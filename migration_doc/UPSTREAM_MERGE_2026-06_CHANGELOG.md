@@ -212,6 +212,40 @@ During verification the WebGPU default-`CesiumViewer` globe appeared black. Afte
 
 Upstream merges can silently renumber enum VALUES that fork code — especially WGSL shaders, which can't `import` a JS enum and must **hardcode** the numbers — depends on. This merge renumbered `Pass.js` (`OVERLAY 12→13`, `NUMBER_OF_PASSES 13→14`, new `CESIUM_3D_TILE_EDGES_DIRECT:12`); `TerrainQuantization` did NOT renumber (modernization-only). **Recommended guard (TODO):** a Jasmine spec pinning the WebGPU-consumed enum values — `Pass.GLOBE===2`, `Pass.OPAQUE===8`, `TerrainQuantization.NONE===0`/`BITS12===1`, the `ShaderDefine` bits — so a future merge that renumbers any of them fails CI loudly instead of silently breaking a WGSL hardcode. CLAUDE.md already mandates "add-only, never renumber" for `ShaderDefine`/`ShaderSourceId`; this guard extends the protection to upstream-owned enums and adds an enforcing test.
 
+## Double-conversion merge hotspots (future-merge guidance)
+
+Several files were **independently ES6-class-converted on BOTH sides** of this merge — the fork
+modernized them (product direction, see `FORK_DRIFT_ANALYSIS_2026-06-11.md`) and upstream's
+`0f9f794b52 "Types: Convert Cesium3DTileContent to ES6 classes"` (and siblings) converged on the
+same class form. Because neither side is a clean `--ours`/`--theirs` (both rewrote the same
+prototype→class shape), git auto-merge **duplicated methods** at the seam. These are NOT behavioral
+conflicts; they are structural double-conversions that resolve cleanly by taking the upstream class
+body wholesale and re-grafting the small fork deltas on top.
+
+**Reconcile strategy (applied this merge, and the standing rule for the next sync):**
+
+1. **Take upstream's class body wholesale** — it carries the richer `@import` / `@implements` /
+   `@ts-check` typing and 700+ commits of accumulated fixes/JSDoc. Do NOT try to preserve the fork's
+   independent class conversion; it has no behavioral delta over upstream's.
+2. **Re-graft only the fork-behavioral deltas** on top (e.g. WebGPU FeatureRenderer hooks,
+   RTE edits, `Class.x =` statics — the latter are invisible to an in-class method-name diff and
+   were the source of the `Matrix4.setDepthRangeType` runtime regression; audit `Class.x =` /
+   `Class.prototype.x =` assignments explicitly, not just in-class members).
+3. **Verify the auto-merge did not leave duplicated in-class methods** — a clean upstream blob
+   removes them; the QuadtreeTile / 3D-tile-content seams had exactly this.
+
+**Confirmed double-conversion files this merge** (all resolved take-upstream + re-graft):
+`Model3DTileContent.js` (+ the `Multiple/Composite/Tileset/Implicit/GaussianSplat/Vector/VectorGltf/`
+`Geometry/Empty3DTileContent.js` sibling content classes — see the per-file entry above),
+`Cesium3DTilePointFeature.js`, `QuadtreeTile.js`, and the Core math classes (Matrix2/3/4 etc.,
+which additionally needed the `Class.x =` statics audit). `Model3DTileContent` specifically adopted
+upstream's `model.edgeDisplayMode = tileset.edgeDisplayMode` per-frame assignment with **no fork
+delta to re-graft** — the cleanest of the set. Tracked as `NEW-MODEL3DTILECONTENT-DOUBLE-CONVERSION`
+in `DEFERRED_WORK.md` (now reconciled to point here).
+
+**No code change at HEAD** — this is merge bookkeeping so the next `upstream/main` sync knows these
+files are take-upstream-and-re-graft, not merge-marker-resolve.
+
 ## Post-merge WebGPU-integration backlog (§5)
 
 The post-merge parity audit (new upstream v1.141–1.143 features vs WebGPU support) lives in **`WEBGPU_PARITY_AUDIT_2026-06.md`** — 15 real gaps, **0 P0**. Headline: the `BufferPrimitive` family (`color.alpha`/`blendOption`/world-space `boundingVolume`, P1, best as one coordinated batch), `EdgeDisplayMode` tri-mode incl. wiring the WebGPU `CESIUM_3D_TILE_EDGES_DIRECT` pass (P2), the voxel data path (XL scaffold). All deferred follow-ups — NOT merge blockers. To be reconciled into `FEATURE_INVENTORY.md` §C/§D + `DEFERRED_WORK.md`.
