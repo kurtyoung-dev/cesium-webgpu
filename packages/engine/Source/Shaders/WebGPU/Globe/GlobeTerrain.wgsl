@@ -2394,14 +2394,14 @@ fn computeEnhancedOcean(
   let foamColor = vec3<f32>(0.85, 0.9, 0.92);
 
   // Match WebGL: imagery preserved, highlights added on top, foam mixed in.
+  // NS-WATER-MASK-COAST-AA — the coastline feather (mix vs baseColor) now
+  // lives at the CALL SITE, where a screen-space-adaptive coverage is
+  // computed with `fwidth(mask)` in uniform control flow. Returning the
+  // full effect color here keeps this helper a pure "ocean over imagery"
+  // shader; the caller decides how much of it survives near the coast.
   var color = baseColor + oceanContribution;
   color = mix(color, foamColor, foamFactor);
-
-  // Smooth water mask transition at coastlines — for non-water fragments
-  // (coastBlend = 0) we return baseColor unchanged. For water (coastBlend
-  // = 1) we return imagery + highlights.
-  let coastBlend = smoothstep(0.3, 0.7, waterMaskValue);
-  return mix(baseColor, color, coastBlend);
+  return color;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -3754,7 +3754,40 @@ fn fragmentMain(
     let waterUV = geoUV * wmTS.zw + wmTS.xy;
     let waterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV, 0.0).r;
 
-    if (waterMask > 0.01) {
+    // NS-WATER-MASK-COAST-AA — screen-space anti-aliased coast coverage.
+    // The water mask is a low-resolution bitmap; a single bilinear sample
+    // resolves the coastline at texel granularity, so at low zoom (a mask
+    // texel spanning ~1 screen pixel) the water/land boundary aliases into
+    // a jagged staircase and, at high zoom, kinks at each bilinear-patch
+    // seam. We widen the coverage smoothstep by the mask's SCREEN-space
+    // rate of change so the boundary feathers over ~1 screen pixel (killing
+    // the staircase), while the 0.2 floor keeps the high-zoom bilinear ramp
+    // soft. This never moves the 0.5 isoline, so the coast stays spatially
+    // accurate and both land (mask≈0 → coverage 0) and open-ocean (mask≈1 →
+    // coverage 1) interiors are byte-identical to a hard step.
+    //
+    // WGSL forbids `fwidth` here (this is downstream of non-uniform
+    // discards), so we reconstruct the mask's per-pixel footprint from the
+    // UV derivatives hoisted to fragment entry (geoUV_dx/geoUV_dy, computed
+    // in uniform control flow). waterUV = geoUV*wmTS.zw + wmTS.xy, so one
+    // screen pixel steps `geoUV_d* * wmTS.zw * wmDim` texels; near a coast
+    // the bilinear mask changes ≈1.0 per texel, making this the fwidth(mask)
+    // analogue. Twin of the GLSL fwidth path in GlobeFS.glsl.
+    let wmDim = vec2<f32>(textureDimensions(waterMaskTexture, 0));
+    let maskTexelDx = geoUV_dx * wmTS.zw * wmDim;
+    let maskTexelDy = geoUV_dy * wmTS.zw * wmDim;
+    let maskScreenGrad = length(maskTexelDx) + length(maskTexelDy);
+    // Cap the band at 0.5: at band=0.5 the smoothstep spans the full [0,1]
+    // mask range, so open ocean (mask=1 → coverage 1) and land (mask=0 →
+    // coverage 0) interiors stay EXACTLY unchanged — a wider band would clip
+    // `smoothstep(0.5-band, 0.5+band, 1.0)` below 1 and dim the open-ocean
+    // effect. The 0.2 floor reproduces the prior smoothstep(0.3,0.7) feather
+    // at close zoom (byte-identical there); the band only grows for AA as the
+    // mask footprint per pixel increases at lower zoom.
+    let coastBand = clamp(maskScreenGrad * 1.5, 0.2, 0.5);
+    let coastCoverage = smoothstep(0.5 - coastBand, 0.5 + coastBand, waterMask);
+
+    if (coastCoverage > 0.0) {
       // GLOBE-POLAR-STRETCH-POLISH — WebGL's computeWaterColor receives
       // the ANALYTIC sphere normal, not the terrain mesh vertex normal:
       // GlobeFS.glsl L382-383 computes
@@ -3776,10 +3809,12 @@ fn fragmentMain(
       // identical to GlobeFS.glsl L428) for the ocean highlight taper, NOT the
       // day/night `dayFade` (which is 1.0 when enableLighting is off → would
       // zero the daytime diffuseHighlight). See computeEnhancedOcean header.
-      color = computeEnhancedOcean(
+      let oceanColor = computeEnhancedOcean(
         color, input.v_positionEC, input.v_positionMC, oceanNormalEC, sunDir,
         geoUV, waterMask, tile.groundAtmosphereControl.y, input.v_distance
       );
+      // Feather the ocean effect in over the anti-aliased coast band.
+      color = mix(color, oceanColor, coastCoverage);
     }
   }
 

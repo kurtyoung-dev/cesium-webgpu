@@ -490,7 +490,25 @@ void main()
     float mask = texture(u_waterMask, waterMaskTextureCoordinates).r;
 
     #ifdef SHOW_REFLECTIVE_OCEAN
-    if (mask > 0.0)
+    // NS-WATER-MASK-COAST-AA — screen-space anti-aliased coast coverage.
+    // The water mask is a low-resolution bitmap; a single bilinear sample
+    // resolves the coastline at texel granularity, so at low zoom (a mask
+    // texel spanning ~1 screen pixel) the water/land boundary aliases into
+    // a jagged staircase. fwidth(mask) measures how fast the mask crosses
+    // in SCREEN space; widening the smoothstep band by that amount feathers
+    // the boundary over ~1 screen pixel while the 0.2 floor keeps the
+    // high-zoom bilinear ramp soft. The 0.5 isoline never moves, so the
+    // coast stays spatially accurate and land (mask~0 -> coverage 0) plus
+    // open-ocean (mask~1 -> coverage 1) interiors are unchanged vs the
+    // previous hard `mask > 0.0` gate. Twin of the WGSL path in
+    // GlobeTerrain.wgsl (fragmentMain water-mask block).
+    // Cap the band at 0.5 so open ocean (mask=1 -> coverage 1) and land
+    // (mask=0 -> coverage 0) interiors stay exactly unchanged; a wider band
+    // would clip smoothstep(0.5-band, 0.5+band, 1.0) below 1 and dim the
+    // open-ocean effect.
+    float coastBand = clamp(fwidth(mask) * 1.5, 0.2, 0.5);
+    float coastCoverage = smoothstep(0.5 - coastBand, 0.5 + coastBand, mask);
+    if (coastCoverage > 0.0)
     {
         mat3 enuToEye = czm_eastNorthUpToEyeCoordinates(v_positionMC, normalEC);
 
@@ -499,7 +517,9 @@ void main()
 
         vec2 textureCoordinates = mix(ellipsoidTextureCoordinates, ellipsoidFlippedTextureCoordinates, czm_morphTime * smoothstep(0.9, 0.95, normalMC.z));
 
-        color = computeWaterColor(v_positionEC, textureCoordinates, enuToEye, color, mask, fade);
+        vec4 oceanColor = computeWaterColor(v_positionEC, textureCoordinates, enuToEye, color, mask, fade);
+        // Feather the ocean effect in over the anti-aliased coast band.
+        color = mix(color, oceanColor, coastCoverage);
     }
     #endif
 #endif
