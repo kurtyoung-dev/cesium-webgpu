@@ -584,21 +584,28 @@ export function createTileUniformBuffer(
   data[OCEAN_PARAMS_OFFSET + 3] = tileProvider?.oceanFresnelPower ?? 0.0; // 0 = use shader default
 
   // ─── Time for ocean wave animation ───
-  // Derive animation clock from `frameState.time` (a JulianDate) so every
-  // view in a multi-view render pass samples the same wave phase and
-  // screenshots are deterministic. Previously the renderer read
-  // `performance.now()` directly, which drifts per-view and breaks
-  // deterministic capture. Mod by 1e6 s (~11.6 days) to keep the
-  // monotonic counter within f32 precision for smooth `sin(k*t)` / `fract`
-  // kernels in the shader.
-  const t = frameState?.time as
-    | { dayNumber?: number; secondsOfDay?: number }
-    | undefined;
-  let waveTime = 0.0;
-  if (t) {
-    const secs = (t.dayNumber ?? 0) * 86400.0 + (t.secondsOfDay ?? 0);
-    waveTime = secs % 1000000.0;
-  }
+  // NS-WEBGPU-OCEAN-BRIGHT-NO-WAVES — drive the wave phase from
+  // `frameState.frameNumber`, mirroring WebGL's `czm_frameNumber` (the
+  // driver of `computeWaterColor`'s wave sampling: `time = czm_frameNumber
+  // * oceanAnimationSpeed`, GlobeFS.glsl L800/805). WebGL animates on every
+  // RENDERED frame regardless of the scene clock, so a paused (or slow) clock
+  // still shows churning ocean. The previous derivation used
+  // `frameState.time` (JulianDate seconds); at the WGSL octave coefficients
+  // (`sampleOceanWaveNormals` 0.012/0.008/0.03) a 1×-realtime clock advanced
+  // the wave UV by only ~0.012/s — visually FROZEN next to WebGL's per-frame
+  // churn — and stopped entirely when the clock was paused. This was the
+  // "WebGPU ocean lacks the wave effect" half of the user-reported bug.
+  //
+  // `frameNumber` preserves the two properties the clock-time switch was made
+  // for: it is CONSTANT across all views of one `scene.render()` (no per-view
+  // phase drift, unlike the earlier `performance.now()`) and DETERMINISTIC for
+  // a fixed warm-up frame count (regression capture). `OCEAN_WAVE_FRAME_SPEED`
+  // is the per-frame phase increment fed into the octave coefficients — tuned
+  // for a gentle, WebGL-comparable churn. Mod by 1e6 keeps the phase within
+  // f32 precision for the shader's `fract`/wrap kernels.
+  const OCEAN_WAVE_FRAME_SPEED = 0.15;
+  const frameNumber = frameState?.frameNumber ?? 0;
+  const waveTime = (frameNumber * OCEAN_WAVE_FRAME_SPEED) % 1000000.0;
   data[TIME_OFFSET] = waveTime;
   //>>includeStart('debug', pragmas.debug);
   // Batch 56 diagnostic — `CesiumDebug.globeFragmentDebug(name)` (or
@@ -703,8 +710,7 @@ export function createTileUniformBuffer(
   let groundAtmosphereFade = 0;
   if (showGroundAtmosphere) {
     const camPos = frameState.camera?.positionWC as
-      | { x: number; y: number; z: number }
-      | undefined;
+      { x: number; y: number; z: number } | undefined;
     if (camPos) {
       const cameraDist = Math.sqrt(
         camPos.x * camPos.x + camPos.y * camPos.y + camPos.z * camPos.z,

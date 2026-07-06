@@ -2264,7 +2264,19 @@ fn computeEnhancedOcean(
       1.0,
     );
     let waveIntensityFade = pow(1.0 - waveFadeLin, 5.0);
-    let waveStrength = mix(0.25, 0.05, smoothstep(10000.0, 500000.0, distance)) *
+    // NS-WEBGPU-OCEAN-BRIGHT-NO-WAVES — raise the near-surface wave-normal
+    // strength so the perturbed normal (and the specular sparkle / diffuse
+    // highlight that ride on it) has WebGL-comparable magnitude. WebGL's
+    // computeWaterColor applies the FULL tangent-space wave normal near the
+    // surface (GlobeFS.glsl L818: `normalTangentSpace.xy *= waveIntensity`
+    // with `waveIntensity ≈ 1` below ~70 km), so the animated Phong glint
+    // churns visibly. The previous near value 0.25 mixed only ~24 % toward
+    // the wave normal, leaving the WebGPU ocean ~4× flatter (detail ~0.28×
+    // WebGL) and its frame-driven animation nearly imperceptible — the
+    // "lacks the wave effect" half of the user report. The far value and
+    // `waveIntensityFade` (→ 0 at orbit) are unchanged, so the orbit
+    // sun-glint parity tuned by GLOBE-POLAR-STRETCH-POLISH is preserved.
+    let waveStrength = mix(0.85, 0.05, smoothstep(10000.0, 500000.0, distance)) *
       waveIntensityFade;
     let enuToEye = eastNorthUpToEyeCoordinates(positionMC, normalEC);
     // ENU.up = normalEC, so `enuToEye * (0,0,1) = normalEC`. A purely

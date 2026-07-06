@@ -1113,9 +1113,7 @@ export class WebGPUGlobeSurfaceRenderer {
         pcfRadius?: number;
       };
       const csmCandidate = frameState.context?.csmRenderer as
-        | CSMRendererView
-        | null
-        | undefined;
+        CSMRendererView | null | undefined;
       const csmBinding =
         csmCandidate &&
         csmCandidate.enabled === true &&
@@ -1790,7 +1788,13 @@ export class WebGPUGlobeSurfaceRenderer {
     const oceanNormalMap = tileProvider?.oceanNormalMap;
     if (oceanNormalMap) {
       const onm = oceanNormalMap as CesiumTextureWithSource;
-      const source = onm._source ?? onm.image ?? oceanNormalMap;
+      // NS-WEBGPU-OCEAN-BRIGHT-NO-WAVES — prefer `_webgpuSource` (the decoded
+      // image Globe.js retains for us; the WebGL Texture drops `_source`/`image`
+      // after upload, so those are undefined here in practice). Without this the
+      // resolver fell through to the Texture object itself, failed the
+      // instanceof gate below, and left the wave sampler on the 1×1 placeholder
+      // → a flat, non-animating ocean.
+      const source = onm._webgpuSource ?? onm._source ?? onm.image;
       if (
         source instanceof HTMLImageElement ||
         source instanceof ImageBitmap ||

@@ -1056,6 +1056,15 @@ class Globe {
             context: frameState.context,
             source: image,
           });
+          // NS-WEBGPU-OCEAN-BRIGHT-NO-WAVES — the WebGL Texture class does not
+          // retain its source image after upload, but the WebGPU globe renderer
+          // must re-upload the ocean normal map into its own GPUTexture cache
+          // (WebGPUGlobeSurfaceRenderer._createWaterOceanMaterialBindGroupInner).
+          // Retain the decoded image here — same `_webgpuSource` handoff pattern
+          // the water mask uses (GlobeSurfaceTile.js). Without it the WGSL wave
+          // sampler bound the 1×1 placeholder, giving a flat, NON-animating
+          // ocean (the "lacks the wave effect" user report).
+          that._oceanNormalMap._webgpuSource = image;
         });
       } else {
         this._oceanNormalMap =

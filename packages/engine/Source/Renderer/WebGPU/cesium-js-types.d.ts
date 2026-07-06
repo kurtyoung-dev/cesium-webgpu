@@ -1532,7 +1532,11 @@ interface CesiumTextureWithSource extends CesiumOpaqueObject {
    * `{width, height, arrayBufferView}` for typed-array LUMINANCE masks
    * (including the shared 1×1 all-water texture).
    */
-  _webgpuSource?: ImageBitmap | CesiumLuminanceTexelSource;
+  _webgpuSource?:
+    | HTMLImageElement
+    | HTMLCanvasElement
+    | ImageBitmap
+    | CesiumLuminanceTexelSource;
   /**
    * NEW-GLOBE-BELOWSURFACE-FIX — registered by the WebGPU water-mask
    * uploader; invoked by GlobeSurfaceTile.freeResources when the WebGL
