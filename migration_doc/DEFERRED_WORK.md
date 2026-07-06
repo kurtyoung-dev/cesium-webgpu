@@ -19,6 +19,20 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-07-06 — NS-LARGE-LAKE-WATER-MASK (BUG 3): flat Great Lakes = provider DATA limitation, NOT a shader gate
+
+- **NS-LARGE-LAKE-WATER-MASK — ✅ ROOT-CAUSED as a DATA limitation (no code fix; honest doc note per Principle 9 + the task off-gate "if a data limitation, no code change beyond an honest doc note").** User report (2026-07-06, split-screen): large inland lakes (Great Lakes, Great Salt Lake) render FLAT with NO animated water-mask wave/specular effect on BOTH backends, while true oceans animate. **Premise is REAL** (lakes ARE flat — confirmed by reading the PNG pair), but the cause is upstream data, not a fixable shader/gate bug. **Empirical root cause** (`probe-large-lake-water.mjs`, queries `terrainProvider.requestTileGeometry(...).waterMask` DIRECTLY at points inside each water body, Cesium World Terrain, level 11): the provider's water mask marks the Great Lakes as **LAND** while marking true ocean as water —
+  - Lake Superior (−87.5, 47.6): mask **0** (uniform 1×1 "all-land" tile)
+  - Lake Michigan (−87.0, 43.3): mask **0**
+  - Lake Huron (−82.4, 44.8): mask **0**
+  - Great Salt Lake (−112.5, 41.15): mask **0**
+  - N. Atlantic ocean control (−60, 40): mask **255** (uniform "all-water")
+  - Nebraska land control (−99.8, 41.5): mask **0**
+
+  The globe FS/WGSL water effect is correctly gated on the mask value (`mask ~0 → coverage 0 → no effect`) and BOTH backends read the identical per-tile mask, so both correctly render lakes flat. **There is NO shader gate excluding lakes and NO backend divergence** — the effect *would* show if the provider marked lakes as water. This matches Cesium World Terrain's known behavior (its water mask derives from a global shoreline/ocean dataset that classifies inland lakes as land). Consistent with the Batch-247 note (line ~171: "world-terrain water-mask wave material … tracked under the collections/material backlog") and PARITY-GLOBE-RIVER-WATER-INTENSITY (line ~93).
+  - **What the fix would require (deferred, NOT this task):** a **supplementary client-side lake water-mask source** — rasterize an inland-lake polygon dataset (e.g. Natural Earth `ne_10m_lakes` / HydroLAKES, license-clean) into the per-tile water mask (compositing OR into the provider mask before `createWaterMaskTextureIfNeeded`), wired identically for WebGL (`u_waterMask` upload in `GlobeSurfaceTile.js`) and WebGPU (`WebGPUGlobeSurfaceTextures.getOrCreateWaterMaskTexture`). This is a substantial feature (dataset ingest + per-tile composite + both-backend byte-identical verification), ~1–2 sessions. **A coverage heuristic was explicitly REJECTED** — any "mark dark/low pixels as water" rule would fake waves on non-water land (rivers, wet fields, dark forest), which the task charter forbids ("Do NOT fake waves on non-water pixels").
+  - **Trace:** `Tools/visual-regression/probe-large-lake-water.mjs` (retained — STEP (i) samples the provider mask + documents the data result, STEP (ii) captures the Lake Michigan PNG pair). Tree left clean apart from this note + the probe.
+
 ## 2026-07-04 — Q3-COLLECTIONS-SCENE2D-ALLZERO diagnostic (premise STALE; new residual surfaced)
 
 - **Q3-COLLECTIONS-SCENE2D-ALLZERO — ✅ PREMISE STALE (2026-07-04, no code).** The tracked claim
