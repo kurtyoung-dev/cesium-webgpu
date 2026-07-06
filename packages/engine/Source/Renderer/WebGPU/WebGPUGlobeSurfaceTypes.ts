@@ -416,6 +416,20 @@ export interface TileGPUResources {
   // accurate near the equator, drifts up to 0.2° at mid-latitudes on WGS84).
   hasGeodeticSurfaceNormals: boolean;
   meshGeneration: number;
+  // NS-WEBGPU-TILE-POPPING-SKIRTS — reference to the `mesh.vertices`
+  // Float32Array these GPU buffers were built from. The cache key is only
+  // `${level}_${x}_${y}` and `meshGeneration` is always 0 (nothing bumps
+  // `mesh._webgpuGeneration`), so without a mesh-identity check the cache
+  // would keep serving a tile's FIRST-seen buffers forever — even after
+  // `GlobeSurfaceTile.renderedMesh` swaps the fill/upsampled mesh for the
+  // real terrain mesh (same tile coords). Decoding the stale vertex data with
+  // the *current* mesh's per-tile uniforms flung individual vertices to
+  // Earth-radius distance, drawing thin black atmosphere-tinted wedge slivers
+  // during cold LOD refine (WebGPU-only; WebGL re-uploads on every mesh
+  // change). A new mesh allocates a new `vertices` array, so comparing the
+  // reference detects the swap and forces a rebuild; an unchanged mesh keeps
+  // the identical reference and the cache stays a byte-for-byte hit.
+  sourceVertices: Float32Array;
   // Per-tile shadow cast uniform buffer for the `quantized12` variant.
   // Holds scaleAndBias (mat4), center3D (vec3+pad), and minMaxHeight
   // (vec2+pad). Only populated for quantized tiles; uncompressed tiles

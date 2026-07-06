@@ -81,7 +81,20 @@ export function getOrCreateTileBuffers(
   const generation = mesh._webgpuGeneration || 0;
 
   const cached = host._tileBufferCache.get(tileKey);
-  if (cached && cached.meshGeneration === generation) {
+  // NS-WEBGPU-TILE-POPPING-SKIRTS — a tile's cache key (`level_x_y`) is stable
+  // across a fill/upsampled → real-terrain mesh swap, and `meshGeneration` is
+  // always 0 (nothing sets `mesh._webgpuGeneration`), so `meshGeneration`
+  // alone never invalidates. Also require the cached buffers to have been built
+  // from the SAME `mesh.vertices` array; when `renderedMesh` swaps in a new
+  // mesh (new typed array) the reference differs and we rebuild instead of
+  // serving stale vertex data that the current per-tile uniforms decode into
+  // flung "space" vertices (black wedge slivers). Same mesh → same reference →
+  // identical cache hit as before (byte-neutral for the settled steady state).
+  if (
+    cached &&
+    cached.meshGeneration === generation &&
+    cached.sourceVertices === mesh.vertices
+  ) {
     return cached;
   }
 
@@ -241,6 +254,7 @@ export function getOrCreateTileBuffers(
             isQuantized,
             hasGeodeticSurfaceNormals: inferredHasGeoNormal,
             meshGeneration: generation,
+            sourceVertices: vertices,
           };
           host._tileBufferCache.set(tileKey, resources);
           return resources;
@@ -287,6 +301,7 @@ export function getOrCreateTileBuffers(
     // the stride and enable the `GEODETIC_NORMAL` shader define.
     hasGeodeticSurfaceNormals: encoding.hasGeodeticSurfaceNormals === true,
     meshGeneration: generation,
+    sourceVertices: vertices,
   };
 
   // Allocate a shadow cast UB for every tile regardless of quantization.
