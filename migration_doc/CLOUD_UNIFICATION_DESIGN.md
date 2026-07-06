@@ -1,5 +1,7 @@
 # Cloud Unification Design — Drive Volumetric Clouds THROUGH CloudCollection
 
+**STATUS: SHIPPED (2026-07-05).** All 8 slices landed (Batches 617–625 + the U8 close-out). The WebGPU volumetric cloud deck is now driven THROUGH `CloudCollection` via the exclusive `renderMode` (`BILLBOARD` default / `VOLUMETRIC`) + the `.volumetric` {@link CloudVolumetrics} config + collection-level `.cloudType`. The legacy `globe.showProceduralClouds` / `globe.cloud*` / `globe.weatherProvider` surface was **removed** (not aliased) in slice 4B; `globe.defaultCloudCollection` is the single cloud authority. WebGPU-only expanded flags (genera, weather, exotic E1/E2/E3) default off, are byte-identical when off, and are documented no-ops on WebGL. Off-identity + WebGL-no-op are guarded by `Tools/visual-regression/probe-cloud-u8-offident.mjs` (both backends GREEN: WebGL billboard hash 455912924 / WebGPU 2372594303, before==after with the entire flag surface populated in BILLBOARD mode; VOLUMETRIC-on-WebGL neither throws nor errors). Sections below are the as-built design of record; §2.5 is corrected to reflect the REMOVE decision.
+
 **Date:** 2026-07-05
 **Directive (user, 2026-07-05):** The fork's WebGPU volumetric cloud system (`WebGPUProceduralCloudRenderer`, key `PROCEDURAL_CLOUDS=32`, + `WebGPUWeatherRenderer`, `CloudNoiseBake`, WMO genera, E1/E2/E3 exotics) must be **driven through the upstream `CloudCollection` API and built OFF it**, instead of being a separate globe-attached system (`globe.showProceduralClouds`). Requirements: (1) `CloudCollection` is the entry point for volumetric too; (2) enable FLAGS turn volumetric on; (3) WebGPU-only FLAGS expose expanded functionality + cloud TYPES (weather, genera, exotics) with no WebGL counterpart; (4) existing billboard `CloudCollection`/`CumulusCloud` usage stays backward-compatible + WebGL keeps working (feature-detect + graceful fallback; opt-in default-off; byte-identical when off).
 
@@ -104,9 +106,9 @@ New public members (each JSDoc'd with the Scene.js no-op template — see §3):
 
 - `context.requestVolumetricClouds(config)` — records the frame's volumetric request. **WebGL Context.js: no-op** (default impl on the abstract base returns immediately). WebGPUContext override stores it for the env-effects consumer. Scene code calls it unconditionally → no `isWebGPU` branch (Principle 2 compliant). Optionally paired with `context.consumeVolumetricCloudRequest()` used internally by env-effects.
 
-### 2.5 Deprecations
+### 2.5 Removal (as built — supersedes the original "deprecate + alias" plan)
 
-- `globe.showProceduralClouds` and the `globe.cloud*` family: **kept working**, marked `@deprecated — use CloudCollection.enableVolumetric / .volumetric`. They forward into the same `requestVolumetricClouds` path (globe synthesizes a `CloudVolumetrics`). No removal.
+- `globe.showProceduralClouds`, the ~49 `globe.cloud*` field family, and `globe.weatherProvider` were **REMOVED** (user-decided REMOVE-not-alias, slice 4B, 2026-07-05) — not kept as deprecated aliases. `globe.defaultCloudCollection` (a managed, config-only `CloudCollection` created in the `Globe` ctor) is the single cloud authority; its exclusive `renderMode === VOLUMETRIC` is the only activation gate. Every former globe consumer (env-effects, post-frustum snapshot gate, god-ray gate, volumetric-fog cloud-shadow, atmospheric-effects genus/weather) was re-homed onto the collection. The `AtmosphericConditions.clouds.*` facade proxies onto `defaultCloudCollection.volumetric` / `.cloudType` / `.renderMode` (the `enableVolumetric` alias flips the exclusive `renderMode`), so user-facing scene code that went through the atmospherics facade is unaffected.
 
 ---
 
@@ -157,7 +159,7 @@ Follows the established fork convention (Scene.js `enableSSR`/`enableNPROutlines
 | 5 | **Genera** — `collection.cloudType` feeds `CloudTypeProfile` deck/profile | Yes (opt-in) | Reuses shared genus vocabulary |
 | 6 | **Weather map / provider** flags on collection config | Yes (opt-in) | Self-contained weather texture path |
 | 7 | **Exotic E1/E2** flags on collection config (mammatus/species + remaining E2 modes). **PREMISE-STALE (CLOUD-U7-EXOTIC-E1-E2)** — already exposed on `collection.volumetric` + wired to slots 128–139 by prior slices; probe `Tools/visual-regression/probe-cloud-exotic-flags.mjs` GREEN (see §5 note). | Yes (opt-in) | Uniform-driven density shaping; E3 excluded |
-| 8 | **Docs + inventory + probes** — deprecation notes, FEATURE_INVENTORY moves, Sandcastle demo, off-identical probe additions | None | Keep docs load-bearing |
+| 8 | **Docs + inventory + probes** — status/removal reconcile (this doc §2.5 + top banner), FEATURE_INVENTORY + FORK_OVERVIEW moved onto the `CloudCollection.renderMode` / `.volumetric` / `.cloudType` API, Sandcastle demos already migrated in 4B, and a dedicated off-identical close-out probe. **LANDED (CLOUD-U8-DOCS-DEMO-PROBES)** — probe `Tools/visual-regression/probe-cloud-u8-offident.mjs` (standing guard) proves on BOTH backends: (A) BILLBOARD-mode byte-identity with the ENTIRE expanded WebGPU-only flag surface populated (WebGL 455912924 / WebGPU 2372594303, base==flags), (B) WebGL no-op — `renderMode=VOLUMETRIC` + every flag neither throws nor emits a console error. | None | Keep docs load-bearing |
 
 Slices 1-2 change nothing visually (pure plumbing). Slice 3 is the first opt-in capability. Slice 4 closes the dual-ownership gap. 5-7 layer WebGPU-only expansion. 8 documents.
 
