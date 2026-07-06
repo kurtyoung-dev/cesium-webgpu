@@ -27,6 +27,12 @@ const attributeLocations = {
   position: 0,
 };
 
+// Identity extinction (fully transmissive) used when no atmospheric
+// extinction is set. Multiplying the surface color by exactly 1.0 keeps the
+// output byte-identical, so the `u_atmosphereExtinction` uniform is inert for
+// every consumer that does not opt in.
+const scratchExtinctionOne = new Cartesian3(1.0, 1.0, 1.0);
+
 /**
  * A renderable ellipsoid.  It can also draw spheres when the three {@link EllipsoidPrimitive#radii} components are equal.
  * <p>
@@ -170,6 +176,18 @@ class EllipsoidPrimitive {
     this._onlySunLighting = false;
 
     /**
+     * Optional per-channel atmospheric extinction (transmittance) multiplier
+     * applied to the final surface color. Used by {@link Moon} to attenuate
+     * and redden the disc along the atmospheric slant path. `undefined`
+     * (the default) leaves the shader byte-identical for every other
+     * EllipsoidPrimitive consumer.
+     * @type {Cartesian3|undefined}
+     * @private
+     */
+    this.atmosphereExtinction = undefined;
+    this._atmosphereExtinctionEnabled = false;
+
+    /**
      * @private
      */
     this._depthTestEnabled = options.depthTestEnabled ?? true;
@@ -198,6 +216,9 @@ class EllipsoidPrimitive {
       },
       u_oneOverEllipsoidRadiiSquared: function () {
         return that._oneOverEllipsoidRadiiSquared;
+      },
+      u_atmosphereExtinction: function () {
+        return that.atmosphereExtinction ?? scratchExtinctionOne;
       },
     };
 
@@ -326,6 +347,15 @@ class EllipsoidPrimitive {
     const lightingChanged = this.onlySunLighting !== this._onlySunLighting;
     this._onlySunLighting = this.onlySunLighting;
 
+    // NS-MOON-ATMOSPHERE-EXTINCTION — the extinction shader path is a define,
+    // so toggling it on/off forces a recompile. The extinction *value* is a
+    // per-frame uniform (no recompile), so only the enabled/disabled
+    // transition matters here.
+    const atmosphereExtinctionEnabled = defined(this.atmosphereExtinction);
+    const atmosphereExtinctionChanged =
+      atmosphereExtinctionEnabled !== this._atmosphereExtinctionEnabled;
+    this._atmosphereExtinctionEnabled = atmosphereExtinctionEnabled;
+
     const useLogDepth = frameState.useLogDepth;
     const useLogDepthChanged = this._useLogDepth !== useLogDepth;
     this._useLogDepth = useLogDepth;
@@ -338,7 +368,8 @@ class EllipsoidPrimitive {
       materialChanged ||
       lightingChanged ||
       translucencyChanged ||
-      useLogDepthChanged
+      useLogDepthChanged ||
+      atmosphereExtinctionChanged
     ) {
       vs = new ShaderSource({
         sources: [EllipsoidVS],
@@ -348,6 +379,9 @@ class EllipsoidPrimitive {
       });
       if (this.onlySunLighting) {
         fs.defines.push("ONLY_SUN_LIGHTING");
+      }
+      if (atmosphereExtinctionEnabled) {
+        fs.defines.push("ATMOSPHERE_EXTINCTION");
       }
       if (!translucent && context.fragmentDepth) {
         fs.defines.push("WRITE_DEPTH");

@@ -1,5 +1,8 @@
 uniform vec3 u_radii;
 uniform vec3 u_oneOverEllipsoidRadiiSquared;
+#ifdef ATMOSPHERE_EXTINCTION
+uniform vec3 u_atmosphereExtinction;
+#endif
 
 in vec3 v_positionEC;
 
@@ -85,6 +88,12 @@ void main()
 
     out_FragColor = mix(insideFaceColor, outsideFaceColor, outsideFaceColor.a);
     out_FragColor.a = 1.0 - (1.0 - insideFaceColor.a) * (1.0 - outsideFaceColor.a);
+
+#ifdef ATMOSPHERE_EXTINCTION
+    // NS-MOON-ATMOSPHERE-EXTINCTION — attenuate + redden by the atmospheric
+    // transmittance along the view ray (exactly vec3(1.0) from orbit → no-op).
+    out_FragColor.rgb *= u_atmosphereExtinction;
+#endif
 
 #if (defined(WRITE_DEPTH) && (__VERSION__ == 300 || defined(GL_EXT_frag_depth)))
     t = (intersection.start != 0.0) ? intersection.start : intersection.stop;

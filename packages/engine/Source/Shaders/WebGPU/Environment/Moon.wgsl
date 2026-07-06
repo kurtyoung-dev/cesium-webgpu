@@ -109,9 +109,11 @@ struct U {
   _p12: f32,                                        // 296
   _p13: f32,                                        // 300
 
-  _spare0: f32,                                     // 304
-  _spare1: f32,                                     // 308
-  _spare2: f32,                                     // 312
+  // NS-MOON-ATMOSPHERE-EXTINCTION — per-channel atmospheric transmittance
+  // (extinction) along the camera→moon view ray. Exactly vec3(1.0) from orbit
+  // / when the sky atmosphere is hidden, so the moon is byte-identical there.
+  // vec3 is 16-byte aligned; offset 304 is 16-aligned.
+  extinction: vec3<f32>,                            // 304..315
   _spare3: f32,                                     // 316
 };
 
@@ -390,7 +392,9 @@ fn fs(i: VO) -> FragOut {
   // present. Inside face only matters from inside the ellipsoid.
   let mixed = mix(insideColor, outsideColor, outsideColor.a);
   let alpha = 1.0 - (1.0 - insideColor.a) * (1.0 - outsideColor.a);
-  out.color = vec4<f32>(mixed.rgb, alpha);
+  // NS-MOON-ATMOSPHERE-EXTINCTION — attenuate + redden by the atmospheric
+  // transmittance along the view ray (exactly vec3(1.0) from orbit → no-op).
+  out.color = vec4<f32>(mixed.rgb * u.extinction, alpha);
 
   // Log depth — this INTENTIONALLY DIVERGES from the shared csm_writeLogDepth
   // contract, and the divergence is safe (see below).

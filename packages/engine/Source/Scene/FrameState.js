@@ -307,6 +307,25 @@ class FrameState {
     this.atmosphere = undefined;
 
     /**
+     * Whether the sky atmosphere is being rendered this frame. Published by
+     * Scene at frame start so celestial-body renderers (Moon) can gate
+     * atmospheric extinction on the atmosphere actually being shown.
+     * @type {boolean}
+     */
+    this.skyAtmosphereVisible = false;
+
+    /**
+     * Per-frame RGB atmospheric extinction (transmittance) for the Moon —
+     * the fraction of moonlight, per channel, that survives the slant path
+     * through the atmosphere to the camera. {@link Cartesian3#ONE} when the
+     * view ray never crosses the atmosphere (from orbit / atmosphere hidden),
+     * making the moon byte-identical in that case. Consumed by the WebGPU
+     * moon feature renderer; the WebGL path reads it via the Moon primitive.
+     * @type {Cartesian3|undefined}
+     */
+    this.moonAtmosphereExtinction = undefined;
+
+    /**
      * Canonical atmospheric conditions facade — forwarded once per frame
      * from `scene.globe.atmosphericConditions`. Renderers read B-series
      * toggles (sun/moon lighting, scattering occlusion, star modulation,

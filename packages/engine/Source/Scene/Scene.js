@@ -5419,6 +5419,13 @@ function render(scene) {
   frameState.backgroundColor = backgroundColor;
 
   frameState.atmosphere = scene.atmosphere;
+  // NS-MOON-ATMOSPHERE-EXTINCTION — publish whether the sky atmosphere is
+  // being rendered so celestial-body renderers (Moon) can gate atmospheric
+  // extinction on it. When the user hides the sky atmosphere the moon stays
+  // byte-identical (no extinction). Set at frame start so it is available
+  // regardless of environment-command build order.
+  frameState.skyAtmosphereVisible =
+    defined(scene.skyAtmosphere) && scene.skyAtmosphere.show === true;
   // Phase 1.1: forward the canonical atmospheric conditions facade so
   // renderers can read B-series toggles (sun/moon lighting, scattering
   // occlusion, star modulation, volumetric fog/clouds, weather, night)

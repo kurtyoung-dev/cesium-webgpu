@@ -1201,7 +1201,15 @@ function _packMoonUniforms(moon, frameState, cache) {
   ud[74] = 0;
   ud[75] = 0;
 
-  // Offsets 76..79 are spare; ud.fill(0) above already zeroed them.
+  // NS-MOON-ATMOSPHERE-EXTINCTION — RGB atmospheric transmittance at offsets
+  // 76..78 (vec3 `extinction`, 16-byte aligned at byte 304). Defaults to
+  // (1,1,1) when the atmosphere is hidden or the moon is viewed from orbit,
+  // making the multiply in the shader an exact no-op (byte-identical).
+  const extinction = frameState.moonAtmosphereExtinction;
+  ud[76] = defined(extinction) ? extinction.x : 1.0;
+  ud[77] = defined(extinction) ? extinction.y : 1.0;
+  ud[78] = defined(extinction) ? extinction.z : 1.0;
+  // Offset 79 is spare; ud.fill(0) above already zeroed it.
 }
 
 /**

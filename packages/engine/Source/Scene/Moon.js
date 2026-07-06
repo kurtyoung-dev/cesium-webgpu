@@ -10,6 +10,7 @@ import Matrix4 from "../Core/Matrix4.js";
 import Simon1994PlanetaryPositions from "../Core/Simon1994PlanetaryPositions.js";
 import Transforms from "../Core/Transforms.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import computeAtmosphereExtinction from "./computeAtmosphereExtinction.js";
 import EllipsoidPrimitive from "./EllipsoidPrimitive.js";
 import Material from "./Material.js";
 
@@ -162,6 +163,40 @@ class Moon {
     );
     frameState.moonPhaseFraction = phaseFraction;
 
+    // NS-MOON-ATMOSPHERE-EXTINCTION — attenuate and redden the moon by the
+    // atmospheric optical path along the view ray. `translation` is the moon
+    // position in Earth-centered fixed coordinates; the extinction integrates
+    // the Rayleigh/Mie optical depth from the camera to the moon through the
+    // atmosphere shell. Gated on the sky atmosphere actually being rendered so
+    // the moon is byte-identical when the atmosphere is hidden, and the
+    // physics yields exactly Cartesian3.ONE from orbit (ray never crosses the
+    // shell) — so the off-gate is byte-identical there too.
+    let extinction = scratchExtinctionOne;
+    const camPos = defined(frameState.camera)
+      ? frameState.camera.positionWC
+      : undefined;
+    if (
+      frameState.skyAtmosphereVisible === true &&
+      defined(frameState.atmosphere) &&
+      defined(camPos)
+    ) {
+      extinction = computeAtmosphereExtinction(
+        scratchExtinction,
+        camPos,
+        translation,
+        frameState.atmosphere,
+        Ellipsoid.default.maximumRadius,
+      );
+    }
+    frameState.moonAtmosphereExtinction = Cartesian3.clone(
+      extinction,
+      frameState.moonAtmosphereExtinction,
+    );
+    // Hand the extinction to the WebGL moon primitive. Undefined disables the
+    // shader path (byte-identical) when the atmosphere is hidden.
+    ellipsoidPrimitive.atmosphereExtinction =
+      frameState.skyAtmosphereVisible === true ? extinction : undefined;
+
     // Backend-specific path — delegate to feature renderer if available
     const context = frameState.context;
     const fr = context.getFeatureRenderer(FeatureRendererKey.MOON);
@@ -260,6 +295,8 @@ const icrfToFixed = new Matrix3();
 const rotationScratch = new Matrix3();
 const translationScratch = new Cartesian3();
 const scratchMoonDirWC = new Cartesian3();
+const scratchExtinction = new Cartesian3();
+const scratchExtinctionOne = new Cartesian3(1.0, 1.0, 1.0);
 const scratchCommandList = [];
 
 export default Moon;
