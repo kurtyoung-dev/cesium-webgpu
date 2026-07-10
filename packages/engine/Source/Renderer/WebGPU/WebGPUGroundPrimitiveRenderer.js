@@ -342,8 +342,14 @@ function ensureMaterialImage(device, cache, imageSource) {
         GPUTextureUsage.COPY_DST |
         GPUTextureUsage.RENDER_ATTACHMENT,
     });
+    // flipY — WebGL Material image textures upload with flipY: true (the
+    // Texture default), so row 0 of the source lands at t=0 (bottom).
+    // Without the flip the sampled pattern is vertically mirrored vs
+    // WebGL (C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO: the Image material
+    // rendered a phase-inverted checkerboard — same variance, ~90%
+    // per-pixel mismatch).
     device.queue.copyExternalImageToTexture(
-      { source: imageBitmap },
+      { source: imageBitmap, flipY: true },
       { texture: tex },
       { width: imageBitmap.width, height: imageBitmap.height },
     );
@@ -986,7 +992,7 @@ fn surfaceUV(eyeCoord: vec3<f32>) -> vec2<f32> {
 // caller (dsColorFS) — calling applyMaterial with materialType==0 still
 // returns materialColor as a safe fallback so the function is well-
 // defined for any input.
-fn applyMaterial(st: vec2<f32>, fallbackColor: vec4<f32>) -> vec4<f32> {
+fn applyMaterial(st: vec2<f32>, stDX: vec2<f32>, stDY: vec2<f32>, fallbackColor: vec4<f32>) -> vec4<f32> {
   let materialType = u32(u.materialMeta.x);
 
   if (materialType == 1u) {
@@ -1034,39 +1040,50 @@ fn applyMaterial(st: vec2<f32>, fallbackColor: vec4<f32>) -> vec4<f32> {
   }
 
   if (materialType == 3u) {
-    // Grid. Mirrors GridMaterial.glsl (simplified — no anisotropic AA
-    // adjustment for distance, just the in-cell line/cell blend):
+    // Grid. Ports GridMaterial.glsl's derivative branch exactly
+    // (C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO — the previous
+    // viewport-ratio thickness approximation produced sub-pixel aliased
+    // lines that mostly vanished):
     //   color         (materialColor) -- line + cell tint
     //   cellAlpha     (materialParam0.x)
     //   lineCount     (materialParam0.yz)
-    //   lineThickness (materialParam1.xy) -- in pixels (approx, since
-    //                  the FS doesn't have screen-space derivatives here)
+    //   lineThickness (materialParam1.xy) -- in pixels
+    // WebGL: scaled distance to the nearest cell border, then a
+    // derivative-widthed smoothstep gives value = 1 in the cell
+    // interior, 0 on the line. FLAT appearance output is
+    // diffuse + emission = 2 * (color.rgb * 0.5) = color.rgb
+    // (czm_gammaCorrect is identity without HDR), alpha =
+    // color.a * (1 - (1 - cellAlpha) * value). czm_pixelRatio is 1.0
+    // for the standard canvas (no supersampling) — carried as a
+    // constant here.
     let cellAlpha = u.materialParam0.x;
-    let lineCountS = u.materialParam0.y;
-    let lineCountT = u.materialParam0.z;
-    let thicknessS = u.materialParam1.x;
-    let thicknessT = u.materialParam1.y;
-    // Cell-relative position (0..1 within each cell).
-    let cellS = fract(st.x * lineCountS);
-    let cellT = fract(st.y * lineCountT);
-    // Distance to nearest cell border (in cell-fraction units).
-    let dS = min(cellS, 1.0 - cellS);
-    let dT = min(cellT, 1.0 - cellT);
-    // Convert thickness from "pixels" to cell-fraction. Use 1 / (cellSize
-    // in pixels) ~= lineCount / viewportDim. Fixed 1/64 approximation
-    // works for typical zooms — exact match to WebGL requires per-pixel
-    // derivative-based thickness, deferred.
-    let cellFracPerPixelS = lineCountS / max(u.viewport.z, 1.0);
-    let cellFracPerPixelT = lineCountT / max(u.viewport.w, 1.0);
-    let lineHalfS = max(thicknessS * 0.5 * cellFracPerPixelS, 0.001);
-    let lineHalfT = max(thicknessT * 0.5 * cellFracPerPixelT, 0.001);
-    let onLine = dS < lineHalfS || dT < lineHalfT;
+    let lineCount = vec2<f32>(u.materialParam0.y, u.materialParam0.z);
+    let lineThickness = vec2<f32>(u.materialParam1.x, u.materialParam1.y);
+    var scaledWidth = fract(lineCount.x * st.x);
+    scaledWidth = abs(scaledWidth - floor(scaledWidth + 0.5));
+    var scaledHeight = fract(lineCount.y * st.y);
+    scaledHeight = abs(scaledHeight - floor(scaledHeight + 0.5));
+    // Fuzz factor -- controls blurriness of lines (WebGL constant).
+    let fuzz = 1.2;
+    let thickness = lineThickness - 1.0; // czm_pixelRatio = 1.0
+    // "3D Engine Design for Virtual Globes" section 4.3.1. WebGL uses
+    // hardware dFdx/dFdy on the interpolated v_texcoord; our st is
+    // RECONSTRUCTED per-fragment from packed globe depth, so hardware
+    // derivatives pick up the depth-pack quantization noise (the
+    // cross-row dpdy blows up to >1 cell and washes every line out).
+    // The caller passes ANALYTIC +1px st deltas computed with the
+    // fragment's own depth instead — exact for locally-flat surfaces,
+    // noise-free by construction.
+    let dxST = abs(stDX);
+    let dyST = abs(stDY);
+    let dF = vec2<f32>(max(dxST.x, dyST.x), max(dxST.y, dyST.y)) * lineCount;
+    let value = min(
+      smoothstep(dF.x * thickness.x, dF.x * (fuzz + thickness.x), scaledWidth),
+      smoothstep(dF.y * thickness.y, dF.y * (fuzz + thickness.y), scaledHeight),
+    );
     let baseColor = u.materialColor;
-    if (onLine) {
-      return baseColor;
-    }
-    // Cell interior: faint version of baseColor.
-    return vec4<f32>(baseColor.rgb, baseColor.a * cellAlpha);
+    let alpha = baseColor.a * (1.0 - (1.0 - cellAlpha) * value);
+    return vec4<f32>(baseColor.rgb, alpha);
   }
 
   if (materialType == 4u) {
@@ -1148,7 +1165,14 @@ ${
 }
   let ec = windowToEye(i.pos.xy, surfaceDepth);
   let st = surfaceUV(ec);
-  let outColor = applyMaterial(st, i.col);
+  // Analytic +1px st derivatives for material anti-aliasing (Grid lines).
+  // Re-evaluate the window->eye->UV chain at neighboring pixels with THIS
+  // fragment's depth: exact for locally-flat surfaces and immune to the
+  // depth-pack quantization noise that hardware dpdx/dpdy would inherit
+  // from the reconstructed st.
+  let stDX = surfaceUV(windowToEye(i.pos.xy + vec2<f32>(1.0, 0.0), surfaceDepth)) - st;
+  let stDY = surfaceUV(windowToEye(i.pos.xy + vec2<f32>(0.0, 1.0), surfaceDepth)) - st;
+  let outColor = applyMaterial(st, stDX, stDY, i.col);
   // Premultiply alpha to match WebGL ShadowVolumeAppearanceFS's
   // out_FragColor.rgb *= out_FragColor.a (classification primitives
   // ride on a translucent-friendly blend state).
@@ -1370,6 +1394,26 @@ struct VelocityCO {
   // InvertClassification etc.).
   // Batch 134 — scene-FB color pipelines bake MSAA sample count.
   const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
+  // C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO — PRE_MULTIPLIED_ALPHA_BLEND
+  // parity. WebGL's ClassificationPrimitive color pass blends with
+  // srcFactor ONE (BlendingState.PRE_MULTIPLIED_ALPHA_BLEND) because
+  // ShadowVolumeAppearanceFS premultiplies rgb by alpha in the shader.
+  // dsColorFS mirrors the premultiply, so the pipeline must mirror the
+  // ONE srcFactor too — the previous `translucent: true` src-alpha blend
+  // applied alpha twice and darkened every translucent classification
+  // (Grid cellAlpha cells, translucent per-instance colors).
+  const premultipliedBlend = {
+    color: {
+      srcFactor: "one",
+      dstFactor: "one-minus-src-alpha",
+      operation: "add",
+    },
+    alpha: {
+      srcFactor: "one",
+      dstFactor: "one-minus-src-alpha",
+      operation: "add",
+    },
+  };
   const depthSampleColorDescriptor = {
     name: `GroundPrimitive depthSampleColor [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
     layout: depthSampleLayout,
@@ -1378,9 +1422,8 @@ struct VelocityCO {
       module: mod,
       entryPoint: "dsColorFS",
       // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
-      // helper. Standard alpha-over blend → `translucent: true`
-      // shorthand.
-      targets: makeSceneFBTargets(format, { translucent: true }),
+      // helper. Premultiplied-alpha blend (WebGL classification parity).
+      targets: makeSceneFBTargets(format, { blend: premultipliedBlend }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
@@ -1469,9 +1512,9 @@ struct VelocityCO {
       module: mod,
       entryPoint: "dsColorFS",
       // Slice 5c-B Phase 1 (Batch 111) — scene-FB color target via
-      // helper. Standard alpha-over blend → `translucent: true`
-      // shorthand.
-      targets: makeSceneFBTargets(format, { translucent: true }),
+      // helper. Premultiplied-alpha blend (WebGL classification parity —
+      // see depthSampleColorDescriptor).
+      targets: makeSceneFBTargets(format, { blend: premultipliedBlend }),
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {

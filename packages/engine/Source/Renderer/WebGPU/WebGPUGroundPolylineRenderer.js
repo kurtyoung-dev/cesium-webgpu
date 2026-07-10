@@ -2338,8 +2338,12 @@ function ensureMaterialImage(device, cache, imageSource) {
         GPUTextureUsage.COPY_DST |
         GPUTextureUsage.RENDER_ATTACHMENT,
     });
+    // flipY — WebGL Material image textures upload with flipY: true (the
+    // Texture default); mirror it so the sampled pattern isn't vertically
+    // mirrored vs WebGL. Same fix as the GroundPrimitive material image
+    // (C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO).
     device.queue.copyExternalImageToTexture(
-      { source: imageBitmap },
+      { source: imageBitmap, flipY: true },
       { texture: tex },
       { width: imageBitmap.width, height: imageBitmap.height },
     );

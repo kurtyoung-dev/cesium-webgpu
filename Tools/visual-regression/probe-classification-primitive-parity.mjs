@@ -141,16 +141,34 @@ async function run(renderer) {
     });
 
     // Build the primitive AND settle globe tiles.
-    for (let i = 0; i < 400; i++) {
+    //
+    // READINESS RACE FIX (C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO): also
+    // gate on GLOBE-pass commands reaching the frustum lists —
+    // `tilesLoaded` does NOT cover the WebGPU globe terrain pipeline's
+    // ~1-2 s `createRenderPipelineAsync`, and headless RAF loops finish
+    // well inside that window. Without the gate this probe captured a
+    // globe-less scene; it historically still "passed" only because the
+    // packed-depth pack lacked the WebGL no-surface sentinel and the
+    // classifier rasterized over the sky. With czm_packDepth(1.0)
+    // parity (packs emit vec4(0) for cleared depth), a globe-less
+    // capture correctly classifies NOTHING — matching WebGL.
+    const globeCommandCount = () =>
+      (scene.frustumCommandsList ?? []).reduce(
+        (acc, fc) => acc + (fc.indices?.[2] ?? 0),
+        0,
+      );
+    const t0 = performance.now();
+    while (performance.now() - t0 < 90_000) {
+      scene.requestRender();
       scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
       if (
         window.__classPrim.ready &&
         scene.globe.tilesLoaded &&
-        i > 30
+        globeCommandCount() > 0
       ) {
         break;
       }
+      await new Promise((r) => setTimeout(r, 50));
     }
     for (let i = 0; i < 60; i++) {
       scene.requestRender();

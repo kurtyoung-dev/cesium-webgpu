@@ -58,6 +58,16 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 @fragment
 fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   let depth = textureSample(depthTex, depthSampler, in.uv);
+  // No-surface sentinel (C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO) — WebGL's
+  // czm_packDepth is fract-based, so packing the cleared/far depth 1.0
+  // yields exactly (0,0,0,0); every ported consumer (classification sky
+  // discard, billboard clamp, model edge background gate) tests
+  // "unpack == 0.0" for "no globe here". The floor-based pack below maps
+  // 1.0 to 1.0 instead, so that sentinel never fired on WebGPU —
+  // classification volumes rasterized over sky where WebGL discards.
+  if (depth >= 1.0) {
+    return vec4<f32>(0.0);
+  }
   // Pack float depth into RGBA8 for compatibility with existing globe depth texture consumers
   let d = depth;
   let r = floor(d * 255.0) / 255.0;
@@ -109,6 +119,11 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
 fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   let coord = vec2<i32>(i32(in.position.x), i32(in.position.y));
   let depth = textureLoad(depthTex, coord, 0);
+  // No-surface sentinel — matches czm_packDepth(1.0) == (0,0,0,0). See
+  // the single-sample variant above.
+  if (depth >= 1.0) {
+    return vec4<f32>(0.0);
+  }
   let d = depth;
   let r = floor(d * 255.0) / 255.0;
   let g = floor((d - r) * 65025.0) / 255.0;

@@ -81,6 +81,13 @@ fn vertexMain(@builtin(vertex_index) vi: u32) -> VertexOutput {
 }
 
 fn packDepth(d: f32) -> vec4<f32> {
+  // No-surface sentinel — WebGL's czm_packDepth is fract-based, so
+  // packing the "skip" depth 1.0 yields exactly (0,0,0,0) and the
+  // depth-sample classifiers' sky discard (unpack == 0.0) fires.
+  // Mirror that here (the floor-based pack would emit ~0.004 instead).
+  if (d >= 1.0) {
+    return vec4<f32>(0.0);
+  }
   let bits = vec4<f32>(1.0, 255.0, 65025.0, 16581375.0) * d;
   let floored = floor(bits);
   let shifted = vec4<f32>(
@@ -154,6 +161,13 @@ fn vertexMain(@builtin(vertex_index) vi: u32) -> VertexOutput {
 }
 
 fn packDepth(d: f32) -> vec4<f32> {
+  // No-surface sentinel — WebGL's czm_packDepth is fract-based, so
+  // packing the "skip" depth 1.0 yields exactly (0,0,0,0) and the
+  // depth-sample classifiers' sky discard (unpack == 0.0) fires.
+  // Mirror that here (the floor-based pack would emit ~0.004 instead).
+  if (d >= 1.0) {
+    return vec4<f32>(0.0);
+  }
   let bits = vec4<f32>(1.0, 255.0, 65025.0, 16581375.0) * d;
   let floored = floor(bits);
   let shifted = vec4<f32>(

@@ -477,9 +477,27 @@ class ClassificationPrimitive {
     // (pushed during `_primitive.update`); on WebGPU the inner shader-
     // compile early-returned so those commands are no-ops, and these
     // FR-built commands are the real classification pass.
-    const fr = frameState.context.getFeatureRenderer(
-      FeatureRendererKey.CLASSIFICATION_PRIMITIVE,
-    );
+    //
+    // STANDALONE-ONLY (C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO, 2026-07-10):
+    // when this ClassificationPrimitive is the INNER primitive of a
+    // GroundPrimitive, the wrapper's `updateAndQueueCommands` override
+    // (GroundPrimitive.js) already dispatched the feature renderer with
+    // the CORRECT owner — the GroundPrimitive, which carries the mode-
+    // appropriate bounding volumes (Batch 174 frustum distribution) and
+    // the user's classificationType. Dispatching again here emitted a
+    // SECOND, unbounded (no-BV → binned into every frustum slice)
+    // command set with this inner primitive's default BOTH
+    // classification — the same translucent polygon blended 3x per
+    // frame (premultiplied over-composite: a Grid cellAlpha-0.5 cell
+    // read 227/255 where WebGL reads 146/255).
+    // `_updateAndQueueCommandsFunction` is defined exactly when a
+    // wrapper owns command emission (the same split the WebGL path uses
+    // above), so gate on its absence.
+    const fr = defined(this._updateAndQueueCommandsFunction)
+      ? undefined
+      : frameState.context.getFeatureRenderer(
+          FeatureRendererKey.CLASSIFICATION_PRIMITIVE,
+        );
     if (fr?.createCommands) {
       const result = fr.createCommands(this, frameState);
       // Push ONLY color commands. The depth-sample classifier attaches its

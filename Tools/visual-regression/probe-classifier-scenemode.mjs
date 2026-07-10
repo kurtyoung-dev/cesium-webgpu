@@ -136,6 +136,26 @@ async function run(renderer) {
         destination: C.Cartesian3.fromDegrees(-97.5, 41.5, 2_400_000),
         orientation: { heading: 0, pitch: -C.Math.PI_OVER_TWO, roll: 0 },
       });
+      // READINESS RACE FIX (C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO): gate
+      // on GLOBE-pass commands in the frustum lists + tilesLoaded so the
+      // capture never races the WebGPU globe terrain pipeline's ~1-2 s
+      // createRenderPipelineAsync (headless RAF settles complete well
+      // inside that). Without this, the first-measured mode captured a
+      // globe-less scene — and with the czm_packDepth(1.0) no-surface
+      // sentinel (WebGL parity), a globe-less scene correctly
+      // classifies NOTHING.
+      const globeCommandCount = () =>
+        (scene.frustumCommandsList ?? []).reduce(
+          (acc, fc) => acc + (fc.indices?.[2] ?? 0),
+          0,
+        );
+      const t0 = performance.now();
+      while (performance.now() - t0 < 90_000) {
+        scene.requestRender();
+        scene.render();
+        if (scene.globe.tilesLoaded && globeCommandCount() > 0) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
       for (let i = 0; i < 90; i++) {
         scene.requestRender();
         scene.render();

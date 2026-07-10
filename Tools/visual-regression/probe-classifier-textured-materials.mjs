@@ -39,6 +39,15 @@
 // (high variance); the Image checkerboard, Stripe, and Checkerboard match
 // WebGL's variance within ±25%.
 //
+// SUPERSEDED (2026-07-10, C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO): the two
+// Batch-198-era blocks below predate the renderer-wide log-depth flip
+// (B251) and the 2026-07-10 fixes. At HEAD the textured UV frequency
+// MATCHES WebGL (probe-groundprim-textured-classify.mjs: Stripe 16.7% /
+// Grid 0.0% / Image 7.3% polygon-ROI mismatch), and
+// `resolveFrustumStateBindGroup` IS invoked per draw
+// (WebGPUDrawCommand.execute resolves bindGroupResolvers). Kept for
+// historical context only.
+//
 // KNOWN LIMITATION — variance is FREQUENCY-BLIND. This probe asserts a
 // pattern is present (variance) + coverage parity (lit), NOT that the
 // tiling FREQUENCY matches WebGL. As of Batch 198 the WebGPU textured
@@ -69,8 +78,12 @@ import fs from "fs";
 
 const PROBE_BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
-// Flip once the material path actually renders textures in WebGPU.
-const ENFORCE_TEXTURED = false;
+// C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO: textured materials render on
+// WebGPU (the historical "0 px" readings were a globe-pipeline readiness
+// race in THIS probe's settle loop — see the fix at the settle site).
+// Enforced now; probe-groundprim-textured-classify.mjs is the canonical
+// acceptance probe with per-pixel convergence checks.
+const ENFORCE_TEXTURED = true;
 
 // Stripe / Checkerboard / Grid materials — variance ratio (WebGPU / WebGL)
 // floor. ~0.3 catches a half-broken pattern; 0.0 means "anything > flat".
@@ -277,10 +290,34 @@ async function captureMaterial(renderer, mat) {
       });
 
       // Build the primitive AND settle globe tiles.
-      for (let i = 0; i < 400; i++) {
+      //
+      // READINESS RACE FIX (C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO): the
+      // original settle exited on `tilesLoaded`, which does NOT cover the
+      // WebGPU globe terrain pipeline's `createRenderPipelineAsync` (~1-2 s
+      // wall time on a fresh profile). Headless RAF loops complete in well
+      // under that, so every WebGPU capture ran against a GLOBE-LESS scene:
+      // packed globe depth = cleared sentinel, textured classification
+      // discarded everywhere, and the probe reported a phantom
+      // "textured renders 0 px" gap (the B595 re-confirmation). Gate on
+      // GLOBE-pass commands actually reaching the frustum lists (pass 2)
+      // — only true once the async pipeline resolved. See
+      // probe-groundprim-textured-classify.mjs (the canonical acceptance
+      // probe for this area).
+      const globeCommandCount = () =>
+        (scene.frustumCommandsList ?? []).reduce(
+          (acc, fc) => acc + (fc.indices?.[2] ?? 0),
+          0,
+        );
+      const t0 = performance.now();
+      while (performance.now() - t0 < 90_000) {
+        scene.requestRender();
         scene.render();
-        await new Promise((r) => requestAnimationFrame(r));
-        if (ground.ready && scene.globe.tilesLoaded && i > 30) break;
+        if (ground.ready && scene.globe.tilesLoaded && globeCommandCount() > 0) {
+          break;
+        }
+        // setTimeout (not RAF) so wall time elapses while the async
+        // pipeline cooks.
+        await new Promise((r) => setTimeout(r, 50));
       }
       for (let i = 0; i < 60; i++) {
         scene.requestRender();
