@@ -1013,6 +1013,53 @@ function configureWebGPUPostProcessPipeline(
   }
 }
 
+// Minimal structural view of a PostProcessStage / PostProcessStageComposite
+// for the silhouette uniform walk — both expose `uniforms`, and composites
+// expose their children on `_stages`.
+interface StageNodeLike {
+  uniforms?: Record<string, unknown>;
+  _stages?: Array<StageNodeLike | undefined | null>;
+}
+
+/**
+ * WIRE-PP-LIBRARY-BUILTINS — resolve the effective edge `color`/`length`
+ * uniforms for a `czm_silhouette` stage.
+ *
+ * Single-stage form: the outer composite's `uniforms` alias points at the
+ * edge-detection stage's `{ length, color }`, so it's returned directly.
+ *
+ * Array form (`createSilhouetteStage([edgeStages])`): the outer wrapper's
+ * `uniforms` alias is `undefined` because the intermediate
+ * `czm_edge_detection_composite` is built without a uniforms option. The
+ * real values live on the individual edge-detection stages nested under
+ * `_stages`. Depth-first search returns the first descendant carrying an
+ * own `length` or `color` uniform (the first edge stage — matching WebGL's
+ * "first edge with alpha wins" combine order for the single edge pass the
+ * WebGPU twin runs). Returns null when nothing is found.
+ */
+function resolveSilhouetteEdgeUniforms(
+  node: unknown,
+): Record<string, unknown> | null {
+  const stage = node as StageNodeLike | null | undefined;
+  if (!stage || typeof stage !== "object") return null;
+  const u = stage.uniforms;
+  if (
+    u &&
+    (Object.prototype.hasOwnProperty.call(u, "length") ||
+      Object.prototype.hasOwnProperty.call(u, "color"))
+  ) {
+    return u;
+  }
+  const children = stage._stages;
+  if (Array.isArray(children)) {
+    for (const child of children) {
+      const found = resolveSilhouetteEdgeUniforms(child);
+      if (found !== null) return found;
+    }
+  }
+  return null;
+}
+
 /**
  * WIRE-PP-LIBRARY-BUILTINS — per-frame sync for intercepted
  * PostProcessStageLibrary built-ins. Walks the live collection stage
@@ -1054,10 +1101,26 @@ function syncInterceptedLibraryStages(
       computeLensFlareFrameContext(scene, stage.uniforms ?? {}, frame);
       lensFlareComputed = true;
     }
+    let uniforms = stage.uniforms ?? {};
+    if (key === "silhouette") {
+      // Array-form createSilhouetteStage([edgeStages]) wraps its edge
+      // detection in a `czm_edge_detection_composite` composite that
+      // carries NO uniforms, so the outer `czm_silhouette` composite's
+      // `uniforms` alias is undefined and packEdgeUniforms would render
+      // the black/0.25 defaults. The real color/length live on the
+      // inner edge-detection stage(s). Walk `_stages` to find them so the
+      // single edge pass matches WebGL's first-edge color/length. The
+      // single-stage form already carries color/length on the outer
+      // wrapper, so this returns it unchanged.
+      const resolved = resolveSilhouetteEdgeUniforms(s);
+      if (resolved !== null) {
+        uniforms = resolved;
+      }
+    }
     pipeline.syncLibraryStage(
       stage.name,
       stage.enabled !== false,
-      stage.uniforms ?? {},
+      uniforms,
       frame,
     );
   }
