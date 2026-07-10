@@ -301,6 +301,26 @@ function CloudVolumetrics(options) {
   this.cloudSpecialShadeScale = options.cloudSpecialShadeScale;
   /** Mode-specific iridescence parameter. WebGPU only. @type {number|undefined} */
   this.cloudSpecialShadeParam = options.cloudSpecialShadeParam;
+
+  // ── LOD / orbit-cost march dials (Batch 634, C6-CLOUD-STBN-TAAU LOD half) ──
+
+  /**
+   * Geometric growth of the view-ray march step per fine step. <code>1.0</code>
+   * (default/undefined) is a no-op — the march comb is uniform and the render is
+   * byte-identical. Values in <code>(1.0, 1.1]</code> grow the step with distance
+   * so near cloud samples stay crisp while far shell samples (which read as 1-2 px)
+   * coarsen, cutting far-shell march cost. WebGPU only.
+   * @type {number|undefined}
+   */
+  this.cloudMarchStepGrowth = options.cloudMarchStepGrowth;
+  /**
+   * Far cap on the view-ray cloud march, in meters. <code>0</code>
+   * (default/undefined) is a no-op — the march runs to the full shell exit. A
+   * positive value stops the march past that distance, where the cloud shell is
+   * sub-pixel and pays full march budget for negligible return. WebGPU only.
+   * @type {number|undefined}
+   */
+  this.cloudMaxRayDistance = options.cloudMaxRayDistance;
 }
 
 function cloneXY(v) {

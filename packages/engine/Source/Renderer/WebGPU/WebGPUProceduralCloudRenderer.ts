@@ -67,7 +67,8 @@ import CloudType from "../../Scene/CloudType.js";
 // → 136 (Batch 610 E1 CLOUD-EXOTIC-SPECIES: speciesMode/Strength/Scale/Param 132-135).
 // → 140 (Batch 611 E2 CLOUD-EXOTIC-FEATURES-REMAINING: featureMode/Strength/Scale/Param 136-139).
 // → 144 (Batch 612 E3 CLOUD-EXOTIC-SPECIAL: specialShadeMode/Strength/Scale/Param 140-143).
-const CLOUD_UNIFORM_FLOATS = 144; // MUST equal the CloudUniforms struct length in WGSL
+// → 148 (Batch 634 C6-CLOUD-STBN-TAAU LOD half: marchStepGrowth/maxRayDistance+2 pads 144-147).
+const CLOUD_UNIFORM_FLOATS = 148; // MUST equal the CloudUniforms struct length in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
@@ -2000,6 +2001,29 @@ export function executeProceduralClouds(
   data[offset++] = globeSpecial.cloudSpecialShadeStrength ?? 0.8; // 141 specialShadeStrength
   data[offset++] = globeSpecial.cloudSpecialShadeScale ?? 1.0; // 142 specialShadeScale
   data[offset++] = globeSpecial.cloudSpecialShadeParam ?? specialParamDefault; // 143 specialShadeParam
+
+  // ── Batch 634 (C6-CLOUD-STBN-TAAU, LOD half) — two orbit-cost march dials, slots
+  // 144-147. WebGPU-only (no WebGL twin — the WebGL cloud path is a separate,
+  // simpler renderer). Default is a NO-OP → byte-identical:
+  //   marchStepGrowth defaults 1.0 → WGSL `> 1.0` guard false → curStep == fineStep.
+  //   maxRayDistance defaults 0.0  → WGSL `> 0.0` far-cap guard false → tEnd untouched.
+  // Opt-in via config.cloudMarchStepGrowth (geometric per-fine-step growth; clamped
+  // to [1.0, 1.1] — near samples stay crisp, far shell samples coarsen) and
+  // config.cloudMaxRayDistance (meters; the view march stops past this distance
+  // where clouds are sub-pixel; clamped >= 0). Both are pure perf/quality knobs.
+  const globeLod = config as unknown as {
+    cloudMarchStepGrowth?: number;
+    cloudMaxRayDistance?: number;
+  };
+  const marchStepGrowth = Math.min(
+    1.1,
+    Math.max(1.0, globeLod.cloudMarchStepGrowth ?? 1.0),
+  );
+  const maxRayDistance = Math.max(0.0, globeLod.cloudMaxRayDistance ?? 0.0);
+  data[offset++] = marchStepGrowth; // 144 marchStepGrowth (1.0 = off)
+  data[offset++] = maxRayDistance; // 145 maxRayDistance (0 = off/infinite)
+  data[offset++] = 0.0; // 146 pad
+  data[offset++] = 0.0; // 147 pad
 
   // Fold the two LUT-coupling bits into qualityFlags (slot 74, already packed
   // above). Add-only bits 8/9; set ONLY when the mode is on so the default render

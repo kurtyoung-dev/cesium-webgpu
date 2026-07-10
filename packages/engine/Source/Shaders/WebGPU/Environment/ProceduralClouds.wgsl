@@ -198,6 +198,21 @@ struct CloudUniforms {
   specialShadeStrength: f32,     // 141 — tint blend depth (0 off → vec3(1.0); clamped 0..1)
   specialShadeScale: f32,        // 142 — band/iridescence spatial frequency (1.0 neutral)
   specialShadeParam: f32,        // 143 — mode extra (nacreous spectral cycling frequency)
+  // ── Batch 634 (C6-CLOUD-STBN-TAAU, LOD half) — two orbit-cost dials for the
+  // view-ray march (marchDeck), each an ADD-ONLY 16-byte row 144-147 (all earlier
+  // offsets UNCHANGED). Both default to a NO-OP so the default render is
+  // byte-identical:
+  //   marchStepGrowth=1.0 → pow(1.0, n)=1.0 → curStep == fineStep exactly, and the
+  //     `> 1.0` guard is false so the pow is never even evaluated (uniform branch).
+  //   maxRayDistance=0.0  → the `> 0.0` far-cap guard is false so tEnd is untouched.
+  // When opted in: the fixed sampling comb GROWS geometrically along the ray so far
+  // shell samples (which read as 1-2 px) coarsen (Takram/AAA perspective step), and
+  // the march STOPS past maxRayDistance where clouds are sub-pixel. WebGPU-only
+  // (no WebGL twin) — a pure perf/quality dial with no visual-parity requirement.
+  marchStepGrowth: f32,          // 144 — geometric per-fine-step growth (1.0 = off/uniform, byte-identical)
+  maxRayDistance: f32,           // 145 — far cap on the view march in meters (0 = off/infinite, byte-identical)
+  _padJ: f32,                    // 146 — pad to the 16-byte row
+  _padK: f32,                    // 147 — pad to the 16-byte row
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -1422,6 +1437,14 @@ fn marchDeck(
     tEnd = min(tEnd, tSceneHit);
   }
 
+  // Batch 634 (C6-CLOUD-STBN-TAAU, LOD half) — FAR CAP. Stop the march past a
+  // distance where the cloud shell subtends a fraction of a pixel: those far
+  // samples cost full march budget for sub-pixel return. Default 0 → skip (tEnd
+  // untouched → byte-identical). When set, clamp tEnd so the march ends early.
+  if (cloud.maxRayDistance > 0.0) {
+    tEnd = min(tEnd, cloud.maxRayDistance);
+  }
+
   if (tStart >= tEnd || tEnd <= 0.0) {
     return result; // transparent (this deck contributes nothing)
   }
@@ -1445,7 +1468,10 @@ fn marchDeck(
   // win is replacing full taps over empty space with cheap base taps at 1/4 the
   // count. `maxSteps` still governs the fine budget.
   let fineStep = (tEnd - tStart) / f32(steps); // == old fixed stepSize (preserves image)
-  let coarseStep = fineStep * 4.0;             // FINE_RATIO = 4
+  // coarseStep (FINE_RATIO = 4) is derived per-iteration as curCoarseStep so the
+  // Batch 634 geometric step growth scales BOTH the coarse skip and fine cadence
+  // consistently. At the default marchStepGrowth=1.0 curCoarseStep == fineStep*4.0
+  // exactly, preserving the pre-634 coarse step.
 
   var transmittance: f32 = 1.0;
   var lightEnergy: f32 = 0.0;
@@ -1465,7 +1491,22 @@ fn marchDeck(
     guard = guard + 1;
     if (guard > maxIter) { break; }
 
-    let curStep = select(coarseStep, fineStep, fine);
+    // Batch 634 (C6-CLOUD-STBN-TAAU, LOD half) — geometric in-march step growth.
+    // The fixed sampling comb (fineStep/coarseStep) pays full detail cost for far
+    // shell samples that read as 1-2 px. Grow the step geometrically with distance
+    // from the layer entry (Takram/AAA "perspective step") so near samples stay
+    // crisp and far samples coarsen. `pow(growth, k)` with k = fine-steps travelled
+    // is stateless and exact. Default marchStepGrowth=1.0 → the guard is false so
+    // the pow is never evaluated and curFineStep == fineStep exactly → byte-identical.
+    // Growth only advances t FASTER, so it strictly reduces the iteration count and
+    // never trips the maxIter sentinel.
+    var curFineStep = fineStep;
+    if (cloud.marchStepGrowth > 1.0) {
+      curFineStep = fineStep * pow(cloud.marchStepGrowth, (t - tStart) / max(fineStep, 1.0));
+    }
+    let curCoarseStep = curFineStep * 4.0;
+
+    let curStep = select(curCoarseStep, curFineStep, fine);
     let samplePos = rayOrigin + rayDir * (t + 0.5 * curStep);
     // Batch 445 (4.12 CLOUD-RTE): resolve the SAMPLE altitude (the precision-sensitive
     // `length(...) - planetRadius` term) in camera-relative RTE space when on. The
@@ -1495,10 +1536,10 @@ fn marchDeck(
         // Back up one coarse step to catch the cloud edge the coarse sample
         // stepped over — but never below tProcessed, so the march can't stall by
         // re-entering an already-examined span (the cause of early-out + empty).
-        t = max(t - coarseStep, tProcessed);
+        t = max(t - curCoarseStep, tProcessed);
         continue;
       }
-      t = t + coarseStep;
+      t = t + curCoarseStep;
       continue;
     }
 
@@ -1511,7 +1552,7 @@ fn marchDeck(
         fine = false;
         emptyRun = 0;
       }
-      t = t + fineStep;
+      t = t + curFineStep;
       tProcessed = t;
       continue;
     }
@@ -1540,7 +1581,7 @@ fn marchDeck(
       // profileExtinction (CUMULUS = 1.0 neutral) so the SAME genus that absorbs
       // more in the light march is also more opaque along the view ray — denser
       // genera read consistently darker AND more opaque, thin genera wispier.
-      let sampleTransmittance = exp(-density * fineStep * effectiveAbsorption());
+      let sampleTransmittance = exp(-density * curFineStep * effectiveAbsorption());
       let sampleWeight = (1.0 - sampleTransmittance) * transmittance;
 
       // W2 — sky-ambient gradient + ground bounce. The blue sky lights the cloud
@@ -1596,11 +1637,11 @@ fn marchDeck(
       weightedColor += (cloudColor * cloud.sunLightColor * scatteredLight + ambient)
                      * specialTint * sampleWeight;
       lightEnergy += scatteredLight * sampleWeight;
-      totalDensity += density * fineStep;
+      totalDensity += density * curFineStep;
       transmittance *= sampleTransmittance;
     }
 
-    t = t + fineStep;
+    t = t + curFineStep;
     tProcessed = t;
   }
 
