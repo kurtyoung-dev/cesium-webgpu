@@ -13092,3 +13092,15 @@ Two bugs caught by running the FULL standing-gate matrix against the post-log-de
 **Verification.** New `Tools/visual-regression/probe-polyline-multimaterial.mjs` — one collection with hue-separated solid/dash/glow lines, per-hue run-count analysis. Pre-fix: dash `runsPerRow` WebGPU 1.00 vs WebGL 19 (RED). Post-fix GREEN: dash WebGPU 16.60 vs WebGL 17.71 (run-count ratio 1.004), glow colored 6037→3249 (taper restored, WebGL 2777), solid unchanged ~1/row, 0 gate errors — PNGs read (WebGPU now matches WebGL: solid red, dashed cyan, tapered yellow glow). Off-gate: single-material dash-only (`runsPerRow` 17.7) + glow-only (colored 3232, tapered) still correct — WebGPU numbers identical to their mixed-collection values, proving per-group rendering is now composition-independent. Standing `probe-polyline-material-primitive` GREEN. Also unblocks upstream v1.143 `PathGraphics.materialMode=PORTIONS` (per-portion material switching within one path renderer).
 
 **Files:** `packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js` (the fix), `Tools/visual-regression/probe-polyline-multimaterial.mjs` (new gate). **Trace:** NS-POLYLINE-COLLECTION-MULTI-MATERIAL.
+
+## Batch 634 NS-VR-HARNESS-FALSE-BLACK-GATE — capture-and-diff readiness gate accepted a lone star; false 99.9% "black globe" FAIL (2026-07-06)
+
+**Symptom.** `capture-and-diff.mjs --scene globe-default` reported FAIL diff=99.9%: the WebGPU capture showed a stars-only black globe while WebGL was fully loaded. Reproduced identically at the pre-v1.144-merge safety branch (safety-branch A/B), while the standalone WebGPU CesiumViewer AND a manually-launched split-screen page (25s wait) rendered perfectly — proving both the engine and the v1.144 merge innocent.
+
+**Root cause (harness, two compounding gaps).** (1) The initial readiness `waitForFunction` sampled the center 32×32 of each canvas and accepted **any single non-black pixel** — a lone skybox star satisfied it while the WebGPU viewer was still cold-compiling its pipeline cache (slow first launch after the 2026-07-06 reboot/browser update), so the gate opened before terrain arrived. (2) `applyScene` settled a **fixed rAF count** after the camera move with no `tilesLoaded` wait, so the capture fired before the invalidated tile set reloaded.
+
+**Fix.** Readiness gate now requires `scene.globe.tilesLoaded === true` on BOTH viewers AND ≥16 non-black center pixels (a globe fills the center; a starfield leaves it ~black), timeout 60s→120s for cold pipeline compiles. `applyScene` gained a bounded (90s, non-fatal) post-camera `tilesLoaded` wait for both viewers before the rAF settle, so synthetic no-globe scenes still fall through. Result: globe-default PASS diff=0.46%, WebGPU gate clean.
+
+**Lesson.** A readiness predicate must reject partially-initialized states the renderer can legitimately present (env pass without terrain). "Any non-black pixel" is not "the scene is up".
+
+**Files:** `Tools/visual-regression/capture-and-diff.mjs`.

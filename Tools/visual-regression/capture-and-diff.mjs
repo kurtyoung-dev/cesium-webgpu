@@ -380,6 +380,30 @@ async function applyScene(page, scene, settleFrames) {
       setCam(window.webgpuViewer);
     }, scene.camera);
   }
+  // Sync-1144 hardening: a camera move invalidates the loaded tile
+  // set, and the fixed rAF settle below undershoots when tiles (or a
+  // cold WebGPU pipeline cache) are slow. Wait for both quadtrees to
+  // report tilesLoaded again — bounded, and non-fatal for synthetic
+  // scenes that never flip the flag (they fall through to the settle).
+  try {
+    await page.waitForFunction(
+      () => {
+        function tilesDone(viewer) {
+          const globe = viewer?.scene?.globe;
+          return !globe || globe.tilesLoaded === true;
+        }
+        return (
+          tilesDone(window.webglViewer) && tilesDone(window.webgpuViewer)
+        );
+      },
+      null,
+      { timeout: 90_000 },
+    );
+  } catch {
+    console.warn(
+      "[visual-regression] tilesLoaded wait timed out — capturing anyway",
+    );
+  }
   // Let the renderers settle (terrain LOD swap, imagery loads, atmosphere LUT…)
   await page.evaluate(
     (n) =>
@@ -456,10 +480,21 @@ async function main() {
   // one non-black frame. Bing imagery + terrain tiles take real
   // wall-clock time to download, and the previous fixed-frame
   // settle (30 rAF ticks ≈ 0.5s) was nowhere near enough.
+  //
+  // Sync-1144 hardening: the old gate accepted ANY single non-black
+  // pixel in the center 32×32 — a lone star in the skybox satisfied
+  // it while the WebGPU viewer was still cold-compiling pipelines
+  // (slow first launch after a browser/driver update), so captures
+  // fired before terrain arrived (stars-only "black globe" false
+  // FAIL). Now require globe.tilesLoaded on BOTH viewers AND ≥16
+  // non-black center pixels, with a longer timeout for cold starts.
   await page.waitForFunction(
     () => {
-      function hasPixels(viewer) {
+      function globeReady(viewer) {
         if (!viewer?.scene?.canvas) return false;
+        if (viewer.scene.globe && viewer.scene.globe.tilesLoaded !== true) {
+          return false;
+        }
         const c = viewer.scene.canvas;
         try {
           const off = new OffscreenCanvas(32, 32);
@@ -477,20 +512,22 @@ async function main() {
             32,
           );
           const d = ctx.getImageData(0, 0, 32, 32).data;
+          let lit = 0;
           for (let i = 0; i < d.length; i += 4) {
-            if (d[i] | d[i + 1] | d[i + 2]) return true;
+            if (d[i] | d[i + 1] | d[i + 2]) lit++;
           }
-          return false;
+          // A globe fills the center; a starfield leaves it ~black.
+          return lit >= 16;
         } catch {
           return false;
         }
       }
       return (
-        hasPixels(window.webglViewer) && hasPixels(window.webgpuViewer)
+        globeReady(window.webglViewer) && globeReady(window.webgpuViewer)
       );
     },
     null,
-    { timeout: 60_000 },
+    { timeout: 120_000 },
   );
 
   const report = { startedAt: new Date().toISOString(), threshold: args.threshold, scenes: [] };
