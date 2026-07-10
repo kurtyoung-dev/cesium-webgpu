@@ -326,6 +326,33 @@ class FrameState {
     this.moonAtmosphereExtinction = undefined;
 
     /**
+     * Per-frame RGB atmospheric extinction (transmittance) for the Sun —
+     * the fraction of sunlight, per channel, that survives the slant path
+     * through the atmosphere to the camera along the camera→sun ray.
+     * {@link Cartesian3#ONE} when the ray never crosses the atmosphere
+     * (from orbit / atmosphere hidden), making the sun byte-identical in
+     * that case. Consumed by the WebGPU sun renderer; the WebGL path reads
+     * it via the {@link Sun} primitive's uniform. Computed by
+     * {@link computeAtmosphereExtinction} (shared with the Moon, B629).
+     * @type {Cartesian3|undefined}
+     */
+    this.sunAtmosphereExtinction = undefined;
+
+    /**
+     * Per-frame RGB atmospheric transmittance at the ZENITH for the
+     * starfield. The star extinction is a per-direction analytic Bouguer
+     * model — each star's slant transmittance is
+     * `zenithTransmittance^airmass(elevation)` — so a single zenith ray
+     * (integrated by {@link computeAtmosphereExtinction}, shared with the
+     * Moon/Sun, B629) drives the whole field. {@link Cartesian3#ONE} from
+     * orbit / when the atmosphere is hidden, making every star byte-
+     * identical (pow(1, x) === 1). Consumed by the WebGL + WebGPU starfield
+     * renderers. Undefined when the effect is disabled.
+     * @type {Cartesian3|undefined}
+     */
+    this.starZenithTransmittance = undefined;
+
+    /**
      * Canonical atmospheric conditions facade — forwarded once per frame
      * from `scene.globe.atmosphericConditions`. Renderers read B-series
      * toggles (sun/moon lighting, scattering occlusion, star modulation,

@@ -41,6 +41,12 @@ uniform vec2 u_pointSize;
 uniform float u_intensityScale;
 // Minimum NDC half-extent floor → keeps faint stars from sub-pixel flicker.
 uniform float u_minPointSize;
+// C7-SUN-STARS-EXTINCTION — zenith atmospheric transmittance (per channel)
+// and the camera's local-up direction in the Earth-fixed frame. Each star's
+// slant transmittance is zenithTransmittance^airmass(elevation). Default
+// (1,1,1) up leaves the field byte-identical (pow(1, x) === 1).
+uniform vec3 u_zenithTransmittance;
+uniform vec3 u_cameraUpFixed;
 
 out vec2 v_corner;   // [-1, 1] quad-local coordinate
 out vec3 v_color;    // HDR color (already intensity-weighted)
@@ -83,5 +89,14 @@ void main()
 
     gl_Position = clip;
     v_corner = corner;
-    v_color = starColor * intensity * u_intensityScale;
+
+    // C7-SUN-STARS-EXTINCTION — per-star atmospheric extinction. Bouguer's law
+    // with a plane-parallel airmass X ≈ 1/sin(elevation), capped near the
+    // horizon at ~38 (the Kasten-Young limit) to stay finite; slant
+    // transmittance = zenithTransmittance^X. u_zenithTransmittance is (1,1,1)
+    // from orbit / atmosphere-hidden, so this is a byte-identical no-op there.
+    float sinElev = dot(dirFixed, u_cameraUpFixed);
+    float airmass = 1.0 / max(sinElev, 0.02631579);
+    vec3 extinction = pow(u_zenithTransmittance, vec3(airmass));
+    v_color = starColor * intensity * u_intensityScale * extinction;
 }

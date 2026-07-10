@@ -49,6 +49,7 @@ import {
   computeStarDayFade,
 } from "../Scene/StarFieldMath.js";
 import BrightStarCatalog from "../Scene/BrightStarCatalog.js";
+import Cartesian3 from "../Core/Cartesian3.js";
 import Buffer from "./Buffer.js";
 import BufferUsage from "./BufferUsage.js";
 import DrawCommand from "./DrawCommand.js";
@@ -200,6 +201,9 @@ function buildResources(context, cache) {
   cache.shaderProgram = shaderProgram;
   cache.renderState = renderState;
   cache.starCount = BrightStarCatalog.count;
+  // C7-SUN-STARS-EXTINCTION — persistent uniform-backing vectors.
+  cache.zenithTransmittance = new Cartesian3(1.0, 1.0, 1.0);
+  cache.cameraUpFixed = new Cartesian3(0.0, 0.0, 1.0);
 }
 
 /**
@@ -248,6 +252,24 @@ function updateWebGLStarField(starField, frameState) {
   cache.intensityScale = starField._intensity * dayFade;
   cache.minPointSize = starField._minPointSize;
 
+  // C7-SUN-STARS-EXTINCTION — per-frame zenith transmittance + camera up
+  // (Earth-fixed). Published by StarField.update (shared B629 integrator).
+  // ONE / no extinction when the atmosphere is hidden or from orbit → the
+  // shader's pow(1, airmass) leaves every star byte-identical.
+  const zenithT = frameState.starZenithTransmittance;
+  if (defined(zenithT)) {
+    Cartesian3.clone(zenithT, cache.zenithTransmittance);
+  } else {
+    Cartesian3.clone(Cartesian3.ONE, cache.zenithTransmittance);
+  }
+  const camPos = frameState.camera?.positionWC;
+  const camLen = defined(camPos) ? Cartesian3.magnitude(camPos) : 0.0;
+  if (camLen > 1.0) {
+    Cartesian3.divideByScalar(camPos, camLen, cache.cameraUpFixed);
+  } else {
+    Cartesian3.clone(Cartesian3.UNIT_Z, cache.cameraUpFixed);
+  }
+
   if (!defined(cache.uniformMap)) {
     cache.uniformMap = {
       u_pointSize: function () {
@@ -260,6 +282,12 @@ function updateWebGLStarField(starField, frameState) {
       },
       u_minPointSize: function () {
         return cache.minPointSize;
+      },
+      u_zenithTransmittance: function () {
+        return cache.zenithTransmittance;
+      },
+      u_cameraUpFixed: function () {
+        return cache.cameraUpFixed;
       },
     };
   }

@@ -32,6 +32,7 @@
  * @module WebGPUStarFieldRenderer
  */
 import defined from "../../Core/defined.js";
+import Cartesian3 from "../../Core/Cartesian3.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Transforms from "../../Core/Transforms.js";
@@ -155,6 +156,11 @@ const STAR_UNIFORM_BUFFER_SIZE = 256;
 const scratchTemeToFixed3 = new Matrix3();
 const scratchTemeToFixed4 = new Matrix4();
 const scratchVPNoTranslation = new Matrix4();
+// C7-SUN-STARS-EXTINCTION scratch — camera up (Earth-fixed), the TEME→fixed
+// transpose, and camera up rotated into the TEME instance frame.
+const scratchTemeToFixedT = new Matrix3();
+const scratchCamUpFixed = new Cartesian3();
+const scratchCamUpTeme = new Cartesian3();
 
 // `bvToRgb` + `buildStarInstanceData` (the B−V → blackbody RGB conversion
 // and the Pogson magnitude → HDR-brightness per-instance packing) live in
@@ -186,8 +192,9 @@ function packStarUniforms(
   // type (cesium-js-types.d.ts) deliberately keeps it opaque so that file
   // stays free of Core imports — the cast is the documented seam.
   const date = frameState.time as unknown as JulianDate | undefined;
+  const hasRotation = defined(date);
   let temeToFixed4;
-  if (defined(date)) {
+  if (hasRotation) {
     Transforms.computeTemeToPseudoFixedMatrix(date, scratchTemeToFixed3);
     temeToFixed4 = Matrix4.fromRotation(
       scratchTemeToFixed3,
@@ -235,6 +242,52 @@ function packStarUniforms(
   uniformData[18] = starField._intensity * dayFade;
   // Minimum NDC half-extent so faint stars stay ≥ ~1 px on a 1080p frame.
   uniformData[19] = starField._minPointSize;
+
+  // C7-SUN-STARS-EXTINCTION — zenith transmittance (floats 20..22) + camera
+  // local-up in the TEME instance frame (floats 24..26). Published by
+  // StarField.update via the shared B629 integrator. (1,1,1) / no extinction
+  // from orbit / atmosphere-hidden → the shader's pow(1, airmass) is a byte-
+  // identical no-op.
+  const zenithT = frameState.starZenithTransmittance;
+  if (defined(zenithT)) {
+    uniformData[20] = zenithT.x;
+    uniformData[21] = zenithT.y;
+    uniformData[22] = zenithT.z;
+  } else {
+    uniformData[20] = 1.0;
+    uniformData[21] = 1.0;
+    uniformData[22] = 1.0;
+  }
+  uniformData[23] = 0.0;
+
+  // Camera local-up (Earth-fixed) rotated into the star instance (TEME)
+  // frame: cameraUpTeme = temeToFixed^T · normalize(cameraPositionWC). Since
+  // rotation preserves the dot product, dot(directionFixed_TEME, cameraUpTeme)
+  // === sin(elevation) in the fixed frame — the exact quantity the WebGL path
+  // computes as dot(temeToFixed·directionFixed, cameraUpFixed).
+  const camPos = frameState.camera?.positionWC as Cartesian3 | undefined;
+  const camLen = defined(camPos) ? Cartesian3.magnitude(camPos) : 0.0;
+  if (camLen > 1.0) {
+    Cartesian3.divideByScalar(camPos as Cartesian3, camLen, scratchCamUpFixed);
+    if (hasRotation) {
+      Matrix3.transpose(scratchTemeToFixed3, scratchTemeToFixedT);
+      Matrix3.multiplyByVector(
+        scratchTemeToFixedT,
+        scratchCamUpFixed,
+        scratchCamUpTeme,
+      );
+    } else {
+      Cartesian3.clone(scratchCamUpFixed, scratchCamUpTeme);
+    }
+    uniformData[24] = scratchCamUpTeme.x;
+    uniformData[25] = scratchCamUpTeme.y;
+    uniformData[26] = scratchCamUpTeme.z;
+  } else {
+    uniformData[24] = 0.0;
+    uniformData[25] = 0.0;
+    uniformData[26] = 1.0;
+  }
+  uniformData[27] = 0.0;
 }
 
 /**

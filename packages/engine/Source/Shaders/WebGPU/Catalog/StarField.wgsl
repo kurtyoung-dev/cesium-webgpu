@@ -35,6 +35,15 @@ struct Uniforms {
   // Minimum on-screen pixel radius floor → keeps faint stars from
   // collapsing to sub-pixel flicker. Expressed in NDC half-extent.
   minPointSize: f32,
+  // C7-SUN-STARS-EXTINCTION — zenith atmospheric transmittance (per channel)
+  // and the camera local-up direction expressed in the star instance frame
+  // (TEME/inertial). Each star's slant transmittance is
+  // zenithTransmittance^airmass(elevation). (1,1,1) from orbit / atmosphere-
+  // hidden, so the multiply is a byte-identical no-op (pow(1, x) === 1).
+  zenithTransmittance: vec3<f32>,
+  _extPad0: f32,
+  cameraUpTeme: vec3<f32>,
+  _extPad1: f32,
 };
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
@@ -107,7 +116,17 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // depth.
   output.position = vec4<f32>(clip.x, clip.y, clip.w, clip.w);
   output.corner = corner;
-  output.color = input.color * input.intensity * u.intensityScale;
+
+  // C7-SUN-STARS-EXTINCTION — per-star atmospheric extinction. Bouguer's law
+  // with a plane-parallel airmass X ≈ 1/sin(elevation), capped near the
+  // horizon at ~38 (Kasten-Young limit); slant transmittance =
+  // zenithTransmittance^X. directionFixed and cameraUpTeme are both in the
+  // TEME frame (dot is rotation-invariant), matching the WebGL path.
+  // zenithTransmittance == (1,1,1) from orbit → byte-identical no-op.
+  let sinElev = dot(input.directionFixed, u.cameraUpTeme);
+  let airmass = 1.0 / max(sinElev, 0.02631579);
+  let extinction = pow(u.zenithTransmittance, vec3<f32>(airmass));
+  output.color = input.color * input.intensity * u.intensityScale * extinction;
   return output;
 }
 

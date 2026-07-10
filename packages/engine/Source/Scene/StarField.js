@@ -1,6 +1,9 @@
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
+import Cartesian3 from "../Core/Cartesian3.js";
+import Ellipsoid from "../Core/Ellipsoid.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import computeAtmosphereExtinction from "./computeAtmosphereExtinction.js";
 import SceneMode from "./SceneMode.js";
 
 /**
@@ -71,6 +74,11 @@ class StarField {
     // Set each frame by `update`: true when the FR pushed a binned copy of
     // the draw onto the command list (WebGPU), false otherwise (WebGL).
     this._wasBinned = false;
+
+    // C7-SUN-STARS-EXTINCTION debug mirror of the per-frame zenith
+    // transmittance (undefined when the effect is disabled). Read by the
+    // acceptance probe; the renderers use frameState.starZenithTransmittance.
+    this._zenithTransmittance = undefined;
   }
 
   /**
@@ -127,6 +135,57 @@ class StarField {
     }
     if (!passes.render) {
       return undefined;
+    }
+
+    // C7-SUN-STARS-EXTINCTION — publish the ZENITH atmospheric transmittance
+    // so the backend starfield renderers can extinguish stars per direction.
+    // The star extinction is an analytic Bouguer model (see StarFieldVS /
+    // StarField.wgsl): each star's slant transmittance is
+    // `zenithTransmittance^airmass(elevation)`, so one zenith ray drives the
+    // whole field. Gated on the sky atmosphere actually being rendered; the
+    // physics returns exactly Cartesian3.ONE from orbit (the zenith ray never
+    // crosses the shell), so from-orbit / atmosphere-hidden stays byte-
+    // identical (pow(1, x) === 1). This shared helper is the SAME integrator
+    // the Moon (B629) and Sun use, keeping all three consistent.
+    const camPos = defined(frameState.camera)
+      ? frameState.camera.positionWC
+      : undefined;
+    if (
+      frameState.skyAtmosphereVisible === true &&
+      defined(frameState.atmosphere) &&
+      defined(camPos)
+    ) {
+      const camLen = Cartesian3.magnitude(camPos);
+      if (camLen > 1.0) {
+        // Synthesize a far "body" straight up (local zenith) so the shared
+        // integrator returns the vertical-column transmittance.
+        Cartesian3.divideByScalar(camPos, camLen, scratchZenithDir);
+        Cartesian3.multiplyByScalar(scratchZenithDir, 1.0e9, scratchZenithBody);
+        Cartesian3.add(camPos, scratchZenithBody, scratchZenithBody);
+        const t = computeAtmosphereExtinction(
+          scratchZenithT,
+          camPos,
+          scratchZenithBody,
+          frameState.atmosphere,
+          Ellipsoid.default.maximumRadius,
+        );
+        frameState.starZenithTransmittance = Cartesian3.clone(
+          t,
+          frameState.starZenithTransmittance,
+        );
+        // Debug mirror (read by probe-sun-stars-extinction). Not consumed by
+        // the renderers — they read frameState.starZenithTransmittance.
+        this._zenithTransmittance = Cartesian3.clone(
+          t,
+          this._zenithTransmittance,
+        );
+      } else {
+        frameState.starZenithTransmittance = undefined;
+        this._zenithTransmittance = undefined;
+      }
+    } else {
+      frameState.starZenithTransmittance = undefined;
+      this._zenithTransmittance = undefined;
     }
 
     const context = frameState.context;
@@ -200,5 +259,11 @@ class StarField {
     return destroyObject(this);
   }
 }
+
+// C7-SUN-STARS-EXTINCTION scratch — zenith direction, synthesized far body,
+// and the resulting per-channel zenith transmittance.
+const scratchZenithDir = new Cartesian3();
+const scratchZenithBody = new Cartesian3();
+const scratchZenithT = new Cartesian3();
 
 export default StarField;

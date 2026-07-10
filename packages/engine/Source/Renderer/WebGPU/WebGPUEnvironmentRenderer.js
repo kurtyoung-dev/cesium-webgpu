@@ -64,6 +64,10 @@ struct Uniforms {
   encodedCameraHigh: vec3<f32>, _p0: f32,
   encodedCameraLow: vec3<f32>, _p1: f32,
   sunSize: vec2<f32>, glowFactor: f32, gamma: f32,
+  // C7-SUN-STARS-EXTINCTION — per-channel atmospheric transmittance along
+  // the camera→sun ray (offset 112, 16-aligned). vec3(1.0) from orbit / when
+  // the atmosphere is hidden, so the multiply below is a no-op (byte-identical).
+  extinction: vec3<f32>, _p2: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var tex: texture_2d<f32>;
@@ -101,6 +105,10 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   if (u.gamma != 1.0) {
     color = vec4f(pow(color.rgb, vec3f(u.gamma)), color.a);
   }
+  // C7-SUN-STARS-EXTINCTION — attenuate + redden the sun by the atmospheric
+  // extinction (dims + warms a low sun over the horizon). extinction == (1,1,1)
+  // from orbit / atmosphere hidden, so this is a byte-identical no-op there.
+  color = vec4f(color.rgb * u.extinction, color.a);
   return color;
 }`;
 
@@ -402,6 +410,16 @@ function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
   uniformData[25] = angHalf * Math.abs(proj[5]) * sunSizeScale; // sunSize.y
   uniformData[26] = glowFactor;
   uniformData[27] = gamma;
+
+  // C7-SUN-STARS-EXTINCTION — RGB atmospheric transmittance at offsets 28..30
+  // (vec3 `extinction`, 16-byte aligned at byte 112). Defaults to (1,1,1) when
+  // the atmosphere is hidden or the sun is viewed from orbit, making the shader
+  // multiply an exact no-op (byte-identical). Published by Sun.update.
+  const extinction = frameState.sunAtmosphereExtinction;
+  uniformData[28] = defined(extinction) ? extinction.x : 1.0;
+  uniformData[29] = defined(extinction) ? extinction.y : 1.0;
+  uniformData[30] = defined(extinction) ? extinction.z : 1.0;
+  uniformData[31] = 0.0;
 }
 
 /**

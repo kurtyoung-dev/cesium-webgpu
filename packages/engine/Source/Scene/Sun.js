@@ -14,6 +14,8 @@ import Buffer from "../Renderer/Buffer.js";
 import BufferUsage from "../Renderer/BufferUsage.js";
 import ComputeCommand from "../Renderer/ComputeCommand.js";
 import DrawCommand from "../Renderer/DrawCommand.js";
+import Ellipsoid from "../Core/Ellipsoid.js";
+import computeAtmosphereExtinction from "./computeAtmosphereExtinction.js";
 import PixelDatatype from "../Renderer/PixelDatatype.js";
 import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
@@ -72,6 +74,12 @@ class Sun {
 
     this._useHdr = undefined;
 
+    // C7-SUN-STARS-EXTINCTION — per-frame RGB atmospheric transmittance
+    // along the camera→sun ray. Cartesian3.ONE (the default) leaves the
+    // sun byte-identical (color * 1.0), so the effect is inert until the
+    // sky atmosphere is visible and the sun sits low over the horizon.
+    this._atmosphereExtinction = Cartesian3.clone(Cartesian3.ONE);
+
     const that = this;
     this._uniformMap = {
       u_texture: function () {
@@ -79,6 +87,9 @@ class Sun {
       },
       u_size: function () {
         return that._size;
+      },
+      u_atmosphereExtinction: function () {
+        return that._atmosphereExtinction;
       },
     };
   }
@@ -117,6 +128,46 @@ class Sun {
     if (!frameState.passes.render) {
       return undefined;
     }
+
+    // C7-SUN-STARS-EXTINCTION — attenuate + redden the sun by the
+    // atmospheric optical path along the camera→sun ray, mirroring the Moon
+    // (B629). Gated on the sky atmosphere actually being rendered so the sun
+    // is byte-identical when the atmosphere is hidden; the physics yields
+    // exactly Cartesian3.ONE from orbit (the ray never crosses the shell),
+    // so the from-orbit case is byte-identical too. Published to frameState
+    // for the WebGPU sun renderer and stored on the primitive for the WebGL
+    // uniform below. Computed here (before the backend branch) so both paths
+    // read the same transmittance.
+    const uniformState = frameState.context.uniformState;
+    const sunPositionWC = uniformState.sunPositionWC;
+    let extinction = scratchExtinctionOne;
+    const camPos = defined(frameState.camera)
+      ? frameState.camera.positionWC
+      : undefined;
+    if (
+      frameState.skyAtmosphereVisible === true &&
+      defined(frameState.atmosphere) &&
+      defined(camPos) &&
+      defined(sunPositionWC)
+    ) {
+      extinction = computeAtmosphereExtinction(
+        scratchExtinction,
+        camPos,
+        sunPositionWC,
+        frameState.atmosphere,
+        Ellipsoid.default.maximumRadius,
+      );
+    }
+    frameState.sunAtmosphereExtinction = Cartesian3.clone(
+      extinction,
+      frameState.sunAtmosphereExtinction,
+    );
+    // WebGL uniform source. ONE when the atmosphere is hidden / from orbit,
+    // making the shader multiply a no-op (byte-identical).
+    this._atmosphereExtinction = Cartesian3.clone(
+      extinction,
+      this._atmosphereExtinction,
+    );
 
     // Backend-specific rendering via Feature Renderer.
     //
@@ -381,6 +432,10 @@ const scratchPositionWC = new Cartesian2();
 const scratchLimbWC = new Cartesian2();
 const scratchPositionEC = new Cartesian4();
 const scratchCartesian4 = new Cartesian4();
+// C7-SUN-STARS-EXTINCTION scratch. `scratchExtinctionOne` is the identity
+// transmittance returned when the atmosphere is hidden / from orbit.
+const scratchExtinction = new Cartesian3();
+const scratchExtinctionOne = new Cartesian3(1.0, 1.0, 1.0);
 
 // Batch 247 — return shape for the feature-renderer (WebGPU) path:
 // mirrors the WebGL `{ drawCommand, computeCommand }` pair so Scene
