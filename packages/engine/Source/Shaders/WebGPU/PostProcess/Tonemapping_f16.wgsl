@@ -34,6 +34,12 @@ struct TonemapUniforms {
   gamma: f32,
   mode: f32,        // 0=Reinhard, 1=ACES, 2=Filmic, 3=ModifiedReinhard, 4=PBRNeutral
   whitePoint: f32,  // Used by Modified Reinhard (default 4.0)
+  // C6-TPDF-DITHER-FINAL — see Tonemapping.wgsl. Kept binary-compatible with
+  // the f32 layout so the same packer feeds both. 0.0 == OFF == byte-identical.
+  ditherStrength: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
 };
 
 @group(0) @binding(0) var inputTexture: texture_2d<f32>;
@@ -138,6 +144,22 @@ fn inverseGamma(color: vec3<f16>, gamma: f16) -> vec3<f16> {
   return pow(max(color, vec3<f16>(0.0h)), vec3<f16>(1.0h / gamma));
 }
 
+// C6-TPDF-DITHER-FINAL — dither computed in f32 (the display value is in
+// [0,1] and the dither is sub-LSB, so f16 precision would swamp it). See
+// Tonemapping.wgsl for the technique rationale.
+fn ditherHash12(p: vec2<f32>) -> f32 {
+  var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
+  p3 += dot(p3, p3.yzx + vec3<f32>(33.33));
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+fn tpdfDither(fragCoord: vec2<f32>, strength: f32) -> vec3<f32> {
+  let r1 = ditherHash12(fragCoord);
+  let r2 = ditherHash12(fragCoord + vec2<f32>(11.13, 47.79));
+  let tri = r1 - r2;
+  return vec3<f32>(tri * (strength / 255.0));
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Sample at f32 (textureSample always returns f32). The exposure
@@ -176,5 +198,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
   // Convert back to f32 for the fragment output. The render target is
   // a standard `@location(0) vec4<f32>` so the upcast is mandatory.
-  return vec4<f32>(vec3<f32>(corrected), 1.0);
+  // C6-TPDF-DITHER-FINAL — add the sub-LSB triangular dither in f32 after
+  // the upcast (0 strength == byte-identical).
+  let dithered = vec3<f32>(corrected) +
+    tpdfDither(input.position.xy, params.ditherStrength);
+
+  return vec4<f32>(dithered, 1.0);
 }

@@ -535,6 +535,27 @@ function configureWebGPUPostProcessPipeline(
     typeof userExposure === "number" ? userExposure : 1.0,
   );
 
+  // C6-TPDF-DITHER-FINAL — opt-in triangular-PDF dither on the tonemap stage
+  // to break banding across smooth sky/atmosphere/fog gradients before the
+  // 8-bit canvas quantization. Scene-level flag `scene.ditherEnabled` (default
+  // OFF) mirrors the colorGrading/godRay opt-in pattern; an optional numeric
+  // `scene.ditherStrength` overrides the ±1-LSB default. Default OFF writes
+  // 0.0 -> byte-identical output. Effective in the HDR pipeline (rgba16float
+  // intermediates preserve the sub-LSB noise until the final downcast); a
+  // no-op benefit in the fully-8-bit SDR chain where banding is baked into the
+  // scene framebuffer before post-process.
+  const ditherScene = scene as unknown as {
+    ditherEnabled?: boolean;
+    ditherStrength?: number;
+  };
+  const ditherOn = ditherScene?.ditherEnabled === true;
+  const ditherStrength = ditherOn
+    ? typeof ditherScene.ditherStrength === "number"
+      ? ditherScene.ditherStrength
+      : 1.0
+    : 0.0;
+  pipeline.setTonemapDither(ditherStrength);
+
   // --- Color grading: lazily initialize on first enable ---
   // WIRE-COLORGRADING-CALLER (Batch 480) — scene-level opt-in
   // (`scene.colorGradingEnabled`, optional `scene.colorGradingConfig`),

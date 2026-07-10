@@ -13,6 +13,19 @@ struct TonemapUniforms {
   gamma: f32,
   mode: f32,     // 0=Reinhard, 1=ACES, 2=Filmic, 3=ModifiedReinhard, 4=PBRNeutral
   whitePoint: f32, // Used by Modified Reinhard (default 4.0)
+  // C6-TPDF-DITHER-FINAL — triangular-PDF dither amplitude applied AFTER
+  // gamma, just before the 8-bit quantization at the eventual canvas blit.
+  // 0.0 == OFF == byte-identical (the dither term multiplies to exactly 0).
+  // Opt-in via `scene.ditherEnabled`. Effective in the HDR post-process
+  // pipeline where the intermediate ping-pong textures are rgba16float, so
+  // the sub-LSB dither survives in floating point until the final downcast
+  // to bgra8unorm breaks up banding across smooth sky/atmosphere/fog
+  // gradients. (Add-only UBO growth 16 -> 32 bytes; the three trailing pads
+  // keep the struct 16-byte aligned.)
+  ditherStrength: f32,
+  _pad0: f32,
+  _pad1: f32,
+  _pad2: f32,
 };
 
 @group(0) @binding(0) var inputTexture: texture_2d<f32>;
@@ -117,6 +130,27 @@ fn inverseGamma(color: vec3<f32>, gamma: f32) -> vec3<f32> {
   return pow(max(color, vec3<f32>(0.0)), vec3<f32>(1.0 / gamma));
 }
 
+// C6-TPDF-DITHER-FINAL — scalar white-noise hash of the pixel coordinate.
+// Hugo Elias / Dave Hoskins style fract-hash (public-domain technique);
+// used to seed two independent uniform samples for the triangular PDF.
+fn ditherHash12(p: vec2<f32>) -> f32 {
+  var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
+  p3 += dot(p3, p3.yzx + vec3<f32>(33.33));
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+// Triangular-PDF dither of one LSB peak amplitude at 8-bit. Subtracting two
+// independent uniform[0,1) samples yields a triangular distribution on
+// (-1, 1), which whitens quantization error far better than a single
+// uniform (rectangular-PDF) sample. Scaled by 1/255 (one 8-bit step) and by
+// the opt-in strength (0 == byte-identical no-op).
+fn tpdfDither(fragCoord: vec2<f32>, strength: f32) -> vec3<f32> {
+  let r1 = ditherHash12(fragCoord);
+  let r2 = ditherHash12(fragCoord + vec2<f32>(11.13, 47.79));
+  let tri = r1 - r2; // triangular PDF on (-1, 1)
+  return vec3<f32>(tri * (strength / 255.0));
+}
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let hdrColor = textureSample(inputTexture, inputSampler, input.uv).rgb;
@@ -143,5 +177,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Apply gamma correction
   let corrected = inverseGamma(mapped, params.gamma);
 
-  return vec4<f32>(corrected, 1.0);
+  // C6-TPDF-DITHER-FINAL — add sub-LSB triangular dither in display-referred
+  // space so banding is broken at the final 8-bit quantization. Off-gate:
+  // ditherStrength defaults to 0 -> the added term is exactly 0 -> the frame
+  // is byte-identical to the pre-feature output.
+  let dithered = corrected + tpdfDither(input.position.xy, params.ditherStrength);
+
+  return vec4<f32>(dithered, 1.0);
 }

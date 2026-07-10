@@ -669,7 +669,21 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // C4-PLAIN-HDR-GAMMA-TAILS (b) — whitePoint defaults to 1.0 to match
     // WebGL's ModifiedReinhardTonemapping `white` uniform (Color.WHITE →
     // (1,1,1)); the operator now divides by `white` (not white²).
-    const uniforms = new Float32Array([exposure, gamma, mode, 1.0]);
+    // Layout: [exposure, gamma, mode, whitePoint, ditherStrength, pad, pad, pad]
+    // C6-TPDF-DITHER-FINAL — ditherStrength defaults to 0.0 so the tonemap
+    // output is byte-identical to the pre-feature path until the caller opts
+    // in via setTonemapDither(). The three trailing pads keep the UBO 16-byte
+    // aligned (32 bytes total).
+    const uniforms = new Float32Array([
+      exposure,
+      gamma,
+      mode,
+      1.0,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+    ]);
     // Phase 5 WGF-3: pick the hand-tuned f16 source when the caller has
     // confirmed the device granted `shader-f16`. The f16 variant is
     // binary-compatible with the f32 uniform layout above so the same
@@ -713,6 +727,24 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       this._tonemapStage.uniformBuffer,
       0,
       new Float32Array([exposure]) as Float32Array<ArrayBuffer>,
+    );
+  }
+
+  /**
+   * C6-TPDF-DITHER-FINAL — set the triangular-PDF dither amplitude on the
+   * tonemap stage. `strength` is in units of 8-bit LSBs (0 = off / byte-
+   * identical, 1 = ±1 LSB peak triangular noise). Writes to the fifth float
+   * (byte offset 16) of TonemapUniforms. No-op if the tonemap stage or device
+   * is unavailable. Effective in the HDR post-process pipeline (rgba16float
+   * intermediates); a documented no-op benefit in the fully-8-bit SDR chain
+   * where the scene framebuffer is already quantized before post-process.
+   */
+  setTonemapDither(strength: number): void {
+    if (!this._tonemapStage?.uniformBuffer || !this._device) return;
+    this._device.queue.writeBuffer(
+      this._tonemapStage.uniformBuffer,
+      16,
+      new Float32Array([strength]) as Float32Array<ArrayBuffer>,
     );
   }
 
