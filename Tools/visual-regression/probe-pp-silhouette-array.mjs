@@ -37,8 +37,6 @@ const OUT_DIR = join(
 );
 mkdirSync(OUT_DIR, { recursive: true });
 
-const CROSS_TOL = 14; // cross-backend mean byte delta
-
 const browser = await chromium.launch({
   channel: "msedge",
   headless: true,
@@ -201,36 +199,30 @@ async function runBackend(renderer) {
 function savePng(name, img) {
   writeFileSync(join(OUT_DIR, name), Buffer.from(img.png.split(",")[1], "base64"));
 }
-function diffImgs(a, b) {
-  const A = Buffer.from(a.b64, "base64");
-  const B = Buffer.from(b.b64, "base64");
-  if (A.length !== B.length) return { fracDiff: 1, meanDelta: 255, diffBytes: -1 };
-  let diffBytes = 0, maxDelta = 0, sum = 0;
-  for (let i = 0; i < A.length; i++) {
-    const d = Math.abs(A[i] - B[i]);
-    if (d > 0) diffBytes++;
-    if (d > maxDelta) maxDelta = d;
-    sum += d;
-  }
-  return { diffBytes, maxDelta, meanDelta: sum / A.length, fracDiff: diffBytes / A.length };
-}
-// Mean RGB over pixels whose color changed vs the base capture (the edge
-// pixels the silhouette painted).
-function edgeMeanColor(cap, base) {
+// Count + locate the silhouette edge pixels by DIRECT COLOR SIGNATURE rather
+// than diff-vs-base. The pre-fix bug rendered gray/dark default edges; the
+// fix renders the caller's saturated RED (array) / CYAN (single) lines. A
+// signature predicate isolates those pure lines cleanly — the box fills
+// (white/orange/yellow) and globe base (dark blue) can't alias into a
+// red-only or cyan-only test. This is robust to the TPDF dither (Batch 639)
+// and atmosphere/tile-settle jitter that made a whole-frame diff-vs-base
+// pick up huge non-edge regions and average to background color.
+function edgePixels(cap, predicate) {
   const A = Buffer.from(cap.b64, "base64");
-  const Bb = Buffer.from(base.b64, "base64");
-  let n = 0, r = 0, g = 0, b = 0;
+  const w = cap.w;
+  let n = 0, r = 0, g = 0, b = 0, sx = 0;
   for (let i = 0; i < A.length; i += 4) {
-    const dr = Math.abs(A[i] - Bb[i]);
-    const dg = Math.abs(A[i + 1] - Bb[i + 1]);
-    const db = Math.abs(A[i + 2] - Bb[i + 2]);
-    if (dr + dg + db > 40) {
-      n++; r += A[i]; g += A[i + 1]; b += A[i + 2];
+    const R = A[i], G = A[i + 1], B = A[i + 2];
+    if (predicate(R, G, B)) {
+      n++; r += R; g += G; b += B; sx += (i / 4) % w;
     }
   }
-  if (n === 0) return { n: 0, r: 0, g: 0, b: 0 };
-  return { n, r: r / n, g: g / n, b: b / n };
+  if (n === 0) return { n: 0, r: 0, g: 0, b: 0, x: 0 };
+  return { n, r: r / n, g: g / n, b: b / n, x: sx / n };
 }
+// Pure silhouette-line signatures (custom colors set in the scene).
+const isRed = (r, g, b) => r > 150 && g < 90 && b < 90;
+const isCyan = (r, g, b) => g > 150 && b > 150 && r < 90;
 
 console.log("=== WebGPU run ===");
 const gpu = await runBackend("webgpu");
@@ -250,38 +242,39 @@ for (const k of ["base", "array", "single"]) {
 
 let pass = true;
 
-// (1) ARRAY form.
-const arrayX = diffImgs(gpu.out.captures.array, gl.out.captures.array);
-const arrayMatch = arrayX.meanDelta <= CROSS_TOL;
-const gpuArrEdge = edgeMeanColor(gpu.out.captures.array, gpu.out.captures.base);
-const glArrEdge = edgeMeanColor(gl.out.captures.array, gl.out.captures.base);
-// RED dominance: red channel clearly above green & blue in edge pixels.
-const gpuArrRed = gpuArrEdge.r > gpuArrEdge.g + 25 && gpuArrEdge.r > gpuArrEdge.b + 25;
-const glArrRed = glArrEdge.r > glArrEdge.g + 25 && glArrEdge.r > glArrEdge.b + 25;
-const arrayOK = arrayMatch && gpuArrRed && glArrRed && gpuArrEdge.n > 2000;
+// Cross-backend edge parity: both backends must paint a comparable count of
+// same-color silhouette pixels at a comparable horizontal centroid. The
+// pre-fix bug produced NO red pixels on WebGPU (gray defaults) → gpuN≈0.
+const MIN_EDGE = 1200; // silhouette line pixel floor per backend
+const countRatioOK = (a, b) => a > 0 && b > 0 && Math.min(a, b) / Math.max(a, b) > 0.4;
+const xCentroidOK = (a, b) => Math.abs(a - b) < 60; // px, out of 1024 wide
+
+// (1) ARRAY form → custom RED edge.
+const gpuArr = edgePixels(gpu.out.captures.array, isRed);
+const glArr = edgePixels(gl.out.captures.array, isRed);
+const arrayOK =
+  gpuArr.n > MIN_EDGE && glArr.n > MIN_EDGE &&
+  countRatioOK(gpuArr.n, glArr.n) && xCentroidOK(gpuArr.x, glArr.x);
 pass = pass && arrayOK;
 console.log(
-  `ARRAY  xMean=${arrayX.meanDelta.toFixed(2)}(tol ${CROSS_TOL}) ` +
-    `gpuEdge rgb=(${gpuArrEdge.r.toFixed(0)},${gpuArrEdge.g.toFixed(0)},${gpuArrEdge.b.toFixed(0)}) n=${gpuArrEdge.n} ` +
-    `glEdge rgb=(${glArrEdge.r.toFixed(0)},${glArrEdge.g.toFixed(0)},${glArrEdge.b.toFixed(0)}) ` +
-    `redDom gpu=${gpuArrRed ? "Y" : "N"}/gl=${glArrRed ? "Y" : "N"} ${arrayOK ? "OK" : "FAIL"}`,
+  `ARRAY  RED gpuN=${gpuArr.n}@x${gpuArr.x.toFixed(0)} ` +
+    `glN=${glArr.n}@x${glArr.x.toFixed(0)} ` +
+    `gpuRGB=(${gpuArr.r.toFixed(0)},${gpuArr.g.toFixed(0)},${gpuArr.b.toFixed(0)}) ` +
+    `${arrayOK ? "OK" : "FAIL"}`,
 );
 
-// (2) SINGLE form.
-const singleX = diffImgs(gpu.out.captures.single, gl.out.captures.single);
-const singleMatch = singleX.meanDelta <= CROSS_TOL;
-const gpuSinEdge = edgeMeanColor(gpu.out.captures.single, gpu.out.captures.base);
-const glSinEdge = edgeMeanColor(gl.out.captures.single, gl.out.captures.base);
-// CYAN dominance: green & blue clearly above red.
-const gpuSinCyan = gpuSinEdge.g > gpuSinEdge.r + 25 && gpuSinEdge.b > gpuSinEdge.r + 25;
-const glSinCyan = glSinEdge.g > glSinEdge.r + 25 && glSinEdge.b > glSinEdge.r + 25;
-const singleOK = singleMatch && gpuSinCyan && glSinCyan && gpuSinEdge.n > 2000;
+// (2) SINGLE form → custom CYAN edge (regression: path unchanged).
+const gpuSin = edgePixels(gpu.out.captures.single, isCyan);
+const glSin = edgePixels(gl.out.captures.single, isCyan);
+const singleOK =
+  gpuSin.n > MIN_EDGE && glSin.n > MIN_EDGE &&
+  countRatioOK(gpuSin.n, glSin.n) && xCentroidOK(gpuSin.x, glSin.x);
 pass = pass && singleOK;
 console.log(
-  `SINGLE xMean=${singleX.meanDelta.toFixed(2)}(tol ${CROSS_TOL}) ` +
-    `gpuEdge rgb=(${gpuSinEdge.r.toFixed(0)},${gpuSinEdge.g.toFixed(0)},${gpuSinEdge.b.toFixed(0)}) n=${gpuSinEdge.n} ` +
-    `glEdge rgb=(${glSinEdge.r.toFixed(0)},${glSinEdge.g.toFixed(0)},${glSinEdge.b.toFixed(0)}) ` +
-    `cyanDom gpu=${gpuSinCyan ? "Y" : "N"}/gl=${glSinCyan ? "Y" : "N"} ${singleOK ? "OK" : "FAIL"}`,
+  `SINGLE CYAN gpuN=${gpuSin.n}@x${gpuSin.x.toFixed(0)} ` +
+    `glN=${glSin.n}@x${glSin.x.toFixed(0)} ` +
+    `gpuRGB=(${gpuSin.r.toFixed(0)},${gpuSin.g.toFixed(0)},${gpuSin.b.toFixed(0)}) ` +
+    `${singleOK ? "OK" : "FAIL"}`,
 );
 
 // (3) errors.
