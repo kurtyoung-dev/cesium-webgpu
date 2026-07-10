@@ -3587,10 +3587,11 @@ class Scene {
     );
 
     const envMaps = this.specularEnvironmentMaps;
-    let specularEnvironmentCubeMap = this._specularEnvironmentCubeMap;
+    const specularEnvironmentCubeMap = this._specularEnvironmentCubeMap;
     if (defined(envMaps) && specularEnvironmentCubeMap?.url !== envMaps) {
-      specularEnvironmentCubeMap =
-        specularEnvironmentCubeMap && specularEnvironmentCubeMap.destroy();
+      if (defined(specularEnvironmentCubeMap)) {
+        specularEnvironmentCubeMap.destroy();
+      }
       this._specularEnvironmentCubeMap = new SpecularEnvironmentCubeMap(
         envMaps,
       );

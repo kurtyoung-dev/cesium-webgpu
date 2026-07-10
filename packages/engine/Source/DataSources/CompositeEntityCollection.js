@@ -169,7 +169,6 @@ class CompositeEntityCollection {
     //>>includeEnd('debug');
 
     if (!hasIndex) {
-      index = this._collections.length;
       this._collections.push(collection);
     } else {
       this._collections.splice(index, 0, collection);

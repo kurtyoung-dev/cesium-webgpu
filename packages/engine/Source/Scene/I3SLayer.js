@@ -32,7 +32,7 @@ class I3SLayer {
 
     const parentUrl = this._parent.resource.getUrlComponent();
 
-    let tilesetUrl = "";
+    let tilesetUrl;
     if (parentUrl.match(/layers\/\d/)) {
       tilesetUrl = `${parentUrl}`.replace(/\/+$/, "");
     } else {

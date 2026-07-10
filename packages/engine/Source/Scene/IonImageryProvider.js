@@ -26,8 +26,6 @@ import IonImageryProviderFactory from "./IonImageryProviderFactory.js";
  * @alias IonImageryProvider
  * @constructor
  *
- * @param {IonImageryProvider.ConstructorOptions} [options] Object describing initialization options
- *
  * @example
  * const imageryLayer = Cesium.ImageryLayer.fromProviderAsync(Cesium.IonImageryProvider.fromAssetId(3812));
  * viewer.imageryLayers.add(imageryLayer);
@@ -35,9 +33,7 @@ import IonImageryProviderFactory from "./IonImageryProviderFactory.js";
  * @see IonImageryProvider.fromAssetId
  */
 class IonImageryProvider {
-  constructor(options) {
-    options = options ?? Frozen.EMPTY_OBJECT;
-
+  constructor() {
     this._defaultAlpha = undefined;
     this._defaultNightAlpha = undefined;
     this._defaultDayAlpha = undefined;

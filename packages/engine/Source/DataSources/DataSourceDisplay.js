@@ -308,7 +308,7 @@ class DataSourceDisplay {
     const tmp = getBoundingSphereBoundingSphereScratch;
 
     let count = 0;
-    let state = BoundingSphereState.DONE;
+    let state;
     const visualizers = dataSource._visualizers;
     const visualizersLength = visualizers.length;
 

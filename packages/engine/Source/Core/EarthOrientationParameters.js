@@ -111,8 +111,8 @@ class EarthOrientationParameters {
     const dates = this._dates;
     const lastIndex = this._lastIndex;
 
-    let before = 0;
-    let after = 0;
+    let before;
+    let after;
     if (defined(lastIndex)) {
       const previousIndexDate = dates[lastIndex];
       const nextIndexDate = dates[lastIndex + 1];

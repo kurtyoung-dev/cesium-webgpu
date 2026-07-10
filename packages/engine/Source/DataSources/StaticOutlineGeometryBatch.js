@@ -377,7 +377,7 @@ class StaticOutlineGeometryBatch {
     const translucentBatchesLength = translucentBatches.length;
     let itemsToRemove;
     let isUpdated = true;
-    let needUpdate = false;
+    let needUpdate;
 
     do {
       needUpdate = false;

@@ -219,7 +219,7 @@ class OrthographicFrustum {
   }
 
   /**
-   * Gets the orthographic projection matrix computed from the view frustum.
+   * Gets the underlying {@link OrthographicOffCenterFrustum}
    * @type {OrthographicOffCenterFrustum}
    * @readonly
    * @private

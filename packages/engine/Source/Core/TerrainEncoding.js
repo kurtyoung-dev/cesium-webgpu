@@ -574,8 +574,7 @@ class TerrainEncoding {
     Check.typeOf.object("result", result);
     //>>includeEnd('debug');
 
-    const bufferIndex = (index =
-      index * this.stride + this._offsetVertexNormal);
+    const bufferIndex = index * this.stride + this._offsetVertexNormal;
     return AttributeCompression.octDecodeFloat(buffer[bufferIndex], result);
   }
 

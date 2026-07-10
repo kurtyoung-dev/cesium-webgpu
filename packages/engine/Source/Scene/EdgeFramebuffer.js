@@ -9,17 +9,13 @@ import ClearCommand from "../Renderer/ClearCommand.js";
 /**
  * Creates and manages framebuffers for edge visibility rendering.
  *
- * @param {Object} options Object with the following properties:
- *
  * @alias EdgeFramebuffer
  * @constructor
  *
  * @private
  */
 class EdgeFramebuffer {
-  constructor(options) {
-    options = options || {};
-
+  constructor() {
     // Create framebuffer manager with multiple render targets (MRT)
     // Color attachment 0: edge color output (visualization / debug)
     // Color attachment 1: R: edge type, G: featureId (metadata / ids)

@@ -655,7 +655,6 @@ class VertexArray {
           }
 
           let attrProps = {};
-          vertexBuffer = undefined;
           if (defined(attribute.values)) {
             vertexBuffer = Buffer.createVertexBuffer({
               context: context,
