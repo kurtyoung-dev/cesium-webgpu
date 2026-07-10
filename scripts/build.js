@@ -497,7 +497,7 @@ export async function createCesiumJs(variant = "dual") {
   // (variant-gated WebGPU exports the main barrel can't carry).
   contents +=
     `\n// Slice 5d step 2 — multi-light public API (Batch 142).\n` +
-    `export { LightCollection, PointLight, SpotLight, LightType } from '@${scope}/engine';\n`;
+    `export { LightCollection, PointLight, SpotLight, LightType, RectAreaLight, DiskAreaLight } from '@${scope}/engine';\n`;
   // Weather ingest public API (Phase 1) — real EDR/etc. weather -> the WebGPU
   // procedural-cloud weather map. See WEATHER_DATA_INGEST_ROADMAP.md.
   contents +=
@@ -1405,7 +1405,7 @@ export async function createIndexJs(workspace) {
       // construct concrete subclasses (PointLight / SpotLight /
       // DirectionalLight) via `scene.lights.add(...)`. Backend-agnostic
       // so always included regardless of variant.
-      `export { LightCollection, PointLight, SpotLight, LightType } from './Source/Scene/LightTypes.js';${EOL}` +
+      `export { LightCollection, PointLight, SpotLight, LightType, RectAreaLight, DiskAreaLight } from './Source/Scene/LightTypes.js';${EOL}` +
       // Weather data ingest public API (Batch 410) — backend-agnostic Scene data.
       `export { WeatherProvider } from './Source/Scene/Weather/WeatherProvider.js';${EOL}` +
       `export { EdrWeatherSource } from './Source/Scene/Weather/EdrWeatherSource.js';${EOL}` +

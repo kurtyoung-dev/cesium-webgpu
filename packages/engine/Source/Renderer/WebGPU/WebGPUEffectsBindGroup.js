@@ -750,6 +750,10 @@ function getPlaceholderEffects(device) {
         resource: { buffer: clusteredPH.perClusterLightIndices },
       },
       { binding: 22, resource: { buffer: clusteredPH.params } },
+      // C6-LTC-AREA-LIGHTS placeholders (LUT texture + area-light buffer;
+      // no sampler — LUT read via textureLoad).
+      { binding: 23, resource: clusteredPH.ltcLUTView },
+      { binding: 25, resource: { buffer: clusteredPH.areaLights } },
     ],
   });
 
@@ -1365,6 +1369,12 @@ function createEffectsBindGroup(device, frameState, options) {
     clusteredLighting?.perClusterLightIndices ??
     clusteredPH.perClusterLightIndices;
   const bClusterParams = clusteredLighting?.params ?? clusteredPH.params;
+  // C6-LTC-AREA-LIGHTS — LUT texture view / sampler / area-light buffer.
+  // The dispatcher only builds the real LUT once an area light appears;
+  // until then (and when no area lights are active) the per-device
+  // placeholders are bound and the FS early-outs on activeLightCount.y=0.
+  const bLtcLUTView = clusteredLighting?.ltcLUTView ?? clusteredPH.ltcLUTView;
+  const bAreaLights = clusteredLighting?.areaLights ?? clusteredPH.areaLights;
 
   // Resource identity key — uniquely names the bound resource graph.
   // Two calls with identical resource identities produce the same
@@ -1382,7 +1392,8 @@ function createEffectsBindGroup(device, frameState, options) {
     `${_idFor(bgCache, bCubeDepth)}|` +
     `${_idFor(bgCache, bClusterLights)}|${_idFor(bgCache, bClusterAABBs)}|` +
     `${_idFor(bgCache, bClusterCount)}|${_idFor(bgCache, bClusterIndices)}|` +
-    `${_idFor(bgCache, bClusterParams)}`;
+    `${_idFor(bgCache, bClusterParams)}|` +
+    `${_idFor(bgCache, bLtcLUTView)}|${_idFor(bgCache, bAreaLights)}`;
 
   // Content key — encodes the per-call inputs that drive UBO bytes
   // beyond what's already implied by the bound resources. Most of the
@@ -1458,6 +1469,9 @@ function createEffectsBindGroup(device, frameState, options) {
         { binding: 20, resource: { buffer: bClusterCount } },
         { binding: 21, resource: { buffer: bClusterIndices } },
         { binding: 22, resource: { buffer: bClusterParams } },
+        // C6-LTC-AREA-LIGHTS — LUT texture + area-light storage (no sampler).
+        { binding: 23, resource: bLtcLUTView },
+        { binding: 25, resource: { buffer: bAreaLights } },
       ],
     });
     cached = { buffer: ub, bindGroup: bg };

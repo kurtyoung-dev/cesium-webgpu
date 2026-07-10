@@ -369,6 +369,55 @@ Fork: https://github.com/lyntel/GraphicsSamples/blob/3d30817ebeeade64fe6a4fc3aa1
 > OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
+### Linearly Transformed Cosines (LTC) area lights
+
+WebGPU analytic area-light shading (`RectAreaLight` / `DiskAreaLight`,
+C6-LTC-AREA-LIGHTS). The two fitted 64×64 lookup tables embedded in
+`packages/engine/Source/Renderer/WebGPU/WebGPULTCLUTData.ts` and the
+edge-integral / cubic-solve math ported into
+`packages/engine/Source/Shaders/WebGPU/chunks/structs/ClusteredLighting.wgsl`
+are derived from the authors' reference implementation:
+
+https://github.com/selfshadow/ltc_code
+
+Paper: Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt,
+"Real-Time Polygonal-Light Shading with Linearly Transformed Cosines",
+ACM Transactions on Graphics (Proc. SIGGRAPH 2016) 35(4), 2016.
+Project page: https://eheitzresearch.wordpress.com/415-2/
+
+> Copyright (c) 2017, Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt.
+> All rights reserved.
+>
+> Redistribution and use in source and binary forms, with or without
+> modification, are permitted provided that the following conditions are met:
+>
+> * If you use (or adapt) the source code in your own work, please include a
+>   reference to the paper:
+>
+>   Real-Time Polygonal-Light Shading with Linearly Transformed Cosines.
+>   Eric Heitz, Jonathan Dupuy, Stephen Hill and David Neubelt.
+>   ACM Transactions on Graphics (Proceedings of ACM SIGGRAPH 2016) 35(4), 2016.
+>   Project page: https://eheitzresearch.wordpress.com/415-2/
+>
+> * Redistributions of source code must retain the above copyright notice, this
+>   list of conditions and the following disclaimer.
+>
+> * Redistributions in binary form must reproduce the above copyright notice,
+>   this list of conditions and the following disclaimer in the documentation
+>   and/or other materials provided with the distribution.
+>
+> THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+> AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+> IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+> DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+> FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+> DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+> SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+> CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+> OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+> OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+
 ### NoSleep.js
 
 https://github.com/richtr/NoSleep.js

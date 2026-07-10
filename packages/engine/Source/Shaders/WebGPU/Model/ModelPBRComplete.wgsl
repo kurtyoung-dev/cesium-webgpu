@@ -2875,6 +2875,14 @@ struct FragOutput {
   );
   direct = direct + clusteredContrib;
 
+  // C6-LTC-AREA-LIGHTS — analytic LTC rect/disk area lights. Early-outs
+  // to vec3(0) when clusterParams.activeLightCount.y == 0 (no area
+  // lights this frame), so the cost when off is one uniform compare.
+  let ltcAreaContrib = evalLTCAreaLights(
+    input.positionEC, N, V, F0, roughness, diffuseColor,
+  );
+  direct = direct + ltcAreaContrib;
+
   // C-R4-GLTF-KHR slice 4 — KHR_materials_anisotropy (factor-level).
   // Full anisotropic GGX needs the tangent-frame as a per-vertex
   // attribute (not currently passed through `FragmentInput`). For Slice

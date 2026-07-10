@@ -62,10 +62,55 @@ import {
   getClusteredLightingBGL,
   buildClusteredLightingBindGroup,
 } from "./WebGPUClusteredLightingBGL.js";
+import { getLTCLUTBytes, LTC_LUT_SIZE } from "./WebGPULTCLUTData.js";
 
 // Uniform buffer holds ClusteredParams: 2 vec4 = 32 bytes. Padded to
 // 256-byte minimum alignment.
 const PARAMS_UNIFORM_BYTES = 256;
+
+// LTC analytic area lights (C6-LTC-AREA-LIGHTS). WebGPU-only, opt-in.
+// A parallel storage buffer beside the clustered punctual path — NOT
+// clustered in v1 (iterated directly in the FS, gated on
+// activeLightCount.y). Struct stride 96 B = 6 vec4 = 24 floats.
+const MAX_AREA_LIGHTS = 8;
+const AREA_LIGHT_FLOATS = 24; // 6 vec4
+const AREA_LIGHT_STRIDE_BYTES = AREA_LIGHT_FLOATS * 4; // 96
+const AREA_LIGHTS_BUFFER_BYTES = MAX_AREA_LIGHTS * AREA_LIGHT_STRIDE_BYTES; // 768
+
+/** Area-light type tags — match LightType.RECT_AREA / DISK_AREA. */
+const AREA_LIGHT_TYPE_RECT = 3;
+const AREA_LIGHT_TYPE_DISK = 4;
+
+/**
+ * World-space area-light entry consumed by the dispatcher. The
+ * SceneRenderer hook normalizes `RectAreaLight` / `DiskAreaLight` into
+ * this shape.
+ */
+export interface ClusterAreaLightInput {
+  /** 3 = rect, 4 = disk (LightType.RECT_AREA / DISK_AREA). */
+  lightType: number;
+  positionWC: { x: number; y: number; z: number };
+  /** Emitter normal (world). */
+  directionWC: { x: number; y: number; z: number };
+  /** Local up axis (world). */
+  upWC: { x: number; y: number; z: number };
+  /** Half-width (rect) or radiusX (disk), meters. */
+  halfWidth: number;
+  /** Half-height (rect) or radiusY (disk), meters. */
+  halfHeight: number;
+  color: {
+    red?: number;
+    green?: number;
+    blue?: number;
+    r?: number;
+    g?: number;
+    b?: number;
+  };
+  intensity?: number;
+  twoSided?: boolean;
+  /** Cull radius (0 = never cull). */
+  range?: number;
+}
 
 /**
  * Minimal interface for the world-space light entries this dispatcher
@@ -111,6 +156,12 @@ export interface ClusterLightingDispatchInputs {
   inverseProjection: ArrayLike<number>;
   /** Column-major 16-element view matrix (camera world → eye space). */
   viewMatrix: ArrayLike<number>;
+  /**
+   * Active area lights this frame (world-space). Empty/undefined ⇒ the
+   * LTC area-light path stays inert (areaLightCount = 0, FS early-out).
+   * C6-LTC-AREA-LIGHTS.
+   */
+  areaLights?: ReadonlyArray<ClusterAreaLightInput>;
 }
 
 export class WebGPUClusteredLightingDispatcher {
@@ -123,10 +174,33 @@ export class WebGPUClusteredLightingDispatcher {
   private readonly _scratchEyeLights: ClusteredLightDef[] = [];
   private _lastActiveLightCount: number = 0;
 
+  // ── LTC area lights (C6-LTC-AREA-LIGHTS) ──
+  private readonly _areaLightsBuffer: GPUBuffer;
+  private readonly _areaLightsData: Float32Array;
+  private _lastAreaLightCount: number = 0;
+  /** LUT texture is created lazily the first time an area light appears. */
+  private _ltcTexture: GPUTexture | null = null;
+  private _ltcView: GPUTextureView | null = null;
+
   constructor(device: GPUDevice) {
     this._device = device;
     this._bounds = new WebGPUClusterBoundsRenderer(device);
     this._assign = new WebGPUClusterAssignRenderer(device);
+    // Area-light storage buffer — allocated up front (768 B, trivial),
+    // zero-filled so a frame with no area lights reads cleanly.
+    this._areaLightsBuffer = device.createBuffer({
+      label: "LTC area lights",
+      size: AREA_LIGHTS_BUFFER_BYTES,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    this._areaLightsData = new Float32Array(
+      MAX_AREA_LIGHTS * AREA_LIGHT_FLOATS,
+    );
+    device.queue.writeBuffer(
+      this._areaLightsBuffer,
+      0,
+      new Uint8Array(AREA_LIGHTS_BUFFER_BYTES),
+    );
     this._paramsBuffer = device.createBuffer({
       label: "ClusteredLighting params",
       size: PARAMS_UNIFORM_BYTES,
@@ -163,6 +237,58 @@ export class WebGPUClusteredLightingDispatcher {
   }
   get paramsBuffer(): GPUBuffer {
     return this._paramsBuffer;
+  }
+
+  // ── LTC area-light public handles (C6-LTC-AREA-LIGHTS) ──
+
+  /** Storage buffer of packed eye-space LTCAreaLight records (768 B). */
+  get areaLightsBuffer(): GPUBuffer {
+    return this._areaLightsBuffer;
+  }
+
+  /**
+   * The 64×64×2 rgba16float LTC LUT array texture view. Created lazily
+   * the first time an area light is packed. Returns null before then —
+   * callers fall back to the per-device placeholder LUT.
+   */
+  get ltcLUTView(): GPUTextureView | null {
+    return this._ltcView;
+  }
+
+  /** Most recent packed area-light count. */
+  get lastAreaLightCount(): number {
+    return this._lastAreaLightCount;
+  }
+
+  /**
+   * Create the LTC LUT array texture + sampler on first use. Two 64×64
+   * rgba16float layers uploaded from the embedded fp16 payloads
+   * (layer 0 = M⁻¹ terms, layer 1 = magnitude/Fresnel/sphere).
+   */
+  private _ensureLTCLUT(): void {
+    if (this._ltcTexture) {
+      return;
+    }
+    const device = this._device;
+    const size = LTC_LUT_SIZE;
+    const tex = device.createTexture({
+      label: "LTC LUT (64x64x2 rgba16float)",
+      size: { width: size, height: size, depthOrArrayLayers: 2 },
+      format: "rgba16float",
+      dimension: "2d",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    const bytes = getLTCLUTBytes();
+    // 8 bytes per texel (rgba16float). writeTexture has no 256-byte
+    // bytesPerRow alignment requirement.
+    device.queue.writeTexture(
+      { texture: tex },
+      bytes,
+      { bytesPerRow: size * 8, rowsPerImage: size },
+      { width: size, height: size, depthOrArrayLayers: 2 },
+    );
+    this._ltcTexture = tex;
+    this._ltcView = tex.createView({ dimension: "2d-array" });
   }
 
   /**
@@ -212,19 +338,28 @@ export class WebGPUClusteredLightingDispatcher {
     inputs: ClusterLightingDispatchInputs,
   ): number {
     let activeCount = 0;
+    let areaCount = 0;
     if (inputs.enabled) {
       activeCount = this._packEyeSpaceLights(inputs.lights, inputs.viewMatrix);
+      if (inputs.areaLights && inputs.areaLights.length > 0) {
+        areaCount = this._packAreaLights(inputs.areaLights, inputs.viewMatrix);
+      }
     }
+    this._lastAreaLightCount = areaCount;
 
     // Update the params uniform first so consumer FS sees the right
     // activeLightCount even when we skip the compute dispatches.
+    // .x = punctual clustered count (Batch 149 gate); .y = area-light
+    // count (C6-LTC-AREA-LIGHTS gate — was documented-unused).
     const data = this._paramsData;
     data[0] = inputs.viewportWidth;
     data[1] = inputs.viewportHeight;
     data[2] = inputs.near;
     data[3] = inputs.far;
-    data[4] = activeCount;
-    data[5] = activeCount; // .x of activeLightCount vec4 (Batch 149 FS gate)
+    // activeLightCount vec4 starts at data[4]: .x=data[4], .y=data[5],
+    // .z=data[6], .w=data[7].
+    data[4] = activeCount; // .x — clustered punctual gate (Batch 149 FS)
+    data[5] = areaCount; // .y — LTC area-light gate (C6-LTC-AREA-LIGHTS FS)
     data[6] = 0;
     data[7] = 0;
     this._device.queue.writeBuffer(this._paramsBuffer, 0, data);
@@ -334,10 +469,155 @@ export class WebGPUClusteredLightingDispatcher {
     return outIndex;
   }
 
+  /**
+   * Transform world-space area lights to eye-space, pack into the
+   * LTCAreaLight storage layout, upload, and ensure the LUT texture
+   * exists. Returns the number packed (≤ MAX_AREA_LIGHTS).
+   *
+   * Per-record layout (24 floats):
+   *   [0..3]   centerEC.xyz, lightType
+   *   [4..7]   color.rgb, intensity
+   *   [8..11]  axisXEC.xyz (half-width vector), halfWidth
+   *   [12..15] axisYEC.xyz (half-height vector), halfHeight
+   *   [16..19] twoSided, cullRadius, reserved, reserved
+   *   [20..23] reserved (textured-emitter follow-up)
+   *
+   * Axes are transformed as directions (w=0); center as a position
+   * (w=1) — same eye-space convention as the punctual pack.
+   */
+  private _packAreaLights(
+    areaLights: ReadonlyArray<ClusterAreaLightInput>,
+    viewMatrix: ArrayLike<number>,
+  ): number {
+    const m = viewMatrix;
+    const cap = Math.min(areaLights.length, MAX_AREA_LIGHTS);
+    const data = this._areaLightsData;
+    data.fill(0);
+
+    let out = 0;
+    for (let i = 0; i < cap; i++) {
+      const L = areaLights[i];
+
+      // Build an orthonormal frame in world space: normal (n), right (x),
+      // up (y). right = normalize(cross(n, up)); reorthogonalize up.
+      let nx = L.directionWC.x;
+      let ny = L.directionWC.y;
+      let nz = L.directionWC.z;
+      let nl = Math.hypot(nx, ny, nz) || 1.0;
+      nx /= nl;
+      ny /= nl;
+      nz /= nl;
+
+      let ux = L.upWC.x;
+      let uy = L.upWC.y;
+      let uz = L.upWC.z;
+      // right = cross(n, up)
+      let rx = ny * uz - nz * uy;
+      let ry = nz * ux - nx * uz;
+      let rz = nx * uy - ny * ux;
+      let rl = Math.hypot(rx, ry, rz);
+      if (rl < 1e-6) {
+        // up parallel to normal — pick an arbitrary perpendicular.
+        if (Math.abs(nx) < 0.9) {
+          rx = 0;
+          ry = nz;
+          rz = -ny;
+        } else {
+          rx = -nz;
+          ry = 0;
+          rz = nx;
+        }
+        rl = Math.hypot(rx, ry, rz) || 1.0;
+      }
+      rx /= rl;
+      ry /= rl;
+      rz /= rl;
+      // reorthogonalized up = cross(right, n)
+      ux = ry * nz - rz * ny;
+      uy = rz * nx - rx * nz;
+      uz = rx * ny - ry * nx;
+
+      const hw = Math.max(L.halfWidth, 1e-4);
+      const hh = Math.max(L.halfHeight, 1e-4);
+      // Half-extent axis vectors in world space.
+      const axWx = rx * hw;
+      const axWy = ry * hw;
+      const axWz = rz * hw;
+      const ayWx = ux * hh;
+      const ayWy = uy * hh;
+      const ayWz = uz * hh;
+
+      // Transform center (w=1) + axes (w=0) into eye-space.
+      const cex =
+        m[0] * L.positionWC.x +
+        m[4] * L.positionWC.y +
+        m[8] * L.positionWC.z +
+        m[12];
+      const cey =
+        m[1] * L.positionWC.x +
+        m[5] * L.positionWC.y +
+        m[9] * L.positionWC.z +
+        m[13];
+      const cez =
+        m[2] * L.positionWC.x +
+        m[6] * L.positionWC.y +
+        m[10] * L.positionWC.z +
+        m[14];
+      const axex = m[0] * axWx + m[4] * axWy + m[8] * axWz;
+      const axey = m[1] * axWx + m[5] * axWy + m[9] * axWz;
+      const axez = m[2] * axWx + m[6] * axWy + m[10] * axWz;
+      const ayex = m[0] * ayWx + m[4] * ayWy + m[8] * ayWz;
+      const ayey = m[1] * ayWx + m[5] * ayWy + m[9] * ayWz;
+      const ayez = m[2] * ayWx + m[6] * ayWy + m[10] * ayWz;
+
+      const c = L.color;
+      const base = out * AREA_LIGHT_FLOATS;
+      const lightType =
+        L.lightType === AREA_LIGHT_TYPE_DISK
+          ? AREA_LIGHT_TYPE_DISK
+          : AREA_LIGHT_TYPE_RECT;
+      data[base + 0] = cex;
+      data[base + 1] = cey;
+      data[base + 2] = cez;
+      data[base + 3] = lightType;
+      data[base + 4] = c.r ?? c.red ?? 1;
+      data[base + 5] = c.g ?? c.green ?? 1;
+      data[base + 6] = c.b ?? c.blue ?? 1;
+      data[base + 7] = L.intensity ?? 1;
+      data[base + 8] = axex;
+      data[base + 9] = axey;
+      data[base + 10] = axez;
+      data[base + 11] = hw;
+      data[base + 12] = ayex;
+      data[base + 13] = ayey;
+      data[base + 14] = ayez;
+      data[base + 15] = hh;
+      data[base + 16] = L.twoSided ? 1 : 0;
+      data[base + 17] = L.range ?? 0;
+      out++;
+    }
+
+    if (out > 0) {
+      this._ensureLTCLUT();
+      this._device.queue.writeBuffer(
+        this._areaLightsBuffer,
+        0,
+        this._areaLightsData,
+        0,
+        out * AREA_LIGHT_FLOATS,
+      );
+    }
+    return out;
+  }
+
   destroy(): void {
     this._bounds.destroy();
     this._assign.destroy();
     this._paramsBuffer.destroy();
+    this._areaLightsBuffer.destroy();
+    this._ltcTexture?.destroy();
+    this._ltcTexture = null;
+    this._ltcView = null;
   }
 }
 

@@ -138,6 +138,27 @@ export const CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES: ReadonlyArray<GPUBindGr
       visibility: Stage.FRAGMENT,
       buffer: { type: "uniform" },
     },
+    // C6-LTC-AREA-LIGHTS — analytic LTC area lights (WebGPU-only, opt-in).
+    // binding 23 — ltcLUT (64×64×2 rgba16float array texture)
+    // binding 25 — areaLights (read-only storage, ≤8 records)
+    // No dedicated sampler: the Model PBR fragment stage is already at the
+    // 16-sampler-per-stage limit, so the LUT is read with textureLoad +
+    // manual bilinear (see ltcSampleLUT in ClusteredLighting.wgsl). The
+    // texture uses sampleType "unfilterable-float" because textureLoad
+    // never filters — this also keeps it valid without a filtering sampler.
+    // Always present in the shared effects BGL; placeholders bound when
+    // no area lights exist so consumer pipelines validate against one
+    // layout and the FS early-outs via activeLightCount.y = 0.
+    {
+      binding: 23,
+      visibility: Stage.FRAGMENT,
+      texture: { sampleType: "unfilterable-float", viewDimension: "2d-array" },
+    },
+    {
+      binding: 25,
+      visibility: Stage.FRAGMENT,
+      buffer: { type: "read-only-storage" },
+    },
   ];
 
 /**
@@ -177,6 +198,12 @@ export interface ClusteredLightingPlaceholderBuffers {
   perClusterLightCount: GPUBuffer;
   perClusterLightIndices: GPUBuffer;
   params: GPUBuffer;
+  // C6-LTC-AREA-LIGHTS placeholders (bindings 23, 25). No sampler —
+  // the LUT is read via textureLoad (see ClusteredLighting.wgsl).
+  ltcLUTView: GPUTextureView;
+  areaLights: GPUBuffer;
+  /** Retained so device-loss cleanup can destroy the placeholder texture. */
+  ltcLUTTexture: GPUTexture;
 }
 
 const _placeholderCache = new WeakMap<
@@ -211,6 +238,25 @@ export function getClusteredLightingPlaceholders(
   });
   device.queue.writeBuffer(params, 0, new Float32Array(8));
 
+  // C6-LTC-AREA-LIGHTS placeholders — a 1×1×2 rgba16float texture and one
+  // zeroed 96 B LTCAreaLight record. Bound at slots 23 / 25 so the BGL
+  // validates when no dispatcher/area-lights exist; never read because
+  // activeLightCount.y stays 0.
+  const ltcLUTTexture = device.createTexture({
+    label: "LTC LUT placeholder (1x1x2 rgba16float)",
+    size: { width: 1, height: 1, depthOrArrayLayers: 2 },
+    format: "rgba16float",
+    dimension: "2d",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  // Zero-fill both layers (8 B/texel × 1 texel × 2 layers = 16 B).
+  device.queue.writeTexture(
+    { texture: ltcLUTTexture },
+    new Uint8Array(16),
+    { bytesPerRow: 8, rowsPerImage: 1 },
+    { width: 1, height: 1, depthOrArrayLayers: 2 },
+  );
+
   const placeholders: ClusteredLightingPlaceholderBuffers = {
     // ClusteredLight = 5 vec4 = 80 bytes per element
     clusterLights: makeStorage(
@@ -229,6 +275,10 @@ export function getClusteredLightingPlaceholders(
       4,
     ),
     params,
+    // LTCAreaLight = 6 vec4 = 96 bytes per element
+    areaLights: makeStorage("LTC area lights placeholder", 96),
+    ltcLUTTexture,
+    ltcLUTView: ltcLUTTexture.createView({ dimension: "2d-array" }),
   };
   _placeholderCache.set(device, placeholders);
   return placeholders;

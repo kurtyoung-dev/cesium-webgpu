@@ -55,6 +55,12 @@ export interface ClusteredLightingBuffers {
   perClusterLightCount: GPUBuffer;
   perClusterLightIndices: GPUBuffer;
   params: GPUBuffer;
+  // C6-LTC-AREA-LIGHTS — analytic area-light resources. `ltcLUTView` is
+  // null until the dispatcher lazily builds the LUT on first area light;
+  // consumers fall back to the placeholder LUT then. No sampler — the LUT
+  // is read via textureLoad in the FS.
+  areaLights: GPUBuffer;
+  ltcLUTView: GPUTextureView | null;
 }
 
 /**
@@ -136,6 +142,19 @@ export function dispatchClusteredLighting(
     outerConeAngle?: number;
     spotDirWC?: { x: number; y: number; z: number };
   }> = [];
+  // C6-LTC-AREA-LIGHTS — parallel world-space area-light list.
+  const areaLights: Array<{
+    lightType: number;
+    positionWC: { x: number; y: number; z: number };
+    directionWC: { x: number; y: number; z: number };
+    upWC: { x: number; y: number; z: number };
+    halfWidth: number;
+    halfHeight: number;
+    color: { red?: number; green?: number; blue?: number };
+    intensity?: number;
+    twoSided?: boolean;
+    range?: number;
+  }> = [];
   if (enabled) {
     // Scene-level lights from LightCollection.
     const sceneLights = (
@@ -155,9 +174,38 @@ export function dispatchClusteredLighting(
           range?: number;
           innerConeAngle?: number;
           outerConeAngle?: number;
+          up?: { x: number; y: number; z: number };
+          width?: number;
+          height?: number;
+          radiusX?: number;
+          radiusY?: number;
+          twoSided?: boolean;
         };
         if (L?.enabled === false) continue;
         const lt = L?.lightType ?? 0;
+        // C6-LTC-AREA-LIGHTS — RECT_AREA (3) / DISK_AREA (4) route to the
+        // separate analytic area-light list, not the clustered punctual
+        // path.
+        if (lt === 3 || lt === 4) {
+          const isDisk = lt === 4;
+          areaLights.push({
+            lightType: lt,
+            positionWC: L.position ?? { x: 0, y: 0, z: 0 },
+            directionWC: L.direction ?? { x: 0, y: 0, z: -1 },
+            upWC: L.up ?? { x: 0, y: 1, z: 0 },
+            halfWidth: isDisk ? (L.radiusX ?? 1) : (L.width ?? 1) * 0.5,
+            halfHeight: isDisk ? (L.radiusY ?? 1) : (L.height ?? 1) * 0.5,
+            color: {
+              red: L.color?.red,
+              green: L.color?.green,
+              blue: L.color?.blue,
+            },
+            intensity: L.intensity,
+            twoSided: L.twoSided,
+            range: L.range,
+          });
+          continue;
+        }
         // Directional: posOrDir = direction; point/spot: position.
         const pd =
           lt === 0
@@ -227,6 +275,7 @@ export function dispatchClusteredLighting(
     far,
     inverseProjection,
     viewMatrix,
+    areaLights,
   });
 
   // Slice 5d Batch 153 — Stash the dispatcher's GPU buffers on the
@@ -251,6 +300,9 @@ export function dispatchClusteredLighting(
     perClusterLightCount: d.perClusterLightCountBuffer,
     perClusterLightIndices: d.perClusterLightIndicesBuffer,
     params: d.paramsBuffer,
+    // C6-LTC-AREA-LIGHTS — area-light storage + lazily-built LUT.
+    areaLights: d.areaLightsBuffer,
+    ltcLUTView: d.ltcLUTView,
   };
   // Slice 5d Batch 154 — CPU-side "is clustered lighting contributing
   // this frame" flag. Consumers that have a cheap no-effects fast path
@@ -289,5 +341,7 @@ export function getClusteredLightingBuffers(
     perClusterLightCount: d.perClusterLightCountBuffer,
     perClusterLightIndices: d.perClusterLightIndicesBuffer,
     params: d.paramsBuffer,
+    areaLights: d.areaLightsBuffer,
+    ltcLUTView: d.ltcLUTView,
   };
 }

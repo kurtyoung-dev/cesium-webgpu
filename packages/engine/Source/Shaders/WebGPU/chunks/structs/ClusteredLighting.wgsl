@@ -91,10 +91,45 @@ struct ClusteredAABB {
 struct ClusteredParams {
   // .xy = viewport (width, height), .zw = (near, far)
   viewportAndPlanes: vec4<f32>,
-  // .x = lightCount (active lights this frame), .yzw = unused.
+  // .x = clustered punctual light count (Batch 149 gate).
+  // .y = LTC analytic area-light count (C6-LTC-AREA-LIGHTS gate — was
+  //      documented-unused; carries areaLightCount now). .zw = unused.
   // Kept here so consumers can early-out when no lights are active
-  // without reading perClusterLightCount.
+  // without reading perClusterLightCount / areaLights.
   activeLightCount: vec4<f32>,
+};
+
+// ── C6-LTC-AREA-LIGHTS: analytic area lights (LTC) ──
+//
+// Linearly-Transformed-Cosines rect/disk area lights, shaded with the
+// two 64x64 LUTs uploaded as a rgba16float texture_2d_array (layer 0 =
+// M^-1 terms, layer 1 = magnitude/Fresnel/horizon-sphere). WebGPU-only,
+// opt-in: `areaLights` is empty and activeLightCount.y = 0 by default,
+// so `evalLTCAreaLights` early-outs to vec3(0) and the whole path is a
+// single uniform compare when no area light exists.
+//
+// Method: Heitz, Dupuy, Hill, Neubelt — "Real-Time Polygonal-Light
+// Shading with Linearly Transformed Cosines", ACM TOG (Proc. SIGGRAPH
+// 2016) 35(4). LUTs + edge/cubic math derived from the authors'
+// reference implementation (github.com/selfshadow/ltc_code, permissive
+// BSD-style license — see fork LICENSE.md).
+
+const LTC_LUT_SIZE_F: f32 = 64.0;
+const LTC_LUT_SCALE: f32 = 63.0 / 64.0;
+const LTC_LUT_BIAS: f32 = 0.5 / 64.0;
+const LTC_MAX_AREA_LIGHTS: u32 = 8u;
+const LTC_TYPE_RECT: i32 = 3;
+const LTC_TYPE_DISK: i32 = 4;
+
+// Per-area-light record — must match LTCAreaLight packing in
+// WebGPUClusteredLightingDispatcher._packAreaLights (96 B / 6 vec4).
+struct LTCAreaLight {
+  centerEC: vec4<f32>,          // .xyz center (eye-space), .w = lightType
+  colorAndIntensity: vec4<f32>, // .rgb color, .w = intensity (radiance)
+  axisXEC: vec4<f32>,           // .xyz half-width vector (eye-space), .w = halfW
+  axisYEC: vec4<f32>,           // .xyz half-height vector, .w = halfH
+  paramsA: vec4<f32>,           // .x = twoSided, .y = cullRadius, .zw reserved
+  paramsB: vec4<f32>,           // reserved (textured-emitter follow-up)
 };
 
 // NOTE: the group index is the literal token `__CL_GROUP__`, substituted
@@ -111,6 +146,12 @@ struct ClusteredParams {
 @group(__CL_GROUP__) @binding(20) var<storage, read> perClusterLightCount: array<u32>;
 @group(__CL_GROUP__) @binding(21) var<storage, read> perClusterLightIndices: array<u32>;
 @group(__CL_GROUP__) @binding(22) var<uniform> clusterParams: ClusteredParams;
+// C6-LTC-AREA-LIGHTS — LUT array texture + area-light list. No dedicated
+// sampler: the Model PBR fragment stage is already at the 16-sampler
+// limit, so the LUT is read with `textureLoad` + manual bilinear
+// (ltcSampleLUT) — equivalent to a linear/clamp sampler, zero sampler cost.
+@group(__CL_GROUP__) @binding(23) var ltcLUT: texture_2d_array<f32>;
+@group(__CL_GROUP__) @binding(25) var<storage, read> areaLights: array<LTCAreaLight>;
 
 // Compute the cluster index for a fragment.
 //
@@ -298,4 +339,425 @@ fn evalClusteredLights(
     );
   }
   return sum;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// C6-LTC-AREA-LIGHTS — LTC evaluation helpers
+// ═══════════════════════════════════════════════════════════════════
+
+// Fitted rational-polynomial replacement for the analytic edge integral
+// (avoids acos). The 1/(2*pi) normalization is baked into the fit.
+fn ltcIntegrateEdgeVec(v1: vec3<f32>, v2: vec3<f32>) -> vec3<f32> {
+  let x = dot(v1, v2);
+  let y = abs(x);
+  let a = 0.8543985 + (0.4965155 + 0.0145206 * y) * y;
+  let b = 3.4175940 + (4.1616724 + y) * y;
+  let v = a / b;
+  var theta_sintheta: f32;
+  if (x > 0.0) {
+    theta_sintheta = v;
+  } else {
+    theta_sintheta = 0.5 * inverseSqrt(max(1.0 - x * x, 1e-7)) - v;
+  }
+  return cross(v1, v2) * theta_sintheta;
+}
+
+fn ltcIntegrateEdge(v1: vec3<f32>, v2: vec3<f32>) -> f32 {
+  return ltcIntegrateEdgeVec(v1, v2).z;
+}
+
+// Bilinear LUT fetch via textureLoad (no sampler). `uv` is the normalized
+// [0,1] texture coordinate already carrying the reference LUT_SCALE/BIAS
+// half-texel correction; this replicates a linear clamp-to-edge sampler:
+// texel-space = uv*64 - 0.5, then lerp the 4 neighbors.
+fn ltcSampleLUT(uv: vec2<f32>, layer: i32) -> vec4<f32> {
+  let px = uv * LTC_LUT_SIZE_F - vec2<f32>(0.5);
+  let ip = floor(px);
+  let f = px - ip;
+  let x0 = clamp(i32(ip.x), 0, 63);
+  let y0 = clamp(i32(ip.y), 0, 63);
+  let x1 = min(x0 + 1, 63);
+  let y1 = min(y0 + 1, 63);
+  let c00 = textureLoad(ltcLUT, vec2<i32>(x0, y0), layer, 0);
+  let c10 = textureLoad(ltcLUT, vec2<i32>(x1, y0), layer, 0);
+  let c01 = textureLoad(ltcLUT, vec2<i32>(x0, y1), layer, 0);
+  let c11 = textureLoad(ltcLUT, vec2<i32>(x1, y1), layer, 0);
+  let cx0 = mix(c00, c10, f.x);
+  let cx1 = mix(c01, c11, f.x);
+  return mix(cx0, cx1, f.y);
+}
+
+// Clip the quad to the upper hemisphere (z > 0). Returns the resulting
+// vertex count n ∈ {0,3,4,5}; L is rewritten in place. Direct port of
+// the reference 16-case config table.
+fn ltcClipQuadToHorizon(L: ptr<function, array<vec3<f32>, 5>>) -> u32 {
+  var config: i32 = 0;
+  if ((*L)[0].z > 0.0) { config += 1; }
+  if ((*L)[1].z > 0.0) { config += 2; }
+  if ((*L)[2].z > 0.0) { config += 4; }
+  if ((*L)[3].z > 0.0) { config += 8; }
+
+  var n: u32 = 0u;
+
+  if (config == 0) {
+    n = 0u;
+  } else if (config == 1) {
+    n = 3u;
+    (*L)[1] = -(*L)[1].z * (*L)[0] + (*L)[0].z * (*L)[1];
+    (*L)[2] = -(*L)[3].z * (*L)[0] + (*L)[0].z * (*L)[3];
+  } else if (config == 2) {
+    n = 3u;
+    (*L)[0] = -(*L)[0].z * (*L)[1] + (*L)[1].z * (*L)[0];
+    (*L)[2] = -(*L)[2].z * (*L)[1] + (*L)[1].z * (*L)[2];
+  } else if (config == 3) {
+    n = 4u;
+    (*L)[2] = -(*L)[2].z * (*L)[1] + (*L)[1].z * (*L)[2];
+    (*L)[3] = -(*L)[3].z * (*L)[0] + (*L)[0].z * (*L)[3];
+  } else if (config == 4) {
+    n = 3u;
+    (*L)[0] = -(*L)[3].z * (*L)[2] + (*L)[2].z * (*L)[3];
+    (*L)[1] = -(*L)[1].z * (*L)[2] + (*L)[2].z * (*L)[1];
+  } else if (config == 5) {
+    n = 0u;
+  } else if (config == 6) {
+    n = 4u;
+    (*L)[0] = -(*L)[0].z * (*L)[1] + (*L)[1].z * (*L)[0];
+    (*L)[3] = -(*L)[3].z * (*L)[2] + (*L)[2].z * (*L)[3];
+  } else if (config == 7) {
+    n = 5u;
+    (*L)[4] = -(*L)[3].z * (*L)[0] + (*L)[0].z * (*L)[3];
+    (*L)[3] = -(*L)[3].z * (*L)[2] + (*L)[2].z * (*L)[3];
+  } else if (config == 8) {
+    n = 3u;
+    (*L)[0] = -(*L)[0].z * (*L)[3] + (*L)[3].z * (*L)[0];
+    (*L)[1] = -(*L)[2].z * (*L)[3] + (*L)[3].z * (*L)[2];
+    (*L)[2] = (*L)[3];
+  } else if (config == 9) {
+    n = 4u;
+    (*L)[1] = -(*L)[1].z * (*L)[0] + (*L)[0].z * (*L)[1];
+    (*L)[2] = -(*L)[2].z * (*L)[3] + (*L)[3].z * (*L)[2];
+  } else if (config == 10) {
+    n = 0u;
+  } else if (config == 11) {
+    n = 5u;
+    (*L)[4] = (*L)[3];
+    (*L)[3] = -(*L)[2].z * (*L)[3] + (*L)[3].z * (*L)[2];
+    (*L)[2] = -(*L)[2].z * (*L)[1] + (*L)[1].z * (*L)[2];
+  } else if (config == 12) {
+    n = 4u;
+    (*L)[1] = -(*L)[1].z * (*L)[2] + (*L)[2].z * (*L)[1];
+    (*L)[0] = -(*L)[0].z * (*L)[3] + (*L)[3].z * (*L)[0];
+  } else if (config == 13) {
+    n = 5u;
+    (*L)[4] = (*L)[3];
+    (*L)[3] = (*L)[2];
+    (*L)[2] = -(*L)[1].z * (*L)[2] + (*L)[2].z * (*L)[1];
+    (*L)[1] = -(*L)[1].z * (*L)[0] + (*L)[0].z * (*L)[1];
+  } else if (config == 14) {
+    n = 5u;
+    (*L)[4] = -(*L)[0].z * (*L)[3] + (*L)[3].z * (*L)[0];
+    (*L)[0] = -(*L)[0].z * (*L)[1] + (*L)[1].z * (*L)[0];
+  } else if (config == 15) {
+    n = 4u;
+  }
+
+  if (n == 3u) { (*L)[3] = (*L)[0]; }
+  if (n == 4u) { (*L)[4] = (*L)[0]; }
+  return n;
+}
+
+// Rect area-light form factor via horizon-clipped polygon integration.
+fn ltcEvaluateRect(
+  N: vec3<f32>, V: vec3<f32>, P: vec3<f32>, MinvIn: mat3x3<f32>,
+  p0: vec3<f32>, p1: vec3<f32>, p2: vec3<f32>, p3: vec3<f32>,
+  twoSided: bool,
+) -> f32 {
+  let T1 = normalize(V - N * dot(V, N));
+  let T2 = cross(N, T1);
+  let Minv = MinvIn * transpose(mat3x3<f32>(T1, T2, N));
+
+  var L: array<vec3<f32>, 5>;
+  L[0] = Minv * (p0 - P);
+  L[1] = Minv * (p1 - P);
+  L[2] = Minv * (p2 - P);
+  L[3] = Minv * (p3 - P);
+  L[4] = vec3<f32>(0.0);
+
+  let n = ltcClipQuadToHorizon(&L);
+  if (n == 0u) {
+    return 0.0;
+  }
+  L[0] = normalize(L[0]);
+  L[1] = normalize(L[1]);
+  L[2] = normalize(L[2]);
+  L[3] = normalize(L[3]);
+  L[4] = normalize(L[4]);
+
+  var sum = ltcIntegrateEdge(L[0], L[1]);
+  sum += ltcIntegrateEdge(L[1], L[2]);
+  sum += ltcIntegrateEdge(L[2], L[3]);
+  if (n >= 4u) { sum += ltcIntegrateEdge(L[3], L[4]); }
+  if (n == 5u) { sum += ltcIntegrateEdge(L[4], L[0]); }
+
+  if (twoSided) {
+    return abs(sum);
+  }
+  return max(0.0, sum);
+}
+
+// Solve c3 x^3 + c2 x^2 + c1 x + c0 (coeff = vec4(c0,c1,c2,c3)) for the
+// three real roots. Port of the reference SolveCubic (extended
+// Blinn/Peters form). Note WGSL two-arg atan is atan2.
+fn ltcSolveCubic(coeffIn: vec4<f32>) -> vec3<f32> {
+  var Coefficient = coeffIn;
+  let cx = Coefficient.x;
+  let cy = Coefficient.y / 3.0 / Coefficient.w;
+  let cz = Coefficient.z / 3.0 / Coefficient.w;
+  let cw = 1.0;
+  Coefficient = vec4<f32>(cx / coeffIn.w, cy, cz, cw);
+
+  let B = Coefficient.z;
+  let C = Coefficient.y;
+  let D = Coefficient.x;
+
+  let Delta = vec3<f32>(
+    -Coefficient.z * Coefficient.z + Coefficient.y,
+    -Coefficient.y * Coefficient.z + Coefficient.x,
+    dot(vec2<f32>(Coefficient.z, -Coefficient.y), Coefficient.xy)
+  );
+
+  let Discriminant = dot(vec2<f32>(4.0 * Delta.x, -Delta.y), Delta.zy);
+
+  var xlc: vec2<f32>;
+  var xsc: vec2<f32>;
+
+  // Algorithm A
+  {
+    let A_a = 1.0;
+    let C_a = Delta.x;
+    let D_a = -2.0 * B * Delta.x + Delta.y;
+    let Theta = atan2(sqrt(max(Discriminant, 0.0)), -D_a) / 3.0;
+    let x_1a = 2.0 * sqrt(max(-C_a, 0.0)) * cos(Theta);
+    let x_3a = 2.0 * sqrt(max(-C_a, 0.0)) * cos(Theta + (2.0 / 3.0) * 3.14159265);
+    var xl: f32;
+    if ((x_1a + x_3a) > 2.0 * B) {
+      xl = x_1a;
+    } else {
+      xl = x_3a;
+    }
+    xlc = vec2<f32>(xl - B, A_a);
+  }
+
+  // Algorithm D
+  {
+    let A_d = D;
+    let C_d = Delta.z;
+    let D_d = -D * Delta.y + 2.0 * C * Delta.z;
+    let Theta = atan2(D * sqrt(max(Discriminant, 0.0)), -D_d) / 3.0;
+    let x_1d = 2.0 * sqrt(max(-C_d, 0.0)) * cos(Theta);
+    let x_3d = 2.0 * sqrt(max(-C_d, 0.0)) * cos(Theta + (2.0 / 3.0) * 3.14159265);
+    var xs: f32;
+    if (x_1d + x_3d < 2.0 * C) {
+      xs = x_1d;
+    } else {
+      xs = x_3d;
+    }
+    xsc = vec2<f32>(-D, xs + C);
+  }
+
+  let E = xlc.y * xsc.y;
+  let F = -xlc.x * xsc.y - xlc.y * xsc.x;
+  let G = xlc.x * xsc.x;
+
+  let xmc = vec2<f32>(C * F - B * G, -B * F + C * E);
+
+  var Root = vec3<f32>(xsc.x / xsc.y, xmc.x / xmc.y, xlc.x / xlc.y);
+
+  if (Root.x < Root.y && Root.x < Root.z) {
+    Root = Root.yxz;
+  } else if (Root.z < Root.x && Root.z < Root.y) {
+    Root = Root.xzy;
+  }
+  return Root;
+}
+
+// Disk (ellipse) area-light form factor. `points` = 3 corners of the
+// ellipse bounding rect (p0,p1,p2). Port of the reference disk
+// LTC_Evaluate (analytic path; ground-truth MC path omitted).
+fn ltcEvaluateDisk(
+  N: vec3<f32>, V: vec3<f32>, P: vec3<f32>, Minv: mat3x3<f32>,
+  p0: vec3<f32>, p1: vec3<f32>, p2: vec3<f32>,
+  twoSided: bool,
+) -> f32 {
+  let T1 = normalize(V - N * dot(V, N));
+  let T2 = cross(N, T1);
+  let R = transpose(mat3x3<f32>(T1, T2, N));
+
+  let l0 = R * (p0 - P);
+  let l1 = R * (p1 - P);
+  let l2 = R * (p2 - P);
+
+  var Cc = 0.5 * (l0 + l2);
+  var V1 = 0.5 * (l1 - l2);
+  var V2 = 0.5 * (l1 - l0);
+
+  Cc = Minv * Cc;
+  V1 = Minv * V1;
+  V2 = Minv * V2;
+
+  if (!twoSided && dot(cross(V1, V2), Cc) < 0.0) {
+    return 0.0;
+  }
+
+  var a: f32;
+  var b: f32;
+  let d11 = dot(V1, V1);
+  let d22 = dot(V2, V2);
+  let d12 = dot(V1, V2);
+  if (abs(d12) / sqrt(max(d11 * d22, 1e-12)) > 0.0001) {
+    let tr = d11 + d22;
+    var det = -d12 * d12 + d11 * d22;
+    det = sqrt(max(det, 0.0));
+    let u = 0.5 * sqrt(max(tr - 2.0 * det, 0.0));
+    let v = 0.5 * sqrt(max(tr + 2.0 * det, 0.0));
+    let e_max = (u + v) * (u + v);
+    let e_min = (u - v) * (u - v);
+    var V1_: vec3<f32>;
+    var V2_: vec3<f32>;
+    if (d11 > d22) {
+      V1_ = d12 * V1 + (e_max - d11) * V2;
+      V2_ = d12 * V1 + (e_min - d11) * V2;
+    } else {
+      V1_ = d12 * V2 + (e_max - d22) * V1;
+      V2_ = d12 * V2 + (e_min - d22) * V1;
+    }
+    a = 1.0 / e_max;
+    b = 1.0 / e_min;
+    V1 = normalize(V1_);
+    V2 = normalize(V2_);
+  } else {
+    a = 1.0 / dot(V1, V1);
+    b = 1.0 / dot(V2, V2);
+    V1 = V1 * sqrt(a);
+    V2 = V2 * sqrt(b);
+  }
+
+  var V3 = cross(V1, V2);
+  if (dot(Cc, V3) < 0.0) {
+    V3 = V3 * -1.0;
+  }
+
+  let Ldist = dot(V3, Cc);
+  let x0 = dot(V1, Cc) / Ldist;
+  let y0 = dot(V2, Cc) / Ldist;
+
+  a *= Ldist * Ldist;
+  b *= Ldist * Ldist;
+
+  let c0 = a * b;
+  let c1 = a * b * (1.0 + x0 * x0 + y0 * y0) - a - b;
+  let c2 = 1.0 - a * (1.0 + x0 * x0) - b * (1.0 + y0 * y0);
+  let c3 = 1.0;
+
+  let roots = ltcSolveCubic(vec4<f32>(c0, c1, c2, c3));
+  let e1 = roots.x;
+  let e2 = roots.y;
+  let e3 = roots.z;
+
+  var avgDir = vec3<f32>(a * x0 / (a - e2), b * y0 / (b - e2), 1.0);
+  let rotate = mat3x3<f32>(V1, V2, V3);
+  avgDir = rotate * avgDir;
+  avgDir = normalize(avgDir);
+
+  let L1 = sqrt(max(-e2 / e3, 0.0));
+  let L2 = sqrt(max(-e2 / e1, 0.0));
+
+  let formFactor = L1 * L2 * inverseSqrt((1.0 + L1 * L1) * (1.0 + L2 * L2));
+
+  var uv = vec2<f32>(avgDir.z * 0.5 + 0.5, formFactor);
+  uv = uv * LTC_LUT_SCALE + LTC_LUT_BIAS;
+  let scale = ltcSampleLUT(uv, 1).w;
+
+  return formFactor * scale;
+}
+
+// Iterate the active LTC area lights and accumulate their contribution.
+// Early-outs to vec3(0) when activeLightCount.y == 0 (default) — the
+// byte-identical opt-in gate. All inputs eye-space.
+fn evalLTCAreaLights(
+  posEC: vec3<f32>,
+  N: vec3<f32>,
+  V: vec3<f32>,
+  F0: vec3<f32>,
+  roughness: f32,
+  baseColor: vec3<f32>,
+) -> vec3<f32> {
+  let count = u32(clusterParams.activeLightCount.y + 0.5);
+  if (count == 0u) {
+    return vec3<f32>(0.0);
+  }
+
+  // LUT fetch is hoisted OUT of the per-light loop so it runs in uniform
+  // control flow. UV = (perceptualRoughness, sqrt(1 - NdotV)).
+  let ndotv = clamp(dot(N, V), 0.0, 1.0);
+  var uv = vec2<f32>(roughness, sqrt(1.0 - ndotv));
+  uv = uv * LTC_LUT_SCALE + LTC_LUT_BIAS;
+  let t1 = ltcSampleLUT(uv, 0);
+  let t2 = ltcSampleLUT(uv, 1);
+
+  let Minv = mat3x3<f32>(
+    vec3<f32>(t1.x, 0.0, t1.y),
+    vec3<f32>(0.0, 1.0, 0.0),
+    vec3<f32>(t1.z, 0.0, t1.w),
+  );
+  let identity = mat3x3<f32>(
+    vec3<f32>(1.0, 0.0, 0.0),
+    vec3<f32>(0.0, 1.0, 0.0),
+    vec3<f32>(0.0, 0.0, 1.0),
+  );
+  // Pre-integrated magnitude + average Schlick-Fresnel over the lobe.
+  let fresnel = F0 * t2.x + (vec3<f32>(1.0) - F0) * t2.y;
+  let kD = vec3<f32>(1.0) - fresnel;
+
+  var result = vec3<f32>(0.0);
+  let maxCount = min(count, LTC_MAX_AREA_LIGHTS);
+  for (var i: u32 = 0u; i < maxCount; i = i + 1u) {
+    let light = areaLights[i];
+    let center = light.centerEC.xyz;
+    let ltype = i32(light.centerEC.w + 0.5);
+    let axisX = light.axisXEC.xyz;
+    let axisY = light.axisYEC.xyz;
+    let twoSided = light.paramsA.x > 0.5;
+    let cullR = light.paramsA.y;
+    if (cullR > 0.0 && distance(posEC, center) > cullR) {
+      continue;
+    }
+
+    // Corner winding chosen so the polygon's geometric normal equals the
+    // packed emitter normal (+direction): a one-sided light emits toward
+    // the side it faces. axisX = right = cross(direction, up), axisY = up,
+    // and cross(right, up) = -direction, so we wind as (-x-y, -x+y, +x+y,
+    // +x-y) to flip the geometric normal back to +direction.
+    let corner0 = center - axisX - axisY;
+    let corner1 = center - axisX + axisY;
+    let corner2 = center + axisX + axisY;
+
+    var specSum: f32;
+    var diffSum: f32;
+    if (ltype == LTC_TYPE_DISK) {
+      specSum = ltcEvaluateDisk(N, V, posEC, Minv, corner0, corner1, corner2, twoSided);
+      diffSum = ltcEvaluateDisk(N, V, posEC, identity, corner0, corner1, corner2, twoSided);
+    } else {
+      let corner3 = center + axisX - axisY;
+      specSum = ltcEvaluateRect(N, V, posEC, Minv, corner0, corner1, corner2, corner3, twoSided);
+      diffSum = ltcEvaluateRect(N, V, posEC, identity, corner0, corner1, corner2, corner3, twoSided);
+    }
+
+    let spec = specSum * fresnel;
+    let diff = baseColor * diffSum * kD;
+    let radiance = light.colorAndIntensity.xyz * light.colorAndIntensity.w;
+    result = result + radiance * (spec + diff);
+  }
+
+  return result;
 }

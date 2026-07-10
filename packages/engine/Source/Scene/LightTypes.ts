@@ -52,6 +52,14 @@ const LightType = Object.freeze({
   POINT: 1,
   /** Cone-shaped light (e.g., flashlight). */
   SPOT: 2,
+  /**
+   * Rectangular analytic area light (LTC — WebGPU only, C6-LTC-AREA-LIGHTS).
+   * Add-only enum value; the legacy 8-light uniform {@link LightCollection#pack}
+   * skips area lights so the punctual path is untouched.
+   */
+  RECT_AREA: 3,
+  /** Elliptical/disk analytic area light (LTC — WebGPU only). */
+  DISK_AREA: 4,
 });
 
 export { LightType };
@@ -311,6 +319,163 @@ export class SpotLight extends Light {
 }
 
 // ═══════════════════════════════════════════════════════════
+// AREA LIGHTS (LTC — WebGPU only, C6-LTC-AREA-LIGHTS)
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * A rectangular analytic area light shaded with Linearly Transformed
+ * Cosines (Heitz et al., SIGGRAPH 2016). Emits from a finite rectangle —
+ * building windows, signage panels, softbox-style fills — with correct
+ * soft shadow-free falloff and NO shadow map.
+ *
+ * WebGPU-only enhancement (opt-in, default-off): a scene renders
+ * byte-identically until a `RectAreaLight` is added AND
+ * `scene.clusteredLightingEnabled` is true. On the WebGL backend area
+ * lights are ignored (documented no-op — see DEFERRED_WORK).
+ *
+ * The rectangle is centered at `position`, faces `direction` (its normal),
+ * with `up` giving the local +Y (height) axis; the +X (width) axis is
+ * `cross(direction, up)`. `width`/`height` are the full edge lengths in
+ * meters. `intensity` is emitter radiance (nits-like) — there is NO
+ * inverse-square attenuation; falloff emerges from the shrinking solid
+ * angle, matching the LTC radiometry.
+ *
+ * @example
+ * scene.clusteredLightingEnabled = true;
+ * scene.lights.add(new Cesium.RectAreaLight({
+ *   position: Cesium.Cartesian3.fromDegrees(-75.0, 40.0, 30.0),
+ *   direction: new Cesium.Cartesian3(0, 0, -1),
+ *   up: new Cesium.Cartesian3(0, 1, 0),
+ *   width: 8.0,
+ *   height: 4.0,
+ *   color: Cesium.Color.WHITE,
+ *   intensity: 4.0,
+ * }));
+ */
+export class RectAreaLight extends Light {
+  /** World-space center of the rectangle. */
+  position: CesiumCartesian3;
+  /** Emitter normal (the direction it faces). Normalized. */
+  direction: CesiumCartesian3;
+  /** Local up axis (height direction). Normalized. */
+  up: CesiumCartesian3;
+  /** Full width of the rectangle in meters (along cross(direction, up)). */
+  width: number;
+  /** Full height of the rectangle in meters (along up). */
+  height: number;
+  /**
+   * When true the rectangle emits from both faces; when false only the
+   * front face (points behind the emitter plane receive nothing).
+   * @default false
+   */
+  twoSided: boolean;
+  /**
+   * Cull radius in meters. Fragments farther than this from the emitter
+   * center are skipped (0 = never cull). Purely an optimization — does
+   * NOT attenuate intensity.
+   * @default 0.0
+   */
+  range: number;
+
+  constructor(options?: {
+    position?: CesiumCartesian3;
+    direction?: CesiumCartesian3;
+    up?: CesiumCartesian3;
+    width?: number;
+    height?: number;
+    twoSided?: boolean;
+    range?: number;
+    color?: CesiumColor;
+    intensity?: number;
+    enabled?: boolean;
+  }) {
+    const opts = options ?? {};
+    super({
+      color: opts.color,
+      intensity: opts.intensity,
+      enabled: opts.enabled,
+      lightType: LightType.RECT_AREA,
+    });
+    this.position = Cartesian3.clone(opts.position ?? Cartesian3.ZERO);
+    this.direction = Cartesian3.clone(
+      opts.direction ?? new Cartesian3(0.0, 0.0, -1.0),
+    );
+    Cartesian3.normalize(this.direction, this.direction);
+    this.up = Cartesian3.clone(opts.up ?? new Cartesian3(0.0, 1.0, 0.0));
+    Cartesian3.normalize(this.up, this.up);
+    this.width = Math.max(opts.width ?? 1.0, 1e-3);
+    this.height = Math.max(opts.height ?? 1.0, 1e-3);
+    this.twoSided = opts.twoSided ?? false;
+    this.range = opts.range ?? 0.0;
+  }
+}
+
+/**
+ * An elliptical (disk) analytic area light shaded with Linearly
+ * Transformed Cosines. Same radiometry and opt-in/default-off semantics
+ * as {@link RectAreaLight}; the emitter is an ellipse of radii
+ * `radiusX` (along cross(direction, up)) and `radiusY` (along up).
+ * A circular disk uses `radiusX === radiusY`.
+ *
+ * @example
+ * scene.lights.add(new Cesium.DiskAreaLight({
+ *   position: Cesium.Cartesian3.fromDegrees(-75.0, 40.0, 20.0),
+ *   direction: new Cesium.Cartesian3(0, 0, -1),
+ *   radiusX: 3.0,
+ *   radiusY: 3.0,
+ *   intensity: 6.0,
+ * }));
+ */
+export class DiskAreaLight extends Light {
+  /** World-space center of the disk. */
+  position: CesiumCartesian3;
+  /** Emitter normal (the direction it faces). Normalized. */
+  direction: CesiumCartesian3;
+  /** Local up axis (radiusY direction). Normalized. */
+  up: CesiumCartesian3;
+  /** Ellipse radius in meters along cross(direction, up). */
+  radiusX: number;
+  /** Ellipse radius in meters along up. */
+  radiusY: number;
+  /** @default false */
+  twoSided: boolean;
+  /** Cull radius in meters (0 = never cull). Optimization only. @default 0.0 */
+  range: number;
+
+  constructor(options?: {
+    position?: CesiumCartesian3;
+    direction?: CesiumCartesian3;
+    up?: CesiumCartesian3;
+    radiusX?: number;
+    radiusY?: number;
+    twoSided?: boolean;
+    range?: number;
+    color?: CesiumColor;
+    intensity?: number;
+    enabled?: boolean;
+  }) {
+    const opts = options ?? {};
+    super({
+      color: opts.color,
+      intensity: opts.intensity,
+      enabled: opts.enabled,
+      lightType: LightType.DISK_AREA,
+    });
+    this.position = Cartesian3.clone(opts.position ?? Cartesian3.ZERO);
+    this.direction = Cartesian3.clone(
+      opts.direction ?? new Cartesian3(0.0, 0.0, -1.0),
+    );
+    Cartesian3.normalize(this.direction, this.direction);
+    this.up = Cartesian3.clone(opts.up ?? new Cartesian3(0.0, 1.0, 0.0));
+    Cartesian3.normalize(this.up, this.up);
+    this.radiusX = Math.max(opts.radiusX ?? 1.0, 1e-3);
+    this.radiusY = Math.max(opts.radiusY ?? 1.0, 1e-3);
+    this.twoSided = opts.twoSided ?? false;
+    this.range = opts.range ?? 0.0;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // LIGHT COLLECTION
 // ═══════════════════════════════════════════════════════════
 
@@ -452,6 +617,13 @@ export class LightCollection {
     for (let i = 0; i < this._lights.length && enabledIndex < MAX_LIGHTS; i++) {
       const light = this._lights[i];
       if (!light.enabled) {
+        continue;
+      }
+      // Area lights (RECT_AREA/DISK_AREA) are shaded analytically via the
+      // separate LTC area-light path (WebGPU clustered dispatcher), NOT
+      // this legacy punctual uniform buffer. Skip them so the punctual
+      // path stays byte-identical.
+      if (light instanceof RectAreaLight || light instanceof DiskAreaLight) {
         continue;
       }
 
