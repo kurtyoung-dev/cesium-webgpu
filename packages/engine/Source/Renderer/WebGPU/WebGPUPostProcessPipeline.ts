@@ -88,6 +88,7 @@ import {
   type DepthOfFieldConfig,
 } from "./WebGPUPostProcessEffects.js";
 import { WebGPUTAAEffect } from "./WebGPUTAAEffect.js";
+import { WebGPUMotionBlurEffect } from "./WebGPUMotionBlurEffect.js";
 import { WebGPUUserPostProcessStage } from "./WebGPUUserPostProcessStage.js";
 // WIRE-PP-LIBRARY-BUILTINS — named PostProcessStageLibrary built-ins
 // (BlackAndWhite, Brightness, NightVision, Silhouette, EdgeDetection,
@@ -300,6 +301,12 @@ export class WebGPUPostProcessPipeline {
   private _aoEffect: AmbientOcclusionEffect | null = null;
   private _dofEffect: DepthOfFieldEffect | null = null;
   private _taaEffect: WebGPUTAAEffect | null = null;
+  // C6-VELOCITY-MOTION-BLUR — velocity-buffer motion blur (WebGPU-only,
+  // opt-in via `scene.motionBlur`, default off). Runs AFTER TAA (blurs the
+  // resolved color) but BEFORE tonemap, reusing the same MRT velocity view +
+  // depth + current/previous VP-RTE that TAA consumes. Sized/formatted
+  // against `_intermediateFormat`, so the recreate-reset block drops it.
+  private _motionBlurEffect: WebGPUMotionBlurEffect | null = null;
   // NEW-POSTPROCESS-USER-WGSL (Batch 198) — first slice. User-supplied
   // WGSL fragment-shader stages added via `Scene.postProcessStages.add()`.
   // Run as a chain AFTER built-in stages but BEFORE tonemapping/FXAA
@@ -369,6 +376,7 @@ export class WebGPUPostProcessPipeline {
     if (this._colorGradingStage?.enabled) return true;
     if (this._fxaaStage?.enabled) return true;
     if (this._taaEffect?.enabled) return true;
+    if (this._motionBlurEffect?.enabled) return true;
     if (this._bloomEffect?.enabled) return true;
     if (this._aoEffect?.enabled) return true;
     if (this._dofEffect?.enabled) return true;
@@ -515,6 +523,12 @@ export class WebGPUPostProcessPipeline {
     // sticky cache flag.
     this._taaEffect?.destroy();
     this._taaEffect = null;
+    // C6-VELOCITY-MOTION-BLUR — output texture is sized + formatted against
+    // `_intermediateFormat`, so a resize / HDR toggle must drop it too. The
+    // configure pass lazily re-adds it on the same frame (gate checks the
+    // live slot).
+    this._motionBlurEffect?.destroy();
+    this._motionBlurEffect = null;
 
     // When HDR is on, intermediate textures use rgba16float so the full
     // dynamic range from the scene framebuffer survives through bloom,
@@ -891,6 +905,38 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
 
   get taaEffect(): WebGPUTAAEffect | null {
     return this._taaEffect;
+  }
+
+  // ================================================================
+  //  Built-in stages: Motion Blur (C6-VELOCITY-MOTION-BLUR)
+  // ================================================================
+
+  /**
+   * Add velocity-buffer motion blur. WebGPU-only, opt-in via
+   * `scene.motionBlur` (default off). Runs in the linear/HDR domain AFTER
+   * TAA and BEFORE tonemap. Lazily added by the configure pass on the first
+   * `scene.motionBlur` frame (mirrors the TAA lazy-add), so this method is
+   * internally idempotent and re-adds transparently after any pipeline
+   * recreate that nulls the slot.
+   */
+  addMotionBlur(device: GPUDevice, canvasFormat: GPUTextureFormat): void {
+    if (this._motionBlurEffect) {
+      return;
+    }
+    this._motionBlurEffect = new WebGPUMotionBlurEffect();
+    // Intermediate format (rgba16float in HDR) — same
+    // NEW-POSTPROCESS-HDR-INTERMEDIATES rule as TAA: the effect runs
+    // pre-tonemap, so an 8-bit output would clamp HDR highlights.
+    this._motionBlurEffect.initialize(
+      device,
+      this._width,
+      this._height,
+      this._intermediateFormat || canvasFormat,
+    );
+  }
+
+  get motionBlurEffect(): WebGPUMotionBlurEffect | null {
+    return this._motionBlurEffect;
   }
 
   // ================================================================
@@ -1502,6 +1548,23 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       );
     }
 
+    // 3.9 Motion Blur (C6-VELOCITY-MOTION-BLUR) — velocity-buffer motion
+    // blur. Runs AFTER TAA so it smears the temporally-resolved color, and
+    // BEFORE tonemap (linear/HDR domain) so the depth texture's projection
+    // stays consistent with the effect's unproject. Needs depth; when depth
+    // is null or the effect is inert (`intensity <= 0`) the effect passes
+    // `currentView` through unchanged (no pass recorded). Reuses the same
+    // `motionView` MRT velocity that TAA consumes.
+    if (this._motionBlurEffect?.enabled && depth) {
+      currentView = this._motionBlurEffect.execute(
+        encoder,
+        currentView,
+        depth,
+        this._sampler!,
+        motionView ?? null,
+      );
+    }
+
     // 4. Tonemapping → user/library stages → ColorGrading + Custom + FXAA.
     //
     // NEW-PP-LIBRARY-TONEMAP-ORDER — the tail order matches WebGL's
@@ -1651,6 +1714,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._heatShimmerEffect?.resize(width, height);
     this._coldOpticsEffect?.resize(width, height);
     this._aerialPerspectiveEffect?.resize(width, height);
+    this._motionBlurEffect?.resize(width, height);
     // WIRE-PP-LIBRARY-BUILTINS — intercepted library built-ins own their
     // output (and silhouette-edge) intermediates; realloc on resize.
     for (const stage of this._libraryStages) {
@@ -1691,6 +1755,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       this._fxaaStage.enabled = enabled;
     } else if (name === "TAA" && this._taaEffect) {
       this._taaEffect.enabled = enabled;
+    } else if (name === "MotionBlur" && this._motionBlurEffect) {
+      this._motionBlurEffect.enabled = enabled;
     } else if (name === "Bloom" && this._bloomEffect) {
       this._bloomEffect.enabled = enabled;
     } else if (name === "AmbientOcclusion" && this._aoEffect) {
@@ -1988,6 +2054,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // leak was unreachable). History textures + params UBO are real
     // GPU allocations; drop them with the rest.
     this._taaEffect?.destroy();
+    this._motionBlurEffect?.destroy();
     // WIRE-PP-LIBRARY-BUILTINS — library-stage intermediates + UBOs.
     this.clearLibraryStages();
     this._bloomEffect = null;
@@ -1999,6 +2066,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     this._aerialPerspectiveEffect = null;
     this._autoExposure = null;
     this._taaEffect = null;
+    this._motionBlurEffect = null;
 
     this._tonemapStage = null;
     this._fxaaStage = null;

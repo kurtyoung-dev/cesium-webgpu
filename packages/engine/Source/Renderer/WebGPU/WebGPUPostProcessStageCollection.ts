@@ -471,6 +471,21 @@ function configureWebGPUPostProcessPipeline(
     taaFx.resetHistory();
   }
   pipeline.setStageEnabled("TAA", taaEnabled);
+
+  // --- Motion Blur (C6-VELOCITY-MOTION-BLUR; controlled by scene.motionBlur) ---
+  // WebGPU-only velocity-buffer motion blur. Lazily added on the first
+  // `scene.motionBlur` frame, mirroring the TAA lazy-add above. The gate
+  // checks the LIVE `pipeline.motionBlurEffect` slot (addMotionBlur is
+  // internally idempotent) so it re-adds transparently after any pipeline
+  // recreate (HDR toggle, resize, device loss) that nulls the slot. Default
+  // off → byte-identical: the effect is never instantiated and never runs.
+  const motionBlurEnabled =
+    (scene as unknown as { motionBlur?: boolean })?.motionBlur === true;
+  if (motionBlurEnabled && !pipeline.motionBlurEffect) {
+    pipeline.addMotionBlur(device, canvasFormat);
+  }
+  pipeline.setStageEnabled("MotionBlur", motionBlurEnabled);
+
   // When TAA is active, disable FXAA (TAA provides superior AA).
   const fxaaEnabled = taaEnabled ? false : cache.fxaaEnabled;
 

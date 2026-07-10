@@ -1157,6 +1157,21 @@ class Scene {
     this.taaEnabled = options.taaEnabled ?? false;
 
     /**
+     * C6-VELOCITY-MOTION-BLUR — when true (WebGPU only), a velocity-buffer
+     * motion-blur post-process smears fast-moving content along its
+     * screen-space velocity. Velocity is derived from the same data TAA
+     * consumes: the per-pixel model MRT velocity (object motion) and camera
+     * reprojection from depth (whole-scene camera motion). Best for fast
+     * camera pans / fly-to and CZML/animation playback. Opt-in, default off →
+     * byte-identical when off (the effect is never instantiated). No effect
+     * on WebGL.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.motionBlur = options.motionBlur ?? false;
+
+    /**
      * Track V-A2 (NEW-ATMO-AERIAL-PERSPECTIVE-POSTPROCESS) — when true (WebGPU
      * only), a unified per-pixel aerial-perspective atmosphere post-process
      * applies one depth-correct haze (transmittance extinction + inscatter)
@@ -5640,6 +5655,45 @@ function render(scene) {
         deltaY,
         deltaZ,
         frameState.frameNumber > 1 && !isTeleport && !historyInvalid,
+      );
+    }
+  }
+
+  // C6-VELOCITY-MOTION-BLUR — feed the motion blur effect the same
+  // motion-vector state TAA uses, but INDEPENDENTLY of `scene.taaEnabled`
+  // (motion blur must work with TAA off). Gated on `scene.motionBlur` so the
+  // default-off path touches nothing. Only the WebGPU SCENE_RENDERER FR owns
+  // an `_alternateSceneRenderer._postProcess` pipeline with the effect slot;
+  // on WebGL the optional chain short-circuits and nothing runs.
+  if (scene.motionBlur === true) {
+    const mbPipeline = scene._alternateSceneRenderer?._postProcess;
+    const mb = mbPipeline?.motionBlurEffect;
+    if (mb) {
+      const us = context.uniformState;
+      const currentVpRte = us.viewProjectionRelativeToEye;
+      const previousVpRte = us.previousViewProjectionRelativeToEye;
+      const currCam = us.cameraPosition;
+      const prevCam = us.previousCameraPosition;
+      // FP64 subtraction — 6.37M-magnitude positions cancel cleanly; the
+      // per-frame-small delta down-casts to FP32 without meaningful loss.
+      const mbDeltaX = currCam.x - prevCam.x;
+      const mbDeltaY = currCam.y - prevCam.y;
+      const mbDeltaZ = currCam.z - prevCam.z;
+      // Same teleport gate as TAA (flyTo landing / viewer reset): a single-
+      // frame jump of 10s of km makes reprojection meaningless, so mark the
+      // velocity invalid for that frame (the shader then produces no smear).
+      const mbDeltaLenSq =
+        mbDeltaX * mbDeltaX + mbDeltaY * mbDeltaY + mbDeltaZ * mbDeltaZ;
+      const MB_TELEPORT_THRESHOLD = 50000.0; // meters
+      const mbIsTeleport =
+        mbDeltaLenSq > MB_TELEPORT_THRESHOLD * MB_TELEPORT_THRESHOLD;
+      mb.updateMotionVectorParams(
+        currentVpRte,
+        previousVpRte,
+        mbDeltaX,
+        mbDeltaY,
+        mbDeltaZ,
+        frameState.frameNumber > 1 && !mbIsTeleport,
       );
     }
   }
