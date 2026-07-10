@@ -304,12 +304,15 @@ The renderer-wide log-depth epic is **complete** (Batch 251 flip + producer swee
     through the existing `_scenePipelineFormatGeneration` gate (bumped on `msaaChanged` in
     `WebGPUSceneRenderer` ~L1180). `probe-vector3dtile-vctr.mjs` msaa=4 frame flipped from the
     known-gap attachment-state signature to a clean parity gate (0 device errors, IoU 0.904 vs WebGL).
-  - **`NEW-VECTOR3DTILE-CLASSIFY-CONTAINMENT` (P2):** the depth-sample classifier `fsMain` only
-    discards `surfaceDepth == 0.0` — no volume-containment test — so the classified footprint is the
-    volume's PROJECTED screen extent, inflated `h/(h-1000)` at nadir height h vs WebGL's exact
-    stencil volume∩surface (1.53x linear at 3 km, ~1.05x at 20 km). Also observed (unquantified):
-    with the polygon-classifier tileset loaded the WebGPU globe surface renders near-black instead
-    of the imagery color (possible interaction with the below-surface-darkening epic B2/B5/B6).
+  - **`NEW-VECTOR3DTILE-CLASSIFY-CONTAINMENT` — ✅ SHIPPED (Q15R, 2026-07-04; reconciled 2026-07-09
+    Campaign-7 batch 0).** Replaced the projected-extent approximation with a WebGL-parity **stencil
+    Z-fail** classifier (per-batch mark + tested color draw in one render pass). Probe
+    `probe-vector3dtile-vctr.mjs`: FAR (20 km) IoU **1.000**, NEAR (3 km) IoU **0.932** at both
+    msaa=4 and msaa=1. Full implementation detail lives under the canonical
+    `NEW-VECTOR3DTILE-CLASSIFY-CONTAINMENT` entry in `DEFERRED_WORK.md` (SHIPPED). The prior `(P2)`
+    open framing (projected-extent inflation `h/(h-1000)`; near-black globe under the classifier
+    tileset) is superseded — the stencil path compares per-fragment volume vs globe depth in
+    hardware and the group(0)-only mark/color pipelines no longer sample `_globeDepthView`.
 - **`NEW-MODEL3DTILECONTENT-DOUBLE-CONVERSION`** — Model3DTileContent class-converted on both fork and
   upstream; needs a double-conversion reconciliation strategy at merge time. **P2** (merge bookkeeping).
 - **EquirectangularPanorama cull-override** (from `WEBGPU_PARITY_AUDIT`) — ✅ **RESOLVED (Batch 317,
@@ -1318,8 +1321,11 @@ Items 1-7 of the Takram research track shipped (Track V + Campaign 3). **Open:**
 
 - **`NEW-SUN-MOON-FIDELITY`** (item 8) — physical sun disc + limb darkening + atmosphere-coupled glow +
   geometry lens-glare; moon phase-correct PBR regolith + earthshine. **P2.**
-- **`NEW-EFFECTS-LIGHTSHAFTS-LENSGLARE`** (item 9) — crepuscular rays (extend `WebGPUGodRayEffect` to
-  atmosphere/cloud-aware) + geometry lens glare. **P2.** _Partial: god-rays exist._
+- **`NEW-EFFECTS-LIGHTSHAFTS-LENSGLARE`** (item 9) — ✅ **CLOSED (reconciled 2026-07-09, Campaign-7
+  batch 0).** Both halves shipped: geometry sun lens-glare is at WebGL parity (Batch 580,
+  C4-TAKRAM8-GEOMETRY-LENS-GLARE — premise verified stale, regression probe added) and cloud-aware
+  crepuscular rays landed (Batch 581, C4-TAKRAM9-CLOUD-AWARE-GODRAY — cloud pixels no longer leak
+  bright color into god-ray shafts). The earlier "Partial: god-rays exist" note is superseded.
 - **`NEW-MULTIBODY-ATMOSPHERE`** (item 10) — Mars (thin CO₂/dust Rayleigh/Mie/ozone + ground albedo) +
   airless-body parameter sets on the same LUT pipeline; a `CelestialBodyAtmosphere` config. **P2.**
 - **`NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK`** — WebGL keeps cubemap-only stars; the bright-star catalog
