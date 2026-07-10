@@ -22,6 +22,7 @@ import AtmosphereCommon from "../Shaders/AtmosphereCommon.js";
 import GroundAtmosphere from "../Shaders/GroundAtmosphere.js";
 import CloudCollection from "./CloudCollection.js";
 import GlobeSurfaceShaderSet from "./GlobeSurfaceShaderSet.js";
+import LakeWaterClassificationProvider from "./WaterClassificationProvider.js";
 import GlobeSurfaceTileProvider from "./GlobeSurfaceTileProvider.js";
 import GlobeTranslucency from "./GlobeTranslucency.js";
 import ImageryLayerCollection from "./ImageryLayerCollection.js";
@@ -340,6 +341,14 @@ class Globe {
      */
     this.showWaterEffect = true;
 
+    // C7-LAKE-WATER-MASK — WaterClassificationProvider Phase-1 seam.
+    // Opt-in (see the `lakeWaterMask` accessor); the provider is fetched
+    // lazily on first enable so the default-off path never loads the
+    // bundled Natural Earth lake dataset.
+    this._lakeWaterMask = false;
+    this._lakeWaterClassificationProvider = undefined;
+    this._lakeWaterMaskLoadPending = false;
+
     // ═══════════════════════════════════════════════════════════════
     // Enhanced rendering configuration (WebGPU)
     // These properties are opt-in and only take effect in the WebGPU
@@ -630,6 +639,61 @@ class Globe {
   set oceanNormalMapUrl(value) {
     this._oceanNormalMapResource.url = value;
     this._oceanNormalMapResourceDirty = true;
+  }
+
+  /**
+   * When true, the terrain provider's per-tile water mask is augmented
+   * with Natural Earth 1:10m lake polygons (public domain), so large
+   * inland lakes (the Great Lakes, Baikal, Victoria, …) receive the
+   * animated water effect that ocean-only provider masks deny them.
+   * Only takes effect when the terrain provider supplies a water mask
+   * (e.g. Cesium World Terrain with <code>requestWaterMask: true</code>)
+   * and {@link Globe#showWaterEffect} is enabled. The bundled lake
+   * dataset (~900 KiB) is fetched lazily on first enable.
+   *
+   * @type {boolean}
+   * @default false
+   */
+  get lakeWaterMask() {
+    return this._lakeWaterMask;
+  }
+
+  set lakeWaterMask(value) {
+    value = value === true;
+    if (value === this._lakeWaterMask) {
+      return;
+    }
+    this._lakeWaterMask = value;
+    if (
+      value &&
+      !defined(this._lakeWaterClassificationProvider) &&
+      !this._lakeWaterMaskLoadPending
+    ) {
+      this._lakeWaterMaskLoadPending = true;
+      const that = this;
+      Resource.fetchArrayBuffer(
+        buildModuleUrl("Assets/WaterMask/ne10mLakes.bin"),
+      )
+        .then(function (buffer) {
+          that._lakeWaterClassificationProvider =
+            new LakeWaterClassificationProvider(buffer);
+          that._lakeWaterMaskLoadPending = false;
+          // Tiles that loaded while the dataset was in flight already
+          // created their water-mask textures; reload so lake tiles pick
+          // up the augmented mask.
+          if (that._lakeWaterMask) {
+            that._surface.invalidateAllTiles();
+          }
+        })
+        .catch(function (error) {
+          that._lakeWaterMaskLoadPending = false;
+          console.error(
+            `[CesiumJS] Globe.lakeWaterMask: failed to load the bundled lake dataset: ${error}`,
+          );
+        });
+    }
+    // Rebuild tiles so toggling takes effect on already-loaded tiles.
+    this._surface.invalidateAllTiles();
   }
 
   /**
@@ -1099,6 +1163,12 @@ class Globe {
           : 0.0;
       tileProvider.hasWaterMask = hasWaterMask;
       tileProvider.showWaterEffect = this.showWaterEffect;
+      // C7-LAKE-WATER-MASK — mirror the loaded lake provider only while
+      // the opt-in flag is on; undefined keeps the default-off water-mask
+      // upload path byte-identical.
+      tileProvider.waterClassificationProvider = this._lakeWaterMask
+        ? this._lakeWaterClassificationProvider
+        : undefined;
       tileProvider.oceanNormalMap = this._oceanNormalMap;
       tileProvider.enableLighting = this.enableLighting;
       tileProvider.dynamicAtmosphereLighting = this.dynamicAtmosphereLighting;

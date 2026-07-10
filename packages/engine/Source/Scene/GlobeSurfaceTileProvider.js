@@ -70,6 +70,12 @@ class GlobeSurfaceTileProvider {
     this.lightingFadeInDistance = 9000000.0;
     this.hasWaterMask = false;
     this.showWaterEffect = false;
+    // C7-LAKE-WATER-MASK — the WaterClassificationProvider Phase-1 seam.
+    // Mirrored from Globe each frame when `globe.lakeWaterMask` is on
+    // (undefined otherwise); consumed by GlobeSurfaceTile's shared
+    // water-mask upload point to OR lake coverage over the terrain
+    // provider's ocean-only mask. See Scene/WaterClassificationProvider.ts.
+    this.waterClassificationProvider = undefined;
     this.oceanNormalMap = undefined;
     this.zoomedOutOceanSpecularIntensity = 0.5;
     this.enableLighting = false;

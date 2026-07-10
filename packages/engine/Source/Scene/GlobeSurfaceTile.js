@@ -664,7 +664,20 @@ function processTerrainStateMachine(
   ) {
     const terrainData = surfaceTile.terrainData;
     if (terrainData.waterMask !== undefined) {
-      createWaterMaskTextureIfNeeded(frameState.context, surfaceTile);
+      // C7-LAKE-WATER-MASK — the WaterClassificationProvider Phase-1 seam.
+      // When `globe.lakeWaterMask` is on, the tile provider mirrors the
+      // loaded provider here (undefined otherwise — the default-off path
+      // is byte-identical). This is the single shared upload point both
+      // backends consume (Batch 512), so augmenting the mask BYTES here
+      // keeps WebGL/WebGPU texel-identical by construction.
+      const waterClassificationProvider =
+        quadtree?.tileProvider?.waterClassificationProvider;
+      createWaterMaskTextureIfNeeded(
+        frameState.context,
+        surfaceTile,
+        tile.rectangle,
+        waterClassificationProvider,
+      );
     } else {
       const sourceTile = surfaceTile._findAncestorTileWithTerrainData(tile);
       if (defined(sourceTile) && defined(sourceTile?.data?.waterMaskTexture)) {
@@ -920,8 +933,37 @@ function getContextWaterMaskData(context) {
   return data;
 }
 
-function createWaterMaskTextureIfNeeded(context, surfaceTile) {
-  const waterMask = surfaceTile.terrainData.waterMask;
+function createWaterMaskTextureIfNeeded(
+  context,
+  surfaceTile,
+  tileRectangle,
+  waterClassificationProvider,
+) {
+  let waterMask = surfaceTile.terrainData.waterMask;
+
+  // C7-LAKE-WATER-MASK — OR-composite the opt-in supplementary lake mask
+  // over the terrain provider's (ocean-only) mask. Operates on a COPY of
+  // the mask bytes (never mutates terrainData.waterMask — it may be
+  // shared with upsampled descendants), expanding the 1-byte all-land
+  // fast path to 256×256 only when a lake actually rasterizes into the
+  // tile. ImageBitmap-shaped masks (non-quantized-mesh providers) are a
+  // documented Phase-1 limitation and pass through un-augmented.
+  if (
+    defined(waterClassificationProvider) &&
+    waterClassificationProvider.ready &&
+    defined(tileRectangle) &&
+    !(waterMask instanceof ImageBitmap) &&
+    waterClassificationProvider.intersectsRectangle(tileRectangle)
+  ) {
+    const augmented = waterClassificationProvider.augmentWaterMask(
+      waterMask,
+      tileRectangle,
+    );
+    if (defined(augmented)) {
+      waterMask = augmented;
+    }
+  }
+
   const waterMaskData = getContextWaterMaskData(context);
   let texture;
 
