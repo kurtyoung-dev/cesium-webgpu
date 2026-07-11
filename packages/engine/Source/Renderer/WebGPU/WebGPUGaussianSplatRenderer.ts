@@ -1434,6 +1434,24 @@ function updateWebGPUGaussianSplats(
     getOrCreateSharedAdvancedEffectsBG(frameState) ??
     getPlaceholderEffects(device).bindGroup;
 
+  // C7-SPLAT-DEPTH-COMPOSE — WebGL parity: `GaussianSplatPrimitive.js` builds
+  // its DrawCommand with `boundingVolume: tileset.boundingSphere` and
+  // `modelMatrix: rootTransform` (GaussianSplatPrimitive.js:2140-2148). Those
+  // fields drive per-frustum binning (`View.createPotentiallyVisibleSet`) and
+  // the splat back-to-front sorter (`_backToFrontSplatsComparator` reads
+  // `boundingVolume.center`). Without them a multi-frustum real-tileset splat
+  // command is binned into every frustum band and never depth-sorted against
+  // its neighbours. Both refresh every frame (the tileset bounding sphere
+  // grows as tiles stream in). Synthetic FR-driven primitives without a
+  // tileset (probes) leave `boundingVolume` undefined — null-safe: the sorter
+  // short-circuits on missing centers and single-frustum binning is unaffected.
+  const parityFields = primitive as unknown as {
+    _tileset?: { boundingSphere?: CesiumBoundingSphere };
+    _rootTransform?: Matrix4;
+  };
+  const commandBoundingVolume = parityFields._tileset?.boundingSphere;
+  const commandModelMatrix = parityFields._rootTransform ?? mm;
+
   if (!cache.command) {
     const cmd = new WebGPUDrawCommand({
       pipeline: cache.pipeline,
@@ -1444,6 +1462,8 @@ function updateWebGPUGaussianSplats(
       vertexCount: 6,
       instanceCount: cache.splatCount,
       pass: Pass.GAUSSIAN_SPLATS,
+      boundingVolume: commandBoundingVolume,
+      modelMatrix: commandModelMatrix,
       owner:
         primitive as unknown as import("./WebGPUDrawCommand.js").WebGPUCommandOwner,
       // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — depth-write variant
@@ -1473,6 +1493,10 @@ function updateWebGPUGaussianSplats(
       cache.bindGroup,
       effectsBG,
     ];
+    // C7-SPLAT-DEPTH-COMPOSE — refresh the WebGL-parity binning/sort fields on
+    // the cached command (the tileset bounding sphere changes as tiles stream).
+    cache.command.boundingVolume = commandBoundingVolume;
+    cache.command.modelMatrix = commandModelMatrix;
   }
   if (
     cache.command &&

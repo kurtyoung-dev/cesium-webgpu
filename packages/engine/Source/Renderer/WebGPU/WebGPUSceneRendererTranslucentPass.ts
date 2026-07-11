@@ -30,6 +30,7 @@ import type { WebGPUOIT } from "./WebGPUOIT.js";
 import {
   executeBatch,
   sortCommandsBackToFront,
+  sortGaussianSplatsBackToFront,
   type WebGPURenderFrameConfig,
 } from "./WebGPUSceneRenderer.js";
 
@@ -69,7 +70,26 @@ export function executeTranslucentPass(
   const { scene, context, passState } = config;
   let commands = frustumCommands.commands[Pass.TRANSLUCENT];
   let count: number = frustumCommands.indices[Pass.TRANSLUCENT];
-  if (count === 0) {
+
+  // C7-SPLAT-DEPTH-COMPOSE — never-drop seatbelt for deferred GS-WSR splats.
+  // Only relevant when the opt-in `_splatOITDeferral` flag is armed (default
+  // off = splats already drew inline in pass 11). Pre-fix, the `count === 0`
+  // early return below dropped `_deferredOITSplats` silently whenever the
+  // frame had zero TRANSLUCENT commands (the common bare-globe + splat scene),
+  // so the deferred splat never rendered. Flushing them inline preserves
+  // WebGL-parity semantics: back-to-front sorted, scene-pass depth test,
+  // executed in GAUSSIAN_SPLATS-before-TRANSLUCENT order.
+  const executeDeferredSplatsInline = (): void => {
+    const deferred = host._deferredOITSplats;
+    if (!deferred) {
+      return;
+    }
+    host._deferredOITSplats = null;
+    sortGaussianSplatsBackToFront(deferred.commands, deferred.count, scene);
+    executeBatch(deferred.commands, deferred.count, scene, context, passState);
+  };
+
+  if (count === 0 && !host._deferredOITSplats) {
     return;
   }
 
@@ -82,11 +102,15 @@ export function executeTranslucentPass(
   // Order is preserved (same iteration), so OIT accumulation and
   // back-to-front alpha both stay correct. No-op when the gate is
   // off, on pick, or when no readback is fresh yet.
-  const culled = host._maybeGPUCullTranslucent(commands, count, config);
-  if (culled.commands !== commands) {
-    commands = culled.commands;
-    count = culled.count;
-    if (count === 0) return;
+  // C7-SPLAT-DEPTH-COMPOSE — only cull when there are translucent commands;
+  // with count === 0 but deferred splats pending we still need to reach the
+  // flush below rather than early-returning here.
+  if (count > 0) {
+    const culled = host._maybeGPUCullTranslucent(commands, count, config);
+    if (culled.commands !== commands) {
+      commands = culled.commands;
+      count = culled.count;
+    }
   }
 
   // OIT accumulation + composite path.
@@ -232,9 +256,23 @@ export function executeTranslucentPass(
 
         // Resume default render pass for subsequent passes
         context.resumeDefaultRenderPass?.();
+        // C7-SPLAT-DEPTH-COMPOSE — if the accumulation pass didn't run
+        // (accPassDesc null) the deferred splats are still pending; draw
+        // them inline on the resumed scene pass rather than dropping them.
+        executeDeferredSplatsInline();
         return;
       }
     }
+  }
+
+  // C7-SPLAT-DEPTH-COMPOSE — the OIT accumulation path didn't run (no OIT
+  // pipelines this frame, or OIT unsupported/picking); consume any deferred
+  // splats inline FIRST. WebGL pass order draws GAUSSIAN_SPLATS before
+  // TRANSLUCENT (`SceneRenderer.js`), so the splats compose under the
+  // translucent fallback that follows.
+  executeDeferredSplatsInline();
+  if (count === 0) {
+    return;
   }
 
   // Fallback: render translucent commands with standard alpha blending.

@@ -64,6 +64,9 @@ export interface FrustumLoopHost {
   _oit: WebGPUOIT | null;
   _translucentTileClassification: WebGPUTranslucentTileClassification | null;
   _cpuPassProfiler: WebGPUCpuPassProfiler;
+  // C7-SPLAT-DEPTH-COMPOSE — opt-in GS-WSR OIT deferral (default false =
+  // WebGL-parity inline execution). See the flag's doc on WebGPUSceneRenderer.
+  _splatOITDeferral: boolean;
 
   // ── Field writes ──
   _capturedFrustumRanges: { near: number; far: number }[];
@@ -175,8 +178,7 @@ export function executeFrustumLoop(
   // to decode eye distance, then unproject with the per-slice projection.
   {
     const camFrust = scene.camera?.frustum as
-      | { near?: number; far?: number }
-      | undefined;
+      { near?: number; far?: number } | undefined;
     if (
       camFrust &&
       typeof camFrust.near === "number" &&
@@ -241,8 +243,7 @@ export function executeFrustumLoop(
       // frustum's own near/far rather than the band-specific values.
       // Mirrors WebGL's behavior in a single-band degenerate case.
       const camFrust = scene._frameState.camera?.frustum as
-        | { near?: number; far?: number }
-        | undefined;
+        { near?: number; far?: number } | undefined;
       near = camFrust?.near ?? frustumCommands.near;
       far = camFrust?.far ?? frustumCommands.far;
     } else {
@@ -287,8 +288,7 @@ export function executeFrustumLoop(
         ctxFrustum._currentFrustumNearFar = new Float32Array(2);
       }
       const invProj = uniformState.inverseProjection as
-        | { [k: number]: number }
-        | undefined;
+        { [k: number]: number } | undefined;
       if (invProj) {
         const dst = ctxFrustum._currentFrustumInvProj;
         for (let c = 0; c < 16; c++) {
@@ -556,13 +556,21 @@ export function executeFrustumLoop(
     );
 
     // Pass 11: GAUSSIAN_SPLATS
-    // GS-WSR: If OIT is available and splat commands have OIT variants,
-    // defer them to the translucent OIT pass for proper weighted-sum rendering.
-    // Otherwise render inline with standard alpha blending.
+    // GS-WSR: If the opt-in deferral flag is ARMED and OIT is available and
+    // splat commands have OIT variants, defer them to the translucent OIT
+    // pass for weighted-sum rendering. Otherwise (the WebGL-parity DEFAULT)
+    // render inline with standard alpha blending — WebGL executes splats
+    // inline in the scene pass, depth-tested against the scene depth, and
+    // never routes them through OIT. C7-SPLAT-DEPTH-COMPOSE: pre-fix the
+    // deferral was unconditional, and `executeTranslucentPass` early-returns
+    // when the frame has zero TRANSLUCENT commands, so the deferred splats
+    // were dropped every frame (presented as "the splat is occluded by the
+    // opaque globe"). See `_splatOITDeferral` on WebGPUSceneRenderer.
     {
       const splatCommands = frustumCommands.commands[Pass.GAUSSIAN_SPLATS];
       const splatCount: number = frustumCommands.indices[Pass.GAUSSIAN_SPLATS];
       const hasOITSplats =
+        host._splatOITDeferral &&
         host._oit?.isSupported &&
         config.useOIT &&
         !config.picking &&

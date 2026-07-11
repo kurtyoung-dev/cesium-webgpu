@@ -1325,6 +1325,10 @@ interface CesiumAnyDrawCommand {
       z: number;
     }) => number;
   };
+  /** World transform the command was built with. On WebGL DrawCommand it
+   *  drives uniform derivation; on WebGPU commands it is binning/sort
+   *  metadata (C7-SPLAT-DEPTH-COMPOSE parity refresh writes it). */
+  modelMatrix?: CesiumMatrix4;
   pass?: number;
   castShadows?: boolean;
   receiveShadows?: boolean;

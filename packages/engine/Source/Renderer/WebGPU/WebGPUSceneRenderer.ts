@@ -915,6 +915,20 @@ export class WebGPUSceneRenderer {
     commands: CesiumAnyDrawCommand[];
     count: number;
   } | null = null;
+  // C7-SPLAT-DEPTH-COMPOSE — opt-in GS-WSR splat-to-OIT deferral. DEFAULT
+  // FALSE = WebGL parity. WebGL executes GAUSSIAN_SPLATS inline in the scene
+  // pass (`GaussianSplatPrimitive.js` pushes its DrawCommand — depthTest on,
+  // depthMask off, PRE_MULTIPLIED_ALPHA blend — into `commandList`; the
+  // GAUSSIAN_SPLATS pass draws it right after OPAQUE and never routes it
+  // through OIT). The fork's GS-WSR deferral (Batch 136-era) routed splats
+  // that carried an `_oitPipeline` into the translucent OIT accumulation pass
+  // instead; but `executeTranslucentPass` early-returns when the frame has
+  // ZERO TRANSLUCENT commands (the common bare-globe + splat scene), so the
+  // deferred splats were silently DROPPED every frame — the splat vanished,
+  // presenting as "occluded by the opaque globe". Gating the deferral behind
+  // this default-false flag restores inline WebGL-parity execution; the
+  // translucent pass also carries a never-drop seatbelt for the armed path.
+  public _splatOITDeferral: boolean = false;
   // NEW-MULTIFRUSTUM-CULL-RESULTS (Batch 220) — per-frustum readback
   // slot for the opaque pass. Each frustum dispatches against its own
   // culler instance and stores its readback under its own frustum
