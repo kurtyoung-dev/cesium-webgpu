@@ -1,4 +1,5 @@
 import defined from "../Core/defined.js";
+import GlobeWaterOcean from "./GlobeWaterOcean.js";
 
 /**
  * GlobeWater — canonical facade (Phase 0.3).
@@ -42,6 +43,22 @@ class GlobeWater {
 
     this._scene = scene;
     this._globe = globe;
+    this._ocean = undefined;
+  }
+
+  /**
+   * Opt-in FFT spectral ocean sub-facade (Campaign 6/7, C6-FFT-OCEAN).
+   * `scene.globe.water.ocean.enabled = true` creates and adds an
+   * {@link OceanSurfacePrimitive}; default off and byte-identical when off.
+   * WebGPU-only (documented no-op on WebGL).
+   * @type {GlobeWaterOcean}
+   * @readonly
+   */
+  get ocean() {
+    if (!defined(this._ocean)) {
+      this._ocean = new GlobeWaterOcean(this._scene);
+    }
+    return this._ocean;
   }
 
   /**

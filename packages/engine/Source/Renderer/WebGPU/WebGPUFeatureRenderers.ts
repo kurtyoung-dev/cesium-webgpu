@@ -841,6 +841,21 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
   );
 
+  // ── FFT spectral ocean (LAZY, C6-FFT-OCEAN) ──
+  // Opt-in default-off: the renderer chunk (FFT compute chain + displaced
+  // surface WGSL) only downloads on the first enabled OceanSurfacePrimitive
+  // update. Nothing is allocated until a primitive with show===true routes here.
+  context.registerFeatureRendererLoader(
+    FeatureRendererKey.FFT_OCEAN,
+    async () => {
+      const mod = await import("./WebGPUOceanRenderer.js");
+      context.registerFeatureRenderer(FeatureRendererKey.FFT_OCEAN, {
+        update: mod.updateWebGPUOcean,
+        destroy: mod.destroyWebGPUOceanResources,
+      });
+    },
+  );
+
   // ── Scene orchestration ──
   context.registerFeatureRenderer(FeatureRendererKey.SCENE_RENDERER, {
     RendererClass: WebGPUSceneRenderer,

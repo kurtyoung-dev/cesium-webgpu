@@ -257,6 +257,19 @@ const FeatureRendererKey = {
   // MIT) — technique only; GFS sample data is NOAA public domain.
   FLOW_FIELD: 52,
 
+  // ── GPU FFT spectral ocean (Campaign 6/7, C6-FFT-OCEAN) ──
+  // `OceanSurfacePrimitive` routes here. WebGPU-only (documented no-op on
+  // WebGL — the primitive renders nothing when no FR resolves). A per-frame
+  // compute chain (initial-spectrum → twiddle → time-evolve → inverse FFT →
+  // merge) synthesizes an animated displacement + foam map from a Tessendorf/
+  // Phillips spectrum; a camera-anchored RTE ENU grid patch samples it. Opt-in,
+  // default-off: nothing is allocated until an enabled OceanSurfacePrimitive is
+  // updated. See WebGPUOceanRenderer.ts. License: gasgiant/FFT-Ocean +
+  // Popov72/OceanDemo + WebTide (all MIT) FFT/packing; Phillips spectrum derived
+  // from Tessendorf's published notes. A WebGL2 fragment-FFT fallback is tracked
+  // in DEFERRED_WORK.
+  FFT_OCEAN: 53,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
@@ -269,7 +282,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 53,
+  COUNT: 54,
 };
 
 export default Object.freeze(FeatureRendererKey);

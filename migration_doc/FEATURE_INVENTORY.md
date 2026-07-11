@@ -992,7 +992,7 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 - FEAT-SURVEY-26 box/sphere environment probes with parallax (FEAT-SURVEY-26)
 - FEAT-SURVEY-27 RedGPU post-effect suite (chromatic aberration, film grain, sharpen, etc.) (FEAT-SURVEY-27)
 - FEAT-SURVEY-28 Kawase dual-filter bloom (mobile profile) (FEAT-SURVEY-28)
-- FEAT-SURVEY-41 FFT + Gerstner + FBM ocean water (planetary patching needed) (FEAT-SURVEY-41)
+- FEAT-SURVEY-41 FFT + Gerstner + FBM ocean water (planetary patching needed) — ✅ FFT path SHIPPED v1 (C6-FFT-OCEAN, 2026-07-11; single-cascade Phillips FFT + RTE ENU patch, opt-in `scene.globe.water.ocean`; cascades/clipmap/JONSWAP follow-ups in DEFERRED_WORK) (FEAT-SURVEY-41)
 - FEAT-SURVEY-42 ghost-cell halo synchronizer for froxel borders (FEAT-SURVEY-42)
 - FEAT-SURVEY-43 grass/foliage material + vegetation instancing (FEAT-SURVEY-43)
 - FEAT-SURVEY-48 STP upscaler (gated on TAA motion vectors) (FEAT-SURVEY-48)
@@ -1008,7 +1008,7 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 - Terrain blend/splat mapping multi-texture close-range (BACKLOG-§9)
 - Weather: aurora borealis, sandstorm/dust, lightning, wet surfaces (BACKLOG-§9)
 - Ocean refraction/caustics water-quality substack (Phase-8e)
-- Tessendorf FFT ocean upgrade for Phase 4 of water doc (WATER §4.3)
+- Tessendorf FFT ocean upgrade for Phase 4 of water doc (WATER §4.3) — ✅ v1 SHIPPED (C6-FFT-OCEAN, 2026-07-11; see DEFERRED_WORK for the JONSWAP+TMA / cascades / clipmap / spectral-normal / reflection follow-ups)
 - Gulf-stream-style flow advection for rivers; ML-based water segmentation; JRC GSW seasonal data (WATER §4.1.1)
 - Water type GLACIER + ICE_SHELF reserved future slots (WATER §4.2)
 

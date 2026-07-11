@@ -1004,6 +1004,13 @@ export const ShaderSourceId = Object.freeze({
   // and is created directly by the renderer, so it needs no source id.
   // Add-only.
   FLOW_FIELD_RENDER: 40,
+  // C6-FFT-OCEAN (Campaign 6/7). The displaced ocean-surface render shader
+  // (`Ocean/OceanSurface.wgsl`). Resolves through the module cache so its
+  // `//>>ifdef LOG_DEPTH` blocks preprocess and the log-depth variant dedupes
+  // per (sourceId, defines). The FFT compute modules (initial-spectrum, twiddle,
+  // time-evolve, IFFT, merge) have no ifdef blocks and are created directly by
+  // the renderer, so they need no source id. Add-only.
+  OCEAN_SURFACE: 41,
 } as const);
 
 /**
