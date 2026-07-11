@@ -85,9 +85,59 @@ import {
 // shares a single compiled `GPUShaderModule` for `ModelPBRComplete.wgsl`.
 // Pipelines themselves stay per-cache (their formats + alphaMode + doubleSided
 // keys differ); only the WGSL compilation is shared.
-const _modelShaderModuleCaches = new WeakMap();
+/**
+ * A single KHR-extension binding entry in {@link KHR_BINDING_MANIFEST}.
+ * @private
+ */
+interface KhrBinding {
+  binding: number;
+  type: "texture" | "sampler";
+  gateDefine: number;
+  viewDimension?: GPUTextureViewDimension;
+}
 
-function getModelShaderModuleCache(device) {
+/**
+ * Minimal shape of the `context` object read by
+ * {@link WebGPUModelPipelineCache#maybeUpdateForSceneFormat}.
+ * @private
+ */
+interface SceneFormatContext {
+  _scenePipelineFormatGeneration?: number;
+  scenePipelineFormat?: GPUTextureFormat;
+  _msaaSamples?: number;
+}
+
+/**
+ * Sampler metadata carried by a glTF texture — either a CesiumJS `Sampler`
+ * instance (min/magnificationFilter) or a raw glTF sampler object
+ * (min/magFilter). All fields are GL enum integers.
+ * @private
+ */
+interface GltfSamplerLike {
+  magnificationFilter?: number;
+  magFilter?: number;
+  minificationFilter?: number;
+  minFilter?: number;
+  wrapS?: number;
+  wrapT?: number;
+}
+
+/**
+ * glTF `textureInfo`-like reader passed to
+ * {@link WebGPUModelPipelineCache#getSamplerForReader}.
+ * @private
+ */
+interface TextureReaderLike {
+  texture?: { _sampler?: GltfSamplerLike; sampler?: GltfSamplerLike };
+  sampler?: GltfSamplerLike;
+}
+
+const _modelShaderModuleCaches = new WeakMap<
+  GPUDevice,
+  WebGPUShaderModuleCache
+>();
+
+function getModelShaderModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
   let cache = _modelShaderModuleCaches.get(device);
   if (!cache) {
     cache = new WebGPUShaderModuleCache(device);
@@ -137,7 +187,7 @@ const ALPHA_BLEND = 2;
  *
  * @private
  */
-const KHR_BINDING_MANIFEST = Object.freeze([
+const KHR_BINDING_MANIFEST: readonly KhrBinding[] = Object.freeze([
   { binding: 12, type: "texture", gateDefine: 1 << 9 },
   { binding: 13, type: "texture", gateDefine: 1 << 9 },
   { binding: 14, type: "texture", gateDefine: 1 << 9 },
@@ -231,7 +281,11 @@ const MATERIAL_DEFINE_MASK = (() => {
  * @returns {number}
  * @private
  */
-function computeKey(alphaMode, doubleSided, materialDefines) {
+function computeKey(
+  alphaMode: number,
+  doubleSided: boolean,
+  materialDefines: number,
+): number {
   const md = (materialDefines >>> 0) & MATERIAL_DEFINE_MASK;
   return (alphaMode | (doubleSided ? 4 : 0) | (md << 3)) >>> 0;
 }
@@ -251,7 +305,10 @@ function computeKey(alphaMode, doubleSided, materialDefines) {
  * @returns {number|string}
  * @private
  */
-function topologyVariantKey(key, topology) {
+function topologyVariantKey(
+  key: number | string,
+  topology: string,
+): number | string {
   return topology === "triangle-list" ? key : `${key}:${topology}`;
 }
 
@@ -278,7 +335,10 @@ function topologyVariantKey(key, topology) {
  * @returns {GPUBindGroupLayout}
  * @private
  */
-function buildMaterialBGL(device, materialDefines) {
+function buildMaterialBGL(
+  device: GPUDevice,
+  materialDefines: number,
+): GPUBindGroupLayout {
   const entries = [
     // 0-1: Material + Light UBOs (always)
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
@@ -498,7 +558,10 @@ function buildMaterialBGL(device, materialDefines) {
  * @param {GPUDevice} device
  * @returns {{ cameraBGL, instanceBGL }}
  */
-function createBindGroupLayouts(device) {
+function createBindGroupLayouts(device: GPUDevice): {
+  cameraBGL: GPUBindGroupLayout;
+  instanceBGL: GPUBindGroupLayout;
+} {
   // ── Group 0: CAMERA ── per-frame, shared across all models.
   const cameraBGL = makeBindGroupLayout(device, "Model Camera BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
@@ -551,7 +614,7 @@ const _GL_REPEAT = 10497;
 const _GL_CLAMP_TO_EDGE = 33071;
 const _GL_MIRRORED_REPEAT = 33648;
 
-function _mapGLFilter(glEnum, fallback) {
+function _mapGLFilter(glEnum: number, fallback: GPUFilterMode): GPUFilterMode {
   if (glEnum === _GL_NEAREST) {
     return "nearest";
   }
@@ -561,7 +624,10 @@ function _mapGLFilter(glEnum, fallback) {
   return fallback;
 }
 
-function _mapGLMinFilter(glEnum) {
+function _mapGLMinFilter(glEnum: number): {
+  min: GPUFilterMode;
+  mip: GPUMipmapFilterMode;
+} {
   // Return { min, mip } because WebGPU splits filter + mipmap filter.
   switch (glEnum) {
     case _GL_NEAREST:
@@ -581,7 +647,7 @@ function _mapGLMinFilter(glEnum) {
   }
 }
 
-function _mapGLWrap(glEnum) {
+function _mapGLWrap(glEnum: number): GPUAddressMode {
   if (glEnum === _GL_CLAMP_TO_EDGE) {
     return "clamp-to-edge";
   }
@@ -628,11 +694,11 @@ function _mapGLWrap(glEnum) {
  *   mode 1, so Edge's `maxVertexBuffers = 8` budget is unaffected).
  */
 function createVertexBufferLayout(
-  hasTexCoord1 = true,
-  hasFeatureId0 = true,
-  metadataSlotMode = 0,
-) {
-  const layout = [
+  hasTexCoord1: boolean = true,
+  hasFeatureId0: boolean = true,
+  metadataSlotMode: number | boolean = 0,
+): GPUVertexBufferLayout[] {
+  const layout: GPUVertexBufferLayout[] = [
     // Slot 0: positionMC (vec3<f32>) — ALWAYS present, vertex step
     {
       arrayStride: 12,
@@ -764,31 +830,31 @@ function createVertexBufferLayout(
  * @returns {GPURenderPipeline}
  */
 function createPipeline(
-  device,
-  shaderModule,
-  pipelineLayout,
-  presentationFormat,
-  depthFormat,
-  alphaMode,
-  doubleSided,
-  forceDepthWrite,
-  hasTexCoord1,
-  hasFeatureId0,
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  presentationFormat: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  alphaMode: number,
+  doubleSided: boolean,
+  forceDepthWrite: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
   // Session 65 Batch 28 — MSAA sample count. Default 1 matches the
   // pre-bridge behavior; when the bridge re-enables this gets the
   // current `context._msaaSamples` value baked into the pipeline.
-  sampleCount = 1,
+  sampleCount: number = 1,
   // DP-H46a — metadata vertex slot 9. Default false keeps every existing
   // caller's layout unchanged.
-  hasMetadata = false,
+  hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE — GPUPrimitiveTopology keyed off the glTF
   // primitive.mode. Default preserves the historical hardcoded value.
-  topology = "triangle-list",
+  topology: GPUPrimitiveTopology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
 
   // Blend state depends on alpha mode
-  let blend;
+  let blend: GPUBlendState | undefined;
   if (alphaMode === ALPHA_BLEND) {
     blend = {
       color: {
@@ -886,23 +952,23 @@ function createPipeline(
  * @private
  */
 function createSilhouetteModelPipeline(
-  device,
-  shaderModule,
-  pipelineLayout,
-  presentationFormat,
-  depthFormat,
-  alphaMode,
-  doubleSided,
-  hasTexCoord1,
-  hasFeatureId0,
-  sampleCount,
-  hasMetadata,
-  invisible,
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  presentationFormat: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  alphaMode: number,
+  doubleSided: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
+  sampleCount: number,
+  hasMetadata: number | boolean,
+  invisible: boolean,
   // GLTF-POINTS-MODE
-  topology = "triangle-list",
+  topology: GPUPrimitiveTopology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
-  let blend;
+  let blend: GPUBlendState | undefined;
   if (alphaMode === ALPHA_BLEND) {
     blend = {
       color: {
@@ -918,7 +984,7 @@ function createSilhouetteModelPipeline(
     };
   }
   const depthWriteEnabled = alphaMode !== ALPHA_BLEND;
-  const stencilWrite = {
+  const stencilWrite: GPUStencilFaceState = {
     compare: "always",
     failOp: "keep",
     depthFailOp: "keep",
@@ -981,21 +1047,21 @@ function createSilhouetteModelPipeline(
  * @private
  */
 function createSilhouetteColorPipeline(
-  device,
-  shaderModule,
-  pipelineLayout,
-  presentationFormat,
-  depthFormat,
-  alphaMode,
-  hasTexCoord1,
-  hasFeatureId0,
-  sampleCount,
-  hasMetadata,
-  translucent,
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  presentationFormat: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  alphaMode: number,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
+  sampleCount: number,
+  hasMetadata: number | boolean,
+  translucent: boolean,
   // GLTF-POINTS-MODE
-  topology = "triangle-list",
+  topology: GPUPrimitiveTopology = "triangle-list",
 ) {
-  const stencilNotEqual = {
+  const stencilNotEqual: GPUStencilFaceState = {
     compare: "not-equal",
     failOp: "keep",
     depthFailOp: "keep",
@@ -1063,18 +1129,18 @@ function createSilhouetteColorPipeline(
  * @private
  */
 function createPickPipeline(
-  device,
-  shaderModule,
-  pipelineLayout,
-  presentationFormat,
-  depthFormat,
-  alphaMode,
-  doubleSided,
-  hasTexCoord1,
-  hasFeatureId0,
-  hasMetadata = false,
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  presentationFormat: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  alphaMode: number,
+  doubleSided: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
+  hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology = "triangle-list",
+  topology: GPUPrimitiveTopology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   // C-R9-MODEL-PICK-TRANSLUCENT (Batch 186) — first slice. Translucent
@@ -1148,18 +1214,18 @@ function createPickPipeline(
  * @private
  */
 function createPickMetadataPipeline(
-  device,
-  shaderModule,
-  pipelineLayout,
-  presentationFormat,
-  depthFormat,
-  alphaMode,
-  doubleSided,
-  hasTexCoord1,
-  hasFeatureId0,
-  hasMetadata = false,
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  presentationFormat: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  alphaMode: number,
+  doubleSided: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
+  hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology = "triangle-list",
+  topology: GPUPrimitiveTopology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const isBlend = alphaMode === 2;
@@ -1219,16 +1285,16 @@ function createPickMetadataPipeline(
  * @private
  */
 function createCapturePipeline(
-  device,
-  shaderModule,
-  pipelineLayout,
-  faceFormat,
-  doubleSided,
-  hasTexCoord1,
-  hasFeatureId0,
-  hasMetadata = false,
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  faceFormat: GPUTextureFormat,
+  doubleSided: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
+  hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology = "triangle-list",
+  topology: GPUPrimitiveTopology = "triangle-list",
 ) {
   return device.createRenderPipeline({
     label: `Model PBR capture [face=${faceFormat},ds=${doubleSided}]`,
@@ -1274,17 +1340,17 @@ function createCapturePipeline(
  * @private
  */
 function createPickHoverPipeline(
-  device,
-  shaderModule,
-  pipelineLayout,
-  presentationFormat,
-  depthFormat,
-  doubleSided,
-  hasTexCoord1,
-  hasFeatureId0,
-  hasMetadata = false,
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  presentationFormat: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  doubleSided: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
+  hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology = "triangle-list",
+  topology: GPUPrimitiveTopology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-hover [BLEND,ds=${doubleSided}]`;
@@ -1330,17 +1396,17 @@ function createPickHoverPipeline(
  * @private
  */
 function createPickPrecisePass1Pipeline(
-  device,
-  shaderModule,
-  pipelineLayout,
-  presentationFormat,
-  depthFormat,
-  doubleSided,
-  hasTexCoord1,
-  hasFeatureId0,
-  hasMetadata = false,
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  presentationFormat: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  doubleSided: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
+  hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology = "triangle-list",
+  topology: GPUPrimitiveTopology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-precise pass1 [BLEND,ds=${doubleSided}]`;
@@ -1348,7 +1414,7 @@ function createPickPrecisePass1Pipeline(
   const hasStencil =
     depthFormat === "depth24plus-stencil8" ||
     depthFormat === "depth32float-stencil8";
-  const stencilState = hasStencil
+  const stencilState: Partial<GPUDepthStencilState> = hasStencil
     ? {
         stencilFront: {
           compare: "always",
@@ -1414,24 +1480,24 @@ function createPickPrecisePass1Pipeline(
  * @private
  */
 function createPickPrecisePass2Pipeline(
-  device,
-  shaderModule,
-  pipelineLayout,
-  presentationFormat,
-  depthFormat,
-  doubleSided,
-  hasTexCoord1,
-  hasFeatureId0,
-  hasMetadata = false,
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  presentationFormat: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  doubleSided: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
+  hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology = "triangle-list",
+  topology: GPUPrimitiveTopology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model PBR pick-precise pass2 [BLEND,ds=${doubleSided}]`;
   const hasStencil =
     depthFormat === "depth24plus-stencil8" ||
     depthFormat === "depth32float-stencil8";
-  const stencilState = hasStencil
+  const stencilState: Partial<GPUDepthStencilState> = hasStencil
     ? {
         stencilFront: {
           compare: "equal",
@@ -1498,22 +1564,22 @@ function createPickPrecisePass2Pipeline(
  * @private
  */
 function createVelocityPipeline(
-  device,
-  shaderModule,
-  pipelineLayout,
-  depthFormat,
-  alphaMode,
-  doubleSided,
-  hasTexCoord1,
-  hasFeatureId0,
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  depthFormat: GPUTextureFormat,
+  alphaMode: number,
+  doubleSided: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
   // Session 65 Batch 28 — MSAA sample count. NO LONGER READ by this
   // pipeline as of Batch 143; signature kept for back-compat with the
   // pipeline-cache call site. See multisample comment below.
-  sampleCount = 1,
+  sampleCount: number = 1,
   // DP-H46a — metadata vertex slot 9.
-  hasMetadata = false,
+  hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology = "triangle-list",
+  topology: GPUPrimitiveTopology = "triangle-list",
 ) {
   void sampleCount;
   const cullMode = doubleSided ? "none" : "back";
@@ -1582,25 +1648,25 @@ function createVelocityPipeline(
  * @private
  */
 function createClassificationPipeline(
-  device,
-  shaderModule,
-  pipelineLayout,
-  presentationFormat,
-  depthFormat,
-  alphaMode,
-  doubleSided,
-  hasTexCoord1,
-  hasFeatureId0,
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  presentationFormat: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  alphaMode: number,
+  doubleSided: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
   // Session 65 Batch 28 — MSAA sample count.
-  sampleCount = 1,
+  sampleCount: number = 1,
   // DP-H46a — metadata vertex slot 9.
-  hasMetadata = false,
+  hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology = "triangle-list",
+  topology: GPUPrimitiveTopology = "triangle-list",
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model classification [alpha=${alphaMode},ds=${doubleSided}]`;
-  const blend = {
+  const blend: GPUBlendState = {
     color: {
       srcFactor: "src-alpha",
       dstFactor: "one-minus-src-alpha",
@@ -1645,12 +1711,100 @@ function createClassificationPipeline(
  * WebGPUModelPipelineCache manages GPU pipeline variants for Model rendering.
  */
 class WebGPUModelPipelineCache {
+  // Type-only field declarations (Session-29 interop pattern). Every field
+  // is `declare` so nothing is emitted at runtime — the constructor's
+  // assignments remain the sole runtime writes, keeping the compiled output
+  // byte-identical to the pre-conversion JS.
+  declare _device: GPUDevice;
+  declare _presentationFormat: GPUTextureFormat;
+  declare _depthFormat: GPUTextureFormat;
+  declare _sampleCount: number;
+  declare _sceneFormatGeneration: number;
+  declare _pipelines: Map<string | number, GPURenderPipeline>;
+  declare _errorShaderModule: GPUShaderModule | null;
+  declare _errorPipelines: Map<string | number, GPURenderPipeline>;
+  declare _errorSwapGeneration: number;
+  declare _pickPipelines: Map<string | number, GPURenderPipeline>;
+  declare _depthWritePipelines: Map<string | number, GPURenderPipeline>;
+  declare _velocityPipelines: Map<string | number, GPURenderPipeline>;
+  declare _classificationPipelines: Map<string | number, GPURenderPipeline>;
+  declare _silhouetteModelPipelines: Map<string | number, GPURenderPipeline>;
+  declare _silhouetteColorPipelines: Map<string | number, GPURenderPipeline>;
+  declare _pickHoverPipelines: Map<string | number, GPURenderPipeline>;
+  declare _pickPrecisePass1Pipelines: Map<string | number, GPURenderPipeline>;
+  declare _pickPrecisePass2Pipelines: Map<string | number, GPURenderPipeline>;
+  declare _capturePipelines: Map<string | number, GPURenderPipeline>;
+  declare _pickMetadataPipelines: Map<string | number, GPURenderPipeline>;
+  declare _cameraBGL: GPUBindGroupLayout;
+  declare _instanceBGL: GPUBindGroupLayout;
+  declare _effectsBGL: GPUBindGroupLayout;
+  declare _materialBGLCache: Map<number, GPUBindGroupLayout>;
+  declare _pipelineLayoutCache: Map<number, GPUPipelineLayout>;
+  declare _shaderModuleCache: Map<string | number, GPUShaderModule>;
+  declare _metadataShaderModuleCache: Map<string | number, GPUShaderModule>;
+  declare _metadataWGSL: string;
+  declare _metadataClassHash: number;
+  declare _metadataMatTransport: boolean;
+  declare _metadataPickWGSL: string;
+  declare _metadataPickClassHash: number;
+  declare _customShaderWGSL: string;
+  declare _customShaderClassHash: number;
+  declare _primitiveTopology: GPUPrimitiveTopology;
+  declare _logDepthEnabled: boolean;
+  declare _splitEnabled: boolean;
+  declare _modelColorEnabled: boolean;
+  declare _silhouetteEnabled: boolean;
+  declare _materialBGL_basic: GPUBindGroupLayout;
+  declare _pipelineLayout_basic: GPUPipelineLayout;
+  declare _shaderModule_basic: GPUShaderModule;
+  declare _materialBGL: GPUBindGroupLayout;
+  declare _pipelineLayout: GPUPipelineLayout;
+  declare _shaderModule: GPUShaderModule;
+  declare _defaultWhiteTexture: GPUTexture;
+  declare _defaultNormalTexture: GPUTexture;
+  declare _defaultBlackTexture: GPUTexture;
+  declare _defaultSampler: GPUSampler;
+  declare _defaultIBLCubemap: GPUTexture;
+  declare _defaultIBLCubemapView: GPUTextureView;
+  declare _defaultIBLSampler: GPUSampler;
+  declare _defaultSHBuffer: GPUBuffer;
+  declare _defaultBrdfLut: GPUTexture;
+  declare _defaultBrdfLutView: GPUTextureView;
+  declare _defaultBrdfLutSampler: GPUSampler;
+  declare _defaultPropertyTexture: GPUTexture;
+  declare _defaultPropertyTextureView: GPUTextureView;
+  declare _propertyTextureSampler: GPUSampler;
+  declare _samplerCache: Map<string, GPUSampler>;
+  declare _defaultNormalBuffer: GPUBuffer;
+  declare _defaultTangentBuffer: GPUBuffer;
+  declare _defaultUVBuffer: GPUBuffer;
+  declare _defaultColorBuffer: GPUBuffer;
+  declare _defaultJointsBuffer: GPUBuffer;
+  declare _defaultWeightsBuffer: GPUBuffer;
+  declare _defaultFeatureIdBuffer: GPUBuffer;
+  declare _defaultJointBuffer: GPUBuffer;
+  declare _defaultMorphDeltaBuffer: GPUBuffer;
+  declare _defaultMorphWeightBuffer: GPUBuffer;
+  declare _defaultInstancingBuffer: GPUBuffer;
+  declare _defaultInstanceBG: GPUBindGroup;
+  declare _defaultFeatureUniformBuffer: GPUBuffer;
+  declare _defaultFeatureIdEntries: () => GPUBindGroupEntry[];
+
+  // Alpha-mode constants, assigned as static properties below the class.
+  declare static ALPHA_OPAQUE: number;
+  declare static ALPHA_MASK: number;
+  declare static ALPHA_BLEND: number;
+
   /**
    * @param {GPUDevice} device
    * @param {string} presentationFormat - e.g., "bgra8unorm"
    * @param {string} depthFormat - e.g., "depth24plus-stencil8"
    */
-  constructor(device, presentationFormat, depthFormat) {
+  constructor(
+    device: GPUDevice,
+    presentationFormat: GPUTextureFormat,
+    depthFormat: GPUTextureFormat,
+  ) {
     this._device = device;
     this._presentationFormat = presentationFormat;
     this._depthFormat = depthFormat;
@@ -2188,7 +2342,7 @@ class WebGPUModelPipelineCache {
    * @returns {number}
    * @private
    */
-  _normalizeMaterialDefines(materialDefines) {
+  _normalizeMaterialDefines(materialDefines: number) {
     return ((materialDefines | 0) & MATERIAL_DEFINE_MASK) >>> 0;
   }
 
@@ -2207,7 +2361,7 @@ class WebGPUModelPipelineCache {
    * @returns {GPUBindGroupLayout}
    * @private
    */
-  _getOrCreateMaterialBGL(materialDefines) {
+  _getOrCreateMaterialBGL(materialDefines: number) {
     const key = this._normalizeMaterialDefines(materialDefines);
     let layout = this._materialBGLCache.get(key);
     if (layout) {
@@ -2227,7 +2381,7 @@ class WebGPUModelPipelineCache {
    * @returns {GPUPipelineLayout}
    * @private
    */
-  _getOrCreatePipelineLayout(materialDefines) {
+  _getOrCreatePipelineLayout(materialDefines: number) {
     const key = this._normalizeMaterialDefines(materialDefines);
     let layout = this._pipelineLayoutCache.get(key);
     if (layout) {
@@ -2260,14 +2414,17 @@ class WebGPUModelPipelineCache {
    * @returns {GPUShaderModule}
    * @private
    */
-  _getOrCreateShaderModule(materialDefines) {
+  _getOrCreateShaderModule(materialDefines: number) {
     const key = this._normalizeMaterialDefines(materialDefines);
     //>>includeStart('debug', pragmas.debug);
     // C2-22 — test hook: when `globalThis.CesiumWebGPUForcePipelineError` is set,
     // return a deliberately-invalid module (no entry points, garbage WGSL) so the
     // downstream createRenderPipeline fails validation and the magenta error
     // pipeline can be verified. Called inside getPipeline's error scope.
-    if (globalThis.CesiumWebGPUForcePipelineError === true) {
+    if (
+      (globalThis as { CesiumWebGPUForcePipelineError?: boolean })
+        .CesiumWebGPUForcePipelineError === true
+    ) {
       return this._device.createShaderModule({
         label: "Model PBR FORCED-ERROR (C2-22 probe)",
         code: "garbage_token_not_valid_wgsl",
@@ -2501,7 +2658,7 @@ class WebGPUModelPipelineCache {
    *   vertex layout (mode 2), and the `:m34` pipeline-key suffix.
    * @private
    */
-  setMetadataWGSL(wgsl, classHash, matTransport) {
+  setMetadataWGSL(wgsl: string, classHash: number, matTransport?: boolean) {
     this._metadataWGSL = wgsl ?? "";
     this._metadataClassHash = (classHash | 0) >>> 0;
     this._metadataMatTransport = matTransport === true;
@@ -2536,7 +2693,7 @@ class WebGPUModelPipelineCache {
    * @returns {number} 0 | 1 | 2
    * @private
    */
-  _metadataSlotMode(md) {
+  _metadataSlotMode(md: number) {
     if ((md & ShaderDefine.MODEL_HAS_METADATA) === 0) {
       return 0;
     }
@@ -2557,7 +2714,7 @@ class WebGPUModelPipelineCache {
    * @returns {number|string}
    * @private
    */
-  _metadataVariantKey(key, md) {
+  _metadataVariantKey(key: number | string, md: number): number | string {
     return this._metadataSlotMode(md) === 2 ? `${key}:m34` : key;
   }
 
@@ -2572,7 +2729,7 @@ class WebGPUModelPipelineCache {
    * @param {number} classHash a stable fingerprint folding in the picked property
    * @private
    */
-  setMetadataPickWGSL(wgsl, classHash) {
+  setMetadataPickWGSL(wgsl: string, classHash: number) {
     this._metadataPickWGSL = wgsl ?? "";
     this._metadataPickClassHash = (classHash | 0) >>> 0;
   }
@@ -2600,7 +2757,7 @@ class WebGPUModelPipelineCache {
    * @param {number} classHash a stable fingerprint of the generated chunk
    * @private
    */
-  setCustomShaderWGSL(wgsl, classHash) {
+  setCustomShaderWGSL(wgsl: string, classHash: number) {
     this._customShaderWGSL = wgsl ?? "";
     this._customShaderClassHash = (classHash | 0) >>> 0;
   }
@@ -2633,7 +2790,7 @@ class WebGPUModelPipelineCache {
    *
    * @param {string} topology GPUPrimitiveTopology
    */
-  setPrimitiveTopology(topology) {
+  setPrimitiveTopology(topology: string) {
     this._primitiveTopology =
       topology === "point-list" ? "point-list" : "triangle-list";
   }
@@ -2649,7 +2806,7 @@ class WebGPUModelPipelineCache {
    * @param {number} materialDefines
    * @returns {GPUBindGroupLayout}
    */
-  getOrCreateMaterialBGL(materialDefines) {
+  getOrCreateMaterialBGL(materialDefines: number) {
     return this._getOrCreateMaterialBGL(materialDefines);
   }
 
@@ -2660,7 +2817,7 @@ class WebGPUModelPipelineCache {
    * @param {number} materialDefines
    * @returns {GPUPipelineLayout}
    */
-  getOrCreatePipelineLayout(materialDefines) {
+  getOrCreatePipelineLayout(materialDefines: number) {
     return this._getOrCreatePipelineLayout(materialDefines);
   }
 
@@ -2689,7 +2846,7 @@ class WebGPUModelPipelineCache {
    *   this to drop per-primitive direct pipeline references, mirroring
    *   the scene-format-generation invalidation).
    */
-  maybeUpdateForLogDepth(active) {
+  maybeUpdateForLogDepth(active: boolean) {
     const enabled = active === true;
     if (this._logDepthEnabled === enabled) {
       return false;
@@ -2730,7 +2887,7 @@ class WebGPUModelPipelineCache {
    *   this to drop per-primitive direct pipeline references, mirroring
    *   the scene-format-generation invalidation).
    */
-  maybeUpdateForSplit(active) {
+  maybeUpdateForSplit(active: boolean) {
     const enabled = active === true;
     if (this._splitEnabled === enabled) {
       return false;
@@ -2770,7 +2927,7 @@ class WebGPUModelPipelineCache {
    *   this to drop per-primitive direct pipeline references, mirroring
    *   the scene-format-generation invalidation).
    */
-  maybeUpdateForModelColor(active) {
+  maybeUpdateForModelColor(active: boolean) {
     const enabled = active === true;
     if (this._modelColorEnabled === enabled) {
       return false;
@@ -2812,7 +2969,7 @@ class WebGPUModelPipelineCache {
    *   this to drop per-primitive direct pipeline references, mirroring
    *   the scene-format-generation invalidation).
    */
-  maybeUpdateForSilhouette(active) {
+  maybeUpdateForSilhouette(active: boolean) {
     const enabled = active === true;
     if (this._silhouetteEnabled === enabled) {
       return false;
@@ -2838,7 +2995,7 @@ class WebGPUModelPipelineCache {
     return true;
   }
 
-  maybeUpdateForSceneFormat(context) {
+  maybeUpdateForSceneFormat(context: SceneFormatContext) {
     const generation = context._scenePipelineFormatGeneration ?? 0;
     if (this._sceneFormatGeneration === generation) {
       return;
@@ -2889,7 +3046,11 @@ class WebGPUModelPipelineCache {
    *   from the primitive's material flags.
    * @returns {GPURenderPipeline}
    */
-  getPipeline(alphaMode, doubleSided, materialDefines) {
+  getPipeline(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ) {
     const md = this._normalizeMaterialDefines(materialDefines);
     // GLTF-POINTS-MODE — snapshot the sticky topology at entry so the async
     // error-scope callback below can't read a later primitive's value.
@@ -2961,7 +3122,10 @@ class WebGPUModelPipelineCache {
    * @returns {GPURenderPipeline}
    * @private
    */
-  _getOrCreateErrorPipeline(md, topology = "triangle-list") {
+  _getOrCreateErrorPipeline(
+    md: number,
+    topology: GPUPrimitiveTopology = "triangle-list",
+  ) {
     const key = topologyVariantKey(md, topology);
     let ep = this._errorPipelines.get(key);
     if (ep) {
@@ -3025,7 +3189,11 @@ class WebGPUModelPipelineCache {
    *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
-  getDepthWritePipeline(alphaMode, doubleSided, materialDefines) {
+  getDepthWritePipeline(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
     const key = this._metadataVariantKey(
@@ -3094,10 +3262,10 @@ class WebGPUModelPipelineCache {
    * @returns {GPURenderPipeline}
    */
   getSilhouetteModelPipeline(
-    alphaMode,
-    doubleSided,
-    materialDefines,
-    invisible,
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+    invisible?: boolean,
   ) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
@@ -3166,10 +3334,10 @@ class WebGPUModelPipelineCache {
    * @returns {GPURenderPipeline}
    */
   getSilhouetteColorPipeline(
-    alphaMode,
-    doubleSided,
-    materialDefines,
-    translucent,
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+    translucent?: boolean,
   ) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
@@ -3236,7 +3404,11 @@ class WebGPUModelPipelineCache {
    *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
-  getPickPipeline(alphaMode, doubleSided, materialDefines) {
+  getPickPipeline(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
     const key = this._metadataVariantKey(
@@ -3288,7 +3460,11 @@ class WebGPUModelPipelineCache {
    * @param {number} materialDefines see {@link WebGPUModelPipelineCache#getPipeline}
    * @returns {GPURenderPipeline}
    */
-  getPickMetadataPipeline(alphaMode, doubleSided, materialDefines) {
+  getPickMetadataPipeline(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ) {
     const md = this._normalizeMaterialDefines(materialDefines);
     // Fold in the picked-property hash so a different picked property (same
     // material variant) doesn't collide on the cache key.
@@ -3346,7 +3522,11 @@ class WebGPUModelPipelineCache {
    * @param {number} [materialDefines=0]
    * @returns {GPURenderPipeline}
    */
-  getPickHoverPipeline(alphaMode, doubleSided, materialDefines) {
+  getPickHoverPipeline(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ) {
     if (alphaMode !== ALPHA_BLEND) {
       // OPAQUE/MASK don't need dither — reuse the default pick pipeline.
       return this.getPickPipeline(alphaMode, doubleSided, materialDefines);
@@ -3390,7 +3570,11 @@ class WebGPUModelPipelineCache {
    * @param {number} [materialDefines=0]
    * @returns {GPURenderPipeline}
    */
-  getPickPrecisePass1Pipeline(alphaMode, doubleSided, materialDefines) {
+  getPickPrecisePass1Pipeline(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ) {
     if (alphaMode !== ALPHA_BLEND) {
       return this.getPickPipeline(alphaMode, doubleSided, materialDefines);
     }
@@ -3431,7 +3615,11 @@ class WebGPUModelPipelineCache {
    * @param {number} [materialDefines=0]
    * @returns {GPURenderPipeline|null}
    */
-  getPickPrecisePass2Pipeline(alphaMode, doubleSided, materialDefines) {
+  getPickPrecisePass2Pipeline(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ) {
     if (alphaMode !== ALPHA_BLEND) {
       return null;
     }
@@ -3476,7 +3664,11 @@ class WebGPUModelPipelineCache {
    *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
-  getVelocityPipeline(alphaMode, doubleSided, materialDefines) {
+  getVelocityPipeline(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
     const key = this._metadataVariantKey(
@@ -3527,7 +3719,11 @@ class WebGPUModelPipelineCache {
    *   {@link WebGPUModelPipelineCache#getPipeline}.
    * @returns {GPURenderPipeline}
    */
-  getClassificationPipeline(alphaMode, doubleSided, materialDefines) {
+  getClassificationPipeline(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ) {
     const md = this._normalizeMaterialDefines(materialDefines);
     const topology = this._primitiveTopology;
     const key = this._metadataVariantKey(
@@ -3586,7 +3782,12 @@ class WebGPUModelPipelineCache {
    * @param {GPUTextureFormat} faceFormat env-cube face color attachment format
    * @returns {GPURenderPipeline}
    */
-  getCapturePipeline(alphaMode, doubleSided, materialDefines, faceFormat) {
+  getCapturePipeline(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+    faceFormat: GPUTextureFormat,
+  ) {
     const md = this._normalizeMaterialDefines(materialDefines);
     // C2-25 (Batch 447) — the capture module forks on LOG_DEPTH downstream in
     // `_getOrCreateShaderModule` (from the live `_logDepthEnabled`), but
@@ -3698,7 +3899,7 @@ class WebGPUModelPipelineCache {
    *   instance or a plain object with the fields listed above.
    * @returns {GPUSampler}
    */
-  getSamplerForReader(textureReader) {
+  getSamplerForReader(textureReader: TextureReaderLike) {
     if (!textureReader || !textureReader.texture) {
       return this._defaultSampler;
     }
@@ -3832,7 +4033,7 @@ class WebGPUModelPipelineCache {
    *   entries; missing bindings get the placeholder.
    * @returns {Array<GPUBindGroupEntry>}
    */
-  propertyTextureEntries(realEntries) {
+  propertyTextureEntries(realEntries?: GPUBindGroupEntry[]) {
     const byBinding = new Map();
     if (defined(realEntries)) {
       for (let i = 0; i < realEntries.length; i++) {
@@ -3872,7 +4073,7 @@ class WebGPUModelPipelineCache {
    *   entries; missing bindings get the placeholder.
    * @returns {Array<GPUBindGroupEntry>}
    */
-  propertyTableEntries(realEntries) {
+  propertyTableEntries(realEntries?: GPUBindGroupEntry[]) {
     const byBinding = new Map();
     if (defined(realEntries)) {
       for (let i = 0; i < realEntries.length; i++) {
@@ -3937,7 +4138,13 @@ class WebGPUModelPipelineCache {
    * Creates a 1×1 RGBA texture with the given color.
    * @private
    */
-  _createDefaultTexture(r, g, b, a, label) {
+  _createDefaultTexture(
+    r: number,
+    g: number,
+    b: number,
+    a: number,
+    label: string,
+  ) {
     const texture = this._device.createTexture({
       label,
       size: [1, 1, 1],
@@ -3958,7 +4165,7 @@ class WebGPUModelPipelineCache {
    * Used with instance step mode when an attribute is missing.
    * @private
    */
-  _createDefaultVertexBuffer(data, label) {
+  _createDefaultVertexBuffer(data: BufferSource, label: string) {
     const buffer = this._device.createBuffer({
       label,
       size: data.byteLength,
