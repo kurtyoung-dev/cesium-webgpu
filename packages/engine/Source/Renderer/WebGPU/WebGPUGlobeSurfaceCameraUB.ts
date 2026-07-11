@@ -774,17 +774,32 @@ export function createCameraUniformBuffer(
         shadowActive?: boolean;
         shadowSunViewVP?: Float32Array;
         shadowAbsorption?: number;
+        shadowCascadeActive?: boolean;
+        shadowCascadeVP?: Float32Array;
       };
     }
   )?._cloudCache;
   const shadowActive = cloudCache?.shadowActive === true;
   const shadowVP = cloudCache?.shadowSunViewVP;
-  if (shadowActive && shadowVP && shadowVP.length >= 16) {
+  // CLOUD-LOD-R5 — the opt-in cascade tier renders a 3-cascade atlas AND stashes
+  // three forward VPs (48 floats). Cascade 0 goes in the existing cloudShadowVP
+  // field; cloudShadowControl.w carries the cascade count (3.0) so the FS takes
+  // the cascade branch. Cascades 1/2 are appended at the struct tail below.
+  const cascadeActive = cloudCache?.shadowCascadeActive === true;
+  const cascadeVP = cloudCache?.shadowCascadeVP;
+  const cascadeReady = cascadeActive && !!cascadeVP && cascadeVP.length >= 48;
+  if (cascadeReady) {
+    for (let i = 0; i < 16; i++) data[offset++] = cascadeVP![i]; // cascade 0 VP
+    data[offset++] = 1.0; // x = enabled
+    data[offset++] = cloudCache?.shadowAbsorption ?? 0.04; // y = absorption
+    data[offset++] = 1.0; // z = strength (full)
+    data[offset++] = 3.0; // w = cascade count (cascaded atlas branch)
+  } else if (shadowActive && shadowVP && shadowVP.length >= 16) {
     for (let i = 0; i < 16; i++) data[offset++] = shadowVP[i];
     data[offset++] = 1.0; // x = enabled
     data[offset++] = cloudCache?.shadowAbsorption ?? 0.04; // y = absorption
     data[offset++] = 1.0; // z = strength (full)
-    data[offset++] = 0.0; // w = reserved
+    data[offset++] = 0.0; // w = cascade count 0 (single-map branch)
   } else {
     // Identity matrix + disabled control (byte-identical default).
     data[offset++] = 1.0;
@@ -953,6 +968,22 @@ export function createCameraUniformBuffer(
   data[offset++] = (uniformState as { gamma?: number }).gamma ?? 2.2;
   data[offset++] = 0.0;
   data[offset++] = 0.0;
+
+  // ─── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP: cascade tail (196-231) ───
+  // cloudShadowVP1 (mat4) + cloudShadowVP2 (mat4) — the mid/far cascade forward
+  // VPs (cascade 0 is packed above into cloudShadowVP). cloudShadowCascadeParams
+  // (vec4): x = atlas tile count (3.0). All-zero unless the opt-in cascade tier
+  // rendered the atlas this frame → the FS single-map branch stays byte-identical.
+  if (cascadeReady) {
+    for (let i = 16; i < 32; i++) data[offset++] = cascadeVP![i]; // cascade 1 VP
+    for (let i = 32; i < 48; i++) data[offset++] = cascadeVP![i]; // cascade 2 VP
+    data[offset++] = 3.0; // x = tile count
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
+  } else {
+    for (let i = 0; i < 36; i++) data[offset++] = 0.0;
+  }
 
   // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — stash the EXACT near/far this
   // globe command log-encodes the whole depth texture against onto the SHARED

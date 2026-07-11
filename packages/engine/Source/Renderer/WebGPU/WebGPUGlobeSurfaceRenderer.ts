@@ -604,10 +604,23 @@ export class WebGPUGlobeSurfaceRenderer {
           shadowActive?: boolean;
           shadowView?: GPUTextureView | null;
           shadowSampler?: GPUSampler | null;
+          shadowCascadeActive?: boolean;
+          shadowCascadeView?: GPUTextureView | null;
         };
       }
     )?._cloudCache;
     if (
+      cloudCacheForShadow?.shadowCascadeActive === true &&
+      cloudCacheForShadow.shadowCascadeView
+    ) {
+      // CLOUD-LOD-R5 — the opt-in cascade tier binds the 3-cascade atlas at
+      // binding 9 (same texture_2d type; the FS reads it via the cascade branch
+      // gated on cloudShadowControl.w). Aerial/fog consumers keep reading the
+      // single map, which is still rendered alongside the atlas.
+      this._cloudShadowView = cloudCacheForShadow.shadowCascadeView;
+      this._cloudShadowSampler =
+        cloudCacheForShadow.shadowSampler ?? this._sampler;
+    } else if (
       cloudCacheForShadow?.shadowActive === true &&
       cloudCacheForShadow.shadowView
     ) {

@@ -1175,6 +1175,7 @@ interface CloudVolumetricsConfig {
   cloudMsDecayPhase?: number;
   cloudType?: number;
   cloudCastShadows?: boolean;
+  cloudShadowCascades?: boolean;
   weatherProvider?: {
     getPackedTexture(texW: number, texH: number): Uint8Array | null;
     readonly version: number;

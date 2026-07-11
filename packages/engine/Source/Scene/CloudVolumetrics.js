@@ -115,6 +115,19 @@ function CloudVolumetrics(options) {
   this.cloudCastShadows = options.cloudCastShadows ?? false;
 
   /**
+   * When <code>true</code> (and {@link CloudVolumetrics#cloudCastShadows} is
+   * on), the cloud beer-shadow-map is rendered as THREE cascades (near / mid /
+   * far, reusing the terrain-CSM geometric split scheme) into a stacked atlas,
+   * with progressively fewer light-march steps per cascade. The globe terrain
+   * samples the finest cascade whose footprint contains the fragment — crisp
+   * near cloud shadows without losing the cheap far coverage. Opt-in quality
+   * tier; when off the single beer-shadow-map is byte-identical. WebGPU only.
+   * @type {boolean}
+   * @default false
+   */
+  this.cloudShadowCascades = options.cloudShadowCascades ?? false;
+
+  /**
    * When <code>true</code>, the dynamic environment map folds the procedural
    * cloud cover into its IBL. WebGPU only.
    * @type {boolean}

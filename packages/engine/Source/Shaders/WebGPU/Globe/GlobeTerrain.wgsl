@@ -232,6 +232,19 @@ struct CameraUniforms {
   // `czm_gammaCorrect` stays the historical identity no-op and the SDR
   // render is byte-identical.
   hdrControl: vec4<f32>,
+  // ─── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP: cloud-shadow cascade tail ───
+  // When the opt-in `cloudShadowCascades` tier is active, the cloud beer-shadow-
+  // map is rendered as three cascades (near/mid/far, geometric ÷3 footprints)
+  // stacked into a 512×1536 atlas bound at `cloudShadowMap`. `cloudShadowVP` (the
+  // existing mid-struct field) is the NEAR cascade's world→sun-clip matrix;
+  // `cloudShadowVP1`/`cloudShadowVP2` are the mid/far ones. `cloudShadowControl.w`
+  // carries the cascade count (3.0 when active, 0 otherwise). The FS picks the
+  // finest cascade whose footprint contains the fragment. Additive tail-append —
+  // no existing offset shifts; all-zero + count 0 by default so `sampleCloudGround-
+  // Shadow` takes the single-map branch → byte-identical when the tier is off.
+  cloudShadowVP1: mat4x4<f32>,
+  cloudShadowVP2: mat4x4<f32>,
+  cloudShadowCascadeParams: vec4<f32>, // x = atlas tile count (3.0); y,z,w reserved
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -2033,15 +2046,51 @@ fn luminance(color: vec3<f32>) -> f32 {
 // footprint (far terrain) — soft local effect, no hard cutoff. The off path never
 // calls this (the call site gates on `cloudShadowControl.x > 0.5`), so the 1×1 zero
 // placeholder is never read in the default render.
-fn sampleCloudGroundShadow(worldPos: vec3<f32>) -> f32 {
-  let clip = camera.cloudShadowVP * vec4<f32>(worldPos, 1.0);
-  // Ortho VP → w is 1, but guard anyway.
+// Project `worldPos` with `vp`; return the tile-local [0,1]² UV (y flipped to
+// texture space) and whether it landed inside the ortho footprint.
+fn cloudShadowProjectUV(vp: mat4x4<f32>, worldPos: vec3<f32>) -> vec3<f32> {
+  let clip = vp * vec4<f32>(worldPos, 1.0);
   let ndc = clip.xyz / max(abs(clip.w), 1e-6);
   let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
-    return 1.0; // outside the footprint — no shadow
+  let inside = select(0.0, 1.0,
+    uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0);
+  return vec3<f32>(uv, inside);
+}
+
+fn sampleCloudGroundShadow(worldPos: vec3<f32>) -> f32 {
+  var opticalDepth: f32 = -1.0;
+  if (camera.cloudShadowControl.w >= 1.5) {
+    // ─── CLOUD-LOD-R5: cascaded atlas (512×1536, 3 tiles stacked, tile 0 = top,
+    // finest near cascade). Pick the FINEST cascade whose ortho footprint contains
+    // the fragment: near (VP0) → mid (VP1) → far (VP2). Atlas V for tile i is
+    // (uvLocal.y + i) / 3. Missing all three → no shadow. ───
+    let p0 = cloudShadowProjectUV(camera.cloudShadowVP, worldPos);
+    let p1 = cloudShadowProjectUV(camera.cloudShadowVP1, worldPos);
+    let p2 = cloudShadowProjectUV(camera.cloudShadowVP2, worldPos);
+    let inv3 = 1.0 / 3.0;
+    if (p0.z > 0.5) {
+      let av = vec2<f32>(p0.x, (p0.y + 0.0) * inv3);
+      opticalDepth = textureSampleLevel(cloudShadowMap, cloudShadowSampler, av, 0.0).r;
+    } else if (p1.z > 0.5) {
+      let av = vec2<f32>(p1.x, (p1.y + 1.0) * inv3);
+      opticalDepth = textureSampleLevel(cloudShadowMap, cloudShadowSampler, av, 0.0).r;
+    } else if (p2.z > 0.5) {
+      let av = vec2<f32>(p2.x, (p2.y + 2.0) * inv3);
+      opticalDepth = textureSampleLevel(cloudShadowMap, cloudShadowSampler, av, 0.0).r;
+    } else {
+      return 1.0; // outside every cascade footprint — no shadow
+    }
+  } else {
+    // Single beer-shadow-map path (byte-identical default).
+    let clip = camera.cloudShadowVP * vec4<f32>(worldPos, 1.0);
+    // Ortho VP → w is 1, but guard anyway.
+    let ndc = clip.xyz / max(abs(clip.w), 1e-6);
+    let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+      return 1.0; // outside the footprint — no shadow
+    }
+    opticalDepth = textureSampleLevel(cloudShadowMap, cloudShadowSampler, uv, 0.0).r;
   }
-  let opticalDepth = textureSampleLevel(cloudShadowMap, cloudShadowSampler, uv, 0.0).r;
   let absorption = camera.cloudShadowControl.y;
   let strength = camera.cloudShadowControl.z;
   // Beer-Lambert transmittance, floored so even a fully overcast column reads as a

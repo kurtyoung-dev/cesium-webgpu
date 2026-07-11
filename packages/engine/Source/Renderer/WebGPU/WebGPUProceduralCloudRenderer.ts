@@ -169,6 +169,20 @@ export interface CloudCache {
   shadowSunViewVP: Float32Array; // 16 floats, column-major world→sun-clip
   shadowActive: boolean; // true when the real map was rendered this frame
   shadowAbsorption: number; // absorptionCoeff used so consumers' exp() matches
+  // ── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — opt-in 3-cascade atlas ──
+  // Allocated ONLY when `config.cloudShadowCascades` is on (and cast shadows).
+  // The atlas is 512×1536 r16float: three 512² tiles stacked (tile 0 = top =
+  // finest near cascade). Rendered by three viewport-scoped draws of the same
+  // `cloudShadowMain` entry point, each fed its own cascade uniforms via a
+  // 256-aligned slice of `shadowCascadeUniformBuffer`. The globe terrain reads
+  // this atlas (via the cascade branch); aerial/fog keep reading the single map.
+  shadowCascadeTexture: GPUTexture | null;
+  shadowCascadeView: GPUTextureView | null; // r16float atlas, 3 stacked tiles
+  shadowCascadeUniformBuffer: GPUBuffer | null; // 3×256B CloudShadowUniforms
+  shadowCascadeUniformData: Float32Array; // 3×64 floats (256B stride)
+  shadowCascadeVP: Float32Array; // 48 floats, 3 forward VPs for the consumers
+  shadowCascadeActive: boolean; // true when the atlas was rendered this frame
+  shadowCascadeSize: number; // per-tile square resolution currently allocated
   // Item 4.2 (CLOUD-IBL, Batch 441) — effective cloud coverage in [0, 1] that
   // the dynamic-env-map sky fill darkens + flattens its radiance toward, so an
   // overcast procedural-cloud sky yields a dim, flat ambient on lit glTF models
@@ -271,6 +285,15 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       shadowSunViewVP: new Float32Array(16),
       shadowActive: false,
       shadowAbsorption: 0.04,
+      shadowCascadeTexture: null,
+      shadowCascadeView: null,
+      shadowCascadeUniformBuffer: null,
+      shadowCascadeUniformData: new Float32Array(
+        CLOUD_SHADOW_CASCADE_COUNT * CLOUD_SHADOW_CASCADE_STRIDE_FLOATS,
+      ),
+      shadowCascadeVP: new Float32Array(CLOUD_SHADOW_CASCADE_COUNT * 16),
+      shadowCascadeActive: false,
+      shadowCascadeSize: 0,
       iblCoverage: 0.0,
       // Item 3-C (CLOUD-IBL-FULL, Batch 450) — seed with the Globe constructor
       // defaults so a pre-publish read still matches the visible defaults.
@@ -415,6 +438,28 @@ const CLOUD_SHADOW_FORMAT: GPUTextureFormat = "r16float";
 const CLOUD_SHADOW_FOOTPRINT_M = 60000.0;
 // Light-march steps for the optical-depth accumulation along the sun ray.
 const CLOUD_SHADOW_LIGHT_STEPS = 16;
+
+// ── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — opt-in 3-cascade constants ──
+// Three cascades reusing a geometric (÷3) CSM-style split: cascade 2 (far)
+// matches the single-map footprint (±60 km); cascades 1/0 tighten to ±20 km and
+// ±6.67 km, so the finest cascade packs the same 512² over 9× less ground → ~3×
+// the effective shadow resolution near the camera. Uniform-buffer offsets must be
+// 256-aligned, so each cascade's CloudShadowUniforms (20 floats) is padded to a
+// 64-float (256-byte) stride.
+const CLOUD_SHADOW_CASCADE_COUNT = 3;
+const CLOUD_SHADOW_CASCADE_STRIDE_FLOATS = 64; // 256 bytes (uniform offset align)
+const CLOUD_SHADOW_CASCADE_STRIDE_BYTES =
+  CLOUD_SHADOW_CASCADE_STRIDE_FLOATS * 4;
+// Per-cascade footprint HALF-extent (metres): near, mid, far. Far == the single
+// map; each step is ÷3 (geometric split).
+const CLOUD_SHADOW_CASCADE_FOOTPRINTS_M = [
+  CLOUD_SHADOW_FOOTPRINT_M / 9.0,
+  CLOUD_SHADOW_FOOTPRINT_M / 3.0,
+  CLOUD_SHADOW_FOOTPRINT_M,
+];
+// Per-cascade light-march steps — full for the crisp near cascade, fewer for the
+// cheaper far cascades (they cover coarse coverage where step count barely reads).
+const CLOUD_SHADOW_CASCADE_STEPS = [CLOUD_SHADOW_LIGHT_STEPS, 12, 8];
 
 // V9 (Batch 432) — half-res target format. rgba16float so the premultiplied HDR
 // cloud radiance survives the bilateral interpolation without banding.
@@ -1396,6 +1441,47 @@ function ensureShadowResources(device: GPUDevice, cache: CloudCache): boolean {
   );
 }
 
+// CLOUD-LOD-R5 — (Re)allocate the 3-cascade shadow atlas + its cascade uniform
+// buffer. REUSES the single-map's pipeline + BGL (`ensureShadowResources` must
+// have succeeded first — the caller guarantees this), so only the atlas target
+// and the 256-aligned uniform buffer are cascade-specific. The atlas stacks
+// `CLOUD_SHADOW_CASCADE_COUNT` square tiles vertically (tile 0 = top = finest).
+// Returns false (→ caller falls back to the single map) if allocation fails.
+function ensureCascadeResources(device: GPUDevice, cache: CloudCache): boolean {
+  if (
+    !cache.shadowCascadeTexture ||
+    cache.shadowCascadeSize !== CLOUD_SHADOW_SIZE
+  ) {
+    cache.shadowCascadeTexture?.destroy();
+    cache.shadowCascadeTexture = device.createTexture({
+      label: "CloudShadow Cascade Atlas (sun-view optical depth, 3 tiles)",
+      size: {
+        width: CLOUD_SHADOW_SIZE,
+        height: CLOUD_SHADOW_SIZE * CLOUD_SHADOW_CASCADE_COUNT,
+        depthOrArrayLayers: 1,
+      },
+      format: CLOUD_SHADOW_FORMAT,
+      usage:
+        GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    cache.shadowCascadeView = cache.shadowCascadeTexture.createView();
+    cache.shadowCascadeSize = CLOUD_SHADOW_SIZE;
+  }
+  if (!cache.shadowCascadeUniformBuffer) {
+    cache.shadowCascadeUniformBuffer = device.createBuffer({
+      label: "CloudShadow Cascade UB (3×256B)",
+      size: CLOUD_SHADOW_CASCADE_COUNT * CLOUD_SHADOW_CASCADE_STRIDE_BYTES,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+  }
+  return (
+    !!cache.shadowCascadeView &&
+    !!cache.shadowCascadeUniformBuffer &&
+    !!cache.shadowPipeline &&
+    !!cache.shadowBindGroupLayout
+  );
+}
+
 /**
  * Execute the procedural cloud rendering pass.
  * Called after globe rendering, before post-processing.
@@ -2112,6 +2198,7 @@ export function executeProceduralClouds(
   // the rendered cloud field exactly. The sun-view ortho VP is stashed on the cache
   // for the consumers (config terrain reads last frame's; aerial/fog this frame's).
   cache.shadowActive = false;
+  cache.shadowCascadeActive = false;
   if (config.cloudCastShadows === true) {
     const shadowOk = ensureShadowResources(device, cache);
     if (!shadowOk) {
@@ -2185,6 +2272,94 @@ export function executeProceduralClouds(
       shadowPass.draw(3);
       shadowPass.end();
       cache.shadowActive = true;
+
+      // ── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — opt-in 3-cascade atlas ──
+      // Additive on top of the single map (which aerial/fog still read): render
+      // three geometrically-split cascades into a stacked 512×1536 atlas the
+      // globe terrain samples. Each cascade reuses the single-map pipeline with
+      // its own footprint + march-step count, fed from a 256-aligned slice of the
+      // cascade uniform buffer. Default OFF → this whole block is skipped and the
+      // render is byte-identical to the single-map path.
+      if (config.cloudShadowCascades === true) {
+        const cascadeOk = ensureCascadeResources(device, cache);
+        if (!cascadeOk) {
+          // Real bug: the tier is on but the atlas couldn't allocate. The globe
+          // falls back to the single map (shadowCascadeActive stays false).
+          console.error(
+            `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow cascade atlas allocation failed; falling back to single beer-shadow-map.`,
+          );
+        } else {
+          const cud = cache.shadowCascadeUniformData;
+          for (let ci = 0; ci < CLOUD_SHADOW_CASCADE_COUNT; ci++) {
+            const base = ci * CLOUD_SHADOW_CASCADE_STRIDE_FLOATS;
+            const fwd = cache.shadowCascadeVP.subarray(ci * 16, ci * 16 + 16);
+            // Reuse the shared invVP scratch region (cud[base..base+15]) as the
+            // per-cascade inverse VP the shadow FS reconstructs columns from.
+            const invVP = cud.subarray(base, base + 16);
+            buildSunViewOrthoVP(
+              groundCenter,
+              [sdx, sdy, sdz],
+              CLOUD_SHADOW_CASCADE_FOOTPRINTS_M[ci],
+              fwd,
+              invVP,
+            );
+            cud[base + 16] = sdx;
+            cud[base + 17] = sdy;
+            cud[base + 18] = sdz;
+            cud[base + 19] = CLOUD_SHADOW_CASCADE_STEPS[ci];
+          }
+          device.queue.writeBuffer(cache.shadowCascadeUniformBuffer!, 0, cud);
+
+          const cascadePass = encoder.beginRenderPass({
+            label: "CloudShadow cascade atlas pass",
+            colorAttachments: [
+              {
+                view: cache.shadowCascadeView!,
+                clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                loadOp: "clear",
+                storeOp: "store",
+              },
+            ],
+          });
+          cascadePass.setPipeline(cache.shadowPipeline!);
+          for (let ci = 0; ci < CLOUD_SHADOW_CASCADE_COUNT; ci++) {
+            // Tile ci occupies rows [ci*512, (ci+1)*512) of the atlas; the
+            // full-screen triangle fills the viewport, so each tile gets a full
+            // [0,1] UV reconstruction against its own cascade inverse VP.
+            cascadePass.setViewport(
+              0,
+              ci * CLOUD_SHADOW_SIZE,
+              CLOUD_SHADOW_SIZE,
+              CLOUD_SHADOW_SIZE,
+              0,
+              1,
+            );
+            const cascadeBindGroup = device.createBindGroup({
+              layout: cache.shadowBindGroupLayout!,
+              entries: [
+                { binding: 3, resource: { buffer: cache.uniformBuffer! } },
+                { binding: 4, resource: weatherView },
+                { binding: 5, resource: cache.weatherSampler! },
+                { binding: 6, resource: noise.shapeView },
+                { binding: 7, resource: noise.detailView },
+                { binding: 8, resource: noise.sampler },
+                {
+                  binding: 13,
+                  resource: {
+                    buffer: cache.shadowCascadeUniformBuffer!,
+                    offset: ci * CLOUD_SHADOW_CASCADE_STRIDE_BYTES,
+                    size: CLOUD_SHADOW_UNIFORM_BYTES,
+                  },
+                },
+              ],
+            });
+            cascadePass.setBindGroup(0, cascadeBindGroup);
+            cascadePass.draw(3);
+          }
+          cascadePass.end();
+          cache.shadowCascadeActive = true;
+        }
+      }
     }
   }
 
@@ -2507,6 +2682,14 @@ export function destroyProceduralCloudResources(
     cache.shadowUniformBuffer = null;
     cache.shadowSize = 0;
     cache.shadowActive = false;
+    // CLOUD-LOD-R5 — release the cascade atlas + cascade uniform buffer.
+    cache.shadowCascadeTexture?.destroy();
+    cache.shadowCascadeTexture = null;
+    cache.shadowCascadeView = null;
+    cache.shadowCascadeUniformBuffer?.destroy();
+    cache.shadowCascadeUniformBuffer = null;
+    cache.shadowCascadeActive = false;
+    cache.shadowCascadeSize = 0;
     // TAKRAM-9 — release the transmittance-mask target + pipeline.
     cache.maskTexture?.destroy();
     cache.maskTexture = null;

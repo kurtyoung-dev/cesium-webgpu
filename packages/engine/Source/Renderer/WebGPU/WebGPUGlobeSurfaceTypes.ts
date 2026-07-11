@@ -155,7 +155,14 @@ export interface GlobePipelineEntry {
 // Additive tail-append (no existing offset shifts). Gate is 0 unless HDR
 // canvas output is engaged, so `czm_gammaCorrect` stays the historical
 // identity no-op → byte-identical default (SDR) render.
-export const CAMERA_UNIFORM_FLOATS = 196;
+// CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — +36 for the cloud-shadow cascade
+// tail: cloudShadowVP1 (mat4, offsets 196-211) + cloudShadowVP2 (mat4, offsets
+// 212-227) + cloudShadowCascadeParams (vec4, offsets 228-231). Carries the two
+// FAR cascade forward-VP matrices (cascade 0 reuses the existing cloudShadowVP
+// field; cascade count travels in cloudShadowControl.w). All-zero unless the
+// opt-in `cloudShadowCascades` tier rendered the cascade atlas this frame, so
+// the single-beer-shadow-map path (cloudShadowControl.w < 1.5) is byte-identical.
+export const CAMERA_UNIFORM_FLOATS = 232;
 export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 
 // TileUniforms layout — Batch 58 (C-R5 imagery layer expansion):
