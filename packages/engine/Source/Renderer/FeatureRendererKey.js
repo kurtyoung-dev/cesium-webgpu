@@ -244,6 +244,19 @@ const FeatureRendererKey = {
   // path differs (Batch 324, NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK).
   STAR_FIELD: 51,
 
+  // ── GPU flow-field wind particles (Campaign 6, C6-FLOWFIELD-WIND) ──
+  // `FlowFieldWindLayer` routes here. WebGPU-only (documented no-op on
+  // WebGL — the layer simply renders nothing when no FR resolves). A
+  // ping-pong compute pass advects N particles across a velocity field
+  // supplied as an RGBA8 imagery texture (R=u, G=v, normalized against the
+  // sidecar min/max), and an instanced point draw vertex-pulls each
+  // particle's lon/lat → RTE-split ellipsoid position. Opt-in, default-off:
+  // nothing is allocated until a layer with `show===true` and a loaded
+  // velocity source is updated. See WebGPUFlowFieldRenderer.ts. Reference
+  // port: mapbox/webgl-wind (ISC) + Cesium GPU-wind blog (RaymanNg,
+  // MIT) — technique only; GFS sample data is NOAA public domain.
+  FLOW_FIELD: 52,
+
   // NOTE: a `DEFERRED_GBUFFER` slot was reserved at index 33 in earlier
   // sessions for a planned deferred renderer. It was never registered and
   // never consumed by any scene code, so it was removed and the subsequent
@@ -256,7 +269,7 @@ const FeatureRendererKey = {
    * Used to pre-allocate the internal array in GraphicsContext.
    * @type {number}
    */
-  COUNT: 52,
+  COUNT: 53,
 };
 
 export default Object.freeze(FeatureRendererKey);

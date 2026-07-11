@@ -1,0 +1,19 @@
+{
+  "source": "NOAA/NCEP GFS via https://nomads.ncep.noaa.gov (US Government work, public domain)",
+  "parameter": "10 m above ground UGRD/VGRD (m/s)",
+  "date": "2026-07-09T00:00Z",
+  "width": 360,
+  "height": 181,
+  "lonRange": [
+    0,
+    359
+  ],
+  "latRange": [
+    90,
+    -90
+  ],
+  "uMin": -36.89,
+  "uMax": 32.06,
+  "vMin": -30.15,
+  "vMax": 45.82
+}

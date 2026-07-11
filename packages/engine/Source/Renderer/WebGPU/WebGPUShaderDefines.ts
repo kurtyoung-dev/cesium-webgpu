@@ -996,6 +996,14 @@ export const ShaderSourceId = Object.freeze({
   // the user enables `pointCloudShading.eyeDomeLighting`; add-only.
   POINT_CLOUD_EDL_DEPTH: 38,
   POINT_CLOUD_EDL_BLEND: 39,
+  // C6-FLOWFIELD-WIND (Campaign 6). The instanced storage-buffer-vertex-pull
+  // wind-particle render shader (`FlowFieldRender.wgsl`). Resolves through the
+  // module cache so its `//>>ifdef LOG_DEPTH` blocks preprocess and the
+  // log-depth color/depth-write variant dedupes per (sourceId, defines).
+  // The advection compute module (`FlowFieldAdvect.wgsl`) has no ifdef blocks
+  // and is created directly by the renderer, so it needs no source id.
+  // Add-only.
+  FLOW_FIELD_RENDER: 40,
 } as const);
 
 /**

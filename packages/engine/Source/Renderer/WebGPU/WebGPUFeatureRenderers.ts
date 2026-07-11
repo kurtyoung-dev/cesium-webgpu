@@ -825,6 +825,22 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     },
   );
 
+  // ── Flow-field wind particles (LAZY, C6-FLOWFIELD-WIND) ──
+  // Opt-in default-off: the renderer chunk (velocity-advection compute +
+  // instanced point WGSL) only downloads on the first FlowFieldWindLayer
+  // update. Nothing is allocated until a layer with show===true and a loaded
+  // velocity source routes here.
+  context.registerFeatureRendererLoader(
+    FeatureRendererKey.FLOW_FIELD,
+    async () => {
+      const mod = await import("./WebGPUFlowFieldRenderer.js");
+      context.registerFeatureRenderer(FeatureRendererKey.FLOW_FIELD, {
+        update: mod.updateWebGPUFlowField,
+        destroy: mod.destroyWebGPUFlowFieldResources,
+      });
+    },
+  );
+
   // ── Scene orchestration ──
   context.registerFeatureRenderer(FeatureRendererKey.SCENE_RENDERER, {
     RendererClass: WebGPUSceneRenderer,
