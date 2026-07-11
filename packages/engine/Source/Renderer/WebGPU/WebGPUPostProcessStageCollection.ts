@@ -703,8 +703,13 @@ function configureWebGPUPostProcessPipeline(
     // discriminator is the lone string-typed uniform — narrow it to
     // the literal union without going through `numU`.
     const rawAlgo = ao?.uniforms?.algorithm;
-    const algorithm: "gtao" | "hbao" =
-      rawAlgo === "gtao" || rawAlgo === "hbao" ? rawAlgo : "hbao";
+    // C6-SSGI-DIFFUSE — "ssgi" opt-in joins the string-typed algorithm
+    // discriminator. Default stays "hbao" (byte-identical); ssgi is only
+    // reached when the user explicitly sets it AND enables the AO stage.
+    const algorithm: "gtao" | "hbao" | "ssgi" =
+      rawAlgo === "gtao" || rawAlgo === "hbao" || rawAlgo === "ssgi"
+        ? rawAlgo
+        : "hbao";
     pipeline.addAmbientOcclusion(
       device,
       canvasFormat,
@@ -718,6 +723,18 @@ function configureWebGPUPostProcessPipeline(
         ambientOcclusionOnly: Boolean(
           ao?.uniforms?.ambientOcclusionOnly ?? false,
         ),
+        // C6-SSGI-DIFFUSE — SSILVB parameters (ignored unless algorithm ssgi).
+        giIntensity: numU(ao?.uniforms?.giIntensity, 1.0),
+        sliceCount: numU(ao?.uniforms?.sliceCount, 2),
+        ssgiStepCount: numU(ao?.uniforms?.ssgiStepCount, 8),
+        radiusPixels: numU(ao?.uniforms?.radiusPixels, 32.0),
+        maxWorldRadius: numU(ao?.uniforms?.maxWorldRadius, 500.0),
+        thicknessMin: numU(ao?.uniforms?.thicknessMin, 1.0),
+        thicknessK: numU(ao?.uniforms?.thicknessK, 0.005),
+        luminanceClamp: numU(ao?.uniforms?.luminanceClamp, 7.0),
+        expFactor: numU(ao?.uniforms?.expFactor, 2.0),
+        aoWeight: numU(ao?.uniforms?.aoWeight, 1.0),
+        ssgiDebugMode: numU(ao?.uniforms?.ssgiDebugMode, 0),
       },
       useShaderF16,
     );
@@ -1562,6 +1579,25 @@ function updateAmbientOcclusionFrameData(
   if (!fx) return;
   const f = resolvePostProcessFrustum(scene);
   if (f) fx.setFrustum(f.near, f.far, f.logActive);
+  // C6-SSGI-DIFFUSE — altitude fade so SSGI degrades to a byte-exact no-op from
+  // orbit (planet-scale guard, decoupled from depth reconstruction). Fades from
+  // 1 at/below `loFade` metres to 0 at/above `hiFade`. no-op for hbao/gtao
+  // (setAltitudeFade guards on the algorithm).
+  const cam = (
+    scene as unknown as {
+      camera?: { positionCartographic?: { height?: number } };
+    }
+  )?.camera;
+  const height = cam?.positionCartographic?.height;
+  if (typeof height === "number") {
+    const loFade = 8000.0;
+    const hiFade = 60000.0;
+    const fade = Math.max(
+      0.0,
+      Math.min(1.0, 1.0 - (height - loFade) / (hiFade - loFade)),
+    );
+    fx.setAltitudeFade(fade);
+  }
 }
 
 /**

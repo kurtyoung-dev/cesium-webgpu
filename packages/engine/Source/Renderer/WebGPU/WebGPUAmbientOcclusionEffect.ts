@@ -18,6 +18,12 @@ import GaussianBlur1DWGSL from "../../Shaders/WebGPU/PostProcess/GaussianBlur1D.
 import AmbientOcclusionGenerateF16WGSL from "../../Shaders/WebGPU/PostProcess/AmbientOcclusionGenerate_f16.js";
 import AmbientOcclusionModulateF16WGSL from "../../Shaders/WebGPU/PostProcess/AmbientOcclusionModulate_f16.js";
 import GaussianBlur1DF16WGSL from "../../Shaders/WebGPU/PostProcess/GaussianBlur1D_f16.js";
+// C6-SSGI-DIFFUSE — screen-space diffuse global illumination (SSILVB visibility
+// bitmask). Opt-in, default-off, WebGPU-only. Reachable only via the "ssgi"
+// AOAlgorithm; the "hbao"/"gtao" paths never import these at runtime.
+import SSGIGenerateWGSL from "../../Shaders/WebGPU/PostProcess/SSGIGenerate.js";
+import BilateralBlur1DWGSL from "../../Shaders/WebGPU/PostProcess/BilateralBlur1D.js";
+import SSGICompositeWGSL from "../../Shaders/WebGPU/PostProcess/SSGIComposite.js";
 import {
   makeBindGroupLayout,
   sampler,
@@ -44,8 +50,18 @@ import type { PostProcessEffect } from "./WebGPUPostProcessEffects.js";
  *            exactly; modern standard in AAA engines (UE5, Unity HDRP,
  *            Frostbite). ~10-15% more ALU than HBAO for visibly better
  *            silhouettes and grazing-angle response.
+ *   "ssgi" — Screen-Space Global Illumination (SSILVB visibility bitmask,
+ *            Therrien et al. 2023). Fork-added Campaign-6 enhancement,
+ *            WebGPU-only, opt-in. A structural superset of GTAO: one pass
+ *            produces BOTH an improved AO term (thin-surface fix) and a
+ *            diffuse indirect-bounce color that bleeds neighbouring surface
+ *            color. Runs at rgba16float through a depth-aware bilateral blur
+ *            and an additive composite. See SSGIGenerate.wgsl. Selecting this
+ *            replaces the GTAO/HBAO generate+modulate chain; it is never
+ *            reached unless explicitly requested, so the default paths stay
+ *            byte-identical.
  */
-export type AOAlgorithm = "hbao" | "gtao";
+export type AOAlgorithm = "hbao" | "gtao" | "ssgi";
 
 export interface AmbientOcclusionConfig {
   /** AO algorithm — defaults to "hbao" for backwards compatibility. */
@@ -57,6 +73,30 @@ export interface AmbientOcclusionConfig {
   directionCount?: number; // Number of sample directions (default 4)
   blurSigma?: number; // Blur sigma (default 2.0)
   ambientOcclusionOnly?: boolean; // Debug: show AO only
+
+  // ── C6-SSGI-DIFFUSE — only consumed when algorithm === "ssgi" ──
+  /** Indirect-bounce brightness multiplier (default 1.0). */
+  giIntensity?: number;
+  /** SSGI slice count — overrides directionCount for ssgi (default 2). */
+  sliceCount?: number;
+  /** SSGI radial step count — overrides stepCount for ssgi (default 8). */
+  ssgiStepCount?: number;
+  /** Screen-space sample reach in pixels (default 32). */
+  radiusPixels?: number;
+  /** Eye-space radius cap in metres — orbit-view no-op guard (default 500). */
+  maxWorldRadius?: number;
+  /** Minimum linear thickness in metres (default 1.0). */
+  thicknessMin?: number;
+  /** Linear thickness fraction of view distance (default 0.005). */
+  thicknessK?: number;
+  /** HDR firefly luminance clamp (default 7.0). */
+  luminanceClamp?: number;
+  /** Exponential step distribution factor (default 2.0). */
+  expFactor?: number;
+  /** SSGI composite AO weight [0,1] (default 1.0). */
+  aoWeight?: number;
+  /** SSGI debug: 0 composite / 1 AO-only / 2 GI-only / 3 scene (default 0). */
+  ssgiDebugMode?: number;
 }
 
 export class AmbientOcclusionEffect implements PostProcessEffect {
@@ -124,6 +164,16 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
   private _far = 10000.0;
   private _logActive = 0.0;
 
+  // C6-SSGI-DIFFUSE — dedicated bilateral-blur layout (adds a depth binding
+  // vs the algorithm-agnostic Gaussian blur layout) and a per-frame counter
+  // driving the temporal slice rotation. Only allocated on the "ssgi" path.
+  private _ssgiBlurLayout: GPUBindGroupLayout | null = null;
+  private _frameCounter = 0;
+  // C6-SSGI-DIFFUSE — CPU-computed altitude fade [0,1]. 1 near the ground,
+  // 0 from orbit (guarantees the SSGI no-op independent of depth
+  // reconstruction). Seeded 1.0 so the first enabled frame is not a no-op.
+  private _altitudeFade = 1.0;
+
   private _config: Required<AmbientOcclusionConfig>;
 
   constructor(config: AmbientOcclusionConfig = {}) {
@@ -137,7 +187,24 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       directionCount: config.directionCount ?? 4,
       blurSigma: config.blurSigma ?? 2.0,
       ambientOcclusionOnly: config.ambientOcclusionOnly ?? false,
+      // C6-SSGI-DIFFUSE defaults (RESEARCH_R-SSGI §9).
+      giIntensity: config.giIntensity ?? 1.0,
+      sliceCount: config.sliceCount ?? 2,
+      ssgiStepCount: config.ssgiStepCount ?? 8,
+      radiusPixels: config.radiusPixels ?? 32.0,
+      maxWorldRadius: config.maxWorldRadius ?? 500.0,
+      thicknessMin: config.thicknessMin ?? 1.0,
+      thicknessK: config.thicknessK ?? 0.005,
+      luminanceClamp: config.luminanceClamp ?? 7.0,
+      expFactor: config.expFactor ?? 2.0,
+      aoWeight: config.aoWeight ?? 1.0,
+      ssgiDebugMode: config.ssgiDebugMode ?? 0,
     };
+  }
+
+  /** True when the SSGI (SSILVB) path is selected. */
+  private get _isSSGI(): boolean {
+    return this._config.algorithm === "ssgi";
   }
 
   initialize(
@@ -183,6 +250,12 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     gBufferNormalView?: GPUTextureView | null,
   ): GPUTextureView {
     if (!this._device || !depthView) return sourceView;
+
+    // ── C6-SSGI-DIFFUSE — SSILVB path (generate radiance+AO → bilateral blur
+    // H/V → additive composite). Kept separate from the hbao/gtao chain. ──
+    if (this._isSSGI) {
+      return this._executeSSGI(encoder, sourceView, depthView, sampler);
+    }
 
     // Pick the normal source. When the caller provides a real
     // G-buffer view, the WGSL's `frustum.w` uniform flag is also set
@@ -286,17 +359,129 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     return this._outputView!;
   }
 
+  /**
+   * C6-SSGI-DIFFUSE — execute the SSILVB screen-space GI chain.
+   *
+   * Pass 1 (generate): SSGIGenerate reads depth + random + the scene-color
+   * source (binding 4) and writes rgba16float (GI.rgb, AO.a) into the raw
+   * target. Pass 2/3 (bilateral H/V): depth-aware denoise. Pass 4 (composite):
+   * additive `scene * ao + gi` into the `format` output.
+   */
+  private _executeSSGI(
+    encoder: GPUCommandEncoder,
+    sourceView: GPUTextureView,
+    depthView: GPUTextureView,
+    sampler: GPUSampler,
+  ): GPUTextureView {
+    const device = this._device!;
+
+    // Pass 1 — generate. Binding 4 = scene-color source (the ping-pong input).
+    const genBG = this._bgCache.getOrCreate(
+      device,
+      "SSGI-Generate-BG",
+      this._generateLayout!,
+      [
+        { binding: 0, resource: depthView },
+        { binding: 1, resource: this._randomView! },
+        { binding: 2, resource: sampler },
+        { binding: 3, resource: { buffer: this._generateUniforms! } },
+        { binding: 4, resource: sourceView },
+      ],
+    );
+    executePass(
+      encoder,
+      "SSGI-Generate",
+      this._generatePipeline!,
+      genBG,
+      this._aoRawView!,
+    );
+
+    // Pass 2 — bilateral horizontal.
+    const blurHBG = this._bgCache.getOrCreate(
+      device,
+      "SSGI-BlurH-BG",
+      this._ssgiBlurLayout!,
+      [
+        { binding: 0, resource: this._aoRawView! },
+        { binding: 1, resource: depthView },
+        { binding: 2, resource: sampler },
+        { binding: 3, resource: { buffer: this._blurHUniforms! } },
+      ],
+    );
+    executePass(
+      encoder,
+      "SSGI-BlurH",
+      this._blurHPipeline!,
+      blurHBG,
+      this._aoBlurTempView!,
+    );
+
+    // Pass 3 — bilateral vertical.
+    const blurVBG = this._bgCache.getOrCreate(
+      device,
+      "SSGI-BlurV-BG",
+      this._ssgiBlurLayout!,
+      [
+        { binding: 0, resource: this._aoBlurTempView! },
+        { binding: 1, resource: depthView },
+        { binding: 2, resource: sampler },
+        { binding: 3, resource: { buffer: this._blurVUniforms! } },
+      ],
+    );
+    executePass(
+      encoder,
+      "SSGI-BlurV",
+      this._blurVPipeline!,
+      blurVBG,
+      this._aoBlurredView!,
+    );
+
+    // Pass 4 — additive composite.
+    const compBG = this._bgCache.getOrCreate(
+      device,
+      "SSGI-Composite-BG",
+      this._modulateLayout!,
+      [
+        { binding: 0, resource: sourceView },
+        { binding: 1, resource: this._aoBlurredView! },
+        { binding: 2, resource: sampler },
+        { binding: 3, resource: { buffer: this._modulateUniforms! } },
+      ],
+    );
+    executePass(
+      encoder,
+      "SSGI-Composite",
+      this._modulatePipeline!,
+      compBG,
+      this._outputView!,
+    );
+
+    return this._outputView!;
+  }
+
   private _createTextures(
     device: GPUDevice,
     w: number,
     h: number,
     format: GPUTextureFormat,
   ): void {
-    this._aoRawTex = createTexture(device, "AO-Raw", w, h, format);
+    // C6-SSGI-DIFFUSE — the SSGI generate/blur targets carry HDR indirect
+    // radiance in .rgb and AO visibility in .a, so they must be rgba16float
+    // regardless of the (possibly 8-bit) chain format. The final composite
+    // still writes `format` so the downstream chain is unchanged. The
+    // hbao/gtao paths keep the historical single-channel-in-`format` targets.
+    const interFormat: GPUTextureFormat = this._isSSGI ? "rgba16float" : format;
+    this._aoRawTex = createTexture(device, "AO-Raw", w, h, interFormat);
     this._aoRawView = this._aoRawTex.createView();
-    this._aoBlurTempTex = createTexture(device, "AO-BlurTemp", w, h, format);
+    this._aoBlurTempTex = createTexture(
+      device,
+      "AO-BlurTemp",
+      w,
+      h,
+      interFormat,
+    );
     this._aoBlurTempView = this._aoBlurTempTex.createView();
-    this._aoBlurredTex = createTexture(device, "AO-Blurred", w, h, format);
+    this._aoBlurredTex = createTexture(device, "AO-Blurred", w, h, interFormat);
     this._aoBlurredView = this._aoBlurredTex.createView();
     this._outputTex = createTexture(device, "AO-Output", w, h, format);
     this._outputView = this._outputTex.createView();
@@ -355,7 +540,9 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
 
   private _createPipelines(device: GPUDevice, format: GPUTextureFormat): void {
     // SSAO Generate layout: depthTex + randomTex + sampler + uniforms
-    //   + gBufferNormalTex (Phase 8a Slice 4, Batch 87)
+    //   + gBufferNormalTex (Phase 8a Slice 4, Batch 87).
+    // C6-SSGI-DIFFUSE reuses the SAME layout shape — binding 4 (a texture) is
+    // the G-buffer normal for hbao/gtao and the scene-color source for ssgi.
     this._generateLayout = makeBindGroupLayout(device, "AO-Generate-BGL", [
       texture(0, Stage.FRAGMENT),
       texture(1, Stage.FRAGMENT),
@@ -371,13 +558,57 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       uniformBuffer(2, Stage.FRAGMENT),
     ]);
 
-    // Modulate layout: scene + AO + sampler + uniforms
+    // Modulate layout: scene + AO + sampler + uniforms (also the SSGI composite)
     this._modulateLayout = makeBindGroupLayout(device, "AO-Modulate-BGL", [
       texture(0, Stage.FRAGMENT),
       texture(1, Stage.FRAGMENT),
       sampler(2, Stage.FRAGMENT),
       uniformBuffer(3, Stage.FRAGMENT),
     ]);
+
+    // ── C6-SSGI-DIFFUSE — SSILVB path. Distinct pipelines: HDR rgba16float
+    // generate + a depth-aware bilateral blur (its own layout with a depth
+    // binding) + an additive composite. Kept fully separate from the
+    // hbao/gtao pipelines below so those stay byte-identical. ──
+    if (this._isSSGI) {
+      const interFormat: GPUTextureFormat = "rgba16float";
+      // Bilateral blur layout: giao(0) + depth(1) + sampler(2) + uniforms(3).
+      this._ssgiBlurLayout = makeBindGroupLayout(device, "SSGI-Blur-BGL", [
+        texture(0, Stage.FRAGMENT),
+        texture(1, Stage.FRAGMENT),
+        sampler(2, Stage.FRAGMENT),
+        uniformBuffer(3, Stage.FRAGMENT),
+      ]);
+      this._generatePipeline = createFullscreenPipeline(
+        device,
+        "SSGI-Generate",
+        SSGIGenerateWGSL,
+        interFormat,
+        this._generateLayout,
+      );
+      this._blurHPipeline = createFullscreenPipeline(
+        device,
+        "SSGI-BlurH",
+        BilateralBlur1DWGSL,
+        interFormat,
+        this._ssgiBlurLayout,
+      );
+      this._blurVPipeline = createFullscreenPipeline(
+        device,
+        "SSGI-BlurV",
+        BilateralBlur1DWGSL,
+        interFormat,
+        this._ssgiBlurLayout,
+      );
+      this._modulatePipeline = createFullscreenPipeline(
+        device,
+        "SSGI-Composite",
+        SSGICompositeWGSL,
+        format,
+        this._modulateLayout,
+      );
+      return;
+    }
 
     // Select generation shader by algorithm. Both variants share the
     // same bind group layout + output format, so swapping the shader is
@@ -461,9 +692,63 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     const data = new Float32Array([near, far, this._logActive]);
     // frustum vec4 begins at byte offset 32 (params0 vec4 → 0, params1 vec4
     // → 16, frustum vec4 → 32). frustum.x=near, .y=far, .z=logActive.
+    // Shared offset for both the hbao/gtao generate UB and the ssgi generate UB.
     this._device.queue.writeBuffer(
       this._generateUniforms,
       32,
+      data.buffer,
+      data.byteOffset,
+      data.byteLength,
+    );
+
+    // ── C6-SSGI-DIFFUSE — also push the frustum into the two bilateral-blur
+    // UBs (they linearize depth for edge-stopping) and advance the temporal
+    // slice-rotation frame index in params3.z (generate UB, byte offset 72). ──
+    if (this._isSSGI) {
+      if (this._blurHUniforms) {
+        this._device.queue.writeBuffer(
+          this._blurHUniforms,
+          32,
+          data.buffer,
+          data.byteOffset,
+          data.byteLength,
+        );
+      }
+      if (this._blurVUniforms) {
+        this._device.queue.writeBuffer(
+          this._blurVUniforms,
+          32,
+          data.buffer,
+          data.byteOffset,
+          data.byteLength,
+        );
+      }
+      this._frameCounter = (this._frameCounter + 1) % 24;
+      const frameData = new Float32Array([this._frameCounter]);
+      // params3 is the 5th vec4 → byte offset 64; .z (frameIndex) → offset 72.
+      this._device.queue.writeBuffer(
+        this._generateUniforms,
+        72,
+        frameData.buffer,
+        frameData.byteOffset,
+        frameData.byteLength,
+      );
+    }
+  }
+
+  /**
+   * C6-SSGI-DIFFUSE — push the CPU-computed altitude fade [0,1] into the SSGI
+   * generate UB (params0.z, byte offset 8). No-op for the hbao/gtao paths,
+   * where params0.z is `lengthCap` and must not be overwritten. Called
+   * per-frame from the post-process collection's frame-data update.
+   */
+  setAltitudeFade(fade: number): void {
+    this._altitudeFade = Math.max(0.0, Math.min(1.0, fade));
+    if (!this._isSSGI || !this._device || !this._generateUniforms) return;
+    const data = new Float32Array([this._altitudeFade]);
+    this._device.queue.writeBuffer(
+      this._generateUniforms,
+      8,
       data.buffer,
       data.byteOffset,
       data.byteLength,
@@ -490,6 +775,87 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     const cfg = this._config;
     const w = this._width;
     const h = this._height;
+
+    // ── C6-SSGI-DIFFUSE — SSILVB uniform layout (5 vec4 generate, 3 vec4 blur,
+    // 1 vec4 composite). Separate from the hbao/gtao packing below. ──
+    if (this._isSSGI) {
+      // generate: params0(aoIntensity,bias,-,stepCount) | params1(sliceCount,
+      // 1/w,1/h,randomTexSize) | frustum(near,far,logActive,-) |
+      // params2(giIntensity,lumClamp,thicknessMin,thicknessK) |
+      // params3(radiusPixels,maxWorldRadius,frameIndex,expFactor)
+      this._generateUniforms = createUniformBuffer(
+        device,
+        "SSGI-Generate-UB",
+        new Float32Array([
+          cfg.intensity,
+          cfg.bias,
+          this._altitudeFade,
+          cfg.ssgiStepCount,
+          cfg.sliceCount,
+          1.0 / w,
+          1.0 / h,
+          4.0,
+          this._near,
+          this._far,
+          this._logActive,
+          0.0,
+          cfg.giIntensity,
+          cfg.luminanceClamp,
+          cfg.thicknessMin,
+          cfg.thicknessK,
+          cfg.radiusPixels,
+          cfg.maxWorldRadius,
+          this._frameCounter,
+          cfg.expFactor,
+        ]),
+      );
+      // blur: params(dirX,dirY,sigma,taps) | texel(1/w,1/h,depthTol,-) |
+      // frustum(near,far,logActive,-)
+      const depthTol = 0.01; // 1% relative eye-depth tolerance (§5)
+      this._blurHUniforms = createUniformBuffer(
+        device,
+        "SSGI-BlurH-UB",
+        new Float32Array([
+          1.0,
+          0.0,
+          cfg.blurSigma,
+          2.0,
+          1.0 / w,
+          1.0 / h,
+          depthTol,
+          0.0,
+          this._near,
+          this._far,
+          this._logActive,
+          0.0,
+        ]),
+      );
+      this._blurVUniforms = createUniformBuffer(
+        device,
+        "SSGI-BlurV-UB",
+        new Float32Array([
+          0.0,
+          1.0,
+          cfg.blurSigma,
+          2.0,
+          1.0 / w,
+          1.0 / h,
+          depthTol,
+          0.0,
+          this._near,
+          this._far,
+          this._logActive,
+          0.0,
+        ]),
+      );
+      // composite: params(debugMode,aoWeight,-,-)
+      this._modulateUniforms = createUniformBuffer(
+        device,
+        "SSGI-Composite-UB",
+        new Float32Array([cfg.ssgiDebugMode, cfg.aoWeight, 0.0, 0.0]),
+      );
+      return;
+    }
 
     // Generate: intensity, bias, lengthCap, stepCount | directionCount, 1/w, 1/h, randomTexSize | near, far, 0, 0 | pad
     this._generateUniforms = createUniformBuffer(
