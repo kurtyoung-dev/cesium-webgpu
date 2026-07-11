@@ -31,6 +31,10 @@ import {
   type SceneCaptureCache,
   type SceneCaptureManager,
 } from "./WebGPUDynamicEnvironmentMapCapture.js";
+import {
+  resolveAtmosphereScattering,
+  type AtmosphereScatteringDefaults,
+} from "./WebGPUAtmosphereUniforms.js";
 
 /** Minimal interface for the upstream DynamicEnvironmentMapManager. */
 interface DynEnvMapManagerLike {
@@ -1004,6 +1008,18 @@ const DEFAULT_RAYLEIGH_SCALE_HEIGHT = 10000.0;
 const DEFAULT_MIE_SCALE_HEIGHT = 3200.0;
 const DEFAULT_MIE_ANISOTROPY = 0.9;
 const DEFAULT_LIGHT_INTENSITY = 10.0;
+// DP-H47 (Campaign-7) — the model IBL sky fill's fallback set, passed to the
+// shared `resolveAtmosphereScattering` resolver. These are the same historical
+// `DEFAULT_*` constants above, so resolving through the shared seam is
+// byte-identical when `scene.atmosphere` leaves a field unset.
+const MODEL_ATMOSPHERE_DEFAULTS: AtmosphereScatteringDefaults = {
+  rayleighCoefficient: DEFAULT_RAYLEIGH_COEFFICIENT,
+  mieCoefficient: DEFAULT_MIE_COEFFICIENT,
+  rayleighScaleHeight: DEFAULT_RAYLEIGH_SCALE_HEIGHT,
+  mieScaleHeight: DEFAULT_MIE_SCALE_HEIGHT,
+  mieAnisotropy: DEFAULT_MIE_ANISOTROPY,
+  lightIntensity: DEFAULT_LIGHT_INTENSITY,
+};
 // WGS84 max radius — fallback when the map projection's ellipsoid is
 // unavailable (mirrors WebGL's `ellipsoid.maximumRadius` fallback in
 // DynamicEnvironmentMapManager.js `atmosphereNeedsUpdate`).
@@ -1136,16 +1152,21 @@ function runProceduralSkyFill(
   const sunDir = uniformState?.sunDirectionWC ??
     frameState.sunDirectionWC ?? { x: 0.3, y: 0.0, z: 0.95 };
 
-  const atmosphere = frameState.atmosphere;
-  const rayleighCoefficient =
-    atmosphere?.rayleighCoefficient ?? DEFAULT_RAYLEIGH_COEFFICIENT;
-  const mieCoefficient = atmosphere?.mieCoefficient ?? DEFAULT_MIE_COEFFICIENT;
-  const rayleighScaleHeight =
-    atmosphere?.rayleighScaleHeight ?? DEFAULT_RAYLEIGH_SCALE_HEIGHT;
-  const mieScaleHeight = atmosphere?.mieScaleHeight ?? DEFAULT_MIE_SCALE_HEIGHT;
-  const mieAnisotropy = atmosphere?.mieAnisotropy ?? DEFAULT_MIE_ANISOTROPY;
-  const lightIntensity = atmosphere?.lightIntensity ?? DEFAULT_LIGHT_INTENSITY;
-  const dynamicLighting = atmosphere?.dynamicLighting ?? 0;
+  // DP-H47 (Campaign-7) — resolve the scattering terms + dynamicLighting
+  // through the shared `WebGPUAtmosphereUniforms` seam. Byte-identical to the
+  // former inline `frameState.atmosphere?.X ?? DEFAULT` reads (same source,
+  // same fallbacks via MODEL_ATMOSPHERE_DEFAULTS).
+  const resolvedAtmosphere = resolveAtmosphereScattering(
+    frameState,
+    MODEL_ATMOSPHERE_DEFAULTS,
+  );
+  const rayleighCoefficient = resolvedAtmosphere.rayleighCoefficient;
+  const mieCoefficient = resolvedAtmosphere.mieCoefficient;
+  const rayleighScaleHeight = resolvedAtmosphere.rayleighScaleHeight;
+  const mieScaleHeight = resolvedAtmosphere.mieScaleHeight;
+  const mieAnisotropy = resolvedAtmosphere.mieAnisotropy;
+  const lightIntensity = resolvedAtmosphere.lightIntensity;
+  const dynamicLighting = resolvedAtmosphere.dynamicLighting;
   // When dynamicLighting === SCENE_LIGHT, feed the scene light vector as
   // the "sun" the shader uses; the shader's NONE/SUNLIGHT paths use the
   // packed sunDirectionWC / local zenith respectively.

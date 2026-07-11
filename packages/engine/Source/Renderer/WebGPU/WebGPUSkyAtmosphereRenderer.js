@@ -13,6 +13,7 @@ import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import SkyAtmosphereWGSL from "../../Shaders/WebGPU/Environment/SkyAtmosphere.js";
+import { resolveDynamicLighting } from "./WebGPUAtmosphereUniforms.js";
 // Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
@@ -839,7 +840,12 @@ function packUniforms(
   //                     regardless of `scene.light`).
   // 1 = DynamicAtmosphereLightingType.SCENE_LIGHT (see
   // `Source/Scene/DynamicAtmosphereLightingType.js`).
-  const dynamicLighting = frameState.atmosphere?.dynamicLighting ?? 0;
+  // DP-H47 (Campaign-7) — resolve `scene.atmosphere.dynamicLighting` through
+  // the shared `WebGPUAtmosphereUniforms` seam so the sky and the model IBL
+  // fill resolve the SAME field identically. The sky's scattering coefficients
+  // stay on the SkyAtmosphere instance (WebGL-faithful — see the resolver's
+  // module docstring), so only `dynamicLighting` routes through the seam here.
+  const dynamicLighting = resolveDynamicLighting(frameState);
   const useSceneLight = dynamicLighting === 1;
   const uniformState = frameState.context?.uniformState;
   const sceneLightWC = uniformState?.lightDirectionWC;
