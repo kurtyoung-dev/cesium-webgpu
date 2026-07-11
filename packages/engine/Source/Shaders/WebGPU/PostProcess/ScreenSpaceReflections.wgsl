@@ -35,7 +35,10 @@ struct SSRUniforms {
   // FS computes normals from depth derivatives instead of sampling the
   // texture (rough approximation, but visually correct for reflective
   // surfaces vs the all-vertical noise the placeholder produced).
-  // y/z/w reserved.
+  // NEW-LOG-DEPTH-PP-SLICEC — y = logActive (>0.5 → the sampled depth is
+  // log-encoded and must be reversed before unproject); z = log-encode
+  // frustum near; w = log-encode frustum far. All zero = byte-identical
+  // pre-Slice-C hyperbolic path.
   flags: vec4<f32>,
 };
 
@@ -61,9 +64,30 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return out;
 }
 
+// NEW-LOG-DEPTH-PP-SLICEC — inline csm_reverseLogDepth (byte-compatible
+// with chunks/functions/csm_reverseLogDepth.wgsl). Maps a [0,1] log-depth
+// value back to the hyperbolic [0,1] window-space NDC z a standard
+// inverse-projection consumer expects.
+fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
+  if (far <= near) { return logZ; }
+  let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
+  let depthFromNear = exp2(logZ * log2FarDepthFromNearPlusOne) - 1.0;
+  let depthFromCamera = depthFromNear + near;
+  return far * (1.0 - near / depthFromCamera) / (far - near);
+}
+
 // Reconstruct view-space position from depth and UV
 fn reconstructViewPosition(uv: vec2<f32>, depth: f32) -> vec3<f32> {
-  let ndc = vec4<f32>(uv * 2.0 - 1.0, depth, 1.0);
+  // The shared depth texture is log-encoded by default (renderer-wide log
+  // depth). Reverse to hyperbolic NDC z before unprojecting; the flag is
+  // packed by WebGPUSSREffect only when the master switch + useLogDepth are
+  // on AND a valid encode frustum is stashed, so flags.y<0.5 keeps the
+  // byte-identical pre-Slice-C path.
+  var z = depth;
+  if (ssr.flags.y > 0.5) {
+    z = logDepthReverse(depth, ssr.flags.z, ssr.flags.w);
+  }
+  let ndc = vec4<f32>(uv * 2.0 - 1.0, z, 1.0);
   var viewPos = ssr.inverseProjection * ndc;
   viewPos /= viewPos.w;
   return viewPos.xyz;

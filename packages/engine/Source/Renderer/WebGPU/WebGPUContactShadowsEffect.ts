@@ -53,6 +53,7 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 
 // inverseProjection(16) + projection(16) + sunDirEC(4) + params(4) +
 // texelSize(4) = 44 floats. Pad to 256-byte UBO alignment minimum.
@@ -183,6 +184,7 @@ export function executeContactShadows(
           projection?: ArrayLike<number>;
           inverseProjection?: ArrayLike<number>;
           sunDirectionEC?: { x: number; y: number; z: number };
+          _logDepthEncodeNearFar?: ArrayLike<number>;
         };
       }
     )?.uniformState ??
@@ -192,6 +194,7 @@ export function executeContactShadows(
           projection?: ArrayLike<number>;
           inverseProjection?: ArrayLike<number>;
           sunDirectionEC?: { x: number; y: number; z: number };
+          _logDepthEncodeNearFar?: ArrayLike<number>;
         };
       }
     ).uniformState;
@@ -211,11 +214,23 @@ export function executeContactShadows(
   } else {
     for (let i = 0; i < 16; i++) data[o++] = i % 5 === 0 ? 1 : 0;
   }
+  // NEW-LOG-DEPTH-PP-SLICEC — arm the log-depth reverse when the master
+  // switch + per-frame useLogDepth are on AND a valid encode frustum is
+  // stashed (the globe's FULL-camera near/far it log-encoded the shared
+  // depth with). sunDirEC.w carries logActive; texelSize.zw carry near/far
+  // below. Off-by-default effect, so no default-scene impact regardless.
+  const logActive = isWebGPULogDepthActive(
+    context as unknown as { _logDepthWriteEnabled?: boolean },
+    frameState as unknown as { useLogDepth?: boolean },
+  );
+  const encNF = us?._logDepthEncodeNearFar;
+  const armLog = logActive && !!encNF && encNF[1] > encNF[0];
+
   const sun = us?.sunDirectionEC;
   data[o++] = sun?.x ?? 0;
   data[o++] = sun?.y ?? 0;
   data[o++] = sun?.z ?? 1; // default towards camera
-  data[o++] = 0;
+  data[o++] = armLog ? 1.0 : 0.0; // sunDirEC.w = logActive
   // params: maxDistance, steps, strength, thickness
   const sceneAny = scene as unknown as {
     contactShadowMaxDistance?: number;
@@ -229,11 +244,11 @@ export function executeContactShadows(
   data[o++] = sceneAny.contactShadowSteps ?? 16;
   data[o++] = sceneAny.contactShadowStrength ?? 0.5;
   data[o++] = sceneAny.contactShadowThickness ?? 0.01;
-  // texelSize
+  // texelSize.xy = 1/w, 1/h; .zw = log-encode frustum near/far (Slice C).
   data[o++] = 1.0 / w;
   data[o++] = 1.0 / h;
-  data[o++] = 0;
-  data[o++] = 0;
+  data[o++] = armLog ? encNF![0] : 0.0;
+  data[o++] = armLog ? encNF![1] : 0.0;
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 

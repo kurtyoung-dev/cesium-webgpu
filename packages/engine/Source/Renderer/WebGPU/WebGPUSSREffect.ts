@@ -38,6 +38,7 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 
 // AUDIT_2026_05_02 B.15 — bumped from 44 to 48 for the new `flags: vec4`
 // trailing field in SSRUniforms (hasNormalGBuffer flag).
@@ -258,9 +259,27 @@ export function executeSSR(
   // normals via `cross(dFdy, dFdx)`. Far better than the all-noise
   // placeholder produced by sampling an uninitialized texture.
   data[offset++] = normalTextureView ? 1.0 : 0.0;
-  data[offset++] = 0.0;
-  data[offset++] = 0.0;
-  data[offset++] = 0.0;
+  // NEW-LOG-DEPTH-PP-SLICEC — flags.y = logActive, .z = encode near,
+  // .w = encode far. The shared depth texture is log-encoded by default
+  // (renderer-wide log depth), so the FS must reverse it before the
+  // inverse-projection unproject. Read the globe's FULL-camera encode
+  // frustum (stashed on `uniformState._logDepthEncodeNearFar` by the globe
+  // camera-UB packer) — the same source GroundPolyline/GroundPrimitive use.
+  // Arm only when the master switch + per-frame useLogDepth are on AND a
+  // valid encode frustum is stashed; otherwise leave the lanes zero so the
+  // FS keeps the byte-identical hyperbolic path (SSR is off by default, so
+  // there is no default-scene impact regardless).
+  const logActive = isWebGPULogDepthActive(
+    context as unknown as { _logDepthWriteEnabled?: boolean },
+    frameState as unknown as { useLogDepth?: boolean },
+  );
+  const encNF = (
+    us as unknown as { _logDepthEncodeNearFar?: ArrayLike<number> }
+  )?._logDepthEncodeNearFar;
+  const armLog = logActive && !!encNF && encNF[1] > encNF[0];
+  data[offset++] = armLog ? 1.0 : 0.0;
+  data[offset++] = armLog ? encNF![0] : 0.0;
+  data[offset++] = armLog ? encNF![1] : 0.0;
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 

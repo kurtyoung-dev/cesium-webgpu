@@ -34,7 +34,9 @@ struct ContactShadowUniforms {
   inverseProjection: mat4x4<f32>,
   // projection: project eye-space → NDC for the per-step depth sample.
   projection: mat4x4<f32>,
-  // .xyz = sun direction in eye-space; .w = unused.
+  // .xyz = sun direction in eye-space.
+  // NEW-LOG-DEPTH-PP-SLICEC — .w = logActive (>0.5 → the sampled depth is
+  // log-encoded and must be reversed before unproject).
   sunDirEC: vec4<f32>,
   // .x = maxDistance (eye-space meters)
   // .y = steps (float, cast to i32 in the loop)
@@ -44,7 +46,7 @@ struct ContactShadowUniforms {
   //      grazes the surface; in eye-space depth units).
   params: vec4<f32>,
   // .xy = 1/width, 1/height (texelSize)
-  // .zw = unused
+  // NEW-LOG-DEPTH-PP-SLICEC — .z = log-encode frustum near; .w = far.
   texelSize: vec4<f32>,
 };
 
@@ -65,11 +67,29 @@ fn vertexMain(@builtin(vertex_index) vertexIndex: u32) -> VertexOutput {
   return output;
 }
 
+// NEW-LOG-DEPTH-PP-SLICEC — inline csm_reverseLogDepth (byte-compatible
+// with chunks/functions/csm_reverseLogDepth.wgsl). Maps a [0,1] log-depth
+// value back to the hyperbolic [0,1] window-space NDC z.
+fn logDepthReverse(logZ: f32, near: f32, far: f32) -> f32 {
+  if (far <= near) { return logZ; }
+  let log2FarDepthFromNearPlusOne = log2((far - near) + 1.0);
+  let depthFromNear = exp2(logZ * log2FarDepthFromNearPlusOne) - 1.0;
+  let depthFromCamera = depthFromNear + near;
+  return far * (1.0 - near / depthFromCamera) / (far - near);
+}
+
 // Unproject a UV + depth into eye-space position. UV is in [0,1] with
 // Y growing downward (texture coord). Depth is NDC z in [0,1].
 fn unprojectUV(uv: vec2<f32>, depth: f32) -> vec3<f32> {
+  // The shared depth texture is log-encoded by default; reverse to
+  // hyperbolic NDC z before unprojecting. sunDirEC.w<0.5 (log inactive or
+  // not wired) keeps the byte-identical pre-Slice-C path.
+  var z = depth;
+  if (uniforms.sunDirEC.w > 0.5) {
+    z = logDepthReverse(depth, uniforms.texelSize.z, uniforms.texelSize.w);
+  }
   // Flip Y for NDC (which is Y-up in WebGPU's clip space, [-1, +1]).
-  let ndc = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+  let ndc = vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, z, 1.0);
   let unproj = uniforms.inverseProjection * ndc;
   return unproj.xyz / unproj.w;
 }
