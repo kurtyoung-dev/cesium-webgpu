@@ -83,6 +83,7 @@ import {
 // Track V-C (Batch 313) — Yale Bright Star Catalog HDR starfield.
 import {
   updateWebGPUStarField,
+  prepareWebGPUStarField,
   getWebGPUStarFieldStatistics,
   destroyWebGPUStarFieldResources,
 } from "./WebGPUStarFieldRenderer.js";
@@ -393,6 +394,11 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   // Drawn additively into the scene FB so bloom makes bright stars glow.
   context.registerFeatureRenderer(FeatureRendererKey.STAR_FIELD, {
     update: updateWebGPUStarField,
+    // Warm-keep on the zero-contribution (daylight) path so the first
+    // contributing dusk frame does not cold-start the instance buffer +
+    // async pipeline compile (C9-06 star pop-in). No per-frame uniform or
+    // draw work — byte-neutral to the rendered daylight frame.
+    prepare: prepareWebGPUStarField,
     destroy: destroyWebGPUStarFieldResources,
     getStatistics: getWebGPUStarFieldStatistics,
   });

@@ -10,7 +10,10 @@ import Matrix4 from "../Core/Matrix4.js";
 import Simon1994PlanetaryPositions from "../Core/Simon1994PlanetaryPositions.js";
 import Transforms from "../Core/Transforms.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
-import computeAtmosphereExtinction from "./computeAtmosphereExtinction.js";
+import {
+  computeAtmosphereExtinctionCached,
+  createAtmosphereExtinctionCache,
+} from "./computeAtmosphereExtinction.js";
 import EllipsoidPrimitive from "./EllipsoidPrimitive.js";
 import Material from "./Material.js";
 
@@ -72,6 +75,14 @@ class Moon {
     this._ellipsoidPrimitive.material.translucent = false;
 
     this._axes = new IauOrientationAxes();
+
+    // C9-06 — per-primitive scalar cache for the shared camera→Moon
+    // atmospheric extinction integration. Reused across frames so the
+    // 16-sample optical-depth march only recomputes when an exact physical
+    // input (camera, Moon position, atmosphere coefficients/scale heights,
+    // inner radius, or the enabled gate) changes. Keeps the Moon consistent
+    // with the Sun/star extinction, which use the same cached integrator.
+    this._atmosphereExtinctionCache = createAtmosphereExtinctionCache();
   }
 
   /**
@@ -171,23 +182,26 @@ class Moon {
     // the moon is byte-identical when the atmosphere is hidden, and the
     // physics yields exactly Cartesian3.ONE from orbit (ray never crosses the
     // shell) — so the off-gate is byte-identical there too.
-    let extinction = scratchExtinctionOne;
     const camPos = defined(frameState.camera)
       ? frameState.camera.positionWC
       : undefined;
-    if (
+    const extinctionEnabled =
       frameState.skyAtmosphereVisible === true &&
       defined(frameState.atmosphere) &&
-      defined(camPos)
-    ) {
-      extinction = computeAtmosphereExtinction(
-        scratchExtinction,
-        camPos,
-        translation,
-        frameState.atmosphere,
-        Ellipsoid.default.maximumRadius,
-      );
-    }
+      defined(camPos);
+    // Cached shared integrator (C9-06). When disabled it returns the exact
+    // multiplicative identity (1,1,1) — byte-identical to the prior
+    // `scratchExtinctionOne` fallback — and from orbit the ray never crosses
+    // the shell so the physics also yields ONE.
+    const extinction = computeAtmosphereExtinctionCached(
+      this._atmosphereExtinctionCache,
+      scratchExtinction,
+      extinctionEnabled,
+      camPos,
+      translation,
+      frameState.atmosphere,
+      Ellipsoid.default.maximumRadius,
+    );
     frameState.moonAtmosphereExtinction = Cartesian3.clone(
       extinction,
       frameState.moonAtmosphereExtinction,
@@ -296,7 +310,6 @@ const rotationScratch = new Matrix3();
 const translationScratch = new Cartesian3();
 const scratchMoonDirWC = new Cartesian3();
 const scratchExtinction = new Cartesian3();
-const scratchExtinctionOne = new Cartesian3(1.0, 1.0, 1.0);
 const scratchCommandList = [];
 
 export default Moon;

@@ -32,7 +32,14 @@ describe("Scene/StarField", function () {
           }
           return returnedCommand;
         }),
+      // C9-06 warm-keep hook: the zero-contribution (daylight) path calls
+      // this to build/keep GPU resources warm so the first contributing dusk
+      // frame does not cold-start (star pop-in). It never draws.
+      prepare: jasmine.createSpy("featureRenderer.prepare"),
     };
+    if (options.omitPrepare === true) {
+      delete featureRenderer.prepare;
+    }
     const getFeatureRenderer = jasmine
       .createSpy("getFeatureRenderer")
       .and.returnValue(featureRenderer);
@@ -85,7 +92,7 @@ describe("Scene/StarField", function () {
     }
   }
 
-  it("skips feature-renderer work for an explicit zero intensity and clears stale state", function () {
+  it("skips feature-renderer draw work for an explicit zero intensity, warms via prepare, and clears stale state", function () {
     const starField = new StarField({ intensity: 0.0 });
     const harness = createHarness();
     seedStaleState(starField, harness.frameState);
@@ -94,18 +101,43 @@ describe("Scene/StarField", function () {
 
     expect(starField._effectiveIntensityScale).toBe(0.0);
     expectClearedState(starField, harness.frameState);
-    expect(harness.getFeatureRenderer).not.toHaveBeenCalled();
+    expect(harness.getFeatureRenderer).toHaveBeenCalledWith(
+      FeatureRendererKey.STAR_FIELD,
+    );
+    // Warm-keep: prepare runs, draw does not.
+    expect(harness.featureRenderer.prepare).toHaveBeenCalledWith(
+      starField,
+      harness.frameState,
+    );
     expect(harness.featureRenderer.update).not.toHaveBeenCalled();
+    // A zero-contribution warm-keep must not grow the command list.
+    expect(harness.frameState.commandList.length).toBe(0);
   });
 
-  it("skips feature-renderer work when the daytime fade reaches exactly zero", function () {
+  it("skips feature-renderer draw work when the daytime fade reaches exactly zero, warms via prepare", function () {
     const starField = new StarField();
     const harness = createHarness({ sunDirection: daySunDirection });
 
     expect(starField.update(harness.frameState)).toBeUndefined();
 
     expect(starField._effectiveIntensityScale).toBe(0.0);
-    expect(harness.getFeatureRenderer).not.toHaveBeenCalled();
+    expect(harness.getFeatureRenderer).toHaveBeenCalledWith(
+      FeatureRendererKey.STAR_FIELD,
+    );
+    expect(harness.featureRenderer.prepare).toHaveBeenCalledTimes(1);
+    expect(harness.featureRenderer.update).not.toHaveBeenCalled();
+    expect(harness.frameState.commandList.length).toBe(0);
+  });
+
+  it("tolerates a feature renderer that exposes no prepare warm-keep hook", function () {
+    const starField = new StarField({ intensity: 0.0 });
+    const harness = createHarness({ omitPrepare: true });
+
+    expect(function () {
+      starField.update(harness.frameState);
+    }).not.toThrow();
+
+    expect(starField.update(harness.frameState)).toBeUndefined();
     expect(harness.featureRenderer.update).not.toHaveBeenCalled();
   });
 

@@ -777,6 +777,11 @@ class Context extends GraphicsContext {
         const mod = await import("./WebGLStarFieldRenderer.js");
         return {
           update: mod.updateWebGLStarField,
+          // Warm-keep on the zero-contribution (daylight) path so the first
+          // contributing dusk frame does not synchronously build the VAO /
+          // shader program / buffers (C9-06 star pop-in). No per-frame
+          // uniform or command work.
+          prepare: mod.prepareWebGLStarField,
           destroy: mod.destroyWebGLStarFieldResources,
           getStatistics: mod.getWebGLStarFieldStatistics,
         };

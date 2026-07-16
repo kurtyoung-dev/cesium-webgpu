@@ -359,41 +359,24 @@ function tryResolveStarPipeline(
 }
 
 /**
- * Updates the WebGPU starfield: builds GPU resources once, repacks the
- * per-frame uniform, and pushes one instanced draw command onto the
- * command list (Pass.ENVIRONMENT). Mirrors the Sun renderer's command
- * convention so the SceneRenderer bins it into the ENVIRONMENT pass.
+ * Ensures the starfield's immutable GPU resources exist and its scene-format
+ * pipeline is (asynchronously) resolving/resolved, WITHOUT packing any
+ * per-frame uniform or emitting a draw. Shared by {@link updateWebGPUStarField}
+ * (contributing frames) and {@link prepareWebGPUStarField} (the zero-
+ * contribution warm-keep path). Returns the resolved pipeline, or `null` when
+ * the async pipeline cache has not settled yet.
  *
- * @param {StarField} starField The backend-agnostic starfield primitive.
- * @param {FrameState} frameState
- * @param {Array} commandList The frame's command list to push onto.
+ * Building these resources on a daylight (zero-contribution) frame is what lets
+ * the first contributing dusk frame draw immediately instead of cold-starting
+ * the instance buffer + async pipeline compile (the star pop-in symptom).
+ *
  * @private
  */
-function updateWebGPUStarField(
+function ensureStarFieldResources(
   starField: StarFieldLike,
-  frameState: CesiumFrameState,
-  commandList: CesiumAnyDrawCommand[],
-): WebGPUDrawCommand | undefined {
-  if (!starField.show) {
-    return;
-  }
-  const context = frameState.context as unknown as StarFieldContext;
-  const device = context.device;
-  if (!defined(device)) {
-    return;
-  }
-
-  const effectiveIntensityScale = defined(starField._effectiveIntensityScale)
-    ? starField._effectiveIntensityScale
-    : starField._intensity *
-      computeStarDayFade(
-        context.uniformState.sunDirectionWC,
-        frameState.camera?.positionWC,
-      );
-  if (effectiveIntensityScale === 0.0) {
-    return;
-  }
-
+  context: StarFieldContext,
+  device: GPUDevice,
+): GPURenderPipeline | null {
   if (!defined(starField._webgpuCache)) {
     starField._webgpuCache = {};
   }
@@ -500,11 +483,11 @@ function updateWebGPUStarField(
     cache.pipelineEntry,
   );
   if (!pipeline) {
-    return;
+    return null;
   }
   cache.pipeline = pipeline;
 
-  // ── Uniform buffer ──
+  // ── Uniform buffer + bind group (per-frame data is written by update) ──
   if (!defined(cache.uniformBuffer)) {
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
       device,
@@ -514,6 +497,90 @@ function updateWebGPUStarField(
     );
     cache.uniformData = new Float32Array(STAR_UNIFORM_BUFFER_SIZE / 4);
   }
+
+  if (!defined(cache.bindGroup)) {
+    cache.bindGroup = device.createBindGroup({
+      label: "StarField bind group",
+      layout: cache.bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
+      ],
+    });
+  }
+
+  return pipeline;
+}
+
+/**
+ * Warm-keeps the WebGPU starfield on a zero-contribution (daylight) frame:
+ * builds the immutable instance buffer + uniform/bind-group resources and
+ * kicks the async pipeline compile, but writes no per-frame uniform and emits
+ * no draw. This is the {@link FeatureRendererKey.STAR_FIELD} `prepare` entry
+ * point; {@link StarField#update} calls it on the zero-intensity path so the
+ * first contributing dusk frame never cold-starts (no star pop-in). Idempotent
+ * and byte-neutral to the rendered frame.
+ *
+ * @param {StarField} starField The backend-agnostic starfield primitive.
+ * @param {FrameState} frameState
+ * @private
+ */
+function prepareWebGPUStarField(
+  starField: StarFieldLike,
+  frameState: CesiumFrameState,
+): void {
+  if (!starField.show) {
+    return;
+  }
+  const context = frameState.context as unknown as StarFieldContext;
+  const device = context.device;
+  if (!defined(device)) {
+    return;
+  }
+  ensureStarFieldResources(starField, context, device);
+}
+
+/**
+ * Updates the WebGPU starfield: builds GPU resources once, repacks the
+ * per-frame uniform, and pushes one instanced draw command onto the
+ * command list (Pass.ENVIRONMENT). Mirrors the Sun renderer's command
+ * convention so the SceneRenderer bins it into the ENVIRONMENT pass.
+ *
+ * @param {StarField} starField The backend-agnostic starfield primitive.
+ * @param {FrameState} frameState
+ * @param {Array} commandList The frame's command list to push onto.
+ * @private
+ */
+function updateWebGPUStarField(
+  starField: StarFieldLike,
+  frameState: CesiumFrameState,
+  commandList: CesiumAnyDrawCommand[],
+): WebGPUDrawCommand | undefined {
+  if (!starField.show) {
+    return;
+  }
+  const context = frameState.context as unknown as StarFieldContext;
+  const device = context.device;
+  if (!defined(device)) {
+    return;
+  }
+
+  const effectiveIntensityScale = defined(starField._effectiveIntensityScale)
+    ? starField._effectiveIntensityScale
+    : starField._intensity *
+      computeStarDayFade(
+        context.uniformState.sunDirectionWC,
+        frameState.camera?.positionWC,
+      );
+  if (effectiveIntensityScale === 0.0) {
+    return;
+  }
+
+  const pipeline = ensureStarFieldResources(starField, context, device);
+  if (!pipeline) {
+    return;
+  }
+  const cache = starField._webgpuCache as StarFieldWebGPUCache;
+
   packStarUniforms(
     cache.uniformData,
     frameState,
@@ -527,16 +594,6 @@ function updateWebGPUStarField(
     0,
     STAR_UNIFORM_BUFFER_SIZE,
   );
-
-  if (!defined(cache.bindGroup)) {
-    cache.bindGroup = device.createBindGroup({
-      label: "StarField bind group",
-      layout: cache.bindGroupLayout,
-      entries: [
-        { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
-      ],
-    });
-  }
 
   // Two command instances sharing the same GPU resources:
   //   - `cache.command` is pushed onto the binned command list so a
@@ -646,6 +703,7 @@ function destroyWebGPUStarFieldResources(
 
 export {
   updateWebGPUStarField,
+  prepareWebGPUStarField,
   getWebGPUStarFieldStatistics,
   destroyWebGPUStarFieldResources,
   bvToRgb,
@@ -653,6 +711,7 @@ export {
 
 export default {
   updateWebGPUStarField,
+  prepareWebGPUStarField,
   getWebGPUStarFieldStatistics,
   destroyWebGPUStarFieldResources,
   bvToRgb,
