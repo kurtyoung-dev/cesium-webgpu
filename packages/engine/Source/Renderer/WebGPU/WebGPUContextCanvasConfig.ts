@@ -28,8 +28,6 @@
  * @module WebGPUContextCanvasConfig
  */
 
-import { clearEffectsPlaceholderCacheForDevice } from "./WebGPUEffectsBindGroup.js";
-
 /**
  * The `WebGPUContext` surface the canvas-config helpers reach into.
  * `_hdrCanvasOutput` / `_presentationFormat` are read+write (the fallback
@@ -193,11 +191,10 @@ export function setHDRCanvasOutput(
     // that's the correct behavior — the canvas couldn't honor the request.
     applyCanvasConfig(host);
     // Format-keyed cache invalidation. Identity-blit + canvas-targeted
-    // pipelines must recompile against the new format. Effects-bind-group
-    // placeholder cache also rebuilds against the new format texture on next
-    // access.
+    // pipelines must recompile against the new format. Effects bind groups
+    // contain no presentation-format resources and are physical-device scoped,
+    // so one context must not invalidate them for other pooled contexts.
     host._webgpuPipelineCache?.clear();
-    clearEffectsPlaceholderCacheForDevice(host._device);
   }
 }
 

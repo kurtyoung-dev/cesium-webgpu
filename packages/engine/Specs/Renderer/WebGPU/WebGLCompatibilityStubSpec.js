@@ -2,6 +2,7 @@ import createWebGLCompatibilityStub, {
   createWebGLCompatibilityStub as namedCreateStub,
   getCompiledShaderForProgram,
 } from "../../../Source/Renderer/WebGPU/WebGLCompatibilityStub.js";
+import { WebGLStubBufferRegistry } from "../../../Source/Renderer/WebGPU/Stubs/WebGLStubBuffer.js";
 
 // These specs are pure-logic tests — no real GPUDevice / GPUQueue is
 // created. `createWebGLCompatibilityStub(state)` composes a WebGL-shaped
@@ -18,9 +19,8 @@ import createWebGLCompatibilityStub, {
 // Device-bound paths — anything that calls `state.device.createTexture`,
 // `device.queue.writeBuffer`, `device.createShaderModule`, etc. — are NOT
 // exercised here. They require a live WebGPU device which the Karma run
-// can't guarantee. Where a method has a device-null early-return that is
-// itself observable (e.g. `createBuffer` returns `{}` with no device,
-// `getParameter` falls back to spec minimums), we cover that branch.
+// can't guarantee. Device-independent handle/state behavior is covered here;
+// native buffer ownership uses a recording device in WebGLStubBufferSpec.
 
 /**
  * Build a minimal fake `WebGLStubState` with no real GPUDevice. The
@@ -43,6 +43,8 @@ function createFakeState() {
     textureBindings: new Map(),
     boundVertexBuffer: null,
     boundIndexBuffer: null,
+    bufferRegistry: new WebGLStubBufferRegistry(),
+    allocateCompatibilityBuffers: true,
     boundFramebuffer: null,
     boundReadFramebuffer: null,
     boundDrawFramebuffer: null,
@@ -263,26 +265,39 @@ describe("Renderer/WebGPU/WebGLCompatibilityStub", function () {
   });
 
   describe("buffer methods (device-null branch)", function () {
-    it("createBuffer returns an empty object when no device is present", function () {
+    it("createBuffer returns a lazy stable handle when no device is present", function () {
       const gl = createWebGLCompatibilityStub(createFakeState());
-      expect(gl.createBuffer()).toEqual({});
+      const buffer = gl.createBuffer();
+      expect(buffer._webgpuBuffer).toBeNull();
+      expect(buffer._size).toBe(0);
+      expect(buffer._destroyed).toBe(false);
     });
 
     it("bindBuffer routes ARRAY_BUFFER to the vertex slot", function () {
       const state = createFakeState();
       const gl = createWebGLCompatibilityStub(state);
-      const fakeBuf = { _webgpuBuffer: { id: "v" } };
+      const fakeBuf = {
+        _webgpuBuffer: null,
+        _size: 0,
+        _device: null,
+        _destroyed: false,
+      };
       gl.bindBuffer(gl.ARRAY_BUFFER, fakeBuf);
-      expect(state.boundVertexBuffer).toBe(fakeBuf._webgpuBuffer);
+      expect(state.boundVertexBuffer).toBe(fakeBuf);
       expect(state.boundIndexBuffer).toBeNull();
     });
 
     it("bindBuffer routes ELEMENT_ARRAY_BUFFER to the index slot", function () {
       const state = createFakeState();
       const gl = createWebGLCompatibilityStub(state);
-      const fakeBuf = { _webgpuBuffer: { id: "i" } };
+      const fakeBuf = {
+        _webgpuBuffer: null,
+        _size: 0,
+        _device: null,
+        _destroyed: false,
+      };
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, fakeBuf);
-      expect(state.boundIndexBuffer).toBe(fakeBuf._webgpuBuffer);
+      expect(state.boundIndexBuffer).toBe(fakeBuf);
       expect(state.boundVertexBuffer).toBeNull();
     });
 

@@ -13,7 +13,7 @@
  * The state object is a *live* proxy: getters/setters read/write
  * through to the Context's underscore-prefixed public fields. Cesium's
  * stub modules expect to mutate the object's slots directly (e.g.
- * `state.boundVertexBuffer = newBuffer` from texImage2D), so the proxy
+ * `state.boundVertexBuffer = handle` from bindBuffer), so the proxy
  * stays a literal with bare accessor properties — not a constructor.
  *
  * @module WebGPUContextWebGLStubInit
@@ -24,8 +24,10 @@ import {
   createWebGLCompatibilityStub,
   type WebGLStubState,
 } from "./WebGLCompatibilityStub.js";
+import { WebGLStubBufferRegistry } from "./Stubs/WebGLStubBuffer.js";
 import type {
   StubAttachment,
+  StubBufferHandle,
   StubFramebuffer,
   StubMipmapGenerator,
   StubRenderbuffer,
@@ -58,8 +60,8 @@ export interface WebGLStubInitHost {
     number,
     { target: number; texture: StubTextureWrapper | null }
   >;
-  _boundVertexBuffer: GPUBuffer | null;
-  _boundIndexBuffer: GPUBuffer | null;
+  _boundVertexBuffer: StubBufferHandle | null;
+  _boundIndexBuffer: StubBufferHandle | null;
   _boundFramebuffer: StubFramebuffer | null;
   _boundReadFramebuffer: StubFramebuffer | null;
   _boundDrawFramebuffer: StubFramebuffer | null;
@@ -160,6 +162,12 @@ export function buildWebGLCompatibilityStubFor(
     set boundIndexBuffer(v) {
       host._boundIndexBuffer = v;
     },
+    bufferRegistry: new WebGLStubBufferRegistry(),
+    // Legacy Buffer/VertexArray objects are still built so shared Cesium scene
+    // code can inspect their metadata. Native feature renderers consume the
+    // retained CPU arrays and own the only GPUBuffer upload; no production
+    // path unwraps the compatibility handle's optional native slot.
+    allocateCompatibilityBuffers: false,
     get boundFramebuffer() {
       return host._boundFramebuffer;
     },

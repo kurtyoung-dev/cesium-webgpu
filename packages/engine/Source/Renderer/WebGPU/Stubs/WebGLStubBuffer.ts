@@ -10,18 +10,138 @@
 
 /// <reference types="@webgpu/types" />
 
-import type { WebGLStubState, LogUsageFn } from "./WebGLStubTypes.js";
-
-/** Opaque handle returned by `gl.createBuffer()` in the stub layer. */
-interface StubBufferHandle {
-  _webgpuBuffer?: GPUBuffer;
-  _size?: number;
-  destroy?: () => void;
-}
+import type {
+  StubBufferDiagnostics,
+  StubBufferHandle,
+  StubBufferRegistry,
+  WebGLStubState,
+  LogUsageFn,
+} from "./WebGLStubTypes.js";
 
 // WebGL buffer target constants
 const GL_ARRAY_BUFFER = 0x8892;
 const GL_ELEMENT_ARRAY_BUFFER = 0x8893;
+function alignToFour(size: number): number {
+  return Math.ceil(size / 4) * 4;
+}
+
+function getBufferUsage(): GPUBufferUsageFlags {
+  return GPUBufferUsage.VERTEX | GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST;
+}
+
+function getBoundHandle(
+  state: WebGLStubState,
+  target: number,
+): StubBufferHandle | null {
+  if (target === GL_ARRAY_BUFFER) {
+    return state.boundVertexBuffer;
+  }
+  if (target === GL_ELEMENT_ARRAY_BUFFER) {
+    return state.boundIndexBuffer;
+  }
+  return null;
+}
+
+function releaseCurrentBuffer(
+  handle: StubBufferHandle,
+  resetLogicalSize: boolean,
+): void {
+  const buffer = handle._webgpuBuffer;
+  handle._webgpuBuffer = null;
+  handle._device = null;
+  if (resetLogicalSize) {
+    handle._size = 0;
+  }
+  buffer?.destroy();
+}
+
+function createReplacementBuffer(
+  handle: StubBufferHandle,
+  device: GPUDevice,
+  size: number,
+): GPUBuffer {
+  return device.createBuffer({
+    size,
+    usage: getBufferUsage(),
+    label: handle._webgpuBuffer?.label ?? "GL Compatibility Buffer",
+  });
+}
+
+function commitReplacementBuffer(
+  handle: StubBufferHandle,
+  device: GPUDevice,
+  candidate: GPUBuffer,
+  logicalSize: number,
+): void {
+  const oldBuffer = handle._webgpuBuffer;
+
+  handle._webgpuBuffer = candidate;
+  handle._device = device;
+  handle._size = logicalSize;
+  oldBuffer?.destroy();
+}
+
+/**
+ * Context-local ownership for all WebGL compatibility buffer handles.
+ *
+ * The registry deliberately owns handles rather than keying by GPUDevice:
+ * multiple contexts can retain the same pooled device, but destroying either
+ * context must release only that context's native allocations.
+ */
+export class WebGLStubBufferRegistry implements StubBufferRegistry {
+  private readonly _handles = new Set<StubBufferHandle>();
+
+  register(handle: StubBufferHandle): void {
+    this._handles.add(handle);
+  }
+
+  unregister(handle: StubBufferHandle): void {
+    this._handles.delete(handle);
+  }
+
+  invalidateDeviceGeneration(): void {
+    for (const handle of this._handles) {
+      // Keep the logical store size and stable handle identity. A subsequent
+      // bufferData/bufferSubData call can realize it on the recovered device.
+      releaseCurrentBuffer(handle, false);
+    }
+  }
+
+  destroy(): void {
+    const handles = Array.from(this._handles);
+    this._handles.clear();
+    for (const handle of handles) {
+      handle._destroyed = true;
+      releaseCurrentBuffer(handle, true);
+    }
+  }
+
+  getDiagnostics(): StubBufferDiagnostics {
+    let logicalStoreCount = 0;
+    let logicalStoreBytes = 0;
+    let liveBufferCount = 0;
+    let liveBufferBytes = 0;
+    for (const handle of this._handles) {
+      if (handle._size > 0) {
+        logicalStoreCount++;
+        logicalStoreBytes += handle._size;
+      }
+      const buffer = handle._webgpuBuffer;
+      if (buffer) {
+        liveBufferCount++;
+        liveBufferBytes += buffer.size;
+      }
+    }
+
+    return Object.freeze({
+      registeredHandleCount: this._handles.size,
+      logicalStoreCount,
+      logicalStoreBytes,
+      liveBufferCount,
+      liveBufferBytes,
+    });
+  }
+}
 
 /**
  * WebGL buffer-related constants.
@@ -38,48 +158,47 @@ export const BUFFER_CONSTANTS = Object.freeze({
  * Creates buffer and vertex attribute stub methods.
  *
  * @param state - Shared mutable state from WebGPUContext
- * @param _logUsage - Debug logging function (unused — buffer ops are silent)
+ * @param logUsage - Debug logging function for unsupported buffer operations
  * @returns Object containing all buffer/vertex-attribute stub methods
  */
-export function createBufferStubs(
-  state: WebGLStubState,
-  _logUsage: LogUsageFn,
-) {
+export function createBufferStubs(state: WebGLStubState, logUsage: LogUsageFn) {
   return {
     // ==== Buffer methods ====
 
-    createBuffer: () => {
-      if (!state.device) return {};
-      const defaultSize = 4096;
-      const buffer = state.device.createBuffer({
-        size: defaultSize,
-        usage:
-          GPUBufferUsage.VERTEX |
-          GPUBufferUsage.INDEX |
-          GPUBufferUsage.COPY_DST,
-        label: "GL Compatibility Buffer",
-      });
-      return {
-        _webgpuBuffer: buffer,
-        _size: defaultSize,
-        destroy: () => buffer.destroy(),
+    createBuffer: (): StubBufferHandle => {
+      const handle: StubBufferHandle = {
+        _webgpuBuffer: null,
+        _size: 0,
+        _device: null,
+        _destroyed: false,
+        destroy() {
+          if (handle._destroyed) return;
+          handle._destroyed = true;
+          state.bufferRegistry.unregister(handle);
+          releaseCurrentBuffer(handle, true);
+        },
       };
+      state.bufferRegistry.register(handle);
+      return handle;
     },
 
     bindBuffer: (target: number, buffer: StubBufferHandle | null) => {
       if (target === GL_ARRAY_BUFFER) {
-        state.boundVertexBuffer = buffer?._webgpuBuffer || null;
+        state.boundVertexBuffer = buffer?._destroyed ? null : buffer;
       } else if (target === GL_ELEMENT_ARRAY_BUFFER) {
-        state.boundIndexBuffer = buffer?._webgpuBuffer || null;
+        state.boundIndexBuffer = buffer?._destroyed ? null : buffer;
       }
     },
 
     deleteBuffer: (buffer: StubBufferHandle | null) => {
-      if (buffer?._webgpuBuffer) {
-        buffer._webgpuBuffer.destroy();
-      } else if (buffer?.destroy) {
-        buffer.destroy();
+      if (!buffer) return;
+      if (state.boundVertexBuffer === buffer) {
+        state.boundVertexBuffer = null;
       }
+      if (state.boundIndexBuffer === buffer) {
+        state.boundIndexBuffer = null;
+      }
+      buffer.destroy();
     },
 
     bufferData: (
@@ -87,62 +206,91 @@ export function createBufferStubs(
       data: ArrayBuffer | ArrayBufferView | number,
       _usage: number,
     ) => {
-      const boundBuffer =
-        target === GL_ARRAY_BUFFER
-          ? state.boundVertexBuffer
-          : state.boundIndexBuffer;
-      if (!boundBuffer) return;
-      if (typeof data === "number") return;
-      const arrayBuffer =
-        data instanceof ArrayBuffer ? data : (data as ArrayBufferView).buffer;
-      const byteOffset =
-        data instanceof ArrayBuffer ? 0 : (data as ArrayBufferView).byteOffset;
-      const byteLength =
-        data instanceof ArrayBuffer
-          ? data.byteLength
-          : (data as ArrayBufferView).byteLength;
-      if (!state.device) return;
-      if (byteLength === 0) return;
-      const alignedLength = Math.ceil(byteLength / 4) * 4;
+      const handle = getBoundHandle(state, target);
+      if (!handle || handle._destroyed) return;
 
-      // Regrow buffer if incoming data exceeds current capacity
-      // (applies to both padded and non-padded branches)
-      let targetBuffer = boundBuffer;
-      if (alignedLength > boundBuffer.size) {
-        const newSize = Math.max(alignedLength, 4);
-        const newBuffer = state.device.createBuffer({
-          size: newSize,
-          usage: boundBuffer.usage,
-          label: boundBuffer.label || "GL Compatibility Buffer (regrown)",
-        });
-        boundBuffer.destroy();
-        if (target === GL_ARRAY_BUFFER) {
-          state.boundVertexBuffer = newBuffer;
-        } else {
-          state.boundIndexBuffer = newBuffer;
-        }
-        targetBuffer = newBuffer;
+      const byteLength = typeof data === "number" ? data : data.byteLength;
+      if (!Number.isSafeInteger(byteLength) || byteLength < 0) return;
+      if (byteLength === 0) {
+        releaseCurrentBuffer(handle, true);
+        return;
       }
 
-      if (alignedLength !== byteLength) {
+      const alignedLength = alignToFour(byteLength);
+      if (!Number.isSafeInteger(alignedLength)) return;
+
+      if (state.allocateCompatibilityBuffers === false) {
+        // The native feature renderers retain the authoritative CPU payload
+        // and perform their own format-specific upload. Keeping a second copy
+        // here would add both an unused GPUBuffer and an unused queue write.
+        // Record only the WebGL store size needed by legacy Buffer/VA metadata;
+        // deliberately do not retain the payload on the compatibility handle.
+        releaseCurrentBuffer(handle, false);
+        handle._size = byteLength;
+        return;
+      }
+
+      if (!state.device) return;
+
+      const needsReplacement =
+        !handle._webgpuBuffer ||
+        handle._device !== state.device ||
+        alignedLength > handle._webgpuBuffer.size;
+      const arrayBuffer =
+        typeof data === "number"
+          ? null
+          : data instanceof ArrayBuffer
+            ? data
+            : (data as ArrayBufferView).buffer;
+      const byteOffset =
+        typeof data === "number" || data instanceof ArrayBuffer
+          ? 0
+          : (data as ArrayBufferView).byteOffset;
+      let uploadData: ArrayBufferLike | null = arrayBuffer;
+      let uploadSize = byteLength;
+      if (arrayBuffer && alignedLength !== byteLength) {
         const paddedArray = new Uint8Array(alignedLength);
         paddedArray.set(new Uint8Array(arrayBuffer, byteOffset, byteLength));
-        state.device.queue.writeBuffer(
-          targetBuffer,
-          0,
-          paddedArray.buffer,
-          0,
+        uploadData = paddedArray.buffer;
+        uploadSize = alignedLength;
+      }
+
+      if (needsReplacement) {
+        const candidate = createReplacementBuffer(
+          handle,
+          state.device,
           alignedLength,
         );
-      } else {
+        try {
+          if (uploadData) {
+            state.device.queue.writeBuffer(
+              candidate,
+              0,
+              uploadData,
+              uploadData === arrayBuffer ? byteOffset : 0,
+              uploadSize,
+            );
+          }
+        } catch (error) {
+          candidate.destroy();
+          throw error;
+        }
+        commitReplacementBuffer(handle, state.device, candidate, byteLength);
+        return;
+      }
+
+      if (uploadData) {
         state.device.queue.writeBuffer(
-          targetBuffer,
+          handle._webgpuBuffer,
           0,
-          arrayBuffer,
-          byteOffset,
-          byteLength,
+          uploadData,
+          uploadData === arrayBuffer ? byteOffset : 0,
+          uploadSize,
         );
       }
+      // Commit the logical WebGL store size only after a synchronous upload
+      // has succeeded. A validation/device-loss throw leaves it unchanged.
+      handle._size = byteLength;
     },
 
     bufferSubData: (
@@ -150,11 +298,8 @@ export function createBufferStubs(
       offset: number,
       data: ArrayBuffer | ArrayBufferView,
     ) => {
-      const boundBuffer =
-        target === GL_ARRAY_BUFFER
-          ? state.boundVertexBuffer
-          : state.boundIndexBuffer;
-      if (!boundBuffer || !state.device) return;
+      const handle = getBoundHandle(state, target);
+      if (!handle || handle._destroyed) return;
       const arrayBuffer =
         data instanceof ArrayBuffer ? data : (data as ArrayBufferView).buffer;
       const byteOffset =
@@ -163,14 +308,74 @@ export function createBufferStubs(
         data instanceof ArrayBuffer
           ? data.byteLength
           : (data as ArrayBufferView).byteLength;
+      if (
+        offset < 0 ||
+        offset % 4 !== 0 ||
+        byteLength % 4 !== 0 ||
+        byteLength === 0 ||
+        offset + byteLength > handle._size
+      ) {
+        logUsage(
+          "bufferSubData",
+          "write must be 4-byte aligned and remain within the buffer store",
+        );
+        return;
+      }
+
+      // Metadata-only stores intentionally have no CPU shadow copy. The
+      // owning native renderer updates its own resource from its authoritative
+      // data, so compatibility sub-writes have nothing to realize or upload.
+      if (state.allocateCompatibilityBuffers === false) return;
+      if (!state.device) return;
+
+      const needsReplacement =
+        !handle._webgpuBuffer || handle._device !== state.device;
+      if (needsReplacement) {
+        const candidate = createReplacementBuffer(
+          handle,
+          state.device,
+          alignToFour(handle._size),
+        );
+        try {
+          state.device.queue.writeBuffer(
+            candidate,
+            offset,
+            arrayBuffer,
+            byteOffset,
+            byteLength,
+          );
+        } catch (error) {
+          candidate.destroy();
+          throw error;
+        }
+        commitReplacementBuffer(handle, state.device, candidate, handle._size);
+        return;
+      }
+
       state.device.queue.writeBuffer(
-        boundBuffer,
+        handle._webgpuBuffer,
         offset,
         arrayBuffer,
         byteOffset,
         byteLength,
       );
     },
+
+    /** Release native allocations while preserving recoverable handles. */
+    invalidateCompatibilityBufferHandles: () => {
+      state.bufferRegistry.invalidateDeviceGeneration();
+    },
+
+    /** Final context teardown: destroy resources and unregister all handles. */
+    destroyCompatibilityBufferHandles: () => {
+      state.boundVertexBuffer = null;
+      state.boundIndexBuffer = null;
+      state.bufferRegistry.destroy();
+    },
+
+    /** Allocation telemetry used by the fork's browser performance probes. */
+    getCompatibilityBufferDiagnostics: (): StubBufferDiagnostics =>
+      state.bufferRegistry.getDiagnostics(),
 
     // ==== Vertex attribute methods (no-ops — handled by pipeline vertex state) ====
     enableVertexAttribArray: () => {},

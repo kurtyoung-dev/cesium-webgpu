@@ -50,6 +50,7 @@ export interface WebGPUDeviceLossHost {
    */
   _deviceFromPool: boolean;
   _isDestroyed: boolean;
+  _isTerminallyLost: boolean;
   // Subset of `WebGPUContextOptions` the recovery class actually
   // reads. Structural-typed here so this module doesn't need to
   // import the full options interface (which would create a
@@ -69,7 +70,9 @@ export interface WebGPUDeviceLossHost {
   _initializeContextLimits(): void;
   _reconfigureCanvas(): void;
   _initializeDefaultTextures(): void;
-  _clearAllCaches(): void;
+  _clearAllCaches(previousDevice?: GPUDevice | null): void;
+  _rollbackRecoveredDevice(candidateDevice: GPUDevice): void;
+  destroy(): void;
 }
 
 /**
@@ -103,16 +106,22 @@ export function buildDeviceLossRecoveryFor(
     set _isDestroyed(v: boolean) {
       host._isDestroyed = v;
     },
+    get _isTerminallyLost() {
+      return host._isTerminallyLost;
+    },
+    set _isTerminallyLost(v: boolean) {
+      host._isTerminallyLost = v;
+    },
     get _options() {
       return host._options;
     },
     get _context() {
       return host._context;
     },
-    _setAdapter: (a: GPUAdapter) => {
+    _setAdapter: (a: GPUAdapter | null) => {
       host._adapter = a;
     },
-    _setDevice: (d: GPUDevice) => {
+    _setDevice: (d: GPUDevice | null) => {
       host._device = d;
       // AUDIT_2026_05_02 C.1 audit fix #5 (Batch 135) — recovery now
       // routes through `WebGPUDevicePool` when the original device
@@ -137,7 +146,11 @@ export function buildDeviceLossRecoveryFor(
     _initializeContextLimits: () => host._initializeContextLimits(),
     _reconfigureCanvas: () => host._reconfigureCanvas(),
     _initializeDefaultTextures: () => host._initializeDefaultTextures(),
-    _clearAllCaches: () => host._clearAllCaches(),
+    _clearAllCaches: (previousDevice?: GPUDevice | null) =>
+      host._clearAllCaches(previousDevice),
+    _rollbackRecoveredDevice: (candidateDevice: GPUDevice) =>
+      host._rollbackRecoveredDevice(candidateDevice),
+    _finalizeTerminalLoss: () => host.destroy(),
   };
 
   return new WebGPUDeviceLossRecovery(adapter, maxRecoveryAttempts);

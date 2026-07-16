@@ -88,6 +88,7 @@ import {
   CLUSTERED_LIGHTING_EFFECTS_BINDING_ENTRIES,
   getClusteredLightingPlaceholders,
 } from "./WebGPUClusteredLightingBGL.js";
+import WebGPUEffectsStateCache from "./WebGPUEffectsStateCache.js";
 
 // 240 bytes = 60 floats: shadowMatrix(16) + shadowMapSize(2) + darkness(1)
 // + soft(1) + planeCount(1u) + unionMode(1u) + edgeWidth(1) + polyCount(1u)
@@ -236,48 +237,162 @@ const CSM_PARAMS_PLACEHOLDER_BYTES = 1088;
 //      Pre-created `placeholderXxxView` slots avoid `texture.createView()`
 //      churn inside the hot-path bind-group factory.
 //
-//   2. `effectsBgCache` — C-R11-EFFECTS-BGL-COLLECTION-CACHE (Batch 55).
-//      Identity-based map of resource-tuple key → {buffer, bindGroup,
-//      contentKey}. Reuses the same UBO + GPUBindGroup across all globe
-//      tiles in a frame that share the same shadow/clipping/csm/edges
-//      identity AND content (the globe-terrain path naturally hits this
-//      because every tile shares the world-space camera and the
-//      collection-scoped clipping resources). Empties on device-loss
-//      via the existing `clearEffectsPlaceholderCacheForDevice` hook.
+//   2. `effectsBgCaches` — one context-scoped stable owner/resource cache per
+//      context sharing this device. Volatile camera bytes never participate
+//      in permanent identity, and Scene-local frame numbers never cross an
+//      eviction boundary between contexts.
 const _placeholderCache = new WeakMap();
+const LEGACY_EFFECTS_CONTEXT = Object.freeze({});
+
+const PLACEHOLDER_TEXTURE_FIELDS = Object.freeze([
+  "placeholderDepthTex",
+  "placeholderClipTex",
+  "placeholderSDFTex",
+  "placeholderLutTex",
+  "placeholderCsmDepthArrayTex",
+  "placeholderEdgeTex",
+  "placeholderCubeDepthTex",
+]);
+
+const PLACEHOLDER_BUFFER_FIELDS = Object.freeze([
+  "placeholderCsmParamsBuffer",
+  "placeholderUniformBuffer",
+]);
+
+function getOrCreateEffectsDeviceCache(device) {
+  let cache = _placeholderCache.get(device);
+  if (!defined(cache)) {
+    cache = {
+      owners: new Set(),
+    };
+    _placeholderCache.set(device, cache);
+  } else if (!defined(cache.owners)) {
+    cache.owners = new Set();
+  }
+  return cache;
+}
+
+function destroyEffectsStateCache(bgCache, destroyResource) {
+  bgCache?.stateCache.drain((resources) => {
+    for (let i = 0; i < resources.length; i++) {
+      destroyResource(resources[i].buffer);
+    }
+  });
+}
+
+function destroyEffectsDeviceCache(cache) {
+  const destroyed = new Set();
+  const destroyResource = (resource) => {
+    if (
+      !defined(resource) ||
+      destroyed.has(resource) ||
+      typeof resource.destroy !== "function"
+    ) {
+      return;
+    }
+    destroyed.add(resource);
+    resource.destroy();
+  };
+
+  if (defined(cache.effectsBgCaches)) {
+    for (const bgCache of cache.effectsBgCaches.values()) {
+      destroyEffectsStateCache(bgCache, destroyResource);
+    }
+    cache.effectsBgCaches.clear();
+  }
+
+  const pendingRetirements = cache.effectsRetirementQueue ?? [];
+  cache.effectsRetirementQueue = [];
+  cache.effectsRetirementPending = false;
+  for (let i = 0; i < pendingRetirements.length; i++) {
+    destroyResource(pendingRetirements[i].buffer);
+  }
+
+  for (let i = 0; i < PLACEHOLDER_TEXTURE_FIELDS.length; i++) {
+    const field = PLACEHOLDER_TEXTURE_FIELDS[i];
+    destroyResource(cache[field]);
+    cache[field] = undefined;
+  }
+  for (let i = 0; i < PLACEHOLDER_BUFFER_FIELDS.length; i++) {
+    const field = PLACEHOLDER_BUFFER_FIELDS[i];
+    destroyResource(cache[field]);
+    cache[field] = undefined;
+  }
+
+  cache.owners?.clear();
+}
 
 /**
- * Allocate the per-device effects bind-group cache lazily on the
- * placeholder cache entry. Returns the cache object so the caller can
- * mutate `bindGroups` / `hits` / `misses` directly.
+ * Retains a context's ownership of the effects cache for a physical device.
+ * Multiple contexts may share a pooled device, so cache resources are not
+ * destroyed until the last distinct owner releases them.
  *
- * Each `bindGroups` entry is a `{buffer: GPUBuffer, bindGroup:
- * GPUBindGroup, contentKey: string}` tuple.
- *
- * @param {object} cache - per-device placeholder cache entry
- * @returns {{
- *   bindGroups: Map<string, object>,
- *   idMap: WeakMap<object, number>,
- *   idCounter: number,
- *   hits: number,
- *   misses: number,
- *   bufferWrites: number,
- *   diagLastFrame: number
- * }}
+ * @param {GPUDevice} device
+ * @param {object} owner
  */
-function _ensureEffectsBgCache(cache) {
-  if (!defined(cache.effectsBgCache)) {
-    cache.effectsBgCache = {
-      bindGroups: new Map(),
+function retainEffectsPlaceholderCacheForContext(device, owner) {
+  if (!defined(device) || !defined(owner)) {
+    return;
+  }
+  getOrCreateEffectsDeviceCache(device).owners.add(owner);
+}
+
+/**
+ * Releases one context owner. Returns true only when this release destroyed
+ * the last-owner cache entry.
+ *
+ * @param {GPUDevice} device
+ * @param {object} owner
+ * @returns {boolean}
+ */
+function releaseEffectsPlaceholderCacheForContext(device, owner) {
+  if (!defined(device) || !defined(owner)) {
+    return false;
+  }
+  const cache = _placeholderCache.get(device);
+  if (!defined(cache) || !cache.owners?.delete(owner)) {
+    return false;
+  }
+
+  // Dynamic effects UBOs carry view/camera state and are context-owned even
+  // though immutable placeholders and layouts are device-shared. Drain this
+  // context's slots on every release so a surviving pooled context neither
+  // retains nor can accidentally reuse the departing context's state.
+  const contextCache = cache.effectsBgCaches?.get(owner);
+  if (defined(contextCache)) {
+    destroyEffectsStateCache(contextCache, (resource) => {
+      if (typeof resource?.destroy === "function") {
+        resource.destroy();
+      }
+    });
+    cache.effectsBgCaches.delete(owner);
+  }
+  if (cache.owners.size > 0) {
+    return false;
+  }
+  destroyEffectsDeviceCache(cache);
+  _placeholderCache.delete(device);
+  return true;
+}
+
+/**
+ * @param {object} cache - per-device placeholder cache entry
+ * @returns {object}
+ */
+function _ensureEffectsBgCache(cache, contextOwner) {
+  cache.effectsBgCaches ??= new Map();
+  const key = contextOwner ?? LEGACY_EFFECTS_CONTEXT;
+  let bgCache = cache.effectsBgCaches.get(key);
+  if (!defined(bgCache)) {
+    bgCache = {
+      stateCache: new WebGPUEffectsStateCache({ maxGroups: 256 }),
       idMap: new WeakMap(),
       idCounter: 0,
-      hits: 0,
-      misses: 0,
-      bufferWrites: 0,
       diagLastFrame: -1,
     };
+    cache.effectsBgCaches.set(key, bgCache);
   }
-  return cache.effectsBgCache;
+  return bgCache;
 }
 
 /**
@@ -301,6 +416,39 @@ function _idFor(bgCache, obj) {
   return id;
 }
 
+function retireEffectsResources(device, resources) {
+  const cache = _placeholderCache.get(device);
+  if (!defined(cache)) {
+    return;
+  }
+  cache.effectsRetirementQueue ??= [];
+  cache.effectsRetirementQueue.push(...resources);
+  if (cache.effectsRetirementPending) {
+    return;
+  }
+  cache.effectsRetirementPending = true;
+
+  const destroyQueued = () => {
+    const retired = cache.effectsRetirementQueue;
+    cache.effectsRetirementQueue = [];
+    cache.effectsRetirementPending = false;
+    for (let i = 0; i < retired.length; i++) {
+      retired[i].buffer.destroy();
+    }
+  };
+
+  if (typeof device.queue.onSubmittedWorkDone !== "function") {
+    destroyQueued();
+    return;
+  }
+  device.queue.onSubmittedWorkDone().then(destroyQueued, () => {
+    // Device loss owns reclamation; drop stale JS references without calling
+    // into the failed device.
+    cache.effectsRetirementQueue = [];
+    cache.effectsRetirementPending = false;
+  });
+}
+
 /**
  * Returns or creates the shared bind group layout for the effects bind group.
  * @param {GPUDevice} device
@@ -313,8 +461,7 @@ function getEffectsBindGroupLayout(device) {
   }
 
   if (!defined(cache)) {
-    cache = {};
-    _placeholderCache.set(device, cache);
+    cache = getOrCreateEffectsDeviceCache(device);
   }
 
   // Phase 5 WGF-1: binding 0 has vertex visibility so the hardware
@@ -417,8 +564,7 @@ function getPlaceholderEffects(device) {
   }
 
   if (!defined(cache)) {
-    cache = {};
-    _placeholderCache.set(device, cache);
+    cache = getOrCreateEffectsDeviceCache(device);
   }
 
   const bgl = getEffectsBindGroupLayout(device);
@@ -764,6 +910,7 @@ function getPlaceholderEffects(device) {
 }
 
 const _scratchEffectsData = new Float32Array(EFFECTS_UNIFORM_FLOATS);
+const _scratchEffectsBits = new Uint32Array(_scratchEffectsData.buffer);
 
 /**
  * Creates an active effects bind group with real shadow and/or clipping resources.
@@ -772,6 +919,9 @@ const _scratchEffectsData = new Float32Array(EFFECTS_UNIFORM_FLOATS);
  * @param {GPUDevice} device
  * @param {FrameState} frameState
  * @param {object} [options]
+ * @param {object} [options.owner] Stable view/model/context owner identity.
+ *   Required on hot paths so volatile camera values update bounded slots
+ *   rather than becoming permanent cache keys.
  * @param {object} [options.shadowMap] - CesiumJS ShadowMap object
  * @param {object} [options.clippingPlanes] - ClippingPlaneCollection with _webgpuCache
  * @param {object} [options.clippingPolygons] - ClippingPolygonCollection with _webgpuCache
@@ -1296,10 +1446,9 @@ function createEffectsBindGroup(device, frameState, options) {
   // C-R11-EFFECTS-BGL-COLLECTION-CACHE (Batch 55):
   //
   // Build the resource tuple from the resolved-or-placeholder views/
-  // samplers/buffers. Then cache the (UBO + GPUBindGroup) pair keyed on
-  // the identity of those resources PLUS the small set of content-
-  // affecting fields (`cameraInPlaneSpace`, `frameNumber`, edge frustum
-  // params, etc.).
+  // samplers/buffers. Then cache the (UBO + GPUBindGroup) pair under a
+  // stable owner/resource identity. Camera, edge, and viewport values live
+  // only in the bounded slot bytes; they never become permanent cache keys.
   //
   // Why this works for the per-tile globe path: every tile in a frame
   // shares the same shadowMap, clippingPlanes collection, atmosphere
@@ -1310,12 +1459,15 @@ function createEffectsBindGroup(device, frameState, options) {
   // GPUBuffers + 200 GPUBindGroups + ~600 GPUTextureViews per frame.
   //
   // Why correctness holds when content varies (model path, non-identity
-  // modelMatrix): different `cameraInPlaneSpace` → different key →
-  // different (UBO, BG) pair. Each variant gets its own buffer; we
-  // never overwrite a buffer that's already been cached against a
-  // different content key.
+  // modelMatrix): distinct byte payloads used during the same frame acquire
+  // distinct slots. On a later frame those slots can be rewritten, because
+  // no slot referenced by the current frame is selected for replacement.
   const pCache = _placeholderCache.get(device);
-  const bgCache = _ensureEffectsBgCache(pCache);
+  // Uniform slots are scoped to the logical context. Frame numbers are only
+  // monotonic within one Scene/Context; treating them as device-global lets a
+  // fast context evict buffers referenced by another context's open encoder.
+  // Placeholders/layouts remain shared in pCache, while volatile slots do not.
+  const bgCache = _ensureEffectsBgCache(pCache, frameState?.context);
 
   // Resolve the actual resource objects we'll bind. Falling back to
   // pre-cached placeholder views avoids `texture.createView()` churn
@@ -1395,98 +1547,80 @@ function createEffectsBindGroup(device, frameState, options) {
     `${_idFor(bgCache, bClusterParams)}|` +
     `${_idFor(bgCache, bLtcLUTView)}|${_idFor(bgCache, bAreaLights)}`;
 
-  // Content key — encodes the per-call inputs that drive UBO bytes
-  // beyond what's already implied by the bound resources. Most of the
-  // UBO is derived from collection-scoped state (clip plane equations,
-  // edge color, shadow matrix from the shadowMap object). The two
-  // exceptions are `cameraInPlaneSpace` (varies with modelMatrix) and
-  // the per-pass edge near/far/viewport fields.
-  //
-  // For the dominant globe-tile path: cameraInPlaneSpace is the world
-  // camera, identical across all 200 tiles in a frame → same content
-  // key. For models with per-model modelMatrix: each unique modelMatrix
-  // produces its own variant (still amortizes any in-frame repeat).
-  const cipx = cameraInPlaneSpace?.x ?? 0;
-  const cipy = cameraInPlaneSpace?.y ?? 0;
-  const cipz = cameraInPlaneSpace?.z ?? 0;
-  // Note: `frameNumber` is NOT in the key. The shadow matrix / edge
-  // near-far values change frame-to-frame but the key already includes
-  // the shadowMap / edges resource identities; on the same identity
-  // we trust the caller-supplied content has been recomputed for the
-  // current frame and `writeBuffer` it unconditionally on hit.
-  const contentKey = `${cipx}|${cipy}|${cipz}|${edges?.near ?? 0}|${
-    edges?.far ?? 0
-  }|${edges?.viewportWidth ?? 0}|${edges?.viewportHeight ?? 0}|${
-    edges?.hasFeatureId ? 1 : 0
-  }`;
-
-  const cacheKey = `${resKey}#${contentKey}`;
-
-  let cached = bgCache.bindGroups.get(cacheKey);
-  if (!defined(cached)) {
-    // Miss — allocate a fresh UBO + BG and store. The UBO and BG stay
-    // pinned in the cache map by the key string; eviction only happens
-    // on device-loss via `clearEffectsPlaceholderCacheForDevice`.
-    bgCache.misses++;
-    const ub = device.createBuffer({
-      size: EFFECTS_UNIFORM_SIZE,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      label: "Effects UB",
-    });
-    const bg = device.createBindGroup({
-      layout: bgl,
-      entries: [
-        { binding: 0, resource: { buffer: ub } },
-        { binding: 1, resource: bDepthView },
-        { binding: 2, resource: bCompSampler },
-        { binding: 3, resource: bClipView },
-        { binding: 4, resource: bClipSampler },
-        { binding: 5, resource: bSDFView },
-        { binding: 6, resource: bSDFSampler },
-        { binding: 7, resource: bLutT },
-        { binding: 8, resource: bLutI },
-        { binding: 9, resource: pCache.placeholderLutSampler },
-        { binding: 10, resource: { buffer: bCsmBuffer } },
-        { binding: 11, resource: bCsmView },
-        { binding: 12, resource: bEdgeColor },
-        { binding: 13, resource: bEdgeId },
-        { binding: 14, resource: bEdgeDepth },
-        { binding: 15, resource: bGlobeDepth },
-        { binding: 16, resource: pCache.edgeSampler },
-        // C-R10-POINT-LIGHT-RECEIVE — cube depth slot. See `bCubeDepth`
-        // resolution above; the resource identity is part of `resKey`
-        // so a frame that toggles point-light shadows on/off gets a
-        // fresh (UBO, BG) pair.
-        { binding: 17, resource: bCubeDepth },
-        // Slice 5d Batch 153 — Forward+ clustered lighting bindings.
-        // Active dispatcher's buffers when `options.clusteredLighting`
-        // is wired through (SceneRenderer's _dispatchClusteredLighting
-        // hook); per-device placeholders otherwise. Identity is part
-        // of `resKey` so toggling clustered lighting allocates a fresh
-        // (UBO, BG) pair.
-        { binding: 18, resource: { buffer: bClusterLights } },
-        { binding: 19, resource: { buffer: bClusterAABBs } },
-        { binding: 20, resource: { buffer: bClusterCount } },
-        { binding: 21, resource: { buffer: bClusterIndices } },
-        { binding: 22, resource: { buffer: bClusterParams } },
-        // C6-LTC-AREA-LIGHTS — LUT texture + area-light storage (no sampler).
-        { binding: 23, resource: bLtcLUTView },
-        { binding: 25, resource: { buffer: bAreaLights } },
-      ],
-    });
-    cached = { buffer: ub, bindGroup: bg };
-    bgCache.bindGroups.set(cacheKey, cached);
+  // Stable owner identity groups byte variants that may safely reuse the
+  // same bounded slots across frames. The exact UBO bytes still distinguish
+  // simultaneous variants within a frame. Production hot paths provide an
+  // owner; the legacy fallback is retained only for internal callers that
+  // have not yet adopted the ownership contract.
+  const owner = options?.owner;
+  let ownerKey;
+  if (defined(owner)) {
+    ownerKey = `owner:${_idFor(bgCache, owner)}`;
   } else {
-    bgCache.hits++;
+    // Compatibility fallback for internal callers not yet supplying stable
+    // ownership. The three production hot paths all provide an owner, so they
+    // avoid this per-call string and its camera-position growth semantics.
+    const cipx = cameraInPlaneSpace?.x ?? 0;
+    const cipy = cameraInPlaneSpace?.y ?? 0;
+    const cipz = cameraInPlaneSpace?.z ?? 0;
+    ownerKey = `legacy:${cipx}|${cipy}|${cipz}|${edges?.near ?? 0}|${
+      edges?.far ?? 0
+    }|${edges?.viewportWidth ?? 0}|${edges?.viewportHeight ?? 0}|${
+      edges?.hasFeatureId ? 1 : 0
+    }`;
   }
+  const cacheKey = `${ownerKey}#${resKey}`;
+  const frameNumber = frameState?.frameNumber ?? 0;
 
-  // Always writeBuffer — the cache key fixes the resource graph but
-  // the per-frame data inside it (shadow matrix, plane equations,
-  // dPrime values, edge frustum) still has to be refreshed on hit.
-  // Identical bytes write is a no-op cost wise compared to the
-  // savings from skipping `createBuffer` + `createBindGroup`.
-  device.queue.writeBuffer(cached.buffer, 0, ud);
-  bgCache.bufferWrites++;
+  const cached = bgCache.stateCache.acquire(
+    cacheKey,
+    _scratchEffectsBits,
+    frameNumber,
+    () => {
+      const ub = device.createBuffer({
+        size: EFFECTS_UNIFORM_SIZE,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        label: "Effects UB",
+      });
+      const bg = device.createBindGroup({
+        layout: bgl,
+        entries: [
+          { binding: 0, resource: { buffer: ub } },
+          { binding: 1, resource: bDepthView },
+          { binding: 2, resource: bCompSampler },
+          { binding: 3, resource: bClipView },
+          { binding: 4, resource: bClipSampler },
+          { binding: 5, resource: bSDFView },
+          { binding: 6, resource: bSDFSampler },
+          { binding: 7, resource: bLutT },
+          { binding: 8, resource: bLutI },
+          { binding: 9, resource: pCache.placeholderLutSampler },
+          { binding: 10, resource: { buffer: bCsmBuffer } },
+          { binding: 11, resource: bCsmView },
+          { binding: 12, resource: bEdgeColor },
+          { binding: 13, resource: bEdgeId },
+          { binding: 14, resource: bEdgeDepth },
+          { binding: 15, resource: bGlobeDepth },
+          { binding: 16, resource: pCache.edgeSampler },
+          { binding: 17, resource: bCubeDepth },
+          { binding: 18, resource: { buffer: bClusterLights } },
+          { binding: 19, resource: { buffer: bClusterAABBs } },
+          { binding: 20, resource: { buffer: bClusterCount } },
+          { binding: 21, resource: { buffer: bClusterIndices } },
+          { binding: 22, resource: { buffer: bClusterParams } },
+          { binding: 23, resource: bLtcLUTView },
+          { binding: 25, resource: { buffer: bAreaLights } },
+        ],
+      });
+      return { buffer: ub, bindGroup: bg };
+    },
+    (resource, bits) => {
+      device.queue.writeBuffer(resource.buffer, 0, bits);
+    },
+    (resources) => {
+      retireEffectsResources(device, resources);
+    },
+  );
 
   //>>includeStart('debug', pragmas.debug);
   // Diagnostic: log cache stats once per ~3 seconds when in active use.
@@ -1498,13 +1632,15 @@ function createEffectsBindGroup(device, frameState, options) {
       : 0;
   if (fnow > 0 && fnow - bgCache.diagLastFrame > 3000) {
     bgCache.diagLastFrame = fnow;
-    const total = bgCache.hits + bgCache.misses;
+    const diagnostics = bgCache.stateCache.getDiagnostics(EFFECTS_UNIFORM_SIZE);
+    const total = diagnostics.hits + diagnostics.misses;
     if (total > 100) {
-      const hitRate = ((bgCache.hits / total) * 100).toFixed(1);
+      const hitRate = ((diagnostics.hits / total) * 100).toFixed(1);
       console.log(
-        `[CesiumJS:webgpu] EffectsBindGroup cache: ${bgCache.bindGroups.size} entries, ` +
-          `${bgCache.hits} hits / ${bgCache.misses} misses (${hitRate}% hit), ` +
-          `${bgCache.bufferWrites} writeBuffer calls`,
+        `[CesiumJS:webgpu] EffectsBindGroup cache: ${diagnostics.groupCount} groups / ` +
+          `${diagnostics.slotCount} slots, ${diagnostics.hits} hits / ` +
+          `${diagnostics.misses} misses (${hitRate}% hit), ` +
+          `${diagnostics.bufferWrites} writes / ${diagnostics.skippedWrites} skipped`,
       );
     }
   }
@@ -1630,28 +1766,78 @@ function updateEffectsUniforms(
 }
 
 /**
- * C-R12 (Batch 33) — Drop the placeholder cache entry for a specific
- * device. Called from {@link WebGPUContext}'s device-invalidation
- * subscriber during device-loss recovery so the dead device's cached
- * BGL, placeholder textures, samplers, UBOs, and CSM params buffer
- * become unreachable immediately (the WeakMap would self-heal
- * eventually but only once the device object itself is unreachable,
- * which depends on unrelated holders dropping their references).
+ * Force-destroys the placeholder cache entry for a specific device. Normal
+ * pooled-context teardown must use the retain/release functions above so one
+ * context cannot destroy resources still used by another. This force path is
+ * reserved for tests and whole-device invalidation.
  *
  * @param {GPUDevice} device
  */
 function clearEffectsPlaceholderCacheForDevice(device) {
-  if (defined(device) && _placeholderCache.has(device)) {
-    _placeholderCache.delete(device);
+  if (!defined(device)) {
+    return;
   }
+  const cache = _placeholderCache.get(device);
+  if (!defined(cache)) {
+    return;
+  }
+  destroyEffectsDeviceCache(cache);
+  _placeholderCache.delete(device);
+}
+
+/**
+ * Returns a frozen allocation/upload snapshot for performance probes.
+ *
+ * @param {GPUDevice} device
+ * @returns {object|undefined}
+ */
+function getEffectsCacheDiagnostics(device) {
+  const deviceCache = _placeholderCache.get(device);
+  const caches = deviceCache?.effectsBgCaches;
+  if (!defined(caches) || caches.size === 0) {
+    return undefined;
+  }
+  const diagnostics = {
+    groupCount: 0,
+    slotCount: 0,
+    liveBytes: 0,
+    hits: 0,
+    misses: 0,
+    bufferWrites: 0,
+    skippedWrites: 0,
+    evictions: 0,
+    maxGroups: 0,
+  };
+  for (const cache of caches.values()) {
+    const snapshot = cache.stateCache.getDiagnostics(EFFECTS_UNIFORM_SIZE);
+    diagnostics.groupCount += snapshot.groupCount;
+    diagnostics.slotCount += snapshot.slotCount;
+    diagnostics.liveBytes += snapshot.liveBytes;
+    diagnostics.hits += snapshot.hits;
+    diagnostics.misses += snapshot.misses;
+    diagnostics.bufferWrites += snapshot.bufferWrites;
+    diagnostics.skippedWrites += snapshot.skippedWrites;
+    diagnostics.evictions += snapshot.evictions;
+    diagnostics.maxGroups += snapshot.maxGroups;
+  }
+  return Object.freeze({
+    ...diagnostics,
+    ownerCount: deviceCache.owners?.size ?? 0,
+    contextCacheCount: caches.size,
+  });
 }
 
 export {
+  destroyEffectsDeviceCache as _destroyEffectsDeviceCache,
+  _ensureEffectsBgCache,
   getEffectsBindGroupLayout,
   getPlaceholderEffects,
   createEffectsBindGroup,
   updateEffectsUniforms,
+  retainEffectsPlaceholderCacheForContext,
+  releaseEffectsPlaceholderCacheForContext,
   clearEffectsPlaceholderCacheForDevice,
+  getEffectsCacheDiagnostics,
   EFFECTS_UNIFORM_SIZE,
   ATMOSPHERE_LUT_CONTROL_OFFSET,
   CSM_CONTROL_OFFSET,
@@ -1667,7 +1853,10 @@ export default {
   getPlaceholderEffects,
   createEffectsBindGroup,
   updateEffectsUniforms,
+  retainEffectsPlaceholderCacheForContext,
+  releaseEffectsPlaceholderCacheForContext,
   clearEffectsPlaceholderCacheForDevice,
+  getEffectsCacheDiagnostics,
   EFFECTS_UNIFORM_SIZE,
   ATMOSPHERE_LUT_CONTROL_OFFSET,
   CSM_CONTROL_OFFSET,

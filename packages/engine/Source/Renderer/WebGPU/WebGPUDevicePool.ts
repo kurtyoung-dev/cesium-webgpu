@@ -85,6 +85,7 @@
  */
 
 import { WebGPUFeatureFlags, DESIRED_FEATURES } from "./WebGPUFeatureFlags.js";
+import { RendererInitializationError } from "../RendererType.js";
 
 /**
  * Adaptive limit ceilings used by the pool's negotiator. Values match
@@ -735,7 +736,10 @@ export class WebGPUDevicePool {
     isPrimary: boolean,
   ): Promise<AcquireResult> {
     if (!WebGPUDevicePool.isWebGPUAvailable) {
-      throw new Error("WebGPU is not available in this environment.");
+      throw new RendererInitializationError(
+        "availability",
+        "WebGPU is not available in this environment.",
+      );
     }
 
     const adapterOptions: GPURequestAdapterOptions = {
@@ -750,18 +754,43 @@ export class WebGPUDevicePool {
       ).featureLevel = "compatibility";
     }
 
-    const adapter = await navigator.gpu.requestAdapter(adapterOptions);
-
-    if (!adapter) {
-      throw new Error("Failed to get GPU adapter.");
+    let adapter: GPUAdapter | null;
+    try {
+      adapter = await navigator.gpu.requestAdapter(adapterOptions);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new RendererInitializationError(
+        "adapter",
+        `Failed to request WebGPU adapter: ${message}`,
+        error,
+      );
     }
 
-    const { requiredFeatures, requiredLimits } = this._negotiate(adapter, opts);
+    if (!adapter) {
+      throw new RendererInitializationError(
+        "adapter",
+        "Failed to get GPU adapter.",
+      );
+    }
 
-    const device = await adapter.requestDevice({
-      requiredFeatures,
-      requiredLimits,
-    });
+    let device: GPUDevice;
+    try {
+      const { requiredFeatures, requiredLimits } = this._negotiate(
+        adapter,
+        opts,
+      );
+      device = await adapter.requestDevice({
+        requiredFeatures,
+        requiredLimits,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new RendererInitializationError(
+        "device",
+        `Failed to create WebGPU device: ${message}`,
+        error,
+      );
+    }
 
     const enabledLimits = snapshotLimits(device.limits);
     const featureLevel: "core" | "compatibility" = opts.featureLevel ?? "core";

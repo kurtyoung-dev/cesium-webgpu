@@ -65,6 +65,41 @@ export interface StubRenderbuffer {
 /** An attachment reference (texture or renderbuffer). */
 export type StubAttachment = StubTextureWrapper | StubRenderbuffer | null;
 
+// Stable compatibility handle that owns at most one live GPUBuffer.
+export interface StubBufferHandle {
+  _webgpuBuffer: GPUBuffer | null;
+  _size: number;
+  _device: GPUDevice | null;
+  _destroyed: boolean;
+  destroy(): void;
+}
+
+/** Snapshot of the native allocations owned by one compatibility stub. */
+export interface StubBufferDiagnostics {
+  readonly registeredHandleCount: number;
+  readonly logicalStoreCount: number;
+  readonly logicalStoreBytes: number;
+  readonly liveBufferCount: number;
+  readonly liveBufferBytes: number;
+}
+
+/**
+ * Context-local ownership registry for WebGL-shaped buffer handles.
+ *
+ * A pooled GPUDevice may outlive an individual WebGPUContext, so native
+ * compatibility allocations cannot rely on device destruction for cleanup.
+ * Device-generation invalidation releases only native allocations (the
+ * stable WebGL handles remain reusable); final teardown destroys the handles
+ * and empties the registry.
+ */
+export interface StubBufferRegistry {
+  register(handle: StubBufferHandle): void;
+  unregister(handle: StubBufferHandle): void;
+  invalidateDeviceGeneration(): void;
+  destroy(): void;
+  getDiagnostics(): StubBufferDiagnostics;
+}
+
 /** Mipmap generator interface — avoids importing the real class here. */
 export interface StubMipmapGenerator {
   generateMipmaps(
@@ -92,8 +127,16 @@ export interface WebGLStubState {
     number,
     { target: number; texture: StubTextureWrapper | null }
   >;
-  boundVertexBuffer: GPUBuffer | null;
-  boundIndexBuffer: GPUBuffer | null;
+  boundVertexBuffer: StubBufferHandle | null;
+  boundIndexBuffer: StubBufferHandle | null;
+  bufferRegistry: StubBufferRegistry;
+  /**
+   * Whether WebGL-shaped buffer stores should be realized as native
+   * `GPUBuffer`s. The production WebGPU renderer keeps this false: feature
+   * renderers upload their retained CPU payloads into purpose-built buffers,
+   * and no production path consumes `StubBufferHandle._webgpuBuffer`.
+   */
+  readonly allocateCompatibilityBuffers: boolean;
   boundFramebuffer: StubFramebuffer | null;
   /**
    * WebGL2 split read/draw framebuffer targets. `bindFramebuffer` with
