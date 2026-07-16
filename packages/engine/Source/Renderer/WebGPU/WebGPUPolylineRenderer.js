@@ -2000,7 +2000,10 @@ function _pushPolylinePickCommand(
   let pickPipelineEntry = cache.pickPipelines.get(pickDefines);
   if (!defined(pickPipelineEntry)) {
     const pickShader = getCollectionShaderSource("polylinePick");
-    const format = context.scenePipelineFormat || "bgra8unorm";
+    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
+    // context's byte-object-ID format authority (matches the pick FBO),
+    // never the (possibly float/HDR) scene format.
+    const format = context.pickPipelineFormat || "rgba8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getPolylineShaderModuleCache(device);
     const pickModule = moduleCache.getOrCreate(

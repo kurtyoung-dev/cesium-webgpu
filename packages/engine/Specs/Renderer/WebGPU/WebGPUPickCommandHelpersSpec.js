@@ -327,7 +327,11 @@ describe("Renderer/WebGPU/WebGPUPickCommandHelpers", function () {
 
     it("strips blend from color targets while preserving format and writeMask", function () {
       const color = makeColorDescriptor();
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain");
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
 
       expect(pick.fragment.targets.length).toBe(1);
       const target = pick.fragment.targets[0];
@@ -338,7 +342,11 @@ describe("Renderer/WebGPU/WebGPUPickCommandHelpers", function () {
 
     it("swaps the fragment entry point to the supplied pick entry", function () {
       const color = makeColorDescriptor();
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain");
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
       expect(pick.fragment.entryPoint).toBe("fragmentPickMain");
       // Module reference is preserved (helper does NOT swap the module).
       expect(pick.fragment.module).toBe(fragmentModule);
@@ -346,7 +354,7 @@ describe("Renderer/WebGPU/WebGPUPickCommandHelpers", function () {
 
     it("does not mutate the input color descriptor", function () {
       const color = makeColorDescriptor();
-      buildPickPipelineDescriptor(color, "fragmentPickMain");
+      buildPickPipelineDescriptor(color, "fragmentPickMain", "rgba8unorm");
       // Blend on the original target must remain intact.
       expect(color.fragment.targets[0].blend).toBeDefined();
       expect(color.fragment.entryPoint).toBe("fragmentMain");
@@ -355,7 +363,11 @@ describe("Renderer/WebGPU/WebGPUPickCommandHelpers", function () {
 
     it("preserves the vertex stage (module, entryPoint, buffers)", function () {
       const color = makeColorDescriptor();
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain");
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
       expect(pick.vertex.module).toBe(vertexModule);
       expect(pick.vertex.entryPoint).toBe("vertexMain");
       expect(pick.vertex.buffers).toBe(color.vertex.buffers);
@@ -363,87 +375,158 @@ describe("Renderer/WebGPU/WebGPUPickCommandHelpers", function () {
 
     it("preserves layout and primitive references", function () {
       const color = makeColorDescriptor();
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain");
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
       expect(pick.layout).toBe(color.layout);
       expect(pick.primitive).toBe(color.primitive);
     });
 
     it("drops the multisample state so the pick pipeline is single-sample", function () {
       const color = makeColorDescriptor();
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain");
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
       expect(pick.multisample).toBeUndefined();
     });
 
     it("defaults the name to '<color> pick'", function () {
       const color = makeColorDescriptor();
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain");
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
       expect(pick.name).toBe("MyColor pick");
     });
 
     it("honors a name override", function () {
       const color = makeColorDescriptor();
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain", {
-        name: "CustomPick",
-      });
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+        {
+          name: "CustomPick",
+        },
+      );
       expect(pick.name).toBe("CustomPick");
     });
 
     it("forces depthWriteEnabled true by default", function () {
       const color = makeColorDescriptor();
       // Color descriptor has depthWriteEnabled:false; default override → true.
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain");
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
       expect(pick.depthStencil.depthWriteEnabled).toBe(true);
     });
 
     it("inherits the color depthWriteEnabled when forceDepthWriteEnabled is false", function () {
       const color = makeColorDescriptor();
       color.depthStencil.depthWriteEnabled = false;
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain", {
-        forceDepthWriteEnabled: false,
-      });
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+        {
+          forceDepthWriteEnabled: false,
+        },
+      );
       expect(pick.depthStencil.depthWriteEnabled).toBe(false);
     });
 
     it("preserves the depthStencil format/compare while overriding write", function () {
       const color = makeColorDescriptor();
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain");
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
       expect(pick.depthStencil.format).toBe("depth24plus");
       expect(pick.depthStencil.depthCompare).toBe("less");
     });
 
     it("leaves depthStencil undefined when the color descriptor has none", function () {
       const color = makeColorDescriptor({ depthStencil: undefined });
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain");
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
       expect(pick.depthStencil).toBeUndefined();
     });
 
-    it("filters out the rgba16float G-buffer target", function () {
+    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the helper stamps exactly one
+    // explicit pick target with the supplied pick format instead of
+    // filtering/inheriting the (possibly float/HDR) scene targets.
+    it("stamps exactly one target with the supplied pick format when the color pipeline has a G-buffer slot", function () {
       const color = makeColorDescriptor();
       color.fragment.targets = [
         { format: "rgba8unorm", blend: { color: {} }, writeMask: 0xf },
         { format: "rgba16float", writeMask: 0xf },
       ];
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain");
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
       expect(pick.fragment.targets.length).toBe(1);
       expect(pick.fragment.targets[0].format).toBe("rgba8unorm");
     });
 
-    it("filters out null/undefined color targets", function () {
+    it("stamps the pick format even when slot 0 is an HDR/float scene format", function () {
       const color = makeColorDescriptor();
       color.fragment.targets = [
-        { format: "rgba8unorm", writeMask: 0xf },
-        null,
-        undefined,
+        { format: "rgba16float", blend: { color: {} }, writeMask: 0xf },
+        { format: "rgba16float", writeMask: 0xf },
       ];
-      const pick = buildPickPipelineDescriptor(color, "fragmentPickMain");
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
       expect(pick.fragment.targets.length).toBe(1);
       expect(pick.fragment.targets[0].format).toBe("rgba8unorm");
+      // Slot-0 writeMask carries through; blend is stripped.
+      expect(pick.fragment.targets[0].writeMask).toBe(0xf);
+      expect(pick.fragment.targets[0].blend).toBeUndefined();
+    });
+
+    it("skips leading null/undefined color targets when locating slot 0", function () {
+      const color = makeColorDescriptor();
+      color.fragment.targets = [
+        null,
+        { format: "rgba8unorm", writeMask: 0xf },
+        undefined,
+      ];
+      const pick = buildPickPipelineDescriptor(
+        color,
+        "fragmentPickMain",
+        "rgba8unorm",
+      );
+      expect(pick.fragment.targets.length).toBe(1);
+      expect(pick.fragment.targets[0].format).toBe("rgba8unorm");
+    });
+
+    it("throws when the color descriptor has no color target at all", function () {
+      const color = makeColorDescriptor();
+      color.fragment.targets = [null, undefined];
+      expect(function () {
+        buildPickPipelineDescriptor(color, "fragmentPickMain", "rgba8unorm");
+      }).toThrowError(/has no color target/);
     });
 
     it("throws when the color descriptor has no fragment stage", function () {
       const color = makeColorDescriptor({ fragment: undefined });
       expect(function () {
-        buildPickPipelineDescriptor(color, "fragmentPickMain");
+        buildPickPipelineDescriptor(color, "fragmentPickMain", "rgba8unorm");
       }).toThrowError(/has no fragment stage/);
     });
   });

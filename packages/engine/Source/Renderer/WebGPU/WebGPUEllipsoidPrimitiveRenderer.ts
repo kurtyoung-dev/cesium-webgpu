@@ -442,6 +442,7 @@ function buildEllipsoidPipelineResources(
   canvasFormat: GPUTextureFormat,
   sampleCount: number = 1,
   logDepthActive: boolean = false,
+  pickFormat: GPUTextureFormat = "rgba8unorm",
 ): EllipsoidPipelineResources {
   // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — OR in LOG_DEPTH when active so
   // the module cache compiles the //>>ifdef LOG_DEPTH FS branch (projection-
@@ -486,8 +487,9 @@ function buildEllipsoidPipelineResources(
       // roughness). The shader emits `FragOutput { color, normalRoughness }`
       // and the pipeline declares slot 1 as writable (writeMask: 0xf via
       // `emitsGBuffer: true`). Pick pipeline is derived from this via
-      // `buildPickPipelineDescriptor` which filters out the rgba16float
-      // slot 1 so the pick FB's 1-attachment pass stays compatible.
+      // `buildPickPipelineDescriptor`, which stamps exactly one target with
+      // `context.pickPipelineFormat` so the pick FB's 1-attachment pass
+      // stays compatible in both SDR and HDR.
       targets: makeSceneFBTargets(canvasFormat, {
         emitsGBuffer: true,
         blend: {
@@ -535,11 +537,19 @@ function buildEllipsoidPipelineResources(
   // `fragmentPickMain` and blend stripped so pick colors reach the FBO
   // unmodified for byte-exact readback. `forceDepthWriteEnabled: true`
   // matches the historical Batch 30 setting (color path also writes depth).
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick target is stamped with
+  // `context.pickPipelineFormat` (threaded through `pickFormat`), not the
+  // scene format, so HDR scenes get a valid LDR pick pipeline.
   const pickDescriptor: WebGPURenderPipelineDescriptor =
-    buildPickPipelineDescriptor(colorDescriptor, "fragmentPickMain", {
-      name: "EllipsoidPrimitive pick pipeline",
-      forceDepthWriteEnabled: true,
-    });
+    buildPickPipelineDescriptor(
+      colorDescriptor,
+      "fragmentPickMain",
+      pickFormat,
+      {
+        name: "EllipsoidPrimitive pick pipeline",
+        forceDepthWriteEnabled: true,
+      },
+    );
 
   return {
     shaderModule,
@@ -896,6 +906,12 @@ function updateWebGPUEllipsoidPrimitive(
       }
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the context's
+  // byte-object-ID format authority, never the (possibly float/HDR) scene
+  // format. Same value as the pick framebuffer's color attachment.
+  const pickFormat: GPUTextureFormat =
+    (context as unknown as { pickPipelineFormat?: GPUTextureFormat })
+      .pickPipelineFormat ?? "rgba8unorm";
   // Slice 5c-B Batch 118 — read MSAA sample count so the pipeline's
   // multisample state matches the scene FB pass it draws into.
   const sampleCount =
@@ -957,6 +973,7 @@ function updateWebGPUEllipsoidPrimitive(
       canvasFormat,
       sampleCount,
       logDepthActive,
+      pickFormat,
     );
     (
       cache as EllipsoidCache & {
@@ -1006,6 +1023,7 @@ function updateWebGPUEllipsoidPrimitive(
       canvasFormat,
       sampleCount,
       logDepthActive,
+      pickFormat,
     );
     (
       cache as EllipsoidCache & {

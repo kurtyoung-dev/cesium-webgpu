@@ -3264,9 +3264,12 @@ function createWebGPUCommands(
           entryPoint: "fragmentMain",
           targets: [
             {
+              // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target
+              // the context's byte-object-ID format authority (matches the
+              // pick FBO), never the presentation/scene format.
               format:
-                context.presentationFormat ||
-                navigator.gpu.getPreferredCanvasFormat(),
+                context.pickPipelineFormat ??
+                (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat),
             },
           ],
         },
@@ -4968,8 +4971,12 @@ function createWebGPUMaterialCommands(
       [uniformBuffer(0, Stage.FRAGMENT)],
     );
 
+    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
+    // context's byte-object-ID format authority (matches the pick FBO),
+    // never the presentation/scene format.
     const fmt =
-      context.presentationFormat || navigator.gpu.getPreferredCanvasFormat();
+      context.pickPipelineFormat ??
+      (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
     cache.pickPipeline = device.createRenderPipeline({
       layout: device.createPipelineLayout({
         bindGroupLayouts: [

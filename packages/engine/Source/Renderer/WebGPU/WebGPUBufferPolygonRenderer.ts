@@ -149,12 +149,12 @@ function buildPolygonPipeline(
   // scene-FB render pass — routes through `makeSceneFBTargets` so
   // Phase 2 picks up the 2nd null slot automatically).
   //
-  // Important: pick + color both use the same `format` arg
-  // (scenePipelineFormat) because the polygon shader compiles for one
-  // format — but the pick pipeline ACTUALLY runs against the pick FB
-  // texture (rgba8unorm in `WebGPUPickFramebuffer.ts:182`). The
-  // format-mismatch question is pre-existing (predates this batch);
-  // not addressing it here to keep Phase 1 byte-equivalent.
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick variant is now built
+  // with `context.pickPipelineFormat` as the `format` arg (the byte-object-ID
+  // authority the pick FBO uses), while the color variant keeps
+  // `scenePipelineFormat`. The historical format mismatch in HDR (pick
+  // pipeline targeting the float scene format against the rgba8unorm pick
+  // attachment) is closed.
   const colorBlend: GPUBlendState = {
     color: {
       srcFactor: "src-alpha",
@@ -287,10 +287,13 @@ function initPolygonCache(
     "fragmentMain",
     sampleCount,
   );
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick pipeline targets the
+  // context's byte-object-ID format authority (matches the pick FBO), never
+  // the (possibly float/HDR) scene format.
   const pickPipeline = buildPolygonPipeline(
     device,
     shaderModule,
-    format,
+    context.pickPipelineFormat ?? "rgba8unorm",
     bgls,
     "fragmentPickMain",
   );

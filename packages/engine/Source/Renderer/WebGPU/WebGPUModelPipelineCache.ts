@@ -104,7 +104,24 @@ interface KhrBinding {
 interface SceneFormatContext {
   _scenePipelineFormatGeneration?: number;
   scenePipelineFormat?: GPUTextureFormat;
+  /** NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the context's byte-object-ID
+   *  pick attachment authority (`WebGPUContext.pickPipelineFormat`). */
+  pickPipelineFormat?: GPUTextureFormat;
   _msaaSamples?: number;
+}
+
+/**
+ * NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — local mirror of the context's
+ * pick-format clamp for construction time (before the first
+ * `maybeUpdateForSceneFormat` can read `context.pickPipelineFormat`).
+ * Must match `WebGPUContext.pickPipelineFormat`: 8-bit unorm scene formats
+ * pass through; anything else (float/HDR) clamps to `rgba8unorm`.
+ * @private
+ */
+function clampToPickFormat(format: GPUTextureFormat): GPUTextureFormat {
+  return format === "bgra8unorm" || format === "rgba8unorm"
+    ? format
+    : "rgba8unorm";
 }
 
 /**
@@ -1717,6 +1734,11 @@ class WebGPUModelPipelineCache {
   // byte-identical to the pre-conversion JS.
   declare _device: GPUDevice;
   declare _presentationFormat: GPUTextureFormat;
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick-family pipelines' color
+  // target format, mirrored from `context.pickPipelineFormat` on every
+  // scene-format generation bump. Equals `_presentationFormat` in SDR;
+  // stays an 8-bit unorm when the scene target is float/HDR.
+  declare _pickFormat: GPUTextureFormat;
   declare _depthFormat: GPUTextureFormat;
   declare _sampleCount: number;
   declare _sceneFormatGeneration: number;
@@ -1807,6 +1829,10 @@ class WebGPUModelPipelineCache {
   ) {
     this._device = device;
     this._presentationFormat = presentationFormat;
+    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — construction-time clamp; the
+    // authoritative `context.pickPipelineFormat` is mirrored on the first
+    // `maybeUpdateForSceneFormat` (generation sentinel −1 guarantees it runs).
+    this._pickFormat = clampToPickFormat(presentationFormat);
     this._depthFormat = depthFormat;
     // Session 65 Batch 28 — MSAA sample count tracked alongside format
     // generation. When the bridge in `WebGPUSceneRenderer.prepareFrame`
@@ -2981,6 +3007,11 @@ class WebGPUModelPipelineCache {
     if (newFormat !== this._presentationFormat) {
       this._presentationFormat = newFormat;
     }
+    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — mirror the context's pick-format
+    // authority alongside the scene format; the wipe below drops every
+    // pick-family pipeline built against the previous format.
+    this._pickFormat =
+      context.pickPipelineFormat ?? clampToPickFormat(newFormat);
     // Session 65 Batch 28 — read the current MSAA sample count so
     // newly-created pipelines bake the matching multisample state.
     // The wipe below covers the previous-generation pipelines that
@@ -3404,7 +3435,8 @@ class WebGPUModelPipelineCache {
       this._device,
       this._getOrCreateShaderModule(md),
       this._getOrCreatePipelineLayout(md),
-      this._presentationFormat,
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      this._pickFormat,
       this._depthFormat,
       alphaMode,
       doubleSided,
@@ -3468,7 +3500,8 @@ class WebGPUModelPipelineCache {
       this._device,
       pickModule,
       this._getOrCreatePipelineLayout(md),
-      this._presentationFormat,
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      this._pickFormat,
       this._depthFormat,
       alphaMode,
       doubleSided,
@@ -3521,7 +3554,8 @@ class WebGPUModelPipelineCache {
       this._device,
       this._getOrCreateShaderModule(md),
       this._getOrCreatePipelineLayout(md),
-      this._presentationFormat,
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      this._pickFormat,
       this._depthFormat,
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
@@ -3568,7 +3602,8 @@ class WebGPUModelPipelineCache {
       this._device,
       this._getOrCreateShaderModule(md),
       this._getOrCreatePipelineLayout(md),
-      this._presentationFormat,
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      this._pickFormat,
       this._depthFormat,
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
@@ -3613,7 +3648,8 @@ class WebGPUModelPipelineCache {
       this._device,
       this._getOrCreateShaderModule(md),
       this._getOrCreatePipelineLayout(md),
-      this._presentationFormat,
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      this._pickFormat,
       this._depthFormat,
       doubleSided,
       (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,

@@ -715,6 +715,10 @@ function buildGroundPipelineResources(
   depthFormat,
   sampleCount,
   logDepthActive,
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
+  // context's byte-object-ID format authority (matches the pick FBO),
+  // never the (possibly float/HDR) scene format.
+  pickFormat = "rgba8unorm",
 ) {
   // UBO layout (256 bytes total — `UNIFORM_BUFFER_SIZE`):
   //   floats   0-15 : mvpRTE                         (mat4x4<f32>)
@@ -1434,13 +1438,13 @@ struct VelocityCO {
   };
 
   const depthSamplePickDescriptor = {
-    name: `GroundPrimitive depthSamplePick [${format}/${depthFormat}]`,
+    name: `GroundPrimitive depthSamplePick [${pickFormat}/${depthFormat}]`,
     layout: depthSampleLayout,
     vertex: { module: mod, entryPoint: "colorVS", buffers: vertexBuffers },
     fragment: {
       module: mod,
       entryPoint: "dsPickFS",
-      targets: [{ format }],
+      targets: [{ format: pickFormat }],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
@@ -1525,7 +1529,7 @@ struct VelocityCO {
   };
 
   const morphPickDescriptor = {
-    name: `GroundPrimitive morphPick [${format}/${depthFormat}]`,
+    name: `GroundPrimitive morphPick [${pickFormat}/${depthFormat}]`,
     layout: depthSampleLayout,
     vertex: {
       module: mod,
@@ -1535,7 +1539,7 @@ struct VelocityCO {
     fragment: {
       module: mod,
       entryPoint: "dsPickFS",
-      targets: [{ format }],
+      targets: [{ format: pickFormat }],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
@@ -2108,6 +2112,8 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
       depthFmt,
       sampleCount,
       logDepthActive,
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      context.pickPipelineFormat || "rgba8unorm",
     );
     cache.bgl = cache._pipelineResources.bgl;
     cache.pipelineRequestPending = false;

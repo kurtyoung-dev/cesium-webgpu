@@ -578,6 +578,7 @@ function buildSplatPipelineResources(
   format: GPUTextureFormat,
   logDepthActive: boolean,
   sampleCount: number,
+  pickFormat: GPUTextureFormat = "rgba8unorm",
 ): SplatPipelineResources {
   // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — the color
   // + depth-write variants use the LOG_DEPTH-preprocessed module when active so
@@ -710,6 +711,9 @@ function buildSplatPipelineResources(
         vertex: { ...colorDescriptor.vertex, module: smBase },
       },
       "fragmentPickMain",
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — stamp the context's pick
+      // format authority, not the (possibly float/HDR) scene format.
+      pickFormat,
       {
         name: "GaussianSplat pick pipeline",
         forceDepthWriteEnabled: false,
@@ -1161,6 +1165,9 @@ function updateWebGPUGaussianSplats(
       canvasFormat,
       logDepthActive,
       sampleCount,
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      (context as unknown as { pickPipelineFormat?: GPUTextureFormat })
+        .pickPipelineFormat ?? "rgba8unorm",
     );
     (
       cache as GaussianSplatCache & {

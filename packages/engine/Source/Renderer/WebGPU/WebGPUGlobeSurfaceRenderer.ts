@@ -251,6 +251,12 @@ export class WebGPUGlobeSurfaceRenderer {
   public _noWaterMaskView: GPUTextureView | null = null;
   // Public underscore: shared with the wireframe helpers (Batch 149).
   public _canvasFormat: GPUTextureFormat = "bgra8unorm";
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the globe pick pipeline's color
+  // target format, mirrored from `context.pickPipelineFormat` (the sole
+  // byte-object-ID attachment authority) whenever the scene-format
+  // generation bumps. Equals `_canvasFormat` in SDR; stays an 8-bit unorm
+  // when the scene target flips to a float/HDR format.
+  public _pickFormat: GPUTextureFormat = "rgba8unorm";
   // Session 65 Batch 32 — MSAA sample count tracked alongside format.
   // Captured from `context._msaaSamples` on each `maybeUpdateForScene
   // Format` call (mirrors `_canvasFormat`). Used by `PipelineHost`
@@ -687,6 +693,15 @@ export class WebGPUGlobeSurfaceRenderer {
           }
         ).scenePipelineFormat ?? this._canvasFormat;
       this._canvasFormat = newFormat;
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — mirror the context's pick
+      // format authority alongside the scene format. The cache wipe below
+      // drops any pick pipeline built against the previous format.
+      this._pickFormat =
+        (
+          frameState.context as unknown as {
+            pickPipelineFormat?: GPUTextureFormat;
+          }
+        ).pickPipelineFormat ?? "rgba8unorm";
       // Session 65 Batch 32 — capture MSAA sample count alongside the
       // canvas format. The cache wipe below ensures pipelines created
       // before the change are dropped; new lookups pick up `_sampleCount`

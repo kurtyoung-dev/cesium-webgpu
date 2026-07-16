@@ -87,6 +87,10 @@ function buildPolylinePipelineResources(
   depthFormat,
   logDepthActive,
   sampleCount,
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
+  // context's byte-object-ID format authority (matches the pick FBO),
+  // never the (possibly float/HDR) scene format.
+  pickFormat = "rgba8unorm",
 ) {
   const code = `
 ${
@@ -443,15 +447,16 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
 
   // Pick pipeline: same VS / same depth / same blend / different FS
   // entry point. The pick FBO consumer expects RGBA8 unorm output in
-  // [0, 1]; the FR's source format already is RGBA8 in pick passes.
+  // [0, 1]; the target is stamped with the context's pick-format
+  // authority (NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE).
   const pickDescriptor = {
-    name: `Vector3DTilePolylines pick [${format}/${depthFormat}]`,
+    name: `Vector3DTilePolylines pick [${pickFormat}/${depthFormat}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
       module: mod,
       entryPoint: "pickFS",
-      targets: [{ format }],
+      targets: [{ format: pickFormat }],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
@@ -996,6 +1001,8 @@ function createWebGPUVector3DTilePolylineCommands(primitive, frameState) {
       depthFmt,
       logDepthActive,
       sampleCount,
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      context.pickPipelineFormat || "rgba8unorm",
     );
     cache._pipelineFormatGeneration = sceneGen;
     cache._pipelineLogDepth = logDepthActive;

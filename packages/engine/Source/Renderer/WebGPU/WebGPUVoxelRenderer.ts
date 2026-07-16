@@ -2459,6 +2459,13 @@ function updateWebGPUVoxelPrimitive(
     ).scenePipelineFormat ??
     (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
 
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the context's
+  // byte-object-ID format authority (matches the pick FBO), never the
+  // (possibly float/HDR) scene format.
+  const pickFormat: GPUTextureFormat =
+    (context as unknown as { pickPipelineFormat?: GPUTextureFormat })
+      .pickPipelineFormat ?? "rgba8unorm";
+
   // NEW-PICK-METADATA-READBACK (Batch 285) — the color pipeline draws into the
   // MSAA scene framebuffer, so it MUST bake `multisample.count =
   // context._msaaSamples` like every other scene-FB renderer
@@ -2662,7 +2669,9 @@ function updateWebGPUVoxelPrimitive(
       fragment: {
         module: shaderModule,
         entryPoint: "fragmentPickMain",
-        targets: [{ format: canvasFormat }],
+        // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format
+        // authority (matches the pick FBO), never the scene format.
+        targets: [{ format: pickFormat }],
       },
       primitive: { topology: "triangle-list", cullMode: "front" },
       depthStencil: {
@@ -2691,7 +2700,9 @@ function updateWebGPUVoxelPrimitive(
       fragment: {
         module: shaderModule,
         entryPoint: "fragmentPickVoxelMain",
-        targets: [{ format: canvasFormat }],
+        // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format
+        // authority (matches the pick FBO), never the scene format.
+        targets: [{ format: pickFormat }],
       },
       primitive: { topology: "triangle-list", cullMode: "front" },
       depthStencil: {

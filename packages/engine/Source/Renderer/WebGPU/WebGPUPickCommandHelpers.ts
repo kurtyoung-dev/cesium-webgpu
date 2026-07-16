@@ -326,9 +326,20 @@ export interface BuildPickPipelineDescriptorOptions {
 /**
  * Clone a color pipeline descriptor into a pick variant: same layout, same
  * vertex stage, same depthStencil shape — but the fragment entry swaps to
- * {@link pickFragmentEntry}, every color target loses its blend state (pick
- * colors MUST reach the FBO byte-exact for round-trip readback to work),
- * and `depthWriteEnabled` is overridden per {@link options.forceDepthWriteEnabled}.
+ * {@link pickFragmentEntry}, and the color targets are replaced by exactly
+ * ONE explicit non-blended single-sample target stamped with
+ * {@link pickFormat} (pick colors MUST reach the FBO byte-exact for
+ * round-trip readback to work). `depthWriteEnabled` is overridden per
+ * {@link options.forceDepthWriteEnabled}.
+ *
+ * NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — {@link pickFormat} is REQUIRED and
+ * callers must pass `context.pickPipelineFormat`, the context's sole
+ * byte-object-ID attachment authority. The helper previously FILTERED the
+ * color targets (dropping any `rgba16float` G-buffer slot), which silently
+ * produced a zero-target pick pipeline in HDR (where slot 0 itself is
+ * `rgba16float`) and inherited whatever slot-0 format remained otherwise.
+ * Stamping is byte-identical in SDR (slot 0 == pickPipelineFormat) and
+ * correct in HDR (LDR pick target for a float scene target).
  *
  * Returns a new descriptor; does NOT mutate the input. Safe to feed into
  * `WebGPURenderPipelineCache.getPipeline()` or pass through `descriptorToGPU`.
@@ -337,6 +348,8 @@ export interface BuildPickPipelineDescriptorOptions {
  * @param pickFragmentEntry - The WGSL function name to use as the pick
  *   fragment entry point. Must exist in the same shader module as the color
  *   fragment entry; the helper does NOT swap the module reference.
+ * @param pickFormat - The pick color attachment format. Pass
+ *   `context.pickPipelineFormat`.
  * @param options - See {@link BuildPickPipelineDescriptorOptions}.
  *
  * @private
@@ -344,6 +357,7 @@ export interface BuildPickPipelineDescriptorOptions {
 export function buildPickPipelineDescriptor(
   colorDescriptor: WebGPURenderPipelineDescriptor,
   pickFragmentEntry: string,
+  pickFormat: GPUTextureFormat,
   options?: BuildPickPipelineDescriptorOptions,
 ): WebGPURenderPipelineDescriptor {
   const forceDepthWriteEnabled = options?.forceDepthWriteEnabled ?? true;
@@ -360,34 +374,28 @@ export function buildPickPipelineDescriptor(
     );
   }
 
-  // Strip blend on every color target while preserving format + writeMask.
-  // Spread instead of mutating so the caller's descriptor stays untouched
-  // (matters for renderers that hold the color descriptor in long-lived
-  // pipeline-resources state).
-  //
-  // Slice 5c-B Batch 118 — filter out the G-buffer slot-1 target. The
-  // pick render pass has 1 color attachment (the pick framebuffer's
-  // rgba8unorm color); converted renderers' color pipelines now declare
-  // 2 targets (scene color + G-buffer placeholder) via
-  // `makeSceneFBTargets`. Without this filter the pick pipeline would
-  // declare 2 targets against a 1-attachment pass and trip
-  // "Attachment state not compatible" at the first pick. Drop any
-  // target whose format matches the G-buffer format AND filter out
-  // explicit nulls in case a future caller passes them.
-  const pickTargets: GPUColorTargetState[] = colorFragment.targets
-    .filter(
-      (t): t is GPUColorTargetState =>
-        t !== null && t !== undefined && t.format !== "rgba16float",
-    )
-    .map((target) => {
-      // Drop the `blend` slot entirely. `writeMask` defaults to ALL when not
-      // specified, which is what we want for pick targets.
-      const { blend: _blend, ...rest } = target;
-      // `_blend` is intentionally discarded; rename to underscore-prefix to
-      // keep linters happy without an explicit unused-marker comment.
-      void _blend;
-      return rest;
-    });
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick render pass has exactly
+  // ONE color attachment (the pick framebuffer's `context.pickPipelineFormat`
+  // texture). Stamp exactly one target: slot 0's writeMask is preserved,
+  // `blend` is dropped entirely (writeMask defaults to ALL when not
+  // specified, which is what we want for pick targets), and the format is
+  // the caller-supplied pick authority — NOT the scene slot-0 format, which
+  // diverges from the pick attachment in HDR.
+  const slot0 = colorFragment.targets.find(
+    (t): t is GPUColorTargetState => t !== null && t !== undefined,
+  );
+  if (!slot0) {
+    throw new Error(
+      `WebGPUPickCommandHelpers.buildPickPipelineDescriptor: ` +
+        `colorDescriptor "${colorDescriptor.name}" has no color target; ` +
+        `cannot derive a pick variant.`,
+    );
+  }
+  const { blend: _blend, ...slot0NoBlend } = slot0;
+  void _blend;
+  const pickTargets: GPUColorTargetState[] = [
+    { ...slot0NoBlend, format: pickFormat },
+  ];
 
   const pickFragment = {
     module: colorFragment.module,

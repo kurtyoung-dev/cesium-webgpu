@@ -149,9 +149,13 @@ export interface DeriveVariantOptions {
    */
   forceDepthWriteEnabled?: boolean;
   /**
-   * PICK: override the pick color-target format. Default keeps the base
-   * slot-0 format (the pick FBO is allocated with the scene pipeline
-   * format, so inheriting matches the pass).
+   * PICK: the pick color-target format — REQUIRED for PICK derivation
+   * (NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE). Pass `context.pickPipelineFormat`,
+   * the context's sole byte-object-ID attachment authority. Inheriting the
+   * base slot-0 format was silently wrong in HDR: the scene target is a
+   * float format while the pick FBO stays an 8-bit unorm, so an inherited
+   * pick pipeline trips "Attachment state not compatible" and every pick
+   * returns undefined.
    */
   pickFormat?: GPUTextureFormat;
   /**
@@ -291,9 +295,10 @@ function requireFragment(
 }
 
 /**
- * PICK: slot-0-only blend-stripped color target (the pick pass has exactly
- * one attachment and pick colors must land byte-exact), depth write forced
- * on by default, multisample dropped (pick FBO is single-sample).
+ * PICK: exactly ONE blend-stripped color target stamped with the REQUIRED
+ * `options.pickFormat` (`context.pickPipelineFormat` — the pick pass has
+ * exactly one attachment and pick colors must land byte-exact), depth write
+ * forced on by default, multisample dropped (pick FBO is single-sample).
  */
 function derivePickDescriptor(
   base: WebGPURenderPipelineDescriptor,
@@ -309,12 +314,23 @@ function derivePickDescriptor(
         `"${base.name}" has no color target; cannot derive a pick variant.`,
     );
   }
+  if (options.pickFormat === undefined) {
+    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick target format must be
+    // stamped explicitly from `context.pickPipelineFormat`. Silently
+    // inheriting the base slot-0 (scene) format produced HDR pick pipelines
+    // targeting a float format against the 8-bit unorm pick attachment.
+    throw new Error(
+      `WebGPUDerivedCommand.deriveDescriptor: PICK derivation for ` +
+        `"${base.name}" requires options.pickFormat ` +
+        `(pass context.pickPipelineFormat).`,
+    );
+  }
   const { blend: _blend, ...slot0NoBlend } = slot0;
   void _blend;
-  const pickTarget: GPUColorTargetState =
-    options.pickFormat !== undefined
-      ? { ...slot0NoBlend, format: options.pickFormat }
-      : slot0NoBlend;
+  const pickTarget: GPUColorTargetState = {
+    ...slot0NoBlend,
+    format: options.pickFormat,
+  };
 
   const forceDepthWriteEnabled = options.forceDepthWriteEnabled ?? true;
   const depthStencil: GPUDepthStencilState | undefined = base.depthStencil

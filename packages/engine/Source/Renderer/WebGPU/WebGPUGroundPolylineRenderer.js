@@ -1202,6 +1202,10 @@ function buildPolylinePipelineResources(
   format,
   depthFormat,
   sampleCount,
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
+  // context's byte-object-ID format authority (matches the pick FBO),
+  // never the (possibly float/HDR) scene format.
+  pickFormat = "rgba8unorm",
 ) {
   const mod = getGroundPolylineShaderCache(device).getOrCreate(
     ShaderSourceId.GROUND_POLYLINE,
@@ -1321,13 +1325,13 @@ function buildPolylinePipelineResources(
   };
 
   const pickDescriptor = {
-    name: `GroundPolyline pick [${format}/${depthFormat}]`,
+    name: `GroundPolyline pick [${pickFormat}/${depthFormat}]`,
     layout: pipelineLayout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
       module: mod,
       entryPoint: "pickFS",
-      targets: [{ format }],
+      targets: [{ format: pickFormat }],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
@@ -1413,13 +1417,13 @@ function buildPolylinePipelineResources(
   };
 
   const morphPickDescriptor = {
-    name: `GroundPolyline pick morph [${format}/${depthFormat}]`,
+    name: `GroundPolyline pick morph [${pickFormat}/${depthFormat}]`,
     layout: pipelineLayout,
     vertex: { module: mod, entryPoint: "vsMorph", buffers: vertexBuffers },
     fragment: {
       module: mod,
       entryPoint: "pickFSMorph",
-      targets: [{ format }],
+      targets: [{ format: pickFormat }],
     },
     primitive: { topology: "triangle-list", cullMode: "front" },
     depthStencil: {
@@ -2678,6 +2682,8 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
       format,
       depthFmt,
       sampleCount,
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      context.pickPipelineFormat || "rgba8unorm",
     );
     cache.bgl = cache._pipelineResources.bgl;
     cache._pipelineFormatGeneration = sceneGen;

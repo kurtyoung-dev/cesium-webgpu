@@ -87,11 +87,17 @@ describe("Renderer/WebGPU/WebGPUDerivedCommand", function () {
   });
 
   describe("deriveDescriptor — PICK", function () {
+    // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — PICK derivation requires an
+    // explicit pickFormat (context.pickPipelineFormat); the spec passes the
+    // SDR value so slot-0 semantics stay observable.
+    const PICK_OPTS = { pickFormat: "bgra8unorm" };
+
     it("keeps only slot 0 with blend stripped and drops multisample", function () {
       const base = makeBaseDescriptor();
       const d = WebGPUDerivedCommand.deriveDescriptor(
         base,
         DerivedCommandType.PICK,
+        PICK_OPTS,
       );
       expect(d.fragment.targets.length).toBe(1);
       expect(d.fragment.targets[0].format).toBe("bgra8unorm");
@@ -99,17 +105,42 @@ describe("Renderer/WebGPU/WebGPUDerivedCommand", function () {
       expect(d.multisample).toBeUndefined();
     });
 
+    it("stamps the supplied pickFormat over an HDR slot-0 format", function () {
+      const base = makeBaseDescriptor();
+      base.fragment.targets[0].format = "rgba16float";
+      const d = WebGPUDerivedCommand.deriveDescriptor(
+        base,
+        DerivedCommandType.PICK,
+        { pickFormat: "rgba8unorm" },
+      );
+      expect(d.fragment.targets.length).toBe(1);
+      expect(d.fragment.targets[0].format).toBe("rgba8unorm");
+    });
+
+    it("throws when options.pickFormat is missing", function () {
+      const base = makeBaseDescriptor();
+      expect(function () {
+        WebGPUDerivedCommand.deriveDescriptor(base, DerivedCommandType.PICK);
+      }).toThrowError(/pickFormat/);
+      expect(function () {
+        WebGPUDerivedCommand.deriveDescriptor(base, DerivedCommandType.PICK, {
+          module: SWAP_MODULE,
+        });
+      }).toThrowError(/pickFormat/);
+    });
+
     it("forces depth write on by default and inherits when disabled", function () {
       const base = makeBaseDescriptor();
       const forced = WebGPUDerivedCommand.deriveDescriptor(
         base,
         DerivedCommandType.PICK,
+        PICK_OPTS,
       );
       expect(forced.depthStencil.depthWriteEnabled).toBe(true);
       const inherited = WebGPUDerivedCommand.deriveDescriptor(
         base,
         DerivedCommandType.PICK,
-        { forceDepthWriteEnabled: false },
+        { forceDepthWriteEnabled: false, pickFormat: "bgra8unorm" },
       );
       expect(inherited.depthStencil.depthWriteEnabled).toBe(false);
     });
@@ -119,7 +150,7 @@ describe("Renderer/WebGPU/WebGPUDerivedCommand", function () {
       const d = WebGPUDerivedCommand.deriveDescriptor(
         base,
         DerivedCommandType.PICK,
-        { module: SWAP_MODULE },
+        { module: SWAP_MODULE, pickFormat: "bgra8unorm" },
       );
       expect(d.vertex.module).toBe(SWAP_MODULE);
       expect(d.fragment.module).toBe(SWAP_MODULE);
@@ -136,7 +167,7 @@ describe("Renderer/WebGPU/WebGPUDerivedCommand", function () {
       const d = WebGPUDerivedCommand.deriveDescriptor(
         base,
         DerivedCommandType.PICK,
-        { fragmentEntryPoint: "fragmentPickMain" },
+        { fragmentEntryPoint: "fragmentPickMain", pickFormat: "bgra8unorm" },
       );
       expect(d.fragment.module).toBe(FS_MODULE);
       expect(d.fragment.entryPoint).toBe("fragmentPickMain");
@@ -149,6 +180,7 @@ describe("Renderer/WebGPU/WebGPUDerivedCommand", function () {
       const d = WebGPUDerivedCommand.deriveDescriptor(
         base,
         DerivedCommandType.PICK,
+        PICK_OPTS,
       );
       expect(d.name).toBe(`${base.name}::pick`);
       expect(d.name).not.toBe(base.name);
@@ -159,6 +191,7 @@ describe("Renderer/WebGPU/WebGPUDerivedCommand", function () {
       const snapshot = JSON.stringify(base);
       WebGPUDerivedCommand.deriveDescriptor(base, DerivedCommandType.PICK, {
         module: SWAP_MODULE,
+        pickFormat: "bgra8unorm",
       });
       expect(JSON.stringify(base)).toBe(snapshot);
     });
@@ -167,7 +200,11 @@ describe("Renderer/WebGPU/WebGPUDerivedCommand", function () {
       const base = makeBaseDescriptor();
       delete base.fragment;
       expect(function () {
-        WebGPUDerivedCommand.deriveDescriptor(base, DerivedCommandType.PICK);
+        WebGPUDerivedCommand.deriveDescriptor(
+          base,
+          DerivedCommandType.PICK,
+          PICK_OPTS,
+        );
       }).toThrowError(/no fragment stage/);
     });
   });

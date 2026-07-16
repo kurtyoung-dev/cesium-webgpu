@@ -1458,7 +1458,13 @@ function _pushBillboardPickCommand(
       // Whole-module swap: the dedicated pick shader source compiled at
       // the same defines as the color module (entry points unchanged —
       // vertexMain/fragmentMain exist in both modules).
-      { module: pickModule },
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick target is stamped
+      // with the context's byte-object-ID format authority, never the
+      // (possibly float/HDR) scene slot-0 format.
+      {
+        module: pickModule,
+        pickFormat: context.pickPipelineFormat ?? "rgba8unorm",
+      },
     );
     pickEntry = { descriptor, pipeline: null, pending: false };
     cache.pickPipelineEntries.set(pickDefines, pickEntry);

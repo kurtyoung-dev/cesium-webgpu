@@ -140,6 +140,10 @@ function buildVectorTilePipelineResources(
   depthFormat,
   logDepthActive,
   sampleCount,
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick pipelines target the
+  // context's byte-object-ID format authority (matches the pick FBO),
+  // never the (possibly float/HDR) scene format.
+  pickFormat = "rgba8unorm",
 ) {
   const code = `
 ${csm_depthClamp}
@@ -528,13 +532,13 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
 
   // Pick pipeline: same VS / depth-sample BGL / different FS entry.
   const pickDescriptor = {
-    name: `Vector3DTilePrimitive pick [${format}/${depthFormat}]`,
+    name: `Vector3DTilePrimitive pick [${pickFormat}/${depthFormat}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
       module: mod,
       entryPoint: "pickFS",
-      targets: [{ format }],
+      targets: [{ format: pickFormat }],
     },
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
@@ -1302,6 +1306,8 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
       depthFmt,
       logDepthActive,
       sampleCount,
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
+      context.pickPipelineFormat || "rgba8unorm",
     );
     cache._pipelineFormatGeneration = sceneGen;
     cache._pipelineLogDepth = logDepthActive;

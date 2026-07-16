@@ -275,10 +275,13 @@ function initPolylineCache(
     "fragmentMain",
     sampleCount,
   );
+  // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick pipeline targets the
+  // context's byte-object-ID format authority (matches the pick FBO), never
+  // the (possibly float/HDR) scene format.
   const pickPipeline = buildPolylinePipeline(
     device,
     shaderModule,
-    format,
+    context.pickPipelineFormat ?? "rgba8unorm",
     bgls,
     "fragmentPickMain",
   );

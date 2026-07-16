@@ -65,6 +65,13 @@ import type {
  */
 export interface PipelineHost extends ShaderFactoryHost {
   readonly _canvasFormat: GPUTextureFormat;
+  /**
+   * NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick pipeline color-target
+   * format, mirrored from `context.pickPipelineFormat` by the renderer on
+   * every scene-format generation bump. Equals `_canvasFormat` in SDR;
+   * stays an 8-bit unorm when the scene target is float/HDR.
+   */
+  readonly _pickFormat?: GPUTextureFormat;
   readonly _pipelineLayout: GPUPipelineLayout | null;
   readonly _pipelineCache: Map<string, GlobePipelineEntry>;
   readonly _debugFragmentPipelineCache: Map<string, GlobePipelineEntry>;
@@ -832,11 +839,12 @@ export function selectCapturePipeline(
  *
  * Derives from the OPAQUE color descriptor for the same vertex variant
  * (`buildPickPipelineDescriptor` swaps the fragment entry to
- * `fragmentPickMain`, strips blend + the rgba16float G-buffer slot-1 target +
- * MSAA, and forces `depthWriteEnabled: true`). The result targets the single
- * pick-FBO color attachment (its format equals the scene color format in SDR,
- * which is what `WebGPUPickFramebuffer` uses) and writes standard rasterizer
- * depth, matching the model / primitive pick pipelines.
+ * `fragmentPickMain`, strips blend + MSAA, stamps exactly one color target
+ * with `host._pickFormat` — `context.pickPipelineFormat`, the byte-object-ID
+ * authority shared with `WebGPUPickFramebuffer` — and forces
+ * `depthWriteEnabled: true`). The result targets the single pick-FBO color
+ * attachment in both SDR and HDR and writes standard rasterizer depth,
+ * matching the model / primitive pick pipelines.
  *
  * Cache key shares the layout / vertex / shader-define dimensions with
  * `selectPipeline` and adds a `_PICK` suffix so it doesn't collide. `isBlend`
@@ -880,6 +888,9 @@ export function selectPickPipeline(
     const descriptor = buildPickPipelineDescriptor(
       colorDescriptor,
       "fragmentPickMain",
+      // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — stamp the context's pick
+      // format authority (mirrored onto the host), never the scene format.
+      host._pickFormat ?? "rgba8unorm",
       {
         name: `${colorDescriptor.name} pick`,
         forceDepthWriteEnabled: true,
