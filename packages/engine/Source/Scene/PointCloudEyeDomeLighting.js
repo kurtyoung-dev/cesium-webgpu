@@ -13,6 +13,7 @@ import BlendingState from "../Scene/BlendingState.js";
 import StencilConstants from "../Scene/StencilConstants.js";
 import PointCloudEyeDomeLightingShader from "../Shaders/PostProcessStages/PointCloudEyeDomeLighting.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import { resolveFeatureRendererReadiness } from "../Renderer/GraphicsContext.js";
 
 /**
  * Eye dome lighting. Does not support points with per-point translucency, but does allow translucent styling against the globe.
@@ -57,15 +58,19 @@ class PointCloudEyeDomeLighting {
     this._radius =
       pointCloudShading.eyeDomeLightingRadius * frameState.pixelRatio;
 
-    // Backend-specific rendering path — delegate to feature renderer if available
-    const fr = frameState.context.getFeatureRenderer(
+    const readiness = resolveFeatureRendererReadiness(
+      frameState.context,
       FeatureRendererKey.POINT_CLOUD_EDL,
     );
+    const fr = readiness.kind === "ready" ? readiness.renderer : undefined;
     if (fr) {
       this._featureRenderer = fr;
       // PARITY-PC-EDL — pass the command-list start index so the WebGPU
       // renderer can find (and hijack) this tileset's point-cloud commands.
       fr.update(this, frameState, commandStart);
+      return;
+    }
+    if (readiness.kind !== "unsupported") {
       return;
     }
 

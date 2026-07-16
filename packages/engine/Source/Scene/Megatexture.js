@@ -1,6 +1,5 @@
 import Cartesian3 from "../Core/Cartesian3.js";
 import Check from "../Core/Check.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
@@ -50,6 +49,7 @@ class Megatexture {
       bytesPerSample,
       availableTextureMemoryBytes,
       tileCount,
+      context.limits.maximum3DTextureSize,
     );
 
     const tileCounts = Cartesian3.divideComponents(
@@ -393,6 +393,7 @@ function MegatextureNode(index) {
  * @param {number} bytesPerSample The number of bytes per voxel sample.
  * @param {number} availableTextureMemoryBytes An upper limit on the texture memory size in bytes.
  * @param {number} [tileCount] The total number of tiles in the tileset.
+ * @param {number} maximum3DTextureSize The owning context's 3D texture limit.
  * @returns {Cartesian3} The computed 3D texture dimensions.
  *
  * @exception {RuntimeError} The GL context does not support a 3D texture large enough to contain a tile with the given dimensions.
@@ -404,8 +405,8 @@ Megatexture.get3DTextureDimension = function (
   bytesPerSample,
   availableTextureMemoryBytes,
   tileCount,
+  maximum3DTextureSize,
 ) {
-  const { maximum3DTextureSize } = ContextLimits;
   if (Cartesian3.maximumComponent(tileDimensions) > maximum3DTextureSize) {
     throw new RuntimeError(
       "The GL context does not support a 3D texture large enough to contain a tile with the given dimensions.",

@@ -199,6 +199,9 @@ class Vector3DTileContent {
   }
 
   update(tileset, frameState) {
+    if (defined(this._batchTable)) {
+      this._batchTable.updateCapabilities(frameState.context);
+    }
     let ready = true;
     if (defined(this._polygons)) {
       this._polygons.classificationType = this._tileset.classificationType;

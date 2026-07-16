@@ -8,7 +8,7 @@ import {
   TextureMagnificationFilter,
   TextureMinificationFilter,
   defined,
-  ContextLimits,
+  GraphicsCapabilities,
 } from "../../index.js";
 import createContext from "../../../../Specs/createContext.js";
 import MetadataTester from "../../../../Specs/MetadataTester.js";
@@ -383,8 +383,6 @@ describe(
 
       let context;
       let structuralMetadata;
-      const maximumTextureSize = ContextLimits.maximumTextureSize;
-
       beforeEach(function () {
         context = createContext();
       });
@@ -399,7 +397,6 @@ describe(
           context.destroyForSpecs();
         }
         context = undefined;
-        ContextLimits._maximumTextureSize = maximumTextureSize;
       });
 
       it("creates a texture for a well-formed property table", function () {
@@ -596,7 +593,12 @@ describe(
 
       it("warns and returns an undefined texture if the number of properties or features exceeds the maximum texture size", function () {
         spyOn(console, "warn");
-        ContextLimits._maximumTextureSize = 1;
+        context._graphicsCapabilities = GraphicsCapabilities.create({
+          ...context.graphicsCapabilities,
+          maximumTextureSize: 1,
+          ktx2TranscodeTargets:
+            context.graphicsCapabilities.ktx2TranscodeTargets,
+        });
 
         const schemaJson = {
           classes: {

@@ -321,8 +321,16 @@ function firstComponentExpr(fieldExpr, wgslType) {
  * @returns {{ layout: object, fields: object[] }|undefined}
  * @private
  */
-function getPropertyTextureFields(model, primitive, usedFieldNames) {
-  const layout = resolvePropertyTextureLayout(model, primitive);
+function getPropertyTextureFields(
+  model,
+  primitive,
+  usedFieldNames,
+  resolvedLayout,
+) {
+  const layout =
+    arguments.length >= 4
+      ? resolvedLayout
+      : resolvePropertyTextureLayout(model, primitive);
   if (!defined(layout)) {
     return undefined;
   }
@@ -374,8 +382,17 @@ function getPropertyTextureFields(model, primitive, usedFieldNames) {
  * @returns {{ layout: object, fields: object[] }|undefined}
  * @private
  */
-function getPropertyTableFields(model, primitive, usedFieldNames, runtimeNode) {
-  const layout = resolvePropertyTableLayout(model, primitive, runtimeNode);
+function getPropertyTableFields(
+  model,
+  primitive,
+  usedFieldNames,
+  runtimeNode,
+  resolvedLayout,
+) {
+  const layout =
+    arguments.length >= 5
+      ? resolvedLayout
+      : resolvePropertyTableLayout(model, primitive, runtimeNode);
   if (!defined(layout)) {
     return undefined;
   }
@@ -444,30 +461,39 @@ function getPropertyTableFields(model, primitive, usedFieldNames, runtimeNode) {
  * @param {ModelComponents.Primitive} primitive
  * @param {ModelRuntimeNode} [runtimeNode] PARITY-METADATA-TABLE-INSTANCE-SOURCE
  *   — enables the instance-sourced property-table feature-ID path.
+ * @param {object} [resolved] Optional pre-resolved CPU metadata inputs. The
+ *   renderer hot path supplies these so layouts and attribute packing are
+ *   built once per source generation rather than again inside codegen.
  * @returns {{ wgsl: string, classHash: number, fields: object[],
  *   propertyTextureLayout: object|undefined,
  *   propertyTableLayout: object|undefined,
  *   matTransport: boolean }|undefined}
  * @private
  */
-function generateMetadataWGSL(model, primitive, runtimeNode) {
+function generateMetadataWGSL(model, primitive, runtimeNode, resolved) {
   const attributeFields = getPropertyAttributeFields(model, primitive);
   const usedFieldNames = new Set(attributeFields.map((f) => f.fieldName));
-  const textureResult = getPropertyTextureFields(
-    model,
-    primitive,
-    usedFieldNames,
-  );
+  const textureResult = defined(resolved)
+    ? getPropertyTextureFields(
+        model,
+        primitive,
+        usedFieldNames,
+        resolved.propertyTextureLayout,
+      )
+    : getPropertyTextureFields(model, primitive, usedFieldNames);
   const textureFields = textureResult?.fields ?? [];
   const propertyTextureLayout = textureResult?.layout;
   // DP-H46d — property TABLES. Resolved AFTER attributes + textures so the
   // table field names disambiguate against any earlier collision.
-  const tableResult = getPropertyTableFields(
-    model,
-    primitive,
-    usedFieldNames,
-    runtimeNode,
-  );
+  const tableResult = defined(resolved)
+    ? getPropertyTableFields(
+        model,
+        primitive,
+        usedFieldNames,
+        runtimeNode,
+        resolved.propertyTableLayout,
+      )
+    : getPropertyTableFields(model, primitive, usedFieldNames, runtimeNode);
   const tableFields = tableResult?.fields ?? [];
   const propertyTableLayout = tableResult?.layout;
 
@@ -499,7 +525,9 @@ function generateMetadataWGSL(model, primitive, runtimeNode) {
     defined(transported) &&
     /^mat[34]x[34]<f32>$/.test(transported.wgslType)
   ) {
-    const resolvedPack = resolveMetadataAttributeData(model, primitive);
+    const resolvedPack = defined(resolved)
+      ? resolved.metadataAttributeData
+      : resolveMetadataAttributeData(model, primitive);
     matTransport =
       defined(resolvedPack) &&
       resolvedPack.vec4Count === 4 &&

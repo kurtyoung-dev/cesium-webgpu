@@ -192,6 +192,46 @@ describe("Scene/Model/ClassificationPipelineStage", function () {
     expect(batchOffsets).toEqual([0, 6, 9]);
   });
 
+  it("retains indexed classification payloads when the renderer requires them", function () {
+    const featureIds = [0, 0, 0, 1, 1, 1];
+    const indexArray = [0, 1, 2, 3, 4, 5];
+    const indices = {
+      typedArray: indexArray,
+      count: indexArray.length,
+    };
+    const primitive = mockPrimitive(featureIds, indices);
+    const renderResources = mockRenderResources(primitive);
+
+    ClassificationPipelineStage.process(renderResources, primitive, {
+      context: {
+        requiresVertexTypedArrayRetention: true,
+      },
+    });
+
+    expect(primitive.indices.typedArray).toBe(indexArray);
+    expect(primitive.attributes[1].typedArray).toBe(featureIds);
+    expect(renderResources.runtimePrimitive.batchLengths).toEqual([3, 3]);
+  });
+
+  it("releases indexed classification payloads after WebGL upload", function () {
+    const featureIds = [0, 0, 0, 1, 1, 1];
+    const indices = {
+      typedArray: [0, 1, 2, 3, 4, 5],
+      count: 6,
+    };
+    const primitive = mockPrimitive(featureIds, indices);
+    const renderResources = mockRenderResources(primitive);
+
+    ClassificationPipelineStage.process(
+      renderResources,
+      primitive,
+      mockFrameState,
+    );
+
+    expect(primitive.indices.typedArray).not.toBeDefined();
+    expect(primitive.attributes[1].typedArray).not.toBeDefined();
+  });
+
   it("doesn't recompute batches for primitive if they are already defined", function () {
     const inputBatchLengths = [6];
     const featureIds = generateFeatureIds(inputBatchLengths);

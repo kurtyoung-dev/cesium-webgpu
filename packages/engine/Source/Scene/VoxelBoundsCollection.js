@@ -3,7 +3,6 @@ import Cartesian3 from "../Core/Cartesian3.js";
 import Cartesian4 from "../Core/Cartesian4.js";
 import Check from "../Core/Check.js";
 import ClippingPlane from "./ClippingPlane.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
 import Event from "../Core/Event.js";
@@ -443,8 +442,8 @@ function transformPlane(plane, transform, result) {
   return Plane.fromCartesian4(transformedPlane, result);
 }
 
-function computeTextureResolution(pixelsNeeded, result) {
-  result.x = Math.min(pixelsNeeded, ContextLimits.maximumTextureSize);
+function computeTextureResolution(pixelsNeeded, maximumTextureSize, result) {
+  result.x = Math.min(pixelsNeeded, maximumTextureSize);
   result.y = Math.ceil(pixelsNeeded / result.x);
   return result;
 }
@@ -475,7 +474,11 @@ VoxelBoundsCollection.getTextureResolution = function (
   }
 
   const pixelsNeeded = clippingPlaneCollection.length;
-  const requiredResolution = computeTextureResolution(pixelsNeeded, result);
+  const requiredResolution = computeTextureResolution(
+    pixelsNeeded,
+    context.limits.maximumTextureSize,
+    result,
+  );
 
   // Allocate twice as much space as needed to avoid frequent texture reallocation.
   requiredResolution.y *= 2;

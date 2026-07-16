@@ -2,7 +2,6 @@ import Check from "../../Core/Check.js";
 import defined from "../../Core/defined.js";
 import Frozen from "../../Core/Frozen.js";
 import PixelFormat from "../../Core/PixelFormat.js";
-import ContextLimits from "../../Renderer/ContextLimits.js";
 import Sampler from "../../Renderer/Sampler.js";
 import Texture from "../../Renderer/Texture.js";
 import TextureMagnificationFilter from "../../Renderer/TextureMagnificationFilter.js";
@@ -554,7 +553,7 @@ PrimitiveOutlineGenerator.createTexture = function (context) {
     return cache.outlineTexture;
   }
 
-  const maxSize = Math.min(4096, ContextLimits.maximumTextureSize);
+  const maxSize = Math.min(4096, context.limits.maximumTextureSize);
 
   let size = maxSize;
   const levelZero = createMipLevel(size);

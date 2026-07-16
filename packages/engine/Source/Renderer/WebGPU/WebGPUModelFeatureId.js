@@ -99,6 +99,43 @@ function classifyFeatureId(featureId, isInstance) {
 }
 
 /**
+ * Returns the selected primitive-scoped implicit feature-ID source without
+ * allocating the classification wrapper used by the general feature path.
+ * Instance feature IDs take precedence and intentionally return null because
+ * their ID is transported with the instance transform, not synthesized per
+ * vertex.
+ *
+ * @param {Model} model
+ * @param {ModelRuntimeNode} runtimeNode
+ * @param {ModelComponents.Primitive} primitive
+ * @returns {ModelComponents.FeatureIdImplicitRange|null}
+ * @private
+ */
+function getSelectedImplicitFeatureId(model, runtimeNode, primitive) {
+  const node = runtimeNode.node || runtimeNode._node;
+  if (defined(node) && defined(node.instances)) {
+    const instanceFeatureId = ModelUtility.getFeatureIdsByLabel(
+      node.instances.featureIds,
+      model.instanceFeatureIdLabel,
+    );
+    if (defined(instanceFeatureId)) {
+      return null;
+    }
+  }
+
+  if (!defined(primitive?.featureIds) || primitive.featureIds.length === 0) {
+    return null;
+  }
+  const primitiveFeatureId = ModelUtility.getFeatureIdsByLabel(
+    primitive.featureIds,
+    model.featureIdLabel,
+  );
+  return primitiveFeatureId instanceof ModelComponents.FeatureIdImplicitRange
+    ? primitiveFeatureId
+    : null;
+}
+
+/**
  * NEW-FEATURE-ID-VERTEX-ATTR (Batch 188) — synthesize a per-vertex
  * Float32Array of feature IDs for primitives that select a
  * `FeatureIdImplicitRange`. Such primitives carry no per-vertex
@@ -126,19 +163,10 @@ function synthesizeImplicitFeatureIdData(
   if (!defined(primitive) || vertexCount <= 0) {
     return null;
   }
-  const selected = findSelectedFeatureId(model, runtimeNode, primitive);
-  if (!defined(selected) || !selected.isImplicit) {
+  const fid = getSelectedImplicitFeatureId(model, runtimeNode, primitive);
+  if (!defined(fid)) {
     return null;
   }
-  // PARITY-METADATA-TABLE-INSTANCE-SOURCE — an INSTANCE implicit range is
-  // per-instance, NOT per-vertex. Synthesizing `offset + floor(v/repeat)` over
-  // the vertex index here would set MODEL_HAS_FEATURE_ID_0 with bogus per-vertex
-  // IDs (and bypass the instance pad-slot → featureId0 path). Leave it to the
-  // instancing feature-ID transport.
-  if (selected.isInstance === true) {
-    return null;
-  }
-  const fid = selected.featureIds;
   // FeatureIdImplicitRange exposes offset (default 0) and repeat
   // (default 1). Per the EXT_mesh_features spec the lookup is
   // `id = offset + floor(vertex_index / repeat)`.
@@ -771,12 +799,14 @@ function destroyFeatureIdResources(primCache) {
 
 export {
   findSelectedFeatureId,
+  getSelectedImplicitFeatureId,
   synthesizeImplicitFeatureIdData,
   ensureFeatureIdResources,
   destroyFeatureIdResources,
 };
 export default {
   findSelectedFeatureId,
+  getSelectedImplicitFeatureId,
   synthesizeImplicitFeatureIdData,
   ensureFeatureIdResources,
   destroyFeatureIdResources,

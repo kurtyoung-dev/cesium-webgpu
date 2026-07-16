@@ -33,8 +33,8 @@ import Cartesian3 from "../Core/Cartesian3.js";
 import Quaternion from "../Core/Quaternion.js";
 import SplitDirection from "./SplitDirection.js";
 import destroyObject from "../Core/destroyObject.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import { resolveFeatureRendererReadiness } from "../Renderer/GraphicsContext.js";
 import Transforms from "../Core/Transforms.js";
 
 const scratchMatrix4A = new Matrix4();
@@ -479,9 +479,12 @@ async function processGeneratedSplatTextureData(
   snapshot,
   promise,
 ) {
+  // Capture before awaiting so an asynchronous completion is tied to the
+  // context that scheduled it, not whichever renderer happens to run later.
+  const maximumTextureSize = frameState.context.limits.maximumTextureSize;
   try {
     const splatTextureData = await promise;
-    const maxTex = ContextLimits.maximumTextureSize;
+    const maxTex = maximumTextureSize;
 
     // Use maximumTextureSize as the texture width; splatsPerRow = maxTex / 2
     // (each splat occupies 2 side-by-side texels). The WASM buffer layout is
@@ -580,7 +583,7 @@ async function processGeneratedSplatTextureData(
 
     if (defined(snapshot.shData) && snapshot.sphericalHarmonicsDegree > 0) {
       const oldTex = snapshot.sphericalHarmonicsTexture;
-      const width = ContextLimits.maximumTextureSize;
+      const width = maximumTextureSize;
       const dims = snapshot.shCoefficientCount / 3;
       const splatsPerRow = Math.floor(width / dims);
       const floatsPerRow = splatsPerRow * (dims * 2);
@@ -1181,13 +1184,19 @@ class GaussianSplatPrimitive {
    * @private
    */
   update(frameState) {
-    // Route to WebGPU feature renderer if available
-    const fr = frameState.context.getFeatureRenderer(
+    // Loading/failed are explicit states of the selected backend; they must
+    // not create the legacy GPU objects while a native renderer is pending.
+    const readiness = resolveFeatureRendererReadiness(
+      frameState.context,
       FeatureRendererKey.GAUSSIAN_SPLAT,
     );
+    const fr = readiness.kind === "ready" ? readiness.renderer : undefined;
     if (fr) {
       fr.update(this, frameState);
       this._featureRenderer = fr;
+      return;
+    }
+    if (readiness.kind !== "unsupported") {
       return;
     }
 

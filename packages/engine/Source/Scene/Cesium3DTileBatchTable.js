@@ -9,7 +9,6 @@ import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import CesiumMath from "../Core/Math.js";
 import RuntimeError from "../Core/RuntimeError.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import DrawCommand from "../Renderer/DrawCommand.js";
 import Pass from "../Renderer/Pass.js";
 import RenderState from "../Renderer/RenderState.js";
@@ -70,6 +69,10 @@ class Cesium3DTileBatchTable {
     this._batchTableBinaryProperties = binaryProperties;
 
     this._content = content;
+    // Learned from the owning frameState before shader callbacks execute.
+    // Keeping this per batch table prevents a second renderer from changing
+    // vertex-texture decisions for commands already owned by the first.
+    this._maximumVertexTextureImageUnits = 0;
 
     this._batchTexture = new BatchTexture({
       featuresLength: featuresLength,
@@ -298,7 +301,7 @@ class Cesium3DTileBatchTable {
       );
       let newMain;
 
-      if (ContextLimits.maximumVertexTextureImageUnits > 0) {
+      if (that._maximumVertexTextureImageUnits > 0) {
         // When VTF is supported, perform per-feature show/hide in the vertex shader
         newMain = "";
         if (handleTranslucent) {
@@ -363,9 +366,10 @@ class Cesium3DTileBatchTable {
     if (this.featuresLength === 0) {
       return;
     }
+    const that = this;
     return function (source) {
       source = modifyDiffuse(source, diffuseAttributeOrUniformName, true);
-      if (ContextLimits.maximumVertexTextureImageUnits > 0) {
+      if (that._maximumVertexTextureImageUnits > 0) {
         // When VTF is supported, per-feature show/hide already happened in the fragment shader
         source +=
           "uniform sampler2D tile_pickTexture; \n" +
@@ -573,7 +577,18 @@ class Cesium3DTileBatchTable {
   }
 
   update(tileset, frameState) {
+    this.updateCapabilities(frameState.context);
     this._batchTexture.update(tileset, frameState);
+  }
+
+  /**
+   * Captures shader-affecting limits before child primitives compile.
+   * @param {Context} context The owning graphics context.
+   * @private
+   */
+  updateCapabilities(context) {
+    this._maximumVertexTextureImageUnits =
+      context.limits.maximumVertexTextureImageUnits;
   }
 
   isDestroyed() {

@@ -35,8 +35,10 @@ import {
   MaterialFlags,
 } from "../../Scene/Model/ModelMaterialInfo.js";
 import {
+  createPrimitiveGeometryView,
   extractPrimitiveGeometry,
   normalizeColorData,
+  resetPrimitiveGeometryView,
 } from "../../Scene/Model/ModelPrimitiveGeometry.js";
 import {
   computeReference2DPosition,
@@ -57,23 +59,17 @@ import {
 import {
   ensureFeatureIdResources,
   destroyFeatureIdResources,
+  getSelectedImplicitFeatureId,
   synthesizeImplicitFeatureIdData,
 } from "./WebGPUModelFeatureId.js";
 import {
   ensureMetadataResources,
   destroyMetadataResources,
-  resolveMetadataAttributeData,
-  // DP-H46c — property TEXTURES.
-  resolvePropertyTextureLayout,
   ensurePropertyTextureResources,
-  // DP-H46d — property TABLES.
-  resolvePropertyTableLayout,
   ensurePropertyTableResources,
 } from "./WebGPUModelMetadata.js";
-import {
-  generateMetadataWGSL,
-  generateMetadataPickWGSL,
-} from "../../Scene/Model/MetadataWGSLPipelineStage.js";
+import { resolveWebGPUModelMetadata } from "./WebGPUModelMetadataCache.js";
+import { generateMetadataPickWGSL } from "../../Scene/Model/MetadataWGSLPipelineStage.js";
 // PARITY-CUSTOM-SHADER-WGSL — native-WGSL customShader codegen + uniform packing
 // + shared binding numbers.
 import {
@@ -249,21 +245,21 @@ interface PrimitiveGeometry {
   vertexCount: number;
   indexCount: number;
   indexType: string | number;
-  indexData?: TypedArray | null;
+  indexData?: Uint16Array | Uint32Array | null;
   primitiveType: number;
   morphTargetCount: number;
-  positionData?: TypedArray | null;
-  normalData?: TypedArray | null;
-  tangentData?: TypedArray | null;
-  texCoord0Data?: TypedArray | null;
-  texCoord1Data?: TypedArray | null;
+  positionData?: Float32Array | null;
+  normalData?: Float32Array | null;
+  tangentData?: Float32Array | null;
+  texCoord0Data?: Float32Array | null;
+  texCoord1Data?: Float32Array | null;
   color0Data?: TypedArray | null;
   color0ComponentType?: string;
   color0ComponentCount?: number;
   color0Normalized?: boolean;
   joints0Data?: TypedArray | null;
-  weights0Data?: TypedArray | null;
-  featureId0Data?: TypedArray | null;
+  weights0Data?: Float32Array | null;
+  featureId0Data?: Float32Array | null;
   metadataData?: TypedArray | null;
   metadataClassHash?: number;
   metadataWGSL?: string | null;
@@ -280,6 +276,28 @@ interface PrimitiveGeometry {
   hasMetadata: boolean;
   hasPropertyTables: boolean;
   hasPropertyTextures: boolean;
+}
+
+interface PrimitiveGeometryViewRecord {
+  base: PrimitiveGeometry;
+  view: PrimitiveGeometry;
+  implicitFeatureIdSource?: object | null;
+  implicitFeatureIdOffset?: number;
+  implicitFeatureIdRepeat?: number;
+  implicitFeatureIdVertexCount?: number;
+  implicitFeatureIdData?: Float32Array | null;
+}
+
+interface ModelMetadataDescriptor {
+  metadataData?: Float32Array;
+  propertyTextureLayout?: unknown;
+  propertyTableLayout?: unknown;
+  metadataWGSL?: string;
+  metadataClassHash: number;
+  metadataMatTransport: boolean;
+  hasMetadata: boolean;
+  hasPropertyTextures: boolean;
+  hasPropertyTables: boolean;
 }
 
 interface PrimitiveRenderData {
@@ -341,6 +359,24 @@ interface PrimitiveRenderData {
   _project2DRefKey?: string | number | null;
   _pipelineNeedsRefetch?: boolean;
   _fetchedErrorGen?: number;
+  _geometryBase?: PrimitiveGeometry;
+  _geometryAnnotationMask?: number;
+  _featureIdData?: Float32Array | null;
+  _metadataDescriptor?: ModelMetadataDescriptor;
+  _mergedInstanceBindGroupCache?: MergedInstanceBindGroupCache;
+}
+
+interface MergedInstanceBindGroupCache {
+  device: GPUDevice;
+  layout: GPUBindGroupLayout;
+  jointBuffer: GPUBuffer;
+  morphDeltaBuffer: GPUBuffer;
+  morphWeightBuffer: GPUBuffer;
+  instanceBuffer: GPUBuffer;
+  prevJointBuffer: GPUBuffer;
+  prevMorphWeightBuffer: GPUBuffer;
+  prevInstanceBuffer: GPUBuffer;
+  bindGroup: GPUBindGroup;
 }
 
 interface SkinData {
@@ -376,6 +412,7 @@ interface NodeCache extends Idl2DHost {
 interface PipelineCacheLike {
   cameraBGL: GPUBindGroupLayout;
   instanceBGL: GPUBindGroupLayout;
+  defaultInstanceBindGroup: GPUBindGroup;
   defaultSampler: GPUSampler;
   defaultWhiteTexture: GPUTexture;
   defaultBlackTexture: GPUTexture;
@@ -433,6 +470,7 @@ interface PipelineCacheLike {
 
 interface ModelWebGPUCache extends Idl2DHost {
   primitives: { [key: string]: PrimitiveRenderData };
+  geometryViews?: { [key: string]: PrimitiveGeometryViewRecord };
   nodes: { [key: string]: NodeCache };
   pipelineCache: PipelineCacheLike;
   cameraBuffer?: WebGPUBuffer | null;
@@ -2340,6 +2378,35 @@ function getCustomShaderEntries(
   return entries;
 }
 
+function getPrimitiveGeometryView(
+  cache: ModelWebGPUCache,
+  primKey: string,
+  base: PrimitiveGeometry,
+): PrimitiveGeometryViewRecord {
+  const geometryViews = (cache.geometryViews ??= {});
+  let record = geometryViews[primKey];
+  if (!defined(record) || record.base !== base) {
+    record = {
+      base,
+      view: createPrimitiveGeometryView(base) as PrimitiveGeometry,
+    };
+    geometryViews[primKey] = record;
+  } else {
+    resetPrimitiveGeometryView(record.view, base);
+  }
+  return record;
+}
+
+function getGeometryAnnotationMask(geometry: PrimitiveGeometry): number {
+  return (
+    (geometry.hasFeatureId0 ? 1 : 0) |
+    (geometry.hasMetadata ? 2 : 0) |
+    (geometry.hasPropertyTextures ? 4 : 0) |
+    (geometry.hasPropertyTables ? 8 : 0) |
+    (geometry.metadataMatTransport ? 16 : 0)
+  );
+}
+
 /**
  * Creates or retrieves cached GPU resources for a single primitive.
  * @private
@@ -3146,15 +3213,16 @@ function buildModelIBLEntries(
 
 /**
  * NEW-BG-CONSOLIDATION (Batch 122) — builds the merged group 2 bind
- * group (4 entries: joint matrices + morph deltas + morph weights +
- * instance transforms). Falls through to default placeholder buffers
+ * group (7 entries: current joint/morph/instance data plus their previous-
+ * frame counterparts). Falls through to default placeholder buffers
  * when a primitive has no skinning / no morph targets / no instancing
  * — the shader gates on FLAG_HAS_SKINNING / FLAG_HAS_MORPH_TARGETS /
  * FLAG_HAS_INSTANCING so placeholder contents are never sampled.
  *
  * @private
  */
-function buildMergedInstanceBindGroup(
+function getOrCreateMergedInstanceBindGroup(
+  primCache: Pick<PrimitiveRenderData, "_mergedInstanceBindGroupCache">,
   device: GPUDevice,
   pipelineCache: PipelineCacheLike,
   jointBuffer: GPUBufferOrNull,
@@ -3165,30 +3233,84 @@ function buildMergedInstanceBindGroup(
   prevMorphWeightBuffer: GPUBufferOrNull,
   prevInstanceBuffer: GPUBufferOrNull,
 ) {
-  return device.createBindGroup({
-    layout: pipelineCache.instanceBGL,
+  const layout = pipelineCache.instanceBGL;
+  const resolvedJointBuffer = jointBuffer ?? pipelineCache.defaultJointBuffer;
+  const resolvedMorphDeltaBuffer =
+    morphDeltaBuffer ?? pipelineCache.defaultMorphDeltaBuffer;
+  const resolvedMorphWeightBuffer =
+    morphWeightBuffer ?? pipelineCache.defaultMorphWeightBuffer;
+  const resolvedInstanceBuffer =
+    instanceBuffer ?? pipelineCache.defaultInstancingBuffer;
+  const resolvedPrevJointBuffer =
+    prevJointBuffer ?? jointBuffer ?? pipelineCache.defaultJointBuffer;
+  const resolvedPrevMorphWeightBuffer =
+    prevMorphWeightBuffer ??
+    morphWeightBuffer ??
+    pipelineCache.defaultMorphWeightBuffer;
+  const resolvedPrevInstanceBuffer =
+    prevInstanceBuffer ??
+    instanceBuffer ??
+    pipelineCache.defaultInstancingBuffer;
+
+  // The pipeline cache already owns the all-placeholder tuple. Most static,
+  // unskinned, non-morphed models can use it directly, avoiding even the first
+  // primitive-local bind-group creation.
+  if (
+    resolvedJointBuffer === pipelineCache.defaultJointBuffer &&
+    resolvedMorphDeltaBuffer === pipelineCache.defaultMorphDeltaBuffer &&
+    resolvedMorphWeightBuffer === pipelineCache.defaultMorphWeightBuffer &&
+    resolvedInstanceBuffer === pipelineCache.defaultInstancingBuffer &&
+    resolvedPrevJointBuffer === pipelineCache.defaultJointBuffer &&
+    resolvedPrevMorphWeightBuffer === pipelineCache.defaultMorphWeightBuffer &&
+    resolvedPrevInstanceBuffer === pipelineCache.defaultInstancingBuffer
+  ) {
+    // Drop references to a formerly-custom tuple if skin/morph/instancing was
+    // removed. GPUBindGroup has no destroy method; releasing this owner record
+    // lets it and its old resource references be collected.
+    primCache._mergedInstanceBindGroupCache = undefined;
+    return pipelineCache.defaultInstanceBindGroup;
+  }
+
+  const cached = primCache._mergedInstanceBindGroupCache;
+  if (
+    defined(cached) &&
+    cached.device === device &&
+    cached.layout === layout &&
+    cached.jointBuffer === resolvedJointBuffer &&
+    cached.morphDeltaBuffer === resolvedMorphDeltaBuffer &&
+    cached.morphWeightBuffer === resolvedMorphWeightBuffer &&
+    cached.instanceBuffer === resolvedInstanceBuffer &&
+    cached.prevJointBuffer === resolvedPrevJointBuffer &&
+    cached.prevMorphWeightBuffer === resolvedPrevMorphWeightBuffer &&
+    cached.prevInstanceBuffer === resolvedPrevInstanceBuffer
+  ) {
+    return cached.bindGroup;
+  }
+
+  // Bind groups are immutable, but the buffers they reference are not. Model
+  // animation, morphing, and instancing update the contents of stable buffers,
+  // so rebuilding this group every frame provides no freshness benefit. Exact
+  // resource identity catches every real replacement/growth/device-recovery
+  // event while keeping the settled-frame path allocation-free.
+  const bindGroup = device.createBindGroup({
+    label: "Model merged instance bind group",
+    layout,
     entries: [
       {
         binding: 0,
-        resource: { buffer: jointBuffer ?? pipelineCache.defaultJointBuffer },
+        resource: { buffer: resolvedJointBuffer },
       },
       {
         binding: 1,
-        resource: {
-          buffer: morphDeltaBuffer ?? pipelineCache.defaultMorphDeltaBuffer,
-        },
+        resource: { buffer: resolvedMorphDeltaBuffer },
       },
       {
         binding: 2,
-        resource: {
-          buffer: morphWeightBuffer ?? pipelineCache.defaultMorphWeightBuffer,
-        },
+        resource: { buffer: resolvedMorphWeightBuffer },
       },
       {
         binding: 3,
-        resource: {
-          buffer: instanceBuffer ?? pipelineCache.defaultInstancingBuffer,
-        },
+        resource: { buffer: resolvedInstanceBuffer },
       },
       {
         // Audit A.5 (Batch 130) -- previous-frame joint matrices for
@@ -3199,10 +3321,7 @@ function buildMergedInstanceBindGroup(
         // CURRENT joint buffer so velocity is zero on the first frame
         // of an animation rather than wildly wrong from the identity.
         binding: 4,
-        resource: {
-          buffer:
-            prevJointBuffer ?? jointBuffer ?? pipelineCache.defaultJointBuffer,
-        },
+        resource: { buffer: resolvedPrevJointBuffer },
       },
       {
         // NEW-TAA-MORPH-PREV (Batch 134) -- previous-frame morph
@@ -3210,12 +3329,7 @@ function buildMergedInstanceBindGroup(
         // prev mirror exists yet (first morphed frame); zero-weights
         // default when no morph at all.
         binding: 5,
-        resource: {
-          buffer:
-            prevMorphWeightBuffer ??
-            morphWeightBuffer ??
-            pipelineCache.defaultMorphWeightBuffer,
-        },
+        resource: { buffer: resolvedPrevMorphWeightBuffer },
       },
       {
         // NEW-TAA-INSTANCE-PREV (Batch 134) -- previous-frame instance
@@ -3223,15 +3337,23 @@ function buildMergedInstanceBindGroup(
         // the current buffer for zero velocity contribution. Animated
         // EXT_mesh_gpu_instancing assets would override.
         binding: 6,
-        resource: {
-          buffer:
-            prevInstanceBuffer ??
-            instanceBuffer ??
-            pipelineCache.defaultInstancingBuffer,
-        },
+        resource: { buffer: resolvedPrevInstanceBuffer },
       },
     ],
   });
+  primCache._mergedInstanceBindGroupCache = {
+    device,
+    layout,
+    jointBuffer: resolvedJointBuffer,
+    morphDeltaBuffer: resolvedMorphDeltaBuffer,
+    morphWeightBuffer: resolvedMorphWeightBuffer,
+    instanceBuffer: resolvedInstanceBuffer,
+    prevJointBuffer: resolvedPrevJointBuffer,
+    prevMorphWeightBuffer: resolvedPrevMorphWeightBuffer,
+    prevInstanceBuffer: resolvedPrevInstanceBuffer,
+    bindGroup,
+  };
+  return bindGroup;
 }
 
 /**
@@ -3641,6 +3763,7 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
       cameraData: null,
       cameraBG: null,
       primitives: {}, // keyed by "nodeIdx_primIdx"
+      geometryViews: {}, // mutable annotation views, keyed like primitives
       nodes: {}, // per-node skinning data, keyed by nodeIdx
     };
   }
@@ -4090,6 +4213,9 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
   const modelClippingPlanes = model._clippingPlanes;
   const modelClippingPolygons = model._clippingPolygons;
   const fxRes = createEffectsBindGroup(device, frameState, {
+    // Model identity is stable across frames; volatile camera/edge bytes must
+    // update its bounded slot instead of becoming permanent cache keys.
+    owner: model,
     shadowMap: receiveShadowMap,
     csm: csmBinding,
     clippingPlanes:
@@ -4485,11 +4611,30 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
       const rp = prims[primIdx];
       const primKey = `${nodeIdx}_${primIdx}`;
 
-      // Use shared extractors for renderer-agnostic data
-      const geometry = extractPrimitiveGeometry(rp);
-      if (!defined(geometry)) {
+      // The shared extractor returns an immutable, WeakMap-memoized base.
+      // Renderer-only metadata and implicit feature-ID fields live on a
+      // reusable mutable view so source conversions and descriptor copies do
+      // not recur in this per-frame loop.
+      const baseGeometry = extractPrimitiveGeometry(
+        rp,
+      ) as PrimitiveGeometry | null;
+      if (!defined(baseGeometry)) {
+        const stalePrimitive = cache.primitives[primKey];
+        if (defined(stalePrimitive)) {
+          destroyPrimitiveCacheResources(stalePrimitive);
+          delete cache.primitives[primKey];
+        }
+        if (defined(cache.geometryViews)) {
+          delete cache.geometryViews[primKey];
+        }
         continue;
       }
+      const geometryRecord = getPrimitiveGeometryView(
+        cache,
+        primKey,
+        baseGeometry,
+      );
+      const geometry = geometryRecord.view;
 
       // Get material from the primitive's glTF data
       const glTFPrimitive = rp.primitive || rp._primitive;
@@ -4502,140 +4647,99 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
       // the FS lights up the same `FLAG_HAS_FEATURE_ID_ATTRIBUTE` branch.
       // Closes the implicit-range follow-up after Batch 130's audit B.2.
       if (!geometry.hasFeatureId0 && defined(glTFPrimitive)) {
-        // Batch 191 (B188-D1 audit fix) — was `rn` (undefined) which
-        // would have thrown ReferenceError at runtime when an
-        // implicit-range glTF model loaded. The variable in scope is
-        // `runtimeNode` from the enclosing for-loop at line ~1916.
-        const synthesized = synthesizeImplicitFeatureIdData(
+        const implicitSource = getSelectedImplicitFeatureId(
           model,
           runtimeNode,
           glTFPrimitive as unknown as Parameters<
-            typeof synthesizeImplicitFeatureIdData
+            typeof getSelectedImplicitFeatureId
           >[2],
-          geometry.vertexCount,
-        );
+        ) as unknown as { offset?: number; repeat?: number } | null;
+        const implicitOffset = implicitSource?.offset ?? 0;
+        const implicitRepeat = Math.max(1, implicitSource?.repeat ?? 1);
+        const implicitChanged =
+          geometryRecord.implicitFeatureIdSource !== implicitSource ||
+          geometryRecord.implicitFeatureIdOffset !== implicitOffset ||
+          geometryRecord.implicitFeatureIdRepeat !== implicitRepeat ||
+          geometryRecord.implicitFeatureIdVertexCount !== geometry.vertexCount;
+        if (implicitChanged) {
+          geometryRecord.implicitFeatureIdSource = implicitSource;
+          geometryRecord.implicitFeatureIdOffset = implicitOffset;
+          geometryRecord.implicitFeatureIdRepeat = implicitRepeat;
+          geometryRecord.implicitFeatureIdVertexCount = geometry.vertexCount;
+          geometryRecord.implicitFeatureIdData = defined(implicitSource)
+            ? synthesizeImplicitFeatureIdData(
+                model,
+                runtimeNode,
+                glTFPrimitive as unknown as Parameters<
+                  typeof synthesizeImplicitFeatureIdData
+                >[2],
+                geometry.vertexCount,
+              )
+            : null;
+        }
+        const synthesized = geometryRecord.implicitFeatureIdData;
         if (defined(synthesized)) {
           geometry.featureId0Data = synthesized;
           geometry.hasFeatureId0 = true;
         }
+      } else {
+        geometryRecord.implicitFeatureIdSource = null;
+        geometryRecord.implicitFeatureIdData = null;
       }
-      // DP-H46a (first increment of the DP-H46 metadata epic) — resolve
-      // the primitive's EXT_structural_metadata property-ATTRIBUTE value
-      // (vec4-packed since METADATA-MULTICOMPONENT — up to four
-      // components per vertex) here (model + glTFPrimitive in scope), and
-      // stash it on `geometry` so `ensurePrimitiveCache` can upload it
-      // into vertex slot 9 + flip the MODEL_HAS_METADATA variant —
-      // exactly mirroring how `featureId0Data` threads through to slot 8.
-      // Resolution is gated on `model.structuralMetadata` being defined
-      // AND the primitive mapping to a property attribute with readable
-      // per-vertex data, so non-metadata models leave
-      // `geometry.metadataData` null and stay byte-identical.
-      // `resolveMetadataAttributeData` short-circuits when structural
-      // metadata is absent (the common case), so the per-frame cost on
-      // non-metadata models is one `defined()` check.
+      // Structural metadata packing, layout resolution, and WGSL generation
+      // are source-generation work. The combined immutable descriptor is
+      // WeakMap-memoized by model + primitive + runtime node; this per-frame
+      // path only copies references/flags onto the mutable geometry view.
+      let metadataDescriptor: ModelMetadataDescriptor | undefined;
       if (defined(glTFPrimitive)) {
-        const metadataAttribute = resolveMetadataAttributeData(
+        metadataDescriptor = resolveWebGPUModelMetadata(
           model,
           glTFPrimitive as unknown as Parameters<
-            typeof resolveMetadataAttributeData
-          >[1],
-        );
-        if (defined(metadataAttribute)) {
-          geometry.metadataData = metadataAttribute.data;
-          geometry.hasMetadata = true;
-        }
-        // DP-H46c — resolve the property-TEXTURE layout (the shared structure
-        // both the binding side here and the codegen consume). Present when
-        // the model maps ≥1 GPU-compatible property texture to this primitive.
-        const propertyTextureLayout = resolvePropertyTextureLayout(
-          model,
-          glTFPrimitive as unknown as Parameters<
-            typeof resolvePropertyTextureLayout
-          >[1],
-        );
-        if (defined(propertyTextureLayout)) {
-          geometry.propertyTextureLayout = propertyTextureLayout;
-          geometry.hasPropertyTextures = true;
-        }
-        // DP-H46d — resolve the property-TABLE layout (the shared structure
-        // both the binding side here and the codegen consume). Present when the
-        // model maps a GPU-compatible property table to this primitive via an
-        // attribute feature-ID set. The table is indexed by the per-vertex
-        // `_FEATURE_ID_0` attribute, so a table primitive ALSO carries that
-        // feature ID (the renderer already sets `geometry.hasFeatureId0`).
-        // PARITY-METADATA-TABLE-INSTANCE-SOURCE — pass `runtimeNode` so an
-        // instanced primitive whose table is keyed by the node's instance
-        // feature IDs resolves (the per-instance ID rides the instance-transform
-        // pad slot → `featureId0`). Non-instanced primitives ignore it.
-        const propertyTableLayout = resolvePropertyTableLayout(
-          model,
-          glTFPrimitive as unknown as Parameters<
-            typeof resolvePropertyTableLayout
+            typeof resolveWebGPUModelMetadata
           >[1],
           runtimeNode,
-        );
-        if (defined(propertyTableLayout)) {
-          geometry.propertyTableLayout = propertyTableLayout;
+        ) as unknown as ModelMetadataDescriptor;
+        if (metadataDescriptor.hasMetadata) {
+          geometry.metadataData = metadataDescriptor.metadataData;
+          geometry.hasMetadata = true;
+        }
+        if (metadataDescriptor.hasPropertyTextures) {
+          geometry.propertyTextureLayout =
+            metadataDescriptor.propertyTextureLayout;
+          geometry.hasPropertyTextures = true;
+        }
+        if (metadataDescriptor.hasPropertyTables) {
+          geometry.propertyTableLayout = metadataDescriptor.propertyTableLayout;
           geometry.hasPropertyTables = true;
         }
-        // DP-H46b/c/d — generate the per-class WGSL chunk (real `struct
-        // Metadata` + `initializeMetadata` + `metadataDebugScalar`, plus
-        // DP-H46c property-texture binding declarations + sampling AND DP-H46d
-        // property-table binding + textureLoad accessors) for this primitive.
-        // The codegen resolves the SAME first GPU-compatible property attribute
-        // the scalar transport above carries, the SAME property-texture layout,
-        // and the SAME property-table layout resolved here, so the generated
-        // fields, the slot-9 value, the texture binding numbers, and the table
-        // rows all agree. `generateMetadataWGSL` returns undefined for
-        // primitives with no attributes/textures/tables (plain glTF) → no
-        // chunk. Stash the chunk + class hash on `geometry` so
-        // `ensurePrimitiveCache` persists them on `primCache` + feeds the
-        // pipeline cache.
-        if (
-          geometry.hasMetadata ||
-          geometry.hasPropertyTextures ||
-          geometry.hasPropertyTables
-        ) {
-          const metadataCodegen = generateMetadataWGSL(
-            model,
-            glTFPrimitive,
-            runtimeNode,
-          );
-          if (defined(metadataCodegen)) {
-            geometry.metadataWGSL = metadataCodegen.wgsl;
-            geometry.metadataClassHash = metadataCodegen.classHash;
-            // NEW-MODEL-METADATA-MAT3-MAT4 — true when the chunk carries the
-            // widened four-vec4 MAT3/MAT4 transport. The codegen derives it
-            // from the SAME `resolveMetadataAttributeData` pack the slot-9
-            // upload above used, so the vertex data (16 floats/vertex), the
-            // mode-2 vertex layout, and the extended `initializeMetadata`
-            // signature are always in lockstep.
-            geometry.metadataMatTransport =
-              metadataCodegen.matTransport === true;
-          }
-        }
-        // METADATA-TABLE-SOURCES — late-metadata rebuild. Structural-metadata
-        // resolution can materialize AFTER this primitive's cache froze its
-        // materialDefines on a metadata-less first build (e.g.
-        // `model.featureTableId` is assigned via a dirty flag in Model.update
-        // and its landing triggers `resetDrawCommands()` — which rebuilds
-        // WebGL's shaders but is invisible to this cache). The resolution
-        // above runs per frame; when the freshly generated metadata class
-        // hash differs from the one the cached build used, destroy + rebuild
-        // this primitive's GPU cache so the pipeline variant, generated WGSL
-        // chunk, and bind-group entries pick up the now-resolved metadata.
-        // Non-metadata primitives compare 0 === 0 every frame — no cost, no
-        // behavior change.
-        const cachedPrim = cache.primitives[primKey];
-        if (
-          defined(cachedPrim) &&
-          ((cachedPrim._metadataClassHash ?? 0) | 0) !==
-            ((geometry.metadataClassHash ?? 0) | 0)
-        ) {
-          destroyPrimitiveCacheResources(cachedPrim);
-          delete cache.primitives[primKey];
+        if (defined(metadataDescriptor.metadataWGSL)) {
+          geometry.metadataWGSL = metadataDescriptor.metadataWGSL;
+          geometry.metadataClassHash = metadataDescriptor.metadataClassHash;
+          geometry.metadataMatTransport =
+            metadataDescriptor.metadataMatTransport;
         }
       }
+
+      // Source replacement/revision invalidates the immutable base descriptor.
+      // Rebuild the native primitive exactly once when that base changes, and
+      // also when renderer annotations change which vertex/pipeline slots are
+      // required. Device loss remains independent: it clears native resources
+      // but can safely reuse the CPU descriptor cached by runtime primitive.
+      const geometryAnnotationMask = getGeometryAnnotationMask(geometry);
+      const cachedPrim = cache.primitives[primKey];
+      if (
+        defined(cachedPrim) &&
+        (cachedPrim._geometryBase !== baseGeometry ||
+          cachedPrim._geometryAnnotationMask !== geometryAnnotationMask ||
+          cachedPrim._featureIdData !== geometry.featureId0Data ||
+          cachedPrim._metadataDescriptor !== metadataDescriptor ||
+          ((cachedPrim._metadataClassHash ?? 0) | 0) !==
+            ((geometry.metadataClassHash ?? 0) | 0))
+      ) {
+        destroyPrimitiveCacheResources(cachedPrim);
+        delete cache.primitives[primKey];
+      }
+
       const material = glTFPrimitive?.material;
       const matInfo = extractMaterialInfo(
         material,
@@ -4659,6 +4763,10 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
         geometry,
         matInfo,
       );
+      primCache._geometryBase = baseGeometry;
+      primCache._geometryAnnotationMask = geometryAnnotationMask;
+      primCache._featureIdData = geometry.featureId0Data;
+      primCache._metadataDescriptor = metadataDescriptor;
 
       // NEW-MODEL-PROJECT2D-BV-MORPH (B11) — lazily build (and cache) the
       // accurate-2D position buffer for this primitive: reproject every vertex
@@ -5177,7 +5285,8 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
         primCache.materialDefines | 0,
         frameState,
       );
-      const mergedInstanceBG = buildMergedInstanceBindGroup(
+      const mergedInstanceBG = getOrCreateMergedInstanceBindGroup(
+        primCache,
         device,
         pipelineCache,
         nodeJointBuffer,
@@ -6329,6 +6438,10 @@ function destroyPrimitiveCacheResources(pc: PrimitiveRenderData | undefined) {
     return;
   }
 
+  // Bind groups do not have an explicit destroy operation. Release the cache
+  // record before destroying any of the buffers it references.
+  pc._mergedInstanceBindGroupCache = undefined;
+
   pc.positionBuffer?.destroy();
   pc.positionBuffer2D?.destroy();
   pc.normalBuffer?.destroy();
@@ -6427,5 +6540,9 @@ function destroyWebGPUModelResources(model: ModelLike) {
   model._webgpuCache = undefined;
 }
 
-export { updateWebGPUModel, destroyWebGPUModelResources };
+export {
+  getOrCreateMergedInstanceBindGroup,
+  updateWebGPUModel,
+  destroyWebGPUModelResources,
+};
 export default { updateWebGPUModel, destroyWebGPUModelResources };

@@ -204,11 +204,9 @@ describe("Renderer/WebGPU/WebGPUVoxelCustomShaderCodegen", function () {
       expect(a.hash).not.toBe(c.hash);
     });
 
-    it("never returns a reserved keySalt value (0 or the Batch 476 constant salt)", function () {
-      // The default-gray parity module occupies the same (sourceId,
-      // masked-defines) numeric key salted with VOXEL_CUSTOM_SHADER_COLOR;
-      // 0 is the unsalted key. The codegen remaps FNV collisions with
-      // either value, so no user chunk may ever land on them.
+    it("never returns zero or the legacy Batch 476 reserved hash", function () {
+      // Zero selects the unsalted key. The old constant-salt value remains
+      // remapped to keep generated-source hashes stable across key widening.
       const reserved = ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR >>> 0;
       const bodies = [
         USER_FRAGMENT,

@@ -35,6 +35,7 @@ import SplitDirection from "./SplitDirection.js";
 import Splitter from "./Splitter.js";
 import StencilConstants from "./StencilConstants.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import { resolveFeatureRendererReadiness } from "../Renderer/GraphicsContext.js";
 
 const DecodingState = {
   NEEDS_DECODE: 0,
@@ -159,10 +160,14 @@ class PointCloud {
   }
 
   update(frameState) {
-    // Backend-specific rendering path — delegate to feature renderer if available
-    const fr = frameState.context.getFeatureRenderer(
+    // A loading/failed renderer still belongs to the selected backend. Only
+    // `unsupported` may enter the legacy WebGL realization path below.
+    const context = frameState.context;
+    const readiness = resolveFeatureRendererReadiness(
+      context,
       FeatureRendererKey.POINT_CLOUD,
     );
+    const fr = readiness.kind === "ready" ? readiness.renderer : undefined;
     if (fr) {
       this._featureRenderer = fr;
       // The WebGPU feature renderer consumes `_parsedContent` directly and
@@ -214,18 +219,9 @@ class PointCloud {
       return;
     }
 
-    // The POINT_CLOUD feature renderer is registered via a lazy loader, so on
-    // a WebGPU context `getFeatureRenderer` returns undefined for the first
-    // few frames while the dynamic import settles. Falling through to the
-    // WebGL `createResources` path here would (a) try to build WebGL vertex
-    // arrays on a WebGPU context and (b) unload `_parsedContent`, leaving the
-    // WebGPU renderer with no data once the FR does load. Wait for the FR
-    // instead — preserve `_parsedContent` and skip this frame.
-    if (frameState.context.isWebGPU) {
+    if (readiness.kind !== "unsupported") {
       return;
     }
-
-    const context = frameState.context;
 
     if (defined(this._error)) {
       const error = this._error;

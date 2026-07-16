@@ -50,11 +50,19 @@ ClassificationPipelineStage.process = function (
   const runtimePrimitive = renderResources.runtimePrimitive;
 
   if (!defined(runtimePrimitive.batchLengths)) {
-    createClassificationBatches(primitive, runtimePrimitive);
+    createClassificationBatches(
+      primitive,
+      runtimePrimitive,
+      frameState.context?.requiresVertexTypedArrayRetention === true,
+    );
   }
 };
 
-function createClassificationBatches(primitive, runtimePrimitive) {
+function createClassificationBatches(
+  primitive,
+  runtimePrimitive,
+  retainTypedArrays,
+) {
   const positionAttribute = ModelUtility.getAttributeBySemantic(
     primitive,
     VertexAttributeSemantic.POSITION,
@@ -71,9 +79,11 @@ function createClassificationBatches(primitive, runtimePrimitive) {
   const hasIndices = defined(indices);
   if (hasIndices) {
     indicesArray = indices.typedArray;
-    // Unload the typed array. This is just a pointer to the array in
-    // the index buffer loader.
-    indices.typedArray = undefined;
+    if (!retainTypedArrays) {
+      // Unload the typed array. This is just a pointer to the array in
+      // the index buffer loader.
+      indices.typedArray = undefined;
+    }
   }
 
   const count = hasIndices ? indices.count : positionAttribute.count;
@@ -92,11 +102,13 @@ function createClassificationBatches(primitive, runtimePrimitive) {
   }
 
   const featureIds = featureIdAttribute.typedArray;
-  // Unload the typed array. This is just a pointer to the array in
-  // the vertex buffer loader, so if the typed array is shared by
-  // multiple primitives (i.e. multiple instances of the same mesh),
-  // this will not affect the other primitives.
-  featureIdAttribute.typedArray = undefined;
+  if (!retainTypedArrays) {
+    // Unload the typed array. This is just a pointer to the array in
+    // the vertex buffer loader, so if the typed array is shared by
+    // multiple primitives (i.e. multiple instances of the same mesh),
+    // this will not affect the other primitives.
+    featureIdAttribute.typedArray = undefined;
+  }
 
   const batchLengths = [];
   const batchOffsets = [0];

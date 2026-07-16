@@ -27,17 +27,311 @@ const AttributeSemantic = Object.freeze({
   _FEATURE_ID_0: "_FEATURE_ID_0",
 });
 
+const EMPTY_ARRAY = Object.freeze([]);
+
+let primitiveGeometryCache = new WeakMap();
+const primitiveGeometryCacheDiagnostics = {
+  hitCount: 0,
+  missCount: 0,
+  invalidationCount: 0,
+  descriptorBuildCount: 0,
+  attributeConversionCount: 0,
+  morphAttributeConversionCount: 0,
+  uint8IndexUpcastCount: 0,
+};
+
+function getGeometryRevision(value) {
+  if (!defined(value)) {
+    return undefined;
+  }
+  return (
+    value._webgpuGeometryRevision ??
+    value._geometryRevision ??
+    value.geometryRevision ??
+    value._webgpuGeneration ??
+    value._generation ??
+    value.generation
+  );
+}
+
+function getAttributeData(attribute) {
+  return attribute?.typedArray || attribute?.buffer;
+}
+
+function getSourceAttributes(source) {
+  return source?.attributes || source?._attributes || EMPTY_ARRAY;
+}
+
+function getMorphTargets(primitive) {
+  return primitive?.morphTargets || EMPTY_ARRAY;
+}
+
+function getTargetAttributes(target) {
+  return target?.attributes || EMPTY_ARRAY;
+}
+
+function vectorComponent(vector, index) {
+  if (!defined(vector)) {
+    return undefined;
+  }
+  if (Array.isArray(vector) || ArrayBuffer.isView(vector)) {
+    return vector[index];
+  }
+  switch (index) {
+    case 0:
+      return vector.x;
+    case 1:
+      return vector.y;
+    case 2:
+      return vector.z;
+    case 3:
+      return vector.w;
+    default:
+      return undefined;
+  }
+}
+
+function captureAttributeSignature(attribute) {
+  const data = getAttributeData(attribute);
+  const quantization = attribute?.quantization;
+  const offset = quantization?.quantizedVolumeOffset;
+  const step = quantization?.quantizedVolumeStepSize;
+  return {
+    attribute,
+    attributeRevision: getGeometryRevision(attribute),
+    data,
+    dataRevision: getGeometryRevision(data),
+    semantic: attribute?.semantic,
+    name: attribute?.name,
+    setIndex: attribute?.setIndex,
+    componentDatatype: attribute?.componentDatatype,
+    componentsPerAttribute: attribute?.componentsPerAttribute,
+    normalized: attribute?.normalized,
+    count: attribute?.count,
+    byteOffset: attribute?.byteOffset,
+    byteStride: attribute?.byteStride,
+    quantization,
+    quantizationRevision: getGeometryRevision(quantization),
+    offset,
+    offsetRevision: getGeometryRevision(offset),
+    offset0: vectorComponent(offset, 0),
+    offset1: vectorComponent(offset, 1),
+    offset2: vectorComponent(offset, 2),
+    offset3: vectorComponent(offset, 3),
+    step,
+    stepRevision: getGeometryRevision(step),
+    step0: vectorComponent(step, 0),
+    step1: vectorComponent(step, 1),
+    step2: vectorComponent(step, 2),
+    step3: vectorComponent(step, 3),
+  };
+}
+
+function attributeSignatureMatches(signature, attribute) {
+  const data = getAttributeData(attribute);
+  const quantization = attribute?.quantization;
+  if (
+    signature.attribute !== attribute ||
+    signature.attributeRevision !== getGeometryRevision(attribute) ||
+    signature.data !== data ||
+    signature.dataRevision !== getGeometryRevision(data) ||
+    signature.semantic !== attribute?.semantic ||
+    signature.name !== attribute?.name ||
+    signature.setIndex !== attribute?.setIndex ||
+    signature.componentDatatype !== attribute?.componentDatatype ||
+    signature.componentsPerAttribute !== attribute?.componentsPerAttribute ||
+    signature.normalized !== attribute?.normalized ||
+    signature.count !== attribute?.count ||
+    signature.byteOffset !== attribute?.byteOffset ||
+    signature.byteStride !== attribute?.byteStride ||
+    signature.quantization !== quantization ||
+    signature.quantizationRevision !== getGeometryRevision(quantization)
+  ) {
+    return false;
+  }
+  if (!defined(quantization)) {
+    return true;
+  }
+
+  const offset = quantization.quantizedVolumeOffset;
+  const step = quantization.quantizedVolumeStepSize;
+  return (
+    signature.offset === offset &&
+    signature.offsetRevision === getGeometryRevision(offset) &&
+    signature.offset0 === vectorComponent(offset, 0) &&
+    signature.offset1 === vectorComponent(offset, 1) &&
+    signature.offset2 === vectorComponent(offset, 2) &&
+    signature.offset3 === vectorComponent(offset, 3) &&
+    signature.step === step &&
+    signature.stepRevision === getGeometryRevision(step) &&
+    signature.step0 === vectorComponent(step, 0) &&
+    signature.step1 === vectorComponent(step, 1) &&
+    signature.step2 === vectorComponent(step, 2) &&
+    signature.step3 === vectorComponent(step, 3)
+  );
+}
+
+function captureGeometrySignature(runtimePrimitive, source, gltfPrimitive) {
+  const attributes = getSourceAttributes(source);
+  const attributeSignatures = new Array(attributes.length);
+  for (let i = 0; i < attributes.length; i++) {
+    attributeSignatures[i] = captureAttributeSignature(attributes[i]);
+  }
+
+  const indices = source?.indices;
+  const indexData = indices?.typedArray || indices?.buffer;
+  const morphTargets = getMorphTargets(gltfPrimitive);
+  const morphTargetSignatures = new Array(morphTargets.length);
+  for (let i = 0; i < morphTargets.length; i++) {
+    const target = morphTargets[i];
+    const targetAttributes = getTargetAttributes(target);
+    const targetAttributeSignatures = new Array(targetAttributes.length);
+    for (let j = 0; j < targetAttributes.length; j++) {
+      targetAttributeSignatures[j] = captureAttributeSignature(
+        targetAttributes[j],
+      );
+    }
+    morphTargetSignatures[i] = {
+      target,
+      targetRevision: getGeometryRevision(target),
+      attributes: targetAttributes,
+      attributeSignatures: targetAttributeSignatures,
+    };
+  }
+
+  return {
+    runtimeRevision: getGeometryRevision(runtimePrimitive),
+    source,
+    sourceRevision: getGeometryRevision(source),
+    gltfPrimitive,
+    gltfPrimitiveRevision: getGeometryRevision(gltfPrimitive),
+    attributes,
+    attributeSignatures,
+    indices,
+    indicesRevision: getGeometryRevision(indices),
+    indexData,
+    indexDataRevision: getGeometryRevision(indexData),
+    primitiveType: source?.primitiveType,
+    fallbackPrimitiveType: gltfPrimitive?.primitiveType,
+    morphTargets,
+    morphTargetSignatures,
+  };
+}
+
+function geometrySignatureMatches(
+  signature,
+  runtimePrimitive,
+  source,
+  gltfPrimitive,
+) {
+  if (
+    signature.runtimeRevision !== getGeometryRevision(runtimePrimitive) ||
+    signature.source !== source ||
+    signature.sourceRevision !== getGeometryRevision(source) ||
+    signature.gltfPrimitive !== gltfPrimitive ||
+    signature.gltfPrimitiveRevision !== getGeometryRevision(gltfPrimitive) ||
+    signature.primitiveType !== source?.primitiveType ||
+    signature.fallbackPrimitiveType !== gltfPrimitive?.primitiveType
+  ) {
+    return false;
+  }
+
+  const attributes = getSourceAttributes(source);
+  if (
+    signature.attributes !== attributes ||
+    signature.attributeSignatures.length !== attributes.length
+  ) {
+    return false;
+  }
+  for (let i = 0; i < attributes.length; i++) {
+    if (
+      !attributeSignatureMatches(
+        signature.attributeSignatures[i],
+        attributes[i],
+      )
+    ) {
+      return false;
+    }
+  }
+
+  const indices = source?.indices;
+  const indexData = indices?.typedArray || indices?.buffer;
+  if (
+    signature.indices !== indices ||
+    signature.indicesRevision !== getGeometryRevision(indices) ||
+    signature.indexData !== indexData ||
+    signature.indexDataRevision !== getGeometryRevision(indexData)
+  ) {
+    return false;
+  }
+
+  const morphTargets = getMorphTargets(gltfPrimitive);
+  if (
+    signature.morphTargets !== morphTargets ||
+    signature.morphTargetSignatures.length !== morphTargets.length
+  ) {
+    return false;
+  }
+  for (let i = 0; i < morphTargets.length; i++) {
+    const target = morphTargets[i];
+    const targetSignature = signature.morphTargetSignatures[i];
+    const targetAttributes = getTargetAttributes(target);
+    if (
+      targetSignature.target !== target ||
+      targetSignature.targetRevision !== getGeometryRevision(target) ||
+      targetSignature.attributes !== targetAttributes ||
+      targetSignature.attributeSignatures.length !== targetAttributes.length
+    ) {
+      return false;
+    }
+    for (let j = 0; j < targetAttributes.length; j++) {
+      if (
+        !attributeSignatureMatches(
+          targetSignature.attributeSignatures[j],
+          targetAttributes[j],
+        )
+      ) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function convertAttributeToFloat32(data, attribute, components, morph) {
+  const converted = ensureFloat32(data, attribute, components);
+  if (converted !== data) {
+    if (morph) {
+      primitiveGeometryCacheDiagnostics.morphAttributeConversionCount++;
+    } else {
+      primitiveGeometryCacheDiagnostics.attributeConversionCount++;
+    }
+  }
+  return converted;
+}
+
+function freezeGeometryDescriptor(geometry) {
+  if (!defined(geometry)) {
+    return geometry;
+  }
+  const morphTargets = geometry.morphTargets;
+  for (let i = 0; i < morphTargets.length; i++) {
+    Object.freeze(morphTargets[i]);
+  }
+  Object.freeze(morphTargets);
+  return Object.freeze(geometry);
+}
+
 /**
- * Extracts geometry info from a ModelRuntimePrimitive's render resources.
+ * Builds geometry info from a ModelRuntimePrimitive's render resources.
+ * Callers should use {@link extractPrimitiveGeometry}, which memoizes this
+ * conversion against source identity and revision state.
  *
  * @param {ModelRuntimePrimitive} runtimePrimitive
  * @returns {ModelPrimitiveGeometry|null} Geometry descriptor, or null if no position data
  */
-function extractPrimitiveGeometry(runtimePrimitive) {
-  if (!defined(runtimePrimitive)) {
-    return null;
-  }
-
+function buildPrimitiveGeometry(runtimePrimitive, source, gltfPrim) {
   // 2026-04-30 — `runtimePrimitive.renderResources` is never assigned
   // anywhere in the codebase (a `PrimitiveRenderResources` is built in
   // `ModelSceneGraph.js:256` but stored on the parent's
@@ -55,10 +349,6 @@ function extractPrimitiveGeometry(runtimePrimitive) {
   // `loadTypedArrayForWebGPU` retention added to `GltfLoader.js`
   // (2026-04-30) so the typed arrays are still present when this
   // function runs on WebGPU.
-  const gltfPrim = runtimePrimitive.primitive || runtimePrimitive._primitive;
-  const rr =
-    runtimePrimitive.renderResources || runtimePrimitive._renderResources;
-  const source = defined(rr) ? rr : gltfPrim;
   if (!defined(source)) {
     return null;
   }
@@ -93,6 +383,18 @@ function extractPrimitiveGeometry(runtimePrimitive) {
     hasColor0: false,
     hasJoints: false,
     hasFeatureId0: false,
+    hasMetadata: false,
+    hasPropertyTables: false,
+    hasPropertyTextures: false,
+
+    // Per-render annotations are deliberately absent from the immutable base.
+    // WebGPUModelRenderer writes these onto a reusable mutable view instead.
+    metadataData: null,
+    metadataClassHash: 0,
+    metadataWGSL: null,
+    metadataMatTransport: false,
+    propertyTableLayout: null,
+    propertyTextureLayout: null,
 
     // Color component type (for proper conversion)
     color0ComponentType: null, // "FLOAT", "UNSIGNED_BYTE", "UNSIGNED_SHORT"
@@ -134,26 +436,26 @@ function extractPrimitiveGeometry(runtimePrimitive) {
 
     switch (semantic) {
       case AttributeSemantic.POSITION:
-        result.positionData = ensureFloat32(data, attr, 3);
+        result.positionData = convertAttributeToFloat32(data, attr, 3, false);
         // Vertex count derives from the dequantized length so it stays
         // correct even when the raw source is interleaved/strided.
         result.vertexCount = Math.floor(result.positionData.length / 3);
         break;
       case AttributeSemantic.NORMAL:
-        result.normalData = ensureFloat32(data, attr, 3);
+        result.normalData = convertAttributeToFloat32(data, attr, 3, false);
         result.hasNormals = true;
         break;
       case AttributeSemantic.TANGENT:
-        result.tangentData = ensureFloat32(data, attr, 4);
+        result.tangentData = convertAttributeToFloat32(data, attr, 4, false);
         result.hasTangents = true;
         break;
       case AttributeSemantic.TEXCOORD_0:
       case "TEXCOORD":
-        result.texCoord0Data = ensureFloat32(data, attr, 2);
+        result.texCoord0Data = convertAttributeToFloat32(data, attr, 2, false);
         result.hasTexCoord0 = true;
         break;
       case AttributeSemantic.TEXCOORD_1:
-        result.texCoord1Data = ensureFloat32(data, attr, 2);
+        result.texCoord1Data = convertAttributeToFloat32(data, attr, 2, false);
         result.hasTexCoord1 = true;
         break;
       case AttributeSemantic.COLOR_0:
@@ -183,14 +485,14 @@ function extractPrimitiveGeometry(runtimePrimitive) {
         break;
       case AttributeSemantic.WEIGHTS_0:
       case "WEIGHTS":
-        result.weights0Data = ensureFloat32(data, attr, 4);
+        result.weights0Data = convertAttributeToFloat32(data, attr, 4, false);
         break;
       case AttributeSemantic._FEATURE_ID_0:
       case "_FEATURE_ID":
         // The loader stores b3dm's `_BATCHID` as `_FEATURE_ID_0`. Cast
         // to f32 so the FS can read it as a flat varying without an
         // explicit integer-attribute pipeline path.
-        result.featureId0Data = ensureFloat32(data, attr, 1);
+        result.featureId0Data = convertAttributeToFloat32(data, attr, 1, false);
         result.hasFeatureId0 = true;
         break;
     }
@@ -204,7 +506,7 @@ function extractPrimitiveGeometry(runtimePrimitive) {
   // Extract morph target data from the glTF primitive
   result.morphTargets = [];
   result.morphTargetCount = 0;
-  const prim = runtimePrimitive.primitive || runtimePrimitive._primitive;
+  const prim = gltfPrim;
   if (defined(prim) && defined(prim.morphTargets)) {
     const targets = prim.morphTargets;
     for (let t = 0; t < targets.length; t++) {
@@ -226,15 +528,30 @@ function extractPrimitiveGeometry(runtimePrimitive) {
         // source accessor carries quantization metadata; otherwise the
         // deltas reconstruct exaggerated (scaled-up integer) values.
         if (tSemantic === "POSITION") {
-          morphTarget.positionData = ensureFloat32(tData, tAttr, 3);
+          morphTarget.positionData = convertAttributeToFloat32(
+            tData,
+            tAttr,
+            3,
+            true,
+          );
         } else if (tSemantic === "NORMAL") {
-          morphTarget.normalData = ensureFloat32(tData, tAttr, 3);
+          morphTarget.normalData = convertAttributeToFloat32(
+            tData,
+            tAttr,
+            3,
+            true,
+          );
         } else if (tSemantic === "TANGENT") {
           // C2-4: glTF morph TANGENT deltas are VEC3 (the .w handedness is NOT
           // morphed), so extract 3 components — matches WebGL getMorphedTangent.
           // Without this, a normal-mapped morphed mesh keeps its rest-pose
           // tangent frame and the tangent-space normal drifts as it deforms.
-          morphTarget.tangentData = ensureFloat32(tData, tAttr, 3);
+          morphTarget.tangentData = convertAttributeToFloat32(
+            tData,
+            tAttr,
+            3,
+            true,
+          );
         }
       }
       if (defined(morphTarget.positionData)) {
@@ -272,6 +589,7 @@ function extractPrimitiveGeometry(runtimePrimitive) {
           upcast[i] = idxData[i];
         }
         idxData = upcast;
+        primitiveGeometryCacheDiagnostics.uint8IndexUpcastCount++;
       }
       result.indexData = idxData;
       result.indexCount = idxData.length;
@@ -281,6 +599,122 @@ function extractPrimitiveGeometry(runtimePrimitive) {
   }
 
   return result;
+}
+
+/**
+ * Returns a cached immutable base descriptor for a runtime primitive.
+ * Validation is allocation-free on cache hits and observes the identities,
+ * revisions, conversion metadata, morph sources, and index source that affect
+ * the extracted result. Weak keys allow dead model scene graphs to be
+ * collected without an explicit cache teardown.
+ *
+ * @param {ModelRuntimePrimitive} runtimePrimitive
+ * @returns {ModelPrimitiveGeometry|null}
+ */
+function extractPrimitiveGeometry(runtimePrimitive) {
+  if (!defined(runtimePrimitive)) {
+    return null;
+  }
+
+  const gltfPrimitive =
+    runtimePrimitive.primitive || runtimePrimitive._primitive;
+  const renderResources =
+    runtimePrimitive.renderResources || runtimePrimitive._renderResources;
+  const source = defined(renderResources) ? renderResources : gltfPrimitive;
+
+  if (
+    (typeof runtimePrimitive !== "object" || runtimePrimitive === null) &&
+    typeof runtimePrimitive !== "function"
+  ) {
+    primitiveGeometryCacheDiagnostics.missCount++;
+    primitiveGeometryCacheDiagnostics.descriptorBuildCount++;
+    return freezeGeometryDescriptor(
+      buildPrimitiveGeometry(runtimePrimitive, source, gltfPrimitive),
+    );
+  }
+
+  const cached = primitiveGeometryCache.get(runtimePrimitive);
+  if (
+    defined(cached) &&
+    geometrySignatureMatches(
+      cached.signature,
+      runtimePrimitive,
+      source,
+      gltfPrimitive,
+    )
+  ) {
+    primitiveGeometryCacheDiagnostics.hitCount++;
+    return cached.geometry;
+  }
+
+  if (defined(cached)) {
+    primitiveGeometryCacheDiagnostics.invalidationCount++;
+  }
+  primitiveGeometryCacheDiagnostics.missCount++;
+  primitiveGeometryCacheDiagnostics.descriptorBuildCount++;
+
+  const signature = captureGeometrySignature(
+    runtimePrimitive,
+    source,
+    gltfPrimitive,
+  );
+  const geometry = freezeGeometryDescriptor(
+    buildPrimitiveGeometry(runtimePrimitive, source, gltfPrimitive),
+  );
+  primitiveGeometryCache.set(runtimePrimitive, { signature, geometry });
+  return geometry;
+}
+
+/**
+ * Creates a mutable renderer view over an immutable cached base. This is a
+ * shallow, once-per-source-generation copy: typed arrays and frozen morph
+ * descriptors remain shared, while renderer annotations can be replaced.
+ *
+ * @param {ModelPrimitiveGeometry} baseGeometry
+ * @returns {ModelPrimitiveGeometry}
+ */
+function createPrimitiveGeometryView(baseGeometry) {
+  return { ...baseGeometry };
+}
+
+/**
+ * Clears fields that WebGPUModelRenderer may annotate or synthesize. Reusing
+ * the same view avoids a per-frame descriptor copy while ensuring late
+ * metadata and implicit feature-ID decisions never contaminate the base.
+ *
+ * @param {ModelPrimitiveGeometry} view
+ * @param {ModelPrimitiveGeometry} baseGeometry
+ * @returns {ModelPrimitiveGeometry}
+ */
+function resetPrimitiveGeometryView(view, baseGeometry) {
+  view.indexData = baseGeometry.indexData;
+  view.indexCount = baseGeometry.indexCount;
+  view.indexType = baseGeometry.indexType;
+  view.featureId0Data = baseGeometry.featureId0Data;
+  view.hasFeatureId0 = baseGeometry.hasFeatureId0;
+  view.metadataData = null;
+  view.metadataClassHash = 0;
+  view.metadataWGSL = null;
+  view.metadataMatTransport = false;
+  view.hasMetadata = false;
+  view.propertyTableLayout = null;
+  view.propertyTextureLayout = null;
+  view.hasPropertyTables = false;
+  view.hasPropertyTextures = false;
+  return view;
+}
+
+function getPrimitiveGeometryCacheDiagnostics() {
+  return Object.freeze({ ...primitiveGeometryCacheDiagnostics });
+}
+
+function resetPrimitiveGeometryCacheForSpecs() {
+  primitiveGeometryCache = new WeakMap();
+  for (const key in primitiveGeometryCacheDiagnostics) {
+    if (Object.hasOwn(primitiveGeometryCacheDiagnostics, key)) {
+      primitiveGeometryCacheDiagnostics[key] = 0;
+    }
+  }
 }
 
 /**
@@ -473,12 +907,19 @@ function getComponentTypeName(data) {
 
 export {
   extractPrimitiveGeometry,
+  createPrimitiveGeometryView,
+  resetPrimitiveGeometryView,
+  getPrimitiveGeometryCacheDiagnostics,
+  resetPrimitiveGeometryCacheForSpecs,
   normalizeColorData,
   ensureFloat32,
   AttributeSemantic,
 };
 export default {
   extractPrimitiveGeometry,
+  createPrimitiveGeometryView,
+  resetPrimitiveGeometryView,
+  getPrimitiveGeometryCacheDiagnostics,
   normalizeColorData,
   AttributeSemantic,
 };

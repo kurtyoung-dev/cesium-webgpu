@@ -153,6 +153,9 @@ class Geometry3DTileContent {
   }
 
   update(tileset, frameState) {
+    if (defined(this._batchTable)) {
+      this._batchTable.updateCapabilities(frameState.context);
+    }
     if (defined(this._geometries)) {
       this._geometries.classificationType = this._tileset.classificationType;
       this._geometries.debugWireframe = this._tileset.debugWireframe;

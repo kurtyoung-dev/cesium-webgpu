@@ -16,6 +16,7 @@ import Matrix3 from "../Core/Matrix3.js";
 import Matrix4 from "../Core/Matrix4.js";
 import PolylineCollection from "./PolylineCollection.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import { resolveFeatureRendererReadiness } from "../Renderer/GraphicsContext.js";
 
 import {
   initializeShape,
@@ -458,13 +459,19 @@ class VoxelPrimitive {
    * @private
    */
   update(frameState) {
-    // Backend-specific rendering path
-    const fr = frameState.context.getFeatureRenderer(
+    // Loading/failed belong to the selected backend. Do not initialize the
+    // legacy traversal/resources until the backend says it is unsupported.
+    const readiness = resolveFeatureRendererReadiness(
+      frameState.context,
       FeatureRendererKey.VOXEL_PRIMITIVE,
     );
+    const fr = readiness.kind === "ready" ? readiness.renderer : undefined;
     if (fr) {
       this._featureRenderer = fr;
       fr.update(this, frameState);
+      return;
+    }
+    if (readiness.kind !== "unsupported") {
       return;
     }
 

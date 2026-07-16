@@ -202,11 +202,10 @@ export function generateVoxelUserShaderChunk(
 
   const chunk = lines.join("\n");
 
-  // Non-zero fingerprint for the DP-H46b salted module-cache key and the
-  // pipeline-cache name. Guard the two reserved values: 0 (unsalted numeric
-  // key) and the Batch 476 constant salt (`VOXEL_CUSTOM_SHADER_COLOR`), which
-  // the DEFAULT gray parity module already occupies at the same
-  // (sourceId, masked-defines) numeric key.
+  // Non-zero fingerprint for the DP-H46b generated-source identity and the
+  // pipeline-cache name. Keep remapping the former Batch 476 reserved value
+  // as well so persisted diagnostics retain stable hash behavior across the
+  // cache-key widening.
   let hash = hashStringFNV1a(chunk);
   if (hash === 0 || hash === ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR >>> 0) {
     hash = (hash ^ 0x9e3779b9) >>> 0;

@@ -2861,10 +2861,9 @@ function updateWebGPUVoxelPrimitive(
           ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR |
             ShaderDefine.VOXEL_USER_CUSTOM_SHADER,
           `VoxelPrimitive (user customShader #${userInfo.hash.toString(16)})`,
-          // Bits ≥ 24 are masked out of the numeric cache key, so the salt is
-          // what distinguishes this module from BOTH the defines=0 placeholder
-          // and the default parity module (salt = bit-25 constant). The chunk
-          // hash also separates DIFFERENT user shader bodies (DP-H46b).
+          // The full define mask distinguishes this variant from the base and
+          // default-parity modules. The salt has one job: separate DIFFERENT
+          // generated user shader bodies sharing the same define set.
           userInfo.hash,
         );
       } else {
@@ -2875,14 +2874,6 @@ function updateWebGPUVoxelPrimitive(
             VOXEL_WGSL,
             ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR,
             "VoxelPrimitive (VOXEL_CUSTOM_SHADER_COLOR)",
-            // The module-cache numeric key masks defines to 24 bits
-            // (`(defines & 0xffffff) << 8`), so VOXEL_CUSTOM_SHADER_COLOR
-            // (bit 25) would alias the defines=0 (placeholder) module and
-            // return the raw-texel shader. A non-zero keySalt forces a
-            // distinct cache entry; the preprocessor still receives the
-            // UNMASKED defines and emits the parity branch. (The salt value
-            // is arbitrary but stable.)
-            ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR,
           );
         cache.colorModuleCustomShader = colorModule;
       }

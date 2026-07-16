@@ -709,6 +709,35 @@ describe(
       );
     });
 
+    it("retains decoded geometry and metadata when the renderer requires CPU payloads", async function () {
+      spyOnProperty(
+        scene.context,
+        "requiresVertexTypedArrayRetention",
+        "get",
+      ).and.returnValue(true);
+
+      const loader = await loadPnts(pointCloudWithPerPointPropertiesUrl);
+      const primitive = loader.components.nodes[0].primitives[0];
+
+      expect(primitive.attributes.length).toBe(5);
+      for (const attribute of primitive.attributes) {
+        expect(attribute.buffer).toBeDefined();
+        expect(attribute.typedArray).toBeDefined();
+        expect(attribute.typedArray.length).toBeGreaterThan(0);
+      }
+    });
+
+    it("drops decoded geometry and metadata after WebGL upload by default", async function () {
+      const loader = await loadPnts(pointCloudWithPerPointPropertiesUrl);
+      const primitive = loader.components.nodes[0].primitives[0];
+
+      expect(primitive.attributes.length).toBe(5);
+      for (const attribute of primitive.attributes) {
+        expect(attribute.buffer).toBeDefined();
+        expect(attribute.typedArray).not.toBeDefined();
+      }
+    });
+
     it("loads PointCloudWithUnicodePropertyIds", function () {
       return loadPnts(pointCloudWithUnicodePropertyIdsUrl).then(
         function (loader) {

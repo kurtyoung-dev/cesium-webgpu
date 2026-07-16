@@ -7,9 +7,9 @@ import {
   Matrix2,
   Matrix3,
   Matrix4,
-  ContextLimits,
   Cesium3DTileBatchTable,
   Cesium3DTileStyle,
+  GraphicsCapabilities,
   RuntimeError,
 } from "../../index.js";
 import Cesium3DTilesTester from "../../../../Specs/Cesium3DTilesTester.js";
@@ -679,40 +679,47 @@ xdescribe(
       );
     });
 
-    it("renders when vertex texture fetch is not supported", function () {
-      // Disable VTF
-      const maximumVertexTextureImageUnits =
-        ContextLimits.maximumVertexTextureImageUnits;
-      ContextLimits._maximumVertexTextureImageUnits = 0;
+    it("renders when vertex texture fetch is not supported", async function () {
+      const originalCapabilities = scene.context.graphicsCapabilities;
+      scene.context._graphicsCapabilities = GraphicsCapabilities.create({
+        ...originalCapabilities,
+        maximumVertexTextureImageUnits: 0,
+        ktx2TranscodeTargets: originalCapabilities.ktx2TranscodeTargets,
+      });
 
-      return Cesium3DTilesTester.loadTileset(scene, withoutBatchTableUrl).then(
-        function (tileset) {
-          Cesium3DTilesTester.expectRenderTileset(scene, tileset);
-
-          // Re-enable VTF
-          ContextLimits._maximumVertexTextureImageUnits =
-            maximumVertexTextureImageUnits;
-        },
-      );
+      try {
+        const tileset = await Cesium3DTilesTester.loadTileset(
+          scene,
+          withoutBatchTableUrl,
+        );
+        Cesium3DTilesTester.expectRenderTileset(scene, tileset);
+      } finally {
+        scene.context._graphicsCapabilities = originalCapabilities;
+      }
     });
 
-    it("renders with featuresLength greater than maximumTextureSize", function () {
+    it("renders with featuresLength greater than maximumTextureSize", async function () {
       // Set maximum texture size to 4 temporarily. Batch length of b3dm file is 10.
-      const maximumTextureSize = ContextLimits.maximumTextureSize;
-      ContextLimits._maximumTextureSize = 4;
+      const originalCapabilities = scene.context.graphicsCapabilities;
+      scene.context._graphicsCapabilities = GraphicsCapabilities.create({
+        ...originalCapabilities,
+        maximumTextureSize: 4,
+        ktx2TranscodeTargets: originalCapabilities.ktx2TranscodeTargets,
+      });
 
-      return Cesium3DTilesTester.loadTileset(scene, withoutBatchTableUrl).then(
-        function (tileset) {
-          const content = tileset.root.content;
-          expect(content.featuresLength).toBeGreaterThan(
-            ContextLimits._maximumTextureSize,
-          );
-          Cesium3DTilesTester.expectRenderTileset(scene, tileset);
-
-          // Reset maximum texture size
-          ContextLimits._maximumTextureSize = maximumTextureSize;
-        },
-      );
+      try {
+        const tileset = await Cesium3DTilesTester.loadTileset(
+          scene,
+          withoutBatchTableUrl,
+        );
+        const content = tileset.root.content;
+        expect(content.featuresLength).toBeGreaterThan(
+          scene.context.limits.maximumTextureSize,
+        );
+        Cesium3DTilesTester.expectRenderTileset(scene, tileset);
+      } finally {
+        scene.context._graphicsCapabilities = originalCapabilities;
+      }
     });
 
     it("renders with featuresLength of zero", function () {
@@ -766,19 +773,23 @@ xdescribe(
       );
     });
 
-    it("renders translucent style when vertex texture fetch is not supported", function () {
-      // Disable VTF
-      const maximumVertexTextureImageUnits =
-        ContextLimits.maximumVertexTextureImageUnits;
-      ContextLimits._maximumVertexTextureImageUnits = 0;
-      return Cesium3DTilesTester.loadTileset(scene, withoutBatchTableUrl).then(
-        function (tileset) {
-          expectRenderTranslucent(tileset);
-          // Re-enable VTF
-          ContextLimits._maximumVertexTextureImageUnits =
-            maximumVertexTextureImageUnits;
-        },
-      );
+    it("renders translucent style when vertex texture fetch is not supported", async function () {
+      const originalCapabilities = scene.context.graphicsCapabilities;
+      scene.context._graphicsCapabilities = GraphicsCapabilities.create({
+        ...originalCapabilities,
+        maximumVertexTextureImageUnits: 0,
+        ktx2TranscodeTargets: originalCapabilities.ktx2TranscodeTargets,
+      });
+
+      try {
+        const tileset = await Cesium3DTilesTester.loadTileset(
+          scene,
+          withoutBatchTableUrl,
+        );
+        expectRenderTranslucent(tileset);
+      } finally {
+        scene.context._graphicsCapabilities = originalCapabilities;
+      }
     });
 
     it("isExactClass throws with invalid batchId", function () {

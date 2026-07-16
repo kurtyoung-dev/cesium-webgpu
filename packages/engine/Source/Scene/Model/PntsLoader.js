@@ -438,9 +438,12 @@ function makeAttribute(loader, attributeInfo, context) {
   }
 
   const loadAttributesFor2D = loader._loadAttributesFor2D;
+  const retainTypedArrayForRenderer =
+    context.requiresVertexTypedArrayRetention === true;
   if (
-    attribute.semantic === VertexAttributeSemantic.POSITION &&
-    loadAttributesFor2D
+    retainTypedArrayForRenderer ||
+    (attribute.semantic === VertexAttributeSemantic.POSITION &&
+      loadAttributesFor2D)
   ) {
     attribute.typedArray = typedArray;
   }
@@ -684,7 +687,10 @@ function addPropertyAttributesToPrimitive(
   for (let i = 0; i < length; i++) {
     const customAttribute = customAttributes[i];
 
-    // Upload the typed array to the GPU and free the CPU copy.
+    // Upload the typed array to the compatibility backend. Backends that
+    // realize their own native geometry cannot read bytes back from that
+    // compatibility buffer, so retain the decoded payload for their lazy
+    // realization path. WebGL keeps the historical drop-after-upload policy.
     const buffer = Buffer.createVertexBuffer({
       typedArray: customAttribute.typedArray,
       context: context,
@@ -693,7 +699,9 @@ function addPropertyAttributesToPrimitive(
     buffer.vertexArrayDestroyable = false;
     loader._buffers.push(buffer);
     customAttribute.buffer = buffer;
-    customAttribute.typedArray = undefined;
+    if (context.requiresVertexTypedArrayRetention !== true) {
+      customAttribute.typedArray = undefined;
+    }
 
     attributes.push(customAttribute);
   }

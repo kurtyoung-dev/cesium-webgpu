@@ -2,7 +2,7 @@ import {
   Cartesian3,
   ClippingPolygon,
   ClippingPolygonCollection,
-  ContextLimits,
+  GraphicsCapabilities,
   Model,
   ModelClippingPolygonsPipelineStage,
   ShaderBuilder,
@@ -36,7 +36,11 @@ describe("Scene/Model/ModelClippingPolygonsPipelineStage", function () {
 
     context = createContext();
     // Set this to the minimum possible value so texture sizes can be consistently tested
-    ContextLimits._maximumTextureSize = 64;
+    context._graphicsCapabilities = GraphicsCapabilities.create({
+      ...context.graphicsCapabilities,
+      maximumTextureSize: 64,
+      ktx2TranscodeTargets: context.graphicsCapabilities.ktx2TranscodeTargets,
+    });
   });
 
   afterEach(function () {

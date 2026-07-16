@@ -7,7 +7,6 @@ import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import PixelFormat from "../Core/PixelFormat.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import PixelDatatype from "../Renderer/PixelDatatype.js";
 import Sampler from "../Renderer/Sampler.js";
 import Texture from "../Renderer/Texture.js";
@@ -50,17 +49,15 @@ class BatchTexture {
     this._pickTexture = undefined;
     this._pickIds = [];
 
-    // Dimensions for batch and pick textures
+    // CPU-side edits are allowed before the first render context is known.
+    // Start with a flat logical layout, then finalize the GPU row width from
+    // frameState.context.limits in update().
     let textureDimensions;
     let textureStep;
 
     if (featuresLength > 0) {
-      // PERFORMANCE_IDEA: this can waste memory in the last row in the uncommon case
-      // when more than one row is needed (e.g., > 16K features in one tile)
-      const width = Math.min(featuresLength, ContextLimits.maximumTextureSize);
-      const height = Math.ceil(
-        featuresLength / ContextLimits.maximumTextureSize,
-      );
+      const width = featuresLength;
+      const height = 1;
       const stepX = 1.0 / width;
       const centerX = stepX * 0.5;
       const stepY = 1.0 / height;
@@ -74,6 +71,7 @@ class BatchTexture {
     this._featuresLength = featuresLength;
     this._textureDimensions = textureDimensions;
     this._textureStep = textureStep;
+    this._textureMaximumSize = undefined;
     this._owner = options.owner;
     this._statistics = options.statistics;
     this._colorChangedCallback = options.colorChangedCallback;
@@ -287,6 +285,7 @@ class BatchTexture {
 
   update(tileset, frameState) {
     const context = frameState.context;
+    configureTextureLayout(this, context.limits.maximumTextureSize);
     this._defaultTexture = context.defaultTexture;
 
     const passes = frameState.passes;
@@ -451,6 +450,56 @@ class BatchTexture {
 BatchTexture.DEFAULT_COLOR_VALUE = Color.WHITE;
 BatchTexture.DEFAULT_SHOW_VALUE = true;
 
+function configureTextureLayout(batchTexture, maximumTextureSize) {
+  if (
+    batchTexture._featuresLength === 0 ||
+    batchTexture._textureMaximumSize === maximumTextureSize
+  ) {
+    return;
+  }
+
+  const featuresLength = batchTexture._featuresLength;
+  const width = Math.min(featuresLength, maximumTextureSize);
+  const height = Math.ceil(featuresLength / maximumTextureSize);
+  const stepX = 1.0 / width;
+  const stepY = 1.0 / height;
+
+  batchTexture._textureDimensions = new Cartesian2(width, height);
+  batchTexture._textureStep = new Cartesian4(
+    stepX,
+    stepX * 0.5,
+    stepY,
+    stepY * 0.5,
+  );
+  batchTexture._textureMaximumSize = maximumTextureSize;
+
+  const requiredByteLength = width * height * 4;
+  const oldValues = batchTexture._batchValues;
+  if (defined(oldValues) && oldValues.length !== requiredByteLength) {
+    const resizedValues = new Uint8Array(requiredByteLength).fill(255);
+    resizedValues.set(oldValues.subarray(0, requiredByteLength));
+    batchTexture._batchValues = resizedValues;
+    batchTexture._batchValuesDirty = true;
+  }
+
+  // A changed device limit (for example after device recovery) changes the
+  // packed resource layout. Recreate context-bound textures deterministically.
+  const statistics = batchTexture._statistics;
+  if (defined(batchTexture._batchTexture)) {
+    if (defined(statistics)) {
+      statistics.batchTableByteLength -= batchTexture._batchTexture.sizeInBytes;
+    }
+    batchTexture._batchTexture = batchTexture._batchTexture.destroy();
+    batchTexture._batchValuesDirty = defined(batchTexture._batchValues);
+  }
+  if (defined(batchTexture._pickTexture)) {
+    if (defined(statistics)) {
+      statistics.batchTableByteLength -= batchTexture._pickTexture.sizeInBytes;
+    }
+    batchTexture._pickTexture = batchTexture._pickTexture.destroy();
+  }
+}
+
 function getByteLength(batchTexture) {
   const dimensions = batchTexture._textureDimensions;
   return dimensions.x * dimensions.y * 4;
@@ -518,8 +567,11 @@ function createPickTexture(batchTexture, context) {
     // to RGBA in the shader.  The only consider is precision issues, which might
     // not be an issue in WebGL 2.
     for (let i = 0; i < featuresLength; ++i) {
-      const pickId = context.createPickId(owner.getFeature(i), "tile-feature");
-      pickIds.push(pickId);
+      let pickId = pickIds[i];
+      if (!defined(pickId)) {
+        pickId = context.createPickId(owner.getFeature(i), "tile-feature");
+        pickIds[i] = pickId;
+      }
 
       const pickColor = pickId.color;
       const offset = i * 4;

@@ -15,7 +15,6 @@ import oneTimeWarning from "../Core/oneTimeWarning.js";
 import TextureWrap from "../Renderer/TextureWrap.js";
 import TextureMagnificationFilter from "../Renderer/TextureMagnificationFilter.js";
 import TextureMinificationFilter from "../Renderer/TextureMinificationFilter.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import MetadataComponentType from "./MetadataComponentType.js";
 import MetadataType from "./MetadataType.js";
 
@@ -171,13 +170,14 @@ function createTextureForPropertyTable(
   }
 
   // In the future, we could use multiple textures if we would exceed the maximum texture size.
+  const maximumTextureSize = context.limits.maximumTextureSize;
   if (
-    numFeatures > ContextLimits.maximumTextureSize ||
-    numGpuCompatibleProperties > ContextLimits.maximumTextureSize
+    numFeatures > maximumTextureSize ||
+    numGpuCompatibleProperties > maximumTextureSize
   ) {
     oneTimeWarning(
       "PropertyTableTextureExceedsMaximumSize",
-      `Cannot create a texture for the property table "${propertyTable.name}" because it exceeds the maximum texture size of ${ContextLimits.maximumTextureSize}.`,
+      `Cannot create a texture for the property table "${propertyTable.name}" because it exceeds the maximum texture size of ${maximumTextureSize}.`,
     );
     return undefined;
   }
