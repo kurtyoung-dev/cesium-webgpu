@@ -201,7 +201,10 @@ function execute2DViewportCommands(scene, passState) {
     1.0,
     scratch2DViewportTransform,
   );
-  const projectionMatrix = camera.frustum.projectionMatrix;
+  const projectionMatrix =
+    typeof camera.frustum.getProjectionMatrix === "function"
+      ? camera.frustum.getProjectionMatrix(scene.context.clipSpaceConvention)
+      : camera.frustum.projectionMatrix;
 
   const x = camera.positionWC.y;
   const eyePoint = Cartesian3.fromElements(
@@ -359,11 +362,12 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
 
   updateAndRenderPrimitives(scene);
 
-  // SORT-3: Bin commands through RenderScheduler for material sort ID population,
-  // then sort all layers for proper render ordering.
+  // FAR-003: the layer buckets are not consumed by either renderer, so their
+  // duplicate O(N log N) sort is opt-in. Keep only the useful linear stable
+  // material-ID assignment on the default path.
   const scheduler = scene._renderScheduler;
+  const cmdList = scene.frameState.commandList;
   if (scheduler.enabled) {
-    const cmdList = scene.frameState.commandList;
     const cmdCount = cmdList.length;
     for (let ci = 0; ci < cmdCount; ci++) {
       const cmd = cmdList[ci];
@@ -374,6 +378,8 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
     // This applies per-layer sort modes (MATERIAL_MESH, BACK_TO_FRONT, etc.)
     // to the commands within each render layer.
     scheduler.sortAllLayers(scene.frameState.camera.positionWC);
+  } else {
+    scheduler.assignMaterialSortIds(cmdList);
   }
 
   // Octree-accelerated PVS when enabled and command count exceeds threshold

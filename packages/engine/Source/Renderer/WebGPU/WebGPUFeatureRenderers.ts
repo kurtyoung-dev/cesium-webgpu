@@ -643,10 +643,10 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     FeatureRendererKey.GAUSSIAN_SPLAT,
     async () => {
       const mod = await import("./WebGPUGaussianSplatRenderer.js");
-      context.registerFeatureRenderer(FeatureRendererKey.GAUSSIAN_SPLAT, {
+      return {
         update: mod.updateWebGPUGaussianSplatPrimitive,
         destroy: mod.destroyWebGPUGaussianSplatResources,
-      });
+      };
     },
   );
 
@@ -655,10 +655,10 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     FeatureRendererKey.POINT_CLOUD,
     async () => {
       const mod = await import("./WebGPUPointCloudRenderer.js");
-      context.registerFeatureRenderer(FeatureRendererKey.POINT_CLOUD, {
+      return {
         update: mod.updateWebGPUPointCloud,
         destroy: mod.destroyWebGPUPointCloudResources,
-      });
+      };
     },
   );
 
@@ -668,14 +668,14 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     FeatureRendererKey.POINT_CLOUD_EDL,
     async () => {
       const mod = await import("./WebGPUPointCloudEyeDomeLighting.js");
-      context.registerFeatureRenderer(FeatureRendererKey.POINT_CLOUD_EDL, {
+      return {
         update: mod.updateWebGPUPointCloudEDL,
         // PARITY-PC-EDL — the WebGL processor's `destroy` calls
         // `fr.destroy(this)`; bind the context so the renderer can release
         // its per-context off-screen framebuffer + pipelines.
         destroy: (processor) =>
           mod.destroyWebGPUPointCloudEDLResources(processor, context),
-      });
+      };
     },
   );
 
@@ -685,13 +685,13 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     FeatureRendererKey.VOXEL_PRIMITIVE,
     async () => {
       const mod = await import("./WebGPUVoxelRenderer.js");
-      context.registerFeatureRenderer(FeatureRendererKey.VOXEL_PRIMITIVE, {
+      return {
         update: mod.updateWebGPUVoxelPrimitive,
         destroy: mod.destroyWebGPUVoxelResources,
         // C-R9-VOXEL-CELL-PICK-TAIL — resolves the root keyframe node for
         // Scene.pickVoxel's VoxelCell construction (WebGPU has no CPU traversal).
         getPickKeyframeNode: mod.getVoxelPickKeyframeNode,
-      });
+      };
     },
   );
 
@@ -756,13 +756,10 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     FeatureRendererKey.SCREEN_SPACE_REFLECTIONS,
     async () => {
       const mod = await import("./WebGPUSSREffect.js");
-      context.registerFeatureRenderer(
-        FeatureRendererKey.SCREEN_SPACE_REFLECTIONS,
-        {
-          execute: mod.executeSSR,
-          destroy: mod.destroySSRResources,
-        },
-      );
+      return {
+        execute: mod.executeSSR,
+        destroy: mod.destroySSRResources,
+      };
     },
   );
 
@@ -773,10 +770,10 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     FeatureRendererKey.NPR_OUTLINES,
     async () => {
       const mod = await import("./WebGPUNPROutlineEffect.js");
-      context.registerFeatureRenderer(FeatureRendererKey.NPR_OUTLINES, {
+      return {
         execute: mod.executeNPROutlines,
         destroy: mod.destroyNPROutlineResources,
-      });
+      };
     },
   );
 
@@ -788,10 +785,10 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     FeatureRendererKey.CONTACT_SHADOWS,
     async () => {
       const mod = await import("./WebGPUContactShadowsEffect.js");
-      context.registerFeatureRenderer(FeatureRendererKey.CONTACT_SHADOWS, {
+      return {
         execute: mod.executeContactShadows,
         destroy: mod.destroyContactShadowsResources,
-      });
+      };
     },
   );
 
@@ -802,13 +799,13 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     FeatureRendererKey.WEATHER_PARTICLES,
     async () => {
       const mod = await import("./WebGPUWeatherRenderer.js");
-      context.registerFeatureRenderer(FeatureRendererKey.WEATHER_PARTICLES, {
+      return {
         update: mod.updateWeatherParticles,
         render: mod.renderWeatherParticles,
         getParticleBuffer: mod.getWeatherParticleBuffer,
         getMaxParticles: mod.getWeatherMaxParticles,
         destroy: mod.destroyWeatherResources,
-      });
+      };
     },
   );
 
@@ -818,10 +815,10 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     FeatureRendererKey.PROCEDURAL_CLOUDS,
     async () => {
       const mod = await import("./WebGPUProceduralCloudRenderer.js");
-      context.registerFeatureRenderer(FeatureRendererKey.PROCEDURAL_CLOUDS, {
+      return {
         execute: mod.executeProceduralClouds,
         destroy: mod.destroyProceduralCloudResources,
-      });
+      };
     },
   );
 
@@ -834,10 +831,10 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     FeatureRendererKey.FLOW_FIELD,
     async () => {
       const mod = await import("./WebGPUFlowFieldRenderer.js");
-      context.registerFeatureRenderer(FeatureRendererKey.FLOW_FIELD, {
+      return {
         update: mod.updateWebGPUFlowField,
         destroy: mod.destroyWebGPUFlowFieldResources,
-      });
+      };
     },
   );
 
@@ -849,10 +846,10 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
     FeatureRendererKey.FFT_OCEAN,
     async () => {
       const mod = await import("./WebGPUOceanRenderer.js");
-      context.registerFeatureRenderer(FeatureRendererKey.FFT_OCEAN, {
+      return {
         update: mod.updateWebGPUOcean,
         destroy: mod.destroyWebGPUOceanResources,
-      });
+      };
     },
   );
 

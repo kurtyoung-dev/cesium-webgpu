@@ -20,7 +20,6 @@ import Interval from "../Core/Interval.js";
 import JulianDate from "../Core/JulianDate.js";
 import CesiumMath from "../Core/Math.js";
 import Matrix3 from "../Core/Matrix3.js";
-import Matrix4 from "../Core/Matrix4.js";
 import RenderScheduler from "./RenderScheduler.js";
 import OrthographicFrustum from "../Core/OrthographicFrustum.js";
 import OrthographicOffCenterFrustum from "../Core/OrthographicOffCenterFrustum.js";
@@ -32,7 +31,9 @@ import ClearCommand from "../Renderer/ClearCommand.js";
 import ComputeEngine from "../Renderer/ComputeEngine.js";
 import Context from "../Renderer/Context.js";
 import ContextFactory from "../Renderer/ContextFactory.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
+import RendererType, {
+  getSynchronousRendererType,
+} from "../Renderer/RendererType.js";
 import Pass from "../Renderer/Pass.js";
 import RenderState from "../Renderer/RenderState.js";
 import Atmosphere from "./Atmosphere.js";
@@ -159,6 +160,41 @@ class Scene {
    * @exception {DeveloperError} options and options.canvas are required.
    */
   constructor(options) {
+    // Establish the fields that construction rollback needs before doing any
+    // work that can throw. Scene initialization is intentionally kept in a
+    // separate method so the constructor can retain the partially-built
+    // instance and release every ownership edge before rethrowing the original
+    // error. In particular, this covers failures after the process-wide
+    // RequestScheduler/TaskProcessor listeners have been installed.
+    this._context = undefined;
+    this._frameState = undefined;
+    this._tweens = undefined;
+    this._hdrFallbackUnsub = null;
+    this._asyncResourceUnsub = null;
+    this._featureRendererReadinessUnsub = null;
+    this._removeRequestListenerCallback = undefined;
+    this._removeTaskProcessorListenerCallback = undefined;
+    this._removeGlobeCallbacks = [];
+    this._removeCreditContainer = false;
+    this._creditContainer = undefined;
+    this._canvas = undefined;
+
+    try {
+      this._initialize(options);
+    } catch (error) {
+      destroySceneResources(this);
+      throw error;
+    }
+  }
+
+  /**
+   * Initializes a Scene after the constructor has established rollback-safe
+   * sentinels.
+   *
+   * @param {object} options Scene construction options.
+   * @private
+   */
+  _initialize(options) {
     options = options ?? Frozen.EMPTY_OBJECT;
     const canvas = options.canvas;
     let creditContainer = options.creditContainer;
@@ -170,13 +206,20 @@ class Scene {
     }
     //>>includeEnd('debug');
 
-    // Check for pre-initialized context (from Scene.createAsync for WebGPU support)
-    let countReferences = false;
+    // Synchronous construction is deliberately WebGL-only. Renderer policies
+    // that may initialize WebGPU or fall back between backends must go through
+    // createAsync so context creation has a real transactional boundary.
+    if (!defined(options._preInitializedContext)) {
+      getSynchronousRendererType(options.contextOptions ?? Frozen.EMPTY_OBJECT);
+    }
+
+    // Check for a pre-initialized context from the async factory. The context
+    // is created against this exact canvas, then transferred into the final
+    // Scene; no temporary Scene or compatibility context is constructed.
+    let countReferences = options._countContextReferences ?? false;
     if (defined(options._preInitializedContext)) {
-      // WebGPU path - context already created asynchronously
       this._context = options._preInitializedContext;
     } else {
-      // WebGL path - synchronous context creation (backward compatible)
       countReferences = options.contextOptions instanceof SharedContext;
       if (countReferences) {
         this._context = options.contextOptions.createSceneContext(canvas);
@@ -186,15 +229,20 @@ class Scene {
       }
     }
     const context = this._context;
-
-    // Set Matrix4 depth range based on renderer type
-    // WebGPU uses 0-1 depth range, WebGL uses -1 to 1
-    // Use capability getter instead of string comparison (FORK-7 fix)
-    if (context.depthRangeZeroToOne) {
-      Matrix4.setDepthRangeType("webgpu");
-    } else {
-      Matrix4.setDepthRangeType("webgl");
-    }
+    this._contextCreationDiagnostics =
+      options._contextCreationDiagnostics ??
+      Object.freeze({
+        requestedRenderer: RendererType.WEBGL,
+        resolvedRenderer: RendererType.WEBGL,
+        selectionReason: "explicit",
+        attempts: Object.freeze([
+          Object.freeze({
+            renderer: RendererType.WEBGL,
+            status: "succeeded",
+          }),
+        ]),
+        fallback: null,
+      });
 
     // Worker-safe headless mode: when running inside a Web Worker
     // (DedicatedWorkerGlobalScope), `document` does not exist and
@@ -231,6 +279,13 @@ class Scene {
       creditViewport = headless ? {} : canvas.parentNode;
     }
 
+    // Publish DOM ownership before CreditDisplay/FrameState construction so a
+    // failure inside either constructor can still remove the generated credit
+    // container. The caller-owned canvas is never removed by rollback.
+    this._canvas = canvas;
+    this._removeCreditContainer = !hasCreditContainer;
+    this._creditContainer = creditContainer;
+
     this._id = createGuid();
     this._jobScheduler = new JobScheduler();
     this._frameState = new FrameState(
@@ -239,10 +294,6 @@ class Scene {
       this._jobScheduler,
     );
     this._frameState.scene3DOnly = options.scene3DOnly ?? false;
-    this._removeCreditContainer = !hasCreditContainer;
-    this._creditContainer = creditContainer;
-
-    this._canvas = canvas;
     this._computeEngine = new ComputeEngine(context);
 
     this._ellipsoid = options.ellipsoid ?? Ellipsoid.default;
@@ -385,6 +436,20 @@ class Scene {
       );
     }
 
+    // Lazy feature-module readiness is a separate state machine from GPU
+    // resource preparation. Wake request-render scenes when a renderer module
+    // installs so they cannot hibernate with a compatibility/placeholder
+    // frame still on screen.
+    this._featureRendererReadinessUnsub = null;
+    if (typeof context?.subscribeFeatureRendererReadiness === "function") {
+      this._featureRendererReadinessUnsub =
+        context.subscribeFeatureRendererReadiness((_key, state) => {
+          if (state.kind === "ready") {
+            this.requestRender();
+          }
+        });
+    }
+
     /**
      * The render scheduler manages layered sorting, material batching,
      * and predictive sort queries. Sits above CesiumJS's 5 existing
@@ -398,6 +463,15 @@ class Scene {
     // This ensures non-Earth bodies (Moon, Mars) have correctly-sized octree bounds.
     this._renderScheduler.octree.rootHalfExtent =
       this._ellipsoid.maximumRadius * 1.1;
+
+    // FAR-003 containment: the current GPU cull/HiZ/sort pipelines map
+    // results back to CPU command arrays and are not safe auto defaults.
+    // Publish the safe policy to the context before the first frame so lazy
+    // culler getters (including shadow paths) cannot allocate implicitly.
+    this._gpuCullingHint = "never";
+    if (typeof context.setGpuCullingHint === "function") {
+      context.setGpuCullingHint("never");
+    }
 
     this._transitioner = new SceneTransitioner(this);
 
@@ -1365,6 +1439,20 @@ class Scene {
     this._defaultView = new View(this, camera, viewport);
     this._view = this._defaultView;
 
+    // Deterministic late-construction failure point for transactional cleanup
+    // specs. This sits after both process-wide listeners and the default View
+    // have been created, which is the first point where all of the ownership
+    // edges involved in the historical leak coexist. Debug pragmas remove the
+    // hook from production bundles.
+    //>>includeStart('debug', pragmas.debug);
+    if (typeof options._constructionFailureForSpecs === "function") {
+      options._constructionFailureForSpecs(
+        "afterGlobalListenersAndDefaultView",
+        this,
+      );
+    }
+    //>>includeEnd('debug');
+
     this._hdr = undefined;
     this._hdrDirty = undefined;
     this.highDynamicRange = false;
@@ -1470,9 +1558,11 @@ class Scene {
    * });
    *
    * @example
-   * // Create scene with WebGL (backward compatible)
+   * // Create scene explicitly with WebGL. Omitting renderer from createAsync
+   * // uses AUTO (WebGPU first with WebGL fallback in a dual build).
    * const scene = await Cesium.Scene.createAsync({
-   *   canvas: canvas
+   *   canvas: canvas,
+   *   contextOptions: { renderer: "webgl" }
    * });
    */
   static async createAsync(options, onProgress) {
@@ -1484,44 +1574,104 @@ class Scene {
     }
     //>>includeEnd('debug');
 
-    // Report initial progress
-    if (defined(onProgress)) {
-      onProgress(10, "Initializing graphics context...");
-    }
+    let result;
+    let scene;
+    try {
+      if (defined(onProgress)) {
+        onProgress(10, "Initializing graphics context...");
+      }
 
-    // Check if we need async context creation (WebGPU)
-    const contextOptions = options.contextOptions ?? {};
-    const needsAsyncContext = contextOptions.renderer === "webgpu";
-
-    let context;
-    if (needsAsyncContext) {
-      // Create WebGPU context asynchronously
-      context = await ContextFactory.createContext(
+      const contextOptions = options.contextOptions ?? {};
+      result = await Scene._createContextWithDiagnostics(
         options.canvas,
         contextOptions,
       );
 
+      // The acquired context is transaction-owned before this callback runs.
+      // A progress observer is user code and may throw; in that case the catch
+      // below must still release the context/device-pool lease.
       if (defined(onProgress)) {
         onProgress(70, "Context ready...");
       }
 
-      // FORK-3 fix: Shader loading is now part of WebGPUContext._initialize().
-      // No redundant shader loading here — shaders are already loaded during context init.
+      scene = new Scene({
+        ...options,
+        _preInitializedContext: result.context,
+        _contextCreationDiagnostics: result.diagnostics,
+        _countContextReferences: result.countReferences,
+      });
+
+      // Keep the completed Scene transaction-owned until the final observer
+      // has returned. Otherwise a throwing 100% callback would reject while
+      // leaving a live Scene, global listeners, and graphics context behind.
+      if (defined(onProgress)) {
+        onProgress(100, "Ready");
+      }
+
+      return scene;
+    } catch (error) {
+      if (
+        defined(scene) &&
+        (typeof scene.isDestroyed !== "function" || !scene.isDestroyed())
+      ) {
+        try {
+          scene.destroy();
+        } catch {
+          // Preserve the original factory/progress error. The context fallback
+          // below remains mandatory even if a custom Scene owner misbehaves.
+        }
+      }
+
+      const context = result?.context;
+      if (
+        defined(context) &&
+        typeof context.destroy === "function" &&
+        (typeof context.isDestroyed !== "function" || !context.isDestroyed())
+      ) {
+        try {
+          context.destroy();
+        } catch {
+          // Preserve the original error; Context.destroy performs its own
+          // best-effort ownership drain before returning/throwing.
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Creates exactly one context for an async Scene/Widget/Viewer transaction.
+   * Kept internal so all three entry points share renderer policy and
+   * diagnostics without constructing temporary ownership graphs.
+   *
+   * @private
+   */
+  static async _createContextWithDiagnostics(canvas, contextOptions) {
+    if (contextOptions instanceof SharedContext) {
+      const context = contextOptions.createSceneContext(canvas);
+      return {
+        context,
+        countReferences: true,
+        diagnostics: Object.freeze({
+          requestedRenderer: RendererType.WEBGL,
+          resolvedRenderer: RendererType.WEBGL,
+          selectionReason: "explicit",
+          attempts: Object.freeze([
+            Object.freeze({
+              renderer: RendererType.WEBGL,
+              status: "succeeded",
+            }),
+          ]),
+          fallback: null,
+        }),
+      };
     }
 
-    // Create scene with pre-initialized context (or undefined for WebGL)
-    const sceneOptions = {
-      ...options,
-      _preInitializedContext: context,
-    };
-
-    const scene = new Scene(sceneOptions);
-
-    if (defined(onProgress)) {
-      onProgress(100, "Ready");
-    }
-
-    return scene;
+    const result = await ContextFactory.createContextWithDiagnostics(
+      canvas,
+      contextOptions,
+    );
+    return { ...result, countReferences: false };
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -1536,6 +1686,17 @@ class Scene {
    */
   get canvas() {
     return this._canvas;
+  }
+
+  /**
+   * Describes the renderer request, attempts, selected backend, and fallback
+   * (if any) that produced this Scene's graphics context.
+   *
+   * @type {ContextCreationDiagnostics}
+   * @readonly
+   */
+  get contextCreationDiagnostics() {
+    return this._contextCreationDiagnostics;
   }
 
   /**
@@ -1571,7 +1732,7 @@ class Scene {
    * @see {@link https://www.khronos.org/opengles/sdk/docs/man/xhtml/glGet.xml|glGet} with <code>ALIASED_LINE_WIDTH_RANGE</code>.
    */
   get maximumAliasedLineWidth() {
-    return ContextLimits.maximumAliasedLineWidth;
+    return this.context.limits.maximumAliasedLineWidth;
   }
 
   /**
@@ -1583,7 +1744,7 @@ class Scene {
    * @see {@link https://www.khronos.org/opengles/sdk/docs/man/xhtml/glGet.xml|glGet} with <code>GL_MAX_CUBE_MAP_TEXTURE_SIZE</code>.
    */
   get maximumCubeMapSize() {
-    return ContextLimits.maximumCubeMapSize;
+    return this.context.limits.maximumCubeMapSize;
   }
 
   /**
@@ -1836,6 +1997,21 @@ class Scene {
       snapshotMode: null,
       visualPerformanceTarget: null,
       renderer: null,
+      containment: {
+        renderScheduler: {
+          requested: this._renderScheduler?.enabled === true,
+          capable: true,
+          active:
+            this._renderScheduler?.enabled === true &&
+            (this._renderScheduler?.stats?.sortCalls ?? 0) > 0,
+          fallbackReason:
+            this._renderScheduler?.enabled === true
+              ? (this._renderScheduler?.stats?.sortCalls ?? 0) > 0
+                ? null
+                : "no-sort-work-this-frame"
+              : "contained-dead-command-stream",
+        },
+      },
       moon: null,
       debugToggles: {
         debugShowFramesPerSecond: this.debugShowFramesPerSecond === true,
@@ -1903,6 +2079,19 @@ class Scene {
           this._alternateSceneRenderer.getHighDensityCullStats();
       } catch (e) {
         snap.highDensityCull = { error: String(e?.message ?? e) };
+      }
+    }
+    if (
+      defined(this._alternateSceneRenderer) &&
+      typeof this._alternateSceneRenderer.getContainmentStats === "function"
+    ) {
+      try {
+        Object.assign(
+          snap.containment,
+          this._alternateSceneRenderer.getContainmentStats(),
+        );
+      } catch (e) {
+        snap.containment.rendererError = String(e?.message ?? e);
       }
     }
     return snap;
@@ -2678,29 +2867,28 @@ class Scene {
    * first frame where the activation threshold crosses (which would
    * otherwise produce a visible hitch).
    *
-   * `'auto'` (default) keeps the lazy-init path — first activation
+   * `'auto'` keeps the lazy-init path — first activation
    * crossing pays the compile cost, subsequent crossings are warm.
    *
    * `'never'` (Batch 225 wire-in) — fully disables the GPU
    * dispatchers. The opaque + translucent gates short-circuit
    * to false (`WebGPUSceneRenderer` already reads the scene
    * hint), AND the context's lazy-getter chain refuses to
-   * allocate new auxiliary culler instances. Existing
-   * instances are left in place to avoid an abrupt mid-render
-   * deallocation; idle-decay (Batch 229) reaps them naturally.
+   * allocate new auxiliary culler instances. Existing auxiliary
+   * instances are reaped by the context when the policy changes.
    *
    * No-op on WebGL.
    *
    * @type {'auto' | 'always' | 'never'}
-   * @default 'auto'
+   * @default 'never'
    * @experimental This feature is experimental and may change or be removed without Cesium's standard deprecation policy.
    */
   get gpuCullingHint() {
-    return this._gpuCullingHint ?? "auto";
+    return this._gpuCullingHint ?? "never";
   }
 
   set gpuCullingHint(value) {
-    const allowed = value === "always" || value === "never" ? value : "auto";
+    const allowed = value === "always" || value === "auto" ? value : "never";
     if (this._gpuCullingHint === allowed) {
       return;
     }
@@ -2745,7 +2933,7 @@ class Scene {
   }
 
   set msaaSamples(value) {
-    value = Math.min(value, ContextLimits.maximumSamples);
+    value = Math.min(value, this.context.limits.maximumSamples);
     this._msaaSamples = value;
   }
 
@@ -3832,6 +4020,14 @@ class Scene {
    * @param {JulianDate} [time] The simulation time at which to render.
    */
   render(time) {
+    // Capture the Scene.render() boundary only while an operator trace is
+    // active. The normal render path pays one boolean check and does not call
+    // performance.now(). Sampling happens after postRender so cpuMs covers the
+    // complete Scene-managed frame, including update and after-render work.
+    const performanceTraceStart = this._performanceTracker.active
+      ? performance.now()
+      : undefined;
+
     /**
      *
      * Pre passes update. Execute any pass invariant code that should run before the passes here.
@@ -3992,14 +4188,6 @@ class Scene {
     updateDebugShowFramesPerSecond(this, shouldRender);
     tryAndCatchError(this, postPassesUpdate);
 
-    // Phase 2 perf benchmarking — record one trace sample per rendered
-    // frame. Inactive by default; the `sample()` call is a one-comparison
-    // no-op when no trace is open. We sample after `postPassesUpdate`
-    // so the bundle stats reflect the frame we just rendered.
-    if (shouldRender && this._performanceTracker.active) {
-      _samplePerformanceTrace(this);
-    }
-
     // Always-on live FPS recording. The recordFrame() call is a couple
     // of typed-array writes per frame regardless of whether anyone is
     // reading the live stats. The HUD overlay polls getLiveStats()
@@ -4016,6 +4204,13 @@ class Scene {
     if (shouldRender) {
       this._postRender.raiseEvent(this, time);
       frameState.creditDisplay.endFrame();
+
+      if (defined(performanceTraceStart)) {
+        _samplePerformanceTrace(
+          this,
+          performance.now() - performanceTraceStart,
+        );
+      }
     }
   }
 
@@ -4084,8 +4279,8 @@ class Scene {
    */
   clampLineWidth(width) {
     return Math.max(
-      ContextLimits.minimumAliasedLineWidth,
-      Math.min(width, ContextLimits.maximumAliasedLineWidth),
+      this.context.limits.minimumAliasedLineWidth,
+      Math.min(width, this.context.limits.maximumAliasedLineWidth),
     );
   }
 
@@ -4443,7 +4638,7 @@ class Scene {
    * @param {Cartesian2} windowPosition
    * @param {number} [width=3] Width of the pick rectangle.
    * @param {number} [height=3] Height of the pick rectangle.
-   * @returns {Promise<object>} The picked object, or `undefined` if
+   * @returns {Promise<object|undefined>} The picked object, or `undefined` if
    *   no object was picked.
    *
    * @example
@@ -4967,137 +5162,180 @@ class Scene {
    * @see Scene#isDestroyed
    */
   destroy() {
-    // Batch 225 (B219-N4 audit fix) — unsubscribe HDR fallback
-    // listener so a destroyed Scene doesn't keep a callback alive
-    // on the (potentially long-lived) shared context.
-    if (typeof this._hdrFallbackUnsub === "function") {
-      this._hdrFallbackUnsub();
-      this._hdrFallbackUnsub = null;
-    }
-    // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 1) — same teardown
-    // discipline for the async resource monitor subscriber. The
-    // monitor lives on the (potentially shared) context, so leaving
-    // a destroyed scene's subscriber attached would resurrect it on
-    // every pipeline resolution.
-    if (typeof this._asyncResourceUnsub === "function") {
-      this._asyncResourceUnsub();
-      this._asyncResourceUnsub = null;
-    }
-    this._tweens.removeAll();
-    this._computeEngine = this._computeEngine && this._computeEngine.destroy();
-    this._screenSpaceCameraController =
-      this._screenSpaceCameraController &&
-      this._screenSpaceCameraController.destroy();
-    this._deviceOrientationCameraController =
-      this._deviceOrientationCameraController &&
-      !this._deviceOrientationCameraController.isDestroyed() &&
-      this._deviceOrientationCameraController.destroy();
-    this._primitives = this._primitives && this._primitives.destroy();
-    this._groundPrimitives =
-      this._groundPrimitives && this._groundPrimitives.destroy();
-    this._globe = this._globe && this._globe.destroy();
-    this._removeTerrainProviderReadyListener =
-      this._removeTerrainProviderReadyListener &&
-      this._removeTerrainProviderReadyListener();
-    this.skyBox = this.skyBox && this.skyBox.destroy();
-    this.skyAtmosphere = this.skyAtmosphere && this.skyAtmosphere.destroy();
-    this._debugSphere = this._debugSphere && this._debugSphere.destroy();
-    this.sun = this.sun && this.sun.destroy();
-    this._sunPostProcess =
-      this._sunPostProcess && this._sunPostProcess.destroy();
-    this._depthPlane = this._depthPlane && this._depthPlane.destroy();
-    this._transitioner = this._transitioner && this._transitioner.destroy();
-    this._debugFrustumPlanes =
-      this._debugFrustumPlanes && this._debugFrustumPlanes.destroy();
-    this._brdfLutGenerator =
-      this._brdfLutGenerator && this._brdfLutGenerator.destroy();
-    this._picking = this._picking && this._picking.destroy();
-
-    // Destroy alternate scene renderer if it was created (e.g., WebGPU)
-    if (this._alternateSceneRenderer) {
-      this._alternateSceneRenderer.destroy();
-      this._alternateSceneRenderer = null;
-    }
-
-    this._defaultView = this._defaultView && this._defaultView.destroy();
-    this._view = undefined;
-
-    // Phase 6 audit fix — orchestration services were never cleaned up.
-    // Each service holds references to registered freezables / probes /
-    // sinks, which in turn close over scene-owned resources. Failing to
-    // destroy them on Scene teardown leaks the entire registration map
-    // and (for active snapshots) prevents the freezables from receiving
-    // their final thaw. Both destroys are idempotent + safe to call
-    // even if the service was never used.
-    if (defined(this._snapshotMode)) {
-      this._snapshotMode.destroy();
-      this._snapshotMode = undefined;
-    }
-    if (defined(this._visualPerformanceTarget)) {
-      this._visualPerformanceTarget.destroy();
-      this._visualPerformanceTarget = undefined;
-    }
-    // Phase 2 perf benchmarking — end any active trace cleanly so the
-    // operator's hold on a reference to the result object doesn't
-    // also pin a destroyed scene.
-    if (defined(this._performanceTracker)) {
-      if (this._performanceTracker.active) {
-        this._performanceTracker.endTrace();
-      }
-      this._performanceTracker = undefined;
-    }
-
-    // Skip the DOM removal in headless mode — `_canvas` is an
-    // `OffscreenCanvas` (no `parentNode`) and `_creditContainer` is the
-    // sentinel `{}` from the worker init path. Both are GC'd along
-    // with the Scene instance.
-    if (
-      this._removeCreditContainer &&
-      this._canvas &&
-      this._canvas.parentNode &&
-      this._creditContainer
-    ) {
-      this._canvas.parentNode.removeChild(this._creditContainer);
-    }
-
-    this.postProcessStages =
-      this.postProcessStages && this.postProcessStages.destroy();
-
-    this._context = this._context && this._context.destroy();
-    this._frameState.creditDisplay =
-      this._frameState.creditDisplay &&
-      this._frameState.creditDisplay.destroy();
-
-    if (defined(this._performanceDisplay)) {
-      // FpsOverlay (and the legacy PerformanceDisplay) both manage
-      // their own DOM lifecycle inside `destroy()`, so we no longer
-      // need a separate `_performanceContainer` removeChild call —
-      // the overlay's destroy() removes its own container from the
-      // parent. The historical `_performanceContainer` field is no
-      // longer set; the cleanup below is preserved as a guard for
-      // any subclass that might still be wiring it.
-      this._performanceDisplay.destroy();
-      this._performanceDisplay = undefined;
-      if (this._performanceContainer && this._performanceContainer.parentNode) {
-        this._performanceContainer.parentNode.removeChild(
-          this._performanceContainer,
-        );
-      }
-    }
-
-    this._removeRequestListenerCallback();
-    this._removeTaskProcessorListenerCallback();
-    for (let i = 0; i < this._removeGlobeCallbacks.length; ++i) {
-      this._removeGlobeCallbacks[i]();
-    }
-    this._removeGlobeCallbacks.length = 0;
-
-    if (defined(this._removeUpdateHeightCallback)) {
-      this._removeUpdateHeightCallback();
-      this._removeUpdateHeightCallback = undefined;
-    }
-
+    // Use the same field-based drain as constructor rollback. Every ownership
+    // edge is isolated, so a throwing custom resource cannot prevent global
+    // listeners, per-scene GPU resources, or the graphics context/device-pool
+    // lease from being released.
+    destroySceneResources(this);
     return destroyObject(this);
+  }
+}
+
+/**
+ * Releases a complete or partially initialized Scene. Each cleanup is isolated
+ * so a malformed/custom backend resource cannot prevent mandatory listener,
+ * per-scene GPU-resource, context, and device-pool cleanup.
+ *
+ * @param {Scene} scene The partially initialized scene.
+ * @private
+ */
+function destroySceneResources(scene) {
+  const cleanup = function (callback) {
+    try {
+      callback();
+    } catch {
+      // Construction rollback preserves its original error, while public
+      // destroy remains best-effort. In both cases later ownership edges,
+      // especially global listeners and the graphics context, must drain.
+    }
+  };
+
+  const removeCallback = function (property) {
+    const callback = scene[property];
+    scene[property] = undefined;
+    if (typeof callback === "function") {
+      cleanup(callback);
+    }
+  };
+
+  const destroyProperty = function (property) {
+    const resource = scene[property];
+    scene[property] = undefined;
+    if (!defined(resource) || typeof resource.destroy !== "function") {
+      return;
+    }
+    cleanup(function () {
+      if (
+        typeof resource.isDestroyed !== "function" ||
+        !resource.isDestroyed()
+      ) {
+        resource.destroy();
+      }
+    });
+  };
+
+  // These callbacks close over the Scene and are owned by process-wide or
+  // context-wide publishers. Detach them before destroying scene resources.
+  removeCallback("_removeTaskProcessorListenerCallback");
+  removeCallback("_removeRequestListenerCallback");
+  removeCallback("_featureRendererReadinessUnsub");
+  removeCallback("_asyncResourceUnsub");
+  removeCallback("_hdrFallbackUnsub");
+  removeCallback("_removeTerrainProviderReadyListener");
+  removeCallback("_removeUpdateHeightCallback");
+
+  const globeCallbacks = scene._removeGlobeCallbacks ?? [];
+  scene._removeGlobeCallbacks = [];
+  for (let i = globeCallbacks.length - 1; i >= 0; --i) {
+    if (typeof globeCallbacks[i] === "function") {
+      cleanup(globeCallbacks[i]);
+    }
+  }
+
+  // Reverse the scene-owned portion of construction. The default View is
+  // deliberately first: it is created after the global listeners and was the
+  // original late-construction failure boundary.
+  const ownedResources = [
+    "_defaultView",
+    "_picking",
+    "_performanceDisplay",
+    "_brdfLutGenerator",
+    "_screenSpaceCameraController",
+    "_deviceOrientationCameraController",
+    "postProcessStages",
+    "_invertClassification",
+    "shadowMap",
+    "_debugFrustumPlanes",
+    "_transitioner",
+    "_depthPlane",
+    "_sunPostProcess",
+    "sun",
+    "_debugSphere",
+    "skyAtmosphere",
+    "skyBox",
+    "_globe",
+    "_groundPrimitives",
+    "_primitives",
+    "_alternateSceneRenderer",
+    "_computeEngine",
+  ];
+  for (let i = 0; i < ownedResources.length; ++i) {
+    destroyProperty(ownedResources[i]);
+  }
+  scene._view = undefined;
+
+  // FpsOverlay removes its own DOM, but preserve the historical container
+  // guard for subclasses/older overlays that only exposed the container.
+  const performanceContainer = scene._performanceContainer;
+  scene._performanceContainer = undefined;
+  if (defined(performanceContainer?.parentNode)) {
+    cleanup(function () {
+      performanceContainer.parentNode.removeChild(performanceContainer);
+    });
+  }
+
+  if (defined(scene._snapshotMode)) {
+    destroyProperty("_snapshotMode");
+  }
+  if (defined(scene._visualPerformanceTarget)) {
+    destroyProperty("_visualPerformanceTarget");
+  }
+  if (defined(scene._performanceTracker)) {
+    const tracker = scene._performanceTracker;
+    scene._performanceTracker = undefined;
+    cleanup(function () {
+      if (tracker.active) {
+        tracker.endTrace();
+      }
+    });
+  }
+  if (defined(scene._tweens)) {
+    const tweens = scene._tweens;
+    scene._tweens = undefined;
+    cleanup(function () {
+      tweens.removeAll();
+    });
+  }
+
+  // Match normal Scene teardown for the constructor-created credit DOM. The
+  // canvas belongs to the caller and is never removed here.
+  if (
+    scene._removeCreditContainer &&
+    scene._canvas?.parentNode &&
+    scene._creditContainer?.parentNode === scene._canvas.parentNode
+  ) {
+    cleanup(function () {
+      scene._canvas.parentNode.removeChild(scene._creditContainer);
+    });
+  }
+
+  const creditDisplay = scene._frameState?.creditDisplay;
+  if (defined(scene._frameState)) {
+    scene._frameState.creditDisplay = undefined;
+  }
+  if (defined(creditDisplay) && typeof creditDisplay.destroy === "function") {
+    cleanup(function () {
+      if (
+        typeof creditDisplay.isDestroyed !== "function" ||
+        !creditDisplay.isDestroyed()
+      ) {
+        creditDisplay.destroy();
+      }
+    });
+  }
+  scene._frameState = undefined;
+
+  // Context destruction is last and isolated. Context.destroy unregisters the
+  // context and releases any pooled WebGPU device lease. Scene.createAsync's
+  // outer catch checks isDestroyed(), so it cannot pay a second release tax.
+  const context = scene._context;
+  scene._context = undefined;
+  if (defined(context) && typeof context.destroy === "function") {
+    cleanup(function () {
+      if (typeof context.isDestroyed !== "function" || !context.isDestroyed()) {
+        context.destroy();
+      }
+    });
   }
 }
 
@@ -5112,12 +5350,13 @@ class Scene {
  * central debug surface so all the per-subsystem getStatistics()
  * methods are exercised through one path.
  *
- * Called from `Scene.render()` only when a trace is active. The
- * `_performanceTracker.sample()` call itself is no-op-when-inactive,
- * so this function is a pure cost only when a trace is open.
+ * Called from `Scene.render()` only when a trace was active at the start of
+ * the frame. The `_performanceTracker.sample()` call remains
+ * no-op-when-inactive in case the trace is explicitly ended by a render event.
  *
  * @private
  * @param {Scene} scene
+ * @param {number} cpuMs Full Scene.render() CPU wall time for this frame.
  */
 const scratchVoxelPickRay = new Ray();
 const scratchVoxelPickLocalRay = new Ray();
@@ -5182,7 +5421,7 @@ function voxelPickRayHitsBounds(scene, windowPosition, voxelPrimitive) {
   return defined(interval) && interval.stop >= 0.0;
 }
 
-function _samplePerformanceTrace(scene) {
+function _samplePerformanceTrace(scene, cpuMs) {
   const tracker = scene._performanceTracker;
   if (!defined(tracker) || !tracker.active) {
     return;
@@ -5190,6 +5429,7 @@ function _samplePerformanceTrace(scene) {
   const fs = scene._frameState;
   let bundleStats;
   let gpuMs;
+  let gpuCoverageExtra;
   const ctx = scene._context;
   if (ctx && typeof ctx.getRendererStatistics === "function") {
     try {
@@ -5205,6 +5445,22 @@ function _samplePerformanceTrace(scene) {
       ) {
         gpuMs = rendererStats.timestamps.frameMs;
       }
+      const timestamps = rendererStats?.timestamps;
+      if (timestamps) {
+        const extra = {};
+        if (typeof timestamps.profiledPassMs === "number") {
+          extra.gpuProfiledPassMs = timestamps.profiledPassMs;
+        }
+        if (typeof timestamps.unprofiledMs === "number") {
+          extra.gpuUnprofiledMs = timestamps.unprofiledMs;
+        }
+        if (typeof timestamps.coverageRatio === "number") {
+          extra.gpuCoverageRatio = timestamps.coverageRatio;
+        }
+        if (Object.keys(extra).length > 0) {
+          gpuCoverageExtra = extra;
+        }
+      }
     } catch (e) {
       // Diagnostic getters must never break the trace path.
     }
@@ -5213,11 +5469,13 @@ function _samplePerformanceTrace(scene) {
     defined(scene._snapshotMode) && scene._snapshotMode.isFrozen === true;
   tracker.sample({
     frameNumber: fs?.frameNumber ?? -1,
+    cpuMs,
     gpuMs,
     drawCount: fs?.commandList ? fs.commandList.length : undefined,
     commandCount: fs?.commandList ? fs.commandList.length : undefined,
     bundleStats,
     snapshotFrozen,
+    extra: gpuCoverageExtra,
   });
 }
 
@@ -5527,10 +5785,12 @@ function render(scene) {
 
   scene.updateEnvironment();
 
-  // TAA: apply sub-pixel jitter to the projection matrix before rendering.
-  // The jitter is computed from a Halton(2,3) sequence and shifts the
-  // projection by ±0.5 pixel in NDC. When snapshot mode is frozen, the
-  // jitter is zeroed to prevent dither accumulation.
+  // TAA: compute the sub-pixel sample offset before rendering. The effect
+  // stores explicit NDC (raster projection) and UV (resolve) representations.
+  // The WebGPU scene renderer applies only the NDC value to its reusable
+  // scratch frustum for each depth slice; the persistent camera-frustum cache
+  // is never mutated. When snapshot mode is frozen, both representations are
+  // zeroed to prevent temporal dither accumulation.
   //
   // Also pushes the motion-vector matrices + camera delta into the TAA
   // effect. Matrices come from UniformState:
@@ -5553,33 +5813,14 @@ function render(scene) {
     const taa = pipeline?.taaEffect;
     if (taa) {
       const frozen = scene._snapshotMode?.isFrozen === true;
-      const cam = scene.camera;
       if (frozen) {
-        taa.jitterX = 0;
-        taa.jitterY = 0;
-        // Forget any captured base so re-enabling jitter re-captures from the
-        // live (un-jittered) matrix instead of reasoning about a stale base.
-        taa.resetProjectionJitter();
+        taa.resetJitter();
       } else {
-        const jitter = taa.computeJitter(
+        taa.computeJitter(
           frameState.frameNumber,
           context.drawingBufferWidth,
           context.drawingBufferHeight,
         );
-        // Apply jitter to the projection matrix (column 2, row 0 and row 1
-        // in column-major layout = indices [8] and [9]).
-        //
-        // NEW-CAMERA-JITTER-ACCUMULATION — write `base + jitter` ABSOLUTELY via
-        // `applyProjectionJitter`, never `proj[8] += jitter.x`.
-        // `cam.frustum.projectionMatrix` is a dirty-cached getter: on a settled
-        // frustum it returns the SAME array every frame without recomputing, so
-        // a `+=` would stack last frame's jitter on top of the new one and
-        // proj[8]/proj[9] would drift unboundedly. The effect tracks the
-        // un-jittered base and self-heals when the frustum recomputes.
-        const proj = cam.frustum.projectionMatrix;
-        if (proj) {
-          taa.applyProjectionJitter(proj, jitter.x, jitter.y);
-        }
       }
 
       const us = context.uniformState;
@@ -5627,9 +5868,10 @@ function render(scene) {
       // execute() passes the source through unblended (prev := current for the
       // flip frame) instead of reprojecting against the incompatible matrix.
       const isMorphing = frameState.mode === SceneMode.MORPHING;
+      const camera = frameState.camera;
       const isOrthographic =
-        cam.frustum instanceof OrthographicFrustum ||
-        cam.frustum instanceof OrthographicOffCenterFrustum;
+        camera.frustum instanceof OrthographicFrustum ||
+        camera.frustum instanceof OrthographicOffCenterFrustum;
       const projectionFlipped =
         defined(scene._taaPrevProjectionOrtho) &&
         scene._taaPrevProjectionOrtho !== isOrthographic;

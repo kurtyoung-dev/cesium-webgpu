@@ -18,6 +18,7 @@ import {
   JulianDate,
   Math as CesiumMath,
   Property,
+  getSynchronousRendererType,
   ScreenSpaceEventType,
   IonGeocoderService,
 } from "@cesium/engine";
@@ -41,6 +42,136 @@ import VRButton from "../VRButton/VRButton.js";
 import LoadingOverlay from "./LoadingOverlay.js";
 
 const boundingSphereScratch = new BoundingSphere();
+
+function createViewerConstructionTransaction(viewer) {
+  return {
+    viewer,
+    root: undefined,
+    eventHelper: undefined,
+    resources: [],
+    cleanups: [],
+  };
+}
+
+function ownViewerConstructionResource(transaction, resource) {
+  if (defined(resource)) {
+    transaction.resources.push(resource);
+  }
+  return resource;
+}
+
+function removeDataSourceCollectionChangedListener(viewer, entityCollection) {
+  const removers = viewer._entityCollectionChangedListenerRemovers;
+  if (!defined(removers)) {
+    return false;
+  }
+
+  const entry = removers.get(entityCollection);
+  if (!defined(entry)) {
+    return false;
+  }
+
+  entry.referenceCount--;
+  if (entry.referenceCount > 0) {
+    return false;
+  }
+
+  // Delete before invoking the callback so every remover is attempted at most
+  // once, including when a callback throws during teardown.
+  removers.delete(entityCollection);
+  try {
+    entry.removeListener();
+  } catch {
+    // A third-party Event implementation must not abort data-source removal
+    // or prevent the rest of Viewer/context teardown from running.
+  }
+  return true;
+}
+
+function runViewerCleanupStep(callback) {
+  try {
+    callback();
+  } catch {
+    // Preserve the original async-construction failure while exact owners are
+    // drained independently.
+  }
+}
+
+function destroyViewerContextIfLive(context) {
+  if (!defined(context) || typeof context.destroy !== "function") {
+    return;
+  }
+  let destroyed = false;
+  if (typeof context.isDestroyed === "function") {
+    try {
+      destroyed = context.isDestroyed();
+    } catch {
+      // Still attempt idempotent destruction if the status probe is faulty.
+    }
+  }
+  if (!destroyed) {
+    context.destroy();
+  }
+}
+
+function removeAllDataSourceCollectionChangedListeners(viewer) {
+  const removers = viewer._entityCollectionChangedListenerRemovers;
+  if (!defined(removers) || removers.size === 0) {
+    return;
+  }
+
+  const entries = Array.from(removers.values());
+  // Clear first to make rollback and normal destruction idempotent even if a
+  // remover raises an unexpected error.
+  removers.clear();
+
+  for (const entry of entries) {
+    try {
+      entry.removeListener();
+    } catch {
+      // Keep draining. Listener teardown is subordinate to releasing the
+      // Viewer-owned Scene, rendering context, widgets, and DOM graph.
+    }
+  }
+}
+
+function rollbackViewerConstruction(transaction) {
+  try {
+    transaction.eventHelper?.removeAll();
+  } catch {
+    // Preserve the construction error and continue draining later owners.
+  }
+
+  for (let i = transaction.cleanups.length - 1; i >= 0; i--) {
+    try {
+      transaction.cleanups[i]();
+    } catch {
+      // Best-effort rollback; the original construction error is authoritative.
+    }
+  }
+  transaction.cleanups.length = 0;
+
+  for (let i = transaction.resources.length - 1; i >= 0; i--) {
+    const resource = transaction.resources[i];
+    try {
+      if (
+        typeof resource.destroy === "function" &&
+        !(typeof resource.isDestroyed === "function" && resource.isDestroyed())
+      ) {
+        resource.destroy();
+      }
+    } catch {
+      // One partial widget must not prevent the Scene/context from draining.
+    }
+  }
+  transaction.resources.length = 0;
+
+  const root = transaction.root;
+  if (defined(root?.parentNode)) {
+    root.parentNode.removeChild(root);
+  }
+  destroyObject(transaction.viewer);
+}
 
 function onTimelineScrubfunction(e) {
   const clock = e.clock;
@@ -409,6 +540,15 @@ class Viewer {
     container = getElement(container);
     options = options ?? Frozen.EMPTY_OBJECT;
 
+    if (
+      !defined(options._preInitializedScene) &&
+      !defined(options._preInitializedContext)
+    ) {
+      // Reject asynchronous renderer policies before constructing any Viewer
+      // DOM or view-model state.
+      getSynchronousRendererType(options.contextOptions ?? Frozen.EMPTY_OBJECT);
+    }
+
     //>>includeStart('debug', pragmas.debug);
     if (
       options.globe === false &&
@@ -447,494 +587,580 @@ class Viewer {
     }
     //>>includeEnd('debug');
 
-    const that = this;
+    const construction = createViewerConstructionTransaction(this);
+    try {
+      const that = this;
 
-    const viewerContainer = document.createElement("div");
-    viewerContainer.className = "cesium-viewer";
-    container.appendChild(viewerContainer);
+      const viewerContainer = document.createElement("div");
+      viewerContainer.className = "cesium-viewer";
+      container.appendChild(viewerContainer);
+      construction.root = viewerContainer;
 
-    // Cesium widget container
-    const cesiumWidgetContainer = document.createElement("div");
-    cesiumWidgetContainer.className = "cesium-viewer-cesiumWidgetContainer";
-    viewerContainer.appendChild(cesiumWidgetContainer);
+      // Cesium widget container
+      const cesiumWidgetContainer = document.createElement("div");
+      cesiumWidgetContainer.className = "cesium-viewer-cesiumWidgetContainer";
+      viewerContainer.appendChild(cesiumWidgetContainer);
 
-    // Bottom container
-    const bottomContainer = document.createElement("div");
-    bottomContainer.className = "cesium-viewer-bottom";
+      // Bottom container
+      const bottomContainer = document.createElement("div");
+      bottomContainer.className = "cesium-viewer-bottom";
 
-    viewerContainer.appendChild(bottomContainer);
+      viewerContainer.appendChild(bottomContainer);
 
-    const scene3DOnly = options.scene3DOnly ?? false;
+      const scene3DOnly = options.scene3DOnly ?? false;
 
-    let clock;
-    let clockViewModel;
-    let destroyClockViewModel = false;
-    if (defined(options.clockViewModel)) {
-      clockViewModel = options.clockViewModel;
-      clock = clockViewModel.clock;
-    } else {
-      clock = new Clock();
-      clockViewModel = new ClockViewModel(clock);
-      destroyClockViewModel = true;
-    }
+      let clock;
+      let clockViewModel;
+      let destroyClockViewModel = false;
+      if (defined(options.clockViewModel)) {
+        clockViewModel = options.clockViewModel;
+        clock = clockViewModel.clock;
+      } else {
+        clock = new Clock();
+        clockViewModel = ownViewerConstructionResource(
+          construction,
+          new ClockViewModel(clock),
+        );
+        destroyClockViewModel = true;
+      }
 
-    // Cesium widget
-    const cesiumWidget = new CesiumWidget(cesiumWidgetContainer, {
-      baseLayer:
-        (createBaseLayerPicker &&
-          defined(options.selectedImageryProviderViewModel)) ||
-        defined(options.baseLayer) ||
-        defined(options.imageryProvider)
-          ? false
-          : undefined,
-      clock: clock,
-      shouldAnimate: options.shouldAnimate,
-      skyBox: options.skyBox,
-      skyAtmosphere: options.skyAtmosphere,
-      sceneMode: options.sceneMode,
-      ellipsoid: options.ellipsoid,
-      mapProjection: options.mapProjection,
-      globe: options.globe,
-      orderIndependentTranslucency: options.orderIndependentTranslucency,
-      automaticallyTrackDataSourceClocks:
-        options.automaticallyTrackDataSourceClocks,
-      contextOptions: options.contextOptions,
-      useDefaultRenderLoop: options.useDefaultRenderLoop,
-      targetFrameRate: options.targetFrameRate,
-      showRenderLoopErrors: options.showRenderLoopErrors,
-      useBrowserRecommendedResolution: options.useBrowserRecommendedResolution,
-      creditContainer: defined(options.creditContainer)
-        ? options.creditContainer
-        : bottomContainer,
-      creditViewport: options.creditViewport,
-      dataSources: options.dataSources,
-      scene3DOnly: scene3DOnly,
-      shadows: options.shadows,
-      terrainShadows: options.terrainShadows,
-      mapMode2D: options.mapMode2D,
-      blurActiveElementOnCanvasFocus: options.blurActiveElementOnCanvasFocus,
-      requestRenderMode: options.requestRenderMode,
-      maximumRenderTimeChange: options.maximumRenderTimeChange,
-      depthPlaneEllipsoidOffset: options.depthPlaneEllipsoidOffset,
-      msaaSamples: options.msaaSamples,
-      _preInitializedScene: options._preInitializedScene,
-    });
-
-    const scene = cesiumWidget.scene;
-
-    const eventHelper = new EventHelper();
-
-    eventHelper.add(clock.onTick, Viewer.prototype._onTick, this);
-
-    // Selection Indicator
-    let selectionIndicator;
-    if (
-      !defined(options.selectionIndicator) ||
-      options.selectionIndicator !== false
-    ) {
-      const selectionIndicatorContainer = document.createElement("div");
-      selectionIndicatorContainer.className =
-        "cesium-viewer-selectionIndicatorContainer";
-      viewerContainer.appendChild(selectionIndicatorContainer);
-      selectionIndicator = new SelectionIndicator(
-        selectionIndicatorContainer,
-        scene,
+      // Cesium widget
+      const cesiumWidget = ownViewerConstructionResource(
+        construction,
+        new CesiumWidget(cesiumWidgetContainer, {
+          baseLayer:
+            (createBaseLayerPicker &&
+              defined(options.selectedImageryProviderViewModel)) ||
+            defined(options.baseLayer) ||
+            defined(options.imageryProvider)
+              ? false
+              : undefined,
+          clock: clock,
+          shouldAnimate: options.shouldAnimate,
+          skyBox: options.skyBox,
+          skyAtmosphere: options.skyAtmosphere,
+          sceneMode: options.sceneMode,
+          ellipsoid: options.ellipsoid,
+          mapProjection: options.mapProjection,
+          globe: options.globe,
+          orderIndependentTranslucency: options.orderIndependentTranslucency,
+          automaticallyTrackDataSourceClocks:
+            options.automaticallyTrackDataSourceClocks,
+          contextOptions: options.contextOptions,
+          useDefaultRenderLoop: options.useDefaultRenderLoop,
+          targetFrameRate: options.targetFrameRate,
+          showRenderLoopErrors: options.showRenderLoopErrors,
+          useBrowserRecommendedResolution:
+            options.useBrowserRecommendedResolution,
+          creditContainer: defined(options.creditContainer)
+            ? options.creditContainer
+            : bottomContainer,
+          creditViewport: options.creditViewport,
+          dataSources: options.dataSources,
+          scene3DOnly: scene3DOnly,
+          shadows: options.shadows,
+          terrainShadows: options.terrainShadows,
+          mapMode2D: options.mapMode2D,
+          blurActiveElementOnCanvasFocus:
+            options.blurActiveElementOnCanvasFocus,
+          requestRenderMode: options.requestRenderMode,
+          maximumRenderTimeChange: options.maximumRenderTimeChange,
+          depthPlaneEllipsoidOffset: options.depthPlaneEllipsoidOffset,
+          msaaSamples: options.msaaSamples,
+          _preInitializedScene: options._preInitializedScene,
+          _preInitializedCanvas: options._preInitializedCanvas,
+          _preInitializedContext: options._preInitializedContext,
+          _contextCreationDiagnostics: options._contextCreationDiagnostics,
+          _countContextReferences: options._countContextReferences,
+        }),
       );
-    }
 
-    // Info Box
-    let infoBox;
-    if (!defined(options.infoBox) || options.infoBox !== false) {
-      const infoBoxContainer = document.createElement("div");
-      infoBoxContainer.className = "cesium-viewer-infoBoxContainer";
-      viewerContainer.appendChild(infoBoxContainer);
-      infoBox = new InfoBox(infoBoxContainer);
+      const scene = cesiumWidget.scene;
 
-      const infoBoxViewModel = infoBox.viewModel;
-      eventHelper.add(
-        infoBoxViewModel.cameraClicked,
-        Viewer.prototype._onInfoBoxCameraClicked,
-        this,
-      );
-      eventHelper.add(
-        infoBoxViewModel.closeClicked,
-        Viewer.prototype._onInfoBoxClockClicked,
-        this,
-      );
-    }
+      const eventHelper = new EventHelper();
+      construction.eventHelper = eventHelper;
 
-    // Main Toolbar
-    const toolbar = document.createElement("div");
-    toolbar.className = "cesium-viewer-toolbar";
-    viewerContainer.appendChild(toolbar);
+      eventHelper.add(clock.onTick, Viewer.prototype._onTick, this);
 
-    // Geocoder
-    let geocoder;
-    if (!defined(options.geocoder) || options.geocoder !== false) {
-      const geocoderContainer = document.createElement("div");
-      geocoderContainer.className = "cesium-viewer-geocoderContainer";
-      toolbar.appendChild(geocoderContainer);
-      let geocoderService;
-      if (typeof options.geocoder === "string") {
-        geocoderService = [
-          new IonGeocoderService({
-            scene,
-            geocodeProviderType: options.geocoder,
-          }),
-        ];
-      } else if (
-        defined(options.geocoder) &&
-        typeof options.geocoder !== "boolean"
+      // Selection Indicator
+      let selectionIndicator;
+      if (
+        !defined(options.selectionIndicator) ||
+        options.selectionIndicator !== false
       ) {
-        geocoderService = Array.isArray(options.geocoder)
-          ? options.geocoder
-          : [options.geocoder];
+        const selectionIndicatorContainer = document.createElement("div");
+        selectionIndicatorContainer.className =
+          "cesium-viewer-selectionIndicatorContainer";
+        viewerContainer.appendChild(selectionIndicatorContainer);
+        selectionIndicator = ownViewerConstructionResource(
+          construction,
+          new SelectionIndicator(selectionIndicatorContainer, scene),
+        );
       }
-      geocoder = new Geocoder({
-        container: geocoderContainer,
-        geocoderServices: geocoderService,
-        scene: scene,
-      });
-      // Subscribe to search so that we can clear the trackedEntity when it is clicked.
-      eventHelper.add(
-        geocoder.viewModel.search.beforeExecute,
-        Viewer.prototype._clearObjects,
-        this,
-      );
-    }
 
-    // HomeButton
-    let homeButton;
-    if (!defined(options.homeButton) || options.homeButton !== false) {
-      homeButton = new HomeButton(toolbar, scene);
-      if (defined(geocoder)) {
-        eventHelper.add(homeButton.viewModel.command.afterExecute, function () {
-          const viewModel = geocoder.viewModel;
-          viewModel.searchText = "";
-          if (viewModel.isSearchInProgress) {
-            viewModel.search();
-          }
-        });
+      // Info Box
+      let infoBox;
+      if (!defined(options.infoBox) || options.infoBox !== false) {
+        const infoBoxContainer = document.createElement("div");
+        infoBoxContainer.className = "cesium-viewer-infoBoxContainer";
+        viewerContainer.appendChild(infoBoxContainer);
+        infoBox = ownViewerConstructionResource(
+          construction,
+          new InfoBox(infoBoxContainer),
+        );
+
+        const infoBoxViewModel = infoBox.viewModel;
+        eventHelper.add(
+          infoBoxViewModel.cameraClicked,
+          Viewer.prototype._onInfoBoxCameraClicked,
+          this,
+        );
+        eventHelper.add(
+          infoBoxViewModel.closeClicked,
+          Viewer.prototype._onInfoBoxClockClicked,
+          this,
+        );
       }
-      // Subscribe to the home button beforeExecute event so that we can clear the trackedEntity.
-      eventHelper.add(
-        homeButton.viewModel.command.beforeExecute,
-        Viewer.prototype._clearTrackedObject,
-        this,
-      );
-    }
 
-    // SceneModePicker
-    // By default, we silently disable the scene mode picker if scene3DOnly is true,
-    // but if sceneModePicker is explicitly set to true, throw an error.
-    //>>includeStart('debug', pragmas.debug);
-    if (options.sceneModePicker === true && scene3DOnly) {
-      throw new DeveloperError(
-        "options.sceneModePicker is not available when options.scene3DOnly is set to true.",
-      );
-    }
-    //>>includeEnd('debug');
+      // Main Toolbar
+      const toolbar = document.createElement("div");
+      toolbar.className = "cesium-viewer-toolbar";
+      viewerContainer.appendChild(toolbar);
 
-    let sceneModePicker;
-    if (
-      !scene3DOnly &&
-      (!defined(options.sceneModePicker) || options.sceneModePicker !== false)
-    ) {
-      sceneModePicker = new SceneModePicker(toolbar, scene);
-    }
-
-    let projectionPicker;
-    if (options.projectionPicker) {
-      projectionPicker = new ProjectionPicker(toolbar, scene);
-    }
-
-    // BaseLayerPicker
-    let baseLayerPicker;
-    let baseLayerPickerDropDown;
-    if (createBaseLayerPicker) {
-      const imageryProviderViewModels =
-        options.imageryProviderViewModels ??
-        createDefaultImageryProviderViewModels();
-      const terrainProviderViewModels =
-        options.terrainProviderViewModels ??
-        createDefaultTerrainProviderViewModels();
-
-      baseLayerPicker = new BaseLayerPicker(toolbar, {
-        globe: scene.globe,
-        imageryProviderViewModels: imageryProviderViewModels,
-        selectedImageryProviderViewModel:
-          options.selectedImageryProviderViewModel,
-        terrainProviderViewModels: terrainProviderViewModels,
-        selectedTerrainProviderViewModel:
-          options.selectedTerrainProviderViewModel,
-      });
-
-      //Grab the dropdown for resize code.
-      const elements = toolbar.getElementsByClassName(
-        "cesium-baseLayerPicker-dropDown",
-      );
-      baseLayerPickerDropDown = elements[0];
-    }
-
-    // These need to be set after the BaseLayerPicker is created in order to take effect
-    if (defined(options.baseLayer) && options.baseLayer !== false) {
-      if (createBaseLayerPicker) {
-        baseLayerPicker.viewModel.selectedImagery = undefined;
+      // Geocoder
+      let geocoder;
+      if (!defined(options.geocoder) || options.geocoder !== false) {
+        const geocoderContainer = document.createElement("div");
+        geocoderContainer.className = "cesium-viewer-geocoderContainer";
+        toolbar.appendChild(geocoderContainer);
+        let geocoderService;
+        if (typeof options.geocoder === "string") {
+          geocoderService = [
+            new IonGeocoderService({
+              scene,
+              geocodeProviderType: options.geocoder,
+            }),
+          ];
+        } else if (
+          defined(options.geocoder) &&
+          typeof options.geocoder !== "boolean"
+        ) {
+          geocoderService = Array.isArray(options.geocoder)
+            ? options.geocoder
+            : [options.geocoder];
+        }
+        geocoder = ownViewerConstructionResource(
+          construction,
+          new Geocoder({
+            container: geocoderContainer,
+            geocoderServices: geocoderService,
+            scene: scene,
+          }),
+        );
+        // Subscribe to search so that we can clear the trackedEntity when it is clicked.
+        eventHelper.add(
+          geocoder.viewModel.search.beforeExecute,
+          Viewer.prototype._clearObjects,
+          this,
+        );
       }
-      scene.imageryLayers.removeAll();
-      scene.imageryLayers.add(options.baseLayer);
-    }
 
-    if (defined(options.terrainProvider)) {
-      if (createBaseLayerPicker) {
-        baseLayerPicker.viewModel.selectedTerrain = undefined;
+      // HomeButton
+      let homeButton;
+      if (!defined(options.homeButton) || options.homeButton !== false) {
+        homeButton = ownViewerConstructionResource(
+          construction,
+          new HomeButton(toolbar, scene),
+        );
+        if (defined(geocoder)) {
+          eventHelper.add(
+            homeButton.viewModel.command.afterExecute,
+            function () {
+              const viewModel = geocoder.viewModel;
+              viewModel.searchText = "";
+              if (viewModel.isSearchInProgress) {
+                viewModel.search();
+              }
+            },
+          );
+        }
+        // Subscribe to the home button beforeExecute event so that we can clear the trackedEntity.
+        eventHelper.add(
+          homeButton.viewModel.command.beforeExecute,
+          Viewer.prototype._clearTrackedObject,
+          this,
+        );
       }
-      scene.terrainProvider = options.terrainProvider;
-    }
 
-    if (defined(options.terrain)) {
+      // SceneModePicker
+      // By default, we silently disable the scene mode picker if scene3DOnly is true,
+      // but if sceneModePicker is explicitly set to true, throw an error.
       //>>includeStart('debug', pragmas.debug);
-      if (defined(options.terrainProvider)) {
+      if (options.sceneModePicker === true && scene3DOnly) {
         throw new DeveloperError(
-          "Specify either options.terrainProvider or options.terrain.",
+          "options.sceneModePicker is not available when options.scene3DOnly is set to true.",
         );
       }
       //>>includeEnd('debug');
 
+      let sceneModePicker;
+      if (
+        !scene3DOnly &&
+        (!defined(options.sceneModePicker) || options.sceneModePicker !== false)
+      ) {
+        sceneModePicker = ownViewerConstructionResource(
+          construction,
+          new SceneModePicker(toolbar, scene),
+        );
+      }
+
+      let projectionPicker;
+      if (options.projectionPicker) {
+        projectionPicker = ownViewerConstructionResource(
+          construction,
+          new ProjectionPicker(toolbar, scene),
+        );
+      }
+
+      // BaseLayerPicker
+      let baseLayerPicker;
+      let baseLayerPickerDropDown;
       if (createBaseLayerPicker) {
-        // Required as this is otherwise set by the baseLayerPicker
-        scene.globe.depthTestAgainstTerrain = true;
+        const imageryProviderViewModels =
+          options.imageryProviderViewModels ??
+          createDefaultImageryProviderViewModels();
+        const terrainProviderViewModels =
+          options.terrainProviderViewModels ??
+          createDefaultTerrainProviderViewModels();
+
+        baseLayerPicker = ownViewerConstructionResource(
+          construction,
+          new BaseLayerPicker(toolbar, {
+            globe: scene.globe,
+            imageryProviderViewModels: imageryProviderViewModels,
+            selectedImageryProviderViewModel:
+              options.selectedImageryProviderViewModel,
+            terrainProviderViewModels: terrainProviderViewModels,
+            selectedTerrainProviderViewModel:
+              options.selectedTerrainProviderViewModel,
+          }),
+        );
+
+        //Grab the dropdown for resize code.
+        const elements = toolbar.getElementsByClassName(
+          "cesium-baseLayerPicker-dropDown",
+        );
+        baseLayerPickerDropDown = elements[0];
       }
 
-      scene.setTerrain(options.terrain);
-    }
+      // These need to be set after the BaseLayerPicker is created in order to take effect
+      if (defined(options.baseLayer) && options.baseLayer !== false) {
+        if (createBaseLayerPicker) {
+          baseLayerPicker.viewModel.selectedImagery = undefined;
+        }
+        scene.imageryLayers.removeAll();
+        scene.imageryLayers.add(options.baseLayer);
+      }
 
-    // Navigation Help Button
-    let navigationHelpButton;
-    if (
-      !defined(options.navigationHelpButton) ||
-      options.navigationHelpButton !== false
-    ) {
-      let showNavHelp = true;
-      try {
-        //window.localStorage is null if disabled in Firefox or undefined in browsers with implementation
-        if (defined(window.localStorage)) {
-          const hasSeenNavHelp = window.localStorage.getItem(
-            "cesium-hasSeenNavHelp",
+      if (defined(options.terrainProvider)) {
+        if (createBaseLayerPicker) {
+          baseLayerPicker.viewModel.selectedTerrain = undefined;
+        }
+        scene.terrainProvider = options.terrainProvider;
+      }
+
+      if (defined(options.terrain)) {
+        //>>includeStart('debug', pragmas.debug);
+        if (defined(options.terrainProvider)) {
+          throw new DeveloperError(
+            "Specify either options.terrainProvider or options.terrain.",
           );
-          if (defined(hasSeenNavHelp) && Boolean(hasSeenNavHelp)) {
-            showNavHelp = false;
-          } else {
-            window.localStorage.setItem("cesium-hasSeenNavHelp", "true");
-          }
         }
-      } catch (e) {
-        //Accessing window.localStorage throws if disabled in Chrome
-        //window.localStorage.setItem throws if in Safari private browsing mode or in any browser if we are over quota.
+        //>>includeEnd('debug');
+
+        if (createBaseLayerPicker) {
+          // Required as this is otherwise set by the baseLayerPicker
+          scene.globe.depthTestAgainstTerrain = true;
+        }
+
+        scene.setTerrain(options.terrain);
       }
-      navigationHelpButton = new NavigationHelpButton({
-        container: toolbar,
-        instructionsInitiallyVisible:
-          options.navigationInstructionsInitiallyVisible ?? showNavHelp,
+
+      // Navigation Help Button
+      let navigationHelpButton;
+      if (
+        !defined(options.navigationHelpButton) ||
+        options.navigationHelpButton !== false
+      ) {
+        let showNavHelp = true;
+        try {
+          //window.localStorage is null if disabled in Firefox or undefined in browsers with implementation
+          if (defined(window.localStorage)) {
+            const hasSeenNavHelp = window.localStorage.getItem(
+              "cesium-hasSeenNavHelp",
+            );
+            if (defined(hasSeenNavHelp) && Boolean(hasSeenNavHelp)) {
+              showNavHelp = false;
+            } else {
+              window.localStorage.setItem("cesium-hasSeenNavHelp", "true");
+            }
+          }
+        } catch (e) {
+          //Accessing window.localStorage throws if disabled in Chrome
+          //window.localStorage.setItem throws if in Safari private browsing mode or in any browser if we are over quota.
+        }
+        navigationHelpButton = ownViewerConstructionResource(
+          construction,
+          new NavigationHelpButton({
+            container: toolbar,
+            instructionsInitiallyVisible:
+              options.navigationInstructionsInitiallyVisible ?? showNavHelp,
+          }),
+        );
+      }
+
+      // Animation
+      let animation;
+      if (!defined(options.animation) || options.animation !== false) {
+        const animationContainer = document.createElement("div");
+        animationContainer.className = "cesium-viewer-animationContainer";
+        viewerContainer.appendChild(animationContainer);
+        animation = ownViewerConstructionResource(
+          construction,
+          new Animation(
+            animationContainer,
+            new AnimationViewModel(clockViewModel),
+          ),
+        );
+      }
+
+      // Timeline
+      let timeline;
+      if (!defined(options.timeline) || options.timeline !== false) {
+        const timelineContainer = document.createElement("div");
+        timelineContainer.className = "cesium-viewer-timelineContainer";
+        viewerContainer.appendChild(timelineContainer);
+        timeline = ownViewerConstructionResource(
+          construction,
+          new Timeline(timelineContainer, clock),
+        );
+        timeline.addEventListener("settime", onTimelineScrubfunction, false);
+        construction.cleanups.push(function () {
+          timeline.removeEventListener(
+            "settime",
+            onTimelineScrubfunction,
+            false,
+          );
+        });
+        timeline.zoomTo(clock.startTime, clock.stopTime);
+      }
+
+      // Fullscreen
+      let fullscreenButton;
+      let fullscreenSubscription;
+      let fullscreenContainer;
+      if (
+        !defined(options.fullscreenButton) ||
+        options.fullscreenButton !== false
+      ) {
+        fullscreenContainer = document.createElement("div");
+        fullscreenContainer.className = "cesium-viewer-fullscreenContainer";
+        viewerContainer.appendChild(fullscreenContainer);
+        fullscreenButton = ownViewerConstructionResource(
+          construction,
+          new FullscreenButton(fullscreenContainer, options.fullscreenElement),
+        );
+
+        //Subscribe to fullscreenButton.viewModel.isFullscreenEnabled so
+        //that we can hide/show the button as well as size the timeline.
+        fullscreenSubscription = subscribeAndEvaluate(
+          fullscreenButton.viewModel,
+          "isFullscreenEnabled",
+          function (isFullscreenEnabled) {
+            fullscreenContainer.style.display = isFullscreenEnabled
+              ? "block"
+              : "none";
+            if (defined(timeline)) {
+              timeline.container.style.right = `${fullscreenContainer.clientWidth}px`;
+              timeline.resize();
+            }
+          },
+        );
+        construction.cleanups.push(function () {
+          fullscreenSubscription.dispose();
+        });
+      }
+
+      // VR
+      let vrButton;
+      let vrSubscription;
+      let vrModeSubscription;
+      if (options.vrButton) {
+        const vrContainer = document.createElement("div");
+        vrContainer.className = "cesium-viewer-vrContainer";
+        viewerContainer.appendChild(vrContainer);
+        vrButton = ownViewerConstructionResource(
+          construction,
+          new VRButton(vrContainer, scene, options.fullScreenElement),
+        );
+
+        vrSubscription = subscribeAndEvaluate(
+          vrButton.viewModel,
+          "isVREnabled",
+          function (isVREnabled) {
+            vrContainer.style.display = isVREnabled ? "block" : "none";
+            if (defined(fullscreenButton)) {
+              vrContainer.style.right = `${fullscreenContainer.clientWidth}px`;
+            }
+            if (defined(timeline)) {
+              timeline.container.style.right = `${vrContainer.clientWidth}px`;
+              timeline.resize();
+            }
+          },
+        );
+
+        vrModeSubscription = subscribeAndEvaluate(
+          vrButton.viewModel,
+          "isVRMode",
+          function (isVRMode) {
+            enableVRUI(that, isVRMode);
+          },
+        );
+        construction.cleanups.push(function () {
+          vrModeSubscription.dispose();
+        });
+        construction.cleanups.push(function () {
+          vrSubscription.dispose();
+        });
+      }
+
+      //Assign all properties to this instance.  No "this" assignments should
+      //take place above this line.
+      this._baseLayerPickerDropDown = baseLayerPickerDropDown;
+      this._fullscreenSubscription = fullscreenSubscription;
+      this._vrSubscription = vrSubscription;
+      this._vrModeSubscription = vrModeSubscription;
+      this._dataSourceChangedListeners = new Map();
+      this._entityCollectionChangedListenerRemovers = new Map();
+      construction.cleanups.push(() => {
+        removeAllDataSourceCollectionChangedListeners(this);
       });
-    }
+      this._container = container;
+      this._bottomContainer = bottomContainer;
+      this._element = viewerContainer;
+      this._cesiumWidget = cesiumWidget;
+      this._selectionIndicator = selectionIndicator;
+      this._infoBox = infoBox;
+      this._clockViewModel = clockViewModel;
+      this._destroyClockViewModel = destroyClockViewModel;
+      this._toolbar = toolbar;
+      this._homeButton = homeButton;
+      this._sceneModePicker = sceneModePicker;
+      this._projectionPicker = projectionPicker;
+      this._baseLayerPicker = baseLayerPicker;
+      this._navigationHelpButton = navigationHelpButton;
+      this._animation = animation;
+      this._timeline = timeline;
+      this._fullscreenButton = fullscreenButton;
+      this._vrButton = vrButton;
+      this._geocoder = geocoder;
+      this._eventHelper = eventHelper;
+      this._lastWidth = 0;
+      this._lastHeight = 0;
+      this._enableInfoOrSelection =
+        defined(infoBox) || defined(selectionIndicator);
+      this._selectedEntity = undefined;
+      this._selectedEntityChanged = new Event();
 
-    // Animation
-    let animation;
-    if (!defined(options.animation) || options.animation !== false) {
-      const animationContainer = document.createElement("div");
-      animationContainer.className = "cesium-viewer-animationContainer";
-      viewerContainer.appendChild(animationContainer);
-      animation = new Animation(
-        animationContainer,
-        new AnimationViewModel(clockViewModel),
+      const dataSourceCollection = this._cesiumWidget.dataSources;
+      const dataSourceDisplay = this._cesiumWidget.dataSourceDisplay;
+
+      //Listen to data source events in order to track clock changes.
+      eventHelper.add(
+        dataSourceCollection.dataSourceAdded,
+        Viewer.prototype._onDataSourceAdded,
+        this,
       );
-    }
-
-    // Timeline
-    let timeline;
-    if (!defined(options.timeline) || options.timeline !== false) {
-      const timelineContainer = document.createElement("div");
-      timelineContainer.className = "cesium-viewer-timelineContainer";
-      viewerContainer.appendChild(timelineContainer);
-      timeline = new Timeline(timelineContainer, clock);
-      timeline.addEventListener("settime", onTimelineScrubfunction, false);
-      timeline.zoomTo(clock.startTime, clock.stopTime);
-    }
-
-    // Fullscreen
-    let fullscreenButton;
-    let fullscreenSubscription;
-    let fullscreenContainer;
-    if (
-      !defined(options.fullscreenButton) ||
-      options.fullscreenButton !== false
-    ) {
-      fullscreenContainer = document.createElement("div");
-      fullscreenContainer.className = "cesium-viewer-fullscreenContainer";
-      viewerContainer.appendChild(fullscreenContainer);
-      fullscreenButton = new FullscreenButton(
-        fullscreenContainer,
-        options.fullscreenElement,
-      );
-
-      //Subscribe to fullscreenButton.viewModel.isFullscreenEnabled so
-      //that we can hide/show the button as well as size the timeline.
-      fullscreenSubscription = subscribeAndEvaluate(
-        fullscreenButton.viewModel,
-        "isFullscreenEnabled",
-        function (isFullscreenEnabled) {
-          fullscreenContainer.style.display = isFullscreenEnabled
-            ? "block"
-            : "none";
-          if (defined(timeline)) {
-            timeline.container.style.right = `${fullscreenContainer.clientWidth}px`;
-            timeline.resize();
-          }
-        },
-      );
-    }
-
-    // VR
-    let vrButton;
-    let vrSubscription;
-    let vrModeSubscription;
-    if (options.vrButton) {
-      const vrContainer = document.createElement("div");
-      vrContainer.className = "cesium-viewer-vrContainer";
-      viewerContainer.appendChild(vrContainer);
-      vrButton = new VRButton(vrContainer, scene, options.fullScreenElement);
-
-      vrSubscription = subscribeAndEvaluate(
-        vrButton.viewModel,
-        "isVREnabled",
-        function (isVREnabled) {
-          vrContainer.style.display = isVREnabled ? "block" : "none";
-          if (defined(fullscreenButton)) {
-            vrContainer.style.right = `${fullscreenContainer.clientWidth}px`;
-          }
-          if (defined(timeline)) {
-            timeline.container.style.right = `${vrContainer.clientWidth}px`;
-            timeline.resize();
-          }
-        },
+      eventHelper.add(
+        dataSourceCollection.dataSourceRemoved,
+        Viewer.prototype._onDataSourceRemoved,
+        this,
       );
 
-      vrModeSubscription = subscribeAndEvaluate(
-        vrButton.viewModel,
-        "isVRMode",
-        function (isVRMode) {
-          enableVRUI(that, isVRMode);
-        },
-      );
-    }
+      // Prior to each render, check if anything needs to be resized.
+      eventHelper.add(scene.postUpdate, Viewer.prototype.resize, this);
 
-    //Assign all properties to this instance.  No "this" assignments should
-    //take place above this line.
-    this._baseLayerPickerDropDown = baseLayerPickerDropDown;
-    this._fullscreenSubscription = fullscreenSubscription;
-    this._vrSubscription = vrSubscription;
-    this._vrModeSubscription = vrModeSubscription;
-    this._dataSourceChangedListeners = {};
-    this._container = container;
-    this._bottomContainer = bottomContainer;
-    this._element = viewerContainer;
-    this._cesiumWidget = cesiumWidget;
-    this._selectionIndicator = selectionIndicator;
-    this._infoBox = infoBox;
-    this._clockViewModel = clockViewModel;
-    this._destroyClockViewModel = destroyClockViewModel;
-    this._toolbar = toolbar;
-    this._homeButton = homeButton;
-    this._sceneModePicker = sceneModePicker;
-    this._projectionPicker = projectionPicker;
-    this._baseLayerPicker = baseLayerPicker;
-    this._navigationHelpButton = navigationHelpButton;
-    this._animation = animation;
-    this._timeline = timeline;
-    this._fullscreenButton = fullscreenButton;
-    this._vrButton = vrButton;
-    this._geocoder = geocoder;
-    this._eventHelper = eventHelper;
-    this._lastWidth = 0;
-    this._lastHeight = 0;
-    this._enableInfoOrSelection =
-      defined(infoBox) || defined(selectionIndicator);
-    this._selectedEntity = undefined;
-    this._selectedEntityChanged = new Event();
-
-    const dataSourceCollection = this._cesiumWidget.dataSources;
-    const dataSourceDisplay = this._cesiumWidget.dataSourceDisplay;
-
-    //Listen to data source events in order to track clock changes.
-    eventHelper.add(
-      dataSourceCollection.dataSourceAdded,
-      Viewer.prototype._onDataSourceAdded,
-      this,
-    );
-    eventHelper.add(
-      dataSourceCollection.dataSourceRemoved,
-      Viewer.prototype._onDataSourceRemoved,
-      this,
-    );
-
-    // Prior to each render, check if anything needs to be resized.
-    eventHelper.add(scene.postUpdate, Viewer.prototype.resize, this);
-
-    // We need to subscribe to the data sources and collections so that we can clear the
-    // tracked object when it is removed from the scene.
-    // Subscribe to current data sources
-    const dataSourceLength = dataSourceCollection.length;
-    for (let i = 0; i < dataSourceLength; i++) {
-      this._dataSourceAdded(dataSourceCollection, dataSourceCollection.get(i));
-    }
-    this._dataSourceAdded(undefined, dataSourceDisplay.defaultDataSource);
-
-    // Hook up events so that we can subscribe to future sources.
-    eventHelper.add(
-      dataSourceCollection.dataSourceAdded,
-      Viewer.prototype._dataSourceAdded,
-      this,
-    );
-    eventHelper.add(
-      dataSourceCollection.dataSourceRemoved,
-      Viewer.prototype._dataSourceRemoved,
-      this,
-    );
-
-    // Subscribe to left clicks and zoom to the picked object.
-    function pickAndTrackObject(e) {
-      const entity = pickEntity(that, e);
-      if (defined(entity)) {
-        //Only track the entity if it has a valid position at the current time.
-        if (
-          Property.getValueOrUndefined(entity.position, that.clock.currentTime)
-        ) {
-          that.trackedEntity = entity;
-        } else {
-          that.zoomTo(entity);
-        }
-      } else if (defined(that.trackedEntity)) {
-        that.trackedEntity = undefined;
+      // We need to subscribe to the data sources and collections so that we can clear the
+      // tracked object when it is removed from the scene.
+      // Subscribe to current data sources
+      const dataSourceLength = dataSourceCollection.length;
+      for (let i = 0; i < dataSourceLength; i++) {
+        this._dataSourceAdded(
+          dataSourceCollection,
+          dataSourceCollection.get(i),
+        );
       }
+      this._dataSourceAdded(undefined, dataSourceDisplay.defaultDataSource);
+
+      // Hook up events so that we can subscribe to future sources.
+      eventHelper.add(
+        dataSourceCollection.dataSourceAdded,
+        Viewer.prototype._dataSourceAdded,
+        this,
+      );
+      eventHelper.add(
+        dataSourceCollection.dataSourceRemoved,
+        Viewer.prototype._dataSourceRemoved,
+        this,
+      );
+
+      // Subscribe to left clicks and zoom to the picked object.
+      function pickAndTrackObject(e) {
+        const entity = pickEntity(that, e);
+        if (defined(entity)) {
+          //Only track the entity if it has a valid position at the current time.
+          if (
+            Property.getValueOrUndefined(
+              entity.position,
+              that.clock.currentTime,
+            )
+          ) {
+            that.trackedEntity = entity;
+          } else {
+            that.zoomTo(entity);
+          }
+        } else if (defined(that.trackedEntity)) {
+          that.trackedEntity = undefined;
+        }
+      }
+
+      function pickAndSelectObject(e) {
+        that.selectedEntity = pickEntity(that, e);
+      }
+
+      cesiumWidget.screenSpaceEventHandler.setInputAction(
+        pickAndSelectObject,
+        ScreenSpaceEventType.LEFT_CLICK,
+      );
+      cesiumWidget.screenSpaceEventHandler.setInputAction(
+        pickAndTrackObject,
+        ScreenSpaceEventType.LEFT_DOUBLE_CLICK,
+      );
+
+      // This allows to update the Viewer's _clockViewModel instead of the CesiumWidget's _clock
+      // when CesiumWidget is created from the Viewer.
+      cesiumWidget._canAnimateUpdateCallback = this._updateCanAnimate(this);
+      // Ownership has transferred to the fully initialized Viewer. Clearing
+      // the transaction prevents a later refactor from accidentally treating
+      // successful resources as rollback candidates.
+      construction.resources.length = 0;
+      construction.cleanups.length = 0;
+      construction.eventHelper = undefined;
+      construction.root = undefined;
+    } catch (error) {
+      rollbackViewerConstruction(construction);
+      throw error;
     }
-
-    function pickAndSelectObject(e) {
-      that.selectedEntity = pickEntity(that, e);
-    }
-
-    cesiumWidget.screenSpaceEventHandler.setInputAction(
-      pickAndSelectObject,
-      ScreenSpaceEventType.LEFT_CLICK,
-    );
-    cesiumWidget.screenSpaceEventHandler.setInputAction(
-      pickAndTrackObject,
-      ScreenSpaceEventType.LEFT_DOUBLE_CLICK,
-    );
-
-    // This allows to update the Viewer's _clockViewModel instead of the CesiumWidget's _clock
-    // when CesiumWidget is created from the Viewer.
-    cesiumWidget._canAnimateUpdateCallback = this._updateCanAnimate(this);
   }
 
   /**
@@ -1111,6 +1337,7 @@ class Viewer {
     this._container.removeChild(this._element);
     this._element.removeChild(this._toolbar);
 
+    removeAllDataSourceCollectionChangedListeners(this);
     this._eventHelper.removeAll();
 
     if (defined(this._geocoder)) {
@@ -1131,6 +1358,10 @@ class Viewer {
 
     if (defined(this._baseLayerPicker)) {
       this._baseLayerPicker = this._baseLayerPicker.destroy();
+    }
+
+    if (defined(this._navigationHelpButton)) {
+      this._navigationHelpButton = this._navigationHelpButton.destroy();
     }
 
     if (defined(this._animation)) {
@@ -1183,11 +1414,22 @@ class Viewer {
    * @private
    */
   _dataSourceAdded(dataSourceCollection, dataSource) {
+    const removers = this._entityCollectionChangedListenerRemovers;
     const entityCollection = dataSource.entities;
-    entityCollection.collectionChanged.addEventListener(
+    const existingEntry = removers.get(entityCollection);
+    if (defined(existingEntry)) {
+      existingEntry.referenceCount++;
+      return;
+    }
+
+    const removeListener = entityCollection.collectionChanged.addEventListener(
       Viewer.prototype._onEntityCollectionChanged,
       this,
     );
+    removers.set(entityCollection, {
+      removeListener,
+      referenceCount: 1,
+    });
   }
 
   /**
@@ -1195,12 +1437,12 @@ class Viewer {
    */
   _dataSourceRemoved(dataSourceCollection, dataSource) {
     const entityCollection = dataSource.entities;
-    entityCollection.collectionChanged.removeEventListener(
-      Viewer.prototype._onEntityCollectionChanged,
+    const removedFinalReference = removeDataSourceCollectionChangedListener(
       this,
+      entityCollection,
     );
 
-    if (defined(this.selectedEntity)) {
+    if (removedFinalReference && defined(this.selectedEntity)) {
       if (
         entityCollection.getById(this.selectedEntity.id) === this.selectedEntity
       ) {
@@ -1359,22 +1601,23 @@ class Viewer {
       // tracked in that class but we also need to update the timeline in this class
       linkTimelineToDataSourceClock(this._timeline, dataSource);
     }
-    const id = dataSource.entities.id;
     const removalFunc = this._eventHelper.add(
       dataSource.changedEvent,
       Viewer.prototype._onDataSourceChanged,
       this,
     );
-    this._dataSourceChangedListeners[id] = removalFunc;
+    this._dataSourceChangedListeners.set(dataSource, removalFunc);
   }
 
   /**
    * @private
    */
   _onDataSourceRemoved(dataSourceCollection, dataSource) {
-    const id = dataSource.entities.id;
-    this._dataSourceChangedListeners[id]();
-    this._dataSourceChangedListeners[id] = undefined;
+    const removalFunc = this._dataSourceChangedListeners.get(dataSource);
+    if (defined(removalFunc)) {
+      removalFunc();
+      this._dataSourceChangedListeners.delete(dataSource);
+    }
   }
 
   /**
@@ -1915,85 +2158,44 @@ class Viewer {
  */
 Viewer.createAsync = async function (container, options) {
   options = options ?? {};
-  const contextOptions = options.contextOptions ?? {};
-  const needsAsync = contextOptions.renderer === "webgpu";
-
-  if (!needsAsync) {
-    // WebGL path — synchronous, no overlay needed
-    return new Viewer(container, options);
-  }
-
-  // WebGPU path — show loading overlay during async init
   const containerEl = getElement(container);
   const overlay = new LoadingOverlay(containerEl);
+  let transaction;
+  let viewer;
 
   try {
-    // Use CesiumWidget.createAsync to handle Scene async creation.
-    //
-    // Session 65 Batch 40 (NEW-VR2-3c-DISK-EXTENT-DRIFT) — the temp
-    // widget container MUST have non-zero layout dimensions so that
-    // the canvas it creates has the correct `clientWidth/clientHeight`
-    // when the synchronous Camera constructor in Scene reads them via
-    // `scene.drawingBufferWidth / scene.drawingBufferHeight` to set
-    // `frustum.aspectRatio` (see Camera.js:209-210). The previous
-    // `display: none` zeroed the canvas's clientWidth/Height before
-    // the canvas DOM-attach + CesiumWidget.configureCanvasSize() ran,
-    // so the WebGPU camera default-view was computed with
-    // `aspectRatio = 1.0` (1×1 buffer) instead of the actual viewport
-    // aspect. That mispositioned the WebGPU camera by ~25% closer to
-    // Earth than WebGL (12.67 Mm vs 17.19 Mm above the ellipsoid for
-    // Hello World), making the visible disk ~1.5× wider in WebGPU
-    // and producing the off-disk "atmosphere bleed" symptom flagged
-    // by the disk-bleed probe.
-    //
-    // Fix: use absolute positioning + visibility:hidden to keep the
-    // canvas off-screen but laid out with real dimensions. The
-    // LoadingOverlay above (z-index 9999) hides any flicker of the
-    // pre-init canvas. The parent container is forced to
-    // `position: relative` if it isn't already positioned so the
-    // absolute child sizes to the parent.
-    const cesiumWidgetContainer = document.createElement("div");
-    const containerPos = window.getComputedStyle(containerEl).position;
-    let restoreContainerPos;
-    if (containerPos === "static") {
-      restoreContainerPos = containerEl.style.position;
-      containerEl.style.position = "relative";
-    }
-    cesiumWidgetContainer.style.position = "absolute";
-    cesiumWidgetContainer.style.inset = "0";
-    cesiumWidgetContainer.style.visibility = "hidden";
-    containerEl.appendChild(cesiumWidgetContainer);
-
-    const widget = await CesiumWidget.createAsync(
-      cesiumWidgetContainer,
-      {
-        ...options,
-        useDefaultRenderLoop: false,
-      },
+    transaction = await CesiumWidget._createAsyncContext(
+      containerEl,
+      options,
       (progress, status) => {
         overlay.updateProgress(progress, status);
       },
     );
 
-    // Clean up the temporary widget container + restore parent
-    // position if we mutated it for the absolute-positioning trick.
-    containerEl.removeChild(cesiumWidgetContainer);
-    if (restoreContainerPos !== undefined) {
-      containerEl.style.position = restoreContainerPos;
-    }
-
-    // Create the Viewer with the pre-initialized scene from the widget
-    const viewer = new Viewer(container, {
+    viewer = new Viewer(container, {
       ...options,
-      _preInitializedScene: widget.scene,
+      _preInitializedCanvas: transaction.canvas,
+      _preInitializedContext: transaction.context,
+      _contextCreationDiagnostics: transaction.diagnostics,
+      _countContextReferences: transaction.countReferences,
     });
 
-    // Remove loading overlay with fade-out
+    overlay.updateProgress(100, "Ready");
     overlay.remove();
 
     return viewer;
   } catch (error) {
-    overlay.showError(error.message || String(error));
+    runViewerCleanupStep(function () {
+      if (defined(viewer) && !viewer.isDestroyed()) {
+        viewer.destroy();
+      }
+    });
+    runViewerCleanupStep(function () {
+      destroyViewerContextIfLive(transaction?.context);
+    });
+    runViewerCleanupStep(function () {
+      overlay.showError(error.message || String(error));
+    });
     throw error;
   }
 };

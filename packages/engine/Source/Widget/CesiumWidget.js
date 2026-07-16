@@ -34,6 +34,7 @@ import Sun from "../Scene/Sun.js";
 import TimeDynamicPointCloud from "../Scene/TimeDynamicPointCloud.js";
 import VoxelPrimitive from "../Scene/VoxelPrimitive.js";
 import BufferPrimitiveCollection from "../Scene/BufferPrimitiveCollection.js";
+import { getSynchronousRendererType } from "../Renderer/RendererType.js";
 
 function trackDataSourceClock(clock, dataSource) {
   if (defined(dataSource)) {
@@ -86,6 +87,189 @@ function startRenderLoop(widget) {
   }
 
   requestAnimationFrame(render);
+}
+
+function runWidgetCleanupStep(callback) {
+  try {
+    callback();
+  } catch {
+    // Construction rollback is best-effort and must preserve the original
+    // exception. Later cleanup steps still need to run if one owner is only
+    // partially initialized.
+  }
+}
+
+function destroyContextIfLive(context) {
+  if (!defined(context) || typeof context.destroy !== "function") {
+    return;
+  }
+
+  let isDestroyed = false;
+  if (typeof context.isDestroyed === "function") {
+    try {
+      isDestroyed = context.isDestroyed();
+    } catch {
+      // If the status probe itself is broken, still attempt the owned
+      // context's idempotent destroy path.
+    }
+  }
+
+  if (!isDestroyed) {
+    context.destroy();
+  }
+}
+
+function removeWidgetEntityCollectionChangedListener(widget, entityCollection) {
+  const removers = widget._entityCollectionChangedListenerRemovers;
+  if (!defined(removers)) {
+    return false;
+  }
+
+  const entry = removers.get(entityCollection);
+  if (!defined(entry)) {
+    return false;
+  }
+
+  entry.referenceCount--;
+  if (entry.referenceCount > 0) {
+    return false;
+  }
+
+  removers.delete(entityCollection);
+  try {
+    entry.removeListener();
+  } catch {
+    // Listener cleanup must not prevent Scene/context teardown.
+  }
+  return true;
+}
+
+function removeAllWidgetEntityCollectionChangedListeners(widget) {
+  const removers = widget._entityCollectionChangedListenerRemovers;
+  if (!defined(removers) || removers.size === 0) {
+    return;
+  }
+
+  const entries = Array.from(removers.values());
+  removers.clear();
+  for (const entry of entries) {
+    try {
+      entry.removeListener();
+    } catch {
+      // Keep draining exact owners even if one third-party remover throws.
+    }
+  }
+}
+
+/**
+ * Tears down both complete widgets and partially constructed widget graphs.
+ * This is intentionally field-based instead of using public getters, which
+ * assume the constructor reached its final assignment block.
+ *
+ * @param {CesiumWidget} widget
+ * @private
+ */
+function destroyCesiumWidgetResources(widget) {
+  // A requestAnimationFrame callback may already close over this object.
+  // Disable rescheduling immediately; destroyObject below makes its first
+  // isDestroyed() check terminate the orphaned callback.
+  widget._useDefaultRenderLoop = false;
+  widget._renderLoopRunning = false;
+
+  const dataSourceCollection = widget._dataSourceCollection;
+  const dataSourceDisplay = widget._dataSourceDisplay;
+  if (defined(dataSourceCollection) && defined(dataSourceDisplay)) {
+    runWidgetCleanupStep(function () {
+      for (let i = 0; i < dataSourceCollection.length; i++) {
+        widget._dataSourceRemoved(
+          dataSourceCollection,
+          dataSourceCollection.get(i),
+        );
+      }
+      widget._dataSourceRemoved(undefined, dataSourceDisplay.defaultDataSource);
+    });
+  }
+  runWidgetCleanupStep(function () {
+    removeAllWidgetEntityCollectionChangedListeners(widget);
+  });
+
+  runWidgetCleanupStep(function () {
+    widget._eventHelper?.removeAll();
+  });
+  runWidgetCleanupStep(function () {
+    if (defined(dataSourceDisplay) && !dataSourceDisplay.isDestroyed?.()) {
+      dataSourceDisplay.destroy();
+    }
+  });
+  widget._dataSourceDisplay = undefined;
+
+  runWidgetCleanupStep(function () {
+    if (
+      defined(widget._screenSpaceEventHandler) &&
+      !widget._screenSpaceEventHandler.isDestroyed()
+    ) {
+      widget._screenSpaceEventHandler.destroy();
+    }
+  });
+  widget._screenSpaceEventHandler = undefined;
+
+  const scene = widget._scene;
+  const constructionContext = widget._constructionContext;
+  const ownedContext = constructionContext ?? scene?._context;
+  runWidgetCleanupStep(function () {
+    if (defined(scene) && !scene.isDestroyed()) {
+      if (defined(widget._onRenderError)) {
+        scene.renderError.removeEventListener(widget._onRenderError);
+      }
+    }
+  });
+  runWidgetCleanupStep(function () {
+    if (defined(scene) && !scene.isDestroyed()) {
+      scene.destroy();
+    }
+  });
+  widget._scene = undefined;
+
+  // Scene.destroy is allowed to fail independently from the context owner. A
+  // captured reference guarantees the final fallback still runs when Scene
+  // teardown throws or leaves its context live.
+  runWidgetCleanupStep(function () {
+    destroyContextIfLive(ownedContext);
+  });
+  widget._constructionContext = undefined;
+
+  runWidgetCleanupStep(function () {
+    if (
+      widget._destroyDataSourceCollection === true &&
+      defined(dataSourceCollection) &&
+      !dataSourceCollection.isDestroyed()
+    ) {
+      dataSourceCollection.destroy();
+    }
+  });
+  widget._dataSourceCollection = undefined;
+
+  const canvas = widget._canvas;
+  if (defined(canvas)) {
+    canvas.oncontextmenu = null;
+    canvas.onselectstart = null;
+    if (defined(widget._blurActiveElement)) {
+      canvas.removeEventListener("mousedown", widget._blurActiveElement);
+      canvas.removeEventListener("pointerdown", widget._blurActiveElement);
+    }
+  }
+  widget._blurActiveElement = undefined;
+
+  const innerCreditContainer = widget._innerCreditContainer;
+  if (defined(innerCreditContainer?.parentNode)) {
+    innerCreditContainer.parentNode.removeChild(innerCreditContainer);
+  }
+  const element = widget._element;
+  if (defined(element?.parentNode)) {
+    element.parentNode.removeChild(element);
+  }
+
+  destroyObject(widget);
 }
 
 function configurePixelRatio(widget) {
@@ -215,128 +399,156 @@ function CesiumWidget(container, options) {
 
   options = options ?? Frozen.EMPTY_OBJECT;
 
-  // When a pre-initialized scene (WebGPU async path) is provided, reuse its
-  // canvas because the WebGPU context is bound to a specific canvas element.
+  // Async construction transfers one canvas/context pair into the final
+  // widget. Retain the older pre-initialized Scene hook for internal callers,
+  // but the public async factory no longer builds a temporary Scene/widget.
   const preScene = options._preInitializedScene;
-  const reuseCanvas = defined(preScene) && defined(preScene._canvas);
+  const preContext = options._preInitializedContext;
+  const preCanvas = options._preInitializedCanvas ?? preScene?._canvas;
+  const reuseCanvas = defined(preCanvas);
 
-  //Configure the widget DOM elements
-  const element = document.createElement("div");
-  element.className = "cesium-widget";
-  container.appendChild(element);
-
-  let canvas;
-  if (reuseCanvas) {
-    // Adopt the canvas from the pre-initialized scene
-    canvas = preScene._canvas;
-    // Remove from old parent if still attached
-    if (canvas.parentNode) {
-      canvas.parentNode.removeChild(canvas);
-    }
-  } else {
-    canvas = document.createElement("canvas");
-  }
-  const supportsImageRenderingPixelated =
-    FeatureDetection.supportsImageRenderingPixelated();
-  this._supportsImageRenderingPixelated = supportsImageRenderingPixelated;
-  if (supportsImageRenderingPixelated) {
-    canvas.style.imageRendering = FeatureDetection.imageRenderingValue();
+  if (!defined(preScene) && !defined(preContext)) {
+    // Fail before mutating the DOM. WebGPU/AUTO/compatibility policies require
+    // the transactional asynchronous factory.
+    getSynchronousRendererType(options.contextOptions ?? Frozen.EMPTY_OBJECT);
   }
 
-  canvas.oncontextmenu = function () {
-    return false;
-  };
-  canvas.onselectstart = function () {
-    return false;
-  };
-
-  // Interacting with a canvas does not automatically blur the previously focused element.
-  // This leads to unexpected interaction if the last element was an input field.
-  // For example, clicking the mouse wheel could lead to the value in  the field changing
-  // unexpectedly. The solution is to blur whatever has focus as soon as canvas interaction begins.
-  // Although in some cases the active element needs to stay active even after interacting with the canvas,
-  // for example when clicking on it only for getting the data of a clicked position or an entity.
-  // For this case, the `blurActiveElementOnCanvasFocus` can be passed with false to avoid blurring
-  // the active element after interacting with the canvas.
-  function blurActiveElement() {
-    if (canvas !== canvas.ownerDocument.activeElement) {
-      canvas.ownerDocument.activeElement.blur();
-    }
+  //>>includeStart('debug', pragmas.debug);
+  if (defined(preContext) !== defined(preCanvas)) {
+    throw new DeveloperError(
+      "A pre-initialized context and its canvas must be supplied together.",
+    );
   }
-
-  const blurActiveElementOnCanvasFocus =
-    options.blurActiveElementOnCanvasFocus ?? true;
-
-  if (blurActiveElementOnCanvasFocus) {
-    canvas.addEventListener("mousedown", blurActiveElement);
-    canvas.addEventListener("pointerdown", blurActiveElement);
+  if (
+    defined(preContext) &&
+    defined(preContext.canvas) &&
+    preContext.canvas !== preCanvas
+  ) {
+    throw new DeveloperError(
+      "The pre-initialized context must be created for the supplied canvas.",
+    );
   }
-
-  element.appendChild(canvas);
-
-  const innerCreditContainer = document.createElement("div");
-  innerCreditContainer.className = "cesium-widget-credits";
-
-  const creditContainer = defined(options.creditContainer)
-    ? getElement(options.creditContainer)
-    : element;
-  creditContainer.appendChild(innerCreditContainer);
-
-  const creditViewport = defined(options.creditViewport)
-    ? getElement(options.creditViewport)
-    : element;
+  //>>includeEnd('debug');
 
   const showRenderLoopErrors = options.showRenderLoopErrors ?? true;
-
-  const useBrowserRecommendedResolution =
-    options.useBrowserRecommendedResolution ?? true;
-
-  this._element = element;
-  this._container = container;
-  this._canvas = canvas;
-  this._canvasClientWidth = 0;
-  this._canvasClientHeight = 0;
-  this._lastDevicePixelRatio = 0;
-  this._creditViewport = creditViewport;
-  this._creditContainer = creditContainer;
-  this._innerCreditContainer = innerCreditContainer;
-  this._canRender = false;
-  this._renderLoopRunning = false;
-  this._showRenderLoopErrors = showRenderLoopErrors;
-  this._resolutionScale = 1.0;
-  this._useBrowserRecommendedResolution = useBrowserRecommendedResolution;
-  this._forceResize = false;
-  this._entityView = undefined;
-  this._clockTrackedDataSource = undefined;
-  this._trackedEntity = undefined;
-  this._needTrackedEntityUpdate = false;
-  this._zoomIsFlight = false;
-  this._zoomTarget = undefined;
-  this._zoomPromise = undefined;
-  this._zoomOptions = undefined;
-  this._trackedEntityChanged = new Event();
-  this._allowDataSourcesToSuspendAnimation = true;
-
-  this._clock = defined(options.clock) ? options.clock : new Clock();
-
-  if (defined(options.shouldAnimate)) {
-    this._clock.shouldAnimate = options.shouldAnimate;
-  }
-
-  configureCanvasSize(this);
+  this._constructionContext = preContext;
 
   try {
+    //Configure the widget DOM elements
+    const element = document.createElement("div");
+    element.className = "cesium-widget";
+    container.appendChild(element);
+    this._element = element;
+    this._container = container;
+
+    let canvas;
+    if (reuseCanvas) {
+      canvas = preCanvas;
+      // Remove from old parent if still attached
+      if (canvas.parentNode) {
+        canvas.parentNode.removeChild(canvas);
+      }
+    } else {
+      canvas = document.createElement("canvas");
+    }
+    this._canvas = canvas;
+    const supportsImageRenderingPixelated =
+      FeatureDetection.supportsImageRenderingPixelated();
+    this._supportsImageRenderingPixelated = supportsImageRenderingPixelated;
+    if (supportsImageRenderingPixelated) {
+      canvas.style.imageRendering = FeatureDetection.imageRenderingValue();
+    }
+
+    canvas.oncontextmenu = function () {
+      return false;
+    };
+    canvas.onselectstart = function () {
+      return false;
+    };
+
+    // Interacting with a canvas does not automatically blur the previously focused element.
+    // This leads to unexpected interaction if the last element was an input field.
+    // For example, clicking the mouse wheel could lead to the value in  the field changing
+    // unexpectedly. The solution is to blur whatever has focus as soon as canvas interaction begins.
+    // Although in some cases the active element needs to stay active even after interacting with the canvas,
+    // for example when clicking on it only for getting the data of a clicked position or an entity.
+    // For this case, the `blurActiveElementOnCanvasFocus` can be passed with false to avoid blurring
+    // the active element after interacting with the canvas.
+    function blurActiveElement() {
+      if (canvas !== canvas.ownerDocument.activeElement) {
+        canvas.ownerDocument.activeElement.blur();
+      }
+    }
+
+    const blurActiveElementOnCanvasFocus =
+      options.blurActiveElementOnCanvasFocus ?? true;
+
+    if (blurActiveElementOnCanvasFocus) {
+      this._blurActiveElement = blurActiveElement;
+      canvas.addEventListener("mousedown", blurActiveElement);
+      canvas.addEventListener("pointerdown", blurActiveElement);
+    }
+
+    element.appendChild(canvas);
+
+    const innerCreditContainer = document.createElement("div");
+    innerCreditContainer.className = "cesium-widget-credits";
+    this._innerCreditContainer = innerCreditContainer;
+
+    const creditContainer = defined(options.creditContainer)
+      ? getElement(options.creditContainer)
+      : element;
+    this._creditContainer = creditContainer;
+    creditContainer.appendChild(innerCreditContainer);
+
+    const creditViewport = defined(options.creditViewport)
+      ? getElement(options.creditViewport)
+      : element;
+
+    const useBrowserRecommendedResolution =
+      options.useBrowserRecommendedResolution ?? true;
+
+    this._canvasClientWidth = 0;
+    this._canvasClientHeight = 0;
+    this._lastDevicePixelRatio = 0;
+    this._creditViewport = creditViewport;
+    this._canRender = false;
+    this._renderLoopRunning = false;
+    this._showRenderLoopErrors = showRenderLoopErrors;
+    this._resolutionScale = 1.0;
+    this._useBrowserRecommendedResolution = useBrowserRecommendedResolution;
+    this._forceResize = false;
+    this._entityView = undefined;
+    this._clockTrackedDataSource = undefined;
+    this._trackedEntity = undefined;
+    this._needTrackedEntityUpdate = false;
+    this._zoomIsFlight = false;
+    this._zoomTarget = undefined;
+    this._zoomPromise = undefined;
+    this._zoomOptions = undefined;
+    this._trackedEntityChanged = new Event();
+    this._allowDataSourcesToSuspendAnimation = true;
+
+    this._clock = defined(options.clock) ? options.clock : new Clock();
+
+    if (defined(options.shouldAnimate)) {
+      this._clock.shouldAnimate = options.shouldAnimate;
+    }
+
+    configureCanvasSize(this);
+
     const ellipsoid = options.ellipsoid ?? Ellipsoid.default;
 
     let scene;
     if (defined(options._preInitializedScene)) {
-      // WebGPU async path — Scene was already created via Scene.createAsync()
       scene = options._preInitializedScene;
     } else {
-      // WebGL synchronous path (backward compatible)
       scene = new Scene({
         canvas: canvas,
         contextOptions: options.contextOptions,
+        _preInitializedContext: preContext,
+        _contextCreationDiagnostics: options._contextCreationDiagnostics,
+        _countContextReferences: options._countContextReferences,
         creditContainer: innerCreditContainer,
         creditViewport: creditViewport,
         ellipsoid: ellipsoid,
@@ -458,7 +670,8 @@ function CesiumWidget(container, options) {
     });
 
     const eventHelper = new EventHelper();
-    this._dataSourceChangedListeners = {};
+    this._dataSourceChangedListeners = new Map();
+    this._entityCollectionChangedListenerRemovers = new Map();
     this._automaticallyTrackDataSourceClocks =
       options.automaticallyTrackDataSourceClocks ?? true;
 
@@ -509,13 +722,17 @@ function CesiumWidget(container, options) {
       CesiumWidget.prototype._dataSourceRemoved,
       this,
     );
+    this._constructionContext = undefined;
   } catch (error) {
-    if (showRenderLoopErrors) {
-      const title = "Error constructing CesiumWidget.";
-      const message =
-        'Visit <a href="http://get.webgl.org">http://get.webgl.org</a> to verify that your web browser and hardware support WebGL.  Consider trying a different web browser or updating your video drivers.  Detailed error information is below:';
-      this.showErrorPanel(title, message, error);
-    }
+    runWidgetCleanupStep(() => {
+      if (showRenderLoopErrors && defined(this._element)) {
+        const title = "Error constructing CesiumWidget.";
+        const message =
+          'Visit <a href="http://get.webgl.org">http://get.webgl.org</a> to verify that your web browser and hardware support WebGL.  Consider trying a different web browser or updating your video drivers.  Detailed error information is below:';
+        this.showErrorPanel(title, message, error);
+      }
+    });
+    destroyCesiumWidgetResources(this);
     throw error;
   }
 }
@@ -538,83 +755,102 @@ function CesiumWidget(container, options) {
  * });
  *
  * @example
- * // Create widget with WebGL (backward compatible)
- * const widget = await Cesium.CesiumWidget.createAsync("cesiumContainer");
+ * // Create widget explicitly with WebGL. Omitting renderer uses AUTO.
+ * const widget = await Cesium.CesiumWidget.createAsync("cesiumContainer", {
+ *   contextOptions: { renderer: "webgl" }
+ * });
  */
 CesiumWidget.createAsync = async function (container, options, onProgress) {
   options = options ?? {};
-  const contextOptions = options.contextOptions ?? {};
-  const needsAsync = contextOptions.renderer === "webgpu";
+  const resolvedContainer = getElement(container);
+  let transaction;
+  let widget;
 
-  if (needsAsync) {
-    // Set up the real DOM structure first so Scene gets a properly-sized canvas.
-    // We create the same element/canvas hierarchy that the CesiumWidget constructor
-    // normally creates, then pass the pre-initialized scene to the constructor.
-    const resolvedContainer = getElement(container);
-    const element = document.createElement("div");
-    element.className = "cesium-widget";
-    resolvedContainer.appendChild(element);
-
-    const realCanvas = document.createElement("canvas");
-    const supportsPixelated =
-      FeatureDetection.supportsImageRenderingPixelated();
-    if (supportsPixelated) {
-      realCanvas.style.imageRendering = FeatureDetection.imageRenderingValue();
-    }
-    element.appendChild(realCanvas);
-
-    // Force initial canvas dimensions so WebGPU can create framebuffers
-    realCanvas.width = Math.max(element.clientWidth, 1);
-    realCanvas.height = Math.max(element.clientHeight, 1);
-
-    // Create credit container in the element so Scene doesn't crash on parentNode
-    const innerCreditContainer = document.createElement("div");
-    innerCreditContainer.className = "cesium-widget-credits";
-    const creditContainer = defined(options.creditContainer)
-      ? getElement(options.creditContainer)
-      : element;
-    creditContainer.appendChild(innerCreditContainer);
-    const creditViewport = defined(options.creditViewport)
-      ? getElement(options.creditViewport)
-      : element;
-
-    const ellipsoid = options.ellipsoid ?? Ellipsoid.default;
-
-    // Create scene asynchronously (handles WebGPU context + shader preload)
-    const scene = await Scene.createAsync(
-      {
-        canvas: realCanvas,
-        contextOptions: contextOptions,
-        creditContainer: innerCreditContainer,
-        creditViewport: creditViewport,
-        ellipsoid: ellipsoid,
-        mapProjection: options.mapProjection,
-        orderIndependentTranslucency: options.orderIndependentTranslucency,
-        scene3DOnly: options.scene3DOnly ?? false,
-        shadows: options.shadows,
-        mapMode2D: options.mapMode2D,
-        requestRenderMode: options.requestRenderMode,
-        maximumRenderTimeChange: options.maximumRenderTimeChange,
-        depthPlaneEllipsoidOffset: options.depthPlaneEllipsoidOffset,
-        msaaSamples: options.msaaSamples,
-      },
+  try {
+    transaction = await CesiumWidget._createAsyncContext(
+      resolvedContainer,
+      options,
       onProgress,
     );
 
-    // Remove the element we created — the CesiumWidget constructor will
-    // create its own and adopt the scene. We need to clean up to avoid
-    // duplicate DOM elements.
-    resolvedContainer.removeChild(element);
-
-    // Now create the widget synchronously with the pre-initialized scene
-    return new CesiumWidget(container, {
+    widget = new CesiumWidget(resolvedContainer, {
       ...options,
-      _preInitializedScene: scene,
+      _preInitializedCanvas: transaction.canvas,
+      _preInitializedContext: transaction.context,
+      _contextCreationDiagnostics: transaction.diagnostics,
+      _countContextReferences: transaction.countReferences,
     });
+    if (defined(onProgress)) {
+      onProgress(100, "Ready");
+    }
+    return widget;
+  } catch (error) {
+    runWidgetCleanupStep(function () {
+      if (defined(widget) && !widget.isDestroyed()) {
+        widget.destroy();
+      }
+    });
+    runWidgetCleanupStep(function () {
+      destroyContextIfLive(transaction?.context);
+    });
+    throw error;
+  }
+};
+
+/**
+ * Prepares the sole canvas/context pair used by an asynchronous Widget or
+ * Viewer construction transaction. No Scene or widget is allocated here.
+ *
+ * @private
+ */
+CesiumWidget._createAsyncContext = async function (
+  container,
+  options,
+  onProgress,
+) {
+  const resolvedContainer = getElement(container);
+  const canvas = document.createElement("canvas");
+  const useBrowserRecommendedResolution =
+    options.useBrowserRecommendedResolution ?? true;
+  const pixelRatio = useBrowserRecommendedResolution
+    ? 1.0
+    : window.devicePixelRatio;
+  canvas.width = Math.max(
+    Math.floor(resolvedContainer.clientWidth * pixelRatio),
+    1,
+  );
+  canvas.height = Math.max(
+    Math.floor(resolvedContainer.clientHeight * pixelRatio),
+    1,
+  );
+
+  if (defined(onProgress)) {
+    onProgress(10, "Initializing graphics context...");
   }
 
-  // WebGL path — just create synchronously (no async needed)
-  return new CesiumWidget(container, options);
+  let result;
+  try {
+    result = await Scene._createContextWithDiagnostics(
+      canvas,
+      options.contextOptions ?? {},
+    );
+
+    if (defined(onProgress)) {
+      onProgress(70, "Context ready...");
+    }
+
+    return {
+      canvas,
+      context: result.context,
+      diagnostics: result.diagnostics,
+      countReferences: result.countReferences,
+    };
+  } catch (error) {
+    runWidgetCleanupStep(function () {
+      destroyContextIfLive(result?.context);
+    });
+    throw error;
+  }
 };
 
 Object.defineProperties(CesiumWidget.prototype, {
@@ -1138,30 +1374,7 @@ CesiumWidget.prototype.isDestroyed = function () {
  * removing the widget from layout.
  */
 CesiumWidget.prototype.destroy = function () {
-  // Unsubscribe from data sources
-  const dataSources = this.dataSources;
-  const dataSourceLength = dataSources.length;
-  for (let i = 0; i < dataSourceLength; i++) {
-    this._dataSourceRemoved(dataSources, dataSources.get(i));
-  }
-  this._dataSourceRemoved(undefined, this._dataSourceDisplay.defaultDataSource);
-
-  this._dataSourceDisplay = this._dataSourceDisplay.destroy();
-
-  if (defined(this._scene)) {
-    this._scene.renderError.removeEventListener(this._onRenderError);
-    this._scene = this._scene.destroy();
-  }
-  this._container.removeChild(this._element);
-  this._creditContainer.removeChild(this._innerCreditContainer);
-
-  this._eventHelper.removeAll();
-
-  if (this._destroyDataSourceCollection) {
-    this._dataSourceCollection = this._dataSourceCollection.destroy();
-  }
-
-  destroyObject(this);
+  destroyCesiumWidgetResources(this);
 };
 
 /**
@@ -1209,10 +1422,21 @@ CesiumWidget.prototype._dataSourceAdded = function (
   dataSource,
 ) {
   const entityCollection = dataSource.entities;
-  entityCollection.collectionChanged.addEventListener(
+  const removers = this._entityCollectionChangedListenerRemovers;
+  const existingEntry = removers.get(entityCollection);
+  if (defined(existingEntry)) {
+    existingEntry.referenceCount++;
+    return;
+  }
+
+  const removeListener = entityCollection.collectionChanged.addEventListener(
     CesiumWidget.prototype._onEntityCollectionChanged,
     this,
   );
+  removers.set(entityCollection, {
+    removeListener,
+    referenceCount: 1,
+  });
 };
 
 /**
@@ -1223,12 +1447,12 @@ CesiumWidget.prototype._dataSourceRemoved = function (
   dataSource,
 ) {
   const entityCollection = dataSource.entities;
-  entityCollection.collectionChanged.removeEventListener(
-    CesiumWidget.prototype._onEntityCollectionChanged,
+  const removedFinalReference = removeWidgetEntityCollectionChangedListener(
     this,
+    entityCollection,
   );
 
-  if (defined(this.trackedEntity)) {
+  if (removedFinalReference && defined(this.trackedEntity)) {
     if (
       entityCollection.getById(this.trackedEntity.id) === this.trackedEntity
     ) {
@@ -1314,13 +1538,12 @@ CesiumWidget.prototype._onDataSourceAdded = function (
   if (this._automaticallyTrackDataSourceClocks) {
     this.clockTrackedDataSource = dataSource;
   }
-  const id = dataSource.entities.id;
   const removalFunc = this._eventHelper.add(
     dataSource.changedEvent,
     CesiumWidget.prototype._onDataSourceChanged,
     this,
   );
-  this._dataSourceChangedListeners[id] = removalFunc;
+  this._dataSourceChangedListeners.set(dataSource, removalFunc);
 };
 
 /**
@@ -1331,9 +1554,11 @@ CesiumWidget.prototype._onDataSourceRemoved = function (
   dataSource,
 ) {
   const resetClock = this.clockTrackedDataSource === dataSource;
-  const id = dataSource.entities.id;
-  this._dataSourceChangedListeners[id]();
-  this._dataSourceChangedListeners[id] = undefined;
+  const removalFunc = this._dataSourceChangedListeners.get(dataSource);
+  if (defined(removalFunc)) {
+    removalFunc();
+    this._dataSourceChangedListeners.delete(dataSource);
+  }
   if (resetClock) {
     const numDataSources = dataSourceCollection.length;
     if (this._automaticallyTrackDataSourceClocks && numDataSources > 0) {

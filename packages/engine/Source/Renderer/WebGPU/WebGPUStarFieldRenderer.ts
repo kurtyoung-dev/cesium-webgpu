@@ -72,6 +72,7 @@ import type { WebGPURenderPipelineDescriptor } from "./WebGPURenderPipelineCache
 interface StarFieldLike {
   show: boolean;
   readonly _intensity: number;
+  readonly _effectiveIntensityScale?: number;
   readonly _pointAngularSize: number;
   readonly _minPointSize: number;
   _webgpuCache?: StarFieldWebGPUCache;
@@ -183,6 +184,7 @@ function packStarUniforms(
   uniformData: Float32Array,
   frameState: CesiumFrameState,
   starField: StarFieldLike,
+  effectiveIntensityScale: number,
 ): void {
   const uniformState = frameState.context.uniformState;
 
@@ -231,15 +233,9 @@ function packStarUniforms(
   uniformData[16] = angularRadius * Math.abs(proj[0]);
   uniformData[17] = angularRadius * Math.abs(proj[5]);
 
-  // Daytime fade: dim the stars as the sun climbs above the horizon for a
-  // surface-level camera, but keep them visible above ~100 km. Shared with
-  // the WebGL renderer (Scene/StarFieldMath) so the fade matches exactly.
-  const dayFade = computeStarDayFade(
-    uniformState.sunDirectionWC,
-    frameState.camera?.positionWC,
-  );
-
-  uniformData[18] = starField._intensity * dayFade;
+  // The backend-neutral StarField update owns the daytime-fade calculation so
+  // WebGL and WebGPU consume the same exact scale and zero-work decision.
+  uniformData[18] = effectiveIntensityScale;
   // Minimum NDC half-extent so faint stars stay ≥ ~1 px on a 1080p frame.
   uniformData[19] = starField._minPointSize;
 
@@ -387,6 +383,17 @@ function updateWebGPUStarField(
     return;
   }
 
+  const effectiveIntensityScale = defined(starField._effectiveIntensityScale)
+    ? starField._effectiveIntensityScale
+    : starField._intensity *
+      computeStarDayFade(
+        context.uniformState.sunDirectionWC,
+        frameState.camera?.positionWC,
+      );
+  if (effectiveIntensityScale === 0.0) {
+    return;
+  }
+
   if (!defined(starField._webgpuCache)) {
     starField._webgpuCache = {};
   }
@@ -507,7 +514,12 @@ function updateWebGPUStarField(
     );
     cache.uniformData = new Float32Array(STAR_UNIFORM_BUFFER_SIZE / 4);
   }
-  packStarUniforms(cache.uniformData, frameState, starField);
+  packStarUniforms(
+    cache.uniformData,
+    frameState,
+    starField,
+    effectiveIntensityScale,
+  );
   device.queue.writeBuffer(
     cache.uniformBuffer.buffer,
     0,

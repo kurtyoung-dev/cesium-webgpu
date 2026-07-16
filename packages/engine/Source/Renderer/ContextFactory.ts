@@ -19,14 +19,136 @@
  */
 
 import RendererType, {
-  isWebGPUSupported,
+  type ConcreteRendererType,
+  type RendererAttemptPlan,
+  RendererInitializationError,
+  type RendererInitializationStage,
   getDefaultRendererType,
+  getRendererAttemptPlan,
+  isWebGPUSupported,
   isValidRendererType,
 } from "./RendererType.js";
+import rendererBuildCapabilities, {
+  type RendererBuildCapabilities,
+} from "./RendererBuildCapabilities.js";
 import GraphicsContext, { GraphicsContextOptions } from "./GraphicsContext.js";
 import Context from "./Context.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import defined from "../Core/defined.js";
+
+export { RendererInitializationError };
+export type { RendererInitializationStage };
+
+export interface RendererAttemptDiagnostic {
+  readonly renderer: ConcreteRendererType;
+  readonly status: "succeeded" | "failed";
+  readonly stage?: RendererInitializationStage;
+  readonly message?: string;
+}
+
+export interface RendererFallbackDiagnostic {
+  readonly fromRenderer: RendererType.WEBGPU | RendererType.WEBGPU_COMPAT;
+  readonly stage: RendererInitializationStage;
+  readonly message: string;
+}
+
+export interface ContextCreationDiagnostics {
+  readonly requestedRenderer: RendererType;
+  readonly resolvedRenderer: ConcreteRendererType | null;
+  readonly selectionReason: RendererAttemptPlan["selectionReason"];
+  readonly attempts: readonly RendererAttemptDiagnostic[];
+  readonly fallback: RendererFallbackDiagnostic | null;
+}
+
+export interface ContextCreationResult {
+  readonly context: GraphicsContext;
+  readonly diagnostics: ContextCreationDiagnostics;
+}
+
+export interface ContextCreationHooks {
+  readonly buildCapabilities: RendererBuildCapabilities;
+  isWebGPUSupported(): boolean;
+  createWebGL(
+    canvas: HTMLCanvasElement,
+    options: GraphicsContextOptions,
+  ): GraphicsContext | Promise<GraphicsContext>;
+  createWebGPU(
+    canvas: HTMLCanvasElement,
+    options: GraphicsContextOptions,
+  ): Promise<GraphicsContext>;
+}
+
+export class ContextCreationError extends Error {
+  readonly diagnostics: ContextCreationDiagnostics;
+  readonly cause: unknown;
+
+  constructor(
+    message: string,
+    diagnostics: ContextCreationDiagnostics,
+    cause: unknown,
+  ) {
+    super(message);
+    this.name = "ContextCreationError";
+    this.diagnostics = diagnostics;
+    this.cause = cause;
+  }
+}
+
+const defaultCreationHooks: ContextCreationHooks = {
+  buildCapabilities: rendererBuildCapabilities,
+  isWebGPUSupported,
+  createWebGL(canvas, options) {
+    return new Context(canvas, options);
+  },
+  async createWebGPU(canvas, options) {
+    const { WebGPUContext } = await import("./WebGPU/WebGPUContext.js");
+    return await WebGPUContext.create(canvas, options);
+  },
+};
+
+function optionsForAttempt(
+  options: GraphicsContextOptions,
+  renderer: ConcreteRendererType,
+): GraphicsContextOptions {
+  if (renderer === RendererType.WEBGPU_COMPAT) {
+    return {
+      ...options,
+      renderer,
+      featureLevel: "compatibility",
+    };
+  }
+  return { ...options, renderer };
+}
+
+function getFailureDetails(error: unknown): {
+  stage: RendererInitializationStage;
+  message: string;
+} {
+  return {
+    stage:
+      error instanceof RendererInitializationError ? error.stage : "unknown",
+    message: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function freezeDiagnostics(
+  plan: RendererAttemptPlan,
+  resolvedRenderer: ConcreteRendererType | null,
+  attempts: readonly RendererAttemptDiagnostic[],
+  fallback: RendererFallbackDiagnostic | null,
+): ContextCreationDiagnostics {
+  const frozenAttempts = Object.freeze(
+    attempts.map((attempt) => Object.freeze({ ...attempt })),
+  );
+  const frozenFallback = fallback ? Object.freeze({ ...fallback }) : null;
+  return Object.freeze({
+    requestedRenderer: plan.requestedRenderer,
+    resolvedRenderer,
+    selectionReason: plan.selectionReason,
+    attempts: frozenAttempts,
+    fallback: frozenFallback,
+  });
+}
 
 /**
  * Factory class for creating graphics contexts
@@ -55,122 +177,103 @@ export class ContextFactory {
     canvas: HTMLCanvasElement,
     options?: GraphicsContextOptions,
   ): Promise<GraphicsContext> {
+    const result = await this.createContextWithDiagnostics(canvas, options);
+    return result.context;
+  }
+
+  static async createContextWithDiagnostics(
+    canvas: HTMLCanvasElement,
+    options: GraphicsContextOptions = {},
+    hooks: ContextCreationHooks = defaultCreationHooks,
+  ): Promise<ContextCreationResult> {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(canvas)) {
       throw new DeveloperError("canvas is required.");
     }
     //>>includeEnd('debug');
 
-    options = options || {};
+    const plan = getRendererAttemptPlan(options, hooks.buildCapabilities);
+    const attempts: RendererAttemptDiagnostic[] = [];
+    let fallback: RendererFallbackDiagnostic | null = null;
+    let lastError: unknown;
 
-    // Determine which renderer to use
-    const rendererType = this._determineRendererType(options);
+    for (let i = 0; i < plan.attempts.length; i++) {
+      const renderer = plan.attempts[i];
+      try {
+        const availableInBuild =
+          renderer === RendererType.WEBGL
+            ? hooks.buildCapabilities.webgl
+            : hooks.buildCapabilities.webgpu;
+        if (!availableInBuild) {
+          throw new RendererInitializationError(
+            "availability",
+            `${renderer} is not available in this build.`,
+          );
+        }
 
-    // Create the appropriate context
-    switch (rendererType) {
-      case RendererType.WEBGPU:
-        return await this._createWebGPUContext(canvas, options);
+        let context: GraphicsContext;
+        const attemptOptions = optionsForAttempt(options, renderer);
+        if (renderer === RendererType.WEBGL) {
+          context = await hooks.createWebGL(canvas, attemptOptions);
+        } else {
+          if (!hooks.isWebGPUSupported()) {
+            throw new RendererInitializationError(
+              "availability",
+              `${renderer} is not supported in this environment.`,
+            );
+          }
+          context = await hooks.createWebGPU(canvas, attemptOptions);
+        }
 
-      case RendererType.WEBGPU_COMPAT:
-        return await this._createWebGPUContext(canvas, {
-          ...options,
-          featureLevel: "compatibility",
+        attempts.push({ renderer, status: "succeeded" });
+        return {
+          context,
+          diagnostics: freezeDiagnostics(plan, renderer, attempts, fallback),
+        };
+      } catch (error) {
+        lastError = error;
+        const failure = getFailureDetails(error);
+        attempts.push({
+          renderer,
+          status: "failed",
+          stage: failure.stage,
+          message: failure.message,
         });
-
-      case RendererType.WEBGL:
-      default:
-        return this._createWebGLContext(canvas, options);
-    }
-  }
-
-  /**
-   * Determines which renderer type to use based on options and capabilities.
-   *
-   * @private
-   * @param {GraphicsContextOptions} options - Configuration options
-   * @returns {RendererType} The renderer type to use
-   */
-  private static _determineRendererType(
-    options: GraphicsContextOptions,
-  ): RendererType {
-    let rendererType: RendererType | undefined =
-      options.renderer as RendererType;
-
-    // Convert string to enum if needed
-    if (typeof options.renderer === "string") {
-      if (isValidRendererType(options.renderer)) {
-        rendererType = options.renderer as RendererType;
-      } else {
-        //>>includeStart('debug', pragmas.debug);
-        console.warn(
-          `Invalid renderer type "${options.renderer}". Falling back to AUTO.`,
-        );
-        //>>includeEnd('debug');
-        rendererType = RendererType.AUTO;
+        if (
+          i + 1 < plan.attempts.length &&
+          (renderer === RendererType.WEBGPU ||
+            renderer === RendererType.WEBGPU_COMPAT)
+        ) {
+          fallback = {
+            fromRenderer: renderer,
+            stage: failure.stage,
+            message: failure.message,
+          };
+          if (plan.selectionReason === "explicit") {
+            // Charter behavior: an explicitly-requested WebGPU backend that
+            // cannot initialize gracefully falls back to WebGL with a
+            // visible warning (permanent, not pragma'd — the caller asked
+            // for "webgpu" and needs to know they are rendering on WebGL).
+            // `strictRenderer: true` removes the fallback attempt from the
+            // plan, so this branch is never reached in strict mode.
+            console.warn(
+              `[CesiumJS] Explicitly requested renderer "${renderer}" failed ` +
+                `to initialize (${failure.stage}: ${failure.message}). ` +
+                `Falling back to WebGL. Pass strictRenderer: true in ` +
+                `contextOptions to fail instead of falling back.`,
+            );
+          }
+        }
       }
     }
 
-    // Handle AUTO mode
-    if (!rendererType || rendererType === RendererType.AUTO) {
-      return getDefaultRendererType(options.preferWebGPU);
-    }
-
-    // Validate WebGPU is actually available
-    if (
-      (rendererType === RendererType.WEBGPU ||
-        rendererType === RendererType.WEBGPU_COMPAT) &&
-      !isWebGPUSupported()
-    ) {
-      //>>includeStart('debug', pragmas.debug);
-      console.warn(
-        `${rendererType} is not supported in this browser. Falling back to WebGL.`,
-      );
-      //>>includeEnd('debug');
-      return RendererType.WEBGL;
-    }
-
-    return rendererType;
-  }
-
-  /**
-   * Creates a WebGL context (wraps existing Context implementation).
-   *
-   * @private
-   * @param {HTMLCanvasElement} canvas - The canvas element
-   * @param {GraphicsContextOptions} options - Configuration options
-   * @returns {GraphicsContext} The WebGL context
-   */
-  private static _createWebGLContext(
-    canvas: HTMLCanvasElement,
-    options: GraphicsContextOptions,
-  ): GraphicsContext {
-    // Context.d.ts declares the JS class's public surface; TypeScript
-    // infers the correct extends relationship without a cast.
-    return new Context(canvas, options);
-  }
-
-  /**
-   * Creates a WebGPU context.
-   *
-   * @private
-   * @param {HTMLCanvasElement} canvas - The canvas element
-   * @param {GraphicsContextOptions} options - Configuration options
-   * @returns {Promise<GraphicsContext>} A promise that resolves to the WebGPU context
-   * @throws {DeveloperError} If WebGPU initialization fails
-   */
-  private static async _createWebGPUContext(
-    canvas: HTMLCanvasElement,
-    options: GraphicsContextOptions,
-  ): Promise<GraphicsContext> {
-    //>>includeStart('debug', pragmas.debug);
-    if (!isWebGPUSupported()) {
-      throw new DeveloperError("WebGPU is not supported in this browser.");
-    }
-    //>>includeEnd('debug');
-
-    // Dynamically import WebGPUContext to avoid loading it when not needed
-    const { WebGPUContext } = await import("./WebGPU/WebGPUContext.js");
-    return await WebGPUContext.create(canvas, options);
+    const diagnostics = freezeDiagnostics(plan, null, attempts, fallback);
+    const failure = getFailureDetails(lastError);
+    throw new ContextCreationError(
+      `Failed to create a graphics context: ${failure.message}`,
+      diagnostics,
+      lastError,
+    );
   }
 
   /**
@@ -184,7 +287,10 @@ export class ContextFactory {
    *   console.log('WebGPU is available!');
    * }
    */
-  static isRendererSupported(rendererType: RendererType | string): boolean {
+  static isRendererSupported(
+    rendererType: RendererType | string,
+    buildCapabilities: RendererBuildCapabilities = rendererBuildCapabilities,
+  ): boolean {
     if (typeof rendererType === "string") {
       if (!isValidRendererType(rendererType)) {
         return false;
@@ -195,13 +301,20 @@ export class ContextFactory {
     switch (rendererType) {
       case RendererType.WEBGPU:
       case RendererType.WEBGPU_COMPAT:
-        return isWebGPUSupported();
+        return buildCapabilities.webgpu && isWebGPUSupported();
 
       case RendererType.WEBGL:
-        return typeof WebGLRenderingContext !== "undefined";
+        return (
+          buildCapabilities.webgl &&
+          typeof WebGLRenderingContext !== "undefined"
+        );
 
       case RendererType.AUTO:
-        return true; // AUTO always supported (falls back)
+        return (
+          (buildCapabilities.webgpu && isWebGPUSupported()) ||
+          (buildCapabilities.webgl &&
+            typeof WebGLRenderingContext !== "undefined")
+        );
 
       default:
         return false;
@@ -217,17 +330,22 @@ export class ContextFactory {
    * const info = ContextFactory.getRendererInfo();
    * console.log(`WebGL: ${info.webgl}, WebGPU: ${info.webgpu}`);
    */
-  static getRendererInfo(): {
+  static getRendererInfo(
+    buildCapabilities: RendererBuildCapabilities = rendererBuildCapabilities,
+  ): {
     webgl: boolean;
     webgpu: boolean;
     webgpuCompat: boolean;
     recommended: RendererType;
   } {
     return {
-      webgl: this.isRendererSupported(RendererType.WEBGL),
-      webgpu: this.isRendererSupported(RendererType.WEBGPU),
-      webgpuCompat: this.isRendererSupported(RendererType.WEBGPU_COMPAT),
-      recommended: getDefaultRendererType(true),
+      webgl: this.isRendererSupported(RendererType.WEBGL, buildCapabilities),
+      webgpu: this.isRendererSupported(RendererType.WEBGPU, buildCapabilities),
+      webgpuCompat: this.isRendererSupported(
+        RendererType.WEBGPU_COMPAT,
+        buildCapabilities,
+      ),
+      recommended: getDefaultRendererType(true, buildCapabilities),
     };
   }
 }

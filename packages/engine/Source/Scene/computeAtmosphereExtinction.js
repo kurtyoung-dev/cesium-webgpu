@@ -142,4 +142,192 @@ function computeAtmosphereExtinction(
   return result;
 }
 
+const CACHE_MODE_UNINITIALIZED = 0;
+const CACHE_MODE_DISABLED = 1;
+const CACHE_MODE_MISSING_INPUT = 2;
+const CACHE_MODE_ENABLED = 3;
+
+/**
+ * Creates a caller-owned scalar cache for {@link computeAtmosphereExtinctionCached}.
+ * The cache is intended to be created once per celestial primitive and reused for
+ * every update.
+ *
+ * @returns {object} The cache state.
+ * @private
+ */
+function createAtmosphereExtinctionCache() {
+  return {
+    _mode: CACHE_MODE_UNINITIALIZED,
+    _cameraX: 0.0,
+    _cameraY: 0.0,
+    _cameraZ: 0.0,
+    _bodyX: 0.0,
+    _bodyY: 0.0,
+    _bodyZ: 0.0,
+    _innerRadius: 0.0,
+    _rayleighX: 0.0,
+    _rayleighY: 0.0,
+    _rayleighZ: 0.0,
+    _mieX: 0.0,
+    _mieY: 0.0,
+    _mieZ: 0.0,
+    _rayleighScaleHeight: 0.0,
+    _mieScaleHeight: 0.0,
+    _resultX: 1.0,
+    _resultY: 1.0,
+    _resultZ: 1.0,
+    computations: 0,
+    hits: 0,
+  };
+}
+
+function setCachedResult(cache, result) {
+  result.x = cache._resultX;
+  result.y = cache._resultY;
+  result.z = cache._resultZ;
+  return result;
+}
+
+function setIdentityResult(cache, result, mode) {
+  cache._mode = mode;
+  cache._resultX = 1.0;
+  cache._resultY = 1.0;
+  cache._resultZ = 1.0;
+  result.x = 1.0;
+  result.y = 1.0;
+  result.z = 1.0;
+  return result;
+}
+
+/**
+ * Computes atmospheric extinction only when one of its exact scalar inputs has
+ * changed. Cache hits copy the cached RGB scalars into the caller-owned result;
+ * no vectors, arrays, strings, or hashes are allocated on the steady-state path.
+ *
+ * Disabled extinction and incomplete inputs produce the exact multiplicative
+ * identity. Those states are kept separate from an enabled result so disabling
+ * and then re-enabling the effect cannot reuse stale extinction.
+ *
+ * @param {object} cache A cache returned by {@link createAtmosphereExtinctionCache}.
+ * @param {Cartesian3} result The caller-owned Cartesian3 to store the result.
+ * @param {boolean} enabled Whether atmospheric extinction is enabled.
+ * @param {Cartesian3} cameraPositionWC Camera position, Earth-centered fixed.
+ * @param {Cartesian3} bodyPositionWC Celestial body position, Earth-centered fixed.
+ * @param {Atmosphere} atmosphere The scene atmosphere.
+ * @param {number} innerRadius The atmosphere inner radius, in meters.
+ * @returns {Cartesian3} The caller-owned `result` parameter.
+ * @private
+ */
+function computeAtmosphereExtinctionCached(
+  cache,
+  result,
+  enabled,
+  cameraPositionWC,
+  bodyPositionWC,
+  atmosphere,
+  innerRadius,
+) {
+  if (!defined(result)) {
+    result = new Cartesian3();
+  }
+
+  if (enabled !== true) {
+    if (cache._mode === CACHE_MODE_DISABLED) {
+      ++cache.hits;
+      return setCachedResult(cache, result);
+    }
+    return setIdentityResult(cache, result, CACHE_MODE_DISABLED);
+  }
+
+  const rayleigh = defined(atmosphere)
+    ? atmosphere.rayleighCoefficient
+    : undefined;
+  const mie = defined(atmosphere) ? atmosphere.mieCoefficient : undefined;
+  if (
+    !defined(cameraPositionWC) ||
+    !defined(bodyPositionWC) ||
+    !defined(cameraPositionWC.x) ||
+    !defined(cameraPositionWC.y) ||
+    !defined(cameraPositionWC.z) ||
+    !defined(bodyPositionWC.x) ||
+    !defined(bodyPositionWC.y) ||
+    !defined(bodyPositionWC.z) ||
+    !defined(atmosphere) ||
+    !defined(rayleigh) ||
+    !defined(mie) ||
+    !defined(rayleigh.x) ||
+    !defined(rayleigh.y) ||
+    !defined(rayleigh.z) ||
+    !defined(mie.x) ||
+    !defined(mie.y) ||
+    !defined(mie.z) ||
+    !defined(atmosphere.rayleighScaleHeight) ||
+    !defined(atmosphere.mieScaleHeight) ||
+    !defined(innerRadius) ||
+    innerRadius <= 0.0
+  ) {
+    if (cache._mode === CACHE_MODE_MISSING_INPUT) {
+      ++cache.hits;
+      return setCachedResult(cache, result);
+    }
+    return setIdentityResult(cache, result, CACHE_MODE_MISSING_INPUT);
+  }
+
+  const rayleighScaleHeight = atmosphere.rayleighScaleHeight;
+  const mieScaleHeight = atmosphere.mieScaleHeight;
+  if (
+    cache._mode === CACHE_MODE_ENABLED &&
+    cache._cameraX === cameraPositionWC.x &&
+    cache._cameraY === cameraPositionWC.y &&
+    cache._cameraZ === cameraPositionWC.z &&
+    cache._bodyX === bodyPositionWC.x &&
+    cache._bodyY === bodyPositionWC.y &&
+    cache._bodyZ === bodyPositionWC.z &&
+    cache._innerRadius === innerRadius &&
+    cache._rayleighX === rayleigh.x &&
+    cache._rayleighY === rayleigh.y &&
+    cache._rayleighZ === rayleigh.z &&
+    cache._mieX === mie.x &&
+    cache._mieY === mie.y &&
+    cache._mieZ === mie.z &&
+    cache._rayleighScaleHeight === rayleighScaleHeight &&
+    cache._mieScaleHeight === mieScaleHeight
+  ) {
+    ++cache.hits;
+    return setCachedResult(cache, result);
+  }
+
+  computeAtmosphereExtinction(
+    result,
+    cameraPositionWC,
+    bodyPositionWC,
+    atmosphere,
+    innerRadius,
+  );
+
+  cache._mode = CACHE_MODE_ENABLED;
+  cache._cameraX = cameraPositionWC.x;
+  cache._cameraY = cameraPositionWC.y;
+  cache._cameraZ = cameraPositionWC.z;
+  cache._bodyX = bodyPositionWC.x;
+  cache._bodyY = bodyPositionWC.y;
+  cache._bodyZ = bodyPositionWC.z;
+  cache._innerRadius = innerRadius;
+  cache._rayleighX = rayleigh.x;
+  cache._rayleighY = rayleigh.y;
+  cache._rayleighZ = rayleigh.z;
+  cache._mieX = mie.x;
+  cache._mieY = mie.y;
+  cache._mieZ = mie.z;
+  cache._rayleighScaleHeight = rayleighScaleHeight;
+  cache._mieScaleHeight = mieScaleHeight;
+  cache._resultX = result.x;
+  cache._resultY = result.y;
+  cache._resultZ = result.z;
+  ++cache.computations;
+
+  return result;
+}
+
+export { createAtmosphereExtinctionCache, computeAtmosphereExtinctionCached };
 export default computeAtmosphereExtinction;

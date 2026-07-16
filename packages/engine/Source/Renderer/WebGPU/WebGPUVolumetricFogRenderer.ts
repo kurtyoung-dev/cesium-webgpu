@@ -746,14 +746,17 @@ class WebGPUVolumetricFogRenderer {
     // Camera should provide it pre-computed; if not, compose it from
     // view × projection on the fly.
     const camera = frameState.camera;
-    let invVP: ArrayLike<number> | undefined = camera?.inverseViewProjection;
+    // UniformState is context-owned and has already selected the WebGPU
+    // convention. A camera-level cached inverse has no renderer identity and
+    // can therefore represent WebGL when two backends alternate.
+    let invVP: ArrayLike<number> | undefined =
+      context.uniformState?.inverseViewProjection;
     if (!invVP && camera) {
       // Compose view × projection then invert.
-      Matrix4.multiply(
-        camera.frustum.projectionMatrix,
-        camera.viewMatrix,
-        _scratchVP,
-      );
+      const projection =
+        camera.frustum.getProjectionMatrix?.(context.clipSpaceConvention) ??
+        camera.frustum.projectionMatrix;
+      Matrix4.multiply(projection, camera.viewMatrix, _scratchVP);
       Matrix4.inverse(_scratchVP, _scratchInvVP);
       invVP = _scratchInvVP;
     }

@@ -1,7 +1,7 @@
 import { DeveloperError } from "@cesium/engine";
 
 /**
- * A loading overlay component that displays progress during WebGPU initialization.
+ * A loading overlay component that displays progress during renderer initialization.
  * Shows a semi-transparent overlay with a progress indicator and status text.
  *
  * @alias LoadingOverlay
@@ -52,7 +52,7 @@ class LoadingOverlay {
     // Create title
     const title = document.createElement("div");
     title.className = "cesium-loading-title";
-    title.textContent = "Initializing WebGPU";
+    title.textContent = "Initializing Renderer";
     title.style.cssText = `
       color: #ffffff;
       font-size: 18px;

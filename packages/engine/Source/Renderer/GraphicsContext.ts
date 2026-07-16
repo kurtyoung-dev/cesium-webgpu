@@ -46,6 +46,12 @@
  * @module GraphicsContext
  */
 
+import ClipSpaceConvention, {
+  type ClipSpaceConventionRecord,
+} from "../Core/ClipSpaceConvention.js";
+import GraphicsCapabilities, {
+  type GraphicsCapabilitiesRecord,
+} from "./GraphicsCapabilities.js";
 import RendererType from "./RendererType.js";
 
 // ═══════════════════════════════════════════════════════════
@@ -300,19 +306,6 @@ import PickId from "./PickId.js";
  * - {@link PrimitiveCommandRenderer} for the PRIMITIVE command factory
  * - {@link SystemRenderer} for specialized entry points
  */
-/**
- * Discriminated state of a lazy feature-renderer slot. The status drives
- * `getFeatureRenderer(key)` (sync, returns undefined if not loaded yet),
- * `getFeatureRendererAsync(key)` (awaits the in-flight promise), and
- * `getFeatureRendererStatus(key)` (introspection — used by debug
- * snapshots and the registry-audit gulp task).
- */
-export type FeatureRendererLoadStatus =
-  | { kind: "registered" }
-  | { kind: "loading"; promise: Promise<void> }
-  | { kind: "loaded" }
-  | { kind: "failed"; error: unknown };
-
 export interface FeatureRenderer {
   /**
    * Destroy GPU resources owned by this renderer.
@@ -346,6 +339,66 @@ export interface FeatureRenderer {
    *  (or via `_warmUpPipelines`) and cached on `_instance`. */
   RendererClass?: new (ctx: unknown) => object;
   _instance?: object;
+}
+
+/**
+ * Explicit readiness of a backend feature renderer.
+ *
+ * `generation` is a per-slot lifetime token. Async producers may only install
+ * a renderer into the generation they started in; context destruction,
+ * device loss, loader replacement, or an eager replacement advances it and
+ * makes an older completion stale.
+ */
+export type FeatureRendererReadiness =
+  | { readonly kind: "unsupported"; readonly generation: number }
+  | {
+      readonly kind: "loading";
+      readonly promise: Promise<FeatureRenderer | undefined>;
+      readonly generation: number;
+    }
+  | {
+      readonly kind: "ready";
+      readonly renderer: FeatureRenderer;
+      readonly generation: number;
+    }
+  | {
+      readonly kind: "failed";
+      readonly error: unknown;
+      readonly generation: number;
+    };
+
+/** @deprecated Use {@link FeatureRendererReadiness}. */
+export type FeatureRendererLoadStatus = FeatureRendererReadiness;
+
+/** Notification emitted when an async feature load settles. */
+export type FeatureRendererReadinessListener = (
+  key: number,
+  state: FeatureRendererReadiness,
+) => void;
+
+/** Minimal context shape accepted by the migration adapter below. */
+export interface FeatureRendererReadinessContext {
+  getFeatureRendererReadiness?: (key: number) => FeatureRendererReadiness;
+  getFeatureRenderer?: (key: number) => FeatureRenderer | undefined;
+}
+
+/**
+ * Backend-neutral migration adapter for Scene consumers and isolated tests.
+ * Real GraphicsContext instances take the explicit-state path. Older context
+ * doubles retain renderer/undefined compatibility, where undefined means the
+ * legacy path is unsupported only because those doubles cannot model loading.
+ */
+export function resolveFeatureRendererReadiness(
+  context: FeatureRendererReadinessContext | null | undefined,
+  key: number,
+): FeatureRendererReadiness {
+  if (typeof context?.getFeatureRendererReadiness === "function") {
+    return context.getFeatureRendererReadiness(key);
+  }
+  const renderer = context?.getFeatureRenderer?.(key);
+  return renderer
+    ? { kind: "ready", renderer, generation: 0 }
+    : { kind: "unsupported", generation: 0 };
 }
 
 /**
@@ -454,6 +507,13 @@ export interface GraphicsContextOptions {
    * Whether to prefer WebGPU when AUTO is selected
    */
   preferWebGPU?: boolean;
+
+  /**
+   * When true, an explicit concrete renderer request (e.g. 'webgpu') hard-fails
+   * instead of gracefully falling back to WebGL. Default false — fallback with
+   * a console warning.
+   */
+  strictRenderer?: boolean;
 
   /**
    * WebGL-specific options
@@ -624,12 +684,20 @@ export interface VolumetricCloudRequest {
  * Both `Context.js` (WebGL) and `WebGPUContext.ts` (WebGPU) extend this class.
  * Provides shared concrete implementations for:
  * - Context-aware logging with `[CesiumJS:type:id]` prefix
- * - Automatic registration with `ContextRegistry`
+ * - Transactional publication to `ContextRegistry`
  * - Feature Renderer registry for backend-agnostic scene code
  * - Convenience type-checking getters (`isWebGPU`, `isWebGL`)
  * - Shared resource pool access
  */
 export abstract class GraphicsContext {
+  /** Immutable projection convention owned by this context. */
+  protected _clipSpaceConvention: ClipSpaceConventionRecord =
+    ClipSpaceConvention.WEBGL;
+
+  /** Immutable limit/format snapshot owned by this context generation. */
+  protected _graphicsCapabilities: GraphicsCapabilitiesRecord =
+    GraphicsCapabilities.EMPTY;
+
   // ═══════════════════════════════════════════════════════════
   // STATIC: CONTEXT REGISTRY (singleton)
   // ═══════════════════════════════════════════════════════════
@@ -666,48 +734,46 @@ export abstract class GraphicsContext {
    * eager-imported `WebGPUFeatureRenderers` chunk lets esbuild split
    * them into separate dynamic chunks that only download on demand.
    *
-   * Loaders are stored alongside the eager registry. The first call to
-   * `getFeatureRenderer(key)` for a key with a pending loader fires the
-   * loader and replaces the slot with the resolved renderer once the
-   * dynamic import settles. The first call returns undefined (the
-   * caller's WebGL fallback runs); the next call after the import
-   * settles returns the registered FR.
+   * Loaders are stored alongside the eager registry. The first readiness
+   * lookup starts the loader and returns `loading`; only the selected backend
+   * may complete that slot. The renderer-only compatibility adapter still
+   * returns undefined until ready, so consumers with a legacy path must use
+   * the readiness discriminator before falling through.
    */
-  private _featureRendererLoaders: ((() => Promise<void>) | undefined)[] =
-    new Array(0);
+  private _featureRendererLoaders: (
+    (() => Promise<FeatureRenderer>) | undefined
+  )[] = new Array(0);
   /**
-   * Per-key load status, one of:
-   *   undefined     — no loader registered (idle)
-   *   "registered"  — loader available, not yet started
-   *   "loading"     — loader in flight; .promise resolves when the FR
-   *                   has been registered (or the loader has rejected)
-   *   "loaded"      — FR is in `_featureRenderers[key]`
-   *   "failed"      — last attempt rejected; .error preserved for
-   *                   diagnostics; calling getFeatureRenderer again
-   *                   triggers a retry
-   *
-   * Storing the Promise (rather than a bare boolean) lets callers use
-   * `await getFeatureRendererAsync(key)` and get the freshly registered
-   * FR on the same frame the loader settles — fixing the "first frame
-   * falls back to WebGL, second frame flips" flicker that the old
-   * boolean-flag implementation caused.
+   * Per-key public readiness. A registered-but-not-yet-requested loader uses
+   * `unsupported` internally; the canonical readiness lookup immediately
+   * advances it to `loading`. Keeping the dormant detail private preserves
+   * the deliberately small four-state public contract.
    */
   private _featureRendererStatus: (FeatureRendererLoadStatus | undefined)[] =
     new Array(0);
+
+  /** Current async-install generation for each feature slot. */
+  private _featureRendererGenerations: number[] = new Array(0);
+
+  /** Monotonic source for feature-slot generations. */
+  private _nextFeatureRendererGeneration = 1;
+
+  /** Completion listeners (Scene uses this to wake requestRenderMode). */
+  private _featureRendererReadinessListeners =
+    new Set<FeatureRendererReadinessListener>();
 
   private _featureRenderers: (FeatureRenderer | undefined)[] = new Array(
     FeatureRendererKey.COUNT,
   );
 
   // ═══════════════════════════════════════════════════════════
-  // CONSTRUCTOR — Auto-registers with ContextRegistry
+  // CONSTRUCTOR — Subclasses publish only at their initialization commit point
   // ═══════════════════════════════════════════════════════════
 
   /**
-   * Called by subclass constructors. Auto-registers this context
-   * with the global ContextRegistry.
-   *
-   * Subclasses MUST call `super()` in their constructors.
+   * Called by subclass constructors. Subclasses MUST call `super()`, then
+   * publish through `_registerWithRegistry()` only after initialization has
+   * committed.
    */
   constructor() {
     // Registration is deferred — subclass must call _registerWithRegistry()
@@ -998,7 +1064,32 @@ export abstract class GraphicsContext {
    * Default: false (WebGL). WebGPU overrides to return true.
    */
   get depthRangeZeroToOne(): boolean {
-    return false;
+    return this._clipSpaceConvention.depthRangeZeroToOne;
+  }
+
+  /** Immutable clip-space convention used by this context. */
+  get clipSpaceConvention(): ClipSpaceConventionRecord {
+    return this._clipSpaceConvention;
+  }
+
+  /** Immutable device limits and texture-format support for this context. */
+  get graphicsCapabilities(): GraphicsCapabilitiesRecord {
+    return this._graphicsCapabilities;
+  }
+
+  /** Compatibility alias for consumers migrating from ContextLimits. */
+  get limits(): GraphicsCapabilitiesRecord {
+    return this._graphicsCapabilities;
+  }
+
+  /**
+   * Monotonic generation of native resources owned by this context. WebGL's
+   * compatibility path retains its established context-loss lifecycle and
+   * therefore stays at zero. WebGPU advances the value whenever a recovered
+   * device invalidates every old-generation handle.
+   */
+  get resourceGeneration(): number {
+    return 0;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -1770,36 +1861,38 @@ export abstract class GraphicsContext {
     key: number,
     renderer: CollectionRenderer | PrimitiveCommandRenderer | SystemRenderer,
   ): void {
+    const generation = this._advanceFeatureRendererGeneration(key);
     this._featureRenderers[key] = renderer;
-    // Clear any pending lazy loader for this key — the renderer is
-    // now available, no need to lazy-import.
     this._featureRendererLoaders[key] = undefined;
-    this._featureRendererStatus[key] = { kind: "loaded" };
+    const ready: FeatureRendererReadiness = {
+      kind: "ready",
+      renderer,
+      generation,
+    };
+    this._featureRendererStatus[key] = ready;
+    this._notifyFeatureRendererReadiness(key, ready);
   }
 
   /**
    * Register an async loader that resolves the renderer for `key` on
    * first access. Used for advanced renderers that should not pull their
    * implementation modules into the main bundle. The loader is invoked
-   * exactly once (subsequent calls during the in-flight import are
-   * coalesced) and is expected to call `registerFeatureRenderer(key, …)`
-   * itself once the dynamic import settles.
-   *
-   * Until the loader resolves, `getFeatureRenderer(key)` returns
-   * `undefined` so callers fall back to their WebGL path. Once the
-   * loader registers the renderer, all subsequent calls return it.
+   * exactly once and returns the renderer to install. Installation remains
+   * owned by this registry so a completion from a stale device/context
+   * generation cannot publish itself.
    *
    * @param key A FeatureRendererKey numeric enum value
-   * @param loader A function returning a Promise that registers the FR
+   * @param loader A function returning the feature renderer to install
    */
   registerFeatureRendererLoader(
     key: number,
-    loader: () => Promise<void>,
+    loader: () => Promise<FeatureRenderer>,
   ): void {
     // Don't overwrite an already-resolved entry — the renderer wins.
     if (this._featureRenderers[key] !== undefined) return;
+    const generation = this._advanceFeatureRendererGeneration(key);
     this._featureRendererLoaders[key] = loader;
-    this._featureRendererStatus[key] = { kind: "registered" };
+    this._featureRendererStatus[key] = { kind: "unsupported", generation };
   }
 
   /**
@@ -1822,47 +1915,77 @@ export abstract class GraphicsContext {
    * if (fr) { (fr as CollectionRenderer).update(collection, frameState); }
    */
   getFeatureRenderer(key: number): FeatureRenderer | undefined {
-    const existing = this._featureRenderers[key];
-    if (existing !== undefined) return existing;
+    const state = this.getFeatureRendererReadiness(key);
+    return state.kind === "ready" ? state.renderer : undefined;
+  }
 
-    // No registered FR — kick the loader (fire-and-forget) if it's idle
-    // or if the previous attempt failed. The call still returns undefined
-    // so the caller's WebGL fallback runs this frame; once the import
-    // settles `registerFeatureRenderer` flips status to "loaded" and
-    // subsequent calls return the FR.
-    this._kickLazyLoader(key);
-    return undefined;
+  /**
+   * Canonical synchronous feature lookup. Unlike the legacy renderer-only
+   * adapter, this preserves the distinction between an unsupported backend,
+   * an in-flight implementation, a ready renderer, and a stable failure.
+   * Consumers that own a legacy implementation must only fall through for
+   * `unsupported`; `loading` and `failed` belong to the selected backend.
+   */
+  getFeatureRendererReadiness(key: number): FeatureRendererReadiness {
+    const existing = this._featureRenderers[key];
+    if (existing !== undefined) {
+      const current = this._featureRendererStatus[key];
+      if (current?.kind === "ready" && current.renderer === existing) {
+        return current;
+      }
+      const generation = this._currentFeatureRendererGeneration(key);
+      const ready: FeatureRendererReadiness = {
+        kind: "ready",
+        renderer: existing,
+        generation,
+      };
+      this._featureRendererStatus[key] = ready;
+      return ready;
+    }
+
+    return this._kickLazyLoader(key);
   }
 
   /**
    * Async variant of {@link getFeatureRenderer}. Awaits any in-flight
-   * loader (or fires a fresh one) and returns the FR once it's been
-   * registered. Returns undefined if no loader exists, or if the loader
-   * failed and registerFeatureRenderer was never called.
+   * loader (or starts the cold loader) and returns the FR once it is ready.
+   * Returns undefined for unsupported, failed, or invalidated generations.
    *
    * @param key - A {@link FeatureRendererKey} numeric enum value
    */
   async getFeatureRendererAsync(
     key: number,
   ): Promise<FeatureRenderer | undefined> {
-    const eager = this._featureRenderers[key];
-    if (eager) return eager;
-    const status = this._kickLazyLoader(key);
+    const status = this.getFeatureRendererReadiness(key);
+    if (status.kind === "ready") {
+      return status.renderer;
+    }
     if (status?.kind === "loading") {
       await status.promise;
     }
-    return this._featureRenderers[key];
+    const settled = this._featureRendererStatus[key];
+    return settled?.kind === "ready" ? settled.renderer : undefined;
   }
 
   /**
    * Introspect the load status for a feature-renderer key. Used by debug
-   * snapshots and the registry-audit tooling. Returns undefined when no
-   * loader and no registration exist for the key (the "idle" state).
+   * snapshots and registry-audit tooling. This is non-starting: a dormant
+   * loader remains represented by `unsupported` until a readiness lookup
+   * requests it, avoiding debug tooling that accidentally downloads chunks.
    *
    * @param key - A {@link FeatureRendererKey} numeric enum value
    */
-  getFeatureRendererStatus(key: number): FeatureRendererLoadStatus | undefined {
-    return this._featureRendererStatus[key];
+  getFeatureRendererStatus(key: number): FeatureRendererReadiness {
+    const status = this._featureRendererStatus[key];
+    if (status !== undefined) {
+      return status;
+    }
+    const unsupported: FeatureRendererReadiness = {
+      kind: "unsupported",
+      generation: this._currentFeatureRendererGeneration(key),
+    };
+    this._featureRendererStatus[key] = unsupported;
+    return unsupported;
   }
 
   /**
@@ -1875,8 +1998,8 @@ export abstract class GraphicsContext {
   }
 
   /**
-   * True when the most recent load attempt for this key failed. A future
-   * `getFeatureRenderer(key)` call retries the loader.
+   * True when the feature loader failed in the current generation. Failures
+   * are stable; ordinary lookup never retries them.
    *
    * @param key - A {@link FeatureRendererKey} numeric enum value
    */
@@ -1889,35 +2012,146 @@ export abstract class GraphicsContext {
    * resulting status so the async wrapper can await the in-flight
    * promise without re-deriving it.
    */
-  private _kickLazyLoader(key: number): FeatureRendererLoadStatus | undefined {
+  private _kickLazyLoader(key: number): FeatureRendererReadiness {
     const status = this._featureRendererStatus[key];
-    if (status?.kind === "loading" || status?.kind === "loaded") {
+    if (
+      status?.kind === "loading" ||
+      status?.kind === "ready" ||
+      status?.kind === "failed"
+    ) {
       return status;
     }
     const loader = this._featureRendererLoaders[key];
-    if (!loader) return status;
+    const generation = this._currentFeatureRendererGeneration(key);
+    if (!loader) {
+      const unsupported: FeatureRendererReadiness = {
+        kind: "unsupported",
+        generation,
+      };
+      this._featureRendererStatus[key] = unsupported;
+      return unsupported;
+    }
 
-    // "registered" or "failed" — fire (or retry) the loader
-    const promise = loader()
-      .then(() => {
-        // The loader is contracted to call registerFeatureRenderer, which
-        // flips status to "loaded". If it didn't, leave us in "loaded"
-        // anyway to avoid an infinite retry loop on a misbehaving loader.
-        if (this._featureRendererStatus[key]?.kind !== "loaded") {
-          this._featureRendererStatus[key] = { kind: "loaded" };
+    // Deferring the call into a microtask converts synchronous loader throws
+    // into the same stable failed state as dynamic-import rejection.
+    const promise = Promise.resolve()
+      .then(loader)
+      .then((renderer) => {
+        if (!this._isFeatureRendererGenerationCurrent(key, generation)) {
+          return undefined;
         }
+        if (renderer === undefined || renderer === null) {
+          throw new Error(
+            `Feature renderer loader for key ${key} resolved without a renderer`,
+          );
+        }
+        this._featureRenderers[key] = renderer;
+        this._featureRendererLoaders[key] = undefined;
+        const ready: FeatureRendererReadiness = {
+          kind: "ready",
+          renderer,
+          generation,
+        };
+        this._featureRendererStatus[key] = ready;
+        this._notifyFeatureRendererReadiness(key, ready);
+        return renderer;
       })
-      .catch((err) => {
-        this._featureRendererStatus[key] = { kind: "failed", error: err };
+      .catch((err): FeatureRenderer | undefined => {
+        if (!this._isFeatureRendererGenerationCurrent(key, generation)) {
+          return undefined;
+        }
+        const failed: FeatureRendererReadiness = {
+          kind: "failed",
+          error: err,
+          generation,
+        };
+        this._featureRendererStatus[key] = failed;
         this.log(
           "warn",
           `Lazy feature renderer load failed for key ${key}: ${err?.message ?? err}`,
         );
+        this._notifyFeatureRendererReadiness(key, failed);
+        return undefined;
       });
 
-    const next: FeatureRendererLoadStatus = { kind: "loading", promise };
+    const next: FeatureRendererReadiness = {
+      kind: "loading",
+      promise,
+      generation,
+    };
     this._featureRendererStatus[key] = next;
     return next;
+  }
+
+  /**
+   * Subscribe to async feature completion. A Scene should request a frame
+   * when it receives a `ready` state so requestRenderMode cannot hibernate
+   * across a dynamic import. Returns a per-listener unsubscribe function.
+   */
+  subscribeFeatureRendererReadiness(
+    listener: FeatureRendererReadinessListener,
+  ): () => void {
+    this._featureRendererReadinessListeners.add(listener);
+    return () => {
+      this._featureRendererReadinessListeners.delete(listener);
+    };
+  }
+
+  /** Advance every lazy slot so pending completions can no longer install. */
+  protected _invalidatePendingFeatureRenderers(): void {
+    const count = Math.max(
+      this._featureRendererLoaders.length,
+      this._featureRenderers.length,
+      this._featureRendererStatus.length,
+    );
+    for (let key = 0; key < count; key++) {
+      const generation = this._advanceFeatureRendererGeneration(key);
+      const renderer = this._featureRenderers[key];
+      this._featureRendererStatus[key] = renderer
+        ? { kind: "ready", renderer, generation }
+        : { kind: "unsupported", generation };
+    }
+  }
+
+  private _advanceFeatureRendererGeneration(key: number): number {
+    const generation = this._nextFeatureRendererGeneration++;
+    this._featureRendererGenerations[key] = generation;
+    return generation;
+  }
+
+  private _currentFeatureRendererGeneration(key: number): number {
+    return (
+      this._featureRendererGenerations[key] ??
+      this._advanceFeatureRendererGeneration(key)
+    );
+  }
+
+  private _isFeatureRendererGenerationCurrent(
+    key: number,
+    generation: number,
+  ): boolean {
+    return (
+      this._featureRendererGenerations[key] === generation &&
+      !this.isDestroyed()
+    );
+  }
+
+  private _notifyFeatureRendererReadiness(
+    key: number,
+    state: FeatureRendererReadiness,
+  ): void {
+    for (const listener of this._featureRendererReadinessListeners) {
+      try {
+        listener(key, state);
+      } catch (error) {
+        this.log(
+          "warn",
+          `Feature renderer readiness listener failed for key ${key}: ${String(
+            (error as Error)?.message ?? error,
+          )}`,
+        );
+      }
+    }
   }
 
   /**
@@ -1950,6 +2184,9 @@ export abstract class GraphicsContext {
    * @protected
    */
   protected _destroyFeatureRenderers(): void {
+    // Invalidate before clearing so every pending loader observes a stale
+    // generation when its microtask eventually settles.
+    this._invalidatePendingFeatureRenderers();
     // Feature renderer destroy() functions are designed for scene-side cleanup
     // and expect their owning scene object as the first argument (e.g.,
     // destroyBillboardResources(collection)). During context destruction the
@@ -1958,7 +2195,11 @@ export abstract class GraphicsContext {
     const renderers = this._featureRenderers;
     for (let i = 0; i < renderers.length; i++) {
       renderers[i] = undefined;
+      this._featureRendererLoaders[i] = undefined;
+      const generation = this._advanceFeatureRendererGeneration(i);
+      this._featureRendererStatus[i] = { kind: "unsupported", generation };
     }
+    this._featureRendererReadinessListeners.clear();
   }
 }
 

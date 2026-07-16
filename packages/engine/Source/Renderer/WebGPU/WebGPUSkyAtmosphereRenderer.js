@@ -726,42 +726,9 @@ function packUniforms(
 ) {
   const camera = frameState.camera;
 
-  // Session 65 (2026-05-11): build the projection matrix in WebGPU NDC
-  // depth range ([0, 1]) instead of reading `camera.frustum.projectionMatrix`
-  // which is cached in WebGL convention ([-1, 1]).
-  //
-  // The frustum caches its `_perspectiveMatrix` keyed only on
-  // near/far/left/right/top/bottom (see `PerspectiveOffCenterFrustum.update`).
-  // It does NOT invalidate when `Matrix4._depthRangeType` toggles, so a
-  // late `setDepthRangeType("webgpu")` returns the stale WebGL-range
-  // cached matrix. WebGL convention emits clip-space z in [-1, 1]; the
-  // WebGPU clip test rejects fragments with NDC z < 0, which silently
-  // culls roughly half the shell mesh. Outside-shell views (orbital
-  // altitudes) still render because every shell fragment sits in front
-  // of the camera (positive view-space z) and the projection naturally
-  // maps that into [0, 1]. Inside-shell views (low altitude — Aerometrex
-  // SF, Particle Fireworks, every ground-level photogrammetry demo)
-  // have shell fragments on both sides of the camera direction; the
-  // negative half gets clipped, leaving a black sky where WebGL shows
-  // blue atmosphere.
-  //
-  // We compute the WebGPU-range projection directly so the frustum
-  // cache stays clean for the WebGL path (which reads the same
-  // `camera.frustum.projectionMatrix` and depends on [-1, 1] depth).
-  // Batch 51 — was: set to "webgpu", compute, reset to "webgl". On a
-  // WebGPU context the reset is wrong: subsequent per-frustum
-  // `_updateFrustumUniforms` calls (called once per iteration of the
-  // multi-frustum loop) invalidate the frustum cache and recompute
-  // projection matrices in the CURRENT global depth-range type. With
-  // the reset in place, the FIRST frustum iteration's projection was
-  // computed in WebGPU range (correct), then the sky reset to "webgl",
-  // then the SECOND iteration's projection was recomputed in WebGL
-  // range — producing the half-globe split artifact when transitioning
-  // back from SCENE2D/CV to SCENE3D. The reset was a defensive
-  // workaround for split-screen mode; in pure WebGPU it harms more
-  // than it helps. The frustum-loop also re-asserts "webgpu" at its
-  // entry, so even if some other code resets, the loop wins.
-  Matrix4.setDepthRangeType("webgpu");
+  // Build the band-specific projection with the context-owned convention.
+  // This keeps split-screen contexts independent while preserving the
+  // atmosphere's current-frustum near/far depth mapping.
   const off = camera.frustum.offCenterFrustum ?? camera.frustum;
   // Use the CURRENT multi-frustum band's near/far rather than the full
   // camera frustum range. The sky shell is rendered inside the frustum
@@ -792,6 +759,7 @@ function packUniforms(
     bandNear,
     bandFar,
     scratchProjectionWebGPU,
+    frameState.context.clipSpaceConvention,
   );
 
   Matrix4.multiply(camera.viewMatrix, Matrix4.IDENTITY, scratchModelView);

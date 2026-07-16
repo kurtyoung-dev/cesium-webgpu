@@ -33,6 +33,7 @@ import {
   DirectionalLight,
   EllipsoidSurfaceAppearance,
   FrameState,
+  FeatureRendererKey,
   Globe,
   Material,
   Primitive,
@@ -55,6 +56,7 @@ import {
 
 import createCanvas from "../../../../Specs/createCanvas.js";
 import createScene from "../../../../Specs/createScene.js";
+import getWebGLStub from "../../../../Specs/getWebGLStub.js";
 import pollToPromise from "../../../../Specs/pollToPromise.js";
 import render from "../../../../Specs/render.js";
 import { Cartesian4, Model } from "@cesium/engine";
@@ -701,6 +703,8 @@ describe(
         expect(scene.frameState).toBeInstanceOf(FrameState);
         expect(scene.tweens).toBeInstanceOf(TweenCollection);
         expect(scene.msaaSamples).toEqual(4);
+        expect(scene.gpuCullingHint).toBe("never");
+        expect(scene.renderScheduler.enabled).toBe(false);
 
         const contextAttributes = scene.context._gl.getContextAttributes();
         // Do not check depth and antialias since they are requests not requirements
@@ -770,6 +774,248 @@ describe(
         expect(function () {
           return new Scene({});
         }).toThrowDeveloperError();
+      });
+
+      it("rejects asynchronous renderer policies before creating a context", function () {
+        const canvas = createCanvas(5, 5);
+        for (const renderer of ["auto", "webgpu", "webgpu-compat"]) {
+          expect(function () {
+            return new Scene({
+              canvas,
+              contextOptions: { renderer },
+            });
+          }).toThrowDeveloperError();
+        }
+        expect(function () {
+          return new Scene({
+            canvas,
+            contextOptions: { renderer: "invalid" },
+          });
+        }).toThrowDeveloperError();
+        document.body.removeChild(canvas);
+      });
+
+      it("createAsync creates one WebGL context with immutable diagnostics", async function () {
+        const canvas = createCanvas(5, 5);
+        const contextOptions = { renderer: "webgl" };
+        if (window.webglStub) {
+          contextOptions.getWebGLStub = getWebGLStub;
+        }
+
+        const asyncScene = await Scene.createAsync({
+          canvas,
+          contextOptions,
+        });
+
+        expect(asyncScene.canvas).toBe(canvas);
+        expect(asyncScene.contextCreationDiagnostics.requestedRenderer).toBe(
+          "webgl",
+        );
+        expect(asyncScene.contextCreationDiagnostics.resolvedRenderer).toBe(
+          "webgl",
+        );
+        expect(asyncScene.contextCreationDiagnostics.attempts.length).toBe(1);
+        expect(Object.isFrozen(asyncScene.contextCreationDiagnostics)).toBe(
+          true,
+        );
+        asyncScene.destroy();
+        document.body.removeChild(canvas);
+      });
+
+      it("createAsync rolls back late Scene construction exactly once", async function () {
+        const canvas = createCanvas(5, 5);
+        const parent = canvas.parentNode;
+        const parentChildCount = parent.childElementCount;
+        const requestListenerCount =
+          RequestScheduler.requestCompletedEvent.numberOfListeners;
+        const taskListenerCount =
+          TaskProcessor.taskCompletedEvent.numberOfListeners;
+        const registryCount = scene.contextRegistry.count;
+        const contextOptions = { renderer: "webgl" };
+        if (window.webglStub) {
+          contextOptions.getWebGLStub = getWebGLStub;
+        }
+
+        let contextDestroy;
+        let viewDestroy;
+        let creditDisplayDestroy;
+        let registryCountDuringConstruction;
+        let requestListenerCountDuringConstruction;
+        let taskListenerCountDuringConstruction;
+        const contextCallbackRemovals = [];
+
+        await expectAsync(
+          Scene.createAsync({
+            canvas,
+            contextOptions,
+            _constructionFailureForSpecs: function (phase, partialScene) {
+              expect(phase).toBe("afterGlobalListenersAndDefaultView");
+
+              registryCountDuringConstruction =
+                partialScene.contextRegistry.count;
+              requestListenerCountDuringConstruction =
+                RequestScheduler.requestCompletedEvent.numberOfListeners;
+              taskListenerCountDuringConstruction =
+                TaskProcessor.taskCompletedEvent.numberOfListeners;
+
+              contextDestroy = spyOn(
+                partialScene.context,
+                "destroy",
+              ).and.callThrough();
+              viewDestroy = spyOn(
+                partialScene._defaultView,
+                "destroy",
+              ).and.callThrough();
+              creditDisplayDestroy = spyOn(
+                partialScene.frameState.creditDisplay,
+                "destroy",
+              ).and.callThrough();
+
+              for (const property of [
+                "_hdrFallbackUnsub",
+                "_asyncResourceUnsub",
+                "_featureRendererReadinessUnsub",
+              ]) {
+                const remove = partialScene[property];
+                if (typeof remove === "function") {
+                  const removalSpy = jasmine
+                    .createSpy(property)
+                    .and.callFake(remove);
+                  partialScene[property] = removalSpy;
+                  contextCallbackRemovals.push(removalSpy);
+                }
+              }
+
+              throw new RuntimeError("injected Scene construction failure");
+            },
+          }),
+        ).toBeRejectedWithError(
+          RuntimeError,
+          "injected Scene construction failure",
+        );
+
+        expect(registryCountDuringConstruction).toBe(registryCount + 1);
+        expect(requestListenerCountDuringConstruction).toBe(
+          requestListenerCount + 1,
+        );
+        expect(taskListenerCountDuringConstruction).toBe(taskListenerCount + 1);
+        expect(contextDestroy).toHaveBeenCalledTimes(1);
+        expect(viewDestroy).toHaveBeenCalledTimes(1);
+        expect(creditDisplayDestroy).toHaveBeenCalledTimes(1);
+        expect(contextCallbackRemovals.length).toBeGreaterThan(0);
+        for (const removalSpy of contextCallbackRemovals) {
+          expect(removalSpy).toHaveBeenCalledTimes(1);
+        }
+        expect(RequestScheduler.requestCompletedEvent.numberOfListeners).toBe(
+          requestListenerCount,
+        );
+        expect(TaskProcessor.taskCompletedEvent.numberOfListeners).toBe(
+          taskListenerCount,
+        );
+        expect(scene.contextRegistry.count).toBe(registryCount);
+        expect(parent.childElementCount).toBe(parentChildCount);
+
+        document.body.removeChild(canvas);
+      });
+
+      it("createAsync rolls back resources when progress callbacks throw", async function () {
+        for (const failingProgress of [70, 100]) {
+          const canvas = createCanvas(5, 5);
+          const parent = canvas.parentNode;
+          const parentChildCount = parent.childElementCount;
+          const requestListenerCount =
+            RequestScheduler.requestCompletedEvent.numberOfListeners;
+          const taskListenerCount =
+            TaskProcessor.taskCompletedEvent.numberOfListeners;
+          const registryCount = scene.contextRegistry.count;
+          const contextOptions = { renderer: "webgl" };
+          if (window.webglStub) {
+            contextOptions.getWebGLStub = getWebGLStub;
+          }
+
+          await expectAsync(
+            Scene.createAsync({ canvas, contextOptions }, function (progress) {
+              if (progress === failingProgress) {
+                throw new RuntimeError(
+                  `injected ${failingProgress}% progress failure`,
+                );
+              }
+            }),
+          ).toBeRejectedWithError(
+            RuntimeError,
+            `injected ${failingProgress}% progress failure`,
+          );
+
+          expect(RequestScheduler.requestCompletedEvent.numberOfListeners).toBe(
+            requestListenerCount,
+          );
+          expect(TaskProcessor.taskCompletedEvent.numberOfListeners).toBe(
+            taskListenerCount,
+          );
+          expect(scene.contextRegistry.count).toBe(registryCount);
+          expect(parent.childElementCount).toBe(parentChildCount);
+          document.body.removeChild(canvas);
+        }
+      });
+
+      it("destroy drains mandatory owners after a resource throws", function () {
+        const requestListenerCount =
+          RequestScheduler.requestCompletedEvent.numberOfListeners;
+        const taskListenerCount =
+          TaskProcessor.taskCompletedEvent.numberOfListeners;
+        const registryCount = scene.contextRegistry.count;
+        const doomedScene = createScene();
+        const doomedCanvas = doomedScene.canvas;
+        const doomedContext = doomedScene.context;
+        const contextDestroy = spyOn(
+          doomedContext,
+          "destroy",
+        ).and.callThrough();
+        const shadowMapDestroy = spyOn(
+          doomedScene.shadowMap,
+          "destroy",
+        ).and.callThrough();
+        const invertClassificationDestroy = spyOn(
+          doomedScene._invertClassification,
+          "destroy",
+        ).and.callThrough();
+        doomedScene.skyBox = {
+          destroy: function () {
+            throw new RuntimeError("injected sky box destroy failure");
+          },
+        };
+
+        expect(function () {
+          doomedScene.destroy();
+        }).not.toThrow();
+
+        expect(doomedScene.isDestroyed()).toBe(true);
+        expect(shadowMapDestroy).toHaveBeenCalledTimes(1);
+        expect(invertClassificationDestroy).toHaveBeenCalledTimes(1);
+        expect(contextDestroy).toHaveBeenCalledTimes(1);
+        expect(doomedContext.isDestroyed()).toBe(true);
+        expect(RequestScheduler.requestCompletedEvent.numberOfListeners).toBe(
+          requestListenerCount,
+        );
+        expect(TaskProcessor.taskCompletedEvent.numberOfListeners).toBe(
+          taskListenerCount,
+        );
+        expect(scene.contextRegistry.count).toBe(registryCount);
+        document.body.removeChild(doomedCanvas);
+      });
+
+      it("requests a frame when a lazy feature renderer becomes ready", async function () {
+        const requestRender = spyOn(scene, "requestRender");
+        const key = FeatureRendererKey.GAUSSIAN_SPLAT;
+        scene.context.registerFeatureRendererLoader(key, async function () {
+          return { update: function () {} };
+        });
+
+        const loading = scene.context.getFeatureRendererReadiness(key);
+        expect(loading.kind).toBe("loading");
+        await loading.promise;
+
+        expect(requestRender).toHaveBeenCalled();
       });
 
       it("draws background color", function () {
@@ -1965,6 +2211,53 @@ describe(
       scene.render();
 
       expect(spyListener.calls.count()).toBe(1);
+    });
+
+    it("records full Scene.render CPU time only for an active performance trace", function () {
+      let now = 0.0;
+      spyOn(performance, "now").and.callFake(function () {
+        return now;
+      });
+
+      // These event boundaries prove that the measurement starts before
+      // preUpdate and ends after postRender, rather than timing only the
+      // backend submission portion of the frame.
+      scene.preUpdate.addEventListener(function () {
+        now = 4.0;
+      });
+      scene.postRender.addEventListener(function () {
+        now = 11.0;
+      });
+
+      const sampleSpy = spyOn(
+        scene.performanceTracker,
+        "sample",
+      ).and.callThrough();
+      spyOn(scene.context, "getRendererStatistics").and.returnValue({
+        timestamps: {
+          frameMs: 9.0,
+          profiledPassMs: 7.0,
+          unprofiledMs: 2.0,
+          coverageRatio: 7.0 / 9.0,
+        },
+      });
+      scene.render();
+      expect(sampleSpy).not.toHaveBeenCalled();
+
+      now = 0.0;
+      scene.beginPerformanceTrace("scene-render-cpu", { frames: 1 });
+      scene.render();
+      const result = scene.endPerformanceTrace();
+
+      expect(sampleSpy.calls.count()).toBe(1);
+      expect(result.samples.length).toBe(1);
+      expect(result.samples[0].cpuMs).toBe(11.0);
+      expect(result.samples[0].gpuMs).toBe(9.0);
+      expect(result.samples[0].gpuProfiledPassMs).toBe(7.0);
+      expect(result.samples[0].gpuUnprofiledMs).toBe(2.0);
+      expect(result.samples[0].gpuCoverageRatio).toBe(7.0 / 9.0);
+      expect(result.summary.cpuMs.count).toBe(1);
+      expect(result.summary.cpuMs.avg).toBe(11.0);
     });
 
     it("raises the cameraMoveStart event after moving the camera", function () {

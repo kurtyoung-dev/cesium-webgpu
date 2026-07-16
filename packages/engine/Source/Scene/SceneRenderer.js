@@ -7,6 +7,7 @@ import PerspectiveFrustum from "../Core/PerspectiveFrustum.js";
 import PerspectiveOffCenterFrustum from "../Core/PerspectiveOffCenterFrustum.js";
 import ClearCommand from "../Renderer/ClearCommand.js";
 import Pass from "../Renderer/Pass.js";
+import { normalizeCommandOrderingList } from "../Renderer/CommandOrdering.js";
 import {
   backToFront,
   backToFrontSplats,
@@ -140,6 +141,7 @@ function performVoxelsPass(scene, passState, frustumCommands) {
   const commands = frustumCommands.commands[Pass.VOXELS];
   commands.length = frustumCommands.indices[Pass.VOXELS];
 
+  normalizeCommandOrderingList(commands);
   mergeSort(commands, backToFront, scene.camera.positionWC);
 
   for (let i = 0; i < commands.length; ++i) {
@@ -153,6 +155,7 @@ function performGaussianSplatPass(scene, passState, frustumCommands) {
   const commands = frustumCommands.commands[Pass.GAUSSIAN_SPLATS];
   commands.length = frustumCommands.indices[Pass.GAUSSIAN_SPLATS];
 
+  normalizeCommandOrderingList(commands);
   mergeSort(commands, backToFrontSplats, scene.camera.positionWC);
 
   for (let i = 0; i < commands.length; ++i) {
@@ -170,7 +173,7 @@ function createWorkingFrustum(camera) {
   if (defined(frustum.fov)) {
     return frustum.clone(scratchPerspectiveFrustum);
   }
-  if (defined(frustum.infiniteProjectionMatrix)) {
+  if (typeof frustum.getInfiniteProjectionMatrix === "function") {
     return frustum.clone(scratchPerspectiveOffCenterFrustum);
   }
   if (defined(frustum.width)) {

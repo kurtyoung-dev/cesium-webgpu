@@ -207,6 +207,36 @@ function buildResources(context, cache) {
 }
 
 /**
+ * Prepares the immutable WebGL resources for the bright-star catalog without
+ * submitting a draw or touching per-frame uniforms. This lets a daylight
+ * frame warm the renderer so the first contributing twilight/night frame
+ * does not synchronously create buffers, the VAO, or the shader program.
+ *
+ * @param {StarField} starField The backend-agnostic starfield primitive.
+ * @param {FrameState} frameState
+ * @private
+ */
+function prepareWebGLStarField(starField, frameState) {
+  if (!starField.show) {
+    return;
+  }
+
+  const context = frameState.context;
+  if (!defined(context)) {
+    return;
+  }
+
+  if (!defined(starField._webglCache)) {
+    starField._webglCache = {};
+  }
+  const cache = starField._webglCache;
+
+  if (!defined(cache.vertexArray)) {
+    buildResources(context, cache);
+  }
+}
+
+/**
  * Updates the WebGL starfield: builds GL resources once, refreshes the
  * per-frame uniforms, and returns one instanced draw command. The caller
  * ({@link StarField#update} → Scene → {@link EnvironmentRenderer}) executes
@@ -226,14 +256,23 @@ function updateWebGLStarField(starField, frameState) {
     return undefined;
   }
 
-  if (!defined(starField._webglCache)) {
-    starField._webglCache = {};
-  }
-  const cache = starField._webglCache;
+  // Prepare immutable resources even when this frame contributes exactly
+  // zero. The zero path remains free of per-frame uniform work and command
+  // creation while avoiding a cold synchronous resource build at dusk.
+  prepareWebGLStarField(starField, frameState);
 
-  if (!defined(cache.vertexArray)) {
-    buildResources(context, cache);
+  const effectiveIntensityScale = defined(starField._effectiveIntensityScale)
+    ? starField._effectiveIntensityScale
+    : starField._intensity *
+      computeStarDayFade(
+        context.uniformState.sunDirectionWC,
+        frameState.camera?.positionWC,
+      );
+  if (effectiveIntensityScale === 0.0) {
+    return undefined;
   }
+
+  const cache = starField._webglCache;
 
   // Per-frame uniforms. Aspect-corrected point half-size in NDC from the
   // projection focal terms (proj[0] horizontal, proj[5] vertical) so a
@@ -245,11 +284,7 @@ function updateWebGLStarField(starField, frameState) {
   cache.pointSizeX = angularRadius * Math.abs(proj[0]);
   cache.pointSizeY = angularRadius * Math.abs(proj[5]);
 
-  const dayFade = computeStarDayFade(
-    uniformState.sunDirectionWC,
-    frameState.camera?.positionWC,
-  );
-  cache.intensityScale = starField._intensity * dayFade;
+  cache.intensityScale = effectiveIntensityScale;
   cache.minPointSize = starField._minPointSize;
 
   // C7-SUN-STARS-EXTINCTION — per-frame zenith transmittance + camera up
@@ -357,12 +392,14 @@ function destroyWebGLStarFieldResources(starField) {
 }
 
 export {
+  prepareWebGLStarField,
   updateWebGLStarField,
   getWebGLStarFieldStatistics,
   destroyWebGLStarFieldResources,
 };
 
 export default {
+  prepareWebGLStarField,
   updateWebGLStarField,
   getWebGLStarFieldStatistics,
   destroyWebGLStarFieldResources,

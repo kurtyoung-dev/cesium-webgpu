@@ -2,11 +2,11 @@ import {
   Cartesian3,
   Cartographic,
   Color,
-  ContextLimits,
   CubeMap,
   DynamicAtmosphereLightingType,
   DynamicEnvironmentMapManager,
   Ellipsoid,
+  GraphicsCapabilities,
   JulianDate,
   Math as CesiumMath,
   TextureMinificationFilter,
@@ -79,20 +79,23 @@ describe("Scene/DynamicEnvironmentMapManager", function () {
     () => {
       const time = JulianDate.fromIso8601("2024-08-30T10:45:00Z");
 
-      let scene, originalMaximumCubeMapSize, manager;
+      let scene, manager;
 
       beforeAll(() => {
         scene = createScene({
           skyBox: false,
         });
-        originalMaximumCubeMapSize = ContextLimits.maximumCubeMapSize;
         // To keep tests fast, don't throttle
-        ContextLimits._maximumCubeMapSize = Number.POSITIVE_INFINITY;
+        scene.context._graphicsCapabilities = GraphicsCapabilities.create({
+          ...scene.context.graphicsCapabilities,
+          maximumCubeMapSize: Number.POSITIVE_INFINITY,
+          ktx2TranscodeTargets:
+            scene.context.graphicsCapabilities.ktx2TranscodeTargets,
+        });
       });
 
       afterAll(() => {
         scene.destroyForSpecs();
-        ContextLimits._maximumCubeMapSize = originalMaximumCubeMapSize;
       });
 
       afterEach(() => {

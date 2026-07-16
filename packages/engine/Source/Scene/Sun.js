@@ -15,7 +15,10 @@ import BufferUsage from "../Renderer/BufferUsage.js";
 import ComputeCommand from "../Renderer/ComputeCommand.js";
 import DrawCommand from "../Renderer/DrawCommand.js";
 import Ellipsoid from "../Core/Ellipsoid.js";
-import computeAtmosphereExtinction from "./computeAtmosphereExtinction.js";
+import {
+  computeAtmosphereExtinctionCached,
+  createAtmosphereExtinctionCache,
+} from "./computeAtmosphereExtinction.js";
 import PixelDatatype from "../Renderer/PixelDatatype.js";
 import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
@@ -79,6 +82,7 @@ class Sun {
     // sun byte-identical (color * 1.0), so the effect is inert until the
     // sky atmosphere is visible and the sun sits low over the horizon.
     this._atmosphereExtinction = Cartesian3.clone(Cartesian3.ONE);
+    this._atmosphereExtinctionCache = createAtmosphereExtinctionCache();
 
     const that = this;
     this._uniformMap = {
@@ -140,24 +144,23 @@ class Sun {
     // read the same transmittance.
     const uniformState = frameState.context.uniformState;
     const sunPositionWC = uniformState.sunPositionWC;
-    let extinction = scratchExtinctionOne;
     const camPos = defined(frameState.camera)
       ? frameState.camera.positionWC
       : undefined;
-    if (
+    const extinctionEnabled =
       frameState.skyAtmosphereVisible === true &&
       defined(frameState.atmosphere) &&
       defined(camPos) &&
-      defined(sunPositionWC)
-    ) {
-      extinction = computeAtmosphereExtinction(
-        scratchExtinction,
-        camPos,
-        sunPositionWC,
-        frameState.atmosphere,
-        Ellipsoid.default.maximumRadius,
-      );
-    }
+      defined(sunPositionWC);
+    const extinction = computeAtmosphereExtinctionCached(
+      this._atmosphereExtinctionCache,
+      scratchExtinction,
+      extinctionEnabled,
+      camPos,
+      sunPositionWC,
+      frameState.atmosphere,
+      Ellipsoid.default.maximumRadius,
+    );
     frameState.sunAtmosphereExtinction = Cartesian3.clone(
       extinction,
       frameState.sunAtmosphereExtinction,
@@ -432,10 +435,9 @@ const scratchPositionWC = new Cartesian2();
 const scratchLimbWC = new Cartesian2();
 const scratchPositionEC = new Cartesian4();
 const scratchCartesian4 = new Cartesian4();
-// C7-SUN-STARS-EXTINCTION scratch. `scratchExtinctionOne` is the identity
-// transmittance returned when the atmosphere is hidden / from orbit.
+// C7-SUN-STARS-EXTINCTION scratch. The exact-input cache writes identity when
+// the atmosphere gate is disabled and reuses this result object every frame.
 const scratchExtinction = new Cartesian3();
-const scratchExtinctionOne = new Cartesian3(1.0, 1.0, 1.0);
 
 // Batch 247 — return shape for the feature-renderer (WebGPU) path:
 // mirrors the WebGL `{ drawCommand, computeCommand }` pair so Scene

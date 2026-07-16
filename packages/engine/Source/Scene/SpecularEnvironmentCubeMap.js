@@ -28,6 +28,7 @@ class SpecularEnvironmentCubeMap {
 
     this._loading = false;
     this._ready = false;
+    this._targetKey = undefined;
 
     this._errorEvent = new Event();
   }
@@ -43,6 +44,17 @@ class SpecularEnvironmentCubeMap {
    */
   update(frameState) {
     const { context } = frameState;
+    const targetFormats = context.graphicsCapabilities.ktx2TranscodeTargets;
+    const targetKey = targetFormats.cacheKey;
+
+    if (defined(this._targetKey) && this._targetKey !== targetKey) {
+      this._texture = this._texture?.destroy();
+      this._cubeMapBuffers = undefined;
+      this._maximumMipmapLevel = undefined;
+      this._loading = false;
+      this._ready = false;
+    }
+    this._targetKey = targetKey;
 
     if (!SpecularEnvironmentCubeMap.isSupported(context)) {
       return;
@@ -66,12 +78,19 @@ class SpecularEnvironmentCubeMap {
     const cubeMapBuffers = this._cubeMapBuffers;
     if (!defined(cubeMapBuffers) && !this._loading) {
       const that = this;
-      loadKTX2(this._url)
+      const requestKey = targetKey;
+      loadKTX2(this._url, targetFormats)
         .then(function (buffers) {
+          if (that._targetKey !== requestKey) {
+            return;
+          }
           that._cubeMapBuffers = buffers;
           that._loading = false;
         })
         .catch(function (error) {
+          if (that._targetKey !== requestKey) {
+            return;
+          }
           if (that.isDestroyed()) {
             return;
           }

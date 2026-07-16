@@ -3,8 +3,12 @@ import destroyObject from "../Core/destroyObject.js";
 import Cartesian3 from "../Core/Cartesian3.js";
 import Ellipsoid from "../Core/Ellipsoid.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
-import computeAtmosphereExtinction from "./computeAtmosphereExtinction.js";
+import {
+  computeAtmosphereExtinctionCached,
+  createAtmosphereExtinctionCache,
+} from "./computeAtmosphereExtinction.js";
 import SceneMode from "./SceneMode.js";
+import { computeStarDayFade } from "./StarFieldMath.js";
 
 /**
  * A real bright-star catalog starfield (Track V-C, NEW-STARS-BRIGHT-CATALOG).
@@ -75,10 +79,18 @@ class StarField {
     // the draw onto the command list (WebGPU), false otherwise (WebGL).
     this._wasBinned = false;
 
+    // Backend-neutral effective scale for the current render update. Keeping
+    // this on the primitive lets both renderers consume the exact same daytime
+    // gate without repeating the camera/sun calculation.
+    this._effectiveIntensityScale = 0.0;
+    this._atmosphereExtinctionCache = createAtmosphereExtinctionCache();
+
     // C7-SUN-STARS-EXTINCTION debug mirror of the per-frame zenith
     // transmittance (undefined when the effect is disabled). Read by the
     // acceptance probe; the renderers use frameState.starZenithTransmittance.
     this._zenithTransmittance = undefined;
+    this._zenithTransmittanceStorage = undefined;
+    this._frameStateZenithTransmittanceStorage = undefined;
   }
 
   /**
@@ -123,19 +135,28 @@ class StarField {
    */
   update(frameState) {
     this._wasBinned = false;
-    if (!this.show) {
-      return undefined;
-    }
-
+    this._effectiveIntensityScale = 0.0;
     const { mode, passes } = frameState;
     // Stars are only meaningful in 3D / morph (like SkyBox). 2D / Columbus
     // View have no celestial sphere.
-    if (mode !== SceneMode.SCENE3D && mode !== SceneMode.MORPHING) {
+    if (
+      !this.show ||
+      (mode !== SceneMode.SCENE3D && mode !== SceneMode.MORPHING) ||
+      !passes.render
+    ) {
+      clearPublishedStarExtinction(this, frameState);
       return undefined;
     }
-    if (!passes.render) {
-      return undefined;
-    }
+
+    const context = frameState.context;
+    const effectiveIntensityScale =
+      this._intensity *
+      computeStarDayFade(
+        context?.uniformState?.sunDirectionWC,
+        frameState.camera?.positionWC,
+      );
+    this._effectiveIntensityScale = effectiveIntensityScale;
+    const zeroContribution = effectiveIntensityScale === 0.0;
 
     // C7-SUN-STARS-EXTINCTION — publish the ZENITH atmospheric transmittance
     // so the backend starfield renderers can extinguish stars per direction.
@@ -147,52 +168,70 @@ class StarField {
     // crosses the shell), so from-orbit / atmosphere-hidden stays byte-
     // identical (pow(1, x) === 1). This shared helper is the SAME integrator
     // the Moon (B629) and Sun use, keeping all three consistent.
-    const camPos = defined(frameState.camera)
-      ? frameState.camera.positionWC
-      : undefined;
-    if (
-      frameState.skyAtmosphereVisible === true &&
-      defined(frameState.atmosphere) &&
-      defined(camPos)
-    ) {
-      const camLen = Cartesian3.magnitude(camPos);
-      if (camLen > 1.0) {
-        // Synthesize a far "body" straight up (local zenith) so the shared
-        // integrator returns the vertical-column transmittance.
-        Cartesian3.divideByScalar(camPos, camLen, scratchZenithDir);
-        Cartesian3.multiplyByScalar(scratchZenithDir, 1.0e9, scratchZenithBody);
-        Cartesian3.add(camPos, scratchZenithBody, scratchZenithBody);
-        const t = computeAtmosphereExtinction(
-          scratchZenithT,
-          camPos,
-          scratchZenithBody,
-          frameState.atmosphere,
-          Ellipsoid.default.maximumRadius,
-        );
-        frameState.starZenithTransmittance = Cartesian3.clone(
-          t,
-          frameState.starZenithTransmittance,
-        );
+    if (!zeroContribution) {
+      const camPos = defined(frameState.camera)
+        ? frameState.camera.positionWC
+        : undefined;
+      const extinctionEnabled =
+        frameState.skyAtmosphereVisible === true &&
+        defined(frameState.atmosphere) &&
+        defined(camPos);
+      let hasZenithBody = false;
+      if (extinctionEnabled) {
+        const camLen = Cartesian3.magnitude(camPos);
+        if (camLen > 1.0) {
+          // Synthesize a far "body" straight up (local zenith) so the shared
+          // integrator returns the vertical-column transmittance.
+          Cartesian3.divideByScalar(camPos, camLen, scratchZenithDir);
+          Cartesian3.multiplyByScalar(
+            scratchZenithDir,
+            1.0e9,
+            scratchZenithBody,
+          );
+          Cartesian3.add(camPos, scratchZenithBody, scratchZenithBody);
+          hasZenithBody = true;
+        }
+      }
+      const t = computeAtmosphereExtinctionCached(
+        this._atmosphereExtinctionCache,
+        scratchZenithT,
+        extinctionEnabled && hasZenithBody,
+        camPos,
+        hasZenithBody ? scratchZenithBody : undefined,
+        frameState.atmosphere,
+        Ellipsoid.default.maximumRadius,
+      );
+      if (extinctionEnabled && hasZenithBody) {
+        if (!defined(this._frameStateZenithTransmittanceStorage)) {
+          this._frameStateZenithTransmittanceStorage = new Cartesian3();
+        }
+        if (!defined(this._zenithTransmittanceStorage)) {
+          this._zenithTransmittanceStorage = new Cartesian3();
+        }
+        Cartesian3.clone(t, this._frameStateZenithTransmittanceStorage);
+        Cartesian3.clone(t, this._zenithTransmittanceStorage);
+        frameState.starZenithTransmittance =
+          this._frameStateZenithTransmittanceStorage;
         // Debug mirror (read by probe-sun-stars-extinction). Not consumed by
         // the renderers — they read frameState.starZenithTransmittance.
-        this._zenithTransmittance = Cartesian3.clone(
-          t,
-          this._zenithTransmittance,
-        );
+        this._zenithTransmittance = this._zenithTransmittanceStorage;
       } else {
-        frameState.starZenithTransmittance = undefined;
-        this._zenithTransmittance = undefined;
+        clearPublishedStarExtinction(this, frameState);
       }
     } else {
-      frameState.starZenithTransmittance = undefined;
-      this._zenithTransmittance = undefined;
+      clearPublishedStarExtinction(this, frameState);
     }
 
-    const context = frameState.context;
     if (!defined(context) || typeof context.getFeatureRenderer !== "function") {
       return undefined;
     }
     const fr = context.getFeatureRenderer(FeatureRendererKey.STAR_FIELD);
+    if (zeroContribution) {
+      if (defined(fr) && typeof fr.prepare === "function") {
+        fr.prepare(this, frameState);
+      }
+      return undefined;
+    }
     if (defined(fr) && typeof fr.update === "function") {
       const commandList = frameState.commandList;
       const lengthBefore = commandList.length;
@@ -258,6 +297,11 @@ class StarField {
     }
     return destroyObject(this);
   }
+}
+
+function clearPublishedStarExtinction(starField, frameState) {
+  frameState.starZenithTransmittance = undefined;
+  starField._zenithTransmittance = undefined;
 }
 
 // C7-SUN-STARS-EXTINCTION scratch — zenith direction, synthesized far body,

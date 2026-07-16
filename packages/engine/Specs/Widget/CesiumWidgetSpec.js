@@ -303,6 +303,251 @@ describe(
       );
     });
 
+    it("rejects asynchronous renderer policies without leaving DOM state", function () {
+      const childCount = container.childElementCount;
+      expect(function () {
+        return new CesiumWidget(container, {
+          contextOptions: { renderer: "auto" },
+        });
+      }).toThrowDeveloperError();
+      expect(container.childElementCount).toBe(childCount);
+    });
+
+    it("createAsync transfers one WebGL canvas/context into the final widget", async function () {
+      const contextOptions = { renderer: "webgl" };
+      if (window.webglStub) {
+        contextOptions.getWebGLStub = getWebGLStub;
+      }
+
+      widget = await CesiumWidget.createAsync(container, {
+        contextOptions,
+        baseLayer: false,
+        useDefaultRenderLoop: false,
+      });
+
+      expect(container.querySelectorAll(".cesium-widget").length).toBe(1);
+      expect(container.querySelectorAll("canvas").length).toBe(1);
+      expect(widget.scene.canvas).toBe(widget.canvas);
+      expect(widget.scene.context.canvas).toBe(widget.canvas);
+      expect(widget.scene.contextCreationDiagnostics.resolvedRenderer).toBe(
+        "webgl",
+      );
+    });
+
+    it("createAsync rolls back a late widget failure and its queued render loop", async function () {
+      const originalChildren = new Set(container.childNodes);
+      const callbacks = [];
+      spyOn(window, "requestAnimationFrame").and.callFake(function (callback) {
+        callbacks.push(callback);
+        return callbacks.length;
+      });
+
+      let transaction;
+      const createContext = CesiumWidget._createAsyncContext;
+      spyOn(CesiumWidget, "_createAsyncContext").and.callFake(async function (
+        ...args
+      ) {
+        transaction = await createContext(...args);
+        return transaction;
+      });
+
+      const contextOptions = { renderer: "webgl" };
+      if (window.webglStub) {
+        contextOptions.getWebGLStub = getWebGLStub;
+      }
+
+      let constructionError;
+      try {
+        await CesiumWidget.createAsync(container, {
+          contextOptions,
+          baseLayer: false,
+          showRenderLoopErrors: false,
+          // useDefaultRenderLoop starts RAF immediately; this validation then
+          // fails, exercising rollback after Scene + handler allocation.
+          targetFrameRate: 0,
+        });
+      } catch (error) {
+        constructionError = error;
+      }
+
+      expect(constructionError).toBeDefined();
+      expect(constructionError.message).toContain(
+        "targetFrameRate must be greater than 0",
+      );
+      expect(transaction.context.isDestroyed()).toBe(true);
+      expect(callbacks.length).toBe(1);
+      expect(Array.from(container.childNodes)).toEqual(
+        Array.from(originalChildren),
+      );
+
+      // The already-queued callback observes destroyObject's isDestroyed()
+      // sentinel and does not render or schedule another frame.
+      callbacks[0](0);
+      expect(window.requestAnimationFrame).toHaveBeenCalledTimes(1);
+    });
+
+    it("createAsync rolls back Scene allocation when terrain options conflict", async function () {
+      const originalChildren = new Set(container.childNodes);
+      let transaction;
+      const createContext = CesiumWidget._createAsyncContext;
+      spyOn(CesiumWidget, "_createAsyncContext").and.callFake(async function (
+        ...args
+      ) {
+        transaction = await createContext(...args);
+        return transaction;
+      });
+
+      const contextOptions = { renderer: "webgl" };
+      if (window.webglStub) {
+        contextOptions.getWebGLStub = getWebGLStub;
+      }
+
+      let constructionError;
+      try {
+        await CesiumWidget.createAsync(container, {
+          contextOptions,
+          baseLayer: false,
+          useDefaultRenderLoop: false,
+          showRenderLoopErrors: false,
+          terrain: {},
+          terrainProvider: new EllipsoidTerrainProvider(),
+        });
+      } catch (error) {
+        constructionError = error;
+      }
+
+      expect(constructionError).toBeDefined();
+      expect(constructionError.message).toContain(
+        "Specify either options.terrainProvider or options.terrain",
+      );
+      expect(transaction.context.isDestroyed()).toBe(true);
+      expect(Array.from(container.childNodes)).toEqual(
+        Array.from(originalChildren),
+      );
+    });
+
+    it("createAsync destroys an acquired widget when final progress throws without sweeping caller DOM", async function () {
+      const callerChild = document.createElement("span");
+      let transaction;
+      const createContext = CesiumWidget._createAsyncContext;
+      spyOn(CesiumWidget, "_createAsyncContext").and.callFake(async function (
+        ...args
+      ) {
+        transaction = await createContext(...args);
+        return transaction;
+      });
+
+      const contextOptions = { renderer: "webgl" };
+      if (window.webglStub) {
+        contextOptions.getWebGLStub = getWebGLStub;
+      }
+
+      let constructionError;
+      try {
+        await CesiumWidget.createAsync(
+          container,
+          {
+            contextOptions,
+            baseLayer: false,
+            useDefaultRenderLoop: false,
+            showRenderLoopErrors: false,
+          },
+          function (progress) {
+            if (progress === 10) {
+              container.appendChild(callerChild);
+            } else if (progress === 100) {
+              throw new Error("injected final progress failure");
+            }
+          },
+        );
+      } catch (error) {
+        constructionError = error;
+      }
+
+      expect(constructionError.message).toBe("injected final progress failure");
+      expect(transaction.context.isDestroyed()).toBe(true);
+      expect(callerChild.parentNode).toBe(container);
+      expect(container.querySelector(".cesium-widget")).toBeNull();
+    });
+
+    it("createAsync rolls back explicitly owned DOM for an invalid creditViewport", async function () {
+      const callerChild = document.createElement("span");
+      container.appendChild(callerChild);
+      let transaction;
+      const createContext = CesiumWidget._createAsyncContext;
+      spyOn(CesiumWidget, "_createAsyncContext").and.callFake(async function (
+        ...args
+      ) {
+        transaction = await createContext(...args);
+        return transaction;
+      });
+
+      const contextOptions = { renderer: "webgl" };
+      if (window.webglStub) {
+        contextOptions.getWebGLStub = getWebGLStub;
+      }
+
+      let constructionError;
+      try {
+        await CesiumWidget.createAsync(container, {
+          contextOptions,
+          baseLayer: false,
+          useDefaultRenderLoop: false,
+          showRenderLoopErrors: false,
+          creditContainer: container,
+          creditViewport: "missing-credit-viewport",
+        });
+      } catch (error) {
+        constructionError = error;
+      }
+
+      expect(constructionError).toBeDefined();
+      expect(transaction.context.isDestroyed()).toBe(true);
+      expect(Array.from(container.childNodes)).toEqual([callerChild]);
+    });
+
+    it("falls back to context destruction when Scene.destroy throws", function () {
+      widget = createCesiumWidget(container, {
+        baseLayer: false,
+        useDefaultRenderLoop: false,
+      });
+      const scene = widget.scene;
+      const context = scene.context;
+      spyOn(scene, "destroy").and.throwError("injected Scene destroy failure");
+
+      expect(function () {
+        widget.destroy();
+      }).not.toThrow();
+
+      expect(widget.isDestroyed()).toBe(true);
+      expect(context.isDestroyed()).toBe(true);
+    });
+
+    it("keeps tracking until the final data source sharing an EntityCollection is removed", async function () {
+      const dataSources = new DataSourceCollection();
+      const first = new MockDataSource();
+      const second = new MockDataSource();
+      second.entities = first.entities;
+      const entity = first.entities.add(new Entity());
+      await dataSources.add(first);
+      await dataSources.add(second);
+
+      widget = createCesiumWidget(container, {
+        dataSources,
+        baseLayer: false,
+        useDefaultRenderLoop: false,
+      });
+      widget.trackedEntity = entity;
+
+      expect(dataSources.remove(first)).toBe(true);
+      expect(widget.trackedEntity).toBe(entity);
+      expect(dataSources.remove(second)).toBe(true);
+      expect(widget.trackedEntity).toBeUndefined();
+
+      widget.destroy();
+      dataSources.destroy();
+    });
+
     it("can disable Order Independent Translucency", function () {
       widget = createCesiumWidget(container, {
         orderIndependentTranslucency: false,

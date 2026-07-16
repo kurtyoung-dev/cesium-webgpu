@@ -1,6 +1,9 @@
 import {
+  Atmosphere,
   BoundingSphere,
+  Cartesian3,
   Color,
+  Ellipsoid,
   Math as CesiumMath,
   SceneMode,
   Sun,
@@ -35,6 +38,54 @@ describe(
       const sunPosition = uniformState.sunPositionWC;
       const bounds = new BoundingSphere(sunPosition, CesiumMath.SOLAR_RADIUS);
       camera.viewBoundingSphere(bounds);
+    }
+
+    function createFeatureRendererHarness() {
+      const innerRadius = Ellipsoid.default.maximumRadius;
+      const drawCommand = {};
+      const featureRenderer = {
+        update: jasmine
+          .createSpy("featureRenderer.update")
+          .and.callFake(function (_sun, _frameState, commandList) {
+            commandList.push(drawCommand);
+          }),
+      };
+      const frameState = {
+        mode: SceneMode.SCENE3D,
+        passes: {
+          render: true,
+        },
+        context: {
+          uniformState: {
+            sunPositionWC: new Cartesian3(
+              innerRadius + 1000.0,
+              384400000.0,
+              0.0,
+            ),
+          },
+          getFeatureRenderer: jasmine
+            .createSpy("getFeatureRenderer")
+            .and.returnValue(featureRenderer),
+        },
+        camera: {
+          positionWC: new Cartesian3(innerRadius + 1000.0, 0.0, 0.0),
+        },
+        commandList: [],
+        skyAtmosphereVisible: true,
+        atmosphere: new Atmosphere(),
+      };
+
+      return {
+        featureRenderer: featureRenderer,
+        frameState: frameState,
+      };
+    }
+
+    function updateWithFeatureRenderer(sun, frameState) {
+      const commands = sun.update(frameState);
+      expect(commands.drawCommand).toBe(
+        frameState.commandList[frameState.commandList.length - 1],
+      );
     }
 
     it("draws in 3D", function () {
@@ -103,6 +154,99 @@ describe(
 
       viewSun(scene.camera, scene.context.uniformState);
       expect(scene).notToRender(backgroundColor);
+    });
+
+    it("uses the exact-input extinction cache through the feature-renderer path", function () {
+      const sun = new Sun();
+      const harness = createFeatureRendererHarness();
+      const frameState = harness.frameState;
+
+      updateWithFeatureRenderer(sun, frameState);
+      expect(sun._atmosphereExtinctionCache.computations).toBe(1);
+      expect(sun._atmosphereExtinctionCache.hits).toBe(0);
+      expect(frameState.sunAtmosphereExtinction).not.toEqual(Cartesian3.ONE);
+
+      const frameStateResult = frameState.sunAtmosphereExtinction;
+      const primitiveResult = sun._atmosphereExtinction;
+      const expected = Cartesian3.clone(frameStateResult);
+      frameStateResult.x = -1.0;
+      primitiveResult.y = -1.0;
+
+      updateWithFeatureRenderer(sun, frameState);
+
+      expect(sun._atmosphereExtinctionCache.computations).toBe(1);
+      expect(sun._atmosphereExtinctionCache.hits).toBe(1);
+      expect(frameState.sunAtmosphereExtinction).toBe(frameStateResult);
+      expect(sun._atmosphereExtinction).toBe(primitiveResult);
+      expect(frameStateResult).not.toBe(primitiveResult);
+      expect(frameStateResult).toEqual(expected);
+      expect(primitiveResult).toEqual(expected);
+      expect(harness.featureRenderer.update).toHaveBeenCalledTimes(2);
+    });
+
+    it("invalidates Sun extinction for exact public scalar and in-place vector mutations", function () {
+      const sun = new Sun();
+      const frameState = createFeatureRendererHarness().frameState;
+
+      updateWithFeatureRenderer(sun, frameState);
+      const frameStateResult = frameState.sunAtmosphereExtinction;
+      const primitiveResult = sun._atmosphereExtinction;
+      const mutations = [
+        function () {
+          frameState.camera.positionWC.x += 1.0;
+        },
+        function () {
+          frameState.context.uniformState.sunPositionWC.y += 1.0;
+        },
+        function () {
+          frameState.atmosphere.rayleighScaleHeight += 1.0;
+        },
+      ];
+
+      for (let i = 0; i < mutations.length; ++i) {
+        mutations[i]();
+        updateWithFeatureRenderer(sun, frameState);
+        expect(sun._atmosphereExtinctionCache.computations)
+          .withContext(`public scalar mutation ${i}`)
+          .toBe(i + 2);
+        expect(frameState.sunAtmosphereExtinction).toBe(frameStateResult);
+        expect(sun._atmosphereExtinction).toBe(primitiveResult);
+      }
+
+      const previousRed = frameStateResult.x;
+      frameState.atmosphere.rayleighCoefficient.x *= 2.0;
+      updateWithFeatureRenderer(sun, frameState);
+
+      expect(sun._atmosphereExtinctionCache.computations).toBe(5);
+      expect(frameStateResult.x).not.toBe(previousRed);
+      expect(primitiveResult).toEqual(frameStateResult);
+    });
+
+    it("publishes exact identity while atmosphere is hidden and recomputes when restored", function () {
+      const sun = new Sun();
+      const frameState = createFeatureRendererHarness().frameState;
+
+      updateWithFeatureRenderer(sun, frameState);
+      const enabledResult = Cartesian3.clone(
+        frameState.sunAtmosphereExtinction,
+      );
+      expect(enabledResult).not.toEqual(Cartesian3.ONE);
+
+      frameState.skyAtmosphereVisible = false;
+      updateWithFeatureRenderer(sun, frameState);
+      expect(frameState.sunAtmosphereExtinction).toEqual(Cartesian3.ONE);
+      expect(sun._atmosphereExtinction).toEqual(Cartesian3.ONE);
+      expect(sun._atmosphereExtinctionCache.computations).toBe(1);
+
+      updateWithFeatureRenderer(sun, frameState);
+      expect(frameState.sunAtmosphereExtinction).toEqual(Cartesian3.ONE);
+      expect(sun._atmosphereExtinctionCache.hits).toBe(1);
+
+      frameState.skyAtmosphereVisible = true;
+      updateWithFeatureRenderer(sun, frameState);
+      expect(sun._atmosphereExtinctionCache.computations).toBe(2);
+      expect(frameState.sunAtmosphereExtinction).toEqual(enabledResult);
+      expect(sun._atmosphereExtinction).toEqual(enabledResult);
     });
 
     it("isDestroyed", function () {

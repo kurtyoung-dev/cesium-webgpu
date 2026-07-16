@@ -30,16 +30,40 @@ import {
   FullscreenButton,
   Geocoder,
   HomeButton,
+  LoadingOverlay,
   NavigationHelpButton,
   SceneModePicker,
   SelectionIndicator,
   Timeline,
+  Viewer,
 } from "../../index.js";
 
 import createViewer from "../createViewer.js";
 import DomEventSimulator from "../../../../Specs/DomEventSimulator.js";
+import getWebGLStub from "../../../../Specs/getWebGLStub.js";
 import MockDataSource from "../../../../Specs/MockDataSource.js";
 import pollToPromise from "../../../../Specs/pollToPromise.js";
+
+function getMinimalDataSourceViewerOptions(dataSources) {
+  return {
+    dataSources,
+    baseLayerPicker: false,
+    baseLayer: false,
+    globe: false,
+    geocoder: false,
+    homeButton: false,
+    sceneModePicker: false,
+    projectionPicker: false,
+    navigationHelpButton: false,
+    animation: false,
+    timeline: false,
+    fullscreenButton: false,
+    vrButton: false,
+    selectionIndicator: false,
+    infoBox: false,
+    useDefaultRenderLoop: false,
+  };
+}
 
 describe(
   "Widgets/Viewer/Viewer",
@@ -483,6 +507,333 @@ describe(
       expect(contextAttributes.preserveDrawingBuffer).toEqual(
         webglOptions.preserveDrawingBuffer,
       );
+    });
+
+    it("rejects asynchronous renderer policies without leaving DOM state", function () {
+      const childCount = container.childElementCount;
+      expect(function () {
+        return new Viewer(container, {
+          contextOptions: { renderer: "auto" },
+        });
+      }).toThrowDeveloperError();
+      expect(container.childElementCount).toBe(childCount);
+    });
+
+    it("createAsync constructs one final widget, scene, canvas, and context", async function () {
+      const contextOptions = { renderer: "webgl" };
+      if (window.webglStub) {
+        contextOptions.getWebGLStub = getWebGLStub;
+      }
+
+      viewer = await Viewer.createAsync(container, {
+        contextOptions,
+        baseLayerPicker: false,
+        baseLayer: false,
+        globe: false,
+        geocoder: false,
+        homeButton: false,
+        sceneModePicker: false,
+        projectionPicker: false,
+        navigationHelpButton: false,
+        animation: false,
+        timeline: false,
+        fullscreenButton: false,
+        vrButton: false,
+        selectionIndicator: false,
+        infoBox: false,
+        useDefaultRenderLoop: false,
+      });
+
+      expect(container.querySelectorAll(".cesium-viewer").length).toBe(1);
+      expect(container.querySelectorAll(".cesium-widget").length).toBe(1);
+      expect(container.querySelectorAll("canvas").length).toBe(1);
+      expect(viewer.scene.canvas).toBe(viewer.canvas);
+      expect(viewer.scene.context.canvas).toBe(viewer.canvas);
+      expect(viewer.scene.contextCreationDiagnostics.resolvedRenderer).toBe(
+        "webgl",
+      );
+    });
+
+    it("createAsync rolls back a late Viewer failure and orphaned render loop", async function () {
+      const callbacks = [];
+      spyOn(window, "requestAnimationFrame").and.callFake(function (callback) {
+        callbacks.push(callback);
+        return callbacks.length;
+      });
+
+      let transaction;
+      const createContext = CesiumWidget._createAsyncContext;
+      spyOn(CesiumWidget, "_createAsyncContext").and.callFake(async function (
+        ...args
+      ) {
+        transaction = await createContext(...args);
+        return transaction;
+      });
+
+      const contextOptions = { renderer: "webgl" };
+      if (window.webglStub) {
+        contextOptions.getWebGLStub = getWebGLStub;
+      }
+
+      let constructionError;
+      try {
+        await Viewer.createAsync(container, {
+          contextOptions,
+          baseLayerPicker: false,
+          baseLayer: false,
+          globe: false,
+          scene3DOnly: true,
+          sceneModePicker: true,
+          showRenderLoopErrors: false,
+        });
+      } catch (error) {
+        constructionError = error;
+      }
+
+      expect(constructionError).toBeDefined();
+      expect(constructionError.message).toContain(
+        "sceneModePicker is not available when options.scene3DOnly",
+      );
+      expect(transaction.context.isDestroyed()).toBe(true);
+      expect(container.querySelectorAll(".cesium-viewer").length).toBe(0);
+      expect(container.querySelectorAll(".cesium-widget").length).toBe(0);
+      expect(container.querySelectorAll("canvas").length).toBe(0);
+      expect(callbacks.length).toBe(1);
+
+      callbacks[0](0);
+      expect(window.requestAnimationFrame).toHaveBeenCalledTimes(1);
+    });
+
+    it("createAsync destroys an acquired Viewer when the final overlay update throws", async function () {
+      const callerChild = document.createElement("span");
+      let transaction;
+      const createContext = CesiumWidget._createAsyncContext;
+      spyOn(CesiumWidget, "_createAsyncContext").and.callFake(async function (
+        ...args
+      ) {
+        const pending = createContext(...args);
+        container.appendChild(callerChild);
+        transaction = await pending;
+        return transaction;
+      });
+      spyOn(LoadingOverlay.prototype, "remove").and.throwError(
+        "injected final overlay failure",
+      );
+
+      const contextOptions = { renderer: "webgl" };
+      if (window.webglStub) {
+        contextOptions.getWebGLStub = getWebGLStub;
+      }
+
+      let constructionError;
+      try {
+        await Viewer.createAsync(container, {
+          ...getMinimalDataSourceViewerOptions(),
+          contextOptions,
+        });
+      } catch (error) {
+        constructionError = error;
+      }
+
+      expect(constructionError.message).toBe("injected final overlay failure");
+      expect(transaction.context.isDestroyed()).toBe(true);
+      expect(callerChild.parentNode).toBe(container);
+      expect(container.querySelector(".cesium-viewer")).toBeNull();
+    });
+
+    it("clears selection and tracking only after the final shared EntityCollection source is removed", async function () {
+      const dataSources = new DataSourceCollection();
+      const first = new MockDataSource();
+      const second = new MockDataSource();
+      second.entities = first.entities;
+      const entity = first.entities.add(new Entity());
+      await dataSources.add(first);
+      await dataSources.add(second);
+
+      viewer = createViewer(
+        container,
+        getMinimalDataSourceViewerOptions(dataSources),
+      );
+      viewer.selectedEntity = entity;
+      viewer.trackedEntity = entity;
+
+      expect(dataSources.remove(first)).toBe(true);
+      expect(viewer.selectedEntity).toBe(entity);
+      expect(viewer.trackedEntity).toBe(entity);
+      expect(dataSources.remove(second)).toBe(true);
+      expect(viewer.selectedEntity).toBeUndefined();
+      expect(viewer.trackedEntity).toBeUndefined();
+
+      viewer.destroy();
+      dataSources.destroy();
+    });
+
+    it("restores caller-owned entity listener counts when destroyed", async function () {
+      const dataSources = new DataSourceCollection();
+      const dataSource = await dataSources.add(new MockDataSource());
+      const collectionChanged = dataSource.entities.collectionChanged;
+      const listenerBaseline = collectionChanged.numberOfListeners;
+
+      viewer = createViewer(
+        container,
+        getMinimalDataSourceViewerOptions(dataSources),
+      );
+      expect(collectionChanged.numberOfListeners).toBeGreaterThan(
+        listenerBaseline,
+      );
+
+      viewer.destroy();
+
+      expect(collectionChanged.numberOfListeners).toBe(listenerBaseline);
+      expect(dataSources.isDestroyed()).toBe(false);
+      dataSources.destroy();
+    });
+
+    it("rolls back earlier entity listeners when a later subscription fails", async function () {
+      const dataSources = new DataSourceCollection();
+      const firstDataSource = await dataSources.add(new MockDataSource());
+      const secondDataSource = await dataSources.add(new MockDataSource());
+      const firstCollectionChanged = firstDataSource.entities.collectionChanged;
+      const secondCollectionChanged =
+        secondDataSource.entities.collectionChanged;
+      const firstListenerBaseline = firstCollectionChanged.numberOfListeners;
+      const secondListenerBaseline = secondCollectionChanged.numberOfListeners;
+      const childBaseline = container.childNodes.length;
+      const originalAddEventListener = secondCollectionChanged.addEventListener;
+      let failedContext;
+
+      spyOn(secondCollectionChanged, "addEventListener").and.callFake(
+        function (listener, scope) {
+          if (listener === Viewer.prototype._onEntityCollectionChanged) {
+            failedContext = scope.scene.context;
+            throw new Error("injected second entity subscription failure");
+          }
+          return originalAddEventListener.call(
+            secondCollectionChanged,
+            listener,
+            scope,
+          );
+        },
+      );
+
+      expect(function () {
+        viewer = createViewer(
+          container,
+          getMinimalDataSourceViewerOptions(dataSources),
+        );
+      }).toThrowError("injected second entity subscription failure");
+
+      expect(firstCollectionChanged.numberOfListeners).toBe(
+        firstListenerBaseline,
+      );
+      expect(secondCollectionChanged.numberOfListeners).toBe(
+        secondListenerBaseline,
+      );
+      expect(failedContext.isDestroyed()).toBe(true);
+      expect(container.childNodes.length).toBe(childBaseline);
+      expect(container.querySelector(".cesium-viewer")).toBeNull();
+      expect(container.querySelector(".cesium-widget")).toBeNull();
+      expect(container.querySelector("canvas")).toBeNull();
+      expect(dataSources.isDestroyed()).toBe(false);
+      expect(dataSources.length).toBe(2);
+      dataSources.destroy();
+    });
+
+    it("invokes entity listener removers exactly once across remove and destroy", async function () {
+      const dataSources = new DataSourceCollection();
+      const removedDataSource = new MockDataSource();
+      const activeDataSource = new MockDataSource();
+      const removedTracker = { adds: 0, removes: 0 };
+      const activeTracker = { adds: 0, removes: 0 };
+
+      function trackViewerListener(dataSource, tracker) {
+        const collectionChanged = dataSource.entities.collectionChanged;
+        const originalAddEventListener = collectionChanged.addEventListener;
+        spyOn(collectionChanged, "addEventListener").and.callFake(
+          function (listener, scope) {
+            const removeListener = originalAddEventListener.call(
+              collectionChanged,
+              listener,
+              scope,
+            );
+            if (listener !== Viewer.prototype._onEntityCollectionChanged) {
+              return removeListener;
+            }
+
+            tracker.adds++;
+            return function () {
+              tracker.removes++;
+              return removeListener();
+            };
+          },
+        );
+      }
+
+      trackViewerListener(removedDataSource, removedTracker);
+      trackViewerListener(activeDataSource, activeTracker);
+
+      viewer = createViewer(
+        container,
+        getMinimalDataSourceViewerOptions(dataSources),
+      );
+      await dataSources.add(removedDataSource);
+      await dataSources.add(activeDataSource);
+
+      expect(removedTracker.adds).toBe(1);
+      expect(activeTracker.adds).toBe(1);
+      expect(dataSources.remove(removedDataSource)).toBe(true);
+      expect(removedTracker.removes).toBe(1);
+      expect(activeTracker.removes).toBe(0);
+
+      viewer.destroy();
+
+      expect(removedTracker.removes).toBe(1);
+      expect(activeTracker.removes).toBe(1);
+      expect(dataSources.isDestroyed()).toBe(false);
+      dataSources.destroy();
+    });
+
+    it("continues destruction when an entity listener remover throws", async function () {
+      const dataSources = new DataSourceCollection();
+      const dataSource = await dataSources.add(new MockDataSource());
+      const collectionChanged = dataSource.entities.collectionChanged;
+      const listenerBaseline = collectionChanged.numberOfListeners;
+      const originalAddEventListener = collectionChanged.addEventListener;
+      let removerCalls = 0;
+
+      spyOn(collectionChanged, "addEventListener").and.callFake(
+        function (listener, scope) {
+          const removeListener = originalAddEventListener.call(
+            collectionChanged,
+            listener,
+            scope,
+          );
+          if (listener !== Viewer.prototype._onEntityCollectionChanged) {
+            return removeListener;
+          }
+          return function () {
+            removerCalls++;
+            removeListener();
+            throw new Error("injected entity listener removal failure");
+          };
+        },
+      );
+
+      viewer = createViewer(
+        container,
+        getMinimalDataSourceViewerOptions(dataSources),
+      );
+      const context = viewer.scene.context;
+
+      expect(function () {
+        viewer.destroy();
+      }).not.toThrow();
+
+      expect(removerCalls).toBe(1);
+      expect(collectionChanged.numberOfListeners).toBe(listenerBaseline);
+      expect(context.isDestroyed()).toBe(true);
+      expect(dataSources.isDestroyed()).toBe(false);
+      dataSources.destroy();
     });
 
     it("can disable Order Independent Translucency", function () {
