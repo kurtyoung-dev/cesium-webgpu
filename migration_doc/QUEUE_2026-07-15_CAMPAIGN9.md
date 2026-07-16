@@ -327,6 +327,31 @@ probe-first contracts. `DEFERRED_WORK.md` carries each item's full investigation
 | W7-5 | `C6-CLOUD-STBN-TAAU-ASSET` | R2/M | Self-generated STBN via EA FastNoise (BSD-3) packed into a 128x128x64 atlas, lazy-loaded behind `QF_JITTER` bit 3 with the Bayer matrix retained as fallback; widen the frameCounter wrap `&15`→`&63`; add the EA notice to LICENSE.md. Completes the STBN half of C6-CLOUD-STBN-TAAU left open by Batch 641. |
 | W7-6 | `C6-AERIAL-INSCATTER-STEP-JITTER` | R2/S optional | Successor to the honestly-closed ellipsoid-snap (DEFERRED_WORK.md L5211 — premise did not reproduce on the tessellated globe): raise/jitter `INSCATTER_STEPS` and/or add a per-pixel march-start dither in `AerialPerspective.wgsl`, targeting the per-tile far-zoom banding root cause the snap investigation isolated. |
 
+## Wave 8 — 2026-07-16 independent deep-dive additions (deduped vs Sol + prior passes)
+
+Full rows, evidence, and quantification live in
+[PERF_ARCH_DEEP_DIVE_2026-07-16.md](PERF_ARCH_DEEP_DIVE_2026-07-16.md) (69 findings, 11 strata).
+The register's draft C9-3x numbers are renumbered here to avoid collision with existing rows.
+Highest-leverage first; none are active until the current 18-task slice completes or a gate
+decision pulls one forward.
+
+| # | ID | Risk | Work (see register for full row) |
+| --- | --- | --- | --- |
+| W8-1 | `C9-40-ENV-COMMAND-FRUSTUM-BINNING` | R2 | Stop BV-less SkyAtmosphere/Sun/StarField commands widening near/far in createPotentiallyVisibleSet: default 3D collapses 2 frusta -> 1 (WebGL parity), halving the per-frustum scaffold. Days-scale, zero shader changes; pre-slice of FAR-707. |
+| W8-2 | `C9-41-TILES-STYLE-COMMAND-ECONOMICS` | R2 | WebGPU model FR must consume styleCommandsNeeded/translucentFeaturesLength: stop emitting the phantom all-discard TRANSLUCENT twin per batch-table primitive (~2x command list + triangle throughput on tilesets). |
+| W8-3 | `C9-42-MSAA-BOUNDARY-BYTES-CONTAINMENT` | R1/R2 | Eager per-segment MSAA resolves only before resolved-color consumers (~330MB/frame waste); **default msaaSamples change requires maintainer ratification** (visual policy). Companion to FAR-405/706. |
+| W8-4 | `C9-43-SPLAT-ASYNC-SORT` | R2 | Replace main-thread comparator splat sort (1-4s freeze at 1M splats) with the shipped-but-unconsumed WASM radix worker path WebGL already uses. |
+| W8-5 | `C9-44-MODEL-TEXTURE-MIP-CHAIN` | R2 | Model textures allocate mipLevelCount=1 and sample mip-0 (~100x bandwidth waste + shimmer); apply the Batch-57 globe fix pattern + MipmapBlit at upload under submit authority. |
+| W8-6 | `C9-45-TTFF-BOOT-CONCURRENCY-AND-PREWARM` | R1/R2 | Adapter prefetch concurrent with chunk import; delete dead awaits; real prewarm (warmUpGlobeRenderer/preloadBatch have zero callers); async frame-1 GlobeTerrain compile. Measured +150-200ms fix. |
+| W8-7 | `C9-46-ASYNC-MODEL-PIPELINES` | R2 | Route the 12 sync WebGPUModelPipelineCache miss sites + PP/mipmap/env pipelines through createRenderPipelineAsync; enabler for C9-47 and FAR-405/706. |
+| W8-8 | `C9-47-MODEL-SHADER-SPECIALIZATION-AXES` | R2/R3 | Promote ~8 ModelPBRComplete axes (70 hasFlag branches, 39 bindings) to ShaderDefine bits via the existing preprocessor/module cache; must land with async pipelines. |
+| W8-9 | `C9-48-VELOCITY-PREV-BUFFER-GPU-COPY` | R1 | PointCloud/Splat/Cloud TAA prev-buffers: GPU copyBufferToBuffer or revision-skip instead of full CPU re-upload (64MB/frame at 1M splats). Rider on C9-25/C9-28/FAR-306. |
+| W8-10 | `C9-49-SHADOW-CAST-SINGLE-SWEEP` | R1 | Fold shadow cast-candidate collection into the single PVS sweep with a revision-maintained castShadows sublist. |
+
+Reversed-Z proper (FAR-707 slice b), the frame-delta classification tier, the entity-at-scale
+arc, worker-renderer productization, and the other next-campaign seeds stay in the register's
+seed list — not activated here.
+
 ## 11. Evidence-gated P2 tail
 
 These are measured existing follow-ups, not substitutes for the highest-impact default-path work. Each
