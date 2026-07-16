@@ -5335,3 +5335,47 @@ The 10 concurrent read-only research lanes that fed Campaign 7's later briefs ar
 - The unit spec's "enabled with zero effective lights" case currently asserts today's behavior (one dispatch, buffers published); when the optimization lands, tighten it to assert zero writeBuffer / zero pass end-resume / stable buffer identity, and add the enabled N→0 transition-write case.
 
 **Evidence to reproduce/verify:** `probe-clustered-zero-work-route.mjs` (add an enabled-zero-light phase asserting zero per-frame work), `probe-clustered-matsweep.mjs` + `probe-clustered-phong.mjs` (enabled-path visual byte-identity after the scratch-array conversion).
+
+---
+
+## NEW-C9-01-COUNTER-PRAGMA-STRIP (surfaced by C9-18, 2026-07-16)
+
+**Status:** deferred release-build refinement; NOT a defaults/hot-path defect. The C9-01
+logical counters already satisfy C9-18 item-34's hard requirement (zero per-call
+closures/objects/strings when disabled).
+
+**Context.** `C9-18-HOTPATH-DIAGNOSTIC-DEMAND-GATES` removed the nine per-frame `() => …`
+closure allocations from the disabled `WebGPUCpuPassProfiler` (the headline defect) by adding a
+closure-free `beginPass`/`endPass` API. That is the acceptance-verified slice.
+
+**Residual (evaluated, intentionally NOT bundled).** The Sol audit (item 12) noted the C9-01
+`if (logicalCounters) { counter = (counter ?? 0) + 1; }` blocks are *runtime-gated, not
+pragma-stripped* — a "soft deviation" from CLAUDE.md's "per-frame/per-tile diagnostics ALWAYS
+wrap with pragma tags" rule. Sites: `WebGPUGlobeSurfaceRenderer.ts` (9 blocks: constructor
+handshake + tileCalls/readyLayerArrays/readyLayers/commandArrays/passLayerSlices/
+camera+tileUniform packs/passDescriptors/effectsHandleReuses/effectsHandlePrepares),
+`WebGPUGlobeSurfaceTextures.ts` (5 `if (logicalCounters)` blocks + the `incrementLogicalCounter`
+helper + `recordOwnedImageryAdded`), `WebGPUGlobeSurfaceTileBuffers.ts` (2 blocks),
+`GlobeSurfaceTileProviderRendering.js` (7 sites).
+
+**Why deferred (not a defect):** when disabled, each block is a single `if (logicalCounters)`
+null test that skips an integer increment — **zero closures/objects/strings, zero allocation** —
+so it already meets I-10 and item-34. Pragma-stripping only removes the branch from **minified
+release** builds; it has **no effect** on the acceptance probe or the performance lanes, which
+load `Build/CesiumUnminified` (built with `removePragmas:false`, so pragma blocks survive there —
+the runtime null-gate is the actual clean/instrumented lane separator, I-12). Bundling it would
+add a second, distinct concern (a release-build strip across 4 files, including a well-factored
+helper module whose call sites would each need wrapping) into a slice whose one concern is
+hot-path closure removal (queue rule 6). The C9-18 execution guide (Slice B, B3 decision point)
+explicitly sanctions keeping the pure runtime gating and recording the deferral.
+
+**Fix when picked up (per guide B3, T-11):** wrap each `if (logicalCounters) {…}` /
+`if (counters) {…}` block (and, for full strip, the `const logicalCounters = this._logicalCounters;`
+locals — move inside the first pragma block or re-read per block) in
+`//>>includeStart('debug', pragmas.debug);` / `//>>includeEnd('debug');`. Keep the field/interface
+declarations (`_logicalCounters`, `WebGPUGlobeLogicalCounters`) OUTSIDE pragmas so types stay
+stable. Wrap complete statements only so stripped output stays valid. Keep permanent error
+sentinels (`WasmSortBridge.js` load/sort failures, loop/null/size guards) unwrapped (I-13). Verify
+with `npx gulp buildRelease` (the pragma stripper only runs there; tsc/eslint see the unstripped
+source). If the stripper mishandles a TS construct, keep the runtime gating — it already satisfies
+I-10.

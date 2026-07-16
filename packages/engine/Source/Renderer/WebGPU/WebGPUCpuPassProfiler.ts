@@ -26,7 +26,11 @@
  * the per-frame totals into the rolling window and resets the buckets.
  *
  * Zero overhead when disabled — `time()` short-circuits without
- * touching `performance.now()`.
+ * touching `performance.now()`. Hot render-pass call sites use the
+ * closure-free {@link WebGPUCpuPassProfiler.beginPass} /
+ * {@link WebGPUCpuPassProfiler.endPass} pair instead, so a disabled
+ * profiler costs a single boolean test per pass with **no** `() => …`
+ * wrapper allocated every frame (C9-18).
  *
  * @module WebGPUCpuPassProfiler
  */
@@ -59,6 +63,7 @@ export class WebGPUCpuPassProfiler {
   private _frameCount = 0;
   private _frameBuckets = new Map<string, number>();
   private _windows = new Map<string, PassWindow>();
+  private _passStart = new Map<string, number>();
 
   constructor(enabled = false) {
     this._enabled = enabled;
@@ -75,6 +80,7 @@ export class WebGPUCpuPassProfiler {
   beginFrame(): void {
     if (!this._enabled) return;
     this._frameBuckets.clear();
+    this._passStart.clear();
   }
 
   /**
@@ -92,6 +98,47 @@ export class WebGPUCpuPassProfiler {
       const dt = performance.now() - t0;
       this._frameBuckets.set(name, (this._frameBuckets.get(name) ?? 0) + dt);
     }
+  }
+
+  /**
+   * Closure-free equivalent of {@link time}, for hot render-pass call
+   * sites that must not allocate a `() => …` wrapper every frame while
+   * profiling is disabled (C9-18). Pair with {@link endPass}:
+   *
+   * ```ts
+   * profiler.beginPass("globe");
+   * try {
+   *   host._executeGlobePass(...);
+   * } finally {
+   *   profiler.endPass("globe");
+   * }
+   * ```
+   *
+   * Both calls early-return with a single boolean test when disabled —
+   * no Map touch, no `performance.now()`, no allocation. When enabled,
+   * `endPass` accumulates elapsed ms into the named per-frame bucket
+   * with `+=` semantics identical to {@link time}, so multiple
+   * begin/end pairs with the same name in one frame (per-frustum
+   * sub-passes) add into a single per-frame total.
+   */
+  beginPass(name: string): void {
+    if (!this._enabled) return;
+    this._passStart.set(name, performance.now());
+  }
+
+  /**
+   * Close a pass opened by {@link beginPass}. Early-returns when
+   * disabled or when there is no matching open `beginPass` (defensive:
+   * an unmatched `endPass` never fabricates a sample). Accumulates the
+   * elapsed ms into the per-frame bucket and clears the start marker.
+   */
+  endPass(name: string): void {
+    if (!this._enabled) return;
+    const t0 = this._passStart.get(name);
+    if (t0 === undefined) return;
+    const dt = performance.now() - t0;
+    this._frameBuckets.set(name, (this._frameBuckets.get(name) ?? 0) + dt);
+    this._passStart.delete(name);
   }
 
   endFrame(): void {
@@ -148,5 +195,6 @@ export class WebGPUCpuPassProfiler {
     this._frameCount = 0;
     this._frameBuckets.clear();
     this._windows.clear();
+    this._passStart.clear();
   }
 }

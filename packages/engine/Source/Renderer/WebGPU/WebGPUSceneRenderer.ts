@@ -1533,7 +1533,12 @@ export class WebGPUSceneRenderer {
     // --- PICK PASS: Render to pick framebuffer ---
     if (picking) {
       this._cpuPassProfiler.beginFrame();
-      this._cpuPassProfiler.time("pick", () => this._executePickPass(config));
+      this._cpuPassProfiler.beginPass("pick");
+      try {
+        this._executePickPass(config);
+      } finally {
+        this._cpuPassProfiler.endPass("pick");
+      }
       this._cpuPassProfiler.endFrame();
       // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — pick frames also call
       // `modelFr.update`, which sets `_sceneHasTransmission` when a
@@ -1654,9 +1659,12 @@ export class WebGPUSceneRenderer {
     // --- Shadow cast pass (once per frame, before multi-frustum rendering) ---
     // Renders scene from light's perspective into the shadow map depth texture.
     if (!config.picking) {
-      this._cpuPassProfiler.time("shadow", () =>
-        context.executeShadowMapCastCommands(scene),
-      );
+      this._cpuPassProfiler.beginPass("shadow");
+      try {
+        context.executeShadowMapCastCommands(scene);
+      } finally {
+        this._cpuPassProfiler.endPass("shadow");
+      }
     }
 
     // Opaque near offset to avoid tearing between adjacent frustums
@@ -1692,9 +1700,12 @@ export class WebGPUSceneRenderer {
     // loadOp="load" by the second half's `setupSceneFramebufferRenderPass`,
     // and the second half runs the chain once over the fully-accumulated FB.
     if (!config.deferComposite) {
-      this._cpuPassProfiler.time("postFrustumChain", () =>
-        executePostFrustumChain(this, context, config, frustumCommandsList),
-      );
+      this._cpuPassProfiler.beginPass("postFrustumChain");
+      try {
+        executePostFrustumChain(this, context, config, frustumCommandsList);
+      } finally {
+        this._cpuPassProfiler.endPass("postFrustumChain");
+      }
 
       // R-7a CPU pass profiler — close out the per-frame bucket and roll
       // into the rolling window. No-op when profiling is disabled.
