@@ -5297,6 +5297,20 @@ slice — each needs its own oracle before any code change (Principle 9):
   OIT+splats scenes. Behavior unchanged by C9-07 (the resume now first-opens with clear instead of
   loading the beginFrame clear — identical bytes). Needs a splats+OIT visual probe before redirecting
   to `_resumeScenePass`.
+- **`NEW-SCENEOCTREE-DIRTY-REVISION-REBUILD-AND-PVS-PROMOTION`** — C9-08 landed the default-path
+  demand gate (material-sort maintenance is now zero-work with no consumer; SceneOctree/OcclusionCulling
+  stay call-site-gated to zero work at defaults). The remaining C9-08 acceptance clause — "enabled
+  SceneOctree uses dirty/revision rebuild and must beat ordinary PVS before any auto promotion" — is
+  deferred because the octree is strictly **opt-in** (`scene.renderScheduler.octree.enabled`,
+  default false) and is **never auto-promoted**, so it has zero default-path exposure. Today an
+  enabled octree rebuilds every frame (`SceneOctree.build` clears + re-inserts). Before any auto
+  promotion could be justified, add: (a) a revision/dirty signal so a static command set skips the
+  clear+re-insert; (b) a measured comparison proving the enabled octree beats ordinary Scene PVS on
+  the moving multi-altitude route with >200 primitive commands (`minCommandsForOctree`); (c) the
+  on/off/restored oracle. Files: `packages/engine/Source/Scene/SceneOctree.js`,
+  `packages/engine/Source/Scene/ViewportExecutor.js`. Regression probe already in tree:
+  `Tools/visual-regression/probe-scheduler-octree-demand.mjs` (currently asserts default zero-work +
+  demand-gate byte-identity; extend case E with a >200-command parity lane when this is picked up).
 
 ---
 

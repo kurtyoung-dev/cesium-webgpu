@@ -2010,6 +2010,25 @@ class Scene {
                 ? null
                 : "no-sort-work-this-frame"
               : "contained-dead-command-stream",
+          // C9-08: default-path stable-material-ID maintenance is demand-gated.
+          materialIdMaintenance: {
+            consumers: this._renderScheduler?.stableMaterialIdConsumers ?? 0,
+            ranThisFrame:
+              (this._renderScheduler?.stats?.materialIdsAssigned ?? 0) > 0,
+            framesRun: this._renderScheduler?.materialIdMaintenanceRuns ?? 0,
+            framesSkipped:
+              this._renderScheduler?.materialIdMaintenanceSkips ?? 0,
+          },
+          // C9-08: SceneOctree is opt-in; at defaults it does zero build work
+          // and never owns terrain/3D-Tiles/voxels (only OPAQUE/TRANSLUCENT
+          // primitive commands are octree-eligible).
+          octree: {
+            enabled: this._renderScheduler?.octree?.enabled === true,
+            builtThisFrame: this._renderScheduler?.octree?.isBuilt === true,
+            buildTimeMs: this._renderScheduler?.octree?.stats?.buildTimeMs ?? 0,
+            commandsInserted:
+              this._renderScheduler?.octree?.stats?.commandsInserted ?? 0,
+          },
         },
       },
       moon: null,

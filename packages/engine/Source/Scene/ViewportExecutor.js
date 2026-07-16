@@ -2,6 +2,7 @@ import BoundingRectangle from "../Core/BoundingRectangle.js";
 import Cartesian3 from "../Core/Cartesian3.js";
 import Cartographic from "../Core/Cartographic.js";
 import CesiumMath from "../Core/Math.js";
+import defined from "../Core/defined.js";
 import Matrix4 from "../Core/Matrix4.js";
 import Transforms from "../Core/Transforms.js";
 import Pass from "../Renderer/Pass.js";
@@ -363,8 +364,13 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
   updateAndRenderPrimitives(scene);
 
   // FAR-003: the layer buckets are not consumed by either renderer, so their
-  // duplicate O(N log N) sort is opt-in. Keep only the useful linear stable
-  // material-ID assignment on the default path.
+  // duplicate O(N log N) sort is opt-in. C9-08: even the linear stable
+  // material-ID assignment on the default path is demand-gated — it does zero
+  // per-command work unless a consumer actually reads `materialSortId` this
+  // frame. The default render pass (opaque unsorted, translucent back-to-front)
+  // never reads it; only the pick-pass front-to-back material tiebreak, the
+  // WebGPU GPU sort-keys path (`gpuCullingHint !== 'never'`), and any
+  // registered long-lived consumer do.
   const scheduler = scene._renderScheduler;
   const cmdList = scene.frameState.commandList;
   if (scheduler.enabled) {
@@ -379,7 +385,13 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
     // to the commands within each render layer.
     scheduler.sortAllLayers(scene.frameState.camera.positionWC);
   } else {
-    scheduler.assignMaterialSortIds(cmdList);
+    const materialIdConsumerDemanded =
+      // Pick/depth passes sort translucent commands front-to-back, which uses
+      // materialSortId as a tiebreaker (CommandSorter.frontToBack).
+      scene.frameState.passes.render !== true ||
+      // WebGPU GPU sort-keys packs materialSortId when GPU culling is armed.
+      (defined(scene.gpuCullingHint) && scene.gpuCullingHint !== "never");
+    scheduler.maintainMaterialSortIds(cmdList, materialIdConsumerDemanded);
   }
 
   // Octree-accelerated PVS when enabled and command count exceeds threshold

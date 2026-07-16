@@ -59,6 +59,34 @@ class RenderScheduler {
     };
 
     /**
+     * C9-08 demand gate. Stable material sort IDs are only maintained on the
+     * default (scheduler-disabled) path when a declared consumer needs them.
+     * External systems that read `materialSortId` off the raw command stream
+     * register demand through {@link RenderScheduler#requireStableMaterialIds}.
+     * @type {number}
+     * @private
+     */
+    this._stableMaterialIdConsumers = 0;
+
+    /**
+     * Cumulative count of frames where the default-path stable-material-ID
+     * maintenance loop actually ran (a consumer was present). Monotonic —
+     * NOT reset per frame — so counter-evidence probes can observe demand
+     * gating over a moving route.
+     * @type {number}
+     * @private
+     */
+    this._materialIdMaintenanceRuns = 0;
+
+    /**
+     * Cumulative count of frames where the maintenance loop was demand-gated
+     * off (no consumer) and performed zero per-command work. Monotonic.
+     * @type {number}
+     * @private
+     */
+    this._materialIdMaintenanceSkips = 0;
+
+    /**
      * Scene octree for spatial acceleration of culling and sorting.
      * Opt-in via `scene.renderScheduler.octree.enabled = true`.
      * @type {SceneOctree}
@@ -127,6 +155,97 @@ class RenderScheduler {
       this._materialAllocator.ensureMaterialSortId(command);
       this._stats.materialIdsAssigned++;
     }
+  }
+
+  /**
+   * Registers a declared consumer of stable material sort IDs. While at least
+   * one consumer is registered, {@link RenderScheduler#maintainMaterialSortIds}
+   * performs its linear assignment even when the scheduler itself is disabled.
+   *
+   * Use this for systems that read `command.materialSortId` off the raw command
+   * stream via a lifetime longer than a single frame (the per-frame internal
+   * consumers — GPU sort keys, pick-pass front-to-back material tiebreak — are
+   * signalled directly through the `consumerDemanded` argument instead).
+   *
+   * @returns {function} A release function; call it once to drop the demand.
+   */
+  requireStableMaterialIds() {
+    this._stableMaterialIdConsumers++;
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      this._stableMaterialIdConsumers = Math.max(
+        0,
+        this._stableMaterialIdConsumers - 1,
+      );
+    };
+  }
+
+  /**
+   * Whether any long-lived consumer currently requires stable material IDs.
+   * @type {boolean}
+   * @readonly
+   */
+  get stableMaterialIdsRequested() {
+    return this._stableMaterialIdConsumers > 0;
+  }
+
+  /**
+   * Number of registered long-lived stable-material-ID consumers.
+   * @type {number}
+   * @readonly
+   */
+  get stableMaterialIdConsumers() {
+    return this._stableMaterialIdConsumers;
+  }
+
+  /**
+   * Cumulative frames the default-path maintenance loop ran (consumer present).
+   * @type {number}
+   * @readonly
+   */
+  get materialIdMaintenanceRuns() {
+    return this._materialIdMaintenanceRuns;
+  }
+
+  /**
+   * Cumulative frames the default-path maintenance loop was demand-gated off.
+   * @type {number}
+   * @readonly
+   */
+  get materialIdMaintenanceSkips() {
+    return this._materialIdMaintenanceSkips;
+  }
+
+  /**
+   * C9-08 default-path stable-material-ID maintenance, demand-gated. Runs the
+   * linear {@link RenderScheduler#assignMaterialSortIds} pass ONLY when a
+   * declared consumer needs stable IDs this frame; otherwise performs zero
+   * per-command work and records the skip for containment truthfulness.
+   *
+   * When no consumer is present the raw command stream keeps its construction
+   * default (`materialSortId === 0`), which the default render path never reads
+   * — so skipping is byte-identical. When a consumer IS present (pick-pass
+   * front-to-back material tiebreak, GPU sort keys, or a registered long-lived
+   * consumer) the assignment runs exactly as before, preserving output.
+   *
+   * @param {object[]} commands The raw command list for the current viewport.
+   * @param {boolean} [consumerDemanded=false] Whether a per-frame internal
+   *   consumer needs stable IDs this frame.
+   * @param {number} [count=commands.length] Number of live command entries.
+   * @returns {boolean} Whether the maintenance loop ran.
+   */
+  maintainMaterialSortIds(commands, consumerDemanded, count) {
+    if (consumerDemanded !== true && !this.stableMaterialIdsRequested) {
+      this._materialIdMaintenanceSkips++;
+      return false;
+    }
+    this.assignMaterialSortIds(commands, count);
+    this._materialIdMaintenanceRuns++;
+    return true;
   }
 
   /**
