@@ -450,6 +450,57 @@ export interface ImageryGPUTexture {
   view: GPUTextureView;
   sourceWidth: number;
   sourceHeight: number;
+  /** Estimated owned allocation size, including mips, for diagnostics/lifetime. */
+  byteSize?: number;
+  /** Logical owner used by opt-in attribution; imported textures omit it. */
+  logicalOwner?: "imagery";
+}
+
+/**
+ * Opt-in logical counters used by the instrumented moving-camera campaign.
+ *
+ * The browser runner publishes the object before Cesium loads. Production and
+ * clean timing runs leave it undefined, so the renderer allocates no counter
+ * state and its instrumented sites reduce to nullable guards. These counters
+ * cover JS objects and logical cache ownership that WebGPU API wrappers cannot
+ * observe.
+ *
+ * @private
+ */
+export interface WebGPUGlobeLogicalCounters {
+  /** Handshake proving an instrumented counter sink reached a renderer. */
+  rendererInstancesAttached?: number;
+  tileCalls?: number;
+  readyLayerArrays?: number;
+  readyLayers?: number;
+  commandArrays?: number;
+  passLayerSlices?: number;
+  passDescriptors?: number;
+  adapterCommandObjects?: number;
+  pickCommandObjects?: number;
+  cameraUniformPacks?: number;
+  cameraUniformLogicalBytes?: number;
+  cameraUniformAlignedBytes?: number;
+  tileUniformPacks?: number;
+  tileUniformLogicalBytes?: number;
+  tileUniformAlignedBytes?: number;
+  tileBufferCacheHits?: number;
+  tileBufferCacheMisses?: number;
+  tileBufferRebuilds?: number;
+  tileBufferRetirements?: number;
+  tileBufferLiveEntries?: number;
+  tileBufferLiveBytes?: number;
+  tileBufferHighWaterEntries?: number;
+  tileBufferHighWaterBytes?: number;
+  imageryTextureCacheHits?: number;
+  imageryTextureCacheMisses?: number;
+  imageryDirectUploads?: number;
+  imageryDirectUploadBytes?: number;
+  imageryOwnedRetirements?: number;
+  imageryOwnedLiveTextures?: number;
+  imageryOwnedLiveBytes?: number;
+  imageryOwnedHighWaterTextures?: number;
+  imageryOwnedHighWaterBytes?: number;
 }
 
 /** Descriptor for a single tile draw pass */

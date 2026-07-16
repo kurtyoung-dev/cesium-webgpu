@@ -4,13 +4,9 @@
  *
  * Per-device cache of the MSAA-depth resolve pipeline. The pipeline runs
  * a fullscreen render pass that reads sample 0 of a
- * `texture_depth_multisampled_2d` and writes the value via
- * `@builtin(frag_depth)` to a single-sample depth attachment. Output
- * format is `depth32float` because depth-format textures aren't
- * storage-bindable; the FS + depth-attachment path is the only way to
- * resolve MSAA depth into a sampleable single-sample depth texture
- * without per-consumer-shader changes (consumers stay at
- * `texture_depth_2d` bindings).
+ * `texture_depth_multisampled_2d` and writes the value to a single-sample
+ * `r16float` color attachment. Consumers bind the resolve as filterable float
+ * depth data; it is not a depth-aspect texture.
  *
  * @module WebGPUDepthResolveMSAA
  */
@@ -20,6 +16,7 @@ import DepthResolveShader from "../../Shaders/WebGPU/PostProcess/DepthResolveMSA
 interface ResolvePipelineCache {
   pipeline: GPURenderPipeline;
   bindGroupLayout: GPUBindGroupLayout;
+  bindGroups: WeakMap<GPUTextureView, GPUBindGroup>;
 }
 
 const _perDevicePipelineCache = new WeakMap<GPUDevice, ResolvePipelineCache>();
@@ -27,9 +24,7 @@ const _perDevicePipelineCache = new WeakMap<GPUDevice, ResolvePipelineCache>();
 /**
  * Get-or-create the depth-resolve render pipeline for a device.
  * Pipeline is cached per-device + reused across SceneFramebuffer
- * instances; depth format is fixed at `depth32float` (the only
- * single-sample depth format that's also a valid render attachment
- * without a stencil component).
+ * instances; the output format is fixed at `r16float`.
  */
 export function getDepthResolvePipeline(
   device: GPUDevice,
@@ -74,7 +69,11 @@ export function getDepthResolvePipeline(
     primitive: { topology: "triangle-list" },
   });
 
-  const entry: ResolvePipelineCache = { pipeline, bindGroupLayout };
+  const entry: ResolvePipelineCache = {
+    pipeline,
+    bindGroupLayout,
+    bindGroups: new WeakMap(),
+  };
   _perDevicePipelineCache.set(device, entry);
   return entry;
 }
@@ -93,7 +92,7 @@ export function getDepthResolvePipeline(
  *   `texture_depth_multisampled_2d`.
  * @param resolveTargetView - Render-attachment view of the
  *   single-sample resolve texture (the output destination). Must be
- *   `depth32float` format, sampleCount 1, RENDER_ATTACHMENT usage.
+ *   `r16float` format, sampleCount 1, RENDER_ATTACHMENT usage.
  */
 export function dispatchDepthResolve(
   encoder: GPUCommandEncoder,
@@ -101,12 +100,17 @@ export function dispatchDepthResolve(
   msaaDepthView: GPUTextureView,
   resolveTargetView: GPUTextureView,
 ): void {
-  const { pipeline, bindGroupLayout } = getDepthResolvePipeline(device);
-  const bindGroup = device.createBindGroup({
-    label: "DepthResolveMSAA BG",
-    layout: bindGroupLayout,
-    entries: [{ binding: 0, resource: msaaDepthView }],
-  });
+  const cache = getDepthResolvePipeline(device);
+  const { pipeline, bindGroupLayout } = cache;
+  let bindGroup = cache.bindGroups.get(msaaDepthView);
+  if (!bindGroup) {
+    bindGroup = device.createBindGroup({
+      label: "DepthResolveMSAA BG",
+      layout: bindGroupLayout,
+      entries: [{ binding: 0, resource: msaaDepthView }],
+    });
+    cache.bindGroups.set(msaaDepthView, bindGroup);
+  }
   const pass = encoder.beginRenderPass({
     label: "DepthResolveMSAA pass",
     colorAttachments: [

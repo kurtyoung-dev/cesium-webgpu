@@ -12,7 +12,6 @@ import {
   HeadingPitchRoll,
   Rectangle,
   WebMercatorProjection,
-  ContextLimits,
   RenderState,
   BlendingState,
   ClippingPlane,
@@ -860,7 +859,11 @@ describe(
       const provider = await SingleTileImageryProvider.fromUrl(
         "Data/Images/Red16x16.png",
       );
-      for (let i = 0; i < ContextLimits.maximumTextureImageUnits + 1; ++i) {
+      for (
+        let i = 0;
+        i < scene.context.limits.maximumTextureImageUnits + 1;
+        ++i
+      ) {
         scene.imageryLayers.addImageryProvider(provider);
       }
 

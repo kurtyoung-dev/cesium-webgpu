@@ -66,6 +66,7 @@ import type {
   TileGPUResources,
   ImageryGPUTexture,
   TileDrawDescriptor,
+  WebGPUGlobeLogicalCounters,
 } from "./WebGPUGlobeSurfaceTypes.js";
 
 // Re-export the public surface so existing import sites that pull
@@ -309,6 +310,11 @@ export class WebGPUGlobeSurfaceRenderer {
   // texture-cache helpers (Batch 148).
   public _imageryTextureCache: Map<string, ImageryGPUTexture> = new Map();
   public _waterMaskTextureCache: Map<string, ImageryGPUTexture> = new Map();
+  // C9-01 — opt-in logical allocation/cache attribution. The performance
+  // runner installs this object before Cesium loads only in its separately
+  // instrumented lane. Clean/production runs retain null and allocate no
+  // diagnostics state.
+  public _logicalCounters: WebGPUGlobeLogicalCounters | null = null;
 
   // Reusable typed arrays for uniform data
   // Public underscore: shared with the camera-UB packer (Batch 152).
@@ -330,6 +336,16 @@ export class WebGPUGlobeSurfaceRenderer {
 
   constructor() {
     this._tileUniformU32View = new Uint32Array(this._tileUniformData.buffer);
+    this._logicalCounters =
+      (
+        globalThis as unknown as {
+          __webgpuGlobeLogicalCounters?: WebGPUGlobeLogicalCounters;
+        }
+      ).__webgpuGlobeLogicalCounters ?? null;
+    if (this._logicalCounters) {
+      this._logicalCounters.rendererInstancesAttached =
+        (this._logicalCounters.rendererInstancesAttached ?? 0) + 1;
+    }
   }
 
   /**
@@ -583,6 +599,10 @@ export class WebGPUGlobeSurfaceRenderer {
     uniformState: CesiumUniformState,
   ): TileDrawDescriptor[] | null {
     if (!this._isInitialized || !this._device) return null;
+    const logicalCounters = this._logicalCounters;
+    if (logicalCounters) {
+      logicalCounters.tileCalls = (logicalCounters.tileCalls ?? 0) + 1;
+    }
 
     // Eagerly touch the uniform ring buffer allocator on first use. The
     // context's lazy getter only constructs the allocator on first access,
@@ -703,6 +723,10 @@ export class WebGPUGlobeSurfaceRenderer {
     // Count total ready imagery layers
     const imageryCollection = surfaceTile.imagery;
     const readyLayers: CesiumTileImagery[] = [];
+    if (logicalCounters) {
+      logicalCounters.readyLayerArrays =
+        (logicalCounters.readyLayerArrays ?? 0) + 1;
+    }
     if (imageryCollection) {
       for (let i = 0; i < imageryCollection.length; i++) {
         const tileImagery = imageryCollection[i];
@@ -724,6 +748,11 @@ export class WebGPUGlobeSurfaceRenderer {
     const totalLayers = readyLayers.length;
     const passCount = Math.max(1, Math.ceil(totalLayers / imagerySlots));
     const commands: TileDrawDescriptor[] = [];
+    if (logicalCounters) {
+      logicalCounters.readyLayers =
+        (logicalCounters.readyLayers ?? 0) + totalLayers;
+      logicalCounters.commandArrays = (logicalCounters.commandArrays ?? 0) + 1;
+    }
 
     // BUG-11 imagery probe diagnostic. Off by default — opt in via
     // `scene.debugShowImageryProbe = true` when investigating an
@@ -854,6 +883,10 @@ export class WebGPUGlobeSurfaceRenderer {
       const layerStart = pass * imagerySlots;
       const layerEnd = Math.min(layerStart + imagerySlots, totalLayers);
       const passLayers = readyLayers.slice(layerStart, layerEnd);
+      if (logicalCounters) {
+        logicalCounters.passLayerSlices =
+          (logicalCounters.passLayerSlices ?? 0) + 1;
+      }
 
       // Phase 5 WGF-1: pick the hardware clip-distances variant only when
       // ALL of the following hold. Each condition is a real correctness
@@ -1021,6 +1054,22 @@ export class WebGPUGlobeSurfaceRenderer {
         passLayers,
         isSubsequentPass,
       );
+      if (logicalCounters) {
+        logicalCounters.cameraUniformPacks =
+          (logicalCounters.cameraUniformPacks ?? 0) + 1;
+        logicalCounters.cameraUniformLogicalBytes =
+          (logicalCounters.cameraUniformLogicalBytes ?? 0) + cameraUB.size;
+        logicalCounters.cameraUniformAlignedBytes =
+          (logicalCounters.cameraUniformAlignedBytes ?? 0) +
+          Math.ceil(cameraUB.size / 256) * 256;
+        logicalCounters.tileUniformPacks =
+          (logicalCounters.tileUniformPacks ?? 0) + 1;
+        logicalCounters.tileUniformLogicalBytes =
+          (logicalCounters.tileUniformLogicalBytes ?? 0) + tileUB.size;
+        logicalCounters.tileUniformAlignedBytes =
+          (logicalCounters.tileUniformAlignedBytes ?? 0) +
+          Math.ceil(tileUB.size / 256) * 256;
+      }
 
       const bg0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
       const bindGroup0 = bg0.bindGroup;
@@ -1163,6 +1212,9 @@ export class WebGPUGlobeSurfaceRenderer {
         csmBinding !== undefined
       ) {
         const fxRes = createEffectsBindGroup(device, frameState, {
+          // Stable per-Scene/view owner. Camera movement updates one bounded
+          // effects slot shared by every terrain tile in this frame.
+          owner: frameState,
           clippingPlanes: tileProvider.clippingPlanes,
           clippingPolygons: activeClippingPolygons,
           shadowMap: receiveShadowMap,
@@ -1518,6 +1570,10 @@ export class WebGPUGlobeSurfaceRenderer {
       });
     }
 
+    if (logicalCounters) {
+      logicalCounters.passDescriptors =
+        (logicalCounters.passDescriptors ?? 0) + commands.length;
+    }
     return commands.length > 0 ? commands : null;
   }
 
@@ -2288,17 +2344,13 @@ export class WebGPUGlobeSurfaceRenderer {
   destroy(): void {
     if (this._isDestroyed) return;
 
-    for (const [, resources] of this._tileBufferCache) {
-      resources.vertexBuffer.destroy();
-      resources.indexBuffer.destroy();
-      resources.shadowCastUB?.destroy();
-    }
-    this._tileBufferCache.clear();
+    // Route final destruction through the same helper as production eviction
+    // so C9-01's opt-in logical lifetime gauges close consistently.
+    evictStaleResourcesHelper(this, new Set());
 
-    for (const [, cached] of this._imageryTextureCache) {
-      cached.texture.destroy();
+    for (const cacheKey of [...this._imageryTextureCache.keys()]) {
+      removeImageryTextureHelper(this, cacheKey);
     }
-    this._imageryTextureCache.clear();
 
     for (const [, cached] of this._waterMaskTextureCache) {
       cached.texture.destroy();

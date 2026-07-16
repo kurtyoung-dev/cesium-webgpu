@@ -24,6 +24,7 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
 
 // Depth copy shader (single-sample): reads depth and writes to a color
 // texture as packed RGBA.
@@ -134,9 +135,16 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
 
 export interface WebGPUGlobeDepthOptions {
   picking?: boolean;
+  timestampProvider?: WebGPUPassTimestampProvider;
+}
+
+interface DepthCopyBinding {
+  bindGroup: GPUBindGroup;
+  multisampled: boolean;
 }
 
 export class WebGPUGlobeDepth {
+  private readonly _timestampProvider: WebGPUPassTimestampProvider | null;
   private _device: GPUDevice | null = null;
   private _width: number = 0;
   private _height: number = 0;
@@ -170,6 +178,13 @@ export class WebGPUGlobeDepth {
   private _depthCopyMSAABindGroupLayout: GPUBindGroupLayout | null = null;
   private _depthCopyMSAABindGroup: GPUBindGroup | null = null;
 
+  // A texture view and bind group are immutable projections of the source
+  // texture. Cache them by the actual GPUTexture identity instead of creating
+  // both objects for every full-screen depth copy. The cache is replaced on
+  // resize/device change/destroy, so no binding can cross a resource epoch.
+  private _depthCopyBindings: WeakMap<GPUTexture, DepthCopyBinding> =
+    new WeakMap();
+
   private _isPicking: boolean = false;
   private _isDestroyed: boolean = false;
 
@@ -179,6 +194,7 @@ export class WebGPUGlobeDepth {
 
   constructor(options?: WebGPUGlobeDepthOptions) {
     this._isPicking = options?.picking ?? false;
+    this._timestampProvider = options?.timestampProvider ?? null;
   }
 
   /**
@@ -244,8 +260,9 @@ export class WebGPUGlobeDepth {
   ): void {
     if (width <= 0 || height <= 0) return;
 
+    const deviceChanged = this._device !== device;
     const needsRecreate =
-      this._device !== device ||
+      deviceChanged ||
       this._width !== width ||
       this._height !== height ||
       this._numSamples !== numSamples ||
@@ -260,6 +277,15 @@ export class WebGPUGlobeDepth {
     this._useHdr = hdr;
 
     this._destroyTargets();
+    if (deviceChanged) {
+      // Pipelines, layouts, and samplers are device-owned. Device recovery may
+      // reuse this JS renderer instance, so force a rebuild on the new device.
+      this._depthCopyPipeline = null;
+      this._depthCopyBindGroupLayout = null;
+      this._depthCopySampler = null;
+      this._depthCopyMSAAPipeline = null;
+      this._depthCopyMSAABindGroupLayout = null;
+    }
 
     const colorFormat = hdr
       ? ("rgba16float" as GPUTextureFormat)
@@ -377,10 +403,67 @@ export class WebGPUGlobeDepth {
     const desc = this._depthCopyTarget.getLoadPassDescriptor();
     if (!desc) return;
 
-    const pass = encoder.beginRenderPass(desc);
+    const pass = encoder.beginRenderPass(
+      this._timestampProvider?.withRenderPassTimestamps(
+        desc,
+        "GlobeDepth-DepthCopy-Pass",
+      ) ?? desc,
+    );
     pass.setPipeline(pipeline);
     pass.setBindGroup(0, bindGroup);
     pass.draw(3); // Fullscreen triangle
+    pass.end();
+  }
+
+  /**
+   * Pack an explicit depth texture into a caller-owned RGBA8 view. Pick
+   * classification uses this checkpoint between its private render passes so
+   * classifiers never sample depth published by a previous normal frame.
+   */
+  executeCopyDepthToView(
+    encoder: GPUCommandEncoder,
+    destinationView: GPUTextureView,
+    depthTexture: GPUTexture,
+    scissor?: { x: number; y: number; width: number; height: number },
+  ): void {
+    if (!this._depthCopyPipeline || !this._outputTarget) {
+      return;
+    }
+    const useMSAA = this._updateDepthCopyBindGroup(depthTexture);
+    const bindGroup = useMSAA
+      ? this._depthCopyMSAABindGroup
+      : this._depthCopyBindGroup;
+    const pipeline = useMSAA
+      ? this._depthCopyMSAAPipeline
+      : this._depthCopyPipeline;
+    if (!bindGroup || !pipeline) {
+      return;
+    }
+    const descriptor: GPURenderPassDescriptor = {
+      label: "Pick classification depth pack pass",
+      colorAttachments: [
+        {
+          view: destinationView,
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
+          loadOp: "clear",
+          storeOp: "store",
+        },
+      ],
+    };
+    const pass = encoder.beginRenderPass(
+      this._timestampProvider?.withRenderPassTimestamps(
+        descriptor,
+        "Pick classification depth pack pass",
+      ) ?? descriptor,
+    );
+    if (scissor && scissor.width > 0 && scissor.height > 0) {
+      pass.setScissorRect(scissor.x, scissor.y, scissor.width, scissor.height);
+    }
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, bindGroup);
+    if (!scissor || (scissor.width > 0 && scissor.height > 0)) {
+      pass.draw(3);
+    }
     pass.end();
   }
 
@@ -534,13 +617,25 @@ export class WebGPUGlobeDepth {
 
     const sampleCount =
       (depthTexture as unknown as { sampleCount?: number }).sampleCount ?? 1;
+    const multisampled = sampleCount > 1;
+    const cached = this._depthCopyBindings.get(depthTexture);
+    if (cached && cached.multisampled === multisampled) {
+      if (multisampled) {
+        this._depthCopyMSAABindGroup = cached.bindGroup;
+        this._depthCopyBindGroup = null;
+      } else {
+        this._depthCopyBindGroup = cached.bindGroup;
+        this._depthCopyMSAABindGroup = null;
+      }
+      return multisampled;
+    }
 
     const depthView = depthTexture.createView({
       aspect: "depth-only",
-      label: `GlobeDepth-DepthTextureView${sampleCount > 1 ? "-MSAA" : ""}`,
+      label: `GlobeDepth-DepthTextureView${multisampled ? "-MSAA" : ""}`,
     });
 
-    if (sampleCount > 1) {
+    if (multisampled) {
       // MSAA path — bind group has no sampler, shader uses textureLoad.
       if (!this._depthCopyMSAABindGroupLayout) {
         return false;
@@ -549,6 +644,10 @@ export class WebGPUGlobeDepth {
         label: "GlobeDepth-DepthCopy-MSAA-BindGroup",
         layout: this._depthCopyMSAABindGroupLayout,
         entries: [{ binding: 0, resource: depthView }],
+      });
+      this._depthCopyBindings.set(depthTexture, {
+        bindGroup: this._depthCopyMSAABindGroup,
+        multisampled: true,
       });
       // Clear the single-sample slot so stale bindings don't leak
       // across frames if the sample count flips.
@@ -568,6 +667,10 @@ export class WebGPUGlobeDepth {
         { binding: 1, resource: this._depthCopySampler },
       ],
     });
+    this._depthCopyBindings.set(depthTexture, {
+      bindGroup: this._depthCopyBindGroup,
+      multisampled: false,
+    });
     this._depthCopyMSAABindGroup = null;
     return false;
   }
@@ -582,6 +685,8 @@ export class WebGPUGlobeDepth {
     this._depthCopyTarget = null;
     this._tempDepthCopyTarget = null;
     this._depthCopyBindGroup = null;
+    this._depthCopyMSAABindGroup = null;
+    this._depthCopyBindings = new WeakMap();
   }
 
   destroy(): void {

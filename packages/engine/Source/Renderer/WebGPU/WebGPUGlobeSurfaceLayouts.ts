@@ -194,7 +194,7 @@ export function createSamplers(host: LayoutsHost): void {
     addressModeV: "clamp-to-edge",
     // GLOBE-POLAR-STRETCH-POLISH — WebGL imagery samplers use anisotropic
     // filtering at the device maximum (ImageryLayer.js finalizeReprojectTexture:
-    // `maximumAnisotropy = min(ContextLimits.maximumTextureFilterAnisotropy,
+    // `maximumAnisotropy = min(context.limits.maximumTextureFilterAnisotropy,
     // layer.maximumAnisotropy ?? max)`, typically 16). Without it the WebGPU
     // globe imagery goes visibly blurry at oblique view angles (limb-adjacent
     // terrain at orbit zoom) — measured as a broad "GPU brighter" smear over

@@ -427,6 +427,23 @@ class GlobeSurfaceTileProvider {
       });
     }
 
+    // C9-02 — optional visibility/execution ownership audit. The performance
+    // runner attaches this observer only in its separately instrumented lane.
+    // Production pays one context-field read and two frame-level guards; tile
+    // compilation itself gains no diagnostic allocation or per-tile branch.
+    const ownershipDiagnostics =
+      frameState.context._visibilityExecutionOwnershipDiagnostics;
+    const ownershipCommandListStart = defined(ownershipDiagnostics)
+      ? frameState.commandList.length
+      : 0;
+    if (defined(ownershipDiagnostics)) {
+      ownershipDiagnostics.beginTerrainCompilation(
+        frameState.frameNumber,
+        this._quadtree._tilesToRender,
+        this._tilesToRenderByTextureCount,
+      );
+    }
+
     const tilesToRenderByTextureCount = this._tilesToRenderByTextureCount;
     for (
       let textureCountIndex = 0,
@@ -453,6 +470,14 @@ class GlobeSurfaceTileProvider {
         );
       }
     }
+
+    if (defined(ownershipDiagnostics)) {
+      ownershipDiagnostics.endTerrainCompilation(
+        frameState.frameNumber,
+        frameState.commandList,
+        ownershipCommandListStart,
+      );
+    }
   }
 
   /**
@@ -460,15 +485,36 @@ class GlobeSurfaceTileProvider {
    * @param {FrameState} frameState The frame state.
    */
   updateForPick(frameState) {
+    const ownershipDiagnostics =
+      frameState.context._visibilityExecutionOwnershipDiagnostics;
+    const ownershipCommandListStart = defined(ownershipDiagnostics)
+      ? frameState.commandList.length
+      : 0;
+    if (defined(ownershipDiagnostics)) {
+      ownershipDiagnostics.beginTerrainPickCompilation(
+        frameState.frameNumber,
+        this._quadtree._tilesToRender,
+        this._tilesToRenderByTextureCount,
+      );
+    }
+
     // DP-H44 — WebGPU rebuilds fresh globe commands (with the pick command
     // attached) for the selected tiles in the pick frame; the WebGL
     // `_drawCommands` re-push below is skipped (it's empty on WebGPU anyway).
-    if (updateWebGPUForPick(this, frameState)) {
-      return;
+    const webGPUHandled = updateWebGPUForPick(this, frameState);
+    if (!webGPUHandled) {
+      const drawCommands = this._drawCommands;
+      for (let i = 0, length = this._usedDrawCommands; i < length; ++i) {
+        pushCommand(drawCommands[i], frameState);
+      }
     }
-    const drawCommands = this._drawCommands;
-    for (let i = 0, length = this._usedDrawCommands; i < length; ++i) {
-      pushCommand(drawCommands[i], frameState);
+
+    if (defined(ownershipDiagnostics)) {
+      ownershipDiagnostics.endTerrainPickCompilation(
+        frameState.frameNumber,
+        frameState.commandList,
+        ownershipCommandListStart,
+      );
     }
   }
 

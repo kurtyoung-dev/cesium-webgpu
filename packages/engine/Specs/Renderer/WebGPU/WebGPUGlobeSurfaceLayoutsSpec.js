@@ -336,24 +336,26 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts", function () {
       });
     });
 
-    // Group 2 — water mask + ocean normal + globe-material payload.
+    // Group 2 — water mask + ocean normal + globe-material payload +
+    // cloud-shadow map.
     // Single-shape layout: texture/sampler pairs at 0/1 and 2/3, then a
     // material UBO at 4, image texture/sampler at 5/6, heights
-    // texture/sampler at 7/8 — 9 entries total.
-    describe("group 2 — water mask + ocean normal + material", function () {
+    // texture/sampler at 7/8, and cloud-shadow texture/sampler at 9/10 —
+    // 11 entries total.
+    describe("group 2 — water mask + ocean normal + material + cloud shadow", function () {
       let layout;
       beforeEach(function () {
         layout = host._bindGroupLayout2.descriptor;
       });
 
-      it("is labeled and has nine entries", function () {
+      it("is labeled and has eleven entries", function () {
         expect(layout.label).toBe(
           "Globe water mask + ocean normal + material layout",
         );
-        expect(layout.entries.length).toBe(9);
+        expect(layout.entries.length).toBe(11);
       });
 
-      it("follows the texture/sampler + UBO + image + heights binding shape", function () {
+      it("follows the texture/sampler + UBO + image + heights + cloud-shadow binding shape", function () {
         const e = layout.entries;
         // 0: water mask texture, 1: water mask sampler
         expect(e[0].binding).toBe(0);
@@ -379,6 +381,11 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts", function () {
         expect(e[7].texture).toBeDefined();
         expect(e[8].binding).toBe(8);
         expect(e[8].sampler).toBeDefined();
+        // 9/10: cloud-shadow optical-depth texture + sampler
+        expect(e[9].binding).toBe(9);
+        expect(e[9].texture).toBeDefined();
+        expect(e[10].binding).toBe(10);
+        expect(e[10].sampler).toBeDefined();
       });
 
       it("marks every group-2 entry FRAGMENT-visible", function () {

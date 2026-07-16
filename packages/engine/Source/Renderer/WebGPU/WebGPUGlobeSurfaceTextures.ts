@@ -34,7 +34,10 @@
  * @module WebGPUGlobeSurfaceTextures
  */
 
-import type { ImageryGPUTexture } from "./WebGPUGlobeSurfaceTypes.js";
+import type {
+  ImageryGPUTexture,
+  WebGPUGlobeLogicalCounters,
+} from "./WebGPUGlobeSurfaceTypes.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 
 // Lazily-allocated mipmap generator, shared across all imagery uploads
@@ -108,7 +111,49 @@ export interface TextureCacheHost {
   readonly _device: GPUDevice | null;
   readonly _imageryTextureCache: Map<string, ImageryGPUTexture>;
   readonly _waterMaskTextureCache: Map<string, ImageryGPUTexture>;
+  readonly _logicalCounters?: WebGPUGlobeLogicalCounters | null;
   _diagShouldLog(): boolean;
+}
+
+function incrementLogicalCounter(
+  counters: WebGPUGlobeLogicalCounters | null | undefined,
+  name: keyof WebGPUGlobeLogicalCounters,
+  amount = 1,
+): void {
+  if (!counters) return;
+  counters[name] = (counters[name] ?? 0) + amount;
+}
+
+function rgba8MipChainBytes(
+  width: number,
+  height: number,
+  mipLevelCount: number,
+): number {
+  let bytes = 0;
+  for (let level = 0; level < mipLevelCount; level++) {
+    bytes += Math.max(1, width >> level) * Math.max(1, height >> level) * 4;
+  }
+  return bytes;
+}
+
+function recordOwnedImageryAdded(
+  host: TextureCacheHost,
+  byteSize: number,
+): void {
+  const counters = host._logicalCounters;
+  if (!counters) return;
+  incrementLogicalCounter(counters, "imageryDirectUploads");
+  incrementLogicalCounter(counters, "imageryDirectUploadBytes", byteSize);
+  incrementLogicalCounter(counters, "imageryOwnedLiveTextures");
+  incrementLogicalCounter(counters, "imageryOwnedLiveBytes", byteSize);
+  counters.imageryOwnedHighWaterTextures = Math.max(
+    counters.imageryOwnedHighWaterTextures ?? 0,
+    counters.imageryOwnedLiveTextures ?? 0,
+  );
+  counters.imageryOwnedHighWaterBytes = Math.max(
+    counters.imageryOwnedHighWaterBytes ?? 0,
+    counters.imageryOwnedLiveBytes ?? 0,
+  );
 }
 
 /**
@@ -233,6 +278,7 @@ export function getOrCreateImageryTexture(
   // shape so the lookup logic can read them.
   const imagery = tileImagery.readyImagery as CesiumReadyImagery | undefined;
   if (!imagery) return null;
+  const logicalCounters = host._logicalCounters;
 
   const baseKey =
     imagery.key || `${imagery.x ?? 0}_${imagery.y ?? 0}_${imagery.level ?? 0}`;
@@ -250,9 +296,17 @@ export function getOrCreateImageryTexture(
   if (projection?.variant === "merc") {
     const cachedMerc = host._imageryTextureCache.get(`${baseKey}_merc`);
     if (cachedMerc) {
+      if (logicalCounters) {
+        logicalCounters.imageryTextureCacheHits =
+          (logicalCounters.imageryTextureCacheHits ?? 0) + 1;
+      }
       return { view: cachedMerc.view, isMercator: true };
     }
     if (imagery._webgpuMercatorTexture) {
+      if (logicalCounters) {
+        logicalCounters.imageryTextureCacheMisses =
+          (logicalCounters.imageryTextureCacheMisses ?? 0) + 1;
+      }
       const gpuTex = imagery._webgpuMercatorTexture;
       const view = gpuTex.createView({ label: `imagery_merc_${baseKey}` });
       host._imageryTextureCache.set(`${baseKey}_merc`, {
@@ -276,9 +330,19 @@ export function getOrCreateImageryTexture(
   // Geographic variant lookup.
   if (projection?.variant === "geo") {
     const cachedGeo = host._imageryTextureCache.get(baseKey);
-    if (cachedGeo) return { view: cachedGeo.view, isMercator: false };
+    if (cachedGeo) {
+      if (logicalCounters) {
+        logicalCounters.imageryTextureCacheHits =
+          (logicalCounters.imageryTextureCacheHits ?? 0) + 1;
+      }
+      return { view: cachedGeo.view, isMercator: false };
+    }
 
     if (imagery._webgpuReprojectedTexture) {
+      if (logicalCounters) {
+        logicalCounters.imageryTextureCacheMisses =
+          (logicalCounters.imageryTextureCacheMisses ?? 0) + 1;
+      }
       const gpuTex = imagery._webgpuReprojectedTexture;
       const view = gpuTex.createView({ label: `imagery_reproj_${baseKey}` });
       host._imageryTextureCache.set(baseKey, {
@@ -298,6 +362,10 @@ export function getOrCreateImageryTexture(
   }
 
   const source = imagery.image || imagery._source;
+  if (logicalCounters) {
+    logicalCounters.imageryTextureCacheMisses =
+      (logicalCounters.imageryTextureCacheMisses ?? 0) + 1;
+  }
   if (!source) {
     if (host._diagShouldLog()) {
       console.warn(`[WebGPU:GlobeTile] No image source for ${baseKey}`, {
@@ -321,6 +389,7 @@ export function getOrCreateImageryTexture(
     source as HTMLImageElement | HTMLCanvasElement | ImageBitmap,
     baseKey,
     host._imageryTextureCache,
+    "imagery",
   );
   if (!uploaded) return null;
   // The `imagery.image` direct-upload path runs for geographic providers
@@ -488,6 +557,7 @@ export function uploadImageSource(
   source: ImageBitmap | HTMLImageElement | HTMLCanvasElement | unknown,
   cacheKey: string,
   cache: Map<string, ImageryGPUTexture>,
+  logicalOwner?: "imagery",
 ): GPUTextureView | null {
   // `source` is declared wider than the WebGPU-supported types because
   // the caller passes heterogeneous imagery payloads; the instanceof
@@ -601,12 +671,27 @@ export function uploadImageSource(
     }
 
     const view = texture.createView();
-    cache.set(cacheKey, {
-      texture,
-      view,
-      sourceWidth: width,
-      sourceHeight: height,
-    });
+    if (logicalOwner === "imagery" && host._logicalCounters) {
+      const byteSize = rgba8MipChainBytes(width, height, mipLevelCount);
+      cache.set(cacheKey, {
+        texture,
+        view,
+        sourceWidth: width,
+        sourceHeight: height,
+        byteSize,
+        logicalOwner,
+      });
+      recordOwnedImageryAdded(host, byteSize);
+    } else {
+      // Preserve the original clean-path object shape and avoid diagnostic
+      // mip-byte accounting when the separate instrumentation lane is off.
+      cache.set(cacheKey, {
+        texture,
+        view,
+        sourceWidth: width,
+        sourceHeight: height,
+      });
+    }
 
     return view;
   } catch (e) {

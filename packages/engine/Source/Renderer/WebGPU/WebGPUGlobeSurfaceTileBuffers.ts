@@ -45,6 +45,7 @@ import { m4Values, gpuData } from "./webgpuTypeHelpers.js";
 import type {
   TileGPUResources,
   ImageryGPUTexture,
+  WebGPUGlobeLogicalCounters,
 } from "./WebGPUGlobeSurfaceTypes.js";
 
 /**
@@ -57,6 +58,51 @@ export interface TileBuffersHost {
   readonly _device: GPUDevice | null;
   readonly _tileBufferCache: Map<string, TileGPUResources>;
   readonly _imageryTextureCache: Map<string, ImageryGPUTexture>;
+  readonly _logicalCounters?: WebGPUGlobeLogicalCounters | null;
+}
+
+function tileResourceBytes(resources: TileGPUResources): number {
+  return (
+    (resources.vertexBuffer.size ?? 0) +
+    (resources.indexBuffer.size ?? 0) +
+    (resources.shadowCastUB?.size ?? 0)
+  );
+}
+
+function recordTileResourcesAdded(
+  host: TileBuffersHost,
+  resources: TileGPUResources,
+): void {
+  const counters = host._logicalCounters;
+  if (!counters) return;
+  const bytes = tileResourceBytes(resources);
+  counters.tileBufferLiveEntries = (counters.tileBufferLiveEntries ?? 0) + 1;
+  counters.tileBufferLiveBytes = (counters.tileBufferLiveBytes ?? 0) + bytes;
+  counters.tileBufferHighWaterEntries = Math.max(
+    counters.tileBufferHighWaterEntries ?? 0,
+    counters.tileBufferLiveEntries,
+  );
+  counters.tileBufferHighWaterBytes = Math.max(
+    counters.tileBufferHighWaterBytes ?? 0,
+    counters.tileBufferLiveBytes,
+  );
+}
+
+function recordTileResourcesRetired(
+  host: TileBuffersHost,
+  resources: TileGPUResources,
+): void {
+  const counters = host._logicalCounters;
+  if (!counters) return;
+  counters.tileBufferRetirements = (counters.tileBufferRetirements ?? 0) + 1;
+  counters.tileBufferLiveEntries = Math.max(
+    0,
+    (counters.tileBufferLiveEntries ?? 0) - 1,
+  );
+  counters.tileBufferLiveBytes = Math.max(
+    0,
+    (counters.tileBufferLiveBytes ?? 0) - tileResourceBytes(resources),
+  );
 }
 
 /** Stable per-tile cache key. Pure function — no host needed. */
@@ -95,13 +141,28 @@ export function getOrCreateTileBuffers(
     cached.meshGeneration === generation &&
     cached.sourceVertices === mesh.vertices
   ) {
+    const counters = host._logicalCounters;
+    if (counters) {
+      counters.tileBufferCacheHits = (counters.tileBufferCacheHits ?? 0) + 1;
+    }
     return cached;
   }
 
+  const counters = host._logicalCounters;
+  if (counters) {
+    counters.tileBufferCacheMisses = (counters.tileBufferCacheMisses ?? 0) + 1;
+  }
+
+  const replacesCachedResources = cached !== undefined;
   if (cached) {
+    recordTileResourcesRetired(host, cached);
     cached.vertexBuffer.destroy();
     cached.indexBuffer.destroy();
     cached.shadowCastUB?.destroy();
+    // Never leave destroyed resources addressable after a failed rebuild.
+    // Validation below can legitimately return null; a later retry must see a
+    // clean miss rather than retire/destroy the same dead entry again.
+    host._tileBufferCache.delete(tileKey);
   }
 
   const vertices: Float32Array = mesh.vertices;
@@ -256,7 +317,12 @@ export function getOrCreateTileBuffers(
             meshGeneration: generation,
             sourceVertices: vertices,
           };
+          if (replacesCachedResources && counters) {
+            counters.tileBufferRebuilds =
+              (counters.tileBufferRebuilds ?? 0) + 1;
+          }
           host._tileBufferCache.set(tileKey, resources);
+          recordTileResourcesAdded(host, resources);
           return resources;
         }
       }
@@ -326,7 +392,11 @@ export function getOrCreateTileBuffers(
   writeTerrainShadowUB(device, shadowUB, mesh);
   resources.shadowCastUB = shadowUB;
 
+  if (replacesCachedResources && counters) {
+    counters.tileBufferRebuilds = (counters.tileBufferRebuilds ?? 0) + 1;
+  }
   host._tileBufferCache.set(tileKey, resources);
+  recordTileResourcesAdded(host, resources);
   return resources;
 }
 
@@ -381,6 +451,7 @@ export function evictStaleResources(
 ): void {
   for (const [key, resources] of host._tileBufferCache) {
     if (!activeTileKeys.has(key)) {
+      recordTileResourcesRetired(host, resources);
       resources.vertexBuffer.destroy();
       resources.indexBuffer.destroy();
       resources.shadowCastUB?.destroy();
@@ -395,6 +466,19 @@ export function removeImageryTexture(
 ): void {
   const cached = host._imageryTextureCache.get(cacheKey);
   if (cached) {
+    if (cached.logicalOwner === "imagery" && host._logicalCounters) {
+      const counters = host._logicalCounters;
+      counters.imageryOwnedRetirements =
+        (counters.imageryOwnedRetirements ?? 0) + 1;
+      counters.imageryOwnedLiveTextures = Math.max(
+        0,
+        (counters.imageryOwnedLiveTextures ?? 0) - 1,
+      );
+      counters.imageryOwnedLiveBytes = Math.max(
+        0,
+        (counters.imageryOwnedLiveBytes ?? 0) - (cached.byteSize ?? 0),
+      );
+    }
     cached.texture.destroy();
     host._imageryTextureCache.delete(cacheKey);
   }

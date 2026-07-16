@@ -1036,6 +1036,10 @@ export function writeUniformSlice(
     | (CesiumGraphicsContext & {
         uniformAllocator?: {
           allocate(size: number): { buffer: GPUBuffer; offset: number };
+          allocateAndWrite?(
+            data: ArrayBuffer | ArrayBufferView,
+            allocationSize?: number,
+          ): { buffer: GPUBuffer; offset: number };
         };
       })
     | undefined;
@@ -1043,14 +1047,24 @@ export function writeUniformSlice(
   const writeBytes = Math.min(data.byteLength, bufferSize);
 
   if (allocator) {
-    const alloc = allocator.allocate(bufferSize);
-    device.queue.writeBuffer(
-      alloc.buffer,
-      alloc.offset,
-      data.buffer,
-      data.byteOffset,
-      writeBytes,
-    );
+    const uploadData =
+      writeBytes === data.byteLength
+        ? data
+        : new Uint8Array(data.buffer, data.byteOffset, writeBytes);
+    const alloc = allocator.allocateAndWrite
+      ? allocator.allocateAndWrite(uploadData, bufferSize)
+      : allocator.allocate(bufferSize);
+    // Compatibility for lightweight allocator mocks and integrations that
+    // expose only allocate(). Production WebGPUContext uses the staged path.
+    if (!allocator.allocateAndWrite) {
+      device.queue.writeBuffer(
+        alloc.buffer,
+        alloc.offset,
+        data.buffer,
+        data.byteOffset,
+        writeBytes,
+      );
+    }
     // Bind exactly the requested struct size, not the allocator's
     // 256-aligned slice size. The shader struct is `bufferSize` bytes;
     // padding bytes [bufferSize, alloc.size) belong to the allocator's

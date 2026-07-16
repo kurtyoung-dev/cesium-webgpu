@@ -24,7 +24,6 @@ import TerrainQuantization from "../Core/TerrainQuantization.js";
 import WebMercatorProjection from "../Core/WebMercatorProjection.js";
 import Buffer from "../Renderer/Buffer.js";
 import BufferUsage from "../Renderer/BufferUsage.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import DrawCommand from "../Renderer/DrawCommand.js";
 import Pass from "../Renderer/Pass.js";
 import VertexArray from "../Renderer/VertexArray.js";
@@ -865,6 +864,12 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
     _webgpuGlobeRenderers.set(device, _webgpuGlobeRenderer);
   }
 
+  // C9-01 — the renderer captures the opt-in counter sink once at
+  // construction. Reading that field here avoids a global lookup per tile and
+  // guarantees the adapter-command counters use the same sink as the renderer
+  // and its resource helpers. Clean/production renderers retain null.
+  const logicalCounters = _webgpuGlobeRenderer._logicalCounters;
+
   // C2-25 ENV-SCENE-CAPTURE (Batch 446) — publish the per-device globe renderer
   // + tile provider so the dynamic-environment-map scene-capture pass
   // (`runSceneCapture`, which runs in `primitives.update`, BEFORE this globe
@@ -988,6 +993,11 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       }
     }
     const command = {
+      // This is a native WebGPU command even before a pick variant is attached.
+      // Without the tag, Scene.updateDerivedCommands treats the command as a
+      // WebGL DrawCommand as soon as `derivedCommands` exists (for example in
+      // a pick mini-frame) and allocates incompatible log-depth/depth clones.
+      isWebGPUDrawCommand: true,
       pass: Pass.GLOBE,
       owner: tile,
       // `cull = false` in non-3D (mirrors WebGL): the 2D-projected sphere is
@@ -1079,6 +1089,10 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
         renderPass.drawIndexed(this._indexCount);
       },
     };
+    if (logicalCounters) {
+      logicalCounters.adapterCommandObjects =
+        (logicalCounters.adapterCommandObjects ?? 0) + 1;
+    }
 
     // Globe translucency: create derived commands for translucent globe
     if (translucencyFR && translucencyFR.updateDerivedCommands) {
@@ -1099,17 +1113,26 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
     // pickColor into the single-target pick FBO). Marked `isWebGPUDrawCommand`
     // so the pick-pass dispatcher calls `execute(pickRenderPass, context)`, and
     // `pickOnly` so it's recognized as a dedicated pick draw whose pipeline
-    // targets the single pick attachment. Gated on `globe.pickable`
-    // (`_webgpuGlobePickColor` is set by `Globe.beginFrame` only then) — when
-    // the globe isn't pickable it stays out of the pick pass entirely (see
-    // `updateWebGPUForPick`), so foreground primitives aren't occluded by the
-    // globe's pick-pass depth and `scene.pick` returns undefined over the globe
-    // (WebGL parity). `scene.pickPosition` is unaffected either way — it reads
-    // the main-pass globe-depth texture, not the pick FBO.
-    if (cmdDesc.pickPipeline && tileProvider._webgpuGlobePickColor) {
+    // targets the single pick attachment. Build it only while commands are
+    // being rebuilt for an actual pick mini-frame; normal rendering neither
+    // consumes it nor should pay one derived-command allocation per tile.
+    // Even when `globe.pickable` is false the camera UBO supplies a zero pick
+    // color, so terrain remains non-pickable while still contributing DEPTH.
+    // ClassificationPrimitive / GroundPrimitive picks need that private,
+    // query-current terrain depth to decide whether their volume covers the
+    // sampled surface. Omitting the draw leaves the pick depth cleared and
+    // makes every terrain classifier discard. This also mirrors WebGL's
+    // `updateForPick`, which always re-pushes globe commands for depth.
+    if (
+      cmdDesc.pickPipeline &&
+      (frameState.passes.pick || frameState.passes.pickVoxel)
+    ) {
       const pickCommand = {
         isWebGPUDrawCommand: true,
         pickOnly: true,
+        // C9-02 — derived terrain executables retain the same selected-tile
+        // ownership as their color command for visibility/pick attribution.
+        owner: tile,
         _pipeline: cmdDesc.pickPipeline,
         _bindGroups: cmdDesc.bindGroups,
         _bindGroup0DynamicOffsets: cmdDesc.bindGroup0DynamicOffsets,
@@ -1135,6 +1158,10 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
           renderPass.drawIndexed(this._indexCount);
         },
       };
+      if (logicalCounters) {
+        logicalCounters.pickCommandObjects =
+          (logicalCounters.pickCommandObjects ?? 0) + 1;
+      }
       // Merge onto any existing derivedCommands (e.g. translucency) rather than
       // clobbering — mirrors `attachPickToColorCommand`.
       if (command.derivedCommands) {
@@ -1184,7 +1211,7 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     }
   }
 
-  let maxTextures = ContextLimits.maximumTextureImageUnits;
+  let maxTextures = context.limits.maximumTextureImageUnits;
 
   let waterMaskTexture = surfaceTile.waterMaskTexture;
   let waterMaskTranslationAndScale = surfaceTile.waterMaskTranslationAndScale;
@@ -1955,18 +1982,11 @@ function updateWebGPUForPick(tileProvider, frameState) {
   if (!fr) {
     return false;
   }
-  // Only render the globe into the pick pass when it is pickable. WebGPU's
-  // `scene.pickPosition` reads the MAIN-pass globe-depth texture (not the pick
-  // FBO), so the globe doesn't need to contribute pick-FBO depth — leaving it
-  // out when `!pickable` preserves the pre-DP-H44 behavior (foreground
-  // primitives in front of the globe stay pickable and aren't occluded by the
-  // globe's pick-pass depth). `_webgpuGlobePickColor` is set by
-  // `Globe.beginFrame` only while `pickable` is true. Returning true still
-  // marks the WebGPU path as "handled" so the empty WebGL `_drawCommands`
-  // re-push in `updateForPick` is skipped.
-  if (!tileProvider._webgpuGlobePickColor) {
-    return true;
-  }
+  // Always rebuild the selected globe tiles for the pick mini-frame. When
+  // `globe.pickable` is false the camera UBO's pick-color tail is zero, so the
+  // draw changes only depth; when true it writes both depth and the Globe ID.
+  // The depth-only case is required for terrain-classification picking and
+  // matches WebGL's unconditional `_drawCommands` re-push below.
   const tilesToRenderByTextureCount = tileProvider._tilesToRenderByTextureCount;
   for (let i = 0; i < tilesToRenderByTextureCount.length; i++) {
     const tilesToRender = tilesToRenderByTextureCount[i];
