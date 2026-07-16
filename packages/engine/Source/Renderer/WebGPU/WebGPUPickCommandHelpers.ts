@@ -93,6 +93,51 @@ export interface MultiPickIdCache {
 }
 
 /**
+ * Shape of Cesium's wrapper chain for geometry-backed primitives. The inner
+ * `Primitive` owns one pick ID per `GeometryInstance`; wrappers such as
+ * `GroundPrimitive` and `ClassificationPrimitive` expose it through one or
+ * two `_primitive` links.
+ *
+ * @private
+ */
+export interface GeometryInstancePickIdNode {
+  _pickIds?: CesiumPickId[];
+  _primitive?: GeometryInstancePickIdNode;
+}
+
+/**
+ * Return the first upstream GeometryInstance pick ID in a primitive wrapper
+ * chain without allocating anything.
+ *
+ * Geometry-backed feature renderers must reuse this ID instead of registering
+ * a second wrapper-level ID: the upstream object carries the public instance
+ * `id` and the correct `pickPrimitive` payload, while a wrapper generally has
+ * no own `id`. The fixed-depth walk is allocation-free on the render hot path
+ * and covers the current direct Primitive, ClassificationPrimitive ->
+ * Primitive, and GroundPrimitive -> ClassificationPrimitive -> Primitive
+ * shapes.
+ *
+ * @param root - Outermost renderer owner (or a direct Primitive).
+ * @returns The first GeometryInstance pick ID, or undefined while the inner
+ *   Primitive is not ready / picking is disabled.
+ *
+ * @private
+ */
+export function findFirstGeometryInstancePickId(
+  root: GeometryInstancePickIdNode | undefined,
+): CesiumPickId | undefined {
+  let current = root;
+  for (let depth = 0; depth < 4 && current; depth++) {
+    const pickIds = current._pickIds;
+    if (pickIds && pickIds.length > 0) {
+      return pickIds[0];
+    }
+    current = current._primitive;
+  }
+  return undefined;
+}
+
+/**
  * Allocate (or refresh) a {@link CesiumPickId} for a primitive and cache it
  * on the supplied target object.
  *

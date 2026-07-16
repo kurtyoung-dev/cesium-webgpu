@@ -32,6 +32,7 @@ import {
   executePass,
 } from "./WebGPUPostProcessEffects.js";
 import type { PostProcessEffect } from "./WebGPUPostProcessEffects.js";
+import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
 
 export interface BloomConfig {
   // NEW-BLOOM-UNIFORM-PARITY (Batch 240) — the bright pass is a port of
@@ -271,6 +272,7 @@ export class BloomEffect implements PostProcessEffect {
     sourceView: GPUTextureView,
     _depthView: GPUTextureView | null,
     sampler: GPUSampler,
+    timestampProvider?: WebGPUPassTimestampProvider,
   ): GPUTextureView {
     if (!this._device) return sourceView;
 
@@ -296,6 +298,7 @@ export class BloomEffect implements PostProcessEffect {
       this._brightPassPipeline!,
       brightBG,
       this._brightView!,
+      timestampProvider,
     );
 
     // Pass 2: Horizontal Gaussian blur
@@ -315,6 +318,7 @@ export class BloomEffect implements PostProcessEffect {
       this._blurHPipeline!,
       blurHBG,
       this._blurTempView!,
+      timestampProvider,
     );
 
     // Pass 3: Vertical Gaussian blur
@@ -334,6 +338,7 @@ export class BloomEffect implements PostProcessEffect {
       this._blurVPipeline!,
       blurVBG,
       this._blurResultView!,
+      timestampProvider,
     );
 
     // Pass 4: Composite bloom + original scene
@@ -354,6 +359,7 @@ export class BloomEffect implements PostProcessEffect {
       this._compositePipeline!,
       compositeBG,
       this._compositeView!,
+      timestampProvider,
     );
 
     return this._compositeView!;

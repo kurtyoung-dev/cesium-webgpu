@@ -1,4 +1,6 @@
 /// <reference types="@webgpu/types" />
+
+import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
 /**
  * WebGPU Post-Process Effects
  *
@@ -90,8 +92,9 @@ export function executePass(
   pipeline: GPURenderPipeline,
   bindGroup: GPUBindGroup,
   targetView: GPUTextureView,
+  timestampProvider?: WebGPUPassTimestampProvider,
 ): void {
-  const pass = encoder.beginRenderPass({
+  const descriptor: GPURenderPassDescriptor = {
     label,
     colorAttachments: [
       {
@@ -101,7 +104,10 @@ export function executePass(
         clearValue: { r: 0, g: 0, b: 0, a: 1 },
       },
     ],
-  });
+  };
+  const pass = encoder.beginRenderPass(
+    timestampProvider?.withRenderPassTimestamps(descriptor) ?? descriptor,
+  );
   pass.setPipeline(pipeline);
   pass.setBindGroup(0, bindGroup);
   pass.draw(3);

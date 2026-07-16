@@ -39,6 +39,7 @@ import {
   executePass,
 } from "./WebGPUPostProcessEffects.js";
 import type { PostProcessEffect } from "./WebGPUPostProcessEffects.js";
+import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
 
 /**
  * Ambient-occlusion algorithm selector.
@@ -248,13 +249,20 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     // frame; otherwise pass null and the SSAO falls back to depth
     // reconstruction.
     gBufferNormalView?: GPUTextureView | null,
+    timestampProvider?: WebGPUPassTimestampProvider,
   ): GPUTextureView {
     if (!this._device || !depthView) return sourceView;
 
     // ── C6-SSGI-DIFFUSE — SSILVB path (generate radiance+AO → bilateral blur
     // H/V → additive composite). Kept separate from the hbao/gtao chain. ──
     if (this._isSSGI) {
-      return this._executeSSGI(encoder, sourceView, depthView, sampler);
+      return this._executeSSGI(
+        encoder,
+        sourceView,
+        depthView,
+        sampler,
+        timestampProvider,
+      );
     }
 
     // Pick the normal source. When the caller provides a real
@@ -296,6 +304,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       this._generatePipeline!,
       genBG,
       this._aoRawView!,
+      timestampProvider,
     );
 
     // Pass 2: Horizontal blur on AO
@@ -315,6 +324,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       this._blurHPipeline!,
       blurHBG,
       this._aoBlurTempView!,
+      timestampProvider,
     );
 
     // Pass 3: Vertical blur on AO
@@ -334,6 +344,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       this._blurVPipeline!,
       blurVBG,
       this._aoBlurredView!,
+      timestampProvider,
     );
 
     // Pass 4: Modulate scene color with blurred AO
@@ -354,6 +365,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       this._modulatePipeline!,
       modBG,
       this._outputView!,
+      timestampProvider,
     );
 
     return this._outputView!;
@@ -372,6 +384,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
     sourceView: GPUTextureView,
     depthView: GPUTextureView,
     sampler: GPUSampler,
+    timestampProvider?: WebGPUPassTimestampProvider,
   ): GPUTextureView {
     const device = this._device!;
 
@@ -394,6 +407,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       this._generatePipeline!,
       genBG,
       this._aoRawView!,
+      timestampProvider,
     );
 
     // Pass 2 — bilateral horizontal.
@@ -414,6 +428,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       this._blurHPipeline!,
       blurHBG,
       this._aoBlurTempView!,
+      timestampProvider,
     );
 
     // Pass 3 — bilateral vertical.
@@ -434,6 +449,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       this._blurVPipeline!,
       blurVBG,
       this._aoBlurredView!,
+      timestampProvider,
     );
 
     // Pass 4 — additive composite.
@@ -454,6 +470,7 @@ export class AmbientOcclusionEffect implements PostProcessEffect {
       this._modulatePipeline!,
       compBG,
       this._outputView!,
+      timestampProvider,
     );
 
     return this._outputView!;

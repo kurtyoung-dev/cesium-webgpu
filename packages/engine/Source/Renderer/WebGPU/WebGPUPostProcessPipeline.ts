@@ -129,6 +129,7 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
 
 // Re-export effect configs for consumers
 export type {
@@ -151,6 +152,23 @@ export const TonemapMode = Object.freeze({
   MODIFIED_REINHARD: 3,
   PBR_NEUTRAL: 4,
 });
+
+function normalizeTonemapMode(mode: number): number {
+  switch (mode) {
+    case TonemapMode.REINHARD:
+    case TonemapMode.ACES:
+    case TonemapMode.FILMIC:
+    case TonemapMode.MODIFIED_REINHARD:
+    case TonemapMode.PBR_NEUTRAL:
+      return mode;
+    default:
+      return TonemapMode.REINHARD;
+  }
+}
+
+function normalizeTonemapDitherStrength(strength: number): number {
+  return Number.isFinite(strength) ? Math.fround(strength) : 0.0;
+}
 
 /**
  * Color grading config — matches `ColorGrading.wgsl`'s
@@ -253,6 +271,7 @@ interface CompiledStage {
 }
 
 export class WebGPUPostProcessPipeline {
+  private readonly _timestampProvider: WebGPUPassTimestampProvider | null;
   private _device: GPUDevice | null = null;
   private _width = 0;
   private _height = 0;
@@ -353,6 +372,11 @@ export class WebGPUPostProcessPipeline {
   // Stored separately so auto-exposure can multiply against it without
   // losing the user's bias.
   private _manualExposure: number = 1.0;
+  // C9-05 — actual stable values already present in the tonemap UBO. The
+  // configure pass calls the setters every frame; these guards keep unchanged
+  // mode and default-off dither at zero allocation/zero queue-write cost.
+  private _tonemapUniformMode: number = TonemapMode.REINHARD;
+  private _tonemapDitherStrength: number = 0.0;
 
   // HDR-DISPLAY (Batch 205, B200-D1/D2 audit fix; PARITY-HDR-PP-MATH) —
   // when the canvas is configured for HDR output (extended dynamic
@@ -367,6 +391,10 @@ export class WebGPUPostProcessPipeline {
   private _hdrOutputMode = false;
 
   private _isDestroyed = false;
+
+  constructor(timestampProvider?: WebGPUPassTimestampProvider) {
+    this._timestampProvider = timestampProvider ?? null;
+  }
 
   /**
    * Whether any post-processing stages or effects are enabled.
@@ -679,6 +707,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     useShaderF16: boolean = false,
   ): void {
     if (this._tonemapStage) return;
+    const normalizedMode = normalizeTonemapMode(mode);
     // Uniforms: exposure, gamma, mode, whitePoint
     // C4-PLAIN-HDR-GAMMA-TAILS (b) — whitePoint defaults to 1.0 to match
     // WebGL's ModifiedReinhardTonemapping `white` uniform (Color.WHITE →
@@ -691,7 +720,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     const uniforms = new Float32Array([
       exposure,
       gamma,
-      mode,
+      normalizedMode,
       1.0,
       0.0,
       0.0,
@@ -717,6 +746,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       uniforms,
       useShaderF16 ? TonemappingWGSL : undefined,
     );
+    this._tonemapUniformMode = normalizedMode;
+    this._tonemapDitherStrength = 0.0;
   }
 
   /**
@@ -724,11 +755,14 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
    */
   setTonemappingMode(mode: number): void {
     if (!this._tonemapStage?.uniformBuffer || !this._device) return;
+    const normalizedMode = normalizeTonemapMode(mode);
+    if (this._tonemapUniformMode === normalizedMode) return;
     this._device.queue.writeBuffer(
       this._tonemapStage.uniformBuffer,
       8,
-      new Float32Array([mode]) as Float32Array<ArrayBuffer>,
+      new Float32Array([normalizedMode]) as Float32Array<ArrayBuffer>,
     );
+    this._tonemapUniformMode = normalizedMode;
   }
 
   /**
@@ -755,11 +789,14 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
    */
   setTonemapDither(strength: number): void {
     if (!this._tonemapStage?.uniformBuffer || !this._device) return;
+    const normalizedStrength = normalizeTonemapDitherStrength(strength);
+    if (this._tonemapDitherStrength === normalizedStrength) return;
     this._device.queue.writeBuffer(
       this._tonemapStage.uniformBuffer,
       16,
-      new Float32Array([strength]) as Float32Array<ArrayBuffer>,
+      new Float32Array([normalizedStrength]) as Float32Array<ArrayBuffer>,
     );
+    this._tonemapDitherStrength = normalizedStrength;
   }
 
   // ================================================================
@@ -1401,6 +1438,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         depth,
         this._sampler!,
         gBufferNormalView ?? null,
+        this._timestampProvider ?? undefined,
       );
     }
 
@@ -1411,6 +1449,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         currentView,
         depth,
         this._sampler!,
+        this._timestampProvider ?? undefined,
       );
     }
 
@@ -1435,6 +1474,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         currentView,
         depth,
         this._sampler!,
+        this._timestampProvider ?? undefined,
       );
     }
 
@@ -1460,7 +1500,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
         sceneColorTexture = this._pongTexture;
       }
       if (sceneColorTexture) {
-        this._autoExposure.dispatch(encoder, sceneColorTexture);
+        this._autoExposure.dispatch(
+          encoder,
+          sceneColorTexture,
+          this._timestampProvider ?? undefined,
+        );
 
         // Feed the averaged luminance into the tonemapping exposure uniform.
         // The tonemapping shader reads `params.exposure` at uniform offset 0.
@@ -1857,7 +1901,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       stage.cachedSourceView = sourceView;
     }
 
-    const pass = encoder.beginRenderPass({
+    const descriptor: GPURenderPassDescriptor = {
       label: `PostProcess-${stage.name}-Pass`,
       colorAttachments: [
         {
@@ -1867,7 +1911,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
           clearValue: { r: 0, g: 0, b: 0, a: 1 },
         },
       ],
-    });
+    };
+    const pass = encoder.beginRenderPass(
+      this._timestampProvider?.withRenderPassTimestamps(descriptor) ??
+        descriptor,
+    );
     pass.setPipeline(stage.pipeline);
     pass.setBindGroup(0, bindGroup);
     pass.draw(3);
@@ -1902,7 +1950,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       this._identityCachedSourceView = sourceView;
     }
 
-    const pass = encoder.beginRenderPass({
+    const descriptor: GPURenderPassDescriptor = {
       label: "PostProcess-IdentityBlit",
       colorAttachments: [
         {
@@ -1912,7 +1960,11 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
           clearValue: { r: 0, g: 0, b: 0, a: 1 },
         },
       ],
-    });
+    };
+    const pass = encoder.beginRenderPass(
+      this._timestampProvider?.withRenderPassTimestamps(descriptor) ??
+        descriptor,
+    );
 
     pass.setPipeline(this._identityPipeline);
     pass.setBindGroup(0, bindGroup);

@@ -153,6 +153,22 @@ const depthQuadRTE = new Float32Array(24);
 // 4×4 matrix (64 bytes) + vec3+pad (16) + vec3+pad (16) = 96 bytes = 24 floats
 // 28 floats = mat4(16) + camHigh(4) + camLow(4) + logDepthParams(4)
 const uniformScratch = new Float32Array(28);
+const DEPTH_PLANE_UNIFORM_BYTES = uniformScratch.byteLength;
+const DEFAULT_UNIFORM_OFFSET_ALIGNMENT = 256;
+// Cesium's planetary camera normally produces at most a small handful of
+// natural frustums. Reserving four slices at initialization costs only 1 KiB
+// with the common 256-byte alignment and avoids replacing the buffer/bind
+// group on the first multi-frustum frame or ordinary altitude transition.
+const INITIAL_UNIFORM_CAPACITY = 4;
+
+// Pass-scoped geometry scratch. The depth-plane quad is camera/ellipsoid
+// dependent but natural-frustum independent, so compute and upload it once
+// before the frustum loop instead of allocating an Ellipsoid and rewriting the
+// same vertices for every slice.
+const scratchEllipsoidRadii = new Cartesian3();
+const scratchEllipsoid = new Ellipsoid();
+
+export type WebGPUDepthPlanePassKind = "scene" | "pick";
 
 /**
  * Compute the depth quad corners in world space from the camera and ellipsoid.
@@ -281,6 +297,7 @@ const scratchCorners = [
 export class WebGPUDepthPlane {
   private _device: GPUDevice | null = null;
   private _pipeline: GPURenderPipeline | null = null;
+  private _pickPipeline: GPURenderPipeline | null = null;
   private _vertexBuffer: GPUBuffer | null = null;
   private _uniformBuffer: GPUBuffer | null = null;
   private _bindGroup: GPUBindGroup | null = null;
@@ -289,6 +306,13 @@ export class WebGPUDepthPlane {
   private _vertexCount: number = 0;
   private _isDestroyed: boolean = false;
   private _ellipsoidOffset: number;
+  private _uniformStride: number = DEFAULT_UNIFORM_OFFSET_ALIGNMENT;
+  private _uniformCapacity: number = 0;
+  private _uniformCursor: number = 0;
+  private _currentUniformOffset: number = 0;
+  private _passPrepared: boolean = false;
+  private _directCompatibilityPass: boolean = false;
+  private _dynamicOffsets = new Uint32Array(1);
 
   // Track whether the depth plane is enabled for the current frame
   private _enabled: boolean = false;
@@ -300,6 +324,12 @@ export class WebGPUDepthPlane {
   // "Attachment state of [DepthPlane-Pipeline] not compatible with [Scene
   // Framebuffer Render Pass]" validation warnings every frame.
   _colorFormat: GPUTextureFormat | null = null;
+
+  // Complete scene/pick attachment identity. The resource-ensure step uses
+  // these fields to rebuild after MSAA/depth/pick-format drift.
+  _depthFormat: GPUTextureFormat | null = null;
+  _sampleCount: number = 1;
+  _pickColorFormat: GPUTextureFormat | null = null;
 
   // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — whether the
   // pipeline was built with the log-depth frag_depth shader variant. Read by
@@ -319,6 +349,54 @@ export class WebGPUDepthPlane {
     this._enabled = value;
   }
 
+  /** True only while this plane owns resources from the supplied device. */
+  isForDevice(device: GPUDevice): boolean {
+    return !this._isDestroyed && this._device === device;
+  }
+
+  /**
+   * Allocate the uniform ring and its one stable dynamic-offset bind group.
+   * Growth happens only before a pass starts, so no encoded draw can retain a
+   * reference to a buffer that is destroyed during the same submission.
+   */
+  private _allocateUniformRing(device: GPUDevice, capacity: number): void {
+    if (!this._bindGroupLayout) {
+      return;
+    }
+    const nextCapacity = Math.max(1, Math.ceil(capacity));
+    const nextBuffer = device.createBuffer({
+      label: "DepthPlane-UniformRing",
+      size: this._uniformStride * nextCapacity,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    });
+    let nextBindGroup: GPUBindGroup;
+    try {
+      nextBindGroup = device.createBindGroup({
+        label: "DepthPlane-BindGroup",
+        layout: this._bindGroupLayout,
+        entries: [
+          {
+            binding: 0,
+            resource: {
+              buffer: nextBuffer,
+              offset: 0,
+              size: DEPTH_PLANE_UNIFORM_BYTES,
+            },
+          },
+        ],
+      });
+    } catch (error) {
+      nextBuffer.destroy();
+      throw error;
+    }
+
+    const previousBuffer = this._uniformBuffer;
+    this._uniformBuffer = nextBuffer;
+    this._bindGroup = nextBindGroup;
+    this._uniformCapacity = nextCapacity;
+    previousBuffer?.destroy();
+  }
+
   /**
    * Initialize the depth plane pipeline (once per device).
    *
@@ -333,6 +411,7 @@ export class WebGPUDepthPlane {
    * @param depthFormat Depth-stencil attachment format
    * @param colorFormat Color attachment format (writeMask = 0; depth-only)
    * @param pipelineCache Optional central pipeline cache for dedup
+   * @param pickColorFormat Exact single-target pick framebuffer format
    */
   initialize(
     device: GPUDevice,
@@ -341,11 +420,15 @@ export class WebGPUDepthPlane {
     pipelineCache?: WebGPURenderPipelineCache | null,
     sampleCount: number = 1,
     useLogDepth: boolean = false,
+    pickColorFormat: GPUTextureFormat = "rgba8unorm",
   ): void {
     if (this._pipeline) return;
 
     this._device = device;
     this._colorFormat = colorFormat;
+    this._depthFormat = depthFormat;
+    this._sampleCount = sampleCount;
+    this._pickColorFormat = pickColorFormat;
     this._logDepth = useLogDepth;
 
     this._shaderModule = device.createShaderModule({
@@ -364,116 +447,146 @@ export class WebGPUDepthPlane {
     this._bindGroupLayout = makeBindGroupLayout(
       device,
       "DepthPlane-BindGroupLayout",
-      [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
+      [
+        uniformBuffer(0, Stage.VERTEX_FRAGMENT, {
+          hasDynamicOffset: true,
+          minBindingSize: DEPTH_PLANE_UNIFORM_BYTES,
+        }),
+      ],
     );
 
-    // 112 bytes = mat4(64) + vec3+pad(16) + vec3+pad(16) + logDepthParams(16)
-    // The logDepthParams vec4 is always declared/packed (static layout);
-    // only the log-depth shader variant reads it.
-    this._uniformBuffer = device.createBuffer({
-      label: "DepthPlane-Uniforms",
-      size: 112,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-
-    this._bindGroup = device.createBindGroup({
-      label: "DepthPlane-BindGroup",
-      layout: this._bindGroupLayout,
-      entries: [{ binding: 0, resource: { buffer: this._uniformBuffer } }],
-    });
+    // 112 bytes = mat4(64) + vec3+pad(16) + vec3+pad(16) +
+    // logDepthParams(16). WebGPU dynamic uniform offsets must respect the
+    // device alignment (normally 256 bytes), so each natural frustum receives
+    // one aligned ring slice even though the logical payload stays 112 bytes.
+    const alignment = Math.max(
+      4,
+      device.limits?.minUniformBufferOffsetAlignment ??
+        DEFAULT_UNIFORM_OFFSET_ALIGNMENT,
+    );
+    this._uniformStride =
+      Math.ceil(DEPTH_PLANE_UNIFORM_BYTES / alignment) * alignment;
+    this._allocateUniformRing(device, INITIAL_UNIFORM_CAPACITY);
 
     const pipelineLayout = device.createPipelineLayout({
       label: "DepthPlane-PipelineLayout",
       bindGroupLayouts: [this._bindGroupLayout],
     });
 
+    const pipelineName = useLogDepth
+      ? "DepthPlane-Pipeline[ld]"
+      : "DepthPlane-Pipeline";
+    const vertex: WebGPURenderPipelineDescriptor["vertex"] = {
+      module: this._shaderModule,
+      entryPoint: "vertexMain",
+      buffers: [
+        {
+          // positionHigh + positionLow interleaved
+          arrayStride: 24, // 6 floats × 4 bytes
+          attributes: [
+            { shaderLocation: 0, offset: 0, format: "float32x3" }, // posHigh
+            { shaderLocation: 1, offset: 12, format: "float32x3" }, // posLow
+          ],
+        },
+      ],
+    };
+    const primitive: GPUPrimitiveState = {
+      topology: "triangle-strip",
+      stripIndexFormat: undefined,
+      cullMode: "none",
+    };
     const descriptor: WebGPURenderPipelineDescriptor = {
-      // The central cache keys on name + state (not module identity), so the
-      // log-depth shader variant MUST carry a distinct name.
-      name: useLogDepth ? "DepthPlane-Pipeline[ld]" : "DepthPlane-Pipeline",
+      // The central cache keys on full attachment state, but the explicit name
+      // keeps diagnostics and captured command streams self-describing.
+      name: pipelineName,
       layout: pipelineLayout,
-      vertex: {
-        module: this._shaderModule,
-        entryPoint: "vertexMain",
-        buffers: [
-          {
-            // positionHigh + positionLow interleaved
-            arrayStride: 24, // 6 floats × 4 bytes
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: "float32x3" }, // posHigh
-              { shaderLocation: 1, offset: 12, format: "float32x3" }, // posLow
-            ],
-          },
-        ],
-      },
+      vertex,
       fragment: {
         module: this._shaderModule,
         entryPoint: "fragmentMain",
-        // Batch 230 — route through `makeSceneFBTargets` so the pipeline
-        // declares the MRT slot-1 placeholder. The hand-rolled 1-target
-        // array predated the always-on G-buffer (Batch 115b+) and failed
-        // attachment-state validation against the 2-attachment scene-FB
-        // pass — which invalidated the WHOLE pass encoder and blanked
-        // every Sandcastle WebGPU demo (CesiumViewer was unaffected only
-        // because its views never enabled the depth plane). writeMask 0
-        // on slot 0 keeps this depth-only.
+        // The normal scene path uses its complete MRT topology.
         targets: makeSceneFBTargets(colorFormat, { writeMask: 0 }),
       },
       depthStencil: {
         format: depthFormat,
         depthWriteEnabled: true,
-        // less-equal for planetary-scale precision robustness.
         depthCompare: "less-equal",
       },
-      primitive: {
-        topology: "triangle-strip",
-        stripIndexFormat: undefined,
-        cullMode: "none",
-      },
-      // Session 65 Batch 21 — match scene FB sample count.
+      primitive,
       multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
     };
 
-    if (pipelineCache) {
-      // Async path through the central cache. `_pipeline` stays null until
-      // the promise resolves; `execute()` already guards on `!_pipeline`
-      // and silently no-ops, so the depth plane just doesn't run on the
-      // first frame after construction. After that, the pipeline is
-      // cached and shared with any other depth plane instance using the
-      // same descriptor (e.g. split-screen).
-      pipelineCache
-        .getPipeline(descriptor)
-        .then((p) => {
-          // Guard against destroy() between issuing the request and its
-          // resolution — _isDestroyed clears device state.
-          if (!this._isDestroyed) {
-            this._pipeline = p;
-          }
-        })
-        .catch(() => {
-          // Cache already logs the underlying creation error. Leave
-          // `_pipeline = null` so `execute()` no-ops.
-        });
-    } else {
-      this._pipeline = device.createRenderPipeline({
-        label: descriptor.name,
-        layout: descriptor.layout ?? "auto",
+    // C9-02A — the pick mini-frame is always single-target and single-sample.
+    // Pre-request this attachment-compatible pipeline with the scene variant
+    // so compilation does not begin on the first-pick hot path and the variant
+    // is normally ready before interaction. Geometry, shader, layout, bind
+    // group, and buffers stay shared.
+    const pickDescriptor: WebGPURenderPipelineDescriptor = {
+      name: `${pipelineName}[pick]`,
+      layout: pipelineLayout,
+      vertex,
+      fragment: {
+        module: this._shaderModule,
+        entryPoint: "fragmentMain",
+        targets: [{ format: pickColorFormat, writeMask: 0 }],
+      },
+      depthStencil: {
+        format: "depth24plus-stencil8",
+        depthWriteEnabled: true,
+        depthCompare: "less-equal",
+      },
+      primitive,
+    };
+
+    const createPipelineSync = (
+      pipelineDescriptor: WebGPURenderPipelineDescriptor,
+    ): GPURenderPipeline =>
+      device.createRenderPipeline({
+        label: pipelineDescriptor.name,
+        layout: pipelineDescriptor.layout ?? "auto",
         vertex: {
-          module: descriptor.vertex.module,
-          entryPoint: descriptor.vertex.entryPoint,
-          buffers: descriptor.vertex.buffers,
+          module: pipelineDescriptor.vertex.module,
+          entryPoint: pipelineDescriptor.vertex.entryPoint,
+          buffers: pipelineDescriptor.vertex.buffers,
         },
-        fragment: descriptor.fragment
+        fragment: pipelineDescriptor.fragment
           ? {
-              module: descriptor.fragment.module,
-              entryPoint: descriptor.fragment.entryPoint,
-              targets: descriptor.fragment.targets,
+              module: pipelineDescriptor.fragment.module,
+              entryPoint: pipelineDescriptor.fragment.entryPoint,
+              targets: pipelineDescriptor.fragment.targets,
             }
           : undefined,
-        primitive: descriptor.primitive,
-        depthStencil: descriptor.depthStencil,
-        multisample: descriptor.multisample,
+        primitive: pipelineDescriptor.primitive,
+        depthStencil: pipelineDescriptor.depthStencil,
+        multisample: pipelineDescriptor.multisample,
       });
+
+    if (pipelineCache) {
+      for (const [pipelineDescriptor, assign] of [
+        [
+          descriptor,
+          (pipeline: GPURenderPipeline) => (this._pipeline = pipeline),
+        ],
+        [
+          pickDescriptor,
+          (pipeline: GPURenderPipeline) => (this._pickPipeline = pipeline),
+        ],
+      ] as const) {
+        pipelineCache
+          .getPipeline(pipelineDescriptor)
+          .then((pipeline) => {
+            if (!this._isDestroyed) {
+              assign(pipeline);
+            }
+          })
+          .catch(() => {
+            // The cache reports creation errors. Never substitute a pipeline
+            // whose attachments differ from the active pass.
+          });
+      }
+    } else {
+      this._pipeline = createPipelineSync(descriptor);
+      this._pickPipeline = createPipelineSync(pickDescriptor);
     }
 
     // Pre-allocate vertex buffer for 4 corners × 24 bytes each = 96 bytes
@@ -513,15 +626,101 @@ export class WebGPUDepthPlane {
   }
 
   /**
-   * Update the depth plane uniforms (MVP, camera position).
+   * Prepare one scene or pick draw sequence before any natural-frustum draw is
+   * encoded. The uniform ring is grown up front, its cursor is reset, and the
+   * camera-dependent (but frustum-independent) quad is uploaded exactly once.
+   *
+   * @param frameState The current frame state.
+   * @param device The current device.
+   * @param maximumDraws Maximum depth-plane draws encoded before submission.
+   */
+  beginPass(
+    frameState: CesiumFrameState,
+    device: GPUDevice,
+    maximumDraws: number,
+  ): void {
+    this._uniformCursor = 0;
+    this._currentUniformOffset = 0;
+    this._dynamicOffsets[0] = 0;
+    this._passPrepared = false;
+    this._directCompatibilityPass = false;
+    this._enabled = false;
+
+    if (
+      !frameState ||
+      !frameState.camera ||
+      frameState.mode !== SCENE_MODE_3D ||
+      !this._bindGroupLayout ||
+      !this._vertexBuffer
+    ) {
+      return;
+    }
+
+    const requiredCapacity = Math.max(1, Math.ceil(maximumDraws));
+    if (
+      !this._uniformBuffer ||
+      !this._bindGroup ||
+      this._uniformCapacity < requiredCapacity
+    ) {
+      this._allocateUniformRing(
+        device,
+        Math.max(requiredCapacity, this._uniformCapacity * 2),
+      );
+    }
+
+    const mapProjection = frameState.mapProjection as
+      { ellipsoid?: { radii?: CesiumCartesian3 } } | undefined;
+    const baseRadii = mapProjection?.ellipsoid?.radii;
+    if (!baseRadii || !this._uniformBuffer || !this._bindGroup) {
+      return;
+    }
+    scratchEllipsoidRadii.x = baseRadii.x + this._ellipsoidOffset;
+    scratchEllipsoidRadii.y = baseRadii.y + this._ellipsoidOffset;
+    scratchEllipsoidRadii.z = baseRadii.z + this._ellipsoidOffset;
+    // Ellipsoid.fromCartesian3 replaces five internal Cartesian3 fields. The
+    // map ellipsoid and offset are stable for ordinary frames, so avoid those
+    // otherwise-hidden allocations until the exact radii actually change.
+    const preparedRadii = scratchEllipsoid.radii as Cartesian3;
+    if (
+      preparedRadii.x !== scratchEllipsoidRadii.x ||
+      preparedRadii.y !== scratchEllipsoidRadii.y ||
+      preparedRadii.z !== scratchEllipsoidRadii.z
+    ) {
+      Ellipsoid.fromCartesian3(scratchEllipsoidRadii, scratchEllipsoid);
+    }
+
+    computeDepthQuadCorners(
+      scratchEllipsoid,
+      frameState.camera,
+      scratchCorners,
+    );
+    encodeQuadToRTE(scratchCorners, depthQuadRTE);
+    this.updateVertices(device, depthQuadRTE);
+
+    this._enabled = true;
+    this._vertexCount = 4;
+    this._passPrepared = true;
+  }
+
+  /**
+   * Write the next aligned depth-plane uniform slice.
    */
   updateUniforms(device: GPUDevice, uniformData: Float32Array): void {
     if (!this._uniformBuffer || !uniformData) return;
+    if (this._uniformCursor >= this._uniformCapacity) {
+      throw new Error(
+        `DepthPlane uniform ring exhausted (${this._uniformCursor + 1} draws, ` +
+          `${this._uniformCapacity} reserved)`,
+      );
+    }
+    const offset = this._uniformCursor * this._uniformStride;
     device.queue.writeBuffer(
       this._uniformBuffer,
-      0,
+      offset,
       uniformData as Float32Array<ArrayBuffer>,
     );
+    this._currentUniformOffset = offset;
+    this._uniformCursor++;
   }
 
   /**
@@ -543,30 +742,20 @@ export class WebGPUDepthPlane {
       return;
     }
 
-    if (!this._pipeline) {
+    // Defensive compatibility for a direct caller. SceneRenderer normally
+    // reserves the exact natural-frustum count before encoding any draw.
+    if (!this._passPrepared) {
+      this.beginPass(frameState, device, 1);
+      this._directCompatibilityPass = this._passPrepared;
+    }
+    if (
+      !this._passPrepared ||
+      !this._uniformBuffer ||
+      !this._vertexBuffer ||
+      !this._bindGroup
+    ) {
       return;
     }
-
-    // Allow offsetting the ellipsoid radius to address rendering artifacts
-    // below ellipsoid zero elevation (matches WebGL DepthPlane behavior)
-    const mapProj = frameState.mapProjection as {
-      ellipsoid: { radii: CesiumCartesian3 };
-    };
-    const baseRadii = mapProj.ellipsoid.radii;
-    const ellipsoid = new Ellipsoid(
-      baseRadii.x + this._ellipsoidOffset,
-      baseRadii.y + this._ellipsoidOffset,
-      baseRadii.z + this._ellipsoidOffset,
-    );
-
-    // Compute the 4 quad corners in world space
-    computeDepthQuadCorners(ellipsoid, frameState.camera, scratchCorners);
-
-    // Encode corners into RTE vertex data
-    encodeQuadToRTE(scratchCorners, depthQuadRTE);
-
-    // Update vertex buffer
-    this.updateVertices(device, depthQuadRTE);
 
     // Build uniform data: mvpRelativeToEye (mat4) + encodedCameraHigh (vec3+pad) + encodedCameraLow (vec3+pad)
     const uniformState = frameState.context.uniformState;
@@ -616,29 +805,39 @@ export class WebGPUDepthPlane {
     uniformScratch[27] = 0.0;
 
     this.updateUniforms(device, uniformScratch);
-
-    this._enabled = true;
-    this._vertexCount = 4; // triangle strip with 4 vertices
   }
 
   /**
    * Execute the depth plane draw command on the given render pass.
    */
-  execute(renderPass: GPURenderPassEncoder): void {
+  execute(
+    renderPass: GPURenderPassEncoder,
+    passKind: WebGPUDepthPlanePassKind,
+  ): void {
+    const pipeline = passKind === "pick" ? this._pickPipeline : this._pipeline;
     if (
       !this._enabled ||
-      !this._pipeline ||
+      !pipeline ||
       !this._vertexBuffer ||
       !this._bindGroup ||
       this._vertexCount === 0
     ) {
+      if (this._directCompatibilityPass) {
+        this._passPrepared = false;
+        this._directCompatibilityPass = false;
+      }
       return;
     }
 
-    renderPass.setPipeline(this._pipeline);
-    renderPass.setBindGroup(0, this._bindGroup);
+    renderPass.setPipeline(pipeline);
+    this._dynamicOffsets[0] = this._currentUniformOffset;
+    renderPass.setBindGroup(0, this._bindGroup, this._dynamicOffsets);
     renderPass.setVertexBuffer(0, this._vertexBuffer);
     renderPass.draw(this._vertexCount);
+    if (this._directCompatibilityPass) {
+      this._passPrepared = false;
+      this._directCompatibilityPass = false;
+    }
   }
 
   destroy(): void {
@@ -648,7 +847,14 @@ export class WebGPUDepthPlane {
     this._vertexBuffer = null;
     this._uniformBuffer = null;
     this._bindGroup = null;
+    this._device = null;
     this._pipeline = null;
+    this._pickPipeline = null;
+    this._uniformCapacity = 0;
+    this._uniformCursor = 0;
+    this._currentUniformOffset = 0;
+    this._passPrepared = false;
+    this._directCompatibilityPass = false;
     this._isDestroyed = true;
   }
 

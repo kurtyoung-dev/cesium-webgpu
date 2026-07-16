@@ -52,6 +52,17 @@ class Picking {
     this._pickPositionCache = {};
     this._pickPositionCacheDirty = false;
 
+    // Hover requests use a two-slot scheduler: one physical pick in flight
+    // and one latest-wins queued cursor. Cursor storage is allocated lazily so
+    // scenes that never opt into hover picking pay no allocation cost.
+    this._inFlightHoverPick = undefined;
+    this._queuedHoverPick = undefined;
+    this._activeHoverCursor = undefined;
+    this._queuedHoverCursor = undefined;
+    this._queuedHoverWidth = undefined;
+    this._queuedHoverHeight = undefined;
+    this._queuedHoverLimit = undefined;
+
     const pickOffscreenViewport = new BoundingRectangle(0, 0, 1, 1);
     const pickOffscreenCamera = new Camera(scene);
     pickOffscreenCamera.frustum = new OrthographicFrustum({
@@ -107,81 +118,146 @@ class Picking {
    * For OPAQUE / MASK alphaMode primitives this is identical to
    * `pickAsync` (the factory delegates to the regular pick pipeline).
    *
-   * Coalesce semantics (Batch 192 mitigation A): if `pickPreciseAsync`
-   * is in flight when this is called, the framework drops the precise
-   * request rather than the hover one — hover at 60fps takes priority
-   * for UX smoothness; missed precise frames are infrequent and the
-   * caller's promise simply doesn't resolve until the next call.
+   * Coalesce semantics (Batch 192 mitigation A): there is at most one
+   * physical hover pick in flight and one queued latest cursor. Callers in
+   * the active cycle receive that physical result as soon as it completes;
+   * callers arriving during the active cycle share the next cycle's promise.
    *
    * @param {Scene} scene
    * @param {Cartesian2} windowPosition
    * @param {number} [width=3]
    * @param {number} [height=3]
    * @param {number} [limit=1]
-   * @returns {Promise<object[]>}
+   * @returns {Promise<object|undefined>}
    */
-  async pickHoverAsync(scene, windowPosition, width, height, limit = 1) {
+  pickHoverAsync(scene, windowPosition, width, height, limit = 1) {
     // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192 mitigation A; Batch 194
-    // B192-N1 audit fix) — coalesce with latest-cursor chaining.
+    // B192-N1 audit fix) — coalesce with a bounded two-slot scheduler.
     //
-    // Standard "trailing debounce" pattern. Hover-pick fires at 60fps
-    // but pick render + readback can take 16-20ms on heavy scenes —
-    // requests stack up. The original Batch 192 coalesce returned the
-    // in-flight promise on pile-up, but that resolved with the result
-    // for the OLD cursor position; if the user moved the cursor mid-
-    // pick the returned tooltip lagged behind reality.
-    //
-    // The fix: track the latest requested cursor (`_latestHoverCursor`)
-    // and run a "drain loop" that processes one pick at a time but
-    // always uses the most-recent cursor. All callers awaiting
-    // `_inFlightHoverPick` get the SAME consolidated result for the
-    // latest cursor — that's the correct UX for hover (every observer
-    // wants "what's under the cursor RIGHT NOW", not "what was under
-    // it when I first asked").
-    this._latestHoverCursor = Cartesian2.clone(
-      windowPosition,
-      this._latestHoverCursor ?? new Cartesian2(),
-    );
-    this._latestHoverArgs = { width, height, limit };
-
-    if (defined(this._inFlightHoverPick)) {
-      return this._inFlightHoverPick;
+    // A trailing drain (wait for the cursor stream to become idle, then
+    // publish one result) starves callers when pointer events arrive faster
+    // than GPU readback. Instead, each completed physical pick publishes its
+    // own result. Requests received during it share one queued promise whose
+    // cursor and scalar arguments are overwritten in place with the latest
+    // values. No request-rate-sized queue or per-call args object is created.
+    if (!defined(this._inFlightHoverPick)) {
+      this._activeHoverCursor = Cartesian2.clone(
+        windowPosition,
+        this._activeHoverCursor ?? new Cartesian2(),
+      );
+      return this._startHoverPick(
+        scene,
+        this._activeHoverCursor,
+        width,
+        height,
+        limit,
+      );
     }
-    this._inFlightHoverPick = this._runHoverChain(scene);
-    return this._inFlightHoverPick;
+
+    this._queuedHoverCursor = Cartesian2.clone(
+      windowPosition,
+      this._queuedHoverCursor ?? new Cartesian2(),
+    );
+    this._queuedHoverWidth = width;
+    this._queuedHoverHeight = height;
+    this._queuedHoverLimit = limit;
+
+    if (!defined(this._queuedHoverPick)) {
+      const predecessor = this._inFlightHoverPick;
+      const startQueuedPick = () =>
+        this._startQueuedHoverPick(scene, queuedPromise);
+      const queuedPromise = predecessor.then(startQueuedPick, startQueuedPick);
+      this._queuedHoverPick = queuedPromise;
+      this._trackHoverPickCompletion(queuedPromise);
+    }
+    return this._queuedHoverPick;
   }
 
   /**
-   * Drains queued hover-pick requests one at a time, always using
-   * the most recent cursor / args. Resolves with the result of the
-   * FINAL pick (latest cursor at drain time), shared with all
-   * coalesced callers awaiting `_inFlightHoverPick`.
+   * Starts the first physical pick in a hover cycle.
    * @private
    */
-  async _runHoverChain(scene) {
-    let lastResult;
-    try {
-      while (defined(this._latestHoverCursor)) {
-        const cursor = this._latestHoverCursor;
-        const args = this._latestHoverArgs;
-        // Claim the latest snapshot. If a new request comes in while
-        // the pick below is running, it'll repopulate these and the
-        // while loop runs again.
-        this._latestHoverCursor = undefined;
-        this._latestHoverArgs = undefined;
-        lastResult = await this._pickAsyncWithMode(
-          scene,
-          cursor,
-          args.width,
-          args.height,
-          args.limit,
-          "hover",
-        );
-      }
-    } finally {
-      this._inFlightHoverPick = undefined;
+  _startHoverPick(scene, cursor, width, height, limit) {
+    const promise = this._executeHoverPick(scene, cursor, width, height, limit);
+    this._inFlightHoverPick = promise;
+    this._trackHoverPickCompletion(promise);
+    return promise;
+  }
+
+  /**
+   * Claims the queued latest-cursor snapshot and starts its physical pick.
+   * The queued promise assimilates the returned physical-pick promise, so all
+   * callers associated with this cycle receive the same single-object result.
+   * @private
+   */
+  _startQueuedHoverPick(scene, queuedPromise) {
+    if (this._queuedHoverPick === queuedPromise) {
+      this._queuedHoverPick = undefined;
     }
-    return lastResult;
+
+    const previousActiveCursor = this._activeHoverCursor;
+    this._activeHoverCursor = this._queuedHoverCursor;
+    this._queuedHoverCursor = previousActiveCursor;
+
+    const width = this._queuedHoverWidth;
+    const height = this._queuedHoverHeight;
+    const limit = this._queuedHoverLimit;
+    this._queuedHoverWidth = undefined;
+    this._queuedHoverHeight = undefined;
+    this._queuedHoverLimit = undefined;
+
+    // Publish the cycle promise before starting the physical pick. A new
+    // pointer event fired by synchronous pick setup therefore observes this
+    // cycle as active and can only occupy the one queued slot behind it.
+    this._inFlightHoverPick = queuedPromise;
+    return this._executeHoverPick(
+      scene,
+      this._activeHoverCursor,
+      width,
+      height,
+      limit,
+    );
+  }
+
+  /**
+   * Executes one physical hover pick and narrows the internal drill-pick array
+   * to Scene.pickHoverAsync's documented object-or-undefined result.
+   * @private
+   */
+  _executeHoverPick(scene, cursor, width, height, limit) {
+    let pickedObjectsPromise;
+    try {
+      pickedObjectsPromise = this._pickAsyncWithMode(
+        scene,
+        cursor,
+        width,
+        height,
+        limit,
+        "hover",
+      );
+    } catch (error) {
+      pickedObjectsPromise = Promise.reject(error);
+    }
+    return Promise.resolve(pickedObjectsPromise).then(
+      (pickedObjects) => pickedObjects?.[0],
+    );
+  }
+
+  /**
+   * Clears the active slot after a cycle settles unless another cycle is
+   * already queued behind it. Both fulfillment and rejection take this path.
+   * @private
+   */
+  _trackHoverPickCompletion(promise) {
+    const complete = () => {
+      if (
+        this._inFlightHoverPick === promise &&
+        !defined(this._queuedHoverPick)
+      ) {
+        this._inFlightHoverPick = undefined;
+      }
+    };
+    promise.then(complete, complete);
   }
 
   /**
@@ -283,14 +359,19 @@ class Picking {
     const { pickFramebuffer } = defaultView;
     // Batch 187 (B184-D1 audit fix) — per-call rectangle instance.
     const drawingBufferRectangle = new BoundingRectangle();
-    pickBegin(
-      scene,
-      windowPosition,
-      drawingBufferRectangle,
-      width,
-      height,
-      mode,
-    );
+    let pickError = noPickFrameError;
+    try {
+      pickBegin(
+        scene,
+        windowPosition,
+        drawingBufferRectangle,
+        width,
+        height,
+        mode,
+      );
+    } catch (error) {
+      pickError = error;
+    }
     // Batch 191 (B187-D1 audit fix) — pickEnd MUST run BEFORE
     // pickFramebuffer.endAsync() on WebGPU. `endAsync` synchronously
     // creates a NEW command encoder, queues `copyTextureToBuffer`, and
@@ -306,7 +387,7 @@ class Picking {
     // running the submit before the await. The correct sequence:
     //   pickBegin → pickEnd (submits pick render) → endAsync (queues
     //   readback after pick render in submission order) → await.
-    pickEnd(scene);
+    completePickFrame(scene, pickError);
     let pickedObjectsPromise;
     if (defined(pickFramebuffer.endAsync)) {
       pickedObjectsPromise = pickFramebuffer.endAsync(
@@ -334,9 +415,18 @@ class Picking {
     const { defaultView } = scene;
     const { pickFramebuffer } = defaultView;
     const drawingBufferRectangle = scratchRectangle;
-    pickBegin(scene, windowPosition, drawingBufferRectangle, width, height);
-    const pickedObjects = pickFramebuffer.end(drawingBufferRectangle, limit);
-    pickEnd(scene);
+    let pickedObjects;
+    let pickError = noPickFrameError;
+    try {
+      pickBegin(scene, windowPosition, drawingBufferRectangle, width, height);
+      // WebGL must read while its pick framebuffer is still bound. WebGPU's
+      // synchronous API starts its cached readback here for the same legacy
+      // ordering, then completePickFrame submits/finalizes the mini-frame.
+      pickedObjects = pickFramebuffer.end(drawingBufferRectangle, limit);
+    } catch (error) {
+      pickError = error;
+    }
+    completePickFrame(scene, pickError);
     return pickedObjects;
   }
 
@@ -387,9 +477,14 @@ class Picking {
     context.uniformState.update(frameState);
     scene.updateEnvironment();
 
-    passState = pickFramebuffer.begin(drawingBufferRectangle, viewport);
-    scene.updateAndExecuteCommands(passState, scratchColorZero);
-    scene.resolveFramebuffers(passState);
+    let pickError = noPickFrameError;
+    try {
+      passState = pickFramebuffer.begin(drawingBufferRectangle, viewport);
+      scene.updateAndExecuteCommands(passState, scratchColorZero);
+      scene.resolveFramebuffers(passState);
+    } catch (error) {
+      pickError = error;
+    }
 
     // endFrame() MUST run before readCenterPixel() on WebGPU: it submits the
     // voxel pass's command encoder to the queue. readCenterPixel arms its own
@@ -399,7 +494,7 @@ class Picking {
     // pick path documents in _pickAsyncWithMode). On WebGL, endFrame() only
     // unbinds the default framebuffer — the pick FBO content persists and
     // readCenterPixel re-binds it explicitly — so the reorder is a no-op there.
-    context.endFrame();
+    completePickFrame(scene, pickError);
     const voxelInfo = pickFramebuffer.readCenterPixel(drawingBufferRectangle);
     return voxelInfo;
   }
@@ -457,23 +552,34 @@ class Picking {
     context.uniformState.update(frameState);
     scene.updateEnvironment();
 
-    passState = pickFramebuffer.begin(drawingBufferRectangle, viewport);
-    scene.updateAndExecuteCommands(passState, scratchColorZero);
+    let pickError = noPickFrameError;
+    try {
+      passState = pickFramebuffer.begin(drawingBufferRectangle, viewport);
+      scene.updateAndExecuteCommands(passState, scratchColorZero);
 
-    const oldOIT = scene._environmentState.useOIT;
-    scene._environmentState.useOIT = false;
-    scene.resolveFramebuffers(passState);
-    scene._environmentState.useOIT = oldOIT;
+      const oldOIT = scene._environmentState.useOIT;
+      try {
+        scene._environmentState.useOIT = false;
+        scene.resolveFramebuffers(passState);
+      } finally {
+        scene._environmentState.useOIT = oldOIT;
+      }
+    } catch (error) {
+      pickError = error;
+    }
 
     // endFrame() before readCenterPixel() — submits the metadata pass so the
     // WebGPU center-pixel readback (NEW-PICK-METADATA-READBACK) copies the
     // just-rendered pixel rather than a stale one. No-op ordering on WebGL
     // (see pickVoxelCoordinate for the full rationale).
-    context.endFrame();
+    try {
+      completePickFrame(scene, pickError);
+    } finally {
+      frameState.pickingMetadata = false;
+    }
     const rawMetadataPixel = pickFramebuffer.readCenterPixel(
       drawingBufferRectangle,
     );
-    frameState.pickingMetadata = false;
 
     return MetadataPicking.decodeMetadataValues(
       pickedMetadataInfo.classProperty,
@@ -590,7 +696,9 @@ class Picking {
     let frustum;
     if (defined(camera.frustum.fov)) {
       frustum = camera.frustum.clone(scratchPerspectiveFrustum);
-    } else if (defined(camera.frustum.infiniteProjectionMatrix)) {
+    } else if (
+      typeof camera.frustum.getInfiniteProjectionMatrix === "function"
+    ) {
       frustum = camera.frustum.clone(scratchPerspectiveOffCenterFrustum);
     } else if (defined(camera.frustum.width)) {
       frustum = camera.frustum.clone(scratchOrthographicFrustum);
@@ -1350,6 +1458,7 @@ function getPickCullingVolume(
 const scratchRectangle = new BoundingRectangle(0.0, 0.0, 3.0, 3.0);
 const scratchPosition = new Cartesian2();
 const scratchColorZero = new Color(0.0, 0.0, 0.0, 0.0);
+const noPickFrameError = Symbol("no pick frame error");
 
 function computePickingDrawingBufferRectangle(
   drawingBufferHeight,
@@ -1438,10 +1547,32 @@ function pickBegin(
 }
 
 function pickEnd(scene) {
-  scene.context.endFrame();
-  // Reset pickMode so the next pick frame starts from a known state.
-  if (scene.frameState?.passes) {
-    scene.frameState.passes.pickMode = "default";
+  try {
+    scene.context.endFrame();
+  } finally {
+    // Reset pickMode so the next pick frame starts from a known state even if
+    // device loss or command-buffer validation makes finalization throw.
+    if (scene.frameState?.passes) {
+      scene.frameState.passes.pickMode = "default";
+    }
+  }
+}
+
+function completePickFrame(scene, primaryError = noPickFrameError) {
+  let cleanupError = noPickFrameError;
+  try {
+    pickEnd(scene);
+  } catch (error) {
+    cleanupError = error;
+  }
+
+  // A cleanup failure is useful only when it is the sole failure. Preserve
+  // the render/readback exception that actually caused the mini-frame abort.
+  if (primaryError !== noPickFrameError) {
+    throw primaryError;
+  }
+  if (cleanupError !== noPickFrameError) {
+    throw cleanupError;
   }
 }
 
@@ -1480,9 +1611,14 @@ function renderTranslucentDepthForPick(scene, drawingBufferPosition) {
     viewport,
   );
 
-  scene.updateAndExecuteCommands(passState, scratchColorZero);
-  scene.resolveFramebuffers(passState);
-  context.endFrame();
+  let pickError = noPickFrameError;
+  try {
+    scene.updateAndExecuteCommands(passState, scratchColorZero);
+    scene.resolveFramebuffers(passState);
+  } catch (error) {
+    pickError = error;
+  }
+  completePickFrame(scene, pickError);
 }
 
 const scratchPerspectiveFrustum = new PerspectiveFrustum();

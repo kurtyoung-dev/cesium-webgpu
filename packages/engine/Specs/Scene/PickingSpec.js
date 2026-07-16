@@ -179,6 +179,45 @@ describe(
           }).toThrowDeveloperError();
         });
 
+        it("finalizes the pick mini-frame when command execution throws", function () {
+          const renderError = new Error("pick render failed");
+          spyOn(scene, "updateAndExecuteCommands").and.throwError(renderError);
+          const endFrameSpy = spyOn(
+            scene.context,
+            "endFrame",
+          ).and.callThrough();
+
+          expect(function () {
+            scene._picking.pick(scene, new Cartesian2(0, 0));
+          }).toThrow(renderError);
+
+          expect(endFrameSpy).toHaveBeenCalledTimes(1);
+          expect(scene.frameState.passes.pickMode).toBe("default");
+        });
+
+        it("finalizes an async pick mini-frame and preserves its render error", async function () {
+          const renderError = new Error("async pick render failed");
+          spyOn(scene, "updateAndExecuteCommands").and.throwError(renderError);
+          const endFrameSpy = spyOn(
+            scene.context,
+            "endFrame",
+          ).and.callThrough();
+
+          await expectAsync(
+            scene._picking._pickAsyncWithMode(
+              scene,
+              new Cartesian2(0, 0),
+              undefined,
+              undefined,
+              1,
+              "precise",
+            ),
+          ).toBeRejectedWith(renderError);
+
+          expect(endFrameSpy).toHaveBeenCalledTimes(1);
+          expect(scene.frameState.passes.pickMode).toBe("default");
+        });
+
         it("picks a primitive", function () {
           const rectangle = createLargeRectangle(0.0);
           expect(scene).toPickPrimitive(rectangle);
@@ -294,6 +333,119 @@ describe(
 
           expect(threw).toBe(true);
           expect(ready).toBe(false);
+        });
+
+        it("publishes hover-pick results by physical cycle while coalescing the latest queued cursor", async function () {
+          const deferredPicks = [];
+          const physicalCalls = [];
+          spyOn(scene._picking, "_pickAsyncWithMode").and.callFake(
+            function (_scene, position, width, height, limit, mode) {
+              let resolve;
+              let reject;
+              const promise = new Promise(function (
+                resolvePromise,
+                rejectPromise,
+              ) {
+                resolve = resolvePromise;
+                reject = rejectPromise;
+              });
+              deferredPicks.push({ promise, resolve, reject });
+              physicalCalls.push({
+                position: Cartesian2.clone(position),
+                width,
+                height,
+                limit,
+                mode,
+              });
+              return promise;
+            },
+          );
+
+          const firstPromise = scene.pickHoverAsync(new Cartesian2(1, 1), 3, 3);
+          const secondPromise = scene.pickHoverAsync(
+            new Cartesian2(2, 2),
+            5,
+            5,
+          );
+          const coalescedSecondPromise = scene.pickHoverAsync(
+            new Cartesian2(3, 3),
+            7,
+            9,
+          );
+
+          expect(physicalCalls.length).toBe(1);
+          expect(secondPromise).toBe(coalescedSecondPromise);
+
+          const firstResult = { id: "first-cycle" };
+          deferredPicks[0].resolve([firstResult]);
+          expect(await firstPromise).toBe(firstResult);
+
+          expect(physicalCalls.length).toBe(2);
+          expect(physicalCalls[1]).toEqual({
+            position: new Cartesian2(3, 3),
+            width: 7,
+            height: 9,
+            limit: 1,
+            mode: "hover",
+          });
+
+          // Keep traffic flowing while the second physical pick is pending.
+          // Its callers must still receive the second result promptly rather
+          // than waiting for the cursor stream to become idle.
+          const thirdPromise = scene.pickHoverAsync(new Cartesian2(4, 4), 3, 3);
+          const coalescedThirdPromise = scene.pickHoverAsync(
+            new Cartesian2(5, 5),
+            11,
+            13,
+          );
+          expect(thirdPromise).toBe(coalescedThirdPromise);
+          expect(thirdPromise).not.toBe(secondPromise);
+          expect(physicalCalls.length).toBe(2);
+
+          const secondResult = { id: "second-cycle" };
+          deferredPicks[1].resolve([secondResult]);
+          expect(await secondPromise).toBe(secondResult);
+
+          expect(physicalCalls.length).toBe(3);
+          expect(physicalCalls[2].position).toEqual(new Cartesian2(5, 5));
+          expect(physicalCalls[2].width).toBe(11);
+          expect(physicalCalls[2].height).toBe(13);
+
+          deferredPicks[2].resolve([]);
+          expect(await thirdPromise).toBeUndefined();
+          expect(scene._picking._inFlightHoverPick).toBeUndefined();
+          expect(scene._picking._queuedHoverPick).toBeUndefined();
+        });
+
+        it("continues the queued hover cycle after an active pick rejects", async function () {
+          const deferredPicks = [];
+          spyOn(scene._picking, "_pickAsyncWithMode").and.callFake(function () {
+            let resolve;
+            let reject;
+            const promise = new Promise(function (
+              resolvePromise,
+              rejectPromise,
+            ) {
+              resolve = resolvePromise;
+              reject = rejectPromise;
+            });
+            deferredPicks.push({ promise, resolve, reject });
+            return promise;
+          });
+
+          const firstPromise = scene.pickHoverAsync(new Cartesian2(1, 1));
+          const queuedPromise = scene.pickHoverAsync(new Cartesian2(2, 2));
+          const pickError = new Error("hover readback failed");
+          const rejected =
+            expectAsync(firstPromise).toBeRejectedWith(pickError);
+          deferredPicks[0].reject(pickError);
+          await rejected;
+
+          expect(deferredPicks.length).toBe(2);
+          const queuedResult = { id: "recovered-cycle" };
+          deferredPicks[1].resolve([queuedResult]);
+          expect(await queuedPromise).toBe(queuedResult);
+          expect(scene._picking._inFlightHoverPick).toBeUndefined();
         });
       });
 

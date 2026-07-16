@@ -28,6 +28,7 @@ import {
   executePass,
 } from "./WebGPUPostProcessEffects.js";
 import type { PostProcessEffect } from "./WebGPUPostProcessEffects.js";
+import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
 
 export interface DepthOfFieldConfig {
   focalDistance?: number; // Distance to focal plane (default 50.0)
@@ -122,6 +123,7 @@ export class DepthOfFieldEffect implements PostProcessEffect {
     sourceView: GPUTextureView,
     depthView: GPUTextureView | null,
     sampler: GPUSampler,
+    timestampProvider?: WebGPUPassTimestampProvider,
   ): GPUTextureView {
     if (!this._device || !depthView) return sourceView;
 
@@ -144,6 +146,7 @@ export class DepthOfFieldEffect implements PostProcessEffect {
       this._blurHPipeline!,
       blurHBG,
       this._blurTempView!,
+      timestampProvider,
     );
 
     // Pass 2: Vertical blur
@@ -163,6 +166,7 @@ export class DepthOfFieldEffect implements PostProcessEffect {
       this._blurVPipeline!,
       blurVBG,
       this._blurredView!,
+      timestampProvider,
     );
 
     // Pass 3: DoF composite (sharp + blurred + depth → output)
@@ -184,6 +188,7 @@ export class DepthOfFieldEffect implements PostProcessEffect {
       this._dofPipeline!,
       dofBG,
       this._outputView!,
+      timestampProvider,
     );
 
     return this._outputView!;

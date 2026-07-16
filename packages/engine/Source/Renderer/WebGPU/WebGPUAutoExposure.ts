@@ -31,6 +31,7 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import WebGPUBindGroupCache from "./WebGPUBindGroupCache.js";
 import type { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
+import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
 
 export interface AutoExposureConfig {
   minimumLuminance?: number;
@@ -273,7 +274,11 @@ export class WebGPUAutoExposure {
    * @param encoder The command encoder for this frame
    * @param sceneColorView The scene framebuffer's color texture view (HDR)
    */
-  dispatch(encoder: GPUCommandEncoder, sceneColorTexture: GPUTexture): void {
+  dispatch(
+    encoder: GPUCommandEncoder,
+    sceneColorTexture: GPUTexture,
+    timestampProvider?: WebGPUPassTimestampProvider,
+  ): void {
     if (
       !this.enabled ||
       !this._device ||
@@ -321,18 +326,26 @@ export class WebGPUAutoExposure {
     );
 
     // Pass 1: tile reduction
-    const pass1 = encoder.beginComputePass({
+    const pass1Descriptor: GPUComputePassDescriptor = {
       label: "AutoExposure pass1",
-    });
+    };
+    const pass1 = encoder.beginComputePass(
+      timestampProvider?.withComputePassTimestamps(pass1Descriptor) ??
+        pass1Descriptor,
+    );
     pass1.setPipeline(this._pass1Pipeline);
     pass1.setBindGroup(0, bindGroup);
     pass1.dispatchWorkgroups(this._tileCountX, this._tileCountY, 1);
     pass1.end();
 
     // Pass 2: final reduction + temporal smoothing
-    const pass2 = encoder.beginComputePass({
+    const pass2Descriptor: GPUComputePassDescriptor = {
       label: "AutoExposure pass2",
-    });
+    };
+    const pass2 = encoder.beginComputePass(
+      timestampProvider?.withComputePassTimestamps(pass2Descriptor) ??
+        pass2Descriptor,
+    );
     pass2.setPipeline(this._pass2Pipeline);
     pass2.setBindGroup(0, bindGroup);
     pass2.dispatchWorkgroups(1, 1, 1);

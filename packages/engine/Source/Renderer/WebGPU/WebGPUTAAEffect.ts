@@ -7,7 +7,7 @@
  * Pipeline position: after ColorGrading, before FXAA.
  *
  * Requires:
- *   - Sub-pixel camera jitter (Halton 2,3 sequence)
+ *   - Sub-pixel camera jitter (interleaved-gradient-noise sequence)
  *   - History ping-pong textures (managed internally)
  *   - Depth texture for future motion vector reprojection
  *
@@ -299,6 +299,37 @@ export function ignJitter(frameIndex: number, axis: number): number {
   return fract(52.9829189 * fract(0.06711056 * x + 0.00583715 * y));
 }
 
+/**
+ * Apply a TAA sample offset to a scratch projection matrix.
+ *
+ * This is expressed as a clip-space translation instead of hard-coding
+ * perspective-only elements [8]/[9]: row0 -= jitterX * row3 and
+ * row1 += jitterY * row3. It therefore works for both perspective and
+ * orthographic projections. The opposite Y operation accounts for WebGPU's
+ * top-left framebuffer/UV origin, so subtracting `resolveJitterUvY` in the
+ * resolve shader samples the same sub-pixel location rasterization produced.
+ *
+ * The caller must use a scratch matrix and restore it after UniformState has
+ * cloned the value. The persistent camera-frustum projection must never be
+ * passed here.
+ *
+ * @param projection Mutable column-major scratch projection.
+ * @param jitterNdcX Horizontal sample offset in NDC units.
+ * @param jitterNdcY Vertical sample offset in NDC units.
+ */
+export function applyProjectionJitterToScratch(
+  projection: { [index: number]: number },
+  jitterNdcX: number,
+  jitterNdcY: number,
+): void {
+  for (let column = 0; column < 4; column++) {
+    const offset = column * 4;
+    const homogeneousRow = projection[offset + 3];
+    projection[offset] -= jitterNdcX * homogeneousRow;
+    projection[offset + 1] += jitterNdcY * homogeneousRow;
+  }
+}
+
 export class WebGPUTAAEffect implements PostProcessEffect {
   readonly name = "TAA";
   enabled = false;
@@ -365,25 +396,18 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   // pattern, same as WebGPUGlobeDepth / WebGPUDebugDepthOverlay.
   private _depthSampler: GPUSampler | null = null;
 
-  // Current jitter offset in UV space (set by the caller before execute).
-  jitterX = 0;
-  jitterY = 0;
-
-  // NEW-CAMERA-JITTER-ACCUMULATION — un-jittered projection base + last
-  // applied jitter, used by `applyProjectionJitter` to write `base + jitter`
-  // ABSOLUTELY each frame instead of `+=`. `cam.frustum.projectionMatrix` is a
-  // dirty-cached getter: on a settled frustum (stable fov/aspect/near/far) it
-  // returns the SAME array every frame without recomputing, so a naive `+=`
-  // accumulates last frame's jitter on top of the new one → unbounded drift in
-  // proj[8]/proj[9]. We instead remember the base (proj[8]/[9] WITHOUT jitter)
-  // and the jitter we last added; if the live matrix value no longer equals
-  // `(base + lastJitter)` within an epsilon, the frustum recomputed to a fresh
-  // un-jittered base, so we re-capture it. NaN sentinels mark "no base captured
-  // yet" (first call / after a reset).
-  private _jitterBase8 = Number.NaN;
-  private _jitterBase9 = Number.NaN;
-  private _jitterLastX = 0;
-  private _jitterLastY = 0;
+  // TAA jitter has two coordinate-space representations. Keeping distinct
+  // names prevents the projection path (NDC) from accidentally consuming the
+  // half-amplitude resolve offset (UV), which was the old live-path bug.
+  //
+  // `projectionJitterNdc*` is the sub-pixel sample offset supplied to
+  // `applyProjectionJitterToScratch`. `resolveJitterUv*` is exactly half that
+  // amplitude because one UV unit spans two NDC units. The resolve shader
+  // subtracts the UV value from `fragCoord / textureSize`.
+  projectionJitterNdcX = 0;
+  projectionJitterNdcY = 0;
+  resolveJitterUvX = 0;
+  resolveJitterUvY = 0;
 
   /** Blend weight: fraction of current frame in the blend (0.1 = 10%). */
   blendWeight = 0.1;
@@ -597,8 +621,8 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     p[2] = this.blendWeight;
     const u32View = new Uint32Array(p.buffer);
     u32View[3] = this._parityManager.frameIndex;
-    p[4] = this.jitterX;
-    p[5] = this.jitterY;
+    p[4] = this.resolveJitterUvX;
+    p[5] = this.resolveJitterUvY;
     // historyValid gates reprojection: 0 on the very first frame where the
     // "previous" VP is still identity, so the shader skips motion-vector
     // math and falls back to the unjittered-UV sample.
@@ -728,85 +752,46 @@ export class WebGPUTAAEffect implements PostProcessEffect {
    * helper for backwards compat / debug visualizations but no longer
    * drives the active TAA path.
    *
-   * Returns offset in NDC space (apply to projection matrix columns
-   * 2,0 and 2,1). The `frameIndex % 16` modulo from the Halton path
-   * is no longer needed — IGN doesn't have a pattern period; it's
-   * pseudo-random across all frame indices.
+   * Returns both representations explicitly: `projectionNdc*` drives the
+   * scratch projection and `resolveUv*` is the exact NDC/2 value uploaded to
+   * the resolve shader. The `frameIndex % 16` modulo from the Halton path is
+   * no longer needed — IGN doesn't have a pattern period; it's pseudo-random
+   * across all frame indices.
    */
   computeJitter(
     frameIndex: number,
     screenWidth: number,
     screenHeight: number,
-  ): { x: number; y: number } {
+  ): {
+    projectionNdcX: number;
+    projectionNdcY: number;
+    resolveUvX: number;
+    resolveUvY: number;
+  } {
     const hx = ignJitter(frameIndex, 0);
     const hy = ignJitter(frameIndex, 1);
-    const x = ((hx - 0.5) * 2.0) / screenWidth;
-    const y = ((hy - 0.5) * 2.0) / screenHeight;
-    this.jitterX = (hx - 0.5) / screenWidth;
-    this.jitterY = (hy - 0.5) / screenHeight;
-    return { x, y };
+    const resolveUvX = (hx - 0.5) / screenWidth;
+    const resolveUvY = (hy - 0.5) / screenHeight;
+    const projectionNdcX = resolveUvX * 2.0;
+    const projectionNdcY = resolveUvY * 2.0;
+    this.projectionJitterNdcX = projectionNdcX;
+    this.projectionJitterNdcY = projectionNdcY;
+    this.resolveJitterUvX = resolveUvX;
+    this.resolveJitterUvY = resolveUvY;
+    return { projectionNdcX, projectionNdcY, resolveUvX, resolveUvY };
   }
 
   /**
-   * NEW-CAMERA-JITTER-ACCUMULATION — apply sub-pixel jitter to the projection
-   * matrix as an ABSOLUTE `base + jitter` write rather than an accumulating
-   * `+=`. Robust to BOTH cases of `cam.frustum.projectionMatrix`:
-   *
-   *   - Settled frustum: the getter returns the SAME cached array every frame
-   *     without recomputing. A naive `proj[8] += jitter.x` would stack each
-   *     frame's jitter on top of the last, so proj[8] drifts without bound.
-   *     Here we detect that the live value still equals our last write
-   *     (`base + lastJitter`) and reuse the stored base, so the write is
-   *     `base + newJitter` — bounded at `base ± maxJitter`.
-   *   - Recomputed frustum: when fov/aspect/near/far change, the getter
-   *     recomputes the matrix to a fresh, un-jittered base. The live value no
-   *     longer matches `base + lastJitter`, so we re-capture the base from the
-   *     current (clean) matrix before adding jitter. This self-heals.
-   *
-   * Operates on column-major indices [8] (col 2, row 0) and [9] (col 2, row 1).
-   *
-   * @param proj The frustum's projection matrix (mutated in place).
-   * @param jitterX NDC-space jitter for column 2, row 0.
-   * @param jitterY NDC-space jitter for column 2, row 1.
+   * Zero both coordinate-space representations. Snapshot/freeze uses this so
+   * diagnostics and the resolve UBO cannot retain the previous frame's sample.
+   * The camera frustum itself is never mutated; raster jitter is applied only
+   * to the renderer's reusable scratch frustum.
    */
-  applyProjectionJitter(
-    proj: Float64Array | number[],
-    jitterX: number,
-    jitterY: number,
-  ): void {
-    // Epsilon scaled to the jitter magnitude: jitter is ~1/screenWidth in NDC
-    // (sub-pixel), so even at 16K resolution it's ~1e-4. A fixed 1e-9 epsilon
-    // reliably distinguishes "still our last write" from a recomputed base
-    // (which differs by the full projection-element delta) without false-
-    // matching across a genuine frustum change.
-    const EPS = 1e-9;
-    if (
-      !Number.isFinite(this._jitterBase8) ||
-      Math.abs(proj[8] - (this._jitterBase8 + this._jitterLastX)) > EPS ||
-      Math.abs(proj[9] - (this._jitterBase9 + this._jitterLastY)) > EPS
-    ) {
-      // Either first application, or the frustum recomputed to a fresh base.
-      // Re-capture the current (un-jittered) base.
-      this._jitterBase8 = proj[8];
-      this._jitterBase9 = proj[9];
-    }
-    proj[8] = this._jitterBase8 + jitterX;
-    proj[9] = this._jitterBase9 + jitterY;
-    this._jitterLastX = jitterX;
-    this._jitterLastY = jitterY;
-  }
-
-  /**
-   * NEW-CAMERA-JITTER-ACCUMULATION — forget the captured projection base so the
-   * next `applyProjectionJitter` re-captures from the live matrix. Called when
-   * jitter is suspended (snapshot freeze) so re-enabling can't reason about a
-   * stale base.
-   */
-  resetProjectionJitter(): void {
-    this._jitterBase8 = Number.NaN;
-    this._jitterBase9 = Number.NaN;
-    this._jitterLastX = 0;
-    this._jitterLastY = 0;
+  resetJitter(): void {
+    this.projectionJitterNdcX = 0;
+    this.projectionJitterNdcY = 0;
+    this.resolveJitterUvX = 0;
+    this.resolveJitterUvY = 0;
   }
 
   getStatistics(): DebugStatsObject {
@@ -816,8 +801,10 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       // whatever slot the manager returns from `read()/write()` this frame.
       frameCounter: this._parityManager.frameIndex,
       blendWeight: this.blendWeight,
-      jitterX: this.jitterX,
-      jitterY: this.jitterY,
+      projectionJitterNdcX: this.projectionJitterNdcX,
+      projectionJitterNdcY: this.projectionJitterNdcY,
+      resolveJitterUvX: this.resolveJitterUvX,
+      resolveJitterUvY: this.resolveJitterUvY,
       // `historyIndex` retains its historical meaning: which slot is the
       // WRITE slot this frame (= `frameIndex & 1` for phaseOffset 0).
       historyIndex: this._parityManager.frameIndex & 1,

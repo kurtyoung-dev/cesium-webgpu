@@ -4,6 +4,7 @@ import {
   buildPickPipelineDescriptor,
   attachPickToColorCommand,
   attachPickVariantsToColorCommand,
+  findFirstGeometryInstancePickId,
 } from "../../../Source/Renderer/WebGPU/WebGPUPickCommandHelpers.js";
 
 // These specs are pure-function tests — the helpers operate over plain JS
@@ -41,6 +42,27 @@ describe("Renderer/WebGPU/WebGPUPickCommandHelpers", function () {
       },
     };
   }
+
+  describe("findFirstGeometryInstancePickId", function () {
+    it("finds the canonical id through Ground/Classification wrapper depth", function () {
+      const canonical = makePickId("geometry-instance");
+      const innerPrimitive = { _pickIds: [canonical] };
+      const classificationPrimitive = { _primitive: innerPrimitive };
+      const groundPrimitive = { _primitive: classificationPrimitive };
+
+      expect(findFirstGeometryInstancePickId(groundPrimitive)).toBe(canonical);
+      expect(findFirstGeometryInstancePickId(classificationPrimitive)).toBe(
+        canonical,
+      );
+      expect(findFirstGeometryInstancePickId(innerPrimitive)).toBe(canonical);
+    });
+
+    it("returns undefined without allocating when the inner primitive is not ready", function () {
+      const wrapper = { _primitive: { _primitive: {} } };
+      expect(findFirstGeometryInstancePickId(wrapper)).toBeUndefined();
+      expect(wrapper._pickId).toBeUndefined();
+    });
+  });
 
   describe("ensurePickId — single-id mode", function () {
     it("allocates a pickId on first call and caches it", function () {

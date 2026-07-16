@@ -12,12 +12,15 @@
  *     `passState.framebuffer`.
  *   - Walk every frustum back-to-front and dispatch every pickable
  *     pass (GLOBE → 3D-tile → 3D-tile-classification → OPAQUE →
- *     TRANSLUCENT → VOXELS → GAUSSIAN_SPLATS) into that render pass.
+ *     TRANSLUCENT → VOXELS → GAUSSIAN_SPLATS). Each independently
+ *     projected frustum gets its own render pass: ID color accumulates across
+ *     slices while non-comparable depth/stencil is cleared for every slice.
  *   - For each command, route through `selectCommandVariant(...,
  *     isPickPass=true)` so commands carrying a `derivedCommands.picking`
  *     entry render their pick variant (writes pick IDs) instead of
  *     the base material.
- *   - End the pick pass and resume the default canvas pass when done.
+ *   - End the pick pass and leave the pick mini-frame ready for
+ *     `pickEnd → context.endFrame()` submission.
  *
  * What it deliberately does NOT do:
  *   - Pick-FBO allocation lives in `WebGPUPickFramebuffer.ts`.
@@ -33,10 +36,27 @@
 
 import Pass from "../../Renderer/Pass.js";
 import type { WebGPUContext } from "./WebGPUContext.js";
+import type { WebGPUDynamicStateOverride } from "./WebGPUDrawCommand.js";
+import {
+  publishCurrentFrustumState,
+  publishLogDepthEncodeNearFar,
+} from "./WebGPUSceneRendererFrustumState.js";
 import {
   selectCommandVariant,
+  sortCommandsBackToFront,
+  sortCommandsFrontToBack,
+  sortGaussianSplatsBackToFront,
   type WebGPURenderFrameConfig,
 } from "./WebGPUSceneRenderer.js";
+
+/**
+ * Gated off until NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT lands — the
+ * depth-plane pick draw uses a mismatched log-depth encode frustum and
+ * over-occludes point picks at defaults (audit P0-1, horizon oracle fails at
+ * 20/500/5000km). Re-enable by flipping this constant when the contract task
+ * completes.
+ */
+const PICK_DEPTH_PLANE_ENABLED = false;
 
 /**
  * The SceneRenderer surface that the extracted pick pass reaches
@@ -45,6 +65,15 @@ import {
  * necessary.
  */
 export interface PickPassHost {
+  _currentFrustumIndex: number;
+  _globeDepth: {
+    executeCopyDepthToView(
+      encoder: GPUCommandEncoder,
+      destinationView: GPUTextureView,
+      depthTexture: GPUTexture,
+      scissor?: { x: number; y: number; width: number; height: number },
+    ): void;
+  } | null;
   /**
    * Apply the given near/far to the camera frustum and refresh the
    * uniform state's projection matrix. Stores originals before the
@@ -56,6 +85,10 @@ export interface PickPassHost {
     near: number,
     far: number,
     scene: CesiumScene,
+  ): void;
+  _renderDepthPlane(
+    config: WebGPURenderFrameConfig,
+    passKind: "scene" | "pick",
   ): void;
 }
 
@@ -70,7 +103,176 @@ type WebGPUPickFBOShape = CesiumOpaqueFramebuffer & {
   _isWebGPUPickFBO?: boolean;
   colorView?: GPUTextureView;
   depthView?: GPUTextureView;
+  depthTexture?: GPUTexture;
+  width?: number;
+  height?: number;
+  pickScissor?: { x: number; y: number; width: number; height: number };
+  ensureClassificationDepth?: () => {
+    texture: GPUTexture;
+    view: GPUTextureView;
+  } | null;
 };
+
+/**
+ * Apply the caller's target sub-viewport and intersect it with the small pick
+ * rectangle.
+ * Cesium rectangles use a bottom-left origin while WebGPU scissor coordinates
+ * use a top-left origin, matching the readback conversion in
+ * `WebGPUPickFramebuffer`.
+ */
+function resolvePickDynamicState(
+  pickFBO: WebGPUPickFBOShape,
+  passState: CesiumPassState,
+): WebGPUDynamicStateOverride {
+  const passViewport = passState.viewport;
+  const targetWidth = Math.max(
+    1,
+    Math.floor(pickFBO.width ?? passViewport?.width ?? 1),
+  );
+  const targetHeight = Math.max(
+    1,
+    Math.floor(pickFBO.height ?? passViewport?.height ?? 1),
+  );
+  const viewportX = Math.max(
+    0,
+    Math.min(targetWidth, Math.floor(passViewport?.x ?? 0)),
+  );
+  const viewportY = Math.max(
+    0,
+    Math.min(targetHeight, Math.floor(passViewport?.y ?? 0)),
+  );
+  const viewport = {
+    x: viewportX,
+    y: viewportY,
+    width: Math.max(
+      0,
+      Math.min(
+        Math.floor(passViewport?.width ?? targetWidth),
+        targetWidth - viewportX,
+      ),
+    ),
+    height: Math.max(
+      0,
+      Math.min(
+        Math.floor(passViewport?.height ?? targetHeight),
+        targetHeight - viewportY,
+      ),
+    ),
+  };
+
+  const normalized = pickFBO.pickScissor;
+  const passScissor = passState.scissorTest;
+  const rectangle = passScissor?.enabled ? passScissor.rectangle : undefined;
+  const query =
+    normalized ??
+    (rectangle
+      ? {
+          x: Math.max(0, Math.min(targetWidth - 1, Math.floor(rectangle.x))),
+          y: Math.max(
+            0,
+            Math.min(
+              targetHeight - 1,
+              targetHeight -
+                Math.floor(rectangle.y) -
+                Math.max(1, Math.floor(rectangle.height)),
+            ),
+          ),
+          width: Math.max(1, Math.floor(rectangle.width)),
+          height: Math.max(1, Math.floor(rectangle.height)),
+        }
+      : { x: 0, y: 0, width: targetWidth, height: targetHeight });
+
+  const x = Math.max(viewport.x, query.x);
+  const y = Math.max(viewport.y, query.y);
+  const right = Math.min(viewport.x + viewport.width, query.x + query.width);
+  const bottom = Math.min(viewport.y + viewport.height, query.y + query.height);
+  return {
+    viewport,
+    scissor: {
+      x,
+      y,
+      width: Math.max(0, right - x),
+      height: Math.max(0, bottom - y),
+    },
+  };
+}
+
+function applyPickDynamicState(
+  renderPass: GPURenderPassEncoder,
+  dynamicState: WebGPUDynamicStateOverride,
+): void {
+  const viewport = dynamicState.viewport!;
+  const scissor = dynamicState.scissor!;
+  renderPass.setViewport(
+    viewport.x,
+    viewport.y,
+    viewport.width,
+    viewport.height,
+    0,
+    1,
+  );
+  renderPass.setScissorRect(
+    scissor.x,
+    scissor.y,
+    scissor.width,
+    scissor.height,
+  );
+}
+
+function beginPickRenderPass(
+  context: WebGPUContext,
+  encoder: GPUCommandEncoder,
+  pickFBO: WebGPUPickFBOShape,
+  dynamicState: WebGPUDynamicStateOverride,
+  label: string,
+  colorLoadOp: GPULoadOp,
+  depthLoadOp: GPULoadOp,
+  stencilLoadOp: GPULoadOp,
+  storeForContinuation: boolean,
+): GPURenderPassEncoder {
+  const descriptor: GPURenderPassDescriptor = {
+    label,
+    colorAttachments: [
+      {
+        view: pickFBO.colorView as GPUTextureView,
+        clearValue: { r: 0, g: 0, b: 0, a: 0 },
+        loadOp: colorLoadOp,
+        storeOp: "store",
+      },
+    ],
+    depthStencilAttachment: {
+      view: pickFBO.depthView as GPUTextureView,
+      depthClearValue: 1.0,
+      depthLoadOp,
+      depthStoreOp: storeForContinuation ? "store" : "discard",
+      stencilClearValue: 0,
+      stencilLoadOp,
+      stencilStoreOp: storeForContinuation ? "store" : "discard",
+    },
+  };
+  const renderPass = encoder.beginRenderPass(
+    context.withRenderPassTimestamps(descriptor, label),
+  );
+  context._currentRenderPassEncoder = renderPass;
+  applyPickDynamicState(renderPass, dynamicState);
+  return renderPass;
+}
+
+function endPickRenderPass(
+  context: WebGPUContext,
+  renderPass: GPURenderPassEncoder | null,
+): void {
+  if (!renderPass) {
+    return;
+  }
+  try {
+    renderPass.end();
+  } finally {
+    if (context._currentRenderPassEncoder === renderPass) {
+      context._currentRenderPassEncoder = null;
+    }
+  }
+}
 
 /**
  * Run the WebGPU pick pass for the current frame. Mirrors the WebGL
@@ -125,124 +327,255 @@ export function executePickPass(
 
   // End the current render pass so we can start the pick render pass
   context.endCurrentRenderPass?.();
-
-  // Create the pick render pass targeting the pick FBO textures
-  const pickPassDescriptor: GPURenderPassDescriptor = {
-    label: "Pick render pass",
-    colorAttachments: [
-      {
-        view: pickFBO.colorView as GPUTextureView,
-        clearValue: { r: 0, g: 0, b: 0, a: 0 },
-        loadOp: "clear" as GPULoadOp,
-        storeOp: "store" as GPUStoreOp,
-      },
-    ],
-    depthStencilAttachment: {
-      view: pickFBO.depthView as GPUTextureView,
-      depthClearValue: 1.0,
-      depthLoadOp: "clear" as GPULoadOp,
-      depthStoreOp: "store" as GPUStoreOp,
-      stencilClearValue: 0,
-      stencilLoadOp: "clear" as GPULoadOp,
-      stencilStoreOp: "store" as GPUStoreOp,
-    },
+  const pickDynamicState = resolvePickDynamicState(pickFBO, passState);
+  publishLogDepthEncodeNearFar(scene, uniformState);
+  const scene2DCamera = scene.camera as unknown as {
+    position: { z: number };
   };
+  const initialHeight2D =
+    scene.mode === 2 /* SceneMode.SCENE2D */ ? scene2DCamera.position.z : 0;
+  const opaqueFrustumNearOffset = scene.opaqueFrustumNearOffset ?? 0.9999;
+  let completed = false;
 
-  const pickRenderPass = encoder.beginRenderPass(pickPassDescriptor);
+  // Execute all pickable passes across all frustums. Cesium frustum depths are
+  // encoded against each slice's projection, so values from two slices are not
+  // comparable. Mirroring WebGL, use one render pass per far-to-near slice:
+  // clear ID color once, load it for later slices, and clear depth/stencil for
+  // every slice. A single pass with one depth clear lets a near-slice depth
+  // incorrectly reject or preserve a far-slice fragment.
+  try {
+    for (let i = 0; i < numFrustums; i++) {
+      const index = numFrustums - i - 1;
+      const frustumCommands = frustumCommandsList[index];
 
-  // Set the pick render pass as the active pass on the context so that
-  // executeWebGPUCommand() dispatches commands to it
-  const savedRenderPass = context.currentRenderPassEncoder;
-  context._currentRenderPassEncoder = pickRenderPass;
+      let near: number;
+      let far: number;
+      if (scene.mode === 2 /* SceneMode.SCENE2D */ && numFrustums > 1) {
+        scene2DCamera.position.z = initialHeight2D - frustumCommands.near + 1.0;
+        near = 1.0;
+        far = Math.max(1.0, frustumCommands.far - frustumCommands.near);
+        const state = uniformState as unknown as {
+          update?: (frameState: typeof scene._frameState) => void;
+        };
+        state.update?.(scene._frameState);
+      } else if (scene.mode === 2 /* SceneMode.SCENE2D */) {
+        const cameraFrustum = scene._frameState.camera?.frustum as
+          { near?: number; far?: number } | undefined;
+        near = cameraFrustum?.near ?? frustumCommands.near;
+        far = cameraFrustum?.far ?? frustumCommands.far;
+      } else {
+        near =
+          index !== 0
+            ? frustumCommands.near * opaqueFrustumNearOffset
+            : frustumCommands.near;
+        far = frustumCommands.far;
+      }
+      host._updateFrustumUniforms(uniformState, near, far, scene);
+      publishCurrentFrustumState(host, context, uniformState, i, near, far);
 
-  // Execute all pickable passes across all frustums
-  for (let i = 0; i < numFrustums; i++) {
-    const index = numFrustums - i - 1;
-    const frustumCommands = frustumCommandsList[index];
-
-    const near = frustumCommands.near;
-    const far = frustumCommands.far;
-    host._updateFrustumUniforms(uniformState, near, far, scene);
-
-    // Skip ENVIRONMENT pass — sky/sun/moon/atmosphere don't generate pick IDs
-
-    // GLOBE pass
-    executePickBatch(
-      frustumCommands,
-      Pass.GLOBE,
-      scene,
-      context,
-      passState,
-      pickRenderPass,
-    );
-
-    // 3D Tiles passes
-    const tilePasses = [
-      Pass.CESIUM_3D_TILE,
-      Pass.CESIUM_3D_TILE_CLASSIFICATION,
-    ];
-    for (const passIndex of tilePasses) {
-      executePickBatch(
-        frustumCommands,
-        passIndex,
-        scene,
+      const terrainClassificationCount =
+        frustumCommands.indices[Pass.TERRAIN_CLASSIFICATION] ?? 0;
+      const tileClassificationCount =
+        frustumCommands.indices[Pass.CESIUM_3D_TILE_CLASSIFICATION] ?? 0;
+      const requestsClassificationDepth =
+        terrainClassificationCount > 0 || tileClassificationCount > 0;
+      const classificationTarget =
+        requestsClassificationDepth && host._globeDepth && pickFBO.depthTexture
+          ? (pickFBO.ensureClassificationDepth?.() ?? null)
+          : null;
+      if (classificationTarget) {
+        context._pickClassificationDepthView = classificationTarget.view;
+      }
+      const terrainCheckpoint =
+        terrainClassificationCount > 0 && classificationTarget !== null;
+      const tileCheckpoint =
+        tileClassificationCount > 0 && classificationTarget !== null;
+      const clearGlobeDepth = config.clearGlobeDepth === true;
+      let pickRenderPass: GPURenderPassEncoder | null = beginPickRenderPass(
         context,
-        passState,
-        pickRenderPass,
+        encoder,
+        pickFBO,
+        pickDynamicState,
+        `Pick render pass frustum ${i}`,
+        i === 0 && !config.sceneFbLoad ? "clear" : "load",
+        "clear",
+        "clear",
+        terrainCheckpoint || clearGlobeDepth || tileCheckpoint,
       );
+      const execute = (passIndex: number): void => {
+        executePickBatch(
+          frustumCommands,
+          passIndex,
+          scene,
+          context,
+          passState,
+          pickRenderPass!,
+          pickDynamicState,
+        );
+      };
+      const reopen = (
+        label: string,
+        depthLoadOp: GPULoadOp,
+        stencilLoadOp: GPULoadOp,
+        storeForContinuation: boolean,
+      ): void => {
+        const previousPass = pickRenderPass;
+        pickRenderPass = null;
+        endPickRenderPass(context, previousPass);
+        pickRenderPass = beginPickRenderPass(
+          context,
+          encoder,
+          pickFBO,
+          pickDynamicState,
+          label,
+          "load",
+          depthLoadOp,
+          stencilLoadOp,
+          storeForContinuation,
+        );
+      };
+      const packDepthAndReopen = (
+        label: string,
+        storeForContinuation: boolean,
+      ): void => {
+        endPickRenderPass(context, pickRenderPass);
+        pickRenderPass = null;
+        host._globeDepth!.executeCopyDepthToView(
+          encoder,
+          classificationTarget!.view,
+          pickFBO.depthTexture!,
+          pickDynamicState.scissor,
+        );
+        context._pickClassificationDepthView = classificationTarget!.view;
+        pickRenderPass = beginPickRenderPass(
+          context,
+          encoder,
+          pickFBO,
+          pickDynamicState,
+          label,
+          "load",
+          "load",
+          "load",
+          storeForContinuation,
+        );
+      };
+
+      try {
+        // Skip ENVIRONMENT pass — sky/sun/moon/atmosphere don't generate pick IDs
+
+        // GLOBE pass
+        execute(Pass.GLOBE);
+
+        // Classification samples packed depth and therefore needs a real pass
+        // boundary. Ordinary picks skip both the pack and the continuation.
+        if (terrainCheckpoint) {
+          packDepthAndReopen(
+            `Pick terrain classification frustum ${i}`,
+            clearGlobeDepth || tileCheckpoint,
+          );
+          execute(Pass.TERRAIN_CLASSIFICATION);
+        }
+
+        if (clearGlobeDepth) {
+          reopen(
+            `Pick post-globe depth-clear frustum ${i}`,
+            "clear",
+            "load",
+            tileCheckpoint,
+          );
+          if (PICK_DEPTH_PLANE_ENABLED && config.useDepthPlane) {
+            host._renderDepthPlane(config, "pick");
+          }
+        }
+
+        execute(Pass.CESIUM_3D_TILE);
+        if (tileCheckpoint) {
+          packDepthAndReopen(`Pick 3D-tile classification frustum ${i}`, false);
+          execute(Pass.CESIUM_3D_TILE_CLASSIFICATION);
+        }
+
+        // H-R3 (Batch 35) — VOXELS and GAUSSIAN_SPLATS pick passes. WebGL
+        // includes them in the pick-pass command list via
+        // `performIdPass`; WebGPU previously skipped them so voxel media
+        // and Gaussian splat primitives were unpickable. Commands without
+        // a pick variant fall through to the base command via
+        // `selectCommandVariant` (Batch 29), same as other passes.
+        const voxelCount = frustumCommands.indices[Pass.VOXELS] ?? 0;
+        if (voxelCount > 1) {
+          sortCommandsBackToFront(
+            frustumCommands.commands[Pass.VOXELS],
+            voxelCount,
+            scene,
+          );
+        }
+        execute(Pass.VOXELS);
+
+        // OPAQUE follows voxels, matching the normal/WebGL frustum loop.
+        const splatCount = frustumCommands.indices[Pass.GAUSSIAN_SPLATS] ?? 0;
+        if (splatCount > 1) {
+          sortGaussianSplatsBackToFront(
+            frustumCommands.commands[Pass.GAUSSIAN_SPLATS],
+            splatCount,
+            scene,
+          );
+        }
+        execute(Pass.OPAQUE);
+
+        execute(Pass.GAUSSIAN_SPLATS);
+
+        // Match the normal loop's exact-near translucent projection. Opaque
+        // slices use a slight near offset to avoid seams, but translucent depth
+        // and blending must use the raw slice boundary.
+        if (
+          index !== 0 &&
+          scene.mode !== 2 /* SceneMode.SCENE2D */ &&
+          (frustumCommands.indices[Pass.TRANSLUCENT] ?? 0) > 0
+        ) {
+          host._updateFrustumUniforms(
+            uniformState,
+            frustumCommands.near,
+            far,
+            scene,
+          );
+          publishCurrentFrustumState(
+            host,
+            context,
+            uniformState,
+            i,
+            frustumCommands.near,
+            far,
+          );
+        }
+
+        // TRANSLUCENT pass runs last so opaque/voxel/splat depth is established.
+        const translucentCount = frustumCommands.indices[Pass.TRANSLUCENT] ?? 0;
+        if (translucentCount > 1) {
+          sortCommandsFrontToBack(
+            frustumCommands.commands[Pass.TRANSLUCENT],
+            translucentCount,
+            scene,
+          );
+        }
+        execute(Pass.TRANSLUCENT);
+      } finally {
+        // A thrown command must not leave the command encoder with an open
+        // render pass; otherwise endFrame cannot finish or submit it.
+        endPickRenderPass(context, pickRenderPass);
+      }
     }
-
-    // OPAQUE pass
-    executePickBatch(
-      frustumCommands,
-      Pass.OPAQUE,
-      scene,
-      context,
-      passState,
-      pickRenderPass,
-    );
-
-    // TRANSLUCENT pass
-    executePickBatch(
-      frustumCommands,
-      Pass.TRANSLUCENT,
-      scene,
-      context,
-      passState,
-      pickRenderPass,
-    );
-
-    // H-R3 (Batch 35) — VOXELS and GAUSSIAN_SPLATS pick passes. WebGL
-    // includes them in the pick-pass command list via
-    // `performIdPass`; WebGPU previously skipped them so voxel media
-    // and Gaussian splat primitives were unpickable. Commands without
-    // a pick variant fall through to the base command via
-    // `selectCommandVariant` (Batch 29), same as other passes.
-    executePickBatch(
-      frustumCommands,
-      Pass.VOXELS,
-      scene,
-      context,
-      passState,
-      pickRenderPass,
-    );
-    executePickBatch(
-      frustumCommands,
-      Pass.GAUSSIAN_SPLATS,
-      scene,
-      context,
-      passState,
-      pickRenderPass,
-    );
+    completed = true;
+  } finally {
+    if (scene.mode === 2 /* SceneMode.SCENE2D */) {
+      scene2DCamera.position.z = initialHeight2D;
+    }
+    // The pick branch is terminal for this mini-frame. Clear the ended
+    // encoder slot and let `pickEnd → context.endFrame()` resolve timestamps,
+    // finish, and submit. A pick mini-frame has no canvas texture to resume.
+    context._currentRenderPassEncoder = null;
+    if (!config.deferComposite || !completed) {
+      context._pickClassificationDepthView = null;
+    }
   }
-
-  pickRenderPass.end();
-
-  // Restore the original render pass
-  context._currentRenderPassEncoder = savedRenderPass;
-
-  // Resume the default render pass if needed
-  context.resumeDefaultRenderPass?.();
 }
 
 /**
@@ -256,6 +589,7 @@ function executePickBatch(
   context: WebGPUContext,
   passState: CesiumPassState,
   pickRenderPass: GPURenderPassEncoder,
+  pickDynamicState: WebGPUDynamicStateOverride,
 ): void {
   const commands = frustumCommands.commands[passIndex];
   const count: number = frustumCommands.indices[passIndex];
@@ -311,15 +645,19 @@ function executePickBatch(
     // attachment, so it is safe to dispatch into the pick render pass.
     const isDedicatedPick =
       cmdMarkers.pickOnly === true || cmdMarkers._isPickCommand === true;
-    if (!resolvedPickVariant && !isDedicatedPick) {
+    // The WebGPU mini-frame can encode only native WebGPU draw commands.
+    // Legacy WebGL DrawCommands can also carry `pickOnly`; dispatching one
+    // through WebGPUContext.draw eventually calls
+    // `GPURenderPassEncoder.draw(DrawCommand, PassState)` and fails WebIDL's
+    // unsigned-long conversion. Standalone ClassificationPrimitive retains
+    // such compatibility commands alongside its native feature-renderer
+    // command, so the marker alone is not a sufficient admission test.
+    const isNativeWebGPU = dispatched.isWebGPUDrawCommand === true;
+    if (!isNativeWebGPU || (!resolvedPickVariant && !isDedicatedPick)) {
       continue;
     }
 
-    if (dispatched.isWebGPUDrawCommand === true) {
-      dispatched.execute(pickRenderPass, context);
-    } else if (dispatched.execute) {
-      dispatched.execute(context, passState);
-    }
+    dispatched.execute(pickRenderPass, pickDynamicState);
 
     // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option C precise pick
     // 2-pass coordination. When `pickMode === "precise"`, the dispatcher
@@ -343,9 +681,7 @@ function executePickBatch(
     ) {
       const pass2 = command.derivedCommands.picking.pickPrecisePass2Command;
       if (pass2.isWebGPUDrawCommand === true) {
-        pass2.execute(pickRenderPass, context);
-      } else if (pass2.execute) {
-        pass2.execute(context, passState);
+        pass2.execute(pickRenderPass, pickDynamicState);
       }
     }
   }
