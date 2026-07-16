@@ -15,8 +15,8 @@
 //   back. On WebGPU the projection already yields ndc.z in [0,1], so we
 //   must NOT re-apply the 0.5*z+0.5 remap or the final depth squishes into
 //   [0.5, 1]. `csm_polylineWindowZ` keeps the raw WebGPU ndc.z so the
-//   round-trip through the WebGPU `viewportOrthographic` (built with
-//   Matrix4.setDepthRangeType("webgpu")) lands the final ndc.z back in
+//   round-trip through the WebGPU `viewportOrthographic` (built with the
+//   owning context's WebGPU clip-space convention) lands final ndc.z back in
 //   [0, 1]. The x/y window math is identical to GLSL — raw NDC fed through
 //   `viewportTransformation` (which carries the halfWidth/halfHeight scale).
 //

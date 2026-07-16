@@ -1,5 +1,36 @@
 > **CAMPAIGN-7 AUTHORITATIVE QUEUE.** This is the canonical queue doc for Campaign 7 (merged, launched 2026-07-06). Landed by batch 0 of `.claude/workflows/campaign-7-merged.js`. Body below is the reviewed plan verbatim.
 
+## Campaign 7 — Closure and Final Disposition (recorded 2026-07-16)
+
+Campaign 7 completed execution as **19 landed campaign batches (Batch 635–654)**, plus the research-register commit mislabeled "Batch 634" (`a54cc06b2a` — sequentially Batch **655**; the sole numbering anomaly of the campaign, colliding with the real pre-campaign Batch 634 `ea66d2dfd4`). Batch 635 landed this queue itself plus the §4 premise-stale reconciliations. Batch 638 + Batch 642 form a dual-batch pair on the one silhouette item (ship, then premise-stale reconcile + probe hardening). Batch 646 is an interleaved user-bug fix (Sandcastle2 wrong-origin black), not a queue item. **DEFERRED_WORK.md carries the authoritative per-item final dispositions; this queue is FROZEN.**
+
+| Queue # | ID | Disposition |
+|---|----|-------------|
+| 1 | WATER-LAKE-MASK-FIX-AS-PHASE1-SEED | ✅ LANDED B636 |
+| 2 | NEW-WEBGPU-GROUNDPRIM-TEXTURED-CLASSIFICATION-ZERO | ✅ LANDED B637 (premise was probe-race; four textured/classification parity defects fixed) |
+| 3 | NEW-PP-SILHOUETTE-ARRAY-EDGE-UNIFORMS | ✅ LANDED B638 + B642 (dual-batch: ship, then premise-stale reconcile + probe hardening) |
+| 4 | C6-TPDF-DITHER-FINAL | ✅ LANDED B639 |
+| 5 | C6-AERIAL-ELLIPSOID-SNAP | ⛔ NOT LANDED — honest premise-close (does not reproduce on the tessellated globe), DEFERRED_WORK.md L5211; successor = C9 Wave-7 W7-6 (`C6-AERIAL-INSCATTER-STEP-JITTER`) |
+| 6 | NS-SUN-STARS-ATMOSPHERE-EXTINCTION | ✅ LANDED B640 |
+| 7 | C6-CLOUD-STBN-TAAU | ✅ LANDED B641 (march step-growth + far cap); the STBN asset half → C9 Wave-7 W7-5 (`C6-CLOUD-STBN-TAAU-ASSET`) |
+| 8 | NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE | ✅ LANDED B647 |
+| 9 | C6-LTC-AREA-LIGHTS | ✅ LANDED B643 |
+| 10 | C6-VELOCITY-MOTION-BLUR | ✅ LANDED B644 |
+| 11 | C6-FLOWFIELD-WIND | ✅ LANDED B645 |
+| 12 | DP-H47-ATMOSPHERE-RESOLVER-INCREMENT | ✅ LANDED B648 |
+| 13 | NEW-LOG-DEPTH-PP-SLICEC-SSR-CONTACTSHADOWS | ✅ LANDED B649 |
+| 14 | C6-SSGI-DIFFUSE | ✅ LANDED B650 |
+| 15 | CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP | ✅ LANDED B651 |
+| 16 | CLOUD-LOD-R7-CLOUD-LIGHTNING | ↩️ NOT LANDED — shipped 2026-07-11 then REVERTED pre-land (hard-edged lon/lat flash-decay block lattice masked by a median-based probe gate); re-land = C9 Wave-7 W7-1 (`C7-CLOUD-LIGHTNING-RELAND`); see the `C7-CLOUD-LIGHTNING` REVERTED entry in DEFERRED_WORK.md |
+| 17 | Q34-B3-MODELPIPELINECACHE-JS-TS | ✅ LANDED B652 |
+| 18 | VEGETATION-V1-SCOPE-LOCK | ✅ LANDED B653 (doc-only scope lock) |
+| 19 | C6-FFT-OCEAN | ✅ LANDED B654 (v1) |
+| 20 | C6-PLANAR-REFLECT-REFRACT | ⏸️ NOT LANDED — unblocked-but-deferred (DEFERRED_WORK.md L5219) → C9 Wave-7 W7-2 |
+| 21 | CLOUD-VOLUMETRIC-IMPOSTOR-LOD | 🔭 NOT LANDED — research-complete FUTURE (DEFERRED_WORK.md L5223) → C9 Wave-7 W7-3 (`C7-CLOUD-IMPOSTOR-LOD`) |
+| 22 | C6-FSR2-UPSCALE | ⏸️ NOT LANDED — premise-verified-REAL deferred epic (DEFERRED_WORK.md L5217) → C9 Wave-7 W7-4 |
+
+---
+
 # Next-Campaign Plan — 2026-07-06 (HEAD ~Batch 633)
 
 Prepared for user review. **Not launched.** All-Opus (Fable capacity exhausted; model-tier infra retained in-engine).

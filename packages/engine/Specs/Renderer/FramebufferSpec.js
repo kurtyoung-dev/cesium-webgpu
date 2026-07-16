@@ -6,7 +6,6 @@ import {
   Buffer,
   BufferUsage,
   ClearCommand,
-  ContextLimits,
   CubeMap,
   DrawCommand,
   Framebuffer,
@@ -915,7 +914,7 @@ describe(
       expect(function () {
         return new Framebuffer({
           context: context,
-          colorTextures: new Array(ContextLimits.maximumColorAttachments + 1),
+          colorTextures: new Array(context.limits.maximumColorAttachments + 1),
         });
       }).toThrowDeveloperError();
     });
@@ -925,7 +924,7 @@ describe(
         return new Framebuffer({
           context: context,
           colorRenderbuffers: new Array(
-            ContextLimits.maximumColorAttachments + 1,
+            context.limits.maximumColorAttachments + 1,
           ),
         });
       }).toThrowDeveloperError();
@@ -944,7 +943,7 @@ describe(
       }).toThrowDeveloperError();
 
       expect(function () {
-        framebuffer.getColorTexture(ContextLimits.maximumColorAttachments + 1);
+        framebuffer.getColorTexture(context.limits.maximumColorAttachments + 1);
       }).toThrowDeveloperError();
     });
 
@@ -962,7 +961,7 @@ describe(
 
       expect(function () {
         framebuffer.getColorRenderbuffer(
-          ContextLimits.maximumColorAttachments + 1,
+          context.limits.maximumColorAttachments + 1,
         );
       }).toThrowDeveloperError();
     });

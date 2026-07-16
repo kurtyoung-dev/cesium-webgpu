@@ -4,6 +4,10 @@ _Last reorganized 2026-05-30 (HEAD `de9d82abe2`, Batch 186). A multi-agent audit
 
 _Currency sweep 2026-06-15 (Batch 303): indexed six docs added since the reorg — `CAMPAIGN_ROADMAP_2026-06.md` (now the active per-workflow stage source), `LARGE_DYNAMIC_OBJECTS_DESIGN.md`, `PLAN_2DCV_MORPH_BATCHES.md`, `audits/2026-06-11_ULTRA_REVIEW.md`, `FORK_DRIFT_ANALYSIS_2026-06-11.md`, `RESEARCH_TAKRAM_GEOSPATIAL_VISUALS.md`._
 
+_2026-07-15 remediation update: Campaign 9 was explicitly launched by the maintainer. Campaign 8 is
+frozen historical evidence; its open IDs transferred unchanged and its completed slices remain
+regression gates._
+
 > **Convention:** docs under `archive/` are historical point-in-time snapshots — do **not** read them as live to-do lists. Their still-open items were lifted into `DEFERRED_WORK.md` ("Carried-forward on archive"). The audit that produced this layout is recorded in `_DOC_AUDIT_PLAN.md`.
 
 ---
@@ -12,6 +16,10 @@ _Currency sweep 2026-06-15 (Batch 303): indexed six docs added since the reorg �
 
 | Doc | Role |
 |---|---|
+| [`FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md`](FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md) | Active fork-wide architecture authority and FAR ID definitions. |
+| [`QUEUE_2026-07-15_CAMPAIGN8.md`](QUEUE_2026-07-15_CAMPAIGN8.md) | Frozen historical campaign; open IDs transferred to Campaign 9 and completed slices retained as regression gates. |
+| [`FORK_PERFORMANCE_RTE_VISIBILITY_REMEDIATION_PLAN_2026-07-15.md`](FORK_PERFORMANCE_RTE_VISIBILITY_REMEDIATION_PLAN_2026-07-15.md) | **Active** consolidation of the performance, shared terrain-quadtree, visibility, RTE, and Campaign 8 remainder. |
+| [`QUEUE_2026-07-15_CAMPAIGN9.md`](QUEUE_2026-07-15_CAMPAIGN9.md) | **Active launched campaign**; highest-impact performance fixes plus every open Campaign 8 ID and a live task-status ledger. |
 | [`WEBGPU_MIGRATION_STATUS.md`](WEBGPU_MIGRATION_STATUS.md) | Single-source migration status + append-only progress log. **Note: batch numbers are non-monotonic — trust dates/hashes.** |
 | [`DEFERRED_WORK.md`](DEFERRED_WORK.md) | Canonical add-only follow-up inventory (NEW-*/C-R*/DP-* IDs). Where open work lives. |
 | [`FEATURE_INVENTORY.md`](FEATURE_INVENTORY.md) | Feature catalog (EXISTING/NEW/WIP/FUTURE) across 10 subsystems — impact-analysis index (CLAUDE.md Principle 6). |

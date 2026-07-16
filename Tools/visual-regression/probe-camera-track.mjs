@@ -45,12 +45,19 @@
  *   Env:  PROBE_BASE (default http://localhost:8080)
  *         PROBE_HEADED=1 to watch the run
  *         PROBE_TERRAIN=1 to use ion world terrain (default: ellipsoid, offline-safe)
+ *
+ * Imagery is always the repository-local NaturalEarthII pyramid. Viewer boot
+ * may still attempt its configured online base layer, but that layer is removed
+ * before any waypoint is measured. This keeps the visual gate deterministic and
+ * prevents a blocked network request from producing false-green star-field-only
+ * captures on both renderers.
  */
 
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { GLOBE_CAMERA_TRACK } from "./lib/globe-camera-track.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
@@ -85,27 +92,7 @@ const REL_EPS = 0.0015; // relative signature change treated as "no change"
  * orientation (heading/pitch/roll in degrees). Screenshots + a WebGPU-vs-WebGL
  * pixel diff are captured at every waypoint.
  */
-const WAYPOINTS = [
-  // 1. Deep orbit — the whole Earth disc from far out (Pacific-centered), top-down.
-  { name: "orbit-globe-pacific", lon: -150, lat: 10, height: 18_000_000, heading: 0, pitch: -90, roll: 0 },
-  // 2. Rotate east, high orbit over the Americas — continental band.
-  { name: "orbit-americas", lon: -100, lat: 35, height: 6_000_000, heading: 20, pitch: -85, roll: 0 },
-  // 3. High over the Sierra Nevada — regional terrain band.
-  { name: "descend-sierra", lon: -119.5, lat: 37.7, height: 900_000, heading: 35, pitch: -75, roll: 0 },
-  // 4. Descend toward the SF Bay coastline (land/sea boundary).
-  { name: "descend-sf-coast", lon: -122.0, lat: 37.7, height: 300_000, heading: 55, pitch: -55, roll: 0 },
-  // 5. Low oblique over San Francisco — city + bay + hills in one frame.
-  { name: "low-oblique-sf", lon: -122.35, lat: 37.74, height: 60_000, heading: 75, pitch: -40, roll: 0 },
-  // 6. City-level over downtown SF — dense imagery LOD.
-  { name: "city-sf", lon: -122.42, lat: 37.77, height: 12_000, heading: 90, pitch: -35, roll: 0 },
-  // 7. Near-ground oblique over SF — building / terrain-detail LOD band.
-  { name: "near-ground-sf", lon: -122.42, lat: 37.78, height: 2_500, heading: 100, pitch: -20, roll: 0 },
-  // 8. GROUND LEVEL — near-horizontal eye height over SF streets (the close band).
-  { name: "ground-sf", lon: -122.42, lat: 37.785, height: 300, heading: 110, pitch: -6, roll: 0 },
-  // 9. Rotate to the far side of the globe — high orbit over the Himalaya
-  //    (Everest): worldwide streaming + a fresh cold LOD pyramid + extreme terrain.
-  { name: "orbit-himalaya", lon: 86.925, lat: 27.99, height: 2_500_000, heading: 0, pitch: -80, roll: 0 },
-];
+const WAYPOINTS = GLOBE_CAMERA_TRACK;
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -172,46 +159,23 @@ async function setupScene(page, useTerrain) {
         out.terrain = "ellipsoid";
       }
 
-      // Imagery: keep the Viewer default (ion Bing). Render a few frames to fire
-      // tile requests; if the base layer errors, fall back to offline
-      // NaturalEarthII and flag it.
+      // Imagery: replace the Viewer's potentially-online default unconditionally.
+      // Waiting for its errorEvent is not sufficient: some blocked Viewer boot
+      // requests leave an unresolved/unknown layer without raising the provider
+      // event, which previously let both renderers capture only the star field.
       try {
-        const layers = v.imageryLayers;
-        let imageryFailed = false;
-        const onErr = () => {
-          imageryFailed = true;
-        };
-        for (let i = 0; i < layers.length; i++) {
-          const layer = layers.get(i);
-          if (layer && layer.imageryProvider && layer.imageryProvider.errorEvent) {
-            layer.imageryProvider.errorEvent.addEventListener(onErr);
-          }
-        }
-        for (let i = 0; i < 60; i++) {
-          v.scene.render();
-          await new Promise((r) => requestAnimationFrame(r));
-        }
-        if (imageryFailed || layers.length === 0) {
-          throw new Error("ion imagery errored or absent");
-        }
-        out.imagery =
-          (layers.length &&
-            layers.get(0).imageryProvider &&
-            layers.get(0).imageryProvider.constructor &&
-            layers.get(0).imageryProvider.constructor.name) ||
-          "unknown";
+        const url = C.buildModuleUrl("Assets/Textures/NaturalEarthII");
+        const provider = await C.TileMapServiceImageryProvider.fromUrl(url);
+        v.imageryLayers.removeAll();
+        v.imageryLayers.addImageryProvider(provider);
+        out.usedFallback = false;
+        out.imagery = "TileMapServiceImageryProvider(NaturalEarthII-local)";
       } catch (e) {
-        try {
-          const url = C.buildModuleUrl("Assets/Textures/NaturalEarthII");
-          const prov = await C.TileMapServiceImageryProvider.fromUrl(url);
-          v.imageryLayers.removeAll();
-          v.imageryLayers.addImageryProvider(prov);
-          out.usedFallback = true;
-          out.imagery = "TileMapServiceImageryProvider(NaturalEarthII)";
-          out.why = (out.why ? out.why + " | " : "") + String(e && e.message ? e.message : e);
-        } catch (e2) {
-          out.why = (out.why ? out.why + " | " : "") + "imagery fallback failed: " + String(e2 && e2.message ? e2.message : e2);
-        }
+        out.imagery = "unavailable";
+        out.why =
+          (out.why ? out.why + " | " : "") +
+          "local imagery failed: " +
+          String(e && e.message ? e.message : e);
       }
 
       return out;

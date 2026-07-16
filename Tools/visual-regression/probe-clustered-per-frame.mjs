@@ -6,12 +6,14 @@
 // renders 60 frames. Verifies:
 //   1. SceneRenderer's `_dispatchClusteredLighting` hook runs without
 //      device errors.
-//   2. The dispatcher instance is lazily constructed.
+//   2. The dispatcher is not constructed while the feature stays disabled and
+//      is lazily constructed on the first enabled frame.
 //   3. After rendering, the perClusterLightCount storage buffer
 //      contains non-zero values (proves the compute passes actually
 //      ran with the supplied lights).
 //   4. Toggling `clusteredLightingEnabled = false` zeros out the
-//      activeLightCount uniform on the next render.
+//      activeLightCount uniform exactly once; stable disabled frames do not
+//      keep dispatching or splitting the render pass.
 
 import { chromium } from "playwright";
 
@@ -80,9 +82,8 @@ const BASE = "http://localhost:8080";
       orientation: { pitch: C.Math.toRadians(-20) },
     });
 
-    // Render 60 frames with clustered lighting OFF first to establish
-    // a baseline (dispatcher should construct but report 0 active
-    // lights since the toggle is false).
+    // Render with clustered lighting OFF first. The disabled fast path must
+    // use shared placeholders without allocating a dispatcher.
     scene.clusteredLightingEnabled = false;
     for (let i = 0; i < 30; i++) {
       scene.render();
@@ -133,12 +134,29 @@ const BASE = "http://localhost:8080";
       }
     }
 
-    // Toggle back off. Render a few more frames.
+    // Count dispatcher calls across the enabled -> disabled transition. The
+    // first disabled render must publish one zero-count params update so stale
+    // bindings cannot observe old lights; subsequent disabled renders must be
+    // stable no-ops.
+    let transitionDispatchCount = 0;
+    if (dispatcher) {
+      const originalDispatch = dispatcher.dispatch.bind(dispatcher);
+      dispatcher.dispatch = (...args) => {
+        transitionDispatchCount++;
+        return originalDispatch(...args);
+      };
+    }
+
+    // Toggle back off. Render the transition frame, then stable disabled frames.
     scene.clusteredLightingEnabled = false;
-    for (let i = 0; i < 10; i++) {
+    scene.render();
+    await new Promise((r) => requestAnimationFrame(r));
+    const dispatchCallsAfterTransition = transitionDispatchCount;
+    for (let i = 0; i < 9; i++) {
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));
     }
+    const dispatchCallsAfterStableOff = transitionDispatchCount;
     const lastActiveOffAgain = dispatcher?.lastActiveLightCount ?? -1;
 
     return {
@@ -149,6 +167,8 @@ const BASE = "http://localhost:8080";
       totalOverlap,
       max,
       lastActiveOffAgain,
+      dispatchCallsAfterTransition,
+      dispatchCallsAfterStableOff,
     };
   });
 
@@ -166,6 +186,7 @@ const BASE = "http://localhost:8080";
   console.log(`  dispatcher.lastActiveLightCount when OFF:    ${r.lastActiveOff}`);
   console.log(`  dispatcher.lastActiveLightCount when ON:     ${r.lastActiveOn}`);
   console.log(`  dispatcher.lastActiveLightCount after RE-OFF: ${r.lastActiveOffAgain}`);
+  console.log(`  dispatcher calls: transition=${r.dispatchCallsAfterTransition} stable-off=${r.dispatchCallsAfterStableOff}`);
   console.log(`  perClusterLightCount: totalOverlap=${r.totalOverlap}/${16 * 9 * 24}  max=${r.max}`);
   console.log(`\nDevice errors: ${errs.length}`);
   if (errs.length) {
@@ -183,12 +204,12 @@ const BASE = "http://localhost:8080";
     console.log(`FAIL: scene.lights.length = ${r.sceneLightsCount}, expected 2`);
     pass = false;
   }
-  if (!r.dispatcherFoundEvenWhenOff) {
-    console.log(`FAIL: dispatcher not constructed during off-phase rendering (should be lazy-constructed on first executeCommands regardless of toggle)`);
+  if (r.dispatcherFoundEvenWhenOff) {
+    console.log(`FAIL: dispatcher was constructed during the initial disabled phase`);
     pass = false;
   }
-  if (r.lastActiveOff !== 0) {
-    console.log(`FAIL: lastActiveLightCount when OFF = ${r.lastActiveOff}, expected 0`);
+  if (r.lastActiveOff !== -1) {
+    console.log(`FAIL: disabled phase unexpectedly exposed dispatcher state ${r.lastActiveOff}`);
     pass = false;
   }
   if (r.lastActiveOn !== 2) {
@@ -197,6 +218,14 @@ const BASE = "http://localhost:8080";
   }
   if (r.lastActiveOffAgain !== 0) {
     console.log(`FAIL: lastActiveLightCount after RE-OFF = ${r.lastActiveOffAgain}, expected 0`);
+    pass = false;
+  }
+  if (r.dispatchCallsAfterTransition !== 1) {
+    console.log(`FAIL: enabled->disabled transition dispatched ${r.dispatchCallsAfterTransition} times, expected 1`);
+    pass = false;
+  }
+  if (r.dispatchCallsAfterStableOff !== 1) {
+    console.log(`FAIL: stable disabled frames added dispatcher calls (${r.dispatchCallsAfterStableOff}, expected 1 total)`);
     pass = false;
   }
   if (r.totalOverlap < 16 * 9 * 24) {
@@ -208,7 +237,7 @@ const BASE = "http://localhost:8080";
     pass = false;
   }
   if (pass) {
-    console.log("\nPASS: per-frame clustered-lighting dispatch works end-to-end + 0 device errors");
+    console.log("\nPASS: clustered lighting is lazy while off, runs when enabled, and publishes exactly one toggle-off sync + 0 device errors");
   }
   process.exit(pass ? 0 : 1);
 })();

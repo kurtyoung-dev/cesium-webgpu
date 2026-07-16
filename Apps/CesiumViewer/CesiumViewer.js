@@ -27,6 +27,7 @@ import {
   // (it mounts `window.CesiumDebug` and friends, it doesn't construct).
   CesiumDebug as installCesiumDebug,
 } from "../../Build/CesiumUnminified/index.js";
+import resolveCesiumViewerStartupOptions from "./CesiumViewerStartupOptions.js";
 
 // ---- State ----
 let currentMode = "webgl"; // 'webgl' | 'webgpu' | 'split'
@@ -49,25 +50,17 @@ if (endUserOptions.stats) {
 // ---- Viewer Creation Helpers ----
 
 function getCommonOptions() {
-  let baseLayer;
-  if (defined(endUserOptions.tmsImageryUrl)) {
-    baseLayer = ImageryLayer.fromProviderAsync(
-      TileMapServiceImageryProvider.fromUrl(endUserOptions.tmsImageryUrl),
-    );
-  }
-  const hasBaseLayerPicker = !defined(baseLayer);
-  const terrain = Terrain.fromWorldTerrain({
-    requestWaterMask: true,
-    requestVertexNormals: true,
+  return resolveCesiumViewerStartupOptions(endUserOptions, {
+    createTmsBaseLayer: (url) =>
+      ImageryLayer.fromProviderAsync(
+        TileMapServiceImageryProvider.fromUrl(url),
+      ),
+    createWorldTerrain: () =>
+      Terrain.fromWorldTerrain({
+        requestWaterMask: true,
+        requestVertexNormals: true,
+      }),
   });
-
-  return {
-    baseLayer,
-    hasBaseLayerPicker,
-    terrain,
-    scene3DOnly: endUserOptions.scene3DOnly,
-    requestRenderMode: true,
-  };
 }
 
 function createWebGLViewer(container) {

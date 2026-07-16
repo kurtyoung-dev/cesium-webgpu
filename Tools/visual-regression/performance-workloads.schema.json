@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "performance-workloads.schema.json",
+  "title": "Cesium fork performance workload manifest",
+  "type": "object",
+  "required": ["schemaVersion", "id", "baseUrl", "protocol", "workloads"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "baseUrl": { "type": "string", "format": "uri" },
+    "protocol": {
+      "type": "object",
+      "required": [
+        "browser",
+        "viewport",
+        "fixedClock",
+        "warmupFrames",
+        "measuredFrames",
+        "settleStableFrames",
+        "settleTimeoutMs"
+      ],
+      "properties": {
+        "browser": { "enum": ["msedge", "chromium"] },
+        "viewport": {
+          "type": "object",
+          "required": ["width", "height", "deviceScaleFactor"],
+          "properties": {
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 },
+            "deviceScaleFactor": { "type": "number", "exclusiveMinimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "fixedClock": { "type": "string" },
+        "warmupFrames": { "type": "integer", "minimum": 0 },
+        "measuredFrames": { "type": "integer", "minimum": 1 },
+        "settleStableFrames": { "type": "integer", "minimum": 1 },
+        "settleTimeoutMs": { "type": "integer", "minimum": 1 },
+        "gpuReadbackDelayMs": { "type": "integer", "minimum": 0 },
+        "repetitions": { "type": "integer", "minimum": 1 },
+        "counterbalancedPairs": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "workloads": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "description",
+          "mode",
+          "action",
+          "content",
+          "contentProfile",
+          "featureProfile"
+        ],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+          "description": { "type": "string" },
+          "mode": { "enum": ["3d", "2d", "columbus"] },
+          "action": {
+            "enum": [
+              "static",
+              "orbit",
+              "camera-track",
+              "camera-track-pick",
+              "sparse-point-mutation",
+              "full-point-mutation",
+              "pick-center",
+              "resize-cycle",
+              "morph-roundtrip",
+              "destroy-recreate-content"
+            ]
+          },
+          "content": { "enum": ["globe-only", "points-4096"] },
+          "contentProfile": { "const": "local-grid-ellipsoid" },
+          "featureProfile": {
+            "enum": ["deterministic-core", "default-globe"]
+          },
+          "measuredFrames": { "type": "integer", "minimum": 1 },
+          "measuredSeconds": { "type": "number", "exclusiveMinimum": 0 },
+          "trackId": { "type": "string", "minLength": 1 }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "action": {
+                  "enum": ["camera-track", "camera-track-pick"]
+                }
+              },
+              "required": ["action"]
+            },
+            "then": { "required": ["trackId", "measuredSeconds"] }
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

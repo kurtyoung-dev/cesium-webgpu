@@ -1,0 +1,1070 @@
+{
+  "schemaVersion": 1,
+  "id": "fork-extension-test-coverage-2026-07-15",
+  "asOf": "2026-07-15",
+  "evidenceKind": "static-discovery-plus-exact-current-execution-checkpoint",
+  "scope": {
+    "included": "Performance/architecture campaign extensions and the highest-risk shared WebGL/WebGPU renderer changes currently in the working tree.",
+    "excluded": "An exhaustive mapping of every fork-added feature in FEATURE_INVENTORY.md. That larger traceability audit is queued as COV-P1-01.",
+    "claimBoundary": "A listed spec or probe in the matrix means that a relevant artifact exists; it does not imply semantic completeness. The executionCheckpoint separately records exact-current runs against one frozen bundle, but does not promote every discovery-time matrix row or certify the full fork."
+  },
+  "verdict": {
+    "unitTestsSufficientForAllForkExtensions": false,
+    "unitTestsSufficientForRecentIsolatedAlgorithms": true,
+    "unitTestsAloneCanCertifyRendererParity": false,
+    "reasons": [
+      "The WebGPU directory has 227 JavaScript/TypeScript source modules and 91 WebGPU spec files with 1530 discovered Jasmine it() cases, but filenames and case counts do not establish source, branch, feature, or interaction coverage.",
+      "No enforced source-coverage threshold or complete feature-to-test traceability manifest was found.",
+      "Most WebGPU unit specs use mock devices, encoders, textures, and buffers; they cannot validate WGSL compilation, driver validation, attachment load/store behavior, pixels, GPU timing, or physical device-loss behavior.",
+      "The certifying visual baseline manifest contains zero entries, so the existing screenshot folders and ad hoc probes cannot currently certify historical WebGL or WebGPU behavior.",
+      "The exact-current broad WebGPU suite and bounded physical probes pass, but shared Renderer, DataSources, Scene, and full-engine gates exposed real regressions; several fork interactions remain mock-only or have no direct extension spec."
+    ]
+  },
+  "snapshot": {
+    "webgpuSourceModules": 227,
+    "webgpuSpecFiles": 91,
+    "webgpuJasmineCasesDiscovered": 1530,
+    "performanceHarnessNodeCasesDiscovered": 12,
+    "visualPolicyNodeCasesDiscovered": 10,
+    "certifyingVisualManifestEntries": 0,
+    "workingTreeWasDirty": true
+  },
+  "executionCheckpoint": {
+    "sourceAnchor": "a54cc06b2aad89a00e8ecb0887b953a36f061954",
+    "branch": "main",
+    "workingTreeWasDirty": true,
+    "bundle": {
+      "path": "Build/CesiumUnminified/Cesium.js",
+      "bytes": 25090507,
+      "sha256": "B8015811ACC0567663C6898386DC74AD94424363B22DA2A1759DF54AC666C11E"
+    },
+    "compile": {
+      "productionBuild": "pass",
+      "typescriptNoEmit": "pass"
+    },
+    "deterministicSuites": {
+      "performanceHarnessNode": "12/12 pass",
+      "visualPolicyNode": "10/10 pass",
+      "karmaWrapperPolicy": "1/1 pass",
+      "picking": "92/92 pass",
+      "webgpuPick": "62/62 pass",
+      "performanceManager": "12/12 pass",
+      "shaderFamily": "98/98 pass",
+      "broadWebGPU": "1505/1505 pass",
+      "widgets": "429/429 pass"
+    },
+    "openBroadSuites": {
+      "renderer": "2493 pass / 20 fail",
+      "dataSources": "1824 pass / 10 fail",
+      "scene": "5704 executed / 47 fail plus afterAll error",
+      "fullEngine": "aborted at 4620/17455 with 7 failures including external-world-terrain dependencies"
+    },
+    "physicalEvidence": {
+      "classification": "pass bounded semantic/pixel gate on both renderers",
+      "multiFrustumPick": "pass bounded near/far semantic gate on both renderers",
+      "movingVisualRoute": "9/9 waypoints settled; 18 images manually inspected; no backend-only artifact",
+      "strictAllocation": "zero physical compatibility buffers; logical compatibility stores and compatibility-shaped texture labels still require attribution",
+      "movingAltitude": "protocol pass; exact-current WebGPU CPU improvement not demonstrated",
+      "movingContinuousPick": "scheduler/drain pass; WebGPU physical pick remains materially more expensive than WebGL"
+    },
+    "certificationVerdict": "open"
+  },
+  "statusVocabulary": {
+    "unit": [
+      "direct-strong",
+      "direct-partial",
+      "indirect-only",
+      "none"
+    ],
+    "runtime": [
+      "exact-current-pass",
+      "exact-current-open",
+      "recorded-not-exact-current",
+      "probe-present-unpromoted",
+      "workload-present-not-executed",
+      "none"
+    ],
+    "gate": [
+      "focused-only",
+      "non-certifying",
+      "planned",
+      "none"
+    ],
+    "priority": [
+      "P0",
+      "P1",
+      "P2",
+      "none"
+    ]
+  },
+  "matrix": [
+    {
+      "id": "COV-PERF-HARNESS",
+      "subsystem": "Moving-camera performance harness and contamination rejection",
+      "sources": [
+        "Tools/visual-regression/run-performance-campaign.mjs",
+        "Tools/visual-regression/lib/performance-campaign-utils.mjs",
+        "Tools/visual-regression/performance-workloads.json"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "Tools/visual-regression/performance-workloads.spec.mjs"
+        ],
+        "covered": [
+          "manifest/schema coherence",
+          "moving altitude and moving-pick action registration",
+          "quality rejection for incomplete routes and observed long-task/readback collapse",
+          "bimodal repetition rejection"
+        ]
+      },
+      "runtime": {
+        "status": "exact-current-pass",
+        "artifacts": [
+          "Tools/visual-regression/output/performance/altitude-track-exact-current-clean-2026-07-15.json",
+          "Tools/visual-regression/output/performance/altitude-track-exact-current-api-2026-07-15.json",
+          "Tools/visual-regression/output/performance/moving-pick-exact-current-clean-2026-07-15.json"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P0",
+      "gaps": [
+        "Fresh-process campaign isolation and no-timestamp control pass, but teardown/device-lost validation remains a separate open matrix.",
+        "Display-paced evidence exists; maximum-throughput pacing remains queued."
+      ]
+    },
+    {
+      "id": "COV-VISUAL-POLICY",
+      "subsystem": "Historical and cross-backend visual regression policy",
+      "sources": [
+        "Tools/visual-regression/capture-and-diff.mjs",
+        "Tools/visual-regression/lib/visual-gate-policy.mjs",
+        "Tools/visual-regression/baseline/manifest.json"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "Tools/visual-regression/capture-and-diff.policy.spec.mjs"
+        ],
+        "covered": [
+          "manifest provenance validation",
+          "missing/unreviewed historical baseline is non-certifying",
+          "independent historical and cross-backend gates"
+        ]
+      },
+      "runtime": {
+        "status": "probe-present-unpromoted",
+        "artifacts": [
+          "Tools/visual-regression/screenshots/",
+          "Tools/visual-regression/probe-camera-track.mjs"
+        ]
+      },
+      "gate": "non-certifying",
+      "gapPriority": "P0",
+      "gaps": [
+        "baseline/manifest.json has no entries.",
+        "The latest screenshot folders are useful characterization but are not bound to reviewed renderer-specific provenance and thresholds."
+      ]
+    },
+    {
+      "id": "COV-FAR100-COMPAT-ALLOCATION",
+      "subsystem": "WebGPU logical WebGL compatibility buffers and allocation double-tax containment",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/Stubs/WebGLStubBuffer.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUContextWebGLStubInit.ts"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGLStubBufferSpec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGLCompatibilityStubSpec.js"
+        ],
+        "covered": [
+          "lazy logical handles",
+          "metadata/state compatibility",
+          "buffer binding and lifetime behavior"
+        ]
+      },
+      "runtime": {
+        "status": "exact-current-pass",
+        "artifacts": [
+          "Tools/visual-regression/output/allocation-tax-exact-current-2026-07-15.json"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "The exact-current strict probe reports zero physical compatibility buffers.",
+        "Textures, vertex arrays, shaders, framebuffers, and pick resources are not covered by the zero-compatibility-buffer result."
+      ]
+    },
+    {
+      "id": "COV-CONTEXT-LIFETIME",
+      "subsystem": "Renderer selection, transactional initialization, teardown, and device loss",
+      "sources": [
+        "packages/engine/Source/Renderer/ContextFactory.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUDeviceLossRecovery.ts",
+        "packages/engine/Source/Scene/Scene.js",
+        "packages/engine/Source/Widget/CesiumWidget.js"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/ContextFactorySpec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUContextInitializationSpec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUDeviceLossRecoverySpec.js",
+          "packages/engine/Specs/Scene/FeatureRendererReadinessConsumersSpec.js",
+          "packages/engine/Specs/Scene/SceneSpec.js",
+          "packages/engine/Specs/Widget/CesiumWidgetSpec.js"
+        ],
+        "covered": [
+          "strict versus fallback renderer policy",
+          "late initialization rollback",
+          "canvas unconfigure before device release",
+          "candidate recovery promotion/rollback and double-release prevention",
+          "FeatureRenderer readiness consumers"
+        ]
+      },
+      "runtime": {
+        "status": "probe-present-unpromoted",
+        "artifacts": [
+          "Tools/visual-regression/probe-webgpu-reinit-switch.mjs",
+          "Tools/visual-regression/run-performance-campaign.mjs"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P0",
+      "gaps": [
+        "No blocking physical-browser multi-context/device-loss/recovery soak is recorded for exact current.",
+        "The test doubles do not prove browser canvas/device lost ordering or all cache-generation invalidations."
+      ]
+    },
+    {
+      "id": "COV-CAPS-CLIP-KTX2",
+      "subsystem": "Immutable graphics capabilities, clip-space conventions, and KTX2 cache identity",
+      "sources": [
+        "packages/engine/Source/Core/ClipSpaceConvention.js",
+        "packages/engine/Source/Core/OrthographicOffCenterFrustum.js",
+        "packages/engine/Source/Core/PerspectiveOffCenterFrustum.js",
+        "packages/engine/Source/Core/loadKTX2.js",
+        "packages/engine/Source/Renderer/GraphicsCapabilities.js",
+        "packages/engine/Source/Scene/ResourceCacheKey.js"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Core/OrthographicOffCenterFrustumSpec.js",
+          "packages/engine/Specs/Core/PerspectiveOffCenterFrustumSpec.js",
+          "packages/engine/Specs/Core/loadKTX2Spec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUContextLimitsInitSpec.js",
+          "packages/engine/Specs/Scene/ResourceCacheKeySpec.js"
+        ],
+        "covered": [
+          "independent projection caches per convention",
+          "immutable per-context limit snapshots",
+          "explicit asynchronous transcode targets",
+          "backend-sensitive KTX2 image keys"
+        ]
+      },
+      "runtime": {
+        "status": "probe-present-unpromoted",
+        "artifacts": [
+          "Tools/visual-regression/probe-2d-cv-modes.mjs",
+          "Tools/visual-regression/probe-ktx2-transcoder-formats.mjs"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "No blocking cross-backend 2D/CV/3D projection matrix is registered in the empty visual manifest.",
+        "Physical adapter format support and multi-context KTX2 cache separation require exact-current runtime proof."
+      ]
+    },
+    {
+      "id": "COV-ORDERING-SCHEDULER",
+      "subsystem": "Backend-neutral command ordering, reusable CPU sort scratch, GPU sort, and duplicate scheduler containment",
+      "sources": [
+        "packages/engine/Source/Renderer/CommandOrdering.js",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUGPUSortKeysDispatcher.ts",
+        "packages/engine/Source/Scene/CommandSorter.js",
+        "packages/engine/Source/Scene/RenderScheduler.js"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Renderer/CommandOrderingSpec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUSceneRendererSortSpec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUGPUSortKeysDispatcherSpec.js",
+          "packages/engine/Specs/Scene/RenderSchedulerSpec.js"
+        ],
+        "covered": [
+          "shared public ordering contract",
+          "stable active-prefix front/back sorting without pooled-tail mutation",
+          "GPU key layout constants",
+          "legacy scheduler disabled but force-reachable"
+        ]
+      },
+      "runtime": {
+        "status": "recorded-not-exact-current",
+        "artifacts": [
+          "Tools/visual-regression/probe-gpu-sort-consume.mjs"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "Safe automatic GPU-sort selection, result identity, normal-frame readback removal, and authoritative scheduler integration remain unimplemented or unproven.",
+        "Sorting specs do not prove translucent, voxel, splat, and pick pixels across all modes."
+      ]
+    },
+    {
+      "id": "COV-UNSAFE-FAST-PATHS",
+      "subsystem": "Culling, HiZ, GPU-sort, and OIT safety gates",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPUContextCullerPool.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererClusteredLighting.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts"
+      ],
+      "unit": {
+        "status": "direct-partial",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUUnsafeDefaultsSpec.js"
+        ],
+        "covered": [
+          "default-closed consumers",
+          "requested/capable/active/fallback diagnostics",
+          "no lazy producer work while disabled"
+        ]
+      },
+      "runtime": {
+        "status": "probe-present-unpromoted",
+        "artifacts": [
+          "Tools/visual-regression/probe-gpu-culler-consumers.mjs",
+          "Tools/visual-regression/probe-hiz-occlusion-control.mjs"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "Containment tests prove disabled behavior, not correctness or performance when each feature is enabled.",
+        "No cross-feature OIT/MSAA/multi-frustum activation matrix is blocking."
+      ]
+    },
+    {
+      "id": "COV-TELEMETRY",
+      "subsystem": "GPU timestamps and performance counters",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPUTimestampProfiler.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUPerformanceManager.ts",
+        "packages/engine/Source/Services/PerformanceTracker.js"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUTimestampProfilerSpec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUPerformanceManagerSpec.js",
+          "packages/engine/Specs/Services/PerformanceTrackerSpec.js"
+        ],
+        "covered": [
+          "disabled path",
+          "triple-buffered query state",
+          "reset/generation rejection",
+          "descriptor cloning only when timestamps are attached",
+          "CPU tracker metrics"
+        ]
+      },
+      "runtime": {
+        "status": "exact-current-open",
+        "artifacts": [
+          "Tools/visual-regression/output/performance/altitude-track-exact-current-timestamps-2026-07-15.json"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "Timestamp coverage remains a bounded subset of the frame and cannot support whole-frame GPU attribution.",
+        "Allocation, lifetime, compilation, GC, mapAsync, and stage attribution are incomplete."
+      ]
+    },
+    {
+      "id": "COV-MATERIAL-UPLOAD",
+      "subsystem": "Stable public Material identity and per-consumer GPU upload versions",
+      "sources": [
+        "packages/engine/Source/Scene/Material.js",
+        "packages/engine/Source/Scene/MaterialUniformBuffer.js",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUMaterialUploadState.js"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Scene/MaterialSpec.js",
+          "packages/engine/Specs/Scene/MaterialUniformBufferSpec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUMaterialUploadStateSpec.js",
+          "packages/engine/Specs/DataSources/MaterialPropertySpec.js"
+        ],
+        "covered": [
+          "stable Color/vector/matrix identity",
+          "in-place mutation detection",
+          "consumer-local versions and settled zero-byte behavior",
+          "replacement identity invalidation"
+        ]
+      },
+      "runtime": {
+        "status": "probe-present-unpromoted",
+        "artifacts": [
+          "Tools/visual-regression/probe-all-materials.mjs",
+          "Tools/visual-regression/probe-channel-materials.mjs"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "No promoted WebGL/WebGPU mutation-sequence visual matrix or long-running pruning plateau is blocking."
+      ]
+    },
+    {
+      "id": "COV-EFFECTS-CACHE",
+      "subsystem": "Effects bind-group/state cache partitioning and device lifetime",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUEffectsStateCache.js"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUEffectsDeviceCacheSpec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUEffectsStateCacheSpec.js"
+        ],
+        "covered": [
+          "device-sharing until last owner",
+          "context-partitioned volatile slots",
+          "single destruction",
+          "bounded reuse and live-entry eviction"
+        ]
+      },
+      "runtime": {
+        "status": "workload-present-not-executed",
+        "artifacts": [
+          "Tools/visual-regression/performance-workloads.json"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "No exact-current moving-camera residency plateau or shared-device multi-context recovery run is recorded."
+      ]
+    },
+    {
+      "id": "COV-RING-TERRAIN-UBO",
+      "subsystem": "Coalesced terrain uniform staging through device-local ring pages",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPURingBufferAllocator.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts"
+      ],
+      "unit": {
+        "status": "direct-partial",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGPURingBufferAllocatorSpec.js"
+        ],
+        "covered": [
+          "alignment",
+          "page rotation and overflow",
+          "one write per dirty page",
+          "unwritten-tail exclusion"
+        ]
+      },
+      "runtime": {
+        "status": "exact-current-pass",
+        "artifacts": [
+          "Tools/visual-regression/output/performance/altitude-track-exact-current-api-2026-07-15.json"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "Allocator tests do not directly exercise terrain multi-frustum binding offsets, in-flight page reuse, or physical queue ordering.",
+        "Exact-current write-call/byte and moving-route visual evidence exists; terrain multi-frustum lifetime and authoritative queue ordering remain open."
+      ]
+    },
+    {
+      "id": "COV-MODEL-PREPARATION",
+      "subsystem": "Model geometry conversion and structural-metadata memoization",
+      "sources": [
+        "packages/engine/Source/Scene/Model/ModelPrimitiveGeometry.js",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUModelMetadataCache.js",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Scene/Model/ModelPrimitiveGeometrySpec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUModelMetadataCacheSpec.js"
+        ],
+        "covered": [
+          "one conversion across settled frames",
+          "identity/metadata/revision invalidation",
+          "immutable cached base isolation",
+          "negative metadata caching"
+        ]
+      },
+      "runtime": {
+        "status": "probe-present-unpromoted",
+        "artifacts": [
+          "Tools/visual-regression/probe-model-instance-bg-cache.mjs"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "Loader-owned revision tokens, O(1) validation for every model family, and a production resource-ownership vertical remain incomplete.",
+        "No loading/mutation/device-loss model matrix is blocking."
+      ]
+    },
+    {
+      "id": "COV-MODEL-GROUP2",
+      "subsystem": "Model instance/morph group-2 bind-group reuse",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUModelInstanceBindGroupCacheSpec.js"
+        ],
+        "covered": [
+          "stable tuple reuse",
+          "all-placeholder shared group",
+          "all current/previous buffer identities",
+          "device/layout generation invalidation"
+        ]
+      },
+      "runtime": {
+        "status": "recorded-not-exact-current",
+        "artifacts": [
+          "Tools/visual-regression/probe-model-instance-bg-cache.mjs"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "Group-1 material/texture/IBL churn and draw-command/frontend allocations remain unattributed.",
+        "The settled cache probe must be rerun on the exact current bundle."
+      ]
+    },
+    {
+      "id": "COV-MODEL-FEATURE-ID-ALLOCATION",
+      "subsystem": "Allocation-free selected implicit feature-ID lookup",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPUModelFeatureId.js"
+      ],
+      "unit": {
+        "status": "none",
+        "specs": [],
+        "covered": []
+      },
+      "runtime": {
+        "status": "none",
+        "artifacts": []
+      },
+      "gate": "none",
+      "gapPriority": "P1",
+      "gaps": [
+        "No direct unit test was found for getSelectedImplicitFeatureId selection semantics or allocation behavior.",
+        "Add table/texture/implicit/absent feature-ID cases plus a settled allocation counter."
+      ]
+    },
+    {
+      "id": "COV-POLYLINE-GROUPING",
+      "subsystem": "Reusable polyline material grouping and retirement grace",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js",
+        "packages/engine/Source/Scene/PolylineCollection.js"
+      ],
+      "unit": {
+        "status": "direct-partial",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUPolylineMaterialGroupingSpec.js"
+        ],
+        "covered": [
+          "exact material identity grouping",
+          "same-type frame work reuse"
+        ]
+      },
+      "runtime": {
+        "status": "recorded-not-exact-current",
+        "artifacts": [
+          "Tools/visual-regression/probe-polyline-multimaterial.mjs"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "No focused unit test names the 60-frame retirement boundary, rapid material replacement, destroy/recreate, or multi-context isolation.",
+        "No exact-current churn/allocation plateau is recorded."
+      ]
+    },
+    {
+      "id": "COV-CLUSTERED-DISABLED-FASTPATH",
+      "subsystem": "Clustered-lighting disabled fast path",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererClusteredLighting.ts"
+      ],
+      "unit": {
+        "status": "none",
+        "specs": [],
+        "covered": []
+      },
+      "runtime": {
+        "status": "probe-present-unpromoted",
+        "artifacts": [
+          "Tools/visual-regression/probe-clustered-dispatcher.mjs",
+          "Tools/visual-regression/probe-clustered-per-frame.mjs"
+        ]
+      },
+      "gate": "none",
+      "gapPriority": "P1",
+      "gaps": [
+        "No direct unit spec proves zero dispatcher/allocation/upload work when clustered lighting is disabled while preserving enabled behavior.",
+        "Existing probes are not registered as blocking exact-current gates."
+      ]
+    },
+    {
+      "id": "COV-PASS-DEPTH",
+      "subsystem": "Empty-pass elimination, globe depth binding reuse, and MSAA depth resolve",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererFrustumLoop.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPostFrustumChain.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUDepthResolveMSAA.ts"
+      ],
+      "unit": {
+        "status": "direct-partial",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUGlobeDepthCachingSpec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUDepthResolveMSAASpec.js"
+        ],
+        "covered": [
+          "stable source-depth view/bind-group reuse",
+          "texture and sample-count invalidation",
+          "MSAA resolve pipeline and bind-group cache identity"
+        ]
+      },
+      "runtime": {
+        "status": "exact-current-open",
+        "artifacts": [
+          "Tools/visual-regression/probe-pass-counts.mjs",
+          "Tools/visual-regression/probe-camera-track.mjs"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P0",
+      "gaps": [
+        "No direct unit spec proves every empty-pass skip predicate or the resulting color/depth/stencil load/store contract.",
+        "A physical attachment/frustum/mode/MSAA/OIT/TAA matrix with GPU-error and pixel gates is required before pass topology is certified."
+      ]
+    },
+    {
+      "id": "COV-DYNAMIC-STATE",
+      "subsystem": "Pass-scoped viewport/scissor override without redundant per-draw state",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPUDrawCommand.ts"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUDrawCommandSpec.js"
+        ],
+        "covered": [
+          "pass override precedence",
+          "zero redundant emission for untouched/stencil-only commands",
+          "single state publication before bundle replay"
+        ]
+      },
+      "runtime": {
+        "status": "probe-present-unpromoted",
+        "artifacts": [
+          "Tools/visual-regression/probe-pick-multifrustum.mjs"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "No physical render-bundle plus nested viewport/scissor matrix is blocking."
+      ]
+    },
+    {
+      "id": "COV-PICK-READBACK",
+      "subsystem": "Minimal pick framebuffer staging, edge clipping, cache generation, and async isolation",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPUPickFramebuffer.ts"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUPickFramebufferStagingSpec.js"
+        ],
+        "covered": [
+          "no eager viewport-sized staging",
+          "on-demand readable/classification depth",
+          "same-size device recovery",
+          "edge zero-padding while preserving logical center",
+          "overlapping async request isolation and completion ordering",
+          "sync cache query/generation identity",
+          "map/unpack failure cleanup",
+          "alpha-only pick-key decoding"
+        ]
+      },
+      "runtime": {
+        "status": "exact-current-open",
+        "artifacts": [
+          "Tools/visual-regression/probe-pick-multifrustum.mjs",
+          "Tools/visual-regression/performance-workloads.json#moving-pick-camera-altitude-track-3d",
+          "Tools/visual-regression/output/performance/moving-pick-exact-current-clean-2026-07-15.json"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P0",
+      "gaps": [
+        "The exact-current moving-pick lane proves physical completion, bounded scheduling, and drain, but not the full bytesPerRow edge matrix or allocation plateau under continuous hover.",
+        "The bounded shared readback pool, cancellation/coalescing policy, and serial-owned reuse remain deferred."
+      ]
+    },
+    {
+      "id": "COV-PICK-PASS",
+      "subsystem": "Multi-frustum object pick, pick-scoped classification depth, sorting, 2D wrap, and mini-frame cleanup",
+      "sources": [
+        "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPickPass.ts",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeDepth.ts",
+        "packages/engine/Source/Scene/Picking.js",
+        "packages/engine/Source/Renderer/WebGPU/WebGPUTAAEffect.ts"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUSceneRendererPickPassSpec.js",
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUTAAJitterAccumulationSpec.js",
+          "packages/engine/Specs/Scene/PickingSpec.js"
+        ],
+        "covered": [
+          "far-to-near color accumulation with per-frustum depth clear",
+          "terrain/tile classification depth checkpoints",
+          "two-half 2D accumulation",
+          "active pass closure and sync/async mini-frame finalization on exceptions",
+          "unjittered auxiliary projection contract"
+        ]
+      },
+      "runtime": {
+        "status": "exact-current-open",
+        "artifacts": [
+          "Tools/visual-regression/probe-pick-multifrustum.mjs",
+          "Tools/visual-regression/probe-pickposition-webgpu.mjs",
+          "Tools/visual-regression/probe-pickposition-model-webgpu.mjs"
+        ]
+      },
+      "gate": "focused-only",
+      "gapPriority": "P0",
+      "gaps": [
+        "Exact-current bounded classification, natural multi-frustum object-pick, and continuous moving-pick oracles pass, but no single matrix yet covers center/edge, sync/async overlap, drill pick, voxel/splat/translucent sorting, 2D wrap, TAA on/off, resize, and device recovery together.",
+        "The pre-existing 2D wrap frustum-uniform slot last-write-wins hazard is not resolved by viewport accumulation tests.",
+        "PickQuery/PickResult, contiguous PickId ranges, cancellation generations, and bounded readback pooling remain deferred."
+      ]
+    },
+    {
+      "id": "COV-RESOURCE-OWNERSHIP",
+      "subsystem": "FAR-200 decoded payload, realization lease, shadow cache, and submission serial scaffold",
+      "sources": [
+        "packages/engine/Source/Renderer/ResourceOwnership/"
+      ],
+      "unit": {
+        "status": "none",
+        "specs": [],
+        "covered": []
+      },
+      "runtime": {
+        "status": "probe-present-unpromoted",
+        "artifacts": [
+          "Tools/run-far200-shadow-self-test.mjs",
+          "Tools/far200-shadow-self-test.ts"
+        ]
+      },
+      "gate": "none",
+      "gapPriority": "P1",
+      "gaps": [
+        "No Jasmine spec was found for the eight ResourceOwnership modules.",
+        "The Node self-test covers shadow scaffolding only; no production allocation, retirement, or submission authority is adopted.",
+        "Direct queue.submit sites and backend-shaped resource construction remain outside this proof."
+      ]
+    },
+    {
+      "id": "COV-ATMOSPHERE-FOG",
+      "subsystem": "Terrain atmosphere fog sampled at absolute ECEF position",
+      "sources": [
+        "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "packages/engine/Specs/Renderer/WebGPU/WebGPUGlobeTerrainShaderSpec.js"
+        ],
+        "covered": [
+          "absolute-position shader contract",
+          "poles, antimeridian, and camera-teleport numeric oracle"
+        ]
+      },
+      "runtime": {
+        "status": "probe-present-unpromoted",
+        "artifacts": [
+          "Tools/visual-regression/probe-atmosphere-orbit.mjs",
+          "Tools/visual-regression/probe-camera-track.mjs"
+        ]
+      },
+      "gate": "non-certifying",
+      "gapPriority": "P1",
+      "gaps": [
+        "String/numeric shader tests do not compile the exact WGSL on a physical adapter or certify pixels across the route."
+      ]
+    },
+    {
+      "id": "COV-BUILD-VARIANTS",
+      "subsystem": "Immutable WebGL/WebGPU build capabilities and stripped-backend selection",
+      "sources": [
+        "packages/engine/Source/Renderer/RendererBuildCapabilities.ts",
+        "scripts/bundleVariantPlugin.js",
+        "scripts/stubs/rendererBuildCapabilitiesWebGL.js",
+        "scripts/stubs/rendererBuildCapabilitiesWebGPU.js"
+      ],
+      "unit": {
+        "status": "direct-strong",
+        "specs": [
+          "scripts/__tests__/bundleVariantPlugin.spec.mjs",
+          "packages/engine/Specs/Renderer/WebGPU/ContextFactorySpec.js"
+        ],
+        "covered": [
+          "build-time backend pruning",
+          "selection/reporting never advertises a stripped backend"
+        ]
+      },
+      "runtime": {
+        "status": "none",
+        "artifacts": []
+      },
+      "gate": "focused-only",
+      "gapPriority": "P1",
+      "gaps": [
+        "No installed-package smoke matrix loads each built variant and exercises create/destroy of every advertised backend."
+      ]
+    },
+    {
+      "id": "COV-SHARED-WEBGL-CORE",
+      "subsystem": "Materially changed upstream WebGL/core scene objects used by both backends",
+      "sources": [
+        "packages/engine/Source/Renderer/Context.js",
+        "packages/engine/Source/Renderer/Texture.js",
+        "packages/engine/Source/Renderer/CubeMap.js",
+        "packages/engine/Source/Renderer/Framebuffer.js",
+        "packages/engine/Source/Renderer/VertexArray.js",
+        "packages/engine/Source/Scene/SceneRenderer.js",
+        "packages/engine/Source/Scene/ViewportExecutor.js"
+      ],
+      "unit": {
+        "status": "indirect-only",
+        "specs": [
+          "packages/engine/Specs/Renderer/ContextSpec.js",
+          "packages/engine/Specs/Renderer/TextureSpec.js",
+          "packages/engine/Specs/Renderer/CubeMapSpec.js",
+          "packages/engine/Specs/Renderer/FramebufferSpec.js",
+          "packages/engine/Specs/Renderer/DrawSpec.js",
+          "packages/engine/Specs/Scene/SceneSpec.js"
+        ],
+        "covered": [
+          "many inherited public and WebGL rendering contracts"
+        ]
+      },
+      "runtime": {
+        "status": "exact-current-open",
+        "artifacts": [
+          "Tools/visual-regression/probe-camera-track.mjs",
+          "Tools/visual-regression/capture-and-diff.mjs"
+        ]
+      },
+      "gate": "non-certifying",
+      "gapPriority": "P0",
+      "gaps": [
+        "There is no complete upstream-diff-to-spec traceability map for the shared core changes.",
+        "Cross-backend parity alone can miss a shared regression, and the historical manifest is empty.",
+        "The exact-current affected/full suites ran but are not green; Renderer, DataSources, Scene, and full-engine closures plus the curated WebGL historical gate are required."
+      ]
+    }
+  ],
+  "queuedGaps": [
+    {
+      "id": "COV-P0-01",
+      "priority": "P0",
+      "title": "Close exact-current affected/full unit failures and freeze the final release run",
+      "acceptance": [
+        "TypeScript no-emit and production build pass for the exact bundle hash used by runtime evidence.",
+        "All newly touched focused specs pass.",
+        "Affected WebGL/WebGPU/shared Renderer, DataSources, Scene, and Widget matrices pass without weakening upstream assertions.",
+        "The full engine/widget suite completes; every environmental dependency is isolated explicitly rather than aborting the remaining specs."
+      ]
+    },
+    {
+      "id": "COV-P0-02",
+      "priority": "P0",
+      "title": "Promote a physical WebGPU pick/query regression matrix",
+      "acceptance": [
+        "Covers center and every edge, 1x1/3x3/odd query sizes, sync and overlapping async reads, resize/device-generation invalidation, and exception recovery.",
+        "Covers multiple frustums, terrain and tile classification, translucent/voxel/splat ordering, 2D wrap/CV/3D, TAA on/off, and drill/query families.",
+        "Includes continuous moving-cursor pick on the complete altitude track with staging live/high-water bytes and latency percentiles.",
+        "Compares semantic IDs/results for WebGL and WebGPU and records GPU/console errors."
+      ]
+    },
+    {
+      "id": "COV-P0-03",
+      "priority": "P0",
+      "title": "Populate the certifying historical WebGL/WebGPU visual manifest",
+      "acceptance": [
+        "Curated current-functionality scenes are bound to reviewed renderer, commit, flags, camera/time/assets, dimensions, hashes, and thresholds.",
+        "Every release run evaluates historical WebGL, historical WebGPU, and current cross-backend gates independently.",
+        "Shared-core regressions cannot pass solely because both current backends changed identically."
+      ]
+    },
+    {
+      "id": "COV-P0-04",
+      "priority": "P0",
+      "title": "Add an attachment/pass-topology regression matrix",
+      "acceptance": [
+        "Covers 3D/2D/CV, one/multiple frustums, MSAA, TAA, OIT, classification, globe translucency, shadows, and post-process consumers.",
+        "Validates color/depth/stencil load/store and clear semantics plus no stale sampled views.",
+        "Records pass/encoder/submit counts, GPU validation errors, and renderer-specific pixels."
+      ]
+    },
+    {
+      "id": "COV-P0-05",
+      "priority": "P0",
+      "title": "Run physical multi-context teardown and device-loss recovery",
+      "acceptance": [
+        "Exercises pooled and isolated devices, same-size canvas recovery, destroy during every recovery stage, and shared immutable caches.",
+        "Proves canvas unconfigure, queue completion, device-lost reason, lease release, generation invalidation, and memory return to baseline.",
+        "No stale bind group, texture view, pipeline, readback, or listener survives recovery."
+      ]
+    },
+    {
+      "id": "COV-P0-06",
+      "priority": "P0",
+      "title": "Rerun the isolated moving-altitude campaign after queued fixes for Gate E",
+      "acceptance": [
+        "Uses a newly frozen bundle/hash and a fresh Edge process for every run after the shared-suite and next performance fixes land.",
+        "Rejects teardown, route, timestamp, long-task, readback-drain, and bimodal contamination.",
+        "Runs WebGL and WebGPU counterbalanced repetitions with clean and separately instrumented lanes.",
+        "Runs a no-GPU-timestamp control and reports exact bundle SHA-256.",
+        "Separates display-paced responsiveness from the maximum-throughput tooling lane required by Gate E."
+      ]
+    },
+    {
+      "id": "COV-P1-01",
+      "priority": "P1",
+      "title": "Create complete fork feature/source/test traceability",
+      "acceptance": [
+        "Every NEW and WIP FEATURE_INVENTORY item maps to owning source, direct unit specs, runtime semantic probes, visual/performance gates, renderer/mode matrix, and current status.",
+        "Every materially modified upstream file maps to inherited and fork-specific regression coverage.",
+        "Missing direct tests are explicit queue items; raw line coverage may supplement but cannot replace semantic traceability."
+      ]
+    },
+    {
+      "id": "COV-P1-02",
+      "priority": "P1",
+      "title": "Register deterministic probes as maintained gates",
+      "acceptance": [
+        "Each promoted probe declares deterministic assets, renderer/modes, expected semantic oracle, timeout, error policy, owner, and artifact schema.",
+        "Historical one-off diagnostic probes remain labeled non-blocking instead of being mistaken for coverage.",
+        "CI/local release command emits one machine-readable gate summary."
+      ]
+    },
+    {
+      "id": "COV-P1-03",
+      "priority": "P1",
+      "title": "Add direct ResourceOwnership and submission-serial specs before production adoption",
+      "acceptance": [
+        "Covers cache identity, lease/refcount transitions, cancellation, stale generations, serial completion, rollback, and exact-once destruction.",
+        "Adds a production pilot with allocation/retirement plateau evidence before replacing existing authority.",
+        "Tracks remaining direct queue.submit and backend-shaped construction sites."
+      ]
+    },
+    {
+      "id": "COV-P1-04",
+      "priority": "P1",
+      "title": "Close direct-unit gaps for recent small hot-path changes",
+      "acceptance": [
+        "Add getSelectedImplicitFeatureId selection/allocation tests.",
+        "Add clustered-lighting disabled/enabled fast-path tests.",
+        "Add empty-pass predicate/load-store tests.",
+        "Add polyline retirement-boundary and rapid mutation tests."
+      ]
+    },
+    {
+      "id": "COV-P1-05",
+      "priority": "P1",
+      "title": "Extend allocation-double-tax coverage beyond compatibility buffers",
+      "acceptance": [
+        "Report logical/decoded/WebGL-native/WebGPU-native ownership separately for buffers, textures, samplers, vertex arrays, shaders/pipelines, framebuffers, and pick resources.",
+        "Exercise WebGPU-only, WebGL-only, and simultaneous mixed-context scenes.",
+        "Prove settled and destroy/recreate live-byte plateaus without removing features."
+      ]
+    },
+    {
+      "id": "COV-P1-06",
+      "priority": "P1",
+      "title": "Complete telemetry coverage needed to defend performance claims",
+      "acceptance": [
+        "Whole-frame GPU timestamp attribution or an explicit measured/unmeasured remainder is reported.",
+        "Counters cover allocations, live/high-water bytes, uploads, bind groups, passes, encoders, submits, pipeline compilation, mapAsync, and GC/long tasks.",
+        "Instrumentation overhead is bounded with clean-versus-instrumented and timestamps-on/off controls."
+      ]
+    },
+    {
+      "id": "COV-P0-07",
+      "priority": "P0",
+      "title": "Restore shared Renderer lifecycle and generated-shader contracts",
+      "acceptance": [
+        "destroyObject replaces ES6 prototype-chain, legacy prototype, and instance-owned functions without invoking getters or touching statics.",
+        "Destroyed renderer resources reject repeated teardown and every existing lifecycle assertion passes.",
+        "ShaderFunction validation and exact ShaderBuilder/ShaderFunction/ShaderStruct text parity pass while legal empty functions and empty-struct fallback remain supported."
+      ]
+    },
+    {
+      "id": "COV-P0-08",
+      "priority": "P0",
+      "title": "Restore DataSources and bulk-visualizer extension parity",
+      "acceptance": [
+        "DataSourceCollection contains/add/remove, Resource URL classes, embedded and nested KMZ paths, and PolylineGeometryUpdater public descriptors match upstream contracts.",
+        "Bulk point, billboard, and label visualizers have dedicated transition/ownership specs and preserve public defaultVisualizersCallback compatibility.",
+        "Disabled-to-enabled-to-disabled clustering moves every entity exactly once without duplicates, leaks, or settled per-frame O(N) work, and physical WebGL/WebGPU probes preserve visuals and picking."
+      ]
+    },
+    {
+      "id": "COV-P0-09",
+      "priority": "P0",
+      "title": "Classify and close the broad Scene suite",
+      "acceptance": [
+        "Every current Scene failure has a minimal owner and is classified as product, stale fixture, harness, or environment with evidence.",
+        "Shared fake contexts use the public renderer-neutral capabilities required by production code without hiding missing product guards.",
+        "WebGL1 shader/pick, terrain, voxel, environment, teardown, and camera-controller clusters pass; no exclusion or timeout increase substitutes for a fix."
+      ]
+    },
+    {
+      "id": "COV-P1-07",
+      "priority": "P1",
+      "title": "Make full-suite external dependencies deterministic and non-aborting",
+      "acceptance": [
+        "World terrain/bathymetry and sampleTerrainMostDetailed tests use declared local fixtures or an explicitly credentialed online lane.",
+        "An unavailable optional network lane skips only its own declared cases and cannot terminate unrelated specs in afterAll.",
+        "The release summary distinguishes product failure, deterministic fixture failure, optional network unavailability, and unexecuted tests."
+      ]
+    }
+  ]
+}

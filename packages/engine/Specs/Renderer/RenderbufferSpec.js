@@ -1,8 +1,4 @@
-import {
-  ContextLimits,
-  Renderbuffer,
-  RenderbufferFormat,
-} from "../../index.js";
+import { Renderbuffer, RenderbufferFormat } from "../../index.js";
 
 import createContext from "../../../../Specs/createContext.js";
 
@@ -78,7 +74,7 @@ describe(
       expect(function () {
         renderbuffer = new Renderbuffer({
           context: context,
-          width: ContextLimits.maximumRenderbufferSize + 1,
+          width: context.limits.maximumRenderbufferSize + 1,
         });
       }).toThrowDeveloperError();
     });
@@ -96,7 +92,7 @@ describe(
       expect(function () {
         renderbuffer = new Renderbuffer({
           context: context,
-          height: ContextLimits.maximumRenderbufferSize + 1,
+          height: context.limits.maximumRenderbufferSize + 1,
         });
       }).toThrowDeveloperError();
     });

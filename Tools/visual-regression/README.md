@@ -10,7 +10,7 @@ for opt-in CI gating once the WebGPU backend approaches visual parity.
 # 1. Start the dev server in another terminal
 npm run restart
 
-# 2. Run the regression suite
+# 2. Run the regression suite (historical WebGL, historical WebGPU, and parity)
 node Tools/visual-regression/capture-and-diff.mjs
 
 # 3. Inspect output
@@ -23,16 +23,39 @@ ls Tools/visual-regression/output/
 
 ## Flags
 
-| Flag                                          | Default  | Notes                                                     |
-| --------------------------------------------- | -------- | --------------------------------------------------------- |
-| `--update`                                    | off      | Promote current outputs to `baseline/`                    |
-| `--scene NAME`                                | all      | Run only the named scene from `scenes.json`               |
-| `--threshold N`                               | `0.02`   | Fail when any scene's diff ratio exceeds N                |
-| `--browser msedge\|chromium\|firefox\|webkit` | `msedge` | Playwright browser; Edge is preferred for Chromium WebGPU |
-| `--headed`                                    | off      | Show the browser window (for debugging)                   |
+| Flag                                          | Default  | Notes                                                      |
+| --------------------------------------------- | -------- | ---------------------------------------------------------- |
+| `--update`                                    | off      | Request reviewed promotion; requires the three flags below |
+| `--confirm-baseline-promotion`                | off      | Explicitly authorize baseline replacement                  |
+| `--update-rationale TEXT`                     | none     | Required written reason for a promotion                    |
+| `--reviewed-by NAME`                          | none     | Required independent reviewer/provenance field             |
+| `--scene NAME`                                | all      | Run only the named scene from `scenes.json`                |
+| `--threshold N`                               | `0.02`   | Fail when any scene's diff ratio exceeds N                 |
+| `--browser msedge\|chromium\|firefox\|webkit` | `msedge` | Playwright browser; Edge is preferred for Chromium WebGPU  |
+| `--headed`                                    | off      | Show the browser window (for debugging)                    |
 
-Exit code: `0` when every scene is under threshold, `1` on any failure,
-`2` on bad arguments, `99` on uncaught errors.
+Exit code: `0` only when both historical renderer gates, current cross-backend
+parity, and the WebGPU error gate certify. A missing, stale, or unreviewed
+historical baseline is explicitly `NON_CERTIFYING` and exits `1`; a pixel/GPU
+regression also exits `1`. Invalid arguments or an incomplete promotion request
+exit `2`; uncaught errors exit `99`.
+
+Baseline replacement is never implicit. After inspecting the before/current/diff
+artifacts, use all four promotion flags:
+
+```bash
+node Tools/visual-regression/capture-and-diff.mjs \
+  --scene globe-default \
+  --update \
+  --confirm-baseline-promotion \
+  --update-rationale "Reviewed renderer correction" \
+  --reviewed-by "Reviewer Name"
+```
+
+Promotion is refused when parity or the GPU error gate is red, publishes images
+and `baseline/manifest.json` atomically, and deliberately remains
+non-certifying. Run the same scene again without `--update` to certify the
+published history.
 
 ## Adding scenes
 
@@ -76,9 +99,9 @@ the unmodified WebGL pipeline:
 
 ```bash
 # After starting the dev server (npm run restart), run:
-node Tools/visual-regression/capture-and-diff.mjs --scene high-density-5k-spheres --update
-# review the captured PNGs in Tools/visual-regression/output/, then promote:
-# (the --update flag above already promotes outputs to baseline/)
+node Tools/visual-regression/capture-and-diff.mjs --scene high-density-5k-spheres
+# This scene is currently characterization/red evidence. Do not promote it
+# until its parity failure is fixed and independently reviewed.
 ```
 
 ## How it works
@@ -92,8 +115,97 @@ node Tools/visual-regression/capture-and-diff.mjs --scene high-density-5k-sphere
    both canvases via OffscreenCanvas → `getImageData()`.
 4. Pixel-diffs the two RGBA buffers with a small per-channel tolerance
    (16/255 ≈ 6%) so JPEG/imagery noise doesn't cause flapping.
-5. Encodes baseline / current / diff PNGs from raw RGBA without
+5. Independently compares current WebGL/historical WebGL, current
+   WebGPU/historical WebGPU, and current WebGL/current WebGPU. Historical PNGs
+   without matching reviewed manifest provenance are still compared but cannot
+   certify.
+6. Encodes baseline / current / diff PNGs from raw RGBA without
    any external dependencies.
+
+## Allocation and performance characterization
+
+Both campaign tools are Node/Playwright scripts and launch installed Edge; they
+do not use Python. Start the normal Cesium Node server first.
+
+The independent allocation probe instruments browser WebGPU API boundaries and
+fails if an explicit WebGPU launch opens a WebGL/WebGL2 canvas:
+
+```bash
+node Tools/visual-regression/probe-webgpu-allocation-tax.mjs \
+  --output Tools/visual-regression/output/allocation-tax.json
+```
+
+Add `--strict-native` for migrated fixtures whose ownership contract requires
+zero `GL Compatibility` buffers. Buffer byte counts are exact at the API
+boundary; texture bytes are descriptor estimates and driver-private memory is
+outside the result. `GLStub_*` textures are reported as compatibility-shaped
+native resources but do not fail this buffer gate: the label proves that the
+WebGL-shaped construction path ran, not that a second physical texture exists.
+Use decoded/backend-realization ownership events to prove or disprove a texture
+double allocation.
+
+The versioned performance campaign reads `performance-workloads.json`, asserts
+the resolved backend, uses local/procedural deterministic content, and records
+full `Scene.render()` CPU samples, p50/p95/p99/MAD, capability-available GPU
+timestamps, long tasks, heap diagnostics, and renderer snapshots:
+
+```bash
+# One bounded smoke on both backends
+node Tools/visual-regression/run-performance-campaign.mjs \
+  --workload settled-static-3d --repetitions 1 --frames 120
+
+# Manifest protocol (all workloads and repetitions)
+node Tools/visual-regression/run-performance-campaign.mjs
+
+# Counterbalanced WebGL/WebGPU altitude flight (18,000 km down to 300 m)
+node Tools/visual-regression/run-performance-campaign.mjs \
+  --workload moving-camera-altitude-track-3d \
+  --renderer both \
+  --output Tools/visual-regression/output/performance/altitude-track-ab.json
+
+# Separate API-boundary characterization run (observer overhead is explicit)
+node Tools/visual-regression/run-performance-campaign.mjs \
+  --workload moving-camera-altitude-track-3d \
+  --renderer both \
+  --api-instrumentation \
+  --output Tools/visual-regression/output/performance/altitude-track-api.json
+```
+
+CPU render time is the primary cross-backend metric. Available GPU timestamps
+are a separate WebGPU characterization metric. The requestAnimationFrame wall
+metric is retained as diagnostic evidence and must
+not be treated as an uncapped FPS promotion gate. The altitude workload uses a
+fixed-duration, time-parametrized route and reports observed FPS, one-percent
+low FPS, 60 Hz dropped-frame diagnostics, camera-height/segment coverage, and
+per-segment CPU/wall distributions. GPU timing remains available for the whole
+trace; it is not assigned to route segments because asynchronous timestamp
+readback does not expose the originating scene frame. API instrumentation is
+off by default so its JavaScript wrappers cannot bias clean timing runs.
+Renderer repetitions alternate WebGL/WebGPU then WebGPU/WebGL to counterbalance
+thermal and ordering drift. The flight's `default-globe` feature profile retains
+the renderer's default fog, skybox, atmosphere, sun, moon, and HDR state; each
+run records the resolved feature state. Other micro-workloads declare the
+isolated `deterministic-core` profile explicitly rather than silently disabling
+features as a benchmark optimization.
+
+GPU timestamps are off by default so a WebGL/WebGPU CPU comparison does not
+instrument only the WebGPU leg. Use `--gpu-timestamps` for a separate WebGPU
+characterization run. Current delayed profiler values are not uniquely tied to
+Scene trace rows, so timestamp p95 remains diagnostic until the profiler emits
+unique submission/frame serials and the runner consumes each completed sample
+once; it is not a promotion metric.
+
+The `moving-pick-camera-altitude-track-3d` lane uses the public asynchronous
+`Scene.pickHoverAsync` path with a deterministic 3x3 cursor sweep. It does not
+use synchronous `Scene.pick`: WebGPU's synchronous compatibility result is
+query-rectangle-specific, so a continuously moving cursor cannot warm that
+cache. Pick mini-frames execute outside the normal `Scene.render` trace; the
+harness therefore records public-call CPU, physical pick-execution CPU, and
+completion latency separately, then reports a combined render-plus-pick CPU
+distribution without double-counting the initial execution nested in the
+public call. A run is invalid if requests do not complete during sustained
+traffic, the chain fails to drain, calls reject, CPU evidence does not balance,
+or cursor/route evidence is incomplete.
 
 ## Why no external deps
 

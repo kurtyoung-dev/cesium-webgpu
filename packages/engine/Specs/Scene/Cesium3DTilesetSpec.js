@@ -19,7 +19,6 @@ import {
   ClippingPolygon,
   ClippingPolygonCollection,
   Color,
-  ContextLimits,
   Credit,
   CullFace,
   CullingVolume,
@@ -27,6 +26,7 @@ import {
   defined,
   findTileMetadata,
   findContentMetadata,
+  GraphicsCapabilities,
   getAbsoluteUri,
   getJsonFromTypedArray,
   HeadingPitchRange,
@@ -3300,14 +3300,18 @@ describe(
     });
 
     it("sets colorBlendMode when vertex texture fetch is not supported", async function () {
-      // Disable VTF
-      const maximumVertexTextureImageUnits =
-        ContextLimits.maximumVertexTextureImageUnits;
-      ContextLimits._maximumVertexTextureImageUnits = 0;
-      await testColorBlendMode(colorsUrl);
-      // Re-enable VTF
-      ContextLimits._maximumVertexTextureImageUnits =
-        maximumVertexTextureImageUnits;
+      const originalCapabilities = scene.context.graphicsCapabilities;
+      scene.context._graphicsCapabilities = GraphicsCapabilities.create({
+        ...originalCapabilities,
+        maximumVertexTextureImageUnits: 0,
+        ktx2TranscodeTargets: originalCapabilities.ktx2TranscodeTargets,
+      });
+
+      try {
+        await testColorBlendMode(colorsUrl);
+      } finally {
+        scene.context._graphicsCapabilities = originalCapabilities;
+      }
     });
 
     it("sets colorBlendMode for textured tileset", function () {

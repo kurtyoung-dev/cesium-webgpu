@@ -218,8 +218,12 @@ const BASE = "http://localhost:8080";
       totalOverlap,
       max,
       TOTAL,
-      paramsEnabledActiveLightCount: params[5],
-      paramsDisabledActiveLightCount: params2[5],
+      // ClusterParams.activeLightCount is the second vec4. Its .x punctual
+      // count is float 4; float 5 is the independently packed LTC area-light
+      // count. This probe predates the area-light split and used the stale .y
+      // offset, which made a healthy two-punctual-light dispatch look disabled.
+      paramsEnabledActiveLightCount: params[4],
+      paramsDisabledActiveLightCount: params2[4],
     };
   });
 

@@ -86,13 +86,19 @@ async function captureFrame(rendererArg, label, modeId) {
       console.log(`[probe]   frust left=${frust.left?.toFixed?.(0)} right=${frust.right?.toFixed?.(0)} top=${frust.top?.toFixed?.(0)} bottom=${frust.bottom?.toFixed?.(0)} near=${frust.near?.toFixed?.(3)} far=${frust.far?.toFixed?.(3)}`);
     }
     try {
-      const C = await import("/Build/CesiumUnminified/index.js");
-      console.log(`[probe]   Matrix4._depthRangeType=${C.Matrix4._depthRangeType}`);
-      // Read raw projection matrix from frustum (should match WebGPU style)
-      const fpm = frust?.projectionMatrix;
+      const convention = fs?.context?.clipSpaceConvention;
+      console.log(
+        `[probe]   clipSpaceConvention=${convention?.name} nearDepth=${convention?.nearDepth}`,
+      );
+      // Read the projection for the owning context, not the WebGL-compatible
+      // context-free property.
+      const fpm =
+        typeof frust?.getProjectionMatrix === "function"
+          ? frust.getProjectionMatrix(convention)
+          : frust?.projectionMatrix;
       if (fpm) console.log(`[probe]   frust.projectionMatrix[10,14]=[${fpm[10]?.toFixed?.(8)}, ${fpm[14]?.toFixed?.(8)}]`);
     } catch (e) {
-      console.log(`[probe]   err reading Matrix4: ${e.message}`);
+      console.log(`[probe]   err reading projection: ${e.message}`);
     }
   }, modeId);
 

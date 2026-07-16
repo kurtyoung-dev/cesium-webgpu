@@ -1,5 +1,5 @@
 import {
-  ContextLimits,
+  GraphicsCapabilities,
   ShaderProgram,
   ShaderSource,
   RuntimeError,
@@ -340,8 +340,12 @@ describe(
     });
 
     it("creates duplicate uniforms if precision of uniforms in vertex and fragment shader do not match", function () {
-      const highpFloatSupported = ContextLimits.highpFloatSupported;
-      ContextLimits._highpFloatSupported = false;
+      const originalCapabilities = context._graphicsCapabilities;
+      context._graphicsCapabilities = GraphicsCapabilities.create({
+        ...originalCapabilities,
+        highpFloatSupported: false,
+        ktx2TranscodeTargets: originalCapabilities.ktx2TranscodeTargets,
+      });
       const vs =
         "in vec4 position; uniform float u_value; out float v_value; void main() { gl_PointSize = 1.0; v_value = u_value * czm_viewport.z; gl_Position = position; }";
       const fs =
@@ -352,26 +356,28 @@ describe(
         },
       };
 
-      sp = ShaderProgram.fromCache({
-        context: context,
-        vertexShaderSource: vs,
-        fragmentShaderSource: fs,
-      });
+      try {
+        sp = ShaderProgram.fromCache({
+          context: context,
+          vertexShaderSource: vs,
+          fragmentShaderSource: fs,
+        });
 
-      if (!webglStub) {
-        // WebGL Stub does not return vertex attribute and uniforms in the shader
-        expect(sp.allUniforms.u_value).toBeDefined();
-        expect(sp.allUniforms.czm_mediump_u_value).toBeDefined();
+        if (!webglStub) {
+          // WebGL Stub does not return vertex attribute and uniforms in the shader
+          expect(sp.allUniforms.u_value).toBeDefined();
+          expect(sp.allUniforms.czm_mediump_u_value).toBeDefined();
+        }
+
+        expect({
+          context: context,
+          vertexShader: vs,
+          fragmentShader: fs,
+          uniformMap: uniformMap,
+        }).notContextToRender([0, 0, 0, 0]);
+      } finally {
+        context._graphicsCapabilities = originalCapabilities;
       }
-
-      expect({
-        context: context,
-        vertexShader: vs,
-        fragmentShader: fs,
-        uniformMap: uniformMap,
-      }).notContextToRender([0, 0, 0, 0]);
-
-      ContextLimits._highpFloatSupported = highpFloatSupported;
     });
 
     it("1 level function dependency", function () {

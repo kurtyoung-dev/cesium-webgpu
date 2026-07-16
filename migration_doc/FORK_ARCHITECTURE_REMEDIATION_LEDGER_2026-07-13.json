@@ -1,0 +1,696 @@
+{
+  "schemaVersion": 1,
+  "campaign": "fork-architecture-remediation-2026-07-13",
+  "status": "active",
+  "checkpoint": "second-bounded-hot-path-tranche-active-exact-current-release-gates-open",
+  "checkpointDate": "2026-07-15",
+  "launchAnchor": "a54cc06b2aad89a00e8ecb0887b953a36f061954",
+  "plan": "FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md",
+  "audit": "FORK_VS_UPSTREAM_WEBGPU_ARCHITECTURE_AUDIT_2026-07-13.md",
+  "functionalityBaseline": "CURRENT_RENDERING_FUNCTIONALITY_BASELINE_2026-07-13.md",
+  "performanceResults": "FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS_2026-07-14.md",
+  "preparedCampaign": {
+    "id": "CAMPAIGN-8",
+    "queue": "QUEUE_2026-07-15_CAMPAIGN8.md",
+    "status": "prepared-not-launched",
+    "preparedDate": "2026-07-15",
+    "launchRequires": "explicit maintainer instruction",
+    "coreItemCount": 27,
+    "gatedTailItemCount": 8,
+    "checkpointAdvanced": false
+  },
+  "stateVocabulary": ["planned", "active", "blocked", "shipped", "experimental", "research"],
+  "gateProfiles": {
+    "correctness": {
+      "tests": ["targeted Jasmine spec", "Node/Playwright semantic probe", "WebGL compatibility gate"],
+      "evidence": ["structured JSON", "GPU/console error gate", "three-way historical/cross-backend images when visual"]
+    },
+    "resource": {
+      "tests": ["allocation/ownership probe", "multi-context lifetime test", "settled/flyover plateau test"],
+      "evidence": ["owner-tagged create/upload/destroy events", "live/high-water bytes", "lease/generation snapshots"]
+    },
+    "hot-path": {
+      "tests": ["Node/Playwright release workload", "settled/moving/cold/mutation windows", "full-frame CPU/GPU attribution"],
+      "evidence": ["p50/p95/p99", "allocation/GC counters", "writes/copies/passes/encoders/submits/compile/mapAsync"]
+    },
+    "frame-graph": {
+      "tests": ["graph snapshot validator", "attachment/frustum/mode matrix", "300-frame GPU error soak"],
+      "evidence": ["node/resource/version snapshot", "pass/submit counters", "three-way images"]
+    },
+    "api-visual": {
+      "tests": ["public API spec", "Node/Playwright semantic probe", "three-way visual comparison"],
+      "evidence": ["API result", "historical WebGL/WebGPU images", "current parity diff"]
+    },
+    "pick-query": {
+      "tests": [
+        "backend-neutral PickQuery/PickResult oracle specs",
+        "Node/Playwright WebGL/WebGPU query-family matrix",
+        "concurrent cancellation/generation/readback-lifetime stress",
+        "pick mini-frame graph snapshot validator"
+      ],
+      "evidence": [
+        "query/result/generation identity traces",
+        "submission-serial and map/unmap lifecycle trace",
+        "readback-slot/live-byte plateau and no-pick allocation counters",
+        "historical WebGL/current WebGL/WebGPU semantic and visual diffs"
+      ]
+    }
+  },
+  "packages": {
+    "FAR-000": {
+      "state": "active",
+      "progress": "plan, audit, ledger, roadmap pointer, and feature-inventory reconciliation note present"
+    },
+    "FAR-001": {
+      "state": "active",
+      "progress": "telemetry-integrity Slice A implemented and validated",
+      "evidence": [
+        "22 WebGPUTimestampProfiler Jasmine cases",
+        "5 WebGPUPerformanceManager Jasmine cases",
+        "1 full-Scene CPU timing Jasmine case",
+        "probe-gpu-timestamp-profiler.mjs physical-adapter smoke"
+      ],
+      "remaining": "all-pass migration, unprofiled remainder, allocation/upload/lifetime/stage/GC counters"
+    },
+    "FAR-002": {
+      "state": "active",
+      "progress": "current output inventory and manually inspected characterization baseline recorded",
+      "remaining": "curated tracked historical per-backend corpus; baseline remains NON_CERTIFYING"
+    },
+    "FAR-003": {
+      "state": "active",
+      "progress": "unsafe default culling, HiZ, sort, and OIT paths contained with requested-versus-active diagnostics",
+      "evidence": ["7 focused unsafe-default Jasmine cases"],
+      "remaining": "consolidated cross-backend/full-suite validation; future frame-graph and scheduler authority are out of this containment slice"
+    },
+    "FAR-004": {
+      "state": "active",
+      "progress": "versioned Node/Edge workload plus recorded first-tranche moving-altitude clean AB/BA and separate instrumented attribution lanes completed",
+      "evidence": [
+        "9 WebGPUPerformanceManager Jasmine cases",
+        "24 PerformanceTracker Jasmine cases",
+        "probe-gpu-timestamp-profiler.mjs physical-adapter run",
+        "Tools/visual-regression/output/performance/altitude-track-before-clean.json",
+        "Tools/visual-regression/output/performance/altitude-track-final-clean.json",
+        "Tools/visual-regression/output/performance/altitude-track-before-instrumented.json",
+        "Tools/visual-regression/output/performance/altitude-track-final-instrumented.json",
+        "complete nine-waypoint/eight-segment 18000 km-to-300 m route proof in every clean run"
+      ],
+      "remaining": "statistically blocking clean-commit campaign, uncapped/maximum-throughput lane, wider mode/frustum/adapter coverage, and full counter schema",
+      "bundleHashes": {
+        "beforeSha256": "FA5276A3131EDEE8EEC3C3A0BDB96EB84EA925B8B466D8720EAAF6A60E3DA802",
+        "recordedFinalSha256": "D2A475A12AD60113B792C8DB8A94D02A52F7A2B635A5C2EDDCE2C7AAD637B623"
+      }
+    },
+    "FAR-005": {
+      "state": "active",
+      "progress": "current/current and GPU-error gates verified; baseline-policy and manifest tests make historical certification state explicit",
+      "evidence": ["17 Node visual-policy/performance-manifest tests"],
+      "remaining": "approved historical WebGL/WebGPU corpus, three-way historical comparison, masks, and physical-runner artifact schema"
+    },
+    "FAR-006": {
+      "state": "active",
+      "progress": "first recorded moving-camera hot-path tranche measured and attributed in clean and separately instrumented lanes; later bounded slices await exact-current rerun",
+      "evidence": [
+        "clean WebGPU CPU p95 8.80 ms to 7.30 ms (17.0% lower)",
+        "clean WebGPU GPU p95 10.02 ms to 7.30 ms (27.2% lower)",
+        "clean WebGPU GPU average 7.71 ms to 5.42 ms (29.6% lower)",
+        "instrumented bind groups/frame 11.76 to 4.94 (58.0% fewer)",
+        "instrumented render passes/frame 23.34 to 14.49 (37.9% fewer)",
+        "instrumented writeBuffer calls/frame 79.02 to 10.06 (87.3% fewer)",
+        "instrumented writeBuffer bytes/frame increased 6.6% from aligned contiguous page coalescing"
+      ],
+      "remaining": "exact-current moving-altitude rerun plus full cold/loading/settled/moving/mutation runtime attribution for HP-01 through HP-08, wider adapter matrix, and explicit unprofiled remainder"
+    },
+    "FAR-007": {
+      "state": "planned",
+      "progress": "display-paced versus maximum-throughput public/tooling contract is defined in the launched Campaign 8 gated tail; its Gate D stop/go review has not activated it",
+      "dependencies": [
+        "FAR-004",
+        "FAR-005",
+        "FAR-200 for the engine maximum-throughput loop and bounded in-flight work"
+      ],
+      "gate": "hot-path",
+      "remaining": "land renderPacingMode, Viewer control, verified Node/Edge launch lane, truthful unsupported-flag handling, bounded in-flight execution, and distinct responsiveness/throughput artifacts",
+      "claimBoundary": "a JavaScript/UI control cannot claim direct compositor-vsync control; Campaign 8 is launched but this gated-tail item is not active before its stop/go review"
+    },
+    "FAR-100": {
+      "state": "active",
+      "progress": "production WebGPU compatibility buffers retain logical metadata without allocating native compatibility GPUBuffer objects",
+      "evidence": [
+        "28 WebGLStubBuffer Jasmine cases",
+        "74 WebGLCompatibilityStub Jasmine cases",
+        "Node metadata-versus-explicit-native allocation oracle",
+        "earlier strict physical-adapter allocation-tax probe reports zero compatibility live buffers and bytes; exact-current rerun required"
+      ],
+      "remaining": "legacy CPU/WebGL-shaped shells remain; address non-buffer compatibility families separately",
+      "retainedDecodedPayloadCoverage": ["PNTS geometry/property attributes", "indexed classification indices/feature IDs"]
+    },
+    "FAR-101": {
+      "state": "active",
+      "progress": "stable public material semantics and per-consumer upload/version state with bounded pruning implemented",
+      "evidence": [
+        "3 Material upload-state Jasmine cases",
+        "2 polyline material-grouping Jasmine cases",
+        "20 MaterialUniformBuffer Jasmine cases",
+        "69 Material Jasmine cases"
+      ],
+      "remaining": "consolidated WebGL/WebGPU visual and full-suite validation"
+    },
+    "FAR-102": {
+      "state": "active",
+      "progress": "renderer selection centralized and async Scene/Widget/Viewer construction made transactional",
+      "evidence": [
+        "27 ContextFactory Jasmine cases",
+        "2 focused Scene.createAsync constructor rollback cases",
+        "79 CesiumWidget Jasmine cases"
+      ],
+      "remaining": "long-running multi-context/device-loss soak",
+      "finalEvidence": "384-case affected Edge matrix passes"
+    },
+    "FAR-103": {
+      "state": "active",
+      "progress": "FeatureRenderer readiness is explicit; initialization, listener ownership, and teardown rollback are transactional",
+      "evidence": ["8 FeatureRenderer readiness-consumer Jasmine cases"],
+      "remaining": "long-running shared-context/device-loss soak beyond focused recovery cases",
+      "finalEvidence": "Scene/DataSourceDisplay/Widget/Viewer rollback and teardown cases included in 384-case passing Edge matrix"
+    },
+    "FAR-104": {
+      "state": "active",
+      "progress": "clip-space convention and graphics capabilities are immutable context-owned inputs; KTX2 targets are explicit",
+      "evidence": [
+        "61 off-center frustum Jasmine cases",
+        "23 loadKTX2 Jasmine cases",
+        "48 ShadowMap Jasmine cases",
+        "27 ContextFactory Jasmine cases"
+      ],
+      "remaining": "final full-suite and long multi-context validation"
+    },
+    "FAR-105": {
+      "state": "active",
+      "progress": "canonical public ordering/distance semantics, once-per-sort normalization with arithmetic-only comparison, explicit TAA convention, and bounded GPU-sort producer/consumer behavior implemented",
+      "evidence": [
+        "11 command-ordering Jasmine cases",
+        "focused TAA contract cases",
+        "3 GPU-sort helper Jasmine cases",
+        "6400-command forced GPU-sort probe: 240 dispatches, 234 consumed complete permutations, exact CPU comparator match, output inside measured off/on noise",
+        "GPU-sort producer performs no upload/dispatch/map when consumer mode is explicitly never"
+      ],
+      "remaining": "normal-frame readback removal, result-identity hardening, safe automatic selection, authoritative Phase-5 scheduling, and final full-suite/adapter validation"
+    },
+    "FAR-106": {
+      "state": "active",
+      "progress": "atmosphere LUT fog uses absolute ECEF position",
+      "evidence": [
+        "2 WebGPU globe-terrain shader Jasmine cases",
+        "poles, antimeridian, and camera-teleport numeric oracle"
+      ],
+      "remaining": "consolidated build and visual campaign"
+    },
+    "FAR-107": {
+      "state": "planned",
+      "progress": "architecture audit and contiguous PickId-range design complete; PickQuery/PickResult and legacy WebGPU sync-policy decision remain unimplemented",
+      "dependencies": ["FAR-104"],
+      "gate": "pick-query",
+      "remaining": "approve sync policy; land query/result types, authoritative async API families, generation/cancellation semantics, capability reporting, one guarded direct/range PickId allocator, and backend-neutral oracle",
+      "claimBoundary": "semantic/API contract only; active WebGPU mini-frame and readback execution is FAR-409"
+    },
+    "FAR-108": {
+      "state": "active",
+      "progress": "effects state is partitioned per logical context, immutable placeholders are shared per device, and cache lifetime is bounded/recovery-aware",
+      "evidence": ["13 focused WebGPUEffects Jasmine cases"],
+      "remaining": "moving-camera residency campaign and consolidated multi-context/device-loss/browser validation"
+    },
+    "FAR-200": {
+      "state": "active",
+      "progress": "shadow-only typed domains, decoded payloads, descriptors, family/policy/token/lease, shadow cache, and submission-serial APIs implemented",
+      "evidence": ["FAR-200 Node self-test"],
+      "baselineDirectSubmitSites": 52,
+      "adoptionSlices": {
+        "S1-PhysicalQueueTimeline": "queued in launched Campaign 8; not started",
+        "S2-SubmitSourceAdoption": "queued in launched Campaign 8; not started",
+        "S3-SerialOwnedRetirement": "queued in launched Campaign 8; not started"
+      },
+      "claimBoundary": "routing submit sources centralizes serial authority but does not reduce physical submit count; consolidation belongs to FAR-402/FAR-406",
+      "remaining": "no production allocation or retirement authority adopted; 52 direct queue.submit sites remain"
+    },
+    "FAR-201": {
+      "state": "planned",
+      "progress": "Primitive geometry ownership pilot specified",
+      "dependencies": ["FAR-100", "FAR-200", "FAR-209"],
+      "gate": "resource",
+      "remaining": "choose ownership before VertexArray realization and preserve the full mode/pass/material/custom-shader matrix"
+    },
+    "FAR-202": {
+      "state": "planned",
+      "progress": "ground and classification ownership matrix specified",
+      "dependencies": ["FAR-201", "FAR-209"],
+      "gate": "resource",
+      "remaining": "adopt shared GeometryPayload ownership for GroundPrimitive, ClassificationPrimitive, and GroundPolyline without parity loss"
+    },
+    "FAR-203": {
+      "state": "planned",
+      "progress": "terrain payload, exact cache identity, lease, and eviction contract specified",
+      "dependencies": ["FAR-200", "FAR-209"],
+      "gate": "resource",
+      "remaining": "land the first production terrain ownership vertical and prove multi-view residency and retirement"
+    },
+    "FAR-204": {
+      "state": "active",
+      "progress": "preparation slices memoize immutable model geometry conversions and bounded metadata products; the common no-structural-metadata negative cache validates identity in O(1)",
+      "evidence": [
+        "Node model-geometry oracle proves one build/conversion until source replacement",
+        "no-structural-metadata cache hit uses O(1) model metadata identity validation",
+        "metadata-bearing models retain mutation-sensitive validation"
+      ],
+      "remaining": "loader-owned geometry/metadata revision tokens, O(1) ModelPrimitiveGeometry cache validation, and actual Model ownership vertical are deferred",
+      "finalEvidence": "metadata cache and PNTS/classification retained-payload cases pass in affected Edge matrix"
+    },
+    "FAR-205": {
+      "state": "planned",
+      "progress": "TexturePayload ownership verticals and mutable-version contract specified",
+      "dependencies": ["FAR-200", "FAR-209"],
+      "familyBlockers": {
+        "billboard-label-atlas": ["NEW-BILLBOARD-ATLAS-VFLIP"],
+        "batch-style-pick-textures": ["FAR-107", "contiguous pick ID ranges", "FAR-200 retirement"],
+        "imagery-reprojection-mips": ["FAR-200", "FAR-209", "FAR-402"]
+      },
+      "campaign8ProvisionalFirstVertical": "immutable water-mask texture, only after deterministic orientation/content premise gates pass",
+      "gate": "resource",
+      "remaining": "migrate immutable material/model/atlas/water/imagery families and versioned mutable Batch/style sources without duplicate backend realizations"
+    },
+    "FAR-206": {
+      "state": "planned",
+      "progress": "decoded-product versus backend-realization cache split specified",
+      "dependencies": ["two green verticals among FAR-201, FAR-203, FAR-205"],
+      "activationEvidenceRequired": [
+        "two exact ownership-vertical artifacts",
+        "complete fetch/decode/transcode fingerprint",
+        "NATIVE_CONTEXT isolation and recovery proof",
+        "no cross-backend GPU-handle sharing"
+      ],
+      "gate": "resource",
+      "remaining": "prove complete fetch/decode/transcode identity before enabling cross-request CPU-product sharing"
+    },
+    "FAR-207": {
+      "state": "planned",
+      "progress": "device-scoped immutable sharing contract specified",
+      "dependencies": ["FAR-206", "all affected families green in NATIVE_CONTEXT"],
+      "gate": "resource",
+      "remaining": "share only exact immutable same-device realizations; retain context-local mutable and writable state"
+    },
+    "FAR-208": {
+      "state": "active",
+      "progress": "transactional device-loss candidate promotion/rollback and generation invalidation implemented for context and selected resource consumers",
+      "gate": "resource",
+      "remaining": "focused physical-browser recovery suite and full shared-lifetime-registry adoption across all subsystems"
+    },
+    "FAR-209": {
+      "state": "planned",
+      "progress": "incremental ResourcePlan, recipe, logical-handle, cancellation, and readiness contract specified",
+      "dependencies": ["FAR-103", "FAR-200"],
+      "gate": "resource",
+      "remaining": "land observe mode and family-by-family asynchronous preparation without rebuilding resource lists or converting persistent assets during draw emission"
+    },
+    "FAR-210": {
+      "state": "planned",
+      "progress": "hot-path resource-preparation prohibitions and per-family budget policy specified",
+      "dependencies": ["FAR-006", "FAR-209"],
+      "gate": "hot-path",
+      "remaining": "move terrain, imagery, Primitive, model, and collection persistent preparation to bounded pre-frame/ResourcePlan work while preserving synchronous contracts"
+    },
+    "FAR-300": {
+      "state": "planned",
+      "progress": "backend-neutral semantic render-packet contract specified",
+      "dependencies": ["FAR-104", "FAR-105", "FAR-200"],
+      "gate": "correctness",
+      "remaining": "make one typed semantic packet stream authoritative before retiring command scaffolding"
+    },
+    "FAR-301": {
+      "state": "planned",
+      "progress": "material compiler and ViewportQuad repair scoped",
+      "dependencies": ["FAR-101", "FAR-300"],
+      "gate": "api-visual",
+      "remaining": "compile shared Fabric semantics to exact GLSL/WGSL fullscreen variants while retaining public mutation behavior"
+    },
+    "FAR-302": {
+      "state": "planned",
+      "progress": "single host-shareable uniform schema and layout generator scoped",
+      "dependencies": ["FAR-101"],
+      "gate": "correctness",
+      "remaining": "generate WGSL/GLSL mappings, CPU offsets, dirty tracking, and packers from one typed schema"
+    },
+    "FAR-303": {
+      "state": "active",
+      "progress": "preparation slice coalesces terrain camera-uniform writes through CPU-staged device-local ring pages without changing layout, dynamic offsets, or payload",
+      "evidence": [
+        "at most one contiguous writeBuffer per dirty ring page before command-buffer finish/submit",
+        "focused typed-array, alignment, repeated-flush, overflow/multipage, and unwritten-tail tests",
+        "moving instrumented writeBuffer calls/frame 79.02 to 10.06 across the combined tranche"
+      ],
+      "remaining": "complete frame/view/material/object hierarchy, persistent material/object tables, static/dynamic terrain split, and ordinary-frame pick-upload elimination",
+      "claimBoundary": "bounded write-call coalescing only; not completion of FAR-303"
+    },
+    "FAR-304": {
+      "state": "planned",
+      "progress": "canonical device-scoped pipeline/layout fingerprint specified",
+      "dependencies": ["FAR-200", "FAR-300"],
+      "gate": "resource",
+      "remaining": "replace incomplete/manual cache keys with complete descriptor fingerprints and async generation guards"
+    },
+    "FAR-305": {
+      "state": "planned",
+      "progress": "unified shader preprocessing/module compiler and RTE helper scoped",
+      "dependencies": ["FAR-304"],
+      "gate": "correctness",
+      "remaining": "replace packed/manual shader identities, centralize imports, and prove one reviewed RTE helper with a GPU oracle"
+    },
+    "FAR-306": {
+      "state": "planned",
+      "progress": "previous-frame RTE and motion-vector parity matrix scoped",
+      "dependencies": ["FAR-302", "FAR-305"],
+      "gate": "api-visual",
+      "remaining": "carry current/previous camera, model, skin, morph, and instance data through the same RTE path"
+    },
+    "FAR-307": {
+      "state": "active",
+      "progress": "preparation slice reuses polyline grouping storage, hoists same-material-type frame work, preserves exact material identity, and applies 60-frame retirement grace",
+      "evidence": ["mixed solid/dash/glow WebGL/WebGPU probe passes"],
+      "remaining": "persistent geometry/material table, dirty-range updates, zero-allocation placeholders, complete velocity/material variants, and full lifetime campaign",
+      "claimBoundary": "bounded grouping and lifetime-churn reduction only; no public material or collection feature removed"
+    },
+    "FAR-308": {
+      "state": "planned",
+      "progress": "shared-frontend backend leakage and per-view resource-bundle split scoped",
+      "dependencies": ["FAR-103", "FAR-200", "FAR-300"],
+      "gate": "correctness",
+      "remaining": "move backend policy behind services and make view context reassignment rebuild or lease exact resources"
+    },
+    "FAR-309": {
+      "state": "active",
+      "progress": "model group-2 bind groups cache by exact layout/device and seven current/previous buffer identities; placeholder-only primitives share the default group",
+      "dependencies": ["FAR-006", "FAR-200", "FAR-209", "FAR-300"],
+      "gate": "hot-path",
+      "evidence": [
+        "6 focused model group-2 cache cases",
+        "static, instanced, and animated-morph WebGPU/TAA probe: stable identities and zero settled group-2 creates over 40 frames"
+      ],
+      "remaining": "attribute and contain group-1 material/texture/IBL binding churn, draw-command/frontend allocation, collection dirty gating, and GC while preserving mutation behavior",
+      "claimBoundary": "group-2 only; the runtime probe still records 14 total bind-group creations per settled frame from other owners"
+    },
+    "FAR-400": {
+      "state": "planned",
+      "progress": "frame-graph schema and legacy/shadow/active rollout contract specified",
+      "dependencies": ["FAR-300"],
+      "gate": "frame-graph",
+      "remaining": "land observe-only graph construction, validation, snapshots, and exact resource-version dependencies"
+    },
+    "FAR-401": {
+      "state": "planned",
+      "progress": "explicit color/depth/stencil/MSAA/query attachment contract specified",
+      "dependencies": ["FAR-400"],
+      "gate": "frame-graph",
+      "remaining": "replace ambiguous scene attachment access with exact descriptor/version handles"
+    },
+    "FAR-402": {
+      "state": "planned",
+      "progress": "normal-frame encoder, copy, readback, and submission migration scoped",
+      "dependencies": ["FAR-400", "FAR-401"],
+      "gate": "frame-graph",
+      "remaining": "move feature encoders/submissions into graph nodes and retain only documented initialization/query workflows"
+    },
+    "FAR-403": {
+      "state": "planned",
+      "progress": "conditional G-buffer demand and exact MRT variants scoped",
+      "dependencies": ["FAR-401", "FAR-402"],
+      "gate": "frame-graph",
+      "remaining": "allocate and compile normal/roughness/validity outputs only for active consumers with semantic fallbacks"
+    },
+    "FAR-404": {
+      "state": "planned",
+      "progress": "single-sample then physically valid multi-frustum MSAA OIT topology specified",
+      "dependencies": ["FAR-401", "FAR-402", "FAR-304"],
+      "gate": "frame-graph",
+      "remaining": "prove frame-wide eligibility and exact opaque/translucent ordering with canonical alpha fallback"
+    },
+    "FAR-405": {
+      "state": "active",
+      "progress": "preparation slice skips post-tile/post-opaque depth boundaries only when no relevant writer ran",
+      "dependencies": ["FAR-402", "FAR-403", "FAR-404", "FAR-408 exact depth-version ownership"],
+      "evidence": [
+        "instrumented render passes/frame 23.34 to 14.49 across the combined tranche",
+        "earlier nine-waypoint visual track mean WebGPU/WebGL pixel difference 0.017%, worst 0.073%; capture predates final depth edits"
+      ],
+      "remaining": "graph-owned pass merging, load/store policy, transient aliasing, and complete attachment/frustum/mode proof",
+      "claimBoundary": "bounded empty-boundary reduction only; active frame-graph FAR-405 remains open and exact-current visual rerun is required"
+    },
+    "FAR-406": {
+      "state": "planned",
+      "progress": "sole normal-frame frame-graph authority transition specified",
+      "dependencies": ["FAR-400", "FAR-401", "FAR-402", "FAR-403", "FAR-404", "FAR-405", "FAR-408", "FAR-409"],
+      "gate": "frame-graph",
+      "remaining": "activate exactly one graph authority after every feature node and query dependency is migrated"
+    },
+    "FAR-407": {
+      "state": "planned",
+      "progress": "WebGL2 compiler for the shared semantic frame graph scoped",
+      "dependencies": ["FAR-300", "FAR-400"],
+      "gate": "frame-graph",
+      "remaining": "shadow then adopt the semantic graph without changing synchronous WebGL API/history or adding FBO churn"
+    },
+    "FAR-408": {
+      "state": "active",
+      "progress": "preparation slice caches globe source-depth and MSAA-resolve views/bind groups by stable texture/view identity with lifecycle invalidation",
+      "stages": {
+        "C0-legacy-depth-correctness": "queued in launched Campaign 8; not started",
+        "S1-shadow-depth-version-model": "Campaign 8 gated tail",
+        "S2-active-graph-owned-packing": "Campaign 8 gated tail"
+      },
+      "evidence": [
+        "focused WebGPUGlobeDepth cache reuse/invalidation specs",
+        "focused WebGPUDepthResolveMSAA single-sample/MSAA and cache identity specs"
+      ],
+      "remaining": "demand-derived graph depth versions/pack nodes and queued multi-frustum WebGPU globe pickPosition packed-depth lifetime correction",
+      "claimBoundary": "binding churn is bounded, but no graph-owned depth-version correctness is claimed"
+    },
+    "FAR-409": {
+      "state": "active",
+      "progress": "bounded preparation fixes give object picking one render/depth lifetime per natural frustum and replace full-viewport/shared staging with minimal sync-reused and async-request-owned buffers",
+      "dependencies": ["FAR-107", "FAR-200", "FAR-300", "FAR-400", "FAR-401", "FAR-402", "FAR-408"],
+      "gate": "pick-query",
+      "evidence": [
+        "1 focused multi-frustum object-pick pass case",
+        "10 focused minimal/request-owned staging cases",
+        "live WebGPU and WebGL near/far object IDs agree; WebGPU TAA resolve advances 23 to 47 with zero device/page errors",
+        "3x3 staging extent is 768 bytes instead of a full viewport allocation"
+      ],
+      "remaining": "land graph-owned query compiler, exact all-family depth outputs, shared at-least-three-slot serial-owned readback pool, concurrency/cancellation/coalescing policy, and contiguous backend-neutral PickId ranges",
+      "claimBoundary": "query-scoped object-ID and staging corrections only; standalone patches/private submits do not count as PickQuery completion, and ordinary model rendering still pays eager per-feature pick allocation"
+    },
+    "FAR-500": {
+      "state": "planned",
+      "progress": "visibility identity, conservative bounds, and capacity contract specified",
+      "dependencies": ["FAR-300", "FAR-400"],
+      "gate": "correctness",
+      "remaining": "prove compact-to-original identity, non-cullable handling, generation rejection, and boundary capacities"
+    },
+    "FAR-501": {
+      "state": "planned",
+      "progress": "serial-owned per-frame monotonic GPU arena design specified",
+      "dependencies": ["FAR-200", "FAR-303", "FAR-400"],
+      "gate": "correctness",
+      "remaining": "land non-overlapping in-flight arena slots with preflight overflow/fallback and no live-resource reuse"
+    },
+    "FAR-502": {
+      "state": "planned",
+      "progress": "persistent GPU object/mesh/material tables and indirect cohort compiler specified",
+      "dependencies": ["FAR-200", "FAR-300", "FAR-303", "FAR-304", "FAR-401", "FAR-501"],
+      "gate": "hot-path",
+      "remaining": "replace stable semantic command reconstruction with dirty table updates and correct bounded indirect/direct cohorts"
+    },
+    "FAR-503": {
+      "state": "planned",
+      "progress": "same-frame graph-owned cull, HiZ, sort, and translucent dependency chain specified",
+      "dependencies": ["FAR-402", "FAR-500", "FAR-501", "FAR-502"],
+      "gate": "correctness",
+      "remaining": "remove normal-frame visibility/sort readback and prove independent color/pick identities"
+    },
+    "FAR-504": {
+      "state": "active",
+      "progress": "preparation slice avoids GPU-sort producer upload/dispatch/map when consumer mode is explicitly never; final scheduler authority is not migrated",
+      "dependencies": ["FAR-300", "FAR-502", "FAR-503"],
+      "gate": "hot-path",
+      "remaining": "adapt or retire legacy RenderScheduler only after the semantic packet/frame-graph compiler is authoritative"
+    },
+    "FAR-505": {
+      "state": "planned",
+      "progress": "adapter-tier threshold and safe default-enablement campaign specified",
+      "dependencies": ["FAR-503", "FAR-504", "FAR-004"],
+      "gate": "hot-path",
+      "remaining": "measure boundary cohorts across integrated/discrete/software tiers and auto-enable only proven wins"
+    },
+    "FAR-600": {
+      "state": "planned",
+      "progress": "asynchronous pipeline prewarm and readiness policy scoped for immediate execution after FAR-304",
+      "dependencies": ["FAR-304"],
+      "gate": "hot-path",
+      "remaining": "prewarm predictable variants outside draw emission while preserving explicit loading/fallback/failure semantics"
+    },
+    "FAR-601": {
+      "state": "planned",
+      "progress": "final lifetime and device-loss audit matrix specified",
+      "dependencies": ["FAR-208", "FAR-406", "FAR-503", "FAR-600"],
+      "gate": "resource",
+      "remaining": "prove teardown-to-baseline, exact retirement, and stale-generation rejection across all adopted subsystems"
+    },
+    "FAR-602": {
+      "state": "planned",
+      "progress": "mechanical decomposition along stable ownership/graph seams specified",
+      "dependencies": ["stable interfaces from FAR-200 through FAR-505"],
+      "gate": "correctness",
+      "remaining": "decompose hot monoliths without mixing behavior changes and retain byte/image-equivalent probes"
+    },
+    "FAR-603": {
+      "state": "planned",
+      "progress": "migration-flag, private-field, and duplicate-path retirement gate specified",
+      "dependencies": ["all prior phase exit gates"],
+      "gate": "correctness",
+      "remaining": "remove obsolete paths only after ownership/execution authority and deferred-feature audits are green"
+    },
+    "FAR-700": {
+      "state": "experimental",
+      "progress": "tiny hot ID/scalar immediates experiment retained",
+      "dependencies": ["FAR-303"],
+      "gate": "hot-path",
+      "remaining": "promote only with lower upload/bind-group CPU cost and no layout or parity regression"
+    },
+    "FAR-701": {
+      "state": "experimental",
+      "progress": "standard transient-attachment experiment retained",
+      "dependencies": ["FAR-401", "FAR-405"],
+      "gate": "frame-graph",
+      "remaining": "detect support directly and prove tile-memory/store savings without lifetime or fallback regressions"
+    },
+    "FAR-702": {
+      "state": "experimental",
+      "progress": "standard uniform-layout variants experiment retained",
+      "dependencies": ["FAR-302"],
+      "gate": "hot-path",
+      "remaining": "promote only after schema-oracle parity and measured memory/packing simplification"
+    },
+    "FAR-703": {
+      "state": "experimental",
+      "progress": "subgroup-kernel experiment retained",
+      "dependencies": ["FAR-503"],
+      "gate": "hot-path",
+      "remaining": "prove target-adapter wins with a correct non-subgroup fallback"
+    },
+    "FAR-704": {
+      "state": "experimental",
+      "progress": "dual-source OIT experiment retained",
+      "dependencies": ["FAR-404"],
+      "gate": "api-visual",
+      "remaining": "prove exact blend parity and lower OIT GPU time on real translucent workloads"
+    },
+    "FAR-705": {
+      "state": "experimental",
+      "progress": "external-video-texture experiment retained",
+      "dependencies": ["FAR-205", "FAR-301"],
+      "gate": "api-visual",
+      "remaining": "prove color, orientation, frame-version, and lifetime correctness with a copy fallback"
+    },
+    "FAR-706": {
+      "state": "experimental",
+      "progress": "render-bundle experiment retained",
+      "dependencies": ["FAR-300", "FAR-406"],
+      "gate": "hot-path",
+      "remaining": "identify stable cohorts, bound invalidation/aging, and prove a CPU win"
+    },
+    "FAR-707": {
+      "state": "experimental",
+      "progress": "reversed-Z experiment retained",
+      "dependencies": ["FAR-305", "FAR-406"],
+      "gate": "api-visual",
+      "remaining": "require full ground-to-orbit feature parity, better early-Z/HiZ, and no precision regression"
+    }
+  },
+  "claimBoundaries": {
+    "historicalBaseline": "NON_CERTIFYING",
+    "far200Authority": "shadow-only",
+    "directQueueSubmitSitesRemaining": 52,
+    "compatibilityBuffers": "production WebGPU stub buffers allocate zero native compatibility GPUBuffer objects; legacy CPU/WebGL-shaped shells remain",
+    "metadataMutation": "bounded descriptor/layout caches and O(1) no-structural-metadata negative validation are implemented; loader-owned geometry/metadata monotonic revision contracts remain deferred",
+    "validation": "coordinated build and TypeScript pass; 384-case affected Edge matrix and 103/103 focused Edge/Jasmine from the first tranche; current pick-pass/model-group-2/pick-staging 17/17 focused Edge/Jasmine and 17/17 performance/visual-policy Node tests pass; live pick and model probes pass; exact-current moving visual/performance and allocation-tax reruns, unrestricted full suite, certifying historical visual run, statistically blocking clean-commit campaign, uncapped lane, and wider adapter matrix remain open",
+    "movingPerformance": "recorded first-tranche only: two clean order-counterbalanced WebGL/WebGPU repetitions over the complete altitude route measured median WebGPU CPU p95 8.80 to 7.30 ms, GPU p95 10.02 to 7.30 ms, and GPU average 7.71 to 5.42 ms; bundle hashes are in the linked results document and do not identify the later pick/model/staging source",
+    "movingInstrumentation": "recorded first-tranche only: separate instrumented lane measured WebGPU bind groups/frame 11.76 to 4.94, render passes/frame 23.34 to 14.49, writeBuffer calls/frame 79.02 to 10.06, and writeBuffer bytes/frame 105.7 KB to 112.6 KB",
+    "measurementCertification": "implementation evidence only: one Windows/Edge/Intel machine, dirty remediation source anchor, two clean order-counterbalanced repetitions, and display-paced presentation; waypoint PNGs predate final depth-source edits, the allocation-tax artifact predates the final source tranche, and neither those artifacts nor bundle D2A475A certify the exact-current worktree",
+    "featurePreservation": "performance work may not remove, default-disable, visually degrade, or bypass a feature merely to improve a metric; defects are queued and safety containment is not counted as a performance win",
+    "far003Containment": "experimental GPU culling/HiZ/sort/indirect automatic defaults remain correctness-contained; the explicit dense GPU-sort path is proven, but safe automatic selection, result identity, and normal-frame no-readback scheduling remain open",
+    "pickingArchitecture": "NON_CERTIFYING: object picking now has correct per-natural-frustum depth clears and minimal request-owned staging, but WebGPU sync screen/ray/most-detailed/position/metadata/voxel paths, submission ownership, shared serial-owned pooling, query identity, and feature-ID realization are not an exact PickQuery architecture; FAR-107 and FAR-409 remain open",
+    "pickIdRanges": "DESIGNED_NOT_IMPLEMENTED: BatchTexture should own a contiguous backend-neutral object-ID key range from one guarded allocator shared with direct IDs; WebGPU computes baseKey+featureId without N CPU PickIds/WebGL textures, while WebGL materializes compatible RGBA bytes; zero/sentinel/overflow/high-alpha decoding, teardown, recovery, and multi-context ownership require gates",
+    "pickPassOverhead": "multi-frustum object queries intentionally encode one render pass per independently projected frustum; color clears once then loads, depth/stencil clear per slice, and normal TAA color/velocity/history attachments are untouched; this is query-scoped but continuous hover still requires coalescing and measurement",
+    "depthVersionCorrectness": "FAR-405/FAR-408 preparation reduces empty work and binding churn but does not claim graph-owned depth correctness; FAR-408 must publish exact natural-frustum-aware query depth consumed by FAR-409",
+    "modelGroup2Cache": "bounded FAR-309 preparation only: exact layout/device/seven-buffer identity caching removes settled group-2 creation in the static/instanced/morph probe, but 14 total bind-group creates/frame from other owners remain",
+    "exactCurrentEvidence": "REQUIRED: rebuild once, rerun the complete moving-altitude WebGL/WebGPU clean/instrumented and visual lanes, and rerun strict native allocation tax; request-render idle soak is not an FPS workload",
+    "deferredReconciliation": "shipped/core-complete WASM bridge load, decoupled-scan guard, clustered-assignment dirty bounds, entity keyframe kernel, orbital inventory, and postprocess-f16 entries must not be reopened wholesale; only their named residuals plus collection/entity/model/cluster/pipeline/resource-aging and measured Phase-7 work remain",
+    "settledCharacterization": "one run, 30 frames: CPU p95 WebGL 3.26 ms, WebGPU 10.45 ms; WebGPU GPU p95 8.34 ms; not a release baseline",
+    "formalVisualRetry": "both renderers launched and WebGPU gate armed, but restricted Bing/terrain network prevented tilesLoaded readiness",
+    "fullSuiteRetry": "4620 cases reached; external Ion/terrain failures aborted run; separate pre-existing S2 1e-15 epsilon failure reproduced"
+  },
+  "findings": {
+    "B1": { "packages": ["FAR-102"], "state": "active", "gate": "correctness" },
+    "B2": { "packages": ["FAR-104"], "state": "active", "gate": "correctness" },
+    "B3": { "packages": ["FAR-003", "FAR-400", "FAR-402", "FAR-503"], "state": "active", "gate": "frame-graph" },
+    "B4": { "packages": ["FAR-003", "FAR-500", "FAR-503"], "state": "active", "gate": "correctness" },
+    "B5": { "packages": ["FAR-003", "FAR-501", "FAR-502", "FAR-503"], "state": "active", "gate": "correctness" },
+    "B6": { "packages": ["FAR-003", "FAR-501", "FAR-503"], "state": "active", "gate": "correctness" },
+    "B7": { "packages": ["FAR-003", "FAR-401", "FAR-404"], "state": "active", "gate": "frame-graph" },
+    "B8": { "packages": ["FAR-301"], "state": "planned", "gate": "api-visual" },
+    "B9": { "packages": ["FAR-103", "FAR-200"], "state": "active", "gate": "correctness" },
+    "B10": { "packages": ["FAR-101", "FAR-302"], "state": "active", "gate": "api-visual" },
+    "B11": { "packages": ["FAR-200", "FAR-201", "FAR-202", "FAR-203", "FAR-204", "FAR-205", "FAR-206", "FAR-207", "FAR-208", "FAR-209", "FAR-210"], "state": "active", "gate": "resource" },
+    "B12": { "packages": ["FAR-100"], "state": "active", "gate": "resource" },
+    "B13": { "packages": ["FAR-102", "FAR-103"], "state": "active", "gate": "correctness" },
+    "B14": { "packages": ["FAR-102", "FAR-103"], "state": "active", "gate": "correctness" },
+    "H1": { "packages": ["FAR-003", "FAR-502", "FAR-503", "FAR-504", "FAR-505"], "state": "active", "gate": "hot-path" },
+    "H2": { "packages": ["FAR-500"], "state": "planned", "gate": "correctness" },
+    "H3": { "packages": ["FAR-400", "FAR-402", "FAR-405", "FAR-406", "FAR-407", "FAR-409"], "state": "active", "gate": "frame-graph" },
+    "H4": { "packages": ["FAR-001", "FAR-209", "FAR-303", "FAR-502"], "state": "active", "gate": "hot-path" },
+    "H5": { "packages": ["FAR-304"], "state": "planned", "gate": "resource" },
+    "H6": { "packages": ["FAR-304", "FAR-600"], "state": "planned", "gate": "hot-path" },
+    "H7": { "packages": ["FAR-401", "FAR-403"], "state": "planned", "gate": "frame-graph" },
+    "H8": { "packages": ["FAR-103", "FAR-208", "FAR-601"], "state": "active", "gate": "resource" },
+    "H9": { "packages": ["FAR-300", "FAR-301", "FAR-308"], "state": "planned", "gate": "correctness" },
+    "H10": { "packages": ["FAR-307"], "state": "active", "gate": "hot-path" },
+    "H11": { "packages": ["FAR-105", "FAR-300"], "state": "active", "gate": "api-visual" },
+    "H12": { "packages": ["FAR-003", "FAR-105", "FAR-504"], "state": "active", "gate": "hot-path" },
+    "H13": { "packages": ["FAR-107", "FAR-409"], "state": "planned", "gate": "pick-query" },
+    "H14": { "packages": ["FAR-102", "FAR-103"], "state": "active", "gate": "resource" },
+    "H16": { "packages": ["FAR-106"], "state": "active", "gate": "api-visual" },
+    "H17": { "packages": ["FAR-303"], "state": "active", "gate": "hot-path" },
+    "H18": { "packages": ["FAR-302"], "state": "planned", "gate": "correctness" },
+    "H19": { "packages": ["FAR-306"], "state": "planned", "gate": "api-visual" },
+    "H20": { "packages": ["FAR-305"], "state": "planned", "gate": "correctness" },
+    "H21": { "packages": ["FAR-304", "FAR-305"], "state": "planned", "gate": "resource" },
+    "H22": { "packages": ["FAR-707"], "state": "research", "gate": "api-visual" },
+    "H23": { "packages": ["FAR-204", "FAR-209", "FAR-210"], "state": "active", "gate": "resource" },
+    "H24": { "packages": ["FAR-200", "FAR-203", "FAR-204", "FAR-205", "FAR-206", "FAR-207", "FAR-208", "FAR-209"], "state": "active", "gate": "resource" },
+    "M1": { "packages": ["FAR-003", "FAR-103"], "state": "active", "gate": "correctness" },
+    "HP-01": { "packages": ["FAR-001", "FAR-004", "FAR-005", "FAR-006"], "state": "active", "gate": "hot-path" },
+    "HP-02": { "packages": ["FAR-108", "FAR-208", "FAR-303"], "state": "active", "gate": "hot-path" },
+    "HP-03": { "packages": ["FAR-401", "FAR-402", "FAR-405", "FAR-408", "FAR-409"], "state": "active", "gate": "frame-graph" },
+    "HP-04": { "packages": ["FAR-300", "FAR-307", "FAR-309", "FAR-502"], "state": "active", "gate": "hot-path" },
+    "HP-05": { "packages": ["FAR-203", "FAR-204", "FAR-205", "FAR-209", "FAR-210"], "state": "active", "gate": "resource" },
+    "HP-06": { "packages": ["FAR-209", "FAR-210"], "state": "planned", "gate": "hot-path" },
+    "HP-07": { "packages": ["FAR-205", "FAR-210", "FAR-402"], "state": "planned", "gate": "frame-graph" },
+    "HP-08": { "packages": ["FAR-303", "FAR-409", "FAR-502"], "state": "active", "gate": "hot-path" }
+  },
+  "notes": [
+    "H15 is intentionally unused and must not be assigned.",
+    "Finding state describes campaign disposition, not closure; active findings may contain a bounded implemented slice while later packages and gates remain open.",
+    "No package in this checkpoint is marked shipped.",
+    "Campaign 8 was launched on 2026-07-15; package states advance only when their own acceptance gates pass.",
+    "Targeted test counts reflect the recorded worktree checkpoint and do not replace the pending consolidated validation run.",
+    "Package-specific manifests add exact test names and artifact paths before release certification."
+  ]
+}

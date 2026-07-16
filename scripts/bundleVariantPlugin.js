@@ -10,8 +10,10 @@
  *
  * Variants:
  *   - "dual"        — no aliasing, every module included (current behaviour)
- *   - "webgl-only"  — WebGPU renderer + WGSL shaders → emptyModule
- *   - "webgpu-only" — GLSL shader strings → emptyShader
+ *   - "webgl-only"  — WebGPU renderer + WGSL shaders → emptyModule;
+ *                      renderer capabilities → WebGL-only constants
+ *   - "webgpu-only" — GLSL shader strings → emptyShader;
+ *                      renderer capabilities → WebGPU-only constants
  *
  * The aliasing happens via esbuild's `onResolve` hook, so it's transparent
  * to the source files — they don't need to be modified at all. The Scene
@@ -24,6 +26,8 @@
  *   - scripts/stubs/emptyShader.js  — `export default ""` for GLSL strings
  *   - scripts/stubs/emptyModule.js  — Proxy that throws if anyone calls
  *     into it, used for WebGPU TS modules in WebGL-only builds
+ *   - scripts/stubs/rendererBuildCapabilities*.js — immutable backend
+ *     availability constants selected at bundle composition time
  *
  * @typedef {"dual" | "webgl-only" | "webgpu-only"} BundleVariant
  */
@@ -34,6 +38,22 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STUB_SHADER = path.resolve(__dirname, "stubs", "emptyShader.js");
 const STUB_MODULE = path.resolve(__dirname, "stubs", "emptyModule.js");
+const WEBGL_BUILD_CAPABILITIES = path.resolve(
+  __dirname,
+  "stubs",
+  "rendererBuildCapabilitiesWebGL.js",
+);
+const WEBGPU_BUILD_CAPABILITIES = path.resolve(
+  __dirname,
+  "stubs",
+  "rendererBuildCapabilitiesWebGPU.js",
+);
+
+function isRendererBuildCapabilitiesFile(absPath) {
+  return /\/Source\/Renderer\/RendererBuildCapabilities\.(?:js|ts)$/u.test(
+    absPath.replace(/\\/g, "/"),
+  );
+}
 
 /**
  * Returns true if `absPath` is a GLSL shader string module under
@@ -225,7 +245,12 @@ export function bundleVariantPlugin(variant) {
         // Decision cache lookup keyed on the candidate.
         let cached = decisionCache.get(candidate);
         if (cached === undefined) {
-          if (variant === "webgpu-only" && isGLSLShaderFile(candidate)) {
+          if (isRendererBuildCapabilitiesFile(candidate)) {
+            cached =
+              variant === "webgl-only"
+                ? WEBGL_BUILD_CAPABILITIES
+                : WEBGPU_BUILD_CAPABILITIES;
+          } else if (variant === "webgpu-only" && isGLSLShaderFile(candidate)) {
             cached = STUB_SHADER;
           } else if (variant === "webgl-only" && isWebGPUFile(candidate)) {
             const isShader = candidate

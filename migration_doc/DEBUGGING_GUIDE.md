@@ -37,7 +37,7 @@ A user reports a bug. Where do I start?
 │
 ├── Perf regression (fps drop, GPU/CPU pass cost spike)?
 │   ├── scene.debugShowFramesPerSecond = true for the live HUD.
-│   ├── CesiumDebug.cpuPassCost(true) / .gpuPassCost() / .highDensityCull()
+│   ├── CesiumDebug.cpuPassCost(true) / .gpuPassCost(true) / .highDensityCull()
 │   │   for per-pass detail.
 │   └── new PerformanceTracker() for repeatable traces. See "Perf bugs".
 │
@@ -220,9 +220,10 @@ Installed by [Apps/CesiumViewer/CesiumViewer.js](../Apps/CesiumViewer/CesiumView
 | `pipelineStatus()` | Shader / pipeline / device-loss / FB health table | partial | ✓ |
 | `postProcess()` | Post-process pipeline state table | partial | ✓ |
 | `cpuPassCost(true \| false \| undefined)` | CPU per-pass profile (R-7a) | — | ✓ |
-| `gpuPassCost()` | GPU per-pass timing (timestamp-query) | — | ✓ |
+| `gpuPassCost(true/false)` | Enable+reset / disable GPU per-pass timing; no arg dumps samples (timestamp-query) | — | ✓ |
 | `highDensityCull()` | GPU culler / HiZ / sort-keys stats (Batch 217) | — | ✓ |
-| `hiZConsume(on)` | FORK-41 (Batch 291) — toggle whether Hi-Z occlusion DROPS occluded commands (default OFF; build/dispatch/readback always run, result inert until the residual OcclusionTest correctness fix lands — see DEFERRED_WORK FORK-41) | — | ✓ |
+| `hiZConsume(on)` | FORK-41 diagnostic toggle for whether Hi-Z results may drop occluded commands. FAR-003 currently contains GPU culling/Hi-Z/sort/indirect selection as opt-in, so the stable default does not build, dispatch, or read back this path. Use only with an explicit characterization mode until safe automatic selection is restored. | — | ✓ |
+| `webgpuOIT(on?)` | Reads/toggles the FAR-003 MRT-OIT containment flag (default-off ratified 2026-07-16; translucency falls back to sorted alpha); logs requested-vs-active state. No arg = read current state. | — | ✓ |
 | `globeBindGroups()` | Globe bind-group cache stats (Batch 241) — healthy steady-state: `lastFrameCreates` ~0, high `hitRate` | — | ✓ |
 | `canvasPixels()` | Sample canvas pixel data | ✓ | ✓ |
 | `logImageryProbe()` | Dump next 4 tile updates to console | ✓ | ✓ |
@@ -254,7 +255,8 @@ CesiumDebug.globeFragmentDebug(null);                   // restore production
 CesiumDebug.cpuPassCost(true);     // start sampling
 // ... let scene run 5 seconds ...
 CesiumDebug.cpuPassCost();         // dump rolling-window stats
-CesiumDebug.gpuPassCost();         // GPU side (needs timestamp-query feature)
+CesiumDebug.gpuPassCost(true);     // enable + reset (needs timestamp-query)
+CesiumDebug.gpuPassCost();         // dump resolved GPU samples
 CesiumDebug.highDensityCull();     // is the GPU culler pulling its weight?
 CesiumDebug.cpuPassCost(false);    // stop sampling
 ```
@@ -279,7 +281,7 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 | Probe | What it does |
 | --- | --- |
 | [probe-saved-view.mjs](../Tools/visual-regression/probe-saved-view.mjs) | **Canonical template.** Playwright + canvas-decode diff for WebGL vs WebGPU at a specific saved view. Copy this when starting a new visual investigation. |
-| [capture-and-diff.mjs](../Tools/visual-regression/capture-and-diff.mjs) | Multi-scene visual regression suite (`scenes.json`). Run before claiming "no regression" on a big change. See [Tools/visual-regression/README.md](../Tools/visual-regression/README.md). **Batch 207:** now also runs the WebGPU error/crash gate — a scene that renders the right pixels while emitting validation errors / losing the device now FAILS. |
+| [capture-and-diff.mjs](../Tools/visual-regression/capture-and-diff.mjs) | Three-axis multi-scene regression suite (`scenes.json`): current WebGL vs reviewed historical WebGL, current WebGPU vs reviewed historical WebGPU, and current cross-backend parity, plus the WebGPU error/device-loss gate. Missing or unreviewed provenance is explicitly `NON_CERTIFYING`; promotion requires confirmation, rationale, reviewer, a green parity/error run, and a follow-up normal run. See [Tools/visual-regression/README.md](../Tools/visual-regression/README.md). |
 | [lib/webgpu-error-gate.mjs](../Tools/lib/webgpu-error-gate.mjs) | **Shared WebGPU error/crash gate** (Batch 207). Catches uncaptured validation errors (`device.onuncapturederror`) + device-loss (`device.lost`) + WebGPU-fault console prints, so a harness FAILS on the FORK-34 class (engine spews GPU errors but the page limps on). Wired into `variant-smoke-test.mjs` + `capture-and-diff.mjs`; import `errorGateInit` / `armWebGPUDevices` / `collectGateErrors` / `attachConsoleErrorGate` into any new Playwright harness. Self-tested by `probe-error-gate-selftest.mjs`. |
 | [probe-debug-api.mjs](../Tools/visual-regression/probe-debug-api.mjs) | End-to-end test of `CesiumDebug.globeFragmentDebug()`. Template for testing new CesiumDebug commands. |
 | [probe-brightness-ratio.mjs](../Tools/visual-regression/probe-brightness-ratio.mjs) | Measures WebGL/WebGPU per-globe-pixel mean-RGB ratio across 5 camera distances. Writes `output/brightness-ratio-report.json` for trend tracking. Template for any "is backend X darker than backend Y?" measurement. **Critical:** compute per-globe-pixel (not full region) — globe-size differences in the screenshot will bias full-region averages. |
@@ -463,6 +465,9 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 | `probe-draw-calls.mjs` / `-draw-pipeline-labels.mjs` / `-direct-draw-fb.mjs` | Draw-call instrumentation |
 | `probe-fb-after-draws.mjs` / `-fb-config.mjs` / `-sceneframebuffer.mjs` | Framebuffer state |
 | `probe-gpu-tex.mjs` / `-tex-format.mjs` | GPU texture format |
+| `probe-gpu-timestamp-profiler.mjs` | Real-adapter timestamp capability, opt-in lifecycle, post-submit readback, named core-pass samples, and browser error gate |
+| `probe-webgpu-allocation-tax.mjs` | Independent Node/Edge API-boundary allocation/upload/pass/submit probe. Fails if explicit WebGPU opens WebGL/WebGL2; `--strict-native` additionally rejects `GL Compatibility` buffer labels for migrated fixtures. It reports `GLStub_*` textures as compatibility-shaped without calling them duplicates: they may be the sole physical realization. Buffer bytes are exact, texture bytes are descriptor estimates, and decoded/backend ownership evidence is still required. |
+| `run-performance-campaign.mjs` + `performance-workloads.json` | Versioned deterministic Node/Edge workload runner. Captures full-Scene CPU p50/p95/p99/MAD, capability-available GPU timestamps/remainder, long tasks/heap diagnostics, startup, and renderer snapshots. CPU/GPU metrics are primary; rAF wall time is diagnostic and may be refresh-limited. |
 | `probe-magenta-clear.mjs` / `-webgpu-grey.mjs` | Sentinel-color clear checks |
 | `probe-shim-debug.mjs` / `-shim-trace.mjs` | GLSL→WGSL stub-translator tracing |
 | `probe-wgsl-doctype.mjs` | WGSL parse sanity |
@@ -936,16 +941,17 @@ await page.evaluate(() => window.CesiumDebug.globeFragmentDebug(null));   // res
 
 ```javascript
 const trace = await page.evaluate(async () => {
-  const C = await import("/Build/CesiumUnminified/index.js");
-  const tracker = new C.PerformanceTracker();
   const v = window.viewer;
-  tracker.beginTrace("orbit-snapshot", { frames: 600 });
-  for (let i = 0; i < 600; i++) {
-    v.scene.render();
+  v.scene.requestRenderMode = false;
+  v.scene.beginPerformanceTrace("orbit-snapshot", { frames: 600 });
+  while (v.scene.performanceTracker.active) {
     await new Promise((r) => requestAnimationFrame(r));
-    // beginPerformanceTrace hooks per-frame collection automatically
   }
-  return { csv: tracker.toCSV(tracker.endTrace()), enabled: true };
+  const result = v.scene.endPerformanceTrace();
+  return {
+    csv: v.scene.performanceTracker.toCSV(result),
+    summary: result.summary,
+  };
 });
 require("fs").writeFileSync(
   "Tools/visual-regression/output/perf-trace.csv",
@@ -953,7 +959,16 @@ require("fs").writeFileSync(
 );
 ```
 
-For GPU timings specifically, `CesiumDebug.gpuPassCost()` returns a structured object; serialize it to JSON the same way.
+For GPU timings specifically, call `CesiumDebug.gpuPassCost(true)` before the trace, then `CesiumDebug.gpuPassCost()` to return a structured object. When `timestamp-query` is available it reports the first-to-last timed-pass span, named-pass sum, explicit unprofiled remainder, and coverage ratio. Call `CesiumDebug.gpuPassCost(false)` when finished.
+
+For comparable campaign output, prefer the versioned Node runner over ad hoc loops:
+
+```powershell
+node Tools/visual-regression/run-performance-campaign.mjs --workload settled-static-3d --repetitions 1 --frames 120
+node Tools/visual-regression/probe-webgpu-allocation-tax.mjs --output Tools/visual-regression/output/allocation-tax.json
+```
+
+Both launch Edge from Node. Do not substitute a Python HTTP server or Python browser driver.
 
 ### Canvas readback caveat
 
@@ -1070,6 +1085,56 @@ Some `CesiumGraphicsContext`-adjacent interfaces (e.g., `PerformanceManagerConte
 
 ## Perf bugs
 
+### Canonical moving-altitude campaign (2026-07-14)
+
+Do not use an idle soak to compare FPS. Cesium request-render mode legitimately pauses rendering when
+the scene has no active change, so an unchanged globe measures the scheduler's ability to sleep rather
+than renderer throughput. Use the versioned camera flight, which continuously traverses nine waypoints
+from 18,000 km orbit to 300 m above ground and back to a 2,500 km rotating view. The report must show
+all eight route segments and the full altitude range as covered.
+
+Start the repository's Node server in one terminal:
+
+```powershell
+node server.js --production
+```
+
+Run the clean, counterbalanced WebGL/WebGPU lane from another terminal:
+
+```powershell
+node Tools/visual-regression/run-performance-campaign.mjs `
+  --workload moving-camera-altitude-track-3d `
+  --renderer both `
+  --repetitions 2 `
+  --output Tools/visual-regression/output/performance/altitude-track-clean.json
+```
+
+Run API-boundary attribution separately:
+
+```powershell
+node Tools/visual-regression/run-performance-campaign.mjs `
+  --workload moving-camera-altitude-track-3d `
+  --renderer both `
+  --repetitions 2 `
+  --api-instrumentation `
+  --output Tools/visual-regression/output/performance/altitude-track-instrumented.json
+```
+
+Never combine timing samples from those lanes: API monkey-patching adds observer overhead. Treat full
+`Scene.render()` CPU distributions and capability-backed GPU timestamps as the primary promotion
+metrics. FPS, 1%-low, dropped-frame, and wall-time results describe the display-paced experience but
+can remain refresh/compositor limited even when CPU and GPU work improve. Alternate WebGL→WebGPU and
+WebGPU→WebGL repetitions to counterbalance thermal and launch-order drift. The exact 2026-07-14
+protocol, bundle hashes, and results are in
+[Fork Performance Audit and Fix Results](FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS_2026-07-14.md).
+
+`NEW-PERF-CAPPED-UNCAPPED-LANES` remains future work. Keep the current capped flight as the
+responsiveness/1%-low lane, and add a separate Node/Edge maximum-throughput lane only after it verifies
+supported no-vsync/no-frame-limit launch flags. A page checkbox can select engine pacing, but JavaScript
+cannot promise control of the OS/compositor swap interval; artifacts must record both UI pacing and
+browser launch mode. In an uncapped lane, report CPU renders/second and GPU timestamp throughput before
+presented FPS.
+
 ### CPU pass cost (R-7a)
 
 `CesiumDebug.cpuPassCost(true)` enables the per-pass profiler in the WebGPU scene renderer. Pass `false` to disable, no-arg to dump rolling-window stats.
@@ -1081,7 +1146,7 @@ Use cases:
 
 ### GPU pass cost
 
-`CesiumDebug.gpuPassCost()` reads from `WebGPUTimestampProfiler` — needs the `timestamp-query` device feature (gated by `WebGPUFeatureFlags`). Some adapters don't expose it; the call returns `{enabled: false}` cleanly.
+`CesiumDebug.gpuPassCost(true)` enables and resets `WebGPUTimestampProfiler`; `gpuPassCost()` dumps its resolved samples and `gpuPassCost(false)` disables collection. Calling the no-argument form while profiling is off does not allocate query resources. The profiler needs the `timestamp-query` device feature (gated by `WebGPUFeatureFlags`). Unsupported adapters report capability failure and leave profiling disabled. `frameCount` is the number of resolved samples; `attemptedFrameCount`, `readbackSkipCount`, `droppedPassCount`, and `failedReadbackCount` make missing samples explicit. An active profiler with no rows means no instrumented pass has resolved yet, not a zero-cost frame. GPU coverage is still partial during FAR-001: direct feature-owned pass creation must migrate before `frameMs` can be interpreted as total GPU-frame time.
 
 Unlike CPU pass cost, GPU timings show actual shader-execution cost — useful for identifying fillrate-bound passes (Bloom, AO) vs compute-bound ones.
 
@@ -1152,7 +1217,7 @@ Run after any change that could affect demo-level behavior (renderer, scene logi
 
 ### Visual regression suite
 
-`node Tools/visual-regression/capture-and-diff.mjs` runs every scene in `scenes.json` against the WebGL baseline. See [Tools/visual-regression/README.md](../Tools/visual-regression/README.md) for flags, scene-add procedure, and synthetic-scene `setup` / `setupFile` plumbing.
+`node Tools/visual-regression/capture-and-diff.mjs` runs every scene in `scenes.json` through three independent visual gates: each renderer against its reviewed historical baseline and current WebGL against current WebGPU. Missing, stale, or unreviewed manifest provenance is `NON_CERTIFYING`, not a pass. See [Tools/visual-regression/README.md](../Tools/visual-regression/README.md) for promotion safeguards, flags, scene-add procedure, and synthetic-scene `setup` / `setupFile` plumbing.
 
 ---
 

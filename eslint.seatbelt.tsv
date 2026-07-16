@@ -1,5 +1,6 @@
 # eslint-seatbelt temporarily allowed errors
 # docs: https://github.com/justjake/eslint-seatbelt#readme
+
 "Apps/Sandcastle/gallery/Atmospheric Conditions.html"	"no-undef"	2
 "Apps/Sandcastle/gallery/Atmospheric Conditions.html"	"strict"	2
 "Apps/Sandcastle/gallery/Volumetric Effects.html"	"no-undef"	2
@@ -52,9 +53,6 @@
 "Apps/Sandcastle/gallery/WebGPU Weather Particles.html"	"no-undef"	2
 "Apps/Sandcastle/gallery/WebGPU Weather Particles.html"	"strict"	2
 "packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.js"	"no-useless-assignment"	2
-"packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js"	"no-useless-assignment"	1
-"packages/engine/Source/Scene/SSCCModeHandlers.js"	"no-useless-assignment"	2
-"packages/engine/Source/Scene/SceneRenderer.js"	"no-useless-assignment"	1
 "packages/engine/Source/Services/WorkerSceneHost.js"	"preserve-caught-error"	1
 "packages/engine/Source/Workers/RendererWorker.js"	"no-useless-assignment"	1
 "packages/engine/Specs/Renderer/WebGPU/WebGPUBindGroupCacheSpec.js"	"curly"	1

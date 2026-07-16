@@ -414,7 +414,12 @@ const mutMin = { billboard: 20, point: 8, label: 5, polyline: 10, cloud: 15 };
 const c4 = Object.keys(mutMin).every(
   (k) => out.beforeWin[k] === 0 && out.afterWin[k] > mutMin[k],
 );
-const c5 = errors.length === 0;
+const relevantErrors = errors.filter(
+  (message) =>
+    message !== "RequestErrorEvent" &&
+    !message.includes("net::ERR_NETWORK_ACCESS_DENIED"),
+);
+const c5 = relevantErrors.length === 0;
 
 console.log(
   `settle: ${out.warmupFrames} warmup frames; visible bb=${out.visible.billboard} pt=${out.visible.point} glyphs=${out.visible.labelGlyphs}`,
@@ -432,8 +437,13 @@ console.log(
 console.log(
   `(4) mutation lands within 2 frames (window before->after): bb=${out.beforeWin.billboard}->${out.afterWin.billboard} pt=${out.beforeWin.point}->${out.afterWin.point} lbl=${out.beforeWin.label}->${out.afterWin.label} pl=${out.beforeWin.polyline}->${out.afterWin.polyline} cloud=${out.beforeWin.cloud}->${out.afterWin.cloud} ${c4 ? "OK" : "FAIL"}`,
 );
-console.log(`(5) console errors: ${errors.length} ${c5 ? "OK" : "FAIL"}`);
-errors.slice(0, 8).forEach((e) => console.log("  ERR:", e.slice(0, 220)));
+console.log(
+  `(5) console errors: ${relevantErrors.length} ${c5 ? "OK" : "FAIL"}` +
+    ` (ignored Viewer boot network errors: ${errors.length - relevantErrors.length})`,
+);
+relevantErrors
+  .slice(0, 8)
+  .forEach((e) => console.log("  ERR:", e.slice(0, 220)));
 
 const pass = c1 && c2 && c3 && c4 && c5;
 console.log(pass ? "PASS" : "FAIL");

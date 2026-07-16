@@ -25,6 +25,9 @@
 // PASS:
 //   - WebGPU classified red-pixel coverage within +/-25% of WebGL, AND both
 //     backends clearly render the tint (>= MIN_RED px).
+//   - A real 5x5 object pick over the classified footprint returns the
+//     GeometryInstance id on both renderers. On WebGPU this exercises the
+//     pick-private packed-depth checkpoints used by terrain classification.
 //   - 0 WebGPU device errors.
 //
 // READ the PNGs: classprim-{webgl,webgpu}.png in the output dir.
@@ -75,11 +78,14 @@ async function run(renderer) {
     }
   });
 
-  await page.evaluate(async () => {
+  await page.evaluate(async (renderer) => {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
     v.useDefaultRenderLoop = false;
     const scene = v.scene;
+    scene.renderError.addEventListener((_scene, error) => {
+      window.__probeErrors.push(error?.stack ?? error?.message ?? String(error));
+    });
     scene.skyBox.show = false;
     scene.skyAtmosphere.show = false;
     scene.backgroundColor = C.Color.fromCssColorString("#101014");
@@ -119,6 +125,7 @@ async function run(renderer) {
       dimensions: dimensions,
     });
     const boxInstance = new C.GeometryInstance({
+      id: "classification-box",
       geometry: boxGeometry,
       modelMatrix: modelMatrix,
       attributes: {
@@ -175,7 +182,49 @@ async function run(renderer) {
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));
     }
-  });
+
+    const centerPixel = new C.Cartesian2(
+      Math.floor(scene.canvas.clientWidth * 0.5),
+      Math.floor(scene.canvas.clientHeight * 0.5),
+    );
+    let picked;
+    let pickError = null;
+    try {
+      picked = renderer === "webgpu" && scene.pickAsync
+        ? await Promise.race([
+            scene.pickAsync(centerPixel, 5, 5),
+            new Promise((_resolve, reject) =>
+              setTimeout(
+                () => reject(new Error("classification pick timed out")),
+                20_000,
+              ),
+            ),
+          ])
+        : scene.pick(centerPixel, 5, 5);
+    } catch (error) {
+      pickError = error?.stack ?? error?.message ?? String(error);
+    }
+    window.__classPickId = picked?.id ?? null;
+    // Keep "no hit" distinct from "hit whose upstream GeometryInstance id
+    // was lost".  Both otherwise serialize as pickId:null, which obscures the
+    // exact identity-ownership failure this probe is intended to catch.
+    window.__classPickDefined = picked !== undefined;
+    window.__classPickPrimitiveMatches =
+      picked?.primitive === window.__classPrim;
+    // A geometry-backed classifier must reuse the inner Primitive's canonical
+    // per-instance pick ID. A wrapper-owned `_pickId` is both a duplicate
+    // registry allocation and loses GeometryInstance.id.
+    window.__classWrapperPickIdAllocated = !!window.__classPrim?._pickId;
+    window.__classPickError = pickError;
+
+    // Leave the normal framebuffer in a settled state for the visual oracle.
+    for (let i = 0; i < 4; i++) {
+      scene.requestRender();
+      scene.render();
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    await scene.context?._device?.queue?.onSubmittedWorkDone?.();
+  }, renderer);
 
   const png = await page.screenshot({ type: "png" });
   fs.writeFileSync(`${OUT_DIR}/classprim-${renderer}.png`, png);
@@ -215,9 +264,31 @@ async function run(renderer) {
   );
 
   const ready = await page.evaluate(() => !!window.__classPrim?.ready);
+  const pickId = await page.evaluate(() => window.__classPickId ?? null);
+  const pickDefined = await page.evaluate(
+    () => window.__classPickDefined === true,
+  );
+  const pickPrimitiveMatches = await page.evaluate(
+    () => window.__classPickPrimitiveMatches === true,
+  );
+  const wrapperPickIdAllocated = await page.evaluate(
+    () => window.__classWrapperPickIdAllocated === true,
+  );
+  const pickError = await page.evaluate(
+    () => window.__classPickError ?? null,
+  );
   const errs = await page.evaluate(() => window.__probeErrors ?? []);
   await browser.close();
-  return { ...stats, ready, errs };
+  return {
+    ...stats,
+    ready,
+    pickId,
+    pickDefined,
+    pickPrimitiveMatches,
+    wrapperPickIdAllocated,
+    pickError,
+    errs,
+  };
 }
 
 (async () => {
@@ -226,18 +297,37 @@ async function run(renderer) {
     "=== Standalone ClassificationPrimitive parity probe (box over terrain) ===\n",
   );
 
+  const rendererOnly = process.env.PROBE_RENDERER;
+  if (rendererOnly) {
+    const result = await run(rendererOnly);
+    console.log(JSON.stringify({ [rendererOnly]: result }, null, 2));
+    const pass =
+      result.ready === true &&
+      result.red >= MIN_RED &&
+      result.pickId === "classification-box" &&
+      result.pickDefined === true &&
+      result.pickPrimitiveMatches === true &&
+      result.wrapperPickIdAllocated === false &&
+      result.pickError === null &&
+      result.errs.length === 0;
+    console.log(pass ? "\nPASS" : "\nFAIL");
+    process.exit(pass ? 0 : 1);
+  }
+
   const wgl = await run("webgl");
   const wgpu = await run("webgpu");
 
   const coverageRatio = wgl.red > 0 ? wgpu.red / wgl.red : 0;
   const coverageDelta = Math.abs(coverageRatio - 1.0);
 
-  console.log(`  backend  ready  classified-red  errs`);
   console.log(
-    `  webgl    ${String(wgl.ready).padEnd(5)}  ${String(wgl.red).padStart(14)}  ${wgl.errs.length}`,
+    `  backend  ready  classified-red  pick-id             pick-error  errs`,
   );
   console.log(
-    `  webgpu   ${String(wgpu.ready).padEnd(5)}  ${String(wgpu.red).padStart(14)}  ${wgpu.errs.length}`,
+    `  webgl    ${String(wgl.ready).padEnd(5)}  ${String(wgl.red).padStart(14)}  ${String(wgl.pickId).padEnd(18)}  ${String(wgl.pickError).padEnd(10)}  ${wgl.errs.length}`,
+  );
+  console.log(
+    `  webgpu   ${String(wgpu.ready).padEnd(5)}  ${String(wgpu.red).padStart(14)}  ${String(wgpu.pickId).padEnd(18)}  ${String(wgpu.pickError).padEnd(10)}  ${wgpu.errs.length}`,
   );
   console.log(
     `\n  coverage ratio (webgpu/webgl) = ${coverageRatio.toFixed(3)} (delta ${coverageDelta.toFixed(3)}, max ${MAX_COVERAGE_DELTA})`,
@@ -250,6 +340,16 @@ async function run(renderer) {
   const pass =
     wgl.red >= MIN_RED &&
     wgpu.red >= MIN_RED &&
+    wgl.pickId === "classification-box" &&
+    wgpu.pickId === "classification-box" &&
+    wgl.pickDefined === true &&
+    wgpu.pickDefined === true &&
+    wgl.pickPrimitiveMatches === true &&
+    wgpu.pickPrimitiveMatches === true &&
+    wgl.wrapperPickIdAllocated === false &&
+    wgpu.wrapperPickIdAllocated === false &&
+    wgl.pickError === null &&
+    wgpu.pickError === null &&
     coverageDelta <= MAX_COVERAGE_DELTA &&
     wgpu.errs.length === 0;
 

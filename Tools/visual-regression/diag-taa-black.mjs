@@ -73,8 +73,11 @@ const out = await page.evaluate(async () => {
             enabled: taa.enabled,
             ...taa.getStatistics(),
             skipNext: taa._skipNextBlend,
-            jx: taa.jitterX,
-            jy: taa.jitterY,
+            projectionJitterNdc: [
+              taa.projectionJitterNdcX,
+              taa.projectionJitterNdcY,
+            ],
+            resolveJitterUv: [taa.resolveJitterUvX, taa.resolveJitterUvY],
             mvValid: taa._motionVectorsValid,
             histFmt: taa._format,
             pipelineNull: !taa._pipeline,

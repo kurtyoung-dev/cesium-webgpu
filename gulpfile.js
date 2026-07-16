@@ -17,6 +17,11 @@ import { build as esbuild } from "esbuild";
 import { createInstrumenter } from "istanbul-lib-instrument";
 
 import {
+  runKarmaTestServer,
+  strictKarmaResultConfig,
+} from "./scripts/karmaTestRun.js";
+
+import {
   buildCesium,
   buildEngine,
   buildWidgets,
@@ -962,7 +967,11 @@ export async function test() {
   const webglValidation = argv.webglValidation ? argv.webglValidation : false;
   const webglStub = argv.webglStub ? argv.webglStub : false;
   const release = argv.release ? argv.release : false;
-  const failTaskOnError = argv.failTaskOnError ? argv.failTaskOnError : false;
+  // A unit-test command must be trustworthy by default. Karma reports browser
+  // launch failures, empty suites, test failures, and Jasmine global-hook
+  // errors with a non-zero exit code; propagate it unless a caller explicitly
+  // requests the legacy diagnostic behavior with --no-failTaskOnError.
+  const failTaskOnError = argv.failTaskOnError !== false;
   const suppressPassed = argv.suppressPassed ? argv.suppressPassed : false;
   const debug = argv.debug ? true : false;
   const debugCanvasWidth = argv.debugCanvasWidth;
@@ -1053,6 +1062,7 @@ export async function test() {
     {
       port: 9876,
       singleRun: !debug,
+      ...strictKarmaResultConfig,
       browsers: browsers,
       specReporter: {
         suppressErrorSummary: false,
@@ -1084,17 +1094,7 @@ export async function test() {
     { promiseConfig: true, throwErrors: true },
   );
 
-  return new Promise((resolve, reject) => {
-    const server = new karma.Server(config, function doneCallback(exitCode) {
-      if (failTaskOnError && exitCode) {
-        reject(exitCode);
-        return;
-      }
-
-      resolve();
-    });
-    server.start();
-  });
+  return runKarmaTestServer(karma.Server, config, { failTaskOnError });
 }
 
 /**

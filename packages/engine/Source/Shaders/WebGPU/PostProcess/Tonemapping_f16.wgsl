@@ -198,10 +198,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
   // Convert back to f32 for the fragment output. The render target is
   // a standard `@location(0) vec4<f32>` so the upcast is mandatory.
-  // C6-TPDF-DITHER-FINAL — add the sub-LSB triangular dither in f32 after
-  // the upcast (0 strength == byte-identical).
-  let dithered = vec3<f32>(corrected) +
-    tpdfDither(input.position.xy, params.ditherStrength);
+  // C6-TPDF-DITHER-FINAL / C9-05 — the zero-strength branch keeps both
+  // hashes off the default path; enabled math remains the same f32 addition.
+  var dithered = vec3<f32>(corrected);
+  if (params.ditherStrength != 0.0) {
+    dithered += tpdfDither(input.position.xy, params.ditherStrength);
+  }
 
   return vec4<f32>(dithered, 1.0);
 }

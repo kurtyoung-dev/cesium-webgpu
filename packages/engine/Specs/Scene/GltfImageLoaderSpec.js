@@ -281,6 +281,10 @@ describe(
         imageId: 2,
         gltfResource: gltfResource,
         baseResource: gltfResource,
+        supportedImageFormats: {
+          ktx2TranscodeTargets:
+            context.graphicsCapabilities.ktx2TranscodeTargets,
+        },
       });
 
       await imageLoader.load();
@@ -306,6 +310,10 @@ describe(
         imageId: 2,
         gltfResource: gltfResource,
         baseResource: gltfResource,
+        supportedImageFormats: {
+          ktx2TranscodeTargets:
+            context.graphicsCapabilities.ktx2TranscodeTargets,
+        },
       });
 
       await imageLoader.load();
@@ -353,6 +361,10 @@ describe(
         imageId: 3,
         gltfResource: gltfResource,
         baseResource: baseResource,
+        supportedImageFormats: {
+          ktx2TranscodeTargets:
+            context.graphicsCapabilities.ktx2TranscodeTargets,
+        },
       });
 
       await imageLoader.load();

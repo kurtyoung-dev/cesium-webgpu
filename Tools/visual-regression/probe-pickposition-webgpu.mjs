@@ -23,6 +23,8 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8134";
 const LON = -75.0;
 const LAT = 40.0;
 const HEIGHT = 2_000_000.0;
+const DISABLE_DEPTH_BINDING_CACHE =
+  process.env.PROBE_DISABLE_DEPTH_BINDING_CACHE === "1";
 
 const browser = await chromium.launch({
   channel: "msedge",
@@ -45,11 +47,47 @@ async function runLeg(renderer) {
   });
   await page.waitForFunction(() => !!window.viewer);
 
+  // Replace Viewer boot's online terrain/imagery before measuring. The public
+  // ion token may be current while CI/network policy still blocks requests;
+  // letting that failure stand produces an empty globe and a false pick-depth
+  // regression on both renderers.
+  await page.evaluate(async () => {
+    const C = await import("/Build/CesiumUnminified/index.js");
+    const v = window.viewer;
+    const terrain = new C.EllipsoidTerrainProvider();
+    v.terrainProvider = terrain;
+    v.scene.globe.terrainProvider = terrain;
+    const imagery = await C.TileMapServiceImageryProvider.fromUrl(
+      C.buildModuleUrl("Assets/Textures/NaturalEarthII"),
+    );
+    v.imageryLayers.removeAll();
+    v.imageryLayers.addImageryProvider(imagery);
+    v.scene.requestRenderMode = false;
+  });
+  // Ignore only the boot layer's already-observed network errors. Any error
+  // raised after deterministic local setup remains a probe failure.
+  errors.length = 0;
+
   const out = await page.evaluate(
-    async ({ LON, LAT, HEIGHT }) => {
+    async ({ LON, LAT, HEIGHT, DISABLE_DEPTH_BINDING_CACHE }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
+
+      // Diagnostic escape hatch: force GlobeDepth to rebuild its source-depth
+      // view/bind group on every copy. This lets the regression probe isolate
+      // cache lifetime errors without changing the production bundle.
+      const globeDepth = scene._alternateSceneRenderer?._globeDepth;
+      const depthBindingCacheDisabled =
+        DISABLE_DEPTH_BINDING_CACHE && !!globeDepth;
+      if (depthBindingCacheDisabled) {
+        globeDepth._depthCopyBindings = {
+          get() {
+            return undefined;
+          },
+          set() {},
+        };
+      }
 
       // Look straight down at a known location so the center pixel is globe.
       v.camera.setView({
@@ -131,7 +169,15 @@ async function runLeg(renderer) {
         } else if (typeof res === "string") {
           kind = res;
         }
-        samples.push({ frame: i, kind, carto });
+        const pickDepthDebug = scene._picking.getPickDepth(scene, 0);
+        samples.push({
+          frame: i,
+          kind,
+          carto,
+          cachedDepth: pickDepthDebug?._lastDepthValue,
+          pendingReadback: pickDepthDebug?._pendingReadback,
+          depthUpdateCount: pickDepthDebug?._updateCount,
+        });
         scene.render();
         await new Promise((r) => requestAnimationFrame(r));
       }
@@ -142,16 +188,19 @@ async function runLeg(renderer) {
       return {
         rendererType: scene.context?.rendererType,
         pickPositionSupported: scene.pickPositionSupported,
+        pickDepthFullFrustumLogEncode:
+          scene.context?.pickDepthFullFrustumLogEncode,
         useLogDepth: scene.frameState?.useLogDepth,
         numFrustums: scene._view?.frustumCommandsList?.length,
         warmupFrames,
+        depthBindingCacheDisabled,
         tilesLoadedAt,
         tilesLoaded: !!(scene.globe && scene.globe.tilesLoaded),
         samples,
         camBefore,
       };
     },
-    { LON, LAT, HEIGHT },
+    { LON, LAT, HEIGHT, DISABLE_DEPTH_BINDING_CACHE },
   );
 
   // Zoom-to-cursor smoke: wheel over the canvas center (SSCC consumes
@@ -202,7 +251,9 @@ function printLeg(name, leg) {
       `  frame ${String(s.frame).padStart(2)}: ${s.kind}` +
         (s.carto
           ? ` @ lon=${s.carto.lon.toFixed(4)} lat=${s.carto.lat.toFixed(4)} h=${s.carto.h.toFixed(1)}`
-          : ""),
+          : "") +
+        ` cachedDepth=${s.cachedDepth} pending=${s.pendingReadback}` +
+        ` updates=${s.depthUpdateCount}`,
     );
   }
   console.log(

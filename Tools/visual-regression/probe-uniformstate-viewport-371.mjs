@@ -6,7 +6,7 @@
  * WebGL RenderState.applyViewport path (gl.viewport). The WebGPU render path
  * never set it, so uniformState.viewportOrthographic / viewportTransformation
  * stayed at IDENTITY on WebGPU. The fix seeds uniformState.viewport once per
- * frame in WebGPUContext.beginFrame (after Scene.render's setDepthRangeType).
+ * frame in WebGPUContext.beginFrame using its context-owned clip convention.
  *
  * This probe asserts, on BOTH backends, that after a render:
  *   - uniformState.viewport.{width,height} == canvas drawingBuffer size

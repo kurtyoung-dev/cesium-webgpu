@@ -453,8 +453,8 @@ function entryFileForVariant(variant) {
  * sibling), which imports all individual modules exported from the
  * Cesium API. The dual webgpu-first entry is the historical default;
  * webgl-only / webgpu-only variants exclude the irrelevant backend's
- * modules from the export list, and a `setGlobalDefaultRenderer` call
- * is appended so the runtime auto-selection picks the matching backend.
+ * modules from the export list. Renderer availability is supplied by the
+ * variant plugin's immutable RendererBuildCapabilities alias.
  *
  * @param {BundleVariant} [variant="dual"] Build variant
  * @returns {Promise<string>} contents
@@ -546,16 +546,6 @@ export async function createCesiumJs(variant = "dual") {
       // preprocessor above — webgl-only doesn't need the stub.
       `export { registerShaderTranslator, getActiveShaderTranslator, subscribeToShaderTranslatorChange, registerShaderPreprocessor, getActiveShaderPreprocessor, parseNagaReflection, buildBindGroupLayoutDescriptors, buildBindGroupLayoutsFromProgram, WGSLPassthroughTranslator, NotSupportedTranslator, NagaShaderTranslator, nagaTranspileGLSL, isNagaReady, isNagaUnavailable, extractPipelineStateFromStub, extractRenderPassStateFromStub, applyStubVariantToBuilder, getCompiledShaderForProgram } from '@${scope}/engine/index-wgsl.js';\n`;
   }
-
-  // Append the runtime default-renderer hint so this entry's bundle picks
-  // the right backend on first `Viewer({ contextOptions: { renderer: 'auto' } })`.
-  // The dual entry leaves the default at WEBGPU (set by RendererType.ts);
-  // we still emit the call explicitly so the intent is visible in source.
-  const defaultRenderer = variant === "webgl-only" ? "WEBGL" : "WEBGPU";
-  contents +=
-    `\n// Build variant: ${variant} — set the runtime default renderer.\n` +
-    `import { setGlobalDefaultRenderer, RendererType } from '@${scope}/engine';\n` +
-    `setGlobalDefaultRenderer(RendererType.${defaultRenderer});\n`;
 
   const outFile = entryFileForVariant(variant);
   await writeFile(outFile, contents, { encoding: "utf-8" });
@@ -1379,8 +1369,7 @@ export async function createIndexJs(workspace) {
   });
 
   // Append re-exports for TypeScript-only public API that the file glob
-  // above can't pick up (it only matches `.js`). Without this the build
-  // variants can't call `setGlobalDefaultRenderer` from the entry barrel.
+  // above can't pick up (it only matches `.js`).
   //
   // IMPORTANT: we split these into "always-safe" (renderer-type / factory /
   // registry exports, which don't reach into WebGPU source) and "WebGPU-only"
@@ -1393,10 +1382,18 @@ export async function createIndexJs(workspace) {
   if (workspace === "engine") {
     contents +=
       `${EOL}// TypeScript-only re-exports — needed by build-variant entry points${EOL}` +
-      `export { default as RendererType, setGlobalDefaultRenderer, getGlobalDefaultRenderer, getDefaultRendererType, isWebGPUSupported, isValidRendererType } from './Source/Renderer/RendererType.js';${EOL}` +
+      `export { default as RendererType, setGlobalDefaultRenderer, getGlobalDefaultRenderer, getDefaultRendererType, getRendererAttemptPlan, getSynchronousRendererType, isWebGPUSupported, isValidRendererType } from './Source/Renderer/RendererType.js';${EOL}` +
       `export { default as ContextFactory } from './Source/Renderer/ContextFactory.js';${EOL}` +
       `export { default as GraphicsContext } from './Source/Renderer/GraphicsContext.js';${EOL}` +
       `export { default as ContextRegistry } from './Source/Renderer/ContextRegistry.js';${EOL}` +
+      `export { BackendDomain, BackendDomainCapture, BackendDomainScope, BackendKind } from './Source/Renderer/ResourceOwnership/BackendDomain.js';${EOL}` +
+      `export { DecodedAssetId, DecodedColorSpace, DecodedComponentType, DecodedGeometryAttribute, DecodedTextureFormat, FeatureTablePayload, FeatureTableProperty, GeometryAttributeSemantic, GeometryPayload, GeometryTopology, ImmutableDecodedBytes, TerrainPayload, TextureMipPayload, TexturePayload } from './Source/Renderer/ResourceOwnership/DecodedPayload.js';${EOL}` +
+      `export { RealizationDescriptor, RealizationKind } from './Source/Renderer/ResourceOwnership/RealizationDescriptor.js';${EOL}` +
+      `export { RealizationLease } from './Source/Renderer/ResourceOwnership/RealizationLease.js';${EOL}` +
+      `export { RealizationEntryState, RealizationIdentity, RealizationShadowCache, StaleBackendDomainError } from './Source/Renderer/ResourceOwnership/RealizationShadowCache.js';${EOL}` +
+      `export { RESOURCE_FAMILY_VALUES, isResourceFamily, ResourceFamily, resourceFamilyName } from './Source/Renderer/ResourceOwnership/ResourceFamily.js';${EOL}` +
+      `export { NativeCoverageProof, OwnershipDecisionReason, propagateResourceOwnershipToken, RequiredRenderPass, RequiredSceneMode, ResourceCoverageRequirement, ResourceFamilyOwnershipRule, ResourceOwnershipDecision, ResourceOwnershipMode, ResourceOwnershipPolicy, ResourceOwnershipTelemetry, ResourceOwnershipToken } from './Source/Renderer/ResourceOwnership/ResourceOwnershipPolicy.js';${EOL}` +
+      `export { ProvisionalEncoderLease, SubmissionSerialAuthority } from './Source/Renderer/ResourceOwnership/SubmissionSerialAuthority.js';${EOL}` +
       // Batch 142 — Slice 5d step 2 multi-light public API.
       // LightTypes.ts defines PointLight / SpotLight / LightCollection /
       // LightType (the `Light` base class is intentionally NOT re-

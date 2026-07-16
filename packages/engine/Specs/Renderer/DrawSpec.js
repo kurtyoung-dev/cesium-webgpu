@@ -9,7 +9,6 @@ import {
   Buffer,
   BufferUsage,
   ClearCommand,
-  ContextLimits,
   DrawCommand,
   RenderState,
   ShaderProgram,
@@ -845,7 +844,7 @@ describe(
         shaderProgram: sp,
         vertexArray: va,
         renderState: RenderState.fromCache({
-          lineWidth: ContextLimits.maximumAliasedLineWidth,
+          lineWidth: context.limits.maximumAliasedLineWidth,
           // May only be 1.
         }),
       });

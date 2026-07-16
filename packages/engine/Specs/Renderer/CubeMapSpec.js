@@ -7,7 +7,6 @@ import {
   PixelFormat,
   Resource,
   ClearCommand,
-  ContextLimits,
   CubeMap,
   PixelDatatype,
   Sampler,
@@ -1400,8 +1399,8 @@ describe(
       expect(function () {
         cubeMap = new CubeMap({
           context: webgl2Context,
-          width: ContextLimits.maximumCubeMapSize + 1,
-          height: ContextLimits.maximumCubeMapSize + 1,
+          width: webgl2Context.limits.maximumCubeMapSize + 1,
+          height: webgl2Context.limits.maximumCubeMapSize + 1,
         });
       }).toThrowDeveloperError();
     });

@@ -255,6 +255,11 @@ const multiIds =
 const multiDistinct = new Set(ids3).size === 3;
 const multiInstancePass =
   multiFound && multiExpected && multiIds && multiDistinct;
+const relevantPageErrors = pageErrors.filter(
+  (message) =>
+    message !== "RequestErrorEvent" &&
+    !message.includes("net::ERR_NETWORK_ACCESS_DENIED"),
+);
 
 const pass =
   out.syncPoint.found &&
@@ -265,7 +270,7 @@ const pass =
   !out.syncMiss.found &&
   multiInstancePass &&
   out.errors.length === 0 &&
-  pageErrors.length === 0;
+  relevantPageErrors.length === 0;
 
 console.log(
   `multi-instance: found=${multiFound} expected=${multiExpected} ids=${JSON.stringify(ids3)} distinct=${multiDistinct} => ${multiInstancePass ? "PASS" : "FAIL"}`,
@@ -275,8 +280,13 @@ if (!multiInstancePass) {
     "  NOTE: a warmed 3-point sync pick should resolve 3 DISTINCT ids; if 2+ collapse to one id this is per-instance pick-color cross-wiring (NEW-WEBGPU-POINT-COLLECTION-PICK). If all are `undefined`, that is the tracked cold-sync-pick staleness gap (NEW-WEBGPU-PICK-COLD-SYNC-STALENESS).",
   );
 }
-if (pageErrors.length > 0) {
-  console.log("page errors:", pageErrors);
+if (relevantPageErrors.length > 0) {
+  console.log("page errors:", relevantPageErrors);
+}
+if (pageErrors.length !== relevantPageErrors.length) {
+  console.log(
+    `ignored Viewer boot network errors: ${pageErrors.length - relevantPageErrors.length}`,
+  );
 }
 console.log(pass ? "PROBE PASS" : "PROBE FAIL");
 process.exit(pass ? 0 : 1);

@@ -59,6 +59,21 @@ async function runLeg(renderer) {
   });
   await page.waitForFunction(() => !!window.viewer);
 
+  await page.evaluate(async () => {
+    const C = await import("/Build/CesiumUnminified/index.js");
+    const v = window.viewer;
+    const terrain = new C.EllipsoidTerrainProvider();
+    v.terrainProvider = terrain;
+    v.scene.globe.terrainProvider = terrain;
+    const imagery = await C.TileMapServiceImageryProvider.fromUrl(
+      C.buildModuleUrl("Assets/Textures/NaturalEarthII"),
+    );
+    v.imageryLayers.removeAll();
+    v.imageryLayers.addImageryProvider(imagery);
+    v.scene.requestRenderMode = false;
+  });
+  errors.length = 0;
+
   const out = await page.evaluate(
     async ({ LON, LAT, MODEL_SCALE, CAM_HEIGHT }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
@@ -162,7 +177,16 @@ async function runLeg(renderer) {
   );
 
   await page.close();
-  return { ...out, errors };
+  const relevantErrors = errors.filter(
+    (message) =>
+      message !== "RequestErrorEvent" &&
+      !message.includes("net::ERR_NETWORK_ACCESS_DENIED"),
+  );
+  return {
+    ...out,
+    errors: relevantErrors,
+    ignoredViewerBootNetworkErrors: errors.length - relevantErrors.length,
+  };
 }
 
 // ---- run both legs ----

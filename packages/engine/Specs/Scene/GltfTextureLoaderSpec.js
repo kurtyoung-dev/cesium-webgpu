@@ -333,6 +333,8 @@ describe(
         baseResource: gltfKtx2BaseResource,
         supportedImageFormats: new SupportedImageFormats({
           basis: true,
+          ktx2TranscodeTargets:
+            scene.context.graphicsCapabilities.ktx2TranscodeTargets,
         }),
       });
 
@@ -360,6 +362,8 @@ describe(
         baseResource: gltfKtx2BaseResource,
         supportedImageFormats: new SupportedImageFormats({
           basis: true,
+          ktx2TranscodeTargets:
+            scene.context.graphicsCapabilities.ktx2TranscodeTargets,
         }),
       });
 
@@ -390,6 +394,8 @@ describe(
         baseResource: gltfKtx2BaseResource,
         supportedImageFormats: new SupportedImageFormats({
           basis: true,
+          ktx2TranscodeTargets:
+            scene.context.graphicsCapabilities.ktx2TranscodeTargets,
         }),
         asynchronous: false,
       });

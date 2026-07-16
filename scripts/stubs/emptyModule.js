@@ -5,7 +5,7 @@
 // dynamic `await import("./WebGPU/WebGPUContext.js")` in `ContextFactory`
 // resolves to a no-op module that throws if anyone actually tries to
 // instantiate WebGPU — which they shouldn't, because the WebGL-only
-// build sets `setGlobalDefaultRenderer(RendererType.WEBGL)` at boot.
+// build aliases RendererBuildCapabilities to disable WebGPU selection.
 //
 // We export both a default and named accessors so the various import
 // shapes used across the codebase all see SOMETHING. Anything trying to

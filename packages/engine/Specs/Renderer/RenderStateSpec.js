@@ -1,7 +1,7 @@
 import {
   WebGLConstants,
   WindingOrder,
-  ContextLimits,
+  GraphicsCapabilities,
   RenderState,
 } from "../../index.js";
 
@@ -191,7 +191,7 @@ describe(
           enabled: true,
           face: WebGLConstants.FRONT,
         },
-        lineWidth: ContextLimits.maximumAliasedLineWidth,
+        lineWidth: context.limits.maximumAliasedLineWidth,
         polygonOffset: {
           enabled: false,
           factor: 1,
@@ -526,18 +526,41 @@ describe(
 
     it("fails to create (small lineWidth)", function () {
       expect(function () {
-        RenderState.fromCache({
-          lineWidth: ContextLimits.minimumAliasedLineWidth - 1,
+        const renderState = RenderState.fromCache({
+          lineWidth: context.limits.minimumAliasedLineWidth - 1,
         });
+        RenderState.validateForContext(renderState, context.limits);
       }).toThrowDeveloperError();
     });
 
     it("fails to create (large lineWidth)", function () {
       expect(function () {
-        RenderState.fromCache({
-          lineWidth: ContextLimits.maximumAliasedLineWidth + 1,
+        const renderState = RenderState.fromCache({
+          lineWidth: context.limits.maximumAliasedLineWidth + 1,
         });
+        RenderState.validateForContext(renderState, context.limits);
       }).toThrowDeveloperError();
+    });
+
+    it("validates a shared render state independently for each context", function () {
+      const renderState = RenderState.fromCache({ lineWidth: 2.0 });
+      const narrow = GraphicsCapabilities.create({
+        minimumAliasedLineWidth: 1.0,
+        maximumAliasedLineWidth: 1.0,
+      });
+      const wide = GraphicsCapabilities.create({
+        minimumAliasedLineWidth: 1.0,
+        maximumAliasedLineWidth: 4.0,
+      });
+
+      for (let i = 0; i < 8; i++) {
+        expect(function () {
+          RenderState.validateForContext(renderState, wide);
+        }).not.toThrow();
+        expect(function () {
+          RenderState.validateForContext(renderState, narrow);
+        }).toThrowDeveloperError();
+      }
     });
 
     it("fails to create (negative scissorTest.rectangle.width)", function () {
@@ -806,7 +829,7 @@ describe(
           enabled: true,
           face: WebGLConstants.FRONT,
         },
-        lineWidth: ContextLimits.maximumAliasedLineWidth,
+        lineWidth: context.limits.maximumAliasedLineWidth,
         polygonOffset: {
           enabled: false,
           factor: 1,

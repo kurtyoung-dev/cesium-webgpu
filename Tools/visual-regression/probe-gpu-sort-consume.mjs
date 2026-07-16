@@ -56,22 +56,14 @@ function floatToSortableUint(f) {
 }
 // Returns {hi, lo} matching the shader's highWord/lowWord.
 function packKey(cap, c) {
-  const dx = fr(cap.centerX[c] - cap.camX);
-  const dy = fr(cap.centerY[c] - cap.camY);
-  const dz = fr(cap.centerZ[c] - cap.camZ);
-  const dist2 = fr(fr(fr(dx * dx) + fr(dy * dy)) + fr(dz * dz));
+  const dist2 = fr(cap.distanceSquared[c]);
   let distKey = floatToSortableUint(dist2);
   if (cap.sortMode === 1) distKey = ~distKey >>> 0;
-  const layer = cap.renderLayers[c] & 0xf;
+  const layer = cap.renderLayers[c] & 0xff;
   const priority = cap.sortPriorities[c] & 0xff;
   const matId = cap.materialSortIds[c] & 0xffff;
-  const hi =
-    ((layer << 28) |
-      (priority << 20) |
-      (matId << 4) |
-      ((distKey >>> 28) & 0xf)) >>>
-    0;
-  const lo = (((distKey & 0x0fffffff) << 4) | (c & 0xf)) >>> 0;
+  const hi = ((layer << 24) | (priority << 16) | matId) >>> 0;
+  const lo = ((distKey & 0xfffffff0) | (c & 0xf)) >>> 0;
   return { hi, lo };
 }
 function keyLE(a, b) {
@@ -85,12 +77,7 @@ function normalizeCapture(snap) {
   return {
     validCount: snap.validCount,
     sortMode: snap.sortMode,
-    camX: fr(snap.cameraPosition.x),
-    camY: fr(snap.cameraPosition.y),
-    camZ: fr(snap.cameraPosition.z),
-    centerX: snap.centerX,
-    centerY: snap.centerY,
-    centerZ: snap.centerZ,
+    distanceSquared: snap.distanceSquared,
     renderLayers: snap.renderLayers,
     sortPriorities: snap.sortPriorities,
     materialSortIds: snap.materialSortIds,
@@ -119,8 +106,7 @@ function verifyOrder(snap) {
     }
     seen[v] = 1;
   }
-  result.isPermutation =
-    result.dupOrOob === -1 && order.length === n;
+  result.isPermutation = result.dupOrOob === -1 && order.length === n;
   // "Order matches the CPU comparator": independently sort the compacted
   // indices in JS by the exact packed 64-bit key, then compare to the GPU
   // order. Disagreements are ALLOWED only where the two elements have
@@ -238,9 +224,15 @@ async function run() {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
 
@@ -352,6 +344,11 @@ async function run() {
   // with HiZ-consume off the box set is stable and any off-vs-on diff is
   // purely the sort reorder.
   await page.evaluate(() => {
+    // FAR-003 contains every high-density compute producer behind an explicit
+    // scene opt-in. Force the producer for this characterization probe; the
+    // consumer toggle below controls only whether the resulting permutation
+    // is applied.
+    window.viewer.scene.gpuCullingHint = "always";
     if (window.CesiumDebug && window.CesiumDebug.hiZConsume) {
       window.CesiumDebug.hiZConsume(false);
     }
@@ -385,8 +382,7 @@ async function run() {
     return {
       hasRenderer: !!renderer,
       hasSnapshotFn:
-        !!renderer &&
-        typeof renderer.getGpuSortConsumeSnapshot === "function",
+        !!renderer && typeof renderer.getGpuSortConsumeSnapshot === "function",
       stats,
       snapshot,
     };
@@ -538,7 +534,9 @@ async function run() {
     `  gate: errors=${res.gate.errors.length} deviceLost=${res.gate.deviceLost} armed=${res.gate.armedDevices}`,
   );
   if (res.gate.errors.length)
-    console.log(`  gate.errors: ${JSON.stringify(res.gate.errors.slice(0, 5))}`);
+    console.log(
+      `  gate.errors: ${JSON.stringify(res.gate.errors.slice(0, 5))}`,
+    );
 
   // ── Pass criteria ──
   // "order matches CPU comparator" = the GPU order equals a JS sort by the

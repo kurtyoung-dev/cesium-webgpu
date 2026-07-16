@@ -499,11 +499,12 @@ byte-identical to a shader with no ifdef blocks (the safe migration default).
 Two-tier model:
 
 - **Tier 1 — module dedupe (this class).** One cache per `GPUDevice`, cleared on
-  device loss. Key is a Uint32 `(sourceId & 0xff) | ((defines & 0xffffff) << 8)`
-  — fastest possible `Map` lookup, no string hashing on the hot path.
-  **Caution:** the `& 0xffffff` mask drops define bits ≥ 24 from the numeric
-  key — any define bit at `1<<24` or above MUST be folded into `keySalt`
-  instead (§6.3.1) or it silently aliases the variant without that bit.
+  device loss. The common-path key is the exact safe integer
+  `((defines >>> 0) * 0x100) + sourceId`: eight low bits identify the validated
+  source ID and all 32 high bits retain the complete define mask. The maximum
+  key is `2^40 - 1`, inside JavaScript's exact 53-bit integer range, so ordinary
+  lookups remain allocation-free numeric `Map` operations without high-define
+  aliasing.
 - **Tier 2 — per-renderer pipeline cache** (`_pipelineCache` /
   `_wireframePipelineCache` / `_debugFragmentPipelineCache` on each renderer),
   keyed with the defines bitmask as a `|0xNN` suffix.
@@ -515,55 +516,25 @@ miss it `preprocess`es the source against the defines and compiles the module.
 per-source *content* fingerprint, e.g. the hash of a generated `struct Metadata`
 chunk), the cache key becomes the **string** `"<numericKey>#<salt>"` so two
 callers that share `(sourceId, defines)` but supply **different source content**
-don't alias one compiled module. `keySalt === 0` (the default) keeps the key
-byte-identical to the pre-DP-H46b numeric path → exact parity for every
-non-metadata caller. The map type is `Map<number | string, GPUShaderModule>`.
+don't alias one compiled module. `keySalt === 0` (the default) keeps the
+allocation-free numeric path. The map type is
+`Map<number | string, GPUShaderModule>`.
 (Shipped `3b146e42a8 "Batch 455: DP-H46b — per-model WGSL metadata codegen"`;
 consumed by `WebGPUModelPipelineCache.js`.)
 
-#### 6.3.1 The `keySalt` escape hatch — define bits ≥ 24 (Batch-476 pattern)
+#### 6.3.1 `keySalt` is generated-source identity, not define overflow
 
-The Tier-1 numeric key masks defines to 24 bits (`(defines & 0xffffff) << 8`),
-so **any `ShaderDefine` bit at `1<<24` or above is invisible to the numeric
-key**. Setting such a bit without compensation returns the cached module for
-the *unset* variant — a silent, wrong-shader aliasing bug. The escape hatch
-(first used for `VOXEL_CUSTOM_SHADER_COLOR` in Batch 476, hence "the Batch-476
-pattern") is to pass a **non-zero `keySalt`** whenever a bit ≥ 24 is set: in
-`WebGPUShaderModuleCache.getOrCreate` (line ~97), `keySalt !== 0` switches the
-map key to the string `` `${numericKey}#${keySalt >>> 0}` ``, forcing a
-distinct cache entry. Crucially, the **preprocessor still receives the
-unmasked defines**, so the `//>>ifdef` directives resolve correctly — only the
-cache key needed help.
+All 32 define bits participate directly in the numeric key, including bits
+24–31. Pass non-zero `keySalt` only when WGSL source text can change while
+`(sourceId, defines)` stays the same—for example model metadata or user
+custom-shader code generation. The salt is a stable content fingerprint; it
+must not substitute for declaring a real static variant bit.
 
-Six bits currently live above the window and all use the hatch (verified at
-HEAD ≈ Batch 506): `MODEL_HAS_WGSL_CUSTOM_VERTEX (1<<24)`,
-`VOXEL_CUSTOM_SHADER_COLOR (1<<25)`, `MODEL_SPLIT_ENABLED (1<<26)`,
-`MODEL_HAS_COLOR (1<<27)`, `MODEL_SILHOUETTE (1<<28)`,
-`VOXEL_USER_CUSTOM_SHADER (1<<29)`. Three salt-composition variants exist:
-
-- **Constant salt (voxel parity, Batch 476).** `WebGPUVoxelRenderer.ts` passes
-  `ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR` itself as the salt — arbitrary but
-  stable; all it must do is differ from `0` (the placeholder module's key).
-- **XOR-fold onto an existing content salt (models, B483/B484/B485).**
-  `WebGPUModelPipelineCache._getOrCreateShaderModule` (~lines 2392–2415)
-  starts from the DP-H46b content salt (`metadataClassHash ^
-  customShaderClassHash`), then conditionally XORs in each set high bit:
-  `keySalt = (keySalt ^ ShaderDefine.MODEL_SPLIT_ENABLED) >>> 0` (likewise
-  `MODEL_HAS_COLOR`, `MODEL_SILHOUETTE`). Unset bits leave the salt untouched,
-  so pre-existing callers' cache keys are byte-identical.
-- **FNV-1a chunk hash (voxel user customShader, B503).**
-  `WebGPUVoxelCustomShaderCodegen.ts` FNV-1a-hashes the *generated* WGSL chunk
-  (`hashStringFNV1a`, remapped away from `0` and from the bit-25 constant to
-  avoid colliding with the other two salt families) and the renderer passes
-  that hash as the salt. This does double duty: it disambiguates the ≥ 24 bit
-  *and* distinguishes different user shader bodies sharing the same
-  `(sourceId, defines)` — the DP-H46b salted-key path.
-
-**Rule when adding a define bit ≥ 24:** the bit's JSDoc in
-`WebGPUShaderDefines.ts` must note the keySalt requirement, and every
-`getOrCreate` call site that can set the bit must fold it (or a content hash
-covering it) into `keySalt`. There is no runtime guard — the aliasing failure
-mode is a wrong-but-valid shader, which no validation layer catches.
+`getOrCreate` rejects source IDs outside `0..255` and define values outside the
+signed-or-unsigned Uint32 domain. Signed and unsigned representations of the
+same mask normalize to one key. These guards turn registry overflow and invalid
+call-site identity into deterministic failures instead of wrong-but-valid
+shader reuse.
 
 **Prewarm.** Renderers call
 `prewarm(sourceId, source, defineSets, labelPrefix)` at the end of their

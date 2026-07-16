@@ -1,0 +1,136 @@
+{
+  "$schema": "./performance-workloads.schema.json",
+  "schemaVersion": 1,
+  "id": "fork-remediation-phase0-v1",
+  "description": "Deterministic local workload set for fork-remediation CPU/GPU hot-path characterization. It is intentionally display-FPS independent and uses local/procedural content.",
+  "baseUrl": "http://localhost:8080/Apps/CesiumViewer/index.html",
+  "protocol": {
+    "browser": "msedge",
+    "viewport": { "width": 1280, "height": 720, "deviceScaleFactor": 1 },
+    "fixedClock": "2026-06-21T08:00:00Z",
+    "warmupFrames": 120,
+    "measuredFrames": 600,
+    "settleStableFrames": 30,
+    "settleTimeoutMs": 45000,
+    "gpuReadbackDelayMs": 300,
+    "repetitions": 6,
+    "counterbalancedPairs": 6
+  },
+  "workloads": [
+    {
+      "id": "settled-static-3d",
+      "description": "Unchanged settled 3D globe. Establishes the no-persistent-work invariant.",
+      "mode": "3d",
+      "action": "static",
+      "content": "globe-only",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "deterministic-core"
+    },
+    {
+      "id": "moving-camera-3d",
+      "description": "Continuous deterministic camera orbit over a settled local globe.",
+      "mode": "3d",
+      "action": "orbit",
+      "content": "globe-only",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "deterministic-core"
+    },
+    {
+      "id": "moving-camera-altitude-track-3d",
+      "description": "Authoritative normal-render comparison: continuous time-parametrized orbit-to-ground globe flight across every camera-distance band. Use this instead of an idle FPS soak.",
+      "mode": "3d",
+      "action": "camera-track",
+      "content": "globe-only",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "default-globe",
+      "trackId": "orbit-to-ground-global-v1",
+      "measuredSeconds": 20
+    },
+    {
+      "id": "moving-pick-camera-altitude-track-3d",
+      "description": "Continuous asynchronous hover-pick stress: flies the complete altitude route while a 3x3 pick window follows a deterministic moving cursor once per animation frame; reports Scene.render CPU plus public-call and coalesced physical-pick CPU outside the render boundary.",
+      "mode": "3d",
+      "action": "camera-track-pick",
+      "content": "points-4096",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "default-globe",
+      "trackId": "orbit-to-ground-global-v1",
+      "measuredSeconds": 20
+    },
+    {
+      "id": "sparse-mutation-3d",
+      "description": "One percent of a 4096-point collection mutates each frame.",
+      "mode": "3d",
+      "action": "sparse-point-mutation",
+      "content": "points-4096",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "deterministic-core"
+    },
+    {
+      "id": "full-mutation-3d",
+      "description": "Every point in a 4096-point collection mutates each frame.",
+      "mode": "3d",
+      "action": "full-point-mutation",
+      "content": "points-4096",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "deterministic-core"
+    },
+    {
+      "id": "pick-center-3d",
+      "description": "One center-window object pick per rendered frame.",
+      "mode": "3d",
+      "action": "pick-center",
+      "content": "points-4096",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "deterministic-core"
+    },
+    {
+      "id": "resize-cycle-3d",
+      "description": "Alternates between two deterministic viewport sizes every 30 frames.",
+      "mode": "3d",
+      "action": "resize-cycle",
+      "content": "globe-only",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "deterministic-core",
+      "measuredFrames": 240
+    },
+    {
+      "id": "settled-static-2d",
+      "description": "Unchanged settled 2D globe/map frontend and render path.",
+      "mode": "2d",
+      "action": "static",
+      "content": "globe-only",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "deterministic-core"
+    },
+    {
+      "id": "moving-camera-columbus",
+      "description": "Continuous deterministic camera orbit in Columbus View.",
+      "mode": "columbus",
+      "action": "orbit",
+      "content": "globe-only",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "deterministic-core"
+    },
+    {
+      "id": "morph-roundtrip",
+      "description": "Repeated 3D to Columbus View to 2D mode transitions.",
+      "mode": "3d",
+      "action": "morph-roundtrip",
+      "content": "globe-only",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "deterministic-core",
+      "measuredFrames": 360
+    },
+    {
+      "id": "destroy-recreate-content",
+      "description": "Removes and recreates the deterministic 4096-point collection every 120 frames.",
+      "mode": "3d",
+      "action": "destroy-recreate-content",
+      "content": "points-4096",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "deterministic-core",
+      "measuredFrames": 360
+    }
+  ]
+}

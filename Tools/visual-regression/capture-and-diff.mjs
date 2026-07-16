@@ -1,14 +1,19 @@
 #!/usr/bin/env node
 /**
- * WebGPU ↔ WebGL Visual Regression Runner
+ * Historical WebGL + historical WebGPU + current parity regression runner
  *
  * Drives Playwright through the split-screen comparison page, applies each
  * scene from `scenes.json`, captures the WebGL canvas + WebGPU canvas, and
- * computes a per-pixel diff image showing where the two backends disagree.
+ * evaluates three independent visual gates:
+ *   1. current WebGL against its reviewed historical WebGL baseline;
+ *   2. current WebGPU against its reviewed historical WebGPU baseline;
+ *   3. current WebGL against current WebGPU.
  *
  * Usage:
  *   node Tools/visual-regression/capture-and-diff.mjs            # run all scenes
- *   node Tools/visual-regression/capture-and-diff.mjs --update   # write new baselines
+ *   node Tools/visual-regression/capture-and-diff.mjs --update \
+ *     --confirm-baseline-promotion \
+ *     --update-rationale "reviewed change" --reviewed-by "name"
  *   node Tools/visual-regression/capture-and-diff.mjs --scene globe-default
  *
  * Output layout:
@@ -17,7 +22,9 @@
  *   Tools/visual-regression/output/<scene>.webgl.png
  *   Tools/visual-regression/output/<scene>.webgpu.png
  *   Tools/visual-regression/output/<scene>.diff.png   (red = mismatch)
- *   Tools/visual-regression/output/report.json        (per-scene diff stats)
+ *   Tools/visual-regression/output/<scene>.webgl-vs-historical.diff.png
+ *   Tools/visual-regression/output/<scene>.webgpu-vs-historical.diff.png
+ *   Tools/visual-regression/output/report.json        (per-gate outcomes)
  *
  * Requirements:
  *   - Playwright installed (already a dev tool via the MCP plugin marketplace).
@@ -26,11 +33,13 @@
  *     in scenes.json before running this script.
  *
  * Threshold:
- *   The exit code is 0 when every scene's diff ratio is below `--threshold`
- *   (default 0.02 = 2%) and non-zero otherwise — suitable for CI gating.
+ *   The exit code is 0 only when all three visual gates certify every scene
+ *   and the WebGPU error gate is clean. Missing, stale, or unreviewed baseline
+ *   provenance is NON_CERTIFYING and exits 1 rather than silently passing.
  */
 
 import { promises as fs } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -39,11 +48,24 @@ import {
   collectGateErrors,
   attachConsoleErrorGate,
 } from "../lib/webgpu-error-gate.mjs";
+import {
+  GateStatus,
+  createSceneIdentity,
+  evaluatePixelGate,
+  resolveSceneThresholds,
+  sha256,
+  summarizeSceneGates,
+  validateManifestEntry,
+  validatePromotionRequest,
+} from "./lib/visual-gate-policy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENES_PATH = path.join(__dirname, "scenes.json");
 const BASELINE_DIR = path.join(__dirname, "baseline");
+const BASELINE_MANIFEST_PATH = path.join(BASELINE_DIR, "manifest.json");
 const OUTPUT_DIR = path.join(__dirname, "output");
+const REPOSITORY_ROOT = path.resolve(__dirname, "../..");
+const VIEWPORT = Object.freeze({ width: 1600, height: 800 });
 
 function parseArgs(argv) {
   const args = {
@@ -52,6 +74,9 @@ function parseArgs(argv) {
     threshold: 0.02,
     headless: true,
     browser: "msedge",
+    confirmBaselinePromotion: false,
+    updateRationale: null,
+    reviewedBy: null,
   };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
@@ -60,6 +85,13 @@ function parseArgs(argv) {
     else if (a === "--scene") args.scene = argv[++i];
     else if (a === "--threshold") args.threshold = Number(argv[++i]);
     else if (a === "--browser") args.browser = argv[++i];
+    else if (a === "--confirm-baseline-promotion") {
+      args.confirmBaselinePromotion = true;
+    } else if (a === "--update-rationale") {
+      args.updateRationale = argv[++i];
+    } else if (a === "--reviewed-by") {
+      args.reviewedBy = argv[++i];
+    }
   }
   return args;
 }
@@ -80,41 +112,194 @@ async function ensureDir(dir) {
   await fs.mkdir(dir, { recursive: true });
 }
 
-/**
- * Per-pixel diff between two equally-sized RGBA buffers. Returns the diff
- * buffer (red on mismatch, black elsewhere) plus the fraction of pixels that
- * differ beyond `tolerance` channel intensity.
- */
-function diffPixelBuffers(a, b, width, height, tolerance = 16) {
-  if (a.length !== b.length) {
-    throw new Error(
-      `Buffer length mismatch: ${a.length} vs ${b.length} (width=${width} height=${height})`,
+function reportPath(filePath) {
+  return path.relative(__dirname, filePath).replaceAll("\\", "/");
+}
+
+function manifestEntryKey(sceneName, renderer) {
+  return `${sceneName}:${renderer}`;
+}
+
+function getGitMetadata() {
+  try {
+    const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: REPOSITORY_ROOT,
+      encoding: "utf8",
+    }).trim();
+    const sourceDirty =
+      execFileSync("git", ["status", "--porcelain"], {
+        cwd: REPOSITORY_ROOT,
+        encoding: "utf8",
+      }).trim().length > 0;
+    return { sourceCommit, sourceDirty };
+  } catch (error) {
+    throw new Error(`Unable to capture Git provenance: ${error.message}`);
+  }
+}
+
+async function loadBaselineManifest() {
+  try {
+    const manifest = JSON.parse(
+      await fs.readFile(BASELINE_MANIFEST_PATH, "utf8"),
     );
-  }
-  const diff = new Uint8ClampedArray(a.length);
-  let mismatches = 0;
-  const totalPixels = width * height;
-  for (let i = 0; i < a.length; i += 4) {
-    const dr = Math.abs(a[i] - b[i]);
-    const dg = Math.abs(a[i + 1] - b[i + 1]);
-    const db = Math.abs(a[i + 2] - b[i + 2]);
-    if (dr > tolerance || dg > tolerance || db > tolerance) {
-      mismatches++;
-      diff[i] = 255;
-      diff[i + 1] = 0;
-      diff[i + 2] = 0;
-      diff[i + 3] = 255;
-    } else {
-      // Faded grayscale of source A so visual context remains
-      const luma = (a[i] + a[i + 1] + a[i + 2]) / 3;
-      const dim = luma * 0.25;
-      diff[i] = dim;
-      diff[i + 1] = dim;
-      diff[i + 2] = dim;
-      diff[i + 3] = 255;
+    if (
+      manifest.schemaVersion !== 1 ||
+      typeof manifest.entries !== "object" ||
+      manifest.entries === null ||
+      Array.isArray(manifest.entries)
+    ) {
+      throw new Error("expected schemaVersion=1 with an entries object");
     }
+    return { manifest, error: null };
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return {
+        manifest: { schemaVersion: 1, entries: {} },
+        error: "BASELINE_MANIFEST_MISSING",
+      };
+    }
+    return {
+      manifest: { schemaVersion: 1, entries: {} },
+      error: `BASELINE_MANIFEST_INVALID:${error.message}`,
+    };
   }
-  return { diff, ratio: mismatches / totalPixels };
+}
+
+function normalizeHardwareClass(parts) {
+  const populated = parts
+    .filter((part) => typeof part === "string" && part.trim().length > 0)
+    .map((part) => part.trim().toLowerCase().replaceAll(/\s+/g, "-"));
+  return populated.length > 0 ? populated.join(":") : "unknown";
+}
+
+async function collectRunEnvironment(browser, page, browserClass) {
+  const adapter = await page.evaluate(() => {
+    const context = window.webgpuViewer?.scene?.context;
+    const gpuAdapter = context?.adapter ?? context?._adapter;
+    const info = gpuAdapter?.info;
+    return {
+      vendor: info?.vendor ?? null,
+      architecture: info?.architecture ?? null,
+      device: info?.device ?? null,
+      description: info?.description ?? null,
+    };
+  });
+  return {
+    browserClass,
+    browserVersion: browser.version(),
+    adapterClass: normalizeHardwareClass([
+      adapter.vendor,
+      adapter.architecture,
+      adapter.device,
+      adapter.description,
+    ]),
+    adapter,
+    platform: process.platform,
+    nodeVersion: process.version,
+    viewport: VIEWPORT,
+  };
+}
+
+async function loadHistoricalCapture(page, filePath) {
+  try {
+    const png = await fs.readFile(filePath);
+    return {
+      capture: await decodePngInPage(page, png),
+      imageSha256: sha256(png),
+    };
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function getManifestValidation(manifestState, key, actual) {
+  if (manifestState.error) {
+    return { certifying: false, reasons: [manifestState.error] };
+  }
+  return validateManifestEntry(manifestState.manifest.entries[key], actual);
+}
+
+async function writeDiffArtifact(filePath, diff, width, height) {
+  if (!diff) {
+    await fs.rm(filePath, { force: true });
+    return null;
+  }
+  await fs.writeFile(filePath, encodePNG(diff, width, height));
+  return reportPath(filePath);
+}
+
+async function atomicCopy(source, destination) {
+  const temporary = `${destination}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await fs.copyFile(source, temporary);
+    await fs.rename(temporary, destination);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
+}
+
+async function writeManifestAtomically(manifest) {
+  const temporary = `${BASELINE_MANIFEST_PATH}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await fs.writeFile(temporary, `${JSON.stringify(manifest, null, 2)}\n`, {
+      flag: "wx",
+    });
+    await fs.rename(temporary, BASELINE_MANIFEST_PATH);
+  } finally {
+    await fs.rm(temporary, { force: true });
+  }
+}
+
+async function promoteBaselineCandidates({
+  candidates,
+  manifestState,
+  environment,
+  git,
+  args,
+}) {
+  if (environment.adapterClass === "unknown") {
+    throw new Error("Cannot promote without a resolved WebGPU adapter class");
+  }
+
+  const now = new Date().toISOString();
+  const entries = { ...manifestState.manifest.entries };
+  for (const candidate of candidates) {
+    const imageName = path.basename(candidate.baselinePath);
+    await atomicCopy(candidate.outputPath, candidate.baselinePath);
+    const imageBytes = await fs.readFile(candidate.baselinePath);
+    entries[manifestEntryKey(candidate.scene.name, candidate.renderer)] = {
+      scene: candidate.scene.name,
+      renderer: candidate.renderer,
+      provenanceClass: "accepted-current",
+      image: imageName,
+      imageSha256: sha256(imageBytes),
+      width: candidate.capture.width,
+      height: candidate.capture.height,
+      sourceCommit: git.sourceCommit,
+      sourceDirty: git.sourceDirty,
+      sceneIdentity: candidate.sceneIdentity,
+      browserClass: environment.browserClass,
+      browserVersion: environment.browserVersion,
+      adapterClass: environment.adapterClass,
+      capturedAt: now,
+      review: {
+        status: "approved",
+        reviewedBy: args.reviewedBy.trim(),
+        rationale: args.updateRationale.trim(),
+        reviewedAt: now,
+      },
+    };
+  }
+
+  await writeManifestAtomically({
+    $schema: "../baseline-manifest.schema.json",
+    schemaVersion: 1,
+    updatedAt: now,
+    entries,
+  });
 }
 
 /**
@@ -421,6 +606,20 @@ async function applyScene(page, scene, settleFrames) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  const promotionRequest = validatePromotionRequest(args);
+  if (!Number.isFinite(args.threshold) || args.threshold < 0) {
+    console.error("--threshold must be a non-negative number");
+    process.exit(2);
+  }
+  if (promotionRequest.errors.length > 0) {
+    console.error(
+      `[visual-regression] baseline promotion denied:\n${promotionRequest.errors
+        .map((error) => `  - ${error}`)
+        .join("\n")}`,
+    );
+    process.exit(2);
+  }
+
   const cfg = JSON.parse(await fs.readFile(SCENES_PATH, "utf8"));
   const scenes = args.scene
     ? cfg.scenes.filter((s) => s.name === args.scene)
@@ -432,6 +631,14 @@ async function main() {
 
   await ensureDir(BASELINE_DIR);
   await ensureDir(OUTPUT_DIR);
+  const baselineManifest = await loadBaselineManifest();
+  const git = getGitMetadata();
+  if (promotionRequest.requested && git.sourceDirty) {
+    console.error(
+      "[visual-regression] baseline promotion denied: candidate Git worktree is dirty",
+    );
+    process.exit(2);
+  }
 
   const playwright = await loadPlaywright();
   const browserType =
@@ -446,7 +653,7 @@ async function main() {
     channel: args.browser === "msedge" ? "msedge" : undefined,
   });
   const context = await browser.newContext({
-    viewport: { width: 1600, height: 800 },
+    viewport: VIEWPORT,
   });
   const page = await context.newPage();
 
@@ -530,8 +737,31 @@ async function main() {
     { timeout: 120_000 },
   );
 
-  const report = { startedAt: new Date().toISOString(), threshold: args.threshold, scenes: [] };
-  let anyFail = false;
+  const environment = await collectRunEnvironment(browser, page, args.browser);
+  const report = {
+    schemaVersion: 2,
+    startedAt: new Date().toISOString(),
+    threshold: args.threshold,
+    thresholdRole: "migration-fallback",
+    candidate: git,
+    environment,
+    baselineManifest: {
+      path: reportPath(BASELINE_MANIFEST_PATH),
+      schemaVersion: baselineManifest.manifest.schemaVersion,
+      valid: baselineManifest.error === null,
+      error: baselineManifest.error,
+    },
+    promotion: {
+      requested: promotionRequest.requested,
+      authorized: promotionRequest.authorized,
+      performed: false,
+      rationale: args.updateRationale,
+      reviewedBy: args.reviewedBy,
+      requiresFollowupVerification: promotionRequest.requested,
+    },
+    scenes: [],
+  };
+  const promotionCandidates = [];
   for (const scene of scenes) {
     console.log(`[visual-regression] scene: ${scene.name}`);
     await applyScene(page, scene, cfg.settleFrames);
@@ -539,38 +769,179 @@ async function main() {
 
     const webglPath = path.join(OUTPUT_DIR, `${scene.name}.webgl.png`);
     const webgpuPath = path.join(OUTPUT_DIR, `${scene.name}.webgpu.png`);
-    const diffPath = path.join(OUTPUT_DIR, `${scene.name}.diff.png`);
+    const crossDiffPath = path.join(OUTPUT_DIR, `${scene.name}.diff.png`);
+    const historicalWebglDiffPath = path.join(
+      OUTPUT_DIR,
+      `${scene.name}.webgl-vs-historical.diff.png`,
+    );
+    const historicalWebgpuDiffPath = path.join(
+      OUTPUT_DIR,
+      `${scene.name}.webgpu-vs-historical.diff.png`,
+    );
+    const baselineWebglPath = path.join(
+      BASELINE_DIR,
+      `${scene.name}.webgl.png`,
+    );
+    const baselineWebgpuPath = path.join(
+      BASELINE_DIR,
+      `${scene.name}.webgpu.png`,
+    );
     await writeRGBAPng(webglPath, cap.webgl);
     await writeRGBAPng(webgpuPath, cap.webgpu);
 
-    const a = new Uint8ClampedArray(cap.webgl.data);
-    const b = new Uint8ClampedArray(cap.webgpu.data);
-    const { diff, ratio } = diffPixelBuffers(
-      a,
-      b,
+    const [historicalWebgl, historicalWebgpu] = await Promise.all([
+      loadHistoricalCapture(page, baselineWebglPath),
+      loadHistoricalCapture(page, baselineWebgpuPath),
+    ]);
+    const thresholds = resolveSceneThresholds(scene, args.threshold);
+    const sceneIdentity = createSceneIdentity(scene, {
+      baseUrl: cfg.baseUrl,
+      settleFrames: cfg.settleFrames,
+      viewport: VIEWPORT,
+    });
+
+    const historicalWebglValidation = historicalWebgl
+      ? getManifestValidation(
+          baselineManifest,
+          manifestEntryKey(scene.name, "webgl"),
+          {
+            scene: scene.name,
+            image: path.basename(baselineWebglPath),
+            imageSha256: historicalWebgl.imageSha256,
+            renderer: "webgl",
+            width: historicalWebgl.capture.width,
+            height: historicalWebgl.capture.height,
+            sceneIdentity,
+            browserClass: environment.browserClass,
+            adapterClass: environment.adapterClass,
+          },
+        )
+      : { certifying: false, reasons: ["HISTORICAL_BASELINE_MISSING"] };
+    const historicalWebgpuValidation = historicalWebgpu
+      ? getManifestValidation(
+          baselineManifest,
+          manifestEntryKey(scene.name, "webgpu"),
+          {
+            scene: scene.name,
+            image: path.basename(baselineWebgpuPath),
+            imageSha256: historicalWebgpu.imageSha256,
+            renderer: "webgpu",
+            width: historicalWebgpu.capture.width,
+            height: historicalWebgpu.capture.height,
+            sceneIdentity,
+            browserClass: environment.browserClass,
+            adapterClass: environment.adapterClass,
+          },
+        )
+      : { certifying: false, reasons: ["HISTORICAL_BASELINE_MISSING"] };
+
+    const historicalWebglResult = evaluatePixelGate({
+      id: "historicalWebgl",
+      current: cap.webgl,
+      reference: historicalWebgl?.capture ?? null,
+      threshold: thresholds.historicalWebgl,
+      manifestValidation: historicalWebglValidation,
+    });
+    const historicalWebgpuResult = evaluatePixelGate({
+      id: "historicalWebgpu",
+      current: cap.webgpu,
+      reference: historicalWebgpu?.capture ?? null,
+      threshold: thresholds.historicalWebgpu,
+      manifestValidation: historicalWebgpuValidation,
+    });
+    const crossBackendResult = evaluatePixelGate({
+      id: "crossBackend",
+      current: cap.webgl,
+      reference: cap.webgpu,
+      threshold: thresholds.crossBackend,
+    });
+
+    const historicalWebglDiff = await writeDiffArtifact(
+      historicalWebglDiffPath,
+      historicalWebglResult.diff,
       cap.webgl.width,
       cap.webgl.height,
     );
-    const diffPng = encodePNG(diff, cap.webgl.width, cap.webgl.height);
-    await fs.writeFile(diffPath, diffPng);
+    const historicalWebgpuDiff = await writeDiffArtifact(
+      historicalWebgpuDiffPath,
+      historicalWebgpuResult.diff,
+      cap.webgpu.width,
+      cap.webgpu.height,
+    );
+    const crossDiff = await writeDiffArtifact(
+      crossDiffPath,
+      crossBackendResult.diff,
+      cap.webgl.width,
+      cap.webgl.height,
+    );
 
-    if (args.update) {
-      await fs.copyFile(
-        webglPath,
-        path.join(BASELINE_DIR, `${scene.name}.webgl.png`),
-      );
-      await fs.copyFile(
-        webgpuPath,
-        path.join(BASELINE_DIR, `${scene.name}.webgpu.png`),
+    const gates = {
+      historicalWebgl: {
+        ...historicalWebglResult.gate,
+        artifacts: {
+          current: reportPath(webglPath),
+          historical: historicalWebgl ? reportPath(baselineWebglPath) : null,
+          expectedHistorical: reportPath(baselineWebglPath),
+          diff: historicalWebglDiff,
+        },
+      },
+      historicalWebgpu: {
+        ...historicalWebgpuResult.gate,
+        artifacts: {
+          current: reportPath(webgpuPath),
+          historical: historicalWebgpu ? reportPath(baselineWebgpuPath) : null,
+          expectedHistorical: reportPath(baselineWebgpuPath),
+          diff: historicalWebgpuDiff,
+        },
+      },
+      crossBackend: {
+        ...crossBackendResult.gate,
+        artifacts: {
+          webgl: reportPath(webglPath),
+          webgpu: reportPath(webgpuPath),
+          diff: crossDiff,
+        },
+      },
+    };
+    const summary = summarizeSceneGates(gates);
+    for (const gate of Object.values(gates)) {
+      const ratioText =
+        gate.ratio === null ? "n/a" : `${(gate.ratio * 100).toFixed(2)}%`;
+      console.log(
+        `  ${gate.id}: ${gate.status} comparison=${gate.comparisonStatus} diff=${ratioText} threshold=${(gate.threshold * 100).toFixed(2)}%`,
       );
     }
+    console.log(`  scene: ${summary.status}`);
+    report.scenes.push({
+      name: scene.name,
+      sceneIdentity,
+      thresholds,
+      status: summary.status,
+      certifying: summary.certifying,
+      ratio: gates.crossBackend.ratio,
+      crossBackendStatus: gates.crossBackend.status,
+      gateCounts: summary.gateCounts,
+      gates,
+    });
 
-    const status = ratio <= args.threshold ? "PASS" : "FAIL";
-    if (status === "FAIL") anyFail = true;
-    console.log(
-      `  ${status} diff=${(ratio * 100).toFixed(2)}%  threshold=${(args.threshold * 100).toFixed(2)}%`,
+    promotionCandidates.push(
+      {
+        scene,
+        sceneIdentity,
+        renderer: "webgl",
+        capture: cap.webgl,
+        outputPath: webglPath,
+        baselinePath: baselineWebglPath,
+      },
+      {
+        scene,
+        sceneIdentity,
+        renderer: "webgpu",
+        capture: cap.webgpu,
+        outputPath: webgpuPath,
+        baselinePath: baselineWebgpuPath,
+      },
     );
-    report.scenes.push({ name: scene.name, ratio, status });
   }
 
   // WebGPU error/crash gate verdict. Let async GPU errors / device-lost
@@ -586,13 +957,15 @@ async function main() {
     ...gateConsoleErrors,
   ];
   report.webgpuGate = {
+    id: "webgpuErrorGate",
+    status: gateFaults.length > 0 ? GateStatus.FAIL : GateStatus.PASS,
+    certifying: gateFaults.length === 0,
     armedDevices: gate.armedDevices,
     uncapturedErrors: gate.errors,
     deviceLost: gate.deviceLost,
     faultConsole: gateConsoleErrors,
   };
   if (gateFaults.length > 0) {
-    anyFail = true;
     console.log(`\n[visual-regression] WebGPU gate FAILED — ${gateFaults.length} fault(s):`);
     for (const f of gateFaults.slice(0, 30)) console.log(`  · ${f}`);
   } else {
@@ -601,12 +974,67 @@ async function main() {
     );
   }
 
+  if (promotionRequest.requested) {
+    const crossBackendFailures = report.scenes.filter(
+      (scene) => scene.gates.crossBackend.status !== GateStatus.PASS,
+    );
+    const promotionBlockers = [];
+    if (gateFaults.length > 0) {
+      promotionBlockers.push("WebGPU error gate failed");
+    }
+    if (crossBackendFailures.length > 0) {
+      promotionBlockers.push(
+        `cross-backend gate failed for: ${crossBackendFailures
+          .map((scene) => scene.name)
+          .join(", ")}`,
+      );
+    }
+    if (promotionBlockers.length === 0) {
+      await promoteBaselineCandidates({
+        candidates: promotionCandidates,
+        manifestState: baselineManifest,
+        environment,
+        git,
+        args,
+      });
+      report.promotion.performed = true;
+      console.log(
+        "[visual-regression] baselines promoted; run again without --update to certify against the locked manifest",
+      );
+    } else {
+      report.promotion.blockers = promotionBlockers;
+      console.log(
+        `[visual-regression] baseline promotion blocked: ${promotionBlockers.join("; ")}`,
+      );
+    }
+  }
+
+  const sceneCounts = Object.fromEntries(
+    Object.values(GateStatus).map((status) => [
+      status,
+      report.scenes.filter((scene) => scene.status === status).length,
+    ]),
+  );
+  const runStatus =
+    gateFaults.length > 0 || sceneCounts.FAIL > 0
+      ? GateStatus.FAIL
+      : sceneCounts.NON_CERTIFYING > 0
+        ? GateStatus.NON_CERTIFYING
+        : GateStatus.PASS;
+  report.completedAt = new Date().toISOString();
+  report.summary = {
+    status: runStatus,
+    certifying: runStatus === GateStatus.PASS,
+    sceneCounts,
+    promotionPerformed: report.promotion.performed,
+  };
+
   await fs.writeFile(
     path.join(OUTPUT_DIR, "report.json"),
-    JSON.stringify(report, null, 2),
+    `${JSON.stringify(report, null, 2)}\n`,
   );
   await browser.close();
-  process.exit(anyFail ? 1 : 0);
+  process.exit(runStatus === GateStatus.PASS ? 0 : 1);
 }
 
 main().catch((err) => {

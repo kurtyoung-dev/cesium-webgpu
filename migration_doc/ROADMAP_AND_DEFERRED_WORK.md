@@ -1,5 +1,28 @@
 # Roadmap & Deferred Work — CesiumJS WebGPU Fork
 
+> **2026-07-13 architecture-remediation priority override.** The fork-vs-upstream audit identified
+> release-blocking correctness, resource-ownership, frame-scheduling, and multi-context defects that
+> supersede unlanded large net-new feature work. The maintainer authorized launch on 2026-07-13;
+> [Fork Architecture Remediation Plan](FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md) is ACTIVE and
+> its Phase 0/P1 work is the current priority. The first historical measured tranche is recorded in
+> [Fork Performance Audit and Fix Results](FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS_2026-07-14.md). The
+> [weekly change defense](FORK_PERFORMANCE_WEEKLY_CHANGE_DEFENSE_2026-07-15.md) reconciles that result
+> with the exact-current bundle: structural API work reductions remain, but a net current CPU win is
+> not demonstrated and WebGPU picking remains expensive. The
+> [fork-extension coverage matrix](FORK_EXTENSION_TEST_COVERAGE_MATRIX_2026-07-15.json) also records
+> that broad shared/full unit certification is open. The reconciled next sequence is active in
+> [Campaign 8 — Correctness Closure and Renderer-Native Architecture](QUEUE_2026-07-15_CAMPAIGN8.md),
+> which the maintainer explicitly launched on 2026-07-15. Existing shipped features and the add-only IDs below remain
+> intact; the authoritative Campaign-7 queue stays frozen as historical execution evidence.
+
+> **2026-07-15 active successor.** The
+> [Performance/RTE/Visibility Remediation Plan](FORK_PERFORMANCE_RTE_VISIBILITY_REMEDIATION_PLAN_2026-07-15.md)
+> reconciles the moving-camera regression audit, post-quadtree terrain hot path, consumerless MRT,
+> terrain residency, effect visibility, temporal RTE, and every unfinished Campaign 8 item. Its
+> [Campaign 9 queue](QUEUE_2026-07-15_CAMPAIGN9.md) was explicitly launched by the maintainer on
+> 2026-07-15. Campaign 8 is frozen; its open IDs transferred unchanged and its completed slices remain
+> regression gates.
+
 > **Canonical doc (consolidation first draft, 2026 consolidation).**
 > **Supersedes:** `DEFERRED_WORK.md` (the P0/P1/P2 tracker backbone), `CAMPAIGN_ROADMAP_2026-06.md`,
 > `WEBGPU_EXECUTION_ROADMAP.md`, `WEBGPU_MIGRATION_BACKLOG.md`, `WEBGPU_PARITY_AUDIT_2026-06.md`,
@@ -93,13 +116,13 @@ live frontier (§8, §9). The table records each phase's verified disposition.
 | **1** | Point/Label partial-write, Cloud gate, TAA velocity, compute-instance BV+velocity, bloom parity, globe bind-group cache, CI smoke | ✅ DONE (Batches 232–242) | all gates green |
 | **2** | **The log-depth epic** — `NEW-DERIVEDCOMMAND-VARIANT-FACTORY` + `NEW-COLLECTIONS-LOG-DEPTH` + `NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION` | ✅ SHIPPED — **master switch ON Batch 251**; geometry/opaque producer sweep Batches 264–267 | far-camera + pickPosition + collections-regression + globe probes green. **Supersedes the entire `WEBGPU_EXECUTION_ROADMAP` "spine."** Residuals: pointcloud/splat producers + off-by-default consumers (§4) |
 | **3** | 2D / Columbus View / morph collections | 🟢 **POSITIONING RESOLVED (premise re-verified 2026-07-04)** | per-frustum camera-UB foundation (Batch 261), projected-frame RTE + log-depth-consistency (Slice 2), CV coplanar fix (Slice 2b) all landed. **The "SCENE2D collections still all-zero / globe-pass issue" premise is STALE** — `probe-collections-2dcv-morph` (2026-07-04) shows all four collections render at correct map location in 2D (billboard 0.99 / point 1.01 / polyline 0.97 / label parity vs WebGL). Residual = a mode-INDEPENDENT label/billboard atlas **vertical-flip** (see `NEW-BILLBOARD-ATLAS-VFLIP`, §4 Collections), not a 2D/globe-pass defect. See `NEW-COLLECTIONS-2DCV-*` (§4 Collections) |
-| **4** | Large Dynamic Objects — flat-buffer + WASM (regime 2) | ✅ CORE SHIPPED (Batches 270–273) | win = position-encode HOIST (not WASM SIMD); WASM kernel still doesn't load in-bundle (`NEW-WASM-BRIDGE-BUNDLE-LOAD`, §6) |
+| **4** | Large Dynamic Objects — flat-buffer + WASM (regime 2) | ✅ CORE SHIPPED (Batches 270–274) | position-encode hoist and bundled WASM glue resolution both ship; the JS fround twin remains the fallback. A wider WASM kernel is workload-gated (§6). |
 | **5** | Orbital / compute-instance productionization | ✅ DONE (Batches 277–283) | df64 J2 15 m/30 d, SGP4 55 m/1440 min, 1,000,000-instance probe; WebGL2 CPU-kernel fallback |
-| **6** | Picking parity completion | ✅ CORE SHIPPED (Batches 284–286) | sampleHeight/clampToHeight, pick-metadata readback, compute-instance pickPosition. **Open:** arbitrary-ray `pickFromRay` position; live voxel-coordinate + metadata-over-tileset (§4 Picking) |
-| **7** | Shading & material parity (Model PBR, CSM) | ✅ CORE SHIPPED (Batches 287–298, 326, 355–358) | IBL split-sum, direct-BRDF parity, CSM cast+globe-receive fixed. **Open:** `NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU` (blocked by `NEW-WEBGPU-KTX2-TRANSCODER-FORMATS`), CSM Slice-3 splits/VSM (§4 Shadows) |
-| **8** | Performance sweep (globe UBO/bundle, cache hygiene) | ✅ CORE SHIPPED (Batches 292–293) | dynamic-offset UBO, bind-group-cache eviction, pointcloud-LOD off-by-one. **Open:** FORK-41 dormant-compute activation (resolved as C2-21, see below), clustered-lighting bounds items (§6) |
+| **6** | Picking parity completion | 🟡 FUNCTIONAL SLICES SHIPPED; QUERY ARCHITECTURE OPEN | Batches 284–286 and later metadata/voxel slices added substantial coverage, but the 2026-07-14 FAR-107/FAR-409 audit found non-certifying query identity, multi-frustum depth, ray ordering, concurrent readback, and eager feature-ID ownership. Preserve the shipped features while replacing the WebGL-shaped WebGPU compatibility path with authoritative backend-neutral query mini-frames (§4 Picking). |
+| **7** | Shading & material parity (Model PBR, CSM) | ✅ CORE SHIPPED (Batches 287–298, 326, 355–358, 370–371) | IBL split-sum, direct-BRDF parity, CSM cast+globe-receive, KTX2 transcode-target negotiation, and authored KTX2 specular IBL are shipped. The old KTX2-blocked wording is stale. **Open:** CSM Slice-3 splits/VSM and the explicitly listed custom-shader residuals (§4.3, §4.6). |
+| **8** | Legacy core performance sweep (globe UBO/bundle, cache hygiene) | 🟡 HISTORICAL CORE SHIPPED; FAR CAMPAIGN ACTIVE | Batches 292–293 landed dynamic-offset UBOs, bind-group-cache eviction, and the pointcloud-LOD correction. This row is historical, not the current performance authority. The active fork-wide work is the [FAR plan](FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md); the [2026-07-14 measured tranche](FORK_PERFORMANCE_AUDIT_AND_FIX_RESULTS_2026-07-14.md) reduced its historical moving-camera CPU/GPU metrics, while the [exact-current defense](FORK_PERFORMANCE_WEEKLY_CHANGE_DEFENSE_2026-07-15.md) does not demonstrate a net CPU win. Submission/frame-graph authority, safe automatic GPU selection, allocation/copy churn, physical pick cost, and shared-suite correctness remain open. |
 | **9** | Upstream alignment (fix-forward drift) | ✅ small pulls SHIPPED (Batch 299); **the big merge landed** v1.142 (`d06742a2ac`) | remaining drift items in §5; `NEW-SG-SCAN-ADOPT` deferred |
-| **10** | Entity-scale integrations (bulk fast-path) | ✅ POINTS + BILLBOARD/LABEL SHIPPED (Batches 300, 333); EntityCluster GPU bin/count (301, 308) | **Open:** `NEW-ENTITY-BULK-CZML-HINT`, `NEW-ENTITY-GPU-KEYFRAME-KERNEL`, full GPU EntityCluster merge, orbit paths/trails (§4 Collections) |
+| **10** | Entity-scale integrations (bulk fast-path) | ✅ POINTS + BILLBOARD/LABEL SHIPPED (Batches 300, 333); keyframe kernel (309); EntityCluster GPU bin/count (301, 308) | **Open:** `NEW-ENTITY-BULK-CZML-HINT`, the automatic Entity→keyframe-buffer bridge/Hermite-Lagrange parity, full GPU EntityCluster merge, orbit paths/trails (§4 Collections) |
 | **11** | Maintainability & architecture debt | 🟡 PARTIAL — ongoing | `NEW-COLLECTION-RENDERER-BASE` ✅ COMPLETE (Batch 332, 5/5); `NEW-CAPABILITY-GETTER-CODIFY` ✅ (Batch 303). **Open:** `NEW-TS-CONVERT-JS-RENDERERS` (bulk JS renderers), SceneRenderer decomposition, `NEW-MATERIAL-PER-BACKEND-SHADER-SOURCE` (§4 Build) |
 | **12** | Bug-bash & long tail | ✅ tractable set SHIPPED (Batch 304) | **Open:** `DP-H47` (czm_atmosphere auto-uniform suite), `NEW-CAMERA-UPDATEVIEWMATRIX-REVERT` (merge-time) (§4 Build, §12) |
 | **13** | GATED: ECS-in-WASM-on-worker | ❌ **NO-GO, CLOSED (Batch 305)** | gate spike proved regimes 2+3 cover the workload; all `NEW-ECS-*` + `NEW-COOP-COEP-SAB-ENABLE` closed as not-needed |
@@ -110,7 +133,7 @@ live frontier (§8, §9). The table records each phase's verified disposition.
 
 | ID | Item | Status @ HEAD ~455 |
 |---|---|---|
-| **C2-21** | `FORK-41` Hi-Z occlusion consume-flip | ✅ RESOLVED — depth-source bug fixed; command-drop now DEFAULT ON, verified (root cause was a MAX-pyramid footprint-coverage bug, not the Y-flip suspicion) |
+| **C2-21** | `FORK-41` Hi-Z occlusion consume-flip | 🟡 IMPLEMENTATION SHIPPED; AUTOMATIC USE CONTAINED BY FAR-003 — the depth-source/MAX-pyramid footprint bug was fixed, but GPU culling/Hi-Z/sort/indirect selection is now opt-in while CPU-command identity and asynchronous-readback hazards are removed. A forced 6,400-command GPU-sort consumer run is green; safe automatic selection remains open and the capability must not be deleted. |
 | **C2-22** | Error-pipeline fallback (magenta on pipeline-validation failure) | ✅ RESOLVED — core Batch 388, color-pass extended Batch 418; pick/velocity/classification fallbacks remain a deferred follow-up |
 | **C2-23** | `DP-H18` depthFailAppearance | ✅ SHIPPED — color slice Batch 390, MATERIAL twin Batch 419 |
 | **C2-24** | Collections far-surface depth | ✅ CLOSED (already shipped Batches 249-251) |
@@ -125,11 +148,13 @@ log depth** — is **DONE** (Batch 251 flip; producer sweep 264-267). That doc's
 ("the dominant work item is the log-depth epic", "3-4 weeks of slices") is **superseded** and should
 be archived, not followed.
 
-**Current critical path** (what actually gates the most downstream work today):
+**Legacy critical-path reconciliation** (the active priority is the FAR override at the top of this
+document; this list preserves and corrects the earlier feature-roadmap spine):
 
-1. **`NEW-WEBGPU-KTX2-TRANSCODER-FORMATS`** (S–M, §4 Models) — registering WebGPU transcode target
-   formats during `WebGPUContext` init. **Unblocks** `NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU` (authored env
-   maps) and **any** WebGPU KTX2 consumer. Small, high-leverage, no dependencies. **Do first.**
+1. ~~**`NEW-WEBGPU-KTX2-TRANSCODER-FORMATS`**~~ — ✅ **SHIPPED Batch 370**, including WebGPUContext
+   transcode-target registration. Its authored-environment-map consumer
+   `NEW-MODEL-IBL-KTX2-CUBEMAP-WEBGPU` shipped in Batch 371 and was re-verified green on 2026-07-04.
+   **No longer on the critical path.**
 2. ~~**`DP-H46c` pickMetadata producer**~~ — ✅ **SHIPPED — DP-H46 epic CLOSED (Batch 463, `8c10431cbc`).**
    The `scene.pickMetadata` WebGPU producer shipped at Batch 460 (`061f6914f0`, `DP-H46e`) on top of the
    DP-H46a/b/c/d display-side reads (Batches 454–458); `getPickMetadataPipeline` is live in
@@ -489,27 +514,36 @@ Clustered Forward+ lighting + punctual lights also ship. Open:
 - **`NEW-COLLECTION-RENDERER-BASE`** is ✅ COMPLETE (Batch 332, 5/5 renderers migrated).
 - **`NEW-ENTITY-BULK-CZML-HINT`** (M) — surface the bulk fast-path at CZML/GeoJSON **ingest** time
   (skip the intermediate per-entity `PointGraphics`/`ConstantProperty` allocation). **P2.**
-- **`NEW-ENTITY-GPU-KEYFRAME-KERNEL`** — `SampledPositionProperty`/Clock → GPU keyframe-interpolation
-  kernel (the second ComputeInstance kernel family; the time-dynamic follow-up). **P2.**
+- **`NEW-ENTITY-GPU-KEYFRAME-KERNEL`** — ✅ the interpolation kernel shipped (Batch 309). The genuine
+  residual is the automatic Entity/`SampledPositionProperty` → keyframe-buffer bridge plus
+  Hermite/Lagrange parity; reuse the shipped kernel rather than building another one. **P2.**
 - **`NEW-ENTITYCLUSTER-GPU-MERGE`** — the fully-GPU parallel cluster merge (union-find over the grid, no
   readback); GPU bin/count + parity-corrected CPU merge ship (Batches 301, 308). **P2.**
-- **`NEW-ORBITAL-INVENTORY-TRACK`** (S) — add `NEW-ORBITAL-GPU-RESIDENT` to DEFERRED_WORK +
-  FEATURE_INVENTORY (regime currently untracked). **P2** (bookkeeping).
+- **`NEW-ORBITAL-INVENTORY-TRACK`** — ✅ **STALE/CLOSED.** The GPU-resident orbital renderer is recorded
+  in `DEFERRED_WORK.md` and `FEATURE_INVENTORY.md`; do not reopen this bookkeeping task.
 
 **2D / Columbus-View / morph batch canvas** (`PLAN_2DCV_MORPH_BATCHES.md`, 2026-06-07 workflow). The
 epic was scoped into 3 batches + a 7-item backlog. Batch 1 (globe morph endpoint stability + Web
 Mercator `instanceof` detection) shipped Batch 217 and **unblocks Batch 3** (the manual-lerp blend is
 reused by the polyline morph port). Batch 3 (PolylineCollection 2D/CV/morph port) shipped at Phase 3
-Slice 4 (2026-06-13). **Batch 2 produced the CRITICAL FINDING** that promoted collections to a
-high-visibility parity hole: billboard/point/label rendered **nothing on WebGPU in all modes** (a
-structurally-correct code-read that didn't match runtime — the classic trap), tracked as the
-`NEW-COLLECTIONS-2DCV-*` cluster above. The 7 backlog items still pending scoping: exaggeration-skirts
+Slice 4 (2026-06-13). The earlier Batch-2 all-zero collection finding is historical and was resolved
+by the later per-frustum camera/projected-RTE chain; it is not a current positioning blocker. The
+remaining visible collection defect is `NEW-BILLBOARD-ATLAS-VFLIP`, plus the specifically named
+classifier/morph residuals below. The 7 backlog items still pending scoping: exaggeration-skirts
 (✅ shipped Batch 362), classifier 2D/CV, morph review gaps, ground-primitive 2D precision, model
 `projectTo2D` (`MORPH-MODEL-PROJECT2D`, §4.3), `MORPH-TAA-PREVVP` (mid-morph polyline velocity), and the
-disputed `_previousMode` typo (`MORPH-PREVMODE-TYPO`, §12 — do NOT blind-rename). **P1** (the cluster is
-the last big visual-parity hole; SCENE2D collections still blocked).
+disputed `_previousMode` typo (`MORPH-PREVMODE-TYPO`, §12 — do NOT blind-rename).
 
 ### 4.5 Picking
+
+> **Active 2026-07-14 authority: FAR-107 + FAR-409.** The shipped entries below describe functional
+> producers, not certification of the current WebGPU query/readback architecture. Object, position,
+> arbitrary-ray, metadata, voxel, and feature picking must share an immutable backend-neutral
+> `PickQuery`/`PickResult` contract compiled to a graph-owned mini-frame. The audit confirmed invalid
+> multi-frustum depth lifetime, pre-submit ray reads, incomplete cross-family cache keys, concurrent
+> staging-buffer reuse, dead/oversized readback allocation, and eager per-feature pick IDs. Preserve all
+> existing query modes and exact WebGL synchronous behavior; make WebGPU async results authoritative and
+> permit a synchronous result only for an exact completed query/generation.
 
 - **`DP-H46c` / `DP-H46e` pickMetadata producer** — ✅ **SHIPPED — DP-H46 epic CLOSED (Batch 463
   `8c10431cbc`; producer Batch 460 `061f6914f0`).** The WebGPU `scene.pickMetadata` producer path is
@@ -535,9 +569,10 @@ the last big visual-parity hole; SCENE2D collections still blocked).
   - **Residual (queued as Q9 in `NEXT_QUEUE_2026-07-04.md`):** pick composes only to depth-1; reaching
     the color march's LEVEL-3 traversal (B552) and fully sharing one traversal routine is the remaining
     slice — tracked in the active queue, not here.
-- **arbitrary-ray `pickFromRay` position** — returns the hit object but no position (`oneTimeWarning`,
-  no throw). Needs an offscreen GlobeDepth pack + per-view readback. **P2** (deferred until a consumer
-  needs it).
+- **arbitrary-ray `pickFromRay` position** — returns the hit object but no authoritative position;
+  current helpers can read the synchronous cache before the offscreen pick render is submitted. This
+  is not a standalone GlobeDepth-pack patch: FAR-107/FAR-409 must return object plus linear ray depth/
+  distance from the same query mini-frame and readback generation. **P0 architecture/correctness.**
 - **`NEW-WEBGPU-POINT-COLLECTION-PICK`** is ✅ SHIPPED/VERIFIED-WORKING (Batch 323).
 - **`MORPH-PICK`** (unverified) — pick during a morph is exercised by the transitioner itself; if the
   pick pass camera-UB doesn't carry the live `mode`/`morphTime`, `pickPosition` returns wrong coords →
@@ -577,9 +612,12 @@ radii; see §5.2). Open:
 
 ### 4.7 Post-process & Effects
 
-- **`NEW-GPU-SORT-PIPELINE-PHASE-3`** — `_lastSortedIndices` readback runs but is consumed nowhere; the
-  permutation indexes the *compacted* SOA, not the original command array. Fill a `compactedToOriginal`
-  map + `skipped` list + `_applySortedOrder` (Principle 9 — finish the scaffolding). **P2.**
+- **`NEW-GPU-SORT-PIPELINE-PHASE-3` / FAR-003 safe-auto restoration** — the old "consumed nowhere"
+  statement is stale: the forced consumer path is live and a 6,400-command run produced a full
+  permutation matching the CPU comparator (240 dispatches, 234 consumed permutations) with visual
+  output inside the measured noise floor. Automatic use remains correctness-contained/opt-in under
+  FAR-003. Still open: remove normal-frame readback and command-identity hazards, place selection under
+  one authoritative scheduler, prove dense-scene benefit, then restore safe automatic selection. **P1.**
 - **`NEW-VR-USER-POSTPROCESSSTAGE-WGSL-MISSING`** — user-added post-process stages without a WGSL
   fragment shader (6 gallery demos) are silently dropped; the real fix is the Naga GLSL→WGSL transpiler
   (vendored, works for clean Vulkan GLSL but not the Cesium-GLSL dialect — `sampler2D`, undecorated
@@ -819,15 +857,13 @@ prerequisite for all four. Phases 1–3 core SHIPPED (Batches 270–283); Phase 
 | **3 — Dense / derivable (orbital)** | 10k–1M, all move/frame, closed-form of element set + time | GPU compute propagator → storage buffer, positions never leave GPU; instanced draw vertex-pulls by `instance_index`; WebGL2 = SGP4-on-worker WASM fallback | **Phase 3 — ✅ SHIPPED** ⭐ |
 | **4 — Hundreds-of-thousands, arbitrary** | 100k+, too heavy for main-thread encode | ECS-in-WASM-on-worker → packed buffer → upload | **Phase 4 — ❌ NO-GO (Batch 305)** |
 
-Open residuals on the shipped regimes:
+Current residuals on the shipped regimes:
 
-- **`NEW-WASM-BRIDGE-BUNDLE-LOAD`** (§6.2) — the WASM RTE-encode kernel still doesn't load in-bundle; the
-  JS `fround` twin runs instead, so the SIMD win is dormant (the flat-buffer position-encode-hoist win
-  stands regardless). **P2.**
-- **`NEW-ENTITY-GPU-KEYFRAME-KERNEL`** (§4.4) — the time-dynamic regime-3 second kernel family
-  (`SampledPositionProperty`/Clock → GPU keyframe interpolation). **P2.**
-- **`NEW-ORBITAL-GPU-RESIDENT` / `NEW-ORBITAL-INVENTORY-TRACK`** — the regime-3 GPU-resident path is
-  currently untracked in `DEFERRED_WORK` + `FEATURE_INVENTORY`; add the bookkeeping rows. **P2.**
+- **WASM:** bundled glue resolution shipped in Batch 274. Only a workload-proven wider instance kernel
+  remains conditional (§6.2); the JS `fround` twin remains a valid fallback.
+- **Entity keyframes:** the time-dynamic regime-3 interpolation kernel shipped in Batch 309. The
+  automatic `SampledPositionProperty`/Clock bridge and Hermite/Lagrange parity remain. **P2.**
+- **Orbital:** the GPU-resident path and inventory records are present; the old inventory task is closed.
 - **Phase 4 re-open criteria** — explicit user demand for >189k arbitrary dynamic objects @30 fps AND
   proof that regime 3 (GPU-compute) doesn't fit the use case. The Batch-305 gate spike measured the
   main-thread flat-buffer encode ceiling at ~89k @60 fps / ~187k @30 fps on WebGPU (~77k / ~154k on
@@ -838,17 +874,18 @@ Open residuals on the shipped regimes:
 #### Phase 5 — Modern WebGPU feature adoption (WGF-1…5)
 
 Capability detection landed 2026-04-09 (`scene.getDebugSnapshot().renderer.capabilities` exposes
-`hasShaderF16` / `hasDualSourceBlending` / `hasClipDistances` / `hasIndirectFirstInstance` / …); the
-per-feature consumers are **deferred**. Full design in `PHASE_5_MODERN_WEBGPU_DESIGN.md`. Recommended
-order — the low-risk first three, then the workload-gated pair:
+`hasShaderF16` / `hasDualSourceBlending` / `hasClipDistances` / `hasIndirectFirstInstance` / …).
+WGF-3 consumers have since shipped; the remaining experiments are capability- and workload-gated.
+Full design in `PHASE_5_MODERN_WEBGPU_DESIGN.md`:
 
-- **`WGF-4` uniform-buffer standard layout** — drop the hand-rolled std140 padding for the WebGPU
-  standard layout. Mechanical, immediate win. **~3–5 days total. P2 (do first).**
-- **`WGF-1` clip-distances** — replace stencil-based clipping with hardware `@builtin(clip_distances)`
-  (10–15% fragment perf win). Globe terrain already uses it; primitives + models do not (see
-  `WGF-1-EXPAND` in §4.3). **1–2 days. P2.**
-- **`WGF-3` shader-f16 for post-process** — opt-in f16 ALU in ColorGrading/FXAA/bloom-HDR (20–40% ALU
-  saving). **2–3 days. P2** (overlaps §6.3's WGF-3 note).
+- **`WGF-4` uniform-buffer standard layout** — measured FAR-702 layout experiment; preserve the
+  current working host/WGSL layouts until byte size, bind compatibility, and adapter timing prove a win. **P2.**
+- **`WGF-1` clip-distances** — globe terrain already has the hardware path. Models already have
+  correct fragment-discard clipping; extending hardware `@builtin(clip_distances)` to models is a
+  performance experiment, not a parity repair. Arbitrary Primitive has no equivalent public clipping-plane
+  surface today. **P2, measure first.**
+- **`WGF-3` shader-f16 for post-process** — ✅ **SHIPPED** for the post-process family (Batch 478).
+  Only `NEW-PP-F16-DEVICE-VERIFY` on a capable physical adapter remains (§6.3).
 - **`WGF-2` dual-source-blending OIT** — 30–50% OIT cost reduction; currently MRT-fallback-only. **Defer**
   pending a real translucent workload. **2–3 days. P2.**
 - **`WGF-5` indirect-first-instance + multi-draw-indirect** — scene-dependent, massively parallel.
@@ -939,12 +976,19 @@ commit messages carry per-item probe evidence + off-gates). All 25 items are **C
 | 505 | `ENV-MOON-SLIVER` | Environment | model-space RTE full disc |
 | 506 | `GLOBE-POLAR-STRETCH-POLISH` | Globe & Imagery | seam grid + ocean glint (stales the colorgrading baseline, §4.7) |
 
-**Registry hygiene (verified at HEAD):** the campaign added exactly 4 add-only `ShaderDefine` tail
+**Registry hygiene (historical Campaign-7 checkpoint at `62c5bab450`):** the campaign added exactly 4 add-only `ShaderDefine` tail
 bits (1<<26..1<<29) → **30 live bits** (1<<0..1<<29, contiguous), of which **6 bits ≥24** live
 outside the 24-bit numeric cache window and are disambiguated via keySalt
 (`${numericKey}#${keySalt}` in `WebGPUShaderModuleCache.getOrCreate`). `ShaderSourceId` stands at
 **39 registrations** (1..39, 0 reserved) — zero new this campaign. 23 new `probe-*.mjs` (441
 total in `Tools/visual-regression`).
+
+**Exact-current reconciliation (2026-07-15):** the registry now has **31 live define bits**
+(1<<0..1<<30, contiguous) and **41 source IDs** (1..41, 0 reserved). The module cache now uses one
+exact 40-bit safe-integer identity for the 8-bit source ID plus the full Uint32 define mask; `keySalt`
+is reserved for dynamically generated WGSL identity rather than compensating for truncated define
+bits. `Tools/visual-regression` contains **540** `probe-*.mjs` scripts. The historical counts above
+remain useful only for reconstructing Campaign 7; they are not current registry authority.
 
 **Post-campaign audit outcome (2026-07-03, HEAD `62c5bab450`): ISSUES-FOUND.** Probe sweep:
 20 PASS, 3 real FAIL, 1 stale-baseline FAIL (`probe-colorgrading-wired` gate F), 1 dismissed
@@ -976,8 +1020,11 @@ The fork ships several **GPU-compute substrates wired as threshold-gated consume
 
 - **gpuCuller** ✅ wired (Batch 209), **HiZ + sort-keys** ✅ wired (Batches 210/211), **GPU bitonic
   sort** ✅ shipped (Batch 228; Phase-3 RenderScheduler consumer = open `NEW-GPU-SORT-PIPELINE-PHASE-3`).
-- **FORK-41 HiZ occlusion command-drop** ✅ now DEFAULT ON (C2-21) — the "5-20× on dense 3D Tiles left on
-  the floor" is **reclaimed**.
+- **FORK-41 HiZ occlusion command-drop / C2-21** — the implementation and historical consume-flip fix
+  ship, but the old "DEFAULT ON" claim is no longer current. FAR-003 contains GPU culling/Hi-Z/sort/
+  indirect selection as opt-in until CPU-command identity and asynchronous-readback hazards are removed.
+  The explicit forced GPU-sort consumer is green; safe automatic selection and an authoritative
+  no-normal-readback scheduler remain open.
 - **`WebGPUComputeEngine`** ✅ wired into `WebGPUContext` (Batch 367, `NEW-WEBGPU-COMPUTE-ENGINE-WIRING`)
   — this had been the dormant-dispatch blocker for the atmosphere LUTs; now live (verified at HEAD: the
   `WebGPUContext.computeEngine` getter lazily instantiates `WebGPUComputeEngine`).
@@ -999,18 +1046,19 @@ The fork ships several **GPU-compute substrates wired as threshold-gated consume
   pre-fix); the Bruneton full-LUT compute passes (Batch 306 infrastructure) now run.
 
 **Open perf items** (`CAMPAIGN_ROADMAP` Phase 8 continuation): `NEW-RENDERBUNDLE-AGING-DECOUPLE`
-(aging-from-frame-tick decouple; LRU + age eviction already exist), `NEW-RESOURCEMANAGER-KEY-EVICTION`
-(low growth risk), `NEW-CLUSTERED-ASSIGN-BOUNDS-DIRTY`, `NEW-CLUSTER-MULTIFRUSTUM-BOUNDS`,
-`NEW-MODEL-VS-MOTION-GATE`, `NEW-DECOUPLEDSCAN-FORWARD-PROGRESS-GUARD`. **All P2**, gate each on a
-measured `CesiumDebug.gpuPassCost()`/`cpuPassCost()` before/after number.
+(low-value aging-from-frame-tick refinement; LRU + age eviction already exist),
+`NEW-RESOURCEMANAGER-KEY-EVICTION` (low growth risk), `NEW-CLUSTER-MULTIFRUSTUM-BOUNDS`, and
+`NEW-MODEL-VS-MOTION-GATE`. **All P2**, gate each on a measured
+`CesiumDebug.gpuPassCost()`/`cpuPassCost()` before/after number. Do not reopen
+`NEW-CLUSTERED-ASSIGN-BOUNDS-DIRTY` (shipped Batch 572) or
+`NEW-DECOUPLEDSCAN-FORWARD-PROGRESS-GUARD` (shipped C4).
 
 ### 6.2 WASM
 
-- **`NEW-WASM-BRIDGE-BUNDLE-LOAD`** — the WASM RTE-encode kernel **does not load in the bundle**; the
-  byte-identical JS fround twin runs instead, so the SIMD win is **dormant**. The flat-buffer strategy
-  win (position-encode hoist) stands regardless (Batch 273 benchmark). **P2** (infra) — until it lands,
-  WASM SIMD is unrealized. `NEW-WASM-WIDE-INSTANCE-KERNEL` deferred (only worth it if the color-pack loop
-  becomes the bottleneck).
+- **`NEW-WASM-BRIDGE-BUNDLE-LOAD`** — ✅ **SHIPPED (Batch 274).** `resolveWasmGlueUrl` and the live
+  `WasmRTEBridge` resolve the bundled glue; older "SIMD dormant because the bundle cannot load" prose is
+  historical. `NEW-WASM-WIDE-INSTANCE-KERNEL` remains deferred and is only worth scheduling if profiling
+  proves the residual color-pack loop is a bottleneck.
 
 ### 6.3 WGF-1..5 (post-process f16 / perf variants)
 
@@ -1514,9 +1562,11 @@ a new artifact). The **active minor bugs** not already covered above:
    **stale-shipped**: log-depth flip (251), buffer-primitive parity (315-318), EdgeDisplayMode (316),
    CSM cast/receive (296-298), the entire atmosphere/cloud improvement plan P0-P4 — now including
    AERIAL-FROXEL (426-451, Q23), C2-25 reflections epic (446-451), tiered clouds V0-V16 (396-453), weather P0-P3 (384-425),
-   DP-H46a/b (454-455), compute-engine wiring (367), C2-21/22/23/24 (388-419).
-3. **Surfaced the genuinely-open items exhaustively** (§4-§12): `NEW-WEBGPU-KTX2-TRANSCODER-FORMATS`,
-   `DP-H46c`, `ENV-CAPTURE-PER-FACE-LOD`, weather Phase 4, collections SCENE2D,
+   DP-H46a/b (454-455), compute-engine wiring (367), and the historical C2-21/22/23/24 implementations
+   (388-419). C2-21 automatic activation was subsequently contained by FAR-003; do not read this
+   shipped-implementation summary as a current default-on claim.
+3. **Surfaced the genuinely-open items exhaustively** (§4-§12): the remaining
+   `NEW-MODEL-WGSL-CUSTOM-SHADER` surface, `DP-H46c`, `ENV-CAPTURE-PER-FACE-LOD`, weather Phase 4, collections SCENE2D,
    voxel data path, `DP-H47`, the morph cluster, vegetation V1-V5, water Phases 1-9.
    (`AERIAL-FROXEL` (2.3) shipped Batch Q23 — the atmosphere/cloud improvement plan is now fully closed.)
 

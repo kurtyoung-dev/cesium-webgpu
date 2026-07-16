@@ -26,9 +26,14 @@ async function measure(renderer, taaOn) {
     args: ["--enable-unsafe-webgpu"],
   });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
-  const errs = [];
-  page.on("console", (m) => { if (m.type() === "error") errs.push(m.text()); });
-  page.on("pageerror", (e) => errs.push("PAGEERR:" + e.message));
+  const pageErrors = [];
+  const consoleErrors = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") {
+      consoleErrors.push(message.text());
+    }
+  });
+  page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
     timeout: 90000,
@@ -60,10 +65,18 @@ async function measure(renderer, taaOn) {
         const j9 = Math.abs(proj[9]);
         if (j8 > maxJitter) maxJitter = j8;
         if (j9 > maxJitter) maxJitter = j9;
-        if (i >= 145) samples.push([+proj[8].toExponential(2), +proj[9].toExponential(2)]);
-      } catch (e) { /* ignore */ }
+        if (i >= 145)
+          samples.push([+proj[8].toExponential(2), +proj[9].toExponential(2)]);
+      } catch (e) {
+        /* ignore */
+      }
     }
-    return { rendererType: s.context.rendererType, taaEnabled: s.taaEnabled, maxJitter, samples };
+    return {
+      rendererType: s.context.rendererType,
+      taaEnabled: s.taaEnabled,
+      maxJitter,
+      samples,
+    };
   }, taaOn);
 
   // Capture one settled frame (inside postRender — WebGPU canvas clears on present).
@@ -72,8 +85,11 @@ async function measure(renderer, taaOn) {
     return await new Promise((res) => {
       const rm = v.scene.postRender.addEventListener(() => {
         rm();
-        try { res(v.scene.canvas.toDataURL("image/png").split(",")[1]); }
-        catch (e) { res(null); }
+        try {
+          res(v.scene.canvas.toDataURL("image/png").split(",")[1]);
+        } catch (e) {
+          res(null);
+        }
       });
       v.scene.requestRender();
       v.scene.render();
@@ -81,7 +97,12 @@ async function measure(renderer, taaOn) {
   });
 
   await browser.close();
-  return { ...out, errs, b64 };
+  const deviceErrors = consoleErrors.filter((message) =>
+    /GPUValidationError|GPUInternalError|GPUOutOfMemoryError|device\s+lost|WebGPU.*(?:error|lost)/i.test(
+      message,
+    ),
+  );
+  return { ...out, pageErrors, consoleErrors, deviceErrors, b64 };
 }
 
 const wgpuOn = await measure("webgpu", true);
@@ -90,10 +111,20 @@ const wglOn = await measure("webgl", true);
 
 const fs = await import("fs");
 fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-if (wgpuOn.b64) fs.writeFileSync("Tools/visual-regression/output/taa-webgpu-on.png", Buffer.from(wgpuOn.b64, "base64"));
+if (wgpuOn.b64)
+  fs.writeFileSync(
+    "Tools/visual-regression/output/taa-webgpu-on.png",
+    Buffer.from(wgpuOn.b64, "base64"),
+  );
 
 const report = {
-  webgpu_taaOn: { maxJitter: wgpuOn.maxJitter, samples: wgpuOn.samples, errs: wgpuOn.errs.slice(0, 3) },
+  webgpu_taaOn: {
+    maxJitter: wgpuOn.maxJitter,
+    samples: wgpuOn.samples,
+    pageErrors: wgpuOn.pageErrors,
+    deviceErrors: wgpuOn.deviceErrors,
+    consoleErrors: wgpuOn.consoleErrors.slice(0, 3),
+  },
   webgpu_taaOff: { maxJitter: wgpuOff.maxJitter, samples: wgpuOff.samples },
   webgl_taaOn: { maxJitter: wglOn.maxJitter, samples: wglOn.samples },
 };
@@ -105,13 +136,14 @@ console.log(JSON.stringify(report, null, 2));
 const pass =
   wgpuOn.maxJitter > JITTER_EPS &&
   wgpuOff.maxJitter <= JITTER_EPS &&
-  wgpuOn.errs.length === 0;
+  wgpuOn.pageErrors.length === 0 &&
+  wgpuOn.deviceErrors.length === 0;
 console.log(
   `WebGL-on maxJitter (informational parity): ${wglOn.maxJitter.toExponential(3)}`,
 );
 console.log(
   pass
-    ? "GATE PASS — WebGPU camera projection carries TAA jitter when taaEnabled (none when off); 0 errors"
+    ? "GATE PASS — WebGPU camera projection carries TAA jitter when taaEnabled (none when off); 0 page/device errors"
     : "GATE FAIL — WebGPU projection jitter not reaching the GPU (or TAA-off leaked jitter / device errors)",
 );
 process.exit(pass ? 0 : 1);

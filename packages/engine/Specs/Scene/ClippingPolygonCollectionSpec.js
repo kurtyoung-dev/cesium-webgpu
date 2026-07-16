@@ -3,7 +3,6 @@ import {
   Cartesian2,
   Cartesian3,
   Math as CesiumMath,
-  ContextLimits,
   ClippingPolygon,
   ClippingPolygonCollection,
   Intersect,
@@ -17,6 +16,10 @@ import {
 import createScene from "../../../../Specs/createScene.js";
 
 describe("Scene/ClippingPolygonCollection", function () {
+  function contextWithMaximumTextureSize(maximumTextureSize) {
+    return { limits: { maximumTextureSize } };
+  }
+
   const positions = Cartesian3.fromRadiansArray([
     -1.3194369277314022, 0.6988062530900625, -1.31941, 0.69879,
     -1.3193955980204217, 0.6988091578771254, -1.3193931220959367,
@@ -598,11 +601,12 @@ describe("Scene/ClippingPolygonCollection", function () {
     });
     const scene = createScene();
     // Set this to the minimum possible value so texture sizes can be consistently tested
-    ContextLimits._maximumTextureSize = 64;
+    const context = contextWithMaximumTextureSize(64);
 
     const result =
       ClippingPolygonCollection.getClippingDistanceTextureResolution(
         polygons,
+        context,
         new Cartesian2(),
       );
     expect(result.x).toBe(64);
@@ -619,11 +623,12 @@ describe("Scene/ClippingPolygonCollection", function () {
     });
     const scene = createScene();
     // Set this to the minimum possible value so texture sizes can be consistently tested
-    ContextLimits._maximumTextureSize = 64;
+    const context = contextWithMaximumTextureSize(64);
 
     const result =
       ClippingPolygonCollection.getClippingExtentsTextureResolution(
         polygons,
+        context,
         new Cartesian2(),
       );
     expect(result.x).toBe(1);
@@ -845,7 +850,7 @@ describe("Scene/ClippingPolygonCollection", function () {
     const polygon = new ClippingPolygon({ positions });
 
     // Set this to the minimum possible value so texture sizes can be consistently tested
-    ContextLimits._maximumTextureSize = 16384;
+    const context = contextWithMaximumTextureSize(16384);
 
     const halfQuality = new ClippingPolygonCollection({
       polygons: [polygon],
@@ -854,6 +859,7 @@ describe("Scene/ClippingPolygonCollection", function () {
     const result05 =
       ClippingPolygonCollection.getClippingDistanceTextureResolution(
         halfQuality,
+        context,
         new Cartesian2(),
       );
     expect(result05.x).toBe(2048);
@@ -865,6 +871,7 @@ describe("Scene/ClippingPolygonCollection", function () {
     const result10 =
       ClippingPolygonCollection.getClippingDistanceTextureResolution(
         defaultQuality,
+        context,
         new Cartesian2(),
       );
     expect(result10.x).toBe(4096);
@@ -877,18 +884,19 @@ describe("Scene/ClippingPolygonCollection", function () {
     const result20 =
       ClippingPolygonCollection.getClippingDistanceTextureResolution(
         doubleQuality,
+        context,
         new Cartesian2(),
       );
     // Clamped to maximumTextureSize
-    expect(result20.x).toBeLessThanOrEqual(ContextLimits.maximumTextureSize);
-    expect(result20.y).toBeLessThanOrEqual(ContextLimits.maximumTextureSize);
+    expect(result20.x).toBeLessThanOrEqual(context.limits.maximumTextureSize);
+    expect(result20.y).toBeLessThanOrEqual(context.limits.maximumTextureSize);
   });
 
   it("quality enforces a minimum texture size of 128", function () {
     const polygon = new ClippingPolygon({ positions });
 
     // Set this to the minimum possible value so texture sizes can be consistently tested
-    ContextLimits._maximumTextureSize = 16384;
+    const context = contextWithMaximumTextureSize(16384);
 
     const polygons = new ClippingPolygonCollection({
       polygons: [polygon],
@@ -897,6 +905,7 @@ describe("Scene/ClippingPolygonCollection", function () {
     const result =
       ClippingPolygonCollection.getClippingDistanceTextureResolution(
         polygons,
+        context,
         new Cartesian2(),
       );
     expect(result.x).toBe(128);

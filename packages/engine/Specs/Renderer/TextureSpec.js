@@ -6,7 +6,6 @@ import {
   PixelFormat,
   Resource,
   ClearCommand,
-  ContextLimits,
   PixelDatatype,
   Sampler,
   Texture,
@@ -105,11 +104,12 @@ describe(
 
         if (context.supportsBasis) {
           promises.push(
-            loadKTX2("./Data/Images/Green4x4_ETC1S.ktx2").then(
-              function (image) {
-                greenBasisKTX2Image = image;
-              },
-            ),
+            loadKTX2(
+              "./Data/Images/Green4x4_ETC1S.ktx2",
+              context.graphicsCapabilities.ktx2TranscodeTargets,
+            ).then(function (image) {
+              greenBasisKTX2Image = image;
+            }),
           );
         }
 
@@ -1016,7 +1016,7 @@ describe(
         expect(function () {
           texture = new Texture({
             context: context,
-            width: ContextLimits.maximumTextureSize + 1,
+            width: context.limits.maximumTextureSize + 1,
             height: 16,
           });
         }).toThrowDeveloperError();
@@ -1037,7 +1037,7 @@ describe(
           texture = new Texture({
             context: context,
             width: 16,
-            height: ContextLimits.maximumTextureSize + 1,
+            height: context.limits.maximumTextureSize + 1,
           });
         }).toThrowDeveloperError();
       });

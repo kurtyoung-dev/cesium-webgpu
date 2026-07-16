@@ -77,11 +77,13 @@ describe("Renderer/WebGPU/WebGPUEllipsoidRenderer", function () {
     it("writes encodedCamera high+low into offsets 16..23", function () {
       const ud = new Float32Array(80);
       const inputs = makeBaseInputs({
-        cameraPositionWC: new Cartesian3(1e7, 2e7, 3e7),
+        // The fixture's model matrix translates the body +1e7 on X, so
+        // this world-space camera is (1e7, 2e7, 3e7) in body-model space.
+        cameraPositionWC: new Cartesian3(2e7, 2e7, 3e7),
       });
       packEllipsoidBaseUniforms(ud, inputs);
-      // The split is f32 high + f32 low — the SUM of high and low must
-      // recover the original f64 to within float32 precision.
+      // The split is f32 high + f32 low in body-model coordinates. The
+      // SUM must recover the model-space value within float32 precision.
       const highX = ud[16];
       const lowX = ud[20];
       expect(highX + lowX).toBeCloseTo(1e7, 0);

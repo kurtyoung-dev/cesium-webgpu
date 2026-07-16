@@ -1,0 +1,350 @@
+# Campaign 9 — Terrain Hot Path, Visibility, Precision, and Campaign 8 Closure
+
+Prepared: 2026-07-15
+
+Status: **LAUNCHED / IN PROGRESS**
+
+Launch authority: the maintainer explicitly instructed the agent to kick off Campaign 9 on
+2026-07-15. Campaign gates continue to control implementation, evidence, and promotion.
+
+Source plan:
+[Fork Performance, RTE, Visibility, and Campaign 8 Remediation Plan](FORK_PERFORMANCE_RTE_VISIBILITY_REMEDIATION_PLAN_2026-07-15.md)
+
+Campaign 8 is frozen as historical evidence and all of its open IDs transfer here unchanged. This
+queue does not repeat closed work and does not silently activate its gated tail.
+
+## 1. Outcome and campaign rules
+
+Recover materially better moving-camera WebGPU performance, complete temporal/planetary precision,
+make attachment/resource/effect work consumer-driven, and close all unfinished Campaign 8 work while
+preserving the complete WebGL/WebGPU feature and API surface.
+
+Rules:
+
+1. Never remove, hide, default-disable, bypass, or visually weaken a feature for a metric.
+2. Follow the WebGL globe architecture: WebGL and WebGPU consume the same backend-neutral
+   `QuadtreePrimitive`/`GlobeSurfaceTileProvider` selected tiles. Never replace terrain quadtree,
+   3D Tiles traversal, or voxel octree with the optional general `SceneOctree`; optimize their
+   post-selection work and give non-PVS effects explicit owners.
+3. Unknown attachment demand keeps MRT; unknown bounds execute the effect; unknown serial retains the
+   resource; uncertain GPU visibility uses the correct fallback.
+4. No absolute planetary ECEF `f32` reconstruction before camera subtraction, including previous
+   frames and GPU culling/LOD data.
+5. Node/Playwright and Microsoft Edge only for browser automation. The moving multi-altitude camera
+   track is mandatory; idle soak/FPS is not performance evidence.
+6. Land one concern per slice. Roll back the optimization, never the feature. Tests and counters remain.
+
+## 2. Inherited closed slices — regression gates only
+
+| ID | Retained proof |
+| --- | --- |
+| `C8-00-EXACT-CURRENT-LAUNCH-SEAL` | Bounded Campaign 8 checkpoint remains historical; Campaign 9 creates a new launch and final hash. |
+| `NEW-PICK-HOVER-LATEST-WINS-DELIVERY` | Active-plus-latest delivery, error/drain, and moving-hover tests remain mandatory. |
+| `NEW-INDIRECT-IDLE-ALLOCATION-CONTAINMENT` | Default/not-requested frames continue to allocate no indirect manager; capability remains available explicitly. |
+| `NEW-SHADER-MODULE-CACHE-FULL-DEFINE-IDENTITY` | Exact full define identity and allocation-free ordinary cache hits remain guarded. |
+
+## 3. Gates
+
+| Gate | Required to pass | Stops promotion when |
+| --- | --- | --- |
+| A — exact launch/attribution | Exact source/build/worktree identity; saved/current bundle replay on the same moving-altitude route; clean/API lanes; deterministic offline boot; known-error ledger | A route is incomplete, rendering pauses, source hashes differ, clean/instrumented data mix, or device errors are unexplained |
+| B — bounded correctness | FAR-107 contract premise plus Campaign 8 items 2–10 and new item 11 checkpoint; WebGL/WebGPU semantic and visual oracles | A public result, feature, mode, depth/history contract, or visual is weakened |
+| C — default hot path | No-op gates, demand-open pass, retained terrain, demand-driven MRT, atmosphere, model/cluster, and exact on/off/restored evidence | Improvement is within noise, a route segment regresses, or an unknown consumer is skipped |
+| D — timeline/residency | FAR-200 timeline/adoption/retirement; terrain byte plateau over repeated altitude loops; multi-context/loss/lifetime matrix | A submission/publication/retirement lacks physical queue, generation, and completion-serial identity |
+| E — visibility/RTE | Numeric precision and view-version oracle; effect hidden/reveal/clock-jump continuity; all scene modes and natural frusta | Planetary precision is lost, bounds are non-conservative, or hidden effects resume incorrectly |
+| F — native ownership | Terrain/mesh and immutable-texture verticals pass no-double-tax, recovery, mutation, mixed-context, and retirement gates | Native ownership creates compatibility GPU resources or backend handles cross contexts |
+| G — final certification | Shared upstream and fork suites; accepted visuals; allocation/lifetime/pass/timestamp evidence; display-paced and supported maximum-throughput moving routes on one new hash | Any lane is absent, historical evidence is overwritten, or unsupported pacing is reported as uncapped |
+
+R0/R1 proof, counters, and no-op work may land before Gate B. FAR-200 S1's shadow physical-timeline
+service is the explicit pre-Gate-B exception because it migrates no production caller and item 13
+needs a generation/serial publication contract. Attachment topology, production submit-source
+migration, and ownership authority otherwise wait for Gate B unless an explicit gate amendment records
+why the slice is correctness-independent.
+
+### 3.1 Investigation-to-task coverage
+
+| Confirmed finding | Campaign 9 owner |
+| --- | --- |
+| WebGL/WebGPU must share globe-quadtree selected tiles; general SceneOctree is not the terrain owner | `C9-02`, `C9-08`, `C9-11` |
+| Per-visible-tile arrays, slices, command wrappers, execute closures, effects packing, and dynamic uploads | `C9-01`, `C9-11`, `C9-12`, `NEW-GLOBE-EFFECTS-PER-VIEW-PREPARED-HANDLE` |
+| Identical immutable imagery sources are realized once per terrain tile, each with eight private mip passes and a private submit | `C9-01`, `C9-12A-IMAGERY-SOURCE-REALIZATION-DEDUP-AND-MIP-PREP`, `FAR-200-S2`, `FAR-203`, `FAR-205` |
+| Always-on consumerless MRT/G-buffer allocation, clear, and resolve | `C9-09`, `C9-10` |
+| Terrain GPU buffers grow without a production byte-budget/retirement owner | `FAR-200-S1/S2/S3`, `C9-15` |
+| Duplicate vertex/fragment ground-atmosphere integration | `C9-14` |
+| Zero-strength TPDF allocation/upload/hash work | `C9-05` |
+| Repeated sun/star extinction integration and zero-intensity star draw | `C9-06` |
+| Default canvas render pass opened only to be redirected/ended | `C9-07` |
+| Scheduler/material-sort/SceneOctree maintenance when no consumer needs it | `C9-08` |
+| Disabled diagnostic/profiler closure/object/string allocation | `C9-18` |
+| Clustered-light and settled Model default-path residual work | `C9-16`, `C9-17` |
+| Fullscreen/compute work does not inherit primitive PVS automatically | `C9-23` |
+| FFT ocean outside view and frame-count time freezing on skipped updates | `C9-20` |
+| Flow-field visibility, simulation continuity, and submission ownership | `C9-21` |
+| Environment capture replays main-view candidates across six faces and lacks complete capture-view selection | `C9-22`, `C9-22A` |
+| Current/previous temporal shaders reconstruct absolute ECEF `f32` | `C9-24`, `C9-25` |
+| Hi-Z/LOD visibility data stores unsafe absolute ECEF and lacks exact view/depth identity | `C9-26` |
+| Collection fallback camera UBO rewrites per slice and non-3D frame identity is incomplete | `C9-27` |
+| Point-cloud/vector-tile/cloud/fog RTE/temporal gaps | `C9-28` |
+| Natural-frustum TAA depth/projection/jitter/history mismatch | `NEW-TAA-MULTIFRUSTUM-DEPTH-REPROJECTION-CONTRACT` / `C9-29` |
+
+Every highest-impact issue found by the performance, RTE, visibility, and octree investigation has a
+named owner above. The Campaign 8 carry-forward tables add the remaining correctness, parity,
+ownership, graph, test, and pacing work.
+
+### 3.2 Live execution status
+
+Every active task not listed in this ledger has status **NOT STARTED**. Update this ledger whenever a
+task starts, completes, is left partially complete while work moves forward, becomes blocked, or is
+explicitly deferred. Status vocabulary:
+
+- **IN PROGRESS** — the current bounded work item;
+- **COMPLETE** — acceptance evidence is recorded and no required work remains;
+- **PARTIAL / PAUSED** — useful work/evidence landed, but acceptance is incomplete and execution moved on;
+- **BLOCKED** — the documented dependency prevents meaningful progress;
+- **DEFERRED** — an explicit gate decision moved the untouched remainder out of active execution;
+- **CONDITIONAL NOT TRIGGERED** — the proof task showed that a conditional product fix is unnecessary.
+
+| Task or gate | Status | Updated | Evidence / next action |
+| --- | --- | --- | --- |
+| Campaign 9 | **IN PROGRESS** | 2026-07-15 | Maintainer launch authority recorded; Campaign 8 frozen and open IDs transferred. |
+| Gate A | **IN PROGRESS** | 2026-07-15 | Exact moving launch seal and deterministic local boot are complete. `C9-01` exact-current attribution is sufficient to rank remediation, but exact week-old replay is paused because that dirty bundle was not retained; a recorded gate amendment or recovered binary is required. `C9-02` visibility ownership and unique timestamp identity remain active dependencies. |
+| `C9-00-EXACT-CURRENT-MOVING-LAUNCH-SEAL` | **COMPLETE** | 2026-07-15 | Exact commit `a54cc06`, dirty bundle `B8015811...11E`, Edge 150.0.4078.65. Smoke plus clean r5 and separately instrumented API r5 all pass correct WebGL/WebGPU resolution, all eight segments, 18,000 km→~300 m, and zero page/device errors. Clean median CPU p95: WebGL 5.50 ms, WebGPU 7.51 ms (WebGPU range 7.20–9.40). API median WebGPU/frame: 14.41 passes, 1.43 submits, 4.85 bind groups, 10.03 writes/112.9 KB, 1.84 buffers/5.60 KB, 0.43 textures and external copies. Nonfatal blocked external-request console diagnostics route to deterministic boot. Artifacts: `campaign9-gate-a-{smoke,clean-r5,api-r5}-2026-07-15.json`. |
+| `C9-01-REGRESSION-ATTRIBUTION-AND-SAVED-BUNDLE-REPLAY` / `FAR-006-CHURN` | **PARTIAL / PAUSED** | 2026-07-15 | Exact-current attribution is complete enough to rank work, and execution moves to `C9-02`. API owner evidence first proved that terrain owns every measured buffer create/destroy, while 513 repeated imagery sources retained 171.0 MiB and added 4,104 mip passes plus 513 private submits. The rebuilt deterministic bundle `5E0ACB5E...873E7` then added engine-logical evidence over 1,189 frames: 41,224 tile calls each allocate ready-layer/command arrays and pass slices; 39,300 emitted descriptors map 1:1 to fresh adapter command objects and camera/tile UB packs; aligned UB staging is 115.1 MiB; 690 terrain misses with 181 rebuilds leave 509 net entries/5.51 MiB; 519 direct imagery uploads retain 173.0 MiB with zero retirement. Globe bind-group caching is healthy (99.66% hits; only 3 group-0 and 1 group-2 creates, while 526 group-1 creates track imagery churn). WebGPU command-count/CPU correlation is 0.604–0.783 versus WebGL 0.109–0.139. Clean deterministic r1 remains WebGL 5.40 ms / WebGPU 7.50 ms CPU p95 with full route and zero external/page/device errors. Artifacts: `campaign9-c9-01-{owner-families,logical-owner-counters}-webgpu-r1-2026-07-15.json`, `campaign9-post-offline-boot-clean-r1-2026-07-15.json`; 17 Node tests, TypeScript, lint, build, and Edge lane pass. The exact week-old dirty bundle was not retained, so historical JSON is characterization rather than an exact replay; this is the sole paused acceptance remainder. |
+| `NEW-PERF-DETERMINISTIC-VIEWER-BOOT` | **COMPLETE** | 2026-07-15 | Explicit `offline=true` CesiumViewer startup resolves both renderers with no base-layer picker, zero bootstrap imagery layers, and the default ellipsoid terrain; the performance runner always opts in, fails any cross-origin request, and records the navigation/boot contract. Normal no-flag world imagery/terrain and explicit TMS paths remain unchanged and tested. Node: 16/16 focused workload/startup tests pass. Edge 150.0.4078.65: WebGL and WebGPU pass with zero external requests, zero page errors, correct backend, and clean teardown. Artifact: `campaign9-deterministic-offline-boot-edge-r1-2026-07-15.json`. |
+| `C9-02-VISIBILITY-EXECUTION-OWNERSHIP-MANIFEST` | **PARTIAL / PAUSED** | 2026-07-16 | Source audit and machine-readable manifest are complete: `VISIBILITY_EXECUTION_OWNERSHIP_MANIFEST_2026-07-15.json` records 15 feature cohorts with selection, visibility, consumer, execution, fallback, source anchors, invariants, and gaps (3 verified, 6 partial, 6 gap). One `QuadtreePrimitive._tilesToRender` set owns terrain selection for both backends and `Pass.GLOBE` bypasses SceneOctree. The corrected instrumented moving lane passes both backends with exact selected-object/bucket/primary ownership, all eight altitude segments, and zero post-refresh executable-variant errors: WebGL refreshed 36,940 commands/184,700 variants; WebGPU compiled 38,542 selected tiles with 122 legitimate async zero-command selections. The first provider-time WebGL variant failure was rejected as an invalid audit boundary: pooled dormant derivatives are upstream-compatible and are refreshed after PVS admission, before any consumer executes. Artifact: `campaign9-c9-02-terrain-ownership-both-r2-2026-07-15.json`. The rebuilt continuous-pick lane now also passes both backends: WebGL has 1,033 pick snapshots/359,540 valid variants; WebGPU has 1,105 pick snapshots, zero owner/backend-contamination errors, and zero page/device errors across all eight route segments. Marking the native WebGPU globe root prevents four accidental WebGL `DrawCommand` derivatives per PVS-admitted pick tile, reducing that derived graph from six command references to the intended native pick+original pair. Artifact: `campaign9-c9-02-terrain-ownership-pick-both-r3-2026-07-15.json`, bundle `A75B64FD...D2A6`. Fixed settled parity passes all nine route checkpoints with identical selected tile IDs, backend-neutral revisions, and exact texture-bucket coverage. Artifact: `campaign9-c9-02-terrain-checkpoint-parity-2026-07-15.json`. This item is paused while execution moves to bounded performance work: strict runtime owner/selection/consumer/execution assertions are still absent for all 14 non-terrain cohorts (3D Tiles, voxels, PVS/SceneOctree, fullscreen/compute, shadow/capture, cloud/weather/ocean/flow/environment); no product compliance is claimed from source documentation alone. |
+| `C9-02A-WEBGPU-PICK-DEPTH-PLANE-PIPELINE-PARITY` | **PARTIAL / PAUSED** | 2026-07-16 | The depth-plane-specific architecture now passes: shared shader/layout/geometry with exact cached scene-MRT/MSAA and single-target/sample-1 pick pipelines; no mismatched fallback; pick-only recovery ensure compares device plus color/depth/MSAA/pick/log-depth identity without allocating the full scene graph. Physical Edge matrix bundle `99EC332B...B45134` passes SDR/HDR, MSAA1/4, resize, and deterministic invalidation/recreate with zero GPU/page errors. Each scene phase reserves exactly two frustums and binds offsets `[0,256]`; each pick phase reserves one and binds `[0]`. Device A→B same-format replacement, transactional initialization, no-demand zero work, and attachment/log-depth drift pass 4/4 focused specs; depth-plane descriptors/ring pass 5/5. Artifact: `campaign9-c9-02a-depth-plane-pick-matrix-2026-07-16.json`. This item is paused, not complete: the matrix exposed systemic non-depth-plane HDR pick-format drift and cold async-pipeline false misses, now queued as `NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE` and `NEW-WEBGPU-ASYNC-PICK-PIPELINE-READINESS-CONTRACT`. Physical GPU-process/device loss remains owned by `C9-04`; deterministic invalidation is not mislabeled as physical loss. |
+| `C9-02B-DEPTH-PLANE-MULTIFRUSTUM-UNIFORM-RING` | **PARTIAL / PAUSED** | 2026-07-16 | Queue-ordering hazard is fixed: every natural-frustum draw gets a distinct 112-byte payload at an aligned dynamic offset; the ring is reserved before encoding, pre-sized to four ordinary slices, grows geometrically before a pass, reuses one bind group/offset array, computes/uploads the camera quad once per pass, and avoids settled Ellipsoid internal allocation when radii are unchanged. The moving continuous-hover route passes on bundle `99EC332B...B45134`: 1,123 frames, all eight segments, 18,000 km→301.9 m, 1,122 public calls/1,121 physical picks, full drain, and zero failures/device/page errors. The required physical 20 km/500 km/5,000 km horizon oracle truthfully fails 12 semantic assertions despite 10 scene plus six pick plane draws per altitude and zero GPU/page/device errors: scene plane-on leaves the physically hidden back marker unchanged, while pick plane-on rejects both the visible front control and hidden marker; diagnostic plane-off returns both exact IDs. This is not a ring-offset or cold-pipeline failure. Point pick lacks logarithmic fragment depth, and scene point versus plane use different log-depth encode frustums. Artifact: `campaign9-c9-02b-depth-plane-horizon-oracle-2026-07-16.json`. Execution moves to `C9-06`; acceptance is paused behind `NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT`, with no false correctness claim. |
+| `NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE` | **PARTIAL / PAUSED** | 2026-07-16 | Added the sole context-owned `pickPipelineFormat` authority (SDR BGRA/RGBA retained; HDR→RGBA8), made the pick framebuffer consume it, and migrated DepthPlane plus PointPrimitive; ComputeInstance is already functionally clamped. Exhaustive audit proves the remaining fleet is wrong in HDR: Billboard/Label, Polyline, three buffer primitives, Ellipsoid, splat, globe, both ground families, all vector-tile families, generic Primitive paths, all five Model variants, and voxel object/cell pick. Central `WebGPUDerivedCommand` silently inherits scene slot 0 and `buildPickPipelineDescriptor` filters formats instead of stamping one exact pick target. Per the maintainer's broken-feature rule, full cohort correction and matrix are queued after the active performance pass; no feature is disabled or removed. |
+| `NEW-WEBGPU-ASYNC-PICK-PIPELINE-READINESS-CONTRACT` | **NOT STARTED** | 2026-07-16 | Physical matrix proves first public `pickAsync` can return false `undefined` while an async pick pipeline is compiling: reproduced on cold SDR, HDR generation change, and invalidation; warmed retries then return the exact point. Define awaitable readiness or bounded replay without eager never-picked resources, blocking the render hot path, or weakening object/undefined semantics. Keep cold result distinct from warmed depth-plane certification. |
+| `NEW-COLLECTION-PICK-2DCV-PIPELINE-KEY-PARITY` | **NOT STARTED** | 2026-07-16 | Audit found Billboard color entries include the 2D/CV no-depth bit while pick lookup uses defines alone; PointPrimitive and Polyline also build hard-coded depth-tested pick variants despite no-depth color variants. Prove and repair 3D/2D/CV/morph cache identity and depth behavior separately from HDR format closure. |
+| `NEW-WORKSPACE-SPEC-BUNDLE-FRESHNESS` | **NOT STARTED** | 2026-07-16 | Non-production `gulp test --workspace engine` rebuilds combined root specs while Karma serves package-local `packages/engine/Build/Specs`, so a new package spec can silently remain stale. Make the workspace task rebuild/await the exact served bundle and certify trustworthy executed/skipped counts; until then the required sequence is explicit engine build followed by production focused test. |
+| `C9-05-TPDF-ZERO-WORK` | **COMPLETE** | 2026-07-15 | Stable tonemap-mode and dither setters now allocate/write only on normalized f32 mutation; invalid modes fall back to Reinhard and non-finite dither falls back to zero so malformed inputs cannot defeat the cache. Default zero-strength f32/f16 WGSL branches around both TPDF hashes. Exposure intentionally remains live because auto exposure shares offset 0. The moving-camera API lane proves tonemap writes fell from exactly 3/frame (3,567/1,189 in C9-01) to exactly 1/frame (1,125/1,125), with offsets 8 and 16 absent and only exposure offset 0 retained: a 66.7% call/allocation reduction. Enabled HDR dither remains functional (99→199 distinct sky colors, max run 10→4), mutation/off/restored returns an identical hash, and the deterministic route has zero console errors. Clean R1 is valid at 7.08 ms CPU p95 versus the prior 7.50 ms characterization, but the single repetition is not used as a campaign-level timing claim. Verification: focused browser specs, 27/27 Node tests, TypeScript, lint, dual build, and Edge moving route. Artifacts: `campaign9-c9-05-tpdf-zero-work-{api,clean}-webgpu-r1-2026-07-15.json`. |
+| `C9-06-CELESTIAL-EXTINCTION-REVISION-GATE` | **IN PROGRESS** | 2026-07-16 | Source audit confirms both `Sun.update` and `StarField.update` repeat the shared 16-sample atmospheric optical-depth integration on every rendered frame. The bounded implementation will keep one backend-neutral per-primitive result cache keyed by exact effective camera/body/atmosphere/gate inputs (not object identity, because public atmosphere fields are directly mutable), retain time-driven celestial transforms, and suppress only provably zero-contribution star draws. Acceptance must cover exact cache hits, every scalar mutation, atmosphere off/on and restore, time/body motion, both renderers, and unchanged enabled output. WebGPU-only command/UB allocation and ordering findings are being classified separately rather than silently folded into this cache change. Acceptance extended per the 2026-07-16 audit: closing this item also requires wiring the `fr.prepare` StarField warm-keep hook on both backends (`Context.js:777`, `WebGPUFeatureRenderers.ts:393` — currently unwired, producing dusk cold-start/late star pop-in) and migrating `Moon.js:183` from the uncached extinction integrator to `computeAtmosphereExtinctionCached`. |
+| `C9-07-DEMAND-OPEN-CANVAS-PASS` / `FAR-405-C0` | **NOT STARTED** | 2026-07-16 | Premise audit is complete and implementation waits behind active `C9-06`. Exact C9-05 API evidence shows 2,250/2,250 `Scene Main Render Pass` opens were empty across 1,125 frames: one unconditional `beginFrame` pass immediately redirected to the scene framebuffer plus one unconditional postprocess tail pass. The safe boundary keeps encoder/swap-view acquisition in `beginFrame`, defers empty-scene clear/present, opens canvas only for a real presentation/overlay/weather consumer, and explicitly tracks pass target instead of inferring from labels. Acceptance must preserve empty-scene background, legacy overlays, TAA, request-render, 2D halves, pick mini-frames, resize/recovery, OIT, shadows, clustered lighting, weather, and presentation before any performance claim. |
+| `NEW-WEBGPU-CELESTIAL-RETAINED-RESOURCES` | **NOT STARTED** | 2026-07-16 | Audit found WebGPU Sun recreates its position vertex buffer as time advances, then writes a 256-byte UBO and allocates a bind group plus command per frame; StarField writes 256 bytes and allocates two commands plus arrays per frame. After C9-06, retain device-generation-safe commands/bind groups, move changing Sun position into a dirty uniform or buffer update, and prove exact time/HDR/MSAA/resize/loss/multi-context/destroy behavior without changing WebGL or celestial output. |
+| `NEW-WEBGPU-STARFIELD-SINGLE-SUBMISSION` | **NOT STARTED** | 2026-07-16 | Static command-flow audit indicates a cubemap frame keeps the early binned catalog-star draw and prepends a distinct post-cubemap injected draw, contradicting the claimed single-submission contract and potentially doubling GPU work/brightness contribution. Instrument exact execution order/count with and without cubemap, then establish one authoritative environment command path while preserving sky-only frustum creation, additive HDR appearance, WebGL behavior, visibility toggles, and recovery. Per the broken-feature rule this correctness-first item stays queued after the active bounded performance slice. |
+| `NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT` | **NOT STARTED** | 2026-07-16 | **PROMOTED TO NEXT-BLOCKING (2026-07-16 audit, P0-1).** The pick depth-plane draw is now GATED OFF at defaults as interim containment (reverting pick behavior to its pre-change state so visible point primitives pick again); re-enabling that gate plus a passing 20 km/500 km/5,000 km horizon oracle is this item's acceptance. The physical horizon oracle proves two producer-contract failures: `PointPrimitivePick.wgsl` declares no log-depth varying/fragment-depth path although the pick define says log depth, so point hyperbolic depth is compared with plane logarithmic depth; scene PointPrimitive packs the full `_logDepthEncodeNearFar` while DepthPlane packs `currentFrustum`, so enabled scene depth fails to hide a physically occluded marker. Establish one exact encode-frustum/log-depth contract for color, pick, and plane across all natural frustums, modes, HDR/MSAA, resize, and recovery; rerun the three-altitude oracle before completing `C9-02B`. |
+| `NEW-WEBGPU-DEBUG-DEPTH-PLANE-GATE-PARITY` | **NOT STARTED** | 2026-07-16 | `Scene.updateEnvironment` honors `debugSkipDepthPlane`, but `WebGPUContext.updateAndClearFramebuffers` later overwrites `environmentState.useDepthPlane` without that gate. Restore backend parity and prove the diagnostic true→false→true sequence without affecting the default production path. |
+| `NEW-WEBGPU-POINT-BLENDOPTION-SYNC` | **NOT STARTED** | 2026-07-16 | The native WebGPU PointPrimitive branch returns before synchronizing collection `_blendOption`; even `BlendOption.OPAQUE` can emit commands labeled `Pass.TRANSLUCENT`. Repair exact opaque/translucent/both command classification, batching, order, depth, pick, mutation, 2D/CV/morph, and cross-backend parity without dropping either blend cohort. |
+| `AUDIT-P0-POINT-SHADOW-GLOBE-RECEIVE` | **COMPLETE** | 2026-07-16 | Audit fix ([SOL_AUDIT_REPORT_2026-07-16.md](SOL_AUDIT_REPORT_2026-07-16.md) P0-2): the third point-shadow receive site — `GlobeTerrain.wgsl` `globeSamplePointShadow` — still remapped `zNdcWebGpu * 0.5 + 0.5` against a cast pass now writing raw `[0,1]` depth, breaking globe point-light shadow receive on WebGPU. Migrated to match the `ModelPBRComplete.wgsl`/`csm_samplePointShadow.wgsl` convention; it was the only remaining `zNdcWebGpu * 0.5` site engine-wide. |
+| `AUDIT-P0-SYNC-PICK-REGION-DRIFT` | **COMPLETE** | 2026-07-16 | Audit fix (P0-3): the `WebGPUPickFramebuffer` exact-region cache gate made sync `scene.pick()` return empty results during any cursor motion, defeating the documented continuous-hover warm-up pattern (an undisclosed semantics change — no prior ledger row). The region-containment gate is widened: a query whose center lies inside the cached region (same attachment generation) decodes from the cached readback instead of being rejected. |
+| `AUDIT-P0-READPIXELS-RING-FLUSH` | **COMPLETE** | 2026-07-16 | Audit fix (P0-4): `readPixelsAsync` submitted the frame encoder without flushing the staged uniform ring introduced by the FAR-303 staging slice — a latent mid-frame submit ordering hazard. The uniform allocator is now flushed before the mid-frame `encoder.finish()`/submit; other mid-frame finish/submit paths audited. |
+| `AUDIT-P0-COLORTYPE-POLYLINE-BATCHING` | **COMPLETE** | 2026-07-16 | Audit fix (P0-5): exact-material-identity polyline grouping split N default Color-type polylines into N groups/segment buffers/UBOs/bind groups/draws for zero correctness gain (the Color shader reads per-instance `@location(4)` and needs no identity split). Color-type materials are now keyed by material TYPE; UBO-consuming types (Glow/Dash/Arrow/Outline) keep exact identity. Interim fix — the durable owner is `FAR-307-POLYLINE-PERSISTENT-MATERIAL-TABLE` (Wave 5 item 62). |
+| `NEW-GPU-TIMESTAMP-UNIQUE-SAMPLE-ACCOUNTING` | **PARTIAL / PAUSED** | 2026-07-16 | Under-claim correction (audit Appendix B — this ledger declares unlisted = NOT STARTED, but the work exists): unique-sample accounting is implemented — one frame/submission serial per completed timestamp sample, once-only consumption, coalesced ring-buffer flush — with 25 spec cases on disk. Acceptance (readback-tail drain plus covered/uncovered span reporting certified on the moving route) remains open under Wave 0 item 5. |
+| `C9-16-CLUSTERED-LIGHT-ZERO-WORK-CONTRACT` | **PARTIAL / PAUSED** | 2026-07-16 | Under-claim correction (audit Appendix B): the core is implemented and spec'd — clustered-lighting disabled-path zero-work plus transition-frame zero-write. The physical-evidence half of the acceptance (enabled multi-frustum exactness plus moving-route counters) remains open under Wave 2 item 32. |
+
+### 3.3 Policy-ratification record (2026-07-16)
+
+Two shipped-behavior reversals surfaced by the Sol audit ([SOL_AUDIT_REPORT_2026-07-16.md](SOL_AUDIT_REPORT_2026-07-16.md) P0-6) were put to the maintainer and resolved:
+
+1. **WebGPU MRT OIT default-off — RATIFIED** as FAR-003 containment (2026-07-16). MRT OIT capability remains available but is contained off at defaults (translucency falls back to sorted alpha). A new `CesiumDebug.webgpuOIT()` toggle reads/flips the containment flag and logs requested-vs-active state. Re-enable acceptance: a before/after translucent-intersection visual probe. Owning row: `FAR-003` / `T7` (Wave 6).
+2. **Explicit `renderer:'webgpu'` hard-fail — REVERTED** to the charter's graceful-fallback-with-warn behavior. The strict hard-fail behavior is preserved behind the new opt-in `strictRenderer` context option; an invalid renderer string throws only in debug builds (release warns and resolves AUTO).
+
+## 4. Wave 0 — seal, attribute, and make evidence trustworthy
+
+| # | ID | Risk | Work / acceptance |
+| --- | --- | --- | --- |
+| 0 | `C9-00-EXACT-CURRENT-MOVING-LAUNCH-SEAL` | R0 | Build one exact source/hash bundle; run at least five order-counterbalanced WebGL/WebGPU repetitions of the clean and instrumented multi-altitude camera route. Record adapter/browser/viewport/assets/flags/warm-up/thermal state and never substitute idle soak. |
+| 1 | `C9-01-REGRESSION-ATTRIBUTION-AND-SAVED-BUNDLE-REPLAY` / `FAR-006-CHURN` | R0 | Replay the saved week-old and exact-current bundles on the same route. Attribute selected tiles, PVS survivors, commands/frustum/pass, MRT bytes/resolves, effects, terrain arrays/objects/closures/uploads, buffers/textures/copies, cache live/high-water/retired bytes, GC, and covered/uncovered CPU/GPU time by owner and stage. |
+| 2 | `C9-02-VISIBILITY-EXECUTION-OWNERSHIP-MANIFEST` | R0 | Machine-readable map for shared WebGL/WebGPU terrain-quadtree selection, 3D Tiles, voxel octree, Scene PVS/SceneOctree, fullscreen, compute, capture, shadow, cloud, and weather work. Compare selected terrain tile IDs/revisions before backend command compilation; every command/effect declares its selection/consumer owner and conservative fallback. |
+| 2A | `C9-02A-WEBGPU-PICK-DEPTH-PLANE-PIPELINE-PARITY` | R2/R3 | Give the WebGPU depth plane a cached single-target/sample-1 pick variant instead of executing the scene MRT/MSAA pipeline in the pick mini-frame. Share shader/layout/geometry/uniform resources and prewarm the bounded pick pipeline off the interaction hot path; no per-frame no-pick work is allowed. Preserve depth-plane occlusion and terrain/classification pick across log-depth, HDR/SDR, MSAA1/4, resize, and device recovery with zero validation errors. |
+| 2B | `C9-02B-DEPTH-PLANE-MULTIFRUSTUM-UNIFORM-RING` | R3 | Replace repeated writes to the one depth-plane uniform buffer before a multi-frustum encoder submit with exact per-frustum dynamic-offset ring slices. Every draw consumes its own near/far/log-depth/RTE state; settled storage is reused with no per-frustum object allocation. Prove near/middle/far horizon occlusion, pick, log-depth, MSAA, resize, and recovery. |
+| 3 | `NEW-PERF-DETERMINISTIC-VIEWER-BOOT` | R0/R1 | Add explicit local/offline Viewer boot for deterministic probes while preserving a separate credentialed streaming lane and unchanged normal Viewer defaults. |
+| 4 | `C8-FORK-EXTENSION-COVERAGE-CLOSURE` | R0/test | Complete the source-to-evidence matrix for every fork extension. P0/P1 GPU integration receives real-browser/API/visual/loss/lifetime/performance coverage; zero specs, launcher death, and `afterAll` fail nonzero. |
+| 4A | `NEW-WORKSPACE-SPEC-BUNDLE-FRESHNESS` | R1/test | Make `gulp test --workspace engine` rebuild and await the package-local spec bundle Karma actually serves. Add a sentinel proving a newly changed package spec executes; zero/new-spec and skipped counts must be trustworthy without a manual pre-build. |
+| 5 | `NEW-GPU-TIMESTAMP-UNIQUE-SAMPLE-ACCOUNTING` | R1/tooling | Give every completed timestamp sample one frame/submission serial and consume it once. Drain the readback tail and report covered/uncovered spans; rolling duplicates cannot enter p95. |
+| 6 | `C9-03-CERTIFYING-VISUAL-BASELINE-PROMOTION` | R0 | Manually inspect current-producer images and populate the historical manifest with exact hash, renderer, camera, flags, browser/adapter, assets, oracle, and tolerance. Diagnostics or unknown/reverted producers remain non-certifying. |
+| 7 | `C9-04-PHYSICAL-ADAPTER-CONTRACT-MATRIX` | R0/test | Add real-adapter WGSL validation, attachment/load-store combinations, HDR/MSAA1/4, resize, multi-context, device loss, double-tax accounting, GC/lifetime plateaus, and strict GPU error scopes. |
+| 8 | `NEW-FULL-SUITE-OFFLINE-DEPENDENCY-ISOLATION` | R1/test | Isolate Ion/world-terrain/network cases into deterministic local fixtures or an explicit online lane. Only declared network cases may skip; teardown cannot abort unrelated suites. |
+
+Gate A closes after items 0–3 and 5 produce one internally consistent launch bundle and items 4 and
+6–8 record their exact-current starting gaps. Coverage, certifying-baseline promotion, physical-matrix
+closure, and offline full-suite isolation then continue in parallel and must be complete by Gate G;
+they do not hold the first bounded no-op or hot-path investigations hostage.
+
+## 5. Wave 1 — Campaign 8 bounded correctness closure
+
+FAR-107 contract review moves before packed-depth implementation. The voxel and CV proof tasks may
+close their conditional product items as “not reproduced”; speculative code changes are forbidden.
+
+| # | ID | Risk | Work / acceptance |
+| --- | --- | --- | --- |
+| 9 | `NEW-VOXEL-PICK-PROBE-CONTRACT` | R0/test | Repair WebGL probe setup; exact filled/off-volume voxel result contract passes both backends without throws. |
+| 10 | `NEW-WEBGL-CV-POINT-ZERO-PROOF` | R0 | Capture projected position, bounds, bin, depth, globe on/off, and elevated/coplanar cases; promote a product fix only for deterministic valid on-screen loss. |
+| 11 | `NEW-BUFFERPRIMITIVE-INTEGER-NORMALIZED-CERT` | R0/test | Certify BYTE/UBYTE/SHORT/USHORT normalized/raw plus DOUBLE across point/polyline/polygon, modes, matrix, mutation, and pick; fix only a reproduced residual. |
+| 12 | `FAR-107-PICKQUERY-CONTRACT` | R4/contract | Approve immutable query/result, generation, cancellation, output demand, and honest sync/async behavior for every pick family; no executor authority change in this slice. |
+| 12A | `FAR-200-S1-PHYSICAL-QUEUE-TIMELINE` | R4/shadow | Establish and test one monotonic serial authority per physical queue/device generation, including submit, abandon, pool, failure, loss, and completion, but migrate no production caller. This explicit shadow prerequisite does not cross production submission authority. |
+| 13 | `NEW-PICK-WEBGPU-MULTIFRUSTUM-PACKED-DEPTH` / `FAR-408-C0` | R3 | Capture requested pixels at each exact natural-frustum depth-version boundary on the main encoder; generation-tagged context batch resolves near-to-far with no private submit or no-query work. Depends on items 12 and 12A. |
+| 14 | `NEW-PICK-CLASSIFICATION-DEPTH-TRANSIENT` | R3 | Replace persistent full-viewport classification pick checkpoint with exact query-extent or graph-transient lifetime; preserve edge/center terrain and 3D-Tile classification IDs, TAA/history, and no-query zero work. |
+| 15 | `NEW-TAA-MULTIFRUSTUM-DEPTH-REPROJECTION-CONTRACT` / `C9-29-NATURAL-FRUSTUM-TAA-CONTRACT` | R3 | Give every contributing natural frustum exact current/previous depth, projection, jitter, and history identity. Moving high-contrast near/far oracle must distinguish TAA on/off, camera/object motion, clears, and teleports. |
+| 16 | `NEW-POLYLINE-COLOR-VELOCITY-GUARD` | R2 | Normalize material type before velocity eligibility/cache. Moving Color writes the exact nonzero velocity mask only with TAA enabled; color/off/restored output is unchanged. |
+| 17 | `NEW-BILLBOARD-ATLAS-VFLIP` | R3 | Establish one upload/UV orientation for billboard, SDF label, and pick variants across 3D/CV/2D, atlas growth/repack, glyph, alpha-sensitive hit/miss, and asymmetric images. |
+| 18 | `NEW-VOXEL-INSIDE-CAMERA-BLACK` | R3 | Correct proxy-face/cull/ray interval through outside/boundary/inside/center/exit while preserving color, object/cell pick, velocity/depth, octree, megatexture, and custom shaders. |
+| 19 | `NEW-VOXEL-PUBLIC-PICK-TAIL` | R2 conditional | Only if item 9 reproduces a product defect, repair public traversal/result construction and retain exact `VoxelCell` identity. Otherwise close with evidence and no code change. |
+| 20 | `NEW-WEBGL-CV-POINT-ZERO` | R2 conditional | Only if item 10 isolates a product defect, repair that cull/depth/position cause; preserve every other collection/mode/backend. |
+| 21 | `C8-11-CORRECTNESS-CHECKPOINT` | R0/gate | Rebuild one new hash and rerun items 9–20 plus allocation and moving routes. This is Gate B; append evidence and preserve prior tranches. |
+
+## 6. Wave 2 — default-path performance recovery
+
+| # | ID | Risk | Work / acceptance |
+| --- | --- | --- | --- |
+| 22 | `C9-05-TPDF-ZERO-WORK` | R1 | When strength is zero: no `Float32Array`, `writeBuffer`, shader hash, or output change. Enabled dither retains its existing distribution, HDR/SDR result, mutation, and off/restored parity. |
+| 23 | `C9-06-CELESTIAL-EXTINCTION-REVISION-GATE` | R1/R2 | Cache sun/star extinction by exact camera/body/atmosphere/time revisions; skip zero-intensity star draw. Preserve enabled appearance, time motion, mutation, eclipse/atmosphere transitions, and restore. |
+| 24 | `C9-07-DEMAND-OPEN-CANVAS-PASS` / `FAR-405-C0` | R1/R3 | `beginFrame` acquires encoder/swap view but opens a canvas pass only for a real producer/clear/present consumer. Prove clear, empty scene, redirect, request-render, TAA, pick, resize, loss, and presentation semantics. |
+| 25 | `C9-08-SCHEDULER-OCTREE-DEMAND-AND-PERSISTENCE` | R1/R2 | Default-disabled scheduler/SceneOctree performs zero material-sort/rebuild work unless a declared consumer needs stable IDs. Enabled SceneOctree uses dirty/revision rebuild and must beat ordinary PVS before auto promotion; it never owns terrain/3D Tiles/voxels. |
+| 26 | `C9-09-ATTACHMENT-DEMAND-REGISTRY` / `FAR-401-C0` | R2/R3 | One canonical pre-pass demand record covers every attachment consumer and feeds both legacy executor and future graph. Unknown consumers require conservative full topology. |
+| 27 | `C9-10-CONSUMER-DRIVEN-MRT` / `FAR-403-C0` | R3 | Cache exact one-target/MRT variants. Default with no consumer reports zero normal/G-buffer bytes, MSAA companion bytes, and resolves. Toggle deferred/SSR/NPR/contact-shadow/SSGI/debug consumers independently and in combinations; preserve HDR/MSAA/resize/loss/TAA/pick/classification. Never merely set `_mrtMode=false`. |
+| 28 | `NEW-GLOBE-EFFECTS-PER-VIEW-PREPARED-HANDLE` / `C9-13` / `FAR-300` | R2 | Prepare one exact revision-keyed terrain-global effects handle per frame/view. Tiles consume it without repacking shadows, clipping, CSM, atmosphere LUT, or identity strings; multi-view, mutation, model-specific state, recovery, and visuals remain exact. |
+| 29 | `C9-11-RETAINED-TERRAIN-DESCRIPTORS` / `FAR-309` | R2 | Preserve the shared WebGL/WebGPU quadtree selected-tile set, then retain WebGPU tile/imagery/pass/pipeline/effect packets and scratch spans. Key mesh/content and imagery revisions, mode, water, clipping/shadows, effect generation, HDR/MSAA/log-depth, and device generation. Warm moving frames create no full arrays, slices, command wrappers, or execute closures per tile/pass; camera/frustum offsets update in place. |
+| 30 | `C9-12-TERRAIN-STATIC-DYNAMIC-UPLOAD-SPLIT` / `FAR-303` | R2 | Separate stable tile/material bytes from per-view/per-frustum ring data. Changed tiles only rewrite their ranges; upload calls and bytes fall without stale multi-view or mode data. |
+| 30A | `C9-12A-IMAGERY-SOURCE-REALIZATION-DEDUP-AND-MIP-PREP` | R2/R4 | Preserve imagery and full mip quality while separating tile references from backend texture realization. Share only an exact immutable source identity + source revision + descriptor + device-generation match; mutable or unknown sources stay distinct. Track per-tile references, release with quadtree lifetime, and retire distinct realizations through a byte-budgeted grace LRU. Mip preparation is frame-owned or off-hot-path through `ResourcePlan`/FAR-200, never a private submit from draw emission. The repeated-canvas GridImagery route produces one realization, or an explicitly bounded exact count, rather than 500+; real distinct imagery remains distinct. Certify mutation, provider replacement, multi-context, loss/recovery, resize, 3D/2D/CV, pick, water, and exaggeration. |
+| 31 | `C9-14-GROUND-ATMOSPHERE-STAGE-OWNERSHIP` | R3 | Reuse `perFragmentGroundAtmosphere`: fragment mode skips the vertex march; vertex mode consumes the varying and skips fragment recompute. Preserve debug visualizers and fog/atmosphere on/off, ground/horizon/orbit, HDR/SDR, water, and exaggeration. |
+| 32 | `C9-16-CLUSTERED-LIGHT-ZERO-WORK-CONTRACT` | R1/test | Direct unit and physical evidence proves disabled/no-light frames allocate, upload, dispatch, and submit zero clustered-light work; enabled multi-frustum output remains exact. |
+| 33 | `C9-17-MODEL-SETTLED-FRONTEND-REVISIONS` / `FAR-309` | R2 | Complete positive-path revisions, group-1 material/texture/IBL caching, allocation-free implicit feature lookup, and settled draw-command/frontend reuse; mutation changes only exact affected resources. |
+| 34 | `C9-18-HOTPATH-DIAGNOSTIC-DEMAND-GATES` | R1 | Disabled CPU/GPU profilers, shader diagnostics, performance trackers, and debug labels create no per-call closures/objects/strings. Enabled diagnostics remain exact and overhead is measured separately. |
+| 35 | `C9-30-DEFAULT-PATH-PERFORMANCE-CHECKPOINT` | R0/gate | Counterbalanced moving route proves each promoted slice exceeds named noise/5% stage rule and the combined tranche targets >=10% whole-route and >=15% near-ground WebGPU CPU p95, or >3x measured noise, with no route p99/feature/WebGL regression. |
+
+## 7. Wave 3 — visibility and planetary/temporal precision
+
+| # | ID | Risk | Work / acceptance |
+| --- | --- | --- | --- |
+| 36 | `C9-23-EFFECT-EXECUTION-AUDIT` / `FAR-500-C0` | R0/R1 | Audit every fullscreen, compute, shadow, cloud, weather, ocean, flow, and capture owner for explicit enabled+consumer+view demand. Add execution counters and conservative fallback; do not octree-cull global viewport effects. |
+| 37 | `C9-20-FFT-OCEAN-VISIBILITY-CONTINUITY` | R3 | Use conservative displaced-patch/frustum/horizon bounds. Establish absolute scene/clock time before skipped updates so waves never freeze; skip draw/FFT only with no view consumer. Prove hidden/reveal, clock jumps, altitude, curvature, mutation, and off/restored output. |
+| 38 | `C9-21-FLOW-FIELD-VISIBILITY-CONTINUITY` | R3 | Gate draw when globe/layer has no view intersection; whole-globe fields remain consumers. Preserve state continuity using absolute delta/bounded catch-up before throttling compute; integrate submission only through declared authority. Test regional/global, hidden/reveal, lifetime, and mutation. |
+| 39 | `C9-22-ENV-CAPTURE-PER-FACE-CULL` | R3 | C0 conservatively culls published candidates per cubemap face instead of replaying every main-camera survivor six times. Track capture-camera/face/revision identity. A separate C1 may add complete capture-view traversal; never omit candidates absent only from the main view. |
+| 39A | `C9-22A-ENV-CAPTURE-VIEW-SELECTION` | R3/R4 | C1 gives the capture camera a complete terrain/3D-Tiles/model candidate selection contract rather than treating main-view survivors as the universe. Budget/amortize six faces without stale captures; preserve dynamic-environment quality, mutation, hidden/reveal, and recovery. Depends on C0 per-face correctness and declared traversal/resource budgets. |
+| 40 | `C9-24-RTE-PRODUCER-CONSUMER-INVENTORY` / `FAR-305` | R0/R2 | One reviewed helper, machine-readable shader/CPU inventory, and GPU numeric oracle assert `(positionHigh-cameraHigh)+(positionLow-cameraLow)` or CPU-double relative origin for all current/previous consumers. |
+| 41 | `C9-25-PREVIOUS-FRAME-RTE` / `FAR-306` | R3 | Convert Billboard, SDF, Point, Polyline, ComputeInstance, and Model velocity to matching previous-frame high/low camera-relative math; test camera/object motion, teleports, negative coordinates, poles, and antimeridian. |
+| 42 | `C9-26-GPU-VISIBILITY-RTE-CLOSURE` | R3 | Store Hi-Z/SoA bounds camera-relative or high/low, expand conservative radius margin, and tag frame/camera/view/natural-frustum/depth/device generations. Point-cloud GPU LOD follows the same identity; auto use stays contained. |
+| 43 | `C9-27-COLLECTION-VIEW-RING-RTE` | R2/R3 | Replace fallback UBO plus per-slice writes with a dynamic-offset view ring. Correct non-3D collection model-matrix frame identity and prove 3D/2D/CV/morph, wrapped views, natural frusta, and recovery. |
+| 44 | `C9-28-POINTCLOUD-VECTOR-VOLUMETRIC-RTE` | R3 | Close point-cloud LOD, vector-tile velocity, and optional cloud/fog temporal camera-relative gaps. Disabled paths remain zero-work; enabled history survives resize, mode, teleport, and device-loss invalidation exactly. |
+
+Gate E includes item 15's natural-frustum TAA contract. No safe-auto visibility restoration may run
+until items 40–44 and the relevant feature oracle are green.
+
+## 8. Wave 4 — queue authority, residency, resource preparation, and picking ownership
+
+| # | ID | Risk | Work / acceptance |
+| --- | --- | --- | --- |
+| 45 | `FAR-200-S2-SUBMIT-SOURCE-ADOPTION` | R4 | Route direct-submit cohorts through the timeline and enforce a static allowlist/zero target. Every submit records owner/source/generation/serial; routing is not claimed as fewer physical submits. |
+| 46 | `FAR-200-S3-SERIAL-OWNED-RETIREMENT` | R4 | Retire/reuse resource, ring, readback, and transient state only after authoritative completion; prove pool, resize, failure, loss, destroy, and bounded plateaus. |
+| 47 | `C9-15-TERRAIN-GPU-RESIDENCY-BUDGET` / `FAR-203` / `FAR-208` | R2/R4 | Budget bytes, not entry count. Active/leased resources are pinned; zero-lease resources enter grace LRU; retire once per frame after traversal and destroy after last-use serial. Repeat altitude loops until live/high-water/retired byte slope plateaus; avoid per-resource `onSubmittedWorkDone`. |
+| 48 | `NEW-MODEL-FEATURE-PAYLOAD-REVISION` / `FAR-204` | R2 | One logical payload revision with independent WebGL/WebGPU realization upload cursors; live show/color mutation, recovery, eviction, and mixed contexts cannot clear each other's work. |
+| 49 | `NEW-PICK-ID-OWNERSHIP-GROUNDPOLYLINE` | R2/R4 | Replace wrapper ID with complete canonical GeometryInstance mapping; exact 3D/projected/morph ID, allowPicking, mutation, registry count, native destroy, and removal-to-baseline tests. |
+| 50 | `NEW-PICK-ID-OWNERSHIP-MODEL` | R2/R4 | Consolidate model/model-instance/feature IDs without eager no-pick WebGPU IDs/textures. Preserve Entity, 3D Tiles, node/primitive, instance, feature, mutation, eviction, destruction, and loss results. |
+| 51 | `NEW-PICK-CONTIGUOUS-ID-RANGES-LOGICAL` / `FAR-107` | R4 | Guarded direct/range allocator and decoder with reserved sentinels, overflow rejection, high-alpha-byte, binary-search, and serial retirement tests; no renderer migration yet. |
+| 52 | `FAR-209-RESOURCEPLAN-OBSERVE` | R4 | Observe-only plan for one family records payload/version/domain/descriptor/dependencies/cancellation and publishes no GPU resource or competing scheduler. |
+| 53 | `FAR-209-ACTIVE-PILOT` + `FAR-210-BUDGETS` | R4 | After FAR-200, activate one budgeted/backpressured family. Draw emission performs no fetch/decode/full conversion/persistent creation/private submit; stale generations never publish; WebGL sync contracts remain intact. |
+| 54 | `FAR-203-FIRST-OWNERSHIP-VERTICAL` | R4 | Migrate one complete terrain/mesh native token: zero compatibility GPU realization when complete; partial coverage retains fallback; mixed-context, recovery, pick/modes, and lifetime pass. |
+| 55 | `FAR-205-IMMUTABLE-TEXTURE-VERTICAL` | R4 | Migrate one deterministic immutable texture family. Share only exact-compatible decoded CPU payload; keep separate WebGL/WebGPU handles; orientation, mutation, recovery, retirement, and flyover plateau pass. |
+| 56 | `NEW-PICK-CONTIGUOUS-ID-RANGES-NATIVE` / `FAR-205` | R4 | After FAR-107, FAR-200 S1–S3, model payload/ID ownership, and logical contiguous ranges, use `baseKey + featureId` for WebGPU model/BatchTexture picking. No-pick frames allocate no per-feature IDs/RGBA/pick texture; every public feature result remains exact. |
+| 57 | `FAR-206-DECODED-REALIZATION-SPLIT-GATE` | R4/gate | After items 54–55, enable the decoded/backend cache split only for qualified families with exact descriptor fingerprint and NATIVE_CONTEXT isolation; otherwise record failed gate and retain current owner. |
+| 58 | `C9-19-CONTINUOUS-HOVER-PERFORMANCE-GATE` | R1/test | Promote the completed latest-wins behavior into the new query architecture: periodic delivery under continuous motion, bounded active/queued work, complete drain, exact object/undefined results, no duplicate GPU readback/sample accounting. |
+
+## 9. Wave 5 — remaining feature and upstream-contract closure
+
+These carried Campaign 8 IDs can run in parallel with bounded performance work, but every item must be
+green before Gate G.
+
+| # | ID | Risk | Work / acceptance |
+| --- | --- | --- | --- |
+| 59 | `NEW-POLYLINE-MATERIAL-VELOCITY-VARIANTS` | R3 | Dash/Arrow/Glow/Outline velocity masks follow exact discard/alpha silhouettes, emit only with TAA, and preserve mixed material/mutation output. |
+| 60 | `NEW-POLYLINECOLLECTION-IMAGE-MATERIAL-WEBGPU` | R3 | Add true Image material to PolylineCollection with asymmetric texture, repeat, tint/alpha, mutation, pick, mixed identities, and all scene modes; primitive Image remains a control. |
+| 61 | `NEW-POLYLINECOLLECTION-DIFFUSEMAP-MATERIAL-WEBGPU` | R3 | Add distinct DiffuseMap layout/shader/upload with swizzle, repeat, alpha, mutation, pick, mixed identity, velocity-mask, and cross-backend parity. |
+| 62 | `FAR-307-POLYLINE-PERSISTENT-MATERIAL-TABLE` | R2/R3 | Persistent exact material/geometry table with safe coalescing and dirty ranges; high-cardinality mixed materials, mutation, pick, TAA velocity, lifetime, and no first-material aliasing. |
+| 63 | `NEW-COMMANDSORTER-FRONTTOBACK-EPSILON-TIES` | R2 | Prove upstream/current semantics, define deterministic exact ties, preserve pooled tail, and pass translucent/pick parity before changing comparator behavior. |
+| 64 | `NEW-SCENE-BROAD-SUITE-FAILURE-CLOSURE` | R2/test | Close all product, fixture, environment-map oracle, WebGL1 async-pick, GLSL100, voxel-limit, panorama, and `afterAll` clusters without exclusions, weakened assertions, or timeout inflation. |
+| 65 | `NEW-DESTROYOBJECT-ES6-LIFECYCLE-PARITY` | R2 | Discover ES6 prototype methods without getters/statics; every method follows destroyed contract and a second destroy cannot repeat native deletion. |
+| 66 | `NEW-SHADER-GENERATOR-UPSTREAM-CONTRACT-PARITY` | R1 | Restore validation and exact generated arrays without meaningless terminal lines; legal empty function/struct behavior remains supported. |
+| 67 | `NEW-RESOURCE-URL-SEMANTIC-PARITY` | R2 | Preserve authority, credentials, protocol-relative/relative, file/opaque/custom/data/blob, path case, query, and fragment semantics in Resource and CZML tests. |
+| 68 | `NEW-DATASOURCECOLLECTION-CONTAINS-PARITY` | R1 | Restore add/remove/promised/removeAll/destroyed `contains` behavior and guard against codemod calls to nonexistent methods. **PULLED FORWARD post-audit as a quick-win: the public API is fully broken since pre-Sol codemod `39f5341e64` (`contains` calls a nonexistent method).** |
+| 69 | `NEW-ENTITY-BULK-CLUSTER-TRANSITION-PARITY` | R2 | Reclassify bulk point/billboard/label exactly across cluster flag transitions with no duplicates/stale primitives/listeners/settled O(N) work; preserve pick, bounds, destroy, and visuals. |
+| 70 | `NEW-KMZ-ARCHIVE-URI-RESOLUTION-PARITY` | R2 | Resolve embedded/nested archive assets and links with normalization/encoding/case/traversal security; existing entries never fall through to HTTP. |
+| 71 | `NEW-POLYLINE-UPDATER-CONSTANT-API-PARITY` | R1 | Restore read-only descriptors and exact values across updater/visualizer/static-batch suites without renderer behavior change. |
+| 72 | `C8-SHARED-UPSTREAM-CONTRACT-GATE` | R0/gate | Broad Renderer, DataSources, Scene, Widgets, and complete engine run records exact pass/fail/unexecuted counts and is green; fork-focused suites are not a substitute. Triage the Renderer 20 failures against the GraphicsCapabilities/ContextLimits migration FIRST (highest blast-radius suspect), then attribute remaining failures pre-existing-vs-tree against the pinned baseline (R20/DS10/S47 at bundle `B8015811`). |
+| 73 | `NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE` | R2/R3 | Make `context.pickPipelineFormat` the sole byte-ID attachment authority. Pick derivation must require and stamp exactly one explicit non-blended single-sample target; thread distinct scene/pick formats through every audited producer without changing color/classification/velocity/capture pipelines or allocating work on never-picked frames. Certify all cohorts across SDR/HDR, MSAA1/4, runtime flip, resize, recovery, modes, natural frustums, and regular/hover/precise/metadata/voxel queries with exact owners and zero validation errors. |
+| 74 | `NEW-WEBGPU-ASYNC-PICK-PIPELINE-READINESS-CONTRACT` | R2/R4 | A public async query must not report `undefined` merely because its exact pipeline is still compiling. Add generation-tagged awaitable readiness or bounded replay/cancellation that preserves latest-wins hover behavior, never blocks normal rendering, creates no never-picked resources, and returns exact owner/undefined semantics across cold start, format change, eviction, and recovery. |
+| 75 | `NEW-COLLECTION-PICK-2DCV-PIPELINE-KEY-PARITY` | R2/R3 | Include the exact no-depth/mode state in collection pick descriptor and cache identity for Billboard/Label, PointPrimitive, and Polyline. Prove visible/coplanar/elevated hit/miss and depth occlusion in 3D/2D/CV/morph without changing settled 3D output or adding non-pick work. |
+| 76 | `NEW-WEBGPU-CELESTIAL-RETAINED-RESOURCES` | R2/R3 | Retain Sun/Star commands and bind groups by exact device/pipeline/resource generation; update only dirty position/uniform ranges and eliminate per-frame typed arrays, command arrays, and native resource churn. Preserve time motion, HDR/MSAA/resize, visibility restore, multiple contexts, loss, and deterministic destruction. |
+| 77 | `NEW-WEBGPU-STARFIELD-SINGLE-SUBMISSION` | R2/R3 | Instrument and remove any duplicate catalog-star execution when a cubemap exists, establishing one authoritative environment ordering path that still draws after the cubemap and still creates a valid sky-only frustum. Prove exactly one physical draw, unchanged enabled appearance, off/on restore, WebGL parity, and recovery. |
+| 78 | `NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT` | R3 | Give point color, point pick, and the ellipsoid depth plane one explicit log-depth encode-frustum contract, including actual pick `frag_depth`. The 20 km/500 km/5,000 km physical oracle must retain the visible front control and reject the hidden back marker in scene plus public pick with plane enabled/restored. |
+| 79 | `NEW-WEBGPU-DEBUG-DEPTH-PLANE-GATE-PARITY` | R1 | Preserve the backend-neutral `debugSkipDepthPlane` value through WebGPU framebuffer setup and prove exact diagnostic off/on state without changing default rendering. |
+| 80 | `NEW-WEBGPU-POINT-BLENDOPTION-SYNC` | R2/R3 | Synchronize native PointPrimitive blend selection before the WebGPU return boundary and prove exact opaque/translucent/both pass classification, ordering, pick, mutation, modes, and backend parity. |
+| 81 | `NEW-FEATURE-RENDERER-FAILED-STATE-RETRY` | R2 | The feature-renderer readiness state machine's `failed` state is terminal per generation (`GraphicsContext.ts:2010`) — one transient chunk-fetch failure permanently disables a feature for the session. Add a bounded retry policy and/or a public `retryFeatureRenderer(key)`; prove transient-failure recovery, permanent-failure stability, and no stale-generation self-install regression. |
+| 82 | `NEW-CONTEXTLIMITS-LEGACY-DISPOSITION` | R1 | `ContextLimits` is exported (`packages/engine/index.js:123`) but permanently zero after the per-context GraphicsCapabilities migration (per FAR-104's own cleanup note). Decide and implement its disposition: mirror-populate from the first created context or deprecate loudly; do not leave the module inert. |
+| 83 | `NEW-DOC-SYNC-CLIPSPACE-GRAPHICSCAPABILITIES` | R1/doc | `SHADER_PAIRS_LOCKSTEP.md:260`, `WEBGPU_MIGRATION_STATUS.md` (~1932/2103/2693), and `ARCHITECTURE.md` still document the removed `Matrix4.setDepthRangeType` mechanism — update them to describe ClipSpaceConvention/GraphicsCapabilities; also fix the stale `GlobeTerrain.wgsl:3292` comment describing the removed `v_positionMC + cameraWC` convention. Load-bearing doc drift is itself a bug. |
+| 84 | `NEW-TAA-CUSTOM-FRUSTUM-JITTER-FALLBACK` | R2 | TAA plus a custom frustum throws every frame mid-`executeCommands` (`WebGPUSceneRenderer.ts:1824`). Fall back to the un-jittered `frustum.projectionMatrix` with a one-time pragma-wrapped warn; keep the throw debug-only. |
+| 85 | `NEW-TEARDOWN-EXCEPTION-CONSOLE-ERROR` | R1 | Restore permanent `console.error` on the swallowed teardown exceptions in `Scene.js` `destroySceneResources` cleanup() and `DataSourceDisplay.js` `runConstructionCleanup` (fork logging rule: real errors must always reach the console). |
+| 86 | `NEW-WEBGPU-PICK-LEGACY-COMMAND-WARN` | R1 | `WebGPUSceneRendererPickPass.ts:647` silently skips legacy non-native pickOnly commands. Add a pragma-wrapped one-shot warning naming the command owner so dropped pick producers are diagnosable instead of invisible. |
+| 87 | `NEW-DEBUG-SNAPSHOT-RENDERSCHEDULER-CAPABLE` | R1 | `getDebugSnapshot` hardcodes `containment.renderScheduler.capable = true` (`Scene.js:~2003`); derive it from `defined(this._renderScheduler)` so the snapshot reports actual capability. |
+| 88 | `NEW-AUDIT-JS-MODULES-TS-FOLLOWUP` | R1/debt | Convert the four audit-flagged new JS modules to TypeScript (or add co-located `.d.ts`): `CommandOrdering.js`, `WebGPUMaterialUploadState.js`, `WebGPUModelMetadataCache.js`, `WebGPUEffectsStateCache.js`. TS-preferred rule; runtime byte-unchanged. |
+| 89 | `NEW-PNTS-TYPEDARRAY-RETENTION-RECORD` | R1/doc | Record the PNTS typedArray retention cost (`PntsLoader.js:441`) in FEATURE_INVENTORY/DEFERRED_WORK alongside the GltfLoader entry, and fold the closure into `FAR-204`/`NEW-PICK-ID-OWNERSHIP-MODEL` (Wave 4 item 50). |
+| 90 | `NEW-SHARED-DEVICE-LOG-ATTRIBUTION` | R1 | Shared-device shader-validation logs attribute an arbitrary leased context (`WebGPUContext.ts:2334`); join all leased context IDs in the log prefix per the multi-context error-log rule. |
+| 91 | `NEW-RING-ALLOCATOR-INVARIANT-AND-EFFECTS-ASSERT` | R1 | Document the single-producer/no-mixed-writes invariant at `WebGPURingBufferAllocator.ts:340` `allocate()`; give the effects-cache `frameNumber ?? 0` fallback a debug assert or slot cap so a missing frame number cannot silently alias ring slots. |
+
+## 10. Wave 6 — graph, depth/query authority, pacing, and final review
+
+This is the imported Campaign 8 gated tail. It remains inactive until an explicit stop/go after Gate F.
+
+| # | ID | Risk | Work / acceptance |
+| --- | --- | --- | --- |
+| T1 | `FAR-400/FAR-401-SHADOW-GRAPH` + `FAR-408-S1` | R4 | Observe-only graph declares attachments and natural-frustum depth versions and reproduces exact current pass/order/resource identity without owning execution. |
+| T2 | `FAR-402-BOUNDED-NODE-MIGRATION` | R4 | Move one bounded encoder/submit cohort through FAR-200; no undeclared attachment, private submit, or order change. |
+| T3 | `FAR-408-S2-GRAPH-OWNED-DEPTH` | R4 | Activate exact graph depth versions/pack/resolve for migrated cohort; globe/model/voxel/classification/TAA/pick producer-consumer matrix passes. |
+| T4 | `FAR-409-GRAPH-OWNED-PICK-MINIFRAME` | R4 | Compile requested outputs as graph-owned mini-frame with bounded generation-tagged readback pool; cancellation/coalescing/retirement and every query family pass. |
+| T5 | `FAR-001/FAR-006-TIMESTAMP-COVERAGE` | R2/tooling | Attribute the unprofiled submitted-frame remainder; every artifact reports covered/uncovered time and unsupported timestamps stay unavailable, never synthesized. |
+| T6 | `FAR-007-RENDER-PACING-LANES` | R4/tooling | Add `DISPLAY_PACED` and truthful `MAXIMUM_THROUGHPUT`, convenience display-pacing boolean, Viewer control, and Node/Edge verification after bounded in-flight FAR-200 work. Report renders/s and completed GPU throughput; unsupported flags are unavailable, not “uncapped.” |
+| T7 | `FAR-003-SAFE-AUTO-RESTORATION` | R4 conditional | Restore automatic GPU cull/Hi-Z/sort/indirect only after identity/readback/RTE hazards close and dense visual/performance promotion passes. Capability remains available throughout; containment is never a performance win. |
+| T8 | `C9-FINAL-CERTIFICATION-AND-REVIEW` / `C8-FINAL-CERTIFICATION-AND-REVIEW` | R0/gate | One new hash runs full shared/fork suites, moving display-paced and supported maximum-throughput lanes, allocation/double-tax/residency/lifetime/pass/timestamp matrices, affected API/visual oracles, and architecture review. Queue every newly found broken feature; do not hide it. |
+
+## Wave 7 — Campaign-7 rendering-feature leftovers (maintainer-directed 2026-07-16)
+
+The maintainer directed on 2026-07-16 that the Campaign-7 rendering-feature leftovers fold into
+Campaign 9 as an explicit wave rather than remaining unowned. They stay gated behind the
+performance/correctness core (Waves 0–5) and follow the same opt-in/default-off byte-identical and
+probe-first contracts. `DEFERRED_WORK.md` carries each item's full investigation record.
+
+| # | ID | Risk | Work / acceptance |
+| --- | --- | --- | --- |
+| W7-1 | `C7-CLOUD-LIGHTNING-RELAND` | R3/M | Re-land the reverted emissive cloud-lightning content batch (emissive scatter term in the march plus flash driver on the weather-map precipitation channel), fixing the two revert blockers: replace the median-based anti-tiling probe gate with an upper-percentile (95th/99th) gate so tail-dwelling block lattices fail loudly, and soften/stagger the per-cell flash-window temporal edges so the lon/lat decay-frame lattice dissolves. Default-off byte-identical; PNGs read. See the `C7-CLOUD-LIGHTNING` REVERTED entry in DEFERRED_WORK.md. |
+| W7-2 | `C6-PLANAR-REFLECT-REFRACT` | R3/L | Per DEFERRED_WORK.md L5219: opt-in `reflection` on `OceanSurfacePrimitive` — reflected virtual camera mirrored across the ocean tangent plane plus Lengyel oblique near-plane clip, reusing the proven `runSceneCapture` single-view re-render pattern; projective reflection sample behind an add-only ShaderDefine with the analytic sky gradient retained as the `//>>else` branch. OFF byte-identical; gate GREEN (FFT ocean landed Batch 654). |
+| W7-3 | `C7-CLOUD-IMPOSTOR-LOD` | R3/R4/L | Phase 1: freeze-and-reproject impostor for the VOLUMETRIC `CloudCollection` renderMode (half-res rgba16float reproject target plus Harris-2001 staleness-predicate re-march), then optional Phase 2 octahedral atlas. `CLOUD_QF_IMPOSTOR` add-only qualityFlags bit; default `cloudImpostorMode='off'` byte-identical; orbit parity probe <=2% versus the live march. |
+| W7-4 | `C6-FSR2-UPSCALE` | R3/R4/XL | Four off-by-default slices per `RESEARCH_R-FSR2_2026-07-06.md`: (P1) `renderResolutionScale` internal/output split including pick-coordinate scaling; (P2) `FSR2Prep` motion/depth/reactive synthesis; (P3) FP32 WGSL ports of the 5+1 passes plus the atomic-scatter storage-buffer helper; (P4) OIT/cloud reactive masks plus quality presets. Mutually exclusive with TAA/FXAA at runtime; AMD MIT headers retained in every derived file. |
+| W7-5 | `C6-CLOUD-STBN-TAAU-ASSET` | R2/M | Self-generated STBN via EA FastNoise (BSD-3) packed into a 128x128x64 atlas, lazy-loaded behind `QF_JITTER` bit 3 with the Bayer matrix retained as fallback; widen the frameCounter wrap `&15`→`&63`; add the EA notice to LICENSE.md. Completes the STBN half of C6-CLOUD-STBN-TAAU left open by Batch 641. |
+| W7-6 | `C6-AERIAL-INSCATTER-STEP-JITTER` | R2/S optional | Successor to the honestly-closed ellipsoid-snap (DEFERRED_WORK.md L5211 — premise did not reproduce on the tessellated globe): raise/jitter `INSCATTER_STEPS` and/or add a per-pixel march-start dither in `AerialPerspective.wgsl`, targeting the per-tile far-zoom banding root cause the snap investigation isolated. |
+
+## 11. Evidence-gated P2 tail
+
+These are measured existing follow-ups, not substitutes for the highest-impact default-path work. Each
+requires an explicit premise check and before/after pass-cost evidence; a stale or noise-sized premise
+closes without engine churn.
+
+| # | ID | Work / entry gate |
+| --- | --- | --- |
+| P2-1 | `NEW-RENDERBUNDLE-AGING-DECOUPLE` | Decouple already-bounded bundle LRU aging from request-render frame ticks only if retained-age evidence reproduces avoidable eviction/rebuild. |
+| P2-2 | `NEW-RESOURCEMANAGER-KEY-EVICTION` | Add descriptor-key eviction only if exact-current key growth is material and unbounded after natural owner cleanup. |
+| P2-3 | `NEW-CLUSTER-MULTIFRUSTUM-BOUNDS` | Tighten clustered grids per natural frustum only after zero-work/default correctness and measured dense-light pass cost justify it. |
+| P2-4 | `NEW-MODEL-VS-MOTION-GATE` | Add a wider model/instance motion kernel only if settled/mutation attribution shows a material CPU bottleneck and the exact RTE/velocity contract is green. |
+
+## 12. Landing and performance requirements
+
+1. Every task records exact source/build, test command/results, browser/adapter, structured metrics,
+   accepted or diagnostic visuals, known errors, and dependency unlocked.
+2. Every effect gate tests enabled, disabled, hidden, reveal/resume, mutation, and clock jump.
+3. Every cache change tests key completeness, mutation, resize, device loss, multi-context isolation,
+   destroy, leases, completion serial, and repeated-route plateau.
+4. Every topology/shader/RTE change compares current WebGL and WebGPU and inspects the accepted
+   historical renderer baseline when one exists.
+5. At least five order-counterbalanced route repetitions support blocking performance claims. Report
+   p50/p95/p99 CPU, completed GPU where supported, commands/passes/submits/attachments/uploads,
+   live/high-water bytes, compilation/GC/long tasks where available, and unprofiled remainder.
+6. Campaign target: >=10% whole-route and >=15% near-ground WebGPU CPU-p95 improvement versus Gate A,
+   or >3x measured noise; no route-segment p99 regression beyond noise, no feature loss, and no WebGL
+   regression beyond the predeclared workload budget.
+
+## 13. Not automatically activated
+
+Full GPU-resident tiles, broad render-bundle conversion, WASM traversal, full GPU LOD, NATIVE_DEVICE
+sharing, and other large feature epics remain separate campaigns/RFCs. Campaign 9 fixes the current
+renderer first. Wave 7 folds the Campaign-7 leftovers in by maintainer instruction 2026-07-16; they
+remain gated behind the perf/correctness core.

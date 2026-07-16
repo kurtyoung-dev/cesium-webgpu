@@ -17,6 +17,7 @@
 // Run with: node scripts/__tests__/bundleVariantPlugin.spec.mjs
 
 import assert from "node:assert";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundleVariantPlugin } from "../bundleVariantPlugin.js";
@@ -28,6 +29,18 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 // constants. Used to verify the redirect target is what we expect.
 const STUB_SHADER = path.resolve(REPO_ROOT, "scripts", "stubs", "emptyShader.js");
 const STUB_MODULE = path.resolve(REPO_ROOT, "scripts", "stubs", "emptyModule.js");
+const WEBGL_BUILD_CAPABILITIES = path.resolve(
+  REPO_ROOT,
+  "scripts",
+  "stubs",
+  "rendererBuildCapabilitiesWebGL.js",
+);
+const WEBGPU_BUILD_CAPABILITIES = path.resolve(
+  REPO_ROOT,
+  "scripts",
+  "stubs",
+  "rendererBuildCapabilitiesWebGPU.js",
+);
 
 // Fake esbuild build object that captures whatever onResolve handler the
 // plugin registers. The plugin only registers ONE handler with filter /.*/
@@ -137,6 +150,20 @@ async function run() {
       "webgpu-only: WebGPU TS imports pass through",
     );
 
+    const capabilitiesResult = resolveLike(
+      handler,
+      "./RendererBuildCapabilities.js",
+      path.resolve(
+        REPO_ROOT,
+        "packages/engine/Source/Renderer/RendererType.ts",
+      ),
+    );
+    assert.strictEqual(
+      capabilitiesResult?.path,
+      WEBGPU_BUILD_CAPABILITIES,
+      "webgpu-only: renderer capabilities resolve to WebGPU-only constants",
+    );
+
     // Bare specifiers (non-relative, not absolute) always pass through.
     const bareResult = resolveLike(handler, "lodash", globeFSImporter);
     assert.strictEqual(bareResult, null, "bare specifier passes through");
@@ -206,6 +233,20 @@ async function run() {
       "webgl-only: GLSL shader imports pass through",
     );
 
+    const capabilitiesResult = resolveLike(
+      handler,
+      "./RendererBuildCapabilities.js",
+      path.resolve(
+        REPO_ROOT,
+        "packages/engine/Source/Renderer/RendererType.ts",
+      ),
+    );
+    assert.strictEqual(
+      capabilitiesResult?.path,
+      WEBGL_BUILD_CAPABILITIES,
+      "webgl-only: renderer capabilities resolve to WebGL-only constants",
+    );
+
     // Compat-exempt files stay resolvable in webgl-only builds.
     const compatExemptions = [
       "../Renderer/WebGPU/WebGLCompatibilityStub.js",
@@ -250,7 +291,27 @@ async function run() {
   }
 
   // ──────────────────────────────────────────────────────────────────
-  // 5. esbuild-internal virtual modules (namespace starts with \0) pass through.
+  // 5. Build entries contain no mutable renderer-default bootstrap.
+  // ──────────────────────────────────────────────────────────────────
+  {
+    const buildSource = await readFile(
+      path.resolve(REPO_ROOT, "scripts", "build.js"),
+      "utf8",
+    );
+    assert.doesNotMatch(
+      buildSource,
+      /setGlobalDefaultRenderer\(RendererType\.\$\{defaultRenderer\}\)/u,
+      "build generator must not append a mutable renderer-default setter",
+    );
+    assert.match(
+      buildSource,
+      /immutable RendererBuildCapabilities alias/u,
+      "build generator documents immutable variant capability selection",
+    );
+  }
+
+  // ──────────────────────────────────────────────────────────────────
+  // 6. esbuild-internal virtual modules (namespace starts with \0) pass through.
   // ──────────────────────────────────────────────────────────────────
   {
     const handler = setupPlugin("webgl-only");

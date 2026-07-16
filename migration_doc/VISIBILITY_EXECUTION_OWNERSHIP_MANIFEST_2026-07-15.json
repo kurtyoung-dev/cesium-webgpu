@@ -1,0 +1,2191 @@
+{
+  "schemaVersion": 1,
+  "generatedOn": "2026-07-15",
+  "campaignTask": "C9-02-VISIBILITY-EXECUTION-OWNERSHIP-MANIFEST",
+  "manifestStatus": "source-audit-complete-runtime-enforcement-pending",
+  "scope": "Static ownership map for candidate selection, visibility, consumer gating, backend execution, and conservative fallback behavior. Source anchors describe the audited 2026-07-15 working tree; line numbers are navigation hints and symbols are the stable anchors.",
+  "statusVocabulary": {
+    "verified": "The source implements the stated ownership contract and this audit found no conflicting path.",
+    "partial": "The primary ownership path is identified, but an adjacent path or missing declaration prevents a complete guarantee.",
+    "gap": "The current source does not satisfy the intended visibility or execution ownership contract."
+  },
+  "runtimeAssertionsRequired": [
+    "Snapshot globe terrain tile IDs plus terrain and imagery revisions immediately before backend command compilation and prove both backends consume the same snapshot.",
+    "Record every draw, compute, fullscreen, shadow, and capture unit against a declared feature ID, selection owner, consumer owner, and fallback policy.",
+    "Reject SceneOctree ownership of terrain, traversal-owned 3D Tiles, voxels, compute, overlay, and commands whose cull flag delegates visibility to their producer.",
+    "Report candidate, selected, rejected, fallback, command, pass, and submission counts by feature ID without allocating when counters are disabled."
+  ],
+  "features": [
+    {
+      "id": "globe-terrain-quadtree",
+      "name": "Globe terrain quadtree",
+      "workKind": "draw",
+      "backends": [
+        "webgl",
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "Globe._surface / QuadtreePrimitive",
+        "output": "QuadtreePrimitive._tilesToRender",
+        "identity": [
+          "tile.level",
+          "tile.x",
+          "tile.y",
+          "terrain mesh or fill revision fingerprint",
+          "ready imagery source and revision fingerprint"
+        ],
+        "view": "main",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/Globe.js",
+            "line": 57,
+            "symbol": "Globe",
+            "role": "Constructs the single GlobeSurfaceTileProvider and QuadtreePrimitive."
+          },
+          {
+            "path": "packages/engine/Source/Scene/QuadtreePrimitive.js",
+            "line": 436,
+            "symbol": "selectTilesForRendering",
+            "role": "Clears and populates the canonical selected tile array."
+          },
+          {
+            "path": "packages/engine/Source/Scene/QuadtreePrimitive.js",
+            "line": 1120,
+            "symbol": "addTileToRenderList",
+            "role": "Appends a selected tile to _tilesToRender."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "QuadtreePrimitive",
+        "view": "main",
+        "predicateId": "terrain-quadtree-visibility-sse-refinement",
+        "contract": "Globe renders one quadtree. Selection applies provider visibility, SSE, refinement readiness, and ancestor fallback before any backend branch.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/QuadtreePrimitive.js",
+            "line": 274,
+            "symbol": "QuadtreePrimitive.render",
+            "role": "Runs selection before command compilation."
+          },
+          {
+            "path": "packages/engine/Source/Scene/QuadtreePrimitive.js",
+            "line": 622,
+            "symbol": "visitTile",
+            "role": "Evaluates SSE and refinement readiness."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "GlobeSurfaceTileProvider",
+        "bounds": "mode-aware ECEF terrain bounding region, sphere, or oriented box",
+        "culling": [
+          "fog",
+          "clipping planes and polygons",
+          "camera frustum",
+          "ellipsoid horizon occlusion"
+        ],
+        "contract": "Unknown or unavailable bounding data remains Visibility.PARTIAL so it cannot be incorrectly discarded.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/GlobeSurfaceTileProvider.js",
+            "line": 551,
+            "symbol": "GlobeSurfaceTileProvider.computeTileVisibility",
+            "role": "Owns terrain fog, clipping, frustum, and horizon tests."
+          },
+          {
+            "path": "packages/engine/Source/Scene/GlobeSurfaceTileProvider.js",
+            "line": 567,
+            "symbol": "GlobeSurfaceTileProvider.computeTileVisibility",
+            "role": "Returns PARTIAL when the source tile or bounds are unavailable."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "GlobeSurfaceTileProviderRendering",
+        "predicateId": "selected-terrain-tile-for-frame-pass",
+        "inputs": [
+          "QuadtreePrimitive._tilesToRender",
+          "tile terrain mesh or fill",
+          "ready imagery",
+          "frame camera and scene mode"
+        ],
+        "output": "Pass.GLOBE draw commands and pick commands",
+        "contract": "Only the selected quadtree array is iterated to publish tiles and compile backend commands.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/QuadtreePrimitive.js",
+            "line": 1365,
+            "symbol": "createRenderCommandsForSelectedTiles",
+            "role": "Iterates the exact selected array."
+          },
+          {
+            "path": "packages/engine/Source/Scene/GlobeSurfaceTileProvider.js",
+            "line": 852,
+            "symbol": "GlobeSurfaceTileProvider.showTileThisFrame",
+            "role": "Buckets each selected tile for rendering."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgpu",
+          "owner": "addWebGPUDrawCommandsForTile / GLOBE_SURFACE feature renderer",
+          "input": "the selected tile passed to addDrawCommandsForTile",
+          "pass": "Pass.GLOBE",
+          "submissionAuthority": "frame",
+          "contract": "The WebGPU branch occurs after shared quadtree selection and preserves tile as command owner.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+              "line": 791,
+              "symbol": "addWebGPUDrawCommandsForTile",
+              "role": "Compiles WebGPU commands for one shared selected tile."
+            },
+            {
+              "path": "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+              "line": 1171,
+              "symbol": "addDrawCommandsForTile",
+              "role": "Branches to WebGPU only after tile selection."
+            }
+          ]
+        },
+        {
+          "backend": "webgl",
+          "owner": "addDrawCommandsForTile legacy path",
+          "input": "the selected tile passed to addDrawCommandsForTile",
+          "pass": "Pass.GLOBE",
+          "submissionAuthority": "frame",
+          "contract": "The legacy path compiles the same shared selected tile when no globe feature renderer is registered.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+              "line": 1171,
+              "symbol": "addDrawCommandsForTile",
+              "role": "Legacy compilation begins after the WebGPU feature-renderer branch."
+            },
+            {
+              "path": "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+              "line": 1871,
+              "symbol": "addDrawCommandsForTile",
+              "role": "Publishes the WebGL command as Pass.GLOBE."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "retain-tile-as-partial",
+        "onMissingProducer": "retain-renderable-parent-or-fill",
+        "correctnessClass": "conservative",
+        "contract": "When descendants are not renderable, remove incomplete descendants and render the ancestor; do not hide terrain to save work.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/QuadtreePrimitive.js",
+            "line": 741,
+            "symbol": "visitTile",
+            "role": "Kicks incomplete descendants and restores the ancestor."
+          }
+        ]
+      },
+      "invariants": [
+        "WebGL and WebGPU compile the same selected tile identity and revision set.",
+        "The backend branch occurs after quadtree selection.",
+        "SceneOctree never selects, refines, or rejects globe terrain.",
+        "Pick reuses the selected terrain buckets rather than running a second terrain selector."
+      ],
+      "auditStatus": "verified",
+      "enforcementStatus": "pending",
+      "gaps": [
+        "The runtime selected tile ID and terrain/imagery revision comparison required by C9-02 is not yet installed."
+      ]
+    },
+    {
+      "id": "cesium-3d-tiles",
+      "name": "Cesium 3D Tiles traversal",
+      "workKind": "draw",
+      "backends": [
+        "webgl",
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "Cesium3DTileset and Cesium3DTilesetTraversal",
+        "output": "Cesium3DTileset._selectedTiles",
+        "identity": [
+          "tile content URI or implicit coordinate",
+          "tile depth",
+          "tile content generation or revision"
+        ],
+        "view": "tileset pass view",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/Cesium3DTileset.js",
+            "line": 225,
+            "symbol": "Cesium3DTileset",
+            "role": "Owns the selected tile array."
+          },
+          {
+            "path": "packages/engine/Source/Scene/Cesium3DTilesetBaseTraversal.js",
+            "line": 35,
+            "symbol": "Cesium3DTilesetBaseTraversal.selectTiles",
+            "role": "Clears and fills the canonical selected tile array."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "Cesium3DTilesetTraversal selected by pass options",
+        "view": "main, pick, preload, or tileset pass",
+        "predicateId": "3d-tiles-visibility-sse-refinement-availability",
+        "contract": "Tileset traversal owns visibility, SSE, refinement, request priority, and parent retention before model backend routing.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/Cesium3DTileset.js",
+            "line": 3799,
+            "symbol": "Cesium3DTileset.updateForPass",
+            "role": "Selects traversal and invokes selectTiles for the pass."
+          },
+          {
+            "path": "packages/engine/Source/Scene/Cesium3DTilesetBaseTraversal.js",
+            "line": 81,
+            "symbol": "selectDesiredTile",
+            "role": "Adds available content through the tileset traversal owner."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "Cesium3DTile and Cesium3DTilesetTraversal",
+        "bounds": "tile bounding volume and optional content bounding volume",
+        "culling": [
+          "camera culling volume plane mask",
+          "viewer request volume",
+          "content visibility",
+          "screen-space error"
+        ],
+        "contract": "The tileset traversal, not Scene PVS or SceneOctree, decides which tile content is selected.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/Cesium3DTile.js",
+            "line": 742,
+            "symbol": "Cesium3DTile.visibility",
+            "role": "Computes tile visibility with the inherited plane mask."
+          },
+          {
+            "path": "packages/engine/Source/Scene/Cesium3DTile.js",
+            "line": 784,
+            "symbol": "Cesium3DTile.contentVisibility",
+            "role": "Computes optional content volume visibility."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "Cesium3DTileset.updateTiles and selected tile content",
+        "predicateId": "selected-3d-tile-content",
+        "inputs": [
+          "Cesium3DTileset._selectedTiles",
+          "tile content state",
+          "pass options"
+        ],
+        "output": "3D Tiles model, point, vector, classification, or geometry commands",
+        "contract": "Only selected tile content is updated to emit render commands.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/Cesium3DTileset.js",
+            "line": 3503,
+            "symbol": "updateTiles",
+            "role": "Iterates _selectedTiles and calls tile.update."
+          },
+          {
+            "path": "packages/engine/Source/Scene/Cesium3DTile.js",
+            "line": 1069,
+            "symbol": "Cesium3DTile.update",
+            "role": "Updates selected content and accounts for emitted commands."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgpu",
+          "owner": "MODEL feature renderer after selected content update",
+          "input": "Model created by selected 3D Tile content",
+          "pass": "Pass.CESIUM_3D_TILE or Pass.TRANSLUCENT",
+          "submissionAuthority": "frame",
+          "contract": "Model.update routes selected content to the WebGPU model feature renderer.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Scene/Model/Model.js",
+              "line": 2817,
+              "symbol": "Model.update",
+              "role": "Routes a visible selected model to FeatureRendererKey.MODEL."
+            }
+          ]
+        },
+        {
+          "backend": "webgl",
+          "owner": "ModelSceneGraph.pushDrawCommands",
+          "input": "Model created by selected 3D Tile content",
+          "pass": "Pass.CESIUM_3D_TILE or Pass.TRANSLUCENT",
+          "submissionAuthority": "frame",
+          "contract": "Model.update uses the legacy scene-graph command path when no model feature renderer ran.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Scene/Model/Model.js",
+              "line": 2835,
+              "symbol": "Model.update",
+              "role": "Pushes legacy commands only when the model feature renderer is absent."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "retain-according-to-tileset-traversal",
+        "onMissingProducer": "retain-loaded-parent-content-until-children-refine",
+        "correctnessClass": "conservative",
+        "contract": "Replacement refinement does not remove a loaded parent until required children are available and at least one child is visible.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/Cesium3DTilesetBaseTraversal.js",
+            "line": 106,
+            "symbol": "updateAndPushChildren",
+            "role": "Loads needed siblings and prevents refinement when children are unavailable."
+          }
+        ]
+      },
+      "invariants": [
+        "Both backends consume content selected by the same Cesium3DTileset traversal.",
+        "SceneOctree must never reject traversal-owned 3D Tile commands.",
+        "Commands marked cull false retain traversal ownership through Scene PVS and optional accelerators."
+      ],
+      "auditStatus": "partial",
+      "enforcementStatus": "gap",
+      "gaps": [
+        "Model3DTileContent sets cull false and Pass.CESIUM_3D_TILE for opaque content at packages/engine/Source/Scene/Model/Model3DTileContent.js:482, but translucent 3D Tile commands may use Pass.TRANSLUCENT.",
+        "SceneOctree eligibility at packages/engine/Source/Scene/SceneOctree.js:288 checks only bounding volume and OPAQUE/TRANSLUCENT pass; it does not reject cull false or traversal-owned 3D Tiles."
+      ]
+    },
+    {
+      "id": "voxel-webgl-traversal",
+      "name": "WebGL voxel traversal",
+      "workKind": "draw-and-stream",
+      "backends": [
+        "webgl"
+      ],
+      "candidateSet": {
+        "owner": "VoxelTraversal",
+        "output": "VoxelTraversal._highPriorityKeyframeNodes and megatexture residency",
+        "identity": [
+          "spatial node coordinates and level",
+          "keyframe index",
+          "content generation"
+        ],
+        "view": "main",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/VoxelPrimitiveHelpers.js",
+            "line": 195,
+            "symbol": "initFromProvider",
+            "role": "Constructs the legacy VoxelTraversal."
+          },
+          {
+            "path": "packages/engine/Source/Scene/VoxelTraversal.js",
+            "line": 522,
+            "symbol": "selectKeyframeNodes",
+            "role": "Builds the priority-selected keyframe set."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "VoxelTraversal",
+        "view": "main",
+        "predicateId": "voxel-octree-frustum-sse-keyframe-priority",
+        "contract": "The legacy voxel octree owns spatial visibility, SSE, keyframe priority, requests, megatexture eviction, and renderable-node fallback.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/VoxelTraversal.js",
+            "line": 276,
+            "symbol": "VoxelTraversal.update",
+            "role": "Runs selection, residency updates, and octree generation."
+          },
+          {
+            "path": "packages/engine/Source/Scene/VoxelTraversal.js",
+            "line": 674,
+            "symbol": "addToQueueRecursive",
+            "role": "Applies frustum and SSE selection recursively."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "VoxelTraversal plus VoxelPrimitive shape gate",
+        "bounds": "voxel shape bounding sphere and per-spatial-node oriented bounds",
+        "culling": [
+          "shape visibility",
+          "frustum plane mask",
+          "screen-space error"
+        ],
+        "contract": "The primitive rejects an offscreen shape before traversal; traversal refines only visible nodes.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/VoxelPrimitive.js",
+            "line": 493,
+            "symbol": "VoxelPrimitive.update",
+            "role": "Updates shape visibility before traversal."
+          },
+          {
+            "path": "packages/engine/Source/Scene/VoxelTraversal.js",
+            "line": 688,
+            "symbol": "addToQueueRecursive",
+            "role": "Rejects nodes outside the frustum plane mask."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "VoxelPrimitive legacy draw command",
+        "predicateId": "visible-voxel-shape-with-renderable-octree",
+        "inputs": [
+          "generated voxel octree texture",
+          "resident megatexture nodes",
+          "shape bounds"
+        ],
+        "output": "Pass.VOXELS draw and pick command",
+        "contract": "The draw command samples the traversal-owned generated octree and resident keyframe content.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/VoxelPrimitive.js",
+            "line": 637,
+            "symbol": "VoxelPrimitive.update",
+            "role": "Publishes the bounded legacy voxel draw or pick command."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgl",
+          "owner": "VoxelPrimitive and WebGL renderer",
+          "input": "VoxelTraversal generated octree plus megatextures",
+          "pass": "Pass.VOXELS",
+          "submissionAuthority": "frame",
+          "contract": "The legacy command carries the voxel shape bounding sphere into Scene PVS.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Scene/VoxelPrimitive.js",
+              "line": 642,
+              "symbol": "VoxelPrimitive.update",
+              "role": "Assigns the shape bounding sphere to the command."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "retain-root-or-loaded-ancestor",
+        "onMissingProducer": "render-coarser-resident-keyframe-node",
+        "correctnessClass": "quality-fallback",
+        "contract": "The generated octree references renderable ancestors when finer keyframe content is not resident.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/VoxelTraversal.js",
+            "line": 975,
+            "symbol": "generateOctree",
+            "role": "Generates renderable node references and ancestor fallback."
+          }
+        ]
+      },
+      "invariants": [
+        "Legacy voxel visibility and residency remain owned by VoxelTraversal.",
+        "The voxel command carries shape bounds so Scene PVS can conservatively bin it."
+      ],
+      "auditStatus": "verified",
+      "enforcementStatus": "pending",
+      "gaps": [
+        "No backend-neutral selected voxel identity contract exists for comparison with WebGPU."
+      ]
+    },
+    {
+      "id": "voxel-webgpu-demand-ladder",
+      "name": "WebGPU voxel demand ladder",
+      "workKind": "draw-and-stream",
+      "backends": [
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "WebGPUVoxelRenderer",
+        "output": "renderer-private SSE demand levels, L2 demand mask, and uploaded content records",
+        "identity": [
+          "provider content key",
+          "demand level",
+          "L2 tile index",
+          "upload generation"
+        ],
+        "view": "main camera for demand; command itself is unbounded",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/VoxelPrimitive.js",
+            "line": 461,
+            "symbol": "VoxelPrimitive.update",
+            "role": "Routes to the WebGPU feature renderer and returns before legacy traversal initialization."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts",
+            "line": 1941,
+            "symbol": "WebGPU voxel SSE demand ladder",
+            "role": "Computes renderer-private detail demand."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "WebGPUVoxelRenderer",
+        "view": "main",
+        "predicateId": "webgpu-voxel-demand-ladder-and-l2-mask",
+        "contract": "WebGPU does not run VoxelTraversal; it selects detail through a separate demand ladder and partial per-tile L2 mask.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts",
+            "line": 2070,
+            "symbol": "WebGPU voxel demand computation",
+            "role": "Selects demanded detail levels."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts",
+            "line": 2118,
+            "symbol": "computeVoxelL2DemandMask",
+            "role": "Applies per-tile frustum demand only to the dynamic L2 pool."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts",
+            "line": 3502,
+            "symbol": "getPickKeyframeNode",
+            "role": "Documents that WebGPU never initializes primitive._traversal."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "WebGPUVoxelRenderer",
+        "bounds": "L2 demand-mask tile bounds only; no root command bound",
+        "culling": [
+          "partial L2 frustum demand mask"
+        ],
+        "contract": "Fine-level demand may be suppressed per tile, but no audited root/shape visibility gate prevents all WebGPU voxel update and draw work offscreen.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts",
+            "line": 2118,
+            "symbol": "computeVoxelL2DemandMask",
+            "role": "Only audited spatial visibility predicate in the WebGPU demand path."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "WebGPUVoxelRenderer cached draw command",
+        "predicateId": "webgpu-voxel-provider-ready",
+        "inputs": [
+          "root/coarse uploaded content",
+          "optional L2 uploads",
+          "camera uniforms"
+        ],
+        "output": "Pass.VOXELS draw and pick commands",
+        "contract": "The main voxel command is emitted without a bounding volume, so Scene PVS conservatively includes it in every frustum.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts",
+            "line": 3204,
+            "symbol": "WebGPUVoxelRenderer command creation",
+            "role": "Creates and publishes the unbounded Pass.VOXELS command."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgpu",
+          "owner": "WebGPUVoxelRenderer",
+          "input": "renderer-private demand and upload state",
+          "pass": "Pass.VOXELS",
+          "submissionAuthority": "frame for draw; renderer-owned preparation for uploads",
+          "contract": "Execution does not consume VoxelTraversal's selected keyframe-node set.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts",
+              "line": 3204,
+              "symbol": "WebGPUVoxelRenderer command creation",
+              "role": "Publishes backend-native draw work."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "execute-root-and-suppress-optional-l2-demand",
+        "onMissingProducer": "retain-root-or-coarse-uploaded-content",
+        "correctnessClass": "quality-fallback",
+        "contract": "Missing camera or shape data yields no optional L2 demand while root/coarse representation remains eligible; it does not hide the feature.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUVoxelRenderer.ts",
+            "line": 2118,
+            "symbol": "computeVoxelL2DemandMask",
+            "role": "Returns an empty fine-demand mask when required visibility inputs are absent."
+          }
+        ]
+      },
+      "invariants": [
+        "WebGPU voxel work must have an explicit root visibility owner.",
+        "Backend divergence from VoxelTraversal must be declared and parity-tested rather than described as a shared voxel octree.",
+        "Fine-demand suppression must never remove the root/coarse representation."
+      ],
+      "auditStatus": "gap",
+      "enforcementStatus": "gap",
+      "gaps": [
+        "WebGPU bypasses the canonical legacy VoxelTraversal selected and resident set.",
+        "The main WebGPU voxel command has no bounding volume and no root/shape visibility gate was found before update, upload, and command publication."
+      ]
+    },
+    {
+      "id": "scene-pvs",
+      "name": "Scene potentially visible set",
+      "workKind": "visibility-and-command-binning",
+      "backends": [
+        "webgl",
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "Scene primitives and feature renderers",
+        "output": "frameState.commandList",
+        "identity": [
+          "command object identity",
+          "command.owner",
+          "command.pass"
+        ],
+        "view": "main",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/ViewportExecutor.js",
+            "line": 357,
+            "symbol": "executeViewport",
+            "role": "Updates primitives to build the frame command list."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "View.createPotentiallyVisibleSet",
+        "view": "main",
+        "predicateId": "scene-command-frustum-occlusion-and-pass",
+        "contract": "Separates compute and overlay, conservatively tests draw bounds, computes near/far, and bins surviving commands by frustum and pass.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/ViewportExecutor.js",
+            "line": 431,
+            "symbol": "executeViewport",
+            "role": "Invokes the canonical scene PVS after command generation and optional accelerators."
+          },
+          {
+            "path": "packages/engine/Source/Scene/View.js",
+            "line": 193,
+            "symbol": "View.createPotentiallyVisibleSet",
+            "role": "Owns final pass separation, visibility, and frustum bins."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "Scene.isVisible",
+        "bounds": "command.boundingVolume in world coordinates",
+        "culling": [
+          "camera culling volume",
+          "optional ellipsoid occluder"
+        ],
+        "contract": "Commands without bounds or with cull false remain visible; known bounds may be frustum- and horizon-culled.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/Scene.js",
+            "line": 3578,
+            "symbol": "Scene.isVisible",
+            "role": "Defines conservative command visibility."
+          },
+          {
+            "path": "packages/engine/Source/Scene/View.js",
+            "line": 253,
+            "symbol": "View.createPotentiallyVisibleSet",
+            "role": "Applies visibility and worst-case near/far for unbounded commands."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "SceneRenderer and backend scene renderer",
+        "predicateId": "frustum-pass-survivor",
+        "inputs": [
+          "View.frustumCommandsList",
+          "scene._computeCommandList",
+          "scene._overlayCommandList"
+        ],
+        "output": "ordered render, compute, and overlay work",
+        "contract": "Backend renderers consume the same PVS and pass bins after backend-native commands are generated.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/View.js",
+            "line": 300,
+            "symbol": "View.createPotentiallyVisibleSet",
+            "role": "Inserts command extents into final frustum bins."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgl",
+          "owner": "SceneRenderer pass execution",
+          "input": "View.frustumCommandsList",
+          "pass": "all draw passes",
+          "submissionAuthority": "frame",
+          "contract": "Executes commands from canonical PVS bins.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Scene/SceneRenderer.js",
+              "line": 306,
+              "symbol": "executeCommands",
+              "role": "Executes the shared frustum and pass bins through the WebGL path."
+            }
+          ]
+        },
+        {
+          "backend": "webgpu",
+          "owner": "WebGPUSceneRenderer",
+          "input": "View.frustumCommandsList",
+          "pass": "all supported draw passes",
+          "submissionAuthority": "frame",
+          "contract": "Consumes the same canonical PVS bins with backend-native command execution.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts",
+              "line": 1478,
+              "symbol": "WebGPUSceneRenderer.executeCommands",
+              "role": "Executes backend-native commands from the shared frame config and PVS bins."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "execute-in-all-frusta",
+        "onMissingProducer": "no-command-no-work",
+        "correctnessClass": "conservative",
+        "contract": "Unknown bounds cannot cause disappearance; they use camera worst-case near/far and enter every necessary frustum.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/View.js",
+            "line": 291,
+            "symbol": "View.createPotentiallyVisibleSet",
+            "role": "Assigns camera near/far to commands without bounds."
+          }
+        ]
+      },
+      "invariants": [
+        "Unknown bounds and cull false are conservative execute cases.",
+        "Compute and overlay are explicitly separated rather than spatially inferred.",
+        "Backend execution does not rerun primitive selection."
+      ],
+      "auditStatus": "verified",
+      "enforcementStatus": "pending",
+      "gaps": [
+        "Feature-level ownership counters are not uniformly attached to PVS survivor accounting."
+      ]
+    },
+    {
+      "id": "scene-octree-optional",
+      "name": "Optional general SceneOctree accelerator",
+      "workKind": "visibility-acceleration",
+      "backends": [
+        "webgl",
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "SceneOctree",
+        "output": "octree-eligible command nodes plus bypassList",
+        "identity": [
+          "command object identity",
+          "command.owner",
+          "command.pass"
+        ],
+        "view": "main",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/SceneOctree.js",
+            "line": 121,
+            "symbol": "SceneOctree.build",
+            "role": "Rebuilds the optional command accelerator each frame."
+          },
+          {
+            "path": "packages/engine/Source/Scene/SceneOctree.js",
+            "line": 288,
+            "symbol": "OCTREE_ELIGIBLE_PASSES",
+            "role": "Defines the current pass-based eligible cohorts."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "RenderScheduler option plus SceneOctree.isOctreeEligible",
+        "view": "main",
+        "predicateId": "scene-octree-enabled-threshold-bounds-and-pass",
+        "contract": "When enabled and above threshold, commands with bounds and OPAQUE or TRANSLUCENT pass enter the octree; all others bypass.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/RenderScheduler.js",
+            "line": 15,
+            "symbol": "RenderScheduler",
+            "role": "Owns the disabled-by-default accelerator option."
+          },
+          {
+            "path": "packages/engine/Source/Scene/SceneOctree.js",
+            "line": 294,
+            "symbol": "isOctreeEligible",
+            "role": "Implements current eligibility."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "SceneOctree.collectVisible",
+        "bounds": "eligible command boundingVolume",
+        "culling": [
+          "camera culling volume",
+          "optional occluder"
+        ],
+        "contract": "The accelerator should remove only primitive cohorts whose selection ownership explicitly allows SceneOctree culling.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/SceneOctree.js",
+            "line": 189,
+            "symbol": "SceneOctree.collectVisible",
+            "role": "Collects visible octree commands."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "ViewportExecutor before View.createPotentiallyVisibleSet",
+        "predicateId": "optional-octree-visible-plus-bypass",
+        "inputs": [
+          "frameState.commandList",
+          "SceneOctree visible list",
+          "SceneOctree bypassList"
+        ],
+        "output": "replacement frameState.commandList",
+        "contract": "Visible eligible commands and all bypass commands replace the original command list before canonical PVS and shadow candidate insertion.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/ViewportExecutor.js",
+            "line": 388,
+            "symbol": "executeViewport",
+            "role": "Builds, collects, and replaces the frame command list."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgl",
+          "owner": "shared ViewportExecutor",
+          "input": "octree-visible plus bypass command list",
+          "pass": "pre-PVS",
+          "submissionAuthority": "frame",
+          "contract": "Optional shared CPU accelerator modifies the candidate list before backend execution.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Scene/ViewportExecutor.js",
+              "line": 388,
+              "symbol": "executeViewport",
+              "role": "Installs the octree-visible plus bypass list before shared backend execution."
+            }
+          ]
+        },
+        {
+          "backend": "webgpu",
+          "owner": "shared ViewportExecutor",
+          "input": "octree-visible plus bypass command list",
+          "pass": "pre-PVS",
+          "submissionAuthority": "frame",
+          "contract": "Optional shared CPU accelerator modifies the candidate list before backend execution.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Scene/ViewportExecutor.js",
+              "line": 388,
+              "symbol": "executeViewport",
+              "role": "Installs the octree-visible plus bypass list before shared backend execution."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "bypass-octree-and-retain-command",
+        "onMissingProducer": "use-original-command-list",
+        "correctnessClass": "conservative",
+        "contract": "Disabled or below-threshold octree returns useOctree false; unbounded commands enter bypassList.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/SceneOctree.js",
+            "line": 121,
+            "symbol": "SceneOctree.build",
+            "role": "Returns the complete input as bypass when the accelerator is inactive."
+          }
+        ]
+      },
+      "invariants": [
+        "Pass.GLOBE terrain always bypasses SceneOctree.",
+        "Traversal-owned 3D Tiles and voxels always bypass SceneOctree.",
+        "Commands with cull false always bypass SceneOctree.",
+        "Disabling the accelerator is behaviorally identical to the original command list."
+      ],
+      "auditStatus": "gap",
+      "enforcementStatus": "gap",
+      "gaps": [
+        "The implementation comment says terrain, 3D Tiles, voxels, and compute are excluded, but eligibility only checks bounds and OPAQUE/TRANSLUCENT pass.",
+        "Translucent 3D Tile commands with cull false can be inserted and incorrectly rejected by the accelerator.",
+        "Because command-list replacement precedes shadow candidate insertion, eligible off-main-view casters may be removed before a shadow-map visibility test."
+      ]
+    },
+    {
+      "id": "fullscreen-postprocess",
+      "name": "Fullscreen post-processing",
+      "workKind": "fullscreen",
+      "backends": [
+        "webgl",
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "PostProcessStageCollection and backend post-process pipeline",
+        "output": "active supported post-process stages and mandatory WebGPU canvas resolve",
+        "identity": [
+          "stage object identity",
+          "effect kind",
+          "configuration revision"
+        ],
+        "view": "main fullscreen",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/PostProcessStageCollection.js",
+            "line": 530,
+            "symbol": "PostProcessStageCollection.update",
+            "role": "Builds the WebGL active stage set or routes WebGPU state."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessStageCollection.ts",
+            "line": 1764,
+            "symbol": "hasActiveWebGPUPostProcessStages",
+            "role": "Reports active WebGPU effects and stages."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "PostProcessStageCollection, FramebufferOrchestrator, and WebGPUPostProcessPipeline",
+        "view": "main fullscreen",
+        "predicateId": "post-stage-enabled-ready-supported-or-required-canvas-resolve",
+        "contract": "Individual effects require enabled, supported, ready inputs; WebGPU still requires an identity scene-framebuffer-to-canvas resolve when no effect is active.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/FramebufferOrchestrator.js",
+            "line": 98,
+            "symbol": "updateAndClearFramebuffers",
+            "role": "Selects post-process work and mandatory backend canvas resolve."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts",
+            "line": 385,
+            "symbol": "WebGPUPostProcessPipeline.hasActiveStages",
+            "role": "Checks WebGPU effect and stage activity."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "consumer and input availability, not spatial PVS",
+        "bounds": "fullscreen",
+        "culling": [
+          "enabled and supported gates",
+          "required color, depth, ID, velocity, or G-buffer input availability"
+        ],
+        "contract": "Fullscreen stages are never primitive- or octree-culled; they run only for a declared output consumer and available inputs.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts",
+            "line": 1349,
+            "symbol": "WebGPUPostProcessPipeline.execute",
+            "role": "Executes enabled fullscreen stages over scene views."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "canvas presentation or downstream post/environmental stage",
+        "predicateId": "scene-color-to-display-consumer",
+        "inputs": [
+          "scene color",
+          "depth",
+          "optional ID, velocity, and G-buffer textures"
+        ],
+        "output": "canvas color or intermediate stage texture",
+        "contract": "Every fullscreen effect must declare its required inputs; the terminal WebGPU consumer is canvas presentation.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts",
+            "line": 1712,
+            "symbol": "WebGPUPostProcessPipeline.execute",
+            "role": "Performs the terminal canvas blit."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgl",
+          "owner": "PostProcessStageCollection.execute",
+          "input": "active WebGL stage list",
+          "pass": "post-process",
+          "submissionAuthority": "frame",
+          "contract": "Executes only active, ready, supported stages.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Scene/PostProcessStageCollection.js",
+              "line": 701,
+              "symbol": "PostProcessStageCollection.execute",
+              "role": "Executes the selected WebGL post-process chain."
+            }
+          ]
+        },
+        {
+          "backend": "webgpu",
+          "owner": "WebGPUPostProcessPipeline.execute",
+          "input": "active effects/stages or identity resolve",
+          "pass": "post-process",
+          "submissionAuthority": "frame",
+          "contract": "Executes the active fullscreen chain and always resolves the offscreen scene target to the canvas.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts",
+              "line": 1349,
+              "symbol": "WebGPUPostProcessPipeline.execute",
+              "role": "Executes effects, user stages, and terminal canvas resolve."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "not-applicable-fullscreen",
+        "onMissingProducer": "identity-copy-or-leave-scene-color-unchanged",
+        "correctnessClass": "conservative",
+        "contract": "When no WebGPU stage is active, identity blit is required for presentation and is not removable feature overhead.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUPostProcessPipeline.ts",
+            "line": 1383,
+            "symbol": "WebGPUPostProcessPipeline.execute",
+            "role": "Uses the mandatory identity blit when no stage is active."
+          }
+        ]
+      },
+      "invariants": [
+        "Fullscreen effects are selected by consumer and input contracts, never SceneOctree.",
+        "Disabled effects perform no effect-specific passes.",
+        "WebGPU identity presentation remains active when its scene framebuffer owns the rendered color."
+      ],
+      "auditStatus": "partial",
+      "enforcementStatus": "pending",
+      "gaps": [
+        "Input and output consumer requirements are distributed across effect implementations rather than represented by one enforced machine-readable contract."
+      ]
+    },
+    {
+      "id": "generic-compute",
+      "name": "Generic and regional compute",
+      "workKind": "compute",
+      "backends": [
+        "webgl",
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "individual compute producer",
+        "output": "Pass.COMPUTE commands in frameState.commandList",
+        "identity": [
+          "command object identity",
+          "command.owner",
+          "producer generation"
+        ],
+        "view": "producer-declared global or regional consumer",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/ComputeCommand.js",
+            "line": 91,
+            "symbol": "ComputeCommand",
+            "role": "Assigns Pass.COMPUTE and producer owner."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUComputeCommand.ts",
+            "line": 110,
+            "symbol": "WebGPUComputeCommand",
+            "role": "Assigns Pass.COMPUTE and producer owner for WebGPU."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "individual producer",
+        "view": "producer-declared",
+        "predicateId": "producer-enabled-input-ready-and-consumer-demand",
+        "contract": "Compute commands do not inherit draw-command PVS. Each producer must decide whether its outputs have a live consumer and whether regional bounds intersect that consumer.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/View.js",
+            "line": 241,
+            "symbol": "View.createPotentiallyVisibleSet",
+            "role": "Copies every Pass.COMPUTE command directly into the compute list."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "individual producer",
+        "bounds": "producer-declared global, view-local, or regional bounds",
+        "culling": [
+          "consumer demand",
+          "optional producer-owned region and view intersection"
+        ],
+        "contract": "No central spatial test exists for compute; an unknown declaration must execute conservatively until the producer supplies a safe predicate.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/View.js",
+            "line": 245,
+            "symbol": "View.createPotentiallyVisibleSet",
+            "role": "Bypasses spatial visibility for compute commands."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "individual feature consuming the compute output",
+        "predicateId": "declared-compute-output-consumer",
+        "inputs": [
+          "producer resources and parameters"
+        ],
+        "output": "producer-declared texture, buffer, indirect data, or simulation state",
+        "contract": "Producer and consumer must share an explicit lifetime, validity generation, and skip policy.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/ComputeCommand.js",
+            "line": 101,
+            "symbol": "ComputeCommand.owner",
+            "role": "Carries the only generic producer identity currently available."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgl",
+          "owner": "Context compute engine",
+          "input": "scene._computeCommandList",
+          "pass": "Pass.COMPUTE",
+          "submissionAuthority": "frame",
+          "contract": "Executes the complete compute list after producer gating.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/GraphicsContext.ts",
+              "line": 1342,
+              "symbol": "GraphicsContext.executeComputeCommands",
+              "role": "Default WebGL implementation executes every queued compute command."
+            }
+          ]
+        },
+        {
+          "backend": "webgpu",
+          "owner": "WebGPU context compute executor",
+          "input": "scene._computeCommandList",
+          "pass": "Pass.COMPUTE",
+          "submissionAuthority": "frame",
+          "contract": "Executes the complete compute list after producer gating.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts",
+              "line": 3408,
+              "symbol": "WebGPUContext.executeComputeCommands",
+              "role": "WebGPU implementation executes every queued WebGPU compute command."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "execute",
+        "onMissingProducer": "skip-no-command",
+        "correctnessClass": "conservative",
+        "contract": "Unknown compute bounds or consumer reach cannot be used to skip work without a producer-defined correctness fallback.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/SceneRenderer.js",
+            "line": 761,
+            "symbol": "executeComputeCommands",
+            "role": "Executes the full selected compute list."
+          }
+        ]
+      },
+      "invariants": [
+        "Every compute producer declares its consumer, spatial scope, validity generation, and fallback.",
+        "Skipping compute cannot expose stale or uninitialized outputs.",
+        "Private queue submission is declared separately from frame-authority execution."
+      ],
+      "auditStatus": "gap",
+      "enforcementStatus": "gap",
+      "gaps": [
+        "There is no uniform consumer or regional-bounds contract for compute producers.",
+        "Pass.COMPUTE is always retained by Scene PVS, so producer gates are the only visibility control."
+      ]
+    },
+    {
+      "id": "shadow-cast",
+      "name": "Shadow caster selection and execution",
+      "workKind": "shadow",
+      "backends": [
+        "webgl",
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "Scene frame command list after primitive selection and optional SceneOctree",
+        "output": "shadowMap.passes[].commandList",
+        "identity": [
+          "source command object identity",
+          "shadow map identity",
+          "shadow pass or cascade index"
+        ],
+        "view": "shadow map or cascade",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/SceneRenderer.js",
+            "line": 782,
+            "symbol": "insertShadowCastCommands",
+            "role": "Builds each shadow map pass candidate list."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "ViewportExecutor shadow state plus SceneRenderer.insertShadowCastCommands",
+        "view": "shadow map, cascade, or point-light face",
+        "predicateId": "shadow-enabled-caster-pass-and-light-volume",
+        "contract": "Only enabled, in-view shadow maps and castShadows commands from supported passes enter shadow-map pass lists.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/ViewportExecutor.js",
+            "line": 25,
+            "symbol": "updateShadowMaps",
+            "role": "Selects active shadow state for the frame."
+          },
+          {
+            "path": "packages/engine/Source/Scene/SceneRenderer.js",
+            "line": 782,
+            "symbol": "insertShadowCastCommands",
+            "role": "Tests caster flags, supported passes, and shadow visibility."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "Scene.isVisible using each shadow-map pass culling volume",
+        "bounds": "source command boundingVolume",
+        "culling": [
+          "shadow map outOfView",
+          "cascade or face culling volume",
+          "command.castShadows",
+          "supported source pass"
+        ],
+        "contract": "Unknown source command bounds remain eligible; known bounds are tested against the light view.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/SceneRenderer.js",
+            "line": 793,
+            "symbol": "insertShadowCastCommands",
+            "role": "Tests each command against shadow pass culling volumes."
+          },
+          {
+            "path": "packages/engine/Source/Scene/Scene.js",
+            "line": 3578,
+            "symbol": "Scene.isVisible",
+            "role": "Retains unbounded and cull-false casters conservatively."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "shadow-receiving scene draw commands",
+        "predicateId": "active-shadow-map-sampled-by-receiver",
+        "inputs": [
+          "shadowMap.passes[].commandList",
+          "shadow map textures and matrices"
+        ],
+        "output": "shadow depth textures sampled by receivers",
+        "contract": "WebGL and WebGPU consume the same populated per-shadow pass command lists.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/SceneRenderer.js",
+            "line": 826,
+            "symbol": "executeShadowMapCastCommands",
+            "role": "Populates pass lists and dispatches backend execution."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgpu",
+          "owner": "WebGPUShadowMapRenderer",
+          "input": "shadowMap.passes[].commandList",
+          "pass": "shadow depth passes",
+          "submissionAuthority": "frame",
+          "contract": "Consumes the shared populated caster lists for directional, cascade, and point-light faces.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js",
+              "line": 826,
+              "symbol": "executeWebGPUShadowMapCastCommands",
+              "role": "Executes populated WebGPU shadow pass lists."
+            }
+          ]
+        },
+        {
+          "backend": "webgl",
+          "owner": "SceneRenderer derived shadow command execution",
+          "input": "shadowMap.passes[].commandList",
+          "pass": "shadow depth passes",
+          "submissionAuthority": "frame",
+          "contract": "Builds and executes WebGL derived caster commands from the same shared lists.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Scene/SceneRenderer.js",
+              "line": 879,
+              "symbol": "executeShadowMapCastCommands",
+              "role": "Executes WebGL derived shadow casts after backend dispatch declines ownership."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "retain-caster",
+        "onMissingProducer": "skip-shadow-map-and-render-geometry-lit",
+        "correctnessClass": "quality-fallback",
+        "contract": "Missing or empty shadow resources remove only the shadow contribution, never source geometry.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUShadowMapRenderer.js",
+            "line": 1067,
+            "symbol": "executeWebGPUShadowMapCastCommands",
+            "role": "Skips unavailable or empty shadow passes."
+          }
+        ]
+      },
+      "invariants": [
+        "Both backends consume the same populated shadow caster lists.",
+        "Unknown caster bounds are conservative retain cases.",
+        "The shadow candidate universe must include all potential light-view casters, not only main-view survivors."
+      ],
+      "auditStatus": "partial",
+      "enforcementStatus": "gap",
+      "gaps": [
+        "The caster universe is the current main frame command list; terrain and 3D Tiles that their own main-view traversals never emitted cannot cast into the main view.",
+        "Optional SceneOctree command-list replacement can remove candidates before shadow-map visibility is evaluated."
+      ]
+    },
+    {
+      "id": "cloud-billboard",
+      "name": "Billboard cloud collections",
+      "workKind": "draw",
+      "backends": [
+        "webgl",
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "CloudCollection",
+        "output": "shown cloud instances in a collection",
+        "identity": [
+          "collection identity",
+          "cloud slot index",
+          "instance-data revision"
+        ],
+        "view": "main",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/CloudCollection.js",
+            "line": 591,
+            "symbol": "CloudCollection.update",
+            "role": "Routes shown collections to the backend and publishes volumetric requests."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts",
+            "line": 673,
+            "symbol": "writeInstanceData",
+            "role": "Filters individual clouds whose show flag is false."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "CloudCollection and WebGPUCloudRenderer",
+        "view": "main",
+        "predicateId": "cloud-collection-shown-nonempty-billboard-mode",
+        "contract": "A hidden or empty collection emits no work; WebGPU VOLUMETRIC mode suppresses billboard command publication.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts",
+            "line": 823,
+            "symbol": "updateWebGPUCloudCollection",
+            "role": "Rejects hidden and empty collections."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts",
+            "line": 1345,
+            "symbol": "_updateWebGPUCloudCollectionInner",
+            "role": "Suppresses the billboard command for volumetric mode."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "collection show flags; no collection bounding volume",
+        "bounds": "none on emitted collection command",
+        "culling": [
+          "collection show",
+          "per-cloud show"
+        ],
+        "contract": "Without a conservative aggregate bound, billboard cloud commands execute in every scene frustum.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/CloudCollection.js",
+            "line": 1214,
+            "symbol": "createDrawCommands",
+            "role": "Creates unbounded WebGL collection commands."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts",
+            "line": 1313,
+            "symbol": "_updateWebGPUCloudCollectionInner",
+            "role": "Creates an unbounded cached WebGPU collection command."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "main scene translucent color",
+        "predicateId": "visible-billboard-cloud-collection",
+        "inputs": [
+          "cloud instance buffer",
+          "cloud noise texture",
+          "camera and depth state"
+        ],
+        "output": "Pass.TRANSLUCENT cloud draw",
+        "contract": "Billboard mode publishes one or more translucent collection commands; volumetric mode publishes none.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts",
+            "line": 1361,
+            "symbol": "_updateWebGPUCloudCollectionInner",
+            "role": "Publishes the WebGPU billboard command."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgl",
+          "owner": "CloudCollection DrawCommand",
+          "input": "collection vertex arrays or instances",
+          "pass": "Pass.TRANSLUCENT",
+          "submissionAuthority": "frame",
+          "contract": "Executes unbounded collection commands through normal translucent rendering.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Scene/CloudCollection.js",
+              "line": 1214,
+              "symbol": "createDrawCommands",
+              "role": "Builds and publishes WebGL translucent cloud commands."
+            }
+          ]
+        },
+        {
+          "backend": "webgpu",
+          "owner": "WebGPUCloudRenderer cached command",
+          "input": "packed visible cloud instances",
+          "pass": "Pass.TRANSLUCENT",
+          "submissionAuthority": "frame",
+          "contract": "Executes the unbounded collection command through normal translucent rendering.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUCloudRenderer.ts",
+              "line": 1361,
+              "symbol": "_updateWebGPUCloudCollectionInner",
+              "role": "Publishes the WebGPU translucent cloud command."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "execute-in-all-frusta",
+        "onMissingProducer": "skip-collection",
+        "correctnessClass": "conservative",
+        "contract": "Absence of an aggregate bound preserves all clouds instead of risking disappearance.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/View.js",
+            "line": 291,
+            "symbol": "View.createPotentiallyVisibleSet",
+            "role": "Uses worst-case near/far for the unbounded collection command."
+          }
+        ]
+      },
+      "invariants": [
+        "Cloud mode selection changes representation, not feature availability.",
+        "Hidden clouds and hidden collections produce no visible draw.",
+        "Any future aggregate bound must conservatively include all displaced cloud quads."
+      ],
+      "auditStatus": "partial",
+      "enforcementStatus": "pending",
+      "gaps": [
+        "Neither backend collection command carries an aggregate world-space bound, so globally distributed and regional collections cannot be distinguished for PVS.",
+        "WebGPU volumetric mode suppresses command publication only after instance-buffer and dirty-state bookkeeping has run."
+      ]
+    },
+    {
+      "id": "cloud-volumetric",
+      "name": "Volumetric procedural cloud deck",
+      "workKind": "fullscreen",
+      "backends": [
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "CloudCollection request publication and managed default cloud collection",
+        "output": "one effective CloudVolumetricsConfig per frame",
+        "identity": [
+          "publishing collection identity or managed-default identity",
+          "configuration revision"
+        ],
+        "view": "main fullscreen",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/CloudCollection.js",
+            "line": 597,
+            "symbol": "CloudCollection.update",
+            "role": "Publishes an enabled VOLUMETRIC collection request; first request wins."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentalEffects.ts",
+            "line": 121,
+            "symbol": "executeEnvironmentalEffects",
+            "role": "Consumes a user request or selects the managed default deck."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "executeEnvironmentalEffects",
+        "view": "main fullscreen",
+        "predicateId": "first-enabled-volumetric-cloud-deck",
+        "contract": "The first enabled user VOLUMETRIC request wins; otherwise an enabled managed default VOLUMETRIC deck is selected.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentalEffects.ts",
+            "line": 127,
+            "symbol": "executeEnvironmentalEffects",
+            "role": "Consumes the user request and falls back to the managed deck."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "fullscreen consumer and required-view availability",
+        "bounds": "fullscreen atmospheric deck",
+        "culling": [
+          "deck enabled",
+          "color view available",
+          "depth view available",
+          "output view available"
+        ],
+        "contract": "This is global view work and is not eligible for primitive PVS or SceneOctree culling.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentalEffects.ts",
+            "line": 161,
+            "symbol": "executeEnvironmentalEffects",
+            "role": "Requires color, depth, and output views before executing effects."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "main canvas environmental composite and cloud IBL coverage publication",
+        "predicateId": "enabled-deck-with-scene-color-depth-output",
+        "inputs": [
+          "post-process scene color snapshot",
+          "scene depth",
+          "cloud volumetric configuration"
+        ],
+        "output": "fullscreen cloud composite and cloud IBL coverage",
+        "contract": "The active deck composites over the main view and publishes its IBL coverage every frame.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentalEffects.ts",
+            "line": 184,
+            "symbol": "executeEnvironmentalEffects",
+            "role": "Executes the selected procedural cloud renderer."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgpu",
+          "owner": "PROCEDURAL_CLOUDS feature renderer",
+          "input": "effective cloud config plus full-screen color/depth views",
+          "pass": "environmental fullscreen composite",
+          "submissionAuthority": "feature renderer with render-pass suspend and resume",
+          "contract": "Runs only when a deck is selected and all required views exist.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
+              "line": 1489,
+              "symbol": "executeProceduralClouds",
+              "role": "Executes the selected procedural cloud fullscreen renderer."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "execute-fullscreen",
+        "onMissingProducer": "clear-cloud-ibl-coverage-and-skip-composite",
+        "correctnessClass": "conservative",
+        "contract": "No selected deck means clear-sky output; missing required views leaves the existing scene color intact.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentalEffects.ts",
+            "line": 157,
+            "symbol": "executeEnvironmentalEffects",
+            "role": "Publishes zero coverage when no cloud config and skips when required views are absent."
+          }
+        ]
+      },
+      "invariants": [
+        "At most one volumetric deck owns a frame.",
+        "No primitive or SceneOctree culling is applied to this fullscreen effect.",
+        "Disabled volumetric clouds retain billboard mode behavior and clear-sky IBL."
+      ],
+      "auditStatus": "partial",
+      "enforcementStatus": "pending",
+      "gaps": [
+        "The fullscreen consumer/input declaration is implicit in executeEnvironmentalEffects rather than enforced as shared metadata or counters."
+      ]
+    },
+    {
+      "id": "weather-particles",
+      "name": "WebGPU weather particles",
+      "workKind": "compute-and-draw",
+      "backends": [
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "Scene weather state",
+        "output": "CesiumWeatherConfig and camera-local particle population",
+        "identity": [
+          "weather type",
+          "weather config revision",
+          "particle state generation"
+        ],
+        "view": "main camera-local volume",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentalEffects.ts",
+            "line": 353,
+            "symbol": "executeEnvironmentalEffects",
+            "role": "Selects weather from scene._enableWeather and builds config."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "executeEnvironmentalEffects and WebGPUWeatherRenderer",
+        "view": "main camera-local volume",
+        "predicateId": "weather-enabled-device-ready",
+        "contract": "Weather updates and draws whenever scene weather is enabled and the feature renderer/device/config are available.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts",
+            "line": 256,
+            "symbol": "updateWeatherParticles",
+            "role": "Applies device and enabled gates before simulation."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts",
+            "line": 596,
+            "symbol": "renderWeatherParticles",
+            "role": "Applies initialized and enabled gates before draw."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "weather producer",
+        "bounds": "implicit camera-local spawn volume",
+        "culling": [
+          "scene weather enabled"
+        ],
+        "contract": "The camera-local effect has no independent world-region intersection; enabled main view is its consumer.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts",
+            "line": 281,
+            "symbol": "updateWeatherParticles",
+            "role": "Updates camera motion and teleport-safe local simulation state."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "main canvas environmental composite",
+        "predicateId": "enabled-weather-main-view",
+        "inputs": [
+          "weather config",
+          "camera-local particle state",
+          "main render pass"
+        ],
+        "output": "weather particle overlay",
+        "contract": "Simulation output is consumed by a weather draw in the same environmental-effects invocation.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentalEffects.ts",
+            "line": 371,
+            "symbol": "executeEnvironmentalEffects",
+            "role": "Runs update and render for the selected weather config."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgpu",
+          "owner": "WebGPUWeatherRenderer",
+          "input": "camera-local particle buffers and weather config",
+          "pass": "three compute passes plus environmental draw",
+          "submissionAuthority": "private submit for compute; frame render pass for draw",
+          "contract": "Simulation creates a private encoder and submit before drawing particles into the main environmental pass.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts",
+              "line": 371,
+              "symbol": "updateWeatherParticles",
+              "role": "Encodes the three compute passes."
+            },
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts",
+              "line": 396,
+              "symbol": "updateWeatherParticles",
+              "role": "Submits the private simulation encoder."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "execute-camera-local-effect",
+        "onMissingProducer": "skip-weather-and-preserve-scene-color",
+        "correctnessClass": "quality-fallback",
+        "contract": "Unavailable weather resources remove precipitation only and never suppress base scene rendering.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts",
+            "line": 256,
+            "symbol": "updateWeatherParticles",
+            "role": "Returns without work when device or enabled config is unavailable."
+          }
+        ]
+      },
+      "invariants": [
+        "Weather simulation runs only for an enabled visible main-view consumer.",
+        "Skipping weather never removes base scene color.",
+        "Simulation time and state remain coherent across camera teleports and intentional skips."
+      ],
+      "auditStatus": "partial",
+      "enforcementStatus": "gap",
+      "gaps": [
+        "The camera-local/global consumer contract is implicit rather than declared in shared visibility metadata.",
+        "Simulation uses performance.now at packages/engine/Source/Renderer/WebGPU/WebGPUWeatherRenderer.ts:367 instead of the scene clock.",
+        "The three compute passes use a renderer-private queue submission outside frame submission authority."
+      ]
+    },
+    {
+      "id": "fft-ocean",
+      "name": "WebGPU FFT ocean",
+      "workKind": "compute-and-draw",
+      "backends": [
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "OceanSurfacePrimitive",
+        "output": "camera-anchored ENU ocean patch and FFT state",
+        "identity": [
+          "primitive identity",
+          "snapped anchor",
+          "wave configuration revision"
+        ],
+        "view": "main",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/OceanSurfacePrimitive.js",
+            "line": 101,
+            "symbol": "OceanSurfacePrimitive.update",
+            "role": "Computes the camera subpoint, snapped ENU anchor, and backend handoff."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "OceanSurfacePrimitive and WebGPUOceanRenderer",
+        "view": "main camera-anchored patch",
+        "predicateId": "ocean-shown-enabled-device-and-anchor",
+        "contract": "Ocean runs whenever shown, enabled, device-ready, and a camera-derived anchor exists; no patch visibility predicate is applied.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/OceanSurfacePrimitive.js",
+            "line": 105,
+            "symbol": "OceanSurfacePrimitive.update",
+            "role": "Applies show and camera-center gates."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUOceanRenderer.ts",
+            "line": 610,
+            "symbol": "updateWebGPUOcean",
+            "role": "Applies device, show, enabled, and anchor gates."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "none beyond show/anchor gates",
+        "bounds": "no emitted command bound; finite displaced ENU patch exists but is undeclared",
+        "culling": [],
+        "contract": "Until a conservative displaced-patch and horizon bound exists, ocean must execute rather than disappear.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUOceanRenderer.ts",
+            "line": 984,
+            "symbol": "updateWebGPUOcean",
+            "role": "Explicitly assigns undefined boundingVolume and cull false."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "main scene opaque color and depth",
+        "predicateId": "camera-anchored-ocean-main-view",
+        "inputs": [
+          "FFT displacement and normal textures",
+          "camera-anchored grid",
+          "scene lighting and environment"
+        ],
+        "output": "Pass.OPAQUE ocean draw",
+        "contract": "The FFT output is consumed by the ocean command emitted in the same update path.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUOceanRenderer.ts",
+            "line": 967,
+            "symbol": "updateWebGPUOcean",
+            "role": "Creates and publishes the opaque ocean command."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgpu",
+          "owner": "WebGPUOceanRenderer",
+          "input": "ocean parameters and FFT textures",
+          "pass": "private FFT compute chain plus Pass.OPAQUE draw",
+          "submissionAuthority": "private submit for FFT; frame for draw",
+          "contract": "Every eligible update submits the FFT chain before publishing an unbounded draw command.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUOceanRenderer.ts",
+              "line": 762,
+              "symbol": "updateWebGPUOcean",
+              "role": "Encodes the FFT compute chain."
+            },
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUOceanRenderer.ts",
+              "line": 848,
+              "symbol": "updateWebGPUOcean",
+              "role": "Submits the private FFT encoder."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "execute",
+        "onMissingProducer": "skip-ocean-and-preserve-base-scene",
+        "correctnessClass": "conservative",
+        "contract": "Current unknown visibility executes all ocean work; a future skip must advance absolute scene time so waves do not freeze or jump.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUOceanRenderer.ts",
+            "line": 741,
+            "symbol": "updateWebGPUOcean",
+            "role": "Currently derives wave time from executed frame count."
+          }
+        ]
+      },
+      "invariants": [
+        "No ocean feature or visual behavior is removed to gain performance.",
+        "A future visibility gate uses a conservative displaced patch plus globe-horizon test.",
+        "Wave phase derives from absolute scene time before offscreen simulation skips are enabled."
+      ],
+      "auditStatus": "gap",
+      "enforcementStatus": "gap",
+      "gaps": [
+        "There is no frustum, displaced-patch, or horizon visibility predicate.",
+        "The command is unbounded and cull false, so it enters every frustum.",
+        "FFT simulation uses executed frame count and a private queue submit, preventing safe offscreen skips and central submission batching."
+      ]
+    },
+    {
+      "id": "flow-field",
+      "name": "WebGPU flow-field wind layer",
+      "workKind": "compute-and-draw",
+      "backends": [
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "FlowFieldWindLayer",
+        "output": "flow-field dataset and particle population",
+        "identity": [
+          "layer identity",
+          "dataset source and metadata revision",
+          "particle-state generation"
+        ],
+        "view": "declared whole-globe today; regional metadata unavailable",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/FlowFieldWindLayer.js",
+            "line": 263,
+            "symbol": "FlowFieldWindLayer.update",
+            "role": "Applies show, particle-count, and data-readiness gates before backend handoff."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "FlowFieldWindLayer and WebGPUFlowFieldRenderer",
+        "view": "main",
+        "predicateId": "flow-shown-particles-data-and-device-ready",
+        "contract": "The layer runs when shown, particle count is nonzero, data is ready, and the WebGPU feature renderer is available.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUFlowFieldRenderer.ts",
+            "line": 493,
+            "symbol": "updateWebGPUFlowField",
+            "role": "Repeats device, show, count, and data gates."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "none beyond producer gates",
+        "bounds": "undefined; source is assumed whole-globe",
+        "culling": [],
+        "contract": "Whole-globe data executes conservatively. Regional datasets need explicit geographic coverage before safe view-intersection skips are possible.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUFlowFieldRenderer.ts",
+            "line": 721,
+            "symbol": "updateWebGPUFlowField",
+            "role": "Creates an unbounded, cull-false translucent command."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "main scene translucent color",
+        "predicateId": "flow-field-main-view",
+        "inputs": [
+          "velocity texture",
+          "particle state buffers",
+          "camera uniforms"
+        ],
+        "output": "Pass.TRANSLUCENT particle draw",
+        "contract": "Advected particles are consumed by the translucent draw command emitted in the same update.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUFlowFieldRenderer.ts",
+            "line": 721,
+            "symbol": "updateWebGPUFlowField",
+            "role": "Publishes the flow-field draw command."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgpu",
+          "owner": "WebGPUFlowFieldRenderer",
+          "input": "velocity field and particle ping-pong buffers",
+          "pass": "private advection compute plus Pass.TRANSLUCENT draw",
+          "submissionAuthority": "private submit for advection; frame for draw",
+          "contract": "Every eligible update privately submits advection before the normal translucent draw.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUFlowFieldRenderer.ts",
+              "line": 656,
+              "symbol": "updateWebGPUFlowField",
+              "role": "Encodes advection."
+            },
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUFlowFieldRenderer.ts",
+              "line": 662,
+              "symbol": "updateWebGPUFlowField",
+              "role": "Submits the private advection encoder."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "execute-as-whole-globe",
+        "onMissingProducer": "skip-layer-and-preserve-base-scene",
+        "correctnessClass": "conservative",
+        "contract": "Unknown geographic coverage executes. A future regional skip must preserve particle/simulation continuity when the region becomes visible again.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUFlowFieldRenderer.ts",
+            "line": 506,
+            "symbol": "updateWebGPUFlowField",
+            "role": "Returns without work only for declared disabled or unavailable producer state."
+          }
+        ]
+      },
+      "invariants": [
+        "Whole-globe flow fields remain visible from every valid main view.",
+        "Regional flow fields are skipped only after conservative coverage metadata exists.",
+        "Simulation continuity is defined before offscreen or nonconsumer skips are introduced."
+      ],
+      "auditStatus": "gap",
+      "enforcementStatus": "gap",
+      "gaps": [
+        "The layer has no regional rectangle, volume, or view-intersection contract.",
+        "The command is unbounded and cull false, so it enters every frustum.",
+        "Advection uses a private queue submit outside frame submission authority."
+      ]
+    },
+    {
+      "id": "dynamic-environment-capture",
+      "name": "Dynamic environment scene capture",
+      "workKind": "capture",
+      "backends": [
+        "webgpu"
+      ],
+      "candidateSet": {
+        "owner": "main-view globe and model publication",
+        "output": "last published QuadtreePrimitive._tilesToRender plus _webgpuSceneCaptureModels",
+        "identity": [
+          "terrain tile level/x/y and revision",
+          "model identity and primitive generation",
+          "publication frame generation"
+        ],
+        "view": "main-view survivors reused for capture",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/GlobeSurfaceTileProviderRendering.js",
+            "line": 870,
+            "symbol": "addWebGPUDrawCommandsForTile",
+            "role": "Publishes the globe renderer and main-view quadtree tile provider for capture."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUModelRenderer.ts",
+            "line": 3788,
+            "symbol": "updateWebGPUModel",
+            "role": "Publishes main-view processed model records for later capture."
+          }
+        ]
+      },
+      "selection": {
+        "owner": "WebGPUDynamicEnvironmentMapManager refresh gate and WebGPUDynamicEnvironmentMapCapture replay",
+        "view": "six capture faces at reflective owner position",
+        "predicateId": "double-opt-in-scene3d-position-refresh",
+        "contract": "Capture requires context and manager opt-in, SCENE3D, owner position, and movement or periodic refresh; current candidates remain the main-view published sets.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Scene/DynamicEnvironmentMapManager.js",
+            "line": 211,
+            "symbol": "DynamicEnvironmentMapManager",
+            "role": "Defaults manager scene capture opt-in to false."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
+            "line": 523,
+            "symbol": "updateWebGPUDynamicEnvironmentMapManager",
+            "role": "Owns double opt-in and movement/every-K refresh selection."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
+            "line": 289,
+            "symbol": "runSceneCapture",
+            "role": "Applies final capture enable, mode, and position gates."
+          }
+        ]
+      },
+      "visibility": {
+        "owner": "main-view selectors only; no per-capture-face selector",
+        "bounds": "published terrain tile and model bounds are available but not tested per face",
+        "culling": [],
+        "contract": "Current capture neither builds a complete capture-eye candidate universe nor rejects published candidates outside each cube face.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
+            "line": 314,
+            "symbol": "runSceneCapture",
+            "role": "Reads the main-view _tilesToRender array as its terrain universe."
+          },
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
+            "line": 380,
+            "symbol": "runSceneCapture",
+            "role": "Loops all published terrain and models for every face without face culling."
+          }
+        ]
+      },
+      "consumer": {
+        "owner": "dynamic environment cube, temporal accumulation, and IBL prefilter",
+        "predicateId": "reflective-owner-environment-refresh",
+        "inputs": [
+          "procedural sky cube",
+          "capture terrain commands",
+          "capture model commands",
+          "six face cameras"
+        ],
+        "output": "dynamic environment cubemap and filtered IBL",
+        "contract": "A refresh captures scene geometry over the sky cube before temporal accumulation and IBL filtering.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
+            "line": 559,
+            "symbol": "updateWebGPUDynamicEnvironmentMapManager",
+            "role": "Orders sky fill, scene capture, temporal accumulation, and downstream filtering."
+          }
+        ]
+      },
+      "execution": [
+        {
+          "backend": "webgpu",
+          "owner": "WebGPUDynamicEnvironmentMapCapture.runSceneCapture",
+          "input": "published main-view terrain and model records",
+          "pass": "six cube-face render passes",
+          "submissionAuthority": "private submit",
+          "contract": "Repoints UniformState to each RTE face camera, builds all published commands for that face, restores the live main camera, and privately submits one encoder.",
+          "sources": [
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
+              "line": 379,
+              "symbol": "runSceneCapture",
+              "role": "Builds and executes six face passes."
+            },
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
+              "line": 495,
+              "symbol": "runSceneCapture",
+              "role": "Restores the live main camera before later frame stages."
+            },
+            {
+              "path": "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
+              "line": 505,
+              "symbol": "runSceneCapture",
+              "role": "Submits the private capture encoder."
+            }
+          ]
+        }
+      ],
+      "fallback": {
+        "onUnknownBounds": "replay-candidate-on-all-six-faces",
+        "onMissingProducer": "current-code-aborts-entire-capture-when-terrain-set-is-empty",
+        "correctnessClass": "nonconservative",
+        "contract": "The intended fallback should retain valid sky and model capture even when terrain is unavailable, while unknown candidate bounds remain included per face.",
+        "sources": [
+          {
+            "path": "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
+            "line": 314,
+            "symbol": "runSceneCapture",
+            "role": "Returns when globe source or selected terrain is missing or empty."
+          }
+        ]
+      },
+      "invariants": [
+        "Capture selection is owned by the capture eye and each cube-face frustum, not the main camera.",
+        "Every candidate is tested against its capture face before command building.",
+        "Capture includes objects visible from the reflective owner even when absent from the main view.",
+        "Model-only and sky-only capture remain valid when terrain has no published candidates.",
+        "UniformState main-camera RTE state is restored on success and failure."
+      ],
+      "auditStatus": "gap",
+      "enforcementStatus": "gap",
+      "gaps": [
+        "All main-view terrain and model survivors are replayed on all six faces without face frustum or horizon culling.",
+        "Capture-only terrain and model candidates absent from the main view can never appear.",
+        "An empty or unpublished terrain set aborts model-only capture.",
+        "Published candidates lack an explicit capture generation, source revision, face, and camera identity contract.",
+        "Capture uses a private queue submit outside frame submission authority."
+      ]
+    }
+  ]
+}

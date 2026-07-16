@@ -177,11 +177,14 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Apply gamma correction
   let corrected = inverseGamma(mapped, params.gamma);
 
-  // C6-TPDF-DITHER-FINAL — add sub-LSB triangular dither in display-referred
-  // space so banding is broken at the final 8-bit quantization. Off-gate:
-  // ditherStrength defaults to 0 -> the added term is exactly 0 -> the frame
-  // is byte-identical to the pre-feature output.
-  let dithered = corrected + tpdfDither(input.position.xy, params.ditherStrength);
+  // C6-TPDF-DITHER-FINAL / C9-05 — add sub-LSB triangular dither in
+  // display-referred space so banding is broken at the final 8-bit
+  // quantization. The explicit zero-strength branch prevents both hash
+  // evaluations on the default path while returning `corrected` unchanged.
+  var dithered = corrected;
+  if (params.ditherStrength != 0.0) {
+    dithered += tpdfDither(input.position.xy, params.ditherStrength);
+  }
 
   return vec4<f32>(dithered, 1.0);
 }

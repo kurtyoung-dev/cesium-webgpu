@@ -94,9 +94,12 @@ async function run() {
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
   page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   await page.evaluate(async () => {

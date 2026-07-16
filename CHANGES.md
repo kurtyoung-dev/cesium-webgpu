@@ -1,5 +1,19 @@
 # Change Log
 
+## Fork (cesium-webgpu) — 2026-07-16
+
+### @cesium/engine
+
+#### Breaking Changes :mega:
+
+- `loadKTX2` now requires the `supportedTargetFormats` argument and throws in release builds when it is omitted. External callers of `Cesium.loadKTX2(url)` must pass the supported transcode target formats (previously implicit).
+- Synchronous `new Scene()` with `renderer: 'auto'` or `renderer: 'webgpu'` now throws — WebGPU initialization is asynchronous. Use `Scene.createAsync()` instead; synchronous construction remains supported for `renderer: 'webgl'`.
+- `pickHoverAsync` now resolves to the single picked object or `undefined` (previously it exposed an internal drill-pick array).
+
+#### Additions :tada:
+
+- Explicit `renderer: 'webgpu'` graceful fallback to WebGL has been RESTORED per the fork charter (warn + fall back when WebGPU is unavailable). The strict hard-fail behavior is available via the new opt-in `strictRenderer: true` context option; invalid renderer strings throw only in debug builds (release warns and resolves to AUTO).
+
 ## 1.144 - 2026-08-01
 
 ### @cesium/engine
