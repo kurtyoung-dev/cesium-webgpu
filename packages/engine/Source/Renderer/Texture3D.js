@@ -6,7 +6,6 @@ import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import PixelFormat from "../Core/PixelFormat.js";
-import ContextLimits from "./ContextLimits.js";
 import MipmapHint from "./MipmapHint.js";
 import PixelDatatype from "./PixelDatatype.js";
 import Sampler from "./Sampler.js";
@@ -132,25 +131,25 @@ class Texture3D {
 
     Check.typeOf.number.greaterThan("width", width, 0);
 
-    if (width > ContextLimits.maximum3DTextureSize) {
+    if (width > context.limits.maximum3DTextureSize) {
       throw new DeveloperError(
-        `Width must be less than or equal to the maximum texture3D size (${ContextLimits.maximum3DTextureSize}).  Check maximum3DTextureSize.`,
+        `Width must be less than or equal to the maximum texture3D size (${context.limits.maximum3DTextureSize}).  Check maximum3DTextureSize.`,
       );
     }
 
     Check.typeOf.number.greaterThan("height", height, 0);
 
-    if (height > ContextLimits.maximum3DTextureSize) {
+    if (height > context.limits.maximum3DTextureSize) {
       throw new DeveloperError(
-        `Height must be less than or equal to the maximum texture3D size (${ContextLimits.maximum3DTextureSize}).  Check maximum3DTextureSize.`,
+        `Height must be less than or equal to the maximum texture3D size (${context.limits.maximum3DTextureSize}).  Check maximum3DTextureSize.`,
       );
     }
 
     Check.typeOf.number.greaterThan("depth", depth, 0);
 
-    if (depth > ContextLimits.maximum3DTextureSize) {
+    if (depth > context.limits.maximum3DTextureSize) {
       throw new DeveloperError(
-        `Depth must be less than or equal to the maximum texture3D size (${ContextLimits.maximum3DTextureSize}).  Check maximum3DTextureSize.`,
+        `Depth must be less than or equal to the maximum texture3D size (${context.limits.maximum3DTextureSize}).  Check maximum3DTextureSize.`,
       );
     }
 

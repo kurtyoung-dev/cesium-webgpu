@@ -3,7 +3,6 @@ import Frozen from "../Core/Frozen.js";
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
-import ContextLimits from "./ContextLimits.js";
 import RenderbufferFormat from "./RenderbufferFormat.js";
 
 /**
@@ -20,7 +19,7 @@ class Renderbuffer {
 
     const context = options.context;
     const gl = context._gl;
-    const maximumRenderbufferSize = ContextLimits.maximumRenderbufferSize;
+    const maximumRenderbufferSize = context.limits.maximumRenderbufferSize;
 
     const format = options.format ?? RenderbufferFormat.RGBA4;
     const width = defined(options.width)

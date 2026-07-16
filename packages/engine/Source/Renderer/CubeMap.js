@@ -10,7 +10,6 @@ import CesiumMath from "../Core/Math.js";
 import PixelFormat from "../Core/PixelFormat.js";
 import VertexFormat from "../Core/VertexFormat.js";
 import BufferUsage from "./BufferUsage.js";
-import ContextLimits from "./ContextLimits.js";
 import CubeMapFace from "./CubeMapFace.js";
 import Framebuffer from "./Framebuffer.js";
 import MipmapHint from "./MipmapHint.js";
@@ -141,9 +140,9 @@ class CubeMap {
       throw new DeveloperError("Width and height must be greater than zero.");
     }
 
-    if (size > ContextLimits.maximumCubeMapSize) {
+    if (size > context.limits.maximumCubeMapSize) {
       throw new DeveloperError(
-        `Width and height must be less than or equal to the maximum cube map size (${ContextLimits.maximumCubeMapSize}). Check maximumCubeMapSize.`,
+        `Width and height must be less than or equal to the maximum cube map size (${context.limits.maximumCubeMapSize}). Check maximumCubeMapSize.`,
       );
     }
 

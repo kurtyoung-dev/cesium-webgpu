@@ -110,6 +110,7 @@ class ShaderCache {
 
       const shaderProgram = new ShaderProgram({
         gl: context._gl,
+        graphicsCapabilities: context.graphicsCapabilities,
         logShaderCompilation: context.logShaderCompilation,
         debugShaders: context.debugShaders,
         vertexShaderSource: vertexShaderSource,
@@ -192,6 +193,7 @@ class ShaderCache {
 
     const derivedShaderProgram = new ShaderProgram({
       gl: context._gl,
+      graphicsCapabilities: context.graphicsCapabilities,
       logShaderCompilation: context.logShaderCompilation,
       debugShaders: context.debugShaders,
       vertexShaderSource: vertexShaderSource,

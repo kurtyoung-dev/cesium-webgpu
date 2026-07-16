@@ -1,11 +1,14 @@
 import Cartesian3 from "./Cartesian3.js";
 import Cartesian4 from "./Cartesian4.js";
+import ClipSpaceConvention from "./ClipSpaceConvention.js";
 import CullingVolume from "./CullingVolume.js";
 import Frozen from "./Frozen.js";
 import defined from "./defined.js";
 import DeveloperError from "./DeveloperError.js";
 import CesiumMath from "./Math.js";
 import Matrix4 from "./Matrix4.js";
+
+/** @import { ClipSpaceConventionRecord } from "./ClipSpaceConvention.js" */
 
 /**
  * The viewing frustum is defined by 6 planes.
@@ -89,8 +92,12 @@ class PerspectiveOffCenterFrustum {
     this._far = this.far;
 
     this._cullingVolume = new CullingVolume();
-    this._perspectiveMatrix = new Matrix4();
-    this._infinitePerspective = new Matrix4();
+    this._perspectiveMatrices = [new Matrix4(), new Matrix4()];
+    this._infinitePerspectiveMatrices = [new Matrix4(), new Matrix4()];
+    this._projectionParameters = [{}, {}];
+    // Preserve private WebGL aliases used by existing diagnostics.
+    this._perspectiveMatrix = this._perspectiveMatrices[0];
+    this._infinitePerspective = this._infinitePerspectiveMatrices[0];
   }
 
   /**
@@ -337,6 +344,7 @@ class PerspectiveOffCenterFrustum {
     result._bottom = undefined;
     result._near = undefined;
     result._far = undefined;
+    result._projectionParameters = [{}, {}];
 
     return result;
   }
@@ -425,8 +433,21 @@ class PerspectiveOffCenterFrustum {
    * @see PerspectiveOffCenterFrustum#infiniteProjectionMatrix
    */
   get projectionMatrix() {
-    update(this);
-    return this._perspectiveMatrix;
+    return this.getProjectionMatrix(ClipSpaceConvention.WEBGL);
+  }
+
+  /**
+   * Gets the perspective projection for an explicit clip-space convention.
+   * Public property access remains WebGL-compatible.
+   *
+   * @param {ClipSpaceConventionRecord} [clipSpaceConvention=ClipSpaceConvention.WEBGL] The target convention.
+   * @returns {Matrix4} The cached projection matrix.
+   * @private
+   */
+  getProjectionMatrix(clipSpaceConvention) {
+    clipSpaceConvention = ClipSpaceConvention.normalize(clipSpaceConvention);
+    update(this, clipSpaceConvention);
+    return this._perspectiveMatrices[clipSpaceConvention.id];
   }
 
   /**
@@ -437,12 +458,24 @@ class PerspectiveOffCenterFrustum {
    * @see PerspectiveOffCenterFrustum#projectionMatrix
    */
   get infiniteProjectionMatrix() {
-    update(this);
-    return this._infinitePerspective;
+    return this.getInfiniteProjectionMatrix(ClipSpaceConvention.WEBGL);
+  }
+
+  /**
+   * Gets the infinite projection for an explicit clip-space convention.
+   *
+   * @param {ClipSpaceConventionRecord} [clipSpaceConvention=ClipSpaceConvention.WEBGL] The target convention.
+   * @returns {Matrix4} The cached infinite projection matrix.
+   * @private
+   */
+  getInfiniteProjectionMatrix(clipSpaceConvention) {
+    clipSpaceConvention = ClipSpaceConvention.normalize(clipSpaceConvention);
+    update(this, clipSpaceConvention);
+    return this._infinitePerspectiveMatrices[clipSpaceConvention.id];
   }
 }
 
-function update(frustum) {
+function update(frustum, clipSpaceConvention) {
   //>>includeStart('debug', pragmas.debug);
   if (
     !defined(frustum.right) ||
@@ -458,15 +491,21 @@ function update(frustum) {
   }
   //>>includeEnd('debug');
 
+  // Non-projection consumers such as getPixelDimensions historically call
+  // update without renderer state. Preserve that backend-neutral path with
+  // the public WebGL default while explicit render paths pass their context.
+  clipSpaceConvention = ClipSpaceConvention.normalize(clipSpaceConvention);
   const { top, bottom, right, left, near, far } = frustum;
+  const conventionId = clipSpaceConvention.id;
+  const parameters = frustum._projectionParameters[conventionId];
 
   const changed =
-    top !== frustum._top ||
-    bottom !== frustum._bottom ||
-    left !== frustum._left ||
-    right !== frustum._right ||
-    near !== frustum._near ||
-    far !== frustum._far;
+    top !== parameters.top ||
+    bottom !== parameters.bottom ||
+    left !== parameters.left ||
+    right !== parameters.right ||
+    near !== parameters.near ||
+    far !== parameters.far;
   if (!changed) {
     return;
   }
@@ -485,22 +524,30 @@ function update(frustum) {
   frustum._bottom = bottom;
   frustum._near = near;
   frustum._far = far;
-  frustum._perspectiveMatrix = Matrix4.computePerspectiveOffCenter(
+  parameters.left = left;
+  parameters.right = right;
+  parameters.top = top;
+  parameters.bottom = bottom;
+  parameters.near = near;
+  parameters.far = far;
+  Matrix4.computePerspectiveOffCenter(
     left,
     right,
     bottom,
     top,
     near,
     far,
-    frustum._perspectiveMatrix,
+    frustum._perspectiveMatrices[conventionId],
+    clipSpaceConvention,
   );
-  frustum._infinitePerspective = Matrix4.computeInfinitePerspectiveOffCenter(
+  Matrix4.computeInfinitePerspectiveOffCenter(
     left,
     right,
     bottom,
     top,
     near,
-    frustum._infinitePerspective,
+    frustum._infinitePerspectiveMatrices[conventionId],
+    clipSpaceConvention,
   );
 }
 

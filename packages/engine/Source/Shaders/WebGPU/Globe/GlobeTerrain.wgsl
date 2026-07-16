@@ -2763,7 +2763,10 @@ fn globeSamplePointShadow(fragWC: vec3<f32>) -> f32 {
   let depthRange = farPlane - nearPlane;
   let zNdcWebGpu =
     farPlane / depthRange - (farPlane * nearPlane) / (axisDist * depthRange);
-  let zAttached = zNdcWebGpu * 0.5 + 0.5;
+  // The convention-aware shadow transform preserves WebGPU z in [0,1] —
+  // compare the raw [0,1] value directly, matching ModelPBRComplete.wgsl's
+  // samplePointShadow and chunks/functions/csm_samplePointShadow.wgsl.
+  let zAttached = zNdcWebGpu;
   let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
   let pcfRadius = effects.pointLightPositionWC.w;
   if (pcfRadius <= 0.0) {
@@ -4072,8 +4075,10 @@ fn fragmentMain(
       // Single-precision subtract is fine here — we're feeding it into
       // a texture sample, not a transform.
       let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
-      // Reconstruct fragment world position via the tile-center + RTE.
-      let fragmentWorldPos = input.v_positionMC + cameraWC;
+      // v_positionMC is already the absolute ECEF position used by the
+      // ground-atmosphere path below. Adding cameraWC a second time displaces
+      // LUT sampling by the camera's ECEF vector and makes fog camera-relative.
+      let fragmentWorldPos = input.v_positionMC;
       let lut = sampleAtmosphereFogLut(fragmentWorldPos, cameraWC);
       // Use the LUT's inscatter directly when it returns meaningful
       // magnitude; the placeholder texture produces zero so we fall

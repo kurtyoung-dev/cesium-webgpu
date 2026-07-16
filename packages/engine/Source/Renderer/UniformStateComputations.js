@@ -210,6 +210,7 @@ function cleanViewport(uniformState) {
       0.0,
       1.0,
       uniformState._viewportOrthographicMatrix,
+      uniformState._clipSpaceConvention,
     );
     Matrix4.computeViewportTransformation(
       v,

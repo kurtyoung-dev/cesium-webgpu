@@ -1652,19 +1652,19 @@ fn computeShadowFactorCSM(
 // Mirrors WebGL's USE_CUBE_MAP_SHADOW path (`shadowVisibility.glsl` +
 // `shadowDepthCompare.glsl`) but adapted to WebGPU's `texture_depth_cube`
 // + `textureSampleCompareLevel` semantics. The cast pipeline writes
-// standard window-space depth (after `_depthRangeType = "webgpu"` produces
-// a [0,1] z_ndc, the per-face camera's `getViewProjection()` further
-// applies a NDC→texture scaleBias that compresses to [0.5, 1] before
-// landing in the depth32float attachment) for each cube face using
+// standard window-space depth (the context-owned WebGPU clip convention
+// produces a [0,1] z_ndc, and the convention-aware NDC→texture transform
+// preserves that z range before landing in the depth32float attachment)
+// for each cube face using
 // `near=1.0`, `far=lightRadius`, FOV=π/2 (see `computeOmnidirectional`
 // in ShadowMapComputations.js). Receive math has to round-trip the
-// SAME perspective-Z formula and apply the SAME scaleBias remap, otherwise
+// SAME perspective-Z formula and depth convention, otherwise
 // every fragment compares unequal against the texel and the scene
 // renders fully shadowed or fully lit by accident.
 //
 // Reference depth derivation (matches the WebGPU-mode perspective in
-// `Matrix4.computePerspectiveFieldOfView` plus the trailing scaleBias
-// matrix in `ShadowMap.js`):
+// `Matrix4.computePerspectiveFieldOfView` plus the convention-aware
+// NDC-to-texture matrix in `ShadowMap.js`):
 //
 //   For a fragment at world-space distance `d` from the light along
 //   the dominant cube-face axis, z_eye = -d (looking down -Z in eye
@@ -1677,7 +1677,7 @@ fn computeShadowFactorCSM(
 //                = (-d * far/(near-far) + near*far/(near-far)) / d
 //                = far*(d - near) / (d * (far - near))            (after sign cleanup)
 //                = far/(far-near) - far*near / (d * (far-near))
-//   z_attached = z_ndc_webgpu * 0.5 + 0.5     (scaleBias remap)
+//   z_attached = z_ndc_webgpu                 (already [0,1])
 //
 // The cube sample direction must be in world space (NOT eye space) and
 // matches `direction = fragWC - lightWC`. Magnitude is irrelevant —
@@ -1705,17 +1705,13 @@ fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
   // would yield 0 (shadowed) — the wrong direction.
   if (axisDist >= farPlane) { return 1.0; }
   // Standard perspective-Z formula, WebGPU [0,1] convention. The
-  // cast pipeline output values in this range too because Cesium
-  // sets `Matrix4._depthRangeType = "webgpu"` at scene creation.
+  // cast pipeline output values in this range too because it constructs the
+  // projection with the owning context's WebGPU clip-space convention.
   let depthRange = farPlane - nearPlane;
   let zNdcWebGpu =
     farPlane / depthRange - (farPlane * nearPlane) / (axisDist * depthRange);
-  // ShadowMap.js's `scaleBiasMatrix` post-multiplies the projection,
-  // remapping z_ndc [-1,1] → [0,1] for WebGL OR z_ndc [0,1] → [0.5,1]
-  // for WebGPU. Either way the cast path applied it, so the receive
-  // path has to apply the same remap before the comparison sample to
-  // round-trip correctly.
-  let zAttached = zNdcWebGpu * 0.5 + 0.5;
+  // The convention-aware shadow transform preserves WebGPU z in [0,1].
+  let zAttached = zNdcWebGpu;
   let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
   // Batch 63 — Soft point-light shadows via 5-tap cross PCF.
   //

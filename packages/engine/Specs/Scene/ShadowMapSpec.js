@@ -2,6 +2,7 @@ import {
   BoundingSphere,
   BoxGeometry,
   Cartesian3,
+  ClipSpaceConvention,
   Color,
   ColorGeometryInstanceAttribute,
   ComponentDatatype,
@@ -21,6 +22,7 @@ import {
   Context,
   Framebuffer,
   PixelDatatype,
+  PerspectiveOffCenterFrustum,
   Texture,
   Camera,
   DirectionalLight,
@@ -201,6 +203,73 @@ describe(
       primitiveFloorRTC = createPrimitiveRTC(floorTransform, 2.0, Color.RED);
 
       return Promise.all(modelPromises);
+    });
+
+    it("maps shadow near/far depth to texture space for both clip conventions", function () {
+      const context = scene.context;
+      const originalConvention = context._clipSpaceConvention;
+
+      function createShadowMap(convention) {
+        context._clipSpaceConvention = convention;
+        const shadowMap = new ShadowMap({
+          context: context,
+          lightCamera: scene.camera,
+          cascadesEnabled: false,
+          size: 1,
+        });
+        shadowMap._shadowMapCamera.frustum = new PerspectiveOffCenterFrustum({
+          left: -1.0,
+          right: 1.0,
+          bottom: -1.0,
+          top: 1.0,
+          near: 1.0,
+          far: 10.0,
+        });
+        Matrix4.clone(Matrix4.IDENTITY, shadowMap._shadowMapCamera.viewMatrix);
+        return shadowMap;
+      }
+
+      function projectDepth(matrix, eyeDepth) {
+        const eyeZ = -eyeDepth;
+        return (
+          (matrix[10] * eyeZ + matrix[14]) / (matrix[11] * eyeZ + matrix[15])
+        );
+      }
+
+      let webglShadowMap;
+      let webgpuShadowMap;
+      try {
+        webglShadowMap = createShadowMap(ClipSpaceConvention.WEBGL);
+        webgpuShadowMap = createShadowMap(ClipSpaceConvention.WEBGPU);
+        const webglMatrix = webglShadowMap._shadowMapCamera.getViewProjection();
+        const webgpuMatrix =
+          webgpuShadowMap._shadowMapCamera.getViewProjection();
+
+        expect(projectDepth(webglMatrix, 1.0)).toEqualEpsilon(
+          0.0,
+          CesiumMath.EPSILON14,
+        );
+        expect(projectDepth(webgpuMatrix, 1.0)).toEqualEpsilon(
+          0.0,
+          CesiumMath.EPSILON14,
+        );
+        expect(projectDepth(webglMatrix, 10.0)).toEqualEpsilon(
+          1.0,
+          CesiumMath.EPSILON14,
+        );
+        expect(projectDepth(webgpuMatrix, 10.0)).toEqualEpsilon(
+          1.0,
+          CesiumMath.EPSILON14,
+        );
+      } finally {
+        context._clipSpaceConvention = originalConvention;
+        if (defined(webglShadowMap)) {
+          webglShadowMap.destroy();
+        }
+        if (defined(webgpuShadowMap)) {
+          webgpuShadowMap.destroy();
+        }
+      }
     });
 
     function createPrimitive(transform, size, color) {

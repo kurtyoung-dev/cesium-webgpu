@@ -12,6 +12,7 @@
 import Cartesian3 from "./Cartesian3.js";
 import Cartesian4 from "./Cartesian4.js";
 import Matrix3 from "./Matrix3.js";
+import type { ClipSpaceConventionRecord } from "./ClipSpaceConvention.js";
 
 /**
  * A 4x4 matrix, indexable as a column-major order array via numeric
@@ -126,6 +127,7 @@ declare class Matrix4 {
     near: number,
     far: number,
     result: Matrix4,
+    clipSpaceConvention?: ClipSpaceConventionRecord,
   ): Matrix4;
   static computeOrthographicOffCenter(
     left: number,
@@ -135,6 +137,7 @@ declare class Matrix4 {
     near: number,
     far: number,
     result: Matrix4,
+    clipSpaceConvention?: ClipSpaceConventionRecord,
   ): Matrix4;
   static computePerspectiveOffCenter(
     left: number,
@@ -144,6 +147,7 @@ declare class Matrix4 {
     near: number,
     far: number,
     result: Matrix4,
+    clipSpaceConvention?: ClipSpaceConventionRecord,
   ): Matrix4;
   static computeInfinitePerspectiveOffCenter(
     left: number,
@@ -152,11 +156,11 @@ declare class Matrix4 {
     top: number,
     near: number,
     result: Matrix4,
+    clipSpaceConvention?: ClipSpaceConventionRecord,
   ): Matrix4;
   static computeViewportTransformation(
     viewport:
-      | { x?: number; y?: number; width?: number; height?: number }
-      | undefined,
+      { x?: number; y?: number; width?: number; height?: number } | undefined,
     nearDepthRange: number,
     farDepthRange: number,
     result: Matrix4,
@@ -285,9 +289,6 @@ declare class Matrix4 {
     array: ArrayLike<number>,
     offset: number,
   ): boolean;
-
-  // ─── Depth range mode (WebGL / WebGPU split) ─────────────────────────
-  static setDepthRangeType(type: "webgl" | "webgpu"): void;
 
   // ─── Constants ───────────────────────────────────────────────────────
   static readonly IDENTITY: Matrix4;

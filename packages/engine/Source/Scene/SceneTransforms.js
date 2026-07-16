@@ -55,7 +55,13 @@ SceneTransforms.worldToWindowCoordinates = function (scene, position, result) {
 const scratchCartesian4 = new Cartesian4();
 const scratchEyeOffset = new Cartesian3();
 
-function worldToClip(position, eyeOffset, camera, result) {
+function getProjectionMatrix(frustum, clipSpaceConvention) {
+  return defined(frustum.getProjectionMatrix)
+    ? frustum.getProjectionMatrix(clipSpaceConvention)
+    : frustum.projectionMatrix;
+}
+
+function worldToClip(position, eyeOffset, camera, clipSpaceConvention, result) {
   const viewMatrix = camera.viewMatrix;
 
   const positionEC = Matrix4.multiplyByVector(
@@ -80,7 +86,7 @@ function worldToClip(position, eyeOffset, camera, result) {
   positionEC.z += zEyeOffset.z;
 
   return Matrix4.multiplyByVector(
-    camera.frustum.projectionMatrix,
+    getProjectionMatrix(camera.frustum, clipSpaceConvention),
     positionEC,
     result,
   );
@@ -132,6 +138,7 @@ SceneTransforms.worldWithEyeOffsetToWindowCoordinates = function (
   viewport.height = canvas.clientHeight;
 
   const camera = scene.camera;
+  const clipSpaceConvention = scene.context.clipSpaceConvention;
   let cameraCentered = false;
 
   if (frameState.mode === SceneMode.SCENE2D) {
@@ -154,7 +161,10 @@ SceneTransforms.worldWithEyeOffsetToWindowCoordinates = function (
       1.0,
       new Matrix4(),
     );
-    const projectionMatrix = camera.frustum.projectionMatrix;
+    const projectionMatrix = getProjectionMatrix(
+      camera.frustum,
+      clipSpaceConvention,
+    );
 
     const x = camera.positionWC.y;
     const eyePoint = Cartesian3.fromElements(
@@ -180,7 +190,13 @@ SceneTransforms.worldWithEyeOffsetToWindowCoordinates = function (
 
         camera.frustum.right = maxCoord.x - x;
 
-        positionCC = worldToClip(actualPosition, eyeOffset, camera, positionCC);
+        positionCC = worldToClip(
+          actualPosition,
+          eyeOffset,
+          camera,
+          clipSpaceConvention,
+          positionCC,
+        );
         SceneTransforms.clipToGLWindowCoordinates(
           viewport,
           positionCC,
@@ -195,7 +211,13 @@ SceneTransforms.worldWithEyeOffsetToWindowCoordinates = function (
         camera.frustum.right = -camera.frustum.left;
         camera.frustum.left = -right;
 
-        positionCC = worldToClip(actualPosition, eyeOffset, camera, positionCC);
+        positionCC = worldToClip(
+          actualPosition,
+          eyeOffset,
+          camera,
+          clipSpaceConvention,
+          positionCC,
+        );
         SceneTransforms.clipToGLWindowCoordinates(
           viewport,
           positionCC,
@@ -207,7 +229,13 @@ SceneTransforms.worldWithEyeOffsetToWindowCoordinates = function (
 
         camera.frustum.left = -maxCoord.x - x;
 
-        positionCC = worldToClip(actualPosition, eyeOffset, camera, positionCC);
+        positionCC = worldToClip(
+          actualPosition,
+          eyeOffset,
+          camera,
+          clipSpaceConvention,
+          positionCC,
+        );
         SceneTransforms.clipToGLWindowCoordinates(
           viewport,
           positionCC,
@@ -222,7 +250,13 @@ SceneTransforms.worldWithEyeOffsetToWindowCoordinates = function (
         camera.frustum.left = -camera.frustum.right;
         camera.frustum.right = -left;
 
-        positionCC = worldToClip(actualPosition, eyeOffset, camera, positionCC);
+        positionCC = worldToClip(
+          actualPosition,
+          eyeOffset,
+          camera,
+          clipSpaceConvention,
+          positionCC,
+        );
         SceneTransforms.clipToGLWindowCoordinates(
           viewport,
           positionCC,
@@ -242,7 +276,13 @@ SceneTransforms.worldWithEyeOffsetToWindowCoordinates = function (
 
   if (frameState.mode !== SceneMode.SCENE2D || cameraCentered) {
     // View-projection matrix to transform from world coordinates to clip coordinates
-    positionCC = worldToClip(actualPosition, eyeOffset, camera, positionCC);
+    positionCC = worldToClip(
+      actualPosition,
+      eyeOffset,
+      camera,
+      clipSpaceConvention,
+      positionCC,
+    );
     if (
       positionCC.z < 0 &&
       !(camera.frustum instanceof OrthographicFrustum) &&
@@ -424,13 +464,15 @@ SceneTransforms.drawingBufferToWorldCoordinates = function (
     ((drawingBufferPosition.y - viewport.y) / viewport.height) * 2.0 - 1.0;
   // NEW-PICK-WEBGPU-DEPTH-RECONSTRUCTION (Batch 252): the NDC z convention
   // must match the convention the projection matrix was built with
-  // (Matrix4.setDepthRangeType). `depth` here is window-space [0, 1] in both
+  // (`context.clipSpaceConvention`). `depth` here is window-space [0, 1] in both
   // conventions (the useLogDepth branch above decodes the log value into
   // exactly that): WebGL projections map it to NDC z in [-1, 1]; WebGPU
   // projections' clip z/w IS window depth, so it passes through unchanged.
   // Feeding 2d-1 into a [0,1]-range inverse projection breaks the w
   // reconstruction and unprojects to garbage.
-  ndc.z = Matrix4._depthRangeType === "webgpu" ? depth : depth * 2.0 - 1.0;
+  ndc.z = context.clipSpaceConvention.depthRangeZeroToOne
+    ? depth
+    : depth * 2.0 - 1.0;
   ndc.w = 1.0;
 
   let worldCoords;

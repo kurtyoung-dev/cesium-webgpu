@@ -1,9 +1,12 @@
 import Check from "./Check.js";
+import ClipSpaceConvention from "./ClipSpaceConvention.js";
 import Frozen from "./Frozen.js";
 import defined from "./defined.js";
 import DeveloperError from "./DeveloperError.js";
 import CesiumMath from "./Math.js";
 import OrthographicOffCenterFrustum from "./OrthographicOffCenterFrustum.js";
+
+/** @import { ClipSpaceConventionRecord } from "./ClipSpaceConvention.js" */
 
 /**
  * The viewing frustum is defined by 6 planes.
@@ -214,8 +217,19 @@ class OrthographicFrustum {
    * @readonly
    */
   get projectionMatrix() {
+    return this.getProjectionMatrix(ClipSpaceConvention.WEBGL);
+  }
+
+  /**
+   * Gets the projection for an explicit clip-space convention.
+   *
+   * @param {ClipSpaceConventionRecord} [clipSpaceConvention=ClipSpaceConvention.WEBGL] The target convention.
+   * @returns {Matrix4} The cached projection matrix.
+   * @private
+   */
+  getProjectionMatrix(clipSpaceConvention) {
     update(this);
-    return this._offCenterFrustum.projectionMatrix;
+    return this._offCenterFrustum.getProjectionMatrix(clipSpaceConvention);
   }
 
   /**

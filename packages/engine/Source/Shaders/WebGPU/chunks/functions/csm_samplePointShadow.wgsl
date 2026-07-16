@@ -36,14 +36,12 @@ fn csm_samplePointShadow(
   // Outside the cube far plane → cleared depth (1.0); treat as fully lit.
   if (axisDist >= farPlane) { return 1.0; }
   let depthRange = farPlane - nearPlane;
-  // WebGPU [0,1] depth convention. Cesium sets Matrix4._depthRangeType =
-  // "webgpu" so the cast pipeline wrote values in this range too.
+  // WebGPU [0,1] depth convention. The cast projection is constructed with
+  // the owning context's convention, so it wrote values in this range too.
   let zNdcWebGpu =
     farPlane / depthRange - (farPlane * nearPlane) / (axisDist * depthRange);
-  // ShadowMap.scaleBiasMatrix post-multiplies the projection. The cast
-  // path applied the remap [0,1] → [0.5,1] (WebGPU branch); receive must
-  // apply the same remap before the comparison sample to round-trip.
-  let zAttached = zNdcWebGpu * 0.5 + 0.5;
+  // The convention-aware shadow transform preserves WebGPU z in [0,1].
+  let zAttached = zNdcWebGpu;
   let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
   // pcfRadius == 0 → single hard tap (Batch 57 behavior).
   if (pcfRadius <= 0.0) {

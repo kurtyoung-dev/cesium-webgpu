@@ -2,6 +2,7 @@ import {
   Cartesian2,
   Cartesian3,
   Cartesian4,
+  ClipSpaceConvention,
   Math as CesiumMath,
   Matrix4,
   OrthographicOffCenterFrustum,
@@ -150,6 +151,26 @@ describe("Core/OrthographicOffCenterFrustum", function () {
       new Matrix4(),
     );
     expect(projectionMatrix).toEqualEpsilon(expected, CesiumMath.EPSILON6);
+  });
+
+  it("keeps stable independent projection caches per clip convention", function () {
+    const webgl = frustum.getProjectionMatrix(ClipSpaceConvention.WEBGL);
+    const webglSnapshot = Matrix4.clone(webgl);
+    const webgpu = frustum.getProjectionMatrix(ClipSpaceConvention.WEBGPU);
+
+    expect(webgpu).not.toBe(webgl);
+    expect(webgl).toEqual(webglSnapshot);
+    expect(frustum.projectionMatrix).toBe(webgl);
+
+    for (let i = 0; i < 32; i++) {
+      expect(frustum.getProjectionMatrix(ClipSpaceConvention.WEBGPU)).toBe(
+        webgpu,
+      );
+      expect(frustum.getProjectionMatrix(ClipSpaceConvention.WEBGL)).toBe(
+        webgl,
+      );
+      expect(webgl).toEqual(webglSnapshot);
+    }
   });
 
   it("get pixel dimensions throws without canvas height", function () {

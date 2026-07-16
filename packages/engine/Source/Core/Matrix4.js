@@ -3,6 +3,7 @@
 import Cartesian3 from "./Cartesian3.js";
 import Cartesian4 from "./Cartesian4.js";
 import Check from "./Check.js";
+import ClipSpaceConvention from "./ClipSpaceConvention.js";
 import Frozen from "./Frozen.js";
 import defined from "./defined.js";
 import DeveloperError from "./DeveloperError.js";
@@ -808,6 +809,7 @@ class Matrix4 {
    * @param {number} near The distance to the near plane in meters.
    * @param {number} far The distance to the far plane in meters.
    * @param {Matrix4} result The object in which the result will be stored.
+   * @param {ClipSpaceConventionRecord} [clipSpaceConvention=ClipSpaceConvention.WEBGL] The target clip-space depth convention.
    * @returns {Matrix4} The modified result parameter.
    *
    * @exception {DeveloperError} fovY must be in (0, PI].
@@ -815,7 +817,14 @@ class Matrix4 {
    * @exception {DeveloperError} near must be greater than zero.
    * @exception {DeveloperError} far must be greater than zero.
    */
-  static computePerspectiveFieldOfView(fovY, aspectRatio, near, far, result) {
+  static computePerspectiveFieldOfView(
+    fovY,
+    aspectRatio,
+    near,
+    far,
+    result,
+    clipSpaceConvention,
+  ) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number.greaterThan("fovY", fovY, 0.0);
     Check.typeOf.number.lessThan("fovY", fovY, Math.PI);
@@ -824,6 +833,8 @@ class Matrix4 {
     Check.typeOf.object("result", result);
     //>>includeEnd('debug');
 
+    clipSpaceConvention = ClipSpaceConvention.normalize(clipSpaceConvention);
+
     const bottom = Math.tan(fovY * 0.5);
 
     const column1Row1 = 1.0 / bottom;
@@ -831,7 +842,7 @@ class Matrix4 {
     // Adapt projection based on depth range (WebGL: -1 to 1, WebGPU: 0 to 1)
     let column2Row2;
     let column3Row2;
-    if (Matrix4._depthRangeType === "webgpu") {
+    if (clipSpaceConvention.depthRangeZeroToOne) {
       column2Row2 = far / (near - far);
       column3Row2 = (near * far) / (near - far);
     } else {
@@ -868,6 +879,7 @@ class Matrix4 {
    * @param {number} near The distance to the near plane in meters.
    * @param {number} far The distance to the far plane in meters.
    * @param {Matrix4} result The object in which the result will be stored.
+   * @param {ClipSpaceConventionRecord} [clipSpaceConvention=ClipSpaceConvention.WEBGL] The target clip-space depth convention.
    * @returns {Matrix4} The modified result parameter.
    */
   static computeOrthographicOffCenter(
@@ -878,6 +890,7 @@ class Matrix4 {
     near,
     far,
     result,
+    clipSpaceConvention,
   ) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number("left", left);
@@ -889,6 +902,8 @@ class Matrix4 {
     Check.typeOf.object("result", result);
     //>>includeEnd('debug');
 
+    clipSpaceConvention = ClipSpaceConvention.normalize(clipSpaceConvention);
+
     let a = 1.0 / (right - left);
     let b = 1.0 / (top - bottom);
     let c = 1.0 / (far - near);
@@ -898,7 +913,7 @@ class Matrix4 {
     // Adapt based on depth range (WebGL: -1 to 1, WebGPU: 0 to 1)
     let tz;
     let cScale;
-    if (Matrix4._depthRangeType === "webgpu") {
+    if (clipSpaceConvention.depthRangeZeroToOne) {
       tz = -near * c;
       cScale = -1.0;
     } else {
@@ -938,6 +953,7 @@ class Matrix4 {
    * @param {number} near The distance to the near plane in meters.
    * @param {number} far The distance to the far plane in meters.
    * @param {Matrix4} result The object in which the result will be stored.
+   * @param {ClipSpaceConventionRecord} [clipSpaceConvention=ClipSpaceConvention.WEBGL] The target clip-space depth convention.
    * @returns {Matrix4} The modified result parameter.
    */
   static computePerspectiveOffCenter(
@@ -948,6 +964,7 @@ class Matrix4 {
     near,
     far,
     result,
+    clipSpaceConvention,
   ) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number("left", left);
@@ -959,6 +976,8 @@ class Matrix4 {
     Check.typeOf.object("result", result);
     //>>includeEnd('debug');
 
+    clipSpaceConvention = ClipSpaceConvention.normalize(clipSpaceConvention);
+
     const column0Row0 = (2.0 * near) / (right - left);
     const column1Row1 = (2.0 * near) / (top - bottom);
     const column2Row0 = (right + left) / (right - left);
@@ -967,7 +986,7 @@ class Matrix4 {
     // Adapt projection based on depth range (WebGL: -1 to 1, WebGPU: 0 to 1)
     let column2Row2;
     let column3Row2;
-    if (Matrix4._depthRangeType === "webgpu") {
+    if (clipSpaceConvention.depthRangeZeroToOne) {
       column2Row2 = far / (near - far);
       column3Row2 = (near * far) / (near - far);
     } else {
@@ -1003,6 +1022,7 @@ class Matrix4 {
    * @param {number} top The number of meters above of the camera that will be in view.
    * @param {number} near The distance to the near plane in meters.
    * @param {Matrix4} result The object in which the result will be stored.
+   * @param {ClipSpaceConventionRecord} [clipSpaceConvention=ClipSpaceConvention.WEBGL] The target clip-space depth convention.
    * @returns {Matrix4} The modified result parameter.
    */
   static computeInfinitePerspectiveOffCenter(
@@ -1012,6 +1032,7 @@ class Matrix4 {
     top,
     near,
     result,
+    clipSpaceConvention,
   ) {
     //>>includeStart('debug', pragmas.debug);
     Check.typeOf.number("left", left);
@@ -1022,6 +1043,8 @@ class Matrix4 {
     Check.typeOf.object("result", result);
     //>>includeEnd('debug');
 
+    clipSpaceConvention = ClipSpaceConvention.normalize(clipSpaceConvention);
+
     const column0Row0 = (2.0 * near) / (right - left);
     const column1Row1 = (2.0 * near) / (top - bottom);
     const column2Row0 = (right + left) / (right - left);
@@ -1030,7 +1053,7 @@ class Matrix4 {
     // Adapt based on depth range (WebGL: -1 to 1, WebGPU: 0 to 1, infinite far plane)
     let column2Row2;
     let column3Row2;
-    if (Matrix4._depthRangeType === "webgpu") {
+    if (clipSpaceConvention.depthRangeZeroToOne) {
       column2Row2 = -1.0;
       column3Row2 = -near;
     } else {
@@ -3062,34 +3085,6 @@ class Matrix4 {
     );
   }
 }
-
-/**
- * Depth range convention for projection matrix calculations: 'webgl' (-1 to 1)
- * or 'webgpu' (0 to 1). Set by the active renderer at init via setDepthRangeType.
- * @private
- * @type {string}
- * @default 'webgl'
- */
-Matrix4._depthRangeType = "webgl";
-
-/**
- * Sets the depth range type for projection matrix calculations.
- * WebGL uses a -1 to 1 depth range in NDC, while WebGPU uses 0 to 1.
- * This should be called by the active renderer when it's initialized.
- *
- * @param {string} type - Either 'webgl' or 'webgpu'
- * @private
- */
-Matrix4.setDepthRangeType = function (type) {
-  //>>includeStart('debug', pragmas.debug);
-  if (type !== "webgl" && type !== "webgpu") {
-    throw new DeveloperError(
-      'Depth range type must be either "webgl" or "webgpu"',
-    );
-  }
-  //>>includeEnd('debug');
-  Matrix4._depthRangeType = type;
-};
 
 /**
  * The number of elements used to pack the object into an array.

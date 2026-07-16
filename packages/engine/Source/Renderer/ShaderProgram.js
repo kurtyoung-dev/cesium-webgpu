@@ -5,7 +5,6 @@ import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import RuntimeError from "../Core/RuntimeError.js";
 import AutomaticUniforms from "./AutomaticUniforms.js";
-import ContextLimits from "./ContextLimits.js";
 import createUniform from "./createUniform.js";
 import createUniformArray from "./createUniformArray.js";
 
@@ -30,6 +29,7 @@ class ShaderProgram {
     const modifiedFS = handleUniformPrecisionMismatches(
       vertexShaderText,
       fragmentShaderText,
+      options.graphicsCapabilities,
     );
 
     this._gl = options.gl;
@@ -211,13 +211,17 @@ function extractUniforms(shaderText) {
 function handleUniformPrecisionMismatches(
   vertexShaderText,
   fragmentShaderText,
+  graphicsCapabilities,
 ) {
   // If a uniform exists in both the vertex and fragment shader but with different precision qualifiers,
   // give the fragment shader uniform a different name. This fixes shader compilation errors on devices
   // that only support mediump in the fragment shader.
   const duplicateUniformNames = {};
 
-  if (!ContextLimits.highpFloatSupported || !ContextLimits.highpIntSupported) {
+  if (
+    !graphicsCapabilities.highpFloatSupported ||
+    !graphicsCapabilities.highpIntSupported
+  ) {
     let i, j;
     let uniformName;
     let duplicateName;

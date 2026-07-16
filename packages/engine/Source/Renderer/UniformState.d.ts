@@ -12,11 +12,12 @@
 
 import Cartesian2 from "../Core/Cartesian2.js";
 import Cartesian3 from "../Core/Cartesian3.js";
+import type { ClipSpaceConventionRecord } from "../Core/ClipSpaceConvention.js";
 import Color from "../Core/Color.js";
 import Matrix4 from "../Core/Matrix4.js";
 
 declare class UniformState {
-  constructor();
+  constructor(clipSpaceConvention?: ClipSpaceConventionRecord);
 
   // ─── Mutable fields ──────────────────────────────────────────────────
   viewport: CesiumBoundingRectangle;

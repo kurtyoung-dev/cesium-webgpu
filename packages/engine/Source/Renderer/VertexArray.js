@@ -10,7 +10,6 @@ import CesiumMath from "../Core/Math.js";
 import RuntimeError from "../Core/RuntimeError.js";
 import Buffer from "./Buffer.js";
 import BufferUsage from "./BufferUsage.js";
-import ContextLimits from "./ContextLimits.js";
 import AttributeType from "../Scene/AttributeType.js";
 import assert from "../Core/assert.js";
 
@@ -891,7 +890,7 @@ function setVertexAttribDivisor(vertexArray) {
 
   const divisors = context._vertexAttribDivisors;
   const attributes = vertexArray._attributes;
-  const maxAttributes = ContextLimits.maximumVertexAttributes;
+  const maxAttributes = context.limits.maximumVertexAttributes;
   let i;
 
   if (hasInstancedAttributes) {

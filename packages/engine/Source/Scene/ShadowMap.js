@@ -38,7 +38,8 @@ import {
  * @private
  */
 class ShadowMapCamera {
-  constructor() {
+  constructor(clipSpaceConvention) {
+    this.clipSpaceConvention = clipSpaceConvention;
     this.viewMatrix = new Matrix4();
     this.inverseViewMatrix = new Matrix4();
     this.frustum = undefined;
@@ -63,10 +64,16 @@ class ShadowMapCamera {
 
   getViewProjection() {
     const view = this.viewMatrix;
-    const projection = this.frustum.projectionMatrix;
+    const projection =
+      typeof this.frustum.getProjectionMatrix === "function"
+        ? this.frustum.getProjectionMatrix(this.clipSpaceConvention)
+        : this.frustum.projectionMatrix;
     Matrix4.multiply(projection, view, this.viewProjectionMatrix);
+    const ndcToTexture = this.clipSpaceConvention.depthRangeZeroToOne
+      ? scaleBiasZeroToOneMatrix
+      : scaleBiasNegativeOneToOneMatrix;
     Matrix4.multiply(
-      scaleBiasMatrix,
+      ndcToTexture,
       this.viewProjectionMatrix,
       this.viewProjectionMatrix,
     );
@@ -75,7 +82,7 @@ class ShadowMapCamera {
 }
 
 // Converts from NDC space to texture space
-const scaleBiasMatrix = new Matrix4(
+const scaleBiasNegativeOneToOneMatrix = new Matrix4(
   0.5,
   0.0,
   0.0,
@@ -94,12 +101,34 @@ const scaleBiasMatrix = new Matrix4(
   1.0,
 );
 
+// WebGPU projection matrices already emit z in [0, 1]. Only x/y need the
+// NDC-to-texture remap; applying the legacy z scale/bias would compress every
+// stored comparison reference into [0.5, 1].
+const scaleBiasZeroToOneMatrix = new Matrix4(
+  0.5,
+  0.0,
+  0.0,
+  0.5,
+  0.0,
+  0.5,
+  0.0,
+  0.5,
+  0.0,
+  0.0,
+  1.0,
+  0.0,
+  0.0,
+  0.0,
+  0.0,
+  1.0,
+);
+
 /**
  * @private
  */
 class ShadowPass {
   constructor(context) {
-    this.camera = new ShadowMapCamera();
+    this.camera = new ShadowMapCamera(context.clipSpaceConvention);
     this.passState = new PassState(context);
     this.framebuffer = undefined;
     this.textureOffsets = undefined;
@@ -352,6 +381,11 @@ class ShadowMap {
     }
     //>>includeEnd('debug');
 
+    // Shadow-map sizing and projection are renderer capabilities, not
+    // process-wide state. Retain the owning context for setters that may run
+    // outside the frame update path.
+    this._context = context;
+
     this._enabled = options.enabled ?? true;
     this._softShadows = options.softShadows ?? false;
     this._normalOffset = options.normalOffset ?? true;
@@ -453,7 +487,7 @@ class ShadowMap {
     this._distance = 0.0;
 
     this._lightCamera = options.lightCamera;
-    this._shadowMapCamera = new ShadowMapCamera();
+    this._shadowMapCamera = new ShadowMapCamera(context.clipSpaceConvention);
     this._shadowMapCullingVolume = undefined;
     this._sceneCamera = undefined;
     this._boundingSphere = new BoundingSphere();

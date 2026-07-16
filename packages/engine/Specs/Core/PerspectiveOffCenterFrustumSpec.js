@@ -2,6 +2,7 @@ import {
   Cartesian2,
   Cartesian3,
   Cartesian4,
+  ClipSpaceConvention,
   Math as CesiumMath,
   Matrix4,
   PerspectiveOffCenterFrustum,
@@ -161,6 +162,37 @@ describe("Core/PerspectiveOffCenterFrustum", function () {
       new Matrix4(),
     );
     expect(expected).toEqual(frustum.infiniteProjectionMatrix);
+  });
+
+  it("keeps stable independent projection caches per clip convention", function () {
+    const webgl = frustum.getProjectionMatrix(ClipSpaceConvention.WEBGL);
+    const webglInfinite = frustum.getInfiniteProjectionMatrix(
+      ClipSpaceConvention.WEBGL,
+    );
+    const webglSnapshot = Matrix4.clone(webgl);
+    const webglInfiniteSnapshot = Matrix4.clone(webglInfinite);
+
+    const webgpu = frustum.getProjectionMatrix(ClipSpaceConvention.WEBGPU);
+    const webgpuInfinite = frustum.getInfiniteProjectionMatrix(
+      ClipSpaceConvention.WEBGPU,
+    );
+    expect(webgpu).not.toBe(webgl);
+    expect(webgpuInfinite).not.toBe(webglInfinite);
+    expect(webgl).toEqual(webglSnapshot);
+    expect(webglInfinite).toEqual(webglInfiniteSnapshot);
+    expect(frustum.projectionMatrix).toBe(webgl);
+    expect(frustum.infiniteProjectionMatrix).toBe(webglInfinite);
+
+    for (let i = 0; i < 32; i++) {
+      expect(frustum.getProjectionMatrix(ClipSpaceConvention.WEBGPU)).toBe(
+        webgpu,
+      );
+      expect(frustum.getProjectionMatrix(ClipSpaceConvention.WEBGL)).toBe(
+        webgl,
+      );
+      expect(webgl).toEqual(webglSnapshot);
+      expect(webglInfinite).toEqual(webglInfiniteSnapshot);
+    }
   });
 
   it("get pixel dimensions throws without canvas height", function () {

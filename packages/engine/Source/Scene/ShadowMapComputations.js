@@ -14,7 +14,6 @@ import PerspectiveFrustum from "../Core/PerspectiveFrustum.js";
 import Quaternion from "../Core/Quaternion.js";
 import SphereOutlineGeometry from "../Core/SphereOutlineGeometry.js";
 import WebGLConstants from "../Core/WebGLConstants.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import CubeMap from "../Renderer/CubeMap.js";
 import Framebuffer from "../Renderer/Framebuffer.js";
 import Pass from "../Renderer/Pass.js";
@@ -203,15 +202,13 @@ function updateFramebuffer(shadowMap, context) {
 
 function resize(shadowMap, size) {
   shadowMap._size = size;
+  const limits = shadowMap._context.limits;
   const passes = shadowMap._passes;
   const numberOfPasses = passes.length;
   const textureSize = shadowMap._textureSize;
 
   if (shadowMap._isPointLight) {
-    size =
-      ContextLimits.maximumCubeMapSize >= size
-        ? size
-        : ContextLimits.maximumCubeMapSize;
+    size = limits.maximumCubeMapSize >= size ? size : limits.maximumCubeMapSize;
     textureSize.x = size;
     textureSize.y = size;
     const faceViewport = new BoundingRectangle(0, 0, size, size);
@@ -225,10 +222,7 @@ function resize(shadowMap, size) {
     // +----+
     // |  1 |
     // +----+
-    size =
-      ContextLimits.maximumTextureSize >= size
-        ? size
-        : ContextLimits.maximumTextureSize;
+    size = limits.maximumTextureSize >= size ? size : limits.maximumTextureSize;
     textureSize.x = size;
     textureSize.y = size;
     passes[0].passState.viewport = new BoundingRectangle(0, 0, size, size);
@@ -239,9 +233,9 @@ function resize(shadowMap, size) {
     // |  1 |  2 |
     // +----+----+
     size =
-      ContextLimits.maximumTextureSize >= size * 2
+      limits.maximumTextureSize >= size * 2
         ? size
-        : ContextLimits.maximumTextureSize / 2;
+        : limits.maximumTextureSize / 2;
     textureSize.x = size * 2;
     textureSize.y = size * 2;
     passes[0].passState.viewport = new BoundingRectangle(0, 0, size, size);
@@ -316,12 +310,27 @@ const scratchCascadeDistances = new Array(4);
 const scratchMin = new Cartesian3();
 const scratchMax = new Cartesian3();
 
+function getProjectionMatrix(frustum, clipSpaceConvention) {
+  return typeof frustum.getProjectionMatrix === "function"
+    ? frustum.getProjectionMatrix(clipSpaceConvention)
+    : frustum.projectionMatrix;
+}
+
+function getFrustumCorner(index, clipSpaceConvention, result) {
+  Cartesian4.clone(frustumCornersNDC[index], result);
+  if (index < 4) {
+    result.z = clipSpaceConvention.nearDepth;
+  }
+  return result;
+}
+
 function computeCascades(shadowMap, frameState) {
   const shadowMapCamera = shadowMap._shadowMapCamera;
   const sceneCamera = shadowMap._sceneCamera;
   const cameraNear = sceneCamera.frustum.near;
   const cameraFar = sceneCamera.frustum.far;
   const numberOfCascades = shadowMap._numberOfCascades;
+  const clipSpaceConvention = shadowMap._context.clipSpaceConvention;
 
   // Split cascades. Use a mix of linear and log splits.
   let i;
@@ -395,7 +404,7 @@ function computeCascades(shadowMap, frameState) {
     cascadeSubFrustum.near = splits[i];
     cascadeSubFrustum.far = splits[i + 1];
     const viewProjection = Matrix4.multiply(
-      cascadeSubFrustum.projectionMatrix,
+      getProjectionMatrix(cascadeSubFrustum, clipSpaceConvention),
       sceneCamera.viewMatrix,
       scratchMatrix,
     );
@@ -424,8 +433,9 @@ function computeCascades(shadowMap, frameState) {
     );
 
     for (let k = 0; k < 8; ++k) {
-      const corner = Cartesian4.clone(
-        frustumCornersNDC[k],
+      const corner = getFrustumCorner(
+        k,
+        clipSpaceConvention,
         scratchFrustumCorners[k],
       );
       Matrix4.multiplyByVector(shadowMapMatrix, corner, corner);
@@ -481,10 +491,11 @@ const scratchTranslation = new Cartesian3();
 function fitShadowMapToScene(shadowMap, frameState) {
   const shadowMapCamera = shadowMap._shadowMapCamera;
   const sceneCamera = shadowMap._sceneCamera;
+  const clipSpaceConvention = shadowMap._context.clipSpaceConvention;
 
   // 1. First find a tight bounding box in light space that contains the entire camera frustum.
   const viewProjection = Matrix4.multiply(
-    sceneCamera.frustum.projectionMatrix,
+    getProjectionMatrix(sceneCamera.frustum, clipSpaceConvention),
     sceneCamera.viewMatrix,
     scratchMatrix,
   );
@@ -535,8 +546,9 @@ function fitShadowMapToScene(shadowMap, frameState) {
   );
 
   for (let i = 0; i < 8; ++i) {
-    const corner = Cartesian4.clone(
-      frustumCornersNDC[i],
+    const corner = getFrustumCorner(
+      i,
+      clipSpaceConvention,
       scratchFrustumCorners[i],
     );
     Matrix4.multiplyByVector(cameraToLight, corner, corner);

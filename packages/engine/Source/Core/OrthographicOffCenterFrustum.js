@@ -1,11 +1,14 @@
 import Cartesian3 from "./Cartesian3.js";
 import Cartesian4 from "./Cartesian4.js";
+import ClipSpaceConvention from "./ClipSpaceConvention.js";
 import CullingVolume from "./CullingVolume.js";
 import Frozen from "./Frozen.js";
 import defined from "./defined.js";
 import DeveloperError from "./DeveloperError.js";
 import CesiumMath from "./Math.js";
 import Matrix4 from "./Matrix4.js";
+
+/** @import { ClipSpaceConventionRecord } from "./ClipSpaceConvention.js" */
 
 /**
  * The viewing frustum is defined by 6 planes.
@@ -88,17 +91,9 @@ class OrthographicOffCenterFrustum {
     this._far = this.far;
 
     this._cullingVolume = new CullingVolume();
-    this._orthographicMatrix = new Matrix4();
-    // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — the cached projection bakes in
-    // the global `Matrix4._depthRangeType` ([-1,1] WebGL vs [0,1] WebGPU)
-    // at compute time. The WebGPU multi-frustum loop flips that type per
-    // frame, but in single-frustum SCENE2D the near/far/extent are stable,
-    // so without tracking the type here `update()` would skip the recompute
-    // and hand back a WebGL-range matrix to a WebGPU pass — putting every
-    // map-surface overlay (billboard/point/label) at NDC z ≈ 7.3, outside
-    // the [0,1] clip volume, so it's clipped away. Seeded undefined so the
-    // first `update()` always computes.
-    this._depthRangeType = undefined;
+    this._orthographicMatrices = [new Matrix4(), new Matrix4()];
+    this._projectionParameters = [{}, {}];
+    this._orthographicMatrix = this._orthographicMatrices[0];
   }
 
   /**
@@ -315,6 +310,7 @@ class OrthographicOffCenterFrustum {
     result._bottom = undefined;
     result._near = undefined;
     result._far = undefined;
+    result._projectionParameters = [{}, {}];
 
     return result;
   }
@@ -399,12 +395,25 @@ class OrthographicOffCenterFrustum {
    * @readonly
    */
   get projectionMatrix() {
-    update(this);
-    return this._orthographicMatrix;
+    return this.getProjectionMatrix(ClipSpaceConvention.WEBGL);
+  }
+
+  /**
+   * Gets the orthographic projection for an explicit clip-space convention.
+   * Public property access remains WebGL-compatible.
+   *
+   * @param {ClipSpaceConventionRecord} [clipSpaceConvention=ClipSpaceConvention.WEBGL] The target convention.
+   * @returns {Matrix4} The cached projection matrix.
+   * @private
+   */
+  getProjectionMatrix(clipSpaceConvention) {
+    clipSpaceConvention = ClipSpaceConvention.normalize(clipSpaceConvention);
+    update(this, clipSpaceConvention);
+    return this._orthographicMatrices[clipSpaceConvention.id];
   }
 }
 
-function update(frustum) {
+function update(frustum, clipSpaceConvention) {
   //>>includeStart('debug', pragmas.debug);
   if (
     !defined(frustum.right) ||
@@ -420,20 +429,19 @@ function update(frustum) {
   }
   //>>includeEnd('debug');
 
-  // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — recompute when the global clip-z
-  // depth-range type flips (WebGL [-1,1] ↔ WebGPU [0,1]) even if the
-  // near/far/extent are otherwise unchanged. `computeOrthographicOffCenter`
-  // bakes the active `Matrix4._depthRangeType` into the matrix, so a stale
-  // cache from a WebGL-range bake would otherwise be served to a WebGPU pass.
-  const depthRangeType = Matrix4._depthRangeType;
+  // Non-projection consumers such as getPixelDimensions historically call
+  // update without renderer state. Preserve that backend-neutral path with
+  // the public WebGL default while explicit render paths pass their context.
+  clipSpaceConvention = ClipSpaceConvention.normalize(clipSpaceConvention);
+  const conventionId = clipSpaceConvention.id;
+  const parameters = frustum._projectionParameters[conventionId];
   if (
-    frustum.top !== frustum._top ||
-    frustum.bottom !== frustum._bottom ||
-    frustum.left !== frustum._left ||
-    frustum.right !== frustum._right ||
-    frustum.near !== frustum._near ||
-    frustum.far !== frustum._far ||
-    depthRangeType !== frustum._depthRangeType
+    frustum.top !== parameters.top ||
+    frustum.bottom !== parameters.bottom ||
+    frustum.left !== parameters.left ||
+    frustum.right !== parameters.right ||
+    frustum.near !== parameters.near ||
+    frustum.far !== parameters.far
   ) {
     //>>includeStart('debug', pragmas.debug);
     if (frustum.left > frustum.right) {
@@ -455,15 +463,21 @@ function update(frustum) {
     frustum._bottom = frustum.bottom;
     frustum._near = frustum.near;
     frustum._far = frustum.far;
-    frustum._depthRangeType = depthRangeType;
-    frustum._orthographicMatrix = Matrix4.computeOrthographicOffCenter(
+    parameters.left = frustum.left;
+    parameters.right = frustum.right;
+    parameters.top = frustum.top;
+    parameters.bottom = frustum.bottom;
+    parameters.near = frustum.near;
+    parameters.far = frustum.far;
+    Matrix4.computeOrthographicOffCenter(
       frustum.left,
       frustum.right,
       frustum.bottom,
       frustum.top,
       frustum.near,
       frustum.far,
-      frustum._orthographicMatrix,
+      frustum._orthographicMatrices[conventionId],
+      clipSpaceConvention,
     );
   }
 }

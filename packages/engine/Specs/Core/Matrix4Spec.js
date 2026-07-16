@@ -1,6 +1,7 @@
 import {
   Cartesian3,
   Cartesian4,
+  ClipSpaceConvention,
   Math as CesiumMath,
   Matrix3,
   Matrix4,
@@ -907,6 +908,133 @@ describe("Core/Matrix4", function () {
       result,
     );
     expect(returnedResult).toEqual(expected);
+  });
+
+  function projectEyeDepth(matrix, eyeDepth) {
+    const eyeZ = -eyeDepth;
+    const clipZ = matrix[10] * eyeZ + matrix[14];
+    const clipW = matrix[11] * eyeZ + matrix[15];
+    return clipZ / clipW;
+  }
+
+  it("projection builders keep WebGL defaults and explicit depth conventions isolated", function () {
+    const near = 1.0;
+    const far = 10.0;
+    const builders = [
+      (convention) =>
+        Matrix4.computePerspectiveFieldOfView(
+          CesiumMath.PI_OVER_TWO,
+          1.5,
+          near,
+          far,
+          new Matrix4(),
+          convention,
+        ),
+      (convention) =>
+        Matrix4.computePerspectiveOffCenter(
+          -1.0,
+          2.0,
+          -0.5,
+          1.5,
+          near,
+          far,
+          new Matrix4(),
+          convention,
+        ),
+      (convention) =>
+        Matrix4.computeOrthographicOffCenter(
+          -1.0,
+          2.0,
+          -0.5,
+          1.5,
+          near,
+          far,
+          new Matrix4(),
+          convention,
+        ),
+    ];
+
+    for (const build of builders) {
+      const defaultMatrix = build(undefined);
+      const webglMatrix = build(ClipSpaceConvention.WEBGL);
+      const webgpuMatrix = build(ClipSpaceConvention.WEBGPU);
+      expect(defaultMatrix).toEqual(webglMatrix);
+      expect(projectEyeDepth(webglMatrix, near)).toEqualEpsilon(
+        -1.0,
+        CesiumMath.EPSILON14,
+      );
+      expect(projectEyeDepth(webgpuMatrix, near)).toEqualEpsilon(
+        0.0,
+        CesiumMath.EPSILON14,
+      );
+      expect(projectEyeDepth(webglMatrix, far)).toEqualEpsilon(
+        1.0,
+        CesiumMath.EPSILON14,
+      );
+      expect(projectEyeDepth(webgpuMatrix, far)).toEqualEpsilon(
+        1.0,
+        CesiumMath.EPSILON14,
+      );
+
+      // Alternate query order repeatedly. No call may inherit another
+      // renderer's convention through process-global state.
+      for (let i = 0; i < 32; i++) {
+        const first =
+          i % 2 === 0 ? ClipSpaceConvention.WEBGL : ClipSpaceConvention.WEBGPU;
+        const second =
+          i % 2 === 0 ? ClipSpaceConvention.WEBGPU : ClipSpaceConvention.WEBGL;
+        const firstExpected =
+          first === ClipSpaceConvention.WEBGL ? webglMatrix : webgpuMatrix;
+        const secondExpected =
+          second === ClipSpaceConvention.WEBGL ? webglMatrix : webgpuMatrix;
+        expect(build(first)).toEqual(firstExpected);
+        expect(build(second)).toEqual(secondExpected);
+      }
+    }
+  });
+
+  it("infinite perspective uses the explicit convention", function () {
+    const near = 2.0;
+    const webgl = Matrix4.computeInfinitePerspectiveOffCenter(
+      -1.0,
+      1.0,
+      -1.0,
+      1.0,
+      near,
+      new Matrix4(),
+      ClipSpaceConvention.WEBGL,
+    );
+    const webgpu = Matrix4.computeInfinitePerspectiveOffCenter(
+      -1.0,
+      1.0,
+      -1.0,
+      1.0,
+      near,
+      new Matrix4(),
+      ClipSpaceConvention.WEBGPU,
+    );
+    expect(projectEyeDepth(webgl, near)).toEqualEpsilon(
+      -1.0,
+      CesiumMath.EPSILON14,
+    );
+    expect(projectEyeDepth(webgpu, near)).toEqualEpsilon(
+      0.0,
+      CesiumMath.EPSILON14,
+    );
+    expect(projectEyeDepth(webgl, 1.0e12)).toEqualEpsilon(
+      1.0,
+      CesiumMath.EPSILON10,
+    );
+    expect(projectEyeDepth(webgpu, 1.0e12)).toEqualEpsilon(
+      1.0,
+      CesiumMath.EPSILON10,
+    );
+  });
+
+  it("rejects non-canonical clip-space conventions in all builds", function () {
+    expect(function () {
+      ClipSpaceConvention.normalize({ depthRangeZeroToOne: true });
+    }).toThrowDeveloperError();
   });
 
   it("toArray works without a result parameter", function () {

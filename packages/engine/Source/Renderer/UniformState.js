@@ -2,6 +2,7 @@ import BoundingRectangle from "../Core/BoundingRectangle.js";
 import Cartesian2 from "../Core/Cartesian2.js";
 import Cartesian3 from "../Core/Cartesian3.js";
 import Cartesian4 from "../Core/Cartesian4.js";
+import ClipSpaceConvention from "../Core/ClipSpaceConvention.js";
 import Color from "../Core/Color.js";
 import defined from "../Core/defined.js";
 import Ellipsoid from "../Core/Ellipsoid.js";
@@ -51,7 +52,9 @@ const defaultLight = new SunLight();
  * @alias UniformState
  */
 class UniformState {
-  constructor() {
+  constructor(clipSpaceConvention) {
+    this._clipSpaceConvention =
+      ClipSpaceConvention.normalize(clipSpaceConvention);
     /** @type {Texture} */
     this.globeDepthTexture = undefined;
     /** @type {Texture} */
@@ -758,9 +761,17 @@ class UniformState {
    * @param {object} frustum The frustum to synchronize with.
    */
   updateFrustum(frustum) {
-    setProjection(this, frustum.projectionMatrix);
+    const projection = defined(frustum.getProjectionMatrix)
+      ? frustum.getProjectionMatrix(this._clipSpaceConvention)
+      : frustum.projectionMatrix;
+    setProjection(this, projection);
 
-    if (defined(frustum.infiniteProjectionMatrix)) {
+    if (defined(frustum.getInfiniteProjectionMatrix)) {
+      setInfiniteProjection(
+        this,
+        frustum.getInfiniteProjectionMatrix(this._clipSpaceConvention),
+      );
+    } else if (defined(frustum.infiniteProjectionMatrix)) {
       setInfiniteProjection(this, frustum.infiniteProjectionMatrix);
     }
     this._currentFrustum.x = frustum.near;

@@ -5,7 +5,6 @@ import defined from "../Core/defined.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import WebGLConstants from "../Core/WebGLConstants.js";
 import WindingOrder from "../Core/WindingOrder.js";
-import ContextLimits from "./ContextLimits.js";
 import freezeRenderState from "./freezeRenderState.js";
 
 function validateBlendEquation(blendEquation) {
@@ -191,17 +190,6 @@ class RenderState {
       : undefined;
 
     //>>includeStart('debug', pragmas.debug);
-    // Only validate lineWidth for WebGL contexts (where limits are initialized)
-    // WebGPU doesn't support lineWidth configuration
-    if (
-      ContextLimits.maximumAliasedLineWidth > 0 &&
-      (this.lineWidth < ContextLimits.minimumAliasedLineWidth ||
-        this.lineWidth > ContextLimits.maximumAliasedLineWidth)
-    ) {
-      throw new DeveloperError(
-        "renderState.lineWidth is out of range.  Check minimumAliasedLineWidth and maximumAliasedLineWidth.",
-      );
-    }
     if (!WindingOrder.validate(this.frontFace)) {
       throw new DeveloperError("Invalid renderState.frontFace.");
     }
@@ -328,22 +316,12 @@ class RenderState {
           "renderState.viewport.height must be greater than or equal to zero.",
         );
       }
-
-      if (this.viewport.width > ContextLimits.maximumViewportWidth) {
-        throw new DeveloperError(
-          `renderState.viewport.width must be less than or equal to the maximum viewport width (${ContextLimits.maximumViewportWidth.toString()}).  Check maximumViewportWidth.`,
-        );
-      }
-      if (this.viewport.height > ContextLimits.maximumViewportHeight) {
-        throw new DeveloperError(
-          `renderState.viewport.height must be less than or equal to the maximum viewport height (${ContextLimits.maximumViewportHeight.toString()}).  Check maximumViewportHeight.`,
-        );
-      }
     }
     //>>includeEnd('debug');
 
     this.id = 0;
     this._applyFunctions = [];
+    this._validatedCapabilities = new WeakSet();
   }
 
   /**
@@ -500,6 +478,46 @@ class RenderState {
     applyScissorTest(gl, renderState, passState);
     applyBlending(gl, renderState, passState);
     applyViewport(gl, renderState, passState);
+  }
+
+  /**
+   * Validates device-dependent state against the context that will consume it.
+   * RenderState objects are backend-neutral and may be shared, so constructor
+   * validation must not consult a process-global "last context" snapshot.
+   *
+   * @param {RenderState} renderState The state being applied.
+   * @param {GraphicsCapabilitiesRecord} capabilities Context-owned limits.
+   * @private
+   */
+  static validateForContext(renderState, capabilities) {
+    //>>includeStart('debug', pragmas.debug);
+    if (renderState._validatedCapabilities.has(capabilities)) {
+      return;
+    }
+    if (
+      renderState.lineWidth < capabilities.minimumAliasedLineWidth ||
+      renderState.lineWidth > capabilities.maximumAliasedLineWidth
+    ) {
+      throw new DeveloperError(
+        "renderState.lineWidth is out of range.  Check context.limits.minimumAliasedLineWidth and maximumAliasedLineWidth.",
+      );
+    }
+
+    const viewport = renderState.viewport;
+    if (defined(viewport)) {
+      if (viewport.width > capabilities.maximumViewportWidth) {
+        throw new DeveloperError(
+          `renderState.viewport.width must be less than or equal to the maximum viewport width (${capabilities.maximumViewportWidth.toString()}).  Check context.limits.maximumViewportWidth.`,
+        );
+      }
+      if (viewport.height > capabilities.maximumViewportHeight) {
+        throw new DeveloperError(
+          `renderState.viewport.height must be less than or equal to the maximum viewport height (${capabilities.maximumViewportHeight.toString()}).  Check context.limits.maximumViewportHeight.`,
+        );
+      }
+    }
+    renderState._validatedCapabilities.add(capabilities);
+    //>>includeEnd('debug');
   }
 
   static partialApply(

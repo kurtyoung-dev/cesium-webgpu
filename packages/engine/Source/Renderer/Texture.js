@@ -7,7 +7,6 @@ import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import CesiumMath from "../Core/Math.js";
 import PixelFormat from "../Core/PixelFormat.js";
-import ContextLimits from "./ContextLimits.js";
 import MipmapHint from "./MipmapHint.js";
 import PixelDatatype from "./PixelDatatype.js";
 import Sampler from "./Sampler.js";
@@ -96,17 +95,17 @@ class Texture {
 
     Check.typeOf.number.greaterThan("width", width, 0);
 
-    if (width > ContextLimits.maximumTextureSize) {
+    if (width > context.limits.maximumTextureSize) {
       throw new DeveloperError(
-        `Width must be less than or equal to the maximum texture size (${ContextLimits.maximumTextureSize}).  Check maximumTextureSize.`,
+        `Width must be less than or equal to the maximum texture size (${context.limits.maximumTextureSize}).  Check maximumTextureSize.`,
       );
     }
 
     Check.typeOf.number.greaterThan("height", height, 0);
 
-    if (height > ContextLimits.maximumTextureSize) {
+    if (height > context.limits.maximumTextureSize) {
       throw new DeveloperError(
-        `Height must be less than or equal to the maximum texture size (${ContextLimits.maximumTextureSize}).  Check maximumTextureSize.`,
+        `Height must be less than or equal to the maximum texture size (${context.limits.maximumTextureSize}).  Check maximumTextureSize.`,
       );
     }
 

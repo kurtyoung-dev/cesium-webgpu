@@ -4,7 +4,6 @@ import {
   Buffer,
   BufferUsage,
   Context,
-  ContextLimits,
   ClearCommand,
   PixelFormat,
   PixelDatatype,
@@ -43,80 +42,82 @@ describe(
 
     it("get maximumCombinedTextureImageUnits", function () {
       expect(
-        ContextLimits.maximumCombinedTextureImageUnits,
+        context.limits.maximumCombinedTextureImageUnits,
       ).toBeGreaterThanOrEqual(32);
     });
 
     it("get maximumCubeMapSize", function () {
-      expect(ContextLimits.maximumCubeMapSize).toBeGreaterThanOrEqual(2048);
+      expect(context.limits.maximumCubeMapSize).toBeGreaterThanOrEqual(2048);
     });
 
     it("get maximumFragmentUniformVectors", function () {
       expect(
-        ContextLimits.maximumFragmentUniformVectors,
+        context.limits.maximumFragmentUniformVectors,
       ).toBeGreaterThanOrEqual(224);
     });
 
     it("get maximumTextureImageUnits", function () {
-      expect(ContextLimits.maximumTextureImageUnits).toBeGreaterThanOrEqual(16);
+      expect(context.limits.maximumTextureImageUnits).toBeGreaterThanOrEqual(
+        16,
+      );
     });
 
     it("get maximumRenderbufferSize", function () {
-      expect(ContextLimits.maximumRenderbufferSize).toBeGreaterThanOrEqual(
+      expect(context.limits.maximumRenderbufferSize).toBeGreaterThanOrEqual(
         2048,
       );
     });
 
     it("get maximumTextureSize", function () {
-      expect(ContextLimits.maximumTextureSize).toBeGreaterThanOrEqual(2048);
+      expect(context.limits.maximumTextureSize).toBeGreaterThanOrEqual(2048);
     });
 
     it("get maximum3DTextureSize", function () {
-      expect(ContextLimits.maximum3DTextureSize).toBeGreaterThanOrEqual(256);
+      expect(context.limits.maximum3DTextureSize).toBeGreaterThanOrEqual(256);
     });
 
     it("get maximumVaryingVectors", function () {
-      expect(ContextLimits.maximumVaryingVectors).toBeGreaterThanOrEqual(15);
+      expect(context.limits.maximumVaryingVectors).toBeGreaterThanOrEqual(15);
     });
 
     it("get maximumVertexAttributes", function () {
-      expect(ContextLimits.maximumVertexAttributes).toBeGreaterThanOrEqual(16);
+      expect(context.limits.maximumVertexAttributes).toBeGreaterThanOrEqual(16);
     });
 
     it("get maximumVertexTextureImageUnits", function () {
       expect(
-        ContextLimits.maximumVertexTextureImageUnits,
+        context.limits.maximumVertexTextureImageUnits,
       ).toBeGreaterThanOrEqual(16);
     });
 
     it("get maximumVertexUniformVectors", function () {
-      expect(ContextLimits.maximumVertexUniformVectors).toBeGreaterThanOrEqual(
+      expect(context.limits.maximumVertexUniformVectors).toBeGreaterThanOrEqual(
         256,
       );
     });
 
     it("get minimumAliasedLineWidth", function () {
-      expect(ContextLimits.minimumAliasedLineWidth).toBeLessThanOrEqual(1);
+      expect(context.limits.minimumAliasedLineWidth).toBeLessThanOrEqual(1);
     });
 
     it("get maximumAliasedLineWidth", function () {
-      expect(ContextLimits.maximumAliasedLineWidth).toBeGreaterThanOrEqual(1);
+      expect(context.limits.maximumAliasedLineWidth).toBeGreaterThanOrEqual(1);
     });
 
     it("get minimumAliasedPointSize", function () {
-      expect(ContextLimits.minimumAliasedPointSize).toBeLessThanOrEqual(1);
+      expect(context.limits.minimumAliasedPointSize).toBeLessThanOrEqual(1);
     });
 
     it("get maximumAliasedPointSize", function () {
-      expect(ContextLimits.maximumAliasedPointSize).toBeGreaterThanOrEqual(1);
+      expect(context.limits.maximumAliasedPointSize).toBeGreaterThanOrEqual(1);
     });
 
     it("get maximumViewportWidth", function () {
-      expect(ContextLimits.maximumViewportWidth).toBeGreaterThan(0);
+      expect(context.limits.maximumViewportWidth).toBeGreaterThan(0);
     });
 
     it("get maximumViewportHeight", function () {
-      expect(ContextLimits.maximumViewportHeight).toBeGreaterThan(0);
+      expect(context.limits.maximumViewportHeight).toBeGreaterThan(0);
     });
 
     it("gets antialias", function () {
@@ -196,10 +197,10 @@ describe(
     it("gets maximum texture filter anisotropy", function () {
       if (context.textureFilterAnisotropic) {
         expect(
-          ContextLimits.maximumTextureFilterAnisotropy,
+          context.limits.maximumTextureFilterAnisotropy,
         ).toBeGreaterThanOrEqual(2);
       } else {
-        expect(ContextLimits.maximumTextureFilterAnisotropy).toEqual(1);
+        expect(context.limits.maximumTextureFilterAnisotropy).toEqual(1);
       }
     });
 
@@ -256,17 +257,19 @@ describe(
 
     it("get the maximum number of draw buffers", function () {
       if (context.drawBuffers) {
-        expect(ContextLimits.maximumDrawBuffers).toBeGreaterThanOrEqual(1);
+        expect(context.limits.maximumDrawBuffers).toBeGreaterThanOrEqual(1);
       } else {
-        expect(ContextLimits.maximumDrawBuffers).toEqual(1);
+        expect(context.limits.maximumDrawBuffers).toEqual(1);
       }
     });
 
     it("get the maximum number of color attachments", function () {
       if (context.drawBuffers) {
-        expect(ContextLimits.maximumColorAttachments).toBeGreaterThanOrEqual(4);
+        expect(context.limits.maximumColorAttachments).toBeGreaterThanOrEqual(
+          4,
+        );
       } else {
-        expect(ContextLimits.maximumColorAttachments).toEqual(1);
+        expect(context.limits.maximumColorAttachments).toEqual(1);
       }
     });
 

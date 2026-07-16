@@ -13,7 +13,6 @@ import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import Geometry from "../Core/Geometry.js";
 import GeometryAttribute from "../Core/GeometryAttribute.js";
-import loadKTX2 from "../Core/loadKTX2.js";
 import Matrix4 from "../Core/Matrix4.js";
 import PixelFormat from "../Core/PixelFormat.js";
 import PrimitiveType from "../Core/PrimitiveType.js";
@@ -22,9 +21,9 @@ import WebGLConstants from "../Core/WebGLConstants.js";
 import ViewportQuadVS from "../Shaders/ViewportQuadVS.js";
 import BufferUsage from "./BufferUsage.js";
 import ClearCommand from "./ClearCommand.js";
-import ContextLimits from "./ContextLimits.js";
 import CubeMap from "./CubeMap.js";
 import DrawCommand from "./DrawCommand.js";
+import GraphicsCapabilities from "./GraphicsCapabilities.js";
 import PassState from "./PassState.js";
 import PixelDatatype from "./PixelDatatype.js";
 import RenderState from "./RenderState.js";
@@ -221,6 +220,7 @@ function validateFramebuffer(context) {
 }
 
 function applyRenderState(context, renderState, passState, clear) {
+  RenderState.validateForContext(renderState, context.limits);
   const previousRenderState = context._currentRenderState;
   const previousPassState = context._currentPassState;
   context._currentRenderState = renderState;
@@ -441,64 +441,56 @@ class Context extends GraphicsContext {
 
     this._stencilBits = gl.getParameter(gl.STENCIL_BITS);
 
-    ContextLimits._maximumCombinedTextureImageUnits = gl.getParameter(
-      gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS,
-    );
-    ContextLimits._maximumCubeMapSize = gl.getParameter(
-      gl.MAX_CUBE_MAP_TEXTURE_SIZE,
-    );
-    ContextLimits._maximumFragmentUniformVectors = gl.getParameter(
-      gl.MAX_FRAGMENT_UNIFORM_VECTORS,
-    );
-    ContextLimits._maximumTextureImageUnits = gl.getParameter(
-      gl.MAX_TEXTURE_IMAGE_UNITS,
-    );
-    ContextLimits._maximumRenderbufferSize = gl.getParameter(
-      gl.MAX_RENDERBUFFER_SIZE,
-    );
-    ContextLimits._maximumTextureSize = gl.getParameter(gl.MAX_TEXTURE_SIZE);
-    ContextLimits._maximum3DTextureSize = gl.getParameter(
-      gl.MAX_3D_TEXTURE_SIZE,
-    );
-    ContextLimits._maximumVaryingVectors = gl.getParameter(
-      gl.MAX_VARYING_VECTORS,
-    );
-    ContextLimits._maximumVertexAttributes = gl.getParameter(
-      gl.MAX_VERTEX_ATTRIBS,
-    );
-    ContextLimits._maximumVertexTextureImageUnits = gl.getParameter(
-      gl.MAX_VERTEX_TEXTURE_IMAGE_UNITS,
-    );
-    ContextLimits._maximumVertexUniformVectors = gl.getParameter(
-      gl.MAX_VERTEX_UNIFORM_VECTORS,
-    );
-
-    ContextLimits._maximumSamples = this._webgl2
-      ? gl.getParameter(gl.MAX_SAMPLES)
-      : 0;
+    const capabilityOptions = {
+      maximumCombinedTextureImageUnits: gl.getParameter(
+        gl.MAX_COMBINED_TEXTURE_IMAGE_UNITS,
+      ),
+      maximumCubeMapSize: gl.getParameter(gl.MAX_CUBE_MAP_TEXTURE_SIZE),
+      maximumFragmentUniformVectors: gl.getParameter(
+        gl.MAX_FRAGMENT_UNIFORM_VECTORS,
+      ),
+      maximumTextureImageUnits: gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS),
+      maximumRenderbufferSize: gl.getParameter(gl.MAX_RENDERBUFFER_SIZE),
+      maximumTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE),
+      maximum3DTextureSize: webgl2
+        ? gl.getParameter(gl.MAX_3D_TEXTURE_SIZE)
+        : 0,
+      maximumArrayTextureLayers: webgl2
+        ? gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS)
+        : 0,
+      maximumVaryingVectors: gl.getParameter(gl.MAX_VARYING_VECTORS),
+      maximumVertexAttributes: gl.getParameter(gl.MAX_VERTEX_ATTRIBS),
+      maximumVertexTextureImageUnits: gl.getParameter(
+        gl.MAX_VERTEX_TEXTURE_IMAGE_UNITS,
+      ),
+      maximumVertexUniformVectors: gl.getParameter(
+        gl.MAX_VERTEX_UNIFORM_VECTORS,
+      ),
+      maximumSamples: webgl2 ? gl.getParameter(gl.MAX_SAMPLES) : 0,
+    };
 
     const aliasedLineWidthRange = gl.getParameter(gl.ALIASED_LINE_WIDTH_RANGE); // must include 1
-    ContextLimits._minimumAliasedLineWidth = aliasedLineWidthRange[0];
-    ContextLimits._maximumAliasedLineWidth = aliasedLineWidthRange[1];
+    capabilityOptions.minimumAliasedLineWidth = aliasedLineWidthRange[0];
+    capabilityOptions.maximumAliasedLineWidth = aliasedLineWidthRange[1];
 
     const aliasedPointSizeRange = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE); // must include 1
-    ContextLimits._minimumAliasedPointSize = aliasedPointSizeRange[0];
-    ContextLimits._maximumAliasedPointSize = aliasedPointSizeRange[1];
+    capabilityOptions.minimumAliasedPointSize = aliasedPointSizeRange[0];
+    capabilityOptions.maximumAliasedPointSize = aliasedPointSizeRange[1];
 
     const maximumViewportDimensions = gl.getParameter(gl.MAX_VIEWPORT_DIMS);
-    ContextLimits._maximumViewportWidth = maximumViewportDimensions[0];
-    ContextLimits._maximumViewportHeight = maximumViewportDimensions[1];
+    capabilityOptions.maximumViewportWidth = maximumViewportDimensions[0];
+    capabilityOptions.maximumViewportHeight = maximumViewportDimensions[1];
 
     const highpFloat = gl.getShaderPrecisionFormat(
       gl.FRAGMENT_SHADER,
       gl.HIGH_FLOAT,
     );
-    ContextLimits._highpFloatSupported = highpFloat.precision !== 0;
+    capabilityOptions.highpFloatSupported = highpFloat.precision !== 0;
     const highpInt = gl.getShaderPrecisionFormat(
       gl.FRAGMENT_SHADER,
       gl.HIGH_INT,
     );
-    ContextLimits._highpIntSupported = highpInt.rangeMax !== 0;
+    capabilityOptions.highpIntSupported = highpInt.rangeMax !== 0;
 
     this._antialias = gl.getContextAttributes().antialias;
 
@@ -561,20 +553,9 @@ class Context extends GraphicsContext {
       "WEBKIT_WEBGL_compressed_texture_pvrtc",
     ]);
     this._astc = !!getExtension(gl, ["WEBGL_compressed_texture_astc"]);
-    this._etc = !!getExtension(gl, ["WEBG_compressed_texture_etc"]);
+    this._etc = !!getExtension(gl, ["WEBGL_compressed_texture_etc"]);
     this._etc1 = !!getExtension(gl, ["WEBGL_compressed_texture_etc1"]);
     this._bc7 = !!getExtension(gl, ["EXT_texture_compression_bptc"]);
-
-    // It is necessary to pass supported formats to loadKTX2
-    // because imagery layers don't have access to the context.
-    loadKTX2.setKTX2SupportedFormats(
-      this._s3tc,
-      this._pvrtc,
-      this._astc,
-      this._etc,
-      this._etc1,
-      this._bc7,
-    );
 
     const textureFilterAnisotropic = allowTextureFilterAnisotropic
       ? getExtension(gl, [
@@ -583,7 +564,7 @@ class Context extends GraphicsContext {
         ])
       : undefined;
     this._textureFilterAnisotropic = textureFilterAnisotropic;
-    ContextLimits._maximumTextureFilterAnisotropy = defined(
+    capabilityOptions.maximumTextureFilterAnisotropy = defined(
       textureFilterAnisotropic,
     )
       ? gl.getParameter(textureFilterAnisotropic.MAX_TEXTURE_MAX_ANISOTROPY_EXT)
@@ -701,18 +682,28 @@ class Context extends GraphicsContext {
     this._instancedArrays = !!instancedArrays;
     this._drawBuffers = !!drawBuffers;
 
-    ContextLimits._maximumDrawBuffers = this.drawBuffers
+    capabilityOptions.maximumDrawBuffers = this.drawBuffers
       ? gl.getParameter(WebGLConstants.MAX_DRAW_BUFFERS)
       : 1;
-    ContextLimits._maximumColorAttachments = this.drawBuffers
+    capabilityOptions.maximumColorAttachments = this.drawBuffers
       ? gl.getParameter(WebGLConstants.MAX_COLOR_ATTACHMENTS)
       : 1;
+
+    capabilityOptions.ktx2TranscodeTargets = {
+      s3tc: this._s3tc,
+      pvrtc: this._pvrtc,
+      astc: this._astc,
+      etc: this._etc,
+      etc1: this._etc1,
+      bc7: this._bc7,
+    };
+    this._graphicsCapabilities = GraphicsCapabilities.create(capabilityOptions);
 
     this._clearColor = new Color(0.0, 0.0, 0.0, 0.0);
     this._clearDepth = 1.0;
     this._clearStencil = 0;
 
-    const us = new UniformState();
+    const us = new UniformState(this.clipSpaceConvention);
     const ps = new PassState(this);
     const rs = RenderState.fromCache();
 
@@ -735,7 +726,7 @@ class Context extends GraphicsContext {
     // Vertex attribute divisor state cache. Workaround for ANGLE (also look at VertexArray.setVertexAttribDivisor)
     this._vertexAttribDivisors = [];
     this._previousDrawInstanced = false;
-    for (let i = 0; i < ContextLimits._maximumVertexAttributes; i++) {
+    for (let i = 0; i < this.limits.maximumVertexAttributes; i++) {
       this._vertexAttribDivisors.push(0);
     }
 
@@ -784,11 +775,11 @@ class Context extends GraphicsContext {
       FeatureRendererKey.STAR_FIELD,
       async () => {
         const mod = await import("./WebGLStarFieldRenderer.js");
-        this.registerFeatureRenderer(FeatureRendererKey.STAR_FIELD, {
+        return {
           update: mod.updateWebGLStarField,
           destroy: mod.destroyWebGLStarFieldResources,
           getStatistics: mod.getWebGLStarFieldStatistics,
-        });
+        };
       },
     );
 
@@ -1065,14 +1056,7 @@ class Context extends GraphicsContext {
    * @type {boolean}
    */
   get supportsBasis() {
-    return (
-      this._s3tc ||
-      this._pvrtc ||
-      this._astc ||
-      this._etc ||
-      this._etc1 ||
-      this._bc7
-    );
+    return this.graphicsCapabilities.supportsBasis;
   }
 
   /**
