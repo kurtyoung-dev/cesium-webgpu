@@ -116,7 +116,7 @@ export const GLOBE_FRAGMENT_DEBUG_MODES: ReadonlyArray<GlobeFragmentDebugMode> =
       name: "rayleigh-v",
       sentinel: 14.0e9,
       description:
-        "Per-vertex `v_atmosphereRayleighColor` varying (currently unused at orbit; kept for close-camera optimization)",
+        "Per-vertex `v_atmosphereRayleighColor` varying. Since C9-14 the VS per-vertex ground-atmosphere march runs ONLY while this or `mie-v` is active (tile.time in [13.5e9,15.5e9]); production shades ground atmosphere per-fragment, so activating this mode is what populates the varying.",
     },
     {
       name: "mie-v",

@@ -653,13 +653,15 @@ struct VertexOutput {
   // (the CSM branch is gated on SCENE3D in WebGPUContext).
   @location(5) v_positionRTE: vec3<f32>,
   // ─── Session 65 Batch 9: per-vertex ground-atmosphere scattering ───
-  // Output of the vertex-stage Nishita ray-march. The fragment shader
-  // applies the Rayleigh and Mie phase functions per-fragment (the Mie
-  // phase varies sharply with view angle so it must be evaluated per
-  // pixel) and modulates by the global light intensity. When the
-  // atmosphere is disabled (`atmosphereParams.w < 0.5`), the vertex
-  // shader skips the ray-march entirely and these stay zero — the
-  // fragment shader gates on the same flag.
+  // Output of the vertex-stage Nishita ray-march. Per C9-14 the fragment
+  // shader owns the production ground-atmosphere integration (per-fragment
+  // always, Batch 56), so these varyings feed ONLY the per-vertex debug
+  // visualizers (`tile.time ∈ [13.5e9,15.5e9]`); the vertex-stage march
+  // runs only in that debug window and otherwise leaves these zero. When
+  // active, the fragment shader still applies the Rayleigh and Mie phase
+  // functions per-fragment (the Mie phase varies sharply with view angle
+  // so it must be evaluated per pixel) and modulates by the global light
+  // intensity.
   @location(6) v_atmosphereRayleighColor: vec3<f32>,
   @location(7) v_atmosphereMieColor: vec3<f32>,
   @location(8) v_atmosphereOpacity: f32,
@@ -1374,7 +1376,25 @@ fn processVertex(position: vec3<f32>, textureCoordinates: vec2<f32>,
   out.v_atmosphereRayleighColor = vec3<f32>(0.0);
   out.v_atmosphereMieColor = vec3<f32>(0.0);
   out.v_atmosphereOpacity = 0.0;
-  if (camera.atmosphereParams.w > 0.5 && mode > 2.5) {
+  // C9-14 (FAR ground-atmosphere de-dup) — the fragment shader OWNS the
+  // production ground-atmosphere integration: `fragmentMain` recomputes
+  // scattering per-fragment via `computeAtmosphereScatteringGround`
+  // unconditionally (Batch 56 chose per-fragment-always to avoid the
+  // orbit-altitude mesh-pattern artifact the per-vertex fast-path
+  // produces). The only consumers of these v_atmosphere* varyings are the
+  // two per-vertex debug visualizers in `fragmentMain`
+  // (`tile.time ∈ [13.5e9, 15.5e9]`, written debug-build-only by
+  // `WebGPUGlobeFragmentDebug`). Running the up-to-16×4 per-vertex ray
+  // march every production frame therefore computes a result nothing
+  // reads — the "duplicate ground-atmosphere integration" flagged by
+  // C9-14. Gate the march on the same debug-visualizer window so exactly
+  // ONE stage owns the work per path: production (`tile.time < 1e6`) does
+  // the march per-fragment only; the per-vertex debug modes still march
+  // here so the visualizers keep showing real per-vertex scattering.
+  // Output stays byte-identical in production because the FS never reads
+  // the varyings outside those debug returns.
+  let perVertexAtmoDebugActive = tile.time > 13.5e9 && tile.time < 15.5e9;
+  if (perVertexAtmoDebugActive && camera.atmosphereParams.w > 0.5 && mode > 2.5) {
     // Session 65 Batch 38 — proper ground-atmosphere integration.
     // `atmosphereParams.w` carries the lighting mode:
     //   1.0 → dynamic lighting OFF → substitute normalize(positionWC)
@@ -4107,9 +4127,12 @@ fn fragmentMain(
     // on near-side vertices vs ~13Mm marches on far-side limb vertices,
     // interpolated linearly across the triangle → mesh-pattern artifact
     // overwriting imagery via `mix(color, draped, fadeAmount=1.0)`.
-    // We always do per-fragment here for parity at orbit; the per-vertex
-    // varyings remain in the VS so re-introducing the distance gate is
-    // a localized future optimization.
+    // We always do per-fragment here for parity at orbit. Per C9-14 the
+    // VS per-vertex march now runs ONLY when the per-vertex debug
+    // visualizers are active (`tile.time ∈ [13.5e9,15.5e9]`); in
+    // production the v_atmosphere* varyings stay zero and are never read
+    // outside those debug returns, so this per-fragment path is the sole
+    // owner of the production integration.
     var groundAtmoColor: vec3<f32>;
     var groundAtmoOpacity: f32 = atmosphereOpacity;
     var groundAtmoLightDir: vec3<f32> = vec3<f32>(0.0, 0.0, 1.0);
