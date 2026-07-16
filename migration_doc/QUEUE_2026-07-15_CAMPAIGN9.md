@@ -335,11 +335,17 @@ probe-first contracts. `DEFERRED_WORK.md` carries each item's full investigation
 
 ## Wave 8 — 2026-07-16 independent deep-dive additions (deduped vs Sol + prior passes)
 
+> **MOVED TO CAMPAIGN 10 (2026-07-16).** These W8-1..W8-10 rows are now the core of
+> [Campaign 10](QUEUE_2026-07-16_CAMPAIGN10.md) (as C10-01..C10-10, with the full execution guide in
+> [CAMPAIGN10_EXECUTION_GUIDE_2026-07-16.md](CAMPAIGN10_EXECUTION_GUIDE_2026-07-16.md)). They are NOT
+> Campaign-9 work — Campaign 9 closes at its C9-30 checkpoint and its open IDs (retained-terrain,
+> imagery-dedup, MRT, model-frontend, pick-fleet log-depth) transfer to Campaign 10 as fallout-intake
+> rows. The table below is retained as the original evidence trail only.
+
 Full rows, evidence, and quantification live in
 [PERF_ARCH_DEEP_DIVE_2026-07-16.md](PERF_ARCH_DEEP_DIVE_2026-07-16.md) (69 findings, 11 strata).
 The register's draft C9-3x numbers are renumbered here to avoid collision with existing rows.
-Highest-leverage first; none are active until the current 18-task slice completes or a gate
-decision pulls one forward.
+Highest-leverage first; superseded by the Campaign-10 queue above.
 
 | # | ID | Risk | Work (see register for full row) |
 | --- | --- | --- | --- |

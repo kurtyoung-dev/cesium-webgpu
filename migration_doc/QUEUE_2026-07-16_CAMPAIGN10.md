@@ -1,0 +1,304 @@
+# Campaign 10 — Performance Architecture Closure and Campaign-9 Fallout
+
+Prepared: 2026-07-16
+
+Status: **PREPARED / NOT LAUNCHED**
+
+Launch authority: **not yet given.** Campaign 10 is composed and gated but does NOT auto-run. Launch
+requires an explicit maintainer instruction, issued **after the currently-running Campaign-9 slice
+completes (or is halted)** and after the `C10-00B` fallout-intake sweep reconciles the tree as it
+actually stands at that moment. Until then this queue is a frozen plan; its live ledger (§3.2) rows
+are all **NOT STARTED**.
+
+Source plan:
+[Performance Architecture Deep Dive](PERF_ARCH_DEEP_DIVE_2026-07-16.md) (the 69-finding "W8"
+register) + the Campaign-9 fallout the running Wave-2 slice leaves behind
+([QUEUE_2026-07-15_CAMPAIGN9.md](QUEUE_2026-07-15_CAMPAIGN9.md) §3.2).
+
+> **Execution guidance:**
+> [CAMPAIGN10_EXECUTION_GUIDE_2026-07-16.md](CAMPAIGN10_EXECUTION_GUIDE_2026-07-16.md) carries the
+> engine/handoff mechanics, the fallout-intake procedure, per-task implementation walkthroughs,
+> verified code anchors, traps, and verification recipes. Workers read their task's guide section
+> (H1–H7) before implementing. Line anchors are hints — the tree moves; re-grep every symbol.
+
+Campaign 9 is frozen as historical evidence when C10 launches; every open C9 ID transfers here as a
+fallout-intake row (§4). This queue does not repeat closed work and does not silently activate its
+gated tail (§6).
+
+---
+
+## 1. Outcome and campaign rules
+
+Close the default-path performance architecture the W8 register mapped — collapse the 3D
+environment-command frustum floor, contain MSAA/attachment boundary bytes, kill redundant
+command/upload economics, cut boot/compile TTFF, and land the pick-fleet log-depth correctness that
+Campaign 9 left blocked — while preserving the complete WebGL/WebGPU feature and API surface and
+without regressing WebGL.
+
+Rules (**inherited verbatim from Campaign 9 §1 — do not weaken**):
+
+1. Never remove, hide, default-disable, bypass, or visually weaken a feature for a metric. Safety
+   containment is correctness work, not a performance win.
+2. Follow the WebGL globe architecture: WebGL and WebGPU consume the same backend-neutral
+   `QuadtreePrimitive`/`GlobeSurfaceTileProvider` selected tiles. Never replace terrain quadtree,
+   3D Tiles traversal, or voxel octree with the optional general `SceneOctree`; optimize their
+   post-selection work and give non-PVS effects explicit owners.
+3. Unknown attachment demand keeps MRT; unknown bounds execute the effect; unknown serial retains the
+   resource; uncertain GPU visibility uses the correct fallback. Unknown demand stays conservative —
+   never guess a skip.
+4. No absolute planetary ECEF `f32` reconstruction before camera subtraction, including previous
+   frames and GPU culling/LOD data.
+5. Node/Playwright and Microsoft Edge only for browser automation. The moving multi-altitude camera
+   track is mandatory; idle soak/FPS is not performance evidence.
+6. Land one concern per slice. Roll back the optimization, never the feature. Tests and counters remain.
+
+**Perf promotion rule (Campaign 9 §12.6, inherited verbatim).** An individual slice may raise a
+promoted-optimization banner only when, versus its on/off/restored oracle on the moving-altitude
+route, it improves a **named unsaturated stage p95 by ≥5%** OR exceeds **3× the measured run-to-run
+noise**, with no route-segment p99 regression and no WebGL regression beyond the predeclared budget.
+**A truthful miss with green mechanics (correctness oracles pass, structure changed as designed) is a
+VALID, COMPLETE result** — record the honest number in the ledger and claim no banner. Structural
+correctness/parity slices (the pick fleet, the frustum-count collapse to WebGL parity) land on their
+own oracle regardless of the timing delta.
+
+---
+
+## 2. MSAA ruling of record (maintainer, 2026-07-16)
+
+The MSAA boundary-bytes work (`C10-03`) is governed by an explicit maintainer ruling. It is recorded
+here so no worker re-litigates it:
+
+- **(b) Resolve-elision — RATIFIED, implement unconditionally.** Eager per-segment MSAA color
+  resolve is replaced by demand-driven "resolve-on-consume": scene-FB segments open without a resolve
+  target and a zero-draw resolve pass fires only before a consumer that reads resolved color. This is
+  redundancy elimination and lands independent of the ≥5%/>3×-noise promotion bar (it still ships
+  on/off/restored evidence).
+- **(d) Auto `msaaSamples = 1` when TAA is enabled — RATIFIED** as redundancy elimination. The
+  forcing mechanism **already exists in-tree** (Batch 234, `WebGPUSceneRenderer.ts:1402-1411`); this
+  is verification + a visual gate probe, NOT new plumbing. `scene.msaaSamples` is never mutated;
+  TAA-off restores the user value via drift detection.
+- **(c) Default `msaaSamples` 4→1 flip — EXPLICITLY NOT RATIFIED. Reserve lever only** (`C10-03R`).
+  It may be pulled ONLY if the `C10-30` default-path checkpoint misses target WITH
+  bandwidth-attributed evidence (GPU-timestamp + counter data implicating attachment traffic, not
+  CPU) AND a fresh maintainer sign-off is recorded in this ledger. Do not flip `Scene.js:488` in any
+  slice without both. MSAA-4 default is visual policy (Rule 1).
+
+---
+
+## 3. Gates
+
+Adapted (lighter) from the Campaign-9 A–G set to the four gates this campaign actually needs:
+
+| Gate | Required to pass | Stops promotion when |
+| --- | --- | --- |
+| A — launch seal / attribution | Fresh C10 launch seal on one clean hash; exact source/build identity; clean + API lanes on the moving-altitude route; deterministic offline boot; known-error ledger. The comparison anchor is the recorded `C9-30` clean-r5 artifact (or Gate-A `B8015811…` = WebGL 5.50 / WebGPU 7.51 ms as a labelled fallback if `C9-30` never ran). | A route is incomplete, rendering pauses, hashes differ, clean/instrumented data mix, or device errors are unexplained. |
+| B — bounded correctness / feature preservation | Every slice's own semantic + visual oracle green; the pick-fleet WebGL-parity matrix; frustum-count/env-pixel parity; byte-identical off-paths and kill switches. The Source-(c) standing reds (bare-globe interior, high-density drift, pickPosition convergence) tracked and pre-attributed. | A public result, feature, mode, depth/history contract, or visual is weakened; a standing red turns a NEW red. |
+| C — default hot path | Per-slice on/off/restored evidence on the moving-altitude clean + API lanes; ≥5% named-stage p95 or >3× noise for any banner; no route-segment p99 regression; no WebGL regression beyond the predeclared budget. | Improvement is within noise, a route segment regresses, or an unknown consumer is skipped. |
+| D — measured checkpoint (`C10-30`) | The W5 tranche checkpoint on one rebuilt hash vs the `C9-30`/Gate-A anchor: ≥10% whole-route + ≥15% near-ground WebGPU CPU-p95 OR >3× noise; feature-loss gate green; honest per-stage attribution + promote/iterate verdict recorded. | A lane is absent, historical evidence is overwritten, the anchor is re-derived on the new tree, or a new visual red appears. |
+
+R0/R1 infra, counters, probes, and structural-correctness slices may land before Gate B. The gated
+tail (§6) is not activated by any of these gates alone — it additionally requires the `C10-30`
+verdict AND fresh maintainer sign-off.
+
+### 3.1 Finding → task coverage
+
+| W8 register finding | Campaign 10 owner |
+| --- | --- |
+| S7-1 2-frusta env floor on every default 3D WebGPU frame | `C10-01` (anchor) |
+| S11-1 phantom all-discard TRANSLUCENT twin per batch-table primitive | `C10-02` |
+| S4-1/S4-2 eager per-segment MSAA resolve + boundary-bytes ceiling | `C10-03` (+ `C10-03R` reserve) |
+| S6-1/S11-2 synchronous main-thread splat comparator sort | `C10-04` |
+| S3-1 model material textures mip-0-locked (sample-bandwidth ~100×) | `C10-05` |
+| S8-1/S8-2 serial boot waterfall + never-wired prewarm | `C10-06` |
+| S8-3 132 sync `createRenderPipeline`, model/PP fully synchronous | `C10-07` |
+| S3-4/S3-5 runtime-flag model uber-shader (worst-path occupancy) | `C10-08` |
+| S6-2 full CPU re-upload of static instance arrays every TAA frame | `C10-09` |
+| S1-2 second full-commandList sweep per shadow map per frame | `C10-10` |
+| S7-3 pick FBO uniformly hyperbolic; far-field indiscriminable (C9 fallout) | `C10-11` → `C10-12` |
+| S7-3/§15 reversed-Z early-Z ceiling on 71 log-depth producers | `C10-13` spike → `C10-GT` (gated) |
+| §14 next-campaign seeds | §6 seed list |
+
+### 3.2 Live execution status
+
+Every task/gate not listed as started is **NOT STARTED**. Status vocabulary is identical to
+Campaign 9 §3.2: **IN PROGRESS · COMPLETE · PARTIAL / PAUSED · BLOCKED · DEFERRED · CONDITIONAL NOT
+TRIGGERED**. Every C10 task brief mandates: update your row here (add it if missing) with status +
+evidence, INCLUDED in your landed files. A missing ledger update is a landing defect. `C10-00B`
+pre-populates the C9-fallout intake rows (§4) into this ledger at intake time so nothing falls
+through the seam.
+
+| Task or gate | Status | Updated | Evidence / next action |
+| --- | --- | --- | --- |
+| Campaign 10 | **NOT STARTED** | 2026-07-16 | Prepared, not launched. Awaits maintainer launch after the running C9 slice completes + `C10-00B` sweep. |
+| Gate A | **NOT STARTED** | 2026-07-16 | Fresh launch seal + anchor identification pending launch. |
+| Gate B | **NOT STARTED** | 2026-07-16 | — |
+| Gate C | **NOT STARTED** | 2026-07-16 | — |
+| Gate D (`C10-30`) | **NOT STARTED** | 2026-07-16 | Anchor = recorded `C9-30` clean-r5 artifact or Gate-A fallback. |
+| `C10-00-ENGINE-HANDOFF-AND-SCRIPT-GEN` | **NOT STARTED** | 2026-07-16 | Fork `campaign-9-resume.js` → `campaign-10.js`; create this queue. |
+| `C10-00B-C9-FALLOUT-INTAKE-SWEEP` | **NOT STARTED** | 2026-07-16 | Four-source sweep at C9-slice completion; seeds §4 rows into §3.2. |
+| `C10-01-ENV-COMMAND-FRUSTUM-BINNING` | **NOT STARTED** | 2026-07-16 | Anchor. Guide H1. |
+| `C10-02-TILES-STYLE-COMMAND-ECONOMICS` | **NOT STARTED** | 2026-07-16 | Guide H2. |
+| `C10-03-MSAA-BOUNDARY-BYTES` | **NOT STARTED** | 2026-07-16 | Guide H3. Ruling §2. |
+| `C10-03R-MSAA-DEFAULT-FLIP-RESERVE` | **CONDITIONAL NOT TRIGGERED** | 2026-07-16 | Reserve lever; needs checkpoint-miss + sign-off. |
+| `C10-04-SPLAT-ASYNC-SORT` | **NOT STARTED** | 2026-07-16 | Guide H4. STOP-AND-BLOCK: production `_splatData` producer. |
+| `C10-05-MODEL-TEXTURE-MIP-CHAIN` | **NOT STARTED** | 2026-07-16 | Guide H4. |
+| `C10-06-TTFF-BOOT-CONCURRENCY-AND-PREWARM` | **NOT STARTED** | 2026-07-16 | Guide H5. |
+| `C10-07-ASYNC-MODEL-PIPELINES` | **NOT STARTED** | 2026-07-16 | Guide H5. Deps `C10-06`. |
+| `C10-08-MODEL-SHADER-SPECIALIZATION-AXES` | **NOT STARTED** | 2026-07-16 | Guide H5. Deps `C10-07`. Bit register nearly full. |
+| `C10-09-VELOCITY-PREV-BUFFER-GPU-COPY` | **NOT STARTED** | 2026-07-16 | Guide H2. |
+| `C10-10-SHADOW-CAST-SINGLE-SWEEP` | **NOT STARTED** | 2026-07-16 | Guide H2. |
+| `C10-11-PICK-FLEET-LOG-DEPTH` | **NOT STARTED** | 2026-07-16 | Guide H6. Closes C9 fallout `NEW-WEBGPU-PICK-FLEET-LOG-DEPTH`. |
+| `C10-12-PICK-DEPTH-PLANE-GATE-FLIP` | **NOT STARTED** | 2026-07-16 | Guide H6. Deps `C10-11`. Closes `C9-02B` + audits `P0-1`. |
+| `C10-13-REVERSED-Z-EARLYZ-SPIKE` | **NOT STARTED** | 2026-07-16 | Guide H1 gated-tail dossier, Gate 2. Measurement-only; gates `C10-GT`. |
+| `C10-30-DEFAULT-PATH-PERFORMANCE-CHECKPOINT` | **NOT STARTED** | 2026-07-16 | Guide H7 Part D. W5 gate. |
+| `C10-GT-REVERSED-Z-SLICE-B` | **DEFERRED** | 2026-07-16 | Gated tail; do not schedule. Guide H1 dossier. |
+
+---
+
+## 4. Campaign-9 fallout intake
+
+Run the **C9-FALLOUT INTAKE procedure** (`C10-00B`) ONCE, at the moment the running Campaign-9
+Wave-2 slice completes or is halted, BEFORE launching C10. It is the load-bearing bridge: it converts
+everything C9 left unfinished into owned C10 intake rows so nothing falls through the seam. Sweep
+**four sources** (full procedure: guide H7 Part C):
+
+- **(a) C9 run journal** (`results[]` of run `wf_f6cb6b3b-927`): intake every
+  BLOCKED / FAILED / REVERTED / SKIPPED-DEP / **LAND-INCOMPLETE**. Resolve any unpushed/unstaged
+  commits FIRST (`git log origin/main..main`, `git status`) — that is invisible debt.
+- **(b) C9 §3.2 ledger** (`QUEUE_2026-07-15_CAMPAIGN9.md`, top-to-bottom): every non-COMPLETE row is
+  a fallout candidate. Known standing candidates seeded below.
+- **(c) uncommitted working tree** (`git status --porcelain`): leave WIP C9 still owns; salvage +
+  clean WIP C9 abandoned (salvage playbook, guide H7 Part B) so C10 launches on a clean tree
+  (`npx tsc --noEmit` green).
+- **(d) the `C9-30` checkpoint verdict**: if C9's own checkpoint ran and MISSED, its per-stage
+  attribution reorders C10 waves (the stage carrying the most unrecovered cost names the highest
+  C10 lever). If it PASSED, C10 is pure follow-through and the wave order below stands.
+
+Each hit becomes one §3.2 row (status NOT STARTED) with an evidence pointer and a wave/seed
+disposition. Seeded known fallout (re-verify at intake — C9 is running):
+
+| Fallout item | Source | Disposition |
+| --- | --- | --- |
+| `NEW-WEBGPU-PICK-FLEET-LOG-DEPTH` (NOT STARTED — the ~15-entry fleet prerequisite) | (b) | **W4 → owned by `C10-11`** |
+| `NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT` (PARTIAL/PAUSED — scene half landed Batch 673, pick half re-blocked) | (b) | **W4 → its closure + `C9-02B` closure ride `C10-12`** |
+| `C9-02B-DEPTH-PLANE-MULTIFRUSTUM-UNIFORM-RING` (PARTIAL/PAUSED — acceptance blocked behind the fleet) | (b) | **closes under `C10-12`** |
+| `NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE` residue (`…BUFFER-PRIMITIVE-PICK-DISPATCH-PARITY`, `…SCENE-PASS-MSAA-FLIP-TRANSITION`, `…COMPUTE-INSTANCE-PICK-INDEX-MIRROR`, `…ASYNC-PICK-PIPELINE-READINESS-CONTRACT`, `NEW-COLLECTION-PICK-2DCV-PIPELINE-KEY-PARITY`) | (b) | **W4 correctness riders** (own oracle, no metric) |
+| `NEW-WEBGPU-PICKPOSITION-CONVERGENCE-REGRESSION` + bare-globe black-interior bimodal (standing gate red, predates campaign) | (b) | **correctness row; gates `C10-30` feature-loss check.** Highest-attention. |
+| `NEW-HIGH-DENSITY-SPHERES-CROSS-BACKEND-DRIFT` (standing visual-gate red) | (b) | **correctness row; gates `C10-30`.** |
+| `NEW-WEBGPU-CELESTIAL-RETAINED-RESOURCES`, `NEW-WEBGPU-STARFIELD-SINGLE-SUBMISSION` (WebGPU-only per-frame celestial waste C9-06 deferred) | (b) | **W1 cheap-rider candidates** |
+| `NEW-WEBGPU-DEBUG-DEPTH-PLANE-GATE-PARITY`, `NEW-WEBGPU-POINT-BLENDOPTION-SYNC` (small parity gaps) | (b) | cheap correctness intake |
+| `NEW-WORKSPACE-SPEC-BUNDLE-FRESHNESS` (stale-spec Karma trap) | (b) | tooling row; workaround (explicit `npm run build --workspace @cesium/engine` before focused test) copied into every C10 brief running Jasmine |
+| `C9-08` octree-persistence, `C9-16` enabled-multi-frustum evidence (deferred remainders) | (b) | seeds unless a C10 task needs them |
+| **C9 run-outcome sweep placeholder** — whatever `results[]` reports at C9-slice completion (BLOCKED/FAILED/REVERTED/SKIPPED-DEP/LAND-INCOMPLETE), plus any dirty-tree WIP | (a)/(c) | **filled at intake time by `C10-00B`; wave/seed per dependency** |
+
+**Output:** the seeded §3.2 ledger + a one-paragraph launch note ("C9 landed X/N; fallout intaken as
+M rows; C9-30 verdict = pass|iterate; C10 wave order adjusted by <attribution>") presented to the
+maintainer before launch, with a `git branch -a` inventory.
+
+---
+
+## 5. Waves and queue rows
+
+Waves are executed **strictly sequentially inside the engine loop** — "wave" is a planning grouping,
+not concurrency. Order within a wave is `TASKS` array order. `C10-00`/`C10-00B` run before W1 as
+infra/gate setup. Rationale (guide H7 Part A): land the risk-free structural ×2 anchor first, then
+cheap high-leverage riders with no dep on it, then the bandwidth family, then the internally-ordered
+boot/compile chain, then the pick-fleet correctness, then measure.
+
+**Wave-8 (register) → Campaign-10 ID mapping.** The register's §13 proposed the W8 rows as
+`C9-40…C9-49`; those numbers collided with in-flight C9 rows, so C10 renumbers them `C10-01…C10-10`
+ordinally. Pick-fleet (`C10-11`/`C10-12`) is C9 fallout, not a W8 row; reversed-Z (`C10-13`/`C10-GT`)
+is register §15.
+
+| Register W8 row | Proposed C9 ID | Campaign-10 ID | Guide |
+| --- | --- | --- | --- |
+| W8-1 ENV-COMMAND-FRUSTUM-BINNING | C9-40 (verified) | `C10-01` | H1 |
+| W8-2 TILES-STYLE-COMMAND-ECONOMICS | C9-41 (C9-34 proposed owner) | `C10-02` | H2 |
+| W8-3 MSAA-BOUNDARY-BYTES-CONTAINMENT | C9-42 (verified) | `C10-03` | H3 |
+| W8-4 SPLAT-ASYNC-SORT | C9-43 (verified) | `C10-04` | H4 |
+| W8-5 MODEL-TEXTURE-MIP-CHAIN | C9-44 (verified) | `C10-05` | H4 |
+| W8-6 TTFF-BOOT-CONCURRENCY-AND-PREWARM | C9-45 | `C10-06` | H5 |
+| W8-7 ASYNC-MODEL-PIPELINES | C9-46 | `C10-07` | H5 |
+| W8-8 MODEL-SHADER-SPECIALIZATION-AXES | C9-47 | `C10-08` | H5 |
+| W8-9 VELOCITY-PREV-BUFFER-GPU-COPY | C9-48 (C9-38 proposed owner) | `C10-09` | H2 |
+| W8-10 SHADOW-CAST-SINGLE-SWEEP | C9-49 (NEW owner) | `C10-10` | H2 |
+
+### Infra / gate rows (run before W1; `C10-30` at W5)
+
+| ID | Pri | Effort | Work / acceptance |
+| --- | --- | --- | --- |
+| `C10-00-ENGINE-HANDOFF-AND-SCRIPT-GEN` | R0 / infra | S | Fork `.claude/workflows/campaign-9-resume.js` → `campaign-10.js`: CHARTER (fix the stale 24-bit-mask sentence → 40-bit, safe on a fresh launch), schemas, all five prompt builders, `safeAgent`, and the per-task loop BYTE-IDENTICAL; replace `meta`, splice the C10 `TASKS` (wave order below, each brief carrying the C9 hard-rules block + this queue/register/cluster-guide pointers + the promotion rule + ledger mandate + verify-premise-first), keep `RESEARCH=[]`. Assign `model:'opus'` to every task with a landed cluster guide; consider `auditModel:'fable'` on shader-math tasks (`C10-01`, `C10-11`). Create this queue doc (mirror C9 §1/§3/§3.2). Accept: `node --check` passes; forbidden-pattern scan clean (`while(true)`/`Date.now(`/`Math.random(`/unbounded recursion/bare `await agent(`); DAG validated (every `deps` id exists, no cycle, wave chain intact); diff-vs-pristine shows ONLY meta/TASKS/context-docs changes; batch numbering left to the land agent (monotonic from git log, no reset). |
+| `C10-00B-C9-FALLOUT-INTAKE-SWEEP` | R0 / gate | S | At C9-slice completion, sweep the four sources (§4) and produce the seeded §3.2 ledger + launch note. Resolve any LAND-INCOMPLETE unpushed commits FIRST; salvage + clean abandoned WIP so C10 launches on a clean tree (`tsc` green); if `C9-30` missed, apply its per-stage attribution to the wave order. Accept: every fallout item has a §3.2 row (status + evidence + wave/seed disposition); tree clean at launch; launch note presented to the maintainer with branch inventory. |
+| `C10-30-DEFAULT-PATH-PERFORMANCE-CHECKPOINT` | R0 / gate (W5) | M | Measurement-only. Rebuild one hash (`npx gulp build`, clean tree). Predeclare the anchor (**the recorded `C9-30` clean-r5 artifact**, or Gate-A `B8015811…` = WebGL 5.50 / WebGPU 7.51 ms as a labelled fallback if `C9-30` never ran — **never re-derive a fresh baseline on the new tree**) + WebGL budget + noise rule in the §3.2 row. Run clean then API lane, `--workload moving-camera-altitude-track-3d --repetitions 5 --renderer both`, fresh process, offline boot, new artifact names (`campaign10-c10-30-checkpoint-{clean,api}-r5-<DATE>.json`, never overwrite). Accept/PASS: both artifacts same `runtimeBundle.sha256`, `result:"pass"`, 10/10 runs `quality:"clean"`, all 8 segments ≥30 samples, 0 page/device errors, 0 externalRequests, both aggregates `stable:true`; combined tranche ≥10% whole-route + ≥15% near-ground (seg 5+6) WebGPU CPU-p95 vs anchor OR >3× noise, no route-segment p99 regression either backend, no WebGL regression past budget, feature-loss gate green (standing reds pre-attributed, NO new red). A truthful ≥10%/≥15% MISS with all mechanics green = VALID COMPLETE = record "iterate" verdict + per-stage attribution + gated-tail recommendation. Ledger the verdict + numbers + artifact names; commit doc-only; never stage `Tools/visual-regression/output/`. |
+
+### Wave 1 — anchor + cheap high-leverage riders
+
+| ID | Pri | Effort | Work / acceptance |
+| --- | --- | --- | --- |
+| `C10-01-ENV-COMMAND-FRUSTUM-BINNING` | P0 (campaign anchor) | M | Stop BV-less `Pass.ENVIRONMENT` commands (FIVE push sites: SkyAtmosphere shell `WebGPUSkyAtmosphereRenderer.js:1354` + fullscreen `:1333`, Sun `WebGPUEnvironmentRenderer.js:621`, Moon `:1119`, StarField `WebGPUStarFieldRenderer.ts:626`) from widening near/far in `View.createPotentiallyVisibleSet` (View.js:292-298): pass-keyed exclusion + sky-only fallback (`near > far && sawEnvironmentNoBV` → camera-range window) before `updateFrustums` (View.js:320); env commands still bin and execute once in the farthest frustum; Batch-247 dedupe byte-untouched; `numFrustums` added to `getDebugSnapshot`. JS-only, zero shader changes. Accept: new `probe-frustum-count-3d.mjs` shows WebGPU `numberOfFrustums === 1 === WebGL` at 18,000 km/500 km/300 m with sun/moon/stars/atmosphere pixels intact and sky-only leg unchanged (PNGs read); capture-and-diff battery + `probe-2d-cv-modes` + `probe-2d-frustum-bins` + pick probes green; Karma Multifrustum/FrustumCommands green; moving-altitude clean lane ≥5 counterbalanced reps OFF/ON/RESTORED vs Gate-A anchor, delta honest (banner only if ≥5% named-stage p95 or >3× noise; **structural frustum parity is the landing bar regardless**). Rollback: single revert; probe + telemetry survive. |
+| `C10-09-VELOCITY-PREV-BUFFER-GPU-COPY` | R1 | M | Revision-skip + GPU self-copy for the TAA prev-instance-buffer identity case in the three renderers that CPU-re-upload static instance arrays every frame: PointCloud (`WebGPUPointCloudRenderer.ts:1736-1761`, default + LOD path), Gaussian splat (`WebGPUGaussianSplatRenderer.ts:1644-1665`), Cloud (`WebGPUCloudRenderer.ts:1421-1442`). Identity case (`prevInstanceData === instanceData`) seeds `prevInstanceBuffer` ONCE via `copyBufferToBuffer` then skips while `instanceDataRevision` is unchanged; animated distinct-array path unchanged; seed/count-change GPU-copy unchanged. Add `instanceDataRevision`/`prevBufferRevision`, bump at every content-write site, reset on realloc. Leave the private mid-frame submit alone (FAR-200 is a separate concern). Accept: static point/splat + TAA lane shows prev-buffer upload bytes/frame → 0 after seed (API instrumentation); velocity texture byte-identical (PNGs); animated `probe-timedynamic-pointcloud-load` still captures motion; moving-altitude on/off/restored, promote if ≥5% named-stage p95 or >3× noise. Each renderer independently revertable. |
+| `C10-10-SHADOW-CAST-SINGLE-SWEEP` | R1 | M | Fold shadow cast-candidate collection into the single PVS sweep: collect a per-frame caster sublist (`castShadows` in a shadowed pass, camera-visible OR camera-invisible-but-light-visible) during `View.createPotentiallyVisibleSet`, publish via `frameState.shadowState.casterCommands`; rewrite `SceneRenderer.insertShadowCastCommands` (`:782-824`) to iterate the sublist + do only light/cascade culling — no second full-`commandList` scan, no per-command `updateDerivedCommands`, no per-call `shadowedPasses` alloc/`.includes`. **INV-1 (critical): off-camera casters preserved** (collect BEFORE the camera-cull `continue`); **INV-2**: camera-INVISIBLE casters get `updateDerivedCommands` at collection time (their only build site). Backend-agnostic; guarded on `shadowsEnabled`. Accept: CSM scene with a caster leaving the frustum but still shadowing visible ground — WebGPU + WebGL shadow output pixel-identical before/after (PNGs — failure mode is a shadow popping out); off-camera casters still in `passes[].commandList`; default no-shadow route zero new cost; moving-altitude CSM+dense workload on/off/restored, honest-partial valid if below bar (default benchmark has no casters). Two files revert together. |
+| `C10-04-SPLAT-ASYNC-SORT` | R2 | M | Replace the synchronous main-thread comparator sort in `WebGPUGaussianSplatRenderer.maybeSortSplats` (`:906-987`, `Array.prototype.sort` `:974`, per-sort `Float64Array(count)` `:963`) with the shipped `GaussianSplatSorter.radixSortIndexes` WASM worker (the exact WebGL asset), consumed one-frame-stale into `sortedIndexBuffer`, filling the unused `sortRequestPending` scaffolding. **STOP-AND-BLOCK first:** trace the production `_splatData`/`_splatCount` producer (probe injects it; no JS assignment found — block if none exists). Feed a fresh transferred `Float32Array` positions copy + `view*modelMatrix`; reject results by (data-generation, request-id) tag; adopt the full WebGL cadence (≥3-frame interval AND position Δ≥1.0 OR angle Δ≥0.5°), not angle-only. Accept: `probe-splat-sort.mjs` all-green (back-to-front order still consumed, pick unchanged); continuous-orbit ≥1M-splat lane shows the periodic multi-hundred-ms main-thread hitches eliminated (off/on/restored, report p99 + max-long-task, sort on a worker thread); no comparator sort remains; no WGSL/buffer/bind-group change. Do NOT wire `WebGPUGPUSortKeysDispatcher` or touch velocity prev-buffers (`C10-09`). |
+
+### Wave 2 — bandwidth
+
+| ID | Pri | Effort | Work / acceptance |
+| --- | --- | --- | --- |
+| `C10-03-MSAA-BOUNDARY-BYTES` | P1 | M | Demand-driven MSAA color resolve for the scene FB (ruling §2 (b)+(d)): `getColorAttachments` gains a `resolve` option (default true), the three scene-FB open sites (`PassRedirect.ts:143`, `_resumeScenePass`, `_clearDepthStencil`) pass false, a context dirty flag keyed on C9-07's `_activePassTarget==="scene-framebuffer"`, and a zero-draw load/store/resolveTarget ensure pass runs before every resolved-color consumer (refraction capture, OIT composite, invert-class composite, BV debug, pre-post-process ALWAYS, debug/readback). Reuse C9-09 attachment-demand registry if it landed; else local flag marked fold-in. Accept: resolve-bearing passes/frame 10→exactly 1 on default globe (in-page `beginRenderPass` counter, JSON artifact), MSAA1 = 0 and byte-identical, default MSAA4 canvas byte-identical pre/post (0 px, frozen clock), HDR/resize/invert/transmission scenarios 0 device errors, capture-and-diff at C9-07 baseline status, moving-altitude clean+API both backends all 8 segments on/off/restored (CPU p95 flat; GPU delta honest vs noise), analytical ~330 MB/frame @1080p elision accounting cited. PLUS part (d) verification: Batch-234 TAA→samples-1 forcing intact (`WebGPUSceneRenderer.ts:1402-1411`), gate probe asserts effective 1 under `taaEnabled` + restore-on-off, `probe-taa-jitter` GATE PASS; flip-frame validation errors stash-attributed to `NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION` if pre-existing. No WGSL/ShaderDefine/pipeline changes; single-commit revert boundary. |
+| `C10-05-MODEL-TEXTURE-MIP-CHAIN` | R2 | M | Give glTF/3D-Tiles model material textures a real mip chain AND make the shader sample it (both prongs, same batch). Shader (`ModelPBRComplete.wgsl`): hoist `dpdx/dpdy(texCoord0/1)` at `fragmentMain` entry (`:2356`, before any non-uniform discard) and convert the ~30 **material** `textureSampleLevel(...,0.0)` sites (baseColor/normal/MR/specular/emissive/occlusion/clearcoat/sheen/transmission) to `textureSampleGrad` (Batch-57 pattern `GlobeTerrain.wgsl:3138-3151`); leave ALL data-lookup samples (batch/featureId/featurePick/edge/globeDepth/SDF/clipping) at LOD 0. Allocation: **trace which path real model textures take** — stub (`WebGPUModelRenderer.ts:1958` → `WebGLStubTexture.ts:289`, gated on `wantsMipmaps`) vs fallback (`:1985`, `mipLevelCount=1`) — allocate a full chain on the LIVE path; run `WebGPUMipmapGenerator` at upload through `ResourcePlan`/FAR-200 frame-owned submit (C9-12A precedent, NO private draw-path submit). Skip KTX2/compressed/pre-mipped (STOP-AND-BLOCK #2). Accept: magnified-texel close-up model probes byte-identical (`probe-model-pbr-ibl-parity`, `probe-model-color`); `probe-mipmap-check`/`probe-mip-debug` confirm a chain exists; distant city-tileset lane loses shimmer + matches WebGL trilinear (PNGs); `gpuPassCost` model-draw GPU p95 drops on the distant lane (off/on/restored, the ~100× sample-bandwidth win); +33% VRAM on newly-mipped uncompressed textures acknowledged, no residency budget (C9-15/FAR-200-S3) blown. |
+| `C10-02-TILES-STYLE-COMMAND-ECONOMICS` | R2 | M | Port the WebGL translucent-command economics onto the WebGPU model FR: emit the `Pass.TRANSLUCENT` twin only when the applied style mixes opacity, and suppress the opaque primary in the `ALL_TRANSLUCENT` case. Read `model.styleCommandsNeeded` fresh each frame (`StyleCommandsNeeded`, `ModelDrawCommand.js:135-160` is the gate to mirror); gate the dual-emission block (`WebGPUModelRenderer.ts:5966`) on `emitTranslucentTwin`; gate the primary push on `!suppressOpaquePrimary`. **INV-6 conservative:** `undefined` → emit twin (today's behavior). Do NOT touch the batch-texture force-create (`WebGPUModelFeatureId.js:287-297`) — separate slice. Verify `BatchTexture.translucentFeaturesLength` is maintained on the WebGPU path (T-3, highest-risk premise) before claiming INV-2. Accept: unstyled b3dm/photogrammetry tileset — tile-content translucent command count → 0, total command count ~halves, split-screen pixel-unchanged; subset-translucent style → twin reappears + correct semi-transparency (pixel-compare WebGL); all-translucent → only translucent emits (or PARTIAL residual opaque draw, still correct, named as follow-up); `drillPick` feature still resolves; moving-altitude tileset workload on/off/restored, promote if ≥5% p95 or >3× noise. Single-file revert (+ import). |
+
+### Wave 3 — boot / compile chain (land in order; hard dependency)
+
+| ID | Pri | Effort | Work / acceptance |
+| --- | --- | --- | --- |
+| `C10-06-TTFF-BOOT-CONCURRENCY-AND-PREWARM` | P1 | M | Three independently-committable sub-steps. (A) Kill the cheap serializers: delete the two dead awaits (`WebGPUContext.ts:1108-1113`, both no-op `initPrimitiveShaders`/`initCollectionShaders`), hoist the inline `WebGPUPrimitiveIndexUtils` import (`:1065`) off the critical path. (B) Adapter/chunk concurrency: prefetch `requestAdapter` (RendererType.ts adapter-prefetch cache preferred, else `Promise.all` in `ContextFactory.createWebGPU`) threaded into `WebGPUDevicePool.acquireDevice` as an optional `prefetchedAdapter`, conservative fallback on mismatch. (C) Real prewarm, fire-and-forget at init: `warmUpGlobeRenderer(context)` (the 2-variant GlobeTerrain prewarm the lazy `:858-865` path defers to frame 1) + wire `WebGPURenderPipelineCache.preloadBatch` for the deterministic set (globe depth, depth plane, PP identity/tonemap/FXAA, auto-exposure compute, sky atmosphere) via the same descriptor factories (INV-06-3 cache-key identity). Never await prewarm (catch-drop). Optional S8-4 lazify rider LAST/separate. Accept: TTFF oracle (C9-30 stack, deterministic-offline-boot or moving-altitude `--renderer both -r5` clean) — `rendererReady→firstFrame` WebGPU delta shrinks from **9.1×/+146 ms** by ≥5% named-stage p95, on/off/restored; cache-hit oracle (`pipelineStatus()` shows deterministic set as hits not created on frame 1 — T-06-a); byte-identical globe/sky/depth (PNGs); viewer boots WebGPU+WebGL 0 errors. |
+| `C10-07-ASYNC-MODEL-PIPELINES` | P1 | M | **Deps `C10-06`.** Propagate the globe async pipeline pattern (`resolveGlobePipelineEntry`, `WebGPUGlobeSurfacePipelines.ts:586-621`) to the model + PP paths (132 sync `createRenderPipeline` vs 5 async today). Model `getPipeline` (`WebGPUModelPipelineCache.ts:3056`) → central-async resolve with tolerate-one-frame null-skip; **verify the draw executor SKIPS on null pipeline** (T-07-a, patch if absent). Keep the sync escape hatch ONLY for must-render passes (capture precedent) + pick (Step 2a, correctness). Preserve the C2-22 magenta-error-swap + `_errorSwapGeneration` (INV-07-3). PP stages async through the central cache; HDR toggle → **build-new-then-destroy-old** (INV-07-5, no black-flash blit gap). Prewarm the model variant matrix at resources-ready. Accept: no sync `createRenderPipeline` on the model/PP draw path (`pipelineStatus()`); model renders within ≤1 frame of first appearance (PNG, no magenta); moving-altitude tileset API lane p99 tile/model-arrival spikes drop vs baseline; HDR-toggle no black flash; C2-22 forced-error still swaps magenta; warm-cache `capture-and-diff` byte-identical. |
+| `C10-08-MODEL-SHADER-SPECIALIZATION-AXES` | R2 | M | **Deps `C10-07`.** Add-only specialization of the runtime-flag model uber-shader. **STOP-AND-BLOCK #0: the `ShaderDefine` register is nearly FULL** (bits 0-30 occupied, `WebGPUShaderDefines.ts`; bit 31 is the sign-bit hazard, material-mask bits ≤ bit 28 for `computeKey`'s `md<<3`). Audit the bit budget FIRST. Honest deliverable: promote the highest-separation axis that fits as a render-mode bit (**shadow mode**, rank 1) in the one free slot, proving the mechanism + banking the occupancy win, AND surface the define-width expansion (Uint32→wider) as the immediate next work item (`C10-08b` follow-on) for the remaining 6-7 axes. Wrap CSM/point-shadow blocks (`ModelPBRComplete.wgsl:1585-1615/1690+`) in `//>>ifdef`; set the bit in `effectiveDefines` (`:2510-2519`) via a sticky per-primitive flag; `//>>else` = today's code (byte-identical at `defines=0`). Accept: per-variant `capture-and-diff` byte-clean vs runtime-flag output (PNGs); `defines=0` byte-identical to the original monolith; pipeline count bounded (≤2× per binary axis) + stable across frames (`pipelineStatus()`); moving-altitude base-material-heavy lane ≥5% model-fill p95 or >3× noise (honest miss valid); `C10-07` p99 oracle still green. New bit stays even on revert (add-only). |
+
+### Wave 4 — pick fleet (correctness; own oracle, no metric)
+
+| ID | Pri | Effort | Work / acceptance |
+| --- | --- | --- | --- |
+| `C10-11-PICK-FLEET-LOG-DEPTH` | P0 | XL | Convert the ENTIRE native WebGPU pick producer fleet to write log `frag_depth` against the full-frustum `_logDepthEncodeNearFar` encode (INV-1/2/3), mirroring the Batch-673 scene half. **Cohort A** (shared-module entries reusing the color module via `buildPickPipelineDescriptor`: globe `fragmentPickMain`, model `fragmentPick{Main,HoverMain,MetadataMain}`, voxel `fragmentPickVoxelMain`, compute-instance, + confirmed A families) = pick FragOutput gains `//>>ifdef LOG_DEPTH @builtin(frag_depth)` + `csm_writeLogDepth` + near discard, reusing the color varying/factor (mostly zero JS). **Cohort B** (9 dedicated pick modules: 3 collection + 6 primitive) = add `v_logDepth` varying in vertex, `frag_depth` in fragment, OR-in the `LOG_DEPTH` define at the pick pipeline build site, pack log lanes into the pick camera UB. **INV-2 all-or-nothing** on the shared pick FBO; kill switch = `_logDepthWriteEnabled`. Cross-link the FAR-707 reversed-Z convert-back surface in both work items; do NOT land with reversed-Z. Accept: every per-family pick probe matches its WebGL control at 20/500/5,000 km (probe list in H6); `probe-collections-far-camera` + `probe-logdepth-globe` stay green; no `frag_depth`-factor-zero over-occlusion (verify lane 51 non-zero per family); broad pick suite green. Feature-preservation (INV-5): no family disabled/degraded. One commit (whole fleet). |
+| `C10-12-PICK-DEPTH-PLANE-GATE-FLIP` | P0 | M | **Deps `C10-11` (all family probes green).** Flip `PICK_DEPTH_PLANE_ENABLED=true` (`WebGPUSceneRendererPickPass.ts:69`); re-run `probe-depth-plane-horizon-oracle.mjs` — all three altitudes × three phases (`normal`/`diagnostic-skip`/`restored` = on/off/restored oracle) pass with zero `failures[]`; back marker occluded in `normal`, pickable in `diagnostic-skip`, re-occluded in `restored`. Tighten the oracle to count only below-limb marker pixels (mask the sprite-above-limb residual: 538 px @20 km, 70 px @500 km) + re-baseline JSON. Close `C9-02B` + `NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT` + audit `P0-1`; move `NEW-WEBGPU-PICK-FLEET-LOG-DEPTH` out of DEFERRED_WORK; log to `WEBGPU_DEBUGGING_LOG.md`. Rollback = flip constant false (fleet stays log-encoded, harmless). |
+
+### Wave 5 — measured checkpoint
+
+`C10-30-DEFAULT-PATH-PERFORMANCE-CHECKPOINT` (row in the infra/gate table above). R0/gate. Decides
+which gated-tail items get pulled.
+
+---
+
+## 6. Gated tail (do NOT auto-run)
+
+Activated ONLY by the `C10-30` verdict AND fresh maintainer sign-off. Not scheduled by the engine.
+
+| ID | Status | Gate to open |
+| --- | --- | --- |
+| `C10-13-REVERSED-Z-EARLYZ-SPIKE` | measurement-only, openable | Cheap FAR-707 evidence gate (register §15.6): one probe scene (horizon-oblique globe + dense tiles) compiled with `defines=0` hyperbolic `//>>else` branches + reversed-Z infinite-far + `depth32float` + `greater-equal`; measure fragment-invocation/`gpuPassCost` delta vs default log-depth. **MUST record its GO/NO-GO in BOTH `NEW-WEBGPU-PICK-FLEET-LOG-DEPTH` and the FAR-707 brief + DEFERRED_WORK before the pick fleet's log-depth conversion is treated as permanent** — the two streams pull the same 71-file producer surface in opposite directions. Nothing from the spike lands on main except the report. |
+| `C10-GT-REVERSED-Z-SLICE-B` | **DEFERRED — do not schedule** | Openable ONLY after: `C10-01` landed (frustum-count claim carved out); `C10-13` spike GO (≥20-30% fragment-work reduction on weak-FPS views); pick-fleet reconciliation decision recorded (GO ⇒ pick fleet converts directly to reversed-Z f32, `C10-11` log-depth conversion skipped/undone knowingly); written `depth32float-stencil8` fallback story covering every supported adapter tier (any tier left behind = forbidden dual permanent architecture = NO-GO). Scope of record (guide H1 dossier): 71 producer `.wgsl` LOG_DEPTH surfaces retired; 140 `depthCompare` sites/47 files flipped + clearValue 1→0 behind a single `_reversedZEnabled` master switch (OFF = byte-identical); 42 `_logDepthEncodeNearFar` JS sites + ~14 depth-consumer families re-linearized; RGBA8 pack ecosystem (`WebGPUGlobeDepth`/`PickDepth`) deleted for r32float/direct depth (un-owned prize: 2-3 fullscreen pack passes/frame); TAA `previousViewProjection` carries the flip; 2D/CV/ortho carved out; RTE high/low untouched. All-or-nothing landing. |
+| `C10-03R-MSAA-DEFAULT-FLIP-RESERVE` | **CONDITIONAL NOT TRIGGERED** | Reserve lever (ruling §2 (c)). Pull ONLY on a `C10-30` miss WITH bandwidth-attributed evidence AND fresh maintainer sign-off recorded here. Then: backend-conditional WebGPU default `msaaSamples` 4→1 (one line at `Scene.js:488`/bridge, WebGL untouched, user opt-in preserved) + release note + visual-policy gate probe + moving-altitude on/off/restored. Any slice found flipping the default without the recorded sign-off is reverted on sight. |
+
+**Next-campaign seeds** (register §14 — NOT C10 tasks; recorded so the `C10-30` verdict can point at
+them): S1 frame-delta retained-commandList tier (true shadow-caster revision-maintenance depends on
+it); entity-at-scale arc (S10); worker-renderer productization; geometry-residency dedupe;
+model define-width expansion (`C10-08b`, unblocks the remaining 6-7 specialization axes); FAR-200
+private-submit-timeline consolidation (`C10-09`/`C10-05` mip blit leave it alone).
+
+---
+
+## 7. Pointers
+
+- **Execution guide (per-task walkthroughs + engine mechanics + fallout intake):**
+  [CAMPAIGN10_EXECUTION_GUIDE_2026-07-16.md](CAMPAIGN10_EXECUTION_GUIDE_2026-07-16.md).
+- **Register (69 findings):** [PERF_ARCH_DEEP_DIVE_2026-07-16.md](PERF_ARCH_DEEP_DIVE_2026-07-16.md)
+  — §13 proposed rows, §14 seeds, §15 reversed-Z verdict, §16 TTFF budget, §17 contradicted
+  assumptions. Raw strata: `scratchpad/perfdive/S1…S11-*.md`.
+- **C9 queue / ledger (fallout source + gate/vocab exemplar):**
+  [QUEUE_2026-07-15_CAMPAIGN9.md](QUEUE_2026-07-15_CAMPAIGN9.md) §1/§3/§3.2.
+- **C9 execution guide (format + engine-handoff + C9-30 protocol exemplar):**
+  [CAMPAIGN9_OPUS_EXECUTION_GUIDE_2026-07-16.md](CAMPAIGN9_OPUS_EXECUTION_GUIDE_2026-07-16.md) §G10.
+- **Engine base (fork target):** `.claude/workflows/campaign-9-resume.js` (untracked) → `campaign-10.js`.
+- **Runner / workload:** `Tools/visual-regression/run-performance-campaign.mjs`;
+  `performance-workloads.json` (`moving-camera-altitude-track-3d`, 8 segments, near-ground idx 5+6).
