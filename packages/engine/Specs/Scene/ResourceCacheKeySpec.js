@@ -1046,6 +1046,55 @@ describe("ResourceCacheKey", function () {
     );
   });
 
+  it("keys KTX2 images by context transcode targets", function () {
+    const etcFormats = new SupportedImageFormats({
+      basis: true,
+      ktx2TranscodeTargets: { etc: true, cacheKey: "ktx2-8" },
+    });
+    const bcFormats = new SupportedImageFormats({
+      basis: true,
+      ktx2TranscodeTargets: {
+        s3tc: true,
+        bc7: true,
+        cacheKey: "ktx2-21",
+      },
+    });
+    const makeKey = (supportedImageFormats) =>
+      ResourceCacheKey.getImageCacheKey({
+        gltf: gltfWithTextures,
+        imageId: 3,
+        gltfResource: gltfResource,
+        baseResource: baseResource,
+        supportedImageFormats: supportedImageFormats,
+      });
+
+    expect(makeKey(etcFormats)).toBe(
+      "image:https://example.com/resources/image.ktx2-targets-ktx2-8",
+    );
+    expect(makeKey(bcFormats)).toBe(
+      "image:https://example.com/resources/image.ktx2-targets-ktx2-21",
+    );
+  });
+
+  it("shares backend-neutral image keys across target sets", function () {
+    const first = new SupportedImageFormats({
+      ktx2TranscodeTargets: { etc: true, cacheKey: "ktx2-8" },
+    });
+    const second = new SupportedImageFormats({
+      ktx2TranscodeTargets: { s3tc: true, cacheKey: "ktx2-1" },
+    });
+    const makeKey = (supportedImageFormats) =>
+      ResourceCacheKey.getImageCacheKey({
+        gltf: gltfWithTextures,
+        imageId: 0,
+        gltfResource: gltfResource,
+        baseResource: baseResource,
+        supportedImageFormats: supportedImageFormats,
+      });
+
+    expect(makeKey(first)).toBe(makeKey(second));
+  });
+
   it("getImageCacheKey throws if gltf is undefined", function () {
     expect(function () {
       ResourceCacheKey.getImageCacheKey({

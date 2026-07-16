@@ -10,7 +10,6 @@ import CesiumMath from "../Core/Math.js";
 import PixelFormat from "../Core/PixelFormat.js";
 import Rectangle from "../Core/Rectangle.js";
 import WebMercatorProjection from "../Core/WebMercatorProjection.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import ComputeCommand from "../Renderer/ComputeCommand.js";
 import Sampler from "../Renderer/Sampler.js";
 import Texture from "../Renderer/Texture.js";
@@ -403,8 +402,8 @@ class ImageryLayer {
   /**
    * @private
    */
-  _requestImagery(imagery) {
-    requestImagery(this, imagery);
+  _requestImagery(imagery, context) {
+    requestImagery(this, imagery, context);
   }
 
   _createTextureWebGL(context, imagery) {
@@ -532,7 +531,7 @@ class ImageryLayer {
     ) {
       minificationFilter = TextureMinificationFilter.LINEAR_MIPMAP_LINEAR;
       const maximumSupportedAnisotropy =
-        ContextLimits.maximumTextureFilterAnisotropy;
+        context.limits.maximumTextureFilterAnisotropy;
       const maximumAnisotropy = Math.min(
         maximumSupportedAnisotropy,
         this._maximumAnisotropy ?? maximumSupportedAnisotropy,

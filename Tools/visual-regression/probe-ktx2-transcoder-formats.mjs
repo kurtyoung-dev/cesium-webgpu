@@ -1,24 +1,20 @@
 /**
  * Q1-KTX2-TRANSCODER-FORMATS regression probe.
  *
- * Premise (ROADMAP s3 #1 / s4.3): loadKTX2() throws
- * "supportedTargetFormats is required" for ANY KTX2 on a WebGPUContext because
- * the transcoder guards on a module-level format set that historically only the
- * WebGL Context.js populated. The fix (Batch 370, C2-1) calls
- * loadKTX2.setKTX2SupportedFormats(...) from WebGPUContext._updateFeatureFlags()
- * after device creation, mirroring WebGL Context.js init.
+ * Premise (FAR-104): KTX2 target selection must come from the consuming
+ * context. A process-global "last renderer" format set races when WebGL and
+ * WebGPU contexts coexist, so loadKTX2 deliberately requires the immutable
+ * context.graphicsCapabilities.ktx2TranscodeTargets record.
  *
  * This probe is the standing REGRESSION guard for that gate. It:
- *   1. Boots the WebGPU CesiumViewer (proves a WebGPUContext initialized →
- *      _updateFeatureFlags ran → setKTX2SupportedFormats registered).
- *   2. Calls loadKTX2() on a real .ktx2 asset and asserts it RESOLVES to a
- *      CompressedTextureBuffer (width/height/bufferView) with NO
- *      "supportedTargetFormats is required" rejection.
+ *   1. Boots the WebGPU CesiumViewer and captures its target record.
+ *   2. Calls loadKTX2() with that record on a real .ktx2 asset and asserts it
+ *      resolves to a CompressedTextureBuffer (width/height/bufferView).
  *
  * Gates:
  *   (A) viewer is WebGPU (scene.context.isWebGPU === true).
  *   (B) loadKTX2 resolves; result has width/height/bufferView.
- *   (C) NO "supportedTargetFormats" error surfaced.
+ *   (C) An immutable, keyed target record was supplied with no target error.
  *
  * Usage: node Tools/visual-regression/probe-ktx2-transcoder-formats.mjs
  *   PROBE_BASE (default http://localhost:8080)
@@ -46,11 +42,12 @@ const result = await page.evaluate(async (ktx2Url) => {
   // Ensure the context finished init (feature flags updated on device create).
   scene.render();
   const isWebGPU = !!scene.context.isWebGPU;
+  const targets = scene.context.graphicsCapabilities.ktx2TranscodeTargets;
 
   let loaded = null;
   let err = null;
   try {
-    const res = await C.loadKTX2(ktx2Url);
+    const res = await C.loadKTX2(ktx2Url, targets);
     // loadKTX2 shape varies with the source:
     //   - plain 2D:        a single CompressedTextureBuffer
     //   - 2D + mips:       an array of CompressedTextureBuffers (per mip)
@@ -88,7 +85,13 @@ const result = await page.evaluate(async (ktx2Url) => {
   } catch (e) {
     err = String(e && e.message ? e.message : e);
   }
-  return { isWebGPU, loaded, err };
+  return {
+    isWebGPU,
+    targetKey: targets.cacheKey,
+    targetsFrozen: Object.isFrozen(targets),
+    loaded,
+    err,
+  };
 }, KTX2);
 
 await browser.close();
@@ -101,17 +104,20 @@ const b =
   result.loaded.width > 0 &&
   result.loaded.height > 0 &&
   result.loaded.hasBufferView;
-const c = !(result.err && /supportedTargetFormats/i.test(result.err));
+const c =
+  result.targetsFrozen === true &&
+  /^ktx2-[0-9a-f]+$/.test(result.targetKey) &&
+  !(result.err && /supportedTargetFormats/i.test(result.err));
 
 console.log(`(A) context is WebGPU: ${a ? "PASS" : "FAIL"}`);
 console.log(`(B) loadKTX2 resolved with a valid buffer: ${b ? "PASS" : "FAIL"}`);
-console.log(`(C) no "supportedTargetFormats is required" throw: ${c ? "PASS" : "FAIL"}`);
+console.log(`(C) immutable keyed context targets supplied: ${c ? "PASS" : "FAIL"}`);
 if (result.err) console.log(`    (loadKTX2 error was: ${result.err})`);
 
 const pass = a && b && c;
 console.log(
   pass
-    ? "GATE PASS — loadKTX2 transcodes on a WebGPU context (transcode formats registered)"
+    ? "GATE PASS — loadKTX2 transcodes with explicit WebGPU context targets"
     : "GATE FAIL",
 );
 process.exit(pass ? 0 : 1);

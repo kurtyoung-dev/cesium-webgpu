@@ -14,6 +14,9 @@ import GltfSpzLoader from "./GltfSpzLoader.js";
 import MetadataSchemaLoader from "./MetadataSchemaLoader.js";
 import ResourceCacheKey from "./ResourceCacheKey.js";
 import ResourceCacheStatistics from "./ResourceCacheStatistics.js";
+import SupportedImageFormats from "./SupportedImageFormats.js";
+
+const defaultSupportedImageFormats = Object.freeze(new SupportedImageFormats());
 
 /**
  * Cache for resources shared across 3D Tiles and glTF.
@@ -678,7 +681,13 @@ ResourceCache.getIndexBufferLoader = function (options) {
  */
 ResourceCache.getImageLoader = function (options) {
   options = options ?? Frozen.EMPTY_OBJECT;
-  const { gltf, imageId, gltfResource, baseResource } = options;
+  const {
+    gltf,
+    imageId,
+    gltfResource,
+    baseResource,
+    supportedImageFormats = defaultSupportedImageFormats,
+  } = options;
 
   //>>includeStart('debug', pragmas.debug);
   Check.typeOf.object("options.gltf", gltf);
@@ -692,6 +701,7 @@ ResourceCache.getImageLoader = function (options) {
     imageId: imageId,
     gltfResource: gltfResource,
     baseResource: baseResource,
+    supportedImageFormats: supportedImageFormats,
   });
 
   let imageLoader = ResourceCache.get(cacheKey);
@@ -705,6 +715,7 @@ ResourceCache.getImageLoader = function (options) {
     imageId: imageId,
     gltfResource: gltfResource,
     baseResource: baseResource,
+    supportedImageFormats: supportedImageFormats,
     cacheKey: cacheKey,
   });
 

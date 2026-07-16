@@ -121,7 +121,7 @@ class Imagery {
   processStateMachine(frameState, needGeographicProjection, skipLoading) {
     if (this.state === ImageryState.UNLOADED && !skipLoading) {
       this.state = ImageryState.TRANSITIONING;
-      this.imageryLayer._requestImagery(this);
+      this.imageryLayer._requestImagery(this, frameState.context);
     }
 
     if (this.state === ImageryState.RECEIVED) {

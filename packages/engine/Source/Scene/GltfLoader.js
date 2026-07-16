@@ -581,6 +581,8 @@ async function loadResources(loader, frameState) {
   loader._supportedImageFormats = new SupportedImageFormats({
     webp: FeatureDetection.supportsWebP(),
     basis: frameState.context.supportsBasis,
+    ktx2TranscodeTargets:
+      frameState.context.graphicsCapabilities.ktx2TranscodeTargets,
   });
 
   // Loaders that create GPU resources need to be processed every frame until they become

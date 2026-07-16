@@ -23,6 +23,7 @@ class GltfImageLoader extends ResourceLoader {
    * @param {number} options.imageId The image ID.
    * @param {Resource} options.gltfResource The {@link Resource} containing the glTF.
    * @param {Resource} options.baseResource The {@link Resource} that paths in the glTF JSON are relative to.
+   * @param {SupportedImageFormats} [options.supportedImageFormats] Context-owned image and transcode targets. Required when loading KTX2.
    * @param {string} [options.cacheKey] The cache key of the resource.
    */
   constructor(options) {
@@ -34,6 +35,7 @@ class GltfImageLoader extends ResourceLoader {
     const imageId = options.imageId;
     const gltfResource = options.gltfResource;
     const baseResource = options.baseResource;
+    const supportedImageFormats = options.supportedImageFormats;
     const cacheKey = options.cacheKey;
 
     //>>includeStart('debug', pragmas.debug);
@@ -51,6 +53,7 @@ class GltfImageLoader extends ResourceLoader {
     this._resourceCache = resourceCache;
     this._gltfResource = gltfResource;
     this._baseResource = baseResource;
+    this._supportedImageFormats = supportedImageFormats;
     this._gltf = gltf;
     this._bufferViewId = bufferViewId;
     this._uri = uri;
@@ -172,7 +175,10 @@ async function loadFromBufferView(imageLoader) {
     }
 
     const typedArray = bufferViewLoader.typedArray;
-    const image = await loadImageFromBufferTypedArray(typedArray);
+    const image = await loadImageFromBufferTypedArray(
+      typedArray,
+      imageLoader._supportedImageFormats?.ktx2TranscodeTargets,
+    );
     if (imageLoader.isDestroyed()) {
       return;
     }
@@ -205,7 +211,10 @@ async function loadFromUri(imageLoader) {
   });
 
   try {
-    const image = await loadImageFromUri(resource);
+    const image = await loadImageFromUri(
+      resource,
+      imageLoader._supportedImageFormats?.ktx2TranscodeTargets,
+    );
     if (imageLoader.isDestroyed()) {
       return;
     }
@@ -265,7 +274,10 @@ function getMimeTypeFromTypedArray(typedArray) {
   throw new RuntimeError("Image format is not recognized");
 }
 
-async function loadImageFromBufferTypedArray(typedArray) {
+async function loadImageFromBufferTypedArray(
+  typedArray,
+  supportedTargetFormats,
+) {
   const mimeType = getMimeTypeFromTypedArray(typedArray);
   if (mimeType === "image/ktx2") {
     // Need to make a copy of the embedded KTX2 buffer otherwise the underlying
@@ -275,7 +287,7 @@ async function loadImageFromBufferTypedArray(typedArray) {
     const ktxBuffer = new Uint8Array(typedArray);
 
     // Resolves to a CompressedTextureBuffer
-    return loadKTX2(ktxBuffer);
+    return loadKTX2(ktxBuffer, supportedTargetFormats);
   }
   // Resolves to an Image or ImageBitmap
   return GltfImageLoader._loadImageFromTypedArray({
@@ -288,11 +300,11 @@ async function loadImageFromBufferTypedArray(typedArray) {
 
 const ktx2Regex = /(^data:image\/ktx2)|(\.ktx2$)/i;
 
-function loadImageFromUri(resource) {
+function loadImageFromUri(resource, supportedTargetFormats) {
   const uri = resource.getUrlComponent(false, true);
   if (ktx2Regex.test(uri)) {
     // Resolves to a CompressedTextureBuffer
-    return loadKTX2(resource);
+    return loadKTX2(resource, supportedTargetFormats);
   }
   // Resolves to an ImageBitmap or Image
   return resource.fetchImage({

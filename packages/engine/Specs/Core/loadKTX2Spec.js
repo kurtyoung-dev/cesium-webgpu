@@ -7,6 +7,16 @@ import {
 } from "../../index.js";
 
 describe("Core/loadKTX2", function () {
+  const noCompressedTargets = Object.freeze({
+    s3tc: false,
+    pvrtc: false,
+    astc: false,
+    etc: false,
+    etc1: false,
+    bc7: false,
+    cacheKey: "ktx2-0",
+  });
+
   it("throws with no url", function () {
     expect(function () {
       loadKTX2();
@@ -19,9 +29,39 @@ describe("Core/loadKTX2", function () {
     }).toThrowDeveloperError();
   });
 
+  it("throws with no context-owned target formats", function () {
+    expect(function () {
+      loadKTX2(new Uint8Array([1]));
+    }).toThrowDeveloperError();
+  });
+
+  it("captures explicit target formats before asynchronous transcoding", async function () {
+    const etcTargets = Object.freeze({ etc: true, cacheKey: "ktx2-8" });
+    const bcTargets = Object.freeze({
+      s3tc: true,
+      bc7: true,
+      cacheKey: "ktx2-21",
+    });
+    const seenTargets = [];
+    spyOn(KTX2Transcoder, "transcode").and.callFake(
+      function (data, targetFormats) {
+        seenTargets.push(targetFormats);
+        return Promise.resolve(targetFormats);
+      },
+    );
+
+    const etcPromise = loadKTX2(new Uint8Array([1]), etcTargets);
+    const bcPromise = loadKTX2(new Uint8Array([2]), bcTargets);
+
+    const results = await Promise.all([etcPromise, bcPromise]);
+    expect(results[0]).toBe(etcTargets);
+    expect(results[1]).toBe(bcTargets);
+    expect(seenTargets).toEqual([etcTargets, bcTargets]);
+  });
+
   it("throws if loadKTX2 is called with invalid url", function () {
     const testUrl = "http://example.invalid/testuri";
-    const promise = loadKTX2(testUrl);
+    const promise = loadKTX2(testUrl, noCompressedTargets);
     return promise
       .then(function (value) {
         fail();
@@ -233,7 +273,7 @@ describe("Core/loadKTX2", function () {
   it("cannot parse invalid KTX2 buffer", function () {
     const invalidKTX = new Uint8Array([0, 1, 2, 3, 4, 5]);
     let rejectedError;
-    const promise = loadKTX2(invalidKTX.buffer);
+    const promise = loadKTX2(invalidKTX.buffer, noCompressedTargets);
     return promise
       .then(function (value) {
         fail();
@@ -253,7 +293,7 @@ describe("Core/loadKTX2", function () {
       invalidKTX[7] = 2; // Uint32 pixelDepth
 
       let rejectedError;
-      const promise = loadKTX2(invalidKTX.buffer);
+      const promise = loadKTX2(invalidKTX.buffer, noCompressedTargets);
       return promise
         .then(function (value) {
           fail();
@@ -276,7 +316,7 @@ describe("Core/loadKTX2", function () {
       invalidKTX[8] = 15; // Uint32 layerCount
 
       let rejectedError;
-      const promise = loadKTX2(invalidKTX.buffer);
+      const promise = loadKTX2(invalidKTX.buffer, noCompressedTargets);
       return promise
         .then(function (value) {
           fail();

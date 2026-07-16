@@ -234,10 +234,15 @@ const ktx2Regex = /\.ktx2$/i;
  *
  * @param {ImageryProvider} imageryProvider The imagery provider for the URL.
  * @param {Resource|string} url The URL of the image.
+ * @param {object} [ktx2TranscodeTargets] Explicit target formats when the resource does not carry a Scene request.
  * @returns {Promise<ImageryTypes|CompressedTextureBuffer>|undefined} A promise for the image that will resolve when the image is available, or
  *          undefined if there are too many active requests to the server, and the request should be retried later.
  */
-ImageryProvider.loadImage = function (imageryProvider, url) {
+ImageryProvider.loadImage = function (
+  imageryProvider,
+  url,
+  ktx2TranscodeTargets,
+) {
   //>>includeStart('debug', pragmas.debug);
   Check.defined("url", url);
   //>>includeEnd('debug');
@@ -246,7 +251,9 @@ ImageryProvider.loadImage = function (imageryProvider, url) {
 
   if (ktx2Regex.test(resource.url)) {
     // Resolves with `CompressedTextureBuffer`
-    return loadKTX2(resource);
+    const targets =
+      ktx2TranscodeTargets ?? resource.request?.ktx2TranscodeTargets;
+    return loadKTX2(resource, targets);
   } else if (
     defined(imageryProvider) &&
     defined(imageryProvider.tileDiscardPolicy)

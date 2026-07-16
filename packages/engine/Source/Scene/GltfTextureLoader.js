@@ -70,6 +70,7 @@ class GltfTextureLoader extends ResourceLoader {
     this._imageId = imageId;
     this._gltfResource = gltfResource;
     this._baseResource = baseResource;
+    this._supportedImageFormats = supportedImageFormats;
     this._cacheKey = cacheKey;
     this._asynchronous = asynchronous;
     this._imageLoader = undefined;
@@ -354,6 +355,7 @@ async function loadResources(loader) {
       imageId: loader._imageId,
       gltfResource: loader._gltfResource,
       baseResource: loader._baseResource,
+      supportedImageFormats: loader._supportedImageFormats,
     });
     loader._imageLoader = imageLoader;
     await imageLoader.load();

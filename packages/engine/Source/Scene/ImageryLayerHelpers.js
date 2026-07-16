@@ -373,9 +373,10 @@ function createTileImagerySkeletons(
  * Request a particular piece of imagery from the imagery provider.
  * @param {ImageryLayer} layer The imagery layer.
  * @param {Imagery} imagery The imagery to request.
+ * @param {GraphicsContext} [context] Context whose immutable KTX2 targets are captured by the request.
  * @private
  */
-function requestImagery(layer, imagery) {
+function requestImagery(layer, imagery, context) {
   const imageryProvider = layer._imageryProvider;
 
   function success(image) {
@@ -422,6 +423,8 @@ function requestImagery(layer, imagery) {
       throttleByServer: true,
       type: RequestType.IMAGERY,
     });
+    request.ktx2TranscodeTargets =
+      context?.graphicsCapabilities?.ktx2TranscodeTargets;
     imagery.request = request;
     imagery.state = ImageryState.TRANSITIONING;
     const imagePromise = imageryProvider.requestImage(

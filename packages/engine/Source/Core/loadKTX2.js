@@ -1,37 +1,7 @@
 import Check from "./Check.js";
+import DeveloperError from "./DeveloperError.js";
 import Resource from "./Resource.js";
 import KTX2Transcoder from "./KTX2Transcoder.js";
-
-/**
- * Stores the supported formats that KTX2 can transcode to. Called during context creation.
- *
- * @param {boolean} s3tc Whether or not S3TC is supported
- * @param {boolean} pvrtc Whether or not PVRTC is supported
- * @param {boolean} astc Whether or not ASTC is supported
- * @param {boolean} etc Whether or not ETC is supported
- * @param {boolean} etc1 Whether or not ETC1 is supported
- * @param {boolean} bc7 Whether or not BC7 is supported
- * @private
- */
-let supportedTranscoderFormats;
-
-loadKTX2.setKTX2SupportedFormats = function (
-  s3tc,
-  pvrtc,
-  astc,
-  etc,
-  etc1,
-  bc7,
-) {
-  supportedTranscoderFormats = {
-    s3tc: s3tc,
-    pvrtc: pvrtc,
-    astc: astc,
-    etc: etc,
-    etc1: etc1,
-    bc7: bc7,
-  };
-};
 
 /**
  * Asynchronously loads and parses the given URL to a KTX2 file or parses the raw binary data of a KTX2 file.
@@ -52,6 +22,7 @@ loadKTX2.setKTX2SupportedFormats = function (
  * @function loadKTX2
  *
  * @param {Resource|string|ArrayBuffer} resourceOrUrlOrBuffer The URL of the binary data or an ArrayBuffer.
+ * @param {object} supportedTargetFormats Immutable target-format snapshot from the consuming graphics context.
  * @returns {Promise<CompressedTextureBuffer>|undefined} A promise that will resolve to the requested data when loaded. Returns undefined if <code>request.throttle</code> is true and the request does not have high enough priority.
  *
  * @exception {RuntimeError} Invalid KTX2 file.
@@ -64,7 +35,10 @@ loadKTX2.setKTX2SupportedFormats = function (
  *
  * @example
  * // load a single URL asynchronously
- * Cesium.loadKTX2('some/url').then(function (ktx2Data) {
+ * Cesium.loadKTX2(
+ *   'some/url',
+ *   scene.context.graphicsCapabilities.ktx2TranscodeTargets,
+ * ).then(function (ktx2Data) {
  *     const width = ktx2Data.width;
  *     const height = ktx2Data.height;
  *     const format = ktx2Data.internalFormat;
@@ -79,10 +53,22 @@ loadKTX2.setKTX2SupportedFormats = function (
  * @see {@link http://wiki.commonjs.org/wiki/Promises/A|CommonJS Promises/A}
  * @private
  */
-function loadKTX2(resourceOrUrlOrBuffer) {
+function loadKTX2(resourceOrUrlOrBuffer, supportedTargetFormats) {
   //>>includeStart('debug', pragmas.debug);
   Check.defined("resourceOrUrlOrBuffer", resourceOrUrlOrBuffer);
   //>>includeEnd('debug');
+
+  // This validation is deliberately retained in release builds. There is no
+  // correct process-global fallback when WebGL and WebGPU contexts coexist.
+  if (supportedTargetFormats === undefined || supportedTargetFormats === null) {
+    throw new DeveloperError(
+      "supportedTargetFormats is required. Pass context.graphicsCapabilities.ktx2TranscodeTargets.",
+    );
+  }
+
+  // Capture selection before asynchronous fetch. Alternating contexts cannot
+  // influence this request after it enters the asynchronous pipeline.
+  const targetFormats = supportedTargetFormats;
 
   let loadPromise;
   if (
@@ -97,7 +83,7 @@ function loadKTX2(resourceOrUrlOrBuffer) {
 
   // load module then return
   return loadPromise.then(function (data) {
-    return KTX2Transcoder.transcode(data, supportedTranscoderFormats);
+    return KTX2Transcoder.transcode(data, targetFormats);
   });
 }
 

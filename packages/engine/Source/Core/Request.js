@@ -19,6 +19,7 @@ import RequestType from "./RequestType.js";
  * @param {boolean} [options.throttleByServer=false] Whether to throttle the request by server.
  * @param {RequestType} [options.type=RequestType.OTHER] The type of request.
  * @param {string} [options.serverKey] A key used to identify the server that a request is going to.
+ * @param {object} [options.ktx2TranscodeTargets] Context-owned KTX2 target formats captured for an imagery request.
  */
 class Request {
   constructor(options) {
@@ -110,6 +111,17 @@ class Request {
     this.serverKey = options.serverKey;
 
     /**
+     * The immutable KTX2 target-format record captured from the graphics
+     * context that issued this request. Keeping this on the request prevents
+     * asynchronous imagery decode from consulting process-global renderer
+     * state after a second context is created.
+     *
+     * @type {object|undefined}
+     * @private
+     */
+    this.ktx2TranscodeTargets = options.ktx2TranscodeTargets;
+
+    /**
      * The current state of the request.
      *
      * @type {RequestState}
@@ -166,6 +178,7 @@ class Request {
     result.throttleByServer = this.throttleByServer;
     result.type = this.type;
     result.serverKey = this.serverKey;
+    result.ktx2TranscodeTargets = this.ktx2TranscodeTargets;
 
     // These get defaulted because the cloned request hasn't been issued
     result.state = RequestState.UNISSUED;

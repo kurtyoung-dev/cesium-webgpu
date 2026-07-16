@@ -525,7 +525,8 @@ ResourceCacheKey.getIndexBufferCacheKey = function (options) {
  */
 ResourceCacheKey.getImageCacheKey = function (options) {
   options = options ?? Frozen.EMPTY_OBJECT;
-  const { gltf, imageId, gltfResource, baseResource } = options;
+  const { gltf, imageId, gltfResource, baseResource, supportedImageFormats } =
+    options;
 
   //>>includeStart('debug', pragmas.debug);
   Check.typeOf.object("options.gltf", gltf);
@@ -541,7 +542,18 @@ ResourceCacheKey.getImageCacheKey = function (options) {
     baseResource,
   );
 
-  return `image:${imageCacheKey}`;
+  const image = gltf.images[imageId];
+  const isKTX2 =
+    image.mimeType === "image/ktx2" ||
+    (typeof image.uri === "string" && /\.ktx2(?:$|[?#])/i.test(image.uri));
+  if (!isKTX2) {
+    // Decoded PNG/JPEG/WebP pixels are backend-neutral and remain shareable
+    // between contexts. Only transcoded KTX2 payloads depend on GPU formats.
+    return `image:${imageCacheKey}`;
+  }
+
+  const targetKey = supportedImageFormats?.ktx2TranscodeTargetKey ?? "ktx2-0";
+  return `image:${imageCacheKey}-targets-${targetKey}`;
 };
 
 /**
@@ -598,7 +610,7 @@ ResourceCacheKey.getTextureCacheKey = function (options) {
   // removing the sampleCacheKey here.
   const samplerCacheKey = getSamplerCacheKey(gltf, textureInfo);
 
-  return `texture:${imageCacheKey}-sampler-${samplerCacheKey}-context-${frameState.context.id}`;
+  return `texture:${imageCacheKey}-targets-${supportedImageFormats.ktx2TranscodeTargetKey}-sampler-${samplerCacheKey}-context-${frameState.context.id}`;
 };
 
 export default ResourceCacheKey;
