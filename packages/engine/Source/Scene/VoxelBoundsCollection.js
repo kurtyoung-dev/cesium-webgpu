@@ -231,6 +231,7 @@ class VoxelBoundsCollection {
     if (!defined(clippingPlanesTexture)) {
       const requiredResolution = computeTextureResolution(
         pixelsNeeded,
+        frameState.context.limits.maximumTextureSize,
         textureResolutionScratch,
       );
       // Allocate twice as much space as needed to avoid frequent texture reallocation.

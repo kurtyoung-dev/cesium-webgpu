@@ -471,6 +471,36 @@ class PolylineGeometryUpdater {
   }
 
   /**
+   * Gets a value indicating if the geometry has an outline component.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  get outlineEnabled() {
+    return false;
+  }
+
+  /**
+   * Gets a value indicating if outline visibility varies with simulation time.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  get hasConstantOutline() {
+    return true;
+  }
+
+  /**
+   * Gets the {@link Color} property for the geometry outline.
+   *
+   * @type {Property}
+   * @readonly
+   */
+  get outlineColorProperty() {
+    return undefined;
+  }
+
+  /**
    * Gets the property specifying whether the geometry
    * casts or receives shadows from light sources.
    *
@@ -510,6 +540,17 @@ class PolylineGeometryUpdater {
    */
   get isDynamic() {
     return this._dynamic;
+  }
+
+  /**
+   * Gets a value indicating if the geometry is closed.
+   * This property is only valid for static geometry.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  get isClosed() {
+    return false;
   }
 
   /**

@@ -176,6 +176,38 @@ class CubeMapPanorama {
       throw error;
     }
 
+    // Backend-independent validation of the public sources contract. This
+    // must run BEFORE the feature-renderer dispatch so WebGL and WebGPU
+    // enforce identical debug-time validation (item 64 / C8-30 "panorama
+    // validation matches across backends").
+    //>>includeStart('debug', pragmas.debug);
+    if (this._sources !== this.sources) {
+      const validatedSources = this.sources;
+      Check.defined("this.sources", validatedSources);
+      if (
+        Object.values(CubeMap.FaceName).some(
+          (faceName) => !defined(validatedSources[faceName]),
+        )
+      ) {
+        throw new DeveloperError(
+          "this.sources must have positiveX, negativeX, positiveY, negativeY, positiveZ, and negativeZ properties.",
+        );
+      }
+
+      const validatedSourceType = typeof validatedSources.positiveX;
+      if (
+        Object.values(CubeMap.FaceName).some(
+          (faceName) =>
+            typeof validatedSources[faceName] !== validatedSourceType,
+        )
+      ) {
+        throw new DeveloperError(
+          "this.sources properties must all be the same type.",
+        );
+      }
+    }
+    //>>includeEnd('debug');
+
     // WebGPU rendering path — delegates to feature renderer
     const fr = context.getFeatureRenderer(FeatureRendererKey.CUBE_MAP_PANORAMA);
     if (fr) {
@@ -186,30 +218,6 @@ class CubeMapPanorama {
     if (this._sources !== this.sources) {
       this._sources = this.sources;
       const sources = this.sources;
-
-      //>>includeStart('debug', pragmas.debug);
-      Check.defined("this.sources", sources);
-      if (
-        Object.values(CubeMap.FaceName).some(
-          (faceName) => !defined(sources[faceName]),
-        )
-      ) {
-        throw new DeveloperError(
-          "this.sources must have positiveX, negativeX, positiveY, negativeY, positiveZ, and negativeZ properties.",
-        );
-      }
-
-      const sourceType = typeof sources.positiveX;
-      if (
-        Object.values(CubeMap.FaceName).some(
-          (faceName) => typeof sources[faceName] !== sourceType,
-        )
-      ) {
-        throw new DeveloperError(
-          "this.sources properties must all be the same type.",
-        );
-      }
-      //>>includeEnd('debug');
 
       if (typeof sources.positiveX === "string") {
         // Given urls for cube-map images.  Load them.

@@ -68,14 +68,20 @@ describe("DataSources/DataSourceCollection", function () {
         expect(collection.indexOf(other)).toEqual(-1);
 
         // Destroyed-collection contract: destroy() removes members and the
-        // collection reports destroyed. Members no longer register as contained.
+        // collection reports destroyed. Once destroyed, every method except
+        // isDestroyed() follows the destroyObject contract and throws
+        // (NEW-DESTROYOBJECT-ES6-LIFECYCLE-PARITY restored ES6 prototype
+        // methods to that contract; contains() no longer answers after
+        // destroy).
         const s2 = new MockDataSource();
         return collection.add(s2).then(function () {
           expect(collection.contains(s2)).toEqual(true);
           collection.destroy();
           expect(collection.isDestroyed()).toEqual(true);
           expect(s2.destroyed).toEqual(true);
-          expect(collection.contains(s2)).toEqual(false);
+          expect(function () {
+            collection.contains(s2);
+          }).toThrowDeveloperError();
         });
       });
     });
