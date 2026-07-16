@@ -205,7 +205,10 @@ export function setupSceneFramebufferRenderPass(
         colorAttachments,
         depthStencilAttachment,
       };
-      const passEncoder = context.beginRenderPass(passDesc);
+      const passEncoder = context.beginRenderPass(
+        passDesc,
+        "scene-framebuffer",
+      );
       if (!passEncoder) {
         return;
       }

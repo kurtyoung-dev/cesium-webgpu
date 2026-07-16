@@ -1929,16 +1929,15 @@ export class WebGPUSceneRenderer {
     if (slot1) {
       colorAttachments = [...colorAttachments, slot1];
     }
-    if (context._currentRenderPassEncoder) {
-      context._currentRenderPassEncoder.end();
-      context._currentRenderPassEncoder = null;
-    }
+    // C9-07 — end via the context helper so the tracked pass target is
+    // nulled alongside the encoder (a raw inline end would leave it stale).
+    context.endCurrentRenderPass?.();
     const passDesc: GPURenderPassDescriptor = {
       label: "Scene Framebuffer Render Pass",
       colorAttachments,
       depthStencilAttachment,
     };
-    const passEncoder = context.beginRenderPass(passDesc);
+    const passEncoder = context.beginRenderPass(passDesc, "scene-framebuffer");
     if (!passEncoder) {
       return;
     }
@@ -2014,7 +2013,10 @@ export class WebGPUSceneRenderer {
           colorAttachments,
           depthStencilAttachment,
         };
-        const passEncoder = context.beginRenderPass(passDesc);
+        const passEncoder = context.beginRenderPass(
+          passDesc,
+          "scene-framebuffer",
+        );
         if (!passEncoder) {
           return;
         }
@@ -3189,6 +3191,11 @@ export class WebGPUSceneRenderer {
         motionView,
         gBufferNormalView,
       );
+      // C9-07 / FAR-405-C0 — the PP pipeline wrote `targetView` (the
+      // canvas) through raw `encoder.beginRenderPass` calls the context
+      // cannot observe. Mark the canvas written so no later default-pass
+      // open clears the blit and the endFrame present fallback stays off.
+      context.markCanvasContentWritten();
     } else {
       context.log(
         "warn",
@@ -3196,8 +3203,11 @@ export class WebGPUSceneRenderer {
       );
     }
 
-    // Resume the default render pass for any subsequent operations
-    context.resumeDefaultRenderPass?.();
+    // C9-07 / FAR-405-C0 — the unconditional canvas-pass resume that used
+    // to sit here (empty pass #2 on the default route) is gone. Downstream
+    // consumers self-manage: the snapshot copy ends passes, env effects
+    // end+resume around themselves, and legacy overlay commands demand-open
+    // the canvas pass in `WebGPUContext.executeDrawCommand`.
   }
 
   /**
@@ -3274,6 +3284,9 @@ export class WebGPUSceneRenderer {
       windowMax,
       useTurbo,
     );
+    // C9-07 — the overlay wrote the canvas via its own pass; without the
+    // marker the resume below (a first open) would clear the output.
+    context.markCanvasContentWritten();
 
     context.resumeDefaultRenderPass?.();
   }
@@ -3331,6 +3344,8 @@ export class WebGPUSceneRenderer {
           }),
         );
         passEncoder.end();
+        // C9-07 — the magenta sentinel clear wrote the canvas.
+        context.markCanvasContentWritten();
       }
       context.resumeDefaultRenderPass?.();
       return;
@@ -3345,6 +3360,8 @@ export class WebGPUSceneRenderer {
     );
 
     this._debugGBufferOverlay.execute(encoder, gBufferView, targetView);
+    // C9-07 — the overlay wrote the canvas via its own pass.
+    context.markCanvasContentWritten();
 
     context.resumeDefaultRenderPass?.();
   }
@@ -3423,6 +3440,8 @@ export class WebGPUSceneRenderer {
       mode,
       ranges,
     );
+    // C9-07 — the overlay wrote the canvas via its own pass.
+    context.markCanvasContentWritten();
 
     context.resumeDefaultRenderPass?.();
   }

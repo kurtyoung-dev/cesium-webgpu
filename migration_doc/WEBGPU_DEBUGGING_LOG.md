@@ -24,6 +24,47 @@
 
 ---
 
+## C9-07-DEMAND-OPEN-CANVAS-PASS / FAR-405-C0 — demand-open the default canvas render pass (2026-07-16)
+
+**Files affected:** `packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUSceneRenderer.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererPassRedirect.ts`,
+`Tools/visual-regression/probe-demand-canvas-pass.mjs` (new acceptance probe).
+
+**Root cause (performance, not a rendering bug):** every WebGPU frame opened the
+`"Scene Main Render Pass"` (canvas swap-chain pass) twice — unconditionally in `beginFrame()`
+(immediately ended by the scene-FB redirect) and unconditionally after the post-process blit
+(`_runPostProcessing` tail resume) — and BOTH were empty on the default route (C9-05 API lane:
+2,250/2,250 empty over 1,125 frames; re-confirmed live pre-change: 2,394/2,394 over 1,197 frames).
+
+**Fix (safe boundary per the C9 ledger):** `beginFrame` keeps encoder/swap-view/depth-texture
+acquisition but no longer opens the pass; `_beginDefaultRenderPass` derives its load ops from new
+per-frame demand flags — the FIRST open of a frame clears each untouched channel (depth is
+load-bearing: untouched depth reads lazy-zero 0.0, not the historical 1.0), re-opens load; explicit
+`_activePassTarget` (`"default-canvas" | "scene-framebuffer" | "external"`) replaces the `clear()`
+label-prefix inference and is nulled at every encoder end site; the background clear defers to the
+pending first-open clear; PP blit + debug overlays mark the canvas written
+(`markCanvasContentWritten()` — they write via raw encoder passes); legacy overlay draws demand-open
+in `executeDrawCommand`; `endFrame` presents a `"Canvas Demand Clear Pass"` clear only when the
+acquired swap view was never touched (empty scene / truncated frames; pick mini-frames excluded by
+the null swap view).
+
+**Verification:** moving-route API lane SMRP opens 2,394→0 (total −2 passes/frame, zero errors);
+`probe-demand-canvas-pass.mjs` pre/post both backends — empty-scene canvas BYTE-IDENTICAL to
+pre-change, request-render retention/update, resize, debug overlays (+MSAA1 overlay writes 100%
+non-black); probe-2d-globe-render / probe-taa-jitter / probe-point-pick-webgpu /
+probe-collections-regression / capture-and-diff green. `probe-pickposition-webgpu` failure attributed
+pre-existing via stash-rebuild-rerun (see queue row `NEW-WEBGPU-PICKPOSITION-CONVERGENCE-REGRESSION`).
+Audit GO-WITH-FIXES follow-up (2026-07-16): probe case 1 strengthened to a canvas-element capture
+gated on the CENTER third of the canvas (the old full-page >20% nonBlack gate passed on UI chrome
+alone with a black globe interior); the strengthened gate correctly reddens on the pre-existing
+BIMODAL offline WebGPU black-globe-interior repro (center avgRGB 2,2,2, tilesLoaded=true, zero
+errors; reproduced byte-identically on the pre-change tree) now ledgered on the
+`NEW-WEBGPU-PICKPOSITION-CONVERGENCE-REGRESSION` queue row — all other assertions, including
+empty-scene byte-identity, remain green.
+
+---
+
 ## NEW-MODEL-IBL-AMBIENT-RELAND — model IBL ambient olive tint: SH cube-lookup flip + faithful czm_computeScattering port (2026-07-04)
 
 **Files affected:** `packages/engine/Source/Shaders/WebGPU/Compute/ProjectRadianceToSH.wgsl`, `packages/engine/Source/Shaders/WebGPU/Compute/ProceduralSkyCubemap.wgsl`, `packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts`.

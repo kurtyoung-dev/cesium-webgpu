@@ -333,6 +333,7 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 | `probe-camera-construct.mjs` / `-camera-issue.mjs` | Camera UB construction |
 | `probe-canvas-timing.mjs` / `-canvas-vs-screenshot.mjs` | Headless canvas readback timing |
 | `probe-cesium-viewer.mjs` / `-cesiumviewer-screenshot.mjs` | CesiumViewer-level smoke |
+| `probe-demand-canvas-pass.mjs` | **The canvas-pass demand-open gate (C9-07 / FAR-405-C0, 2026-07-16) — run after ANY change to `WebGPUContext` beginFrame/endFrame/clear/`_beginDefaultRenderPass`/`resumeDefaultRenderPass`, the scene-FB redirect, or the post-process tail.** Both backends, offline boot: default globe presents; EMPTY scene (globe/sky/sun/moon hidden, frozen clock, DOM overlays hidden) canvas byte-compared against the `-PRECHANGE` capture (run once with `PHASE=pre` to refresh baselines); request-render retains the last frame while idle (waits for frame-number stability — WebGPU has a legit multi-second warm-up tail of requestRender calls) and updates after `requestRender()`; mid-run resize; `CesiumDebug.showDepth/showFrustums` present. Allowlists ONE pre-existing resize validation error (`SceneFramebuffer-Color_depth_resolve_ss` sample-type race — NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION family). Writes `output/demand-canvas/*.png`. The signature failure it exists to catch: a black canvas with zero console errors (endFrame fallback clearing after the PP blit, or a first-open clear wiping overlay output). |
 
 ### Collections (billboard / point / label / polyline / cloud / compute-instance)
 

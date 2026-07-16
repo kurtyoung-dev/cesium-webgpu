@@ -435,14 +435,15 @@
     },
     "FAR-405": {
       "state": "active",
-      "progress": "preparation slice skips post-tile/post-opaque depth boundaries only when no relevant writer ran",
+      "progress": "preparation slice skips post-tile/post-opaque depth boundaries only when no relevant writer ran; FAR-405-C0 demand-open canvas pass landed 2026-07-16 (C9-07): beginFrame keeps encoder/swap-view acquisition but the canvas pass opens only on first demand, with explicit pass-target tracking replacing the clear() label inference and an endFrame clear/present fallback for untouched-canvas frames",
       "dependencies": ["FAR-402", "FAR-403", "FAR-404", "FAR-408 exact depth-version ownership"],
       "evidence": [
         "instrumented render passes/frame 23.34 to 14.49 across the combined tranche",
-        "earlier nine-waypoint visual track mean WebGPU/WebGL pixel difference 0.017%, worst 0.073%; capture predates final depth edits"
+        "earlier nine-waypoint visual track mean WebGPU/WebGL pixel difference 0.017%, worst 0.073%; capture predates final depth edits",
+        "C9-07 (2026-07-16): moving-route API lane 'Scene Main Render Pass' opens 2394 (all empty) -> 0 per ~1200-frame window; total passes/frame -2; endFrame fallback 0 opens on the moving route; empty-scene canvas byte-identical to pre-change (campaign9-c9-07-demand-canvas-api-webgpu-r1-2026-07-16{,-PRECHANGE-BASELINE}.json + probe-demand-canvas-pass.mjs)"
       ],
       "remaining": "graph-owned pass merging, load/store policy, transient aliasing, and complete attachment/frustum/mode proof",
-      "claimBoundary": "bounded empty-boundary reduction only; active frame-graph FAR-405 remains open and exact-current visual rerun is required"
+      "claimBoundary": "bounded empty-boundary reduction only (C0 empty-canvas slice landed); active frame-graph FAR-405 remains open and exact-current visual rerun is required"
     },
     "FAR-406": {
       "state": "planned",

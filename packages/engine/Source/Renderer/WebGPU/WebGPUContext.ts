@@ -207,6 +207,16 @@ interface CesiumClearCommand {
 
 // Re-export types that external code may depend on
 export { DeviceLossState, type DeviceLostCallback };
+
+/**
+ * Explicit classification of the currently-open render pass (C9-07 /
+ * FAR-405-C0). Scene-FB pass opens declare "scene-framebuffer"; the
+ * default swap-chain pass is "default-canvas"; every other custom pass
+ * (shadow, pick, OIT, clear, post-process helpers, …) is "external".
+ * The `clear()` guard keys off this instead of inferring from pass labels.
+ */
+export type WebGPUPassTarget =
+  "default-canvas" | "scene-framebuffer" | "external";
 // Re-export the LOD processor interface so consumers (e.g. the point
 // cloud renderer) can import it from the context barrel without
 // pulling in the compute pipeline class itself.
@@ -348,6 +358,7 @@ export class WebGPUContext extends GraphicsContext {
     this._terminallyLost = value;
     if (value) {
       this._currentRenderPassEncoder = null;
+      this._activePassTarget = null;
       this._currentCommandEncoder = null;
     }
   }
@@ -367,6 +378,29 @@ export class WebGPUContext extends GraphicsContext {
   // Frame state for command recording — public for cross-renderer access
   public _currentCommandEncoder: GPUCommandEncoder | null = null;
   public _currentRenderPassEncoder: GPURenderPassEncoder | null = null;
+
+  // C9-07 / FAR-405-C0 — explicit render-pass target tracking. The
+  // clear() guard used to infer "is a scene-owned pass active?" from
+  // `_currentRenderPassEncoder.label.startsWith("Scene")`; the target is
+  // now tracked explicitly at every pass open/end site instead:
+  //   "default-canvas"    — the swap-chain pass (`_beginDefaultRenderPass`)
+  //   "scene-framebuffer" — the scene-FB pass (declared by its 3 open sites)
+  //   "external"          — every other custom pass (shadow, pick, clear, …)
+  private _activePassTarget: WebGPUPassTarget | null = null;
+
+  // C9-07 / FAR-405-C0 — per-frame canvas demand flags. `beginFrame` no
+  // longer opens the canvas pass eagerly; the FIRST open of a frame clears
+  // each untouched channel (historically beginFrame cleared exactly once,
+  // then every re-open loaded). Depth is the load-bearing half: an
+  // untouched "Scene Depth Texture" read with depthLoadOp:"load" yields
+  // WebGPU lazy-zero 0.0, not the historical clear value 1.0. Color is
+  // set by any canvas-color write, including the post-process blit (which
+  // encodes raw passes the context cannot observe — see
+  // `markCanvasContentWritten`). Reset in `beginFrame`/`beginPickFrame`
+  // ONLY, never in `endFrame`, so a pick mini-frame between render frames
+  // cannot corrupt the next render frame's state.
+  private _canvasColorTouchedThisFrame: boolean = false;
+  private _canvasDepthTouchedThisFrame: boolean = false;
   private _currentTextureView: GPUTextureView | null = null;
   private _depthTexture: GPUTexture | null = null;
   private _depthTextureView: GPUTextureView | null = null;
@@ -1712,23 +1746,28 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * Begin a new frame - creates command encoder and starts the default render pass.
+   * Begin a new frame - creates the command encoder and acquires the canvas
+   * swap-chain view. The default canvas render pass is NOT opened here
+   * (C9-07 / FAR-405-C0): it opens on first demand — a consumer calling
+   * `resumeDefaultRenderPass()`/`_beginDefaultRenderPass()`, a canvas draw
+   * via `executeDrawCommand`, or the `endFrame` clear/present fallback for
+   * frames where nothing else touches the canvas. The first open of a
+   * frame clears each untouched channel, so the historical
+   * clear-once-then-load sequence is preserved exactly.
    *
-   * The default render pass renders to the canvas with depth/stencil.
    * Use `beginRenderPass()` to start additional render passes within the frame
    * (e.g., for shadow maps, pick framebuffers, post-processing).
    *
    * Frame lifecycle:
    * ```
-   * beginFrame()          — creates command encoder + default canvas render pass
-   *   draw commands...    — execute against current render pass
-   *   endCurrentRenderPass()   — (optional) end current pass
-   *   beginRenderPass(desc)    — start a new pass (e.g., shadow, pick)
+   * beginFrame()          — creates command encoder + acquires swap view
+   *   beginRenderPass(desc)    — start a pass (e.g., scene FB, shadow, pick)
    *   draw commands...
    *   endCurrentRenderPass()
-   *   beginRenderPass(desc)    — start another pass
+   *   resumeDefaultRenderPass() — open/resume the canvas pass on demand
    *   ...
-   * endFrame()            — ends any active pass + submits command buffer
+   * endFrame()            — ends any active pass, presents (clearing) if the
+   *                         canvas was never touched, + submits the buffer
    * ```
    */
   beginFrame(): void {
@@ -1753,6 +1792,13 @@ export class WebGPUContext extends GraphicsContext {
     this._frameCount++;
     this._clearCallsThisFrame = 0;
     this._clearOverflowWarned = false;
+
+    // C9-07 / FAR-405-C0 — reset the canvas demand flags + pass target.
+    // Reset here (and in beginPickFrame), never in endFrame — see the
+    // field docs.
+    this._activePassTarget = null;
+    this._canvasColorTouchedThisFrame = false;
+    this._canvasDepthTouchedThisFrame = false;
 
     // Advance ring buffer allocator to next page
     if (this._uniformAllocator) {
@@ -1786,6 +1832,13 @@ export class WebGPUContext extends GraphicsContext {
     // Create or recreate depth texture if needed
     this._ensureDepthTexture();
 
+    // C9-07 / FAR-405-C0 — the default (canvas) render pass is no longer
+    // opened here. On the default route the scene renderer immediately
+    // redirected to the scene framebuffer, making this an empty pass
+    // (2/frame measured empty on the moving route, C9-05 API lane); it
+    // now opens on first demand and `endFrame` presents a cleared canvas
+    // for frames where no consumer touches it.
+
     // NEW-WEBGPU-UNIFORMSTATE-VIEWPORT (Batch 368, item 371): seed
     // uniformState.viewport once per frame. The WebGL path seeds it in
     // RenderState.applyViewport (alongside gl.viewport); the WebGPU path never
@@ -1803,9 +1856,6 @@ export class WebGPUContext extends GraphicsContext {
       width: this.drawingBufferWidth,
       height: this.drawingBufferHeight,
     };
-
-    // Start the default (canvas) render pass
-    this._beginDefaultRenderPass();
   }
 
   /**
@@ -1831,6 +1881,13 @@ export class WebGPUContext extends GraphicsContext {
     ) {
       return;
     }
+    // C9-07 / FAR-405-C0 — pick mini-frames never acquire the swap view,
+    // so the endFrame present fallback (gated on `_currentTextureView`)
+    // can never fabricate a canvas pass here. Reset the tracking state
+    // anyway so a stale target from a truncated frame can't leak in.
+    this._activePassTarget = null;
+    this._canvasColorTouchedThisFrame = false;
+    this._canvasDepthTouchedThisFrame = false;
     if (this._uniformAllocator) {
       this._uniformAllocator.beginFrame();
     }
@@ -1842,12 +1899,21 @@ export class WebGPUContext extends GraphicsContext {
 
   /**
    * Starts the default render pass targeting the canvas surface.
-   * This is called automatically by `beginFrame()` and can also be called
-   * after `endCurrentRenderPass()` to resume rendering to the canvas.
    *
-   * @param {boolean} [clear=true] - Whether to clear the canvas (loadOp: "clear" vs "load")
+   * C9-07 / FAR-405-C0 — no longer called from `beginFrame()`; the canvas
+   * pass opens on first demand (`resumeDefaultRenderPass`, the lazy
+   * `executeDrawCommand` open, or the `endFrame` present fallback). Load
+   * ops derive from the per-frame demand flags: the FIRST open of a frame
+   * clears each untouched channel (exactly what the historical beginFrame
+   * open did once per frame), every subsequent open loads. Callers no
+   * longer choose clear-vs-load — the flags make it deterministic.
+   *
+   * @param {string} [label] - Pass label; the endFrame present fallback
+   *   passes a distinct label so API-lane evidence is self-describing.
    */
-  private _beginDefaultRenderPass(clear: boolean = true): void {
+  private _beginDefaultRenderPass(
+    label: string = "Scene Main Render Pass",
+  ): void {
     if (!this._currentCommandEncoder || !this._currentTextureView) {
       return;
     }
@@ -1870,10 +1936,25 @@ export class WebGPUContext extends GraphicsContext {
     if (this._currentRenderPassEncoder) {
       this._currentRenderPassEncoder.end();
       this._currentRenderPassEncoder = null;
+      this._activePassTarget = null;
     }
 
+    // First-open-clears rule (C9-07 / FAR-405-C0): today's frame always
+    // cleared these channels exactly once (at beginFrame) and loaded
+    // thereafter; deriving from the flags clears each channel exactly once
+    // at its first actual open instead. Depth is load-bearing: an
+    // untouched depth texture read with "load" yields lazy-zero 0.0, not
+    // the historical clear value 1.0, and every depth-tested canvas draw
+    // would fail.
+    const colorLoadOp: GPULoadOp = this._canvasColorTouchedThisFrame
+      ? "load"
+      : "clear";
+    const depthLoadOp: GPULoadOp = this._canvasDepthTouchedThisFrame
+      ? "load"
+      : "clear";
+
     const renderPassDescriptor: GPURenderPassDescriptor = {
-      label: "Scene Main Render Pass",
+      label,
       colorAttachments: [
         {
           view: this._currentTextureView,
@@ -1883,7 +1964,7 @@ export class WebGPUContext extends GraphicsContext {
             b: this._clearColor.blue ?? 0.0,
             a: this._clearColor.alpha ?? 1.0,
           },
-          loadOp: clear ? "clear" : "load",
+          loadOp: colorLoadOp,
           storeOp: "store",
         },
       ],
@@ -1891,10 +1972,10 @@ export class WebGPUContext extends GraphicsContext {
         ? {
             view: this._depthTextureView,
             depthClearValue: this._clearDepth,
-            depthLoadOp: clear ? "clear" : "load",
+            depthLoadOp: depthLoadOp,
             depthStoreOp: "store",
             stencilClearValue: this._clearStencil,
-            stencilLoadOp: clear ? "clear" : "load",
+            stencilLoadOp: depthLoadOp,
             stencilStoreOp: "store",
           }
         : undefined,
@@ -1902,11 +1983,12 @@ export class WebGPUContext extends GraphicsContext {
 
     this._currentRenderPassEncoder =
       this._currentCommandEncoder.beginRenderPass(
-        this.withRenderPassTimestamps(
-          renderPassDescriptor,
-          "Scene Main Render Pass",
-        ),
+        this.withRenderPassTimestamps(renderPassDescriptor, label),
       );
+    this._activePassTarget = "default-canvas";
+    // This pass's store defines the canvas content from here on.
+    this._canvasColorTouchedThisFrame = true;
+    this._canvasDepthTouchedThisFrame = true;
 
     // Set default viewport to full canvas size
     this._currentRenderPassEncoder.setViewport(
@@ -1936,6 +2018,9 @@ export class WebGPUContext extends GraphicsContext {
    * - Translucent rendering (separate pass with different blend state)
    *
    * @param {GPURenderPassDescriptor} descriptor - The render pass descriptor
+   * @param {WebGPUPassTarget} [target="external"] - Explicit pass-target
+   *   classification (C9-07 / FAR-405-C0). The three scene-FB open sites
+   *   declare "scene-framebuffer"; everything else defaults to "external".
    * @returns {GPURenderPassEncoder | null} The new render pass encoder, or null if no command encoder
    *
    * @example
@@ -1958,6 +2043,7 @@ export class WebGPUContext extends GraphicsContext {
    */
   beginRenderPass(
     descriptor: GPURenderPassDescriptor,
+    target: WebGPUPassTarget = "external",
   ): GPURenderPassEncoder | null {
     if (!this._currentCommandEncoder) {
       this.log(
@@ -1986,6 +2072,7 @@ export class WebGPUContext extends GraphicsContext {
     if (this._currentRenderPassEncoder) {
       this._currentRenderPassEncoder.end();
       this._currentRenderPassEncoder = null;
+      this._activePassTarget = null;
     }
 
     // Begin the new render pass
@@ -1993,6 +2080,7 @@ export class WebGPUContext extends GraphicsContext {
       this._currentCommandEncoder.beginRenderPass(
         this.withRenderPassTimestamps(descriptor),
       );
+    this._activePassTarget = target;
 
     return this._currentRenderPassEncoder;
   }
@@ -2038,15 +2126,18 @@ export class WebGPUContext extends GraphicsContext {
     if (this._currentRenderPassEncoder) {
       this._currentRenderPassEncoder.end();
       this._currentRenderPassEncoder = null;
+      this._activePassTarget = null;
     }
   }
 
   /**
    * Resume rendering to the default canvas render pass.
    *
-   * This starts a new render pass targeting the canvas surface with loadOp: "load"
-   * (preserving what was already rendered). Use this after completing a non-default
-   * render pass (e.g., shadow map, pick buffer) to continue rendering to the screen.
+   * This starts a new render pass targeting the canvas surface, preserving
+   * what was already rendered this frame (the first open of a frame clears
+   * untouched channels — see `_beginDefaultRenderPass`). Use this after
+   * completing a non-default render pass (e.g., shadow map, pick buffer)
+   * to continue rendering to the screen.
    *
    * @returns {GPURenderPassEncoder | null} The render pass encoder, or null
    */
@@ -2063,10 +2154,12 @@ export class WebGPUContext extends GraphicsContext {
     if (this._currentRenderPassEncoder) {
       this._currentRenderPassEncoder.end();
       this._currentRenderPassEncoder = null;
+      this._activePassTarget = null;
     }
 
-    // Start a new default pass with loadOp: "load" (preserve existing content)
-    this._beginDefaultRenderPass(false);
+    // Open the default pass; load ops derive from the per-frame demand
+    // flags (clear on the frame's first open, load thereafter).
+    this._beginDefaultRenderPass();
 
     return this._currentRenderPassEncoder;
   }
@@ -2128,6 +2221,19 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * Declare that this frame's canvas color content has been written by a
+   * pass the context cannot observe (C9-07 / FAR-405-C0). The post-process
+   * pipeline and the debug overlays blit to `currentTextureView` through
+   * raw `encoder.beginRenderPass` calls, bypassing the context pass
+   * helpers — without this marker the next default-pass open would use
+   * `loadOp:"clear"` and the `endFrame` present fallback would wipe the
+   * blit with a cleared canvas.
+   */
+  markCanvasContentWritten(): void {
+    this._canvasColorTouchedThisFrame = true;
+  }
+
+  /**
    * End the current frame - ends render pass and submits commands
    */
   /**
@@ -2177,6 +2283,30 @@ export class WebGPUContext extends GraphicsContext {
     if (this._currentRenderPassEncoder) {
       this._currentRenderPassEncoder.end();
       this._currentRenderPassEncoder = null;
+      this._activePassTarget = null;
+    }
+
+    // C9-07 / FAR-405-C0 — deferred clear/present fallback. An acquired
+    // swap texture that nothing writes presents WebGPU lazy-zeros; the
+    // historical behavior was one beginFrame clear pass every frame. The
+    // ONLY frames that pay this open+end are frames where no consumer
+    // touched the canvas color (empty scene, post-process missing,
+    // exception-truncated frames). Pick mini-frames never acquire a swap
+    // view (`beginPickFrame`), so `_currentTextureView === null` excludes
+    // them naturally. The distinct label keeps API-lane evidence
+    // self-describing (nothing in live code matches pass labels).
+    if (
+      this._currentTextureView !== null &&
+      !this._canvasColorTouchedThisFrame
+    ) {
+      this._beginDefaultRenderPass("Canvas Demand Clear Pass");
+      if (this._currentRenderPassEncoder) {
+        const fallbackPass = this
+          ._currentRenderPassEncoder as GPURenderPassEncoder;
+        fallbackPass.end();
+        this._currentRenderPassEncoder = null;
+        this._activePassTarget = null;
+      }
     }
 
     // Coalesce per-draw uniform uploads into one queue write per dirty ring
@@ -2829,6 +2959,7 @@ export class WebGPUContext extends GraphicsContext {
     if (this._currentRenderPassEncoder) {
       this._currentRenderPassEncoder.end();
       this._currentRenderPassEncoder = null;
+      this._activePassTarget = null;
     }
 
     // Resolve the source GPU texture -----------------------------------------------
@@ -3253,36 +3384,42 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
-    // ── Scene framebuffer guard (MUST run BEFORE ending the pass) ──
+    // ── Scene-owned pass guard (MUST run BEFORE ending the pass) ──
     //
-    // When the WebGPU scene renderer's "Scene Framebuffer" pass is
-    // active, ClearCommands must NOT tear it down and replace it with a
-    // canvas-targeting clear pass. The scene FB pass was opened with
-    // loadOp: "clear", so these clears are redundant.
+    // When a scene-owned pass (the scene framebuffer pass or the default
+    // canvas pass) is active, ClearCommands must NOT tear it down and
+    // replace it with a canvas-targeting clear pass. Those passes were
+    // opened with the correct load ops, so these clears are redundant —
+    // and tearing down the scene-FB pass mid-frame is the documented
+    // all-black failure mode.
     //
-    // IMPORTANT: this check reads `_currentRenderPassEncoder.label`
-    // which is destroyed on the next line. Moving this guard below the
-    // `.end()` call made the check always see `null` — which is what
-    // caused the original all-black WebGPU output and the recent
-    // infinite clear loop (the guard silently became a no-op).
-    const activePassLabel = this._currentRenderPassEncoder?.label ?? "";
-    if (activePassLabel.startsWith("Scene")) {
-      // Scene-owned pass is active — its loadOp already handles the
-      // clear. Don't tear it down and replace it with a canvas pass.
+    // C9-07 / FAR-405-C0 — the guard used to infer this from
+    // `_currentRenderPassEncoder.label.startsWith("Scene")` (matching
+    // exactly "Scene Main Render Pass" + "Scene Framebuffer Render
+    // Pass"); it now reads the explicitly tracked pass target, which is
+    // nulled at every `.end()` site, so the historical moved-below-end
+    // bug (guard always seeing null) cannot silently recur.
+    if (
+      this._activePassTarget === "scene-framebuffer" ||
+      this._activePassTarget === "default-canvas"
+    ) {
       return;
     }
+
+    const hadActivePass = this._currentRenderPassEncoder !== null;
 
     // End the active render pass so we can start a fresh one with clear ops
     if (this._currentRenderPassEncoder) {
       this._currentRenderPassEncoder.end();
       this._currentRenderPassEncoder = null;
+      this._activePassTarget = null;
     }
 
     // Build a render pass descriptor that clears only the requested channels
     // and loads (preserves) everything else.
     const colorLoadOp: GPULoadOp = wantColor ? "clear" : "load";
-    const depthLoadOp: GPULoadOp = wantDepth ? "clear" : "load";
-    const stencilLoadOp: GPULoadOp = wantStencil ? "clear" : "load";
+    let depthLoadOp: GPULoadOp = wantDepth ? "clear" : "load";
+    let stencilLoadOp: GPULoadOp = wantStencil ? "clear" : "load";
 
     let colorView = this._currentTextureView;
     let depthStencilView = this._depthTextureView;
@@ -3303,6 +3440,42 @@ export class WebGPUContext extends GraphicsContext {
 
     if (!colorView) {
       return;
+    }
+
+    // ── Deferred canvas clear (C9-07 / FAR-405-C0) ──
+    // A default-framebuffer clear arriving while no pass is active and the
+    // canvas is still untouched this frame (the background
+    // `scene._clearColorCommand` on the new deferred-open timeline) is
+    // subsumed by the pending first-open clear (or the endFrame present
+    // fallback), which delivers the same `_clearColor`/`_clearDepth`/
+    // `_clearStencil` values. This reproduces the historical behavior
+    // where that command arrived while the beginFrame canvas pass was
+    // active and was swallowed by the guard above. NOTE: `cmd.color` is
+    // deliberately NOT copied into `_clearColor` here — that would change
+    // empty-scene bytes from transparent black to the scene background
+    // color (ledgered as a WebGL-parity follow-on candidate, not this
+    // slice).
+    if (
+      !hadActivePass &&
+      colorView === this._currentTextureView &&
+      !this._canvasColorTouchedThisFrame &&
+      !this._canvasDepthTouchedThisFrame
+    ) {
+      return;
+    }
+
+    // C9-07 / FAR-405-C0 — when this clear pass attaches the CONTEXT
+    // (canvas) depth texture and that texture is untouched this frame, a
+    // "load" op would read lazy-zero 0.0 instead of the historical 1.0
+    // (the beginFrame pass used to clear it every frame). Force a clear
+    // to the default values — byte-identical to what "load" used to see.
+    if (
+      depthStencilView === this._depthTextureView &&
+      depthStencilView !== null &&
+      !this._canvasDepthTouchedThisFrame
+    ) {
+      depthLoadOp = "clear";
+      stencilLoadOp = "clear";
     }
 
     const cc = cmd.color as CesiumColor | undefined;
@@ -3348,6 +3521,20 @@ export class WebGPUContext extends GraphicsContext {
           "ClearCommand Render Pass",
         ),
       );
+    // "external" (NOT "default-canvas") so a subsequent default-FB
+    // ClearCommand still executes — the historical label guard never
+    // matched "ClearCommand Render Pass" either.
+    this._activePassTarget = "external";
+    // The stores of this pass define the canvas channels it attaches.
+    if (colorView === this._currentTextureView) {
+      this._canvasColorTouchedThisFrame = true;
+    }
+    if (
+      depthStencilView !== null &&
+      depthStencilView === this._depthTextureView
+    ) {
+      this._canvasDepthTouchedThisFrame = true;
+    }
 
     // Restore default viewport / scissor
     this._currentRenderPassEncoder.setViewport(
@@ -3404,6 +3591,15 @@ export class WebGPUContext extends GraphicsContext {
   /**
    * WebGPU override: dispatch draw commands through the active render pass encoder.
    * Silently skips non-WebGPU commands (expected during transition).
+   *
+   * C9-07 / FAR-405-C0 — demand-open: a WebGPU draw command arriving with
+   * no active pass during a render frame (legacy overlay commands from
+   * `Scene._overlayCommandList`, executed after post-process) lazily opens
+   * the default canvas pass. Historically those commands landed in the
+   * canvas pass the post-process tail unconditionally re-opened; the tail
+   * resume is now demand-driven, so the open happens here instead — same
+   * target, same load ops (canvas already marked written by the PP blit).
+   * Pick mini-frames (`_currentTextureView === null`) keep the silent skip.
    */
   override executeDrawCommand(
     command: CesiumAnyDrawCommand,
@@ -3411,7 +3607,15 @@ export class WebGPUContext extends GraphicsContext {
     _passState: CesiumPassState,
     _debugFramebuffer?: CesiumOpaqueFramebuffer,
   ): void {
-    const renderPass = this._currentRenderPassEncoder;
+    let renderPass = this._currentRenderPassEncoder;
+    if (
+      !renderPass &&
+      command.isWebGPUDrawCommand === true &&
+      this._currentCommandEncoder !== null &&
+      this._currentTextureView !== null
+    ) {
+      renderPass = this.resumeDefaultRenderPass();
+    }
     if (!renderPass) {
       return;
     }

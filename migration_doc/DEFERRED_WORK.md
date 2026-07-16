@@ -5272,6 +5272,34 @@ gate flip stay paused behind this item.
 
 ---
 
+## C9-07-DEMAND-OPEN-CANVAS-PASS latent findings (2026-07-16)
+
+Surfaced (verified against live code, NOT fixed) while landing the FAR-405-C0 demand-open canvas
+slice — each needs its own oracle before any code change (Principle 9):
+
+- **`NEW-WEBGPU-RENDERCOMMAND-STALE-PASS-SLOT`** — `Renderer/WebGPU/RenderCommand.js:345`
+  (`_executeWebGPU`) reads `context._currentRenderPass`, a property that does not exist on
+  `WebGPUContext` (the real slot is `_currentRenderPassEncoder`), so the expression always falls
+  through to `passState` and the immediate-mode RenderCommand WebGPU path never receives the active
+  pass encoder. Latent and independent of the demand-open slice (pre-existing). Fix needs a consumer
+  probe first — no current caller exercises the broken branch on the default route.
+- **`NEW-WEBGPU-CANVAS-BACKGROUND-COLOR-PARITY`** — the WebGPU context `_clearColor` is
+  `(0,0,0,0)` from the constructor and is never fed `scene.backgroundColor`; the background
+  `_clearColorCommand` targeting the default framebuffer is (and historically was) swallowed, so an
+  EMPTY WebGPU scene presents transparent black while WebGL clears to the scene background color.
+  The C9-07 slice deliberately preserved these bytes (empty-scene byte-identity gate); adopting
+  `cmd.color` into the deferred first-open clear is the parity fix, but it is a visible behavior
+  change needing its own WebGL-vs-WebGPU background probe.
+- **`NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME`** — `WebGPUSceneRendererTranslucentPass.ts`
+  (~L348) resumes the DEFAULT (canvas) pass after the OIT composite, mid-frustum-loop, and draws
+  deferred Gaussian splats inline there; the comment says "resumed scene pass" but the target is the
+  canvas, and the post-process blit later overwrites the canvas — likely invisible splats under
+  OIT+splats scenes. Behavior unchanged by C9-07 (the resume now first-opens with clear instead of
+  loading the beginFrame clear — identical bytes). Needs a splats+OIT visual probe before redirecting
+  to `_resumeScenePass`.
+
+---
+
 ## Campaign-7 research register (2026-07-06)
 
 The 10 concurrent read-only research lanes that fed Campaign 7's later briefs are consolidated in **[`RESEARCH_REGISTER_2026-07-06.md`](RESEARCH_REGISTER_2026-07-06.md)** — one section per lane (license verdict, key findings, recommendation, source links, cross-links to the rows above). Lanes: R-STBN, R-LTC, R-WIND-DATA, R-SSGI, R-FFT-OCEAN, R-FSR2, R-VEGETATION, R-IMPOSTOR, R-LAKE-SRTMSWBD, R-MARS-ATMO. Full per-lane reports live in the session scratchpad (`RESEARCH_*.md`, paths in the register). The rows they inform: C6-CLOUD-STBN-TAAU / C6-TPDF-DITHER-FINAL (R-STBN), C6-LTC-AREA-LIGHTS (R-LTC), C6-FLOWFIELD-WIND (R-WIND-DATA), C6-SSGI-DIFFUSE (R-SSGI), C6-FFT-OCEAN + C6-PLANAR-REFLECT-REFRACT (R-FFT-OCEAN), C6-FSR2-UPSCALE (R-FSR2), NEW-VEGETATION-SYSTEM (R-VEGETATION), C7-CLOUD-IMPOSTOR-LOD (R-IMPOSTOR), C7-LAKE-WATER-MASK v2 (R-LAKE-SRTMSWBD), FUT-MULTI-BODY-ATMOSPHERE (R-MARS-ATMO).
