@@ -148,7 +148,7 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
     alloc.endFrame();
   });
 
-  it("allocateAndWrite forwards typed arrays through the queue", function () {
+  it("allocateAndWrite stages typed arrays until flush", function () {
     const { device, writes } = makeMockDevice();
     const alloc = new WebGPURingBufferAllocator(device, {
       pageSize: 4096,
@@ -157,10 +157,76 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
     alloc.beginFrame();
     const data = new Float32Array([1, 2, 3, 4]);
     const result = alloc.allocateAndWrite(data);
+    expect(writes.length).toBe(0);
+    alloc.flush();
     expect(writes.length).toBe(1);
     expect(writes[0].buffer).toBe(result.buffer);
     expect(writes[0].offset).toBe(result.offset);
     expect(writes[0].byteLength).toBe(data.byteLength);
+    expect(
+      Array.from(
+        new Float32Array(writes[0].source, writes[0].srcOffset, data.length),
+      ),
+    ).toEqual(Array.from(data));
+    alloc.endFrame();
+  });
+
+  it("coalesces multiple allocations on one page into one queue write", function () {
+    const { device, writes } = makeMockDevice();
+    const alloc = new WebGPURingBufferAllocator(device, {
+      pageSize: 4096,
+      pageCount: 2,
+      minAlignment: 256,
+    });
+    alloc.beginFrame();
+    alloc.allocateAndWrite(new Uint32Array([0x11223344]));
+    alloc.allocateAndWrite(new Uint32Array([0x55667788]));
+    alloc.flush();
+    expect(writes.length).toBe(1);
+    expect(writes[0].offset).toBe(0);
+    expect(writes[0].byteLength).toBe(260);
+    alloc.flush();
+    expect(writes.length).toBe(1);
+    alloc.endFrame();
+  });
+
+  it("flushes every dirty page when staged writes overflow", function () {
+    const { device, writes } = makeMockDevice();
+    const alloc = new WebGPURingBufferAllocator(device, {
+      pageSize: 512,
+      pageCount: 2,
+      minAlignment: 256,
+    });
+    alloc.beginFrame();
+    const first = alloc.allocateAndWrite(new Uint8Array(300).fill(1));
+    const second = alloc.allocateAndWrite(new Uint8Array(300).fill(2));
+    expect(first.pageIndex).not.toBe(second.pageIndex);
+
+    alloc.flush();
+
+    expect(writes.length).toBe(2);
+    expect(writes[0].buffer).toBe(first.buffer);
+    expect(writes[0].byteLength).toBe(300);
+    expect(writes[1].buffer).toBe(second.buffer);
+    expect(writes[1].byteLength).toBe(300);
+    alloc.endFrame();
+  });
+
+  it("does not upload unwritten tail padding from a wider binding", function () {
+    const { device, writes } = makeMockDevice();
+    const alloc = new WebGPURingBufferAllocator(device, {
+      pageSize: 4096,
+      pageCount: 2,
+      minAlignment: 256,
+    });
+    alloc.beginFrame();
+    const payload = new Uint32Array([0x12345678]);
+    const result = alloc.allocateAndWrite(payload, 192);
+    alloc.flush();
+
+    expect(result.size).toBe(192);
+    expect(writes.length).toBe(1);
+    expect(writes[0].byteLength).toBe(payload.byteLength);
     alloc.endFrame();
   });
 });

@@ -58,6 +58,12 @@ import type {
 interface PerformanceManagerContext {
   readonly device?: GPUDevice | null;
   supportsComputeShaders: boolean;
+  /**
+   * Consumer policy for the contained 3D Tiles indirect-draw path. The
+   * performance-manager feature flag only advertises/supports the facility;
+   * this policy says whether a renderer consumer actually requested it.
+   */
+  useIndirectDrawForTiles?: boolean | "never" | "auto" | "always";
   computeEngine?: {
     getOrCreatePipeline(
       cacheKey: string,
@@ -95,13 +101,17 @@ interface PerformanceManagerContext {
     executeDrawIndexedIndirect(renderPass: GPURenderPassEncoder): void;
   } | null;
   timestampProfiler: {
-    beginPass(encoder: GPUCommandEncoder, label: string): void;
-    endPass(encoder: GPUCommandEncoder, label: string): void;
-    resolveTimestamps(encoder: GPUCommandEncoder): void;
-    getResults(): Record<string, number>;
+    beginPass?(encoder: GPUCommandEncoder, label: string): void;
+    endPass?(encoder: GPUCommandEncoder, label: string): void;
+    resolveTimestamps?(encoder: GPUCommandEncoder): void;
+    getResults(): {
+      enabled: boolean;
+      frameMs: number;
+      passes: { readonly [name: string]: { readonly lastMs: number } };
+    };
     beginFrame(): void;
-    endFrame(): void;
-    getStatistics?(): { totalMs?: number; passes?: Record<string, number> };
+    endFrame(encoder: GPUCommandEncoder): void;
+    reset?(): void;
     getPassTimestampWrites?(
       passName: string,
     ): GPURenderPassTimestampWrites | undefined;
@@ -203,6 +213,23 @@ export interface PerformanceConfig {
   bundleMaxIdleFrames: number;
 }
 
+/**
+ * Minimal surface used by renderer subsystems that encode passes directly on
+ * a {@link GPUCommandEncoder}. The provider returns the caller's descriptor
+ * unchanged while profiling is inactive (the normal path), and only clones it
+ * when timestamp writes must be attached.
+ */
+export interface WebGPUPassTimestampProvider {
+  withRenderPassTimestamps(
+    descriptor: GPURenderPassDescriptor,
+    fallbackName?: string,
+  ): GPURenderPassDescriptor;
+  withComputePassTimestamps(
+    descriptor: GPUComputePassDescriptor,
+    fallbackName?: string,
+  ): GPUComputePassDescriptor;
+}
+
 const DEFAULT_CONFIG: PerformanceConfig = {
   renderBundles: true,
   indirectDraw: true,
@@ -219,6 +246,16 @@ const DEFAULT_CONFIG: PerformanceConfig = {
   gpuPointCloudThreshold: 50000,
   bundleMaxIdleFrames: 300,
 };
+
+/**
+ * Keep the performance manager's lifecycle aligned with the tile renderer's
+ * contained `never | auto | always` policy without importing a Scene-layer
+ * module into the Renderer infrastructure. Unknown values fail closed, just
+ * like `normalizeTileIndirectMode` in WebGPUSceneRenderer3DTilePasses.
+ */
+function isTileIndirectDrawRequested(value: unknown): boolean {
+  return value === true || value === "auto" || value === "always";
+}
 
 /**
  * Cached compute pipeline entry for the orchestrator.
@@ -262,6 +299,7 @@ export class WebGPUPerformanceManager {
   private _indirectDrawActive: boolean = false;
   private _gpuCullerActive: boolean = false;
   private _profilerActive: boolean = false;
+  private _frameActive: boolean = false;
 
   // Render bundle tracking
   private _staticTileBundleKeys: Set<string> = new Set();
@@ -307,8 +345,7 @@ export class WebGPUPerformanceManager {
   // managed pattern. Allocated lazily on the first dispatch when
   // `frameState.useDeferredLighting === true`; stays null otherwise.
   public _gbufferComputeResources:
-    | import("./WebGPUGBufferRenderer.js").GBufferComputeResources
-    | null = null;
+    import("./WebGPUGBufferRenderer.js").GBufferComputeResources | null = null;
 
   constructor(
     context: PerformanceManagerContext,
@@ -338,9 +375,12 @@ export class WebGPUPerformanceManager {
    * Called at the start of each frame. Resets counters and begins profiling.
    */
   beginFrame(): void {
+    this._frameActive = true;
     this._frameCount++;
     this._frameTimings = this._createEmptyTimings();
     this._computeDispatches = 0;
+    this._bundleManagerActive = false;
+    this._indirectDrawActive = false;
 
     // Render bundle manager: begin frame tick for stale eviction
     if (this._config.renderBundles) {
@@ -351,8 +391,16 @@ export class WebGPUPerformanceManager {
       }
     }
 
-    // Indirect draw manager: reset for new frame
-    if (this._config.indirectDraw) {
+    // Indirect draw manager: reset only when its sole current consumer has
+    // explicitly requested the contained tile path. `indirectDraw` remains a
+    // capability/master feature flag and intentionally defaults on, but the
+    // context getter is lazy and allocates GPU buffers. Reading it while the
+    // tile policy is the default `false`/`never` would therefore impose an
+    // idle allocation on every ordinary WebGPU scene.
+    if (
+      this._config.indirectDraw &&
+      isTileIndirectDrawRequested(this._context.useIndirectDrawForTiles)
+    ) {
       const indirectMgr = this._context.indirectDrawManager;
       if (indirectMgr) {
         indirectMgr.beginFrame();
@@ -360,22 +408,38 @@ export class WebGPUPerformanceManager {
       }
     }
 
-    // Timestamp profiler: begin frame timing
-    if (this._config.timestampProfiling) {
-      const profiler = this._context.timestampProfiler;
-      if (profiler) {
-        profiler.beginFrame();
-        this._profilerActive = true;
-      }
+    this.beginTimestampFrame();
+  }
+
+  /**
+   * Begin only the GPU timestamp portion of a frame. WebGPUContext invokes
+   * this before opening its first render pass; beginFrame invokes it again
+   * after scene preparation, so the idempotent guard covers both lifecycle
+   * entry points without double-allocating query indices.
+   */
+  beginTimestampFrame(): void {
+    if (this._profilerActive || !this._config.timestampProfiling) {
+      return;
+    }
+    const profiler = this._context.timestampProfiler;
+    if (profiler) {
+      profiler.beginFrame();
+      this._profilerActive = true;
     }
   }
 
   /**
    * Called at the end of each frame. Flushes indirect draws and reads profiling.
    */
-  endFrame(): void {
+  endFrame(encoder: GPUCommandEncoder): void {
+    if (!this._frameActive && !this._profilerActive) {
+      return;
+    }
+    const frameWasActive = this._frameActive;
+    this._frameActive = false;
+
     // Flush indirect draw buffer to GPU
-    if (this._indirectDrawActive) {
+    if (frameWasActive && this._indirectDrawActive) {
       const indirectMgr = this._context.indirectDrawManager;
       if (indirectMgr) {
         indirectMgr.flush();
@@ -386,26 +450,29 @@ export class WebGPUPerformanceManager {
     if (this._profilerActive) {
       const profiler = this._context.timestampProfiler;
       if (profiler) {
-        profiler.endFrame();
-        // Async readback — results arrive next frame
-        const stats = profiler.getStatistics?.();
-        if (stats) {
-          this._frameTimings.totalGpuMs = stats.totalMs ?? 0;
-          this._frameTimings.passes = (stats.passes ?? {}) as Record<
-            string,
-            number
-          >;
+        profiler.endFrame(encoder);
+        const results = profiler.getResults();
+        this._frameTimings.totalGpuMs = results.frameMs;
+        const passes: Record<string, number> = {};
+        for (const [name, timing] of Object.entries(results.passes)) {
+          passes[name] = timing.lastMs;
         }
+        this._frameTimings.passes = passes;
       }
     }
 
-    this._frameTimings.bundlesExecuted = this._bundleHitCount;
-    this._frameTimings.indirectDrawsBatched = this._indirectDrawActive
-      ? (this._context.indirectDrawManager?.drawCount ?? 0)
-      : 0;
+    if (frameWasActive) {
+      this._frameTimings.bundlesExecuted = this._bundleHitCount;
+      this._frameTimings.indirectDrawsBatched = this._indirectDrawActive
+        ? (this._context.indirectDrawManager?.drawCount ?? 0)
+        : 0;
+    }
 
     this._bundleHitCount = 0;
     this._bundleMissCount = 0;
+    this._bundleManagerActive = false;
+    this._indirectDrawActive = false;
+    this._profilerActive = false;
   }
 
   // ═══════════════════════════════════════════════════════════
@@ -552,6 +619,44 @@ export class WebGPUPerformanceManager {
     }
     const profiler = this._context.timestampProfiler;
     return profiler?.getComputePassTimestampWrites?.(passName);
+  }
+
+  /**
+   * Attach timestamp writes to a render-pass descriptor when opt-in profiling
+   * is active. Caller-provided writes always win. The disabled path performs
+   * one guard and returns the exact descriptor object without allocating.
+   */
+  withRenderPassTimestamps(
+    descriptor: GPURenderPassDescriptor,
+    fallbackName: string = "Unnamed Render Pass",
+  ): GPURenderPassDescriptor {
+    if (!this._profilerActive || descriptor.timestampWrites) {
+      return descriptor;
+    }
+
+    const timestampWrites =
+      this._context.timestampProfiler?.getPassTimestampWrites?.(
+        descriptor.label ?? fallbackName,
+      );
+    return timestampWrites ? { ...descriptor, timestampWrites } : descriptor;
+  }
+
+  /**
+   * Compute-pass counterpart to {@link withRenderPassTimestamps}.
+   */
+  withComputePassTimestamps(
+    descriptor: GPUComputePassDescriptor,
+    fallbackName: string = "Unnamed Compute Pass",
+  ): GPUComputePassDescriptor {
+    if (!this._profilerActive || descriptor.timestampWrites) {
+      return descriptor;
+    }
+
+    const timestampWrites =
+      this._context.timestampProfiler?.getComputePassTimestampWrites?.(
+        descriptor.label ?? fallbackName,
+      );
+    return timestampWrites ? { ...descriptor, timestampWrites } : descriptor;
   }
 
   // ═══════════════════════════════════════════════════════════

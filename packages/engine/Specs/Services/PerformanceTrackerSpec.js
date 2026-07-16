@@ -165,8 +165,67 @@ describe("Services/PerformanceTracker", function () {
       expect(r.summary.cpuMs.max).toBe(30);
       expect(r.summary.cpuMs.avg).toBe(20);
       expect(r.summary.cpuMs.total).toBe(60);
+      expect(r.summary.cpuMs.p50).toBe(20);
+      expect(r.summary.cpuMs.p95).toBe(29);
+      expect(r.summary.cpuMs.p99).toBeCloseTo(29.8, 8);
+      expect(r.summary.cpuMs.mad).toBe(10);
+      expect(r.summary.cpuMs.normalizedMad).toBe(0.5);
       expect(r.summary.gpuMs.count).toBe(3);
       expect(r.summary.gpuMs.avg).toBe(6);
+    });
+
+    it("interpolates percentiles and reports variability for even samples", function () {
+      const t = new PerformanceTracker();
+      t.beginTrace("percentiles");
+      t.sample(makeSample(0, { cpuMs: 1 }));
+      t.sample(makeSample(1, { cpuMs: 2 }));
+      t.sample(makeSample(2, { cpuMs: 3 }));
+      t.sample(makeSample(3, { cpuMs: 100 }));
+      const r = t.endTrace();
+      expect(r.summary.cpuMs.p50).toBe(2.5);
+      expect(r.summary.cpuMs.p95).toBeCloseTo(85.45, 8);
+      expect(r.summary.cpuMs.p99).toBeCloseTo(97.09, 8);
+      expect(r.summary.cpuMs.mad).toBe(1);
+      expect(r.summary.cpuMs.normalizedMad).toBe(0.4);
+    });
+
+    it("leaves normalized MAD unavailable for a zero median", function () {
+      const t = new PerformanceTracker();
+      t.beginTrace("zero");
+      t.sample(makeSample(0, { cpuMs: 0 }));
+      const r = t.endTrace();
+      expect(r.summary.cpuMs.p50).toBe(0);
+      expect(r.summary.cpuMs.mad).toBe(0);
+      expect(r.summary.cpuMs.normalizedMad).toBeNull();
+    });
+
+    it("aggregates GPU timestamp coverage fields", function () {
+      const t = new PerformanceTracker();
+      t.beginTrace("coverage");
+      t.sample(
+        makeSample(0, {
+          extra: {
+            gpuProfiledPassMs: 8,
+            gpuUnprofiledMs: 2,
+            gpuCoverageRatio: 0.8,
+          },
+        }),
+      );
+      t.sample(
+        makeSample(1, {
+          extra: {
+            gpuProfiledPassMs: 9,
+            gpuUnprofiledMs: 1,
+            gpuCoverageRatio: 0.9,
+          },
+        }),
+      );
+
+      const r = t.endTrace();
+      expect(r.summary.gpuProfiledPassMs.avg).toBe(8.5);
+      expect(r.summary.gpuUnprofiledMs.total).toBe(3);
+      expect(r.summary.gpuCoverageRatio.min).toBe(0.8);
+      expect(r.summary.gpuCoverageRatio.max).toBe(0.9);
     });
 
     it("computes the snapshotFrozenRatio", function () {

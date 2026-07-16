@@ -76,8 +76,7 @@ describe("Renderer/WebGPU/webgpuTypeHelpers", function () {
 
   describe("jsModule", function () {
     // jsModule is the typed-cast helper that lets WebGPU TS code call
-    // static methods on JS-only Cesium modules (IndexDatatype,
-    // EncodedCartesian3, RenderState, ContextLimits) without an
+    // static methods on JS-only Cesium modules without an
     // `as any`. The runtime behaviour is identity — the test pins
     // that contract.
     it("returns the input module reference unchanged", function () {

@@ -79,6 +79,7 @@ export function resetPerFrameState(
   // model effects bind group on frames that skip the globe-depth
   // copy (e.g., picking, debug paths, useGlobeDepthFramebuffer off).
   context._globeDepthView = null;
+  context._pickClassificationDepthView = null;
   // Migration Session 2 — clear per-frame packed-translucent-depth
   // view so a stale view from the previous frame doesn't get
   // sampled by the classifier when this frame has no translucent

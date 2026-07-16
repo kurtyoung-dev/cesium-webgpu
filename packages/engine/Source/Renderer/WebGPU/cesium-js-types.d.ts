@@ -495,6 +495,12 @@ interface CesiumCamera {
     fov?: number;
     aspectRatio?: number;
     projectionMatrix?: CesiumMatrix4;
+    getProjectionMatrix?: (
+      clipSpaceConvention: import("../../Core/ClipSpaceConvention.js").ClipSpaceConventionRecord,
+    ) => CesiumMatrix4;
+    getInfiniteProjectionMatrix?: (
+      clipSpaceConvention: import("../../Core/ClipSpaceConvention.js").ClipSpaceConventionRecord,
+    ) => CesiumMatrix4;
     // VOXEL-OCTREE-LOD — screen-space-error denominator (2 * tan(fovy / 2)
     // for perspective frustums). Consumed by the WebGPU voxel SSE refine
     // test, mirroring VoxelTraversal.js's screenSpaceErrorMultiplier.
@@ -529,6 +535,7 @@ interface CesiumUniformState {
    */
   readonly inverseViewTranspose?: CesiumMatrix4 | undefined;
   readonly viewProjection: CesiumMatrix4;
+  readonly inverseViewProjection: CesiumMatrix4;
   /**
    * Last frame's `viewProjection`, cloned before current-frame state is
    * written. Consumed by the TAA / motion-vector path (DP-H41, Batch 27).
@@ -585,6 +592,9 @@ interface CesiumGraphicsContext {
   readonly id: string;
   readonly rendererType: string;
   readonly isWebGPU: boolean;
+  readonly clipSpaceConvention: import("../../Core/ClipSpaceConvention.js").ClipSpaceConventionRecord;
+  readonly graphicsCapabilities: import("../GraphicsCapabilities.js").GraphicsCapabilitiesRecord;
+  readonly limits: import("../GraphicsCapabilities.js").GraphicsCapabilitiesRecord;
   // Backend-agnostic predicates that Scene uses instead of `isWebGPU`.
   // Defaults (WebGL) live on `GraphicsContext`; WebGPU overrides both.
   readonly requiresSceneRenderer: boolean;
@@ -618,6 +628,10 @@ interface CesiumGraphicsContext {
   };
   readonly _canvasFormat?: GPUTextureFormat;
   readonly presentationFormat?: GPUTextureFormat;
+  /** WebGPU-only scene framebuffer color target (HDR-capable/MRT). */
+  readonly scenePipelineFormat?: GPUTextureFormat;
+  /** WebGPU-only byte-exact, single-sample object-ID pick color target. */
+  readonly pickPipelineFormat?: GPUTextureFormat;
   readonly depthFormat?: GPUTextureFormat;
   useHardwareClipDistances?: boolean;
   /** WebGPU-only: opt-in flag selecting the hand-tuned f16 post-process
@@ -751,6 +765,7 @@ interface CesiumDrawCommand {
   cull: boolean;
   occlude: boolean;
   sortKey: number;
+  sortLayer: number;
   sortPriority: number;
   materialSortId: number;
   dirty: boolean;
@@ -929,6 +944,7 @@ interface CesiumImageBasedLighting {
   _webgpuSpecularKTX2Loading?: boolean;
   _webgpuSpecularKTX2Failed?: boolean;
   _webgpuSpecularKTX2Url?: string;
+  _webgpuSpecularKTX2RequestKey?: string;
   _webgpuSpecularVersion?: number;
   _webgpuSpecularCube?: {
     destroy(): void;
@@ -1335,6 +1351,10 @@ interface CesiumAnyDrawCommand {
   receiveShadows?: boolean;
   cull?: boolean;
   occlude?: boolean;
+  /** Canonical backend-neutral command ordering fields. */
+  sortLayer?: number;
+  sortPriority?: number;
+  materialSortId?: number;
   owner?: import("./WebGPUDrawCommand.js").WebGPUCommandOwner;
   execute?(...args: unknown[]): void;
   // WebGPU-specific rendering fields

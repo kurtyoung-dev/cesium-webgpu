@@ -34,7 +34,6 @@
  * @module WebGPUSceneRendererFrustumLoop
  */
 
-import Matrix4 from "../../Core/Matrix4.js";
 import Pass from "../../Renderer/Pass.js";
 import type { WebGPUContext } from "./WebGPUContext.js";
 import type { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
@@ -52,6 +51,10 @@ import {
   type WebGPURenderFrameConfig,
 } from "./WebGPUSceneRenderer.js";
 import type { WebGPUCpuPassProfiler } from "./WebGPUCpuPassProfiler.js";
+import {
+  publishCurrentFrustumState,
+  publishLogDepthEncodeNearFar,
+} from "./WebGPUSceneRendererFrustumState.js";
 
 /**
  * SceneRenderer surface the frustum-loop helper reaches back to.
@@ -95,7 +98,10 @@ export interface FrustumLoopHost {
     frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
   ): void;
-  _renderDepthPlane(config: WebGPURenderFrameConfig): void;
+  _renderDepthPlane(
+    config: WebGPURenderFrameConfig,
+    passKind: "scene" | "pick",
+  ): void;
   _execute3DTilePasses(
     frustumCommands: CesiumFrustumCommands,
     config: WebGPURenderFrameConfig,
@@ -136,22 +142,6 @@ export function executeFrustumLoop(
   const numFrustums = frustumCommandsList.length;
   const uniformState = context.uniformState;
 
-  // Force WebGPU depth-range type for THIS frame's projection-matrix
-  // recomputes. Scene init sets the global to "webgpu" but other
-  // renderers (notably `WebGPUSkyAtmosphereRenderer`) flip it back to
-  // "webgl" after their own per-frame compute — see the comment block
-  // at WebGPUSkyAtmosphereRenderer:530-552. Without re-asserting here,
-  // every projection-matrix recompute that happens during this frustum
-  // loop emits clip-space z in [-1, 1] while WebGPU clips on [0, 1],
-  // silently rejecting roughly the near-half of every frustum. The
-  // SCENE3D perspective + log-depth path happens to keep most
-  // fragments at clip_z > 0 even with the wrong range so it rendered
-  // acceptably; SCENE2D ortho is uniformly distributed across the
-  // depth range and is the most-visible victim (entire viewport
-  // blank). `_updateFrustumUniforms` further invalidates the per-frame
-  // cached projection matrix so this fix actually takes effect.
-  Matrix4.setDepthRangeType("webgpu");
-
   // C-R8-SCENE2D-JITTER (Batch 36) — capture the initial 2D camera
   // altitude before the frustum loop so we can offset per-frustum
   // inside 2D mode. WebGL's `SceneRenderer.js:419,444-449` does this
@@ -176,31 +166,7 @@ export function executeFrustumLoop(
   // and replays unchanged, so scene.camera.frustum here equals its encode
   // frustum exactly. Depth-sample classifiers read this via fstate.encodeFrustum
   // to decode eye distance, then unproject with the per-slice projection.
-  {
-    const camFrust = scene.camera?.frustum as
-      { near?: number; far?: number } | undefined;
-    if (
-      camFrust &&
-      typeof camFrust.near === "number" &&
-      typeof camFrust.far === "number"
-    ) {
-      // Stash on uniformState — the ONE object provably shared between the
-      // renderer's config.context and the classifier's frameState.context (the
-      // GraphicsContext abstraction makes those two context objects DIFFERENT,
-      // so context fields don't cross; but the per-slice currentFrustum set here
-      // via this uniformState IS read by the classifier, proving uniformState is
-      // the shared singleton). The classifier reads
-      // frameState.context.uniformState._logDepthEncodeNearFar.
-      const usEnc = uniformState as unknown as {
-        _logDepthEncodeNearFar: Float32Array | null;
-      };
-      if (!usEnc._logDepthEncodeNearFar) {
-        usEnc._logDepthEncodeNearFar = new Float32Array(2);
-      }
-      usEnc._logDepthEncodeNearFar[0] = camFrust.near;
-      usEnc._logDepthEncodeNearFar[1] = camFrust.far;
-    }
-  }
+  publishLogDepthEncodeNearFar(scene, uniformState);
 
   // --- Multi-frustum loop: iterate from FAR to NEAR ---
   // This matches the WebGL path in Scene.js which goes (numFrustums - 1 - i)
@@ -265,48 +231,9 @@ export function executeFrustumLoop(
     };
 
     host._updateFrustumUniforms(uniformState, near, far, scene);
-    host._currentFrustumIndex = i;
-
-    // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — publish the
-    // per-slice projection so depth-sample classifiers can recover
-    // eye-space against the CORRECT slice at draw time. `_updateFrustumUniforms`
-    // just refreshed `uniformState.inverseProjection` + `.currentFrustum`
-    // for THIS slice; snapshot them onto the context (reused buffers,
-    // overwritten each slice) + mirror the slice index. The classifier
-    // bind-group resolver reads `_currentFrustumIndex` to write/bind a
-    // distinct per-slice GPU buffer (see WebGPUGroundPrimitiveRenderer).
-    {
-      const ctxFrustum = context as unknown as {
-        _currentFrustumInvProj: Float32Array | null;
-        _currentFrustumNearFar: Float32Array | null;
-        _currentFrustumIndex: number;
-      };
-      if (!ctxFrustum._currentFrustumInvProj) {
-        ctxFrustum._currentFrustumInvProj = new Float32Array(16);
-      }
-      if (!ctxFrustum._currentFrustumNearFar) {
-        ctxFrustum._currentFrustumNearFar = new Float32Array(2);
-      }
-      const invProj = uniformState.inverseProjection as
-        { [k: number]: number } | undefined;
-      if (invProj) {
-        const dst = ctxFrustum._currentFrustumInvProj;
-        for (let c = 0; c < 16; c++) {
-          dst[c] = invProj[c];
-        }
-      }
-      ctxFrustum._currentFrustumNearFar[0] = near;
-      ctxFrustum._currentFrustumNearFar[1] = far;
-      ctxFrustum._currentFrustumIndex = i;
-    }
-    // Also publish the slice index on the SHARED uniformState so depth-sample
-    // classifiers (which read frameState.context.uniformState, NOT the renderer's
-    // config.context — different objects under the GraphicsContext abstraction)
-    // can pick the correct per-slice fstate buffer. uniformState.inverseProjection
-    // / .currentFrustum already carry this slice's values (just updated above).
-    (
-      uniformState as unknown as { _currentSliceIndex: number }
-    )._currentSliceIndex = i;
+    // Shared with the auxiliary pick loop; collection/classification
+    // bind-group resolvers require the exact slice projection and index.
+    publishCurrentFrustumState(host, context, uniformState, i, near, far);
 
     // Clear depth/stencil per frustum (but not color — color accumulates across frustums).
     //
@@ -397,7 +324,7 @@ export function executeFrustumLoop(
     if (config.clearGlobeDepth && !debugDepthViz) {
       host._clearDepthStencil(context);
       if (config.useDepthPlane) {
-        host._renderDepthPlane(config);
+        host._renderDepthPlane(config, "scene");
       }
     }
 
@@ -521,7 +448,14 @@ export function executeFrustumLoop(
       !picking &&
       host._globeDepth &&
       config.useGlobeDepthFramebuffer &&
-      scene._picking
+      scene._picking &&
+      // Only repack when a pass after the preceding globe/tile publication
+      // could have changed the live depth attachment. The multi-frustum globe
+      // pick defect still reproduces with this gate removed, so it is tracked
+      // separately as a shared packed-depth lifetime issue.
+      ((frustumCommands.indices[Pass.OPAQUE] ?? 0) > 0 ||
+        (frustumCommands.indices[Pass.VOXELS] ?? 0) > 0 ||
+        (config.clearGlobeDepth && !debugDepthViz))
     ) {
       const enc: GPUCommandEncoder | undefined = context._currentCommandEncoder;
       if (enc) {
@@ -604,12 +538,24 @@ export function executeFrustumLoop(
     }
 
     // For translucent pass, use actual near to avoid blending artifacts
-    if (index !== 0 && scene.mode !== 2 /* SceneMode.SCENE2D */) {
+    if (
+      index !== 0 &&
+      scene.mode !== 2 /* SceneMode.SCENE2D */ &&
+      (frustumCommands.indices[Pass.TRANSLUCENT] ?? 0) > 0
+    ) {
       host._updateFrustumUniforms(
         uniformState,
         frustumCommands.near,
         far,
         scene,
+      );
+      publishCurrentFrustumState(
+        host,
+        context,
+        uniformState,
+        i,
+        frustumCommands.near,
+        far,
       );
     }
 

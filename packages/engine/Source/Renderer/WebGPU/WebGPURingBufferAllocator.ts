@@ -17,8 +17,8 @@
  *
  * // Each frame:
  * allocator.beginFrame();
- * const alloc = allocator.allocate(256); // 256 bytes for a uniform block
- * device.queue.writeBuffer(alloc.buffer, alloc.offset, data);
+ * const alloc = allocator.allocateAndWrite(data, 256);
+ * allocator.flush(); // one queue write per dirty page, before queue.submit()
  * // Use alloc.buffer + alloc.offset in bind group
  * allocator.endFrame();
  * @module WebGPURingBufferAllocator
@@ -91,6 +91,9 @@ export interface RingBufferStats {
 interface RingBufferPage {
   buffer: GPUBuffer;
   size: number;
+  staging: Uint8Array<ArrayBuffer>;
+  dirtyStart: number;
+  dirtyEnd: number;
 }
 
 /**
@@ -101,6 +104,7 @@ interface RingBufferPage {
  * in a circular fashion.
  */
 export class WebGPURingBufferAllocator {
+  private static readonly INITIAL_STAGING_BYTES = 64 * 1024;
   private _device: GPUDevice;
   private _pages: RingBufferPage[] = [];
   private _pageSize: number;
@@ -159,7 +163,18 @@ export class WebGPURingBufferAllocator {
       label: `${this._label} Page ${index} (${(this._pageSize / 1024 / 1024).toFixed(1)}MB)`,
     });
 
-    this._pages.push({ buffer, size: this._pageSize });
+    this._pages.push({
+      buffer,
+      size: this._pageSize,
+      staging: new Uint8Array(
+        Math.min(
+          this._pageSize,
+          WebGPURingBufferAllocator.INITIAL_STAGING_BYTES,
+        ),
+      ),
+      dirtyStart: this._pageSize,
+      dirtyEnd: 0,
+    });
   }
 
   /**
@@ -243,7 +258,18 @@ export class WebGPURingBufferAllocator {
         label: `${this._label} Overflow Page ${overflowIndex}`,
       });
 
-      this._pages.push({ buffer, size: overflowSize });
+      this._pages.push({
+        buffer,
+        size: overflowSize,
+        staging: new Uint8Array(
+          Math.min(
+            overflowSize,
+            WebGPURingBufferAllocator.INITIAL_STAGING_BYTES,
+          ),
+        ),
+        dirtyStart: overflowSize,
+        dirtyEnd: 0,
+      });
       this._currentPageIndex = overflowIndex;
       this._currentOffset = 0;
 
@@ -265,35 +291,69 @@ export class WebGPURingBufferAllocator {
   }
 
   /**
-   * Allocate and immediately write data.
+   * Allocate and stage data for a batched upload.
    *
-   * Convenience method that combines allocate() + writeBuffer().
+   * The CPU copy is accumulated into the current page. {@link flush} emits at
+   * most one `queue.writeBuffer` call for each dirty page, avoiding the driver
+   * and browser-process overhead of one WebGPU API call per uniform block.
+   * `flush()` must run before the command buffer that consumes the allocations
+   * is submitted.
    *
    * @param data - The data to write (typed array or ArrayBuffer)
+   * @param allocationSize - Optional allocation size when the binding is wider
+   * than the source payload (for example, a padded WGSL struct).
    * @returns The allocation descriptor
    */
-  allocateAndWrite(data: ArrayBuffer | ArrayBufferView): RingBufferAllocation {
-    const byteLength =
-      data instanceof ArrayBuffer ? data.byteLength : data.byteLength;
-    const allocation = this.allocate(byteLength);
-
-    if (data instanceof ArrayBuffer) {
-      this._device.queue.writeBuffer(
-        allocation.buffer,
-        allocation.offset,
-        data,
-      );
-    } else {
-      this._device.queue.writeBuffer(
-        allocation.buffer,
-        allocation.offset,
-        data.buffer,
-        data.byteOffset,
-        data.byteLength,
+  allocateAndWrite(
+    data: ArrayBuffer | ArrayBufferView,
+    allocationSize?: number,
+  ): RingBufferAllocation {
+    const byteLength = data.byteLength;
+    const allocation = this.allocate(allocationSize ?? byteLength);
+    if (byteLength > allocation.size) {
+      throw new RangeError(
+        `Ring-buffer upload (${byteLength} bytes) exceeds its allocation (${allocation.size} bytes).`,
       );
     }
 
+    const page = this._pages[allocation.pageIndex];
+    const source =
+      data instanceof ArrayBuffer
+        ? new Uint8Array(data)
+        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    this._ensureStagingCapacity(page, allocation.offset + byteLength);
+    page.staging.set(source, allocation.offset);
+    page.dirtyStart = Math.min(page.dirtyStart, allocation.offset);
+    page.dirtyEnd = Math.max(
+      page.dirtyEnd,
+      this._alignSize(allocation.offset + byteLength),
+    );
+
     return allocation;
+  }
+
+  /**
+   * Upload all staged allocations. Each dirty backing page is transferred with
+   * one `queue.writeBuffer` call. This is intentionally separate from
+   * {@link endFrame}: the context must flush before `queue.submit()`, while page
+   * retirement remains an after-submit operation.
+   */
+  flush(): void {
+    for (const page of this._pages) {
+      if (page.dirtyEnd <= page.dirtyStart) {
+        continue;
+      }
+      const byteLength = page.dirtyEnd - page.dirtyStart;
+      this._device.queue.writeBuffer(
+        page.buffer,
+        page.dirtyStart,
+        page.staging.buffer,
+        page.staging.byteOffset + page.dirtyStart,
+        byteLength,
+      );
+      page.dirtyStart = page.size;
+      page.dirtyEnd = 0;
+    }
   }
 
   /**
@@ -348,6 +408,23 @@ export class WebGPURingBufferAllocator {
    */
   private _alignSize(size: number): number {
     return Math.ceil(size / 4) * 4;
+  }
+
+  /** Grow a CPU staging page geometrically, only to the frame's actual peak. */
+  private _ensureStagingCapacity(
+    page: RingBufferPage,
+    requiredBytes: number,
+  ): void {
+    if (requiredBytes <= page.staging.byteLength) {
+      return;
+    }
+    let capacity = page.staging.byteLength;
+    while (capacity < requiredBytes) {
+      capacity = Math.min(page.size, Math.max(requiredBytes, capacity * 2));
+    }
+    const staging = new Uint8Array(capacity);
+    staging.set(page.staging);
+    page.staging = staging;
   }
 
   /**

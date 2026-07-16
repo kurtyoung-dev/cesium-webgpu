@@ -34,12 +34,21 @@
  * @private
  */
 
-import Matrix4 from "../../Core/Matrix4.js";
 import Pass from "../../Renderer/Pass.js";
-import mergeSort from "../../Core/mergeSort.js";
+import {
+  DEFAULT_COMMAND_MATERIAL_SORT_ID,
+  DEFAULT_COMMAND_SORT_LAYER,
+  DEFAULT_COMMAND_SORT_PRIORITY,
+  getCommandDistanceSquaredForSort,
+  isCommandOrderingGPUEncodable,
+  normalizeCommandOrderingList,
+  normalizeCommandMaterialSortId,
+  normalizeCommandSortByte,
+} from "../../Renderer/CommandOrdering.js";
 import {
   backToFront as _commandSorterBackToFront,
   backToFrontSplats as _commandSorterBackToFrontSplats,
+  frontToBack as _commandSorterFrontToBack,
 } from "../../Scene/CommandSorter.js";
 import FeatureRendererKey from "../FeatureRendererKey.js";
 import type { WebGPUContext } from "./WebGPUContext.js";
@@ -58,8 +67,12 @@ import { WebGPUTranslucentTileClassification } from "./WebGPUTranslucentTileClas
 import { WebGPUOIT } from "./WebGPUOIT.js";
 import { WebGPUClusteredLightingDispatcher } from "./WebGPUClusteredLightingDispatcher.js";
 import { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
-import { WebGPUDepthPlane } from "./WebGPUDepthPlane.js";
+import {
+  WebGPUDepthPlane,
+  type WebGPUDepthPlanePassKind,
+} from "./WebGPUDepthPlane.js";
 import { WebGPUPostProcessPipeline } from "./WebGPUPostProcessPipeline.js";
+import { applyProjectionJitterToScratch } from "./WebGPUTAAEffect.js";
 import { dispatchGBufferNormalsFromDepth } from "./WebGPUGBufferRenderer.js";
 import type { GBufferComputeHost } from "./WebGPUGBufferRenderer.js";
 import { WebGPUDebugDepthOverlay } from "./WebGPUDebugDepthOverlay.js";
@@ -76,7 +89,10 @@ import {
 } from "./WebGPUSceneRendererClusteredLighting.js";
 import { executeGlobeDispatch } from "./WebGPUSceneRendererGlobePass.js";
 import { executeTranslucentPass } from "./WebGPUSceneRendererTranslucentPass.js";
-import { execute3DTilePasses } from "./WebGPUSceneRenderer3DTilePasses.js";
+import {
+  execute3DTilePasses,
+  type TileIndirectStatus,
+} from "./WebGPUSceneRenderer3DTilePasses.js";
 import {
   setupSceneFramebufferRenderPass,
   buildMrtSlot1Attachment,
@@ -85,7 +101,10 @@ import { isSceneFBMrtMode } from "./WebGPUSceneFBTargetHelpers.js";
 import { resetPerFrameState } from "./WebGPUSceneRendererFrameReset.js";
 import { executeFrustumLoop } from "./WebGPUSceneRendererFrustumLoop.js";
 import { executePostFrustumChain } from "./WebGPUSceneRendererPostFrustumChain.js";
-import { ensureResources } from "./WebGPUSceneRendererEnsureResources.js";
+import {
+  ensureDepthPlane,
+  ensureResources,
+} from "./WebGPUSceneRendererEnsureResources.js";
 import {
   WebGPUCpuPassProfiler,
   type CpuPassProfile,
@@ -315,21 +334,15 @@ function executeWebGPUCommand(
 
 /**
  * Back-to-front comparator delegating to `Scene/CommandSorter.js#backToFront`
- * for WebGL-parity semantics: sortKey → sortPriority → eye-distance-squared.
- * The guard short-circuits when WebGPU commands lack a sphere (some OIT
- * auto-create paths), which WebGL doesn't produce but the WebGPU pipeline
- * occasionally does.
+ * for WebGL-parity semantics: sortLayer → sortKey → sortPriority →
+ * eye-distance-squared. CommandSorter preserves the ordering prefix and safely
+ * returns zero for the distance term when a WebGPU command lacks a sphere.
  */
 function _backToFrontComparator(
   a: CesiumAnyDrawCommand,
   b: CesiumAnyDrawCommand,
   position: { x: number; y: number; z: number },
 ): number {
-  const bvA = a?.boundingVolume;
-  const bvB = b?.boundingVolume;
-  if (!bvA || !bvB || !bvA.distanceSquaredTo || !bvB.distanceSquaredTo) {
-    return 0;
-  }
   return _commandSorterBackToFront(a, b, position);
 }
 
@@ -345,12 +358,73 @@ function _backToFrontSplatsComparator(
   b: CesiumAnyDrawCommand,
   position: { x: number; y: number; z: number },
 ): number {
-  const bvA = a?.boundingVolume;
-  const bvB = b?.boundingVolume;
-  if (!bvA?.center || !bvB?.center) {
-    return 0;
-  }
   return _commandSorterBackToFrontSplats(a, b, position);
+}
+
+function _frontToBackComparator(
+  a: CesiumAnyDrawCommand,
+  b: CesiumAnyDrawCommand,
+  position: { x: number; y: number; z: number },
+): number {
+  return _commandSorterFrontToBack(a, b, position);
+}
+
+type ActiveCommandComparator = (
+  a: CesiumAnyDrawCommand,
+  b: CesiumAnyDrawCommand,
+  position: { x: number; y: number; z: number },
+) => number;
+
+const activeSortScratch = new WeakMap<
+  CesiumAnyDrawCommand[],
+  CesiumAnyDrawCommand[]
+>();
+
+function sortActiveCommandRange(
+  commands: CesiumAnyDrawCommand[],
+  count: number,
+  comparator: ActiveCommandComparator,
+  position: { x: number; y: number; z: number },
+): void {
+  normalizeCommandOrderingList(commands, count);
+  let scratch = activeSortScratch.get(commands);
+  if (!scratch) {
+    scratch = [];
+    activeSortScratch.set(commands, scratch);
+  }
+  if (scratch.length < count) {
+    scratch.length = count;
+  }
+
+  let source = commands;
+  let target = scratch;
+  for (let width = 1; width < count; width *= 2) {
+    for (let left = 0; left < count; left += width * 2) {
+      const middle = Math.min(left + width, count);
+      const right = Math.min(left + width * 2, count);
+      let leftIndex = left;
+      let rightIndex = middle;
+      for (let output = left; output < right; output++) {
+        if (
+          rightIndex >= right ||
+          (leftIndex < middle &&
+            comparator(source[leftIndex], source[rightIndex], position) <= 0)
+        ) {
+          target[output] = source[leftIndex++];
+        } else {
+          target[output] = source[rightIndex++];
+        }
+      }
+    }
+    const previousSource = source;
+    source = target;
+    target = previousSource;
+  }
+  if (source !== commands) {
+    for (let i = 0; i < count; i++) {
+      commands[i] = source[i];
+    }
+  }
 }
 
 /**
@@ -370,13 +444,29 @@ export function sortCommandsBackToFront(
   if (count <= 1 || !scene?.camera?.positionWC) {
     return;
   }
-  // Slice out the active range, sort it, copy back in place. mergeSort on the
-  // live backing array would scramble pooled slots past `count`.
-  const slice = commands.slice(0, count);
-  mergeSort(slice, _backToFrontComparator, scene.camera.positionWC);
-  for (let i = 0; i < count; i++) {
-    commands[i] = slice[i];
+  sortActiveCommandRange(
+    commands,
+    count,
+    _backToFrontComparator,
+    scene.camera.positionWC,
+  );
+}
+
+/** Sort active pick/depth commands front-to-back for early-Z and nearest wins. */
+export function sortCommandsFrontToBack(
+  commands: CesiumAnyDrawCommand[],
+  count: number,
+  scene: CesiumScene,
+): void {
+  if (count <= 1 || !scene?.camera?.positionWC) {
+    return;
   }
+  sortActiveCommandRange(
+    commands,
+    count,
+    _frontToBackComparator,
+    scene.camera.positionWC,
+  );
 }
 
 /**
@@ -395,11 +485,12 @@ export function sortGaussianSplatsBackToFront(
   if (count <= 1 || !scene?.camera?.positionWC) {
     return;
   }
-  const slice = commands.slice(0, count);
-  mergeSort(slice, _backToFrontSplatsComparator, scene.camera.positionWC);
-  for (let i = 0; i < count; i++) {
-    commands[i] = slice[i];
-  }
+  sortActiveCommandRange(
+    commands,
+    count,
+    _backToFrontSplatsComparator,
+    scene.camera.positionWC,
+  );
 }
 
 // Exported so the extracted globe-pass module
@@ -447,11 +538,10 @@ export function executeBatch(
  * buffer, command without `instanceCount`/`indexCount` fields, or a
  * one-element "run") falls back to the per-command executeBatch path.
  *
- * Activation is gated on `context.useIndirectDrawForTiles === true` so
- * the existing per-command path remains the default. The integration
- * point is here so a single feature flag flips it on for the whole 3D
- * Tile pass once a consumer (3D Tiles batched-table renderer, point
- * cloud collection) opts in.
+ * Activation is resolved by the contained tile policy before this function is
+ * called. The legacy context boolean maps `false -> never` and
+ * `true -> always`; an internal `auto` value remains available for threshold
+ * characterization. The existing per-command path is the default.
  */
 // Exported alongside `executeBatch` so the extracted 3D-tile-passes
 // module (`WebGPUSceneRenderer3DTilePasses.ts`, Batch 137) can reach
@@ -696,9 +786,7 @@ interface GpuSortDebugCapture {
   originalCount: number;
   sortMode: number;
   cameraPosition: { x: number; y: number; z: number };
-  centerX: number[];
-  centerY: number[];
-  centerZ: number[];
+  distanceSquared: number[];
   renderLayers: number[];
   sortPriorities: number[];
   materialSortIds: number[];
@@ -722,10 +810,27 @@ interface GpuSortReadbackTag {
   debug?: GpuSortDebugCapture;
 }
 
+interface UnsafePathStatus {
+  requested: boolean;
+  capable: boolean;
+  active: boolean;
+  fallbackReason: string | null;
+}
+
+interface ModeUnsafePathStatus<Mode extends string> extends UnsafePathStatus {
+  requestedMode: Mode;
+}
+
 // --------------- Main class ---------------
 
 export class WebGPUSceneRenderer {
   private _isDestroyed: boolean = false;
+  // Reused clone of the camera frustum for per-slice near/far and TAA jitter.
+  // The persistent camera frustum is renderer-shared state; mutating its
+  // cached projection made freeze/reset correctness depend on cache misses.
+  private _frustumScratch: object | null = null;
+  private _projectionJitterRestore: Float64Array | null = null;
+  private _infiniteProjectionJitterRestore: Float64Array | null = null;
 
   // Batch 226 (NEW-SHADOW-CAST-GPU-CULL-PHASE-2 stats wire-in) —
   // cached context reference set during `_executeOpaquePass` so
@@ -770,6 +875,13 @@ export class WebGPUSceneRenderer {
   // Public underscore: shared with the extracted translucent-pass
   // module (`WebGPUSceneRendererTranslucentPass.ts`, Batch 136).
   public _oit: WebGPUOIT | null = null;
+  // FAR-003: the public Scene OIT option remains a request, while this
+  // renderer-owned safety gate controls whether the currently unsafe WebGPU
+  // MRT implementation may allocate or execute. Default false preserves the
+  // complete alpha-blend fallback.
+  public _webgpuOITEnabled: boolean = false;
+  public _lastOITRequested: boolean = false;
+  public _webgpuOITActiveThisFrame: boolean = false;
   // Public underscore: shared with the executeCommands frustum-loop
   // slice (Batch 140).
   public _globeDepth: WebGPUGlobeDepth | null = null;
@@ -827,6 +939,14 @@ export class WebGPUSceneRenderer {
   // module (Batch 137).
   public _width: number = 0;
   public _height: number = 0;
+  public _tileIndirectStatus: TileIndirectStatus = {
+    requestedMode: "never",
+    requested: false,
+    capable: false,
+    active: false,
+    fallbackReason: "not-requested",
+  };
+  public _tileIndirectStatusFrame: number = -1;
   // Audit C.11 (Batch 132) -- per-frame viewport derived from
   // `passState.viewport` when present, else the full canvas. Used by
   // every `setViewport` / `setScissorRect` call in the scene-FB
@@ -959,6 +1079,7 @@ export class WebGPUSceneRenderer {
   // because both can be active in the same frame and the second's
   // input is the first's output.
   private _gpuCullFilterPool: CesiumAnyDrawCommand[] = [];
+  private _gpuCullingRequestedMode: "auto" | "always" | "never" = "never";
 
   // NEW-HIZ-CONSUME (Batch 210) — HiZ occlusion threshold-gated state.
   //
@@ -978,7 +1099,9 @@ export class WebGPUSceneRenderer {
   private static readonly HI_Z_THRESHOLD = 2000;
   private static readonly HI_Z_THRESHOLD_HI = 2400;
   private static readonly HI_Z_THRESHOLD_LO = 1600;
-  // FORK-41 / C2-21 — consumer-side activation flag, DEFAULT ON (Batch C2-21).
+  // FAR-003 — renderer-owned consumer activation flag, default OFF. Keeping
+  // this per instance prevents one scene's diagnostic toggle from changing
+  // another scene/context and makes visibility consumption an explicit opt-in.
   //
   // The Hi-Z pyramid build + OcclusionTest dispatch + async readback run
   // whenever the density gate is active; when this flag is true the visibility
@@ -1006,44 +1129,44 @@ export class WebGPUSceneRenderer {
   // anyway, so zero visible change. The sky-overhanging tall-box scene
   // (`probe-fork41-occlusion.mjs`) confirms no false-cull. Toggle for A/B via
   // `setHiZConsumeEnabled` / `CesiumDebug.hiZConsume`.
-  private static _hiZConsumeEnabled = true;
+  private _hiZConsumeEnabled: boolean = false;
 
   /**
    * FORK-41 / C2-21 — enable/disable the consumer-side application of Hi-Z
-   * occlusion visibility (dropping occluded commands). Default ON since C2-21
-   * fixed the depth-source root cause + verified real culls with zero
-   * false-cull. The build/dispatch/readback always run when the density gate
-   * is active; this only toggles the drop (useful for A/B regression probes).
+   * occlusion visibility (dropping occluded commands). FAR-003 keeps this OFF
+   * until result identity is tied to the producing frame/frustum/command list.
+   * The build/dispatch/readback can still run in an explicitly requested
+   * producer mode; this toggle only controls result consumption.
    */
-  static setHiZConsumeEnabled(value: boolean): void {
-    WebGPUSceneRenderer._hiZConsumeEnabled = value === true;
+  setHiZConsumeEnabled(value: boolean): void {
+    this._hiZConsumeEnabled = value === true;
   }
 
   /** FORK-41 — whether occluded commands are actually dropped. */
-  static get hiZConsumeEnabled(): boolean {
-    return WebGPUSceneRenderer._hiZConsumeEnabled;
+  get hiZConsumeEnabled(): boolean {
+    return this._hiZConsumeEnabled;
   }
 
   /**
    * NS-GPU-SORT-NO-SCENE-WIRING — set the consumer-side activation mode
-   * for the GPU-produced front-to-back sort order. `"auto"` (default) is
-   * the production heuristic: apply whenever the opaque-command-count gate
-   * is active. `"always"` force-applies; `"never"` is the off-gate (the
+   * for the GPU-produced front-to-back sort order. `"never"` is the FAR-003
+   * contained default. `"auto"` applies whenever the opaque-command-count
+   * gate is active and `"always"` force-applies; `"never"` is the off-gate (the
    * keygen + bitonic sort + readback still run when the density gate is
    * active — stats surface via `highDensityCull()` — but the permutation
    * is never applied, byte-identical to the pre-heuristic default).
    * Reordering opaque commands is output-invariant, so every mode is
    * byte-neutral for the final image; the mode only trades early-Z cost.
    */
-  static setGpuSortConsumeMode(mode: "auto" | "always" | "never"): void {
+  setGpuSortConsumeMode(mode: "auto" | "always" | "never"): void {
     if (mode === "auto" || mode === "always" || mode === "never") {
-      WebGPUSceneRenderer._gpuSortConsumeMode = mode;
+      this._gpuSortConsumeMode = mode;
     }
   }
 
   /** NS-GPU-SORT-NO-SCENE-WIRING — current consumer activation mode. */
-  static get gpuSortConsumeMode(): "auto" | "always" | "never" {
-    return WebGPUSceneRenderer._gpuSortConsumeMode;
+  get gpuSortConsumeMode(): "auto" | "always" | "never" {
+    return this._gpuSortConsumeMode;
   }
 
   /**
@@ -1054,9 +1177,8 @@ export class WebGPUSceneRenderer {
    * `"auto"` production heuristic stays reachable — a boolean can't
    * express it. Used by `CesiumDebug.gpuSortConsume` for A/B probes.
    */
-  static setGpuSortConsumeEnabled(value: boolean): void {
-    WebGPUSceneRenderer._gpuSortConsumeMode =
-      value === true ? "always" : "never";
+  setGpuSortConsumeEnabled(value: boolean): void {
+    this._gpuSortConsumeMode = value === true ? "always" : "never";
   }
 
   /**
@@ -1064,8 +1186,18 @@ export class WebGPUSceneRenderer {
    * gate is active (i.e. mode is not `"never"`). In `"auto"`/`"always"`
    * the consumer applies; in `"never"` it does not.
    */
-  static get gpuSortConsumeEnabled(): boolean {
-    return WebGPUSceneRenderer._gpuSortConsumeMode !== "never";
+  get gpuSortConsumeEnabled(): boolean {
+    return this._gpuSortConsumeMode !== "never";
+  }
+
+  /** Internal FAR-003 comparison gate for the contained WebGPU OIT path. */
+  setWebGPUOITEnabled(value: boolean): void {
+    this._webgpuOITEnabled = value === true;
+  }
+
+  /** Whether the unsafe WebGPU OIT implementation was explicitly forced. */
+  get webgpuOITEnabled(): boolean {
+    return this._webgpuOITEnabled;
   }
   // B214-N1 (Batch 219) — per-frustum gate state.
   private _hiZActiveByFrustum: Map<number, boolean> = new Map();
@@ -1091,6 +1223,7 @@ export class WebGPUSceneRenderer {
   // True while a readback Promise is in flight; prevents stacking
   // duplicate readback calls per frame.
   private _hiZReadbackInFlight: boolean = false;
+  private _hiZConsumedThisFrame: boolean = false;
   // Batch 213 (cosmetic) — reusable filter output for
   // `_filterByHiZVisibility`. Same lifetime model as
   // `_gpuCullFilterPool` above.
@@ -1117,9 +1250,7 @@ export class WebGPUSceneRenderer {
   private _gpuSortActiveByFrustum: Map<number, boolean> = new Map();
   private _sortKeysAllocatedFor: number = 0;
   private _sortKeysSoA: {
-    centerX: Float32Array;
-    centerY: Float32Array;
-    centerZ: Float32Array;
+    distanceSquared: Float32Array;
     renderLayers: Uint32Array;
     sortPriorities: Uint32Array;
     materialSortIds: Uint32Array;
@@ -1133,10 +1264,10 @@ export class WebGPUSceneRenderer {
   // map-vs-submit races internally — no consumer-level in-flight flag).
   // NEW-GPU-SORT-PIPELINE Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — the
   // readback carries the compaction map so the permutation indexes the
-  // ORIGINAL command array, not the compacted SOA. `_dispatchGPUSortKeys`
-  // skips commands with no bounding-volume center; those become the
-  // `skipped` list, and `compactedToOriginal[c]` maps a compacted SOA
-  // slot `c` (what `indices` holds) back to its original command index.
+  // ORIGINAL command array, not the compacted SOA. Canonical-distance
+  // dispatches require every command to be encodable, so this map is identity
+  // and `skipped` is empty today; retaining both fields keeps delayed readback
+  // tags self-describing and backwards-compatible with existing probes.
   // `originalCount` gates staleness (only apply when this frame's opaque
   // count matches, same 1-frame-latency contract as HiZ/gpuCull).
   private _lastSortedIndices: {
@@ -1159,27 +1290,27 @@ export class WebGPUSceneRenderer {
   } | null = null;
   // NS-GPU-SORT-NO-SCENE-WIRING (2026-07-05) — consumer-side activation
   // MODE. Three states, mirroring `Scene.gpuCullingHint` semantics:
-  //   - "auto"   (DEFAULT): the production heuristic. The consumer applies
+  //   - "auto":  explicit threshold-characterization mode. The consumer applies
   //              the GPU front-to-back permutation whenever the per-frustum
   //              opaque-command-count gate (`gpuSortActive`, hysteresis
   //              GPU_SORT_KEYS_THRESHOLD_HI/LO) is active. This is the
   //              "live path" — the count threshold IS the heuristic, so no
   //              extra flag is needed for a dense scene to benefit.
   //   - "always": force-apply whenever a readback exists (debug/A-B).
-  //   - "never":  force-off; the sort dispatch + readback still run when the
-  //              density gate is active (so stats surface), but the result
-  //              is never APPLIED — byte-identical to the pre-heuristic
-  //              default. This is the off-gate.
+  //   - "never" (DEFAULT): force-off; neither the sort producer nor consumer
+  //              runs. This avoids ending the render pass, uploading keys,
+  //              sorting, and mapping a readback whose result cannot be used.
   // Reordering opaque commands is output-invariant (depth test resolves
   // overlap) so every mode is byte-neutral for the final image; the mode
   // only trades early-Z efficiency. Precedent: `_hiZConsumeEnabled` (a
-  // sibling output-invariant consumer) likewise defaults ON once verified.
+  // sibling consumer) is also explicitly opt-in while identity hazards remain.
   // Toggle via `setGpuSortConsumeMode` / `setGpuSortConsumeEnabled` /
   // `CesiumDebug.gpuSortConsume`.
-  private static _gpuSortConsumeMode: "auto" | "always" | "never" = "auto";
+  private _gpuSortConsumeMode: "auto" | "always" | "never" = "never";
   // Phase 3 diagnostic counters (surfaced via getHighDensityCullStats).
   private _sortConsumeApplied: number = 0;
   private _sortConsumeSkipped: number = 0;
+  private _sortConsumeAppliedThisFrame: boolean = false;
   // Debug-only capture of the last dispatched compacted SOA + readback,
   // for the acceptance probe to verify the GPU order matches the CPU
   // comparator. Populated only under the debug pragma.
@@ -1352,6 +1483,12 @@ export class WebGPUSceneRenderer {
   }
   executeCommands(config: WebGPURenderFrameConfig): void {
     const { scene, context, passState, picking } = config;
+    this._lastContext = context;
+    this._lastOITRequested = config.useOIT === true;
+    this._webgpuOITActiveThisFrame = false;
+    this._gpuCullingRequestedMode =
+      (scene as { gpuCullingHint?: "auto" | "always" | "never" })
+        .gpuCullingHint ?? "never";
 
     // Slice 5c-B Batch 117 — stash scene for `_resumeScenePass` and
     // `_clearDepthStencil` so they can read `scene._view.gBufferFramebuffer`
@@ -1540,6 +1677,7 @@ export class WebGPUSceneRenderer {
     // `WebGPUSceneRendererFrustumLoop.ts` in Batch 140 (Slice C of
     // the executeCommands decomposition plan). The 2D-jitter setup
     // is folded into the helper since it only feeds the loop.
+    this._beginDepthPlanePass(config, numFrustums);
     executeFrustumLoop(this, config, opaqueFrustumNearOffset);
 
     // Post-frustum chain (overlay + depth plane + env effects +
@@ -1555,13 +1693,7 @@ export class WebGPUSceneRenderer {
     // and the second half runs the chain once over the fully-accumulated FB.
     if (!config.deferComposite) {
       this._cpuPassProfiler.time("postFrustumChain", () =>
-        executePostFrustumChain(
-          this,
-          context,
-          config,
-          frustumCommandsList,
-          perfManager,
-        ),
+        executePostFrustumChain(this, context, config, frustumCommandsList),
       );
 
       // R-7a CPU pass profiler — close out the per-frame bucket and roll
@@ -1589,6 +1721,12 @@ export class WebGPUSceneRenderer {
     // The wrapper stays here because `executeCommands` calls it as
     // `this._executePickPass(config)`. `_executePickBatch` (the inner
     // helper) moved with the body — no longer present on this class.
+    // A pick can be the first work after recovery. Rebuild only this resource
+    // family here; do not allocate the full scene/postprocess graph on a pick
+    // hot path. Device identity is part of the helper's exact reuse contract.
+    ensureDepthPlane(this, config);
+    const maximumDraws = config.scene._view.frustumCommandsList.length;
+    this._beginDepthPlanePass(config, maximumDraws);
     executePickPass(this, config);
   }
 
@@ -1607,83 +1745,138 @@ export class WebGPUSceneRenderer {
     // Create a working frustum from the camera and update uniform state
     // This mirrors the WebGL path which creates a clone and sets near/far on it
     const camera = scene._frameState.camera;
-    const frustum = camera.frustum;
-    const frustumCache = frustum as unknown as {
+    const cameraFrustum = camera.frustum;
+    type CloneableFrustum = typeof cameraFrustum & {
+      clone?: (result?: object) => CloneableFrustum;
       _near?: number;
       _far?: number;
+      getProjectionMatrix?: (
+        convention: WebGPUContext["clipSpaceConvention"],
+      ) => CesiumMatrix4;
+      getInfiniteProjectionMatrix?: (
+        convention: WebGPUContext["clipSpaceConvention"],
+      ) => CesiumMatrix4;
     };
-    if (frustum && frustum.near !== undefined) {
-      // Use updateFrustum with modified near/far via the scratch approach
-      // Store originals, update, then the uniform state captures the projection matrix
-      const origNear = frustum.near;
-      const origFar = frustum.far;
+    const sourceFrustum = cameraFrustum as CloneableFrustum;
+    if (sourceFrustum && sourceFrustum.near !== undefined) {
+      // Every built-in Cesium frustum implements clone(result). Reusing one
+      // same-prototype clone keeps the per-frustum hot path allocation-free
+      // while isolating near/far and projection-cache mutations from Camera.
+      const existingScratch = this._frustumScratch as CloneableFrustum | null;
+      const compatibleScratch =
+        existingScratch !== null &&
+        Object.getPrototypeOf(existingScratch) ===
+          Object.getPrototypeOf(sourceFrustum)
+          ? existingScratch
+          : undefined;
+      const frustum =
+        typeof sourceFrustum.clone === "function"
+          ? sourceFrustum.clone(compatibleScratch)
+          : sourceFrustum;
+      const usingScratch = frustum !== sourceFrustum;
+      if (usingScratch) {
+        this._frustumScratch = frustum;
+      }
+      const origNear = sourceFrustum.near;
+      const origFar = sourceFrustum.far;
       frustum.near = near;
       frustum.far = far;
-      // Force cached projection-matrix invalidation so the recomputed
-      // projection picks up `Matrix4._depthRangeType = "webgpu"` (set by
-      // Scene init for WebGPU contexts). Without this the cache stays in
-      // the WebGL [-1, 1] clip-z form — fragments at clip_z < 0 (the
-      // near half of every frustum) get clipped by WebGPU's [0, 1] clip
-      // space. Most visible in SCENE2D where the linear ortho depth
-      // puts half the visible range in the now-clipped near half;
-      // perspective + log-depth in SCENE3D / COLUMBUS happens to push
-      // most fragments to clip_z > 0 even with the WebGL projection so
-      // those modes rendered acceptably. Set the sentinel-cached values
-      // to NaN so any equality compare against the new `frustum.near`
-      // fails and triggers a recompute. Touching the cached matrices to
-      // undefined would also work but is harder to type cleanly.
-      frustumCache._near = NaN;
-      frustumCache._far = NaN;
-      // Belt-and-suspenders: re-assert WebGPU depth-range type at every
-      // frustum-uniform update. Other renderers (sky atmosphere, etc.)
-      // may flip the global between iterations; doing this immediately
-      // before the projection recompute guarantees each frustum's
-      // projection matrix is consistent with the depth buffer.
-      // Without this, transitioning back from SCENE2D/CV to SCENE3D
-      // produced a half-globe split where one frustum band rendered
-      // in WebGPU range and the other in WebGL range.
-      Matrix4.setDepthRangeType("webgpu");
+      // Force a near/far cache miss for this frustum band. The projection
+      // query below and UniformState both receive the context convention
+      // explicitly, so construction order cannot change clip-z semantics.
+      frustum._near = NaN;
+      frustum._far = NaN;
 
-      // NEW-TAA-PROJECTION-JITTER-OVERWRITTEN (Batch 358) — re-apply the TAA
-      // sub-pixel jitter to THIS frustum's freshly-recomputed projection
-      // before `updateFrustum` captures it. `Scene.js` applies the jitter to
-      // the camera's ORIGINAL-near/far projection (`applyProjectionJitter`),
-      // but the per-frustum near/far recompute above (forced via the NaN
-      // cache-bust) discards it — so without this the GPU camera UB packs an
-      // UN-jittered projection and TAA's static-edge anti-aliasing half never
-      // runs. `proj[8]/proj[9]` are the clip-space x/y center offset (the same
-      // indices `Scene.js` writes); the offset is near/far-independent, so the
-      // same jitterX/jitterY applies to every frustum slice. `updateFrustum →
-      // setProjection` clones this into `_projection` + marks every dependent
-      // matrix (viewProjection, VP-RTE, MVP, MVP-RTE) dirty, so the jitter
-      // flows into the camera UB. Gated on `taaEnabled` (and not frozen) — a
-      // strict no-op for all non-TAA rendering.
+      // Apply the raster-space NDC jitter to the cloned frustum only.
+      // UniformState clones both projections before the `finally` block
+      // restores their exact cached values. The homogeneous-row translation
+      // works for perspective and orthographic matrices and includes the
+      // WebGPU framebuffer-Y conversion used by the resolve shader.
       const taaScene = scene as unknown as {
         taaEnabled?: boolean;
         _snapshotMode?: { isFrozen?: boolean };
         _alternateSceneRenderer?: {
-          _postProcess?: { taaEffect?: { jitterX: number; jitterY: number } };
+          _postProcess?: {
+            taaEffect?: {
+              projectionJitterNdcX: number;
+              projectionJitterNdcY: number;
+            };
+          };
         };
       };
       const taaEffect =
         taaScene._alternateSceneRenderer?._postProcess?.taaEffect;
-      if (
+      const jitterActive =
         taaScene.taaEnabled === true &&
         taaEffect !== undefined &&
-        taaScene._snapshotMode?.isFrozen !== true
-      ) {
-        // Force the per-frustum recompute (cache NaN-busted above), then shift
-        // the clip-space center by the same jitter Scene.js computed this frame
-        // (proj[8/9] are 0 on a centered frustum, so += equals base + jitter).
-        const proj = frustum.projectionMatrix as unknown as Float64Array;
-        proj[8] += taaEffect.jitterX;
-        proj[9] += taaEffect.jitterY;
-      }
+        scene._frameState?.passes?.render === true &&
+        taaScene._snapshotMode?.isFrozen !== true;
+      let projection: CesiumMatrix4 | undefined;
+      let infiniteProjection: CesiumMatrix4 | undefined;
+      try {
+        if (jitterActive) {
+          const context = scene._frameState.context as unknown as WebGPUContext;
+          projection = frustum.getProjectionMatrix?.(
+            context.clipSpaceConvention,
+          );
+          if (projection === undefined) {
+            throw new Error(
+              "WebGPU frustum must support explicit clip-space projection",
+            );
+          }
 
-      uniformState.updateFrustum(frustum);
-      // Restore — the frustum on the camera should stay unchanged for other systems
-      frustum.near = origNear;
-      frustum.far = origFar;
+          const projectionRestore =
+            this._projectionJitterRestore ?? new Float64Array(16);
+          this._projectionJitterRestore = projectionRestore;
+          for (let i = 0; i < 16; i++) {
+            projectionRestore[i] = projection[i];
+          }
+          applyProjectionJitterToScratch(
+            projection,
+            taaEffect.projectionJitterNdcX,
+            taaEffect.projectionJitterNdcY,
+          );
+
+          if (typeof frustum.getInfiniteProjectionMatrix === "function") {
+            infiniteProjection = frustum.getInfiniteProjectionMatrix(
+              context.clipSpaceConvention,
+            );
+            const infiniteRestore =
+              this._infiniteProjectionJitterRestore ?? new Float64Array(16);
+            this._infiniteProjectionJitterRestore = infiniteRestore;
+            for (let i = 0; i < 16; i++) {
+              infiniteRestore[i] = infiniteProjection[i];
+            }
+            applyProjectionJitterToScratch(
+              infiniteProjection,
+              taaEffect.projectionJitterNdcX,
+              taaEffect.projectionJitterNdcY,
+            );
+          }
+        }
+
+        uniformState.updateFrustum(frustum);
+      } finally {
+        if (projection !== undefined && this._projectionJitterRestore) {
+          for (let i = 0; i < 16; i++) {
+            projection[i] = this._projectionJitterRestore[i];
+          }
+        }
+        if (
+          infiniteProjection !== undefined &&
+          this._infiniteProjectionJitterRestore
+        ) {
+          for (let i = 0; i < 16; i++) {
+            infiniteProjection[i] = this._infiniteProjectionJitterRestore[i];
+          }
+        }
+        // Custom frustum implementations may not provide clone(). Retain the
+        // historical fallback but restore their public near/far in all cases.
+        if (!usingScratch) {
+          sourceFrustum.near = origNear;
+          sourceFrustum.far = origFar;
+        }
+      }
     }
   }
 
@@ -1745,13 +1938,15 @@ export class WebGPUSceneRenderer {
       colorAttachments,
       depthStencilAttachment,
     };
-    context._currentRenderPassEncoder =
-      context._currentCommandEncoder.beginRenderPass(passDesc);
+    const passEncoder = context.beginRenderPass(passDesc);
+    if (!passEncoder) {
+      return;
+    }
     // Audit C.11 (Batch 132) -- use the per-frame cached viewport so
     // split-screen and sub-viewport callers see their requested
     // rectangle. Falls through to full canvas via the snapshot in
     // `executeCommands`.
-    context._currentRenderPassEncoder.setViewport(
+    passEncoder.setViewport(
       this._viewportX,
       this._viewportY,
       this._viewportWidth,
@@ -1759,7 +1954,7 @@ export class WebGPUSceneRenderer {
       0,
       1,
     );
-    context._currentRenderPassEncoder.setScissorRect(
+    passEncoder.setScissorRect(
       this._viewportX,
       this._viewportY,
       this._viewportWidth,
@@ -1819,10 +2014,12 @@ export class WebGPUSceneRenderer {
           colorAttachments,
           depthStencilAttachment,
         };
-        context._currentRenderPassEncoder =
-          context._currentCommandEncoder.beginRenderPass(passDesc);
+        const passEncoder = context.beginRenderPass(passDesc);
+        if (!passEncoder) {
+          return;
+        }
         // Audit C.11 (Batch 132) -- per-frame viewport.
-        context._currentRenderPassEncoder.setViewport(
+        passEncoder.setViewport(
           this._viewportX,
           this._viewportY,
           this._viewportWidth,
@@ -1830,7 +2027,7 @@ export class WebGPUSceneRenderer {
           0,
           1,
         );
-        context._currentRenderPassEncoder.setScissorRect(
+        passEncoder.setScissorRect(
           this._viewportX,
           this._viewportY,
           this._viewportWidth,
@@ -1992,8 +2189,10 @@ export class WebGPUSceneRenderer {
       this._gpuCullLastFiltered = 0;
       this._hiZLastInput = 0;
       this._hiZLastFiltered = 0;
+      this._hiZConsumedThisFrame = false;
       this._gpuCullLastTranslucentInput = 0;
       this._gpuCullLastTranslucentFiltered = 0;
+      this._sortConsumeAppliedThisFrame = false;
       this._statsLastFrameId++;
 
       const numFrustums =
@@ -2026,9 +2225,12 @@ export class WebGPUSceneRenderer {
     // the gates from pick passes either, since pick framerate is on-
     // demand and would skew hysteresis on the render path.
     const fIdx = this._currentFrustumIndex;
-    const hint = (scene as { gpuCullingHint?: "auto" | "always" | "never" })
-      .gpuCullingHint;
+    const hint =
+      (scene as { gpuCullingHint?: "auto" | "always" | "never" })
+        .gpuCullingHint ?? "never";
+    this._gpuCullingRequestedMode = hint;
     const forceOff = hint === "never";
+    const gpuSortProducerRequested = this._gpuSortConsumeMode !== "never";
 
     let gpuCullActive = false;
     let hiZActive = false;
@@ -2046,12 +2248,14 @@ export class WebGPUSceneRenderer {
         WebGPUSceneRenderer.HI_Z_THRESHOLD_HI,
         WebGPUSceneRenderer.HI_Z_THRESHOLD_LO,
       );
-      gpuSortActive = this._updateActivationGate(
-        this._gpuSortActiveByFrustum.get(fIdx) ?? false,
-        count,
-        WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_HI,
-        WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_LO,
-      );
+      if (gpuSortProducerRequested) {
+        gpuSortActive = this._updateActivationGate(
+          this._gpuSortActiveByFrustum.get(fIdx) ?? false,
+          count,
+          WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_HI,
+          WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_LO,
+        );
+      }
     }
     this._gpuCullActiveByFrustum.set(fIdx, gpuCullActive);
     this._hiZActiveByFrustum.set(fIdx, hiZActive);
@@ -2104,10 +2308,9 @@ export class WebGPUSceneRenderer {
     // raw set (just possibly copied by the cull/HiZ passes, which
     // preserve order). When filtering dropped commands, cull/HiZ take
     // precedence and the CPU order stands (opaque order is a pure early-Z
-    // optimization, so this is correct either way). Consumer mode default
-    // "auto" (NS-GPU-SORT-NO-SCENE-WIRING) — the gate active here IS the
-    // production threshold heuristic; see `_applySortedOrder` /
-    // `setGpuSortConsumeMode`.
+    // optimization, so this is correct either way). FAR-003 defaults the
+    // consumer to "never"; "auto" remains an explicit threshold probe. See
+    // `_applySortedOrder` / `setGpuSortConsumeMode`.
     if (gpuSortActive && activeCount === count) {
       const reordered = this._applySortedOrder(
         commands as CesiumAnyDrawCommand[],
@@ -2212,8 +2415,40 @@ export class WebGPUSceneRenderer {
 
   // --- Depth plane ---
 
+  /** Reserve exact per-frustum uniform slices before encoding any draw. */
+  private _beginDepthPlanePass(
+    config: WebGPURenderFrameConfig,
+    maximumDraws: number,
+  ): void {
+    if (!this._depthPlane || !config.useDepthPlane) {
+      return;
+    }
+    const device: GPUDevice | undefined = config.context._device;
+    if (!device) {
+      return;
+    }
+    try {
+      this._depthPlane.beginPass(
+        config.scene._frameState,
+        device,
+        Math.max(1, maximumDraws),
+      );
+    } catch (e: unknown) {
+      if (!this._depthPlaneWarned) {
+        config.context.log(
+          "warn",
+          `DepthPlane preparation error (suppressed): ${(e as Error).message}`,
+        );
+        this._depthPlaneWarned = true;
+      }
+    }
+  }
+
   // Public underscore: shared with the frustum-loop slice (Batch 140).
-  public _renderDepthPlane(config: WebGPURenderFrameConfig): void {
+  public _renderDepthPlane(
+    config: WebGPURenderFrameConfig,
+    passKind: WebGPUDepthPlanePassKind,
+  ): void {
     if (!this._depthPlane || !config.useDepthPlane) {
       return;
     }
@@ -2231,7 +2466,7 @@ export class WebGPUSceneRenderer {
       const renderPass: GPURenderPassEncoder | undefined =
         context.currentRenderPassEncoder;
       if (renderPass) {
-        this._depthPlane.execute(renderPass);
+        this._depthPlane.execute(renderPass, passKind);
       }
     } catch (e: unknown) {
       // Depth plane is non-essential — log warning but don't crash rendering
@@ -2743,7 +2978,9 @@ export class WebGPUSceneRenderer {
       },
     };
 
-    const passEncoder = encoder.beginRenderPass(passDesc);
+    const passEncoder = encoder.beginRenderPass(
+      context.withRenderPassTimestamps(passDesc, "TAA Velocity Pass"),
+    );
     // Audit C.11 (Batch 132) -- per-frame viewport rather than full
     // canvas, so the velocity pass writes only into the requested
     // sub-rectangle (matches the main color pass).
@@ -3080,17 +3317,19 @@ export class WebGPUSceneRenderer {
       // didn't populate the target this frame — likely
       // scene.deferredLighting needs to be true too."
       if (encoder && targetView) {
-        const passEncoder = encoder.beginRenderPass({
-          label: "DebugGBufferOverlay clear (no g-buffer)",
-          colorAttachments: [
-            {
-              view: targetView,
-              loadOp: "clear",
-              storeOp: "store",
-              clearValue: { r: 0.5, g: 0, b: 0.5, a: 1 },
-            },
-          ],
-        });
+        const passEncoder = encoder.beginRenderPass(
+          context.withRenderPassTimestamps({
+            label: "DebugGBufferOverlay clear (no g-buffer)",
+            colorAttachments: [
+              {
+                view: targetView,
+                loadOp: "clear",
+                storeOp: "store",
+                clearValue: { r: 0.5, g: 0, b: 0.5, a: 1 },
+              },
+            ],
+          }),
+        );
         passEncoder.end();
       }
       context.resumeDefaultRenderPass?.();
@@ -3579,11 +3818,14 @@ export class WebGPUSceneRenderer {
     // particle-heavy scene with 50 opaque + 5000 translucent commands
     // correctly fires the translucent cull even though the opaque
     // gate stayed off. Per-frustum hysteresis (B214-N1).
-    // `Scene.gpuCullingHint = 'never'` short-circuits this gate too.
+    // FAR-003: translucent culling is more hazardous than opaque culling
+    // because this call site can run inside an active render pass. It is
+    // therefore reachable only through the explicit `always` force mode;
+    // `auto` remains opaque-only characterization.
     const hint = (
       config.scene as { gpuCullingHint?: "auto" | "always" | "never" }
     ).gpuCullingHint;
-    if (hint === "never") {
+    if (hint !== "always") {
       return { commands, count };
     }
     const fIdx = this._currentFrustumIndex;
@@ -3761,11 +4003,11 @@ export class WebGPUSceneRenderer {
     // so CesiumDebug.highDensityCull surfaces the (currently inert) hit ratio.
     this._hiZLastInput += count;
     this._hiZLastFiltered += filtered.length;
-    // FORK-41 / C2-21 — gate the actual command drop. Default ON since C2-21
-    // fixed the depth-source root cause (pyramid now reads the scene
-    // framebuffer's written depth) + verified real culls with zero false-cull.
-    // The toggle remains for A/B regression probes (`CesiumDebug.hiZConsume`).
-    if (!WebGPUSceneRenderer._hiZConsumeEnabled) return commands;
+    // FAR-003 — gate the actual command drop. Default OFF until result identity
+    // includes its producing frustum/frame/command generation. The toggle
+    // remains for A/B regression probes (`CesiumDebug.hiZConsume`).
+    if (!this._hiZConsumeEnabled) return commands;
+    this._hiZConsumedThisFrame = true;
     return filtered;
   }
 
@@ -3776,12 +4018,11 @@ export class WebGPUSceneRenderer {
    * list, producing a reordered array that is a strict permutation of
    * the same commands (nothing added or dropped).
    *
-   * The readback `indices` hold COMPACTED SOA slots (the keygen skips
-   * commands with no bounding-volume center); `compactedToOriginal` maps
-   * each back to its original command index and `skipped` carries the
-   * no-center commands so the full set is preserved. The permutation
-   * therefore indexes the ORIGINAL `commands` array, never the compacted
-   * SOA — the correctness invariant the Phase-3 off-gate requires.
+   * The readback `indices` hold SOA slots and `compactedToOriginal` maps each
+   * back to its original command index. Canonical-distance dispatches are
+   * all-or-nothing, making this map identity and `skipped` empty, but the
+   * tagged reconstruction protocol remains defensive against old/in-flight
+   * results. The permutation therefore indexes the ORIGINAL `commands` array.
    *
    * Only applied when this frame's opaque count matches the count the
    * dispatch saw (1-frame-latency staleness guard, same contract as
@@ -3796,12 +4037,21 @@ export class WebGPUSceneRenderer {
     count: number,
   ): CesiumAnyDrawCommand[] {
     if (count <= 0) return commands;
-    if (WebGPUSceneRenderer._gpuSortConsumeMode === "never") {
+    if (this._gpuSortConsumeMode === "never") {
       // Off-gate: byte-identical to the pre-heuristic default — never
-      // reorder. "auto" (default) + "always" fall through and apply; this
-      // method is only reached when the opaque-count gate is already
-      // active, so "auto" IS the production threshold heuristic.
+      // reorder. Explicit "auto" + "always" fall through and apply; this
+      // method is only reached when the opaque-count gate is already active.
       return commands;
+    }
+    // The packed 64-bit GPU key has no lossless field for Cesium's legacy
+    // sortKey. Even the explicit "always" debug mode must stay on the CPU
+    // path for such lists; otherwise it would silently violate the canonical
+    // sortLayer -> sortKey -> sortPriority precedence.
+    for (let i = 0; i < count; i++) {
+      if (!isCommandOrderingGPUEncodable(commands[i])) {
+        this._sortConsumeSkipped++;
+        return commands;
+      }
     }
     const prev = this._lastSortedIndices;
     if (!prev || prev.originalCount !== count) {
@@ -3824,8 +4074,7 @@ export class WebGPUSceneRenderer {
       const origIdx = c2o[compactedIdx];
       if (origIdx < count) out.push(commands[origIdx]);
     }
-    // Append the no-center commands in original order so the executed
-    // set is exactly the input set.
+    // Preserve any skipped entries carried by an older/in-flight protocol tag.
     const skipped = prev.skipped;
     for (let i = 0; i < skipped.length; i++) {
       const s = skipped[i];
@@ -3837,6 +4086,7 @@ export class WebGPUSceneRenderer {
       return commands;
     }
     this._sortConsumeApplied++;
+    this._sortConsumeAppliedThisFrame = true;
     //>>includeStart('debug', pragmas.debug);
     if (this._gpuSortDebugCapture) {
       this._gpuSortDebugCapture.appliedOrderLength = out.length;
@@ -4084,6 +4334,11 @@ export class WebGPUSceneRenderer {
   ): boolean {
     // Batch 214 — gate enforcement is upstream (`_gpuSortActive`).
     if (count <= 0) return false;
+    for (let i = 0; i < count; i++) {
+      if (!isCommandOrderingGPUEncodable(commands[i])) {
+        return false;
+      }
+    }
 
     const fr = context.getFeatureRenderer?.(
       FeatureRendererKey.GPU_SORT_KEYS,
@@ -4093,16 +4348,13 @@ export class WebGPUSceneRenderer {
           dispatch?: (
             encoder: GPUCommandEncoder,
             soa: {
-              centerX: Float32Array;
-              centerY: Float32Array;
-              centerZ: Float32Array;
+              distanceSquared: Float32Array;
               renderLayers: Uint32Array;
               sortPriorities: Uint32Array;
               materialSortIds: Uint32Array;
               count: number;
             },
             params: {
-              cameraPosition: { x: number; y: number; z: number };
               sortMode: number;
             },
           ) => boolean;
@@ -4154,9 +4406,7 @@ export class WebGPUSceneRenderer {
     if (!soa || soa.capacity < count) {
       const cap = Math.max(count, soa?.capacity ?? 0);
       soa = {
-        centerX: new Float32Array(cap),
-        centerY: new Float32Array(cap),
-        centerZ: new Float32Array(cap),
+        distanceSquared: new Float32Array(cap),
         renderLayers: new Uint32Array(cap),
         sortPriorities: new Uint32Array(cap),
         materialSortIds: new Uint32Array(cap),
@@ -4165,12 +4415,15 @@ export class WebGPUSceneRenderer {
       this._sortKeysSoA = soa;
     }
     // Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — build the compaction map
-    // alongside the SOA. Commands without a bounding-volume center are
-    // skipped from the sort SOA (no distance key), so the compacted slot
-    // index the GPU sorts is NOT the original command index. Record
-    // `compactedToOriginal[compacted] = original` and collect the
-    // `skipped` originals so the consumer can reconstruct the full,
-    // correctly-ordered command list from the readback permutation.
+    // alongside the SOA. The live GPU path now requires every command to
+    // expose the same finite `boundingVolume.distanceSquaredTo(camera)` term
+    // the CPU comparator uses. A list containing an unsortable command stays
+    // entirely on the CPU; no center-distance approximation or partial-list
+    // reconstruction is permitted. The compaction map remains paired with
+    // readback tags for protocol compatibility, but is identity for live
+    // dispatches. Record `compactedToOriginal[slot] = original` explicitly so
+    // the delayed readback remains paired with the command generation that
+    // produced it even if this protocol gains compaction again later.
     let compaction = this._sortCompactionScratch;
     if (!compaction || compaction.compactedToOriginal.length < count) {
       compaction = {
@@ -4184,25 +4437,23 @@ export class WebGPUSceneRenderer {
     skipped.length = 0;
     let valid = 0;
     for (let i = 0; i < count; i++) {
-      const cmd = commands[i] as {
-        boundingVolume?: {
-          center?: { x: number; y: number; z: number };
-        };
-        renderLayer?: number;
-        sortPriority?: number;
-        materialId?: number;
-      };
-      const c = cmd.boundingVolume?.center;
-      if (!c) {
-        skipped.push(i);
-        continue;
+      const cmd = commands[i];
+      const distanceSquared = getCommandDistanceSquaredForSort(cmd, camPos);
+      if (distanceSquared === undefined) {
+        return false;
       }
-      soa.centerX[valid] = c.x;
-      soa.centerY[valid] = c.y;
-      soa.centerZ[valid] = c.z;
-      soa.renderLayers[valid] = cmd.renderLayer ?? 0;
-      soa.sortPriorities[valid] = cmd.sortPriority ?? 0;
-      soa.materialSortIds[valid] = cmd.materialId ?? 0;
+      soa.distanceSquared[valid] = distanceSquared;
+      soa.renderLayers[valid] = normalizeCommandSortByte(
+        cmd.sortLayer,
+        DEFAULT_COMMAND_SORT_LAYER,
+      );
+      soa.sortPriorities[valid] = normalizeCommandSortByte(
+        cmd.sortPriority,
+        DEFAULT_COMMAND_SORT_PRIORITY,
+      );
+      soa.materialSortIds[valid] = normalizeCommandMaterialSortId(
+        cmd.materialSortId ?? DEFAULT_COMMAND_MATERIAL_SORT_ID,
+      );
       compactedToOriginal[valid] = i;
       valid++;
     }
@@ -4211,16 +4462,13 @@ export class WebGPUSceneRenderer {
     const ok = fr.dispatch(
       encoder,
       {
-        centerX: soa.centerX,
-        centerY: soa.centerY,
-        centerZ: soa.centerZ,
+        distanceSquared: soa.distanceSquared,
         renderLayers: soa.renderLayers,
         sortPriorities: soa.sortPriorities,
         materialSortIds: soa.materialSortIds,
         count: valid,
       },
       {
-        cameraPosition: camPos,
         sortMode: 0 /* SORT_MODE_FRONT_TO_BACK — opaque early-Z */,
       },
     );
@@ -4260,9 +4508,7 @@ export class WebGPUSceneRenderer {
           originalCount: count,
           sortMode: 0,
           cameraPosition: { x: camPos.x, y: camPos.y, z: camPos.z },
-          centerX: Array.from(soa.centerX.subarray(0, valid)),
-          centerY: Array.from(soa.centerY.subarray(0, valid)),
-          centerZ: Array.from(soa.centerZ.subarray(0, valid)),
+          distanceSquared: Array.from(soa.distanceSquared.subarray(0, valid)),
           renderLayers: Array.from(soa.renderLayers.subarray(0, valid)),
           sortPriorities: Array.from(soa.sortPriorities.subarray(0, valid)),
           materialSortIds: Array.from(soa.materialSortIds.subarray(0, valid)),
@@ -4270,7 +4516,7 @@ export class WebGPUSceneRenderer {
           compactedToOriginal: Array.from(c2oSnapshot),
           skipped: skippedSnapshot.slice(),
           appliedOrderLength: 0,
-          consumeEnabled: WebGPUSceneRenderer.gpuSortConsumeEnabled,
+          consumeEnabled: this.gpuSortConsumeEnabled,
         };
         //>>includeEnd('debug');
         fr.prepareIndicesReadback(encoder, valid, tag);
@@ -4304,10 +4550,168 @@ export class WebGPUSceneRenderer {
   // ─── High-density cull diagnostic surface (Batch 217) ──────────────────
 
   /**
+   * FAR-003 safety-policy snapshot. This deliberately reads only already-owned
+   * renderer/context state: diagnostics must not trigger lazy feature-renderer,
+   * culler, indirect-manager, or OIT allocation.
+   */
+  getContainmentStats(): {
+    gpuCullerOpaque: ModeUnsafePathStatus<"auto" | "always" | "never">;
+    gpuCullerTranslucent: ModeUnsafePathStatus<"auto" | "always" | "never">;
+    hiZ: UnsafePathStatus & {
+      producerMode: "auto" | "always" | "never";
+      consumeEnabled: boolean;
+    };
+    gpuSortKeys: ModeUnsafePathStatus<"auto" | "always" | "never"> & {
+      producerMode: "auto" | "always" | "never";
+    };
+    tileIndirect: ModeUnsafePathStatus<"auto" | "always" | "never">;
+    webgpuOIT: UnsafePathStatus & {
+      safetyGateEnabled: boolean;
+    };
+  } {
+    const anyTrue = (m: Map<number, boolean>): boolean => {
+      for (const value of m.values()) {
+        if (value) return true;
+      }
+      return false;
+    };
+    const fallbackFor = (
+      requested: boolean,
+      capable: boolean,
+      active: boolean,
+      inactiveReason: string,
+    ): string | null => {
+      if (!requested) return "not-requested";
+      if (!capable) return "unsupported";
+      return active ? null : inactiveReason;
+    };
+
+    const producerMode = this._gpuCullingRequestedMode;
+    const producerRequested = producerMode !== "never";
+    const computeCapable = this._lastContext?.supportsComputeShaders === true;
+
+    const opaqueGateActive =
+      producerRequested && anyTrue(this._gpuCullActiveByFrustum);
+    const opaqueActive = producerRequested && this._gpuCullLastInput > 0;
+    const translucentRequested = producerMode === "always";
+    const translucentGateActive =
+      translucentRequested && anyTrue(this._gpuCullTranslucentActiveByFrustum);
+    const translucentActive =
+      translucentRequested && this._gpuCullLastTranslucentInput > 0;
+
+    const hiZRequested = this._hiZConsumeEnabled;
+    const hiZActive =
+      hiZRequested && producerRequested && this._hiZConsumedThisFrame;
+    let hiZFallback = fallbackFor(
+      hiZRequested,
+      computeCapable,
+      hiZActive,
+      "producer-inactive-or-result-not-ready",
+    );
+    if (hiZRequested && !producerRequested) {
+      hiZFallback = "producer-disabled";
+    }
+
+    const sortRequested = this._gpuSortConsumeMode !== "never";
+    const sortActive =
+      sortRequested && producerRequested && this._sortConsumeAppliedThisFrame;
+    let sortFallback = fallbackFor(
+      sortRequested,
+      computeCapable,
+      sortActive,
+      "producer-inactive-or-result-not-ready",
+    );
+    if (sortRequested && !producerRequested) {
+      sortFallback = "producer-disabled";
+    }
+
+    const oitRequested = this._lastOITRequested;
+    const oitCapable = !!(
+      this._lastContext as unknown as { _device?: GPUDevice | null }
+    )?._device;
+    const oitActive =
+      oitRequested && this._webgpuOITEnabled && this._webgpuOITActiveThisFrame;
+    let oitFallback: string | null;
+    if (!oitRequested) {
+      oitFallback = "not-requested";
+    } else if (!this._webgpuOITEnabled) {
+      oitFallback = "contained-unsafe-path";
+    } else if (!oitCapable || (this._oit && !this._oit.isSupported)) {
+      oitFallback = "unsupported";
+    } else {
+      oitFallback = oitActive ? null : "inactive-or-resources-not-ready";
+    }
+
+    const tile = this._tileIndirectStatus;
+    return {
+      gpuCullerOpaque: {
+        requestedMode: producerMode,
+        requested: producerRequested,
+        capable: computeCapable,
+        active: opaqueActive,
+        fallbackReason: fallbackFor(
+          producerRequested,
+          computeCapable,
+          opaqueActive,
+          opaqueGateActive
+            ? "result-not-ready-or-not-applied"
+            : "below-threshold",
+        ),
+      },
+      gpuCullerTranslucent: {
+        requestedMode: producerMode,
+        requested: translucentRequested,
+        capable: computeCapable,
+        active: translucentActive,
+        fallbackReason:
+          producerMode === "auto"
+            ? "requires-always-opt-in"
+            : fallbackFor(
+                translucentRequested,
+                computeCapable,
+                translucentActive,
+                translucentGateActive
+                  ? "result-not-ready-or-not-applied"
+                  : "below-threshold",
+              ),
+      },
+      hiZ: {
+        producerMode,
+        consumeEnabled: hiZRequested,
+        requested: hiZRequested,
+        capable: computeCapable,
+        active: hiZActive,
+        fallbackReason: hiZFallback,
+      },
+      gpuSortKeys: {
+        requestedMode: this._gpuSortConsumeMode,
+        producerMode,
+        requested: sortRequested,
+        capable: computeCapable,
+        active: sortActive,
+        fallbackReason: sortFallback,
+      },
+      tileIndirect: {
+        requestedMode: tile.requestedMode,
+        requested: tile.requested,
+        capable: tile.capable,
+        active: tile.active,
+        fallbackReason: tile.fallbackReason,
+      },
+      webgpuOIT: {
+        safetyGateEnabled: this._webgpuOITEnabled,
+        requested: oitRequested,
+        capable: oitCapable,
+        active: oitActive,
+        fallbackReason: oitFallback,
+      },
+    };
+  }
+
+  /**
    * Snapshot of the three threshold-gated GPU dispatchers' current
-   * state + per-frame effectiveness. Routed through
-   * `WebGPUContext.getRendererStatistics()` so it appears in
-   * `scene.getDebugSnapshot().renderer.highDensityCull`.
+   * state + per-frame effectiveness. Read by `Scene.getDebugSnapshot()`
+   * as `scene.getDebugSnapshot().highDensityCull`.
    *
    * Counters reset on context destruction; the `last*` fields
    * reflect the most recent frame the dispatcher ran. `hitRatio` is
@@ -4317,7 +4721,7 @@ export class WebGPUSceneRenderer {
    * to drop (likely the CPU cull was already tight).
    */
   getHighDensityCullStats(): {
-    gpuCullerOpaque: {
+    gpuCullerOpaque: ModeUnsafePathStatus<"auto" | "always" | "never"> & {
       activeAnyFrustum: boolean;
       thresholdHi: number;
       thresholdLo: number;
@@ -4326,7 +4730,7 @@ export class WebGPUSceneRenderer {
       lastFrameFiltered: number;
       hitRatio: number;
     };
-    gpuCullerTranslucent: {
+    gpuCullerTranslucent: ModeUnsafePathStatus<"auto" | "always" | "never"> & {
       activeAnyFrustum: boolean;
       thresholdHi: number;
       thresholdLo: number;
@@ -4335,7 +4739,9 @@ export class WebGPUSceneRenderer {
       lastFrameFiltered: number;
       hitRatio: number;
     };
-    hiZ: {
+    hiZ: UnsafePathStatus & {
+      producerMode: "auto" | "always" | "never";
+      consumeEnabled: boolean;
       activeAnyFrustum: boolean;
       thresholdHi: number;
       thresholdLo: number;
@@ -4345,7 +4751,8 @@ export class WebGPUSceneRenderer {
       lastFrameFiltered: number;
       hitRatio: number;
     };
-    gpuSortKeys: {
+    gpuSortKeys: ModeUnsafePathStatus<"auto" | "always" | "never"> & {
+      producerMode: "auto" | "always" | "never";
       activeAnyFrustum: boolean;
       thresholdHi: number;
       thresholdLo: number;
@@ -4372,8 +4779,10 @@ export class WebGPUSceneRenderer {
       for (const v of m.values()) if (v) return true;
       return false;
     };
+    const containment = this.getContainmentStats();
     return {
       gpuCullerOpaque: {
+        ...containment.gpuCullerOpaque,
         activeAnyFrustum: anyTrue(this._gpuCullActiveByFrustum),
         thresholdHi: WebGPUSceneRenderer.GPU_CULL_THRESHOLD_HI,
         thresholdLo: WebGPUSceneRenderer.GPU_CULL_THRESHOLD_LO,
@@ -4383,6 +4792,7 @@ export class WebGPUSceneRenderer {
         hitRatio: ratio(this._gpuCullLastInput, this._gpuCullLastFiltered),
       },
       gpuCullerTranslucent: {
+        ...containment.gpuCullerTranslucent,
         activeAnyFrustum: anyTrue(this._gpuCullTranslucentActiveByFrustum),
         thresholdHi: WebGPUSceneRenderer.GPU_CULL_THRESHOLD_HI,
         thresholdLo: WebGPUSceneRenderer.GPU_CULL_THRESHOLD_LO,
@@ -4395,6 +4805,7 @@ export class WebGPUSceneRenderer {
         ),
       },
       hiZ: {
+        ...containment.hiZ,
         activeAnyFrustum: anyTrue(this._hiZActiveByFrustum),
         thresholdHi: WebGPUSceneRenderer.HI_Z_THRESHOLD_HI,
         thresholdLo: WebGPUSceneRenderer.HI_Z_THRESHOLD_LO,
@@ -4406,16 +4817,16 @@ export class WebGPUSceneRenderer {
         hitRatio: ratio(this._hiZLastInput, this._hiZLastFiltered),
       },
       gpuSortKeys: {
+        ...containment.gpuSortKeys,
         activeAnyFrustum: anyTrue(this._gpuSortActiveByFrustum),
         thresholdHi: WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_HI,
         thresholdLo: WebGPUSceneRenderer.GPU_SORT_KEYS_THRESHOLD_LO,
         dispatches: this._sortKeysDispatches,
         // Phase 3 (C4-GPU-SORT-PIPELINE-PHASE3) — consumer state.
-        // NS-GPU-SORT-NO-SCENE-WIRING — `consumeMode` surfaces the "auto"
-        // production heuristic; `consumeEnabled` stays true whenever the
-        // mode is not "never" (back-compat).
-        consumeMode: WebGPUSceneRenderer._gpuSortConsumeMode,
-        consumeEnabled: WebGPUSceneRenderer.gpuSortConsumeEnabled,
+        // `consumeMode` surfaces the explicit comparison policy;
+        // `consumeEnabled` stays true whenever the mode is not "never".
+        consumeMode: this._gpuSortConsumeMode,
+        consumeEnabled: this.gpuSortConsumeEnabled,
         consumeApplied: this._sortConsumeApplied,
         consumeSkipped: this._sortConsumeSkipped,
         hasReadback: !!this._lastSortedIndices,
@@ -4491,6 +4902,9 @@ export class WebGPUSceneRenderer {
    * `CesiumDebug.cpuPassCost(true)` to start collecting samples.
    */
   setCpuPassProfiling(enabled: boolean): void {
+    if (enabled && !this._cpuPassProfiler.enabled) {
+      this._cpuPassProfiler.reset();
+    }
     this._cpuPassProfiler.setEnabled(enabled);
   }
 

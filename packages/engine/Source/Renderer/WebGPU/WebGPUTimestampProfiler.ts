@@ -56,14 +56,45 @@ export interface PassTimingResult extends DebugStatsObject {
 export interface ProfilingResults extends DebugStatsObject {
   /** Whether profiling is active (timestamp-query feature enabled) */
   readonly enabled: boolean;
-  /** Total frame GPU time in milliseconds (sum of all passes) */
+  /** GPU span from the first timed pass begin to the last timed pass end. */
   readonly frameMs: number;
   /** Average frame GPU time (rolling window) */
   readonly frameAvgMs: number;
+  /** Sum of the latest frame's individually timed pass durations. */
+  readonly profiledPassMs: number;
+  /** Rolling average of individually timed pass duration sums. */
+  readonly profiledPassAvgMs: number;
+  /** Latest frame span not attributed to a named timed pass. */
+  readonly unprofiledMs: number;
+  /** Rolling average of the unprofiled frame-span remainder. */
+  readonly unprofiledAvgMs: number;
+  /** Fraction of the latest frame span covered by named pass timings. */
+  readonly coverageRatio: number | null;
+  /** Portable timestamp envelope used for the coverage calculation. */
+  readonly coverageScope: "between-first-and-last-timed-pass";
   /** Per-pass timing results, keyed by pass name. */
   readonly passes: { readonly [passName: string]: PassTimingResult };
   /** Number of frames profiled */
   readonly frameCount: number;
+  /** Number of frame profiling attempts, including empty or skipped frames. */
+  readonly attemptedFrameCount: number;
+  /** Passes dropped because the query-set capacity was exhausted. */
+  readonly droppedPassCount: number;
+  /** Frames not sampled because a readback slot was still in use. */
+  readonly readbackSkipCount: number;
+  /** Timestamp readbacks that rejected or could not be mapped. */
+  readonly failedReadbackCount: number;
+}
+
+interface PassQueryRecord {
+  name: string;
+  beginIndex: number;
+  endIndex: number;
+}
+
+interface PendingSubmission {
+  stateIndex: number;
+  generation: number;
 }
 
 /**
@@ -75,15 +106,15 @@ interface FrameQueryState {
   readbackBuffer: GPUBuffer;
   /** Number of queries actually written this frame */
   queryCount: number;
-  /** Maps pass name → [beginQueryIndex, endQueryIndex] */
-  passIndices: Map<string, [number, number]>;
+  passRecords: PassQueryRecord[];
+  readbackPending: boolean;
 }
 
 /** Rolling window size for average computation */
 const ROLLING_WINDOW = 60;
 
 /** Maximum number of passes per frame */
-const MAX_PASSES_PER_FRAME = 32;
+const MAX_PASSES_PER_FRAME = 128;
 
 /** Queries per frame: 2 per pass (begin + end) */
 const MAX_QUERIES = MAX_PASSES_PER_FRAME * 2;
@@ -96,7 +127,8 @@ const MAX_QUERIES = MAX_PASSES_PER_FRAME * 2;
  *
  * Uses triple-buffering to avoid GPU stalls:
  * - Frame N writes timestamps via timestampWrites
- * - Frame N+2 reads back results from frame N
+ * - After Frame N is submitted, mapAsync waits for its copy without blocking
+ * - Later frames use the other slots while that readback is pending
  */
 export class WebGPUTimestampProfiler {
   private _device: GPUDevice;
@@ -109,12 +141,22 @@ export class WebGPUTimestampProfiler {
 
   // Current frame tracking
   private _nextQueryIndex: number = 0;
-  private _currentPassIndices: Map<string, [number, number]> = new Map();
+  private _currentPassRecords: PassQueryRecord[] = [];
+  private _currentFrameAvailable: boolean = false;
+  private _currentFrameGeneration: number = 0;
 
   // Results storage
   private _latestResults: Map<string, number[]> = new Map();
   private _frameTimings: number[] = [];
-  private _totalFrames: number = 0;
+  private _profiledPassTimings: number[] = [];
+  private _unprofiledTimings: number[] = [];
+  private _attemptedFrames: number = 0;
+  private _sampledFrames: number = 0;
+  private _droppedPassCount: number = 0;
+  private _readbackSkipCount: number = 0;
+  private _failedReadbackCount: number = 0;
+  private _generation: number = 0;
+  private _pendingSubmissions: PendingSubmission[] = [];
 
   private _isDestroyed: boolean = false;
 
@@ -168,7 +210,8 @@ export class WebGPUTimestampProfiler {
       resolveBuffer,
       readbackBuffer,
       queryCount: 0,
-      passIndices: new Map(),
+      passRecords: [],
+      readbackPending: false,
     };
   }
 
@@ -181,7 +224,14 @@ export class WebGPUTimestampProfiler {
       return;
     }
     this._nextQueryIndex = 0;
-    this._currentPassIndices = new Map();
+    this._currentPassRecords = [];
+    this._currentFrameGeneration = this._generation;
+    const state = this._frameStates[this._currentFrameIndex];
+    this._currentFrameAvailable =
+      !state.readbackPending && state.readbackBuffer.mapState === "unmapped";
+    if (!this._currentFrameAvailable) {
+      this._readbackSkipCount++;
+    }
   }
 
   /**
@@ -199,18 +249,19 @@ export class WebGPUTimestampProfiler {
   getPassTimestampWrites(
     name: string,
   ): GPURenderPassTimestampWrites | undefined {
-    if (!this._enabled) {
+    if (!this._enabled || !this._currentFrameAvailable) {
       return undefined;
     }
     if (this._nextQueryIndex + 2 > MAX_QUERIES) {
-      return undefined; // Out of query slots
+      this._droppedPassCount++;
+      return undefined;
     }
 
     const state = this._frameStates[this._currentFrameIndex];
     const beginIndex = this._nextQueryIndex++;
     const endIndex = this._nextQueryIndex++;
 
-    this._currentPassIndices.set(name, [beginIndex, endIndex]);
+    this._currentPassRecords.push({ name, beginIndex, endIndex });
 
     return {
       querySet: state.querySet,
@@ -228,10 +279,11 @@ export class WebGPUTimestampProfiler {
   getComputePassTimestampWrites(
     name: string,
   ): GPUComputePassTimestampWrites | undefined {
-    if (!this._enabled) {
+    if (!this._enabled || !this._currentFrameAvailable) {
       return undefined;
     }
     if (this._nextQueryIndex + 2 > MAX_QUERIES) {
+      this._droppedPassCount++;
       return undefined;
     }
 
@@ -239,7 +291,7 @@ export class WebGPUTimestampProfiler {
     const beginIndex = this._nextQueryIndex++;
     const endIndex = this._nextQueryIndex++;
 
-    this._currentPassIndices.set(name, [beginIndex, endIndex]);
+    this._currentPassRecords.push({ name, beginIndex, endIndex });
 
     return {
       querySet: state.querySet,
@@ -260,81 +312,126 @@ export class WebGPUTimestampProfiler {
 
     const state = this._frameStates[this._currentFrameIndex];
 
-    // Store pass info for this frame
-    state.queryCount = this._nextQueryIndex;
-    state.passIndices = new Map(this._currentPassIndices);
-
-    if (state.queryCount === 0) {
-      this._currentFrameIndex =
-        (this._currentFrameIndex + 1) % this._bufferCount;
-      this._totalFrames++;
-      return;
+    if (this._currentFrameAvailable) {
+      state.queryCount = this._nextQueryIndex;
+      state.passRecords = this._currentPassRecords.slice();
     }
 
-    // Resolve timestamps into the resolve buffer
-    encoder.resolveQuerySet(
-      state.querySet,
-      0,
-      state.queryCount,
-      state.resolveBuffer,
-      0,
-    );
-
-    // Copy resolve buffer → readback buffer
-    encoder.copyBufferToBuffer(
-      state.resolveBuffer,
-      0,
-      state.readbackBuffer,
-      0,
-      state.queryCount * 8,
-    );
+    if (this._currentFrameAvailable && state.queryCount > 0) {
+      encoder.resolveQuerySet(
+        state.querySet,
+        0,
+        state.queryCount,
+        state.resolveBuffer,
+        0,
+      );
+      encoder.copyBufferToBuffer(
+        state.resolveBuffer,
+        0,
+        state.readbackBuffer,
+        0,
+        state.queryCount * 8,
+      );
+      state.readbackPending = true;
+      this._pendingSubmissions.push({
+        stateIndex: this._currentFrameIndex,
+        generation: this._currentFrameGeneration,
+      });
+    }
 
     // Advance to next frame state
     this._currentFrameIndex = (this._currentFrameIndex + 1) % this._bufferCount;
-    this._totalFrames++;
-
-    // Attempt to read results from the oldest frame (N frames ago)
-    this._readOldestFrame();
+    this._attemptedFrames++;
   }
 
   /**
-   * Asynchronously reads results from the oldest completed frame.
+   * Starts asynchronous readback for work submitted by the most recent queue
+   * submission. This must be called after `queue.submit()` so `mapAsync()` is
+   * ordered after the copy encoded by {@link endFrame}. It does not wait for
+   * the GPU and therefore does not block the render path.
    */
-  private async _readOldestFrame(): Promise<void> {
-    const readIndex = (this._currentFrameIndex + 1) % this._bufferCount;
-    const state = this._frameStates[readIndex];
+  afterSubmit(): void {
+    if (!this._enabled || this._pendingSubmissions.length === 0) {
+      return;
+    }
+    const submissions = this._pendingSubmissions;
+    this._pendingSubmissions = [];
+    for (const submission of submissions) {
+      void this._readSubmittedFrame(submission);
+    }
+  }
 
-    if (state.queryCount === 0) {
+  /** Asynchronously reads results from one submitted frame slot. */
+  private async _readSubmittedFrame(
+    submission: PendingSubmission,
+  ): Promise<void> {
+    const state = this._frameStates[submission.stateIndex];
+
+    if (
+      !state ||
+      state.queryCount === 0 ||
+      state.readbackBuffer.mapState !== "unmapped"
+    ) {
       return;
     }
 
     try {
       const readbackBuffer = state.readbackBuffer;
-
-      if (readbackBuffer.mapState === "unmapped") {
-        await readbackBuffer.mapAsync(GPUMapMode.READ);
-        const data = new BigUint64Array(readbackBuffer.getMappedRange());
-
-        let frameTotalMs = 0;
-
-        // Extract per-pass timings
-        for (const [name, [startIdx, endIdx]] of state.passIndices) {
-          const startNs = data[startIdx];
-          const endNs = data[endIdx];
-          const passMs = Number(endNs - startNs) / 1_000_000;
-
-          if (!this._latestResults.has(name)) {
-            this._latestResults.set(name, []);
-          }
-          this._addToRollingWindow(this._latestResults.get(name)!, passMs);
-          frameTotalMs += passMs;
-        }
-
-        this._addToRollingWindow(this._frameTimings, frameTotalMs);
-        readbackBuffer.unmap();
+      await readbackBuffer.mapAsync(GPUMapMode.READ);
+      if (this._isDestroyed || submission.generation !== this._generation) {
+        return;
       }
+      const data = new BigUint64Array(readbackBuffer.getMappedRange());
+      const passTotals = new Map<string, number>();
+      let profiledPassMs = 0;
+
+      for (const record of state.passRecords) {
+        const startNs = data[record.beginIndex];
+        const endNs = data[record.endIndex];
+        const passMs = Number(endNs - startNs) / 1_000_000;
+        passTotals.set(
+          record.name,
+          (passTotals.get(record.name) ?? 0) + passMs,
+        );
+        profiledPassMs += passMs;
+      }
+      for (const [name, passMs] of passTotals) {
+        let timings = this._latestResults.get(name);
+        if (!timings) {
+          timings = [];
+          this._latestResults.set(name, timings);
+        }
+        this._addToRollingWindow(timings, passMs);
+      }
+      const firstRecord = state.passRecords[0];
+      const lastRecord = state.passRecords[state.passRecords.length - 1];
+      const frameSpanMs =
+        firstRecord && lastRecord
+          ? Number(data[lastRecord.endIndex] - data[firstRecord.beginIndex]) /
+            1_000_000
+          : 0;
+      // Passes on one command encoder cannot overlap, but timestamp precision
+      // and implementations may produce a tiny negative subtraction residue.
+      const unprofiledMs = Math.max(0, frameSpanMs - profiledPassMs);
+      this._addToRollingWindow(this._frameTimings, frameSpanMs);
+      this._addToRollingWindow(this._profiledPassTimings, profiledPassMs);
+      this._addToRollingWindow(this._unprofiledTimings, unprofiledMs);
+      this._sampledFrames++;
     } catch {
-      // Readback may fail if GPU is busy — silently skip
+      if (!this._isDestroyed && submission.generation === this._generation) {
+        this._failedReadbackCount++;
+      }
+    } finally {
+      // TypeScript retains the pre-await "unmapped" narrowing even though
+      // mapAsync mutates this WebGPU state asynchronously. Re-read through a
+      // string boundary so the cleanup reflects the actual post-await state.
+      const finalMapState = String(state.readbackBuffer.mapState);
+      if (!this._isDestroyed && finalMapState === "mapped") {
+        state.readbackBuffer.unmap();
+      }
+      state.queryCount = 0;
+      state.passRecords = [];
+      state.readbackPending = false;
     }
   }
 
@@ -378,12 +475,24 @@ export class WebGPUTimestampProfiler {
         enabled: false,
         frameMs: 0,
         frameAvgMs: 0,
+        profiledPassMs: 0,
+        profiledPassAvgMs: 0,
+        unprofiledMs: 0,
+        unprofiledAvgMs: 0,
+        coverageRatio: null,
+        coverageScope: "between-first-and-last-timed-pass",
         passes: {},
-        frameCount: this._totalFrames,
+        frameCount: this._sampledFrames,
+        attemptedFrameCount: this._attemptedFrames,
+        droppedPassCount: this._droppedPassCount,
+        readbackSkipCount: this._readbackSkipCount,
+        failedReadbackCount: this._failedReadbackCount,
       };
     }
 
     const frameStats = this._computeStats(this._frameTimings);
+    const profiledPassStats = this._computeStats(this._profiledPassTimings);
+    const unprofiledStats = this._computeStats(this._unprofiledTimings);
     const passes: Record<string, PassTimingResult> = {};
 
     for (const [name, timings] of this._latestResults) {
@@ -401,9 +510,35 @@ export class WebGPUTimestampProfiler {
       enabled: true,
       frameMs: frameStats.last,
       frameAvgMs: frameStats.avg,
+      profiledPassMs: profiledPassStats.last,
+      profiledPassAvgMs: profiledPassStats.avg,
+      unprofiledMs: unprofiledStats.last,
+      unprofiledAvgMs: unprofiledStats.avg,
+      coverageRatio:
+        frameStats.last > 0
+          ? Math.min(1, profiledPassStats.last / frameStats.last)
+          : null,
+      coverageScope: "between-first-and-last-timed-pass",
       passes,
-      frameCount: this._totalFrames,
+      frameCount: this._sampledFrames,
+      attemptedFrameCount: this._attemptedFrames,
+      droppedPassCount: this._droppedPassCount,
+      readbackSkipCount: this._readbackSkipCount,
+      failedReadbackCount: this._failedReadbackCount,
     };
+  }
+
+  reset(): void {
+    this._generation++;
+    this._latestResults.clear();
+    this._frameTimings = [];
+    this._profiledPassTimings = [];
+    this._unprofiledTimings = [];
+    this._attemptedFrames = 0;
+    this._sampledFrames = 0;
+    this._droppedPassCount = 0;
+    this._readbackSkipCount = 0;
+    this._failedReadbackCount = 0;
   }
 
   /** Whether profiling is enabled. */
@@ -429,6 +564,13 @@ export class WebGPUTimestampProfiler {
     this._frameStates = [];
     this._latestResults.clear();
     this._frameTimings = [];
+    this._profiledPassTimings = [];
+    this._unprofiledTimings = [];
+    this._currentPassRecords = [];
+    this._pendingSubmissions = [];
+    this._currentFrameAvailable = false;
+    this._generation++;
+    this._enabled = false;
     this._isDestroyed = true;
   }
 }

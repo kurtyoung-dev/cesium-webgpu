@@ -606,6 +606,7 @@ class PerformanceTracker {
         let sum = 0;
         let min = Infinity;
         let max = -Infinity;
+        const values = [];
         for (const r of samples) {
           const v = r[key];
           if (typeof v !== "number" || !isFinite(v)) {
@@ -613,6 +614,7 @@ class PerformanceTracker {
           }
           count++;
           sum += v;
+          values.push(v);
           if (v < min) {
             min = v;
           }
@@ -623,12 +625,43 @@ class PerformanceTracker {
         if (count === 0) {
           return null;
         }
+        values.sort((left, right) => left - right);
+        const percentile = (fraction) => {
+          if (values.length === 1) {
+            return values[0];
+          }
+          const position = (values.length - 1) * fraction;
+          const lowerIndex = Math.floor(position);
+          const upperIndex = Math.ceil(position);
+          const interpolation = position - lowerIndex;
+          return (
+            values[lowerIndex] +
+            (values[upperIndex] - values[lowerIndex]) * interpolation
+          );
+        };
+        const p50 = percentile(0.5);
+        const deviations = values
+          .map((value) => Math.abs(value - p50))
+          .sort((left, right) => left - right);
+        const deviationPosition = (deviations.length - 1) * 0.5;
+        const deviationLower = Math.floor(deviationPosition);
+        const deviationUpper = Math.ceil(deviationPosition);
+        const deviationInterpolation = deviationPosition - deviationLower;
+        const mad =
+          deviations[deviationLower] +
+          (deviations[deviationUpper] - deviations[deviationLower]) *
+            deviationInterpolation;
         return {
           count,
           avg: sum / count,
           min,
           max,
           total: sum,
+          p50,
+          p95: percentile(0.95),
+          p99: percentile(0.99),
+          mad,
+          normalizedMad: p50 !== 0 ? mad / Math.abs(p50) : null,
         };
       };
       const cpu = aggregate("cpuMs");
@@ -642,6 +675,20 @@ class PerformanceTracker {
       const wall = aggregate("wallDtMs");
       if (wall) {
         summary.wallDtMs = wall;
+      }
+      // Timestamp coverage fields use the same robust distribution shape as
+      // CPU/GPU time. Keeping these in the summary makes partial pass coverage
+      // visible to automated campaign comparisons instead of burying it in
+      // individual samples.
+      for (const key of [
+        "gpuProfiledPassMs",
+        "gpuUnprofiledMs",
+        "gpuCoverageRatio",
+      ]) {
+        const value = aggregate(key);
+        if (value) {
+          summary[key] = value;
+        }
       }
       // Average bundle hit rate across the trace, weighted by frame count.
       let hitRateSum = 0;

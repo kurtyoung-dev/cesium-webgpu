@@ -28,10 +28,10 @@
  *      scene FB. Falls back to the default chain if any required
  *      resource is missing.
  *
- *   3. **Indirect-draw fast path**: when
- *      `context.useIndirectDrawForTiles === true` OR the per-pass
- *      command count >= INDIRECT_BATCH_MIN (32), `runPass` dispatches
- *      via `executeBatchIndirect` instead of `executeBatch`.
+ *   3. **Indirect-draw fast path**: controlled by the contained
+ *      `never | auto | always` policy. The legacy boolean bridge maps
+ *      `false → never` and `true → always`; default `false` can no longer
+ *      threshold-auto-activate or allocate the manager.
  *      `executeBatchIndirect` falls back per-command for any run that
  *      doesn't satisfy its homogeneous-batch criteria, so the
  *      threshold is just a "don't bother below this point" floor.
@@ -69,17 +69,106 @@ export interface _3DTilePassesHost {
   _invertClassStencilReady: boolean;
   _width: number;
   _height: number;
+  _tileIndirectStatus: TileIndirectStatus;
+  _tileIndirectStatusFrame: number;
   _resumeScenePass(context: WebGPUContext): void;
 }
 
+export type TileIndirectMode = "never" | "auto" | "always";
+
+export interface TileIndirectStatus {
+  requestedMode: TileIndirectMode;
+  requested: boolean;
+  capable: boolean;
+  active: boolean;
+  fallbackReason: string | null;
+}
+
 /**
- * Indirect-draw fast path threshold. Activated automatically when a
- * pass has at least this many tile commands. `executeBatchIndirect`
- * falls back per-command for runs that don't satisfy its homogeneous-
- * batch criteria, so this is a "don't bother below this count" floor
- * rather than a strict gate.
+ * Indirect-draw fast path threshold used only by the explicit `auto`
+ * characterization mode. `executeBatchIndirect` falls back per-command
+ * for runs that don't satisfy its homogeneous-batch criteria, so this is
+ * a "don't bother below this count" floor rather than a strict gate.
  */
 const INDIRECT_BATCH_MIN = 32;
+
+/**
+ * Normalize the internal tri-state policy while preserving the legacy boolean
+ * bridge. Unknown values fail closed.
+ */
+export function normalizeTileIndirectMode(value: unknown): TileIndirectMode {
+  if (value === true) return "always";
+  if (value === "auto" || value === "always") return value;
+  return "never";
+}
+
+/**
+ * Resolve one pass's indirect policy. The `never` path deliberately does not
+ * touch `indirectDrawManager`, whose context getter allocates GPU resources.
+ */
+export function resolveTileIndirectPolicy(
+  context: WebGPUContext,
+  commandCount: number,
+): TileIndirectStatus {
+  const requestedMode = normalizeTileIndirectMode(
+    (context as unknown as { useIndirectDrawForTiles?: unknown })
+      .useIndirectDrawForTiles,
+  );
+  const requested = requestedMode !== "never";
+  const hasRenderPass = !!context.currentRenderPassEncoder;
+  const capable = !!context.device;
+
+  if (!requested) {
+    return {
+      requestedMode,
+      requested: false,
+      capable,
+      active: false,
+      fallbackReason: "not-requested",
+    };
+  }
+
+  if (!capable) {
+    return {
+      requestedMode,
+      requested: true,
+      capable: false,
+      active: false,
+      fallbackReason: "unsupported",
+    };
+  }
+
+  const thresholdReached =
+    requestedMode === "always" || commandCount >= INDIRECT_BATCH_MIN;
+  if (!thresholdReached) {
+    return {
+      requestedMode,
+      requested: true,
+      capable: true,
+      active: false,
+      fallbackReason: "below-threshold",
+    };
+  }
+
+  if (!hasRenderPass) {
+    return {
+      requestedMode,
+      requested: true,
+      capable: true,
+      active: false,
+      fallbackReason: "no-active-render-pass",
+    };
+  }
+
+  const active = !!context.indirectDrawManager;
+  return {
+    requestedMode,
+    requested: true,
+    capable: true,
+    active,
+    fallbackReason: active ? null : "manager-unavailable",
+  };
+}
 
 /**
  * Run the 3D-tile pass chain for a single frustum. Mirrors the WebGL
@@ -102,6 +191,21 @@ export function execute3DTilePasses(
   onAfterTileMainPass?: () => void,
 ): void {
   const { scene, context, passState } = config;
+  const frameNumber = scene?._frameState?.frameNumber ?? -1;
+  if (host._tileIndirectStatusFrame !== frameNumber) {
+    const requestedMode = normalizeTileIndirectMode(
+      (context as unknown as { useIndirectDrawForTiles?: unknown })
+        .useIndirectDrawForTiles,
+    );
+    host._tileIndirectStatusFrame = frameNumber;
+    const status = host._tileIndirectStatus;
+    status.requestedMode = requestedMode;
+    status.requested = requestedMode !== "never";
+    status.capable = !!context.device;
+    status.active = false;
+    status.fallbackReason =
+      requestedMode === "never" ? "not-requested" : "no-tile-commands";
+  }
   // C-R8 (Batch 35) — passes are split so `onAfterTileMainPass` can
   // run between `CESIUM_3D_TILE` and `CESIUM_3D_TILE_CLASSIFICATION`.
   // WebGL's `SceneRenderer.js:544-560` calls `globeDepth.executeUpdateDepth`
@@ -121,7 +225,10 @@ export function execute3DTilePasses(
     Pass.CESIUM_3D_TILE_CLASSIFICATION,
     Pass.CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW,
   ];
-
+  // A full-screen depth pack plus scene-pass reopen is only required when the
+  // main tile pass actually wrote depth.
+  const hasTileMainCommands =
+    (frustumCommands.indices[Pass.CESIUM_3D_TILE] ?? 0) > 0;
   // C-R8-INVERT-CLASS-FBO-REDIRECT (Batch 39) — When the scene has
   // invert-classification enabled, `firstPasses` must write tile
   // color into `InvertClassification.classifiedTexture` instead of
@@ -145,27 +252,25 @@ export function execute3DTilePasses(
     !!config.useInvertClassification &&
     !!invertOwner &&
     isInvertClassificationReady(invertOwner);
-  // Indirect-draw fast path. Activated automatically when a pass has
-  // enough tile commands for batching to pay off (INDIRECT_BATCH_MIN).
-  // Users can force on via `context.useIndirectDrawForTiles = true`
-  // for testing / profiling, or force off by leaving the flag at its
-  // default (auto mode still applies unless disabled explicitly).
-  //
-  // `executeBatchIndirect` falls back per-command for any run that
-  // doesn't satisfy its homogeneous-batch criteria, so enabling this
-  // on small counts is safe (just wasted overhead), which is why we
-  // gate on count rather than a hard opt-in.
-  const hasIndirectInfra =
-    !!context.indirectDrawManager && !!context.currentRenderPassEncoder;
-  const explicitlyEnabled = context.useIndirectDrawForTiles === true;
+  // FAR-003: default `false` maps to `never`; only explicit `auto` or
+  // `always` may allocate/access the indirect manager.
   const runPass = (passIndex: number): void => {
     const cmds = frustumCommands.commands[passIndex];
     const cnt: number = frustumCommands.indices[passIndex];
     if (cnt > 0) {
       context.uniformState?.updatePass(passIndex);
-      const useIndirect =
-        hasIndirectInfra && (explicitlyEnabled || cnt >= INDIRECT_BATCH_MIN);
-      if (useIndirect) {
+      if (host._tileIndirectStatus.requestedMode === "never") {
+        executeBatch(cmds, cnt, scene, context, passState);
+        return;
+      }
+      const policy = resolveTileIndirectPolicy(context, cnt);
+      const status = host._tileIndirectStatus;
+      status.requestedMode = policy.requestedMode;
+      status.requested = policy.requested;
+      status.capable ||= policy.capable;
+      status.active ||= policy.active;
+      status.fallbackReason = status.active ? null : policy.fallbackReason;
+      if (policy.active) {
         executeBatchIndirect(cmds, cnt, scene, context, passState);
       } else {
         executeBatch(cmds, cnt, scene, context, passState);
@@ -300,7 +405,7 @@ export function execute3DTilePasses(
       // globe-depth should sample the invert FBO's depth instead.
       // Until that's wired, downstream ground/overlay primitives
       // may still Z-fight against tiles when invert is on.
-      if (onAfterTileMainPass) {
+      if (hasTileMainCommands && onAfterTileMainPass) {
         onAfterTileMainPass();
       }
 
@@ -379,7 +484,7 @@ export function execute3DTilePasses(
       for (const passIndex of firstPasses) {
         runPass(passIndex);
       }
-      if (onAfterTileMainPass) {
+      if (hasTileMainCommands && onAfterTileMainPass) {
         onAfterTileMainPass();
       }
       for (const passIndex of classificationPasses) {
@@ -392,7 +497,7 @@ export function execute3DTilePasses(
     }
     // C-R8 (Batch 35) — depth update hook. Fires after the main 3D tile
     // pass so classification can read tile-augmented depth.
-    if (onAfterTileMainPass) {
+    if (hasTileMainCommands && onAfterTileMainPass) {
       onAfterTileMainPass();
     }
     for (const passIndex of classificationPasses) {

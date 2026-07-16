@@ -73,8 +73,7 @@ export function gpuData(
 /**
  * Type-erased view of a CesiumJS JS module/class.
  *
- * CesiumJS core modules like `IndexDatatype`, `EncodedCartesian3`,
- * `RenderState`, and `ContextLimits` are written in JavaScript with no
+ * Some CesiumJS core modules are written in JavaScript with no complete
  * accompanying `.d.ts`. Static methods (`createTypedArray`, `encode`,
  * `fromCache`, etc.) are not visible to TypeScript, so call sites
  * normally need a `(Foo as any).bar()` cast.

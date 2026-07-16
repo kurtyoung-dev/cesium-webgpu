@@ -1,5 +1,17 @@
 import WebGPUTimestampProfiler from "../../../Source/Renderer/WebGPU/WebGPUTimestampProfiler.js";
 
+if (typeof globalThis.GPUBufferUsage === "undefined") {
+  globalThis.GPUBufferUsage = {
+    MAP_READ: 0x0001,
+    COPY_SRC: 0x0004,
+    COPY_DST: 0x0008,
+    QUERY_RESOLVE: 0x0200,
+  };
+}
+if (typeof globalThis.GPUMapMode === "undefined") {
+  globalThis.GPUMapMode = { READ: 0x0001, WRITE: 0x0002 };
+}
+
 // ── Test fixtures ───────────────────────────────────────────────────
 //
 // WebGPUTimestampProfiler's enabled path calls device.createQuerySet /
@@ -25,10 +37,9 @@ import WebGPUTimestampProfiler from "../../../Source/Renderer/WebGPU/WebGPUTimes
 //   - destroy() idempotence + isDestroyed flip on a disabled profiler
 //     (empty _frameStates → no GPU resource .destroy() calls)
 //
-// SKIPPED (device-bound — require a real GPUDevice/queue): the enabled
-// constructor (_createFrameState), endFrame's resolve/copy, _readOldestFrame
-// readback + per-pass stats, and the enabled getPass*TimestampWrites slot
-// allocation. Those need an actual timestamp-query-capable device.
+// A pure fake device below also covers enabled-path query allocation,
+// resolve/copy, asynchronous readback, duplicate-label aggregation, overflow,
+// and destruction without requiring a physical GPU.
 
 // A stub device whose feature set is configurable. The disabled paths
 // only ever read device.features.has(...); they never call create*.
@@ -42,6 +53,75 @@ function stubDevice(features) {
     // create* are intentionally absent — if any disabled path tried to
     // call one, the spec would throw and fail loudly rather than pass
     // on a silently-wrong code path.
+  });
+}
+
+function fakeEnabledDevice(mapAsyncHook) {
+  const buffers = [];
+  const querySets = [];
+  const device = {
+    features: new Set(["timestamp-query"]),
+    createQuerySet: function () {
+      const querySet = { destroy: jasmine.createSpy("querySet.destroy") };
+      querySets.push(querySet);
+      return querySet;
+    },
+    createBuffer: function (descriptor) {
+      let mapState = "unmapped";
+      const storage = new ArrayBuffer(descriptor.size);
+      const buffer = {
+        get mapState() {
+          return mapState;
+        },
+        mapAsync: function () {
+          mapState = "pending";
+          const pending = mapAsyncHook ? mapAsyncHook() : Promise.resolve();
+          return pending.then(
+            function () {
+              mapState = "mapped";
+            },
+            function (error) {
+              mapState = "unmapped";
+              throw error;
+            },
+          );
+        },
+        getMappedRange: function () {
+          return storage;
+        },
+        unmap: function () {
+          mapState = "unmapped";
+        },
+        destroy: jasmine.createSpy("buffer.destroy"),
+        _storage: storage,
+      };
+      buffers.push(buffer);
+      return buffer;
+    },
+    _buffers: buffers,
+    _querySets: querySets,
+  };
+  return /** @type {any} */ (device);
+}
+
+function fakeEncoder() {
+  return /** @type {any} */ ({
+    resolveQuerySet: jasmine.createSpy("resolveQuerySet"),
+    copyBufferToBuffer: jasmine
+      .createSpy("copyBufferToBuffer")
+      .and.callFake(function (...args) {
+        const destination = args[2];
+        const offset = args[3];
+        const size = args[4];
+        const values = new BigUint64Array(
+          destination._storage,
+          offset,
+          size / 8,
+        );
+        for (let i = 0; i < values.length; i++) {
+          values[i] = BigInt(i) * 1000000n;
+        }
+      }),
   });
 }
 
@@ -90,6 +170,100 @@ describe("Renderer/WebGPU/WebGPUTimestampProfiler", function () {
     });
   });
 
+  describe("enabled fake-device path", function () {
+    it("allocates triple-buffered query state when explicitly enabled", function () {
+      const device = fakeEnabledDevice();
+      const profiler = new WebGPUTimestampProfiler(device, true);
+      expect(profiler.enabled).toBe(true);
+      expect(device._querySets.length).toBe(3);
+      expect(device._buffers.length).toBe(6);
+    });
+
+    it("allocates pass query pairs and resolves them through the frame encoder", function () {
+      const profiler = new WebGPUTimestampProfiler(fakeEnabledDevice(), true);
+      const encoder = fakeEncoder();
+      profiler.beginFrame();
+      const writes = profiler.getPassTimestampWrites("globe");
+      expect(writes.beginningOfPassWriteIndex).toBe(0);
+      expect(writes.endOfPassWriteIndex).toBe(1);
+      profiler.endFrame(encoder);
+      expect(encoder.resolveQuerySet).toHaveBeenCalledTimes(1);
+      expect(encoder.copyBufferToBuffer).toHaveBeenCalledTimes(1);
+    });
+
+    it("aggregates repeated labels within one frame", async function () {
+      const profiler = new WebGPUTimestampProfiler(fakeEnabledDevice(), true);
+      profiler.beginFrame();
+      profiler.getPassTimestampWrites("opaque");
+      profiler.getPassTimestampWrites("opaque");
+      profiler.endFrame(fakeEncoder());
+      profiler.afterSubmit();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      const results = profiler.getResults();
+      expect(results.passes.opaque.lastMs).toBe(2);
+      expect(results.frameMs).toBe(3);
+      expect(results.profiledPassMs).toBe(2);
+      expect(results.unprofiledMs).toBe(1);
+      expect(results.coverageRatio).toBeCloseTo(2 / 3, 8);
+      expect(results.coverageScope).toBe("between-first-and-last-timed-pass");
+      expect(results.frameCount).toBe(1);
+      expect(results.attemptedFrameCount).toBe(1);
+    });
+
+    it("does not publish an in-flight sample after reset", async function () {
+      let resolveMap;
+      const mapPromise = new Promise(function (resolve) {
+        resolveMap = resolve;
+      });
+      const profiler = new WebGPUTimestampProfiler(
+        fakeEnabledDevice(function () {
+          return mapPromise;
+        }),
+        true,
+      );
+      profiler.beginFrame();
+      profiler.getPassTimestampWrites("old-frame");
+      profiler.endFrame(fakeEncoder());
+      profiler.afterSubmit();
+      profiler.reset();
+      resolveMap();
+      await mapPromise;
+      await Promise.resolve();
+      await Promise.resolve();
+      const results = profiler.getResults();
+      expect(results.passes).toEqual({});
+      expect(results.frameCount).toBe(0);
+      expect(results.attemptedFrameCount).toBe(0);
+    });
+
+    it("does not publish a partially recorded frame when reset happens before endFrame", async function () {
+      const profiler = new WebGPUTimestampProfiler(fakeEnabledDevice(), true);
+      profiler.beginFrame();
+      profiler.getPassTimestampWrites("pre-reset-frame");
+      profiler.reset();
+      profiler.endFrame(fakeEncoder());
+      profiler.afterSubmit();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      const results = profiler.getResults();
+      expect(results.passes).toEqual({});
+      expect(results.frameCount).toBe(0);
+    });
+
+    it("reports pass-query overflow instead of silently losing it", function () {
+      const profiler = new WebGPUTimestampProfiler(fakeEnabledDevice(), true);
+      profiler.beginFrame();
+      for (let i = 0; i < 128; i++) {
+        expect(profiler.getPassTimestampWrites(`pass-${i}`)).toBeDefined();
+      }
+      expect(profiler.getPassTimestampWrites("overflow")).toBeUndefined();
+      expect(profiler.getResults().droppedPassCount).toBe(1);
+    });
+  });
+
   describe("getResults() when disabled", function () {
     it("returns the documented zeroed ProfilingResults shape", function () {
       const profiler = new WebGPUTimestampProfiler(stubDevice([]), false);
@@ -97,8 +271,14 @@ describe("Renderer/WebGPU/WebGPUTimestampProfiler", function () {
       expect(results.enabled).toBe(false);
       expect(results.frameMs).toBe(0);
       expect(results.frameAvgMs).toBe(0);
+      expect(results.profiledPassMs).toBe(0);
+      expect(results.unprofiledMs).toBe(0);
+      expect(results.coverageRatio).toBeNull();
+      expect(results.coverageScope).toBe("between-first-and-last-timed-pass");
       expect(results.passes).toEqual({});
       expect(results.frameCount).toBe(0);
+      expect(results.attemptedFrameCount).toBe(0);
+      expect(results.failedReadbackCount).toBe(0);
     });
 
     it("reports frameCount 0 before any frames are profiled", function () {

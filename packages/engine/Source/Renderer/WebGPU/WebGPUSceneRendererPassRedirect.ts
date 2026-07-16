@@ -205,8 +205,10 @@ export function setupSceneFramebufferRenderPass(
         colorAttachments,
         depthStencilAttachment,
       };
-      context._currentRenderPassEncoder =
-        context._currentCommandEncoder.beginRenderPass(passDesc);
+      const passEncoder = context.beginRenderPass(passDesc);
+      if (!passEncoder) {
+        return;
+      }
       // Use the per-frame cached viewport (= full canvas for normal renders;
       // = the per-half sub-rect during the SCENE2D wrap, BUG-3) so each wrap
       // half's draws are confined to its screen region. Clamp to a valid,
@@ -216,8 +218,8 @@ export function setupSceneFramebufferRenderPass(
       const vy = host._viewportY || 0;
       const vw = host._viewportWidth > 0 ? host._viewportWidth : host._width;
       const vh = host._viewportHeight > 0 ? host._viewportHeight : host._height;
-      context._currentRenderPassEncoder.setViewport(vx, vy, vw, vh, 0, 1);
-      context._currentRenderPassEncoder.setScissorRect(vx, vy, vw, vh);
+      passEncoder.setViewport(vx, vy, vw, vh, 0, 1);
+      passEncoder.setScissorRect(vx, vy, vw, vh);
       //>>includeStart('debug', pragmas.debug);
       if (!host._renderPassRedirectLogged) {
         host._renderPassRedirectLogged = true;

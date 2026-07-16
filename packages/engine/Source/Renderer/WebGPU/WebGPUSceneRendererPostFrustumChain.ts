@@ -22,9 +22,8 @@
  *   - `context._sceneHasTransmission = false` (Batch 107 cleanup —
  *     model renderer sets it during `update()`, we reset at frame
  *     end so next frame's `update()` starts clean).
- *   - `perfManager.endFrame()` (flushes indirect draws + collects
- *     profiling counters; pairs with `beginFrame()` at the top of
- *     executeCommands).
+ * Performance finalization runs from `WebGPUContext.endFrame()` after every
+ * render pass has ended and immediately before the command encoder finishes.
  *
  * @module WebGPUSceneRendererPostFrustumChain
  */
@@ -48,7 +47,10 @@ export interface PostFrustumChainHost {
     frustumCommandsList: CesiumFrustumCommands[],
     config: WebGPURenderFrameConfig,
   ): void;
-  _renderDepthPlane(config: WebGPURenderFrameConfig): void;
+  _renderDepthPlane(
+    config: WebGPURenderFrameConfig,
+    passKind: "scene" | "pick",
+  ): void;
   _executeEnvironmentalEffects(config: WebGPURenderFrameConfig): void;
   // Phase 8a Slice 2 (Batch 85) — screen-space normal reconstruction.
   // Runs after the scene render pass closes (post environmentalEffects)
@@ -65,11 +67,6 @@ export interface PostFrustumChainHost {
   _runPostProcessing(config: WebGPURenderFrameConfig): void;
 }
 
-/** Light-typed surface for the perfManager bookkeeping pair. */
-export interface PerfManagerLike {
-  endFrame(): void;
-}
-
 /**
  * Run the post-frustum tail of the frame. Caller (`executeCommands`
  * on the SceneRenderer) is responsible for the per-frustum loop
@@ -81,23 +78,19 @@ export interface PerfManagerLike {
  * @param config - Render-frame config from `executeCommands`.
  * @param frustumCommandsList - The per-frustum command buckets the
  *   overlay pass reads.
- * @param perfManager - Optional performance manager. Caller passes
- *   the same instance whose `beginFrame()` it called earlier; this
- *   helper invokes `endFrame()`.
  */
 export function executePostFrustumChain(
   host: PostFrustumChainHost,
   context: WebGPUContext,
   config: WebGPURenderFrameConfig,
   frustumCommandsList: CesiumFrustumCommands[],
-  perfManager: PerfManagerLike | null | undefined,
 ): void {
   // Pass 12: OVERLAY (runs once, not per-frustum)
   host._executeOverlayPass(frustumCommandsList, config);
 
   // Depth plane (if enabled, renders after all frustums)
   if (!config.clearGlobeDepth) {
-    host._renderDepthPlane(config);
+    host._renderDepthPlane(config, "scene");
   }
 
   // Slice 5c-B Batch 128 — MSAA depth resolve. In single-sample mode
@@ -320,9 +313,4 @@ export function executePostFrustumChain(
   // `update()` starts with a clean slate; if no model declares
   // transmission, the capture step early-exits.
   context._sceneHasTransmission = false;
-
-  // Performance infrastructure: end frame — flush indirect draws, collect profiling
-  if (perfManager) {
-    perfManager.endFrame();
-  }
 }

@@ -12,7 +12,7 @@
 
 /// <reference types="@webgpu/types" />
 
-import RendererType from "../RendererType.js";
+import RendererType, { RendererInitializationError } from "../RendererType.js";
 import WebGPUSync from "./WebGPUSync.js";
 import {
   GraphicsContext,
@@ -25,10 +25,10 @@ import DeveloperError from "../../Core/DeveloperError.js";
 import defined from "../../Core/defined.js";
 import RuntimeError from "../../Core/RuntimeError.js";
 import createGuid from "../../Core/createGuid.js";
-import loadKTX2 from "../../Core/loadKTX2.js";
+import ClipSpaceConvention from "../../Core/ClipSpaceConvention.js";
 import Color from "../../Core/Color.js";
 import UniformState from "../UniformState.js";
-import { initializeContextLimitsFromDevice } from "./WebGPUContextLimitsInit.js";
+import GraphicsCapabilities from "../GraphicsCapabilities.js";
 import PassState from "../PassState.js";
 import RenderState from "../RenderState.js";
 import ShaderCache from "../ShaderCache.js";
@@ -71,6 +71,7 @@ import type {
   StubFramebuffer,
   StubRenderbuffer,
   StubAttachment,
+  StubBufferHandle,
 } from "./Stubs/WebGLStubTypes.js";
 // `DeviceLossRecoveryHost` no longer imported — the host literal that
 // used it moved to `WebGPUContextDeviceLoss.ts` in Batch 143.
@@ -89,7 +90,10 @@ import { WebGPUIndirectDrawManager } from "./WebGPUIndirectDrawManager.js";
 import { WebGPUCSMRenderer } from "./WebGPUCSMRenderer.js";
 import { WebGPUBufferMapper } from "./WebGPUBufferMapper.js";
 import { WebGPURingBufferAllocator } from "./WebGPURingBufferAllocator.js";
-import { clearEffectsPlaceholderCacheForDevice } from "./WebGPUEffectsBindGroup.js";
+import {
+  releaseEffectsPlaceholderCacheForContext,
+  retainEffectsPlaceholderCacheForContext,
+} from "./WebGPUEffectsBindGroup.js";
 import {
   applyCanvasConfig as applyCanvasConfigExt,
   reconfigureCanvas as reconfigureCanvasExt,
@@ -201,11 +205,6 @@ interface CesiumClearCommand {
   ) => void;
 }
 
-// `ContextLimitsInternals` is now defined in `WebGPUContextLimitsInit.ts`
-// alongside the `initializeContextLimitsFromDevice` helper. The interface
-// stays exported there so any other helper that wants to write into
-// ContextLimits goes through the same shape declaration.
-
 // Re-export types that external code may depend on
 export { DeviceLossState, type DeviceLostCallback };
 // Re-export the LOD processor interface so consumers (e.g. the point
@@ -282,6 +281,16 @@ export interface WebGPUContextOptions extends GraphicsContextOptions {
  * Manages the WebGPU device, adapter, and rendering pipeline.
  */
 export class WebGPUContext extends GraphicsContext {
+  /** One validation wrapper per pooled device, leased by live contexts. */
+  private static readonly _shaderValidationByDevice = new WeakMap<
+    GPUDevice,
+    {
+      original: GPUDevice["createShaderModule"];
+      wrapper: GPUDevice["createShaderModule"];
+      contextIds: Set<string>;
+    }
+  >();
+
   // Public underscore fields: these have public getters but renderers also
   // access the fields directly for performance. Marking public is honest
   // about the actual access pattern across the WebGPU renderer module.
@@ -328,6 +337,20 @@ export class WebGPUContext extends GraphicsContext {
   private _depthFormat: GPUTextureFormat = "depth24plus-stencil8";
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _isDestroyed: boolean = false;
+  private _terminallyLost: boolean = false;
+  // Public underscore accessor: FATAL device state is distinct from completed
+  // context teardown. Entering it drops in-progress encoders immediately so no
+  // subsequent path can submit old-device work, while destroy() remains legal.
+  public get _isTerminallyLost(): boolean {
+    return this._terminallyLost;
+  }
+  public set _isTerminallyLost(value: boolean) {
+    this._terminallyLost = value;
+    if (value) {
+      this._currentRenderPassEncoder = null;
+      this._currentCommandEncoder = null;
+    }
+  }
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _options: WebGPUContextOptions;
 
@@ -466,6 +489,8 @@ export class WebGPUContext extends GraphicsContext {
   // detection stage in Model FS) have a single, stable place to read
   // it from. `null` when globe depth wasn't computed this frame.
   public _globeDepthView: GPUTextureView | null = null;
+  /** Pick-scoped packed depth; never falls back to a previous render frame. */
+  public _pickClassificationDepthView: GPUTextureView | null = null;
   // Batch 139 (NEW-LABEL-SDF-BIND-GROUP-CACHING) — published
   // alongside `_globeDepthView` so collection renderers can compare
   // by underlying texture identity (stable across frames; only
@@ -551,6 +576,12 @@ export class WebGPUContext extends GraphicsContext {
   // validation warnings + black scene FB writes when HDR toggled.
   public _scenePipelineFormatGeneration: number = 0;
 
+  // Physical-device resource generation. Unlike the scene-format epoch above,
+  // this advances on every successful recovery even when the replacement has
+  // identical formats/limits. Scene command owners use it to reject buffers,
+  // bind groups, and pipelines created by the previous GPUDevice.
+  public _deviceResourceGeneration: number = 0;
+
   /**
    * Backend-agnostic epoch that increments whenever the scene render-target
    * color format changes at runtime (HDR toggle, MSAA toggle, canvas-format
@@ -564,6 +595,10 @@ export class WebGPUContext extends GraphicsContext {
    */
   get renderTargetGeneration(): number {
     return this._scenePipelineFormatGeneration;
+  }
+
+  override get resourceGeneration(): number {
+    return this._deviceResourceGeneration;
   }
 
   /**
@@ -582,6 +617,20 @@ export class WebGPUContext extends GraphicsContext {
       this.presentationFormat ??
       ("bgra8unorm" as GPUTextureFormat)
     );
+  }
+
+  /**
+   * Canonical color target for object-ID pick pipelines and the pick
+   * framebuffer. Pick IDs use byte-exact RGBA readback, so an HDR scene
+   * target cannot be reused as the pick attachment. Keeping this decision on
+   * the context gives every pick producer and the framebuffer one format
+   * authority instead of independently clamping the scene format.
+   */
+  get pickPipelineFormat(): GPUTextureFormat {
+    const sceneFormat = this.scenePipelineFormat;
+    return sceneFormat === "bgra8unorm" || sceneFormat === "rgba8unorm"
+      ? sceneFormat
+      : "rgba8unorm";
   }
 
   // WebGL extension properties (WebGPU natively supports these as core features)
@@ -695,10 +744,10 @@ export class WebGPUContext extends GraphicsContext {
   private _drawBuffers: boolean = true;
 
   // Default textures
-  private _defaultTexture: CesiumOpaqueTexture | undefined;
-  private _defaultEmissiveTexture: CesiumOpaqueTexture | undefined;
-  private _defaultNormalTexture: CesiumOpaqueTexture | undefined;
-  private _defaultCubeMap: CesiumOpaqueTexture | undefined;
+  private _defaultTexture: WebGPUTexture | undefined;
+  private _defaultEmissiveTexture: WebGPUTexture | undefined;
+  private _defaultNormalTexture: WebGPUTexture | undefined;
+  private _defaultCubeMap: WebGPUTexture | undefined;
 
   // Render state
   // Public underscore: shared with the WebGL-stub state proxy (Batch 129
@@ -760,12 +809,13 @@ export class WebGPUContext extends GraphicsContext {
 
   // Device loss recovery — delegated to WebGPUDeviceLossRecovery (FORK-1 fix)
   private _deviceLossRecovery: WebGPUDeviceLossRecovery | null = null;
+  private _releaseShaderValidation: (() => void) | null = null;
 
   // GL compatibility - bound buffer/texture tracking for legacy code.
   // Public underscore: shared with the WebGL-stub state proxy
   // (Batch 129 extraction).
-  public _boundVertexBuffer: GPUBuffer | null = null;
-  public _boundIndexBuffer: GPUBuffer | null = null;
+  public _boundVertexBuffer: StubBufferHandle | null = null;
+  public _boundIndexBuffer: StubBufferHandle | null = null;
   public _activeTextureUnit: number = 0;
   public _textureBindings: Map<
     number,
@@ -795,6 +845,7 @@ export class WebGPUContext extends GraphicsContext {
 
     this._canvas = canvas;
     this._options = options;
+    this._clipSpaceConvention = ClipSpaceConvention.WEBGPU;
 
     // Generate unique ID
     this._id = createGuid();
@@ -804,7 +855,7 @@ export class WebGPUContext extends GraphicsContext {
     this._textureCache = new TextureCache();
 
     // Initialize uniform and pass state
-    this._uniformState = new UniformState();
+    this._uniformState = new UniformState(this.clipSpaceConvention);
     this._defaultPassState = new PassState(this);
     this._defaultRenderState =
       jsModule<RenderStateStatics>(RenderState).fromCache();
@@ -834,8 +885,8 @@ export class WebGPUContext extends GraphicsContext {
     // This provides WebGL constants that legacy code expects
     this._initializeWebGLStub();
 
-    // Register with the global ContextRegistry (Phase B)
-    this._registerWithRegistry();
+    // Registry publication is the commit point of create(). A partially
+    // initialized WebGPU context must never be observable globally.
   }
 
   /**
@@ -862,7 +913,8 @@ export class WebGPUContext extends GraphicsContext {
     }
 
     if (!("gpu" in navigator)) {
-      throw new RuntimeError(
+      throw new RendererInitializationError(
+        "availability",
         "WebGPU is not supported in this browser. " +
           "Please use a browser with WebGPU support (Chrome 113+, Edge 113+) " +
           'or set renderer to "webgl" or "auto".',
@@ -870,9 +922,18 @@ export class WebGPUContext extends GraphicsContext {
     }
     //>>includeEnd('debug');
 
-    const context = new WebGPUContext(canvas, options);
-    await context._initialize();
-    return context;
+    let context: WebGPUContext | undefined;
+    try {
+      context = new WebGPUContext(canvas, options);
+      await context._initialize();
+      context._registerWithRegistry();
+      return context;
+    } catch (error) {
+      // Roll back every resource/refcount acquired before the failure. The
+      // context was never registered, so destroy's unregister is a no-op.
+      context?.destroy();
+      throw error;
+    }
   }
 
   /**
@@ -913,6 +974,7 @@ export class WebGPUContext extends GraphicsContext {
 
       this._adapter = acquired.adapter;
       this._device = acquired.device;
+      retainEffectsPlaceholderCacheForContext(this._device, this);
       // Track whether we pulled a shared device or got our own — this
       // flag drives the destroy path's choice between `pool.releaseDevice`
       // (refcount-aware) and a direct `device.destroy()` (only safe if
@@ -920,7 +982,8 @@ export class WebGPUContext extends GraphicsContext {
       this._deviceFromPool = true;
 
       if (!this._adapter) {
-        throw new RuntimeError(
+        throw new RendererInitializationError(
+          "adapter",
           "Failed to get WebGPU adapter. " +
             "WebGPU may not be properly supported on this device.",
         );
@@ -956,10 +1019,7 @@ export class WebGPUContext extends GraphicsContext {
       // (Batch 131.)
       this._registerResourceCaches();
 
-      // Handle device lost event with recovery strategy
-      this._setupDeviceLostHandler();
-
-      // Initialize ContextLimits from WebGPU device limits
+      // Capture this context generation's immutable device capabilities.
       this._initializeContextLimits();
 
       // Update capability flags based on enabled features
@@ -1022,9 +1082,20 @@ export class WebGPUContext extends GraphicsContext {
       // Pipeline warm-up: proactively initialize common renderers to avoid
       // first-frame stutter from synchronous pipeline compilation.
       this._warmUpPipelines();
+
+      // Install loss handling only after every fallible initialization stage
+      // has committed. A failed create therefore leaves no device-loss
+      // callback retaining the rejected context on a shared pooled device.
+      this._setupDeviceLostHandler();
     } catch (error) {
-      throw new RuntimeError(
-        `Failed to initialize WebGPU context: ${(error as Error).message}`,
+      if (error instanceof RendererInitializationError) {
+        throw error;
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      throw new RendererInitializationError(
+        "context",
+        `Failed to initialize WebGPU context: ${message}`,
+        error,
       );
     }
   }
@@ -1083,9 +1154,9 @@ export class WebGPUContext extends GraphicsContext {
    * crosses the activation threshold. Without this warm-up the first
    * threshold crossing hitches by 5-50 ms (compile + alloc).
    *
-   * Triggered by `Scene.gpuCullingHint = 'always'`. The 'auto'
-   * default keeps the lazy-init paths from Batches 209-211 — only
-   * users who anticipate >10K visible commands should opt in.
+   * Triggered by `Scene.gpuCullingHint = 'always'`. The contained
+   * default is 'never'; 'auto' remains an explicit characterization
+   * mode for users who anticipate >10K visible commands.
    *
    * Fire-and-forget: each dispatcher's init is async; failures are
    * non-fatal (lazy path still works).
@@ -1142,7 +1213,7 @@ export class WebGPUContext extends GraphicsContext {
     hintViewportHeight: number = 1080,
     hintMaxCommands: number = 16384,
   ): void {
-    if (!this._device || this._isDestroyed) return;
+    if (!this._device || this._isDeviceUnavailable) return;
     // B219-N3 — refuse warm-up when the hint forbids it. Symmetric
     // with the lazy-getter guards so both eager + lazy paths agree.
     if (this._gpuCullingHint === "never") return;
@@ -1209,59 +1280,88 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
-    // Create 1x1 white texture (default texture)
-    const whiteData = new Uint8Array([255, 255, 255, 255]);
-    const whiteTex = WebGPUTexture.create2D(
-      this._device,
-      1,
-      1,
-      "rgba8unorm",
-      1,
-      "Default White Texture",
-    );
-    whiteTex.write(whiteData, 1, 1);
-    this._defaultTexture = whiteTex;
+    // Build the full replacement set off to the side. A pooled candidate may
+    // remain alive for another Context after this recovery attempt fails, so
+    // relying on candidate-device destruction to reclaim a half-built set is
+    // not sufficient.
+    const created: WebGPUTexture[] = [];
+    let whiteTex: WebGPUTexture;
+    let blackTex: WebGPUTexture;
+    let normalTex: WebGPUTexture;
+    let cubeTex: WebGPUTexture;
+    try {
+      const whiteData = new Uint8Array([255, 255, 255, 255]);
+      whiteTex = WebGPUTexture.create2D(
+        this._device,
+        1,
+        1,
+        "rgba8unorm",
+        1,
+        "Default White Texture",
+      );
+      created.push(whiteTex);
+      whiteTex.write(whiteData, 1, 1);
 
-    // Create 1x1 black texture (default emissive)
-    const blackData = new Uint8Array([0, 0, 0, 255]);
-    const blackTex = WebGPUTexture.create2D(
-      this._device,
-      1,
-      1,
-      "rgba8unorm",
-      1,
-      "Default Emissive Texture",
-    );
-    blackTex.write(blackData, 1, 1);
-    this._defaultEmissiveTexture = blackTex;
+      const blackData = new Uint8Array([0, 0, 0, 255]);
+      blackTex = WebGPUTexture.create2D(
+        this._device,
+        1,
+        1,
+        "rgba8unorm",
+        1,
+        "Default Emissive Texture",
+      );
+      created.push(blackTex);
+      blackTex.write(blackData, 1, 1);
 
-    // Create 1x1 normal texture (default normal - pointing up in tangent space)
-    // Normal = (0.5, 0.5, 1.0) in RGB space = (128, 128, 255, 255)
-    const normalData = new Uint8Array([128, 128, 255, 255]);
-    const normalTex = WebGPUTexture.create2D(
-      this._device,
-      1,
-      1,
-      "rgba8unorm",
-      1,
-      "Default Normal Texture",
-    );
-    normalTex.write(normalData, 1, 1);
-    this._defaultNormalTexture = normalTex;
+      // Normal = (0.5, 0.5, 1.0) in RGB space.
+      const normalData = new Uint8Array([128, 128, 255, 255]);
+      normalTex = WebGPUTexture.create2D(
+        this._device,
+        1,
+        1,
+        "rgba8unorm",
+        1,
+        "Default Normal Texture",
+      );
+      created.push(normalTex);
+      normalTex.write(normalData, 1, 1);
 
-    // Create 1x1 cubemap (all faces white)
-    const cubeTex = WebGPUTexture.createCubeMap(
-      this._device,
-      1,
-      "rgba8unorm",
-      1,
-      "Default Cube Map",
-    );
-    // Write white to all 6 faces
-    for (let face = 0; face < 6; face++) {
-      cubeTex.write(whiteData, 1, 1, face);
+      cubeTex = WebGPUTexture.createCubeMap(
+        this._device,
+        1,
+        "rgba8unorm",
+        1,
+        "Default Cube Map",
+      );
+      created.push(cubeTex);
+      for (let face = 0; face < 6; face++) {
+        cubeTex.write(whiteData, 1, 1, face);
+      }
+    } catch (error) {
+      for (let i = created.length - 1; i >= 0; i--) {
+        try {
+          created[i].destroy();
+        } catch {
+          // Preserve the initialization failure; candidate cleanup continues.
+        }
+      }
+      throw error;
     }
+
+    const previous = [
+      this._defaultTexture,
+      this._defaultEmissiveTexture,
+      this._defaultNormalTexture,
+      this._defaultCubeMap,
+    ];
+    this._defaultTexture = whiteTex;
+    this._defaultEmissiveTexture = blackTex;
+    this._defaultNormalTexture = normalTex;
     this._defaultCubeMap = cubeTex;
+    for (const texture of previous) {
+      texture?.destroy();
+    }
   }
 
   // GraphicsContext interface implementation
@@ -1582,6 +1682,11 @@ export class WebGPUContext extends GraphicsContext {
     return this._isDestroyed;
   }
 
+  /** Rendering is unavailable before or after physical context teardown. */
+  private get _isDeviceUnavailable(): boolean {
+    return this._isDestroyed || this._isTerminallyLost;
+  }
+
   /**
    * Gets the WebGPU device
    * @returns {GPUDevice | null} The GPU device
@@ -1627,11 +1732,16 @@ export class WebGPUContext extends GraphicsContext {
    * ```
    */
   beginFrame(): void {
-    //>>includeStart('debug', pragmas.debug);
-    if (this._isDestroyed) {
-      throw new DeveloperError("Context has been destroyed.");
+    if (this._isDeviceUnavailable) {
+      //>>includeStart('debug', pragmas.debug);
+      throw new DeveloperError(
+        this._isDestroyed
+          ? "Context has been destroyed."
+          : "Context's WebGPU device is terminally lost.",
+      );
+      //>>includeEnd('debug');
+      return;
     }
-    //>>includeEnd('debug');
 
     if (!this._device || !this._context) {
       return;
@@ -1663,6 +1773,12 @@ export class WebGPUContext extends GraphicsContext {
       label: "Scene Frame Command Encoder",
     });
 
+    // Timestamp profiling is opt-in. If the performance manager already
+    // exists, begin before opening the default pass so the first pass is not
+    // omitted from the sample. The manager method is idempotent because the
+    // scene renderer also enters its broader per-frame lifecycle later.
+    this._performanceManager?.beginTimestampFrame();
+
     // Get current canvas texture
     const canvasTexture = this._context.getCurrentTexture();
     this._currentTextureView = canvasTexture.createView();
@@ -1677,10 +1793,10 @@ export class WebGPUContext extends GraphicsContext {
     // at IDENTITY and every screen-space WGSL shader had to hand-build them
     // from drawingBufferWidth/Height. Seeding here makes the canonical
     // UniformState getters correct for ALL screen-space WebGPU shaders.
-    // ORDERING: Scene.render() calls Matrix4.setDepthRangeType("webgpu") before
-    // context.beginFrame(), so the lazy cleanViewport ortho z-mapping uses the
-    // WebGPU 0..1 branch. The setter only reads x/y/width/height, so a plain
-    // object literal suffices (no BoundingRectangle import).
+    // UniformState owns this context's immutable ClipSpaceConvention, so the
+    // lazy viewport-orthographic matrix uses WebGPU's 0..1 depth range without
+    // any process-global renderer ordering. The setter only reads
+    // x/y/width/height, so a plain object literal suffices.
     this._uniformState.viewport = {
       x: 0,
       y: 0,
@@ -1708,7 +1824,11 @@ export class WebGPUContext extends GraphicsContext {
    * encoder already exists (e.g. re-entrant call within one pick).
    */
   beginPickFrame(): void {
-    if (!this._device || this._currentCommandEncoder) {
+    if (
+      this._isDeviceUnavailable ||
+      !this._device ||
+      this._currentCommandEncoder
+    ) {
       return;
     }
     if (this._uniformAllocator) {
@@ -1717,6 +1837,7 @@ export class WebGPUContext extends GraphicsContext {
     this._currentCommandEncoder = this._device.createCommandEncoder({
       label: "Pick Frame Command Encoder",
     });
+    this._performanceManager?.beginTimestampFrame();
   }
 
   /**
@@ -1780,7 +1901,12 @@ export class WebGPUContext extends GraphicsContext {
     };
 
     this._currentRenderPassEncoder =
-      this._currentCommandEncoder.beginRenderPass(renderPassDescriptor);
+      this._currentCommandEncoder.beginRenderPass(
+        this.withRenderPassTimestamps(
+          renderPassDescriptor,
+          "Scene Main Render Pass",
+        ),
+      );
 
     // Set default viewport to full canvas size
     this._currentRenderPassEncoder.setViewport(
@@ -1864,9 +1990,38 @@ export class WebGPUContext extends GraphicsContext {
 
     // Begin the new render pass
     this._currentRenderPassEncoder =
-      this._currentCommandEncoder.beginRenderPass(descriptor);
+      this._currentCommandEncoder.beginRenderPass(
+        this.withRenderPassTimestamps(descriptor),
+      );
 
     return this._currentRenderPassEncoder;
+  }
+
+  /**
+   * Return a render-pass descriptor with opt-in timestamp writes attached.
+   * Direct-pass subsystems use this when they intentionally encode on the
+   * context's command encoder without taking ownership of the active-pass
+   * lifecycle. Default rendering returns the exact descriptor unchanged.
+   */
+  withRenderPassTimestamps(
+    descriptor: GPURenderPassDescriptor,
+    fallbackName?: string,
+  ): GPURenderPassDescriptor {
+    const performanceManager = this._performanceManager;
+    return performanceManager
+      ? performanceManager.withRenderPassTimestamps(descriptor, fallbackName)
+      : descriptor;
+  }
+
+  /** Compute-pass counterpart to {@link withRenderPassTimestamps}. */
+  withComputePassTimestamps(
+    descriptor: GPUComputePassDescriptor,
+    fallbackName?: string,
+  ): GPUComputePassDescriptor {
+    const performanceManager = this._performanceManager;
+    return performanceManager
+      ? performanceManager.withComputePassTimestamps(descriptor, fallbackName)
+      : descriptor;
   }
 
   /**
@@ -1990,7 +2145,7 @@ export class WebGPUContext extends GraphicsContext {
     if (!texture) {
       return;
     }
-    if (!this._device || this._isDestroyed) {
+    if (!this._device || this._isDeviceUnavailable) {
       try {
         texture.destroy();
       } catch {
@@ -2003,11 +2158,16 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   endFrame(): void {
-    //>>includeStart('debug', pragmas.debug);
-    if (this._isDestroyed) {
-      throw new DeveloperError("Context has been destroyed.");
+    if (this._isDeviceUnavailable) {
+      //>>includeStart('debug', pragmas.debug);
+      throw new DeveloperError(
+        this._isDestroyed
+          ? "Context has been destroyed."
+          : "Context's WebGPU device is terminally lost.",
+      );
+      //>>includeEnd('debug');
+      return;
     }
-    //>>includeEnd('debug');
 
     if (!this._device || !this._currentCommandEncoder) {
       return;
@@ -2019,9 +2179,20 @@ export class WebGPUContext extends GraphicsContext {
       this._currentRenderPassEncoder = null;
     }
 
+    // Coalesce per-draw uniform uploads into one queue write per dirty ring
+    // page. Queue writes issued before submit are ordered before the command
+    // buffer that consumes them.
+    this._uniformAllocator?.flush();
+
+    // Timestamp queries must resolve after every frame pass has ended and
+    // before this encoder is finished. The manager is lazy and endFrame is
+    // idempotent, so pick/empty frames that never began profiling are no-ops.
+    this._performanceManager?.endFrame(this._currentCommandEncoder);
+
     // Submit command buffer
     const commandBuffer = this._currentCommandEncoder.finish();
     this._device.queue.submit([commandBuffer]);
+    this._timestampProfiler?.afterSubmit();
 
     // Drain deferred texture destroys: any texture the scene evicted this
     // frame is now safe to free once the work just submitted (which may bind
@@ -2122,32 +2293,59 @@ export class WebGPUContext extends GraphicsContext {
    * that cascade through render bundles and kill the entire frame.
    */
   private _installShaderValidation(device: GPUDevice): void {
-    const origCreateShaderModule = device.createShaderModule.bind(device);
-    const contextId = this._id;
-    device.createShaderModule = function (
-      descriptor: GPUShaderModuleDescriptor,
-    ): GPUShaderModule {
-      const mod = origCreateShaderModule(descriptor);
-      // Fire-and-forget async validation — doesn't block pipeline
-      // creation but surfaces errors in the console immediately.
-      mod.getCompilationInfo().then((info: GPUCompilationInfo) => {
-        for (const msg of info.messages) {
-          if (msg.type === "error") {
-            console.error(
-              `[CesiumJS:webgpu:${contextId}] Shader "${descriptor.label ?? "unlabeled"}" ` +
-                `compilation ERROR at line ${msg.lineNum}:${msg.linePos}: ${msg.message}`,
-            );
-          } else if (msg.type === "warning") {
-            //>>includeStart('debug', pragmas.debug);
-            console.warn(
-              `[CesiumJS:webgpu:${contextId}] Shader "${descriptor.label ?? "unlabeled"}" ` +
-                `warning at line ${msg.lineNum}: ${msg.message}`,
-            );
-            //>>includeEnd('debug');
+    this._releaseShaderValidation?.();
+
+    let installation = WebGPUContext._shaderValidationByDevice.get(device);
+    if (!installation) {
+      const original = device.createShaderModule;
+      const contextIds = new Set<string>();
+      const wrapper = function (
+        this: GPUDevice,
+        descriptor: GPUShaderModuleDescriptor,
+      ): GPUShaderModule {
+        const mod = original.call(device, descriptor);
+        const contextId = contextIds.values().next().value ?? "shared-device";
+        // Fire-and-forget async validation — doesn't block pipeline
+        // creation but surfaces errors in the console immediately.
+        mod.getCompilationInfo().then((info: GPUCompilationInfo) => {
+          for (const msg of info.messages) {
+            if (msg.type === "error") {
+              console.error(
+                `[CesiumJS:webgpu:${contextId}] Shader "${descriptor.label ?? "unlabeled"}" ` +
+                  `compilation ERROR at line ${msg.lineNum}:${msg.linePos}: ${msg.message}`,
+              );
+            } else if (msg.type === "warning") {
+              //>>includeStart('debug', pragmas.debug);
+              console.warn(
+                `[CesiumJS:webgpu:${contextId}] Shader "${descriptor.label ?? "unlabeled"}" ` +
+                  `warning at line ${msg.lineNum}: ${msg.message}`,
+              );
+              //>>includeEnd('debug');
+            }
           }
+        });
+        return mod;
+      };
+      installation = { original, wrapper, contextIds };
+      WebGPUContext._shaderValidationByDevice.set(device, installation);
+      device.createShaderModule = wrapper;
+    }
+
+    installation.contextIds.add(this._id);
+    let released = false;
+    this._releaseShaderValidation = () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      installation!.contextIds.delete(this._id);
+      if (installation!.contextIds.size === 0) {
+        if (device.createShaderModule === installation!.wrapper) {
+          device.createShaderModule = installation!.original;
         }
-      });
-      return mod;
+        WebGPUContext._shaderValidationByDevice.delete(device);
+      }
+      this._releaseShaderValidation = null;
     };
   }
 
@@ -2234,24 +2432,6 @@ export class WebGPUContext extends GraphicsContext {
       this._astc = true;
       this.astc = true;
     }
-
-    // C2-1 NEW-WEBGPU-KTX2-TRANSCODER-FORMATS: register the KTX2 transcode
-    // target formats derived from the device's compression features, mirroring
-    // the WebGL Context.js init. Without this, loadKTX2() throws
-    // "supportedTargetFormats is required" on a WebGPU context (the transcoder
-    // guards on a module-level set that only the WebGL backend populated), so
-    // even an uncompressed half-float .ktx2 (e.g. an IBL env map) fails to load.
-    // WebGPU exposes no PVRTC or ETC1 device feature, so those pass false.
-    // NOTE: setKTX2SupportedFormats writes a process-global shared with WebGL
-    // (last init wins) — see loadKTX2.js. Idempotent on device-loss re-init.
-    loadKTX2.setKTX2SupportedFormats(
-      this._s3tc, // texture-compression-bc
-      this._pvrtc, // no WebGPU device feature → false
-      this._astc, // texture-compression-astc
-      this._etc, // texture-compression-etc2
-      this._etc1, // no WebGPU device feature → false
-      this._bc7, // texture-compression-bc
-    );
   }
 
   /**
@@ -2282,12 +2462,18 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * Initializes the global ContextLimits with values from WebGPU device limits
+   * Replaces this context's immutable capability snapshot from device limits.
    * @internal
    */
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _initializeContextLimits(): void {
-    initializeContextLimitsFromDevice(this._device);
+    if (!this._device) {
+      this._graphicsCapabilities = GraphicsCapabilities.EMPTY;
+      return;
+    }
+    this._graphicsCapabilities = GraphicsCapabilities.fromWebGPUDevice(
+      this._device,
+    );
 
     // (Re)build the vertex-attribute divisor state cache now that the
     // real device limits are known. Runs again on device-loss recovery,
@@ -2494,9 +2680,13 @@ export class WebGPUContext extends GraphicsContext {
     // consumers (verified by grep) — `options` is part of the abstract
     // base signature and currently has no caller-provided fields, so
     // pass `this` as the context and let WebGPUSync resolve the device.
-    if (!this._device) {
+    if (this._isDeviceUnavailable || !this._device) {
       throw new DeveloperError(
-        "createSync called before WebGPU device is initialized.",
+        this._isDestroyed
+          ? "createSync called after the WebGPU context was destroyed."
+          : this._isTerminallyLost
+            ? "createSync called after the WebGPU device was terminally lost."
+            : "createSync called before WebGPU device is initialized.",
       );
     }
     return WebGPUSync.create({
@@ -2511,11 +2701,16 @@ export class WebGPUContext extends GraphicsContext {
    * @param {CesiumPassState} passState - Pass state information
    */
   draw(drawCommand: CesiumDrawCommand, passState?: CesiumPassState): void {
-    //>>includeStart('debug', pragmas.debug);
-    if (this._isDestroyed) {
-      throw new DeveloperError("Context has been destroyed.");
+    if (this._isDeviceUnavailable) {
+      //>>includeStart('debug', pragmas.debug);
+      throw new DeveloperError(
+        this._isDestroyed
+          ? "Context has been destroyed."
+          : "Context's WebGPU device is terminally lost.",
+      );
+      //>>includeEnd('debug');
+      return;
     }
-    //>>includeEnd('debug');
 
     if (!this._currentRenderPassEncoder) {
       this.log("warn", "draw() called without active render pass encoder");
@@ -2606,7 +2801,11 @@ export class WebGPUContext extends GraphicsContext {
    * @returns {object|null} PBO handle with `mapAsync`, `getBufferData`, `destroy`
    */
   readPixelsToPBO(readState: CesiumReadState): PixelReadbackPBO | null {
-    if (!this._device || !this._currentCommandEncoder) {
+    if (
+      this._isDeviceUnavailable ||
+      !this._device ||
+      !this._currentCommandEncoder
+    ) {
       this.log("warn", "readPixelsToPBO: No active device or command encoder");
       return null;
     }
@@ -2756,6 +2955,13 @@ export class WebGPUContext extends GraphicsContext {
 
     // Submit the command buffer so the copy actually executes on the GPU
     if (this._currentCommandEncoder) {
+      // Coalesce any staged per-draw uniform uploads before this MID-FRAME
+      // submit. Queue writes issued before submit are ordered before the
+      // command buffer that consumes them — without this flush, draws already
+      // encoded into this encoder would read stale ring-buffer bytes because
+      // their staged writes would only land at endFrame's flush, AFTER this
+      // submit. Mirrors the endFrame() flush.
+      this._uniformAllocator?.flush();
       const commandBuffer = this._currentCommandEncoder.finish();
       this._device!.queue.submit([commandBuffer]);
       // Create a fresh encoder for any subsequent operations this frame
@@ -2949,14 +3155,7 @@ export class WebGPUContext extends GraphicsContext {
    * Basis texture compression support
    */
   get supportsBasis(): boolean {
-    return (
-      this._s3tc ||
-      this._pvrtc ||
-      this._astc ||
-      this._etc ||
-      this._etc1 ||
-      this._bc7
-    );
+    return this.graphicsCapabilities.supportsBasis;
   }
 
   /**
@@ -3008,11 +3207,16 @@ export class WebGPUContext extends GraphicsContext {
   private _clearOverflowWarned: boolean = false;
 
   clear(clearCommand: CesiumClearCommand, passState?: CesiumPassState): void {
-    //>>includeStart('debug', pragmas.debug);
-    if (this._isDestroyed) {
-      throw new DeveloperError("Context has been destroyed.");
+    if (this._isDeviceUnavailable) {
+      //>>includeStart('debug', pragmas.debug);
+      throw new DeveloperError(
+        this._isDestroyed
+          ? "Context has been destroyed."
+          : "Context's WebGPU device is terminally lost.",
+      );
+      //>>includeEnd('debug');
+      return;
     }
-    //>>includeEnd('debug');
 
     if (!this._device || !this._context || !this._currentCommandEncoder) {
       return;
@@ -3138,7 +3342,12 @@ export class WebGPUContext extends GraphicsContext {
     // Begin a new pass with the clear ops, then immediately make it the
     // active pass so subsequent draw commands render into it.
     this._currentRenderPassEncoder =
-      this._currentCommandEncoder.beginRenderPass(renderPassDescriptor);
+      this._currentCommandEncoder.beginRenderPass(
+        this.withRenderPassTimestamps(
+          renderPassDescriptor,
+          "ClearCommand Render Pass",
+        ),
+      );
 
     // Restore default viewport / scissor
     this._currentRenderPassEncoder.setViewport(
@@ -3166,7 +3375,7 @@ export class WebGPUContext extends GraphicsContext {
     // routes through `_applyCanvasConfig` (Batch 213 audit fix) so
     // the HDR mode survives resize and a browser without extended
     // toneMapping support degrades to rgba16float-only or SDR.
-    if (this._context && this._device && !this._isDestroyed) {
+    if (this._context && this._device && !this._isDeviceUnavailable) {
       this._applyCanvasConfig();
     }
   }
@@ -3663,6 +3872,35 @@ export class WebGPUContext extends GraphicsContext {
       this._bufferMapper = null;
     }
 
+    // Context-owned textures/caches must be released explicitly because a
+    // pooled GPUDevice may outlive this context (including failed creates).
+    this._depthTexture?.destroy();
+    this._depthTexture = null;
+    this._depthTextureView = null;
+    this._depthOnlyTextureView = null;
+    this._defaultTexture?.destroy();
+    this._defaultTexture = undefined;
+    this._defaultEmissiveTexture?.destroy();
+    this._defaultEmissiveTexture = undefined;
+    this._defaultNormalTexture?.destroy();
+    this._defaultNormalTexture = undefined;
+    this._defaultCubeMap?.destroy();
+    this._defaultCubeMap = undefined;
+    for (const texture of this._pendingTextureDestroys) {
+      texture.destroy();
+    }
+    this._pendingTextureDestroys.length = 0;
+
+    this._shaderCache.destroy();
+    const textureCache = this._textureCache as { destroy?: () => void };
+    textureCache.destroy?.();
+
+    this._asyncResourceTelemetry?.destroy();
+    this._asyncResourceTelemetry = null;
+    this._asyncResources?.reset("context-destroyed");
+    this._asyncResources = null;
+    this.clearAllHDRFallbackListeners();
+
     // Clear buffer pools (drops device-owned buffers back for GC).
     this._bufferPool.clear();
     this._uniformBufferPool = [];
@@ -3688,6 +3926,35 @@ export class WebGPUContext extends GraphicsContext {
     // matches the lifecycle pattern used by the bus + cache registry.
     this._featureFlags.clear();
 
+    // Remove this context's lease from the device-level shader validation
+    // wrapper. The last lease restores the device's original method, so a
+    // failed create cannot leave a closure rooted in a shared pooled device.
+    this._releaseShaderValidation?.();
+
+    // Compatibility buffers are context-owned even when the physical device
+    // is pooled. Drain every registered handle before releasing this
+    // context's device lease; another context retaining the same GPUDevice
+    // must not keep these otherwise-unbound allocations alive.
+    this._gl.destroyCompatibilityBufferHandles();
+
+    // Release this context's lease on device-level effects resources before
+    // returning a pooled device. The final context owner drains buffers and
+    // placeholder textures; earlier owners leave the shared cache intact.
+    if (this._device) {
+      releaseEffectsPlaceholderCacheForContext(this._device, this);
+    }
+
+    // Stop presenting from this canvas before releasing the device lease. The
+    // final pooled owner destroys the GPUDevice synchronously, so unconfiguring
+    // afterwards would leave presentation teardown racing a dead device.
+    try {
+      this._context?.unconfigure();
+    } catch {
+      // A lost canvas can already be unconfigured by the browser. Device and
+      // pool ownership still has to be released even if presentation teardown
+      // reports a late error.
+    }
+
     // NOW destroy the device — everything that needed it has already run.
     // AUDIT_2026_05_02 C.1 (Batch 135) — when the device came from the
     // pool, release the reference so refcount drops; the pool destroys
@@ -3698,9 +3965,12 @@ export class WebGPUContext extends GraphicsContext {
     if (this._device) {
       if (this._deviceFromPool) {
         WebGPUDevicePool.instance.releaseDevice(this._device);
-      } else {
+      } else if (!this._isTerminallyLost) {
         this._device.destroy();
       }
+      // A terminally-lost isolated device was already destroyed by the
+      // browser (or explicitly by the caller). Do not issue a second destroy;
+      // some implementations reject it during loss teardown.
       this._device = null;
       this._deviceFromPool = false;
     }
@@ -3708,6 +3978,7 @@ export class WebGPUContext extends GraphicsContext {
     // Clear references
     this._adapter = null;
     this._context = null;
+    this._isTerminallyLost = false;
     this._isDestroyed = true;
   }
 
@@ -3768,7 +4039,7 @@ export class WebGPUContext extends GraphicsContext {
    * @returns {GPUSampler} The sampler
    */
   getOrCreateSampler(descriptor: GPUSamplerDescriptor): GPUSampler | null {
-    if (!this._device) {
+    if (this._isDeviceUnavailable || !this._device) {
       return null;
     }
 
@@ -3791,7 +4062,7 @@ export class WebGPUContext extends GraphicsContext {
   getOrCreateBindGroupLayout(
     descriptor: GPUBindGroupLayoutDescriptor,
   ): GPUBindGroupLayout | null {
-    if (!this._device) {
+    if (this._isDeviceUnavailable || !this._device) {
       return null;
     }
 
@@ -3812,7 +4083,7 @@ export class WebGPUContext extends GraphicsContext {
    * @returns {GPUBindGroup} The bind group
    */
   createBindGroup(descriptor: GPUBindGroupDescriptor): GPUBindGroup | null {
-    if (!this._device) {
+    if (this._isDeviceUnavailable || !this._device) {
       return null;
     }
 
@@ -3825,7 +4096,7 @@ export class WebGPUContext extends GraphicsContext {
    * @returns {GPUBuffer | null} A uniform buffer
    */
   getUniformBuffer(size: number): GPUBuffer | null {
-    if (!this._device) {
+    if (this._isDeviceUnavailable || !this._device) {
       return null;
     }
 
@@ -3858,6 +4129,10 @@ export class WebGPUContext extends GraphicsContext {
    * @param {GPUBuffer} buffer - The buffer to return
    */
   returnUniformBuffer(buffer: GPUBuffer): void {
+    if (buffer && this._isDeviceUnavailable) {
+      buffer.destroy();
+      return;
+    }
     if (buffer && this._uniformBufferPool.length < 100) {
       // Limit pool size
       this._uniformBufferPool.push(buffer);
@@ -3879,7 +4154,7 @@ export class WebGPUContext extends GraphicsContext {
     size: number,
     usage: GPUBufferUsageFlags,
   ): GPUBuffer | null {
-    if (!this._device) {
+    if (this._isDeviceUnavailable || !this._device) {
       return null;
     }
 
@@ -3913,6 +4188,10 @@ export class WebGPUContext extends GraphicsContext {
     if (!buffer) {
       return;
     }
+    if (this._isDeviceUnavailable) {
+      buffer.destroy();
+      return;
+    }
 
     const pool = this._bufferPool.get(type) || [];
 
@@ -3932,7 +4211,7 @@ export class WebGPUContext extends GraphicsContext {
    * @returns {boolean} Whether the format is supported
    */
   supportsTextureCompression(format: string): boolean {
-    if (!this._device) {
+    if (this._isDeviceUnavailable || !this._device) {
       return false;
     }
 
@@ -3956,7 +4235,7 @@ export class WebGPUContext extends GraphicsContext {
    * @returns {string[]} Array of supported compression format names
    */
   getSupportedCompressionFormats(): string[] {
-    if (!this._device) {
+    if (this._isDeviceUnavailable || !this._device) {
       return [];
     }
 
@@ -4009,10 +4288,17 @@ export class WebGPUContext extends GraphicsContext {
     destinationOrigin?: GPUOrigin3D,
     copySize?: GPUExtent3D,
   ): void {
-    //>>includeStart('debug', pragmas.debug);
-    if (this._isDestroyed) {
-      throw new DeveloperError("Context has been destroyed.");
+    if (this._isDeviceUnavailable) {
+      //>>includeStart('debug', pragmas.debug);
+      throw new DeveloperError(
+        this._isDestroyed
+          ? "Context has been destroyed."
+          : "Context's WebGPU device is terminally lost.",
+      );
+      //>>includeEnd('debug');
+      return;
     }
+    //>>includeStart('debug', pragmas.debug);
     if (!this._currentCommandEncoder) {
       throw new DeveloperError(
         "No active command encoder. Call beginFrame() first.",
@@ -4099,7 +4385,7 @@ export class WebGPUContext extends GraphicsContext {
     format: GPUTextureFormat = "rgba8unorm",
     generateMipmaps: boolean = false,
   ): WebGPUTexture | null {
-    if (!this._device) {
+    if (this._isDeviceUnavailable || !this._device) {
       return null;
     }
 
@@ -4164,7 +4450,7 @@ export class WebGPUContext extends GraphicsContext {
       respectEXIF?: boolean;
     } = {},
   ): Promise<WebGPUTexture | null> {
-    if (!this._device) {
+    if (this._isDeviceUnavailable || !this._device) {
       return null;
     }
 
@@ -4178,6 +4464,15 @@ export class WebGPUContext extends GraphicsContext {
       this.asyncResources,
       "Texture from Image (async)",
     );
+
+    // Decoding can outlive a terminal loss. Do not allocate or upload through
+    // the retained dead device during the short interval before teardown.
+    if (this._isDeviceUnavailable || !this._device) {
+      if (decoded !== source && "close" in decoded) {
+        decoded.close();
+      }
+      return null;
+    }
 
     // After EXIF rotation the bitmap dimensions can be swapped (90°/270°), so
     // pull width/height from the decoded surface, not the original source.
@@ -4220,7 +4515,7 @@ export class WebGPUContext extends GraphicsContext {
    * @returns {GPUBuffer | null} A staging buffer
    */
   createStagingBuffer(size: number): GPUBuffer | null {
-    if (!this._device) {
+    if (this._isDeviceUnavailable || !this._device) {
       return null;
     }
 
@@ -4241,7 +4536,7 @@ export class WebGPUContext extends GraphicsContext {
    * @returns {WebGPUMipmapGenerator} The mipmap generator
    */
   get mipmapGenerator(): WebGPUMipmapGenerator {
-    if (!this._mipmapGenerator && this._device) {
+    if (!this._mipmapGenerator && this._device && !this._isDeviceUnavailable) {
       this._mipmapGenerator = new WebGPUMipmapGenerator(this._device);
       // C-R12 (Batch 33) — on device-loss, drop the reference so the
       // next access rebuilds against the recovered device. Calling
@@ -4284,7 +4579,7 @@ export class WebGPUContext extends GraphicsContext {
   // burn VRAM. Closes the asymmetry — 'never' truly disables.
   // Public-underscore: read+written by the culler-pool helpers
   // (`WebGPUContextCullerPool.ts`) and `setGpuCullingHint`.
-  public _gpuCullingHint: "auto" | "always" | "never" = "auto";
+  public _gpuCullingHint: "auto" | "always" | "never" = "never";
 
   // NEW-AUX-CULLER-IDLE-DECAY (Batch 229) — track when each
   // auxiliary culler instance was last used, and periodically reap
@@ -4357,6 +4652,9 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   get uniformAllocator(): WebGPURingBufferAllocator | null {
+    if (this._isDeviceUnavailable) {
+      return null;
+    }
     if (!this._uniformAllocator && this._device) {
       this._uniformAllocator = new WebGPURingBufferAllocator(this._device, {
         pageSize: 4 * 1024 * 1024, // 4MB per page
@@ -4401,6 +4699,9 @@ export class WebGPUContext extends GraphicsContext {
    * freezable registration.
    */
   override get renderBundleManager(): WebGPURenderBundleManager | null {
+    if (this._isDeviceUnavailable) {
+      return null;
+    }
     if (!this._renderBundleManager && this._device) {
       this._renderBundleManager = new WebGPURenderBundleManager(this._device);
       // C-R12 (Batch 33) — bundles hold references to pipelines /
@@ -4425,6 +4726,9 @@ export class WebGPUContext extends GraphicsContext {
    * loss — it caches GPUComputePipelines invalid after the device is recreated.
    */
   get computeEngine(): WebGPUComputeEngine | null {
+    if (this._isDeviceUnavailable) {
+      return null;
+    }
     if (!this._computeEngine && this._device) {
       this._computeEngine = new WebGPUComputeEngine(
         this._device,
@@ -4578,12 +4882,18 @@ export class WebGPUContext extends GraphicsContext {
    * Requires 'timestamp-query' feature to be enabled.
    */
   get timestampProfiler(): WebGPUTimestampProfiler | null {
+    if (this._isDeviceUnavailable) {
+      return null;
+    }
     if (
       !this._timestampProfiler &&
       this._device &&
       this.hasFeature("timestamp-query")
     ) {
-      this._timestampProfiler = new WebGPUTimestampProfiler(this._device);
+      this._timestampProfiler = new WebGPUTimestampProfiler(
+        this._device,
+        this.hasFeature("timestamp-query"),
+      );
       // C-R12 (Batch 33) — query sets are device-scoped; drop on loss.
       this.onDeviceInvalidated(() => {
         this._timestampProfiler = null;
@@ -4597,6 +4907,9 @@ export class WebGPUContext extends GraphicsContext {
    * Pre-allocates and reuses GPU storage buffers.
    */
   get storageBufferPool(): WebGPUStorageBufferPool | null {
+    if (this._isDeviceUnavailable) {
+      return null;
+    }
     if (!this._storageBufferPool && this._device) {
       this._storageBufferPool = new WebGPUStorageBufferPool(this._device);
       // C-R12 (Batch 33) — pooled buffers are bound to the dead device.
@@ -4612,6 +4925,9 @@ export class WebGPUContext extends GraphicsContext {
    * Writes draw parameters from compute shaders for drawIndirect/drawIndexedIndirect.
    */
   get indirectDrawManager(): WebGPUIndirectDrawManager | null {
+    if (this._isDeviceUnavailable) {
+      return null;
+    }
     if (!this._indirectDrawManager && this._device) {
       this._indirectDrawManager = new WebGPUIndirectDrawManager(this._device);
       // C-R12 (Batch 33) — indirect args staging buffer is device-scoped.
@@ -4627,6 +4943,9 @@ export class WebGPUContext extends GraphicsContext {
    * Manages mapAsync/getMappedRange for readback and upload.
    */
   get bufferMapper(): WebGPUBufferMapper | null {
+    if (this._isDeviceUnavailable) {
+      return null;
+    }
     if (!this._bufferMapper && this._device) {
       this._bufferMapper = new WebGPUBufferMapper(this._device);
       // C-R12 (Batch 33) — staging + readback caches hold device buffers.
@@ -4656,6 +4975,9 @@ export class WebGPUContext extends GraphicsContext {
    * of those fields now materialize as distinct pipeline objects.
    */
   get webgpuPipelineCache(): WebGPURenderPipelineCache | null {
+    if (this._isDeviceUnavailable) {
+      return null;
+    }
     if (!this._webgpuPipelineCache && this._device) {
       // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 2) — pass the
       // context's async monitor so every async pipeline creation
@@ -4693,6 +5015,9 @@ export class WebGPUContext extends GraphicsContext {
    * C-R7-COMPUTE-PIPELINE-CACHE (Batch 76).
    */
   get webgpuComputePipelineCache(): WebGPUComputePipelineCache | null {
+    if (this._isDeviceUnavailable) {
+      return null;
+    }
     if (!this._webgpuComputePipelineCache && this._device) {
       this._webgpuComputePipelineCache = new WebGPUComputePipelineCache(
         this._device,
@@ -4837,6 +5162,9 @@ export class WebGPUContext extends GraphicsContext {
    * @returns The processor instance (may be mid-initialization — check .isReady)
    */
   get pointCloudLOD(): WebGPUPointCloudLODProcessorInstance | null {
+    if (this._isDeviceUnavailable) {
+      return null;
+    }
     if (
       !this._pointCloudLOD &&
       this._device &&
@@ -4913,6 +5241,14 @@ export class WebGPUContext extends GraphicsContext {
     // in Batch 143. The wrapper stays so `_initialize` keeps calling
     // it as `this._setupDeviceLostHandler()`.
     this._deviceLossRecovery = buildDeviceLossRecoveryFor(this, 3);
+    this._deviceLossRecovery.onDeviceLost((info) => {
+      if (info.reason !== "recovered") {
+        // Dynamic imports started against the old device generation may
+        // still settle while recovery is running. Advance their slot tokens
+        // immediately so none can install into the recovered context.
+        this._invalidatePendingFeatureRenderers();
+      }
+    });
     this._deviceLossRecovery.setupHandler(this._device);
   }
 
@@ -5022,10 +5358,8 @@ export class WebGPUContext extends GraphicsContext {
    * matches the original inline `_clearAllCaches` body so any
    * implicit dependency between clears is preserved.
    *
-   * Note: `clearEffectsPlaceholderCacheForDevice` is NOT registered —
-   * it needs the *current* `this._device` ref, and stays inline in
-   * `_clearAllCaches` so its ordering relative to
-   * `_fireDeviceInvalidated` is unambiguous.
+   * Device-level effects resources are owner-refcounted separately because a
+   * pooled GPUDevice may outlive any one Context.
    *
    * @private
    */
@@ -5091,25 +5425,48 @@ export class WebGPUContext extends GraphicsContext {
    * @internal
    */
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
-  public _clearAllCaches(): void {
+  public _clearAllCaches(previousDevice?: GPUDevice | null): void {
     // Per-cache try/catch + named error logs live inside the registry
     // (Batch 131). What stays inline:
-    //   - `clearEffectsPlaceholderCacheForDevice` — needs the current
-    //     `this._device` ref and runs strictly between the cache
-    //     clears and the invalidation fire.
+    //   - effects-cache lease transfer — moves this context from the lost
+    //     physical device generation to the recovered one.
     //   - `_fireDeviceInvalidated` — the side-effect that notifies
     //     external subscribers AFTER all caches drop their stale
     //     handles.
     this._cacheRegistry.clearAll();
 
-    // C-R12 (Batch 33) — drop the module-level placeholder cache for
-    // the dead device. The WeakMap would self-heal once the device
-    // object becomes unreachable, but we can't rely on other holders
-    // (cached shader modules, long-lived closures) releasing it fast
-    // enough. Explicit delete returns the resources to GC immediately.
+    // Stable WebGL-shaped handles survive recovery, but their native buffers
+    // belong to the old device generation. Release every registered native
+    // allocation, including unbound buffers that the two binding slots cannot
+    // reach. Later bufferData/bufferSubData calls realize the same handles on
+    // the recovered device.
+    this._gl.invalidateCompatibilityBufferHandles();
+
+    // Recovery has already swapped `_device` before reaching this hook.
+    // Move the validation lease off the lost device and onto the recovered
+    // generation; `_installShaderValidation` releases the old lease first.
     if (this._device) {
-      clearEffectsPlaceholderCacheForDevice(this._device);
+      this._installShaderValidation(this._device);
     }
+
+    // Recovery swaps `_device` before entering this hook. Move only this
+    // context's effects-cache ownership from the lost generation to the new
+    // one. A pooled device may have multiple contexts, so the old entry is
+    // destroyed only after every context has released it; the new entry must
+    // never be force-cleared here.
+    if (previousDevice && previousDevice !== this._device) {
+      releaseEffectsPlaceholderCacheForContext(previousDevice, this);
+    }
+    if (this._device) {
+      retainEffectsPlaceholderCacheForContext(this._device, this);
+    }
+
+    // The replacement device may expose byte-identical formats and limits, but
+    // none of its native objects are compatible with the previous device.
+    // Advance only after all throwing cache/lease work has completed, and
+    // independently from the scene-format generation, so command owners cannot
+    // mistake "same format" for "same resource lifetime".
+    this._deviceResourceGeneration += 1;
 
     // C-R12 (Batch 33) — fire the invalidation event so every
     // subscribed subsystem / feature renderer / per-object cache
@@ -5120,6 +5477,54 @@ export class WebGPUContext extends GraphicsContext {
     // (effect bind-group caches, module-level WeakMaps) state that
     // the context can't reach directly.
     this._fireDeviceInvalidated();
+  }
+
+  /**
+   * Roll back context-owned state created for a recovery candidate whose
+   * initialization failed. Device ownership remains with the recovery
+   * candidate lease; this hook only drains per-context resources/leases that
+   * would otherwise survive when a pooled device has another owner.
+   * @internal
+   */
+  public _rollbackRecoveredDevice(candidateDevice: GPUDevice): void {
+    const defaultTextures = [
+      this._defaultTexture,
+      this._defaultEmissiveTexture,
+      this._defaultNormalTexture,
+      this._defaultCubeMap,
+    ];
+    this._defaultTexture = undefined;
+    this._defaultEmissiveTexture = undefined;
+    this._defaultNormalTexture = undefined;
+    this._defaultCubeMap = undefined;
+
+    for (const texture of defaultTextures) {
+      try {
+        texture?.destroy();
+      } catch {
+        // Candidate teardown below still releases the physical device lease.
+      }
+    }
+
+    try {
+      this._releaseShaderValidation?.();
+    } catch {
+      // A failed wrapper restoration must not block the remaining lease drains.
+    }
+    try {
+      releaseEffectsPlaceholderCacheForContext(candidateDevice, this);
+    } catch {
+      // Candidate release remains mandatory even if cache cleanup misbehaves.
+    }
+    try {
+      this._context?.unconfigure();
+    } catch {
+      // A lost canvas can already be unconfigured by the browser.
+    }
+
+    this._graphicsCapabilities = GraphicsCapabilities.EMPTY;
+    this._vertexAttribDivisors.length = 0;
+    this._previousDrawInstanced = false;
   }
 
   // C-R12 (Batch 33) — Device-invalidation subscriber registry.

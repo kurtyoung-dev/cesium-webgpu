@@ -4,8 +4,9 @@
  * Batch 136 of the audit-recommended SceneRenderer decomposition.
  * Covers both dispatch paths:
  *
- *   1. Full MRT OIT (McGuire & Bavoil 2013) — when WebGPUOIT is
- *      supported, `useOIT` is on, this isn't a pick frame, and
+ *   1. Full MRT OIT (McGuire & Bavoil 2013) — only when the internal
+ *      FAR-003 comparison gate is forced, WebGPUOIT is supported,
+ *      `useOIT` is on, this isn't a pick frame, and
  *      commands carry `_oitPipeline` variants. Auto-builds OIT
  *      pipelines for any command with `_shaderCode` that hasn't yet
  *      been wired. Runs accumulation pass + composite over the scene
@@ -40,6 +41,8 @@ import {
  */
 export interface TranslucentPassHost {
   _oit: WebGPUOIT | null;
+  _webgpuOITEnabled: boolean;
+  _webgpuOITActiveThisFrame: boolean;
   _deferredOITSplats: {
     commands: CesiumAnyDrawCommand[];
     count: number;
@@ -119,7 +122,13 @@ export function executeTranslucentPass(
   // Pipeline variant support is implemented per-renderer by checking
   // command._oitPipeline. When available, we use the MRT accumulation pass;
   // otherwise fall back to standard alpha blending.
-  if (host._oit && host._oit.isSupported && config.useOIT && !config.picking) {
+  if (
+    host._webgpuOITEnabled &&
+    host._oit &&
+    host._oit.isSupported &&
+    config.useOIT &&
+    !config.picking
+  ) {
     // Auto-create OIT pipeline variants for commands that have shader code
     // but no OIT pipeline yet. This enables OIT for any command that opts in
     // by storing its WGSL source in _shaderCode.
@@ -176,7 +185,13 @@ export function executeTranslucentPass(
         // Begin OIT accumulation render pass (2 MRT targets, depth read-only)
         const accPassDesc = host._oit.getAccumulationPassDescriptor(depthView);
         if (accPassDesc) {
-          const accPass = encoder.beginRenderPass(accPassDesc);
+          const accPass = encoder.beginRenderPass(
+            context.withRenderPassTimestamps(
+              accPassDesc,
+              "OIT-Accumulation-Pass",
+            ),
+          );
+          host._webgpuOITActiveThisFrame = true;
           // Helper to execute a single OIT command in the accumulation pass
           const executeOITCommand = (cmd: CesiumAnyDrawCommand) => {
             if (!cmd?._oitPipeline) return;
