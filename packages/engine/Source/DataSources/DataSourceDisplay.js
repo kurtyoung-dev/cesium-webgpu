@@ -22,6 +22,119 @@ import PathVisualizer from "./PathVisualizer.js";
 import PointVisualizer from "./PointVisualizer.js";
 import PolylineVisualizer from "./PolylineVisualizer.js";
 
+function runConstructionCleanup(callback) {
+  try {
+    callback();
+  } catch {
+    // Preserve the construction error and continue releasing later owners.
+  }
+}
+
+function rollbackDataSourceInitialization(display, state) {
+  const dataSource = state.dataSource;
+  const visualizers = state.createdVisualizers;
+  if (defined(visualizers) && visualizers !== state.previousVisualizers) {
+    for (let i = 0; i < visualizers.length; i++) {
+      const visualizer = visualizers[i];
+      if (defined(visualizer) && typeof visualizer.destroy === "function") {
+        runConstructionCleanup(function () {
+          visualizer.destroy();
+        });
+      }
+    }
+  }
+
+  const primitives = state.createdPrimitives;
+  const entityCluster = state.entityCluster;
+  if (defined(primitives) && primitives.contains(entityCluster)) {
+    runConstructionCleanup(function () {
+      primitives.remove(entityCluster);
+    });
+  }
+
+  if (
+    defined(state.createdPrimitives) &&
+    display._primitives.contains(state.createdPrimitives)
+  ) {
+    runConstructionCleanup(function () {
+      display._primitives.remove(state.createdPrimitives);
+    });
+  }
+  if (
+    defined(state.createdGroundPrimitives) &&
+    display._groundPrimitives.contains(state.createdGroundPrimitives)
+  ) {
+    runConstructionCleanup(function () {
+      display._groundPrimitives.remove(state.createdGroundPrimitives);
+    });
+  }
+
+  const clusterRemover = entityCluster?._removeEventListener;
+  if (
+    typeof clusterRemover === "function" &&
+    clusterRemover !== state.previousClusterRemover
+  ) {
+    runConstructionCleanup(clusterRemover);
+  }
+  if (defined(entityCluster)) {
+    entityCluster._scene = state.previousClusterScene;
+    entityCluster._cluster = state.previousClusterCallback;
+    entityCluster._removeEventListener = state.previousClusterRemover;
+  }
+
+  if (dataSource._primitives === state.createdPrimitives) {
+    dataSource._primitives = state.previousPrimitives;
+  }
+  if (dataSource._groundPrimitives === state.createdGroundPrimitives) {
+    dataSource._groundPrimitives = state.previousGroundPrimitives;
+  }
+  if (dataSource._visualizers === state.createdVisualizers) {
+    dataSource._visualizers = state.previousVisualizers;
+  }
+}
+
+function rollbackDataSourceDisplayConstruction(display, initializedStates) {
+  const removeDefaultListener = display._removeDefaultDataSourceListener;
+  display._removeDefaultDataSourceListener = undefined;
+  if (typeof removeDefaultListener === "function") {
+    runConstructionCleanup(removeDefaultListener);
+  }
+
+  const removeCollectionListener = display._removeDataSourceCollectionListener;
+  display._removeDataSourceCollectionListener = undefined;
+  if (typeof removeCollectionListener === "function") {
+    runConstructionCleanup(removeCollectionListener);
+  }
+
+  runConstructionCleanup(function () {
+    display._eventHelper.removeAll();
+  });
+
+  for (let i = initializedStates.length - 1; i >= 0; i--) {
+    rollbackDataSourceInitialization(display, initializedStates[i]);
+  }
+
+  const primitives = display._primitives;
+  runConstructionCleanup(function () {
+    display._scene.primitives.remove(primitives);
+  });
+  if (!primitives.isDestroyed()) {
+    runConstructionCleanup(function () {
+      primitives.destroy();
+    });
+  }
+
+  const groundPrimitives = display._groundPrimitives;
+  runConstructionCleanup(function () {
+    display._scene.groundPrimitives.remove(groundPrimitives);
+  });
+  if (!groundPrimitives.isDestroyed()) {
+    runConstructionCleanup(function () {
+      groundPrimitives.destroy();
+    });
+  }
+}
+
 /**
  * Visualizes a collection of {@link DataSource} instances.
  * @alias DataSourceDisplay
@@ -51,79 +164,80 @@ class DataSourceDisplay {
     const scene = options.scene;
     const dataSourceCollection = options.dataSourceCollection;
 
-    this._eventHelper = new EventHelper();
-    this._eventHelper.add(
-      dataSourceCollection.dataSourceAdded,
-      this._onDataSourceAdded,
-      this,
-    );
-    this._eventHelper.add(
-      dataSourceCollection.dataSourceRemoved,
-      this._onDataSourceRemoved,
-      this,
-    );
-    this._eventHelper.add(
-      dataSourceCollection.dataSourceMoved,
-      this._onDataSourceMoved,
-      this,
-    );
-    this._eventHelper.add(scene.postRender, this._postRender, this);
-
     this._dataSourceCollection = dataSourceCollection;
     this._scene = scene;
     this._visualizersCallback =
       options.visualizersCallback ??
       DataSourceDisplay.defaultVisualizersCallback;
-
-    let primitivesAdded = false;
-    const primitives = new PrimitiveCollection();
-    const groundPrimitives = new PrimitiveCollection();
-
-    if (dataSourceCollection.length > 0) {
-      scene.primitives.add(primitives);
-      scene.groundPrimitives.add(groundPrimitives);
-      primitivesAdded = true;
-    }
-
-    this._primitives = primitives;
-    this._groundPrimitives = groundPrimitives;
-
-    for (let i = 0, len = dataSourceCollection.length; i < len; i++) {
-      this._onDataSourceAdded(
-        dataSourceCollection,
-        dataSourceCollection.get(i),
-      );
-    }
-
-    const defaultDataSource = new CustomDataSource();
-    this._onDataSourceAdded(undefined, defaultDataSource);
-    this._defaultDataSource = defaultDataSource;
-
-    let removeDefaultDataSourceListener;
-    let removeDataSourceCollectionListener;
-    if (!primitivesAdded) {
-      const that = this;
-      const addPrimitives = function () {
-        scene.primitives.add(primitives);
-        scene.groundPrimitives.add(groundPrimitives);
-        removeDefaultDataSourceListener();
-        removeDataSourceCollectionListener();
-        that._removeDefaultDataSourceListener = undefined;
-        that._removeDataSourceCollectionListener = undefined;
-      };
-      removeDefaultDataSourceListener =
-        defaultDataSource.entities.collectionChanged.addEventListener(
-          addPrimitives,
-        );
-      removeDataSourceCollectionListener =
-        dataSourceCollection.dataSourceAdded.addEventListener(addPrimitives);
-    }
-
-    this._removeDefaultDataSourceListener = removeDefaultDataSourceListener;
-    this._removeDataSourceCollectionListener =
-      removeDataSourceCollectionListener;
-
+    this._eventHelper = new EventHelper();
+    this._primitives = new PrimitiveCollection();
+    this._groundPrimitives = new PrimitiveCollection();
+    this._defaultDataSource = undefined;
+    this._removeDefaultDataSourceListener = undefined;
+    this._removeDataSourceCollectionListener = undefined;
     this._ready = false;
+
+    const initializedStates = [];
+    try {
+      this._eventHelper.add(
+        dataSourceCollection.dataSourceAdded,
+        this._onDataSourceAdded,
+        this,
+      );
+      this._eventHelper.add(
+        dataSourceCollection.dataSourceRemoved,
+        this._onDataSourceRemoved,
+        this,
+      );
+      this._eventHelper.add(
+        dataSourceCollection.dataSourceMoved,
+        this._onDataSourceMoved,
+        this,
+      );
+      this._eventHelper.add(scene.postRender, this._postRender, this);
+
+      const primitivesAdded = dataSourceCollection.length > 0;
+      if (primitivesAdded) {
+        scene.primitives.add(this._primitives);
+        scene.groundPrimitives.add(this._groundPrimitives);
+      }
+
+      for (let i = 0, len = dataSourceCollection.length; i < len; i++) {
+        initializedStates.push(
+          this._onDataSourceAdded(
+            dataSourceCollection,
+            dataSourceCollection.get(i),
+          ),
+        );
+      }
+
+      const defaultDataSource = new CustomDataSource();
+      this._defaultDataSource = defaultDataSource;
+      initializedStates.push(
+        this._onDataSourceAdded(undefined, defaultDataSource),
+      );
+
+      if (!primitivesAdded) {
+        const that = this;
+        const addPrimitives = function () {
+          scene.primitives.add(that._primitives);
+          scene.groundPrimitives.add(that._groundPrimitives);
+          that._removeDefaultDataSourceListener();
+          that._removeDataSourceCollectionListener();
+          that._removeDefaultDataSourceListener = undefined;
+          that._removeDataSourceCollectionListener = undefined;
+        };
+        this._removeDefaultDataSourceListener =
+          defaultDataSource.entities.collectionChanged.addEventListener(
+            addPrimitives,
+          );
+        this._removeDataSourceCollectionListener =
+          dataSourceCollection.dataSourceAdded.addEventListener(addPrimitives);
+      }
+    } catch (error) {
+      rollbackDataSourceDisplayConstruction(this, initializedStates);
+      throw error;
+    }
   }
 
   /**
@@ -342,25 +456,49 @@ class DataSourceDisplay {
 
     const displayPrimitives = this._primitives;
     const displayGroundPrimitives = this._groundPrimitives;
-
-    const primitives = displayPrimitives.add(new PrimitiveCollection());
-    const groundPrimitives = displayGroundPrimitives.add(
-      new OrderedGroundPrimitiveCollection(),
-    );
-
-    dataSource._primitives = primitives;
-    dataSource._groundPrimitives = groundPrimitives;
-
     const entityCluster = dataSource.clustering;
-    entityCluster._initialize(scene);
+    const state = {
+      dataSource: dataSource,
+      entityCluster: entityCluster,
+      previousPrimitives: dataSource._primitives,
+      previousGroundPrimitives: dataSource._groundPrimitives,
+      previousVisualizers: dataSource._visualizers,
+      previousClusterScene: entityCluster._scene,
+      previousClusterCallback: entityCluster._cluster,
+      previousClusterRemover: entityCluster._removeEventListener,
+      createdPrimitives: undefined,
+      createdGroundPrimitives: undefined,
+      createdVisualizers: undefined,
+    };
 
-    primitives.add(entityCluster);
+    try {
+      state.createdPrimitives = displayPrimitives.add(
+        new PrimitiveCollection(),
+      );
+      state.createdGroundPrimitives = displayGroundPrimitives.add(
+        new OrderedGroundPrimitiveCollection(),
+      );
 
-    dataSource._visualizers = this._visualizersCallback(
-      scene,
-      entityCluster,
-      dataSource,
-    );
+      dataSource._primitives = state.createdPrimitives;
+      dataSource._groundPrimitives = state.createdGroundPrimitives;
+
+      entityCluster._initialize(scene);
+      state.createdPrimitives.add(entityCluster);
+
+      state.createdVisualizers = this._visualizersCallback(
+        scene,
+        entityCluster,
+        dataSource,
+      );
+      dataSource._visualizers = state.createdVisualizers;
+      return state;
+    } catch (error) {
+      if (dataSource._visualizers !== state.previousVisualizers) {
+        state.createdVisualizers = dataSource._visualizers;
+      }
+      rollbackDataSourceInitialization(this, state);
+      throw error;
+    }
   }
 
   _onDataSourceRemoved(dataSourceCollection, dataSource) {

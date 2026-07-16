@@ -104,6 +104,129 @@ describe(
       display.destroy();
     });
 
+    it("rolls back initialized data sources when visualizer creation fails", async function () {
+      const source1 = new MockDataSource();
+      const source2 = new MockDataSource();
+      await dataSourceCollection.add(source1);
+      await dataSourceCollection.add(source2);
+
+      const source1Primitives = source1._primitives;
+      const source1GroundPrimitives = source1._groundPrimitives;
+      const source2Primitives = source2._primitives;
+      const source2GroundPrimitives = source2._groundPrimitives;
+      const primitiveCount = scene.primitives.length;
+      const groundPrimitiveCount = scene.groundPrimitives.length;
+      const cameraListenerCount = scene.camera.changed.numberOfListeners;
+      const postRenderListenerCount = scene.postRender.numberOfListeners;
+      const addedListenerCount =
+        dataSourceCollection.dataSourceAdded.numberOfListeners;
+      const removedListenerCount =
+        dataSourceCollection.dataSourceRemoved.numberOfListeners;
+      const movedListenerCount =
+        dataSourceCollection.dataSourceMoved.numberOfListeners;
+      const source1Visualizer = new MockVisualizer();
+      const constructionError = new Error("visualizer construction failed");
+      let callbackCount = 0;
+      let thrownError;
+
+      try {
+        display = new DataSourceDisplay({
+          scene: scene,
+          dataSourceCollection: dataSourceCollection,
+          visualizersCallback: function () {
+            callbackCount++;
+            if (callbackCount === 2) {
+              throw constructionError;
+            }
+            return [source1Visualizer];
+          },
+        });
+      } catch (error) {
+        thrownError = error;
+      }
+
+      expect(thrownError).toBe(constructionError);
+      expect(source1Visualizer.destroyed).toBe(true);
+      expect(source1._primitives).toBe(source1Primitives);
+      expect(source1._groundPrimitives).toBe(source1GroundPrimitives);
+      expect(source1._visualizers).toBeUndefined();
+      expect(source2._primitives).toBe(source2Primitives);
+      expect(source2._groundPrimitives).toBe(source2GroundPrimitives);
+      expect(source2._visualizers).toBeUndefined();
+      expect(source1.clustering._removeEventListener).toBeUndefined();
+      expect(source2.clustering._removeEventListener).toBeUndefined();
+      expect(source1.destroyed).toBe(false);
+      expect(source2.destroyed).toBe(false);
+      expect(dataSourceCollection.length).toBe(2);
+      expect(scene.primitives.length).toBe(primitiveCount);
+      expect(scene.groundPrimitives.length).toBe(groundPrimitiveCount);
+      expect(scene.camera.changed.numberOfListeners).toBe(cameraListenerCount);
+      expect(scene.postRender.numberOfListeners).toBe(postRenderListenerCount);
+      expect(dataSourceCollection.dataSourceAdded.numberOfListeners).toBe(
+        addedListenerCount,
+      );
+      expect(dataSourceCollection.dataSourceRemoved.numberOfListeners).toBe(
+        removedListenerCount,
+      );
+      expect(dataSourceCollection.dataSourceMoved.numberOfListeners).toBe(
+        movedListenerCount,
+      );
+    });
+
+    it("rolls back the default data source when late setup fails", function () {
+      const dataSourceAdded = dataSourceCollection.dataSourceAdded;
+      const originalAddEventListener = dataSourceAdded.addEventListener;
+      const primitiveCount = scene.primitives.length;
+      const groundPrimitiveCount = scene.groundPrimitives.length;
+      const cameraListenerCount = scene.camera.changed.numberOfListeners;
+      const postRenderListenerCount = scene.postRender.numberOfListeners;
+      const addedListenerCount = dataSourceAdded.numberOfListeners;
+      const defaultVisualizer = new MockVisualizer();
+      const constructionError = new Error("late listener setup failed");
+      let defaultDataSource;
+      let addEventListenerCalls = 0;
+      let thrownError;
+
+      spyOn(dataSourceAdded, "addEventListener").and.callFake(
+        function (listener, scope) {
+          addEventListenerCalls++;
+          if (addEventListenerCalls === 2) {
+            throw constructionError;
+          }
+          return originalAddEventListener.call(this, listener, scope);
+        },
+      );
+
+      try {
+        display = new DataSourceDisplay({
+          scene: scene,
+          dataSourceCollection: dataSourceCollection,
+          visualizersCallback: function (unusedScene, unusedCluster, source) {
+            defaultDataSource = source;
+            return [defaultVisualizer];
+          },
+        });
+      } catch (error) {
+        thrownError = error;
+      }
+
+      expect(thrownError).toBe(constructionError);
+      expect(defaultVisualizer.destroyed).toBe(true);
+      expect(defaultDataSource._primitives).toBeUndefined();
+      expect(defaultDataSource._groundPrimitives).toBeUndefined();
+      expect(defaultDataSource._visualizers).toBeUndefined();
+      expect(
+        defaultDataSource.entities.collectionChanged.numberOfListeners,
+      ).toBe(0);
+      expect(defaultDataSource.clustering._removeEventListener).toBeUndefined();
+      expect(dataSourceCollection.length).toBe(0);
+      expect(scene.primitives.length).toBe(primitiveCount);
+      expect(scene.groundPrimitives.length).toBe(groundPrimitiveCount);
+      expect(scene.camera.changed.numberOfListeners).toBe(cameraListenerCount);
+      expect(scene.postRender.numberOfListeners).toBe(postRenderListenerCount);
+      expect(dataSourceAdded.numberOfListeners).toBe(addedListenerCount);
+    });
+
     it("Computes complete bounding sphere.", function () {
       const visualizer1 = new MockVisualizer();
       visualizer1.getBoundingSphereResult = new BoundingSphere(
