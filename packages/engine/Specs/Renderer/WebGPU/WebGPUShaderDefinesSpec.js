@@ -32,14 +32,28 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       expect(ShaderDefine.MATERIAL_APPLY).toBe(1 << 14);
       expect(ShaderDefine.LOG_DEPTH).toBe(1 << 15);
       expect(ShaderDefine.GLOBE_IMAGERY_REDUCED).toBe(1 << 16);
+      expect(ShaderDefine.CAPTURE_MODE).toBe(1 << 17);
+      expect(ShaderDefine.MODEL_HAS_METADATA).toBe(1 << 18);
+      expect(ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES).toBe(1 << 19);
+      expect(ShaderDefine.MODEL_HAS_PROPERTY_TABLES).toBe(1 << 20);
+      expect(ShaderDefine.METADATA_PICKING_ENABLED).toBe(1 << 21);
+      expect(ShaderDefine.POINT_CLOUD_EDL_DEPTH).toBe(1 << 22);
+      expect(ShaderDefine.MODEL_HAS_WGSL_CUSTOM_SHADER).toBe(1 << 23);
+      expect(ShaderDefine.MODEL_HAS_WGSL_CUSTOM_VERTEX).toBe(1 << 24);
+      expect(ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR).toBe(1 << 25);
+      expect(ShaderDefine.MODEL_SPLIT_ENABLED).toBe(1 << 26);
+      expect(ShaderDefine.MODEL_HAS_COLOR).toBe(1 << 27);
+      expect(ShaderDefine.MODEL_SILHOUETTE).toBe(1 << 28);
+      expect(ShaderDefine.VOXEL_USER_CUSTOM_SHADER).toBe(1 << 29);
+      expect(ShaderDefine.MODEL_METADATA_MAT_TRANSPORT).toBe(1 << 30);
     });
 
     it("pins every declared define (no unpinned additions)", function () {
       // The block above pins each bit by name. This count guard forces a
       // newly-added define to come with its own explicit pin: bump the
       // expected count here only after adding the matching expect() above.
-      // Bits 0..16 inclusive => 17 entries.
-      expect(Object.keys(ShaderDefine).length).toBe(17);
+      // Bits 0..30 inclusive => 31 entries.
+      expect(Object.keys(ShaderDefine).length).toBe(31);
     });
 
     it("uses each bit exactly once (no aliasing)", function () {
@@ -56,11 +70,11 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       }
     });
 
-    it("keeps all defines within the 24-bit cache-key field", function () {
-      // The cache key packs defines into bits 8..31 via
-      // ((defines & 0xffffff) << 8), so every bit must fit in 24 bits.
+    it("keeps all defines within the full Uint32 cache-key field", function () {
+      // The cache key retains `(defines >>> 0)` in a safe 40-bit integer,
+      // so all 32 Uint32 bits are available to the add-only registry.
       for (const bit of Object.values(ShaderDefine)) {
-        expect(bit & 0xffffff).toBe(bit);
+        expect(bit >>> 0).toBe(bit);
       }
     });
 
@@ -108,13 +122,17 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       expect(ShaderSourceId.COMPUTE_INSTANCE_RENDER).toBe(35);
       expect(ShaderSourceId.GAUSSIAN_SPLAT).toBe(36);
       expect(ShaderSourceId.STAR_FIELD_CATALOG).toBe(37);
+      expect(ShaderSourceId.POINT_CLOUD_EDL_DEPTH).toBe(38);
+      expect(ShaderSourceId.POINT_CLOUD_EDL_BLEND).toBe(39);
+      expect(ShaderSourceId.FLOW_FIELD_RENDER).toBe(40);
+      expect(ShaderSourceId.OCEAN_SURFACE).toBe(41);
     });
 
     it("pins every declared source ID (no unpinned additions)", function () {
       // As with the defines, this count guard forces a newly-added source
-      // ID to come with its own explicit pin above. IDs 1..37 with 0
-      // reserved => 37 entries.
-      expect(Object.keys(ShaderSourceId).length).toBe(37);
+      // ID to come with its own explicit pin above. IDs 1..41 with 0
+      // reserved => 41 entries.
+      expect(Object.keys(ShaderSourceId).length).toBe(41);
     });
 
     it("reserves source ID 0 (no entry uses it)", function () {
@@ -130,8 +148,8 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
     });
 
     it("keeps every source ID within the 8-bit cache-key field", function () {
-      // The cache key packs the source ID into bits 0..7 via
-      // (sourceId & 0xff), so every ID must fit in 8 bits.
+      // The cache key reserves its low byte for sourceId, and the cache
+      // rejects callers outside this range rather than masking collisions.
       for (const id of Object.values(ShaderSourceId)) {
         expect(id & 0xff).toBe(id);
       }
@@ -169,9 +187,9 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
     });
 
     it("ignores bits that don't correspond to any define", function () {
-      // Bit 30 is not a declared define; it must not produce a name and
+      // Bit 31 is not yet a declared define; it must not produce a name and
       // must not throw.
-      const mask = ShaderDefine.COMPRESSED_VERTICES | (1 << 30);
+      const mask = ShaderDefine.COMPRESSED_VERTICES | 0x80000000;
       expect(defineKeyToNames(mask)).toEqual(["COMPRESSED_VERTICES"]);
     });
 

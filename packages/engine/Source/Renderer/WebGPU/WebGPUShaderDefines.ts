@@ -3,32 +3,19 @@
  * system in Cesium-authored WGSL shaders, plus stable numeric identity
  * for each shader source file. Both tables are pure data — no runtime
  * state — and are looked up by the preprocessor + shader module cache
- * to produce compact Uint32 cache keys.
+ * to produce compact, exact cache keys.
  *
  * # How the cache key is packed
  *
  * The shader module cache (see `WebGPUShaderModuleCache.getOrCreate`)
- * keys modules by a Uint32 computed as
- * `(sourceId & 0xff) | ((defines & 0xffffff) << 8)`. That gives
- * 8 bits for source IDs (256 shader files — plenty) and 24 bits of
- * define mask in the NUMERIC key. The registry has grown past 24
- * defines (31 bits live as of NEW-MODEL-METADATA-MAT3-MAT4, `1 << 0` …
- * `1 << 30`): the
- * numeric key's `& 0xffffff` mask silently DROPS bits 24-31, so any
- * define at bit >= 24 MUST be disambiguated via the cache's `keySalt`
- * escape hatch — callers fold the high bits (or a content fingerprint
- * such as an FNV-1a hash of a generated chunk) into `keySalt`, and
- * `getOrCreate` switches to a distinct string key
- * `` `${numericKey}#${keySalt}` `` whenever `keySalt !== 0`. Live
- * examples: `WebGPUModelPipelineCache.js` XOR-folds
- * `MODEL_SPLIT_ENABLED`/`MODEL_HAS_COLOR`/`MODEL_SILHOUETTE`
- * (bits 26-28) + `MODEL_METADATA_MAT_TRANSPORT` (bit 30) into its
- * keySalt; `WebGPUVoxelRenderer.ts` salts
- * `VOXEL_USER_CUSTOM_SHADER` (bit 29) with the generated-chunk hash.
- * When adding a define at bit >= 24, document the keySalt requirement
- * in its JSDoc and make every consumer that sets the bit pass a
- * disambiguating salt — a high bit without a salt aliases cached
- * modules across variants.
+ * keys modules by the exact 40-bit safe integer
+ * `((defines >>> 0) * 0x100) + sourceId`. That reserves 8 bits for
+ * source IDs and retains the complete 32-bit define mask. JavaScript
+ * numbers represent every such key exactly (the maximum is `2^40 - 1`),
+ * so all 32 define bits participate without string allocation on the
+ * common path. `keySalt` remains available only for sources whose WGSL
+ * text is generated dynamically and therefore needs an additional
+ * content fingerprint beyond `(sourceId, defines)`.
  *
  * # Add-only rule
  *
@@ -700,13 +687,8 @@ export const ShaderDefine = Object.freeze({
    * bit). When clear (the default), every gated block is stripped and the
    * preprocessed module is byte-identical to the pre-splitter source.
    *
-   * NOTE — bit ≥ 24: the device-level module-cache numeric key masks
-   * defines to 24 bits (`(defines & 0xffffff) << 8`), so this bit alone
-   * would alias the non-split module. `WebGPUModelPipelineCache.
-   * _getOrCreateShaderModule` folds the bit into the cache's `keySalt`
-   * when set (the Batch 476 `VOXEL_CUSTOM_SHADER_COLOR` pattern) so the
-   * split variant gets a distinct compiled module; non-split callers keep
-   * `keySalt` untouched → their device cache key is unchanged.
+   * The shader-module cache retains the full Uint32 define mask, so this
+   * high bit directly distinguishes split and non-split modules.
    *
    * Consumer: `ModelPBRComplete.wgsl`.
    */
@@ -741,10 +723,8 @@ export const ShaderDefine = Object.freeze({
    * stripped and the preprocessed module is byte-identical to the
    * pre-model-color source.
    *
-   * NOTE — bit ≥ 24: the device-level module-cache numeric key masks
-   * defines to 24 bits, so `WebGPUModelPipelineCache._getOrCreateShaderModule`
-   * folds this bit into the cache's `keySalt` when set (the Batch 476
-   * pattern, same as `MODEL_SPLIT_ENABLED`).
+   * The shader-module cache retains the full Uint32 define mask, so this
+   * high bit directly distinguishes colour and non-colour modules.
    *
    * Consumer: `ModelPBRComplete.wgsl`.
    */
@@ -787,8 +767,8 @@ export const ShaderDefine = Object.freeze({
    * is not prepended, and the preprocessed module is byte-identical to
    * the pre-silhouette source.
    *
-   * NOTE — bit ≥ 24: folded into the device module-cache `keySalt` when
-   * set (the Batch 476 pattern, same as `MODEL_SPLIT_ENABLED`).
+   * The shader-module cache retains the full Uint32 define mask, so this
+   * high bit directly distinguishes silhouette and base modules.
    *
    * Consumers: `ModelPBRComplete.wgsl`, `ModelSilhouetteStage.wgsl`.
    */
@@ -819,10 +799,9 @@ export const ShaderDefine = Object.freeze({
    * `preprocess(VOXEL_WGSL, VOXEL_CUSTOM_SHADER_COLOR)` are unchanged —
    * off-gate byte-identical.
    *
-   * NOTE — bit ≥ 24: the device module-cache numeric key masks defines to 24
-   * bits, so callers pass the generated chunk's FNV-1a hash as `keySalt`
-   * (which also disambiguates DIFFERENT user shader bodies sharing the same
-   * `(sourceId, defines)` — the DP-H46b salted-key path).
+   * The define bit participates directly in the full Uint32 cache key. The
+   * generated chunk's FNV-1a hash remains the `keySalt` only to disambiguate
+   * DIFFERENT user shader bodies sharing the same `(sourceId, defines)`.
    *
    * Consumer: `WebGPUVoxelRenderer.ts` (inline `VOXEL_WGSL` fragmentMain).
    */
@@ -860,11 +839,9 @@ export const ShaderDefine = Object.freeze({
    * blocks strip to the historical source and the module/pipeline keys are
    * byte-identical to the pre-MAT-transport path.
    *
-   * NOTE — bit ≥ 24: the device module-cache numeric key masks defines to 24
-   * bits. `WebGPUModelPipelineCache._getOrCreateShaderModule` folds this bit
-   * into the cache's `keySalt` when set (Batch 476 pattern; the metadata
-   * class hash already differs for MAT-transport chunks, so this is
-   * belt-and-suspenders). The pipeline maps append a `:m34` key suffix.
+   * The define bit participates directly in the full Uint32 shader-module
+   * cache key; the generated metadata class still supplies `keySalt` for its
+   * dynamic source content. The pipeline maps append a `:m34` key suffix.
    *
    * Consumers: `ModelPBRComplete.wgsl` + the GENERATED metadata chunk.
    */

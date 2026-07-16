@@ -16,15 +16,17 @@
  *
  * # Cache key encoding
  *
- * Keys are Uint32 packed as `(sourceId & 0xff) | ((defines & 0xffffff) << 8)`:
+ * Common-path keys are exact 40-bit JavaScript integers packed as
+ * `((defines >>> 0) * 0x100) + sourceId`:
  *
  *   - Low 8 bits: `ShaderSourceId` (256 shader sources engine-wide).
- *   - High 24 bits: active-defines bitmask (24 possible defines).
+ *   - High 32 bits: the complete active-defines Uint32 bitmask.
  *
- * Numeric keys give us the fastest possible `Map` lookup — no string
- * hashing, no allocation per lookup. Debuggability is preserved through
- * `defineKeyToNames` (in `WebGPUShaderDefines`) for diagnostic paths;
- * the hot path stays numeric.
+ * A 40-bit integer is exactly representable by JavaScript's 53-bit safe
+ * integer range. This keeps the fast, allocation-free numeric `Map` lookup
+ * while ensuring define bits 24-31 cannot alias the no-define variant. A
+ * non-zero generated-source `keySalt` still uses a string key because that
+ * is a separate identity dimension, not an overflow escape hatch.
  *
  * # Prewarm
  *
@@ -48,14 +50,13 @@ import { preprocess } from "./WebGPUShaderPreprocessor.js";
 
 export class WebGPUShaderModuleCache {
   private _device: GPUDevice;
-  // Keys are numeric (`(sourceId & 0xff) | ((defines & 0xffffff) << 8)`) for
+  // Keys are exact numeric `(sourceId, full Uint32 defines)` identities for
   // the common, source-stable path. DP-H46b — when a caller passes a non-zero
   // `keySalt` (a per-source content fingerprint, e.g. the metadata-class hash
   // for the GENERATED `struct Metadata` chunk), the key becomes the STRING
   // `"<numericKey>#<salt>"` so two callers that share `(sourceId, defines)`
   // but supply DIFFERENT source content don't alias one compiled module.
-  // `keySalt === 0` (the default) keeps the numeric key byte-identical to the
-  // pre-DP-H46b path → parity for every non-metadata caller.
+  // `keySalt === 0` (the default) keeps the allocation-free numeric path.
   private _modules = new Map<number | string, GPUShaderModule>();
 
   constructor(device: GPUDevice) {
@@ -66,15 +67,15 @@ export class WebGPUShaderModuleCache {
    * Fetch or create the shader module for `(sourceId, defines)`.
    * Preprocesses the source string against the defines bitmask on
    * miss, then caches the compiled `GPUShaderModule` keyed by a
-   * compact Uint32. Subsequent calls for the same key are a single
+   * compact safe integer. Subsequent calls for the same key are a single
    * `Map.get`.
    *
    * @param sourceId `ShaderSourceId` integer identifying which source
-   *   file this is. Low 8 bits of the cache key.
+   *   file this is. Must fit in the low 8 bits of the cache key.
    * @param source Raw WGSL source as imported from the `.wgsl` module.
    *   Build-time debug pragma stripping is already applied.
    * @param defines Active-defines bitmask (`ShaderDefine` bits OR'd
-   *   together). High 24 bits of the cache key. Pass `0` for no
+   *   together). The complete Uint32 is retained. Pass `0` for no
    *   conditional blocks.
    * @param label Devtools label for `createShaderModule`. Callers
    *   should include the define set in the label (see `prewarm`) for
@@ -93,7 +94,22 @@ export class WebGPUShaderModuleCache {
     label: string,
     keySalt = 0,
   ): GPUShaderModule {
-    const numericKey = (sourceId & 0xff) | ((defines & 0xffffff) << 8);
+    if (!Number.isInteger(sourceId) || sourceId < 0 || sourceId > 0xff) {
+      throw new RangeError("sourceId must be an integer in the range 0..255");
+    }
+    if (
+      !Number.isInteger(defines) ||
+      defines < -0x80000000 ||
+      defines > 0xffffffff
+    ) {
+      throw new RangeError("defines must be a signed or unsigned Uint32 mask");
+    }
+
+    const unsignedDefines = defines >>> 0;
+    // Multiplication, rather than a bitwise shift, is intentional: JavaScript
+    // bitwise operators truncate to 32 bits and would discard define bits
+    // 24-31 after reserving the low source-id byte.
+    const numericKey = unsignedDefines * 0x100 + sourceId;
     const key = keySalt === 0 ? numericKey : `${numericKey}#${keySalt >>> 0}`;
     let module = this._modules.get(key);
     if (module !== undefined) return module;
@@ -124,7 +140,9 @@ export class WebGPUShaderModuleCache {
         sourceId,
         source,
         defines,
-        `${labelPrefix} (defines=0x${defines.toString(16).padStart(6, "0")})`,
+        `${labelPrefix} (defines=0x${(defines >>> 0)
+          .toString(16)
+          .padStart(8, "0")})`,
       );
     }
   }

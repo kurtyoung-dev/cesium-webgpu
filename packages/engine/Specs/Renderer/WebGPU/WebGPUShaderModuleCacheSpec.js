@@ -3,7 +3,7 @@ import { WebGPUShaderModuleCache } from "../../../Source/Renderer/WebGPU/WebGPUS
 // WebGPUShaderModuleCache's only device-touching call is
 // `device.createShaderModule` inside `getOrCreate` (and, transitively,
 // `prewarm`). Everything that makes this class correct — the
-// `(sourceId & 0xff) | ((defines & 0xffffff) << 8)` key packing, the
+// exact `(sourceId, full Uint32 defines, generated-source salt)` key, the
 // dedup-on-hit behaviour, `size()` accounting, and `destroy()` clearing
 // — is observable through a tiny capturing stub device that returns a
 // sentinel object and records every `createShaderModule` call. No live
@@ -101,35 +101,41 @@ describe("Renderer/WebGPU/WebGPUShaderModuleCache", function () {
     });
   });
 
-  describe("cache-key packing: (sourceId & 0xff) | ((defines & 0xffffff) << 8)", function () {
-    it("treats sourceId 0x00 and 0x100 as the same key (low 8 bits only)", function () {
+  describe("collision-free cache-key packing", function () {
+    it("rejects sourceIds that do not fit the reserved 8-bit field", function () {
       const device = makeStubDevice();
       const cache = new WebGPUShaderModuleCache(device);
-      // 0x100 & 0xff === 0x00, so these collide to one cache entry.
-      const a = cache.getOrCreate(0x00, "src", 0, "a");
-      const b = cache.getOrCreate(0x100, "src", 0, "b");
-      expect(b).toBe(a);
-      expect(device.calls.length).toBe(1);
-      expect(cache.size()).toBe(1);
+      expect(function () {
+        cache.getOrCreate(0x100, "src", 0, "too-large");
+      }).toThrowError(RangeError);
+      expect(function () {
+        cache.getOrCreate(1.5, "src", 0, "fractional");
+      }).toThrowError(RangeError);
+      expect(device.calls.length).toBe(0);
+      expect(cache.size()).toBe(0);
     });
 
-    it("keeps sourceId 0x01 distinct from sourceId 0x101 only via the masked low byte", function () {
+    it("keeps every valid source-id value distinct", function () {
       const device = makeStubDevice();
       const cache = new WebGPUShaderModuleCache(device);
-      // Both mask to 0x01; same key, single compile.
-      cache.getOrCreate(0x01, "src", 0, "a");
-      cache.getOrCreate(0x101, "src", 0, "b");
-      expect(cache.size()).toBe(1);
+      const low = cache.getOrCreate(0x00, "src", 0, "low");
+      const high = cache.getOrCreate(0xff, "src", 0, "high");
+      expect(high).not.toBe(low);
+      expect(device.calls.length).toBe(2);
+      expect(cache.size()).toBe(2);
     });
 
-    it("treats defines 0x000000 and 0x1000000 as the same key (low 24 bits only)", function () {
+    it("keeps every high define bit distinct from the no-defines variant", function () {
       const device = makeStubDevice();
       const cache = new WebGPUShaderModuleCache(device);
-      // 0x1000000 & 0xffffff === 0, so it aliases the no-defines entry.
-      const a = cache.getOrCreate(5, "src", 0x000000, "a");
-      const b = cache.getOrCreate(5, "src", 0x1000000, "b");
-      expect(b).toBe(a);
-      expect(device.calls.length).toBe(1);
+      const none = cache.getOrCreate(5, "src", 0, "none");
+      for (let bitIndex = 24; bitIndex < 32; bitIndex++) {
+        const bit = 2 ** bitIndex;
+        const variant = cache.getOrCreate(5, "src", bit, `bit-${bitIndex}`);
+        expect(variant).not.toBe(none);
+      }
+      expect(device.calls.length).toBe(9);
+      expect(cache.size()).toBe(9);
     });
 
     it("separates the sourceId byte from the defines field (no cross-talk)", function () {
@@ -145,15 +151,48 @@ describe("Renderer/WebGPU/WebGPUShaderModuleCache", function () {
       expect(cache.size()).toBe(2);
     });
 
-    it("packs the full 24-bit defines field without overflow into a recompile", function () {
+    it("packs the full 32-bit defines field without overflow", function () {
       const device = makeStubDevice();
       const cache = new WebGPUShaderModuleCache(device);
-      // 0xffffff is the maximum representable defines field. Asking for
+      // 0xffffffff is the maximum representable defines field. Asking for
       // it twice must hit the cache the second time.
-      const first = cache.getOrCreate(0xff, "src", 0xffffff, "max");
-      const second = cache.getOrCreate(0xff, "src", 0xffffff, "max-again");
+      const first = cache.getOrCreate(0xff, "src", 0xffffffff, "max");
+      const second = cache.getOrCreate(0xff, "src", 0xffffffff, "max-again");
       expect(second).toBe(first);
       expect(device.calls.length).toBe(1);
+    });
+
+    it("normalizes signed and unsigned representations of the same Uint32 mask", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUShaderModuleCache(device);
+      const signed = cache.getOrCreate(1, "src", -1, "signed");
+      const unsigned = cache.getOrCreate(1, "src", 0xffffffff, "unsigned");
+      expect(unsigned).toBe(signed);
+      expect(device.calls.length).toBe(1);
+    });
+
+    it("rejects values outside the signed-or-unsigned Uint32 range", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUShaderModuleCache(device);
+      expect(function () {
+        cache.getOrCreate(1, "src", 0x100000000, "too-large");
+      }).toThrowError(RangeError);
+      expect(function () {
+        cache.getOrCreate(1, "src", -0x80000001, "too-small");
+      }).toThrowError(RangeError);
+      expect(device.calls.length).toBe(0);
+    });
+
+    it("retains keySalt as an independent generated-source identity", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUShaderModuleCache(device);
+      const first = cache.getOrCreate(1, "generated-a", 1 << 30, "a", 7);
+      const second = cache.getOrCreate(1, "generated-b", 1 << 30, "b", 8);
+      const firstAgain = cache.getOrCreate(1, "generated-a", 1 << 30, "a2", 7);
+      expect(second).not.toBe(first);
+      expect(firstAgain).toBe(first);
+      expect(device.calls.length).toBe(2);
+      expect(cache.size()).toBe(2);
     });
   });
 
@@ -176,21 +215,21 @@ describe("Renderer/WebGPU/WebGPUShaderModuleCache", function () {
       expect(cache.size()).toBe(2);
     });
 
-    it("deduplicates define sets that collide under the 24-bit mask", function () {
+    it("prewarms high define bits as distinct variants", function () {
       const device = makeStubDevice();
       const cache = new WebGPUShaderModuleCache(device);
-      // 0x000000 and 0x1000000 both mask to 0 → a single entry.
+      // Bit 24 used to alias zero when the cache truncated defines to 24 bits.
       cache.prewarm(3, "src", [0x000000, 0x1000000], "Globe");
-      expect(device.calls.length).toBe(1);
-      expect(cache.size()).toBe(1);
+      expect(device.calls.length).toBe(2);
+      expect(cache.size()).toBe(2);
     });
 
     it("labels each variant with the zero-padded hex defines suffix", function () {
       const device = makeStubDevice();
       const cache = new WebGPUShaderModuleCache(device);
       cache.prewarm(3, "src", [0x000000, 0x0000ab], "Globe");
-      expect(device.calls[0].label).toBe("Globe (defines=0x000000)");
-      expect(device.calls[1].label).toBe("Globe (defines=0x0000ab)");
+      expect(device.calls[0].label).toBe("Globe (defines=0x00000000)");
+      expect(device.calls[1].label).toBe("Globe (defines=0x000000ab)");
     });
 
     it("compiles nothing for an empty define-set list", function () {

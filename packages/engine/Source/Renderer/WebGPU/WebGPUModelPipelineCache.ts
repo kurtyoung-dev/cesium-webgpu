@@ -2590,37 +2590,13 @@ class WebGPUModelPipelineCache {
     // BOTH the metadata + customShader class hashes into one salt so two models
     // sharing (sourceId, defines) but differing in either generated chunk get
     // distinct compiled modules. Zero for the plain path → device key unchanged.
-    let keySalt =
+    const keySalt =
       customShaderClassHash === 0
         ? metadataClassHash
         : (metadataClassHash ^ customShaderClassHash) >>> 0;
-    // WIRE-MODEL-SPLITTER — MODEL_SPLIT_ENABLED is bit 26, above the device
-    // cache's 24-bit define window (`(defines & 0xffffff) << 8`), so the bit
-    // alone would alias the non-split module. Fold it into the salt (Batch
-    // 476 keySalt pattern) so the split variant gets a distinct device-cache
-    // entry; non-split callers leave the salt untouched → key unchanged.
-    if (splitBit !== 0) {
-      keySalt = (keySalt ^ ShaderDefine.MODEL_SPLIT_ENABLED) >>> 0;
-    }
-    // WIRE-MODEL-COLOR — MODEL_HAS_COLOR is bit 27, also above the device
-    // cache's 24-bit define window; fold it into the salt the same way so
-    // the model-colour variant gets a distinct device-cache entry.
-    if (modelColorBit !== 0) {
-      keySalt = (keySalt ^ ShaderDefine.MODEL_HAS_COLOR) >>> 0;
-    }
-    // WIRE-MODEL-SILHOUETTE — MODEL_SILHOUETTE is bit 28, also above the
-    // device cache's 24-bit define window; fold it into the salt the same
-    // way so the silhouette variant gets a distinct device-cache entry.
-    if (silhouetteBit !== 0) {
-      keySalt = (keySalt ^ ShaderDefine.MODEL_SILHOUETTE) >>> 0;
-    }
-    // NEW-MODEL-METADATA-MAT3-MAT4 — bit 30, also above the 24-bit window;
-    // fold it into the salt (belt-and-suspenders: the metadata class hash
-    // already differs for MAT-transport chunks, but the Batch 476 pattern
-    // keeps every high bit explicitly salted).
-    if (metadataMatBit !== 0) {
-      keySalt = (keySalt ^ ShaderDefine.MODEL_METADATA_MAT_TRANSPORT) >>> 0;
-    }
+    // The Tier-1 cache retains the complete Uint32 `effectiveDefines`, so
+    // render-mode bits 26-30 require no salt. `keySalt` now has one job only:
+    // fingerprint the dynamically generated metadata/custom-shader source.
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
       fullSource,
