@@ -13223,3 +13223,21 @@ Two bugs caught by running the FULL standing-gate matrix against the post-log-de
 **Renderer-20 triage (audit amendment A13).** The pinned 20 Renderer failures decompose into exactly two pre-existing clusters: 10 lifecycle (fixed here) + 10 shader-generator (`ShaderBuilder` 5, `ShaderFunction` 3, `ShaderStruct` 2 — missing `addLines` validation + trailing empty generated line; last touched Batch 243, owner item 66 `NEW-SHADER-GENERATOR-UPSTREAM-CONTRACT-PARITY`). **Zero failures attribute to the GraphicsCapabilities/ContextLimits migration** — the highest-blast-radius suspect is clean.
 
 **Files:** `packages/engine/Source/Core/destroyObject.js`, `packages/engine/Source/DataSources/PolylineGeometryUpdater.js`, `packages/engine/Source/Scene/VoxelBoundsCollection.js`, `packages/engine/Source/Scene/CubeMapPanorama.js` (debug sources-contract validation hoisted above the feature-renderer dispatch so both backends validate identically; release bytes unchanged), `packages/engine/Specs/Core/destroyObjectSpec.js` (new), `packages/engine/Specs/Scene/VoxelBoundsCollectionSpec.js` (new), `packages/engine/Specs/DataSources/DataSourceCollectionSpec.js`. **Trace:** C9 items 65/71/64/72, `SOL_AUDIT_REPORT_2026-07-16.md` A13.
+
+---
+
+## C9-16 — Clustered-light zero-work contract certification (2026-07-16)
+
+**Type:** certification (no engine source change), Campaign 9 Wave 2 item 32.
+
+**Premise verified first:** `WebGPUSceneRendererClusteredLighting.ts` untouched since Batch 661 (`374f193f8a`); the audit-reported under-claim was accurate — the disabled-path zero-work core and the enabled→disabled single zero-count transition write were already implemented but unproven by direct unit + physical evidence.
+
+**Delivered:**
+- `packages/engine/Specs/Renderer/WebGPU/WebGPUSceneRendererClusteredLightingSpec.js` (new, mock-device, 8 cases): disabled zero-work, transition single write, missing-encoder retry, enabled-zero-light stable-buffer publication, enabled-with-light contributing, re-enable, area-light routing, accessor null→handles. 8/8 SUCCESS in Edge.
+- `Tools/visual-regression/probe-clustered-zero-work-route.mjs` (new): patches the real device API, buckets clustered work by label over the shared `GLOBE_CAMERA_TRACK` moving route. At defaults: 0 real dispatcher work labels, 0 clustered compute passes; the only clustered-prefixed labels are the per-device `*placeholder*` effects fallback created exactly once each (bounded, not per-frame). Positive control (enabled + 1 light): 75 work labels + 8 compute passes. 0 device errors. Artifact `campaign9-c9-16-clustered-zero-work-api-r1-2026-07-16.json`.
+
+**Key finding:** the naive "any clustered-prefixed label at defaults = violation" gate false-fails — the shared `WebGPUClusteredLightingBGL` per-device placeholder buffers (always-bind-something effects fallback) legitimately carry a "ClusteredLighting placeholder …" label and are created once per device. The gate distinguishes one-time shared fallback (bounded, ≤1) from real per-frame dispatcher work (ClusterBounds*/ClusterAssign*/real params/compute passes), asserting only the latter is zero at defaults.
+
+**Regressions green:** `probe-clustered-multifrustum` (enabled multi-frustum output exact), `probe-clustered-per-frame`, `probe-clustered-dispatcher`.
+
+**Residual deferred:** enabled-but-zero-light per-frame work → `NEW-CLUSTERED-ENABLED-ZERO-LIGHT-FRAME-ZERO-WORK` in DEFERRED_WORK (not reproduced at defaults).

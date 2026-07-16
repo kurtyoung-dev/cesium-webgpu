@@ -5317,3 +5317,21 @@ slice — each needs its own oracle before any code change (Principle 9):
 ## Campaign-7 research register (2026-07-06)
 
 The 10 concurrent read-only research lanes that fed Campaign 7's later briefs are consolidated in **[`RESEARCH_REGISTER_2026-07-06.md`](RESEARCH_REGISTER_2026-07-06.md)** — one section per lane (license verdict, key findings, recommendation, source links, cross-links to the rows above). Lanes: R-STBN, R-LTC, R-WIND-DATA, R-SSGI, R-FFT-OCEAN, R-FSR2, R-VEGETATION, R-IMPOSTOR, R-LAKE-SRTMSWBD, R-MARS-ATMO. Full per-lane reports live in the session scratchpad (`RESEARCH_*.md`, paths in the register). The rows they inform: C6-CLOUD-STBN-TAAU / C6-TPDF-DITHER-FINAL (R-STBN), C6-LTC-AREA-LIGHTS (R-LTC), C6-FLOWFIELD-WIND (R-WIND-DATA), C6-SSGI-DIFFUSE (R-SSGI), C6-FFT-OCEAN + C6-PLANAR-REFLECT-REFRACT (R-FFT-OCEAN), C6-FSR2-UPSCALE (R-FSR2), NEW-VEGETATION-SYSTEM (R-VEGETATION), C7-CLOUD-IMPOSTOR-LOD (R-IMPOSTOR), C7-LAKE-WATER-MASK v2 (R-LAKE-SRTMSWBD), FUT-MULTI-BODY-ATMOSPHERE (R-MARS-ATMO).
+
+---
+
+## NEW-CLUSTERED-ENABLED-ZERO-LIGHT-FRAME-ZERO-WORK (surfaced by C9-16 certification, 2026-07-16)
+
+**Status:** deferred optimization, NOT on any default render path (Forward+ clustered lighting is default-off, `Scene.js` `_clusteredLightingEnabled=false`).
+
+**Context.** `C9-16-CLUSTERED-LIGHT-ZERO-WORK-CONTRACT` was certified COMPLETE for the disabled/defaults path: with clustered lighting OFF the dispatcher allocates, uploads, dispatches, and submits ZERO clustered work per frame (proven by the new unit spec + the new `probe-clustered-zero-work-route.mjs` API-counter gate over the moving multi-altitude route). The enabled→disabled transition writes exactly one zero-count params update; settled disabled frames are no-ops.
+
+**Residual gap (verified live in `WebGPUSceneRendererClusteredLighting.ts`).** When the feature is ENABLED but there are no effective lights (no punctual `scene.lights` survivors AND no area lights), each frame still does per-frame work: it allocates fresh `lights[]`/`areaLights[]` arrays (:198-220), ends+resumes the canvas render pass (:189/:379), and calls `dispatcher.dispatch(...)` which unconditionally writes the 32 B params UBO (`WebGPUClusteredLightingDispatcher.ts` :365) and re-allocates the buffers-stash object literal (:356-365). This is NOT reproduced at defaults (defaults use the disabled early-return path), so it is out of the C9-16 acceptance route.
+
+**Fix (per CAMPAIGN9_OPUS_EXECUTION_GUIDE §C9-16 Step 1, ~40+10 lines).**
+- Dispatcher: track last-written `(activeCount, areaCount)`; when both are zero AND the last write was already all-zero, skip the params `writeBuffer` and return 0.
+- Hook: hoist `lights[]`/`areaLights[]` to module-level scratch reset with `.length = 0` (the dispatcher copies inputs out synchronously in `_packEyeSpaceLights`/`_packAreaLights` — no retention, verified); when the post-walk state is empty AND the dispatcher's last-written state is already zero, publish the identity-stable buffers stash (invariant 4 — do NOT flip real↔placeholder, it churns the effects bind-group cache), set `_clusteredLightingActive=false`, and return WITHOUT ending/resuming the pass or calling `dispatch`.
+- Invariants to preserve: transition N-lights→0-lights still writes params exactly once; buffers stash identity is stable once a dispatcher exists; every enabled-path early return after `endCurrentRenderPass` must resume the pass (decide zero-work BEFORE ending the pass); keep `COPY_SRC` on the params buffer (probe readback); keep the module-level WeakSet keyed per host (multi-context). Gate zero-work on BOTH punctual (`_paramsData[4]`) and area (`_paramsData[5]`) counts being zero.
+- The unit spec's "enabled with zero effective lights" case currently asserts today's behavior (one dispatch, buffers published); when the optimization lands, tighten it to assert zero writeBuffer / zero pass end-resume / stable buffer identity, and add the enabled N→0 transition-write case.
+
+**Evidence to reproduce/verify:** `probe-clustered-zero-work-route.mjs` (add an enabled-zero-light phase asserting zero per-frame work), `probe-clustered-matsweep.mjs` + `probe-clustered-phong.mjs` (enabled-path visual byte-identity after the scratch-array conversion).
