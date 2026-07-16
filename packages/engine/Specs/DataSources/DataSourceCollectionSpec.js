@@ -27,6 +27,60 @@ describe("DataSources/DataSourceCollection", function () {
     });
   });
 
+  it("contains regression: full false->true->false matrix across add/remove/removeAll/promise/destroy", function () {
+    // Regression guard for the pre-Sol codemod (39f5341e64) that rewrote
+    // contains() to call the nonexistent this.includes(). contains() must be
+    // implemented purely in terms of methods that actually exist on the class.
+    expect(typeof DataSourceCollection.prototype.includes).toEqual("undefined");
+
+    const collection = new DataSourceCollection();
+    const source = new MockDataSource();
+
+    // Empty collection.
+    expect(collection.contains(source)).toEqual(false);
+    expect(collection.length).toEqual(0);
+
+    // Promised addition is not contained until the promise resolves.
+    const pendingPromise = collection.add(Promise.resolve(source));
+    expect(collection.contains(source)).toEqual(false);
+
+    return pendingPromise.then(function () {
+      // After resolution the data source is contained and index/get/length agree.
+      expect(collection.contains(source)).toEqual(true);
+      expect(collection.length).toEqual(1);
+      expect(collection.indexOf(source)).toEqual(0);
+      expect(collection.get(collection.indexOf(source))).toBe(source);
+
+      // Remove flips it back to false without disturbing indexOf/get for others.
+      const other = new MockDataSource();
+      return collection.add(other).then(function () {
+        expect(collection.contains(other)).toEqual(true);
+        expect(collection.remove(source)).toEqual(true);
+        expect(collection.contains(source)).toEqual(false);
+        expect(collection.contains(other)).toEqual(true);
+        expect(collection.indexOf(other)).toEqual(0);
+        expect(collection.get(0)).toBe(other);
+
+        // removeAll clears containment for all members.
+        collection.removeAll();
+        expect(collection.contains(other)).toEqual(false);
+        expect(collection.length).toEqual(0);
+        expect(collection.indexOf(other)).toEqual(-1);
+
+        // Destroyed-collection contract: destroy() removes members and the
+        // collection reports destroyed. Members no longer register as contained.
+        const s2 = new MockDataSource();
+        return collection.add(s2).then(function () {
+          expect(collection.contains(s2)).toEqual(true);
+          collection.destroy();
+          expect(collection.isDestroyed()).toEqual(true);
+          expect(s2.destroyed).toEqual(true);
+          expect(collection.contains(s2)).toEqual(false);
+        });
+      });
+    });
+  });
+
   it("getByName works", function () {
     const collection = new DataSourceCollection();
     const promises = [];

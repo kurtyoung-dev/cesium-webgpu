@@ -98,7 +98,7 @@ class DataSourceCollection {
    * @returns {boolean} true if the collection contains the data source, false otherwise.
    */
   contains(dataSource) {
-    return this.includes(dataSource);
+    return this.indexOf(dataSource) !== -1;
   }
 
   /**
