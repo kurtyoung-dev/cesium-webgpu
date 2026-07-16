@@ -13,6 +13,11 @@ Source plan:
 Campaign 8 is frozen as historical evidence and all of its open IDs transfer here unchanged. This
 queue does not repeat closed work and does not silently activate its gated tail.
 
+> **Execution guidance:** [CAMPAIGN9_OPUS_EXECUTION_GUIDE_2026-07-16.md](CAMPAIGN9_OPUS_EXECUTION_GUIDE_2026-07-16.md)
+> carries per-task implementation walkthroughs, verified code anchors, traps, verification recipes,
+> and the campaign-engine resume/handoff procedure. Workers should read their task's guide section
+> before implementing.
+
 ## 1. Outcome and campaign rules
 
 Recover materially better moving-camera WebGPU performance, complete temporal/planetary precision,
