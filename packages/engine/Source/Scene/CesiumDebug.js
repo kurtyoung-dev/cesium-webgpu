@@ -81,9 +81,10 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.canvasPixels()    — sample canvas data    ║
 ║  CesiumDebug.logImageryProbe() — next 4 tile updates   ║
 ║  CesiumDebug.cpuPassCost(t/f)  — CPU per-pass cost (R-7a) ║
-║  CesiumDebug.gpuPassCost()     — GPU per-pass cost (timestamp) ║
+║  CesiumDebug.gpuPassCost(t/f)  — GPU per-pass cost (timestamp) ║
 ║  CesiumDebug.highDensityCull() — gpuCuller/HiZ/sort-keys stats ║
 ║  CesiumDebug.globeBindGroups() — globe bind-group cache stats ║
+║  CesiumDebug.webgpuOIT(t/f)    — WebGPU OIT containment gate (FAR-003) ║
 ║  CesiumDebug.globeFragmentDebug(name) — visualize FS stages ║
 ║  CesiumDebug.globeFragmentDebug()        — list available modes ║
 ╚══════════════════════════════════════════════════════╝
@@ -465,9 +466,7 @@ function installCesiumDebug(viewer) {
     /**
      * AUDIT_2026_05_02 C.5 — dump GPU-side per-pass timing from
      * `WebGPUTimestampProfiler`. Requires the `timestamp-query` device
-     * feature to be enabled (gated by `WebGPUFeatureFlags`); on adapters
-     * without it, the profiler still allocates but `getResults()` returns
-     * `enabled: false`.
+     * feature to be enabled (gated by `WebGPUFeatureFlags`).
      *
      * Unlike CPU pass cost, GPU timings show the actual shader-execution
      * cost on the device — useful for deciding which passes are GPU-bound
@@ -475,26 +474,47 @@ function installCesiumDebug(viewer) {
      * bound passes like Bloom or AO).
      *
      * Usage:
-     *   CesiumDebug.gpuPassCost()        // dump rolling-window stats
+     *   CesiumDebug.gpuPassCost(true)   // enable + reset
+     *   CesiumDebug.gpuPassCost()       // dump rolling-window stats
+     *   CesiumDebug.gpuPassCost(false)  // disable
      */
-    gpuPassCost() {
+    gpuPassCost(enabled) {
       const ctx = scene._context;
       if (!ctx?.isWebGPU) {
         console.warn("[CesiumDebug] GPU pass profiler is WebGPU-only");
         return;
       }
+      const manager = ctx.performanceManager;
+      if (typeof enabled === "boolean") {
+        manager.config.timestampProfiling = enabled;
+        if (!enabled) {
+          console.log("[CesiumDebug] GPU pass profiling disabled");
+          return;
+        }
+      }
+      if (!manager.config.timestampProfiling) {
+        console.warn(
+          "[CesiumDebug] GPU pass profiling is OFF — call gpuPassCost(true) first",
+        );
+        return;
+      }
       const profiler = ctx.timestampProfiler;
       if (!profiler) {
+        manager.config.timestampProfiling = false;
         console.warn(
           "[CesiumDebug] timestamp-query feature not available on this adapter",
         );
         return;
       }
+      if (enabled === true) {
+        profiler.reset();
+        scene.requestRender();
+        console.log("[CesiumDebug] GPU pass profiling enabled and reset");
+      }
       const results = profiler.getResults();
       if (!results.enabled) {
         console.warn(
-          "[CesiumDebug] GPU pass profiler is disabled (timestamp-query " +
-            "feature not active or not yet sampled)",
+          "[CesiumDebug] GPU pass profiler is not active despite being requested",
         );
         return results;
       }
@@ -506,6 +526,11 @@ function installCesiumDebug(viewer) {
         maxMs: p.maxMs.toFixed(3),
       }));
       rows.sort((a, b) => Number(b.avgMs) - Number(a.avgMs));
+      if (rows.length === 0) {
+        console.warn(
+          "[CesiumDebug] GPU pass profiling is active but has no resolved pass samples yet",
+        );
+      }
       console.log(
         `[CesiumDebug] GPU pass cost (frame=${results.frameMs.toFixed(3)}ms ` +
           `avg=${results.frameAvgMs.toFixed(3)}ms frames=${results.frameCount}):`,
@@ -588,15 +613,14 @@ function installCesiumDebug(viewer) {
      */
     hiZConsume(on = true) {
       const renderer = scene._alternateSceneRenderer;
-      const ctor = renderer && renderer.constructor;
-      if (!ctor || typeof ctor.setHiZConsumeEnabled !== "function") {
+      if (!renderer || typeof renderer.setHiZConsumeEnabled !== "function") {
         console.warn(
           "[CesiumDebug] No WebGPU scene renderer — Hi-Z consume toggle unavailable",
         );
         return null;
       }
-      ctor.setHiZConsumeEnabled(on === true);
-      const state = ctor.hiZConsumeEnabled;
+      renderer.setHiZConsumeEnabled(on === true);
+      const state = renderer.hiZConsumeEnabled;
       console.log(
         `[CesiumDebug] Hi-Z occlusion consume (command drop) = ${state}`,
       );
@@ -616,10 +640,9 @@ function installCesiumDebug(viewer) {
      * for A/B probes that confirm the consumer applies the exact
      * CPU-comparator order without a pixel change.
      *
-     * The production default is `"auto"` (NS-GPU-SORT-NO-SCENE-WIRING):
-     * the consumer auto-applies above the opaque-command-count gate
-     * without any flag. Use {@link CesiumDebug.gpuSortConsumeMode} to
-     * restore `"auto"` after an A/B toggle.
+     * The contained production default is `"never"`; use
+     * {@link CesiumDebug.gpuSortConsumeMode} to explicitly select
+     * `"auto"` for threshold characterization.
      *
      * @param {boolean} [on=true] Whether to apply the GPU sort order.
      * @returns {boolean|null} The resulting enable state, or null if no
@@ -627,42 +650,85 @@ function installCesiumDebug(viewer) {
      */
     gpuSortConsume(on = true) {
       const renderer = scene._alternateSceneRenderer;
-      const ctor = renderer && renderer.constructor;
-      if (!ctor || typeof ctor.setGpuSortConsumeEnabled !== "function") {
+      if (
+        !renderer ||
+        typeof renderer.setGpuSortConsumeEnabled !== "function"
+      ) {
         console.warn(
           "[CesiumDebug] No WebGPU scene renderer — GPU sort consume toggle unavailable",
         );
         return null;
       }
-      ctor.setGpuSortConsumeEnabled(on === true);
-      const state = ctor.gpuSortConsumeEnabled;
+      renderer.setGpuSortConsumeEnabled(on === true);
+      const state = renderer.gpuSortConsumeEnabled;
       console.log(`[CesiumDebug] GPU sort-order consume (reorder) = ${state}`);
       return state;
     },
 
     /**
      * NS-GPU-SORT-NO-SCENE-WIRING — set the consumer activation MODE for
-     * the GPU front-to-back opaque sort. `"auto"` (default) is the
-     * production heuristic: apply whenever the opaque-command-count gate is
-     * active. `"always"` force-applies; `"never"` is the off-gate.
+     * the GPU front-to-back opaque sort. `"never"` is the contained
+     * default; `"auto"` applies whenever the opaque-command-count gate is
+     * active and `"always"` force-applies when a valid result exists.
      *
-     * @param {"auto"|"always"|"never"} [mode="auto"] The consumer mode.
+     * @param {"auto"|"always"|"never"} [mode="never"] The consumer mode.
      * @returns {string|null} The resulting mode, or null if no WebGPU
      *   renderer is active.
      */
-    gpuSortConsumeMode(mode = "auto") {
+    gpuSortConsumeMode(mode = "never") {
       const renderer = scene._alternateSceneRenderer;
-      const ctor = renderer && renderer.constructor;
-      if (!ctor || typeof ctor.setGpuSortConsumeMode !== "function") {
+      if (!renderer || typeof renderer.setGpuSortConsumeMode !== "function") {
         console.warn(
           "[CesiumDebug] No WebGPU scene renderer — GPU sort consume mode unavailable",
         );
         return null;
       }
-      ctor.setGpuSortConsumeMode(mode);
-      const state = ctor.gpuSortConsumeMode;
+      renderer.setGpuSortConsumeMode(mode);
+      const state = renderer.gpuSortConsumeMode;
       console.log(`[CesiumDebug] GPU sort-order consume mode = ${state}`);
       return state;
+    },
+
+    /**
+     * FAR-003 — read or toggle the WebGPU MRT OIT safety-containment gate
+     * (`_webgpuOITEnabled`, contained production default `false`). The
+     * public `scene.orderIndependentTranslucency` option remains a REQUEST;
+     * this renderer-owned gate controls whether the contained WebGPU MRT
+     * implementation may allocate or execute. While the gate is off,
+     * translucency uses the complete alpha-blend fallback.
+     *
+     * Call with no argument to inspect requested-vs-active state without
+     * changing anything. A toggle takes effect on the next rendered frame
+     * (`active` reflects the most recent frame).
+     *
+     * @param {boolean} [enable] New gate state; omit to just report.
+     * @returns {object|null} The webgpuOIT containment status
+     *   (`{ safetyGateEnabled, requested, capable, active, fallbackReason }`),
+     *   or null if no WebGPU renderer is active.
+     */
+    webgpuOIT(enable) {
+      const renderer = scene._alternateSceneRenderer;
+      if (!renderer || typeof renderer.setWebGPUOITEnabled !== "function") {
+        console.warn(
+          "[CesiumDebug] No WebGPU scene renderer — OIT containment gate unavailable",
+        );
+        return null;
+      }
+      if (enable !== undefined) {
+        renderer.setWebGPUOITEnabled(enable === true);
+      }
+      const status =
+        typeof renderer.getContainmentStats === "function"
+          ? renderer.getContainmentStats().webgpuOIT
+          : { safetyGateEnabled: renderer.webgpuOITEnabled };
+      const fallback = status.fallbackReason
+        ? `, fallback=${status.fallbackReason}`
+        : "";
+      console.log(
+        `[CesiumDebug] WebGPU OIT containment gate = ${status.safetyGateEnabled} ` +
+          `(requested=${status.requested}, active=${status.active}${fallback})`,
+      );
+      return status;
     },
 
     /**

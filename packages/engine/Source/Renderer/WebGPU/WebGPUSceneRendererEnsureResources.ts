@@ -13,7 +13,8 @@
  *     depth + ID targets. Format flips between `rgba16float` (HDR) /
  *     canvas format (SDR) on `useHDR` toggle.
  *   - **OIT** (`WebGPUOIT`): accumulation + revealage MRT for
- *     order-independent transparency. Created when `useOIT && !_oit`.
+ *     order-independent transparency. FAR-003 contains allocation behind
+ *     a renderer-owned comparison gate even when Scene requests OIT.
  *   - **Edge MRT framebuffer** (`WebGPUEdgeFramebuffer`): allocated
  *     only when `_enableEdgeVisibility` is on. C-R8-EDGE-FBO Batch 44.
  *   - **Translucent tile classification framebuffer**
@@ -54,6 +55,7 @@ import { WebGPUTranslucentTileClassification } from "./WebGPUTranslucentTileClas
 import { WebGPUOIT } from "./WebGPUOIT.js";
 import { WebGPUGlobeDepth } from "./WebGPUGlobeDepth.js";
 import { WebGPUDepthPlane } from "./WebGPUDepthPlane.js";
+import { getWebGPUPickColorFormat } from "./WebGPUPickFramebuffer.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUPostProcessPipeline } from "./WebGPUPostProcessPipeline.js";
 import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
@@ -71,6 +73,8 @@ export interface EnsureResourcesHost {
   _edgeFramebuffer: WebGPUEdgeFramebuffer | null;
   _translucentTileClassification: WebGPUTranslucentTileClassification | null;
   _oit: WebGPUOIT | null;
+  _webgpuOITEnabled: boolean;
+  _lastOITRequested: boolean;
   _globeDepth: WebGPUGlobeDepth | null;
   _depthPlane: WebGPUDepthPlane | null;
   _postProcess: WebGPUPostProcessPipeline | null;
@@ -87,6 +91,80 @@ export interface EnsureResourcesHost {
   _height: number;
   _lastHDR: boolean | null;
   _deviceInvalidationUnsub: (() => void) | null;
+}
+
+export interface EnsureDepthPlaneHost {
+  _depthPlane: WebGPUDepthPlane | null;
+}
+
+/**
+ * Ensure only the depth-plane resource family. The pick mini-frame uses this
+ * path after device recovery so it never has to invoke the full scene-FBO and
+ * post-process allocator merely to obtain an attachment-compatible plane.
+ */
+export function ensureDepthPlane(
+  host: EnsureDepthPlaneHost,
+  config: WebGPURenderFrameConfig,
+): void {
+  const { context, scene } = config;
+  const device: GPUDevice | undefined = context._device;
+  if (!device || !config.useDepthPlane) {
+    return;
+  }
+
+  const desiredFormat: GPUTextureFormat =
+    context.scenePipelineFormat ?? context.presentationFormat ?? "bgra8unorm";
+  const desiredDepthFormat: GPUTextureFormat =
+    context.depthFormat ?? "depth24plus-stencil8";
+  const desiredSampleCount = context._msaaSamples ?? 1;
+  const desiredPickFormat = getWebGPUPickColorFormat(context);
+  const desiredLogDepth = isWebGPULogDepthActive(
+    context,
+    (scene as unknown as { _frameState?: { useLogDepth?: boolean } })
+      ._frameState,
+  );
+  const current = host._depthPlane;
+  if (
+    current &&
+    (!current.isForDevice(device) ||
+      current._colorFormat !== desiredFormat ||
+      current._depthFormat !== desiredDepthFormat ||
+      current._sampleCount !== desiredSampleCount ||
+      current._pickColorFormat !== desiredPickFormat ||
+      current._logDepth !== desiredLogDepth)
+  ) {
+    current.destroy();
+    host._depthPlane = null;
+  }
+
+  if (host._depthPlane) {
+    return;
+  }
+
+  const next = new WebGPUDepthPlane();
+  try {
+    next.initialize(
+      device,
+      desiredDepthFormat,
+      desiredFormat,
+      context.webgpuPipelineCache ?? null,
+      desiredSampleCount,
+      desiredLogDepth,
+      desiredPickFormat,
+    );
+    host._depthPlane = next;
+  } catch (error) {
+    next.destroy();
+    throw error;
+  }
+}
+
+/** FAR-003 pure policy helper, exported for no-allocation regression tests. */
+export function shouldAllocateWebGPUOIT(
+  requested: boolean,
+  safetyGateEnabled: boolean,
+): boolean {
+  return requested === true && safetyGateEnabled === true;
 }
 
 /**
@@ -270,11 +348,20 @@ export function ensureResources(
     context.renderBundleManager?.invalidateAll?.();
   }
 
-  // OIT (order-independent transparency)
-  if (config.useOIT && !host._oit) {
-    host._oit = new WebGPUOIT();
+  // FAR-003: preserve the public Scene OIT request while independently
+  // containing the unsafe native WebGPU MRT path. The alpha fallback in the
+  // translucent pass remains complete when this gate is false.
+  host._lastOITRequested = config.useOIT === true;
+  const useContainedWebGPUOIT = shouldAllocateWebGPUOIT(
+    host._lastOITRequested,
+    host._webgpuOITEnabled,
+  );
+  let createdOIT = false;
+  if (useContainedWebGPUOIT && !host._oit) {
+    host._oit = new WebGPUOIT(context);
+    createdOIT = true;
   }
-  if (host._oit && needsRecreate) {
+  if (useContainedWebGPUOIT && host._oit && (needsRecreate || createdOIT)) {
     // Session 65 Batch 33 — pass MSAA sample count so the OIT
     // composite pipeline matches the scene FB's sample count when
     // the bridge re-enables.
@@ -323,7 +410,7 @@ export function ensureResources(
 
   // Globe depth framebuffer
   if (config.useGlobeDepthFramebuffer && !host._globeDepth) {
-    host._globeDepth = new WebGPUGlobeDepth();
+    host._globeDepth = new WebGPUGlobeDepth({ timestampProvider: context });
   }
   if (host._globeDepth && needsRecreate) {
     const numSamples: number = context._msaaSamples ?? 1;
@@ -339,54 +426,9 @@ export function ensureResources(
     );
   }
 
-  // Depth plane
-  // The plane writes ZERO color (writeMask=0); the only reason its pipeline
-  // declares a color target at all is so the render-pass attachment-state
-  // validation passes. The Scene Framebuffer Render Pass uses the SCENE
-  // color attachment format (rgba16float / rg11b10ufloat in HDR, bgra8unorm
-  // / canvas format in SDR), NOT the canvas presentation format — so the
-  // pipeline must be rebuilt whenever the scene FB color format flips
-  // (HDR toggle at runtime). Otherwise WebGPU emits "Attachment state of
-  // [DepthPlane-Pipeline] not compatible with [Scene Framebuffer Render
-  // Pass]" every frame and the depth plane silently no-ops.
-  const desiredDepthPlaneFormat: GPUTextureFormat =
-    context.scenePipelineFormat ?? context.presentationFormat ?? "bgra8unorm";
-  // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — the depth plane
-  // must write the SAME depth encoding as the globe/collections, so a
-  // master-switch flip rebuilds it (same drift pattern as the color-format
-  // check).
-  const desiredDepthPlaneLogDepth = isWebGPULogDepthActive(
-    context,
-    (scene as unknown as { _frameState?: { useLogDepth?: boolean } })
-      ._frameState,
-  );
-  if (
-    host._depthPlane &&
-    ((host._depthPlane as unknown as { _colorFormat?: GPUTextureFormat })
-      ._colorFormat !== desiredDepthPlaneFormat ||
-      (host._depthPlane as unknown as { _logDepth?: boolean })._logDepth !==
-        desiredDepthPlaneLogDepth)
-  ) {
-    host._depthPlane.destroy?.();
-    host._depthPlane = null;
-  }
-  if (config.useDepthPlane && !host._depthPlane) {
-    host._depthPlane = new WebGPUDepthPlane();
-    const depthFormat: GPUTextureFormat =
-      context.depthFormat ?? "depth24plus-stencil8";
-    // C-R7-RENDERER-MIGRATION (Batch 56) — route the depth-plane
-    // pipeline through the central cache so split-screen / multi-canvas
-    // setups dedupe identical descriptors instead of materializing
-    // separate `GPURenderPipeline` objects per scene.
-    host._depthPlane.initialize(
-      device,
-      depthFormat,
-      desiredDepthPlaneFormat,
-      context.webgpuPipelineCache ?? null,
-      context._msaaSamples ?? 1,
-      desiredDepthPlaneLogDepth,
-    );
-  }
+  // Keep this after scene framebuffer update: that step publishes the exact
+  // HDR/SDR scene attachment format consumed by the scene pipeline variant.
+  ensureDepthPlane(host, config);
 
   // Batch 110 (in progress) — when HDR mode toggles at runtime, the
   // post-process pipeline's ping-pong textures (rgba16float ↔ canvas
@@ -409,7 +451,7 @@ export function ensureResources(
 
   // Post-processing pipeline
   if (config.usePostProcess && !host._postProcess) {
-    host._postProcess = new WebGPUPostProcessPipeline();
+    host._postProcess = new WebGPUPostProcessPipeline(context);
     const canvasFormat: GPUTextureFormat =
       context.presentationFormat ?? "bgra8unorm";
     // HDR pipeline fix: when `scene.highDynamicRange=true`, the

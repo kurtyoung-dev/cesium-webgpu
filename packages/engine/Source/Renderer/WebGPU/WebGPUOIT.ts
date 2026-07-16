@@ -26,6 +26,7 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
 
 // OIT composite shader: combines accumulation + revealage textures with opaque scene
 const OIT_COMPOSITE_WGSL = /* wgsl */ `
@@ -77,6 +78,7 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
 `;
 
 export class WebGPUOIT {
+  private readonly _timestampProvider: WebGPUPassTimestampProvider | null;
   private _device: GPUDevice | null = null;
   private _width: number = 0;
   private _height: number = 0;
@@ -108,6 +110,10 @@ export class WebGPUOIT {
   // Whether OIT is supported and enabled
   private _supported: boolean = false;
   private _isDestroyed: boolean = false;
+
+  constructor(timestampProvider?: WebGPUPassTimestampProvider) {
+    this._timestampProvider = timestampProvider ?? null;
+  }
 
   /**
    * Whether OIT is supported on this device.
@@ -266,7 +272,9 @@ export class WebGPUOIT {
       ],
     };
 
-    const pass = encoder.beginRenderPass(passDesc);
+    const pass = encoder.beginRenderPass(
+      this._timestampProvider?.withRenderPassTimestamps(passDesc) ?? passDesc,
+    );
     pass.setPipeline(this._compositePipeline);
     pass.setBindGroup(0, this._compositeBindGroup);
     pass.draw(3); // Fullscreen triangle

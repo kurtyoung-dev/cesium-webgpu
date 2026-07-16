@@ -25,9 +25,9 @@
  * the same names become one-line delegators; the moved bodies are byte-for-byte
  * equivalent (identical lazy-import paths, identical debug pragmas, identical
  * device-loss re-touch ordering, identical defensive caps). Culling is opt-in
- * and gated (`_gpuCullingHint`, feature-renderer gates) — with the default
- * `'auto'` hint the getter chain only allocates when a render path actually
- * touches a culler, exactly as before.
+ * and gated (`_gpuCullingHint`, feature-renderer gates). FAR-003 changes the
+ * default to `'never'`, so merely touching the getter chain cannot allocate a
+ * culler until the owning Scene explicitly selects `auto` or `always`.
  *
  * @module WebGPUContextCullerPool
  */

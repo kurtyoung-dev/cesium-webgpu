@@ -12,7 +12,9 @@ import SortMode from "./SortMode.js";
  * order) and unifies them into a predictive, layered, material-batched sort.
  *
  * @param {object} [options] Configuration options.
- * @param {boolean} [options.enabled=true] Whether the scheduler is active.
+ * @param {boolean} [options.enabled=false] Whether duplicate layer binning and
+ *   sorting are active. The stable material-ID service remains available while
+ *   disabled.
  *
  * @alias RenderScheduler
  * @private
@@ -24,9 +26,9 @@ class RenderScheduler {
     /**
      * Whether the scheduler is active. When false, Scene.js uses legacy sorting.
      * @type {boolean}
-     * @default true
+     * @default false
      */
-    this.enabled = options.enabled ?? true;
+    this.enabled = options.enabled ?? false;
 
     /**
      * The render layer collection managed by this scheduler.
@@ -52,6 +54,8 @@ class RenderScheduler {
       layersRendered: 0,
       depthClears: 0,
       materialBatches: 0,
+      materialIdsAssigned: 0,
+      sortCalls: 0,
     };
 
     /**
@@ -94,11 +98,35 @@ class RenderScheduler {
    * and per-frame statistics. Called at the start of Scene.render().
    */
   beginFrame() {
-    this.layers.resetAllBuckets();
+    if (this.enabled) {
+      this.layers.resetAllBuckets();
+    }
     this._stats.commandsBinned = 0;
     this._stats.layersRendered = 0;
     this._stats.depthClears = 0;
     this._stats.materialBatches = 0;
+    this._stats.materialIdsAssigned = 0;
+    this._stats.sortCalls = 0;
+  }
+
+  /**
+   * Assign stable material IDs without populating the scheduler's unconsumed
+   * layer buckets. This is the default linear service used by Scene while the
+   * duplicate scheduling architecture is contained.
+   *
+   * @param {object[]} commands Draw commands emitted for the current viewport.
+   * @param {number} [count=commands.length] Number of live command entries.
+   */
+  assignMaterialSortIds(commands, count) {
+    const length = Math.min(count ?? commands.length, commands.length);
+    for (let i = 0; i < length; i++) {
+      const command = commands[i];
+      if (!defined(command)) {
+        continue;
+      }
+      this._materialAllocator.ensureMaterialSortId(command);
+      this._stats.materialIdsAssigned++;
+    }
   }
 
   /**
@@ -111,6 +139,7 @@ class RenderScheduler {
   binCommand(command, isTranslucent) {
     // Auto-populate materialSortId from shader program
     this._materialAllocator.ensureMaterialSortId(command);
+    this._stats.materialIdsAssigned++;
 
     // Resolve which layer this command belongs to
     const layerOrder = command.sortLayer ?? 50;
@@ -143,6 +172,7 @@ class RenderScheduler {
    * @param {object} cameraPosition The camera position in world coordinates.
    */
   sortAllLayers(cameraPosition) {
+    this._stats.sortCalls++;
     this.layers._ensureSorted();
 
     const layers = this.layers._layers;

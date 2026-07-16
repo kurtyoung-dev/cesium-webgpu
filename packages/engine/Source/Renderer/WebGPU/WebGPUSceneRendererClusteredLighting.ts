@@ -15,16 +15,15 @@
  * The once-per-frame Forward+ clustered-lighting compute hook (Slice 5d
  * Batch 151). It:
  *
- *   1. Lazy-constructs the `WebGPUClusteredLightingDispatcher` on first
- *      call (the device wasn't available at SceneRenderer construction
- *      time). Constructed even when disabled so consumer pipelines can
- *      bind the placeholder buffers without runtime branching.
+ *   1. Returns before dispatcher allocation when clustered lighting is
+ *      disabled. Once enabled, lazily constructs the dispatcher (the device
+ *      wasn't available at SceneRenderer construction time).
  *   2. Walks `scene.lights` (+ a documented future hook for per-model
  *      glTF KHR_lights_punctual lights) into a world-space light list.
- *   3. Ends the active canvas render pass before issuing compute work
- *      (beginComputePass on a locked encoder is a validation error —
+ *   3. Ends the active canvas render pass before issuing enabled compute
+ *      work (beginComputePass on a locked encoder is a validation error —
  *      same family as BUG-MIPMAP-DURING-CANVAS-PASS), dispatches, then
- *      resumes the default pass.
+ *      resumes the default pass. Stable disabled frames do none of this.
  *   4. Stashes the dispatcher's GPU buffer handles + an "is contributing
  *      this frame" boolean on the context so material pipelines can bind
  *      them at draw time without threading the dispatcher through every
@@ -75,6 +74,18 @@ export interface ClusteredLightingHost {
   _viewportHeight: number;
 }
 
+interface ClusteredLightingContextState {
+  _clusteredLightingBuffers?: ClusteredLightingBuffers;
+  _clusteredLightingActive?: boolean;
+}
+
+// Tracks the one disabled-state publication already sent to an existing
+// dispatcher. A dispatcher that was active must receive one zero-count params
+// write so commands built earlier in the transition frame cannot observe stale
+// lights. Stable disabled frames then return before allocation, pass churn, or
+// queue traffic.
+const _disabledClusteredLightingHosts = new WeakSet<ClusteredLightingHost>();
+
 /**
  * Slice 5d Batch 151 — Forward+ clustered lighting per-frame hook.
  * Walks scene.lights + every visible model.lightsFromGltf, hands
@@ -89,10 +100,11 @@ export interface ClusteredLightingHost {
  * PBR / Lit Mat consumers (Batch 153+, merged into group 3 effects)
  * read them.
  *
- * Inert when scene.clusteredLightingEnabled === false OR zero
- * lights are configured — the dispatcher returns activeLightCount=0
- * and consumer FS chunks gate on that value to skip the cluster
- * read entirely.
+ * Inert when scene.clusteredLightingEnabled === false. After a true-to-false
+ * transition, an existing dispatcher receives one zero-count params write;
+ * subsequent disabled frames return before GPU allocation or queue traffic.
+ * With the feature enabled but no configured lights, the dispatcher publishes
+ * activeLightCount=0 and consumer FS chunks skip the cluster read entirely.
  */
 export function dispatchClusteredLighting(
   host: ClusteredLightingHost,
@@ -101,16 +113,67 @@ export function dispatchClusteredLighting(
   const { scene, context } = config;
   const enabled = !!(scene as unknown as { clusteredLightingEnabled?: boolean })
     .clusteredLightingEnabled;
+  const ctxStash = context as unknown as ClusteredLightingContextState;
+
+  if (!enabled) {
+    const dispatcher = host._clusteredLightingDispatcher;
+    const alreadySynchronized = _disabledClusteredLightingHosts.has(host);
+
+    // Consumers built on the next frame must select the shared placeholder
+    // resources, not a dispatcher's stale buffers.
+    ctxStash._clusteredLightingBuffers = undefined;
+    ctxStash._clusteredLightingActive = false;
+
+    if (!dispatcher || alreadySynchronized) {
+      _disabledClusteredLightingHosts.add(host);
+      return;
+    }
+
+    // Preserve toggle-off correctness for commands that were built before this
+    // executeCommands hook and therefore still bind the previous frame's real
+    // buffers. Zero the params once; activeCount=0 makes dispatch() stop before
+    // opening either compute pass, so the current render pass stays intact.
+    const encoder = context._currentCommandEncoder;
+    const uniformState = context.uniformState as unknown as {
+      inverseProjection?: ArrayLike<number>;
+      view?: ArrayLike<number>;
+    };
+    const inverseProjection = uniformState?.inverseProjection;
+    const viewMatrix = uniformState?.view;
+    if (!encoder || !inverseProjection || !viewMatrix) {
+      return;
+    }
+    const cam = (
+      scene as unknown as {
+        camera?: { frustum?: { near?: number; far?: number } };
+      }
+    ).camera;
+    const near = Math.max(cam?.frustum?.near ?? 1.0, 0.1);
+    const far = Math.max(cam?.frustum?.far ?? 10000.0, near + 1.0);
+    dispatcher.dispatch(encoder, {
+      enabled: false,
+      lights: [],
+      viewportWidth: host._viewportWidth,
+      viewportHeight: host._viewportHeight,
+      near,
+      far,
+      inverseProjection,
+      viewMatrix,
+      areaLights: [],
+    });
+    _disabledClusteredLightingHosts.add(host);
+    return;
+  }
+
+  _disabledClusteredLightingHosts.delete(host);
   const device = context._device;
   if (!device) {
     return;
   }
 
-  // Lazy-construct on first call — the device wasn't available at
-  // SceneRenderer construction time. Construct even when disabled
-  // so consumer pipelines (Batch 153+, merged into group 3 effects)
-  // can bind the placeholder buffers without runtime branching on
-  // whether the dispatcher exists.
+  // Lazy-construct on the first enabled call — the device wasn't available at
+  // SceneRenderer construction time. Disabled consumers use the effects
+  // system's shared placeholder resources and do not need a dispatcher.
   if (!host._clusteredLightingDispatcher) {
     host._clusteredLightingDispatcher = new WebGPUClusteredLightingDispatcher(
       device,
@@ -290,10 +353,6 @@ export function dispatchClusteredLighting(
   // effects bind group falls back to per-device placeholders (whose
   // `params.activeLightCount = 0` makes the FS chunk early-out).
   const d = host._clusteredLightingDispatcher;
-  const ctxStash = context as unknown as {
-    _clusteredLightingBuffers?: ClusteredLightingBuffers;
-    _clusteredLightingActive?: boolean;
-  };
   ctxStash._clusteredLightingBuffers = {
     clusterLights: d.clusterLightsBuffer,
     clusterAABBs: d.clusterAABBsBuffer,
