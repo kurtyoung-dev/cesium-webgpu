@@ -85,6 +85,7 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.highDensityCull() — gpuCuller/HiZ/sort-keys stats ║
 ║  CesiumDebug.globeBindGroups() — globe bind-group cache stats ║
 ║  CesiumDebug.webgpuOIT(t/f)    — WebGPU OIT containment gate (FAR-003) ║
+║  CesiumDebug.attachmentDemand(t/f) — scene-FB attachment demand record ║
 ║  CesiumDebug.globeFragmentDebug(name) — visualize FS stages ║
 ║  CesiumDebug.globeFragmentDebug()        — list available modes ║
 ╚══════════════════════════════════════════════════════╝
@@ -537,6 +538,53 @@ function installCesiumDebug(viewer) {
       );
       console.table(rows);
       return results;
+    },
+
+    /**
+     * C9-09-ATTACHMENT-DEMAND-REGISTRY — dump the canonical per-frame
+     * attachment-demand record and the ACTUAL measured scene-FB topology.
+     * WebGPU-only. Pass a boolean to set the conservative `forceSceneMRT`
+     * switch (its default `true` keeps today's always-MRT behavior until
+     * C9-10 lands the demand-driven flip).
+     *
+     * Usage:
+     *   CesiumDebug.attachmentDemand()        // dump current record + actual
+     *   CesiumDebug.attachmentDemand(false)   // (C9-10 preview) allow demand-driven
+     *   CesiumDebug.attachmentDemand(true)    // force full MRT (default)
+     */
+    attachmentDemand(force) {
+      const ctx = scene._context;
+      if (!ctx?.isWebGPU) {
+        console.warn("[CesiumDebug] attachmentDemand is WebGPU-only");
+        return;
+      }
+      if (typeof force === "boolean") {
+        ctx.forceSceneMRT = force;
+        scene.requestRender();
+        console.log(
+          `[CesiumDebug] context.forceSceneMRT set to ${force} (takes effect next frame)`,
+        );
+      }
+      if (typeof ctx.getAttachmentDemandStats !== "function") {
+        console.warn("[CesiumDebug] attachment-demand registry not available");
+        return;
+      }
+      const stats = ctx.getAttachmentDemandStats();
+      if (!stats) {
+        console.warn(
+          "[CesiumDebug] no attachment-demand record yet — render one frame first",
+        );
+        return;
+      }
+      console.log(
+        `[CesiumDebug] attachment demand: topology=${stats.record.topology} ` +
+          `gbufferDemanded=${stats.record.gbufferDemanded} ` +
+          `forceSceneMRT=${stats.forceSceneMRT} ` +
+          `recordMatchesActual=${stats.recordMatchesActual}`,
+      );
+      console.table(stats.record.gbufferReaders);
+      console.table(stats.actual);
+      return stats;
     },
 
     /**

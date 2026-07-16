@@ -68,17 +68,34 @@ export function buildMrtSlot1Attachment(
         sampleCount?: number;
       };
     };
+    _context?: {
+      _attachmentDemandActual?: {
+        slot1AttachmentOpens: number;
+        slot1ResolveOpens: number;
+      };
+    };
   };
   const gb = sceneAny?._view?.gBufferFramebuffer;
   if (!gb?.renderAttachmentView) {
     return null;
+  }
+  const hasResolve = !!gb.resolveTargetView;
+  // C9-09 truthful reporting: count every scene-pass slot-1 (G-buffer) open
+  // so the debug snapshot reflects the actual MRT pass topology. All three
+  // scene-pass-open sites funnel through this one builder.
+  const counters = sceneAny?._context?._attachmentDemandActual;
+  if (counters) {
+    counters.slot1AttachmentOpens += 1;
+    if (hasResolve) {
+      counters.slot1ResolveOpens += 1;
+    }
   }
   return {
     view: gb.renderAttachmentView,
     loadOp,
     storeOp: "store",
     clearValue: { r: 0, g: 0, b: 0, a: 1 },
-    ...(gb.resolveTargetView ? { resolveTarget: gb.resolveTargetView } : {}),
+    ...(hasResolve ? { resolveTarget: gb.resolveTargetView } : {}),
   };
 }
 

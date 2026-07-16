@@ -2075,6 +2075,20 @@ class Scene {
         snap.renderer = { error: String(e?.message ?? e) };
       }
     }
+    // C9-09-ATTACHMENT-DEMAND-REGISTRY — the canonical per-frame attachment
+    // demand record + actual measured scene-FB topology (WebGPU only; the
+    // method is absent on the WebGL context, so this stays null there).
+    snap.attachmentDemand = null;
+    if (
+      defined(this._context) &&
+      typeof this._context.getAttachmentDemandStats === "function"
+    ) {
+      try {
+        snap.attachmentDemand = this._context.getAttachmentDemandStats();
+      } catch (e) {
+        snap.attachmentDemand = { error: String(e?.message ?? e) };
+      }
+    }
     if (
       defined(this.moon) &&
       typeof this.moon.getDebugStatistics === "function"

@@ -43,6 +43,12 @@ import { WebGPUTexture } from "./WebGPUTexture.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import { WebGPUPickFramebuffer } from "./WebGPUPickFramebuffer.js";
+import { isSceneFBMrtMode } from "./WebGPUSceneFBTargetHelpers.js";
+import {
+  computeAttachmentDemand,
+  type AttachmentDemandRecord,
+  type AttachmentDemandSceneLike,
+} from "./WebGPUAttachmentDemandRegistry.js";
 import {
   WebGPUViewportQuad,
   type ViewportQuadCommand,
@@ -471,6 +477,38 @@ export class WebGPUContext extends GraphicsContext {
   public _sceneColorFormat: GPUTextureFormat = "bgra8unorm";
   public _msaaSamples: number = 1;
   public useIndirectDrawForTiles: boolean = false;
+
+  // ── C9-09-ATTACHMENT-DEMAND-REGISTRY (FAR-401-C0) ──
+  // Conservative force switch. While `true` the frame is forced to the
+  // historical full-MRT scene-FB topology regardless of consumer demand,
+  // preserving today's exact behavior. It stays `true` until C9-10 lands
+  // the demand-driven topology flip behind the Gate-B decision point
+  // (queue §3). Any un-enumerable consumer is covered by keeping this true
+  // (campaign 9 rule 3 — unknown demand keeps MRT).
+  public forceSceneMRT: boolean = true;
+  // Frozen per-frame demand record (computed once in
+  // updateAndClearFramebuffers, immutable for the rest of the frame). Both
+  // the legacy executor and the future FAR-400/401 graph read this. Null
+  // before the first frame.
+  public _attachmentDemand: AttachmentDemandRecord | null = null;
+  // Actual measured scene-FB attachment behavior for this frame, so the
+  // debug snapshot can assert the registry record matches reality
+  // (C9-09 acceptance). Reset at the top of updateAndClearFramebuffers.
+  public _attachmentDemandActual: {
+    gbufferAllocated: boolean;
+    gbufferBytes: number;
+    gbufferMsaaCompanionBytes: number;
+    sceneColorAttachmentCount: number;
+    slot1AttachmentOpens: number;
+    slot1ResolveOpens: number;
+  } = {
+    gbufferAllocated: false,
+    gbufferBytes: 0,
+    gbufferMsaaCompanionBytes: 0,
+    sceneColorAttachmentCount: 0,
+    slot1AttachmentOpens: 0,
+    slot1ResolveOpens: 0,
+  };
 
   // Renderer-wide log-depth master switch (Approach A for
   // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION / NEW-COLLECTIONS-LOG-DEPTH).
@@ -3852,6 +3890,32 @@ export class WebGPUContext extends GraphicsContext {
       !picking && scene.invertClassification;
     environmentState.renderTranslucentDepthForPick = false;
 
+    // ── C9-09-ATTACHMENT-DEMAND-REGISTRY (FAR-401-C0) ──
+    // Compute the ONE canonical attachment-demand record for this frame,
+    // once, before any scene pass opens or any pipeline builds. Observe-only
+    // in this slice: the record is frozen on the context and reported through
+    // the debug snapshot, but nothing in the render path gates on it yet
+    // (C9-10 is the slice that acts on `gbufferDemanded`). `forceSceneMRT`
+    // defaults true, so `topology` is `"mrt"` every frame — matching the
+    // always-MRT legacy executor. Reset the per-frame actual counters here so
+    // the snapshot reflects only this frame.
+    const actual = this._attachmentDemandActual;
+    actual.gbufferAllocated = false;
+    actual.gbufferBytes = 0;
+    actual.gbufferMsaaCompanionBytes = 0;
+    actual.sceneColorAttachmentCount = 0;
+    actual.slot1AttachmentOpens = 0;
+    actual.slot1ResolveOpens = 0;
+    this._attachmentDemand = computeAttachmentDemand(
+      scene as unknown as AttachmentDemandSceneLike,
+      {
+        forceSceneMRT: this.forceSceneMRT,
+        picking: picking === true,
+        globeDepth: environmentState.useGlobeDepthFramebuffer === true,
+        postProcess: environmentState.usePostProcess === true,
+      },
+    );
+
     // Phase 8a Slice 1 (Batch 80) + Slice 2b (Batch 86) — G-buffer
     // allocation. Mirrors the gating block in
     // `FramebufferOrchestrator.js` which DOES NOT run on WebGPU
@@ -3921,7 +3985,32 @@ export class WebGPUContext extends GraphicsContext {
         this._msaaSamples ?? 1,
       );
       view.gBufferFramebuffer.clear(this, passState);
+
+      // C9-09 truthful reporting: record the ACTUAL G-buffer byte cost this
+      // frame so the debug snapshot can assert the demand record matches
+      // reality. rgba16float = 8 bytes/texel; the MSAA companion multiplies
+      // by the effective sample count. `narrow` re-reads the allocated
+      // dimensions/sample count that `update()` just committed.
+      const gbfDims = view.gBufferFramebuffer as unknown as {
+        _width?: number;
+        _height?: number;
+        _sampleCount?: number;
+        framebuffer?: boolean;
+      };
+      const gw = gbfDims._width ?? 0;
+      const gh = gbfDims._height ?? 0;
+      const gsamples = gbfDims._sampleCount ?? 1;
+      if (gbfDims.framebuffer === true && gw > 0 && gh > 0) {
+        actual.gbufferAllocated = true;
+        actual.gbufferBytes = gw * gh * 8;
+        actual.gbufferMsaaCompanionBytes =
+          gsamples > 1 ? gw * gh * 8 * gsamples : 0;
+      }
     }
+    // Actual scene-FB color topology this frame: MRT mode binds slot 0 +
+    // slot 1 (2 attachments); one-target binds slot 0 only. Non-render
+    // (pick) frames use the single-target pick topology.
+    actual.sceneColorAttachmentCount = picking ? 1 : isSceneFBMrtMode() ? 2 : 1;
 
     // Batch 95 — drive the PostProcessStageCollection sync. The WebGL
     // orchestrator at `FramebufferOrchestrator.js:126` calls
@@ -4945,6 +5034,61 @@ export class WebGPUContext extends GraphicsContext {
       });
     }
     return this._computeEngine;
+  }
+
+  /**
+   * C9-09-ATTACHMENT-DEMAND-REGISTRY debug surface. Returns the frozen
+   * per-frame demand record (the registry's prediction) alongside the
+   * ACTUAL measured scene-FB attachment behavior this frame, so callers can
+   * assert the two agree (`record.topology` vs `actual.sceneColorAttachmentCount`,
+   * `record.gbufferDemanded` vs `actual.gbufferAllocated`). Read by
+   * `Scene.getDebugSnapshot().attachmentDemand`. Pure read.
+   *
+   * @returns The demand record + actual counters, or null before the first frame.
+   */
+  getAttachmentDemandStats(): {
+    record: AttachmentDemandRecord;
+    actual: {
+      mrtTopologyActive: boolean;
+      gbufferAllocated: boolean;
+      gbufferBytes: number;
+      gbufferMsaaCompanionBytes: number;
+      sceneColorAttachmentCount: number;
+      slot1AttachmentOpens: number;
+      slot1ResolveOpens: number;
+    };
+    forceSceneMRT: boolean;
+    recordMatchesActual: boolean;
+  } | null {
+    const record = this._attachmentDemand;
+    if (record === null) {
+      return null;
+    }
+    const a = this._attachmentDemandActual;
+    const mrtTopologyActive = isSceneFBMrtMode();
+    // The record describes actual behavior when its topology matches the
+    // scene-FB color-attachment count the executor actually used (2 => mrt,
+    // 1 => one-target). Pick frames are single-target by construction and
+    // excluded from the render-topology equivalence.
+    const recordMatchesActual =
+      record.other.picking === true ||
+      (record.topology === "mrt"
+        ? a.sceneColorAttachmentCount === 2
+        : a.sceneColorAttachmentCount === 1);
+    return {
+      record,
+      actual: {
+        mrtTopologyActive,
+        gbufferAllocated: a.gbufferAllocated,
+        gbufferBytes: a.gbufferBytes,
+        gbufferMsaaCompanionBytes: a.gbufferMsaaCompanionBytes,
+        sceneColorAttachmentCount: a.sceneColorAttachmentCount,
+        slot1AttachmentOpens: a.slot1AttachmentOpens,
+        slot1ResolveOpens: a.slot1ResolveOpens,
+      },
+      forceSceneMRT: this.forceSceneMRT,
+      recordMatchesActual,
+    };
   }
 
   /**
