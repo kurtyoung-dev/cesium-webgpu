@@ -7,7 +7,6 @@ import destroyObject from "../Core/destroyObject.js";
 import DeveloperError from "../Core/DeveloperError.js";
 import Matrix4 from "../Core/Matrix4.js";
 import RuntimeError from "../Core/RuntimeError.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import PrimitiveState from "./PrimitiveState.js";
 import SceneMode from "./SceneMode.js";
@@ -302,6 +301,10 @@ class Primitive {
     // the WebGPU pipelines rekey to the new scene FB format. Unused on WebGL
     // (renderTargetGeneration is constant 0 there).
     this._renderTargetGeneration = -1;
+    // Device-resource lifetime token. A recovered WebGPU device can have the
+    // same render-target format as its predecessor, so format generation alone
+    // cannot prove cached command buffers/bind groups are still valid.
+    this._resourceGeneration = -1;
 
     this._createBoundingVolumeFunction = options._createBoundingVolumeFunction;
     this._createRenderStatesFunction = options._createRenderStatesFunction;
@@ -461,7 +464,7 @@ class Primitive {
       createBatchTable(this, context);
     }
     if (this._batchTable.attributes.length > 0) {
-      if (ContextLimits.maximumVertexTextureImageUnits === 0) {
+      if (context.limits.maximumVertexTextureImageUnits === 0) {
         throw new RuntimeError(
           "Vertex texture fetch support is required to render primitives with per-instance attributes. The maximum number of vertex texture image units must be greater than zero.",
         );
@@ -579,17 +582,22 @@ class Primitive {
     const renderTargetFormatChanged =
       hasAlternateRenderer &&
       this._renderTargetGeneration !== renderTargetGeneration;
+    const resourceGeneration = context.resourceGeneration ?? 0;
+    const deviceResourcesChanged =
+      hasAlternateRenderer && this._resourceGeneration !== resourceGeneration;
 
     // For alternate renderers, always create commands when they don't exist or when appearance changes
     const needsCommands = hasAlternateRenderer
       ? createRS ||
         createSP ||
         this._colorCommands.length === 0 ||
-        renderTargetFormatChanged
+        renderTargetFormatChanged ||
+        deviceResourcesChanged
       : createRS || createSP;
 
     if (needsCommands) {
       this._renderTargetGeneration = renderTargetGeneration;
+      this._resourceGeneration = resourceGeneration;
       const commandFunc = this._createCommandsFunction ?? createCommands;
       commandFunc(
         this,

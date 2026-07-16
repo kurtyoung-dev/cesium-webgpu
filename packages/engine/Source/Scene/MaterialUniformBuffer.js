@@ -7,12 +7,12 @@ import defined from "../Core/defined.js";
 /**
  * Packed Float32Array-backed storage for material uniform values.
  *
- * Replaces the plain-object `material.uniforms` with a typed-array-backed
- * store that supports:
+ * Mirrors the plain-object `material.uniforms` into typed-array-backed
+ * storage that supports:
  *   - Zero-copy GPU upload via {@link MaterialUniformBuffer#getGPUData}
  *   - Dirty tracking (skip GPU writes when nothing changed)
  *   - HDR-capable float storage (values can exceed 1.0)
- *   - Backward-compatible property access via defineProperty getters/setters
+ *   - Stable public Color, Cartesian, matrix, and texture values
  *
  * Texture references (sampler2D, samplerCube) live in a separate Map since
  * they can't be packed into a Float32Array.
@@ -28,16 +28,13 @@ class MaterialUniformBuffer {
   constructor(templateUniforms) {
     const layout = MaterialUniformBuffer._buildLayout(templateUniforms);
     this._layout = layout.entries;
+    this._uniformNames = Array.from(this._layout.keys());
     this._totalFloats = layout.totalFloats;
     this._data = new Float32Array(layout.totalFloats);
     this._textures = {};
+    this._uniforms = templateUniforms;
     this._dirty = true;
-
-    // Pre-allocate scratch objects for zero-alloc reads. One per
-    // vector/color uniform, keyed by uniform name. Created lazily on
-    // first get — most reads go through the WebGPU zero-copy path and
-    // never touch these.
-    this._scratch = {};
+    this._version = 1;
 
     // Populate initial values from the template.
     for (const name in templateUniforms) {
@@ -47,9 +44,8 @@ class MaterialUniformBuffer {
       this._writeValue(name, templateUniforms[name]);
     }
 
-    // Mark clean after initial population — the first GPU upload will
-    // see dirty=true from the constructor assignment above.
-    // Actually keep dirty=true so the first frame uploads.
+    // Keep the initial state dirty so every backend consumer performs its
+    // first upload even when all packed values happen to be zero.
   }
 
   /**
@@ -275,23 +271,18 @@ class MaterialUniformBuffer {
     }
   }
 
-  /**
-   * Inverse of `_channelCharToIndex`. Used by the read-facade to return
-   * the original shorthand string.
-   * @private
-   */
-  static _channelIndexToChar(idx) {
-    const i = Math.round(idx);
-    if (i === 1) {
-      return "g";
+  static _writeFloat(data, index, value) {
+    const packedValue = Math.fround(value);
+    const currentValue = data[index];
+    if (
+      currentValue === packedValue ||
+      (Number.isNaN(currentValue) && Number.isNaN(packedValue))
+    ) {
+      return false;
     }
-    if (i === 2) {
-      return "b";
-    }
-    if (i === 3) {
-      return "a";
-    }
-    return "r";
+
+    data[index] = packedValue;
+    return true;
   }
 
   /**
@@ -303,26 +294,30 @@ class MaterialUniformBuffer {
   _writeValue(name, value) {
     const entry = this._layout.get(name);
     if (!entry) {
-      return;
+      return false;
     }
 
     if (entry.offset === -1) {
-      // Texture reference — store separately
+      if (this._textures[name] === value) {
+        return false;
+      }
       this._textures[name] = value;
-      this._dirty = true;
-      return;
+      return true;
     }
 
     const d = this._data;
     const o = entry.offset;
+    let changed = false;
 
     // Channel-string uniforms: `channel: "a"` → write index; `channels: "rgb"`
     // → write (0,1,2) into a vec3/vec4 slot. Must come BEFORE the generic
     // `typeof value === "string"` fallthrough below.
     if (entry.type === "channelIndex" && typeof value === "string") {
-      d[o] = MaterialUniformBuffer._channelCharToIndex(value[0] ?? "r");
-      this._dirty = true;
-      return;
+      return MaterialUniformBuffer._writeFloat(
+        d,
+        o,
+        MaterialUniformBuffer._channelCharToIndex(value[0] ?? "r"),
+      );
     }
     if (
       (entry.type === "channelsVec3" || entry.type === "channelsVec4") &&
@@ -331,148 +326,102 @@ class MaterialUniformBuffer {
       const count = entry.size;
       for (let i = 0; i < count; i++) {
         const ch = value[i] ?? "r";
-        d[o + i] = MaterialUniformBuffer._channelCharToIndex(ch);
+        changed =
+          MaterialUniformBuffer._writeFloat(
+            d,
+            o + i,
+            MaterialUniformBuffer._channelCharToIndex(ch),
+          ) || changed;
       }
-      this._dirty = true;
-      return;
+      return changed;
     }
 
     if (value instanceof Color) {
-      d[o] = value.red;
-      d[o + 1] = value.green;
-      d[o + 2] = value.blue;
-      d[o + 3] = value.alpha;
+      changed = MaterialUniformBuffer._writeFloat(d, o, value.red) || changed;
+      changed =
+        MaterialUniformBuffer._writeFloat(d, o + 1, value.green) || changed;
+      changed =
+        MaterialUniformBuffer._writeFloat(d, o + 2, value.blue) || changed;
+      changed =
+        MaterialUniformBuffer._writeFloat(d, o + 3, value.alpha) || changed;
     } else if (value instanceof Cartesian4) {
-      d[o] = value.x;
-      d[o + 1] = value.y;
-      d[o + 2] = value.z;
-      d[o + 3] = value.w;
+      changed = MaterialUniformBuffer._writeFloat(d, o, value.x) || changed;
+      changed = MaterialUniformBuffer._writeFloat(d, o + 1, value.y) || changed;
+      changed = MaterialUniformBuffer._writeFloat(d, o + 2, value.z) || changed;
+      changed = MaterialUniformBuffer._writeFloat(d, o + 3, value.w) || changed;
     } else if (value instanceof Cartesian3) {
-      d[o] = value.x;
-      d[o + 1] = value.y;
-      d[o + 2] = value.z;
+      changed = MaterialUniformBuffer._writeFloat(d, o, value.x) || changed;
+      changed = MaterialUniformBuffer._writeFloat(d, o + 1, value.y) || changed;
+      changed = MaterialUniformBuffer._writeFloat(d, o + 2, value.z) || changed;
     } else if (value instanceof Cartesian2) {
-      d[o] = value.x;
-      d[o + 1] = value.y;
+      changed = MaterialUniformBuffer._writeFloat(d, o, value.x) || changed;
+      changed = MaterialUniformBuffer._writeFloat(d, o + 1, value.y) || changed;
     } else if (typeof value === "number") {
-      d[o] = value;
+      changed = MaterialUniformBuffer._writeFloat(d, o, value) || changed;
     } else if (typeof value === "boolean") {
-      d[o] = value ? 1.0 : 0.0;
+      changed =
+        MaterialUniformBuffer._writeFloat(d, o, value ? 1.0 : 0.0) || changed;
     } else if (Array.isArray(value)) {
       for (let i = 0; i < value.length && i < entry.size; i++) {
-        d[o + i] = value[i];
+        changed =
+          MaterialUniformBuffer._writeFloat(d, o + i, value[i]) || changed;
       }
     } else if (typeof value === "object" && value !== null) {
       // Boolean vec (fadeDirection: { x: true, y: true })
       if (typeof value.x === "boolean") {
-        d[o] = value.x ? 1.0 : 0.0;
+        changed =
+          MaterialUniformBuffer._writeFloat(d, o, value.x ? 1.0 : 0.0) ||
+          changed;
         if (entry.size > 1) {
-          d[o + 1] = value.y ? 1.0 : 0.0;
+          changed =
+            MaterialUniformBuffer._writeFloat(d, o + 1, value.y ? 1.0 : 0.0) ||
+            changed;
         }
       } else {
         // Generic x/y/z/w object
         if (defined(value.x)) {
-          d[o] = value.x;
+          changed = MaterialUniformBuffer._writeFloat(d, o, value.x) || changed;
         }
         if (defined(value.y) && entry.size > 1) {
-          d[o + 1] = value.y;
+          changed =
+            MaterialUniformBuffer._writeFloat(d, o + 1, value.y) || changed;
         }
         if (defined(value.z) && entry.size > 2) {
-          d[o + 2] = value.z;
+          changed =
+            MaterialUniformBuffer._writeFloat(d, o + 2, value.z) || changed;
         }
         if (defined(value.w) && entry.size > 3) {
-          d[o + 3] = value.w;
+          changed =
+            MaterialUniformBuffer._writeFloat(d, o + 3, value.w) || changed;
         }
       }
     }
 
-    this._dirty = true;
+    return changed;
+  }
+
+  _syncValues() {
+    let changed = false;
+    const names = this._uniformNames;
+    for (let i = 0; i < names.length; i++) {
+      const name = names[i];
+      changed = this._writeValue(name, this._uniforms[name]) || changed;
+    }
+
+    if (changed) {
+      this._dirty = true;
+      this._version++;
+    }
   }
 
   /**
-   * Read a value from the backing store. Returns either a scratch
-   * Color/Cartesian or a scalar, depending on the uniform type.
+   * Read the stable public value associated with a packed uniform.
    *
    * @param {string} name Uniform name
    * @returns {Color|Cartesian2|Cartesian3|Cartesian4|number|boolean|*}
    */
   _readValue(name) {
-    const entry = this._layout.get(name);
-    if (!entry) {
-      return undefined;
-    }
-
-    if (entry.offset === -1) {
-      return this._textures[name];
-    }
-
-    const d = this._data;
-    const o = entry.offset;
-
-    switch (entry.type) {
-      case "vec4": {
-        let s = this._scratch[name];
-        if (!s) {
-          s = new Color();
-          this._scratch[name] = s;
-        }
-        s.red = d[o];
-        s.green = d[o + 1];
-        s.blue = d[o + 2];
-        s.alpha = d[o + 3];
-        return s;
-      }
-      case "vec3": {
-        let s = this._scratch[name];
-        if (!s) {
-          s = new Cartesian3();
-          this._scratch[name] = s;
-        }
-        s.x = d[o];
-        s.y = d[o + 1];
-        s.z = d[o + 2];
-        return s;
-      }
-      case "vec2": {
-        let s = this._scratch[name];
-        if (!s) {
-          s = new Cartesian2();
-          this._scratch[name] = s;
-        }
-        s.x = d[o];
-        s.y = d[o + 1];
-        return s;
-      }
-      case "float":
-        return d[o];
-      case "bool":
-        return d[o] > 0.5;
-      case "boolVec2":
-        return { x: d[o] > 0.5, y: d[o + 1] > 0.5 };
-      case "matrix": {
-        const arr = new Array(entry.size);
-        for (let i = 0; i < entry.size; i++) {
-          arr[i] = d[o + i];
-        }
-        return arr;
-      }
-      case "channelIndex":
-        // Reconstruct the fabric's original shorthand character so reads
-        // round-trip. Callers that expect the number can use
-        // `material._uniformBuffer._data[entry.offset]`.
-        return MaterialUniformBuffer._channelIndexToChar(d[o]);
-      case "channelsVec3":
-      case "channelsVec4": {
-        const count = entry.size;
-        let s = "";
-        for (let i = 0; i < count; i++) {
-          s += MaterialUniformBuffer._channelIndexToChar(d[o + i]);
-        }
-        return s;
-      }
-      default:
-        return undefined;
-    }
+    return this._layout.has(name) ? this._uniforms[name] : undefined;
   }
 
   /**
@@ -484,6 +433,7 @@ class MaterialUniformBuffer {
    * @readonly
    */
   get gpuData() {
+    this._syncValues();
     return this._data;
   }
 
@@ -494,7 +444,19 @@ class MaterialUniformBuffer {
    * @readonly
    */
   get isDirty() {
+    this._syncValues();
     return this._dirty;
+  }
+
+  /**
+   * Monotonically increasing packed-value version. Consumers can retain their
+   * own uploaded version instead of clearing shared material state.
+   * @type {number}
+   * @readonly
+   */
+  get version() {
+    this._syncValues();
+    return this._version;
   }
 
   /**
@@ -528,53 +490,16 @@ class MaterialUniformBuffer {
    * @readonly
    */
   get textures() {
+    this._syncValues();
     return this._textures;
   }
 
   /**
-   * Create a backward-compatible `uniforms` proxy object that
-   * exposes named getters/setters backed by this buffer. Existing code
-   * that does `material.uniforms.color = new Color(...)` or
-   * `material.uniforms.color.alpha` will continue to work.
-   *
-   * The returned object also exposes `_buffer` for direct access and
-   * `hasOwnProperty` support for uniform enumeration.
-   *
-   * @returns {object} An object with defineProperty getters/setters
+   * Returns the original public uniforms object retained by this mirror.
+   * @returns {object} The stable public uniforms object.
    */
   createFacade() {
-    const buffer = this;
-    const facade = {
-      _buffer: buffer,
-    };
-
-    for (const [name, entry] of this._layout) {
-      const isNumeric = entry.offset !== -1;
-      Object.defineProperty(facade, name, {
-        get() {
-          return buffer._readValue(name);
-        },
-        set(value) {
-          buffer._writeValue(name, value);
-        },
-        enumerable: true,
-        configurable: true,
-      });
-
-      // For Color/Cartesian uniforms, the read returns a scratch object.
-      // If the caller mutates it (e.g., `uniforms.color.red = 0.5`),
-      // the mutation goes into the scratch but NOT back into the buffer.
-      // This matches how the current system works: mutating the returned
-      // Color object also doesn't trigger any dirty flag. The caller must
-      // re-assign: `uniforms.color = uniforms.color` to trigger the set.
-      //
-      // For the common CesiumJS pattern of reading uniforms in
-      // `translucent` callbacks: `material.uniforms.color.alpha < 1.0`,
-      // the scratch read is correct and zero-alloc.
-      void isNumeric;
-    }
-
-    return facade;
+    return this._uniforms;
   }
 }
 

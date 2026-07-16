@@ -3052,7 +3052,10 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   // dispatch so we don't reference a null view.
   const packedTranslucentView = context._packedTranslucentDepthView ?? null;
   const globeDepthView = context._globeDepthView ?? null;
-  const depthSourceView = packedTranslucentView ?? globeDepthView;
+  const picking = passes?.pick === true || passes?.pickVoxel === true;
+  const depthSourceView = picking
+    ? context._pickClassificationDepthView
+    : (packedTranslucentView ?? globeDepthView);
   if (!depthSourceView) {
     return {
       stencilCommand: null,
@@ -3093,8 +3096,9 @@ function createWebGPUGroundPolylineCommands(primitive, frameState) {
   // source at draw time (Session 3 contract). Spans-frustum-boundary
   // primitives get re-resolved per frustum.
   const resolveDepthSampleBindGroup = () => {
-    const currentSource =
-      context._packedTranslucentDepthView ?? context._globeDepthView;
+    const currentSource = picking
+      ? context._pickClassificationDepthView
+      : (context._packedTranslucentDepthView ?? context._globeDepthView);
     if (!currentSource) {
       return null;
     }

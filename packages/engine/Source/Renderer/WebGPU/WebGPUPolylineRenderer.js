@@ -60,6 +60,10 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import {
+  createMaterialUploadState,
+  uploadMaterialUniformBuffer,
+} from "./WebGPUMaterialUploadState.js";
 // NEW-COLLECTION-RENDERER-BASE (Phase 11 finisher, Batch 307) — shared
 // per-frame scaffolding. Polyline is bucket-shaped (grouped by material
 // type, no resident-instance manager, no per-instance pick buffer), so it
@@ -85,6 +89,10 @@ import {
 const FLOATS_PER_SEGMENT = 28;
 const BYTES_PER_SEGMENT = FLOATS_PER_SEGMENT * 4;
 const VERTICES_PER_SEGMENT = 6;
+// Keep temporarily inactive material resources resident long enough to absorb
+// ordinary show/hide changes and streaming gaps. Immediate retirement made a
+// one-frame absence pay synchronous buffer/bind-group recreation on return.
+const MATERIAL_RESOURCE_RETIREMENT_GRACE_FRAMES = 60;
 
 /**
  * Batch 140 (NEW-DISABLE-DEPTH-DISTANCE-INFINITY-PARITY-POLYLINE-POINT) —
@@ -264,14 +272,24 @@ function computeNormalizedDistances(positions) {
 // =========================================================================
 
 /**
- * Groups polylines by material type and returns a Map of
- * materialType → { polylines, material }.
+ * Groups polylines by exact material identity. An optional result map lets the
+ * renderer reuse group objects and arrays across frames for stable materials.
+ * Empty groups are removed so a deleted material is not retained by the cache.
+ *
+ * @param {object} collection
+ * @param {Map} [result]
+ * @returns {Map}
  * @private
  */
-function groupByMaterialType(collection) {
+const defaultMaterialGroupKey = Object.freeze({});
+
+function groupByMaterialType(collection, result) {
   const polylines = collection._polylines;
   const length = collection._polylines.length;
-  const groups = new Map();
+  const groups = result ?? new Map();
+  for (const group of groups.values()) {
+    group.polylines.length = 0;
+  }
 
   for (let i = 0; i < length; i++) {
     const polyline = polylines[i];
@@ -285,19 +303,201 @@ function groupByMaterialType(collection) {
 
     const material = polyline.material;
     const materialType = material ? material.type : "Color";
+    // Base Color-type materials are per-instance colored — the Color shader
+    // reads the per-instance color attribute and ignores the material UBO —
+    // so exact-object-identity grouping split N solid-color polylines into N
+    // draws. Key Color materials by material TYPE so they batch into a single
+    // draw; UBO-consuming types (Dash/Glow/Arrow/Outline/Image) keep
+    // exact-object-identity grouping because distinct instances carry
+    // distinct uniforms.
+    const groupKey =
+      materialType === "Color"
+        ? "Color"
+        : (material ?? defaultMaterialGroupKey);
 
-    let group = groups.get(materialType);
+    let group = groups.get(groupKey);
     if (!defined(group)) {
-      group = { polylines: [], material };
-      groups.set(materialType, group);
+      group = { polylines: [], material, materialType };
+      groups.set(groupKey, group);
     }
+    group.material = material;
+    group.materialType = materialType;
     group.polylines.push(polyline);
+  }
+
+  for (const [key, group] of groups) {
+    if (group.polylines.length === 0) {
+      groups.delete(key);
+    }
   }
   return groups;
 }
 
+function getMaterialResourceKey(cache, materialType, material) {
+  // Color-type groups share one stable resource key: groupByMaterialType
+  // batches ALL Color polylines into a single type-keyed group whose
+  // `group.material` is merely the last member's instance. An identity-derived
+  // key would flap with collection membership and churn the cached
+  // material/segment buffers; the Color shader never reads the material UBO,
+  // so a shared key is safe.
+  if (materialType === "Color" || !defined(material)) {
+    return `${materialType}_default`;
+  }
+  cache.materialResourceIds ??= new WeakMap();
+  cache.materialResourceIdCounter ??= 0;
+  let id = cache.materialResourceIds.get(material);
+  if (!defined(id)) {
+    id = ++cache.materialResourceIdCounter;
+    cache.materialResourceIds.set(material, id);
+  }
+  return `${materialType}_${id}`;
+}
+
+function pruneInactiveMaterialResources(cache, activeKeys, frameNumber) {
+  const lastUsedByKey = (cache.materialResourceLastUsed ??= new Map());
+  for (const key of activeKeys) {
+    lastUsedByKey.set(key, frameNumber);
+  }
+
+  for (const [key, lastUsedFrame] of lastUsedByKey) {
+    if (
+      activeKeys.has(key) ||
+      frameNumber - lastUsedFrame < MATERIAL_RESOURCE_RETIREMENT_GRACE_FRAMES
+    ) {
+      continue;
+    }
+    for (const prefix of [
+      "materialBuffer_",
+      "segmentBuffer_",
+      "prevSegmentBuffer_",
+    ]) {
+      const resourceKey = `${prefix}${key}`;
+      const resource = cache[resourceKey];
+      if (defined(resource) && typeof resource.destroy === "function") {
+        resource.destroy();
+      }
+      delete cache[resourceKey];
+    }
+    delete cache[`materialBuffer_${key}_size`];
+    delete cache[`materialUploadState_${key}`];
+    delete cache[`matBindGroup_${key}`];
+    delete cache[`prevSegmentData_${key}`];
+    lastUsedByKey.delete(key);
+  }
+}
+
 /**
- * Build segment instance data for a group of polylines sharing one material.
+ * Resolves pipeline and camera resources once per material type per collection
+ * update. Exact material instances still own distinct material/segment state,
+ * but they no longer repeat an identical camera upload or resolver setup.
+ *
+ * @private
+ */
+function prepareMaterialTypeFrameResources(
+  cache,
+  device,
+  context,
+  materialType,
+  defines,
+  noDepthTest,
+  frameState,
+  modelMatrix,
+  frameToken,
+) {
+  const resourcesByType = (cache.materialTypeFrameResources ??= new Map());
+  let resources = resourcesByType.get(materialType);
+  if (!defined(resources)) {
+    resources = {
+      frameToken: -1,
+      ready: false,
+      pipelineResult: {},
+    };
+    resourcesByType.set(materialType, resources);
+  } else if (resources.frameToken === frameToken) {
+    return resources.ready ? resources : undefined;
+  }
+
+  resources.frameToken = frameToken;
+  resources.ready = false;
+
+  const pipelineEntry = getOrCreatePolylinePipelineEntry(
+    cache,
+    device,
+    context,
+    materialType,
+    defines,
+    noDepthTest,
+  );
+  const resolvedPipeline = tryResolvePolylinePipeline(
+    device,
+    context.webgpuPipelineCache ?? null,
+    pipelineEntry,
+  );
+  if (!defined(resolvedPipeline)) {
+    return undefined;
+  }
+
+  const pipelineResult = resources.pipelineResult;
+  pipelineResult.pipeline = resolvedPipeline;
+  pipelineResult.cameraBindGroupLayout = pipelineEntry.cameraBindGroupLayout;
+  pipelineResult.materialBindGroupLayout =
+    pipelineEntry.materialBindGroupLayout;
+
+  const camKey = (resources.camKey ??= `cameraBuffer_${materialType}`);
+  const cameraDataKey =
+    (resources.cameraDataKey ??= `cameraData_${materialType}`);
+  if (!defined(cache[camKey])) {
+    cache[camKey] = WebGPUBuffer.createUniformBuffer(
+      device,
+      CAMERA_BUFFER_SIZE,
+      `Polyline ${materialType} camera`,
+    );
+    cache[cameraDataKey] = new Float32Array(CAMERA_FLOATS);
+  }
+
+  const cameraBuffer = cache[camKey];
+  const cameraData = cache[cameraDataKey];
+  packCameraUniforms(cameraData, frameState, modelMatrix);
+  device.queue.writeBuffer(
+    cameraBuffer.buffer,
+    0,
+    cameraData.buffer,
+    0,
+    CAMERA_BUFFER_SIZE,
+  );
+
+  const camBgKey = (resources.camBgKey ??= `camBindGroup_${materialType}`);
+  if (!defined(cache[camBgKey])) {
+    cache[camBgKey] = device.createBindGroup({
+      layout: pipelineResult.cameraBindGroupLayout,
+      entries: [{ binding: 0, resource: { buffer: cameraBuffer.buffer } }],
+    });
+  }
+
+  const camUBKey = (resources.camUBKey ??= `cameraUB_${materialType}`);
+  if (!defined(cache[camUBKey])) {
+    cache[camUBKey] = new WebGPUCollectionCameraUB(
+      device,
+      `Polyline ${materialType}`,
+    );
+  }
+  cache[camUBKey].bindUniformState(context.uniformState);
+
+  resources.pipelineEntry = pipelineEntry;
+  resources.cameraBuffer = cameraBuffer;
+  resources.cameraResolver = cache[camUBKey].makeResolver({
+    bufferSize: CAMERA_BUFFER_SIZE,
+    bindGroupLayout: pipelineResult.cameraBindGroupLayout,
+    pack: (data) => packCameraUniforms(data, frameState, modelMatrix),
+  });
+  resources.ready = true;
+  return resources;
+}
+
+/**
+ * Build segment instance data for a group of polylines sharing one exact
+ * material instance. Pipeline state is still shared by material type, while
+ * uniform and segment resources remain isolated by material identity.
  * Packs RTE-encoded positions, line width, and optional st coordinates
  * into the padding slots (startPosLow.w = sStart, endPosLow.w = sEnd).
  * @private
@@ -1428,65 +1628,56 @@ async function _updateWebGPUPolylinesInner(
   const noDepthTest = computeNoDepthTest(frameState);
   cache.currentNoDepthTest = noDepthTest;
 
-  // Group polylines by material type
-  const groups = groupByMaterialType(collection);
+  // Group by exact material identity, EXCEPT base Color-type materials which
+  // group by type (per-instance colored; the Color shader ignores the material
+  // UBO, so N solid-color polylines batch into one draw). Distinct instances
+  // of the UBO-consuming shader types carry different uniforms and therefore
+  // cannot share one UBO or segment draw. Pipeline compilation remains shared
+  // by materialType.
+  const groups = groupByMaterialType(
+    collection,
+    (cache.materialGroups ??= new Map()),
+  );
+  const activeMaterialResourceKeys = (cache.activeMaterialResourceKeys ??=
+    new Set());
+  activeMaterialResourceKeys.clear();
+  const materialTypeFrameToken = (cache.materialTypeFrameToken ?? 0) + 1;
+  cache.materialTypeFrameToken = materialTypeFrameToken;
+  const materialResourceFrameNumber = Number.isFinite(frameState.frameNumber)
+    ? frameState.frameNumber
+    : materialTypeFrameToken;
 
-  for (const [materialType, group] of groups) {
-    // Get or create the descriptor-level cache entry for this
-    // (materialType, defines) combo. The actual GPU pipeline is
-    // resolved through the central pipeline cache below.
-    const pipelineEntry = getOrCreatePolylinePipelineEntry(
+  for (const group of groups.values()) {
+    const materialType = group.materialType;
+    const materialResourceKey = getMaterialResourceKey(
+      cache,
+      materialType,
+      group.material,
+    );
+    activeMaterialResourceKeys.add(materialResourceKey);
+    const typeFrameResources = prepareMaterialTypeFrameResources(
       cache,
       device,
       context,
       materialType,
       defines,
       noDepthTest,
+      frameState,
+      modelMatrix,
+      materialTypeFrameToken,
     );
-    const resolvedPipeline = tryResolvePolylinePipeline(
-      device,
-      context.webgpuPipelineCache ?? null,
-      pipelineEntry,
-    );
-    if (!defined(resolvedPipeline)) {
+    if (!defined(typeFrameResources)) {
       // Pipeline still materializing async — skip this material group's
       // draw for this frame; subsequent frames pick it up via getPipelineSync.
       continue;
     }
-    // Backwards-compat shape — downstream code reads `pipelineResult.pipeline`,
-    // `pipelineResult.cameraBindGroupLayout`, `pipelineResult.materialBindGroupLayout`.
-    const pipelineResult = {
-      pipeline: resolvedPipeline,
-      cameraBindGroupLayout: pipelineEntry.cameraBindGroupLayout,
-      materialBindGroupLayout: pipelineEntry.materialBindGroupLayout,
-    };
-
-    // Camera uniform buffer (shared structure, per-material-type instance)
-    const camKey = `cameraBuffer_${materialType}`;
-    if (!defined(cache[camKey])) {
-      cache[camKey] = WebGPUBuffer.createUniformBuffer(
-        device,
-        CAMERA_BUFFER_SIZE,
-        `Polyline ${materialType} camera`,
-      );
-      cache[`cameraData_${materialType}`] = new Float32Array(CAMERA_FLOATS);
-    }
-
-    const cameraBuffer = cache[camKey];
-    const cameraData = cache[`cameraData_${materialType}`];
-
-    // Pack camera RTE uniforms
-    packCameraUniforms(cameraData, frameState, modelMatrix);
-    device.queue.writeBuffer(
-      cameraBuffer.buffer,
-      0,
-      cameraData.buffer,
-      0,
-      CAMERA_BUFFER_SIZE,
-    );
+    const pipelineResult = typeFrameResources.pipelineResult;
+    const cameraBuffer = typeFrameResources.cameraBuffer;
+    const camBgKey = typeFrameResources.camBgKey;
+    const cameraResolver = typeFrameResources.cameraResolver;
 
     // Material uniform buffer — sourced from MaterialUniformBuffer.gpuData
-    const matKey = `materialBuffer_${materialType}`;
+    const matKey = `materialBuffer_${materialResourceKey}`;
     const material = group.material;
     const matUB = defined(material) ? material._uniformBuffer : undefined;
     const matGpuData = defined(matUB) ? matUB.gpuData : undefined;
@@ -1504,19 +1695,23 @@ async function _updateWebGPUPolylinesInner(
         label: `Polyline ${materialType} material`,
       });
       cache[`${matKey}_size`] = matByteSize;
-      cache[`matBindGroup_${materialType}`] = null; // force rebind
+      cache[`materialUploadState_${materialResourceKey}`] =
+        createMaterialUploadState();
+      cache[`matBindGroup_${materialResourceKey}`] = null; // force rebind
     }
 
     if (defined(matGpuData)) {
-      if (
-        !defined(matUB) ||
-        matUB.isDirty ||
-        !defined(cache[`matBindGroup_${materialType}`])
-      ) {
+      const uploadStateKey = `materialUploadState_${materialResourceKey}`;
+      cache[uploadStateKey] ??= createMaterialUploadState();
+      if (defined(matUB)) {
+        uploadMaterialUniformBuffer(
+          device,
+          cache[matKey],
+          matUB,
+          cache[uploadStateKey],
+        );
+      } else {
         device.queue.writeBuffer(cache[matKey], 0, matGpuData);
-        if (defined(matUB)) {
-          matUB.clearDirty();
-        }
       }
     } else {
       device.queue.writeBuffer(
@@ -1526,37 +1721,17 @@ async function _updateWebGPUPolylinesInner(
       );
     }
 
-    // Camera bind group
-    const camBgKey = `camBindGroup_${materialType}`;
-    if (!defined(cache[camBgKey])) {
-      cache[camBgKey] = device.createBindGroup({
-        layout: pipelineResult.cameraBindGroupLayout,
-        entries: [{ binding: 0, resource: { buffer: cameraBuffer.buffer } }],
-      });
-    }
-
     // NEW-COLLECTIONS-PER-FRUSTUM-CAMERA-UB (Phase 3 Slice 1) — per-slice
     // camera UB, one resolver per material type (each material group keeps
     // its own per-slice buffer pool). The static `cache[camBgKey]` above is
     // the slice-0 / single-frustum fallback. Polyline's camera UB lives in a
     // DEDICATED group at command index 0 (material is group 1), so the
     // resolver swaps just the camera group — the cleanest case.
-    const camUBKey = `cameraUB_${materialType}`;
-    if (!defined(cache[camUBKey])) {
-      cache[camUBKey] = new WebGPUCollectionCameraUB(
-        device,
-        `Polyline ${materialType}`,
-      );
-    }
-    cache[camUBKey].bindUniformState(context.uniformState);
-    const cameraResolver = cache[camUBKey].makeResolver({
-      bufferSize: CAMERA_BUFFER_SIZE,
-      bindGroupLayout: pipelineResult.cameraBindGroupLayout,
-      pack: (data) => packCameraUniforms(data, frameState, modelMatrix),
-    });
+    // Setup is hoisted into `prepareMaterialTypeFrameResources`; every exact
+    // material group of this type shares the same per-frame resolver.
 
     // Material bind group
-    const matBgKey = `matBindGroup_${materialType}`;
+    const matBgKey = `matBindGroup_${materialResourceKey}`;
     if (!defined(cache[matBgKey])) {
       cache[matBgKey] = device.createBindGroup({
         layout: pipelineResult.materialBindGroupLayout,
@@ -1577,7 +1752,7 @@ async function _updateWebGPUPolylinesInner(
     }
 
     // Segment vertex buffer
-    const sbKey = `segmentBuffer_${materialType}`;
+    const sbKey = `segmentBuffer_${materialResourceKey}`;
     const requiredSize = segmentCount * BYTES_PER_SEGMENT;
     if (!defined(cache[sbKey]) || cache[sbKey].size < requiredSize) {
       if (defined(cache[sbKey])) {
@@ -1597,8 +1772,8 @@ async function _updateWebGPUPolylinesInner(
     // the velocity VS reads both streams at slot 0 and slot 1. Mirrors
     // the Billboard / Label pattern from Batches 143/144.
     const taaEnabledThisFrame = frameState.taaEnabled === true;
-    const prevSbKey = `prevSegmentBuffer_${materialType}`;
-    const prevDataKey = `prevSegmentData_${materialType}`;
+    const prevSbKey = `prevSegmentBuffer_${materialResourceKey}`;
+    const prevDataKey = `prevSegmentData_${materialResourceKey}`;
     if (taaEnabledThisFrame || defined(cache[prevSbKey])) {
       if (!defined(cache[prevSbKey]) || cache[prevSbKey].size < requiredSize) {
         if (defined(cache[prevSbKey])) {
@@ -1699,6 +1874,9 @@ async function _updateWebGPUPolylinesInner(
         owner: collection,
         boundingVolume: collection._boundingVolume,
         modelMatrix: modelMatrix,
+        sortLayer: collection._commandOrdering.sortLayer,
+        sortPriority: collection._commandOrdering.sortPriority,
+        materialSortId: collection._commandOrdering.materialSortId,
         cull: true,
         renderState: polylineRS,
       });
@@ -1750,6 +1928,9 @@ async function _updateWebGPUPolylinesInner(
             owner: collection,
             boundingVolume: collection._boundingVolume,
             modelMatrix: modelMatrix,
+            sortLayer: collection._commandOrdering.sortLayer,
+            sortPriority: collection._commandOrdering.sortPriority,
+            materialSortId: collection._commandOrdering.materialSortId,
             cull: true,
             renderState: polylineRS,
           });
@@ -1759,6 +1940,12 @@ async function _updateWebGPUPolylinesInner(
       commandList.push(cmd);
     }
   }
+
+  pruneInactiveMaterialResources(
+    cache,
+    activeMaterialResourceKeys,
+    materialResourceFrameNumber,
+  );
 
   // Pick pass — uses a single combined buffer with pick colors
   if (frameState.passes.pick) {
@@ -1943,6 +2130,9 @@ function _pushPolylinePickCommand(
     owner: collection,
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,
+    sortLayer: collection._commandOrdering.sortLayer,
+    sortPriority: collection._commandOrdering.sortPriority,
+    materialSortId: collection._commandOrdering.materialSortId,
     cull: true,
     // Pick runs in OPAQUE pass — mirror WebGL behavior by using the
     // opaque render state (depth-test on, depth-write on, no blending
@@ -1987,5 +2177,12 @@ function destroyWebGPUPolylineResources(collection) {
   collection._webgpuCache = undefined;
 }
 
-export { updateWebGPUPolylines, destroyWebGPUPolylineResources };
+export {
+  MATERIAL_RESOURCE_RETIREMENT_GRACE_FRAMES,
+  updateWebGPUPolylines,
+  destroyWebGPUPolylineResources,
+  groupByMaterialType,
+  prepareMaterialTypeFrameResources,
+  pruneInactiveMaterialResources,
+};
 export default { updateWebGPUPolylines, destroyWebGPUPolylineResources };

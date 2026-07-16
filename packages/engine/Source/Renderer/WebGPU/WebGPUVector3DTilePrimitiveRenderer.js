@@ -1423,7 +1423,11 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
   // skipped while classification still renders.
   const packedTranslucentView = context._packedTranslucentDepthView ?? null;
   const globeDepthView = context._globeDepthView ?? null;
-  const depthSourceView = packedTranslucentView ?? globeDepthView;
+  const picking =
+    frameState.passes?.pick === true || frameState.passes?.pickVoxel === true;
+  const depthSourceView = picking
+    ? context._pickClassificationDepthView
+    : (packedTranslucentView ?? globeDepthView);
   if (defined(depthSourceView)) {
     if (!defined(cache.depthSampleSampler)) {
       cache.depthSampleSampler = device.createSampler({
@@ -1450,8 +1454,9 @@ function createWebGPUVector3DTilePrimitiveCommands(primitive, frameState) {
     }
   }
   const resolveDepthSampleBindGroup = () => {
-    const currentSource =
-      context._packedTranslucentDepthView ?? context._globeDepthView;
+    const currentSource = picking
+      ? context._pickClassificationDepthView
+      : (context._packedTranslucentDepthView ?? context._globeDepthView);
     if (!currentSource) {
       return null;
     }

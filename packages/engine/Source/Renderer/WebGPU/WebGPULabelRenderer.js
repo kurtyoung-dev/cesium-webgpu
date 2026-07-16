@@ -1273,6 +1273,9 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
     owner: labelCollection,
     boundingVolume: glyphCollection._boundingVolume,
     modelMatrix: modelMatrix,
+    sortLayer: labelCollection._commandOrdering.sortLayer,
+    sortPriority: labelCollection._commandOrdering.sortPriority,
+    materialSortId: labelCollection._commandOrdering.materialSortId,
     cull: true,
     renderState: labelRS,
   });
@@ -1298,6 +1301,9 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
       owner: labelCollection,
       boundingVolume: glyphCollection._boundingVolume,
       modelMatrix: modelMatrix,
+      sortLayer: labelCollection._commandOrdering.sortLayer,
+      sortPriority: labelCollection._commandOrdering.sortPriority,
+      materialSortId: labelCollection._commandOrdering.materialSortId,
       cull: true,
       renderState: labelRS,
     });

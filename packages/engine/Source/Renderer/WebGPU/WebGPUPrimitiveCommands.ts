@@ -58,6 +58,10 @@ import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import {
+  createMaterialUploadState,
+  uploadMaterialUniformBuffer,
+} from "./WebGPUMaterialUploadState.js";
+import {
   getEffectsBindGroupLayout,
   getPlaceholderEffects,
   createEffectsBindGroup,
@@ -194,7 +198,14 @@ interface MaterialUniformsLike {
 interface MaterialUniformBufferLike {
   isDirty?: boolean;
   gpuData?: ArrayBufferView;
+  version?: number;
   clearDirty?(): void;
+}
+
+interface MaterialUploadStateLike {
+  source: object | undefined;
+  version: number | undefined;
+  initialized: boolean;
 }
 
 interface MaterialLike {
@@ -291,6 +302,7 @@ interface CacheLike {
   materialBindGroupLayout?: GPUBindGroupLayout;
   materialBindGroup?: GPUBindGroup;
   materialBuffer?: GPUBuffer;
+  materialUploadState?: MaterialUploadStateLike;
   _materialBufferSize?: number;
   effectsBGL?: GPUBindGroupLayout;
   textureBindGroup?: GPUBindGroup;
@@ -331,6 +343,7 @@ interface CacheLike {
   dfMaterialBindGroup?: GPUBindGroup;
   dfMaterialBindGroupLayout?: GPUBindGroupLayout;
   dfMaterialBuffer?: GPUBuffer;
+  dfMaterialUploadState?: MaterialUploadStateLike;
   _dfMaterialBufferSize?: number;
   dfTextureBindGroup?: GPUBindGroup;
   dfTextureBindGroupLayout?: GPUBindGroupLayout;
@@ -351,6 +364,7 @@ type PrimitiveDrawCommand = WebGPUDrawCommand & {
   _webgpuMatShaderType?: string;
   _webgpuMaterialBuffer?: GPUBuffer;
   _webgpuMaterialUB?: MaterialUniformBufferLike;
+  _webgpuMaterialUploadState?: MaterialUploadStateLike;
   _shadowCastLayout?: string;
   _webgpuPickColor?: unknown;
   _isPickCommand?: boolean;
@@ -389,7 +403,7 @@ declare global {
     viewportOrthographic?: CesiumMatrix4;
   }
   interface CesiumGraphicsContext {
-    scenePipelineFormat?: GPUTextureFormat;
+    readonly scenePipelineFormat?: GPUTextureFormat;
     _scenePipelineFormatGeneration?: number;
     _clusteredLightingActive?: boolean;
     _clusteredLightingBuffers?: unknown;
@@ -1234,10 +1248,8 @@ function writePreviousViewProjection(
  *   89    currentFrustumNear
  *   90-91 pad
  *
- * MUST be called after `Matrix4.setDepthRangeType("webgpu")` so the
- * viewportOrthographic we build here uses the WebGPU-correct z mapping
- * (computeOrthographicOffCenter's webgpu branch). The projection getter
- * likewise reflects the active depth-range type.
+ * The viewport projection receives the context-owned clip-space convention
+ * explicitly; no process-global Matrix4 mode is consulted.
  *
  * MISSING-FUNCTIONALITY NOTE (Principle 9): `uniformState.viewport` is only
  * ever set by the WebGL `RenderState.applyViewport` path (it calls
@@ -1300,8 +1312,7 @@ function writeRTEUniformsPolyline(
     1.0,
     scratchViewportTransform,
   );
-  // viewportOrthographic: window (pixel) coords -> clip. WebGPU z mapping
-  // when Matrix4._depthRangeType === "webgpu" (set by the caller).
+  // viewportOrthographic: window (pixel) coords -> WebGPU clip space.
   Matrix4.computeOrthographicOffCenter(
     0.0,
     width,
@@ -1310,6 +1321,7 @@ function writeRTEUniformsPolyline(
     0.0,
     1.0,
     scratchViewportOrtho,
+    context.clipSpaceConvention,
   );
 
   // Screen-space expansion matrices.
@@ -1474,6 +1486,7 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState: CesiumFrameState) {
   }
 
   const fxRes = createEffectsBindGroup(device, frameState, {
+    owner: context,
     shadowMap: receiveShadowMap,
     csm: csmBinding,
     // Primitives have identity modelMatrix, so world camera == plane-space
@@ -1572,7 +1585,6 @@ function updateWebGPUCommandUniforms(
   // the polyline material types don't fall through to the generic flat/lit
   // camera writers below (their UB layout differs).
   if (command._isPolylineAppearance === true) {
-    Matrix4.setDepthRangeType("webgpu");
     const rtePoly = computeRTEMatrices(
       context.uniformState,
       frameState.camera,
@@ -1594,12 +1606,14 @@ function updateWebGPUCommandUniforms(
     // there.
     const matUB = command._webgpuMaterialUB;
     const matBuffer = command._webgpuMaterialBuffer;
-    if (defined(matUB) && defined(matBuffer) && matUB.isDirty) {
-      const matData = matUB.gpuData;
-      if (defined(matData)) {
-        device.queue.writeBuffer(matBuffer, 0, matData);
-      }
-      matUB.clearDirty();
+    if (defined(matUB) && defined(matBuffer)) {
+      command._webgpuMaterialUploadState ??= createMaterialUploadState();
+      uploadMaterialUniformBuffer(
+        device,
+        matBuffer,
+        matUB,
+        command._webgpuMaterialUploadState,
+      );
     }
 
     // 376d — refresh the textured Image variant's texture bind group. The
@@ -1914,10 +1928,6 @@ function createPolylineAppearanceCommands(
     });
   }
 
-  // Depth-range type MUST be webgpu before the viewportOrthographic /
-  // projection getters are read so they produce z in [0,1] (see
-  // writeRTEUniformsPolyline + the depth-range note in csm_polylineCommon.wgsl).
-  Matrix4.setDepthRangeType("webgpu");
   const rte = computeRTEMatrices(
     context.uniformState,
     frameState.camera,
@@ -2405,16 +2415,22 @@ function createPolylineMaterialAppearanceCommands(
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       label: "Polyline Mat Material UB",
     });
+    cache.materialUploadState = createMaterialUploadState();
     cache._materialBufferSize = matByteSize;
     cache.materialBindGroup = null; // force rebind
   }
 
   if (defined(matGpuData)) {
-    if (!defined(matUB) || matUB.isDirty || !defined(cache.materialBindGroup)) {
+    cache.materialUploadState ??= createMaterialUploadState();
+    if (defined(matUB)) {
+      uploadMaterialUniformBuffer(
+        device,
+        cache.materialBuffer,
+        matUB,
+        cache.materialUploadState,
+      );
+    } else {
       device.queue.writeBuffer(cache.materialBuffer, 0, matGpuData);
-      if (defined(matUB)) {
-        matUB.clearDirty();
-      }
     }
   } else {
     device.queue.writeBuffer(
@@ -2444,9 +2460,6 @@ function createPolylineMaterialAppearanceCommands(
     );
   }
 
-  // Depth-range type MUST be webgpu before the viewportOrthographic /
-  // projection getters are read (see csm_polylineCommon.wgsl depth note).
-  Matrix4.setDepthRangeType("webgpu");
   const rte = computeRTEMatrices(
     context.uniformState,
     frameState.camera,
@@ -2647,6 +2660,7 @@ function createPolylineMaterialAppearanceCommands(
     // itself dirty.
     cmd._webgpuMaterialBuffer = cache.materialBuffer;
     cmd._webgpuMaterialUB = matUB;
+    cmd._webgpuMaterialUploadState = cache.materialUploadState;
     cmd._label = "polyline material appearance";
     cmd.vertexStride = vertexLayout.stride;
     validCommands.push(cmd);
@@ -3272,7 +3286,6 @@ function createWebGPUCommands(
   const validPickCommands = [];
 
   // Compute RTE matrices for initial uniform writes
-  Matrix4.setDepthRangeType("webgpu");
   const rte = computeRTEMatrices(
     context.uniformState,
     frameState.camera,
@@ -4890,11 +4903,22 @@ function createWebGPUMaterialCommands(
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
         label: "MatDepthFail Material UB",
       });
+      cache.dfMaterialUploadState = createMaterialUploadState();
       cache._dfMaterialBufferSize = dfMatByteSize;
       cache.dfMaterialBindGroup = null;
     }
     if (defined(dfMatGpuData)) {
-      device.queue.writeBuffer(cache.dfMaterialBuffer, 0, dfMatGpuData);
+      cache.dfMaterialUploadState ??= createMaterialUploadState();
+      if (defined(dfMatUB)) {
+        uploadMaterialUniformBuffer(
+          device,
+          cache.dfMaterialBuffer,
+          dfMatUB,
+          cache.dfMaterialUploadState,
+        );
+      } else {
+        device.queue.writeBuffer(cache.dfMaterialBuffer, 0, dfMatGpuData);
+      }
     } else {
       device.queue.writeBuffer(
         cache.dfMaterialBuffer,
@@ -4974,7 +4998,6 @@ function createWebGPUMaterialCommands(
     });
   }
 
-  Matrix4.setDepthRangeType("webgpu");
   const rte = computeRTEMatrices(
     context.uniformState,
     frameState.camera,
@@ -5001,17 +5024,23 @@ function createWebGPUMaterialCommands(
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       label: "Mat Material UB",
     });
+    cache.materialUploadState = createMaterialUploadState();
     cache._materialBufferSize = matByteSize;
     cache.materialBindGroup = null; // Force rebind
   }
 
   // Upload material data (only when dirty or first time)
   if (defined(matGpuData)) {
-    if (!defined(matUB) || matUB.isDirty || !defined(cache.materialBindGroup)) {
+    cache.materialUploadState ??= createMaterialUploadState();
+    if (defined(matUB)) {
+      uploadMaterialUniformBuffer(
+        device,
+        cache.materialBuffer,
+        matUB,
+        cache.materialUploadState,
+      );
+    } else {
       device.queue.writeBuffer(cache.materialBuffer, 0, matGpuData);
-      if (defined(matUB)) {
-        matUB.clearDirty();
-      }
     }
   } else {
     // No material uniform buffer — write placeholder zeros
@@ -5136,6 +5165,7 @@ function createWebGPUMaterialCommands(
     // (animated water, flowing dash, glowing polyline) froze after frame 1.
     cmd._webgpuMaterialBuffer = cache.materialBuffer;
     cmd._webgpuMaterialUB = matUB;
+    cmd._webgpuMaterialUploadState = cache.materialUploadState;
     // NEW-CSM-CAST-NO-DISPATCH-VIEWER (Batch 296) — shadow-cast metadata.
     // The material vertex buffer (buildMaterialVertexData) is interleaved
     // posHigh(3) + posLow(3) + ... so the first 24 bytes match the `rte24`
@@ -5224,6 +5254,7 @@ function createWebGPUMaterialCommands(
       dfCmd._webgpuShaderType = dfShaderInfo.type;
       dfCmd._webgpuMaterialBuffer = cache.dfMaterialBuffer;
       dfCmd._webgpuMaterialUB = depthFailMaterial._uniformBuffer;
+      dfCmd._webgpuMaterialUploadState = cache.dfMaterialUploadState;
       // 376d-style flag — when the df shader is textured, its TEXTURE occupies
       // the last bind-group slot (no effects group is consumed there), so the
       // effects-slot refresh must skip it (else it clobbers the texture).
@@ -5395,12 +5426,14 @@ function updateWebGPUMaterialCommandUniforms(
   // change \u2014 so every time-varying material froze after frame 1.
   const matUB = command._webgpuMaterialUB;
   const matBuffer = command._webgpuMaterialBuffer;
-  if (defined(matUB) && defined(matBuffer) && matUB.isDirty) {
-    const matData = matUB.gpuData;
-    if (defined(matData)) {
-      device.queue.writeBuffer(matBuffer, 0, matData);
-    }
-    matUB.clearDirty();
+  if (defined(matUB) && defined(matBuffer)) {
+    command._webgpuMaterialUploadState ??= createMaterialUploadState();
+    uploadMaterialUniformBuffer(
+      device,
+      matBuffer,
+      matUB,
+      command._webgpuMaterialUploadState,
+    );
   }
 
   // Slice 2d — swap the effects bind group for this frame so shadow-

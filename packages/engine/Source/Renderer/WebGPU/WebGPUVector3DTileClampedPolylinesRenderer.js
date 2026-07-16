@@ -1261,7 +1261,11 @@ function createWebGPUVector3DTileClampedPolylineCommands(
   // + 3D-Tile depth), else fall back to `_globeDepthView`.
   const packedTranslucentView = context._packedTranslucentDepthView ?? null;
   const globeDepthView = context._globeDepthView ?? null;
-  const depthSourceView = packedTranslucentView ?? globeDepthView;
+  const picking =
+    frameState.passes?.pick === true || frameState.passes?.pickVoxel === true;
+  const depthSourceView = picking
+    ? context._pickClassificationDepthView
+    : (packedTranslucentView ?? globeDepthView);
   if (!depthSourceView) {
     return { colorCommands: [], pickCommands: [], ignoreShowCommands: [] };
   }
@@ -1289,8 +1293,9 @@ function createWebGPUVector3DTileClampedPolylineCommands(
     cache.depthSampleViewRef = depthSourceView;
   }
   const resolveDepthSampleBindGroup = () => {
-    const currentSource =
-      context._packedTranslucentDepthView ?? context._globeDepthView;
+    const currentSource = picking
+      ? context._pickClassificationDepthView
+      : (context._packedTranslucentDepthView ?? context._globeDepthView);
     if (!currentSource) {
       return null;
     }

@@ -430,7 +430,11 @@ function createTexture2DUpdateFunction(uniformId) {
 
     // If we get to this point, the image should be a string URL or Resource.
     // Don't wait on the promise to resolve, just start loading the image and poll status from the update loop.
-    loadTexture2DImageForUniform(material, uniformId);
+    loadTexture2DImageForUniform(
+      material,
+      uniformId,
+      context.graphicsCapabilities.ktx2TranscodeTargets,
+    );
   };
 }
 
@@ -444,7 +448,11 @@ function createTexture2DUpdateFunction(uniformId) {
  *
  * @private
  */
-function loadTexture2DImageForUniform(material, uniformId) {
+function loadTexture2DImageForUniform(
+  material,
+  uniformId,
+  ktx2TranscodeTargets,
+) {
   const uniforms = material.uniforms;
   const uniformValue = uniforms[uniformId];
   if (uniformValue === DEFAULT_IMAGE_ID) {
@@ -464,21 +472,36 @@ function loadTexture2DImageForUniform(material, uniformId) {
   const oldResource = Resource.createIfNeeded(
     material._texturePaths[uniformId],
   );
+  const isKTX2 = ktx2Regex.test(resource.url);
+  const targetKey = isKTX2 ? ktx2TranscodeTargets?.cacheKey : undefined;
   const uniformHasChanged =
-    !defined(oldResource) || oldResource.url !== resource.url;
+    !defined(oldResource) ||
+    oldResource.url !== resource.url ||
+    (isKTX2 && material._textureTargetKeys[uniformId] !== targetKey);
   if (!uniformHasChanged) {
     return Promise.resolve();
   }
 
   let promise;
-  if (ktx2Regex.test(resource.url)) {
-    promise = loadKTX2(resource.url);
+  if (isKTX2) {
+    // Material construction has no graphics context. Defer KTX2 until the
+    // first update supplies the consuming context's immutable target set.
+    if (!defined(ktx2TranscodeTargets)) {
+      return Promise.resolve();
+    }
+    promise = loadKTX2(resource.url, ktx2TranscodeTargets);
   } else {
     promise = resource.fetchImage();
   }
 
   Promise.resolve(promise)
     .then(function (image) {
+      if (
+        material._texturePaths[uniformId] !== uniformValue ||
+        material._textureTargetKeys[uniformId] !== targetKey
+      ) {
+        return;
+      }
       material._loadedImages.push({
         id: uniformId,
         image: image,
@@ -494,6 +517,7 @@ function loadTexture2DImageForUniform(material, uniformId) {
     });
 
   material._texturePaths[uniformId] = uniformValue;
+  material._textureTargetKeys[uniformId] = targetKey;
   return promise;
 }
 
@@ -956,26 +980,9 @@ function initializeMaterial(options, result, MaterialConstructor) {
   createWGSLMethodDefinition(result);
   createUniforms(result);
 
-  // After createUniforms populates result.uniforms with default values,
-  // create a MaterialUniformBuffer backed by Float32Array and replace the
-  // plain object with a facade that provides backward-compatible property
-  // access while storing numeric values in a packed GPU-ready buffer.
-  //
-  // The _uniformBuffer field gives WebGPU renderers direct access to the
-  // packed data via `material._uniformBuffer.gpuData` for zero-copy upload.
-  // The facade ensures existing code (`material.uniforms.color.alpha < 1.0`)
-  // continues to work via getter/setter pass-through.
-  const uniformBuffer = new MaterialUniformBuffer(result.uniforms);
-  result._uniformBuffer = uniformBuffer;
-  const facade = uniformBuffer.createFacade();
-  // Replace result.uniforms with the facade backed by the GPU buffer.
-  // The _uniforms getter closures close over `material.uniforms[id]` and
-  // continue to work through the facade's getter/setter proxying.
-  result.uniforms = facade;
-  // The _uniforms getter functions close over `material.uniforms[uniformId]`.
-  // Since we replaced result.uniforms with a facade that has the same
-  // enumerable properties and getter/setter behavior, the closures continue
-  // to work — they read/write through the facade, which routes to the buffer.
+  // Keep Cesium's public mutable values authoritative. WebGPU consumers read
+  // the packed mirror, which detects visible component changes before upload.
+  result._uniformBuffer = new MaterialUniformBuffer(result.uniforms);
 
   createSubMaterials(result, MaterialConstructor);
 

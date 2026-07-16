@@ -1,4 +1,5 @@
 import Cartesian2 from "../../Source/Core/Cartesian2.js";
+import Cartesian4 from "../../Source/Core/Cartesian4.js";
 import Color from "../../Source/Core/Color.js";
 import MaterialUniformBuffer from "../../Source/Scene/MaterialUniformBuffer.js";
 
@@ -252,6 +253,68 @@ describe("Scene/MaterialUniformBuffer", function () {
     it("treats a 5+ char `channels` string as a texture", function () {
       const buf = new MaterialUniformBuffer({ channels: "rgbag" });
       expect(buf.layout.get("channels").offset).toBe(-1);
+    });
+  });
+
+  describe("public-value mirroring", function () {
+    it("detects in-place vector mutations without changing public identity", function () {
+      const color = new Color(1.0, 0.5, 0.25, 1.0);
+      const value = new Cartesian4(1.0, 2.0, 3.0, 4.0);
+      const uniforms = { color: color, value: value };
+      const buf = new MaterialUniformBuffer(uniforms);
+      const colorOffset = buf.layout.get("color").offset;
+      const valueOffset = buf.layout.get("value").offset;
+
+      buf.clearDirty();
+      const version = buf.version;
+      color.alpha = 0.25;
+      value.w = 8.0;
+
+      expect(buf.isDirty).toBe(true);
+      expect(buf.version).toBe(version + 1);
+      expect(buf._readValue("color")).toBe(color);
+      expect(buf._readValue("value")).toBe(value);
+      expect(buf.gpuData[colorOffset + 3]).toBeCloseTo(0.25);
+      expect(buf.gpuData[valueOffset + 3]).toBe(8.0);
+    });
+
+    it("detects in-place matrix mutation without allocating a replacement", function () {
+      const matrix = [1.0, 0.0, 0.0, 1.0];
+      const buf = new MaterialUniformBuffer({ transform: matrix });
+
+      expect(buf._readValue("transform")).toBe(matrix);
+      buf.clearDirty();
+      matrix[1] = 0.5;
+
+      expect(buf.isDirty).toBe(true);
+      expect(buf.gpuData[1]).toBeCloseTo(0.5);
+    });
+
+    it("supports consumer-local versions and zero-byte settled uploads", function () {
+      const uniforms = { repeat: new Cartesian2(1.0, 1.0) };
+      const buf = new MaterialUniformBuffer(uniforms);
+      const gpuData = buf.gpuData;
+      let uploadedVersion = -1;
+
+      function uploadIfChanged() {
+        const version = buf.version;
+        if (version === uploadedVersion) {
+          return 0;
+        }
+        uploadedVersion = version;
+        return buf.gpuData.byteLength;
+      }
+
+      expect(uploadIfChanged()).toBe(buf.gpuData.byteLength);
+      expect(uploadIfChanged()).toBe(0);
+      expect(buf.gpuData).toBe(gpuData);
+
+      uniforms.repeat.x = 2.0;
+      expect(uploadIfChanged()).toBe(buf.gpuData.byteLength);
+      expect(uploadIfChanged()).toBe(0);
+
+      uniforms.repeat.x = 2.0;
+      expect(uploadIfChanged()).toBe(0);
     });
   });
 });

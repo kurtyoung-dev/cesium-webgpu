@@ -9,7 +9,6 @@ import Event from "../Core/Event.js";
 import Intersect from "../Core/Intersect.js";
 import PixelFormat from "../Core/PixelFormat.js";
 import Rectangle from "../Core/Rectangle.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import PixelDatatype from "../Renderer/PixelDatatype.js";
 import RuntimeError from "../Core/RuntimeError.js";
 import Sampler from "../Renderer/Sampler.js";
@@ -345,6 +344,7 @@ class ClippingPolygonCollection {
       const requiredResolution = ClippingPolygonCollection.getTextureResolution(
         polygonsTexture,
         this.pixelsNeededForPolygonPositions,
+        context,
         textureResolutionScratch,
       );
 
@@ -384,6 +384,7 @@ class ClippingPolygonCollection {
       const requiredResolution = ClippingPolygonCollection.getTextureResolution(
         extentsTexture,
         this.pixelsNeededForExtents,
+        context,
         textureResolutionScratch,
       );
 
@@ -425,6 +426,7 @@ class ClippingPolygonCollection {
       const textureDimensions =
         ClippingPolygonCollection.getClippingDistanceTextureResolution(
           this,
+          context,
           textureResolutionScratch,
         );
       signedDistanceTexture = new Texture({
@@ -1089,6 +1091,7 @@ ClippingPolygonCollection.isSupported = function (scene) {
  *
  * @param {Texture} texture The texture to be packed.
  * @param {number} pixelsNeeded The number of pixels needed based on the current polygon count.
+ * @param {Context} context The owning rendering context.
  * @param {Cartesian2} result A Cartesian2 for the result.
  * @returns {Cartesian2} The required resolution.
  * @private
@@ -1096,6 +1099,7 @@ ClippingPolygonCollection.isSupported = function (scene) {
 ClippingPolygonCollection.getTextureResolution = function (
   texture,
   pixelsNeeded,
+  context,
   result,
 ) {
   if (defined(texture)) {
@@ -1104,7 +1108,7 @@ ClippingPolygonCollection.getTextureResolution = function (
     return result;
   }
 
-  const maxSize = ContextLimits.maximumTextureSize;
+  const maxSize = context.limits.maximumTextureSize;
   result.x = Math.min(pixelsNeeded, maxSize);
   result.y = Math.ceil(pixelsNeeded / result.x);
 
@@ -1120,12 +1124,14 @@ ClippingPolygonCollection.getTextureResolution = function (
  * allocated based on the current settings
  *
  * @param {ClippingPolygonCollection} clippingPolygonCollection The clipping polygon collection
+ * @param {Context} context The owning rendering context.
  * @param {Cartesian2} result A Cartesian2 for the result.
  * @returns {Cartesian2} The required resolution.
  * @private
  */
 ClippingPolygonCollection.getClippingDistanceTextureResolution = function (
   clippingPolygonCollection,
+  context,
   result,
 ) {
   const texture = clippingPolygonCollection.signedDistanceTexture;
@@ -1137,8 +1143,9 @@ ClippingPolygonCollection.getClippingDistanceTextureResolution = function (
 
   const quality = clippingPolygonCollection.quality;
   const baseSize = Math.max(128, Math.ceil(4096 * quality));
-  result.x = Math.min(ContextLimits.maximumTextureSize, baseSize);
-  result.y = Math.min(ContextLimits.maximumTextureSize, baseSize);
+  const maximumTextureSize = context.limits.maximumTextureSize;
+  result.x = Math.min(maximumTextureSize, baseSize);
+  result.y = Math.min(maximumTextureSize, baseSize);
 
   return result;
 };
@@ -1149,12 +1156,14 @@ ClippingPolygonCollection.getClippingDistanceTextureResolution = function (
  * allocated based on the current polygon count.
  *
  * @param {ClippingPolygonCollection} clippingPolygonCollection The clipping polygon collection
+ * @param {Context} context The owning rendering context.
  * @param {Cartesian2} result A Cartesian2 for the result.
  * @returns {Cartesian2} The required resolution.
  * @private
  */
 ClippingPolygonCollection.getClippingExtentsTextureResolution = function (
   clippingPolygonCollection,
+  context,
   result,
 ) {
   const texture = clippingPolygonCollection.extentsTexture;
@@ -1167,6 +1176,7 @@ ClippingPolygonCollection.getClippingExtentsTextureResolution = function (
   return ClippingPolygonCollection.getTextureResolution(
     texture,
     clippingPolygonCollection.pixelsNeededForExtents,
+    context,
     result,
   );
 };

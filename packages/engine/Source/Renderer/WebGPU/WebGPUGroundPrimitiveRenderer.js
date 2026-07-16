@@ -59,8 +59,7 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import {
   attachPickToColorCommand,
-  destroyPickIds,
-  ensurePickId,
+  findFirstGeometryInstancePickId,
 } from "./WebGPUPickCommandHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
@@ -2178,15 +2177,18 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   const modelMatrix = primitive.modelMatrix || Matrix4.IDENTITY;
   const color = primitive.appearance?.material?.uniforms?.color;
 
-  // C-R9 (Batch 31 / refactored Batch 59) — pick ID lifecycle delegated
-  // to {@link ensurePickId}. Mirrors WebGL's `Scene/GroundPrimitive.js`
-  // pickId lifecycle; cache slot is the primitive itself so existing
-  // `_pickId` / `_pickIdLastId` references keep working.
+  // Geometry-backed wrappers already own the canonical per-instance pick IDs
+  // on their inner Primitive. Reuse the first one (this renderer is explicitly
+  // first-geometry-only below) instead of allocating a second wrapper ID.
+  // The inner ID preserves GeometryInstance.id + pickPrimitive exactly as the
+  // WebGL path does; a wrapper-level ID loses the instance id and duplicates
+  // registry/resource ownership. Primitive.destroy owns its lifecycle.
   const passes = frameState.passes;
-  const allowAllocate = !!(passes && (passes.pick || passes.render));
-  const pickId = ensurePickId(primitive, context, primitive, {
-    allowAllocate,
-  });
+  const allowPicking = primitive?.allowPicking !== false;
+  const pickId =
+    allowPicking && !!(passes && (passes.pick || passes.render))
+      ? findFirstGeometryInstancePickId(primitive)
+      : undefined;
   const pickColor = pickId?.color;
 
   packUniforms(
@@ -2481,7 +2483,10 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // fallback. In steady state the classifier dispatches every frame.
   const packedTranslucentView = context._packedTranslucentDepthView ?? null;
   const globeDepthView = context._globeDepthView ?? null;
-  const depthSourceView = packedTranslucentView ?? globeDepthView;
+  const picking = passes?.pick === true || passes?.pickVoxel === true;
+  const depthSourceView = picking
+    ? context._pickClassificationDepthView
+    : (packedTranslucentView ?? globeDepthView);
   if (!depthSourceView) {
     return {
       colorPipeline: cache.depthSampleColorPipeline,
@@ -2530,8 +2535,9 @@ function createWebGPUGroundPrimitiveCommands(primitive, frameState) {
   // source view ref has changed since the last call. Spans-frustum-
   // boundaries primitives get re-resolved per frustum.
   const resolveDepthSampleBindGroup = () => {
-    const currentSource =
-      context._packedTranslucentDepthView ?? context._globeDepthView;
+    const currentSource = picking
+      ? context._pickClassificationDepthView
+      : (context._packedTranslucentDepthView ?? context._globeDepthView);
     if (!currentSource) {
       return null; // fall through to static reference
     }
@@ -2887,9 +2893,8 @@ function destroyWebGPUGroundPrimitiveResources(primitive) {
   // Batch 164 — release the morph-side 2D vertex buffer if present.
   cache.vertexGPUBuffer2D?.destroy();
   cache.indexGPUBuffer?.destroy();
-  // C-R9 (Batch 31 / refactored Batch 59) — release the pick ID slot
-  // back to the registry.
-  destroyPickIds(primitive);
+  // Pick IDs belong to the inner Cesium Primitive and are released by its
+  // destroy path. Do not destroy them here or register a duplicate owner.
   primitive._webgpuCache = undefined;
 }
 

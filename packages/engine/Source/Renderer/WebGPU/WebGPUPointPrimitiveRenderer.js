@@ -1228,6 +1228,9 @@ function _updateWebGPUPointPrimitivesInner(
     owner: collection,
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,
+    sortLayer: collection._commandOrdering.sortLayer,
+    sortPriority: collection._commandOrdering.sortPriority,
+    materialSortId: collection._commandOrdering.materialSortId,
     cull: true,
     // C-R1-COLLECTIONS-PER-ENCODER (Batch 39) — forward the matching
     // render-state (`_rsOpaque` vs `_rsTranslucent`) so
@@ -1288,6 +1291,9 @@ function _updateWebGPUPointPrimitivesInner(
         owner: collection,
         boundingVolume: collection._boundingVolume,
         modelMatrix: modelMatrix,
+        sortLayer: collection._commandOrdering.sortLayer,
+        sortPriority: collection._commandOrdering.sortPriority,
+        materialSortId: collection._commandOrdering.materialSortId,
         cull: true,
       });
     } else {
@@ -1340,7 +1346,10 @@ function _pushPickCommand(
   let pickEntry = cache.pickPipelines.get(pickDefines);
   if (!defined(pickEntry)) {
     const pickShader = getCollectionShaderSource("pointPick");
-    const format = context.scenePipelineFormat || "bgra8unorm";
+    // Object-ID readback is byte-exact and single-sample. In HDR the scene
+    // attachment is float, while the pick framebuffer intentionally stays
+    // rgba8unorm; both sides consume the context's one pick-format contract.
+    const format = context.pickPipelineFormat || "rgba8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
     const moduleCache = getPointShaderModuleCache(device);
     const pickModule = moduleCache.getOrCreate(
@@ -1423,6 +1432,9 @@ function _pushPickCommand(
     owner: collection,
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,
+    sortLayer: collection._commandOrdering.sortLayer,
+    sortPriority: collection._commandOrdering.sortPriority,
+    materialSortId: collection._commandOrdering.materialSortId,
     cull: true,
     // Pick pass is OPAQUE — use `_rsOpaque` so pick-FBO depth behavior
     // matches the color-opaque path. Falls back to `_rsTranslucent`

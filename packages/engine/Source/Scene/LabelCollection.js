@@ -18,6 +18,10 @@ import LabelStyle from "./LabelStyle.js";
 import SDFSettings from "./SDFSettings.js";
 import TextureAtlas from "../Renderer/TextureAtlas.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import {
+  createCommandOrdering,
+  syncCollectionCommandOrdering,
+} from "../Renderer/CommandOrdering.js";
 import VerticalOrigin from "./VerticalOrigin.js";
 import GraphemeSplitter from "grapheme-splitter";
 import { Check } from "@cesium/engine";
@@ -596,6 +600,8 @@ function destroyLabel(labelCollection, label) {
  * is used for rendering both opaque and translucent labels. However, if either all of the labels are completely opaque or all are completely translucent,
  * setting the technique to BlendOption.OPAQUE or BlendOption.TRANSLUCENT can improve performance by up to 2x.
  * @param {boolean} [options.show=true] Determines if the labels in the collection will be shown.
+ * @param {number} [options.renderPriority=0] Priority within the collection's render layer. Higher values render later.
+ * @param {number} [options.renderLayer=50] Render layer assigned to this collection's glyph and background commands.
  * @param {number} [options.coarseDepthTestDistance] The distance from the camera, beyond which, labels are depth-tested against an approximation of the globe ellipsoid rather than against the full globe depth buffer. If unspecified, the default value is determined relative to the value of {@link Ellipsoid.default}.
  * @param {number} [options.threePointDepthTestDistance] The distance from the camera, within which, lables with a {@link Label#heightReference} value of {@link HeightReference.CLAMP_TO_GROUND} or {@link HeightReference.CLAMP_TO_TERRAIN} are depth tested against three key points. This ensures that if any key point of the label is visible, the whole label will be visible. If unspecified, the default value is determined relative to the value of {@link Ellipsoid.default}.
  * @performance For best performance, prefer a few collections, each with many labels, to
@@ -636,6 +642,8 @@ class LabelCollection {
       }),
       coarseDepthTestDistance: options.coarseDepthTestDistance,
       threePointDepthTestDistance: options.threePointDepthTestDistance,
+      renderPriority: options.renderPriority,
+      renderLayer: options.renderLayer,
     });
     this._backgroundBillboardCollection = backgroundBillboardCollection;
     this._backgroundBillboardTexture = new BillboardTexture(
@@ -647,6 +655,8 @@ class LabelCollection {
       batchTable: this._batchTable,
       coarseDepthTestDistance: options.coarseDepthTestDistance,
       threePointDepthTestDistance: options.threePointDepthTestDistance,
+      renderPriority: options.renderPriority,
+      renderLayer: options.renderLayer,
     });
     this._glyphBillboardCollection._sdf = true;
 
@@ -665,6 +675,28 @@ class LabelCollection {
      * @default true
      */
     this.show = options.show ?? true;
+
+    /**
+     * The render priority for this collection. Higher values render on top
+     * (later in draw order). Maps to DrawCommand.sortPriority.
+     * @type {number}
+     * @default 0
+     */
+    this.renderPriority = options.renderPriority ?? 0;
+
+    /**
+     * The render layer order for this collection. Maps to
+     * DrawCommand.sortLayer.
+     * @type {number}
+     * @default 50
+     */
+    this.renderLayer = options.renderLayer ?? 50;
+
+    /** @private */
+    this._commandOrdering = createCommandOrdering(
+      this.renderLayer,
+      this.renderPriority,
+    );
 
     /**
      * The 4x4 transformation matrix that transforms each label in this collection from model to world coordinates.
@@ -905,6 +937,16 @@ class LabelCollection {
 
     const glyphBillboardCollection = this._glyphBillboardCollection;
     const backgroundBillboardCollection = this._backgroundBillboardCollection;
+
+    // Map the public LabelCollection API to one canonical command packet before
+    // selecting the label feature renderer or the WebGL billboard fallback.
+    const commandOrdering = syncCollectionCommandOrdering(this);
+    glyphBillboardCollection.renderLayer = commandOrdering.sortLayer;
+    glyphBillboardCollection.renderPriority = commandOrdering.sortPriority;
+    backgroundBillboardCollection.renderLayer = commandOrdering.sortLayer;
+    backgroundBillboardCollection.renderPriority = commandOrdering.sortPriority;
+    syncCollectionCommandOrdering(glyphBillboardCollection);
+    syncCollectionCommandOrdering(backgroundBillboardCollection);
 
     glyphBillboardCollection.modelMatrix = this.modelMatrix;
     glyphBillboardCollection.debugShowBoundingVolume =

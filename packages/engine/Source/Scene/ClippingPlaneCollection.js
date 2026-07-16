@@ -13,7 +13,6 @@ import Intersect from "../Core/Intersect.js";
 import Matrix4 from "../Core/Matrix4.js";
 import PixelFormat from "../Core/PixelFormat.js";
 import Plane from "../Core/Plane.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
 import PixelDatatype from "../Renderer/PixelDatatype.js";
 import Sampler from "../Renderer/Sampler.js";
 import Texture from "../Renderer/Texture.js";
@@ -320,6 +319,7 @@ class ClippingPlaneCollection {
     if (!defined(clippingPlanesTexture)) {
       const requiredResolution = computeTextureResolution(
         pixelsNeeded,
+        context.limits.maximumTextureSize,
         textureResolutionScratch,
       );
       // Allocate twice as much space as needed to avoid frequent texture reallocation.
@@ -673,8 +673,7 @@ function packPlanesAsFloats(clippingPlaneCollection, startIndex, endIndex) {
   }
 }
 
-function computeTextureResolution(pixelsNeeded, result) {
-  const maxSize = ContextLimits.maximumTextureSize;
+function computeTextureResolution(pixelsNeeded, maxSize, result) {
   result.x = Math.min(pixelsNeeded, maxSize);
   result.y = Math.ceil(pixelsNeeded / result.x);
   return result;
@@ -755,7 +754,11 @@ ClippingPlaneCollection.getTextureResolution = function (
   const pixelsNeeded = ClippingPlaneCollection.useFloatTexture(context)
     ? clippingPlaneCollection.length
     : clippingPlaneCollection.length * 2;
-  const requiredResolution = computeTextureResolution(pixelsNeeded, result);
+  const requiredResolution = computeTextureResolution(
+    pixelsNeeded,
+    context.limits.maximumTextureSize,
+    result,
+  );
 
   // Allocate twice as much space as needed to avoid frequent texture reallocation.
   requiredResolution.y *= 2;

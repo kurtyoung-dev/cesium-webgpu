@@ -1341,6 +1341,9 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
     owner: collection,
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,
+    sortLayer: collection._commandOrdering.sortLayer,
+    sortPriority: collection._commandOrdering.sortPriority,
+    materialSortId: collection._commandOrdering.materialSortId,
     cull: true,
     renderState: colorRenderState,
   });
@@ -1367,6 +1370,9 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
       owner: collection,
       boundingVolume: collection._boundingVolume,
       modelMatrix: modelMatrix,
+      sortLayer: collection._commandOrdering.sortLayer,
+      sortPriority: collection._commandOrdering.sortPriority,
+      materialSortId: collection._commandOrdering.materialSortId,
       cull: true,
       renderState: colorRenderState,
     });
@@ -1507,6 +1513,9 @@ function _pushBillboardPickCommand(
     owner: collection,
     boundingVolume: collection._boundingVolume,
     modelMatrix: modelMatrix,
+    sortLayer: collection._commandOrdering.sortLayer,
+    sortPriority: collection._commandOrdering.sortPriority,
+    materialSortId: collection._commandOrdering.materialSortId,
     cull: true,
     renderState: collection._rsOpaque ?? collection._rsTranslucent,
     // FORK-34 (Batch 207) — mark as a dedicated pick command so the pick

@@ -19,7 +19,11 @@ import Plane from "../Core/Plane.js";
 import RuntimeError from "../Core/RuntimeError.js";
 import Buffer from "../Renderer/Buffer.js";
 import BufferUsage from "../Renderer/BufferUsage.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
+import {
+  applyCommandOrdering,
+  createCommandOrdering,
+  syncCollectionCommandOrdering,
+} from "../Renderer/CommandOrdering.js";
 import DrawCommand from "../Renderer/DrawCommand.js";
 import Pass from "../Renderer/Pass.js";
 import RenderState from "../Renderer/RenderState.js";
@@ -80,6 +84,8 @@ const attributeLocations = {
  * @param {Matrix4} [options.modelMatrix=Matrix4.IDENTITY] The 4x4 transformation matrix that transforms each polyline from model to world coordinates.
  * @param {boolean} [options.debugShowBoundingVolume=false] For debugging only. Determines if this primitive's commands' bounding spheres are shown.
  * @param {boolean} [options.show=true] Determines if the polylines in the collection will be shown.
+ * @param {number} [options.renderPriority=0] Priority within the collection's render layer. Higher values render later.
+ * @param {number} [options.renderLayer=50] Render layer assigned to this collection's draw commands.
  *
  * @performance For best performance, prefer a few collections, each with many polylines, to
  * many collections with only a few polylines each.  Organize collections so that polylines
@@ -139,6 +145,12 @@ class PolylineCollection {
      * @default 50
      */
     this.renderLayer = options.renderLayer ?? 50;
+
+    /** @private */
+    this._commandOrdering = createCommandOrdering(
+      this.renderLayer,
+      this.renderPriority,
+    );
 
     /**
      * The 4x4 transformation matrix that transforms each polyline in this collection from model to world coordinates.
@@ -389,6 +401,10 @@ class PolylineCollection {
 
     updateMode(this, frameState);
 
+    // Snapshot public collection fields before choosing a backend. Both the
+    // WebGL fallback and WebGPU feature renderer consume this same packet.
+    syncCollectionCommandOrdering(this);
+
     const context = frameState.context;
 
     // Backend-specific rendering path — delegate to feature renderer if available
@@ -405,7 +421,7 @@ class PolylineCollection {
     let properties = this._propertiesChanged;
 
     if (this._createBatchTable) {
-      if (ContextLimits.maximumVertexTextureImageUnits === 0) {
+      if (context.limits.maximumVertexTextureImageUnits === 0) {
         throw new RuntimeError(
           "Vertex texture fetch support is required to render polylines. The maximum number of vertex texture image units must be greater than zero.",
         );
@@ -794,9 +810,7 @@ function createCommandLists(
             count = 0;
             cloneBoundingSphere = true;
 
-            // SORT-1: Wire collection renderPriority/renderLayer to DrawCommand sort properties
-            command.sortPriority = polylineCollection.renderPriority;
-            command.sortLayer = polylineCollection.renderLayer;
+            applyCommandOrdering(command, polylineCollection._commandOrdering);
 
             commandList.push(command);
           }
@@ -890,9 +904,7 @@ function createCommandLists(
 
         cloneBoundingSphere = true;
 
-        // SORT-1: Wire collection renderPriority/renderLayer to DrawCommand sort properties
-        command.sortPriority = polylineCollection.renderPriority;
-        command.sortLayer = polylineCollection.renderLayer;
+        applyCommandOrdering(command, polylineCollection._commandOrdering);
 
         commandList.push(command);
       }

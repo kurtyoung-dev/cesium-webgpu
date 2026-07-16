@@ -315,9 +315,9 @@ class Material {
     this._uniforms = undefined;
 
     /**
-     * Packed Float32Array-backed uniform storage. Created during
-     * initialization from the fabric template. WebGPU renderers use
-     * `material._uniformBuffer.gpuData` for zero-copy upload.
+     * Packed Float32Array-backed mirror of the public uniform values. WebGPU
+     * renderers use `material._uniformBuffer.gpuData` for zero-copy upload
+     * without replacing Cesium's stable mutable value objects.
      *
      * @type {MaterialUniformBuffer|undefined}
      * @private
@@ -342,6 +342,7 @@ class Material {
     this._count = undefined;
 
     this._texturePaths = {};
+    this._textureTargetKeys = {};
     this._loadedImages = [];
     this._loadedCubeMaps = [];
 

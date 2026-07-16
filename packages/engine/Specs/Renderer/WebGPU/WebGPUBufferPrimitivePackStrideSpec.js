@@ -1,7 +1,17 @@
 import Cartesian3 from "../../../Source/Core/Cartesian3.js";
+import Cartographic from "../../../Source/Core/Cartographic.js";
+import ComponentDatatype from "../../../Source/Core/ComponentDatatype.js";
+import GeographicProjection from "../../../Source/Core/GeographicProjection.js";
+import Matrix4 from "../../../Source/Core/Matrix4.js";
 import BufferPointCollection from "../../../Source/Scene/BufferPointCollection.js";
 import BufferPolylineCollection from "../../../Source/Scene/BufferPolylineCollection.js";
 import BufferPolygonCollection from "../../../Source/Scene/BufferPolygonCollection.js";
+import SceneMode from "../../../Source/Scene/SceneMode.js";
+import {
+  bufferPositionNormalizeDivisor,
+  normalizeBufferPositionInPlace,
+  projectBufferPositionForMode,
+} from "../../../Source/Renderer/WebGPU/WebGPUBufferPrimitiveRenderer.js";
 import {
   updateWebGPUBufferPointCollection,
   destroyWebGPUBufferPointCollection,
@@ -184,6 +194,12 @@ function makeIdentityUniformState() {
 function createStubFrameState(context) {
   return {
     context,
+    // A real Scene frameState always declares its mode. This stride-only stub
+    // predates the shared 2D/CV projection path; leaving mode undefined now
+    // (correctly) selects that non-3D path, but without the mapProjection a real
+    // frameState would also provide. Keep this fixture explicitly on the
+    // byte-identical 3D pack path that the stride assertions are exercising.
+    mode: SceneMode.SCENE3D,
     pixelRatio: 1.0,
     useLogDepth: false,
     passes: { render: true, pick: false },
@@ -412,5 +428,79 @@ describe("Renderer/WebGPU/WebGPUBufferPrimitive pack-vs-arrayStride lockstep", f
     expect(message).toContain("@location(3)");
     expect(message).toContain("12"); // CPU bytes/element
     expect(message).toContain("16"); // GPU arrayStride
+  });
+
+  it("keeps the shared BufferPrimitive projection contract explicit in 3D, Columbus View, and 2D", function () {
+    const projection = new GeographicProjection();
+    const cartographic = Cartographic.fromDegrees(-75.0, 40.0, 120.0);
+    const position = projection.ellipsoid.cartographicToCartesian(cartographic);
+    const translation = new Cartesian3(25.0, -10.0, 5.0);
+    const modelMatrix = Matrix4.fromTranslation(translation);
+    const transformedPosition = Matrix4.multiplyByPoint(
+      modelMatrix,
+      position,
+      new Cartesian3(),
+    );
+    const transformedCartographic =
+      projection.ellipsoid.cartesianToCartographic(transformedPosition);
+    const projected = projection.project(transformedCartographic);
+
+    const frameState = {
+      mode: SceneMode.SCENE3D,
+      mapProjection: projection,
+      morphTime: 1.0,
+    };
+    const result = new Cartesian3();
+
+    // In 3D the renderer deliberately keeps collection-local coordinates;
+    // the camera/model matrix path applies modelMatrix later.
+    expect(
+      projectBufferPositionForMode(position, frameState, modelMatrix, result),
+    ).toEqual(position);
+
+    frameState.mode = SceneMode.COLUMBUS_VIEW;
+    expect(
+      projectBufferPositionForMode(position, frameState, modelMatrix, result),
+    ).toEqualEpsilon(
+      new Cartesian3(projected.z, projected.x, projected.y),
+      1.0e-7,
+    );
+
+    frameState.mode = SceneMode.SCENE2D;
+    expect(
+      projectBufferPositionForMode(position, frameState, modelMatrix, result),
+    ).toEqualEpsilon(new Cartesian3(0.0, projected.x, projected.y), 1.0e-7);
+  });
+
+  it("preserves normalized integer position divisors and signed-endpoint clamping", function () {
+    const collection = {
+      _positionNormalized: true,
+      _positionDatatype: ComponentDatatype.BYTE,
+    };
+    const cases = [
+      [ComponentDatatype.BYTE, 127.0],
+      [ComponentDatatype.UNSIGNED_BYTE, 255.0],
+      [ComponentDatatype.SHORT, 32767.0],
+      [ComponentDatatype.UNSIGNED_SHORT, 65535.0],
+      [ComponentDatatype.INT, 2147483647.0],
+      [ComponentDatatype.UNSIGNED_INT, 4294967295.0],
+    ];
+
+    for (const [datatype, divisor] of cases) {
+      collection._positionDatatype = datatype;
+      expect(bufferPositionNormalizeDivisor(collection)).toBe(divisor);
+    }
+
+    collection._positionDatatype = ComponentDatatype.FLOAT;
+    expect(bufferPositionNormalizeDivisor(collection)).toBe(0);
+    collection._positionNormalized = false;
+    collection._positionDatatype = ComponentDatatype.BYTE;
+    expect(bufferPositionNormalizeDivisor(collection)).toBe(0);
+
+    const signedBytePosition = new Cartesian3(-128.0, 64.0, 127.0);
+    normalizeBufferPositionInPlace(signedBytePosition, 127.0);
+    expect(signedBytePosition.x).toBe(-1.0);
+    expect(signedBytePosition.y).toBeCloseTo(64.0 / 127.0, 14);
+    expect(signedBytePosition.z).toBe(1.0);
   });
 });

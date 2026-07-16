@@ -15,7 +15,11 @@ import CesiumMath from "../Core/Math.js";
 import Matrix4 from "../Core/Matrix4.js";
 import Buffer from "../Renderer/Buffer.js";
 import BufferUsage from "../Renderer/BufferUsage.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
+import {
+  applyCommandOrdering,
+  createCommandOrdering,
+  syncCollectionCommandOrdering,
+} from "../Renderer/CommandOrdering.js";
 import DrawCommand from "../Renderer/DrawCommand.js";
 import Pass from "../Renderer/Pass.js";
 import RenderState from "../Renderer/RenderState.js";
@@ -100,6 +104,8 @@ const attributeLocations = {
  * is used for rendering both opaque and translucent billboards. However, if either all of the billboards are completely opaque or all are completely translucent,
  * setting the technique to BlendOption.OPAQUE or BlendOption.TRANSLUCENT can improve performance by up to 2x.
  * @param {boolean} [options.show=true] Determines if the billboards in the collection will be shown.
+ * @param {number} [options.renderPriority=0] Priority within the collection's render layer. Higher values render later.
+ * @param {number} [options.renderLayer=50] Render layer assigned to this collection's draw commands.
  * @param {number} [options.coarseDepthTestDistance] The distance from the camera, beyond which, billboards are depth-tested against an approximation of the globe ellipsoid rather than against the full globe depth buffer. If unspecified, the default value is determined relative to the value of {@link Ellipsoid.default}.
  * @param {number} [options.threePointDepthTestDistance] The distance from the camera, within which, billboards with a {@link Billboard#heightReference} value of {@link HeightReference.CLAMP_TO_GROUND} or {@link HeightReference.CLAMP_TO_TERRAIN} are depth tested against three key points. This ensures that if any key point of the billboard is visible, the whole billboard will be visible. If unspecified, the default value is determined relative to the value of {@link Ellipsoid.default}.
  * @performance For best performance, prefer a few collections, each with many billboards, to
@@ -221,6 +227,12 @@ class BillboardCollection {
      * @default 50
      */
     this.renderLayer = options.renderLayer ?? 50;
+
+    /** @private */
+    this._commandOrdering = createCommandOrdering(
+      this.renderLayer,
+      this.renderPriority,
+    );
 
     /**
      * The 4x4 transformation matrix that transforms each billboard in this collection from model to world coordinates.
@@ -728,6 +740,10 @@ class BillboardCollection {
     }
     // ─── End shared scene logic ───
 
+    // Snapshot public collection fields before choosing a backend. Both the
+    // WebGL fallback and WebGPU feature renderer consume this same packet.
+    syncCollectionCommandOrdering(this);
+
     const context = frameState.context;
 
     // Backend-specific rendering path — delegate to feature renderer if available
@@ -752,7 +768,7 @@ class BillboardCollection {
 
     if (
       !context.instancedArrays ||
-      !(ContextLimits.maximumVertexTextureImageUnits > 0)
+      !(context.limits.maximumVertexTextureImageUnits > 0)
     ) {
       throw new DeveloperError(
         "Beginning in CesiumJS 1.140, billboards and labels require device support for WebGL 2, " +
@@ -1207,9 +1223,7 @@ class BillboardCollection {
         command.count = 6;
         command.instanceCount = billboardsLength;
 
-        // SORT-1: Wire collection renderPriority/renderLayer to DrawCommand sort properties
-        command.sortPriority = this.renderPriority;
-        command.sortLayer = this.renderLayer;
+        applyCommandOrdering(command, this._commandOrdering);
 
         commandList.push(command);
       }

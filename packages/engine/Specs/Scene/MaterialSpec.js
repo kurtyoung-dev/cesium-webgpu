@@ -1,5 +1,6 @@
 import {
   Cartesian3,
+  Cartesian4,
   Color,
   defined,
   Ellipsoid,
@@ -257,6 +258,88 @@ describe(
       material.materials.first.uniforms.repeat.x = 2.0;
 
       renderMaterial(material);
+    });
+
+    it("preserves stable public Color values and clone-into-result semantics", function () {
+      const material = Material.fromType(Material.ColorType);
+      const color = material.uniforms.color;
+
+      material._uniformBuffer.clearDirty();
+      Color.clone(Color.WHITE, color);
+
+      expect(material.uniforms.color).toBe(color);
+      expect(material.uniforms.color).toEqual(Color.WHITE);
+      expect(material.isTranslucent()).toBe(false);
+      expect(material._uniformBuffer.isDirty).toBe(true);
+      expect(material._uniformBuffer.gpuData[3]).toBe(1.0);
+
+      color.alpha = 0.25;
+      expect(material.isTranslucent()).toBe(true);
+      expect(material._uniformBuffer.gpuData[3]).toBeCloseTo(0.25);
+    });
+
+    it("preserves Cartesian4 and matrix identities while mirroring mutations", function () {
+      const material = new Material({
+        fabric: {
+          uniforms: {
+            value: new Cartesian4(1.0, 2.0, 3.0, 4.0),
+            transform: [1.0, 0.0, 0.0, 1.0],
+          },
+          components: {
+            diffuse: "value.rgb * transform[0][0]",
+            alpha: "value.a",
+          },
+        },
+      });
+      const value = material.uniforms.value;
+      const transform = material.uniforms.transform;
+
+      expect(value).toBeInstanceOf(Cartesian4);
+      expect(material.uniforms.value).toBe(value);
+      expect(material.uniforms.transform).toBe(transform);
+
+      material._uniformBuffer.clearDirty();
+      value.w = 0.75;
+      transform[0] = 0.5;
+
+      expect(material._uniformBuffer.isDirty).toBe(true);
+      expect(material._uniformBuffer._readValue("value")).toBe(value);
+      expect(material._uniformBuffer._readValue("transform")).toBe(transform);
+    });
+
+    it("preserves replacement values and submaterial mutation", function () {
+      const material = new Material({
+        fabric: {
+          materials: {
+            first: {
+              type: Material.ColorType,
+            },
+          },
+          components: {
+            diffuse: "first.diffuse",
+            alpha: "first.alpha",
+          },
+        },
+      });
+      const submaterial = material.materials.first;
+      const replacement = new Color(0.25, 0.5, 0.75, 0.125);
+
+      submaterial._uniformBuffer.clearDirty();
+      submaterial.uniforms.color = replacement;
+
+      expect(submaterial.uniforms.color).toBe(replacement);
+      expect(submaterial.isTranslucent()).toBe(true);
+      expect(submaterial._uniformBuffer.isDirty).toBe(true);
+      expect(submaterial._uniformBuffer.gpuData[3]).toBeCloseTo(0.125);
+    });
+
+    it("remains pickable after an in-place material mutation", function () {
+      const material = Material.fromType(Material.ColorType);
+      material.uniforms.color.alpha = 0.25;
+      polygon.appearance.material = material;
+      scene.primitives.add(polygon);
+
+      expect(scene).toPickPrimitive(polygon);
     });
 
     it("creates a material inside a material inside a material", function () {

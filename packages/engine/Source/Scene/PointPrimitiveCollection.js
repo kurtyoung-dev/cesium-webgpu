@@ -11,7 +11,11 @@ import Matrix4 from "../Core/Matrix4.js";
 import PrimitiveType from "../Core/PrimitiveType.js";
 import WebGLConstants from "../Core/WebGLConstants.js";
 import BufferUsage from "../Renderer/BufferUsage.js";
-import ContextLimits from "../Renderer/ContextLimits.js";
+import {
+  applyCommandOrdering,
+  createCommandOrdering,
+  syncCollectionCommandOrdering,
+} from "../Renderer/CommandOrdering.js";
 import DrawCommand from "../Renderer/DrawCommand.js";
 import Pass from "../Renderer/Pass.js";
 import RenderState from "../Renderer/RenderState.js";
@@ -67,6 +71,8 @@ const attributeLocations = {
  * is used for rendering both opaque and translucent points. However, if either all of the points are completely opaque or all are completely translucent,
  * setting the technique to BlendOption.OPAQUE or BlendOption.TRANSLUCENT can improve performance by up to 2x.
  * @param {boolean} [options.show=true] Determines if the primitives in the collection will be shown.
+ * @param {number} [options.renderPriority=0] Priority within the collection's render layer. Higher values render later.
+ * @param {number} [options.renderLayer=50] Render layer assigned to this collection's draw commands.
  *
  * @performance For best performance, prefer a few collections, each with many points, to
  * many collections with only a few points each.  Organize collections so that points
@@ -153,6 +159,12 @@ class PointPrimitiveCollection {
      * @default 50
      */
     this.renderLayer = options.renderLayer ?? 50;
+
+    /** @private */
+    this._commandOrdering = createCommandOrdering(
+      this.renderLayer,
+      this.renderPriority,
+    );
 
     /**
      * The 4x4 transformation matrix that transforms each point in this collection from model to world coordinates.
@@ -476,11 +488,14 @@ class PointPrimitiveCollection {
       return;
     }
 
-    this._maxTotalPointSize = ContextLimits.maximumAliasedPointSize;
+    const context = frameState.context;
+    this._maxTotalPointSize = context.limits.maximumAliasedPointSize;
 
     updateMode(this, frameState);
 
-    const context = frameState.context;
+    // Snapshot public collection fields before choosing a backend. Both the
+    // WebGL fallback and WebGPU feature renderer consume this same packet.
+    syncCollectionCommandOrdering(this);
 
     // ---- Backend-specific rendering via Feature Renderer ----
     const fr = context.getFeatureRenderer(
@@ -826,9 +841,7 @@ class PointPrimitiveCollection {
         command.debugShowBoundingVolume = this.debugShowBoundingVolume;
         command.pickId = "v_pickColor";
 
-        // SORT-1: Wire collection renderPriority/renderLayer to DrawCommand sort properties
-        command.sortPriority = this.renderPriority;
-        command.sortLayer = this.renderLayer;
+        applyCommandOrdering(command, this._commandOrdering);
 
         commandList.push(command);
       }

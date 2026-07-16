@@ -116,16 +116,16 @@ class WebGPUCollectionCameraUB {
    * @param {boolean} [opts.repackPerSlice=false] - PHASE 3 SLICE 2
    *   (NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE). When TRUE the resolver
    *   RE-INVOKES `pack(scratch)` at DRAW time — after the frustum loop's
-   *   `_updateFrustumUniforms(...)` has (a) applied
-   *   `Matrix4.setDepthRangeType("webgpu")` and (b) recomputed
-   *   `uniformState.projection` for THIS slice's near/far — so each slice's
+   *   `_updateFrustumUniforms(...)` has recomputed
+   *   `uniformState.projection` for THIS slice's near/far using the owning
+   *   context's WebGPU clip-space convention — so each slice's
    *   `mvpRelativeToEye` is baked against the LIVE slice projection instead
    *   of the stale update-time snapshot.
    *
    *   WHY this is the 2D/CV fix. A collection FR packs its MVP at `update()`
    *   from `uniformState.projection`, which at that point is still the
-   *   WebGL-clip-z `[-1,1]` projection (the loop flips depth-range type +
-   *   recomputes only DURING render, after FR update). In SCENE2D the
+   *   previous full-frustum projection (the loop recomputes the context-owned
+   *   projection only DURING render, after FR update). In SCENE2D a
    *   orthographic depth-range mismatch is catastrophic: a point at the map
    *   surface lands at NDC z ≈ 7.3 (WebGL range) instead of ≈ 0.026 (WebGPU
    *   range) and is clipped out — the all-zero 2D state. In COLUMBUS_VIEW the
