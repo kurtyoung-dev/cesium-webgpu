@@ -5226,6 +5226,52 @@ Most combinations are coincidentally disambiguated by the existing labels (quant
 
 ---
 
+## NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — pick mini-frame depth is fleet-wide hyperbolic; the P0-1 pick depth-plane gate is blocked on converting ALL pick producers to log frag_depth (2026-07-16)
+
+Surfaced by `NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT` (Campaign 9, audit P0-1). The scene-side half
+of that contract landed (see `WEBGPU_DEBUGGING_LOG.md` same date): `WebGPUDepthPlane.update` now
+encodes its scene log depth against the full-frustum `uniformState._logDepthEncodeNearFar` stash like
+every other scene producer, and the three-altitude horizon oracle's scene assertions went from
+all-fail (Sol run) to pass at 500 km/5,000 km with only the sprite-above-limb residual at 20 km.
+The pick-side half — re-enabling `PICK_DEPTH_PLANE_ENABLED` in `WebGPUSceneRendererPickPass.ts` — is
+**blocked on a fleet-scale prerequisite** proven by two instrumented oracle runs on 2026-07-16:
+
+- **The pick FBO contract today is uniformly hyperbolic.** Every native pick producer — globe
+  `fragmentPickMain` (deliberate-design note at `GlobeTerrain.wgsl` ~L3048), all three Model pick
+  entries, Billboard/Polyline/PointPrimitive pick shaders, all six `PrimitivePick*.wgsl` — writes
+  standard rasterizer z, baked at UPDATE time against the camera's own frustum (native pick commands
+  bind update-time camera UBs; the pick loop's per-slice `_updateFrustumUniforms` remap only reaches
+  draw-time uniformState consumers such as the depth plane). Run 1 (log-variant plane pick pipeline):
+  the plane's log frag_depth (~0.4-0.8) over-occluded EVERY hyperbolic pick (~0.999+) over the whole
+  globe disk — even the visible front control returned null at 20/500/5,000 km. Run-1 variant with a
+  per-slice hyperbolic plane pick pipeline mismatched the update-time bake the same way.
+- **Hyperbolic depth cannot pass the oracle even when made consistent.** With every producer on the
+  shared update-time camera projection (near ≈ 1 m, far ≈ 5e8 m), the plane-vs-marker separation at
+  5,000 km is Δz ≈ n·Δ(1/d) ≈ 1.7e-8 — below one float32 ulp at z≈1.0 (6e-8) — and `less-equal`
+  ties pass, so the beyond-horizon marker stays pickable. Only log-encoded pick depth has the
+  far-field resolution the 20/500/5,000 km oracle demands (WebGL parity: upstream's LOG_DEPTH
+  wrapper applies to every derived pick shader, so the WebGL pick FBO is log).
+- **Therefore:** converting only the oracle participants (plane + points) to log breaks every other
+  cohort at defaults (models/billboards/polylines/primitives over the globe would be over-occluded
+  by the log plane, and log points would pick through hyperbolic models); keeping hyperbolic can
+  never reject the far marker. The only correct end state is the WHOLE pick fleet writing log
+  frag_depth with one encode (`_logDepthEncodeNearFar`), mirroring the scene contract: ~15+ pick
+  WGSL entries (collections ×3, primitives ×6, model ×3, globe ×1, buffer primitives, vector-tile /
+  voxel / splat / point-cloud / ellipsoid / classification renderers) plus per-renderer verification
+  that the encode scalars reach each pick bind group, across HDR/MSAA/modes/resize/recovery.
+
+Evidence: `Tools/visual-regression/output/performance/campaign9-c9-02b-depth-plane-horizon-oracle-2026-07-16.json`
+(final-tree run: scene draws green, pick assertions honestly failing with the gate off) plus the six
+read `campaign9-c9-02b-horizon-{near,middle,far}-plane-{on,off}.png` captures. Regressions green on
+the landed scene half: `probe-point-pick-webgpu` PASS, `probe-collections-far-camera` PASS (includes
+the below-ground occlusion negative control), `probe-logdepth-globe` clean. Also noted: the 20 km
+"leak" (538 px) and 500 km residual (70 px) in the oracle are the screen-space sprite quad extending
+ABOVE the horizon line where neither plane nor globe covers pixels — identical WebGL geometry; a
+future oracle revision should count only below-limb marker pixels. `C9-02B` acceptance and the P0-1
+gate flip stay paused behind this item.
+
+---
+
 ## Campaign-7 research register (2026-07-06)
 
 The 10 concurrent read-only research lanes that fed Campaign 7's later briefs are consolidated in **[`RESEARCH_REGISTER_2026-07-06.md`](RESEARCH_REGISTER_2026-07-06.md)** — one section per lane (license verdict, key findings, recommendation, source links, cross-links to the rows above). Lanes: R-STBN, R-LTC, R-WIND-DATA, R-SSGI, R-FFT-OCEAN, R-FSR2, R-VEGETATION, R-IMPOSTOR, R-LAKE-SRTMSWBD, R-MARS-ATMO. Full per-lane reports live in the session scratchpad (`RESEARCH_*.md`, paths in the register). The rows they inform: C6-CLOUD-STBN-TAAU / C6-TPDF-DITHER-FINAL (R-STBN), C6-LTC-AREA-LIGHTS (R-LTC), C6-FLOWFIELD-WIND (R-WIND-DATA), C6-SSGI-DIFFUSE (R-SSGI), C6-FFT-OCEAN + C6-PLANAR-REFLECT-REFRACT (R-FFT-OCEAN), C6-FSR2-UPSCALE (R-FSR2), NEW-VEGETATION-SYSTEM (R-VEGETATION), C7-CLOUD-IMPOSTOR-LOD (R-IMPOSTOR), C7-LAKE-WATER-MASK v2 (R-LAKE-SRTMSWBD), FUT-MULTI-BODY-ATMOSPHERE (R-MARS-ATMO).

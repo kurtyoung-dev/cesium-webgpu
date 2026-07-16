@@ -703,6 +703,40 @@ try {
       };
     }, altitude);
     results.push(result);
+
+    // Read-the-PNG evidence (CLAUDE.md Principle 8): capture the composited
+    // canvas for this altitude with the plane active (normal path) and with
+    // the debugSkipDepthPlane diagnostic, so the scene-side occlusion state
+    // is visually inspectable alongside the GPU-readback assertions.
+    const screenshotDirectory = resolve(toolDirectory, "output", "performance");
+    await mkdir(screenshotDirectory, { recursive: true });
+    const renderSettled = async (diagnosticSkip) => {
+      await page.evaluate(async (skip) => {
+        const { viewer, scene } = globalThis.__depthPlaneHorizon;
+        scene.debugSkipDepthPlane = skip;
+        for (let i = 0; i < 4; i++) {
+          scene.render(viewer.clock.currentTime);
+          await new Promise((resolveFrame) =>
+            requestAnimationFrame(resolveFrame),
+          );
+        }
+      }, diagnosticSkip);
+    };
+    await renderSettled(false);
+    await page.screenshot({
+      path: resolve(
+        screenshotDirectory,
+        `campaign9-c9-02b-horizon-${altitude.label}-plane-on.png`,
+      ),
+    });
+    await renderSettled(true);
+    await page.screenshot({
+      path: resolve(
+        screenshotDirectory,
+        `campaign9-c9-02b-horizon-${altitude.label}-plane-off.png`,
+      ),
+    });
+    await renderSettled(false);
   }
 } catch (error) {
   fatalError = error instanceof Error ? error.stack || error.message : String(error);

@@ -55,6 +55,16 @@ import {
  * over-occludes point picks at defaults (audit P0-1, horizon oracle fails at
  * 20/500/5000km). Re-enable by flipping this constant when the contract task
  * completes.
+ *
+ * 2026-07-16 contract finding (see DEFERRED_WORK.md
+ * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH): flipping this gate requires the WHOLE
+ * pick fleet to write log frag_depth first. Every native pick producer
+ * (globe/model/collection/primitive pick shaders) writes update-time
+ * camera-frustum hyperbolic z today; hyperbolic depth cannot discriminate
+ * the depth plane from a just-beyond-horizon marker at 5,000 km (sub-ulp),
+ * and a log-depth plane over-occludes every hyperbolic pick cohort over the
+ * globe disk. Converting only the oracle participants breaks the rest of
+ * the fleet at defaults, so the flip stays blocked on the fleet conversion.
  */
 const PICK_DEPTH_PLANE_ENABLED = false;
 

@@ -781,21 +781,40 @@ export class WebGPUDepthPlane {
     uniformScratch[22] = camLow.z;
     uniformScratch[23] = 0.0; // padding
 
-    // Renderer-wide log depth — pack (near, far, factor, 0). Same source as
-    // every other producer (uniformState.currentFrustum at scene-update
-    // time = the encode frustum the globe log-encodes with). Packed
-    // unconditionally; only the log shader variant reads the lane.
+    // Renderer-wide log depth — pack (near, far, factor, 0).
+    //
+    // NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT — the log-depth ENCODE
+    // frustum MUST be the FULL camera frustum stashed on
+    // `uniformState._logDepthEncodeNearFar` (published by the globe camera-UB
+    // pack and by both frustum loops before any slice remap), NOT the live
+    // per-slice `currentFrustum`. Every other scene log-depth producer
+    // (globe, PointPrimitive, Billboard, Polyline, ground/vector-tile
+    // families, ellipsoid) encodes against that stash; this update() runs
+    // INSIDE the frustum loop, so reading `currentFrustum` here baked the
+    // slice's narrow near/far — a different curve — and the plane's depth was
+    // not comparable with the geometry it must occlude (Sol horizon oracle:
+    // the enabled scene plane failed to hide a physically-occluded marker).
+    // When the stash drives near/far the factor is recomputed from the same
+    // pair so encode + factor stay self-consistent. `currentFrustum` remains
+    // only as the pre-stash early-frame fallback, matching the collections.
     const usLog = uniformState as unknown as {
       currentFrustum?: { x: number; y: number };
       oneOverLog2FarDepthFromNearPlusOne?: number;
+      _logDepthEncodeNearFar?: Float32Array | null;
     };
-    const ldNear = usLog.currentFrustum?.x ?? 0.0;
-    const ldFar = usLog.currentFrustum?.y ?? 0.0;
+    const ldEncode = usLog._logDepthEncodeNearFar;
+    let ldNear = usLog.currentFrustum?.x ?? 0.0;
+    let ldFar = usLog.currentFrustum?.y ?? 0.0;
     let ldFactor =
       typeof usLog.oneOverLog2FarDepthFromNearPlusOne === "number"
         ? usLog.oneOverLog2FarDepthFromNearPlusOne
         : 0.0;
-    if (!(ldFactor > 0.0) && ldFar > ldNear) {
+    if (ldEncode && ldEncode[1] > ldEncode[0]) {
+      ldNear = ldEncode[0];
+      ldFar = ldEncode[1];
+      const log2Far = Math.log2(ldFar - ldNear + 1.0);
+      ldFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
+    } else if (!(ldFactor > 0.0) && ldFar > ldNear) {
       const log2Far = Math.log2(ldFar - ldNear + 1.0);
       ldFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
     }
