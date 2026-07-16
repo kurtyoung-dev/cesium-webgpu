@@ -3,6 +3,13 @@
 import Frozen from "../Core/Frozen.js";
 import defined from "../Core/defined.js";
 import PrimitiveType from "../Core/PrimitiveType.js";
+import {
+  DEFAULT_COMMAND_MATERIAL_SORT_ID,
+  DEFAULT_COMMAND_SORT_LAYER,
+  DEFAULT_COMMAND_SORT_PRIORITY,
+  normalizeCommandMaterialSortId,
+  normalizeCommandSortByte,
+} from "./CommandOrdering.js";
 
 /** @import Context from "./Context.js"; */
 /** @import Framebuffer from "./Framebuffer.js"; */
@@ -121,7 +128,10 @@ class DrawCommand {
      * @type {number}
      * @see RenderLayer
      */
-    this.sortLayer = options.sortLayer ?? 50;
+    this.sortLayer = normalizeCommandSortByte(
+      options.sortLayer,
+      DEFAULT_COMMAND_SORT_LAYER,
+    );
 
     /**
      * Priority within the render layer. Lower values render first.
@@ -129,7 +139,10 @@ class DrawCommand {
      * Default is 0 (no priority bias).
      * @type {number}
      */
-    this.sortPriority = options.sortPriority ?? 0;
+    this.sortPriority = normalizeCommandSortByte(
+      options.sortPriority,
+      DEFAULT_COMMAND_SORT_PRIORITY,
+    );
 
     /**
      * Material/shader grouping ID for batching. Commands with the same
@@ -138,7 +151,9 @@ class DrawCommand {
      * Only effective for opaque commands with SortMode.MATERIAL_MESH.
      * @type {number}
      */
-    this.materialSortId = options.materialSortId ?? 0;
+    this.materialSortId = normalizeCommandMaterialSortId(
+      options.materialSortId ?? DEFAULT_COMMAND_MATERIAL_SORT_ID,
+    );
 
     /**
      * 32-bit bitmask for visibility group filtering. A command passes

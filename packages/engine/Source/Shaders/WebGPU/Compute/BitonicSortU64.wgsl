@@ -6,8 +6,8 @@
 // low if high is equal.
 //
 // Key format produced by GPUSortKeys (front-to-back ascending):
-//   high = (renderLayer << 24) | (~depthBits << 0)  [conservative — see Note]
-//   low  = (sortPriority << 16) | materialSortId
+//   high = (renderLayer << 24) | (sortPriority << 16) | materialSortId
+//   low  = distanceKey (top 28 bits) | originalIndex (low 4 bits)
 //
 // (We don't need to know the exact packing here — the sort is purely
 // numerical on the (high, low) tuple. The host decides what each bit

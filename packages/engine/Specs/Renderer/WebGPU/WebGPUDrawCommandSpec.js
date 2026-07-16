@@ -219,6 +219,119 @@ describe("Renderer/WebGPU/WebGPUDrawCommand", function () {
     expect(drawCall[4]).toEqual(1); // firstInstance
   });
 
+  it("applies a pass dynamic-state override after command renderState", function () {
+    const viewports = [];
+    const scissors = [];
+    const mockPassEncoder = {
+      setPipeline: function () {},
+      setBindGroup: function () {},
+      setVertexBuffer: function () {},
+      setViewport: function (...args) {
+        viewports.push(args);
+      },
+      setScissorRect: function (...args) {
+        scissors.push(args);
+      },
+      draw: function () {},
+    };
+    const cmd = new WebGPUDrawCommand({
+      pipeline: mockPipeline,
+      vertexBuffer: mockVertexBuffer,
+      vertexCount: 3,
+      renderState: {
+        viewport: { x: 1, y: 2, width: 90, height: 80 },
+        scissorTest: {
+          enabled: true,
+          rectangle: { x: 3, y: 4, width: 70, height: 60 },
+        },
+      },
+    });
+
+    cmd.execute(mockPassEncoder, {
+      viewport: { x: 0, y: 0, width: 100, height: 80 },
+      scissor: { x: 10, y: 55, width: 3, height: 5 },
+    });
+
+    expect(viewports).toEqual([
+      [1, 2, 90, 80, 0, 1],
+      [0, 0, 100, 80, 0, 1],
+    ]);
+    expect(scissors).toEqual([
+      [3, 4, 70, 60],
+      [10, 55, 3, 5],
+    ]);
+  });
+
+  it("does not re-emit pass dynamic state for commands that leave it untouched", function () {
+    const setViewport = jasmine.createSpy("setViewport");
+    const setScissorRect = jasmine.createSpy("setScissorRect");
+    const mockPassEncoder = {
+      setPipeline: function () {},
+      setBindGroup: function () {},
+      setVertexBuffer: function () {},
+      setViewport: setViewport,
+      setScissorRect: setScissorRect,
+      setStencilReference: function () {},
+      draw: function () {},
+    };
+    const cmd = new WebGPUDrawCommand({
+      pipeline: mockPipeline,
+      vertexBuffer: mockVertexBuffer,
+      vertexCount: 3,
+    });
+
+    cmd.execute(mockPassEncoder, {
+      viewport: { x: 0, y: 0, width: 100, height: 80 },
+      scissor: { x: 10, y: 55, width: 3, height: 5 },
+    });
+
+    const stencilOnly = new WebGPUDrawCommand({
+      pipeline: mockPipeline,
+      vertexBuffer: mockVertexBuffer,
+      vertexCount: 3,
+      renderState: { stencilTest: { reference: 7 } },
+    });
+    stencilOnly.execute(mockPassEncoder, {
+      viewport: { x: 0, y: 0, width: 100, height: 80 },
+      scissor: { x: 10, y: 55, width: 3, height: 5 },
+    });
+
+    expect(setViewport).not.toHaveBeenCalled();
+    expect(setScissorRect).not.toHaveBeenCalled();
+  });
+
+  it("publishes pass dynamic state once before replaying a render bundle", function () {
+    const calls = [];
+    const bundle = {};
+    const mockPassEncoder = {
+      setViewport: function (...args) {
+        calls.push(["viewport", ...args]);
+      },
+      setScissorRect: function (...args) {
+        calls.push(["scissor", ...args]);
+      },
+      executeBundles: function (bundles) {
+        calls.push(["bundle", bundles]);
+      },
+    };
+    const cmd = new WebGPUDrawCommand({
+      pipeline: mockPipeline,
+      vertexBuffer: mockVertexBuffer,
+    });
+    cmd.bundle = bundle;
+
+    cmd.execute(mockPassEncoder, {
+      viewport: { x: 0, y: 0, width: 100, height: 80 },
+      scissor: { x: 10, y: 55, width: 3, height: 5 },
+    });
+
+    expect(calls).toEqual([
+      ["viewport", 0, 0, 100, 80, 0, 1],
+      ["scissor", 10, 55, 3, 5],
+      ["bundle", [bundle]],
+    ]);
+  });
+
   it("executes indexed draw when index buffer is provided", function () {
     const calls = [];
     const mockPassEncoder = {

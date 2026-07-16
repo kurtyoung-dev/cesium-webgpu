@@ -9,24 +9,31 @@ import Cartesian3 from "../Core/Cartesian3.js";
 import CesiumMath from "../Core/Math.js";
 import defined from "../Core/defined.js";
 import mergeSort from "../Core/mergeSort.js";
+import {
+  compareCommandOrdering,
+  normalizeCommandOrderingList,
+} from "../Renderer/CommandOrdering.js";
 
 const scratchCart3 = new Cartesian3();
 
 /**
- * Multi-level transparent sort: sortKey → sortPriority → distance (back-to-front).
+ * Multi-level transparent sort: sortLayer → sortKey → sortPriority → distance
+ * (back-to-front).
  * NO material batching — correct blending order is more important than state changes.
  * @private
  */
 function backToFront(a, b, position) {
-  const sortKeyA = a.sortKey ?? 0;
-  const sortKeyB = b.sortKey ?? 0;
-  if (sortKeyA !== sortKeyB) {
-    return sortKeyA - sortKeyB;
+  const ordering = compareCommandOrdering(a, b, false);
+  if (ordering !== 0) {
+    return ordering;
   }
-  const priorityA = a.sortPriority ?? 0;
-  const priorityB = b.sortPriority ?? 0;
-  if (priorityA !== priorityB) {
-    return priorityA - priorityB;
+  if (
+    !defined(a.boundingVolume) ||
+    !defined(b.boundingVolume) ||
+    !defined(a.boundingVolume.distanceSquaredTo) ||
+    !defined(b.boundingVolume.distanceSquaredTo)
+  ) {
+    return 0;
   }
   return (
     b.boundingVolume.distanceSquaredTo(position) -
@@ -41,8 +48,16 @@ function distanceSquaredToCenter(center, position) {
 }
 
 function backToFrontSplats(a, b, position) {
+  const ordering = compareCommandOrdering(a, b, false);
+  if (ordering !== 0) {
+    return ordering;
+  }
   const boxA = a.boundingVolume;
   const boxB = b.boundingVolume;
+
+  if (!defined(boxA?.center) || !defined(boxB?.center)) {
+    return 0;
+  }
 
   return (
     distanceSquaredToCenter(boxB.center, position) -
@@ -51,26 +66,24 @@ function backToFrontSplats(a, b, position) {
 }
 
 /**
- * Multi-level opaque sort: sortKey → sortPriority → materialSortId → distance (front-to-back).
+ * Multi-level opaque sort: sortLayer → sortKey → sortPriority → materialSortId
+ * → distance (front-to-back).
  * Material batching reduces shader/texture state changes.
  * Distance sort within same material gives early-Z benefit.
  * @private
  */
 function frontToBack(a, b, position) {
-  const sortKeyA = a.sortKey ?? 0;
-  const sortKeyB = b.sortKey ?? 0;
-  if (sortKeyA !== sortKeyB) {
-    return sortKeyA - sortKeyB;
+  const ordering = compareCommandOrdering(a, b, true);
+  if (ordering !== 0) {
+    return ordering;
   }
-  const priorityA = a.sortPriority ?? 0;
-  const priorityB = b.sortPriority ?? 0;
-  if (priorityA !== priorityB) {
-    return priorityA - priorityB;
-  }
-  const matA = a.materialSortId ?? 0;
-  const matB = b.materialSortId ?? 0;
-  if (matA !== matB) {
-    return matA - matB;
+  if (
+    !defined(a.boundingVolume) ||
+    !defined(b.boundingVolume) ||
+    !defined(a.boundingVolume.distanceSquaredTo) ||
+    !defined(b.boundingVolume.distanceSquaredTo)
+  ) {
+    return 0;
   }
   return (
     a.boundingVolume.distanceSquaredTo(position) -
@@ -86,6 +99,7 @@ function executeTranslucentCommandsBackToFront(
   commands,
   invertClassification,
 ) {
+  normalizeCommandOrderingList(commands);
   mergeSort(commands, backToFront, scene.camera.positionWC);
 
   if (defined(invertClassification)) {
@@ -104,6 +118,7 @@ function executeTranslucentCommandsFrontToBack(
   commands,
   invertClassification,
 ) {
+  normalizeCommandOrderingList(commands);
   mergeSort(commands, frontToBack, scene.camera.positionWC);
 
   if (defined(invertClassification)) {

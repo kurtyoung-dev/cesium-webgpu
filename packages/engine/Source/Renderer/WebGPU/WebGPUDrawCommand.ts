@@ -1,5 +1,12 @@
 import defined from "../../Core/defined.js";
 import DeveloperError from "../../Core/DeveloperError.js";
+import {
+  DEFAULT_COMMAND_MATERIAL_SORT_ID,
+  DEFAULT_COMMAND_SORT_LAYER,
+  DEFAULT_COMMAND_SORT_PRIORITY,
+  normalizeCommandMaterialSortId,
+  normalizeCommandSortByte,
+} from "../CommandOrdering.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import {
   applyPerEncoderState,
@@ -45,6 +52,57 @@ export interface WebGPUPipelineConfig {
  * WebGPUBuffer has a `.buffer` accessor; raw GPUBuffer is used directly.
  */
 export type AnyGPUBuffer = WebGPUBuffer | GPUBuffer;
+
+/**
+ * Pass-owned dynamic state that must win over a command's baked WebGL-style
+ * renderState. Pick rendering uses this to enforce its small query rectangle.
+ */
+export interface WebGPUDynamicStateOverride {
+  viewport?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  scissor?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+}
+
+function applyDynamicStateOverride(
+  passEncoder: GPURenderPassEncoder,
+  override?: WebGPUDynamicStateOverride,
+  renderState?: CesiumRenderStateLike,
+  force = false,
+): void {
+  const viewport = override?.viewport;
+  if (viewport && (force || renderState?.viewport)) {
+    passEncoder.setViewport(
+      viewport.x,
+      viewport.y,
+      viewport.width,
+      viewport.height,
+      0,
+      1,
+    );
+  }
+  const scissor = override?.scissor;
+  if (
+    scissor &&
+    (force ||
+      (renderState?.scissorTest?.enabled && renderState.scissorTest.rectangle))
+  ) {
+    passEncoder.setScissorRect(
+      scissor.x,
+      scissor.y,
+      scissor.width,
+      scissor.height,
+    );
+  }
+}
 
 /** Extracts the underlying GPUBuffer from either a WebGPUBuffer or raw GPUBuffer. */
 function resolveBuffer(buf: AnyGPUBuffer): GPUBuffer {
@@ -397,9 +455,17 @@ class WebGPUDrawCommand {
     this.executeInClosestFrustum = options.executeInClosestFrustum ?? false;
 
     // Structured sort properties (matching DrawCommand parity)
-    this.sortLayer = options.sortLayer ?? 50; // RenderLayer.Order.WORLD
-    this.sortPriority = options.sortPriority ?? 0;
-    this.materialSortId = options.materialSortId ?? 0;
+    this.sortLayer = normalizeCommandSortByte(
+      options.sortLayer,
+      DEFAULT_COMMAND_SORT_LAYER,
+    );
+    this.sortPriority = normalizeCommandSortByte(
+      options.sortPriority,
+      DEFAULT_COMMAND_SORT_PRIORITY,
+    );
+    this.materialSortId = normalizeCommandMaterialSortId(
+      options.materialSortId ?? DEFAULT_COMMAND_MATERIAL_SORT_ID,
+    );
     this.visibilityMask = options.visibilityMask ?? 0xffffffff;
     this.isTransmissive = options.isTransmissive ?? false;
 
@@ -450,13 +516,18 @@ class WebGPUDrawCommand {
    * Executes the draw command by encoding it into the given render pass encoder.
    *
    * @param {GPURenderPassEncoder} passEncoder The render pass encoder to encode commands into.
+   * @param dynamicStateOverride Optional pass-owned viewport/scissor applied
+   * after command renderState so the pass restriction wins.
    *
    * @example
    * const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
    * drawCommand.execute(passEncoder);
    * passEncoder.end();
    */
-  execute(passEncoder: GPURenderPassEncoder): void {
+  execute(
+    passEncoder: GPURenderPassEncoder,
+    dynamicStateOverride?: WebGPUDynamicStateOverride,
+  ): void {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(passEncoder)) {
       throw new DeveloperError("passEncoder is required.");
@@ -474,6 +545,15 @@ class WebGPUDrawCommand {
     // drawIndexed, so the per-frame CPU work collapses to one
     // executeBundles call. Phase 1.2c v2 — Moon is the first consumer.
     if (defined(this.bundle)) {
+      // A bundle is opaque at replay time, so publish the pass-owned state
+      // immediately before it. Native commands below can be more selective:
+      // they restore only channels their renderState actually overwrote.
+      applyDynamicStateOverride(
+        passEncoder,
+        dynamicStateOverride,
+        undefined,
+        true,
+      );
       passEncoder.executeBundles([this.bundle!]);
       return;
     }
@@ -502,6 +582,11 @@ class WebGPUDrawCommand {
     if (this.renderState) {
       applyPerEncoderState(passEncoder, this.renderState);
     }
+    applyDynamicStateOverride(
+      passEncoder,
+      dynamicStateOverride,
+      this.renderState,
+    );
 
     // Set all bind groups. Migration Session 3 (Batch 83) — per-index
     // resolvers, when present, are called at draw time to swap in a

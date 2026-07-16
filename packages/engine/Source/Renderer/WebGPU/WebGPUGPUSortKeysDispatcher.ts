@@ -9,10 +9,10 @@ import {
 
 /**
  * Phase 3 activation wrapper for `GPUSortKeys.wgsl`. Owns the SOA
- * command metadata storage buffers (centerX/Y/Z + renderLayer +
- * sortPriority + materialSortId) and the packed output buffers
+ * command metadata storage buffers (canonical distanceSquared + renderLayer
+ * + sortPriority + materialSortId) and the packed output buffers
  * (sortKeysHigh + sortKeysLow + commandIndices), plus the SortKeyParams
- * UBO with camera position + sort mode.
+ * UBO with command count + sort mode.
  *
  * Call shape:
  *
@@ -20,7 +20,7 @@ import {
  *     d.setShaderSource(GPUSortKeysSource);
  *     d.allocate(maxCommands);
  *     // per frame:
- *     d.dispatch(encoder, soa, { cameraPosition, sortMode });
+ *     d.dispatch(encoder, soa, { sortMode });
  *     // Later: a sort pass (e.g. PointCloudSort) reorders the
  *     // packed key + index buffers.
  *
@@ -37,7 +37,7 @@ import {
  * @module WebGPUGPUSortKeysDispatcher
  */
 
-const SORT_KEY_PARAMS_BYTES = 32; // 8 × u32
+const SORT_KEY_PARAMS_BYTES = 16; // 4 × u32
 
 /**
  * NEW-GPU-SORT-PIPELINE Phase 2 (Batch 228) — round `n` up to the
@@ -66,9 +66,7 @@ interface GPUSortKeysResources {
   // the consumer trustworthy for arbitrary counts, not just powers of 2.
   paddedCapacity: number;
   paramsBuffer: GPUBuffer;
-  centerXBuffer: GPUBuffer;
-  centerYBuffer: GPUBuffer;
-  centerZBuffer: GPUBuffer;
+  distanceSquaredBuffer: GPUBuffer;
   renderLayersBuffer: GPUBuffer;
   sortPrioritiesBuffer: GPUBuffer;
   materialSortIdsBuffer: GPUBuffer;
@@ -178,12 +176,10 @@ class WebGPUGPUSortKeysDispatcher {
   // avoid per-frame GC pressure.
   private _paramsScratch = new ArrayBuffer(SORT_KEY_PARAMS_BYTES);
   private _paramsU32: Uint32Array;
-  private _paramsF32: Float32Array;
 
   constructor(device: GPUDevice) {
     this._device = device;
     this._paramsU32 = new Uint32Array(this._paramsScratch);
-    this._paramsF32 = new Float32Array(this._paramsScratch);
   }
 
   /**
@@ -308,9 +304,7 @@ class WebGPUGPUSortKeysDispatcher {
           GPUBufferUsage.COPY_DST,
       });
 
-    const centerXBuffer = makeStorageIn("GPUSortKeys_CenterX");
-    const centerYBuffer = makeStorageIn("GPUSortKeys_CenterY");
-    const centerZBuffer = makeStorageIn("GPUSortKeys_CenterZ");
+    const distanceSquaredBuffer = makeStorageIn("GPUSortKeys_DistanceSquared");
     const renderLayersBuffer = makeStorageIn("GPUSortKeys_RenderLayers");
     const sortPrioritiesBuffer = makeStorageIn("GPUSortKeys_SortPriorities");
     const materialSortIdsBuffer = makeStorageIn("GPUSortKeys_MaterialSortIds");
@@ -320,10 +314,10 @@ class WebGPUGPUSortKeysDispatcher {
 
     const bindGroupLayout = makeBindGroupLayout(device, "GPUSortKeys_BGL", [
       uniformBuffer(0, Stage.COMPUTE),
-      ...[1, 2, 3, 4, 5, 6].map((b) =>
+      ...[1, 2, 3, 4].map((b) =>
         storageBuffer(b, Stage.COMPUTE, { readOnly: true }),
       ),
-      ...[7, 8, 9].map((b) => storageBuffer(b, Stage.COMPUTE)),
+      ...[5, 6, 7].map((b) => storageBuffer(b, Stage.COMPUTE)),
     ]);
 
     const bindGroup = device.createBindGroup({
@@ -331,15 +325,13 @@ class WebGPUGPUSortKeysDispatcher {
       layout: bindGroupLayout,
       entries: [
         { binding: 0, resource: { buffer: paramsBuffer } },
-        { binding: 1, resource: { buffer: centerXBuffer } },
-        { binding: 2, resource: { buffer: centerYBuffer } },
-        { binding: 3, resource: { buffer: centerZBuffer } },
-        { binding: 4, resource: { buffer: renderLayersBuffer } },
-        { binding: 5, resource: { buffer: sortPrioritiesBuffer } },
-        { binding: 6, resource: { buffer: materialSortIdsBuffer } },
-        { binding: 7, resource: { buffer: sortKeysHighBuffer } },
-        { binding: 8, resource: { buffer: sortKeysLowBuffer } },
-        { binding: 9, resource: { buffer: commandIndicesBuffer } },
+        { binding: 1, resource: { buffer: distanceSquaredBuffer } },
+        { binding: 2, resource: { buffer: renderLayersBuffer } },
+        { binding: 3, resource: { buffer: sortPrioritiesBuffer } },
+        { binding: 4, resource: { buffer: materialSortIdsBuffer } },
+        { binding: 5, resource: { buffer: sortKeysHighBuffer } },
+        { binding: 6, resource: { buffer: sortKeysLowBuffer } },
+        { binding: 7, resource: { buffer: commandIndicesBuffer } },
       ],
     });
 
@@ -364,9 +356,7 @@ class WebGPUGPUSortKeysDispatcher {
       capacity: maxCommands,
       paddedCapacity,
       paramsBuffer,
-      centerXBuffer,
-      centerYBuffer,
-      centerZBuffer,
+      distanceSquaredBuffer,
       renderLayersBuffer,
       sortPrioritiesBuffer,
       materialSortIdsBuffer,
@@ -737,16 +727,13 @@ class WebGPUGPUSortKeysDispatcher {
   dispatch(
     encoder: GPUCommandEncoder,
     soa: {
-      centerX: Float32Array;
-      centerY: Float32Array;
-      centerZ: Float32Array;
+      distanceSquared: Float32Array;
       renderLayers: Uint32Array;
       sortPriorities: Uint32Array;
       materialSortIds: Uint32Array;
       count: number;
     },
     params: {
-      cameraPosition: { x: number; y: number; z: number };
       sortMode: number; // 0 = front-to-back, 1 = back-to-front
     },
   ): boolean {
@@ -759,24 +746,10 @@ class WebGPUGPUSortKeysDispatcher {
 
     // Upload SOA components — only the valid range per component.
     device.queue.writeBuffer(
-      r.centerXBuffer,
+      r.distanceSquaredBuffer,
       0,
-      soa.centerX.buffer,
-      soa.centerX.byteOffset,
-      byteLen,
-    );
-    device.queue.writeBuffer(
-      r.centerYBuffer,
-      0,
-      soa.centerY.buffer,
-      soa.centerY.byteOffset,
-      byteLen,
-    );
-    device.queue.writeBuffer(
-      r.centerZBuffer,
-      0,
-      soa.centerZ.buffer,
-      soa.centerZ.byteOffset,
+      soa.distanceSquared.buffer,
+      soa.distanceSquared.byteOffset,
       byteLen,
     );
     device.queue.writeBuffer(
@@ -801,15 +774,11 @@ class WebGPUGPUSortKeysDispatcher {
       byteLen,
     );
 
-    // Pack SortKeyParams: u32 commandCount + f32 cameraXYZ + u32 sortMode + 3 × u32 pad.
+    // Pack SortKeyParams: u32 commandCount + u32 sortMode + 2 × u32 pad.
     this._paramsU32[0] = soa.count;
-    this._paramsF32[1] = params.cameraPosition.x;
-    this._paramsF32[2] = params.cameraPosition.y;
-    this._paramsF32[3] = params.cameraPosition.z;
-    this._paramsU32[4] = params.sortMode | 0;
-    this._paramsU32[5] = 0;
-    this._paramsU32[6] = 0;
-    this._paramsU32[7] = 0;
+    this._paramsU32[1] = params.sortMode | 0;
+    this._paramsU32[2] = 0;
+    this._paramsU32[3] = 0;
     device.queue.writeBuffer(r.paramsBuffer, 0, this._paramsScratch);
 
     const workgroupsX = Math.ceil(soa.count / 256);
@@ -831,9 +800,7 @@ class WebGPUGPUSortKeysDispatcher {
     if (!r) return;
     try {
       r.paramsBuffer.destroy();
-      r.centerXBuffer.destroy();
-      r.centerYBuffer.destroy();
-      r.centerZBuffer.destroy();
+      r.distanceSquaredBuffer.destroy();
       r.renderLayersBuffer.destroy();
       r.sortPrioritiesBuffer.destroy();
       r.materialSortIdsBuffer.destroy();
@@ -904,16 +871,13 @@ function dispatchWebGPUGPUSortKeys(
   context: { device: GPUDevice | null | undefined },
   encoder: GPUCommandEncoder,
   soa: {
-    centerX: Float32Array;
-    centerY: Float32Array;
-    centerZ: Float32Array;
+    distanceSquared: Float32Array;
     renderLayers: Uint32Array;
     sortPriorities: Uint32Array;
     materialSortIds: Uint32Array;
     count: number;
   },
   params: {
-    cameraPosition: { x: number; y: number; z: number };
     sortMode: number;
   },
 ): boolean {

@@ -13,8 +13,8 @@ import {
 
 describe("Renderer/WebGPU/WebGPUGPUSortKeysDispatcher helpers", function () {
   describe("layout constants", function () {
-    it("SORT_KEY_PARAMS_BYTES matches SortKeyParams in WGSL (8 × u32 = 32)", function () {
-      expect(SORT_KEY_PARAMS_BYTES).toBe(32);
+    it("SORT_KEY_PARAMS_BYTES matches SortKeyParams in WGSL (4 × u32 = 16)", function () {
+      expect(SORT_KEY_PARAMS_BYTES).toBe(16);
     });
 
     it("SORT_MODE_FRONT_TO_BACK is 0 (opaque sort direction)", function () {

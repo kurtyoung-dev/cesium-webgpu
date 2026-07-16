@@ -1,5 +1,11 @@
 import defined from "../Core/defined.js";
 import WasmFeatureDetection from "../Core/WasmFeatureDetection.js";
+import {
+  DEFAULT_COMMAND_SORT_LAYER,
+  DEFAULT_COMMAND_SORT_PRIORITY,
+  normalizeCommandMaterialSortId,
+  normalizeCommandSortByte,
+} from "../Renderer/CommandOrdering.js";
 import { WasmArenaSlot, allocFromSlot } from "./WasmArenaSlots.js";
 import resolveWasmGlueUrl from "./resolveWasmGlueUrl.js";
 
@@ -24,7 +30,7 @@ const _scratchUint32 = new Uint32Array(_scratchArrayBuffer);
  * ```
  * ┌──────────┬───────────┬───────────┬──────────────────────┐
  * │ Layer    │ Priority  │ Material  │ Distance (float32)   │
- * │ (4 bits) │ (12 bits) │ (16 bits) │ (32 bits)            │
+ * │ (8 bits) │ (8 bits)  │ (16 bits) │ (32 bits)            │
  * └──────────┴───────────┴───────────┴──────────────────────┘
  * ```
  *
@@ -128,11 +134,17 @@ class WasmSortBridge {
    * @private
    */
   _packKey(command, distanceSquared, backToFront, index) {
-    const layer = (command.sortLayer ?? 50) & 0xf;
-    const priority = (command.sortPriority ?? 0) & 0xfff;
-    const material = (command.materialSortId ?? 0) & 0xffff;
+    const layer = normalizeCommandSortByte(
+      command.sortLayer,
+      DEFAULT_COMMAND_SORT_LAYER,
+    );
+    const priority = normalizeCommandSortByte(
+      command.sortPriority,
+      DEFAULT_COMMAND_SORT_PRIORITY,
+    );
+    const material = normalizeCommandMaterialSortId(command.materialSortId);
 
-    this._keysHigh[index] = (layer << 28) | (priority << 16) | material;
+    this._keysHigh[index] = (layer << 24) | (priority << 16) | material;
 
     const distance = Math.sqrt(distanceSquared);
     const distFloat32 = Math.fround(distance);
