@@ -74,6 +74,51 @@ import type {
 export type { TileDrawDescriptor } from "./WebGPUGlobeSurfaceTypes.js";
 export { DebugFragmentMode } from "./WebGPUGlobeSurfaceTypes.js";
 
+// C9-13 (NEW-GLOBE-EFFECTS-PER-VIEW-PREPARED-HANDLE) — the terrain-global
+// group-3 effects state (shadow receive / CSM / atmosphere LUT / clipping
+// planes+polygons) is identical for every selected tile in a frame/view, yet
+// the pre-C9-13 path re-resolved and re-packed it once per tile per imagery
+// pass (~200 tiles → ~200 identical repacks: a 480-byte `fill(0)`+repack,
+// `computeClipPlaneDPrimes`, 22 WeakMap identity lookups, 3 string concats, and
+// several wrapper-object literals). This snapshot records the exact inputs that
+// determine those bytes and the placeholder-vs-active decision, so tiles 2..N
+// reuse one prepared `GPUBindGroup`. The memo lives on the CONTEXT (not the
+// per-GPUDevice renderer instance): post-Sol multi-context work shares pooled
+// devices across Scenes, so a renderer-scoped memo keyed by frameNumber alone
+// would alias Scene A's camera bytes into Scene B (see the same rationale in
+// `WebGPUEffectsBindGroup.js` `_ensureEffectsBgCache`, and the primitive
+// precedent `_getOrCreateSharedPrimitiveEffectsBG`).
+interface GlobeEffectsHandleSnapshot {
+  frameNumber: number;
+  device: GPUDevice;
+  bindGroup: GPUBindGroup;
+  // Reference identity of every resolved effect input (undefined when the
+  // feature is inactive). Any ref mismatch → miss → fresh prepare.
+  receiveShadowMap: unknown;
+  csmParamsBuffer: unknown;
+  csmArrayView: unknown;
+  csmPcfRadius: number | undefined;
+  lutTransmittance: unknown;
+  lutInscatter: unknown;
+  clippingPlanes: unknown;
+  clippingPlanesLength: number;
+  clippingPolygons: unknown;
+  clippingPolygonsLength: number;
+  tileProvider: unknown;
+  // Camera position VALUES (not the mutated-in-place scratch Cartesian3 ref):
+  // the clip-plane dPrime bytes depend on them, and a multi-view frame can
+  // reuse one frameNumber across different cameras.
+  cameraX: number;
+  cameraY: number;
+  cameraZ: number;
+}
+
+// Home for the per-(context, frame) prepared globe effects handle. Mirrors the
+// `_primitiveEffectsBG*` fields the primitive path declares on the context.
+type GlobeEffectsMemoContext = {
+  _globeEffectsHandle?: GlobeEffectsHandleSnapshot | null;
+};
+
 /**
  * WebGPU Globe Surface Renderer
  *
@@ -587,6 +632,257 @@ export class WebGPUGlobeSurfaceRenderer {
   // ═══════════════════════════════════════════════════════════════════════
 
   /**
+   * C9-13 (NEW-GLOBE-EFFECTS-PER-VIEW-PREPARED-HANDLE) — resolve and pack the
+   * terrain-global group-3 effects bind group ONCE per (context, frame/view).
+   *
+   * The shadow-receive / CSM / atmosphere-LUT / clipping-planes+polygons state
+   * is identical for every selected tile and every imagery pass in a frame, so
+   * the body below (moved verbatim from the old per-tile-per-pass inline block)
+   * runs at most once; subsequent tiles/passes take the memo fast-path (a few
+   * reference/scalar compares) and reuse the prepared `GPUBindGroup`.
+   *
+   * The memo is stored on the CONTEXT, not on this per-GPUDevice renderer
+   * instance: pooled devices are shared across contexts post-Sol, so a memo
+   * keyed by frameNumber on a device-shared renderer would alias Scene A's
+   * camera bytes into Scene B. Any input mismatch falls through to a fresh
+   * prepare (campaign rule 3: unknown ⇒ conservative execution).
+   */
+  private _getOrCreateFrameEffectsBindGroup(
+    device: GPUDevice,
+    frameState: CesiumFrameState,
+    tileProvider: CesiumGlobeTileProvider,
+    uniformState: CesiumUniformState,
+  ): GPUBindGroup {
+    // Phase 4 AtmosphereLUT integration: when the scene has an
+    // atmosphere LUT ready (compute supported + SkyAtmosphere has
+    // dispatched the LUT compute pass at least once), we route
+    // through the active bind group builder to pass the LUT views
+    // into bindings 7/8 of the effects BGL. The globe shader reads
+    // those to compute fog color that matches the visible sky dome.
+    // If neither clipping nor LUT is present we still take the
+    // placeholder fast-path.
+    const perfMgr = (
+      frameState as {
+        context?: {
+          performanceManager?: {
+            ensureAtmosphereLUTResources?: (d: GPUDevice) => {
+              transmittanceView?: GPUTextureView;
+              inscatterView?: GPUTextureView;
+            } | null;
+          };
+        };
+      }
+    ).context?.performanceManager;
+    let atmosphereLutViews: {
+      transmittance: GPUTextureView;
+      inscatter: GPUTextureView;
+    } | null = null;
+    if (perfMgr?.ensureAtmosphereLUTResources) {
+      // Read the existing LUT views. We deliberately don't consult
+      // `shouldRecomputeAtmosphereLUT()` here because that method is
+      // side-effecting — it clears the dirty flag on read, and the
+      // flag belongs to SkyAtmosphere's dispatch lifecycle. Consuming
+      // it here would prevent SkyAtmosphere from seeing "needs
+      // recompute" on its next frame.
+      //
+      // Instead we bind whatever the texture currently contains and
+      // let the shader's `lutLuminance > 0.001` check in
+      // `sampleAtmosphereFogLut` decide whether the data is
+      // meaningful. Before SkyAtmosphere has dispatched (first frame)
+      // the textures are all-zero and the shader takes the inline
+      // Rayleigh/Mie fallback, which produces the same look as
+      // pre-LUT builds — no flash or pop.
+      const res = perfMgr.ensureAtmosphereLUTResources(device);
+      if (res && res.transmittanceView && res.inscatterView) {
+        atmosphereLutViews = {
+          transmittance: res.transmittanceView,
+          inscatter: res.inscatterView,
+        };
+      }
+    }
+    // DP-H28 — resolve the scene's receive shadow map so the globe
+    // actually gets shadow-darkening when `viewer.shadows = true`.
+    // WebGL routes through Scene.js per-command receive logic; in
+    // WebGPU the globe manages its own bind groups, so we inline the
+    // same lookup here. `lightShadowMaps[0]` is the canonical receive
+    // source (cascades, spot, directional all land there post-update).
+    // Gated on `lightShadowsEnabled` to match Scene.js:4389.
+    const shadowState = frameState?.shadowState;
+    const receiveShadowMap =
+      shadowState?.lightShadowsEnabled && shadowState?.lightShadowMaps?.[0]
+        ? shadowState.lightShadowMaps[0]
+        : undefined;
+
+    // CSM Slice 1 — resolve the context's cascaded shadow map renderer
+    // when the scene has asked for cascades and the renderer has
+    // initialized a cascade texture array. We pass the params UBO +
+    // array view into the effects bind group so the shader's shadow
+    // branch can route through `sampleCascadeShadow` (binding 10/11)
+    // instead of the single-map path (binding 1/2).
+    //
+    // The ambient `csmRenderer: object | null` on the context is
+    // intentionally opaque (cesium-js-types.d.ts keeps this file free
+    // of WebGPU-renderer imports). Narrow it here to the local shape
+    // we actually consume.
+    type CSMRendererView = {
+      enabled?: boolean;
+      cascadeParamsBuffer?: GPUBuffer | null;
+      cascadeArrayView?: GPUTextureView | null;
+      pcfRadius?: number;
+    };
+    const csmCandidate = frameState.context?.csmRenderer as
+      CSMRendererView | null | undefined;
+    const csmBinding =
+      csmCandidate &&
+      csmCandidate.enabled === true &&
+      csmCandidate.cascadeParamsBuffer &&
+      csmCandidate.cascadeArrayView
+        ? {
+            enabled: true,
+            paramsBuffer: csmCandidate.cascadeParamsBuffer,
+            cascadeArrayView: csmCandidate.cascadeArrayView,
+            // NEW-CSM-SOFT-SHADOW-PCF — soft-shadow kernel radius (texels).
+            pcfRadius: csmCandidate.pcfRadius,
+          }
+        : undefined;
+
+    // GLOBE-CLIPPOLY-GEODETIC — `globe.clippingPolygons`. Mirrors the
+    // model renderer's gate: only an enabled, non-empty collection
+    // activates the polygon SDF path (`effects.clippingPolygonCount`).
+    const tpClippingPolygons = tileProvider?.clippingPolygons;
+    const activeClippingPolygons =
+      tpClippingPolygons &&
+      tpClippingPolygons.enabled &&
+      tpClippingPolygons.length > 0
+        ? tpClippingPolygons
+        : undefined;
+
+    const clippingPlanes = tileProvider?.clippingPlanes;
+    const clippingPlanesLength = clippingPlanes?.length ?? 0;
+    const clippingPolygonsLength = activeClippingPolygons?.length ?? 0;
+    const cameraPosition = uniformState.cameraPosition;
+    const cameraX = cameraPosition?.x ?? 0;
+    const cameraY = cameraPosition?.y ?? 0;
+    const cameraZ = cameraPosition?.z ?? 0;
+
+    // ── Memo fast-path ──────────────────────────────────────────────
+    // Reuse the prepared handle only when EVERY input that determines the
+    // packed bytes or the placeholder decision is unchanged. Ordered
+    // cheapest-first: frameNumber (changes every tick) → device → refs →
+    // camera values. `frameNumber` is read raw and a missing value disables
+    // memoization (a `?? 0` fallback would alias distinct frames — queue
+    // audit P1 #14). The memo is context-scoped (T1 pooled-device hazard).
+    const memoCtx = frameState.context as unknown as
+      GlobeEffectsMemoContext | undefined;
+    const frameNumber = frameState.frameNumber;
+    const logicalCounters = this._logicalCounters;
+    if (memoCtx && typeof frameNumber === "number") {
+      const memo = memoCtx._globeEffectsHandle;
+      if (
+        memo &&
+        memo.frameNumber === frameNumber &&
+        memo.device === device &&
+        memo.receiveShadowMap === receiveShadowMap &&
+        memo.csmParamsBuffer === csmBinding?.paramsBuffer &&
+        memo.csmArrayView === csmBinding?.cascadeArrayView &&
+        memo.csmPcfRadius === csmBinding?.pcfRadius &&
+        memo.lutTransmittance === atmosphereLutViews?.transmittance &&
+        memo.lutInscatter === atmosphereLutViews?.inscatter &&
+        memo.clippingPlanes === clippingPlanes &&
+        memo.clippingPlanesLength === clippingPlanesLength &&
+        memo.clippingPolygons === activeClippingPolygons &&
+        memo.clippingPolygonsLength === clippingPolygonsLength &&
+        memo.tileProvider === tileProvider &&
+        memo.cameraX === cameraX &&
+        memo.cameraY === cameraY &&
+        memo.cameraZ === cameraZ
+      ) {
+        if (logicalCounters) {
+          logicalCounters.effectsHandleReuses =
+            (logicalCounters.effectsHandleReuses ?? 0) + 1;
+        }
+        return memo.bindGroup;
+      }
+    }
+
+    // ── Fresh prepare ───────────────────────────────────────────────
+    // The active-vs-placeholder gate: any active effect routes through the
+    // real bind group builder; otherwise the per-device placeholder is
+    // returned (byte-identical zero-filled effects UBO). `useClipDistances`
+    // from the per-pass loop is intentionally NOT a term here — it requires
+    // `clippingPlanes.length > 0`, so it can never widen this condition
+    // beyond the `clippingPlanesLength > 0` term (provably byte-equal).
+    let bindGroup3: GPUBindGroup;
+    if (
+      clippingPlanesLength > 0 ||
+      activeClippingPolygons !== undefined ||
+      atmosphereLutViews !== null ||
+      receiveShadowMap !== undefined ||
+      csmBinding !== undefined
+    ) {
+      const fxRes = createEffectsBindGroup(device, frameState, {
+        // Stable per-Scene/view owner. Camera movement updates one bounded
+        // effects slot shared by every terrain tile in this frame.
+        owner: frameState,
+        clippingPlanes: clippingPlanes,
+        clippingPolygons: activeClippingPolygons,
+        shadowMap: receiveShadowMap,
+        csm: csmBinding,
+        // Globe terrain model matrix is identity, so the camera in
+        // plane-space is the same as the world camera position.
+        cameraInPlaneSpace: cameraPosition,
+        atmosphereLutTransmittanceView: atmosphereLutViews?.transmittance,
+        atmosphereLutInscatterView: atmosphereLutViews?.inscatter,
+        // Use the SkyAtmosphere convention — WGS84 + 2.5% atmosphere
+        // thickness matches the default the LUT compute dispatcher
+        // uses unless SkyAtmosphere.atmosphereLightIntensity has
+        // been customized. Full scene-specific radii plumbing is a
+        // small follow-on but the shader clamps altitudes anyway.
+        atmosphereLutPlanetRadii: {
+          inner: 6378137.0,
+          outer: 6378137.0 * 1.025,
+        },
+      });
+      bindGroup3 = fxRes.bindGroup;
+    } else {
+      // Toggle-off transition: storing the placeholder here (not leaving the
+      // stale active handle) means the next tile after shadows/CSM/LUT turn
+      // off binds zero-filled effects data rather than last frame's control
+      // bytes (the `WebGPUPrimitiveCommands._getOrCreateSharedPrimitiveEffectsBG`
+      // lesson).
+      bindGroup3 = this._placeholderEffectsBG!;
+    }
+
+    // Publish the prepared handle + its exact input snapshot for tiles 2..N.
+    if (memoCtx && typeof frameNumber === "number") {
+      memoCtx._globeEffectsHandle = {
+        frameNumber,
+        device,
+        bindGroup: bindGroup3,
+        receiveShadowMap,
+        csmParamsBuffer: csmBinding?.paramsBuffer,
+        csmArrayView: csmBinding?.cascadeArrayView,
+        csmPcfRadius: csmBinding?.pcfRadius,
+        lutTransmittance: atmosphereLutViews?.transmittance,
+        lutInscatter: atmosphereLutViews?.inscatter,
+        clippingPlanes,
+        clippingPlanesLength,
+        clippingPolygons: activeClippingPolygons,
+        clippingPolygonsLength,
+        tileProvider,
+        cameraX,
+        cameraY,
+        cameraZ,
+      };
+    }
+    if (logicalCounters) {
+      logicalCounters.effectsHandlePrepares =
+        (logicalCounters.effectsHandlePrepares ?? 0) + 1;
+    }
+    return bindGroup3;
+  }
+
+  /**
    * Create WebGPU draw command(s) for a terrain tile.
    * Returns an array of descriptors — one per pass.
    * Tiles with >4 imagery layers produce multiple passes.
@@ -1098,161 +1394,21 @@ export class WebGPUGlobeSurfaceRenderer {
         tileProvider,
       );
 
-      // Group 3: Effects (shadow receive + clipping planes).
+      // Group 3: Effects (shadow receive + CSM + atmosphere LUT + clipping).
       //
-      // Phase 5 WGF-1: when clipping planes are active on the tile
-      // provider AND the hardware clip-distances pipeline variant is on,
-      // build a real effects bind group with the precomputed
-      // `clipPlaneEqHW` quads. The legacy fragment-discard path is also
-      // covered by this branch — `useClipDistances` may be false but the
-      // collection still active, in which case the bind group still
-      // populates the texture binding for the legacy path.
-      //
-      // When neither shadows nor clipping are active the placeholder is
-      // returned (no per-frame allocation), preserving the existing
-      // hot-path behavior for the common case.
-      //
-      // Phase 4 AtmosphereLUT integration: when the scene has an
-      // atmosphere LUT ready (compute supported + SkyAtmosphere has
-      // dispatched the LUT compute pass at least once), we route
-      // through the active bind group builder to pass the LUT views
-      // into bindings 7/8 of the effects BGL. The globe shader reads
-      // those to compute fog color that matches the visible sky dome.
-      // If neither clipping nor LUT is present we still take the
-      // placeholder fast-path.
-      const perfMgr = (
-        frameState as {
-          context?: {
-            performanceManager?: {
-              ensureAtmosphereLUTResources?: (d: GPUDevice) => {
-                transmittanceView?: GPUTextureView;
-                inscatterView?: GPUTextureView;
-              } | null;
-            };
-          };
-        }
-      ).context?.performanceManager;
-      let atmosphereLutViews: {
-        transmittance: GPUTextureView;
-        inscatter: GPUTextureView;
-      } | null = null;
-      if (perfMgr?.ensureAtmosphereLUTResources) {
-        // Read the existing LUT views. We deliberately don't consult
-        // `shouldRecomputeAtmosphereLUT()` here because that method is
-        // side-effecting — it clears the dirty flag on read, and the
-        // flag belongs to SkyAtmosphere's dispatch lifecycle. Consuming
-        // it here would prevent SkyAtmosphere from seeing "needs
-        // recompute" on its next frame.
-        //
-        // Instead we bind whatever the texture currently contains and
-        // let the shader's `lutLuminance > 0.001` check in
-        // `sampleAtmosphereFogLut` decide whether the data is
-        // meaningful. Before SkyAtmosphere has dispatched (first frame)
-        // the textures are all-zero and the shader takes the inline
-        // Rayleigh/Mie fallback, which produces the same look as
-        // pre-LUT builds — no flash or pop.
-        const res = perfMgr.ensureAtmosphereLUTResources(device);
-        if (res && res.transmittanceView && res.inscatterView) {
-          atmosphereLutViews = {
-            transmittance: res.transmittanceView,
-            inscatter: res.inscatterView,
-          };
-        }
-      }
-      // DP-H28 — resolve the scene's receive shadow map so the globe
-      // actually gets shadow-darkening when `viewer.shadows = true`.
-      // WebGL routes through Scene.js per-command receive logic; in
-      // WebGPU the globe manages its own bind groups, so we inline the
-      // same lookup here. `lightShadowMaps[0]` is the canonical receive
-      // source (cascades, spot, directional all land there post-update).
-      // Gated on `lightShadowsEnabled` to match Scene.js:4389.
-      const shadowState = frameState?.shadowState;
-      const receiveShadowMap =
-        shadowState?.lightShadowsEnabled && shadowState?.lightShadowMaps?.[0]
-          ? shadowState.lightShadowMaps[0]
-          : undefined;
-
-      // CSM Slice 1 — resolve the context's cascaded shadow map renderer
-      // when the scene has asked for cascades and the renderer has
-      // initialized a cascade texture array. We pass the params UBO +
-      // array view into the effects bind group so the shader's shadow
-      // branch can route through `sampleCascadeShadow` (binding 10/11)
-      // instead of the single-map path (binding 1/2).
-      //
-      // The ambient `csmRenderer: object | null` on the context is
-      // intentionally opaque (cesium-js-types.d.ts keeps this file free
-      // of WebGPU-renderer imports). Narrow it here to the local shape
-      // we actually consume.
-      type CSMRendererView = {
-        enabled?: boolean;
-        cascadeParamsBuffer?: GPUBuffer | null;
-        cascadeArrayView?: GPUTextureView | null;
-        pcfRadius?: number;
-      };
-      const csmCandidate = frameState.context?.csmRenderer as
-        CSMRendererView | null | undefined;
-      const csmBinding =
-        csmCandidate &&
-        csmCandidate.enabled === true &&
-        csmCandidate.cascadeParamsBuffer &&
-        csmCandidate.cascadeArrayView
-          ? {
-              enabled: true,
-              paramsBuffer: csmCandidate.cascadeParamsBuffer,
-              cascadeArrayView: csmCandidate.cascadeArrayView,
-              // NEW-CSM-SOFT-SHADOW-PCF — soft-shadow kernel radius (texels).
-              pcfRadius: csmCandidate.pcfRadius,
-            }
-          : undefined;
-
-      // GLOBE-CLIPPOLY-GEODETIC — `globe.clippingPolygons`. Mirrors the
-      // model renderer's gate: only an enabled, non-empty collection
-      // activates the polygon SDF path (`effects.clippingPolygonCount`).
-      const tpClippingPolygons = tileProvider?.clippingPolygons;
-      const activeClippingPolygons =
-        tpClippingPolygons &&
-        tpClippingPolygons.enabled &&
-        tpClippingPolygons.length > 0
-          ? tpClippingPolygons
-          : undefined;
-
-      let bindGroup3: GPUBindGroup;
-      if (
-        useClipDistances ||
-        (tileProvider?.clippingPlanes &&
-          tileProvider.clippingPlanes.length > 0) ||
-        activeClippingPolygons !== undefined ||
-        atmosphereLutViews !== null ||
-        receiveShadowMap !== undefined ||
-        csmBinding !== undefined
-      ) {
-        const fxRes = createEffectsBindGroup(device, frameState, {
-          // Stable per-Scene/view owner. Camera movement updates one bounded
-          // effects slot shared by every terrain tile in this frame.
-          owner: frameState,
-          clippingPlanes: tileProvider.clippingPlanes,
-          clippingPolygons: activeClippingPolygons,
-          shadowMap: receiveShadowMap,
-          csm: csmBinding,
-          // Globe terrain model matrix is identity, so the camera in
-          // plane-space is the same as the world camera position.
-          cameraInPlaneSpace: uniformState.cameraPosition,
-          atmosphereLutTransmittanceView: atmosphereLutViews?.transmittance,
-          atmosphereLutInscatterView: atmosphereLutViews?.inscatter,
-          // Use the SkyAtmosphere convention — WGS84 + 2.5% atmosphere
-          // thickness matches the default the LUT compute dispatcher
-          // uses unless SkyAtmosphere.atmosphereLightIntensity has
-          // been customized. Full scene-specific radii plumbing is a
-          // small follow-on but the shader clamps altitudes anyway.
-          atmosphereLutPlanetRadii: {
-            inner: 6378137.0,
-            outer: 6378137.0 * 1.025,
-          },
-        });
-        bindGroup3 = fxRes.bindGroup;
-      } else {
-        bindGroup3 = this._placeholderEffectsBG!;
-      }
+      // C9-13 — the entire effects group is terrain-global: its bytes and its
+      // placeholder-vs-active decision are identical for every selected tile
+      // and every imagery pass in this frame/view. Resolve and pack it ONCE
+      // per (context, frame) in `_getOrCreateFrameEffectsBindGroup`; tiles
+      // 2..N and passes 2..M reuse the prepared handle. See that method for
+      // the full move of the LUT/shadow/CSM/clipping resolution + gate that
+      // used to run inline here (per tile per pass).
+      const bindGroup3 = this._getOrCreateFrameEffectsBindGroup(
+        device,
+        frameState,
+        tileProvider,
+        uniformState,
+      );
 
       // Wireframe overlay: swap the index buffer to the line-list version.
       // The wireframe IB is only used on the first pass (matches the pipeline

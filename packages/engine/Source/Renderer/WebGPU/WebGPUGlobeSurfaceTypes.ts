@@ -501,6 +501,10 @@ export interface WebGPUGlobeLogicalCounters {
   imageryOwnedLiveBytes?: number;
   imageryOwnedHighWaterTextures?: number;
   imageryOwnedHighWaterBytes?: number;
+  /** C9-13 — times the per-frame globe effects handle was built fresh. */
+  effectsHandlePrepares?: number;
+  /** C9-13 — times a tile/pass reused the prepared globe effects handle. */
+  effectsHandleReuses?: number;
 }
 
 /** Descriptor for a single tile draw pass */
