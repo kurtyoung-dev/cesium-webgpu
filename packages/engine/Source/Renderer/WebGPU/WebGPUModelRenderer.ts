@@ -364,6 +364,22 @@ interface PrimitiveRenderData {
   _featureIdData?: Float32Array | null;
   _metadataDescriptor?: ModelMetadataDescriptor;
   _mergedInstanceBindGroupCache?: MergedInstanceBindGroupCache;
+  // C9-17 Slice A — merged group-1 (material) bind-group cache, one slot per
+  // material-buffer variant so silhouette/translucent never alias the primary.
+  _mergedMaterialBindGroupCache?: MergedMaterialBindGroupCache;
+  _mergedMaterialBindGroupCacheSilhouette?: MergedMaterialBindGroupCache;
+  _mergedMaterialBindGroupCacheTranslucent?: MergedMaterialBindGroupCache;
+}
+
+interface MergedMaterialBindGroupCache {
+  device: GPUDevice;
+  layout: GPUBindGroupLayout;
+  materialBuffer: WebGPUBuffer | null;
+  lightBuffer: WebGPUBuffer | null;
+  textureEntries: GPUBindGroupEntry[] | null | undefined;
+  featureIdEntries: GPUBindGroupEntry[] | null | undefined;
+  iblEntries: GPUBindGroupEntry[] | null | undefined;
+  bindGroup: GPUBindGroup;
 }
 
 interface MergedInstanceBindGroupCache {
@@ -488,6 +504,18 @@ interface ModelWebGPUCache extends Idl2DHost {
   _project2DRefKey?: string | number | null;
   _project2DReference?: Cartesian3 | null;
   _customShader?: CustomShaderResourcesLike | null;
+  // C9-17 Slice A — memoized per-model IBL entries array + the five resolved
+  // identities that produced it (see getOrCreateModelIBLEntries).
+  _iblEntriesMemo?: IBLEntriesMemo;
+}
+
+interface IBLEntriesMemo {
+  diffuseView: GPUTextureView;
+  specularView: GPUTextureView;
+  sampler: GPUSampler;
+  shBuffer: GPUBuffer;
+  brdfLutView: GPUTextureView;
+  entries: GPUBindGroupEntry[];
 }
 
 interface CustomShaderLike {
@@ -3058,6 +3086,10 @@ function buildMergedMaterialBindGroup(
   frameState: CesiumFrameState,
 ) {
   return device.createBindGroup({
+    // C9-17 Slice A — label group 1 so the settled-frame bind-group probe
+    // (and the API-instrumentation lane) can attribute merged-material creates
+    // by label, exactly like the Batch-665 group-2 instance cache.
+    label: "Model merged material bind group",
     layout: pipelineCache.getOrCreateMaterialBGL(materialDefines | 0),
     entries: [
       { binding: 0, resource: { buffer: materialBuffer.buffer } },
@@ -3120,20 +3152,55 @@ function brdfLutEntries(
 }
 
 /**
- * Audit A.9 (Batch 130) -- builds the per-model IBL bind-group entries
- * from the model's `imageBasedLighting` cache, or returns null when
- * the cache hasn't run yet (caller falls back to defaults).
- * `WebGPUImageBasedLighting.update` populates `_webgpuSpecularView`,
- * `_webgpuDiffuseView`, `_webgpuSampler`, `_webgpuSHBuffer` on the
- * model's IBL instance once the radiance + irradiance prefilter has
- * generated mips.
+ * C9-17 Slice A — resolved per-model IBL identities. These five identities
+ * fully determine the group-1 IBL bind-group entries (bindings 33-38). A stable
+ * identity tuple lets {@link getOrCreateModelIBLEntries} hand back a
+ * byte-identical entries array whose OBJECT IDENTITY is stable across settled
+ * frames, which in turn lets the merged-material bind-group cache key on a
+ * single array reference (invariant 2).
  * @private
  */
-function buildModelIBLEntries(
+interface ResolvedModelIBL {
+  diffuseView: GPUTextureView;
+  specularView: GPUTextureView;
+  sampler: GPUSampler;
+  shBuffer: GPUBuffer;
+  brdfLutView: GPUTextureView;
+}
+
+/**
+ * Audit A.9 (Batch 130) -- resolves the per-model IBL identities from the
+ * model's `imageBasedLighting` cache + environment-map manager, falling back to
+ * the pipeline cache's neutral placeholders when the prefilter hasn't run yet.
+ * `WebGPUImageBasedLighting.update` populates `_webgpuSpecularView`,
+ * `_webgpuDiffuseView`, `_webgpuSampler`, `_webgpuSHBuffer` on the model's IBL
+ * instance once the radiance + irradiance prefilter has generated mips.
+ *
+ * C9-17 Slice A refactor: this was `buildModelIBLEntries` (which allocated a
+ * fresh array every frame and returned null on the placeholder path). It now
+ * returns the resolved IDENTITIES so the memoizing wrapper can compare them and
+ * keep the entries-array identity stable. The neutral-placeholder path returns
+ * the same bindings `defaultIBLEntries` produces (bindings 33/34 both point at
+ * `defaultIBLCubemapView`), so the built entries are byte-identical to before.
+ * @private
+ */
+function resolveModelIBL(
   model: ModelLike,
   pipelineCache: PipelineCacheLike,
   frameState: CesiumFrameState,
-): GPUBindGroupEntry[] {
+): ResolvedModelIBL {
+  // NEW-MODEL-IBL-BRDF-LUT (Batch 287) — binding 37 split-sum environment BRDF
+  // LUT; flips ONCE from the 1x1 placeholder to the generated table (trap #3).
+  const lutTex = (
+    frameState?.brdfLutGenerator as
+      | { _colorTexture?: { _webgpuTextureView?: GPUTextureView | null } }
+      | undefined
+  )?._colorTexture;
+  const lutView = lutTex?._webgpuTextureView;
+  const brdfLutView = defined(lutView)
+    ? lutView
+    : pipelineCache.defaultBrdfLutView;
+
   const ibl = model?._imageBasedLighting;
   let specularView = ibl?._webgpuSpecularView;
   let diffuseView = ibl?._webgpuDiffuseView;
@@ -3192,23 +3259,93 @@ function buildModelIBLEntries(
   }
 
   if (!defined(specularView) || !defined(diffuseView) || !defined(sampler)) {
-    return null;
+    // Neutral placeholder path — mid-grey ambient sampling so the FS doesn't
+    // have to gate the cubemap sample on an explicit "iblEnabled" flag. Mirrors
+    // `defaultIBLEntries` (bindings 33 AND 34 → defaultIBLCubemapView).
+    return {
+      diffuseView: pipelineCache.defaultIBLCubemapView,
+      specularView: pipelineCache.defaultIBLCubemapView,
+      sampler: pipelineCache.defaultIBLSampler,
+      shBuffer: pipelineCache.defaultSHBuffer,
+      brdfLutView,
+    };
   }
   // SH falls back to the cache's default (zeros + inactive flag) when
   // neither the explicit IBL nor the env manager publishes one. The
   // shader gates on `sh.control.w` so the default just makes the
   // diffuse path use the irradiance cubemap (which is what we want
   // when the env manager is the source).
-  const shResource = defined(shBuffer)
-    ? { buffer: shBuffer }
-    : { buffer: pipelineCache.defaultSHBuffer };
+  const shResolved = defined(shBuffer)
+    ? shBuffer
+    : pipelineCache.defaultSHBuffer;
+  return {
+    diffuseView,
+    specularView,
+    sampler,
+    shBuffer: shResolved,
+    brdfLutView,
+  };
+}
+
+/**
+ * Builds the group-1 IBL bind-group entries (bindings 33-38) from resolved
+ * identities. Binding order + resources are byte-identical to the historical
+ * `buildModelIBLEntries` / `defaultIBLEntries` + `brdfLutEntries` output.
+ * @private
+ */
+function buildIBLEntriesFromResolved(
+  resolved: ResolvedModelIBL,
+  pipelineCache: PipelineCacheLike,
+): GPUBindGroupEntry[] {
   return [
-    { binding: 33, resource: diffuseView },
-    { binding: 34, resource: specularView },
-    { binding: 35, resource: sampler },
-    { binding: 36, resource: shResource },
-    ...brdfLutEntries(pipelineCache, frameState),
+    { binding: 33, resource: resolved.diffuseView },
+    { binding: 34, resource: resolved.specularView },
+    { binding: 35, resource: resolved.sampler },
+    { binding: 36, resource: { buffer: resolved.shBuffer } },
+    { binding: 37, resource: resolved.brdfLutView },
+    { binding: 38, resource: pipelineCache.defaultBrdfLutSampler },
   ];
+}
+
+/**
+ * C9-17 Slice A — memoized per-model IBL entries. Resolves the five IBL
+ * identities every frame (cheap object reads) but returns the SAME entries
+ * array while they are unchanged, so the merged-material bind-group cache can
+ * treat the array reference as a single revision token (invariant 2). Trap
+ * #2/#3: without this memo the merged-material cache would miss every settled
+ * frame on a fresh array and "work" while still creating just as many bind
+ * groups; the memo also carries the brdf-LUT + env-manager view flips so a
+ * placeholder→real upgrade rebuilds exactly once.
+ * @private
+ */
+function getOrCreateModelIBLEntries(
+  cache: ModelWebGPUCache,
+  model: ModelLike,
+  pipelineCache: PipelineCacheLike,
+  frameState: CesiumFrameState,
+): GPUBindGroupEntry[] {
+  const resolved = resolveModelIBL(model, pipelineCache, frameState);
+  const memo = cache._iblEntriesMemo;
+  if (
+    defined(memo) &&
+    memo.diffuseView === resolved.diffuseView &&
+    memo.specularView === resolved.specularView &&
+    memo.sampler === resolved.sampler &&
+    memo.shBuffer === resolved.shBuffer &&
+    memo.brdfLutView === resolved.brdfLutView
+  ) {
+    return memo.entries;
+  }
+  const entries = buildIBLEntriesFromResolved(resolved, pipelineCache);
+  cache._iblEntriesMemo = {
+    diffuseView: resolved.diffuseView,
+    specularView: resolved.specularView,
+    sampler: resolved.sampler,
+    shBuffer: resolved.shBuffer,
+    brdfLutView: resolved.brdfLutView,
+    entries,
+  };
+  return entries;
 }
 
 /**
@@ -3353,6 +3490,103 @@ function getOrCreateMergedInstanceBindGroup(
     prevInstanceBuffer: resolvedPrevInstanceBuffer,
     bindGroup,
   };
+  return bindGroup;
+}
+
+// C9-17 Slice A — the three merged-material variants share one builder but must
+// NOT alias each other's cache: they differ only by material buffer
+// (primary / silhouette / translucent — trap #1). Each variant gets its own
+// per-primitive cache slot.
+const MERGED_MATERIAL_SLOT_PRIMARY = 0;
+const MERGED_MATERIAL_SLOT_SILHOUETTE = 1;
+const MERGED_MATERIAL_SLOT_TRANSLUCENT = 2;
+
+/**
+ * C9-17 Slice A (FAR-309 / audit #21) — per-primitive merged group-1 (material +
+ * light + textures + featureId + IBL) bind-group cache, mirroring the Batch-665
+ * group-2 instance cache. Bind groups are immutable but the buffers/textures
+ * they reference are updated in place every frame (material UBO writeBuffer, sun
+ * direction, etc.), so rebuilding this group every frame provides no freshness
+ * benefit. Exact resource identity catches every real replacement:
+ *   - `layout`          — per-`materialDefines` variant BGL (Batch 174)
+ *   - `materialBuffer`  — primary / silhouette / translucent UB (slot-keyed)
+ *   - `lightBuffer`     — per-primitive light UB
+ *   - `textureEntries`  — rebuilt only on deferred-placeholder upgrade /
+ *                         refraction-view change, so its ARRAY IDENTITY is the
+ *                         invalidation token (trap #4 — never clone it)
+ *   - `featureIdEntries`— stable `primCache._featureIdEntries` array or null;
+ *                         null (default entries spliced by the builder) is its
+ *                         own cache state (trap #6)
+ *   - `iblEntries`      — the memoized array from {@link getOrCreateModelIBLEntries}
+ *                         (invariant 2), one reference summarising the five IBL
+ *                         identities
+ * Cache hit ⇒ zero `createBindGroup`; any identity change ⇒ exactly one rebuild.
+ * @private
+ */
+function getOrCreateMergedMaterialBindGroup(
+  primCache: PrimitiveRenderData,
+  slot: number,
+  device: GPUDevice,
+  pipelineCache: PipelineCacheLike,
+  materialBuffer: WebGPUBuffer | null,
+  lightBuffer: WebGPUBuffer | null,
+  textureEntries: GPUBindGroupEntry[] | null | undefined,
+  featureIdEntries: GPUBindGroupEntry[] | null | undefined,
+  iblEntries: GPUBindGroupEntry[] | null | undefined,
+  materialDefines: number,
+  frameState: CesiumFrameState,
+): GPUBindGroup {
+  const layout = pipelineCache.getOrCreateMaterialBGL(materialDefines | 0);
+  let cached: MergedMaterialBindGroupCache | undefined;
+  if (slot === MERGED_MATERIAL_SLOT_SILHOUETTE) {
+    cached = primCache._mergedMaterialBindGroupCacheSilhouette;
+  } else if (slot === MERGED_MATERIAL_SLOT_TRANSLUCENT) {
+    cached = primCache._mergedMaterialBindGroupCacheTranslucent;
+  } else {
+    cached = primCache._mergedMaterialBindGroupCache;
+  }
+
+  if (
+    defined(cached) &&
+    cached.device === device &&
+    cached.layout === layout &&
+    cached.materialBuffer === materialBuffer &&
+    cached.lightBuffer === lightBuffer &&
+    cached.textureEntries === textureEntries &&
+    cached.featureIdEntries === featureIdEntries &&
+    cached.iblEntries === iblEntries
+  ) {
+    return cached.bindGroup;
+  }
+
+  const bindGroup = buildMergedMaterialBindGroup(
+    device,
+    pipelineCache,
+    materialBuffer,
+    lightBuffer,
+    textureEntries,
+    featureIdEntries,
+    iblEntries,
+    materialDefines,
+    frameState,
+  );
+  const record: MergedMaterialBindGroupCache = {
+    device,
+    layout,
+    materialBuffer,
+    lightBuffer,
+    textureEntries,
+    featureIdEntries,
+    iblEntries,
+    bindGroup,
+  };
+  if (slot === MERGED_MATERIAL_SLOT_SILHOUETTE) {
+    primCache._mergedMaterialBindGroupCacheSilhouette = record;
+  } else if (slot === MERGED_MATERIAL_SLOT_TRANSLUCENT) {
+    primCache._mergedMaterialBindGroupCacheTranslucent = record;
+  } else {
+    primCache._mergedMaterialBindGroupCache = record;
+  }
   return bindGroup;
 }
 
@@ -5273,8 +5507,18 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
 
       // NEW-BG-CONSOLIDATION (Batch 122) — 4 merged bind groups.
       // Batch 174 — `materialDefines` selects the per-variant materialBGL.
-      const iblEntries = buildModelIBLEntries(model, pipelineCache, frameState);
-      const mergedMaterialBG = buildMergedMaterialBindGroup(
+      // C9-17 Slice A — memoized IBL entries (stable array identity while the
+      // five resolved IBL identities are unchanged) so the group-1 cache below
+      // keys on one array reference.
+      const iblEntries = getOrCreateModelIBLEntries(
+        cache,
+        model,
+        pipelineCache,
+        frameState,
+      );
+      const mergedMaterialBG = getOrCreateMergedMaterialBindGroup(
+        primCache,
+        MERGED_MATERIAL_SLOT_PRIMARY,
         device,
         pipelineCache,
         primCache.materialBuffer,
@@ -5904,7 +6148,9 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
               silhouettePassTranslucent,
             );
         }
-        const mergedMaterialBGSilhouette = buildMergedMaterialBindGroup(
+        const mergedMaterialBGSilhouette = getOrCreateMergedMaterialBindGroup(
+          primCache,
+          MERGED_MATERIAL_SLOT_SILHOUETTE,
           device,
           pipelineCache,
           primCache.materialBufferSilhouette,
@@ -6054,7 +6300,9 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
         // NEW-BG-CONSOLIDATION (Batch 122) — translucent-class merged
         // group 1 BG. Same shape as the primary `mergedMaterialBG` but
         // with the alternate `materialBufferTranslucent` instead.
-        const mergedMaterialBGTranslucent = buildMergedMaterialBindGroup(
+        const mergedMaterialBGTranslucent = getOrCreateMergedMaterialBindGroup(
+          primCache,
+          MERGED_MATERIAL_SLOT_TRANSLUCENT,
           device,
           pipelineCache,
           primCache.materialBufferTranslucent,
@@ -6441,6 +6689,12 @@ function destroyPrimitiveCacheResources(pc: PrimitiveRenderData | undefined) {
   // Bind groups do not have an explicit destroy operation. Release the cache
   // record before destroying any of the buffers it references.
   pc._mergedInstanceBindGroupCache = undefined;
+  // C9-17 Slice A — release the merged group-1 records too; a late-metadata
+  // rebuild (METADATA-TABLE-SOURCES) destroys+recreates the material buffers,
+  // so the cached bind groups must drop their now-dangling buffer references.
+  pc._mergedMaterialBindGroupCache = undefined;
+  pc._mergedMaterialBindGroupCacheSilhouette = undefined;
+  pc._mergedMaterialBindGroupCacheTranslucent = undefined;
 
   pc.positionBuffer?.destroy();
   pc.positionBuffer2D?.destroy();
@@ -6542,6 +6796,8 @@ function destroyWebGPUModelResources(model: ModelLike) {
 
 export {
   getOrCreateMergedInstanceBindGroup,
+  getOrCreateMergedMaterialBindGroup,
+  getOrCreateModelIBLEntries,
   updateWebGPUModel,
   destroyWebGPUModelResources,
 };

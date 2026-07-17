@@ -13279,3 +13279,28 @@ Two bugs caught by running the FULL standing-gate matrix against the post-log-de
 **Regressions green:** `probe-clustered-multifrustum` (enabled multi-frustum output exact), `probe-clustered-per-frame`, `probe-clustered-dispatcher`.
 
 **Residual deferred:** enabled-but-zero-light per-frame work → `NEW-CLUSTERED-ENABLED-ZERO-LIGHT-FRAME-ZERO-WORK` in DEFERRED_WORK (not reproduced at defaults).
+
+## C9-17 Slice A — settled model group-1 (material/IBL) bind-group caching (2026-07-17)
+
+**Type:** performance/allocation reduction (not a bug fix), Campaign 9 Wave 2 item 33 / FAR-309. PARTIAL — Slice A + Slice C invariant-4 certification landed; Slices B/D remain.
+
+**Premise verified first:** `probe-model-instance-bg-cache.mjs` on clean `da04ab31aa` reproduced the weekly-defense §8.6 figure exactly — **560 settled `createBindGroup`/40 frames = 14/frame**, `settledMergedInstanceBindGroupCreates=0`. A label/entry-count breakdown + stack fingerprint attributed **8/frame to group-1 material BGs, all from `updateWebGPUModel`** (not the env-capture path, idle here; `Model.update` runs 2×/model/frame = main + offscreen env-map render), with `updateWebGPUSun`/`TAA_BG`/`PostProcess-IdentityBlit` accounting for the other 6/frame.
+
+**Root of the churn:** `buildMergedMaterialBindGroup` did a raw unlabeled `device.createBindGroup` every frame per primitive at three emission sites, and `buildModelIBLEntries` allocated a fresh 6-entry array every frame even when the resolved IBL views were unchanged — so there was no stable identity to cache on.
+
+**Fix (`WebGPUModelRenderer.ts`):**
+
+- Labeled the group-1 descriptor `"Model merged material bind group"` (probe/API-lane attribution).
+- Refactored `buildModelIBLEntries` → `resolveModelIBL` (returns the five identities: diffuse/specular views, sampler, SH buffer, brdf-LUT view) + `buildIBLEntriesFromResolved` + memoizing `getOrCreateModelIBLEntries` (per-model `cache._iblEntriesMemo`; stable array while the five identities are unchanged — byte-identical bindings 33-38, neutral-placeholder path binds 33 & 34 to `defaultIBLCubemapView` exactly as the retained `defaultIBLEntries`).
+- New `getOrCreateMergedMaterialBindGroup(primCache, slot, …)` mirroring the Batch-665 group-2 instance cache, three per-primitive slots (primary/silhouette/translucent — never alias since they differ only by material buffer), keyed on exact identities (device, layout, materialBuffer, lightBuffer, textureEntries ref, featureIdEntries ref, iblEntries ref). Cache hit ⇒ 0 creates; any identity change ⇒ 1 rebuild.
+- Wired the three emission sites; the env-capture-path `buildMergedMaterialBindGroup` (`getOrCreateModelCaptureCommands`) stays UNcached (out of scope, now labeled). Released the three slots in `destroyPrimitiveCacheResources`.
+
+**Evidence (post-change, same probe):** `settledAllBindGroupCreates` **560 → 240** (−320 = the exact `entries-25`+`entries-27` group-1 buckets), **`settledMergedMaterialBindGroupCreates=0`**, `settledMergedInstanceBindGroupCreates=0`, `identitiesStable=true`, 0 device/page errors. The 240 remainder is 100% non-model owners (Sun 80, TAA 80, canvas blit 80). Every model group-1 settled create eliminated.
+
+**Key trap avoided:** caching group-1 on the `iblEntries` array identity WITHOUT first memoizing the IBL resolution (trap #2) would miss every frame on a fresh array and "work" while creating just as many bind groups — verified by the labeled counter dropping to 0, not by eyeball. The brdf-LUT placeholder→real flip (trap #3) is in the memo key, certified by `WebGPUModelMaterialBindGroupCacheSpec` and `probe-model-ibl` (BRDF LUT consumed, GATE PASS).
+
+**Specs:** `WebGPUModelMaterialBindGroupCacheSpec.js` (material-cache + IBL-memo) and `WebGPUModelFeatureIdSpec.js` (Slice C invariant-4: `getSelectedImplicitFeatureId` returns the exact `FeatureIdImplicitRange` — allocation-free — or literal null; `synthesizeImplicitFeatureIdData` offset+floor(v/repeat)). `gulp test --includeName "WebGPUModel"` = 35 SUCCESS, 0 failures.
+
+**Mutation-exactness (all PASS, byte-identical):** `verify-model-feature-pick`, `probe-model-color` (GATE PASS, meanChanDiff 0.02), `probe-taa-model-skinned-velocity`, `probe-model-ibl` (trap #3), `probe-model-pbr-ibl-parity` (<5%), `probe-standalone-model-pick`, `probe-model-scene-modes` (2D/CV/3D). PNGs read.
+
+**Remaining:** Slice B (loader-owned `_webgpuGeometryRevision` tokens), Slice D (settled `WebGPUDrawCommand` reuse), renderer-side implicit-FID change-gate spec. See the C9-17 row in `QUEUE_2026-07-15_CAMPAIGN9.md` §3.2.

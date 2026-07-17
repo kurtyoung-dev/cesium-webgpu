@@ -41,12 +41,23 @@ try {
     scene.taaEnabled = true;
 
     let mergedCreates = 0;
+    let mergedMaterialCreates = 0;
     let allBindGroupCreates = 0;
+    // C9-17 Slice A — attribute every settled createBindGroup by its label, or
+    // by an entry-count signature when the descriptor is unlabeled, so the
+    // remaining creates after group-1 caching can be named in the ledger row.
+    let labelCounts = {};
     const originalCreateBindGroup = device.createBindGroup.bind(device);
     device.createBindGroup = function (descriptor) {
       allBindGroupCreates++;
+      const entryCount = descriptor?.entries?.length ?? 0;
+      const bucket = descriptor?.label ?? `unlabeled:entries-${entryCount}`;
+      labelCounts[bucket] = (labelCounts[bucket] ?? 0) + 1;
       if (descriptor?.label === "Model merged instance bind group") {
         mergedCreates++;
+      }
+      if (descriptor?.label === "Model merged material bind group") {
+        mergedMaterialCreates++;
       }
       return originalCreateBindGroup(descriptor);
     };
@@ -123,7 +134,9 @@ try {
 
     const before = cacheSnapshot();
     mergedCreates = 0;
+    mergedMaterialCreates = 0;
     allBindGroupCreates = 0;
+    labelCounts = {};
     await renderFrames(40);
     const after = cacheSnapshot();
 
@@ -144,7 +157,9 @@ try {
       after: after.map(({ privateGroups: _privateGroups, ...entry }) => entry),
       settledFrames: 40,
       settledMergedInstanceBindGroupCreates: mergedCreates,
+      settledMergedMaterialBindGroupCreates: mergedMaterialCreates,
       settledAllBindGroupCreates: allBindGroupCreates,
+      settledBindGroupCreatesByBucket: labelCounts,
       identitiesStable,
       deviceErrors,
     };
@@ -159,6 +174,7 @@ try {
     result.ready.every((entry) => entry.ready) &&
     hasCustomCoverage &&
     result.settledMergedInstanceBindGroupCreates === 0 &&
+    result.settledMergedMaterialBindGroupCreates === 0 &&
     result.identitiesStable &&
     result.deviceErrors.length === 0 &&
     result.pageErrors.length === 0;
