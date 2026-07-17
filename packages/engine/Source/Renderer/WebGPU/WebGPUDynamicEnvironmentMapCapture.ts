@@ -300,6 +300,7 @@ export function runSceneCapture(
     uniformState?: {
       updateCamera(camera: unknown): void;
     };
+    flushPendingImageryMipJobs?: () => void;
   };
   if (
     ctx.sceneCaptureReflections !== true ||
@@ -502,5 +503,13 @@ export function runSceneCapture(
     uniformState.updateCamera(mainCamera);
   }
 
+  // F3 (Batch 686) — this is a PRIVATE mid-frame submit whose passes replay
+  // the globe tile commands with the standard imagery bind groups. A texture
+  // realized earlier THIS frame has its mip chain pending in the context's
+  // frame-owned `"ImageryMipPreparation"` queue (only submitted at endFrame),
+  // so without a flush the capture would sample mips 1..N zero-initialized at
+  // cube-face resolution (darkened env cube). Flush pending mip jobs first so
+  // the queue orders mips → capture passes.
+  ctx.flushPendingImageryMipJobs?.();
   device.queue.submit([encoder.finish()]);
 }

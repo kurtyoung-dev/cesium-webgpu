@@ -22,6 +22,7 @@
  */
 
 import type { WebGPURenderPipelineDescriptor } from "./WebGPURenderPipelineCache.js";
+import type { SharedImageryRealization } from "./WebGPUSharedImageryRealizations.js";
 
 /**
  * Entry slot for the per-cacheKey pipeline maps. The descriptor is the
@@ -454,6 +455,13 @@ export interface ImageryGPUTexture {
   byteSize?: number;
   /** Logical owner used by opt-in attribution; imported textures omit it. */
   logicalOwner?: "imagery";
+  /**
+   * C9-12A — when set, the texture/view are OWNED by this shared realization
+   * (many tile cache entries reference the same one), not by this cache entry.
+   * The entry's cleanup releases the reference instead of destroying the
+   * texture. Undefined → the cache entry owns its texture outright.
+   */
+  shared?: SharedImageryRealization;
 }
 
 /**
@@ -501,6 +509,19 @@ export interface WebGPUGlobeLogicalCounters {
   imageryOwnedLiveBytes?: number;
   imageryOwnedHighWaterTextures?: number;
   imageryOwnedHighWaterBytes?: number;
+  /** C9-12A — distinct shared imagery realizations created (a cache miss on the
+   * shared table for a shareable, immutable source). */
+  imageryRealizationsCreated?: number;
+  /** C9-12A — tile cache entries that referenced an existing shared realization
+   * instead of realizing their own texture. */
+  imageryRealizationShares?: number;
+  /** C9-12A — live bytes held by the shared realization table. */
+  imageryRealizationLiveBytes?: number;
+  /** C9-12A — shared realizations retired through the grace LRU / teardown. */
+  imageryRealizationRetirements?: number;
+  /** C9-12A — mip generations that fell back to a private draw-path submit
+   * (context unavailable). Must stay 0 on the happy path — a probe tripwire. */
+  imageryMipFallbackSubmits?: number;
   /** C9-13 — times the per-frame globe effects handle was built fresh. */
   effectsHandlePrepares?: number;
   /** C9-13 — times a tile/pass reused the prepared globe effects handle. */

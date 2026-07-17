@@ -381,6 +381,29 @@ export class WebGPUContext extends GraphicsContext {
   // after the just-submitted GPU work completes (`onSubmittedWorkDone`).
   private _pendingTextureDestroys: GPUTexture[] = [];
 
+  // C9-12A (hardened Batch 686) — imagery mip-generation jobs deferred out of
+  // draw emission. A tile that realizes a new imagery GPUTexture during
+  // command building enqueues a job here instead of opening a private encoder
+  // + private submit. `endFrame` encodes every pending job into ONE
+  // `"ImageryMipPreparation"` encoder submitted immediately BEFORE the frame
+  // encoder's own submit (F8: two submits — same-queue ordering guaranteed, an
+  // invalid prep buffer cannot invalidate the frame), so the queue orders
+  // `copyExternalImageToTexture` → mip passes → scene passes and the realizing
+  // frame samples complete mips. Renderers that privately submit mid-frame
+  // work sampling imagery textures MUST call `flushPendingImageryMipJobs`
+  // first (F3). Zero private submits from the draw path.
+  private _pendingImageryMipJobs: Array<{
+    texture: GPUTexture;
+    format: GPUTextureFormat;
+    mipLevelCount: number;
+  }> = [];
+
+  // F7 (Batch 686) — textures destroyed INLINE (dead immediately). Consulted
+  // by the pending-mip encode step: only these are skipped. Scheduled destroys
+  // (`_pendingTextureDestroys`) remain live through the frame submit and MUST
+  // still get their mip chains. WeakSet — entries vanish with the texture.
+  private _inlineDestroyedTextures = new WeakSet<GPUTexture>();
+
   // Frame state for command recording — public for cross-renderer access
   public _currentCommandEncoder: GPUCommandEncoder | null = null;
   public _currentRenderPassEncoder: GPURenderPassEncoder | null = null;
@@ -2341,6 +2364,102 @@ export class WebGPUContext extends GraphicsContext {
     this._pendingTextureDestroys.push(texture);
   }
 
+  /**
+   * Enqueue mip-chain generation for a freshly-uploaded texture (C9-12A). The
+   * job is encoded into the shared `"ImageryMipPreparation"` encoder in
+   * {@link WebGPUContext#endFrame} and submitted before the frame encoder, so
+   * the mips are complete before any scene pass samples the texture this frame.
+   *
+   * If the device is gone the job is dropped: nothing will sample the texture
+   * (its owning realization is discarded on device change), so generating mips
+   * would be wasted work and would fail on the dead device anyway.
+   */
+  enqueueImageryMipGeneration(
+    texture: GPUTexture,
+    format: GPUTextureFormat,
+    mipLevelCount: number,
+  ): void {
+    if (!texture || mipLevelCount <= 1) {
+      return;
+    }
+    if (!this._device || this._isDeviceUnavailable) {
+      return;
+    }
+    this._pendingImageryMipJobs.push({ texture, format, mipLevelCount });
+  }
+
+  /**
+   * F7 (Batch 686) — record that a texture was destroyed INLINE (it is dead
+   * immediately, unlike {@link WebGPUContext#scheduleTextureDestroy}'d
+   * textures, which stay live until after this frame's submit completes).
+   * The pending-mip encode step drops jobs ONLY for inline-destroyed textures;
+   * scheduled-but-live textures still get their mips (worst case trivially
+   * wasted work, correct output always).
+   */
+  noteInlineTextureDestroy(texture: GPUTexture): void {
+    this._inlineDestroyedTextures.add(texture);
+  }
+
+  /**
+   * Capture-and-clear the pending imagery mip jobs and encode them into one
+   * `"ImageryMipPreparation"` command buffer (C9-12A). Returns null when there
+   * is nothing to encode. Shared by {@link WebGPUContext#endFrame} and
+   * {@link WebGPUContext#flushPendingImageryMipJobs}.
+   */
+  private _encodePendingImageryMipJobs(): GPUCommandBuffer | null {
+    if (this._pendingImageryMipJobs.length === 0 || !this._device) {
+      return null;
+    }
+    const jobs = this._pendingImageryMipJobs;
+    this._pendingImageryMipJobs = [];
+    const prepEncoder = this._device.createCommandEncoder({
+      label: "ImageryMipPreparation",
+    });
+    const gen = this.mipmapGenerator;
+    let encoded = 0;
+    for (let i = 0; i < jobs.length; ++i) {
+      const job = jobs[i];
+      // F7 — skip ONLY textures actually destroyed inline (dead now).
+      // Scheduled destroys (`_pendingTextureDestroys`) stay LIVE until after
+      // the upcoming submit — this frame's already-encoded draws may still
+      // sample them, so their mip chains MUST be generated.
+      if (this._inlineDestroyedTextures.has(job.texture)) {
+        continue;
+      }
+      gen.generateMipmaps(
+        job.texture,
+        job.format,
+        job.mipLevelCount,
+        prepEncoder,
+      );
+      ++encoded;
+    }
+    return encoded > 0 ? prepEncoder.finish() : null;
+  }
+
+  /**
+   * F3 (Batch 686) — immediately encode + submit any pending imagery mip jobs.
+   * MUST be called by every renderer that privately `queue.submit`s work which
+   * samples globe imagery textures mid-frame (e.g. the dynamic environment-map
+   * capture): without the flush, a texture realized earlier in the same frame
+   * would be sampled with mips 1..N still zero-initialized, because the
+   * frame-owned `"ImageryMipPreparation"` submit only happens in `endFrame`.
+   * No-op when nothing is pending.
+   */
+  flushPendingImageryMipJobs(): void {
+    if (this._pendingImageryMipJobs.length === 0) {
+      return;
+    }
+    if (!this._device || this._isDeviceUnavailable) {
+      this._pendingImageryMipJobs.length = 0;
+      return;
+    }
+    const prepBuffer = this._encodePendingImageryMipJobs();
+    if (prepBuffer) {
+      this._device.queue.submit([prepBuffer]);
+    }
+  }
+
   endFrame(): void {
     if (this._isDeviceUnavailable) {
       //>>includeStart('debug', pragmas.debug);
@@ -2396,6 +2515,20 @@ export class WebGPUContext extends GraphicsContext {
     // before this encoder is finished. The manager is lazy and endFrame is
     // idempotent, so pick/empty frames that never began profiling are no-ops.
     this._performanceManager?.endFrame(this._currentCommandEncoder);
+
+    // C9-12A (hardened Batch 686) — encode all imagery mip jobs deferred out
+    // of draw emission into one prep encoder and submit it BEFORE the frame
+    // encoder as its OWN submit (F8 — same-queue ordering is guaranteed, and
+    // an invalid prep buffer can no longer invalidate the whole frame submit).
+    // Queue ordering (copyExternalImageToTexture at update time → these mip
+    // passes → scene passes) guarantees the frame that realized the texture
+    // samples complete mips. Only textures destroyed INLINE this frame are
+    // skipped (F7); scheduled-destroy textures are live through this submit
+    // and still get their mips.
+    const prepBuffer = this._encodePendingImageryMipJobs();
+    if (prepBuffer) {
+      this._device.queue.submit([prepBuffer]);
+    }
 
     // Submit command buffer
     const commandBuffer = this._currentCommandEncoder.finish();
@@ -3171,6 +3304,11 @@ export class WebGPUContext extends GraphicsContext {
       // their staged writes would only land at endFrame's flush, AFTER this
       // submit. Mirrors the endFrame() flush.
       this._uniformAllocator?.flush();
+      // F3 (Batch 686) — this mid-frame submit executes draws already encoded
+      // into the frame encoder, which may sample an imagery texture realized
+      // THIS frame whose mip chain is still pending for endFrame. Flush the
+      // pending mip jobs first (own submit) so the queue orders mips → draws.
+      this.flushPendingImageryMipJobs();
       const commandBuffer = this._currentCommandEncoder.finish();
       this._device!.queue.submit([commandBuffer]);
       // Create a fresh encoder for any subsequent operations this frame
@@ -4223,6 +4361,8 @@ export class WebGPUContext extends GraphicsContext {
       texture.destroy();
     }
     this._pendingTextureDestroys.length = 0;
+    // C9-12A — drop any undelivered imagery mip jobs on teardown.
+    this._pendingImageryMipJobs.length = 0;
 
     this._shaderCache.destroy();
     const textureCache = this._textureCache as { destroy?: () => void };
@@ -4877,6 +5017,10 @@ export class WebGPUContext extends GraphicsContext {
       // GPUBuffer.destroy() calls fail against the dead device anyway.
       this.onDeviceInvalidated(() => {
         this._mipmapGenerator = null;
+        // C9-12A — drop any imagery mip jobs queued for the lost device;
+        // encoding them with the recovered device's generator would be a
+        // cross-device validation error. Their textures die with the device.
+        this._pendingImageryMipJobs.length = 0;
       });
     }
     return this._mipmapGenerator!;

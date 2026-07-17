@@ -1,9 +1,26 @@
 // C2-10 NEW-WEBGPU-GRID-MATERIAL-PATTERN-MISSING — verify the WGSL Grid material
 // now draws constant-PIXEL-width antialiased lines (GridMaterial.glsl parity) via
 // screen-space derivatives, instead of the old constant-UV-width step() lines
-// whose apparent thickness scaled with zoom. Captures a flat Grid polygon at two
-// straight-down altitudes on both backends and measures the mean grid-line width
-// (center scanline) — it should stay ~constant across zoom AND match WebGL.
+// whose apparent thickness scaled with zoom.
+//
+// Batch 685 reframe: the original far capture (pitch -35 from a fixed 333 m
+// south offset, alt 2000) put the polygon ENTIRELY below the frustum's bottom
+// edge — a deterministic black canvas on BOTH backends (3+3 reps byte-identical,
+// zero console errors), so check A could never pass. Nadir waypoints were added
+// so the subject is guaranteed in-frame at both zooms.
+//
+// Batch 686 hardening (review F9): the close OBLIQUE waypoint (C2-10-style
+// pitch -35, anisotropic derivatives) is kept alongside the two nadir zoom
+// waypoints; check A now requires INTERIOR-region grid lines (runs inside the
+// central third of the scanline band — border/edge artifacts can't satisfy it)
+// at EVERY waypoint; and WebGL's own zoom ratio is gated exactly like WebGPU's
+// (the reference must satisfy its own constancy bar). Width statistics use the
+// interior-run median so the polygon's solid border can't skew the far-zoom
+// median. Thresholds unchanged (ratio < 1.8; >2 lines).
+//
+// Also hardened (Batch 685): console-error CONTENTS + pageerror are captured
+// and printed (previously only counted), each capture closes its browser in a
+// finally block, and the settle waits for prim.ready before the fixed frames.
 //
 // Usage: PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-grid-multizoom.mjs
 import { chromium } from "playwright";
@@ -11,91 +28,130 @@ import zlib from "zlib";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const LON = -75, LAT = 40;
-const ALTS = [400, 2000]; // close, far (straight down)
+// Waypoints: one close oblique (C2-10 original framing — exercises anisotropic
+// screen-space derivatives) + two nadir zooms (subject guaranteed in-frame;
+// 700/2000 m ASL = 400/1700 m above the 300 m extruded top face). The zoom
+// CONSTANCY ratio is measured across the two nadir waypoints (same view
+// geometry, pure zoom); the oblique waypoint feeds the render/interior check.
+const WAYPOINTS = [
+  { name: "oblique-400", alt: 400, pitch: -35, southOffset: 1.5 },
+  { name: "nadir-700", alt: 700, pitch: -90, southOffset: 0 },
+  { name: "nadir-2000", alt: 2000, pitch: -90, southOffset: 0 },
+];
+const RATIO_PAIR = ["nadir-700", "nadir-2000"];
 
-async function capture(renderer, alt) {
+async function capture(renderer, waypoint) {
   const browser = await chromium.launch({ channel: "msedge", headless: true, args: ["--enable-unsafe-webgpu"] });
-  const page = await browser.newPage({ viewport: { width: 600, height: 600 } });
-  const errs = [];
-  page.on("console", (m) => { if (m.type() === "error") errs.push(m.text()); });
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, { waitUntil: "networkidle", timeout: 90000 });
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
+  try {
+    const page = await browser.newPage({ viewport: { width: 600, height: 600 } });
+    const errs = [];
+    page.on("console", (m) => { if (m.type() === "error") errs.push(m.text().slice(0, 800)); });
+    page.on("pageerror", (e) => errs.push(`PAGEERROR: ${String(e).slice(0, 800)}`));
+    await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, { waitUntil: "networkidle", timeout: 90000 });
+    await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
-  await page.evaluate(async ({ lon, lat, alt }) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const v = window.viewer, s = v.scene;
-    s.requestRenderMode = false;
-    s.globe.show = false; s.skyBox.show = false; s.skyAtmosphere.show = false;
-    if (s.sun) s.sun.show = false;
-    s.backgroundColor = C.Color.BLACK;
-    for (const sel of [".cesium-viewer-toolbar", ".cesium-viewer-animationContainer",
-      ".cesium-viewer-timelineContainer", ".cesium-viewer-bottom", ".cesium-viewer-fullscreenContainer"]) {
-      document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
-    }
-    const d = 0.002;
-    const material = C.Material.fromType("Grid", {
-      color: C.Color.YELLOW,
-      cellAlpha: 0.1,
-      lineCount: new C.Cartesian2(8, 8),
-      lineThickness: new C.Cartesian2(2, 2),
-    });
-    // EXTRUDED polygon (top face carries st) — the FLAT-polygon grid renders
-    // solid on WebGPU (pre-existing st issue, both old+new shader). The extruded
-    // top face is the path matparity uses, where the grid pattern renders.
-    const prim = new C.Primitive({
-      geometryInstances: new C.GeometryInstance({
-        geometry: new C.PolygonGeometry({
-          polygonHierarchy: new C.PolygonHierarchy(C.Cartesian3.fromDegreesArray([
-            lon - d, lat - d, lon + d, lat - d, lon + d, lat + d, lon - d, lat + d,
-          ])),
-          height: 0, extrudedHeight: 300,
-          vertexFormat: C.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
+    await page.evaluate(async ({ lon, lat, alt, pitch, southOffset }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer, s = v.scene;
+      s.requestRenderMode = false;
+      s.globe.show = false; s.skyBox.show = false; s.skyAtmosphere.show = false;
+      if (s.sun) s.sun.show = false;
+      s.backgroundColor = C.Color.BLACK;
+      for (const sel of [".cesium-viewer-toolbar", ".cesium-viewer-animationContainer",
+        ".cesium-viewer-timelineContainer", ".cesium-viewer-bottom", ".cesium-viewer-fullscreenContainer"]) {
+        document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
+      }
+      const d = 0.002;
+      const material = C.Material.fromType("Grid", {
+        color: C.Color.YELLOW,
+        cellAlpha: 0.1,
+        lineCount: new C.Cartesian2(8, 8),
+        lineThickness: new C.Cartesian2(2, 2),
+      });
+      // EXTRUDED polygon (top face carries st) — the FLAT-polygon grid renders
+      // solid on WebGPU (pre-existing st issue, both old+new shader). The extruded
+      // top face is the path matparity uses, where the grid pattern renders.
+      const prim = new C.Primitive({
+        geometryInstances: new C.GeometryInstance({
+          geometry: new C.PolygonGeometry({
+            polygonHierarchy: new C.PolygonHierarchy(C.Cartesian3.fromDegreesArray([
+              lon - d, lat - d, lon + d, lat - d, lon + d, lat + d, lon - d, lat + d,
+            ])),
+            height: 0, extrudedHeight: 300,
+            vertexFormat: C.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
+          }),
         }),
-      }),
-      appearance: new C.MaterialAppearance({ material, flat: true }),
-      asynchronous: false,
-    });
-    s.primitives.add(prim);
-    v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(lon, lat - d * 1.5, alt),
-      orientation: { heading: 0, pitch: C.Math.toRadians(-35), roll: 0 },
-    });
-    for (let i = 0; i < 120; i++) { s.render(); await new Promise((r) => requestAnimationFrame(r)); }
-    s.canvas.setAttribute("data-grid", "1");
-  }, { lon: LON, lat: LAT, alt });
+        appearance: new C.MaterialAppearance({ material, flat: true }),
+        asynchronous: false,
+      });
+      s.primitives.add(prim);
+      v.camera.setView({
+        destination: C.Cartesian3.fromDegrees(lon, lat - d * southOffset, alt),
+        orientation: { heading: 0, pitch: C.Math.toRadians(pitch), roll: 0 },
+      });
+      // Deterministic settle: primitive ready first (bounded), then fixed frames.
+      for (let i = 0; i < 600 && !prim.ready; i++) { s.render(); await new Promise((r) => requestAnimationFrame(r)); }
+      for (let i = 0; i < 120; i++) { s.render(); await new Promise((r) => requestAnimationFrame(r)); }
+      s.canvas.setAttribute("data-grid", "1");
+    }, { lon: LON, lat: LAT, alt: waypoint.alt, pitch: waypoint.pitch, southOffset: waypoint.southOffset });
 
-  const png = await page.locator('canvas[data-grid="1"]').screenshot({ type: "png" });
-  const decoded = await page.evaluate(async (b64) => {
-    const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
-    const bmp = await createImageBitmap(blob);
-    const off = new OffscreenCanvas(bmp.width, bmp.height);
-    const cx = off.getContext("2d"); cx.drawImage(bmp, 0, 0);
-    return { w: bmp.width, h: bmp.height, data: Array.from(cx.getImageData(0, 0, bmp.width, bmp.height).data) };
-  }, Buffer.from(png).toString("base64"));
-  await browser.close();
-  return { errs, decoded };
+    const png = await page.locator('canvas[data-grid="1"]').screenshot({ type: "png" });
+    const decoded = await page.evaluate(async (b64) => {
+      const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
+      const bmp = await createImageBitmap(blob);
+      const off = new OffscreenCanvas(bmp.width, bmp.height);
+      const cx = off.getContext("2d"); cx.drawImage(bmp, 0, 0);
+      return { w: bmp.width, h: bmp.height, data: Array.from(cx.getImageData(0, 0, bmp.width, bmp.height).data) };
+    }, Buffer.from(png).toString("base64"));
+    return { errs: errs.slice(0, 40), decoded };
+  } finally {
+    await browser.close().catch(() => {});
+  }
 }
 
-// Mean grid-line run-length on the central horizontal scanlines: a "line" pixel
-// is one whose green<<red+green (yellow line = high R+G; cell = low alpha → dark).
-// We measure runs of bright pixels (the lines) across the middle 40 rows.
+// Grid-line run statistics on the central horizontal scanlines (y 40-60%).
+// A "line" pixel is bright (yellow line = high R+G; cells/background dark).
+// F9 — runs are classified INTERIOR when they lie fully inside the central
+// third of the width (x in [w/3, 2w/3]): border/edge artifacts at the frame
+// or polygon boundary cannot satisfy the interior checks, and the interior
+// median is immune to the polygon's solid border skewing far-zoom widths.
 function lineWidth(img) {
   const widths = [];
+  const interiorWidths = [];
   const y0 = (img.h * 0.4) | 0, y1 = (img.h * 0.6) | 0;
+  const xInner0 = (img.w / 3) | 0, xInner1 = ((2 * img.w) / 3) | 0;
   for (let y = y0; y < y1; y++) {
     let run = 0;
-    for (let x = 0; x < img.w; x++) {
-      const i = (y * img.w + x) * 4;
-      const lum = img.data[i] + img.data[i + 1] + img.data[i + 2];
-      const bright = lum > 250; // grid line (yellow) vs dark cell
+    for (let x = 0; x <= img.w; x++) {
+      const bright =
+        x < img.w &&
+        img.data[(y * img.w + x) * 4] +
+          img.data[(y * img.w + x) * 4 + 1] +
+          img.data[(y * img.w + x) * 4 + 2] >
+          250;
       if (bright) { run++; }
-      else if (run > 0) { if (run < img.w * 0.5) widths.push(run); run = 0; }
+      else if (run > 0) {
+        if (run < img.w * 0.5) {
+          widths.push(run);
+          const start = x - run;
+          if (start >= xInner0 && x <= xInner1) interiorWidths.push(run);
+        }
+        run = 0;
+      }
     }
   }
-  widths.sort((a, b) => a - b);
-  const px = widths.reduce((s, v) => s + v, 0);
-  const median = widths.length ? widths[(widths.length / 2) | 0] : 0;
-  return { lines: widths.length, medianW: median, totalLinePx: px };
+  const median = (arr) => {
+    if (!arr.length) return 0;
+    const s = [...arr].sort((a, b) => a - b);
+    return s[(s.length / 2) | 0];
+  };
+  return {
+    lines: widths.length,
+    medianW: median(widths),
+    interiorLines: interiorWidths.length,
+    interiorMedianW: median(interiorWidths),
+    totalLinePx: widths.reduce((s, v) => s + v, 0),
+  };
 }
 
 const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
@@ -114,24 +170,27 @@ fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
 const res = {};
 for (const r of ["webgl", "webgpu"]) {
   res[r] = {};
-  for (const alt of ALTS) {
-    const cap = await capture(r, alt);
-    fs.writeFileSync(`Tools/visual-regression/output/grid-multizoom-${r}-${alt}.png`, encodePNG(cap.decoded));
-    res[r][alt] = { ...lineWidth(cap.decoded), errs: cap.errs.length };
+  for (const wp of WAYPOINTS) {
+    const cap = await capture(r, wp);
+    fs.writeFileSync(`Tools/visual-regression/output/grid-multizoom-${r}-${wp.name}.png`, encodePNG(cap.decoded));
+    res[r][wp.name] = { ...lineWidth(cap.decoded), errCount: cap.errs.length, errs: cap.errs };
   }
 }
 const ratio = (r) => {
-  const w0 = res[r][ALTS[0]].medianW, w1 = res[r][ALTS[1]].medianW;
+  const w0 = res[r][RATIO_PAIR[0]].interiorMedianW, w1 = res[r][RATIO_PAIR[1]].interiorMedianW;
   return w0 && w1 ? +(Math.max(w0, w1) / Math.min(w0, w1)).toFixed(2) : 0;
 };
 const gpuRatio = ratio("webgpu"), glRatio = ratio("webgl");
 console.log(JSON.stringify(res, null, 2));
-console.log(`WebGPU line-width zoom ratio (close/far): ${gpuRatio} | WebGL: ${glRatio}`);
-// Gate: WebGPU lines render at both zooms + stay roughly pixel-constant like WebGL.
-const gpuRenders = res.webgpu[ALTS[0]].lines > 2 && res.webgpu[ALTS[1]].lines > 2;
-const constant = gpuRatio > 0 && gpuRatio < 1.8;
-const pass = gpuRenders && constant;
-console.log(`(A) WebGPU grid lines render at both zooms: ${gpuRenders ? "PASS" : "FAIL"}`);
-console.log(`(B) WebGPU line width ~pixel-constant across zoom (ratio<1.8): ${constant ? "PASS" : "FAIL"}`);
-console.log(pass ? "GATE PASS — WebGPU grid lines are constant-pixel-width AA (GridMaterial.glsl parity)." : "GATE FAIL.");
+console.log(`Zoom ratio over ${RATIO_PAIR.join("/")} interior medians — WebGPU: ${gpuRatio} | WebGL: ${glRatio}`);
+// Gates (F9-hardened): interior lines at EVERY waypoint on WebGPU; interior
+// line width ~pixel-constant across the nadir zoom pair on BOTH backends.
+const gpuRenders = WAYPOINTS.every((wp) => res.webgpu[wp.name].interiorLines > 2);
+const gpuConstant = gpuRatio > 0 && gpuRatio < 1.8;
+const glConstant = glRatio > 0 && glRatio < 1.8;
+const pass = gpuRenders && gpuConstant && glConstant;
+console.log(`(A) WebGPU interior grid lines at every waypoint (oblique + both zooms): ${gpuRenders ? "PASS" : "FAIL"}`);
+console.log(`(B) WebGPU line width ~pixel-constant across zoom (ratio<1.8): ${gpuConstant ? "PASS" : "FAIL"}`);
+console.log(`(B-gl) WebGL reference line width ~pixel-constant across zoom (ratio<1.8): ${glConstant ? "PASS" : "FAIL"}`);
+console.log(pass ? "GATE PASS — grid lines are constant-pixel-width AA on both backends (GridMaterial.glsl parity)." : "GATE FAIL.");
 process.exit(pass ? 0 : 1);

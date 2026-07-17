@@ -39,6 +39,26 @@ import type {
   WebGPUGlobeLogicalCounters,
 } from "./WebGPUGlobeSurfaceTypes.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
+import type { WebGPUSharedImageryRealizations } from "./WebGPUSharedImageryRealizations.js";
+import { getShareableImagerySourceIdentity } from "../ImagerySourceIdentity.js";
+
+/**
+ * The subset of `WebGPUContext` the texture helpers reach for C9-12A frame-owned
+ * mip preparation and deferred texture retirement. Kept structural to avoid a
+ * hard import cycle with `WebGPUContext`.
+ */
+export interface ImageryRealizationContext {
+  enqueueImageryMipGeneration(
+    texture: GPUTexture,
+    format: GPUTextureFormat,
+    mipLevelCount: number,
+  ): void;
+  scheduleTextureDestroy(texture: GPUTexture | null | undefined): void;
+  /** F7 (Batch 686) — stamp a texture destroyed INLINE (dies immediately, not
+   * deferred) so a same-frame pending mip job for it is dropped rather than
+   * encoded against a dead texture. Optional for structural-typing tolerance. */
+  noteInlineTextureDestroy?(texture: GPUTexture): void;
+}
 
 // Lazily-allocated mipmap generator, shared across all imagery uploads
 // (and reprojection outputs — same device, same shader, same sampler).
@@ -112,6 +132,12 @@ export interface TextureCacheHost {
   readonly _imageryTextureCache: Map<string, ImageryGPUTexture>;
   readonly _waterMaskTextureCache: Map<string, ImageryGPUTexture>;
   readonly _logicalCounters?: WebGPUGlobeLogicalCounters | null;
+  // C9-12A — the per-context shared imagery realization table and the context
+  // used for frame-owned mip prep + deferred retirement. Both are null until
+  // the first tile-command frame plumbs them (uploads only occur from that
+  // path, so they are populated before `uploadImageSource` ever runs).
+  _sharedImageryRealizations?: WebGPUSharedImageryRealizations | null;
+  _webgpuContext?: ImageryRealizationContext | null;
   _diagShouldLog(): boolean;
 }
 
@@ -154,6 +180,118 @@ function recordOwnedImageryAdded(
     counters.imageryOwnedHighWaterBytes ?? 0,
     counters.imageryOwnedLiveBytes ?? 0,
   );
+}
+
+function recordOwnedImageryRetired(
+  host: TextureCacheHost,
+  byteSize: number,
+): void {
+  const counters = host._logicalCounters;
+  if (!counters) return;
+  incrementLogicalCounter(counters, "imageryOwnedRetirements");
+  incrementLogicalCounter(counters, "imageryOwnedLiveTextures", -1);
+  incrementLogicalCounter(counters, "imageryOwnedLiveBytes", -byteSize);
+}
+
+function recordRealizationLiveBytes(host: TextureCacheHost): void {
+  const counters = host._logicalCounters;
+  const table = host._sharedImageryRealizations;
+  if (!counters || !table) return;
+  counters.imageryRealizationLiveBytes = table.getDiagnostics().liveBytes;
+}
+
+// F5 (Batch 686) — layer-scoped imagery cache key. `imagery.key` is never
+// assigned in-tree, so the fallback was a bare `x_y_level` string with NO
+// layer/provider component: two geographic-provider ImageryLayers whose tiles
+// share coordinates aliased each other's cached GPUTexture on the cache-hit
+// branch (filed as NEW-WEBGPU-IMAGERY-CACHE-KEY-CROSS-LAYER-COLLISION).
+// Prefixing a stable per-ImageryLayer id closes the collision at the root.
+// Memory stays deduped for shareable sources — the realization table BELOW the
+// cache keys on source identity, not on this string. The two derivation sites
+// (`resolveImageryProjection` / `getOrCreateImageryTexture`) both route here.
+let _nextImageryLayerId = 1;
+const _imageryLayerIds = new WeakMap<object, number>();
+function imageryCacheKey(imagery: CesiumReadyImagery): string {
+  if (imagery.key) return imagery.key;
+  const layer = imagery.imageryLayer as object | undefined;
+  let lid = 0;
+  if (layer) {
+    lid = _imageryLayerIds.get(layer) ?? _nextImageryLayerId++;
+    _imageryLayerIds.set(layer, lid);
+  }
+  return `L${lid}_${imagery.x ?? 0}_${imagery.y ?? 0}_${imagery.level ?? 0}`;
+}
+
+/**
+ * Register the per-imagery cleanup for a direct-upload / shared-realization
+ * cache entry (C9-12A). Unlike {@link registerImageryCacheCleanup} (which only
+ * drops the map entry, used for reprojection-produced textures the imagery
+ * owns), this releases the shared realization reference or retires the owned
+ * texture through the context's deferred destroy, closing the historical
+ * zero-retirement leak on the direct-upload path.
+ *
+ * Identity-guarded (`cache.get(key)?.texture === entry.texture`) so a later
+ * re-realization under a reused key is not clobbered.
+ */
+function registerImageryUploadCleanup(
+  host: TextureCacheHost,
+  imagery: CesiumReadyImagery,
+  key: string,
+  entry: ImageryGPUTexture,
+): void {
+  const cache = host._imageryTextureCache;
+  const texture = entry.texture;
+  const shared = entry.shared;
+  const byteSize = entry.byteSize ?? 0;
+  const previous = imagery._webgpuTextureCacheCleanup;
+  imagery._webgpuTextureCacheCleanup = () => {
+    if (previous) {
+      previous();
+    }
+    if (cache.get(key)?.texture !== texture) {
+      return;
+    }
+    cache.delete(key);
+    if (shared) {
+      const table = host._sharedImageryRealizations;
+      if (table) {
+        // Batch 686 (F0b/F2a) — destruction routes through a live context's
+        // deferred destroy supplied at call time; never-shared entries retire
+        // promptly here (counter below), ever-shared ones enter the pool.
+        const ctx = host._webgpuContext;
+        const retired = table.release(shared, (t) => {
+          if (ctx) {
+            ctx.scheduleTextureDestroy(t);
+          } else {
+            try {
+              t.destroy();
+            } catch {
+              // Device already lost — destroy() is a safe no-op.
+            }
+          }
+        });
+        if (retired) {
+          incrementLogicalCounter(
+            host._logicalCounters,
+            "imageryRealizationRetirements",
+          );
+        }
+        recordRealizationLiveBytes(host);
+      }
+    } else {
+      const ctx = host._webgpuContext;
+      if (ctx) {
+        ctx.scheduleTextureDestroy(texture);
+      } else {
+        try {
+          texture.destroy();
+        } catch {
+          // Device already lost — destroy() is a safe no-op.
+        }
+      }
+      recordOwnedImageryRetired(host, byteSize);
+    }
+  };
 }
 
 /**
@@ -229,8 +367,7 @@ export function resolveImageryProjection(
   const imagery = tileImagery.readyImagery as CesiumReadyImagery | undefined;
   if (!imagery) return null;
 
-  const baseKey =
-    imagery.key || `${imagery.x ?? 0}_${imagery.y ?? 0}_${imagery.level ?? 0}`;
+  const baseKey = imageryCacheKey(imagery);
   const wantMercator = !!tileImagery.useWebMercatorT;
 
   // First preference: Mercator variant when the skeleton requested it
@@ -280,8 +417,7 @@ export function getOrCreateImageryTexture(
   if (!imagery) return null;
   const logicalCounters = host._logicalCounters;
 
-  const baseKey =
-    imagery.key || `${imagery.x ?? 0}_${imagery.y ?? 0}_${imagery.level ?? 0}`;
+  const baseKey = imageryCacheKey(imagery);
 
   // NEW-USEWEBMERCATORT-SINGLE-SOURCE (Batch 304) — the projection
   // decision (Mercator vs geographic variant) is computed ONCE in
@@ -392,6 +528,15 @@ export function getOrCreateImageryTexture(
     "imagery",
   );
   if (!uploaded) return null;
+  // C9-12A — register the release hook for the direct-upload path (which
+  // historically registered none → the zero-retirement leak). Shared entries
+  // release their realization reference; owned entries retire via
+  // `scheduleTextureDestroy`. The imagery object is reachable here (it is not
+  // inside `uploadImageSource`), so this is where the cleanup is bound.
+  const uploadedEntry = host._imageryTextureCache.get(baseKey);
+  if (uploadedEntry) {
+    registerImageryUploadCleanup(host, imagery, baseKey, uploadedEntry);
+  }
   // The `imagery.image` direct-upload path runs for geographic providers
   // (no reprojection step). The data is geographic-V, regardless of
   // what the tile skeleton flagged — report `isMercator: false` so the
@@ -544,6 +689,64 @@ export function getOrCreateWaterMaskTexture(
 }
 
 /**
+ * C9-12A — prepare the mip chain for a freshly-uploaded imagery texture.
+ * Frame-owned by default (enqueued on the context, encoded + submitted in one
+ * `"ImageryMipPreparation"` encoder in `endFrame` before scene passes → zero
+ * private submits from draw emission). Falls back to the historical private
+ * submit only when no context is plumbed (cannot happen on the live upload
+ * path, but guarded so the fallback is counted as a regression tripwire).
+ */
+function prepareImageryMips(
+  host: TextureCacheHost,
+  device: GPUDevice,
+  texture: GPUTexture,
+  mipLevelCount: number,
+): void {
+  if (mipLevelCount <= 1) return;
+  const ctx = host._webgpuContext;
+  if (ctx) {
+    ctx.enqueueImageryMipGeneration(texture, "rgba8unorm", mipLevelCount);
+    return;
+  }
+  ensureMipmapGenerator(device).generateMipmapsAndSubmit(
+    texture,
+    "rgba8unorm",
+    mipLevelCount,
+  );
+  incrementLogicalCounter(host._logicalCounters, "imageryMipFallbackSubmits");
+}
+
+// Create the destination `GPUTexture` and copy the source image into mip 0.
+// Shared by the dedup-miss and owned branches of `uploadImageSource`; the
+// colorSpace/flipY rationale is documented at the call site block below.
+function createUploadedImageryTexture(
+  device: GPUDevice,
+  cacheKey: string,
+  gpuSource: ImageBitmap | HTMLImageElement | HTMLCanvasElement,
+  width: number,
+  height: number,
+  needsFlipY: boolean,
+  mipLevelCount: number,
+): GPUTexture {
+  const texture = device.createTexture({
+    label: `Globe ${cacheKey}`,
+    size: [width, height],
+    format: "rgba8unorm",
+    mipLevelCount,
+    usage:
+      GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_DST |
+      GPUTextureUsage.RENDER_ATTACHMENT,
+  });
+  device.queue.copyExternalImageToTexture(
+    { source: gpuSource, flipY: needsFlipY },
+    { texture, colorSpace: "srgb" },
+    [width, height],
+  );
+  return texture;
+}
+
+/**
  * Upload an image source (ImageBitmap, HTMLImageElement, HTMLCanvasElement)
  * to a GPU texture.
  *
@@ -634,44 +837,99 @@ export function uploadImageSource(
     // WebGL's properly-mipmapped sampling. See
     // `migration_doc/WEBGPU_DEBUGGING_LOG.md` Batch 57.
     const mipLevelCount = mipLevelCountFor(width, height);
-    const texture = device.createTexture({
-      label: `Globe ${cacheKey}`,
-      size: [width, height],
-      format: "rgba8unorm",
-      mipLevelCount,
-      usage:
-        GPUTextureUsage.TEXTURE_BINDING |
-        GPUTextureUsage.COPY_DST |
-        GPUTextureUsage.RENDER_ATTACHMENT,
-    });
 
-    // Force sRGB color space on both source and destination to prevent the
-    // browser from applying a wide-gamut → sRGB conversion when the user
-    // is on a display-p3 / HDR monitor. WebGL's `pixelStorei(
-    // UNPACK_COLORSPACE_CONVERSION_WEBGL, BROWSER_DEFAULT_WEBGL)` ends up
-    // as a no-op on those setups, while WebGPU's
-    // `copyExternalImageToTexture` defaults to a "default" colorSpace
-    // mapping that may convert the source. Explicit srgb→srgb is a safe
-    // identity copy on every display.
-    device.queue.copyExternalImageToTexture(
-      { source: gpuSource, flipY: needsFlipY },
-      { texture, colorSpace: "srgb" },
-      [width, height],
-    );
+    // C9-12A — realization dedup for the imagery cache only. A shareable
+    // (immutable) source (an ImageBitmap, or a provider-declared canvas such as
+    // GridImagery's constructor-drawn grid) is realized ONCE into a shared
+    // GPUTexture+view referenced by every tile that binds it, instead of one
+    // identical full-mip texture per tile. Non-imagery callers (ocean normal /
+    // material uploads) never participate — they keep owned textures exactly.
+    //
+    // The sRGB colorSpace and the flipY convention (see the `needsFlipY` block
+    // above) are unchanged: `createUploadedImageryTexture` forces srgb→srgb
+    // identity copy so a display-p3 / HDR monitor cannot introduce a wide-gamut
+    // conversion. Mip generation is frame-owned (`prepareImageryMips`).
+    const identity =
+      logicalOwner === "imagery"
+        ? getShareableImagerySourceIdentity(source)
+        : null;
+    const table =
+      logicalOwner === "imagery"
+        ? (host._sharedImageryRealizations ?? null)
+        : null;
 
-    // Generate mipmap chain via blit pipeline. The generator runs a
-    // fullscreen-triangle render pass from mip N to mip N+1 for each
-    // level, using a linear sampler. Equivalent to gl.generateMipmap.
-    if (mipLevelCount > 1) {
-      ensureMipmapGenerator(device).generateMipmapsAndSubmit(
-        texture,
-        "rgba8unorm",
+    if (identity && table) {
+      const fingerprint = `s${identity.sourceId}r${identity.revision}|${width}x${height}|rgba8unorm|m${mipLevelCount}|f${needsFlipY ? 1 : 0}|srgb`;
+      const existing = table.get(fingerprint);
+      if (existing) {
+        // Reuse the ONE texture + view. Sharing the view object also collapses
+        // the group-1 bind-group cache key (keyed on view identity) so the
+        // repeated per-tile bind-group creates collapse alongside the uploads.
+        cache.set(cacheKey, {
+          texture: existing.texture,
+          view: existing.view,
+          sourceWidth: width,
+          sourceHeight: height,
+          byteSize: existing.byteSize,
+          logicalOwner,
+          shared: existing,
+        });
+        incrementLogicalCounter(
+          host._logicalCounters,
+          "imageryRealizationShares",
+        );
+        recordRealizationLiveBytes(host);
+        return existing.view;
+      }
+      // Miss — realize once and register in the shared table.
+      const texture = createUploadedImageryTexture(
+        device,
+        cacheKey,
+        gpuSource,
+        width,
+        height,
+        needsFlipY,
         mipLevelCount,
       );
+      prepareImageryMips(host, device, texture, mipLevelCount);
+      const view = texture.createView();
+      const byteSize = rgba8MipChainBytes(width, height, mipLevelCount);
+      const entry = table.register(fingerprint, texture, view, byteSize);
+      cache.set(cacheKey, {
+        texture,
+        view,
+        sourceWidth: width,
+        sourceHeight: height,
+        byteSize,
+        logicalOwner,
+        shared: entry,
+      });
+      incrementLogicalCounter(
+        host._logicalCounters,
+        "imageryRealizationsCreated",
+      );
+      recordRealizationLiveBytes(host);
+      return view;
     }
 
+    // Non-shareable source (undeclared / mutable) or a non-imagery caller: own
+    // the texture outright, exactly as before this task — but with frame-owned
+    // mips and (for imagery) refcounted retirement wired at the caller.
+    const texture = createUploadedImageryTexture(
+      device,
+      cacheKey,
+      gpuSource,
+      width,
+      height,
+      needsFlipY,
+      mipLevelCount,
+    );
+    prepareImageryMips(host, device, texture, mipLevelCount);
+
     const view = texture.createView();
-    if (logicalOwner === "imagery" && host._logicalCounters) {
+    if (logicalOwner === "imagery") {
+      // Always store byteSize so eviction retirement can account it; counters
+      // stay behind the null guard in `recordOwnedImageryAdded`.
       const byteSize = rgba8MipChainBytes(width, height, mipLevelCount);
       cache.set(cacheKey, {
         texture,
@@ -683,8 +941,7 @@ export function uploadImageSource(
       });
       recordOwnedImageryAdded(host, byteSize);
     } else {
-      // Preserve the original clean-path object shape and avoid diagnostic
-      // mip-byte accounting when the separate instrumentation lane is off.
+      // Preserve the original clean-path object shape for non-imagery callers.
       cache.set(cacheKey, {
         texture,
         view,

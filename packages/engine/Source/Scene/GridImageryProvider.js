@@ -3,6 +3,7 @@ import Frozen from "../Core/Frozen.js";
 import defined from "../Core/defined.js";
 import Event from "../Core/Event.js";
 import GeographicTilingScheme from "../Core/GeographicTilingScheme.js";
+import { declareImmutableImagerySource } from "../Renderer/ImagerySourceIdentity.js";
 
 const defaultColor = new Color(1.0, 1.0, 1.0, 0.4);
 const defaultGlowColor = new Color(0.0, 1.0, 0.0, 0.05);
@@ -70,6 +71,12 @@ class GridImageryProvider {
 
     // We only need a single canvas since all tiles will be the same
     this._canvas = this._createGridCanvas();
+    // C9-12A — the grid canvas is drawn exactly once here and returned
+    // unchanged for every tile (`requestImage` resolves to `this._canvas`).
+    // Declaring it immutable lets the WebGPU globe realize ONE shared GPU
+    // texture for all tiles instead of one identical full-mip texture per
+    // tile. Backend-neutral: WebGL ignores the declaration.
+    declareImmutableImagerySource(this._canvas);
   }
 
   /**

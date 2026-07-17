@@ -18,6 +18,8 @@ import {
   getOrCreateWaterMaskTexture as getOrCreateWaterMaskTextureHelper,
   uploadImageSource as uploadImageSourceHelper,
 } from "./WebGPUGlobeSurfaceTextures.js";
+import type { ImageryRealizationContext } from "./WebGPUGlobeSurfaceTextures.js";
+import { WebGPUSharedImageryRealizations } from "./WebGPUSharedImageryRealizations.js";
 import {
   selectWireframePipeline as selectWireframePipelineHelper,
   getOrCreateWireframeIndices as getOrCreateWireframeIndicesHelper,
@@ -361,6 +363,21 @@ export class WebGPUGlobeSurfaceRenderer {
   // texture-cache helpers (Batch 148).
   public _imageryTextureCache: Map<string, ImageryGPUTexture> = new Map();
   public _waterMaskTextureCache: Map<string, ImageryGPUTexture> = new Map();
+  // C9-12A (hardened Batch 686) — per-renderer (= per-pooled-GPUDevice, NOT
+  // per-context: two viewers on one device share this renderer and this table)
+  // shared imagery realization table, plus the CURRENT frame's context used for
+  // frame-owned mip prep + deferred texture retirement. Both are populated each
+  // frame from `createTileCommands` (the only site with `frameState.context`);
+  // imagery uploads only occur from that path so they are set before
+  // `uploadImageSource` runs. `_webgpuContext` always tracks the most recent
+  // live context; the table never captures one (F0b). Rebuilt on a
+  // device-generation change so GPU handles never cross devices.
+  public _sharedImageryRealizations: WebGPUSharedImageryRealizations | null =
+    null;
+  public _webgpuContext: ImageryRealizationContext | null = null;
+  // F4 (Batch 686) — frameNumber edge detector so the realization-table sweep
+  // runs once per frame, not once per tile (createTileCommands is per-tile).
+  private _lastRealizationSweepFrame = -1;
   // C9-01 — opt-in logical allocation/cache attribution. The performance
   // runner installs this object before Cesium loads only in its separately
   // instrumented lane. Clean/production runs retain null and allocate no
@@ -919,6 +936,64 @@ export class WebGPUGlobeSurfaceRenderer {
     // when it already exists. Without this touch the allocator would never
     // initialize and BUG-9's per-frame buffer leak would re-emerge.
     void frameState.context?.uniformAllocator;
+
+    // C9-12A (hardened Batch 686) — plumb the shared imagery realization table
+    // + the CURRENT frame's context for uploads. The table stores no context
+    // closure (F0b): destruction routes through a scheduleDestroy callback
+    // supplied at each call from the live `realizationContext`, so a viewer
+    // teardown never pins a dead context's destroy queue while the pooled
+    // device stays live for another viewer.
+    const realizationContext = frameState.context as unknown as
+      ImageryRealizationContext | undefined;
+    if (
+      realizationContext &&
+      typeof realizationContext.enqueueImageryMipGeneration === "function"
+    ) {
+      this._webgpuContext = realizationContext;
+      const device = this._device;
+      if (device) {
+        const table = this._sharedImageryRealizations;
+        if (table === null || table.device !== device) {
+          // F6 — the `table.device !== device` arm is DEFENSIVE ONLY: this
+          // renderer is constructed per pooled GPUDevice and `_device` is
+          // written once at initialize, so with the current outer plumbing the
+          // mismatch cannot occur. It is kept (cheap) so a future change to
+          // the renderer pooling fails safe (rebuild) instead of serving
+          // stale-device textures.
+          if (table !== null) {
+            table.destroyAll((t) =>
+              realizationContext.scheduleTextureDestroy(t),
+            );
+          }
+          this._sharedImageryRealizations = new WebGPUSharedImageryRealizations(
+            device,
+          );
+        }
+        // F4 — sweep once per frame (not per tile): createTileCommands is a
+        // per-tile call site, so gate on the scene's frameNumber. The number
+        // is used ONLY as an edge detector — the table keeps its own internal
+        // clock (F0a), so two scenes sharing this renderer each tick the sweep
+        // clock once per their frame (faster wall-clock aging = the safe
+        // direction), with no cross-scene stamp mixing.
+        const activeTable = this._sharedImageryRealizations;
+        if (activeTable) {
+          const frameNumber =
+            (frameState as unknown as { frameNumber?: number }).frameNumber ??
+            0;
+          if (this._lastRealizationSweepFrame !== frameNumber) {
+            this._lastRealizationSweepFrame = frameNumber;
+            const retired = activeTable.sweep((t) =>
+              realizationContext.scheduleTextureDestroy(t),
+            );
+            if (retired > 0 && this._logicalCounters) {
+              this._logicalCounters.imageryRealizationRetirements =
+                (this._logicalCounters.imageryRealizationRetirements ?? 0) +
+                retired;
+            }
+          }
+        }
+      }
+    }
 
     // Batch 437 (CLOUD-SHADOWS) — capture the sun-view beer shadow map view +
     // sampler from the procedural cloud renderer's cache for the group-2 bind
@@ -2539,16 +2614,45 @@ export class WebGPUGlobeSurfaceRenderer {
     for (const cacheKey of [...this._imageryTextureCache.keys()]) {
       removeImageryTextureHelper(this, cacheKey);
     }
+    // C9-12A (hardened Batch 686) — release every shared imagery realization.
+    // The map entries were already dropped above; this destroys the shared
+    // GPUTextures the table owns. Destruction routes through the last live
+    // context's deferred `scheduleTextureDestroy` (F0b — the table stores no
+    // context closure); if no context was ever plumbed, inline destroy is the
+    // only option and is stamped for the F7 mip-job skip.
+    if (this._sharedImageryRealizations) {
+      const ctx = this._webgpuContext;
+      this._sharedImageryRealizations.destroyAll((t) => {
+        if (ctx) {
+          ctx.scheduleTextureDestroy(t);
+        } else {
+          try {
+            t.destroy();
+          } catch {
+            // Device already lost — destroy() is a safe no-op.
+          }
+        }
+      });
+      this._sharedImageryRealizations = null;
+    }
 
     for (const [, cached] of this._waterMaskTextureCache) {
+      // F7 (Batch 686) — inline destroy: stamp so a same-frame pending mip job
+      // for this texture is skipped instead of encoding on a dead texture.
+      this._webgpuContext?.noteInlineTextureDestroy?.(cached.texture);
       cached.texture.destroy();
     }
     this._waterMaskTextureCache.clear();
 
     for (const [, cached] of this._oceanNormalMapCache) {
+      // F7 — ocean-normal uploads enqueue frame-owned mip jobs every frame
+      // (see NEW-WEBGPU-OCEANNORMAL-PER-CALL-REUPLOAD), so a mid-frame destroy
+      // MUST stamp or endFrame would encode mips on a destroyed texture.
+      this._webgpuContext?.noteInlineTextureDestroy?.(cached.texture);
       cached.texture.destroy();
     }
     this._oceanNormalMapCache.clear();
+    this._webgpuContext = null;
 
     for (const [, wf] of this._wireframeIndexCache) {
       wf.buffer.destroy();

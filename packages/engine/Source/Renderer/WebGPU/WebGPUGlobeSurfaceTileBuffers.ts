@@ -47,18 +47,27 @@ import type {
   ImageryGPUTexture,
   WebGPUGlobeLogicalCounters,
 } from "./WebGPUGlobeSurfaceTypes.js";
+import type { WebGPUSharedImageryRealizations } from "./WebGPUSharedImageryRealizations.js";
 
 /**
  * The renderer surface the tile-buffer helpers reach into.
  *
  *   - `_device`: read-only.
  *   - `_tileBufferCache` / `_imageryTextureCache`: read+write Maps.
+ *   - `_sharedImageryRealizations` / `_webgpuContext` (optional, C9-12A):
+ *     shared-realization reference release + deferred/inline-destroy stamping
+ *     for evicted imagery entries.
  */
 export interface TileBuffersHost {
   readonly _device: GPUDevice | null;
   readonly _tileBufferCache: Map<string, TileGPUResources>;
   readonly _imageryTextureCache: Map<string, ImageryGPUTexture>;
   readonly _logicalCounters?: WebGPUGlobeLogicalCounters | null;
+  _sharedImageryRealizations?: WebGPUSharedImageryRealizations | null;
+  _webgpuContext?: {
+    scheduleTextureDestroy(texture: GPUTexture | null | undefined): void;
+    noteInlineTextureDestroy?(texture: GPUTexture): void;
+  } | null;
 }
 
 function tileResourceBytes(resources: TileGPUResources): number {
@@ -466,6 +475,42 @@ export function removeImageryTexture(
 ): void {
   const cached = host._imageryTextureCache.get(cacheKey);
   if (cached) {
+    // C9-12A (hardened Batch 686, F1) — a shared-realization entry does NOT
+    // own its texture, but it DOES own a reference: dropping the map entry
+    // without releasing it orphans the refcount forever (the imagery-side
+    // cleanup is identity-guarded on this same map entry and early-returns
+    // once the entry is gone). Release here — never-shared entries retire
+    // promptly through the live context's deferred destroy (F2a); ever-shared
+    // ones re-enter the table's zero-ref pool. Owned-texture counters are not
+    // touched (those track outright-owned direct uploads).
+    if (cached.shared) {
+      host._imageryTextureCache.delete(cacheKey);
+      const table = host._sharedImageryRealizations;
+      const ctx = host._webgpuContext;
+      if (table) {
+        const retired = table.release(cached.shared, (t) => {
+          if (ctx) {
+            ctx.scheduleTextureDestroy(t);
+          } else {
+            try {
+              t.destroy();
+            } catch {
+              // Device already lost — destroy() is a safe no-op.
+            }
+          }
+        });
+        const counters = host._logicalCounters;
+        if (counters) {
+          if (retired) {
+            counters.imageryRealizationRetirements =
+              (counters.imageryRealizationRetirements ?? 0) + 1;
+          }
+          counters.imageryRealizationLiveBytes =
+            table.getDiagnostics().liveBytes;
+        }
+      }
+      return;
+    }
     if (cached.logicalOwner === "imagery" && host._logicalCounters) {
       const counters = host._logicalCounters;
       counters.imageryOwnedRetirements =
@@ -479,6 +524,10 @@ export function removeImageryTexture(
         (counters.imageryOwnedLiveBytes ?? 0) - (cached.byteSize ?? 0),
       );
     }
+    // F7 (Batch 686) — inline destroy: stamp so a same-frame pending mip job
+    // for this texture is skipped (the texture dies NOW, unlike scheduled
+    // destroys which stay live through this frame's submit).
+    host._webgpuContext?.noteInlineTextureDestroy?.(cached.texture);
     cached.texture.destroy();
     host._imageryTextureCache.delete(cacheKey);
   }
