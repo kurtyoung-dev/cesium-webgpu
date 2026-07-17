@@ -38,6 +38,43 @@ import TerrainFillMesh from "./TerrainFillMesh.js";
 import TileBoundingRegion from "./TileBoundingRegion.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Shared execute for WebGPU globe tile draw commands (C9-11 / FAR-309)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// One hoisted `execute` shared by every WebGPU globe tile command (color and
+// pick). The body reads only `this.*` fields — it closes over nothing — so a
+// single module-level function replaces the per-tile-per-pass `execute:
+// function(renderPass){…}` literal that previously allocated one fresh closure
+// per command per frame (~39,300/frame on the FAR-309 audited moving route).
+// All call sites invoke it method-style (`command.execute(renderPass)`), so
+// `this` still binds to the command; behavior is byte-identical to the inlined
+// closures it replaces. The color and pick bodies were already identical, so
+// one function covers both. Retaining the descriptor/command-wrapper objects
+// and per-tile scratch arrays themselves (keyed by mesh/imagery/mode/effect
+// revision) is the remaining FAR-309 lever, tracked as a partial in
+// DEFERRED_WORK — this slice lands the provably byte-identical closure core.
+function executeWebGPUGlobeTileCommand(renderPass) {
+  renderPass.setPipeline(this._pipeline);
+  for (let i = 0; i < this._bindGroups.length; i++) {
+    // Group 0 carries dynamic offsets (camera + tile UB slices in the ring
+    // page); pass them so the bind group built once over the page resolves to
+    // this command's actual UB region.
+    if (i === 0 && this._bindGroup0DynamicOffsets !== undefined) {
+      renderPass.setBindGroup(
+        0,
+        this._bindGroups[0],
+        this._bindGroup0DynamicOffsets,
+      );
+    } else {
+      renderPass.setBindGroup(i, this._bindGroups[i]);
+    }
+  }
+  renderPass.setVertexBuffer(0, this._vertexBuffer);
+  renderPass.setIndexBuffer(this._indexBuffer, this._indexFormat);
+  renderPass.drawIndexed(this._indexCount);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Scratch variables for rendering
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1068,26 +1105,7 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       // hasWebMercatorT / hasGeodeticSurfaceNormals — Batch 19's
       // TileGPUResources.strideBytes already captures the right value.
       vertexStride: cmdDesc.isQuantized ? 16 : (cmdDesc.strideBytes ?? 24),
-      execute: function (renderPass) {
-        renderPass.setPipeline(this._pipeline);
-        for (let i = 0; i < this._bindGroups.length; i++) {
-          // Group 0 carries dynamic offsets (camera + tile UB slices in
-          // the ring page); pass them so the bind group built once over
-          // the page resolves to this command's actual UB region.
-          if (i === 0 && this._bindGroup0DynamicOffsets !== undefined) {
-            renderPass.setBindGroup(
-              0,
-              this._bindGroups[0],
-              this._bindGroup0DynamicOffsets,
-            );
-          } else {
-            renderPass.setBindGroup(i, this._bindGroups[i]);
-          }
-        }
-        renderPass.setVertexBuffer(0, this._vertexBuffer);
-        renderPass.setIndexBuffer(this._indexBuffer, this._indexFormat);
-        renderPass.drawIndexed(this._indexCount);
-      },
+      execute: executeWebGPUGlobeTileCommand,
     };
     if (logicalCounters) {
       logicalCounters.adapterCommandObjects =
@@ -1140,23 +1158,7 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
         _indexBuffer: cmdDesc.indexBuffer,
         _indexCount: cmdDesc.indexCount,
         _indexFormat: cmdDesc.indexFormat,
-        execute: function (renderPass) {
-          renderPass.setPipeline(this._pipeline);
-          for (let i = 0; i < this._bindGroups.length; i++) {
-            if (i === 0 && this._bindGroup0DynamicOffsets !== undefined) {
-              renderPass.setBindGroup(
-                0,
-                this._bindGroups[0],
-                this._bindGroup0DynamicOffsets,
-              );
-            } else {
-              renderPass.setBindGroup(i, this._bindGroups[i]);
-            }
-          }
-          renderPass.setVertexBuffer(0, this._vertexBuffer);
-          renderPass.setIndexBuffer(this._indexBuffer, this._indexFormat);
-          renderPass.drawIndexed(this._indexCount);
-        },
+        execute: executeWebGPUGlobeTileCommand,
       };
       if (logicalCounters) {
         logicalCounters.pickCommandObjects =
