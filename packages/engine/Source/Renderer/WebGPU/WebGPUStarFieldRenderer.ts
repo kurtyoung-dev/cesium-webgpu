@@ -107,6 +107,7 @@ interface StarFieldWebGPUCache {
   pipeline?: GPURenderPipeline;
   bindGroupLayout?: GPUBindGroupLayout;
   _pipelineFormatGeneration?: number;
+  _deviceResourceGeneration?: number;
   uniformBuffer?: WebGPUBuffer;
   uniformData?: Float32Array;
   bindGroup?: GPUBindGroup;
@@ -127,6 +128,7 @@ interface StarFieldContext {
   readonly depthFormat?: GPUTextureFormat;
   readonly _msaaSamples?: number;
   readonly _scenePipelineFormatGeneration?: number;
+  readonly resourceGeneration?: number;
   readonly webgpuPipelineCache?: WebGPURenderPipelineCache | null;
 }
 
@@ -381,6 +383,33 @@ function ensureStarFieldResources(
     starField._webgpuCache = {};
   }
   const cache = starField._webgpuCache;
+
+  // ── Invalidate ALL cached GPU resources on device-loss recovery ──
+  // Buffers, bind groups, and pipelines built by a prior GPUDevice are
+  // unusable after recovery even when formats/limits are identical. The
+  // scene-format epoch below does NOT advance on a same-format device swap,
+  // so key device-resource lifetime off the physical-device generation
+  // separately, then let the `!defined(...)` guards re-create each slot.
+  const deviceGen = context.resourceGeneration ?? 0;
+  if (
+    defined(cache._deviceResourceGeneration) &&
+    cache._deviceResourceGeneration !== deviceGen
+  ) {
+    if (defined(cache.instanceBuffer)) {
+      cache.instanceBuffer.destroy();
+    }
+    if (defined(cache.uniformBuffer)) {
+      cache.uniformBuffer.destroy();
+    }
+    cache.instanceBuffer = undefined;
+    cache.uniformBuffer = undefined;
+    cache.uniformData = undefined;
+    cache.bindGroup = undefined;
+    cache.bindGroupLayout = undefined;
+    cache.pipelineEntry = undefined;
+    cache.pipeline = undefined;
+  }
+  cache._deviceResourceGeneration = deviceGen;
 
   // ── One-time instance buffer (catalog is static) ──
   if (!defined(cache.instanceBuffer)) {

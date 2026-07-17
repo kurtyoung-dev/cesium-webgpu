@@ -549,7 +549,7 @@ function installCesiumDebug(viewer) {
      *
      * Usage:
      *   CesiumDebug.attachmentDemand()        // dump current record + actual
-     *   CesiumDebug.attachmentDemand(false)   // (C9-10 preview) allow demand-driven
+     *   CesiumDebug.attachmentDemand(false)   // BLOCKED until C9-10 (refused, no-op)
      *   CesiumDebug.attachmentDemand(true)    // force full MRT (default)
      */
     attachmentDemand(force) {
@@ -558,11 +558,25 @@ function installCesiumDebug(viewer) {
         console.warn("[CesiumDebug] attachmentDemand is WebGPU-only");
         return;
       }
-      if (typeof force === "boolean") {
-        ctx.forceSceneMRT = force;
+      // C9-AUDIT-P1-SWEEP (Batch 684): REFUSE the mid-session demand-driven
+      // MRT topology flip. The C9-10 block analysis proved a live
+      // `forceSceneMRT=false` flip unsafe until the 31-renderer topology-keyed
+      // pipeline-cache audit lands — a stale MRT-keyed pipeline replayed into
+      // a single-target pass corrupts the scene FB. Permanent warn (real
+      // hazard, no pragma); context state is left unchanged.
+      if (force === false) {
+        console.warn(
+          "[CesiumDebug] attachmentDemand(false) is BLOCKED until C9-10 lands: " +
+            "the 31-renderer topology-keyed cache audit. Refusing the " +
+            "demand-driven MRT topology flip; context.forceSceneMRT unchanged.",
+        );
+        return;
+      }
+      if (force === true) {
+        ctx.forceSceneMRT = true;
         scene.requestRender();
         console.log(
-          `[CesiumDebug] context.forceSceneMRT set to ${force} (takes effect next frame)`,
+          "[CesiumDebug] context.forceSceneMRT set to true (takes effect next frame)",
         );
       }
       if (typeof ctx.getAttachmentDemandStats !== "function") {

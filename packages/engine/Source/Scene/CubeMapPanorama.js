@@ -179,32 +179,36 @@ class CubeMapPanorama {
     // Backend-independent validation of the public sources contract. This
     // must run BEFORE the feature-renderer dispatch so WebGL and WebGPU
     // enforce identical debug-time validation (item 64 / C8-30 "panorama
-    // validation matches across backends").
+    // validation matches across backends"). C9-AUDIT-P1-SWEEP (Batch 684):
+    // validate unconditionally in debug. The former `this._sources !==
+    // this.sources` gate was vestigial — Batch 674 moved the realize
+    // assignment that reset that sentinel down into the WebGL path, and the
+    // WebGPU path never resets it, so the gate made validation once-per-change
+    // on WebGL but every-frame on WebGPU (NOT the "identical" validation the
+    // comment claims). Dropping it makes the two backends truly symmetric;
+    // the whole block is pragma-stripped, so release bytes are unchanged.
     //>>includeStart('debug', pragmas.debug);
-    if (this._sources !== this.sources) {
-      const validatedSources = this.sources;
-      Check.defined("this.sources", validatedSources);
-      if (
-        Object.values(CubeMap.FaceName).some(
-          (faceName) => !defined(validatedSources[faceName]),
-        )
-      ) {
-        throw new DeveloperError(
-          "this.sources must have positiveX, negativeX, positiveY, negativeY, positiveZ, and negativeZ properties.",
-        );
-      }
+    const validatedSources = this.sources;
+    Check.defined("this.sources", validatedSources);
+    if (
+      Object.values(CubeMap.FaceName).some(
+        (faceName) => !defined(validatedSources[faceName]),
+      )
+    ) {
+      throw new DeveloperError(
+        "this.sources must have positiveX, negativeX, positiveY, negativeY, positiveZ, and negativeZ properties.",
+      );
+    }
 
-      const validatedSourceType = typeof validatedSources.positiveX;
-      if (
-        Object.values(CubeMap.FaceName).some(
-          (faceName) =>
-            typeof validatedSources[faceName] !== validatedSourceType,
-        )
-      ) {
-        throw new DeveloperError(
-          "this.sources properties must all be the same type.",
-        );
-      }
+    const validatedSourceType = typeof validatedSources.positiveX;
+    if (
+      Object.values(CubeMap.FaceName).some(
+        (faceName) => typeof validatedSources[faceName] !== validatedSourceType,
+      )
+    ) {
+      throw new DeveloperError(
+        "this.sources properties must all be the same type.",
+      );
     }
     //>>includeEnd('debug');
 

@@ -348,10 +348,13 @@ function execute2DViewportCommands(scene, passState) {
  * If this is the first viewport rendered, the framebuffers will be cleared
  * to the background color.
  *
- * SORT-3: After primitives update, bin commands through the RenderScheduler
- * to populate materialSortId on each DrawCommand. The existing multi-level
- * comparators (frontToBack, backToFront) already read materialSortId — this
- * activation step makes material batching work automatically.
+ * SORT-3 (demand-gated since C9-08): after primitives update, commands are
+ * binned through the RenderScheduler, which assigns `materialSortId` only when
+ * a consumer actually reads it this frame. The default render path does NOT
+ * read it (opaque unsorted; translucent back-to-front ignores materialSortId);
+ * only the opaque multi-level tiebreak used by the pick-pass front-to-back
+ * sort, the WebGPU GPU sort-keys path, and any registered long-lived consumer
+ * do — see the gating block below.
  */
 function executeCommandsInViewport(firstViewport, scene, passState) {
   const view = scene._view;

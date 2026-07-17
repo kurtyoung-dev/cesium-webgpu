@@ -1,7 +1,22 @@
 #!/usr/bin/env node
-// Probe what's actually in the imagery textures and uniform buffers.
-// Reads the first imagery layer's texture and checks if it has expected
-// content (Bing aerial = mostly green/blue, not solid color).
+// Probe the REALIZED WebGPU imagery texture for a loaded globe tile.
+//
+// C9-AUDIT-P1-SWEEP (Batch 684): the old probe read imagery._webgpuTexture /
+// imagery._webgpuTextureView — fields that DO NOT EXIST on the imagery object,
+// so every "hasWebGPUTex" flag was vacuously false and the probe could never
+// fail. It now reads the actual realized GPUTexture from two authoritative
+// sources and ASSERTS one is present for a loaded, rendered tile:
+//
+//   1. The per-imagery dual-texture fields (`imagery._webgpuMercatorTexture` /
+//      `imagery._webgpuReprojectedTexture`). Per the WebGPUGlobeSurfaceTextures
+//      module docstring these ARE exactly the GPUTextures the renderer's
+//      `_imageryTextureCache` holds (`${key}_merc` → mercator, `${key}` →
+//      reprojected), set by ImageryLayer._reprojectTexture.
+//   2. The per-renderer `_imageryTextureCache` Map entry (`{ texture }`),
+//      reached through the only page-visible handle to the device-keyed globe
+//      renderer: the `sceneCaptureReflections` publish
+//      (`context._webgpuSceneCaptureSources.globeRenderer`). Best-effort +
+//      guarded — if unreachable the imagery-field assertion still stands.
 import { chromium } from "playwright";
 
 const BASE = "http://localhost:8080";
@@ -35,11 +50,7 @@ const BASE = "http://localhost:8080";
       await new Promise((r) => requestAnimationFrame(r));
     }
     const ctx = v.scene.context;
-    const device = ctx._device;
 
-    // Find the globe surface renderer's imagery cache
-    const fr = ctx.getFeatureRenderer?.(/* GLOBE_SURFACE */ 0);
-    // Walk through the first ready tile and find its imagery
     const surface = v.scene.globe._surface;
     const tiles = surface._tilesToRender;
     const sampleTile = tiles?.[0];
@@ -47,73 +58,93 @@ const BASE = "http://localhost:8080";
       return { error: "no imagery on first tile", tilesCount: tiles?.length };
     }
 
-    // Inspect first imagery
     const ti = sampleTile.data.imagery[0];
     const imagery = ti.readyImagery;
-    const dump = {
+    const isGPUTexture = (t) =>
+      !!t && typeof t === "object" && typeof t.createView === "function";
+
+    // ── Source 1: per-imagery realized dual-texture fields (REAL) ──
+    const realizedMerc = imagery?._webgpuMercatorTexture ?? null;
+    const realizedGeo = imagery?._webgpuReprojectedTexture ?? null;
+    let realizedFromImagery = null;
+    if (isGPUTexture(realizedMerc)) {
+      realizedFromImagery = "merc";
+    } else if (isGPUTexture(realizedGeo)) {
+      realizedFromImagery = "geo";
+    }
+
+    const baseKey =
+      imagery?.key ||
+      `${imagery?.x ?? 0}_${imagery?.y ?? 0}_${imagery?.level ?? 0}`;
+
+    // ── Source 2: per-renderer _imageryTextureCache (best-effort) ──
+    // Reach the device-keyed globe renderer via the sceneCaptureReflections
+    // publish. Bounded (6 frames) + guarded; failure here does not fail the
+    // probe, the imagery-field assertion below does.
+    let cacheProbe = { reachable: false };
+    try {
+      const prev = ctx.sceneCaptureReflections;
+      ctx.sceneCaptureReflections = true;
+      for (let i = 0; i < 6; i++) {
+        v.scene.render();
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      const renderer = ctx._webgpuSceneCaptureSources?.globeRenderer;
+      ctx.sceneCaptureReflections = prev;
+      const cache = renderer?._imageryTextureCache;
+      if (cache && typeof cache.get === "function") {
+        const entryHasTex = (e) => isGPUTexture(e?.texture);
+        cacheProbe = {
+          reachable: true,
+          size: cache.size,
+          baseKey,
+          geoEntryHasTexture: entryHasTex(cache.get(baseKey)),
+          mercEntryHasTexture: entryHasTex(cache.get(`${baseKey}_merc`)),
+        };
+      }
+    } catch (e) {
+      cacheProbe = { reachable: false, error: String(e) };
+    }
+
+    const realizedTexturePresent =
+      realizedFromImagery !== null ||
+      cacheProbe.geoEntryHasTexture === true ||
+      cacheProbe.mercEntryHasTexture === true;
+
+    return {
       tilesToRender: tiles.length,
       tileLevel: sampleTile.level,
-      tileX: sampleTile.x,
-      tileY: sampleTile.y,
+      tileXY: [sampleTile.x, sampleTile.y],
       imageryReady: !!imagery,
-      tsImagery: !!ti.textureTranslationAndScale,
-      ts: ti.textureTranslationAndScale ? {
-        x: ti.textureTranslationAndScale.x,
-        y: ti.textureTranslationAndScale.y,
-        z: ti.textureTranslationAndScale.z,
-        w: ti.textureTranslationAndScale.w,
-      } : null,
-      tcr: ti.textureCoordinateRectangle ? {
-        x: ti.textureCoordinateRectangle.x,
-        y: ti.textureCoordinateRectangle.y,
-        z: ti.textureCoordinateRectangle.z,
-        w: ti.textureCoordinateRectangle.w,
-      } : null,
-      imageryHasTex: !!imagery?.texture,
-      imageryHasWebGPUTex: !!imagery?._webgpuTexture || !!imagery?.webgpuTexture,
-      imageryHasWebGPUView: !!imagery?._webgpuTextureView || !!imagery?.webgpuTextureView,
-      imageryStateNum: imagery?.state,
+      imageryState: imagery?.state,
       imageryHasImage: !!imagery?.image,
-      imageryImageType: imagery?.image?.constructor?.name,
-      imageryImageSize: imagery?.image
-        ? { w: imagery.image.width || imagery.image.naturalWidth, h: imagery.image.height || imagery.image.naturalHeight }
-        : null,
-      useWebMercatorT: ti.useWebMercatorT,
+      baseKey,
+      realizedFromImagery,
+      cacheProbe,
+      realizedTexturePresent,
     };
-    // Pull mesh details
-    if (sampleTile.data.mesh) {
-      const m = sampleTile.data.mesh;
-      const enc = m.encoding;
-      dump.mesh = {
-        hasNormals: !!enc?.hasVertexNormals,
-        hasWebMercatorT: !!enc?.hasWebMercatorT,
-        hasGeodeticSurfaceNormals: !!enc?.hasGeodeticSurfaceNormals,
-        quantization: enc?.quantization,
-        stride: enc?.stride || enc?.getStride?.(),
-        center: m.center
-          ? { x: m.center.x, y: m.center.y, z: m.center.z }
-          : null,
-      };
-    }
-    // Sample center of imagery image
-    if (imagery?.image && imagery.image instanceof ImageBitmap) {
-      const off = document.createElement("canvas");
-      off.width = imagery.image.width;
-      off.height = imagery.image.height;
-      const cctx = off.getContext("2d");
-      cctx.drawImage(imagery.image, 0, 0);
-      const samples = [];
-      for (const [x, y] of [
-        [10, 10], [128, 128], [240, 240], [128, 10], [10, 240],
-      ]) {
-        const px = cctx.getImageData(x, y, 1, 1).data;
-        samples.push(`(${x},${y})=[${px[0]},${px[1]},${px[2]},${px[3]}]`);
-      }
-      dump.imagerySamplesRGBA = samples;
-    }
-    return dump;
   });
 
   await browser.close();
   console.log(JSON.stringify(result, null, 2));
+
+  // Real pass/fail assertion — a loaded, rendered tile MUST carry a realized
+  // WebGPU imagery GPUTexture on at least one of the two authoritative sources.
+  if (result.error) {
+    console.log(`FAIL: ${result.error}`);
+    process.exit(1);
+  }
+  if (!result.realizedTexturePresent) {
+    console.log(
+      "FAIL: loaded tile has NO realized WebGPU imagery texture " +
+        "(imagery dual-texture fields AND per-renderer cache both empty)",
+    );
+    process.exit(1);
+  }
+  console.log(
+    "PASS: realized WebGPU imagery texture present for loaded tile " +
+      `(imagery=${result.realizedFromImagery ?? "none"}, ` +
+      `cacheReachable=${result.cacheProbe.reachable})`,
+  );
+  process.exit(0);
 })();

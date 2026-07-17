@@ -1923,9 +1923,22 @@ export class WebGPUContext extends GraphicsContext {
     // so the endFrame present fallback (gated on `_currentTextureView`)
     // can never fabricate a canvas pass here. Reset the tracking state
     // anyway so a stale target from a truncated frame can't leak in.
+    //
+    // C9-AUDIT-P1-SWEEP (Batch 684) edge (b): if a render frame still holds
+    // the swap view (its endFrame has not run), its canvas-touched flags
+    // describe the PP-blit that already wrote the canvas this frame — a pick
+    // mini-frame must NOT wipe them, or the render's present fallback would
+    // re-clear the blit. Only reset the demand flags for a standalone pick.
+    const renderFrameInFlight = this._currentTextureView !== null;
     this._activePassTarget = null;
-    this._canvasColorTouchedThisFrame = false;
-    this._canvasDepthTouchedThisFrame = false;
+    if (!renderFrameInFlight) {
+      this._canvasColorTouchedThisFrame = false;
+      this._canvasDepthTouchedThisFrame = false;
+    }
+    // C9-AUDIT-P1-SWEEP (Batch 684) edge (a): drop any swap view a prior
+    // (possibly truncated) render frame left behind so a pick pass cannot
+    // lazily open the stale canvas view during this mini-frame.
+    this._currentTextureView = null;
     if (this._uniformAllocator) {
       this._uniformAllocator.beginFrame();
     }
@@ -2119,6 +2132,33 @@ export class WebGPUContext extends GraphicsContext {
         this.withRenderPassTimestamps(descriptor),
       );
     this._activePassTarget = target;
+
+    // Canvas-touch MECHANISM (C9-07 / FAR-405-C0): a pass whose color or
+    // depth attachment IS the current swap-chain view has, by construction,
+    // written canvas content — record it structurally so the next
+    // default-pass open loads (never clears) the channel and the endFrame
+    // present fallback preserves the blit. This is the belt to the manual
+    // `markCanvasContentWritten()` suspenders (still called at every existing
+    // site). The scan is over ≤8 attachments — no allocation, no logging.
+    const colorAttachments = descriptor.colorAttachments;
+    if (defined(colorAttachments)) {
+      for (const attachment of colorAttachments) {
+        if (
+          defined(attachment) &&
+          attachment.view === this._currentTextureView
+        ) {
+          this._canvasColorTouchedThisFrame = true;
+          break;
+        }
+      }
+    }
+    const depthAttachment = descriptor.depthStencilAttachment;
+    if (
+      defined(depthAttachment) &&
+      depthAttachment.view === this._depthTextureView
+    ) {
+      this._canvasDepthTouchedThisFrame = true;
+    }
 
     return this._currentRenderPassEncoder;
   }
@@ -5070,11 +5110,20 @@ export class WebGPUContext extends GraphicsContext {
     // scene-FB color-attachment count the executor actually used (2 => mrt,
     // 1 => one-target). Pick frames are single-target by construction and
     // excluded from the render-topology equivalence.
-    const recordMatchesActual =
-      record.other.picking === true ||
-      (record.topology === "mrt"
+    const topologyMatchesCount =
+      record.topology === "mrt"
         ? a.sceneColorAttachmentCount === 2
-        : a.sceneColorAttachmentCount === 1);
+        : a.sceneColorAttachmentCount === 1;
+    // C9-AUDIT-P1-SWEEP (Batch 684): the attachment-count comparison above is
+    // near-tautological with the same demand flag the record was derived from.
+    // Fold the INDEPENDENTLY-MEASURED slot-1 open counter in so a non-pick
+    // frame only "matches" when the predicted MRT topology also coincides with
+    // slot-1 attachments having actually opened this frame (mrt <=> opens>0).
+    const slot1Opened = a.slot1AttachmentOpens > 0;
+    const recordMatchesActual =
+      record.other.picking === true
+        ? true
+        : topologyMatchesCount && (record.topology === "mrt") === slot1Opened;
     return {
       record,
       actual: {
@@ -5782,6 +5831,15 @@ export class WebGPUContext extends GraphicsContext {
     //     external subscribers AFTER all caches drop their stale
     //     handles.
     this._cacheRegistry.clearAll();
+
+    // C9-AUDIT-P1-SWEEP (Batch 684) — the globe renderer's per-(context, frame)
+    // effects memo (Batch 677 `_globeEffectsHandle`) is a context expando that
+    // pins a bind group + shadowMap/clipping/tileProvider refs from the lost
+    // device generation. Drop it on invalidation so recovery does not reuse a
+    // stale-device bind group; it is intra-frame by design and rebuilt next
+    // frame, so nulling here is safe by construction.
+    (this as unknown as { _globeEffectsHandle?: unknown })._globeEffectsHandle =
+      null;
 
     // Stable WebGL-shaped handles survive recovery, but their native buffers
     // belong to the old device generation. Release every registered native

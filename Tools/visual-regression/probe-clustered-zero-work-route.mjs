@@ -9,10 +9,19 @@
 // resources carry stable label prefixes (verified in the dispatcher/renderers):
 //   - buffers:  "ClusteredLighting params", "LTC area lights",
 //               "ClusterBounds*", "ClusterAssign*"
+//   - textures: "LTC LUT*" (Batch 684 — createTexture/writeTexture now watched)
 //   - compute:  "ClusterBounds compute pass", "ClusterAssign compute pass"
 //
+// C9-AUDIT-P1-SWEEP (Batch 684): the gate watched only 4 API surfaces and the
+// label regex missed the "LTC LUT" texture family. Added createTexture +
+// writeTexture counters and 'LTC LUT' to the regex, plus a source-derived
+// label-inventory assertion: every clustered GPU-resource label in the four
+// clustered source files MUST match CLUSTER_LABEL_RE, so a rename breaks this
+// probe loudly instead of silently escaping the gate.
+//
 // Phase A (defaults / moving route): NO clustered-prefixed label may appear
-//   under createBuffer / createBindGroup / writeBuffer / beginComputePass.
+//   under createBuffer / createTexture / createBindGroup / writeBuffer /
+//   writeTexture / beginComputePass.
 // Phase B (positive control): with clusteredLightingEnabled + one point light,
 //   the SAME patched counters MUST record clustered-prefixed labels — this
 //   guards against a silent label rename greening the gate forever.
@@ -21,7 +30,7 @@
 // starts false); the FEATURE is never disabled to pass — Phase B re-enables and
 // requires the work to appear.
 
-import { writeFileSync, mkdirSync } from "fs";
+import { writeFileSync, mkdirSync, readFileSync } from "fs";
 import { dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { chromium } from "playwright";
@@ -38,7 +47,8 @@ const OUT = resolve(
     .slice(0, 10)}.json`,
 );
 
-const CLUSTER_LABEL_RE = "^(ClusterBounds|ClusterAssign|ClusteredLighting|LTC area)";
+const CLUSTER_LABEL_RE =
+  "^(ClusterBounds|ClusterAssign|ClusteredLighting|LTC area|LTC LUT)";
 
 (async () => {
   const browser = await chromium.launch({
@@ -67,11 +77,14 @@ const CLUSTER_LABEL_RE = "^(ClusterBounds|ClusterAssign|ClusteredLighting|LTC ar
       device.onuncapturederror = (ev) =>
         errors.push(ev?.error?.message ?? "unknown");
 
-      // Per-phase label buckets across the four measured counters.
+      // Per-phase label buckets across the measured counters (Batch 684 adds
+      // createTexture + writeTexture so the LTC LUT texture family is covered).
       const emptyCounters = () => ({
         createBuffer: Object.create(null),
+        createTexture: Object.create(null),
         createBindGroup: Object.create(null),
         writeBuffer: Object.create(null),
+        writeTexture: Object.create(null),
         beginComputePass: Object.create(null),
       });
       let current = emptyCounters();
@@ -88,6 +101,11 @@ const CLUSTER_LABEL_RE = "^(ClusterBounds|ClusterAssign|ClusteredLighting|LTC ar
         bump("createBuffer", desc?.label);
         return origCreateBuffer(desc);
       };
+      const origCreateTexture = device.createTexture.bind(device);
+      device.createTexture = (desc) => {
+        bump("createTexture", desc?.label);
+        return origCreateTexture(desc);
+      };
       const origCreateBindGroup = device.createBindGroup.bind(device);
       device.createBindGroup = (desc) => {
         bump("createBindGroup", desc?.label);
@@ -97,6 +115,13 @@ const CLUSTER_LABEL_RE = "^(ClusterBounds|ClusterAssign|ClusteredLighting|LTC ar
       device.queue.writeBuffer = (buffer, ...rest) => {
         bump("writeBuffer", buffer?.label);
         return origWriteBuffer(buffer, ...rest);
+      };
+      const origWriteTexture = device.queue.writeTexture.bind(device.queue);
+      device.queue.writeTexture = (destination, ...rest) => {
+        // writeTexture(destination, data, dataLayout, size): the label lives on
+        // destination.texture (GPUImageCopyTexture).
+        bump("writeTexture", destination?.texture?.label);
+        return origWriteTexture(destination, ...rest);
       };
       const origCreateEncoder = device.createCommandEncoder.bind(device);
       device.createCommandEncoder = (desc) => {
@@ -224,6 +249,63 @@ const CLUSTER_LABEL_RE = "^(ClusterBounds|ClusterAssign|ClusteredLighting|LTC ar
   const a = classify(result.phaseA);
   const b = classify(result.phaseB);
 
+  // ── Label-inventory assertion (Batch 684) ──
+  // The counters only bucket labels that match CLUSTER_LABEL_RE, so a clustered
+  // GPU-resource label renamed OUT of the regex would silently escape the gate.
+  // Grep the four clustered source files for every `label: "..."` string and
+  // assert each still matches the watched regex — a rename breaks THIS probe
+  // loudly instead of greening the gate forever. If an escape is found it is a
+  // REAL finding (either the regex or the source drifted); do not weaken it.
+  const CLUSTERED_SOURCE_FILES = [
+    "WebGPUClusterAssignRenderer.ts",
+    "WebGPUClusterBoundsRenderer.ts",
+    "WebGPUClusteredLightingDispatcher.ts",
+    "WebGPUClusteredLightingBGL.ts",
+  ].map((f) =>
+    resolve(
+      __dirname,
+      "..",
+      "..",
+      "packages",
+      "engine",
+      "Source",
+      "Renderer",
+      "WebGPU",
+      f,
+    ),
+  );
+  const clusterRe = new RegExp(CLUSTER_LABEL_RE);
+  const LABEL_RE = /label:\s*"([^"]+)"/g; // clustered labels are double-quoted
+  const inventory = [];
+  const escapedLabels = [];
+  for (const file of CLUSTERED_SOURCE_FILES) {
+    let src;
+    try {
+      src = readFileSync(file, "utf8");
+    } catch (e) {
+      fail(`label-inventory: cannot read ${file}: ${e}`);
+      continue;
+    }
+    let m;
+    while ((m = LABEL_RE.exec(src)) !== null) {
+      const label = m[1];
+      inventory.push(label);
+      if (!clusterRe.test(label)) {
+        escapedLabels.push({ file: file.split(/[\\/]/).pop(), label });
+      }
+    }
+  }
+  console.log(
+    `  label inventory: ${inventory.length} clustered labels scanned across ${CLUSTERED_SOURCE_FILES.length} source files`,
+  );
+  if (escapedLabels.length > 0) {
+    fail(
+      `label-inventory: ${escapedLabels.length} clustered GPU-resource label(s) do NOT match ` +
+        `CLUSTER_LABEL_RE (${CLUSTER_LABEL_RE}) — they would ESCAPE the zero-work gate: ` +
+        JSON.stringify(escapedLabels),
+    );
+  }
+
   console.log("[probe-clustered-zero-work-route]");
   console.log(`  default scene.clusteredLightingEnabled: ${result.defaultEnabled}`);
   console.log("  --- Phase A (defaults / moving route) ---");
@@ -276,6 +358,10 @@ const CLUSTER_LABEL_RE = "^(ClusterBounds|ClusterAssign|ClusteredLighting|LTC ar
     clusterLabelRegex: CLUSTER_LABEL_RE,
     result: pass ? "pass" : "fail",
     classification: { phaseA: a, phaseB: b },
+    labelInventory: {
+      scannedCount: inventory.length,
+      escaped: escapedLabels,
+    },
     ...result,
   };
   mkdirSync(dirname(OUT), { recursive: true });

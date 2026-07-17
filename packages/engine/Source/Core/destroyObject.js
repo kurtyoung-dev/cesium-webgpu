@@ -5,10 +5,11 @@ function returnTrue() {
 }
 
 /**
- * Destroys an object.  Each of the object's functions, including functions in its prototype
- * chain, is replaced with a function that throws a {@link DeveloperError}, except for the
- * object's <code>isDestroyed</code> function, which is set to a function that returns
- * <code>true</code>.
+ * Destroys an object.  Each of the object's <b>string-keyed</b> methods (own or inherited
+ * function-valued data properties, including those in its prototype chain) is replaced with a
+ * function that throws a {@link DeveloperError}, except for the object's <code>isDestroyed</code>
+ * function, which is set to a function that returns <code>true</code>.  Symbol-keyed properties
+ * and accessor (getter/setter) properties are left untouched.
  * <br /><br />
  * This function is used by objects that hold native resources, e.g., WebGL resources, which
  * need to be explicitly released.  Client code calls an object's <code>destroy</code> function,

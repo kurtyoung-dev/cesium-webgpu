@@ -384,6 +384,11 @@ export class WebGPUGlobeSurfaceRenderer {
 
   private _isDestroyed: boolean = false;
   private _isInitialized: boolean = false;
+  // Last context this renderer published its per-frame effects memo onto
+  // (Batch 677 `_globeEffectsHandle`). Captured so `destroy()` can drop the
+  // memo, which otherwise pins a bind group + shadowMap/clipping/tileProvider
+  // for the context's lifetime. Null until the first effects prepare.
+  private _effectsMemoContext: GlobeEffectsMemoContext | null = null;
 
   constructor() {
     this._tileUniformU32View = new Uint32Array(this._tileUniformData.buffer);
@@ -855,6 +860,8 @@ export class WebGPUGlobeSurfaceRenderer {
 
     // Publish the prepared handle + its exact input snapshot for tiles 2..N.
     if (memoCtx && typeof frameNumber === "number") {
+      // Remember which context owns the memo so destroy() can release it.
+      this._effectsMemoContext = memoCtx;
       memoCtx._globeEffectsHandle = {
         frameNumber,
         device,
@@ -2514,6 +2521,16 @@ export class WebGPUGlobeSurfaceRenderer {
 
   destroy(): void {
     if (this._isDestroyed) return;
+
+    // C9-AUDIT-P1-SWEEP (Batch 684) — drop the per-(context, frame) effects
+    // memo this renderer published. It pins a bind group + shadowMap /
+    // clipping / tileProvider refs for the context's lifetime otherwise. The
+    // memo is intra-frame by design (reuse is gated on `frameNumber`), so
+    // nulling it here is safe by construction — the next frame rebuilds it.
+    if (this._effectsMemoContext) {
+      this._effectsMemoContext._globeEffectsHandle = null;
+      this._effectsMemoContext = null;
+    }
 
     // Route final destruction through the same helper as production eviction
     // so C9-01's opt-in logical lifetime gauges close consistently.

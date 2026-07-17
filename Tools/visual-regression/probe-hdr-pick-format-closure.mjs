@@ -666,9 +666,11 @@ const PRE_EXISTING_GATE_PATTERNS = [
   /Destroyed texture \[Texture "GlobeDepth-DepthCopy/,
 ];
 const newGateErrors = [];
+let gateAllowlistMatchCount = 0;
 for (const err of gateErrors) {
   const text = String(err);
   if (PRE_EXISTING_GATE_PATTERNS.some((re) => re.test(text))) {
+    gateAllowlistMatchCount += 1;
     preExistingFindings.push(`gate(pre-existing): ${text.slice(0, 160)}`);
   } else {
     newGateErrors.push(text);
@@ -676,6 +678,19 @@ for (const err of gateErrors) {
 }
 if (newGateErrors.length > 0) {
   failures.push(`WebGPU error gate: ${newGateErrors.length} NEW error(s)`);
+}
+// C9-AUDIT-P1-SWEEP (Batch 684) — the allowlist is otherwise UNBOUNDED: a
+// future pass-lifecycle regression could silently pour new errors into the
+// pre-existing races and never trip the gate. Cap it at the measured baseline
+// (79 allowlisted matches). A count ABOVE the baseline means the pre-existing
+// class grew — investigate, don't just raise the cap.
+const GATE_ALLOWLIST_BASELINE = 79;
+if (gateAllowlistMatchCount > GATE_ALLOWLIST_BASELINE) {
+  failures.push(
+    `WebGPU error gate: allowlisted pre-existing matches (${gateAllowlistMatchCount}) ` +
+      `EXCEED the ${GATE_ALLOWLIST_BASELINE}-error baseline — the pre-existing ` +
+      `race class grew; new errors may be hiding behind the allowlist`,
+  );
 }
 
 await writeFile(
