@@ -129,13 +129,13 @@ through the seam.
 
 | Task or gate | Status | Updated | Evidence / next action |
 | --- | --- | --- | --- |
-| Campaign 10 | **NOT STARTED** | 2026-07-16 | Prepared, not launched. Awaits maintainer launch after the running C9 slice completes + `C10-00B` sweep. |
-| Gate A | **NOT STARTED** | 2026-07-16 | Fresh launch seal + anchor identification pending launch. |
+| Campaign 10 | **LAUNCHED (orchestrator mode)** | 2026-07-18 | Campaign 9 CLOSED green at Batch 691 (`C9-30` VERDICT: PROMOTE — WebGPU whole-route CPU p95 −30.8%, near-ground −42%/−41%, WebGPU/WebGL ratio 1.37→0.98). Launch per the standing maintainer directive (2026-07-17: "finish Campaign 9 and then move onto campaign 10"). Operating model: ORCHESTRATOR (main loop = work-preparer + acceptance-reviewer; model-matched Opus/Fable workers; workers never commit — orchestrator reviews each diff and lands). Wave order stands (checkpoint PASSED — no attribution reorder). |
+| Gate A | **COMPLETE (launch seal)** | 2026-07-18 | Anchor = the recorded `C9-30` clean-r5 artifact (`campaign9-c9-30-checkpoint-clean-r5-2026-07-17.json`; bundle sha `5B2B323F…AD38`): WebGPU 5.20 ms / WebGL 5.31 ms whole-route CPU p95 medians are the C10 reference. |
 | Gate B | **NOT STARTED** | 2026-07-16 | — |
 | Gate C | **NOT STARTED** | 2026-07-16 | — |
 | Gate D (`C10-30`) | **NOT STARTED** | 2026-07-16 | Anchor = recorded `C9-30` clean-r5 artifact or Gate-A fallback. |
-| `C10-00-ENGINE-HANDOFF-AND-SCRIPT-GEN` | **NOT STARTED** | 2026-07-16 | Fork `campaign-9-resume.js` → `campaign-10.js`; create this queue. |
-| `C10-00B-C9-FALLOUT-INTAKE-SWEEP` | **NOT STARTED** | 2026-07-16 | Four-source sweep at C9-slice completion; seeds §4 rows into §3.2. |
+| `C10-00-ENGINE-HANDOFF-AND-SCRIPT-GEN` | **DEFERRED — orchestrator mode active** | 2026-07-18 | The autonomous engine script is not needed while the maintainer-directed orchestrator operating model runs C10 (main loop dispatches + reviews). Queue/ledger discipline unchanged. Fork `campaign-9-resume.js` → `campaign-10.js` only if the campaign reverts to engine mode. |
+| `C10-00B-C9-FALLOUT-INTAKE-SWEEP` | **COMPLETE (Batch 692)** | 2026-07-18 | Four-source sweep executed at C9 closure: **(a)** run journal `wf_f6cb6b3b-927` — every non-landed outcome was resolved by the orchestrated finish (Batches 683–691): C9-12A landed+hardened (685+686), C9-17 A+B landed (687/688, Slice D → §4), C9-12 BLOCKED → §4, C9-30 COMPLETE/PROMOTE (691). **(b)** C9 §3.2 non-COMPLETE rows → §4 seeds (pre-populated Batch 689; extended this batch with C9-30 outcomes). **(c)** working tree CLEAN at launch (`tsc` green, Batch 691 pushed). **(d)** `C9-30` PASSED → wave order stands unchanged. Launch note: C9 landed 19 batches + 9 orchestrated finish/close batches; fallout intaken below; branch inventory = `main` only. |
 | `C10-01-ENV-COMMAND-FRUSTUM-BINNING` | **NOT STARTED** | 2026-07-16 | Anchor. Guide H1. |
 | `C10-02-TILES-STYLE-COMMAND-ECONOMICS` | **NOT STARTED** | 2026-07-16 | Guide H2. |
 | `C10-03-MSAA-BOUNDARY-BYTES` | **NOT STARTED** | 2026-07-16 | Guide H3. Ruling §2. |
@@ -184,7 +184,8 @@ disposition. Seeded known fallout (re-verify at intake — C9 is running):
 | `C9-02B-DEPTH-PLANE-MULTIFRUSTUM-UNIFORM-RING` (PARTIAL/PAUSED — acceptance blocked behind the fleet) | (b) | **closes under `C10-12`** |
 | `NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE` residue (`…BUFFER-PRIMITIVE-PICK-DISPATCH-PARITY`, `…SCENE-PASS-MSAA-FLIP-TRANSITION`, `…COMPUTE-INSTANCE-PICK-INDEX-MIRROR`, `…ASYNC-PICK-PIPELINE-READINESS-CONTRACT`, `NEW-COLLECTION-PICK-2DCV-PIPELINE-KEY-PARITY`) | (b) | **W4 correctness riders** (own oracle, no metric) |
 | `NEW-WEBGPU-PICKPOSITION-CONVERGENCE-REGRESSION` + bare-globe black-interior bimodal (standing gate red, predates campaign) | (b) | **correctness row; gates `C10-30` feature-loss check.** Highest-attention. |
-| `NEW-HIGH-DENSITY-SPHERES-CROSS-BACKEND-DRIFT` (standing visual-gate red) | (b) | **correctness row; gates `C10-30`.** |
+| `NEW-HIGH-DENSITY-SPHERES-CROSS-BACKEND-DRIFT` (standing visual-gate red; re-confirmed 8.62% at C9-30 close-out, unchanged) | (b) | **correctness row; gates `C10-30`.** Its baselines are additionally DEGENERATE (fully black); `--update` promotion auto-blocked 2026-07-18 because the backends disagree — repair the drift FIRST, then recapture. |
+| WebGL near-ground seg5 p99 GC-tail noise (65.8→70.6 ms at C9-30, un-optimized backend, no WebGL code changes — likely allocation/GC pressure) | (d) | **next-campaign seed** unless a C10 task touches the shared scene path; note-only for `C10-30` noise budgeting. |
 | `NEW-WEBGPU-CELESTIAL-RETAINED-RESOURCES`, `NEW-WEBGPU-STARFIELD-SINGLE-SUBMISSION` (WebGPU-only per-frame celestial waste C9-06 deferred) | (b) | **W1 cheap-rider candidates** |
 | `NEW-WEBGPU-DEBUG-DEPTH-PLANE-GATE-PARITY`, `NEW-WEBGPU-POINT-BLENDOPTION-SYNC` (small parity gaps) | (b) | cheap correctness intake |
 | `NEW-WORKSPACE-SPEC-BUNDLE-FRESHNESS` (stale-spec Karma trap) | (b) | tooling row; workaround (explicit `npm run build --workspace @cesium/engine` before focused test) copied into every C10 brief running Jasmine |
