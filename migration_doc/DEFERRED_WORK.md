@@ -5411,6 +5411,60 @@ target that survives subsequent MSAA resolves, or (b) defer the OIT composite to
 (after the last scene-FB segment) so no later resolve stomps it. One concern per slice — belongs
 to the FAR-003 OIT×MSAA lane, not the resolve-elision slice.
 
+## NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING (surfaced by M-OIT, 2026-07-18)
+
+**Status:** DEFERRED (the real prerequisite for any WebGPU-OIT default-parity flip; multi-batch,
+epic). Contained-off today ⇒ no default-path impact, but it is the load-bearing gap behind the
+`M-OIT-COVERAGE-AND-FLIP-EVIDENCE` NO-GO verdict.
+
+**Finding.** The WebGPU MRT-OIT accumulation path in `WebGPUSceneRendererTranslucentPass.ts`
+(`executeTranslucentPass`) engages only when `hasOITPipelines` is true, which requires a
+`Pass.TRANSLUCENT` command carrying `_shaderCode` (auto-built into `_oitPipeline`) or a pre-built
+`_oitPipeline`. Exhaustive grep of `packages/engine/Source`: the ONLY producers of `_shaderCode`
+on a WebGPU draw command are `WebGPUGaussianSplatRenderer.ts` (splats → `Pass.GAUSSIAN_SPLATS`)
+and `WebGPUGlobeSurfaceShaders.ts` (the OPAQUE globe → `Pass.GLOBE`). **No primitive, model, or
+collection sets `_shaderCode`**, so the `Pass.TRANSLUCENT` bucket never contains a carrier,
+`hasOITPipelines` is always false, and the MRT accumulation path — including the Batch-697
+`_ensureSceneColorResolved` composite line (~L268) — is **dead code at HEAD** for standard
+translucency. Empirically proven by `probe-oit-transparency.mjs` oracle (c): `webgpuOIT(true)`
+flips the gate but reports `active=false`; WebGPU renders like WebGL-OIT-*off* (parity vs
+WebGL-OIT-on ≈10.3% at intersections), and oracle (c-splat) shows even a splat + armed
+`_splatOITDeferral` never sets `_webgpuOITActiveThisFrame`.
+
+**Consequence.** Flipping `_webgpuOITEnabled` default-on is a visual no-op for standard
+transparency and does NOT achieve WebGL parity. The gate is not the blocker; the missing wiring is.
+
+**Fix when picked up (multi-batch):** route real translucent producers through the OIT dual-MRT
+injection so their `Pass.TRANSLUCENT` commands carry an `_oitPipeline` variant — either populate
+`_shaderCode` with the primitive/model/collection WGSL (so the `executeTranslucentPass` auto-build
+runs `WebGPUOIT.injectOITOutput` → `createOITPipeline`), or pre-build `_oitPipeline` where the WGSL
+is generated. Start with the simplest translucent producer (Ellipsoid/Box/Polygon primitive) as a
+single reachable slice, verify oracle (c) flips to `active=true` + the parity delta collapses toward
+the oracle (a) magnitude, THEN broaden to models/collections. Close the two live FAR-003 adjacencies
+(`NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME`, `NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING`) in tandem.
+Full record: `migration_doc/OIT_DEFAULT_FLIP_EVIDENCE_2026-07-18.md`. Owning FAR row: `FAR-003`/`T7`.
+
+## NEW-WEBGPU-CUSTOMSHADER-TRANSLUCENCYMODE-ALPHA-UNDERAPPLIED (surfaced by M-OIT regression net, 2026-07-18)
+
+**Status:** DEFERRED / needs triage. **Pre-existing at Batch-699 HEAD; NOT caused by the M-OIT
+slice** (which adds zero engine code). Deterministic (identical numbers across 2 runs).
+
+**Finding.** `probe-custom-shader-translucency.mjs` is RED. A native-WGSL `CustomShader` with
+`translucencyMode=TRANSLUCENT` and body `(*material).alpha = 0.35`, applied to the CesiumMilkTruck
+(authored OPAQUE), **routes to the blend pass** (the truck becomes faintly see-through — PNGs read:
+`output/cs-trans-translucent.png` vs `cs-trans-inherit.png`) but the customShader **alpha value is
+under-applied**: the model stays near-opaque (model-centre blue 66.6 vs INHERIT 66.1; the probe gate
+needs +30 and `inheritVsTranslucent` ≈1.03% vs the >4% gate). So `translucencyMode` routing works but
+the customShader `material.alpha` write does not reach the final blend at the authored strength. The
+Batch-473 `PARITY-CUSTOM-SHADER-WGSL` translucencyMode slice regressed on the alpha half.
+
+**Triage lead (unconfirmed):** Batch 699 (`C10-02-TILES-STYLE-COMMAND-ECONOMICS`, "phantom
+translucent twin gated on styleCommandsNeeded") is the most recent batch and touches
+translucent-command gating — a possible correlate, not a confirmed cause. Bisect against Batch-697/698
+too (698 = `C10-05-MODEL-TEXTURE-MIP-CHAIN`, touches model material sampling). Reproduce with
+`node Tools/visual-regression/probe-custom-shader-translucency.mjs` (deterministic RED). No OIT
+involvement — this is the standard translucent model pass on WebGPU.
+
 ## NOTE — S4-1 eager-resolve elision LANDED (C10-03, FAR-405 companion, 2026-07-18)
 
 The eager per-segment MSAA scene-COLOR resolve (S4-1, ~330 MB/frame @1080p analytical) is now

@@ -24,6 +24,46 @@
 
 ---
 
+## M-OIT-COVERAGE-AND-FLIP-EVIDENCE — WebGPU MRT-OIT is unreachable for standard translucency; default-flip verdict NO-GO (2026-07-18, Batch 700, maintainer-directed)
+
+**Not a bug fix — a coverage + evidence slice (zero engine code).** Built OIT test coverage and a
+default-flip evidence package for `FAR-003` (WebGPU MRT-OIT contained off, ratified 2026-07-16).
+
+**Root architectural finding (this is the load-bearing result).** The WebGPU MRT-OIT accumulation
+path (`WebGPUSceneRendererTranslucentPass.executeTranslucentPass`) enters only when
+`hasOITPipelines` is true, which needs a `Pass.TRANSLUCENT` command carrying `_shaderCode`
+(auto-built into `_oitPipeline`) or a pre-built `_oitPipeline`. Exhaustive grep: the ONLY
+`_shaderCode` producers on WebGPU draw commands are `WebGPUGaussianSplatRenderer` (splats →
+`Pass.GAUSSIAN_SPLATS`) and `WebGPUGlobeSurfaceShaders` (the OPAQUE globe → `Pass.GLOBE`). Neither
+lands in `Pass.TRANSLUCENT`; no primitive/model/collection produces `_shaderCode`. Therefore
+`hasOITPipelines` is **always false**, and the accumulation path — including the Batch-697
+`_ensureSceneColorResolved` composite line — has **never executed** at HEAD.
+
+**Empirical (probe-oit-transparency.mjs, all oracles GREEN):** WebGL OIT-on vs off differ 9.80% at
+intersections (OIT genuinely active on WebGL); WebGPU default vs WebGL-off 0.69% (sorted≈sorted);
+`CesiumDebug.webgpuOIT(true)` flips the gate (requested/capable/safetyGate true) with 0
+device/validation errors but reports `active=false` and stays pixel-identical to the WebGPU default
+(parity vs WebGL-OIT-on 10.33% — WebGPU keeps the OIT-*off* look); a synthetic splat with
+`_webgpuOITEnabled`+`_splatOITDeferral` armed never sets `_webgpuOITActiveThisFrame`;
+`webgpuOIT(false)` restores within the dither noise floor. PNGs read (WebGL-on desaturated WBOIT
+deep-overlap vs WebGL-off saturated sorted; WebGPU on≡default≡WebGL-off). Perf spot: OIT-on ≈ OIT-off
+(0.4–0.6 ms median CPU/render, null cost shape — path not entered).
+
+**Probe gotcha noted:** the probe recreates the viewer per backend (to control the
+`orderIndependentTranslucency` constructor option), which destroys the app device and emits benign
+`reason=destroyed` teardown console lines the Node fault-regex over-matches; the real GPU error gate
+(`device.onuncapturederror`, `device.lost`) is clean. The probe filters those benign lines.
+
+**Verdict:** NO-GO on defaulting WebGPU OIT on for parity (flip is a visual no-op). Real prerequisite
+= `NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING` + closing the 2 live FAR-003 adjacencies. Flip
+nothing; maintainer ratifies. **Regression net:** ellipsoidprim-translucent + globe-translucency PASS
+(the guide's 25.49% "standing FAIL" is RESOLVED → 0.46%), classification-debug clean;
+custom-shader-translucency RED (NEW pre-existing Batch-699 finding —
+`NEW-WEBGPU-CUSTOMSHADER-TRANSLUCENCYMODE-ALPHA-UNDERAPPLIED`, alpha override under-applied, not this
+slice). Full package: `migration_doc/OIT_DEFAULT_FLIP_EVIDENCE_2026-07-18.md`. Files: new
+`Tools/visual-regression/probe-oit-transparency.mjs`, `packages/sandcastle/gallery/order-independent-translucency/`,
+evidence doc; docs (DEBUGGING_GUIDE, FEATURE_INVENTORY, DEFERRED_WORK, QUEUE C10 §3.2, this log).
+
 ## C10-04-SPLAT-ASYNC-SORT — STOP-AND-BLOCK verdict: WebGPU splat FR has no production data producer; the target sync sort never runs in production (BLOCKED, 2026-07-18, Campaign 10 W1)
 
 **Finding (register S6-1 = S11-2; guide H4 STOP-AND-BLOCK #1):** C10-04 targets the synchronous main-thread comparator sort in `WebGPUGaussianSplatRenderer.maybeSortSplats` (`Array.prototype.sort` over a per-sort `new Float64Array(count)`, uploaded to `sortedIndexBuffer`). The Phase-0 producer trace proves that sort **never executes in production**, so the slice's perf premise is unverifiable and the slice is BLOCKED (no code change — this note + the doc updates are the deliverable). This is a valid honest block (C9-12 precedent).

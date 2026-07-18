@@ -1,0 +1,7 @@
+legacyId: Order Independent Translucency.html
+title: Order-Independent Translucency
+description: "Intersecting translucent ellipsoids + polygon where blend order matters: compare WebGL order-independent translucency (default) vs sorted alpha, and the contained WebGPU MRT-OIT gate."
+labels:
+  - WebGPU
+  - Showcases
+thumbnail: thumbnail.jpg
