@@ -38,6 +38,14 @@ const primitiveGeometryCacheDiagnostics = {
   attributeConversionCount: 0,
   morphAttributeConversionCount: 0,
   uint8IndexUpcastCount: 0,
+  // C9-17 Slice B — positive-path validation attribution. A cache HIT that the
+  // loader-owned revision tokens proved without the deep field walk increments
+  // `revisionHitCount`; a HIT that still needed the full signature walk (some
+  // attribute/index/morph token absent — an uninstrumented producer)
+  // increments `walkHitCount`. On settled frames of fully-instrumented glTF
+  // primitives, revisionHitCount should climb while walkHitCount stays flat.
+  revisionHitCount: 0,
+  walkHitCount: 0,
 };
 
 function getGeometryRevision(value) {
@@ -52,6 +60,30 @@ function getGeometryRevision(value) {
     value._generation ??
     value.generation
   );
+}
+
+/**
+ * C9-17 Slice B (FAR-204) — loader-owned monotonic geometry revision token.
+ * Producers that REPLACE a primitive attribute's or index accessor's typed
+ * array / buffer (GltfLoader's finalize callbacks, PntsLoader's attribute
+ * build, and the CESIUM_primitive_outline post-process in PrimitiveLoadPlan)
+ * call this after the mutation so the positive-path validation in
+ * {@link geometrySignatureMatches} can short-circuit the deep per-field walk
+ * when nothing has mutated since the signature was captured.
+ *
+ * The stamped field name (`_webgpuGeometryRevision`) is centralized here so it
+ * can never drift from the {@link getGeometryRevision} probe chain, which reads
+ * it first. Monotonic per-object increment (never resets) so equality with a
+ * captured value proves "no mutation since capture" without an ABA hazard.
+ *
+ * @param {object} [target] attribute / indices / accessor source object
+ * @private
+ */
+function bumpGeometryRevision(target) {
+  if (!defined(target)) {
+    return;
+  }
+  target._webgpuGeometryRevision = (target._webgpuGeometryRevision ?? 0) + 1;
 }
 
 function getAttributeData(attribute) {
@@ -218,31 +250,33 @@ function captureGeometrySignature(runtimePrimitive, source, gltfPrimitive) {
   };
 }
 
-function geometrySignatureMatches(
-  signature,
-  runtimePrimitive,
-  source,
-  gltfPrimitive,
-) {
-  if (
-    signature.runtimeRevision !== getGeometryRevision(runtimePrimitive) ||
-    signature.source !== source ||
-    signature.sourceRevision !== getGeometryRevision(source) ||
-    signature.gltfPrimitive !== gltfPrimitive ||
-    signature.gltfPrimitiveRevision !== getGeometryRevision(gltfPrimitive) ||
-    signature.primitiveType !== source?.primitiveType ||
-    signature.fallbackPrimitiveType !== gltfPrimitive?.primitiveType
-  ) {
-    return false;
-  }
+/**
+ * C9-17 Slice B — positive-path revision check for one attribute signature.
+ * A HIT requires the loader to have stamped a DEFINED revision AND the
+ * attribute + its data (typed array / buffer) to still have the captured
+ * identity. When the revision is absent (an uninstrumented producer) this
+ * returns false so the caller falls back to the deep field walk.
+ * @private
+ */
+function attributeRevisionMatches(signature, attribute) {
+  const revision = getGeometryRevision(attribute);
+  return (
+    defined(revision) &&
+    signature.attribute === attribute &&
+    signature.attributeRevision === revision &&
+    signature.data === getAttributeData(attribute)
+  );
+}
 
-  const attributes = getSourceAttributes(source);
-  if (
-    signature.attributes !== attributes ||
-    signature.attributeSignatures.length !== attributes.length
-  ) {
-    return false;
-  }
+/**
+ * C9-17 Slice B — the deep per-field signature walk (attributes + indices +
+ * morph targets). Correct for every producer, instrumented or not; this is the
+ * O(attributes × fields) fallback and the debug cross-check oracle. Assumes the
+ * caller already validated the top-level identities and the attributes-array
+ * identity/length.
+ * @private
+ */
+function geometryDeepWalkMatches(signature, source, gltfPrimitive, attributes) {
   for (let i = 0; i < attributes.length; i++) {
     if (
       !attributeSignatureMatches(
@@ -297,6 +331,150 @@ function geometrySignatureMatches(
   }
 
   return true;
+}
+
+/**
+ * C9-17 Slice B — O(objects) positive-path fast path. Returns true ONLY when
+ * every attribute (base + morph) and the index accessor carry a defined,
+ * unchanged loader-owned revision token AND every captured object identity
+ * still holds — which provably implies the deep field walk would also match, so
+ * the per-field/per-quantization-component comparisons are skipped. Returns
+ * false (fall through to the walk) the instant any token is absent or any
+ * identity/revision differs — so an uninstrumented producer, or a genuine
+ * mutation, is always caught by the walk. Assumes the caller already validated
+ * the top-level identities and the attributes-array identity/length.
+ * @private
+ */
+function geometryRevisionFastPathMatches(
+  signature,
+  source,
+  gltfPrimitive,
+  attributes,
+) {
+  for (let i = 0; i < attributes.length; i++) {
+    if (
+      !attributeRevisionMatches(signature.attributeSignatures[i], attributes[i])
+    ) {
+      return false;
+    }
+  }
+
+  const indices = source?.indices;
+  if (signature.indices !== indices) {
+    return false;
+  }
+  if (defined(indices)) {
+    const indicesRevision = getGeometryRevision(indices);
+    if (
+      !defined(indicesRevision) ||
+      signature.indicesRevision !== indicesRevision ||
+      signature.indexData !== (indices.typedArray || indices.buffer)
+    ) {
+      return false;
+    }
+  } else if (defined(signature.indexData)) {
+    return false;
+  }
+
+  const morphTargets = getMorphTargets(gltfPrimitive);
+  if (
+    signature.morphTargets !== morphTargets ||
+    signature.morphTargetSignatures.length !== morphTargets.length
+  ) {
+    return false;
+  }
+  for (let i = 0; i < morphTargets.length; i++) {
+    const target = morphTargets[i];
+    const targetSignature = signature.morphTargetSignatures[i];
+    const targetAttributes = getTargetAttributes(target);
+    // The MorphTarget wrapper is never re-stamped (only its attributes'
+    // typed arrays mutate), so its identity + its attributes' revisions are
+    // the invalidation tokens; targetRevision equality stays permissive.
+    if (
+      targetSignature.target !== target ||
+      targetSignature.targetRevision !== getGeometryRevision(target) ||
+      targetSignature.attributes !== targetAttributes ||
+      targetSignature.attributeSignatures.length !== targetAttributes.length
+    ) {
+      return false;
+    }
+    for (let j = 0; j < targetAttributes.length; j++) {
+      if (
+        !attributeRevisionMatches(
+          targetSignature.attributeSignatures[j],
+          targetAttributes[j],
+        )
+      ) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+function geometrySignatureMatches(
+  signature,
+  runtimePrimitive,
+  source,
+  gltfPrimitive,
+) {
+  if (
+    signature.runtimeRevision !== getGeometryRevision(runtimePrimitive) ||
+    signature.source !== source ||
+    signature.sourceRevision !== getGeometryRevision(source) ||
+    signature.gltfPrimitive !== gltfPrimitive ||
+    signature.gltfPrimitiveRevision !== getGeometryRevision(gltfPrimitive) ||
+    signature.primitiveType !== source?.primitiveType ||
+    signature.fallbackPrimitiveType !== gltfPrimitive?.primitiveType
+  ) {
+    return false;
+  }
+
+  const attributes = getSourceAttributes(source);
+  if (
+    signature.attributes !== attributes ||
+    signature.attributeSignatures.length !== attributes.length
+  ) {
+    return false;
+  }
+
+  // C9-17 Slice B — positive path: when the loader-owned revision tokens prove
+  // the geometry is unchanged, skip the deep per-field walk entirely.
+  if (
+    geometryRevisionFastPathMatches(
+      signature,
+      source,
+      gltfPrimitive,
+      attributes,
+    )
+  ) {
+    //>>includeStart('debug', pragmas.debug);
+    // Revision-hit MUST imply signature-match. A divergence here means a
+    // geometry mutation site is missing a bumpGeometryRevision stamp — loud in
+    // dev, stripped from release.
+    if (
+      !geometryDeepWalkMatches(signature, source, gltfPrimitive, attributes)
+    ) {
+      console.error(
+        "[CesiumJS:ModelPrimitiveGeometry] revision fast-path reported a HIT but the deep signature walk diverged — a geometry mutation site is missing a bumpGeometryRevision stamp",
+      );
+    }
+    //>>includeEnd('debug');
+    primitiveGeometryCacheDiagnostics.revisionHitCount++;
+    return true;
+  }
+
+  const matches = geometryDeepWalkMatches(
+    signature,
+    source,
+    gltfPrimitive,
+    attributes,
+  );
+  if (matches) {
+    primitiveGeometryCacheDiagnostics.walkHitCount++;
+  }
+  return matches;
 }
 
 function convertAttributeToFloat32(data, attribute, components, morph) {
@@ -911,6 +1089,7 @@ export {
   resetPrimitiveGeometryView,
   getPrimitiveGeometryCacheDiagnostics,
   resetPrimitiveGeometryCacheForSpecs,
+  bumpGeometryRevision,
   normalizeColorData,
   ensureFloat32,
   AttributeSemantic,

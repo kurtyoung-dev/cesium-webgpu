@@ -13304,3 +13304,23 @@ Two bugs caught by running the FULL standing-gate matrix against the post-log-de
 **Mutation-exactness (all PASS, byte-identical):** `verify-model-feature-pick`, `probe-model-color` (GATE PASS, meanChanDiff 0.02), `probe-taa-model-skinned-velocity`, `probe-model-ibl` (trap #3), `probe-model-pbr-ibl-parity` (<5%), `probe-standalone-model-pick`, `probe-model-scene-modes` (2D/CV/3D). PNGs read.
 
 **Remaining:** Slice B (loader-owned `_webgpuGeometryRevision` tokens), Slice D (settled `WebGPUDrawCommand` reuse), renderer-side implicit-FID change-gate spec. See the C9-17 row in `QUEUE_2026-07-15_CAMPAIGN9.md` §3.2.
+
+## C9-17 Slice B — loader-owned geometry revision tokens for O(1) positive-path validation (2026-07-17)
+
+**Type:** performance/allocation reduction (not a bug fix), Campaign 9 Wave 2 item 33 / FAR-204. PARTIAL continuation — Slice D remains (STOP-gated for C10).
+
+**Premise verified first:** `ModelPrimitiveGeometry.getGeometryRevision` (`:43`) already probed `_webgpuGeometryRevision ?? _geometryRevision ?? …`, but a repo-wide search confirmed NOTHING in the engine assigned any of those fields — Principle-7 scaffolding awaiting exactly this task. So the per-frame geometry cache validation (`geometrySignatureMatches`) always ran the deep O(attributes × fields) signature walk, including 12 quantization vector-component reads per attribute per frame for quantized (Google-Photorealistic-class) assets.
+
+**Producer half (the stamps):** new exported `bumpGeometryRevision(target)` in `ModelPrimitiveGeometry.js` — centralizes the `_webgpuGeometryRevision` field name (can never drift from the probe chain; monotonic per-object `(x ?? 0) + 1`, never resets → no ABA). Called at every geometry-identity mutation site enumerated by a `typedArray =` grep across `Source/Scene`:
+
+- `GltfLoader.js` — `finalizeDracoAttribute`, `finalizeSpzAttribute`, `finalizeAttribute` (each sets `attribute.typedArray`/`.buffer`), and the index-accessor geometry callback (`indices.typedArray`/`.buffer`).
+- `PntsLoader.js` — the point-cloud attribute build (`attribute.typedArray`/`.buffer`).
+- `PrimitiveLoadPlan.js` — `generateOutlines` (CESIUM_primitive_outline reindexes every attribute, replaces the index array, and adds the outline-coordinates attribute).
+
+**Consumer half (the fast path):** `geometrySignatureMatches` tries `geometryRevisionFastPathMatches` FIRST. It returns a HIT with ZERO deep walk only when every base + morph attribute (and the index accessor, if present) carries a DEFINED, unchanged token AND every captured object identity + data identity still holds. It returns false — falling through to the extracted `geometryDeepWalkMatches` — the instant any token is absent (uninstrumented producer) or any identity/revision differs. Two safety layers: (1) the fast path compares data identity, so an unstamped external typed-array swap that forgot to bump is still rejected; (2) a `//>>includeStart('debug', pragmas.debug)` cross-check runs the full walk on every HIT and `console.error`s on divergence (revision-hit MUST imply signature-match — catches a missed stamp in dev, stripped from release). New diagnostics `revisionHitCount`/`walkHitCount`.
+
+**Key soundness insight:** the token is an OPTIMIZATION, not the correctness mechanism — the deep walk (kept verbatim) is always correct, and the fast path can only ever produce a HIT (never a MISS decision), so a stale token can never cache stale geometry: it either matches (proven unchanged) or the walk runs.
+
+**Evidence:** `probe-model-instance-bg-cache.mjs` (extended to read `getPrimitiveGeometryCacheDiagnostics()` deltas over 40 settled frames): `settledGeometryRevisionHits=240`, `settledGeometryWalkHits=0` — 100% of settled geometry validations use the fast path (incl. the morphed AnimatedMorphCube), with Slice A's bind-group gates still green. `ModelPrimitiveGeometrySpec` 8/8 (5 new), WebGPUModel 35/35, `probe-taa-model-skinned-velocity`/`probe-model-scene-modes`/`verify-model-feature-pick`/`probe-model-color`/`probe-model-ibl` all PASS. tsc/eslint/build clean.
+
+**Coverage (honest-partial):** standard glTF (regular/Draco/SPZ) + PNTS + outlines stamped. Gaussian-splat index attribute, I3dm instance attributes (not in the per-vertex signature), and user-code post-load mutations fall to the deep walk (safe). Skinning/morph animation updates joint/morph-weight buffer CONTENT, not geometry attributes, so it never bumps the token — the cache does not thrash.

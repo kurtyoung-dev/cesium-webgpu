@@ -6,6 +6,7 @@ import Buffer from "../Renderer/Buffer.js";
 import BufferUsage from "../Renderer/BufferUsage.js";
 import AttributeType from "./AttributeType.js";
 import ModelComponents from "./ModelComponents.js";
+import { bumpGeometryRevision } from "./Model/ModelPrimitiveGeometry.js";
 import PrimitiveOutlineGenerator from "./Model/PrimitiveOutlineGenerator.js";
 
 /**
@@ -226,6 +227,16 @@ function generateOutlines(loadPlan) {
   for (let i = 0; i < attributesLength; i++) {
     const attribute = attributePlans[i].attribute;
     attribute.typedArray = generator.updateAttribute(attribute.typedArray);
+  }
+
+  // C9-17 Slice B — CESIUM_primitive_outline is a post-load geometry mutation:
+  // it replaces the index typed array and reindexes every attribute's typed
+  // array (and added the outline-coordinates attribute above). Stamp the
+  // geometry revision on each mutated source object so the WebGPU geometry
+  // cache's positive-path validation invalidates exactly once.
+  bumpGeometryRevision(indices);
+  for (let i = 0; i < attributesLength; i++) {
+    bumpGeometryRevision(attributePlans[i].attribute);
   }
 }
 

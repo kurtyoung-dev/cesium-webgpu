@@ -24,6 +24,7 @@ import GltfLoaderUtil from "./GltfLoaderUtil.js";
 import hasExtension from "./hasExtension.js";
 import InstanceAttributeSemantic from "./InstanceAttributeSemantic.js";
 import ModelComponents from "./ModelComponents.js";
+import { bumpGeometryRevision } from "./Model/ModelPrimitiveGeometry.js";
 import PrimitiveLoadPlan from "./PrimitiveLoadPlan.js";
 import ResourceCache from "./ResourceCache.js";
 import ResourceLoader from "./ResourceLoader.js";
@@ -1180,6 +1181,10 @@ function finalizeDracoAttribute(
       vertexBufferLoader.typedArray.buffer,
     );
   }
+  // C9-17 Slice B — this finalize callback replaces the attribute's buffer /
+  // typed array; stamp the geometry revision so the WebGPU geometry cache's
+  // positive-path validation invalidates exactly once when it lands.
+  bumpGeometryRevision(attribute);
 }
 
 function finalizeSpzAttribute(
@@ -1232,6 +1237,8 @@ function finalizeSpzAttribute(
     const buffer = attribute.typedArray;
     [attribute.min, attribute.max] = findMinMaxXY(buffer);
   }
+  // C9-17 Slice B — see finalizeDracoAttribute.
+  bumpGeometryRevision(attribute);
 }
 
 function finalizeAttribute(
@@ -1262,6 +1269,8 @@ function finalizeAttribute(
       attribute.byteStride = undefined;
     }
   }
+  // C9-17 Slice B — see finalizeDracoAttribute.
+  bumpGeometryRevision(attribute);
 }
 
 function loadAttribute(
@@ -1637,6 +1646,9 @@ function loadIndices(
     indices.indexDatatype = indexBufferLoader.indexDatatype;
     indices.buffer = indexBufferLoader.buffer;
     indices.typedArray = indexBufferLoader.typedArray;
+    // C9-17 Slice B — index accessor's buffer / typed array replaced; stamp
+    // the geometry revision (see finalizeDracoAttribute).
+    bumpGeometryRevision(indices);
   };
 
   const indicesPlan = new PrimitiveLoadPlan.IndicesLoadPlan(indices);

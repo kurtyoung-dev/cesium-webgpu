@@ -20,6 +20,7 @@ import DracoLoader from "../DracoLoader.js";
 import StructuralMetadata from "../StructuralMetadata.js";
 import ResourceLoader from "../ResourceLoader.js";
 import ModelComponents from "../ModelComponents.js";
+import { bumpGeometryRevision } from "./ModelPrimitiveGeometry.js";
 import PntsParser from "../PntsParser.js";
 import ResourceLoaderState from "../ResourceLoaderState.js";
 import VertexAttributeSemantic from "../VertexAttributeSemantic.js";
@@ -447,6 +448,11 @@ function makeAttribute(loader, attributeInfo, context) {
   ) {
     attribute.typedArray = typedArray;
   }
+
+  // C9-17 Slice B — a point-cloud attribute's buffer / typed array is now set;
+  // stamp the geometry revision so the WebGPU geometry cache's positive-path
+  // validation can short-circuit its deep field walk.
+  bumpGeometryRevision(attribute);
 
   return attribute;
 }

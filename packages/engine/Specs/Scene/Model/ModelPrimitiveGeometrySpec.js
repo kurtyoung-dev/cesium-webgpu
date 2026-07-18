@@ -1,4 +1,5 @@
 import {
+  bumpGeometryRevision,
   createPrimitiveGeometryView,
   extractPrimitiveGeometry,
   getPrimitiveGeometryCacheDiagnostics,
@@ -72,6 +73,10 @@ describe("Scene/Model/ModelPrimitiveGeometry", function () {
       attributeConversionCount: 1,
       morphAttributeConversionCount: 1,
       uint8IndexUpcastCount: 1,
+      // This fixture carries no loader revision tokens, so every settled hit
+      // goes through the deep walk (C9-17 Slice B fallback).
+      revisionHitCount: 0,
+      walkHitCount: 100,
     });
   });
 
@@ -147,5 +152,98 @@ describe("Scene/Model/ModelPrimitiveGeometry", function () {
     expect(view.metadataClassHash).toBe(0);
     expect(view.indexData).toBe(base.indexData);
     expect(view.indexCount).toBe(base.indexCount);
+  });
+
+  // C9-17 Slice B — loader-owned revision tokens for O(1) positive-path validation.
+  function createStampedFixture() {
+    const fixture = createFixture();
+    // Simulate the loader stamping each geometry-identity-bearing object at
+    // load completion (GltfLoader finalize callbacks + indices callback).
+    bumpGeometryRevision(fixture.position);
+    bumpGeometryRevision(fixture.morphPosition);
+    bumpGeometryRevision(fixture.indices);
+    return fixture;
+  }
+
+  it("validates settled frames through the revision fast path with zero deep walk", function () {
+    const fixture = createStampedFixture();
+    const first = extractPrimitiveGeometry(fixture.runtimePrimitive);
+
+    for (let frame = 0; frame < 50; frame++) {
+      expect(extractPrimitiveGeometry(fixture.runtimePrimitive)).toBe(first);
+    }
+
+    const diagnostics = getPrimitiveGeometryCacheDiagnostics();
+    expect(diagnostics.hitCount).toBe(50);
+    expect(diagnostics.revisionHitCount).toBe(50);
+    expect(diagnostics.walkHitCount).toBe(0);
+  });
+
+  it("falls back to the deep walk when any revision token is absent", function () {
+    // Stamp every object EXCEPT the morph attribute — one missing token forces
+    // the whole primitive onto the walk (honest-partial fallback).
+    const fixture = createFixture();
+    bumpGeometryRevision(fixture.position);
+    bumpGeometryRevision(fixture.indices);
+    const first = extractPrimitiveGeometry(fixture.runtimePrimitive);
+
+    for (let frame = 0; frame < 50; frame++) {
+      expect(extractPrimitiveGeometry(fixture.runtimePrimitive)).toBe(first);
+    }
+
+    const diagnostics = getPrimitiveGeometryCacheDiagnostics();
+    expect(diagnostics.hitCount).toBe(50);
+    expect(diagnostics.revisionHitCount).toBe(0);
+    expect(diagnostics.walkHitCount).toBe(50);
+  });
+
+  it("invalidates once when a stamped producer bumps the geometry revision", function () {
+    const fixture = createStampedFixture();
+    const first = extractPrimitiveGeometry(fixture.runtimePrimitive);
+    expect(extractPrimitiveGeometry(fixture.runtimePrimitive)).toBe(first);
+
+    // A real re-stamp replaces the typed array AND bumps the revision.
+    const before = getPrimitiveGeometryCacheDiagnostics();
+    fixture.position.typedArray = new Int16Array([2, 4, 6, 8, 10, 12]);
+    bumpGeometryRevision(fixture.position);
+    const next = extractPrimitiveGeometry(fixture.runtimePrimitive);
+    expect(next).not.toBe(first);
+    const afterRebuild = getPrimitiveGeometryCacheDiagnostics();
+    expect(afterRebuild.invalidationCount).toBe(before.invalidationCount + 1);
+    expect(afterRebuild.descriptorBuildCount).toBe(
+      before.descriptorBuildCount + 1,
+    );
+
+    // The rebuilt signature re-arms the fast path.
+    expect(extractPrimitiveGeometry(fixture.runtimePrimitive)).toBe(next);
+    expect(getPrimitiveGeometryCacheDiagnostics().revisionHitCount).toBe(
+      afterRebuild.revisionHitCount + 1,
+    );
+  });
+
+  it("catches an unstamped external typed-array swap via the deep-walk fallback", function () {
+    // A producer we did NOT instrument replaces the typed array but forgets to
+    // bump the revision. The fast path's data-identity guard rejects the stale
+    // token and the walk rebuilds — no false HIT.
+    const fixture = createStampedFixture();
+    const first = extractPrimitiveGeometry(fixture.runtimePrimitive);
+
+    fixture.position.typedArray = new Int16Array([9, 9, 9, 1, 1, 1]);
+    const next = extractPrimitiveGeometry(fixture.runtimePrimitive);
+    expect(next).not.toBe(first);
+  });
+
+  it("debug cross-check flags a fast-path hit that diverges from the deep walk", function () {
+    // Simulate a MISSED stamp: mutate a scalar field in place without bumping
+    // the revision and without changing the data identity. The fast path will
+    // (wrongly) HIT; the debug cross-check must console.error the divergence.
+    // (Debug-build only — the assertion runs in the unminified spec bundle.)
+    const fixture = createStampedFixture();
+    extractPrimitiveGeometry(fixture.runtimePrimitive);
+
+    const errorSpy = spyOn(console, "error");
+    fixture.position.componentDatatype = 5126; // FLOAT — was undefined
+    extractPrimitiveGeometry(fixture.runtimePrimitive);
+    expect(errorSpy).toHaveBeenCalled();
   });
 });

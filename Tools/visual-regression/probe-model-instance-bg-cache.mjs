@@ -132,6 +132,12 @@ try {
       });
     }
 
+    // C9-17 Slice B — geometry-cache positive-path attribution. On settled
+    // frames of fully-instrumented glTF primitives the loader revision tokens
+    // should let extractPrimitiveGeometry short-circuit the deep signature walk,
+    // so revisionHits climb while walkHits stay flat.
+    const geomDiagBefore =
+      C.ModelPrimitiveGeometry.getPrimitiveGeometryCacheDiagnostics();
     const before = cacheSnapshot();
     mergedCreates = 0;
     mergedMaterialCreates = 0;
@@ -139,6 +145,8 @@ try {
     labelCounts = {};
     await renderFrames(40);
     const after = cacheSnapshot();
+    const geomDiagAfter =
+      C.ModelPrimitiveGeometry.getPrimitiveGeometryCacheDiagnostics();
 
     const identitiesStable = before.every((entry, modelIndex) => {
       const next = after[modelIndex];
@@ -160,6 +168,11 @@ try {
       settledMergedMaterialBindGroupCreates: mergedMaterialCreates,
       settledAllBindGroupCreates: allBindGroupCreates,
       settledBindGroupCreatesByBucket: labelCounts,
+      settledGeometryHits: geomDiagAfter.hitCount - geomDiagBefore.hitCount,
+      settledGeometryRevisionHits:
+        geomDiagAfter.revisionHitCount - geomDiagBefore.revisionHitCount,
+      settledGeometryWalkHits:
+        geomDiagAfter.walkHitCount - geomDiagBefore.walkHitCount,
       identitiesStable,
       deviceErrors,
     };
@@ -175,6 +188,10 @@ try {
     hasCustomCoverage &&
     result.settledMergedInstanceBindGroupCreates === 0 &&
     result.settledMergedMaterialBindGroupCreates === 0 &&
+    // C9-17 Slice B — settled geometry validation is via the revision fast path
+    // (walk hits stay flat) and the fast path is actually exercised.
+    result.settledGeometryWalkHits === 0 &&
+    result.settledGeometryRevisionHits > 0 &&
     result.identitiesStable &&
     result.deviceErrors.length === 0 &&
     result.pageErrors.length === 0;
