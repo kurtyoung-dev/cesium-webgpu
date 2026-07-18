@@ -23,6 +23,19 @@ import SceneMode from "./SceneMode.js";
 import ShadowMap from "./ShadowMap.js";
 import TranslucentTileClassification from "./TranslucentTileClassification.js";
 
+// C10-10-SHADOW-CAST-SINGLE-SWEEP — the passes whose commands can cast a
+// shadow. Folding cast-candidate collection into the single PVS sweep needs an
+// O(1) pass test here, replacing the per-call
+// `[GLOBE, CESIUM_3D_TILE, OPAQUE, TRANSLUCENT].includes(pass)` that
+// `SceneRenderer.insertShadowCastCommands` used to run once per command per
+// shadow map. Indexed by the Pass enum; absent entries read back `undefined`
+// (falsy), so `isShadowedPass[pass] === true` is the caster-pass gate.
+const isShadowedPass = [];
+isShadowedPass[Pass.GLOBE] = true;
+isShadowedPass[Pass.CESIUM_3D_TILE] = true;
+isShadowedPass[Pass.OPAQUE] = true;
+isShadowedPass[Pass.TRANSLUCENT] = true;
+
 /**
  * @alias View
  * @private
@@ -117,6 +130,15 @@ class View {
     // Array of all commands that get rendered into frustums along with their near / far values.
     // Acts similar to a ManagedArray.
     this._commandExtents = [];
+
+    // C10-10-SHADOW-CAST-SINGLE-SWEEP — per-frame shadow-caster sublist,
+    // collected during `createPotentiallyVisibleSet` (the single PVS walk) and
+    // published to `frameState.shadowState.casterCommands`. Persistent + reset
+    // by length each PVS so it does not re-allocate. Includes off-camera casters
+    // (INV-1). Consumed by `SceneRenderer.insertShadowCastCommands`, which now
+    // only light/cascade-culls this small set instead of re-scanning the full
+    // command list per shadow map.
+    this._shadowCasters = [];
   }
 
   /**
@@ -214,6 +236,11 @@ class View {
 
     computeList.length = 0;
     overlayList.length = 0;
+    // C10-10 — reset the shadow-caster sublist for this PVS walk (by length so
+    // the backing array is reused; T-5/T-6: every PVS entry starts empty so a
+    // non-shadowed or second (2D-wrap) run never leaks stale casters).
+    const shadowCasters = this._shadowCasters;
+    shadowCasters.length = 0;
 
     const commandExtents = this._commandExtents;
     const commandExtentCapacity = commandExtents.length;
@@ -253,9 +280,40 @@ class View {
         let commandNear;
         let commandFar;
 
+        // C10-10-SHADOW-CAST-SINGLE-SWEEP — is this command a shadow caster to
+        // fold into the per-frame caster sublist? Guarded on `shadowsEnabled`
+        // (INV-5: no collection, zero new cost, when shadows are off). Matches
+        // the old `insertShadowCastCommands` gate
+        // (`!command.castShadows || !shadowedPasses.includes(command.pass)`)
+        // exactly — `castShadows` is a strict boolean flag getter.
+        const isCaster =
+          shadowsEnabled &&
+          command.castShadows === true &&
+          isShadowedPass[pass] === true;
+
         if (defined(boundingVolume)) {
           if (!scene.isVisible(cullingVolume, command, occluder)) {
+            // C10-10 INV-1 (CRITICAL): camera-invisible, but an object behind/
+            // beside the camera can still cast a shadow into view. Collect
+            // BEFORE this camera-cull `continue`. INV-2 / Trap T-1: this branch
+            // never reaches `insertIntoBin`, so this is the ONLY site that runs
+            // `updateDerivedCommands` (builds `derivedCommands.shadows`) for an
+            // off-camera caster — without it the WebGL cast dispatch reads
+            // `derivedCommands.shadows` = undefined and the off-screen shadow
+            // is lost / throws.
+            if (isCaster) {
+              scene.updateDerivedCommands(command);
+              shadowCasters.push(command);
+            }
             continue;
+          }
+
+          // C10-10: camera-visible caster. Its `updateDerivedCommands` runs
+          // later via `insertIntoBin` (the `commandExtents` loop below), so
+          // collect only — Trap T-2: do NOT call it here or globe casters
+          // (re-dirtied every frame) would rebuild their cast command twice.
+          if (isCaster) {
+            shadowCasters.push(command);
           }
 
           const nearFarInterval = boundingVolume.computePlaneDistances(
@@ -312,6 +370,15 @@ class View {
           } else {
             sawEnvironmentNoBV = true;
           }
+
+          // C10-10 Trap T-4: a caster without a bounding volume (rare — casters
+          // normally carry a BV). It DOES reach `insertIntoBin` via the extent
+          // below (so `updateDerivedCommands` runs there — collect only), and
+          // the light-frustum `isVisible` with no BV returns true → added to
+          // every cascade, matching the old full-scan behavior. Conservative.
+          if (isCaster) {
+            shadowCasters.push(command);
+          }
         }
 
         let extent = commandExtents[commandExtentCount];
@@ -332,6 +399,14 @@ class View {
       shadowState.nearPlane = shadowNear;
       shadowState.farPlane = shadowFar;
       shadowState.closestObjectSize = shadowClosestObjectSize;
+      // C10-10 — publish the caster sublist collected above so
+      // `executeShadowMapCastCommands` iterates it instead of re-scanning the
+      // full command list per shadow map.
+      shadowState.casterCommands = shadowCasters;
+    } else {
+      // C10-10 Trap T-5: never leave a stale sublist that a later mid-frame
+      // shadow toggle could read as this frame's casters.
+      shadowState.casterCommands = undefined;
     }
 
     if (near > far && sawEnvironmentNoBV) {

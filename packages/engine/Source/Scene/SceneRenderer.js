@@ -779,26 +779,33 @@ function executeOverlayCommands(scene, passState) {
   }
 }
 
-function insertShadowCastCommands(scene, commandList, shadowMap) {
+// C10-10-SHADOW-CAST-SINGLE-SWEEP — build the per-cascade cast lists from the
+// caster sublist collected during the single PVS walk
+// (`View.createPotentiallyVisibleSet` → `frameState.shadowState.casterCommands`),
+// doing ONLY the shadow-map light-frustum + per-cascade culling here.
+//
+// The old implementation re-scanned the entire `frameState.commandList` for
+// EVERY shadow map, re-ran `scene.updateDerivedCommands` on every command,
+// allocated a `shadowedPasses` array per call, and linear-`.includes`-tested
+// each command's pass — all duplicating the walk the PVS pass already made. The
+// sublist already excludes non-casters and non-shadowed passes, and every entry
+// already carries this frame's derived cast command (camera-visible casters via
+// `insertIntoBin`; camera-invisible casters via collection-time
+// `updateDerivedCommands` in View.js — INV-2). So the only work left per caster
+// is the light/cascade `isVisible` culling, which needs the shadow-map volumes
+// (computed after PVS) and therefore stays here (INV-3). Output — the populated
+// `shadowMap.passes[j].commandList` and each command's `derivedCommands.shadows`
+// — is byte-identical to the old full-scan; only how the caster set is gathered
+// changed.
+function insertShadowCastCommands(scene, casters, shadowMap) {
   const { shadowMapCullingVolume, isPointLight, passes } = shadowMap;
   const numberOfPasses = passes.length;
 
-  const shadowedPasses = [
-    Pass.GLOBE,
-    Pass.CESIUM_3D_TILE,
-    Pass.OPAQUE,
-    Pass.TRANSLUCENT,
-  ];
+  for (let i = 0; i < casters.length; ++i) {
+    const command = casters[i];
 
-  for (let i = 0; i < commandList.length; ++i) {
-    const command = commandList[i];
-    scene.updateDerivedCommands(command);
-
-    if (
-      !command.castShadows ||
-      !shadowedPasses.includes(command.pass) ||
-      !scene.isVisible(shadowMapCullingVolume, command)
-    ) {
+    // Light-frustum cull (INV-3) — the only per-caster test left.
+    if (!scene.isVisible(shadowMapCullingVolume, command)) {
       continue;
     }
 
@@ -824,10 +831,17 @@ function insertShadowCastCommands(scene, commandList, shadowMap) {
 }
 
 function executeShadowMapCastCommands(scene) {
-  const { shadowState, commandList } = scene.frameState;
+  const { shadowState } = scene.frameState;
   const { shadowsEnabled, shadowMaps } = shadowState;
 
   if (!shadowsEnabled) {
+    return;
+  }
+
+  // C10-10 — the caster sublist the PVS walk collected this frame. Conservative
+  // no-op if PVS did not run or shadows were toggled off mid-frame (Trap T-5).
+  const casters = shadowState.casterCommands;
+  if (!defined(casters)) {
     return;
   }
 
@@ -860,7 +874,7 @@ function executeShadowMapCastCommands(scene) {
     for (let j = 0; j < passes.length; ++j) {
       passes[j].commandList.length = 0;
     }
-    insertShadowCastCommands(scene, commandList, shadowMap);
+    insertShadowCastCommands(scene, casters, shadowMap);
   }
 
   // Backend dispatch. WebGPU consumes the populated `passes[].commandList`

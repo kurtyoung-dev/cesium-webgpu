@@ -422,6 +422,7 @@ class FrameState {
      * @property {number} closestObjectSize The size of the bounding volume that is closest to the camera. This is used to place more shadow detail near the object.
      * @property {number} lastDirtyTime The time when a shadow map was last dirty
      * @property {boolean} outOfView Whether the shadows maps are out of view this frame
+     * @property {DrawCommand[]} [casterCommands] C10-10 — the per-frame shadow-caster sublist collected during {@link View#createPotentiallyVisibleSet} (all `castShadows` commands in a shadowed pass, camera-visible or not). {@link SceneRenderer.executeShadowMapCastCommands} iterates this instead of re-scanning the full command list per shadow map. `undefined` when shadows are disabled this frame.
      */
 
     /**
@@ -455,6 +456,13 @@ class FrameState {
        * @default true
        */
       outOfView: true,
+      /**
+       * C10-10 shadow-caster sublist; populated by the PVS walk when shadows
+       * are enabled, `undefined` otherwise.
+       * @type {DrawCommand[]|undefined}
+       * @default undefined
+       */
+      casterCommands: undefined,
     };
 
     /**
