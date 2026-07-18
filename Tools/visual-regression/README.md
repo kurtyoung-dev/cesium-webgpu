@@ -271,6 +271,19 @@ the rest of the sweep's output.
 Use `analyze-cross-backend-report.mjs` to bucket the report into
 WebGPU-only regressions / both-OK / etc.
 
+## Standalone diagnostic probes
+
+Alongside the split-screen battery, standalone `probe-*.mjs` scripts target one
+subsystem each (see the probe inventory in `migration_doc/DEBUGGING_GUIDE.md`).
+Notable:
+
+- `probe-frustum-count-3d.mjs` — **default-3D frustum-count parity gate (C10-01).**
+  Records `scene.numberOfFrustums` for WebGL vs WebGPU at 18,000 km / 500 km /
+  300 m plus a sky-only leg, with per-frustum `ENVIRONMENT`/`GLOBE` bin counts and
+  PNGs. Asserts WebGPU count `=== 1 === WebGL` (pre-fix WebGPU floored at 2
+  because BV-less `Pass.ENVIRONMENT` commands widened near/far). Server on :8080
+  first. `node Tools/visual-regression/probe-frustum-count-3d.mjs [both|webgl|webgpu]`.
+
 ## Known caveats
 
 - The diff is sensitive to **timing**: imagery tiles may load in

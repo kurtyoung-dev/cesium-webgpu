@@ -2,13 +2,14 @@
 
 Prepared: 2026-07-16
 
-Status: **PREPARED / NOT LAUNCHED**
+Status: **LAUNCHED 2026-07-18 (orchestrator mode)**
 
-Launch authority: **not yet given.** Campaign 10 is composed and gated but does NOT auto-run. Launch
-requires an explicit maintainer instruction, issued **after the currently-running Campaign-9 slice
-completes (or is halted)** and after the `C10-00B` fallout-intake sweep reconciles the tree as it
-actually stands at that moment. Until then this queue is a frozen plan; its live ledger (§3.2) rows
-are all **NOT STARTED**.
+Launch authority: **given** — the standing maintainer directive (2026-07-17: "finish Campaign 9 and
+then move onto campaign 10"), exercised after Campaign 9 CLOSED green at Batch 691 (`C9-30` VERDICT
+PROMOTE) and after the `C10-00B` fallout-intake sweep reconciled the tree (Batch 692). Operating
+model: ORCHESTRATOR — the main loop prepares briefs, dispatches model-matched workers (who never
+commit), reviews every diff, and lands; the autonomous engine (`C10-00`) stays DEFERRED while this
+mode runs. Live status: §3.2.
 
 Source plan:
 [Performance Architecture Deep Dive](PERF_ARCH_DEEP_DIVE_2026-07-16.md) (the 69-finding "W8"
@@ -136,7 +137,7 @@ through the seam.
 | Gate D (`C10-30`) | **NOT STARTED** | 2026-07-16 | Anchor = recorded `C9-30` clean-r5 artifact or Gate-A fallback. |
 | `C10-00-ENGINE-HANDOFF-AND-SCRIPT-GEN` | **DEFERRED — orchestrator mode active** | 2026-07-18 | The autonomous engine script is not needed while the maintainer-directed orchestrator operating model runs C10 (main loop dispatches + reviews). Queue/ledger discipline unchanged. Fork `campaign-9-resume.js` → `campaign-10.js` only if the campaign reverts to engine mode. |
 | `C10-00B-C9-FALLOUT-INTAKE-SWEEP` | **COMPLETE (Batch 692)** | 2026-07-18 | Four-source sweep executed at C9 closure: **(a)** run journal `wf_f6cb6b3b-927` — every non-landed outcome was resolved by the orchestrated finish (Batches 683–691): C9-12A landed+hardened (685+686), C9-17 A+B landed (687/688, Slice D → §4), C9-12 BLOCKED → §4, C9-30 COMPLETE/PROMOTE (691). **(b)** C9 §3.2 non-COMPLETE rows → §4 seeds (pre-populated Batch 689; extended this batch with C9-30 outcomes). **(c)** working tree CLEAN at launch (`tsc` green, Batch 691 pushed). **(d)** `C9-30` PASSED → wave order stands unchanged. Launch note: C9 landed 19 batches + 9 orchestrated finish/close batches; fallout intaken below; branch inventory = `main` only. |
-| `C10-01-ENV-COMMAND-FRUSTUM-BINNING` | **NOT STARTED** | 2026-07-16 | Anchor. Guide H1. |
+| `C10-01-ENV-COMMAND-FRUSTUM-BINNING` | **COMPLETE (impl+verify; pending orchestrator land)** | 2026-07-18 | Anchor. Guide H1. BV-less `Pass.ENVIRONMENT` near/far exclusion + sky-only fallback in `View.createPotentiallyVisibleSet` (`View.js`: `sawEnvironmentNoBV` local, pass-keyed else branch, pre-`updateFrustums` `near>far` restore); `frustums.count` added to `Scene.getDebugSnapshot`; new `probe-frustum-count-3d.mjs`. JS-only, zero shader/pipeline change. **PRE:** WebGPU `numberOfFrustums`=2 at 18,000 km/500 km/300 m (env binned `[3,3]` into both frusta); WebGL=1. **POST:** WebGPU=1===WebGL at all three (globe bins 6/36/147 match WebGL); sky-only leg WebGPU=2 unchanged (fallback, star field renders); PNGs read — atmosphere limb + sun + stars + moon identical. Gates: `tsc`/eslint/`gulp build` clean; capture-and-diff globe-default crossBackend 0.46% (band 0.43–0.77%) + repaired historical lane green 0.01% both backends, 5 other globe scenes 0.46–0.75% (high-density-5k-spheres 8.62% = pre-attributed standing red `NEW-HIGH-DENSITY-SPHERES-CROSS-BACKEND-DRIFT`, spheres are BV'd OPAQUE so untouched by this change); camera-track 9/9 both backends max 0.079% zero errors; celestial battery green (extinction-cache, sun-stars-extinction PARITY match=true, moon-atmosphere, atmosphere-orbit 0.42%, atmo-moon-438 errs=0, diag-stars); 2D/CV safe (2d-frustum-bins `noBV=0` in SCENE2D → change is a no-op there; 2d-cv-modes + model-scene-modes GATE PASS all modes); pick — point-pick + billboard-pick PASS, `probe-pickposition-webgpu` FAIL is pre-existing standing red `NEW-WEBGPU-PICKPOSITION-CONVERGENCE-REGRESSION` **confirmed via OFF-oracle** (fails identically with fix neutralized). WebGL invariant: Trap-4 verified (no WebGL/shared path pushes `Pass.ENVIRONMENT` into `frameState.commandList`; `CubeMapPanorama` uses `panoramaCommandList`), Multifrustum/FrustumCommands specs build only BV'd OPAQUE / pure data — never reach the new branch (Karma+Edge launcher env-broken this session; not executed). Perf spot (clean lane, 2 reps): WebGPU CPU-p95 4.85 ms (vs 5.20 ref, ~−6.7%), WebGL 5.36 ms (vs 5.31, flat/noise) — characterization only, C10-30 owns the measured claim; **structural frustum parity is the landing bar and is met**. Rollback: single revert; probe + `frustums.count` telemetry survive. |
 | `C10-02-TILES-STYLE-COMMAND-ECONOMICS` | **NOT STARTED** | 2026-07-16 | Guide H2. |
 | `C10-03-MSAA-BOUNDARY-BYTES` | **NOT STARTED** | 2026-07-16 | Guide H3. Ruling §2. |
 | `C10-03R-MSAA-DEFAULT-FLIP-RESERVE` | **CONDITIONAL NOT TRIGGERED** | 2026-07-16 | Reserve lever; needs checkpoint-miss + sign-off. |

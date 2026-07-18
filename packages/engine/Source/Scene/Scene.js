@@ -2032,6 +2032,13 @@ class Scene {
         },
       },
       moon: null,
+      // C10-01: number of depth frustums the last frame split into. The default
+      // 3D scene collapses to 1 (WebGL parity) once BV-less Pass.ENVIRONMENT
+      // commands stop widening near/far in View.createPotentiallyVisibleSet; a
+      // regression that re-introduces a BV-less near/far widener shows up here.
+      frustums: {
+        count: this._view?.frustumCommandsList?.length ?? 0,
+      },
       debugToggles: {
         debugShowFramesPerSecond: this.debugShowFramesPerSecond === true,
         debugShowCommands: this.debugShowCommands === true,

@@ -221,6 +221,9 @@ class View {
 
     let near = +Number.MAX_VALUE;
     let far = -Number.MAX_VALUE;
+    // C10-01: track whether any BV-less Pass.ENVIRONMENT command was seen so a
+    // sky-only view (nothing else in the list) can still get a frustum below.
+    let sawEnvironmentNoBV = false;
 
     const { shadowsEnabled } = shadowState;
     let shadowNear = +Number.MAX_VALUE;
@@ -293,8 +296,22 @@ class View {
           // worst-case near and far planes to avoid clipping something important.
           commandNear = frustum.near;
           commandFar = frustum.far;
-          near = Math.min(near, commandNear);
-          far = Math.max(far, commandFar);
+          // C10-01: BV-less Pass.ENVIRONMENT commands (sky-atmosphere shell,
+          // sun, moon, star field) still bin into (and execute once in) the
+          // farthest frustum via the extent below, but must NOT feed the scene
+          // near/far accumulators. Under log depth the camera worst-case span is
+          // [0.1, 1e10] (ratio 1e11 -> 2 frustums), so letting these directional
+          // effects widen near/far forced a permanent 2-frustum floor on every
+          // default 3D frame — the empty far band paying the full per-frustum
+          // scaffold for nothing. WebGL never routes these through commandList,
+          // so it already renders them in one content-fit frustum. Same defect
+          // class as Batch 268's BV-less command exploding the 2D split.
+          if (pass !== Pass.ENVIRONMENT) {
+            near = Math.min(near, commandNear);
+            far = Math.max(far, commandFar);
+          } else {
+            sawEnvironmentNoBV = true;
+          }
         }
 
         let extent = commandExtents[commandExtentCount];
@@ -315,6 +332,18 @@ class View {
       shadowState.nearPlane = shadowNear;
       shadowState.farPlane = shadowFar;
       shadowState.closestObjectSize = shadowClosestObjectSize;
+    }
+
+    if (near > far && sawEnvironmentNoBV) {
+      // C10-01: sky-only view — only BV-less Pass.ENVIRONMENT commands were
+      // seen, so the accumulators never moved off their +/-MAX_VALUE sentinels.
+      // Restore the camera-range window so a frustum still exists to bin and
+      // execute them (the Batch 247 dual-path push convention depends on this;
+      // without it near stays +MAX, the clamps collapse the range, and nothing
+      // renders — a black canvas). Behavior-preserving: this reproduces exactly
+      // the frustum(s) sky-only frames produce today.
+      near = frustum.near;
+      far = frustum.far;
     }
 
     updateFrustums(this, scene, near, far);

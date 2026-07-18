@@ -686,6 +686,18 @@ always-on per-frame GPU→CPU readback exists beyond the known set.** The proble
   (atmosphere shell = 1.025× ellipsoid BS). Zero shader changes; days-scale. Add a `numFrustums`
   route-telemetry counter to guard the invariant thereafter.
   **Owner:** NEW → proposed `C9-30` (pre-slice of FAR-707; multiplies FAR-405/C9-07 value).
+- **RESOLVED — `C10-01-ENV-COMMAND-FRUSTUM-BINNING` (2026-07-18, impl+verify complete; pending
+  orchestrator land).** Fix landed as the pass-keyed exclusion (NOT honest-BV — the register missed
+  the Moon + fullscreen-sky as fourth/fifth BV-less producers, so a producer-keyed BV attach would
+  have left the floor at 2; the pass-keyed `Pass.ENVIRONMENT` exclusion covers all five + any
+  future producer). Single fallback point: `if (near > far && sawEnvironmentNoBV)` restores the
+  camera window before `updateFrustums` (NOT `max(1, …)` inside `updateFrustums`, which would bin
+  env into a degenerate `[1e10, 1e10]` band). `Scene.getDebugSnapshot().frustums.count` +
+  `probe-frustum-count-3d.mjs` guard the invariant. **The frustum-count claim of FAR-707 (§15.1) is
+  now carved out**: default 3D WebGPU renders 1 frustum == WebGL at 18,000 km / 500 km / 300 m,
+  verified with env pixels (sun/moon/stars/atmosphere limb) intact and the sky-only leg unchanged.
+  The remaining FAR-707 content (S7-3 reversed-Z / early-Z on log-depth producers, §15) is
+  independent and stays gated (`C10-13` spike → `C10-GT`).
 
 ### S7-2 (DEEPER-ON-KNOWN · per-frame · HIGH) — Per-frustum fixed pass scaffold: ~6 full-target pass boundaries + 2 content-ungated fullscreen depth packs per frustum, paid twice under the 2-frusta floor including for the sky-only far band
 - **Location:** `WebGPUSceneRendererFrustumLoop.ts:251-309, 324-329, 447-468`;
