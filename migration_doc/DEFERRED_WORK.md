@@ -5254,7 +5254,12 @@ GATE-OFF byte-identity (globe-default crossBackend 0.46%, native pick battery gr
 occlusion at 20/500/5,000 km (`probe-c10-11-mixed-coherence.mjs`, PNGs read), blend pickability
 (`probe-c10-11-blend-pickability.mjs`), voxel occlusion; pickPosition unchanged (independent — reads the
 main-pass depth texture). `probe-globe-pick-h44` cold-page flake shown pre-existing (8/8 hit-rate A/B off
-AND on via `probe-c10-11-ddtd-hitrate.mjs`). **C10-12 (`PICK_DEPTH_PLANE_ENABLED` flip) is now unblocked.**
+AND on via `probe-c10-11-ddtd-hitrate.mjs`). **C10-12 (`PICK_DEPTH_PLANE_ENABLED` flip) LANDED 2026-07-18 —
+gate flipped `false → true` (`WebGPUSceneRendererPickPass.ts:69`); the three-altitude horizon oracle is
+GREEN (below-limb magenta 0/0/0 at 20/500/5,000 km, on/off/restored discipline) and the over-occlusion
+guard (`probe-c10-12-over-occlusion.mjs`) shows visible-face hit-rate 11/11·11/11·13/13 plane-on == plane-off
+(no dropped visible pick). This CLOSES `C9-02B` + satisfies audit `P0-1`. See `WEBGPU_DEBUGGING_LOG.md`
+C10-12 entry (2026-07-18).**
 Reversed-Z: these ~24 pick entries are the FAR-707/C10-GT slice-b convert-back surface — do not re-fight
 until the C10-13/C11-GT-01 spike verdict lands. Full completion note: `WEBGPU_DEBUGGING_LOG.md` C10-11
 COMPLETE entry (2026-07-18). Original blocking analysis retained below for history.

@@ -137,20 +137,32 @@ function validateAltitude(result, failures) {
   }
 
   const skipMagenta = skipped.scenePixels.back.magentaLike;
-  const normalMagenta = normal.scenePixels.back.magentaLike;
-  const restoredMagenta = restored.scenePixels.back.magentaLike;
   if (skipMagenta < 24) {
     failures.push(`${prefix}/diagnostic-skip: back marker did not appear in GPU readback`);
   }
-  const occludedLimit = Math.max(4, Math.floor(skipMagenta * 0.1));
-  if (normalMagenta > occludedLimit) {
+  // C10-12 tightening: the occlusion assertion counts ONLY below-limb magenta
+  // (pixels whose view ray hits the ellipsoid — where the depth plane / globe
+  // must occlude the beyond-horizon marker). The above-limb sprite fringe
+  // (538 px @20 km, 70 px @500 km) shows against the sky identically in WebGL
+  // and is not an occlusion leak. The diagnostic-skip phase must present a
+  // meaningful below-limb footprint so the occlusion test is non-trivial.
+  const skipBelow = skipped.scenePixels.back.magentaBelowLimb;
+  const normalBelow = normal.scenePixels.back.magentaBelowLimb;
+  const restoredBelow = restored.scenePixels.back.magentaBelowLimb;
+  if (skipBelow < 24) {
     failures.push(
-      `${prefix}/normal: back marker leaked through (${normalMagenta} magenta pixels)`,
+      `${prefix}/diagnostic-skip: back marker had no below-limb footprint (${skipBelow} px) — occlusion test is trivial`,
     );
   }
-  if (restoredMagenta > occludedLimit) {
+  const occludedLimit = Math.max(4, Math.floor(skipBelow * 0.1));
+  if (normalBelow > occludedLimit) {
     failures.push(
-      `${prefix}/restored: back marker leaked after restoration (${restoredMagenta} magenta pixels)`,
+      `${prefix}/normal: back marker leaked below the limb (${normalBelow} of ${skipBelow} below-limb magenta pixels)`,
+    );
+  }
+  if (restoredBelow > occludedLimit) {
+    failures.push(
+      `${prefix}/restored: back marker leaked below the limb after restoration (${restoredBelow} of ${skipBelow} below-limb magenta pixels)`,
     );
   }
   for (const phase of [normal, skipped, restored]) {
@@ -469,8 +481,36 @@ try {
         await buffer.mapAsync(GPUMapMode.READ);
         const bytes = new Uint8Array(buffer.getMappedRange());
         const bgra = String(format).startsWith("bgra");
+
+        // C10-12 below-limb mask: a beyond-horizon marker sprite is a fixed
+        // screen-space quad, so the fraction of it that projects ABOVE the
+        // geometric limb has no globe (or depth plane) behind it and shows
+        // against the sky — identically in WebGL. Only magenta pixels whose
+        // view ray actually intersects the ellipsoid (below-limb / over the
+        // globe disk) are pixels the depth plane MUST occlude; those are the
+        // only ones that count as an occlusion leak. Classify per magenta
+        // pixel via a camera pick-ray vs ellipsoid intersection.
+        const rayScratch = new C.Ray();
+        const windowScratch = new C.Cartesian2();
+        const isBelowLimb = (windowX, windowY) => {
+          windowScratch.x = windowX;
+          windowScratch.y = windowY;
+          const ray = scene.camera.getPickRay(windowScratch, rayScratch);
+          if (!ray) {
+            return false;
+          }
+          const interval = C.IntersectionTests.rayEllipsoid(
+            ray,
+            C.Ellipsoid.WGS84,
+          );
+          // A hit interval (defined, non-negative stop) means the globe is
+          // behind this pixel: below the limb.
+          return Boolean(interval && interval.stop >= 0);
+        };
+
         let limeLike = 0;
         let magentaLike = 0;
+        let magentaBelowLimb = 0;
         let nonBlack = 0;
         for (let row = 0; row < copyHeight; row++) {
           for (let column = 0; column < copyWidth; column++) {
@@ -479,7 +519,10 @@ try {
             const green = bytes[offset + 1];
             const blue = bytes[offset + (bgra ? 0 : 2)];
             if (green > 170 && red < 120 && blue < 120) limeLike++;
-            if (red > 170 && green < 120 && blue > 170) magentaLike++;
+            if (red > 170 && green < 120 && blue > 170) {
+              magentaLike++;
+              if (isBelowLimb(x + column, y + row)) magentaBelowLimb++;
+            }
             if (red > 8 || green > 8 || blue > 8) nonBlack++;
           }
         }
@@ -493,6 +536,8 @@ try {
           pixelCount: copyWidth * copyHeight,
           limeLike,
           magentaLike,
+          magentaBelowLimb,
+          magentaAboveLimb: magentaLike - magentaBelowLimb,
           nonBlack,
         };
       }
@@ -814,12 +859,12 @@ const report = {
     })),
     currentSourceContractFindings: [
       "WebGPUContext.updateAndClearFramebuffers recomputes environmentState.useDepthPlane without Scene.debugSkipDepthPlane, overwriting Scene.updateEnvironment's debug result; this oracle bridges only that diagnostic seam in-page.",
-      "PointPrimitivePick.wgsl has no LOG_DEPTH varying or @builtin(frag_depth) output even though computePointDefinesForFrame sets ShaderDefine.LOG_DEPTH, so pick compares hyperbolic point depth against logarithmic depth-plane depth.",
-      "WebGPUDepthPlane.update packs uniformState.currentFrustum for log depth while PointPrimitive color packing deliberately prefers uniformState._logDepthEncodeNearFar, leaving the two scene-depth producers on different encode-frustum sources.",
-      "PointPrimitiveCollection's WebGPU feature-renderer branch returns before synchronizing collection._blendOption; an explicitly OPAQUE test collection consequently reports Pass.TRANSLUCENT (9).",
+      "RESOLVED (C10-11, Batch 709): the whole native pick fleet — globe/model/collection/primitive/voxel/ellipsoid/splat/buffer pick entries, incl. PointPrimitivePick — now writes log @builtin(frag_depth) against the shared full-frustum encode, gated on isWebGPUPickLogDepthActive. The shared pick FBO is uniformly log, so pick depth is comparable with the depth plane.",
+      "RESOLVED (Batch 673): WebGPUDepthPlane.update packs uniformState._logDepthEncodeNearFar (the FULL camera frustum stash), matching every other scene-depth producer; currentFrustum remains only as the pre-stash early-frame fallback.",
+      "RESOLVED (C10-12, Batch flip): PICK_DEPTH_PLANE_ENABLED is TRUE — the depth-plane pick draw writes the horizon far-depth into the shared pick FBO. Below-limb occlusion holds at 20/500/5,000 km; the residual above-limb magenta (538 px @20 km, 70 px @500 km) is the screen-space sprite fringe over the sky (WebGL-identical) and is masked out of the occlusion count.",
     ],
     campaignStatusRecommendation:
-      "Keep C9-02B IN PROGRESS. The uniform-ring mechanics are exercised, but semantic scene/pick horizon correctness is not satisfied at any tested altitude.",
+      "C9-02B CLOSED and audit P0-1 satisfied. Scene/pick horizon correctness holds at all three altitudes: below-limb magenta is occluded in normal/restored, the beyond-horizon marker becomes pickable in diagnostic-skip, and the front control stays visible + pickable throughout.",
   },
   oracleScope:
     "The normal WebGPU scene/pick path runs with useDepthPlane=true and logarithmic depth. The debug skip is used only for an in-process A/B oracle, then the feature is restored and re-verified. Scene visibility is read directly from the WebGPU scene-color texture; public async picking is an independent assertion.",

@@ -50,23 +50,36 @@ import {
 } from "./WebGPUSceneRenderer.js";
 
 /**
- * Gated off until NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT lands — the
- * depth-plane pick draw uses a mismatched log-depth encode frustum and
- * over-occludes point picks at defaults (audit P0-1, horizon oracle fails at
- * 20/500/5000km). Re-enable by flipping this constant when the contract task
- * completes.
+ * C10-12-PICK-DEPTH-PLANE-GATE-FLIP (2026-07-18) — ENABLED. The depth-plane
+ * pick draw writes a horizon far-depth into the shared pick FBO so picks
+ * BEYOND the visible terrain limb (behind the globe) are correctly occluded,
+ * while front/visible picks still resolve. This closes C9-02B and audit P0-1.
  *
- * 2026-07-16 contract finding (see DEFERRED_WORK.md
- * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH): flipping this gate requires the WHOLE
- * pick fleet to write log frag_depth first. Every native pick producer
- * (globe/model/collection/primitive pick shaders) writes update-time
- * camera-frustum hyperbolic z today; hyperbolic depth cannot discriminate
- * the depth plane from a just-beyond-horizon marker at 5,000 km (sub-ulp),
- * and a log-depth plane over-occludes every hyperbolic pick cohort over the
- * globe disk. Converting only the oracle participants breaks the rest of
- * the fleet at defaults, so the flip stays blocked on the fleet conversion.
+ * Why the gate was held OFF until now (kept for history): flipping it requires
+ * the WHOLE native pick fleet to write log `@builtin(frag_depth)` against the
+ * SAME full-frustum encode the depth plane uses. Before C10-11 every native
+ * pick producer (globe/model/collection/primitive/voxel/ellipsoid/splat/buffer
+ * pick shaders) wrote update-time camera-frustum HYPERBOLIC z. Hyperbolic depth
+ * cannot discriminate the depth plane from a just-beyond-horizon marker at
+ * 5,000 km (sub-ulp Δz), and a log-depth plane over a hyperbolic fleet
+ * OVER-OCCLUDED every pick cohort across the globe disk (Run-1, 2026-07-16).
+ *
+ * Prerequisites now met:
+ *  - Scene half (Batch 673): `WebGPUDepthPlane.update()` encodes log depth from
+ *    the FULL camera frustum stash `uniformState._logDepthEncodeNearFar`, and
+ *    the dedicated `_pickPipeline` writes log `frag_depth` from the same pair.
+ *  - Fleet half (C10-11, Batch 709): every native pick producer writes log
+ *    `frag_depth` against that same encode, gated on `isWebGPUPickLogDepthActive`
+ *    (`WebGPUContext._pickLogDepthWriteEnabled`, default TRUE). The shared pick
+ *    FBO is now uniformly log — coherent with the plane (INV-1/INV-2).
+ *
+ * Kill switch: set this back to `false` to disable ONLY the depth-plane pick
+ * draw (the fleet stays log-encoded — harmless, WebGL-parity). The fleet-wide
+ * kill switch is `WebGPUContext._pickLogDepthWriteEnabled = false`.
+ * Verified by `probe-depth-plane-horizon-oracle.mjs` (normal/diagnostic-skip/
+ * restored = on/off/restored discipline) at 20/500/5,000 km.
  */
-const PICK_DEPTH_PLANE_ENABLED = false;
+const PICK_DEPTH_PLANE_ENABLED = true;
 
 /**
  * The SceneRenderer surface that the extracted pick pass reaches
