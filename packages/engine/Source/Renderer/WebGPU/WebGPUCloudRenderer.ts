@@ -97,6 +97,15 @@ interface CloudCache extends CollectionRenderCache {
   velocityPipeline: GPURenderPipeline | null;
   velocityPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
   velocityPipelineRequestPending: boolean;
+  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY. Monotonic counter bumped at the
+  // single `instanceBuffer` content-write (rebuild) site — which fires on
+  // cloud count change OR per-cloud property edits (the rebuild gate reads
+  // the collection dirty state). The identity-case prev buffer re-seeds once
+  // via copyBufferToBuffer then skips the per-frame CPU re-upload.
+  instanceDataRevision: number;
+  // The `instanceDataRevision` resident in `prevInstanceBuffer`; `undefined` =
+  // unknown/stale → re-seed. Reset on prev-buffer realloc (T-4).
+  prevBufferRevision: number | undefined;
 }
 
 const CLOUD_WGSL = /* wgsl */ `
@@ -734,8 +743,12 @@ function buildInstanceBuffer(
     visibleCount++;
   }
   const buffer = device.createBuffer({
+    // C10-09 - COPY_SRC so the velocity prev-buffer identity-seed / count-change
+    // seed can copyBufferToBuffer(instanceBuffer -> prevInstanceBuffer) on the
+    // GPU (the identical bytes already reside here). Mirrors the splat renderer.
     size: data.byteLength,
-    usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    usage:
+      GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
   });
   device.queue.writeBuffer(buffer, 0, data);
   // Return visibleCount (clouds with show:true) as the instance count.
@@ -852,6 +865,9 @@ function updateWebGPUCloudCollection(
       velocityPipeline: null,
       velocityPipelineDescriptor: null,
       velocityPipelineRequestPending: false,
+      // C10-09 - prev-buffer revision-skip.
+      instanceDataRevision: 0,
+      prevBufferRevision: undefined,
     } as CloudCache;
   }
 
@@ -1146,6 +1162,10 @@ function _updateWebGPUCloudCollectionInner(
     // comment on the `attachCloudVelocityCommand` helper for the
     // first-frame-seed and revision-change-mismatch cases.
     cache.instanceData = result.instanceData;
+    // C10-09 - single `instanceBuffer` content-write site (count change OR
+    // property edit via the dirty-state gate). Bump so the velocity prev
+    // buffer re-seeds once for this content then skips per-frame uploads.
+    cache.instanceDataRevision++;
   }
 
   // Phase 0 dirty-consume (NEW-DIRTY-CONSUME-CLOUD). The WebGPU renderer
@@ -1416,10 +1436,38 @@ function attachCloudVelocityCommand(
       size: requiredBytes,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
+    // C10-09 T-4 - prev buffer reallocated; resident revision is stale.
+    cache.prevBufferRevision = undefined;
   }
 
+  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY — revision-skip + GPU self-copy.
   const prevSrc = cache.prevInstanceData;
-  if (prevSrc && prevSrc.byteLength >= requiredBytes) {
+  const isIdentity = prevSrc === cache.instanceData; // static: prev IS curr
+  if (
+    isIdentity &&
+    cache.prevInstanceBuffer &&
+    cache.prevInstanceBuffer.size >= requiredBytes
+  ) {
+    // Identity (static clouds): the bytes already reside in `instanceBuffer`
+    // on the GPU. Seed `prevInstanceBuffer` from it ONCE then SKIP while the
+    // data revision is unchanged (INV-1). Geometry velocity is 0 either way.
+    if (cache.prevBufferRevision !== cache.instanceDataRevision) {
+      const encoder = device.createCommandEncoder({
+        label: "Cloud prev identity-seed",
+      });
+      encoder.copyBufferToBuffer(
+        cache.instanceBuffer,
+        0,
+        cache.prevInstanceBuffer,
+        0,
+        requiredBytes,
+      );
+      device.queue.submit([encoder.finish()]);
+      cache.prevBufferRevision = cache.instanceDataRevision;
+    }
+    // else: static & already resident → NOTHING. This is the per-frame win.
+  } else if (prevSrc && prevSrc.byteLength >= requiredBytes) {
+    // Animated distinct-array path (INV-2) — unchanged.
     device.queue.writeBuffer(
       cache.prevInstanceBuffer,
       0,
@@ -1427,7 +1475,9 @@ function attachCloudVelocityCommand(
       prevSrc.byteOffset,
       requiredBytes,
     );
+    cache.prevBufferRevision = undefined;
   } else {
+    // First-frame seed OR count mismatch (INV-4) — existing GPU copy.
     const encoder = device.createCommandEncoder({
       label: "Cloud prev seed",
     });
@@ -1439,6 +1489,7 @@ function attachCloudVelocityCommand(
       requiredBytes,
     );
     device.queue.submit([encoder.finish()]);
+    cache.prevBufferRevision = undefined;
   }
 
   // Lazy velocity pipeline build. Reuses the same color BGL since the

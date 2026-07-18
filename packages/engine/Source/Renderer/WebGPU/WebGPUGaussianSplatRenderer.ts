@@ -113,6 +113,14 @@ interface GaussianSplatCache {
   velocityPipeline: GPURenderPipeline | null;
   velocityPipelineDescriptor: WebGPURenderPipelineDescriptor | null;
   velocityPipelineRequestPending: boolean;
+  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY. Monotonic counter bumped at the
+  // single `splatBuffer` content-write (rebuild) site; the identity-case prev
+  // buffer re-seeds once via copyBufferToBuffer then skips the per-frame CPU
+  // re-upload while the revision is unchanged.
+  instanceDataRevision: number;
+  // The `instanceDataRevision` resident in `prevSplatBuffer`; `undefined` =
+  // unknown/stale → re-seed. Reset on prev-buffer realloc (T-4).
+  prevBufferRevision: number | undefined;
 }
 
 const SPLAT_WGSL = `
@@ -1031,6 +1039,9 @@ function updateWebGPUGaussianSplats(
       velocityPipeline: null,
       velocityPipelineDescriptor: null,
       velocityPipelineRequestPending: false,
+      // C10-09 - prev-buffer revision-skip.
+      instanceDataRevision: 0,
+      prevBufferRevision: undefined,
     } as GaussianSplatCache;
   }
 
@@ -1244,6 +1255,9 @@ function updateWebGPUGaussianSplats(
     // can promote it to `prevSplatData` AFTER its dispatch. Reference
     // to the same typed array — the loader owns the storage.
     cache.splatData = splatData;
+    // C10-09 - single `splatBuffer` content-write site; bump so the velocity
+    // prev buffer re-seeds once for this content then skips per-frame uploads.
+    cache.instanceDataRevision++;
 
     // (Re)allocate the sorted-index storage buffer to match the count, and
     // seed it with identity order (overwritten once the sort resolves). Force
@@ -1639,10 +1653,38 @@ function attachSplatVelocityCommand(
       }
       cache.pickCommand = null;
     }
+    // C10-09 T-4 - prev buffer was reallocated; resident revision is stale.
+    cache.prevBufferRevision = undefined;
   }
 
+  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY — revision-skip + GPU self-copy.
   const prevSrc = cache.prevSplatData;
-  if (prevSrc && prevSrc.byteLength >= requiredBytes) {
+  const isIdentity = prevSrc === cache.splatData; // static: prev IS curr
+  if (
+    isIdentity &&
+    cache.prevSplatBuffer &&
+    cache.prevSplatBuffer.size >= requiredBytes
+  ) {
+    // Identity (static splats): the bytes already reside in `splatBuffer` on
+    // the GPU. Seed `prevSplatBuffer` from it ONCE then SKIP while the data
+    // revision is unchanged (INV-1). Geometry velocity is 0 either way.
+    if (cache.prevBufferRevision !== cache.instanceDataRevision) {
+      const encoder = device.createCommandEncoder({
+        label: "GaussianSplat prev identity-seed",
+      });
+      encoder.copyBufferToBuffer(
+        cache.splatBuffer,
+        0,
+        cache.prevSplatBuffer,
+        0,
+        requiredBytes,
+      );
+      device.queue.submit([encoder.finish()]);
+      cache.prevBufferRevision = cache.instanceDataRevision;
+    }
+    // else: static & already resident → NOTHING. This is the per-frame win.
+  } else if (prevSrc && prevSrc.byteLength >= requiredBytes) {
+    // Animated distinct-array path (INV-2) — unchanged.
     device.queue.writeBuffer(
       cache.prevSplatBuffer,
       0,
@@ -1650,7 +1692,9 @@ function attachSplatVelocityCommand(
       prevSrc.byteOffset,
       requiredBytes,
     );
+    cache.prevBufferRevision = undefined;
   } else {
+    // First-frame seed OR count mismatch (INV-4) — existing GPU copy.
     const encoder = device.createCommandEncoder({
       label: "GaussianSplat prev seed",
     });
@@ -1662,6 +1706,7 @@ function attachSplatVelocityCommand(
       requiredBytes,
     );
     device.queue.submit([encoder.finish()]);
+    cache.prevBufferRevision = undefined;
   }
 
   // Lazy velocity pipeline build. Reuses the color BGL since the

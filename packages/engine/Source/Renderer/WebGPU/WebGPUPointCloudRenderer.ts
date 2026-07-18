@@ -191,6 +191,23 @@ interface PointCloudCache {
   lodVelocityPipelineEntry: PointCloudPipelineEntry | null;
   lodVelocityBindGroup: GPUBindGroup | null;
   lodVelocityStorageBGL: GPUBindGroupLayout | null;
+
+  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY. Monotonic counter bumped at every
+  // site that (re)writes `instanceBuffer` CONTENT (the single rebuild site —
+  // the LOD path only uploads positions to the LOD processor's own buffers,
+  // never `instanceBuffer`). `pointCount` alone is an insufficient
+  // content-change signal (two static clouds could share a count, and a
+  // count that returns to a prior value would alias), so a dedicated
+  // monotonic counter is used. When the identity-case prev buffer already
+  // holds this revision's bytes the per-frame CPU re-upload is skipped.
+  instanceDataRevision: number;
+  // The `instanceDataRevision` whose bytes currently reside in
+  // `prevInstanceBuffer` (default VB path). `undefined` = unknown/stale →
+  // re-seed. Reset to undefined on prev-buffer realloc (T-4).
+  prevBufferRevision: number | undefined;
+  // Same marker for the LOD storage-path prev buffer (`lodPrevInstanceBuffer`),
+  // which has its own independent realloc lifecycle.
+  lodPrevBufferRevision: number | undefined;
 }
 
 const POINT_CLOUD_WGSL = `
@@ -1183,7 +1200,12 @@ function buildInstanceBuffer(
   // When GPU LOD might activate, OR in STORAGE usage so the same buffer
   // can back both the VB-instanced default path and the storage-backed
   // LOD path without duplicating 40 bytes/point of GPU memory.
-  let usage = GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST;
+  // C10-09 - COPY_SRC so the velocity prev-buffer identity-seed / count-change
+  // seed can copyBufferToBuffer(instanceBuffer -> prevInstanceBuffer) on the
+  // GPU (the identical bytes already reside here). Mirrors the splat renderer,
+  // which added COPY_SRC for the same reason.
+  let usage =
+    GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
   if (allowStorage) {
     usage |= GPUBufferUsage.STORAGE;
   }
@@ -1363,6 +1385,10 @@ function updateWebGPUPointCloud(
       lodVelocityPipelineEntry: null,
       lodVelocityBindGroup: null,
       lodVelocityStorageBGL: null,
+      // C10-09 - prev-buffer revision-skip.
+      instanceDataRevision: 0,
+      prevBufferRevision: undefined,
+      lodPrevBufferRevision: undefined,
     } as PointCloudCache;
   }
 
@@ -1510,6 +1536,12 @@ function updateWebGPUPointCloud(
     // and emits velocity=0 for the discontinuity (correct — no
     // continuous index correspondence between OLD and NEW points).
     cache.instanceData = result.instanceData;
+    // C10-09 - the single content-write site for `instanceBuffer`. Bump the
+    // monotonic data revision so the velocity prev buffers re-seed exactly
+    // once for this content (T-3: grep confirms `instanceBuffer` is written
+    // ONLY here — the LOD path uploads positions to the LOD processor, never
+    // to `instanceBuffer`, so no second bump site exists).
+    cache.instanceDataRevision++;
     cache.command = null;
     cache.lodCommand = null;
     cache.lodStorageBindGroup = null;
@@ -1710,6 +1742,9 @@ function attachPointCloudVelocityCommand(
       size: requiredBytes,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
+    // C10-09 T-4 - the resident revision points at bytes in the destroyed
+    // buffer; force a re-seed on the next frame.
+    cache.prevBufferRevision = undefined;
   }
   // Upload prev frame's data. `cache.prevInstanceData` tracks the
   // PREVIOUS frame's data (set at the END of this function on the
@@ -1733,8 +1768,37 @@ function attachPointCloudVelocityCommand(
   //      correspondence between OLD and NEW points at the same i).
   //      Subsequent frames at the new count restore the per-frame
   //      delta capture.
+  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY — revision-skip + GPU self-copy.
   const prevSrc = cache.prevInstanceData;
-  if (prevSrc && prevSrc.byteLength >= requiredBytes) {
+  const isIdentity = prevSrc === cache.instanceData; // static: prev IS curr
+  if (
+    isIdentity &&
+    cache.prevInstanceBuffer &&
+    cache.prevInstanceBuffer.size >= requiredBytes
+  ) {
+    // Identity (static geometry): the bytes we would upload already live in
+    // `instanceBuffer` on the GPU. Seed `prevInstanceBuffer` from it ONCE
+    // (GPU copy, zero CPU upload) then SKIP while the data revision is
+    // unchanged (INV-1). Geometry velocity is 0 either way; camera-induced
+    // velocity comes from `previousViewProjection`, untouched.
+    if (cache.prevBufferRevision !== cache.instanceDataRevision) {
+      const encoder = device.createCommandEncoder({
+        label: "PointCloud prev identity-seed",
+      });
+      encoder.copyBufferToBuffer(
+        cache.instanceBuffer,
+        0,
+        cache.prevInstanceBuffer,
+        0,
+        requiredBytes,
+      );
+      device.queue.submit([encoder.finish()]);
+      cache.prevBufferRevision = cache.instanceDataRevision;
+    }
+    // else: static & already resident → NOTHING. This is the per-frame win.
+  } else if (prevSrc && prevSrc.byteLength >= requiredBytes) {
+    // Animated distinct-array path (INV-2) — prev holds the PREVIOUS frame's
+    // data; upload it unchanged so velocity captures the true delta.
     device.queue.writeBuffer(
       cache.prevInstanceBuffer,
       0,
@@ -1742,8 +1806,10 @@ function attachPointCloudVelocityCommand(
       prevSrc.byteOffset,
       requiredBytes,
     );
+    // prev now holds last-frame data, not the current instance revision.
+    cache.prevBufferRevision = undefined;
   } else {
-    // First-frame seed OR revision-change point-count mismatch.
+    // First-frame seed OR revision-change point-count mismatch (INV-4).
     // Either way the correct emission is velocity = 0 for this frame;
     // GPU self-copy ensures the prev buffer holds matching bytes so
     // the velocity VS reads (curr, curr) → 0 instead of garbage.
@@ -1758,6 +1824,7 @@ function attachPointCloudVelocityCommand(
       requiredBytes,
     );
     device.queue.submit([encoder.finish()]);
+    cache.prevBufferRevision = undefined;
   }
 
   // Lazy velocity pipeline build.
@@ -2072,15 +2139,38 @@ function attachLODPointCloudVelocityCommand(
     });
     // Storage BG references the prev SSBO; rebuild on size change.
     cache.lodVelocityBindGroup = null;
+    // C10-09 T-4 - resident revision points at the destroyed buffer; re-seed.
+    cache.lodPrevBufferRevision = undefined;
   }
 
-  // Upload prev frame's data. Same cases as the default-path helper:
-  // first-frame seed OR revision-change point-count mismatch both
-  // fall through to the GPU self-copy emitting velocity = 0. Static
-  // 3D-Tiles content has prevInstanceData aliasing instanceData so
-  // velocity stays zero (camera-only TAA fallback handles motion).
+  // C10-09-VELOCITY-PREV-BUFFER-GPU-COPY — revision-skip + GPU self-copy on the
+  // LOD storage prev SSBO (own realloc lifecycle, own resident marker). Same
+  // three-branch shape as the default path; `instanceBuffer` is the shared
+  // current-frame source and already carries the identical bytes for static
+  // content, so the identity case is a one-time GPU copy then skip.
   const prevSrc = cache.prevInstanceData;
-  if (prevSrc && prevSrc.byteLength >= requiredBytes) {
+  const isIdentity = prevSrc === cache.instanceData;
+  if (
+    isIdentity &&
+    cache.lodPrevInstanceBuffer &&
+    cache.lodPrevInstanceBuffer.size >= requiredBytes
+  ) {
+    if (cache.lodPrevBufferRevision !== cache.instanceDataRevision) {
+      const encoder = device.createCommandEncoder({
+        label: "PointCloud LOD prev identity-seed",
+      });
+      encoder.copyBufferToBuffer(
+        cache.instanceBuffer,
+        0,
+        cache.lodPrevInstanceBuffer,
+        0,
+        requiredBytes,
+      );
+      device.queue.submit([encoder.finish()]);
+      cache.lodPrevBufferRevision = cache.instanceDataRevision;
+    }
+    // else: static & already resident → NOTHING.
+  } else if (prevSrc && prevSrc.byteLength >= requiredBytes) {
     device.queue.writeBuffer(
       cache.lodPrevInstanceBuffer,
       0,
@@ -2088,6 +2178,7 @@ function attachLODPointCloudVelocityCommand(
       prevSrc.byteOffset,
       requiredBytes,
     );
+    cache.lodPrevBufferRevision = undefined;
   } else {
     const encoder = device.createCommandEncoder({
       label: "PointCloud LOD prev seed",
@@ -2100,6 +2191,7 @@ function attachLODPointCloudVelocityCommand(
       requiredBytes,
     );
     device.queue.submit([encoder.finish()]);
+    cache.lodPrevBufferRevision = undefined;
   }
 
   // Lazy LOD velocity pipeline build.
