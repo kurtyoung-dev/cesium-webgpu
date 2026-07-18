@@ -84,6 +84,11 @@ import {
 // translucency knob that WebGL's CustomShaderPipelineStage applies via
 // alphaOptions.pass. Values: INHERIT (0) / OPAQUE (1) / TRANSLUCENT (2).
 import CustomShaderTranslucencyMode from "../../Scene/Model/CustomShaderTranslucencyMode.js";
+// C10-02-TILES-STYLE-COMMAND-ECONOMICS — the enum the WebGL model FR consults
+// (ModelDrawCommand.pushCommands) to decide whether the per-feature translucent
+// twin is needed. Values: ALL_OPAQUE (0) / ALL_TRANSLUCENT (1) /
+// OPAQUE_AND_TRANSLUCENT (2).
+import StyleCommandsNeeded from "../../Scene/Model/StyleCommandsNeeded.js";
 import Pass from "../Pass.js";
 import ColorBlendMode from "../../Scene/ColorBlendMode.js";
 import SceneMode from "../../Scene/SceneMode.js";
@@ -588,6 +593,9 @@ interface ModelLike {
   silhouetteSize?: number;
   silhouetteColor?: ColorLike;
   opaquePass?: number;
+  // C10-02 — StyleCommandsNeeded enum (0 ALL_OPAQUE / 1 ALL_TRANSLUCENT /
+  // 2 OPAQUE_AND_TRANSLUCENT), or undefined before the feature table realizes.
+  styleCommandsNeeded?: number;
   structuralMetadata?: unknown;
   shadows?: number;
   isDestroyed?: () => boolean;
@@ -6306,12 +6314,47 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
       const hasBatchTable =
         defined(featureIdRes) &&
         (featureIdRes.flags & MaterialFlags.HAS_BATCH_TABLE) !== 0;
+      // C10-02-TILES-STYLE-COMMAND-ECONOMICS — mirror WebGL's
+      // ModelDrawCommand.pushCommands economics (`ModelDrawCommand.js:149-160`):
+      // only emit the TRANSLUCENT-class twin when the applied style actually
+      // mixes per-feature opacity. Read `model.styleCommandsNeeded` FRESH every
+      // frame — it is a cheap field read that Model.updateFeatureTables keeps
+      // current on style mutation (`Model.js:2361-2386`); caching it would go
+      // stale across a style change (Trap T-2), so do not cache. For an
+      // unstyled batch-table tile this is ALL_OPAQUE(0) at steady state
+      // (Model.applyStyle sets it defined on first feature-table realization,
+      // `Model.js:1118-1125`), so the default all-discard phantom twin — which
+      // re-ran the full VS + rasterization + per-fragment batch fetch only to
+      // `discard` 100% of fragments — is now suppressed. INV-6 (conservative):
+      // an `undefined` signal (feature table not yet realized) still emits the
+      // twin, matching today's behavior and WebGL's `defined()` guard — never
+      // skip on an unknown signal.
+      // INV-3 (ALL_TRANSLUCENT opaque-primary suppression) is intentionally
+      // shipped PARTIAL: the opaque primary is NOT suppressed here. The primary
+      // command carries this primitive's pick derivative
+      // (`attachPickToColorCommand`, ~:5892) while the twin carries none, and
+      // pick dispatch is per-command from the command list
+      // (`WebGPUSceneRenderer.executeWebGPUCommand`), so suppressing the primary
+      // would drop feature pick on all-translucent tiles (INV-5). In
+      // ALL_TRANSLUCENT the primary's passClass=0 shader discards 100% of
+      // fragments, so the residual opaque draw is visually correct (the twin
+      // renders the geometry) — only a small redundant draw in a rare case.
+      // Full INV-3 needs the twin to carry a pick derivative; filed as
+      // NEW-WEBGPU-ALLTRANSLUCENT-PRIMARY-SUPPRESS.
+      const scn = model.styleCommandsNeeded;
+      const emitTranslucentTwin =
+        !defined(scn) || scn !== StyleCommandsNeeded.ALL_OPAQUE;
       // C-R8-EDGE-DISPLAY-MODE (§5 P2) — the dual translucent-class
       // command is a SURFACE derivative (per-feature styling of the same
       // geometry), so EDGES_ONLY must suppress it alongside the primary
       // surface command above; otherwise the surface would still render
       // through the batch-table styling path in wireframe mode.
-      if (passClass === 0 && hasBatchTable && !suppressSurfaceForEdgesOnly) {
+      if (
+        passClass === 0 &&
+        hasBatchTable &&
+        !suppressSurfaceForEdgesOnly &&
+        emitTranslucentTwin
+      ) {
         if (!defined(primCache.materialBufferTranslucent)) {
           primCache.materialBufferTranslucent =
             WebGPUBuffer.createUniformBuffer(

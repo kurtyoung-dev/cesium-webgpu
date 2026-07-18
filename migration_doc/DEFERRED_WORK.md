@@ -5420,3 +5420,70 @@ RATIFIED** (reserve lever `C10-03R`, ruling §2(c); needs a `C10-30` checkpoint 
 bandwidth-attributed evidence AND fresh maintainer sign-off). The remaining S4 boundary-bytes items
 (S4-2 depth store/load, S4-3 usage-flags/transient, S4-4 depth-resolve consumer gating, S4-5
 globe-depth pack chain, FAR-405/706 segment-count reduction) are separate rows, untouched here.
+
+## NEW-WEBGPU-ALLTRANSLUCENT-PRIMARY-SUPPRESS (filed C10-02, 2026-07-18)
+
+**Status:** DEFERRED (INV-3 follow-up; C10-02 shipped INV-1/2/4/5/6, INV-3 as PARTIAL).
+
+**Context:** C10-02 (`TILES-STYLE-COMMAND-ECONOMICS`) gates the `Pass.TRANSLUCENT` twin on
+`styleCommandsNeeded`, killing the phantom for unstyled batch-table tiles (WebGL parity). WebGL's
+`ModelDrawCommand.pushCommands:157-159` additionally SUPPRESSES the opaque primary in the
+`ALL_TRANSLUCENT` case. C10-02 did NOT port that suppression: on the WebGPU path the opaque primary
+command carries this primitive's pick derivative (`attachPickToColorCommand`) and the translucent
+twin carries none; pick dispatches per-command from the command list
+(`WebGPUSceneRenderer.executeWebGPUCommand`→`selectCommandVariant`), so dropping the primary would
+drop feature pick on all-translucent tiles (INV-5). Because the primary's `passClass=0` FS discards
+100% of fragments when every feature is translucent, keeping it is visually correct — just one
+redundant all-discard opaque draw in the rare `ALL_TRANSLUCENT` case (not the default; unstyled and
+mixed styles are unaffected).
+
+**Fix when picked up:** attach a pick derivative to the translucent twin (hoist the `pickCmd` built
+in `updateWebGPUModel` and re-`attachPickToColorCommand(translucentCmd, pickCmd)` when the primary is
+suppressed), OR move pick emission off the surface primary, THEN gate the primary push
+(`WebGPUModelRenderer.ts`, the `commandList.push(webgpuCmd)` inside `!suppressSurfaceForEdgesOnly`) on
+`!suppressOpaquePrimary` where `suppressOpaquePrimary = defined(scn) && scn === ALL_TRANSLUCENT`.
+Also verify T-5 (classification depth: the twin already carries `depthForTranslucentClassification`
+when `classificationType` is set, so depth is preserved) and suppress the IDL 2D duplicate of the
+primary alongside it. Single concern; do not fold into another slice.
+
+## NEW-WEBGPU-TILE-FEATURE-TRANSLUCENT-COLOR-COMPOSITE (surfaced by C10-02, 2026-07-18)
+
+**Status:** DEFERRED (pre-existing WebGPU parity gap; NOT introduced by C10-02 — identical PRE↔POST).
+
+**Context:** Applying a per-feature translucent color to b3dm batch-table content
+(`Cesium3DTileFeature.color = rgba(...,0.4)`, driving `BatchTexture.setColor`) renders correctly on
+WebGL (the styled feature composites red/green semi-transparent) but shows **no visual tint** on
+WebGPU — the styled building renders with its base opaque material color. The C10-02 translucent twin
+DOES emit for the styled case (verified: `styleCommandsNeeded===2/1`, tile-content translucent
+command count = 1) and the batch GPU texture DOES re-upload on style change
+(`WebGPUModelFeatureId.updateBatchGPUTexture` on `_batchValuesDirty`), yet the twin's fragment output
+does not apply the per-feature color/alpha modulation from the batch texture. Evidence
+(`probe-c10-02-pixel.mjs`, N=700² frame, requestRenderMode off): WebGL subset redPix=2781 / all
+greenPix=6853; WebGPU red/green ≈ 0 across unstyled/subset/all with identical RGB — the twin
+contributes nothing visible even when it emits. Confirmed pre-existing via the C10-02 `__C10_02_PRE__`
+A/B (twin-always PRE also shows no tint).
+
+**Fix when picked up:** trace the twin's `ModelPBRComplete.wgsl` per-feature color path — the batch
+texture sample + color/alpha modulation that WebGL's `CPUStylingStage`/batch-table shader applies —
+and wire the per-feature RGBA (from the batch texture bound in the merged group-1 BG) into the
+translucent-class fragment output. Verify against WebGL with `probe-c10-02-pixel.mjs`
+(RENDERER=webgl/webgpu MODE=subset|all).
+
+## NEW-WEBGPU-B3DM-TILE-CONTENT-PICK-EMPTY (surfaced by C10-02, 2026-07-18)
+
+**Status:** DEFERRED (pre-existing WebGPU parity gap; NOT introduced by C10-02 — identical PRE↔POST).
+
+**Context:** `scene.pick` / `scene.drillPick` over rendered b3dm tile content
+(`BatchedWithBatchTable`) returns **nothing** on WebGPU while WebGL resolves the
+`Cesium3DTileFeature` (featureId 4 at the same screen pixel). Reproduced with globe on/off and
+`requestRenderMode=false` (`probe-c10-02-pixel.mjs`: WebGL drillCount=1, WebGPU scan of the whole
+building region finds no pick). Standalone `Model.fromGltfAsync` pick DOES work on WebGPU
+(`probe-standalone-model-pick` PASS both backends), so the gap is specific to 3D-tile-content
+feature pick, not model pick generally. Confirmed pre-existing via the C10-02 A/B (identical PRE↔POST).
+C10-02 is pick-neutral (its gate touches only the surface twin; the pick derivative is on the
+always-emitted primary), so this does not block the slice.
+
+**Fix when picked up:** determine why the WebGPU pick FBO is not populated with b3dm tile-content
+feature IDs — trace the tile-content Model pick command emission + pick-pass dispatch for
+`Model3DTileContent` vs a standalone Model, and confirm the feature-id pick texture is bound during
+the pick pass. Verify with `probe-c10-02-pixel.mjs MODE=subset` (WebGPU drillCount should become 1).
