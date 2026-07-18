@@ -5284,6 +5284,65 @@ ABOVE the horizon line where neither plane nor globe covers pixels — identical
 future oracle revision should count only below-limb marker pixels. `C9-02B` acceptance and the P0-1
 gate flip stay paused behind this item.
 
+### Phase-0 premise correction (C10-11, 2026-07-18) — the fleet is larger + one producer has NO log-depth infrastructure ⇒ all-or-nothing BLOCKED
+
+Re-derived the exact native pick-producer fleet at HEAD (Batch 706) before attempting the conversion.
+Two premise corrections vs the C10 guide H6 walkthrough:
+
+- **Voxel is NOT Cohort A — it has ZERO log-depth infrastructure and is the hard blocker.**
+  `WebGPUVoxelRenderer.ts` has 0 occurrences of `LOG_DEPTH`/`logDepth`/`v_logDepth`/`csm_writeLogDepth`/
+  `frag_depth` (grep-confirmed). Its COLOR entry `fragmentMain` (`:760`) returns a bare
+  `@location(0) vec4<f32>` (hyperbolic), and its two pick entries (`fragmentPickMain :1009`,
+  `fragmentPickVoxelMain :1103`) do the same; both pick pipelines are `depthWriteEnabled:false`
+  (`:2679`, `:2710`). The voxel UBO (`struct Uniforms :185`) carries `mvpRelativeToEye` but no
+  near/factor/far log lanes. The renderer-wide log-depth epic (`NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION`,
+  §1565) converted "ALL GEOMETRY/**OPAQUE** PRODUCERS" only; the voxel (translucent volumetric, writes
+  no depth) was **deliberately excluded** and is not among the tracked residuals (§1607 lists only the
+  standalone point-cloud + splat, both since shipped). So the guide's claim that voxel's "module already
+  carries LOG_DEPTH ifdefs + the `v_logDepth` varying from its color path" is false. Converting voxel
+  pick cleanly is a mini-epic (grow the voxel UBO with log lanes, add `csm_vertexLogDepth`/
+  `csm_writeLogDepth` + a `v_logDepth` varying, define plumbing, AND a design decision on what depth a
+  volumetric first-hit pick writes — box-surface vs density-hit) that belongs to a voxel-color
+  log-depth prerequisite (extend `NEW-LOG-DEPTH-REMAINING-PRODUCERS` to the voxel), NOT this pick slice.
+- **Because the pick FBO has ONE shared depth attachment (INV-2) and Rule 3 forbids shipping a partial
+  fleet, the voxel blocker STOPS the whole all-or-nothing landing.** No engine code was changed. The
+  smallest unblock: land the voxel color→log-depth conversion first, then C10-11 converts the entire
+  fleet (including both voxel pick entries) in one coordinated change.
+
+**Corrected fleet enumeration (PRE = uniformly hyperbolic by design; ~24 pick entries / ~20 files, not
+"~14"):**
+
+| Family | Pick entry / file | Cohort | PRE | Convert path | Camera-UB log lanes |
+| --- | --- | --- | --- | --- | --- |
+| Globe | `GlobeTerrain.wgsl fragmentPickMain :3081` | A (shared color module) | hyperbolic (bare vec4) | WGSL only (`g_fragLogDepth`/`camera.logDepth.z`) | globe bespoke UB — yes |
+| Model ×3 | `ModelPBRComplete.wgsl fragmentPick{Main:3828,HoverMain:3758,MetadataMain:3983}` | A | hyperbolic | WGSL only (`input.v_logDepth`/`camera.logDepthFactor`); multi-return → struct+helper | `WebGPUModelPipelineCache.ts:2579` — yes |
+| Ellipsoid | `WebGPUEllipsoidPrimitiveRenderer.ts fragmentPickMain :281` | A | hyperbolic (color FS `:229` already logs) | WGSL only (recompute `positionCC` like color FS) | UB packs — yes |
+| Splat | `WebGPUGaussianSplatRenderer.ts fragmentPickMain :393` | A + **JS module swap** | hyperbolic (pick pinned to `smBase` `:710-734`, `depthWrite:false`) | WGSL struct + JS: use log `sm` module + depthWrite when active | UB floats 35/39 — yes |
+| Buffer ×3 | point/polygon/polyline (`WebGPUBufferPointRenderer.ts fragmentPickMain :331` etc.) | A + **JS define** | hyperbolic by design (`:297-300` "pick stays hyperbolic") | WGSL struct + OR-in LOG_DEPTH for pick defines | Buffer*Material.wgsl color logs — yes |
+| Billboard | `Collections/BillboardCollectionPick.wgsl fragmentMain :246` | B (dedicated) | hyperbolic (no varying) | VS `v_logDepth` + FS struct + LOG_DEPTH in `pickDefines` | packed (`WebGPUBillboardRenderer.js:683`) |
+| Point | `Collections/PointPrimitivePick.wgsl fragmentMain :201` | B | hyperbolic | same | packed (`WebGPUPointPrimitiveRenderer.js:887`) |
+| Polyline | `Collections/PolylineCollectionPick.wgsl fragmentMain :190` | B | hyperbolic | same | packed (`WebGPUPolylineRenderer.js:1305`) |
+| Primitive ×6 | `Primitive/PrimitivePick{Basic,BasicTextured,MatFlat,MatLit,Phong,PhongTextured}.wgsl` | B | hyperbolic | same (copy color sibling's ifdef) | verify per family |
+| Ground/Vector-tile | GroundPrimitive/GroundPolyline/Vector3DTile* (derived via `WebGPUDerivedCommand` PICK) | classify per build site | hyperbolic | reuse-color-module vs dedicated; confirm at pipeline build | color path logs — yes |
+| **Voxel ×2** | `WebGPUVoxelRenderer.ts fragmentPick{Main:1009,VoxelMain:1103}` | **NONE — no infra** | hyperbolic (color also hyperbolic) | **BLOCKED — needs full log-depth plumbing + design decision** | **absent** |
+| Compute-instance | `ComputeInstanceRender.wgsl fragmentPickMain :215` | A | **already log** (`v_logDepth` + `csm_writeLogDepth`, reference pattern) | done | yes |
+
+**Guide drift (record for a future H6 correction):** (1) the Phase-1/INV-4 pseudocode adds
+`if (v_logDepth <= 0.9999999) { discard; }` as the near-cull, but NO color-side `csm_writeLogDepth`
+call site (80+ across globe/model/collections/primitives/buffer/splat/compute-instance) has that
+discard — mirroring the color sibling means writing log `frag_depth` with **no** near-discard (adding
+one would DIVERGE from the color path, exactly trap #8); (2) voxel is mis-classified Cohort A;
+(3) the fleet is ~24 entries, not "~14".
+
+**Reversed-Z reconciliation (mandatory cross-link, not a blocker for this slice).** Log `frag_depth`
+is the conservative default (WebGL parity). When the pick fleet DOES land (post-voxel-prerequisite),
+its ~24 pick entries JOIN the FAR-707/`C10-GT-REVERSED-Z-SLICE-B` convert-back surface (the 71-file
+color surface that reversed-Z slice-b removes `frag_depth` from wholesale). Per `C11-GT-01`/`C10-13`,
+the reversed-Z spike's GO/NO-GO verdict must be recorded in THIS item + the FAR-707 brief +
+`DEFERRED_WORK.md` before the pick-fleet log-depth is treated as PERMANENT. If reversed-Z goes GO the
+fleet converts to reversed-Z f32 with the color surface — do NOT convert to reversed-Z now, and never
+land the two streams in the same slice.
+
 ---
 
 ## C9-07-DEMAND-OPEN-CANVAS-PASS latent findings (2026-07-16)
