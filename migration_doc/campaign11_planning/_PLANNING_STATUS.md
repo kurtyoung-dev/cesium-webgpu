@@ -22,9 +22,28 @@ HEAD = `aef553d592` (Batch 698); repo HEAD at salvage = Batch 700 (`b533124568`)
 - **`../DEFAULT_PARITY_MATRIX_2026-07-18.md`** — 22 backend default divergences
   (5 visible-visual), flip-candidate shortlist, runtime-verification plan. Feeds G8.
 
-## Guides — ALL 10 COMPLETE (G8/G9/G10 authored by Opus 2026-07-18, Batch 702)
+## PHASE 2 + 3 COMPLETE — Campaign 11 is LAUNCH-READY (2026-07-18, Batch 705)
 
-G1–G10 all present in `guides/`. Cross-cutting findings the assembler MUST honor:
+**Guides: ALL 12 present** in `guides/` — G1–G10 + **G11 (rte-taa)** + **G12
+(clouds-weather)**, authored by Opus after the assembler found the original 10
+covered only 165/188. Coverage is now **188/188**.
+
+**Phase 3 assembly DONE:** `../QUEUE_2026-07-18_CAMPAIGN11.md` (the campaign
+authority — §1 canonical ID table `C11-01..C11-156` contiguous + 26 SEED + 3 GT
++ 3 IC, **independently verified collision-free**, all 188 register items placed;
+§2 rules, §3 gates incl. the C8-contract EXIT gate, §3.2 seeded ledger, §4
+C11-00B intake, §5 8-wave plan, §6 gated tail, §7 maintainer decisions) +
+`../CAMPAIGN11_EXECUTION_GUIDE.md` (thin composition/index over G1–G12).
+
+**Launch:** auto-fires when Campaign 10 closes (C10-30) → C11-00B intake → W1.
+
+**Minor doc-consistency follow-ups (non-load-bearing, do at first C11 touch):**
+the §1 table's owning-guide column still shows "—" for the 23 rte-taa
+(`C11-51..57`) + clouds-weather (`C11-124..130`, `SEED-10..18`) rows now owned by
+G11/G12; and `C11-126` (CLOUD-U4) is ALREADY RESOLVED in code (Batches 621/622)
+so it collapses to a doc-reconcile, not the epic it looks like (G12 finding).
+
+### Cross-cutting findings the executor MUST honor:
 - **enhanced-ocean is NOT a clean flip** (G8): uniform-driven, no `ENHANCED_OCEAN`
   ShaderDefine — a define-gate must be added first; two-part maintainer ask.
 - **ShaderDefine registry EXHAUSTED** bits 0–30 (G8/G9): `C10-08b` define-width is a
