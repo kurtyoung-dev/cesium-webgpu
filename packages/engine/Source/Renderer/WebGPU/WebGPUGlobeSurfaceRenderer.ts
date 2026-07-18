@@ -318,6 +318,13 @@ export class WebGPUGlobeSurfaceRenderer {
   // the globe pipeline's defines + cache key. Default false → the bit is 0 and
   // the globe pipeline is byte-identical until the epic's final flip.
   public _logDepthEnabled: boolean = false;
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet master
+  // switch, mirrored from `context._pickLogDepthWriteEnabled` each frame. The
+  // globe PICK pipeline (selectPickPipeline) ORs LOG_DEPTH from THIS flag (not
+  // `_logDepthEnabled`) into its pick-pipeline cache key, so the pick FBO stays
+  // uniformly hyperbolic OR log across the whole fleet. Default false → the
+  // globe pick is byte-identical hyperbolic until C10-11's coordinated flip.
+  public _pickLogDepthEnabled: boolean = false;
   // Batch 110 — track scene-pipeline format generation last applied
   // so a runtime HDR / canvas-format change clears the pipeline +
   // wireframe + debug-fragment caches and rebuilds against the new
@@ -1099,6 +1106,12 @@ export class WebGPUGlobeSurfaceRenderer {
     this._logDepthEnabled =
       (frameState.context as unknown as { _logDepthWriteEnabled?: boolean })
         ._logDepthWriteEnabled ?? false;
+    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — mirror the SEPARATE pick-fleet
+    // master switch so selectPickPipeline compiles its LOG_DEPTH module from it
+    // (its pick cache key includes the define → the flip rebuilds via keyed miss).
+    this._pickLogDepthEnabled =
+      (frameState.context as unknown as { _pickLogDepthWriteEnabled?: boolean })
+        ._pickLogDepthWriteEnabled ?? false;
 
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;

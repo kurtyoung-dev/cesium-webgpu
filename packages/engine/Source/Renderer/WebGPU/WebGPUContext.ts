@@ -597,18 +597,23 @@ export class WebGPUContext extends GraphicsContext {
   // migration_doc/DEFERRED_WORK.md. See WebGPULogDepth.ts.
   public _logDepthWriteEnabled: boolean = true;
 
-  // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — pick-fleet log-depth master switch,
-  // SEPARATE from `_logDepthWriteEnabled` (scene). The pick mini-frame owns its
-  // own single shared depth attachment (WebGPUSceneRendererPickPass, INV-2), so
-  // the whole native pick fleet must be uniformly hyperbolic OR uniformly log —
-  // a mixed FBO depth-tests incoherently. The scene half is TRUE by default but
-  // the pick fleet is still uniformly hyperbolic, so this defaults FALSE and
-  // stays there until every pick producer writes log frag_depth in one
-  // coordinated change (C10-11, NEW-WEBGPU-PICK-FLEET-LOG-DEPTH). The voxel pick
-  // is the first producer wired to it (isWebGPUPickLogDepthActive); with this
-  // false the voxel pick module carries no LOG_DEPTH define and its pick
-  // pipelines keep depthWriteEnabled:false → byte-identical to today.
-  public _pickLogDepthWriteEnabled: boolean = false;
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-fleet log-depth master
+  // switch, SEPARATE from `_logDepthWriteEnabled` (scene). The pick mini-frame
+  // owns its own single shared depth attachment (WebGPUSceneRendererPickPass,
+  // INV-2), so the whole native pick fleet must be uniformly hyperbolic OR
+  // uniformly log — a mixed FBO depth-tests incoherently. Historically this
+  // defaulted FALSE while the fleet was still uniformly hyperbolic. Batch 708
+  // (NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH) cleared the last blocker (voxel had zero
+  // log-depth infra); C10-11 then converted EVERY remaining native pick producer
+  // (globe, model incl. hover/metadata/precise-pass, ellipsoid, splat, buffer
+  // point/polygon/polyline, billboard/point/polyline collections, primitive
+  // pick families) to write log `@builtin(frag_depth)` gated on
+  // `isWebGPUPickLogDepthActive`, so this flips TRUE in one coordinated change:
+  // the shared pick FBO is now uniformly log. OPAQUE picks write the log depth;
+  // BLEND/translucent picks keep depth-test-only (Batch-186 opaque-behind-
+  // translucent pickability). Flipping this false restores the uniformly-
+  // hyperbolic pick FBO (kill switch) — proven byte-identical (gate-off).
+  public _pickLogDepthWriteEnabled: boolean = true;
 
   // Slice 5c-B Batch 129 — post-process snapshot. After the post-process
   // pipeline has blitted scene FB to canvas, a 1-pass copyTextureToTexture

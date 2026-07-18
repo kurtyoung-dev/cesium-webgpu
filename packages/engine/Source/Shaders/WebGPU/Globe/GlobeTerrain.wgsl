@@ -3065,10 +3065,17 @@ fn makeFragOutput(color: vec4<f32>, normalEC: vec3<f32>) -> FragOutput {
 // pick color (packed at the camera-UB tail) into the single-target pick FBO.
 // Rendered by the pick-pass pick pipeline (buildPickPipelineDescriptor strips
 // the G-buffer slot-1 target + blend + MSAA from the color descriptor). Writes
-// STANDARD rasterizer depth (no @builtin(frag_depth)) so the pick FBO depth
-// stays consistent with the model / primitive pick pipelines, which also write
-// standard depth. The globe pick command is dispatched ONLY when
-// `globe.pickable` is set (the globe stays out of the pick pass otherwise — see
+// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — under the pick-fleet LOG_DEPTH
+// module (compiled only when isWebGPUPickLogDepthActive, the SEPARATE pick
+// master switch — NOT the scene log switch), the globe pick writes the SAME
+// log frag_depth its color sibling (makeFragOutput) writes: the interpolated
+// `input.v_logDepth` through `csm_writeLogDepth` with factor `camera.logDepth.z`.
+// This keeps the whole pick fleet on ONE encoding in the shared pick FBO (INV-2)
+// so nearer pick producers occlude farther ones. The //>>else branch is a
+// single @location(0) output byte-identical to the historical bare-vec4 return
+// (kill-switch parity). NO near-discard — the color sibling has none.
+// The globe pick command is dispatched ONLY when `globe.pickable` is set (the
+// globe stays out of the pick pass otherwise — see
 // `GlobeSurfaceTileProviderRendering.updateWebGPUForPick`), so `scene.pick`
 // stays undefined over the globe by default (WebGL parity) and returns the
 // Globe only when the app opts in. `scene.pickPosition` reads the main-pass
@@ -3077,9 +3084,21 @@ fn makeFragOutput(color: vec4<f32>, normalEC: vec3<f32>) -> FragOutput {
 // `fragmentMain` applies are intentionally NOT mirrored here yet — globe pick
 // over a clipped/limited globe is a follow-up; the default (unclipped) globe
 // picks correctly.
+struct PickFragOutput {
+  @location(0) color: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  return camera.pickColor;
+fn fragmentPickMain(input: VertexOutput) -> PickFragOutput {
+  var out: PickFragOutput;
+  out.color = camera.pickColor;
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepth.z);
+  //>>endif
+  return out;
 }
 
 // GLOBE-UNDERGROUND-COLOR — port of GlobeFS.glsl `interpolateByDistance`

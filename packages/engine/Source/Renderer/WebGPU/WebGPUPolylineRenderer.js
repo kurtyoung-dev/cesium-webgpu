@@ -59,7 +59,10 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
-import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import {
+  isWebGPULogDepthActive,
+  isWebGPUPickLogDepthActive,
+} from "./WebGPULogDepth.js";
 import {
   createMaterialUploadState,
   uploadMaterialUniformBuffer,
@@ -1140,8 +1143,13 @@ function buildPolylinePickDescriptor(
     [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
   );
 
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the defines hex already encodes
+  // the LOG_DEPTH bit, but append an explicit `[ld]` marker so the central
+  // pipeline cache (keyed on the descriptor name) can't serve a stale
+  // hyperbolic/log variant across a pick-fleet gate flip.
+  const ldSuffix = defines & ShaderDefine.LOG_DEPTH ? " [ld]" : "";
   const descriptor = {
-    name: `Polyline pick pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
+    name: `Polyline pick pipeline [${format}/${depthFormat}/defines=0x${defines.toString(16)}${ldSuffix}]`,
     layout: device.createPipelineLayout({
       bindGroupLayouts: [cameraBindGroupLayout],
     }),
@@ -1158,6 +1166,9 @@ function buildPolylinePickDescriptor(
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: depthFormat,
+      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — already true today (nearer pick
+      // producers back-clip farther ones in the shared pick FBO), so the log
+      // frag_depth write composes with the fleet with no change here.
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
@@ -1993,7 +2004,20 @@ function _pushPolylinePickCommand(
   // C-R7-RENDERER-MIGRATION (Batch 58) — `pickPipelines` is now a Map of
   // `defines → { descriptor, pipeline, pending, cameraBindGroupLayout }`.
   // The actual GPU pipeline is materialized via `context.webgpuPipelineCache`.
-  const pickDefines = cache.currentDefines ?? 0;
+  //
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick module's LOG_DEPTH
+  // define is gated by the SEPARATE pick-fleet master switch
+  // (`isWebGPUPickLogDepthActive`), NOT the scene log switch baked into
+  // `currentDefines`. Strip the scene LOG_DEPTH bit and re-add it only when the
+  // pick fleet is active, so with the switch OFF (default) the pick shader emits
+  // a single-`@location(0)` output byte-identical to the pre-conversion pick and
+  // the shared pick FBO stays uniformly hyperbolic (INV-2). The pick pass runs
+  // the SAME `packCameraUniforms` as the color path, so the pick camera buffer
+  // already carries the log lanes (floats 26-27 near/far, float 30 factor).
+  const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
+  const pickDefines =
+    ((cache.currentDefines ?? 0) & ~ShaderDefine.LOG_DEPTH) |
+    (pickLogActive ? ShaderDefine.LOG_DEPTH : 0);
   if (!defined(cache.pickPipelines)) {
     cache.pickPipelines = new Map();
   }

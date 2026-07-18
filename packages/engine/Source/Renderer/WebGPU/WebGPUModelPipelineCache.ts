@@ -1205,6 +1205,13 @@ function createPickPipeline(
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: GPUPrimitiveTopology = "triangle-list",
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — when the pick-fleet switch is on
+  // the passed `shaderModule` is the LOG_DEPTH variant (fragmentPickMain writes
+  // log `@builtin(frag_depth)`); tag the label `[ld]`. Only OPAQUE/MASK picks
+  // WRITE that log depth (they already wrote depth); BLEND stays depth-test-only
+  // (depthWriteEnabled below is `!isBlend`, independent of this flag). Default
+  // false → byte-identical.
+  pickLogActive: boolean = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   // C-R9-MODEL-PICK-TRANSLUCENT (Batch 186) — first slice. Translucent
@@ -1235,7 +1242,9 @@ function createPickPipeline(
   // building behind a tinted glass facade should select the building,
   // not the glass).
   const isBlend = alphaMode === 2;
-  const label = `Model PBR pick [alpha=${alphaMode},ds=${doubleSided}]`;
+  const label = `Model PBR pick [alpha=${alphaMode},ds=${doubleSided}]${
+    pickLogActive ? " [ld]" : ""
+  }`;
   return device.createRenderPipeline({
     label,
     layout: pipelineLayout,
@@ -1259,6 +1268,15 @@ function createPickPipeline(
     },
     depthStencil: {
       format: depthFormat,
+      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — the pick-log switch changes the
+      // ENCODING of the depth a pick pipeline writes, NOT which pipelines write.
+      // OPAQUE/MASK picks (`!isBlend`) already write depth, so under the switch
+      // their `fragmentPickMain` writes LOG frag_depth into the shared pick FBO.
+      // BLEND/translucent picks keep the historical Batch-186 depth-test-only
+      // behavior (`depthWriteEnabled:false`) so opaque-behind-translucent stays
+      // pickable — the log module still runs so its frag_depth compares
+      // COHERENTLY against the (log) buffer, it just isn't written. Same both
+      // states → the pick-fleet switch never forces a blend pick to write depth.
       depthWriteEnabled: !isBlend,
       depthCompare: "less-equal",
     },
@@ -1290,11 +1308,15 @@ function createPickMetadataPipeline(
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: GPUPrimitiveTopology = "triangle-list",
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — see createPickPipeline.
+  pickLogActive: boolean = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const isBlend = alphaMode === 2;
   return device.createRenderPipeline({
-    label: `Model PBR pick-metadata [alpha=${alphaMode},ds=${doubleSided}]`,
+    label: `Model PBR pick-metadata [alpha=${alphaMode},ds=${doubleSided}]${
+      pickLogActive ? " [ld]" : ""
+    }`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -1316,6 +1338,9 @@ function createPickMetadataPipeline(
     },
     depthStencil: {
       format: depthFormat,
+      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — see createPickPipeline. Opaque/mask
+      // metadata-pick writes LOG frag_depth under the switch; BLEND keeps the
+      // depth-test-only behavior. The switch never changes which pipeline writes.
       depthWriteEnabled: !isBlend,
       depthCompare: "less-equal",
     },
@@ -1415,9 +1440,14 @@ function createPickHoverPipeline(
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: GPUPrimitiveTopology = "triangle-list",
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — see createPickPipeline. Depth-write
+  // is already true here (dither-gated blend competes on the standard depth test).
+  pickLogActive: boolean = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
-  const label = `Model PBR pick-hover [BLEND,ds=${doubleSided}]`;
+  const label = `Model PBR pick-hover [BLEND,ds=${doubleSided}]${
+    pickLogActive ? " [ld]" : ""
+  }`;
   return device.createRenderPipeline({
     label,
     layout: pipelineLayout,
@@ -1471,9 +1501,15 @@ function createPickPrecisePass1Pipeline(
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: GPUPrimitiveTopology = "triangle-list",
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — reuses fragmentPickMain, so it
+  // MUST take the same pick-gated module; tag `[ld]` when active. Depth-write is
+  // already true (this pass records the closest translucent log depth).
+  pickLogActive: boolean = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
-  const label = `Model PBR pick-precise pass1 [BLEND,ds=${doubleSided}]`;
+  const label = `Model PBR pick-precise pass1 [BLEND,ds=${doubleSided}]${
+    pickLogActive ? " [ld]" : ""
+  }`;
   // Stencil ops only valid on depth-stencil formats. Sniff the format.
   const hasStencil =
     depthFormat === "depth24plus-stencil8" ||
@@ -1555,9 +1591,17 @@ function createPickPrecisePass2Pipeline(
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
   topology: GPUPrimitiveTopology = "triangle-list",
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — reuses fragmentPickMain, so it
+  // MUST take the same pick-gated module; tag `[ld]` when active. Depth-write
+  // STAYS false: this pass depth-tests `equal` against the log depth pass1 wrote
+  // (both use fragmentPickMain, so the log frag_depth values match) — forcing
+  // depth-write here would corrupt the two-pass equal-test winner selection.
+  pickLogActive: boolean = false,
 ) {
   const cullMode = doubleSided ? "none" : "back";
-  const label = `Model PBR pick-precise pass2 [BLEND,ds=${doubleSided}]`;
+  const label = `Model PBR pick-precise pass2 [BLEND,ds=${doubleSided}]${
+    pickLogActive ? " [ld]" : ""
+  }`;
   const hasStencil =
     depthFormat === "depth24plus-stencil8" ||
     depthFormat === "depth32float-stencil8";
@@ -1826,6 +1870,15 @@ class WebGPUModelPipelineCache {
   declare _customShaderClassHash: number;
   declare _primitiveTopology: GPUPrimitiveTopology;
   declare _logDepthEnabled: boolean;
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet log-depth
+  // switch, mirrored from `context._pickLogDepthWriteEnabled` via
+  // maybeUpdateForPickLogDepth() each frame. The 3 pick fragment entries (and
+  // the 2 BLEND precise-pass pipelines reusing fragmentPickMain) compile their
+  // module with LOG_DEPTH gated by THIS flag — NOT the scene `_logDepthEnabled`
+  // — so the shared pick FBO stays uniformly hyperbolic OR log across the whole
+  // fleet (INV-2). Default false → the pick modules carry no LOG_DEPTH define
+  // and the pick pipelines are byte-identical hyperbolic until C10-11's flip.
+  declare _pickLogDepthEnabled: boolean;
   declare _splitEnabled: boolean;
   declare _modelColorEnabled: boolean;
   declare _silhouetteEnabled: boolean;
@@ -2086,6 +2139,10 @@ class WebGPUModelPipelineCache {
     // Renderer-wide log depth — OFF until the renderer's first
     // maybeUpdateForLogDepth() call mirrors the live master switch.
     this._logDepthEnabled = false;
+    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-fleet log depth, OFF
+    // until the renderer's first maybeUpdateForPickLogDepth() call mirrors the
+    // SEPARATE `context._pickLogDepthWriteEnabled` master switch.
+    this._pickLogDepthEnabled = false;
     // WIRE-MODEL-SPLITTER — per-model split-screen discard. OFF until the
     // renderer's first maybeUpdateForSplit() call mirrors
     // `model.splitDirection !== SplitDirection.NONE`. This cache is
@@ -2498,10 +2555,17 @@ class WebGPUModelPipelineCache {
    * differs per variant.
    *
    * @param {number} materialDefines
+   * @param {boolean} [pickLogOverride] NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11)
+   *   — when supplied, the LOG_DEPTH module bit follows THIS value instead of
+   *   the scene `_logDepthEnabled`. The pick pipelines pass
+   *   `this._pickLogDepthEnabled` so their module's log state is gated by the
+   *   SEPARATE pick-fleet switch (INV-2). Omitted (undefined) for every color /
+   *   velocity / classification / capture / silhouette caller → the LOG_DEPTH
+   *   bit keeps following `_logDepthEnabled` exactly as before (byte-identical).
    * @returns {GPUShaderModule}
    * @private
    */
-  _getOrCreateShaderModule(materialDefines: number) {
+  _getOrCreateShaderModule(materialDefines: number, pickLogOverride?: boolean) {
     const key = this._normalizeMaterialDefines(materialDefines);
     //>>includeStart('debug', pragmas.debug);
     // C2-22 — test hook: when `globalThis.CesiumWebGPUForcePipelineError` is set,
@@ -2568,6 +2632,16 @@ class WebGPUModelPipelineCache {
       (key & ShaderDefine.MODEL_HAS_METADATA) !== 0
         ? ShaderDefine.MODEL_METADATA_MAT_TRANSPORT
         : 0;
+    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — a PICK caller passes
+    // `pickLogOverride` so its module's LOG_DEPTH bit follows the SEPARATE
+    // pick-fleet switch, decoupled from the scene `_logDepthEnabled`. Nullish
+    // coalescing (not `||`) so an explicit `false` (pick off, scene on) CLEARS
+    // the bit; `undefined` (every non-pick caller) falls through to the scene
+    // switch → byte-identical. Because this bit is part of `effectiveDefines`,
+    // the per-cache `moduleKey` + the device Tier-1 cache key already
+    // distinguish the pick-off variant from the scene-on color module (distinct
+    // modules when scene-on/pick-off; deduped when both agree).
+    const logDepthActiveForModule = pickLogOverride ?? this._logDepthEnabled;
     const effectiveDefines =
       (key |
         captureBit |
@@ -2576,7 +2650,7 @@ class WebGPUModelPipelineCache {
         modelColorBit |
         silhouetteBit |
         metadataMatBit |
-        (this._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0)) >>>
+        (logDepthActiveForModule ? ShaderDefine.LOG_DEPTH : 0)) >>>
       0;
     // DP-H46b/c — the generated metadata chunk is class-dependent, so when
     // MODEL_HAS_METADATA (property attributes) OR MODEL_HAS_PROPERTY_TEXTURES
@@ -2939,6 +3013,43 @@ class WebGPUModelPipelineCache {
     this._shaderModule = this._getOrCreateShaderModule(
       ShaderDefine.MODEL_HAS_KHR_TEXTURES,
     );
+    return true;
+  }
+
+  /**
+   * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — mirror the SEPARATE pick-fleet
+   * master switch (`context._pickLogDepthWriteEnabled`) each frame. Structurally
+   * the maybeUpdateForLogDepth pattern, but scoped to the PICK pipelines only:
+   *
+   *   - Wipes ONLY the pick pipeline maps (`_pickPipelines`, `_pickHoverPipelines`,
+   *     `_pickMetadataPipelines`, and the two BLEND precise-pass maps whose
+   *     pipelines reuse `fragmentPickMain`). Those cached pipelines reference a
+   *     module compiled with the wrong pick-log state, so a flip must rebuild
+   *     them — the module cache serves the correct variant because the LOG_DEPTH
+   *     bit is now part of `effectiveDefines` (via the `pickLogOverride` arg).
+   *   - Does NOT touch the color / velocity / classification / capture /
+   *     silhouette maps, nor the eager `_shaderModule*` fields — those follow the
+   *     scene `_logDepthEnabled` and are unaffected by the pick switch.
+   *
+   * With the switch OFF (default) the pick modules carry no LOG_DEPTH define and
+   * the pick pipelines are byte-identical hyperbolic; a flip to true is C10-11's
+   * coordinated fleet conversion.
+   *
+   * @param {boolean} active isWebGPUPickLogDepthActive(context, frameState)
+   * @returns {boolean} true when the flag flipped this call (the renderer uses
+   *   this to drop per-primitive direct pick-pipeline references).
+   */
+  maybeUpdateForPickLogDepth(active: boolean) {
+    const enabled = active === true;
+    if (this._pickLogDepthEnabled === enabled) {
+      return false;
+    }
+    this._pickLogDepthEnabled = enabled;
+    this._pickPipelines.clear();
+    this._pickHoverPipelines.clear();
+    this._pickMetadataPipelines.clear();
+    this._pickPrecisePass1Pipelines.clear();
+    this._pickPrecisePass2Pipelines.clear();
     return true;
   }
 
@@ -3585,7 +3696,9 @@ class WebGPUModelPipelineCache {
     // error fallback needs its own pick-FBO-shaped error pipeline.
     pipeline = createPickPipeline(
       this._device,
-      this._getOrCreateShaderModule(md),
+      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-gated module: LOG_DEPTH
+      // follows the pick-fleet switch, NOT the scene `_logDepthEnabled`.
+      this._getOrCreateShaderModule(md, this._pickLogDepthEnabled),
       this._getOrCreatePipelineLayout(md),
       // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
       this._pickFormat,
@@ -3596,6 +3709,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       this._metadataSlotMode(md),
       topology,
+      this._pickLogDepthEnabled,
     );
     this._pickPipelines.set(key, pipeline);
     return pipeline;
@@ -3645,8 +3759,12 @@ class WebGPUModelPipelineCache {
     // The module compiles `fragmentPickMetadataMain` only when the pick bit is
     // present in the raw arg (it's stripped from `md` but preserved in the
     // module fetch — see `_getOrCreateShaderModule`).
+    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — fold the pick-fleet LOG_DEPTH
+    // override in alongside the metadata-pick bit so the metadata-pick module's
+    // log state follows the pick switch (not the scene `_logDepthEnabled`).
     const pickModule = this._getOrCreateShaderModule(
       (md | ShaderDefine.METADATA_PICKING_ENABLED) >>> 0,
+      this._pickLogDepthEnabled,
     );
     pipeline = createPickMetadataPipeline(
       this._device,
@@ -3661,6 +3779,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       this._metadataSlotMode(md),
       topology,
+      this._pickLogDepthEnabled,
     );
     this._pickMetadataPipelines.set(key, pipeline);
     return pipeline;
@@ -3704,7 +3823,8 @@ class WebGPUModelPipelineCache {
     }
     pipeline = createPickHoverPipeline(
       this._device,
-      this._getOrCreateShaderModule(md),
+      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-gated module.
+      this._getOrCreateShaderModule(md, this._pickLogDepthEnabled),
       this._getOrCreatePipelineLayout(md),
       // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
       this._pickFormat,
@@ -3714,6 +3834,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       this._metadataSlotMode(md),
       topology,
+      this._pickLogDepthEnabled,
     );
     this._pickHoverPipelines.set(key, pipeline);
     return pipeline;
@@ -3752,7 +3873,11 @@ class WebGPUModelPipelineCache {
     }
     pipeline = createPickPrecisePass1Pipeline(
       this._device,
-      this._getOrCreateShaderModule(md),
+      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — reuses fragmentPickMain, so it
+      // MUST fetch the SAME pick-gated module as getPickPipeline; otherwise the
+      // scene-log module (LOG_DEPTH on by default) would make fragmentPickMain
+      // write log frag_depth even with the pick switch OFF (NOT byte-identical).
+      this._getOrCreateShaderModule(md, this._pickLogDepthEnabled),
       this._getOrCreatePipelineLayout(md),
       // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
       this._pickFormat,
@@ -3762,6 +3887,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       this._metadataSlotMode(md),
       topology,
+      this._pickLogDepthEnabled,
     );
     this._pickPrecisePass1Pipelines.set(key, pipeline);
     return pipeline;
@@ -3798,7 +3924,10 @@ class WebGPUModelPipelineCache {
     }
     pipeline = createPickPrecisePass2Pipeline(
       this._device,
-      this._getOrCreateShaderModule(md),
+      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — reuses fragmentPickMain; same
+      // pick-gated module as pass1 so their log frag_depth values match for the
+      // equal-test winner selection (and off is byte-identical, see pass1).
+      this._getOrCreateShaderModule(md, this._pickLogDepthEnabled),
       this._getOrCreatePipelineLayout(md),
       // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
       this._pickFormat,
@@ -3808,6 +3937,7 @@ class WebGPUModelPipelineCache {
       (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
       this._metadataSlotMode(md),
       topology,
+      this._pickLogDepthEnabled,
     );
     this._pickPrecisePass2Pipelines.set(key, pipeline);
     return pipeline;

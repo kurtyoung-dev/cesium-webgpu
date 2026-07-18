@@ -5240,6 +5240,27 @@ Most combinations are coincidentally disambiguated by the existing labels (quant
 
 ---
 
+## NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — ✅ DONE (C10-11, 2026-07-18) — whole native pick fleet writes log frag_depth; master switch flipped true
+
+**RESOLVED (C10-11, 2026-07-18).** The voxel hard-blocker was cleared by Batch 708
+(`NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH`), then the whole remaining fleet (25 files) was converted to write
+log `@builtin(frag_depth)` gated on `isWebGPUPickLogDepthActive`, and the master switch
+`WebGPUContext._pickLogDepthWriteEnabled` was flipped **false → true** (the shared pick FBO is now
+uniformly log by default; false = byte-identical hyperbolic kill switch). **Design ruling applied:** the
+switch changes the depth ENCODING, not WHICH pipelines write — OPAQUE/MASK picks write log depth; the
+Model BLEND lane was corrected from `depthWriteEnabled: pickLogActive || !isBlend` to `!isBlend` so
+translucent picks keep the Batch-186 depth-test-only (opaque-behind-translucent) behavior. Verified:
+GATE-OFF byte-identity (globe-default crossBackend 0.46%, native pick battery green); GATE-ON mixed-family
+occlusion at 20/500/5,000 km (`probe-c10-11-mixed-coherence.mjs`, PNGs read), blend pickability
+(`probe-c10-11-blend-pickability.mjs`), voxel occlusion; pickPosition unchanged (independent — reads the
+main-pass depth texture). `probe-globe-pick-h44` cold-page flake shown pre-existing (8/8 hit-rate A/B off
+AND on via `probe-c10-11-ddtd-hitrate.mjs`). **C10-12 (`PICK_DEPTH_PLANE_ENABLED` flip) is now unblocked.**
+Reversed-Z: these ~24 pick entries are the FAR-707/C10-GT slice-b convert-back surface — do not re-fight
+until the C10-13/C11-GT-01 spike verdict lands. Full completion note: `WEBGPU_DEBUGGING_LOG.md` C10-11
+COMPLETE entry (2026-07-18). Original blocking analysis retained below for history.
+
+---
+
 ## NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — pick mini-frame depth is fleet-wide hyperbolic; the P0-1 pick depth-plane gate is blocked on converting ALL pick producers to log frag_depth (2026-07-16)
 
 Surfaced by `NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT` (Campaign 9, audit P0-1). The scene-side half

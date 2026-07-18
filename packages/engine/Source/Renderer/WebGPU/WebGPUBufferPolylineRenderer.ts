@@ -37,6 +37,8 @@ import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   packCameraUniforms,
   preprocessShader,
+  preprocessPickShader,
+  BUFFER_PICK_MODULE_KEYSALT,
   makeCameraBindGroupLayout,
   createSharedCacheBase,
   createVB,
@@ -53,7 +55,10 @@ import {
   scratchEnc,
 } from "./WebGPUBufferPrimitiveRenderer.js";
 import { ShaderSourceId, ShaderDefine } from "./WebGPUShaderDefines.js";
-import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import {
+  isWebGPULogDepthActive,
+  isWebGPUPickLogDepthActive,
+} from "./WebGPULogDepth.js";
 import { computeNoDepthTest } from "./WebGPUCollectionRendererBase.js";
 import BlendOption from "../../Scene/BlendOption.js";
 import type {
@@ -133,6 +138,11 @@ function buildPolylinePipeline(
   // PARITY-BUFFER-2DCV — settled-2D/CV coplanar variant: depth test "always" +
   // no depth write. Default false keeps the historical path byte-identical.
   noDepthTest: boolean = false,
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-fleet log gate. The polyline
+  // pick pipeline ALREADY writes depth (`!noDepthTest`), so this only tags the
+  // devtools label `[ld]`; the log frag_depth comes from the pick MODULE.
+  // Ignored for the color stage. Default false preserves every existing caller.
+  pickLogActive: boolean = false,
 ): GPURenderPipeline {
   const float3 = (loc: number): GPUVertexBufferLayout => ({
     arrayStride: 12,
@@ -146,7 +156,7 @@ function buildPolylinePipeline(
   return device.createRenderPipeline({
     label: `BufferPolyline pipeline (${fragmentEntryPoint}, ms=${
       multisample?.count ?? 1
-    })`,
+    })${isPickStage && pickLogActive ? " [ld]" : ""}`,
     layout: device.createPipelineLayout({ bindGroupLayouts: bgls }),
     multisample,
     vertex: {
@@ -229,6 +239,9 @@ function initPolylineCache(
   context: CesiumGraphicsContext,
   format: GPUTextureFormat,
   defines: number,
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the SEPARATE pick-fleet log
+  // switch (isWebGPUPickLogDepthActive), independent of the color `defines`.
+  pickLogActive: boolean,
 ): PolylineCache {
   const device: GPUDevice = context.device;
   const vertexCountMax: number = collection.vertexCountMax * 2; // each vertex written twice
@@ -265,6 +278,30 @@ function initPolylineCache(
     defines,
     "BufferPolylineMaterial",
   );
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick pipeline compiles its
+  // OWN module gated on the SEPARATE pick-fleet switch, decoupled from the
+  // color `defines`. Off → REUSE the color module (byte-identical to today);
+  // on → a distinct LOG_DEPTH module (source + pick suffix preprocessed at
+  // LOG_DEPTH so `v_logDepth` is in scope and the pick FS writes log
+  // frag_depth). keySalt prevents aliasing the color module at the SAME
+  // `(sourceId, LOG_DEPTH)` when the scene switch is also on.
+  const pickDefines =
+    (defines & ~ShaderDefine.LOG_DEPTH) |
+    (pickLogActive ? ShaderDefine.LOG_DEPTH : 0);
+  const pickModule = pickLogActive
+    ? getBufferPrimitiveShaderCache(device).getOrCreate(
+        ShaderSourceId.BUFFER_POLYLINE_MATERIAL,
+        preprocessPickShader(
+          context,
+          "BufferPolylineMaterial",
+          BufferPolylineMaterialWGSL,
+          pickDefines,
+        ),
+        pickDefines,
+        "BufferPolylineMaterial [ld pick]",
+        BUFFER_PICK_MODULE_KEYSALT,
+      )
+    : shaderModule;
   const bgls = makeCameraBindGroupLayout(device, true);
   const sampleCount = context._msaaSamples ?? 1;
   const pipeline = buildPolylinePipeline(
@@ -277,13 +314,19 @@ function initPolylineCache(
   );
   // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick pipeline targets the
   // context's byte-object-ID format authority (matches the pick FBO), never
-  // the (possibly float/HDR) scene format.
+  // the (possibly float/HDR) scene format. NEW-WEBGPU-PICK-FLEET-LOG-DEPTH —
+  // built from `pickModule` (log variant when the gate is on); polyline pick
+  // already writes depth, so only the module + `[ld]` label change.
   const pickPipeline = buildPolylinePipeline(
     device,
-    shaderModule,
+    pickModule,
     context.pickPipelineFormat ?? "rgba8unorm",
     bgls,
     "fragmentPickMain",
+    1,
+    false,
+    false,
+    pickLogActive,
   );
 
   const base = createSharedCacheBase(device);
@@ -613,6 +656,10 @@ export function updateWebGPUBufferPolylineCollection(
   // it invalidates the cache so module + pipeline rebuild.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const defines = logDepthActive ? ShaderDefine.LOG_DEPTH : 0;
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet master
+  // switch (default OFF until the fleet flips). Flipping it must rebuild the
+  // pick module + pipeline, so track it alongside the format + log guards.
+  const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
 
   let cache = collection._webgpuCache as PolylineCache | undefined;
   // Batch 110 — invalidate on scene format change (HDR toggle).
@@ -624,18 +671,29 @@ export function updateWebGPUBufferPolylineCollection(
     ((cache as unknown as { _pipelineFormatGeneration?: number })
       ._pipelineFormatGeneration !== sceneGen ||
       (cache as unknown as { _logDepthEnabled?: boolean })._logDepthEnabled !==
-        logDepthActive)
+        logDepthActive ||
+      (cache as unknown as { _pickLogDepthEnabled?: boolean })
+        ._pickLogDepthEnabled !== pickLogActive)
   ) {
     cache = undefined;
     collection._webgpuCache = undefined;
   }
   if (!cache) {
-    cache = initPolylineCache(collection, context, format, defines);
+    cache = initPolylineCache(
+      collection,
+      context,
+      format,
+      defines,
+      pickLogActive,
+    );
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
     (cache as unknown as { _logDepthEnabled?: boolean })._logDepthEnabled =
       logDepthActive;
+    (
+      cache as unknown as { _pickLogDepthEnabled?: boolean }
+    )._pickLogDepthEnabled = pickLogActive;
     collection._webgpuCache = cache;
     collection._dirtyOffset = 0;
     collection._dirtyCount = collection.primitiveCount;

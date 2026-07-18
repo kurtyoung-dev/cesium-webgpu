@@ -42,7 +42,10 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
-import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import {
+  isWebGPULogDepthActive,
+  isWebGPUPickLogDepthActive,
+} from "./WebGPULogDepth.js";
 // NEW-COLLECTION-RENDERER-BASE (Phase 11) — shared per-frame plumbing +
 // the three permanent collection sentinels. Billboard keeps its own
 // pack/define-scan/atlas/descriptors; only duplicated scaffolding moved.
@@ -1391,6 +1394,7 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
       modelMatrix,
       visibleCount,
       commandList,
+      frameState,
     );
   }
 
@@ -1413,6 +1417,7 @@ function _pushBillboardPickCommand(
   modelMatrix,
   visibleCount,
   commandList,
+  frameState,
 ) {
   // DP-H42 / DP-H40 — pick pipeline uses the same defines as the color
   // pipeline for this frame so the pick region exactly matches the
@@ -1422,11 +1427,29 @@ function _pushBillboardPickCommand(
   // `cache.pickPipelineEntries`; pipeline resolves through the central
   // pipeline cache. Skip the pick command if the pipeline is still
   // materializing (a frame later it'll be ready).
-  const pickDefines = cache.currentDefines ?? 0;
+  //
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick MODULE's LOG_DEPTH
+  // define is gated by the SEPARATE pick-fleet master switch
+  // (`isWebGPUPickLogDepthActive`), NOT the scene log switch that `currentDefines`
+  // already baked in. The color-entry lookup + descriptor derivation still use
+  // the color defines (so the derived pick descriptor inherits the exact color
+  // pipeline state), but the pick shader compiles with the scene LOG_DEPTH bit
+  // STRIPPED and re-added only when the pick fleet is active. With the switch
+  // OFF (default) the pick module has no LOG_DEPTH define → the pick FS emits a
+  // single-`@location(0)` output byte-identical to the pre-conversion pick, so
+  // the shared pick FBO stays uniformly hyperbolic (INV-2).
+  const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
+  const colorDefines = cache.currentDefines ?? 0;
+  const pickModuleDefines =
+    (colorDefines & ~ShaderDefine.LOG_DEPTH) |
+    (pickLogActive ? ShaderDefine.LOG_DEPTH : 0);
   if (!defined(cache.pickPipelineEntries)) {
     cache.pickPipelineEntries = new Map();
   }
-  let pickEntry = cache.pickPipelineEntries.get(pickDefines);
+  // Keyed on the pick-MODULE defines so a pick-fleet gate flip (C10-11) rebuilds
+  // against the log module + [ld] descriptor name instead of serving the stale
+  // hyperbolic entry.
+  let pickEntry = cache.pickPipelineEntries.get(pickModuleDefines);
   if (!defined(pickEntry)) {
     // NEW-DERIVEDCOMMAND-VARIANT-FACTORY (Batch 248) — the pick descriptor
     // is DERIVED from the color descriptor through the centralized variant
@@ -1435,7 +1458,7 @@ function _pushBillboardPickCommand(
     // old hand-rolled `buildBillboardPickDescriptor`. The color entry for
     // this defines-set always exists here: `updateWebGPUBillboards` builds
     // and resolves it before pushing the pick command.
-    const colorEntry = cache.pipelineEntries.get(pickDefines);
+    const colorEntry = cache.pipelineEntries.get(colorDefines);
     if (!defined(colorEntry)) {
       // Only reachable via the `?? 0` fallback before the first color
       // resolve — skip the pick draw this frame; next frame the color
@@ -1449,25 +1472,29 @@ function _pushBillboardPickCommand(
     const pickModule = moduleCache.getOrCreate(
       ShaderSourceId.BILLBOARD_COLLECTION_PICK,
       pickShader,
-      pickDefines,
+      pickModuleDefines,
       "Billboard pick shader",
     );
     const descriptor = WebGPUDerivedCommand.deriveDescriptor(
       colorEntry.descriptor,
       DerivedCommandType.PICK,
       // Whole-module swap: the dedicated pick shader source compiled at
-      // the same defines as the color module (entry points unchanged —
-      // vertexMain/fragmentMain exist in both modules).
+      // the pick-gated defines (entry points unchanged — vertexMain/
+      // fragmentMain exist in both modules).
       // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick target is stamped
       // with the context's byte-object-ID format authority, never the
       // (possibly float/HDR) scene slot-0 format.
+      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — `[ld]` name discriminator so the
+      // central pipeline cache (keyed on descriptor name) never serves the
+      // hyperbolic pick pipeline for the log module or vice versa.
       {
         module: pickModule,
         pickFormat: context.pickPipelineFormat ?? "rgba8unorm",
+        nameSuffix: pickLogActive ? "[ld]" : undefined,
       },
     );
     pickEntry = { descriptor, pipeline: null, pending: false };
-    cache.pickPipelineEntries.set(pickDefines, pickEntry);
+    cache.pickPipelineEntries.set(pickModuleDefines, pickEntry);
   }
   const pickPipeline = tryResolveBillboardPipeline(
     device,

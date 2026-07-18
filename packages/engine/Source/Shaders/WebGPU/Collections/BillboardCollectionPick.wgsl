@@ -28,20 +28,50 @@ struct CameraUniforms {
   mvpRelativeToEye: mat4x4<f32>,
   viewRotation: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>,
-  _pad0: f32,
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick pipeline reuses the
+  // color bind group (the SAME camera UB the color path packs), so these
+  // formerly-`_pad0`/`_pad1` lanes already carry the log-depth encode frustum
+  // (near at float 35, far at float 39) and float 46 the factor. Byte layout is
+  // UNCHANGED. Only the `//>>ifdef LOG_DEPTH` pick module reads them; the
+  // hyperbolic pick module never does. See BillboardCollection.wgsl (color).
+  logDepthNear: f32,
   encodedCameraLow: vec3<f32>,
-  _pad1: f32,
+  logDepthFar: f32,
   viewportSize: vec2<f32>,
   highResMultiplier: f32,
   _pad2: f32,
   minimumDisableDepthTestDistance: f32,
   splitPosition: f32,
+  // Log-depth factor (oneOverLog2FarDepthFromNearPlusOne) at float 46 +
+  // reserved float 47 — previously implicit padding before
+  // `previousViewProjection`'s 16-byte alignment, so struct size / offsets are
+  // unchanged.
+  logDepthFactor: f32,
+  _padLog: f32,
       previousViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 @group(0) @binding(1) var atlasTexture: texture_2d<f32>;
 @group(0) @binding(2) var atlasSampler: sampler;
+
+//>>ifdef LOG_DEPTH
+// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — renderer-wide log depth, canonical
+// inline copies matching the color sibling (BillboardCollection.wgsl). Compiled
+// into the pick module ONLY when the pick-fleet gate is active
+// (isWebGPUPickLogDepthActive); the //>>else path is byte-identical to today.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var coords = clipPosition;
+  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+  return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif
 
 struct VertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -78,6 +108,11 @@ struct VertexOutput {
   @location(1) pickColor: vec4<f32>,
   //>>ifdef SPLIT_ENABLED
   @location(2) splitDirection: f32,
+  //>>endif
+  //>>ifdef LOG_DEPTH
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — interpolated linear depthFromNearPlusOne;
+  // the pick FS converts it to frag_depth (matches the color sibling's varying).
+  @location(3) v_logDepth: f32,
   //>>endif
 };
 
@@ -240,11 +275,38 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   );
 
   output.pickColor = input.pickColor;
+
+  //>>ifdef LOG_DEPTH
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — mirror the color sibling's block
+  // (BillboardCollection.wgsl vertexMain). Computed AFTER every clipPos
+  // override above. A forced z == 0 (near-plane / hide collapse) maps to
+  // v_logDepth = 1.0; every other case takes the general encode.
+  if (output.position.z == 0.0) {
+    output.v_logDepth = 1.0;
+  } else {
+    output.v_logDepth = csm_vertexLogDepth(output.position, camera.logDepthNear);
+  }
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
+
   return output;
 }
 
+// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — shared pick output. At defines=0
+// (pick-fleet gate OFF) this is a single-field `@location(0)` struct,
+// output-byte-identical to the historical bare `-> @location(0) vec4<f32>`
+// return. When the gate is active the struct also carries the log-encoded
+// `@builtin(frag_depth)` (the SAME encoding the color sibling writes) so the
+// converted pick fleet depth-tests coherently in the shared pick FBO.
+struct PickFragOutput {
+  @location(0) color: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> PickFragOutput {
   //>>ifdef SPLIT_ENABLED
   if (input.splitDirection < 0.0 && input.position.x > camera.splitPosition) {
     discard;
@@ -260,5 +322,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     discard;
   }
   // Output pick color (ID encoded as RGBA)
-  return input.pickColor;
+  var out: PickFragOutput;
+  out.color = input.pickColor;
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+  //>>endif
+  return out;
 }

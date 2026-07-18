@@ -113,6 +113,7 @@ import { createEffectsBindGroup } from "./WebGPUEffectsBindGroup.js";
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
 import {
   isWebGPULogDepthActive,
+  isWebGPUPickLogDepthActive,
   packCameraLogDepthLanes,
 } from "./WebGPULogDepth.js";
 import {
@@ -494,6 +495,7 @@ interface PipelineCacheLike {
   setMetadataWGSL(...args: unknown[]): void;
   setMetadataPickWGSL(...args: unknown[]): void;
   maybeUpdateForLogDepth(...args: unknown[]): boolean;
+  maybeUpdateForPickLogDepth(...args: unknown[]): boolean;
   maybeUpdateForModelColor(...args: unknown[]): boolean;
   maybeUpdateForSceneFormat(...args: unknown[]): boolean;
   maybeUpdateForSilhouette(...args: unknown[]): boolean;
@@ -4190,6 +4192,17 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
       frameState,
     ),
   );
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — mirror the SEPARATE pick-fleet
+  // master switch into the pipeline cache; a flip wipes ONLY the pick pipeline
+  // maps so the 3 pick fragment entries (+ the 2 BLEND precise-pass pipelines)
+  // recompile their module with/without the LOG_DEPTH define. Default false →
+  // pick modules carry no LOG_DEPTH define, byte-identical hyperbolic pick.
+  const pickLogDepthFlipped = pipelineCache.maybeUpdateForPickLogDepth(
+    isWebGPUPickLogDepthActive(
+      context as unknown as Parameters<typeof isWebGPUPickLogDepthActive>[0],
+      frameState,
+    ),
+  );
   // WIRE-MODEL-SPLITTER — mirror model.splitDirection into the per-model
   // pipeline cache; a flip wipes pipelines so modules recompile
   // with/without MODEL_SPLIT_ENABLED (WebGL ModelSplitterPipelineStage
@@ -4283,6 +4296,10 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
   const sceneFormatChanged =
     previousGen !== pipelineCache._sceneFormatGeneration ||
     logDepthFlipped ||
+    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — a pick-log flip wiped the pick
+    // pipeline maps, so the per-primitive `pc.pickPipeline` direct refs must be
+    // dropped + re-fetched, same as a scene-format / scene-log flip.
+    pickLogDepthFlipped ||
     splitFlipped ||
     modelColorFlipped ||
     silhouetteFlipped;

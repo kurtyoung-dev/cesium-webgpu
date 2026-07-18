@@ -38,7 +38,10 @@ import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
 // Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
-import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import {
+  isWebGPULogDepthActive,
+  isWebGPUPickLogDepthActive,
+} from "./WebGPULogDepth.js";
 import SceneMode from "../../Scene/SceneMode.js";
 // NEW-COLLECTION-RENDERER-BASE (Phase 11) — shared per-frame plumbing
 // (resident-instance manager fold, pipeline-format-gen invalidation,
@@ -537,8 +540,13 @@ function buildPointPickDescriptor(
     label: "PointPrimitive pick pipeline layout",
     bindGroupLayouts: [bindGroupLayout],
   });
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the defines hex already encodes
+  // the LOG_DEPTH bit, but append an explicit `[ld]` marker so the central
+  // pipeline cache (keyed on the descriptor name) can't serve a stale
+  // hyperbolic/log variant across a pick-fleet gate flip.
+  const ldSuffix = defines & ShaderDefine.LOG_DEPTH ? " [ld]" : "";
   return {
-    name: `PointPrimitive pick [${format}/${depthFormat}/defines=0x${defines.toString(16)}]`,
+    name: `PointPrimitive pick [${format}/${depthFormat}/defines=0x${defines.toString(16)}${ldSuffix}]`,
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
@@ -553,6 +561,9 @@ function buildPointPickDescriptor(
     primitive: { topology: "triangle-list", cullMode: "none" },
     depthStencil: {
       format: depthFormat,
+      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — already true today (nearer pick
+      // producers back-clip farther ones in the shared pick FBO), so the log
+      // frag_depth write composes with the fleet with no change here.
       depthWriteEnabled: true,
       depthCompare: "less-equal",
     },
@@ -1312,6 +1323,7 @@ function _updateWebGPUPointPrimitivesInner(
       cache,
       modelMatrix,
       commandList,
+      frameState,
     );
   }
 
@@ -1333,13 +1345,28 @@ function _pushPickCommand(
   cache,
   modelMatrix,
   commandList,
+  frameState,
 ) {
   // DP-H42 / DP-H40 — pick pipeline mirrors the color pipeline's defines
   // so the pick region matches what's visible on screen.
   // C-R7-RENDERER-MIGRATION (Batch 58) — `cache.pickPipelines` is now
   // `defines → { descriptor, pipeline, pending }` and the actual GPU
   // pipeline is materialized via `context.webgpuPipelineCache`.
-  const pickDefines = cache.currentDefines ?? 0;
+  //
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick module's LOG_DEPTH
+  // define is gated by the SEPARATE pick-fleet master switch
+  // (`isWebGPUPickLogDepthActive`), NOT the scene log switch baked into
+  // `currentDefines`. Strip the scene LOG_DEPTH bit and re-add it only when the
+  // pick fleet is active, so with the switch OFF (default) the pick shader emits
+  // a single-`@location(0)` output byte-identical to the pre-conversion pick and
+  // the shared pick FBO stays uniformly hyperbolic (INV-2). The `defines` bit is
+  // carried into the descriptor name (+ `[ld]`) so the pipeline cache rebuilds on
+  // a flip. The pick reuses the color camera UB, which already packs the log
+  // lanes (floats 44-47).
+  const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
+  const pickDefines =
+    ((cache.currentDefines ?? 0) & ~ShaderDefine.LOG_DEPTH) |
+    (pickLogActive ? ShaderDefine.LOG_DEPTH : 0);
   if (!defined(cache.pickPipelines)) {
     cache.pickPipelines = new Map();
   }

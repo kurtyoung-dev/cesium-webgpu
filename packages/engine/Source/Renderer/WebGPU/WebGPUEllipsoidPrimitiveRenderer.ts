@@ -38,7 +38,10 @@ import {
 } from "./WebGPUPickCommandHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
-import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import {
+  isWebGPULogDepthActive,
+  isWebGPUPickLogDepthActive,
+} from "./WebGPULogDepth.js";
 
 // C-R7-SHADER-MODULE-DEDUP (Batch 185) — per-device module cache.
 // EllipsoidPrimitive is typically few-per-scene; the dedup win is
@@ -277,19 +280,47 @@ fn fragmentMain(
 // discard as the color pass, but outputs the pick color instead of the
 // lit material. The pick FBO readback maps this color back to the
 // {primitive, id} target registered at creation time.
+//
+// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — under the pick-fleet LOG_DEPTH
+// module (compiled only when isWebGPUPickLogDepthActive), the pick fragment
+// writes the SAME projection-recovered log frag_depth its color sibling
+// (fragmentMain) writes, so the ellipsoid pick shares the fleet's log
+// encoding in the shared pick FBO. The //>>else struct is a single
+// @location(0) output — byte-identical to the historical bare-vec4 return.
+struct PickFragOutput {
+  @location(0) color: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
 fn fragmentPickMain(
   @builtin(position) fragPos: vec4<f32>,
   @location(0) positionEC: vec3<f32>,
   @location(1) ellipsoidCenter: vec3<f32>,
-) -> @location(0) vec4<f32> {
+) -> PickFragOutput {
   let rayDir = normalize(positionEC);
   let t = intersectEllipsoid(vec3<f32>(0.0), rayDir, ellipsoidCenter, ellipsoid.oneOverRadiiSq);
   if (t.x < 0.0 && t.y < 0.0) { discard; }
   var tHit = t.x;
   if (tHit < 0.0) { tHit = t.y; }
   if (tHit < 0.0) { discard; }
-  return ellipsoid.pickColor;
+  var out: PickFragOutput;
+  out.color = ellipsoid.pickColor;
+  //>>ifdef LOG_DEPTH
+  // Recover the eye-space hit's clip-space w and log-encode with the SAME
+  // (near, factor) the color FS uses. NO near-discard — the color sibling
+  // (fragmentMain) has none, and mirroring it exactly is the parity contract
+  // (adding a discard would diverge; the color path relies on clip-z clamp).
+  let hit = rayDir * tHit;
+  let positionCC = camera.projection * vec4<f32>(hit, 1.0);
+  out.depth = csm_writeLogDepth(
+    csm_vertexLogDepth(positionCC, camera.logDepth.x),
+    camera.logDepth.z,
+  );
+  //>>endif
+  return out;
 }
 `;
 
@@ -443,6 +474,7 @@ function buildEllipsoidPipelineResources(
   sampleCount: number = 1,
   logDepthActive: boolean = false,
   pickFormat: GPUTextureFormat = "rgba8unorm",
+  pickLogActive: boolean = false,
 ): EllipsoidPipelineResources {
   // NEW-ELLIPSOIDPRIM-LOG-DEPTH (Batch 266) — OR in LOG_DEPTH when active so
   // the module cache compiles the //>>ifdef LOG_DEPTH FS branch (projection-
@@ -455,6 +487,28 @@ function buildEllipsoidPipelineResources(
     defines,
     `EllipsoidPrimitive${logDepthActive ? " [log]" : ""}`,
   );
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the PICK pipeline compiles its
+  // OWN module variant gated by the SEPARATE pick-fleet master switch
+  // (isWebGPUPickLogDepthActive), NOT the scene log switch. This keeps the
+  // pick FBO uniformly hyperbolic OR uniformly log across the whole fleet
+  // (INV-2) and makes the kill switch (`_pickLogDepthWriteEnabled=false`)
+  // restore byte-identical hyperbolic pick even while the scene stays log.
+  // When pick-log is inactive the module has no LOG_DEPTH define → the pick FS
+  // returns a single-@location(0) output byte-identical to the historical
+  // bare-vec4 return. Dedupes to `shaderModule` when both switches agree.
+  const pickModule = pickLogActive
+    ? getEllipsoidPrimitiveShaderCache(device).getOrCreate(
+        ShaderSourceId.ELLIPSOID_PRIMITIVE,
+        ELLIPSOID_WGSL,
+        ShaderDefine.LOG_DEPTH,
+        "EllipsoidPrimitive [log pick]",
+      )
+    : getEllipsoidPrimitiveShaderCache(device).getOrCreate(
+        ShaderSourceId.ELLIPSOID_PRIMITIVE,
+        ELLIPSOID_WGSL,
+        0,
+        "EllipsoidPrimitive",
+      );
 
   const bindGroupLayout0 = makeBindGroupLayout(
     device,
@@ -546,10 +600,23 @@ function buildEllipsoidPipelineResources(
       "fragmentPickMain",
       pickFormat,
       {
-        name: "EllipsoidPrimitive pick pipeline",
+        // Distinct name so the central pipeline cache (keyed on name) never
+        // serves the hyperbolic pick pipeline for the log module or vice versa.
+        name: pickLogActive
+          ? "EllipsoidPrimitive pick pipeline [ld]"
+          : "EllipsoidPrimitive pick pipeline",
         forceDepthWriteEnabled: true,
       },
     );
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — override the color-module reuse with the
+  // pick-gated module (both stages; the ellipsoid VS is log-independent — the
+  // FS recovers the log depth from the ray-cast hit — so either module's
+  // vertex stage is byte-identical). depthWriteEnabled stays true both states
+  // (the color path already writes depth), so only the module swaps.
+  pickDescriptor.vertex.module = pickModule;
+  if (pickDescriptor.fragment) {
+    pickDescriptor.fragment.module = pickModule;
+  }
 
   return {
     shaderModule,
@@ -926,14 +993,20 @@ function updateWebGPUEllipsoidPrimitive(
   // shader module + pipelines must rebuild. Tracked alongside the scene-format
   // generation; mirrors the GroundPrimitive `_pipelineLogDepth` flip guard.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick-fleet master switch is
+  // SEPARATE from the scene log switch; a flip must rebuild the pick pipeline
+  // against the pick-gated module (+ its [ld] cache name), so track it too.
+  const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
   const cacheGuard = cache as unknown as {
     _pipelineFormatGeneration?: number;
     _pipelineLogDepth?: boolean;
+    _pickPipelineLogDepth?: boolean;
   };
   if (
     cache.initialized &&
     (cacheGuard._pipelineFormatGeneration !== sceneGen ||
-      cacheGuard._pipelineLogDepth !== logDepthActive)
+      cacheGuard._pipelineLogDepth !== logDepthActive ||
+      cacheGuard._pickPipelineLogDepth !== pickLogActive)
   ) {
     (
       cache as EllipsoidCache & {
@@ -942,6 +1015,7 @@ function updateWebGPUEllipsoidPrimitive(
     )._pipelineResources = undefined;
     cacheGuard._pipelineFormatGeneration = sceneGen;
     cacheGuard._pipelineLogDepth = logDepthActive;
+    cacheGuard._pickPipelineLogDepth = pickLogActive;
   }
 
   // C-R7-RENDERER-MIGRATION (Batch 56) — route pipeline creation through
@@ -974,6 +1048,7 @@ function updateWebGPUEllipsoidPrimitive(
       sampleCount,
       logDepthActive,
       pickFormat,
+      pickLogActive,
     );
     (
       cache as EllipsoidCache & {
@@ -1024,6 +1099,7 @@ function updateWebGPUEllipsoidPrimitive(
       sampleCount,
       logDepthActive,
       pickFormat,
+      pickLogActive,
     );
     (
       cache as EllipsoidCache & {

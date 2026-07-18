@@ -537,42 +537,80 @@ const _processedShaderCache = new Map<string, string>();
  * vertex stage already writes `v_pickColor` into VertexOutput, so the pick
  * variant only needs an alternate fragment entry that returns it instead of
  * `v_color`. This lets one shader module serve both color and pick pipelines.
+ *
+ * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — at `defines=0` this resolves to a
+ * single-field `@location(0)` struct whose output is byte-identical to the
+ * historical bare `-> @location(0) vec4<f32>` return (a one-field struct at
+ * `@location(0)` is the accepted output-identical form — see the Ellipsoid /
+ * Voxel pick templates). When the pick-fleet gate is active the module compiles
+ * this suffix with LOG_DEPTH and the struct ALSO carries the log-encoded
+ * `@builtin(frag_depth)` — written from the SAME `v_logDepth` varying +
+ * `camera.cameraPosition.w` factor field the color FS (`fragmentMain`) writes,
+ * so a converted pick shares the fleet's log encoding in the shared pick FBO.
+ *
+ * The LOG_DEPTH gate here is resolved against the PICK-fleet switch
+ * (`preprocessPickShader`'s `pickDefines`), INDEPENDENT of the color path's
+ * scene-switch `defines` — the pick FBO's single shared depth attachment is
+ * all-or-nothing, so the whole fleet must be uniformly hyperbolic OR uniformly
+ * log (INV-2). `preprocessShader` therefore resolves this suffix with LOG_DEPTH
+ * OFF for the color module (whose `fragmentPickMain` is unused by the pick
+ * pipeline when the gate is on — a separate pick module is built via
+ * `preprocessPickShader`).
  */
 const PICK_FRAGMENT_SUFFIX = `
 
+struct PickFragOutput {
+  @location(0) color : vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth : f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentPickMain(input : VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentPickMain(input : VertexOutput) -> PickFragOutput {
   // Match the color path's alpha discard so picks line up exactly with
   // visible pixels (no picking through translucent fringes).
   if (input.v_color.a < 0.005) { discard; }
-  return input.v_pickColor;
+  var out : PickFragOutput;
+  out.color = input.v_pickColor;
+  //>>ifdef LOG_DEPTH
+  // Same varying + factor field the color FS (fragmentMain) writes. NO
+  // near-discard — the color sibling has none, and mirroring it exactly is the
+  // parity contract (the color path relies on the VS clip-z clamp).
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.cameraPosition.w);
+  //>>endif
+  return out;
 }
 `;
 
-export function preprocessShader(
-  context: CesiumGraphicsContext,
-  name: string,
-  source: string,
-  // NEW-BUFFER-LOG-DEPTH (Batch 263) — active-defines bitmask. The Buffer*
-  // shaders now carry `//>>ifdef LOG_DEPTH` blocks; resolving them depends on
-  // the bitmask, so the processed-source cache keys by (name, defines).
-  defines: number = 0,
-): string {
-  const cacheKey = `${name}|${defines}`;
-  let processed = _processedShaderCache.get(cacheKey);
-  if (processed) {
-    return processed;
-  }
-  // NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT (Batch 180) — resolve the bare
-  // `#import Name;` directives by inlining the chunk source. This replaces
-  // the previously-dead `context.shaderCache.preprocessOnly` branch (that
-  // method never existed on the WebGL `ShaderCache` that `context.shaderCache`
-  // actually returns, so `#import` lines reached the WGSL compiler verbatim →
-  // "invalid character" on `#`). De-dupe so a chunk imported by both the VS
-  // and FS isn't emitted twice (redeclaration error); strip + warn-once on an
-  // unknown name so a stray directive can never break compilation again.
+/**
+ * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — keySalt folded into the pick
+ * module's cache key so it never aliases the COLOR module at the SAME
+ * `(sourceId, defines)`. When BOTH the scene log switch and the pick-fleet
+ * switch are on, the color module and the pick module are both compiled at
+ * `defines = LOG_DEPTH` but from DIFFERENT generated source (the color module's
+ * appended suffix is hyperbolic, the pick module's writes frag_depth), so the
+ * numeric-only key would collide and the cache would serve the wrong module. A
+ * non-zero keySalt is exactly the sanctioned mechanism for "generated WGSL
+ * whose source text adds an identity dimension beyond (sourceId, defines)" —
+ * see WebGPUShaderModuleCache.getOrCreate.
+ */
+export const BUFFER_PICK_MODULE_KEYSALT = 0x5049434b; // 'PICK'
+
+/**
+ * Resolve the bare `#import Name;` directives in a Buffer* shader source by
+ * inlining the chunk source (NEW-WEBGPU-BUFFERPOLYGON-WGSL-IMPORT, Batch 180).
+ * Shared by the color + pick preprocess paths. Replaces the previously-dead
+ * `context.shaderCache.preprocessOnly` branch (that method never existed on the
+ * WebGL `ShaderCache` that `context.shaderCache` actually returns, so `#import`
+ * lines reached the WGSL compiler verbatim → "invalid character" on `#`).
+ * De-dupes so a chunk imported by both the VS and FS isn't emitted twice
+ * (redeclaration error); strips + warns-once on an unknown name so a stray
+ * directive can never break compilation again.
+ */
+function resolveBufferImports(name: string, source: string): string {
   const emitted = new Set<string>();
-  processed = source.replace(
+  return source.replace(
     /^[ \t]*#import\s+([A-Za-z_]\w*)\s*;?[ \t]*\r?\n?/gm,
     (_full: string, importName: string): string => {
       const chunk = BUFFER_WGSL_CHUNKS[importName];
@@ -596,22 +634,77 @@ export function preprocessShader(
       return `${chunk}\n`;
     },
   );
-  // `context.shaderCache` is intentionally unused for import resolution — it
-  // is the WebGL `ShaderCache` (no `preprocessOnly`); kept in the signature
-  // for API stability with other callers.
+}
+
+export function preprocessShader(
+  context: CesiumGraphicsContext,
+  name: string,
+  source: string,
+  // NEW-BUFFER-LOG-DEPTH (Batch 263) — active-defines bitmask. The Buffer*
+  // shaders now carry `//>>ifdef LOG_DEPTH` blocks; resolving them depends on
+  // the bitmask, so the processed-source cache keys by (name, defines).
+  defines: number = 0,
+): string {
+  const cacheKey = `${name}|${defines}`;
+  let processed = _processedShaderCache.get(cacheKey);
+  if (processed) {
+    return processed;
+  }
+  // `context.shaderCache` is intentionally unused for import resolution — it is
+  // the WebGL `ShaderCache` (no `preprocessOnly`); kept in the signature for
+  // API stability with other callers.
   void context;
-  // NEW-BUFFER-LOG-DEPTH (Batch 263) — resolve the `//>>ifdef LOG_DEPTH`
-  // conditional blocks against the active-defines bitmask AFTER `#import`
-  // inlining (the chunks themselves carry no directives, so order is safe).
-  // `defines=0` emits the `//>>else` branch of every block byte-identically to
-  // the historical hyperbolic path. Done BEFORE the pick suffix is appended so
-  // the pick FS never sees a frag_depth write (pick stays hyperbolic).
-  processed = preprocess(processed!, defines);
-  // Append the pick fragment entry. Done after preprocessing so the pick
-  // function references the already-resolved VertexOutput struct definition.
-  processed = processed + PICK_FRAGMENT_SUFFIX;
-  _processedShaderCache.set(cacheKey, processed!);
-  return processed!;
+  const imported = resolveBufferImports(name, source);
+  // NEW-BUFFER-LOG-DEPTH (Batch 263) — resolve the COLOR body's `//>>ifdef
+  // LOG_DEPTH` blocks against the scene-switch `defines`. `defines=0` emits the
+  // `//>>else` branch byte-identically to the historical hyperbolic path.
+  //
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the appended pick suffix is
+  // resolved SEPARATELY with LOG_DEPTH OFF (`0`), so the COLOR module's
+  // `fragmentPickMain` stays hyperbolic regardless of the scene switch. That
+  // keeps the pick pipeline byte-identical to today when the pick-fleet gate is
+  // off (the renderers reuse this color module for pick then); when the gate is
+  // on the renderers build a SEPARATE pick module via `preprocessPickShader`.
+  // Resolving the suffix here (rather than appending it raw) is REQUIRED now
+  // that it carries `//>>ifdef` directives — an unresolved directive reaching
+  // the module cache's internal `preprocess(source, defines)` would otherwise
+  // silently bind the pick FS to the SCENE switch.
+  processed =
+    preprocess(imported, defines) + preprocess(PICK_FRAGMENT_SUFFIX, 0);
+  _processedShaderCache.set(cacheKey, processed);
+  return processed;
+}
+
+/**
+ * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-module source variant. The
+ * WHOLE source (VertexOutput / vertexMain, so `v_logDepth` exists in scope) AND
+ * the appended pick suffix are preprocessed against the PICK-fleet log state
+ * (`pickDefines`), decoupled from the color path's scene-switch `defines`.
+ *
+ * Only used to build the pick pipeline's module when the pick-fleet gate is
+ * active; when it is off the renderers reuse the color module returned by
+ * `preprocessShader` (byte-identical to today). The extra `fragmentMain` this
+ * module carries is unused by the pick pipeline (which references
+ * `fragmentPickMain`) but must still compile — which it does in either state.
+ */
+export function preprocessPickShader(
+  context: CesiumGraphicsContext,
+  name: string,
+  source: string,
+  pickDefines: number,
+): string {
+  const cacheKey = `${name}|pick|${pickDefines}`;
+  let processed = _processedShaderCache.get(cacheKey);
+  if (processed) {
+    return processed;
+  }
+  void context;
+  const imported = resolveBufferImports(name, source);
+  processed =
+    preprocess(imported, pickDefines) +
+    preprocess(PICK_FRAGMENT_SUFFIX, pickDefines);
+  _processedShaderCache.set(cacheKey, processed);
+  return processed;
 }
 
 // ─── Pipeline builders ───────────────────────────────────────────────────────

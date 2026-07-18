@@ -3755,8 +3755,43 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
   return fract(52.9829189 * fract(0.06711056 * fragCoord.x + 0.00583715 * fragCoord.y));
 }
 
-@fragment fn fragmentPickHoverMain(input: FragmentInput) -> @location(0) vec4<f32> {
+// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — shared pick output for the three
+// model pick fragment entries (fragmentPickHoverMain / fragmentPickMain /
+// fragmentPickMetadataMain, and by extension the two BLEND precise-pass
+// pipelines that reuse fragmentPickMain). At defines=0 — the DEFAULT pick-gated
+// module, pick-fleet master switch OFF — this is a single `@location(0)` struct
+// whose output is byte-identical to the historical bare `-> @location(0)
+// vec4<f32>` return. When the pick-fleet gate is active the pick module compiles
+// with LOG_DEPTH and the struct also carries the log-encoded
+// `@builtin(frag_depth)` — the SAME encoding the color FS `fragmentMain` writes
+// (`out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor)`) —
+// so a converted model pick shares the fleet's log depth in the shared pick FBO.
+struct PickFragOutput {
+  @location(0) color: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
+  var out: PickFragOutput;
+  out.color = color;
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(logDepth, camera.logDepthFactor);
+  //>>endif
+  return out;
+}
+
+@fragment fn fragmentPickHoverMain(input: FragmentInput) -> PickFragOutput {
   let flags = material.materialFlags;
+  //>>ifdef LOG_DEPTH
+  // The log frag_depth source is the interpolated linear depthFromNearPlusOne
+  // the VS wrote (present ONLY in the LOG_DEPTH-compiled pick module). In the
+  // default pick-gated module (LOG_DEPTH off) `v_logDepth` is stripped from
+  // FragmentInput, so the //>>else binds a placeholder makeModelPickOut ignores.
+  let pickLogDepth = input.v_logDepth;
+  //>>else
+  let pickLogDepth = 0.0;
+  //>>endif
   // C10-05 — hoist baseColor UV derivatives at entry (uniform control flow,
   // before any discard) so the alpha-test baseColor sample below uses
   // textureSampleGrad and selects the SAME mip as fragmentMain. Keeps the
@@ -3817,16 +3852,24 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
       // detailed note in fragmentPickMain). Pick-ID colors have alpha 0 for
       // keys below 2^24; a valid pickId is identified by nonzero RGB.
       if (featurePickColor.r > 0.0 || featurePickColor.g > 0.0 || featurePickColor.b > 0.0) {
-        return featurePickColor;
+        return makeModelPickOut(featurePickColor, pickLogDepth);
       }
     }
   }
 
-  return material.pickColor;
+  return makeModelPickOut(material.pickColor, pickLogDepth);
 }
 
-@fragment fn fragmentPickMain(input: FragmentInput) -> @location(0) vec4<f32> {
+@fragment fn fragmentPickMain(input: FragmentInput) -> PickFragOutput {
   let flags = material.materialFlags;
+  //>>ifdef LOG_DEPTH
+  // See fragmentPickHoverMain — the interpolated log-depth source, gated so the
+  // default pick module (LOG_DEPTH off, `v_logDepth` stripped) stays compilable
+  // and byte-identical.
+  let pickLogDepth = input.v_logDepth;
+  //>>else
+  let pickLogDepth = 0.0;
+  //>>endif
   // C10-05 — hoist baseColor UV derivatives at entry (uniform control flow,
   // before the split/clip/alpha discards) so the alpha-test baseColor sample
   // uses textureSampleGrad and selects the same mip as fragmentMain (consistent
@@ -3950,12 +3993,12 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
       // valid pickId has a nonzero key → nonzero RGB. Same RGB!=0 decode as
       // WebGPUPickFramebuffer.pickObjectsFromPixels.
       if (featurePickColor.r > 0.0 || featurePickColor.g > 0.0 || featurePickColor.b > 0.0) {
-        return featurePickColor;
+        return makeModelPickOut(featurePickColor, pickLogDepth);
       }
     }
   }
 
-  return material.pickColor;
+  return makeModelPickOut(material.pickColor, pickLogDepth);
 }
 
 // DP-H46e — metadata-pick fragment entry (scene.pickMetadata producer). The
@@ -3980,8 +4023,16 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
 // transparent fragments don't claim the metadata pick (parity with
 // fragmentPickMain / the GLSL metadata pick).
 //>>ifdef METADATA_PICKING_ENABLED
-@fragment fn fragmentPickMetadataMain(input: FragmentInput) -> @location(0) vec4<f32> {
+@fragment fn fragmentPickMetadataMain(input: FragmentInput) -> PickFragOutput {
   let flags = material.materialFlags;
+  //>>ifdef LOG_DEPTH
+  // See fragmentPickHoverMain — the interpolated log-depth source, gated so the
+  // default pick module (LOG_DEPTH off, `v_logDepth` stripped) stays compilable
+  // and byte-identical.
+  let pickLogDepth = input.v_logDepth;
+  //>>else
+  let pickLogDepth = 0.0;
+  //>>endif
   // C10-05 — hoist baseColor UV derivatives at entry (uniform control flow,
   // before the split/alpha discards) so the alpha-test baseColor sample uses
   // textureSampleGrad and selects the same mip as fragmentMain (consistent
@@ -4044,7 +4095,7 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
   let pickMetadata = initializeMetadata(vec4<f32>(0.0), input.texCoord0, metaPickTC1, input.featureId0);
   //>>endif
 
-  return metadataPickingStage(pickMetadata);
+  return makeModelPickOut(metadataPickingStage(pickMetadata), pickLogDepth);
 }
 //>>endif
 

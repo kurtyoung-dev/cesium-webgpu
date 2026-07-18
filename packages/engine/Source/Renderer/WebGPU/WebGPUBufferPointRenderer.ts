@@ -39,6 +39,8 @@ import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   packCameraUniforms,
   preprocessShader,
+  preprocessPickShader,
+  BUFFER_PICK_MODULE_KEYSALT,
   makeCameraBindGroupLayout,
   createSharedCacheBase,
   createVB,
@@ -54,7 +56,10 @@ import {
   scratchEnc,
 } from "./WebGPUBufferPrimitiveRenderer.js";
 import { ShaderSourceId, ShaderDefine } from "./WebGPUShaderDefines.js";
-import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import {
+  isWebGPULogDepthActive,
+  isWebGPUPickLogDepthActive,
+} from "./WebGPULogDepth.js";
 import { computeNoDepthTest } from "./WebGPUCollectionRendererBase.js";
 import BlendOption from "../../Scene/BlendOption.js";
 import type {
@@ -175,6 +180,12 @@ function buildPointPipeline(
   // PARITY-BUFFER-2DCV — settled-2D/CV coplanar variant: depth test "always" +
   // no depth write. Default false keeps the historical path byte-identical.
   noDepthTest: boolean = false,
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — pick-fleet log gate. Only
+  // meaningful for the pick stage: when true the pick module writes log
+  // `@builtin(frag_depth)` so the pipeline must ENABLE depth write (was off);
+  // when false the pick pipeline is byte-identical to today. Ignored for the
+  // color stage. Default false preserves every existing caller.
+  pickLogActive: boolean = false,
 ): GPURenderPipeline {
   // Color path draws into the MSAA scene FB → sample count must match
   // `context._msaaSamples`; pick path renders into the single-sample pick FB.
@@ -184,7 +195,7 @@ function buildPointPipeline(
   return device.createRenderPipeline({
     label: `BufferPoint pipeline (${fragmentEntryPoint}, ms=${
       multisample?.count ?? 1
-    })`,
+    })${isPickStage && pickLogActive ? " [ld]" : ""}`,
     layout: device.createPipelineLayout({ bindGroupLayouts: bgls }),
     multisample,
     vertex: {
@@ -262,7 +273,12 @@ function buildPointPipeline(
       // OPAQUE color variant writes depth (correct occlusion/sort vs WebGL);
       // TRANSLUCENT default keeps depth write off (composite back-to-front).
       // PARITY-BUFFER-2DCV: coplanar-2D/CV variant never writes depth.
-      depthWriteEnabled: !noDepthTest && opaque,
+      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick stage historically
+      // never wrote depth (pick is non-opaque → `opaque` false); under the
+      // pick-fleet log gate it MUST write the log `@builtin(frag_depth)` into
+      // the shared pick FBO so a nearer buffer point occludes a farther one
+      // coherently with the rest of the (log) fleet. Off → false, byte-identical.
+      depthWriteEnabled: isPickStage ? pickLogActive : !noDepthTest && opaque,
       // less-equal (not less) — lets primitives that project exactly
       // onto the far plane due to FP32 rounding still pass the depth
       // test. Safe at planetary scale where the Z range is huge and
@@ -280,6 +296,9 @@ function initPointCache(
   context: CesiumGraphicsContext,
   format: GPUTextureFormat,
   defines: number,
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the SEPARATE pick-fleet log
+  // switch (isWebGPUPickLogDepthActive), independent of the color `defines`.
+  pickLogActive: boolean,
 ): PointCache {
   const device: GPUDevice = context.device;
   const primitiveCountMax: number = collection.primitiveCountMax;
@@ -310,6 +329,31 @@ function initPointCache(
     defines,
     "BufferPointMaterial",
   );
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick pipeline compiles its
+  // OWN module gated on the SEPARATE pick-fleet switch, decoupled from the
+  // color `defines`. When the gate is off it REUSES the color module
+  // (byte-identical to today); when on it builds a distinct LOG_DEPTH module
+  // (source + pick suffix both preprocessed at LOG_DEPTH, so `v_logDepth` is in
+  // scope and the pick FS writes log frag_depth). The keySalt keeps it from
+  // aliasing the color module at the SAME `(sourceId, LOG_DEPTH)` when the
+  // scene switch is also on.
+  const pickDefines =
+    (defines & ~ShaderDefine.LOG_DEPTH) |
+    (pickLogActive ? ShaderDefine.LOG_DEPTH : 0);
+  const pickModule = pickLogActive
+    ? getBufferPrimitiveShaderCache(device).getOrCreate(
+        ShaderSourceId.BUFFER_POINT_MATERIAL,
+        preprocessPickShader(
+          context,
+          "BufferPointMaterial",
+          BufferPointMaterialWGSL,
+          pickDefines,
+        ),
+        pickDefines,
+        "BufferPointMaterial [ld pick]",
+        BUFFER_PICK_MODULE_KEYSALT,
+      )
+    : shaderModule;
   const bgls = makeCameraBindGroupLayout(device, true);
   const sampleCount = context._msaaSamples ?? 1;
   const pipeline = buildPointPipeline(
@@ -322,13 +366,19 @@ function initPointCache(
   );
   // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick pipeline targets the
   // context's byte-object-ID format authority (matches the pick FBO), never
-  // the (possibly float/HDR) scene format.
+  // the (possibly float/HDR) scene format. NEW-WEBGPU-PICK-FLEET-LOG-DEPTH —
+  // built from `pickModule` (log variant when the gate is on) and told to
+  // enable depth write when logging.
   const pickPipeline = buildPointPipeline(
     device,
-    shaderModule,
+    pickModule,
     context.pickPipelineFormat ?? "rgba8unorm",
     bgls,
     "fragmentPickMain",
+    1,
+    false,
+    false,
+    pickLogActive,
   );
 
   const base = createSharedCacheBase(device);
@@ -593,6 +643,10 @@ export function updateWebGPUBufferPointCollection(
   // master switch off is byte-identical to the historical hyperbolic path.
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const defines = logDepthActive ? ShaderDefine.LOG_DEPTH : 0;
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet master
+  // switch (default OFF until the fleet flips). Flipping it must rebuild the
+  // pick module + pipeline, so track it alongside the format + log guards.
+  const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
 
   let cache = collection._webgpuCache as PointCache | undefined;
   // Batch 110 — invalidate on scene format change (HDR toggle).
@@ -604,18 +658,23 @@ export function updateWebGPUBufferPointCollection(
     ((cache as unknown as { _pipelineFormatGeneration?: number })
       ._pipelineFormatGeneration !== sceneGen ||
       (cache as unknown as { _logDepthEnabled?: boolean })._logDepthEnabled !==
-        logDepthActive)
+        logDepthActive ||
+      (cache as unknown as { _pickLogDepthEnabled?: boolean })
+        ._pickLogDepthEnabled !== pickLogActive)
   ) {
     cache = undefined;
     collection._webgpuCache = undefined;
   }
   if (!cache) {
-    cache = initPointCache(collection, context, format, defines);
+    cache = initPointCache(collection, context, format, defines, pickLogActive);
     (
       cache as unknown as { _pipelineFormatGeneration?: number }
     )._pipelineFormatGeneration = sceneGen;
     (cache as unknown as { _logDepthEnabled?: boolean })._logDepthEnabled =
       logDepthActive;
+    (
+      cache as unknown as { _pickLogDepthEnabled?: boolean }
+    )._pickLogDepthEnabled = pickLogActive;
     collection._webgpuCache = cache;
     collection._dirtyOffset = 0;
     collection._dirtyCount = collection.primitiveCount;

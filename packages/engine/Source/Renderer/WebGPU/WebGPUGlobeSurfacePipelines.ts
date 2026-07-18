@@ -110,6 +110,14 @@ export interface PipelineHost extends ShaderFactoryHost {
    * false/undefined → the bit is 0 and pipelines are byte-identical.
    */
   readonly _logDepthEnabled?: boolean;
+  /**
+   * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet master
+   * switch mirror. `selectPickPipeline` ORs `LOG_DEPTH` from THIS flag (via the
+   * `logDepthOverride` arg to `buildPipelineDescriptor`) so the globe pick
+   * module gates on the pick switch, not the scene switch. Default
+   * false/undefined → the globe pick stays byte-identical hyperbolic.
+   */
+  readonly _pickLogDepthEnabled?: boolean;
 }
 
 // ─── Render Pipelines (lazily created per actual vertex stride) ───
@@ -170,6 +178,12 @@ export function buildPipelineDescriptor(
   // populated with the near globe surface (sky/atmosphere gating, depth
   // plane, later primitives, pickPosition all read it).
   depthOnlyFrontFace: boolean = false,
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — when defined, this replaces
+  // `host._logDepthEnabled` in the LOG_DEPTH define/module decision. The pick
+  // pipeline (selectPickPipeline) passes `host._pickLogDepthEnabled` so the
+  // globe pick module gates on the SEPARATE pick-fleet master switch. undefined
+  // (every color/other call site) is byte-identical to before.
+  logDepthOverride?: boolean,
 ): WebGPURenderPipelineDescriptor {
   let vertexBuffers: GPUVertexBufferLayout[];
   let entryPoint: string;
@@ -322,9 +336,13 @@ export function buildPipelineDescriptor(
   // imagery bit rides along on default-limit devices so the module's
   // group-1 declarations match the 1-slot pipeline layout.
   const isCapture = captureFaceFormat !== undefined;
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — the pick pipeline overrides the log state
+  // with the SEPARATE pick-fleet master switch; every other call site passes
+  // undefined and keeps the scene `_logDepthEnabled`.
+  const logDepthOn = logDepthOverride ?? host._logDepthEnabled;
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
-    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
+    (logDepthOn ? ShaderDefine.LOG_DEPTH : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0) |
     // C2-25 (Batch 446) — capture variant drops the G-buffer slot-1 output so
     // the fragment stage matches the single-color-target capture pipeline.
@@ -866,9 +884,13 @@ export function selectPickPipeline(
   hasGeodeticSurfaceNormals: boolean = false,
 ): GPURenderPipeline | null {
   const cdSuffix = useClipDistances ? "_CD" : "";
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the globe PICK module gates
+  // LOG_DEPTH on the SEPARATE pick-fleet master switch, NOT the scene switch,
+  // so the pick FBO is uniformly hyperbolic OR log across the whole fleet.
+  const pickLogActive = host._pickLogDepthEnabled ?? false;
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
-    (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
+    (pickLogActive ? ShaderDefine.LOG_DEPTH : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
   const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}O_${strideBytes}${cdSuffix}_PICK|${defines.toString(16)}`;
   let entry = host._pipelineCache.get(cacheKey);
@@ -884,6 +906,14 @@ export function selectPickPipeline(
       useClipDistances,
       hasGeodeticSurfaceNormals,
       false, // disableCulling — standard back-face cull, matches color first pass
+      false, // depthOnlyBackFace
+      false, // translucentBackFace
+      undefined, // captureFaceFormat
+      false, // depthOnlyFrontFace
+      // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — force the pick module's LOG_DEPTH to
+      // the pick-fleet switch (the pick reuses this descriptor's vertex + FS
+      // module, so both stages get the pick-gated v_logDepth path).
+      pickLogActive,
     );
     const descriptor = buildPickPipelineDescriptor(
       colorDescriptor,

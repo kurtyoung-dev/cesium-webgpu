@@ -56,7 +56,10 @@ import {
 } from "./WebGPUPrimitiveShaders.js";
 import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
-import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import {
+  isWebGPULogDepthActive,
+  isWebGPUPickLogDepthActive,
+} from "./WebGPULogDepth.js";
 import {
   createMaterialUploadState,
   uploadMaterialUniformBuffer,
@@ -316,6 +319,11 @@ interface CacheLike {
   indexFormats?: IndexFormatLike[];
   pickShaderModule?: ShaderModuleLike;
   pickPipeline?: GPURenderPipeline;
+  // C10-11-PICK-FLEET-LOG-DEPTH — the pick-fleet LOG_DEPTH state baked into the
+  // cached pick pipeline. Tracked separately from `logDepthEnabled` (the scene
+  // switch) because the pick fleet flips on its own master switch; a flip
+  // rebuilds the pick pipeline against the LOG_DEPTH module. Defaults false.
+  pickLogDepthEnabled?: boolean;
   pickCameraBindGroupLayout?: GPUBindGroupLayout;
   pickCameraBindGroups?: GPUBindGroup[];
   pickCameraBuffers?: GPUBuffer[];
@@ -456,7 +464,16 @@ const FLAT_CAMERA_BYTES = 176; // mvpRTE(64) + camHigh(16) + camLow(16) + prevVP
 // 304-byte CameraUniforms struct and read only the first 304 bytes of this
 // 320-byte buffer — valid WebGPU, byte-identical behavior.
 const LIT_CAMERA_BYTES = 320; // ...prevVP(64) + logDepth(16)
-const PICK_CAMERA_BYTES = 160; // same as flat
+// C10-11-PICK-FLEET-LOG-DEPTH — grown 160 -> 176 to carry the FLAT logDepth
+// vec4 tail (floats 40-43: near, far, factor, reserved) that
+// writeRTEUniformsFlat already writes. The pick camera buffer AND its scratch
+// array are both sized from this constant (`new Float32Array(PICK_CAMERA_BYTES
+// / 4)`), so the 44th-float logDepth writes now LAND instead of falling off a
+// too-short 40-element array. A pick shader compiled with the LOG_DEPTH define
+// reads camera.logDepth from these lanes; the extra 16 bytes are written
+// unconditionally but read ONLY under the define, so the OFF path is
+// byte-identical in output. Matches the 176-byte FLAT color UB layout exactly.
+const PICK_CAMERA_BYTES = 176; // FLAT head (160) + logDepth vec4 tail (16)
 
 // NEW-POLYLINE-APPEARANCE-PRIMITIVE-WEBGPU (COLOR slice) — the polyline
 // appearance camera UB extends the flat parity head (mvpRTE + camHigh/Low)
@@ -2756,6 +2773,9 @@ function createWebGPUCommands(
       vertexCounts: [],
       pickShaderModule: null,
       pickPipeline: null,
+      // C10-11-PICK-FLEET-LOG-DEPTH — pick-fleet log state baked into the pick
+      // pipeline; starts false (hyperbolic pick) until the fleet switch flips.
+      pickLogDepthEnabled: false,
       pickCameraBindGroupLayout: null,
       pickMaterialBindGroupLayout: null,
       pickCameraBuffers: [],
@@ -2840,10 +2860,20 @@ function createWebGPUCommands(
   // master switch + per-frame flag are on. Defaults FALSE, so this is inert
   // (defines=0 → historical else-branch, byte-identical). `logDepthChanged`
   // forces a shader-module + pipeline rebuild when the master switch flips,
-  // mirroring the topologyChanged invalidation guard. Pick variants stay
-  // hyperbolic (handled by the pick pipeline path, never given LOG_DEPTH).
+  // mirroring the topologyChanged invalidation guard. The COLOR pipeline uses
+  // the scene switch; the PICK pipeline uses the SEPARATE pick-fleet switch
+  // (see pickLogActive below).
   const logDepthActive = isWebGPULogDepthActive(context, frameState);
   const logDepthChanged = cache.logDepthEnabled !== logDepthActive;
+  // C10-11-PICK-FLEET-LOG-DEPTH — the pick fleet writes log-encoded frag_depth
+  // on its OWN master switch (isWebGPUPickLogDepthActive), independent of the
+  // scene switch, because the shared pick FBO depth is all-or-nothing. A flip
+  // must rebuild the pick pipeline (LOG_DEPTH module + widened camera UB lanes),
+  // so fold pickLogChanged into the rebuild guard below. Gated on hasPickIds so
+  // a flip is a no-op for non-pickable primitives. Defaults FALSE → inert.
+  const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
+  const pickLogChanged =
+    hasPickIds && cache.pickLogDepthEnabled !== pickLogActive;
 
   // Q14-HDR-TOGGLE-INVALIDATION — the cached pipeline bakes in the scene FB
   // color format (`context.scenePipelineFormat`, resolved into `canvasFormat`
@@ -2864,12 +2894,16 @@ function createWebGPUCommands(
     twoPassesChanged ||
     topologyChanged ||
     logDepthChanged ||
+    pickLogChanged ||
     formatGenChanged
   ) {
     cache.shaderType = shaderInfo.type;
     cache.translucent = translucent;
     cache.primitiveTopology = primitiveTopology;
     cache.logDepthEnabled = logDepthActive;
+    // C10-11-PICK-FLEET-LOG-DEPTH — stamp the pick-log state the pick pipeline
+    // (rebuilt below in the `if (hasPickIds)` block) is being built with.
+    cache.pickLogDepthEnabled = pickLogActive;
     cache.pipelineFormatGeneration = sceneFormatGen;
 
     // DP-H19-SHADER-DECODE (Batch 27) — always route through the
@@ -3227,17 +3261,30 @@ function createWebGPUCommands(
     // ── Pick pipeline (split camera/material bind groups) ──
     if (hasPickIds) {
       const pickShaderCode = getPickShaderForType(shaderInfo.type);
+      // C10-11-PICK-FLEET-LOG-DEPTH — compile the pick module with LOG_DEPTH
+      // when the pick-fleet switch is active so the //>>ifdef LOG_DEPTH blocks
+      // (logDepth UB tail read + v_logDepth varying + csm_updatePositionDepth
+      // clip-z clamp + log frag_depth) resolve. defines=0 → historical
+      // hyperbolic else-branch, byte-identical.
       cache.pickShaderModule = WebGPUShaderModule.create({
         device: device,
-        code: preprocessShaderSource(pickShaderCode, 0),
-        label: `${shaderInfo.type} Pick Shader`,
+        code: preprocessShaderSource(
+          pickShaderCode,
+          pickLogActive ? ShaderDefine.LOG_DEPTH : 0,
+        ),
+        label: `${shaderInfo.type} Pick Shader${pickLogActive ? " [ld]" : ""}`,
       });
 
-      // Pick camera BGL — group(0)
+      // Pick camera BGL — group(0).
+      // C10-11-PICK-FLEET-LOG-DEPTH — VERTEX_FRAGMENT (was VERTEX-only): the
+      // pick FS reads camera.logDepth.z (the log factor) under LOG_DEPTH.
+      // Widened unconditionally — broader visibility is always valid and
+      // output-identical when the define is off; mirrors the material-pick BGL
+      // (already VERTEX_FRAGMENT) and the color camera BGL.
       cache.pickCameraBindGroupLayout = makeBindGroupLayout(
         device,
         "Pick Camera BGL",
-        [uniformBuffer(0, Stage.VERTEX)],
+        [uniformBuffer(0, Stage.VERTEX_FRAGMENT)],
       );
 
       // Pick material BGL — group(1): pickColor
@@ -3248,6 +3295,9 @@ function createWebGPUCommands(
       );
 
       cache.pickPipeline = device.createRenderPipeline({
+        // C10-11-PICK-FLEET-LOG-DEPTH — [ld] suffix when the log variant is
+        // active, for devtools readability.
+        label: `${shaderInfo.type} Pick Pipeline${pickLogActive ? " [ld]" : ""}`,
         layout: device.createPipelineLayout({
           bindGroupLayouts: [
             cache.pickCameraBindGroupLayout,
@@ -3279,6 +3329,10 @@ function createWebGPUCommands(
         primitive: { topology: primitiveTopology, cullMode: "none" },
         depthStencil: {
           format: "depth24plus-stencil8",
+          // C10-11-PICK-FLEET-LOG-DEPTH — already unconditionally true (the pick
+          // FBO shares its depth attachment); kept true. Off-path is byte-
+          // identical because the off module writes no @builtin(frag_depth), so
+          // the hardware rasterized (hyperbolic) z is written exactly as before.
           depthWriteEnabled: true,
           depthCompare: "less-equal",
         },
@@ -4626,6 +4680,9 @@ function createWebGPUMaterialCommands(
       vertexCounts: [],
       pickShaderModule: null,
       pickPipeline: null,
+      // C10-11-PICK-FLEET-LOG-DEPTH — pick-fleet log state baked into the pick
+      // pipeline; starts false (hyperbolic pick) until the fleet switch flips.
+      pickLogDepthEnabled: false,
       pickCameraBindGroupLayout: null,
       pickMaterialBindGroupLayout: null,
       pickCameraBuffers: [],
@@ -4941,12 +4998,25 @@ function createWebGPUMaterialCommands(
   const pickIds = primitive._pickIds;
   const hasPickIds =
     primitive._allowPicking && defined(pickIds) && pickIds.length > 0;
-  if (hasPickIds && shaderChanged) {
+  // C10-11-PICK-FLEET-LOG-DEPTH — the pick-fleet log switch is SEPARATE from the
+  // scene log switch and flips independently. createMaterialPipelineAndCache
+  // reports shaderChanged only on scene-log / shader / topology / format
+  // changes, so a bare pick-fleet flip must ALSO trigger the pick rebuild.
+  // Defaults FALSE → inert (pick module define=0, byte-identical hyperbolic).
+  const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
+  const pickLogChanged = cache.pickLogDepthEnabled !== pickLogActive;
+  if (hasPickIds && (shaderChanged || pickLogChanged)) {
+    cache.pickLogDepthEnabled = pickLogActive;
     const pickCode = getMaterialPickShaderForType(shaderInfo.type);
+    // Compile with LOG_DEPTH when the pick-fleet switch is active so the
+    // //>>ifdef LOG_DEPTH blocks resolve; defines=0 → byte-identical hyperbolic.
     cache.pickShaderModule = WebGPUShaderModule.create({
       device,
-      code: preprocessShaderSource(pickCode, 0),
-      label: `${shaderInfo.type} MatPick`,
+      code: preprocessShaderSource(
+        pickCode,
+        pickLogActive ? ShaderDefine.LOG_DEPTH : 0,
+      ),
+      label: `${shaderInfo.type} MatPick${pickLogActive ? " [ld]" : ""}`,
     });
 
     // Pick camera BGL — group(0).
@@ -4978,6 +5048,8 @@ function createWebGPUMaterialCommands(
       context.pickPipelineFormat ??
       (navigator.gpu.getPreferredCanvasFormat() as GPUTextureFormat);
     cache.pickPipeline = device.createRenderPipeline({
+      // C10-11-PICK-FLEET-LOG-DEPTH — [ld] suffix for the log variant.
+      label: `${shaderInfo.type} MatPick Pipeline${pickLogActive ? " [ld]" : ""}`,
       layout: device.createPipelineLayout({
         bindGroupLayouts: [
           cache.pickCameraBindGroupLayout,
@@ -4999,6 +5071,9 @@ function createWebGPUMaterialCommands(
       primitive: { topology: matPrimitiveTopology, cullMode: "none" },
       depthStencil: {
         format: "depth24plus-stencil8",
+        // C10-11-PICK-FLEET-LOG-DEPTH — already unconditionally true (shared pick
+        // FBO depth); kept true. Off-path byte-identical (off module writes no
+        // @builtin(frag_depth), so the hardware hyperbolic z is written as before).
         depthWriteEnabled: true,
         depthCompare: "less-equal",
       },

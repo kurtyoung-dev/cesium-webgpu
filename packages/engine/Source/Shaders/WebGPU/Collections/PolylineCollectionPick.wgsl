@@ -26,13 +26,39 @@ struct CameraUniforms {
   encodedCameraLow: vec3<f32>,
   _pad1: f32,
   viewportSize: vec2<f32>,
-  _pad2: vec2<f32>,
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — formerly `_pad2`; carries the
+  // log-depth encode frustum (near, far). The factor lane sits after
+  // `splitPosition` (previously implicit padding before previousViewProjection's
+  // 16-byte alignment). Byte layout UNCHANGED. The pick pass runs the SAME
+  // `packCameraUniforms` the color path does, so these lanes are populated; only
+  // the `//>>ifdef LOG_DEPTH` pick module reads them. See PolylineCollection.wgsl.
+  logDepthNearFar: vec2<f32>,
   minimumDisableDepthTestDistance: f32,
   splitPosition: f32,
+  logDepthFactor: f32,
+  _padLog: f32,
       previousViewProjection: mat4x4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
+
+//>>ifdef LOG_DEPTH
+// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — renderer-wide log depth, canonical
+// inline copies matching the color sibling (PolylineCollection.wgsl). Compiled
+// into the pick module ONLY when the pick-fleet gate is active; the //>>else
+// path is byte-identical to today.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var coords = clipPosition;
+  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+  return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif
 
 struct VertexInput {
   @builtin(vertex_index) vertexIndex: u32,
@@ -64,6 +90,11 @@ struct VertexOutput {
   @location(0) pickColor: vec4<f32>,
   //>>ifdef SPLIT_ENABLED
   @location(1) splitDirection: f32,
+  //>>endif
+  //>>ifdef LOG_DEPTH
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — interpolated linear depthFromNearPlusOne;
+  // the pick FS converts it to frag_depth (matches the color sibling).
+  @location(2) v_logDepth: f32,
   //>>endif
 };
 
@@ -184,11 +215,42 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   output.splitDirection = input.perInstanceFlags.y;
   //>>endif
 
+  //>>ifdef LOG_DEPTH
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — mirror the color sibling's block
+  // (PolylineCollection.wgsl vertexMain). Computed AFTER every position
+  // override above. The pick DISABLE_DEPTH path pushes to the far plane
+  // (z == w); map it to the log far plane. A forced z == 0 maps to the near
+  // plane. Every other case takes the general encode.
+  if (output.position.z == output.position.w && output.position.w != 0.0) {
+    output.v_logDepth =
+      (camera.logDepthNearFar.y - camera.logDepthNearFar.x) + 1.0;
+  } else if (output.position.z == 0.0) {
+    output.v_logDepth = 1.0;
+  } else {
+    output.v_logDepth =
+      csm_vertexLogDepth(output.position, camera.logDepthNearFar.x);
+  }
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
+
   return output;
 }
 
+// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — shared pick output. At defines=0
+// (pick-fleet gate OFF) this is a single-field `@location(0)` struct,
+// output-byte-identical to the historical bare `-> @location(0) vec4<f32>`
+// return. When the gate is active the struct also carries the log-encoded
+// `@builtin(frag_depth)` so the converted pick fleet depth-tests coherently in
+// the shared pick FBO.
+struct PickFragOutput {
+  @location(0) color: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 @fragment
-fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentMain(input: VertexOutput) -> PickFragOutput {
   //>>ifdef SPLIT_ENABLED
   if (input.splitDirection < 0.0 && input.position.x > camera.splitPosition) {
     discard;
@@ -199,5 +261,10 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   //>>endif
 
   // Output pick color (ID encoded as RGBA)
-  return input.pickColor;
+  var out: PickFragOutput;
+  out.color = input.pickColor;
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, camera.logDepthFactor);
+  //>>endif
+  return out;
 }

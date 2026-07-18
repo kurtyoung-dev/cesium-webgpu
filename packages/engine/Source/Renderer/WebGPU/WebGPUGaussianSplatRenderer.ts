@@ -22,7 +22,10 @@ import {
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { preprocess } from "./WebGPUShaderPreprocessor.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
-import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
+import {
+  isWebGPULogDepthActive,
+  isWebGPUPickLogDepthActive,
+} from "./WebGPULogDepth.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
 import { WebGPUOIT } from "./WebGPUOIT.js";
 import type {
@@ -88,6 +91,10 @@ interface GaussianSplatCache {
   // master switch flips, the color/depth-write pipelines must recompile from
   // the other shader-module variant.
   logDepthEnabled: boolean;
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — tracks the pick-fleet master
+  // switch state the pick pipeline was built with (separate from the scene
+  // logDepthEnabled) so a flip rebuilds the pick pipeline.
+  pickLogDepthEnabled: boolean;
   pipelineLayout: GPUPipelineLayout | null;
   // C-R7-RENDERER-MIGRATION (Batch 56) — see EllipsoidPrimitiveRenderer
   // for the rationale. The OIT pipeline is optional (its WGSL injection
@@ -389,15 +396,39 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 // the color pass (so pick hits only the visible splat density), but
 // outputs u.pickColor unmodified. No blending on the pick pipeline so
 // the readback sees byte-exact pick IDs.
+//
+// NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — under the pick-fleet LOG_DEPTH
+// module (compiled only when isWebGPUPickLogDepthActive) the pick FS writes
+// the SAME log frag_depth the color FS writes (input.v_logDepth via the
+// vertex csm_vertexLogDepth, factor u.logDepthFactor), so the splat pick
+// shares the fleet's log encoding in the shared pick FBO. The //>>else keeps
+// the historical bare-@location(0) return byte-identical (kill-switch parity).
+// NO near-discard — the color sibling has none; mirror it exactly.
+//>>ifdef LOG_DEPTH
+struct PickFragOutput {
+  @location(0) color: vec4<f32>,
+  @builtin(frag_depth) depth: f32,
+};
+@fragment
+fn fragmentPickMain(input: VertexOutput) -> PickFragOutput {
+//>>else
 @fragment
 fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
+//>>endif
   let off = input.centerOffset;
   let power = -0.5*(input.conic.x*off.x*off.x + input.conic.z*off.y*off.y)
               - input.conic.y*off.x*off.y;
   if (power > 0.0) { discard; }
   let alpha = min(0.99, input.color.a * exp(power));
   if (alpha < 1.0/255.0) { discard; }
+  //>>ifdef LOG_DEPTH
+  var out: PickFragOutput;
+  out.color = u.pickColor;
+  out.depth = csm_writeLogDepth(input.v_logDepth, u.logDepthFactor);
+  return out;
+  //>>else
   return u.pickColor;
+  //>>endif
 }
 
 // Batch 171 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity emission for
@@ -587,6 +618,7 @@ function buildSplatPipelineResources(
   logDepthActive: boolean,
   sampleCount: number,
   pickFormat: GPUTextureFormat = "rgba8unorm",
+  pickLogActive: boolean = false,
 ): SplatPipelineResources {
   // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — the color
   // + depth-write variants use the LOG_DEPTH-preprocessed module when active so
@@ -603,6 +635,21 @@ function buildSplatPipelineResources(
     "GaussianSplat",
   );
   const sm = logDepthActive
+    ? moduleCache.getOrCreate(
+        ShaderSourceId.GAUSSIAN_SPLAT,
+        SPLAT_WGSL,
+        ShaderDefine.LOG_DEPTH,
+        "GaussianSplat [log]",
+      )
+    : smBase;
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the PICK pipeline is gated by
+  // the SEPARATE pick-fleet master switch (isWebGPUPickLogDepthActive), NOT
+  // the scene log switch. When active it uses the LOG_DEPTH module so
+  // fragmentPickMain writes log frag_depth into the shared pick FBO (all-or-
+  // nothing coherence, INV-2); when inactive it stays on the base module —
+  // byte-identical to the historical hyperbolic pick. Dedupes to `sm` when
+  // both switches agree.
+  const pickModule = pickLogActive
     ? moduleCache.getOrCreate(
         ShaderSourceId.GAUSSIAN_SPLAT,
         SPLAT_WGSL,
@@ -716,21 +763,28 @@ function buildSplatPipelineResources(
     buildPickPipelineDescriptor(
       {
         ...colorDescriptor,
-        vertex: { ...colorDescriptor.vertex, module: smBase },
+        vertex: { ...colorDescriptor.vertex, module: pickModule },
       },
       "fragmentPickMain",
       // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — stamp the context's pick
       // format authority, not the (possibly float/HDR) scene format.
       pickFormat,
       {
-        name: "GaussianSplat pick pipeline",
-        forceDepthWriteEnabled: false,
+        // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — distinct [ld] name so the central
+        // cache never serves the hyperbolic pick pipeline for the log module.
+        name: pickLogActive
+          ? "GaussianSplat pick pipeline [ld]"
+          : "GaussianSplat pick pipeline",
+        // Write log frag_depth into the shared pick FBO depth ONLY when the
+        // fleet is log (gate on); otherwise stay depth-test-only (byte-
+        // identical to the historical hyperbolic pick).
+        forceDepthWriteEnabled: pickLogActive,
       },
     );
-  // Ensure the pick FS module is also the base module (buildPickPipelineDescriptor
-  // copies the color fragment.module by default).
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — pick FS module = the pick-gated module
+  // (base when the fleet switch is off; LOG_DEPTH when on).
   if (pickDescriptor.fragment) {
-    pickDescriptor.fragment.module = smBase;
+    pickDescriptor.fragment.module = pickModule;
   }
 
   // NEW-GS-CLASSIFICATION-DEPTH (Batch 176) — depth-write variant of the
@@ -1030,6 +1084,7 @@ function updateWebGPUGaussianSplats(
       initialized: false,
       lastRevision: -1,
       logDepthEnabled: false,
+      pickLogDepthEnabled: false,
       pipelineLayout: null,
       pipelineRequestPending: false,
       // Batch 171 - velocity slots (lazy, allocated when TAA is on).
@@ -1066,8 +1121,20 @@ function updateWebGPUGaussianSplats(
     context as unknown as { _logDepthWriteEnabled?: boolean },
     frameState as unknown as { useLogDepth?: boolean },
   );
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the pick pipeline is gated by
+  // the SEPARATE pick-fleet master switch; a flip must rebuild it against the
+  // pick-gated module (+ [ld] name), so track it in the same guard.
+  const pickLogActive = isWebGPUPickLogDepthActive(
+    context as unknown as {
+      _logDepthWriteEnabled?: boolean;
+      _pickLogDepthWriteEnabled?: boolean;
+    },
+    frameState as unknown as { useLogDepth?: boolean },
+  );
   const logDepthFlipped =
-    cache.initialized && cache.logDepthEnabled !== logDepthActive;
+    cache.initialized &&
+    (cache.logDepthEnabled !== logDepthActive ||
+      cache.pickLogDepthEnabled !== pickLogActive);
   if (
     cache.initialized &&
     ((cache as unknown as { _pipelineFormatGeneration?: number })
@@ -1179,6 +1246,7 @@ function updateWebGPUGaussianSplats(
       // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format authority.
       (context as unknown as { pickPipelineFormat?: GPUTextureFormat })
         .pickPipelineFormat ?? "rgba8unorm",
+      pickLogActive,
     );
     (
       cache as GaussianSplatCache & {
@@ -1188,6 +1256,7 @@ function updateWebGPUGaussianSplats(
     cache.shaderModule = resources.shaderModule;
     cache.pipelineLayout = resources.layout;
     cache.logDepthEnabled = logDepthActive;
+    cache.pickLogDepthEnabled = pickLogActive;
     // Bind group references the freshly-built BGL + current buffers.
     cache.bindGroup = null;
   }
