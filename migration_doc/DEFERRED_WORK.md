@@ -5541,3 +5541,38 @@ always-emitted primary), so this does not block the slice.
 feature IDs — trace the tile-content Model pick command emission + pick-pass dispatch for
 `Model3DTileContent` vs a standalone Model, and confirm the feature-id pick texture is bound during
 the pick pass. Verify with `probe-c10-02-pixel.mjs MODE=subset` (WebGPU drillCount should become 1).
+
+## NEW-WEBGPU-BOOT-DETERMINISTIC-PIPELINE-PREWARM (C10-06 Step C.2 deferred, 2026-07-18)
+
+**Status:** DEFERRED (honest partial of C10-06; Steps A + B + C.1 landed, C.2 deferred for a real
+INV-06-3 blocker, not for time). Natural home is C10-07's resources-ready hook.
+
+**Context:** C10-06 Step C.2 called for wiring `WebGPURenderPipelineCache.preloadBatch`
+(`WebGPURenderPipelineCache.ts:765`, still 0 callers) at context init to prewarm the deterministic
+render-PIPELINE set (globe depth, depth plane, PP identity/tonemap/FXAA, sky atmosphere, + the two
+auto-exposure compute pipelines). Premise-verification during C10-06 found this is **not
+init-reproducible**: every one of those pipelines is built with the **scene-FB attachment identity**
+(`colorFormat` / `depthFormat` / `sampleCount` / MRT mode — e.g. `WebGPUDepthPlane.initialize(device,
+depthFormat, colorFormat, sampleCount)` at `WebGPUDepthPlane.ts:416`) which is only resolved by the
+SceneRenderer resource-ensure step (`WebGPUSceneRendererEnsureResources.ts`) **during/after the first
+frame** — NOT at `WebGPUContext._initialize` time (where the canvas is not yet even configured to a
+scene FB, and HDR/MSAA/MRT state is unknown). Prewarming at init would have to *guess* those formats;
+a one-field mismatch is a cache MISS (trap **T-06-a**) that recompiles at frame 1 anyway — worse than
+doing nothing (wasted work + still-cold real path).
+
+**Why Step C.1 was still landed:** the globe **shader-module** prewarm (`warmUpGlobeRenderer` →
+`initialize` → `initShaderCache`) IS init-reproducible — its cache keys on `(sourceId, defines)`, not
+on any FB format, and its `getShaderCode()` is a static WGSL string available at
+`registerWebGPUFeatureRenderers` time. Mechanism proven (`probe-boot-prewarm-c10-06.mjs`: prewarm log
+at console seq=3, first tile draw at seq=26 — prewarm beats frame 1). But the 2×239 KB GlobeTerrain
+module compile is only *part* of the ~150 ms WebGPU frame-1 delta; the residual is dominated by the
+lazy `createRenderPipeline` assembly, which C.2 would have targeted.
+
+**Fix when picked up (do it in/after C10-07):** C10-07 restructures the model + PP pipeline paths to
+resolve through the central async cache and "prewarm the model variant matrix at resources-ready" —
+that resources-ready site is exactly where the scene-FB `colorFormat`/`depthFormat`/`sampleCount` ARE
+known. Wire `preloadBatch` (and the two auto-exposure compute pipelines via `WebGPUComputePipelineCache`)
+there, reusing each renderer's own descriptor factory (do NOT hand-author descriptors — INV-06-3), and
+assert via `pipelineStatus()` / `getStats()` that the deterministic set shows as cache `hits` on frame 1
+(the T-06-a mechanism oracle). Never `await` the prewarm (T-06-b). This closes the remaining WebGPU
+frame-1 pipeline-compile stall that Step C.1 could not reach.

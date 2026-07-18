@@ -824,6 +824,58 @@ let debugDestroyPrimitive;
 // Per-device globe renderer cache (supports multi-context / split-screen)
 const _webgpuGlobeRenderers = new WeakMap();
 
+/**
+ * C10-06 Step C.1 — proactively construct + initialize the per-device WebGPU
+ * globe renderer during context init instead of lazily on the first tile draw.
+ *
+ * `.initialize()` runs the 2-variant GlobeTerrain shader-module prewarm
+ * (`initShaderCache` — baseline + GEODETIC_NORMAL|reduced) plus the bind-group
+ * layouts / samplers / placeholder texture. Those two Tint compiles of the
+ * ~239 KB `GlobeTerrain.wgsl` are the dominant first-frame stall on WebGPU
+ * (measured ~176 ms `rendererReady→firstFrame` vs ~16 ms on WebGL). Running
+ * them in the idle init window means the first `addWebGPUDrawCommandsForTile`
+ * finds the already-initialized renderer in `_webgpuGlobeRenderers` and reuses
+ * the cached shader modules when it builds its (tile-stride-dependent) pipeline.
+ *
+ * This is byte-identical to the lazy path (same `RendererClass`, same static
+ * `getShaderCode()` WGSL, same canvas format, same device-keyed WeakMap slot) —
+ * it only moves the compile earlier (INV-06-2 / INV-06-3). Multi-context safe:
+ * keyed off `context.device`, so a second device prewarms its own renderer
+ * (INV-06-5). Every failure mode is a no-op that leaves the lazy path intact.
+ *
+ * @param {import("../Renderer/GraphicsContext.js").default} context The WebGPU
+ *   context being initialized. A no-op on WebGL contexts (no `.device`).
+ * @private
+ */
+function warmUpGlobeRenderer(context) {
+  const device = context && context.device;
+  if (!device) {
+    return;
+  }
+  const fr = context.getFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE);
+  if (!fr || !fr.RendererClass || !fr.getShaderCode) {
+    return;
+  }
+  const shaderCode = fr.getShaderCode();
+  if (!shaderCode || shaderCode.length === 0) {
+    return;
+  }
+  let renderer = _webgpuGlobeRenderers.get(device);
+  if (!renderer || renderer.isDestroyed()) {
+    renderer = new fr.RendererClass();
+    const fmt =
+      context.canvasFormat || navigator.gpu.getPreferredCanvasFormat();
+    renderer.initialize(device, shaderCode, fmt);
+    _webgpuGlobeRenderers.set(device, renderer);
+    //>>includeStart('debug', pragmas.debug);
+    console.log(
+      `[WebGPU:GlobePrewarm] Globe renderer warmed at init ` +
+        `(shaderCode=${shaderCode.length}B, initialized=${renderer.isInitialized})`,
+    );
+    //>>includeEnd('debug');
+  }
+}
+
 let _webgpuTileDiagCount = 0;
 function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
   const surfaceTile = tile.data;
@@ -2019,6 +2071,7 @@ export {
   pushCommand,
   isUndergroundVisible,
   clipRectangleAntimeridian,
+  warmUpGlobeRenderer,
 };
 
 // Namespace default export for build system barrel compatibility
@@ -2033,5 +2086,6 @@ const GlobeSurfaceTileProviderRendering = {
   pushCommand,
   isUndergroundVisible,
   clipRectangleAntimeridian,
+  warmUpGlobeRenderer,
 };
 export default GlobeSurfaceTileProviderRendering;

@@ -42,6 +42,12 @@ import { WebGPUBuffer } from "./WebGPUBuffer.js";
 import { WebGPUTexture } from "./WebGPUTexture.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+// C10-06 Step A: statically imported so the WGF-6 primitive-index utils cache
+// is populated synchronously during `_initialize` instead of paying an inline
+// dynamic-import round-trip serialized into every boot. The module is a pure
+// static-method class with zero top-level imports and no module-level side
+// effects, so folding it into the (already-lazy) WebGPU chunk is a net win.
+import { WebGPUPrimitiveIndexUtils } from "./WebGPUPrimitiveIndexUtils.js";
 import { WebGPUPickFramebuffer } from "./WebGPUPickFramebuffer.js";
 import { isSceneFBMrtMode } from "./WebGPUSceneFBTargetHelpers.js";
 import {
@@ -254,6 +260,17 @@ export interface WebGPUContextOptions extends GraphicsContextOptions {
    * Required limits for the device
    */
   requiredLimits?: Record<string, number>;
+
+  /**
+   * C10-06 Step B — an in-flight `requestAdapter()` promise kicked off by
+   * `ContextFactory.createWebGPU` *before* the ~3 MB WebGPU chunk is parsed,
+   * so GPU-process adapter negotiation overlaps chunk parse/eval instead of
+   * being gated behind it. Consumed by `WebGPUDevicePool.acquireDevice`; a
+   * mismatch or rejection falls back to the pool's own `requestAdapter`
+   * (conservative — never forced). Not persisted into device-loss recovery
+   * options (an adapter is single-use).
+   */
+  prefetchedAdapter?: Promise<GPUAdapter | null>;
 
   /**
    * AUDIT_2026_05_02 C.1 (Batch 135) — when true (default), route
@@ -1093,6 +1110,10 @@ export class WebGPUContext extends GraphicsContext {
         requiredFeatures: this._options.requiredFeatures,
         requiredLimits: this._options.requiredLimits,
         forceNewDevice: !useDevicePool,
+        // C10-06 Step B: hand the pre-kicked adapter request to the pool so
+        // negotiation that started during chunk parse is reused instead of
+        // re-requested serially. Pool falls back on any mismatch/rejection.
+        prefetchedAdapter: this._options.prefetchedAdapter,
       });
 
       this._adapter = acquired.adapter;
@@ -1150,12 +1171,11 @@ export class WebGPUContext extends GraphicsContext {
 
       // WGF-6: Cache the primitive_index utility module so backend-agnostic
       // Scene code can probe support without importing from Renderer/WebGPU.
-      try {
-        const primIdxMod = await import("./WebGPUPrimitiveIndexUtils.js");
-        this._primitiveIndexUtilsCache = primIdxMod.WebGPUPrimitiveIndexUtils;
-      } catch (e) {
-        this._primitiveIndexUtilsCache = null;
-      }
+      // C10-06 Step A: assigned synchronously from the static import above —
+      // the former inline `await import(...)` serialized an extra module
+      // round-trip into every boot for a dependency-free utility. Consumers
+      // (`supportsTriangulationDebug`, :1734) already tolerate a null cache.
+      this._primitiveIndexUtilsCache = WebGPUPrimitiveIndexUtils;
 
       // Configure canvas context
       this._context = this._canvas.getContext("webgpu") as GPUCanvasContext;
@@ -1188,19 +1208,11 @@ export class WebGPUContext extends GraphicsContext {
       // via context.getFeatureRenderer('name') instead of importing directly
       registerWebGPUFeatureRenderers(this);
 
-      // Load WGSL shaders during context initialization (not in Scene.createAsync).
-      // This keeps shader loading as part of the context's own async init lifecycle.
-      const sceneRendererFR = this.getFeatureRenderer(
-        FeatureRendererKey.SCENE_RENDERER,
-      ) as import("../GraphicsContext.js").SystemRenderer | undefined;
-      if (sceneRendererFR) {
-        if (sceneRendererFR.initPrimitiveShaders) {
-          await sceneRendererFR.initPrimitiveShaders();
-        }
-        if (sceneRendererFR.initCollectionShaders) {
-          await sceneRendererFR.initCollectionShaders();
-        }
-      }
+      // C10-06 Step A (INV-06-6): the former `initPrimitiveShaders` /
+      // `initCollectionShaders` awaits were removed. Both bodies are no-ops
+      // (`WebGPUPrimitiveShaders.js:246` / `WebGPUCollectionShaders.js:66` —
+      // "shaders are statically imported and always available"), so awaiting
+      // them only added two dead microtask turns to the boot critical path.
 
       // Pipeline warm-up: proactively initialize common renderers to avoid
       // first-frame stutter from synchronous pipeline compilation.
@@ -1244,22 +1256,24 @@ export class WebGPUContext extends GraphicsContext {
     // perform any GPU work (it just allocates a Float32Array scratch).
     // So the warmup achieved nothing for globe.
     //
-    // Two future fix paths if first-frame globe stutter becomes a
-    // priority:
-    //   (a) Move the warmup into GlobeSurfaceTileProviderRendering.js
-    //       as a top-level `warmUpGlobeRenderer(context)` helper that
-    //       populates `_webgpuGlobeRenderers` and calls `.initialize`.
-    //       WebGPUContext can then call that helper here.
-    //   (b) Have addWebGPUDrawCommandsForTile check `globeFR._instance`
-    //       first as a pre-warmed instance, falling back to the
-    //       device-keyed map for multi-context cases. Multi-context
-    //       (split-screen) would still pay first-frame on the second
-    //       device because `_instance` is a single field.
-    //
-    // Neither has been done yet — first-frame globe rendering is fast
-    // enough in practice that the stutter is below the perceptible
-    // threshold on the dev machines we've measured. Tracked in
-    // DEFERRED_WORK.md if it surfaces as a real issue.
+    // C10-06 Step C.1 — the fix is now wired. `warmUpGlobeRenderer` (a
+    // top-level export in `GlobeSurfaceTileProviderRendering.js`) populates the
+    // module-scoped `_webgpuGlobeRenderers` WeakMap and calls `.initialize`,
+    // which runs the 2-variant GlobeTerrain shader-module prewarm during this
+    // idle init window instead of on the first tile draw (measured ~176 ms
+    // `rendererReady→firstFrame` on WebGPU vs ~16 ms WebGL — the +146-200 ms
+    // stall the comment below wrongly called "below the perceptible
+    // threshold"). Fire-and-forget via a dynamic import so this never blocks
+    // `_initialize` from returning and never introduces an eager Renderer→Scene
+    // cycle (INV-06-2). Every failure mode is caught and dropped — the lazy
+    // first-frame path stays correct.
+    void import("../../Scene/GlobeSurfaceTileProviderRendering.js")
+      .then((m) => {
+        m.warmUpGlobeRenderer(this);
+      })
+      .catch(() => {
+        /* prewarm is best-effort — the lazy first-frame path still works */
+      });
     //
     // AUDIT_2026_05_02 C.2 (Batch 135) — eager `void this.gpuCuller`
     // trigger removed. The lazy getter remains; consumers wired in

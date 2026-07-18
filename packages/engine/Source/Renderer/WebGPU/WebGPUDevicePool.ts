@@ -248,6 +248,21 @@ export interface DeviceAcquisitionOptions {
    * @default false
    */
   forceNewDevice?: boolean;
+
+  /**
+   * C10-06 Step B — an in-flight `requestAdapter()` promise the caller kicked
+   * off before the WebGPU chunk was parsed (see `ContextFactory.createWebGPU`).
+   * When present and it resolves to a usable adapter, `_createNewDevice`
+   * reuses it instead of issuing its own serial `requestAdapter`, overlapping
+   * GPU-process negotiation with chunk parse. Consumed ONLY on the `"core"`
+   * feature-level path — a `"compatibility"` request needs its own adapter
+   * (different capability set) and the prefetch is always core. Any rejection
+   * or missing adapter falls through to the pool's own `requestAdapter`
+   * (conservative — a mismatched prefetch is never forced). NOT persisted into
+   * `originalOptions`: an adapter is single-use, so device-loss recovery always
+   * re-requests a fresh one.
+   */
+  prefetchedAdapter?: Promise<GPUAdapter | null>;
 }
 
 /**
@@ -754,16 +769,31 @@ export class WebGPUDevicePool {
       ).featureLevel = "compatibility";
     }
 
-    let adapter: GPUAdapter | null;
-    try {
-      adapter = await navigator.gpu.requestAdapter(adapterOptions);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      throw new RendererInitializationError(
-        "adapter",
-        `Failed to request WebGPU adapter: ${message}`,
-        error,
-      );
+    let adapter: GPUAdapter | null = null;
+
+    // C10-06 Step B: reuse a prefetched adapter when one was handed in and the
+    // request is core (compatibility needs its own adapter — different
+    // capability set). A rejection or null falls through to the pool's own
+    // `requestAdapter` below (conservative — never force a mismatched prefetch).
+    if (opts.prefetchedAdapter && opts.featureLevel !== "compatibility") {
+      try {
+        adapter = await opts.prefetchedAdapter;
+      } catch (error) {
+        adapter = null;
+      }
+    }
+
+    if (!adapter) {
+      try {
+        adapter = await navigator.gpu.requestAdapter(adapterOptions);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new RendererInitializationError(
+          "adapter",
+          `Failed to request WebGPU adapter: ${message}`,
+          error,
+        );
+      }
     }
 
     if (!adapter) {
@@ -803,8 +833,11 @@ export class WebGPUDevicePool {
       enabledLimits,
       featureLevel,
       // Snapshot the originating options so recovery can re-negotiate
-      // with the same parameters. Audit fix #5 (Batch 135).
-      originalOptions: { ...opts },
+      // with the same parameters. Audit fix #5 (Batch 135). C10-06 Step B:
+      // strip `prefetchedAdapter` — an adapter is single-use, so device-loss
+      // recovery must always issue a fresh `requestAdapter` rather than await
+      // the already-consumed prefetch promise (T-06-f).
+      originalOptions: { ...opts, prefetchedAdapter: undefined },
       isLost: false,
     };
 
