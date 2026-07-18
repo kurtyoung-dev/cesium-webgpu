@@ -617,6 +617,13 @@ interface CesiumGraphicsContext {
    *  `isWebGPULogDepthActive(context, frameState)` (WebGPULogDepth.ts), not on
    *  this directly. Absent on WebGL. */
   readonly _logDepthWriteEnabled?: boolean;
+  /** WebGPU-only: pick-fleet log-depth master switch (SEPARATE from the scene
+   *  `_logDepthWriteEnabled`; NEW-WEBGPU-PICK-FLEET-LOG-DEPTH). Default false —
+   *  the pick mini-frame's shared depth attachment is all-or-nothing (INV-2), so
+   *  it stays false until every pick producer writes log frag_depth (C10-11).
+   *  Gate pick-path log-depth on `isWebGPUPickLogDepthActive(context, frameState)`
+   *  (WebGPULogDepth.ts), not on this directly. Absent on WebGL. */
+  readonly _pickLogDepthWriteEnabled?: boolean;
   readonly drawingBufferWidth: number;
   readonly drawingBufferHeight: number;
   readonly device?: GPUDevice | null;

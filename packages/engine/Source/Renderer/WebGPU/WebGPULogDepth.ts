@@ -62,6 +62,10 @@ interface LogDepthContext {
   readonly _logDepthWriteEnabled?: boolean;
 }
 
+interface PickLogDepthContext {
+  readonly _pickLogDepthWriteEnabled?: boolean;
+}
+
 interface LogDepthFrameState {
   readonly useLogDepth?: boolean;
 }
@@ -77,6 +81,32 @@ export function isWebGPULogDepthActive(
   frameState: LogDepthFrameState | null | undefined,
 ): boolean {
   return !!context?._logDepthWriteEnabled && !!frameState?.useLogDepth;
+}
+
+/**
+ * True when the WebGPU PICK fleet should write log-encoded `@builtin(frag_depth)`
+ * this frame. This is a SEPARATE flip point from {@link isWebGPULogDepthActive}
+ * because the pick mini-frame owns its own single shared depth attachment
+ * (`WebGPUSceneRendererPickPass` `depthView`, INV-2): the whole pick fleet must
+ * be uniformly hyperbolic OR uniformly log — a mixed FBO depth-tests
+ * incoherently (a log producer at ~0.4 over-occludes a hyperbolic producer at
+ * ~0.999 over the entire disk). The scene half (`_logDepthWriteEnabled`) is
+ * already TRUE by default, but the pick fleet is still uniformly hyperbolic, so
+ * this master switch defaults FALSE and stays there until EVERY native pick
+ * producer writes log frag_depth in one coordinated change (C10-11,
+ * `NEW-WEBGPU-PICK-FLEET-LOG-DEPTH`). The voxel pick
+ * (`NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH`) is the first producer wired to this gate —
+ * it was the fleet blocker because it had ZERO log-depth infrastructure. With
+ * the switch FALSE the voxel pick module carries no `LOG_DEPTH` define and its
+ * pick pipelines keep `depthWriteEnabled:false` → byte-identical to the
+ * pre-conversion pick FBO. C10-11 flips this true after converting the rest of
+ * the fleet.
+ */
+export function isWebGPUPickLogDepthActive(
+  context: (LogDepthContext & PickLogDepthContext) | null | undefined,
+  frameState: LogDepthFrameState | null | undefined,
+): boolean {
+  return !!context?._pickLogDepthWriteEnabled && !!frameState?.useLogDepth;
 }
 
 /**

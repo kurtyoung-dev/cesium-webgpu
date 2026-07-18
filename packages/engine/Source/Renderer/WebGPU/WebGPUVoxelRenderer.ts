@@ -48,6 +48,7 @@ import {
 } from "./WebGPUPickCommandHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+import { isWebGPUPickLogDepthActive } from "./WebGPULogDepth.js";
 import {
   getEffectsBindGroupLayout,
   getPlaceholderEffects,
@@ -181,13 +182,29 @@ struct VertexInput {
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) worldPos: vec3<f32>,
+  //>>ifdef LOG_DEPTH
+  // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — interpolated linear depthFromNearPlusOne
+  // of the box PROXY front face; the pick FS converts it to log frag_depth.
+  // Present only in the LOG_DEPTH-compiled pick module — the color/velocity
+  // modules (no define) never carry it, so their output is byte-identical.
+  @location(1) v_logDepth: f32,
+  //>>endif
 };
 struct Uniforms {
   mvpRelativeToEye: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>,
-  _pad0: f32,
+  // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — renderer-wide log-depth lanes, repurposed
+  // from the two formerly-zero vec3 pads (byte layout UNCHANGED, so every other
+  // pipeline/module that shares this UBO is unaffected). Packed only when the
+  // pick-fleet gate is active (isWebGPUPickLogDepthActive); read ONLY inside
+  // \`//>>ifdef LOG_DEPTH\` blocks, so the color/velocity modules (no LOG_DEPTH
+  // define) never touch them. \`logDepthNear\` = the FULL-frustum encode near the
+  // scene baked (\`uniformState._logDepthEncodeNearFar\`), \`logDepthFactor\` =
+  // czm_oneOverLog2FarDepthFromNearPlusOne — the SAME encode the scene depth
+  // plane + globe use, so a converted pick fleet composes coherently.
+  logDepthNear: f32,
   encodedCameraLow: vec3<f32>,
-  _pad1: f32,
+  logDepthFactor: f32,
   minBounds: vec3<f32>,
   stepSize: f32,
   maxBounds: vec3<f32>,
@@ -352,6 +369,23 @@ struct EffectsUniforms {
 @group(1) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(1) @binding(9) var atmosphereLutSampler: sampler;
 
+//>>ifdef LOG_DEPTH
+// NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — renderer-wide log depth, canonical inline
+// copies (see ComputeInstanceRender.wgsl / chunks/functions/csm_*LogDepth.wgsl).
+// Compiled ONLY into the pick module when the pick-fleet gate is active.
+fn csm_vertexLogDepth(clipPosition: vec4<f32>, near: f32) -> f32 {
+  return (clipPosition.w - near) + 1.0;
+}
+fn csm_updatePositionDepth(clipPosition: vec4<f32>) -> vec4<f32> {
+  var coords = clipPosition;
+  coords.z = clamp(coords.z / coords.w, 0.0, 1.0) * coords.w;
+  return coords;
+}
+fn csm_writeLogDepth(depthFromNearPlusOne: f32, oneOverLog2FarDepthFromNearPlusOne: f32) -> f32 {
+  return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne;
+}
+//>>endif
+
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
@@ -359,6 +393,12 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
              + (input.positionLow - u.encodedCameraLow);
   output.position = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
   output.worldPos = posRTE;
+  //>>ifdef LOG_DEPTH
+  // Box proxy front-face log depth (RTE clip → Rule-4 clean). Compute the linear
+  // varying BEFORE the z-clamp (which only touches .z, not the .w this reads).
+  output.v_logDepth = csm_vertexLogDepth(output.position, u.logDepthNear);
+  output.position = csm_updatePositionDepth(output.position);
+  //>>endif
   return output;
 }
 
@@ -995,6 +1035,19 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   return finalColor;
 }
 
+// NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — shared pick output. At defines=0 this is a
+// single-field \`@location(0)\` struct, byte-identical in output to the historical
+// bare \`-> @location(0) vec4<f32>\` return. When the pick-fleet gate is active
+// the module compiles with LOG_DEPTH and the struct also carries the log-encoded
+// \`@builtin(frag_depth)\` (which replaces the rasterized hyperbolic z for BOTH
+// the depth test and the depth write).
+struct VoxelPickFragOutput {
+  @location(0) color: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
 // C-R9-VOXEL-PICK (Batch 53) — pick entry point.
 //
 // Runs the same AABB entry/exit clip and ray-march loop as fragmentMain,
@@ -1005,15 +1058,31 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 // follow-up (C-R9-VOXEL-CELL-PICK). All shape entry/exit checks and
 // uvw bounds checks are preserved so a ray that misses the volume still
 // discards correctly.
+//
+// NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — the ray-march resolves WHICH VoxelPrimitive
+// is hit; under LOG_DEPTH we write the log depth of the box PROXY front face the
+// ray ENTERS the volume at — the interpolated \`v_logDepth\` varying the VS
+// computed via the clean RTE clip path (input.worldPos → mvpRelativeToEye).
+// The first-density sample \`p\` here lives in the camera-CENTERED ±0.5 phantom
+// box (\`u.cameraPositionEC\` is 0, minBounds/maxBounds are ±0.5), NOT metric
+// RTE, so it cannot be lifted to a real clip depth without violating Rule 4 —
+// the front-face entry is the task-sanctioned conservative default (the first
+// hit is always at or behind it). The picked VoxelPrimitive is UNCHANGED — only
+// the frag_depth changes from hyperbolic-none to the log-encoded entry depth.
 @fragment
-fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentPickMain(input: VertexOutput) -> VoxelPickFragOutput {
+  var out: VoxelPickFragOutput;
+  out.color = vec4<f32>(0.0);
+  //>>ifdef LOG_DEPTH
+  out.depth = csm_writeLogDepth(input.v_logDepth, u.logDepthFactor);
+  //>>endif
   let rayDir = normalize(input.worldPos - u.cameraPositionEC);
   let invDir = 1.0 / rayDir;
   let tr = intersectAABB(u.cameraPositionEC, invDir, u.minBounds, u.maxBounds);
   // NEW-4-E (Batch 68): see comment in fragmentMain — every \`discard\`
   // is paired with an explicit \`return\` so naga can prove the function
   // terminates on every control-flow path.
-  if (tr.x > tr.y) { discard; return vec4<f32>(0.0); }
+  if (tr.x > tr.y) { discard; return out; }
   let tS = max(tr.x, 0.0);
   let tE = tr.y;
   let maxI = i32(u.maxSteps);
@@ -1036,13 +1105,15 @@ fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
     let s = textureSampleLevel(voxelTex, voxelSamp, uvw, 0.0);
     if (s.a > u.densityThreshold) {
       // First non-empty sample wins. Emit the pickColor unmodified —
-      // the pick FBO readback maps it back to {primitive, id}.
-      return u.pickColor;
+      // the pick FBO readback maps it back to {primitive, id}. The log
+      // frag_depth (box front-face entry) was set at function entry.
+      out.color = u.pickColor;
+      return out;
     }
   }
   // Ray traversed the whole AABB with no density hit; nothing to pick.
   discard;
-  return vec4<f32>(0.0);
+  return out;
 }
 
 // C-R9-VOXEL-CELL-PICK — WebGL VoxelFS.glsl packIntToVec2: base-255 split
@@ -1100,7 +1171,19 @@ fn packVoxelIntToVec2(value: f32) -> vec2<f32> {
 // never routes here, and the UBO convention fields this entry reads are only
 // written on that same path.
 @fragment
-fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragmentPickVoxelMain(input: VertexOutput) -> VoxelPickFragOutput {
+  var out: VoxelPickFragOutput;
+  out.color = vec4<f32>(0.0);
+  //>>ifdef LOG_DEPTH
+  // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — the first-density/alpha-saturating hit
+  // here is resolved in PROXY (shape-local) space (rayOrigin = cameraPositionProxy),
+  // which cannot be lifted to RTE without an absolute-ECEF f32 reconstruction
+  // (Rule-4 violation). The conservative default (task-sanctioned) is the box
+  // PROXY front-face depth — the interpolated \`v_logDepth\` varying the VS
+  // computed via the clean RTE clip path; the first cell hit is always at or
+  // behind that entry face. The picked cell is UNCHANGED.
+  out.depth = csm_writeLogDepth(input.v_logDepth, u.logDepthFactor);
+  //>>endif
   let rayDir = normalize(input.worldPos - u.cameraPositionEC);
   let invDir = 1.0 / rayDir;
   let rayOrigin = u.cameraPositionProxy;
@@ -1110,7 +1193,7 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let shellReal = intersectShapeReal(rayOrigin, rayDir, invDir);
   let trReal = shellReal.xy;
   // NEW-4-E: pair discard with a return for naga's terminator analysis.
-  if (trReal.x > trReal.y) { discard; return vec4<f32>(0.0); }
+  if (trReal.x > trReal.y) { discard; return out; }
   let tStart = max(trReal.x, 0.0);
   let tEnd = trReal.y;
   let maxI = i32(u.maxSteps);
@@ -1220,7 +1303,9 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
         cell.x + u.inputDimensions.x * (cell.y + u.inputDimensions.y * cell.z);
       let megatextureId = packVoxelIntToVec2(tileSlot);
       let sampleId = packVoxelIntToVec2(sampleIndex);
-      return vec4<f32>(megatextureId.x, megatextureId.y, sampleId.x, sampleId.y);
+      out.color =
+        vec4<f32>(megatextureId.x, megatextureId.y, sampleId.x, sampleId.y);
+      return out;
     }
 //>>endif
   }
@@ -1235,13 +1320,15 @@ fn fragmentPickVoxelMain(input: VertexOutput) -> @location(0) vec4<f32> {
       cell.x + u.inputDimensions.x * (cell.y + u.inputDimensions.y * cell.z);
     let megatextureId = packVoxelIntToVec2(winnerTileSlot);
     let sampleId = packVoxelIntToVec2(sampleIndex);
-    return vec4<f32>(megatextureId.x, megatextureId.y, sampleId.x, sampleId.y);
+    out.color =
+      vec4<f32>(megatextureId.x, megatextureId.y, sampleId.x, sampleId.y);
+    return out;
   }
 //>>endif
   // No pickable sample — nothing to pick at this pixel (WebGL:
   // colorAccum.a == 0 → discard).
   discard;
-  return vec4<f32>(0.0);
+  return out;
 }
 
 // Batch 173 - B.10 NEW-ADVANCED-MOTION-VECTORS velocity emission for
@@ -2409,6 +2496,15 @@ function updateWebGPUVoxelPrimitive(
     return;
   }
 
+  // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — pick-fleet log-depth gate (default FALSE
+  // until C10-11 flips the whole fleet). When active, the two voxel PICK
+  // pipelines compile the shader with the LOG_DEPTH define and write log-encoded
+  // \`@builtin(frag_depth)\` into the shared pick FBO (depthWriteEnabled:true);
+  // when inactive they stay hyperbolic-none (depthWriteEnabled:false) —
+  // byte-identical to the pre-conversion pick FBO. The COLOR + VELOCITY
+  // pipelines never see this define, so their depth behaviour is unchanged.
+  const pickLogActive = isWebGPUPickLogDepthActive(context, frameState);
+
   if (!primitive._webgpuCache) {
     primitive._webgpuCache = {
       uniformBuffer: null,
@@ -2488,11 +2584,18 @@ function updateWebGPUVoxelPrimitive(
   const prevSampleCount = (
     cache as unknown as { _pipelineSampleCount?: number }
   )._pipelineSampleCount;
+  // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — a runtime flip of the pick-fleet gate
+  // (C10-11) must rebuild the pick pipelines against the LOG_DEPTH module +
+  // depthWriteEnabled. Track the state the descriptors were built with and
+  // invalidate on change, alongside the format/MSAA generation stamp.
+  const prevPickLog = (cache as unknown as { _pipelinePickLogActive?: boolean })
+    ._pipelinePickLogActive;
   if (
     cache.initialized &&
     ((cache as unknown as { _pipelineFormatGeneration?: number })
       ._pipelineFormatGeneration !== sceneGen ||
-      (prevSampleCount !== undefined && prevSampleCount !== sceneSampleCount))
+      (prevSampleCount !== undefined && prevSampleCount !== sceneSampleCount) ||
+      (prevPickLog !== undefined && prevPickLog !== pickLogActive))
   ) {
     cache.initialized = false;
     cache.pipeline = null;
@@ -2518,6 +2621,9 @@ function updateWebGPUVoxelPrimitive(
     (
       cache as unknown as { _pipelineSampleCount?: number }
     )._pipelineSampleCount = sceneSampleCount;
+    (
+      cache as unknown as { _pipelinePickLogActive?: boolean }
+    )._pipelinePickLogActive = pickLogActive;
   }
 
   if (!cache.initialized) {
@@ -2568,6 +2674,21 @@ function updateWebGPUVoxelPrimitive(
       "VoxelPrimitive",
     );
     cache.shaderModule = shaderModule;
+
+    // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — the PICK pipelines use a LOG_DEPTH
+    // variant of the SAME source when the pick-fleet gate is active; the color
+    // + velocity pipelines never see this define. When the gate is off this is
+    // the base module (define=0) → byte-identical. Distinct cache key
+    // (sourceId, LOG_DEPTH) so it dedupes independently of the color/velocity
+    // modules.
+    const pickModule = pickLogActive
+      ? moduleCache.getOrCreate(
+          ShaderSourceId.VOXEL_PRIMITIVE,
+          VOXEL_WGSL,
+          ShaderDefine.LOG_DEPTH,
+          "VoxelPrimitive (LOG_DEPTH pick)",
+        )
+      : shaderModule;
 
     const bgl = makeBindGroupLayout(device, "Voxel BGL", [
       uniformBuffer(0, Stage.VERTEX_FRAGMENT),
@@ -2659,15 +2780,18 @@ function updateWebGPUVoxelPrimitive(
     // matches the color path so picking and shading agree on which
     // box face the ray enters from.
     cache.pickDescriptor = {
-      name: "Voxel pick pipeline",
+      // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — distinct name when the log variant is
+      // active so the central pipeline cache (keyed on descriptor name) does
+      // not serve the hyperbolic pipeline for the log module (and vice versa).
+      name: pickLogActive ? "Voxel pick pipeline [ld]" : "Voxel pick pipeline",
       layout: pipelineLayout,
       vertex: {
-        module: shaderModule,
+        module: pickModule,
         entryPoint: "vertexMain",
         buffers: vertexBuffers,
       },
       fragment: {
-        module: shaderModule,
+        module: pickModule,
         entryPoint: "fragmentPickMain",
         // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format
         // authority (matches the pick FBO), never the scene format.
@@ -2676,7 +2800,10 @@ function updateWebGPUVoxelPrimitive(
       primitive: { topology: "triangle-list", cullMode: "front" },
       depthStencil: {
         format: "depth24plus-stencil8",
-        depthWriteEnabled: false,
+        // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — write the log frag_depth into the
+        // shared pick FBO depth ONLY when the whole pick fleet is log (gate on);
+        // otherwise stay depth-test-only (byte-identical to the historical path).
+        depthWriteEnabled: pickLogActive,
         depthCompare: "less-equal",
       },
     };
@@ -2690,15 +2817,17 @@ function updateWebGPUVoxelPrimitive(
     // Descriptor-only here (a plain object); the PIPELINE is resolved lazily
     // and only on the real-data path (see attachVoxelCellPickCommand).
     cache.pickVoxelDescriptor = {
-      name: VOXEL_PICKVOXEL_PIPELINE_NAME,
+      name: pickLogActive
+        ? `${VOXEL_PICKVOXEL_PIPELINE_NAME} [ld]`
+        : VOXEL_PICKVOXEL_PIPELINE_NAME,
       layout: pipelineLayout,
       vertex: {
-        module: shaderModule,
+        module: pickModule,
         entryPoint: "vertexMain",
         buffers: vertexBuffers,
       },
       fragment: {
-        module: shaderModule,
+        module: pickModule,
         entryPoint: "fragmentPickVoxelMain",
         // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — pick target format
         // authority (matches the pick FBO), never the scene format.
@@ -2707,7 +2836,8 @@ function updateWebGPUVoxelPrimitive(
       primitive: { topology: "triangle-list", cullMode: "front" },
       depthStencil: {
         format: "depth24plus-stencil8",
-        depthWriteEnabled: false,
+        // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — see the object-pick descriptor above.
+        depthWriteEnabled: pickLogActive,
         depthCompare: "less-equal",
       },
     };
@@ -2759,6 +2889,11 @@ function updateWebGPUVoxelPrimitive(
     (
       cache as unknown as { _pipelineSampleCount?: number }
     )._pipelineSampleCount = sceneSampleCount;
+    // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — stamp the pick-log state the pick
+    // descriptors were built with so a later gate flip (C10-11) rebuilds them.
+    (
+      cache as unknown as { _pipelinePickLogActive?: boolean }
+    )._pipelinePickLogActive = pickLogActive;
 
     cache.initialized = true;
   }
@@ -2922,21 +3057,42 @@ function updateWebGPUVoxelPrimitive(
     // untouched: with no user shader the desired name equals the init-time
     // literal, so no patch, no pipeline churn — off-gate byte-identical.
     if (cache.pickVoxelDescriptor && cache.shaderModule) {
+      // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — OR-in LOG_DEPTH on the pickVoxel
+      // module when the pick-fleet gate is active. The [ld] name suffix keeps
+      // the central pipeline cache (keyed on descriptor name) from serving the
+      // hyperbolic pipeline for the log module. With the gate OFF the suffix +
+      // define are empty → identical to the pre-conversion name/module, so the
+      // default path stays byte-identical.
+      const ldSuffix = pickLogActive ? " [ld]" : "";
+      const ldDefine = pickLogActive ? ShaderDefine.LOG_DEPTH : 0;
       const desiredPickName = userInfo
-        ? voxelUserPickVoxelPipelineName(userInfo)
-        : VOXEL_PICKVOXEL_PIPELINE_NAME;
+        ? `${voxelUserPickVoxelPipelineName(userInfo)}${ldSuffix}`
+        : `${VOXEL_PICKVOXEL_PIPELINE_NAME}${ldSuffix}`;
       if (cache.pickVoxelDescriptor.name !== desiredPickName) {
         const moduleCache = getVoxelShaderModuleCache(device);
-        const pickModule = userInfo
-          ? moduleCache.getOrCreate(
-              ShaderSourceId.VOXEL_PRIMITIVE,
-              userInfo.chunk + VOXEL_WGSL,
-              ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR |
-                ShaderDefine.VOXEL_USER_CUSTOM_SHADER,
-              `VoxelPrimitive (user customShader #${userInfo.hash.toString(16)})`,
-              userInfo.hash,
-            )
-          : cache.shaderModule;
+        let pickModule: GPUShaderModule;
+        if (userInfo) {
+          pickModule = moduleCache.getOrCreate(
+            ShaderSourceId.VOXEL_PRIMITIVE,
+            userInfo.chunk + VOXEL_WGSL,
+            ShaderDefine.VOXEL_CUSTOM_SHADER_COLOR |
+              ShaderDefine.VOXEL_USER_CUSTOM_SHADER |
+              ldDefine,
+            `VoxelPrimitive (user customShader #${userInfo.hash.toString(16)}${
+              pickLogActive ? " +LOG_DEPTH" : ""
+            })`,
+            userInfo.hash,
+          );
+        } else if (pickLogActive) {
+          pickModule = moduleCache.getOrCreate(
+            ShaderSourceId.VOXEL_PRIMITIVE,
+            VOXEL_WGSL,
+            ShaderDefine.LOG_DEPTH,
+            "VoxelPrimitive (LOG_DEPTH pick)",
+          );
+        } else {
+          pickModule = cache.shaderModule;
+        }
         cache.pickVoxelDescriptor.vertex.module = pickModule;
         if (cache.pickVoxelDescriptor.fragment) {
           cache.pickVoxelDescriptor.fragment.module = pickModule;
@@ -3053,14 +3209,41 @@ function updateWebGPUVoxelPrimitive(
   for (let i = 0; i < 16; i++) {
     data[i] = mvp[i];
   }
+  // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — renderer-wide log-depth lanes (floats 19
+  // + 23, the former vec3 pads). Prefer the FULL-frustum encode the scene baked
+  // (`uniformState._logDepthEncodeNearFar`) over the live per-slice
+  // currentFrustum so the voxel pick composes with the globe/depth-plane pick
+  // depth (identical recipe to WebGPUEllipsoidPrimitiveRenderer.packUniforms).
+  // Packed unconditionally — it only fills previously-zero pad lanes, so it is
+  // inert until the LOG_DEPTH pick module reads it (pick-fleet gate on).
+  const ldEncode = (
+    us as unknown as { _logDepthEncodeNearFar?: Float32Array | null }
+  )._logDepthEncodeNearFar;
+  const ldFrustum = us.currentFrustum;
+  let ldNear = ldFrustum ? ldFrustum.x : 0.0;
+  let ldFar = ldFrustum ? ldFrustum.y : 0.0;
+  let ldFactor =
+    typeof us.oneOverLog2FarDepthFromNearPlusOne === "number"
+      ? us.oneOverLog2FarDepthFromNearPlusOne
+      : 0.0;
+  if (ldEncode && ldEncode[1] > ldEncode[0]) {
+    ldNear = ldEncode[0];
+    ldFar = ldEncode[1];
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  } else if (!(ldFactor > 0.0) && ldFar > ldNear) {
+    const ldLog2Far = Math.log2(ldFar - ldNear + 1.0);
+    ldFactor = ldLog2Far > 0.0 ? 1.0 / ldLog2Far : 0.0;
+  }
+
   data[16] = scratchEncoded.high.x;
   data[17] = scratchEncoded.high.y;
   data[18] = scratchEncoded.high.z;
-  data[19] = 0;
+  data[19] = ldNear; // logDepthNear (was _pad0)
   data[20] = scratchEncoded.low.x;
   data[21] = scratchEncoded.low.y;
   data[22] = scratchEncoded.low.z;
-  data[23] = 0;
+  data[23] = ldFactor; // logDepthFactor (was _pad1)
   data[24] = -0.5;
   data[25] = -0.5;
   data[26] = -0.5;

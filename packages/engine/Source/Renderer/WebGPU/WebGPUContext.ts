@@ -597,6 +597,19 @@ export class WebGPUContext extends GraphicsContext {
   // migration_doc/DEFERRED_WORK.md. See WebGPULogDepth.ts.
   public _logDepthWriteEnabled: boolean = true;
 
+  // NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — pick-fleet log-depth master switch,
+  // SEPARATE from `_logDepthWriteEnabled` (scene). The pick mini-frame owns its
+  // own single shared depth attachment (WebGPUSceneRendererPickPass, INV-2), so
+  // the whole native pick fleet must be uniformly hyperbolic OR uniformly log —
+  // a mixed FBO depth-tests incoherently. The scene half is TRUE by default but
+  // the pick fleet is still uniformly hyperbolic, so this defaults FALSE and
+  // stays there until every pick producer writes log frag_depth in one
+  // coordinated change (C10-11, NEW-WEBGPU-PICK-FLEET-LOG-DEPTH). The voxel pick
+  // is the first producer wired to it (isWebGPUPickLogDepthActive); with this
+  // false the voxel pick module carries no LOG_DEPTH define and its pick
+  // pipelines keep depthWriteEnabled:false → byte-identical to today.
+  public _pickLogDepthWriteEnabled: boolean = false;
+
   // Slice 5c-B Batch 129 — post-process snapshot. After the post-process
   // pipeline has blitted scene FB to canvas, a 1-pass copyTextureToTexture
   // mirrors the canvas into this view so env effects (SSR, NPR, Clouds,

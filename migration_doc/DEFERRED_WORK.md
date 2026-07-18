@@ -5309,6 +5309,59 @@ Two premise corrections vs the C10 guide H6 walkthrough:
   smallest unblock: land the voxel color→log-depth conversion first, then C10-11 converts the entire
   fleet (including both voxel pick entries) in one coordinated change.
 
+### NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH — ✅ SHIPPED (2026-07-18) — the voxel blocker is cleared; C10-11 is UNBLOCKED
+
+The voxel pick log-depth prerequisite is done. `WebGPUVoxelRenderer.ts` now has the full log-depth
+infrastructure on both PICK entries, add-only and gated OFF by default so today's uniformly-hyperbolic
+pick FBO is byte-identical:
+
+- **Premise-verify verdict (no maintainer design call needed).** Both pick fragments already resolve a
+  well-defined FIRST hit (`fragmentPickMain`: first `s.a > densityThreshold` sample; `fragmentPickVoxelMain`:
+  first density hit / first alpha-saturating sample). The hit POSITIONS, however, are NOT Rule-4-liftable:
+  `fragmentPickMain`'s `p` lives in the camera-CENTERED ±0.5 phantom box (`cameraPositionEC=0`,
+  `minBounds/maxBounds=±0.5`) — `mvpRelativeToEye * p` gives a degenerate ~0.5 m depth, NOT the voxel's
+  real distance; `fragmentPickVoxelMain`'s hit is in proxy/shape-local space (an absolute-ECEF f32
+  reconstruction to lift it → Rule-4 violation). So BOTH entries use the **box PROXY geometry front-face
+  log depth** — the `v_logDepth` varying the VS computes via the clean RTE clip path (`input.worldPos →
+  mvpRelativeToEye`, then `csm_vertexLogDepth`), the task-sanctioned conservative default (the first hit
+  is at or behind the entry face; the box is meters-scale vs the km-scale pick-depth-plane discriminator).
+  This encodes the depth at which the pick ray enters the picked volume — a plausible, non-degenerate,
+  monotonic log depth using the SAME encode as the scene fleet. The picked VoxelPrimitive/cell is
+  UNCHANGED (determined by the ray-march, not the frag_depth).
+- **Fix summary (file:symbol).** `WebGPUVoxelRenderer.ts`: (1) UBO `struct Uniforms` — repurposed the two
+  zero vec3 pads (`_pad0`→`logDepthNear` float 19, `_pad1`→`logDepthFactor` float 23; byte layout
+  UNCHANGED so color/velocity are unaffected), packed from `uniformState._logDepthEncodeNearFar` (FULL
+  frustum, preferred) with the `currentFrustum`/`oneOverLog2FarDepthFromNearPlusOne` fallback (identical
+  recipe to `WebGPUEllipsoidPrimitiveRenderer.packUniforms`); (2) added `csm_vertexLogDepth`/
+  `csm_updatePositionDepth`/`csm_writeLogDepth` + `VertexOutput.v_logDepth` + the `vertexMain` compute,
+  all `//>>ifdef LOG_DEPTH`; (3) `fragmentPickMain` + `fragmentPickVoxelMain` now return a shared
+  `VoxelPickFragOutput` struct that carries `@builtin(frag_depth) = csm_writeLogDepth(v_logDepth, factor)`
+  under `//>>ifdef LOG_DEPTH` (the `//>>else` single-`@location(0)` struct is output-byte-identical to the
+  historical bare-vec4 return; every discard/return site preserved for naga's NEW-4-E terminator analysis);
+  (4) the two PICK pipelines compile the LOG_DEPTH module + `depthWriteEnabled:true` (distinct `[ld]`
+  descriptor names) ONLY when the gate is active, with a flip-rebuild guard stamped alongside the
+  format/MSAA generation. Gate: new `isWebGPUPickLogDepthActive(context, frameState)` in
+  `WebGPULogDepth.ts` + `WebGPUContext._pickLogDepthWriteEnabled` (default **FALSE** — the pick-fleet
+  master switch, SEPARATE from the scene `_logDepthWriteEnabled`, since the pick mini-frame's shared depth
+  attachment is all-or-nothing).
+- **Evidence.** `probe-voxel-pick.mjs` PASS (gate off — cell picks correct cross-backend, 0 errors →
+  default byte-identical); `probe-voxel-parity.mjs` PASS (voxel COLOR footprint IoU 0.986, avg-color L1
+  **0**, 0 errors → color path untouched); NEW `probe-voxel-pick-logdepth.mjs` PASS (gate FORCED on:
+  `[ld]` pick pipelines bound with `depthWriteEnabled:true`; cell + object picks still return the correct
+  voxel; a nearer "blocker" voxel correctly OCCLUDES a farther one in the shared pick FBO → positive proof
+  the log frag_depth is WRITTEN, non-degenerate, and monotonic; 0 device/console errors → the LOG_DEPTH
+  module and both pick pipelines compiled/built); `capture-and-diff --scene globe-default` PASS (crossBackend 0.46%,
+  no collateral). Gates: `tsc --noEmit` clean, eslint clean, `gulp build` clean, `buildAllVariants` clean,
+  `variant-smoke-test` all 3 PASS.
+- **C10-11 (`NEW-WEBGPU-PICK-FLEET-LOG-DEPTH`) is now UNBLOCKED.** The voxel row below is done; C10-11
+  converts the remaining ~22 pick entries and flips `_pickLogDepthWriteEnabled` true in one coordinated
+  change (INV-2 all-or-nothing). Follow-up nicety (not a blocker): `fragmentPickMain` writes the box
+  proxy **back** face depth (the pick pipeline culls front faces, so the rasterized fragment is the far
+  face) — a conservative-FAR stand-in that is correct for the standalone-voxel common case; a nearer
+  first-hit depth would need either a cullMode change (risks the pick footprint) or a Rule-4-safe
+  proxy→RTE lift (not currently available). Tracked here for C10-11 to weigh if the depth-plane gate
+  needs the entry face.
+
 **Corrected fleet enumeration (PRE = uniformly hyperbolic by design; ~24 pick entries / ~20 files, not
 "~14"):**
 
@@ -5324,7 +5377,7 @@ Two premise corrections vs the C10 guide H6 walkthrough:
 | Polyline | `Collections/PolylineCollectionPick.wgsl fragmentMain :190` | B | hyperbolic | same | packed (`WebGPUPolylineRenderer.js:1305`) |
 | Primitive ×6 | `Primitive/PrimitivePick{Basic,BasicTextured,MatFlat,MatLit,Phong,PhongTextured}.wgsl` | B | hyperbolic | same (copy color sibling's ifdef) | verify per family |
 | Ground/Vector-tile | GroundPrimitive/GroundPolyline/Vector3DTile* (derived via `WebGPUDerivedCommand` PICK) | classify per build site | hyperbolic | reuse-color-module vs dedicated; confirm at pipeline build | color path logs — yes |
-| **Voxel ×2** | `WebGPUVoxelRenderer.ts fragmentPick{Main:1009,VoxelMain:1103}` | **NONE — no infra** | hyperbolic (color also hyperbolic) | **BLOCKED — needs full log-depth plumbing + design decision** | **absent** |
+| **Voxel ×2** | `WebGPUVoxelRenderer.ts fragmentPick{Main,VoxelMain}` | A (both share `pickModule`) | hyperbolic | ✅ **DONE (NEW-WEBGPU-VOXEL-PICK-LOG-DEPTH, 2026-07-18)** — VS `v_logDepth` (box proxy front-face) + FS `VoxelPickFragOutput`; gated `isWebGPUPickLogDepthActive` (`[ld]` module + depthWrite) | UBO floats 19/23 — yes |
 | Compute-instance | `ComputeInstanceRender.wgsl fragmentPickMain :215` | A | **already log** (`v_logDepth` + `csm_writeLogDepth`, reference pattern) | done | yes |
 
 **Guide drift (record for a future H6 correction):** (1) the Phase-1/INV-4 pseudocode adds
