@@ -2396,6 +2396,34 @@ struct FragOutput {
   let normalDerivTangent = deriveTangentRaw(input.positionEC, normalUV(input));
   let clearcoatDerivTangent = deriveTangentRaw(input.positionEC, baseColorUV(input));
 
+  // C10-05-MODEL-TEXTURE-MIP-CHAIN — per-fragment UV derivatives computed AT
+  // FRAGMENT ENTRY while control flow is still uniform (Batch-57 globe pattern,
+  // `GlobeTerrain.wgsl:3158-3171`). The material texture samples below use
+  // `textureSampleGrad(..., d_dx, d_dy)` instead of `textureSampleLevel(..., 0.0)`
+  // so the sampler picks the correct mip from the (stub-generated) chain — this
+  // removes minification shimmer/aliasing on distant tiles and matches WebGL
+  // trilinear. `textureSampleGrad` is the only mip-selecting sampler legal to
+  // call after the non-uniform discards (clipping / alpha-mask) in this shader,
+  // but the derivatives it consumes MUST be taken here in uniform control flow.
+  // One pair per material UV set (each `*UV()` returns the KHR_texture_transform-
+  // transformed coordinate actually fed to the sampler, so its derivative is the
+  // gradient of the transformed UV — exactly what trilinear selection needs).
+  // Cost: a handful of ALU per fragment even when a slot's texture is unbound —
+  // negligible, and the unconditional evaluation is required for the WGSL
+  // uniformity guarantee. Data-lookup samples (batch table / featureId /
+  // feature-pick / edge / globe-depth / SDF / clipping / IBL explicit-LOD /
+  // atmosphere LUT / refraction screen-space) intentionally stay at LOD 0.
+  let baseColorUV_dx = dpdx(baseColorUV(input));
+  let baseColorUV_dy = dpdy(baseColorUV(input));
+  let normalUV_dx = dpdx(normalUV(input));
+  let normalUV_dy = dpdy(normalUV(input));
+  let mrUV_dx = dpdx(metallicRoughnessUV(input));
+  let mrUV_dy = dpdy(metallicRoughnessUV(input));
+  let emissiveUV_dx = dpdx(emissiveUV(input));
+  let emissiveUV_dy = dpdy(emissiveUV(input));
+  let occlusionUV_dx = dpdx(occlusionUV(input));
+  let occlusionUV_dy = dpdy(occlusionUV(input));
+
   // AUDIT_2026_05_02 A.6 — model clipping planes. Eye-space distance
   // test: planes are uploaded eye-space transformed (see
   // `WebGPUClippingPlaneCollection.ts:103-119`), and `input.positionEC`
@@ -2475,12 +2503,12 @@ struct FragOutput {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+      let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
       baseColor = baseColor * tc;
     }
   } else {
     if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+      let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
       baseColor = baseColor * tc;
     }
   }
@@ -2560,7 +2588,7 @@ struct FragOutput {
   var N = normalize(input.normalEC);
   if (hasFlag(flags, FLAG_IS_DOUBLE_SIDED) && !input.frontFacing) { N = -N; }
   if (hasFlag(flags, FLAG_HAS_NORMAL_TEXTURE)) {
-    let nm = textureSampleLevel(normalTexture, normalSampler, normalUV(input), 0.0).rgb;
+    let nm = textureSampleGrad(normalTexture, normalSampler, normalUV(input), normalUV_dx, normalUV_dy).rgb;
     N = perturbNormal(N, input.tangentEC, input.bitangentEC, nm, material.normalScale,
                       normalDerivTangent);
   }
@@ -2575,7 +2603,7 @@ struct FragOutput {
     var spec = vec3<f32>(material.specularFactor_r, material.specularFactor_g, material.specularFactor_b);
     var gloss = material.glossinessFactor;
     if (hasFlag(flags, FLAG_HAS_SPECGLOSS_TEXTURE)) {
-      let sg = textureSampleLevel(metallicRoughnessTexture, metallicRoughnessSampler, metallicRoughnessUV(input), 0.0);
+      let sg = textureSampleGrad(metallicRoughnessTexture, metallicRoughnessSampler, metallicRoughnessUV(input), mrUV_dx, mrUV_dy);
       spec = spec * srgbToLinear(sg.rgb);
       gloss = gloss * sg.a;
     }
@@ -2587,7 +2615,7 @@ struct FragOutput {
     metallic = material.metallicFactor;
     roughness = material.roughnessFactor;
     if (hasFlag(flags, FLAG_HAS_METALLIC_ROUGHNESS_TEXTURE)) {
-      let mr = textureSampleLevel(metallicRoughnessTexture, metallicRoughnessSampler, metallicRoughnessUV(input), 0.0);
+      let mr = textureSampleGrad(metallicRoughnessTexture, metallicRoughnessSampler, metallicRoughnessUV(input), mrUV_dx, mrUV_dy);
       roughness = roughness * mr.g;
       metallic = metallic * mr.b;
     }
@@ -2611,12 +2639,12 @@ struct FragOutput {
     // specularColorTexture (RGB) and specularFactorTexture (A) per
     // spec. specularColorTexture modulates the F0 chromatic tint;
     // specularFactorTexture's alpha channel scales the factor scalar.
-    let scTex = textureSampleLevel(
-      specularColorTexture, khrSampler, baseColorUV(input), 0.0,
+    let scTex = textureSampleGrad(
+      specularColorTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     sc = sc * scTex.rgb;
-    let sfTex = textureSampleLevel(
-      specularFactorTexture, khrSampler, baseColorUV(input), 0.0,
+    let sfTex = textureSampleGrad(
+      specularFactorTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     sf = sf * sfTex.a;
     // Recolor the dielectric component (mix factor = 1.0 - metallic).
@@ -2642,12 +2670,12 @@ struct FragOutput {
     let irIor = material.iridescenceFactors.y;
     // C-R4-GLTF-KHR-TEXTURES (Batch 102/103) — sample iridescenceTexture
     // (R = mask) and iridescenceThicknessTexture (G) per spec.
-    let irTex = textureSampleLevel(
-      iridescenceTexture, khrSampler, baseColorUV(input), 0.0,
+    let irTex = textureSampleGrad(
+      iridescenceTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     irFactor = irFactor * irTex.r;
-    let thickTex = textureSampleLevel(
-      iridescenceThicknessTexture, khrSampler, baseColorUV(input), 0.0,
+    let thickTex = textureSampleGrad(
+      iridescenceThicknessTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     let thinFilmThickness = mix(
       material.iridescenceFactors.z,
@@ -2764,8 +2792,8 @@ struct FragOutput {
   //>>ifdef MODEL_HAS_WGSL_CUSTOM_SHADER
   var csEmissive: vec3<f32> = material.emissiveFactor;
   if (hasFlag(flags, FLAG_HAS_EMISSIVE_TEXTURE)) {
-    csEmissive = csEmissive * textureSampleLevel(
-      emissiveTexture, emissiveSampler, emissiveUV(input), 0.0).rgb;
+    csEmissive = csEmissive * textureSampleGrad(
+      emissiveTexture, emissiveSampler, emissiveUV(input), emissiveUV_dx, emissiveUV_dy).rgb;
   }
   var csAlpha: f32 = baseColor.a;
   // Q31 slice B — seed the user-modifiable ambient-occlusion factor from the
@@ -2775,8 +2803,8 @@ struct FragOutput {
   // Defaults to 1.0 (no texture) → byte-identical when the field is untouched.
   var csOcclusion: f32 = 1.0;
   if (hasFlag(flags, FLAG_HAS_OCCLUSION_TEXTURE)) {
-    let csAo = textureSampleLevel(
-      occlusionTexture, occlusionSampler, occlusionUV(input), 0.0).r;
+    let csAo = textureSampleGrad(
+      occlusionTexture, occlusionSampler, occlusionUV(input), occlusionUV_dx, occlusionUV_dy).r;
     csOcclusion = mix(1.0, csAo, material.occlusionStrength);
   }
   {
@@ -2895,8 +2923,8 @@ struct FragOutput {
     // RG carries the (cos, sin) of a per-pixel rotation offset; B
     // scales the strength. Spec stores the trig pair as
     // (RG * 2 - 1) so 0.5 = no rotation, 1.0 = +pi/2.
-    let aniTex = textureSampleLevel(
-      anisotropyTexture, khrSampler, baseColorUV(input), 0.0,
+    let aniTex = textureSampleGrad(
+      anisotropyTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     let aniRotOffset = atan2(aniTex.g * 2.0 - 1.0, aniTex.r * 2.0 - 1.0);
     aniRotation = aniRotation + aniRotOffset;
@@ -2952,12 +2980,12 @@ struct FragOutput {
     // C-R4-GLTF-KHR-TEXTURES (Batch 102/103) — sample clearcoatTexture
     // (R = intensity), clearcoatRoughnessTexture (G = roughness), and
     // clearcoatNormalTexture (RGB = tangent-space normal) per spec.
-    let ccTex = textureSampleLevel(
-      clearcoatTexture, khrSampler, baseColorUV(input), 0.0,
+    let ccTex = textureSampleGrad(
+      clearcoatTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     ccFactor = ccFactor * ccTex.r;
-    let ccRoughTex = textureSampleLevel(
-      clearcoatRoughnessTexture, khrSampler, baseColorUV(input), 0.0,
+    let ccRoughTex = textureSampleGrad(
+      clearcoatRoughnessTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     ccRough = clamp(ccRough * ccRoughTex.g, 0.04, 1.0);
     // Clearcoat normal: per spec, the second specular lobe uses its
@@ -2967,8 +2995,8 @@ struct FragOutput {
     // FLAG_HAS_CLEARCOAT bit, but with a 1×1 white placeholder the
     // perturbation reduces to identity since (R,G) decode to (1,1)
     // and `perturbNormal` outputs back the original axis).
-    let ccNormalTex = textureSampleLevel(
-      clearcoatNormalTexture, khrSampler, baseColorUV(input), 0.0,
+    let ccNormalTex = textureSampleGrad(
+      clearcoatNormalTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     let N_cc = perturbNormal(
       input.normalEC, input.tangentEC, input.bitangentEC,
@@ -2997,12 +3025,12 @@ struct FragOutput {
     var sheenRough = clamp(material.sheenFactors.w, 0.07, 1.0);
     // C-R4-GLTF-KHR-TEXTURES (Batch 102/103) — sample sheenColorTexture
     // (RGB) and sheenRoughnessTexture (A) per spec.
-    let sheenTex = textureSampleLevel(
-      sheenColorTexture, khrSampler, baseColorUV(input), 0.0,
+    let sheenTex = textureSampleGrad(
+      sheenColorTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     sheenColor = sheenColor * sheenTex.rgb;
-    let sheenRoughTex = textureSampleLevel(
-      sheenRoughnessTexture, khrSampler, baseColorUV(input), 0.0,
+    let sheenRoughTex = textureSampleGrad(
+      sheenRoughnessTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     sheenRough = clamp(sheenRough * sheenRoughTex.a, 0.07, 1.0);
     // Charlie distribution: D_charlie(α, NdotH) = ((2 + 1/α) * (sin θ_h)^(1/α)) / (2π)
@@ -3059,16 +3087,16 @@ struct FragOutput {
   // once per fragment regardless of which block(s) consume it.
   var thicknessForKHR: f32 = 0.0;
   if (hasFlag(flags, FLAG_HAS_VOLUME)) {
-    let thickTex = textureSampleLevel(
-      thicknessTexture, khrSampler, baseColorUV(input), 0.0,
+    let thickTex = textureSampleGrad(
+      thicknessTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     thicknessForKHR = material.volumeFactors0.x * thickTex.g;
   }
 
   if (hasFlag(flags, FLAG_HAS_TRANSMISSION)) {
     var trFactor = material.transmissionFactors.x;
-    let trTex = textureSampleLevel(
-      transmissionTexture, khrSampler, baseColorUV(input), 0.0,
+    let trTex = textureSampleGrad(
+      transmissionTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     trFactor = trFactor * trTex.r;
     if (trFactor > 0.0) {
@@ -3321,8 +3349,8 @@ struct FragOutput {
   // roughness -> 1 (bendFactorPow4 -> 1 -> unbent N). Gated under
   // MODEL_HAS_KHR_TEXTURES because it samples `anisotropyTexture`.
   if (hasFlag(flags, FLAG_HAS_ANISOTROPY)) {
-    let aniTexIBL = textureSampleLevel(
-      anisotropyTexture, khrSampler, baseColorUV(input), 0.0,
+    let aniTexIBL = textureSampleGrad(
+      anisotropyTexture, khrSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy,
     );
     let aniRotIBL = material.anisotropyFactors.y +
       atan2(aniTexIBL.g * 2.0 - 1.0, aniTexIBL.r * 2.0 - 1.0);
@@ -3419,7 +3447,7 @@ struct FragOutput {
   ambient = ambient * csOcclusion;
   //>>else
   if (hasFlag(flags, FLAG_HAS_OCCLUSION_TEXTURE)) {
-    let ao = textureSampleLevel(occlusionTexture, occlusionSampler, occlusionUV(input), 0.0).r;
+    let ao = textureSampleGrad(occlusionTexture, occlusionSampler, occlusionUV(input), occlusionUV_dx, occlusionUV_dy).r;
     ambient = mix(ambient, ambient * ao, material.occlusionStrength);
   }
   //>>endif
@@ -3430,7 +3458,7 @@ struct FragOutput {
   // full rationale on sRGB format selection.
   var emissive = material.emissiveFactor;
   if (hasFlag(flags, FLAG_HAS_EMISSIVE_TEXTURE)) {
-    let et = textureSampleLevel(emissiveTexture, emissiveSampler, emissiveUV(input), 0.0).rgb;
+    let et = textureSampleGrad(emissiveTexture, emissiveSampler, emissiveUV(input), emissiveUV_dx, emissiveUV_dy).rgb;
     emissive = emissive * et;
   }
   // PARITY-CUSTOM-SHADER-WGSL slice A — the pre-lighting injection may have
@@ -3729,17 +3757,24 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
 
 @fragment fn fragmentPickHoverMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
+  // C10-05 — hoist baseColor UV derivatives at entry (uniform control flow,
+  // before any discard) so the alpha-test baseColor sample below uses
+  // textureSampleGrad and selects the SAME mip as fragmentMain. Keeps the
+  // alpha-mask/blend discard decision consistent across pick/velocity passes at
+  // distance (WebGL mip-samples the alpha test in every pass).
+  let baseColorUV_dx = dpdx(baseColorUV(input));
+  let baseColorUV_dy = dpdy(baseColorUV(input));
   var baseColor = material.baseColorFactor;
 
   if (hasFlag(flags, FLAG_USE_SPECULAR_GLOSSINESS)) {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+      let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
       baseColor = baseColor * tc;
     }
   } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-    let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+    let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
     baseColor = baseColor * tc;
   }
 
@@ -3792,6 +3827,12 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
 
 @fragment fn fragmentPickMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
+  // C10-05 — hoist baseColor UV derivatives at entry (uniform control flow,
+  // before the split/clip/alpha discards) so the alpha-test baseColor sample
+  // uses textureSampleGrad and selects the same mip as fragmentMain (consistent
+  // discard across pick and color passes at distance).
+  let baseColorUV_dx = dpdx(baseColorUV(input));
+  let baseColorUV_dy = dpdy(baseColorUV(input));
   //>>ifdef MODEL_SPLIT_ENABLED
   // WIRE-MODEL-SPLITTER — the hidden half of a split model must not be
   // pickable. WebGL's derived pick command keeps the splitter stage in
@@ -3826,11 +3867,11 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+      let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
       baseColor = baseColor * tc;
     }
   } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-    let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+    let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
     baseColor = baseColor * tc;
   }
 
@@ -3941,6 +3982,12 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
 //>>ifdef METADATA_PICKING_ENABLED
 @fragment fn fragmentPickMetadataMain(input: FragmentInput) -> @location(0) vec4<f32> {
   let flags = material.materialFlags;
+  // C10-05 — hoist baseColor UV derivatives at entry (uniform control flow,
+  // before the split/alpha discards) so the alpha-test baseColor sample uses
+  // textureSampleGrad and selects the same mip as fragmentMain (consistent
+  // discard across the metadata-pick and color passes at distance).
+  let baseColorUV_dx = dpdx(baseColorUV(input));
+  let baseColorUV_dy = dpdy(baseColorUV(input));
   //>>ifdef MODEL_SPLIT_ENABLED
   // WIRE-MODEL-SPLITTER — the hidden half of a split model must not claim
   // the metadata pick. WebGL's deriveMetadataPickingShader only adds
@@ -3958,11 +4005,11 @@ fn pickHoverDither(fragCoord: vec2<f32>) -> f32 {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+      let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
       baseColor = baseColor * tc;
     }
   } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-    let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+    let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
     baseColor = baseColor * tc;
   }
   if (hasFlag(flags, FLAG_HAS_VERTEX_COLORS)) {
@@ -4037,6 +4084,12 @@ struct VelocityFragOutput {
 
 @fragment fn fragmentVelocityMain(input: FragmentInput) -> VelocityFragOutput {
   let flags = material.materialFlags;
+  // C10-05 — hoist baseColor UV derivatives at entry (uniform control flow) so
+  // the alpha-test baseColor sample uses textureSampleGrad and selects the same
+  // mip as fragmentMain (consistent alpha-mask discard across the velocity and
+  // color passes at distance).
+  let baseColorUV_dx = dpdx(baseColorUV(input));
+  let baseColorUV_dy = dpdy(baseColorUV(input));
 
   // Alpha-mask discard parity with the color pass.
   var baseColor = material.baseColorFactor;
@@ -4044,11 +4097,11 @@ struct VelocityFragOutput {
     baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
                           material.diffuseFactor_b, material.diffuseFactor_a);
     if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
-      let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+      let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
       baseColor = baseColor * tc;
     }
   } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
-    let tc = textureSampleLevel(baseColorTexture, baseColorSampler, baseColorUV(input), 0.0);
+    let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
     baseColor = baseColor * tc;
   }
   if (hasFlag(flags, FLAG_HAS_VERTEX_COLORS)) {

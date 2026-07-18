@@ -96,6 +96,7 @@ import SceneMode from "../../Scene/SceneMode.js";
 import ModelSilhouettePipelineStage from "../../Scene/Model/ModelSilhouettePipelineStage.js";
 import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
+import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 // C2-25 ENV-SCENE-CAPTURE (Batch 447) — per-frame uniform ring allocator. The
 // capture pass packs a face-camera UB per visible primitive per face; it MUST
@@ -168,6 +169,12 @@ interface ColorLike {
   alpha: number;
 }
 
+interface SamplerLike {
+  // Cesium `Sampler` uses `minificationFilter`; a raw glTF sampler uses
+  // `minFilter`. Read both (mirrors `getSamplerForReader`).
+  minificationFilter?: number;
+  minFilter?: number;
+}
 interface TextureReaderLike {
   texture?: {
     _texture?: {
@@ -176,7 +183,10 @@ interface TextureReaderLike {
     _source?: ImageSourceLike | null;
     source?: ImageSourceLike | null;
     _image?: ImageSourceLike | null;
+    _sampler?: SamplerLike | null;
+    sampler?: SamplerLike | null;
   } | null;
+  sampler?: SamplerLike | null;
   texCoord?: number;
   transform?: ArrayLike<number> | null;
 }
@@ -698,8 +708,22 @@ interface SceneCaptureModelsLike {
   buildCaptureCommands: unknown;
 }
 
+/**
+ * C10-05 — frame-owned mip-generation sink (C9-12A `WebGPUContext`
+ * `enqueueImageryMipGeneration`). A texture upgraded to a real mip chain in the
+ * `createGPUTextureFromReader` fallback registers its blit here so the mips are
+ * generated in the shared pre-frame `"ImageryMipPreparation"` submit — never a
+ * private `queue.submit` from draw emission.
+ */
+type EnqueueMipFn = (
+  texture: GPUTexture,
+  format: GPUTextureFormat,
+  mipLevelCount: number,
+) => void;
+
 interface ModelRenderContext {
   device: GPUDevice;
+  enqueueImageryMipGeneration?: EnqueueMipFn;
   uniformState: CesiumUniformState;
   drawingBufferWidth: number;
   drawingBufferHeight: number;
@@ -1957,10 +1981,31 @@ const scratchLightVec3b = new Cartesian3();
 
 // ─── GPU Texture Creation from glTF TextureReader ────────────────────────────
 
+/**
+ * C10-05 — true when the reader's glTF/CesiumJS sampler requests a mipmapped
+ * minification filter (the four `*_MIPMAP_*` variants, GL 9984-9987). Mirrors
+ * `GltfTextureLoader`'s `samplerRequiresMipmap` / `WebGLStubTexture`'s
+ * `wantsMipmaps` gate so the fallback allocation path matches WebGL parity: it
+ * only builds a chain for textures WebGL would mipmap, and leaves LINEAR /
+ * NEAREST (and all data-lookup) textures single-level.
+ */
+function readerRequestsMipmap(textureReader: ReaderOrNull): boolean {
+  const sampler =
+    textureReader?.texture?._sampler ||
+    textureReader?.texture?.sampler ||
+    textureReader?.sampler;
+  const minFilter = sampler?.minificationFilter ?? sampler?.minFilter;
+  // 9984 NEAREST_MIPMAP_NEAREST .. 9987 LINEAR_MIPMAP_LINEAR
+  return (
+    typeof minFilter === "number" && minFilter >= 9984 && minFilter <= 9987
+  );
+}
+
 function createGPUTextureFromReader(
   device: GPUDevice,
   textureReader: ReaderOrNull,
   colorSpace: string,
+  enqueueMip?: EnqueueMipFn,
 ): GPUTexture | null {
   if (!defined(textureReader)) {
     return null;
@@ -2009,11 +2054,31 @@ function createGPUTextureFromReader(
   //            occlusion / data textures that must not be gamma-corrected).
   const format = colorSpace === "srgb" ? "rgba8unorm-srgb" : "rgba8unorm";
 
+  // C10-05-MODEL-TEXTURE-MIP-CHAIN — secondary allocation path (only reached
+  // when the CesiumJS Texture has no stub-owned `_webgpuTexture`; the stub path
+  // above already allocates + generates a real chain for mipmap-sampler
+  // textures). Give this branch a real mip chain too when the source sampler
+  // requests mipmaps, so distant tiles trilinear-filter instead of aliasing
+  // mip 0 — matching the stub path and WebGL. The source here is always an
+  // uncompressed ImageBitmap (compressed KTX2 arrives with `internalFormat` and
+  // takes `Texture.create` with its own transcoded chain, never this branch),
+  // so `rgba8unorm[-srgb]` is RENDER_ATTACHMENT-capable for the blit. Mip
+  // generation is routed through the frame-owned `enqueueImageryMipGeneration`
+  // (C9-12A) — never a private submit from draw emission. Falls back to a
+  // single level when no sink is provided or mipmaps are not requested.
+  const wantsMips = defined(enqueueMip) && readerRequestsMipmap(textureReader);
+  const mipLevelCount = wantsMips
+    ? WebGPUMipmapGenerator.calculateMipLevelCount(width, height)
+    : 1;
+
   try {
     const gpuTexture = device.createTexture({
-      label: `Model glTF texture ${width}x${height} (${format})`,
+      label: `Model glTF texture ${width}x${height} (${format})${
+        mipLevelCount > 1 ? ` mip${mipLevelCount}` : ""
+      }`,
       size: [width, height, 1],
       format,
+      mipLevelCount,
       usage:
         GPUTextureUsage.TEXTURE_BINDING |
         GPUTextureUsage.COPY_DST |
@@ -2025,6 +2090,13 @@ function createGPUTextureFromReader(
       { texture: gpuTexture },
       { width, height },
     );
+
+    // Enqueue the down-blit of levels 1..N-1 into the shared pre-frame submit.
+    // The `copyExternalImageToTexture` of level 0 above is queued first, so it
+    // completes before the blit reads it (queue submission order).
+    if (mipLevelCount > 1 && defined(enqueueMip)) {
+      enqueueMip(gpuTexture, format, mipLevelCount);
+    }
 
     return gpuTexture;
   } catch (_e) {
@@ -2446,6 +2518,7 @@ function ensurePrimitiveCache(
   primKey: string | number,
   geometry: PrimitiveGeometry,
   matInfo: MaterialInfo,
+  enqueueMip?: EnqueueMipFn,
 ): PrimitiveRenderData {
   if (defined(cache.primitives[primKey])) {
     return cache.primitives[primKey];
@@ -2854,7 +2927,12 @@ function ensurePrimitiveCache(
   }
 
   // Create GPU textures from glTF image sources
-  const textures = createMaterialTextures(device, pipelineCache, matInfo);
+  const textures = createMaterialTextures(
+    device,
+    pipelineCache,
+    matInfo,
+    enqueueMip,
+  );
   primCache.gpuTextures = textures.created;
   // Stash matInfo + placeholderSlots so the per-frame
   // refreshDeferredModelTextures helper can poll the readers and
@@ -3598,6 +3676,7 @@ function createMaterialTextures(
   device: GPUDevice,
   pipelineCache: PipelineCacheLike,
   matInfo: MaterialInfo,
+  enqueueMip?: EnqueueMipFn,
 ) {
   const created: GPUTexture[] = [];
   const defWhite = pipelineCache.defaultWhiteTexture;
@@ -3623,7 +3702,12 @@ function createMaterialTextures(
     if (!defined(reader)) {
       return fallback;
     }
-    const tex = createGPUTextureFromReader(device, reader, colorSpace);
+    const tex = createGPUTextureFromReader(
+      device,
+      reader,
+      colorSpace,
+      enqueueMip,
+    );
     if (defined(tex)) {
       // Only push to `created` (which the primCache destroys later) if
       // this WebGPU texture was allocated *here* via copyExternalImageToTexture.
@@ -3883,6 +3967,7 @@ function refreshDeferredModelTextures(
   device: GPUDevice,
   primCache: PrimitiveRenderData,
   matInfo: MaterialInfo,
+  enqueueMip?: EnqueueMipFn,
 ) {
   const placeholders = primCache.placeholderSlots;
   if (!placeholders || placeholders.size === 0) {
@@ -3903,7 +3988,12 @@ function refreshDeferredModelTextures(
     if (!defined(reader)) {
       continue;
     }
-    const tex = createGPUTextureFromReader(device, reader, schema.colorSpace);
+    const tex = createGPUTextureFromReader(
+      device,
+      reader,
+      schema.colorSpace,
+      enqueueMip,
+    );
     if (!defined(tex)) {
       continue;
     }
@@ -3988,6 +4078,16 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
   const commandList = frameState.commandList;
   const context = frameState.context as unknown as ModelRenderContext;
   const device = context.device;
+
+  // C10-05 — frame-owned mip-generation sink for the fallback texture path
+  // (createGPUTextureFromReader when a model texture is NOT stub-backed). The
+  // stub path already generates its own chain at upload; this only covers the
+  // secondary branch. Undefined if the context predates C9-12A, in which case
+  // the fallback keeps its historical single-level behavior.
+  const enqueueMip: EnqueueMipFn | undefined =
+    typeof context.enqueueImageryMipGeneration === "function"
+      ? context.enqueueImageryMipGeneration.bind(context)
+      : undefined;
 
   // Initialize model cache
   if (!defined(model._webgpuCache)) {
@@ -4996,6 +5096,7 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
         primKey,
         geometry,
         matInfo,
+        enqueueMip,
       );
       primCache._geometryBase = baseGeometry;
       primCache._geometryAnnotationMask = geometryAnnotationMask;
@@ -5090,6 +5191,7 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
         device,
         primCache,
         matInfo,
+        enqueueMip,
       );
 
       // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — when the primitive
