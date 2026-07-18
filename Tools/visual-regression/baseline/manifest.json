@@ -1,5 +1,51 @@
 {
   "$schema": "../baseline-manifest.schema.json",
   "schemaVersion": 1,
-  "entries": {}
+  "updatedAt": "2026-07-18T00:50:19.216Z",
+  "entries": {
+    "globe-default:webgl": {
+      "scene": "globe-default",
+      "renderer": "webgl",
+      "provenanceClass": "accepted-current",
+      "image": "globe-default.webgl.png",
+      "imageSha256": "d48f0e02d41e61a1072d3c44d036114d53f875a27c2b6feb449fd0957285b131",
+      "width": 799,
+      "height": 752,
+      "sourceCommit": "9bb273a17c84ea508bc11ebf6262bf47975bfd06",
+      "sourceDirty": false,
+      "sceneIdentity": "100915dd3f4344f586dd844972be020336e069ec359391451d9e835b8c164141",
+      "browserClass": "msedge",
+      "browserVersion": "150.0.4078.65",
+      "adapterClass": "nvidia:pascal",
+      "capturedAt": "2026-07-18T00:50:19.216Z",
+      "review": {
+        "status": "approved",
+        "reviewedBy": "C9-30 checkpoint (Opus measurement worker)",
+        "rationale": "P0-4a baseline repair: prior globe-default.webgpu.png was a known-degenerate flat-gray capture (94.69% historical FAIL); current WebGPU capture visually verified as correct SF-Bay globe (crossBackend 0.46%, in 0.43-0.77% band) at C9-30 checkpoint HEAD Batch 690",
+        "reviewedAt": "2026-07-18T00:50:19.216Z"
+      }
+    },
+    "globe-default:webgpu": {
+      "scene": "globe-default",
+      "renderer": "webgpu",
+      "provenanceClass": "accepted-current",
+      "image": "globe-default.webgpu.png",
+      "imageSha256": "d9b12c81b74482170fb188da4b9b0cfdf6517529fa1e7082103e3a52a18aba7e",
+      "width": 799,
+      "height": 752,
+      "sourceCommit": "9bb273a17c84ea508bc11ebf6262bf47975bfd06",
+      "sourceDirty": false,
+      "sceneIdentity": "100915dd3f4344f586dd844972be020336e069ec359391451d9e835b8c164141",
+      "browserClass": "msedge",
+      "browserVersion": "150.0.4078.65",
+      "adapterClass": "nvidia:pascal",
+      "capturedAt": "2026-07-18T00:50:19.216Z",
+      "review": {
+        "status": "approved",
+        "reviewedBy": "C9-30 checkpoint (Opus measurement worker)",
+        "rationale": "P0-4a baseline repair: prior globe-default.webgpu.png was a known-degenerate flat-gray capture (94.69% historical FAIL); current WebGPU capture visually verified as correct SF-Bay globe (crossBackend 0.46%, in 0.43-0.77% band) at C9-30 checkpoint HEAD Batch 690",
+        "reviewedAt": "2026-07-18T00:50:19.216Z"
+      }
+    }
+  }
 }
