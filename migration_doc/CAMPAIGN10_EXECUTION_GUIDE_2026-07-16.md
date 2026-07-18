@@ -43,6 +43,14 @@ Engine wave order (guide H7 Part A): **W1** `C10-01` · `C10-09` · `C10-10` · 
 > gated-tail dossier were rewritten to the queue's canonical set (spike = `C10-13`; W1 riders =
 > `C10-09`/`C10-10`; splat = `C10-04`; W2 = `C10-03`/`C10-05`/`C10-02`; W4 = `C10-11` log-depth →
 > `C10-12` gate-flip). If any residue survives, the queue remains authoritative.
+> **Anchor-drift verification (2026-07-17, 7-cluster read-only pass, run wf_cb113499-4f2):** all
+> seven H clusters spot-verified against HEAD (Batch 689). 16 drifts found; the material ones are
+> corrected IN PLACE in the H sections (H3 resolve-count oracle bucketing — brief-breaking; H3
+> C9-09-landed status; H2 twin bind-group component removed by Batch 687; H4 derivative census +
+> mip-slot API; H6 compute-instance already-converted + cohort import reality + fleet ≈14; H7
+> queue-doc-exists + C10-11 ownership). Line-number-only shifts were NOT patched: Batches 681-689
+> grew `WebGPUContext.ts` ~+350 lines and `WebGPUModelRenderer.ts` ~+300 lines — anchors in those
+> files drifted beyond ±80 with structure/symbols intact; grep by symbol per the standing rule.
 
 ### QUICK START (Opus worker, cold start)
 
@@ -286,7 +294,7 @@ the second push fails the fast-forward and the agent re-reads — the git log ar
 
 C9 used `migration_doc/QUEUE_2026-07-15_CAMPAIGN9.md` §3.2 as its live execution ledger (status
 vocabulary: IN PROGRESS / COMPLETE / PARTIAL·PAUSED / BLOCKED / DEFERRED / CONDITIONAL NOT TRIGGERED;
-unlisted = NOT STARTED). **Create `migration_doc/QUEUE_2026-07-16_CAMPAIGN10.md` with the same shape**
+unlisted = NOT STARTED). **The queue doc `migration_doc/QUEUE_2026-07-16_CAMPAIGN10.md` ALREADY EXISTS (created f6cc291981; §3.2 seeded + §4 intake pre-populated by Batch 689) — VERIFY/EXTEND it, never re-create it (a literal re-create clobbers the seeded intake rows)**
 (the §1 rules block, §3 gates A–G, and a §3.2 live ledger table with the identical status vocabulary
 and columns `| Task or gate | Status | Updated | Evidence / next action |`). Every C10 task brief must
 mandate the same rule the C9 briefs did: **update your row in the C10 §3.2 ledger (add it if missing)
@@ -362,7 +370,7 @@ running) are:
 - **`NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT`** — PARTIAL/PAUSED: scene half landed (Batch 673), pick
   half re-blocked behind fleet-scale conversion. → **C10 W4** (folds into C10-12).
 - **`NEW-WEBGPU-PICK-FLEET-LOG-DEPTH`** — NOT STARTED: the fleet prerequisite (~15+ pick WGSL entries to
-  log frag_depth); blocks C9-02B and audit P0-1 gate flip. → **C10 W4 = C10-12** (its owner). Note the
+  log frag_depth); blocks C9-02B and audit P0-1 gate flip. → **C10 W4 = C10-11** (its owner; `C10-12` is the dependent gate-flip). Note the
   register §15 sequencing hazard: this is the exact surface reversed-Z slice-b (C10-GT) later reverts.
 - **`NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE`** — PARTIAL (authority+fleet landed, per-family residue). The
   residue rows below are its spawn.
@@ -1010,7 +1018,7 @@ connected them. **They must be one design:**
   which independently solves the discrimination defect that motivated it (reversed-Z far-field
   quanta ~2⁻²⁴·eyeZ easily separate plane from marker at 5,000 km) — and slice-b becomes a joint
   scene+pick migration with one depth convention end-to-end (also killing the mixed-encoding bug
-  class that burned C9-02B). The ~15-producer log-depth conversion is then SKIPPED, not done and
+  class that burned C9-02B). The ~14-producer log-depth conversion is then SKIPPED, not done and
   undone.
 - **If the spike says NO-GO:** reversed-Z parks permanently in the register, and the pick fleet
   proceeds with log depth exactly as its row specifies.
@@ -1071,7 +1079,7 @@ first or be accepted explicitly. Rollback = flip the switch, not revert 47 files
 | # | ID | Pri | Effort | Work / acceptance |
 | --- | --- | --- | --- | --- |
 | 1 | `C10-01-ENV-COMMAND-FRUSTUM-BINNING` | P0 (campaign anchor) | M (days) | Stop BV-less `Pass.ENVIRONMENT` commands (5 push sites: SkyAtmosphere shell `WebGPUSkyAtmosphereRenderer.js:1354` + fullscreen `:1333`, Sun `WebGPUEnvironmentRenderer.js:621`, Moon `:1119`, StarField `WebGPUStarFieldRenderer.ts:626`) from widening near/far in `View.createPotentiallyVisibleSet` (View.js:292-298): pass-keyed exclusion + sky-only fallback (`near > far && sawEnvironmentNoBV` → camera-range window) before `updateFrustums` (View.js:320); env commands still bin and execute in the farthest frustum; Batch-247 dedupe untouched; `numFrustums` added to `getDebugSnapshot`. JS-only, zero shader changes. Acceptance: new `probe-frustum-count-3d.mjs` shows WebGPU `numberOfFrustums === 1 === WebGL` at 18,000 km/500 km/300 m with sun/moon/stars/atmosphere pixels intact and sky-only leg unchanged (PNGs read); capture-and-diff battery + probe-2d-cv-modes + probe-2d-frustum-bins + pick probes green; Karma Multifrustum/FrustumCommands green; moving-altitude clean lane ≥5 counterbalanced reps with OFF/ON/RESTORED oracle vs Gate-A anchor, delta reported honestly (promotion banner only if ≥5% named-stage p95 or >3× noise; structural frustum parity is the landing bar regardless). Rollback: single revert; probe + telemetry survive. |
-| 2 | `C10-13-REVERSED-Z-EARLYZ-SPIKE` | P1 | S-M (days, measurement-only) | FAR-707 gate evidence: one probe scene (horizon-oblique globe + dense tiles) compiled with `defines=0` hyperbolic `//>>else` branches + reversed-Z infinite-far projection + `depth32float` + `greater-equal`; measure fragment-invocation/gpuPassCost delta vs the default log-depth pipelines. MUST complete (and its verdict be recorded in BOTH `NEW-WEBGPU-PICK-FLEET-LOG-DEPTH` and the FAR-707 brief + DEFERRED_WORK) BEFORE the pick fleet's ~15-producer log-depth conversion lands — the two streams pull the same 71-file producer surface in opposite directions and must resolve to one depth convention. Acceptance: measurement report with ≥5 reps on the weak-FPS views + a written GO/NO-GO against the ≥20-30% fragment-work-reduction threshold (register §15.6); nothing from the spike lands on main. |
+| 2 | `C10-13-REVERSED-Z-EARLYZ-SPIKE` | P1 | S-M (days, measurement-only) | FAR-707 gate evidence: one probe scene (horizon-oblique globe + dense tiles) compiled with `defines=0` hyperbolic `//>>else` branches + reversed-Z infinite-far projection + `depth32float` + `greater-equal`; measure fragment-invocation/gpuPassCost delta vs the default log-depth pipelines. MUST complete (and its verdict be recorded in BOTH `NEW-WEBGPU-PICK-FLEET-LOG-DEPTH` and the FAR-707 brief + DEFERRED_WORK) BEFORE the pick fleet's ~14-producer log-depth conversion lands — the two streams pull the same 71-file producer surface in opposite directions and must resolve to one depth convention. Acceptance: measurement report with ≥5 reps on the weak-FPS views + a written GO/NO-GO against the ≥20-30% fragment-work-reduction threshold (register §15.6); nothing from the spike lands on main. |
 | 3 | `C10-GT-REVERSED-Z-SLICE-B` | Gated tail (do not schedule) | XL (weeks) | Reversed-Z migration proper, openable ONLY after: C10-01 landed, C10-13 spike GO (≥20-30% fragment-work reduction), pick-fleet reconciliation decision recorded (GO ⇒ pick fleet converts directly to reversed-Z f32, log-depth conversion skipped), and a written `depth32float-stencil8` fallback story covering every supported adapter tier (any tier left behind = forbidden dual permanent architecture = NO-GO). Scope of record: 71 producer `.wgsl` LOG_DEPTH surfaces retired; 140 `depthCompare` sites/47 files flipped + depth clearValue 1→0 behind a single `_reversedZEnabled`-style master switch (OFF = byte-identical log depth); 42 `_logDepthEncodeNearFar` JS sites + ~14 depth-consumer effect families re-linearized; RGBA8 pack ecosystem (`WebGPUGlobeDepth`/`PickDepth`) deleted in favor of r32float/direct depth sampling (the un-owned prize: 2-3 fullscreen pack passes/frame removed); TAA `previousViewProjection` carries the flipped convention; 2D/CV/ortho explicitly carved out (linear depth — machinery survives). All-or-nothing landing on the shared depth buffer; RTE high/low pipeline untouched. Acceptance: measured early-Z rejection gain on weak-FPS views ≥ spike projection, pack-pass deletion count, no pick/classification regression at horizon ranges (three-altitude oracle), full probe battery + moving-altitude lanes green, master-switch OFF byte-identical. |
 
 
@@ -1184,8 +1192,13 @@ rasterization + a batch fetch per fragment, then throws every fragment away, and
   translucent-tile-classification depth machinery.
 
 **Quantification (from S11 Finding 1):** 400 selected tiles × ~1–2 prims ⇒ +400–800 draw
-commands/frame, +300–600 KB/frame redundant material-UB writeBuffer, +400–800 bind-group
-builds/frame, plus a full second rasterization of all tile geometry. Command-list length roughly
+commands/frame, +300–600 KB/frame redundant material-UB writeBuffer, plus a full second
+rasterization of all tile geometry. *(Correction 2026-07-17: the original "+400–800 bind-group
+builds/frame" component was eliminated by Batch 687 — the translucent twin's group-1 bind group is
+now identity-cached (dedicated `MERGED_MATERIAL_SLOT_TRANSLUCENT` slot, 0 steady-state creates);
+the surviving costs above — twin command construction, 768 B writeBuffer/frame/prim, second
+`packMaterialUniforms`, full second rasterization with early-Z-disabling discard, translucent-bin
+sort inflation — still justify this task; drop the bind-group component from V-5's expected win.)* Command-list length roughly
 doubles for tileset-heavy scenes.
 
 #### Target design + invariants
@@ -1834,8 +1847,7 @@ identical; only *how* the caster set is gathered changes. Tests and counters sur
 - **(b) Resolve-elision: RATIFIED, implement unconditionally.** Eager MSAA color resolve happens
   ONLY on segments whose next consumer reads resolved color. Build the consumer-demand map from
   `getColorAttachments` + every resolve site (done below, verified). Reuse `C9-09-ATTACHMENT-DEMAND-REGISTRY`
-  work **if it has landed by execution time** (it is **NOT STARTED** as of 2026-07-16 — check the
-  §3.2 ledger in `migration_doc/QUEUE_2026-07-15_CAMPAIGN9.md` first; decision point in Step 0).
+  work — **it LANDED** (Batch 681; hardened Batch 684 with the measured `slot1AttachmentOpens`/`slot1ResolveOpens` fold; C9 §3.2 row COMPLETE). Step 0 resolves to registry-available. NOTE: the C9-10 topology FLIP did NOT land — `forceSceneMRT` stays `true` and `attachmentDemand(false)` refuses.
 - **(d) Auto `msaaSamples=1` when TAA is enabled: RATIFIED** as redundancy elimination, needs a
   visual gate probe. **CRITICAL verified fact: the forcing mechanism ALREADY EXISTS in-tree**
   (Batch 234, `WebGPUSceneRenderer.ts:1402-1411`). Part (d) is therefore verification + gate-probe
@@ -1941,7 +1953,7 @@ texture/view when MSAA is on):**
 | 6 | Env effects sample `_sceneColorView` | `WebGPUSceneRendererEnvironmentalEffects.ts:179` | all env effects default-off | after PP |
 | 7 | Debug overlays / readbacks | `SceneRenderer.ts:3114/:3395/:3504`, `WebGPUContext.ts:2972/:3431-3432` | debug only | late |
 
-**Default frame → exactly ONE required resolve (before post-process). Today's frame performs ~10.**
+**Default frame → exactly ONE required scene-COLOR resolve (before post-process). Today's frame performs ~10 scene-color resolves.** **Oracle correction (2026-07-17 verify pass, brief-breaking):** the shipped default ALSO bakes an MRT slot-1 G-buffer `resolveTarget` into every scene-FB open (`buildMrtSlot1Attachment` spreads `resolveTarget: gb.resolveTargetView`; `forceSceneMRT` default-true; CONFIRMED measured by C9-09's `slot1ResolveOpens > 0`, Batch 681). A raw resolve-bearing-attachment counter therefore reads **~20 pre / ~11 post**, not 10→1 — the acceptance counter MUST bucket by attachment: **scene-COLOR resolves 10→exactly 1**; slot-1 resolves out of scope and unchanged (slot-1 gating is C9-10/MRT-demand territory, forbidden as a side effect here). The S4-2 bytes table below carries no slot-1 store/load/resolve rows, so its boundary figure is understated for the shipped MRT-on default.
 
 **Bytes-per-frame budget @1920×1080 SDR MSAA4, 3 frustums, plain globe (S4-2, corrected
 post-C9-07):**
@@ -2020,12 +2032,12 @@ themselves, and `resolveTarget` must be baked at `beginRenderPass` time. Don't a
 #### Implementation walkthrough
 
 **Step 0 — Ledger check (decision point).** Read `migration_doc/QUEUE_2026-07-15_CAMPAIGN9.md`
-§3.2. If `C9-09-ATTACHMENT-DEMAND-REGISTRY` has **landed**, the demand record is the owner: register
-"resolved scene color" as a consumer-declared attachment demand and drive `resolve` + the ensure
-calls from that registry instead of a local flag; keep the same invariants. If it is still NOT
-STARTED / PARTIAL (state as of 2026-07-16): implement the local dirty-flag design below and mark
-the flag + ensure helper with a `// C9-09 fold-in candidate:` comment so the registry slice can
-absorb them. Also check whether `NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION` (ledger row, NOT
+§3.2. **RESOLVED at HEAD (2026-07-17 verify pass): `C9-09-ATTACHMENT-DEMAND-REGISTRY` LANDED**
+(Batch 681, hardened Batch 684) — the demand record IS the owner: register "resolved scene color"
+as a consumer-declared attachment demand and drive `resolve` + the ensure calls from
+`computeAttachmentDemand` / `context._attachmentDemand`; keep the same invariants. The local
+dirty-flag design below is FALLBACK-ONLY documentation (do not implement it first; it applies only
+if the registry regresses before execution). Also check whether `NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION` (ledger row, NOT
 STARTED as of 2026-07-16) has landed — it affects what you may observe in part (d) verification
 (see Traps).
 
@@ -2306,7 +2318,7 @@ reds byte-identical-red), TAA gate PASS, tsc+build clean, moving route completes
 
 | # | ID | Pri | Effort | Work / acceptance |
 | --- | --- | --- | --- | --- |
-| C10-03 | `C10-03-MSAA-BOUNDARY-BYTES` (W8-3 / C9-42; maintainer-ratified (b)+(d) 2026-07-16) | P1 | M | Demand-driven MSAA color resolve for the scene FB: `getColorAttachments` gains `resolve` option (default true), the three scene-FB open sites (`PassRedirect.ts:143`, `_resumeScenePass`, `_clearDepthStencil`) pass false, context dirty flag keyed on C9-07's `_activePassTarget==="scene-framebuffer"`, zero-draw load/store/resolveTarget ensure pass before every resolved-color consumer (refraction capture, OIT composite, invert-class composite, BV debug, pre-post-process ALWAYS, debug/readback). Reuse C9-09 demand registry if landed; else local flag marked as fold-in. Acceptance: resolve-bearing passes/frame 10→exactly 1 on default globe (in-page beginRenderPass counter, JSON artifact), MSAA1 = 0 and byte-identical, default MSAA4 canvas byte-identical pre/post (0 px, frozen clock), HDR/resize/invert/transmission scenarios 0 device errors, capture-and-diff at C9-07 baseline status, moving-altitude clean+API lanes both backends all 8 segments with on/off/restored reporting (CPU p95 flat; GPU delta reported honestly vs noise), analytical ~330 MB/frame @1080p elision accounting cited from the S4-2 table. PLUS part (d) verification: Batch 234 TAA→samples-1 forcing intact (`WebGPUSceneRenderer.ts:1402-1411`), gate probe asserts effective 1 under taaEnabled + restore-on-off, `probe-taa-jitter` GATE PASS; flip-frame validation errors stash-attributed to `NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION` if pre-existing. No WGSL/ShaderDefine/pipeline changes; single-commit revert boundary. |
+| C10-03 | `C10-03-MSAA-BOUNDARY-BYTES` (W8-3 / C9-42; maintainer-ratified (b)+(d) 2026-07-16) | P1 | M | Demand-driven MSAA color resolve for the scene FB: `getColorAttachments` gains `resolve` option (default true), the three scene-FB open sites (`PassRedirect.ts:143`, `_resumeScenePass`, `_clearDepthStencil`) pass false, context dirty flag keyed on C9-07's `_activePassTarget==="scene-framebuffer"`, zero-draw load/store/resolveTarget ensure pass before every resolved-color consumer (refraction capture, OIT composite, invert-class composite, BV debug, pre-post-process ALWAYS, debug/readback). Reuse C9-09 demand registry if landed; else local flag marked as fold-in. Acceptance: scene-COLOR resolve-bearing passes/frame 10→exactly 1 on default globe (in-page beginRenderPass counter BUCKETED per attachment — MRT slot-1 G-buffer resolves are out of scope and stay unchanged; raw unbucketed counts read ~20→~11; JSON artifact), MSAA1 = 0 and byte-identical, default MSAA4 canvas byte-identical pre/post (0 px, frozen clock), HDR/resize/invert/transmission scenarios 0 device errors, capture-and-diff at C9-07 baseline status, moving-altitude clean+API lanes both backends all 8 segments with on/off/restored reporting (CPU p95 flat; GPU delta reported honestly vs noise), analytical ~330 MB/frame @1080p elision accounting cited from the S4-2 table. PLUS part (d) verification: Batch 234 TAA→samples-1 forcing intact (`WebGPUSceneRenderer.ts:1402-1411`), gate probe asserts effective 1 under taaEnabled + restore-on-off, `probe-taa-jitter` GATE PASS; flip-frame validation errors stash-attributed to `NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION` if pre-existing. No WGSL/ShaderDefine/pipeline changes; single-commit revert boundary. |
 | C10-03R | `C10-03R-MSAA-DEFAULT-FLIP-RESERVE` (option (c) — **NOT RATIFIED**) | P4/gated | S | RESERVE LEVER, do not execute without BOTH: (1) the C9-30/C10 default-path checkpoint misses its whole-route/near-ground targets WITH bandwidth-attributed evidence (GPU timestamp + counter data implicating attachment traffic, not CPU), and (2) fresh maintainer sign-off recorded in the queue ledger. Work if triggered: backend-conditional WebGPU default `msaaSamples` 4→1 (one line at the `Scene.js:488`/bridge boundary, WebGL default untouched, user opt-in fully preserved) + release note + visual-policy gate probe (MSAA4 opt-in byte-path proven live) + moving-altitude on/off/restored evidence. Until triggered this row is documentation; any slice found flipping the default without the recorded sign-off is reverted on sight. |
 
 
@@ -2588,7 +2600,11 @@ Shader side (`packages/engine/Source/Shaders/WebGPU/Model/ModelPBRComplete.wgsl`
   `baseColorTexture` region). WGSL forbids implicit-derivative sampling after non-uniform discard/return —
   the same constraint the globe hit. `textureSampleLevel(...,0.0)` is legal after a discard but pins mip 0.
 - Fragment entry: `@fragment fn fragmentMain(input: FragmentInput)` at `:2356`. No UV derivatives are
-  computed at entry today (grep for `dpdx`/`dpdy` in this file = none).
+  hoisted at entry today. *(Correction 2026-07-17: `dpdx`/`dpdy` DO appear in this file — the
+  tangent-less `perturbNormal` screen-space-tangent fallback at ~:1364-1367 uses them under the
+  uniform-control-flow comment at ~:1349. The file already carries derivative built-ins with a
+  uniformity constraint; only the entry-hoist is absent — factor that into the uniformity-analysis
+  reasoning when adding derivative-based mip selection.)*
 - **Non-material samples that MUST stay at mip 0** (data lookups, not filtered material — do NOT convert):
   batch table `:1459/:1463`, feature pick `:1479/:1482`, feature id `:2456`, edge/globe-depth screen-space
   `:1910-1913`, SDF `:2265`, clipping-plane data `:2292`. Converting any of these to grad would corrupt the
@@ -2726,9 +2742,11 @@ Invariants:
    is explicit ("never a private submit from draw emission") and the Batch-144 comment
    (`WebGLStubTexture.ts:896-921`) shows the concrete hazard: the blit's `beginRenderPass` collides with the
    open scene render pass if it lands mid-frame. **Decision:** route the mip-blit encoder through the same
-   `ResourcePlan`/FAR-200 pre-frame resource-submit slot C9-12A established for imagery mips. If FAR-200's
-   frame-owned submit slot is not yet available in the tree at execution time (check whether C9-12A/FAR-200-S2
-   has landed — grep `ResourcePlan` submit routing), then the safe interim is the *existing* standalone-encoder
+   `ResourcePlan`/FAR-200 pre-frame resource-submit slot C9-12A established for imagery mips. The frame-owned slot IS
+   available at HEAD: C9-12A LANDED (Batches 685-686) as `WebGPUContext.enqueueImageryMipGeneration` +
+   `flushPendingImageryMipJobs` with split prep/frame submits — note there is NO code symbol named
+   `ResourcePlan` (queue-prose term only; a literal grep misfires), so route through the enqueue/flush
+   API. Only if that API were somehow absent would the safe interim be the *existing* standalone-encoder
    pattern the stub already uses at upload time (`:916-921`) — it is a documented at-upload (not
    draw-emission) submit — and file the migration to FAR-200 as the follow-on. **State which you chose and
    why in the batch message; do not silently add a new private submit on any per-frame path.**
@@ -3608,8 +3626,13 @@ Primary sources (read in this order):
 
 The two facts that force a fleet-wide (not per-participant) conversion:
 
-1. **The pick FBO is uniformly hyperbolic today.** Every native pick producer writes standard
-   rasterizer z (no `@builtin(frag_depth)`), baked at UPDATE time against the camera's own frustum.
+1. **The pick FBO is hyperbolic today for every producer but one.** Every native pick producer
+   EXCEPT compute-instance writes standard rasterizer z (no `@builtin(frag_depth)`), baked at UPDATE
+   time against the camera's own frustum. *(Correction 2026-07-17: `ComputeInstanceRender.wgsl` is
+   ALREADY log-depth-converted — `v_logDepth` under `//>>ifdef LOG_DEPTH`, `@builtin(frag_depth)` +
+   `csm_writeLogDepth` in `fragmentPickMain`, pipeline reusing the LOG_DEPTH-compiled module. Use it
+   as the fleet's reference pattern and drop it from the convert list — the fleet to convert is ~14,
+   not ~15.)*
    Run 1 (2026-07-16) gave a log-`frag_depth` depth plane (~0.4–0.8) that over-occluded EVERY
    hyperbolic pick (~0.999+) across the whole globe disk — even the visible front control returned
    `null` at 20/500/5,000 km.
@@ -3687,11 +3710,17 @@ The pick `@fragment` fn returns a plain `@location(0) vec4<f32>` today; the modu
   `FragOutput` has `@builtin(frag_depth)` at `:2352`; `v_logDepth` varying exists under LOG_DEPTH.
   Model camera UB packs log lanes at `WebGPUModelRenderer.ts:1050` (`packCameraLogDepthLanes(data, 0,
   uniformState)`).
-- **Voxel** — `fragmentPickVoxelMain` (shared voxel module). **Compute-instance** —
-  `ComputeInstanceRender.wgsl` has a pick path. Ellipsoid / GaussianSplat / Buffer* / GroundPrimitive
-  / GroundPolyline / Vector3DTile* renderers all import `buildPickPipelineDescriptor` — verify per
-  family whether the pick entry is in the color module (Cohort A) or a dedicated pick module (Cohort B)
-  using the grep recipe below.
+- **Voxel** — `fragmentPickVoxelMain` is GENERATED WGSL inside `WebGPUVoxelRenderer.ts` (~:1103,
+  entryPoint wired ~:2702); there is NO `*Voxel*.wgsl` under `Shaders/WebGPU`, so a Shaders-scoped
+  grep returns nothing for voxel — enumerate it from the renderer. **Compute-instance** — already
+  converted (see fact 1; reference pattern), and its `@fragment` sits on its own line, so the
+  recipe's single-line `@fragment\s+fn` pattern misses it (use a multiline-tolerant grep).
+  *(Correction 2026-07-17)*: at HEAD only `WebGPUGaussianSplatRenderer.ts`,
+  `WebGPUEllipsoidPrimitiveRenderer.ts`, `WebGPUGlobeSurfacePipelines.ts`, and
+  `WebGPUDerivedCommand.ts` import `buildPickPipelineDescriptor` DIRECTLY — GroundPrimitive /
+  GroundPolyline / Vector3DTile* / Buffer* derive their pick variants via `WebGPUDerivedCommand`'s
+  PICK machinery (which wraps the helper). Classify per family whether the pick entry is in the
+  color module (Cohort A) or a dedicated pick module (Cohort B) using the grep recipe below.
 
 **Cohort B — DEDICATED pick modules (standalone `.wgsl`, own vertex + `fragmentMain` entry).** These do
 NOT reuse the color module, so they carry NEITHER the `LOG_DEPTH` define NOR the `v_logDepth` varying
@@ -3870,7 +3899,7 @@ half-converted fleet on the shared pick FBO is INV-2 violation.**
   to restore hardware early-Z/Hi-Z on the 72+ log-depth surfaces. It is **all-or-nothing** and its
   convert-back surface now INCLUDES the pick fleet.
 - **Action (required by §15.5 / §S7-3):** when landing C10-11, add a note to the FAR-707 brief that the
-  ~15 pick entries are now part of its convert-back surface, and add a back-reference in the C10-11
+  ~14 pick entries (compute-instance already converted) are now part of its convert-back surface, and add a back-reference in the C10-11
   batch comment. Do NOT run reversed-Z and pick-fleet log-depth in the same slice; do NOT let a future
   reversed-Z spike partially convert the pick fleet. The cheap FAR-707 spike (`defines=0` `//>>else`
   branches + reversed-Z infinite-far + depth32float + greater-equal, measured with gpuPassCost
