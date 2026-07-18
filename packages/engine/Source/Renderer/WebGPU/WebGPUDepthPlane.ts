@@ -298,6 +298,12 @@ export class WebGPUDepthPlane {
   private _device: GPUDevice | null = null;
   private _pipeline: GPURenderPipeline | null = null;
   private _pickPipeline: GPURenderPipeline | null = null;
+  // C10-07 — the exact central-cache descriptors this instance built, stashed
+  // so the deterministic-boot prewarm hook (`prewarmDeterministicPipelines`)
+  // can re-submit them through the central cache at the scene resources-ready
+  // step. Idempotent with the self-warm in `initialize` (the central cache
+  // dedupes on cached/pending key), so no double compile.
+  private _prewarmDescriptors: WebGPURenderPipelineDescriptor[] = [];
   private _vertexBuffer: GPUBuffer | null = null;
   private _uniformBuffer: GPUBuffer | null = null;
   private _bindGroup: GPUBindGroup | null = null;
@@ -352,6 +358,30 @@ export class WebGPUDepthPlane {
   /** True only while this plane owns resources from the supplied device. */
   isForDevice(device: GPUDevice): boolean {
     return !this._isDestroyed && this._device === device;
+  }
+
+  /**
+   * C10-07-ASYNC-MODEL-PIPELINES / NEW-WEBGPU-BOOT-DETERMINISTIC-PIPELINE-PREWARM
+   * — deterministic-boot prewarm entry. Non-awaited, background-priority warm
+   * of this plane's color + pick pipeline variants through the central async
+   * cache at the scene resources-ready step (where the scene-FB attachment
+   * formats are already resolved). Idempotent: `initialize` already kicks the
+   * same descriptors, and the central cache dedupes on the cached/pending key,
+   * so this never double-compiles. Returns the number of descriptors submitted
+   * so the caller can maintain an observable prewarm counter.
+   *
+   * @returns count of descriptors submitted to the prewarm.
+   */
+  prewarm(pipelineCache: WebGPURenderPipelineCache | null): number {
+    if (!pipelineCache || this._isDestroyed) {
+      return 0;
+    }
+    for (const descriptor of this._prewarmDescriptors) {
+      // `warm` is the central cache's fire-and-forget, background-priority
+      // preload path (idempotent for cached/pending keys). Never awaited.
+      pipelineCache.warm(descriptor);
+    }
+    return this._prewarmDescriptors.length;
   }
 
   /**
@@ -560,6 +590,9 @@ export class WebGPUDepthPlane {
         depthStencil: pipelineDescriptor.depthStencil,
         multisample: pipelineDescriptor.multisample,
       });
+
+    // C10-07 — remember both variants for the deterministic-boot prewarm hook.
+    this._prewarmDescriptors = [descriptor, pickDescriptor];
 
     if (pipelineCache) {
       for (const [pipelineDescriptor, assign] of [

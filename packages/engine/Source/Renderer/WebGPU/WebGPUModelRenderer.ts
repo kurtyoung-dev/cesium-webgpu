@@ -473,7 +473,9 @@ interface PipelineCacheLike {
   clearMetadataWGSL(...args: unknown[]): void;
   _errorSwapGeneration: number;
   _sceneFormatGeneration: number;
-  getPipeline(...args: unknown[]): GPURenderPipeline;
+  // C10-07 — the on-screen color pipeline resolves async through the central
+  // cache and returns null while the variant is still compiling (ready-gate).
+  getPipeline(...args: unknown[]): GPURenderPipeline | null;
   getDepthWritePipeline(...args: unknown[]): GPURenderPipeline;
   getClassificationPipeline(...args: unknown[]): GPURenderPipeline;
   getCapturePipeline(...args: unknown[]): GPURenderPipeline;
@@ -749,6 +751,11 @@ interface ModelRenderContext {
   _edgeIdView?: GPUTextureView | null;
   _edgeDepthView?: GPUTextureView | null;
   _globeDepthView?: GPUTextureView | null;
+  // C10-07 — central async render-pipeline cache, threaded into the model
+  // pipeline cache so the on-screen color pipeline compiles via
+  // `createRenderPipelineAsync`.
+  webgpuPipelineCache?:
+    import("./WebGPURenderPipelineCache.js").WebGPURenderPipelineCache | null;
 }
 interface ImageBasedLightingLike {
   _imageBasedLightingFactor?: { x: number; y: number } | null;
@@ -4119,6 +4126,11 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
       device,
       fmt,
       depthFmt,
+      // C10-07 — central async pipeline cache so the color pipeline resolves
+      // through `createRenderPipelineAsync` instead of a synchronous mid-draw
+      // `device.createRenderPipeline`. Null (WebGL stub / older context) keeps
+      // the synchronous fallback.
+      context.webgpuPipelineCache ?? null,
     ) as unknown as PipelineCacheLike;
   }
   const pipelineCache = cache.pipelineCache;
@@ -5690,6 +5702,21 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
           ? primCache.silhouettePipeline
           : primCache.pipeline;
 
+      // C10-07-ASYNC-MODEL-PIPELINES — ready-gate. The on-screen color
+      // pipeline (`primCache.pipeline`) is now compiled via
+      // `createRenderPipelineAsync` and is null while the variant is still
+      // cooking. Skip this primitive's draw for the cooking frame — never bind
+      // a null pipeline (`WebGPUDrawCommand` requires one; a null
+      // `setPipeline` is a validation error). The per-frame refetch guard
+      // above re-polls `primCache.pipeline`, so the draw appears within ≤1
+      // frame of the async compile landing (matches the globe's
+      // `resolveGlobePipelineEntry` skip-a-frame behavior). The classifier +
+      // silhouette paths build their pipelines synchronously, so only the
+      // normal color path can be null here.
+      if (!defined(activePipeline)) {
+        continue;
+      }
+
       // WIRE-MODEL-SILHOUETTE — the stencil-write pipeline needs the
       // model's stencil reference set per-draw (`applyPerEncoderState`
       // reads `renderState.stencilTest.reference` →
@@ -6458,46 +6485,55 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
           primCache.materialDefines | 0,
           frameState,
         );
-        const translucentCmd = new WebGPUDrawCommand({
-          pipeline: primCache.translucentPipeline,
-          bindGroups: [
-            nodeCameraBG, // B.8 (Batch 152) — per-runtime-node camera BG
-            mergedMaterialBGTranslucent,
-            mergedInstanceBG,
-            cache.effectsBG,
-          ],
-          vertexBuffers: vertexBuffers,
-          indexBuffer: primCache.indexBuffer || undefined,
-          indexCount: primCache.indexCount || 0,
-          indexFormat: primCache.indexFormat || "uint16",
-          vertexCount: primCache.vertexCount || 0,
-          instanceCount: instanceCount,
-          pass: Pass.TRANSLUCENT,
-          owner: model,
-          boundingVolume: commandBoundingVolume,
-          modelMatrix: modelMatrix,
-          cull: model._cull ?? true,
-          renderState: modelRenderState,
-        });
-        // AUDIT_2026_05_02 B.7 — Batch 79's selective depth-write fix
-        // previously only fired for tile-owned models (Cesium3DTile.js sets
-        // `depthForTranslucentClassification = true`). Standalone Models —
-        // including any glTF added via `viewer.scene.primitives.add(...)` and
-        // any Model used as a classifier — also need the depth-write variant
-        // so `pickPosition` and ground/Vector3DTile classifiers don't see
-        // through them. Opt-in via `model.depthWriteForTranslucentPicking`
-        // (default false to preserve existing performance), or
-        // automatically when `model.classificationType !== undefined`.
-        if (
-          primCache.depthWritePipeline &&
-          (model.depthWriteForTranslucentPicking === true ||
-            defined(model.classificationType))
-        ) {
-          translucentCmd.depthForTranslucentClassification = true;
-          translucentCmd.classificationDepthPipeline =
-            primCache.depthWritePipeline;
+        // C10-07-ASYNC-MODEL-PIPELINES — translucent-twin ready-gate. The
+        // twin's color pipeline (`getPipeline(BLEND,...)` above) is compiled
+        // via `createRenderPipelineAsync` and is null while cooking. Only
+        // build + push the twin once its pipeline is ready — never bind a null
+        // pipeline into `WebGPUDrawCommand` (it requires one). The
+        // `if (!defined(...translucentPipeline))` block above re-polls each
+        // frame, so the twin appears within ≤1 frame of the compile landing.
+        if (defined(primCache.translucentPipeline)) {
+          const translucentCmd = new WebGPUDrawCommand({
+            pipeline: primCache.translucentPipeline,
+            bindGroups: [
+              nodeCameraBG, // B.8 (Batch 152) — per-runtime-node camera BG
+              mergedMaterialBGTranslucent,
+              mergedInstanceBG,
+              cache.effectsBG,
+            ],
+            vertexBuffers: vertexBuffers,
+            indexBuffer: primCache.indexBuffer || undefined,
+            indexCount: primCache.indexCount || 0,
+            indexFormat: primCache.indexFormat || "uint16",
+            vertexCount: primCache.vertexCount || 0,
+            instanceCount: instanceCount,
+            pass: Pass.TRANSLUCENT,
+            owner: model,
+            boundingVolume: commandBoundingVolume,
+            modelMatrix: modelMatrix,
+            cull: model._cull ?? true,
+            renderState: modelRenderState,
+          });
+          // AUDIT_2026_05_02 B.7 — Batch 79's selective depth-write fix
+          // previously only fired for tile-owned models (Cesium3DTile.js sets
+          // `depthForTranslucentClassification = true`). Standalone Models —
+          // including any glTF added via `viewer.scene.primitives.add(...)` and
+          // any Model used as a classifier — also need the depth-write variant
+          // so `pickPosition` and ground/Vector3DTile classifiers don't see
+          // through them. Opt-in via `model.depthWriteForTranslucentPicking`
+          // (default false to preserve existing performance), or
+          // automatically when `model.classificationType !== undefined`.
+          if (
+            primCache.depthWritePipeline &&
+            (model.depthWriteForTranslucentPicking === true ||
+              defined(model.classificationType))
+          ) {
+            translucentCmd.depthForTranslucentClassification = true;
+            translucentCmd.classificationDepthPipeline =
+              primCache.depthWritePipeline;
+          }
+          commandList.push(translucentCmd);
         }
-        commandList.push(translucentCmd);
       }
 
       // C-R8-EDGE-EMITTER (Batch 45) — Emit edge visibility commands

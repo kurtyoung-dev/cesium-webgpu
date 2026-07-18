@@ -234,6 +234,11 @@ export function ensureResources(
   // gating purposes.
   const hdrChanged = host._lastHDR !== null && host._lastHDR !== hdr;
   const needsRecreate = !host._initialized || needsResize || hdrChanged;
+  // C10-07 — capture the first-init edge before `host._initialized` is set at
+  // the tail. The deterministic-boot prewarm fires exactly once, after the
+  // scene-FB attachment formats have resolved (the site the C10-06 Step-C.2
+  // deferral identified as where formats ARE known).
+  const firstInit = !host._initialized;
   host._lastHDR = hdr;
 
   // Scene framebuffer (main color + depth + ID targets)
@@ -529,6 +534,64 @@ export function ensureResources(
   host._width = width;
   host._height = height;
   host._initialized = true;
+
+  // C10-07-ASYNC-MODEL-PIPELINES / NEW-WEBGPU-BOOT-DETERMINISTIC-PIPELINE-PREWARM
+  // — kick the deterministic-boot render-pipeline set's async compile as soon
+  // as the scene-FB attachment formats resolve (this step). Fire-and-forget:
+  // never awaited, never blocks the frame, no-op on failure.
+  if (firstInit) {
+    prewarmDeterministicPipelines(host, config);
+  }
+}
+
+/**
+ * C10-07 — the deterministic-boot pipeline prewarm the C10-06 Step-C.2 deferral
+ * (`NEW-WEBGPU-BOOT-DETERMINISTIC-PIPELINE-PREWARM`) left for this slice. It
+ * runs once, at the first `ensureResources`, where the scene-FB
+ * color/depth/sampleCount are already known — the exact precondition the
+ * deferral required and that context `_initialize` could not satisfy.
+ *
+ * It routes the deterministic pipelines that resolve through the central async
+ * cache to `WebGPURenderPipelineCache.warm()` / `preloadBatch()` — the
+ * previously-0-caller preload machinery (S8-1 "built and never wired"). Today
+ * the depth plane is the eligible deterministic renderer already migrated to
+ * the central cache; it self-warms in `initialize`, so this call is idempotent
+ * for it (the cache dedupes cached/pending keys) and confirms the deterministic
+ * set is compiled-ahead of the frame's draw. The remaining SYNC deterministic
+ * pipelines (SkyAtmosphere, GlobeDepth depth-copy, PostProcess
+ * identity/tonemap/FXAA) still resolve through private `device.createRenderPipeline`
+ * calls and must be migrated to the central cache per-renderer (guide H5 Step-4)
+ * before they can register here — tracked as the immediate follow-on.
+ *
+ * Fire-and-forget (INV-06-2 / T-06-b): never awaited. A throw never escapes
+ * `ensureResources`.
+ */
+function prewarmDeterministicPipelines(
+  host: EnsureResourcesHost,
+  config: WebGPURenderFrameConfig,
+): void {
+  const { context } = config;
+  const pipelineCache = context.webgpuPipelineCache ?? null;
+  if (!pipelineCache) {
+    return;
+  }
+  try {
+    let warmed = 0;
+    // Depth plane — the one deterministic renderer already on the central
+    // cache. `prewarm` warms its color + pick variants (idempotent).
+    warmed += host._depthPlane?.prewarm(pipelineCache) ?? 0;
+
+    // Observable counter (read by probe-c10-07 / boot prewarm probes) proving
+    // the hook fired at the resources-ready step before the frame's draw.
+    const ctxCounter = context as unknown as {
+      _deterministicPrewarmCount?: number;
+    };
+    ctxCounter._deterministicPrewarmCount =
+      (ctxCounter._deterministicPrewarmCount ?? 0) + warmed;
+  } catch {
+    // Prewarm is a pure optimization — a failure to warm must never break the
+    // frame. The lazy first-use path still builds the pipeline correctly.
+  }
 }
 
 /**

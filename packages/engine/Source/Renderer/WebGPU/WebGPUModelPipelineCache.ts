@@ -61,6 +61,17 @@ import { substituteClusteredLightingGroup } from "./WebGPUClusteredLightingBGL.j
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+// C10-07-ASYNC-MODEL-PIPELINES (Batch 704) — central render-pipeline cache.
+// The on-screen model COLOR pipeline now resolves through this cache's
+// `createRenderPipelineAsync` path (with a ready-gate) instead of a
+// synchronous `device.createRenderPipeline` mid-draw, mirroring the globe's
+// `resolveGlobePipelineEntry`. Pick / velocity / classification / capture /
+// silhouette / depth-write stay synchronous (documented must-render escape
+// hatch — a cooking frame must not return a wrong pick / miss a must-run pass).
+import type {
+  WebGPURenderPipelineCache,
+  WebGPURenderPipelineDescriptor,
+} from "./WebGPURenderPipelineCache.js";
 // DP-H46c/d — property-texture + property-table binding numbers, shared with
 // the codegen + renderer so the BGL, shader, and bind-group entries all agree.
 import {
@@ -846,8 +857,11 @@ function createVertexBufferLayout(
  * @param {boolean} doubleSided
  * @returns {GPURenderPipeline}
  */
-function createPipeline(
-  device: GPUDevice,
+// C10-07 — the raw color-pipeline descriptor, extracted so the SYNC path
+// (`createPipeline`, used by `getDepthWritePipeline` + the no-central-cache
+// fallback) and the ASYNC path (`getPipeline` → central cache) build a
+// BYTE-IDENTICAL descriptor (INV-07-4: same pipeline, one-frame-later at most).
+function buildColorPipelineDescriptor(
   shaderModule: GPUShaderModule,
   pipelineLayout: GPUPipelineLayout,
   presentationFormat: GPUTextureFormat,
@@ -867,7 +881,7 @@ function createPipeline(
   // GLTF-POINTS-MODE — GPUPrimitiveTopology keyed off the glTF
   // primitive.mode. Default preserves the historical hardcoded value.
   topology: GPUPrimitiveTopology = "triangle-list",
-) {
+): GPURenderPipelineDescriptor {
   const cullMode = doubleSided ? "none" : "back";
 
   // Blend state depends on alpha mode
@@ -897,7 +911,7 @@ function createPipeline(
   const variantTag = forceDepthWrite ? ",dwForceOn" : "";
   const label = `Model PBR [alpha=${alphaMode},ds=${doubleSided}${variantTag}]`;
 
-  return device.createRenderPipeline({
+  return {
     label,
     layout: pipelineLayout,
     vertex: {
@@ -943,7 +957,40 @@ function createPipeline(
     // sample count. Default 1 produces `undefined` (no multisample
     // block), preserving pre-MSAA behavior.
     multisample: sampleCount > 1 ? { count: sampleCount } : undefined,
-  });
+  };
+}
+
+function createPipeline(
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  presentationFormat: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  alphaMode: number,
+  doubleSided: boolean,
+  forceDepthWrite: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
+  sampleCount: number = 1,
+  hasMetadata: number | boolean = false,
+  topology: GPUPrimitiveTopology = "triangle-list",
+) {
+  return device.createRenderPipeline(
+    buildColorPipelineDescriptor(
+      shaderModule,
+      pipelineLayout,
+      presentationFormat,
+      depthFormat,
+      alphaMode,
+      doubleSided,
+      forceDepthWrite,
+      hasTexCoord1,
+      hasFeatureId0,
+      sampleCount,
+      hasMetadata,
+      topology,
+    ),
+  );
 }
 
 /**
@@ -1743,6 +1790,12 @@ class WebGPUModelPipelineCache {
   declare _sampleCount: number;
   declare _sceneFormatGeneration: number;
   declare _pipelines: Map<string | number, GPURenderPipeline>;
+  // C10-07 — central async render-pipeline cache (shared across renderer
+  // instances on the same device) + per-key in-flight set for the model
+  // COLOR pipeline's `resolveGlobePipelineEntry`-style ready-gate. Null when
+  // no central cache is available (falls back to the synchronous build path).
+  declare _centralPipelineCache: WebGPURenderPipelineCache | null;
+  declare _pendingColorPipelines: Set<string | number>;
   declare _errorShaderModule: GPUShaderModule | null;
   declare _errorPipelines: Map<string | number, GPURenderPipeline>;
   declare _errorSwapGeneration: number;
@@ -1826,8 +1879,16 @@ class WebGPUModelPipelineCache {
     device: GPUDevice,
     presentationFormat: GPUTextureFormat,
     depthFormat: GPUTextureFormat,
+    // C10-07 — central async pipeline cache from the context
+    // (`context.webgpuPipelineCache`). Optional + null-default so the
+    // existing 3-arg call sites and the synchronous fallback path are
+    // unaffected; when present the on-screen COLOR pipeline resolves through
+    // it via `createRenderPipelineAsync`.
+    centralPipelineCache: WebGPURenderPipelineCache | null = null,
   ) {
     this._device = device;
+    this._centralPipelineCache = centralPipelineCache;
+    this._pendingColorPipelines = new Set();
     this._presentationFormat = presentationFormat;
     // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — construction-time clamp; the
     // authoritative `context.pickPipelineFormat` is mirrored on the first
@@ -2855,6 +2916,10 @@ class WebGPUModelPipelineCache {
     }
     this._logDepthEnabled = enabled;
     this._pipelines.clear();
+    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
+    // baked the now-stale format / mode; the `.then` also carries a
+    // scene-format-generation guard so a stale resolve never writes back.
+    this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
@@ -2896,6 +2961,10 @@ class WebGPUModelPipelineCache {
     }
     this._splitEnabled = enabled;
     this._pipelines.clear();
+    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
+    // baked the now-stale format / mode; the `.then` also carries a
+    // scene-format-generation guard so a stale resolve never writes back.
+    this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
@@ -2936,6 +3005,10 @@ class WebGPUModelPipelineCache {
     }
     this._modelColorEnabled = enabled;
     this._pipelines.clear();
+    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
+    // baked the now-stale format / mode; the `.then` also carries a
+    // scene-format-generation guard so a stale resolve never writes back.
+    this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
@@ -2978,6 +3051,10 @@ class WebGPUModelPipelineCache {
     }
     this._silhouetteEnabled = enabled;
     this._pipelines.clear();
+    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
+    // baked the now-stale format / mode; the `.then` also carries a
+    // scene-format-generation guard so a stale resolve never writes back.
+    this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
@@ -3024,6 +3101,10 @@ class WebGPUModelPipelineCache {
     // for the JS GC to collect them once any in-flight commands
     // referencing them complete.
     this._pipelines.clear();
+    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
+    // baked the now-stale format / mode; the `.then` also carries a
+    // scene-format-generation guard so a stale resolve never writes back.
+    this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
@@ -3051,24 +3132,29 @@ class WebGPUModelPipelineCache {
    *   variant (all KHR bindings present). Future per-extension subsets
    *   build a minimal layout on demand. The renderer computes this
    *   from the primitive's material flags.
-   * @returns {GPURenderPipeline}
+   * @returns {GPURenderPipeline | null} the pipeline, or `null` when a central
+   *   cache is present and the variant is still compiling asynchronously
+   *   (C10-07 ready-gate — the caller SKIPS the draw for the cooking frame and
+   *   the per-frame refetch guard re-polls; the draw appears within ≤1 frame of
+   *   the compile landing). Returns non-null synchronously on a cache hit or on
+   *   the no-central-cache fallback path.
    */
   getPipeline(
     alphaMode: number,
     doubleSided: boolean,
     materialDefines: number,
-  ) {
+  ): GPURenderPipeline | null {
     const md = this._normalizeMaterialDefines(materialDefines);
     // GLTF-POINTS-MODE — snapshot the sticky topology at entry so the async
-    // error-scope callback below can't read a later primitive's value.
+    // callback below can't read a later primitive's value.
     const topology = this._primitiveTopology;
     const key = this._metadataVariantKey(
       topologyVariantKey(computeKey(alphaMode, doubleSided, md), topology),
       md,
     );
-    let pipeline = this._pipelines.get(key);
-    if (pipeline) {
-      return pipeline;
+    const cached = this._pipelines.get(key);
+    if (cached) {
+      return cached;
     }
 
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
@@ -3076,16 +3162,11 @@ class WebGPUModelPipelineCache {
     // DP-H46a — metadata vertex slot 9 variant (mode 2 = widened MAT3/MAT4
     // transport, NEW-MODEL-METADATA-MAT3-MAT4).
     const metadataSlotMode = this._metadataSlotMode(md);
-    // C2-22 — wrap creation in a validation error scope. Synchronous
-    // `createRenderPipeline` does NOT throw on a bad shader/layout; it returns an
-    // INVALID pipeline whose draws are silently dropped (render-hole). The scope's
-    // async resolution tells us if it failed, at which point we swap the cache
-    // entry to a flat-magenta error pipeline so the model shows magenta (the
-    // universal "shader broke" signal) instead of nothing. Frame N draws the
-    // invalid pipeline (a no-op); frame N+1 binds the magenta fallback.
-    this._device.pushErrorScope("validation");
-    pipeline = createPipeline(
-      this._device,
+    // C10-07 — shared descriptor for both the async and sync paths so a
+    // cooking-frame async compile and the fallback build are byte-identical
+    // (INV-07-4). Pick/velocity/classification/capture/silhouette/depth-write
+    // keep their own synchronous builders (documented must-render hatch).
+    const raw = buildColorPipelineDescriptor(
       this._getOrCreateShaderModule(md),
       this._getOrCreatePipelineLayout(md),
       this._presentationFormat,
@@ -3099,6 +3180,77 @@ class WebGPUModelPipelineCache {
       metadataSlotMode,
       topology,
     );
+
+    const central = this._centralPipelineCache;
+    if (central) {
+      // C10-07-ASYNC-MODEL-PIPELINES — resolve the on-screen COLOR pipeline
+      // through the central `createRenderPipelineAsync` path, exactly like the
+      // globe's `resolveGlobePipelineEntry`. `name` carries the full variant
+      // key so the central cache dedupes per
+      // (alphaMode, doubleSided, materialDefines, topology, metadataSlot); the
+      // format/sampleCount/vertex-layout fields feed the central key too, so a
+      // scene-format change materializes a distinct entry (no collision).
+      const centralDesc: WebGPURenderPipelineDescriptor = {
+        name: `${raw.label}|${key}`,
+        layout: raw.layout as GPUPipelineLayout,
+        vertex: raw.vertex as WebGPURenderPipelineDescriptor["vertex"],
+        fragment: raw.fragment as WebGPURenderPipelineDescriptor["fragment"],
+        primitive: raw.primitive,
+        depthStencil: raw.depthStencil,
+        multisample: raw.multisample,
+      };
+      const sync = central.getPipelineSync(centralDesc);
+      if (sync) {
+        this._pipelines.set(key, sync);
+        this._pendingColorPipelines.delete(key);
+        return sync;
+      }
+      if (!this._pendingColorPipelines.has(key)) {
+        this._pendingColorPipelines.add(key);
+        // Capture the scene-format generation so a resolution that lands
+        // AFTER a runtime HDR/log-depth/format toggle (which cleared
+        // `_pipelines` + bumped the generation) is dropped instead of
+        // writing a stale-format pipeline back into the cache.
+        const kickGeneration = this._sceneFormatGeneration;
+        central
+          .getPipeline(centralDesc)
+          .then((p) => {
+            this._pendingColorPipelines.delete(key);
+            if (this._sceneFormatGeneration === kickGeneration) {
+              this._pipelines.set(key, p);
+            }
+          })
+          .catch(() => {
+            // C2-22 magenta contract under async (INV-07-3). The synchronous
+            // path needs an error scope because `createRenderPipeline`
+            // returns an INVALID pipeline silently; `createRenderPipelineAsync`
+            // REJECTS on a validation failure, so the swap lives in `.catch`.
+            // Still swap to the flat-magenta fallback + bump
+            // `_errorSwapGeneration` so the renderer's `errorSwapped` refetch
+            // reaches the built command. `_getOrCreateErrorPipeline` bakes the
+            // current format, so guard on the generation too.
+            this._pendingColorPipelines.delete(key);
+            if (this._sceneFormatGeneration === kickGeneration) {
+              console.error(
+                `[CesiumJS:webgpu] Model PBR pipeline creation failed (async); substituting flat-magenta error pipeline`,
+              );
+              this._pipelines.set(
+                key,
+                this._getOrCreateErrorPipeline(md, topology),
+              );
+              this._errorSwapGeneration++;
+            }
+          });
+      }
+      // Ready-gate: null tells the renderer to skip this primitive's draw for
+      // the cooking frame (never bind a null pipeline). Steady state is a hit.
+      return null;
+    }
+
+    // Fallback — no central cache: synchronous build, byte-identical to the
+    // pre-C10-07 path including the C2-22 error-scope magenta swap.
+    this._device.pushErrorScope("validation");
+    const built = this._device.createRenderPipeline(raw);
     this._device.popErrorScope().then((error) => {
       if (error) {
         console.error(
@@ -3110,8 +3262,8 @@ class WebGPUModelPipelineCache {
         this._errorSwapGeneration++;
       }
     });
-    this._pipelines.set(key, pipeline);
-    return pipeline;
+    this._pipelines.set(key, built);
+    return built;
   }
 
   /**
@@ -4192,6 +4344,10 @@ class WebGPUModelPipelineCache {
    */
   destroy() {
     this._pipelines.clear();
+    // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
+    // baked the now-stale format / mode; the `.then` also carries a
+    // scene-format-generation guard so a stale resolve never writes back.
+    this._pendingColorPipelines.clear();
     // C-R9-MODEL-PICK (Batch 54) — drop pick pipelines too. GPUPipelines
     // are released via GC once all references go away; clearing the map
     // releases the cache's reference. Same lifecycle as `_pipelines`.

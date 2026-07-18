@@ -5544,8 +5544,28 @@ the pick pass. Verify with `probe-c10-02-pixel.mjs MODE=subset` (WebGPU drillCou
 
 ## NEW-WEBGPU-BOOT-DETERMINISTIC-PIPELINE-PREWARM (C10-06 Step C.2 deferred, 2026-07-18)
 
-**Status:** DEFERRED (honest partial of C10-06; Steps A + B + C.1 landed, C.2 deferred for a real
-INV-06-3 blocker, not for time). Natural home is C10-07's resources-ready hook.
+**Status:** PARTIALLY RESOLVED by C10-07 (Batch 704, pending orchestrator land). The prewarm HOOK is
+now wired at the scene resources-ready step (`prewarmDeterministicPipelines` in
+`WebGPUSceneRendererEnsureResources.ts`, fired once at first `ensureResources` where the scene-FB
+`colorFormat`/`depthFormat`/`sampleCount` ARE resolved — the exact precondition this defer required
+and context `_initialize` could not satisfy). It warms the depth-plane deterministic set through the
+central cache's `warm()` (the previously-0-caller preload machinery, S8-1) and bumps observable
+`context._deterministicPrewarmCount` (probe-c10-07 asserts it fired = 2). **Empirical finding at
+C10-07 (probe-c10-07-async-model-pipelines.mjs):** the deterministic pipelines that resolve through
+the central cache — depth plane + environment Moon/Star/Sun — ALREADY self-kick their async compile
+during frame 1 (depth-plane at `ensureDepthPlane`, environment at first env-draw), so they are
+already compiled-ahead; the hook makes the depth-plane prewarm explicit + counted. **The remaining
+deterministic pipelines are the real gap and are NOT closed by this hook:** SkyAtmosphere×2,
+GlobeDepth-DepthCopy×2, PostProcess identity/tonemap/FXAA×3, DepthResolveMSAA×1 all resolve through
+PRIVATE synchronous `device.createRenderPipeline` (confirmed sync at boot in the probe) and cannot be
+made frame-1 central-cache hits until each renderer is migrated to the central async cache
+(per-renderer, guide H5 Step-4). That per-renderer migration is tracked as
+`NEW-WEBGPU-DETERMINISTIC-SYNC-PIPELINE-CENTRALIZATION` (below). This entry's HOOK deliverable is
+DONE; its full "deterministic set shows as cache hits on frame 1" acceptance is gated on that
+follow-on.
+
+**Original status:** DEFERRED (honest partial of C10-06; Steps A + B + C.1 landed, C.2 deferred for a
+real INV-06-3 blocker, not for time). Natural home is C10-07's resources-ready hook.
 
 **Context:** C10-06 Step C.2 called for wiring `WebGPURenderPipelineCache.preloadBatch`
 (`WebGPURenderPipelineCache.ts:765`, still 0 callers) at context init to prewarm the deterministic
@@ -5576,3 +5596,41 @@ there, reusing each renderer's own descriptor factory (do NOT hand-author descri
 assert via `pipelineStatus()` / `getStats()` that the deterministic set shows as cache `hits` on frame 1
 (the T-06-a mechanism oracle). Never `await` the prewarm (T-06-b). This closes the remaining WebGPU
 frame-1 pipeline-compile stall that Step C.1 could not reach.
+
+## NEW-WEBGPU-DETERMINISTIC-SYNC-PIPELINE-CENTRALIZATION (C10-07 follow-on, 2026-07-18)
+
+**Status:** DEFERRED (filed at C10-07 / Batch 704; guide H5 Step-4; Principle 9 surfacing of the gap
+the C10-07 prewarm hook could not close in one concern).
+
+**Context:** C10-07 wired the deterministic-boot prewarm HOOK
+(`prewarmDeterministicPipelines`) and converted the model COLOR pipeline to the central async cache.
+Empirical boot census (`probe-c10-07-async-model-pipelines.mjs`, WebGPU, offline) shows the following
+deterministic pipelines STILL compile through PRIVATE synchronous `device.createRenderPipeline` at
+boot and therefore cannot be prewarmed (or made frame-1 central-cache hits) until each renderer is
+migrated to `WebGPURenderPipelineCache` + a ready-gate:
+
+- **SkyAtmosphere** ×2 (`WebGPUSkyAtmosphereRenderer.js` ~`:241` — shell + fullscreen pipelines).
+- **GlobeDepth depth-copy** ×2 (`WebGPUGlobeDepth.ts` `:506` single-sample + `:563` MSAA; the MSAA
+  variant uses a hand-rolled multisampled-depth BGL).
+- **PostProcess** identity-blit + tonemap + FXAA (×3) (`WebGPUPostProcessPipeline.ts` `_compileStage`,
+  no central-cache participation — plus the HDR-toggle destroy→sync-recreate at
+  `WebGPUSceneRendererEnsureResources.ts` ~`:444-509`).
+- **DepthResolveMSAA** ×1 (MSAA depth resolve helper pipeline).
+
+**Why it's a separate slice (not folded into C10-07):** each conversion needs its own ready-gate +
+consumer null-tolerance analysis (one-concern-per-slice, Rule 6). GlobeDepth depth-copy feeds
+pickPosition / translucent classification (a skipped frame is a benign conservative wait only during
+the boot cooking window — matches the globe surface, which already skips ~2 s while its terrain
+pipeline cooks). PostProcess is correctness-sensitive: the canvas blit MUST stay on a
+guaranteed-present pipeline (build-new-then-destroy-old on HDR toggle, INV-07-5 / T-07-d — never leave
+the canvas without a blit). SkyAtmosphere skips to a black-sky frame during cooking (benign, matches
+the cooking globe).
+
+**Fix when picked up:** convert each renderer's pipeline creation to
+`WebGPURenderPipelineCache.getPipeline` (async) with a `getPipelineSync`-hit fast path + a null-skip
+(or the `resolveCapturePipelineEntrySync` documented sync hatch for must-render passes), then register
+their descriptors with `prewarmDeterministicPipelines` (the C10-07 hook already exists) so they warm
+at the resources-ready step. Route the two auto-exposure COMPUTE pipelines through
+`WebGPUComputePipelineCache`. Then the T-06-a oracle (deterministic set shows as frame-1 cache `hits`)
+becomes fully satisfiable. This is guide H5 Step-4 ("mipmap/reprojection/environment... include if
+budget allows, else surface as follow-on").
