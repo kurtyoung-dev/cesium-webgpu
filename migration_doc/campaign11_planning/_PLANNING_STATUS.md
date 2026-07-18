@@ -22,29 +22,31 @@ HEAD = `aef553d592` (Batch 698); repo HEAD at salvage = Batch 700 (`b533124568`)
 - **`../DEFAULT_PARITY_MATRIX_2026-07-18.md`** — 22 backend default divergences
   (5 visible-visual), flip-candidate shortlist, runtime-verification plan. Feeds G8.
 
-## What REMAINS (Fable hit its usage limit mid-authoring)
+## Guides — ALL 10 COMPLETE (G8/G9/G10 authored by Opus 2026-07-18, Batch 702)
 
-1. **Guides G8, G9, G10 — NOT WRITTEN** (their author agents died on credit
-   exhaustion). Re-runnable from the authoring workflow cache
-   (`wf_3c2df40b-079`, resumeFromRunId) — G1–G7 replay instantly, only G8/G9/G10 run:
-   - **G8** shadows-lighting + atmosphere-sky + water + the defaults-parity flip
-     candidates (enhanced-ocean #1, night-lights, AutoExposure, background-color,
-     the OIT flip as a conditional dossier — NOW RESOLVED to NO-GO by Batch 700).
-   - **G9** test-infra + build-boot (the C8 upstream-contract-gate certification lane
-     is the intended C11 exit gate; Karma Edge-launcher flakiness fix-first).
-   - **G10** gated-tail dossiers + **the CAMPAIGN OPERATING CHARTER** — the
-     load-bearing takeover manual (dispatch-review-land loop, review standards,
-     salvage playbook, model-tier table, C11-00B launch intake, engine-script
-     fallback) so Opus or Sol can assume the orchestrator seat cold. **Highest-value
-     missing piece.**
-2. **Phase 3 — ASSEMBLY (orchestrator/me, not a worker):** author the canonical
+G1–G10 all present in `guides/`. Cross-cutting findings the assembler MUST honor:
+- **enhanced-ocean is NOT a clean flip** (G8): uniform-driven, no `ENHANCED_OCEAN`
+  ShaderDefine — a define-gate must be added first; two-part maintainer ask.
+- **ShaderDefine registry EXHAUSTED** bits 0–30 (G8/G9): `C10-08b` define-width is a
+  HARD prerequisite for any new define bit (blocks several tiles/model items).
+- **Premise-drift corrections** (G8/G9): SHADOW-LAYOUT-QUANTIZED likely doc-close;
+  C-R10-GLOBE-POINT-LIGHT receive-infra present; C9-14B fog LUT already sampled (only
+  the per-fragment ground march ungated); `WebGPUComputePipelineCache` EXISTS
+  (re-scope to routing); `WebGPUModelRenderer` already `.ts`. → a cheap
+  cluster-reconciliation slice at wave start is recommended.
+- Clean GO-now parity wins (G8): AutoExposure demand-gate, canvas-background,
+  sun-bloom restore (file tracking rows — currently silent).
+
+## What REMAINS
+
+1. **Phase 3 — ASSEMBLY:** author the canonical
    **C11 ID table FIRST** (the C10 numbering-collision lesson — assign every register
    item its C11-xx number before composing any guide prose), then
    `QUEUE_2026-07-16→_CAMPAIGN11.md` (§1 rules inherited verbatim, §2 any rulings,
    §3 gates, §3.2 ledger seeded, §4 C11-00B intake, §5 waves, §6 gated tail) +
    `CAMPAIGN11_EXECUTION_GUIDE.md` composed from G1–G10 with a canonical-ID
    reconciliation note.
-3. **C11-00B intake at launch** must absorb the still-open C10 fallout: the C10-30
+2. **C11-00B intake at launch** must absorb the still-open C10 fallout: the C10-30
    verdict, C10-06/07/08 (boot chain) and C10-11/12 (pick fleet) + C10-13 outcomes,
    and the Batch-700 OIT NO-GO (`NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING`).
 
