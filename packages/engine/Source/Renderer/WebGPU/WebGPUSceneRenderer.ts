@@ -1447,6 +1447,10 @@ export class WebGPUSceneRenderer {
         canvasFormat,
       );
       context._refractionSceneView = null;
+      // C10-03 — resize / HDR / MSAA flip destroys + recreates the resolve
+      // texture; force the next consumer to resolve into the fresh target so
+      // post-process can never sample an uninitialized resolve (Trap 6).
+      context._sceneColorResolvePending = true;
     }
 
     const previousSceneColorFormat = context._sceneColorFormat;
@@ -1915,8 +1919,14 @@ export class WebGPUSceneRenderer {
       context.resumeDefaultRenderPass?.();
       return;
     }
+    // C10-03 — open the resumed scene segment WITHOUT an eager color resolve
+    // (`resolve:false`); scene color resolves on demand via
+    // `_ensureSceneColorResolved`. With no resolveTarget upstream the spread
+    // below copies none through (I1), so no map-time deletion is needed.
     const rawColor: GPURenderPassColorAttachment[] | undefined =
-      colorTarget.getColorAttachments?.();
+      colorTarget.getColorAttachments?.(undefined, {
+        resolve: context._sceneColorResolveElisionEnabled !== true,
+      });
     let colorAttachments = rawColor?.map((a) => ({
       ...a,
       loadOp: "load" as GPULoadOp,
@@ -1972,6 +1982,71 @@ export class WebGPUSceneRenderer {
     );
   }
 
+  /**
+   * C10-03-MSAA-BOUNDARY-BYTES — demand-driven "resolve-on-consume" for scene
+   * COLOR. The scene-FB segments open WITHOUT a `resolveTarget`
+   * (`getColorAttachments({ resolve:false })`), so the multisampled color is no
+   * longer resolved eagerly at every `pass.end()` (~10 resolves/frame → the
+   * S4-1 waste). Instead every resolved-color consumer (refraction capture,
+   * OIT composite, invert-classification composite, bounding-volume debug, and
+   * ALWAYS the pre-post-process blit) calls this immediately before reading
+   * `colorTarget.getColorTextureView(0)` / `context._sceneColorView`.
+   *
+   * Idempotent + conservative:
+   * - `_msaaSamples <= 1` → no resolve target exists (I5), the resolve view IS
+   *   the attachment view, so this is inert and the MSAA-off path is
+   *   byte-identical by construction.
+   * - `_sceneColorResolvePending === false` → nothing has drawn to the scene FB
+   *   since the last resolve; skip (this is what keeps a write-consumer's
+   *   output — e.g. the fallback invert composite that draws into the
+   *   single-sample resolve view — from being stomped by a redundant re-resolve
+   *   before post-process, since `resumeDefaultRenderPass` opens the CANVAS
+   *   pass and never re-dirties scene color).
+   *
+   * The resolve is a raw zero-draw pass on the frame command encoder (mirrors
+   * `WebGPUSceneFramebuffer._clearTarget`) so it never touches the context's
+   * tracked pass state (`_activePassTarget` / canvas-demand bookkeeping).
+   *
+   * @param context - The active WebGPU context.
+   */
+  public _ensureSceneColorResolved(context: WebGPUContext): void {
+    if (context._sceneColorResolveElisionEnabled !== true) {
+      // Kill switch off — the open sites baked eager resolveTargets, so the
+      // resolve view is already current; the demand pass is inert.
+      return;
+    }
+    if ((context._msaaSamples ?? 1) <= 1) {
+      return;
+    }
+    if (context._sceneColorResolvePending !== true) {
+      return;
+    }
+    const colorTarget = this._sceneFramebuffer?.colorTarget;
+    const desc = colorTarget?.createColorResolvePassDescriptor?.();
+    if (!desc) {
+      // No resolve target (single-sample) or non-single-color target —
+      // leave the flag set (conservative) and skip.
+      return;
+    }
+    // Consumers already end their pass before reading; keep the call
+    // idempotent so a stray active pass can't leak into the resolve.
+    context.endCurrentRenderPass?.();
+    const encoder: GPUCommandEncoder | undefined =
+      context._currentCommandEncoder;
+    if (!encoder) {
+      // No encoder (e.g. truncated frame) — leave dirty so a later
+      // consumer with a valid encoder resolves.
+      return;
+    }
+    const pass = encoder.beginRenderPass(desc);
+    pass.end();
+    context._sceneColorResolvePending = false;
+    const actual = context._attachmentDemandActual;
+    if (actual) {
+      actual.sceneColorResolveOpens += 1;
+    }
+  }
+
   // Public underscore: shared with the frustum-loop slice (Batch 140).
   public _clearDepthStencil(context: WebGPUContext): void {
     // ── Multi-frustum depth clear — CRITICAL for correct rendering ──
@@ -2002,8 +2077,13 @@ export class WebGPUSceneRenderer {
     // and an encoder, always open a scene-FB pass.
     const colorTarget = this._sceneFramebuffer?.colorTarget;
     if (colorTarget && context._currentCommandEncoder) {
+      // C10-03 — depth-clear re-open preserves accumulated color
+      // (loadOp:"load") but must NOT eagerly resolve it; scene color resolves
+      // on demand (`resolve:false`).
       const rawColor: GPURenderPassColorAttachment[] | undefined =
-        colorTarget.getColorAttachments?.();
+        colorTarget.getColorAttachments?.(undefined, {
+          resolve: context._sceneColorResolveElisionEnabled !== true,
+        });
       let colorAttachments = rawColor?.map((a) => ({
         ...a,
         loadOp: "load" as GPULoadOp,
@@ -2723,11 +2803,15 @@ export class WebGPUSceneRenderer {
     // the stencil-gated composite branch in `runInvertCompositeFromTracker`
     // active. The previous "every-pixel-tinted" warning is now obsolete.
 
-    // End the current scene pass so the MSAA color attachment resolves
-    // into the single-sample resolve view. Both the stencil-gated path
-    // (writes to MSAA + auto-resolves at pass end) and the fallback
-    // path (writes to the resolved view directly) need this.
+    // End the current scene pass (required regardless of MSAA so the
+    // composite / read can run outside a render pass), then — C10-03 —
+    // resolve MSAA color into the single-sample resolve view on demand (the
+    // eager per-segment resolve was elided). Both the stencil-gated path
+    // (writes MSAA + auto-resolves at its own pass end) and the fallback path
+    // (writes the resolved view directly) require the resolved view to already
+    // hold the accumulated scene color. Ensure is inert under MSAA-off (I5).
     context.endCurrentRenderPass?.();
+    this._ensureSceneColorResolved(context);
 
     const encoder: GPUCommandEncoder | undefined =
       context._currentCommandEncoder;
@@ -2816,7 +2900,12 @@ export class WebGPUSceneRenderer {
       return;
     }
 
+    // End the scene pass (required for the copy), then — C10-03 — resolve
+    // MSAA color on demand: the refraction copy source is the resolved color
+    // texture (`colorTarget.getColorTexture()`), which the eager per-segment
+    // resolve used to keep current. Ensure is inert under MSAA-off (I5).
     context.endCurrentRenderPass?.();
+    this._ensureSceneColorResolved(context);
     const encoder: GPUCommandEncoder | undefined =
       context._currentCommandEncoder;
     if (!encoder) {
@@ -3516,6 +3605,12 @@ export class WebGPUSceneRenderer {
     if (!targetView) {
       return;
     }
+
+    // C10-03 — the wireframe draws INTO the resolved color view; resolve the
+    // accumulated scene color on demand first (the eager per-segment resolve
+    // was elided). Only reached when a command is flagged, so unflagged frames
+    // stay byte-identical. Inert under MSAA-off (I5).
+    this._ensureSceneColorResolved(context);
 
     // Close the scene pass so we can open our own single-attachment pass on
     // the resolved color view.

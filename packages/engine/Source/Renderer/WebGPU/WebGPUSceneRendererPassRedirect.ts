@@ -157,14 +157,21 @@ export function setupSceneFramebufferRenderPass(
 
     const colorTarget = host._sceneFramebuffer.colorTarget;
     const bg = config.backgroundColor;
-    let colorAttachments = colorTarget.getColorAttachments?.([
-      {
-        r: bg?.red ?? 0,
-        g: bg?.green ?? 0,
-        b: bg?.blue ?? 0,
-        a: bg?.alpha ?? 0,
-      },
-    ]);
+    // C10-03-MSAA-BOUNDARY-BYTES — open the initial scene-FB segment WITHOUT an
+    // eager color resolve (`resolve:false`); scene color resolves on demand via
+    // `_ensureSceneColorResolved` before each consumer. (Slot-1 G-buffer resolve
+    // is appended separately by `buildMrtSlot1Attachment` and is out of scope.)
+    let colorAttachments = colorTarget.getColorAttachments?.(
+      [
+        {
+          r: bg?.red ?? 0,
+          g: bg?.green ?? 0,
+          b: bg?.blue ?? 0,
+          a: bg?.alpha ?? 0,
+        },
+      ],
+      { resolve: context._sceneColorResolveElisionEnabled !== true },
+    );
     const depthStencilAttachment = colorTarget.getDepthStencilAttachment?.();
 
     if (!colorAttachments?.length) {

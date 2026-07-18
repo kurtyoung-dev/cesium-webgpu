@@ -5391,3 +5391,32 @@ sentinels (`WasmSortBridge.js` load/sort failures, loop/null/size guards) unwrap
 with `npx gulp buildRelease` (the pragma stripper only runs there; tsc/eslint see the unstripped
 source). If the stripper mishandles a TS construct, keep the runtime gating — it already satisfies
 I-10.
+
+## NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING (filed C10-03, 2026-07-18)
+
+**Status:** DEFERRED (pre-existing FAR-003 adjacency; NOT introduced by C10-03).
+
+**Context:** C10-03 (`MSAA-BOUNDARY-BYTES`) replaced eager per-segment scene-COLOR resolve with
+demand-driven "resolve-on-consume". The OIT composite (`WebGPUSceneRendererTranslucentPass`,
+gated `useOIT && _webgpuOITEnabled`, default OFF) writes `context._sceneColorView` (the resolve
+view) per frustum. C10-03 correctly inserts `_ensureSceneColorResolved` before the composite so it
+composites over resolved opaque color. However, under MSAA a subsequent frustum's scene-FB
+segments re-dirty scene color and the next demand resolve re-resolves the MSAA attachment,
+overwriting the mid-frame OIT composite — **exactly as today's eager per-segment resolve already
+did**. This is a pre-existing MSAA×OIT compositing-order adjacency (FAR-003 family), not a C10-03
+regression. OIT is contained OFF by default, so no default-path impact.
+
+**Fix when picked up:** either (a) run the OIT composite into a dedicated non-multisampled accum
+target that survives subsequent MSAA resolves, or (b) defer the OIT composite to post-frustum
+(after the last scene-FB segment) so no later resolve stomps it. One concern per slice — belongs
+to the FAR-003 OIT×MSAA lane, not the resolve-elision slice.
+
+## NOTE — S4-1 eager-resolve elision LANDED (C10-03, FAR-405 companion, 2026-07-18)
+
+The eager per-segment MSAA scene-COLOR resolve (S4-1, ~330 MB/frame @1080p analytical) is now
+demand-driven: scene-COLOR resolves 9→1/frame on the default globe (measured, per-attachment
+bucketed counter). Option (c) — `Scene.js:488` default `msaaSamples` 4→1 — remains **NOT
+RATIFIED** (reserve lever `C10-03R`, ruling §2(c); needs a `C10-30` checkpoint miss WITH
+bandwidth-attributed evidence AND fresh maintainer sign-off). The remaining S4 boundary-bytes items
+(S4-2 depth store/load, S4-3 usage-flags/transient, S4-4 depth-resolve consumer gating, S4-5
+globe-depth pack chain, FAR-405/706 segment-count reduction) are separate rows, untouched here.

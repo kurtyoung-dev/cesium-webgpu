@@ -104,6 +104,21 @@ export interface AttachmentOtherFamilies {
   picking: boolean;
   /** Post-process composite active (WebGPU always composites off-screen). */
   postProcess: boolean;
+  /**
+   * C10-03-MSAA-BOUNDARY-BYTES — the frame demands a resolved scene-COLOR
+   * texture (a consumer reads `colorTarget.getColorTextureView(0)` /
+   * `_sceneColorView`). On WebGPU this is TRUE whenever the post-process
+   * composite runs (the always-on, load-bearing consumer — the PP blit is the
+   * only path that reaches the canvas), and is the demand that the
+   * "resolve-on-consume" elision honors. Observe-only here, like the other
+   * families: the actual resolve count is measured on the context as
+   * `_attachmentDemandActual.sceneColorResolveOpens`; behavior is driven by
+   * that demand plus the intra-frame staleness flag
+   * (`WebGPUContext._sceneColorResolvePending`). A per-frame pure record cannot
+   * itself track intra-frame staleness, so the flag is the executor — see the
+   * ensure helper.
+   */
+  resolvedSceneColor: boolean;
 }
 
 /**
@@ -215,6 +230,10 @@ export function computeAttachmentDemand(
     globeDepth: options.globeDepth === true,
     picking: options.picking === true,
     postProcess: options.postProcess === true,
+    // C10-03: resolved scene color is demanded whenever the PP composite runs
+    // (the always-on WebGPU canvas path). Non-pick frames therefore always
+    // demand exactly one resolved scene-color read before post-process.
+    resolvedSceneColor: options.postProcess === true,
   };
 
   return {

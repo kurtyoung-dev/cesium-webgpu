@@ -308,11 +308,21 @@ export class WebGPURenderTarget {
    * Get color attachment descriptors for render pass
    *
    * @param clearValues - Optional clear values for each attachment
+   * @param options - Optional behavior flags. `resolve` (default `true`)
+   *   controls whether an MSAA `resolveTarget` is baked onto each attachment.
+   *   C10-03-MSAA-BOUNDARY-BYTES: the scene-FB pass-open sites pass
+   *   `resolve:false` so intermediate segments do NOT eagerly resolve at every
+   *   `pass.end()`; a single demand-driven `createColorResolvePassDescriptor`
+   *   pass resolves scene color only when a consumer reads it. Default `true`
+   *   keeps every unmigrated caller (`renderPassDescriptor`,
+   *   `getClearPassDescriptor`) byte-identical.
    * @returns Array of color attachment descriptors
    */
   getColorAttachments(
     clearValues?: GPUColor[],
+    options?: { resolve?: boolean },
   ): GPURenderPassColorAttachment[] {
+    const withResolve = options?.resolve !== false;
     return this.colorAttachments.map((attachment, index) => {
       const descriptor: GPURenderPassColorAttachment = {
         view: attachment.view,
@@ -321,13 +331,57 @@ export class WebGPURenderTarget {
         storeOp: "store" as const,
       };
 
-      // Add resolve target if MSAA is enabled
-      if (this.resolveTargets.length > 0) {
+      // Add resolve target if MSAA is enabled AND the caller wants the
+      // eager per-segment resolve. C10-03: scene-FB segments open with
+      // `resolve:false` and defer the resolve to a demand pass.
+      if (withResolve && this.resolveTargets.length > 0) {
         descriptor.resolveTarget = this.resolveTargets[index].view;
       }
 
       return descriptor;
     });
+  }
+
+  /**
+   * C10-03-MSAA-BOUNDARY-BYTES — build a zero-draw, single-color-attachment
+   * render pass descriptor that resolves the multisampled color attachment
+   * (index 0) into its single-sample resolve target. Used by
+   * `WebGPUSceneRenderer._ensureSceneColorResolved` to perform the
+   * demand-driven "resolve-on-consume" once per frame, replacing the eager
+   * per-segment resolves elided via `getColorAttachments({ resolve:false })`.
+   *
+   * `loadOp:"load"` preserves the accumulated MSAA color; `storeOp:"store"`
+   * is mandatory — later scene segments resume with color `loadOp:"load"`, so
+   * a `"discard"` here would destroy the accumulated scene. No depth-stencil
+   * attachment and NO MRT slot-1: a pass with zero draws carries no
+   * pipeline-compat constraints, and slot-1 (G-buffer) resolves are a separate
+   * concern (owned by `buildMrtSlot1Attachment` / C9-10).
+   *
+   * @returns The resolve-only descriptor, or `null` when there is no MSAA
+   *   resolve target (single-sample) or the target is not single-color
+   *   (conservative skip — the scene FB is single-color by construction).
+   */
+  createColorResolvePassDescriptor(): GPURenderPassDescriptor | null {
+    if (this.resolveTargets.length === 0) {
+      return null;
+    }
+    // Scene FB is single-color-target (MRT slot-1 lives outside this class,
+    // appended by `buildMrtSlot1Attachment`). Stay conservative for any other
+    // multi-target user: only index 0 is resolved here.
+    if (this.colorAttachments.length !== 1) {
+      return null;
+    }
+    return {
+      label: `${this.descriptor.name}_demand_resolve`,
+      colorAttachments: [
+        {
+          view: this.colorAttachments[0].view,
+          loadOp: "load" as const,
+          storeOp: "store" as const,
+          resolveTarget: this.resolveTargets[0].view,
+        },
+      ],
+    };
   }
 
   /**

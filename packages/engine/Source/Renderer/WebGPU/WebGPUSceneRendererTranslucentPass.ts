@@ -28,6 +28,7 @@
 
 import Pass from "../../Renderer/Pass.js";
 import type { WebGPUOIT } from "./WebGPUOIT.js";
+import type { WebGPUContext } from "./WebGPUContext.js";
 import {
   executeBatch,
   sortCommandsBackToFront,
@@ -55,6 +56,8 @@ export interface TranslucentPassHost {
     count: number,
     config: WebGPURenderFrameConfig,
   ) => { commands: CesiumAnyDrawCommand[]; count: number };
+  // C10-03-MSAA-BOUNDARY-BYTES — demand-driven scene-COLOR MSAA resolve.
+  _ensureSceneColorResolved: (context: WebGPUContext) => void;
 }
 
 /**
@@ -256,6 +259,13 @@ export function executeTranslucentPass(
           }
 
           accPass.end();
+
+          // C10-03 — resolve the accumulated opaque scene color on demand
+          // before the OIT composite writes over it (the eager per-segment
+          // resolve was elided). Inert under MSAA-off (I5). MSAA×OIT
+          // compositing ordering is the pre-existing FAR-003 adjacency, not
+          // this slice's concern.
+          host._ensureSceneColorResolved(context);
 
           // Composite OIT result over opaque scene
           const sceneColorView = context._sceneColorView;

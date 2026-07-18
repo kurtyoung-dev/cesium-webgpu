@@ -65,6 +65,8 @@ export interface PostFrustumChainHost {
   // no command is flagged, so unflagged frames are byte-identical.
   _executeBoundingVolumeDebugPass(config: WebGPURenderFrameConfig): void;
   _runPostProcessing(config: WebGPURenderFrameConfig): void;
+  // C10-03-MSAA-BOUNDARY-BYTES — demand-driven scene-COLOR MSAA resolve.
+  _ensureSceneColorResolved(context: WebGPUContext): void;
 }
 
 /**
@@ -183,6 +185,16 @@ export function executePostFrustumChain(
   // survives to present. No-op when no command carries the flag (default),
   // keeping unflagged frames byte-identical.
   host._executeBoundingVolumeDebugPass(config);
+
+  // C10-03-MSAA-BOUNDARY-BYTES — the ALWAYS-ON resolved-color consumer.
+  // Post-process reads `context._sceneColorView` (the single-sample resolve
+  // view) and blits it to the canvas — the only path that reaches the canvas
+  // on WebGPU. With the eager per-segment resolve elided, this is where the
+  // one required scene-COLOR resolve happens on the default globe (the demand
+  // flag is dirty from the frustum-loop draws → exactly 1 resolve/frame).
+  // Miss this and every MSAA frame is black (Trap 4). Inert under MSAA-off (I5)
+  // and a no-op when a prior consumer already resolved with nothing redrawn.
+  host._ensureSceneColorResolved(context);
 
   // Post-processing (tonemapping, FXAA, etc.)
   // On WebGPU this is REQUIRED to blit the scene framebuffer to canvas.

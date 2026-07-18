@@ -524,6 +524,12 @@ export class WebGPUContext extends GraphicsContext {
     sceneColorAttachmentCount: number;
     slot1AttachmentOpens: number;
     slot1ResolveOpens: number;
+    // C10-03-MSAA-BOUNDARY-BYTES — measured demand-driven scene-COLOR resolve
+    // passes this frame (label `SceneFramebuffer-Color_demand_resolve`). Under
+    // the elision this is exactly 1 on the default globe (the pre-post-process
+    // ensure); 0 when `_msaaSamples <= 1`. Slot-1 (G-buffer) resolves are
+    // counted separately by `slot1ResolveOpens` and are out of scope here.
+    sceneColorResolveOpens: number;
   } = {
     gbufferAllocated: false,
     gbufferBytes: 0,
@@ -531,7 +537,29 @@ export class WebGPUContext extends GraphicsContext {
     sceneColorAttachmentCount: 0,
     slot1AttachmentOpens: 0,
     slot1ResolveOpens: 0,
+    sceneColorResolveOpens: 0,
   };
+
+  // C10-03-MSAA-BOUNDARY-BYTES — intra-frame scene-COLOR resolve staleness.
+  // Set `true` whenever a `"scene-framebuffer"` pass opens (new draws make the
+  // single-sample resolve texture stale) and cleared only by
+  // `WebGPUSceneRenderer._ensureSceneColorResolved`. Reset conservatively to
+  // `true` at frame begin / pick begin / scene-FB recreate. A per-frame pure
+  // demand record (`_attachmentDemand`) cannot own this because it is immutable
+  // for the frame; this single flag, anchored on the existing C9-07
+  // `_activePassTarget` tracking, is the executor of the resolved-scene-color
+  // demand. Conservative default `true` (Rule 3: unknown demand resolves).
+  public _sceneColorResolvePending: boolean = true;
+
+  // C10-03-MSAA-BOUNDARY-BYTES — elision kill switch. Default `true` =
+  // demand-driven "resolve-on-consume" (the shipped behavior). Set `false` to
+  // restore the historical eager per-segment resolve (the scene-FB open sites
+  // bake `resolveTarget` again and `_ensureSceneColorResolved` becomes inert),
+  // so the two paths differ ONLY in resolve timing. Kept because the clean
+  // one-commit revert boundary cannot be exercised without git; this bool is
+  // the on/off/restored oracle mechanism (identical-build A/B) and a runtime
+  // safety fallback. Reverting the batch removes it together with the elision.
+  public _sceneColorResolveElisionEnabled: boolean = true;
 
   // Renderer-wide log-depth master switch (Approach A for
   // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION / NEW-COLLECTIONS-LOG-DEPTH).
@@ -1860,6 +1888,8 @@ export class WebGPUContext extends GraphicsContext {
     this._activePassTarget = null;
     this._canvasColorTouchedThisFrame = false;
     this._canvasDepthTouchedThisFrame = false;
+    // C10-03 — a fresh frame starts with no valid resolved scene color.
+    this._sceneColorResolvePending = true;
 
     // Advance ring buffer allocator to next page
     if (this._uniformAllocator) {
@@ -1954,6 +1984,9 @@ export class WebGPUContext extends GraphicsContext {
     // re-clear the blit. Only reset the demand flags for a standalone pick.
     const renderFrameInFlight = this._currentTextureView !== null;
     this._activePassTarget = null;
+    // C10-03 — pick mini-frames render to a single-sample pick FBO, so the
+    // ensure helper is inert (I5); reset conservatively regardless.
+    this._sceneColorResolvePending = true;
     if (!renderFrameInFlight) {
       this._canvasColorTouchedThisFrame = false;
       this._canvasDepthTouchedThisFrame = false;
@@ -2155,6 +2188,17 @@ export class WebGPUContext extends GraphicsContext {
         this.withRenderPassTimestamps(descriptor),
       );
     this._activePassTarget = target;
+
+    // C10-03-MSAA-BOUNDARY-BYTES — opening a scene-framebuffer segment means
+    // new draws will land in the multisampled color attachment, making the
+    // single-sample resolve texture stale. Mark it so the next resolved-color
+    // consumer's `_ensureSceneColorResolved` performs the (now demand-driven)
+    // resolve. This single hook, keyed on the C9-07 pass target, replaces the
+    // eager per-`pass.end()` resolve that `getColorAttachments({resolve:false})`
+    // removed. Canvas / external / pick passes never dirty scene color.
+    if (target === "scene-framebuffer") {
+      this._sceneColorResolvePending = true;
+    }
 
     // Canvas-touch MECHANISM (C9-07 / FAR-405-C0): a pass whose color or
     // depth attachment IS the current swap-chain view has, by construction,
@@ -4084,6 +4128,7 @@ export class WebGPUContext extends GraphicsContext {
     actual.sceneColorAttachmentCount = 0;
     actual.slot1AttachmentOpens = 0;
     actual.slot1ResolveOpens = 0;
+    actual.sceneColorResolveOpens = 0;
     this._attachmentDemand = computeAttachmentDemand(
       scene as unknown as AttachmentDemandSceneLike,
       {
@@ -5240,6 +5285,7 @@ export class WebGPUContext extends GraphicsContext {
       sceneColorAttachmentCount: number;
       slot1AttachmentOpens: number;
       slot1ResolveOpens: number;
+      sceneColorResolveOpens: number;
     };
     forceSceneMRT: boolean;
     recordMatchesActual: boolean;
@@ -5278,6 +5324,7 @@ export class WebGPUContext extends GraphicsContext {
         sceneColorAttachmentCount: a.sceneColorAttachmentCount,
         slot1AttachmentOpens: a.slot1AttachmentOpens,
         slot1ResolveOpens: a.slot1ResolveOpens,
+        sceneColorResolveOpens: a.sceneColorResolveOpens,
       },
       forceSceneMRT: this.forceSceneMRT,
       recordMatchesActual,
