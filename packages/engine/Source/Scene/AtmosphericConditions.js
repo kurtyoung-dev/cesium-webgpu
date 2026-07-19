@@ -355,17 +355,43 @@ function buildLighting(globe) {
 
 function buildSkyAtmosphere(scene) {
   // New Phase 1 state: star modulation curve parameters (plain container).
-  // Phase 1.3b adds `enableStarBrightnessModulation` (default ON) which
-  // gates the cubemap panorama shader's smoothstep dim. The curve
-  // parameters use B4-locked defaults — apps that want a sharper
-  // twilight transition (clearer dark-sky preset) override
-  // `inflection` and `steepness` directly.
+  // Phase 1.3b adds `enableStarBrightnessModulation`, which gates the cubemap
+  // panorama shader's smoothstep dim. The curve parameters use B4-locked
+  // defaults — apps that want a sharper twilight transition (clearer dark-sky
+  // preset) override `inflection` and `steepness` directly.
+  //
+  // C11-176 (2026-07-19) — DEFAULT FLIPPED TO FALSE FOR WEBGL PARITY.
+  // This shipped `true`, which silently contradicted the consuming renderer:
+  // `WebGPUCubeMapPanoramaRenderer.js:539-548` documents the flag as "Default
+  // OFF for WebGL parity" and gates on `=== true` as a fail-safe against an
+  // ABSENT property — shipping it present-and-true defeated that fail-safe.
+  // WebGL's `SkyBoxFS.glsl` is nine lines and applies NO such term, so this was
+  // a pure unmatched WebGPU divergence: star colour was multiplied by
+  //   factor = 1 - smoothstep(0, 1, clamp((skyBrightness - inflection) * steepness, 0, 1))
+  // which at skyBrightness = 1.0 (sun >= ~23.6 deg above the camera's local
+  // horizon — i.e. most of the sunlit hemisphere for an orbital camera) equals
+  // exactly 0.5, halving the star map.
+  //
+  // MEASURED (probe-skybox-star-modulation, camera placed along the sun
+  // direction so skyBrightness = 1.0): WebGPU/WebGL mean luminance 0.493,
+  // contrast (stddev) 0.552, and visible star pixels 21.06% -> 4.01% — five
+  // times fewer stars. Forcing this flag false at runtime restored 1.001 /
+  // 1.009 / 1.000 respectively, which is what proved causation.
+  //
+  // The capability is NOT removed — only its default. Setting it back to true
+  // re-enables the dim exactly as before (the probe's A/B relies on that).
   const leaf = {
     starModulationCurve: {
       inflection: 0.5,
       steepness: 1.0,
     },
-    enableStarBrightnessModulation: true,
+    enableStarBrightnessModulation: false,
+    // NOTE: reserved, currently UNWIRED — this is the only reference to
+    // `enableNightSkyDimming` in packages/engine/Source. It was intended for
+    // night-sky dimming in the sky-atmosphere shader (see Scene.js:5760-5762
+    // "and (later) by night-sky dimming") but no consumer was ever added.
+    // Left in place per the scaffolding rule rather than deleted; do not
+    // assume it does anything until a reader exists.
     enableNightSkyDimming: true,
   };
   Object.defineProperties(leaf, {

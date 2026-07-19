@@ -535,7 +535,14 @@ export function updateUniforms(
   const curve =
     sky && sky.starModulationCurve
       ? sky.starModulationCurve
-      : { inflection: 0.3, steepness: 4.0 };
+      : // C11-176 — this fallback was {inflection: 0.3, steepness: 4.0}, which
+        // disagreed with the shipped curve in AtmosphericConditions.js:364-367
+        // ({0.5, 1.0}). That mattered: at skyBrightness = 1.0 the 0.3/4.0 pair
+        // gives t = clamp((1.0 - 0.3) * 4.0) = 1.0 -> factor = 0.0, i.e. a TOTAL
+        // blackout of the star map, strictly worse than the 50% dim C11-176
+        // fixed. Aligned so the opt-in path is deterministic no matter which
+        // object supplied the curve.
+        { inflection: 0.5, steepness: 1.0 };
   // Default OFF for WebGL parity — the legacy SkyBox shader (SkyBoxFS.glsl)
   // emits the cubemap unmodulated regardless of sun position, so the night-
   // sky stars stay visible all day. Star-brightness modulation was added in
