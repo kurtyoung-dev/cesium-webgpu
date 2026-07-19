@@ -51,6 +51,9 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
+// C11-157 Slice B — non-LOG_DEPTH preprocess of the polyline color source for
+// the OIT accumulation variant (`cmd._shaderCode`). Inert unless the FAR-003 gate.
+import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
 // Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
@@ -445,6 +448,10 @@ function prepareMaterialTypeFrameResources(
   pipelineResult.cameraBindGroupLayout = pipelineEntry.cameraBindGroupLayout;
   pipelineResult.materialBindGroupLayout =
     pipelineEntry.materialBindGroupLayout;
+  // C11-157 Slice B — carry the OIT variant inputs (base pipeline descriptor +
+  // non-LOG_DEPTH source) onto the frame-result object the command site reads.
+  pipelineResult.descriptor = pipelineEntry.descriptor;
+  pipelineResult.oitShaderCode = pipelineEntry.oitShaderCode;
 
   const camKey = (resources.camKey ??= `cameraBuffer_${materialType}`);
   const cameraDataKey =
@@ -1489,6 +1496,13 @@ function getOrCreatePolylinePipelineEntry(
     pending: false,
     cameraBindGroupLayout: built.cameraBindGroupLayout,
     materialBindGroupLayout: built.materialBindGroupLayout,
+    // C11-157 Slice B — non-LOG_DEPTH preprocessed source for the OIT
+    // accumulation variant (depth-read-only pass; frag_depth stripped). One per
+    // (materialType, defines) pipeline; read ONLY under the FAR-003 gate.
+    oitShaderCode: preprocessShaderSource(
+      shaderCode,
+      defines & ~ShaderDefine.LOG_DEPTH,
+    ),
   };
 
   byDefines.set(pipelineKey, entry);
@@ -1891,6 +1905,33 @@ async function _updateWebGPUPolylinesInner(
         cull: true,
         renderState: polylineRS,
       });
+
+      // C11-157 Slice B — OIT reachability for translucent polylines. Attach
+      // the OIT variant inputs when the command lands in Pass.TRANSLUCENT (9);
+      // reuses the base color pipeline's SHARED layout (camera+material BGLs)
+      // + vertex/primitive/depth state (single-sample for the OIT accumulation
+      // targets). createOITPipeline forces depthWriteEnabled:false, so reusing
+      // the base depthStencil (which may write depth on the 3D path) is safe.
+      // Inert when the FAR-003 gate is off → gate-OFF byte-identical. The
+      // polyline material FS returns a `FragOutput` struct (@location(0) color)
+      // — handled by injectOITOutput's Slice-A struct branch.
+      if (
+        polylinePass === 9 /* Pass.TRANSLUCENT */ &&
+        defined(pipelineResult.descriptor) &&
+        defined(pipelineResult.oitShaderCode)
+      ) {
+        cmd._shaderCode = pipelineResult.oitShaderCode;
+        cmd._pipelineConfig = {
+          label: "OIT Polyline",
+          layout: pipelineResult.descriptor.layout,
+          vertexBuffers: pipelineResult.descriptor.vertex.buffers,
+          vertexEntryPoint: "vertexMain",
+          fragmentEntryPoint: "fragmentMain",
+          primitive: pipelineResult.descriptor.primitive,
+          depthStencil: pipelineResult.descriptor.depthStencil,
+          multisample: undefined,
+        };
+      }
 
       // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
       // attach velocity command. Only emitted when TAA is on, the

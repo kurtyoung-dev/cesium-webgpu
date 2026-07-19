@@ -35,6 +35,9 @@ import {
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
+// C11-157 Slice B — non-LOG_DEPTH preprocess of the point color source for the
+// OIT accumulation variant (`cmd._shaderCode`). Inert unless the FAR-003 gate.
+import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
 // Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
@@ -1066,6 +1069,14 @@ function _updateWebGPUPointPrimitivesInner(
       ),
       pipeline: null,
       pending: false,
+      // C11-157 Slice B — non-LOG_DEPTH preprocessed source for the OIT
+      // accumulation variant (depth-read-only pass; frag_depth stripped).
+      // Attached to the translucent color command; read ONLY under the
+      // FAR-003 gate (gate-OFF inert).
+      oitShaderCode: preprocessShaderSource(
+        colorShaderCode,
+        defines & ~ShaderDefine.LOG_DEPTH,
+      ),
     };
     cache.pipelines.set(pipelineKey, pipelineEntry);
   }
@@ -1252,6 +1263,29 @@ function _updateWebGPUPointPrimitivesInner(
         ? collection._rsOpaque
         : collection._rsTranslucent,
   });
+
+  // C11-157 Slice B — OIT reachability for translucent point primitives.
+  // Attach the OIT variant inputs when the command lands in Pass.TRANSLUCENT
+  // (9); reuses the base color pipeline's SHARED layout + vertex/primitive/
+  // depth state (single-sample for the OIT accumulation targets). Inert when
+  // the FAR-003 gate is off → gate-OFF byte-identical. The point FS returns a
+  // `FragOutput` struct (@location(0) color) — injectOITOutput struct branch.
+  if (
+    pointPass === 9 /* Pass.TRANSLUCENT */ &&
+    defined(pipelineEntry.oitShaderCode)
+  ) {
+    cache.colorCommand._shaderCode = pipelineEntry.oitShaderCode;
+    cache.colorCommand._pipelineConfig = {
+      label: "OIT PointPrimitive",
+      layout: pipelineEntry.descriptor.layout,
+      vertexBuffers: pipelineEntry.descriptor.vertex.buffers,
+      vertexEntryPoint: "vertexMain",
+      fragmentEntryPoint: "fragmentMain",
+      primitive: pipelineEntry.descriptor.primitive,
+      depthStencil: pipelineEntry.descriptor.depthStencil,
+      multisample: undefined,
+    };
+  }
 
   // AUDIT_2026_05_02 B.10 (Batch 148, NEW-COLLECTIONS-MOTION-VECTORS) —
   // attach velocity command. The TAA pass walks the command list for

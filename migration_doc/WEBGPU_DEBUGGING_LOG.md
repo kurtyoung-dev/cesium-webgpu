@@ -24,6 +24,42 @@
 
 ---
 
+## C11-157 Slice B — WebGPU MRT-OIT made REACHABLE for translucent COLLECTIONS (2026-07-19)
+
+**What.** Extended Slice A's reachability from PRIMITIVES to the COLLECTION family
+(billboard / point / polyline). Model (Slice C) remains. FAR-003 stays DEFAULT-OFF.
+
+**Premise-verify (no injector change needed).** All collection color fragment shaders —
+`BillboardCollection`, `PointPrimitiveColor`, `PolylineCollection`, and the polyline material variants
+`PolylineArrow/Dash/Glow/Outline` — return a `FragOutput` struct (`@location(0) color` +
+`@builtin(position) position`; at defines=0 the LOG_DEPTH `@builtin(frag_depth)` member is stripped).
+The Slice-A `injectOITOutput` struct branch already handles exactly this shape (finds the `@location(0)`
+color member, resolves the `position` builtin field, strips the struct's IO attrs, wraps with
+`csm_oitOutput(base.color, in.position.z)`).
+
+**Files.** `WebGPUBillboardRenderer.js`, `WebGPUPointPrimitiveRenderer.js`, `WebGPUPolylineRenderer.js`
+— each now: (1) imports `preprocess as preprocessShaderSource`; (2) caches `oitShaderCode =
+preprocess(colorSource, defines & ~LOG_DEPTH)` on the pipeline entry; (3) when the color command lands
+in `Pass.TRANSLUCENT` (9), attaches `cmd._shaderCode = <cached OIT source>` + `cmd._pipelineConfig`
+(the base color pipeline's SHARED `GPUPipelineLayout` + `vertex.buffers` + `primitive` + `depthStencil`,
+`multisample: undefined` to match the single-sample OIT accumulation targets). Reusing the shared layout
+keeps the pre-baked bind groups + per-slice camera `bindGroupResolvers` compatible (resolvers are
+honored in the OIT accumulation pass by `executeOITCommand`). All fields inert unless the FAR-003 gate
+is on → gate-OFF byte-identical.
+
+**Verification.** `probe-oit-collection-reachable.mjs` (new): point / polyline / billboard scenes at
+`msaaSamples=1` all PASS — `_webgpuOITActiveThisFrame`=TRUE (was ALWAYS false), 0 device/validation
+errors, gate-ON differs from gate-OFF (onVsOff 10.08% / 1.17% / 9.66%), restore 0px. PNGs read: the
+triple-overlap regions desaturate to neutral gray (billboard discs + point Venn) — the McGuire-Bavoil
+WBOIT look, order-independent. No-regression: `probe-oit-primitive-reachable` (Slice A lit still 9.854%
+active), `probe-oit-transparency` (parity 1.33%), `probe-splat-sort`, `probe-ellipsoidprim-translucent`
+(0.499 single-blend), `probe-globe-translucency` (0.50/3.35/0.46%), `capture-and-diff globe-default`
+(0.43% crossBackend) all green. `tsc`/`eslint`/`gulp build`/`buildAllVariants` clean. Follow-ups
+unchanged (`NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH`, `NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING`). Slice C
+(models) remains.
+
+---
+
 ## C11-157 Slice A — WebGPU MRT-OIT made REACHABLE for translucent PRIMITIVES (2026-07-18)
 
 **What.** Turned the M-OIT finding (below) from unreachable → reachable for the PRIMITIVE family

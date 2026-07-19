@@ -31,6 +31,10 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import WebGPUCollectionCameraUB from "./WebGPUCollectionCameraUB.js";
 import { getCollectionShaderSource } from "./WebGPUCollectionShaders.js";
+// C11-157 Slice B — non-LOG_DEPTH preprocess of the collection color source
+// for the OIT accumulation variant (`cmd._shaderCode`). Same pattern the
+// primitive path uses (Slice A). Inert unless the FAR-003 gate is on.
+import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
 // Slice 5c-B Phase 1 (Batch 110) — scene-FB target helper. Used only
 // for the COLOR pipeline; pick + velocity stay single-target.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
@@ -1047,7 +1051,17 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
       sampleCount,
       noDepthTest,
     );
-    entry = { descriptor, pipeline: null, pending: false };
+    // C11-157 Slice B — cache the non-LOG_DEPTH preprocessed source for the
+    // OIT accumulation variant. OIT runs in a depth-read-only pass, so the
+    // LOG_DEPTH `@builtin(frag_depth)` FragOutput member is stripped (leaving
+    // the plain `@location(0)` struct the injector's struct branch handles).
+    // Attached to the translucent color command below; read ONLY by
+    // executeTranslucentPass under the FAR-003 gate (gate-OFF inert).
+    const oitShaderCode = preprocessShaderSource(
+      shaderCode,
+      defines & ~ShaderDefine.LOG_DEPTH,
+    );
+    entry = { descriptor, pipeline: null, pending: false, oitShaderCode };
     cache.pipelineEntries.set(pipelineKey, entry);
   }
   const pipeline = tryResolveBillboardPipeline(
@@ -1350,6 +1364,32 @@ function _updateWebGPUBillboardsInner(collection, frameState, commandList) {
     cull: true,
     renderState: colorRenderState,
   });
+
+  // C11-157 Slice B — OIT reachability for translucent billboards. When the
+  // command lands in Pass.TRANSLUCENT (9), attach the OIT variant inputs so
+  // executeTranslucentPass auto-builds the MRT accumulation pipeline under the
+  // FAR-003 gate. Reuses the base color pipeline's SHARED layout + vertex
+  // layout + primitive/depth state (so the pre-baked bind group + per-slice
+  // camera resolver stay compatible), single-sample to match the OIT
+  // accumulation targets. Inert (never read) when the gate is off → gate-OFF
+  // byte-identical. The billboard FS returns a `FragOutput` struct
+  // (@location(0) color) — handled by injectOITOutput's Slice-A struct branch.
+  if (
+    billboardPass === 9 /* Pass.TRANSLUCENT */ &&
+    defined(entry.oitShaderCode)
+  ) {
+    cache.colorCommand._shaderCode = entry.oitShaderCode;
+    cache.colorCommand._pipelineConfig = {
+      label: "OIT Billboard",
+      layout: entry.descriptor.layout,
+      vertexBuffers: entry.descriptor.vertex.buffers,
+      vertexEntryPoint: "vertexMain",
+      fragmentEntryPoint: "fragmentMain",
+      primitive: entry.descriptor.primitive,
+      depthStencil: entry.descriptor.depthStencil,
+      multisample: undefined,
+    };
+  }
 
   // AUDIT_2026_05_02 B.10 (Batch 143, NEW-COLLECTIONS-MOTION-VECTORS) —
   // attach velocity command. The TAA pass walks the command list for

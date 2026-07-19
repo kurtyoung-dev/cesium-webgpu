@@ -5553,8 +5553,24 @@ to the FAR-003 OIT×MSAA lane, not the resolve-elision slice.
 
 ## NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING (surfaced by M-OIT, 2026-07-18)
 
-**Status:** **PARTIAL — Slice A (PRIMITIVE family) DONE 2026-07-18 (C11-157).** Collection + model
-(Slices B/C) REMAIN. Contained-off today ⇒ no default-path impact.
+**Status:** **PARTIAL — Slices A (PRIMITIVE) + B (COLLECTION) DONE 2026-07-18/19 (C11-157).** Model
+(Slice C) REMAINS. Contained-off today ⇒ no default-path impact.
+
+**Slice B (COLLECTION, C11-157) — DONE 2026-07-19.** Translucent COLLECTION color commands now carry
+the OIT variant too. `WebGPUBillboardRenderer.js`, `WebGPUPointPrimitiveRenderer.js`,
+`WebGPUPolylineRenderer.js` each attach `cmd._shaderCode` (the non-LOG_DEPTH preprocessed collection
+source, cached per pipeline entry) + `cmd._pipelineConfig` (the base color pipeline's SHARED layout +
+vertex layout + primitive/depth state, single-sample) to their `Pass.TRANSLUCENT` (9) color command.
+All collection color FS return a `FragOutput` struct with `@location(0) color` + `@builtin(position)
+position` — handled by the Slice-A `injectOITOutput` struct branch (no injector change needed;
+premise-verified for billboard/point/polyline + the polyline material variants Arrow/Dash/Glow/Outline).
+Per-slice camera resolvers (`bindGroupResolvers`) are honored in the OIT accumulation pass
+(`executeOITCommand`), so 2D/CV collections resolve correctly. Evidence:
+`probe-oit-collection-reachable.mjs` — point (onVsOff 10.08%), polyline (1.17%), billboard (9.66%) all
+PASS with `_webgpuOITActiveThisFrame`=TRUE (was always false), 0 validation errors, restore 0px; PNGs
+read (Venn-overlap / triple-overlap desaturation = the known WBOIT look). No-regression: Slice-A
+primitives + splats + evidence probe (parity 1.33%) + standard net + capture-and-diff all green.
+Runs at `msaaSamples=1`.
 
 **Slice A (PRIMITIVE, C11-157) — DONE.** Translucent primitive color commands in
 `WebGPUPrimitiveCommands.ts::createWebGPUCommands` now carry `_shaderCode` (the non-LOG_DEPTH
@@ -5577,9 +5593,12 @@ stays DEFAULT-OFF (reachable, not default-on). Runs at `msaaSamples=1`. Follow-u
 `NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH` (WBOIT weight desaturation), `NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING`
 (MSAA×OIT accumulation).
 
-**Original finding (Slices B/C still open for collection + model):** the real prerequisite for any
-WebGPU-OIT default-parity flip; multi-batch, epic. It is the load-bearing gap behind the
-`M-OIT-COVERAGE-AND-FLIP-EVIDENCE` NO-GO verdict.
+**Original finding (Slice C still open for model):** the real prerequisite for any WebGPU-OIT
+default-parity flip; multi-batch, epic. It is the load-bearing gap behind the
+`M-OIT-COVERAGE-AND-FLIP-EVIDENCE` NO-GO verdict. With primitives (A) + collections (B) now reachable,
+Slice C (translucent glTF MODEL commands via `WebGPUModelRenderer`) is the remaining producer; then a
+default flip additionally needs the two FAR-003 adjacencies (`NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME`,
+`NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING`).
 
 **Finding.** The WebGPU MRT-OIT accumulation path in `WebGPUSceneRendererTranslucentPass.ts`
 (`executeTranslucentPass`) engages only when `hasOITPipelines` is true, which requires a
