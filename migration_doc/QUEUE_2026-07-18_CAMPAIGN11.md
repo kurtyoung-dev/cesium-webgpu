@@ -493,10 +493,54 @@ starting at `C11-166` (`C11-01..165` NOT renumbered or reused).
 preserved verbatim per the register-preservation rule); `C11-167..171` are newly minted from the
 Batch-717 investigation. The 188-item register baseline is unchanged.
 
-**Open — absorbs pending findings.** A broader 7-lane performance investigation (external
-best-practice research, full `DEFERRED_WORK` perf inventory, C11 perf-adequacy verdict, hot-path
-audit, tooling gap analysis) was still running when this block was written. **Its confirmed findings
-append here as `C11-173+`** rather than being scattered — keep this the single perf lane.
+**Pending findings ABSORBED (2026-07-19, 32-agent investigation — 7 lanes + adversarial verification).**
+The broader sweep completed and **independently confirmed the Batch-717 root cause** by a separate
+evidence path (code-proof of `ContextFactory.ts:228-259` alongside the runtime `getContext` proof).
+**23 of its 24 heavy claims were KILLED by adversarial verification** — most lanes theorized against
+pre-fix code or attributed shared costs to a backend gap. Its three cheap surviving tool items append
+below as `C11-173..175`; its five missing-backlog items were filed to `DEFERRED_WORK.md` (2026-07-19
+section). Numbered range now contiguous `C11-01..175`, collision-checked as before.
+
+| C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
+|---|---|---|---|---|---|---|---|
+| `C11-173` | NEW-FRAME-PACING-MEASURED-REFRESH-RATE [`summarizeFramePacing()` (`lib/performance-campaign-utils.mjs:120-154`) already computes `droppedFramesAtRefreshRate`, but `refreshHz` is a **default parameter of 60** and the call site (`run-performance-campaign.mjs:2545`) passes ONE argument — so every dropped-frame figure silently assumes 60 Hz. Measure the real display period with a no-op rAF spin and thread it in. **Do NOT build a new quantization probe** — this one works, it just assumes its input] | test-infra | P1 | tooling | XS (~10 LOC) | G10 | W1 (perf lane) |
+| `C11-174` | NEW-WEBGPU-CACHE-STATS-EXPOSURE [`WebGPURenderPipelineCache.ts:168-200` and `WebGPUBindGroupCache.ts:81-95` **already track hits/misses/hitRate**, but the counters are absent from `WebGPUContext.getRendererStatistics()` (:5377-5497). Expose them (follow the `csmShadows` try/catch pattern at :5473-5479) + add `CesiumDebug.cacheStats()`. **A churning bind-group cache is EXACTLY the shape of the bug Batch 717 just fixed** — this makes that shape visible for free] | test-infra | P1 | tooling | S (~40 LOC) | G10 | W1 (perf lane) |
+| `C11-175` | NEW-WEBGPU-ADAPTER-SELECTION-AUDIT [Chrome can silently select a **weaker adapter** for WebGPU than for WebGL (notably on battery), which would show up as a backend "deficit" that no code change can fix. Pass `powerPreference: 'high-performance'` at adapter request and **log `adapter.info` next to the WebGL `RENDERER` string** so every future perf comparison states which physical GPU each backend actually got. Directly relevant: the maintainer's own reports come from a machine whose adapter pairing has never been recorded] | build-boot | P1 | correctness/tooling | S | G9 | W1 (perf lane) |
+
+**⚠ GUARD RAILS — explicitly do NOT do these** (each would waste effort or fabricate evidence; all
+were considered and rejected with reasons by the sweep):
+
+- **Do NOT promote `C11-SEED-23` (S1-6 shared frontend floor, ~4-5 ms avg / 8-10 ms p95) as a response
+  to a backend gap.** It is backend-neutral — both backends pay it equally, so it raises absolute
+  throughput on BOTH and **cannot narrow a ratio**. Legitimate work, wrong symptom.
+- **Do NOT pull `C11-GT-03` (MSAA 4→1).** The reserve-lever gating is correct, and the
+  bandwidth-attributed evidence it demands does not exist. `scene.msaaSamples` (`Scene.js:488`) is
+  **backend-agnostic** — WebGL consumes it at `FramebufferOrchestrator.js:76,92` and both backends
+  rasterize 4×. Flipping it on WebGPU alone would benchmark no-AA against 4×-AA and **fabricate**
+  the evidence. If ever tested, set `msaaSamples = 1` on BOTH and compare the ratio. The 1,640 MB/frame
+  figure is stale (predates the C10-03 resolve elision and C10's −33% passes).
+- **Do NOT pull `C11-43`/`C11-32`/`C11-33` forward from W6.** `C11-43` skips its own P0 31-renderer
+  pipeline-cache-key audit (documented black-frame failure: no free bit for topology in the collection
+  Uint32 key) and jumps `C11-50`, the validation probe the queue marks "must precede." Their
+  documented baselines (~33 allocations/frame; ~10 `writeBuffer` calls, ~113 KB/frame) are **two orders
+  of magnitude below** what Batch 717 removed. Re-size them AFTER `C11-168`.
+- **Do NOT re-derive the Gate-D anchor.** `C11-SEED-27` is a supplementary input, not the anchor; the
+  anchor is `campaign9-c9-30-checkpoint-clean-r5-2026-07-17.json`. Re-baselining on the improved tree
+  trips Gate D's own stop condition (§3 / :553,556) and would erase the C9/C10 gains it exists to show.
+- **Do NOT lead with globe hot-path allocation churn** (232-float camera UB re-packed per tile per pass
+  `WebGPUGlobeSurfaceCameraUB.ts:97,228,236`; unpooled tile command literals
+  `GlobeSurfaceTileProviderRendering.js:1084`; string bind-group keys
+  `WebGPUGlobeSurfaceRenderer.ts:1997-2000`). All real, all **tens of microseconds** against the 9.6 ms
+  Batch 717 removed. Secondary until `C11-168` re-sizes them.
+- **Do NOT build WebGL GPU timing yet** (`EXT_disjoint_timer_query_webgl2` is absent from the codebase
+  and not exposed by default in Chromium). If ever built, emit under a **distinct key**: WebGPU's
+  `frameMs` is a begin-to-end *span* while WebGL's would be a *sum* of non-nestable elapsed queries —
+  aliasing both into `gpuMs` would systematically flatter WebGL.
+
+**Still-open genuine WebGPU-specific cost (unmeasured):** the mandatory post-process blit. It scales
+with **pixel count**, so it is near-invisible at the harness's 1280×720 and could matter at 1440p/4K.
+`C11-168` must therefore capture the maintainer's ACTUAL session parameters — canvas size,
+`devicePixelRatio`, resolution scale, which page — not just the harness defaults.
 
 ---
 
@@ -612,6 +656,9 @@ evidence paragraph as each slice lands.)
 | `C11-170` (perf regression guard) | NOT STARTED | §1.25 / G10 | Wire the new probes (`probe-cpu-sampling-profile`, `probe-webgpu-frame-breakdown`, `probe-request-render-asymmetry`, `probe-backend-isolation`) into a runnable gate so a re-upload/churn storm cannot silently return. This defect class survived two campaigns undetected. |
 | `C11-171` (split-screen viewer init) | NOT STARTED | §1.25 / G9 | `Apps/WebGPUTest/split-screen-comparison.html` never exposed both `webglViewer`/`webgpuViewer` within 90 s, with **no console errors** (`probe-backend-isolation` split lane; globals confirmed present at `:553-554`). Blocks the maintainer's own A/B comparison workflow — the frame in which the original perf report was made. |
 | `C11-172` (ocean-wave octave LOD) | NOT STARTED | §1.25 / G8 / `DEFERRED_WORK` `OCEAN-WAVE-OCTAVE-LOD` | W4 with `C11-158` (shared water-shader surface). Filed by the Batch-716 ocean-waves audit: altitude-gate the march 3→2→1 octaves reusing `waveIntensityFade`; ~0.1 ms/frame mid-altitude, and landing at 2 octaves also narrows the WGSL-vs-GLSL 3-vs-2 divergence. *(This row also serves as the §3.2 ledger entry for the Batch-716 audit, which previously had none.)* |
+| `C11-173` (measured display refresh rate in frame pacing) | NOT STARTED | §1.25 / G10 | XS (~10 LOC). `summarizeFramePacing()` (`lib/performance-campaign-utils.mjs:120-154`) already computes `droppedFramesAtRefreshRate`, but `refreshHz` is a **default parameter of 60** and `run-performance-campaign.mjs:2545` passes ONE argument — so every dropped-frame figure silently assumes 60 Hz. Measure the real display period with a no-op rAF spin and thread it in. **Do NOT build a new quantization probe** — this one works, it just assumes its input. |
+| `C11-174` (WebGPU cache-stats exposure) | NOT STARTED | §1.25 / G10 | S (~40 LOC). `WebGPURenderPipelineCache.ts:168-200` + `WebGPUBindGroupCache.ts:81-95` **already track hits/misses/hitRate**; they are simply absent from `WebGPUContext.getRendererStatistics()` (:5377-5497). Expose via the `csmShadows` try/catch pattern (:5473-5479) + add `CesiumDebug.cacheStats()`. **A churning bind-group cache is exactly the shape of the Batch-717 bug** — pure exposure of counters already paid for. |
+| `C11-175` (WebGPU adapter-selection audit) | NOT STARTED | §1.25 / G9 | Chrome can silently select a **weaker adapter** for WebGPU than for WebGL (notably on battery) — a "deficit" that no code change can fix. Pass `powerPreference: 'high-performance'` at adapter request and log `adapter.info` beside the WebGL `RENDERER` string, so every future perf comparison records which physical GPU each backend actually got. Directly relevant: the maintainer's own reports come from a machine whose adapter pairing has never been recorded. |
 | `C11-SEED-27` (C10-30 clean-env r5 re-measure) | DEFERRED (seed) | §1.23 / G10/G9 | Gate-D anchor input |
 
 ---
