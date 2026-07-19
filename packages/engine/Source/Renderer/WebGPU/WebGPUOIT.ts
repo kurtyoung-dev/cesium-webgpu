@@ -149,13 +149,21 @@ export class WebGPUOIT {
           storeOp: "store" as GPUStoreOp,
         },
       ],
+      // C11-157 Slice A — READ-ONLY depth+stencil. The OIT accumulation pass
+      // depth-TESTS translucent fragments against the opaque scene depth but
+      // never writes it (the OIT pipelines set depthWriteEnabled:false). For a
+      // combined depth24plus-stencil8 target the attachment must encompass ALL
+      // aspects, so BOTH depth and stencil are declared read-only; WebGPU
+      // forbids loadOp/storeOp alongside `*ReadOnly: true`, so they are omitted
+      // (the prior `depthReadOnly:true` + depthLoadOp/StoreOp combination was
+      // an invalid descriptor that failed validation every frame — latent
+      // because the OIT path was unreachable until Slice A wired it up). The
+      // `depthStencilView` MUST be the all-aspects render-pass attachment view,
+      // NOT a depth-only sampleable view (see the caller).
       depthStencilAttachment: {
         view: depthStencilView,
-        depthLoadOp: "load" as GPULoadOp,
-        depthStoreOp: "store" as GPUStoreOp,
-        depthReadOnly: true, // Don't modify depth from opaque pass
-        stencilLoadOp: "load" as GPULoadOp,
-        stencilStoreOp: "store" as GPUStoreOp,
+        depthReadOnly: true,
+        stencilReadOnly: true,
       },
     };
   }
@@ -460,6 +468,32 @@ fn csm_oitOutput(color: vec4<f32>, clipZ: f32) -> OITFragOutput {
 }
 `;
 
+    // ── C11-157 Slice A — struct-typed fragment return support (ADD-ONLY) ──
+    // The single-`@location(0)` path below is preserved VERBATIM; Gaussian
+    // splats + FLAT primitive shaders depend on its exact output (a spec
+    // asserts byte-identity). LIT / MRT-G-buffer primitive fragment shaders
+    // instead return a NAMED STRUCT (e.g. `-> FragOutput` with `@location(0)
+    // color` + `@location(1) normalRoughness`). The text-surgery below can't
+    // strip a `@location(0)` that lives on the STRUCT DEFINITION rather than
+    // the function signature, and after renaming the entry to a non-entry
+    // function that struct's `@location`/`@builtin` attributes would be
+    // orphaned (WGSL rejects IO attributes outside entry-point I/O). Struct
+    // returns therefore route through a dedicated branch that renames the
+    // entry, strips the struct's IO attributes, and wraps with
+    // `csm_oitOutput(base.<colorField>, in.<posField>.z)`.
+    const structInfo = WebGPUOIT._analyzeStructFragmentReturn(
+      baseWGSL,
+      fragmentEntryPoint,
+    );
+    if (structInfo) {
+      return WebGPUOIT._injectOITStructReturn(
+        baseWGSL,
+        fragmentEntryPoint,
+        structInfo,
+        oitHelpers,
+      );
+    }
+
     // Strategy: rename the original fragment entry point, then create a wrapper
     // that calls it and transforms the output.
     const entryRegex = new RegExp(
@@ -510,6 +544,160 @@ fn ${fragmentEntryPoint}(${paramName}: ${paramType}) -> OITFragOutput {
 }
 `;
 
+    return oitHelpers + modified + oitWrapper;
+  }
+
+  /**
+   * Analyze a fragment shader whose entry point returns a NAMED STRUCT type
+   * (the LIT / MRT-G-buffer primitive shape, `-> FragOutput`). Returns null for
+   * the single-`@location(0)` shape (so the caller keeps the verbatim legacy
+   * path) or when the shader can't be parsed (graceful fall-through). On
+   * success returns the struct name, the `@location(0)` color member name, and
+   * the fragment input parameter name/type plus its `@builtin(position)` member
+   * name (the clip/frag position the OIT weight function samples).
+   * @private
+   */
+  private static _analyzeStructFragmentReturn(
+    baseWGSL: string,
+    fragmentEntryPoint: string,
+  ): {
+    structName: string;
+    colorField: string;
+    paramName: string;
+    paramType: string;
+    posField: string;
+  } | null {
+    // Entry signature: `@fragment fn <entry>(<params>) -> <ret> {`.
+    const sigRe = new RegExp(
+      `@fragment\\s+fn\\s+${fragmentEntryPoint}\\s*\\(([^)]*)\\)\\s*->\\s*([A-Za-z_]\\w*|@[\\s\\S]*?)\\s*\\{`,
+    );
+    const sig = baseWGSL.match(sigRe);
+    if (!sig) {
+      return null;
+    }
+    const paramDecl = sig[1].trim();
+    const returnType = sig[2].trim();
+    // A `@location(0) vec4<f32>` (or any `@`-prefixed) return is the single-
+    // target shape → NOT a struct; let the byte-identical legacy path handle it.
+    if (returnType.startsWith("@") || !/^[A-Za-z_]\w*$/.test(returnType)) {
+      return null;
+    }
+    const structName = returnType;
+    const structBody = WebGPUOIT._extractStructBody(baseWGSL, structName);
+    if (!structBody) {
+      return null;
+    }
+    const colorMatch = structBody.match(/@location\(0\)\s+([A-Za-z_]\w*)\s*:/);
+    if (!colorMatch) {
+      return null;
+    }
+    const colorField = colorMatch[1];
+    const paramName = paramDecl.split(":")[0].trim();
+    const paramType = paramDecl.split(":").slice(1).join(":").trim();
+    // The `@builtin(position)` member of the input struct is the framebuffer
+    // position; its `.z` (NDC depth) feeds csm_oitWeight. Field name varies
+    // (`position` on flat shaders, `clipPosition` on lit) — resolve it.
+    let posField = "position";
+    const inputBody = WebGPUOIT._extractStructBody(baseWGSL, paramType);
+    if (inputBody) {
+      const posMatch = inputBody.match(
+        /@builtin\(position\)\s+([A-Za-z_]\w*)\s*:/,
+      );
+      if (posMatch) {
+        posField = posMatch[1];
+      }
+    }
+    return { structName, colorField, paramName, paramType, posField };
+  }
+
+  /**
+   * Extract the `{ ... }` body text of `struct <name>`, or null if not found.
+   * WGSL struct member declarations contain no nested `{}` (composite types use
+   * `<>` / `[]`), so scanning to the first `}` after the opening `{` is exact.
+   * @private
+   */
+  private static _extractStructBody(
+    wgsl: string,
+    structName: string,
+  ): string | null {
+    const decl = new RegExp(`struct\\s+${structName}\\b`).exec(wgsl);
+    if (!decl) {
+      return null;
+    }
+    const open = wgsl.indexOf("{", decl.index);
+    if (open < 0) {
+      return null;
+    }
+    const close = wgsl.indexOf("}", open);
+    if (close < 0) {
+      return null;
+    }
+    return wgsl.slice(open + 1, close);
+  }
+
+  /**
+   * Remove `@location(n)` and `@builtin(...)` attributes from the members of
+   * `struct <structName>`. Required so the renamed non-entry `_oit_base_*`
+   * function can return the (formerly entry-point) output struct without WGSL
+   * rejecting its now-orphaned I/O attributes.
+   * @private
+   */
+  private static _stripStructIOAttributes(
+    wgsl: string,
+    structName: string,
+  ): string {
+    const decl = new RegExp(`struct\\s+${structName}\\b`).exec(wgsl);
+    if (!decl) {
+      return wgsl;
+    }
+    const open = wgsl.indexOf("{", decl.index);
+    if (open < 0) {
+      return wgsl;
+    }
+    const close = wgsl.indexOf("}", open);
+    if (close < 0) {
+      return wgsl;
+    }
+    const body = wgsl.slice(open + 1, close);
+    const strippedBody = body
+      .replace(/@location\([^)]*\)\s*/g, "")
+      .replace(/@builtin\([^)]*\)\s*/g, "");
+    return wgsl.slice(0, open + 1) + strippedBody + wgsl.slice(close);
+  }
+
+  /**
+   * Transform a struct-returning fragment shader into an OIT MRT variant
+   * (weighted-blended dual output). Add-only companion to `injectOITOutput` —
+   * never invoked for the single-`@location(0)` shape. Strategy: (1) rename the
+   * entry to a non-entry `_oit_base_*` keeping its `-> <struct>` return, (2)
+   * strip the struct's I/O attributes, (3) append an OIT wrapper entry that
+   * calls the base and re-emits `csm_oitOutput(base.<colorField>, in.pos.z)`.
+   * @private
+   */
+  private static _injectOITStructReturn(
+    baseWGSL: string,
+    fragmentEntryPoint: string,
+    info: {
+      structName: string;
+      colorField: string;
+      paramName: string;
+      paramType: string;
+      posField: string;
+    },
+    oitHelpers: string,
+  ): string {
+    let modified = baseWGSL.replace(
+      new RegExp(`@fragment([\\s\\S]*?)fn\\s+${fragmentEntryPoint}`),
+      `fn _oit_base_${fragmentEntryPoint}`,
+    );
+    modified = WebGPUOIT._stripStructIOAttributes(modified, info.structName);
+    const oitWrapper = `
+@fragment
+fn ${fragmentEntryPoint}(${info.paramName}: ${info.paramType}) -> OITFragOutput {
+  let _oitBase = _oit_base_${fragmentEntryPoint}(${info.paramName});
+  return csm_oitOutput(_oitBase.${info.colorField}, ${info.paramName}.${info.posField}.z);
+}
+`;
     return oitHelpers + modified + oitWrapper;
   }
 

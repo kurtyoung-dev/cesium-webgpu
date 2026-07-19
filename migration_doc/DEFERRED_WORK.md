@@ -5553,8 +5553,32 @@ to the FAR-003 OIT×MSAA lane, not the resolve-elision slice.
 
 ## NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING (surfaced by M-OIT, 2026-07-18)
 
-**Status:** DEFERRED (the real prerequisite for any WebGPU-OIT default-parity flip; multi-batch,
-epic). Contained-off today ⇒ no default-path impact, but it is the load-bearing gap behind the
+**Status:** **PARTIAL — Slice A (PRIMITIVE family) DONE 2026-07-18 (C11-157).** Collection + model
+(Slices B/C) REMAIN. Contained-off today ⇒ no default-path impact.
+
+**Slice A (PRIMITIVE, C11-157) — DONE.** Translucent primitive color commands in
+`WebGPUPrimitiveCommands.ts::createWebGPUCommands` now carry `_shaderCode` (the non-LOG_DEPTH
+preprocessed source) + `_pipelineConfig` (the SHARED primitive pipeline layout so pre-baked bind
+groups stay compatible, single-sample to match the OIT accumulation targets). `injectOITOutput`
+(`WebGPUOIT.ts`) gained an **add-only struct-return branch** so it handles BOTH the FLAT
+single-`@location(0)` shape (PrimitiveBasicColor — legacy path, byte-identical, splats depend on it)
+AND the LIT `FragOutput`-struct shape (PrimitivePhongColor — strips the struct's `@location`/
+`@builtin` attrs, wraps with `csm_oitOutput(base.<colorField>, in.<posField>.z)`). Also fixed two
+latent OIT-accumulation-pass bugs that only fired once the path became reachable:
+(1) `getAccumulationPassDescriptor` built an INVALID read-only depth attachment (`depthReadOnly:true`
+alongside `depthLoadOp/StoreOp`, stencil aspect unhandled) → now `depthReadOnly:true` +
+`stencilReadOnly:true`, no loadOp/storeOp; (2) `executeTranslucentPass` passed the depth-ONLY
+sampleable view (`context._depthStencilView`) as a render-pass attachment → now uses the scene FB's
+ALL-ASPECTS view (`_sceneFramebuffer.colorTarget.getDepthStencilTextureView()`).
+Evidence: `probe-oit-primitive-reachable.mjs` (lit canonical + flat PASS, `_webgpuOITActiveThisFrame`
+= TRUE was-always-false, 0 errors); `probe-oit-transparency.mjs` oracle-c now PASS with
+`parityVsWebglOn` = **1.33%** (was 10.33% @ Batch-700 — WebGPU OIT now matches WebGL OIT). FAR-003
+stays DEFAULT-OFF (reachable, not default-on). Runs at `msaaSamples=1`. Follow-ups:
+`NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH` (WBOIT weight desaturation), `NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING`
+(MSAA×OIT accumulation).
+
+**Original finding (Slices B/C still open for collection + model):** the real prerequisite for any
+WebGPU-OIT default-parity flip; multi-batch, epic. It is the load-bearing gap behind the
 `M-OIT-COVERAGE-AND-FLIP-EVIDENCE` NO-GO verdict.
 
 **Finding.** The WebGPU MRT-OIT accumulation path in `WebGPUSceneRendererTranslucentPass.ts`
@@ -5583,6 +5607,28 @@ single reachable slice, verify oracle (c) flips to `active=true` + the parity de
 the oracle (a) magnitude, THEN broaden to models/collections. Close the two live FAR-003 adjacencies
 (`NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME`, `NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING`) in tandem.
 Full record: `migration_doc/OIT_DEFAULT_FLIP_EVIDENCE_2026-07-18.md`. Owning FAR row: `FAR-003`/`T7`.
+
+## NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH (surfaced by C11-157 Slice A, 2026-07-18)
+
+**Status:** DEFERRED (quality follow-up; does NOT block C11-157 or any default flip). Improves BOTH
+translucent primitives AND Gaussian splats — they share `WebGPUOIT.injectOITOutput`.
+
+**Finding.** `WebGPUOIT.injectOITOutput`'s wrapper feeds `csm_oitWeight(alpha, in.<pos>.z)` where
+`<pos>.z` is the **framebuffer/NDC depth ∈ [0,1]** (WebGPU depth range). The McGuire-Bavoil weight
+function `10.0 / (1e-5 + pow(z/5,2) + pow(z/200,6))` was authored for **view-space / eye-linear**
+depth (metres); with z ∈ [0,1] the denominator ≈ 1e-5 for nearly all fragments, so the weight
+saturates to the `3e2` clamp for the whole scene → the depth-ordering term degenerates and WBOIT
+falls back toward flat averaging. Visible as the known desaturation-at-depth-complexity look (deep
+overlaps wash to muddy gray-green). This is NOT a bug — it is the honest current WBOIT behavior, and
+it already matches WebGL OIT-on closely (`probe-oit-transparency` parity 1.33%). Both the splat
+producer (`WebGPUGaussianSplatRenderer`) and the new primitive path share this weight.
+
+**Fix when picked up.** Feed an **eye-linear view depth** (metres) into `csm_oitWeight` instead of
+NDC z — e.g. pass the interpolated view-space `-viewPosition.z` (lit shaders already carry
+`viewPosition`) or reconstruct linear depth from the camera near/far in the injected wrapper. Improves
+WBOIT layer separation at high depth-complexity for splats + primitives + (future) collections/models
+simultaneously. Verify against `probe-oit-primitive-reachable.mjs` (expect sharper, less-washed
+overlaps) and re-check `probe-oit-transparency` parity vs WebGL OIT-on.
 
 ## NEW-WEBGPU-CUSTOMSHADER-TRANSLUCENCYMODE-ALPHA-UNDERAPPLIED (surfaced by M-OIT regression net, 2026-07-18)
 

@@ -293,6 +293,18 @@ interface CacheLike {
   pipeline?: GPURenderPipeline;
   pipelineFrontCull?: GPURenderPipeline;
   pipelineBackCull?: GPURenderPipeline;
+  // C11-157 Slice A — OIT (weighted-blended MRT) reachability for translucent
+  // primitives. Cached once per pipeline (re)build; attached to each
+  // Pass.TRANSLUCENT color command via `_shaderCode` + `_pipelineConfig` so
+  // `executeTranslucentPass` auto-builds the MRT accumulation variant when the
+  // FAR-003 `_webgpuOITEnabled` gate is on. Inert (never read) while the gate
+  // is off → gate-OFF byte-identical. `oitShaderCode` is the non-LOG_DEPTH
+  // preprocessed source (OIT runs in a depth-read-only pass; log frag_depth is
+  // meaningless there). `oitPipelineLayout` is the SHARED layout the base
+  // pipelines use, so the command's pre-baked bind groups stay compatible.
+  oitPipelineLayout?: GPUPipelineLayout;
+  oitShaderCode?: string;
+  oitDefaultCullMode?: GPUCullMode;
   translucent?: boolean;
   twoPasses?: boolean;
   primitiveTopology?: string;
@@ -3002,6 +3014,17 @@ function createWebGPUCommands(
     // kept for diff hygiene but the value is now scene-pipeline-correct.
     const canvasFormat =
       context.scenePipelineFormat || navigator.gpu.getPreferredCanvasFormat();
+    // C11-157 Slice A — build the pipeline layout ONCE and reuse it across every
+    // cull variant AND the OIT accumulation variant. A translucent command's
+    // OIT pipeline (auto-built in executeTranslucentPass) must share the exact
+    // layout its pre-baked bind groups were created against, or WebGPU rejects
+    // the setBindGroup. Behaviorally identical to the former per-call inline
+    // layout (pipeline layouts are immutable descriptors — one shared instance
+    // is a pure allocation win, not a behavior change).
+    const primitivePipelineLayout = device.createPipelineLayout({
+      label: `Primitive PL ${shaderInfo.type}`,
+      bindGroupLayouts: bindGroupLayouts,
+    });
     // Build the primitive render pipeline for a given cull mode. Kept
     // as a closure so the `twoPasses` path below can create two extra
     // variants (cullMode: "front" for pass 1, cullMode: "back" for
@@ -3009,9 +3032,7 @@ function createWebGPUCommands(
     const makePipeline = (cullMode: GPUCullMode, label: string) =>
       device.createRenderPipeline({
         label,
-        layout: device.createPipelineLayout({
-          bindGroupLayouts: bindGroupLayouts,
-        }),
+        layout: primitivePipelineLayout,
         vertex: {
           module: cache.shaderModule.module,
           entryPoint: "vertexMain",
@@ -3103,6 +3124,19 @@ function createWebGPUCommands(
       defaultCullMode,
       `Primitive pipeline (cull=${defaultCullMode})`,
     );
+
+    // C11-157 Slice A — cache OIT-variant inputs (see CacheLike). Attached to
+    // each Pass.TRANSLUCENT color command below; read ONLY by
+    // executeTranslucentPass under the FAR-003 gate (gate-OFF inert). The OIT
+    // source is the NON-LOG_DEPTH preprocessing (accumulation is depth-read-
+    // only, so log frag_depth is meaningless there); when the master log switch
+    // is off this equals `processedCode`. WebGPUOIT.injectOITOutput transforms
+    // both the flat single-`@location(0)` shape and the lit `FragOutput` struct.
+    cache.oitPipelineLayout = primitivePipelineLayout;
+    cache.oitShaderCode = logDepthActive
+      ? preprocessShaderSource(phongCode, 0)
+      : processedCode;
+    cache.oitDefaultCullMode = defaultCullMode;
 
     // DP-H18 / C2-23 — depthFailAppearance twin pipeline. Always a FLAT shader
     // ([camera, material, effects] — 3 groups, no texture) regardless of the
@@ -3723,7 +3757,11 @@ function createWebGPUCommands(
     // twoPasses front/back-cull pipelines (DP-H17) continue to drive
     // pipeline identity.
     const appearanceRS = primitive.appearance?.renderState;
-    const makeCommand = (pipeline: GPURenderPipeline, label: string) => {
+    const makeCommand = (
+      pipeline: GPURenderPipeline,
+      label: string,
+      cullMode: GPUCullMode,
+    ) => {
       const cmd: PrimitiveDrawCommand = new WebGPUDrawCommand({
         pipeline,
         bindGroups: commandBindGroups,
@@ -3754,17 +3792,60 @@ function createWebGPUCommands(
       // and expose the stride for the cast pass's pipeline override.
       cmd._shadowCastLayout = "rte24";
       cmd.vertexStride = fpv * 4;
+      // C11-157 Slice A — attach the OIT accumulation variant inputs to
+      // translucent color commands. `executeTranslucentPass` auto-builds the
+      // MRT pipeline from `_shaderCode` + `_pipelineConfig` ONLY when the
+      // FAR-003 `_webgpuOITEnabled` gate is on; both fields are otherwise inert
+      // (never read), so the sorted-alpha default path is byte-identical. The
+      // OIT pipeline reuses the primitive's SHARED layout (bind-group
+      // compatibility) and the base cull mode. It is single-sample to match the
+      // single-sample OIT accumulation targets — MSAA×OIT accumulation stays
+      // the pre-existing FAR-003 adjacency (NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING).
+      if (
+        translucent &&
+        defined(cache.oitShaderCode) &&
+        defined(cache.oitPipelineLayout)
+      ) {
+        const oitCull: GPUCullMode = primitiveTopology.startsWith("line")
+          ? "none"
+          : cullMode;
+        cmd._shaderCode = cache.oitShaderCode;
+        cmd._pipelineConfig = {
+          label: `OIT ${shaderInfo.type} (${label})`,
+          layout: cache.oitPipelineLayout,
+          vertexBuffers: [vertexLayout.layout],
+          vertexEntryPoint: "vertexMain",
+          fragmentEntryPoint: "fragmentMain",
+          primitive: {
+            topology: primitiveTopology,
+            cullMode: oitCull,
+            frontFace: "ccw",
+          },
+          depthStencil: {
+            format: "depth24plus-stencil8",
+            depthWriteEnabled: false,
+            depthCompare: "less-equal",
+          },
+          multisample: undefined,
+        };
+      }
       return cmd;
     };
     if (twoPasses && cache.pipelineFrontCull && cache.pipelineBackCull) {
       validCommands.push(
-        makeCommand(cache.pipelineFrontCull, "back-face pass"),
+        makeCommand(cache.pipelineFrontCull, "back-face pass", "front"),
       );
       validCommands.push(
-        makeCommand(cache.pipelineBackCull, "front-face pass"),
+        makeCommand(cache.pipelineBackCull, "front-face pass", "back"),
       );
     } else {
-      validCommands.push(makeCommand(cache.pipeline, "single-pass"));
+      validCommands.push(
+        makeCommand(
+          cache.pipeline,
+          "single-pass",
+          cache.oitDefaultCullMode ?? "none",
+        ),
+      );
     }
 
     // DP-H18 / C2-23 — depth-fail twin command, emitted AFTER the main

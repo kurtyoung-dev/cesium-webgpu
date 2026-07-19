@@ -20,15 +20,14 @@
  *   (c) WebGPU OIT OPT-IN — CesiumDebug.webgpuOIT(true). Capture the status
  *       object, render/settle, assert ZERO device/validation errors, output
  *       non-black. Compare vs WebGL OIT-on (the parity target); record
- *       mismatch %. **FINDING-AWARE:** at HEAD the WebGPU MRT-OIT accumulation
- *       path only engages for Pass.TRANSLUCENT commands carrying `_shaderCode`
- *       / `_oitPipeline`, and NO standard translucent primitive produces one
- *       (only Gaussian splats + the opaque globe surface set `_shaderCode`, and
- *       neither lands in Pass.TRANSLUCENT). So `active` is expected FALSE even
- *       with the gate ON — the gate flips, but OIT never activates for standard
- *       translucency. The probe RECORDS active + fallbackReason and gates on the
- *       flip mechanics + zero errors + non-black, NOT on active (active=false is
- *       the headline finding, reported not hidden).
+ *       mismatch %. **C11-157 Slice A (2026-07-18):** translucent PRIMITIVES now
+ *       carry the OIT variant (`_shaderCode`/`_pipelineConfig`), so the MRT-OIT
+ *       accumulation path engages for standard translucency: `active` and
+ *       `_webgpuOITActiveThisFrame` are now expected TRUE (both were ALWAYS
+ *       FALSE at Batch-700 — the original unreachability finding). The probe
+ *       HARD-GATES on active=true + zero errors + non-black; a false is now a
+ *       Slice-A regression, not the historical finding. Runs at msaaSamples=1
+ *       (single-sample OIT accumulation targets).
  *   (c-splat) REACHABILITY confirmation — the synthetic Gaussian-splat FR (the
  *       only `_shaderCode` carrier) + arm `_webgpuOITEnabled` AND
  *       `_splatOITDeferral`. Observe whether `_webgpuOITActiveThisFrame` ever
@@ -132,6 +131,11 @@ async function setupViewer(page, { renderer, oit }) {
       }
 
       const scene = v.scene;
+      // C11-157 Slice A — single-sample so the OIT accumulation pass (single-
+      // sample MRT targets) is sample-consistent when the gate is flipped ON.
+      // MSAA×OIT accumulation remains the tracked adjacency
+      // NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING (out of Slice A scope).
+      scene.msaaSamples = 1;
       v.clock.shouldAnimate = false;
       v.clock.currentTime = C.JulianDate.fromIso8601(clockIso);
 
@@ -552,8 +556,15 @@ let overallPass = true;
       !!(statusOn.toggled && statusOn.toggled.safetyGateEnabled) &&
       live.requested === true &&
       live.capable === true;
+    // C11-157 Slice A — translucent PRIMITIVES now carry the OIT variant, so
+    // the accumulation path MUST engage: active + _webgpuOITActiveThisFrame
+    // true (both were ALWAYS false at Batch-700).
     const cPass =
-      gateFlipped && pOnNB > 8 && errors === 0;
+      gateFlipped &&
+      pOnNB > 8 &&
+      errors === 0 &&
+      statusOn.activeThisFrame === true &&
+      live.active === true;
     // parity delta vs WebGL OIT-on
     const webglOnDecoded = report.__webglOnDecoded;
     const cParity = diffPixels(pOn.decoded, webglOnDecoded);
@@ -569,14 +580,14 @@ let overallPass = true;
       parityVsWebglOn_maxDelta: cParity.maxDelta,
       errors,
       note:
-        "gate flips (requested/capable/safetyGateEnabled) + 0 errors + non-black. active=FALSE is the FINDING: no Pass.TRANSLUCENT command carries _shaderCode/_oitPipeline, so the MRT-OIT accumulation path never engages for standard translucency.",
+        "C11-157 Slice A: translucent PRIMITIVES now reach the MRT-OIT accumulation. Gate flips (requested/capable/safetyGateEnabled) + 0 errors + non-black + active=TRUE + _webgpuOITActiveThisFrame=TRUE (both were ALWAYS FALSE at Batch-700). Weighted-blended (McGuire-Bavoil) desaturation at the intersections is the expected, known WBOIT look.",
     };
     if (!cPass) overallPass = false;
-    if (live.active !== true) {
+    if (statusOn.activeThisFrame !== true || live.active !== true) {
       report.findings.push(
-        "OIT-UNREACHABLE-FOR-PRIMITIVES: webgpuOIT(true) sets the gate but `active` stays " +
-          live.active +
-          ` (fallback=${live.fallbackReason}) on an intersecting-translucent-primitive scene. The WebGPU MRT-OIT accumulation path only runs for Pass.TRANSLUCENT commands carrying _shaderCode/_oitPipeline; only Gaussian splats + the opaque globe surface produce _shaderCode, and neither lands in Pass.TRANSLUCENT. Flipping the gate default-on is a visual no-op for standard transparency — it does NOT achieve WebGL default-parity.`,
+        "OIT-PRIMITIVE-REACHABILITY-REGRESSION: webgpuOIT(true) on the intersecting-translucent-primitive scene did NOT engage the MRT-OIT accumulation (_webgpuOITActiveThisFrame=" +
+          statusOn.activeThisFrame +
+          `, active=${live.active}, fallback=${live.fallbackReason}). C11-157 Slice A wired translucent primitives to carry the OIT variant, so a false here is a regression, not the Batch-700 unreachability finding.`,
       );
     }
 
@@ -599,7 +610,7 @@ let overallPass = true;
       withinNoiseFloor: dWithinFloor,
       errors,
       note:
-        "webgpuOIT(false) returns to the pre-toggle WebGPU default within the intrinsic dither noise floor (measured by a no-toggle control). Restore delta ≈ floor ⇒ containment restored. (Trivially holds because OIT never engaged — a meaningful but weak restore proof.)",
+        "webgpuOIT(false) returns to the pre-toggle WebGPU default within the intrinsic dither noise floor (measured by a no-toggle control). Restore delta ≈ floor ⇒ containment restored. C11-157 Slice A: this is now a MEANINGFUL restore proof — OIT genuinely engaged at gate-ON (oracle c), and gate-OFF returns to the byte-identical sorted-alpha default.",
     };
     if (!dPass) overallPass = false;
 
@@ -609,7 +620,7 @@ let overallPass = true;
       mismatchPx: onVsDefault.mismatch,
       maxDelta: onVsDefault.maxDelta,
       note:
-        "OIT-on vs WebGPU-default: 0 px confirms the gate flip has NO visual effect for standard translucency (corroborates the unreachable finding).",
+        "OIT-on vs WebGPU-default: now NON-zero — the gate flip visibly changes the render because weighted-blended OIT engages for translucent primitives (C11-157 Slice A).",
     };
 
     // ── (c-splat) reachability confirmation via the synthetic splat FR ──
@@ -718,14 +729,9 @@ let overallPass = true;
       ...splatObs,
       errors: splatErrors,
       note:
-        "Synthetic splat + armed _webgpuOITEnabled + _splatOITDeferral. sawOITActiveAnyFrame=false confirms even the only _shaderCode carrier cannot reach the MRT-OIT accumulation composite (splats are Pass.GAUSSIAN_SPLATS; hasOITPipelines is derived from the empty TRANSLUCENT bucket → inline seatbelt). The Batch-697 _ensureSceneColorResolved composite line stays UNEXECUTED.",
+        "Synthetic splat + armed _webgpuOITEnabled + _splatOITDeferral. Observational only (gates on 0 device errors). C11-157 Slice A note: the accumulation pass is now REACHABLE whenever a translucent PRIMITIVE is present, so sawOITActiveAnyFrame may be true here from residual translucent primitives left by the shared viewer's prior scene — it does NOT by itself prove the splat-DEFERRAL path reaches OIT. The Gaussian-splat deferral (splats are Pass.GAUSSIAN_SPLATS, folded only after hasOITPipelines is derived) remains a SEPARATE slice: NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME.",
     };
     if (splatErrors !== 0) overallPass = false;
-    if (splatObs && splatObs.sawOITActiveAnyFrame === false) {
-      report.findings.push(
-        "OIT-COMPOSITE-UNREACHED-EVEN-FOR-SPLATS: with _webgpuOITEnabled + _splatOITDeferral armed and a splat present, _webgpuOITActiveThisFrame never became true. The Batch-697 `_ensureSceneColorResolved` call inside the OIT composite path (WebGPUSceneRendererTranslucentPass ~L268) remains unexecuted at HEAD — it has no reachable caller.",
-      );
-    }
 
     delete report.__webglOnDecoded;
   } finally {
@@ -758,7 +764,7 @@ const gatedOracles = [
 const gatePass = overallPass && gatedOracles.every((o) => o && o.pass);
 console.log(
   gatePass
-    ? "\nGATE PASS — OIT coverage captured; WebGL OIT genuinely active; WebGPU gate flips + restores byte-identically with 0 device errors. FINDING(S) recorded above (WebGPU MRT-OIT is architecturally unreachable for standard translucency)."
+    ? "\nGATE PASS — OIT coverage captured; WebGL OIT genuinely active; WebGPU translucent PRIMITIVES now REACH the MRT-OIT accumulation (C11-157 Slice A: active=true, 0 device errors) and containment restores. Splat-deferral (c-splat) remains a separate unreached path."
     : "\nGATE FAIL — see oracle table + findings.",
 );
 process.exit(gatePass ? 0 : 1);

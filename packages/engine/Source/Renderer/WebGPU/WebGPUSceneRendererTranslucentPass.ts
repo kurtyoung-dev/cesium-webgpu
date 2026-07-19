@@ -58,6 +58,15 @@ export interface TranslucentPassHost {
   ) => { commands: CesiumAnyDrawCommand[]; count: number };
   // C10-03-MSAA-BOUNDARY-BYTES — demand-driven scene-COLOR MSAA resolve.
   _ensureSceneColorResolved: (context: WebGPUContext) => void;
+  // C11-157 Slice A — the scene framebuffer's color target exposes the
+  // all-aspects render-pass depth-stencil view the OIT accumulation pass must
+  // depth-test against (NOT the depth-only sampleable view carried by
+  // `context._depthStencilView`, which is for shader sampling only).
+  _sceneFramebuffer?: {
+    colorTarget?: {
+      getDepthStencilTextureView?: () => GPUTextureView | undefined;
+    } | null;
+  } | null;
 }
 
 /**
@@ -181,7 +190,16 @@ export function executeTranslucentPass(
       // Full OIT path: end opaque render pass → accumulation → composite
       const encoder: GPUCommandEncoder | undefined =
         context._currentCommandEncoder;
-      const depthView = context._depthStencilView;
+      // C11-157 Slice A — the OIT accumulation pass depth-tests against the
+      // opaque scene depth, so it needs the scene FB's ALL-ASPECTS render-pass
+      // depth-stencil view. `context._depthStencilView` is the depth-ONLY
+      // sampleable view (for env/AO/DoF shader sampling); using it as a
+      // depthStencilAttachment on a depth24plus-stencil8 target fails WebGPU's
+      // "must encompass all aspects" validation. Fall back to it only if the
+      // scene FB view is unavailable (defensive; shouldn't happen in practice).
+      const depthView =
+        host._sceneFramebuffer?.colorTarget?.getDepthStencilTextureView?.() ??
+        context._depthStencilView;
       if (encoder && depthView) {
         context.endCurrentRenderPass?.();
 

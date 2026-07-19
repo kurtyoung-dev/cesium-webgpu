@@ -24,6 +24,51 @@
 
 ---
 
+## C11-157 Slice A — WebGPU MRT-OIT made REACHABLE for translucent PRIMITIVES (2026-07-18)
+
+**What.** Turned the M-OIT finding (below) from unreachable → reachable for the PRIMITIVE family
+(collection + model = Slices B/C, still open). FAR-003 stays DEFAULT-OFF — this makes the path
+reachable when the gate is flipped, it does NOT change the default.
+
+**Files.**
+
+- `packages/engine/Source/Renderer/WebGPU/WebGPUOIT.ts` — `injectOITOutput` gained an **add-only
+  struct-return branch** (`_analyzeStructFragmentReturn` / `_stripStructIOAttributes` /
+  `_injectOITStructReturn`). The single-`@location(0)` path is preserved byte-identical (golden spec
+  `WebGPUOITInjectSpec.js`; splats depend on it). Lit shaders return a `FragOutput` struct
+  (`@location(0) color` + `@location(1) normalRoughness`) — the branch renames the entry to a
+  non-entry `_oit_base_*`, STRIPS the struct's `@location`/`@builtin` (WGSL forbids orphaned IO
+  attrs on a non-entry return struct), and wraps with `csm_oitOutput(base.color, in.clipPosition.z)`.
+- `packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts` — `createWebGPUCommands` now
+  builds ONE shared `GPUPipelineLayout` (reused by all cull variants) and attaches
+  `_shaderCode` (non-LOG_DEPTH source) + `_pipelineConfig` (shared layout, single-sample, base cull)
+  to each `Pass.TRANSLUCENT` color command. Inert unless `_webgpuOITEnabled` (gate-OFF byte-identical).
+
+**Two latent OIT-accumulation-pass bugs fixed (only fired once the path became reachable):**
+
+1. `WebGPUOIT.getAccumulationPassDescriptor` built an INVALID depth attachment — `depthReadOnly:true`
+   alongside `depthLoadOp/depthStoreOp` (mutually exclusive) and the stencil aspect of the
+   `depth24plus-stencil8` target unhandled → *"depth stencil attachment must encompass all aspects"*
+   validation error every frame. Fixed to `depthReadOnly:true` + `stencilReadOnly:true`, no
+   loadOp/storeOp.
+2. `WebGPUSceneRendererTranslucentPass.executeTranslucentPass` passed `context._depthStencilView` (the
+   depth-ONLY **sampleable** view, for env/AO/DoF shader sampling) as a render-pass depthStencilAttachment.
+   Fixed to use the scene FB's ALL-ASPECTS render-pass view via
+   `host._sceneFramebuffer.colorTarget.getDepthStencilTextureView()`.
+
+**Verification.** `probe-oit-primitive-reachable.mjs` (new): lit canonical (3 ellipsoids + polygon,
+LIT PrimitivePhongColor) + flat (PerInstanceColorAppearance flat:true, PrimitiveBasicColor) both
+PASS — `_webgpuOITActiveThisFrame`=TRUE (was ALWAYS false), 0 device/validation errors, WBOIT
+desaturation vs sorted-alpha confirmed in PNGs. `probe-oit-transparency.mjs` (updated, `msaaSamples=1`,
+oracle-c flipped to expect reachability) PASS with `parityVsWebglOn` **1.33%** (was 10.33% @ Batch-700).
+Regression net green: `probe-ellipsoidprim-translucent` (single-blend 0.499), `probe-globe-translucency`
+(3/3), `probe-splat-sort` (splats unbroken), `capture-and-diff globe-default` (0.46% cross-backend).
+`tsc`/`gulp build`/`buildAllVariants` clean. Follow-ups: `NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH` (WBOIT
+weight uses NDC z, degenerates toward flat averaging), `NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING` (runs at
+`msaaSamples=1`). Slices B/C (collection + model) remain.
+
+---
+
 ## M-OIT-COVERAGE-AND-FLIP-EVIDENCE — WebGPU MRT-OIT is unreachable for standard translucency; default-flip verdict NO-GO (2026-07-18, Batch 700, maintainer-directed)
 
 **Not a bug fix — a coverage + evidence slice (zero engine code).** Built OIT test coverage and a
