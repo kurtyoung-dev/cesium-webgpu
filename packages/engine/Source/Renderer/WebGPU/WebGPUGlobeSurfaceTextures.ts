@@ -746,14 +746,84 @@ function createUploadedImageryTexture(
   return texture;
 }
 
+// Per-cacheKey upload tally backing the re-upload storm sentinel below.
+const reuploadWatch = new Map<
+  string,
+  { count: number; windowStartMs: number; reported: boolean }
+>();
+
+/**
+ * PERMANENT SENTINEL — detects a texture re-upload storm.
+ *
+ * `uploadImageSource` does NOT read the cache it is handed (see its docblock),
+ * so a caller that forgets its own cache-hit guard silently re-uploads the same
+ * image every frame. That exact defect (`NEW-WEBGPU-OCEANNORMAL-PER-CALL-REUPLOAD`)
+ * cost ~9.6 ms/frame and hid for two campaigns, because the per-pass CPU
+ * profiler is structurally blind to it — 99% of the frame lived outside every
+ * instrumented pass.
+ *
+ * Deliberately NOT pragma-stripped, per the permanent-sentinel rule for
+ * loop/re-entry detectors. The cost argument is airtight: in correct operation
+ * uploads are rare (once per source), so this Map op is noise next to a
+ * `copyExternalImageToTexture`; in broken operation the frequency IS the bug and
+ * we want the error. The tally is per cacheKey, so many DIFFERENT tiles
+ * uploading during load never trip it — only the same key repeating does.
+ */
+function noteUploadForStormDetection(cacheKey: string): void {
+  const now = performance.now();
+  let entry = reuploadWatch.get(cacheKey);
+  if (!entry) {
+    entry = { count: 0, windowStartMs: now, reported: false };
+    reuploadWatch.set(cacheKey, entry);
+  }
+  // Rolling 2 s window: a legitimate re-upload on content change is a slow
+  // trickle and resets here, so it can never accumulate into a false positive.
+  if (now - entry.windowStartMs > 2000) {
+    entry.count = 1;
+    entry.windowStartMs = now;
+    entry.reported = false;
+    return;
+  }
+  entry.count++;
+  if (!entry.reported && entry.count >= 30) {
+    entry.reported = true;
+    console.error(
+      `[WebGPU:TextureUpload] RE-UPLOAD STORM: "${cacheKey}" uploaded ${entry.count}x in ` +
+        `${Math.round(now - entry.windowStartMs)}ms. \`uploadImageSource\` does NOT read its ` +
+        `\`cache\` argument — the CALLING site must supply a cache-hit guard (compare source ` +
+        `identity, as \`_materialTextureCache\` and \`_oceanNormalMapSource\` do). Until it does, ` +
+        `this uploads a texture + regenerates mips + creates a new view every frame, and the ` +
+        `fresh view identity also defeats any view-keyed bind-group cache downstream.`,
+    );
+  }
+}
+
 /**
  * Upload an image source (ImageBitmap, HTMLImageElement, HTMLCanvasElement)
  * to a GPU texture.
  *
- * The `cache` parameter lets the caller pick the destination Map —
- * imagery, water mask, or ocean normal cache. Returns null on any
- * error (unrecognized source type, zero-sized image, undecoded
- * `<img>`, `copyExternalImageToTexture` rejection).
+ * ⚠ **CONTRACT — THIS FUNCTION NEVER READS `cache`.** It only ever WRITES the
+ * resulting entry into it. There is no `cache.get`/`cache.has` anywhere in the
+ * body. The `cache` argument selects the destination Map (imagery, water mask,
+ * or ocean normal) — it is **not** a memo.
+ *
+ * **Therefore every caller MUST supply its own cache-hit guard.** An unguarded
+ * call re-uploads on every invocation: `createTexture` +
+ * `copyExternalImageToTexture` + a full mip chain + a fresh `createView`, and
+ * because bind-group caches key on view identity the new view also forces a
+ * `createBindGroup` — self-perpetuating. Guarded callers to copy from:
+ * `_resolveOrUploadMaterialTexture` and the ocean-normal path (both compare
+ * source identity: `cached.source === value`).
+ *
+ * The one internal dedupe path — the shared realization table
+ * (`host._sharedImageryRealizations`) — is gated on `logicalOwner === "imagery"`
+ * and does nothing for any other caller.
+ *
+ * A `console.error` sentinel fires if the same `cacheKey` is uploaded ≥30 times
+ * within 2 s, which is what a missing guard looks like.
+ *
+ * Returns null on any error (unrecognized source type, zero-sized image,
+ * undecoded `<img>`, `copyExternalImageToTexture` rejection).
  */
 export function uploadImageSource(
   host: TextureCacheHost,
@@ -766,6 +836,7 @@ export function uploadImageSource(
   // the caller passes heterogeneous imagery payloads; the instanceof
   // chain below narrows to the actual GPU-copyable variants.
   const device = host._device!;
+  noteUploadForStormDetection(cacheKey);
 
   try {
     let width: number, height: number;
