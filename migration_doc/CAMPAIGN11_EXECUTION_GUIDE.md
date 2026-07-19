@@ -1,7 +1,19 @@
 # Campaign 11 — Execution Guide (composition / index over the 10 cluster guides)
 
-Prepared: 2026-07-18 · Status: **PREPARED / NOT LAUNCHED** (auto-launches on Campaign-10 close per the
-standing directive; see `QUEUE_2026-07-18_CAMPAIGN11.md` front matter).
+Prepared: 2026-07-18 · Status: **LAUNCHED / EXECUTING (2026-07-18)** — Campaign 10 CLOSED (Batch 711,
+`9a52717cf2`); the `C11-00B` sweep has run. See `QUEUE_2026-07-18_CAMPAIGN11.md` front matter + §7.0.
+
+> **Launch reorder (2026-07-18 — `C11-00B` sweep).** Campaign 11 is now live and the loop is executing
+> **W1**. The fallout-intake + launch-reorder sweep ratified a set of maintainer-final decisions and
+> **reordered QUEUE §5 waves**: **W1 now opens with `C11-157` OIT translucent-primitive wiring (TOP)**,
+> then the `C11-GT-01` reversed-Z measurement spike, `C11-149` define-width pulled forward (unblocks the
+> `C11-158` enhanced-ocean toggle), the `C11-01`/`C11-11` diagnoses, the stale-premise reconcile, and the
+> cheap ratified parity fixes (`C11-17` background-color, `C11-159` night-lights-off). The governing
+> principle — **never remove an additive WebGPU capability for parity; change the default + keep a
+> toggle** — is now QUEUE §2 ★. **Before scheduling any parity/defaults or celestial slice, read: QUEUE
+> §7.0 (resolved decisions), §1.23 (appended IDs `C11-157..165` + `C11-SEED-27`),
+> `DEFAULT_PARITY_MATRIX_2026-07-18.md` (ratified rows), and the new
+> `CELESTIAL_WATER_REFLECTION_RESEARCH.md` (the `C11-163` epic).**
 
 This is a **thin index**, not a re-statement. The per-item walkthroughs — HEAD-verified `file:symbol`
 anchors, premise-verify-first steps, traps vs the landed 683–700 work, acceptance/verification

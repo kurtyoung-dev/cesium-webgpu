@@ -2,7 +2,16 @@
 
 Prepared: 2026-07-18
 
-Status: **PREPARED / NOT LAUNCHED.** Auto-launches when Campaign 10 CLOSES, per the standing
+Status: **LAUNCHED / EXECUTING (2026-07-18).** Campaign 10 CLOSED at **Batch 711 (`9a52717cf2`)**; the
+`C11-00B` launch-intake + fallout-sweep (§4) has RUN (this doc's 2026-07-18 reorder is its output) and
+reconciled the tree. The standing maintainer directive for the C10→C11 seam is now exercised — the
+loop is live and executing **W1** (which now opens with `C11-157` OIT translucent-primitive wiring; see
+§5). The 2026-07-18 maintainer-ratified decisions are recorded RESOLVED in **§7.0**, the appended
+schedulable rows in **§1.23** (`C11-157..165` + `C11-SEED-27`, collision-verified), and the new
+`CELESTIAL_WATER_REFLECTION_RESEARCH.md` epic as **`C11-163`**. Historical launch-authority context is
+preserved below.
+
+Status (historical): **PREPARED / NOT LAUNCHED.** Auto-launches when Campaign 10 CLOSES, per the standing
 maintainer directive (2026-07-17: "finish Campaign 9 and then move onto campaign 10" — the same
 directive that armed C10 to launch on C9 close; C11 inherits the same standing-launch rule for the
 C10→C11 seam). The `C11-00B` launch-intake sweep (§4) runs ONCE at that moment and reconciles the
@@ -110,7 +119,7 @@ guide · wave.**
 | `C11-14` | NEW-WEBGL-ANISO-GLSL-BROKEN | standing-reds | P1 | correctness | S | G1 | W1 |
 | `C11-15` | NEW-FEATURE-RENDERER-FAILED-STATE-RETRY | standing-reds | P1 | correctness | M | G1 | W1 |
 | `C11-16` | NEW-WEBGPU-POINT-BLENDOPTION-SYNC | standing-reds | P1 | correctness | M | G1 | W1 (cheap rider) |
-| `C11-17` | NEW-WEBGPU-CANVAS-BACKGROUND-COLOR-PARITY | standing-reds | P1 | parity | S | G1 | W1 (cheap rider) |
+| `C11-17` | NEW-WEBGPU-CANVAS-BACKGROUND-COLOR-PARITY | standing-reds | P1 | parity | S | G1 | W1 (cheap rider) · **RATIFIED 2026-07-18: FIX (§7.0)** |
 | `C11-18` | NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME | standing-reds | P1 | correctness | S | G1 | W7 (blocked on C11-26 producer) |
 | `C11-19` | BUG-GLOBE-PIPELINE-NAME-AXES | standing-reds | P1 | correctness | S | G1 | W1 |
 | `C11-20` | C-R12-PER-OBJECT-CACHES | standing-reds | P1 | correctness | S | G1 | W3 |
@@ -237,7 +246,7 @@ guide · wave.**
 | `C11-88` | KHR_materials_variants / IOR / clearcoat-IOR coupling | tiles-model-parity | P2 | parity | M | G5 | W7 (after C10-08) |
 | `C11-89` | 5 default textures bound per model draw | tiles-model-parity | P2 | perf | S | G5 | W4 (after C10-08 axes) |
 | `C11-90` | GLTF-POINTS-MODE-RESIDUALS | tiles-model-parity | P2 | parity | M | G5 | W7 |
-| `C11-91` | WIRE-MODEL-SILHOUETTE-TRANSLUCENT-DIVERGENCE | tiles-model-parity | P2 | parity | S | G5 | W7 · maintainer decision |
+| `C11-91` | WIRE-MODEL-SILHOUETTE-TRANSLUCENT-DIVERGENCE | tiles-model-parity | P2 | parity | S | G5 | **RESOLVED 2026-07-18: replicate WebGL body-wash — folds into `C11-157` OIT slice (W1)** |
 | `C11-92` | NEW-MODEL-WGSL-CUSTOM-SHADER (Q31 Slice C varyings) | tiles-model-parity | P2 | parity | L | G5 | W4 (blocked on `C11-149` define-width) |
 | `C11-93` | NEW-MODEL-SCENE2D-IDL-DUPLICATE | tiles-model-parity | P2 | parity | M | G5 | W7 |
 | `C11-94` | BACKLOG-§4.6 — indirect drawing for 3D Tiles | tiles-model-parity | P2 | perf | L | G5 | W7 (after C11-27/C11-29) |
@@ -279,7 +288,7 @@ guide · wave.**
 |---|---|---|---|---|---|---|---|
 | `C11-113` | C9-14B-ATMOSPHERE-LUT-CONSUMPTION | atmosphere-sky | P1 | perf | M | G8 | W7 (gated on checkpoint attribution; premise-reconciled W1) |
 | `C11-114` | C6-HIGHER-ORDER-SCATTER-LUT (reframed diagnostic) | atmosphere-sky | P2 | correctness | S | G8 | W7 |
-| `C11-115` | NS-SUN-BLEND-MODE-DIVERGENCE | atmosphere-sky | P2 | parity | M | G8 | W7 · maintainer direction |
+| `C11-115` | NS-SUN-BLEND-MODE-DIVERGENCE | atmosphere-sky | P2 | parity | M | G8 | W7 · **RESOLVED 2026-07-18: WebGPU ALPHA_BLEND (match WebGL) (§7.0)** |
 | `C11-116` | NS-SURFACE-SKYATMOSPHERE-NIGHT-BRIGHT | atmosphere-sky | P2 | parity | unknown | G8 | W7 |
 | `C11-SEED-06` | FUT-MULTI-BODY-ATMOSPHERE | atmosphere-sky | P3 | feature | M–L | G8 | seed |
 | `C11-SEED-07` | NEW-SUN-MOON-FIDELITY | atmosphere-sky | P3 | feature | M | G8 | seed |
@@ -304,7 +313,7 @@ guide · wave.**
 |---|---|---|---|---|---|---|---|
 | `C11-124` | C7-CLOUD-LIGHTNING (reland = C9 W7-1) | clouds-weather | P2 | feature | M | — | W7 |
 | `C11-125` | C6-CLOUD-STBN-TAAU | clouds-weather | P2 | feature | M | — | W7 (needs offline EA-SEED STBN) |
-| `C11-126` | CLOUD-U4-REMOVE-GLOBE-FLAG | clouds-weather | P2 | infra | L | — | W7 · maintainer/arch decision |
+| `C11-126` | CLOUD-U4-REMOVE-GLOBE-FLAG | clouds-weather | P2 | infra | L | — | W7 · **RESOLVED 2026-07-18: option (A) — Scene owns a managed default VOLUMETRIC CloudCollection (§7.0)** |
 | `C11-127` | Q36-WEATHER-PHASE-4-GRIB2 | clouds-weather | P2 | feature | L | — | W7 (proxy prereq; env-blocked) |
 | `C11-128` | Live EDR network confirm | clouds-weather | P2 | tooling | S | — | W7 (needs networked session) |
 | `C11-129` | WeatherSystem / scene.weather facade (Phase 3) | clouds-weather | P2 | feature | M | — | W7 |
@@ -330,7 +339,7 @@ guide · wave.**
 
 | C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
 |---|---|---|---|---|---|---|---|
-| `C11-GT-01` | C10-13-REVERSED-Z-EARLYZ-SPIKE ⚠C10 | gated-reversed-z | P1 | perf/tooling | S | G10 | W8/GT (may be pre-run in C10 — §4) |
+| `C11-GT-01` | C10-13-REVERSED-Z-EARLYZ-SPIKE ⚠C10 | gated-reversed-z | P1 | perf/tooling | S | G10 | **W1 (measurement-only spike, ratified 2026-07-18)** / GT for the slice (§6) |
 | `C11-GT-02` | C10-GT-REVERSED-Z-SLICE-B ⚠C10 | gated-reversed-z | P2 | perf | XL | G10 | GT (do not schedule) |
 | `C11-GT-03` | C10-03R-MSAA-DEFAULT-FLIP-RESERVE ⚠C10 | gated-reversed-z | P3 | perf | S | G10 | GT (reserve lever) |
 
@@ -360,7 +369,7 @@ guide · wave.**
 | C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
 |---|---|---|---|---|---|---|---|
 | `C11-148` | NEW-MATERIAL-PER-BACKEND-SHADER-SOURCE | build-boot | P1 | infra | M | G9 | W4 |
-| `C11-149` | C10-08b — ShaderDefine define-width expansion ⚠C10 (follows C10-08) | build-boot | P1 | infra | M | G9 | W4 · **HARD PREREQ for any new define bit** |
+| `C11-149` | C10-08b — ShaderDefine define-width expansion ⚠C10 (follows C10-08) | build-boot | P1 | infra | M | G9 | **W1 (early — C10-08 landed at C10 close, unblocks `C11-158` enhanced-ocean toggle)** · **HARD PREREQ for any new define bit** |
 | `C11-150` | S8-5 / S3-7 — WGSL module granularity + globe imagery layout tranches | build-boot | P2 | perf | L | G9 | W4 (after C10-07) |
 | `C11-151` | NEW-WGSL-STRING-COMMENT-STRIP | build-boot | P2 | perf | S | G9 | W4 |
 | `C11-152` | NEW-EMPTYMODULE-STUB-HARDENING | build-boot | P2 | infra | S | G9 | W4 (prereq for leaf-strip seed) |
@@ -382,6 +391,36 @@ guide · wave.**
 | `C11-SEED-25` | S5-2 — WASM acceleration layer consume-or-retire | arch-seeds | P2 | perf | M | G10 | seed (per-bridge disposition) |
 | `C11-SEED-26` | NEW-VEGETATION-SYSTEM | arch-seeds | P3 | feature | XL | G10 | seed |
 
+### 1.23 Campaign-11 launch-reorder appends (2026-07-18, `C11-00B` sweep — APPEND-ONLY, collision-verified)
+
+Minted by the `C11-00B` fallout-intake + launch-reorder sweep (2026-07-18). **Append-only additions**
+starting at `C11-157` (the numbered range `C11-01..156` was NOT renumbered or reused; `C11-SEED-27`
+follows `C11-SEED-26`). Every ID below was checked against §1.0–§1.22 and the GT/SEED/IC suffix ranges —
+**no collision** (§1.24 addendum). Items that ALREADY carry a register number are NOT re-minted here;
+their ratified direction is recorded IN PLACE — background-color `C11-17`, silhouette body-wash `C11-91`,
+sun-blend `C11-115` (see §7.0). Every alias below is preserved verbatim from its DEFERRED_WORK / matrix
+row (`NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING` + `NEW-WEBGPU-DETERMINISTIC-SYNC-PIPELINE-
+CENTRALIZATION` are pre-filed DEFERRED_WORK entries dated 2026-07-18 that were awaiting a C11 number).
+
+| C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
+|---|---|---|---|---|---|---|---|
+| `C11-157` | NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING [Batch-700 fallout; FULL primitive→collection→model; **absorbs the `C11-91` silhouette body-wash resolution**] | standing-reds (FAR-003 OIT lane) | P1 | feature/correctness | L–XL | G1/G3 | **W1 (TOP)** |
+| `C11-158` | NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE [defaults-parity D1; `ENHANCED_OCEAN` define-gate; default classic water, enhancement opt-in] | water | P1 | parity/infra | M–L | G8 | W4 (**HARD PRED `C11-149`**; land with `water-bugs-2026-07-06`) |
+| `C11-159` | NEW-WEBGPU-NIGHTLIGHTS-DEFAULT-OFF-PARITY [matrix row 17; default OFF, keep opt-in toggle] | atmosphere-sky | P2 | parity | S | G8 | W1 (cheap rider) |
+| `C11-160` | NEW-WEBGPU-SUNBLOOM-PP-WIRING [matrix row 3; wire `scene.sunBloom` → WebGPU PP Bloom/LensFlare] | postprocess-effects | P2 | parity | M | G6/G8 | W7 (after `C11-117`; mid-campaign intent) |
+| `C11-161` | NEW-WEBGPU-AUTOEXPOSURE-DEMAND-GATE [matrix row 14; demand-gate the dispatch + ratify HDR altitude-gate] | postprocess-effects | P2 | perf/parity | S | G6/G8 | W7 (after `C11-117` consumer inventory) |
+| `C11-162` | NEW-WEBGPU-USEPOSTPROCESSSELECTED-PORT [matrix row 19; port the selected-feature path] | postprocess-effects | P2 | correctness | M | G6 | W7 |
+| `C11-163` | C11-CELESTIAL-WATER-REFLECTION [unified sun-by-day + moon/stars-by-night reflection on water + clouds; runtime UBO enable-float — **NO new define bit, NO `C11-149` dep**; cheap path does NOT touch depth (**NOT reversed-Z-coupled**); S0 day-sun-glint audit/unify front-of-line] | water (celestial-water lane) | P2 | feature | L–XL | G8 + `CELESTIAL_WATER_REFLECTION_RESEARCH.md` | **Tier-4 / gated** (opt-in default-OFF, byte-identical off) |
+| `C11-164` | NEW-WEBGPU-PICK-COLD-SYNC-STALENESS [C10-11 fallout — **cold-page async-pick-readback RACE**; reopens the June-361 docs-only close, distinct live-race defect] | pick | P1 | correctness | M | G1 | W2 (pick fleet) |
+| `C11-165` | NEW-WEBGPU-DETERMINISTIC-SYNC-PIPELINE-CENTRALIZATION [C10-07 follow-on; pre-filed DEFERRED_WORK 2026-07-18] | build-boot | P2 | infra | M | G9 | W4 (boot chain) |
+| `C11-SEED-27` | C10-30 clean-environment r5 re-measure (Gate-D reference — C10-30 wall-clock was env-confounded at close; deterministic **−33% render-passes/frame** recorded, no banner) | — | R0 | tooling/measurement | S | G10/G9 | seed (Gate-D anchor input) |
+
+**Append accounting:** +9 numbered (`C11-157..165`) + 1 seed (`C11-SEED-27`) = **10 new rows**, all
+collision-free. Three ratified directions land on EXISTING rows (no new ID): `C11-17`, `C11-91`,
+`C11-115`. The B699 shared-cause diagnosis + `NEW-WEBGPU-CUSTOMSHADER-TRANSLUCENCYMODE-ALPHA-UNDERAPPLIED`
+intake (§4 pts 5/7) remain **G5-owned** and are numbered when that diagnosis slice is cut (G5 §G5.0) —
+deliberately NOT minted here.
+
 ### 1.24 Uniqueness check (mechanical)
 
 I verified the mapping mechanically while authoring: the numbered range is a **contiguous
@@ -396,9 +435,28 @@ the register's item count. No name appears under two IDs; no ID is reused.** Eve
 `NEW-*/C9-*/S*/FAR-*/C-R*/DP-*` name is preserved verbatim as an alias — nothing renamed
 (register-preservation rule).
 
+**2026-07-18 append addendum (`C11-00B` sweep).** §1.23 adds `C11-157..165` (9 numbered) and
+`C11-SEED-27` (1 seed). The numbered range is now contiguous `C11-01..165`; the seed range contiguous
+`C11-SEED-01..27`. I re-checked every appended ID mechanically against the FULL namespace (numbered
+`C11-01..156`, `C11-GT-01..03`, `C11-SEED-01..26`, `C11-IC-01..03`, and the infra rows) via
+`grep 'C11-15[7-9]|C11-16[0-9]|C11-SEED-2[7-9]'` → **zero pre-existing hits: no collision, no reuse, no
+name under two IDs.** The three ratified parity directions that map to pre-existing rows (`C11-17`
+background-color, `C11-91` silhouette body-wash, `C11-115` sun-blend) were recorded IN PLACE —
+deliberately NOT re-minted — preserving append-only + register-preservation. The register-item baseline
+is unchanged at **188**; the 10 appends are campaign-scheduled work items (ratified list + C10 fallout)
+tracked separately from that baseline.
+
 ---
 
 ## 2. Rules (inherited verbatim from Campaign-9/10 §1 — do not weaken)
+
+**★ GOVERNING PRINCIPLE (maintainer-ratified 2026-07-18, `C11-00B` sweep — binds every parity/defaults
+slice in this campaign).** NEVER remove an additive WebGPU capability to reach parity — only change the
+DEFAULT to match WebGL, keeping the enhancement reachable as a TOGGLE. **A parity fix that DELETES a
+feature is WRONG.** This is the operative reading of rule 1 for the whole ratified parity family in
+§1.23 / §7.0 (enhanced-ocean, night-lights, AutoExposure, sunBloom, sun-blend, `usePostProcessSelected`,
+and the OIT-wiring lane): default classic/parity + preserve the enhancement behind a flag; land no slice
+that reaches parity by amputation.
 
 1. Never remove, hide, default-disable, bypass, or visually weaken a feature for a metric. Safety
    containment is correctness work, not a performance win.
@@ -444,7 +502,7 @@ certification (`C11-137`) is the campaign EXIT gate** per G9 (§A.16 — "dead l
 | B — bounded correctness / feature preservation | Every slice's own semantic + visual oracle green; the pick-fleet WebGL-parity matrix; frustum-count/env-pixel parity; byte-identical off-paths and kill switches. The standing reds (`C11-01` pickposition, `C11-11` spheres drift, bare-globe interior) tracked and **pre-attributed** via their W1 diagnoses. | A public result, feature, mode, depth/history contract, or visual is weakened; a standing red turns a NEW red. |
 | C — default hot path | Per-slice on/off/restored evidence on the moving-altitude clean + API lanes; ≥5% named-stage p95 or >3× noise for any banner; no route-segment p99 regression; no WebGL regression beyond the predeclared budget. | Improvement is within noise, a route segment regresses, or an unknown consumer is skipped. |
 | D — measured checkpoint (`C11-GATE-D-CHECKPOINT`) | The perf-tranche checkpoint on one rebuilt hash vs the anchor: **≥10% whole-route + ≥15% near-ground (seg 5+6) WebGPU CPU-p95 OR >3× noise**; feature-loss gate green (standing reds pre-attributed, NO new red); honest per-stage attribution + promote/iterate verdict recorded. A truthful MISS with green mechanics is VALID = record "iterate" + per-stage attribution + gated-tail recommendation. | A lane is absent, historical evidence is overwritten, the anchor is re-derived on the new tree, or a new visual red appears. |
-| **EXIT — C8 upstream-contract certification (`C11-137`)** | Full engine + widgets + complete-engine suite run on the **stabilized** launcher (`C11-133`), offline lane isolated (`C11-134`), spec bundle fresh (`C11-132`); truthful executed/passed/skipped/failed counts with every skip reasoned (WebGL2-only per Principle 4, requires-network per A.3, requires-adapter per A.4); zero unowned reds; the four owner items (`C11-138`/`C11-142`/`C11-143`/`C11-144`) landed; GraphicsCapabilities Renderer-triage re-asserted zero-attribution; committed certification report = the C11 exit evidence. | Any owner item is open, the environment is flaky, a skip is a silent pass, or a DataSources failure is unowned. The campaign does NOT certify — say so plainly (honest-partial). |
+| **EXIT — C8 upstream-contract certification (`C11-137`)** | **RATIFIED 2026-07-18: BOTH lanes** — the campaign CLOSES on the **deterministic `C11-137` C8-contract gate with truthful counts** (the focused/unit lane is the close bar); the **full real-scene suite additionally runs when a real adapter is available** and is a **recorded follow-up, NOT a close-blocker** (resolves G9 Q1/Q2, §7.0/§7.2). Full engine + widgets + complete-engine suite run on the **stabilized** launcher (`C11-133`), offline lane isolated (`C11-134`), spec bundle fresh (`C11-132`); truthful executed/passed/skipped/failed counts with every skip reasoned (WebGL2-only per Principle 4, requires-network per A.3, requires-adapter per A.4); zero unowned reds; the four owner items (`C11-138`/`C11-142`/`C11-143`/`C11-144`) landed; GraphicsCapabilities Renderer-triage re-asserted zero-attribution; committed certification report = the C11 exit evidence. | Any owner item is open, the environment is flaky, a skip is a silent pass, or a DataSources failure is unowned. The campaign does NOT certify — say so plainly (honest-partial). |
 
 R0/R1 infra, counters, probes, and structural-correctness slices may land before Gate B. The gated
 tail (§6) is not activated by any of these gates alone — it additionally requires the Gate-D verdict
@@ -456,12 +514,13 @@ Status vocabulary (identical to C9/C10 §3.2): **IN PROGRESS · COMPLETE · PART
 DEFERRED · CONDITIONAL NOT TRIGGERED · NOT STARTED**. Every brief mandates: update your row here with
 status + evidence, INCLUDED in your landed files. A missing ledger update is a landing defect. All
 185 schedulable/gated/seed rows + the 3 intake rows below seed **NOT STARTED** with the guide pointer;
-evidence-pending. (Rendered compact — one line per id; the orchestrator expands a row to the C10-style
+evidence-pending (**plus the 10 launch-reorder appends §1.23 — `C11-157..165` + `C11-SEED-27` — also
+seeded NOT STARTED / DEFERRED below**). (Rendered compact — one line per id; the orchestrator expands a row to the C10-style
 evidence paragraph as each slice lands.)
 
 | Rows | Seeded status | Guide pointer | Evidence |
 | --- | --- | --- | --- |
-| `C11-00`, `C11-00B`, `C11-GATE-D-CHECKPOINT` | `C11-00` DEFERRED (orchestrator); `C11-00B`/Gate-D NOT STARTED | G10 §B6 / §B7 | pending launch |
+| `C11-00`, `C11-00B`, `C11-GATE-D-CHECKPOINT` | `C11-00` DEFERRED (orchestrator); **`C11-00B` COMPLETE (2026-07-18 fallout-intake + launch-reorder sweep — this doc)**; `C11-GATE-D-CHECKPOINT` NOT STARTED (anchor input = `C11-SEED-27` clean-env re-measure) | G10 §B6 / §B7 | C10 closed Batch 711 `9a52717cf2`; sweep output = §1.23 + §7.0 + §4 |
 | `C11-01 … C11-10`, `C11-IC-01` (pick) | NOT STARTED | G1 §A/§0 | evidence-pending |
 | `C11-11 … C11-25` (standing-reds) | NOT STARTED | G1 §B (C11-13 → G6 A1) | evidence-pending |
 | `C11-26` (splat producer), `C11-IC-02` | NOT STARTED · BLOCKED-ON-MAINTAINER | G5 §G5.1 | evidence-pending |
@@ -484,10 +543,46 @@ evidence paragraph as each slice lands.)
 | `C11-132 … C11-147` (test-infra) | NOT STARTED (`C11-137` = EXIT) | G9 §A | evidence-pending |
 | `C11-148 … C11-156`, `C11-SEED-20/21/22`, `C11-IC-03` (build-boot) | NOT STARTED | G9 §B | evidence-pending |
 | `C11-SEED-23 … C11-SEED-26` (arch-seeds) | DEFERRED (seed) | G10 §A4–A7 | seed-pending |
+| `C11-157` (OIT translucent-primitive wiring) | NOT STARTED | §1.23 / G1/G3 | **TOP of W1**; absorbs `C11-91` body-wash; Batch-700 fallout |
+| `C11-158` (enhanced-ocean default-parity toggle) | NOT STARTED | §1.23 / G8 | W4; HARD PRED `C11-149`; with `water-bugs-2026-07-06` |
+| `C11-159` (night-lights default-OFF parity) | NOT STARTED | §1.23 / G8 | W1 cheap rider; keep toggle |
+| `C11-160` (sunBloom → PP wiring) | NOT STARTED | §1.23 / G6/G8 | W7 after `C11-117` |
+| `C11-161` (AutoExposure demand-gate) | NOT STARTED | §1.23 / G6/G8 | W7 after `C11-117` inventory |
+| `C11-162` (usePostProcessSelected port) | NOT STARTED | §1.23 / G6 | W7 |
+| `C11-163` (C11-CELESTIAL-WATER-REFLECTION epic) | NOT STARTED · Tier-4/gated | §1.23 / G8 + `CELESTIAL_WATER_REFLECTION_RESEARCH.md` | opt-in default-OFF; 4 sub-decisions §7.0 |
+| `C11-164` (pick cold-sync-staleness race) | NOT STARTED | §1.23 / G1 | W2 pick fleet; C10-11 fallout |
+| `C11-165` (deterministic-sync pipeline centralization) | NOT STARTED | §1.23 / G9 | W4 boot chain; C10-07 follow-on |
+| `C11-SEED-27` (C10-30 clean-env r5 re-measure) | DEFERRED (seed) | §1.23 / G10/G9 | Gate-D anchor input |
 
 ---
 
 ## 4. `C11-00B` launch intake (summary — full procedure in G10 §B6)
+
+> **EXECUTED 2026-07-18 — `C11-00B` COMPLETE.** Campaign 10 CLOSED at **Batch 711 (`9a52717cf2`)**.
+> Sweep results are folded below and into §1.23 (appended rows), §3.2 (seeded ledger), and §7.0
+> (resolved decisions).
+>
+> - **C10-30 verdict:** green mechanics + deterministic **−33% render-passes/frame**; wall-clock
+>   **env-confounded → iterate (no banner)**. The clean-environment r5 **re-measure is a C11 follow-up**,
+>   seeded as **`C11-SEED-27`** (Gate-D reference). Gate A still anchors on the recorded `C9-30` clean-r5
+>   artifact per §3 — the new tree is NOT re-baselined.
+> - **Boot chain:** `C10-08` BLOCKED at C10 close (registry EXHAUSTED — bits 0–30 used; the fragile
+>   sign-bit 31 was deliberately NOT consumed per the ruling) → **`C11-149` define-width is the HARD
+>   PREREQUISITE, pulled to W1** to widen the registry; it unblocks the `C11-158` enhanced-ocean toggle. The `C10-07` follow-on
+>   `NEW-WEBGPU-DETERMINISTIC-SYNC-PIPELINE-CENTRALIZATION` is seeded as **`C11-165`**.
+> - **Pick fleet:** `NEW-WEBGPU-PICK-FLEET-LOG-DEPTH` (`C11-IC-01`) DONE, but the **reversed-Z-convert-
+>   back surface is noted** — read the `C11-GT-01` reconciliation record before treating the log-depth
+>   conversion permanent (same 71-file surface). The C10-11 **cold-page async-pick-readback RACE** is
+>   seeded as **`C11-164`** (distinct from the June-361 docs-only close of the same name).
+> - **Batch-700 OIT NO-GO:** the real prerequisite `NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING` is
+>   intaken as **`C11-157`** — RESOLVED to **FULL primitive→collection→model wiring, TOP of W1** (§7.0);
+>   silhouette body-wash (`C11-91`) folds in. MRT-OIT default-off stays FAR-003-contained (not a metric
+>   flip).
+> - **Splat** (`C10-04`) stays BLOCKED-ON-MAINTAINER (`C11-26` producer → `C11-IC-02`). **High-density
+>   drift** = `C11-11` (diagnose-first, lean repair — §7.0).
+> - **Reversed-Z** (`C11-GT-01`): its measurement-only spike is pulled into **W1** (slice work stays
+>   gated §6). If C10 already ran it, its verdict is a `C11-00B` fact recorded in all three sinks.
+> - A launch note + `git branch -a` inventory were presented to the maintainer before the first slice.
 
 Run ONCE at launch, BEFORE the first slice. It converts everything still open when C10 closes into
 owned C11 rows so nothing falls through the C10→C11 seam (the load-bearing bridge, exactly as
@@ -503,7 +598,8 @@ the register sweep was HEAD `aef553d592` (Batch 698); the tree has since moved (
 2. **The boot chain `C10-06` / `C10-07` / `C10-08`.** `C10-06` outcome determines whether `C11-153`
    (S8-4 FR-lazify) is absorbed or standalone; `C10-07` sequences `C11-150` (module granularity)
    after; **`C10-08` gates `C11-149` (C10-08b define-width)** — the ShaderDefine registry is EXHAUSTED
-   (bits 0–30 used; C10-08 banks bit 31), so `C11-149` is the HARD prereq for any new define bit
+   (bits 0–30 used; C10-08 was BLOCKED because only the fragile sign-bit 31 remained and the ruling
+   forbade consuming it), so `C11-149` is the HARD prereq for any new define bit
    (`C11-92` Q31 varyings, `C11-88` KHR gates, `C11-89`, `C11-81`, `C11-131` OCEAN_PLANAR_REFLECT).
 3. **The pick fleet `C10-11` / `C10-12` + the 5 W4 riders.** `C10-11` owns `C11-IC-01`
    (NEW-WEBGPU-PICK-FLEET-LOG-DEPTH); `C10-12` closes `C9-02A` (`C11-06`) + audits `P0-1` + flips
@@ -516,8 +612,9 @@ the register sweep was HEAD `aef553d592` (Batch 698); the tree has since moved (
 5. **The Batch-700 OIT NO-GO.** `M-OIT-COVERAGE-AND-FLIP-EVIDENCE` verdict = **NO-GO (flip nothing)**.
    WebGPU MRT-OIT is unreachable for standard translucency — the composite line has never executed
    (only Gaussian splats + opaque globe produce `_shaderCode`). The real prerequisite is
-   **`NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING`** (intake as a new C11 row — a maintainer-decision
-   item, §7) + the two live FAR-003 adjacencies (`C11-18`, `C11-23`). Also intake the pre-existing
+   **`NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING`** (**intaken as `C11-157`, RESOLVED 2026-07-18 to
+   FULL primitive→collection→model wiring, TOP of W1 — §7.0**) + the two live FAR-003 adjacencies
+   (`C11-18`, `C11-23`). Also intake the pre-existing
    Batch-699 `NEW-WEBGPU-CUSTOMSHADER-TRANSLUCENCYMODE-ALPHA-UNDERAPPLIED`. MRT-OIT default-off stays
    RATIFIED FAR-003 containment — do NOT flip it for a metric.
 6. **The defaults-parity runtime pass results.** `DEFAULT_PARITY_MATRIX_2026-07-18.md` catalogs 22
@@ -553,9 +650,30 @@ new-define item (registry EXHAUSTED — G9 §0); keep the XL epics (MRT topology
 S10 arc, reversed-Z) in later waves behind their prereqs; the 3 maintainer-decision items are
 BLOCKED-ON-MAINTAINER and do not open on an engineering default; measure, then certify.
 
-### W1 — standing-reds, diagnosis, environment, cheap riders, reconciliation
+### W1 — OIT-wiring (TOP), reversed-Z spike, define-width, standing-reds, diagnosis, environment, cheap riders, reconciliation
 
-The "stop paying the OFF-oracle tax" wave. Contents:
+**Reordered 2026-07-18 (ratified).** The "stop paying the OFF-oracle tax" wave, now fronted by the OIT
+wiring and the two early spikes. Contents:
+
+- **★ TOP OF W1 — `C11-157` OIT translucent-primitive wiring (ratified 2026-07-18).** FULL
+  primitive→collection→model wiring; the `C11-91` silhouette body-wash "replicate WebGL" resolution
+  folds in here. This is the Batch-700 OIT NO-GO's real prerequisite (no primitive/model/collection
+  currently emits a `Pass.TRANSLUCENT` command carrying `_shaderCode`/`_oitPipeline`). **MRT-OIT
+  default-off stays RATIFIED FAR-003 containment — do NOT flip the metric.** Multi-batch; opens W1.
+- **Reversed-Z measurement spike EARLY — `C11-GT-01` (ratified 2026-07-18, measurement-only).** Run the
+  `C10-13-REVERSED-Z-EARLYZ-SPIKE` here as **measurement-only** (moved out of the gated tail; the SLICE
+  work `C11-GT-02` stays gated §6). Record its GO/NO-GO in `C11-IC-01` + the FAR-707 brief +
+  `DEFERRED_WORK.md`; it gates the pick-fleet log-depth reconciliation (the 71-file surface hazard).
+- **Define-width EARLY — `C11-149` (C10-08b).** `C10-08` was BLOCKED at C10 close (registry exhausted;
+  the sign-bit 31 deliberately left unconsumed), so define-width is the prerequisite and pulled into W1. It is the HARD PREREQ that unblocks the `C11-158` enhanced-ocean toggle
+  (and later `C11-92`/`C11-88`/`C11-89`/`C11-81`/`C11-131`).
+- **The cheap RATIFIED parity fixes (W1 cheap riders):** `C11-17` (empty-scene background-color FIX),
+  `C11-159` (night-lights default-OFF, keep toggle). *(The remaining ratified parity fixes land later:
+  `C11-158` enhanced-ocean toggle in W4 after define-width; `C11-160` sunBloom-wire, `C11-161`
+  AutoExposure demand-gate, `C11-162` usePostProcessSelected port in W7 behind the `C11-117` effect
+  audit — see §1.23 / §7.0.)*
+
+Then the original W1 contents:
 
 - **Two checkpoint-gating diagnoses (fable, diagnosis-only):** `C11-01` (pickPosition convergence) +
   `C11-11` (high-density-spheres cross-backend drift). Scheduling these in W1 pre-attributes the two
@@ -609,13 +727,17 @@ cache. **Never run two of `C11-32`/`C11-33`/`C11-34` concurrently — same tile-
 
 ### W4 — boot / compile chain + define-width + TS-debt
 
-Intake-conditional on the C10 boot triad (`C10-06/07/08`). Hard ordering: `C11-149` (C10-08b
-define-width) can only start after `C10-08` lands and banks bit 31 — and **it is the HARD PREREQ for
-every new-define item** (`C11-92`, `C11-88`, `C11-89`, `C11-81`, and the `C11-131` OCEAN_PLANAR_REFLECT
-bit). Then `C11-150` (module granularity, after `C10-07`), `C11-148` (per-backend material source),
+Intake-conditional on the C10 boot triad (`C10-06/07/08`). **2026-07-18: `C10-08` LANDED at C10 close,
+so `C11-149` (C10-08b define-width) was pulled forward to W1 (§5 W1) — the rest of the boot chain stays
+here.** `C11-149` remains **the HARD PREREQ for every new-define item** (`C11-92`, `C11-88`, `C11-89`,
+`C11-81`, the `C11-131` OCEAN_PLANAR_REFLECT bit, **and the `C11-158` enhanced-ocean `ENHANCED_OCEAN`
+gate**). Then `C11-150` (module granularity, after `C10-07`), `C11-148` (per-backend material source),
 `C11-151`, `C11-152` (→ enables the leaf-strip seed), `C11-153` (S8-4, if `C10-06` didn't absorb it),
-`C11-155`, and `C11-154` (TS-convert, one renderer per batch — `WebGPUModelRenderer` already `.ts`,
-struck). `C11-81`/`C11-89`/`C11-92` open here once define-width lands.
+`C11-155`, `C11-154` (TS-convert, one renderer per batch — `WebGPUModelRenderer` already `.ts`, struck),
+and **`C11-165`** (NEW-WEBGPU-DETERMINISTIC-SYNC-PIPELINE-CENTRALIZATION, the C10-07 follow-on).
+`C11-81`/`C11-89`/`C11-92` open here once define-width lands; **`C11-158` (enhanced-ocean default-parity
+toggle) also opens here after `C11-149`, landing jointly with the OPEN `water-bugs-2026-07-06` fix so the
+ratified default isn't a buggy one.**
 
 ### W5 — RTE / TAA temporal contracts (no cluster guide — commission one first)
 
@@ -653,7 +775,11 @@ The broad parity/feature wave, and the S10 arc:
   FAR-107 `C11-07`), `C11-70`, `C11-71`, `C11-73`, `C11-74`. Whether the L-sized `C11-65/66` wait for
   the Gate-D attribution is a maintainer call (G7 Q6).
 - **Post-process visibility:** `C11-117` (C9-23 effect-execution audit) opens the cluster FIRST (its
-  consumer inventory feeds the AutoExposure gate, G6 §B1) → then `C11-118..123`.
+  consumer inventory feeds the AutoExposure gate, G6 §B1) → then `C11-118..123`. **The ratified PP
+  parity wirings land behind `C11-117`:** `C11-160` (sunBloom → WebGPU PP Bloom/LensFlare), `C11-161`
+  (AutoExposure demand-gate — its "no consumer enabled" evidence comes from the `C11-117` inventory),
+  `C11-162` (usePostProcessSelected port). *(Default-pixel changes → the enhancement-preserving governing
+  principle §2 applies; keep the WebGPU capability reachable.)*
 - **Tiles/model parity:** `C11-82`, `C11-83`, `C11-84`, `C11-85`, `C11-86`, `C11-87`, `C11-88`,
   `C11-90`, `C11-91` (maintainer decision), `C11-93`, `C11-94`/`C11-95` (behind `C11-27`/`C11-29`),
   `C11-96`, `C11-97`, `C11-98`, `C11-99`. `C11-26` splat-producer (BLOCKED-ON-MAINTAINER) unblocks
@@ -661,9 +787,17 @@ The broad parity/feature wave, and the S10 arc:
 - **Classification/voxel:** `C11-100` (sliced; A2-slice-0 triage first), `C11-101` (.vctr fixture
   prereq), `C11-102`, `C11-103`, `C11-104`, `C11-105` (dep `C11-26`), `C11-106`, `C11-107`, `C11-108`.
 - **Shadows/atmosphere/water/clouds:** `C11-110`, `C11-111`, `C11-112`; `C11-113` (gated on checkpoint
-  attribution), `C11-114`, `C11-115` (direction decision), `C11-116`; `C11-131` (after define-width /
-  reversed-Z disposition); `C11-124..130` (clouds-weather — commission a guide first; `C11-126`
-  CLOUD-U4 is a maintainer/arch decision).
+  attribution), `C11-114`, `C11-115` (**RESOLVED 2026-07-18: ALPHA_BLEND, §7.0**), `C11-116`; `C11-131`
+  (after define-width / reversed-Z disposition); `C11-124..130` (clouds-weather — commission a guide
+  first; `C11-126` CLOUD-U4 **RESOLVED 2026-07-18: option (A), §7.0**).
+- **Celestial-water epic (Tier-4 / gated):** `C11-163` (C11-CELESTIAL-WATER-REFLECTION) — unified
+  sun-by-day + moon/stars-by-night reflection on water + clouds, cloud-occluded via the EXISTING O(1)
+  sun-view beer-shadow-map (no per-fragment raymarch), cloud-top specular fallback. **Opt-in
+  default-OFF, byte-identical when off; runtime UBO enable-float (NO new define bit, NO `C11-149` dep);
+  the cheap path does NOT touch depth (NOT reversed-Z-coupled).** Front-of-line S0 = day-sun-glint
+  audit/unify (upgrade the existing `GlobeTerrain.wgsl:2441` sun glint to the same Cook-Torrance GGX
+  lobe). Its **4 sub-decisions resolve when scheduled (§7.0)**. Full dossier:
+  `CELESTIAL_WATER_REFLECTION_RESEARCH.md`.
 - **Attachment future:** `C11-49` (Phase-8a normal G-buffer + depth prepass — maintainer-scoping gate).
 - **Test-infra closure (exit-gate owners land here, mid-late):** `C11-138` (item 66, cheapest),
   `C11-142` (item 67), `C11-143` (item 69), `C11-144` (item 70), `C11-136` (item 64 broad-suite),
@@ -684,8 +818,11 @@ The campaign closer (G9 §A.16). Full engine + widgets + complete-engine suite o
 launcher with truthful executed/skipped/failed counts, every skip reasoned, zero unowned reds, the
 four owner items landed, GraphicsCapabilities Renderer-triage re-asserted. The committed certification
 report IS the C11 exit evidence. If any owner item did not land, the gate stays **OPEN** and the
-campaign does not certify — say so plainly (honest-partial). "Campaign certifies" = "`C11-137` closes
-green with truthful counts" (confirm with the maintainer, G9 Q1).
+campaign does not certify — say so plainly (honest-partial). **RATIFIED 2026-07-18 (resolves G9 Q1/Q2):
+the campaign CLOSES on the deterministic `C11-137` C8-contract gate with truthful counts (the
+focused/unit lane is the close bar); the FULL real-scene suite ADDITIONALLY runs when a real adapter is
+available and is a recorded follow-up, NOT a close-blocker.** "Campaign certifies" = "`C11-137` closes
+green with truthful counts."
 
 ---
 
@@ -696,7 +833,7 @@ dossiers: **G10 §A1–A7.**
 
 | C11-id | Item | Gate to open |
 | --- | --- | --- |
-| `C11-GT-01` | `C10-13-REVERSED-Z-EARLYZ-SPIKE` (measurement-only, openable) | Cheap FAR-707 evidence gate; GO threshold ≥20–30% fragment-work reduction on weak-FPS views. **MUST record its GO/NO-GO in BOTH `C11-IC-01` (NEW-WEBGPU-PICK-FLEET-LOG-DEPTH) AND the FAR-707 brief AND `DEFERRED_WORK.md`** before the pick fleet's log-depth conversion is treated as permanent — the two streams pull the same 71-file surface opposite ways. Openable only after the Gate-D verdict + fresh sign-off. If C10 already ran it, its verdict is a `C11-00B` fact. |
+| `C11-GT-01` | `C10-13-REVERSED-Z-EARLYZ-SPIKE` (measurement-only, openable) | **RATIFIED 2026-07-18: the measurement-only SPIKE runs EARLY in W1** (moved out of the gated tail — it changes no shipped behavior; only the reversed-Z SLICE `C11-GT-02` stays behind Gate-D + fresh sign-off). Cheap FAR-707 evidence gate; GO threshold ≥20–30% fragment-work reduction on weak-FPS views. **MUST record its GO/NO-GO in BOTH `C11-IC-01` (NEW-WEBGPU-PICK-FLEET-LOG-DEPTH) AND the FAR-707 brief AND `DEFERRED_WORK.md`** before the pick fleet's log-depth conversion is treated as permanent — the two streams pull the same 71-file surface opposite ways. If C10 already ran it, its verdict is a `C11-00B` fact. |
 | `C11-GT-02` | `C10-GT-REVERSED-Z-SLICE-B` (DEFERRED — do not schedule) | All of: `C10-01` landed (done, B693); `C11-GT-01` GO; the pick-fleet reconciliation decision recorded; a written `depth32float-stencil8` fallback story covering every adapter tier (any tier left behind = forbidden dual permanent architecture = NO-GO); Gate-D verdict + fresh sign-off. XL, all-or-nothing behind `_reversedZEnabled` (OFF = byte-identical). **Trap:** if GO, the RGBA8 pack ecosystem `C11-45`/`C11-46` optimize is slated for DELETION — land them near-term but sequence BEFORE any reversed-Z commitment and mark them superseded-by-design. |
 | `C11-GT-03` | `C10-03R-MSAA-DEFAULT-FLIP-RESERVE` (CONDITIONAL NOT TRIGGERED) | Reserve lever. Pull ONLY on a Gate-D MISS WITH bandwidth-attributed evidence (GPU-timestamp + counters implicating attachment traffic, NOT CPU) AND fresh maintainer sign-off recorded here. Backend-conditional WebGPU default `msaaSamples` 4→1 (WebGL untouched, opt-in preserved). MSAA-4 default is visual policy (Rule 1) — any slice flipping it without recorded sign-off is reverted on sight. |
 
@@ -714,7 +851,64 @@ disposition, no silent deletion); `C11-SEED-26` NEW-VEGETATION-SYSTEM; plus the 
 
 ## 7. The 3 maintainer decisions + consolidated cross-guide OPEN QUESTIONS
 
+### 7.0 Maintainer decisions RESOLVED at the 2026-07-18 `C11-00B` sweep (maintainer-final)
+
+These were ratified maintainer-final on 2026-07-18 and are now SCHEDULED (no longer
+BLOCKED-ON-MAINTAINER). All are bound by the §2 ★ GOVERNING PRINCIPLE — never remove an additive WebGPU
+capability for parity; change the default + keep a toggle.
+
+- **OIT translucent-primitive wiring → FULL wiring** (`C11-157`, TOP of W1; primitive→collection→model).
+  Silhouette body-wash (`C11-91`) → **replicate WebGL**, folds into `C11-157`. MRT-OIT default-off stays
+  FAR-003-contained (7.1 #3 RESOLVED to "fund the wiring", not a metric flip).
+- **Enhanced-ocean → TRUE PARITY** (`C11-158`): default **classic** water; the enhancement becomes an
+  opt-in **TOGGLE** via a new `ENHANCED_OCEAN` define ⇒ **`C11-149` define-width is a HARD PREDECESSOR**;
+  land jointly with the OPEN `water-bugs-2026-07-06` fix (7.1 #2 RESOLVED).
+- **Parity sweep (default-parity + keep toggle, never remove):** night-lights → default **OFF**
+  (`C11-159`, toggle stays); sunBloom → **WIRE** to WebGPU PP Bloom/LensFlare (`C11-160`); empty-scene
+  background-color → **FIX** (`C11-17`); AutoExposure always-on compute → **DEMAND-GATE** the dispatch +
+  **ratify the HDR altitude-gate** (`C11-161`); `usePostProcessSelected` hardwired false → **PORT** the
+  selected path (`C11-162`).
+- **Sun blend mode** (`C11-115`) → WebGPU **ALPHA_BLEND** (match WebGL).
+- **Reversed-Z** → run the `C11-GT-01` measurement spike **EARLY in W1** (measurement-only; the slice
+  work `C11-GT-02` stays gated §6).
+- **Exit gate** → **BOTH**: certify/close on the deterministic `C11-137` C8-contract gate (truthful
+  counts); ALSO run the full real-scene suite when a real adapter is available (recorded follow-up, not
+  a close-blocker).
+- **Orchestrator mode** → **DEFAULT** (G10 Q3 resolved; the ×5-hardened engine-script fallback stays a
+  reserve).
+- **`forceSceneMRT` default-flip** → requires an **EXPLICIT recorded maintainer sign-off** (like the
+  `C11-GT-03` reserve-lever protocol), NOT standing DW-phasing approval (G3 Q3a resolved). Governs
+  `C11-43` P2.
+- **CLOUD-U4** (`C11-126`) → option **(A): Scene owns a managed default VOLUMETRIC CloudCollection**
+  (re-point the 4 producers); renderer gates are mechanical once chosen.
+- **High-density / `gpuCullingHint`** (`C11-11`) → **diagnose first** (W1 diagnosis), then a **lean
+  repair** — do NOT degrade the feature for the metric; if it traces to the contained GPU-cull path,
+  surface per the charter (§2 rule 1).
+
+**Still-deferred after this sweep:** the splat-data-producer placement + offline asset (7.1 #1, still
+BLOCKED-ON-MAINTAINER); FAR-107 public pick-API review (`C11-07`); declutter displacement-threshold
+default (`C11-66`); C9-01 Gate-A closure (`C11-145`) + gate-F baseline refresh (`C11-147`); rte-taa +
+clouds-weather guide commissioning; benchmark-lane workload-file identity (`C11-64`); the absent 2D perf
+lane (`C11-59`); **and the 4 CELESTIAL sub-decisions below.**
+
+**The 4 `C11-163` CELESTIAL-WATER-REFLECTION sub-decisions (deferred to when the epic is scheduled):**
+
+1. **Target ocean:** (A) globe water-mask "enhanced ocean" (`computeEnhancedOcean`, the default shipping
+   path) vs (B) opt-in FFT `OceanSurface.wgsl` (cleaner prototype host). Dossier §1 recommends prototype
+   in (B) → port to (A).
+2. **Parity stance:** (i) declare it a WebGPU-only enhancement (`FEATURE_INVENTORY §B`, no GLSL twin —
+   consistent with `ProceduralClouds` precedent) vs (ii) ship a reduced moonglade-only GLSL twin for the
+   enhanced ocean. Dossier §6 recommends (i).
+3. **Star source:** S3 (a) bake a star-catalog cubemap / (b) procedural hash star field / (c) reuse the
+   atmosphere IBL cube / (d) expose the existing SkyBox Tycho cubemap. Dossier §4 favors (d) or (b) for a
+   first cut.
+4. **Cloud-occlusion fidelity:** S5a cheap (reuse the existing sun-view beer-shadow-map) vs S5b accurate
+   (bake a second moon-view beer-shadow-map). Dossier §2.4 recommends S5a first, S5b as a follow-up.
+
 ### 7.1 The 3 named maintainer-decision items (BLOCKED-ON-MAINTAINER)
+
+> **2026-07-18: #2 (enhanced-ocean) and #3 (OIT-wiring) are RESOLVED — see §7.0. Only #1 (splat) remains
+> BLOCKED-ON-MAINTAINER.**
 
 1. **Splat-data-producer (`C11-26`).** Placement — a WebGPU branch in `GaussianSplatPrimitive.update`
    pre-FR-return (scene-logic-extractor) vs inside the FR — AND the offline asset: vendor a
@@ -736,6 +930,14 @@ disposition, no silent deletion); `C11-SEED-26` NEW-VEGETATION-SYSTEM; plus the 
    flip a metric.
 
 ### 7.2 Consolidated cross-guide OPEN QUESTIONS (all G1–G10, deduped)
+
+> **2026-07-18: several of the bullets below were RESOLVED at the `C11-00B` sweep — see §7.0**
+> (`forceSceneMRT` sign-off protocol, sun-blend direction, sunBloom direction, HDR AutoExposure
+> altitude-gate, CLOUD-U4, high-density `gpuCullingHint` policy, exit-gate criterion, orchestrator-mode).
+> The bullets that REMAIN OPEN: FAR-107 public pick-API review, declutter displacement-threshold default,
+> C9-01 Gate-A closure + gate-F baseline refresh, rte-taa/clouds-weather guide commissioning,
+> benchmark-lane workload identity, the absent 2D perf lane, define-width sequencing, the
+> checkpoint-attribution gates, and the reversed-Z reconciliation read.
 
 **Maintainer decisions (beyond the 3 above):**
 
