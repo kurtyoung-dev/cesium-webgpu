@@ -170,6 +170,61 @@ The fixed mechanism only fires when the Sun is **above the camera's local horizo
 **Q4 — Star-map / sprite seam magnitude.** *(blocks `C12-09` and `C12-11`)*
 Either (a) bake a **bright-star-free** cubemap — more work, requires custom rendering rather than using an SVS product as-shipped, but architecturally correct and what makes "thousands of resolved stars" reachable; or (b) accept a small overlap and compensate in sprite intensities. **Recommendation: (a).**
 
+
+---
+
+## 6c. DECISION RECORD DR-01 — star-map / sprite seam (answers Q4)
+
+**Decided 2026-07-19 by the maintainer: option (a), implemented via (c).** The cubemap carries **diffuse light only**; **every resolved star comes from the sprite catalogue**. Explicitly **CONDITIONAL ON LICENSING** — maintainer's words: *"if there are no license restrictions to doing this and shipping it."* See §6d.
+
+### What was chosen
+
+| Option | Description | Chosen |
+|---|---|---|
+| (a) | Bright-star-free texture; sprites are the sole source of resolved stars | ✅ **YES** |
+| (b) | Keep stars in the texture, accept the double-draw, compensate sprite intensity | ❌ fallback — see reversal plan |
+| (c) | Practical implementation of (a): low-pass the t5 bake to destroy point sources, keeping only the diffuse Milky Way | ✅ **the method** |
+
+### Why (not just "it's cleaner")
+
+1. **Painted stars are dead pixels.** They cannot receive *any* of the work C12 exists to do — no Moffat halo (`C12-05`), no B−V blackbody colour, and critically **no angular sun-glare** (`C12-27`), because a baked texel cannot respond to sun angle. Leaving bright stars in the texture would produce a visibly inconsistent sky: sprite stars with halos beside painted blobs without them.
+2. **The double-draw over-brightens exactly the stars reported as blobs.** The texture contains every star; the sprite pass redraws the ~80 brightest on top. t5 makes this worse — SVS describes it as *"bright stars are large"*.
+3. **(b) is more fragile than it looks.** SVS deliberately non-linearizes the magnitude→intensity curve (boosting faint stars for visibility). A compensation factor would be reverse-engineering a curve we do not control and which differs per variant.
+
+### Binding scope consequence (maintainer-stated)
+
+> *"This means we need to have the same bright star effects for WebGL & WebGPU."*
+
+**Confirmed and binding.** This is natural rather than costly — `StarFieldFS.glsl` and `StarField.wgsl` are already character-identical and share `StarFieldMath.ts`. But it makes three things non-negotiable: every new uniform/attribute is plumbed on **both** backends in the **same** slice; **G2 must pass identically on both**; and no sprite feature may be WebGPU-only. Re-introducing a WebGPU-only celestial effect would recreate the exact bug class `C11-176` just closed (three instances and counting).
+
+### Cost accepted
+
+`C12-09` (catalogue extension toward mag ~6, ~5,000 stars) is **promoted from optional to load-bearing**. With the texture no longer supplying point sources, the catalogue is the *only* source of star density — the ISS-reference look now depends on it. `BrightStarCatalog.js` currently holds ~230 entries and the full 9,110-entry BSC5 is **not vendored**, so this is a real data ingest.
+
+### REVERSAL PLAN — how to fall back to (b) after seeing results
+
+The design is **deliberately reversible**, and the reversal is cheap because the blur is the *last* stage of the bake pipeline.
+
+1. **Keep both bake artifacts.** `C12-10` must emit **the un-blurred cube faces as well as the blurred ones** and check in both (or make the blur a documented one-command re-run). This is the single most important reversibility requirement — **if only the blurred artifact survives, reversal costs a full re-bake.**
+2. Ship the un-blurred faces; restore `MAG_CUTOFF` to the overlap value.
+3. Apply a compensation factor to sprite intensity across the overlap band.
+4. **Do NOT revert `C12-05/06/07`** (PSF, quad extent, amplitude restructure). Those are independent of the seam decision and improve option (b) as well.
+5. **Do NOT revert `C12-27`** (angular sun-glare) for sprites; accept that texture-painted stars will not participate — that asymmetry is precisely the cost of (b).
+6. Cap sprite magnitude at the texture's threshold so the extended catalogue does not double-draw faint stars.
+
+### What would justify reversing (decide on evidence, not impression)
+
+- The blurred Milky Way reads as a **smear** rather than granular structure — i.e. `G3`'s dust-lane metric passes but the result still looks wrong to the eye. *(Capture both bakes through G3 to compare.)*
+- Sprite count required for ISS-reference density proves **prohibitive** at low altitude / wide FOV.
+- The `C12-09` catalogue ingest proves materially harder than budgeted.
+- Faint-star sprites **alias or twinkle** unacceptably under camera motion (sub-pixel sprites are the classic failure).
+
+### Evidence to capture during W3 so this is decidable
+
+- `G3` dust-lane + source-density metrics on **blurred vs un-blurred** bakes, side by side.
+- The `M6` split (sprites-only vs texture-only) — already specified, and it directly measures where density comes from.
+- Frame-cost delta from ~5,000 sprites on both backends.
+
 ---
 
 ## 7. Cross-campaign dependencies (do NOT double-schedule)
