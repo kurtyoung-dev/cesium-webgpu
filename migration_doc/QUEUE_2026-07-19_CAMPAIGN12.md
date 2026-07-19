@@ -130,7 +130,33 @@ Two hard bounds:
 
 ---
 
-## 6. MAINTAINER DECISIONS REQUIRED BEFORE LAUNCH
+## 6. MAINTAINER DECISIONS — ANSWERED 2026-07-19
+
+**Q1 — Gaia-derived imagery → ANSWERED: take the t5 path.** SVS 3572 `TychoSkymapII.t5_16384x08192`. Sidesteps the CC BY-NC 3.0 IGO incompatibility entirely; same product family, already covered by `LICENSE.md:1042`. **NASA SVS 4851 Deep Star Maps is DISQUALIFIED — do not revisit.**
+
+**Q2 — Where observed → ANSWERED: "Both while in orbit."** This is load-bearing and it *re-scopes the symptom*:
+
+- **Measured at HEAD (post-Batch-722), WebGPU and WebGL are at parity on BOTH sides.** Night lane (`skyBrightness = 0`, so the fixed modulation is inert by construction): mean **1.002**, star pixels **0.999**, contrast 1.033, brightest-0.1% 1.064. **`secondCausePresent: false`.** Sunlit lane: mean 1.002. Evidence: `probe-skybox-star-modulation.mjs`, night + sunlit lanes.
+- **Therefore the residual "faded" impression on the night side is NOT a WebGPU-vs-WebGL defect — it is ABSOLUTE faintness that both backends share**, and its cause is already identified: the fork ships **t3, the variant SVS itself describes as *"the Milky Way is very faint"***. That is exactly what `C12-10` (t5 re-bake) fixes. Two different defects were being reported as one symptom; the parity half is closed, the asset half is not.
+
+**Q2b — NEW REQUIREMENT surfaced by the same answer:** *"I understand that looking towards the sun should dim stars near it but I am not seeing that effect either."* **This is correct physics and the fork implements the wrong model for it.** The removed `enableStarBrightnessModulation` was a **global** dim keyed to the Sun's *elevation above the camera's local horizon* — it dimmed the entire sky uniformly, including stars 180° away from the Sun. In orbit there is no atmosphere, so there is no sky glow and no global dim; what genuinely washes out stars near the Sun is **ocular / instrument glare, which is ANGULAR** — a function of each star's angular separation from the Sun, not of the Sun's elevation. So the maintainer is asking for a feature the codebase never had, while the thing that *was* there was a physically wrong stand-in for it. Filed as `C12-27`.
+
+**Q3 — HDR default → ANSWERED: on by default only where the browser/display actually reports HDR.** Not a blanket flip. Filed as `C12-28`.
+
+**Q4 — Seam magnitude → deferred pending explanation; `C12-11` holds the decision.** Default if unanswered: option (a), a bright-star-free cubemap bake.
+
+### New items from these answers
+
+| ID | Item | Effort | Wave |
+|---|---|---|---|
+| `C12-27` | **`NEW-ANGULAR-SOLAR-GLARE-STAR-WASHOUT`.** Dim/wash stars as a function of **angular separation from the Sun**, replacing the deleted global elevation-keyed model. Physically this is the same glare-spread function as `C12-05` (Stiles–Holladay inverse-square, `Lv(θ) ∝ 1/θ²`) applied to the *sky* rather than to a single sprite — so it should reuse that math, not invent a second curve. Must land on **both** backends (the deleted model was WebGPU-only; re-adding a WebGPU-only version would recreate the exact parity bug just fixed). Applies to both the cubemap and the sprite pass. Gate: stars at small angular separation dim measurably while stars at >90° separation are byte-identical to the no-Sun frame. | M | W2 (with the PSF work) |
+| `C12-28` | **`NEW-HDR-DEFAULT-ON-HDR-CAPABLE-DISPLAYS`.** Default `highDynamicRange` from actual display capability rather than a hardcoded `false` — `window.matchMedia("(dynamic-range: high)")` (and/or `(video-dynamic-range: high)`), with the WebGPU canvas configured for extended range where supported. **Constraints:** must remain explicitly overridable by the app; must not change behaviour on SDR displays (byte-identical); and because enabling HDR engages PBR Neutral's highlight compression, `C12-07` (the chroma-preserving profile that fixes the blob **without** HDR) stays the first increment and this lands **after** it. ⚠ Do NOT switch the default tonemap operator to ACES as part of this — `acesTonemap` ends in a per-channel `clamp(0,1)` that maximizes hue-shift-to-white on exactly these pixels. | M | W4 (after `C12-07`) |
+
+---
+
+## 6b. Original decision text (retained for context)
+
+### MAINTAINER DECISIONS REQUIRED BEFORE LAUNCH
 
 **Q1 — Gaia-derived NASA imagery: acceptable or disqualified?** *(blocks `C12-10`, therefore all of W3)*
 NASA SVS 4851 "Deep Star Maps 2020" is technically the best asset available (1.7 B stars, native OpenEXR, pre-split diffuse-vs-bright) — but two of its three layers are **Gaia DR2-derived**, and ESA states verbatim that Gaia data are **CC BY-NC 3.0 IGO**. Non-commercial is **incompatible with MIT**. NASA redistributes the result as public domain without marking it third-party-copyrighted; the counter-argument (raw astrometry is arguably uncopyrightable under *Feist*) is **not something engineering should rely on** — a rendered image is a creative work. **Recommendation: take the SVS 3572 t5 path instead** — same product family, same attribution, already covered by `LICENSE.md:1042`, and it directly delivers the dense Milky Way requested. **Default if unanswered: t5.**

@@ -49,7 +49,7 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
 
 // Runs in-page. Positions the camera for maximum star modulation, renders,
 // and returns both the driving scalar and star-field image statistics.
-const MEASURE = async ({ toggleFlag }) => {
+const MEASURE = async ({ toggleFlag, side }) => {
   const C = await import("/Build/CesiumUnminified/index.js");
   const viewer = window.viewer;
   const scene = viewer.scene;
@@ -66,22 +66,28 @@ const MEASURE = async ({ toggleFlag }) => {
   scene.render();
   const sunDir = C.Cartesian3.clone(scene.context.uniformState.sunDirectionWC);
 
-  // Camera ALONG the sun direction => normalize(positionWC) == sunDir
-  // => sunAlt = dot(sunDir, up) = 1.0 => skyBrightness = 1.0 (max dim).
+  // SUNLIT: camera ALONG the sun direction => normalize(positionWC) == sunDir
+  //   => sunAlt = dot(sunDir, up) = 1.0 => skyBrightness = 1.0 (max dim).
+  // NIGHT:  camera OPPOSITE the sun => sunAlt = -1.0 => skyBrightness = 0
+  //   => the star-modulation factor is exactly 1.0 (no dim) by construction,
+  //   so ANY residual WebGPU-vs-WebGL gap on this lane is a SECOND cause.
   const dist = 5.0e7;
-  const position = C.Cartesian3.multiplyByScalar(sunDir, dist, new C.Cartesian3());
+  const axis = side === "night"
+    ? C.Cartesian3.negate(sunDir, new C.Cartesian3())
+    : sunDir;
+  const position = C.Cartesian3.multiplyByScalar(axis, dist, new C.Cartesian3());
 
   // Aim perpendicular to the sun so neither the sun disc nor Earth is in frame.
   const seed =
-    Math.abs(sunDir.z) < 0.9
+    Math.abs(axis.z) < 0.9
       ? new C.Cartesian3(0, 0, 1)
       : new C.Cartesian3(1, 0, 0);
   const perp = C.Cartesian3.normalize(
-    C.Cartesian3.cross(sunDir, seed, new C.Cartesian3()),
+    C.Cartesian3.cross(axis, seed, new C.Cartesian3()),
     new C.Cartesian3(),
   );
   const up = C.Cartesian3.normalize(
-    C.Cartesian3.cross(perp, sunDir, new C.Cartesian3()),
+    C.Cartesian3.cross(perp, axis, new C.Cartesian3()),
     new C.Cartesian3(),
   );
   scene.camera.setView({ destination: position, orientation: { direction: perp, up } });
@@ -150,7 +156,7 @@ const MEASURE = async ({ toggleFlag }) => {
   };
 };
 
-async function runBackend(browser, renderer, toggleFlag) {
+async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
   const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
   const errs = [];
@@ -161,11 +167,11 @@ async function runBackend(browser, renderer, toggleFlag) {
     });
     await page.waitForFunction(() => !!(window.viewer && window.viewer.scene && window.viewer.scene.context), null, { timeout: 90000 });
     await page.waitForTimeout(5000);
-    const stats = await page.evaluate(MEASURE, { toggleFlag });
-    await page.screenshot({ path: path.join(OUT_DIR, `skybox-stars-${renderer}${toggleFlag === undefined ? "" : `-mod${toggleFlag ? "ON" : "OFF"}`}.png`) });
-    return { ok: true, renderer, toggleFlag, stats, consoleErrors: errs.slice(0, 4) };
+    const stats = await page.evaluate(MEASURE, { toggleFlag, side });
+    await page.screenshot({ path: path.join(OUT_DIR, `skybox-stars-${side}-${renderer}${toggleFlag === undefined ? "" : `-mod${toggleFlag ? "ON" : "OFF"}`}.png`) });
+    return { ok: true, renderer, toggleFlag, side, stats, consoleErrors: errs.slice(0, 4) };
   } catch (e) {
-    return { ok: false, renderer, toggleFlag, error: String((e && e.message) || e).slice(0, 300), consoleErrors: errs.slice(0, 4) };
+    return { ok: false, renderer, toggleFlag, side, error: String((e && e.message) || e).slice(0, 300), consoleErrors: errs.slice(0, 4) };
   } finally {
     await context.close().catch(() => {});
   }
@@ -174,18 +180,20 @@ async function runBackend(browser, renderer, toggleFlag) {
 (async () => {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const browser = await chromium.launch({ channel: "msedge", headless: true });
-  let gl, gpu, gpuOff, gpuOn;
+  let gl, gpu, gpuOff, gpuOn, glNight, gpuNight;
   try {
     gl = await runBackend(browser, "webgl", undefined);
     gpu = await runBackend(browser, "webgpu", undefined);          // as shipped
     gpuOff = await runBackend(browser, "webgpu", false);           // flag forced OFF
     gpuOn = await runBackend(browser, "webgpu", true);             // opt-in still works?
+    glNight = await runBackend(browser, "webgl", undefined, "night");
+    gpuNight = await runBackend(browser, "webgpu", undefined, "night");
   } finally {
     await browser.close().catch(() => {});
   }
 
   const S = (x) => (x && x.ok ? x.stats : null);
-  const a = S(gl), b = S(gpu), c = S(gpuOff), d = S(gpuOn);
+  const a = S(gl), b = S(gpu), c = S(gpuOff), d = S(gpuOn), e = S(glNight), f = S(gpuNight);
 
   const ratio = (x, y) => (x != null && y != null && y !== 0 ? r3(x / y) : null);
 
@@ -222,6 +230,20 @@ async function runBackend(browser, renderer, toggleFlag) {
       capabilityPreserved:
         d && b && d.meanLum != null && b.meanLum > 0 ? d.meanLum / b.meanLum < 0.85 : null,
     },
+    // NIGHT-SIDE LANE — maintainer reports the fade on BOTH sides. The star
+    // modulation factor is exactly 1.0 here by construction, so any residual
+    // gap on this lane is a SECOND, independent cause.
+    nightSide: {
+      skyBrightness: f ? r3(f.skyBrightness) : null,
+      webgl: e ? { mean: r3(e.meanLum), stddev: r3(e.stddev), starPct: r3(e.starPct), topMean: r3(e.topMean) } : null,
+      webgpu: f ? { mean: r3(f.meanLum), stddev: r3(f.stddev), starPct: r3(f.starPct), topMean: r3(f.topMean) } : null,
+      gpuOverGl_mean: ratio(f && f.meanLum, e && e.meanLum),
+      gpuOverGl_stddev: ratio(f && f.stddev, e && e.stddev),
+      gpuOverGl_starPct: ratio(f && f.starPct, e && e.starPct),
+      gpuOverGl_topMean: ratio(f && f.topMean, e && e.topMean),
+      secondCausePresent:
+        e && f && e.meanLum > 0 ? Math.abs(f.meanLum / e.meanLum - 1) > 0.1 : null,
+    },
     // The gate: default must be at parity AND the opt-in must still function.
     GATE:
       (() => {
@@ -237,9 +259,9 @@ async function runBackend(browser, renderer, toggleFlag) {
   };
 
   const outPath = path.join(OUT_DIR, "skybox-star-modulation.json");
-  fs.writeFileSync(outPath, JSON.stringify({ verdict, gl, gpu, gpuOff, gpuOn }, null, 2));
+  fs.writeFileSync(outPath, JSON.stringify({ verdict, gl, gpu, gpuOff, gpuOn, glNight, gpuNight }, null, 2));
   console.log(JSON.stringify(verdict, null, 2));
-  for (const l of [gl, gpu, gpuOff]) if (l && !l.ok) console.log(`${l.renderer}(mod=${l.toggleFlag}) FAILED: ${l.error}`);
+  for (const l of [gl, gpu, gpuOff, gpuOn, glNight, gpuNight]) if (l && !l.ok) console.log(`${l.renderer}(mod=${l.toggleFlag}) FAILED: ${l.error}`);
   console.log(`\n[full report: ${outPath}]`);
   clearTimeout(watchdog);
   process.exit(0);
