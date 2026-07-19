@@ -5553,8 +5553,53 @@ to the FAR-003 OIT×MSAA lane, not the resolve-elision slice.
 
 ## NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING (surfaced by M-OIT, 2026-07-18)
 
-**Status:** **PARTIAL — Slices A (PRIMITIVE) + B (COLLECTION) DONE 2026-07-18/19 (C11-157).** Model
-(Slice C) REMAINS. Contained-off today ⇒ no default-path impact.
+**Status:** **PARTIAL — Slices A (PRIMITIVE) + B (COLLECTION) + C-core (MODEL) DONE 2026-07-18/19
+(C11-157).** Only the **C11-91 silhouette OIT "body wash" (Slice D)** remains — deferred as
+design-heavy (its own stencil/pass machinery; design recorded below). Contained-off today ⇒ no
+default-path impact. All THREE standard translucent producer families (primitive, collection, model)
+now reach the WebGPU MRT-OIT accumulation when the FAR-003 gate is on.
+
+**Slice C (MODEL core, C11-157) — DONE 2026-07-19.** Translucent MODEL commands now carry the OIT
+variant. `WebGPUModelPipelineCache.getOITColorConfig(alphaMode, doubleSided, materialDefines)` returns
+the non-LOG_DEPTH preprocessed color `_shaderCode` + a `_pipelineConfig` reusing the base color
+pipeline's SHARED layout + vertex layout + primitive/depth state (single-sample). It shares the
+composition with the module build via an extracted `_composeColorSource` helper (byte-identical
+module output — verified by the model battery). `WebGPUModelRenderer` attaches it to (1) the PRIMARY
+command when `primaryPass === Pass.TRANSLUCENT` (natively-BLEND model, or CustomShader
+translucencyMode=TRANSLUCENT), skipping classifiers + silhouetted models; and (2) the per-feature-
+styled TRANSLUCENT **twin** (C10-02 / Batch 699) — both inside the Batch-704 async ready-gate (a
+command is only emitted once its base pipeline is ready, so the sync-built OIT variant never renders
+during warmup). The model color FS returns a `FragOutput` struct (`@location(0) color` +
+`@location(1) normalRoughness`, `@builtin(position) fragCoord`) — the Slice-A `injectOITOutput`
+struct branch handles it (posField `fragCoord`). **Latent bug fixed:** `executeOITCommand`
+(`WebGPUSceneRendererTranslucentPass`) assumed vertex/index buffers were `{buffer}` wrappers and threw
+`setIndexBuffer: parameter 1 is not of type 'GPUBuffer'` on model commands (raw `GPUBuffer`) — now
+`resolveOITBuffer` handles both wrapper and raw, mirroring `WebGPUDrawCommand.execute` (primitives/
+collections unaffected — they use the wrapper). Evidence: `probe-oit-model-reachable.mjs` twin
+(BatchedWithBatchTable + subset α-style) + blend (BatchedTranslucent) both PASS —
+`_webgpuOITActiveThisFrame`=TRUE (was always false), 0 device/validation errors, the model renders via
+the OIT composite (doesn't vanish), restore 0px. `onVsOff≈0` is CORRECT: model geometry is
+single-sided (back-face culled) and the batched buildings don't overlap → no depth-complexity → WBOIT
+≡ sorted-alpha; the visible WBOIT desaturation is inherited-proven from Slices A/B on the SHARED
+composite. No-regression: model battery (instance-bg-cache group-1/2 + geometry fast-path,
+pbr-ibl-parity, standalone-model-pick) + all OIT/standard probes green. Runs at `msaaSamples=1`.
+
+**Slice D (C11-91 silhouette OIT "body wash") — DEFERRED, design-heavy (design below).** WebGL's
+silhouette-on-translucent produces an OIT-stencil whole-object "body wash" (the entire object tinted
+by the silhouette colour); the WebGPU silhouette path (`WebGPUModelRenderer` ~L6318,
+`ModelSilhouetteStage.wgsl`) currently does rim-only via a stencil NOT-EQUAL cutout
+(`renderState.stencilTest.reference = silhouetteStencilRef`, `silhouetteColorPipeline`). Replicating
+the body-wash is NOT a small ride-along on the model OIT reachability — it needs its OWN stencil/pass
+machinery: the silhouette color command must render the WHOLE object (not the NOT-EQUAL rim cutout)
+through the OIT accumulation, with the stencil semantics that produce the wash rather than the rim,
+matching WebGL's OIT-stencil interaction. Per the C11-157 scope decision (don't guess a stencil
+design), this is filed as its own sub-slice. **Recommended approach when picked up:** (a) study
+WebGL's `deriveSilhouetteModelCommand` + its OIT-stencil pass ordering; (b) decide whether the
+body-wash is a second silhouette-color draw of the full object into OIT accumulation (stencil-equal
+to the stamped ref) vs a modified rim pass; (c) route THAT command through `getOITColorConfig` (the
+Slice-C machinery is ready); (d) verify against a silhouette+translucent scene (extend
+`probe-model-silhouette.mjs`). Owning row: `C11-91` (RESOLVED-to-fold-into-C11-157, now re-scoped to
+Slice D).
 
 **Slice B (COLLECTION, C11-157) — DONE 2026-07-19.** Translucent COLLECTION color commands now carry
 the OIT variant too. `WebGPUBillboardRenderer.js`, `WebGPUPointPrimitiveRenderer.js`,
@@ -5593,12 +5638,15 @@ stays DEFAULT-OFF (reachable, not default-on). Runs at `msaaSamples=1`. Follow-u
 `NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH` (WBOIT weight desaturation), `NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING`
 (MSAA×OIT accumulation).
 
-**Original finding (Slice C still open for model):** the real prerequisite for any WebGPU-OIT
-default-parity flip; multi-batch, epic. It is the load-bearing gap behind the
-`M-OIT-COVERAGE-AND-FLIP-EVIDENCE` NO-GO verdict. With primitives (A) + collections (B) now reachable,
-Slice C (translucent glTF MODEL commands via `WebGPUModelRenderer`) is the remaining producer; then a
-default flip additionally needs the two FAR-003 adjacencies (`NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME`,
-`NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING`).
+**Original finding (all standard producers now reachable):** this was the real prerequisite for any
+WebGPU-OIT default-parity flip; multi-batch, epic — the load-bearing gap behind the
+`M-OIT-COVERAGE-AND-FLIP-EVIDENCE` NO-GO verdict. With primitives (A) + collections (B) + models
+(C-core) now reachable, ALL standard translucent producers route into the MRT accumulation. What still
+stands between here and a meaningful default flip: (1) the C11-91 silhouette body-wash (Slice D
+above); (2) the two FAR-003 adjacencies `NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME` +
+`NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING` (MSAA — everything reachable so far is proven at
+`msaaSamples=1`); (3) optionally the `NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH` quality follow-up. The flip
+itself remains a separate maintainer decision (FAR-003 stays default-off until then).
 
 **Finding.** The WebGPU MRT-OIT accumulation path in `WebGPUSceneRendererTranslucentPass.ts`
 (`executeTranslucentPass`) engages only when `hasOITPipelines` is true, which requires a

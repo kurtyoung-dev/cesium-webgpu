@@ -27,6 +27,7 @@
  */
 
 import Pass from "../../Renderer/Pass.js";
+import WebGPUBuffer from "./WebGPUBuffer.js";
 import type { WebGPUOIT } from "./WebGPUOIT.js";
 import type { WebGPUContext } from "./WebGPUContext.js";
 import {
@@ -35,6 +36,24 @@ import {
   sortGaussianSplatsBackToFront,
   type WebGPURenderFrameConfig,
 } from "./WebGPUSceneRenderer.js";
+
+// C11-157 Slice C — a vertex/index buffer on a draw command can be EITHER our
+// `WebGPUBuffer` wrapper (`.buffer` accessor — primitives/collections) OR a raw
+// `GPUBuffer` (models). `executeOITCommand` must resolve both, exactly like the
+// canonical `WebGPUDrawCommand.execute()` path. Before this, the OIT
+// accumulation path assumed the wrapper and threw `setIndexBuffer: parameter 1
+// is not of type 'GPUBuffer'` on model commands (raw GPUBuffer → `.buffer`
+// undefined) — latent until Slice C made translucent models OIT-reachable.
+function resolveOITBuffer(
+  buf: { buffer: GPUBuffer } | GPUBuffer | undefined,
+): GPUBuffer | undefined {
+  if (!buf) {
+    return undefined;
+  }
+  return buf instanceof WebGPUBuffer
+    ? buf.buffer
+    : ((buf as { buffer?: GPUBuffer }).buffer ?? (buf as GPUBuffer));
+}
 
 /**
  * The SceneRenderer surface that the extracted translucent pass
@@ -245,12 +264,12 @@ export function executeTranslucentPass(
             for (let vi = 0; vi < cmd.vertexBuffers.length; vi++) {
               accPass.setVertexBuffer(
                 vi,
-                (cmd.vertexBuffers[vi] as { buffer: GPUBuffer })?.buffer,
+                resolveOITBuffer(cmd.vertexBuffers[vi]),
               );
             }
             if (cmd.indexBuffer && cmd.indexCount) {
               accPass.setIndexBuffer(
-                (cmd.indexBuffer as { buffer: GPUBuffer }).buffer,
+                resolveOITBuffer(cmd.indexBuffer)!,
                 cmd.indexFormat ?? "uint16",
               );
               accPass.drawIndexed(cmd.indexCount, cmd.instanceCount ?? 1);

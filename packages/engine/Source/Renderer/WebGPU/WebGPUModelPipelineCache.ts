@@ -43,6 +43,11 @@ import ErrorPipelineWGSL from "../../Shaders/WebGPU/Model/ErrorPipeline.js";
 // `clusterParams.activeLightCount.x` (zero when no lights or
 // scene.clusteredLightingEnabled === false → FS chunk early-out).
 import ClusteredLightingChunk from "../../Shaders/WebGPU/chunks/structs/ClusteredLighting.js";
+// C11-157 Slice C — preprocess the composed color source (LOG_DEPTH cleared)
+// for the model OIT accumulation variant. The module cache preprocesses
+// internally; the OIT path needs the concrete WGSL for injectOITOutput.
+import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
+import type { WebGPUPipelineConfig } from "./WebGPUDrawCommand.js";
 import {
   makeBindGroupLayout,
   sampler,
@@ -2565,23 +2570,19 @@ class WebGPUModelPipelineCache {
    * @returns {GPUShaderModule}
    * @private
    */
-  _getOrCreateShaderModule(materialDefines: number, pickLogOverride?: boolean) {
+  /**
+   * C11-157 Slice C — the color-shader composition (effective defines +
+   * generated chunks + full source + cache keys), extracted verbatim from
+   * `_getOrCreateShaderModule` so BOTH the module build AND `getOITColorConfig`
+   * (the OIT accumulation variant) derive a byte-identical `fullSource` +
+   * `effectiveDefines` for a given `materialDefines` + per-cache render-mode
+   * state. Pure — no module creation, no cache mutation. (`_getOrCreateShaderModule`
+   * still short-circuits on a module-cache hit; this composes unconditionally,
+   * a negligible string cost on the rare pipeline-miss path.)
+   * @private
+   */
+  _composeColorSource(materialDefines: number, pickLogOverride?: boolean) {
     const key = this._normalizeMaterialDefines(materialDefines);
-    //>>includeStart('debug', pragmas.debug);
-    // C2-22 — test hook: when `globalThis.CesiumWebGPUForcePipelineError` is set,
-    // return a deliberately-invalid module (no entry points, garbage WGSL) so the
-    // downstream createRenderPipeline fails validation and the magenta error
-    // pipeline can be verified. Called inside getPipeline's error scope.
-    if (
-      (globalThis as { CesiumWebGPUForcePipelineError?: boolean })
-        .CesiumWebGPUForcePipelineError === true
-    ) {
-      return this._device.createShaderModule({
-        label: "Model PBR FORCED-ERROR (C2-22 probe)",
-        code: "garbage_token_not_valid_wgsl",
-      });
-    }
-    //>>includeEnd('debug');
     // Renderer-wide log depth (NEW-COLLECTIONS-LOG-DEPTH) — the module
     // (NOT the BGL/pipeline-layout, whose bindings don't change) forks on
     // the LOG_DEPTH bit. `_logDepthEnabled` mirrors
@@ -2697,10 +2698,6 @@ class WebGPUModelPipelineCache {
       metadataClassHash === 0 && customShaderClassHash === 0
         ? effectiveDefines
         : `${effectiveDefines}#${metadataClassHash}#${customShaderClassHash}`;
-    let module = this._shaderModuleCache.get(moduleKey);
-    if (module) {
-      return module;
-    }
     const variantHex = `0x${effectiveDefines.toString(16)}`;
     // Slice 5d Batch 153 — prepend the ClusteredLighting chunk so the
     // Model PBR shader has @group(3) bindings 18..22 declared + the
@@ -2755,26 +2752,124 @@ class WebGPUModelPipelineCache {
       customShaderClassHash === 0
         ? metadataClassHash
         : (metadataClassHash ^ customShaderClassHash) >>> 0;
+    return {
+      fullSource,
+      effectiveDefines,
+      moduleKey,
+      keySalt,
+      variantHex,
+      metadataClassHash,
+      customShaderClassHash,
+    };
+  }
+
+  _getOrCreateShaderModule(materialDefines: number, pickLogOverride?: boolean) {
+    //>>includeStart('debug', pragmas.debug);
+    // C2-22 — test hook: when `globalThis.CesiumWebGPUForcePipelineError` is set,
+    // return a deliberately-invalid module (no entry points, garbage WGSL) so the
+    // downstream createRenderPipeline fails validation and the magenta error
+    // pipeline can be verified. Called inside getPipeline's error scope.
+    if (
+      (globalThis as { CesiumWebGPUForcePipelineError?: boolean })
+        .CesiumWebGPUForcePipelineError === true
+    ) {
+      return this._device.createShaderModule({
+        label: "Model PBR FORCED-ERROR (C2-22 probe)",
+        code: "garbage_token_not_valid_wgsl",
+      });
+    }
+    //>>includeEnd('debug');
+    const composed = this._composeColorSource(materialDefines, pickLogOverride);
+    let module = this._shaderModuleCache.get(composed.moduleKey);
+    if (module) {
+      return module;
+    }
     // The Tier-1 cache retains the complete Uint32 `effectiveDefines`, so
     // render-mode bits 26-30 require no salt. `keySalt` now has one job only:
     // fingerprint the dynamically generated metadata/custom-shader source.
     module = getModelShaderModuleCache(this._device).getOrCreate(
       ShaderSourceId.MODEL_PBR_COMPLETE,
-      fullSource,
-      effectiveDefines,
-      `Model PBR ShaderModule [defines=${variantHex}${
-        metadataClassHash !== 0
-          ? ` meta=0x${metadataClassHash.toString(16)}`
+      composed.fullSource,
+      composed.effectiveDefines,
+      `Model PBR ShaderModule [defines=${composed.variantHex}${
+        composed.metadataClassHash !== 0
+          ? ` meta=0x${composed.metadataClassHash.toString(16)}`
           : ""
       }${
-        customShaderClassHash !== 0
-          ? ` cs=0x${customShaderClassHash.toString(16)}`
+        composed.customShaderClassHash !== 0
+          ? ` cs=0x${composed.customShaderClassHash.toString(16)}`
           : ""
       }]`,
-      keySalt,
+      composed.keySalt,
     );
-    this._shaderModuleCache.set(moduleKey, module);
+    this._shaderModuleCache.set(composed.moduleKey, module);
     return module;
+  }
+
+  /**
+   * C11-157 Slice C — build the OIT accumulation variant inputs for a
+   * translucent model color/twin command: the non-LOG_DEPTH preprocessed color
+   * source (`_shaderCode`) + a `_pipelineConfig` reusing the base color
+   * pipeline's SHARED layout + vertex layout + primitive/depth state
+   * (single-sample to match the single-sample OIT accumulation targets). The
+   * renderer attaches these to a `Pass.TRANSLUCENT` model command so
+   * `executeTranslucentPass` auto-builds the MRT accumulation pipeline under the
+   * FAR-003 gate; read ONLY when the gate is on → gate-OFF byte-identical. The
+   * model FS returns a `FragOutput` struct (@location(0) color) → the
+   * `injectOITOutput` struct branch handles it. Returns null defensively when
+   * the composed source is empty (e.g. the C2-22 forced-error test hook).
+   */
+  getOITColorConfig(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ): { shaderCode: string; pipelineConfig: WebGPUPipelineConfig } | null {
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const composed = this._composeColorSource(materialDefines);
+    if (!composed.fullSource) {
+      return null;
+    }
+    // OIT runs in a depth-read-only pass; strip LOG_DEPTH so the FragOutput's
+    // `@builtin(frag_depth)` member is gone (leaving the plain @location(0)/(1)
+    // struct the injector's struct branch transforms).
+    const shaderCode = preprocessShaderSource(
+      composed.fullSource,
+      (composed.effectiveDefines & ~ShaderDefine.LOG_DEPTH) >>> 0,
+    );
+    const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
+    const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
+    const metadataSlotMode = this._metadataSlotMode(md);
+    // Reuse the EXACT color-pipeline descriptor so the OIT variant's layout +
+    // vertex layout + primitive/depth match the base pipeline the command's
+    // bind groups + vertex buffers were built against. The shaderModule arg is
+    // discarded here (createOITPipeline compiles its own module from shaderCode).
+    const raw = buildColorPipelineDescriptor(
+      this._getOrCreateShaderModule(md),
+      this._getOrCreatePipelineLayout(md),
+      this._presentationFormat,
+      this._depthFormat,
+      alphaMode,
+      doubleSided,
+      false,
+      hasTexCoord1,
+      hasFeatureId0,
+      this._sampleCount,
+      metadataSlotMode,
+      this._primitiveTopology,
+    );
+    return {
+      shaderCode,
+      pipelineConfig: {
+        label: `OIT Model [${composed.variantHex}]`,
+        layout: raw.layout as GPUPipelineLayout,
+        vertexBuffers: raw.vertex.buffers as GPUVertexBufferLayout[],
+        vertexEntryPoint: "vertexMain",
+        fragmentEntryPoint: "fragmentMain",
+        primitive: raw.primitive as GPUPrimitiveState,
+        depthStencil: raw.depthStencil as GPUDepthStencilState,
+        multisample: undefined,
+      },
+    };
   }
 
   /**

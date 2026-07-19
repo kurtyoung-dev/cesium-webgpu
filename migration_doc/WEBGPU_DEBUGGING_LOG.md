@@ -24,6 +24,53 @@
 
 ---
 
+## C11-157 Slice C — WebGPU MRT-OIT made REACHABLE for translucent MODELS + a latent OIT buffer bug (2026-07-19)
+
+**What.** Completed the standard-translucent-producer reachability arc (A=primitives, B=collections,
+C=models). The natively-BLEND model primary AND the per-feature-styled TRANSLUCENT twin now route into
+MRT accumulation. Only the C11-91 silhouette body-wash (Slice D) remains, deferred as design-heavy.
+FAR-003 stays DEFAULT-OFF.
+
+**Premise-verify.** The model color FS (`ModelPBRComplete.wgsl`) is `@fragment fn fragmentMain(input:
+FragmentInput) -> FragOutput`; at defines=0 `FragOutput` = `{ @location(0) color, @location(1)
+normalRoughness }` (CAPTURE_MODE off → 2-target MRT, LOG_DEPTH off → no frag_depth) and `FragmentInput`
+has `@builtin(position) fragCoord`. The Slice-A `injectOITOutput` struct branch handles this exactly
+(colorField `color`, posField `fragCoord`, strips the struct attrs, wraps). No injector change.
+
+**Files.**
+
+- `WebGPUModelPipelineCache.ts` — extracted `_composeColorSource(materialDefines, pickLogOverride?)`
+  from `_getOrCreateShaderModule` (the effective-defines + generated-chunk + fullSource + cache-key
+  composition), so BOTH the module build AND a new `getOITColorConfig` derive a byte-identical source
+  (verified by the model battery). `getOITColorConfig(alphaMode, doubleSided, materialDefines)` returns
+  the non-LOG_DEPTH preprocessed `_shaderCode` + a `_pipelineConfig` reusing the base color descriptor's
+  layout + vertex layout + primitive/depth (single-sample).
+- `WebGPUModelRenderer.ts` — attaches `getOITColorConfig` output to (1) the PRIMARY command when
+  `primaryPass === Pass.TRANSLUCENT` (non-classifier, non-silhouette), and (2) the per-feature-styled
+  TRANSLUCENT twin (BLEND config). Both sit inside the Batch-704 async ready-gate (command only emitted
+  once its base pipeline is ready; the sync-built OIT variant never draws during warmup).
+- `WebGPUSceneRendererTranslucentPass.ts` — **latent bug fixed.** `executeOITCommand` assumed vertex/
+  index buffers were `{buffer}` wrappers (true for primitives/collections) and did
+  `(cmd.indexBuffer as {buffer}).buffer`. Model commands carry RAW `GPUBuffer`s → `.buffer` undefined →
+  `setIndexBuffer: parameter 1 is not of type 'GPUBuffer'` (crash, gate-ON). Added `resolveOITBuffer`
+  (handles WebGPUBuffer wrapper, `{buffer}` object, AND raw GPUBuffer), mirroring
+  `WebGPUDrawCommand.execute`. Latent because A/B always use wrappers; only reachable models tripped it.
+
+**Verification.** `probe-oit-model-reachable.mjs` (new): `twin` (BatchedWithBatchTable + subset α-style
+→ the OPAQUE primary + BLEND twin) and `blend` (BatchedTranslucent) both PASS —
+`_webgpuOITActiveThisFrame`=TRUE (was always false), 0 device/validation errors, the model renders via
+the OIT composite (doesn't vanish), restore 0px. PNGs read: `onVsOff≈0` is CORRECT — model geometry is
+single-sided (back-face culled) + the batched buildings don't overlap → no depth-complexity → WBOIT ≡
+sorted-alpha; the visible WBOIT desaturation is inherited-proven from Slices A/B on the SHARED
+composite. **Model battery unregressed** (the `_composeColorSource` extraction risk): probe-model-
+instance-bg-cache (group-1/2 cache + geometry fast-path/revision tokens 240/240), pbr-ibl-parity
+(within 5%), standalone-model-pick — all 0 errors. OIT/standard no-regression: primitive-reachable
+(9.854%), collection-reachable (10.084%), oit-transparency (parity 1.329%), splat-sort, ellipsoidprim
+(0.499), globe-translucency (0.50/3.35/0.46%), capture-and-diff globe-default (0.43%) all green.
+`tsc`/`gulp build`/`buildAllVariants` clean.
+
+---
+
 ## C11-157 Slice B — WebGPU MRT-OIT made REACHABLE for translucent COLLECTIONS (2026-07-19)
 
 **What.** Extended Slice A's reachability from PRIMITIVES to the COLLECTION family

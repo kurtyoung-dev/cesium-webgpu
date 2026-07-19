@@ -103,6 +103,7 @@ import EdgeDisplayMode from "../../Scene/EdgeDisplayMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import type { WebGPUPipelineConfig } from "./WebGPUDrawCommand.js";
 // C2-25 ENV-SCENE-CAPTURE (Batch 447) — per-frame uniform ring allocator. The
 // capture pass packs a face-camera UB per visible primitive per face; it MUST
 // ride the ring (not `cache.cameraBuffer`/`nc.cameraBuffer`, which the main
@@ -477,6 +478,13 @@ interface PipelineCacheLike {
   // C10-07 — the on-screen color pipeline resolves async through the central
   // cache and returns null while the variant is still compiling (ready-gate).
   getPipeline(...args: unknown[]): GPURenderPipeline | null;
+  // C11-157 Slice C — OIT accumulation variant inputs for a translucent model
+  // color/twin command (non-LOG_DEPTH source + shared-layout pipeline config).
+  getOITColorConfig(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ): { shaderCode: string; pipelineConfig: WebGPUPipelineConfig } | null;
   getDepthWritePipeline(...args: unknown[]): GPURenderPipeline;
   getClassificationPipeline(...args: unknown[]): GPURenderPipeline;
   getCapturePipeline(...args: unknown[]): GPURenderPipeline;
@@ -5785,6 +5793,32 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
       };
       const webgpuCmd: ModelDrawCommand = new WebGPUDrawCommand(webgpuCmdArgs);
 
+      // C11-157 Slice C — OIT reachability for a natively-translucent (BLEND
+      // alphaMode) model primary command. Attach the OIT variant inputs so
+      // `executeTranslucentPass` auto-builds the MRT accumulation pipeline under
+      // the FAR-003 gate. Skips classifiers (draw via globe-depth, not a
+      // reflective/translucent surface) and silhouetted models (the silhouette
+      // OIT "body wash" is deferred to C11-157 Slice D / C11-91). The command is
+      // only reached once `activePipeline` is ready (the async ready-gate above
+      // `continue`s otherwise), and the OIT variant is built synchronously
+      // on-demand in the translucent pass, so it never renders during pipeline
+      // warmup. Inert when the FAR-003 gate is off → gate-OFF byte-identical.
+      if (
+        primaryPass === Pass.TRANSLUCENT &&
+        !isClassifier &&
+        !modelHasSilhouette
+      ) {
+        const oit = pipelineCache.getOITColorConfig(
+          matInfo.alphaMode,
+          matInfo.isDoubleSided,
+          primCache.materialDefines | 0,
+        );
+        if (oit) {
+          webgpuCmd._shaderCode = oit.shaderCode;
+          webgpuCmd._pipelineConfig = oit.pipelineConfig;
+        }
+      }
+
       // C2-25 ENV-SCENE-CAPTURE (Batch 447) — collect this primitive's
       // camera-independent draw resources so the env-map capture pass can
       // replay it per cube face. Skips:
@@ -6531,6 +6565,23 @@ function updateWebGPUModel(model: ModelLike, frameState: CesiumFrameState) {
             cull: model._cull ?? true,
             renderState: modelRenderState,
           });
+          // C11-157 Slice C — OIT reachability for the per-feature-styled
+          // translucent TWIN — the actual translucent-model case (an OPAQUE
+          // primary + this BLEND-class twin, gated on `styleCommandsNeeded`
+          // mixing opacity). The twin is always Pass.TRANSLUCENT and is only
+          // built inside the `defined(primCache.translucentPipeline)` async
+          // ready-gate, so attaching the OIT variant here respects that gate.
+          // The BLEND-alphaMode config matches the twin's own pipeline. Inert
+          // when the FAR-003 gate is off → gate-OFF byte-identical.
+          const twinOIT = pipelineCache.getOITColorConfig(
+            AlphaModes.BLEND,
+            matInfo.isDoubleSided,
+            primCache.materialDefines | 0,
+          );
+          if (twinOIT) {
+            translucentCmd._shaderCode = twinOIT.shaderCode;
+            translucentCmd._pipelineConfig = twinOIT.pipelineConfig;
+          }
           // AUDIT_2026_05_02 B.7 — Batch 79's selective depth-write fix
           // previously only fired for tile-owned models (Cesium3DTile.js sets
           // `depthForTranslucentClassification = true`). Standalone Models —
