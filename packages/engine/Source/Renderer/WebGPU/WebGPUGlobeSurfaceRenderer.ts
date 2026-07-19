@@ -259,6 +259,17 @@ export class WebGPUGlobeSurfaceRenderer {
   private _cloudShadowView: GPUTextureView | null = null;
   private _cloudShadowSampler: GPUSampler | null = null;
   private _oceanNormalMapCache: Map<string, ImageryGPUTexture> = new Map();
+  // PERF-OCEAN-NORMAL-REUPLOAD (2026-07-19) — `uploadImageSource` only WRITES
+  // to the cache map it is handed; it never reads it, and its shared-
+  // realization dedupe is gated on `logicalOwner === "imagery"`, which the
+  // ocean-normal call site does not pass. Without this source-identity guard
+  // the normal map was re-uploaded (copyExternalImageToTexture + mip regen +
+  // createView) once per tile per frame on a static scene — and because the
+  // group-2 bind-group cache keys on view identity, a fresh view each call
+  // also forced a createBindGroup every frame. Same idiom as
+  // `_materialTextureCache` below.
+  private _oceanNormalMapSource: unknown = null;
+  private _oceanNormalMapView: GPUTextureView | null = null;
   public _pipelineLayout: GPUPipelineLayout | null = null;
   // Session 65 Cluster 3 — material lives at @group(2) bindings 4-8
   // (UBO + image texture/sampler + heights texture/sampler). The
@@ -2135,14 +2146,26 @@ export class WebGPUGlobeSurfaceRenderer {
         source instanceof ImageBitmap ||
         source instanceof HTMLCanvasElement
       ) {
-        const view = uploadImageSourceHelper(
-          this,
-          source,
-          "oceanNormal",
-          this._oceanNormalMapCache,
-        );
-        if (view) {
-          normalMapView = view;
+        // PERF-OCEAN-NORMAL-REUPLOAD — reuse the previously uploaded view while
+        // the underlying source object is unchanged. The ocean normal map is a
+        // decoded, immutable image retained by Globe.js, so identity equality is
+        // a sound reuse test here (the same test `_resolveOrUploadMaterialTexture`
+        // applies). A changed source (e.g. `oceanNormalMapUrl` swapped at
+        // runtime) fails the identity check and re-uploads exactly once.
+        if (this._oceanNormalMapView && this._oceanNormalMapSource === source) {
+          normalMapView = this._oceanNormalMapView;
+        } else {
+          const view = uploadImageSourceHelper(
+            this,
+            source,
+            "oceanNormal",
+            this._oceanNormalMapCache,
+          );
+          if (view) {
+            normalMapView = view;
+            this._oceanNormalMapSource = source;
+            this._oceanNormalMapView = view;
+          }
         }
       }
     }
@@ -2665,6 +2688,11 @@ export class WebGPUGlobeSurfaceRenderer {
       cached.texture.destroy();
     }
     this._oceanNormalMapCache.clear();
+    // PERF-OCEAN-NORMAL-REUPLOAD — drop the reuse guard alongside the textures
+    // it points at, or a later frame would hand out a view backed by a
+    // destroyed texture.
+    this._oceanNormalMapSource = null;
+    this._oceanNormalMapView = null;
     this._webgpuContext = null;
 
     for (const [, wf] of this._wireframeIndexCache) {
