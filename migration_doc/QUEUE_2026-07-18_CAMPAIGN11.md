@@ -446,6 +446,58 @@ deliberately NOT re-minted — preserving append-only + register-preservation. T
 is unchanged at **188**; the 10 appends are campaign-scheduled work items (ratified list + C10 fallout)
 tracked separately from that baseline.
 
+### 1.25 PERFORMANCE-FRONT appends (2026-07-19, maintainer-directed — APPEND-ONLY, collision-verified)
+
+**Origin.** Maintainer report: *"WebGPU performance is still pretty poor and around 50% slower FPS
+than WebGL."* The empirical investigation (Batch 717) root-caused it and the maintainer directed that
+the resulting performance work be **inserted at the front of Campaign 11**. Append-only additions
+starting at `C11-166` (`C11-01..165` NOT renumbered or reused).
+
+**What the investigation established** (all measured, not inferred — see `DEFERRED_WORK.md`
+`NEW-WEBGPU-OCEANNORMAL-PER-CALL-REUPLOAD` and the Batch-717 commit body):
+
+- The deficit was **not** renderer architecture, **not** the mandatory PP blit, and **not** Scene
+  coupling. It was a per-frame texture **re-upload storm** on the globe water path.
+- `uploadImageSource` (`WebGPUGlobeSurfaceTextures.ts:758`) **only WRITES to the cache Map it is
+  handed — it never READS it** (no `cache.get`/`cache.has` in the function). Its sole internal dedupe
+  (`_sharedImageryRealizations`) is gated on `logicalOwner === "imagery"`, which **neither call site
+  passes**. Callers must own the guard; the ocean-normal caller had none.
+- Result: full `copyExternalImageToTexture` + 9-level mip regen + `createView` **per tile per frame**,
+  and — because the group-2 bind-group cache keys on **view identity** — a `createBindGroup` every
+  frame too. Self-perpetuating.
+- **Measured:** WebGPU `scene.render()` **10.5 ms → 0.9 ms (11.7×)**; WebGPU/WebGL **17.5× → 1.5×**;
+  as-shipped idle lane WebGPU **1.1 ms vs WebGL 1.2 ms (now FASTER)**. `copyExternalImageToTexture`
+  went from **47% of all CPU self-time** to absent.
+- **Why it hid for two campaigns:** the in-engine per-pass CPU profiler accounted for only
+  **0.117 ms of the 10.5 ms frame** — 99% of frame cost fell outside every instrumented pass, so the
+  existing tooling could not see it *by construction*. It was correctly FILED (Batch 685) and simply
+  never triaged. **Logging was not the gap; triage and coverage were.**
+- **Ruled out, definitively:** WebGL is NOT running in WebGPU-only mode (`getContext` instrumented
+  before page scripts → zero WebGL calls; `context._gl` is the `WebGLCompatibilityStub`). Idle
+  `requestRenderMode` asymmetry is NOT the cause (`pendingForegroundCount` drained to 0 on all frames).
+
+| C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
+|---|---|---|---|---|---|---|---|
+| `C11-166` | NEW-WEBGPU-OCEANNORMAL-PER-CALL-REUPLOAD [filed Batch 685; ocean normal map re-uploaded per tile per frame; source-identity memo `_oceanNormalMapSource`/`_oceanNormalMapView`] | water / terrain-imagery | P0 | perf | S | — | **W1 (TOP) — ✅ COMPLETE Batch 717** |
+| `C11-167` | NEW-WEBGPU-UPLOADIMAGESOURCE-CACHE-CONTRACT-AUDIT [**the systematic follow-up — highest-value open perf item**: `uploadImageSource` never reads its cache, so EVERY caller needs its own guard. Audit all call sites for the same missing-guard defect, then fix the contract at the right altitude (honor the `cache` param, or make the missing guard a type/API error) rather than patching callers one at a time] | terrain-imagery | P0 | perf/correctness | M | — | **W1 (TOP — next)** |
+| `C11-168` | NEW-WEBGPU-PERF-REMEASURE-REAL-WORKLOAD [the 11.7× was measured on a STATIC default scene of 9 draw commands / 6 tiles. Re-measure on the canonical moving-altitude campaign + a dense/tileset scene to confirm the win holds under load and to surface the NEXT bottleneck. Until this lands, the headline number is honest but narrow] | test-infra | P0 | tooling/measurement | S–M | G10 | **W1 (TOP — next)** |
+| `C11-169` | NEW-WEBGPU-FRAME-COST-ACCOUNTING-GAP [per-pass CPU profiler saw 0.117 ms of a 10.5 ms frame. Extend instrumentation to cover the whole frame, or at minimum report the UNACCOUNTED remainder, so future perf work is not blind to out-of-pass cost] | test-infra | P1 | tooling | M | G10 | W1 |
+| `C11-170` | NEW-WEBGPU-PERF-REGRESSION-GUARD [wire the new probes into a runnable gate so a re-upload/churn storm cannot silently return. This defect class survived two campaigns undetected] | test-infra | P1 | tooling/gate | M | G10 | W1 |
+| `C11-171` | NEW-WEBGPU-SPLIT-SCREEN-VIEWER-INIT [`Apps/WebGPUTest/split-screen-comparison.html` never exposed both `webglViewer`/`webgpuViewer` within 90 s, with NO console errors (probe-backend-isolation split lane). Blocks the maintainer's own A/B comparison workflow] | build-boot | P1 | correctness | S–M | G9 | W1 |
+| `C11-172` | OCEAN-WAVE-OCTAVE-LOD [filed Batch 716; altitude-gate the wave march 3→2→1 octaves reusing `waveIntensityFade`; also narrows the WGSL-vs-GLSL 3-vs-2 octave divergence] | water | P2 | perf | S | G8 | W4 (land with `C11-158`) |
+
+**Append accounting:** +7 numbered (`C11-166..172`), zero seeds. Numbered range now contiguous
+`C11-01..172`. Checked mechanically against the FULL namespace (`C11-01..165`, `C11-GT-01..03`,
+`C11-SEED-01..27`, `C11-IC-01..03`, infra rows) → **zero pre-existing hits: no collision, no reuse.**
+`C11-166` and `C11-172` are pre-filed `DEFERRED_WORK` entries receiving a campaign number (names
+preserved verbatim per the register-preservation rule); `C11-167..171` are newly minted from the
+Batch-717 investigation. The 188-item register baseline is unchanged.
+
+**Open — absorbs pending findings.** A broader 7-lane performance investigation (external
+best-practice research, full `DEFERRED_WORK` perf inventory, C11 perf-adequacy verdict, hot-path
+audit, tooling gap analysis) was still running when this block was written. **Its confirmed findings
+append here as `C11-173+`** rather than being scattered — keep this the single perf lane.
+
 ---
 
 ## 2. Rules (inherited verbatim from Campaign-9/10 §1 — do not weaken)
@@ -539,11 +591,12 @@ evidence paragraph as each slice lands.)
 | `C11-117 … C11-123`, `C11-SEED-08/09` (postprocess-effects) | NOT STARTED | G6 §B | evidence-pending |
 | `C11-124 … C11-130`, `C11-SEED-10..18` (clouds-weather) | NOT STARTED · **no cluster guide** | register §17 | evidence-pending |
 | `C11-131`, `C11-SEED-19` (water) | NOT STARTED | G8 §water | evidence-pending |
-| `C11-GT-01 … C11-GT-03` (gated-reversed-z) | DEFERRED (gated tail §6) | G10 §A1–A3 | gate-pending |
+| `C11-GT-01` (reversed-Z measurement spike) | **COMPLETE — NO-GO (2026-07-19, Batch 717)** | G10 §A1 / `REVERSED_Z_MEASUREMENT_SPIKE_2026-07-19.md` | **Verdict STAY-LOG-DEPTH**, adversarially verified (verifier independently recomputed the precision math and confirmed the format claim). Decisive fact: the scene depth attachment is `depth24plus-stencil8` (`WebGPUContext.ts:370`, `grep '_depthFormat *='` → zero reassignments; independently hardcoded at `WebGPUSceneFramebuffer.ts:330,341` and `WebGPUGlobeDepth.ts:300,310`). Reversed-Z's precision gain requires a FLOAT depth buffer — on a fixed-point format the code levels are uniformly spaced and reversing mirrors a uniform ladder, so the gain is **mathematically zero**. `depth32float-stencil8` is an OPTIONAL feature and is **absent from `DESIRED_FEATURES`** (`WebGPUFeatureFlags.ts:40-66`); worse, `depth24plus-stencil8` maps to D24_UNORM_S8 on D3D12 (gain 0×) vs D32_SFLOAT_S8 on Vulkan (~10×) with **no WebGPU query to tell them apart** — migrating today ships a driver-determined, untestable result. Multi-frustum contributes nothing either: reversed-Z NDC is `d≈n/z` so `Δz=ε_rel·z` and the slice near/far cancel. **Consequence: the log-depth pick fleet (82 WGSL `frag_depth` writers / 182 `csm_writeLogDepth` sites / ~24 pick producers) is CLEARED TO KEEP GROWING** — it is not a trap a later migration must rip out. Record in `C11-IC-01` + FAR-707 + `DEFERRED_WORK`. Stale-figure correction: `DEFERRED_WORK.md:5425-5426` cites a "71-file color surface"; measured is **82 WGSL + 28 Renderer files**. |
+| `C11-GT-02 … C11-GT-03` (gated-reversed-z slice work) | DEFERRED (gated tail §6) — **gate CLOSED by `C11-GT-01` NO-GO** | G10 §A2–A3 | Do not open: the measurement spike these were gated behind returned NO-GO. Retain as historical/reopen-only if the depth format ever moves to `depth32float-stencil8`. |
 | `C11-132 … C11-147` (test-infra) | NOT STARTED (`C11-137` = EXIT) | G9 §A | evidence-pending |
 | `C11-148 … C11-156`, `C11-SEED-20/21/22`, `C11-IC-03` (build-boot) | NOT STARTED | G9 §B | evidence-pending |
 | `C11-SEED-23 … C11-SEED-26` (arch-seeds) | DEFERRED (seed) | G10 §A4–A7 | seed-pending |
-| `C11-157` (OIT translucent-primitive wiring) | **PARTIAL (Slices A+B: PRIMITIVE + COLLECTION families DONE, 2026-07-18/19)** | §1.23 / G1/G3 | **TOP of W1**; absorbs `C11-91` body-wash; Batch-700 fallout. **Slice A (Batch 713)**: translucent PRIMITIVES (flat single-`@location` PrimitiveBasicColor + LIT `FragOutput`-struct PrimitivePhongColor via new `injectOITOutput` struct branch) REACH MRT-OIT — `_webgpuOITActiveThisFrame`=TRUE, WebGPU OIT-on now **1.33%** from WebGL OIT-on (was 10.33% @ Batch-700). **Slice B**: translucent COLLECTIONS (billboard / point / polyline color commands, all `FragOutput`-struct FS → the same struct branch) now REACH MRT-OIT too — `probe-oit-collection-reachable.mjs` point/polyline/billboard all PASS (`activeThisFrame`=TRUE was-always-false, 0 validation errors, non-degenerate WBOIT blend, restore 0px). Wiring: `WebGPU{Billboard,PointPrimitive,Polyline}Renderer.js` attach `_shaderCode` (non-LOG_DEPTH source) + `_pipelineConfig` (base pipeline's shared layout, single-sample) to each Pass.TRANSLUCENT color command. **Slice C (MODEL core)**: translucent MODELS now REACH MRT-OIT — both the natively-BLEND primary command AND the per-feature-styled TRANSLUCENT **twin** (C10-02 / Batch 699). `WebGPUModelPipelineCache` gained `getOITColorConfig` (extracted `_composeColorSource` — byte-identical module composition — + non-LOG_DEPTH preprocess + reused color descriptor); `WebGPUModelRenderer` attaches it to the primary (when `pass===TRANSLUCENT`, non-classifier, non-silhouette) + the twin (both inside the Batch-704 async ready-gate). Also fixed a latent `executeOITCommand` bug: it assumed the `{buffer}` wrapper and threw `setIndexBuffer: not a GPUBuffer` on models (raw GPUBuffer) — now `resolveOITBuffer` handles both (unblocks models; A/B unaffected). `probe-oit-model-reachable.mjs` twin+blend PASS (`activeThisFrame`=TRUE, 0 errors, model renders via composite, restore 0px; onVsOff≈0 is CORRECT — single-sided model geometry → WBOIT≡sorted-alpha). Model battery unregressed (instance-bg-cache, pbr-ibl-parity, standalone-model-pick). No-regression: primitive-reachable + collection-reachable + oit-transparency (parity 1.33%) + splat-sort + ellipsoidprim + globe-translucency + capture-and-diff all green. FAR-003 stays DEFAULT-OFF (reachable, not default-on). **Slice D REMAINS** = the C11-91 silhouette OIT "body wash" (design-heavy stencil/pass work, deferred + designed in DEFERRED_WORK). Runs at `msaaSamples=1` (MSAA×OIT = `NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING`). Weight follow-up = `NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH` |
+| `C11-157` (OIT translucent-primitive wiring) | **COMPLETE — Slices A+B+C (PRIMITIVE + COLLECTION + MODEL families ALL reach MRT-OIT; Batches 713/714/715). Slice D (`C11-91` silhouette body-wash) REMAINS OPEN.** ⚠ "reachable" ≠ "shipped": FAR-003 keeps MRT-OIT DEFAULT-OFF, so none of this is user-visible yet. *(Label corrected 2026-07-19 — it read "PARTIAL (Slices A+B)" while the evidence cell below already carried the Slice-C paragraph landed by Batch 715.)* | §1.23 / G1/G3 | **TOP of W1**; absorbs `C11-91` body-wash; Batch-700 fallout. **Slice A (Batch 713)**: translucent PRIMITIVES (flat single-`@location` PrimitiveBasicColor + LIT `FragOutput`-struct PrimitivePhongColor via new `injectOITOutput` struct branch) REACH MRT-OIT — `_webgpuOITActiveThisFrame`=TRUE, WebGPU OIT-on now **1.33%** from WebGL OIT-on (was 10.33% @ Batch-700). **Slice B**: translucent COLLECTIONS (billboard / point / polyline color commands, all `FragOutput`-struct FS → the same struct branch) now REACH MRT-OIT too — `probe-oit-collection-reachable.mjs` point/polyline/billboard all PASS (`activeThisFrame`=TRUE was-always-false, 0 validation errors, non-degenerate WBOIT blend, restore 0px). Wiring: `WebGPU{Billboard,PointPrimitive,Polyline}Renderer.js` attach `_shaderCode` (non-LOG_DEPTH source) + `_pipelineConfig` (base pipeline's shared layout, single-sample) to each Pass.TRANSLUCENT color command. **Slice C (MODEL core)**: translucent MODELS now REACH MRT-OIT — both the natively-BLEND primary command AND the per-feature-styled TRANSLUCENT **twin** (C10-02 / Batch 699). `WebGPUModelPipelineCache` gained `getOITColorConfig` (extracted `_composeColorSource` — byte-identical module composition — + non-LOG_DEPTH preprocess + reused color descriptor); `WebGPUModelRenderer` attaches it to the primary (when `pass===TRANSLUCENT`, non-classifier, non-silhouette) + the twin (both inside the Batch-704 async ready-gate). Also fixed a latent `executeOITCommand` bug: it assumed the `{buffer}` wrapper and threw `setIndexBuffer: not a GPUBuffer` on models (raw GPUBuffer) — now `resolveOITBuffer` handles both (unblocks models; A/B unaffected). `probe-oit-model-reachable.mjs` twin+blend PASS (`activeThisFrame`=TRUE, 0 errors, model renders via composite, restore 0px; onVsOff≈0 is CORRECT — single-sided model geometry → WBOIT≡sorted-alpha). Model battery unregressed (instance-bg-cache, pbr-ibl-parity, standalone-model-pick). No-regression: primitive-reachable + collection-reachable + oit-transparency (parity 1.33%) + splat-sort + ellipsoidprim + globe-translucency + capture-and-diff all green. FAR-003 stays DEFAULT-OFF (reachable, not default-on). **Slice D REMAINS** = the C11-91 silhouette OIT "body wash" (design-heavy stencil/pass work, deferred + designed in DEFERRED_WORK). Runs at `msaaSamples=1` (MSAA×OIT = `NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING`). Weight follow-up = `NEW-WEBGPU-OIT-WEIGHT-LINEAR-DEPTH` |
 | `C11-158` (enhanced-ocean default-parity toggle) | NOT STARTED | §1.23 / G8 | W4; HARD PRED `C11-149`; with `water-bugs-2026-07-06`. **⚠ PREMISE CORRECTED by the 2026-07-19 ocean-waves audit** (`Tools/visual-regression/output/ocean-waves-perf-audit-2026-07-19.md`): (a) `globe.enableEnhancedOcean` does NOT gate the GPU wave path — it appears nowhere in `Renderer/WebGPU/**` or the WGSL; it only pushes CPU-side color params (deepColor/fresnel/foam/darkening), so defaulting it `false` restyles the ocean at **~0 GPU saving** (the 3-octave march still runs). (b) The ocean **WAVES are parity-preserving** — WebGL runs the SAME waves under the SAME default-true `globe.showWaterEffect`/`flags.z`; the genuine divergence is the enhanced STYLING (Fresnel/GGX-specular/foam/deep-color/SSS) at ~0 extra GPU beyond the shared march — a COSMETIC/shader-look difference, NOT a perf difference. So the parity toggle must gate the enhanced STYLING (default → WebGL-classic look, enhanced opt-in), NOT flip `enableEnhancedOcean` (no-op for GPU) nor `showWaterEffect` (would remove waves from BOTH backends = a real feature loss, forbidden by the governing principle). Cheap perf win filed separately: `OCEAN-WAVE-OCTAVE-LOD` (altitude-gate octaves 3→2→1). |
 | `C11-159` (night-lights default-OFF parity) | NOT STARTED | §1.23 / G8 | W1 cheap rider; keep toggle |
 | `C11-160` (sunBloom → PP wiring) | NOT STARTED | §1.23 / G6/G8 | W7 after `C11-117` |
@@ -552,6 +605,13 @@ evidence paragraph as each slice lands.)
 | `C11-163` (C11-CELESTIAL-WATER-REFLECTION epic) | NOT STARTED · Tier-4/gated | §1.23 / G8 + `CELESTIAL_WATER_REFLECTION_RESEARCH.md` | opt-in default-OFF; 4 sub-decisions §7.0 |
 | `C11-164` (pick cold-sync-staleness race) | NOT STARTED | §1.23 / G1 | W2 pick fleet; C10-11 fallout |
 | `C11-165` (deterministic-sync pipeline centralization) | NOT STARTED | §1.23 / G9 | W4 boot chain; C10-07 follow-on |
+| `C11-166` (ocean-normal per-call re-upload) | **COMPLETE (2026-07-19, Batch 717)** | §1.25 / `DEFERRED_WORK` `NEW-WEBGPU-OCEANNORMAL-PER-CALL-REUPLOAD` | **This was the reported ~50% FPS deficit.** `uploadImageSource` never READS the cache Map it is handed (no `cache.get`/`cache.has` in the function); its only dedupe (`_sharedImageryRealizations`) is gated on `logicalOwner === "imagery"`, which neither call site passes — so callers must own the guard and the ocean-normal caller had none. Every `_createWaterOceanMaterialBindGroupInner` call therefore ran `copyExternalImageToTexture` + 9-level mip regen + `createView` **per tile per frame**, and since the group-2 bind-group cache keys on VIEW IDENTITY, a fresh view each call also forced `createBindGroup` every frame (self-perpetuating). **Fix:** source-identity memo `_oceanNormalMapSource`/`_oceanNormalMapView` mirroring the in-file `_materialTextureCache` idiom, reset alongside the texture destroys in teardown — exactly the fix sketch the Batch-685 filing wrote. **Measured** (static settled scene, 9 commands/6 tiles, `requestRenderMode=false` on BOTH): WebGPU `scene.render()` **10.5 ms → 0.9 ms (11.7×)**; ratio **17.5× → 1.5×**; as-shipped idle lane **1.1 ms vs WebGL 1.2 ms (WebGPU now FASTER)**. Profile: `copyExternalImageToTexture` **47% of all CPU self-time → absent from top-18**; WebGPU 68.7% idle ≈ WebGL 69.1%. **Correctness:** `probe-webgpu-ocean-waves` brightness gpu/gl 0.996, wave-detail 1.204, temporal delta **1.818** (>0.3 = animating; frozen-ocean is this fix's documented failure class), PNGs read clean. `tsc --noEmit` clean. |
+| `C11-167` (uploadImageSource cache-contract audit) | NOT STARTED — **NEXT UP (top of W1)** | §1.25 | **Highest-value open perf item.** Batch 717 fixed ONE caller; the underlying defect is a contract trap — `uploadImageSource` never reads its cache, every caller must own a guard, and nothing enforces it. Audit ALL call sites for the same missing-guard defect, then fix at the right altitude (honor the `cache` param internally, or make an unguarded call impossible) rather than patching callers one at a time. Beware in-place-mutating `HTMLCanvasElement` sources — identity equality is sound for immutable decoded images but would freeze a canvas that is redrawn under a stable identity; the shared-realization path already models this via `identity.revision`. |
+| `C11-168` (perf re-measure on a real workload) | NOT STARTED — **NEXT UP (top of W1)** | §1.25 / G10 | The 11.7× was measured on a STATIC default scene (9 draw commands / 6 tiles). Re-measure on the canonical moving-altitude campaign + a dense/tileset scene to confirm the win holds under load and to surface the NEXT bottleneck. **Until this lands the headline number is honest but NARROW — do not quote it as a general speedup.** Pairs with `C11-SEED-27` / `C11-140` (uncertified timers silently invalidate perf claims). |
+| `C11-169` (frame-cost accounting gap) | NOT STARTED | §1.25 / G10 | The in-engine per-pass CPU profiler accounted for **0.117 ms of a 10.5 ms frame** — 99% of frame cost fell outside every instrumented pass, so existing tooling could not see this bug *by construction*. Extend instrumentation to cover the whole frame, or at minimum report the UNACCOUNTED remainder, so future perf work is not blind. |
+| `C11-170` (perf regression guard) | NOT STARTED | §1.25 / G10 | Wire the new probes (`probe-cpu-sampling-profile`, `probe-webgpu-frame-breakdown`, `probe-request-render-asymmetry`, `probe-backend-isolation`) into a runnable gate so a re-upload/churn storm cannot silently return. This defect class survived two campaigns undetected. |
+| `C11-171` (split-screen viewer init) | NOT STARTED | §1.25 / G9 | `Apps/WebGPUTest/split-screen-comparison.html` never exposed both `webglViewer`/`webgpuViewer` within 90 s, with **no console errors** (`probe-backend-isolation` split lane; globals confirmed present at `:553-554`). Blocks the maintainer's own A/B comparison workflow — the frame in which the original perf report was made. |
+| `C11-172` (ocean-wave octave LOD) | NOT STARTED | §1.25 / G8 / `DEFERRED_WORK` `OCEAN-WAVE-OCTAVE-LOD` | W4 with `C11-158` (shared water-shader surface). Filed by the Batch-716 ocean-waves audit: altitude-gate the march 3→2→1 octaves reusing `waveIntensityFade`; ~0.1 ms/frame mid-altitude, and landing at 2 octaves also narrows the WGSL-vs-GLSL 3-vs-2 divergence. *(This row also serves as the §3.2 ledger entry for the Batch-716 audit, which previously had none.)* |
 | `C11-SEED-27` (C10-30 clean-env r5 re-measure) | DEFERRED (seed) | §1.23 / G10/G9 | Gate-D anchor input |
 
 ---
@@ -650,20 +710,55 @@ new-define item (registry EXHAUSTED — G9 §0); keep the XL epics (MRT topology
 S10 arc, reversed-Z) in later waves behind their prereqs; the 3 maintainer-decision items are
 BLOCKED-ON-MAINTAINER and do not open on an engineering default; measure, then certify.
 
-### W1 — OIT-wiring (TOP), reversed-Z spike, define-width, standing-reds, diagnosis, environment, cheap riders, reconciliation
+### W1 — PERFORMANCE FRONT (TOP), then OIT-wiring, define-width, standing-reds, diagnosis, environment, cheap riders, reconciliation
 
-**Reordered 2026-07-18 (ratified).** The "stop paying the OFF-oracle tax" wave, now fronted by the OIT
-wiring and the two early spikes. Contents:
+**Re-fronted 2026-07-19 (maintainer-directed).** The performance lane §1.25 is inserted at the
+**front of W1, ahead of everything else**, on the maintainer's instruction after Batch 717 root-caused
+the reported ~50% FPS deficit. The prior W1 head (`C11-157` OIT wiring) is **already COMPLETE**, and
+the reversed-Z spike is **already CLOSED NO-GO**, so the perf lane inherits the top slot cleanly
+rather than displacing live work.
 
-- **★ TOP OF W1 — `C11-157` OIT translucent-primitive wiring (ratified 2026-07-18).** FULL
-  primitive→collection→model wiring; the `C11-91` silhouette body-wash "replicate WebGL" resolution
-  folds in here. This is the Batch-700 OIT NO-GO's real prerequisite (no primitive/model/collection
-  currently emits a `Pass.TRANSLUCENT` command carrying `_shaderCode`/`_oitPipeline`). **MRT-OIT
-  default-off stays RATIFIED FAR-003 containment — do NOT flip the metric.** Multi-batch; opens W1.
-- **Reversed-Z measurement spike EARLY — `C11-GT-01` (ratified 2026-07-18, measurement-only).** Run the
-  `C10-13-REVERSED-Z-EARLYZ-SPIKE` here as **measurement-only** (moved out of the gated tail; the SLICE
-  work `C11-GT-02` stays gated §6). Record its GO/NO-GO in `C11-IC-01` + the FAR-707 brief +
-  `DEFERRED_WORK.md`; it gates the pick-fleet log-depth reconciliation (the 71-file surface hazard).
+- **★★ TOP OF W1 — PERFORMANCE LANE `C11-166..172` (§1.25, maintainer-directed 2026-07-19).**
+  Execution order within the lane:
+  1. **`C11-166` ✅ COMPLETE (Batch 717)** — ocean-normal per-frame re-upload storm fixed.
+     WebGPU `scene.render()` **10.5 ms → 0.9 ms (11.7×)**; ratio **17.5× → 1.5×**; WebGPU now *faster*
+     than WebGL in the as-shipped `requestRenderMode` lane. Ocean-wave animation re-verified
+     (temporal delta 1.818) — frozen-ocean is this fix's documented failure class.
+  2. **`C11-167` — uploadImageSource cache-contract audit. THE highest-value open perf item.**
+     Batch 717 fixed *one* caller. The underlying defect is a **contract trap**: `uploadImageSource`
+     never reads the cache it is handed, so every caller must own its own guard, and nothing enforces
+     that. Audit all call sites for the same missing-guard defect, then fix at the right altitude —
+     honor the `cache` param internally, or make an unguarded call impossible — instead of patching
+     callers one at a time (Principle 7/9: surface the missing mechanism, don't route around it).
+  3. **`C11-168` — re-measure on a REAL workload.** The 11.7× was measured on a *static* default scene
+     (9 draw commands, 6 tiles). Re-run on the canonical moving-altitude campaign plus a dense/tileset
+     scene to confirm the win holds under load and to surface the next bottleneck. **Until this lands,
+     treat the headline number as honest but narrow** — do not quote it as a general speedup.
+  4. **`C11-169` / `C11-170` — close the tooling hole that let this hide.** The per-pass CPU profiler
+     accounted for **0.117 ms of a 10.5 ms frame**; 99% of frame cost was invisible *by construction*.
+     `C11-169` extends coverage (or at minimum reports the unaccounted remainder); `C11-170` wires the
+     new probes into a gate so the class cannot silently return.
+  5. **`C11-171` — split-screen page viewer-init.** `split-screen-comparison.html` never exposed both
+     viewers within 90 s, with no console errors. This blocks the maintainer's own A/B workflow and is
+     how the original report was framed, so it is in-lane rather than deferred.
+  - `C11-172` (ocean-wave octave LOD) stays in **W4** with `C11-158` — it is a real but small win
+    (~0.1 ms) and shares the water-shader surface, so batching it there avoids double-touching.
+  - **Absorbs pending findings:** the broader 7-lane perf investigation appends confirmed items here
+    as `C11-173+`. Keep one perf lane, not scattered rows.
+
+- **`C11-157` OIT translucent-primitive wiring — ✅ COMPLETE (Batches 713/714/715, Slices A+B+C).** FULL
+  primitive→collection→model wiring landed; MRT-OIT is now *reachable* for all three translucent
+  families (primitive parity 10.33% → 1.33%). The `C11-91` silhouette body-wash resolution folds in
+  here and is **still open** as Slice D. **MRT-OIT default-off stays RATIFIED FAR-003 containment —
+  "reachable" is NOT "shipped"; do NOT flip the metric.**
+- **Reversed-Z measurement spike — `C11-GT-01` ✅ COMPLETE / NO-GO (2026-07-19, Batch 717).** Verdict
+  **STAY-LOG-DEPTH**, adversarially verified. Decisive fact: the depth attachment is
+  `depth24plus-stencil8` (`WebGPUContext.ts:370`, never reassigned) — a **fixed-point** format on
+  D3D12, where reversed-Z's precision gain is **mathematically zero**; `depth32float-stencil8` is not
+  even in `DESIRED_FEATURES`, and WebGPU exposes no query for the driver's actual backing. The
+  log-depth pick fleet (82 WGSL `frag_depth` writers / 182 `csm_writeLogDepth` sites) is therefore
+  **cleared to keep growing** — it is not a trap a later migration must rip out. Slice work
+  `C11-GT-02` stays gated §6. Full analysis: `REVERSED_Z_MEASUREMENT_SPIKE_2026-07-19.md`.
 - **Define-width EARLY — `C11-149` (C10-08b).** `C10-08` was BLOCKED at C10 close (registry exhausted;
   the sign-bit 31 deliberately left unconsumed), so define-width is the prerequisite and pulled into W1. It is the HARD PREREQ that unblocks the `C11-158` enhanced-ocean toggle
   (and later `C11-92`/`C11-88`/`C11-89`/`C11-81`/`C11-131`).
