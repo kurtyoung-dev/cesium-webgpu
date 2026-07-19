@@ -1,6 +1,6 @@
 # Campaign 12 — Celestial Appearance: from "present" to "photographic"
 
-**Status: DRAFT — NOT LAUNCHED.** Constructed 2026-07-19 at maintainer direction ("use the findings to start constructing campaign 12"). **Four maintainer decisions (Q1–Q4, §6) gate launch**; two of them (Q1 asset licensing, Q3 HDR default) change what actually gets built. Campaign 11 is the live campaign and continues to run.
+**Status: DRAFT — NOT LAUNCHED. ⚠ W3 (star-map asset) is LICENCE-BLOCKED — see §6d.** Constructed 2026-07-19 at maintainer direction ("use the findings to start constructing campaign 12"). **Four maintainer decisions (Q1–Q4, §6) gate launch**; two of them (Q1 asset licensing, Q3 HDR default) change what actually gets built. Campaign 11 is the live campaign and continues to run.
 
 **Source of truth for every claim here:** [CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md](CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md) — 8 research lanes, every load-bearing claim adversarially verified (20 of 20 heavy claims refuted and dropped; what remains survived attack).
 
@@ -60,12 +60,12 @@ Two hard bounds:
 | `C12-06` | **Quad enlargement** driven through the existing `sizeBoost` plumbing as **halo extent, not core size**; clamp total glare diameter to 1°. Today the sprite is only ~7.5 px, of which ~4 px is plateau — the Polaris reference look is **geometrically unreachable** without this. | S | `C12-05` |
 | `C12-07` | **Amplitude restructure** — stop the core saturating across half the sprite; chroma-preserving split so the core may clip white while the halo stays below 1.0 and keeps blackbody hue. **This is the increment that actually kills the blob, and it needs no HDR.** ⚠ Adding a wing to a still-clipping core makes a *bigger* blob; **do not raise `HI`** (that widens the white disc). | S | `C12-05` |
 | `C12-08` | **Dynamic-range restoration** — remove the baked `FLUX_GAMMA=0.5`, keep flux linear (Pogson), move compression into an explicit exposure term. Today the true 38.4:1 flux range across rendered stars is pre-crushed to **2.70:1**, then clipped — Sirius and a 2nd-magnitude star arrive nearly identical. | M | `C12-07` |
-| `C12-09` | **Catalogue depth** toward mag ~5.5 (BSC5, public domain). **Last in the wave** — before the above it just adds more blobs. Note the full 9,110-entry BSC5 is **not vendored**; this is a data ingest, not raising a constant. | M | `C12-08`, `C12-11` |
+| `C12-09` | **Catalogue depth** toward mag ~5.5 (BSC5 - NOT public domain; UNCONFIRMED, see 6d/DR-02; gated on sourcing from NASA HEASARC and vendoring only the factual fields). **Last in the wave** — before the above it just adds more blobs. Note the full 9,110-entry BSC5 is **not vendored**; this is a data ingest, not raising a constant. | M | `C12-08`, `C12-11` |
 | **Gate** | **G2** — must pass identically on **both** backends (shared code). | | |
 
 ### W3 — Star-map asset (licence-gated; parallel to W2 once Q1 is answered)
 
-**The single cheapest high-value finding in the whole sweep: the fork ships the *faintest* variant of its own star map.** SVS 3572 publishes three: `t3` — *"the Milky Way is very faint"* (**what we ship**, at 1024/face), `t4` — *"fainter"*, and `t5` — ***"the Milky Way is very bright and bright stars are large"*** at **16384×8192**. Same NASA product, same creators, **same existing `LICENSE.md:1042` entry**, US public domain.
+**The single cheapest high-value finding in the whole sweep: the fork ships the *faintest* variant of its own star map.** SVS 3572 publishes three: `t3` — *"the Milky Way is very faint"* (**what we ship**, at 1024/face), `t4` — *"fainter"*, and `t5` — ***"the Milky Way is very bright and bright stars are large"*** at **16384×8192**. Same NASA product, same creators, same existing `LICENSE.md:1042` entry. **SUPERSEDED - this wave is LICENCE-BLOCKED; see 6d.** The "US public domain" reading does not survive: SVS 3572's declared source catalogues (Hipparcos, Tycho-2) are distributed by ESA under CC BY-NC 3.0 IGO.
 
 | ID | Item | Effort | Deps |
 |---|---|---|---|
@@ -224,6 +224,56 @@ The design is **deliberately reversible**, and the reversal is cheap because the
 - `G3` dust-lane + source-density metrics on **blurred vs un-blurred** bakes, side by side.
 - The `M6` split (sprites-only vs texture-only) — already specified, and it directly measures where density comes from.
 - Frame-cost delta from ~5,000 sprites on both backends.
+
+---
+
+## 6d. LICENSING RULING — **NO-GO** for the t5 path (2026-07-19)
+
+**The maintainer's condition was *"if there are no license restrictions to doing this and shipping it."* There are. DR-01's asset half is BLOCKED.** Verified by a 4-lane primary-source review with independent confirmation; nothing was downloaded or baked.
+
+### The blocker
+
+SVS 3572 declares exactly two source datasets — **"Hipparcos Catalogue" and "Tycho 2 Catalogue"** ([svs.gsfc.nasa.gov/3572/](https://svs.gsfc.nasa.gov/3572/)) — and ESA states verbatim on its own catalogues page: **"The Hipparcos and Tycho Catalogues are distributed under the CC BY-NC 3.0 IGO licence"** ([cosmos.esa.int/web/hipparcos/catalogues](https://www.cosmos.esa.int/web/hipparcos/catalogues)).
+
+That is the **identical licence instrument, from the identical rights holder**, that this project already used to disqualify SVS 4851. The operative precedent was never "Gaia is bad" — it was *"an ESA catalogue under CC BY-NC 3.0 IGO anywhere in the derivation chain is disqualifying."* **SVS 3572 fails that test on Hipparcos alone**, independently of any Tycho-1/Tycho-2 ambiguity. CC BY-NC's bar on use "primarily intended for or directed toward commercial advantage" cannot be reconciled with MIT's grant to "use, copy, modify, merge, publish, distribute, sublicense, and/or sell."
+
+### Two defences that do NOT work
+
+1. **Blurring does not launder it.** SVS 3572 has no separate diffuse layer — the Milky Way band _is_ the plotted catalogue stars: _"Stars fainter than the threshold magnitude… have their magnitude-intensity curve adjusted so they appear brighter than they really are. This makes the band of the Milky Way more visible."_ Low-passing **aggregates** catalogue content rather than destroying it, and the download step copies the full image verbatim regardless. **This invalidates option (c) as a _licensing_ strategy** — it remains sound as an image-processing technique for whatever source we are cleared to use.
+2. **"NASA publishes it as public domain" does not reach the inputs.** NASA's guidelines carve out material where NASA has incorporated third-party content, and NASA neither indemnifies nor warrants. §105 is separately shaky for 3572 itself — both credited animators are non-civil-servants.
+
+### Status of each asset
+
+| Asset | Verdict |
+| --- | --- |
+| SVS 3572 t5 image | **ENCUMBERED via its declared source catalogues.** A hard stop, not a judgement call — an express contrary statement from the rights holder, not silence to interpret. |
+| Hipparcos / Tycho-2 data | **ENCUMBERED.** CC BY-NC 3.0 IGO; ESA requires prior written authorisation (`data.licences@esa.int`) for any use generating financial gain. |
+| Yale BSC5 (already vendored, ~230 stars) | **UNCONFIRMED — not cleared, and not prohibited either.** No licence instrument exists in either direction. See DR-02. |
+
+### Routes forward, in cost order
+
+1. **Drop 3572; source the Milky Way from a provider whose terms affirmatively permit commercial redistribution and derivatives.** Recommended. ⚠ **ESO GigaGalaxy Zoom (CC BY 4.0) was rejected earlier on _technical_ grounds only — it is licence-clean and should be re-evaluated now that licensing is the binding constraint.** Any replacement must be cleared by checking the licence of **every declared source dataset**, not by keyword-scanning for the mission name that burned us last time.
+2. Email `data.licences@esa.int` for written clearance — must permit onward sublicensing by downstream MIT consumers, which is a high bar.
+3. Obtain a written statement from NASA/GSFC SVS that 3572 is distributed free of third-party restriction.
+
+### ⚠ Pre-existing condition — surfaced, NOT introduced by this work
+
+**The fork already ships `tycho2t3_80_{px,py,pz,mx,my,mz}.jpg`, derived from the same SVS 3572 product**, attributed at `LICENSE.md:1042`. Established by `git log`: these files are **inherited from upstream CesiumJS** (present in `upstream/main`, first committed 2022-11-01 by a Cesium developer). Upstream ships them under Apache 2.0 — the same commercial grant as MIT. **This is an upstream condition the fork inherits, and it is a maintainer/counsel decision, not an engineering one.** Recorded because the analysis above makes it known; taking no action is a legitimate choice, but it should be a _chosen_ one.
+
+### DR-02 — BSC5 provenance claim corrected (action already taken)
+
+`BrightStarCatalog.js` is **fork-added** and its docblock asserted BSC5 _"is in the PUBLIC DOMAIN"_. **That claim was unsupported and has been withdrawn in code**, replaced with what is actually established: freely available but with no licence instrument in either direction; §105 inapplicable (Hoffleit = Yale, a private university; Warren = ST Systems Corporation, a contractor — federal hosting confers nothing); the vendored fields are uncopyrightable _facts_ under _Feist_ in the US; no ESA-catalogue encumbrance; higher exposure in the EU under the Database Directive.
+
+**Consequences for `C12-09`** (extend to ~5,000 stars) — **gated, not blocked**. Required conditions: source from **NASA HEASARC**, not VizieR (removes EU sui-generis database-right exposure for what would be a substantial extract of 9,110 records); vendor only RA/Dec/Vmag/B−V, dropping remarks/notes/spectral commentary; re-sort under our own schema rather than shipping V/50's row order. Cheapest conversion from UNCONFIRMED to defensible is a one-line written confirmation from CDS (`cds-question@unistra.fr`) and/or Yale.
+
+**Excluded substitutes — do not reach for these:** Hipparcos, Tycho, Tycho-2, any ESA Space Science Archive product (all CC BY-NC 3.0 IGO); HYG (CC BY-SA copyleft _and_ embeds Hipparcos); AT-HYG (Gaia DR3). "Use a Hipparcos-derived subset instead" walks straight back into the SVS-4851 failure mode.
+
+### Effect on the campaign
+
+- **W3 (`C12-10..14`) is BLOCKED** pending a cleared Milky Way source. Do not download or bake 3572.
+- **W2 (`C12-05..08`) is UNAFFECTED and becomes the lead wave** — the PSF, quad-extent, amplitude and dynamic-range work operates on the _already-vendored_ catalogue and delivers most of the visible improvement with no new asset.
+- **`C12-09` is gated** on the DR-02 conditions above.
+- **DR-01's reversal plan is unaffected** — option (b) is now _more_ likely, since it requires no new asset at all.
 
 ---
 

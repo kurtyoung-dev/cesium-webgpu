@@ -1,7 +1,33 @@
 /**
  * Compact bright-star subset of the Yale Bright Star Catalog (BSC5,
- * Hoffleit & Warren 1991), which is in the PUBLIC DOMAIN. This module
- * embeds the brightest ~230 stars (visual magnitude ≲ 3.6 — the
+ * Hoffleit & Warren 1991).
+ *
+ * ⚠ PROVENANCE CORRECTION (2026-07-19). This docblock previously asserted that
+ * BSC5 "is in the PUBLIC DOMAIN". **That claim was not supported and has been
+ * withdrawn.** A primary-source licensing review found no copyright notice,
+ * licence, or public-domain dedication in the CDS V/50 ReadMe, the HEASARC
+ * BSC5P page, or the BSC5 documentation — the catalogue is demonstrably
+ * *freely available*, which is not the same thing as public domain. In
+ * particular **17 U.S.C. §105 does not apply**: §105 covers works of US
+ * Government *employees*, whereas BSC5's authors are Hoffleit (Yale, a private
+ * university) and Warren (ST Systems Corporation, a contractor). Federal
+ * hosting confers no PD status.
+ *
+ * What IS accurate: the vendored fields below are RA/Dec/Vmag/B−V —
+ * measurements of physical reality, which are uncopyrightable *facts* in the US
+ * under *Feist v. Rural*; BSC5 is a 1991 pre-satellite compilation carrying no
+ * ESA-catalogue encumbrance (unlike Hipparcos/Tycho/Gaia, which ESA distributes
+ * under CC BY-NC 3.0 IGO and which are therefore incompatible with this
+ * project's licence); and it has been redistributed unchallenged for decades.
+ * Residual exposure is low in the US and higher in the EU, where the Database
+ * Directive protects substantial extraction independently of copyright.
+ *
+ * **Do not restore the public-domain assertion without a written grant.**
+ * Tracked as `C12-09` / DR-02; the cheap route to clearance is a one-line
+ * written confirmation from CDS (`cds-question@unistra.fr`) and/or Yale that no
+ * restriction is asserted on redistribution of the factual fields.
+ *
+ * This module embeds the brightest ~230 stars (visual magnitude ≲ 3.6 — the
  * constellation-defining naked-eye stars) as a flat numeric table so the
  * starfield renderer can build a GPU point set without a network fetch.
  *
