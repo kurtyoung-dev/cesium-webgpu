@@ -542,6 +542,55 @@ with **pixel count**, so it is near-invisible at the harness's 1280×720 and cou
 `C11-168` must therefore capture the maintainer's ACTUAL session parameters — canvas size,
 `devicePixelRatio`, resolution scale, which page — not just the harness defaults.
 
+### 1.26 CELESTIAL-APPEARANCE appends (2026-07-19, maintainer-directed — queued to the END of C11, new wave W9)
+
+**Origin.** Maintainer report (2026-07-19), with three reference images supplied, after confirming the
+Batch-717 perf fix on real hardware:
+
+> "The star map in the skybox for WebGPU is significantly more faded than WebGL. Additionally the
+> bright star that we added need to look more like stars and less like white blobs. Maybe we also need
+> to get a better skybox image map… I also added an image of what the Sun & bright stars should look
+> like from orbit."
+
+**Reference images (the acceptance target):**
+
+1. **ISS cupola photograph** — a DENSE Milky Way with visible dark dust lanes, thousands of resolved
+   point stars of varying brightness *and colour*, plus Earth's limb showing a green airglow band with
+   a red-orange layer above it. This is the density/structure target for the star map.
+2. **Polaris A / Ab / B** — a brilliant core with a WIDE, SMOOTH, GRADUATED halo extending many core
+   radii, with tight fainter companions. **The falloff is continuous — it is not a hard-edged white
+   disc.** This is the shape target for bright stars and the sun.
+3. **Compact bright concentration** resolving against a sparse field of fainter stars.
+
+**Placement:** queued to the **END** of the campaign as a new **wave W9**, immediately before the
+`C11-137` exit gate, per the maintainer's "queue this to the end of Campaign 11". `C11-176` is a
+genuine *parity defect* rather than an aesthetic preference, so it may be **promoted earlier if the
+in-flight research returns a cheap, well-anchored root cause** (an sRGB/format mismatch or a
+tonemap-ordering divergence would be a small fix, not a feature).
+
+| C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
+|---|---|---|---|---|---|---|---|
+| `C11-176` | NEW-WEBGPU-SKYBOX-STARMAP-FADE-PARITY [WebGPU star map significantly MORE FADED than WebGL — a parity DEFECT. Prime suspects: sRGB-vs-linear cubemap format mismatch, a missing intensity multiplier, skybox tonemapped on WebGPU but not WebGL (WebGPU's mandatory PP blit puts tonemap between scene and canvas), AutoExposure metering a bright limb and exposing the star field down, or mip-averaging stars into grey mush] | atmosphere-sky | P1 | parity/bug | S–M | G8 | **W9 (promotable)** |
+| `C11-177` | NEW-BRIGHT-STAR-APPEARANCE-MODEL ["white blobs" → real stars. Needs: logarithmic magnitude→luminance (5 mag = exactly 100× flux), a PSF of Gaussian core + wide power-law halo (the reference-2 shape) instead of a flat disc, B−V colour index → blackbody RGB so the field is not monochrome, and HDR energy driving bloom rather than a painted-on sprite glow] | atmosphere-sky | P2 | feature | M–L | G8 | W9 |
+| `C11-178` | NEW-SKYBOX-STARMAP-ASSET-UPGRADE [denser Milky Way with dust lanes per reference 1. **LICENSE IS LOAD-BEARING** — MIT repo, so public-domain (NASA SVS Deep Star Maps) strongly preferred; anything share-alike or non-commercial is DISQUALIFIED. Includes the architectural call: texture carries the diffuse Milky Way while bright stars come from a catalogue as point sprites, rather than conflating both in one cubemap — which is likely *why* bright stars read as blobs today. Must land on BOTH backends] | atmosphere-sky | P2 | asset/feature | M | G8 | W9 |
+| `C11-179` | NEW-SUN-MOON-APPEARANCE-IMPROVEMENTS [Sun: correct ~0.53° angular diameter, limb darkening (cheap, high realism), HDR-driven glare — and note that in vacuum there is NO atmospheric halo, so the glow is instrument/eye response, not scattering. Moon: non-Lambertian reflectance (Hapke / Lommel-Seeliger — the full moon is far brighter and flatter than Lambertian predicts), opposition surge, earthshine on the dark limb, public-domain LROC/CGI-Moon-Kit albedo+normal maps. **Cross-ref to avoid double-scheduling:** `C11-160` sunBloom PP wiring, `C11-115` sun blend → ALPHA_BLEND, `C11-161` AutoExposure demand-gate are ALREADY queued] | atmosphere-sky / celestial-env | P2 | feature | L | G8 | W9 |
+
+**Append accounting:** +4 numbered (`C11-176..179`). Numbered range now contiguous `C11-01..179`,
+collision-checked against the full namespace → zero pre-existing hits.
+
+**Research IN FLIGHT.** An 8-lane celestial-appearance research sweep (skybox-fade diagnosis, star-map
+asset licensing, PSF/magnitude/colour model, sun glare, moon BRDF, current-implementation survey,
+HDR/tonemap chain order, and measurable acceptance criteria) is running as of 2026-07-19 and **feeds
+Campaign 12**. Its findings refine these four rows; the *feature* depth lands in C12 while the
+*parity defect* (`C11-176`) stays here.
+
+**⚠ Acceptance must be measured, not eyeballed.** "Looks better" is not a gate. A washed-out star
+field can have the SAME mean luminance as a good one while having far lower variance — so a
+mean-luminance diff would **miss this bug entirely**. Gate on star-point CONTRAST (local max vs local
+background), COUNT of distinguishable point sources above threshold, luminance-histogram tail shape,
+colour SATURATION distribution, and for bright stars the RADIAL FALLOFF PROFILE (a blob has a flat
+core then a cliff; a real star has a smooth power-law tail).
+
 ---
 
 ## 2. Rules (inherited verbatim from Campaign-9/10 §1 — do not weaken)
@@ -659,6 +708,10 @@ evidence paragraph as each slice lands.)
 | `C11-173` (measured display refresh rate in frame pacing) | NOT STARTED | §1.25 / G10 | XS (~10 LOC). `summarizeFramePacing()` (`lib/performance-campaign-utils.mjs:120-154`) already computes `droppedFramesAtRefreshRate`, but `refreshHz` is a **default parameter of 60** and `run-performance-campaign.mjs:2545` passes ONE argument — so every dropped-frame figure silently assumes 60 Hz. Measure the real display period with a no-op rAF spin and thread it in. **Do NOT build a new quantization probe** — this one works, it just assumes its input. |
 | `C11-174` (WebGPU cache-stats exposure) | NOT STARTED | §1.25 / G10 | S (~40 LOC). `WebGPURenderPipelineCache.ts:168-200` + `WebGPUBindGroupCache.ts:81-95` **already track hits/misses/hitRate**; they are simply absent from `WebGPUContext.getRendererStatistics()` (:5377-5497). Expose via the `csmShadows` try/catch pattern (:5473-5479) + add `CesiumDebug.cacheStats()`. **A churning bind-group cache is exactly the shape of the Batch-717 bug** — pure exposure of counters already paid for. |
 | `C11-175` (WebGPU adapter-selection audit) | NOT STARTED | §1.25 / G9 | Chrome can silently select a **weaker adapter** for WebGPU than for WebGL (notably on battery) — a "deficit" that no code change can fix. Pass `powerPreference: 'high-performance'` at adapter request and log `adapter.info` beside the WebGL `RENDERER` string, so every future perf comparison records which physical GPU each backend actually got. Directly relevant: the maintainer's own reports come from a machine whose adapter pairing has never been recorded. |
+| `C11-176` (skybox star-map fade parity) | NOT STARTED — **W9, PROMOTABLE** | §1.26 / G8 | **A parity DEFECT, not a preference:** WebGPU's star map reads significantly more faded than WebGL (maintainer report 2026-07-19). Prime suspects, in likelihood order: sRGB-vs-linear cubemap format mismatch (a linear-sampled sRGB texture reads darker/flatter); a missing intensity multiplier; skybox tonemapped on WebGPU but not WebGL (WebGPU's mandatory PP blit puts tonemap between scene and canvas, WebGL can go direct); AutoExposure metering a bright Earth limb and exposing the night-side star field DOWN (cross-ref `C11-161`); mip-averaging stars into grey mush. **Pull forward out of W9 if the in-flight research returns a cheap anchored cause** — a small parity fix should not wait on a feature wave. **Verification must measure CONTRAST/variance, not mean luminance** — a washed-out field can share the same mean. |
+| `C11-177` (bright-star appearance model) | NOT STARTED | §1.26 / G8 | "White blobs" → real stars. Logarithmic magnitude→luminance (5 mag = exactly 100× flux; naive linear mapping is why bright stars clip to flat white); PSF = Gaussian core + wide power-law halo, matching the maintainer's Polaris reference (continuous falloff over many core radii, NOT a hard-edged disc); B−V colour index → blackbody RGB so the field is not monochrome; HDR energy driving bloom rather than a painted-on sprite glow. Note the reference image shows NO diffraction spikes — a naked-eye/window view would not have telescope vanes, so spikes are a stylistic choice, not realism. |
+| `C11-178` (star-map asset upgrade) | NOT STARTED | §1.26 / G8 | Denser Milky Way with dust lanes per the ISS reference. **LICENSING GATES THIS** — MIT repo, so public-domain (NASA SVS Deep Star Maps) strongly preferred; share-alike or non-commercial sources are DISQUALIFIED regardless of quality. Carries the architectural call: texture holds the DIFFUSE Milky Way, bright stars come from a catalogue as point sprites — conflating both in one cubemap is a leading hypothesis for why bright stars read as blobs today. Must land on BOTH backends (Principle 5). |
+| `C11-179` (sun + moon appearance) | NOT STARTED | §1.26 / G8 | **Sun:** correct ~0.53° angular diameter, limb darkening (cheap, high realism-per-effort), HDR-driven glare — and physically, in vacuum there is NO atmospheric scattering halo, so the glow is instrument/eye response. The sun is ~10⁵× brighter than anything else in frame, making it the extreme case for the HDR chain and AutoExposure. **Moon:** non-Lambertian reflectance (Hapke / Lommel-Seeliger — the full moon is far brighter and flatter than Lambertian predicts), opposition surge, earthshine on the dark limb, public-domain LROC/CGI-Moon-Kit albedo + normal maps, correct ~0.52° angular size. **Do NOT double-schedule:** `C11-160` (sunBloom PP wiring), `C11-115` (sun blend → ALPHA_BLEND), `C11-161` (AutoExposure demand-gate) are already queued; prior fork work exists on moon matte-not-sunlit + moon atmosphere extinction. |
 | `C11-SEED-27` (C10-30 clean-env r5 re-measure) | DEFERRED (seed) | §1.23 / G10/G9 | Gate-D anchor input |
 
 ---
@@ -953,6 +1006,40 @@ moving-camera-altitude-track-3d --repetitions 5 --renderer both`; never re-deriv
 Its verdict decides which gated-tail items get pulled (§6): the `C11-GT-01` reversed-Z spike verdict
 (if not already run in C10) is recorded in all three sinks; `C11-GT-03` MSAA-default-flip reserve
 triggers only on a MISS with bandwidth-attributed evidence + fresh sign-off.
+
+### W9 — celestial appearance (star map, bright stars, sun, moon) — maintainer-queued to the END
+
+**Added 2026-07-19 (maintainer-directed, §1.26).** Runs after the W8 checkpoint and before the exit
+gate. Contents `C11-176..179`:
+
+- **`C11-176` skybox star-map fade — the only true DEFECT in this wave, and PROMOTABLE.** WebGPU's star
+  map reads significantly more faded than WebGL. This is a parity bug, not a preference. If the
+  in-flight research returns a cheap anchored root cause — an sRGB-vs-linear cubemap format mismatch, a
+  missing intensity multiplier, a tonemap-ordering divergence (WebGPU's mandatory PP blit puts tonemap
+  between scene and canvas where WebGL can go direct), AutoExposure metering a bright limb and exposing
+  the night side down, or mip-averaging stars into grey mush — **pull it forward out of W9**; do not
+  make a small parity fix wait on a feature wave.
+- **`C11-177` bright-star appearance model.** Replace the flat-disc look with: logarithmic
+  magnitude→luminance (5 magnitudes = exactly 100× flux), a Gaussian core + wide power-law halo PSF
+  (the maintainer's Polaris reference shape), B−V colour → blackbody RGB so the field is not
+  monochrome, and HDR energy driving bloom instead of a painted-on sprite glow.
+- **`C11-178` star-map asset upgrade.** Denser Milky Way with dust lanes. **Licensing gates this** —
+  MIT repo, so public-domain (NASA SVS Deep Star Maps) is strongly preferred and any share-alike or
+  non-commercial source is disqualified regardless of quality. Carries the architectural call: let the
+  texture hold the *diffuse* Milky Way while *bright* stars come from a catalogue as point sprites.
+  Conflating both in one cubemap is a leading hypothesis for why bright stars read as blobs today.
+- **`C11-179` sun + moon.** Sun: correct ~0.53° angular diameter, limb darkening, HDR-driven glare —
+  remembering that in vacuum there is no atmospheric halo, so the glow is instrument/eye response.
+  Moon: non-Lambertian reflectance (Hapke / Lommel-Seeliger), opposition surge, earthshine on the dark
+  limb, public-domain LROC albedo/normal maps. **Do not double-schedule** `C11-160` (sunBloom PP
+  wiring), `C11-115` (sun blend → ALPHA_BLEND) or `C11-161` (AutoExposure demand-gate) — already queued.
+
+**Feature depth belongs to Campaign 12.** The 8-lane research sweep running as of 2026-07-19 produces a
+C12 construction proposal. W9 carries the parity defect plus whatever cheap wins the research confirms;
+the deep work (catalogue-driven star rendering, physically-based sun/moon) is C12 scope.
+
+**Gate on measurements, not eyeballs** — see §1.26. A mean-luminance comparison would miss this bug
+entirely, because a faded field can share the same mean with far lower variance.
 
 ### EXIT GATE — `C11-137` C8-upstream-contract certification (DEAD LAST)
 
