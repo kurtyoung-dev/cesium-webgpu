@@ -1,6 +1,6 @@
 # Campaign 12 — Celestial Appearance: from "present" to "photographic"
 
-**Status: DRAFT — NOT LAUNCHED. ⚠ W3 asset licensing: the §6d NO-GO is RETRACTED — see §6e for the revised CONDITIONAL GO and the accept-or-decline decision it hands the maintainer.** Constructed 2026-07-19 at maintainer direction ("use the findings to start constructing campaign 12"). **Four maintainer decisions (Q1–Q4, §6) gate launch**; two of them (Q1 asset licensing, Q3 HDR default) change what actually gets built. Campaign 11 is the live campaign and continues to run.
+**Status: DRAFT — NOT LAUNCHED. ✅ W3 asset licensing RESOLVED — see §6f: the project scope (personal, non-commercial, not redistributed) makes the question moot; t5 is cleared and `C12-10` is unblocked.** Constructed 2026-07-19 at maintainer direction ("use the findings to start constructing campaign 12"). Campaign 11 is the live campaign and continues to run.
 
 **Source of truth for every claim here:** [CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md](CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md) — 8 research lanes, every load-bearing claim adversarially verified (20 of 20 heavy claims refuted and dropped; what remains survived attack).
 
@@ -226,6 +226,32 @@ The design is **deliberately reversible**, and the reversal is cheap because the
 - `G3` dust-lane + source-density metrics on **blurred vs un-blurred** bakes, side by side.
 - The `M6` split (sprites-only vs texture-only) — already specified, and it directly measures where density comes from.
 - Frame-cost delta from ~5,000 sprites on both backends.
+
+---
+
+## 6f. ✅ RESOLVED — project scope makes this moot (2026-07-19, maintainer)
+
+**Read this before §6e or §6d. The licence question is closed for this project's actual scope, and the earlier analysis is retained only for the case where that scope changes.**
+
+**Maintainer-stated scope as of 2026-07-19:** a personal side project; **not affiliated with Cesium GS**; **not redistributing the fork or the code**; non-commercial.
+
+**Under that scope both readings converge on GO:**
+
+- **Permissive reading (§6e):** the NC term never attaches, because CC BY-NC 3.0 IGO §1 licenses a database only as to selection and arrangement, §2 disclaims reaching uses free from copyright, and the SVS rendering takes neither.
+- **Most restrictive reading** (assume NC fully attaches): **personal, non-commercial, non-redistributed use is precisely what CC BY-NC affirmatively grants.** That is the licence operating as designed, not an exception carved out of it.
+
+Substantially all of the §6e risk analysis was driven by **redistribution** and the **onward MIT grant** — CC §4(a) *"You may not sublicense the Work"*, the propagated-defective-grant problem, and the affirmative representation that a blanket MIT grant makes to downstream consumers. **With no downstream, none of those have anything to attach to.**
+
+**The one residual wrinkle is already handled.** A public GitHub repository is arguably publication, and this repo carries an MIT licence file. The `# Bundled Engine Assets` section added to `LICENSE.md` (Batch 730) explicitly carves the skybox assets **out** of that blanket grant and states their own terms, so even the nominal onward grant does not sweep them in.
+
+**Consequences:**
+
+- **t5 is cleared to proceed** for this project. `C12-10` is unblocked; `W3` is no longer licence-blocked.
+- **Keep the attribution** (`Credit: ESA` + NASA/GSFC SVS). It costs nothing, honours the BY term under either reading, and concedes nothing on NC.
+- **Do NOT send the `data.licences@esa.int` email.** It was recommended only against commercial exposure that does not exist here; sending it would invite an adverse written record for no benefit.
+- **§6e's mitigations 1, 2, 3 and 5 are already done** (credits, engine-section filing, analysis written into the repo, swappable asset path via `SkyBox.Variant`). Mitigation 6 (filing an upstream issue at CesiumGS) remains optional and is a courtesy, not a need.
+
+**⚠ WHAT WOULD REOPEN THIS.** The scope statement above is the load-bearing fact. If **any** of the following becomes true, **stop and re-read §6e in full before shipping further**: the fork is redistributed or published as a package; it is used commercially or by an employer; a third party is granted rights to it; or it acquires a licensee or downstream consumer. The analysis in §6e is intact and directly applicable to that situation — it was not wrong, it was answering a harder question than this project actually poses.
 
 ---
 
