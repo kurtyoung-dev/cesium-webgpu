@@ -1,4 +1,6 @@
 import buildModuleUrl from "../Core/buildModuleUrl.js";
+import defined from "../Core/defined.js";
+import DeveloperError from "../Core/DeveloperError.js";
 import CubeMapPanorama from "./CubeMapPanorama.js";
 import SceneMode from "./SceneMode.js";
 import StarField from "./StarField.js";
@@ -159,27 +161,109 @@ class SkyBox {
 
   /**
    * Creates a skybox instance with the default starmap for the Earth.
+   *
+   * @param {string} [variant] One of {@link SkyBox.Variant}. Defaults to
+   *        {@link SkyBox.defaultVariant}, which applications may set globally.
    * @return {SkyBox} The default skybox for the Earth
    *
    * @example
    * viewer.scene.skyBox = Cesium.SkyBox.createEarthSkyBox();
+   *
+   * @example
+   * // Pick a specific star map for one skybox.
+   * viewer.scene.skyBox = Cesium.SkyBox.createEarthSkyBox(
+   *   Cesium.SkyBox.Variant.TYCHO_T5,
+   * );
+   *
+   * @example
+   * // Or change the default for every skybox created afterwards.
+   * Cesium.SkyBox.defaultVariant = Cesium.SkyBox.Variant.TYCHO_T5;
    */
-  static createEarthSkyBox() {
+  static createEarthSkyBox(variant) {
+    const v = variant ?? SkyBox.defaultVariant;
+    const descriptor = skyBoxVariants[v];
+    //>>includeStart('debug', pragmas.debug);
+    if (!defined(descriptor)) {
+      throw new DeveloperError(
+        `Unknown SkyBox variant "${v}". Valid values are: ${Object.keys(skyBoxVariants).join(", ")}`,
+      );
+    }
+    //>>includeEnd('debug');
+    const resolved = descriptor ?? skyBoxVariants[SkyBox.Variant.TYCHO_T3];
     return new SkyBox({
       sources: {
-        positiveX: getDefaultSkyBoxUrl("px"),
-        negativeX: getDefaultSkyBoxUrl("mx"),
-        positiveY: getDefaultSkyBoxUrl("py"),
-        negativeY: getDefaultSkyBoxUrl("my"),
-        positiveZ: getDefaultSkyBoxUrl("pz"),
-        negativeZ: getDefaultSkyBoxUrl("mz"),
+        positiveX: resolved.url("px"),
+        negativeX: resolved.url("mx"),
+        positiveY: resolved.url("py"),
+        negativeY: resolved.url("my"),
+        positiveZ: resolved.url("pz"),
+        negativeZ: resolved.url("mz"),
       },
     });
   }
 }
 
-function getDefaultSkyBoxUrl(suffix) {
-  return buildModuleUrl(`Assets/Textures/SkyBox/tycho2t3_80_${suffix}.jpg`);
-}
+/**
+ * Selectable star-map variants for {@link SkyBox.createEarthSkyBox}.
+ *
+ * Each entry names a bundled cube-map set. Enumerated rather than raw strings
+ * so a typo fails loudly in debug builds instead of silently 404-ing the sky.
+ *
+ * `TYCHO_T3` and `TYCHO_T5` are the faint and bright renders of the same NASA
+ * SVS product (SVS 3572): SVS describes t3 as "the Milky Way is very faint" and
+ * t5 as "the Milky Way is very bright and bright stars are large".
+ *
+ * @enum {string}
+ * @readonly
+ */
+SkyBox.Variant = Object.freeze({
+  /** Tycho catalogue skymap, faint Milky Way render. The historical default. */
+  TYCHO_T3: "TYCHO_T3",
+  /**
+   * Tycho catalogue skymap, bright Milky Way render.
+   *
+   * ⚠ **NOT YET BUNDLED.** Registered so the selection API and any application
+   * code can be written against it, but the cube faces are not in the
+   * repository: acquiring them is gated on the `C12-10` licence question
+   * (SVS 3572's declared sources — Hipparcos and Tycho-2 — are distributed by
+   * ESA under CC BY-NC 3.0 IGO, which is why this is not simply a download).
+   * Selecting it before the assets land will 404. See
+   * `migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md` §6d.
+   */
+  TYCHO_T5: "TYCHO_T5",
+});
+
+const skyBoxVariants = {
+  [SkyBox.Variant.TYCHO_T3]: {
+    prefix: "tycho2t3_80",
+    url(suffix) {
+      return buildModuleUrl(
+        `Assets/Textures/SkyBox/${this.prefix}_${suffix}.jpg`,
+      );
+    },
+  },
+  [SkyBox.Variant.TYCHO_T5]: {
+    prefix: "tycho2t5_80",
+    url(suffix) {
+      return buildModuleUrl(
+        `Assets/Textures/SkyBox/${this.prefix}_${suffix}.jpg`,
+      );
+    },
+  },
+};
+
+/**
+ * The variant {@link SkyBox.createEarthSkyBox} uses when none is passed.
+ *
+ * ⚠ Currently `TYCHO_T3` — **not** `TYCHO_T5` — because the t5 faces are not
+ * yet in the repository. Pointing the default at absent files would break the
+ * sky outright. Flipping this to `TYCHO_T5` is a **one-line change** once
+ * `C12-10` lands the assets and the licence question is resolved; the selection
+ * plumbing below is complete and needs nothing further.
+ *
+ * @type {string}
+ * @default SkyBox.Variant.TYCHO_T3
+ */
+SkyBox.defaultVariant = SkyBox.Variant.TYCHO_T3;
 
 export default SkyBox;
