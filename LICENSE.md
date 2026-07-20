@@ -1021,6 +1021,28 @@ Source® Sans Pro, Adobe's first open source typeface family, was designed by Pa
 
 [SIL Open Font License, 1.1](http://scripts.sil.org/cms/scripts/page.php?site_id=nrsi&id=OFL) ([text](http://scripts.sil.org/cms/scripts/render_download.php?format=file&media_id=OFL_plaintext&filename=OFL.txt))
 
+# Bundled Engine Assets
+
+Binary assets shipped **inside the published `@cesium/engine` package** — not merely used by the example applications. These are **not** covered by the licence grant at the top of this file; each carries its own terms, stated below, and redistributors must carry this section with them.
+
+### Star map cube maps — NASA/GSFC Scientific Visualization Studio
+
+**Files:** `packages/engine/Source/Assets/Textures/SkyBox/tycho2t3_80_{px,py,pz,mx,my,mz}.jpg`, selected via `SkyBox.Variant.TYCHO_T3` (see `packages/engine/Source/Scene/SkyBox.js`). Any additional variant registered in `SkyBox.Variant` and derived from the same SVS product is covered by this same entry.
+
+**Product:** "The Tycho Catalog Skymap — Version 2.0", NASA SVS ID 3572, released 2009-01-26. The bundled faces are the `t3` variant (SVS describes it as *"the Milky Way is very faint"*), reprojected from the source equirectangular image to six cube faces.
+
+- Source: <https://svs.gsfc.nasa.gov/3572/>
+- NASA media guidelines: <https://www.nasa.gov/nasa-brand-center/images-and-media/>
+- Upstream CesiumJS additionally cited `http://maps.jpl.nasa.gov/stars.html`, which no longer resolves; recorded here for provenance completeness.
+
+**Credit:** NASA/Goddard Space Flight Center Scientific Visualization Studio.
+
+**Underlying catalogues:** the skymap was rendered from the Hipparcos and Tycho-2 star catalogues. **Credit: ESA.**
+
+**Terms position.** NASA publishes this product as NASA content; NASA's guidelines carve out material where NASA has incorporated third-party content, and NASA does not indemnify. ESA publishes the Hipparcos and Tycho catalogues under CC BY-NC 3.0 IGO — whose §2 states that *"Nothing in this License is intended to reduce, limit, or restrict any uses free from copyright protection"*, and whose §1 licenses a database only as to *the selection and arrangement of its contents constituting an intellectual creation*. This rendering plots substantially the entire catalogue (an unoriginal selection) positioned by physical sky coordinates (an arrangement dictated by nature rather than by the catalogue), with its expressive choices — point-spread function, colour mapping, intensity curve — originating with NASA. On that reading the non-commercial condition is not triggered. The ESA credit above is given because attribution costs nothing and honours the BY term; **it is not an admission that the NC term attaches.**
+
+**This is a documented risk assessment, not legal advice, and not a clearance.** The full analysis — including the points that remain unconfirmed and the specific findings that would reverse it — is recorded in [`migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md`](migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md) §6e. A future maintainer should read that section before relying on, extending, or changing this entry.
+
 # Example Applications
 
 The CesiumJS example applications include the following third-party libraries and data.
@@ -1041,11 +1063,7 @@ Copyright Information: http://planetpixelemporium.com/planets.html
 
 ### Sky box images from NASA
 
-http://maps.jpl.nasa.gov/stars.html
-
-http://svs.gsfc.nasa.gov/vis/a000000/a003500/a003572/
-
-Terms of use: http://www.nasa.gov/audience/formedia/features/MP_Photo_Guidelines.html
+**Moved.** These ship inside `@cesium/engine`, not merely in the example applications, so they are now documented under **Bundled Engine Assets** above — with the full provenance chain, both credits, and the terms analysis. The stub that previously sat here named no licence and cited a URL that no longer resolves.
 
 ### Some vector icons from (or inspired by) Raphaël JS
 
