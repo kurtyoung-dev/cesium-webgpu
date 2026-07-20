@@ -8,7 +8,9 @@
 
 ## 1. Theme
 
-> Close the last default-ON WebGPU-only celestial divergences, replace flat-disc point-source rendering with a physically-motivated glare PSF **on both backends**, upgrade the star map within the licence we already hold, and make the Sun and Moon photometrically honest.
+> Close the last default-ON WebGPU-only celestial divergences, replace flat-disc point-source rendering with a physically-motivated glare PSF **on both backends**, upgrade the star map **from a source whose terms affirmatively permit commercial redistribution and derivatives**, and make the Sun and Moon photometrically honest.
+
+⚠ **Corrected 2026-07-19.** This theme originally read *"upgrade the star map within the licence we already hold."* **That was wrong and is withdrawn.** We hold no licence for the current star map. `LICENSE.md:1042` is an **attribution record** — a heading, two source URLs, and a pointer to *NASA's* terms — not a grant; the only grant language in `LICENSE.md` is the Apache-2.0 boilerplate covering Cesium's own code. The shipped `t3` faces and the proposed `t5` are the **same SVS 3572 product rendered from the same two ESA catalogues, so their legal status is identical** (see §6d). The difference between them is not rights but posture: `t3` is an inherited upstream condition predating any examination of the chain, whereas `t5` would be a new deliberate download-derive-ship **after** we documented that we understand the test. Do not let the presence of an attribution entry be read as clearance for anything.
 
 Two hard bounds:
 
