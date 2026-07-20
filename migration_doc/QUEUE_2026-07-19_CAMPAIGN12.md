@@ -1,6 +1,6 @@
 # Campaign 12 — Celestial Appearance: from "present" to "photographic"
 
-**Status: DRAFT — NOT LAUNCHED. ⚠ W3 (star-map asset) is LICENCE-BLOCKED — see §6d.** Constructed 2026-07-19 at maintainer direction ("use the findings to start constructing campaign 12"). **Four maintainer decisions (Q1–Q4, §6) gate launch**; two of them (Q1 asset licensing, Q3 HDR default) change what actually gets built. Campaign 11 is the live campaign and continues to run.
+**Status: DRAFT — NOT LAUNCHED. ⚠ W3 asset licensing: the §6d NO-GO is RETRACTED — see §6e for the revised CONDITIONAL GO and the accept-or-decline decision it hands the maintainer.** Constructed 2026-07-19 at maintainer direction ("use the findings to start constructing campaign 12"). **Four maintainer decisions (Q1–Q4, §6) gate launch**; two of them (Q1 asset licensing, Q3 HDR default) change what actually gets built. Campaign 11 is the live campaign and continues to run.
 
 **Source of truth for every claim here:** [CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md](CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md) — 8 research lanes, every load-bearing claim adversarially verified (20 of 20 heavy claims refuted and dropped; what remains survived attack).
 
@@ -229,7 +229,70 @@ The design is **deliberately reversible**, and the reversal is cheap because the
 
 ---
 
-## 6d. LICENSING RULING — **NO-GO** for the t5 path (2026-07-19)
+## 6e. ⚠ THE §6d NO-GO IS RETRACTED — revised ruling: CONDITIONAL GO (2026-07-19, later same day)
+
+**§6d below is superseded. Its reasoning was wrong and is formally retracted; read this section first.** Triggered by the maintainer's question: *"if upstream is already using t3 there must be a reason it can right? which should mean we can also use t5?"* A re-examination steelmanning **both** sides overturned the analysis.
+
+### Where §6d went wrong
+
+It reasoned "ESA states CC BY-NC → SVS 3572 names those catalogues → therefore encumbered" — **moving from a licence _statement_ to a legal _right_ without ever asking whether the licensor owns the thing being licensed.** It never engaged *Feist*, never read the licence text ESA itself chose, never checked the sui generis term, and never noticed that CC 3.0 does not license sui generis rights at all.
+
+### The decisive finding — on ESA's own words, not contested doctrine
+
+**CC BY-NC 3.0 IGO §2, verbatim:** *"Nothing in this License is intended to reduce, limit, or restrict any uses free from copyright protection."*
+**§1**, defining the licensed object for databases: a database is a Work *"by reason of the selection and arrangement of its contents constitut[ing] an intellectual creation."*
+
+ESA's instrument therefore claims exactly one thing about a catalogue — the intellectual creation in its **selection and arrangement** — and expressly disclaims reaching anything else. **The SVS rendering takes neither:** it plots ~2.4M of Tycho-2's ~2.5M stars (a take-everything, archetypally *unoriginal* selection), arranged by **physical sky position** in plate carrée (dictated by nature, not by ESA's table order), with every expressive choice NASA's own (gaussian PSFs, B−V → effective temperature → CIE tristimulus → RGB).
+
+### Supporting findings, all fetched and verified
+
+- **ESA's operative terms are archive-scoped** (data *"contained in the ESA Space Science Archives"*) and a targeted extraction for any derived-works, visualization, third-party or redistribution clause returned **ABSENT**.
+- **NASA did not take Tycho from ESA.** SVS 3572 cites `archive.eso.org` — the European Southern Observatory, a different organisation. No privity with ESA's terms, which form only on archive access.
+- **Sui generis right has EXPIRED.** Directive 96/9/EC Art. 10(2) gives 15 years from 1 Jan following publication: Hipparcos (1997) expired **2013-01-01**; Tycho-2 (2000) expired **2016-01-01**.
+- **CC 3.0 IGO is silent on sui generis rights** (verified by direct fetch) — so even a live database right would not carry the NC condition. _This cuts both ways: it also means CC 3.0 grants no sui generis rights to anyone; only expiry confers permission._
+- **EU copyright limb closes via CJEU C-604/10 _Football Dataco_**: *"the significant labour and skill required for setting up that database cannot as such justify such a protection if they do not express any originality in the selection or arrangement."* The EU's functional analogue to *Feist*.
+- **Timing:** CC 3.0 IGO did not exist until 2013-12-06; SVS 3572 is dated 2009-01-26. Wayback places the CC BY-NC sentence's appearance on ESA's Hipparcos page between **2025-01-06 and 2025-05-26**. _Stated fairly: this is a fact about ESA's web publishing, not about ESA's rights — there is no notice formality — and our conduct would be prospective._
+
+### The maintainer's inference — half falsified, half correct
+
+- **"Upstream must have had a reason" → AFFIRMATIVELY FALSIFIED.** A controlled search of CesiumGS (control query "skybox" returned 25 issues, proving the index works) found **zero** issues, PRs, commits or discussions on Tycho/Hipparcos licensing. What exists: a one-line 2012 commit (`4c8b32dc7e` "Added images for sky box"); an attribution stub naming **no licence**, filed under the heading *"Example Applications"* despite the asset shipping from `packages/engine/Source/Assets/Textures/SkyBox/` **inside the published npm package**; a provenance URL that now 404s. Cesium's own `CONTRIBUTING.md:84` requires opening an issue before adding third-party material — **no such issue exists. The reason upstream can ship it is that nobody looked.**
+- **"t3 fine ⇒ t5 fine" → CORRECT, and the step is legally EMPTY.** Same SVS 3572 product at different resolution tiers, identical provenance, no resolution-dependent term anywhere. So the real question was never t3-vs-t5; it was *"is either clear?"* — answered above, on the merits.
+- **Consequence: §6d's "pre-existing condition" framing was also wrong.** Status quo is **not** the cautious option. If t5 were unshippable, so is the t3 already shipping. That option has no coherent rationale.
+
+### The honest counterweight — the thing to sit with
+
+The permissive case's own weakest point, found while *verifying* it rather than attacking it: **the sui generis analysis is weaker for Tycho-2 specifically than for Hipparcos**, because Tycho-2 expressly merges star-mapper data with ~144 pre-existing ground-based catalogues, which looks like qualifying *"obtaining"* investment under CJEU C-203/02 *BHB*. The ruling does **not** rely on BHB — expiry carries that limb on its own — but a careful reader should know the fallback is thinner than the headline.
+
+**Still UNCONFIRMED:** whether ESA's sentence even nominally reaches Tycho-2 (a Copenhagen Obs./USNO/ARI/ESO product, not an ESA SP-1200 issue; ESA's own Tycho-2 page carries no licence statement at all); and whether any Art. 10(3) substantial-change event reset the term (no evidence found, absence not affirmatively verified).
+
+### Calibrated risk
+
+Only **ESA** could assert. They would have to claim copyright in a *rendering they did not make*, of *facts they cannot own*, against a party that **never accepted their terms**, under an instrument whose §2 disclaims exactly that reach — and for the sui generis limb, under an **expired** right. Likelihood of assertion: **very low**. Realistic consequence: a request to stop, an asset swap, a `LICENSE.md` correction. **Not damages.** Six JPEGs behind `SkyBox.createEarthSkyBox` is not a load-bearing dependency — and `SkyBox.Variant` (Batch 728) already makes replacement a config change.
+
+**Scienter, stated plainly:** commissioning this review means proceeding *knowingly*. Cesium added t3 in 2012 in an innocent-inheritance posture; we would not be. That does not make a weak claim strong, but it converts an inherited exposure into an elected one.
+
+### RECOMMENDATION — ship t5 under "option 2", ESA email in parallel (not as a gate)
+
+**Decouple the asset from the blanket MIT grant.** Ship the skybox under its own documented terms in `LICENSE.md` — attribution + full provenance — rather than sweeping it into MIT's `sublicense`/`sell` grant. This costs a paragraph and removes the CC §4(a) *"You may not sublicense the Work"* exposure and the propagated-defective-grant problem **without conceding that NC ever attached**. It strictly dominates shipping it under blanket MIT.
+
+Mitigations, all cheap, all worth doing whether or not the analysis is right:
+
+1. Credit *"Credit: ESA"* and *"NASA/Goddard Space Flight Center Scientific Visualization Studio"*. **Do not conflate BY with NC** — only NC conflicts with MIT; the BY half is free to honour.
+2. File under the **engine** section of `LICENSE.md` (not "Example Applications"), with the full provenance chain and its own terms line.
+3. **Write this analysis and its gaps into the repo** — upstream's failure to do so is the concrete defect this research actually found; repeating it would be the real mistake.
+4. Send the `data.licences@esa.int` email. A non-answer is itself informative.
+5. Keep the texture behind the swappable asset path (`SkyBox.Variant` — already done).
+6. Consider filing an upstream issue at CesiumGS so the t3 gap is documented rather than silently inherited by thousands more users.
+
+**What flips this back to NO-GO:** any ESA response asserting rights; discovery of an Art. 10(3) term reset for Tycho-2; retrieval of 2009-era ESO/ESA terms showing NASA acquired under a restrictive grant; or the fork gaining a commercial licensee whose counsel wants documented clearance rather than a defensible theory. Substituting a clean-provenance skymap remains **an afternoon away** if any of those land.
+
+**What must NOT be recorded:** the framing *"upstream does it, so we can."* That is the one justification the evidence positively rules out. Record this as **"we assessed a low residual risk on stated grounds and accepted it"** — never as *"it is clear."*
+
+Confidence: high on US copyright, moderate-to-high on EU, moderate on contract. **Not legal advice; not counsel.** If the fork carries meaningful commercial exposure, route to a lawyer rather than acting on this analysis.
+
+---
+
+## 6d. ~~LICENSING RULING — NO-GO for the t5 path~~ (2026-07-19) — **SUPERSEDED BY §6e, REASONING RETRACTED**
 
 **The maintainer's condition was *"if there are no license restrictions to doing this and shipping it."* There are. DR-01's asset half is BLOCKED.** Verified by a 4-lane primary-source review with independent confirmation; nothing was downloaded or baked.
 
