@@ -599,7 +599,7 @@ landing defect.
 | `C13-33` | CONDITIONAL NOT TRIGGERED | Blocked by `C13-26`; mock demo does not satisfy the real-data headline. |
 | `C13-34` | DEFERRED | Opens after rich/stable cloud shadows. |
 | `C13-35` | **COMPLETE — Batch 734** | A non-consuming per-frame cloud-demand signal and shared environment-demand predicate keep a zero-frustum frame alive only when an effect needs it. The black-sky acceptance records eight managed and eight real user-owned frames with `numFrustums=0`, exact request/demand observation, and all resource/post/environment/cloud/canvas stages reached; the managed default is off during the user-owned phase. Eight disabled control frames retain zero frustums and skip all expensive stages. Each active output has 7,584 cloud cells, disabled is exactly black, and all 42 checks plus the WebGPU error gate pass. |
-| `C13-36` | NOT STARTED | Diagnosis/design only: `jitterEnabled`/`QF_JITTER` exist but are not wired into the renderer or raymarch. Implement a license-free per-pixel IGN sample phase and a periodicity oracle without changing adaptive-march interval/control invariants. |
+| `C13-36` | **COMPLETE — Batch 736** | The existing tier-owned `jitterEnabled` contract now drives a license-clean analytic IGN phase once per fragment. T1/T2 animate only with realized temporal history; full-resolution T3 holds a deterministic spatial phase; the power-user escape path remains exact midpoint. Six source/math/Naga checks, low/high browser artifacts, the moving altitude route, temporal smoke, and WebGL billboard parity are green. This does not close periodic baked density (`C13-37`), temporal invalidation (`C13-12`), or mask/history alignment (`C13-06`/`C13-22`). |
 | `C13-37` | NOT STARTED | The repeat-sampled baked textures, harmonic scales, and raw-ECEF density domain remain unchanged. Planet-stable regional/local coordinates and the temporal-off baked-vs-live periodicity gate are still required. |
 | `C13-GATE-A` | NOT STARTED | Follows `C13-01/02`. |
 | `C13-GATE-B` | NOT STARTED | Follows `C13-03..08`. |
@@ -710,6 +710,50 @@ This is an oracle/tooling slice only; it changes no engine renderer or cloud app
   and their contract/probes/tests form one removable slice. No temporal attachment, weather
   resource, shadow topology, or WebGL shader is changed.
 
+### C13-36 Batch 736 ray-sample phase evidence
+
+- The pre-existing tier contract is now real: `jitterEnabled` contributes `QF_JITTER` to uniform
+  slot 74. The low/medium temporal tiers use a per-pixel Jimenez-2014 analytic
+  interleaved-gradient-noise phase with a 64-frame sequence. Full-resolution T3 uses the same
+  spatial field at frame zero because it has no temporal filter. The explicit numeric
+  `cloudQuality` escape route retains `jitterEnabled=false` and the exact old midpoint expression.
+- IGN is evaluated once per fragment outside the ray loop and requires no texture, sampler, bind
+  group, upload, or external asset. It is blue-noise-like screen noise, not an STBN claim. The
+  frame counter widened from 16 to 64 exact integer phases; Bayer UV jitter and cone-light jitter
+  continue to mask the low four bits, preserving their existing 16-phase cycles.
+- Only `t + phase * curStep` changes. `t`, `tProcessed`, conservative base-density testing, coarse
+  backtracking, interval bounds, and loop progression are unchanged; base and full density sample
+  the same position. The cloud-aware god-ray mask deliberately remains at midpoint because it has
+  no temporal filter. Replacing that duplicate march with resolved/upscaled cloud alpha or a
+  suitable MRT is retained under `C13-06`/`C13-22` rather than accepting mask shimmer here.
+- `cloud-ray-jitter.spec.mjs` passes `6/6`: f32 spatial/temporal distribution, tier/flag wiring,
+  midpoint fallback, 64/16 counter behavior, f32 interval containment from near range through
+  orbit-scale distances, shared density position, and full-shader Naga validation. The engine
+  build and TypeScript check are green.
+- `probe-cloud-banding.mjs` produced valid provenance-bearing low and high artifacts with clean
+  WebGPU/device gates. Low realized `24` primary steps at `512x384` with matching temporal history
+  and `QF_JITTER`; high realized `96` steps on the direct full-resolution path with no temporal
+  allocation. Its fixed-camera single and frame-32 high-tier PNGs are exactly identical
+  (`0/786,432` changed pixels), proving this bounded temporal-off route does not sparkle.
+- The low characterization records `547,928` single-frame and `556,378` settled interior cloud
+  pixels. Its coherent-jump densities are `0.002843` and `0.010453`; without a separately built
+  provenance-compatible pre-change companion these values do not establish an improvement.
+  Manual inspection still shows the large-scale ordered baked-density lattice, which keeps
+  `C13-37` open and next.
+- The post-change moving altitude route covered all eight segments and 1,117 active frames over
+  `20.016 s` with no page, device, or route failures. Diagnostic pacing was `55.80 FPS`; CPU was
+  p50 `2.9 ms`, p95 `5.7 ms`, p99 `7.6 ms`. Compared with Batch 735's single-run
+  `55.84 FPS` / `2.9` / `6.4` / `9.1 ms`, this is a no-regression characterization, not a promoted
+  speedup. The medium temporal static/pan/settle smoke also completed without new errors.
+- Functionality preservation: no cloud feature, quality tier, atmospheric consumer, or renderer
+  path was disabled. WebGPU and WebGL billboard smoke remained visible (`59,911` and `36,504`
+  neutral-cloud evidence pixels). Temporal history invalidation across cuts/origin/tier/weather
+  changes remains owned by `C13-12`; this landing does not claim it.
+- Rollback boundary: the tier flag packing, 64-phase counter, per-fragment IGN helper/phase
+  parameter, and their two focused tools form one removable slice. Baked density resources,
+  weather, shell geometry, reconstruction attachments, WebGL shaders, and public APIs are
+  unchanged.
+
 ---
 
 ## 10. Source pointers
@@ -728,6 +772,8 @@ This is an oracle/tooling slice only; it changes no engine renderer or cloud app
 - `packages/engine/Source/Scene/Weather/WeatherTexPacker.ts`
 - `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentDemand.ts`
 - `Tools/visual-regression/cloud-primary-shell.spec.mjs`
+- `Tools/visual-regression/cloud-ray-jitter.spec.mjs`
+- `Tools/visual-regression/probe-cloud-banding.mjs`
 - `Tools/visual-regression/probe-cloud-empty-frustum.mjs`
 - `Tools/visual-regression/probe-cloud-planetary.mjs`
 - `Tools/visual-regression/probe-cloud-tour.mjs`

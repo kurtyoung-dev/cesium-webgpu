@@ -9,10 +9,9 @@
  * **Tier 0 = the cheap default** (the cloud pass does not run — the default-off
  * WebGL-parity path); Tiers 1–3 are opt-in volumetric (low / high / cinematic).
  *
- * **V1 (inert spine):** only `qualityFlags`@74 is packed from this, and no shader
- * reads `qualityFlags` yet, so every tier renders byte-identically to pre-V1.
- * Feature batches wire each field in turn (V3 noiseSource, V5 multiScatterOctaves,
- * V6 jitter, V9 renderResScale, V10 temporal, V11 profile). `primarySteps` /
+ * **V1 (inert spine):** introduced `qualityFlags`@74; later feature batches wire
+ * each field in turn (V3 noiseSource, V5 multiScatterOctaves, V9 renderResScale,
+ * V10 temporal, V11 profile, C13-36 jitter). `primarySteps` /
  * `lightSteps` MIRROR the legacy `resolveCloudQuality` table (24/3, 48/4, 96/8);
  * the research target counts (32/96/128 …) land per-feature behind their own A/B.
  */
@@ -203,7 +202,7 @@ export function resolveCloudPreset(
 export const CLOUD_QF_NOISE_BAKED = 1 << 0; // V3
 export const CLOUD_QF_HALF_RES = 1 << 1; // V9
 export const CLOUD_QF_TEMPORAL = 1 << 2; // V10
-export const CLOUD_QF_JITTER = 1 << 3; // V6
+export const CLOUD_QF_JITTER = 1 << 3; // C13-36 per-pixel ray sample phase
 export const CLOUD_QF_OCTAVES_SHIFT = 4; // bits 4-6
 export const CLOUD_QF_PROFILE_ON = 1 << 7; // V11
 // Batch 434 — atmosphere-LUT coupling (add-only). Set by the renderer ONLY when the

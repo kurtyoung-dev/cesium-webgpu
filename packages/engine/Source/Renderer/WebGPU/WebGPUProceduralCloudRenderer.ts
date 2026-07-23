@@ -36,6 +36,7 @@ import {
   CLOUD_QF_NOISE_BAKED,
   CLOUD_QF_HALF_RES,
   CLOUD_QF_TEMPORAL,
+  CLOUD_QF_JITTER,
   CLOUD_QF_AERIAL_LUT,
   CLOUD_QF_AMBIENT_LUT,
   CLOUD_QF_LIGHT_CONE,
@@ -119,7 +120,9 @@ export interface CloudCache {
   upscaleUniformBuffer: GPUBuffer | null;
   upscaleUniformData: Float32Array;
   upscaleSampler: GPUSampler | null;
-  frameCounter: number; // per-frame Bayer index for the half-res jitter
+  // Shared exact integer phase: low 4 bits preserve the Bayer/cone 16-phase
+  // sequence; all 6 bits drive C13-36's animated IGN sequence.
+  frameCounter: number;
   // V10 (Batch 433) — temporal reprojection + accumulation. ALL null on the
   // default / cinematic / escape-hatch path (temporal OFF → byte-identical). The
   // history is DOUBLE-BUFFERED (ping-pong) at HALF-RES (it accumulates the
@@ -1754,8 +1757,9 @@ export function executeProceduralClouds(
   // 74 — qualityFlags bitfield. V3 sets bit 0 (noiseSource) when the tier wants
   // the baked 3D-texture core AND the bake actually succeeded — SELF-HEALING:
   // if the bake is unavailable (cache.noise null), the bit stays 0 and the WGSL
-  // falls back to the live march. (halfRes/temporal/jitter/profile bits land in
-  // V9/V10/V6/V11; the octaves bits carry the preset value, read by V5.)
+  // falls back to the live march. (halfRes/temporal/profile bits land in
+  // V9/V10/V11; C13-36 consumes jitter bit 3; the octaves bits carry the preset
+  // value, read by V5.)
   const noiseBakedBit =
     cloudPreset.noiseSource === CloudNoiseSource.BAKED &&
     cache.noiseBaked &&
@@ -1773,6 +1777,11 @@ export function executeProceduralClouds(
   // the half-res target; it stays clear on the default / cinematic / escape-hatch
   // path. Carried for flag self-consistency with the tier presets + future readers.
   const temporalBit = temporalActive ? CLOUD_QF_TEMPORAL : 0;
+  // C13-36 — wire the tier's existing jitter contract. T1/T2 animate the
+  // per-pixel IGN phase only when temporal accumulation is actually active; T3
+  // receives deterministic frame-zero spatial IGN. The power-user escape preset
+  // keeps jitterEnabled=false and therefore retains exact midpoint sampling.
+  const jitterBit = cloudPreset.jitterEnabled ? CLOUD_QF_JITTER : 0;
   // Batch 436 (3.6 CLOUD-CONE-LIGHT) — set bit 10 (QF_LIGHT_CONE) when the resolved
   // tier wants the cone-sampled light march (T1 low / T2 medium). T3 cinematic + the
   // escape hatch have `lightConeSampling=false` → the bit stays clear → the WGSL
@@ -1782,6 +1791,7 @@ export function executeProceduralClouds(
     noiseBakedBit |
     halfResBit |
     temporalBit |
+    jitterBit |
     lightConeBit |
     ((Math.min(7, cloudPreset.multiScatterOctaves) & 7) <<
       CLOUD_QF_OCTAVES_SHIFT); // 74 qualityFlags
@@ -1794,11 +1804,10 @@ export function executeProceduralClouds(
   // SAMPLED (subtractive erosion), so it can carve wispier edges but never add
   // density — same safety property as the live-path Worley erosion.
   data[offset++] = config.cloudCurlAmplitude ?? 0.0; // 75 curlAmplitude
-  // 76 — V9 frameCounter (Bayer jitter index for the half-res sub-pixel offset).
-  // Only consumed when QF_HALF_RES is set; full-res ignores it (jitter branch
-  // skipped), so writing it is byte-irrelevant on the default path. Wraps at 16
-  // (the Bayer LUT length) to keep the f32 store exact.
-  cache.frameCounter = (cache.frameCounter + 1) & 15;
+  // 76 — shared temporal phase. The low 4 bits preserve the Bayer/cone 16-phase
+  // sequence; all 6 bits drive animated IGN. Full-res T3 still stores zero so
+  // its spatial IGN remains deterministic and cannot sparkle without history.
+  cache.frameCounter = (cache.frameCounter + 1) & 63;
   data[offset++] = halfResActive ? cache.frameCounter : 0; // 76 frameCounter
   // 77 — Batch 439 (4.7 CLOUD-CURL) curl-noise swirl wavelength (noise-space
   // scale). Byte-irrelevant when curlAmplitude is 0 (the warp is guarded off), so
@@ -2130,9 +2139,9 @@ export function executeProceduralClouds(
   if (multiDeckOn) {
     data[74] = data[74] | CLOUD_QF_MULTI_DECK;
   }
-  // Batch 445 — fold the high-precision bit (12) into qualityFlags. Set ONLY when
-  // opted in so the default leaves it clear → the WGSL takes the verbatim
-  // closest-point f32 shell/altitude math → byte-identical.
+  // Batch 445 / C13-04 — fold the high-precision bit (12) into qualityFlags.
+  // Production/default sets it; explicit cloudHighPrecision=false retains the
+  // one-part f32 WGS84 precision A/B.
   if (highPrecisionOn) {
     data[74] = data[74] | CLOUD_QF_HIGH_PRECISION;
   }

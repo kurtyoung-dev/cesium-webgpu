@@ -1233,6 +1233,30 @@ Remove-Item Env:TEMPORAL_TIER
 `Tools/visual-regression/output/cloud-temporal/` as the three phase PNGs and
 `<tier>-truth.json`; the truth record includes effective time, resolved configuration, and errors.
 
+Use the Campaign-13 ray-phase contracts and banding characterization for `C13-36`:
+
+```powershell
+node --test Tools/visual-regression/cloud-ray-jitter.spec.mjs
+node Tools/visual-regression/probe-cloud-banding.mjs
+$env:CLOUD_BANDING_QUALITY = "high"
+node Tools/visual-regression/probe-cloud-banding.mjs
+Remove-Item Env:CLOUD_BANDING_QUALITY
+```
+
+The source suite models WGSL arithmetic as f32, covers near/horizon/orbit march intervals, and runs
+the complete cloud shader through Naga. The browser probe defaults to `TAG=after`, low temporal
+quality, fixed time/camera, zero wind, and offline WebGPU. `CLOUD_BANDING_QUALITY=high` exercises the
+full-resolution temporal-off tier and requires the single/frame-32 captures to be pixel-identical.
+Artifacts land under `Tools/visual-regression/output/cloud-banding/` with quality and tag in every
+filename.
+
+For a real before/after banding claim, run separately built source states with the same nonempty
+`CLOUD_BANDING_PAIR_ID`, `TAG=before`/`after`, browser, adapter, resolution, and configuration. The
+probe rejects identical build fingerprints and missing/stale companions. An unpaired run is valid
+characterization only. Its provisional coherent-contour metric must be reviewed with the PNGs and
+does not certify baked-noise periodicity, temporal-history invalidation, god-ray mask alignment, or
+performance.
+
 Use the fixed-scene queue-drain probe for maximum-throughput characterization:
 
 ```powershell

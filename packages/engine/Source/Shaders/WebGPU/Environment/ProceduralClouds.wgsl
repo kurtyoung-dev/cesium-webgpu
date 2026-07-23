@@ -69,7 +69,7 @@ struct CloudUniforms {
   curlAmplitude: f32,            // 75 — 4.7 curl warp amplitude (0 = off, default)
   // 76-79 — split from the old `_padA` vec4 (byte-identical: 4 scalars on the
   // same 16-byte stride). Each named per the ratified D-2 table.
-  frameCounter: f32,             // 76 — reserved (V6 jitter/temporal)
+  frameCounter: f32,             // 76 — Bayer/cone 16-phase + IGN 64-phase
   curlFrequency: f32,            // 77 — 4.7 curl-noise swirl wavelength (noise-space scale)
   lightSampleScale: f32,         // 78 — reserved (V5 lighting)
   erosionStrength: f32,          // 79 — V4 mean-preserving erosion strength
@@ -280,9 +280,9 @@ const CLOUD_BASE_NORM_METERS: f32 = 12000.0;
 // gradient, not a white-out. Promoted to the `cloud.exposure` uniform (Batch 407,
 // default 0.22) so it can be tuned live; the const is gone.
 
-// V1 — `qualityFlags`@74 bit layout (declared; no path reads them yet — feature
-// batches wire each: V3 noiseSource, V9 halfRes, V10 temporal, V6 jitter, V5
-// octaves, V11 profile). Unpack with `u32(cloud.qualityFlags)`.
+// V1 — `qualityFlags`@74 bit layout. Feature batches wire each: V3 noiseSource,
+// V9 halfRes, V10 temporal, C13-36 jitter, V5 octaves, V11 profile. Unpack with
+// `u32(cloud.qualityFlags)`.
 const QF_NOISE_BAKED: u32 = 1u;     // bit 0
 const QF_HALF_RES: u32 = 2u;        // bit 1
 const QF_TEMPORAL: u32 = 4u;        // bit 2
@@ -314,6 +314,41 @@ const BAYER4: array<f32, 16> = array<f32, 16>(
    3.0 / 16.0, 11.0 / 16.0,  1.0 / 16.0,  9.0 / 16.0,
   15.0 / 16.0,  7.0 / 16.0, 13.0 / 16.0,  5.0 / 16.0
 );
+
+// C13-36 — Jimenez 2014 analytic interleaved-gradient noise (IGN), shared with
+// this repository's volumetric-fog renderer. This is blue-noise-like screen
+// noise, not spatiotemporal blue noise (STBN). It needs no texture, sampler,
+// bind group, or external asset. The golden-ratio frame rotation gives the
+// temporal tiers a 64-frame decorrelated sequence while full-resolution T3
+// intentionally stays at frame zero.
+fn interleavedGradientNoise(
+  pixelCoord: vec2<f32>,
+  frameIndex: f32,
+) -> f32 {
+  let temporalOffset =
+    5.588238 * fract(frameIndex * 0.6180339887);
+  let p = floor(pixelCoord) + vec2<f32>(temporalOffset);
+  return fract(
+    52.9829189 *
+    fract(0.06711056 * p.x + 0.00583715 * p.y)
+  );
+}
+
+fn cloudRaySamplePhase(pixelCoord: vec2<f32>) -> f32 {
+  let flags = u32(cloud.qualityFlags);
+  if ((flags & QF_JITTER) == 0u) {
+    return 0.5;
+  }
+
+  // Animate only when a temporal history actually exists. Cinematic/full-res
+  // and a self-healing temporal-allocation fallback use a deterministic spatial
+  // phase, so this ray-phase feature adds no unfiltered frame-to-frame sparkle.
+  var frameIndex = 0.0;
+  if ((flags & QF_TEMPORAL) != 0u) {
+    frameIndex = cloud.frameCounter;
+  }
+  return interleavedGradientNoise(pixelCoord, frameIndex);
+}
 
 // ─── Full-screen triangle ───
 @vertex
@@ -1154,7 +1189,10 @@ const CONE_KERNEL: array<vec3<f32>, 5> = array<vec3<f32>, 5>(
 // resolve averages out the under-sampling instead of locking in a fixed bias.
 // Returns a small unit-length vector used to perturb the kernel offsets.
 fn coneJitter(pos: vec3<f32>) -> vec3<f32> {
-  let seed = pos * 0.013 + vec3<f32>(cloud.frameCounter * 0.61803399);
+  // C13-36 widens frameCounter to 64 phases for ray IGN. Preserve the existing
+  // cone-light sequence exactly by retaining only its original low 4 bits.
+  let coneFrame = f32(u32(cloud.frameCounter) & 15u);
+  let seed = pos * 0.013 + vec3<f32>(coneFrame * 0.61803399);
   return hash33(seed) - vec3<f32>(0.5);
 }
 
@@ -1414,12 +1452,13 @@ struct DeckResult {
 
 // Batch 443 — march ONE cloud shell [deckBottom, deckTop] along the view ray and
 // return its tone-mapped + aerial-hazed color + alpha. This is the LEGACY
-// fragmentMain march body, verbatim, with the hardcoded `cloud.cloudLayerBottom/
-// Top` replaced by the `deckBottom/Top` parameters (so a call with the default
-// bounds is byte-identical to pre-443) and the scene-composite tail lifted out to
-// the caller (the caller composites — single shell or front-to-back). A ray that
-// misses the shell, or whose layer is fully occluded by depth, returns alpha 0
-// (transparent → contributes nothing to the composite).
+// fragmentMain march body with the hardcoded `cloud.cloudLayerBottom/Top`
+// replaced by the `deckBottom/Top` parameters and the scene-composite tail
+// lifted out to the caller (the caller composites — single shell or
+// front-to-back). `marchSamplePhase=0.5` preserves the old midpoint positions
+// exactly; C13-36's tier flag supplies a spatial/temporal phase instead. A ray
+// that misses the shell, or whose layer is fully occluded by depth, returns
+// alpha 0 (transparent → contributes nothing to the composite).
 fn marchDeck(
   rayOrigin: vec3<f32>,
   rayDir: vec3<f32>,
@@ -1429,6 +1468,7 @@ fn marchDeck(
   msOctaves: i32,
   centerHigh: vec3<f32>,
   centerLow: vec3<f32>,
+  marchSamplePhase: f32,
 ) -> DeckResult {
   var result: DeckResult;
   result.hazed = vec3<f32>(0.0);
@@ -1562,7 +1602,10 @@ fn marchDeck(
     let curCoarseStep = curFineStep * 4.0;
 
     let curStep = select(curCoarseStep, curFineStep, fine);
-    let sampleOffset = rayDir * (t + 0.5 * curStep);
+    // C13-36 shifts only the sample within the current interval. `t`,
+    // `tProcessed`, coarse backtracking, and the interval bounds remain
+    // unchanged; base/full density still share this exact sample position.
+    let sampleOffset = rayDir * (t + marchSamplePhase * curStep);
     let samplePos = rayOrigin + sampleOffset;
     // Resolve the vertical profile against the same oblate boundaries used for
     // intersection. The world-space noise domain remains unchanged.
@@ -1794,8 +1837,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // texels via the bilateral upscale) sample DIFFERENT sub-pixel positions,
   // decorrelating the under-sampling. `cloud.resolution` here is the HALF-RES
   // target size, so one texel = (1/halfW, 1/halfH) in UV; the Bayer offset stays
-  // within ±0.5 texel. Full-res path: no jitter (resolution = full canvas, bit
-  // clear), so `uv` is byte-identical to the legacy `input.uv`.
+  // within ±0.5 texel. Full-res path: no sub-pixel UV jitter (resolution = full
+  // canvas, bit clear), so `uv` remains the legacy `input.uv`; C13-36's separate
+  // ray sample phase is resolved below.
   var uv = input.uv;
   if (halfResEnabled()) {
     let bIndex = u32(cloud.frameCounter) & 15u;
@@ -1809,6 +1853,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 
   let rayOrigin = cloud.cameraPosition;
   let rayDir = getWorldRay(uv);
+  // One per-fragment phase is shared by every visible deck so multi-deck
+  // compositing cannot introduce inter-deck sampling shimmer.
+  let marchSamplePhase = cloudRaySamplePhase(input.position.xy);
 
   // Batch 445 (4.12 CLOUD-RTE) — the planet center relative to the camera is
   // -cameraWorldPos, supplied as a high/low split so `marchDeck`'s high-precision
@@ -1824,12 +1871,13 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let msOctaves = i32((u32(cloud.qualityFlags) >> QF_OCTAVES_SHIFT) & 7u);
 
   if (!multiDeckEnabled()) {
-    // ── DEFAULT single-shell path — byte-identical to pre-443. March exactly ONE
-    // shell with today's bounds, then run the LEGACY composite verbatim. ──
+    // ── DEFAULT single-shell topology. March exactly ONE shell with today's
+    // bounds, then run the established composite formula. ──
     let r = marchDeck(
       rayOrigin, rayDir, sceneDepth,
       cloud.cloudLayerBottom, cloud.cloudLayerTop, msOctaves,
       centerHigh, centerLow,
+      marchSamplePhase,
     );
     let cloudAlpha = r.alpha;
     let hazed = r.hazed;
@@ -1838,7 +1886,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     if (halfResEnabled()) {
       return vec4<f32>(hazed * cloudAlpha, cloudAlpha);
     }
-    // Full-res path — UNCHANGED legacy composite (byte-identical to pre-V9/443).
+    // Full-res path — unchanged scene/cloud composite formula.
     let finalColor = mix(sceneColor.rgb, hazed, cloudAlpha);
     return vec4<f32>(finalColor, sceneColor.a);
   }
@@ -1896,7 +1944,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   for (var k: i32 = 0; k < 3; k = k + 1) {
     if (trans < 0.005) { break; } // opaque — far decks fully occluded, early-out
     let di = order[k];
-    let r = marchDeck(rayOrigin, rayDir, sceneDepth, bottoms[di], tops[di], msOctaves, centerHigh, centerLow);
+    let r = marchDeck(
+      rayOrigin, rayDir, sceneDepth,
+      bottoms[di], tops[di], msOctaves,
+      centerHigh, centerLow,
+      marchSamplePhase,
+    );
     if (r.alpha <= 0.0) { continue; } // empty deck (missed shell / fully thin) — skip
     accColor += trans * r.alpha * r.hazed;
     accAlpha += trans * r.alpha;
@@ -1919,14 +1972,16 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 // camera view and emits ONLY the per-pixel view-ray TRANSMITTANCE (1 = clear
 // sky, 0 = fully opaque cloud) into a single-channel r8unorm target. The
 // procedural cloud renderer runs this pass ONLY when cloud-aware god rays are
-// active (an opt-in-on-opt-in cinematic combo); the shipped composite pass
-// (`fragmentMain`) is untouched, so the default cloud render stays byte-
-// identical. The god-ray generate pass samples this mask to attenuate the
-// light shaft where clouds block the sun (crepuscular rays through gaps).
+// active (an opt-in-on-opt-in cinematic combo). C13-36 deliberately retains
+// exact midpoint sampling in this unfiltered mask rather than introducing
+// frame-to-frame shaft shimmer. The god-ray generate pass samples this mask to
+// attenuate the light shaft where clouds block the sun (crepuscular rays
+// through gaps).
 //
 // This mirrors `fragmentMain`'s full-res branches (single-shell + multi-deck)
-// but skips half-res jitter (the mask is always full-res) and the scene-color
-// composite (we want transmittance, not radiance). Transmittance:
+// but skips half-res UV jitter and passes the exact midpoint phase (the mask is
+// always full-res and unfiltered), plus it skips the scene-color composite (we
+// want transmittance, not radiance). Transmittance:
 //   single-shell: 1 - alpha
 //   multi-deck:   Πᵢ (1 - alphaᵢ)  (the running `trans` product)
 @fragment
@@ -1944,6 +1999,7 @@ fn fragmentCloudMaskMain(input: VertexOutput) -> @location(0) f32 {
       rayOrigin, rayDir, sceneDepth,
       cloud.cloudLayerBottom, cloud.cloudLayerTop, msOctaves,
       centerHigh, centerLow,
+      0.5,
     );
     return clamp(1.0 - r.alpha, 0.0, 1.0);
   }
@@ -1977,7 +2033,12 @@ fn fragmentCloudMaskMain(input: VertexOutput) -> @location(0) f32 {
   for (var k: i32 = 0; k < 3; k = k + 1) {
     if (trans < 0.005) { break; }
     let di = order[k];
-    let r = marchDeck(rayOrigin, rayDir, sceneDepth, bottoms[di], tops[di], msOctaves, centerHigh, centerLow);
+    let r = marchDeck(
+      rayOrigin, rayDir, sceneDepth,
+      bottoms[di], tops[di], msOctaves,
+      centerHigh, centerLow,
+      0.5,
+    );
     if (r.alpha <= 0.0) { continue; }
     trans = trans * (1.0 - r.alpha);
   }
