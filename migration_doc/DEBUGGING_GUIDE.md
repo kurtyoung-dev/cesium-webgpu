@@ -1161,8 +1161,11 @@ disable request-render pausing and clock animation, and render authored fixed ti
 [`cloud-probe-harness.mjs`](../Tools/visual-regression/lib/cloud-probe-harness.mjs) configures
 `globe.defaultCloudCollection.volumetric` directly. It rejects unknown/misspelled properties, requires
 WebGPU where requested, and verifies that `requestRenderMode`, `enableVolumetric`, and every requested
-value round-trip exactly. Treat the emitted truth JSON as part of the evidence; a screenshot without
-matching configuration truth is invalid.
+value round-trip exactly. Procedural probes also await the exported lazy feature renderer and drive
+bounded camera motion until a real execute initializes the cache; a fixed warm-up count is not
+readiness because an empty/idle command list can skip the environment chain. Treat the emitted truth
+JSON as part of the evidence; a screenshot without matching configuration and realization truth is
+invalid.
 
 Use the full static tour for cloud types, lighting, altitude, dateline, poles, and billboard parity:
 
@@ -1182,9 +1185,40 @@ Procedural volumetrics run only on WebGPU. Billboard `CloudCollection` scenes ru
 the shared API/WebGL path remains covered. Outputs are
 `Tools/visual-regression/output/cloud-tour/<scene>-<backend>.png` plus
 `cloud-tour-truth.json`; configuration mismatches, new
-console/page/GPU/device errors, and missing cloud-pixel evidence in a gated
-seam/pole/billboard fixture fail the probe. Do not lower that gate to make a
-known planetary defect green.
+console/page/GPU/device errors, and missing cloud-contribution evidence in a
+gated seam/pole/billboard fixture fail the probe. Procedural fixtures use a
+same-camera, same-time OFF/ON delta so polar or dusk cloud color cannot fool a
+bright-neutral-pixel heuristic; billboard parity retains its neutral-pixel
+metric. Do not lower the gate to make a known defect green.
+
+Use the dynamic WGS84/RTE oracle for route-ordered antimeridian, pole, and altitude coverage:
+
+```powershell
+node Tools/visual-regression/probe-cloud-planetary.mjs
+```
+
+For a focused pole and explicit precision A/B:
+
+```powershell
+$env:CLOUD_PLANETARY_ROUTES = "north-pole"
+$env:CLOUD_RTE_MODE = "on"
+node Tools/visual-regression/probe-cloud-planetary.mjs
+$env:CLOUD_RTE_MODE = "off"
+node Tools/visual-regression/probe-cloud-planetary.mjs
+Remove-Item Env:CLOUD_PLANETARY_ROUTES
+Remove-Item Env:CLOUD_RTE_MODE
+```
+
+Routes are `antimeridian`, `north-pole`, `south-pole`, and `altitude`; precision modes are `default`,
+`on`, and `off`. Consecutive checkpoints are joined by deterministic camera-motion frames before
+each settled checkpoint renders clouds OFF and ON at the same camera/authored time and measures the
+raw-canvas delta. This avoids certifying blue sky, terrain, UI, or an idle renderer as clouds. Mode
+and selected route set are encoded in every filename, so A/B and subset runs do not overwrite one
+another. PNG pairs plus `cloud-planetary-<mode>-<route-set>-truth.json` are written under
+`Tools/visual-regression/output/cloud-planetary/`; each truth file records the
+source commit/dirty state and runtime-bundle length/SHA-256 to expose stale
+builds. The governing rules are in the
+[Campaign 13 Cloud Coordinate Contract](CLOUD_COORDINATE_CONTRACT_2026-07-23.md).
 
 Use the fixed-time temporal sequence to inspect static convergence, mid-pan ghosting, and post-pan
 settling:
@@ -1210,6 +1244,7 @@ Remove-Item Env:TAG
 ```
 
 It writes `Tools/visual-regression/output/cloud-perf-<tag>.{png,json}` and gates configuration truth,
+an actual lazy-renderer execute, `maxSteps=128`, the full-resolution non-temporal target path,
 WebGPU device/browser errors, and cloud-pixel liveness. `TAG` labels the current executable; it does not
 switch implementations. An adaptive/fixed A/B is valid only after running two separately checked-out
 implementations under their matching tags and the same explicit `CLOUD_PERF_PAIR_ID`. Source/runtime
@@ -1217,6 +1252,21 @@ bundle, adapter, browser, resolution, configuration, liveness, and error truth a
 same-bundle, stale, invalid, or differently configured companion artifacts are rejected. A single-tag
 result cannot establish a speedup. With `CLOUD_PERF_PAIR_ID` set, the first capture writes its artifact
 but intentionally exits RED until the comparable companion has been produced.
+
+Use the dedicated zero-frustum scheduler acceptance when validating a
+sky-only/black-sky cloud fix:
+
+```powershell
+node Tools/visual-regression/probe-cloud-empty-frustum.mjs
+```
+
+The managed and real user-owned volumetric phases each require zero command
+frustums while resource setup, post-processing, environmental effects,
+procedural clouds, and canvas writes all execute; the user-owned phase keeps
+the managed collection off. The disabled control uses the same camera and
+requires those stages to remain skipped, preserving the true-empty fast path.
+Its truth JSON and three PNGs are written under
+`Tools/visual-regression/output/cloud-empty-frustum/`.
 
 Use the canonical moving route to characterize volumetrics across camera-distance bands:
 
@@ -1230,7 +1280,8 @@ node Tools/visual-regression/run-performance-campaign.mjs `
 
 The workload is WebGPU-only and records the exact cloud configuration in `featureState`: coverage `0.5`,
 density `0.75`, layer `1500–3800 m`, medium temporal quality, `64` march steps, with weather-map
-animation, wind, shadows/cascades, cloud IBL, multi-deck, and high-precision paths disabled. It fails on
+animation, wind, shadows/cascades, cloud IBL, multi-deck, and other optional paths disabled; the
+production high-precision WGS84 path is enabled. It fails on
 the wrong renderer, external requests, page/device errors, missing samples, or incomplete/misaligned
 route coverage. It also requires realized raymarch, temporal-resolve, upscale, current-target, and
 history-target evidence; API configuration alone cannot prove the pass ran. Its only valid cloud-off

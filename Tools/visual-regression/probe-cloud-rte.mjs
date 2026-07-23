@@ -2,21 +2,22 @@
 /**
  * CLOUD-RTE probe (Batch 445 — item 4.12 CLOUD-RTE). WebGPU-only.
  *
- * Verifies the opt-in camera-relative high-precision cloud march
+ * Verifies the explicit one-part/high-low A/B paths for the default-on
+ * camera-relative high-precision primary cloud shell
  * (`globe.defaultCloudCollection.volumetric.cloudHighPrecision`). The flag folds CLOUD_QF_HIGH_PRECISION (bit 12)
- * into qualityFlags; the WGSL then does shell intersection + sample-altitude in
- * camera-relative RTE space (high/low camera split) instead of the world-space
- * closest-point f32 form.
+ * into qualityFlags; the WGSL then does WGS84 shell intersection + height
+ * fraction in camera-relative RTE space (high/low camera split) instead of the
+ * one-part world-space f32 form. Density/noise, temporal, and shadow consumers
+ * remain separate Campaign 13 work; this probe must not be cited as end-to-end
+ * cloud RTE certification.
  *
- * The precision win in pure f32 is marginal ("~1m wobble currently unobserved"
- * per the plan), so the deliverable is the ARCHITECTURE + opt-in + default-off
- * parity — NOT a dramatic visual change. SUCCESS = the flag-ON render looks
+ * SUCCESS = the flag-ON render looks
  * ESSENTIALLY IDENTICAL to flag-OFF (no artifact, no shift). A precision path
  * must not change the nominal look.
  *
  * Captures (both WebGPU, same camera/time/coverage, default cinematic full-res
  * tier so the diff is deterministic):
- *   - OFF: clouds on, cloudHighPrecision unset (default)  → output/probe-cloud-rte-off.png
+ *   - OFF: clouds on, cloudHighPrecision = false (one-part WGS84 A/B) → output/probe-cloud-rte-off.png
  *   - ON:  clouds on, cloudHighPrecision = true           → output/probe-cloud-rte-on.png
  * Then computes a pixel diff (sum-abs > 16). Expected: ~0% (essentially identical).
  *
@@ -28,9 +29,16 @@
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
+import {
+  armWebGPUDevices,
+  attachConsoleErrorGate,
+  collectGateErrors,
+  errorGateInit,
+} from "../lib/webgpu-error-gate.mjs";
+import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
+const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`;
 const OUT_DIR = "Tools/visual-regression/output";
 
 // Camera looking out across a cloud field with the sun up so the lit/shadow
@@ -46,19 +54,23 @@ async function settleAndShoot(page, highPrecision, file) {
         s = v.scene,
         g = s.globe;
       const C = await import("/Build/CesiumUnminified/index.js");
+      const frameTime = C.JulianDate.fromIso8601(timeIso);
       v.clock.shouldAnimate = false;
-      v.clock.currentTime = C.JulianDate.fromIso8601(timeIso);
+      v.clock.currentTime = frameTime;
       s.skyAtmosphere.show = true;
       s.globe.show = true;
       s.globe.enableLighting = true;
-      // Clouds ON at the DEFAULT (cinematic, full-res) tier; multiDeck OFF so the
+      // Clouds ON at the high/full-res tier; multiDeck OFF so the
       // single-shell march path is exercised (the one the RTE branch refines).
-      g.defaultCloudCollection.enableVolumetric = true;
-      g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // cinematic → renderResScale=1, no temporal
-      g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
-      if ("cloudMultiDeck" in g) g.defaultCloudCollection.volumetric.cloudMultiDeck = false;
-      // The opt-in flag under test.
-      g.defaultCloudCollection.volumetric.cloudHighPrecision = highPrecision === true;
+      const configTruth = globalThis.__cloudProbe.configure({
+        requireWebGPU: true,
+        volumetric: {
+          cloudVolumetricQuality: "high",
+          cloudCoverage: 0.55,
+          cloudMultiDeck: false,
+          cloudHighPrecision: highPrecision === true,
+        },
+      });
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(
           camera.lon,
@@ -71,9 +83,13 @@ async function settleAndShoot(page, highPrecision, file) {
           roll: 0.0,
         },
       });
+      const readiness = await globalThis.__cloudProbe.awaitProceduralReady({
+        featureRendererKey: C.FeatureRendererKey.PROCEDURAL_CLOUDS,
+        frameTime,
+      });
       let loadedStreak = 0;
       for (let i = 0; i < 1200; i++) {
-        s.render();
+        s.render(frameTime);
         await new Promise((r) => requestAnimationFrame(r));
         if (g.tilesLoaded === true) {
           loadedStreak++;
@@ -83,10 +99,12 @@ async function settleAndShoot(page, highPrecision, file) {
         }
       }
       for (let i = 0; i < 60; i++) {
-        s.render();
+        s.render(frameTime);
         await new Promise((r) => requestAnimationFrame(r));
       }
       return {
+        configTruth,
+        readiness,
         showProceduralClouds: g.defaultCloudCollection.enableVolumetric,
         cloudHighPrecision: g.defaultCloudCollection.volumetric.cloudHighPrecision,
         cloudVolumetricQuality: g.defaultCloudCollection.volumetric.cloudVolumetricQuality,
@@ -159,23 +177,40 @@ async function diffPngs(page, fileA, fileB) {
     viewport: { width: 1024, height: 768 },
   });
   const errs = [];
+  const gpuConsoleErrors = attachConsoleErrorGate(page);
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
   });
+  page.on("pageerror", (error) => errs.push(`pageerror: ${error.message}`));
+  await page.addInitScript(errorGateInit);
+  await installCloudProbeHarnessOnPage(page);
   await page.goto(URL, { waitUntil: "networkidle", timeout: 90_000 });
   await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), {
     timeout: 90_000,
   });
+  const armState = await armWebGPUDevices(page);
 
-  // OFF (default) then ON.
+  // Explicit one-part OFF then explicit high/low ON. Both use WGS84 shell
+  // geometry; this is a precision A/B, not a sphere/ellipsoid comparison.
   const off = await settleAndShoot(page, false, "probe-cloud-rte-off.png");
   const on = await settleAndShoot(page, true, "probe-cloud-rte-on.png");
 
   const diff = await diffPngs(page, off.out, on.out);
+  const gpuGate = await collectGateErrors(page);
 
   console.log(JSON.stringify({ off: off.state, on: on.state, diff }, null, 1));
 
-  const newErrs = errs.filter(
+  const newErrs = [
+    ...new Set([
+      ...errs,
+      ...gpuConsoleErrors,
+      ...gpuGate.errors,
+      ...(gpuGate.deviceLost ? [gpuGate.deviceLost] : []),
+      ...(armState.found < 1
+        ? ["WebGPU error gate did not find a device"]
+        : []),
+    ]),
+  ].filter(
     (e) => !/AtmosphereLUT|default layout|favicon/.test(e),
   );
 
@@ -184,12 +219,16 @@ async function diffPngs(page, fileA, fileB) {
     [
       `OFF: clouds on, highPrecision off (${off.state.showProceduralClouds} / ${off.state.cloudHighPrecision})`,
       off.state.showProceduralClouds === true &&
-        off.state.cloudHighPrecision === false,
+        off.state.cloudHighPrecision === false &&
+        off.state.configTruth.ok &&
+        off.state.readiness.ok,
     ],
     [
       `ON: clouds on, highPrecision on (${on.state.showProceduralClouds} / ${on.state.cloudHighPrecision})`,
       on.state.showProceduralClouds === true &&
-        on.state.cloudHighPrecision === true,
+        on.state.cloudHighPrecision === true &&
+        on.state.configTruth.ok &&
+        on.state.readiness.ok,
     ],
     [
       `OFF vs ON essentially identical (diff ${diff.diffPx}px / ${diff.diffPct}%, maxChannelSum=${diff.maxChannelSum})`,

@@ -564,10 +564,10 @@ landing defect.
 | ID(s) | Status | Evidence / next action |
 | --- | --- | --- |
 | `C13-00` | **COMPLETE — Batch 732 (`f4a934e606`)** | Explicit 2026-07-23 maintainer launch authority; C11 transfer map and confirmed findings recorded here; TypeScript, Markdown lint, and Prettier passed. Local `main` contains the launch commit. Publication remains externally blocked because `origin` returned HTTP 403 for the configured account; this does not block the explicitly authorized local-trunk campaign. |
-| `C13-01` | **IN PROGRESS — Batch 733 plus Batch 734 readiness follow-up (2026-07-23)** | Batch 733 repaired unified API/config truth, deterministic offline/fixed-time capture, raw-frame metrics, backend-aware workload selection, and the moving WebGPU route. Batch 734 requires an actual procedural execute plus initialized cache/pipeline instead of trusting a loaded lazy handle or fixed warm-up count; the procedural tour now uses same-camera OFF/ON contribution for colored pole/dusk fixtures. The stale `cloudQuality=128` blank claim is superseded: it realizes 128/8 full-resolution work with 7,584 cloud cells. The pre-fix north-pole shell defect remains C13-03/04 evidence. Climate/region/type/same-type fixtures, wind/time and temporal-reset sequences, complete per-sequence provenance/metrics, and GPU timing remain. |
+| `C13-01` | **IN PROGRESS — Batches 733–735 evidence follow-up (2026-07-23)** | Batch 733 repaired unified API/config truth, deterministic offline/fixed-time capture, raw-frame metrics, backend-aware workload selection, and the moving WebGPU route. Batch 734 requires an actual procedural execute plus initialized cache/pipeline instead of trusting a loaded lazy handle or fixed warm-up count; the procedural tour now uses same-camera OFF/ON contribution for colored pole/dusk fixtures. The stale `cloudQuality=128` blank claim is superseded by 128/8 full-resolution work with 7,584 cloud cells; Batch 735 supersedes the pre-fix north-pole blank with green WGS84 evidence. Climate/region/type/same-type fixtures, wind/time and temporal-reset sequences, complete per-sequence metrics, and GPU timing remain. |
 | `C13-02` | NOT STARTED | Begins after the repaired tour establishes the measurement surface. |
-| `C13-03` | NOT STARTED | Author the WGS84/RTE contract and dynamic RED planetary probe before the primary-shell landing. Batch 733's fixed north-pole view is pre-fix RED. |
-| `C13-04` | NOT STARTED | Primary visible-march RTE/WGS84 owner; it does not own raw-ECEF density, temporal, standalone shadow, capture, or weather correctness. |
+| `C13-03` | **COMPLETE — Batch 735** | The active WGS84/RTE coordinate contract, f32-faithful source/math suite, and provenance-bearing moving planetary OFF/ON oracle are landed. The default route is green at 21/21 antimeridian, pole, deck/altitude, regional, and orbit checkpoints with clean WebGPU gates. |
+| `C13-04` | **COMPLETE — Batch 735 (primary visible shell only)** | Both one-part and high/low branches intersect WGS84 expanded ellipsoids; production precision defaults on, CPU-f64 cartographic height drives interval/deck ordering, and view/light/midpoint height fractions share the oblate boundaries without growing the 148-float uniform. Raw-ECEF density/noise and broader temporal/shadow/capture/weather consumers remain explicitly open under later IDs. |
 | `C13-05` | NOT STARTED | Temporal origin/reprojection RTE owner. |
 | `C13-06` | NOT STARTED | Shadow/mask/capture/atmosphere RTE owner. |
 | `C13-07` | NOT STARTED | Bounded global-map seam/pole correction; does not replace `C13-14`. |
@@ -671,6 +671,45 @@ This is an oracle/tooling slice only; it changes no engine renderer or cloud app
   zero-frustum early-return/snapshot gates. Readiness/probe changes are independently removable and
   do not alter production configuration or rendering.
 
+### C13-03/04 Batch 735 WGS84 primary-shell evidence
+
+- Root cause: the old equatorial-radius sphere placed the modeled surface about `21.4 km` above
+  WGS84 at the poles. A camera authored at geodetic `20,000 m` was classified below ordinary cloud
+  decks, selected a far-side interval, and could be entirely erased by terrain depth. Weather was
+  disabled and explicit high/low alone did not fix the wrong surface.
+- Cloud deck boundaries now use axes `(a+h, a+h, b+h)` for WGS84 `a=6,378,137 m` and
+  `b=6,356,752.314245179 m`. The high/low branch intersects those axes camera-relatively; explicit
+  `cloudHighPrecision=false` retains a one-part f32 precision A/B while still using correct WGS84
+  geometry. Production/default precision is on.
+- The renderer reuses uniform slots `62–63` for the polar radius and CPU-f64 cartographic camera
+  height; the layout remains exactly `148` floats. Camera/deck classification and multi-deck sorting
+  no longer reconstruct altitude from a large f32 ECEF magnitude. View, light, and aerial-midpoint
+  height fractions share precomputed oblate inverse axes, keeping division out of density/light
+  inner loops.
+- Nine source/math tests cover the old polar misclassification, equator, antimeridian, both poles,
+  below/inside/above deck, both WGS84 boundaries, defaults/layout, and WGSL source ownership. The
+  orbit oracle rounds every modeled operation to f32: worst root errors are `0.596 m` nadir,
+  `38.547 m` near horizon, and `212.424 m` in a bounded near-grazing case; exact tangency is
+  deliberately not claimed.
+- The provenance-bearing default Node/Edge route is green at `21/21` checkpoints with 12
+  deterministic transition frames per segment, minimum same-camera OFF/ON delta `135,330` pixels,
+  default high precision `true`, and no page/GPU/device errors. It spans the antimeridian, both
+  poles, `800 m` below-deck, inside/above deck, `200 km`, and `18,000 km`. The fixed-view explicit
+  false/true precision A/B differs at `154/786,432` pixels (`0.020%`).
+- The post-change moving cloud route remains clean at 1,117 frames over `20.004 s`: diagnostic
+  `55.84 FPS`, CPU p50 `2.9 ms`, p95 `6.4 ms`, p99 `9.1 ms`, all eight altitude segments, and no
+  device/page failures. An alternating steady-state explicit false/true queue-drain check measured
+  `12.42–12.53 ms/frame` versus `12.45–12.52 ms/frame`; this is noise-level parity, not a claim
+  comparing the new WGS84 shader with the removed sphere.
+- Functionality preservation: WebGL billboard behavior and inert volumetric configuration remain
+  intact; no cloud feature or renderer path was removed. This landing closes only the primary
+  visible-shell geometry/height owner. Density/noise and some light coordinates remain raw ECEF
+  f32; temporal history, standalone shadows, capture, and regional weather remain under
+  `C13-05..08` and `C13-37`. Gate B remains open.
+- Rollback boundary: WGS84 uniform packing/default selection, the primary WGSL shell/height helpers,
+  and their contract/probes/tests form one removable slice. No temporal attachment, weather
+  resource, shadow topology, or WebGL shader is changed.
+
 ---
 
 ## 10. Source pointers
@@ -687,6 +726,10 @@ This is an oracle/tooling slice only; it changes no engine renderer or cloud app
 - `packages/engine/Source/Scene/CloudCollection.js`
 - `packages/engine/Source/Scene/Weather/WeatherProvider.ts`
 - `packages/engine/Source/Scene/Weather/WeatherTexPacker.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentDemand.ts`
+- `Tools/visual-regression/cloud-primary-shell.spec.mjs`
+- `Tools/visual-regression/probe-cloud-empty-frustum.mjs`
+- `Tools/visual-regression/probe-cloud-planetary.mjs`
 - `Tools/visual-regression/probe-cloud-tour.mjs`
 
 ### Durable project context
@@ -702,5 +745,6 @@ This is an oracle/tooling slice only; it changes no engine renderer or cloud app
 - `DEFERRED_WORK.md`
 - `FEATURE_INVENTORY.md`
 - `DEBUGGING_GUIDE.md`
+- `CLOUD_COORDINATE_CONTRACT_2026-07-23.md`
 
 Line numbers in older reports are hints. Re-grep symbols at the start of every brief.

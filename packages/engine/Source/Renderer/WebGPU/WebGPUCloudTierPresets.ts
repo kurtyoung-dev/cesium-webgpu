@@ -219,7 +219,6 @@ export const CLOUD_QF_LIGHT_CONE = 1 << 10; // 3.6 cone-sampled light march
 // globe.cloudMultiDeck is opted in; the default leaves it clear → the WGSL marches
 // exactly one shell with cloudLayerBottom/Top + the legacy composite, byte-identical.
 export const CLOUD_QF_MULTI_DECK = 1 << 11; // 4.9 multi-deck shell march
-// Batch 445 (4.12 CLOUD-RTE) — add-only. Set by the renderer ONLY when
-// globe.cloudHighPrecision is opted in; the default leaves it clear → the WGSL takes
-// the verbatim closest-point f32 shell-intersection/altitude math, byte-identical.
+// Batch 445 (4.12 CLOUD-RTE) — add-only. C13-04 makes this automatic by default;
+// an explicit cloudHighPrecision=false leaves it clear for the legacy A/B path.
 export const CLOUD_QF_HIGH_PRECISION = 1 << 12; // 4.12 CLOUD-RTE camera-relative high-precision march

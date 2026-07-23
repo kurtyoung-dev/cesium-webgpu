@@ -46,7 +46,10 @@ struct CloudUniforms {
   _pad1: f32,
   // Screen info
   resolution: vec2<f32>,
-  _pad2: vec2<f32>,
+  // C13-04 — reuse the former aligned vec2 pad, preserving this uniform's byte
+  // size and every later field offset.
+  planetPolarRadius: f32,        // WGS84 semi-minor axis (6356752.314245179 m)
+  cameraGeodeticHeight: f32,     // CPU-f64 Cartographic height, stored as f32
   // Weather Phase 1 — weather-map seam (floats 64-79). Byte-locked to the JS
   // packer in WebGPUProceduralCloudRenderer.ts.
   weatherMapEnabled: f32,        // 64 — >0.5 → sample the weather map per position
@@ -133,8 +136,8 @@ struct CloudUniforms {
   // 120-127, two new 16-byte rows appended ADD-ONLY (existing field offsets above
   // are UNCHANGED). The RTE high/low split of the camera world position; the planet
   // center relative to the camera is -(high+low). READ ONLY inside the
-  // CLOUD_QF_HIGH_PRECISION branch — when the bit is clear these floats are never
-  // touched, so the default render is byte-identical. The .xyz carry the split; the
+  // CLOUD_QF_HIGH_PRECISION branch. C13-04 enables that branch automatically;
+  // explicit false retains the legacy A/B route. The .xyz carry the split; the
   // packed pad keeps each on a 16-byte (vec4) stride so the struct length is 128. ──
   encodedCameraHigh: vec3<f32>,  // 120-122 — high part of the camera world position
   _padG: f32,                    // 123 — pad to the 16-byte row
@@ -293,9 +296,8 @@ const QF_AERIAL_LUT: u32 = 256u;    // bit 8 — 3.3 physical aerial (sky-view +
 const QF_AMBIENT_LUT: u32 = 512u;   // bit 9 — 3.4 sky-LUT cloud ambient (MS sky LUT)
 const QF_LIGHT_CONE: u32 = 1024u;   // bit 10 — 3.6 cone-sampled light march (Batch 436)
 const QF_MULTI_DECK: u32 = 2048u;   // bit 11 — 4.9 multi-deck shell march (Batch 443)
-// Batch 445 (4.12 CLOUD-RTE) — add-only. The JS renderer sets this only when
-// globe.cloudHighPrecision is opted in; when clear the closest-point f32 march below
-// runs verbatim (byte-identical).
+// Batch 445 (4.12 CLOUD-RTE), C13-04 default-on. Explicit
+// globe.cloudHighPrecision=false keeps the world-coordinate A/B branch available.
 const QF_HIGH_PRECISION: u32 = 4096u; // bit 12 — 4.12 camera-relative high-precision march (1<<12)
 
 // V9 (Batch 432) — ordered 4×4 Bayer matrix (normalized 0..1, the standard
@@ -1009,34 +1011,36 @@ fn raySphereIntersect(ro: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
 }
 
 // Batch 445 (4.12 CLOUD-RTE) — is the camera-relative high-precision march active?
-// (qualityFlags bit 12). When clear (DEFAULT), the closest-point f32 march runs
-// verbatim → byte-identical. Set only when globe.cloudHighPrecision is opted in.
+// (qualityFlags bit 12). C13-04 makes this the automatic/default path; explicit
+// cloudHighPrecision=false retains the closest-point f32 A/B route.
 fn highPrecisionEnabled() -> bool {
   return (u32(cloud.qualityFlags) & QF_HIGH_PRECISION) != 0u;
 }
 
-// Batch 445 (4.12 CLOUD-RTE) — camera-relative ray/sphere intersection. The camera
-// sits at the ORIGIN and the sphere center is supplied as a high/low f32 split
-// (`centerHigh + centerLow` == the planet center relative to the camera, i.e.
-// -cameraWorldPos). Same closest-point formulation as `raySphereIntersect`, but the
-// closest-point vector is formed by subtracting the LARGE `centerHigh` term BEFORE
-// the small `centerLow` refinement — this removes the residual near-radial f32
-// cancellation that the world-space form suffers (`radius - |ro|` differencing two
-// ~6.4e6 m magnitudes). Returns the SAME (near, far) t pair the world-space form
-// would, just computed with reduced cancellation.
-fn raySphereIntersectRTE(
+// C13-04 — WGS84 oblate shell helpers. A cloud boundary at height h is represented
+// by axes (a+h, a+h, b+h). This bounded correction removes the equatorial-sphere
+// error that placed a 20 km polar camera below the deck.
+fn cloudShellAxes(height: f32) -> vec3<f32> {
+  return vec3<f32>(
+    cloud.planetRadius + height,
+    cloud.planetRadius + height,
+    cloud.planetPolarRadius + height,
+  );
+}
+
+// Stable ray/ellipsoid intersection in scaled space. The returned roots remain in
+// world metres because the scaled ray keeps the original t parameter.
+fn rayEllipsoidIntersect(
+  ro: vec3<f32>,
   rd: vec3<f32>,
-  centerHigh: vec3<f32>,
-  centerLow: vec3<f32>,
-  radius: f32,
+  axes: vec3<f32>,
 ) -> vec2<f32> {
-  // t at the ray's closest approach to the center: dot(rd, center).
-  let tClosest = dot(rd, centerHigh) + dot(rd, centerLow);
-  // Closest-point offset from the center, formed RTE: subtract the big high term
-  // first, then refine with the low term, so the large magnitudes cancel in f32
-  // before the small residual is added.
-  let cp = (rd * tClosest - centerHigh) - centerLow;
-  let halfChordSq = radius * radius - dot(cp, cp);
+  let roScaled = ro / axes;
+  let rdScaled = rd / axes;
+  let a = max(dot(rdScaled, rdScaled), 1e-20);
+  let tClosest = -dot(roScaled, rdScaled) / a;
+  let closest = roScaled + rdScaled * tClosest;
+  let halfChordSq = (1.0 - dot(closest, closest)) / a;
   if (halfChordSq < 0.0) {
     return vec2<f32>(-1.0);
   }
@@ -1044,16 +1048,63 @@ fn raySphereIntersectRTE(
   return vec2<f32>(tClosest - halfChord, tClosest + halfChord);
 }
 
-// Batch 445 (4.12 CLOUD-RTE) — radial distance |rd*t - center| computed RTE with the
-// high/low center split, so the camera altitude / sample altitude (`length(...) -
-// planetRadius`, the term that loses precision near-radially) is resolved with the
-// large `centerHigh` subtracted before the small `centerLow` refinement.
-fn rteRadialDistance(
-  point: vec3<f32>,        // rd*t — the along-ray position relative to the camera
+// Camera-relative counterpart. Scale high and low independently, then cancel the
+// large high component before applying the low refinement.
+fn rayEllipsoidIntersectRTE(
+  rd: vec3<f32>,
   centerHigh: vec3<f32>,
   centerLow: vec3<f32>,
+  axes: vec3<f32>,
+) -> vec2<f32> {
+  let rdScaled = rd / axes;
+  let centerHighScaled = centerHigh / axes;
+  let centerLowScaled = centerLow / axes;
+  let a = max(dot(rdScaled, rdScaled), 1e-20);
+  let tClosest =
+    (dot(rdScaled, centerHighScaled) + dot(rdScaled, centerLowScaled)) / a;
+  let closest =
+    (rdScaled * tClosest - centerHighScaled) - centerLowScaled;
+  let halfChordSq = (1.0 - dot(closest, closest)) / a;
+  if (halfChordSq < 0.0) {
+    return vec2<f32>(-1.0);
+  }
+  let halfChord = sqrt(halfChordSq);
+  return vec2<f32>(tClosest - halfChord, tClosest + halfChord);
+}
+
+// A normalized coordinate between the two oblate boundaries. It is exactly 0 at
+// the inner ellipsoid and 1 at the outer ellipsoid, avoiding `length(p)-a` at
+// every latitude without an iterative geodetic conversion in the hot loop.
+fn ellipsoidShellHeightFraction(
+  worldPos: vec3<f32>,
+  innerInverseAxes: vec3<f32>,
+  outerInverseAxes: vec3<f32>,
 ) -> f32 {
-  return length((point - centerHigh) - centerLow);
+  let innerScaled = worldPos * innerInverseAxes;
+  let outerScaled = worldPos * outerInverseAxes;
+  // Squared implicit-surface residuals avoid two square roots per density tap.
+  // Their ratio is monotonic through this thin shell and exact at both bounds.
+  let fromInner = max(dot(innerScaled, innerScaled) - 1.0, 0.0);
+  let toOuter = max(1.0 - dot(outerScaled, outerScaled), 0.0);
+  return clamp(fromInner / max(fromInner + toOuter, 1e-7), 0.0, 1.0);
+}
+
+fn ellipsoidShellHeightFractionRTE(
+  point: vec3<f32>,
+  centerHigh: vec3<f32>,
+  centerLow: vec3<f32>,
+  innerInverseAxes: vec3<f32>,
+  outerInverseAxes: vec3<f32>,
+) -> f32 {
+  // Form the RTE world point once, then use precomputed reciprocals. This preserves
+  // the old high-then-low cancellation order and removes vector division from the
+  // inner density/light loops.
+  let worldPos = (point - centerHigh) - centerLow;
+  let innerScaled = worldPos * innerInverseAxes;
+  let outerScaled = worldPos * outerInverseAxes;
+  let fromInner = max(dot(innerScaled, innerScaled) - 1.0, 0.0);
+  let toOuter = max(1.0 - dot(outerScaled, outerScaled), 0.0);
+  return clamp(fromInner / max(fromInner + toOuter, 1e-7), 0.0, 1.0);
 }
 
 // ─── Henyey-Greenstein phase function ───
@@ -1116,9 +1167,11 @@ fn coneJitter(pos: vec3<f32>) -> vec3<f32> {
 // `lightSteps` full taps per cone radius.
 fn lightMarchCone(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32) -> f32 {
   let sunDir = normalize(cloud.sunDirection);
-  let innerR = cloud.planetRadius + deckBottom;
-  let outerR = cloud.planetRadius + deckTop;
-  let layerThickness = outerR - innerR;
+  let innerAxes = cloudShellAxes(deckBottom);
+  let outerAxes = cloudShellAxes(deckTop);
+  let innerInverseAxes = vec3<f32>(1.0) / innerAxes;
+  let outerInverseAxes = vec3<f32>(1.0) / outerAxes;
+  let layerThickness = deckTop - deckBottom;
 
   // Base step toward the sun. The straight march walked `steps` of `layerThickness/
   // steps`; the cone covers the same near-shadow span with 5 geometrically-growing
@@ -1143,8 +1196,9 @@ fn lightMarchCone(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop:
     let coneRadius = coneStepBase * (fi + 0.5);  // widening cone
     let lateral = (k.x * tangent + k.y * bitangent) * coneRadius;
     let samplePos = pos + sunDir * marchDist + lateral;
-    let altitude = length(samplePos) - cloud.planetRadius;
-    let hf = clamp((altitude - deckBottom) / layerThickness, 0.0, 1.0);
+    let hf = ellipsoidShellHeightFraction(
+      samplePos, innerInverseAxes, outerInverseAxes
+    );
     // Weight each tap by its marched extent so the summed optical depth is
     // dimensionally the same as the straight march's Σ density·stepSize.
     opticalDepth += cloudDensity(samplePos, hf, deckBottom, deckTop) * coneStepBase;
@@ -1156,8 +1210,9 @@ fn lightMarchCone(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop:
   // exactly the desired soft far self-occlusion at a fraction of a full tap's cost.
   let farDist = layerThickness * 1.5;
   let farPos = pos + sunDir * farDist;
-  let farAlt = length(farPos) - cloud.planetRadius;
-  let farHf = clamp((farAlt - deckBottom) / layerThickness, 0.0, 1.0);
+  let farHf = ellipsoidShellHeightFraction(
+    farPos, innerInverseAxes, outerInverseAxes
+  );
   opticalDepth += cloudBaseDensity(farPos, farHf, deckBottom, deckTop) * coneStepBase * 3.0;
 
   return opticalDepth;
@@ -1177,9 +1232,11 @@ fn lightMarch(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32
   // at lower cost). lightSteps is the EXPONENTIAL cost knob, so this is the cheap
   // lever for the low tiers.
   let steps = max(1, i32(cloud.lightSteps * cloud.lightSampleScale));
-  let innerR = cloud.planetRadius + deckBottom;
-  let outerR = cloud.planetRadius + deckTop;
-  let layerThickness = outerR - innerR;
+  let innerAxes = cloudShellAxes(deckBottom);
+  let outerAxes = cloudShellAxes(deckTop);
+  let innerInverseAxes = vec3<f32>(1.0) / innerAxes;
+  let outerInverseAxes = vec3<f32>(1.0) / outerAxes;
+  let layerThickness = deckTop - deckBottom;
 
   // March toward sun through remaining cloud
   let stepSize = layerThickness / f32(steps);
@@ -1187,8 +1244,9 @@ fn lightMarch(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32
 
   for (var i: i32 = 0; i < steps; i++) {
     let samplePos = pos + sunDir * f32(i + 1) * stepSize;
-    let altitude = length(samplePos) - cloud.planetRadius;
-    let hf = clamp((altitude - deckBottom) / layerThickness, 0.0, 1.0);
+    let hf = ellipsoidShellHeightFraction(
+      samplePos, innerInverseAxes, outerInverseAxes
+    );
     opticalDepth += cloudDensity(samplePos, hf, deckBottom, deckTop) * stepSize;
   }
 
@@ -1376,22 +1434,24 @@ fn marchDeck(
   result.hazed = vec3<f32>(0.0);
   result.alpha = 0.0;
 
-  // Cloud shell radii
-  let innerR = cloud.planetRadius + deckBottom;
-  let outerR = cloud.planetRadius + deckTop;
+  // C13-04 — cloud shells follow WGS84's oblate figure instead of using the
+  // equatorial radius as a sphere at every latitude.
+  let innerAxes = cloudShellAxes(deckBottom);
+  let outerAxes = cloudShellAxes(deckTop);
+  let innerInverseAxes = vec3<f32>(1.0) / innerAxes;
+  let outerInverseAxes = vec3<f32>(1.0) / outerAxes;
 
-  // Intersect ray with cloud shell. Batch 445 (4.12 CLOUD-RTE): the high-precision
-  // branch intersects spheres about the camera-relative center (high/low split) so
-  // the large camera magnitude cancels before the small refinement; the default
-  // branch is the verbatim world-space form (byte-identical when the bit is clear).
+  // Intersect the ray with the two oblate shell boundaries. The high-precision
+  // branch operates camera-relative with a high/low center; explicit false retains
+  // the world-coordinate A/B path, but both branches use the same WGS84 geometry.
   var tInner: vec2<f32>;
   var tOuter: vec2<f32>;
   if (highPrecisionEnabled()) {
-    tInner = raySphereIntersectRTE(rayDir, centerHigh, centerLow, innerR);
-    tOuter = raySphereIntersectRTE(rayDir, centerHigh, centerLow, outerR);
+    tInner = rayEllipsoidIntersectRTE(rayDir, centerHigh, centerLow, innerAxes);
+    tOuter = rayEllipsoidIntersectRTE(rayDir, centerHigh, centerLow, outerAxes);
   } else {
-    tInner = raySphereIntersect(rayOrigin, rayDir, innerR);
-    tOuter = raySphereIntersect(rayOrigin, rayDir, outerR);
+    tInner = rayEllipsoidIntersect(rayOrigin, rayDir, innerAxes);
+    tOuter = rayEllipsoidIntersect(rayOrigin, rayDir, outerAxes);
   }
 
   // No intersection with the shell — transparent (no contribution).
@@ -1399,14 +1459,9 @@ fn marchDeck(
     return result;
   }
 
-  // Determine march start/end. Batch 445: the high-precision branch computes the
-  // camera altitude from the RTE radial distance (camera at the origin → point 0).
-  var cameraAltitude: f32;
-  if (highPrecisionEnabled()) {
-    cameraAltitude = rteRadialDistance(vec3<f32>(0.0), centerHigh, centerLow) - cloud.planetRadius;
-  } else {
-    cameraAltitude = length(rayOrigin) - cloud.planetRadius;
-  }
+  // The CPU already has the f64 WGS84 Cartographic height. Reusing it here avoids
+  // both the old polar misclassification and redundant per-deck GPU conversion.
+  let cameraAltitude = cloud.cameraGeodeticHeight;
   var tStart: f32;
   var tEnd: f32;
 
@@ -1507,21 +1562,21 @@ fn marchDeck(
     let curCoarseStep = curFineStep * 4.0;
 
     let curStep = select(curCoarseStep, curFineStep, fine);
-    let samplePos = rayOrigin + rayDir * (t + 0.5 * curStep);
-    // Batch 445 (4.12 CLOUD-RTE): resolve the SAMPLE altitude (the precision-sensitive
-    // `length(...) - planetRadius` term) in camera-relative RTE space when on. The
-    // along-ray offset from the camera is `rayDir * (t + 0.5*curStep)`. `samplePos`
-    // (the world-space noise-domain coordinate) is left UNCHANGED so the noise lookups
-    // stay byte-identical — only the altitude math gains precision.
-    var altitude: f32;
+    let sampleOffset = rayDir * (t + 0.5 * curStep);
+    let samplePos = rayOrigin + sampleOffset;
+    // Resolve the vertical profile against the same oblate boundaries used for
+    // intersection. The world-space noise domain remains unchanged.
+    var heightFraction: f32;
     if (highPrecisionEnabled()) {
-      altitude = rteRadialDistance(rayDir * (t + 0.5 * curStep), centerHigh, centerLow) - cloud.planetRadius;
+      heightFraction = ellipsoidShellHeightFractionRTE(
+        sampleOffset, centerHigh, centerLow,
+        innerInverseAxes, outerInverseAxes
+      );
     } else {
-      altitude = length(samplePos) - cloud.planetRadius;
+      heightFraction = ellipsoidShellHeightFraction(
+        samplePos, innerInverseAxes, outerInverseAxes
+      );
     }
-    let heightFraction = clamp(
-      (altitude - deckBottom) / layerThickness, 0.0, 1.0
-    );
 
     // Cheap conservative presence test (base >= full, so this never skips real
     // cloud) drives the coarse/fine state.
@@ -1683,14 +1738,21 @@ fn marchDeck(
     let midUp = normalize(midPos);
     let inscatterHDR = cloudSampleSkyViewLut(midUp, rayDir, sunDir);
     if (cloudLutLuminance(inscatterHDR) > 1e-5) {
-      // Batch 445 (4.12 CLOUD-RTE): refine the midpoint altitude in RTE space when on
-      // (`midPos` world coord kept for `midUp`/the LUT sun-relative domain).
-      var midAltitude: f32;
+      // Resolve the midpoint against the same oblate boundaries as the march. Keep
+      // `midPos` in the world domain for the atmosphere LUT's direction lookup.
+      var midHeightFraction: f32;
       if (highPrecisionEnabled()) {
-        midAltitude = rteRadialDistance(rayDir * midDist, centerHigh, centerLow) - cloud.planetRadius;
+        midHeightFraction = ellipsoidShellHeightFractionRTE(
+          rayDir * midDist, centerHigh, centerLow,
+          innerInverseAxes, outerInverseAxes
+        );
       } else {
-        midAltitude = length(midPos) - cloud.planetRadius;
+        midHeightFraction = ellipsoidShellHeightFraction(
+          midPos, innerInverseAxes, outerInverseAxes
+        );
       }
+      let midAltitude =
+        deckBottom + midHeightFraction * (deckTop - deckBottom);
       let midCosZenith = dot(rayDir, midUp);
       let trans = cloudSampleTransmittance(max(midAltitude, 0.0), midCosZenith);
       // The sky-view LUT radiance is in the SAME pre-tonemap HDR space the sky dome
@@ -1792,14 +1854,8 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // common case (a clear far deck, or full near coverage) far cheaper. The B (deck)
   // weather channel can later gate empty decks; for now each deck early-outs inside
   // marchDeck when the shell is missed / fully thin (alpha 0 → no contribution). ──
-  // Batch 445 (4.12 CLOUD-RTE): refine the camera altitude (deck sort key) in RTE
-  // space when on; default branch verbatim.
-  var camAlt: f32;
-  if (highPrecisionEnabled()) {
-    camAlt = rteRadialDistance(vec3<f32>(0.0), centerHigh, centerLow) - cloud.planetRadius;
-  } else {
-    camAlt = length(rayOrigin) - cloud.planetRadius;
-  }
+  // CPU-f64 WGS84 Cartographic height is the stable multi-deck sort key.
+  let camAlt = cloud.cameraGeodeticHeight;
   let midLow = 0.5 * (cloud.deckBoundsLow.x + cloud.deckBoundsLow.y);
   let midMid = 0.5 * (cloud.deckBoundsMid.x + cloud.deckBoundsMid.y);
   let midHigh = 0.5 * (cloud.deckBoundsHigh.x + cloud.deckBoundsHigh.y);
@@ -1894,12 +1950,7 @@ fn fragmentCloudMaskMain(input: VertexOutput) -> @location(0) f32 {
 
   // Multi-deck: accumulate the running transmittance product exactly as the
   // composite path does, but keep only `trans`.
-  var camAlt: f32;
-  if (highPrecisionEnabled()) {
-    camAlt = rteRadialDistance(vec3<f32>(0.0), centerHigh, centerLow) - cloud.planetRadius;
-  } else {
-    camAlt = length(rayOrigin) - cloud.planetRadius;
-  }
+  let camAlt = cloud.cameraGeodeticHeight;
   let midLow = 0.5 * (cloud.deckBoundsLow.x + cloud.deckBoundsLow.y);
   let midMid = 0.5 * (cloud.deckBoundsMid.x + cloud.deckBoundsMid.y);
   let midHigh = 0.5 * (cloud.deckBoundsHigh.x + cloud.deckBoundsHigh.y);

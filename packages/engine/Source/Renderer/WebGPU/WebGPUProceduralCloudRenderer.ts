@@ -70,6 +70,8 @@ import CloudType from "../../Scene/CloudType.js";
 // → 148 (Batch 634 C6-CLOUD-STBN-TAAU LOD half: marchStepGrowth/maxRayDistance+2 pads 144-147).
 const CLOUD_UNIFORM_FLOATS = 148; // MUST equal the CloudUniforms struct length in WGSL
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
+const WGS84_EQUATORIAL_RADIUS = 6378137.0;
+const WGS84_POLAR_RADIUS = 6356752.314245179;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
 const WEATHER_TEX_H = 128;
@@ -1590,7 +1592,7 @@ export function executeProceduralClouds(
   // Cloud layer params
   data[offset++] = config.cloudLayerBottom ?? 1500.0;
   data[offset++] = config.cloudLayerTop ?? 4000.0;
-  data[offset++] = 6378137.0; // planetRadius
+  data[offset++] = WGS84_EQUATORIAL_RADIUS; // planetRadius
   data[offset++] = config.cloudCoverage ?? 0.5;
 
   // Quality params (Phase 6d/6b resolver).
@@ -1708,14 +1710,17 @@ export function executeProceduralClouds(
   data[offset++] = 0.97;
   data[offset++] = 0;
 
-  // resolution + pad. V9 (Batch 432) — when half-res is active this is the HALF-RES
+  // resolution + WGS84 coordinate data. V9 (Batch 432) — when half-res is active this is the HALF-RES
   // target size so the shader's Bayer jitter step (1/resolution) is one half-res
   // texel; the full-res path keeps the canvas size (jitter branch is skipped, so
   // the value is byte-irrelevant there but stays the canvas size as before).
   data[offset++] = halfResActive ? cache.halfWidth : canvasW;
   data[offset++] = halfResActive ? cache.halfHeight : canvasH;
-  data[offset++] = 0;
-  data[offset++] = 0;
+  // C13-04 — reuse the aligned resolution-row pads without growing the uniform:
+  // WGS84 semi-minor axis + CPU-f64 geodetic camera height. The latter avoids
+  // reclassifying a 20 km polar camera as being below the cloud deck.
+  data[offset++] = WGS84_POLAR_RADIUS;
+  data[offset++] = cameraHeightM;
 
   // Weather Phase 1 — weather-map seam lanes (floats 64-79).
   // Ingest (Phase 1): if a WeatherProvider has real data, use it AND auto-enable
@@ -1932,13 +1937,12 @@ export function executeProceduralClouds(
   // ── Batch 445 (4.12 CLOUD-RTE) — camera-relative high-precision march. Slots
   // 120-127: the RTE high/low split of the SAME camera world position that feeds
   // `cloud.cameraPosition` (slots ~50-52 above). These 8 floats are written EVERY
-  // frame but the WGSL READS them ONLY inside the CLOUD_QF_HIGH_PRECISION branch —
-  // so growing the UB does NOT change rendered output when the flag is off (the
-  // OFF path never touches these floats → byte-identical canvas). Opt-in via
-  // `config.cloudHighPrecision`. ──
+  // frame but the WGSL READS them ONLY inside the CLOUD_QF_HIGH_PRECISION branch.
+  // Planetary precision is automatic; explicit false retains the legacy A/B
+  // intersection path. ──
   const highPrecisionOn =
     (config as unknown as { cloudHighPrecision?: boolean })
-      .cloudHighPrecision === true;
+      .cloudHighPrecision !== false;
   // Encode the camera world position into a high/low f32 pair so the WGSL can
   // subtract the large `high` term before the small `low` refinement (cancellation
   // reduction). `camPos` is the same `frameState.camera.positionWC` packed above.

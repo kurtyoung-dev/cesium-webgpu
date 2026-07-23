@@ -1592,7 +1592,9 @@ async function runOne(
               cloudShadowCascades: false,
               cloudContributesIBL: false,
               cloudMultiDeck: false,
-              cloudHighPrecision: false,
+              // C13-04: production planetary route exercises the automatic
+              // high/low WGS84 path. Explicit false is reserved for A/B probes.
+              cloudHighPrecision: true,
             },
           });
         }

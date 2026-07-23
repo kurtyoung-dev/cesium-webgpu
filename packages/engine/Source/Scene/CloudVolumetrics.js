@@ -146,12 +146,13 @@ function CloudVolumetrics(options) {
 
   /**
    * When <code>true</code>, the raymarch encodes the camera world position as a
-   * high/low f32 pair (RTE cancellation reduction). Previously a cast-only globe
-   * field. WebGPU only.
+   * high/low f32 pair (RTE cancellation reduction). Planetary precision is on by
+   * default; setting this to <code>false</code> retains the explicit legacy A/B
+   * path. Previously a cast-only globe field. WebGPU only.
    * @type {boolean}
-   * @default false
+   * @default true
    */
-  this.cloudHighPrecision = options.cloudHighPrecision ?? false;
+  this.cloudHighPrecision = options.cloudHighPrecision ?? true;
 
   // ── Quality ──
 
