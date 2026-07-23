@@ -8,6 +8,12 @@ _2026-07-15 remediation update: Campaign 9 was explicitly launched by the mainta
 frozen historical evidence; its open IDs transferred unchanged and its completed slices remain
 regression gates._
 
+_2026-07-23 cloud-campaign launch: Campaign 13 is the current live execution queue. Campaign 11
+remains open but is paused; its cloud/weather IDs transferred to Campaign 13 without being renamed
+or double-scheduled. Campaign 12 remains draft/not launched. The current non-cloud performance
+evidence remains in `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`; cloud evidence is in
+`CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md`._
+
 > **Convention:** docs under `archive/` are historical point-in-time snapshots — do **not** read them as live to-do lists. Their still-open items were lifted into `DEFERRED_WORK.md` ("Carried-forward on archive"). The audit that produced this layout is recorded in `_DOC_AUDIT_PLAN.md`.
 
 ---
@@ -18,15 +24,19 @@ regression gates._
 |---|---|
 | [`FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md`](FORK_ARCHITECTURE_REMEDIATION_PLAN_2026-07-13.md) | Active fork-wide architecture authority and FAR ID definitions. |
 | [`QUEUE_2026-07-15_CAMPAIGN8.md`](QUEUE_2026-07-15_CAMPAIGN8.md) | Frozen historical campaign; open IDs transferred to Campaign 9 and completed slices retained as regression gates. |
-| [`FORK_PERFORMANCE_RTE_VISIBILITY_REMEDIATION_PLAN_2026-07-15.md`](FORK_PERFORMANCE_RTE_VISIBILITY_REMEDIATION_PLAN_2026-07-15.md) | **Active** consolidation of the performance, shared terrain-quadtree, visibility, RTE, and Campaign 8 remainder. |
-| [`QUEUE_2026-07-15_CAMPAIGN9.md`](QUEUE_2026-07-15_CAMPAIGN9.md) | **Active launched campaign**; highest-impact performance fixes plus every open Campaign 8 ID and a live task-status ledger. |
+| [`FORK_PERFORMANCE_RTE_VISIBILITY_REMEDIATION_PLAN_2026-07-15.md`](FORK_PERFORMANCE_RTE_VISIBILITY_REMEDIATION_PLAN_2026-07-15.md) | Campaign-9 source plan and durable design background; execution status is historical. |
+| [`QUEUE_2026-07-15_CAMPAIGN9.md`](QUEUE_2026-07-15_CAMPAIGN9.md) | **Closed green at `C9-30`**; retained as the exact implementation/evidence ledger. |
+| [`QUEUE_2026-07-16_CAMPAIGN10.md`](QUEUE_2026-07-16_CAMPAIGN10.md) | **Closed at `C10-30`** with green mechanics and wall-clock evidence explicitly inconclusive. |
+| [`QUEUE_2026-07-18_CAMPAIGN11.md`](QUEUE_2026-07-18_CAMPAIGN11.md) | **Paused / open remainder retained**; cloud/weather rows transferred to Campaign 13, all other open work remains owned here. |
+| [`QUEUE_2026-07-19_CAMPAIGN12.md`](QUEUE_2026-07-19_CAMPAIGN12.md) | **Draft / not launched** celestial-appearance campaign. |
+| [`QUEUE_2026-07-23_CAMPAIGN13.md`](QUEUE_2026-07-23_CAMPAIGN13.md) | **Current live campaign** for planetary volumetric-cloud RTE, temporal reconstruction, weather realism, quality, and performance. |
 | [`WEBGPU_MIGRATION_STATUS.md`](WEBGPU_MIGRATION_STATUS.md) | Single-source migration status + append-only progress log. **Note: batch numbers are non-monotonic — trust dates/hashes.** |
 | [`DEFERRED_WORK.md`](DEFERRED_WORK.md) | Canonical add-only follow-up inventory (NEW-*/C-R*/DP-* IDs). Where open work lives. |
 | [`FEATURE_INVENTORY.md`](FEATURE_INVENTORY.md) | Feature catalog (EXISTING/NEW/WIP/FUTURE) across 10 subsystems — impact-analysis index (CLAUDE.md Principle 6). |
 | [`WEBGPU_MIGRATION_BACKLOG.md`](WEBGPU_MIGRATION_BACKLOG.md) | Older remaining-work backlog (body stops ~Batch 64; see EXECUTION_ROADMAP for the current frontier). |
 | [`WEBGPU_EXECUTION_ROADMAP.md`](WEBGPU_EXECUTION_ROADMAP.md) | Current outstanding-work roadmap + critical path (log-depth epic spine). |
 | [`CAMPAIGN_ROADMAP_2026-06.md`](CAMPAIGN_ROADMAP_2026-06.md) | **Active multi-phase execution plan** (June 2026 onward) — phase-by-phase walk through `DEFERRED_WORK.md`; the current per-workflow stage source. Phases 1–5 DONE; 9–11 in flight. |
-| [`QUEUE_2026-06-23_CAMPAIGN2.md`](QUEUE_2026-06-23_CAMPAIGN2.md) | **Current 25-batch execution queue** (Campaign 2, successor to `QUEUE_2026-06-22.md`). 6 tiers, git batches continue from 370. Built by 6-source parallel extraction + manual verify. Start here for "what's next". |
+| [`QUEUE_2026-06-23_CAMPAIGN2.md`](QUEUE_2026-06-23_CAMPAIGN2.md) | Historical 25-batch Campaign-2 queue; no longer the current execution frontier. |
 | [`QUEUE_2026-06-22.md`](QUEUE_2026-06-22.md) | Prior 25-batch queue (Batches 355–369 — Tiers 1–3 cleared). Superseded by Campaign 2. |
 | [`NEXT_SESSION_HANDOFF.md`](NEXT_SESSION_HANDOFF.md) | Append-only session handoff log; top section is the latest. |
 | [`WEBGPU_DEBUGGING_LOG.md`](WEBGPU_DEBUGGING_LOG.md) | Chronological bug log (append-only). Search before debugging a new artifact. |
@@ -61,6 +71,8 @@ regression gates._
 
 | Doc | Role |
 |---|---|
+| [`FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md) | **Current fork-progress/performance audit and second-pass action authority** for Batches through 731; includes current r6 evidence, confirmed defects, rejected shortcuts, and feature-preserving gates. |
+| [`CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md`](CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md) | **Current cloud evidence authority**: WGS84/RTE, temporal reconstruction, weather wrapping/bounds, regional variation, deterministic formation randomization, quality, lifecycle, and Takram comparison. |
 | [`audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md`](audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md) · [`_FORK_FEATURE_INVENTORY.md`](audits/2026-04-30_FORK_FEATURE_INVENTORY.md) · [`_MAINTAINABILITY_SURVIVABILITY.md`](audits/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md) | **Live wiring/feature/maintainability audit trio** (supersedes the archived 2026-04-02 WIRING_AUDIT). |
 | [`audits/2026-06-11_ULTRA_REVIEW.md`](audits/2026-06-11_ULTRA_REVIEW.md) (+ `_findings.json`) | **Most-recent deep multi-agent review** (53 agents, 195 confirmed findings, HEAD `f6fd367827`). Per-finding sidecar JSON is the machine-readable index. Source of the A-* findings driving the current campaign phases. |
 | [`FORK_DRIFT_ANALYSIS_2026-06-11.md`](FORK_DRIFT_ANALYSIS_2026-06-11.md) | Fork-vs-upstream drift analysis + sync decision (2026-06-11). |

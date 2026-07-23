@@ -2,7 +2,7 @@
 
 Prepared: 2026-07-16
 
-Status: **LAUNCHED 2026-07-18 (orchestrator mode)**
+Status: **CLOSED — 2026-07-18 (`C10-30`, green mechanics / wall-clock inconclusive)**
 
 Launch authority: **given** — the standing maintainer directive (2026-07-17: "finish Campaign 9 and
 then move onto campaign 10"), exercised after Campaign 9 CLOSED green at Batch 691 (`C9-30` VERDICT
@@ -130,7 +130,7 @@ through the seam.
 
 | Task or gate | Status | Updated | Evidence / next action |
 | --- | --- | --- | --- |
-| Campaign 10 | **LAUNCHED (orchestrator mode)** | 2026-07-18 | Campaign 9 CLOSED green at Batch 691 (`C9-30` VERDICT: PROMOTE — WebGPU whole-route CPU p95 −30.8%, near-ground −42%/−41%, WebGPU/WebGL ratio 1.37→0.98). Launch per the standing maintainer directive (2026-07-17: "finish Campaign 9 and then move onto campaign 10"). Operating model: ORCHESTRATOR (main loop = work-preparer + acceptance-reviewer; model-matched Opus/Fable workers; workers never commit — orchestrator reviews each diff and lands). Wave order stands (checkpoint PASSED — no attribution reorder). |
+| Campaign 10 | **COMPLETE / CLOSED** | 2026-07-18 | `C10-30` closed with green mechanics and a deterministic 33% render-pass reduction; the wall-clock lane was environment-confounded, so no timing banner was claimed. Partial/blocked items transferred to Campaign 11/deferred work. |
 | Gate A | **COMPLETE (launch seal)** | 2026-07-18 | Anchor = the recorded `C9-30` clean-r5 artifact (`campaign9-c9-30-checkpoint-clean-r5-2026-07-17.json`; bundle sha `5B2B323F…AD38`): WebGPU 5.20 ms / WebGL 5.31 ms whole-route CPU p95 medians are the C10 reference. |
 | Gate B | **NOT STARTED** | 2026-07-16 | — |
 | Gate C | **NOT STARTED** | 2026-07-16 | — |

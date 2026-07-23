@@ -2,7 +2,7 @@
 
 Prepared: 2026-07-15
 
-Status: **LAUNCHED / IN PROGRESS**
+Status: **CLOSED GREEN — 2026-07-18 (`C9-30`)**
 
 Launch authority: the maintainer explicitly instructed the agent to kick off Campaign 9 on
 2026-07-15. Campaign gates continue to control implementation, evidence, and promotion.
@@ -111,7 +111,7 @@ explicitly deferred. Status vocabulary:
 
 | Task or gate | Status | Updated | Evidence / next action |
 | --- | --- | --- | --- |
-| Campaign 9 | **IN PROGRESS** | 2026-07-15 | Maintainer launch authority recorded; Campaign 8 frozen and open IDs transferred. |
+| Campaign 9 | **COMPLETE / CLOSED GREEN** | 2026-07-18 | `C9-30` promoted the landed tranche and closed the campaign. Partial, blocked, and deferred rows remain historical evidence or carried-forward work; they do not keep this campaign active. |
 | Gate A | **IN PROGRESS** | 2026-07-15 | Exact moving launch seal and deterministic local boot are complete. `C9-01` exact-current attribution is sufficient to rank remediation, but exact week-old replay is paused because that dirty bundle was not retained; a recorded gate amendment or recovered binary is required. `C9-02` visibility ownership and unique timestamp identity remain active dependencies. |
 | `C9-00-EXACT-CURRENT-MOVING-LAUNCH-SEAL` | **COMPLETE** | 2026-07-15 | Exact commit `a54cc06`, dirty bundle `B8015811...11E`, Edge 150.0.4078.65. Smoke plus clean r5 and separately instrumented API r5 all pass correct WebGL/WebGPU resolution, all eight segments, 18,000 km→~300 m, and zero page/device errors. Clean median CPU p95: WebGL 5.50 ms, WebGPU 7.51 ms (WebGPU range 7.20–9.40). API median WebGPU/frame: 14.41 passes, 1.43 submits, 4.85 bind groups, 10.03 writes/112.9 KB, 1.84 buffers/5.60 KB, 0.43 textures and external copies. Nonfatal blocked external-request console diagnostics route to deterministic boot. Artifacts: `campaign9-gate-a-{smoke,clean-r5,api-r5}-2026-07-15.json`. |
 | `C9-01-REGRESSION-ATTRIBUTION-AND-SAVED-BUNDLE-REPLAY` / `FAR-006-CHURN` | **PARTIAL / PAUSED** | 2026-07-15 | Exact-current attribution is complete enough to rank work, and execution moves to `C9-02`. API owner evidence first proved that terrain owns every measured buffer create/destroy, while 513 repeated imagery sources retained 171.0 MiB and added 4,104 mip passes plus 513 private submits. The rebuilt deterministic bundle `5E0ACB5E...873E7` then added engine-logical evidence over 1,189 frames: 41,224 tile calls each allocate ready-layer/command arrays and pass slices; 39,300 emitted descriptors map 1:1 to fresh adapter command objects and camera/tile UB packs; aligned UB staging is 115.1 MiB; 690 terrain misses with 181 rebuilds leave 509 net entries/5.51 MiB; 519 direct imagery uploads retain 173.0 MiB with zero retirement. Globe bind-group caching is healthy (99.66% hits; only 3 group-0 and 1 group-2 creates, while 526 group-1 creates track imagery churn). WebGPU command-count/CPU correlation is 0.604–0.783 versus WebGL 0.109–0.139. Clean deterministic r1 remains WebGL 5.40 ms / WebGPU 7.50 ms CPU p95 with full route and zero external/page/device errors. Artifacts: `campaign9-c9-01-{owner-families,logical-owner-counters}-webgpu-r1-2026-07-15.json`, `campaign9-post-offline-boot-clean-r1-2026-07-15.json`; 17 Node tests, TypeScript, lint, build, and Edge lane pass. The exact week-old dirty bundle was not retained, so historical JSON is characterization rather than an exact replay; this is the sole paused acceptance remainder. |

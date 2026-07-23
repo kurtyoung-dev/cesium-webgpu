@@ -1,5 +1,10 @@
 # Campaign-11 Cluster Guide G12 — `clouds-weather` (cluster 17, 16 items)
 
+> **Execution transfer (2026-07-23):** this guide remains the historical intake/design evidence,
+> but the cluster now executes under
+> [`QUEUE_2026-07-23_CAMPAIGN13.md`](../../QUEUE_2026-07-23_CAMPAIGN13.md). Preserve the original
+> C11 IDs as aliases and use Campaign 13's corrected findings, dependencies, gates, and live ledger.
+
 **Anchors verified 2026-07-18 against committed HEAD `c643516c04` (Batch 703,
 `C11-PLANNING guides G8/G9/G10 complete`).** The register (`CANDIDATE_REGISTER.md` cluster 17)
 was swept at `aef553d592` (B698) and the canonical C11-ids live in
