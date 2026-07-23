@@ -29,6 +29,10 @@ import {
   summarizeTrackMetrics,
 } from "./lib/performance-campaign-utils.mjs";
 import { buildPerformanceViewerUrl } from "./lib/performance-viewer-url.mjs";
+import {
+  renderersForWorkload,
+  selectWorkloadsForRenderers,
+} from "./lib/performance-workload-selection.mjs";
 
 const toolDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryDirectory = resolve(toolDirectory, "..", "..");
@@ -1567,6 +1571,31 @@ async function runOne(
             scene.moon.show = false;
           }
         }
+        let cloudVolumetrics = null;
+        if (workloadDefinition.featureProfile === "volumetric-clouds") {
+          const { installCloudProbeHarness } = await import(
+            "/Tools/visual-regression/lib/cloud-probe-harness.mjs"
+          );
+          installCloudProbeHarness();
+          cloudVolumetrics = globalThis.__cloudProbe.configure({
+            requireWebGPU: true,
+            volumetric: {
+              cloudCoverage: 0.5,
+              cloudDensity: 0.75,
+              cloudLayerBottom: 1500,
+              cloudLayerTop: 3800,
+              cloudVolumetricQuality: "medium",
+              cloudQuality: 64,
+              cloudWeatherMap: false,
+              cloudWindSpeed: 0,
+              cloudCastShadows: false,
+              cloudShadowCascades: false,
+              cloudContributesIBL: false,
+              cloudMultiDeck: false,
+              cloudHighPrecision: false,
+            },
+          });
+        }
         const featureState = {
           contentProfile: workloadDefinition.contentProfile,
           profile: workloadDefinition.featureProfile,
@@ -1578,6 +1607,7 @@ async function runOne(
           groundAtmosphereShown: scene.globe?.showGroundAtmosphere ?? null,
           globeLightingEnabled: scene.globe?.enableLighting ?? null,
           highDynamicRange: scene.highDynamicRange ?? null,
+          cloudVolumetrics,
         };
         if (cameraTrackEnabled) {
           const firstWaypoint = cameraTrack[0];
@@ -2350,6 +2380,33 @@ async function runOne(
           "uncapturederror",
           onUncapturedDeviceError,
         );
+        const cloudCache = context._cloudCache;
+        const cloudExecutionEvidence = cloudVolumetrics
+          ? {
+              cachePresent: !!cloudCache,
+              initialized: cloudCache?.initialized === true,
+              canvasTarget: {
+                width: context.drawingBufferWidth ?? scene.canvas.width,
+                height: context.drawingBufferHeight ?? scene.canvas.height,
+              },
+              currentTarget: {
+                width: cloudCache?.halfWidth ?? 0,
+                height: cloudCache?.halfHeight ?? 0,
+              },
+              historyTarget: {
+                width: cloudCache?.temporalWidth ?? 0,
+                height: cloudCache?.temporalHeight ?? 0,
+              },
+              pipelines: {
+                raymarch: !!cloudCache?.halfPipeline,
+                temporalResolve: !!cloudCache?.temporalPipeline,
+                upscale: !!cloudCache?.upscalePipeline,
+              },
+              historyAllocated:
+                Array.isArray(cloudCache?.temporalHistory) &&
+                cloudCache.temporalHistory.every(Boolean),
+            }
+          : null;
         const adapterInfo = context.adapter?.info
           ? {
               vendor: context.adapter.info.vendor || "",
@@ -2368,6 +2425,7 @@ async function runOne(
           timestampAvailable,
           timestampEnabled,
           featureState,
+          cloudExecutionEvidence,
           deviceErrors,
           adapterInfo,
           enabledFeatures: context.enabledFeatures || [],
@@ -2582,6 +2640,25 @@ async function runOne(
       failures.push(
         `${browserResult.deviceErrors.length} uncaptured GPU errors`,
       );
+    }
+    if (workload.featureProfile === "volumetric-clouds") {
+      const evidence = browserResult.cloudExecutionEvidence;
+      if (
+        !evidence?.cachePresent ||
+        !evidence.initialized ||
+        evidence.currentTarget.width < 1 ||
+        evidence.currentTarget.height < 1 ||
+        evidence.historyTarget.width !== evidence.currentTarget.width ||
+        evidence.historyTarget.height !== evidence.currentTarget.height ||
+        !evidence.pipelines.raymarch ||
+        !evidence.pipelines.temporalResolve ||
+        !evidence.pipelines.upscale ||
+        !evidence.historyAllocated
+      ) {
+        failures.push(
+          "volumetric cloud workload did not realize the raymarch, temporal-history, and upscale targets",
+        );
+      }
     }
     if (
       apiInstrumentation &&
@@ -2854,13 +2931,26 @@ const bundlePath = resolve(
   "Cesium.js",
 );
 const bundleIdentity = await fileIdentity(bundlePath);
-const selectedWorkloads = options.workloads.length
+const requestedWorkloads = options.workloads.length
   ? options.workloads.map((id) => {
       const workload = manifest.workloads.find((entry) => entry.id === id);
       if (!workload) throw new Error(`Unknown workload: ${id}`);
       return workload;
     })
   : manifest.workloads;
+const renderers =
+  options.renderer === "both" ? ["webgl", "webgpu"] : [options.renderer];
+const workloadSelection = selectWorkloadsForRenderers(
+  requestedWorkloads,
+  renderers,
+  { strict: options.workloads.length > 0 },
+);
+const selectedWorkloads = workloadSelection.selected;
+if (selectedWorkloads.length === 0) {
+  throw new Error(
+    `No workloads support selected renderer(s): ${renderers.join(", ")}`,
+  );
+}
 for (const workload of selectedWorkloads) {
   if (
     usesCameraTrack(workload.action) &&
@@ -2871,10 +2961,17 @@ for (const workload of selectedWorkloads) {
     );
   }
 }
-const renderers =
-  options.renderer === "both" ? ["webgl", "webgpu"] : [options.renderer];
 const repetitions = options.repetitions ?? manifest.protocol.repetitions;
 const runSchedule = buildCounterbalancedSchedule(renderers, repetitions);
+const workloadSchedules = Object.fromEntries(
+  selectedWorkloads.map((workload) => {
+    const workloadRenderers = renderersForWorkload(workload, renderers);
+    return [
+      workload.id,
+      buildCounterbalancedSchedule(workloadRenderers, repetitions),
+    ];
+  }),
+);
 
 const report = {
   schemaVersion: 1,
@@ -2922,7 +3019,10 @@ const report = {
       : "fresh-process-per-run",
     selectedRenderers: renderers,
     selectedWorkloads: selectedWorkloads.map((workload) => workload.id),
+    skippedWorkloads: workloadSelection.skipped,
+    skippedWorkloadRenderers: workloadSelection.skippedRenderers,
     runSchedule,
+    workloadSchedules,
     note: "CPU Scene.render and capability-available GPU timestamp metrics are primary; requestAnimationFrame wall time is diagnostic and may be display-limited.",
   },
   browserVersion: null,
@@ -2938,8 +3038,12 @@ try {
     report.browserVersion = sharedBrowser.version();
   }
   for (const workload of selectedWorkloads) {
-    const runsByRenderer = new Map(renderers.map((renderer) => [renderer, []]));
-    for (const scheduled of runSchedule) {
+    const workloadRenderers = renderersForWorkload(workload, renderers);
+    const workloadSchedule = workloadSchedules[workload.id];
+    const runsByRenderer = new Map(
+      workloadRenderers.map((renderer) => [renderer, []]),
+    );
+    for (const scheduled of workloadSchedule) {
       for (const renderer of scheduled.order) {
         const key = `${renderer}:${workload.id}`;
         console.error(
@@ -2988,7 +3092,7 @@ try {
         }
       }
     }
-    for (const renderer of renderers) {
+    for (const renderer of workloadRenderers) {
       const key = `${renderer}:${workload.id}`;
       const aggregate = aggregateRuns(runsByRenderer.get(renderer));
       report.aggregates[key] = aggregate;

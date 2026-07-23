@@ -20,6 +20,10 @@ import {
   summarizeTrackMetrics,
 } from "./lib/performance-campaign-utils.mjs";
 import { buildPerformanceViewerUrl } from "./lib/performance-viewer-url.mjs";
+import {
+  renderersForWorkload,
+  selectWorkloadsForRenderers,
+} from "./lib/performance-workload-selection.mjs";
 import resolveCesiumViewerStartupOptions from "../../Apps/CesiumViewer/CesiumViewerStartupOptions.js";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -79,8 +83,19 @@ test("manifest covers core hot-path states with local deterministic content", ()
     assert.ok(["globe-only", "points-4096"].includes(workload.content));
     assert.equal(workload.contentProfile, "local-grid-ellipsoid");
     assert.ok(
-      ["deterministic-core", "default-globe"].includes(workload.featureProfile),
+      ["deterministic-core", "default-globe", "volumetric-clouds"].includes(
+        workload.featureProfile,
+      ),
     );
+    if (workload.renderers !== undefined) {
+      assert.ok(workload.renderers.length > 0);
+      assert.equal(new Set(workload.renderers).size, workload.renderers.length);
+      assert.ok(
+        workload.renderers.every((renderer) =>
+          ["webgl", "webgpu"].includes(renderer),
+        ),
+      );
+    }
   }
 });
 
@@ -208,6 +223,81 @@ test("continuous pick workload combines the altitude route with cursor motion", 
     "trackId",
     "measuredSeconds",
   ]);
+});
+
+test("volumetric-cloud workload uses the moving route and WebGPU only", () => {
+  const workload = manifest.workloads.find(
+    (entry) => entry.id === "moving-camera-cloud-altitude-track-3d",
+  );
+  assert.ok(workload);
+  assert.equal(workload.action, "camera-track");
+  assert.equal(workload.trackId, GLOBE_CAMERA_TRACK_ID);
+  assert.equal(workload.featureProfile, "volumetric-clouds");
+  assert.deepEqual(workload.renderers, ["webgpu"]);
+  assert.equal(workload.measuredSeconds, GLOBE_CAMERA_TRACK_DURATION_SECONDS);
+  assert.ok(
+    schema.properties.workloads.items.properties.featureProfile.enum.includes(
+      "volumetric-clouds",
+    ),
+  );
+  assert.deepEqual(
+    schema.properties.workloads.items.properties.renderers.items.enum,
+    ["webgl", "webgpu"],
+  );
+});
+
+test("implicit renderer-specific workloads skip while explicit requests fail", () => {
+  const workloads = [
+    { id: "shared" },
+    { id: "webgpu-only", renderers: ["webgpu"] },
+  ];
+
+  assert.deepEqual(renderersForWorkload(workloads[0], ["webgl"]), ["webgl"]);
+  assert.deepEqual(
+    selectWorkloadsForRenderers(workloads, ["webgl"]),
+    {
+      selected: [workloads[0]],
+      skipped: [
+        {
+          id: "webgpu-only",
+          reason: "unsupported-renderer",
+          selectedRenderers: ["webgl"],
+          supportedRenderers: ["webgpu"],
+        },
+      ],
+      skippedRenderers: [],
+    },
+  );
+  assert.throws(
+    () =>
+      selectWorkloadsForRenderers([workloads[1]], ["webgl"], {
+        strict: true,
+      }),
+    /Explicit workload request does not support selected renderer/,
+  );
+  assert.deepEqual(
+    selectWorkloadsForRenderers(workloads, ["webgl", "webgpu"]),
+    {
+      selected: workloads,
+      skipped: [],
+      skippedRenderers: [
+        {
+          id: "webgpu-only",
+          reason: "unsupported-renderer",
+          skippedRenderers: ["webgl"],
+          compatibleRenderers: ["webgpu"],
+          supportedRenderers: ["webgpu"],
+        },
+      ],
+    },
+  );
+  assert.throws(
+    () =>
+      selectWorkloadsForRenderers([workloads[1]], ["webgl", "webgpu"], {
+        strict: true,
+      }),
+    /Explicit workload request does not support selected renderer/,
+  );
 });
 
 test("renderer repetitions are truly counterbalanced AB then BA", () => {

@@ -21,9 +21,19 @@
  *   TEMPORAL_TIER=medium node Tools/visual-regression/probe-cloud-temporal.mjs
  */
 import { chromium } from "playwright";
+import {
+  errorGateInit,
+  armWebGPUDevices,
+  collectGateErrors,
+  attachConsoleErrorGate,
+} from "../lib/webgpu-error-gate.mjs";
+import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const TIER = process.env.TEMPORAL_TIER || "medium"; // low=T1, medium=T2
+if (!["low", "medium"].includes(TIER)) {
+  throw new Error("TEMPORAL_TIER must be low or medium");
+}
 
 const SCENE = {
   proc: { coverage: 0.5, density: 0.75, bottom: 1500, top: 3800 },
@@ -42,33 +52,47 @@ const SCENE = {
   });
   const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
   const errs = [];
+  const gpuConsoleErrors = attachConsoleErrorGate(page);
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
   });
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "networkidle",
-    timeout: 90_000,
-  });
+  page.on("pageerror", (error) => errs.push(`pageerror: ${error.message}`));
+  await page.addInitScript(errorGateInit);
+  await installCloudProbeHarnessOnPage(page);
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
+    {
+      waitUntil: "networkidle",
+      timeout: 90_000,
+    },
+  );
   await page.waitForFunction(() => !!window.viewer, { timeout: 90_000 });
+  const armState = await armWebGPUDevices(page);
 
   const results = await page.evaluate(
     async ({ scene, tier }) => {
       const v = window.viewer,
-        s = v.scene,
-        g = s.globe;
+        s = v.scene;
       const C = await import("/Build/CesiumUnminified/index.js");
+      v.useDefaultRenderLoop = false;
       s.skyBox.show = true;
       s.sun.show = true;
       s.skyAtmosphere.show = true;
       s.globe.show = true;
       v.clock.shouldAnimate = false;
-      v.clock.currentTime = C.JulianDate.fromIso8601(scene.timeIso);
-      g.defaultCloudCollection.enableVolumetric = true;
-      g.defaultCloudCollection.volumetric.cloudCoverage = scene.proc.coverage;
-      g.defaultCloudCollection.volumetric.cloudDensity = scene.proc.density;
-      g.defaultCloudCollection.volumetric.cloudLayerBottom = scene.proc.bottom;
-      g.defaultCloudCollection.volumetric.cloudLayerTop = scene.proc.top;
-      g.defaultCloudCollection.volumetric.cloudVolumetricQuality = tier; // low → T1, medium → T2 (both temporal)
+      const frameTime = C.JulianDate.fromIso8601(scene.timeIso);
+      v.clock.currentTime = frameTime;
+      const configTruth = globalThis.__cloudProbe.configure({
+        requireWebGPU: true,
+        volumetric: {
+          cloudCoverage: scene.proc.coverage,
+          cloudDensity: scene.proc.density,
+          cloudLayerBottom: scene.proc.bottom,
+          cloudLayerTop: scene.proc.top,
+          // low → T1, medium → T2 (both temporal)
+          cloudVolumetricQuality: tier,
+        },
+      });
 
       const setView = (lon, lat, height, headingDeg, pitchDeg) =>
         v.camera.setView({
@@ -81,9 +105,16 @@ const SCENE = {
         });
       const renderN = async (n) => {
         for (let i = 0; i < n; i++) {
-          s.render();
+          s.render(frameTime);
           await new Promise((r) => requestAnimationFrame(r));
         }
+      };
+      const capture = () => {
+        // Snapshot in the same task as an explicit render. Waiting until after
+        // presentation can relinquish the WebGPU canvas texture and yield a
+        // misleading all-zero PNG.
+        s.render(frameTime);
+        return s.canvas.toDataURL("image/png");
       };
 
       const cam = scene.camera;
@@ -93,7 +124,7 @@ const SCENE = {
       // Hold the camera dead still; let temporal accumulation converge.
       setView(cam.lon, cam.lat, cam.height, cam.heading, cam.pitch);
       await renderN(48);
-      out.staticConverged = s.canvas.toDataURL("image/png");
+      out.staticConverged = capture();
 
       // ── MOVING (GHOSTING TEST) ──
       // Continuous heading pan: one degree per frame for ~25 frames so reprojected
@@ -103,22 +134,27 @@ const SCENE = {
       for (let i = 0; i < 25; i++) {
         h += 1.6; // pan right ~1.6°/frame
         setView(cam.lon, cam.lat, cam.height, h, cam.pitch);
-        s.render();
+        s.render(frameTime);
         await new Promise((r) => requestAnimationFrame(r));
       }
-      out.movingMid = s.canvas.toDataURL("image/png");
+      out.movingMid = capture();
 
       // ── SETTLE ──
       // Stop moving; render a handful of frames; the deck should re-converge clean
       // with NO residual ghost from the pan.
       await renderN(24);
-      out.movingSettle = s.canvas.toDataURL("image/png");
+      out.movingSettle = capture();
 
-      return out;
+      return {
+        ...out,
+        configTruth,
+        effectiveTimeIso: C.JulianDate.toIso8601(frameTime),
+      };
     },
     { scene: SCENE, tier: TIER },
   );
 
+  const gpuGate = await collectGateErrors(page);
   await browser.close();
   const write = (name, dataUrl) => {
     const p = `${outDir}/${TIER}-${name}.png`;
@@ -128,12 +164,43 @@ const SCENE = {
   write("static-converged", results.staticConverged);
   write("moving-mid", results.movingMid);
   write("moving-settle", results.movingSettle);
-  const newErrs = errs.filter(
-    (e) => !/AtmosphereLUT|default layout|favicon/.test(e),
-  );
+  const newErrs = [
+    ...new Set([
+      ...errs,
+      ...gpuConsoleErrors,
+      ...gpuGate.errors,
+      ...(gpuGate.deviceLost ? [gpuGate.deviceLost] : []),
+      ...(armState.found < 1
+        ? ["WebGPU error gate did not find a device"]
+        : []),
+    ]),
+  ].filter((e) => !/AtmosphereLUT|default layout|favicon/.test(e));
   console.log(
     newErrs.length
       ? `NEW errs: ${newErrs.slice(0, 6).join(" | ")}`
       : "no new console errors",
   );
+  const truthPath = `${outDir}/${TIER}-truth.json`;
+  fs.writeFileSync(
+    truthPath,
+    JSON.stringify(
+      {
+        probeVersion: "c13-01",
+        tier: TIER,
+        configTruth: results.configTruth,
+        effectiveTimeIso: results.effectiveTimeIso,
+        gpuGate: {
+          ...gpuGate,
+          armState,
+        },
+        errors: newErrs,
+      },
+      null,
+      2,
+    ),
+  );
+  console.log(
+    `[temporal:${TIER}] config=${JSON.stringify(results.configTruth.config)} truth=${truthPath}`,
+  );
+  process.exitCode = results.configTruth.ok && newErrs.length === 0 ? 0 : 1;
 })();

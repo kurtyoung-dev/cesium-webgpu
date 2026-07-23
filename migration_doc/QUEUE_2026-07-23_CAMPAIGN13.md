@@ -10,9 +10,15 @@ Launch authority: explicit maintainer direction on 2026-07-23:
 > improvements. Create a cloud specific campaign and then lets launch it."
 
 Anchor: committed `main` HEAD **`851ce64389` (Batch 731)**. The queue and launch truth are
-`C13-00`, intended to land as **Batch 732**. Runtime work begins with `C13-01` only after the
-launch/document batch is landed, `git status` is clean, `git log origin/main..main` is empty, and
+`C13-00`, landed locally as **Batch 732 (`f4a934e606`)**. Runtime work begins with `C13-01` only
+after the launch/document batch is committed, `git status` contains no unrelated changes, and
 `npx tsc --noEmit` is green.
+
+Publication note: the 2026-07-23 `git push origin main` attempt returned HTTP 403 because the
+configured `kurtyoung-dev/cesium-webgpu` remote and active `KurtTrottr` credential do not authorize
+the same repository. No remote, credential, or account was changed. The maintainer's explicit launch
+directive authorizes local trunk execution; origin publication remains an external coordination
+item, not a reason to bypass or weaken the local gates.
 
 Campaign 13 supersedes **only** Campaign 11's `clouds-weather` execution cluster. It does not close
 Campaign 11's unrelated open work, and it does not launch or renumber the existing Campaign 12
@@ -498,10 +504,10 @@ landing defect.
 
 | ID(s) | Status | Evidence / next action |
 | --- | --- | --- |
-| `C13-00` | **COMPLETE — launch/doc truth prepared for Batch 732** | Campaign authored at `851ce64389`; explicit 2026-07-23 maintainer launch authority; C11 transfer map and confirmed findings recorded here. Runtime waits for the launch batch to land clean and TypeScript to pass. |
-| `C13-01` | **NOT STARTED** | First runtime slice after Batch 732. Repair unified API setup and record current moving baselines; no engine visual fix precedes this oracle. |
+| `C13-00` | **COMPLETE — Batch 732 (`f4a934e606`)** | Explicit 2026-07-23 maintainer launch authority; C11 transfer map and confirmed findings recorded here; TypeScript, Markdown lint, and Prettier passed. Local `main` contains the launch commit. Publication remains externally blocked because `origin` returned HTTP 403 for the configured account; this does not block the explicitly authorized local-trunk campaign. |
+| `C13-01` | **IN PROGRESS — Batch 733 Slice A (2026-07-23)** | Repaired unified API/config truth, deterministic offline/fixed-time capture, raw-frame metrics, WebGPU error/device-loss gates, backend-aware workload selection, and a WebGPU moving cloud route. Launch evidence now truthfully exposes a north-pole blank and the `cloudQuality=128` live/full-resolution escape hatch producing zero cloud pixels; these are queued defects, not green baselines. Dynamic crossings, climate/type fixtures, temporal metrics, complete provenance, and GPU-timestamp evidence remain. |
 | `C13-02` | NOT STARTED | Begins after the repaired tour establishes the measurement surface. |
-| `C13-03` | NOT STARTED | Author the WGS84/RTE contract and RED planetary probes before shader changes. |
+| `C13-03` | NOT STARTED | Author the WGS84/RTE contract and dynamic RED planetary probes before shader changes. Slice A's fixed north-pole view is already RED (`0` cloudish pixels on a uniform-blue frame). |
 | `C13-04` | NOT STARTED | Primary march RTE/WGS84 owner. |
 | `C13-05` | NOT STARTED | Temporal origin/reprojection RTE owner. |
 | `C13-06` | NOT STARTED | Shadow/mask/capture/atmosphere RTE owner. |
@@ -511,7 +517,7 @@ landing defect.
 | `C13-10` | NOT STARTED | True 1/16 current work and full-resolution history. |
 | `C13-11` | **BLOCKED** | Needs a provenance-approved, license-clean STBN generation/import plan and notices. NVIDIA STBN assets are prohibited. Does not block W1. |
 | `C13-12` | NOT STARTED | Opens after reconstruction topology and current-work layout. |
-| `C13-13` | NOT STARTED | Lighting/spatial-tier separation. |
+| `C13-13` | NOT STARTED | Lighting/spatial-tier separation. Also owns the Slice-A RED where the supported `cloudQuality=128` live/full-resolution escape hatch applies exactly but renders `0` cloud pixels. |
 | `C13-14` | NOT STARTED | Promoted C11 planet-scale tiling seed; core W3 architecture. |
 | `C13-15` | NOT STARTED | Climate prior; distinguish climatology from current observations. |
 | `C13-16` | NOT STARTED | Regional type/deck mixtures. |
@@ -538,6 +544,43 @@ landing defect.
 | `C13-GATE-C` | NOT STARTED | Follows `C13-09..13`; STBN may remain an explicit blocker if its provenance is unresolved. |
 | `C13-GATE-D` | NOT STARTED | Follows `C13-14..20`. |
 | `C13-EXIT` | NOT STARTED | Dead last. |
+
+### C13-01 Slice A launch evidence
+
+This is an oracle/tooling slice only; it changes no engine renderer or cloud appearance.
+
+- The shared harness writes `globe.defaultCloudCollection.volumetric`, rejects unknown fields, forces
+  live rendering, and records exact configuration/render-mode/backend truth. The tour and temporal
+  probes boot `offline=true`, pass their authored `JulianDate` into every manual render, capture the
+  raw Cesium canvas, and arm the shared console/uncaptured-error/device-loss gate.
+- A 2026-07-23 Edge/WebGPU route run on NVIDIA Pascal completed the canonical eight-segment,
+  18,000,000 m to 302 m flight in 20.007 s with 1,118 measured frames and no page, external-network,
+  or device errors. CPU `Scene.render` was p50 `2.90 ms`, p95 `6.00 ms`, p99 `8.60 ms`; diagnostic
+  display pacing was `55.88 FPS` with a `46.77` 1%-low. This single run is characterization, not a
+  promotion claim and not a cloud-on/off delta.
+- The same route proves renderer realization in addition to API round-trip: the `1280x720` canvas
+  owned a `640x360` raymarch target, a `640x360` temporal-history target, two live history textures,
+  and ready raymarch, temporal-resolve, and upscale pipelines. Exact per-frame pass/sample counters
+  remain `C13-02`.
+- The repaired static tour produced `199,937` cloudish pixels at the east antimeridian and preserved
+  billboard output on WebGPU/WebGL (`36,113`/`36,504` cloudish pixels), with clean error gates. The
+  north-pole fixture produced `0` cloudish pixels and a uniform-blue raw canvas. Its visibility gate
+  is intentionally RED.
+- The medium temporal sequence applied its exact tier/time and captured static, moving, and settled
+  frames without device errors. Visual inspection confirms severe ordered/repeating spatial structure;
+  this is baseline defect evidence only because numeric ghost/flicker/history metrics are not yet
+  implemented.
+- The repaired adaptive-march maximum-throughput probe requires an explicit pair ID, distinct runtime
+  bundles, matching adapter/browser/resolution/configuration, clean error truth, and visible clouds.
+  The current `cloudQuality=128` escape-hatch run is intentionally RED with `0` cloud pixels; its
+  sub-millisecond queue-drain timing is invalid as a cloud-performance result.
+- Functionality preservation: WebGL volumetrics remain unsupported by design, while WebGL billboard
+  and shared collection/API coverage remain active. Unsupported implicit workloads are recorded as
+  skips; an explicitly requested incompatible workload fails. No feature was removed or disabled to
+  obtain these measurements.
+- Rollback boundary: Batch 733 Slice A is confined to Node/Playwright tools, workload metadata/tests,
+  and documentation. The next runtime slice starts only after `C13-01` expands the dynamic RED
+  fixtures and `C13-03` seals the WGS84/RTE coordinate contract.
 
 ---
 

@@ -22,18 +22,24 @@
  * black sky, sun/atmosphere off, fixed sun via manual render(jd).
  *
  * Usage:
- *   TAG=adaptive PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cloud-perf.mjs
+ *   CLOUD_PERF_PAIR_ID=2026-07-23-w5 TAG=adaptive PROBE_BASE=http://localhost:8080 node Tools/visual-regression/probe-cloud-perf.mjs
  */
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chromium } from "playwright";
+import sharp from "sharp";
 import {
   errorGateInit,
   armWebGPUDevices,
   collectGateErrors,
   attachConsoleErrorGate,
 } from "../lib/webgpu-error-gate.mjs";
+import { resolveCloudPerfPass } from "./lib/cloud-perf-evidence.mjs";
+import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const TAG = process.env.TAG || "adaptive";
+const PAIR_ID = process.env.CLOUD_PERF_PAIR_ID || null;
 const W = 1024,
   H = 768;
 const LON = -95.0,
@@ -44,18 +50,35 @@ const LON = -95.0,
 const NOON = "2026-06-21T18:20:00Z";
 const OUT = "Tools/visual-regression/output";
 
+if (!["adaptive", "fixed"].includes(TAG)) {
+  throw new Error("TAG must be adaptive or fixed");
+}
+
+function command(name, args) {
+  try {
+    return execFileSync(name, args, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
 const SETUP = async (cfg) => {
   const C = await import("/Build/CesiumUnminified/index.js");
   const v = window.viewer;
   const s = v.scene;
-  const g = s.globe;
   v.useDefaultRenderLoop = false;
-  s.requestRenderMode = false;
-  g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.35; // sparse → ~65% empty along rays
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.7;
-  if ("cloudQuality" in g) g.defaultCloudCollection.volumetric.cloudQuality = 128; // non-default → used verbatim (high budget)
+  const configTruth = globalThis.__cloudProbe.configure({
+    requireWebGPU: true,
+    volumetric: {
+      cloudCoverage: 0.35, // sparse → ~65% empty along rays
+      cloudWeatherMap: false,
+      cloudDensity: 0.7,
+      cloudQuality: 128, // non-default → used verbatim (high budget)
+    },
+  });
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
@@ -68,7 +91,7 @@ const SETUP = async (cfg) => {
       roll: 0.0,
     },
   });
-  return { ok: true };
+  return configTruth;
 };
 
 const RENDER_AND_TIME = async (cfg) => {
@@ -93,137 +116,285 @@ const RENDER_AND_TIME = async (cfg) => {
   }
   if (device) await device.queue.onSubmittedWorkDone();
   const t1 = performance.now();
+  // Render one unmeasured frame for the Playwright canvas screenshot taken
+  // after this function returns. Do not use canvas.toDataURL here: the WebGPU
+  // presentation texture may already have been relinquished and decode as an
+  // all-zero image despite a visible composited frame.
+  s.render(jd);
 
   return {
     msPerFrame: +((t1 - t0) / M).toFixed(4),
     hasDevice: !!device,
-    dataUrl: s.canvas.toDataURL("image/png"),
+    adapterInfo: s.context.adapter?.info
+      ? {
+          vendor: s.context.adapter.info.vendor || "",
+          architecture: s.context.adapter.info.architecture || "",
+          device: s.context.adapter.info.device || "",
+          description: s.context.adapter.info.description || "",
+        }
+      : null,
+    canvas: {
+      width: s.canvas.width,
+      height: s.canvas.height,
+    },
   };
 };
 
-async function lumStats(page, dataUrl) {
-  return page.evaluate(async (du) => {
-    const img = new Image();
-    img.src = du;
-    await img.decode();
-    const c = document.createElement("canvas");
-    c.width = img.naturalWidth;
-    c.height = img.naturalHeight;
-    const cx = c.getContext("2d");
-    cx.drawImage(img, 0, 0);
-    const d = cx.getImageData(0, 0, c.width, c.height).data;
-    let sum = 0,
-      cells = 0,
-      n = d.length / 4;
-    for (let i = 0; i < d.length; i += 4) {
-      const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-      sum += lum;
-      if (lum > 150) cells++;
-    }
-    return { meanLum: +(sum / n).toFixed(3), cloudCells: cells };
-  }, dataUrl);
+async function decodeRgb(png) {
+  return sharp(png)
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+}
+
+async function lumStats(png) {
+  const { data, info } = await decodeRgb(png);
+  let sum = 0;
+  let cells = 0;
+  const n = info.width * info.height;
+  for (let i = 0; i < data.length; i += info.channels) {
+    const lum =
+      0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+    sum += lum;
+    if (lum > 150) cells++;
+  }
+  return { meanLum: +(sum / n).toFixed(3), cloudCells: cells };
 }
 
 // Mean-abs luminance mismatch between two same-size PNGs.
-async function imageMismatch(page, duA, duB) {
-  return page.evaluate(
-    async ([a, b]) => {
-      const load = async (u) => {
-        const img = new Image();
-        img.src = u;
-        await img.decode();
-        const c = document.createElement("canvas");
-        c.width = img.naturalWidth;
-        c.height = img.naturalHeight;
-        const cx = c.getContext("2d");
-        cx.drawImage(img, 0, 0);
-        return cx.getImageData(0, 0, c.width, c.height).data;
-      };
-      const da = await load(a);
-      const db = await load(b);
-      let acc = 0;
-      const n = da.length / 4;
-      for (let i = 0; i < da.length; i += 4) {
-        const la = 0.299 * da[i] + 0.587 * da[i + 1] + 0.114 * da[i + 2];
-        const lb = 0.299 * db[i] + 0.587 * db[i + 1] + 0.114 * db[i + 2];
-        acc += Math.abs(la - lb);
-      }
-      return +(acc / n).toFixed(3); // 0..255
-    },
-    [duA, duB],
-  );
+async function imageMismatch(pngA, pngB) {
+  const [a, b] = await Promise.all([decodeRgb(pngA), decodeRgb(pngB)]);
+  if (
+    a.info.width !== b.info.width ||
+    a.info.height !== b.info.height ||
+    a.info.channels !== b.info.channels
+  ) {
+    throw new Error("cloud perf A/B images have different dimensions");
+  }
+  let acc = 0;
+  const n = a.info.width * a.info.height;
+  for (let i = 0; i < a.data.length; i += a.info.channels) {
+    const la =
+      0.299 * a.data[i] +
+      0.587 * a.data[i + 1] +
+      0.114 * a.data[i + 2];
+    const lb =
+      0.299 * b.data[i] +
+      0.587 * b.data[i + 1] +
+      0.114 * b.data[i + 2];
+    acc += Math.abs(la - lb);
+  }
+  return +(acc / n).toFixed(3); // 0..255
 }
 
 async function run() {
   const fs = await import("fs");
   fs.mkdirSync(OUT, { recursive: true });
+  const runtimeBundle = fs.readFileSync("Build/CesiumUnminified/Cesium.js");
+  const source = {
+    commit: command("git", ["rev-parse", "HEAD"]),
+    dirty: Boolean(command("git", ["status", "--porcelain"])),
+    runtimeBundle: {
+      path: "Build/CesiumUnminified/Cesium.js",
+      byteLength: runtimeBundle.byteLength,
+      sha256: createHash("sha256").update(runtimeBundle).digest("hex"),
+    },
+  };
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
   const page = await browser.newPage({ viewport: { width: W, height: H } });
-  attachConsoleErrorGate(page);
+  const gpuConsoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "domcontentloaded",
-  });
+  await installCloudProbeHarnessOnPage(page);
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
+    {
+      waitUntil: "domcontentloaded",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer, null, { timeout: 60000 });
-  await armWebGPUDevices(page);
-  await page.evaluate(SETUP, { LON, LAT, ALT });
+  const armState = await armWebGPUDevices(page);
+  const configTruth = await page.evaluate(SETUP, { LON, LAT, ALT });
 
   const r = await page.evaluate(RENDER_AND_TIME, { iso: NOON });
+  // Element screenshots include visually overlapping siblings. Hide Cesium's
+  // controls before clipping to the canvas so UI text cannot satisfy the
+  // cloud-pixel liveness gate.
+  await page.addStyleTag({
+    content: `
+      #rendererToolbar,
+      .cesium-viewer-toolbar,
+      .cesium-viewer-animationContainer,
+      .cesium-viewer-timelineContainer,
+      .cesium-viewer-fullscreenContainer,
+      .cesium-viewer-bottom,
+      .cesium-navigation-help {
+        display: none !important;
+      }
+    `,
+  });
+  const pngBuffer = await page
+    .locator(".cesium-widget canvas")
+    .first()
+    .screenshot();
   const png = `${OUT}/cloud-perf-${TAG}.png`;
-  fs.writeFileSync(png, Buffer.from(r.dataUrl.split(",")[1], "base64"));
-  const stats = await lumStats(page, r.dataUrl);
+  fs.writeFileSync(png, pngBuffer);
+  const stats = await lumStats(pngBuffer);
 
   const gate = await collectGateErrors(page);
-  const newErrs = (gate.errors || []).filter(
-    (e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout/i.test(e),
-  );
+  const newErrs = [
+    ...new Set([
+      ...gpuConsoleErrors,
+      ...(gate.errors || []),
+      ...(gate.deviceLost ? [gate.deviceLost] : []),
+      ...(armState.found < 1
+        ? ["WebGPU error gate did not find a device"]
+        : []),
+    ]),
+  ].filter((e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout/i.test(e));
 
-  const rec = { tag: TAG, msPerFrame: r.msPerFrame, hasDevice: r.hasDevice, ...stats };
-  fs.writeFileSync(`${OUT}/cloud-perf-${TAG}.json`, JSON.stringify(rec, null, 2));
-  console.log(`[${TAG}]`, JSON.stringify(rec));
-  if (newErrs.length) console.log("NEW errs:", newErrs.slice(0, 2));
-
+  const rec = {
+    probeVersion: "c13-01",
+    measurementKind: "gpu-queue-drain-max-throughput",
+    pairId: PAIR_ID,
+    tag: TAG,
+    msPerFrame: r.msPerFrame,
+    hasDevice: r.hasDevice,
+    adapterInfo: r.adapterInfo,
+    browserVersion: browser.version(),
+    canvas: r.canvas,
+    source,
+    ...stats,
+    configTruth,
+    gpuGate: {
+      ...gate,
+      armState,
+    },
+    errors: newErrs,
+  };
   // If the OTHER tag exists, compare.
   const other = TAG === "adaptive" ? "fixed" : "adaptive";
   const otherJson = `${OUT}/cloud-perf-${other}.json`;
-  let pass = newErrs.length === 0 && stats.cloudCells > 3000;
+  const currentArtifactValid =
+    configTruth.ok &&
+    newErrs.length === 0 &&
+    stats.cloudCells > 3000 &&
+    r.hasDevice &&
+    r.adapterInfo !== null;
+  let comparison = {
+    status: PAIR_ID === null ? "not-requested" : "missing-companion",
+    pairId: PAIR_ID,
+    otherTag: other,
+  };
+  let comparisonPassed = null;
   if (fs.existsSync(otherJson)) {
     const o = JSON.parse(fs.readFileSync(otherJson, "utf8"));
-    const otherDu =
-      "data:image/png;base64," +
-      fs.readFileSync(`${OUT}/cloud-perf-${other}.png`).toString("base64");
-    const mismatch = await imageMismatch(page, r.dataUrl, otherDu);
-    const cellRatio = stats.cloudCells / Math.max(1, o.cloudCells);
-    const adaptive = TAG === "adaptive" ? rec : o;
-    const fixed = TAG === "fixed" ? rec : o;
-    const speedup = +(fixed.msPerFrame / Math.max(0.0001, adaptive.msPerFrame)).toFixed(3);
+    const comparable =
+      o.probeVersion === rec.probeVersion &&
+      o.measurementKind === rec.measurementKind &&
+      rec.pairId !== null &&
+      o.pairId === rec.pairId &&
+      JSON.stringify(o.configTruth?.config) ===
+        JSON.stringify(rec.configTruth.config) &&
+      JSON.stringify(o.adapterInfo) === JSON.stringify(rec.adapterInfo) &&
+      o.browserVersion === rec.browserVersion &&
+      JSON.stringify(o.canvas) === JSON.stringify(rec.canvas) &&
+      typeof o.source?.runtimeBundle?.sha256 === "string" &&
+      typeof rec.source.runtimeBundle.sha256 === "string" &&
+      o.source.runtimeBundle.sha256 !== rec.source.runtimeBundle.sha256 &&
+      fs.existsSync(`${OUT}/cloud-perf-${other}.png`);
+    if (comparable) {
+      const otherPng = fs.readFileSync(`${OUT}/cloud-perf-${other}.png`);
+      const mismatch = await imageMismatch(pngBuffer, otherPng);
+      const cellRatio = stats.cloudCells / Math.max(1, o.cloudCells);
+      const adaptive = TAG === "adaptive" ? rec : o;
+      const fixed = TAG === "fixed" ? rec : o;
+      const speedup = +(
+        fixed.msPerFrame / Math.max(0.0001, adaptive.msPerFrame)
+      ).toFixed(3);
+      const otherArtifactValid =
+        o.configTruth?.ok === true &&
+        Array.isArray(o.errors) &&
+        o.errors.length === 0 &&
+        o.cloudCells > 3000 &&
+        o.hasDevice === true &&
+        o.adapterInfo !== null &&
+        !o.gpuGate?.deviceLost;
 
-    console.log("\n=== A/B (adaptive vs fixed) ===");
-    console.log(`  image mean-abs luma mismatch: ${mismatch}/255 (${(mismatch / 255 * 100).toFixed(2)}%)`);
-    console.log(`  cloud-cell ratio ${TAG}/${other}: ${cellRatio.toFixed(3)}`);
-    console.log(`  frame time  adaptive ${adaptive.msPerFrame}ms  fixed ${fixed.msPerFrame}ms  speedup ×${speedup}`);
+      console.log("\n=== A/B (adaptive vs fixed) ===");
+      console.log(
+        `  image mean-abs luma mismatch: ${mismatch}/255 (${((mismatch / 255) * 100).toFixed(2)}%)`,
+      );
+      console.log(
+        `  cloud-cell ratio ${TAG}/${other}: ${cellRatio.toFixed(3)}`,
+      );
+      console.log(
+        `  frame time  adaptive ${adaptive.msPerFrame}ms  fixed ${fixed.msPerFrame}ms  speedup ×${speedup}`,
+      );
 
-    const checks = [
-      [`image preserved (mismatch ${mismatch} ≤ 5.1/255 ≈2%)`, mismatch <= 5.1],
-      [`cloud silhouette preserved (cell ratio ${cellRatio.toFixed(3)} in 0.94-1.06)`, cellRatio >= 0.94 && cellRatio <= 1.06],
-      [`adaptive faster than fixed (speedup ×${speedup} > 1.05)`, speedup > 1.05],
-      ["no NEW device errors (this run)", newErrs.length === 0],
-    ];
-    console.log("\n=== ANALYSIS ===");
-    pass = true;
-    for (const [n, ok] of checks) {
-      console.log(`  [${ok ? "PASS" : "FAIL"}] ${n}`);
-      if (!ok) pass = false;
+      const checks = [
+        [
+          `current artifact is valid and visibly contains clouds (${stats.cloudCells} cells)`,
+          currentArtifactValid,
+        ],
+        ["paired artifact is valid and visibly contains clouds", otherArtifactValid],
+        [
+          `image preserved (mismatch ${mismatch} ≤ 5.1/255 ≈2%)`,
+          mismatch <= 5.1,
+        ],
+        [
+          `cloud silhouette preserved (cell ratio ${cellRatio.toFixed(3)} in 0.94-1.06)`,
+          cellRatio >= 0.94 && cellRatio <= 1.06,
+        ],
+        [
+          `adaptive faster than fixed (speedup ×${speedup} > 1.05)`,
+          speedup > 1.05,
+        ],
+        ["no NEW device errors (this run)", newErrs.length === 0],
+        ["probe configuration round-tripped", configTruth.ok],
+      ];
+      console.log("\n=== ANALYSIS ===");
+      comparisonPassed = checks.every(([, ok]) => ok);
+      for (const [n, ok] of checks) {
+        console.log(`  [${ok ? "PASS" : "FAIL"}] ${n}`);
+      }
+      comparison = {
+        status: "compared",
+        pairId: PAIR_ID,
+        otherTag: other,
+        imageMeanAbsoluteLumaMismatch: mismatch,
+        cloudCellRatio: cellRatio,
+        speedup,
+        checks: checks.map(([name, ok]) => ({ name, ok })),
+      };
+    } else {
+      comparison = {
+        status: "noncomparable-companion",
+        pairId: PAIR_ID,
+        otherTag: other,
+      };
+      console.log(
+        `(existing ${other} capture is stale, unpaired, from the same bundle, or configured differently — rerun both builds with the same CLOUD_PERF_PAIR_ID before comparing)`,
+      );
     }
-    console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}`);
   } else {
     console.log(`(no ${other} capture yet — run the other build to compare)`);
   }
 
+  const pass = resolveCloudPerfPass({
+    currentArtifactValid,
+    pairId: PAIR_ID,
+    comparisonStatus: comparison.status,
+    comparisonPassed,
+  });
+  rec.comparison = comparison;
+  fs.writeFileSync(`${OUT}/cloud-perf-${TAG}.json`, JSON.stringify(rec, null, 2));
+  console.log(`[${TAG}]`, JSON.stringify(rec));
+  if (newErrs.length) console.log("NEW errs:", newErrs.slice(0, 2));
+  console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}`);
   await browser.close();
   process.exitCode = pass ? 0 : 1;
 }

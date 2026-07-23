@@ -1153,6 +1153,100 @@ cannot promise control of the OS/compositor swap interval; artifacts must record
 browser launch mode. In an uncapped lane, report CPU renders/second and GPU timestamp throughput before
 presented FPS.
 
+### Campaign 13 cloud probes (C13-01 Slice A)
+
+Campaign 13 begins with deterministic, offline Node/Playwright characterization rather than a renderer
+change. Start `node server.js --production`; all commands below use the local viewer with `offline=true`,
+disable request-render pausing and clock animation, and render authored fixed times. The injected
+[`cloud-probe-harness.mjs`](../Tools/visual-regression/lib/cloud-probe-harness.mjs) configures
+`globe.defaultCloudCollection.volumetric` directly. It rejects unknown/misspelled properties, requires
+WebGPU where requested, and verifies that `requestRenderMode`, `enableVolumetric`, and every requested
+value round-trip exactly. Treat the emitted truth JSON as part of the evidence; a screenshot without
+matching configuration truth is invalid.
+
+Use the full static tour for cloud types, lighting, altitude, dateline, poles, and billboard parity:
+
+```powershell
+node Tools/visual-regression/probe-cloud-tour.mjs
+```
+
+For the short seam/pole/API smoke:
+
+```powershell
+$env:TOUR_SCENES = "proc-dateline-east-horizon,proc-dateline-west-horizon,proc-north-pole-oblique,proc-south-pole-oblique,billboard-cumulus-noon"
+node Tools/visual-regression/probe-cloud-tour.mjs
+Remove-Item Env:TOUR_SCENES
+```
+
+Procedural volumetrics run only on WebGPU. Billboard `CloudCollection` scenes run on both renderers so
+the shared API/WebGL path remains covered. Outputs are
+`Tools/visual-regression/output/cloud-tour/<scene>-<backend>.png` plus
+`cloud-tour-truth.json`; configuration mismatches, new
+console/page/GPU/device errors, and missing cloud-pixel evidence in a gated
+seam/pole/billboard fixture fail the probe. Do not lower that gate to make a
+known planetary defect green.
+
+Use the fixed-time temporal sequence to inspect static convergence, mid-pan ghosting, and post-pan
+settling:
+
+```powershell
+$env:TEMPORAL_TIER = "medium"
+node Tools/visual-regression/probe-cloud-temporal.mjs
+Remove-Item Env:TEMPORAL_TIER
+```
+
+`TEMPORAL_TIER` is `low` or `medium`. Outputs land under
+`Tools/visual-regression/output/cloud-temporal/` as the three phase PNGs and
+`<tier>-truth.json`; the truth record includes effective time, resolved configuration, and errors.
+
+Use the fixed-scene queue-drain probe for maximum-throughput characterization:
+
+```powershell
+$env:CLOUD_PERF_PAIR_ID = "w5-local-2026-07-23"
+$env:TAG = "adaptive"
+node Tools/visual-regression/probe-cloud-perf.mjs
+Remove-Item Env:CLOUD_PERF_PAIR_ID
+Remove-Item Env:TAG
+```
+
+It writes `Tools/visual-regression/output/cloud-perf-<tag>.{png,json}` and gates configuration truth,
+WebGPU device/browser errors, and cloud-pixel liveness. `TAG` labels the current executable; it does not
+switch implementations. An adaptive/fixed A/B is valid only after running two separately checked-out
+implementations under their matching tags and the same explicit `CLOUD_PERF_PAIR_ID`. Source/runtime
+bundle, adapter, browser, resolution, configuration, liveness, and error truth are recorded; unpaired,
+same-bundle, stale, invalid, or differently configured companion artifacts are rejected. A single-tag
+result cannot establish a speedup. With `CLOUD_PERF_PAIR_ID` set, the first capture writes its artifact
+but intentionally exits RED until the comparable companion has been produced.
+
+Use the canonical moving route to characterize volumetrics across camera-distance bands:
+
+```powershell
+node Tools/visual-regression/run-performance-campaign.mjs `
+  --workload moving-camera-cloud-altitude-track-3d `
+  --renderer webgpu `
+  --repetitions 1 `
+  --output Tools/visual-regression/output/performance/campaign13-cloud-route.json
+```
+
+The workload is WebGPU-only and records the exact cloud configuration in `featureState`: coverage `0.5`,
+density `0.75`, layer `1500–3800 m`, medium temporal quality, `64` march steps, with weather-map
+animation, wind, shadows/cascades, cloud IBL, multi-deck, and high-precision paths disabled. It fails on
+the wrong renderer, external requests, page/device errors, missing samples, or incomplete/misaligned
+route coverage. It also requires realized raymarch, temporal-resolve, upscale, current-target, and
+history-target evidence; API configuration alone cannot prove the pass ran. Its only valid cloud-off
+reference is the same runner and renderer with
+`moving-camera-altitude-track-3d`.
+An explicit cloud workload request with `--renderer webgl` or `both` fails rather than silently
+dropping WebGL. An implicit all-workload campaign retains the WebGPU run and records the per-workload
+WebGL skip in its report.
+
+**Evidence limit:** C13-01 Slice A is characterization, not a promotion/performance claim. The cloud-on
+and cloud-off workloads are not yet scheduled as a cross-workload counterbalanced pair, so their raw
+delta can include launch-order, thermal, and browser-state drift. Static dateline/pole scenes do not
+prove dynamic seam crossings, RTE correctness, regional weather, or temporal-history validity.
+[Campaign 13](QUEUE_2026-07-23_CAMPAIGN13.md) therefore keeps C13-01 incomplete while those fixtures and
+gates remain open.
+
 ### CPU pass cost (R-7a)
 
 `CesiumDebug.cpuPassCost(true)` enables the per-pass profiler in the WebGPU scene renderer. Pass `false` to disable, no-arg to dump rolling-window stats.

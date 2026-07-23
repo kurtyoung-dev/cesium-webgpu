@@ -2,7 +2,8 @@
 /**
  * Cloud tour — a reusable, data-driven camera-tour harness that captures BOTH of
  * this fork's cloud systems across cloud "types", planet locations, view angles,
- * and times of day, on WebGPU vs WebGL.
+ * and times of day. Procedural clouds are WebGPU-only; billboard clouds are
+ * captured on both WebGPU and WebGL for renderer parity.
  *
  * TWO CLOUD SYSTEMS:
  *   - "procedural": the Schneider volumetric raymarcher (globe.defaultCloudCollection.enableVolumetric,
@@ -31,6 +32,13 @@
  *   (optional) TOUR_SCENES=proc-scattered-noon-up,billboard-cumulus-dusk  # subset
  */
 import { chromium } from "playwright";
+import {
+  errorGateInit,
+  armWebGPUDevices,
+  collectGateErrors,
+  attachConsoleErrorGate,
+} from "../lib/webgpu-error-gate.mjs";
+import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const ONLY = (process.env.TOUR_SCENES || "").split(",").filter(Boolean);
@@ -88,11 +96,48 @@ const SCENES = [
     camera: { lon: -95, lat: 37, height: 200000, heading: 0, pitch: -40 },
     timeIso: "2026-06-21T18:20:00Z",
   },
+  {
+    name: "proc-dateline-east-horizon",
+    system: "procedural",
+    desc: "broken clouds, east side of dateline, horizon",
+    proc: { coverage: 0.6, density: 0.85, bottom: 1500, top: 4000 },
+    minCloudish: 1000,
+    camera: { lon: 179.8, lat: 10, height: 9000, heading: 90, pitch: -5 },
+    timeIso: "2026-06-21T00:00:00Z",
+  },
+  {
+    name: "proc-dateline-west-horizon",
+    system: "procedural",
+    desc: "broken clouds, west side of dateline, horizon",
+    proc: { coverage: 0.6, density: 0.85, bottom: 1500, top: 4000 },
+    minCloudish: 1000,
+    camera: { lon: -179.8, lat: 10, height: 9000, heading: 270, pitch: -5 },
+    timeIso: "2026-06-21T00:00:00Z",
+  },
+  {
+    name: "proc-north-pole-oblique",
+    system: "procedural",
+    desc: "broken clouds, near north pole, oblique",
+    proc: { coverage: 0.6, density: 0.85, bottom: 1500, top: 4000 },
+    minCloudish: 1000,
+    camera: { lon: 45, lat: 88, height: 20000, heading: 0, pitch: -30 },
+    timeIso: "2026-06-21T12:00:00Z",
+  },
+  {
+    name: "proc-south-pole-oblique",
+    system: "procedural",
+    desc: "broken clouds, near south pole, oblique",
+    proc: { coverage: 0.6, density: 0.85, bottom: 1500, top: 4000 },
+    minCloudish: 1000,
+    camera: { lon: -45, lat: -88, height: 20000, heading: 180, pitch: -30 },
+    timeIso: "2026-06-21T12:00:00Z",
+  },
   // ---- Billboard CumulusCloud puffs ----
   {
     name: "billboard-cumulus-noon",
     system: "billboard",
     desc: "CumulusCloud puff cluster, plains, oblique, noon",
+    minCloudish: 1000,
     camera: { lon: -95.02, lat: 39, height: 6000, heading: 10, pitch: -18 },
     timeIso: "2026-06-21T18:20:00Z",
   },
@@ -100,6 +145,7 @@ const SCENES = [
     name: "billboard-cumulus-dusk",
     system: "billboard",
     desc: "CumulusCloud puff cluster, plains, oblique, DUSK",
+    minCloudish: 1000,
     camera: { lon: -95.02, lat: 39, height: 6000, heading: 10, pitch: -18 },
     timeIso: "2026-06-22T00:50:00Z",
   },
@@ -109,11 +155,14 @@ async function setupAndCapture(page, scene) {
   return page.evaluate(async (scene) => {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer,
-      s = v.scene,
-      g = s.globe;
+      s = v.scene;
+    v.useDefaultRenderLoop = false;
 
-    // Reset cloud state between scenes.
-    g.defaultCloudCollection.enableVolumetric = false;
+    // Reset cloud state between scenes and keep requestRenderMode disabled so
+    // every capture exercises live rendering rather than an idle frame.
+    let configTruth = globalThis.__cloudProbe.configure({
+      enableVolumetric: false,
+    });
     // Remove any prior CloudCollection.
     const prims = s.primitives;
     for (let i = prims.length - 1; i >= 0; i--) {
@@ -130,14 +179,19 @@ async function setupAndCapture(page, scene) {
 
     // Time of day → sun direction.
     v.clock.shouldAnimate = false;
-    v.clock.currentTime = C.JulianDate.fromIso8601(scene.timeIso);
+    const frameTime = C.JulianDate.fromIso8601(scene.timeIso);
+    v.clock.currentTime = frameTime;
 
     if (scene.system === "procedural") {
-      g.defaultCloudCollection.enableVolumetric = true;
-      if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = scene.proc.coverage;
-      if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = scene.proc.density;
-      if ("cloudLayerBottom" in g) g.defaultCloudCollection.volumetric.cloudLayerBottom = scene.proc.bottom;
-      if ("cloudLayerTop" in g) g.defaultCloudCollection.volumetric.cloudLayerTop = scene.proc.top;
+      configTruth = globalThis.__cloudProbe.configure({
+        requireWebGPU: true,
+        volumetric: {
+          cloudCoverage: scene.proc.coverage,
+          cloudDensity: scene.proc.density,
+          cloudLayerBottom: scene.proc.bottom,
+          cloudLayerTop: scene.proc.top,
+        },
+      });
     } else {
       // Billboard CumulusCloud cluster around the camera target.
       const clouds = prims.add(new C.CloudCollection());
@@ -180,19 +234,28 @@ async function setupAndCapture(page, scene) {
     });
 
     for (let i = 0; i < 150; i++) {
-      s.render();
+      s.render(frameTime);
       await new Promise((r) => requestAnimationFrame(r));
     }
 
-    // Cloud-ish metric: bright low-saturation (white/grey) pixels.
+    // Capture the raw Cesium canvas before returning to Playwright. Reading
+    // the WebGPU presentation canvas through drawImage can produce an all-zero
+    // buffer after the current texture has been presented, even though a page
+    // screenshot visibly contains the frame. A PNG snapshot gives the metric
+    // and saved artifact the same stable source.
+    s.render(frameTime);
     const canvas = s.canvas,
       w = canvas.width,
-      h = canvas.height;
+      h = canvas.height,
+      dataUrl = canvas.toDataURL("image/png");
+    const image = new Image();
+    image.src = dataUrl;
+    await image.decode();
     const tmp = document.createElement("canvas");
     tmp.width = w;
     tmp.height = h;
     const cx = tmp.getContext("2d");
-    cx.drawImage(canvas, 0, 0);
+    cx.drawImage(image, 0, 0);
     const px = cx.getImageData(0, 0, w, h).data;
     let cloudish = 0,
       lumSum = 0;
@@ -210,10 +273,13 @@ async function setupAndCapture(page, scene) {
     }
     return {
       renderer: s.context?.rendererType,
+      configTruth,
       cloudish,
       cloudMeanLum: cloudish ? Math.round(lumSum / cloudish) : 0,
       width: w,
       height: h,
+      effectiveTimeIso: C.JulianDate.toIso8601(frameTime),
+      dataUrl,
     };
   }, scene);
 }
@@ -226,43 +292,98 @@ async function runBackend(renderer, scenes, fs) {
   });
   const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
   const errs = [];
+  const gpuConsoleErrors =
+    renderer === "webgpu" ? attachConsoleErrorGate(page) : [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
   });
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-    timeout: 90_000,
-  });
+  page.on("pageerror", (error) => errs.push(`pageerror: ${error.message}`));
+  if (renderer === "webgpu") {
+    await page.addInitScript(errorGateInit);
+  }
+  await installCloudProbeHarnessOnPage(page);
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
+    {
+      waitUntil: "networkidle",
+      timeout: 90_000,
+    },
+  );
   await page.waitForFunction(() => !!window.viewer, { timeout: 90_000 });
+  const armState =
+    renderer === "webgpu"
+      ? await armWebGPUDevices(page)
+      : { armed: 0, found: 0, total: 0 };
 
   const results = {};
   for (const scene of scenes) {
-    const res = await setupAndCapture(page, scene);
-    const buf = await page.screenshot({ omitBackground: false });
+    const captured = await setupAndCapture(page, scene);
+    const { dataUrl, ...res } = captured;
     const out = `Tools/visual-regression/output/cloud-tour/${scene.name}-${renderer}.png`;
-    fs.writeFileSync(out, buf);
+    fs.writeFileSync(out, Buffer.from(dataUrl.split(",")[1], "base64"));
+    res.visibility = {
+      minCloudish: scene.minCloudish ?? 0,
+      pass: res.cloudish >= (scene.minCloudish ?? 0),
+    };
     results[scene.name] = res;
-    console.log(`  [${renderer}] ${scene.name}: cloudish=${res.cloudish} meanLum=${res.cloudMeanLum} → ${out}`);
+    console.log(
+      `  [${renderer}] ${scene.name}: cloudish=${res.cloudish} meanLum=${res.cloudMeanLum} visible=${res.visibility.pass} config=${JSON.stringify(res.configTruth.config)} → ${out}`,
+    );
   }
+  const gpuGate =
+    renderer === "webgpu"
+      ? await collectGateErrors(page)
+      : { errors: [], deviceLost: null, armedDevices: 0 };
+  const fatalErrors = [
+    ...errs,
+    ...gpuConsoleErrors,
+    ...gpuGate.errors,
+    ...(gpuGate.deviceLost ? [gpuGate.deviceLost] : []),
+    ...(renderer === "webgpu" && armState.found < 1
+      ? ["WebGPU error gate did not find a device"]
+      : []),
+  ];
   await browser.close();
   return {
     results,
-    errs: errs.filter((e) => !/AtmosphereLUT|default layout/.test(e)),
+    errs: [...new Set(fatalErrors)].filter(
+      (e) => !/AtmosphereLUT|default layout/.test(e),
+    ),
+    gpuGate: {
+      ...gpuGate,
+      armState,
+    },
   };
 }
 
 (async () => {
   const fs = await import("fs");
   fs.mkdirSync("Tools/visual-regression/output/cloud-tour", { recursive: true });
+  const unknownScenes = [
+    ...new Set(ONLY.filter((name) => !SCENES.some((scene) => scene.name === name))),
+  ];
+  if (unknownScenes.length > 0) {
+    throw new Error(`Unknown TOUR_SCENES: ${unknownScenes.join(", ")}`);
+  }
   const scenes = ONLY.length
     ? SCENES.filter((s) => ONLY.includes(s.name))
     : SCENES;
+  if (scenes.length === 0) {
+    throw new Error("Cloud tour selected zero scenes");
+  }
 
-  console.log(`=== Cloud tour: ${scenes.length} scenes × 2 backends ===`);
+  const billboardScenes = scenes.filter((scene) => scene.system === "billboard");
+  console.log(
+    `=== Cloud tour: ${scenes.length} WebGPU scenes; ${billboardScenes.length} billboard parity scenes ===`,
+  );
   console.log("\n--- WEBGPU ---");
   const wgpu = await runBackend("webgpu", scenes, fs);
-  console.log("\n--- WEBGL ---");
-  const wgl = await runBackend("webgl", scenes, fs);
+  const wgl = billboardScenes.length
+    ? await (async () => {
+        console.log("\n--- WEBGL (billboard parity) ---");
+        return runBackend("webgl", billboardScenes, fs);
+      })()
+    : { results: {}, errs: [] };
 
   console.log("\n=== SUMMARY (cloudish px / mean lum) ===");
   console.log(
@@ -277,13 +398,39 @@ async function runBackend(renderer, scenes, fs) {
     console.log(
       sc.name.padEnd(30),
       `${a.cloudish}/${a.cloudMeanLum}`.padEnd(18),
-      `${b.cloudish}/${b.cloudMeanLum}`.padEnd(18),
+      (b ? `${b.cloudish}/${b.cloudMeanLum}` : "n/a").padEnd(18),
       sc.desc,
     );
   }
   if (wgpu.errs.length)
     console.log("\nwebgpu NEW errs:", wgpu.errs.slice(0, 4));
+  if (wgl.errs.length)
+    console.log("\nwebgl NEW errs:", wgl.errs.slice(0, 4));
+  const truthPath =
+    "Tools/visual-regression/output/cloud-tour/cloud-tour-truth.json";
+  fs.writeFileSync(
+    truthPath,
+    JSON.stringify(
+      {
+        probeVersion: "c13-01",
+        webgpu: wgpu,
+        webglBillboardParity: wgl,
+      },
+      null,
+      2,
+    ),
+  );
+  console.log(`Truth manifest: ${truthPath}`);
   console.log(
     "\nPNGs: Tools/visual-regression/output/cloud-tour/<scene>-<backend>.png",
   );
+  process.exitCode =
+    wgpu.errs.length === 0 &&
+    wgl.errs.length === 0 &&
+    Object.values(wgpu.results).every((result) => result.configTruth.ok) &&
+    Object.values(wgl.results).every((result) => result.configTruth.ok) &&
+    Object.values(wgpu.results).every((result) => result.visibility.pass) &&
+    Object.values(wgl.results).every((result) => result.visibility.pass)
+      ? 0
+      : 1;
 })();

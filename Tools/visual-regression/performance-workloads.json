@@ -47,6 +47,18 @@
       "measuredSeconds": 20
     },
     {
+      "id": "moving-camera-cloud-altitude-track-3d",
+      "description": "WebGPU volumetric-cloud characterization over the authoritative continuous orbit-to-ground route. WebGL volumetric clouds are intentionally unsupported. The current workload-major schedule is not a promotion-grade cloud-on/off comparison; pair and counterbalance it against the same-renderer moving-camera-altitude-track-3d workload before claiming a delta.",
+      "mode": "3d",
+      "action": "camera-track",
+      "content": "globe-only",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "volumetric-clouds",
+      "renderers": ["webgpu"],
+      "trackId": "orbit-to-ground-global-v1",
+      "measuredSeconds": 20
+    },
+    {
       "id": "moving-pick-camera-altitude-track-3d",
       "description": "Continuous asynchronous hover-pick stress: flies the complete altitude route while a 3x3 pick window follows a deterministic moving cursor once per animation frame; reports Scene.render CPU plus public-call and coalesced physical-pick CPU outside the render boundary.",
       "mode": "3d",

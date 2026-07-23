@@ -78,7 +78,17 @@
           "content": { "enum": ["globe-only", "points-4096"] },
           "contentProfile": { "const": "local-grid-ellipsoid" },
           "featureProfile": {
-            "enum": ["deterministic-core", "default-globe"]
+            "enum": [
+              "deterministic-core",
+              "default-globe",
+              "volumetric-clouds"
+            ]
+          },
+          "renderers": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "enum": ["webgl", "webgpu"] }
           },
           "measuredFrames": { "type": "integer", "minimum": 1 },
           "measuredSeconds": { "type": "number", "exclusiveMinimum": 0 },
