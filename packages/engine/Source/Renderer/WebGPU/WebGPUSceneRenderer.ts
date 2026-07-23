@@ -82,6 +82,7 @@ import { WebGPUBoundingVolumeDebugPass } from "./WebGPUBoundingVolumeDebugPass.j
 import { configureWebGPUPostProcessPipeline } from "./WebGPUPostProcessStageCollection.js";
 import { executePickPass } from "./WebGPUSceneRendererPickPass.js";
 import { executeEnvironmentalEffects } from "./WebGPUSceneRendererEnvironmentalEffects.js";
+import { shouldExecuteWebGPUSceneFrame } from "./WebGPUSceneRendererEnvironmentDemand.js";
 import {
   dispatchClusteredLighting,
   getClusteredLightingBuffers,
@@ -1581,7 +1582,13 @@ export class WebGPUSceneRenderer {
     }
     //>>includeEnd('debug');
 
-    if (numFrustums === 0) {
+    // A command-empty view can still contain screen-space environmental
+    // content (most importantly a volumetric cloud deck while looking wholly
+    // above the globe). Keep the original zero-work fast path only when no
+    // environmental consumer is active. Demanded empty frames continue below:
+    // the scene framebuffer is cleared, post-process reaches the canvas, and
+    // the environmental chain composites over that valid empty scene.
+    if (!shouldExecuteWebGPUSceneFrame(numFrustums, scene, context)) {
       return;
     }
 

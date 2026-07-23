@@ -35,6 +35,29 @@ export function installCloudProbeHarness() {
     return value;
   };
 
+  const proceduralRealization = () => {
+    const viewer = root.viewer;
+    const context = viewer?.scene?.context;
+    const cache = context?._cloudCache;
+    const uniforms = cache?.uniformData;
+    return {
+      cachePresent: cache !== undefined && cache !== null,
+      initialized: cache?.initialized === true,
+      pipelineReady: cache?.pipeline !== null && cache?.pipeline !== undefined,
+      maxSteps: uniforms?.[44],
+      lightSteps: uniforms?.[45],
+      qualityFlags: uniforms?.[74],
+      halfWidth: cache?.halfWidth ?? 0,
+      halfHeight: cache?.halfHeight ?? 0,
+      temporalWidth: cache?.temporalWidth ?? 0,
+      temporalHeight: cache?.temporalHeight ?? 0,
+      temporalPipelineReady:
+        cache?.temporalPipeline !== null &&
+        cache?.temporalPipeline !== undefined,
+      frameCounter: cache?.frameCounter ?? 0,
+    };
+  };
+
   root.__cloudProbe = Object.freeze({
     configure(options = {}) {
       const viewer = root.viewer;
@@ -113,6 +136,140 @@ export function installCloudProbeHarness() {
       }
       return truth;
     },
+
+    /**
+     * Await the lazy procedural-cloud feature renderer and prove that it has
+     * executed far enough to initialize its renderer cache. A fixed number of
+     * rAF warm-up frames is not a readiness contract: on a cold chunk load the
+     * Scene legitimately skips the effect while the feature renderer is absent.
+     */
+    async awaitProceduralReady(options = {}) {
+      const viewer = root.viewer;
+      const scene = viewer?.scene;
+      const context = scene?.context;
+      const featureRendererKey = options.featureRendererKey;
+      if (!scene || !context) {
+        throw new Error("cloud probe requires viewer.scene.context");
+      }
+      if (typeof featureRendererKey !== "number") {
+        throw new Error(
+          "cloud probe requires the exported PROCEDURAL_CLOUDS feature-renderer key",
+        );
+      }
+      if (typeof context.getFeatureRendererAsync !== "function") {
+        throw new Error(
+          "cloud probe requires GraphicsContext.getFeatureRendererAsync",
+        );
+      }
+
+      const featureRenderer =
+        await context.getFeatureRendererAsync(featureRendererKey);
+      if (!featureRenderer) {
+        throw new Error(
+          `procedural cloud feature renderer ${featureRendererKey} is unavailable`,
+        );
+      }
+
+      const maxFrames = Math.max(1, options.maxFrames ?? 180);
+      const frameTime = options.frameTime ?? viewer.clock?.currentTime;
+      const camera = scene.camera;
+      const cloneCartesian = (value) => {
+        if (!value) {
+          return undefined;
+        }
+        if (typeof value.clone === "function") {
+          return value.clone();
+        }
+        return { x: value.x, y: value.y, z: value.z };
+      };
+      const cameraState =
+        camera && typeof camera.setView === "function"
+          ? {
+              destination: cloneCartesian(
+                camera.positionWC ?? camera.position,
+              ),
+              direction: cloneCartesian(
+                camera.directionWC ?? camera.direction,
+              ),
+              up: cloneCartesian(camera.upWC ?? camera.up),
+            }
+          : undefined;
+      let executeCalls = 0;
+      let executeInstrumented = false;
+      const originalExecute = featureRenderer.execute;
+      if (typeof originalExecute === "function") {
+        try {
+          featureRenderer.execute = function (...args) {
+            executeCalls++;
+            return Reflect.apply(originalExecute, this, args);
+          };
+          executeInstrumented = featureRenderer.execute !== originalExecute;
+        } catch {
+          // Report the exact readiness-contract failure below.
+        }
+      }
+      if (!executeInstrumented) {
+        throw new Error(
+          "cloud probe could not instrument the procedural renderer execute path",
+        );
+      }
+
+      try {
+        for (let frame = 0; frame < maxFrames; frame++) {
+          // The renderer intentionally freezes idle scene work. Drive a bounded,
+          // alternating camera rotation during readiness so a cold feature
+          // renderer cannot be "warmed" by frames that never reach the
+          // environmental-effects chain. The helper restores the entry pose
+          // before returning; callers then set their exact evidence camera.
+          if (typeof camera?.rotateRight === "function") {
+            camera.rotateRight((frame & 1) === 0 ? 0.01 : -0.01);
+          }
+          scene.requestRender?.();
+          scene.render(frameTime);
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+          const realization = proceduralRealization();
+          if (
+            realization.initialized &&
+            realization.pipelineReady &&
+            executeCalls > 0
+          ) {
+            return {
+              ok: true,
+              featureRendererKey,
+              waitedFrames: frame + 1,
+              executeCalls,
+              cameraDriven: typeof camera?.rotateRight === "function",
+              ...realization,
+            };
+          }
+        }
+
+        throw new Error(
+          `procedural cloud renderer did not initialize after ${maxFrames} moving frames (executeCalls=${executeCalls}): ${JSON.stringify(
+            proceduralRealization(),
+          )}`,
+        );
+      } finally {
+        if (executeInstrumented) {
+          featureRenderer.execute = originalExecute;
+        }
+        if (
+          cameraState?.destination &&
+          cameraState.direction &&
+          cameraState.up
+        ) {
+          camera.setView({
+            destination: cameraState.destination,
+            orientation: {
+              direction: cameraState.direction,
+              up: cameraState.up,
+            },
+          });
+        }
+      }
+    },
+
+    proceduralRealization,
   });
 }
 

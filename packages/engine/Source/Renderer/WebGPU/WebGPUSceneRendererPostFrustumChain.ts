@@ -32,6 +32,7 @@ import type { WebGPUContext } from "./WebGPUContext.js";
 import type { WebGPUPostProcessPipeline } from "./WebGPUPostProcessPipeline.js";
 import type { WebGPUSceneFramebuffer } from "./WebGPUSceneFramebuffer.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
+import { hasEnvironmentalEffectDemand } from "./WebGPUSceneRendererEnvironmentDemand.js";
 
 /** SceneRenderer surface the post-frustum chain reaches back to. */
 export interface PostFrustumChainHost {
@@ -231,40 +232,13 @@ export function executePostFrustumChain(
   // Fog) are off — the default for the basic CesiumViewer — the copy
   // is skipped entirely. Saves the per-frame canvas-copy bandwidth
   // (~7 MB at 1920×1080 bgra8unorm) for the common case.
-  const _sceneAny = config.scene as unknown as {
-    _enableSSR?: boolean;
-    _enableNPROutlines?: boolean;
-    _enableContactShadows?: boolean;
-    _enableWeather?: boolean;
-    globe?: {
-      // Cloud-unification epic slice 4A/4B — the managed default cloud collection
-      // drives the volumetric deck via its exclusive `renderMode`
-      // (VOLUMETRIC === 1). Include it in the snapshot-copy gate so
-      // facade-enabled clouds still get the scene-color snapshot copy (else the
-      // composite samples raw HDR color). The `globe.showProceduralClouds` field
-      // was removed in 4B — the collection's `renderMode` is the single gate.
-      defaultCloudCollection?: { renderMode?: number };
-    };
-    _frameState?: {
-      atmosphericConditions?: {
-        volumetricFog?: { enabled?: boolean };
-        // Batch 420 — ground fog reuses the froxel composite, which samples
-        // this snapshot copy of the scene color. Include it in the
-        // any-effect gate so the copy isn't skipped when ground fog is the
-        // sole driver (volumetricFog master off).
-        effects?: { groundFog?: { enabled?: boolean } };
-      };
-    };
-  };
-  const _acForCopy = _sceneAny._frameState?.atmosphericConditions;
-  const _anyEnvEffectEnabled =
-    !!_sceneAny._enableSSR ||
-    !!_sceneAny._enableNPROutlines ||
-    !!_sceneAny._enableContactShadows ||
-    !!_sceneAny._enableWeather ||
-    _sceneAny.globe?.defaultCloudCollection?.renderMode === 1 || // CloudRenderMode.VOLUMETRIC
-    _acForCopy?.volumetricFog?.enabled === true ||
-    _acForCopy?.effects?.groundFog?.enabled === true;
+  // Use the same non-consuming demand contract as the empty-frustum scheduler.
+  // In particular, this includes a user-owned VOLUMETRIC CloudCollection's
+  // pending request, not only the managed default collection.
+  const _anyEnvEffectEnabled = hasEnvironmentalEffectDemand(
+    config.scene,
+    context,
+  );
   const _ppCtx = context as unknown as {
     _currentTextureView?: GPUTextureView | null;
     _currentCommandEncoder?: GPUCommandEncoder | null;

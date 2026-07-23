@@ -73,9 +73,12 @@ renumber, reuse, or mint a `C13-*` identifier elsewhere without adding it here f
 | `C13-32` | View-local cascaded 3D density clipmap | P3 | architecture/perf | XL | W6 | `C13-10`, Gate C |
 | `C13-33` | Historical weather replay demo | P3 | demo/data | M | W6 | `C13-24`, `C13-26` |
 | `C13-34` | Cloud-shadow contribution to dynamic environment maps | P3 | feature/quality | S | W6 | `C13-22` |
-| `C13-GATE-A` | Launch and evidence-truth gate | R0 | gate | S | W0 | `C13-01`, `C13-02` |
+| `C13-35` | Command-empty environment demand scheduling and cold-start cloud readiness | P0 | correctness/perf | M | W0 | `C13-01` |
+| `C13-36` | Animated per-pixel IGN ray-start jitter and periodicity oracle | P0 | quality/perf | M | W2 | `C13-03` |
+| `C13-37` | Planet-stable non-periodic baked density domain | P0 | quality/correctness | L | W2 | `C13-03`, `C13-36` |
+| `C13-GATE-A` | Launch and evidence-truth gate | R0 | gate | S | W0 | `C13-01`, `C13-02`, `C13-35` |
 | `C13-GATE-B` | Planetary correctness gate | R0 | gate | M | W1 | `C13-03..08` |
-| `C13-GATE-C` | Temporal reconstruction and measured-performance gate | R0 | gate | M | W2 | `C13-09..13` |
+| `C13-GATE-C` | Temporal reconstruction and measured-performance gate | R0 | gate | M | W2 | `C13-09..13`, `C13-36`, `C13-37` |
 | `C13-GATE-D` | Regional weather realism gate | R0 | gate | M | W3 | `C13-14..20` |
 | `C13-EXIT` | Feature-preserving cloud certification | R0 | gate | L | EXIT | Gates A-D, selected W4/W5 owners |
 
@@ -206,6 +209,39 @@ Primary references:
 - [cloud raymarch shader](https://github.com/takram-design-engineering/three-geospatial/blob/main/packages/clouds/src/shaders/clouds.frag)
 - [temporal resolve shader](https://github.com/takram-design-engineering/three-geospatial/blob/main/packages/clouds/src/shaders/cloudsResolve.frag)
 - [shadow shader](https://github.com/takram-design-engineering/three-geospatial/blob/main/packages/clouds/src/shaders/shadow.frag)
+
+### 2.8 Command-empty frames currently suppress demanded clouds
+
+The initial `cloudQuality=128` zero-cloud artifact was not evidence that the live-noise shader fails
+at 128 steps. The probe configured the collection correctly, but its cold upward-looking view drained
+to zero frustum command lists before the lazy procedural renderer executed. The WebGPU scene renderer
+returned before resource setup and the post-frustum/environment chain, leaving `_cloudCache`
+uninitialized, uniforms zero, no cloud pass, and a meaningless sub-millisecond timing.
+
+This is both an evidence bug and a renderer scheduling bug:
+
+- a loaded feature-renderer handle is not proof its `execute` ran;
+- a fixed rAF count does not guarantee the environment chain ran;
+- no geometry/frustum commands does not mean a demanded screen-space cloud/fog/weather frame has no
+  work.
+
+`C13-35` owns the scheduling correction and the exact readiness gate. The 128-step path remains under
+`C13-13` for lighting/spatial-budget separation, but the old blank screenshot is reclassified as
+invalid evidence rather than a raymarch defect.
+
+### 2.9 The severe static lattice precedes temporal history
+
+The repeated rows/spokes are visible in full-resolution, temporal-off captures and are much stronger
+with baked noise than live noise. The baked 3D texture repeats on all axes, uses harmonically related
+frequencies, and is sampled in the ECEF domain. Its approximate visible periods are `7.4 km` for the
+base shape and `0.667 km` for detail; perspective projects that Cartesian lattice into converging
+rows.
+
+The planned per-pixel animated interleaved-gradient-noise ray-start offset also never shipped:
+`QF_JITTER` and the tier's `jitterEnabled` exist but are not consumed, while the current Bayer value
+is one frame-global UV offset. Temporal history preserves and can amplify this structured input, but
+is not its original cause. `C13-36` restores the license-free ray-start jitter contract; `C13-37`
+owns the durable non-periodic density domain.
 
 ---
 
@@ -344,6 +380,17 @@ Expose, without per-frame allocation:
 Keep clean and API-instrumented lanes separate. Instrumentation must be removable/disableable without
 changing the render result.
 
+#### `C13-35` — command-empty environment demand scheduling
+
+An empty geometry/frustum command list is not proof that the frame has no work. Preserve the
+zero-work return only when no post-frustum/environment consumer is demanded. Managed or user-owned
+volumetric clouds, fog, weather, SSR, outlines, and contact shadows must still reach the canvas and
+environment chain while looking into an otherwise command-empty sky.
+
+Cloud probes must await the exported lazy feature-renderer key and then prove at least one actual
+execute plus initialized uniforms/targets. A fixed rAF warm-up count, configuration round trip, or
+loaded renderer handle is not execution evidence.
+
 ### W1 — Planetary correctness before appearance tuning
 
 `C13-03` defines the shared cloud coordinate contract and authors RED probes. `C13-04` applies it to
@@ -393,6 +440,18 @@ changes.
 `C13-13` preserves scattering/atmosphere fidelity at lower spatial tiers. Sample count, lighting
 octaves, shadow quality, reconstruction quality, and output resolution become explicit independent
 budgets rather than one "low means flat" preset.
+
+`C13-36` restores the existing but unwired `jitterEnabled`/`QF_JITTER` contract with a deterministic,
+license-free animated interleaved-gradient-noise offset at each pixel's ray start. It remains
+separate from the 16-phase reconstruction/update mask and must preserve the adaptive march's
+conservative base-density oracle.
+
+`C13-37` removes the axis-aligned periodic lattice from the baked density domain. Increasing texture
+resolution is not sufficient because it retains the normalized repeat period. Use planet-stable
+regional/local coordinates, seeded rotations, incommensurate scales, and footprint-aware sampling;
+apply identical macro shaping to full density and the empty-space oracle. The full-resolution,
+temporal-off baked-vs-live periodicity probe is the acceptance authority before temporal history can
+hide or amplify the result.
 
 ### W3 — Globe-native weather and regional formation variety
 
@@ -505,10 +564,10 @@ landing defect.
 | ID(s) | Status | Evidence / next action |
 | --- | --- | --- |
 | `C13-00` | **COMPLETE — Batch 732 (`f4a934e606`)** | Explicit 2026-07-23 maintainer launch authority; C11 transfer map and confirmed findings recorded here; TypeScript, Markdown lint, and Prettier passed. Local `main` contains the launch commit. Publication remains externally blocked because `origin` returned HTTP 403 for the configured account; this does not block the explicitly authorized local-trunk campaign. |
-| `C13-01` | **IN PROGRESS — Batch 733 Slice A (2026-07-23)** | Repaired unified API/config truth, deterministic offline/fixed-time capture, raw-frame metrics, WebGPU error/device-loss gates, backend-aware workload selection, and a WebGPU moving cloud route. Launch evidence now truthfully exposes a north-pole blank and the `cloudQuality=128` live/full-resolution escape hatch producing zero cloud pixels; these are queued defects, not green baselines. Dynamic crossings, climate/type fixtures, temporal metrics, complete provenance, and GPU-timestamp evidence remain. |
+| `C13-01` | **IN PROGRESS — Batch 733 plus Batch 734 readiness follow-up (2026-07-23)** | Batch 733 repaired unified API/config truth, deterministic offline/fixed-time capture, raw-frame metrics, backend-aware workload selection, and the moving WebGPU route. Batch 734 requires an actual procedural execute plus initialized cache/pipeline instead of trusting a loaded lazy handle or fixed warm-up count; the procedural tour now uses same-camera OFF/ON contribution for colored pole/dusk fixtures. The stale `cloudQuality=128` blank claim is superseded: it realizes 128/8 full-resolution work with 7,584 cloud cells. The pre-fix north-pole shell defect remains C13-03/04 evidence. Climate/region/type/same-type fixtures, wind/time and temporal-reset sequences, complete per-sequence provenance/metrics, and GPU timing remain. |
 | `C13-02` | NOT STARTED | Begins after the repaired tour establishes the measurement surface. |
-| `C13-03` | NOT STARTED | Author the WGS84/RTE contract and dynamic RED planetary probes before shader changes. Slice A's fixed north-pole view is already RED (`0` cloudish pixels on a uniform-blue frame). |
-| `C13-04` | NOT STARTED | Primary march RTE/WGS84 owner. |
+| `C13-03` | NOT STARTED | Author the WGS84/RTE contract and dynamic RED planetary probe before the primary-shell landing. Batch 733's fixed north-pole view is pre-fix RED. |
+| `C13-04` | NOT STARTED | Primary visible-march RTE/WGS84 owner; it does not own raw-ECEF density, temporal, standalone shadow, capture, or weather correctness. |
 | `C13-05` | NOT STARTED | Temporal origin/reprojection RTE owner. |
 | `C13-06` | NOT STARTED | Shadow/mask/capture/atmosphere RTE owner. |
 | `C13-07` | NOT STARTED | Bounded global-map seam/pole correction; does not replace `C13-14`. |
@@ -517,7 +576,7 @@ landing defect.
 | `C13-10` | NOT STARTED | True 1/16 current work and full-resolution history. |
 | `C13-11` | **BLOCKED** | Needs a provenance-approved, license-clean STBN generation/import plan and notices. NVIDIA STBN assets are prohibited. Does not block W1. |
 | `C13-12` | NOT STARTED | Opens after reconstruction topology and current-work layout. |
-| `C13-13` | NOT STARTED | Lighting/spatial-tier separation. Also owns the Slice-A RED where the supported `cloudQuality=128` live/full-resolution escape hatch applies exactly but renders `0` cloud pixels. |
+| `C13-13` | NOT STARTED | Lighting/spatial-tier separation still follows reconstruction topology. The old 128-step blank was command-empty scheduling/readiness, not a raymarch-tier failure; fresh visible evidence is clean but has no comparable adaptive/fixed companion and therefore proves no speedup. |
 | `C13-14` | NOT STARTED | Promoted C11 planet-scale tiling seed; core W3 architecture. |
 | `C13-15` | NOT STARTED | Climate prior; distinguish climatology from current observations. |
 | `C13-16` | NOT STARTED | Regional type/deck mixtures. |
@@ -539,6 +598,9 @@ landing defect.
 | `C13-32` | DEFERRED | XL architecture option; activate only after measured Gate-C attribution. |
 | `C13-33` | CONDITIONAL NOT TRIGGERED | Blocked by `C13-26`; mock demo does not satisfy the real-data headline. |
 | `C13-34` | DEFERRED | Opens after rich/stable cloud shadows. |
+| `C13-35` | **COMPLETE — Batch 734** | A non-consuming per-frame cloud-demand signal and shared environment-demand predicate keep a zero-frustum frame alive only when an effect needs it. The black-sky acceptance records eight managed and eight real user-owned frames with `numFrustums=0`, exact request/demand observation, and all resource/post/environment/cloud/canvas stages reached; the managed default is off during the user-owned phase. Eight disabled control frames retain zero frustums and skip all expensive stages. Each active output has 7,584 cloud cells, disabled is exactly black, and all 42 checks plus the WebGPU error gate pass. |
+| `C13-36` | NOT STARTED | Diagnosis/design only: `jitterEnabled`/`QF_JITTER` exist but are not wired into the renderer or raymarch. Implement a license-free per-pixel IGN sample phase and a periodicity oracle without changing adaptive-march interval/control invariants. |
+| `C13-37` | NOT STARTED | The repeat-sampled baked textures, harmonic scales, and raw-ECEF density domain remain unchanged. Planet-stable regional/local coordinates and the temporal-off baked-vs-live periodicity gate are still required. |
 | `C13-GATE-A` | NOT STARTED | Follows `C13-01/02`. |
 | `C13-GATE-B` | NOT STARTED | Follows `C13-03..08`. |
 | `C13-GATE-C` | NOT STARTED | Follows `C13-09..13`; STBN may remain an explicit blocker if its provenance is unresolved. |
@@ -572,15 +634,42 @@ This is an oracle/tooling slice only; it changes no engine renderer or cloud app
   implemented.
 - The repaired adaptive-march maximum-throughput probe requires an explicit pair ID, distinct runtime
   bundles, matching adapter/browser/resolution/configuration, clean error truth, and visible clouds.
-  The current `cloudQuality=128` escape-hatch run is intentionally RED with `0` cloud pixels; its
-  sub-millisecond queue-drain timing is invalid as a cloud-performance result.
+  Batch 733's `cloudQuality=128` escape-hatch run was RED with `0` cloud pixels and its
+  sub-millisecond queue-drain timing was invalid. C13-35 later proved that this was a skipped
+  command-empty environment frame, not a 128-step shader failure.
 - Functionality preservation: WebGL volumetrics remain unsupported by design, while WebGL billboard
   and shared collection/API coverage remain active. Unsupported implicit workloads are recorded as
   skips; an explicitly requested incompatible workload fails. No feature was removed or disabled to
   obtain these measurements.
 - Rollback boundary: Batch 733 Slice A is confined to Node/Playwright tools, workload metadata/tests,
-  and documentation. The next runtime slice starts only after `C13-01` expands the dynamic RED
-  fixtures and `C13-03` seals the WGS84/RTE coordinate contract.
+  and documentation. The first runtime correction is isolated in C13-35/Batch 734 below.
+
+### C13-35 Batch 734 scheduling/readiness evidence
+
+- `WebGPUSceneRenderer` now keeps a command-empty frame alive only when a shared, side-effect-free
+  environmental-demand predicate reports managed/user volumetric clouds, SSR, NPR outlines, contact
+  shadows, weather, volumetric fog, or ground fog. With no frustums and no demand, the existing
+  zero-work return remains.
+- The predicate consumes no cloud request. The eventual environmental renderer remains the sole
+  request consumer, and the same predicate governs the scene-color snapshot-copy decision.
+- The black-sky Node/Edge acceptance holds `numFrustums=0` for all three eight-frame phases. Managed
+  clouds active: resource setup, post-processing, environmental effects, procedural clouds, and
+  canvas writes each execute `8/8`; the exact `128` primary/`8` light-step full-resolution path
+  produces `7,584` cloud cells. A real user-owned VOLUMETRIC collection with the managed default off
+  publishes and exposes demand `8/8`, reaches the same stages `8/8`, and also produces `7,584` cloud
+  cells. All clouds disabled: those stages execute `0/8`, the image is exactly black, and the
+  true-empty fast path is preserved.
+- Managed/disabled images differ at `49,980` pixels (`6.3553%`); the user-owned phase has the same
+  contribution. All 42 acceptance checks pass and the WebGPU error/device-loss gate is clean. The
+  separate maximum-throughput characterization is green at `12.1847 ms/frame`; it is not a speedup
+  claim because its fixed companion is stale and noncomparable.
+- Functionality preservation: no effect or renderer was disabled to obtain the active result;
+  WebGL billboard parity remains `36,113`/`36,504` evidence pixels. The procedural-tour pole/dusk
+  gate now measures same-camera OFF/ON contribution instead of assuming all valid clouds are bright
+  and neutral.
+- Rollback boundary: the engine change is limited to non-consuming demand observation and the
+  zero-frustum early-return/snapshot gates. Readiness/probe changes are independently removable and
+  do not alter production configuration or rendering.
 
 ---
 

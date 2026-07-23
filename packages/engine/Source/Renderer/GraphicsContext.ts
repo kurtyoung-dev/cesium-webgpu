@@ -1023,6 +1023,19 @@ export abstract class GraphicsContext {
   }
 
   /**
+   * Whether a collection published a volumetric-cloud request for the current
+   * frame. This is a non-consuming scheduling signal: scene renderers may use
+   * it to keep an otherwise command-empty environmental frame alive without
+   * stealing the request from {@link GraphicsContext#consumeVolumetricCloudRequest}.
+   *
+   * The base implementation is always `false`; WebGPU overrides it alongside
+   * its request storage.
+   */
+  get hasVolumetricCloudRequest(): boolean {
+    return false;
+  }
+
+  /**
    * Retrieve (and clear) the volumetric cloud request published this frame via
    * {@link GraphicsContext#requestVolumetricClouds}. The base implementation
    * always returns `undefined` (WebGL never has a request); `WebGPUContext`

@@ -163,6 +163,7 @@ async function setupAndCapture(page, scene) {
     let configTruth = globalThis.__cloudProbe.configure({
       enableVolumetric: false,
     });
+    let readiness = null;
     // Remove any prior CloudCollection.
     const prims = s.primitives;
     for (let i = prims.length - 1; i >= 0; i--) {
@@ -191,6 +192,10 @@ async function setupAndCapture(page, scene) {
           cloudLayerBottom: scene.proc.bottom,
           cloudLayerTop: scene.proc.top,
         },
+      });
+      readiness = await globalThis.__cloudProbe.awaitProceduralReady({
+        featureRendererKey: C.FeatureRendererKey.PROCEDURAL_CLOUDS,
+        frameTime,
       });
     } else {
       // Billboard CumulusCloud cluster around the camera target.
@@ -243,20 +248,28 @@ async function setupAndCapture(page, scene) {
     // buffer after the current texture has been presented, even though a page
     // screenshot visibly contains the frame. A PNG snapshot gives the metric
     // and saved artifact the same stable source.
-    s.render(frameTime);
-    const canvas = s.canvas,
-      w = canvas.width,
-      h = canvas.height,
-      dataUrl = canvas.toDataURL("image/png");
-    const image = new Image();
-    image.src = dataUrl;
-    await image.decode();
-    const tmp = document.createElement("canvas");
-    tmp.width = w;
-    tmp.height = h;
-    const cx = tmp.getContext("2d");
-    cx.drawImage(image, 0, 0);
-    const px = cx.getImageData(0, 0, w, h).data;
+    const captureRawCanvas = async () => {
+      s.render(frameTime);
+      const canvas = s.canvas;
+      const dataUrl = canvas.toDataURL("image/png");
+      const image = new Image();
+      image.src = dataUrl;
+      await image.decode();
+      const tmp = document.createElement("canvas");
+      tmp.width = canvas.width;
+      tmp.height = canvas.height;
+      const cx = tmp.getContext("2d");
+      cx.drawImage(image, 0, 0);
+      return {
+        dataUrl,
+        width: tmp.width,
+        height: tmp.height,
+        pixels: cx.getImageData(0, 0, tmp.width, tmp.height).data,
+      };
+    };
+
+    const onCapture = await captureRawCanvas();
+    const px = onCapture.pixels;
     let cloudish = 0,
       lumSum = 0;
     for (let i = 0; i < px.length; i += 4) {
@@ -271,15 +284,49 @@ async function setupAndCapture(page, scene) {
         lumSum += mx;
       }
     }
+
+    // Neutral/bright-pixel classification is useful for the billboard parity
+    // lane but is not a valid procedural visibility oracle: physically lit
+    // polar or dusk clouds can be strongly colored. Isolate procedural cloud
+    // contribution with a same-camera, same-time OFF/ON delta instead.
+    let contributionPixels = null;
+    let meanContributionDelta = null;
+    if (scene.system === "procedural") {
+      globalThis.__cloudProbe.configure({ enableVolumetric: false });
+      for (let i = 0; i < 3; i++) {
+        s.render(frameTime);
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      const offCapture = await captureRawCanvas();
+      let totalDelta = 0;
+      contributionPixels = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        const sum =
+          Math.abs(px[i] - offCapture.pixels[i]) +
+          Math.abs(px[i + 1] - offCapture.pixels[i + 1]) +
+          Math.abs(px[i + 2] - offCapture.pixels[i + 2]);
+        totalDelta += sum;
+        if (sum > 18) {
+          contributionPixels++;
+        }
+      }
+      meanContributionDelta =
+        totalDelta /
+        Math.max(1, onCapture.width * onCapture.height * 3);
+    }
+
     return {
       renderer: s.context?.rendererType,
       configTruth,
+      readiness,
       cloudish,
       cloudMeanLum: cloudish ? Math.round(lumSum / cloudish) : 0,
-      width: w,
-      height: h,
+      contributionPixels,
+      meanContributionDelta,
+      width: onCapture.width,
+      height: onCapture.height,
       effectiveTimeIso: C.JulianDate.toIso8601(frameTime),
-      dataUrl,
+      dataUrl: onCapture.dataUrl,
     };
   }, scene);
 }
@@ -321,13 +368,20 @@ async function runBackend(renderer, scenes, fs) {
     const { dataUrl, ...res } = captured;
     const out = `Tools/visual-regression/output/cloud-tour/${scene.name}-${renderer}.png`;
     fs.writeFileSync(out, Buffer.from(dataUrl.split(",")[1], "base64"));
+    const evidencePixels =
+      scene.system === "procedural" ? res.contributionPixels : res.cloudish;
     res.visibility = {
+      metric:
+        scene.system === "procedural"
+          ? "same-camera-off-on-delta"
+          : "bright-neutral-pixels",
       minCloudish: scene.minCloudish ?? 0,
-      pass: res.cloudish >= (scene.minCloudish ?? 0),
+      evidencePixels,
+      pass: evidencePixels >= (scene.minCloudish ?? 0),
     };
     results[scene.name] = res;
     console.log(
-      `  [${renderer}] ${scene.name}: cloudish=${res.cloudish} meanLum=${res.cloudMeanLum} visible=${res.visibility.pass} config=${JSON.stringify(res.configTruth.config)} → ${out}`,
+      `  [${renderer}] ${scene.name}: cloudish=${res.cloudish} contribution=${res.contributionPixels ?? "n/a"} meanLum=${res.cloudMeanLum} visible=${res.visibility.pass} config=${JSON.stringify(res.configTruth.config)} → ${out}`,
     );
   }
   const gpuGate =
@@ -385,7 +439,7 @@ async function runBackend(renderer, scenes, fs) {
       })()
     : { results: {}, errs: [] };
 
-  console.log("\n=== SUMMARY (cloudish px / mean lum) ===");
+  console.log("\n=== SUMMARY (visibility-evidence px / neutral-cloud mean lum) ===");
   console.log(
     "scene".padEnd(30),
     "webgpu".padEnd(18),
@@ -397,8 +451,10 @@ async function runBackend(renderer, scenes, fs) {
       b = wgl.results[sc.name];
     console.log(
       sc.name.padEnd(30),
-      `${a.cloudish}/${a.cloudMeanLum}`.padEnd(18),
-      (b ? `${b.cloudish}/${b.cloudMeanLum}` : "n/a").padEnd(18),
+      `${a.visibility.evidencePixels}/${a.cloudMeanLum}`.padEnd(18),
+      (b ? `${b.visibility.evidencePixels}/${b.cloudMeanLum}` : "n/a").padEnd(
+        18,
+      ),
       sc.desc,
     );
   }

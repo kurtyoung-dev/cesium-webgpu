@@ -1720,6 +1720,16 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * Non-consuming scheduling signal for the scene renderer. A user-owned
+   * VOLUMETRIC collection may be the only visible content in a frame, so its
+   * pending request must keep the post-frustum environmental chain alive even
+   * when no geometry command produced a frustum.
+   */
+  override get hasVolumetricCloudRequest(): boolean {
+    return this._volumetricCloudRequest?.enabled === true;
+  }
+
+  /**
    * Retrieve and clear the frame's volumetric cloud request. Called by the
    * env-effects consumer once per frame; clearing here means a collection that
    * stops publishing (mode flipped back to BILLBOARD, or destroyed) correctly

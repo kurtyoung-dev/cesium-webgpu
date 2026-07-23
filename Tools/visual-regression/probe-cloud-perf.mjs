@@ -101,6 +101,10 @@ const RENDER_AND_TIME = async (cfg) => {
   const jd = C.JulianDate.fromIso8601(cfg.iso);
   v.clock.currentTime = jd;
   const device = s.context.device;
+  const readiness = await globalThis.__cloudProbe.awaitProceduralReady({
+    featureRendererKey: C.FeatureRendererKey.PROCEDURAL_CLOUDS,
+    frameTime: jd,
+  });
   // Warm up (compile pipelines, settle clouds).
   for (let i = 0; i < 40; i++) {
     s.render(jd);
@@ -123,6 +127,8 @@ const RENDER_AND_TIME = async (cfg) => {
   s.render(jd);
 
   return {
+    readiness,
+    realization: globalThis.__cloudProbe.proceduralRealization(),
     msPerFrame: +((t1 - t0) / M).toFixed(4),
     hasDevice: !!device,
     adapterInfo: s.context.adapter?.info
@@ -212,7 +218,8 @@ async function run() {
   await page.goto(
     `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
     {
-      waitUntil: "domcontentloaded",
+      waitUntil: "networkidle",
+      timeout: 90_000,
     },
   );
   await page.waitForFunction(() => !!window.viewer, null, { timeout: 60000 });
@@ -269,6 +276,8 @@ async function run() {
     source,
     ...stats,
     configTruth,
+    readiness: r.readiness,
+    realization: r.realization,
     gpuGate: {
       ...gate,
       armState,
@@ -280,6 +289,15 @@ async function run() {
   const otherJson = `${OUT}/cloud-perf-${other}.json`;
   const currentArtifactValid =
     configTruth.ok &&
+    r.readiness.ok === true &&
+    r.readiness.executeCalls > 0 &&
+    r.realization.initialized === true &&
+    r.realization.pipelineReady === true &&
+    r.realization.maxSteps === 128 &&
+    r.realization.halfWidth === 0 &&
+    r.realization.halfHeight === 0 &&
+    r.realization.temporalWidth === 0 &&
+    r.realization.temporalHeight === 0 &&
     newErrs.length === 0 &&
     stats.cloudCells > 3000 &&
     r.hasDevice &&
@@ -317,6 +335,15 @@ async function run() {
       ).toFixed(3);
       const otherArtifactValid =
         o.configTruth?.ok === true &&
+        o.readiness?.ok === true &&
+        o.readiness?.executeCalls > 0 &&
+        o.realization?.initialized === true &&
+        o.realization?.pipelineReady === true &&
+        o.realization?.maxSteps === 128 &&
+        o.realization?.halfWidth === 0 &&
+        o.realization?.halfHeight === 0 &&
+        o.realization?.temporalWidth === 0 &&
+        o.realization?.temporalHeight === 0 &&
         Array.isArray(o.errors) &&
         o.errors.length === 0 &&
         o.cloudCells > 3000 &&

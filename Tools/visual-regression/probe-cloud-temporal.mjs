@@ -93,6 +93,10 @@ const SCENE = {
           cloudVolumetricQuality: tier,
         },
       });
+      const readiness = await globalThis.__cloudProbe.awaitProceduralReady({
+        featureRendererKey: C.FeatureRendererKey.PROCEDURAL_CLOUDS,
+        frameTime,
+      });
 
       const setView = (lon, lat, height, headingDeg, pitchDeg) =>
         v.camera.setView({
@@ -148,6 +152,7 @@ const SCENE = {
       return {
         ...out,
         configTruth,
+        readiness,
         effectiveTimeIso: C.JulianDate.toIso8601(frameTime),
       };
     },
@@ -188,6 +193,7 @@ const SCENE = {
         probeVersion: "c13-01",
         tier: TIER,
         configTruth: results.configTruth,
+        readiness: results.readiness,
         effectiveTimeIso: results.effectiveTimeIso,
         gpuGate: {
           ...gpuGate,

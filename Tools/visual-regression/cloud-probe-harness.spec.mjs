@@ -9,6 +9,7 @@ import { resolveCloudPerfPass } from "./lib/cloud-perf-evidence.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const probeFiles = [
+  "probe-cloud-planetary.mjs",
   "probe-cloud-tour.mjs",
   "probe-cloud-temporal.mjs",
   "probe-cloud-perf.mjs",
@@ -89,7 +90,11 @@ test("core cloud probes use the deterministic offline viewer boot", () => {
 });
 
 test("manual cloud probes render with their fixed JulianDate", () => {
-  for (const file of ["probe-cloud-tour.mjs", "probe-cloud-temporal.mjs"]) {
+  for (const file of [
+    "probe-cloud-planetary.mjs",
+    "probe-cloud-tour.mjs",
+    "probe-cloud-temporal.mjs",
+  ]) {
     const source = fs.readFileSync(path.join(here, file), "utf8");
     assert.doesNotMatch(
       source,
@@ -139,6 +144,67 @@ test("cloud probe rejects misspelled or removed volumetric fields", () => {
   } finally {
     delete globalThis.__cloudProbe;
     delete globalThis.viewer;
+  }
+});
+
+test("cloud probe awaits the exported procedural renderer key and cache realization", async () => {
+  const uniformData = new Float32Array(148);
+  uniformData[44] = 128;
+  uniformData[45] = 8;
+  uniformData[74] = 0;
+  let renderCalls = 0;
+  const featureRenderer = { execute() {} };
+  const context = {
+    rendererType: "webgpu",
+    isWebGPU: true,
+    async getFeatureRendererAsync(key) {
+      assert.equal(key, 32);
+      return featureRenderer;
+    },
+  };
+  globalThis.viewer = {
+    clock: { currentTime: { authored: true } },
+    scene: {
+      context,
+      render(frameTime) {
+        assert.deepEqual(frameTime, { authored: true });
+        featureRenderer.execute();
+        renderCalls++;
+        if (renderCalls === 2) {
+          context._cloudCache = {
+            initialized: true,
+            pipeline: {},
+            uniformData,
+            halfWidth: 0,
+            halfHeight: 0,
+            temporalWidth: 0,
+            temporalHeight: 0,
+            temporalPipeline: null,
+            frameCounter: 0,
+          };
+        }
+      },
+    },
+  };
+  globalThis.requestAnimationFrame = (callback) => callback();
+
+  try {
+    installCloudProbeHarness();
+    const readiness = await globalThis.__cloudProbe.awaitProceduralReady({
+      featureRendererKey: 32,
+      frameTime: globalThis.viewer.clock.currentTime,
+      maxFrames: 4,
+    });
+
+    assert.equal(readiness.ok, true);
+    assert.equal(readiness.waitedFrames, 2);
+    assert.equal(readiness.executeCalls, 2);
+    assert.equal(readiness.maxSteps, 128);
+    assert.equal(readiness.pipelineReady, true);
+  } finally {
+    delete globalThis.__cloudProbe;
+    delete globalThis.viewer;
+    delete globalThis.requestAnimationFrame;
   }
 });
 
