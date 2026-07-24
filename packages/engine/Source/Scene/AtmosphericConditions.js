@@ -104,7 +104,9 @@ class AtmosphericConditions {
    * `enableMoonPhase`, and `enableEarthshine` are new Phase 1 state stored
    * on the facade. The C12 moon-wave toggles `enableLunarBRDF`,
    * `enableOppositionSurge`, and `enableMoonSkyWash` (all default ON, both
-   * backends) also live here.
+   * backends) also live here, as does the C12-29 `enableEclipse` toggle
+   * (default ON, both backends — gates application of
+   * `frameState.eclipseState`).
    * @type {object}
    * @readonly
    */
@@ -317,6 +319,15 @@ function buildLighting(globe) {
   //    the disc (disc = disc × extinction + inscatter), so the daytime
   //    moon reads pale/sky-washed instead of a dark cutout. Only active
   //    while the sky atmosphere is visible; exactly zero from orbit.
+  //
+  // C12-29 S1 (2026-07-24) — `enableEclipse`, DEFAULT ON by maintainer
+  // ruling E1 ("this is the actual simulation that needs to be there",
+  // ECLIPSE_EFFECTS_RESEARCH_2026-07-24.md §6a). It gates only whether
+  // consumers APPLY `frameState.eclipseState.sunVisibleFraction`; the
+  // eclipse geometry itself is computed unconditionally every frame so
+  // probes and tooling can read the physics with the effect switched off.
+  // With it false, every consumer multiplies by exactly 1.0 and the frame
+  // is byte-identical to the pre-C12-29 engine on both backends.
   const leaf = {
     enableSunLight: true,
     enableMoonLight: true,
@@ -327,6 +338,7 @@ function buildLighting(globe) {
     enableLunarBRDF: true,
     enableOppositionSurge: true,
     enableMoonSkyWash: true,
+    enableEclipse: true,
   };
   Object.defineProperties(leaf, {
     lambertDiffuseMultiplier: {

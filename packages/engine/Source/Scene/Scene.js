@@ -39,6 +39,7 @@ import RenderState from "../Renderer/RenderState.js";
 import Atmosphere from "./Atmosphere.js";
 import AtmosphericConditions from "./AtmosphericConditions.js";
 import { computeSkyBrightness } from "./SkyBrightness.js";
+import { createEclipseState, updateEclipseState } from "./EclipseState.js";
 import GlobeWater from "./GlobeWater.js";
 import VisualPerformanceTargetService from "../Services/VisualPerformanceTargetService.js";
 import SnapshotModeService from "../Services/SnapshotModeService.js";
@@ -299,6 +300,9 @@ class Scene {
     this._ellipsoid = options.ellipsoid ?? Ellipsoid.default;
     this._globe = undefined;
     this._globeTranslucencyState = new GlobeTranslucencyState();
+    // C12-29 S1 — one eclipse-state object for the scene's lifetime; it is
+    // mutated in place each frame and published on `frameState.eclipseState`.
+    this._eclipseState = createEclipseState();
     this._primitives = new PrimitiveCollection({ countReferences });
     this._groundPrimitives = new PrimitiveCollection({ countReferences });
 
@@ -5701,6 +5705,17 @@ function postPassesUpdate(scene) {
 
 const scratchBackgroundColor = new Color();
 
+// C12-29 S1 — hoisted so the per-frame eclipse update allocates nothing.
+// Every field is overwritten unconditionally at the call site below.
+const scratchEclipseOptions = {
+  active: true,
+  enabled: true,
+  cameraPositionWC: undefined,
+  sunPositionWC: undefined,
+  time: undefined,
+  earthOccluderRadius: undefined,
+};
+
 function render(scene) {
   const frameState = scene._frameState;
 
@@ -5756,6 +5771,52 @@ function render(scene) {
   // the per-context uniform state. Phase 1.3 atmosphere scattering also
   // relies on this.
   frameState.sunDirectionWC = uniformState.sunDirectionWC;
+
+  // C12-29 S1 — per-frame eclipse / occultation state. Computed
+  // unconditionally (a couple of dot products and two asin in the common
+  // no-occlusion case, which early-outs before any quadrature); the
+  // `enableEclipse` toggle gates only whether consumers APPLY the result.
+  //
+  // The Earth occluder is taken straight off `frameState.occluder` — the
+  // very sphere `Scene.updateEnvironment` feeds to the legacy binary
+  // `Occluder.isBoundingSphereVisible` cull. Reading its radius (rather
+  // than rebuilding `ellipsoid.minimumRadius + minimumTerrainHeight`)
+  // guarantees the continuous fade and the surviving binary cull are
+  // derived from identical geometry, and reproduces every guard
+  // `SceneUtilities.getOccluder` applies for free: 2D/Columbus view, a
+  // hidden globe, an underground camera and a translucent globe all leave
+  // `frameState.occluder` undefined, so the Earth term is exactly 0 there —
+  // matching today's "sun is always visible" behaviour in those modes.
+  // `sunVisibleThroughGlobe` is the one extra guard `updateEnvironment`
+  // applies on top, mirrored here.
+  //
+  // SCENE3D ONLY: in 2D, Columbus view and MORPHING the camera position is
+  // in projected-map coordinates while the sun and moon are ECEF. Gating
+  // only the Earth term there (its occluder is already absent) would leave
+  // the MOON term running on mixed frames — direction errors of up to ~1.5
+  // degrees, several solar diameters. Legacy had no sun occlusion in those
+  // modes at all, so `valid = false` and a factor of exactly 1.0 is correct
+  // by definition, not a compromise.
+  {
+    const eclipseLighting = frameState.atmosphericConditions?.lighting;
+    const occluder = scene._globeTranslucencyState.sunVisibleThroughGlobe
+      ? undefined
+      : frameState.occluder;
+    scratchEclipseOptions.active = frameState.mode === SceneMode.SCENE3D;
+    scratchEclipseOptions.enabled = defined(eclipseLighting)
+      ? eclipseLighting.enableEclipse !== false
+      : true;
+    scratchEclipseOptions.cameraPositionWC = frameState.camera?.positionWC;
+    scratchEclipseOptions.sunPositionWC = uniformState.sunPositionWC;
+    scratchEclipseOptions.time = frameState.time;
+    scratchEclipseOptions.earthOccluderRadius = defined(occluder)
+      ? occluder.radius
+      : undefined;
+    frameState.eclipseState = updateEclipseState(
+      scene._eclipseState,
+      scratchEclipseOptions,
+    );
+  }
 
   // Phase 1.3a: cheap CPU sky brightness estimate consumed by star
   // modulation in the cubemap panorama shader and (later) by night-sky

@@ -19,6 +19,7 @@ import {
   computeAtmosphereExtinctionCached,
   createAtmosphereExtinctionCache,
 } from "./computeAtmosphereExtinction.js";
+import { getEclipseSunFactor } from "./EclipseState.js";
 import PixelDatatype from "../Renderer/PixelDatatype.js";
 import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
@@ -84,6 +85,11 @@ class Sun {
     this._atmosphereExtinction = Cartesian3.clone(Cartesian3.ONE);
     this._atmosphereExtinctionCache = createAtmosphereExtinctionCache();
 
+    // C12-29 S1 — continuous occlusion fade. 1.0 (the multiplicative
+    // identity) whenever nothing occults the sun or the effect is off, so
+    // the shader multiply is byte-identical in those frames.
+    this._eclipseAlpha = 1.0;
+
     const that = this;
     this._uniformMap = {
       u_texture: function () {
@@ -94,6 +100,9 @@ class Sun {
       },
       u_atmosphereExtinction: function () {
         return that._atmosphereExtinction;
+      },
+      u_eclipseAlpha: function () {
+        return that._eclipseAlpha;
       },
     };
   }
@@ -171,6 +180,33 @@ class Sun {
       extinction,
       this._atmosphereExtinction,
     );
+
+    // C12-29 S1 — CONTINUOUS OCCLUSION FADE (the pop killer).
+    //
+    // Premise: `Scene.updateEnvironment` still runs the legacy binary cull
+    // (`environmentState.isSunVisible = isVisible(..., occluder)`), and it
+    // is deliberately left alone. That test culls only when the sun's
+    // ~6-solar-radii glow bounding sphere lies ENTIRELY inside the Earth
+    // occluder's horizon cone, which strictly implies the far smaller solar
+    // DISC is fully occluded too — i.e. the cull can only fire in frames
+    // where `sunVisibleFraction` is already exactly 0. So the cull boundary
+    // now sits well inside the alpha-zero region instead of being the
+    // moment the sun snapped to full brightness, and the visible transition
+    // is the fade below. Keeping the cull also keeps the disabled position
+    // trivially byte-identical and preserves the culling perf.
+    //
+    // ALPHA, not RGB: WebGL blends the sun with ALPHA_BLEND (below) where
+    // dimming rgb produces a black disc over the sky, while WebGPU blends
+    // additively with src-alpha (`WebGPUEnvironmentRenderer.js`). An
+    // alpha-only multiply fades correctly under BOTH, so the design is
+    // invariant to the C11-115 blend flip.
+    //
+    // Published to frameState before the backend branch (the
+    // C7-SUN-STARS-EXTINCTION convention) so the WebGL uniform and the
+    // WebGPU uniform buffer read one identical scalar.
+    const eclipseAlpha = getEclipseSunFactor(frameState.eclipseState);
+    frameState.sunEclipseAlpha = eclipseAlpha;
+    this._eclipseAlpha = eclipseAlpha;
 
     // Backend-specific rendering via Feature Renderer.
     //

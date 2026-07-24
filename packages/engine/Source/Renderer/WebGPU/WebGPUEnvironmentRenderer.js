@@ -67,7 +67,12 @@ struct Uniforms {
   // C7-SUN-STARS-EXTINCTION — per-channel atmospheric transmittance along
   // the camera→sun ray (offset 112, 16-aligned). vec3(1.0) from orbit / when
   // the atmosphere is hidden, so the multiply below is a no-op (byte-identical).
-  extinction: vec3<f32>, _p2: f32,
+  // C12-29 S1 — eclipseAlpha occupies the former _p2 pad at offset 124.
+  // The pad was already written (as 0.0) and already reserved by the 256-byte
+  // uniform buffer, so this is a rename + a use, not a layout change: no
+  // stride, alignment, binding or bind-group-layout delta, and no new
+  // ShaderDefine bit (the registry is exhausted; C12 exit-gate item 5).
+  extinction: vec3<f32>, eclipseAlpha: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var tex: texture_2d<f32>;
@@ -109,6 +114,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
   // extinction (dims + warms a low sun over the horizon). extinction == (1,1,1)
   // from orbit / atmosphere hidden, so this is a byte-identical no-op there.
   color = vec4f(color.rgb * u.extinction, color.a);
+  // C12-29 S1 — continuous eclipse / occultation fade, the WGSL twin of
+  // SunFS.glsl's out_FragColor.a *= u_eclipseAlpha. ALPHA, not rgb: this
+  // pipeline blends additively with srcFactor src-alpha, so scaling alpha
+  // scales the whole additive contribution; it also fades correctly if
+  // C11-115 flips this target to ALPHA_BLEND. eclipseAlpha == 1.0 whenever
+  // nothing occults the sun or enableEclipse is off — an exact no-op.
+  color = vec4f(color.rgb, color.a * u.eclipseAlpha);
   return color;
 }`;
 
@@ -423,7 +435,13 @@ function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
   uniformData[28] = defined(extinction) ? extinction.x : 1.0;
   uniformData[29] = defined(extinction) ? extinction.y : 1.0;
   uniformData[30] = defined(extinction) ? extinction.z : 1.0;
-  uniformData[31] = 0.0;
+
+  // C12-29 S1 — eclipse fade at offset 31 (the former `_p2` pad, byte 124).
+  // `Sun.update` publishes this before the backend branch, so WebGL's
+  // `u_eclipseAlpha` and this slot always carry the same scalar. Falls back
+  // to 1.0 (exact identity) when the publisher hasn't run.
+  const eclipseAlpha = frameState.sunEclipseAlpha;
+  uniformData[31] = typeof eclipseAlpha === "number" ? eclipseAlpha : 1.0;
 }
 
 /**

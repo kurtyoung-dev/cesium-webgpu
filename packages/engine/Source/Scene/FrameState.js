@@ -376,6 +376,32 @@ class FrameState {
     this.starZenithTransmittance = undefined;
 
     /**
+     * Per-frame eclipse / occultation state (C12-29 S1). Computed
+     * unconditionally by {@link EclipseState} once per frame from the
+     * camera-anchored dual-cone geometry of the solar disc against the Earth
+     * limb and the lunar disc, in f64. Carries `sunVisibleFraction` (the
+     * limb-darkened surviving flux fraction the sun billboard fades by),
+     * `earthOcclusionFraction`, `moonObscuration`, `moonPositionWC` (ECEF,
+     * for the S5 per-fragment umbra term) plus angular diagnostics. The
+     * `enabled` field mirrors `atmosphericConditions.lighting.enableEclipse`
+     * and gates only whether consumers APPLY the fraction — the physics is
+     * always available for probes. One object, mutated in place.
+     * @type {object|undefined}
+     */
+    this.eclipseState = undefined;
+
+    /**
+     * Per-frame sun-billboard alpha multiplier derived from
+     * `eclipseState.sunVisibleFraction` (C12-29 S1). Exactly 1.0 — the
+     * multiplicative identity, hence byte-identical output — whenever the
+     * effect is disabled or nothing occults the sun. Published by
+     * {@link Sun#update} before the backend branch so the WebGL uniform and
+     * the WebGPU uniform buffer read the same scalar.
+     * @type {number|undefined}
+     */
+    this.sunEclipseAlpha = undefined;
+
+    /**
      * Canonical atmospheric conditions facade — forwarded once per frame
      * from `scene.globe.atmosphericConditions`. Renderers read B-series
      * toggles (sun/moon lighting, scattering occlusion, star modulation,
