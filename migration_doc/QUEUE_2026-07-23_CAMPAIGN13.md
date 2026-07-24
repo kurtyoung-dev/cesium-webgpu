@@ -76,9 +76,12 @@ renumber, reuse, or mint a `C13-*` identifier elsewhere without adding it here f
 | `C13-35` | Command-empty environment demand scheduling and cold-start cloud readiness | P0 | correctness/perf | M | W0 | `C13-01` |
 | `C13-36` | Animated per-pixel IGN ray-start jitter and periodicity oracle | P0 | quality/perf | M | W2 | `C13-03` |
 | `C13-37` | Planet-stable non-periodic baked density domain | P0 | quality/correctness | L | W2 | `C13-03`, `C13-36` |
+| `C13-38` | Suppress cloud-IBL environment refreshes while full cloud IBL is irrelevant | P0 | perf/correctness | S | W2 | `C13-37` |
+| `C13-39` | Hoist density LOD/domain transforms out of per-sample view, light, shadow, and IBL loops | P0 | perf/architecture | L | W2 | `C13-02`, `C13-37` |
+| `C13-40` | Async cloud-noise prewarm plus generation-keyed reconstruction resources and retirement | P1 | perf/architecture | M | W2 | `C13-02`, `C13-37` |
 | `C13-GATE-A` | Launch and evidence-truth gate | R0 | gate | S | W0 | `C13-01`, `C13-02`, `C13-35` |
 | `C13-GATE-B` | Planetary correctness gate | R0 | gate | M | W1 | `C13-03..08` |
-| `C13-GATE-C` | Temporal reconstruction and measured-performance gate | R0 | gate | M | W2 | `C13-09..13`, `C13-36`, `C13-37` |
+| `C13-GATE-C` | Temporal reconstruction and measured-performance gate | R0 | gate | M | W2 | `C13-09..13`, `C13-36..40` |
 | `C13-GATE-D` | Regional weather realism gate | R0 | gate | M | W3 | `C13-14..20` |
 | `C13-EXIT` | Feature-preserving cloud certification | R0 | gate | L | EXIT | Gates A-D, selected W4/W5 owners |
 
@@ -86,8 +89,10 @@ renumber, reuse, or mint a `C13-*` identifier elsewhere without adding it here f
 
 ## 2. Confirmed current-state findings
 
-These findings are the launch premise. Every implementation brief must re-grep the named symbols and
-reproduce its premise at execution HEAD before changing code.
+These findings are the frozen launch premise, not the live completion ledger. Every implementation
+brief must re-grep the named symbols and reproduce its premise at execution HEAD before changing
+code. Section 9 and the dated evidence subsections are the current execution authority when later
+Campaign 13 work supersedes a launch-time finding.
 
 ### 2.1 Temporal reconstruction is not yet TAAU
 
@@ -433,9 +438,11 @@ smaller blend weight is not a work reduction.
 path remains the loading/fallback route. This task may proceed in parallel with attachment design but
 does not block RTE or bounds correctness.
 
-`C13-12` owns motion-aware rejection, variance clipping, reactive history, wind advection in
-reprojection, disocclusion, camera cuts, origin changes, tier/resolution changes, and weather-source
-changes.
+`C13-12` builds on `C13-05`'s coarse history-compatibility contract and owns attachment-aware
+motion/depth rejection, variance clipping, reactive history, wind advection in reprojection,
+disocclusion, and weather/density changes that require the reconstruction attachments from
+`C13-09/10`. Coarse frame-gap, teleport, scene/projection, morph, temporal re-entry, deck, and
+multi-deck topology resets are already owned by `C13-05`.
 
 `C13-13` preserves scattering/atmosphere fidelity at lower spatial tiers. Sample count, lighting
 octaves, shadow quality, reconstruction quality, and output resolution become explicit independent
@@ -452,6 +459,31 @@ regional/local coordinates, seeded rotations, incommensurate scales, and footpri
 apply identical macro shaping to full density and the empty-space oracle. The full-resolution,
 temporal-off baked-vs-live periodicity probe is the acceptance authority before temporal history can
 hide or amplify the result.
+
+`C13-38` closes the post-`C13-37` cloud-IBL invalidation leak. A cloud appearance revision must not
+launch the full environment-cube fill, prefilter, and SH projection while neither the current nor the
+previous environment state used the full cloud march. The prior-full-march case remains relevant so
+an ON-to-OFF transition still performs its one teardown refresh, and revisions accumulated while
+opted out must be consumed when the user later opts in. This is an execution suppression only: it
+does not weaken visible clouds, reflection quality, coverage-only IBL, or any public feature.
+
+`C13-39` owns the steady-state ALU regression risk exposed by the post-`C13-37` hot-path review.
+`cloudDensityMipLevels()` currently repeats texture-dimension queries and three `log2` evaluations
+inside density taps, while cone lighting, shadow, and IBL paths also repeat the same seeded-domain
+matrix transforms per sample. Capture the current shader as the baseline, then precompute the common
+footprint logarithm, per-domain bias/clamp bundle, and affine rotated ray/basis coordinates at the
+widest safe scope. Defer fine/detail work until a sample is actually occupied. Do not change the LOD
+curve, sample thresholds, shadow/cascade count, IBL content, LIVE escape route, or morphology to win
+timing. Acceptance requires GPU-timestamp lanes for baked, LIVE, single/cascaded shadow, and IBL,
+plus visual/morphology equivalence.
+
+`C13-40` owns first-use and lifetime costs. Noise/mipmap construction currently performs synchronous
+module/pipeline creation and all bake/downsample passes from the first visible render; reconstruction
+passes also need generation-keyed bind-group retention and post-submit retirement. Prewarm
+asynchronously after exact formats/topology are known, publish readiness explicitly, and retain the
+existing fallback until the new generation is ready. `C13-05` may remove its independently proven
+per-frame temporal bind-group allocation now; that bounded hot-path correction does not close this
+broader task.
 
 ### W3 — Globe-native weather and regional formation variety
 
@@ -567,15 +599,15 @@ landing defect.
 | `C13-01` | **IN PROGRESS — Batches 733–735 evidence follow-up (2026-07-23)** | Batch 733 repaired unified API/config truth, deterministic offline/fixed-time capture, raw-frame metrics, backend-aware workload selection, and the moving WebGPU route. Batch 734 requires an actual procedural execute plus initialized cache/pipeline instead of trusting a loaded lazy handle or fixed warm-up count; the procedural tour now uses same-camera OFF/ON contribution for colored pole/dusk fixtures. The stale `cloudQuality=128` blank claim is superseded by 128/8 full-resolution work with 7,584 cloud cells; Batch 735 supersedes the pre-fix north-pole blank with green WGS84 evidence. Climate/region/type/same-type fixtures, wind/time and temporal-reset sequences, complete per-sequence metrics, and GPU timing remain. |
 | `C13-02` | NOT STARTED | Begins after the repaired tour establishes the measurement surface. |
 | `C13-03` | **COMPLETE — Batch 735** | The active WGS84/RTE coordinate contract, f32-faithful source/math suite, and provenance-bearing moving planetary OFF/ON oracle are landed. The default route is green at 21/21 antimeridian, pole, deck/altitude, regional, and orbit checkpoints with clean WebGPU gates. |
-| `C13-04` | **COMPLETE — Batch 735 (primary visible shell only)** | Both one-part and high/low branches intersect WGS84 expanded ellipsoids; production precision defaults on, CPU-f64 cartographic height drives interval/deck ordering, and view/light/midpoint height fractions share the oblate boundaries without growing the 148-float uniform. Raw-ECEF density/noise and broader temporal/shadow/capture/weather consumers remain explicitly open under later IDs. |
-| `C13-05` | NOT STARTED | Temporal origin/reprojection RTE owner. |
+| `C13-04` | **COMPLETE — Batch 735 (primary visible shell only)** | Both one-part and high/low branches intersect WGS84 expanded ellipsoids; production precision defaults on, CPU-f64 cartographic height drives interval/deck ordering, and view/light/midpoint height fractions share the oblate boundaries without growing the then-current 148-float uniform. The density-domain work that remained open at this landing later closed under `C13-37`, and temporal RTE/coarse reset later closed under `C13-05`; shadow/mask/capture/atmosphere and regional-weather consumers remain explicitly open under `C13-06..08`. |
+| `C13-05` | **COMPLETE — Batch 754 (bounded W1 RTE/reset slice)** | Perspective temporal reprojection now uses inverse-current and previous view-projection-relative-to-eye transforms, CPU-`f64` camera delta, encoded camera origin, and WGS84 configured-deck intersection without rebuilding raw ECEF `f32`. Allocation-free history classification resets on incompatible frame continuity, teleport, scene/projection mode, morph, temporal re-entry, resource resize, deck topology, and observed cull/re-entry; two temporal parity bind groups are retained across frames. The inverse current RTE transform composes the existing inverse projection with translation-free inverse view, while orthographic/morph frames preserve the live current march and remain current-only until reconstruction carries a per-pixel ray origin. Invalid reprojections return before the 3×3 clamp fetch. `cloud-temporal-rte.spec.mjs` passes `11/11`; the complete cloud spec lane passes `64/64`; `probe-cloud-temporal-rte.mjs` is GREEN with 26 finite 60-float uploads, maximum high/low reconstruction error `0.002723 m`, exact/stable source-build provenance, observed cull/re-entry, and clean WebGPU/device/console gates. This does not close color/depth/velocity/moment attachments, true 1/16 current work, or attachment-aware wind/depth/disocclusion rejection; `C13-09/10/12` remain open. |
 | `C13-06` | NOT STARTED | Shadow/mask/capture/atmosphere RTE owner. |
 | `C13-07` | NOT STARTED | Bounded global-map seam/pole correction; does not replace `C13-14`. |
 | `C13-08` | NOT STARTED | Bounds/no-data/regional packer contract. |
 | `C13-09` | NOT STARTED | Reconstruction attachment topology. |
 | `C13-10` | NOT STARTED | True 1/16 current work and full-resolution history. |
 | `C13-11` | **BLOCKED** | Needs a provenance-approved, license-clean STBN generation/import plan and notices. NVIDIA STBN assets are prohibited. Does not block W1. |
-| `C13-12` | NOT STARTED | Opens after reconstruction topology and current-work layout. |
+| `C13-12` | NOT STARTED | Opens after reconstruction topology and current-work layout. `C13-05` now supplies the coarse compatibility/reset generation; this task retains attachment-aware wind/weather/depth rejection, disocclusion, variance clipping, and reactive history. |
 | `C13-13` | NOT STARTED | Lighting/spatial-tier separation still follows reconstruction topology. The old 128-step blank was command-empty scheduling/readiness, not a raymarch-tier failure; fresh visible evidence is clean but has no comparable adaptive/fixed companion and therefore proves no speedup. |
 | `C13-14` | NOT STARTED | Promoted C11 planet-scale tiling seed; core W3 architecture. |
 | `C13-15` | NOT STARTED | Climate prior; distinguish climatology from current observations. |
@@ -599,11 +631,14 @@ landing defect.
 | `C13-33` | CONDITIONAL NOT TRIGGERED | Blocked by `C13-26`; mock demo does not satisfy the real-data headline. |
 | `C13-34` | DEFERRED | Opens after rich/stable cloud shadows. |
 | `C13-35` | **COMPLETE — Batch 734** | A non-consuming per-frame cloud-demand signal and shared environment-demand predicate keep a zero-frustum frame alive only when an effect needs it. The black-sky acceptance records eight managed and eight real user-owned frames with `numFrustums=0`, exact request/demand observation, and all resource/post/environment/cloud/canvas stages reached; the managed default is off during the user-owned phase. Eight disabled control frames retain zero frustums and skip all expensive stages. Each active output has 7,584 cloud cells, disabled is exactly black, and all 42 checks plus the WebGPU error gate pass. |
-| `C13-36` | **COMPLETE — Batch 736** | The existing tier-owned `jitterEnabled` contract now drives a license-clean analytic IGN phase once per fragment. T1/T2 animate only with realized temporal history; full-resolution T3 holds a deterministic spatial phase; the power-user escape path remains exact midpoint. Six source/math/Naga checks, low/high browser artifacts, the moving altitude route, temporal smoke, and WebGL billboard parity are green. This does not close periodic baked density (`C13-37`), temporal invalidation (`C13-12`), or mask/history alignment (`C13-06`/`C13-22`). |
-| `C13-37` | **COMPLETE — Batch 743 (gate GREEN, confirmed twice bit-identically)** | Landed: Slice A (planet-stable density domain: `WebGPUCloudDensityDomain.ts` + `CloudDensityDomain.wgsl` + `ProceduralClouds.wgsl` integration, 148→168-float add-only uniform tail) + Slice B (3D noise mip chains `CloudNoiseMipmap.wgsl`/`WebGPUCloudNoiseResources.ts` + footprint-aware LOD in both consumers) + the IBL-parity leg (`WebGPUDynamicEnvironmentMapManager` capture parity + revision/scene-clock invalidation, now quantization-debounced at the publish side so animated `cloudCoverage` cannot refill every frame). **RED→GREEN root cause:** the three "independent" SO(3) domain rotations shared m22≈−0.427 (Shoemake m22=2·u1−1; adjacent xorshift32 seeds → correlated first draws); the correlated WARP draw aligned the ~1 km warp-texel lattice 3.0° from screen-horizontal at the near-horizon camera — the audit's visible lattice artifact. Fix: warp-only re-draw, penalty-optimized seed 45296 (constants + provenance docs only; shape/detail draws unchanged, layout unchanged, frozen legacy path SHA-intact, RTE untouched). Final gate: near-horizon 0.0918 vs legacy 0.0953 (ratio 0.963, PASS — thin margin, oracle deterministic), above-deck 0.0858 vs envelope 0.0994 (PASS; legacy-ratio 0.496), morphology 4/4 both phases, 52/52 Node specs, PNGs reviewed by worker AND orchestrator. Residual honesty: warp screened against the two acceptance cameras (other geometries have their own projections); shape/detail m22 correlation remains, documented in the module docstring. **Single-batch justification (review defect 4):** the acceptance oracle certified the COMBINED tree; splitting the renderer's interleaved domain/LOD/IBL hunks would create untested intermediate commits (renderer publishing IBL fields no consumer reads). Also lands: watchdogs on all six cloud probes (machine-safety defect 1), `sharp` pinned as a root devDependency + README exception (defect 5), and the review's small-fix list (defects 4a-f). Follow-ups spun out: limb-view `marchDeck` interval gap → the march-redesign tasks; the four scaffolded WGSL helpers await `C13-05`/`C13-06`; WGSL/renderer decomposition queued under Gate C. |
+| `C13-36` | **COMPLETE — Batch 736** | The existing tier-owned `jitterEnabled` contract now drives a license-clean analytic IGN phase once per fragment. T1/T2 animate only with realized temporal history; full-resolution T3 holds a deterministic spatial phase; the power-user escape path remains exact midpoint. Six source/math/Naga checks, low/high browser artifacts, the moving altitude route, temporal smoke, and WebGL billboard parity are green. This did not close periodic baked density (`C13-37`), mask/history alignment (`C13-06`/`C13-22`), or advanced attachment-aware rejection (`C13-12`); coarse temporal RTE/reset subsequently closed under `C13-05`. |
+| `C13-37` | **COMPLETE — Batch 743 (gate GREEN, confirmed twice bit-identically)** | Landed: Slice A (planet-stable density domain: `WebGPUCloudDensityDomain.ts` + `CloudDensityDomain.wgsl` + `ProceduralClouds.wgsl` integration, 148→168-float add-only uniform tail) + Slice B (3D noise mip chains `CloudNoiseMipmap.wgsl`/`WebGPUCloudNoiseResources.ts` + footprint-aware LOD in both consumers) + the IBL-parity leg (`WebGPUDynamicEnvironmentMapManager` capture parity + revision/scene-clock invalidation, now quantization-debounced at the publish side so animated `cloudCoverage` cannot refill every frame). **RED→GREEN root cause:** the three "independent" SO(3) domain rotations shared m22≈−0.427 (Shoemake m22=2·u1−1; adjacent xorshift32 seeds → correlated first draws); the correlated WARP draw aligned the ~1 km warp-texel lattice 3.0° from screen-horizontal at the near-horizon camera — the audit's visible lattice artifact. Fix: warp-only re-draw, penalty-optimized seed 45296 (constants + provenance docs only; shape/detail draws unchanged, layout unchanged, frozen legacy path SHA-intact, RTE untouched). Final gate: near-horizon 0.0918 vs legacy 0.0953 (ratio 0.963, PASS — thin margin, oracle deterministic), above-deck 0.0858 vs envelope 0.0994 (PASS; legacy-ratio 0.496), morphology 4/4 both phases, 52/52 Node specs, PNGs reviewed by worker AND orchestrator. Residual honesty: warp screened against the two acceptance cameras (other geometries have their own projections); shape/detail m22 correlation remains, documented in the module docstring. **Single-batch justification (review defect 4):** the acceptance oracle certified the COMBINED tree; splitting the renderer's interleaved domain/LOD/IBL hunks would create untested intermediate commits (renderer publishing IBL fields no consumer reads). Also lands: watchdogs on all six cloud probes (machine-safety defect 1), `sharp` pinned as a root devDependency + README exception (defect 5), and the review's small-fix list (defects 4a-f). Follow-ups spun out: limb-view `marchDeck` interval gap → the march-redesign tasks; the temporal helper is now consumed by `C13-05`, while shadow/mask/capture integration remains under `C13-06`; WGSL/renderer decomposition is queued under Gate C. |
+| `C13-38` | **COMPLETE — Batch 754** | Cloud revisions now request the full environment rebuild only while the current or previous environment state uses the full cloud march: `(wantMarch || lastUsedCloudMarch) && revisionChanged`. Animated visible-only clouds therefore cannot trigger the 256²×6 fill, prefilter, and SH projection while full cloud IBL is opted out. First opt-in, active full-march updates, and ON-to-OFF teardown remain refresh-capable. `cloud-ibl-revision.spec.mjs` passes `4/4`, including 100 inert opted-out revisions; `probe-cloud-ibl-optout-revision.mjs` proves both opt-in cycles and teardown with clean WebGPU/device/console gates. This is eliminated irrelevant work, not a measured FPS claim. |
+| `C13-39` | NOT STARTED | Post-`C13-37` shader review found repeated footprint `log2`/dimension work and repeated seeded-domain transforms inside occupied view/light/shadow/IBL sample loops. Baseline and exact feature-preserving optimization slices are defined above. |
+| `C13-40` | NOT STARTED | First-use bake/prewarm and broader generation/retirement work; the C13-05 temporal parity bind-group cache is a separately bounded partial. |
 | `C13-GATE-A` | NOT STARTED | Follows `C13-01/02`. |
 | `C13-GATE-B` | NOT STARTED | Follows `C13-03..08`. |
-| `C13-GATE-C` | NOT STARTED | Follows `C13-09..13`; STBN may remain an explicit blocker if its provenance is unresolved. |
+| `C13-GATE-C` | NOT STARTED | Follows `C13-09..13` and `C13-36..40`; STBN may remain an explicit blocker if its provenance is unresolved. |
 | `C13-GATE-D` | NOT STARTED | Follows `C13-14..20`. |
 | `C13-EXIT` | NOT STARTED | Dead last. |
 
@@ -702,13 +737,73 @@ This is an oracle/tooling slice only; it changes no engine renderer or cloud app
   `12.42–12.53 ms/frame` versus `12.45–12.52 ms/frame`; this is noise-level parity, not a claim
   comparing the new WGS84 shader with the removed sphere.
 - Functionality preservation: WebGL billboard behavior and inert volumetric configuration remain
-  intact; no cloud feature or renderer path was removed. This landing closes only the primary
-  visible-shell geometry/height owner. Density/noise and some light coordinates remain raw ECEF
-  f32; temporal history, standalone shadows, capture, and regional weather remain under
-  `C13-05..08` and `C13-37`. Gate B remains open.
+  intact; no cloud feature or renderer path was removed. This landing closed only the primary
+  visible-shell geometry/height owner. Its then-open density-domain and temporal consumers later
+  closed under `C13-37` and `C13-05`; standalone shadows/masks/capture/atmosphere and regional
+  weather remain under `C13-06..08`. Gate B remains open.
 - Rollback boundary: WGS84 uniform packing/default selection, the primary WGSL shell/height helpers,
   and their contract/probes/tests form one removable slice. No temporal attachment, weather
   resource, shadow topology, or WebGL shader is changed.
+
+### C13-05 Batch 754 temporal RTE/coarse-reset evidence
+
+- Premise/root cause: the half-resolution temporal resolver reconstructed a full-ECEF `f32` anchor,
+  projected it through the absolute previous view-projection matrix, approximated the deck with an
+  equatorial midpoint sphere, retained color history across incompatible frame gaps/tier/cull/deck
+  transitions, and allocated a temporal bind group every frame.
+- The current frame now unprojects with the inverse current VP-relative-to-eye transform and
+  intersects configured WGS84 deck shells in camera-relative space. CPU `f64` computes
+  `currentCameraWC - previousCameraWC`; the shader adds that delta to the current eye-relative
+  anchor and projects through `previousViewProjectionRelativeToEye`. Encoded camera high/low data is
+  reused from the primary march, so no full-ECEF `vec3<f32>` is reconstructed.
+- `WebGPUCloudTemporalHistory.ts` owns an allocation-free coarse classifier/commit contract.
+  Initial history, missing transforms, frame gaps, teleports over 50 km, scene/projection changes,
+  morph, temporal re-entry, primary-deck changes, multi-deck topology changes, resize, and observed
+  cull/re-entry all reject incompatible history. A persistent missing transform or morph remains
+  current-only for safety, while the diagnostic generation/count advances only once per newly
+  observed cause until the reset episode clears. Ordinary bounded camera, clock, and wind evolution
+  retain history. Two parity bind groups are created with the history resources and selected
+  without a hot-path allocation.
+- `cloud-temporal-rte.spec.mjs` passes `11/11`, including WGS84 equator/dateline/both-pole/orbit
+  f64 oracles, a RED legacy-polar fixture, reset truth, layout/allocation guards, source ownership,
+  and Naga. `probe-cloud-temporal-rte.mjs` passes `22/22` in Edge/WebGPU with 26 finite 60-float
+  temporal uploads, observed look-away cull/re-entry, tier/deck/multi-deck/resize transitions,
+  maximum camera high/low reconstruction error `0.002723 m`, exact/stable source/build
+  fingerprints, and no validation, device-loss, console, or page errors.
+- Independent final review moved the 3×3 neighborhood clamp after shell/behind-camera/offscreen
+  rejection, replaced general perspective VP inversion with inverse-view/projection composition,
+  made orthographic/morph history explicitly current-only pending per-pixel ray-origin support, gave
+  resize an explicit reset bit/generation, distinguished adjacent new reset causes from persistent
+  causes, and made the never-active temporal-off path skip redundant bookkeeping. The complete cloud
+  spec lane is `64/64` GREEN after those corrections.
+- Functionality preservation: the primary march, high direct tier, medium temporal tier, public
+  cloud controls, WebGL billboard path, and graceful WebGL volumetric no-op remain present. The
+  repaired U8 preservation probe is byte-identical for billboard mode on both renderers.
+- Scope/rollback: this closes planetary temporal coordinates, representative configured-deck
+  reprojection, coarse compatibility resets, and parity bind-group retention only. Color-only
+  half-resolution history remains; `C13-09/10/12` still own attachments, true 1/16 current work,
+  wind/depth/disocclusion/variance/reactive rejection. The helper, temporal uniform packing/WGSL,
+  retained bind groups, and focused tests/probe form the rollback boundary.
+
+### C13-38 Batch 754 irrelevant cloud-IBL refresh suppression
+
+- Premise/root cause: after `C13-37`, every published cloud appearance revision was a dynamic
+  environment refresh reason even while the full reflected-cloud march was opted out. Visible-only
+  animation could therefore schedule an irrelevant 256²×6 cube fill, IBL prefilter, and SH-L2
+  projection.
+- The revision gate is now
+  `(wantMarch || cache.lastUsedCloudMarch) && liveCloudRevision !== cache.lastCloudRevision`.
+  Current full-march animation still refreshes; revisions published while opted out remain
+  unconsumed for the next opt-in; and a previous full-march environment still receives its one
+  ON-to-OFF teardown refresh.
+- `cloud-ibl-revision.spec.mjs` passes `4/4`, including 100 consecutive opted-out revisions.
+  `probe-cloud-ibl-optout-revision.mjs` passes `12/12` in Edge/WebGPU: two off-animation/opt-in
+  cycles, the teardown edge, exact/stable source/build provenance, and clean validation,
+  device-loss, console, and page gates.
+- Functionality preservation/rollback: no reflection, cloud, coverage-only IBL, public option,
+  WebGL path, or quality setting was removed or weakened. This is proven irrelevant-work
+  suppression, not a quantitative FPS claim. The one relevance predicate, table-driven test, and
+  runtime scheduling probe are the rollback boundary.
 
 ### C13-36 Batch 736 ray-sample phase evidence
 
@@ -747,8 +842,9 @@ This is an oracle/tooling slice only; it changes no engine renderer or cloud app
   speedup. The medium temporal static/pan/settle smoke also completed without new errors.
 - Functionality preservation: no cloud feature, quality tier, atmospheric consumer, or renderer
   path was disabled. WebGPU and WebGL billboard smoke remained visible (`59,911` and `36,504`
-  neutral-cloud evidence pixels). Temporal history invalidation across cuts/origin/tier/weather
-  changes remains owned by `C13-12`; this landing does not claim it.
+  neutral-cloud evidence pixels). Coarse temporal coordinate/reset handling later closed under
+  `C13-05`; attachment-aware wind/weather/depth/disocclusion/variance/reactive rejection remains
+  owned by `C13-12`.
 - Rollback boundary: the tier flag packing, 64-phase counter, per-fragment IGN helper/phase
   parameter, and their two focused tools form one removable slice. Baked density resources,
   weather, shell geometry, reconstruction attachments, WebGL shaders, and public APIs are
@@ -761,8 +857,10 @@ This is an oracle/tooling slice only; it changes no engine renderer or cloud app
 ### Current implementation
 
 - `packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUCloudTemporalHistory.ts`
 - `packages/engine/Source/Renderer/WebGPU/WebGPUCloudTierPresets.ts`
 - `packages/engine/Source/Renderer/WebGPU/WebGPUCloudNoiseResources.ts`
+- `packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts`
 - `packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl`
 - `packages/engine/Source/Shaders/WebGPU/Environment/CloudTemporalResolve.wgsl`
 - `packages/engine/Source/Shaders/WebGPU/Environment/CloudUpscale.wgsl`
@@ -773,7 +871,11 @@ This is an oracle/tooling slice only; it changes no engine renderer or cloud app
 - `packages/engine/Source/Renderer/WebGPU/WebGPUSceneRendererEnvironmentDemand.ts`
 - `Tools/visual-regression/cloud-primary-shell.spec.mjs`
 - `Tools/visual-regression/cloud-ray-jitter.spec.mjs`
+- `Tools/visual-regression/cloud-temporal-rte.spec.mjs`
+- `Tools/visual-regression/cloud-ibl-revision.spec.mjs`
 - `Tools/visual-regression/probe-cloud-banding.mjs`
+- `Tools/visual-regression/probe-cloud-temporal-rte.mjs`
+- `Tools/visual-regression/probe-cloud-ibl-optout-revision.mjs`
 - `Tools/visual-regression/probe-cloud-empty-frustum.mjs`
 - `Tools/visual-regression/probe-cloud-planetary.mjs`
 - `Tools/visual-regression/probe-cloud-tour.mjs`

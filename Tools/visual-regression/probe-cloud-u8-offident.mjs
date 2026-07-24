@@ -24,9 +24,22 @@
 // Env:   PROBE_BASE (default http://localhost:8080)
 
 import { chromium } from "playwright";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+
+import {
+  armWebGPUDevices,
+  attachConsoleErrorGate,
+  collectGateErrors,
+  errorGateInit,
+} from "../lib/webgpu-error-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
+const OUTPUT_DIR = "Tools/visual-regression/output/cloud-u8-offident";
+const watchdog = setTimeout(() => {
+  console.error("[cloud-u8-offident] WATCHDOG FIRED (180s) — forcing exit");
+  process.exit(2);
+}, 180_000);
+watchdog.unref?.();
 
 // Every WebGPU-only volumetric flag, exercised at a non-default value so a
 // leak into the BILLBOARD path would move pixels. Kept in one place so the
@@ -102,17 +115,35 @@ async function runBackend(renderer) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 800, height: 500 } });
-  const errors = [];
-  page.on("console", (m) => {
-    if (m.type() === "error") errors.push(m.text());
-  });
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-  });
-  await page.waitForFunction(() => !!window.viewer);
+  try {
+    const page = await browser.newPage({ viewport: { width: 800, height: 500 } });
+    const errors = [];
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        errors.push(`console: ${message.text()}`);
+      }
+    });
+    page.on("pageerror", (error) => {
+      errors.push(`pageerror: ${error.message}`);
+    });
+    const gpuConsoleErrors = attachConsoleErrorGate(page);
+    await page.addInitScript(errorGateInit);
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
+      {
+        waitUntil: "networkidle",
+        timeout: 90_000,
+      },
+    );
+    await page.waitForFunction(() => !!window.viewer, undefined, {
+      timeout: 90_000,
+    });
+    const armState =
+      renderer === "webgpu"
+        ? await armWebGPUDevices(page)
+        : { armed: 0, found: 0, total: 0 };
 
-  const result = await page.evaluate(async (applySrc) => {
+    const result = await page.evaluate(async (applySrc) => {
     const C = await import("/Build/CesiumUnminified/index.js");
     const applyAllVolumetricFlags = new Function(
       "C",
@@ -122,6 +153,11 @@ async function runBackend(renderer) {
     const v = window.viewer,
       scene = v.scene;
 
+    v.useDefaultRenderLoop = false;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    v.clock.shouldAnimate = false;
+    const frameTime = C.JulianDate.fromIso8601("2026-07-23T18:00:00Z");
+    v.clock.currentTime = frameTime;
     scene.globe.show = false;
     if (scene.skyBox) scene.skyBox.show = false;
     if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
@@ -136,7 +172,7 @@ async function runBackend(renderer) {
       const coll = scene.primitives.add(new C.CloudCollection());
       buildFn(coll);
       for (let i = 0; i < 12; i++) {
-        scene.render();
+        scene.render(frameTime);
         await new Promise((r) => requestAnimationFrame(r));
       }
       const canvas = scene.canvas;
@@ -146,6 +182,12 @@ async function runBackend(renderer) {
       const ctx2d = tmp.getContext("2d");
       ctx2d.drawImage(canvas, 0, 0);
       const data = ctx2d.getImageData(0, 0, tmp.width, tmp.height).data;
+      const digest = new Uint8Array(
+        await crypto.subtle.digest("SHA-256", data),
+      );
+      const sha256 = Array.from(digest, (byte) =>
+        byte.toString(16).padStart(2, "0"),
+      ).join("");
       let h = 0x811c9dc5;
       let bright = 0;
       for (let i = 0; i < data.length; i += 4) {
@@ -161,7 +203,7 @@ async function runBackend(renderer) {
         h = Math.imul(h, 0x01000193);
       }
       scene.primitives.remove(coll);
-      return { hash: h >>> 0, bright };
+      return { hash: h >>> 0, sha256, bright };
     }
 
     const puffs = [
@@ -204,7 +246,7 @@ async function runBackend(renderer) {
       volColl.renderMode = C.CloudRenderMode.VOLUMETRIC; // exclusive toggle
       volColl.enableVolumetric = true;
       for (let i = 0; i < 8; i++) {
-        scene.render();
+        scene.render(frameTime);
         await new Promise((r) => requestAnimationFrame(r));
       }
       scene.primitives.remove(volColl);
@@ -217,24 +259,40 @@ async function runBackend(renderer) {
     return {
       baselineHash: baseline.hash,
       withFlagsHash: withFlags.hash,
+      baselineSha256: baseline.sha256,
+      withFlagsSha256: withFlags.sha256,
       baselineBright: baseline.bright,
       withFlagsBright: withFlags.bright,
-      identical: baseline.hash === withFlags.hash,
+      identical: baseline.sha256 === withFlags.sha256,
       applyThrew,
       volumetricSetupThrew,
       shotUrl,
     };
-  }, applyAllVolumetricFlags.toString());
+    }, applyAllVolumetricFlags.toString());
 
-  const b64 = result.shotUrl.split(",")[1];
-  writeFileSync(
-    `Tools/visual-regression/out-cloud-u8-${renderer}.png`,
-    Buffer.from(b64, "base64"),
-  );
-  delete result.shotUrl;
+    const gpuGate =
+      renderer === "webgpu"
+        ? await collectGateErrors(page)
+        : { errors: [], deviceLost: null, armedDevices: 0 };
+    const b64 = result.shotUrl.split(",")[1];
+    mkdirSync(OUTPUT_DIR, { recursive: true });
+    writeFileSync(
+      `${OUTPUT_DIR}/${renderer}.png`,
+      Buffer.from(b64, "base64"),
+    );
+    delete result.shotUrl;
 
-  await browser.close();
-  return { renderer, errors, ...result };
+    return {
+      renderer,
+      errors,
+      gpuConsoleErrors,
+      gpuGate,
+      armState,
+      ...result,
+    };
+  } finally {
+    await browser.close().catch(() => {});
+  }
 }
 
 const results = [];
@@ -246,9 +304,21 @@ let ok = true;
 for (const res of results) {
   const checks = {
     billboardByteIdentical: res.identical,
+    billboardBaselineVisible:
+      res.baselineBright > 1000 && res.withFlagsBright > 1000,
+    strongDigestPresent:
+      res.baselineSha256?.length === 64 &&
+      res.withFlagsSha256?.length === 64,
     applyDidNotThrow: !res.applyThrew,
     volumetricSetupDidNotThrow: !res.volumetricSetupThrew,
-    zeroErrors: res.errors.length === 0,
+    zeroErrors:
+      res.errors.length === 0 &&
+      res.gpuConsoleErrors.length === 0 &&
+      res.gpuGate.errors.length === 0 &&
+      res.gpuGate.deviceLost === null,
+    webgpuGateArmed:
+      res.renderer !== "webgpu" ||
+      (res.armState.found >= 1 && res.gpuGate.armedDevices >= 1),
   };
   const failed = Object.entries(checks).filter(([, v]) => !v);
   if (failed.length) ok = false;
@@ -257,11 +327,20 @@ for (const res of results) {
     `  baselineHash=${res.baselineHash} withFlagsHash=${res.withFlagsHash} ` +
       `bright(base=${res.baselineBright}, flags=${res.withFlagsBright})`,
   );
+  console.log(
+    `  sha256(base=${res.baselineSha256}, flags=${res.withFlagsSha256})`,
+  );
   console.log(`  checks: ${JSON.stringify(checks)}`);
   if (failed.length)
     console.log(`  FAILED: ${failed.map(([k]) => k).join(", ")}`);
   if (res.errors.length)
     console.log(`  console errors: ${JSON.stringify(res.errors.slice(0, 5))}`);
+  if (res.gpuConsoleErrors.length)
+    console.log(
+      `  GPU console errors: ${JSON.stringify(res.gpuConsoleErrors.slice(0, 5))}`,
+    );
+  if (res.gpuGate.errors.length || res.gpuGate.deviceLost)
+    console.log(`  GPU gate: ${JSON.stringify(res.gpuGate)}`);
 }
 
 console.log(`\n${ok ? "PASS" : "FAIL"} — CLOUD-U8-DOCS-DEMO-PROBES off-identity`);

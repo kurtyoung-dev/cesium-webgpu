@@ -56,12 +56,28 @@ import {
 // high-precision cloud march. Only the encoded floats (slots 120-127) are sourced
 // from this; the WGSL reads them solely inside the CLOUD_QF_HIGH_PRECISION branch.
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import Matrix4 from "../../Core/Matrix4.js";
+import OrthographicFrustum from "../../Core/OrthographicFrustum.js";
+import OrthographicOffCenterFrustum from "../../Core/OrthographicOffCenterFrustum.js";
+import SceneMode from "../../Scene/SceneMode.js";
 // V9 (Batch 432) — half-res bilateral-upscale composite shader.
 import CloudUpscaleWGSL from "../../Shaders/WebGPU/Environment/CloudUpscale.js";
 // V10 (Batch 433) — temporal reprojection + accumulation resolve shader.
 import CloudTemporalResolveWGSL from "../../Shaders/WebGPU/Environment/CloudTemporalResolve.js";
 import { buildCloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
 import type { CloudNoiseResources } from "./WebGPUCloudNoiseResources.js";
+import {
+  CLOUD_TEMPORAL_RESET_RESOURCE,
+  classifyCloudTemporalHistoryReset,
+  cloudTemporalResetStartsGeneration,
+  commitCloudTemporalHistoryState,
+  createCloudTemporalHistorySample,
+  createCloudTemporalHistoryState,
+} from "./WebGPUCloudTemporalHistory.js";
+import type {
+  CloudTemporalHistorySample,
+  CloudTemporalHistoryState,
+} from "./WebGPUCloudTemporalHistory.js";
 // V11 (Batch 408) — per-genus vertical-density profiles. Backend-neutral Scene
 // data (the WGSL just reads the packed profile floats).
 import CloudTypeProfile from "../../Scene/CloudTypeProfile.js";
@@ -92,6 +108,29 @@ const WEATHER_TEX_H = 128;
 // camera high/low split (avoids a per-frame allocation). Only written when the
 // camera position is defined; read into the cloud UB slots 120-127.
 const scratchEncodedCamera = new EncodedCartesian3();
+const scratchInverseViewRelativeToEye = new Matrix4();
+const scratchInverseCurrentViewProjectionRelativeToEye = new Matrix4();
+
+function matrix4IsFinite(matrix: ArrayLike<number> | undefined): boolean {
+  if (!matrix || matrix.length < 16) {
+    return false;
+  }
+  for (let index = 0; index < 16; index++) {
+    if (!Number.isFinite(matrix[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function matrix4HasNonZeroEntry(matrix: ArrayLike<number>): boolean {
+  for (let index = 0; index < 16; index++) {
+    if (matrix[index] !== 0.0) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export interface CloudCache {
   pipeline: GPURenderPipeline | null;
@@ -151,9 +190,28 @@ export interface CloudCache {
   temporalFirstFrame: boolean;
   temporalPipeline: GPURenderPipeline | null; // reproject + clamp + blend → new history
   temporalBindGroupLayout: GPUBindGroupLayout | null;
+  // One bind group per history READ parity. Rebuilt only when the half/history
+  // views are reallocated; the hot temporal path selects by parity with no
+  // per-frame bind-group allocation.
+  temporalBindGroups: [GPUBindGroup | null, GPUBindGroup | null];
   temporalUniformBuffer: GPUBuffer | null;
   temporalUniformData: Float32Array;
   temporalSampler: GPUSampler | null;
+  // C13-05 — allocation-free coarse history compatibility and probe-visible
+  // diagnostics. Advanced wind/weather/depth rejection remains C13-12.
+  temporalHistoryState: CloudTemporalHistoryState;
+  temporalHistorySample: CloudTemporalHistorySample;
+  // Reset reasons observed continuously in the current reset episode. A new
+  // reason bit starts a new generation even on an adjacent reset frame, while a
+  // persistent reason (for example MORPH) does not increment every frame.
+  temporalHistoryLatchedResetReasons: number;
+  // Renderer-owned reasons such as history texture reallocation are ORed with
+  // the pure classifier on the next resolve and then consumed.
+  temporalHistoryPendingResetReasons: number;
+  temporalHistoryGeneration: number;
+  temporalHistoryResetReasons: number;
+  temporalHistoryResetCount: number;
+  temporalHistoryAcceptedFrames: number;
   // Batch 434 (3.3 + 3.4) — atmosphere-LUT coupling. The cloud BGL ALWAYS declares
   // the three LUT textures (sky-view / MS / transmittance) + a linear sampler at
   // bindings 9-12 so the pipeline layout never forks. When the modes are off (or the
@@ -297,9 +355,18 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       temporalFirstFrame: true,
       temporalPipeline: null,
       temporalBindGroupLayout: null,
+      temporalBindGroups: [null, null],
       temporalUniformBuffer: null,
       temporalUniformData: new Float32Array(TEMPORAL_UNIFORM_FLOATS),
       temporalSampler: null,
+      temporalHistoryState: createCloudTemporalHistoryState(),
+      temporalHistorySample: createCloudTemporalHistorySample(),
+      temporalHistoryLatchedResetReasons: 0,
+      temporalHistoryPendingResetReasons: 0,
+      temporalHistoryGeneration: 0,
+      temporalHistoryResetReasons: 0,
+      temporalHistoryResetCount: 0,
+      temporalHistoryAcceptedFrames: 0,
       lutPlaceholderTexture: null,
       lutPlaceholderView: null,
       lutSampler: null,
@@ -640,10 +707,30 @@ const CLOUD_UPSCALE_DEPTH_SIGMA = 5.0e-3;
 // (rgba16float, premultiplied HDR cloud) since the history accumulates that buffer.
 const CLOUD_TEMPORAL_FORMAT: GPUTextureFormat = CLOUD_HALF_FORMAT;
 // TemporalUniforms float count — MUST equal the WGSL struct length
-// (CloudTemporalResolve.wgsl): prevVP(16) + invProj(16) + invView(16) +
-// cameraPositionAndBlend(4) + shellRadiiAndRes(4) + firstFrameFlags(4) = 60.
+// (CloudTemporalResolve.wgsl): previousVpRte(16) + inverseCurrentVpRte(16) +
+// seven vec4 rows carrying encoded camera, f64 camera delta, deck topology,
+// resolution, validity, and diagnostics = 60. This remains within WebGPU's
+// 256-byte minimum uniform-buffer alignment without growing the allocation.
 const TEMPORAL_UNIFORM_FLOATS = 60;
 const TEMPORAL_UNIFORM_BYTES = TEMPORAL_UNIFORM_FLOATS * 4;
+
+function markCloudTemporalInactive(cache: CloudCache): void {
+  if (
+    !cache.temporalHistoryState.temporalActive &&
+    !cache.temporalHistorySample.temporalActive
+  ) {
+    return;
+  }
+  cache.temporalHistorySample.temporalActive = false;
+  commitCloudTemporalHistoryState(
+    cache.temporalHistoryState,
+    cache.temporalHistorySample,
+    false,
+  );
+  // Reactivation is a new discontinuity even if the prior active frame was
+  // itself invalid (for example, the user toggles tiers during a morph).
+  cache.temporalHistoryLatchedResetReasons = 0;
+}
 
 /**
  * V10 (Batch 433) — (re)allocate the DOUBLE-BUFFERED (ping-pong) half-res cloud
@@ -684,8 +771,10 @@ function ensureTemporalResources(
     cache.temporalWidth = halfW;
     cache.temporalHeight = halfH;
     cache.temporalRead = 0;
+    cache.temporalBindGroups = [null, null];
     // History contents are undefined after (re)allocation — seed identity next frame.
     cache.temporalFirstFrame = true;
+    cache.temporalHistoryPendingResetReasons |= CLOUD_TEMPORAL_RESET_RESOURCE;
   }
 
   if (!cache.temporalPipeline) {
@@ -731,10 +820,38 @@ function ensureTemporalResources(
     });
   }
 
+  if (
+    cache.halfView &&
+    cache.temporalBindGroupLayout &&
+    cache.temporalUniformBuffer &&
+    cache.temporalSampler &&
+    cache.temporalHistoryView[0] &&
+    cache.temporalHistoryView[1] &&
+    (!cache.temporalBindGroups[0] || !cache.temporalBindGroups[1])
+  ) {
+    for (let readIndex = 0; readIndex < 2; readIndex++) {
+      cache.temporalBindGroups[readIndex] = device.createBindGroup({
+        label: `CloudTemporalResolve bind group (read ${readIndex})`,
+        layout: cache.temporalBindGroupLayout,
+        entries: [
+          { binding: 0, resource: cache.halfView },
+          {
+            binding: 1,
+            resource: cache.temporalHistoryView[readIndex]!,
+          },
+          { binding: 2, resource: cache.temporalSampler },
+          { binding: 3, resource: { buffer: cache.temporalUniformBuffer } },
+        ],
+      });
+    }
+  }
+
   return (
     !!cache.temporalHistoryView[0] &&
     !!cache.temporalHistoryView[1] &&
-    !!cache.temporalPipeline
+    !!cache.temporalPipeline &&
+    !!cache.temporalBindGroups[0] &&
+    !!cache.temporalBindGroups[1]
   );
 }
 
@@ -1679,6 +1796,9 @@ export function executeProceduralClouds(
     const outerR = 6378137.0 + (config.cloudLayerTop ?? 4000.0);
     for (let p = 0; p < planes.length; p++) {
       if (planes[p].w < -outerR) {
+        if (context._cloudCache) {
+          markCloudTemporalInactive(context._cloudCache);
+        }
         return; // shell entirely outside the frustum — nothing to draw
       }
     }
@@ -1819,12 +1939,27 @@ export function executeProceduralClouds(
   // V10 (Batch 433) — temporal gate. A tier with `temporalEnabled` (T1 low / T2
   // medium) layers temporal reprojection/accumulation ON TOP of the half-res march:
   // the history accumulates the premultiplied half-res cloud and is reprojected via
-  // `previousViewProjection` + neighborhood-clamped each frame. T3 cinematic and the
-  // cloudQuality escape hatch keep `temporalEnabled=false` → NO history allocates →
+  // the previous relative-to-eye VP + CPU-f64 camera delta, then neighborhood-
+  // clamped each frame. T3 cinematic and the cloudQuality escape hatch keep
+  // `temporalEnabled=false` → NO history allocates →
   // byte-identical. Temporal REQUIRES the half-res path (the history is half-res), so
   // it is additionally gated on `halfResActive`; self-healing: if the history pair /
   // resolve pipeline can't allocate we fall back to plain half-res (no accumulation).
-  let temporalActive = cloudPreset.temporalEnabled && halfResActive;
+  const temporalFrustum = frameState.camera?.frustum;
+  const temporalProjectionOrthographic =
+    temporalFrustum instanceof OrthographicFrustum ||
+    temporalFrustum instanceof OrthographicOffCenterFrustum;
+  // The current color-only proxy assumes every ray begins at the camera.
+  // Orthographic reconstruction needs a per-pixel eye-relative origin, and
+  // morphing crosses incompatible projection regimes. Keep the live half-res
+  // march/upscale, but do not animate its temporal-only phase, allocate/execute
+  // history, or advertise QF_TEMPORAL until that geometry is representable.
+  const temporalReprojectionSupported =
+    !temporalProjectionOrthographic && frameState.mode !== SceneMode.MORPHING;
+  let temporalActive =
+    cloudPreset.temporalEnabled &&
+    halfResActive &&
+    temporalReprojectionSupported;
   if (temporalActive) {
     const tAllocated = ensureTemporalResources(
       device,
@@ -1841,6 +1976,11 @@ export function executeProceduralClouds(
       );
     }
     temporalActive = tAllocated;
+  }
+  if (!temporalActive) {
+    // A full-resolution/plain-half frame does not update the temporal history.
+    // Even an adjacent re-entry must therefore seed from the current march.
+    markCloudTemporalInactive(cache);
   }
   data[offset++] = qualityResolved.maxSteps;
   data[offset++] = qualityResolved.lightSteps;
@@ -2606,11 +2746,12 @@ export function executeProceduralClouds(
     halfPass.end();
 
     // V10 (Batch 433) — TEMPORAL RESOLVE (optional, between raymarch and upscale).
-    // Reproject the previous accumulated history via `previousViewProjection`,
-    // neighborhood-clamp it to the current 3×3 freshly-marched AABB (ghost rejection),
-    // and blend → write the new accumulated history. The upscale then reads THAT
-    // history instead of the raw half-res march. When temporal is OFF (default /
-    // cinematic / escape hatch) this whole block is skipped → byte-identical.
+    // Reproject the previous accumulated history through the RTE
+    // `previousViewProjectionRelativeToEye`, neighborhood-clamp it to the current
+    // 3×3 freshly-marched AABB (ghost rejection), and blend → write the new
+    // accumulated history. The upscale then reads THAT history instead of the
+    // raw half-res march. When temporal is OFF (default / cinematic / escape
+    // hatch) this whole block is skipped → byte-identical.
     let upscaleSourceView: GPUTextureView = cache.halfView;
     if (
       temporalActive &&
@@ -2619,66 +2760,173 @@ export function executeProceduralClouds(
       cache.temporalUniformBuffer &&
       cache.temporalSampler &&
       cache.temporalHistoryView[0] &&
-      cache.temporalHistoryView[1]
+      cache.temporalHistoryView[1] &&
+      cache.temporalBindGroups[0] &&
+      cache.temporalBindGroups[1]
     ) {
       const readIdx = cache.temporalRead & 1;
       const writeIdx = readIdx ^ 1;
-      const readView = cache.temporalHistoryView[readIdx]!;
       const writeView = cache.temporalHistoryView[writeIdx]!;
 
-      // Pack TemporalUniforms (60 floats — byte-locked to CloudTemporalResolve.wgsl).
+      // C13-05 — compare with the last frame that actually WROTE cloud
+      // history, not merely UniformState's immediately preceding Scene frame.
+      // This catches culling/disable gaps and tier re-entry while preserving
+      // ordinary bounded camera motion.
+      const previousVpRte = us?.previousViewProjectionRelativeToEye;
+      const inverseProjection = us?.inverseProjection;
+      const inverseView = us?.inverseView;
+      const currentCamera = us?.cameraPosition ?? camPos;
+      const previousCamera = us?.previousCameraPosition;
+      let inverseCurrentVpRteValid = false;
+      if (
+        temporalReprojectionSupported &&
+        matrix4IsFinite(previousVpRte) &&
+        matrix4IsFinite(inverseProjection) &&
+        matrix4IsFinite(inverseView) &&
+        matrix4HasNonZeroEntry(inverseProjection as Matrix4)
+      ) {
+        // inverse(P * Vrot) = inverse(Vrot) * inverse(P). Reuse the already
+        // computed inverse view/projection and remove the inverse-view
+        // translation instead of generally inverting the VP_RTE matrix. This
+        // is cheaper in the perspective hot path; unsupported
+        // orthographic/morph projections were gated before temporal resources.
+        Matrix4.clone(inverseView as Matrix4, scratchInverseViewRelativeToEye);
+        scratchInverseViewRelativeToEye[12] = 0.0;
+        scratchInverseViewRelativeToEye[13] = 0.0;
+        scratchInverseViewRelativeToEye[14] = 0.0;
+        Matrix4.multiply(
+          scratchInverseViewRelativeToEye,
+          inverseProjection as Matrix4,
+          scratchInverseCurrentViewProjectionRelativeToEye,
+        );
+        inverseCurrentVpRteValid = matrix4IsFinite(
+          scratchInverseCurrentViewProjectionRelativeToEye,
+        );
+      }
+
+      const transformsValid =
+        inverseCurrentVpRteValid &&
+        currentCamera !== undefined &&
+        previousCamera !== undefined &&
+        Number.isFinite(currentCamera.x) &&
+        Number.isFinite(currentCamera.y) &&
+        Number.isFinite(currentCamera.z) &&
+        Number.isFinite(previousCamera.x) &&
+        Number.isFinite(previousCamera.y) &&
+        Number.isFinite(previousCamera.z);
+      // Both operands are JS numbers (f64). Only the per-frame-small result is
+      // down-cast when written to the uniform buffer.
+      const cameraDeltaX = transformsValid
+        ? currentCamera.x - previousCamera.x
+        : 0.0;
+      const cameraDeltaY = transformsValid
+        ? currentCamera.y - previousCamera.y
+        : 0.0;
+      const cameraDeltaZ = transformsValid
+        ? currentCamera.z - previousCamera.z
+        : 0.0;
+      const layerBottom = config.cloudLayerBottom ?? 1500.0;
+      const layerTop = config.cloudLayerTop ?? 4000.0;
+      const historySample = cache.temporalHistorySample;
+      historySample.frameNumber = frameState.frameNumber;
+      historySample.temporalActive = true;
+      historySample.transformValid = transformsValid;
+      historySample.cameraX = currentCamera?.x ?? 0.0;
+      historySample.cameraY = currentCamera?.y ?? 0.0;
+      historySample.cameraZ = currentCamera?.z ?? 0.0;
+      historySample.sceneMode = frameState.mode;
+      historySample.morphing = frameState.mode === SceneMode.MORPHING;
+      historySample.projectionType = temporalProjectionOrthographic ? 1 : 0;
+      historySample.deckBottom = layerBottom;
+      historySample.deckTop = layerTop;
+      historySample.multiDeck = multiDeckOn;
+
+      const temporalResetReasons =
+        classifyCloudTemporalHistoryReset(
+          cache.temporalHistoryState,
+          historySample,
+        ) | cache.temporalHistoryPendingResetReasons;
+      cache.temporalHistoryPendingResetReasons = 0;
+      if (temporalResetReasons !== 0) {
+        cache.temporalFirstFrame = true;
+        if (
+          cloudTemporalResetStartsGeneration(
+            cache.temporalHistoryLatchedResetReasons,
+            temporalResetReasons,
+          )
+        ) {
+          cache.temporalHistoryGeneration++;
+          cache.temporalHistoryResetCount++;
+        }
+        cache.temporalHistoryLatchedResetReasons |= temporalResetReasons;
+      } else if (!cache.temporalFirstFrame) {
+        cache.temporalHistoryAcceptedFrames++;
+        cache.temporalHistoryLatchedResetReasons = 0;
+      }
+      cache.temporalHistoryResetReasons = temporalResetReasons;
+
+      // Pack TemporalUniforms (60 floats — byte-locked to
+      // CloudTemporalResolve.wgsl). Clear first so a missing transform cannot
+      // reuse stale matrix values from an earlier valid frame.
       const td = cache.temporalUniformData;
+      td.fill(0.0);
       let to = 0;
-      // previousViewProjection (mat4, 16) — column-major, same as the cloud packer.
-      const prevVP = us?.previousViewProjection;
-      if (prevVP) {
-        for (let i = 0; i < 16; i++) td[to++] = prevVP[i];
+      // previousViewProjectionRelativeToEye (mat4, 16), column-major.
+      if (matrix4IsFinite(previousVpRte)) {
+        for (let i = 0; i < 16; i++) td[to++] = previousVpRte[i];
       } else {
         to += 16;
       }
-      // inverseProjection (mat4, 16) — current frame.
-      if (invProj) {
-        for (let i = 0; i < 16; i++) td[to++] = invProj[i];
+      // inverseCurrentViewProjectionRelativeToEye (mat4, 16).
+      if (inverseCurrentVpRteValid) {
+        for (let i = 0; i < 16; i++) {
+          td[to++] = scratchInverseCurrentViewProjectionRelativeToEye[i];
+        }
       } else {
         to += 16;
       }
-      // inverseView (mat4, 16) — current frame.
-      if (invView) {
-        for (let i = 0; i < 16; i++) td[to++] = invView[i];
-      } else {
-        to += 16;
-      }
-      // cameraPositionAndBlend (vec4): camera world pos + per-frame blend weight.
-      td[to++] = camPos?.x ?? 0;
-      td[to++] = camPos?.y ?? 0;
-      td[to++] = camPos?.z ?? 0;
+      // encodedCameraHighAndBlend (vec4). Reuse the primary march's exact
+      // high/low split so both paths share one camera origin.
+      td[to++] = data[120];
+      td[to++] = data[121];
+      td[to++] = data[122];
       td[to++] = Math.max(
         1 / 16,
         Math.min(1, cloudPreset.temporalUpdateFraction || 1 / 8),
       );
-      // shellRadiiAndRes (vec4): inner/outer shell radius + half-res target size.
-      const innerR = 6378137.0 + (config.cloudLayerBottom ?? 1500.0);
-      const outerR = 6378137.0 + (config.cloudLayerTop ?? 4000.0);
-      td[to++] = innerR;
-      td[to++] = outerR;
+      // encodedCameraLowAndHeight (vec4): low split + CPU-f64 WGS84 height.
+      td[to++] = data[124];
+      td[to++] = data[125];
+      td[to++] = data[126];
+      td[to++] = frameState.camera?.positionCartographic?.height ?? 0.0;
+      // cameraDeltaAndWidth (vec4).
+      td[to++] = cameraDeltaX;
+      td[to++] = cameraDeltaY;
+      td[to++] = cameraDeltaZ;
       td[to++] = cache.halfWidth;
+      // primaryDeckAndResolutionY (vec4).
+      td[to++] = layerBottom;
+      td[to++] = layerTop;
       td[to++] = cache.halfHeight;
-      // firstFrameFlags (vec4): x=1 on the first temporal frame (seed identity).
+      td[to++] = 0.0;
+      // Low and middle multi-deck bounds.
+      td[to++] = deckBounds[0][0];
+      td[to++] = deckBounds[0][1];
+      td[to++] = deckBounds[1][0];
+      td[to++] = deckBounds[1][1];
+      // High bounds + topology/history-validity flags.
+      td[to++] = deckBounds[2][0];
+      td[to++] = deckBounds[2][1];
+      td[to++] = multiDeckOn ? 1.0 : 0.0;
       td[to++] = cache.temporalFirstFrame ? 1.0 : 0.0;
-      td[to++] = 0;
-      td[to++] = 0;
-      td[to++] = 0;
+      // Probe-visible diagnostics (the shader does not branch on this row).
+      td[to++] = cache.temporalHistoryGeneration;
+      td[to++] = temporalResetReasons;
+      td[to++] = frameState.frameNumber;
+      td[to++] = 0.0;
       device.queue.writeBuffer(cache.temporalUniformBuffer, 0, td);
 
-      const temporalBindGroup = device.createBindGroup({
-        layout: cache.temporalBindGroupLayout,
-        entries: [
-          { binding: 0, resource: cache.halfView }, // current freshly-marched
-          { binding: 1, resource: readView }, // previous accumulated history
-          { binding: 2, resource: cache.temporalSampler },
-          { binding: 3, resource: { buffer: cache.temporalUniformBuffer } },
-        ],
-      });
+      const temporalBindGroup = cache.temporalBindGroups[readIdx]!;
       const temporalPass = encoder.beginRenderPass({
         label: "CloudTemporalResolve pass",
         colorAttachments: [
@@ -2699,6 +2947,11 @@ export function executeProceduralClouds(
       upscaleSourceView = writeView;
       // Ping-pong: next frame reads what we just wrote.
       cache.temporalRead = writeIdx;
+      commitCloudTemporalHistoryState(
+        cache.temporalHistoryState,
+        historySample,
+        true,
+      );
       cache.temporalFirstFrame = false;
     }
 
@@ -2875,7 +3128,16 @@ export function destroyProceduralCloudResources(
     cache.temporalUniformBuffer = null;
     cache.temporalPipeline = null;
     cache.temporalBindGroupLayout = null;
+    cache.temporalBindGroups = [null, null];
     cache.temporalSampler = null;
+    cache.temporalHistoryState = createCloudTemporalHistoryState();
+    cache.temporalHistorySample = createCloudTemporalHistorySample();
+    cache.temporalHistoryLatchedResetReasons = 0;
+    cache.temporalHistoryPendingResetReasons = 0;
+    cache.temporalHistoryGeneration = 0;
+    cache.temporalHistoryResetReasons = 0;
+    cache.temporalHistoryResetCount = 0;
+    cache.temporalHistoryAcceptedFrames = 0;
     // Batch 434 (3.3 + 3.4) — release the LUT placeholder + sampler. The real LUT
     // textures are owned by the performance manager, not this cache.
     cache.lutPlaceholderTexture?.destroy();

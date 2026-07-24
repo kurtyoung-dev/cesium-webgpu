@@ -52,7 +52,7 @@ test("the environment-map cache edge-triggers fills from cloud revisions", () =>
   );
   assert.match(
     refreshGate,
-    /const cloudRevisionChanged\s*=\s*liveCloudRevision\s*!==\s*cache\.lastCloudRevision;/,
+    /const cloudRevisionChanged\s*=\s*\(wantMarch\s*\|\|\s*cache\.lastUsedCloudMarch\)\s*&&\s*liveCloudRevision\s*!==\s*cache\.lastCloudRevision;/,
   );
 
   const fillBlock = sourceSection(
@@ -83,6 +83,88 @@ test("the environment-map cache edge-triggers fills from cloud revisions", () =>
     revisionCommitIndex > projectionIndex,
     "the consumed revision must be committed only after the complete fill",
   );
+});
+
+test("cloud revisions refresh only a current or previous full reflection march", () => {
+  const revisionRequestsFill = ({
+    wantMarch,
+    lastUsedCloudMarch,
+    liveRevision,
+    lastRevision,
+  }) =>
+    (wantMarch || lastUsedCloudMarch) && liveRevision !== lastRevision;
+
+  const cases = [
+    {
+      name: "static opt-out",
+      wantMarch: false,
+      lastUsedCloudMarch: false,
+      liveRevision: 11,
+      lastRevision: 11,
+      expected: false,
+    },
+    {
+      name: "animated opt-out",
+      wantMarch: false,
+      lastUsedCloudMarch: false,
+      liveRevision: 12,
+      lastRevision: 11,
+      expected: false,
+    },
+    {
+      name: "active full march",
+      wantMarch: true,
+      lastUsedCloudMarch: true,
+      liveRevision: 12,
+      lastRevision: 11,
+      expected: true,
+    },
+    {
+      name: "first opt-in consumes deferred revision",
+      wantMarch: true,
+      lastUsedCloudMarch: false,
+      liveRevision: 19,
+      lastRevision: 11,
+      expected: true,
+    },
+    {
+      name: "ON-to-OFF teardown consumes final revision",
+      wantMarch: false,
+      lastUsedCloudMarch: true,
+      liveRevision: 20,
+      lastRevision: 19,
+      expected: true,
+    },
+    {
+      name: "settled teardown",
+      wantMarch: false,
+      lastUsedCloudMarch: false,
+      liveRevision: 20,
+      lastRevision: 20,
+      expected: false,
+    },
+  ];
+
+  for (const fixture of cases) {
+    assert.equal(
+      revisionRequestsFill(fixture),
+      fixture.expected,
+      fixture.name,
+    );
+  }
+
+  for (let liveRevision = 1; liveRevision <= 100; liveRevision++) {
+    assert.equal(
+      revisionRequestsFill({
+        wantMarch: false,
+        lastUsedCloudMarch: false,
+        liveRevision,
+        lastRevision: 0,
+      }),
+      false,
+      `opted-out animation revision ${liveRevision} must remain inert`,
+    );
+  }
 });
 
 test("one revision covers every reflected-density input without per-frame fills", () => {

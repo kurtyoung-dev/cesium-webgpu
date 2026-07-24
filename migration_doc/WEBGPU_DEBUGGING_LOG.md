@@ -24,6 +24,142 @@
 
 ---
 
+## C13-05 — temporal WGS84/RTE reprojection and coarse history-reset contract (2026-07-24, Campaign 13 W1)
+
+**Premise.** The temporal resolve was not using the renderer's planet-scale coordinate contract. It
+reconstructed a raw full-ECEF `f32` anchor from the camera position, intersected an equatorial
+midpoint sphere, and projected with an absolute previous view-projection matrix. Color history could
+also survive discontinuities for which that proxy was no longer meaningful: frame gaps, camera
+teleports, scene/projection changes, morphs, temporal-tier re-entry, skipped/cull frames, deck-bound
+changes, and multi-deck topology changes. Separately, the temporal hot path created a bind group each
+frame even though only the read-history parity changes.
+
+**Cause.** Temporal history had no cache-owned record describing the frame/transform/shell topology
+that actually wrote each history generation. The shader had neither an inverse current
+view-projection-relative-to-eye transform nor a previous relative-to-eye contract, so its only
+available anchor was imprecise world `f32`. Resource parity was treated as a reason to construct a
+new bind group rather than select one of two generation-owned bindings.
+
+**Fix.**
+
+- New `WebGPUCloudTemporalHistory.ts` provides an allocation-free classifier/commit pair. One
+  logical generation reset now records all applicable causes: initial or missing transform, frame
+  gap, camera displacement over 50 km, scene mode, morph, projection type, temporal reactivation,
+  primary deck bounds, multi-deck topology, and temporal-resource resize. Adjacent new causes advance
+  diagnostics without repeatedly counting a persistent cause. State describes the last frame that
+  actually wrote history, not merely the previous Scene frame. Ordinary bounded camera movement and
+  continuous clock/wind evolution intentionally retain history.
+- `WebGPUProceduralCloudRenderer.ts` consumes current and previous
+  `viewProjectionRelativeToEye`, composes the inverse current RTE transform from the existing inverse
+  projection and translation-free inverse view, computes the inter-frame camera delta from
+  CPU-`f64` world positions before `f32` packing, publishes encoded camera high/low and configured
+  deck intervals, and seeds current-only whenever the classifier rejects history. Orthographic and
+  morph frames preserve the live current march but remain current-only because this representative
+  proxy does not yet carry their required per-pixel ray origin; the renderer never forwards
+  UniformState's zero inverse-projection sentinel to WGSL. History commits only after a temporal pass
+  writes it. The two parity bind groups are built when temporal resources are created/resized and
+  selected without a per-frame `createBindGroup`; never-active non-temporal tiers skip redundant
+  history bookkeeping.
+- `CloudTemporalResolve.wgsl` unprojects a current-camera-relative ray, intersects expanded-WGS84
+  deck shells (choosing the nearest visible configured interval, including multi-deck mode), shifts
+  the camera-relative anchor by the CPU-derived camera delta, and projects with the previous
+  relative-to-eye matrix. The existing 3×3 current-color neighborhood clamp and current-only
+  fallback remain, but shell misses, behind-camera anchors, and off-screen reprojections now return
+  before paying the neighborhood fetches.
+- `UniformState.d.ts` and `cesium-js-types.d.ts` declare the current/previous relative-to-eye
+  transforms and previous camera position used by the implementation.
+
+**Exact files.** Engine:
+`packages/engine/Source/Renderer/WebGPU/WebGPUCloudTemporalHistory.ts`,
+`packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts`,
+`packages/engine/Source/Shaders/WebGPU/Environment/CloudTemporalResolve.wgsl`,
+`packages/engine/Source/Renderer/UniformState.d.ts`, and
+`packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts`. Evidence:
+`Tools/visual-regression/cloud-temporal-rte.spec.mjs`,
+`Tools/visual-regression/probe-cloud-temporal-rte.mjs`, and the probe registration in
+`Tools/visual-regression/cloud-probe-harness.spec.mjs`. The existing
+`Tools/visual-regression/probe-cloud-u8-offident.mjs` received only an offline URL and watchdog so
+the WebGL/WebGPU billboard/API preservation lane terminates deterministically.
+
+**Evidence.** The deterministic temporal source/math/state suite is **11/11 GREEN**, including
+WGS84 equator/dateline/poles/orbit reconstruction, the reset truth table, allocation-free hot
+functions, adjacent-cause/reset-resource diagnostics, exact 60-float uniform layout, retained parity
+bind groups, and WGSL validation. The complete cloud spec lane is **64/64 GREEN**. The
+Node/Playwright/Edge runtime gate is **GREEN** after observing **26** production uploads to
+`CloudTemporalResolve UB`; maximum camera high/low reconstruction error was **0.002723 m** across
+the route. Bounded movement accumulated history, required discontinuities seeded current-only,
+look-away culling and re-entry were observed, and GPU validation, device-loss, page, and console
+error gates were clean. This is correctness/state-machine evidence, not FPS or GPU-time evidence.
+
+**Feature preservation.** No cloud mode, quality tier, deck, temporal fallback, WebGL feature, or
+public API was removed or disabled. The half-resolution color history and neighborhood-clamp
+appearance contract remain; invalid history is conservatively replaced by current content.
+WebGL remains the billboard/API preservation lane and does not execute these WebGPU-only files.
+
+**Rollback boundary.** The helper, renderer uniform/state integration, temporal shader, and type
+declarations form one independently revertible correctness slice; the deterministic/runtime probes
+should remain as RED regression evidence if the implementation is rolled back. The temporal
+bind-group retention can be reverted independently without changing the reprojection math.
+`C13-38` is unrelated and does not depend on this rollback.
+
+**Limitations / open owners.** This remains a half-resolution, color-only representative-shell
+proxy. It does not add physical front/weighted depth, velocity, moments, true 1/16 current work,
+STBN, wind-aware reprojection, reactive masks, variance clipping, overlap handling, or disocclusion;
+those remain `C13-09/10/12`. Orthographic temporal accumulation remains current-only until the
+reconstruction layout carries a per-pixel ray origin. Shadow, god-ray mask, environment capture,
+and atmosphere-consumer RTE remain `C13-06`. No quantitative performance improvement is claimed.
+
+---
+
+## C13-38 — cloud-IBL revision relevance gate while full reflection march is opted out (2026-07-24, Campaign 13 W2)
+
+**Premise.** After `C13-37`, the visible cloud renderer publishes a controlled appearance revision.
+`WebGPUDynamicEnvironmentMapManager` treated every changed revision as a refresh reason even when the
+full reflected-cloud march was opted out. Animated visible-only clouds could therefore schedule an
+otherwise irrelevant environment cube fill, prefilter, and spherical-harmonic projection.
+
+**Cause.** `cloudRevisionChanged` compared the live and consumed revision unconditionally. It did
+not distinguish a revision relevant to the current/previous full cloud march from one relevant only
+to the visible cloud path.
+
+**Fix.** Revision-driven refresh is now gated by
+`(wantMarch || cache.lastUsedCloudMarch) && liveCloudRevision !== cache.lastCloudRevision`. Current
+full-march changes still refresh. The previous-full-march term preserves the single ON-to-OFF
+teardown fill. Revisions published while opted out intentionally remain unconsumed, so the first
+later opt-in immediately consumes the newest revision. Coverage refreshes, scene-capture scheduling,
+and the coverage-only IBL path are untouched.
+
+**Exact files.**
+`packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts`,
+`Tools/visual-regression/cloud-ibl-revision.spec.mjs`,
+`Tools/visual-regression/probe-cloud-ibl-optout-revision.mjs`, and the probe registration in
+`Tools/visual-regression/cloud-probe-harness.spec.mjs`.
+
+**Evidence.** The source/table suite is **4/4 GREEN**, including static and 100 animated opt-out
+revisions, active full march, deferred first opt-in, ON-to-OFF teardown, and settled state. The
+Node/Playwright/Edge runtime gate is **GREEN**: an opt-out revision remained unconsumed, opt-in
+consumed the latest revision and enabled the full march, opt-out performed its teardown transition,
+a later opt-out revision again remained deferred, and the second opt-in consumed it. GPU validation,
+device-loss, console, and source/build-stability checks were clean. This proves scheduling/state
+semantics; it does not report a measured frame-time or whole-route speedup.
+
+**Feature preservation.** Visible cloud animation is unchanged. Opted-in reflected clouds still
+refresh at the published cadence and retain full quality; a later opt-in cannot miss changes made
+while off. The one teardown refresh, coverage-only IBL, coverage invalidation, and scene-capture
+features remain active.
+
+**Rollback boundary.** Reverting the single relevance predicate restores the unconditional
+revision refresh without touching cloud revision publication, reflection content, temporal history,
+or any public API. The two focused probes should remain to expose that regression. The slice is
+independent of `C13-05`.
+
+**Limitations / open owners.** This removes an irrelevant refresh trigger only. It does not optimize
+an environment fill when full cloud IBL is requested, change cube resolution/quality, add async
+prewarm, or complete generation-keyed lifetime/retirement work (`C13-40`). No quantitative
+performance improvement is claimed.
+
+---
+
 ## C11-157 Slice C — WebGPU MRT-OIT made REACHABLE for translucent MODELS + a latent OIT buffer bug (2026-07-19)
 
 **What.** Completed the standard-translucent-producer reachability arc (A=primitives, B=collections,

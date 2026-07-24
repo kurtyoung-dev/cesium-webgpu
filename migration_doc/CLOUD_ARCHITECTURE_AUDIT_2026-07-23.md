@@ -1,6 +1,6 @@
 # Planetary Volumetric Cloud Architecture Audit — 2026-07-23
 
-Status: **COMPLETE — CURRENT EVIDENCE AUTHORITY FOR CAMPAIGN 13**
+Status: **COMPLETE — LAUNCH-TIME EVIDENCE AUTHORITY; LIVE STATUS IS THE CAMPAIGN 13 QUEUE**
 
 Audited source: committed `main` at `851ce64389` (Batch 731)
 
@@ -13,6 +13,33 @@ cloud research and design documents remain useful inputs, but they are not execu
 The governing constraint is feature preservation: performance work may improve, gate on actual
 demand, or replace an implementation behind an equivalent fallback, but it may not remove cloud
 features, silently reduce their quality, or disable them merely to improve a benchmark.
+
+### 2026-07-24 implementation reconciliation
+
+This file remains the frozen 2026-07-23 launch audit. Later implementation does not erase the
+findings below; the following dated notes identify the portions now superseded:
+
+- `C13-04` already replaced the primary visible shell's spherical intersection with expanded-WGS84
+  shell math. `C13-05` is now **complete for its bounded temporal lane**: temporal reprojection uses
+  current/previous relative-to-eye transforms, a CPU-`f64` camera delta, expanded-WGS84
+  camera-relative deck intersection, and an allocation-free coarse history reset/generation
+  contract. This supersedes only the temporal raw-ECEF/equatorial-sphere and missing-coarse-reset
+  findings in sections 2.1, 2.2, and 2.4.
+- `C13-38` is **complete**: cloud appearance revisions no longer request an environment cube fill,
+  prefilter, and spherical-harmonic projection while neither the current nor previous environment
+  state used the full reflected-cloud march. Deferred revisions are still consumed on opt-in, and an
+  ON-to-OFF transition still receives one teardown refresh.
+- The temporal result is still a half-resolution, color-only proxy. Reconstruction attachments,
+  true 1/16 current work, and wind/depth/disocclusion-aware history remain open under
+  `C13-09/10/12`. Shadow, mask, environment-capture, and atmosphere-consumer RTE remain open under
+  `C13-06`.
+
+Current evidence is correctness and scheduling evidence, not a quantitative speedup claim:
+`cloud-temporal-rte.spec.mjs` is 11/11 and the complete cloud spec lane is 64/64; the Node/Edge
+temporal runtime gate is GREEN with 26 observed production uniform uploads, maximum camera high/low
+reconstruction error `0.002723 m`, explicit resize and observed cull/re-entry resets, and clean
+GPU/device/console gates. The `C13-38` source/table suite is 4/4 and its runtime
+opt-out/opt-in/teardown gate is GREEN.
 
 ---
 
@@ -56,6 +83,11 @@ small geodesy approximation at high latitude; it can move the cloud volume by mu
 Required correction: shared ellipsoid/scaled-space, geodetic-height, surface-normal, and tangent-frame
 helpers must drive the primary march, temporal reconstruction, weather mapping, and Beer shadow maps.
 
+**2026-07-24 reconciliation:** this was true at the audited Batch-731 source. `C13-04` superseded the
+primary-visible-shell portion, and bounded `C13-05` superseded the temporal-shell portion. The
+shadow/mask/capture consumers remain open under `C13-06`; weather and local-tangent wind remain
+separate open work.
+
 ### 2.2 Cloud RTE is incomplete and default-off
 
 `CloudVolumetrics.cloudHighPrecision` defaults to `false`
@@ -71,6 +103,13 @@ Required correction: one automatic camera-relative/RTE coordinate frame across v
 planet anchoring, temporal history, shadows, masks, environment capture, and atmospheric composite.
 The legacy path may remain as an explicit A/B fallback, but planetary precision is not an appearance
 quality option.
+
+**2026-07-24 reconciliation:** `C13-04` made the visible-shell precision path automatic, `C13-37`
+made the baked density domain planet-stable, and `C13-05` removed raw full-ECEF `f32` from temporal
+reprojection. The temporal resolve now reconstructs a current-camera-relative shell anchor and
+projects it with the previous relative-to-eye transform plus the CPU-`f64`-derived camera delta.
+Shadow/mask/capture/atmosphere consumers remain open under `C13-06`; this bounded temporal fix does
+not claim them.
 
 ### 2.3 The current temporal path is not true 1/16 TAAU
 
@@ -103,6 +142,18 @@ Its 3×3 color clamp cannot distinguish a valid moving cloud from stale history.
 Campaign 13 should evaluate both front depth and transmittance-weighted mean depth plus variance or
 moments. Takram documents artifacts from relying on weighted mean depth for overlapping sparse and
 distant clouds, so that limitation should not be copied unmodified.
+
+**2026-07-24 reconciliation:** `C13-05` made that proxy planet-correct and chose the nearest visible
+configured WGS84 deck interval, then added coarse resets for initial/missing transforms, frame gaps,
+teleports over 50 km, scene/projection changes, morphs, temporal reactivation, deck-bound changes,
+multi-deck topology changes, and temporal-resource resize. The perspective inverse current RTE
+transform is composed from the existing inverse projection and translation-free inverse view rather
+than a general VP inverse; orthographic/morph frames preserve the current cloud march but remain
+current-only until reconstruction carries their required per-pixel ray origin. The expensive 3×3
+clamp neighborhood is sampled only after reprojection passes shell/behind-camera/offscreen
+validation. It deliberately does not claim physical per-pixel depth or moving density-field
+validity. The color-only, wind, overlap, variance, and disocclusion findings remain open under
+`C13-09/10/12`.
 
 ### 2.5 Weather wrapping, poles, and regional bounds are incorrect
 
@@ -209,6 +260,12 @@ group retention, complete owned-resource destruction, and post-submit retirement
 follow the renderer's context/device ownership rules and must not destroy resources before queued
 commands submit.
 
+**2026-07-24 reconciliation:** `C13-05` prebuilds and reuses the two temporal parity bind groups
+until temporal resources are reallocated, and `C13-38` closes the unrelated cloud-IBL opt-out
+revision leak. Those bounded fixes do not close async prewarm, general generation-keyed resource
+retention, complete destruction, or post-submit retirement (`C13-40`), and no whole-route speedup is
+claimed from them.
+
 ### 2.12 Existing cloud regression evidence is not certifying
 
 `probe-cloud-tour.mjs:137-140` checks removed cloud properties on `Globe` before writing the managed
@@ -224,6 +281,15 @@ The first Campaign-13 slice must repair unified API setup and establish Node/Pla
 evidence across ground, horizon, inside, above, orbit, dateline, poles, time/wind motion, and
 regional fields. Volumetric clouds are WebGPU-only; WebGL is the billboard/API preservation lane,
 not a fake volumetric parity comparison.
+
+**2026-07-24 reconciliation:** the historical static-tour criticism remains valid, but Campaign 13
+now has a separate certifying temporal-state/RTE lane. `probe-cloud-temporal-rte.mjs` instruments the
+production `CloudTemporalResolve UB`, records 26 uploads over bounded motion, teleports,
+antimeridian/poles/orbit, tier re-entry, deck/topology changes, resize, and an observed cull/re-entry,
+and exits GREEN with `0.002723 m` maximum high/low camera reconstruction error and clean
+GPU/device/console gates. It is explicitly not an image-quality, ghosting, FPS, CPU, or GPU-timestamp
+metric. `probe-cloud-ibl-optout-revision.mjs` separately certifies the `C13-38` scheduling
+state-machine without presenting it as performance timing.
 
 ---
 
@@ -281,6 +347,13 @@ response while the cheaper temporal path is incomplete.
   this audit.
 - Older static cloud-tour green claims are non-certifying until Campaign 13 repairs the probe and
   records a current manifest.
+- As of 2026-07-24, `C13-05` is complete only for temporal WGS84/RTE reprojection and coarse history
+  compatibility/reset. `C13-09/10/12` remain the authority for real reconstruction attachments,
+  true 1/16 work, and attachment/wind-aware rejection; `C13-06` remains the authority for
+  shadow/mask/capture/atmosphere RTE.
+- As of 2026-07-24, `C13-38` is complete for revision relevance gating. It suppresses irrelevant
+  work while preserving opt-in consumption and teardown; it does not reduce reflected-cloud quality
+  or establish a measured speedup.
 
 ---
 

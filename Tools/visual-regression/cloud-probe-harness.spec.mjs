@@ -12,6 +12,8 @@ const probeFiles = [
   "probe-cloud-planetary.mjs",
   "probe-cloud-tour.mjs",
   "probe-cloud-temporal.mjs",
+  "probe-cloud-temporal-rte.mjs",
+  "probe-cloud-ibl-optout-revision.mjs",
   "probe-cloud-perf.mjs",
 ];
 
@@ -94,6 +96,7 @@ test("manual cloud probes render with their fixed JulianDate", () => {
     "probe-cloud-planetary.mjs",
     "probe-cloud-tour.mjs",
     "probe-cloud-temporal.mjs",
+    "probe-cloud-temporal-rte.mjs",
   ]) {
     const source = fs.readFileSync(path.join(here, file), "utf8");
     assert.doesNotMatch(

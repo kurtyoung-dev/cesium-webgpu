@@ -520,12 +520,6 @@ function updateWebGPUDynamicEnvironmentMap(
     Math.abs(liveCloudCoverage - cache.lastCloudCoverage) <
     CLOUD_COVERAGE_REFRESH_EPSILON
   );
-  // C13-37 — coverage alone cannot detect a moving or reconfigured density
-  // field. The cloud renderer advances this revision at a controlled cadence
-  // when any IBL-visible input changes. Equality after a fill makes the gate
-  // inert between publications, rather than forcing an expensive per-frame
-  // cube fill + prefilter.
-  const cloudRevisionChanged = liveCloudRevision !== cache.lastCloudRevision;
   // Item 3-C (CLOUD-IBL-FULL, Batch 450) — re-fill when the full cloud-march
   // path becomes available/unavailable (flag toggled, or the cloud noise just
   // finished baking) so a static scene doesn't stay on the wrong path. `wantMarch`
@@ -537,6 +531,17 @@ function updateWebGPUDynamicEnvironmentMap(
   const wantMarch =
     (frameState.context as unknown as { cloudsInReflections?: boolean })
       .cloudsInReflections === true && liveCloudCoverage > 0.0;
+  // C13-37 — coverage alone cannot detect a moving or reconfigured density
+  // field. The cloud renderer advances this revision at a controlled cadence
+  // when any full-march-visible input changes. A revision is relevant only while
+  // the full reflected-cloud march is requested, or while the previous fill
+  // still contains that march and needs one final teardown fill. This keeps
+  // visible-cloud-only animation from launching an otherwise inert cube fill +
+  // prefilter + SH projection. Revisions published while the march is off remain
+  // unconsumed, so the next opt-in observes the latest state immediately.
+  const cloudRevisionChanged =
+    (wantMarch || cache.lastUsedCloudMarch) &&
+    liveCloudRevision !== cache.lastCloudRevision;
   const cloudMarchPathChanged = wantMarch !== cache.lastUsedCloudMarch;
   // C2-25 ENV-SCENE-CAPTURE (Batch 446) — capture refresh gate. `wantCapture`
   // is the double opt-in + SCENE3D check (cheap; no GPU). When OFF the whole

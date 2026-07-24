@@ -23,6 +23,18 @@
 > 2026-07-15. Campaign 8 is frozen; its open IDs transferred unchanged and its completed slices remain
 > regression gates.
 
+> **2026-07-24 cloud execution authority.**
+> [Campaign 13 — Planetary Cloud Reconstruction and Regional Weather](QUEUE_2026-07-23_CAMPAIGN13.md)
+> is the live cloud plan and ledger. Historical Campaign-3 and Batch-433 status below records that
+> implementations exist; it is not current certification of the complete temporal, RTE, consumer, or
+> performance architecture. Campaign 13's bounded `C13-05` correction now gives the color-history
+> proxy WGS84/RTE reprojection and coarse reset/generation handling, and `C13-38` suppresses
+> revision-driven environment refreshes while full cloud IBL is irrelevant. Neither landing is a
+> measured-FPS claim. The current temporal path remains color-only at half resolution and shades every
+> current texel. Reconstruction attachments (`C13-09`), true 1/16-rate current work (`C13-10`),
+> advanced wind/depth/disocclusion/variance/reactive rejection (`C13-12`), and RTE correction of the
+> shadow/mask/capture/atmosphere consumers (`C13-06`) remain open.
+
 > **Canonical doc (consolidation first draft, 2026 consolidation).**
 > **Supersedes:** `DEFERRED_WORK.md` (the P0/P1/P2 tracker backbone), `CAMPAIGN_ROADMAP_2026-06.md`,
 > `WEBGPU_EXECUTION_ROADMAP.md`, `WEBGPU_MIGRATION_BACKLOG.md`, `WEBGPU_PARITY_AUDIT_2026-06.md`,
@@ -1184,20 +1196,38 @@ scale.
 
 ### 8.1 What shipped (verified against git)
 
-- **Tiered clouds V0-V16** ✅ functionally COMPLETE (2026-06-30 reconcile, `CAMPAIGN3_PROGRESS.md`). V0
+- **Tiered clouds V0-V16** ✅ functionally COMPLETE as a **historical implementation-presence
+  inventory** (2026-06-30 reconcile, `CAMPAIGN3_PROGRESS.md`); current correctness, architecture, and
+  performance execution belongs to
+  [Campaign 13](QUEUE_2026-07-23_CAMPAIGN13.md). V0
   (LUT auto-layout fix) → V1 (quality-tier preset scaffold, `qualityFlags@74` lane) → V2/V3 (baked 3D
   Perlin-Worley + flip density core to baked textures, KEYSTONE, Batches 396-408) → V4 (mean-preserving
   erosion + `erosionStrength`) → V5 (Frostbite multi-scatter octaves, `msDecayA/B/C` geometric decay) →
-  half-res march (`CLOUD-HALFRES`, Batch 432) → temporal reprojection (`CLOUD-TEMPORAL`, Batch 433) →
+  half-res march (`CLOUD-HALFRES`, Batch 432) → first temporal reprojection implementation
+  (`CLOUD-TEMPORAL`, Batch 433) →
   IGN jitter → curl (Batch 439) → per-genus vertical profiles + `profileExtinction` (V11, Batch 452) →
   multi-deck (Batch 443) → cloud shadows (Batch 437) → god-rays → precip (Batch 444). The tiered-cloud
   features all shipped under the **improvement-plan naming** (atmosphere/cloud arc, Batches 437-452), NOT
-  the V0-V18 numbering, which is why the v2 tracker drifted. **`CloudUniforms` is 128 floats** (grew
-  add-only: 64→80→96→128, verified `CLOUD_UNIFORM_FLOATS` in `WebGPUProceduralCloudRenderer.ts`). Public
+  the V0-V18 numbering, which is why the v2 tracker drifted. The 2026-06-30 reconciliation observed
+  `CloudUniforms` at 128 floats (historical add-only growth 64→80→96→128); the **current live
+  `CLOUD_UNIFORM_FLOATS` is 168** in `WebGPUProceduralCloudRenderer.ts`. Public
   dial: `globe.cloudVolumetricQuality` ∈ `'low'|'medium'|'high'|'auto'` + escape hatch
   `globe.cloudQuality` (raw `maxSteps` int, default 64). **Only V17 (baked-impostor far-field) remains —
   deferred as speculative Ultra-only research.** Campaign 3 v2 is CLOSED; next major work = the DP-H46
   metadata epic.
+- **Campaign-13 temporal/RTE correction** ✅ `C13-05` bounded slice complete: temporal reprojection now
+  uses previous view-projection-relative-to-eye state, a CPU-`f64` camera delta, and camera-relative
+  expanded-WGS84 deck intersection, with allocation-free coarse history generation/reset handling for
+  initial use, skipped frames, teleports, scene/projection changes, temporal re-entry, and deck
+  topology changes. This improves the existing proxy; it does **not** turn it into TAAU. It still
+  resolves color only, at half resolution, after shading every current texel. `C13-09`, `C13-10`, and
+  `C13-12` own the missing attachments, true 1/16-rate current work/full-resolution reconstruction,
+  and advanced rejection respectively.
+- **Campaign-13 cloud-IBL relevance gate** ✅ `C13-38` complete: cloud animation/revision changes no
+  longer force a full environment cube fill, prefilter, and SH projection while full cloud IBL is
+  opted out and was not active in the preceding state. Active full-cloud marching, first later opt-in,
+  and ON→OFF teardown refresh semantics are preserved. This removes irrelevant environment work; no
+  FPS or end-to-end speedup is claimed without a comparable moving-camera measurement.
 - **Weather recreation Phase 0-1** ✅ (Batches 384-387): clock-bind motion, 11 WMO genera +
   `CloudTypeProfile.js`, Worley erosion + multi-scatter, **the weather-map seam C2-16 (the keystone)**.
 - **Weather data ingest Phase 0-3** ✅: MVP EDR→weatherTex R-only (Batch 410), P2 time model
@@ -1295,7 +1325,7 @@ disposition; **only the unshipped items are open work.**
 | 2.3 | `AERIAL-FROXEL` aerial-perspective froxel 3D LUT | ✅ Batch Q23 (32³ volume, `scene.aerialPerspectiveFroxel`, opt-in default OFF) |
 | 2.4 | `FOG-IBL-AMBIENT` sky-LUT/SH fog ambient | ✅ Batch 431 |
 | 3.1 | `CLOUD-HALFRES` half-res march + bilateral upsample | ✅ Batch 432 |
-| 3.2 | `CLOUD-TEMPORAL` reprojection/accumulation | ✅ Batch 433 |
+| 3.2 | `CLOUD-TEMPORAL` reprojection/accumulation | ✅ implementation exists (Batch 433); bounded WGS84/RTE + coarse reset correction complete in Campaign-13 `C13-05`; color-only half-resolution proxy remains, with `C13-09/10/12` open |
 | 3.3 | `CLOUD-AERIAL-LUT` aerial coupling | ✅ Batch 434 (samples shipped LUTs since 2.3 deferred) |
 | 3.4 | `CLOUD-AMBIENT-LUT` sky-coupled cloud ambient | ✅ Batch 434 |
 | 3.5 | `FOG-TEMPORAL` froxel temporal reproject | ✅ Batch 435 |
