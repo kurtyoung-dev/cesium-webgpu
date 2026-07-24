@@ -296,9 +296,22 @@ async function runBackend(browser, renderer, toggleFlag, side = "sunlit") {
   console.log(JSON.stringify(verdict, null, 2));
   for (const l of [gl, gpu, gpuOff, gpuOn, glNight, gpuNight]) if (l && !l.ok) console.log(`${l.renderer}(mod=${l.toggleFlag}) FAILED: ${l.error}`);
   console.log(`\n[full report: ${outPath}]`);
+
+  // HARD EXIT CODES (binding probe rule 5, C12-01). The prior version exited 0
+  // UNCONDITIONALLY here — even on GATE FAIL — so this gate could never fail a
+  // CI/orchestrator run. Fixed: exit 1 on gate FAIL, 0 only on PASS, 2 on a
+  // structural error (a lane that never ran, or an INCOMPLETE verdict because a
+  // required capture is missing).
+  const anyLaneFailed = [gl, gpu, gpuOff, gpuOn, glNight, gpuNight].some(
+    (l) => l && !l.ok,
+  );
+  const gateStr = typeof verdict.GATE === "string" ? verdict.GATE : "INCOMPLETE";
+  const structural = anyLaneFailed || gateStr.startsWith("INCOMPLETE");
+  const exitCode = structural ? 2 : gateStr.startsWith("PASS") ? 0 : 1;
+  console.log(`\nGATE: ${gateStr}\nEXIT: ${exitCode}`);
   clearTimeout(watchdog);
-  process.exit(0);
+  process.exit(exitCode);
 })().catch((e) => {
   console.error("[probe-skybox-star-mod] FATAL", e);
-  process.exit(1);
+  process.exit(2);
 });

@@ -39,8 +39,20 @@ import {
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
+const PINNED_ISO = "2026-05-19T18:00:00Z";
 
-async function capture(rendererArg, starFieldOn) {
+// RULE 4 — unref'd force-exit watchdog so a hung Edge/WebGPU device can never
+// wedge the probe indefinitely.
+const HARD_LIMIT_MS = 300000;
+const watchdog = setTimeout(() => {
+  console.error("[env-skybox-stars] WATCHDOG FIRED (300s) — forcing exit");
+  process.exit(2);
+}, HARD_LIMIT_MS);
+if (watchdog.unref) {
+  watchdog.unref();
+}
+
+async function capture(rendererArg, starFieldOn, cameraMode) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
@@ -55,62 +67,138 @@ async function capture(rendererArg, starFieldOn) {
   await page.waitForFunction(() => !!window.viewer);
   await armWebGPUDevices(page);
 
-  const meta = await page.evaluate(async (starFieldOn) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const v = window.viewer;
-    const s = v.scene;
+  const meta = await page.evaluate(
+    async ({ starFieldOn, cameraMode, pinnedIso }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      const s = v.scene;
 
-    // Pin the clock so the skybox orientation is deterministic across runs.
-    const fixed = C.JulianDate.fromIso8601("2026-05-19T18:00:00Z");
-    v.clock.currentTime = fixed.clone();
-    v.clock.startTime = fixed.clone();
-    v.clock.stopTime = fixed.clone();
-    v.clock.shouldAnimate = false;
-    v.clock.multiplier = 0;
+      // RULE 1 — pin the clock AND kill the default render loop so EVERY render
+      // uses the pinned time. A bare s.render() renders at wall-clock NOW while
+      // the widget loop renders at the pinned clock — two suns interleaving
+      // (root-caused Batch 744). Kill the loop and pass the pinned time to every
+      // render below.
+      const fixed = C.JulianDate.fromIso8601(pinnedIso);
+      v.clock.currentTime = fixed.clone();
+      v.clock.startTime = fixed.clone();
+      v.clock.stopTime = fixed.clone();
+      v.clock.shouldAnimate = false;
+      v.clock.multiplier = 0;
+      v.useDefaultRenderLoop = false;
+      s.requestRenderMode = false;
+      const at = () => v.clock.currentTime;
 
-    if (s.skyBox) {
-      s.skyBox.show = true;
-      if (s.skyBox.starField) {
-        s.skyBox.starField.show = starFieldOn;
+      if (s.skyBox) {
+        s.skyBox.show = true;
+        if (s.skyBox.starField) {
+          s.skyBox.starField.show = starFieldOn;
+        }
       }
-    }
-    if (s.sun) s.sun.show = true;
-    if (s.skyAtmosphere) s.skyAtmosphere.show = true;
-    s.backgroundColor = C.Color.BLACK;
+      if (s.sun) s.sun.show = true;
+      if (s.skyAtmosphere) s.skyAtmosphere.show = true;
+      s.backgroundColor = C.Color.BLACK;
 
-    // Far out in space, looking straight AWAY from Earth (local up) so the
-    // frame is pure skybox — no globe, no limb, no atmosphere.
-    v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(0, 0, 5.0e7),
-      orientation: { heading: 0, pitch: C.Math.toRadians(90), roll: 0 },
-    });
+      let sunElevationDeg = null;
+      if (cameraMode === "sunlit") {
+        // SUNLIT lane — the only framing that reaches the C11-176 star-map
+        // modulation failure state (Sun >= 25deg above the camera's local
+        // horizon). Hide the globe for a pure star field, then place the camera
+        // ALONG the settled sun direction so the Sun sits at the local zenith
+        // (elevation ~90deg), aiming perpendicular so neither the sun disc nor
+        // Earth is in frame.
+        if (s.globe) s.globe.show = false;
+        // RULE 3 — bounded sun-direction settle before sun-relative aiming
+        // (ICRF loads async): <=180 frames, stable at 10 deltas < 1e-9.
+        let prev = null;
+        let stable = 0;
+        for (let i = 0; i < 180 && stable < 10; i++) {
+          s.render(at());
+          const cur = C.Cartesian3.clone(s.context.uniformState.sunDirectionWC);
+          if (prev && C.Cartesian3.distance(cur, prev) < 1e-9) {
+            stable++;
+          } else {
+            stable = 0;
+          }
+          prev = cur;
+          await new Promise((r) => requestAnimationFrame(r));
+        }
+        const sunDir = prev;
+        const dist = 5.0e7;
+        const position = C.Cartesian3.multiplyByScalar(
+          sunDir,
+          dist,
+          new C.Cartesian3(),
+        );
+        const seed =
+          Math.abs(sunDir.z) < 0.9
+            ? new C.Cartesian3(0, 0, 1)
+            : new C.Cartesian3(1, 0, 0);
+        const perp = C.Cartesian3.normalize(
+          C.Cartesian3.cross(sunDir, seed, new C.Cartesian3()),
+          new C.Cartesian3(),
+        );
+        const up = C.Cartesian3.normalize(
+          C.Cartesian3.cross(perp, sunDir, new C.Cartesian3()),
+          new C.Cartesian3(),
+        );
+        s.camera.setView({
+          destination: position,
+          orientation: { direction: perp, up },
+        });
+        const camUp = C.Cartesian3.normalize(position, new C.Cartesian3());
+        sunElevationDeg =
+          (Math.asin(
+            Math.max(-1, Math.min(1, C.Cartesian3.dot(sunDir, camUp))),
+          ) *
+            180) /
+          Math.PI;
+      } else {
+        // AWAY lane (existing behaviour) — far out in space, looking straight
+        // AWAY from Earth (local up) so the frame is pure skybox.
+        v.camera.setView({
+          destination: C.Cartesian3.fromDegrees(0, 0, 5.0e7),
+          orientation: { heading: 0, pitch: C.Math.toRadians(90), roll: 0 },
+        });
+      }
 
-    // Render enough frames for the async cube-map load + command creation.
-    let sawSkyBoxCmd = false;
-    for (let i = 0; i < 300; i++) {
-      s.render();
-      await new Promise((r) => requestAnimationFrame(r));
-      const env = s._environmentState;
-      if (env && env.skyBoxCommand) sawSkyBoxCmd = true;
-      if (sawSkyBoxCmd && i > 60) break;
-    }
+      // Render enough frames for the async cube-map load + command creation,
+      // ALL at the pinned time.
+      let sawSkyBoxCmd = false;
+      for (let i = 0; i < 300; i++) {
+        s.render(at());
+        await new Promise((r) => requestAnimationFrame(r));
+        const env = s._environmentState;
+        if (env && env.skyBoxCommand) sawSkyBoxCmd = true;
+        if (sawSkyBoxCmd && i > 60) break;
+      }
+      // Trailing pinned render so the compositor holds a pinned-time frame for
+      // the screenshot below (the default loop is off).
+      s.render(at());
 
-    return {
-      renderer: s.context.rendererType,
-      skyBoxShow: !!(s.skyBox && s.skyBox.show),
-      starFieldShow: !!(
-        s.skyBox &&
-        s.skyBox.starField &&
-        s.skyBox.starField.show
-      ),
-      sawSkyBoxCmd,
-    };
-  }, starFieldOn);
+      return {
+        renderer: s.context.rendererType,
+        skyBoxShow: !!(s.skyBox && s.skyBox.show),
+        starFieldShow: !!(
+          s.skyBox &&
+          s.skyBox.starField &&
+          s.skyBox.starField.show
+        ),
+        sawSkyBoxCmd,
+        skyBrightness: s.frameState ? s.frameState.skyBrightness ?? null : null,
+        sunElevationDeg,
+      };
+    },
+    { starFieldOn, cameraMode, pinnedIso: PINNED_ISO },
+  );
 
   await page.waitForTimeout(800);
 
   const label = starFieldOn ? "default" : "cubemap";
-  const out = path.join(OUT_DIR, `env-skybox-stars-${rendererArg}-${label}.png`);
+  const camTag = cameraMode === "away" ? "" : `${cameraMode}-`;
+  const out = path.join(
+    OUT_DIR,
+    `env-skybox-stars-${rendererArg}-${camTag}${label}.png`,
+  );
   await page.screenshot({ path: out, fullPage: false });
 
   const gate = await collectGateErrors(page);
@@ -255,55 +343,83 @@ async function correlate(pngA, pngB) {
   console.log(`[env-skybox-stars] base=${BASE}`);
 
   const results = {};
+  // Two camera framings: AWAY (existing, pitch straight up) for the flipY /
+  // cubemap-parity lane, and SUNLIT (new, sun-relative) which is the only
+  // framing that reaches the C11-176 star-map modulation failure state.
   for (const renderer of ["webgpu", "webgl"]) {
-    for (const starFieldOn of [false, true]) {
-      const label = starFieldOn ? "default" : "cubemap";
-      const r = await capture(renderer, starFieldOn);
-      results[`${renderer}-${label}`] = r;
-      const a = await analyze(r.out);
-      results[`${renderer}-${label}`].stats = a;
-      console.log(
-        `\n-- ${renderer} / ${label} --\n` +
-          `  meta: ${JSON.stringify(r.meta)}\n` +
-          `  stats: ${JSON.stringify(a)}\n` +
-          `  gate errors: ${r.gate ? r.gate.errors.length : "n/a"} ` +
-          `deviceLost: ${r.gate ? r.gate.deviceLost : "n/a"} ` +
-          `console faults: ${r.consoleErrors.length}`,
-      );
-      if (r.consoleErrors.length) {
-        r.consoleErrors.slice(0, 5).forEach((e) => console.log("    " + e));
+    for (const cameraMode of ["away", "sunlit"]) {
+      for (const starFieldOn of [false, true]) {
+        const label = starFieldOn ? "default" : "cubemap";
+        const r = await capture(renderer, starFieldOn, cameraMode);
+        results[`${renderer}-${cameraMode}-${label}`] = r;
+        const a = await analyze(r.out);
+        results[`${renderer}-${cameraMode}-${label}`].stats = a;
+        console.log(
+          `\n-- ${renderer} / ${cameraMode} / ${label} --\n` +
+            `  meta: ${JSON.stringify(r.meta)}\n` +
+            `  stats: ${JSON.stringify(a)}\n` +
+            `  gate errors: ${r.gate ? r.gate.errors.length : "n/a"} ` +
+            `deviceLost: ${r.gate ? r.gate.deviceLost : "n/a"} ` +
+            `console faults: ${r.consoleErrors.length}`,
+        );
+        if (r.consoleErrors.length) {
+          r.consoleErrors.slice(0, 5).forEach((e) => console.log("    " + e));
+        }
       }
     }
   }
 
-  // Verdict: cube-map-only star density on WebGPU must be in family with WebGL.
-  const gpu = results["webgpu-cubemap"].stats;
-  const gl = results["webgl-cubemap"].stats;
-  const densityRatio = gl.starPct > 0 ? gpu.starPct / gl.starPct : 0;
-  const lumRatio = gl.meanLum > 0 ? gpu.meanLum / gl.meanLum : 0;
-  const gateErrors = results["webgpu-cubemap"].gate.errors.length;
+  const band = (x) => x > 0.75 && x < 1.33;
+  const rat = (num, den) => (den > 0 ? num / den : 0);
 
-  // Same sky region (flipY parity): the aligned pattern correlation must be
-  // meaningfully positive and beat the vertically-mirrored correlation.
+  // Lane 1 (existing) — AWAY cube-map-only star density + flipY parity.
+  const gpuCube = results["webgpu-away-cubemap"].stats;
+  const glCube = results["webgl-away-cubemap"].stats;
+  const densityRatio = rat(gpuCube.starPct, glCube.starPct);
+  const lumRatio = rat(gpuCube.meanLum, glCube.meanLum);
+  const gateErrors = results["webgpu-away-cubemap"].gate.errors.length;
   const corr = await correlate(
-    results["webgpu-cubemap"].out,
-    results["webgl-cubemap"].out,
+    results["webgpu-away-cubemap"].out,
+    results["webgl-away-cubemap"].out,
   );
 
-  const pass =
-    densityRatio > 0.75 &&
-    densityRatio < 1.33 &&
-    lumRatio > 0.75 &&
-    lumRatio < 1.33 &&
+  // Lane 2 (NEW) — assert on the DEFAULT pair (starField ON, cubemap+sprites)
+  // in the SUNLIT framing, wiring the previously-computed-then-discarded
+  // brightPct into the pass criteria. This is the pair the viewer actually
+  // ships, and the sunlit framing is where the C11-176 modulation would bite.
+  const gpuDef = results["webgpu-sunlit-default"].stats;
+  const glDef = results["webgl-sunlit-default"].stats;
+  const defDensityRatio = rat(gpuDef.starPct, glDef.starPct);
+  const defLumRatio = rat(gpuDef.meanLum, glDef.meanLum);
+  const defBrightRatio = rat(gpuDef.brightPct, glDef.brightPct);
+  const sunElevGpu = results["webgpu-sunlit-default"].meta.sunElevationDeg;
+  const sunElevGl = results["webgl-sunlit-default"].meta.sunElevationDeg;
+  const skyBrightGpu = results["webgpu-sunlit-default"].meta.skyBrightness;
+  // The sunlit lane must actually reach the failing state, else it is not a gate.
+  const framingReached =
+    (sunElevGpu ?? 0) >= 25 && (sunElevGl ?? 0) >= 25;
+
+  const cubemapParity =
+    band(densityRatio) &&
+    band(lumRatio) &&
     corr.aligned > 0.5 &&
-    corr.aligned > corr.mirrored &&
-    gateErrors === 0;
+    corr.aligned > corr.mirrored;
+  const defaultParity =
+    band(defDensityRatio) && band(defLumRatio) && band(defBrightRatio);
+
+  const pass =
+    cubemapParity && defaultParity && framingReached && gateErrors === 0;
 
   console.log(
-    `\n== verdict == densityRatio(gpu/gl)=${densityRatio.toFixed(3)} ` +
+    `\n== verdict ==\n` +
+      `  [away/cubemap] densityRatio=${densityRatio.toFixed(3)} ` +
       `lumRatio=${lumRatio.toFixed(3)} ` +
-      `patternCorr aligned=${corr.aligned.toFixed(3)} ` +
-      `mirrored=${corr.mirrored.toFixed(3)} gateErrors=${gateErrors} => ` +
+      `corr aligned=${corr.aligned.toFixed(3)} mirrored=${corr.mirrored.toFixed(3)}\n` +
+      `  [sunlit/default] densityRatio=${defDensityRatio.toFixed(3)} ` +
+      `lumRatio=${defLumRatio.toFixed(3)} brightRatio=${defBrightRatio.toFixed(3)}\n` +
+      `  sunElevationDeg gpu=${sunElevGpu} gl=${sunElevGl} ` +
+      `skyBrightness(gpu)=${skyBrightGpu} framingReached=${framingReached}\n` +
+      `  gateErrors=${gateErrors} => ` +
       (pass ? "PASS" : "FAIL"),
   );
 
@@ -311,5 +427,6 @@ async function correlate(pngA, pngB) {
   for (const k of Object.keys(results)) {
     console.log("  " + path.resolve(results[k].out));
   }
+  clearTimeout(watchdog);
   process.exit(pass ? 0 : 1);
 })();
