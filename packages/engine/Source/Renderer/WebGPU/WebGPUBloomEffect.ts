@@ -25,6 +25,7 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import WebGPUBindGroupCache from "./WebGPUBindGroupCache.js";
+import type { BindGroupCacheStats } from "./WebGPUBindGroupCache.js";
 import {
   createFullscreenPipeline,
   createTexture,
@@ -185,6 +186,15 @@ export class BloomEffect implements PostProcessEffect {
       altitudeGateOrbitFloor: config.altitudeGateOrbitFloor ?? 0.15,
     };
     this._baseIntensity = this._config.intensity;
+  }
+
+  /**
+   * C11-174 — read-only snapshot of the bind-group cache counters for
+   * `WebGPUContext.getRendererStatistics()` / `CesiumDebug.cacheStats()`.
+   * Pure exposure of bookkeeping the cache already maintains.
+   */
+  getBindGroupCacheStats(): BindGroupCacheStats {
+    return this._bgCache.getStats();
   }
 
   /**

@@ -118,6 +118,11 @@ export function buildCounterbalancedSchedule(renderers, repetitions) {
 }
 
 export function summarizeFramePacing(samples, refreshHz = 60) {
+  // C11-173 — callers pass the measured display rate; a bad measurement
+  // must not poison the frame budget with a NaN/Infinity divisor.
+  if (!Number.isFinite(refreshHz) || refreshHz <= 0) {
+    refreshHz = 60;
+  }
   const wallValues = samples
     .map((sample) => sample.wallDtMs)
     .filter(Number.isFinite);

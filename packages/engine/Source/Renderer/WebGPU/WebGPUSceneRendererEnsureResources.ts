@@ -452,11 +452,18 @@ export function ensureResources(
   ) {
     host._postProcess.destroy();
     host._postProcess = null;
+    // C11-174 — drop the context's cache-stats back-reference with the
+    // pipeline (re-registered below if the pipeline is recreated).
+    context._postProcessCacheStatsSource = null;
   }
 
   // Post-processing pipeline
   if (config.usePostProcess && !host._postProcess) {
     host._postProcess = new WebGPUPostProcessPipeline(context);
+    // C11-174 — register the pipeline's bind-group cache-stats surface so
+    // `WebGPUContext.getRendererStatistics()` can expose the counters
+    // without importing the post-process pipeline graph.
+    context._postProcessCacheStatsSource = host._postProcess;
     const canvasFormat: GPUTextureFormat =
       context.presentationFormat ?? "bgra8unorm";
     // HDR pipeline fix: when `scene.highDynamicRange=true`, the

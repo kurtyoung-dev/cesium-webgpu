@@ -11,9 +11,12 @@
 // Each catalog entry is drawn as a view-facing point sprite. The star's
 // inertial (J2000 / TEME) direction is rotated into the Earth-fixed frame
 // on the CPU (TEME→pseudo-fixed matrix, matching SkyBox), then placed at
-// the far plane so it sits behind all scene geometry. Output is HDR and
-// additively blended into the scene framebuffer so the existing bloom
-// post-process makes the brightest stars glow.
+// the far plane so it sits behind all scene geometry. Output is additively
+// blended into the scene framebuffer. At default settings the scene target
+// is LDR (scene.highDynamicRange=false, bloom disabled), so values above
+// 1.0 clip at the ROP; only with HDR enabled does the float scene target
+// preserve the overflow for the bloom bright-pass (when bloom is also
+// enabled).
 //
 // Geometry: instanced draw — 6 vertices (two triangles) per instance,
 // one instance per star. The per-instance buffer carries the fixed-frame
@@ -142,9 +145,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   let edge = smoothstep(1.0, 0.45, dist); // fade the outer half of the quad
   let alpha = core * edge;
 
-  // HDR additive output: bright stars overflow 1.0 in the scene FB float
-  // target and feed the bloom bright-pass. RGB is the blackbody color
-  // already weighted by Pogson intensity in the VS.
+  // Additive output: RGB is the blackbody color already weighted by Pogson
+  // intensity in the VS. Values above 1.0 clip at the ROP on the default
+  // LDR target (highDynamicRange=false, bloom off); only with HDR enabled
+  // does the float scene target preserve the overflow for the bloom
+  // bright-pass (when bloom is also enabled).
   let rgb = input.color * alpha;
   return vec4<f32>(rgb, alpha);
 }

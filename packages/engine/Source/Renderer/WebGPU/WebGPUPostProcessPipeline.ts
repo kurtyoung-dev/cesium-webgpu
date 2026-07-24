@@ -122,6 +122,9 @@ import {
   WebGPUAutoExposure,
   type AutoExposureConfig,
 } from "./WebGPUAutoExposure.js";
+// C11-174 — bind-group cache stats surfaced through
+// `WebGPUContext.getRendererStatistics()` / `CesiumDebug.cacheStats()`.
+import type { BindGroupCacheStats } from "./WebGPUBindGroupCache.js";
 import {
   makeBindGroupLayout,
   uniformBuffer as uniformBuffer_,
@@ -429,6 +432,24 @@ export class WebGPUPostProcessPipeline {
 
   get autoExposure(): WebGPUAutoExposure | null {
     return this._autoExposure;
+  }
+
+  /**
+   * C11-174 — aggregate the per-effect `WebGPUBindGroupCache` counters
+   * (hits/misses/hitRate) for the context debug surface. `null` for an
+   * effect that hasn't been added to the pipeline. Pure read; the caches
+   * already pay for this bookkeeping on their normal lookup path.
+   */
+  getBindGroupCacheStats(): {
+    bloom: BindGroupCacheStats | null;
+    ambientOcclusion: BindGroupCacheStats | null;
+    autoExposure: BindGroupCacheStats | null;
+  } {
+    return {
+      bloom: this._bloomEffect?.getBindGroupCacheStats() ?? null,
+      ambientOcclusion: this._aoEffect?.getBindGroupCacheStats() ?? null,
+      autoExposure: this._autoExposure?.getBindGroupCacheStats() ?? null,
+    };
   }
 
   get depthOfFieldEffect(): DepthOfFieldEffect | null {

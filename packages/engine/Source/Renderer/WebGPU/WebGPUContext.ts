@@ -35,6 +35,9 @@ import ShaderCache from "../ShaderCache.js";
 import TextureCache from "../TextureCache.js";
 import { WebGPUShaderCache } from "./WebGPUShaderCache.js";
 import { WebGPURenderPipelineCache } from "./WebGPURenderPipelineCache.js";
+// C11-174 — type-only: bind-group cache counters surfaced by
+// `getRendererStatistics()`. No runtime dependency on the cache module.
+import type { BindGroupCacheStats } from "./WebGPUBindGroupCache.js";
 import { AsyncResourceMonitor } from "./AsyncResourceMonitor.js";
 import { AsyncResourceTelemetry } from "./AsyncResourceTelemetry.js";
 import { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
@@ -215,6 +218,24 @@ interface CesiumClearCommand {
     context: CesiumGraphicsContext,
     passState?: CesiumPassState,
   ) => void;
+}
+
+/**
+ * C11-174 — minimal structural surface of `WebGPUPostProcessPipeline`
+ * consumed by `getRendererStatistics()` to expose the per-effect
+ * bind-group cache counters. Registered by
+ * `WebGPUSceneRendererEnsureResources` when the pipeline is (re)created.
+ * Kept structural so this module never imports the post-process pipeline
+ * graph; readers must check `isDestroyed` because the reference can
+ * outlive a scene-renderer teardown.
+ */
+interface PostProcessCacheStatsSource {
+  readonly isDestroyed: boolean;
+  getBindGroupCacheStats(): {
+    bloom: BindGroupCacheStats | null;
+    ambientOcclusion: BindGroupCacheStats | null;
+    autoExposure: BindGroupCacheStats | null;
+  };
 }
 
 // Re-export types that external code may depend on
@@ -473,6 +494,12 @@ export class WebGPUContext extends GraphicsContext {
   // Public underscore: read by the canvas-config helper's HDR-toggle
   // cache invalidation (`WebGPUContextCanvasConfig.ts`, Batch 593).
   public _webgpuPipelineCache: WebGPURenderPipelineCache | null = null;
+  // C11-174 — back-reference to the active post-process pipeline's
+  // cache-stats surface (see `PostProcessCacheStatsSource`). Public
+  // underscore: written by `WebGPUSceneRendererEnsureResources` when the
+  // pipeline is (re)created. Read-only debug exposure.
+  public _postProcessCacheStatsSource: PostProcessCacheStatsSource | null =
+    null;
   private _webgpuComputePipelineCache: WebGPUComputePipelineCache | null = null;
   // NEW-WEBGPU-PIPELINE-READY-SIGNAL — Phase 1 scaffolding. Per-context
   // registry of inflight async GPU work. Lazy-initialized via the
@@ -5485,6 +5512,33 @@ export class WebGPUContext extends GraphicsContext {
         stats.csmShadows = this._csmRenderer.getStatistics();
       } catch (e) {
         stats.csmShadows = { error: String((e as Error)?.message ?? e) };
+      }
+    }
+    // C11-174 — render-pipeline + post-process bind-group cache
+    // effectiveness counters. Pure exposure of bookkeeping both caches
+    // already pay for on their lookup paths — no new per-frame work. A
+    // near-zero bind-group hitRate is the Batch-717 churn shape (resource
+    // identities recreated every frame without cache invalidation).
+    if (this._webgpuPipelineCache) {
+      try {
+        stats.pipelineCache = { ...this._webgpuPipelineCache.getStats() };
+      } catch (e) {
+        stats.pipelineCache = { error: String((e as Error)?.message ?? e) };
+      }
+    }
+    const ppCacheSource = this._postProcessCacheStatsSource;
+    if (ppCacheSource && !ppCacheSource.isDestroyed) {
+      try {
+        const bg = ppCacheSource.getBindGroupCacheStats();
+        stats.bindGroupCaches = {
+          bloom: bg.bloom ? { ...bg.bloom } : null,
+          ambientOcclusion: bg.ambientOcclusion
+            ? { ...bg.ambientOcclusion }
+            : null,
+          autoExposure: bg.autoExposure ? { ...bg.autoExposure } : null,
+        };
+      } catch (e) {
+        stats.bindGroupCaches = { error: String((e as Error)?.message ?? e) };
       }
     }
     // Phase 5 — capability snapshot. Lists every WebGPU optional

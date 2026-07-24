@@ -47,12 +47,13 @@ class SkyBox {
     });
 
     // Track V-C (NEW-STARS-BRIGHT-CATALOG) — real bright-star catalog
-    // starfield. Backend-agnostic; renders (additively, into the bloom
-    // pipeline) only on backends that register a STAR_FIELD feature
-    // renderer (WebGPU). On WebGL it is an inert no-op and the cubemap
-    // stars above are the only starfield. Defaults ON to AUGMENT the
-    // cubemap (both render — the catalog stars sit on top of the cubemap
-    // and feed bloom). Opt out via `skyBox.starField.show = false`.
+    // starfield. Backend-agnostic; renders additively on BOTH backends:
+    // WebGPU through its STAR_FIELD feature renderer, WebGL through the
+    // lazy-loaded twin registered in Context.js (STAR_FIELD loader,
+    // Batch 324). Defaults ON to AUGMENT the cubemap (both render — the
+    // catalog stars sit on top of the cubemap stars; their >1.0 output
+    // feeds bloom only when HDR + bloom are enabled). Opt out via
+    // `skyBox.starField.show = false`.
     this._starField = new StarField({
       show: options.showStarCatalog ?? true,
     });
@@ -60,8 +61,8 @@ class SkyBox {
 
   /**
    * The real bright-star catalog starfield (Track V-C). Augments the
-   * static star cubemap with HDR points placed at actual RA/Dec on
-   * backends that support it (WebGPU). Toggle with `starField.show`.
+   * static star cubemap with points placed at actual RA/Dec on both
+   * backends (WebGPU and WebGL). Toggle with `starField.show`.
    * @type {StarField}
    * @readonly
    */

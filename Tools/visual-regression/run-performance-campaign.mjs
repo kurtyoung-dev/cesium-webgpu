@@ -1717,6 +1717,67 @@ async function runOne(
         }
         const setupToStableMs = performance.now() - setupStart;
 
+        // C11-173 — measure the real display refresh period with a short
+        // no-op rAF spin so framePacing's dropped-frame math is judged
+        // against the actual monitor rate instead of an assumed 60 Hz.
+        // Doubly bounded (frame count + absolute deadline): the enclosing
+        // page.evaluate has no Playwright timeout of its own, so the spin
+        // must not be able to hang the harness if rAF stops firing.
+        const measureDisplayRefresh = async (frameCount, deadlineMs) => {
+          const timestamps = [];
+          await new Promise((resolveSpin) => {
+            const deadline = performance.now() + deadlineMs;
+            const timeoutId = setTimeout(resolveSpin, deadlineMs);
+            const tick = (now) => {
+              timestamps.push(now);
+              if (
+                timestamps.length >= frameCount ||
+                performance.now() >= deadline
+              ) {
+                clearTimeout(timeoutId);
+                resolveSpin();
+                return;
+              }
+              requestAnimationFrame(tick);
+            };
+            requestAnimationFrame(tick);
+          });
+          const deltas = [];
+          for (let index = 1; index < timestamps.length; index++) {
+            const delta = timestamps[index] - timestamps[index - 1];
+            if (Number.isFinite(delta) && delta > 0) deltas.push(delta);
+          }
+          if (deltas.length === 0) {
+            return {
+              refreshHz: 60,
+              rawHz: null,
+              medianFrameDeltaMs: null,
+              sampleCount: 0,
+              clamped: false,
+              source: "fallback-default-60",
+            };
+          }
+          deltas.sort((left, right) => left - right);
+          const mid = Math.floor(deltas.length / 2);
+          const medianMs =
+            deltas.length % 2 === 1
+              ? deltas[mid]
+              : (deltas[mid - 1] + deltas[mid]) / 2;
+          const rawHz = 1000 / medianMs;
+          // Clamp to a sane display range — a compositor stall (or a
+          // duplicated vsync) must not turn into an absurd frame budget.
+          const refreshHz = Math.min(360, Math.max(30, rawHz));
+          return {
+            refreshHz,
+            rawHz,
+            medianFrameDeltaMs: medianMs,
+            sampleCount: deltas.length,
+            clamped: refreshHz !== rawHz,
+            source: "measured-raf-median",
+          };
+        };
+        const displayRefresh = await measureDisplayRefresh(31, 2000);
+
         const actionCounters = {
           frames: 0,
           pointsMutated: 0,
@@ -2423,6 +2484,7 @@ async function runOne(
           actualRenderer,
           settleFrames,
           setupToStableMs,
+          displayRefresh,
           mode: scene.mode,
           timestampAvailable,
           timestampEnabled,
@@ -2602,8 +2664,11 @@ async function runOne(
         ].sort((left, right) => left - right),
       };
     }
+    // C11-173 — judge dropped frames against the measured display rate
+    // (recorded in `browserResult.displayRefresh`), not an assumed 60 Hz.
     browserResult.framePacing = summarizeFramePacing(
       browserResult.trace?.samples || [],
+      browserResult.displayRefresh?.refreshHz,
     );
     browserResult.trackMetrics =
       usesCameraTrack(workload.action)

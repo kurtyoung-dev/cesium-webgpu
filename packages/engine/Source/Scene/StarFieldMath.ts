@@ -115,8 +115,11 @@ export function buildStarInstanceData(): Float32Array {
   //   2) gamma-compress it (exponent < 1) so the faint end lifts into
   //      visibility, then
   //   3) remap into a [LO, HI] band where LO keeps the faintest star a
-  //      dim-but-real point and HI lets the brightest stars overflow 1.0
-  //      (HDR) so the additive scene-FB target feeds them into bloom.
+  //      dim-but-real point and HI lets the brightest stars exceed 1.0.
+  //      On the default LDR target (highDynamicRange=false, bloom off)
+  //      the >1.0 overflow clips at the ROP; only with HDR enabled does
+  //      the float scene target preserve it for the bloom bright-pass
+  //      (when bloom is also enabled).
   // This preserves the PERCEPTUAL ordering (brighter magnitude ⇒ brighter
   // pixel ⇒ larger bloomed disc) while keeping the whole catalog visible.
   // Catalog point-sprites are limited to BRIGHT stars (mag <= cutoff). The
@@ -129,7 +132,7 @@ export function buildStarInstanceData(): Float32Array {
   const brightestFlux = Math.pow(10.0, -0.4 * (-1.46 - faintLimitMag));
   const FLUX_GAMMA = 0.5; // < 1 lifts the faint tail
   const LO = 0.5; // faintest included star (dim point, no bloom)
-  const HI = 2.0; // brightest star (overflows 1.0 → SUBTLE bloom, not a blob)
+  const HI = 2.0; // brightest star (>1.0 — clips at the LDR default; subtle bloom when HDR + bloom are on)
 
   for (let i = 0; i < count; i++) {
     const base = i * stride;

@@ -30,6 +30,7 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import WebGPUBindGroupCache from "./WebGPUBindGroupCache.js";
+import type { BindGroupCacheStats } from "./WebGPUBindGroupCache.js";
 import type { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
 import type { WebGPUPassTimestampProvider } from "./WebGPUPerformanceManager.js";
 
@@ -144,6 +145,15 @@ export class WebGPUAutoExposure {
     this._altitudeGateMinMeters = config?.altitudeGateMinMeters ?? 100_000.0;
     this._altitudeGateMaxMeters = config?.altitudeGateMaxMeters ?? 6_378_137.0;
     this._altitudeGateOrbitFloor = config?.altitudeGateOrbitFloor ?? 0.75;
+  }
+
+  /**
+   * C11-174 — read-only snapshot of the bind-group cache counters for
+   * `WebGPUContext.getRendererStatistics()` / `CesiumDebug.cacheStats()`.
+   * Pure exposure of bookkeeping the cache already maintains.
+   */
+  getBindGroupCacheStats(): BindGroupCacheStats {
+    return this._bgCache.getStats();
   }
 
   get averageLuminance(): number {

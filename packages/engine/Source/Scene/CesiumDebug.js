@@ -84,6 +84,7 @@ function installCesiumDebug(viewer) {
 ║  CesiumDebug.gpuPassCost(t/f)  — GPU per-pass cost (timestamp) ║
 ║  CesiumDebug.highDensityCull() — gpuCuller/HiZ/sort-keys stats ║
 ║  CesiumDebug.globeBindGroups() — globe bind-group cache stats ║
+║  CesiumDebug.cacheStats()      — pipeline + bind-group cache counters ║
 ║  CesiumDebug.webgpuOIT(t/f)    — WebGPU OIT containment gate (FAR-003) ║
 ║  CesiumDebug.attachmentDemand(t/f) — scene-FB attachment demand record ║
 ║  CesiumDebug.globeFragmentDebug(name) — visualize FS stages ║
@@ -815,6 +816,78 @@ function installCesiumDebug(viewer) {
       const stats = cache.getStats();
       console.table(stats);
       return stats;
+    },
+
+    /**
+     * C11-174 — dump the central render-pipeline cache and the
+     * post-process bind-group cache counters (hits/misses/hitRate).
+     * Pure exposure of bookkeeping the caches already maintain on their
+     * lookup paths — calling this adds no per-frame work.
+     *
+     * Healthy steady state: high hitRate on every row. A near-zero
+     * bind-group hitRate is the Batch-717 churn shape — resource
+     * identities (texture views, buffers) recreated every frame without
+     * a matching cache invalidation.
+     *
+     * Usage:
+     *   CesiumDebug.cacheStats()
+     */
+    cacheStats() {
+      const ctx = scene._context;
+      if (!ctx?.isWebGPU || typeof ctx.getRendererStatistics !== "function") {
+        console.warn("[CesiumDebug] Cache stats are WebGPU-only");
+        return null;
+      }
+      const stats = ctx.getRendererStatistics();
+      const pipeline = stats.pipelineCache;
+      const bindGroups = stats.bindGroupCaches;
+      if (!pipeline && !bindGroups) {
+        console.warn(
+          "[CesiumDebug] No cache statistics yet — render at least one frame first",
+        );
+        return null;
+      }
+      const formatRate = (rate) =>
+        Number.isFinite(rate) ? `${(rate * 100).toFixed(1)}%` : "n/a";
+      const rows = [];
+      if (pipeline && pipeline.error === undefined) {
+        rows.push({
+          cache: "renderPipeline",
+          hits: pipeline.hits,
+          misses: pipeline.misses,
+          hitRate: formatRate(pipeline.hitRate),
+          size: pipeline.size,
+          evicted: pipeline.evicted,
+          detail: `created=${pipeline.created} pending=${pipeline.pending} max=${pipeline.maxSize}`,
+        });
+      }
+      if (bindGroups && bindGroups.error === undefined) {
+        for (const [name, bg] of Object.entries(bindGroups)) {
+          if (!bg) {
+            continue; // effect not added to the pipeline
+          }
+          rows.push({
+            cache: `bindGroups:${name}`,
+            hits: bg.hits,
+            misses: bg.misses,
+            hitRate: formatRate(bg.hitRate),
+            size: bg.size,
+            evicted: bg.evictions,
+            detail: `invalidations=${bg.invalidations}`,
+          });
+        }
+      }
+      if (rows.length === 0) {
+        console.warn(
+          "[CesiumDebug] Caches not initialized yet — render at least one frame first",
+        );
+        return null;
+      }
+      console.table(rows);
+      return {
+        pipelineCache: pipeline ?? null,
+        bindGroupCaches: bindGroups ?? null,
+      };
     },
 
     /**
