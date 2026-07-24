@@ -189,6 +189,6 @@ Frame context: current WebGPU characterization ~12.18-12.53 ms/frame (`QUEUE_202
 6. **O6 RATIFIED with door open:** single-quality v1; the tier axis may be added later if performance demands — design W3 so the axis can be introduced without rework (no hardcoded single-quality assumptions in the uniform/config surface).
 
 ---
-**UNCONFIRMED register (carried into phase intakes):** fork FFT-ocean actual GPU ms (W0 baseline); FFT-ocean requestRenderMode keep-alive behavior (W0 probe); Cesium-World-Terrain ocean-lid datum (W0 probe, shared with tides); NWS-MDL EDR UGRD/VGRD parameter/level availability (W5 intake); OSCAR NRT variant existence + terms (W4 intake); MERRA-2 per-dataset licence wording (deprioritized).
+**UNCONFIRMED register (carried into phase intakes):** fork FFT-ocean actual GPU ms (W0 baseline); FFT-ocean requestRenderMode keep-alive behavior (W0 probe); Cesium-World-Terrain ocean-lid datum — **CONFIRMED GEOID (Batch 759, probe-ocean-datum: RMS 3.7 m vs EGM2008; FFT patch +101.6 m above the baked sea at high-undulation coasts; exaggeration displaces the lid)**; NWS-MDL EDR UGRD/VGRD parameter/level availability (W5 intake); OSCAR NRT variant existence + terms (W4 intake); MERRA-2 per-dataset licence wording (deprioritized).
 
 *Session note for the orchestrator: the claude.ai Google Drive MCP connector remains unauthorized (needs authorization via claude.ai connector settings); nothing in this task required it.*
