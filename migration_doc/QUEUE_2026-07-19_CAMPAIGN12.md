@@ -1,6 +1,6 @@
 # Campaign 12 — Celestial Appearance: from "present" to "photographic"
 
-**Status: DRAFT — NOT LAUNCHED. ✅ W3 asset licensing RESOLVED — see §6f: the project scope (personal, non-commercial, not redistributed) makes the question moot; t5 is cleared and `C12-10` is unblocked.** Constructed 2026-07-19 at maintainer direction ("use the findings to start constructing campaign 12"). Campaign 11 is the live campaign and continues to run.
+**Status: DRAFT — NOT LAUNCHED. ✅ W3 asset licensing RESOLVED — see §6f: the project scope (personal, non-commercial, not redistributed) makes the question moot; t5 is cleared and `C12-10` is unblocked.** Constructed 2026-07-19 at maintainer direction ("use the findings to start constructing campaign 12"). ⚠ **Updated 2026-07-23: Campaign 13 (clouds) is the live campaign (Batch 732 `f4a934e606`); Campaign 11 is PAUSED with its clouds-weather rows transferred to C13. Every `C11-*` dependency named in this queue (`C11-79`/`C11-80`, `C11-160`, `C11-161`, `C11-175`, plus the never-registered `C11-176a`) is NOT STARTED in the paused queue and therefore DORMANT until explicitly transferred into C12 or pulled forward — see §3, W1, and the §7 launch precondition.**
 
 **Source of truth for every claim here:** [CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md](CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md) — 8 research lanes, every load-bearing claim adversarially verified (20 of 20 heavy claims refuted and dropped; what remains survived attack).
 
@@ -8,14 +8,14 @@
 
 ## 1. Theme
 
-> Close the last default-ON WebGPU-only celestial divergences, replace flat-disc point-source rendering with a physically-motivated glare PSF **on both backends**, upgrade the star map **from a source whose terms affirmatively permit commercial redistribution and derivatives**, and make the Sun and Moon photometrically honest.
+> Close the last default-ON WebGPU-only celestial divergences, replace flat-disc point-source rendering with a physically-motivated glare PSF **on both backends**, upgrade the star map **to the SVS 3572 t5 variant — cleared for this project's scope per §6f and shipped under its own documented terms in `LICENSE.md`'s Bundled Engine Assets section (never under the blanket MIT grant)**, and make the Sun and Moon photometrically honest.
 
-⚠ **Corrected 2026-07-19.** This theme originally read *"upgrade the star map within the licence we already hold."* **That was wrong and is withdrawn.** We hold no licence for the current star map. `LICENSE.md:1042` is an **attribution record** — a heading, two source URLs, and a pointer to *NASA's* terms — not a grant; the only grant language in `LICENSE.md` is the Apache-2.0 boilerplate covering Cesium's own code. The shipped `t3` faces and the proposed `t5` are the **same SVS 3572 product rendered from the same two ESA catalogues, so their legal status is identical** (see §6d). The difference between them is not rights but posture: `t3` is an inherited upstream condition predating any examination of the chain, whereas `t5` would be a new deliberate download-derive-ship **after** we documented that we understand the test. Do not let the presence of an attribution entry be read as clearance for anything.
+⚠ **Corrected 2026-07-19.** This theme originally read *"upgrade the star map within the licence we already hold."* **That was wrong and is withdrawn.** We hold no licence for the current star map. `LICENSE.md:1042` was, at authoring, an **attribution record** — a heading, two source URLs, and a pointer to *NASA's* terms — not a grant; the only grant language in `LICENSE.md` was the Apache-2.0 boilerplate covering Cesium's own code. *(Since Batch 730 the entry is the `# Bundled Engine Assets` section at `LICENSE.md:1024-1044`, which states the assets' own terms and carves them out of the blanket grant; the old stub location carries a "Moved." tombstone at `LICENSE.md:1066`.)* The shipped `t3` faces and the proposed `t5` are the **same SVS 3572 product rendered from the same two ESA catalogues, so their legal status is identical** (see §6d). The difference between them is not rights but posture: `t3` is an inherited upstream condition predating any examination of the chain, whereas `t5` would be a new deliberate download-derive-ship **after** we documented that we understand the test. Do not let the presence of an attribution entry be read as clearance for anything.
 
 Two hard bounds:
 
 - **(a) Everything shader-side lands on BOTH backends** (Principle 5). The "white blobs" symptom is **shared code**, not a parity defect — `StarFieldFS.glsl:18-21` and `StarField.wgsl:140-143` are character-identical and both consume `StarFieldMath.ts`. Fixing one alone would *create* a parity gap.
-- **(b) No asset enters the repo whose licence is not stated exactly** and verified public-domain or permissive-attribution. This is an MIT repo; a non-commercial asset cannot be sublicensed.
+- **(b) No asset enters the repo whose terms are not stated exactly** in `LICENSE.md`'s **Bundled Engine Assets** section (Batch 730), carved out of the blanket MIT grant. Under the §6f scope ruling a non-commercially-licensed asset is acceptable for THIS project; the §6f reopen triggers (redistribution, commercial use, third-party grant, downstream consumer) bind every asset admitted under this bound.
 
 ---
 
@@ -24,6 +24,8 @@ Two hard bounds:
 | Item | Status |
 |---|---|
 | **`C11-176` skybox star-map fade** | ✅ **FIXED, Batch 722.** WebGPU-only `enableStarBrightnessModulation` shipped ON, halving the star map whenever the Sun was ≥ ~23.6° above the camera's local horizon. WebGL's `SkyBoxFS.glsl` (9 lines) has no such term. Measured `0.493 → 1.001` mean, star pixels `4.01% → 21.20%`. Default flipped; **capability preserved** (forcing it true still dims — the gate asserts this). Also fixed the `{0.3,4.0}` fallback curve that would have caused a **total blackout**, and annotated `enableNightSkyDimming` (zero consumers). |
+| **`SkyBox.Variant` selection** | ✅ **SHIPPED, Batch 728.** `TYCHO_T3`/`TYCHO_T5` enum + `defaultVariant` + descriptor table in `SkyBox.js:219-267`. t5 is registered but **NOT BUNDLED** (jpg-hardcoded descriptor; selecting it 404s). `C12-10` fills in the asset, updates the descriptor for KTX2, and flips `defaultVariant` (a one-line change per the code's own note). |
+| **`LICENSE.md` Bundled Engine Assets** | ✅ **SHIPPED, Batch 730.** Carves the skybox faces out of the blanket MIT grant (`LICENSE.md:1024-1044`) with full provenance, both credits, and the terms-position analysis; its Files line (`LICENSE.md:1030`) already covers future variants of the same SVS product. **Re-scopes `C12-13` to an extension of this section.** Note: this queue's live-section `LICENSE.md:1042` citations describe the PRE-Batch-730 stub — treat them as historical line references, not current content. |
 
 **Consequence for C12:** the fade is closed. C12 inherits the *asset* problem (the map is genuinely sparse) and the *blob* problem (shared code), which are different defects.
 
@@ -31,12 +33,12 @@ Two hard bounds:
 
 ## 3. Split — C11 tail vs C12
 
-**These belong in C11's W9 tail, not here.** One-line defaults and comment corrections with an existing P1 home; they should not wait for a new campaign.
+**These belong in C11's W9 tail, not here.** One-line defaults and comment corrections with an existing P1 home; they should not wait for a new campaign. **⚠ 2026-07-23: that home does not exist — no `C11-176b`/`C11-176c` rows were ever appended to the C11 queue, and C11 is now PAUSED, so as filed these WILL wait indefinitely, defeating the rationale. Decision at C12 launch (LD-2): pull them in as C12 W1 riders, IDs retained (recommended — `C11-176b` is open in code at HEAD (`Moon.wgsl:345-346`), gates `C12-21`/`C12-22` per the research dep table (`CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md:353-354`), and edits the same `Moon.wgsl` phase region W5 touches, so landing it BEFORE `C12-20..23` re-baselines the Batch-517 crescent probe once, not twice; Batch 730 already discharged the `LICENSE.md:1042` dead-URL bullet of `C11-176c`) — or explicitly accept they sleep until C11 resumes.**
 
 | ID | Item | Effort |
 |---|---|---|
 | `C11-176b` | **Moon `phaseGate` deletion** (`Moon.wgsl:345-346`) — **the same class of bug as the skybox fade**: `enableMoonPhase` defaults **true**, and `phaseFraction`/`earthshine` appear in **no GLSL file**. It is also a physical double-count — N·L against the real Simon1994 sun direction already yields the correct terminator and phase, while the extra `smoothstep(0,0.3,phaseFraction)` additionally blacks out real crescents. Requires re-baselining the Batch-517 crescent probe. | XS + re-baseline |
-| `C11-176c` | **Stale-comment corrections** that actively mislead diagnosis: four comments asserting a float target + bloom that are **off by default** (`StarField.wgsl:14-16,145-146`, `StarFieldFS.glsl:23-24`, `StarFieldMath.ts:118-119`); `StarField.js:63` says "~0.34°" for `0.0042` rad (actual **0.2406°**); `SkyBox.js:49-51` calls StarField "an inert no-op" on WebGL, falsified by the WebGL twin at `Renderer/Context.js:766-788`; `LICENSE.md:1042` dead URLs. | XS |
+| `C11-176c` | **Stale-comment corrections** that actively mislead diagnosis: four comments asserting a float target + bloom that are **off by default** (`StarField.wgsl:14-16,145-146`, `StarFieldFS.glsl:23-24`, `StarFieldMath.ts:118-119`); `StarField.js:63` says "~0.34°" for `0.0042` rad (actual **0.2406°**); `SkyBox.js:49-55` (phrase at :52) calls StarField "an inert no-op" on WebGL, falsified by the WebGL twin at `Renderer/Context.js:766-789`. *(The `LICENSE.md:1042` dead-URL sub-item was discharged by Batch 730 — live URLs at `LICENSE.md:1034-1035`, the dead JPL URL kept as a provenance note at `:1036`.)* | XS |
 | `C11-SEED-07` | Fold `NEW-SUN-MOON-FIDELITY` into `C11-179` — duplicate scope. | XS |
 
 ---
@@ -47,10 +49,10 @@ Two hard bounds:
 
 | ID | Item | Effort | Deps |
 |---|---|---|---|
-| `C12-01` | **Celestial gate harness** — implement metrics M1/M2/M2e/M3/M6 on the existing probe scene; emit the 14-field manifest; baseline both backends for all four gates. | M | `C11-176a` |
+| `C12-01` | **Celestial gate harness** — implement metrics M1/M2/M2e/M3/M6 on the existing probe scene; emit the 14-field manifest; baseline both backends for all four gates. **ABSORBS `C11-176a`** (never appended to the C11 queue — research-doc row only, `CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md:297`). Already landed de facto in `probe-skybox-star-modulation.mjs` (Batches 722/724): sunlit-side + night cameras, default-pair assertion, RMS-contrast + top-0.1% metrics. Still missing and owed here: M1 source census, M2e sky floor, wiring `brightPct` + the default-pair assertion into `probe-env-skybox-stars.mjs` (camera there is still NOT sun-relative, `:83-86`; `brightPct` computed at `:154` but absent from pass criteria `:293-300`), and HARD exit-code gating (`probe-skybox-star-modulation.mjs:267` exits 0 unconditionally, even on GATE FAIL). | M | `C11-176a` (absorbed here) |
 | `C12-02` | **Exposure-bracket capture** (1×/8×/64× stitch). **An 8-bit readback cannot measure a halo to 1e-3 of peak — the halo is exactly what the current capture discards.** Required by every PSF gate. | M | `C12-01` |
-| `C12-03` | **Adapter provenance** — consume `C11-175`'s `adapter.info` logging so a PASS records which physical GPU produced it. | XS | `C11-175` |
-| `C12-04` | **Sequencing audit vs `C11-79`/`C11-80`** (starfield single-submission retains star commands). C12 edits the same renderer; confirm no conflict. | XS | `C11-80` landed |
+| `C12-03` | **Adapter provenance** — consume `C11-175`'s `adapter.info` logging so a PASS records which physical GPU produced it. ⚠ `C11-175` is NOT STARTED in the PAUSED C11 (`QUEUE_2026-07-18_CAMPAIGN11.md:721`) — pull it into C12 or fold the logging into this item (LD-1). Half pre-exists: `powerPreference:"high-performance"` is already the default (`WebGPUContext.ts:1126`, `WebGPUDevicePool.ts:761`) and a vendor-only init log exists (`WebGPUContext.ts:1222`); the missing piece is the structured `adapter.info` record beside the WebGL `RENDERER` string. | XS | `C11-175` (pull into C12 or fold in) |
+| `C12-04` | **Sequencing audit vs `C11-79`/`C11-80`** (starfield single-submission retains star commands). C12 edits the same renderer; confirm no conflict. ⚠ Premise stale: `C11-80` is NOT STARTED and C11 is PAUSED — this row executes AFTER the §7 transfer-vs-rebase decision (LD-1). | XS | §7 launch decision (was: `C11-80` landed) |
 
 ### W2 — Bright-star appearance model (the "white blobs" fix) — shader + data only, no framebuffer risk
 
@@ -62,19 +64,20 @@ Two hard bounds:
 | `C12-06` | **Quad enlargement** driven through the existing `sizeBoost` plumbing as **halo extent, not core size**; clamp total glare diameter to 1°. Today the sprite is only ~7.5 px, of which ~4 px is plateau — the Polaris reference look is **geometrically unreachable** without this. | S | `C12-05` |
 | `C12-07` | **Amplitude restructure** — stop the core saturating across half the sprite; chroma-preserving split so the core may clip white while the halo stays below 1.0 and keeps blackbody hue. **This is the increment that actually kills the blob, and it needs no HDR.** ⚠ Adding a wing to a still-clipping core makes a *bigger* blob; **do not raise `HI`** (that widens the white disc). | S | `C12-05` |
 | `C12-08` | **Dynamic-range restoration** — remove the baked `FLUX_GAMMA=0.5`, keep flux linear (Pogson), move compression into an explicit exposure term. Today the true 38.4:1 flux range across rendered stars is pre-crushed to **2.70:1**, then clipped — Sirius and a 2nd-magnitude star arrive nearly identical. | M | `C12-07` |
-| `C12-09` | **Catalogue depth** toward mag ~5.5 (BSC5 - NOT public domain; UNCONFIRMED, see 6d/DR-02; gated on sourcing from NASA HEASARC and vendoring only the factual fields). **Last in the wave** — before the above it just adds more blobs. Note the full 9,110-entry BSC5 is **not vendored**; this is a data ingest, not raising a constant. | M | `C12-08`, `C12-11` |
-| **Gate** | **G2** — must pass identically on **both** backends (shared code). | | |
+| `C12-09` | **Catalogue depth** toward mag ~5.5–6 (~5,000 stars). **DR-01 (§6c) promotes this from optional to LOAD-BEARING** — with the texture no longer supplying point sources, the catalogue is the only source of star density. BSC5 provenance UNCONFIRMED (DR-02, recorded in §6d and NOT retracted with §6d's t5 reasoning); gated on ALL THREE DR-02 conditions: source from NASA HEASARC (not VizieR), vendor only RA/Dec/Vmag/B−V, re-sort under our own schema rather than shipping V/50's row order. ⚠ OPEN DECISION for the maintainer (LD-3): does the §6f scope ruling relax the DR-02 conditions? Until answered they bind. **Last in the wave** — before the above it just adds more blobs. Note the full 9,110-entry BSC5 is **not vendored**; this is a data ingest, not raising a constant. | M | `C12-08`, `C12-11` |
+| `C12-27` | **Angular solar glare star-washout** — full definition §6 (Q2b). Reuses the `C12-05` Stiles–Holladay math applied to the sky; BOTH backends; both cubemap and sprite pass. | M | `C12-05` |
+| **Gate** | **G2** — must pass identically on **both** backends (shared code), **including the `C12-27` criterion: stars at small angular separation from the Sun dim measurably while stars at >90° separation are byte-identical to the no-Sun frame.** | | |
 
-### W3 — Star-map asset (licence-gated; parallel to W2 once Q1 is answered)
+### W3 — Star-map asset (Q1 ANSWERED: t5; licence RESOLVED per §6f; runs parallel to W2)
 
-**The single cheapest high-value finding in the whole sweep: the fork ships the *faintest* variant of its own star map.** SVS 3572 publishes three: `t3` — *"the Milky Way is very faint"* (**what we ship**, at 1024/face), `t4` — *"fainter"*, and `t5` — ***"the Milky Way is very bright and bright stars are large"*** at **16384×8192**. Same NASA product, same creators, same existing `LICENSE.md:1042` entry. **SUPERSEDED - this wave is LICENCE-BLOCKED; see 6d.** The "US public domain" reading does not survive: SVS 3572's declared source catalogues (Hipparcos, Tycho-2) are distributed by ESA under CC BY-NC 3.0 IGO.
+**The single cheapest high-value finding in the whole sweep: the fork ships the *faintest* variant of its own star map.** SVS 3572 publishes three: `t3` — *"the Milky Way is very faint"* (**what we ship**, at 1024/face), `t4` — *"fainter"*, and `t5` — ***"the Milky Way is very bright and bright stars are large"*** at **16384×8192**. Same NASA product, same creators, same attribution entry (now `# Bundled Engine Assets`, `LICENSE.md:1024-1044`, Batch 730 — whose Files line already covers additional `SkyBox.Variant` entries derived from the same SVS product). **Licence history: §6d ruled this wave BLOCKED (retracted), §6e revised to CONDITIONAL GO, §6f RESOLVED it 2026-07-19 — t5 is cleared for this project's scope and W3 is UNBLOCKED.** The Batch-728 `SkyBox.Variant` plumbing already registers `TYCHO_T5` (NOT YET BUNDLED — jpg-hardcoded descriptor; selecting it 404s until `C12-10` lands).
 
 | ID | Item | Effort | Deps |
 |---|---|---|---|
-| `C12-10` | **Offline bake pipeline, checked in:** `TychoSkymapII.t5_16384x08192` → **gamma-1.8 → sRGB correction** (SVS states the product is gamma 1.8 and the shipped JPEGs carry no ICC profile — decoding it as sRGB darkens and flattens it; shared by both backends, so not the parity fade but a real contributor to the absolute faint look) → six cube faces at 4096 → KTX2/BC6H. Reproducible — the current faces are a hand-edited Paint.NET downsample. | L | **Q1** |
-| `C12-11` | **Seam reconciliation.** The cubemap is a threshold-mag-3.0 render with fainter stars *boosted*; the sprite pass cuts at `MAG_CUTOFF = 2.5`, so **stars ≤2.5 are drawn twice** — over-brightening exactly the stars called blobs. Moving to t5 (threshold 5.0) **widens** that overlap. Blocking for `C12-09`. | M | `C12-10` |
+| `C12-10` | **Offline bake pipeline, checked in:** `TychoSkymapII.t5_16384x08192` → **gamma-1.8 → sRGB correction** (SVS states the product is gamma 1.8 and the shipped JPEGs carry no ICC profile — decoding it as sRGB darkens and flattens it; shared by both backends, so not the parity fade but a real contributor to the absolute faint look) → **DR-01 low-pass stage destroying point sources (option (a) via (c), §6c)** → six cube faces at 4096 → KTX2/BC6H. **MUST emit and check in BOTH the blurred AND un-blurred faces (or a documented one-command blur re-run) — DR-01 reversal item 1; if only the blurred artifact survives, reversal costs a full re-bake.** Update the Batch-728 `SkyBox.Variant.TYCHO_T5` descriptor (currently jpg-hardcoded to `tycho2t5_80_*.jpg`, `SkyBox.js:246`) for the KTX2 output, refresh the stale `SkyBox.js:222-232` docblock (still calls acquisition licence-gated and cites the retracted §6d; superseded by §6f), and flip `SkyBox.defaultVariant` (`SkyBox.js:267`, a documented one-line change). Reproducible — the current faces are a hand-edited Paint.NET downsample. | L | — (Q1 ANSWERED: t5, §6; licence RESOLVED, §6f) |
+| `C12-11` | **Seam implementation per DR-01 (§6c — DECIDED; no open decision here).** The cubemap carries diffuse light only (bright stars removed by the `C12-10` blur); every resolved star comes from the sprite catalogue. Implement: verify the blurred bake has no resolved point sources (M6 split), extend sprite coverage to what the t5 threshold-mag-5.0 render previously painted, and capture DR-01 reversal evidence (G3 on blurred vs un-blurred bakes; ~5,000-sprite frame-cost delta on both backends). Historical context: the t3 seam double-drew stars ≤2.5 — over-brightening exactly the stars called blobs — and t5 as-shipped would have widened it; DR-01 removes the overlap by construction. Blocking for `C12-09`. | M | `C12-10` |
 | `C12-12` | **VRAM/streaming policy** — 2048/face default, 4096 opt-in, KTX2 compressed (4096/face RGBA8 uncompressed ≈ 402 MB). | S | `C12-10` |
-| `C12-13` | **`LICENSE.md` refresh** — live SVS URLs, exact product name + variant, verbatim credit line, current NASA terms URL. | XS | `C12-10` |
+| `C12-13` | **`LICENSE.md` refresh** — ✅ largely delivered for t3 by Batch 730 (`# Bundled Engine Assets`, `LICENSE.md:1024-1044`: live SVS + NASA-guidelines URLs, exact product name + variant, both credit lines, terms position). Residual: extend the entry's **Files** line with the baked t5 faces + a t5 variant description sentence and record the KTX2 bake derivation chain when `C12-10` lands (coverage of additional `SkyBox.Variant`s from the same product is already pre-stated at `LICENSE.md:1030`). | XS | `C12-10` |
 | `C12-14` | *(opportunistic)* Expose the baked cubemap as a **samplable star texture**, discharging the `C11-163` celestial-water-reflection blocker for free. | S | `C12-10` |
 | **Gate** | **G3**, both backends. | | |
 
@@ -87,21 +90,22 @@ Two hard bounds:
 | `C12-17` | **WebGPU sun-texture format/size parity** — WebGPU hardcodes `rgba8unorm` at 256², WebGL selects HALF_FLOAT under HDR and sizes from the drawing buffer. 8-bit quantization of a smooth glow ramp bands visibly. | S–M | — |
 | `C12-18` | **Reconcile bake vs screen-space halo** once `C11-160` lands: disc at true 0.53°, all halo from the PP chain. | M | `C11-160`, `C11-115` |
 | `C12-19` | **True HDR sun radiance** — remove the `clamp(...,0,1)` in both bakes, retune BrightPass. ⚠ **Must be probed against both AE-on and AE-off lanes** — introducing ~10⁵ energy without that re-creates the inverse of the Batch-364 failure (the sun crushes everything else). | L | `C12-17`, `C12-18`, `C11-161` |
-| **Gate** | **G4** sun half. | | |
+| `C12-28` | **HDR default on HDR-capable displays** — full definition §6 (Q3). Lands AFTER `C12-07`; app-overridable; do NOT switch default tonemap to ACES. | M | `C12-07` |
+| **Gate** | **G4** sun half, **plus the `C12-28` check: byte-identical behaviour on SDR displays.** | | |
 
 ### W5 — Moon (almost entirely shader one-liners)
 
 | ID | Item | Effort |
 |---|---|---|
 | `C12-20` | **Lommel-Seeliger reflectance** — the Moon is currently a **pure Lambert sphere** (`specularStrength = 0.0`), which is why the full moon reads as a shaded ball instead of a flat bright disc. Replace `rawNdotL` with `2·NdotL/(NdotL+NdotV+ε)`; `toEyeMC` is already computed. | XS |
-| `C12-21` | **Phase-dependent earthshine** — currently a **constant** with no phase term, which is physically backwards: Earth's phase from the Moon is the exact complement of the Moon's phase from Earth, so earthshine should peak at new moon and vanish at full. Multiply by `(1 − phaseFraction)`, already in the uniform block. | XS |
-| `C12-22` | **Soft terminator** from the Sun's finite ~0.5° disc (±0.0044 in N·L). One `smoothstep`. | XS |
+| `C12-21` | **Phase-dependent earthshine** — currently a **constant** with no phase term, which is physically backwards: Earth's phase from the Moon is the exact complement of the Moon's phase from Earth, so earthshine should peak at new moon and vanish at full. Multiply by `(1 − phaseFraction)`, already in the uniform block. **Dep: `C11-176b` (phaseGate deletion) — land it first or the phase terms compound.** | XS |
+| `C12-22` | **Soft terminator** from the Sun's finite ~0.5° disc (±0.0044 in N·L). One `smoothstep`. **Dep: `C11-176b`.** | XS |
 | `C12-23` | **Opposition surge** — lunar brightness rises >40% between phase angles 4° and 0°, beyond anything Lambert or Lommel-Seeliger predicts. Cheap here: for a distant decorative moon α is effectively constant across the disc, so compute once CPU-side and pass one uniform. **Zero per-pixel cost.** | S |
 | `C12-24` | **NASA CGI Moon Kit albedo swap** (1k/2k). `moonSmall.jpg` is **256×128**, so the visible hemisphere is 128 texels over a ~190 px disc = **0.67 texels/px, under-resolved**. Re-opens `C4-CELESTIAL-HIRES-MOON` on corrected premises — **drop its altitude-blend half** (that would open a parity gap). | S |
 | `C12-25` | **LOLA-derived normal map** for terminator relief (NASA ships displacement, not normals — offline derivation step). | M |
 | **Gate** | **G4** moon half — gate the **phase curve**, not a single frame: a single image cannot distinguish Lambertian from Hapke, the full:quarter brightness ratio can. | |
 
-**Do NOT spend effort on** libration (already exact — IAU 2000 E1–E13 series supplies physical libration implicitly and optical libration falls out of the real ephemeris) or angular size (real radius at real ephemeris distance, 32.9′ perigee / 29.5′ apogee). Both are explicit non-goals in `FEATURE_INVENTORY.md:1076-1078`.
+**Do NOT spend effort on** libration (already exact — IAU 2000 E1–E13 series supplies physical libration implicitly and optical libration falls out of the real ephemeris) or angular size (real radius at real ephemeris distance, 32.9′ perigee / 29.5′ apogee). Libration is an explicit non-goal at `FEATURE_INVENTORY.md:1078`; angular size is a non-goal by construction (already exact — real radius at real ephemeris distance; the inventory carries no entry for it).
 
 ### W6 — Adjacent: file, don't fold
 
@@ -117,7 +121,7 @@ Two hard bounds:
 
 | Gate | Covers | Headline criterion |
 |---|---|---|
-| **G1** | Skybox fade | Camera **on the sunlit side, Sun ≥ 25° above local horizon** — the only framing that reaches the failure state. M1 source-count ratio ≥ 0.90; RMS-contrast and P99.9−P50 ratios ∈ [0.85, 1.15]. **Mean luminance is diagnostic only and explicitly non-certifying.** |
+| **G1** | Skybox fade | Camera **on the sunlit side, Sun ≥ 25° above local horizon** — the only framing that reaches the failure state. M1 source-count ratio ≥ 0.90; RMS-contrast and P99.9−P50 ratios ∈ [0.85, 1.15]. **Mean luminance is diagnostic only and explicitly non-certifying.** *Expected already-green at HEAD: Batch 722 landed the fix and the §6 Q2 measurements are effectively this gate passing — G1 is held as a REGRESSION gate, baselined by `C12-01` in W1.* |
 | **G2** | White blobs | **`r_1e-3 / r_core ≥ 8`** — a Gaussian truncated at `d=1.0` cannot exceed ~1.8, so this one number separates blob from star. Plus: two agreeing log-log slopes in [−5,−2]; <25 clipped px/star; rendered brightest:faintest ≥ 15:1 (today **4:1** by construction). |
 | **G3** | Asset upgrade | ≤ 2.0 arcmin/px; ≥10× sources/steradian vs the t3 baseline; median chroma ≥ 0.20 (**fails immediately under 4:2:0 JPEG**, so it doubles as the format gate); **dust-lane structure** via low-pass residual IQR ≥ 3× current. |
 | **G4** | Sun + Moon | Sun: `r_1e-3/r_core ≥ 10`; angular diameter within 5% of 0.5334°; `I(0.95R)/I(0)` ∈ [0.3,0.5]. Moon: full:quarter integrated-brightness ratio must exceed the Lambertian ~3:1. |
@@ -125,16 +129,16 @@ Two hard bounds:
 **C12 closes when all four gates pass on both backends at HEAD, with:**
 
 1. Every manifest attributable to a commit **and a recorded adapter pairing** (`C12-03`/`C11-175`).
-2. **Zero default-ON WebGPU-only celestial multipliers remaining** — an audit asserting that for every celestial uniform gate (`enableStarBrightnessModulation`, cloud-cover occlusion, `enableMoonPhase`, `enableEarthshine`, `enableNightSkyDimming`) either a GLSL consumer exists **or** the default is off. **The exit gate closes the CLASS, not the instance** — this bug family has now produced three separate defects.
+2. **Zero default-ON WebGPU-only celestial multipliers remaining** — an audit asserting that for every celestial uniform gate (`enableStarBrightnessModulation`, cloud-cover occlusion, `enableMoonPhase`, `enableEarthshine`, `enableNightSkyDimming`) either a GLSL consumer exists **or** the default is off. **The exit gate closes the CLASS, not the instance** — this bug family has now produced three separate defects. **C13 coordination note (2026-07-23): the cloud-cover-occlusion half of this audit inspects code now owned by Campaign 13 — run it read-only against C13's HEAD and route any fix to C13; do not double-schedule.**
 3. `FEATURE_INVENTORY.md` updated (celestial WIP §C → §B; airglow added to §D).
 4. `LICENSE.md` third-party attributions current with live URLs and exact credit strings.
-5. **No new `ShaderDefine` bits consumed** — the registry is exhausted, so any C12 quality toggle uses a **runtime uniform float** (the pattern `C11-163` already mandates).
+5. **No new `ShaderDefine` bits consumed** — the registry is exhausted, so any C12 quality toggle uses a **runtime uniform float** (the pattern `C11-163` already mandates). (Consequence: `C11-149` define-width is NOT a C12 dependency; needing it would itself be a scope violation.)
 
 ---
 
 ## 6. MAINTAINER DECISIONS — ANSWERED 2026-07-19
 
-**Q1 — Gaia-derived imagery → ANSWERED: take the t5 path.** SVS 3572 `TychoSkymapII.t5_16384x08192`. Sidesteps the CC BY-NC 3.0 IGO incompatibility entirely; same product family, already covered by `LICENSE.md:1042`. **NASA SVS 4851 Deep Star Maps is DISQUALIFIED — do not revisit.**
+**Q1 — Gaia-derived imagery → ANSWERED: take the t5 path.** SVS 3572 `TychoSkymapII.t5_16384x08192`. Sidesteps the CC BY-NC 3.0 IGO incompatibility entirely; same product family, already covered by the `# Bundled Engine Assets` entry (`LICENSE.md:1024-1044`, Batch 730 — its Files line at `LICENSE.md:1030` explicitly extends coverage to any `SkyBox.Variant` derived from the same SVS product). **NASA SVS 4851 Deep Star Maps is DISQUALIFIED — do not revisit.**
 
 **Q2 — Where observed → ANSWERED: "Both while in orbit."** This is load-bearing and it *re-scopes the symptom*:
 
@@ -145,7 +149,7 @@ Two hard bounds:
 
 **Q3 — HDR default → ANSWERED: on by default only where the browser/display actually reports HDR.** Not a blanket flip. Filed as `C12-28`.
 
-**Q4 — Seam magnitude → deferred pending explanation; `C12-11` holds the decision.** Default if unanswered: option (a), a bright-star-free cubemap bake.
+**Q4 — Seam magnitude → ANSWERED: option (a) implemented via (c) — DECISION RECORD DR-01 (§6c), decided 2026-07-19 by the maintainer, with a documented reversal plan. Its licensing condition was discharged by §6f. `C12-10`/`C12-11` carry the implementation obligations; `C12-09` is promoted to load-bearing.**
 
 ### New items from these answers
 
@@ -177,7 +181,7 @@ Either (a) bake a **bright-star-free** cubemap — more work, requires custom re
 
 ## 6c. DECISION RECORD DR-01 — star-map / sprite seam (answers Q4)
 
-**Decided 2026-07-19 by the maintainer: option (a), implemented via (c).** The cubemap carries **diffuse light only**; **every resolved star comes from the sprite catalogue**. Explicitly **CONDITIONAL ON LICENSING** — maintainer's words: *"if there are no license restrictions to doing this and shipping it."* See §6d.
+**Decided 2026-07-19 by the maintainer: option (a), implemented via (c).** The cubemap carries **diffuse light only**; **every resolved star comes from the sprite catalogue**. Explicitly **CONDITIONAL ON LICENSING** — maintainer's words: *"if there are no license restrictions to doing this and shipping it."* See §6d (since retracted by §6e). **That condition is DISCHARGED: §6f resolved the licence question for this project's scope on 2026-07-19. DR-01 is now unconditional unless a §6f reopen trigger fires.**
 
 ### What was chosen
 
@@ -190,7 +194,7 @@ Either (a) bake a **bright-star-free** cubemap — more work, requires custom re
 ### Why (not just "it's cleaner")
 
 1. **Painted stars are dead pixels.** They cannot receive *any* of the work C12 exists to do — no Moffat halo (`C12-05`), no B−V blackbody colour, and critically **no angular sun-glare** (`C12-27`), because a baked texel cannot respond to sun angle. Leaving bright stars in the texture would produce a visibly inconsistent sky: sprite stars with halos beside painted blobs without them.
-2. **The double-draw over-brightens exactly the stars reported as blobs.** The texture contains every star; the sprite pass redraws the ~80 brightest on top. t5 makes this worse — SVS describes it as *"bright stars are large"*.
+2. **The double-draw over-brightens exactly the stars reported as blobs.** The texture contains every star; the sprite pass redraws the 92 brightest on top (measured at HEAD: vmag ≤ 2.5 across the 263-entry catalog). t5 makes this worse — SVS describes it as *"bright stars are large"*.
 3. **(b) is more fragile than it looks.** SVS deliberately non-linearizes the magnitude→intensity curve (boosting faint stars for visibility). A compensation factor would be reverse-engineering a curve we do not control and which differs per variant.
 
 ### Binding scope consequence (maintainer-stated)
@@ -201,7 +205,7 @@ Either (a) bake a **bright-star-free** cubemap — more work, requires custom re
 
 ### Cost accepted
 
-`C12-09` (catalogue extension toward mag ~6, ~5,000 stars) is **promoted from optional to load-bearing**. With the texture no longer supplying point sources, the catalogue is the *only* source of star density — the ISS-reference look now depends on it. `BrightStarCatalog.js` currently holds ~230 entries and the full 9,110-entry BSC5 is **not vendored**, so this is a real data ingest.
+`C12-09` (catalogue extension toward mag ~6, ~5,000 stars) is **promoted from optional to load-bearing**. With the texture no longer supplying point sources, the catalogue is the *only* source of star density — the ISS-reference look now depends on it. `BrightStarCatalog.js` currently holds 263 entries (measured at HEAD: `data.length` 1052 / `STRIDE` 4; the file's own docblock still says "~230") and the full 9,110-entry BSC5 is **not vendored**, so this is a real data ingest.
 
 ### REVERSAL PLAN — how to fall back to (b) after seeing results
 
@@ -375,8 +379,10 @@ That is the **identical licence instrument, from the identical rights holder**, 
 | **`C11-160`** sunBloom → PP wiring | **The single largest contributor to "the sun looks like a blob."** `sunBloom` defaults **true** and drives the full `SunPostProcess` chain on WebGL, but is gated off on WebGPU. WebGL ships a wide blurred halo by default; WebGPU ships the bare quad. It is a **routing** task against existing tested WGSL, not new authoring. C12 W4 depends on it. |
 | **`C11-115`** sun blend → ALPHA_BLEND | RESOLVED-as-decision. Additive over a bright sky independently pushes the sun core to flat white. Do not re-open. |
 | **`C11-161`** AutoExposure demand-gate | A **perf** item, not a parity fix. Do not re-scope it as a celestial cause. |
-| **`C11-79` / `C11-80`** celestial retained resources / starfield single submission | **W1 — imminent.** `C11-80` retains star commands and must land before `C11-79`. **Any C12 starfield renderer change must sequence against these or it will conflict.** |
+| **`C11-79` / `C11-80`** celestial retained resources / starfield single submission | **NOT STARTED and DORMANT — C11 is PAUSED (2026-07-23), "imminent" no longer holds** (`QUEUE_2026-07-18_CAMPAIGN11.md:690`). `C11-80` retains star commands and must land before `C11-79`. **LAUNCH DECISION (LD-1):** transfer both into C12 W1 with IDs retained (C13 precedent), or ratify C12-edits-first with a written rebase contract for the paused rows. Until decided, `C12-04` and every W2 renderer edit is blocked. |
 | **`C11-163`** celestial water reflection | `C12-14` would discharge its documented biggest blocker (no samplable star cubemap) for free. |
+
+**⚠ Launch precondition (2026-07-23, LD-1):** Campaign 11 is PAUSED. Every C11 row this queue depends on — `C11-79`/`C11-80` (C12-04 + W2 sequencing), `C11-160` (C12-18), `C11-161` (C12-19), `C11-175` (C12-03) — is NOT STARTED there (`QUEUE_2026-07-18_CAMPAIGN11.md:690,706,707,721`); `C11-115` is resolved-as-decision only (ALPHA_BLEND direction ratified, implementing code NOT STARTED). Maintainer must choose before launch: (i) execute these rows as C12-hosted prerequisites retaining their C11 IDs as aliases (the C13 transfer pattern — they are all celestial-scoped), or (ii) launch with `C12-03`/`C12-04` degraded and W4's `C12-18`/`C12-19` blocked until C11 resumes, which leaves G4's sun half unreachable at campaign close and requires re-scoping the exit criteria. Under either choice, schedule W4 as `C12-15/16/17` first (dependency-free today). Also note `C12-14` discharges the `C11-163` blocker into a paused campaign — still worth doing; the payoff waits on C11.
 
 ---
 
