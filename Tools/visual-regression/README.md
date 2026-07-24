@@ -378,6 +378,22 @@ package install. The diff function is intentionally simple — once we
 have stable baselines we can replace it with a Wasserstein/SSIM
 implementation if needed.
 
+### Exception: `sharp` for the Campaign 13 cloud evidence probes
+
+The dependency-free rule holds for the split-screen diff scaffold above. The
+one deliberate exception is the Campaign 13 cloud image-analysis path
+(`lib/cloud-image-analysis.mjs` and the `probe-cloud-*` evidence probes, e.g.
+`probe-cloud-perf.mjs` / `probe-cloud-empty-frustum.mjs`), which decodes and
+statistically characterizes captured cloud PNGs (baked-noise periodicity,
+coherent-band density, cloud-cell counts) rather than doing a raw RGBA diff.
+That analysis uses [`sharp`](https://www.npmjs.com/package/sharp) for fast PNG
+decode. `sharp` was previously reachable only TRANSITIVELY (via
+`@cesium/sandcastle → @huggingface/transformers → sharp@0.34.5`), which is
+fragile — a sandcastle/transformers bump could silently drop it. It is now
+declared as a pinned root devDependency (`sharp: ^0.34.5`, matching the
+transitively-resolved 0.34.x) so the cloud evidence tooling has a first-class,
+version-stable dependency. The core split-screen diff remains dep-free.
+
 ## Cross-backend Sandcastle runner
 
 `cross-backend-sandcastle-runner.mjs` is a separate harness that runs

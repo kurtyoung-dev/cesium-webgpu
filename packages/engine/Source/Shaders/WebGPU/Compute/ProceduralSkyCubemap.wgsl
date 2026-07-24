@@ -127,12 +127,21 @@ struct SkyUniforms {
   // consistent with the face directions the cube is filled along.
   cloudSunLocal: vec3<f32>,   // 40-42 — sun direction in the IBL local frame
   cloudDeckBottom: f32,       // 43 — deck bottom (m above surface)
-  cloudWindAndTime: vec3<f32>,// 44-46 — wind.xz (m/s components) packed; .z = time(s)
+  _cloudWindWorldOffset: vec3<f32>,// 44-46 — deprecated; CPU phases include wind
   cloudDeckTop: f32,          // 47 — deck top (m above surface)
   cloudBaseColor: vec3<f32>,  // 48-50 — beer's-law lit base (shadowed) cloud tint
   cloudDensityMult: f32,      // 51 — density scale (globe.cloudDensity-derived)
   cloudTopColor: vec3<f32>,   // 52-54 — sun-lit cloud tint (silver edge)
   cloudPuffSize: f32,         // 55 — baked-shape SHAPE_SCALE (puff size dial)
+  // C13-37 — f64-origin phases at the environment capture position. Local
+  // samples are converted through the packed ENU basis, then added to these
+  // bounded planet-domain phases just like the primary camera-relative march.
+  densityShapeOriginPhase: vec3<f32>, // 56-58
+  _padCloudDensity0: f32,              // 59
+  densityWarpOriginPhase: vec3<f32>,  // 60-62
+  _padCloudDensity1: f32,              // 63
+  densityDetailOriginPhase: vec3<f32>,// 64-66
+  _padCloudDensity2: f32,              // 67
 };
 
 @group(0) @binding(0) var<uniform> u: SkyUniforms;
@@ -431,26 +440,119 @@ const PI: f32 = 3.14159265358979323846;
 // `u.cloudCoverage > 0`; otherwise it is never called (bindings 5/6/7 are
 // placeholders) → byte-identical default parity.
 
+// C13-37 Slice B — the IBL march uses the same ray-interval-to-voxel rule as
+// the visible density field. One-level placeholders naturally clamp to LOD 0.
+fn cloudNoiseMipLevelIBL(
+  footprintMeters: f32,
+  domainUnitsPerMeter: f32,
+  baseResolution: u32,
+  levelCount: u32,
+) -> f32 {
+  let coveredLevel0Voxels =
+    max(footprintMeters, 0.0) *
+    abs(domainUnitsPerMeter) *
+    f32(baseResolution);
+  let maxMip = f32(max(i32(levelCount) - 1, 0));
+  return clamp(
+    log2(max(coveredLevel0Voxels, 1.0)) - 1.0,
+    0.0,
+    maxMip,
+  );
+}
+
+struct CloudNoiseMipLevelsIBL {
+  shape: f32,
+  warp: f32,
+  detail: f32,
+}
+
+fn cloudDensityMipLevelsIBL(
+  footprintMeters: f32,
+) -> CloudNoiseMipLevelsIBL {
+  let shapeResolution = textureDimensions(cloudShapeTex).x;
+  let shapeLevelCount = textureNumLevels(cloudShapeTex);
+  let detailResolution = textureDimensions(cloudDetailTex).x;
+  let detailLevelCount = textureNumLevels(cloudDetailTex);
+  return CloudNoiseMipLevelsIBL(
+    cloudNoiseMipLevelIBL(
+      footprintMeters,
+      CLOUD_DENSITY_WORLD_TO_NOISE * u.cloudPuffSize,
+      shapeResolution,
+      shapeLevelCount,
+    ),
+    cloudNoiseMipLevelIBL(
+      footprintMeters,
+      CLOUD_DENSITY_WORLD_TO_NOISE *
+        u.cloudPuffSize *
+        CLOUD_DENSITY_WARP_RATIO,
+      detailResolution,
+      detailLevelCount,
+    ),
+    cloudNoiseMipLevelIBL(
+      footprintMeters,
+      CLOUD_DENSITY_WORLD_TO_NOISE * CLOUD_DENSITY_DETAIL_RATIO,
+      detailResolution,
+      detailLevelCount,
+    ),
+  );
+}
+
 // Baked cloud BASE shape — a stripped `bakedBase` from ProceduralClouds.wgsl:
 // one trilinear shape fetch warped by a slow detail offset (de-tiles the bake).
-// `samplePos` is in the same 0.0003-scaled noise space the visible march uses.
-fn cloudBakedBaseIBL(samplePos: vec3<f32>) -> f32 {
-  let s = samplePos * u.cloudPuffSize;
-  let w = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, s * 0.32, 0.0).rgb;
-  let uvw = s + (w - vec3<f32>(0.5)) * 0.5;
-  return textureSampleLevel(cloudShapeTex, cloudNoiseSampler, uvw, 0.0).r;
+fn cloudBakedBaseIBL(
+  coordinates: CloudDensityCoordinates,
+  mipLevels: CloudNoiseMipLevelsIBL,
+) -> f32 {
+  let w = textureSampleLevel(
+    cloudDetailTex,
+    cloudNoiseSampler,
+    coordinates.warp,
+    mipLevels.warp,
+  ).rgb;
+  let uvw = coordinates.shape + (w - vec3<f32>(0.5)) * 0.5;
+  return textureSampleLevel(
+    cloudShapeTex,
+    cloudNoiseSampler,
+    uvw,
+    mipLevels.shape,
+  ).r;
+}
+
+// Convert an IBL-local displacement (x=East, y=Up, z=North) into the global
+// ECEF displacement used by the visible cloud renderer.
+fn cloudIblLocalDeltaToWorld(delta: vec3<f32>) -> vec3<f32> {
+  return u.enuX * delta.x + u.enuZ * delta.y + u.enuY * delta.z;
+}
+
+fn cloudDensityCoordinatesIBL(
+  localWorldPos: vec3<f32>,
+) -> CloudDensityCoordinates {
+  let captureOriginLocal =
+    vec3<f32>(0.0, u.innerRadius + u.ellipsoidHeight, 0.0);
+  let relativeWorld =
+    cloudIblLocalDeltaToWorld(localWorldPos - captureOriginLocal);
+  return cloudDensityCoordinatesFromOriginPhases(
+    relativeWorld * CLOUD_DENSITY_WORLD_TO_NOISE,
+    u.cloudPuffSize,
+    u.densityShapeOriginPhase,
+    u.densityWarpOriginPhase,
+    u.densityDetailOriginPhase,
+  );
 }
 
 // Cloud density at a world-frame point on the deck. Mirrors the BAKED branch of
 // `cloudDensity`: baked base → coverage threshold → BILLOWY height gradient →
 // subtractive Worley detail erosion. No weather map, no per-genus profile (this
 // is a coarse IBL field, not the cinematic march).
-fn cloudDensityIBL(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
-  let windOffset = vec3<f32>(u.cloudWindAndTime.x, 0.0, u.cloudWindAndTime.y)
-                   * u.cloudWindAndTime.z;
-  let samplePos = (worldPos + windOffset) * 0.0003;
+fn cloudDensityIBL(
+  worldPos: vec3<f32>,
+  heightFraction: f32,
+  footprintMeters: f32,
+) -> f32 {
+  let coordinates = cloudDensityCoordinatesIBL(worldPos);
+  let mipLevels = cloudDensityMipLevelsIBL(footprintMeters);
 
-  var density = cloudBakedBaseIBL(samplePos);
+  var density = cloudBakedBaseIBL(coordinates, mipLevels);
   let coverage = clamp(u.cloudCoverage, 0.0, 1.0);
   density = smoothstep(1.0 - coverage, 1.0, density);
 
@@ -458,8 +560,15 @@ fn cloudDensityIBL(worldPos: vec3<f32>, heightFraction: f32) -> f32 {
   let hg = smoothstep(0.0, 0.15, heightFraction) * smoothstep(1.0, 0.7, heightFraction);
   density *= hg;
 
-  // High-frequency Worley detail erosion (fades toward the deck top).
-  let detail = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, samplePos * 5.0, 0.0);
+  // Preserve the established IBL-specific subtractive erosion. The environment
+  // march is deliberately coarser than the visible path; changing its response
+  // belongs in a separately captured appearance slice.
+  let detail = textureSampleLevel(
+    cloudDetailTex,
+    cloudNoiseSampler,
+    coordinates.detail,
+    mipLevels.detail,
+  );
   let worleyDetail = 1.0 - detail.r;
   density -= worleyDetail * 0.35 * (1.0 - heightFraction);
   density = max(density, 0.0);
@@ -490,7 +599,7 @@ fn cloudLightIBL(pos: vec3<f32>, innerR: f32, deckBottom: f32, deckTop: f32) -> 
     let sp = pos + u.cloudSunLocal * (stepLen * f32(i + 1));
     let altitude = length(sp) - innerR;
     let hf = clamp((altitude - deckBottom) / max(layerThickness, 1.0), 0.0, 1.0);
-    opticalDepth += cloudDensityIBL(sp, hf) * stepLen;
+    opticalDepth += cloudDensityIBL(sp, hf, stepLen) * stepLen;
   }
   return exp(-opticalDepth * 0.04);
 }
@@ -542,7 +651,7 @@ fn marchCloudFaceIBL(
     let p = viewOrigin + dir * t;
     let altitude = length(p) - innerR;
     let hf = clamp((altitude - deckBottom) / layerThickness, 0.0, 1.0);
-    let density = cloudDensityIBL(p, hf);
+    let density = cloudDensityIBL(p, hf, stepLen);
     if (density > 0.001) {
       let light = cloudLightIBL(p, innerR, deckBottom, deckTop);
       // Sun-lit tint toward `cloudTopColor`, shadowed toward `cloudBaseColor`,

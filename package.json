@@ -110,6 +110,7 @@
     "prettier": "3.9.4",
     "prismjs": "^1.28.0",
     "rimraf": "^6.0.1",
+    "sharp": "^0.34.5",
     "tsd-jsdoc": "^2.5.0",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.58.0",

@@ -22,6 +22,7 @@
  * @private
  */
 import ProceduralCloudsWGSL from "../../Shaders/WebGPU/Environment/ProceduralClouds.js";
+import CloudDensityDomainWGSL from "../../Shaders/WebGPU/Environment/CloudDensityDomain.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
@@ -42,7 +43,15 @@ import {
   CLOUD_QF_LIGHT_CONE,
   CLOUD_QF_MULTI_DECK,
   CLOUD_QF_HIGH_PRECISION,
+  CLOUD_QF_PLANET_DENSITY,
 } from "./WebGPUCloudTierPresets.js";
+import {
+  CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS,
+  CLOUD_DENSITY_ORIGIN_PHASE_FLOATS,
+  CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS,
+  writeCloudDensityAdvectedOriginPhases,
+  writeCloudMorphologyOriginHighLow,
+} from "./WebGPUCloudDensityDomain.js";
 // Batch 445 (4.12 CLOUD-RTE) — RTE high/low camera split for the camera-relative
 // high-precision cloud march. Only the encoded floats (slots 120-127) are sourced
 // from this; the WGSL reads them solely inside the CLOUD_QF_HIGH_PRECISION branch.
@@ -69,8 +78,11 @@ import CloudType from "../../Scene/CloudType.js";
 // → 140 (Batch 611 E2 CLOUD-EXOTIC-FEATURES-REMAINING: featureMode/Strength/Scale/Param 136-139).
 // → 144 (Batch 612 E3 CLOUD-EXOTIC-SPECIAL: specialShadeMode/Strength/Scale/Param 140-143).
 // → 148 (Batch 634 C6-CLOUD-STBN-TAAU LOD half: marchStepGrowth/maxRayDistance+2 pads 144-147).
-const CLOUD_UNIFORM_FLOATS = 148; // MUST equal the CloudUniforms struct length in WGSL
+// → 160 (C13-37: CPU-f64 texture-domain phases, 148-159).
+// → 168 (C13-37: encoded canonical morphology origin, 160-167).
+const CLOUD_UNIFORM_FLOATS = 148 + CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
+const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${ProceduralCloudsWGSL}`;
 const WGS84_EQUATORIAL_RADIUS = 6378137.0;
 const WGS84_POLAR_RADIUS = 6356752.314245179;
 // Procedural weather-map texture (coarse global coverage field).
@@ -213,8 +225,22 @@ export interface CloudCache {
   iblWindX: number;
   iblWindY: number;
   iblWindSpeed: number;
+  iblTimeSeconds: number;
   iblDensity: number;
+  iblPuffSize: number;
   iblPWActive: boolean;
+  // C13-37 IBL-refill debounce — the discrete "does the cloud deck contribute to
+  // reflections at all" state (showProceduralClouds AND cloudContributesIBL). Held
+  // separately from `iblCoverage` and compared EXACTLY so toggling either flag
+  // always bumps `iblRevision` immediately, even when the deck's coverage is below
+  // the coverage quantization step. Continuous inputs are snapped/debounced.
+  iblContributesIbl: boolean;
+  // C13-37 — bounded invalidation signal for the expensive environment-cube
+  // cloud march. Static cloud-appearance changes increment immediately; pure
+  // advection increments only after a meaningful world-space displacement.
+  iblRevision: number;
+  iblRevisionAdvectionX: number;
+  iblRevisionAdvectionZ: number;
   // ── TAKRAM-9 (cloud-aware god rays) — screen-space transmittance mask ──
   // Allocated ONLY when a consumer (the PP god-ray pass) requests the mask via
   // `setCloudTransmittanceCapture(context, true)`. Everything here stays null on
@@ -307,8 +333,14 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       iblWindX: 0.7,
       iblWindY: 0.3,
       iblWindSpeed: 15.0,
+      iblTimeSeconds: 0.0,
       iblDensity: 0.3,
+      iblPuffSize: 0.45,
       iblPWActive: false,
+      iblContributesIbl: false,
+      iblRevision: 0,
+      iblRevisionAdvectionX: Number.NaN,
+      iblRevisionAdvectionZ: Number.NaN,
       maskCaptureEnabled: false,
       maskTexture: null,
       maskView: null,
@@ -359,6 +391,56 @@ export function getCloudTransmittanceView(
 }
 
 /**
+ * Resolve scene-clock seconds relative to this context's first cloud frame.
+ * The subtraction happens in CPU f64 before any f32 uniform store, keeping wind
+ * advection stable while ensuring the visible and IBL cloud consumers share the
+ * same time coordinate.
+ */
+function resolveCloudTimeSeconds(
+  cache: CloudCache,
+  frameState: CesiumFrameState | undefined,
+): number {
+  const jd = frameState?.time as unknown as
+    { dayNumber: number; secondsOfDay: number } | undefined;
+  if (
+    jd &&
+    typeof jd.dayNumber === "number" &&
+    typeof jd.secondsOfDay === "number"
+  ) {
+    const seconds = jd.dayNumber * 86400.0 + jd.secondsOfDay;
+    if (cache.timeEpoch === null) {
+      cache.timeEpoch = seconds;
+    }
+    return seconds - cache.timeEpoch;
+  }
+  return performance.now() / 1000.0;
+}
+
+// C13-37 IBL-refill debounce — the env-cube cloud march is expensive (full cube
+// fill + IBL prefilter + SH-L2 projection), and `publishCloudIblCoverage` runs
+// every frame, edge-triggering that refill through `iblRevision`. Comparing the
+// raw continuous inputs with `!==` bumped the revision on ANY float wobble, so an
+// app animating `cloudCoverage` (or density / wind) refilled the whole cube every
+// frame — defeating the consume-side `CLOUD_COVERAGE_REFRESH_EPSILON` gate once
+// `iblRevision` began edge-triggering the same refill. We instead SNAP each
+// continuous input to a per-input quantization grid and compare the snapped
+// values: sub-step jitter is inert, while a genuine drift still crosses a grid
+// boundary and refills (unlike a per-frame delta test, snapping accumulates). The
+// gate lives here at the single publish site so EVERY consumer benefits. Discrete
+// inputs (enable flags, PW morphology, tier switches that move a param past its
+// step) still bump immediately. The snapped values are also what the manager
+// binds — the deviation from the exact input is at most half a step and is
+// imperceptible after the low-resolution env-cube prefilter + SH projection.
+const IBL_REVISION_UNIT_STEP = 1.0 / 256.0; // coverage / density / puff (∈ [0,1])
+const IBL_REVISION_WIND_DIR_STEP = 1.0 / 256.0; // wind-direction components
+const IBL_REVISION_WIND_SPEED_STEP_MPS = 0.05; // wind speed (m/s)
+const IBL_REVISION_DECK_STEP_M = 1.0; // deck bottom / top altitude (m)
+
+function quantizeCloudIblInput(value: number, step: number): number {
+  return Math.round(value / step) * step;
+}
+
+/**
  * Item 4.2 (CLOUD-IBL, Batch 441) — publish the effective cloud coverage the
  * dynamic-env-map sky fill uses to darken + flatten its radiance. Called every
  * frame from the environmental-effects dispatch (NOT from the culled raymarch),
@@ -384,36 +466,113 @@ export function getCloudTransmittanceView(
 export function publishCloudIblCoverage(
   context: CesiumGraphicsContext,
   config: CloudVolumetricsConfig | undefined,
+  frameState?: CesiumFrameState,
 ): void {
   const cache = ensureCloudCache(context);
-  // Item 3-C — publish the real march params unconditionally (so a clear-flag
-  // toggle never leaves a stale deck). These match the Globe constructor
-  // defaults when unset, which equals the visible renderer's fallback.
-  cache.iblDeckBottom = config?.cloudLayerBottom ?? 1500.0;
-  cache.iblDeckTop = config?.cloudLayerTop ?? 4000.0;
-  cache.iblWindX = config?.cloudWindDirection?.x ?? 0.7;
-  cache.iblWindY = config?.cloudWindDirection?.y ?? 0.3;
-  cache.iblWindSpeed = config?.cloudWindSpeed ?? 15.0;
-  cache.iblDensity = config?.cloudDensity ?? 0.3;
+  const deckBottom = config?.cloudLayerBottom ?? 1500.0;
+  const deckTop = config?.cloudLayerTop ?? 4000.0;
+  const windX = config?.cloudWindDirection?.x ?? 0.7;
+  const windY = config?.cloudWindDirection?.y ?? 0.3;
+  const windSpeed = config?.cloudWindSpeed ?? 15.0;
+  const density = config?.cloudDensity ?? 0.3;
+  const puffSize = config?.cloudPuffSize ?? 0.45;
+  const pwActive = config?.cloudNoiseMorphology === "perlin-worley";
+  const cloudsVisible = config?.showProceduralClouds === true;
+  const contributesIbl = cloudsVisible && config?.cloudContributesIBL === true;
+  // Do not establish the scene-time epoch while clouds are disabled. The first
+  // visible cloud frame remains time zero, matching the documented contract.
+  const cloudTimeSeconds = cloudsVisible
+    ? resolveCloudTimeSeconds(cache, frameState)
+    : 0.0;
+  const coverage = contributesIbl
+    ? clampUnit(config?.cloudCoverage ?? 0.5)
+    : 0.0;
+  const densityWeight = 0.7 + 0.3 * clampUnit(density);
+  const effectiveCoverage = contributesIbl
+    ? clampUnit(coverage * densityWeight)
+    : 0.0;
+
+  // Snap the continuous inputs to their per-input debounce grid (see the
+  // IBL_REVISION_* rationale above). These snapped values are what gets published
+  // AND compared, so sub-step jitter neither bumps `iblRevision` nor perturbs the
+  // bound reflection, while a genuine drift crosses a grid step and refills.
+  const quantDeckBottom = quantizeCloudIblInput(
+    deckBottom,
+    IBL_REVISION_DECK_STEP_M,
+  );
+  const quantDeckTop = quantizeCloudIblInput(deckTop, IBL_REVISION_DECK_STEP_M);
+  const quantWindX = quantizeCloudIblInput(windX, IBL_REVISION_WIND_DIR_STEP);
+  const quantWindY = quantizeCloudIblInput(windY, IBL_REVISION_WIND_DIR_STEP);
+  const quantWindSpeed = quantizeCloudIblInput(
+    windSpeed,
+    IBL_REVISION_WIND_SPEED_STEP_MPS,
+  );
+  const quantDensity = quantizeCloudIblInput(density, IBL_REVISION_UNIT_STEP);
+  const quantPuffSize = quantizeCloudIblInput(puffSize, IBL_REVISION_UNIT_STEP);
+  const quantCoverage = quantizeCloudIblInput(
+    effectiveCoverage,
+    IBL_REVISION_UNIT_STEP,
+  );
+
+  // Bump the revision immediately for DISCRETE changes — the enable flag
+  // (compared exactly, so a flag toggle refreshes even below the coverage step)
+  // and the PW base-shape morphology — and for any CONTINUOUS input whose snapped
+  // value crossed a grid step. Pure wind advection is debounced separately below:
+  // it displaces the field without changing any of these snapped appearance
+  // inputs, so a fixed-sun scene still re-darkens reflected clouds as they drift.
+  const staticStateChanged =
+    cache.iblContributesIbl !== contributesIbl ||
+    cache.iblPWActive !== pwActive ||
+    cache.iblDeckBottom !== quantDeckBottom ||
+    cache.iblDeckTop !== quantDeckTop ||
+    cache.iblWindX !== quantWindX ||
+    cache.iblWindY !== quantWindY ||
+    cache.iblWindSpeed !== quantWindSpeed ||
+    cache.iblDensity !== quantDensity ||
+    cache.iblPuffSize !== quantPuffSize ||
+    cache.iblCoverage !== quantCoverage;
+  // Advection uses the snapped wind (the same values the manager binds) so the
+  // 64 m displacement debounce tracks the reflected field's actual motion.
+  const advectionMeters = quantWindSpeed * cloudTimeSeconds;
+  const advectionX = quantWindX * advectionMeters;
+  const advectionZ = quantWindY * advectionMeters;
+  const advectionDeltaX = advectionX - cache.iblRevisionAdvectionX;
+  const advectionDeltaZ = advectionZ - cache.iblRevisionAdvectionZ;
+  const advectionMoved =
+    contributesIbl &&
+    !(
+      advectionDeltaX * advectionDeltaX + advectionDeltaZ * advectionDeltaZ <
+      64.0 * 64.0
+    );
+
+  // Item 3-C — publish the real (snapped) march params unconditionally (so a
+  // clear-flag toggle never leaves a stale deck). These match the constructor
+  // defaults, which already lie on their grids.
+  cache.iblDeckBottom = quantDeckBottom;
+  cache.iblDeckTop = quantDeckTop;
+  cache.iblWindX = quantWindX;
+  cache.iblWindY = quantWindY;
+  cache.iblWindSpeed = quantWindSpeed;
+  cache.iblTimeSeconds = cloudTimeSeconds;
+  cache.iblDensity = quantDensity;
+  cache.iblPuffSize = quantPuffSize;
   // Mirror WebGPUProceduralCloudRenderer's PW selection so the IBL march binds
   // the SAME base shape view (PW vs value-FBM) the visible deck samples.
-  cache.iblPWActive = config?.cloudNoiseMorphology === "perlin-worley";
-  if (
-    !config ||
-    config.showProceduralClouds !== true ||
-    config.cloudContributesIBL !== true
-  ) {
-    cache.iblCoverage = 0.0;
-    return;
+  cache.iblPWActive = pwActive;
+  cache.iblCoverage = quantCoverage;
+  cache.iblContributesIbl = contributesIbl;
+
+  if (staticStateChanged || advectionMoved) {
+    cache.iblRevision++;
+    if (contributesIbl) {
+      cache.iblRevisionAdvectionX = advectionX;
+      cache.iblRevisionAdvectionZ = advectionZ;
+    } else {
+      // Re-enabling must establish a fresh advection baseline and refill.
+      cache.iblRevisionAdvectionX = Number.NaN;
+      cache.iblRevisionAdvectionZ = Number.NaN;
+    }
   }
-  const coverage = clampUnit(config.cloudCoverage ?? 0.5);
-  const density = clampUnit(config.cloudDensity ?? 0.3);
-  // Density biases the effective coverage modestly: a dense deck reads as
-  // ~fully overcast; a wispy layer at the same coverage transmits more sky.
-  // Map density [0,1] → multiplier [0.7, 1.0] so the floor never erases a
-  // genuinely high coverage.
-  const densityWeight = 0.7 + 0.3 * density;
-  cache.iblCoverage = clampUnit(coverage * densityWeight);
 }
 
 function clampUnit(v: number): number {
@@ -620,7 +779,7 @@ function ensureHalfResResources(
   if (!cache.halfPipeline && cache.bindGroupLayout) {
     const shaderModule = device.createShaderModule({
       label: "ProceduralClouds shader (half-res)",
-      code: ProceduralCloudsWGSL,
+      code: PROCEDURAL_CLOUDS_SOURCE,
     });
     const layout = device.createPipelineLayout({
       label: "ProceduralClouds half-res pipeline layout",
@@ -1001,7 +1160,7 @@ function initializeCloudPipeline(
 
   const shaderModule = device.createShaderModule({
     label: "ProceduralClouds shader",
-    code: ProceduralCloudsWGSL,
+    code: PROCEDURAL_CLOUDS_SOURCE,
   });
   // TAKRAM-9 — retained so the (lazy) transmittance-mask pipeline can reuse the
   // same module + BGL without recompiling the WGSL.
@@ -1421,7 +1580,7 @@ function ensureShadowResources(device: GPUDevice, cache: CloudCache): boolean {
     );
     const shaderModule = device.createShaderModule({
       label: "ProceduralClouds shader (shadow pass)",
-      code: ProceduralCloudsWGSL,
+      code: PROCEDURAL_CLOUDS_SOURCE,
     });
     cache.shadowPipeline = device.createRenderPipeline({
       label: "CloudShadow pipeline",
@@ -1573,17 +1732,11 @@ export function executeProceduralClouds(
   // `clock.shouldAnimate` is false, and scales with `clock.multiplier`. The
   // day-seconds are computed in f64 and the first-frame epoch is subtracted
   // BEFORE the f32 store (raw day-seconds ~1.9e14 would destroy f32 precision).
-  const jd = frameState.time as unknown as
-    { dayNumber: number; secondsOfDay: number } | undefined;
-  if (jd && typeof jd.dayNumber === "number") {
-    const seconds = jd.dayNumber * 86400.0 + jd.secondsOfDay;
-    if (cache.timeEpoch === null) {
-      cache.timeEpoch = seconds;
-    }
-    data[offset++] = seconds - cache.timeEpoch;
-  } else {
-    data[offset++] = performance.now() / 1000.0; // fallback (no clock)
-  }
+  const cloudTimeSeconds = resolveCloudTimeSeconds(cache, frameState);
+  data[offset++] = cloudTimeSeconds;
+  // Keep the environment-capture consumer synchronized even if its update is
+  // requested after this execute rather than through the normal publish call.
+  cache.iblTimeSeconds = cloudTimeSeconds;
 
   // sunDirection (vec3 + intensity)
   const sunDir = us?.sunDirectionWC ?? us?.sunDirectionEC;
@@ -1696,9 +1849,12 @@ export function executeProceduralClouds(
 
   // Wind
   const windDir = config.cloudWindDirection;
-  data[offset++] = windDir?.x ?? 0.7;
-  data[offset++] = windDir?.y ?? 0.3;
-  data[offset++] = config.cloudWindSpeed ?? 15.0;
+  const cloudWindX = windDir?.x ?? 0.7;
+  const cloudWindY = windDir?.y ?? 0.3;
+  const cloudWindSpeed = config.cloudWindSpeed ?? 15.0;
+  data[offset++] = cloudWindX;
+  data[offset++] = cloudWindY;
+  data[offset++] = cloudWindSpeed;
   // Config — silver-lining intensity (live via atmosphericConditions.clouds.silverLining).
   data[offset++] = config.cloudSilverLiningIntensity ?? 0.8; // silverLiningIntensity
 
@@ -1870,7 +2026,9 @@ export function executeProceduralClouds(
   // pads (101-103). The ?? defaults EXACTLY match the former WGSL consts
   // (SHAPE_SCALE 0.45, CLOUD_EXPOSURE 0.22, MS a/b/c 0.5/0.5/0.85), so with the
   // config fields unset this is byte-identical to the pre-407 render.
-  data[offset++] = config.cloudPuffSize ?? 0.45; // 96 puffSize (was SHAPE_SCALE)
+  const cloudPuffSize = config.cloudPuffSize ?? 0.45;
+  data[offset++] = cloudPuffSize; // 96 puffSize (was SHAPE_SCALE)
+  cache.iblPuffSize = cloudPuffSize;
   data[offset++] = config.cloudExposure ?? 0.22; // 97 exposure (was CLOUD_EXPOSURE)
   data[offset++] = config.cloudMsDecayScatter ?? 0.5; // 98 msDecayA
   data[offset++] = config.cloudMsDecayExtinction ?? 0.5; // 99 msDecayB
@@ -2124,6 +2282,41 @@ export function executeProceduralClouds(
   data[offset++] = 0.0; // 146 pad
   data[offset++] = 0.0; // 147 pad
 
+  // C13-37 — CPU-f64 planet-domain origin phases, three vec4 rows 148-159.
+  // The visible march reconstructs density coordinates from these camera-origin
+  // phases plus its small camera-relative sample offset. Wind advection is
+  // folded into the origin in CPU f64, so long timeline scrubs never construct a
+  // planet-scale f32 displacement in WGSL.
+  writeCloudDensityAdvectedOriginPhases(
+    data,
+    offset,
+    camPos?.x ?? 0.0,
+    camPos?.y ?? 0.0,
+    camPos?.z ?? 0.0,
+    cloudPuffSize,
+    cloudWindX,
+    cloudWindY,
+    cloudWindSpeed,
+    cloudTimeSeconds,
+  );
+  offset += CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;
+
+  // 160-167 — encoded canonical morphology origin (high.xyz+pad,
+  // low.xyz+pad). Analytic species/features retain their historical unrotated
+  // x/z wind plane without consuming wrapped texture coordinates.
+  writeCloudMorphologyOriginHighLow(
+    data,
+    offset,
+    camPos?.x ?? 0.0,
+    camPos?.y ?? 0.0,
+    camPos?.z ?? 0.0,
+    cloudWindX,
+    cloudWindY,
+    cloudWindSpeed,
+    cloudTimeSeconds,
+  );
+  offset += CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS;
+
   // Fold the two LUT-coupling bits into qualityFlags (slot 74, already packed
   // above). Add-only bits 8/9; set ONLY when the mode is on so the default render
   // leaves them clear → the WGSL gates stay closed → byte-identical.
@@ -2144,6 +2337,14 @@ export function executeProceduralClouds(
   // one-part f32 WGS84 precision A/B.
   if (highPrecisionOn) {
     data[74] = data[74] | CLOUD_QF_HIGH_PRECISION;
+  }
+  // C13-37 — enable the planet-domain only for a realized baked resource. The
+  // LIVE fallback retains its historical formula. Unlike cloudHighPrecision this
+  // bit has NO public override: the only way to flip it in isolation is the
+  // same-build density-domain characterization probe poking data[74] directly
+  // after upload — a diagnostic route, not a user-facing CloudVolumetrics flag.
+  if (noiseBakedBit !== 0) {
+    data[74] = data[74] | CLOUD_QF_PLANET_DENSITY;
   }
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);

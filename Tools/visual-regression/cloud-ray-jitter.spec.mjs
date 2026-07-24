@@ -10,6 +10,10 @@ const shaderPath = path.join(
   root,
   "packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
 );
+const densityDomainPath = path.join(
+  root,
+  "packages/engine/Source/Shaders/WebGPU/Environment/CloudDensityDomain.wgsl",
+);
 const rendererPath = path.join(
   root,
   "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
@@ -20,6 +24,7 @@ const tierPath = path.join(
 );
 
 const shader = fs.readFileSync(shaderPath, "utf8");
+const densityDomain = fs.readFileSync(densityDomainPath, "utf8");
 const renderer = fs.readFileSync(rendererPath, "utf8");
 const tiers = fs.readFileSync(tierPath, "utf8");
 
@@ -233,15 +238,21 @@ test("jitter changes only the sample phase, preserving adaptive control interval
   assert.match(march, /var tProcessed:\s*f32\s*=\s*tStart;/);
   assert.match(
     march,
-    /let sampleOffset\s*=\s*rayDir\s*\*\s*\(t\s*\+\s*marchSamplePhase\s*\*\s*curStep\);/,
+    /let sampleDistance\s*=\s*t\s*\+\s*marchSamplePhase\s*\*\s*curStep;[\s\S]*let sampleOffset\s*=\s*rayDir\s*\*\s*sampleDistance;/,
+  );
+  assert.match(march, /macroSample\s*=\s*cloudMacroSampleAt\(/);
+  assert.match(
+    march,
+    /base\s*=\s*cloudBaseFromMacro\(macroSample\);/,
   );
   assert.match(
     march,
-    /let base\s*=\s*cloudBaseDensity\(samplePos,\s*heightFraction,\s*deckBottom,\s*deckTop\);/,
+    /density\s*=\s*cloudDensityFromMacro\(macroSample,\s*heightFraction\);/,
   );
-  assert.match(
-    march,
-    /let density\s*=\s*cloudDensity\(samplePos,\s*heightFraction,\s*deckBottom,\s*deckTop\);/,
+  assert.equal(
+    march.match(/cloudMacroSampleAt\(/g)?.length,
+    1,
+    "base/full density must share one macro evaluation at the jittered sample",
   );
   assert.match(march, /t\s*=\s*max\(t\s*-\s*curCoarseStep,\s*tProcessed\);/);
   assert.doesNotMatch(
@@ -321,5 +332,6 @@ test("the complete procedural-cloud shader passes Naga WGSL validation", async (
       path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
     ),
   });
-  assert.doesNotThrow(() => naga.validate_wgsl(shader));
+  const composedShader = `${densityDomain}\n${shader}`;
+  assert.doesNotThrow(() => naga.validate_wgsl(composedShader));
 });

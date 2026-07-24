@@ -221,3 +221,8 @@ export const CLOUD_QF_MULTI_DECK = 1 << 11; // 4.9 multi-deck shell march
 // Batch 445 (4.12 CLOUD-RTE) — add-only. C13-04 makes this automatic by default;
 // an explicit cloudHighPrecision=false leaves it clear for the legacy A/B path.
 export const CLOUD_QF_HIGH_PRECISION = 1 << 12; // 4.12 CLOUD-RTE camera-relative high-precision march
+// Campaign 13 C13-37 — planet-anchored, camera-relative baked-density domain.
+// Set only when the baked noise resource is realized; the live-noise fallback
+// retains its historical coordinate path. This is an internal rollout/A-B bit,
+// not a public quality or appearance feature toggle.
+export const CLOUD_QF_PLANET_DENSITY = 1 << 13;

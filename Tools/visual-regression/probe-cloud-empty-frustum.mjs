@@ -37,6 +37,17 @@ import {
 } from "../lib/webgpu-error-gate.mjs";
 import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
 
+// ── HARD watchdog: force-exit if anything hangs (machine safety) ──
+// The browser lifetime is already try/finally-guarded below, but a GPU hang
+// inside an await could still stall the process; this unref'd force-exit timer
+// guarantees headless Edge (--enable-unsafe-webgpu) can never stay alive forever.
+const HARD_LIMIT_MS = 300000; // 300s
+const watchdog = setTimeout(() => {
+  console.error("[cloud-empty-frustum] WATCHDOG FIRED (300s) — forcing exit");
+  process.exit(2);
+}, HARD_LIMIT_MS);
+if (watchdog.unref) watchdog.unref();
+
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`;
 const OUT_DIR = "Tools/visual-regression/output/cloud-empty-frustum";

@@ -543,13 +543,26 @@ test("visible WGSL uses oblate intersections while the bounded shadow path is un
   assert.match(shadowMarch, /raySphereIntersect\(columnPoint/);
 });
 
-test("renderer reuses uniform padding and keeps the 148-float layout stable", () => {
+test("renderer preserves the WGS84 rows and appends the C13-37 phase layout", () => {
   const renderer = fs.readFileSync(rendererPath, "utf8");
 
-  assert.match(renderer, /const CLOUD_UNIFORM_FLOATS = 148;/);
+  assert.match(
+    renderer,
+    /const CLOUD_UNIFORM_FLOATS = 148 \+ CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS;/,
+  );
   assert.match(
     renderer,
     /data\[offset\+\+\] = WGS84_POLAR_RADIUS;[\s\S]*data\[offset\+\+\] = cameraHeightM;/,
+  );
+  assert.match(renderer, /writeCloudDensityAdvectedOriginPhases\(/);
+  assert.match(renderer, /writeCloudMorphologyOriginHighLow\(/);
+  assert.match(
+    renderer,
+    /offset \+= CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;/,
+  );
+  assert.match(
+    renderer,
+    /offset \+= CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS;/,
   );
   assert.match(renderer, /\.cloudHighPrecision !== false;/);
 });

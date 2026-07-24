@@ -40,6 +40,18 @@ import {
 } from "../lib/webgpu-error-gate.mjs";
 import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
 
+// ── HARD watchdog: force-exit if anything hangs (machine safety) ──
+// runBackend launches Edge twice and awaits rAF settles / onSubmittedWorkDone
+// inside page.evaluate; a GPU hang could otherwise leave headless Edge
+// (--enable-unsafe-webgpu) alive forever. Unref'd so it never keeps an
+// otherwise-finished process alive.
+const HARD_LIMIT_MS = 300000; // 300s
+const watchdog = setTimeout(() => {
+  console.error("[cloud-tour] WATCHDOG FIRED (300s) — forcing exit");
+  process.exit(2);
+}, HARD_LIMIT_MS);
+if (watchdog.unref) watchdog.unref();
+
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const ONLY = (process.env.TOUR_SCENES || "").split(",").filter(Boolean);
 
@@ -337,6 +349,7 @@ async function runBackend(renderer, scenes, fs) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
+  try {
   const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
   const errs = [];
   const gpuConsoleErrors =
@@ -408,6 +421,11 @@ async function runBackend(renderer, scenes, fs) {
       armState,
     },
   };
+  } finally {
+    // Guarantee headless Edge teardown even if capture/analysis throws
+    // (pairs with the force-exit watchdog above).
+    await browser.close().catch(() => {});
+  }
 }
 
 (async () => {

@@ -20,6 +20,7 @@
  */
 
 import ProceduralSkyCubemapWGSL from "../../Shaders/WebGPU/Compute/ProceduralSkyCubemap.js";
+import CloudDensityDomainWGSL from "../../Shaders/WebGPU/Environment/CloudDensityDomain.js";
 import ProjectRadianceToSHWGSL from "../../Shaders/WebGPU/Compute/ProjectRadianceToSH.js";
 import EnvCubeTemporalBlendWGSL from "../../Shaders/WebGPU/Compute/EnvCubeTemporalBlend.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
@@ -35,6 +36,10 @@ import {
   resolveAtmosphereScattering,
   type AtmosphereScatteringDefaults,
 } from "./WebGPUAtmosphereUniforms.js";
+import {
+  CLOUD_DENSITY_ORIGIN_PHASE_FLOATS,
+  writeCloudDensityAdvectedOriginPhases,
+} from "./WebGPUCloudDensityDomain.js";
 
 /** Minimal interface for the upstream DynamicEnvironmentMapManager. */
 interface DynEnvMapManagerLike {
@@ -156,6 +161,11 @@ interface DynEnvMapCache {
   // scene still re-darkens its IBL when cloud cover changes. NaN sentinel forces
   // the first-frame run (same convention as `lastSunDir*`).
   lastCloudCoverage: number;
+  // C13-37 — monotonic revision of the complete cloud state used by the IBL
+  // march. Coverage has its own epsilon gate above, but wind/time/deck/density/
+  // morphology changes also alter the reflected formation. Tracking one
+  // publisher-owned revision keeps that gate O(1) and edge-triggered.
+  lastCloudRevision: number;
   // Item 3-C (CLOUD-IBL-FULL, Batch 450) — full per-face cloud march. A 1×1×1
   // white 3D placeholder + sampler back bindings 5/6/7 whenever the march is off
   // (or the cloud noise hasn't baked), mirroring the LUT placeholder. The bound
@@ -292,6 +302,7 @@ function updateWebGPUDynamicEnvironmentMap(
       lutMsView: null,
       lastUsedMultiScatterLut: false,
       lastCloudCoverage: NaN,
+      lastCloudRevision: NaN,
       // Item 3-C (CLOUD-IBL-FULL, Batch 450) — cloud-march placeholder + bound
       // views (all null until the first fill builds the placeholder).
       cloudPlaceholderTex: null,
@@ -498,16 +509,23 @@ function updateWebGPUDynamicEnvironmentMap(
   // (so a static scene re-darkens its IBL as cloud cover changes). The published
   // coverage is already 0 when the cloud-IBL flags are off, so the off path's
   // `cloudCoverage` is a constant 0 → this never trips → byte-identical gating.
-  const liveCloudCoverage =
-    (
-      frameState.context as unknown as {
-        _cloudCache?: { iblCoverage?: number };
-      }
-    )._cloudCache?.iblCoverage ?? 0.0;
+  const liveCloudState = (
+    frameState.context as unknown as {
+      _cloudCache?: { iblCoverage?: number; iblRevision?: number };
+    }
+  )._cloudCache;
+  const liveCloudCoverage = liveCloudState?.iblCoverage ?? 0.0;
+  const liveCloudRevision = liveCloudState?.iblRevision ?? 0;
   const cloudCoverageMoved = !(
     Math.abs(liveCloudCoverage - cache.lastCloudCoverage) <
     CLOUD_COVERAGE_REFRESH_EPSILON
   );
+  // C13-37 — coverage alone cannot detect a moving or reconfigured density
+  // field. The cloud renderer advances this revision at a controlled cadence
+  // when any IBL-visible input changes. Equality after a fill makes the gate
+  // inert between publications, rather than forcing an expensive per-frame
+  // cube fill + prefilter.
+  const cloudRevisionChanged = liveCloudRevision !== cache.lastCloudRevision;
   // Item 3-C (CLOUD-IBL-FULL, Batch 450) — re-fill when the full cloud-march
   // path becomes available/unavailable (flag toggled, or the cloud noise just
   // finished baking) so a static scene doesn't stay on the wrong path. `wantMarch`
@@ -555,6 +573,7 @@ function updateWebGPUDynamicEnvironmentMap(
     sunMoved ||
     lutPathChanged ||
     cloudCoverageMoved ||
+    cloudRevisionChanged ||
     cloudMarchPathChanged ||
     captureRefresh
   ) {
@@ -604,6 +623,7 @@ function updateWebGPUDynamicEnvironmentMap(
     cache.lastSunDirZ = sunDir.z;
     // Item 4.2 (CLOUD-IBL, Batch 441) — record the coverage this fill used.
     cache.lastCloudCoverage = liveCloudCoverage;
+    cache.lastCloudRevision = liveCloudRevision;
   }
 
   // Expose cubemap + prefiltered IBL views for shader consumption.
@@ -973,17 +993,22 @@ function runEnvCubeTemporalBlend(
 //   32 groundAlbedo  33 dynamicLightingEnum  34 scatteringIntensity  35 useMultiScatterLut
 //   36 cloudCoverage  37 cloudMarch  38 cloudPlanetRadius  39 ellipsoidHeight
 //   40..42 cloudSunLocal     43 cloudDeckBottom
-//   44..46 cloudWindAndTime  47 cloudDeckTop
+//   44..46 deprecatedCloudWind  47 cloudDeckTop
 //   48..50 cloudBaseColor    51 cloudDensityMult
 //   52..54 cloudTopColor     55 cloudPuffSize
+//   56..59 densityShapeOriginPhase
+//   60..63 densityWarpOriginPhase
+//   64..67 densityDetailOriginPhase
 // Item 4.2 (CLOUD-IBL, Batch 441) grew the struct 144→160 bytes (one new vec4
 // slot) for the effective cloud-coverage scalar. Item 3-C (CLOUD-IBL-FULL,
 // Batch 450) grew it 160→224 bytes (four new vec4 rows) for the full per-face
 // cloud-march controls. Add-only; the off path packs cloudMarch = 0 → the WGSL
 // march branch is skipped + the noise bindings are 1×1×1 placeholders →
-// byte-identical to the 4.2 fill.
-const SKY_UNIFORM_SIZE = 224;
-const SKY_UNIFORM_FLOATS = 56;
+// byte-identical to the 4.2 fill. C13-37 grows it 224→272 bytes with three
+// CPU-f64 planet-domain origin-phase rows shared with the visible cloud march.
+const SKY_UNIFORM_FLOATS = 56 + CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;
+const SKY_UNIFORM_SIZE = SKY_UNIFORM_FLOATS * 4;
+const PROCEDURAL_SKY_SOURCE = `${CloudDensityDomainWGSL}\n${ProceduralSkyCubemapWGSL}`;
 
 // Reused scratch so the per-fill pack does not allocate.
 const scratchPosition = new Cartesian3();
@@ -1109,8 +1134,8 @@ function runProceduralSkyFill(
     });
     const skyCode =
       storageFormat === "rgba8unorm"
-        ? ProceduralSkyCubemapWGSL
-        : ProceduralSkyCubemapWGSL.replace(
+        ? PROCEDURAL_SKY_SOURCE
+        : PROCEDURAL_SKY_SOURCE.replace(
             "texture_storage_2d_array<rgba8unorm, write>",
             "texture_storage_2d_array<rgba16float, write>",
           );
@@ -1310,7 +1335,10 @@ function runProceduralSkyFill(
         iblWindX?: number;
         iblWindY?: number;
         iblWindSpeed?: number;
+        iblTimeSeconds?: number;
+        iblRevision?: number;
         iblDensity?: number;
+        iblPuffSize?: number;
         iblPWActive?: boolean;
         noise?: {
           shapeSampleView?: GPUTextureView;
@@ -1373,10 +1401,12 @@ function runProceduralSkyFill(
   const windX = cloudCache?.iblWindX ?? 0.7;
   const windY = cloudCache?.iblWindY ?? 0.3;
   const windSpeed = cloudCache?.iblWindSpeed ?? 15.0;
-  // Animate the noise with the same wind*speed*time the visible march uses, so
-  // the reflected deck drifts. A coarse time (perf clock) is fine — the IBL is
-  // re-filled only on coverage/sun moves, so frame-exact time isn't required.
-  const cloudTime = cloudMarchActive ? performance.now() / 1000.0 : 0.0;
+  // C13-37 — use the visible renderer's scene-clock-relative time. Wall-clock
+  // capture drift made reflected formations disagree with paused/scrubbed scenes.
+  const cloudTime = cloudMarchActive
+    ? (cloudCache?.iblTimeSeconds ?? 0.0)
+    : 0.0;
+  const cloudPuffSize = cloudCache?.iblPuffSize ?? 0.45;
   // Sun direction in the IBL LOCAL frame (same basis rotation as the shader's
   // `sunLocal`): East→localX, Up→localY, North→localZ.
   const sunLocalX =
@@ -1401,10 +1431,12 @@ function runProceduralSkyFill(
   data[41] = sunLocalY / sunLocalLen;
   data[42] = sunLocalZ / sunLocalLen;
   data[43] = deckBottom;
-  // 44..46 cloudWindAndTime (wind.x, wind.y folded with speed, time) + 47 deckTop
-  data[44] = windX * windSpeed;
-  data[45] = windY * windSpeed;
-  data[46] = cloudTime;
+  // 44..46 are retained as deprecated add-only layout slots. Wind advection is
+  // folded into the CPU-f64 origin phases below so planet-scale capture does
+  // not quantize an ever-growing displacement through three f32 uniforms.
+  data[44] = 0.0;
+  data[45] = 0.0;
+  data[46] = 0.0;
   data[47] = deckTop;
   // 48..50 cloudBaseColor (shadowed deck tint) + 51 cloudDensityMult
   data[48] = 0.45;
@@ -1415,7 +1447,21 @@ function runProceduralSkyFill(
   data[52] = 0.95;
   data[53] = 0.95;
   data[54] = 0.98;
-  data[55] = 0.45; // SHAPE_SCALE default (matches cloud renderer puffSize)
+  data[55] = cloudPuffSize;
+  // 56..67 — the same three CPU-f64 planet-domain origin phases used by the
+  // visible march, evaluated at this environment capture's actual ECEF origin.
+  writeCloudDensityAdvectedOriginPhases(
+    data,
+    56,
+    position.x,
+    position.y,
+    position.z,
+    cloudPuffSize,
+    windX,
+    windY,
+    windSpeed,
+    cloudTime,
+  );
   device.queue.writeBuffer(cache.skyUniformBuffer, 0, data);
 
   // Item 2.2 (ENV-AERIAL-MS, Batch 430) — LUT sampler + 1×1 white placeholder

@@ -37,6 +37,17 @@ import {
 import { resolveCloudPerfPass } from "./lib/cloud-perf-evidence.mjs";
 import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
 
+// ── HARD watchdog: force-exit if anything hangs (machine safety) ──
+// Unbounded awaits inside page.evaluate (rAF settles, onSubmittedWorkDone) could
+// otherwise leave headless Edge (--enable-unsafe-webgpu) alive forever on a GPU
+// hang. Unref'd so it never keeps an otherwise-finished process alive.
+const HARD_LIMIT_MS = 300000; // 300s
+const watchdog = setTimeout(() => {
+  console.error("[cloud-perf] WATCHDOG FIRED (300s) — forcing exit");
+  process.exit(2);
+}, HARD_LIMIT_MS);
+if (watchdog.unref) watchdog.unref();
+
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const TAG = process.env.TAG || "adaptive";
 const PAIR_ID = process.env.CLOUD_PERF_PAIR_ID || null;
@@ -211,6 +222,7 @@ async function run() {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
+  try {
   const page = await browser.newPage({ viewport: { width: W, height: H } });
   const gpuConsoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
@@ -424,5 +436,10 @@ async function run() {
   console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}`);
   await browser.close();
   process.exitCode = pass ? 0 : 1;
+  } finally {
+    // Guarantee headless Edge teardown even if capture/analysis throws
+    // (pairs with the force-exit watchdog above).
+    await browser.close().catch(() => {});
+  }
 }
 run();

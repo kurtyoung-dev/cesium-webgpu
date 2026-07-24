@@ -216,6 +216,23 @@ struct CloudUniforms {
   maxRayDistance: f32,           // 145 — far cap on the view march in meters (0 = off/infinite, byte-identical)
   _padJ: f32,                    // 146 — pad to the 16-byte row
   _padK: f32,                    // 147 — pad to the 16-byte row
+  // C13-37 — CPU-f64 density-domain phases at the current camera origin.
+  // The primary march adds only camera-relative metre offsets in f32, avoiding
+  // raw full-ECEF conversion inside the density hot path. Three independent
+  // rows preserve the seeded shape/warp/detail coordinate transforms.
+  densityShapeOriginPhase: vec3<f32>, // 148-150
+  _padL: f32,                         // 151
+  densityWarpOriginPhase: vec3<f32>,  // 152-154
+  _padM: f32,                         // 155
+  densityDetailOriginPhase: vec3<f32>,// 156-158
+  _padN: f32,                         // 159
+  // Unwrapped canonical morphology origin, encoded high/low after CPU-f64
+  // wind advection. Optional analytic species/features rely on the historical
+  // unrotated x/z wind plane and must not consume wrapped texture coordinates.
+  densityMorphologyOriginHigh: vec3<f32>, // 160-162
+  _padO: f32,                              // 163
+  densityMorphologyOriginLow: vec3<f32>,  // 164-166
+  _padP: f32,                              // 167
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -299,6 +316,7 @@ const QF_MULTI_DECK: u32 = 2048u;   // bit 11 — 4.9 multi-deck shell march (Ba
 // Batch 445 (4.12 CLOUD-RTE), C13-04 default-on. Explicit
 // globe.cloudHighPrecision=false keeps the world-coordinate A/B branch available.
 const QF_HIGH_PRECISION: u32 = 4096u; // bit 12 — 4.12 camera-relative high-precision march (1<<12)
+const QF_PLANET_DENSITY: u32 = 8192u; // bit 13 — C13-37 planet-anchored baked density
 
 // V9 (Batch 432) — ordered 4×4 Bayer matrix (normalized 0..1, the standard
 // recursive dither pattern). Used to JITTER the half-res sample point by a
@@ -503,6 +521,10 @@ fn noiseBakedEnabled() -> bool {
   return (u32(cloud.qualityFlags) & QF_NOISE_BAKED) != 0u;
 }
 
+fn planetDensityEnabled() -> bool {
+  return (u32(cloud.qualityFlags) & QF_PLANET_DENSITY) != 0u;
+}
+
 // V9 (Batch 432) — is the half-res render path active? (qualityFlags bit 1). When
 // set, the raymarch renders into a 0.5× rgba16float offscreen target and emits
 // PREMULTIPLIED cloud radiance + alpha (NO scene-color composite — that moves to
@@ -522,7 +544,78 @@ fn halfResEnabled() -> bool {
 // cloudBaseDensity skip-oracle so they stay identical BEFORE erosion — that
 // preserves W5's `base >= full` invariant (cloudDensity subtracts erosion; the
 // oracle does not). The `repeat` sampler tiles the periodic bake through world space.
-fn bakedBase(samplePos: vec3<f32>) -> f32 {
+// C13-37 Slice B — convert the ray interval represented by one density sample
+// into an explicit 3D-texture mip. The rotated density domains are orthonormal,
+// so their scalar world-to-domain scale is sufficient. A footprint covering at
+// most one level-0 voxel returns exactly LOD 0. The internal legacy oracle and
+// LIVE path remain exact mip-0 routes; only the planet-domain BAKED branch may
+// select lower-frequency levels.
+fn cloudNoiseMipLevel(
+  footprintMeters: f32,
+  domainUnitsPerMeter: f32,
+  baseResolution: u32,
+  levelCount: u32,
+) -> f32 {
+  let coveredLevel0Voxels =
+    max(footprintMeters, 0.0) *
+    abs(domainUnitsPerMeter) *
+    f32(baseResolution);
+  let maxMip = f32(max(i32(levelCount) - 1, 0));
+  // Bias one mip toward detail: filtering starts only once the integration
+  // interval spans more than two level-0 voxels. This limits over-blur before
+  // the nonlinear coverage threshold while still suppressing undersampling.
+  return clamp(
+    log2(max(coveredLevel0Voxels, 1.0)) - 1.0,
+    0.0,
+    maxMip,
+  );
+}
+
+struct CloudNoiseMipLevels {
+  shape: f32,
+  warp: f32,
+  detail: f32,
+}
+
+fn cloudDensityMipLevels(footprintMeters: f32) -> CloudNoiseMipLevels {
+  if (!planetDensityEnabled() || !noiseBakedEnabled()) {
+    return CloudNoiseMipLevels(0.0, 0.0, 0.0);
+  }
+
+  // Query each bound texture's descriptor metadata once per macro sample.
+  // Both detail-domain consumers share the same resolution/level count.
+  let shapeResolution = textureDimensions(cloudShapeTex).x;
+  let shapeLevelCount = textureNumLevels(cloudShapeTex);
+  let detailResolution = textureDimensions(cloudDetailTex).x;
+  let detailLevelCount = textureNumLevels(cloudDetailTex);
+  return CloudNoiseMipLevels(
+    cloudNoiseMipLevel(
+      footprintMeters,
+      CLOUD_DENSITY_WORLD_TO_NOISE * cloud.puffSize,
+      shapeResolution,
+      shapeLevelCount,
+    ),
+    cloudNoiseMipLevel(
+      footprintMeters,
+      CLOUD_DENSITY_WORLD_TO_NOISE *
+        cloud.puffSize *
+        CLOUD_DENSITY_WARP_RATIO,
+      detailResolution,
+      detailLevelCount,
+    ),
+    cloudNoiseMipLevel(
+      footprintMeters,
+      CLOUD_DENSITY_WORLD_TO_NOISE * CLOUD_DENSITY_DETAIL_RATIO,
+      detailResolution,
+      detailLevelCount,
+    ),
+  );
+}
+
+fn bakedBase(
+  coordinates: CloudDensityCoordinates,
+  mipLevels: CloudNoiseMipLevels,
+) -> f32 {
   // Domain-warp the lookup by a SLOW low-frequency offset (sampled from the
   // detail texture at a large period) so the baked texture's ~3.3 km tiling grid
   // bends into organic shapes instead of reading as an obvious repeating lattice.
@@ -534,11 +627,120 @@ fn bakedBase(samplePos: vec3<f32>) -> f32 {
   // dapple; the detail erosion (cloudDensity, samplePos*5) stays fine, giving big
   // lobes with cauliflower edges. Warp + warp-sample scale track SHAPE_SCALE so
   // the de-tiling stays proportional.
-  let SHAPE_SCALE = cloud.puffSize; // Batch 407 dial (default 0.45)
+  let w = textureSampleLevel(
+    cloudDetailTex,
+    cloudNoiseSampler,
+    coordinates.warp,
+    mipLevels.warp,
+  ).rgb;
+  let uvw = coordinates.shape + (w - vec3<f32>(0.5)) * 0.5;
+  return textureSampleLevel(
+    cloudShapeTex,
+    cloudNoiseSampler,
+    uvw,
+    mipLevels.shape,
+  ).r;
+}
+
+// Exact pre-C13-37 baked lookup retained for the bit-13-off/LIVE functionality
+// oracle. Keeping this separate also guarantees the fallback never observes a
+// generated mip or a rotated domain.
+fn legacyBakedBase(samplePos: vec3<f32>) -> f32 {
+  let SHAPE_SCALE = cloud.puffSize;
   let s = samplePos * SHAPE_SCALE;
-  let w = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, s * 0.32, 0.0).rgb;
+  let w = textureSampleLevel(
+    cloudDetailTex, cloudNoiseSampler, s * 0.32, 0.0
+  ).rgb;
   let uvw = s + (w - vec3<f32>(0.5)) * 0.5;
-  return textureSampleLevel(cloudShapeTex, cloudNoiseSampler, uvw, 0.0).r;
+  return textureSampleLevel(
+    cloudShapeTex, cloudNoiseSampler, uvw, 0.0
+  ).r;
+}
+
+// C13-37 — retain the historical harmonic coordinate construction for the
+// internal same-build oracle and the LIVE fallback. This is intentionally kept
+// separate from CloudDensityDomain.wgsl so bit-13-off remains exact.
+fn legacyCloudDensityCoordinates(worldNoise: vec3<f32>) -> CloudDensityCoordinates {
+  let shape = worldNoise * cloud.puffSize;
+  return CloudDensityCoordinates(
+    worldNoise,
+    shape,
+    shape * 0.32,
+    worldNoise * 5.0,
+  );
+}
+
+fn cloudDensityCoordinatesAtWorld(
+  worldPos: vec3<f32>,
+  windOffset: vec3<f32>,
+) -> CloudDensityCoordinates {
+  let worldNoise =
+    (worldPos + windOffset) * CLOUD_DENSITY_WORLD_TO_NOISE;
+  if (planetDensityEnabled() && noiseBakedEnabled()) {
+    return cloudDensityCoordinatesFromWorldNoise(worldNoise, cloud.puffSize);
+  }
+  return legacyCloudDensityCoordinates(worldNoise);
+}
+
+// Primary-view RTE path: CPU-f64 phases already include camera origin and wind;
+// the shader adds only the small camera-relative sample displacement.
+// SCAFFOLDING (Principle 7): defined but not yet called. Intended consumer is
+// C13-05 (RTE temporal reprojection / history origin), which will sample the
+// density field at camera-relative reprojected positions. Do not delete.
+fn cloudDensityCoordinatesAtRelative(
+  relativeWorld: vec3<f32>,
+) -> CloudDensityCoordinates {
+  let relativeNoise = relativeWorld * CLOUD_DENSITY_WORLD_TO_NOISE;
+  return cloudDensityCoordinatesFromOriginPhases(
+    relativeNoise,
+    cloud.puffSize,
+    cloud.densityShapeOriginPhase,
+    cloud.densityWarpOriginPhase,
+    cloud.densityDetailOriginPhase,
+  );
+}
+
+fn advanceDensityCoordinates(
+  coordinates: CloudDensityCoordinates,
+  worldDelta: vec3<f32>,
+) -> CloudDensityCoordinates {
+  let noiseDelta = worldDelta * CLOUD_DENSITY_WORLD_TO_NOISE;
+  if (planetDensityEnabled() && noiseBakedEnabled()) {
+    return advanceCloudDensityCoordinates(
+      coordinates, noiseDelta, cloud.puffSize
+    );
+  }
+  return CloudDensityCoordinates(
+    coordinates.canonical + noiseDelta,
+    coordinates.shape + noiseDelta * cloud.puffSize,
+    coordinates.warp + noiseDelta * cloud.puffSize * 0.32,
+    coordinates.detail + noiseDelta * 5.0,
+  );
+}
+
+// SCAFFOLDING (Principle 7): defined but not yet called. Camera-relative
+// morphology origin for the same C13-05 RTE temporal-history reprojection
+// consumer as cloudDensityCoordinatesAtRelative above. Do not delete.
+fn cloudMorphologyCoordinateAtRelative(
+  relativeWorld: vec3<f32>,
+) -> vec3<f32> {
+  let relativeNoise = relativeWorld * CLOUD_DENSITY_WORLD_TO_NOISE;
+  return cloud.densityMorphologyOriginHigh +
+    (cloud.densityMorphologyOriginLow + relativeNoise);
+}
+
+fn advanceCloudMorphologyCoordinate(
+  coordinate: vec3<f32>,
+  worldDelta: vec3<f32>,
+) -> vec3<f32> {
+  return coordinate + worldDelta * CLOUD_DENSITY_WORLD_TO_NOISE;
+}
+
+fn cloudMorphologyCoordinateAtWorld(
+  worldPos: vec3<f32>,
+  windOffset: vec3<f32>,
+) -> vec3<f32> {
+  return (worldPos + windOffset) * CLOUD_DENSITY_WORLD_TO_NOISE;
 }
 
 // V11 — per-genus vertical density gradient. Replaces the single hardcoded
@@ -858,124 +1060,168 @@ fn decodeWeatherChannels(gba: vec3<f32>, deckThickness: f32) -> WeatherChannels 
   return WeatherChannels(densityScale, baseShiftFrac, perGenusShape);
 }
 
-// Batch 443 (4.9 CLOUD-MULTIDECK) — `deckBottom`/`deckTop` are the active deck's
-// shell bounds (m above surface). The default single-shell call passes
-// cloud.cloudLayerBottom/Top, so the weather-base-shift fraction (the only place
-// the bounds enter cloudDensity) is byte-identical to pre-443; multi-deck calls
-// pass each deck's own bounds so per-deck base shifts stay in that deck's fraction.
-fn cloudDensity(worldPos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32) -> f32 {
-  // Animate with wind
-  let windOffset = vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y)
-                   * cloud.windSpeed * cloud.time;
-  let samplePos = (worldPos + windOffset) * 0.0003; // scale to noise space
+// C13-37 same-build control. These two functions preserve the pre-change
+// density evaluation literally for LIVE and bit-13-off BAKED lanes. They are
+// intentionally not routed through the macro/domain helpers: this makes the A/B
+// lane capable of detecting regressions in those helpers as well as in the
+// rotated texture coordinates.
+fn legacyCloudDensity(
+  worldPos: vec3<f32>,
+  heightFraction: f32,
+  deckBottom: f32,
+  deckTop: f32,
+) -> f32 {
+  let windOffset =
+    vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y) *
+    cloud.windSpeed *
+    cloud.time;
+  let samplePos = (worldPos + windOffset) * 0.0003;
 
-  // Weather Phase 1 (KEYSTONE) — per-position coverage from the weather map's
-  // R channel, so cloud cover varies SPATIALLY (distinct regions) instead of one
-  // global scalar. `cloud.coverage` folds into `weatherStrength` as a global
-  // multiplier. weatherMapEnabled=0 → byte-identical to the old global-scalar
-  // path. The weather UV uses the RAW world position (geographic), not the
-  // wind-scaled noise-space `samplePos`.
-  // Weather Phase 3 — G/B/A channels (genus, base, density-bias). Neutral
-  // (G=0.5,B=0,A=0.5) → identity, so the R-only / disabled paths stay byte-exact.
   var effectiveCoverage = cloud.coverage;
   var wch = WeatherChannels(1.0, 0.0, cloud.profileShape);
   if (cloud.weatherMapEnabled > 0.5) {
     let wuv = worldToWeatherUV(worldPos);
-    let wsample = textureSampleLevel(weatherTex, weatherSampler, wuv, 0, 0.0);
-    effectiveCoverage = clamp(wsample.r * cloud.weatherStrength, 0.0, 1.0);
+    let wsample = textureSampleLevel(
+      weatherTex, weatherSampler, wuv, 0, 0.0
+    );
+    effectiveCoverage = clamp(
+      wsample.r * cloud.weatherStrength, 0.0, 1.0
+    );
     wch = decodeWeatherChannels(wsample.gba, deckTop - deckBottom);
   }
 
-  // Base shape. V3 — BAKED: the Nubis Perlin-Worley combine from the baked 3D
-  // shape texture (one trilinear fetch + remap — better-looking AND cheaper than
-  // the ~30 live evals). LIVE: the historical value-noise FBM (kept as the
-  // fallback / low tier so the default never regresses).
   var density: f32;
   if (noiseBakedEnabled()) {
-    density = bakedBase(samplePos);
+    density = legacyBakedBase(samplePos);
   } else {
     density = fbmNoise(samplePos);
   }
-
-  // Coverage threshold — shapes the clouds (per-position when the weather map is on)
   density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
 
-  // V11 — per-genus vertical gradient (default CUMULUS=BILLOWY == the old expr).
-  // Weather B/G — shift the height-gradient base up by baseShiftFrac (B) and use
-  // the per-position genus shape (G). At neutral both collapse to the old call.
   let hForGradient = clamp(
-    (heightFraction - wch.baseShiftFrac) / max(1.0 - wch.baseShiftFrac, 1e-3),
-    0.0, 1.0);
-  let heightGradient = heightGradientFor(hForGradient, wch.perGenusShape, cloud.anvilBias);
+    (heightFraction - wch.baseShiftFrac) /
+      max(1.0 - wch.baseShiftFrac, 1e-3),
+    0.0,
+    1.0,
+  );
+  let heightGradient = heightGradientFor(
+    hForGradient, wch.perGenusShape, cloud.anvilBias
+  );
   density *= heightGradient;
 
-  // High-frequency WORLEY edge erosion (carves billowy lobes; fades toward the top).
   if (noiseBakedEnabled()) {
-    // V4 — MEAN-PRESERVING erosion remap (Nubis). The detail texture's R is
-    // INVERTED Worley (high AT features), so `1 - detail.r` is the Worley DISTANCE
-    // (high BETWEEN features). `remap(density, erosionLo, 1, 0, 1)` carves where
-    // density falls below the erosion floor but stretches the survivors back up,
-    // so dense cloud CORES stay solid (no lumpy-with-holes deck at high coverage —
-    // the V3 dapple) while edges still erode. remap(v, lo, 1, 0, 1) <= v for
-    // v in [0,1], lo >= 0, so cloudDensity <= cloudBaseDensity (W5 `base >= full`)
-    // STILL holds — the oracle just omits this erosion step entirely.
-    // Batch 439 (4.7 CLOUD-CURL) — curl-noise domain warp on the DETAIL erosion
-    // lookup. The divergence-free curl field swirls the high-frequency Worley
-    // erosion sample into turbulent, advected filaments — wispy tendril edges
-    // (Schneider/Nubis) instead of the static dapple. GUARDED on curlAmplitude>0
-    // so the default render skips the curl evaluation AND the warp entirely; at
-    // amplitude 0 the warp offset is exactly vec3(0) → the detail sample position
-    // is byte-identical to pre-439. curlFrequency scales the swirl wavelength.
     var detailPos = samplePos * 5.0;
     if (cloud.curlAmplitude > 0.0) {
-      // The detail lookup lives in `samplePos*5` space; the analytic curl is ~O(1)
-      // per component. A gain of ~2 makes the dial's nominal 1.0 read as a clear,
-      // tendril-forming swirl in that space (still bounded — the warp only moves
-      // WHERE the subtractive erosion samples, never adds density).
-      let warp = curlNoise3(samplePos * cloud.curlFrequency) * (cloud.curlAmplitude * 2.0);
+      let warp =
+        curlNoise3(samplePos * cloud.curlFrequency) *
+        (cloud.curlAmplitude * 2.0);
       detailPos = detailPos + warp;
     }
-    let detail = textureSampleLevel(cloudDetailTex, cloudNoiseSampler, detailPos, 0.0);
+    let detail = textureSampleLevel(
+      cloudDetailTex, cloudNoiseSampler, detailPos, 0.0
+    );
     let worleyDetail = 1.0 - detail.r;
-    let erosionLo = worleyDetail * cloud.erosionStrength * (1.0 - heightFraction);
-    density = clamp(remap(density, erosionLo, 1.0, 0.0, 1.0), 0.0, 1.0);
+    let erosionLo =
+      worleyDetail * cloud.erosionStrength * (1.0 - heightFraction);
+    density = clamp(
+      remap(density, erosionLo, 1.0, 0.0, 1.0), 0.0, 1.0
+    );
   } else {
-    // LIVE path FROZEN (W5): literal subtractive erosion, unchanged.
-    let worleyDetail = worleyF1(samplePos * 5.0 + windOffset * 0.001);
+    let worleyDetail = worleyF1(
+      samplePos * 5.0 + windOffset * 0.001
+    );
     density -= worleyDetail * 0.18 * (1.0 - heightFraction);
     density = max(density, 0.0);
   }
 
-  // V11 — per-genus density scale (CUMULUS = 1.0, so default is byte-identical;
-  // cirrus thins, nimbostratus thickens). Applied identically in the oracle below.
-  // Weather A — per-position density-bias multiplier (1.0 neutral) folded last so
-  // the deck is visibly denser/thinner where the map's A varies.
-  // E2 mammatus — underside pouch carve (default OFF → factor 1.0, byte-identical).
-  // E1 species — lenticular/fibratus density shaping (default OFF → factor 1.0).
-  // E2 features — asperitas/fluctus/arcus/virga shaping (default OFF → factor 1.0).
-  return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale
-    * mammatusFactor(samplePos, heightFraction)
-    * speciesFactor(samplePos, heightFraction)
-    * featureFactor(samplePos, heightFraction);
+  return density *
+    cloud.densityMultiplier *
+    cloud.profileDensityScale *
+    wch.densityScale *
+    mammatusFactor(samplePos, heightFraction) *
+    speciesFactor(samplePos, heightFraction) *
+    featureFactor(samplePos, heightFraction);
 }
 
-// ─── W5: cheap low-detail presence test for empty-space skipping ───
-// Returns the cloud BASE shape (fbm + coverage threshold + height gradient)
-// WITHOUT the 27-tap Worley erosion or detail. Two properties make it the right
-// skip oracle: (1) CONSERVATIVE — Worley only SUBTRACTS from density, so
-// base >= full everywhere; base ≈ 0 guarantees full ≈ 0, so the coarse phase
-// never skips real cloud. (2) SMOOTH — no internal erosion pockets, so the
-// coarse→fine handoff never false-triggers inside a cloud the way the eroded
-// full density does. And it is much cheaper (no Worley, no detail), so coarse
-// probing of empty space is a real tap-cost win, not just a step-count one.
-fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32) -> f32 {
-  let windOffset = vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y)
-                   * cloud.windSpeed * cloud.time;
+fn legacyCloudBaseDensity(
+  worldPos: vec3<f32>,
+  heightFraction: f32,
+  deckBottom: f32,
+  deckTop: f32,
+) -> f32 {
+  let windOffset =
+    vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y) *
+    cloud.windSpeed *
+    cloud.time;
   let samplePos = (worldPos + windOffset) * 0.0003;
 
-  // Weather Phase 3 — decode G/B/A IDENTICALLY to cloudDensity so the oracle's
-  // density scale + base/genus shaping match, preserving W5's `base >= full`
-  // invariant per-position (the oracle just omits the Worley erosion).
+  var effectiveCoverage = cloud.coverage;
+  var wch = WeatherChannels(1.0, 0.0, cloud.profileShape);
+  if (cloud.weatherMapEnabled > 0.5) {
+    let wuv = worldToWeatherUV(worldPos);
+    let wsample = textureSampleLevel(
+      weatherTex, weatherSampler, wuv, 0, 0.0
+    );
+    effectiveCoverage = clamp(
+      wsample.r * cloud.weatherStrength, 0.0, 1.0
+    );
+    wch = decodeWeatherChannels(wsample.gba, deckTop - deckBottom);
+  }
+
+  var density: f32;
+  if (noiseBakedEnabled()) {
+    density = legacyBakedBase(samplePos);
+  } else {
+    density = fbmNoise(samplePos);
+  }
+  density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
+  let hForGradient = clamp(
+    (heightFraction - wch.baseShiftFrac) /
+      max(1.0 - wch.baseShiftFrac, 1e-3),
+    0.0,
+    1.0,
+  );
+  let heightGradient = heightGradientFor(
+    hForGradient, wch.perGenusShape, cloud.anvilBias
+  );
+  density *= heightGradient;
+  return density *
+    cloud.densityMultiplier *
+    cloud.profileDensityScale *
+    wch.densityScale *
+    mammatusFactor(samplePos, heightFraction) *
+    speciesFactor(samplePos, heightFraction) *
+    featureFactor(samplePos, heightFraction);
+}
+
+// C13-37 evaluates coverage, base noise, vertical profile, and every morphology
+// factor once. The adaptive fine path then reuses this exact macro sample for the
+// conservative base oracle and the eroded full density, removing the old double
+// weather/noise/morphology tax while making base >= full structural.
+struct CloudMacroSample {
+  preErosion: f32,
+  densityFactor: f32,
+  coordinates: CloudDensityCoordinates,
+  morphologyCoordinate: vec3<f32>,
+  detailMipLevel: f32,
+};
+
+fn cloudWindOffset() -> vec3<f32> {
+  return vec3<f32>(cloud.windDirection.x, 0.0, cloud.windDirection.y)
+       * cloud.windSpeed * cloud.time;
+}
+
+fn cloudMacroSampleAt(
+  worldPos: vec3<f32>,
+  coordinates: CloudDensityCoordinates,
+  morphologyCoordinate: vec3<f32>,
+  heightFraction: f32,
+  deckBottom: f32,
+  deckTop: f32,
+  footprintMeters: f32,
+) -> CloudMacroSample {
+  // Weather remains geographically anchored to worldPos. C13-07/08 own the
+  // equirectangular seam/bounds correction; density coordinates never advect it.
   var effectiveCoverage = cloud.coverage;
   var wch = WeatherChannels(1.0, 0.0, cloud.profileShape);
   if (cloud.weatherMapEnabled > 0.5) {
@@ -985,35 +1231,159 @@ fn cloudBaseDensity(worldPos: vec3<f32>, heightFraction: f32, deckBottom: f32, d
     wch = decodeWeatherChannels(wsample.gba, deckTop - deckBottom);
   }
 
-  // SAME base as cloudDensity (baked or live), then coverage + height gradient,
-  // and crucially NO erosion — so this oracle is >= cloudDensity everywhere
-  // (W5's conservative `base >= full` invariant), in both the baked and live paths.
+  var mipLevels = CloudNoiseMipLevels(0.0, 0.0, 0.0);
   var density: f32;
   if (noiseBakedEnabled()) {
-    density = bakedBase(samplePos);
+    mipLevels = cloudDensityMipLevels(footprintMeters);
+    density = bakedBase(coordinates, mipLevels);
   } else {
-    density = fbmNoise(samplePos);
+    density = fbmNoise(coordinates.canonical);
   }
   density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
-  // V11 — IDENTICAL per-genus gradient + density scale as cloudDensity (no
-  // erosion here), so the W5 `base >= full` invariant still holds per-genus.
-  // Weather B/G — same base-shift + genus shape as cloudDensity.
+
   let hForGradient = clamp(
-    (heightFraction - wch.baseShiftFrac) / max(1.0 - wch.baseShiftFrac, 1e-3),
-    0.0, 1.0);
-  let heightGradient = heightGradientFor(hForGradient, wch.perGenusShape, cloud.anvilBias);
-  density *= heightGradient;
-  // Weather A — same per-position density scale as cloudDensity.
-  // E2 mammatus — IDENTICAL underside pouch carve as cloudDensity (same factor,
-  // [0,1]), so the W5 `base >= full` invariant is preserved per-position.
-  // E1 species — IDENTICAL lenticular/fibratus shaping as cloudDensity (same [0,1]
-  // factor), so the W5 `base >= full` invariant still holds per-position.
-  // E2 features — IDENTICAL asperitas/fluctus/arcus/virga shaping as cloudDensity
-  // (same [0,1] factor), so the W5 `base >= full` invariant still holds per-position.
-  return density * cloud.densityMultiplier * cloud.profileDensityScale * wch.densityScale
-    * mammatusFactor(samplePos, heightFraction)
-    * speciesFactor(samplePos, heightFraction)
-    * featureFactor(samplePos, heightFraction);
+    (heightFraction - wch.baseShiftFrac) /
+      max(1.0 - wch.baseShiftFrac, 1e-3),
+    0.0,
+    1.0,
+  );
+  density *= heightGradientFor(
+    hForGradient, wch.perGenusShape, cloud.anvilBias
+  );
+
+  let factor =
+    cloud.densityMultiplier *
+    cloud.profileDensityScale *
+    wch.densityScale *
+    mammatusFactor(morphologyCoordinate, heightFraction) *
+    speciesFactor(morphologyCoordinate, heightFraction) *
+    featureFactor(morphologyCoordinate, heightFraction);
+  return CloudMacroSample(
+    density,
+    factor,
+    coordinates,
+    morphologyCoordinate,
+    mipLevels.detail,
+  );
+}
+
+fn cloudBaseFromMacro(sample: CloudMacroSample) -> f32 {
+  return sample.preErosion * sample.densityFactor;
+}
+
+fn cloudDensityFromMacro(
+  sample: CloudMacroSample,
+  heightFraction: f32,
+) -> f32 {
+  var density = sample.preErosion;
+  var detailPos = sample.coordinates.detail;
+  if (cloud.curlAmplitude > 0.0) {
+    let warp = curlNoise3(
+      sample.morphologyCoordinate * cloud.curlFrequency
+    ) * (cloud.curlAmplitude * 2.0);
+    detailPos = detailPos + warp;
+  }
+  let detail = textureSampleLevel(
+    cloudDetailTex,
+    cloudNoiseSampler,
+    detailPos,
+    sample.detailMipLevel,
+  );
+  let worleyDetail = 1.0 - detail.r;
+  let erosionLo =
+    worleyDetail * cloud.erosionStrength * (1.0 - heightFraction);
+  density = clamp(remap(density, erosionLo, 1.0, 0.0, 1.0), 0.0, 1.0);
+  return density * sample.densityFactor;
+}
+
+fn cloudDensityAtCoordinates(
+  worldPos: vec3<f32>,
+  coordinates: CloudDensityCoordinates,
+  morphologyCoordinate: vec3<f32>,
+  heightFraction: f32,
+  deckBottom: f32,
+  deckTop: f32,
+  footprintMeters: f32,
+) -> f32 {
+  let macroSample = cloudMacroSampleAt(
+    worldPos, coordinates, morphologyCoordinate,
+    heightFraction, deckBottom, deckTop, footprintMeters
+  );
+  return cloudDensityFromMacro(macroSample, heightFraction);
+}
+
+// Raw-world wrappers keep the standalone shadow and non-RTE diagnostic routes
+// on the same mathematical density field. Their remaining reconstruction
+// precision is explicitly owned by C13-06.
+// SCAFFOLDING (Principle 7): cloudDensity itself is defined but not yet called —
+// its C13-06 shadow/mask/environment-capture consumer is not wired yet
+// (cloudDensityWithFootprint below IS live). Do not delete.
+fn cloudDensity(
+  worldPos: vec3<f32>,
+  heightFraction: f32,
+  deckBottom: f32,
+  deckTop: f32,
+) -> f32 {
+  if (!planetDensityEnabled() || !noiseBakedEnabled()) {
+    return legacyCloudDensity(
+      worldPos, heightFraction, deckBottom, deckTop
+    );
+  }
+  let windOffset = cloudWindOffset();
+  let coordinates = cloudDensityCoordinatesAtWorld(worldPos, windOffset);
+  let morphologyCoordinate =
+    cloudMorphologyCoordinateAtWorld(worldPos, windOffset);
+  return cloudDensityAtCoordinates(
+    worldPos, coordinates, morphologyCoordinate,
+    heightFraction, deckBottom, deckTop, 0.0
+  );
+}
+
+fn cloudDensityWithFootprint(
+  worldPos: vec3<f32>,
+  heightFraction: f32,
+  deckBottom: f32,
+  deckTop: f32,
+  footprintMeters: f32,
+) -> f32 {
+  if (!planetDensityEnabled() || !noiseBakedEnabled()) {
+    return legacyCloudDensity(
+      worldPos, heightFraction, deckBottom, deckTop
+    );
+  }
+  let windOffset = cloudWindOffset();
+  let coordinates = cloudDensityCoordinatesAtWorld(worldPos, windOffset);
+  let morphologyCoordinate =
+    cloudMorphologyCoordinateAtWorld(worldPos, windOffset);
+  return cloudDensityAtCoordinates(
+    worldPos, coordinates, morphologyCoordinate,
+    heightFraction, deckBottom, deckTop, footprintMeters
+  );
+}
+
+// SCAFFOLDING (Principle 7): cloudBaseDensity is defined but not yet called. It is
+// the cheap no-erosion base oracle for the same C13-06 shadow/mask/capture RTE
+// consumers; wire-up is pending. Do not delete.
+fn cloudBaseDensity(
+  worldPos: vec3<f32>,
+  heightFraction: f32,
+  deckBottom: f32,
+  deckTop: f32,
+) -> f32 {
+  if (!planetDensityEnabled() || !noiseBakedEnabled()) {
+    return legacyCloudBaseDensity(
+      worldPos, heightFraction, deckBottom, deckTop
+    );
+  }
+  let windOffset = cloudWindOffset();
+  let coordinates = cloudDensityCoordinatesAtWorld(worldPos, windOffset);
+  let morphologyCoordinate =
+    cloudMorphologyCoordinateAtWorld(worldPos, windOffset);
+  let macroSample = cloudMacroSampleAt(
+    worldPos, coordinates, morphologyCoordinate,
+    heightFraction, deckBottom, deckTop, 0.0
+  );
+  return cloudBaseFromMacro(macroSample);
 }
 
 // ─── Ray-sphere intersection (sphere centered at the planet origin) ───
@@ -1203,7 +1573,14 @@ fn coneJitter(pos: vec3<f32>) -> vec3<f32> {
 // beer-powder / multi-scatter / HG lighting model unchanged — only the SAMPLING
 // PATTERN differs. ~½ the cost: 6 taps (5 full + 1 cheap) vs the straight march's
 // `lightSteps` full taps per cone radius.
-fn lightMarchCone(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32) -> f32 {
+fn lightMarchCone(
+  pos: vec3<f32>,
+  heightFraction: f32,
+  deckBottom: f32,
+  deckTop: f32,
+  densityCoordinates: CloudDensityCoordinates,
+  morphologyCoordinate: vec3<f32>,
+) -> f32 {
   let sunDir = normalize(cloud.sunDirection);
   let innerAxes = cloudShellAxes(deckBottom);
   let outerAxes = cloudShellAxes(deckTop);
@@ -1233,13 +1610,32 @@ fn lightMarchCone(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop:
     let k = CONE_KERNEL[i] + jit * 0.4;          // per-pixel jittered offset
     let coneRadius = coneStepBase * (fi + 0.5);  // widening cone
     let lateral = (k.x * tangent + k.y * bitangent) * coneRadius;
-    let samplePos = pos + sunDir * marchDist + lateral;
+    let sampleDelta = sunDir * marchDist + lateral;
+    let samplePos = pos + sampleDelta;
     let hf = ellipsoidShellHeightFraction(
       samplePos, innerInverseAxes, outerInverseAxes
     );
     // Weight each tap by its marched extent so the summed optical depth is
     // dimensionally the same as the straight march's Σ density·stepSize.
-    opticalDepth += cloudDensity(samplePos, hf, deckBottom, deckTop) * coneStepBase;
+    if (planetDensityEnabled() && noiseBakedEnabled()) {
+      let sampleCoordinates =
+        advanceDensityCoordinates(densityCoordinates, sampleDelta);
+      let sampleMorphologyCoordinate =
+        advanceCloudMorphologyCoordinate(morphologyCoordinate, sampleDelta);
+      opticalDepth += cloudDensityAtCoordinates(
+        samplePos,
+        sampleCoordinates,
+        sampleMorphologyCoordinate,
+        hf,
+        deckBottom,
+        deckTop,
+        coneStepBase,
+      ) * coneStepBase;
+    } else {
+      opticalDepth += legacyCloudDensity(
+        samplePos, hf, deckBottom, deckTop
+      ) * coneStepBase;
+    }
   }
 
   // ONE LONG FAR TAP — captures distant self-shadowing the short cone can't reach,
@@ -1247,11 +1643,31 @@ fn lightMarchCone(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop:
   // is conservative (base >= full), so this slightly OVER-shadows the far term —
   // exactly the desired soft far self-occlusion at a fraction of a full tap's cost.
   let farDist = layerThickness * 1.5;
-  let farPos = pos + sunDir * farDist;
+  let farDelta = sunDir * farDist;
+  let farPos = pos + farDelta;
   let farHf = ellipsoidShellHeightFraction(
     farPos, innerInverseAxes, outerInverseAxes
   );
-  opticalDepth += cloudBaseDensity(farPos, farHf, deckBottom, deckTop) * coneStepBase * 3.0;
+  if (planetDensityEnabled() && noiseBakedEnabled()) {
+    let farCoordinates =
+      advanceDensityCoordinates(densityCoordinates, farDelta);
+    let farMorphologyCoordinate =
+      advanceCloudMorphologyCoordinate(morphologyCoordinate, farDelta);
+    let farMacro = cloudMacroSampleAt(
+      farPos,
+      farCoordinates,
+      farMorphologyCoordinate,
+      farHf,
+      deckBottom,
+      deckTop,
+      coneStepBase * 3.0,
+    );
+    opticalDepth += cloudBaseFromMacro(farMacro) * coneStepBase * 3.0;
+  } else {
+    opticalDepth += legacyCloudBaseDensity(
+      farPos, farHf, deckBottom, deckTop
+    ) * coneStepBase * 3.0;
+  }
 
   return opticalDepth;
 }
@@ -1260,9 +1676,19 @@ fn lightMarchCone(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop:
 // Batch 436 — dispatch: the cone path (T1/T2) when QF_LIGHT_CONE is set, else the
 // STRAIGHT N-step march below, kept VERBATIM so the default / cinematic / escape
 // hatch render byte-identical to pre-436.
-fn lightMarch(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32) -> f32 {
+fn lightMarch(
+  pos: vec3<f32>,
+  heightFraction: f32,
+  deckBottom: f32,
+  deckTop: f32,
+  densityCoordinates: CloudDensityCoordinates,
+  morphologyCoordinate: vec3<f32>,
+) -> f32 {
   if (lightConeEnabled()) {
-    return lightMarchCone(pos, heightFraction, deckBottom, deckTop);
+    return lightMarchCone(
+      pos, heightFraction, deckBottom, deckTop,
+      densityCoordinates, morphologyCoordinate
+    );
   }
   let sunDir = normalize(cloud.sunDirection);
   // V5 — scale the light-march step count by the tier's lightSampleScale (T3 = 1.0
@@ -1279,13 +1705,65 @@ fn lightMarch(pos: vec3<f32>, heightFraction: f32, deckBottom: f32, deckTop: f32
   // March toward sun through remaining cloud
   let stepSize = layerThickness / f32(steps);
   var opticalDepth: f32 = 0.0;
+  let usePlanetDensity = planetDensityEnabled() && noiseBakedEnabled();
+  var canonicalStep = vec3<f32>(0.0);
+  var shapeStep = vec3<f32>(0.0);
+  var warpStep = vec3<f32>(0.0);
+  var detailStep = vec3<f32>(0.0);
+  if (usePlanetDensity) {
+    canonicalStep =
+      sunDir * stepSize * CLOUD_DENSITY_WORLD_TO_NOISE;
+    shapeStep =
+      CLOUD_DENSITY_SHAPE_ROTATION *
+      (canonicalStep * cloud.puffSize);
+    warpStep =
+      CLOUD_DENSITY_WARP_ROTATION *
+      (
+        canonicalStep *
+        cloud.puffSize *
+        CLOUD_DENSITY_WARP_RATIO
+      );
+    detailStep =
+      CLOUD_DENSITY_DETAIL_ROTATION *
+      (canonicalStep * CLOUD_DENSITY_DETAIL_RATIO);
+  }
 
   for (var i: i32 = 0; i < steps; i++) {
-    let samplePos = pos + sunDir * f32(i + 1) * stepSize;
+    let stepMultiple = f32(i + 1);
+    let sampleDelta = sunDir * stepMultiple * stepSize;
+    let samplePos = pos + sampleDelta;
     let hf = ellipsoidShellHeightFraction(
       samplePos, innerInverseAxes, outerInverseAxes
     );
-    opticalDepth += cloudDensity(samplePos, hf, deckBottom, deckTop) * stepSize;
+    if (usePlanetDensity) {
+      let sampleCoordinates = CloudDensityCoordinates(
+        densityCoordinates.canonical + canonicalStep * stepMultiple,
+        wrapCloudDensityDomain(
+          densityCoordinates.shape + shapeStep * stepMultiple
+        ),
+        wrapCloudDensityDomain(
+          densityCoordinates.warp + warpStep * stepMultiple
+        ),
+        wrapCloudDensityDomain(
+          densityCoordinates.detail + detailStep * stepMultiple
+        ),
+      );
+      let sampleMorphologyCoordinate =
+        morphologyCoordinate + canonicalStep * stepMultiple;
+      opticalDepth += cloudDensityAtCoordinates(
+        samplePos,
+        sampleCoordinates,
+        sampleMorphologyCoordinate,
+        hf,
+        deckBottom,
+        deckTop,
+        stepSize,
+      ) * stepSize;
+    } else {
+      opticalDepth += legacyCloudDensity(
+        samplePos, hf, deckBottom, deckTop
+      ) * stepSize;
+    }
   }
 
   return opticalDepth;
@@ -1579,6 +2057,30 @@ fn marchDeck(
   var emptyRun: i32 = 0;
   var guard: i32 = 0;
   let maxIter: i32 = steps * 3; // permanent loop sentinel (coarse skips + fine)
+  let windOffset = cloudWindOffset();
+  let usePlanetDensity = planetDensityEnabled() && noiseBakedEnabled();
+  // The camera-relative density coordinate is affine along this view ray.
+  // Transform each per-metre increment once per pixel, rather than paying three
+  // mat3 multiplies on every (often empty) march probe.
+  let rayNoisePerMeter = rayDir * CLOUD_DENSITY_WORLD_TO_NOISE;
+  var shapeRayPhasePerMeter = vec3<f32>(0.0);
+  var warpRayPhasePerMeter = vec3<f32>(0.0);
+  var detailRayPhasePerMeter = vec3<f32>(0.0);
+  if (usePlanetDensity && highPrecisionEnabled()) {
+    shapeRayPhasePerMeter =
+      CLOUD_DENSITY_SHAPE_ROTATION *
+      (rayNoisePerMeter * cloud.puffSize);
+    warpRayPhasePerMeter =
+      CLOUD_DENSITY_WARP_ROTATION *
+      (
+        rayNoisePerMeter *
+        cloud.puffSize *
+        CLOUD_DENSITY_WARP_RATIO
+      );
+    detailRayPhasePerMeter =
+      CLOUD_DENSITY_DETAIL_ROTATION *
+      (rayNoisePerMeter * CLOUD_DENSITY_DETAIL_RATIO);
+  }
 
   loop {
     if (t >= tEnd) { break; }
@@ -1605,7 +2107,8 @@ fn marchDeck(
     // C13-36 shifts only the sample within the current interval. `t`,
     // `tProcessed`, coarse backtracking, and the interval bounds remain
     // unchanged; base/full density still share this exact sample position.
-    let sampleOffset = rayDir * (t + marchSamplePhase * curStep);
+    let sampleDistance = t + marchSamplePhase * curStep;
+    let sampleOffset = rayDir * sampleDistance;
     let samplePos = rayOrigin + sampleOffset;
     // Resolve the vertical profile against the same oblate boundaries used for
     // intersection. The world-space noise domain remains unchanged.
@@ -1621,9 +2124,64 @@ fn marchDeck(
       );
     }
 
-    // Cheap conservative presence test (base >= full, so this never skips real
-    // cloud) drives the coarse/fine state.
-    let base = cloudBaseDensity(samplePos, heightFraction, deckBottom, deckTop);
+    // C13-37 — only the new baked planet domain takes the single-evaluation
+    // macro route. LIVE and bit-13-off BAKED execute the literal pre-change
+    // functions above, making them a trustworthy same-build functionality
+    // oracle rather than merely a coordinate toggle.
+    var densityCoordinates = CloudDensityCoordinates(
+      vec3<f32>(0.0),
+      vec3<f32>(0.0),
+      vec3<f32>(0.0),
+      vec3<f32>(0.0),
+    );
+    var morphologyCoordinate = vec3<f32>(0.0);
+    var macroSample = CloudMacroSample(
+      0.0,
+      0.0,
+      densityCoordinates,
+      morphologyCoordinate,
+      0.0,
+    );
+    var base: f32;
+    if (usePlanetDensity) {
+      if (highPrecisionEnabled()) {
+        let relativeNoise = rayNoisePerMeter * sampleDistance;
+        densityCoordinates = CloudDensityCoordinates(
+          relativeNoise,
+          wrapCloudDensityDomain(
+            cloud.densityShapeOriginPhase +
+            shapeRayPhasePerMeter * sampleDistance
+          ),
+          wrapCloudDensityDomain(
+            cloud.densityWarpOriginPhase +
+            warpRayPhasePerMeter * sampleDistance
+          ),
+          vec3<f32>(0.0),
+        );
+        morphologyCoordinate =
+          cloud.densityMorphologyOriginHigh +
+          (cloud.densityMorphologyOriginLow + relativeNoise);
+      } else {
+        densityCoordinates =
+          cloudDensityCoordinatesAtWorld(samplePos, windOffset);
+        morphologyCoordinate =
+          cloudMorphologyCoordinateAtWorld(samplePos, windOffset);
+      }
+      macroSample = cloudMacroSampleAt(
+        samplePos,
+        densityCoordinates,
+        morphologyCoordinate,
+        heightFraction,
+        deckBottom,
+        deckTop,
+        curFineStep,
+      );
+      base = cloudBaseFromMacro(macroSample);
+    } else {
+      base = legacyCloudBaseDensity(
+        samplePos, heightFraction, deckBottom, deckTop
+      );
+    }
 
     if (!fine) {
       // Coarse skip. On the first base hit, step back one coarse step (clamped to
@@ -1658,12 +2216,37 @@ fn marchDeck(
 
     // Inside the cloud shape — integrate the FULL (eroded) density. An erosion
     // pocket (full density 0) contributes nothing but keeps us in the fine phase.
-    let density = cloudDensity(samplePos, heightFraction, deckBottom, deckTop);
+    var density: f32;
+    if (usePlanetDensity) {
+      // The coarse/base probe never reads erosion detail. Materialize the third
+      // rotated domain only after the base oracle confirms an occupied fine
+      // sample; the per-ray transformed increment was already computed above.
+      if (highPrecisionEnabled()) {
+        let detailCoordinate = wrapCloudDensityDomain(
+          cloud.densityDetailOriginPhase +
+          detailRayPhasePerMeter * sampleDistance
+        );
+        densityCoordinates.detail = detailCoordinate;
+        macroSample.coordinates.detail = detailCoordinate;
+      }
+      density = cloudDensityFromMacro(macroSample, heightFraction);
+    } else {
+      density = legacyCloudDensity(
+        samplePos, heightFraction, deckBottom, deckTop
+      );
+    }
     if (density > 0.001) {
       // Light contribution. V5 — Frostbite multi-scatter octaves with the phase
       // folded per-octave (softer lit-from-within interiors; deeper octaves more
       // isotropic) so the returned value already carries the phase.
-      let lightOpticalDepth = lightMarch(samplePos, heightFraction, deckBottom, deckTop);
+      let lightOpticalDepth = lightMarch(
+        samplePos,
+        heightFraction,
+        deckBottom,
+        deckTop,
+        densityCoordinates,
+        morphologyCoordinate,
+      );
       let msLight = multiScatterLight(lightOpticalDepth, cosTheta, 0.5, msOctaves);
 
       // Silver lining: enhanced scattering at cloud edges
@@ -1729,9 +2312,18 @@ fn marchDeck(
       // the tint has full authority over the sample color (a multiplicative-albedo
       // tint is overwhelmed by the additive ambient/silver-lining terms). Default
       // OFF → specialShadeTint() returns vec3(1.0) so the radiance is multiplied by
-      // exactly 1.0 (byte-identical). Uses samplePos*0.0003 to match cloudDensity's
-      // noise-space scale so the band/iridescence frequency reads at the same world scale.
-      let specialTint = specialShadeTint(samplePos * 0.0003, heightFraction, cosTheta);
+      // exactly 1.0 (byte-identical). The control lane retains the historical
+      // unadvected samplePos coordinate; the new route uses its stable encoded
+      // morphology origin, never a wrapped/rotated texture domain.
+      var specialShadeCoordinate = samplePos * 0.0003;
+      if (usePlanetDensity) {
+        specialShadeCoordinate = morphologyCoordinate;
+      }
+      let specialTint = specialShadeTint(
+        specialShadeCoordinate,
+        heightFraction,
+        cosTheta
+      );
       weightedColor += (cloudColor * cloud.sunLightColor * scatteredLight + ambient)
                      * specialTint * sampleWeight;
       lightEnergy += scatteredLight * sampleWeight;
@@ -2102,7 +2694,13 @@ fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
     // Batch 443 — the shadow map stays SINGLE-SHELL (the cast shadow tracks the
     // primary cloud layer). Pass cloudLayerBottom/Top as the deck bounds so the
     // density evaluation is byte-identical to the pre-443 hardcoded call.
-    opticalDepth += cloudDensity(samplePos, hf, cloud.cloudLayerBottom, cloud.cloudLayerTop) * stepSize;
+    opticalDepth += cloudDensityWithFootprint(
+      samplePos,
+      hf,
+      cloud.cloudLayerBottom,
+      cloud.cloudLayerTop,
+      stepSize,
+    ) * stepSize;
   }
   // Clamp to keep the f16 store finite and the consumer's exp() in range. The
   // raw integral over a dense ~2.5 km shell with densityMultiplier~0.3 is O(10²-10³);

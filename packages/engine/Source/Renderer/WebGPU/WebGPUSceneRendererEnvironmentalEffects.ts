@@ -106,6 +106,7 @@ export function executeEnvironmentalEffects(
 ): void {
   const { scene, context } = config;
   const globe = scene.globe;
+  const frameState = scene._frameState;
 
   // Item 4.2 (CLOUD-IBL, Batch 441) — publish the effective cloud coverage the
   // dynamic-env-map sky fill darkens + flattens its radiance toward. Done FIRST,
@@ -158,7 +159,7 @@ export function executeEnvironmentalEffects(
       useCollectionDeck = true;
     }
   }
-  publishCloudIblCoverage(context, cloudConfig);
+  publishCloudIblCoverage(context, cloudConfig, frameState);
 
   // Get texture views needed by all environmental effects.
   //
@@ -184,8 +185,6 @@ export function executeEnvironmentalEffects(
   if (!colorView || !depthView || !outputView) {
     return;
   }
-
-  const frameState = scene._frameState;
 
   // 1. Procedural Clouds — volumetric ray-marched clouds. Active when a
   // VOLUMETRIC CloudCollection published this frame (a USER collection, slice 3,
