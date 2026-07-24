@@ -42,8 +42,13 @@
 //     (matches WebGL `#ifdef ONLY_SUN_LIGHTING`)
 //   - Exact log depth write via VS-output clip-space w
 //
-// Phase 1.2 celestial additions (preserved):
-//   - Moon phase gating on the lit hemisphere (smoothstep on phaseFraction)
+// Phase 1.2 celestial additions:
+//   - Moon phase gating (smoothstep on phaseFraction) — DELETED (C11-176b,
+//     2026-07-24). It double-counted phase (N·L against the real sun
+//     direction already yields the terminator + illuminated fraction) and
+//     blacked out the whole disc at small sun-moon elongations (the C12-30
+//     daytime "dark blob"). No GLSL twin ever had it. Do NOT re-add; the
+//     phaseFraction uniform stays for C12-21 phase-dependent earthshine.
 //   - Earthshine — soft blue-grey tint on the unlit side, gated by
 //     atmosphericConditions.lighting.enableEarthshine
 //
@@ -339,11 +344,18 @@ fn computeEllipsoidColor(
 
   let lit = phongCsmMaterial(m, L, toEyeMC);
 
-  // Phase gating — new moon (phaseFraction ~ 0) fades the lit hemisphere
-  // toward black; quarter onward reaches full intensity.
+  // C11-176b (phaseGate DELETED): the disc used to be multiplied by
+  // `smoothstep(0.0, 0.3, u.phaseFraction)`. That was a physical double
+  // count — N·L against the real Simon1994 sun direction already produces
+  // the correct terminator and illuminated fraction — and it additionally
+  // blacked out the WHOLE disc (crescent included) whenever the sun-moon
+  // elongation was small, e.g. every daytime moon near the sun (C12-30
+  // "dark blob"). WebGL (EllipsoidFS.glsl + czm_private_phong) has no such
+  // term; the lit fraction now follows the real phase geometry on both
+  // backends. `u.phaseFraction` stays in the UB for C12-21
+  // (phase-dependent earthshine) and layout stability.
   let rawNdotL = max(dot(N, L), 0.0);
-  let phaseGate = smoothstep(0.0, 0.3, u.phaseFraction);
-  var color = lit * phaseGate;
+  var color = lit;
 
   // Earthshine — gated on atmosphericConditions.lighting.enableEarthshine.
   // Soft blue-grey tint on the unlit side; uses raw (pre-phase) N·L so

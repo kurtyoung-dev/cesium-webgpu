@@ -836,7 +836,9 @@ function createMoonPlaceholderTexture(device) {
  * Architecture: bounding-cube rasterization + analytic ray-marched
  * ellipsoid in model space + RTE 64-bit precision in the VS. Mirrors the
  * WebGL EllipsoidPrimitive moon path with full feature parity, plus the
- * Phase 1.2 celestial improvements (phase gating, earthshine).
+ * Phase 1.2 earthshine improvement. (The Phase 1.2 phase-gating multiplier
+ * was deleted by C11-176b — it double-counted N·L phase and blacked out
+ * the daytime moon; phaseFraction is still packed for C12-21 earthshine.)
  *
  * Performance leverage from Phase 0:
  *   - Render bundle pre-encoding via WebGPURenderBundleManager. The

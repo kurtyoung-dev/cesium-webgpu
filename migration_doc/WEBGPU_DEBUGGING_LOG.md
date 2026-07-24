@@ -24,6 +24,60 @@
 
 ---
 
+## C11-176b — Moon phaseGate blackout deleted (2026-07-24, C12 W1 rider; C12-30 suspect (a))
+
+**Premise.** The maintainer's C12-30 screenshot shows the daytime moon as a small DARK blob beside
+the sun glow (WebGPU). The C12-30 size half was already measured CLOSED at Batch 752 (angular size
+accurate); the appearance half listed the `Moon.wgsl` phaseGate as suspect (a). The C11 queue
+(§1.26/G8) had independently classified the gate as the third instance of the default-ON
+WebGPU-only celestial-multiplier class (same class as the skybox star-modulation fade).
+
+**Cause.** `Moon.wgsl:344-346` multiplied the whole Phong-lit disc by a phase scalar:
+
+```wgsl
+let rawNdotL = max(dot(N, L), 0.0);
+let phaseGate = smoothstep(0.0, 0.3, u.phaseFraction);
+var color = lit * phaseGate;
+```
+
+`phaseFraction = 0.5 * (1 − cos(sun-moon elongation))` (Scene/Moon.js:143-159) ≈ the illuminated
+fraction, and `AtmosphericConditions.js` ships `enableMoonPhase: true`, so the gate was live at
+defaults. It is a physical double-count: the Phong term already computes N·L against the real
+Simon1994 sun direction, which produces the correct terminator and illuminated fraction by itself.
+The extra multiplier scaled the WHOLE disc — the genuinely-lit crescent included — toward black
+whenever the elongation was small: at phaseFraction 0.05 the multiplier is ~0.07 (93% blackout of a
+real crescent), reaching 0 at new moon. Every daytime moon near the sun (elongation < ~66° ⇒
+phaseFraction < 0.3) sits in the dimming range — the C12-30 dark blob. No GLSL file contains
+`phaseFraction`: the WebGL moon (EllipsoidPrimitive + `Material.ImageType` + `ONLY_SUN_LIGHTING`
+`czm_private_phong`) never had the term and was already correct. Archaeology: the gate was born in
+commit `8620f7c171` (2026-04-09, "Phase 1.2 celestial additions") already alongside the real
+`sunDirMC` N·L lighting — a deliberate aesthetic feature that double-counted from birth, not
+scaffolding for pending work (no `DEFERRED_WORK.md` entry; Principle-7 check clean).
+
+**Fix.** Deleted the two gate lines; `var color = lit;`. The lit fraction now follows the real
+sun-moon phase geometry in all configurations on both backends (WGSL converges to WebGL's behavior).
+Kept: `rawNdotL` (earthshine input), the `phaseFraction` UB member + `ud[67]` pack +
+`frameState.moonPhaseFraction` publication — that is load-bearing scaffolding for `C12-21`
+phase-dependent earthshine and the legitimate scalar consumers (sky atmosphere, volumetric fog,
+sky brightness use it as a moonlight-intensity proxy, which does not double-count the disc).
+Explicitly NOT touched (C12 moon-wave work, not this rider): atmospheric extinction on the moon,
+Lommel-Seeliger vs Lambert, moon geometry/scale/distance, sun rendering.
+
+**Verification.** `Tools/visual-regression/probe-moon-phase-gate.mjs` (3 Simon1994-derived lanes:
+day-crescent blackout lane, crescent partial-dim lane, night-full control lane where the old gate
+was exactly 1.0; disc ROI by projecting moonPositionWC; provenance SHA hard-gate) + source spec
+`Tools/visual-regression/moon-phase-gate.spec.mjs` (5/5 pass: gate-absence on comment-stripped
+code, `var color = lit;` pin, C12-21 scaffolding intact, EllipsoidFS.glsl phase-term-free, naga
+validation). `npx tsc --noEmit` clean. Note: the Batch-517 crescent lane in `probe-env-moon.mjs`
+runs at illuminated fraction ≈0.43 > 0.3 where the old gate already evaluated to exactly 1.0 — the
+deletion is byte-identical there, so its Edge re-run is a no-drift confirmation, not a re-baseline.
+
+**Files modified:** `packages/engine/Source/Shaders/WebGPU/Environment/Moon.wgsl` (gate deleted +
+header/deletion rationale comments), `packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js`
+(stale doc comment), new probe + spec, `DEBUGGING_GUIDE.md` probe row, C11/C12 queue row updates.
+
+---
+
 ## C13-05 — temporal WGS84/RTE reprojection and coarse history-reset contract (2026-07-24, Campaign 13 W1)
 
 **Premise.** The temporal resolve was not using the renderer's planet-scale coordinate contract. It
