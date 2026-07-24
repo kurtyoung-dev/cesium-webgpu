@@ -218,18 +218,19 @@ class SkyBox {
  * @readonly
  */
 SkyBox.Variant = Object.freeze({
-  /** Tycho catalogue skymap, faint Milky Way render. The historical default. */
+  /** Tycho catalogue skymap, faint Milky Way render. The historical default
+   * (superseded as default by `TYCHO_T5` in C12-10); still bundled offline. */
   TYCHO_T3: "TYCHO_T3",
   /**
-   * Tycho catalogue skymap, bright Milky Way render.
+   * Tycho catalogue skymap, bright Milky Way render — the default (see
+   * {@link SkyBox.defaultVariant}).
    *
-   * ⚠ **NOT YET BUNDLED.** Registered so the selection API and any application
-   * code can be written against it, but the cube faces are not in the
-   * repository: acquiring them is gated on the `C12-10` licence question
-   * (SVS 3572's declared sources — Hipparcos and Tycho-2 — are distributed by
-   * ESA under CC BY-NC 3.0 IGO, which is why this is not simply a download).
-   * Selecting it before the assets land will 404. See
-   * `migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md` §6d.
+   * Bundled at 2048/face (`tycho2t5_80_*.jpg`) alongside the historical `t3`
+   * faces; both are offline, no network fetch. Baked from the SVS 3572
+   * `TychoSkymapII.t5_16384x08192` equirectangular by the reproducible pipeline
+   * at `Tools/skybox-bake/` (SMPTE gamma-1.8 → sRGB corrected). The asset's
+   * terms are stated in `LICENSE.md` → Bundled Engine Assets (cleared for this
+   * project's scope per `migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md` §6f).
    */
   TYCHO_T5: "TYCHO_T5",
 });
@@ -256,15 +257,14 @@ const skyBoxVariants = {
 /**
  * The variant {@link SkyBox.createEarthSkyBox} uses when none is passed.
  *
- * ⚠ Currently `TYCHO_T3` — **not** `TYCHO_T5` — because the t5 faces are not
- * yet in the repository. Pointing the default at absent files would break the
- * sky outright. Flipping this to `TYCHO_T5` is a **one-line change** once
- * `C12-10` lands the assets and the licence question is resolved; the selection
- * plumbing below is complete and needs nothing further.
+ * `TYCHO_T5` — the bright Milky Way render — is the default as of `C12-10`
+ * (Campaign 12): its faces are now bundled in the repository (see
+ * {@link SkyBox.Variant.TYCHO_T5}). `TYCHO_T3` remains bundled and selectable
+ * for applications that prefer the historical faint render; both are offline.
  *
  * @type {string}
- * @default SkyBox.Variant.TYCHO_T3
+ * @default SkyBox.Variant.TYCHO_T5
  */
-SkyBox.defaultVariant = SkyBox.Variant.TYCHO_T3;
+SkyBox.defaultVariant = SkyBox.Variant.TYCHO_T5;
 
 export default SkyBox;

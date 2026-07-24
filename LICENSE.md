@@ -1027,9 +1027,9 @@ Binary assets shipped **inside the published `@cesium/engine` package** — not 
 
 ### Star map cube maps — NASA/GSFC Scientific Visualization Studio
 
-**Files:** `packages/engine/Source/Assets/Textures/SkyBox/tycho2t3_80_{px,py,pz,mx,my,mz}.jpg`, selected via `SkyBox.Variant.TYCHO_T3` (see `packages/engine/Source/Scene/SkyBox.js`). Any additional variant registered in `SkyBox.Variant` and derived from the same SVS product is covered by this same entry.
+**Files:** `packages/engine/Source/Assets/Textures/SkyBox/tycho2t3_80_{px,py,pz,mx,my,mz}.jpg` (selected via `SkyBox.Variant.TYCHO_T3`) and `packages/engine/Source/Assets/Textures/SkyBox/tycho2t5_80_{px,py,pz,mx,my,mz}.jpg` (selected via `SkyBox.Variant.TYCHO_T5`, the default since C12-10); see `packages/engine/Source/Scene/SkyBox.js`. Both are bundled offline. Any additional variant registered in `SkyBox.Variant` and derived from the same SVS product is covered by this same entry.
 
-**Product:** "The Tycho Catalog Skymap — Version 2.0", NASA SVS ID 3572, released 2009-01-26. The bundled faces are the `t3` variant (SVS describes it as *"the Milky Way is very faint"*), reprojected from the source equirectangular image to six cube faces.
+**Product:** "The Tycho Catalog Skymap — Version 2.0", NASA SVS ID 3572, released 2009-01-26. The `t3` faces are the `t3` variant (SVS describes it as *"the Milky Way is very faint"*), reprojected from the source equirectangular image to six cube faces. The `t5` faces are the `t5` variant (SVS: *"the Milky Way is very bright and bright stars are large"*), baked from `TychoSkymapII.t5_16384x08192` (16384×8192 TIFF, SHA-256 `2eb9baf5796c62bb04d8c87625b93356cd5ff4172bc56d6b731df554393de04f`) by the reproducible pipeline at `Tools/skybox-bake/`. The bake applies the correct **SMPTE gamma-1.8 → sRGB** transfer (SVS states the product's colour standard is SMPTE with a gamma of 1.8; the JPEGs carry no ICC profile) before reprojecting to six cube faces at 2048/face. This is a derived work of the same NASA product and is covered by the terms below identically to the `t3` faces.
 
 - Source: <https://svs.gsfc.nasa.gov/3572/>
 - NASA media guidelines: <https://www.nasa.gov/nasa-brand-center/images-and-media/>
