@@ -168,6 +168,8 @@ Two hard bounds:
 
 **LD-3 — DR-02 relaxation:** unanswered; safe default stands (the three DR-02 conditions BIND for `C12-09`: HEASARC sourcing, factual fields only, own schema).
 
+**C12-10 STATUS: ✅ COMPLETE + VISUALLY VERIFIED (Batches 742/744).** t5 baked, bundled beside t3, default flipped; serial-Edge verification: gate PASS (backend parity mean 1.002 / contrast 1.045 / starPct identical 5.587; opt-in modulation dims to 0.477; night lane 1.002), PNGs read on both sides (crisp colored stars, true blacks, no seams). During verification a LATENT PROBE DEFECT was root-caused and fixed (Batch 744): bare `scene.render()` renders at wall-clock NOW while the widget's default loop renders at the pinned clock — two suns interleaving; exposed by Batch 734's cloud frame-demand. Probe now kills the default loop, renders at pinned time, and captures same-task. ⚠ FLEET NOTE: any probe that pins a clock AND calls bare `scene.render()` has the same latent defect — audit at next probe touch.
+
 **C12-10 amendment (maintainer, 2026-07-23): "Yes but we want T3 available offline too."** The t5 bake must NOT displace t3: **both variants stay bundled in the repo** (t3 faces remain at `Assets/Textures/SkyBox/tycho2t3_80_*`; t5 lands beside them), both selectable via `SkyBox.Variant` with no network fetch, and `defaultVariant` flips to `TYCHO_T5` only once the t5 faces are in-tree. The Bundled Engine Assets LICENSE.md entry already covers both (its Files line spans variants of the same SVS product).
 
 **Context ruling recorded with these:** C11 certification is **HELD** (maintainer 2026-07-23) — the body executes before any certification; and C13 execution transferred from Sol 5.6 (out of capacity) to the orchestrator, who takes over the in-flight C13-37 tree.

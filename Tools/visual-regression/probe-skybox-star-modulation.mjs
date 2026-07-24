@@ -58,13 +58,41 @@ const MEASURE = async ({ toggleFlag, side }) => {
   // deterministic across backends and runs.
   viewer.clock.shouldAnimate = false;
   viewer.clock.currentTime = C.JulianDate.fromIso8601("2026-05-19T18:00:00Z");
+  // CRITICAL render-time discipline (root-caused 2026-07-23): a bare
+  // scene.render() renders at WALL-CLOCK NOW, while the widget's default
+  // render loop renders at the pinned clock — two suns ~90 deg apart
+  // interleaving frame-by-frame. Pre-Batch-734 the default loop idled out
+  // under requestRenderMode so the bare renders were consistently NOW-timed;
+  // 734's cloud frame-demand made the app loop render for real and exposed
+  // this. Kill the loop and pass the pinned time to EVERY render.
+  viewer.useDefaultRenderLoop = false;
+  const T = () => viewer.clock.currentTime;
   scene.backgroundColor = C.Color.BLACK;
   if (scene.globe) scene.globe.show = false; // pure sky, no Earth
   scene.requestRenderMode = false;
 
-  // Prime one frame so uniformState.sunDirectionWC is populated.
-  scene.render();
-  const sunDir = C.Cartesian3.clone(scene.context.uniformState.sunDirectionWC);
+  // Prime until uniformState.sunDirectionWC is STABLE. The ICRF/earth-
+  // orientation data loads ASYNC after the first demanding render; until it
+  // settles, the sun's world direction migrates frame-to-frame (fallback
+  // rotation -> partially-loaded -> final). Reading it after one render and
+  // aiming the camera at that transient produced skyBrightness=0 at measure
+  // time (caught 2026-07-23 by reachedFailingState=false after Batch 734's
+  // cloud frame-demand changed early-frame timing). Bounded: <=180 frames,
+  // stable when 10 consecutive deltas < 1e-9.
+  let sunDir = new C.Cartesian3();
+  {
+    let prev = null;
+    let stableRun = 0;
+    for (let i = 0; i < 180 && stableRun < 10; i++) {
+      scene.render(T());
+      const cur = C.Cartesian3.clone(scene.context.uniformState.sunDirectionWC);
+      if (prev && C.Cartesian3.distance(cur, prev) < 1e-9) stableRun++;
+      else stableRun = 0;
+      prev = cur;
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    sunDir = prev;
+  }
 
   // SUNLIT: camera ALONG the sun direction => normalize(positionWC) == sunDir
   //   => sunAlt = dot(sunDir, up) = 1.0 => skyBrightness = 1.0 (max dim).
@@ -103,11 +131,16 @@ const MEASURE = async ({ toggleFlag, side }) => {
   }
 
   for (let i = 0; i < 12; i++) {
-    scene.render();
+    scene.render(T());
     await new Promise((r) => requestAnimationFrame(r));
   }
 
   // ---- image statistics over the star field ----
+  // WebGPU canvas capture rule: the drawing buffer is cleared once the
+  // compositor consumes a presented frame, so drawImage must run in the SAME
+  // task as a render (no await in between). The default loop used to
+  // re-present continuously and masked this.
+  scene.render(T());
   const canvas = scene.canvas;
   const w = canvas.width, h = canvas.height;
   const tmp = document.createElement("canvas");
