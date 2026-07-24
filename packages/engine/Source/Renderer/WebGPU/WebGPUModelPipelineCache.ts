@@ -297,6 +297,26 @@ const MATERIAL_DEFINE_MASK = (() => {
   return m;
 })();
 
+// C11-149 BOOT ASSERTION — `computeKey` packs the masked material defines
+// as `md << 3` inside a Uint32-normalized key. A masked bit at index 29+
+// would shift to bit 32+ and be TRUNCATED by JavaScript's 32-bit shift,
+// silently ALIASING that variant's pipelines with the variant that lacks
+// the bit (wrong pipeline served, no error — exactly how the
+// MODEL_METADATA_MAT_TRANSPORT bit-30 case was dodged by keeping it out of
+// materialDefines). Fail at module load, before any pipeline can be keyed.
+// If this fires: route the new axis through sticky per-primitive state /
+// a key suffix (the `:m34` pattern) or the hi-word registry instead of
+// MATERIAL_DEFINE_MASK. PERMANENT (no debug pragma) — silent pipeline
+// aliasing is broken output.
+if ((MATERIAL_DEFINE_MASK & ~0x1fffffff) !== 0) {
+  throw new Error(
+    `WebGPUModelPipelineCache: MATERIAL_DEFINE_MASK 0x${(MATERIAL_DEFINE_MASK >>> 0).toString(16)} ` +
+      `includes a define bit >= 29, which overflows computeKey's 'md << 3' ` +
+      `packing and silently aliases pipeline variants. Key the new axis ` +
+      `outside MATERIAL_DEFINE_MASK (sticky state / key suffix / hi word).`,
+  );
+}
+
 /**
  * Computes a cache key from pipeline configuration.
  *
@@ -306,7 +326,9 @@ const MATERIAL_DEFINE_MASK = (() => {
  *   bits 3+    : materialDefines bitmask (shifted left 3). Currently
  *                only `ShaderDefine.MODEL_HAS_KHR_TEXTURES` (1<<9) is
  *                consumed, but the cache scales to any future
- *                model-material define bit added to the manifest.
+ *                model-material define bit added to the manifest UP TO
+ *                bit 28 — bit 29+ would shift past the Uint32 and alias
+ *                (guarded by the C11-149 boot assertion above).
  *
  * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
  * @param {boolean} doubleSided - true = no backface culling

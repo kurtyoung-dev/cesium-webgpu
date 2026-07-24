@@ -1,4 +1,8 @@
-import { WebGPUShaderModuleCache } from "../../../Source/Renderer/WebGPU/WebGPUShaderModuleCache.js";
+import {
+  WebGPUShaderModuleCache,
+  computeShaderModuleCacheLoKey,
+} from "../../../Source/Renderer/WebGPU/WebGPUShaderModuleCache.js";
+import { ShaderDefineHi } from "../../../Source/Renderer/WebGPU/WebGPUShaderDefines.js";
 
 // WebGPUShaderModuleCache's only device-touching call is
 // `device.createShaderModule` inside `getOrCreate` (and, transitively,
@@ -238,6 +242,152 @@ describe("Renderer/WebGPU/WebGPUShaderModuleCache", function () {
       cache.prewarm(3, "src", [], "Globe");
       expect(device.calls.length).toBe(0);
       expect(cache.size()).toBe(0);
+    });
+  });
+
+  describe("hi-word two-level keying (C11-149)", function () {
+    it("keeps the hi=0 key byte-identical to the pre-widening 40-bit packing", function () {
+      // The historical (pre-C11-149) cache computed
+      // `((defines >>> 0) * 0x100) + sourceId`, with the DP-H46b string
+      // form for a non-zero salt. Every hi=0 lookup still uses exactly
+      // this key against the SAME first-level map, so no pre-existing
+      // cached identity shifts under the widening.
+      const sweep = [
+        [1, 0],
+        [0xff, 0],
+        [5, 0x000001],
+        [5, 0x80000000],
+        [7, 0xffffffff],
+        [7, -1],
+      ];
+      for (const [sourceId, defines] of sweep) {
+        expect(computeShaderModuleCacheLoKey(sourceId, defines)).toBe(
+          (defines >>> 0) * 0x100 + sourceId,
+        );
+      }
+      expect(computeShaderModuleCacheLoKey(5, 0x000001, 7)).toBe(
+        `${0x000001 * 0x100 + 5}#7`,
+      );
+    });
+
+    it("treats definesHi as its own key dimension — no (lo, hi) pair aliases another", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUShaderModuleCache(device);
+      const los = [0, 1, 0x80000000, 0xffffffff];
+      const his = [0, 1, 2, 0x40000000];
+      const modules = [];
+      for (const lo of los) {
+        for (const hi of his) {
+          modules.push(cache.getOrCreate(9, "src", lo, `l${lo}h${hi}`, 0, hi));
+        }
+      }
+      // Every distinct tuple compiled its own module...
+      expect(new Set(modules).size).toBe(los.length * his.length);
+      expect(device.calls.length).toBe(los.length * his.length);
+      expect(cache.size()).toBe(los.length * his.length);
+      // ...and re-requesting every tuple hits the cache (no recompiles).
+      for (const lo of los) {
+        for (const hi of his) {
+          cache.getOrCreate(9, "src", lo, "again", 0, hi);
+        }
+      }
+      expect(device.calls.length).toBe(los.length * his.length);
+    });
+
+    it("keeps the legacy 5-arg call and an explicit hi=0 on the same cache entry", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUShaderModuleCache(device);
+      const legacy = cache.getOrCreate(3, "src", 0x12, "legacy");
+      const explicit = cache.getOrCreate(3, "src", 0x12, "explicit", 0, 0);
+      expect(explicit).toBe(legacy);
+      expect(device.calls.length).toBe(1);
+    });
+
+    it("threads definesHi into preprocessing", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUShaderModuleCache(device);
+      const gated = [
+        "//>>ifdef HI_WORD_PROBE",
+        "hi-then",
+        "//>>else",
+        "hi-else",
+        "//>>endif",
+      ].join("\n");
+      const off = cache.getOrCreate(4, gated, 0, "off", 0, 0);
+      const on = cache.getOrCreate(
+        4,
+        gated,
+        0,
+        "on",
+        0,
+        ShaderDefineHi.HI_WORD_PROBE,
+      );
+      expect(off.code).toBe("hi-else");
+      expect(on.code).toBe("hi-then");
+    });
+
+    it("keeps keySalt an independent identity within a hi level", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUShaderModuleCache(device);
+      const hi = ShaderDefineHi.HI_WORD_PROBE;
+      const a = cache.getOrCreate(1, "generated-a", 0x20, "a", 7, hi);
+      const b = cache.getOrCreate(1, "generated-b", 0x20, "b", 8, hi);
+      const aAgain = cache.getOrCreate(1, "generated-a", 0x20, "a2", 7, hi);
+      expect(b).not.toBe(a);
+      expect(aAgain).toBe(a);
+      expect(device.calls.length).toBe(2);
+    });
+
+    it("rejects definesHi outside hi-word bits 0..30", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUShaderModuleCache(device);
+      expect(function () {
+        cache.getOrCreate(1, "src", 0, "neg", 0, -1);
+      }).toThrowError(RangeError);
+      expect(function () {
+        // Hi-word bit 31 is reserved — the sign bit must never be claimable.
+        cache.getOrCreate(1, "src", 0, "bit31", 0, 0x80000000);
+      }).toThrowError(RangeError);
+      expect(function () {
+        cache.getOrCreate(1, "src", 0, "frac", 0, 1.5);
+      }).toThrowError(RangeError);
+      expect(device.calls.length).toBe(0);
+      expect(cache.size()).toBe(0);
+    });
+
+    it("destroy() clears hi-word levels too", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUShaderModuleCache(device);
+      const before = cache.getOrCreate(1, "src", 0, "a", 0, 1);
+      cache.getOrCreate(1, "src", 0, "b", 0, 2);
+      expect(cache.size()).toBe(2);
+      cache.destroy();
+      expect(cache.size()).toBe(0);
+      const after = cache.getOrCreate(1, "src", 0, "a", 0, 1);
+      expect(after).not.toBe(before);
+      expect(device.calls.length).toBe(3);
+    });
+
+    it("prewarm accepts [lo, hi] pairs alongside plain lo masks", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUShaderModuleCache(device);
+      const sets = [0x000000, 0x000001, [0x000001, 1]];
+      cache.prewarm(3, "src", sets, "Globe");
+      expect(device.calls.length).toBe(3);
+      expect(cache.size()).toBe(3);
+      // Idempotent across both entry forms.
+      cache.prewarm(3, "src", sets, "Globe");
+      expect(device.calls.length).toBe(3);
+    });
+
+    it("labels hi-word prewarm variants with both hex masks (lo-only labels unchanged)", function () {
+      const device = makeStubDevice();
+      const cache = new WebGPUShaderModuleCache(device);
+      cache.prewarm(3, "src", [0x0000ab, [0x0000ab, 0x000001]], "Globe");
+      expect(device.calls[0].label).toBe("Globe (defines=0x000000ab)");
+      expect(device.calls[1].label).toBe(
+        "Globe (defines=0x000000ab,hi=0x00000001)",
+      );
     });
   });
 

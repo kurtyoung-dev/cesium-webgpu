@@ -1,8 +1,11 @@
 import {
   ShaderDefine,
+  ShaderDefineHi,
   ShaderSourceId,
   defineKeyToNames,
+  defineHiKeyToNames,
   resolveDefineBit,
+  resolveDefineBitHi,
 } from "../../../Source/Renderer/WebGPU/WebGPUShaderDefines.js";
 
 describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
@@ -187,8 +190,9 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
     });
 
     it("ignores bits that don't correspond to any define", function () {
-      // Bit 31 is not yet a declared define; it must not produce a name and
-      // must not throw.
+      // Bit 31 is PERMANENTLY RESERVED (C11-149 — it was historically
+      // aliased by the collections' noDepthTest pipeline-key fold and is
+      // never claimable); it must not produce a name and must not throw.
       const mask = ShaderDefine.COMPRESSED_VERTICES | 0x80000000;
       expect(defineKeyToNames(mask)).toEqual(["COMPRESSED_VERTICES"]);
     });
@@ -222,6 +226,87 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
         expect(resolveDefineBit(name)).toBe(bit);
         expect(defineKeyToNames(bit)).toEqual([name]);
       }
+    });
+  });
+
+  describe("ShaderDefineHi registry (C11-149 hi-word widening)", function () {
+    it("pins the probe entry to hi-word bit 0", function () {
+      expect(ShaderDefineHi.HI_WORD_PROBE).toBe(1 << 0);
+    });
+
+    it("pins every declared hi define (no unpinned additions)", function () {
+      // Same discipline as the lo table: a newly-claimed hi bit must come
+      // with its own explicit pin above; bump this count with it.
+      expect(Object.keys(ShaderDefineHi).length).toBe(1);
+    });
+
+    it("uses each hi bit exactly once, as a power of two, below bit 31", function () {
+      const bits = Object.values(ShaderDefineHi);
+      expect(new Set(bits).size).toBe(bits.length);
+      for (const bit of bits) {
+        expect(bit & (bit - 1)).toBe(0);
+        expect(bit).toBeGreaterThan(0);
+        // Hi-word bit 31 is reserved — every entry must fit bits 0..30.
+        expect(bit >>> 0).toBeLessThanOrEqual(0x40000000);
+      }
+    });
+
+    it("shares no flag name with the lo-word ShaderDefine table", function () {
+      // A duplicated name would make `//>>ifdef NAME` ambiguous between
+      // the lo and hi test — the module has a load-time assertion for
+      // this; the spec pins the same invariant in CI.
+      for (const name of Object.keys(ShaderDefineHi)) {
+        expect(name in ShaderDefine).toBe(false);
+      }
+    });
+
+    it("is frozen (add-only registry cannot be mutated at runtime)", function () {
+      expect(Object.isFrozen(ShaderDefineHi)).toBe(true);
+    });
+  });
+
+  describe("resolveDefineBitHi", function () {
+    it("resolves a hi-word flag name to its bit", function () {
+      expect(resolveDefineBitHi("HI_WORD_PROBE")).toBe(
+        ShaderDefineHi.HI_WORD_PROBE,
+      );
+    });
+
+    it("returns undefined for unknown names AND lo-word names (never throws)", function () {
+      // The preprocessor probes the hi resolver FIRST and falls through
+      // to the lo path, so lo names must return undefined here.
+      expect(resolveDefineBitHi("NOT_A_REAL_DEFINE")).toBeUndefined();
+      expect(resolveDefineBitHi("LOG_DEPTH")).toBeUndefined();
+      expect(resolveDefineBitHi("GEODETIC_NORMAL")).toBeUndefined();
+    });
+  });
+
+  describe("resolveDefineBit fail-loud on hi-word names (C11-149)", function () {
+    it("throws when handed a hi-word define name", function () {
+      // A legacy caller resolving a hi name through the lo path and
+      // testing the result against a lo mask would silently read the
+      // wrong bit — the lo resolver must fail loudly instead.
+      expect(function () {
+        resolveDefineBit("HI_WORD_PROBE");
+      }).toThrowError(/HI-word define/);
+    });
+  });
+
+  describe("defineHiKeyToNames", function () {
+    it("returns an empty array for a zero hi mask", function () {
+      expect(defineHiKeyToNames(0)).toEqual([]);
+    });
+
+    it("returns the matching hi name for a set bit", function () {
+      expect(defineHiKeyToNames(ShaderDefineHi.HI_WORD_PROBE)).toEqual([
+        "HI_WORD_PROBE",
+      ]);
+    });
+
+    it("ignores hi bits that don't correspond to any hi define", function () {
+      expect(
+        defineHiKeyToNames(ShaderDefineHi.HI_WORD_PROBE | 0x40000000),
+      ).toEqual(["HI_WORD_PROBE"]);
     });
   });
 });

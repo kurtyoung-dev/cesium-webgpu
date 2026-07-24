@@ -20,13 +20,35 @@
  * `((defines >>> 0) * 0x100) + sourceId`:
  *
  *   - Low 8 bits: `ShaderSourceId` (256 shader sources engine-wide).
- *   - High 32 bits: the complete active-defines Uint32 bitmask.
+ *   - High 32 bits: the complete active-defines lo-word Uint32 bitmask.
  *
  * A 40-bit integer is exactly representable by JavaScript's 53-bit safe
  * integer range. This keeps the fast, allocation-free numeric `Map` lookup
  * while ensuring define bits 24-31 cannot alias the no-define variant. A
  * non-zero generated-source `keySalt` still uses a string key because that
  * is a separate identity dimension, not an overflow escape hatch.
+ *
+ * # Hi-word widening (C11-149)
+ *
+ * The define space is now the two-word `(defines, definesHi)` pair (see
+ * `ShaderDefineHi` in `WebGPUShaderDefines`). The hi word is a SECOND
+ * cache level, not a wider packed integer — packing 64 define bits + 8
+ * source-id bits into one number would exceed the 53-bit safe-integer
+ * range and force string keys (allocation on the hot path, the design
+ * point this cache exists to avoid). Instead:
+ *
+ *   - `definesHi === 0` (every legacy caller and the overwhelmingly
+ *     common path): the lookup is the SAME single `Map.get` against the
+ *     same `_modules` field with the same 40-bit key as before —
+ *     structurally identical to the pre-widening hot path.
+ *   - `definesHi !== 0`: a lazily-created outer `Map` keyed by the hi
+ *     word selects an inner level with the identical 40-bit lo-key
+ *     scheme. Two map hops, numeric keys throughout, still
+ *     allocation-free.
+ *
+ * No `(defines, definesHi, sourceId, keySalt)` tuple can alias another:
+ * the hi word selects the level and the lo key is collision-free within
+ * a level (proven in `WebGPUShaderModuleCacheSpec`).
  *
  * # Prewarm
  *
@@ -47,6 +69,29 @@
  */
 
 import { preprocess } from "./WebGPUShaderPreprocessor.js";
+import type { ShaderDefineLoMask } from "./WebGPUShaderDefines.js";
+
+/**
+ * Pure lo-level key packing: `((defines >>> 0) * 0x100) + sourceId`, with
+ * the DP-H46b string form `"<numericKey>#<salt>"` when a non-zero
+ * `keySalt` is supplied. Exported so `WebGPUShaderModuleCacheSpec` can
+ * pin the hi=0 key against the historical (pre-C11-149) formula without
+ * reaching into cache internals. Callers must validate ranges first —
+ * this helper only packs.
+ *
+ * @private
+ */
+export function computeShaderModuleCacheLoKey(
+  sourceId: number,
+  defines: number,
+  keySalt = 0,
+): number | string {
+  // Multiplication, rather than a bitwise shift, is intentional: JavaScript
+  // bitwise operators truncate to 32 bits and would discard define bits
+  // 24-31 after reserving the low source-id byte.
+  const numericKey = (defines >>> 0) * 0x100 + sourceId;
+  return keySalt === 0 ? numericKey : `${numericKey}#${keySalt >>> 0}`;
+}
 
 export class WebGPUShaderModuleCache {
   private _device: GPUDevice;
@@ -57,26 +102,40 @@ export class WebGPUShaderModuleCache {
   // `"<numericKey>#<salt>"` so two callers that share `(sourceId, defines)`
   // but supply DIFFERENT source content don't alias one compiled module.
   // `keySalt === 0` (the default) keeps the allocation-free numeric path.
+  //
+  // C11-149 — `_modules` is the `definesHi === 0` level of the two-level
+  // (hi → loKey) scheme. Keeping it as its own field (rather than an entry
+  // of `_modulesByHi`) keeps the hi=0 hot path structurally identical to
+  // the pre-widening cache: one integer compare, then the same single
+  // `Map.get`.
   private _modules = new Map<number | string, GPUShaderModule>();
+  // C11-149 — outer level for `definesHi !== 0` variants, keyed by the hi
+  // word. Lazily created: callers that never pass a hi word (all of them,
+  // until the first hi-word consumer lands) never allocate it.
+  private _modulesByHi: Map<
+    number,
+    Map<number | string, GPUShaderModule>
+  > | null = null;
 
   constructor(device: GPUDevice) {
     this._device = device;
   }
 
   /**
-   * Fetch or create the shader module for `(sourceId, defines)`.
-   * Preprocesses the source string against the defines bitmask on
+   * Fetch or create the shader module for `(sourceId, defines, definesHi)`.
+   * Preprocesses the source string against the defines bitmasks on
    * miss, then caches the compiled `GPUShaderModule` keyed by a
    * compact safe integer. Subsequent calls for the same key are a single
-   * `Map.get`.
+   * `Map.get` (two for hi-word variants).
    *
    * @param sourceId `ShaderSourceId` integer identifying which source
    *   file this is. Must fit in the low 8 bits of the cache key.
    * @param source Raw WGSL source as imported from the `.wgsl` module.
    *   Build-time debug pragma stripping is already applied.
-   * @param defines Active-defines bitmask (`ShaderDefine` bits OR'd
-   *   together). The complete Uint32 is retained. Pass `0` for no
-   *   conditional blocks.
+   * @param defines Active lo-word defines bitmask (`ShaderDefine` bits
+   *   OR'd together). The complete Uint32 is retained. Pass `0` for no
+   *   conditional blocks. Typed as `ShaderDefineLoMask` so a branded
+   *   `ShaderDefineHi` bit passed here is a compile error.
    * @param label Devtools label for `createShaderModule`. Callers
    *   should include the define set in the label (see `prewarm`) for
    *   easier browser-side diagnostic output.
@@ -86,13 +145,21 @@ export class WebGPUShaderModuleCache {
    *   metadata classes whose generated `Metadata` chunk differs) get
    *   distinct compiled modules. Defaults to `0` → numeric key unchanged
    *   (parity for all existing callers).
+   * @param definesHi C11-149 — active hi-word defines bitmask
+   *   (`ShaderDefineHi` bits OR'd together). Defaults to `0`, which keeps
+   *   every existing call site source-compatible AND keeps the lookup on
+   *   the structurally-unchanged hi=0 hot path. Unlike `defines`, the hi
+   *   word is a fresh namespace with no signed legacy, so only
+   *   `0..0x7fffffff` is accepted (hi bit 31 is reserved — see
+   *   `ShaderDefineHi`).
    */
   getOrCreate(
     sourceId: number,
     source: string,
-    defines: number,
+    defines: ShaderDefineLoMask,
     label: string,
     keySalt = 0,
+    definesHi: number = 0,
   ): GPUShaderModule {
     if (!Number.isInteger(sourceId) || sourceId < 0 || sourceId > 0xff) {
       throw new RangeError("sourceId must be an integer in the range 0..255");
@@ -104,19 +171,43 @@ export class WebGPUShaderModuleCache {
     ) {
       throw new RangeError("defines must be a signed or unsigned Uint32 mask");
     }
+    if (
+      !Number.isInteger(definesHi) ||
+      definesHi < 0 ||
+      definesHi > 0x7fffffff
+    ) {
+      throw new RangeError(
+        "definesHi must be an integer mask using hi-word bits 0..30 (bit 31 is reserved)",
+      );
+    }
 
-    const unsignedDefines = defines >>> 0;
-    // Multiplication, rather than a bitwise shift, is intentional: JavaScript
-    // bitwise operators truncate to 32 bits and would discard define bits
-    // 24-31 after reserving the low source-id byte.
-    const numericKey = unsignedDefines * 0x100 + sourceId;
-    const key = keySalt === 0 ? numericKey : `${numericKey}#${keySalt >>> 0}`;
-    let module = this._modules.get(key);
+    // C11-149 — select the cache level. `definesHi === 0` stays the
+    // pre-widening hot path: same `_modules` field, same 40-bit key, one
+    // `Map.get`.
+    let level: Map<number | string, GPUShaderModule>;
+    if (definesHi === 0) {
+      level = this._modules;
+    } else {
+      let byHi = this._modulesByHi;
+      if (byHi === null) {
+        byHi = new Map();
+        this._modulesByHi = byHi;
+      }
+      let hiLevel = byHi.get(definesHi);
+      if (hiLevel === undefined) {
+        hiLevel = new Map();
+        byHi.set(definesHi, hiLevel);
+      }
+      level = hiLevel;
+    }
+
+    const key = computeShaderModuleCacheLoKey(sourceId, defines, keySalt);
+    let module = level.get(key);
     if (module !== undefined) return module;
 
-    const processed = preprocess(source, defines);
+    const processed = preprocess(source, defines, definesHi);
     module = this._device.createShaderModule({ code: processed, label });
-    this._modules.set(key, module);
+    level.set(key, module);
     return module;
   }
 
@@ -126,32 +217,46 @@ export class WebGPUShaderModuleCache {
    * end of renderer `_initDevice` with the define sets that your first
    * 30 frames are known to exercise.
    *
+   * C11-149 — each entry is either a lo-word mask (hi = 0, the historical
+   * form; existing callers are source-compatible and produce byte-identical
+   * labels) or a `[definesLo, definesHi]` pair for hi-word variants, whose
+   * labels carry both hex masks.
+   *
    * Idempotent — already-cached entries are a no-op.
    */
   prewarm(
     sourceId: number,
     source: string,
-    defineSets: readonly number[],
+    defineSets: readonly (number | readonly [number, number])[],
     labelPrefix: string,
   ): void {
     for (let i = 0; i < defineSets.length; i++) {
-      const defines = defineSets[i];
-      this.getOrCreate(
-        sourceId,
-        source,
-        defines,
-        `${labelPrefix} (defines=0x${(defines >>> 0)
-          .toString(16)
-          .padStart(8, "0")})`,
-      );
+      const entry = defineSets[i];
+      const defines = typeof entry === "number" ? entry : entry[0];
+      const definesHi = typeof entry === "number" ? 0 : entry[1];
+      const loHex = (defines >>> 0).toString(16).padStart(8, "0");
+      const label =
+        definesHi === 0
+          ? `${labelPrefix} (defines=0x${loHex})`
+          : `${labelPrefix} (defines=0x${loHex},hi=0x${(definesHi >>> 0)
+              .toString(16)
+              .padStart(8, "0")})`;
+      this.getOrCreate(sourceId, source, defines, label, 0, definesHi);
     }
   }
 
   /**
-   * Diagnostic: number of compiled modules currently cached.
+   * Diagnostic: number of compiled modules currently cached, across the
+   * hi=0 level and every hi-word level.
    */
   size(): number {
-    return this._modules.size;
+    let n = this._modules.size;
+    if (this._modulesByHi !== null) {
+      for (const level of this._modulesByHi.values()) {
+        n += level.size;
+      }
+    }
+    return n;
   }
 
   /**
@@ -161,5 +266,9 @@ export class WebGPUShaderModuleCache {
    */
   destroy(): void {
     this._modules.clear();
+    if (this._modulesByHi !== null) {
+      this._modulesByHi.clear();
+      this._modulesByHi = null;
+    }
   }
 }

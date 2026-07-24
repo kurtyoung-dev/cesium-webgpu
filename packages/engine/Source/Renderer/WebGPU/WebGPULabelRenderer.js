@@ -883,8 +883,9 @@ function _updateWebGPULabelsInner(labelCollection, frameState, commandList) {
   ]);
   // NEW-COLLECTIONS-2DCV-COPLANAR-DEPTH — settled 2D/CV draws coplanar label
   // glyphs on top of the flat map with the depth test disabled. Fold the flag
-  // into the pipeline-cache key (bit 31, above every ShaderDefine bit) so 3D
-  // keeps its `less-equal` variant byte-identical. (Shared base helpers —
+  // into the pipeline-cache key as its own dimension (`defines * 2 + flag` —
+  // C11-149 moved it off define bit 31, which is now free) so 3D keeps its
+  // `less-equal` variant byte-identical. (Shared base helpers —
   // `computeNoDepthTest` is `morphTime === 0 && mode !== SCENE3D`,
   // byte-identical to the prior inline derivation.)
   const noDepthTest = computeNoDepthTest(frameState);

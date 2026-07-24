@@ -201,15 +201,28 @@ export function computeNoDepthTest(
   return frameState.morphTime === 0.0 && frameState.mode !== SceneMode.SCENE3D;
 }
 
-/** Bit 31 — folds `noDepthTest` into the pipeline-cache key above every ShaderDefine bit. */
-export const NO_DEPTH_TEST_PIPELINE_KEY_BIT = 0x80000000;
-
-/** Fold `noDepthTest` into a defines bitmask to key a DISTINCT pipeline. */
+/**
+ * Fold `noDepthTest` into a pipeline-cache key as its OWN key dimension:
+ * `key = (defines >>> 0) * 2 + flag`. The result is at most a 33-bit
+ * integer — exactly representable, allocation-free, and collision-free
+ * against every `(defines, flag)` pair.
+ *
+ * History (C11-149 / NEW-WEBGPU-SHADERDEFINE-WIDTH-EXPANSION): this
+ * helper previously squatted on bit 31 of the define mask
+ * (`defines | 0x80000000`), which made the last free `ShaderDefine`
+ * lo-word bit unusable as a real define — any future `1 << 31` entry
+ * would have aliased the noDepthTest pipeline variant. The folded key
+ * was only ever a renderer-local Map key (the shader module cache always
+ * received the raw `defines`), so re-keying costs nothing; bit 31 of the
+ * lo word is now genuinely reserved/unclaimed again. Out-of-band flags
+ * must never be folded into define bit positions — give them their own
+ * key dimension like this one.
+ */
 export function pipelineKeyWithDepthFlag(
   defines: number,
   noDepthTest: boolean,
 ): number {
-  return noDepthTest ? defines | NO_DEPTH_TEST_PIPELINE_KEY_BIT : defines;
+  return (defines >>> 0) * 2 + (noDepthTest ? 1 : 0);
 }
 
 // =========================================================================
@@ -223,8 +236,7 @@ export function getOrCreateInstanceManager<T extends ResidentInstanceItem>(
   label: string,
 ): WebGPUResidentInstanceBuffer<T> {
   let mgr = cache.instanceManager as
-    | WebGPUResidentInstanceBuffer<T>
-    | undefined;
+    WebGPUResidentInstanceBuffer<T> | undefined;
   if (mgr === undefined) {
     mgr = new WebGPUResidentInstanceBuffer<T>(device, label);
     cache.instanceManager =
@@ -476,7 +488,6 @@ export default {
   invalidatePipelinesOnSceneFormatChange,
   computeNoDepthTest,
   pipelineKeyWithDepthFlag,
-  NO_DEPTH_TEST_PIPELINE_KEY_BIT,
   getOrCreateInstanceManager,
   syncInstancesAndConsume,
   validateInstanceSyncResult,

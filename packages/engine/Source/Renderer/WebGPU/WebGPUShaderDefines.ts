@@ -10,16 +10,35 @@
  * The shader module cache (see `WebGPUShaderModuleCache.getOrCreate`)
  * keys modules by the exact 40-bit safe integer
  * `((defines >>> 0) * 0x100) + sourceId`. That reserves 8 bits for
- * source IDs and retains the complete 32-bit define mask. JavaScript
- * numbers represent every such key exactly (the maximum is `2^40 - 1`),
- * so all 32 define bits participate without string allocation on the
- * common path. `keySalt` remains available only for sources whose WGSL
- * text is generated dynamically and therefore needs an additional
- * content fingerprint beyond `(sourceId, defines)`.
+ * source IDs and retains the complete 32-bit lo-word define mask.
+ * JavaScript numbers represent every such key exactly (the maximum is
+ * `2^40 - 1`), so all 32 lo-word bits participate without string
+ * allocation on the common path. `keySalt` remains available only for
+ * sources whose WGSL text is generated dynamically and therefore needs
+ * an additional content fingerprint beyond `(sourceId, defines)`.
+ *
+ * # Two-word (lo/hi) widening — C11-149
+ *
+ * The lo-word `ShaderDefine` registry is EXHAUSTED: bits 0-30 are all
+ * occupied, and bit 31 is deliberately left unclaimed (it was
+ * historically squatted by the collections' `noDepthTest`
+ * pipeline-key fold — see `pipelineKeyWithDepthFlag` in
+ * `WebGPUCollectionRendererBase` — and stays reserved so any stale
+ * folded value can never alias a real define). New specialization
+ * axes claim bits in the **`ShaderDefineHi`** registry instead: a
+ * DISTINCT second-word namespace threaded through
+ * `preprocess(source, defines, definesHi)` and the module cache's
+ * two-level `(definesHi → loKey)` map. Hi-word bit 31 is likewise
+ * reserved (never claim it). The branded `ShaderDefineHiMask` type
+ * makes passing a hi-word bit where a lo-word mask is expected a
+ * compile error in TypeScript; the reverse direction (a lo bit passed
+ * as a `definesHi` argument) is not compile-checked — reviewers must
+ * watch for it at hi-word call sites.
  *
  * # Add-only rule
  *
- * Both tables are **add-only**. Never reorder, renumber, or remove an
+ * All three tables (`ShaderDefine`, `ShaderDefineHi`, `ShaderSourceId`)
+ * are **add-only**. Never reorder, renumber, or remove an
  * entry even if its last consumer disappears. Reordering silently
  * aliases cached modules across rebuilds; removal breaks any pipeline
  * that still references the bit. Deprecated entries should be marked
@@ -31,7 +50,14 @@
 
 /**
  * Preprocessor defines exposed via `//>>ifdef FLAG_NAME` in Cesium-
- * authored WGSL. Each entry occupies one bit of a Uint32 bitmask.
+ * authored WGSL. Each entry occupies one bit of the LO-word Uint32
+ * bitmask.
+ *
+ * **FULL** as of C11-149: bits 0-30 are all claimed and bit 31 is
+ * permanently reserved (historically aliased by the collections'
+ * noDepthTest pipeline-key fold; keeping it unclaimed guarantees no
+ * stale folded key can ever alias a real define). New defines go in
+ * {@link ShaderDefineHi}.
  *
  * **Add-only; never reorder or remove.**
  */
@@ -848,6 +874,100 @@ export const ShaderDefine = Object.freeze({
   MODEL_METADATA_MAT_TRANSPORT: 1 << 30,
 } as const);
 
+// ============================================================================
+// Hi-word registry (C11-149 / NEW-WEBGPU-SHADERDEFINE-WIDTH-EXPANSION)
+// ============================================================================
+
+declare const shaderDefineHiBrand: unique symbol;
+
+/**
+ * Branded numeric type for a HI-word define bit or mask. The brand is a
+ * compile-time-only property (erased at runtime — values are plain
+ * numbers, allocation-free); its purpose is directional safety: a
+ * `ShaderDefineHiMask` is NOT assignable to {@link ShaderDefineLoMask},
+ * so passing a hi-word bit where a lo-word `defines` mask is expected is
+ * a COMPILE ERROR instead of a silent `defines & BIT === 0` that would
+ * quietly emit the `//>>else` branch of the gated block (wrong shader,
+ * no throw — the dominant failure mode this type exists to prevent).
+ */
+export type ShaderDefineHiMask = number & {
+  readonly [shaderDefineHiBrand]: "ShaderDefineHi";
+};
+
+/**
+ * "Flavored" lo-word mask type: every plain `number` (including all
+ * `ShaderDefine` bits and any bitwise combination of them) is assignable,
+ * but a branded {@link ShaderDefineHiMask} is REJECTED at compile time.
+ * Use this as the parameter type of any API that consumes a lo-word
+ * defines mask (`preprocess`, `WebGPUShaderModuleCache.getOrCreate`).
+ *
+ * Limitation (documented, not enforceable without breaking every
+ * existing call site): the REVERSE mistake — a lo-word bit passed as a
+ * `definesHi` argument — cannot be compile-checked, because lo bits are
+ * plain numbers. Hi-word parameters are named `definesHi` everywhere so
+ * the mistake is at least greppable/reviewable.
+ */
+export type ShaderDefineLoMask = number & {
+  readonly [shaderDefineHiBrand]?: never;
+};
+
+/**
+ * Construct a hi-word define bit. Bits 0..30 only — hi-word bit 31 is
+ * reserved (mirroring the lo word, where bit 31 was historically aliased
+ * by an out-of-band pipeline-key fold; keeping the sign bit of BOTH
+ * words permanently unclaimed means `mask | 0` / `mask >>> 0`
+ * normalization can never change which defines a mask names).
+ */
+function hiDefineBit(bitIndex: number): ShaderDefineHiMask {
+  if (!Number.isInteger(bitIndex) || bitIndex < 0 || bitIndex > 30) {
+    throw new RangeError(
+      `ShaderDefineHi bits must use bit indices 0..30 (got ${bitIndex}); hi-word bit 31 is reserved`,
+    );
+  }
+  return ((1 << bitIndex) >>> 0) as ShaderDefineHiMask;
+}
+
+/**
+ * HI-word preprocessor defines — the second Uint32 of the widened
+ * `(defines, definesHi)` pair (C11-149). A DISTINCT namespace from
+ * {@link ShaderDefine}: names must be unique across BOTH tables (asserted
+ * at module load), and a hi-word `//>>ifdef FLAG` resolves against the
+ * `definesHi` argument of `preprocess`, never against the lo word.
+ *
+ * Claim bits here for every NEW specialization axis (the lo word is
+ * full): enhanced-ocean (C11-158), model uber-shader axes
+ * (C11-81/88/89/92), tiles (C11-131), etc. Bits 0-30 of this word are
+ * claimable; bit 31 stays reserved.
+ *
+ * **Add-only; never reorder or remove.**
+ */
+export const ShaderDefineHi = Object.freeze({
+  /**
+   * Permanently-reserved validation probe (C11-149). Consumed ONLY by
+   * the widening specs (`WebGPUShaderDefinesSpec`,
+   * `WebGPUShaderPreprocessorHiSpec`, `WebGPUShaderModuleCacheSpec`) to
+   * exercise the hi-word resolve → preprocess → cache-key path
+   * end-to-end against a REAL registry entry; no production renderer
+   * ever sets it and no shipped WGSL gates on it. Kept forever per the
+   * add-only rule — without it the hi path would only be testable
+   * against an empty table (i.e., not at all).
+   */
+  HI_WORD_PROBE: hiDefineBit(0),
+} as const);
+
+// Namespace-collision boot assertion: a name living in BOTH tables would
+// make `//>>ifdef NAME` ambiguous (lo test vs hi test). Fails loudly at
+// module load, which is effectively compile time for the bundle.
+for (const name of Object.keys(ShaderDefineHi)) {
+  if (name in ShaderDefine) {
+    throw new Error(
+      `WebGPUShaderDefines: "${name}" is declared in BOTH ShaderDefine (lo) ` +
+        `and ShaderDefineHi (hi) — flag names must be unique across the two ` +
+        `registries or //>>ifdef resolution is ambiguous.`,
+    );
+  }
+}
+
 /**
  * Stable numeric identity for each Cesium-authored WGSL source file.
  * Combined with the active-defines bitmask as the shader module cache
@@ -991,8 +1111,8 @@ export const ShaderSourceId = Object.freeze({
 } as const);
 
 /**
- * Debug helper: expand a defines bitmask back into the set of active
- * define names. Intended only for diagnostic output (cache dumps,
+ * Debug helper: expand a lo-word defines bitmask back into the set of
+ * active define names. Intended only for diagnostic output (cache dumps,
  * error messages). Do not call on the hot path — the cost is O(n) over
  * the registry and the allocation isn't free.
  */
@@ -1005,9 +1125,48 @@ export function defineKeyToNames(defines: number): string[] {
 }
 
 /**
- * Resolve a define flag name to its bit. Returns `undefined` for
+ * Debug helper: hi-word sibling of {@link defineKeyToNames}. Diagnostic
+ * output only.
+ */
+export function defineHiKeyToNames(definesHi: number): string[] {
+  const names: string[] = [];
+  for (const [name, bit] of Object.entries(ShaderDefineHi)) {
+    if ((definesHi & (bit as number)) !== 0) names.push(name);
+  }
+  return names;
+}
+
+/**
+ * Resolve a LO-word define flag name to its bit. Returns `undefined` for
  * unknown names so the preprocessor can produce a clear error.
+ *
+ * C11-149 fail-loud rule: if `name` is a HI-word define
+ * ({@link ShaderDefineHi}), this THROWS instead of returning `undefined`
+ * — a legacy caller that resolved a hi name through the lo path and
+ * tested the result against a lo mask would silently read the wrong bit
+ * (and a silent `undefined` would misreport a REGISTERED define as
+ * unknown). Callers that legitimately handle both words must check
+ * {@link resolveDefineBitHi} FIRST (as the preprocessor does).
  */
 export function resolveDefineBit(name: string): number | undefined {
+  if ((ShaderDefineHi as Record<string, number>)[name] !== undefined) {
+    throw new Error(
+      `WebGPUShaderDefines: "${name}" is a HI-word define (ShaderDefineHi). ` +
+        `Resolve it with resolveDefineBitHi and test it against a definesHi ` +
+        `mask — testing it against the lo word would silently read the wrong bit.`,
+    );
+  }
   return (ShaderDefine as Record<string, number>)[name];
+}
+
+/**
+ * Resolve a HI-word define flag name to its branded bit. Returns
+ * `undefined` for names not in {@link ShaderDefineHi} (including lo-word
+ * names — this resolver never throws, so the preprocessor can probe it
+ * first and fall through to the lo path).
+ */
+export function resolveDefineBitHi(
+  name: string,
+): ShaderDefineHiMask | undefined {
+  return (ShaderDefineHi as Record<string, ShaderDefineHiMask>)[name];
 }

@@ -28,14 +28,19 @@
  *     //>>endif
  *
  * Nesting is supported to arbitrary depth. Flag names must be
- * registered in `WebGPUShaderDefines.ShaderDefine`; unknown names
- * throw at preprocess time (better to fail loudly than silently
- * emit the wrong branch).
+ * registered in `WebGPUShaderDefines.ShaderDefine` (lo word) or
+ * `ShaderDefineHi` (hi word — C11-149 widening); unknown names throw
+ * at preprocess time (better to fail loudly than silently emit the
+ * wrong branch). A hi-word flag tests against the `definesHi`
+ * argument; legacy 1-/2-arg callers implicitly pass `definesHi = 0`,
+ * so a hi-gated block correctly emits its `//>>else` branch for them.
  *
  * # Purity
  *
- * `preprocess(source, defines)` is a pure function: same inputs always
- * produce byte-identical output. Callers cache results in
+ * `preprocess(source, defines, definesHi)` is a pure function: same
+ * inputs always produce byte-identical output. In particular,
+ * `preprocess(source, defines, 0)` is byte-identical to the historical
+ * two-argument `preprocess(source, defines)`. Callers cache results in
  * `WebGPUShaderModuleCache`; the preprocessor itself has no cache
  * concept.
  *
@@ -43,7 +48,11 @@
  * @module WebGPUShaderPreprocessor
  */
 
-import { resolveDefineBit } from "./WebGPUShaderDefines.js";
+import {
+  resolveDefineBit,
+  resolveDefineBitHi,
+  type ShaderDefineLoMask,
+} from "./WebGPUShaderDefines.js";
 
 // Directive lines look like:
 //   //>>ifdef FLAG_NAME
@@ -67,16 +76,27 @@ interface Frame {
  *
  * @param source Raw WGSL source (as imported from a `.wgsl` module;
  *   debug pragmas already stripped at build time for release builds).
- * @param defines Active-defines bitmask. Each set bit corresponds to
- *   an entry in `ShaderDefine` and enables the matching `//>>ifdef`
- *   block. Pass `0` for "no conditional blocks active."
+ * @param defines Active LO-word defines bitmask. Each set bit
+ *   corresponds to an entry in `ShaderDefine` and enables the matching
+ *   `//>>ifdef` block. Pass `0` for "no conditional blocks active."
+ *   Typed as `ShaderDefineLoMask` so a branded `ShaderDefineHi` bit
+ *   passed here is a compile error (it would silently test false).
+ * @param definesHi Active HI-word defines bitmask (C11-149 widening).
+ *   Each set bit corresponds to an entry in `ShaderDefineHi`. Defaults
+ *   to `0`, keeping every existing lo-only call site source-compatible
+ *   and byte-identical in output.
  * @returns Preprocessed WGSL, ready for `device.createShaderModule`.
- * @throws {Error} when the source contains an unknown `//>>ifdef FLAG`,
- *   an unbalanced directive (extra `//>>endif`, unclosed `//>>ifdef`),
- *   or a duplicate `//>>else` within a single block. Errors carry the
- *   offending line number.
+ * @throws {Error} when the source contains an unknown `//>>ifdef FLAG`
+ *   (registered in neither word's registry), an unbalanced directive
+ *   (extra `//>>endif`, unclosed `//>>ifdef`), or a duplicate
+ *   `//>>else` within a single block. Errors carry the offending line
+ *   number.
  */
-export function preprocess(source: string, defines: number): string {
+export function preprocess(
+  source: string,
+  defines: ShaderDefineLoMask,
+  definesHi: number = 0,
+): string {
   const lines = source.split("\n");
   const output: string[] = [];
   const stack: Frame[] = [];
@@ -108,15 +128,29 @@ export function preprocess(source: string, defines: number): string {
             `WGSL preprocessor: //>>ifdef at line ${i + 1} missing flag name`,
           );
         }
-        const bit = resolveDefineBit(flag);
-        if (bit === undefined) {
-          throw new Error(
-            `WGSL preprocessor: unknown define "${flag}" at line ${i + 1}. ` +
-              `Register it in WebGPUShaderDefines.ShaderDefine before use.`,
-          );
+        // C11-149 — probe the HI-word registry FIRST: `resolveDefineBit`
+        // (the lo resolver) deliberately THROWS on hi-word names, so a
+        // hi flag must never reach it. The hi table is tiny, so this is
+        // one failed property lookup per lo-flag directive — and the
+        // preprocessor result is cached per (source, defines, definesHi)
+        // by the module cache, so none of this is hot.
+        let conditionWasTrue: boolean;
+        const hiBit = resolveDefineBitHi(flag);
+        if (hiBit !== undefined) {
+          conditionWasTrue = (definesHi & hiBit) !== 0;
+        } else {
+          const bit = resolveDefineBit(flag);
+          if (bit === undefined) {
+            throw new Error(
+              `WGSL preprocessor: unknown define "${flag}" at line ${i + 1}. ` +
+                `Register it in WebGPUShaderDefines.ShaderDefine (lo word) ` +
+                `or ShaderDefineHi (hi word) before use.`,
+            );
+          }
+          conditionWasTrue = (defines & bit) !== 0;
         }
         stack.push({
-          conditionWasTrue: (defines & bit) !== 0,
+          conditionWasTrue,
           inElse: false,
           startLine: i + 1,
         });
