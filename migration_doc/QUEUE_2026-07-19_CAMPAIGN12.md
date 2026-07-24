@@ -1,6 +1,6 @@
 # Campaign 12 — Celestial Appearance: from "present" to "photographic"
 
-**Status: DRAFT — NOT LAUNCHED. ✅ W3 asset licensing RESOLVED — see §6f: the project scope (personal, non-commercial, not redistributed) makes the question moot; t5 is cleared and `C12-10` is unblocked.** Constructed 2026-07-19 at maintainer direction ("use the findings to start constructing campaign 12"). ⚠ **Updated 2026-07-23: Campaign 13 (clouds) is the live campaign (Batch 732 `f4a934e606`); Campaign 11 is PAUSED with its clouds-weather rows transferred to C13. Every `C11-*` dependency named in this queue (`C11-79`/`C11-80`, `C11-160`, `C11-161`, `C11-175`, plus the never-registered `C11-176a`) is NOT STARTED in the paused queue and therefore DORMANT until explicitly transferred into C12 or pulled forward — see §3, W1, and the §7 launch precondition.**
+**Status: ✅ LAUNCHED 2026-07-23** (LD-1/LD-2 answered — see §6g). Runs under the orchestrator pattern (Opus + Fable subagents, model-matched per task) interleaved with C11 (certification HELD; body continues) and C13 (in-flight Sol work taken over by the orchestrator).
 
 **Source of truth for every claim here:** [CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md](CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md) — 8 research lanes, every load-bearing claim adversarially verified (20 of 20 heavy claims refuted and dropped; what remains survived attack).
 
@@ -51,8 +51,8 @@ Two hard bounds:
 |---|---|---|---|
 | `C12-01` | **Celestial gate harness** — implement metrics M1/M2/M2e/M3/M6 on the existing probe scene; emit the 14-field manifest; baseline both backends for all four gates. **ABSORBS `C11-176a`** (never appended to the C11 queue — research-doc row only, `CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md:297`). Already landed de facto in `probe-skybox-star-modulation.mjs` (Batches 722/724): sunlit-side + night cameras, default-pair assertion, RMS-contrast + top-0.1% metrics. Still missing and owed here: M1 source census, M2e sky floor, wiring `brightPct` + the default-pair assertion into `probe-env-skybox-stars.mjs` (camera there is still NOT sun-relative, `:83-86`; `brightPct` computed at `:154` but absent from pass criteria `:293-300`), and HARD exit-code gating (`probe-skybox-star-modulation.mjs:267` exits 0 unconditionally, even on GATE FAIL). | M | `C11-176a` (absorbed here) |
 | `C12-02` | **Exposure-bracket capture** (1×/8×/64× stitch). **An 8-bit readback cannot measure a halo to 1e-3 of peak — the halo is exactly what the current capture discards.** Required by every PSF gate. | M | `C12-01` |
-| `C12-03` | **Adapter provenance** — consume `C11-175`'s `adapter.info` logging so a PASS records which physical GPU produced it. ⚠ `C11-175` is NOT STARTED in the PAUSED C11 (`QUEUE_2026-07-18_CAMPAIGN11.md:721`) — pull it into C12 or fold the logging into this item (LD-1). Half pre-exists: `powerPreference:"high-performance"` is already the default (`WebGPUContext.ts:1126`, `WebGPUDevicePool.ts:761`) and a vendor-only init log exists (`WebGPUContext.ts:1222`); the missing piece is the structured `adapter.info` record beside the WebGL `RENDERER` string. | XS | `C11-175` (pull into C12 or fold in) |
-| `C12-04` | **Sequencing audit vs `C11-79`/`C11-80`** (starfield single-submission retains star commands). C12 edits the same renderer; confirm no conflict. ⚠ Premise stale: `C11-80` is NOT STARTED and C11 is PAUSED — this row executes AFTER the §7 transfer-vs-rebase decision (LD-1). | XS | §7 launch decision (was: `C11-80` landed) |
+| `C12-03` | **Adapter provenance** — consume `C11-175`'s `adapter.info` logging so a PASS records which physical GPU produced it. ✅ LD-1 ANSWERED (2026-07-23): `C11-175` TRANSFERRED into this item — dep resolved, `C12-03` is READY. Half pre-exists: `powerPreference:"high-performance"` is already the default (`WebGPUContext.ts:1126`, `WebGPUDevicePool.ts:761`) and a vendor-only init log exists (`WebGPUContext.ts:1222`); the missing piece is the structured `adapter.info` record beside the WebGL `RENDERER` string. | XS | `C11-175` (pull into C12 or fold in) |
+| `C12-04` | **Sequencing audit vs `C11-79`/`C11-80`** (starfield single-submission retains star commands). C12 edits the same renderer; confirm no conflict. ✅ LD-1 ANSWERED (2026-07-23): `C11-79`/`C11-80` TRANSFERRED into C12 — this row now sequences them (audit first, then C11-80 → C11-79 → the W2 renderer edits). | XS | LD-1 (answered) |
 
 ### W2 — Bright-star appearance model (the "white blobs" fix) — shader + data only, no framebuffer risk
 
@@ -159,6 +159,18 @@ Two hard bounds:
 | `C12-28` | **`NEW-HDR-DEFAULT-ON-HDR-CAPABLE-DISPLAYS`.** Default `highDynamicRange` from actual display capability rather than a hardcoded `false` — `window.matchMedia("(dynamic-range: high)")` (and/or `(video-dynamic-range: high)`), with the WebGPU canvas configured for extended range where supported. **Constraints:** must remain explicitly overridable by the app; must not change behaviour on SDR displays (byte-identical); and because enabling HDR engages PBR Neutral's highlight compression, `C12-07` (the chroma-preserving profile that fixes the blob **without** HDR) stays the first increment and this lands **after** it. ⚠ Do NOT switch the default tonemap operator to ACES as part of this — `acesTonemap` ends in a per-channel `clamp(0,1)` that maximizes hue-shift-to-white on exactly these pixels. | M | W4 (after `C12-07`) |
 
 ---
+
+## 6g. LAUNCH DECISIONS — ANSWERED 2026-07-23 (maintainer)
+
+**LD-1 — paused-C11 dependencies → TRANSFER (as recommended).** `C11-79`, `C11-80`, `C11-160`, the `C11-115` implementation (direction stays RESOLVED: ALPHA_BLEND), `C11-161`, and `C11-175` transfer into C12 with IDs retained as aliases (C13 precedent). Slotting: `C11-175`→`C12-03`; `C11-79`/`C11-80`→`C12-04` (C11-80 lands before C11-79 — it retains star commands); `C11-160`+`C11-115`-impl→`C12-18`; `C11-161`→`C12-19`. The C11 ledger rows are closed as TRANSFERRED.
+
+**LD-2 — §3 split items → PULL IN (as recommended).** `C11-176b` and `C11-176c` become C12 W1 riders (IDs retained; 176c is in flight with the Phase-1 trio worker at time of ruling; 176b lands BEFORE `C12-20..23` so the Batch-517 crescent probe re-baselines once). `C11-SEED-07` folded into `C11-179` in the C11 queue; `C11-177`/`C11-179` deep design is C12-owned per the 2026-07-23 audit.
+
+**LD-3 — DR-02 relaxation:** unanswered; safe default stands (the three DR-02 conditions BIND for `C12-09`: HEASARC sourcing, factual fields only, own schema).
+
+**C12-10 amendment (maintainer, 2026-07-23): "Yes but we want T3 available offline too."** The t5 bake must NOT displace t3: **both variants stay bundled in the repo** (t3 faces remain at `Assets/Textures/SkyBox/tycho2t3_80_*`; t5 lands beside them), both selectable via `SkyBox.Variant` with no network fetch, and `defaultVariant` flips to `TYCHO_T5` only once the t5 faces are in-tree. The Bundled Engine Assets LICENSE.md entry already covers both (its Files line spans variants of the same SVS product).
+
+**Context ruling recorded with these:** C11 certification is **HELD** (maintainer 2026-07-23) — the body executes before any certification; and C13 execution transferred from Sol 5.6 (out of capacity) to the orchestrator, who takes over the in-flight C13-37 tree.
 
 ## 6b. Original decision text (retained for context)
 
