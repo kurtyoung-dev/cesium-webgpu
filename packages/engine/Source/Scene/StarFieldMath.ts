@@ -107,32 +107,77 @@ export function buildStarInstanceData(): Float32Array {
   const count = BrightStarCatalog.count;
   const out = new Float32Array(count * FLOATS_PER_STAR);
 
-  // Per-star brightness from visual magnitude (Pogson scale). The raw
-  // flux ratio across the catalog (mag −1.46 … +4.4) spans ~240×, far too
-  // wide to map linearly onto a display — the faintest stars would vanish
-  // below 1/255 while Sirius alone fills the frame. We therefore:
-  //   1) compute the true Pogson flux relative to the faint limit, then
-  //   2) gamma-compress it (exponent < 1) so the faint end lifts into
-  //      visibility, then
-  //   3) remap into a [LO, HI] band where LO keeps the faintest star a
-  //      dim-but-real point and HI lets the brightest stars exceed 1.0.
-  //      On the default LDR target (highDynamicRange=false, bloom off)
-  //      the >1.0 overflow clips at the ROP; only with HDR enabled does
-  //      the float scene target preserve it for the bloom bright-pass
-  //      (when bloom is also enabled).
-  // This preserves the PERCEPTUAL ordering (brighter magnitude ⇒ brighter
-  // pixel ⇒ larger bloomed disc) while keeping the whole catalog visible.
-  // Catalog point-sprites are limited to BRIGHT stars (mag <= cutoff). The
-  // dense faint-star background is carried by the baked SkyBox star cubemap
-  // (rendered on both backends, the same texture WebGL uses), so faint catalog
-  // points would only duplicate and over-brighten it. Fainter stars emit zero
-  // flux below (invisible); the cutoff is the single tunable. (~80 stars at 2.5.)
-  const MAG_CUTOFF = 2.5;
-  const faintLimitMag = MAG_CUTOFF;
-  const brightestFlux = Math.pow(10.0, -0.4 * (-1.46 - faintLimitMag));
-  const FLUX_GAMMA = 0.5; // < 1 lifts the faint tail
-  const LO = 0.5; // faintest included star (dim point, no bloom)
-  const HI = 2.0; // brightest star (>1.0 — clips at the LDR default; subtle bloom when HDR + bloom are on)
+  // Per-star brightness from visual magnitude — C12-08 dynamic-range
+  // restoration. The magnitude→intensity mapping is STRICTLY LINEAR in
+  // flux (Pogson 1856: relative flux = 10^(−0.4·mag)); the historical
+  // FLUX_GAMMA=0.5 / LO / HI band is GONE. That band pre-crushed the true
+  // 38.4:1 flux range of the then-rendered set (mag −1.46…2.5) to 2.70:1
+  // before any exposure control could act — Sirius and a 2nd-magnitude
+  // star arrived nearly identical, then both clipped into the same white
+  // plateau (CELESTIAL_APPEARANCE_RESEARCH_2026-07-19.md §2d).
+  //
+  // All compression now lives in ONE explicit exposure constant, anchored
+  // at the faint end:
+  //
+  //   intensity I(m) = EXPOSURE · 10^(−0.4·m)
+  //   EXPOSURE = FAINT_ANCHOR_PEAK / (1 + K_HALO) · 10^(0.4·FAINT_ANCHOR_MAG)
+  //            ≈ 0.060 / 1.08 · 27.54 ≈ 1.53
+  //
+  // so a FAINT_ANCHOR_MAG (3.6) star renders a peak-pixel of
+  // FAINT_ANCHOR_PEAK = 0.060 ≈ 15.3/255 — above the M1 detection floor
+  // (P−B ≥ 12/255) with margin for sub-pixel sampling phase (the peak
+  // sample sits up to 0.5 px off the profile centre; at σ_px ≈ 0.6 the
+  // phase-median attenuation is ≈0.80, keeping the anchor star ≥ 12/255),
+  // and below 1/15 so the rendered brightest(clipped 1.0):faintest peak
+  // ratio is ≥ 15:1 (G2 criterion 5; ≈16.7:1 at the anchor). At the math
+  // layer the range is fully linear: I(−1.46)/I(5.0) = 10^(0.4·6.46) ≈ 380:1.
+  //
+  // Retired / re-derived constants (C12-08 ledger):
+  //   FLUX_GAMMA — RETIRED. Gamma-compression destroyed flux ordering
+  //     information permanently; linearity is the whole point.
+  //   LO — RETIRED. The faint floor is now the FAINT_ANCHOR_PEAK exposure
+  //     anchor above, expressed in framebuffer units, not a remap band.
+  //   HI — RETIRED. The bright peak now emerges from physics (I_max ≈ 5.87
+  //     for Sirius); the C12-07 shader amplitude split confines the
+  //     resulting clip to a ≤~1.3 px core instead of a 4 px plateau.
+  //     Raising brightness caps under an LDR clamp only widens the white
+  //     disc — do not reintroduce HI.
+  //   MAG_CUTOFF — SURVIVES, re-derived: now the vendored-catalogue
+  //     inclusion bound (5.0 = the faintest vendored star), not a bright-
+  //     stars-only gate. The whole catalogue renders; stars between the
+  //     3.6 anchor and 5.0 fall below the guaranteed M1 census floor but
+  //     remain visible (a mag-5.0 star peaks ≈ 4/255). When C12-09 deepens
+  //     the catalogue, re-derive MAG_CUTOFF and FAINT_ANCHOR_* together —
+  //     Tools/visual-regression/starfield-psf.spec.mjs asserts the anchor
+  //     invariants against the live catalogue data.
+  //
+  // The cubemap double-draw seam (t3 bake vs sprite overlap band) is owned
+  // and reconciled by C12-11; the sprite side deliberately renders the full
+  // catalogue per the C12-08 mandate.
+  const MAG_CUTOFF = 5.0;
+  const FAINT_ANCHOR_MAG = 3.6;
+  const FAINT_ANCHOR_PEAK = 0.06; // ≈15.3/255: ≥ M1 floor 12/255, ≤ 1/15
+  // Fragment-profile peak is (1 + K_HALO)·I — K_HALO here MUST equal the
+  // shader constant STAR_PSF_K_HALO (StarField.wgsl / StarFieldFS.glsl);
+  // starfield-psf.spec.mjs asserts the three stay identical.
+  const K_HALO = 0.08;
+  const EXPOSURE =
+    (FAINT_ANCHOR_PEAK / (1.0 + K_HALO)) *
+    Math.pow(10.0, 0.4 * FAINT_ANCHOR_MAG);
+  // C12-06 — bright-star quad growth is HALO EXTENT, not core size. The
+  // quad scale rides into the shader as (1 + sizeBoost); the fragment
+  // profile multiplies the core's radius back by the same factor so the
+  // core's on-screen size is invariant while the Moffat wing (whose α is
+  // quad-relative) widens with the quad. Growth law: quadScale = √I for
+  // clipping stars (I > 1) — glare area ∝ flux — clamped so the total
+  // glare (quad) angular diameter never exceeds 1°: Celestia adopted the
+  // same 1° bound after larger Gaussian glows produced visible squares
+  // (CelestiaProject/Celestia#1948). Sirius: √5.87 ≈ 2.42 < 2.91 cap.
+  const GLARE_MAX_DIAMETER_RAD = 0.017453292519943295; // 1 degree
+  // 2 × StarField.js `_pointAngularSize` (0.0030 rad base half-angle) —
+  // keep the two in sync; starfield-psf.spec.mjs cross-checks them.
+  const BASE_QUAD_DIAMETER_RAD = 0.006;
+  const MAX_QUAD_SCALE = GLARE_MAX_DIAMETER_RAD / BASE_QUAD_DIAMETER_RAD;
 
   for (let i = 0; i < count; i++) {
     const base = i * stride;
@@ -150,23 +195,23 @@ export function buildStarInstanceData(): Float32Array {
     const dy = cosDec * Math.sin(ra);
     const dz = Math.sin(dec);
 
-    // Pogson flux relative to the faint limit. Apparent magnitude already
-    // encodes luminosity / distance² (inverse-square), so this IS the
-    // distance-scaled brightness. Stars fainter than the catalog cutoff emit
-    // zero (invisible) — the baked SkyBox texture carries them instead.
-    const rawFlux = Math.pow(10.0, -0.4 * (vmag - faintLimitMag));
-    const norm = Math.min(1.0, rawFlux / brightestFlux);
-    const compressed = Math.pow(norm, FLUX_GAMMA);
-    const flux = vmag > MAG_CUTOFF ? 0.0 : LO + compressed * (HI - LO);
+    // Linear Pogson flux scaled by the explicit exposure. Apparent
+    // magnitude already encodes luminosity / distance² (inverse-square),
+    // so this IS the distance-scaled brightness — no clamp, no gamma.
+    // Stars fainter than the vendored-catalogue bound emit zero (none
+    // exist today; the guard is the C12-09 deepening valve).
+    const flux =
+      vmag > MAG_CUTOFF ? 0.0 : EXPOSURE * Math.pow(10.0, -0.4 * vmag);
 
     const rgb = bvToRgb(bv);
 
-    // Constant size: every star is a true point source (real angular size
-    // << 1 px even for the nearest/largest), so there is NO brightness→size
-    // disc boost. Brightness alone — via subtle bloom on the brightest —
-    // provides the only perceived size variation, matching how the eye and
-    // camera actually see stars.
-    const sizeBoost = 0.0;
+    // C12-06 halo extent (see the derivation above): stars are unresolved
+    // point sources, so the CORE never grows — the shader holds its pixel
+    // size constant against this scale. The quad growth only creates room
+    // for the Moffat glare wing of stars bright enough to clip (I > 1).
+    const quadScale =
+      flux > 1.0 ? Math.min(Math.sqrt(flux), MAX_QUAD_SCALE) : 1.0;
+    const sizeBoost = quadScale - 1.0;
 
     const o = i * FLOATS_PER_STAR;
     out[o + 0] = dx;

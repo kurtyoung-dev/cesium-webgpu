@@ -60,10 +60,16 @@ class StarField {
     // the daytime fade by the feature renderer).
     this._intensity = options.intensity ?? 1.0;
 
-    // Angular radius of a base star point sprite, in radians. 0.0042 rad
-    // (~0.24°) gives a small crisp disc; bright stars enlarge via the
-    // per-star sizeBoost packed in the instance buffer.
-    this._pointAngularSize = 0.0042;
+    // Angular radius of a BASE star point sprite, in radians. 0.0030 rad
+    // (~0.172°) — just enough quad to hold the C12-05 PSF core (σ = 0.12
+    // of the base quad ≈ 0.6 px at 1920×1080) plus its edge AA window;
+    // stars are unresolved point sources, so the core never needs more.
+    // Bright stars do NOT get a bigger core: the per-star sizeBoost packed
+    // in the instance buffer grows the QUAD as glare-halo extent (C12-06),
+    // capped so the total glare diameter stays ≤ 1° — see the derivation
+    // in StarFieldMath.buildStarInstanceData, whose MAX_QUAD_SCALE bakes
+    // in 2× this value (starfield-psf.spec.mjs cross-checks the pair).
+    this._pointAngularSize = 0.003;
 
     // Floor on the NDC half-extent so faint stars never collapse to a
     // sub-pixel that flickers under MSAA. 0.0022 ≈ a 1.7 px diameter on a

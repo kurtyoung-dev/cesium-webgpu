@@ -48,8 +48,12 @@ uniform float u_minPointSize;
 uniform vec3 u_zenithTransmittance;
 uniform vec3 u_cameraUpFixed;
 
-out vec2 v_corner;   // [-1, 1] quad-local coordinate
-out vec3 v_color;    // HDR color (already intensity-weighted)
+out vec2 v_corner;     // [-1, 1] quad-local coordinate
+out vec3 v_color;      // HDR color (already intensity-weighted)
+// C12-06 — the quad enlargement factor (1 + sizeBoost). The fragment
+// profile multiplies the core's radius by this so the core keeps a
+// constant on-screen size while the enlarged quad carries the halo.
+out float v_coreScale;
 
 void main()
 {
@@ -72,6 +76,7 @@ void main()
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
         v_corner = vec2(0.0);
         v_color = vec3(0.0);
+        v_coreScale = 1.0;
         return;
     }
 
@@ -89,6 +94,7 @@ void main()
 
     gl_Position = clip;
     v_corner = corner;
+    v_coreScale = 1.0 + sizeBoost;
 
     // C7-SUN-STARS-EXTINCTION — per-star atmospheric extinction. Bouguer's law
     // with a plane-parallel airmass X ≈ 1/sin(elevation), capped near the

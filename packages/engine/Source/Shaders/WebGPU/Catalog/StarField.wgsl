@@ -12,11 +12,14 @@
 // inertial (J2000 / TEME) direction is rotated into the Earth-fixed frame
 // on the CPU (TEME→pseudo-fixed matrix, matching SkyBox), then placed at
 // the far plane so it sits behind all scene geometry. Output is additively
-// blended into the scene framebuffer. At default settings the scene target
-// is LDR (scene.highDynamicRange=false, bloom disabled), so values above
-// 1.0 clip at the ROP; only with HDR enabled does the float scene target
-// preserve the overflow for the bloom bright-pass (when bloom is also
-// enabled).
+// blended into the scene framebuffer. The C12-05/06/07 Moffat PSF in
+// fragmentMain is designed for the DEFAULT LDR target
+// (scene.highDynamicRange=false, bloom off): only the tight Gaussian core
+// of the brightest stars exceeds 1.0 and clips to white — deliberately,
+// over ≤ ~1.3 px radius — while the power-law glare halo stays below the
+// clip level by construction and keeps its blackbody hue. HDR + bloom are
+// an optional enhancement (the same core overflow then feeds the bloom
+// bright-pass), NOT a dependency.
 //
 // Geometry: instanced draw — 6 vertices (two triangles) per instance,
 // one instance per star. The per-instance buffer carries the fixed-frame
@@ -65,6 +68,10 @@ struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) corner: vec2<f32>,   // [-1,1] quad-local coordinate
   @location(1) color: vec3<f32>,    // HDR color (already intensity-weighted)
+  // C12-06 — the quad enlargement factor (1 + sizeBoost). The fragment
+  // profile multiplies the core's radius by this so the core keeps a
+  // constant on-screen size while the enlarged quad carries the halo.
+  @location(2) coreScale: f32,
 };
 
 // Two-triangle quad corner table indexed by vertex_index 0..5.
@@ -96,6 +103,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     output.position = vec4<f32>(2.0, 2.0, 2.0, 1.0);
     output.corner = vec2<f32>(0.0);
     output.color = vec3<f32>(0.0);
+    output.coreScale = 1.0;
     return output;
   }
 
@@ -119,6 +127,7 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // depth.
   output.position = vec4<f32>(clip.x, clip.y, clip.w, clip.w);
   output.corner = corner;
+  output.coreScale = 1.0 + input.sizeBoost;
 
   // C7-SUN-STARS-EXTINCTION — per-star atmospheric extinction. Bouguer's law
   // with a plane-parallel airmass X ≈ 1/sin(elevation), capped near the
@@ -133,23 +142,59 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   return output;
 }
 
+// C12-05/06/07 — Moffat core+wing glare PSF, chroma-preserving amplitude
+// split. These constants MUST stay byte-identical to the GLSL twin
+// (Shaders/StarFieldFS.glsl) — Principle 5 shared shading; the Node spec
+// Tools/visual-regression/starfield-psf.spec.mjs extracts and compares
+// them, and also asserts the analytic G2 shape (r_1e-3/r_core ≥ 8 vs
+// < 2 for the old truncated Gaussian).
+//
+//   core = exp(−(r·coreScale)² / (2σ²)) — the resolved stellar image.
+//     σ is BASE-quad-relative; multiplying r by coreScale (the C12-06
+//     quad enlargement, 1 + sizeBoost) keeps the core at a constant
+//     on-screen pixel size (σ ≈ 0.60 px at 1920×1080) while the quad
+//     grows, so quad growth is pure halo extent — never a bigger disc.
+//   halo = (1 + (r/α)²)^(−β) — Moffat (1969) power-law wing, log-log
+//     slope −2β = −4.0: the vacuum/ocular glare regime (Stiles–Holladay
+//     inverse-square family; Spencer et al., SIGGRAPH '95), NOT the
+//     ground-seeing β=4.765. α is quad-relative and deliberately NOT
+//     coreScale-compensated: the wing widens with the boosted quad —
+//     that IS the C12-06 halo-extent mechanism.
+//   window = smoothstep(1.0, 0.92, r) — narrow AA band at the quad edge
+//     (moved from 0.45: the old wide fade would multiply the wing to
+//     zero across the outer 55% of the quad and make it inert). At
+//     r = 0.92 even Sirius' wing is ≈ 3e−4 — below 1/255 — so the
+//     window trims nothing visible; it exists to reach exactly zero at
+//     the quad edge (no square sprites, the Celestia failure mode).
+//
+// Amplitude (C12-07): rgb = color·prof, where color = chroma·I from the
+// VS. The halo share I·K_HALO ≤ 5.87·0.08 ≈ 0.47 < 1 for the brightest
+// catalogue star (I_max = EXPOSURE·10^(0.4·1.46), StarFieldMath.ts), so
+// on the DEFAULT LDR target the halo NEVER clips and keeps full
+// blackbody hue. Only the tight core may exceed 1.0 and clip to white —
+// correct, saturated detector cores ARE white — over ≤ ~1.3 px radius
+// at 1920×1080 (solve I_max·exp(−r²/(2·0.60²)) + 0.47·halo = 1 →
+// r ≈ 1.2 px). Do NOT re-widen the clip by raising intensities: under
+// an LDR clamp that strictly widens the white disc. No HDR/bloom
+// dependency; with HDR+bloom on, the same core overflow feeds the
+// bright-pass.
+const STAR_PSF_SIGMA: f32 = 0.12;
+const STAR_PSF_ALPHA: f32 = 0.15;
+const STAR_PSF_BETA: f32 = 2.0;
+const STAR_PSF_K_HALO: f32 = 0.08;
+
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  // Soft radial falloff → a round, anti-aliased point with a bright
-  // core and a softer halo. dist in [0,√2]; a wide Gaussian core (so the
-  // disc is visibly filled, not a single hot texel) plus a smoothstep
-  // cutoff at the quad edge for anti-aliasing. The additive blend reads
-  // the result as a glowing star.
-  let dist = length(input.corner);
-  let core = exp(-dist * dist * 2.2);
-  let edge = smoothstep(1.0, 0.45, dist); // fade the outer half of the quad
-  let alpha = core * edge;
+  let r = length(input.corner);
+  let rCore = r * input.coreScale;
+  let core = exp(-(rCore * rCore) / (2.0 * STAR_PSF_SIGMA * STAR_PSF_SIGMA));
+  let haloBase = r / STAR_PSF_ALPHA;
+  let halo = pow(1.0 + haloBase * haloBase, -STAR_PSF_BETA);
+  let win = smoothstep(1.0, 0.92, r);
+  let prof = (core + STAR_PSF_K_HALO * halo) * win;
 
-  // Additive output: RGB is the blackbody color already weighted by Pogson
-  // intensity in the VS. Values above 1.0 clip at the ROP on the default
-  // LDR target (highDynamicRange=false, bloom off); only with HDR enabled
-  // does the float scene target preserve the overflow for the bloom
-  // bright-pass (when bloom is also enabled).
-  let rgb = input.color * alpha;
-  return vec4<f32>(rgb, alpha);
+  // Additive premultiplied output: RGB is the blackbody color already
+  // weighted by linear Pogson intensity in the VS, times the PSF profile.
+  let rgb = input.color * prof;
+  return vec4<f32>(rgb, prof);
 }
