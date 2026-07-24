@@ -470,8 +470,16 @@ export function buildPipelineDescriptor(
   // fragment stage matches the single target. The `_cap_<format>` name suffix
   // keeps the capture pipeline distinct in any shared cache.
   const capLabel = isCapture ? `, capture ${captureFaceFormat}` : "";
+  // C11-158 — the enhanced-ocean STYLING variant compiles a DIFFERENT
+  // GlobeTerrain module (the `ENHANCED_OCEAN` hi-word branch, via
+  // `getProductionShaderModule` reading `host._enhancedOceanEnabled`). The
+  // central pipeline cache keys on this descriptor name, so it MUST carry a
+  // distinct marker or the enhanced + classic pipelines would alias. The
+  // renderer-local pipeline caches (keyed without the hi word) are wiped on the
+  // flag flip instead — see `WebGPUGlobeSurfaceRenderer._applyEnhancedOceanState`.
+  const oceanLabel = host._enhancedOceanEnabled ? ", enhOcean" : "";
   return {
-    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${dofLabel}${tbfLabel}${ncLabel}${imgLabel}${capLabel})`,
+    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${dofLabel}${tbfLabel}${ncLabel}${imgLabel}${capLabel}${oceanLabel})`,
     layout: host._pipelineLayout!,
     vertex: {
       module: vertexModule,

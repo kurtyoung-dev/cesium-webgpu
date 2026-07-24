@@ -953,6 +953,38 @@ export const ShaderDefineHi = Object.freeze({
    * against an empty table (i.e., not at all).
    */
   HI_WORD_PROBE: hiDefineBit(0),
+
+  /**
+   * Globe enhanced-ocean STYLING variant (C11-158 /
+   * NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE). The FIRST production
+   * consumer of the hi-word registry. When set, `GlobeTerrain.wgsl`'s
+   * `computeEnhancedOcean` emits its `//>>ifdef ENHANCED_OCEAN` branch — the
+   * WebGPU-only enhanced ocean look (foam whitecaps layered over the
+   * full-strength wave-perturbed diffuse / non-diffuse / Phong-specular
+   * highlight composite). When clear (the DEFAULT, matching WebGL), it emits
+   * the `//>>else` branch: a faithful port of WebGL's classic
+   * `computeWaterColor` (GlobeFS.glsl L807-878) — imagery preserved, the same
+   * wave-diffuse + non-diffuse + Phong-specular highlights added on top, but
+   * NO foam / SSS / GGX / deep-colour styling.
+   *
+   * The gate is STYLING-ONLY. The shared wave-normal march
+   * (`sampleOceanWaveNormals` → perturbed `waterNormal` / `tsPerturbationRatio`)
+   * runs UNCONDITIONALLY and feeds BOTH branches, so the toggle never touches
+   * the waves — those stay parity-preserving under the same default-true
+   * `globe.showWaterEffect` on both backends. Only how the perturbed surface
+   * is coloured changes.
+   *
+   * Gating (single flip point): OR'd in when `host._enhancedOceanEnabled` is
+   * true, mirrored each frame from `Globe.enableEnhancedOcean` (default
+   * FALSE → classic WebGL-parity water). The bit participates in the
+   * shader-module cache's hi-word level (`getOrCreate(..., definesHi)`) and the
+   * globe pipeline's descriptor-name cache key; a runtime flip wipes the
+   * renderer-local globe pipeline caches so the module + pipeline re-resolve
+   * without a reload.
+   *
+   * Consumer: `GlobeTerrain.wgsl` (`computeEnhancedOcean`).
+   */
+  ENHANCED_OCEAN: hiDefineBit(1),
 } as const);
 
 // Namespace-collision boot assertion: a name living in BOTH tables would

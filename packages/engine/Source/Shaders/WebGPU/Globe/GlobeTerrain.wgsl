@@ -2372,6 +2372,7 @@ fn computeEnhancedOcean(
     tsPerturbationRatio = tsFadedNormal.z;
   }
 
+//>>ifdef ENHANCED_OCEAN
   // Wave-highlight diffuse term — matches WebGL `waveHighlightColor *
   // czm_getLambertDiffuse(...) * mask * (1 - fade)`. Runs unconditionally
   // (WebGL doesn't gate this on `enableLighting`) and contributes only a
@@ -2471,6 +2472,71 @@ fn computeEnhancedOcean(
   var color = baseColor + oceanContribution;
   color = mix(color, foamColor, foamFactor);
   return color;
+//>>else
+  // ── Classic WebGL-parity ocean styling (C11-158 DEFAULT) ──
+  // Faithful port of GlobeFS.glsl::computeWaterColor (non-HDR path,
+  // L807-878). The gate is STYLING-ONLY: the shared wave march above already
+  // produced the perturbed eye-space normal (`waterNormal`, WebGL's
+  // `enuToEye * normalTangentSpace`) and `tsPerturbationRatio` (WebGL's
+  // `normalTangentSpace.z`), so BOTH branches ride the identical waves — only
+  // the colour derivation differs. This branch reproduces WebGL's exact
+  // shading model (imagery preserved; wave-diffuse + non-diffuse + Phong
+  // specular ADDED) and OMITS the WebGPU-only enhanced additions (foam
+  // whitecaps / SSS / GGX / deep-colour) so default WebGPU water reads like
+  // WebGL water. WebGPU tone-maps HDR downstream, so — like the enhanced
+  // branch — the WebGL `#ifdef HDR` composition is intentionally not
+  // reproduced. See WebGPUShaderDefines.ShaderDefineHi.ENHANCED_OCEAN.
+  let classicWaveHighlightColor = vec3<f32>(0.3, 0.45, 0.6);
+  // czm_getLambertDiffuse(sunDirEC, waterNormal) * maskValue (GlobeFS L849).
+  let classicDiffuseIntensity =
+    max(dot(waterNormal, sunDirEC), 0.0) * waterMaskValue;
+  // diffuseHighlight = waveHighlightColor * diffuseIntensity * (1 - fade)
+  // (GlobeFS L850). `lightingFade` is WebGL's atmosphere camera-distance
+  // `fade` (the SAME clamp GlobeFS L428 computes, passed by the caller).
+  let classicDiffuseHighlight =
+    classicWaveHighlightColor *
+    classicDiffuseIntensity *
+    (1.0 - clamp(lightingFade, 0.0, 1.0));
+  // nonDiffuseHighlight: only under SHOW_OCEAN_WAVES (GlobeFS L852-859 #ifdef);
+  // the #else path is vec3(0.0), reproduced by leaving the var at zero when
+  // waves are off. Mix factor is the mask-scaled `diffuseIntensity` (GlobeFS
+  // L856), NOT the raw NdotL.
+  var classicNonDiffuseHighlight = vec3<f32>(0.0);
+  if (showOceanWaves) {
+    classicNonDiffuseHighlight = mix(
+      classicWaveHighlightColor * 5.0 * (1.0 - tsPerturbationRatio),
+      vec3<f32>(0.0),
+      classicDiffuseIntensity,
+    );
+  }
+  // czm_getSpecular(sunDirEC, viewDir, waterNormal, 10) (GlobeFS L862):
+  //   pow(max(dot(reflect(-L, N), V), 0), 10)
+  let classicToReflectedLight = reflect(-sunDirEC, waterNormal);
+  let classicSpecularIntensity =
+    pow(max(dot(classicToReflectedLight, viewDir), 0.0), 10.0);
+  // surfaceReflectance = mix(0, mix(zoomedOut, oceanSpec, waveIntensity), mask)
+  //   = mix(zoomedOut, oceanSpec, waveIntensity) * mask (GlobeFS L863).
+  // waveIntensity = waveFade(70000, 1e6, |positionToEyeEC|)
+  //   = pow(1 - clamp((len-70000)/(1e6-70000),0,1), 5) (GlobeFS L782-786, L816).
+  let classicPositionToEyeECLength = length(positionEC);
+  let classicWaveFadeLin = clamp(
+    (classicPositionToEyeECLength - 70000.0) / (1000000.0 - 70000.0),
+    0.0,
+    1.0,
+  );
+  let classicWaveIntensity = pow(1.0 - classicWaveFadeLin, 5.0);
+  // `camera.lighting.w` mirrors WebGL's u_zoomedOutOceanSpecularIntensity
+  // (Globe.beginFrame — 0.4 with ground atmosphere, 0.5 otherwise, 0 outside
+  // SCENE3D); the GLSL const oceanSpecularIntensity = 0.5 (GlobeFS L800).
+  let classicSurfaceReflectance =
+    mix(camera.lighting.w, 0.5, classicWaveIntensity) * waterMaskValue;
+  let classicSpecular = classicSpecularIntensity * classicSurfaceReflectance;
+  // Non-HDR composition: imagery + all three highlight terms (GlobeFS L875).
+  return baseColor +
+    classicDiffuseHighlight +
+    classicNonDiffuseHighlight +
+    vec3<f32>(classicSpecular);
+//>>endif
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -3796,6 +3862,18 @@ fn fragmentMain(
   // corrects this so the lockstep discipline points reviewers at the
   // right files.
   //
+  // C11-158 STYLING TOGGLE (NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE).
+  // `computeEnhancedOcean` is now `//>>ifdef ENHANCED_OCEAN`-gated at the
+  // STYLING boundary: the shared wave march (`sampleOceanWaveNormals` →
+  // `waterNormal` / `tsPerturbationRatio` / `foamFactor`) runs unconditionally
+  // and feeds both branches; only the colour derivation is gated. The
+  // `//>>ifdef` branch is the WGSL enhanced look (bytes-identical to the
+  // pre-toggle source); the `//>>else` branch is a faithful port of WebGL's
+  // classic `computeWaterColor` and is the DEFAULT (hi word clear), so the
+  // divergences numbered 5-7 below are ENHANCED-branch-only — the classic
+  // default branch matches WebGL. The bit is `ShaderDefineHi.ENHANCED_OCEAN`,
+  // OR'd in when `Globe.enableEnhancedOcean` (default false) is true.
+  //
   // STRUCTURAL DIVERGENCES (separate from the now-matched algorithm)
   //
   // 1. **Gating**. GLSL: `#if defined(HAS_WATER_MASK) && (defined(SHOW_
@@ -3825,19 +3903,22 @@ fn fragmentMain(
   //    direct tile UV sampling. Wave appearance differs in detail; both
   //    produce convincing ocean motion. WGSL-only enhancement: 3-octave
   //    instead of 2-octave (documented in convention ledger).
-  // 5. **Specular model**. MATCHED since GLOBE-POLAR-STRETCH-POLISH:
-  //    both backends use the `czm_getSpecular` Phong lobe
+  // 5. **Specular model**. MATCHED in BOTH branches since
+  //    GLOBE-POLAR-STRETCH-POLISH: enhanced and classic (C11-158 `//>>else`)
+  //    both use the `czm_getSpecular` Phong lobe
   //    (`pow(max(dot(reflect(-L, N), V), 0), 10)`) × the waveIntensity-
   //    modulated `surfaceReflectance`, unconditionally (no enableLighting
   //    gate, no orbit fade). The earlier WGSL-only GGX + orbit-fade
   //    variant suppressed the zoomed-out sun glint that WebGL shows at
   //    orbital altitudes. `distributionGGX` remains defined but unused.
-  // 6. **Foam (whitecaps)**. WGSL has `computeFoam` overlaying white
-  //    pixels where wave normals are steep; GLSL has no equivalent.
-  //    WGSL-only enhancement.
+  // 6. **Foam (whitecaps)**. ENHANCED-branch only (C11-158). WGSL's
+  //    `computeFoam` overlays white pixels where wave normals are steep;
+  //    GLSL has no equivalent, and the classic `//>>else` default branch
+  //    omits it — foam is a WGSL-only enhancement that renders only when
+  //    `Globe.enableEnhancedOcean` is true.
   // 7. **Subsurface scattering**. WGSL has `computeSubsurfaceScattering`
-  //    defined but currently unused — scaffolding for future
-  //    enhancement; GLSL has no equivalent.
+  //    defined but currently unused (neither branch calls it) — scaffolding
+  //    for future enhancement; GLSL has no equivalent.
   //
   // ─── Enhanced Water mask + ocean rendering ───
   if (tile.flags.x > 0.5) {

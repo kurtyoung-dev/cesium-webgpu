@@ -336,6 +336,16 @@ export class WebGPUGlobeSurfaceRenderer {
   // uniformly hyperbolic OR log across the whole fleet. Default false → the
   // globe pick is byte-identical hyperbolic until C10-11's coordinated flip.
   public _pickLogDepthEnabled: boolean = false;
+  // C11-158 (NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE) — renderer mirror
+  // of `Globe.enableEnhancedOcean` (default FALSE). When true, the globe shader
+  // factory ORs `ShaderDefineHi.ENHANCED_OCEAN` into `definesHi` (via
+  // `host._enhancedOceanEnabled`), selecting the enhanced ocean STYLING branch
+  // of `computeEnhancedOcean`; false compiles the classic WebGL-parity branch.
+  // Only the STYLING is gated — the shared wave march is unconditional. Set
+  // each frame from the tile provider (which `Globe.render` copies the flag
+  // onto) via `_applyEnhancedOceanState`, which wipes the renderer-local globe
+  // pipeline caches on a flip so the module + pipeline re-resolve.
+  public _enhancedOceanEnabled: boolean = false;
   // Batch 110 — track scene-pipeline format generation last applied
   // so a runtime HDR / canvas-format change clears the pipeline +
   // wireframe + debug-fragment caches and rebuilds against the new
@@ -654,6 +664,39 @@ export class WebGPUGlobeSurfaceRenderer {
     defines: number,
   ): GPUShaderModule | null {
     return getClipDistancesShaderModuleHelper(this, defines);
+  }
+
+  /**
+   * C11-158 (NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE) — apply the
+   * current `Globe.enableEnhancedOcean` state (mirrored onto the tile provider
+   * each frame) to the renderer. On a FLIP, the enhanced ocean STYLING branch
+   * of `computeEnhancedOcean` swaps in/out via the `ShaderDefineHi.ENHANCED_OCEAN`
+   * hi-word define. The shader-module cache keys by `definesHi`, so it serves
+   * the correct module on its own — but the renderer-local pipeline caches key
+   * WITHOUT the hi word (only the central cache keys on the descriptor name,
+   * which now carries an `enhOcean` label), and the clip-distances module map
+   * keys by the lo defines only. So a flip must wipe those to force a
+   * keyed-miss rebuild that re-resolves the module + pipeline — no reload
+   * needed. Idempotent: returns immediately when the state is unchanged (the
+   * common per-frame case), so the wipe fires only on the rare toggle.
+   *
+   * Called from BOTH `createTileCommands` (on-screen) and
+   * `getOrCreateCaptureTileCommands` (env-map capture) — whichever runs first
+   * in a frame wipes ALL globe pipeline caches, so the ordering between the two
+   * (capture runs before `globe.render`) never leaves a stale cache behind.
+   */
+  private _applyEnhancedOceanState(enabled: boolean): void {
+    if (this._enhancedOceanEnabled === enabled) {
+      return;
+    }
+    this._enhancedOceanEnabled = enabled;
+    this._pipelineCache.clear();
+    this._wireframePipelineCache.clear();
+    this._debugFragmentPipelineCache.clear();
+    this._capturePipelineCache.clear();
+    // The clip-distances MODULE map keys by the lo defines only; wipe it so the
+    // next lookup rebuilds its base against the new `definesHi`.
+    this._clipDistancesShaderModules.clear();
   }
 
   // ─── Bind Group Layouts, Pipeline Layout, Samplers, Placeholder Texture
@@ -1123,6 +1166,13 @@ export class WebGPUGlobeSurfaceRenderer {
     this._pickLogDepthEnabled =
       (frameState.context as unknown as { _pickLogDepthWriteEnabled?: boolean })
         ._pickLogDepthWriteEnabled ?? false;
+
+    // C11-158 — mirror `Globe.enableEnhancedOcean` (copied onto the tile
+    // provider each frame by `Globe.render`) so the globe shader factory picks
+    // the enhanced vs classic ocean STYLING module. Default false = classic
+    // WebGL-parity water. A flip wipes the globe pipeline caches (see
+    // `_applyEnhancedOceanState`) so it takes effect without a reload.
+    this._applyEnhancedOceanState(tileProvider.enableEnhancedOcean ?? false);
 
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;
@@ -2470,6 +2520,13 @@ export class WebGPUGlobeSurfaceRenderer {
     this._logDepthEnabled =
       (frameState.context as unknown as { _logDepthWriteEnabled?: boolean })
         ._logDepthWriteEnabled ?? false;
+
+    // C11-158 — mirror the ocean-styling toggle here too. Capture runs in
+    // `primitives.update` (BEFORE `globe.render` / `createTileCommands`), so
+    // read it directly to stay in sync on the first capture of the frame; the
+    // shared `_applyEnhancedOceanState` wipes ALL globe pipeline caches on a
+    // flip, so whichever path runs first covers both.
+    this._applyEnhancedOceanState(tileProvider.enableEnhancedOcean ?? false);
 
     const device = this._device;
     const mesh = surfaceTile.renderedMesh || surfaceTile.mesh;

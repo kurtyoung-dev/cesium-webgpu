@@ -236,8 +236,14 @@ export function buildWireframePipelineDescriptor(
   // the same `defines` used by the production pipeline for this tile,
   // so the wireframe overlay always matches its colored counterpart.
   const shaderModule = getProductionShaderModuleHelper(host, defines);
+  // C11-158 — the wireframe overlay uses the full production `fragmentMain`
+  // (line 249), so its module carries the ocean STYLING variant too. Mark the
+  // descriptor name so the central pipeline cache doesn't alias the enhanced
+  // and classic wireframe variants (the renderer-local `_wireframePipelineCache`
+  // is wiped on the flag flip — see `_applyEnhancedOceanState`).
+  const oceanLabel = host._enhancedOceanEnabled ? ", enhOcean" : "";
   return {
-    name: `Globe wireframe (${quantLabel}, ${normLabel}, ${mercLabel}, ${strideBytes}b${host._imageryReduced ? ", imagery1" : ""})`,
+    name: `Globe wireframe (${quantLabel}, ${normLabel}, ${mercLabel}, ${strideBytes}b${host._imageryReduced ? ", imagery1" : ""}${oceanLabel})`,
     layout: host._pipelineLayout!,
     vertex: {
       module: shaderModule,

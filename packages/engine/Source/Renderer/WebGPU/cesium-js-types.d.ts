@@ -536,11 +536,15 @@ interface CesiumUniformState {
   readonly inverseViewTranspose?: CesiumMatrix4 | undefined;
   readonly viewProjection: CesiumMatrix4;
   readonly inverseViewProjection: CesiumMatrix4;
+  /** Model-independent projection × rotation-only view for RTE reprojection. */
+  readonly viewProjectionRelativeToEye: CesiumMatrix4;
   /**
    * Last frame's `viewProjection`, cloned before current-frame state is
    * written. Consumed by the TAA / motion-vector path (DP-H41, Batch 27).
    */
   readonly previousViewProjection: CesiumMatrix4;
+  /** Previous frame's model-independent relative-to-eye view-projection. */
+  readonly previousViewProjectionRelativeToEye: CesiumMatrix4;
   readonly normal: CesiumMatrix4;
   readonly modelView: CesiumMatrix4;
   readonly modelViewProjection: CesiumMatrix4;
@@ -549,6 +553,8 @@ interface CesiumUniformState {
   readonly inverseModelView: CesiumMatrix4;
   readonly encodedCameraPositionMCHigh: CesiumCartesian3;
   readonly encodedCameraPositionMCLow: CesiumCartesian3;
+  /** Previous frame's world-space camera position for CPU-f64 deltas. */
+  readonly previousCameraPosition: CesiumCartesian3;
   readonly sunDirectionEC: CesiumCartesian3;
   readonly sunDirectionWC: CesiumCartesian3;
   readonly sunPositionWC: CesiumCartesian3;
@@ -1223,6 +1229,13 @@ interface CesiumGlobeTileProvider {
     | undefined;
   clippingPolygons: { enabled: boolean; length: number } | undefined;
   showWaterEffect: boolean;
+  /**
+   * C11-158 (NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE) — mirrored from
+   * `Globe.enableEnhancedOcean` each frame. Gates the enhanced ocean STYLING
+   * branch of `computeEnhancedOcean` (via `ShaderDefineHi.ENHANCED_OCEAN`);
+   * default false = classic WebGL-parity water. Does NOT gate the waves.
+   */
+  enableEnhancedOcean?: boolean;
   oceanNormalMap: CesiumOpaqueTexture | undefined;
   oceanDeepColor: CesiumColor;
   oceanFresnelPower?: number;

@@ -41,7 +41,11 @@
  * @module WebGPUGlobeSurfaceShaders
  */
 
-import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import {
+  ShaderDefine,
+  ShaderDefineHi,
+  ShaderSourceId,
+} from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
 
@@ -73,6 +77,27 @@ export interface ShaderFactoryHost {
    * per device — captured once at renderer `initialize()`.
    */
   readonly _imageryReduced?: boolean;
+  /**
+   * C11-158 (NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE) — mirrored each
+   * frame from `Globe.enableEnhancedOcean` (default false). When true, every
+   * GlobeTerrain module fetch ORs the `ShaderDefineHi.ENHANCED_OCEAN` hi-word
+   * bit into `definesHi`, selecting the enhanced ocean STYLING branch in
+   * `computeEnhancedOcean`; when false (the default), the module compiles the
+   * classic WebGL-parity `//>>else` branch. The wave march is unconditional in
+   * both. The flag is read HERE (not passed per-call) so every production /
+   * clip-distances module the factory hands back is consistent with the
+   * renderer's current ocean state.
+   */
+  readonly _enhancedOceanEnabled?: boolean;
+}
+
+// C11-158 — compute the hi-word define mask for the current ocean state.
+// Returns `ShaderDefineHi.ENHANCED_OCEAN` when the renderer mirrors
+// `Globe.enableEnhancedOcean === true`, else 0 (classic WebGL-parity styling).
+// The value threads into `getOrCreate(..., definesHi)` + `preprocess(...,
+// definesHi)`, which key the compiled module by the hi word.
+function oceanDefinesHi(host: ShaderFactoryHost): number {
+  return host._enhancedOceanEnabled ? ShaderDefineHi.ENHANCED_OCEAN : 0;
 }
 
 // ─── Shader Module Cache ─────────────────────────────────────────
@@ -118,11 +143,22 @@ export function getProductionShaderModule(
   host: ShaderFactoryHost,
   defines: number,
 ): GPUShaderModule {
+  // C11-158 — the hi-word `ENHANCED_OCEAN` bit rides `definesHi`. The module
+  // cache keys the compiled module by (sourceId, defines, definesHi), so the
+  // enhanced and classic ocean STYLING variants dedupe as distinct modules on
+  // a shared device.
+  const definesHi = oceanDefinesHi(host);
+  const label =
+    definesHi === 0
+      ? "GlobeTerrain shader"
+      : `GlobeTerrain shader (hi=0x${definesHi.toString(16)})`;
   return host._shaderModuleCache!.getOrCreate(
     ShaderSourceId.GLOBE_TERRAIN,
     host._shaderCode,
     defines,
-    "GlobeTerrain shader",
+    label,
+    0,
+    definesHi,
   );
 }
 
@@ -311,7 +347,19 @@ export function getClipDistancesShaderModule(
   // `input.geodeticSurfaceNormal` arg) would still be present and
   // would match the anchor patterns but produce invalid output when
   // combined with the `//>>else` branch.
-  const preprocessedBase = preprocessShaderSource(host._shaderCode, defines);
+  // C11-158 — pass the hi word so the clip-distances variant compiles the
+  // SAME ocean STYLING branch as the on-screen production module (the clip
+  // variant uses the real `fragmentMain`, so a mismatch would render classic
+  // water under active clipping planes while the rest renders enhanced). The
+  // `_clipDistancesShaderModules` map keys by `defines` only, but the renderer
+  // wipes it on an ocean-flag flip, so `definesHi` is constant within a map
+  // epoch.
+  const definesHi = oceanDefinesHi(host);
+  const preprocessedBase = preprocessShaderSource(
+    host._shaderCode,
+    defines,
+    definesHi,
+  );
   const augmented = buildClipDistancesShaderSource(preprocessedBase);
   if (augmented === null) {
     //>>includeStart('debug', pragmas.debug);

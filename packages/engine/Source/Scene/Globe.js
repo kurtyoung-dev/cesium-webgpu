@@ -373,13 +373,32 @@ class Globe {
     this.nightIntensity = 2.5;
 
     /**
-     * When true, enhanced ocean rendering is active: Fresnel reflection,
-     * GGX specular, multi-octave wave normals, foam/whitecaps, subsurface
-     * scattering, and deep water color.
+     * Selects the WebGPU ocean STYLING model. This gates only how water
+     * surfaces are coloured — NOT the waves. The animated wave-normal march is
+     * shared and always runs (under the same default-true {@link Globe#showWaterEffect}
+     * as WebGL), so the ocean animates identically either way.
+     * <p>
+     * When <code>false</code> (the default), WebGPU renders the classic
+     * WebGL-parity water look: imagery preserved with wave-diffuse,
+     * non-diffuse, and Phong-specular highlights added on top — a faithful
+     * port of WebGL's <code>computeWaterColor</code>. This matches WebGL.
+     * </p>
+     * <p>
+     * When <code>true</code>, WebGPU renders its additive enhanced styling:
+     * foam/whitecaps layered over the full-strength wave-perturbed
+     * highlight composite (with the deep-colour / Fresnel / reflectivity /
+     * foam-threshold / darkening dials below). This is a WebGPU-only look with
+     * no WebGL equivalent, so it is opt-in.
+     * </p>
+     * <p>
+     * The WebGL backend ignores this flag (it has no enhanced path); its water
+     * is always the classic look. A runtime change takes effect on the next
+     * frame without a reload.
+     * </p>
      * @type {boolean}
-     * @default true
+     * @default false
      */
-    this.enableEnhancedOcean = true;
+    this.enableEnhancedOcean = false;
 
     /**
      * Deep ocean water color (RGB). Blended with imagery on water surfaces.
