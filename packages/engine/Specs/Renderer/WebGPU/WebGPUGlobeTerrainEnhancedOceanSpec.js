@@ -83,7 +83,11 @@ describe("Renderer/WebGPU/GlobeTerrain enhanced-ocean styling gate (C11-158)", f
       // so BOTH branches contain them — the toggle never touches the waves.
       for (const out of [classic, enhanced]) {
         expect(out).toContain("fn computeEnhancedOcean");
-        expect(out).toContain("sampleOceanWaveNormals(uv, t)");
+        // C11-172 v3: the shared march samples in an RTE-decomposed physical-
+        // wavelength ellipsoid UV; the call passes the tile-local UV + its
+        // derivatives + the three packed phase offsets + the clock.
+        expect(out).toContain("sampleOceanWaveNormals(");
+        expect(out).toContain("euvLocal, euvDx, euvDy,");
         // The shared perturbed eye-space normal feeds both branches.
         expect(out).toContain("waveNormalEC");
       }

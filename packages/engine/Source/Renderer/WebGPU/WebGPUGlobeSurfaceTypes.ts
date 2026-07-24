@@ -222,11 +222,31 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //                antimeridian-clipped + localized to tile UV, west/south/east/
 //                north). All-zero when translucency is off; the FS only reads
 //                it inside the `camera.translucencyControl.x > 0.5` gate.
+//   484 - 487  oceanWavePhaseA (vec4) — C11-172 v3 ocean-wave RTE phase. f64-
+//                computed per-tile phase offsets fract(rectOriginNorm × Rᵢ) for
+//                octaves 1 & 2: (.xy)=octave1 (u,v), (.zw)=octave2 (u,v). ADD-ONLY
+//                tail. Removes the f32 quantization of the absolute global wave UV
+//                (euv×R reached ~2.7e6 ⇒ ulp ~0.25 repeat ⇒ staircase banding +
+//                frozen animation). All-zero when the tile has no rectangle.
+//   488 - 491  oceanWavePhaseB (vec4) — (.xy)=octave3 phase (u,v),
+//                (.zw)=oceanWaveSpanNorm (normalized ellipsoid-UV tile span:
+//                width×1/2π, height×1/π). The span is packed (not computed in
+//                the FS as east−west) to avoid f32 cancellation ⇒ tile-boundary
+//                wave-scale seams at fine LOD.
 //
-// Total = 484 floats = 1936 bytes. Well under WebGPU's
+// Total = 492 floats = 1968 bytes. Well under WebGPU's
 // `maxUniformBufferBindingSize` floor (16 KiB).
-export const TILE_UNIFORM_FLOATS = 484;
+export const TILE_UNIFORM_FLOATS = 492;
 export const TILE_UNIFORM_BYTES = TILE_UNIFORM_FLOATS * 4;
+
+// C11-172 v3 — integer normal-map repeat counts per octave, = round(equatorial
+// circumference / target wavelength). INTEGER so the ±180° ellipsoid-UV wrap is
+// an exact repeat count (seamless) AND the CPU f64 phase offset stays consistent
+// with the shader. Wavelengths (approx): 267167 → 150.0 m, 801500 → 50.0 m,
+// 2671668 → 15.0 m (equatorial, zonal; meridional is ×2 — see the shader). These
+// are the WebGPU wave-scale tunable; keep in lockstep with GlobeTerrain.wgsl's
+// OCEAN_OCTAVE_REPEATS_* and the ocean-wave-lod.spec.mjs cross-check.
+export const OCEAN_OCTAVE_REPEATS = [267167.0, 801500.0, 2671668.0];
 
 // Per-layer floats: vec4 translationAndScale + vec4 texCoordsRect +
 // vec4 colorToAlpha + vec4 cutoutRectangle + (alpha,brightness,contrast,saturation)
@@ -258,6 +278,8 @@ export const HSB_SHIFT_OFFSET = 468;
 export const GROUND_ATMOSPHERE_CONTROL_OFFSET = 472;
 export const INITIAL_COLOR_OFFSET = 476;
 export const LOCALIZED_TRANSLUCENCY_RECT_OFFSET = 480;
+export const OCEAN_WAVE_PHASE_A_OFFSET = 484; // octave1.xy, octave2.xy
+export const OCEAN_WAVE_PHASE_B_OFFSET = 488; // octave3.xy, spanNorm.xy
 
 // Max imagery layers per tile in a single draw call (16 — WebGPU minimum
 // `maxSampledTexturesPerShaderStage`). Tiles exceeding this count multi-pass.

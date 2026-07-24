@@ -157,6 +157,30 @@ header/deletion rationale comments), `packages/engine/Source/Renderer/WebGPU/Web
 
 ---
 
+## C11-172 — ocean-wave noise-to-horizon: physical-wavelength wave march (2026-07-24, Batch 757)
+
+**Premise.** Maintainer screenshot: at a low camera over open ocean, WebGPU waves render as
+uniform per-pixel noise all the way to the horizon. **Cause (two layers).** (1) The wave octaves
+sampled a FIXED mip (`textureSampleLevel(…, 0.0)`), so sub-pixel content aliased into sparkle —
+WebGL never showed it because `czm_getWaterNoise` uses auto-LOD `texture()`. (2) Deeper: the
+octave scales (×400/×200/×800) keyed off TILE UV, and terrain SSE holds tiles at a near-constant
+screen size, so every octave was sub-pixel BY CONSTRUCTION at every altitude — the pre-existing
+"waves" were animated mip-0 aliasing, never resolved structure. **Fix (Batch 757, three-iteration
+orchestrator/worker cycle — full history in the C11-172 queue row).** Physical-wavelength march:
+a global ellipsoid UV built linearly from `camera.tileRectangle` + geoUV (seamless across tiles),
+octaves at 150/50/15 m via integer repeat counts, `textureSampleGrad` with hoisted derivatives,
+per-octave amplitude fade (xy toward flat, continuous at the hard far cutoff), RTE-style per-tile
+f64 phase offsets (tile UB 484→492 add-only) so no absolute f32 coordinate exceeds ~2·10³, ocean
+sampler `maxAnisotropy: 8` with the matching footprint clamp `max(minAxis, maxAxis/8)`, and the
+GLSL twin recalibrated by `czm_getWaterNoise`'s internal divisors (~940) so WebGL's near/mid look
+is byte-preserved while gaining the same far-field fade + 8-tap cutoff. **Evidence.** Same-probe
+baseline (original shaders): near-band Laplacian variance 45.65 / far 12.75, no structure; landed:
+2.04 / 1.81 with real animating waves (`probe-ocean-wave-lod.mjs` GATE PASS; Karma enhanced-ocean
+5/5; `ocean-wave-lod.spec.mjs` 8/8 incl. worst-case ulp < 1%-of-repeat precision proof). Residual:
+`OCEAN-WAVE-HIGHLAT-HORIZON-BAND` (DEFERRED_WORK) — high-lat near-horizon corduroy from cos(lat)
+wavelength compression. **Files.** GlobeTerrain.wgsl, GlobeFS.glsl, WebGPUGlobeSurfaceTypes.ts,
+WebGPUGlobeSurfaceTileUB.ts, WebGPUGlobeSurfaceLayouts.ts, WebGPUGlobeTerrainEnhancedOceanSpec.js.
+
 ## C13-05 — temporal WGS84/RTE reprojection and coarse history-reset contract (2026-07-24, Campaign 13 W1)
 
 **Premise.** The temporal resolve was not using the renderer's planet-scale coordinate contract. It

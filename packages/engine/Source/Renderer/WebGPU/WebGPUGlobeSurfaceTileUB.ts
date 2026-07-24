@@ -77,6 +77,9 @@ import {
   GROUND_ATMOSPHERE_CONTROL_OFFSET,
   INITIAL_COLOR_OFFSET,
   LOCALIZED_TRANSLUCENCY_RECT_OFFSET,
+  OCEAN_WAVE_PHASE_A_OFFSET,
+  OCEAN_WAVE_PHASE_B_OFFSET,
+  OCEAN_OCTAVE_REPEATS,
   MAX_IMAGERY_LAYERS,
   resolveImageryLayerValue,
 } from "./WebGPUGlobeSurfaceTypes.js";
@@ -601,11 +604,16 @@ export function createTileUniformBuffer(
   // phase drift, unlike the earlier `performance.now()`) and DETERMINISTIC for
   // a fixed warm-up frame count (regression capture). `OCEAN_WAVE_FRAME_SPEED`
   // is the per-frame phase increment fed into the octave coefficients — tuned
-  // for a gentle, WebGL-comparable churn. Mod by 1e6 keeps the phase within
-  // f32 precision for the shader's `fract`/wrap kernels.
+  // for a gentle, WebGL-comparable churn.
+  // C11-172 v3 — mod by 16384 (was 1e6). The WGSL march does `fract(t × velocity)`
+  // per octave; with `t` up to 1e6 the largest advection `t × 0.03 ≈ 3e4` had an
+  // f32 ulp (~0.004) comparable to the per-frame step (~0.0045), so the ripple
+  // animation stuttered near the top of the range. 16384 keeps `t × 0.03 ≤ 491`
+  // (ulp ~3e-5 ≪ step) — smooth — while wrapping only every ~109k frames (~30 min
+  // at 60 fps); the fract() makes the wrap a benign sub-repeat texture-phase shift.
   const OCEAN_WAVE_FRAME_SPEED = 0.15;
   const frameNumber = frameState?.frameNumber ?? 0;
-  const waveTime = (frameNumber * OCEAN_WAVE_FRAME_SPEED) % 1000000.0;
+  const waveTime = (frameNumber * OCEAN_WAVE_FRAME_SPEED) % 16384.0;
   data[TIME_OFFSET] = waveTime;
   //>>includeStart('debug', pragmas.debug);
   // Batch 56 diagnostic — `CesiumDebug.globeFragmentDebug(name)` (or
@@ -806,6 +814,52 @@ export function createTileUniformBuffer(
       (clippedTranslucencyRectangle.east - tile.rectangle.west) * invW;
     data[LOCALIZED_TRANSLUCENCY_RECT_OFFSET + 3] =
       (clippedTranslucencyRectangle.north - tile.rectangle.south) * invH;
+  }
+
+  // ─── C11-172 v3 — ocean-wave RTE phase offsets + normalized span ───
+  // The WGSL march samples 3 octaves in a GLOBAL ellipsoid (lon/lat) UV at
+  // integer normal-map repeat counts Rᵢ = round(circumference / wavelengthᵢ).
+  // The ABSOLUTE sample coordinate `euv × Rᵢ` reaches ~2.7e6 for the 15 m
+  // ripple, whose f32 ulp is ~0.25 of a repeat — quantizing the coordinate
+  // into staircase bands and freezing the (small-delta) time advection. We
+  // remove the large magnitude the same way the fork handles RTE positions:
+  // compute the per-tile per-octave PHASE OFFSET in f64 here —
+  // fract(rectOriginNorm × Rᵢ) per axis — and pack only the [0,1) remainder;
+  // the shader then reconstructs the coordinate from small quantities
+  // (phaseOffset + tileLocalUV × spanNorm × Rᵢ + fract(time)). Because Rᵢ is an
+  // exact integer, adjacent tiles + the ±180° wrap stay phase-continuous. The
+  // normalized span is packed too (not derived as east−west in the FS) to avoid
+  // f32 cancellation ⇒ wave-scale seams at fine LOD.
+  if (tile.rectangle) {
+    const ONE_OVER_TWO_PI = 0.15915494309189535;
+    const ONE_OVER_PI = 0.3183098861837907;
+    // SW-corner of the tile in normalized ellipsoid UV (matches the shader's
+    // `oceanEllipsoidUV`: lon×1/2π+0.5, lat×1/π+0.5), computed in f64.
+    const originU = tile.rectangle.west * ONE_OVER_TWO_PI + 0.5;
+    const originV = tile.rectangle.south * ONE_OVER_PI + 0.5;
+    const spanU = tile.rectangle.width * ONE_OVER_TWO_PI;
+    const spanV = tile.rectangle.height * ONE_OVER_PI;
+    const frac = (v: number): number => v - Math.floor(v);
+    data[OCEAN_WAVE_PHASE_A_OFFSET + 0] = frac(
+      originU * OCEAN_OCTAVE_REPEATS[0],
+    );
+    data[OCEAN_WAVE_PHASE_A_OFFSET + 1] = frac(
+      originV * OCEAN_OCTAVE_REPEATS[0],
+    );
+    data[OCEAN_WAVE_PHASE_A_OFFSET + 2] = frac(
+      originU * OCEAN_OCTAVE_REPEATS[1],
+    );
+    data[OCEAN_WAVE_PHASE_A_OFFSET + 3] = frac(
+      originV * OCEAN_OCTAVE_REPEATS[1],
+    );
+    data[OCEAN_WAVE_PHASE_B_OFFSET + 0] = frac(
+      originU * OCEAN_OCTAVE_REPEATS[2],
+    );
+    data[OCEAN_WAVE_PHASE_B_OFFSET + 1] = frac(
+      originV * OCEAN_OCTAVE_REPEATS[2],
+    );
+    data[OCEAN_WAVE_PHASE_B_OFFSET + 2] = spanU;
+    data[OCEAN_WAVE_PHASE_B_OFFSET + 3] = spanV;
   }
 
   return writeUniformSlice(

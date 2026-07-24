@@ -214,7 +214,15 @@ export function createSamplers(host: LayoutsHost): void {
     addressModeU: "clamp-to-edge",
     addressModeV: "clamp-to-edge",
   });
-  // Ocean normal map uses repeating linear filtering for tiled wave patterns
+  // Ocean normal map uses repeating linear filtering for tiled wave patterns.
+  // C11-172 — maxAnisotropy 8: the physical-wavelength wave march samples with
+  // `textureSampleGrad`, whose footprint is highly elongated at the grazing
+  // angles of a low camera looking toward the horizon. Isotropic mip selection
+  // (maxAnisotropy 1) would pick the LONG-axis LOD and over-blur across-track
+  // detail into mush; anisotropic filtering takes multiple taps along the long
+  // axis at the finer (short-axis) LOD, keeping the wave streaks crisp. Requires
+  // linear min/mag/mipmap (all set). The octave footprint WEIGHT is keyed off the
+  // MIN (short) axis to match — see GlobeTerrain.wgsl::sampleOceanWaveNormals.
   host._oceanNormalSampler = host._device!.createSampler({
     label: "Globe ocean normal sampler",
     magFilter: "linear",
@@ -222,6 +230,7 @@ export function createSamplers(host: LayoutsHost): void {
     mipmapFilter: "linear",
     addressModeU: "repeat",
     addressModeV: "repeat",
+    maxAnisotropy: 8,
   });
 }
 

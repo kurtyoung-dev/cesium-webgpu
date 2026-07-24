@@ -804,6 +804,43 @@ const float oceanFrequencyHighAltitude = 125000.0;
 const float oceanAnimationSpeedHighAltitude = 0.008;
 const float oceanOneOverAmplitudeHighAltitude = 1.0 / 2.0;
 
+// ─── C11-172 — Ocean-wave footprint LOD (v2, 2026-07-24) ───
+// Twin of the physical-wavelength shared march in
+// GlobeTerrain.wgsl::sampleOceanWaveNormals. WebGL is NOT broken here: it
+// already mip-averages (czm_getWaterNoise uses texture(), auto-LOD) AND is
+// physically anchored (ellipsoid textureCoordinates), so the WebGPU LOD-0 /
+// tile-UV sparkle the maintainer screenshotted is a WebGPU-ONLY defect. This
+// block therefore adds only a CONSERVATIVE per-layer footprint fade + hard
+// cutoff — engaging at extreme footprint (far / orbit) — to skip the wave
+// fetches and collapse the far field, WITHOUT regressing WebGL's proven near/mid
+// appearance.
+//
+// SHARED vs MAPPED (Principle 5): the fade BAND (OCEAN_OCTAVE_FADE_LO/HI, in
+// normal-map repeats spanned per screen pixel) and OCEAN_WAVE_MARCH_CUTOFF are
+// shared VERBATIM with the WGSL march (pinned by ocean-wave-lod.spec.mjs). The
+// per-layer SCALE is backend-native and does NOT match: WGSL picks explicit
+// physical wavelengths (OCEAN_WAVELENGTH_*_M) for the WebGPU look, whereas WebGL
+// keeps czm_getWaterNoise's scale. czm_getWaterNoise divides the incoming UV by
+// 103/107/(897,983)/(991,877) across its 4 taps (Builtin/Functions/
+// getWaterNoise.glsl), so the map's EFFECTIVE repeat rate is oceanFrequency /
+// (~divisor), NOT the raw oceanFrequency — v1's bug (D2). We key the fade on the
+// COARSEST tap divisor (the last structure to go sub-pixel), so a layer only
+// fades once even its largest content is sub-pixel — the safe, WebGL-preserving
+// calibration. Footprint uses the MAX screen axis here (WebGL's texture() is
+// isotropic — no anisotropy — so the long axis is the limiter; the WGSL twin
+// uses MIN because its sampler has maxAnisotropy 8).
+const float OCEAN_OCTAVE_FADE_LO = 0.5;   // repeats/pixel: full weight at/below
+const float OCEAN_OCTAVE_FADE_HI = 1.0;   // repeats/pixel: zero weight at/above
+const float OCEAN_WAVE_MARCH_CUTOFF = 0.01; // effective-weight sum below which the march is skipped
+// czm_getWaterNoise's coarsest-tap divisor (~991/877 ≈ 940): the effective
+// per-layer repeat rate is oceanFrequency / this, keeping the fade conservative.
+const float OCEAN_GETWATERNOISE_DIVISOR = 940.0;
+
+float oceanOctaveLodWeight(float repeatsPerPixel)
+{
+    return 1.0 - smoothstep(OCEAN_OCTAVE_FADE_LO, OCEAN_OCTAVE_FADE_HI, repeatsPerPixel);
+}
+
 vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, mat3 enuToEye, vec4 imageryColor, float maskValue, float fade)
 {
     vec3 positionToEyeEC = -positionEyeCoordinates;
@@ -816,27 +853,70 @@ vec4 computeWaterColor(vec3 positionEyeCoordinates, vec2 textureCoordinates, mat
     float waveIntensity = waveFade(70000.0, 1000000.0, positionToEyeECLength);
 
 #ifdef SHOW_OCEAN_WAVES
-    // high altitude waves
-    float time = czm_frameNumber * oceanAnimationSpeedHighAltitude;
-    vec4 noise = czm_getWaterNoise(u_oceanNormalMap, textureCoordinates * oceanFrequencyHighAltitude, time, 0.0);
-    vec3 normalTangentSpaceHighAltitude = vec3(noise.xy, noise.z * oceanOneOverAmplitudeHighAltitude);
-
-    // low altitude waves
-    time = czm_frameNumber * oceanAnimationSpeedLowAltitude;
-    noise = czm_getWaterNoise(u_oceanNormalMap, textureCoordinates * oceanFrequencyLowAltitude, time, 0.0);
-    vec3 normalTangentSpaceLowAltitude = vec3(noise.xy, noise.z * oceanOneOverAmplitudeLowAltitude);
+    // C11-172 v2 — conservative footprint LOD (see the block above computeWaterColor).
+    // Per-pixel change of the (global) ellipsoid wave UV, then a fade weight per
+    // altitude layer keyed on its EFFECTIVE repeat rate (oceanFrequency divided by
+    // czm_getWaterNoise's coarsest tap divisor — the D2 recalibration; keying on
+    // the raw oceanFrequency, as v1 did, over-stated the rate ~3 orders of
+    // magnitude and fired the fade far too early). GLSL permits dFdx/dFdy anywhere
+    // in the fragment stage (result only undefined under NON-uniform flow), so
+    // unlike the WGSL twin no derivative hoisting is needed. This call is inside
+    // the `coastCoverage > 0.0` branch, but over OPEN ocean (the reported case)
+    // the whole ocean tile takes that branch uniformly, so the derivative is
+    // well-defined; only coast-boundary quads can see a garbage derivative, and
+    // there it merely perturbs the LOD weight on a ≤1 px already-feathered edge.
+    // MAX-axis footprint: WebGL's texture() is isotropic (no anisotropy), so the
+    // long axis is the resolution limiter (the WGSL twin uses MIN because its
+    // sampler has maxAnisotropy 8).
+    vec2 tcDx = dFdx(textureCoordinates);
+    vec2 tcDy = dFdy(textureCoordinates);
+    float uvFootprint = max(length(tcDx), length(tcDy));
+    float highEffRate = oceanFrequencyHighAltitude / OCEAN_GETWATERNOISE_DIVISOR;
+    float lowEffRate = oceanFrequencyLowAltitude / OCEAN_GETWATERNOISE_DIVISOR;
+    float highLodWeight = oceanOctaveLodWeight(highEffRate * uvFootprint);
+    float lowLodWeight = oceanOctaveLodWeight(lowEffRate * uvFootprint);
 
     // blend the 2 wave layers based on distance to surface
     float highAltitudeFade = linearFade(0.0, 60000.0, positionToEyeECLength);
     float lowAltitudeFade = 1.0 - linearFade(20000.0, 60000.0, positionToEyeECLength);
-    vec3 normalTangentSpace =
-        (highAltitudeFade * normalTangentSpaceHighAltitude) +
-        (lowAltitudeFade * normalTangentSpaceLowAltitude);
-    normalTangentSpace = normalize(normalTangentSpace);
 
-    // fade out the normal perturbation as we move farther from the water surface
-    normalTangentSpace.xy *= waveIntensity;
-    normalTangentSpace = normalize(normalTangentSpace);
+    vec3 normalTangentSpace;
+    // (3) Hard far cutoff — once BOTH layers' effective weights are negligible
+    // the perturbation is flat; skip both czm_getWaterNoise calls (8 texture
+    // taps). effective weight = altitude blend × footprint fade.
+    if (highAltitudeFade * highLodWeight + lowAltitudeFade * lowLodWeight < OCEAN_WAVE_MARCH_CUTOFF)
+    {
+        normalTangentSpace = vec3(0.0, 0.0, 1.0);
+    }
+    else
+    {
+        // high altitude waves
+        float time = czm_frameNumber * oceanAnimationSpeedHighAltitude;
+        vec4 noise = czm_getWaterNoise(u_oceanNormalMap, textureCoordinates * oceanFrequencyHighAltitude, time, 0.0);
+        vec3 normalTangentSpaceHighAltitude = vec3(noise.xy, noise.z * oceanOneOverAmplitudeHighAltitude);
+
+        // low altitude waves
+        time = czm_frameNumber * oceanAnimationSpeedLowAltitude;
+        noise = czm_getWaterNoise(u_oceanNormalMap, textureCoordinates * oceanFrequencyLowAltitude, time, 0.0);
+        vec3 normalTangentSpaceLowAltitude = vec3(noise.xy, noise.z * oceanOneOverAmplitudeLowAltitude);
+
+        // (1) Footprint-fade each layer's perturbation (xy) toward flat as its
+        // repeat nears the Nyquist limit — mirrors the WGSL per-octave weight
+        // fade. `* 1.0` (weight 1) is a no-op, so the near/mid field is
+        // byte-identical; z (amplitude) is kept so normalize() stays
+        // well-conditioned.
+        normalTangentSpaceHighAltitude.xy *= highLodWeight;
+        normalTangentSpaceLowAltitude.xy *= lowLodWeight;
+
+        normalTangentSpace =
+            (highAltitudeFade * normalTangentSpaceHighAltitude) +
+            (lowAltitudeFade * normalTangentSpaceLowAltitude);
+        normalTangentSpace = normalize(normalTangentSpace);
+
+        // fade out the normal perturbation as we move farther from the water surface
+        normalTangentSpace.xy *= waveIntensity;
+        normalTangentSpace = normalize(normalTangentSpace);
+    }
 #else
     vec3 normalTangentSpace = vec3(0.0, 0.0, 1.0);
 #endif

@@ -391,6 +391,18 @@ struct TileUniforms {
   // fragment qualifies. All-zero when translucency is off — inert because
   // the `camera.translucencyControl.x` gate is closed then anyway.
   localizedTranslucencyRectangle: vec4<f32>,
+  // C11-172 v3 — ocean-wave RTE phase decomposition (add-only tail). f64-
+  // computed per-tile per-octave phase offsets fract(rectOriginNorm × Rᵢ) keep
+  // the sampled ellipsoid-UV coordinate small (the absolute `euv × Rᵢ` reached
+  // ~2.7e6 for the 15 m ripple → f32 ulp ~0.25 repeat → staircase banding +
+  // frozen advection). See WebGPUGlobeSurfaceTypes.ts offsets 484-491.
+  //   oceanWavePhaseA: (.xy)=octave1 phase (u,v), (.zw)=octave2 phase (u,v)
+  oceanWavePhaseA: vec4<f32>,
+  //   oceanWavePhaseB: (.xy)=octave3 phase (u,v),
+  //                    (.zw)=oceanWaveSpanNorm (normalized ellipsoid-UV tile
+  //                          span: width×1/2π, height×1/π — packed to dodge the
+  //                          f32 east−west cancellation that would seam scales).
+  oceanWavePhaseB: vec4<f32>,
 };
 
 @group(0) @binding(1) var<uniform> tile: TileUniforms;
@@ -2218,22 +2230,157 @@ fn eastNorthUpToEyeCoordinates(
   return mat3x3<f32>(tangentEC, bitangentEC, normalEC);
 }
 
-// Sample ocean wave normals with 3 octaves for detail at multiple scales
-fn sampleOceanWaveNormals(uv: vec2<f32>, t: f32) -> vec3<f32> {
-  // Large slow-moving swells
-  let waveUV1 = uv * 400.0 + vec2<f32>(t * 0.012, t * 0.008);
-  let n1 = textureSampleLevel(oceanNormalMap, oceanNormalSampler, waveUV1, 0.0).xyz * 2.0 - 1.0;
+// ═══════════════════════════════════════════════════════════════════════
+// C11-172 — Ocean-wave PHYSICAL-WAVELENGTH march + footprint LOD (v3, 2026-07-24)
+// ═══════════════════════════════════════════════════════════════════════
+// v1 sampled the octaves in TILE UV (`geoUV × 400/200/800`), which is SCALE-
+// INVARIANT under terrain SSE — sub-pixel at every altitude, so the "waves" were
+// animated mip-0 aliasing (the maintainer's "noisy, not natural" bug). v2
+// anchored them to a GLOBAL ellipsoid (lon/lat) coordinate at PHYSICAL
+// wavelengths (constant real-world scale, resolvable at a 50 m camera). v3 fixes
+// the f32 PRECISION of that global coordinate: the absolute `euv × Rᵢ` reaches
+// ~2.7e6 for the 15 m ripple, whose f32 ulp is ~0.25 of a repeat — staircase
+// bands + frozen (small-delta) time advection. RTE-style fix (the fork's
+// standard pattern): the CPU computes per-tile per-octave phase offsets in f64
+// — fract(rectOriginNorm × Rᵢ) — and packs only the [0,1) remainder + the
+// normalized tile span; the shader reconstructs the coordinate from small
+// quantities: `phaseᵢ + tileLocalUV × spanNorm × Rᵢ + fract(time)`. Every f32
+// term stays ≤ ~(tile screen px) when the octave is resolved ⇒ ulp ≪ 1% of a
+// repeat everywhere (see ocean-wave-lod.spec.mjs (f) at 60 N / 170 E).
+//
+//   (1) PHYSICAL-WAVELENGTH, MIP+ANISO-AWARE SAMPLING. Each octave tiles the
+//       normal map Rᵢ = round(circumference / wavelengthᵢ) times per globe;
+//       `textureSampleGrad` (explicit gradients, legal after the non-uniform
+//       coast discard) mip-averages AND — with the ocean sampler's
+//       maxAnisotropy 8 — anisotropic-filters, matching WebGL's auto-LOD. Rᵢ is
+//       INTEGER so the ±180° ellipsoid-UV wrap is an exact repeat (seamless).
+//   (2) CAMERA-HEIGHT-AWARE FADE — SUBSUMED BY the footprint metric (repeats per
+//       pixel): huge on a low camera's grazing horizon, tiny nadir, no hardcoded
+//       distance ramp. Legacy `waveIntensityFade` (70 km–1 Mm) is left intact
+//       ONLY for the tuned orbit sun-glint parity (GLOBE-POLAR-STRETCH-POLISH).
+//   (3) AMPLITUDE FADE + HARD FAR CUTOFF. Each octave's tangent-space `.xy`
+//       (slope amplitude) is scaled by its footprint weight while `.z` is kept,
+//       so the perturbation fades CONTINUOUSLY toward flat (v1 scaled whole
+//       vectors inside `normalize` = a scale-invariant no-op; D3). Once all
+//       weights are negligible the march skips the fetches (perf); the amplitude
+//       fade already drove the blend to ≈flat so the cutoff is continuous.
+//
+// ANISOTROPY / WAVELENGTH HONESTY (P4): the sampling normalizes U by 1/2π and V
+// by 1/π, so `Rᵢ` repeats span the full 2π longitude but only the π half-
+// meridian — the MERIDIONAL (north-south) wavelength is HALF the zonal one, and
+// the zonal metric wavelength further shrinks by cos(lat) toward the poles (the
+// standard `czm_ellipsoidTextureCoordinates` distortion WebGL also has). The
+// footprint fade is computed from the ACTUAL per-axis UV derivatives, so it
+// self-tracks this compression (no aliasing) — but the quoted wavelengths are
+// the EQUATORIAL ZONAL values; multiply by 0.5 for meridional / by cos(lat) for
+// the local zonal metric scale.
+//
+// TUNABLE (shared with GlobeFS.glsl + WebGPUGlobeSurfaceTypes.OCEAN_OCTAVE_REPEATS,
+// pinned by ocean-wave-lod.spec.mjs which EXTRACTS them): integer repeat counts
+// (≈ wavelength) + the fade band (repeats/pixel).
+const OCEAN_CIRCUMFERENCE_M: f32 = 40075016.0; // WGS84 equatorial circumference
+const OCEAN_OCTAVE_REPEATS_1: f32 = 267167.0;  // swell  ≈ 150.0 m zonal (importance 0.6)
+const OCEAN_OCTAVE_REPEATS_2: f32 = 801500.0;  // medium ≈  50.0 m zonal (importance 0.3)
+const OCEAN_OCTAVE_REPEATS_3: f32 = 2671668.0; // ripple ≈  15.0 m zonal (importance 0.1)
+const OCEAN_OCTAVE_WEIGHT_1: f32 = 0.6;
+const OCEAN_OCTAVE_WEIGHT_2: f32 = 0.3;
+const OCEAN_OCTAVE_WEIGHT_3: f32 = 0.1;
+// Per-octave advection velocity (repeats per unit `t`; `t` is frame-driven
+// `tile.time`). fract() at the call site keeps the time offset in [0,1).
+const OCEAN_ADVECT_1: vec2<f32> = vec2<f32>(0.012, 0.008);
+const OCEAN_ADVECT_2: vec2<f32> = vec2<f32>(-0.008, 0.018);
+const OCEAN_ADVECT_3: vec2<f32> = vec2<f32>(0.03, -0.012);
+// Fade band in normal-map repeats spanned per screen pixel. Full weight at/below
+// FADE_LO (repeat ≥ 2 px, resolvable); zero at/above FADE_HI (repeat ≤ 1 px,
+// sub-pixel — mip has already averaged it toward flat). Spec-safe INCREASING
+// smoothstep edges (WGSL leaves `smoothstep` undefined for low ≥ high).
+const OCEAN_OCTAVE_FADE_LO: f32 = 0.5;
+const OCEAN_OCTAVE_FADE_HI: f32 = 1.0;
+// Sum-of-weights below which the whole march is skipped (perturbation ≈ flat).
+const OCEAN_WAVE_MARCH_CUTOFF: f32 = 0.01;
+// Must equal the maxAnisotropy of the ocean-normal sampler
+// (WebGPUGlobeSurfaceLayouts.ts) - see the footprint clamp below.
+const OCEAN_SAMPLER_MAX_ANISO: f32 = 8.0;
 
-  // Medium waves
-  let waveUV2 = uv * 200.0 + vec2<f32>(-t * 0.008, t * 0.018);
-  let n2 = textureSampleLevel(oceanNormalMap, oceanNormalSampler, waveUV2, 0.0).xyz * 2.0 - 1.0;
+// Footprint weight for one wave octave. `repeatsPerPixel` = normal-map repeats
+// spanned by one screen pixel for this octave; the octave fades as it crosses
+// the sub-pixel band. MIN-axis footprint is used at the call site because, with
+// anisotropic sampling on, the LIMITING resolution is the short (across-track)
+// axis — the long axis is resolved by the hardware's aniso taps.
+fn oceanOctaveLodWeight(repeatsPerPixel: f32) -> f32 {
+  return 1.0 - smoothstep(OCEAN_OCTAVE_FADE_LO, OCEAN_OCTAVE_FADE_HI, repeatsPerPixel);
+}
 
-  // Small wind ripples (higher frequency, faster)
-  let waveUV3 = uv * 800.0 + vec2<f32>(t * 0.03, -t * 0.012);
-  let n3 = textureSampleLevel(oceanNormalMap, oceanNormalSampler, waveUV3, 0.0).xyz * 2.0 - 1.0;
+// Sample ocean wave normals as 3 physically-scaled octaves in RTE-decomposed
+// ellipsoid UV. `euvLocal` = geoUV × spanNorm (TILE-LOCAL ellipsoid UV, small);
+// `euvDx`/`euvDy` = its per-pixel derivatives; `phaseN` = the f64-computed
+// per-tile per-octave phase offset (from the tile UB). The absolute sample
+// coordinate `phaseN + euvLocal × Rᵢ` stays small so f32 resolves it; adjacent
+// tiles stay phase-continuous because Rᵢ is integer and both the phase and the
+// span come from the same f64 rectangle. Feeds BOTH ocean-styling branches.
+fn sampleOceanWaveNormals(
+  euvLocal: vec2<f32>,
+  euvDx: vec2<f32>,
+  euvDy: vec2<f32>,
+  phase1: vec2<f32>,
+  phase2: vec2<f32>,
+  phase3: vec2<f32>,
+  t: f32,
+) -> vec3<f32> {
+  // MIN-axis footprint (repeats/pixel = octave repeats × UV footprint). Min, not
+  // max, because anisotropic sampling resolves the long axis — the short axis
+  // sets the resolution limit (D6c).
+  // Orchestrator refinement at landing (Batch 757, Bering 53N/178E Edge
+  // evidence): keying the octave weight on the pure MIN footprint axis
+  // leaves a visible corduroy aliasing band just under the horizon at
+  // extreme grazing angles - the sampler resolves at most
+  // OCEAN_SAMPLER_MAX_ANISO texels of footprint elongation (it is created
+  // with maxAnisotropy = 8 in WebGPUGlobeSurfaceLayouts.ts; keep the two
+  // constants in lockstep), so beyond that ratio the long axis aliases at
+  // the min-axis LOD. Standard hardware-aniso LOD clamp: the effective
+  // resolvable footprint is max(minAxis, maxAxis / maxAniso).
+  let footMinRaw = min(length(euvDx), length(euvDy));
+  let footMaxRaw = max(length(euvDx), length(euvDy));
+  let footMin = max(footMinRaw, footMaxRaw / OCEAN_SAMPLER_MAX_ANISO);
+  let w1 = OCEAN_OCTAVE_WEIGHT_1 * oceanOctaveLodWeight(OCEAN_OCTAVE_REPEATS_1 * footMin);
+  let w2 = OCEAN_OCTAVE_WEIGHT_2 * oceanOctaveLodWeight(OCEAN_OCTAVE_REPEATS_2 * footMin);
+  let w3 = OCEAN_OCTAVE_WEIGHT_3 * oceanOctaveLodWeight(OCEAN_OCTAVE_REPEATS_3 * footMin);
 
-  // Blend: large swells dominate, small ripples add detail
-  return normalize(n1 * 0.6 + n2 * 0.3 + n3 * 0.1);
+  // (3) Hard far cutoff — all octaves faded, skip the three fetches. The
+  // amplitude fade below has already driven the blend to ≈flat here, so the
+  // early return is visually continuous.
+  if (w1 + w2 + w3 < OCEAN_WAVE_MARCH_CUTOFF) {
+    return vec3<f32>(0.0, 0.0, 1.0);
+  }
+
+  // Sample coord = phase (small, [0,1)) + tileLocal repeats (small when
+  // resolved) + fract(time) (small). Gradients = euvD × Rᵢ (phase + time are
+  // constant across the quad, so they don't enter the derivative).
+  let n1 = textureSampleGrad(
+    oceanNormalMap, oceanNormalSampler,
+    phase1 + euvLocal * OCEAN_OCTAVE_REPEATS_1 + fract(t * OCEAN_ADVECT_1),
+    euvDx * OCEAN_OCTAVE_REPEATS_1, euvDy * OCEAN_OCTAVE_REPEATS_1,
+  ).xyz * 2.0 - 1.0;
+  let n2 = textureSampleGrad(
+    oceanNormalMap, oceanNormalSampler,
+    phase2 + euvLocal * OCEAN_OCTAVE_REPEATS_2 + fract(t * OCEAN_ADVECT_2),
+    euvDx * OCEAN_OCTAVE_REPEATS_2, euvDy * OCEAN_OCTAVE_REPEATS_2,
+  ).xyz * 2.0 - 1.0;
+  let n3 = textureSampleGrad(
+    oceanNormalMap, oceanNormalSampler,
+    phase3 + euvLocal * OCEAN_OCTAVE_REPEATS_3 + fract(t * OCEAN_ADVECT_3),
+    euvDx * OCEAN_OCTAVE_REPEATS_3, euvDy * OCEAN_OCTAVE_REPEATS_3,
+  ).xyz * 2.0 - 1.0;
+
+  // (3) AMPLITUDE fade: scale each octave's tangent-space slope (.xy) by its
+  // footprint weight while KEEPING .z, then blend by importance. As a weight →
+  // 0 that octave's slope contribution vanishes but its flat .z remains, so the
+  // summed perturbation attenuates CONTINUOUSLY toward (0,0,1) — a true
+  // amplitude fade (not the scale-invariant no-op v1 had inside `normalize`).
+  let m1 = vec3<f32>(n1.xy * w1, n1.z * OCEAN_OCTAVE_WEIGHT_1);
+  let m2 = vec3<f32>(n2.xy * w2, n2.z * OCEAN_OCTAVE_WEIGHT_2);
+  let m3 = vec3<f32>(n3.xy * w3, n3.z * OCEAN_OCTAVE_WEIGHT_3);
+  return normalize(m1 + m2 + m3);
 }
 
 // Compute foam factor: whitecaps appear where wave normals are steep
@@ -2288,6 +2435,12 @@ fn computeEnhancedOcean(
   normalEC: vec3<f32>,
   sunDirEC: vec3<f32>,
   uv: vec2<f32>,
+  // C11-172 — fragment-entry-hoisted derivatives of `uv` (= geoUV) for the
+  // wave-march pixel-footprint octave LOD. `fwidth` is illegal at this call
+  // site (downstream of the non-uniform coast discard), so they are threaded
+  // in from uniform control flow, matching the water-mask AA pattern.
+  uvDx: vec2<f32>,
+  uvDy: vec2<f32>,
   waterMaskValue: f32,
   lightingFade: f32,
   distance: f32,
@@ -2318,7 +2471,24 @@ fn computeEnhancedOcean(
     // share an identical wave phase instead of inheriting the sentinel
     // value. Production (tile.time < 1e6) selects the real clock.
     let t = select(tile.time, 0.0, tile.time > 1.0e9);
-    let waveN = sampleOceanWaveNormals(uv, t);
+    // C11-172 v3 — RTE-decomposed ellipsoid wave UV. The f64-computed per-tile
+    // per-octave phase offsets + the normalized tile span come from the tile UB
+    // (packed to keep every f32 quantity small — see the C11-172 block above).
+    // The shader reconstructs only TILE-LOCAL quantities: euvLocal = geoUV ×
+    // spanNorm (small, tile-relative ellipsoid UV) and its per-pixel derivatives
+    // euvD = spanNorm × geoUV-derivative (seam-free, no f32 east−west
+    // cancellation). Planar (2D/CV) modes pack a projected-meters span → euvD
+    // blows up → the footprint fade collapses every octave → flat ocean
+    // (graceful; 2D ocean waves are a pre-existing edge case).
+    let spanNorm = tile.oceanWavePhaseB.zw;
+    let euvLocal = uv * spanNorm;
+    let euvDx = uvDx * spanNorm;
+    let euvDy = uvDy * spanNorm;
+    let waveN = sampleOceanWaveNormals(
+      euvLocal, euvDx, euvDy,
+      tile.oceanWavePhaseA.xy, tile.oceanWavePhaseA.zw, tile.oceanWavePhaseB.xy,
+      t,
+    );
     // GLOBE-POLAR-STRETCH-POLISH — fade the wave perturbation to EXACTLY
     // zero far from the surface, matching WebGL GlobeFS.glsl L794+816:
     //   waveIntensity = waveFade(70000, 1e6, positionToEyeECLength)
@@ -3834,7 +4004,7 @@ fn fragmentMain(
   // │   GLSL call site: Shaders/GlobeFS.glsl ~lines 433-495                │
   // │   GLSL impl:      Shaders/GlobeFS.glsl L777-849 (computeWaterColor,  │
   // │                   gated by `#ifdef SHOW_REFLECTIVE_OCEAN`)           │
-  // │ Last lockstep audit: 2026-05-20, Batch 78                            │
+  // │ Last lockstep audit: 2026-07-24, C11-172 (wave-march footprint LOD) │
   // └─────────────────────────────────────────────────────────────────────┘
   // Any change to this block MUST land with a matching change in the
   // GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
@@ -3896,13 +4066,23 @@ fn fragmentMain(
   //    (lines 1861-1933). Both require manual line-by-line edits;
   //    neither is generated.
   // 4. **Wave-normal source**. GLSL uses `czm_getWaterNoise(
-  //    u_oceanNormalMap, textureCoordinates × oceanFrequency*, time,
-  //    0)` with TWO octaves (high-altitude + low-altitude blend) and
-  //    `czm_ellipsoidTextureCoordinates(normalMC)` for globe-consistent
-  //    wrapping. WGSL uses THREE octaves (uv × 400 / 200 / 800) with
-  //    direct tile UV sampling. Wave appearance differs in detail; both
-  //    produce convincing ocean motion. WGSL-only enhancement: 3-octave
-  //    instead of 2-octave (documented in convention ledger).
+  //    u_oceanNormalMap, textureCoordinates × oceanFrequency*, time, 0)`
+  //    with TWO altitude layers and `czm_ellipsoidTextureCoordinates(
+  //    normalMC)` for globe-consistent wrapping. C11-172 v3 (2026-07-24)
+  //    CONVERGED the WGSL coordinate onto WebGL's: the WGSL march now also
+  //    samples in a GLOBAL ellipsoid (lon/lat) UV at INTEGER repeat counts
+  //    (`OCEAN_OCTAVE_REPEATS_*` ≈ 150/50/15 m), RTE-decomposed via CPU-packed
+  //    f64 phase offsets for f32 precision, replacing the old scale-invariant
+  //    tile-UV ×400/200/800 sampling that was sub-pixel at every altitude
+  //    (animated aliasing, the maintainer's "noisy" bug).
+  //    Both backends now MIP-AVERAGE (WGSL `textureSampleGrad` + sampler
+  //    maxAnisotropy 8 ↔ GLSL `texture()` auto-LOD) and apply a footprint
+  //    amplitude fade + hard cutoff. SHARED (Principle 5): the fade band
+  //    (repeats/pixel) + cutoff, pinned by ocean-wave-lod.spec.mjs. NOT
+  //    shared (intentional, documented): the per-layer SCALE — WGSL picks
+  //    physical wavelengths for the WebGPU look; GLSL keeps czm_getWaterNoise
+  //    (its fade keyed on the effective divisor, D2). So wave appearance is
+  //    similar-but-not-identical; strict pixel parity is NOT a goal here.
   // 5. **Specular model**. MATCHED in BOTH branches since
   //    GLOBE-POLAR-STRETCH-POLISH: enhanced and classic (C11-158 `//>>else`)
   //    both use the `czm_getSpecular` Phong lobe
@@ -3983,7 +4163,8 @@ fn fragmentMain(
       // zero the daytime diffuseHighlight). See computeEnhancedOcean header.
       let oceanColor = computeEnhancedOcean(
         color, input.v_positionEC, input.v_positionMC, oceanNormalEC, sunDir,
-        geoUV, waterMask, tile.groundAtmosphereControl.y, input.v_distance
+        geoUV, geoUV_dx, geoUV_dy, waterMask, tile.groundAtmosphereControl.y,
+        input.v_distance
       );
       // Feather the ocean effect in over the anti-aliased coast band.
       color = mix(color, oceanColor, coastCoverage);
