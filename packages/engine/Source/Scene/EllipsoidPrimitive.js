@@ -33,6 +33,11 @@ const attributeLocations = {
 // every consumer that does not opt in.
 const scratchExtinctionOne = new Cartesian3(1.0, 1.0, 1.0);
 
+// Identity in-scattering (no wash) used when no atmospheric in-scatter is
+// set — the ADDITIVE identity, mirroring scratchExtinctionOne's
+// multiplicative one (C12-30).
+const scratchInscatterZero = new Cartesian3(0.0, 0.0, 0.0);
+
 /**
  * A renderable ellipsoid.  It can also draw spheres when the three {@link EllipsoidPrimitive#radii} components are equal.
  * <p>
@@ -188,6 +193,43 @@ class EllipsoidPrimitive {
     this._atmosphereExtinctionEnabled = false;
 
     /**
+     * Optional per-channel atmospheric in-scattering (sky-wash) ADDED to
+     * the final surface color after the extinction multiply — the additive
+     * half of the atmospheric transfer (C12-30). Used by {@link Moon} so a
+     * daytime disc reads pale and sky-washed instead of a dark cutout.
+     * `undefined` (the default) leaves the shader byte-identical for every
+     * other EllipsoidPrimitive consumer.
+     * @type {Cartesian3|undefined}
+     * @private
+     */
+    this.atmosphereInscatter = undefined;
+    this._atmosphereInscatterEnabled = false;
+
+    /**
+     * When true, replaces the Lambert/Phong disc law with the
+     * Lommel-Seeliger lunar-regolith reflectance (C12-20) so a full moon
+     * renders as the famously flat bright disc rather than a limb-darkened
+     * Lambert ball. Default false — byte-identical for every other
+     * EllipsoidPrimitive consumer. Set per-frame by {@link Moon} from
+     * `atmosphericConditions.lighting.enableLunarBRDF`.
+     * @type {boolean}
+     * @private
+     */
+    this.lunarBRDF = false;
+    this._lunarBRDF = false;
+
+    /**
+     * Optional opposition-surge brightness multiplier (C12-23), computed
+     * CPU-side from the true phase angle by {@link Moon}. `undefined`
+     * (the default) compiles the term out entirely — byte-identical for
+     * every other EllipsoidPrimitive consumer.
+     * @type {number|undefined}
+     * @private
+     */
+    this.oppositionSurge = undefined;
+    this._oppositionSurgeEnabled = false;
+
+    /**
      * @private
      */
     this._depthTestEnabled = options.depthTestEnabled ?? true;
@@ -219,6 +261,12 @@ class EllipsoidPrimitive {
       },
       u_atmosphereExtinction: function () {
         return that.atmosphereExtinction ?? scratchExtinctionOne;
+      },
+      u_atmosphereInscatter: function () {
+        return that.atmosphereInscatter ?? scratchInscatterZero;
+      },
+      u_oppositionSurge: function () {
+        return that.oppositionSurge ?? 1.0;
       },
     };
 
@@ -356,6 +404,23 @@ class EllipsoidPrimitive {
       atmosphereExtinctionEnabled !== this._atmosphereExtinctionEnabled;
     this._atmosphereExtinctionEnabled = atmosphereExtinctionEnabled;
 
+    // C12-30/C12-20/C12-23 — same define-toggle pattern for the sky-wash,
+    // the lunar BRDF, and the opposition surge: enabled/disabled
+    // transitions recompile; the values are per-frame uniforms.
+    const atmosphereInscatterEnabled = defined(this.atmosphereInscatter);
+    const atmosphereInscatterChanged =
+      atmosphereInscatterEnabled !== this._atmosphereInscatterEnabled;
+    this._atmosphereInscatterEnabled = atmosphereInscatterEnabled;
+
+    const lunarBRDFEnabled = this.lunarBRDF === true;
+    const lunarBRDFChanged = lunarBRDFEnabled !== this._lunarBRDF;
+    this._lunarBRDF = lunarBRDFEnabled;
+
+    const oppositionSurgeEnabled = defined(this.oppositionSurge);
+    const oppositionSurgeChanged =
+      oppositionSurgeEnabled !== this._oppositionSurgeEnabled;
+    this._oppositionSurgeEnabled = oppositionSurgeEnabled;
+
     const useLogDepth = frameState.useLogDepth;
     const useLogDepthChanged = this._useLogDepth !== useLogDepth;
     this._useLogDepth = useLogDepth;
@@ -369,7 +434,10 @@ class EllipsoidPrimitive {
       lightingChanged ||
       translucencyChanged ||
       useLogDepthChanged ||
-      atmosphereExtinctionChanged
+      atmosphereExtinctionChanged ||
+      atmosphereInscatterChanged ||
+      lunarBRDFChanged ||
+      oppositionSurgeChanged
     ) {
       vs = new ShaderSource({
         sources: [EllipsoidVS],
@@ -382,6 +450,15 @@ class EllipsoidPrimitive {
       }
       if (atmosphereExtinctionEnabled) {
         fs.defines.push("ATMOSPHERE_EXTINCTION");
+      }
+      if (atmosphereInscatterEnabled) {
+        fs.defines.push("ATMOSPHERE_INSCATTER");
+      }
+      if (lunarBRDFEnabled) {
+        fs.defines.push("LUNAR_BRDF");
+      }
+      if (oppositionSurgeEnabled) {
+        fs.defines.push("OPPOSITION_SURGE");
       }
       if (!translucent && context.fragmentDepth) {
         fs.defines.push("WRITE_DEPTH");

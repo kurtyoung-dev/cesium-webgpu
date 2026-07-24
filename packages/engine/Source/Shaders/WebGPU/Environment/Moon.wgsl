@@ -52,6 +52,20 @@
 //   - Earthshine — soft blue-grey tint on the unlit side, gated by
 //     atmosphericConditions.lighting.enableEarthshine
 //
+// C12 moon-wave additions (2026-07-24, BOTH backends in lockstep with
+// EllipsoidFS.glsl — keep character-consistent):
+//   - C12-20 Lommel-Seeliger lunar reflectance (runtime uniform flag
+//     `lunarBRDF`, from atmosphericConditions.lighting.enableLunarBRDF):
+//     replaces Lambert with 2·μ0/(μ0+μ+ε) so the full moon renders as the
+//     real flat bright disc, not a limb-darkened ball.
+//   - C12-23 opposition surge (uniform `oppositionSurge`, CPU-side
+//     Hapke-SHOE multiplier from the true phase angle; 1.0 = identity).
+//   - C12-30 atmospheric in-scattering sky-wash (uniform `inscatter`,
+//     additive): disc = disc × extinction + inscatter, computed by the
+//     CPU integral in Scene/computeAtmosphereExtinction.js which mirrors
+//     the sky-atmosphere shader's own scattering model. Exactly (0,0,0)
+//     from orbit / disabled — the additive identity.
+//
 // Coordinate frame strategy:
 //   The ray march happens in MOON MODEL space. The VS rasterizes the
 //   bounding cube in clip space and outputs the eye-space hit point
@@ -67,8 +81,9 @@
 //   (sunDirMC, sceneLightDirMC) so the FS does no per-pixel matrix work
 //   for lighting.
 //
-// Uniform layout: 320-byte budget (bumped from 256 in Phase 1.2c v2 to fit
-// the full state). Used 304 bytes; 16 bytes spare.
+// Uniform layout: 336-byte budget (256 → 320 in Phase 1.2c v2; 320 → 336
+// for the C12 moon wave — ADD-ONLY at the tail, existing offsets frozen;
+// phaseFraction stays at byte 268).
 //
 // This file is the build source for Shaders/WebGPU/Environment/Moon.js
 // (hand-written wrapper until the next `gulp build` regenerates it via
@@ -119,7 +134,19 @@ struct U {
   // / when the sky atmosphere is hidden, so the moon is byte-identical there.
   // vec3 is 16-byte aligned; offset 304 is 16-aligned.
   extinction: vec3<f32>,                            // 304..315
-  _spare3: f32,                                     // 316
+
+  // C12-20 — Lommel-Seeliger runtime flag (u32-as-f32; was _spare3, so no
+  // existing offset moved). 1 = lunar BRDF, 0 = legacy Lambert/Phong.
+  lunarBRDF: f32,                                   // 316
+
+  // C12-30 — additive in-scattered sky radiance (sky-wash) along the
+  // camera→moon view ray. Exactly vec3(0.0) from orbit / when disabled —
+  // the ADDITIVE identity, mirroring extinction's multiplicative one.
+  inscatter: vec3<f32>,                             // 320..331
+
+  // C12-23 — opposition-surge brightness multiplier (Hapke SHOE), computed
+  // CPU-side from the true phase angle. 1.0 = identity/disabled.
+  oppositionSurge: f32,                             // 332
 };
 
 @group(0) @binding(0) var<uniform> u: U;
@@ -342,7 +369,29 @@ fn computeEllipsoidColor(
   // Eye direction in model space.
   let toEyeMC = normalize(u.cameraPositionMC - hitMC);
 
-  let lit = phongCsmMaterial(m, L, toEyeMC);
+  // C12-20 — Lommel-Seeliger lunar-regolith reflectance vs legacy
+  // Lambert/Phong, selected by a runtime uniform (cheap branch; no
+  // ShaderDefine bit — the registry is exhausted and the C12 exit criteria
+  // mandate runtime uniforms for quality toggles). I ∝ μ0/(μ0+μ),
+  // normalized so the sub-solar point at full phase matches Lambert's peak
+  // (2·1/(1+1) = 1). At full moon μ0 ≈ μ across the whole disc so the
+  // factor is ~1 everywhere — the real Moon's famously FLAT full disc,
+  // where Lambert renders a limb-darkened ball. Diffuse-only by design:
+  // lunar regolith has no specular lobe (specularStrength is 0 anyway).
+  // C12-23 — `oppositionSurge` is the CPU-side Hapke-SHOE multiplier from
+  // the true phase angle (1.0 = identity). Both terms are character-
+  // consistent with the LUNAR_BRDF / OPPOSITION_SURGE blocks in
+  // EllipsoidFS.glsl (Principle 5 lockstep).
+  let useLunar: bool = u32(round(u.lunarBRDF)) == 1u;
+  var lit: vec3<f32>;
+  if (useLunar) {
+    let mu0 = max(dot(N, L), 0.0);
+    let mu = max(dot(N, toEyeMC), 0.0);
+    let lommelSeeliger = 2.0 * mu0 / (mu0 + mu + 1.0e-4);
+    lit = m.diffuse * lommelSeeliger * u.oppositionSurge;
+  } else {
+    lit = phongCsmMaterial(m, L, toEyeMC) * u.oppositionSurge;
+  }
 
   // C11-176b (phaseGate DELETED): the disc used to be multiplied by
   // `smoothstep(0.0, 0.3, u.phaseFraction)`. That was a physical double
@@ -406,7 +455,13 @@ fn fs(i: VO) -> FragOut {
   let alpha = 1.0 - (1.0 - insideColor.a) * (1.0 - outsideColor.a);
   // NS-MOON-ATMOSPHERE-EXTINCTION — attenuate + redden by the atmospheric
   // transmittance along the view ray (exactly vec3(1.0) from orbit → no-op).
-  out.color = vec4<f32>(mixed.rgb * u.extinction, alpha);
+  // C12-30 — then ADD the in-scattered sky radiance (sky-wash):
+  // disc = disc × extinction + inscatter, the full radiative-transfer
+  // composite. inscatter is exactly vec3(0.0) from orbit / disabled, so
+  // the legacy output is byte-identical there. The wash is what makes a
+  // daytime disc pale and sky-blended instead of a dark cutout against
+  // the bright sky the opaque disc overdraws.
+  out.color = vec4<f32>(mixed.rgb * u.extinction + u.inscatter, alpha);
 
   // Log depth — this INTENTIONALLY DIVERGES from the shared csm_writeLogDepth
   // contract, and the divergence is safe (see below).

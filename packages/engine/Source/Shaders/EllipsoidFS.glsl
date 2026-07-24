@@ -3,6 +3,12 @@ uniform vec3 u_oneOverEllipsoidRadiiSquared;
 #ifdef ATMOSPHERE_EXTINCTION
 uniform vec3 u_atmosphereExtinction;
 #endif
+#ifdef ATMOSPHERE_INSCATTER
+uniform vec3 u_atmosphereInscatter;
+#endif
+#ifdef OPPOSITION_SURGE
+uniform float u_oppositionSurge;
+#endif
 
 in vec3 v_positionEC;
 
@@ -27,10 +33,42 @@ vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
     materialInput.positionToEyeEC = positionToEyeEC;
     czm_material material = czm_getMaterial(materialInput);
 
+#ifdef LUNAR_BRDF
+    // C12-20 — Lommel-Seeliger lunar-regolith reflectance (Moon path).
+    // I ∝ μ0 / (μ0 + μ), normalized so the sub-solar point at full phase
+    // matches Lambert's peak (2·1/(1+1) = 1). At full moon μ0 ≈ μ across
+    // the whole disc so the factor is ~1 everywhere — the real Moon's
+    // famously FLAT full disc, where Lambert renders a limb-darkened ball.
+    // Diffuse-only by design: lunar regolith has no specular lobe (the
+    // Moon material's specular is 0 anyway). Keep the WGSL twin in
+    // Moon.wgsl character-consistent with this block.
 #ifdef ONLY_SUN_LIGHTING
-    return czm_private_phong(normalize(positionToEyeEC), material, czm_sunDirectionEC);
+    vec3 lunarLightDirEC = czm_sunDirectionEC;
 #else
-    return czm_phong(normalize(positionToEyeEC), material, czm_lightDirectionEC);
+    vec3 lunarLightDirEC = czm_lightDirectionEC;
+#endif
+    float mu0 = max(dot(material.normal, lunarLightDirEC), 0.0);
+    float mu = max(dot(material.normal, normalize(positionToEyeEC)), 0.0);
+    float lommelSeeliger = 2.0 * mu0 / (mu0 + mu + 1.0e-4);
+    vec4 lunarColor = vec4(material.diffuse * lommelSeeliger, material.alpha);
+#ifdef OPPOSITION_SURGE
+    // C12-23 — Hapke-SHOE opposition surge, computed CPU-side from the
+    // true phase angle (constant across the distant disc).
+    lunarColor.rgb *= u_oppositionSurge;
+#endif
+    return lunarColor;
+#elif defined(ONLY_SUN_LIGHTING)
+    vec4 litColor = czm_private_phong(normalize(positionToEyeEC), material, czm_sunDirectionEC);
+#ifdef OPPOSITION_SURGE
+    litColor.rgb *= u_oppositionSurge;
+#endif
+    return litColor;
+#else
+    vec4 litColor = czm_phong(normalize(positionToEyeEC), material, czm_lightDirectionEC);
+#ifdef OPPOSITION_SURGE
+    litColor.rgb *= u_oppositionSurge;
+#endif
+    return litColor;
 #endif
 }
 
@@ -93,6 +131,15 @@ void main()
     // NS-MOON-ATMOSPHERE-EXTINCTION — attenuate + redden by the atmospheric
     // transmittance along the view ray (exactly vec3(1.0) from orbit → no-op).
     out_FragColor.rgb *= u_atmosphereExtinction;
+#endif
+
+#ifdef ATMOSPHERE_INSCATTER
+    // C12-30 — add the in-scattered sky radiance (sky-wash) along the view
+    // ray: disc = disc × extinction + inscatter, the full radiative-transfer
+    // composite. Exactly vec3(0.0) from orbit / wash disabled → no-op. The
+    // wash is what makes a daytime disc pale and sky-blended instead of a
+    // dark cutout against the bright sky the disc overdraws.
+    out_FragColor.rgb += u_atmosphereInscatter;
 #endif
 
 #if (defined(WRITE_DEPTH) && (__VERSION__ == 300 || defined(GL_EXT_frag_depth)))

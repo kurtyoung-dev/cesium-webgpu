@@ -24,6 +24,85 @@
 
 ---
 
+## C12 moon wave — sky-wash + Lommel-Seeliger + opposition surge (2026-07-24, C12-30 remainder / C12-20 / C12-23)
+
+**Premise.** After the C11-176b phaseGate deletion, the C12-30 appearance defect had two remaining
+suspects: (2) no atmospheric treatment of the disc beyond extinction, and (3) Lambert disc shading.
+The maintainer-visible goal: from inside the atmosphere in daytime the moon must read as a pale,
+slightly sky-washed disc with its lit side clearly visible — not a dark cutout; at night it must
+stay bright and properly phase-lit. All three items land on BOTH backends in lockstep (Principle 5;
+the C12 exit gate forbids new single-backend default-ON celestial multipliers).
+
+**C12-30 remainder — in-scattering sky-wash.**
+*Cause:* the opaque moon disc draws OVER the sky-atmosphere shell (EnvironmentRenderer.js executes
+moonCommand after skyAtmosphereCommand; same ordering on WebGPU), so disc pixels lose the
+in-scattered sky radiance their neighbors keep. Extinction alone (`disc × T`, NS-MOON-ATMOSPHERE-
+EXTINCTION/C9-06) can only DARKEN the disc — the daytime moon was `T·moon` against a bright sky:
+a dark cutout. The correct radiative-transfer composite is `disc = disc × T + inscatter`.
+*Fix:* new CPU integral `computeAtmosphereInscatter` (+ exact-input cached wrapper) in
+`Scene/computeAtmosphereExtinction.js`, beside its multiplicative twin. It ports the sky shader's
+OWN single-scattering model (AtmosphereCommon.glsl `computeScattering`/`computeAtmosphereColor`):
+same 111 km shell, same Rayleigh/Mie coefficients + scale heights from `frameState.atmosphere`,
+16-step primary march with running optical depth, 4-step light march per sample (whose
+through-the-planet paths accumulate enormous optical depth — attenuation → 0 — which IS the
+earth-shadow/night behavior, so no stylistic nightAlpha is needed), Rayleigh + HG phase functions,
+`lightIntensity` scale, then the sky FS's non-HDR display chain (PBR-Neutral + inverse gamma,
+skipped when `frameState.useHDR`) and the `alpha = mix(color.b, 1, heightOpacity)` composite over
+the space background. The wash therefore MATCHES the rendered sky around the disc rather than
+being an ad-hoc tint, and it is exactly (0,0,0) — the additive identity — from orbit, at night,
+or when the sky atmosphere is hidden. Wiring: Moon.js computes it per frame (cached), publishes
+`frameState.moonAtmosphereInscatter`, hands it to the WebGL primitive
+(`ATMOSPHERE_INSCATTER` define + `u_atmosphereInscatter`, added AFTER the extinction multiply in
+EllipsoidFS.glsl) and the WGSL pack (`inscatter` UB member; `mixed.rgb * u.extinction +
+u.inscatter`). Toggle: `atmosphericConditions.lighting.enableMoonSkyWash` (default ON).
+
+**C12-20 — Lommel-Seeliger reflectance.**
+*Cause:* the moon was a pure Lambert sphere (`specularStrength = 0`), so the full moon rendered as
+a limb-darkened ball; the real full moon is famously flat because regolith reflectance follows
+Lommel-Seeliger `I ∝ μ0/(μ0+μ)` (Fairbairn 2005; Hapke, Theory of Reflectance Spectroscopy),
+which is ≈1 across the whole disc at opposition (μ0 ≈ μ).
+*Fix:* per the queue row, `2·μ0/(μ0+μ+1e-4)` (normalized to Lambert's sub-solar peak) replaces the
+Lambert term when enabled — character-identical formula in `EllipsoidFS.glsl` (`LUNAR_BRDF`
+define, respects ONLY_SUN_LIGHTING) and `Moon.wgsl` (runtime `lunarBRDF` uniform flag — no
+ShaderDefine bit; the lo registry is exhausted and C12 exit criteria mandate runtime uniforms).
+Diffuse-only by design (no specular lobe on regolith). Toggle:
+`atmosphericConditions.lighting.enableLunarBRDF` (default ON).
+
+**C12-23 — opposition surge.**
+*Cause:* disc-integrated lunar brightness rises >40% between phase angles 4° and 0° (Buratti,
+Hillier & Wang 1996, Clementine) — beyond Lambert or Lommel-Seeliger. Note LS alone gives a
+full:quarter ratio of only ~2.65:1 (Φ_LS(90°) ≈ 0.377), so the G4 moon gate (">3:1 Lambertian")
+is only exceeded by LS + surge together: 2.65 × 1.6/1.005 ≈ 4.2:1.
+*Fix:* new `Scene/computeLunarOppositionSurge.js` — Hapke (1986) SHOE form
+`B(α) = 1 + B0/(1 + tan(α/2)/h)` with B0 = 0.6, h = tan(0.5°) ≈ 0.00873, giving
+B(0)/B(4°) ≈ 1.43 (spec-pinned ≥ 1.4) and <1% effect by α = 90°. Computed once per frame on the
+CPU from the true Sun–Moon–observer angle (α is constant across the distant disc — zero per-pixel
+cost per the queue row), published as `frameState.moonOppositionSurge`, applied as a single
+multiplier in both shaders (`OPPOSITION_SURGE` define / `oppositionSurge` uniform; 1.0 identity).
+Toggle: `atmosphericConditions.lighting.enableOppositionSurge` (default ON).
+
+**UB delta (WebGPU, add-only at the tail):** Moon UB 320 → 336 bytes. `lunarBRDF: f32` takes the
+old `_spare3` at byte 316 (no offset moved), `inscatter: vec3<f32>` at 320..331,
+`oppositionSurge: f32` at 332. `phaseFraction` stays at byte 268 / float 67; extinction stays at
+76..78. Pack: ud[79..83] in `_packMoonUniforms`. No ShaderDefine bits consumed.
+
+**Verification.** `Tools/visual-regression/moon-atmosphere-appearance.spec.mjs` (14/14: both-backend
+formula pins, add-only UB pins, C11-176b contract re-pins, integrator numerics — day wash
+blue-dominant, horizon wash brighter/whiter, night and orbit EXACT zero, cache identity/hit —
+surge curve ≥1.4 ratio + monotone + inert at 90°, naga validation) +
+`probe-moon-atmosphere-appearance.mjs` (3 lanes × control/atmosphere × both backends: day-mid
+disc-not-cutout + crescent-visible, horizon extinction-dims + reddens, night-full stays-bright with
+dark sky ring; per-lane cross-backend parity; all Batch-744 fleet probe rules; NOT yet run — the
+orchestrator runs Edge). `npx tsc --noEmit` clean; `moon-phase-gate.spec.mjs` still 5/5.
+
+**Files modified:** `Scene/computeAtmosphereExtinction.js` (in-scatter integral + cache),
+`Scene/computeLunarOppositionSurge.js` (new), `Scene/Moon.js`, `Scene/EllipsoidPrimitive.js`,
+`Scene/FrameState.js`, `Scene/AtmosphericConditions.js`, `Shaders/EllipsoidFS.glsl`,
+`Shaders/WebGPU/Environment/Moon.wgsl`, `Renderer/WebGPU/WebGPUEnvironmentRenderer.js`, new probe
++ spec, `DEBUGGING_GUIDE.md`, `FEATURE_INVENTORY.md`, C12 queue rows.
+
+---
+
 ## C11-176b — Moon phaseGate blackout deleted (2026-07-24, C12 W1 rider; C12-30 suspect (a))
 
 **Premise.** The maintainer's C12-30 screenshot shows the daytime moon as a small DARK blob beside

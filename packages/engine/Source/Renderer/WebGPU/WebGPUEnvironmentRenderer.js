@@ -184,7 +184,11 @@ const UNIFORM_BUFFER_SIZE = 256;
 // Moon uses a slightly larger uniform buffer to fit the full Phase 1.2c v2
 // state (RTE moon center + camera split + 3x3 inverse-modelView + radii +
 // 2 light directions + celestial state + Phong tunables + log-depth far).
-const MOON_UNIFORM_BUFFER_SIZE = 320;
+// 320 → 336 for the C12 moon wave (lunarBRDF flag reuses the old spare at
+// byte 316; inscatter vec3 + oppositionSurge appended at 320..335) —
+// ADD-ONLY at the tail, existing offsets frozen (phaseFraction stays at
+// float offset 67 / byte 268).
+const MOON_UNIFORM_BUFFER_SIZE = 336;
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
@@ -966,7 +970,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     _loadRealMoonTexture(device, cache, moon.textureUrl);
   }
 
-  // Uniform buffer (Phase 1.2c v2 layout = 320 bytes / 80 floats)
+  // Uniform buffer (Phase 1.2c v2 + C12 moon-wave tail = 336 bytes / 84 floats)
   if (!defined(cache.uniformBuffer)) {
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
       device,
@@ -1142,7 +1146,10 @@ function updateWebGPUMoon(moon, frameState, commandList) {
  *   moonDirWC + phase  64..67
  *   shineFlag/log/shin/spec 68..71
  *   farPlane + 3 pad   72..75
- *   spare              76..79
+ *   extinction         76..78  (NS-MOON-ATMOSPHERE-EXTINCTION)
+ *   lunarBRDF flag     79      (C12-20; was spare)
+ *   inscatter          80..82  (C12-30 sky-wash, additive)
+ *   oppositionSurge    83      (C12-23)
  *
  * @private
  */
@@ -1229,7 +1236,29 @@ function _packMoonUniforms(moon, frameState, cache) {
   ud[76] = defined(extinction) ? extinction.x : 1.0;
   ud[77] = defined(extinction) ? extinction.y : 1.0;
   ud[78] = defined(extinction) ? extinction.z : 1.0;
-  // Offset 79 is spare; ud.fill(0) above already zeroed it.
+
+  // C12-20 — Lommel-Seeliger runtime flag at offset 79 (byte 316; was the
+  // spare). Same source expression as the WebGL path's Moon.js wiring
+  // (atmosphericConditions.lighting.enableLunarBRDF, false when no globe),
+  // so both backends select the same disc law every frame.
+  ud[79] =
+    defined(ac) && defined(ac.lighting) && ac.lighting.enableLunarBRDF === true
+      ? 1.0
+      : 0.0;
+
+  // C12-30 — additive in-scattered sky-wash at offsets 80..82 (vec3
+  // `inscatter`, 16-byte aligned at byte 320). Published by Moon.update via
+  // the shared CPU integral; (0,0,0) — the additive identity — when the
+  // wash is disabled, the atmosphere is hidden, or the view ray misses the
+  // shell (orbit), keeping the legacy output byte-identical there.
+  const inscatter = frameState.moonAtmosphereInscatter;
+  ud[80] = defined(inscatter) ? inscatter.x : 0.0;
+  ud[81] = defined(inscatter) ? inscatter.y : 0.0;
+  ud[82] = defined(inscatter) ? inscatter.z : 0.0;
+
+  // C12-23 — opposition-surge multiplier at offset 83 (byte 332). 1.0 =
+  // identity (disabled / away from opposition). Published by Moon.update.
+  ud[83] = frameState.moonOppositionSurge ?? 1.0;
 }
 
 /**
@@ -1273,7 +1302,7 @@ function getWebGPUMoonStatistics(moon) {
   const cache = moon._webgpuCache;
   // Pull the moon-specific uniforms back out of the packed buffer for
   // a quick "what got pushed to the GPU last frame" view. The offsets
-  // here mirror `_packMoonUniforms()` (offsets 64..75 are moon tail).
+  // here mirror `_packMoonUniforms()` (offsets 64..83 are the moon tail).
   const ud = cache.uniformData;
   const moonDirWC =
     defined(ud) && ud.length > 67 ? { x: ud[64], y: ud[65], z: ud[66] } : null;
@@ -1282,6 +1311,14 @@ function getWebGPUMoonStatistics(moon) {
   const useLogDepth = defined(ud) && ud.length > 69 ? ud[69] === 1.0 : null;
   const shininess = defined(ud) && ud.length > 70 ? ud[70] : null;
   const specularStrength = defined(ud) && ud.length > 71 ? ud[71] : null;
+  // C12 moon-wave tail (offsets 76..83) — extinction, lunar BRDF flag,
+  // sky-wash, opposition surge, as last pushed to the GPU.
+  const extinction =
+    defined(ud) && ud.length > 78 ? { x: ud[76], y: ud[77], z: ud[78] } : null;
+  const lunarBRDFOn = defined(ud) && ud.length > 79 ? ud[79] === 1.0 : null;
+  const inscatter =
+    defined(ud) && ud.length > 82 ? { x: ud[80], y: ud[81], z: ud[82] } : null;
+  const oppositionSurge = defined(ud) && ud.length > 83 ? ud[83] : null;
   return {
     backend: "webgpu",
     pipelineReady: defined(cache.pipeline),
@@ -1297,6 +1334,10 @@ function getWebGPUMoonStatistics(moon) {
     useLogDepth,
     shininess,
     specularStrength,
+    atmosphereExtinction: extinction,
+    lunarBRDFOn,
+    atmosphereInscatter: inscatter,
+    oppositionSurge,
   };
 }
 

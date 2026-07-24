@@ -13,7 +13,10 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import {
   computeAtmosphereExtinctionCached,
   createAtmosphereExtinctionCache,
+  computeAtmosphereInscatterCached,
+  createAtmosphereInscatterCache,
 } from "./computeAtmosphereExtinction.js";
+import computeLunarOppositionSurge from "./computeLunarOppositionSurge.js";
 import EllipsoidPrimitive from "./EllipsoidPrimitive.js";
 import Material from "./Material.js";
 
@@ -83,6 +86,10 @@ class Moon {
     // inner radius, or the enabled gate) changes. Keeps the Moon consistent
     // with the Sun/star extinction, which use the same cached integrator.
     this._atmosphereExtinctionCache = createAtmosphereExtinctionCache();
+
+    // C12-30 — cache for the additive in-scattering (sky-wash) integral,
+    // the extinction's additive twin. Same exact-input caching contract.
+    this._atmosphereInscatterCache = createAtmosphereInscatterCache();
   }
 
   /**
@@ -211,6 +218,104 @@ class Moon {
     ellipsoidPrimitive.atmosphereExtinction =
       frameState.skyAtmosphereVisible === true ? extinction : undefined;
 
+    // C12-30 — atmospheric IN-SCATTERING (sky-wash), the additive half of
+    // the transfer the extinction above is the multiplicative half of. The
+    // opaque disc is drawn OVER the sky-atmosphere shell, so without this
+    // term the disc loses the sky radiance its neighboring pixels keep and
+    // a daytime moon reads as a dark cutout. The CPU integral mirrors the
+    // sky shader's own single-scattering model (see
+    // computeAtmosphereInscatter) so the disc blends into the rendered sky:
+    //     disc = discColor × extinction + inscatter.
+    // Gated on the same skyAtmosphereVisible condition as the extinction
+    // plus the atmosphericConditions.lighting.enableMoonSkyWash toggle;
+    // disabled (or from orbit, where the ray misses the shell) the wash is
+    // exactly (0,0,0) — the additive identity, byte-identical.
+    const lighting =
+      defined(ac) && defined(ac.lighting) ? ac.lighting : undefined;
+    const sunDirWCForWash =
+      defined(uniformState) && defined(uniformState.sunDirectionWC)
+        ? uniformState.sunDirectionWC
+        : undefined;
+    const washEnabled =
+      extinctionEnabled &&
+      defined(sunDirWCForWash) &&
+      defined(lighting) &&
+      lighting.enableMoonSkyWash === true;
+    // Display-space matching: with HDR off (the default) the sky FS
+    // tonemaps in-shader, so the wash applies the same transform; with HDR
+    // on the wash stays linear and rides the post-process tonemap.
+    const applyWashTonemap = frameState.useHDR !== true;
+    const washGamma =
+      defined(uniformState) && defined(uniformState.gamma)
+        ? uniformState.gamma
+        : 2.2;
+    const inscatter = computeAtmosphereInscatterCached(
+      this._atmosphereInscatterCache,
+      scratchInscatter,
+      washEnabled,
+      camPos,
+      translation,
+      sunDirWCForWash,
+      frameState.atmosphere,
+      Ellipsoid.default.maximumRadius,
+      applyWashTonemap,
+      washGamma,
+    );
+    frameState.moonAtmosphereInscatter = Cartesian3.clone(
+      inscatter,
+      frameState.moonAtmosphereInscatter,
+    );
+    // Hand the wash to the WebGL moon primitive. Undefined disables the
+    // shader path (no define, byte-identical) when the wash is off.
+    ellipsoidPrimitive.atmosphereInscatter = washEnabled
+      ? inscatter
+      : undefined;
+
+    // C12-20 — Lommel-Seeliger lunar reflectance toggle. The shader-side
+    // branch (both backends) replaces the Lambert disc law with the lunar
+    // regolith law; the flag just routes it. Default ON via
+    // AtmosphericConditions.lighting.enableLunarBRDF.
+    const lunarBRDF = defined(lighting) && lighting.enableLunarBRDF === true;
+    ellipsoidPrimitive.lunarBRDF = lunarBRDF;
+
+    // C12-23 — opposition surge: one CPU-side Hapke-SHOE multiplier from
+    // the true Sun–Moon–observer phase angle (constant across the distant
+    // disc), passed as a single uniform. 1.0 (identity) when disabled or
+    // away from opposition.
+    const surgeEnabled =
+      defined(lighting) && lighting.enableOppositionSurge === true;
+    let oppositionSurge = 1.0;
+    if (
+      surgeEnabled &&
+      defined(uniformState) &&
+      defined(uniformState.sunPositionWC) &&
+      defined(camPos)
+    ) {
+      const moonToSun = Cartesian3.subtract(
+        uniformState.sunPositionWC,
+        translation,
+        scratchMoonToSun,
+      );
+      const moonToCamera = Cartesian3.subtract(
+        camPos,
+        translation,
+        scratchMoonToCamera,
+      );
+      const sunDistance = Cartesian3.magnitude(moonToSun);
+      const cameraDistance = Cartesian3.magnitude(moonToCamera);
+      if (sunDistance > 0.0 && cameraDistance > 0.0) {
+        let cosPhaseAngle =
+          Cartesian3.dot(moonToSun, moonToCamera) /
+          (sunDistance * cameraDistance);
+        cosPhaseAngle = Math.min(Math.max(cosPhaseAngle, -1.0), 1.0);
+        oppositionSurge = computeLunarOppositionSurge(Math.acos(cosPhaseAngle));
+      }
+    }
+    frameState.moonOppositionSurge = oppositionSurge;
+    ellipsoidPrimitive.oppositionSurge = surgeEnabled
+      ? oppositionSurge
+      : undefined;
+
     // Backend-specific path — delegate to feature renderer if available
     const context = frameState.context;
     const fr = context.getFeatureRenderer(FeatureRendererKey.MOON);
@@ -310,6 +415,9 @@ const rotationScratch = new Matrix3();
 const translationScratch = new Cartesian3();
 const scratchMoonDirWC = new Cartesian3();
 const scratchExtinction = new Cartesian3();
+const scratchInscatter = new Cartesian3();
+const scratchMoonToSun = new Cartesian3();
+const scratchMoonToCamera = new Cartesian3();
 const scratchCommandList = [];
 
 export default Moon;

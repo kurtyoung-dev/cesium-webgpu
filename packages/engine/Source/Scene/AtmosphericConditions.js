@@ -102,7 +102,9 @@ class AtmosphericConditions {
    * `dynamicAtmosphereLighting`, and `dynamicAtmosphereLightingFromSun`
    * delegate to `Globe`. `enableSunLight`, `enableMoonLight`,
    * `enableMoonPhase`, and `enableEarthshine` are new Phase 1 state stored
-   * on the facade.
+   * on the facade. The C12 moon-wave toggles `enableLunarBRDF`,
+   * `enableOppositionSurge`, and `enableMoonSkyWash` (all default ON, both
+   * backends) also live here.
    * @type {object}
    * @readonly
    */
@@ -304,6 +306,17 @@ function buildLighting(globe) {
   // (the moon contribution is gated to zero when the moon is below
   // the horizon AND scaled by phase fraction, so "ON by default" is
   // visually identical to today during the day and at new moon).
+  // C12 moon wave (2026-07-24) — three moon-appearance toggles, all
+  // default ON and implemented on BOTH backends in lockstep (never a
+  // WebGPU-only default-ON multiplier — the C11-176/C12 exit-gate class):
+  //  - enableLunarBRDF (C12-20): Lommel-Seeliger regolith reflectance in
+  //    place of Lambert, so the full moon is a flat bright disc.
+  //  - enableOppositionSurge (C12-23): CPU-side Hapke-SHOE brightness
+  //    surge within a few degrees of opposition.
+  //  - enableMoonSkyWash (C12-30): additive in-scattered sky radiance over
+  //    the disc (disc = disc × extinction + inscatter), so the daytime
+  //    moon reads pale/sky-washed instead of a dark cutout. Only active
+  //    while the sky atmosphere is visible; exactly zero from orbit.
   const leaf = {
     enableSunLight: true,
     enableMoonLight: true,
@@ -311,6 +324,9 @@ function buildLighting(globe) {
     enableEarthshine: false,
     enableDualLightAtmosphere: true,
     moonIntensity: 0.05,
+    enableLunarBRDF: true,
+    enableOppositionSurge: true,
+    enableMoonSkyWash: true,
   };
   Object.defineProperties(leaf, {
     lambertDiffuseMultiplier: {

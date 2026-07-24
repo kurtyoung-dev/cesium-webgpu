@@ -326,6 +326,29 @@ class FrameState {
     this.moonAtmosphereExtinction = undefined;
 
     /**
+     * Per-frame RGB atmospheric IN-SCATTERING (sky-wash) for the Moon —
+     * the additive half of the transfer {@link FrameState#moonAtmosphereExtinction}
+     * is the multiplicative half of: the sky radiance scattered into the
+     * camera→moon path, added over the opaque disc so a daytime moon reads
+     * pale/sky-washed instead of a dark cutout (C12-30). Exactly
+     * {@link Cartesian3#ZERO} — the additive identity — when disabled, when
+     * the atmosphere is hidden, or from orbit. Consumed by the WebGPU moon
+     * feature renderer; the WebGL path reads it via the Moon primitive.
+     * @type {Cartesian3|undefined}
+     */
+    this.moonAtmosphereInscatter = undefined;
+
+    /**
+     * Per-frame lunar opposition-surge brightness multiplier (C12-23) —
+     * the Hapke-SHOE term computed CPU-side from the true Sun–Moon–observer
+     * phase angle. 1.0 (identity) when disabled or away from opposition.
+     * Consumed by the WebGPU moon feature renderer; the WebGL path reads
+     * it via the Moon primitive's uniform.
+     * @type {number|undefined}
+     */
+    this.moonOppositionSurge = undefined;
+
+    /**
      * Per-frame RGB atmospheric extinction (transmittance) for the Sun —
      * the fraction of sunlight, per channel, that survives the slant path
      * through the atmosphere to the camera along the camera→sun ray.
