@@ -26,7 +26,13 @@ celestial-appearance draft.
 
 Operating model: **ORCHESTRATOR**. One worker implements a bounded slice and returns a verified dirty
 tree; an independent reviewer checks the actual diff and evidence; only the orchestrator lands it and
-updates this ledger. The mechanics in
+updates this ledger.
+
+**EXECUTOR RULING (maintainer, 2026-07-24, recorded Batch 758): the orchestrator (Claude Fable/Opus
+workers) owns ALL Campaign 13 execution — Option B.** Sol 5.6's dispatch lane is closed; the
+maintainer will handle any future re-partitioning. If Sol returns and leaves uncommitted work in the
+tree, it is taken over, independently verified, and landed under orchestrator review (the Batch
+743/754 takeover protocol). The C13 dispatch freeze is LIFTED. The mechanics in
 `campaign11_planning/guides/G10-charter-mechanics.md` remain the process reference.
 
 ---

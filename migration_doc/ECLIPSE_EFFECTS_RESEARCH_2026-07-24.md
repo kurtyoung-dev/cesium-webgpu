@@ -147,6 +147,16 @@ Each slice re-runs Scenes A/B/C (below) as regression gates. Probes: `probe-save
 5. **Sequencing pin:** confirm S1 lands *before* C12-18/C11-160 so the continuity probe becomes the regression gate for the sun-PP refactor (this reorders C12-29 ahead of parts of W4 despite its later number).
 6. **Ambition ceiling:** analytic dual-cone (this plan) now, with Schneegans CGF 2025-style precomputed eclipse-shadow Bruneton extension (MIT/CosmoScout reference) recorded as a possible future L-item — or commit to the precomputed path from the start? **Recommendation: analytic now; it reaches the acceptance bar (both 2026/2027 instants + 2024 shapefile match) at a fraction of the cost.**
 
+
+### §6a Maintainer rulings (2026-07-24, all six answered — recorded at Batch 758)
+
+1. **E1 RATIFIED: default-on.** "This is the actual simulation that needs to be there." Ship S2 default-on with the `enableEclipse` toggle.
+2. **E2 RATIFIED with scope add:** human-eye impression (preserved darkness) is the DEFAULT; camera-autoexposure compensation becomes a **togglable alternative mode** (new small item: an eclipse-AE mode switch, to be designed with C12-19's AE lanes — the AE-exemption is the default state, the switch opts INTO camera behavior).
+3. **E3 RATIFIED with redirection:** no light-pollution modeling; S6's star reveal works through the EXISTING star-brightness-at-night machinery — and the maintainer additionally rules that machinery should **default ON at a countryside-like level** (today `enableStarBrightnessModulation` defaults `false`, `AtmosphericConditions.js:404`). Scope: flip the default + pick a countryside strength, as a both-backend default-path change routed through the C12 exit-gate audit (it becomes part of the audited multiplier set, not an exception to it).
+4. **E4 RATIFIED:** the orchestrator takes over ALL Sol in-flight work completely (see the global Sol ruling: Option B — the orchestrator owns Campaign 13 outright). S3 lands as a C13 rider under single ownership, sequenced after C13-39.
+5. **E5 RATIFIED:** the S1-before-C12-18/C11-160 sequencing pin is confirmed.
+6. **E6 RATIFIED:** analytic dual-cone now; the precomputed Bruneton-extension path stays a recorded future L-item.
+
 ---
 
 Key repo anchors verified this session: `Scene.js:3803-3830`, `Sun.js:312-337` (BV radius = `SOLAR_RADIUS*(1+glowLengthTS)`), `WebGPUEnvironmentRenderer.js:612-619` (BV-less sun command), `AtmosphericConditions.js:363-395` (`enableStarBrightnessModulation` default false — the "stars free" claim from Lane 3 is corrected above), `QUEUE_2026-07-19_CAMPAIGN12.md:59` (C12-29 row) and exit-gate items 2/5. Lane 4's sun-BV formula (`1+2*glowLengthTS`) was wrong; magnitude (≈4.2e9 m) was right. Lane 3's corona-falloff citation is superseded by the REFUTED correction (Baumbach −17/−7/−2.5).

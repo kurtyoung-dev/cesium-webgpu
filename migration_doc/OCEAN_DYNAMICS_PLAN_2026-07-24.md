@@ -178,6 +178,16 @@ Frame context: current WebGPU characterization ~12.18-12.53 ms/frame (`QUEUE_202
 5. **Campaign 14 launch timing:** after C13-GATE-D as recommended, vs earlier launch of the C13-independent phases (W0-W2 have no C13 dependency) if ocean priority rises.
 6. **Ocean quality-tier axis:** confirm adding cascade-count/N/patch-extent tiers (new axis, W3) vs keeping single-quality v1 through the epic.
 
+
+### §6a Maintainer rulings (2026-07-24, all six answered — recorded at Batch 758)
+
+1. **O1 RATIFIED:** ENU wind contract lands as the C13-18 rider (now single-owner: the orchestrator owns C13 per the global Sol ruling).
+2. **O2 OVERRULED (scope expansion):** jet streams are NOT visualization-only — a **rough low-LOD physical field must also feed other systems, clouds first** (coarse jet-stream advection input to the cloud decks). Cross-campaign coordination is moot under single C13 ownership; the W4 row gains the coarse-coupling deliverable, with the fidelity bar explicitly "rough/low-LOD".
+3. **O3 RATIFIED:** procedural gyres default + committed RTOFS-derived sample; never bundle OSCAR/Copernicus.
+4. **O4 RATIFIED:** ≤2.0 ms all-on budget provisionally, pending the W0 baseline; the maintainer notes this lane is lower priority and can proceed asynchronously.
+5. **O5 RULED (stricter than the recommendation):** **Campaign 14 launches only after Campaigns 11, 12, AND 13 are done** — not merely after C13-GATE-D. W0-W2's C13-independence does not accelerate the launch.
+6. **O6 RATIFIED with door open:** single-quality v1; the tier axis may be added later if performance demands — design W3 so the axis can be introduced without rework (no hardcoded single-quality assumptions in the uniform/config surface).
+
 ---
 **UNCONFIRMED register (carried into phase intakes):** fork FFT-ocean actual GPU ms (W0 baseline); FFT-ocean requestRenderMode keep-alive behavior (W0 probe); Cesium-World-Terrain ocean-lid datum (W0 probe, shared with tides); NWS-MDL EDR UGRD/VGRD parameter/level availability (W5 intake); OSCAR NRT variant existence + terms (W4 intake); MERRA-2 per-dataset licence wording (deprioritized).
 

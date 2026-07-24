@@ -79,6 +79,15 @@ Honest placement, even with C12 live: **tides do not belong in C12.** The equili
 4. **Design B's containment bill**: accept coastline smear, lake-gating, and constant pick/clamp divergence plus C11-149/158 sequencing — or defer B until C11 resumes and Design A has proven demand. (Recommendation: defer; file the seed per Principle 9.)
 5. **Regional-realism data pick**: EOT20 bake (CC BY, global, recommended), NOAA CO-OPS runtime (public domain, US-only), exaggerated-equilibrium-only (zero licence exposure), or FES2022 (encumbered AVISO contract quoted above — requires your sign-off and a documented §6f-style analysis; never bundled without it). TPXO/UKHO/DTU23 are off the table under project rules.
 
+### §5a Maintainer rulings (2026-07-24, all five answered + one addition — recorded at Batch 758)
+
+1. **T1 RATIFIED:** equilibrium TideModel lands in Core; regional prediction stays out of the engine; revise `FEATURE_INVENTORY.md:1119` accordingly when the work lands.
+2. **T2 RATIFIED with scope expansion:** not a single geoid term — the ocean anchor must support **both ellipsoid and geoid, and multiple vertical datums**, derived from the selected globe/terrain+imagery (per-provider datum metadata with a manual override; regional vdatum offsets ride the same uniform; the datum PROBE still runs first to establish what Cesium World Terrain actually uses).
+3. **T3 RATIFIED:** documented `tideExaggeration` knob, default 1.0 (true scale).
+4. **T4 RATIFIED as EXPERIMENT:** Design B carries an explicit `(EXPERIMENTAL)` tag if/when built — "this could be awesome or it could suck"; not a commitment.
+5. **T5 RATIFIED:** support BOTH EOT20 (bundled bake, CC BY 4.0) and NOAA CO-OPS (runtime, public domain, US stations); **default EOT20**.
+6. **T6 NEW ACCEPTANCE CRITERION (maintainer addition):** tides, when enabled, must match REAL tide dates/timings and stay phase-locked to the actual moon position/motion — i.e. the model evaluates from the scene clock + the in-engine Simon1994 lunar/solar ephemerides (equilibrium) and EOT20 constituents at scene time, and the acceptance probe verifies predicted high/low-water timing against NOAA reference-station predictions.
+
 **Bottom line:** your model of the default renderer is right — the ocean is the terrain mesh and WMTS can only paint pixels — but "nothing is possible" is wrong on the strength of your own fork: the ocean-surface primitive, the reserved tideCallback, the exaggeration displacement machinery, and in-tree bathymetry loading mean a real, licence-clean 3D tide (Design A + D, ~1–2 batches after a datum probe) is available now, with the fully-correct bathymetry-split (Design C) already half-built and correctly sized as its own campaign.
 
 Session note (non-blocking): the claude.ai Google Drive MCP connector requires authorization via claude.ai connector settings before its tools can be used; nothing in this task needed it.

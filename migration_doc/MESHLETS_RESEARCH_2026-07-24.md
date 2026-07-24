@@ -95,4 +95,13 @@ The 64-bit-atomic gap forces either untextured output (nanite-webgpu's pack) or 
 5. **Licence/provenance ruling** — implement-from-reference house norm with nanite-webgpu as MIT-confirmed reference; meshoptimizer already in-tree MIT; METIS (Apache-2.0) only if Tier 2 ever prefers it over buildMeshletsSpatial.
 6. **Gate contract** — default-off, byte-identical off, zero passes/allocations when off; plus the FAR-003/FORK-41 re-arm story and the C11-168 tileset-lane launch gate.
 
+### §6a Maintainer rulings (2026-07-24, all six answered — recorded at Batch 758)
+
+1. **M1 RATIFIED:** Tier 1 alone; Tier 2 only after Tier 1 proves wins on the C11-168 lane.
+2. **M2 RATIFIED:** inside the Phase-8b GPU-resident-tiles program.
+3. **M3 RATIFIED:** WebGPU-only additive; WebGL keeps the standard path.
+4. **M4 RATIFIED with research addition:** load-time worker clusterization (benchmark probe first) — **plus investigate pre-baking meshlet data into 3D Tiles** (an offline enrichment stage — 3d-tiles-tools preprocessing or a custom tileset extension carrying pre-clustered meshlet buffers; becomes a research sub-item of the epic seed).
+5. **M5 RATIFIED with attribution requirement:** implement-from-techniques stands, AND **any code directly taken from or directly inspired by nanite-webgpu must carry an attribution comment at the code site** (MIT, Marcin Matuszczyk) — not just the LICENSE-level notice.
+6. **M6 RATIFIED:** default-off / byte-identical-off gate contract + FAR-003/FORK-41 re-arm story + C11-168 hard launch gate.
+
 **Bottom line:** Tier 1 is a well-substrated, production-defensible M-L feature that the fork is unusually ready for (shipped point-cloud precedent, installed clusterizer, first-class indirect draw plumbing, three WebGPU-only-additive precedents); Tier 2 is a credible follow-on constrained to intra-tile LOD; Tier 3 is not worth pursuing on browser WebGPU today and should be explicitly deferred with named unblock conditions (64-bit atomics or drawIndirectCount standardization).
