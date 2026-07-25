@@ -108,6 +108,11 @@ class AtmosphericConditions {
    * (default ON, both backends — gates application of
    * `frameState.eclipseState`) and `eclipseAutoExposure` (default OFF —
    * ruling E2's camera-metering alternative to the human-eye impression).
+   * The C12 sun-wave toggles `enableSolarLimbDarkening` (C12-15) and
+   * `enableSolarGlareFalloff` (C12-16) are here too — both default ON, both
+   * backends, both resolved once per frame by `Scene/SunDiscAppearance.js`
+   * and published as `frameState.sunDiscAppearance`, and both with an EXACT
+   * identity position when false.
    * @type {object}
    * @readonly
    */
@@ -362,6 +367,36 @@ function buildLighting(globe) {
   // the true path must feed the eclipse-dimmed luminance into them. The
   // transfer-function split above is the complete, shipped default path;
   // everything C12-19 adds attaches to the `true` branch.
+  // C12 sun wave (2026-07-25) — two sun-BAKE toggles, both DEFAULT ON and
+  // implemented on BOTH backends in lockstep (the C11-176/C12 exit-gate
+  // class: never a WebGPU-only default-ON celestial change). Both feed the
+  // bake through `Scene/SunDiscAppearance.js`, which reads the numbers from
+  // `Scene/SolarDiscModel.js` — the single constants source the C12-15 row
+  // required, shared with `computeSolarObscuration.js`.
+  //
+  //  - enableSolarLimbDarkening (C12-15): the disc's radiance follows the
+  //    quadratic law I(mu) = 0.3 + 0.93*mu - 0.23*mu^2 instead of the
+  //    binary `step()` flat disc. Turning it off passes (1, 0, 0), which is
+  //    the exact flat disc again — an identity, not an approximation.
+  //    HONEST NOTE: at SDR defaults the bake clamps alpha to 1 and the glare
+  //    term alone is ~0.73 over the disc, so limb darkening is arithmetically
+  //    masked until C12-19 removes that clamp (or C12-18 moves the halo to
+  //    the post-process chain). It ships now so C12-19 only has to remove
+  //    clamps, not re-derive the law — and the clamp count is ASYMMETRIC:
+  //    ONE site in `SunTextureFS.glsl` (the final `clamp(color, 0, 1)`) but
+  //    SIX in the WebGPU CPU twin (`WebGPUEnvironmentRenderer.js` — four
+  //    `Math.min(1, Math.max(0, …))` calls in the half-float branch plus two
+  //    `Math.min(255, …)` in the 8-bit branch, and the 8-bit branch cannot
+  //    carry >1 at all, so C12-19 must also force the float format there).
+  //
+  //  - enableSolarGlareFalloff (C12-16): the halo uses a Lorentzian /
+  //    inverse-square veiling-glare profile that decays as 1/theta^2 and
+  //    reaches zero only at the billboard's inscribed circle (11.0 solar
+  //    radii), replacing `1 - smoothstep(0, 0.55, r)` which terminated hard
+  //    at 8.556 solar radii. Turning it off selects the historical
+  //    expression verbatim. Measured delta inside 6 solar radii: at most
+  //    0.098 in profile units (0.074 in alpha) — the table is in
+  //    `SolarDiscModel.solarGlareProfile`'s JSDoc.
   const leaf = {
     enableSunLight: true,
     enableMoonLight: true,
@@ -374,6 +409,8 @@ function buildLighting(globe) {
     enableMoonSkyWash: true,
     enableEclipse: true,
     eclipseAutoExposure: false,
+    enableSolarLimbDarkening: true,
+    enableSolarGlareFalloff: true,
   };
   Object.defineProperties(leaf, {
     lambertDiffuseMultiplier: {

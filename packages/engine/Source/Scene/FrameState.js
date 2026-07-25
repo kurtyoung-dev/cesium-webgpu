@@ -402,6 +402,17 @@ class FrameState {
     this.sunEclipseAlpha = undefined;
 
     /**
+     * Resolved sun-disc bake appearance (C12-15 limb darkening + C12-16
+     * glare falloff), published by {@link Sun#update} before the backend
+     * branch so the WebGL bake's uniforms and the WebGPU CPU bake read one
+     * identical resolution. See `Scene/SunDiscAppearance.js`; the numeric
+     * constants live in `Scene/SolarDiscModel.js`, the single source both
+     * bakes and `computeSolarObscuration.js` read.
+     * @type {object|undefined}
+     */
+    this.sunDiscAppearance = undefined;
+
+    /**
      * Per-frame multiplier applied to every SUN-DRIVEN scene light and
      * atmosphere intensity during a solar eclipse (C12-29 S2) — the scene
      * light colour (`UniformState`), the sky-atmosphere shell on both

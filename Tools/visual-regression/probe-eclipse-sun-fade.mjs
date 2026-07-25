@@ -100,6 +100,44 @@
 // of silently mis-reporting WebGL. `blendSpace`, `ratioDisplay`,
 // `ratioLinear`, `errDisplay` and `errLinear` are all in the manifest.
 //
+// ⛔ RATIONALE CORRECTED 2026-07-25 (round 3 of the C12 sun wave). The
+// `NA-geometric-limb` TIER BELOW IS STILL CORRECT — nothing measurable lives
+// in that annulus — but the REASON recorded for it (immediately after this
+// block: "the WebGPU sun's glow does not extend above the earth limb", "a
+// PRE-EXISTING backend sun-RENDERING divergence") is WRONG, and the C12-15/
+// C12-16/C12-17 rows it points at are NOT what unblocks it.
+//
+// `probe-sun-glow-profile` measured `frameState.sunAtmosphereExtinction` —
+// which `Sun.js` computes BACKEND-AGNOSTICALLY before the feature-renderer
+// branch — as BYTE-IDENTICAL on both backends at every near-limb step:
+// [0.723, 0.467, 0.190] at -19.0 deg and [0, 0, 0] (< 5e-4/channel) below it.
+// Both backends multiply the billboard's RGB by it. EXTINCTION 0 => A BLACK
+// BILLBOARD => DELTA 0. WebGPU's zero is the physics executing correctly; the
+// sun is genuinely extinguished at those elevations on BOTH backends, so
+// there is no sun there to dim and no wave can make one appear.
+//
+// The anomaly is WebGL's NON-zero at those same steps. Leading mechanism,
+// from source: WebGL's sun uses BlendingState.ALPHA_BLEND, so
+// out = src.rgb*src.a + dst*(1 - src.a); with src.rgb == 0 that is
+// out = dst*(1 - a) — a black billboard DARKENS the sky by a*dst. WebGPU
+// blends additively (src-alpha/one), where src.rgb == 0 is an exact
+// identity. That reproduces every observation: the residual appears exactly
+// where the billboard is black, its magnitude tracks the ROI background, and
+// it collapses to 0 at -22.6 deg where no billboard is drawn at all.
+//
+// CONSEQUENCE FOR THIS PROBE: at the one step where the sun is genuinely
+// above the horizon (-19.0 deg) WebGPU measures 1,176,861 vs WebGL 982,022 —
+// 120% of WebGL, BRIGHTER not absent — and the Batch-760 "open-sky WebGPU =
+// 77% of WebGL" asymmetry DOES NOT REPRODUCE (0.06% agreement per radial
+// bin). Lane (c)'s deferral to lane (b) should be re-derived on the corrected
+// premise; it is not wrong to defer, but the stated cause is.
+//
+// ALSO: `scene.sun.show` IS NOT A SINGLE-VARIABLE LEVER ON WEBGL — it drives
+// `environmentState.isSunVisible`, which gates the sun bloom pass
+// (EnvironmentRenderer.js:43-58, FramebufferOrchestrator.js:49-53) as well as
+// the billboard. This probe already forces `scene.sunBloom = false`, which is
+// what makes that safe here; do not remove that line.
+//
 // MEASURED BACKEND DIVERGENCE, RECORDED HERE SO IT IS NOT RE-DISCOVERED
 // (round-4 Edge run, 2026-07-24): WebGPU sun glow does not extend above the
 // earth limb — glowOffRaw is 0 across the WHOLE fade band at this vantage

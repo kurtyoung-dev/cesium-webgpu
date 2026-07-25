@@ -20,6 +20,10 @@ import {
   createAtmosphereExtinctionCache,
 } from "./computeAtmosphereExtinction.js";
 import { getEclipseSunFactor } from "./EclipseState.js";
+import {
+  createSunDiscAppearance,
+  readSunDiscAppearance,
+} from "./SunDiscAppearance.js";
 import PixelDatatype from "../Renderer/PixelDatatype.js";
 import RenderState from "../Renderer/RenderState.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
@@ -90,6 +94,16 @@ class Sun {
     // the shader multiply is byte-identical in those frames.
     this._eclipseAlpha = 1.0;
 
+    // C12-15 / C12-16 — resolved sun-bake appearance, published to
+    // frameState before the backend branch so the GLSL bake (uniforms below)
+    // and the WebGPU CPU bake consume one identical resolution. `_bakedKey`
+    // is the 2-bit toggle signature the texture was last baked with; a
+    // mismatch forces a rebuild exactly like `_glowFactorDirty` does.
+    this._discAppearance = createSunDiscAppearance();
+    this._bakedAppearanceKey = undefined;
+    this._limbDarkening = new Cartesian3(1.0, 0.0, 0.0);
+    this._glareProfile = new Cartesian4(0.0, 0.0, 0.0, 1.0);
+
     const that = this;
     this._uniformMap = {
       u_texture: function () {
@@ -145,12 +159,51 @@ class Sun {
     // C7-SUN-STARS-EXTINCTION — attenuate + redden the sun by the
     // atmospheric optical path along the camera→sun ray, mirroring the Moon
     // (B629). Gated on the sky atmosphere actually being rendered so the sun
-    // is byte-identical when the atmosphere is hidden; the physics yields
-    // exactly Cartesian3.ONE from orbit (the ray never crosses the shell),
-    // so the from-orbit case is byte-identical too. Published to frameState
-    // for the WebGPU sun renderer and stored on the primitive for the WebGL
-    // uniform below. Computed here (before the backend branch) so both paths
-    // read the same transmittance.
+    // is byte-identical when the atmosphere is hidden. Published to
+    // frameState for the WebGPU sun renderer and stored on the primitive for
+    // the WebGL uniform below. Computed here (before the backend branch) so
+    // both paths read the same transmittance.
+    //
+    // C12-29 S4 CORRECTION (2026-07-25). This block used to claim "the
+    // physics yields exactly Cartesian3.ONE from orbit (the ray never
+    // crosses the shell), so the from-orbit case is byte-identical too".
+    // That is FALSE in exactly the geometry S4 exists for. From a 400 km
+    // vantage the 111 km shell subtends 73.1° from nadir and the solid
+    // Earth 70.2°, so a 2.9°-wide annulus of directions produces
+    // limb-GRAZING rays that traverse the entire atmosphere — the band the
+    // sun crosses during an orbital sunset. Measured over that band
+    // (`Tools/visual-regression/sun-orbital-limb-extinction.spec.mjs`): the
+    // transmittance is EXACTLY (1,1,1) for tangent heights above 111 km,
+    // then ramps monotonically to blue 8.3e-12 / red 1.7e-5 at a grazing
+    // altitude of 0 km, with the red/blue ratio climbing 1.0 → 2.0e6. The
+    // orbital-sunset reddening ramp S4 was scoped to build ALREADY EXISTS
+    // here; what kept it invisible was the legacy binary cull (replaced by
+    // S1's continuous fade) — see the S4 verdict in the debugging log.
+    //
+    // KNOWN LIMIT (deferred polish, recorded on the C12-29 S4 row): the
+    // integral is evaluated on the camera→sun-CENTRE ray only, so the whole
+    // billboard receives ONE uniform tint. A real setting sun is graded
+    // ACROSS its disc. At this vantage the sun's 0.5327° angular diameter
+    // maps to a 21.33 km span in tangent height, and the upper-limb /
+    // lower-limb transmittance ratio measured with THIS integrator is
+    // strongly altitude- and channel-dependent:
+    //
+    //   tangent h | ratio red | ratio green | ratio blue
+    //   ----------+-----------+-------------+-----------
+    //      60 km  |    1.02   |     1.05    |    1.12
+    //      40 km  |    1.18   |     1.47    |    2.33
+    //      25 km  |    2.27   |     6.16    |   4.8e1
+    //      20 km  |    5.03   |     2.6e1   |   7.7e2
+    //      15 km  |    5.1e1  |     7.7e2   |   2.0e5
+    //      10 km  |    1.7e5  |     1.4e7   |   1.2e11
+    //       0 km  |    2.6e9  |     9.7e11  |   1.9e17
+    //
+    // An earlier revision of this comment quoted "~5.6x in blue" as if it
+    // were the figure; it is only reached in a narrow ~31.75–34.25 km band
+    // and UNDERSTATES the deferred limit by many orders of magnitude across
+    // the 0–15 km band, which is exactly where an orbital sunset is
+    // visually interesting. Differential extinction across the disc and
+    // refraction lift/flattening are deliberately not implemented.
     const uniformState = frameState.context.uniformState;
     const sunPositionWC = uniformState.sunPositionWC;
     const camPos = defined(frameState.camera)
@@ -208,6 +261,21 @@ class Sun {
     frameState.sunEclipseAlpha = eclipseAlpha;
     this._eclipseAlpha = eclipseAlpha;
 
+    // C12-15 (limb-darkened disc) + C12-16 (inverse-square glare falloff).
+    // Resolved BEFORE the backend branch and published on frameState, the
+    // C7-SUN-STARS-EXTINCTION convention, so the WebGL uniform payload below
+    // and the WebGPU CPU bake are provably fed the same numbers rather than
+    // each reading `atmosphericConditions` independently.
+    const appearance = readSunDiscAppearance(frameState, this._discAppearance);
+    frameState.sunDiscAppearance = appearance;
+    this._limbDarkening.x = appearance.a0;
+    this._limbDarkening.y = appearance.a1;
+    this._limbDarkening.z = appearance.a2;
+    this._glareProfile.x = appearance.glareCore;
+    this._glareProfile.y = appearance.glarePedestal;
+    this._glareProfile.z = appearance.glareLegacyEdge;
+    this._glareProfile.w = appearance.glareLegacy;
+
     // Backend-specific rendering via Feature Renderer.
     //
     // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 2) — the SkyAtmosphere
@@ -240,13 +308,17 @@ class Sun {
       drawingBufferWidth !== this._drawingBufferWidth ||
       drawingBufferHeight !== this._drawingBufferHeight ||
       this._glowFactorDirty ||
-      useHdr !== this._useHdr
+      useHdr !== this._useHdr ||
+      // C12-15 / C12-16 — a toggle flip changes the baked profile, so the
+      // texture must be re-baked exactly as a glowFactor change does.
+      this._bakedAppearanceKey !== appearance.key
     ) {
       this._texture = this._texture && this._texture.destroy();
       this._drawingBufferWidth = drawingBufferWidth;
       this._drawingBufferHeight = drawingBufferHeight;
       this._glowFactorDirty = false;
       this._useHdr = useHdr;
+      this._bakedAppearanceKey = appearance.key;
 
       let size = Math.max(drawingBufferWidth, drawingBufferHeight);
       size = Math.pow(2.0, Math.ceil(Math.log(size) / Math.log(2.0)) - 2.0);
@@ -276,6 +348,16 @@ class Sun {
       const uniformMap = {
         u_radiusTS: function () {
           return that._radiusTS;
+        },
+        // C12-15 / C12-16 — the bake's only numeric source. `SunTextureFS`
+        // holds no copy of the limb-darkening triple or the glare
+        // parameters; they arrive here from `Scene/SolarDiscModel.js` via
+        // `SunDiscAppearance.readSunDiscAppearance` above.
+        u_limbDarkening: function () {
+          return that._limbDarkening;
+        },
+        u_glareProfile: function () {
+          return that._glareProfile;
         },
       };
 

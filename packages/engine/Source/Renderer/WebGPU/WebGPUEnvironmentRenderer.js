@@ -221,14 +221,89 @@ const scratchEncodedPos = new EncodedCartesian3();
 // ============================================================
 
 /**
- * Creates sun procedural texture via CPU fallback.
+ * C12-17 — WebGL's sun texture is sized from the drawing buffer
+ * (`Sun.js`: `2^(ceil(log2(max(w, h))) - 2)`, clamped to >= 1). WebGPU
+ * hardcoded 256. This reproduces the WebGL rule so the two backends bake at
+ * the same resolution, with ONE deliberate difference: an upper cap.
+ *
+ * WHY THE CAP. WebGL bakes on the GPU (a ComputeCommand full-screen pass);
+ * WebGPU bakes on the CPU in a JS double loop, so an uncapped 8K canvas
+ * would ask for a 2048^2 = 4.2 Mpx loop on the main thread at every resize.
+ * The cap costs nothing visually: the billboard's on-screen footprint is
+ * `22 * limbPx` pixels and `limbPx` is ~4.3 px at 1080p / 60 deg FOV, i.e.
+ * the quad is ~95 px wide, so even 256^2 is already ~2.7x oversampled and
+ * 1024^2 is ~11x. Resolution is not the visual lever here — FORMAT is, which
+ * is the other half of C12-17.
+ *
+ * @param {number} width Drawing buffer width in pixels.
+ * @param {number} height Drawing buffer height in pixels.
+ * @returns {number} Bake edge length in texels.
  * @private
  */
-function createSunTexture(device, size, glowFactor) {
+function sunTextureSize(width, height) {
+  const maxDim = Math.max(width | 0, height | 0);
+  if (!(maxDim > 0)) {
+    return 256;
+  }
+  const size = Math.pow(2.0, Math.ceil(Math.log(maxDim) / Math.log(2.0)) - 2.0);
+  return Math.min(1024, Math.max(1.0, size));
+}
+
+// C12-17 — IEEE-754 binary32 -> binary16 conversion for the HDR bake.
+// `Float16Array` is too new to rely on in the browsers this fork targets, so
+// the packing is explicit. Every value this bake produces is a finite number
+// in [0, 1] (main() clamps), so the Inf/NaN paths are unreachable and the
+// only special case that matters is flushing values below the smallest
+// binary16 subnormal (2^-24) to zero.
+const _f32Scratch = new Float32Array(1);
+const _u32Scratch = new Uint32Array(_f32Scratch.buffer);
+
+function floatToHalfBits(value) {
+  _f32Scratch[0] = value;
+  const bits = _u32Scratch[0];
+  const sign = (bits >>> 16) & 0x8000;
+  const exponent = (bits >>> 23) & 0xff;
+  const mantissa = bits & 0x7fffff;
+  // Rebiased exponent (127 -> 15).
+  const e = exponent - 112;
+  if (e >= 31) {
+    // Overflow / Inf / NaN — unreachable for a clamped [0, 1] bake, but a
+    // finite saturation is the safe answer rather than a silent Inf.
+    return sign | 0x7bff;
+  }
+  if (e <= 0) {
+    if (e < -10) {
+      return sign;
+    }
+    // Subnormal: restore the implicit leading 1 and shift into place,
+    // rounding to nearest.
+    const m = mantissa | 0x800000;
+    const shift = 14 - e;
+    const half = (m >>> shift) + ((m >>> (shift - 1)) & 1);
+    return sign | half;
+  }
+  const half = (e << 10) | (mantissa >>> 13);
+  // Round to nearest on the dropped bit.
+  return sign | (half + ((mantissa >>> 12) & 1));
+}
+
+/**
+ * Creates sun procedural texture via CPU fallback.
+ *
+ * @param {GPUDevice} device The device.
+ * @param {number} size Edge length in texels ({@link sunTextureSize}).
+ * @param {number} glowFactor `Sun.glowFactor`.
+ * @param {string} format `"rgba16float"` under HDR, otherwise `"rgba8unorm"`
+ *        (C12-17 parity with WebGL's HALF_FLOAT/UNSIGNED_BYTE selection).
+ * @param {object} appearance Resolved `frameState.sunDiscAppearance`
+ *        (C12-15 / C12-16); see `Scene/SunDiscAppearance.js`.
+ * @private
+ */
+function createSunTexture(device, size, glowFactor, format, appearance) {
   const texture = device.createTexture({
-    label: "Sun procedural texture",
+    label: `Sun procedural texture [${size}^2 ${format}]`,
     size: [size, size, 1],
-    format: "rgba8unorm",
+    format: format,
     usage:
       GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.STORAGE_BINDING |
@@ -251,6 +326,28 @@ function createSunTexture(device, size, glowFactor) {
     const t = Math.min(1.0, Math.max(0.0, (x - e0) / (e1 - e0)));
     return t * t * (3.0 - 2.0 * t);
   };
+  // C12-15 / C12-16 — the SAME resolution the WebGL bake receives as
+  // uniforms (`frameState.sunDiscAppearance`, published by `Sun.update`
+  // before the backend branch). `a1 = a2 = 0, a0 = 1` is the disabled
+  // position and reproduces the historical flat disc exactly;
+  // `glareLegacy = 1` selects the historical smoothstep halo.
+  const a0 = appearance ? appearance.a0 : 1.0;
+  const a1 = appearance ? appearance.a1 : 0.0;
+  const a2 = appearance ? appearance.a2 : 0.0;
+  const glareCore = appearance ? appearance.glareCore : 0.275;
+  const glarePedestal = appearance ? appearance.glarePedestal : 0.0;
+  const glareLegacyEdge = appearance ? appearance.glareLegacyEdge : 0.55;
+  const glareLegacy = appearance ? appearance.glareLegacy : 1.0;
+  // Twin of `sunGlare()` in SunTextureFS.glsl — keep the two in lockstep.
+  const sunGlare = (radius) => {
+    if (glareLegacy > 0.5) {
+      return 1.0 - smoothstep(0.0, glareLegacyEdge, radius);
+    }
+    const t = radius / glareCore;
+    const raw = 1.0 / (1.0 + t * t);
+    const shaped = (raw - glarePedestal) / (1.0 - glarePedestal);
+    return Math.min(1.0, Math.max(0.0, shaped));
+  };
   // Six manually-unrolled burst directions from SunTextureFS.glsl:42-48.
   const bursts = [
     [0.38942, 0.92106, 0.4],
@@ -260,23 +357,36 @@ function createSunTexture(device, size, glowFactor) {
     [0.97931, 0.20239, 0.3],
     [0.66507, -0.74678, 0.3],
   ];
-  const pixels = new Uint8Array(size * size * 4);
+  const isHalf = format === "rgba16float";
+  const pixels = isHalf
+    ? new Uint16Array(size * size * 4)
+    : new Uint8Array(size * size * 4);
   for (let y = 0; y < size; y++) {
     for (let x = 0; x < size; x++) {
       const px = (x + 0.5) / size - 0.5;
       const py = (y + 0.5) / size - 0.5;
       const radius = Math.sqrt(px * px + py * py) * lengthScalar;
-      const surface = radius <= radiusTS ? 1.0 : 0.0;
+      // C12-15 — limb-darkened disc radiance in place of the binary step.
+      // See the SDR-clamp caveat in SunTextureFS.glsl's main(): with the
+      // 0..1 clamp below still in place this is masked at defaults and
+      // becomes visible under C12-19.
+      const xr = Math.min(radius / radiusTS, 1.0);
+      const muSq = 1.0 - xr * xr;
+      const mu = muSq > 0.0 ? Math.sqrt(muSq) : 0.0;
+      const limb = a0 + a1 * mu + a2 * mu * mu;
+      const surface = (radius <= radiusTS ? 1.0 : 0.0) * limb;
       // color = vec4(1, 1, surface + 0.2, surface)
       let cr = 1.0;
       let cg = 1.0;
       let cb = surface + 0.2;
       let ca = surface;
       // glow halo into blue + alpha.
-      const glow = 1.0 - smoothstep(0.0, 0.55, radius);
+      const glow = sunGlare(radius);
       cb += glow * 0.75;
       ca += glow * 0.75;
       // lens-flare bursts (rotate(position, dir) * (25, 0.75), then radius).
+      // Aperture diffraction, not veiling glare — unchanged by C12-16, and
+      // reading `glareLegacyEdge` for the same 0.55 the GLSL twin uses.
       let burst = 0.0;
       for (let b = 0; b < bursts.length; b++) {
         const dx = bursts[b][0];
@@ -284,7 +394,7 @@ function createSunTexture(device, size, glowFactor) {
         const rx = (px * dx - py * dy) * 25.0;
         const ry = (px * dy + py * dx) * 0.75;
         const rb = Math.sqrt(rx * rx + ry * ry) * lengthScalar;
-        burst += bursts[b][2] * (1.0 - smoothstep(0.0, 0.55, rb));
+        burst += bursts[b][2] * (1.0 - smoothstep(0.0, glareLegacyEdge, rb));
       }
       burst = Math.min(1.0, Math.max(0.0, burst)) * 0.15;
       cr += burst;
@@ -293,14 +403,29 @@ function createSunTexture(device, size, glowFactor) {
       ca += burst;
 
       const idx = (y * size + x) * 4;
-      pixels[idx + 0] = Math.min(255, Math.max(0, cr) * 255);
-      pixels[idx + 1] = Math.min(255, Math.max(0, cg) * 255);
-      pixels[idx + 2] = Math.min(255, Math.max(0, cb) * 255);
-      pixels[idx + 3] = Math.min(255, Math.max(0, ca) * 255);
+      if (isHalf) {
+        // C12-17 — HDR bake. The values are still clamped to [0, 1] here
+        // (removing that clamp is C12-19's job and needs the BrightPass
+        // retune); half-float buys PRECISION in the glare tail, which is
+        // exactly where 8-bit quantisation truncated the profile. Measured:
+        // rgba8unorm cannot represent alpha below 1/255 = 0.00392, which
+        // clips the legacy halo at 8.199 solar radii instead of its true
+        // 8.556 — a 4.2% radial loss, and 100% of the C12-16 tail beyond it.
+        pixels[idx + 0] = floatToHalfBits(Math.min(1.0, Math.max(0.0, cr)));
+        pixels[idx + 1] = floatToHalfBits(Math.min(1.0, Math.max(0.0, cg)));
+        pixels[idx + 2] = floatToHalfBits(Math.min(1.0, Math.max(0.0, cb)));
+        pixels[idx + 3] = floatToHalfBits(Math.min(1.0, Math.max(0.0, ca)));
+      } else {
+        pixels[idx + 0] = Math.min(255, Math.max(0, cr) * 255);
+        pixels[idx + 1] = Math.min(255, Math.max(0, cg) * 255);
+        pixels[idx + 2] = Math.min(255, Math.max(0, cb) * 255);
+        pixels[idx + 3] = Math.min(255, Math.max(0, ca) * 255);
+      }
     }
   }
 
-  device.queue.writeTexture({ texture }, pixels, { bytesPerRow: size * 4 }, [
+  const bytesPerRow = size * 4 * (isHalf ? 2 : 1);
+  device.queue.writeTexture({ texture }, pixels, { bytesPerRow: bytesPerRow }, [
     size,
     size,
     1,
@@ -465,18 +590,54 @@ function updateWebGPUSun(sun, frameState, commandList) {
   // historical hardcoded bake, so default scenes stay byte-identical.
   const glowFactor = defined(sun.glowFactor) ? sun.glowFactor : 1.0;
 
-  // Regenerate the baked texture when glowFactor changes (mirrors WebGL's
-  // _glowFactorDirty texture rebuild). Rebuild only on change to avoid a
-  // per-frame CPU bake.
-  if (defined(cache.sunTexture) && cache.lastGlowFactor !== glowFactor) {
+  // C12-17 — bake size + format parity with WebGL (`Sun.update`): size from
+  // the drawing buffer, HALF_FLOAT-equivalent storage under HDR. Previously
+  // hardcoded 256^2 rgba8unorm regardless of canvas or HDR state.
+  const bakeSize = sunTextureSize(
+    context.drawingBufferWidth,
+    context.drawingBufferHeight,
+  );
+  const bakeFormat = frameState.useHDR === true ? "rgba16float" : "rgba8unorm";
+  // C12-15 / C12-16 — resolved by `Sun.update` before the backend branch, so
+  // this is the identical payload the WebGL bake's uniforms carry.
+  const appearance = frameState.sunDiscAppearance;
+  // Fallback key MUST be 0 (both toggles OFF), because that is exactly what
+  // `createSunTexture` bakes when `appearance` is undefined (a0 = 1, a1 = a2
+  // = 0, glareLegacy = 1 — the historical disc + smoothstep halo). Using 3
+  // here would cache a LEGACY bake under a "both ON" signature and never
+  // rebuild it once a real appearance arrived carrying the same key.
+  // Unreachable today (`Sun.update` publishes before the FR branch), which is
+  // precisely why the mismatch would have been permanent if it ever fired.
+  const appearanceKey = defined(appearance) ? appearance.key : 0;
+
+  // Regenerate the baked texture when glowFactor, the drawing-buffer-derived
+  // size, the HDR format or the C12-15/16 toggle signature changes (mirrors
+  // WebGL's `_glowFactorDirty` / drawing-buffer / `_useHdr` rebuild set).
+  // Rebuild only on change to avoid a per-frame CPU bake.
+  if (
+    defined(cache.sunTexture) &&
+    (cache.lastGlowFactor !== glowFactor ||
+      cache.lastBakeSize !== bakeSize ||
+      cache.lastBakeFormat !== bakeFormat ||
+      cache.lastAppearanceKey !== appearanceKey)
+  ) {
     cache.sunTexture.destroy();
     cache.sunTexture = undefined;
     cache.sunTextureView = undefined;
   }
 
   if (!defined(cache.sunTexture)) {
-    cache.sunTexture = createSunTexture(device, 256, glowFactor);
+    cache.sunTexture = createSunTexture(
+      device,
+      bakeSize,
+      glowFactor,
+      bakeFormat,
+      appearance,
+    );
     cache.lastGlowFactor = glowFactor;
+    cache.lastBakeSize = bakeSize;
+    cache.lastBakeFormat = bakeFormat;
+    cache.lastAppearanceKey = appearanceKey;
     cache.sunTextureView = cache.sunTexture.createView();
     cache.sampler = device.createSampler({
       minFilter: "linear",

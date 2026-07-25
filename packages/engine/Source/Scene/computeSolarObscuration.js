@@ -63,21 +63,35 @@
 // visually and physically irrelevant. The EXACT endpoints (0.0 disjoint,
 // 1.0 umbra) are branch results, not quadrature results, and carry no error.
 //
-// Everything here is pure: no Cesium imports, no allocation per call
-// (scratch arrays are module-level and sized at load), no state. That keeps
-// it directly unit-testable under `node --test`.
+// Everything here is pure: no allocation per call (scratch arrays are
+// module-level and sized at load), no state, and the one import
+// (`SolarDiscModel.js`, the C12-15 constants source) is itself pure with no
+// Cesium dependencies. That keeps this module directly unit-testable under
+// `node --test`.
 //
 // @private
 // @module computeSolarObscuration
 
+import {
+  SOLAR_LIMB_DARKENING_A0,
+  SOLAR_LIMB_DARKENING_A1,
+  SOLAR_LIMB_DARKENING_A2,
+  solarLimbIntensity,
+} from "./SolarDiscModel.js";
+
 /**
- * C12-15 quadratic limb-darkening coefficients, shared with the sun-disc
- * bake so both consumers read one constants source. I(1) = a0+a1+a2 = 1.
+ * C12-15 quadratic limb-darkening coefficients. The C12-15 row required that
+ * the eclipse photometry and the sun-disc BAKE read one constants source
+ * when the sun wave landed; they now both come from `SolarDiscModel.js`
+ * (which additionally feeds `SunTextureFS.glsl` through uniforms, so the
+ * GLSL carries no numeric copy either). Re-exported below so the existing
+ * importers of this module keep working unchanged.
+ * I(1) = a0+a1+a2 = 1.
  * @private
  */
-const LIMB_DARKENING_A0 = 0.3;
-const LIMB_DARKENING_A1 = 0.93;
-const LIMB_DARKENING_A2 = -0.23;
+const LIMB_DARKENING_A0 = SOLAR_LIMB_DARKENING_A0;
+const LIMB_DARKENING_A1 = SOLAR_LIMB_DARKENING_A1;
+const LIMB_DARKENING_A2 = SOLAR_LIMB_DARKENING_A2;
 
 /**
  * Gauss-Legendre order per smooth sub-interval. Three sub-intervals at most
@@ -188,11 +202,11 @@ function ringCoverage(r, ro, d) {
  * @private
  */
 function limbIntensity(x) {
-  const s = 1.0 - x * x;
-  const mu = s > 0.0 ? Math.sqrt(s) : 0.0;
-  return (
-    LIMB_DARKENING_A0 + LIMB_DARKENING_A1 * mu + LIMB_DARKENING_A2 * mu * mu
-  );
+  // Delegates to the C12-15 constants source so the bake and the photometry
+  // cannot drift. `solarLimbIntensity` clamps x to [0, 1]; the quadrature
+  // never leaves that range, so the result is unchanged from the previous
+  // inline form.
+  return solarLimbIntensity(x);
 }
 
 /**
