@@ -1764,6 +1764,30 @@ function ensureCascadeResources(device: GPUDevice, cache: CloudCache): boolean {
 }
 
 /**
+ * C13-39 — route a cloud render pass through the opt-in GPU timestamp profiler.
+ *
+ * Every raymarching pass this module opens (shadow map, shadow cascade atlas,
+ * half-res march, temporal resolve, bilateral upscale, full-res march,
+ * transmittance mask) is a separate measurable lane. Without this the passes
+ * carried no `timestampWrites`, so `CesiumDebug.gpuPassCost()` could not
+ * attribute any GPU time to the cloud march at all — which is what the C13-39
+ * baked / LIVE / single-shadow / cascaded-shadow acceptance lanes need.
+ *
+ * `withRenderPassTimestamps` returns the EXACT descriptor object when the
+ * profiler is not armed for the frame, so the default path allocates nothing and
+ * the emitted commands are unchanged. The optional-call guard keeps this safe on
+ * any context that predates the accessor.
+ *
+ * Pass results are keyed by the descriptor's `label`.
+ */
+function timedCloudPass(
+  context: CesiumGraphicsContext,
+  descriptor: GPURenderPassDescriptor,
+): GPURenderPassDescriptor {
+  return context.withRenderPassTimestamps?.(descriptor) ?? descriptor;
+}
+
+/**
  * Execute the procedural cloud rendering pass.
  * Called after globe rendering, before post-processing.
  */
@@ -2610,17 +2634,19 @@ export function executeProceduralClouds(
           { binding: 13, resource: { buffer: cache.shadowUniformBuffer! } },
         ],
       });
-      const shadowPass = encoder.beginRenderPass({
-        label: "CloudShadow map pass",
-        colorAttachments: [
-          {
-            view: cache.shadowView!,
-            clearValue: { r: 0, g: 0, b: 0, a: 0 },
-            loadOp: "clear",
-            storeOp: "store",
-          },
-        ],
-      });
+      const shadowPass = encoder.beginRenderPass(
+        timedCloudPass(context, {
+          label: "CloudShadow map pass",
+          colorAttachments: [
+            {
+              view: cache.shadowView!,
+              clearValue: { r: 0, g: 0, b: 0, a: 0 },
+              loadOp: "clear",
+              storeOp: "store",
+            },
+          ],
+        }),
+      );
       shadowPass.setPipeline(cache.shadowPipeline!);
       shadowPass.setBindGroup(0, shadowBindGroup);
       shadowPass.draw(3);
@@ -2664,17 +2690,19 @@ export function executeProceduralClouds(
           }
           device.queue.writeBuffer(cache.shadowCascadeUniformBuffer!, 0, cud);
 
-          const cascadePass = encoder.beginRenderPass({
-            label: "CloudShadow cascade atlas pass",
-            colorAttachments: [
-              {
-                view: cache.shadowCascadeView!,
-                clearValue: { r: 0, g: 0, b: 0, a: 0 },
-                loadOp: "clear",
-                storeOp: "store",
-              },
-            ],
-          });
+          const cascadePass = encoder.beginRenderPass(
+            timedCloudPass(context, {
+              label: "CloudShadow cascade atlas pass",
+              colorAttachments: [
+                {
+                  view: cache.shadowCascadeView!,
+                  clearValue: { r: 0, g: 0, b: 0, a: 0 },
+                  loadOp: "clear",
+                  storeOp: "store",
+                },
+              ],
+            }),
+          );
           cascadePass.setPipeline(cache.shadowPipeline!);
           for (let ci = 0; ci < CLOUD_SHADOW_CASCADE_COUNT; ci++) {
             // Tile ci occupies rows [ci*512, (ci+1)*512) of the atlas; the
@@ -2729,17 +2757,19 @@ export function executeProceduralClouds(
     // ── V9 (Batch 432) — HALF-RES PATH ──
     // Pass 1: raymarch into the 0.5× rgba16float target (CLEAR to transparent so
     // non-cloud texels stay 0; the shader emits premultiplied cloud + alpha).
-    const halfPass = encoder.beginRenderPass({
-      label: "ProceduralClouds half-res pass",
-      colorAttachments: [
-        {
-          view: cache.halfView,
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
-          loadOp: "clear",
-          storeOp: "store",
-        },
-      ],
-    });
+    const halfPass = encoder.beginRenderPass(
+      timedCloudPass(context, {
+        label: "ProceduralClouds half-res pass",
+        colorAttachments: [
+          {
+            view: cache.halfView,
+            clearValue: { r: 0, g: 0, b: 0, a: 0 },
+            loadOp: "clear",
+            storeOp: "store",
+          },
+        ],
+      }),
+    );
     halfPass.setPipeline(cache.halfPipeline);
     halfPass.setBindGroup(0, bindGroup);
     halfPass.draw(3); // full-screen triangle
@@ -2927,17 +2957,19 @@ export function executeProceduralClouds(
       device.queue.writeBuffer(cache.temporalUniformBuffer, 0, td);
 
       const temporalBindGroup = cache.temporalBindGroups[readIdx]!;
-      const temporalPass = encoder.beginRenderPass({
-        label: "CloudTemporalResolve pass",
-        colorAttachments: [
-          {
-            view: writeView,
-            // No clear: the shader writes every texel (full-screen triangle).
-            loadOp: "load",
-            storeOp: "store",
-          },
-        ],
-      });
+      const temporalPass = encoder.beginRenderPass(
+        timedCloudPass(context, {
+          label: "CloudTemporalResolve pass",
+          colorAttachments: [
+            {
+              view: writeView,
+              // No clear: the shader writes every texel (full-screen triangle).
+              loadOp: "load",
+              storeOp: "store",
+            },
+          ],
+        }),
+      );
       temporalPass.setPipeline(cache.temporalPipeline);
       temporalPass.setBindGroup(0, temporalBindGroup);
       temporalPass.draw(3);
@@ -2981,32 +3013,36 @@ export function executeProceduralClouds(
         { binding: 4, resource: { buffer: cache.upscaleUniformBuffer } },
       ],
     });
-    const upscalePass = encoder.beginRenderPass({
-      label: "CloudUpscale composite pass",
-      colorAttachments: [
-        {
-          view: outputView,
-          loadOp: "load",
-          storeOp: "store",
-        },
-      ],
-    });
+    const upscalePass = encoder.beginRenderPass(
+      timedCloudPass(context, {
+        label: "CloudUpscale composite pass",
+        colorAttachments: [
+          {
+            view: outputView,
+            loadOp: "load",
+            storeOp: "store",
+          },
+        ],
+      }),
+    );
     upscalePass.setPipeline(cache.upscalePipeline);
     upscalePass.setBindGroup(0, upscaleBindGroup);
     upscalePass.draw(3);
     upscalePass.end();
   } else {
     // ── Full-res path (default / cinematic / escape hatch) — UNCHANGED ──
-    const pass = encoder.beginRenderPass({
-      label: "ProceduralClouds pass",
-      colorAttachments: [
-        {
-          view: outputView,
-          loadOp: "load",
-          storeOp: "store",
-        },
-      ],
-    });
+    const pass = encoder.beginRenderPass(
+      timedCloudPass(context, {
+        label: "ProceduralClouds pass",
+        colorAttachments: [
+          {
+            view: outputView,
+            loadOp: "load",
+            storeOp: "store",
+          },
+        ],
+      }),
+    );
     pass.setPipeline(cache.pipeline!);
     pass.setBindGroup(0, bindGroup);
     pass.draw(3); // full-screen triangle
@@ -3021,19 +3057,21 @@ export function executeProceduralClouds(
   if (cache.maskCaptureEnabled) {
     ensureCloudMaskResources(device, cache, canvasW, canvasH);
     if (cache.maskPipeline && cache.maskView) {
-      const maskPass = encoder.beginRenderPass({
-        label: "ProceduralClouds transmittance-mask pass",
-        colorAttachments: [
-          {
-            view: cache.maskView,
-            // Clear to 1.0 (fully transmissive) so any pixel the full-screen
-            // triangle somehow misses reads as clear sky.
-            clearValue: { r: 1, g: 1, b: 1, a: 1 },
-            loadOp: "clear",
-            storeOp: "store",
-          },
-        ],
-      });
+      const maskPass = encoder.beginRenderPass(
+        timedCloudPass(context, {
+          label: "ProceduralClouds transmittance-mask pass",
+          colorAttachments: [
+            {
+              view: cache.maskView,
+              // Clear to 1.0 (fully transmissive) so any pixel the full-screen
+              // triangle somehow misses reads as clear sky.
+              clearValue: { r: 1, g: 1, b: 1, a: 1 },
+              loadOp: "clear",
+              storeOp: "store",
+            },
+          ],
+        }),
+      );
       maskPass.setPipeline(cache.maskPipeline);
       maskPass.setBindGroup(0, bindGroup);
       maskPass.draw(3);

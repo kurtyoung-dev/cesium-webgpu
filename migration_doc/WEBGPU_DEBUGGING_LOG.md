@@ -14130,6 +14130,35 @@ Per the governing orchestrator rule ("if it genuinely needs new GLOBAL define bi
 **Gates:** `npx tsc --noEmit` clean; `npx eslint` clean on all seven touched engine files; `node --test eclipse-state.spec.mjs` 28/28; `node --check probe-eclipse-sun-fade.mjs` clean. `gulp build` + the Edge probe run are the orchestrator's.
 
 **Not in S1 (unchanged, still §D):** S2 scene-light + atmosphere dimming, S3 clouds + IBL (C13 rider after C13-39), S4 orbital-sunrise limb glow, S5 per-fragment globe umbra, S6 totality phenomena. `Sun.js:136-163`'s extinction integrator is untouched — it is S4 territory.
+## C13-39 - cloud hot-path hoisting: NEGATIVE RESULT, the march is occupancy-bound (2026-07-24, Batch 762)
+
+**Type:** Performance investigation closed with a rejected optimization and a landed measurement
+substrate. **What was tried.** Two drafts of per-sample invariant hoisting in the cloud mega-shader
+(LOD input bundles, per-deck light contexts, deferred detail domains): a full set, then a
+register-light rescope that reverted every straight-route hoist to near-literal original code.
+**What the measurements said.** Drift-controlled interleaved A/B (both bundles built once, swapped
+per run within one session, r1 pre-post + r2 post-pre reversed, occupancy fingerprints byte-identical
+across all runs): the full-res straight-route `ProceduralClouds pass` regressed +36-54% in BOTH
+orderings on BOTH drafts (baked-straight 69.2 to 94-95 ms), the cone half-res lane's early -21% win
+did NOT reproduce (+2.4%/-6.4% mixed), and the hash-frozen LIVE legacy density route - untouched by
+either draft - regressed too. **Mechanism.** WGSL register allocation is static per pipeline: helper
+structs and branch bodies compiled into the module inflate the register footprint of EVERY draw that
+uses the shader, whether or not the runtime branch executes (`lightConeEnabled()` gates execution,
+not allocation). The march is occupancy-bound; trading per-step ALU for live registers is the wrong
+direction on this class of GPU. **What landed (Batch 762).** The measurement substrate: per-pass GPU
+timestamps for all seven cloud render passes + the DynEnvMap Sky Fill (`timedCloudPass` /
+`withComputePassTimestamps`, exact-descriptor pass-through when unarmed), `probe-cloud-lod-hoist-perf.mjs`
+(six lanes with workload verification: bounded bake-readiness render-measure-check with
+density-realization bits; the env-map OWNER discovery - `DynamicEnvironmentMapManager.update` has NO
+scene-level caller, only `Model.update` and `Cesium3DTileset.update`, so a perf lane must add an
+owner primitive; per-fill input attribution; fixed frame-budget clock walks), the CRLF-robust
+`cloud-ibl-revision.spec.mjs` anchors, and the interleaved-A/B protocol documented in the probe
+header as MANDATORY for every GPU-timing comparison in this repo (worked example recorded: 40-min
+separation produced impossible bidirectional deltas - `CloudTemporalResolve` -59% and `live-escape`
++98% on untouched code). **Follow-up:** `C13-39B-CLOUD-SHADER-VARIANT-SPLIT` (DEFERRED_WORK).
+**Files:** WebGPUProceduralCloudRenderer.ts, WebGPUDynamicEnvironmentMapManager.ts,
+cesium-js-types.d.ts (wiring only), probe + spec. WGSL: NONE (both drafts reverted).
+
 ## C12-G1F1 (WIDENED) — WebGPU environment-pass drop: frustum existence was derived from a SUBSET of the frame's environment content (2026-07-24)
 
 **Type:** Correctness. One cause behind the whole "WebGPU renders no sky / no moon in a sparse environment configuration" class. Two confirmed manifestations: (1) `skyBox.starField.show = false` killed the ENTIRE WebGPU sky in the G1 `cubemap-only` split (M1: WebGL 55 sources vs WebGPU 0 — filed Batch 745); (2) in `probe-moon-atmosphere-appearance`'s no-atmosphere CONTROL scene the WebGPU moon rendered ZERO pixels in the day-mid and horizon lanes while the SAME configuration rendered it fine in night-full (litFrac 0.97) — recorded as `BLOCKED-C12-G1F1-FAMILY` markers at Batch 756.

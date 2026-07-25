@@ -711,6 +711,22 @@ interface CesiumGraphicsContext {
    *  Added Batch 76. */
   readonly webgpuComputePipelineCache?:
     import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache | null;
+  /** WebGPU-only: attach opt-in GPU timestamp queries to a render-pass
+   *  descriptor. Returns the EXACT descriptor object (no allocation) unless
+   *  `CesiumDebug.gpuPassCost(true)` armed the profiler for this frame, so
+   *  wrapping a pass descriptor is free in production. Feature renderers that
+   *  open their own render passes should route them through this so their cost
+   *  appears in `context.timestampProfiler.getResults().passes`, keyed by the
+   *  descriptor's `label`. Absent on WebGL. See `WebGPUContext.ts:2308`. */
+  withRenderPassTimestamps?(
+    descriptor: GPURenderPassDescriptor,
+    fallbackName?: string,
+  ): GPURenderPassDescriptor;
+  /** Compute-pass counterpart to {@link withRenderPassTimestamps}. */
+  withComputePassTimestamps?(
+    descriptor: GPUComputePassDescriptor,
+    fallbackName?: string,
+  ): GPUComputePassDescriptor;
   getFeatureRenderer(key: number): CesiumFeatureRenderer | undefined;
   registerFeatureRenderer(key: number, renderer: CesiumFeatureRenderer): void;
   createPickId(

@@ -14,8 +14,14 @@ const cloudRendererPath = path.join(
   root,
   "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
 );
-const manager = fs.readFileSync(managerPath, "utf8");
-const cloudRenderer = fs.readFileSync(cloudRendererPath, "utf8");
+// Multi-line source anchors below are written with LF. Normalize the checkout's
+// line endings so the spec is not silently CRLF-sensitive on Windows working
+// trees (it was failing there for exactly that reason, unrelated to the
+// behaviour under test).
+const readNormalized = (file) =>
+  fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n");
+const manager = readNormalized(managerPath);
+const cloudRenderer = readNormalized(cloudRendererPath);
 
 function sourceSection(source, start, end) {
   const startIndex = source.indexOf(start);

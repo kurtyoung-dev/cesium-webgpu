@@ -1586,7 +1586,18 @@ function runProceduralSkyFill(
   // Dispatch: workgroup_size(8, 8, 1); grid covers face × face × 6.
   const groupsXY = Math.ceil(cache.size / 8);
   const encoder = device.createCommandEncoder({ label: "DynEnvMap Sky Pass" });
-  const pass = encoder.beginComputePass();
+  // C13-39 — this dispatch is the environment/IBL leg of the cloud march (it
+  // runs `marchCloudFaceIBL` when `cloudMarch > 0`), so it needs its own GPU
+  // timestamp lane. `withComputePassTimestamps` returns the exact descriptor
+  // when the profiler is not armed, so the default path is unchanged; the
+  // optional-call guard keeps it safe on contexts without the accessor.
+  const skyPassDescriptor: GPUComputePassDescriptor = {
+    label: "DynEnvMap Sky Fill",
+  };
+  const pass = encoder.beginComputePass(
+    frameState.context.withComputePassTimestamps?.(skyPassDescriptor) ??
+      skyPassDescriptor,
+  );
   pass.setPipeline(cache.skyPipeline);
   pass.setBindGroup(0, cache.skyBindGroup);
   pass.dispatchWorkgroups(groupsXY, groupsXY, 6);
