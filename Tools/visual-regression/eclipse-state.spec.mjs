@@ -256,6 +256,11 @@ test("eclipse magnitude crosses 1 exactly at totality", () => {
 
 const CONTRACT_KEYS = [
   "enabled",
+  // C12-29 S2 additions: the ruling-E2 mode flag and the sun position the
+  // frame actually used (derived in-module now that `Scene.render` publishes
+  // the state before `uniformState.update`).
+  "autoExposure",
+  "sunPositionWC",
   "valid",
   "sunVisibleFraction",
   "earthOcclusionFraction",

@@ -39,7 +39,11 @@ import RenderState from "../Renderer/RenderState.js";
 import Atmosphere from "./Atmosphere.js";
 import AtmosphericConditions from "./AtmosphericConditions.js";
 import { computeSkyBrightness } from "./SkyBrightness.js";
-import { createEclipseState, updateEclipseState } from "./EclipseState.js";
+import {
+  createEclipseState,
+  getEclipseSceneLightFactor,
+  updateEclipseState,
+} from "./EclipseState.js";
 import GlobeWater from "./GlobeWater.js";
 import VisualPerformanceTargetService from "../Services/VisualPerformanceTargetService.js";
 import SnapshotModeService from "../Services/SnapshotModeService.js";
@@ -5710,8 +5714,11 @@ const scratchBackgroundColor = new Color();
 const scratchEclipseOptions = {
   active: true,
   enabled: true,
+  autoExposure: false,
   cameraPositionWC: undefined,
-  sunPositionWC: undefined,
+  // C12-29 S2 — deliberately ABSENT (not `undefined`-then-assigned): the sun
+  // position is derived inside EclipseState from `time`, because this block
+  // now runs before `uniformState.update`.
   time: undefined,
   earthOccluderRadius: undefined,
 };
@@ -5764,14 +5771,6 @@ function render(scene) {
     : undefined;
   scene.fog.update(frameState);
 
-  uniformState.update(frameState);
-
-  // Phase 1.2: forward sun direction (world coords) onto frameState so
-  // celestial / atmosphere renderers can read it without reaching into
-  // the per-context uniform state. Phase 1.3 atmosphere scattering also
-  // relies on this.
-  frameState.sunDirectionWC = uniformState.sunDirectionWC;
-
   // C12-29 S1 — per-frame eclipse / occultation state. Computed
   // unconditionally (a couple of dot products and two asin in the common
   // no-occlusion case, which early-outs before any quadrature); the
@@ -5797,6 +5796,19 @@ function render(scene) {
   // degrees, several solar diameters. Legacy had no sun occlusion in those
   // modes at all, so `valid = false` and a factor of exactly 1.0 is correct
   // by definition, not a compromise.
+  //
+  // C12-29 S2 — this block MOVED AHEAD of `uniformState.update(frameState)`.
+  // `UniformState` is now one of the consumers (it dims the sun-driven scene
+  // light colour), and `uniformState.update` is re-entered several times per
+  // frame from picking, the viewport executor and offscreen views; a factor
+  // applied after the fact would be dropped by every one of those re-entries.
+  // Everything this block reads is already current here: `frameState.occluder`
+  // and `frameState.camera` are set by `updateFrameState` above, and the sun's
+  // world position is now derived inside `EclipseState` from `frameState.time`
+  // with `setSunAndMoonDirections`' own pair of calls (before
+  // `uniformState.update`, `uniformState.sunPositionWC` still holds the
+  // PREVIOUS frame's value — negligible at 60 Hz, a whole step wrong under the
+  // stepped clocks every probe uses).
   {
     const eclipseLighting = frameState.atmosphericConditions?.lighting;
     const occluder = scene._globeTranslucencyState.sunVisibleThroughGlobe
@@ -5806,8 +5818,9 @@ function render(scene) {
     scratchEclipseOptions.enabled = defined(eclipseLighting)
       ? eclipseLighting.enableEclipse !== false
       : true;
+    scratchEclipseOptions.autoExposure =
+      eclipseLighting?.eclipseAutoExposure === true;
     scratchEclipseOptions.cameraPositionWC = frameState.camera?.positionWC;
-    scratchEclipseOptions.sunPositionWC = uniformState.sunPositionWC;
     scratchEclipseOptions.time = frameState.time;
     scratchEclipseOptions.earthOccluderRadius = defined(occluder)
       ? occluder.radius
@@ -5816,7 +5829,21 @@ function render(scene) {
       scene._eclipseState,
       scratchEclipseOptions,
     );
+    // C12-29 S2 — ONE scalar every scene-dimming consumer reads, published
+    // before anything can consume it. Exactly 1.0 in every non-eclipse frame
+    // and in the off position, which is what makes those frames identical.
+    frameState.eclipseSceneLightFactor = getEclipseSceneLightFactor(
+      frameState.eclipseState,
+    );
   }
+
+  uniformState.update(frameState);
+
+  // Phase 1.2: forward sun direction (world coords) onto frameState so
+  // celestial / atmosphere renderers can read it without reaching into
+  // the per-context uniform state. Phase 1.3 atmosphere scattering also
+  // relies on this.
+  frameState.sunDirectionWC = uniformState.sunDirectionWC;
 
   // Phase 1.3a: cheap CPU sky brightness estimate consumed by star
   // modulation in the cubemap panorama shader and (later) by night-sky
@@ -5825,12 +5852,19 @@ function render(scene) {
   // prior `Moon.update()` call) — visually indistinguishable from the
   // current value at any reasonable simulation rate, and avoids
   // duplicating the Simon 1994 ephemeris computation here.
-  frameState.skyBrightness = computeSkyBrightness(
-    uniformState.sunDirectionWC,
-    frameState.moonDirectionWC,
-    frameState.moonPhaseFraction ?? 1.0,
-    frameState.camera?.positionWC,
-  );
+  //
+  // C12-29 S2 — an eclipse removes sun flux that this altitude-only estimate
+  // cannot see, so the same scene factor scales it. `* 1.0` is bit-exact, so
+  // every non-eclipse frame is unchanged; at defaults the whole term is inert
+  // anyway (`enableStarBrightnessModulation` is false since C11-176, and it is
+  // skyBrightness' only consumer).
+  frameState.skyBrightness =
+    computeSkyBrightness(
+      uniformState.sunDirectionWC,
+      frameState.moonDirectionWC,
+      frameState.moonPhaseFraction ?? 1.0,
+      frameState.camera?.positionWC,
+    ) * frameState.eclipseSceneLightFactor;
 
   const shadowMap = scene.shadowMap;
   if (defined(shadowMap) && shadowMap.enabled) {

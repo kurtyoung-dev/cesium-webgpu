@@ -1194,7 +1194,19 @@ class Globe {
       tileProvider.dynamicAtmosphereLightingFromSun =
         this.dynamicAtmosphereLightingFromSun;
       tileProvider.showGroundAtmosphere = this.showGroundAtmosphere;
-      tileProvider.atmosphereLightIntensity = this.atmosphereLightIntensity;
+      // C12-29 S2 — the ground atmosphere AND the globe's fog both dim here.
+      // This one mirror is the single JS source both backends read:
+      // WebGL takes it through `u_atmosphereLightIntensity`
+      // (`GlobeSurfaceTileProviderRendering`, consumed by
+      // `AtmosphereCommon.glsl`'s `computeAtmosphereColor`, whose result IS
+      // the fog colour in `GlobeFS.glsl`), and WebGPU takes it through
+      // `WebGPUGlobeSurfaceCameraUB` / `WebGPUGlobeSurfaceTileUB` into
+      // `GlobeTerrain.wgsl`. The user's `globe.atmosphereLightIntensity` is
+      // never mutated — only this per-frame derived mirror is. `* 1.0` is
+      // bit-exact, so non-eclipse frames are unchanged.
+      tileProvider.atmosphereLightIntensity =
+        this.atmosphereLightIntensity *
+        (frameState.eclipseSceneLightFactor ?? 1.0);
       tileProvider.atmosphereRayleighCoefficient =
         this.atmosphereRayleighCoefficient;
       tileProvider.atmosphereMieCoefficient = this.atmosphereMieCoefficient;

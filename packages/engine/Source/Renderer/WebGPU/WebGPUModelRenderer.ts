@@ -92,6 +92,11 @@ import StyleCommandsNeeded from "../../Scene/Model/StyleCommandsNeeded.js";
 import Pass from "../Pass.js";
 import ColorBlendMode from "../../Scene/ColorBlendMode.js";
 import SceneMode from "../../Scene/SceneMode.js";
+// C12-29 S2 — the eclipse dimming of model direct lighting is gated on the
+// frame's light being the scene SUN, exactly as `UniformState` gates its own
+// multiply. `SunLight` is a two-import leaf (Color, Frozen), so this cannot
+// introduce a cycle.
+import SunLight from "../../Scene/SunLight.js";
 // WIRE-MODEL-SILHOUETTE — shared silhouette-ID counter (WebGL's
 // ModelSilhouettePipelineStage assigns `model._silhouetteId` from this
 // static counter; on WebGPU the same stage runs during the shared
@@ -651,6 +656,9 @@ declare global {
   interface CesiumFrameState {
     useHDR?: boolean;
     atmosphereSkyIrradiance?: { x: number; y: number; z: number } | null;
+    // C12-29 S2 — the per-frame eclipse dimming multiplier published by
+    // `Scene.render`. Exactly 1.0 outside a solar eclipse.
+    eclipseSceneLightFactor?: number;
     scene?: {
       _webgpuPickHoverEnabled?: boolean;
       [key: string]: unknown;
@@ -1708,14 +1716,46 @@ function packLightUniforms(
   // sunColor — honor scene.light.color (public API, defaults to white sunlight).
   const light = frameState.light;
   const lightColor = light?.color;
+
+  // C12-29 S2 injection site 5 — eclipse dimming of WebGPU MODEL direct
+  // lighting.
+  //
+  // WHY THIS SITE EXISTS AT ALL. Sites 1-4 all route through a shared JS
+  // uniform source, so one multiply serves both backends. This one does not:
+  // WebGL models read `czm_lightColorHdr` (`Model/LightingStageFS.glsl`), which
+  // `UniformState` already dims, but `ModelPBRComplete.wgsl` never reads
+  // `csm_lightColor*` — its direct term is `light.sunColor *
+  // light.sunIntensity * NdotL`, fed RAW from `frameState.light` right here.
+  // Without this multiply, a solar eclipse would dim the WebGL scene AND the
+  // WebGPU globe/sky while leaving WebGPU glTF + 3D-Tiles models at full
+  // brightness on top of a darkened world — exactly the cross-backend
+  // divergence class the C12 exit gate forbids for a default-ON multiplier.
+  //
+  // COLOR, not intensity: the shader's product is `sunColor * sunIntensity`,
+  // so scaling the colour is algebraically identical to scaling the intensity
+  // and leaves `data[7]` carrying the user's own `light.intensity` unmodified.
+  // One multiply here covers all four direct terms in the WGSL (base,
+  // anisotropy, clearcoat, sheen).
+  //
+  // GATED EXACTLY LIKE SITE 1 (`UniformState`): only when the frame's light
+  // IS the scene sun. A user-supplied `DirectionalLight` is never touched. The
+  // aerial-perspective derived light takes the dimming too, because
+  // `Scene._atmosphereDerivedLight` is itself a `SunLight` — which is what
+  // keeps the WebGPU aerial-perspective sub-case in step with the plain one.
+  const eclipseFactorRaw = frameState.eclipseSceneLightFactor;
+  const eclipseFactor =
+    light instanceof SunLight && typeof eclipseFactorRaw === "number"
+      ? eclipseFactorRaw
+      : 1.0;
+
   if (lightColor) {
-    data[4] = lightColor.red;
-    data[5] = lightColor.green;
-    data[6] = lightColor.blue;
+    data[4] = lightColor.red * eclipseFactor;
+    data[5] = lightColor.green * eclipseFactor;
+    data[6] = lightColor.blue * eclipseFactor;
   } else {
-    data[4] = 1.0;
-    data[5] = 1.0;
-    data[6] = 1.0;
+    data[4] = eclipseFactor;
+    data[5] = eclipseFactor;
+    data[6] = eclipseFactor;
   }
   data[7] = light?.intensity ?? 2.0;
 
@@ -1728,11 +1768,24 @@ function packLightUniforms(
   // sky term, consistent with its direct sun, rather than a flat grey. Falls
   // back to the historical neutral 0.2 floor when aerial perspective is off
   // (or on WebGL).
+  //
+  // C12-29 S2 — the sky-irradiance branch takes the eclipse factor too. It is
+  // a genuinely sun-driven quantity (`Scene.updateFrameState` derives it from
+  // the same atmosphere that produces `frameState.light`, and only publishes
+  // it when the scene light is a `SunLight`), and it is computed BEFORE the
+  // eclipse state is published, so this is its single dimming site. Leaving it
+  // undimmed would keep a full-brightness blue sky bounce on models through
+  // totality.
+  //
+  // The 0.2 neutral FALLBACK is deliberately left alone: it is a non-physical
+  // "unlit faces aren't pitch black" floor, not a sun term, and dimming it
+  // would drive models to black at totality — the one outcome the S2 twilight
+  // floor exists to prevent.
   const skyIrradiance = frameState.atmosphereSkyIrradiance;
   if (skyIrradiance) {
-    data[8] = skyIrradiance.x;
-    data[9] = skyIrradiance.y;
-    data[10] = skyIrradiance.z;
+    data[8] = skyIrradiance.x * eclipseFactor;
+    data[9] = skyIrradiance.y * eclipseFactor;
+    data[10] = skyIrradiance.z * eclipseFactor;
   } else {
     data[8] = 0.2;
     data[9] = 0.2;

@@ -65,6 +65,41 @@
 // unwired (C11-160) so leaving it on makes the two backends structurally
 // incomparable, and the fade multiplies the bloom INPUT by construction.
 //
+// C12-29 S2 CONFOUND ON LANE (b), FIXED 2026-07-24 — THE BLEND EQUATIONS
+// DIFFER BETWEEN THE BACKENDS AND ONLY ONE OF THEM IS dst-INDEPENDENT:
+//   WebGL  (ALPHA_BLEND): out - dst = a*(src - dst)   -> depends on the sky
+//   WebGPU (additive)   : out - dst = a*src           -> immune
+// This lane's metric IS that difference image, so once S2 started dimming the
+// sky the sun is composited over, WebGL's ratio began over-reporting for a
+// reason that has nothing to do with the sun's alpha. Measured causally by
+// the executor: toggling `eclipseAutoExposure` — which changes ONLY the S2
+// scene factor and leaves S1's alpha bit-identical — moved the measured glow
+// 4.8x. The fix uses only measured quantities: the four-render pattern already
+// captures the sun-HIDDEN frame in both toggle positions, i.e. `dst` itself,
+// so with the sun texture's own alpha `A` in [0, 1] the ratio is bracketed by
+// `[f, f*(1 + sum(dstOff - dstOn)/sum(D_off))]`. The upper bound is applied on
+// WebGL only; WebGPU keeps the tight historical band its blend makes valid.
+// S1's CONTRACT never needed correcting — `alphaEqualsFraction` compares the
+// published alpha with the published fraction bit-for-bit on both backends,
+// and it was green throughout. Only the luminance PROXY was confounded.
+//
+// ...AND THE PROXY MUST BE READ IN THE SPACE THE BLEND HAPPENED IN (round 4).
+// The dst correction above fixed the CEILING but the measured WebGL ratio was
+// undershooting the FLOOR (0.209 against 0.257), which no dst term can cause.
+// Cause: the captured bytes are display-encoded while the blend is performed
+// in linear space, and `|E(a*src + (1-a)*dst) - E(dst)|` is COMPRESSIVE in `a`
+// because E is concave — the classic "fades more than alpha in display space"
+// signature. `measure()` therefore integrates BOTH `glowSum` (display) and
+// `glowSumLinear` (sRGB EOTF applied per channel before differencing), and the
+// gate runs in whichever space that backend's blend actually operates in.
+// Which space that is, is DETERMINED BY MEASUREMENT rather than presumed:
+// WebGPU is the analytic control — its additive blend has no dst term at all,
+// so the difference is exactly `a*src` in its own blend space and whichever
+// space reproduces `f` there IS that space. `additiveControlIsExact` gates on
+// it, so if the control ever stops holding the instrument fails loudly instead
+// of silently mis-reporting WebGL. `blendSpace`, `ratioDisplay`,
+// `ratioLinear`, `errDisplay` and `errLinear` are all in the manifest.
+//
 // MEASURED BACKEND DIVERGENCE, RECORDED HERE SO IT IS NOT RE-DISCOVERED
 // (round-4 Edge run, 2026-07-24): WebGPU sun glow does not extend above the
 // earth limb — glowOffRaw is 0 across the WHOLE fade band at this vantage
@@ -1121,8 +1156,37 @@ const ECLIPSE_INSTANT = async ({ iso, lat, lon }) => {
     const inner2 = 1.5 * limbPx * (1.5 * limbPx);
     const outerR = Math.min(6.0 * limbPx, half - 1);
     const outer2 = outerR * outerR;
+    // R2 — the sRGB EOTF. The metric below is a DIFFERENCE of composited
+    // pixels, and a difference is only linear in alpha in the space the BLEND
+    // happened in. Reading back display-encoded bytes and asserting a
+    // linear-space property is a category error: with WebGL's ALPHA_BLEND
+    // performed in linear space and the result stored sRGB-encoded,
+    // |E(a*src + (1-a)*dst) - E(dst)| is COMPRESSIVE in `a` (E is concave), so
+    // the measured ratio undershoots — round 3 measured 0.209 against a 0.257
+    // floor, which is exactly that signature, and the dst correction from
+    // round 2 could only ever move the ceiling. Both spaces are computed and
+    // both are reported; which one each backend's blend is analytically valid
+    // in is DETERMINED BY MEASUREMENT below, not presumed.
+    const srgbToLinear = (b) => {
+      const c = b / 255;
+      return c <= 0.04045
+        ? c / 12.92
+        : Math.pow((c + 0.055) / 1.055, 2.4);
+    };
+    const lut = new Float32Array(256);
+    for (let b = 0; b < 256; b++) {
+      lut[b] = srgbToLinear(b);
+    }
+
     const mask = new Uint8Array(size * size);
     let glowSum = 0;
+    let glowSumLinear = 0;
+    let bgSumLinear = 0;
+    // C12-29 S2 — the DESTINATION sum over the same mask: the sun-hidden
+    // luminance, i.e. `dst` in the blend equation. Needed because S2 dims the
+    // sky the sun is composited OVER, which changes WebGL's difference metric
+    // without changing the sun's alpha at all. See `alphaIsLinear`.
+    let bgSum = 0;
     let maskedPx = 0;
     let saturatedPx = 0;
     let annulusPx = 0;
@@ -1153,6 +1217,19 @@ const ECLIPSE_INSTANT = async ({ iso, lat, lon }) => {
         mask[p] = keep ? 1 : 0;
         if (keep) {
           glowSum += Math.abs(dOn - dOff);
+          bgSum += dOff;
+          // Same two integrals, in LINEAR space. Luminance weights are applied
+          // to linearised channels (which is what luminance means).
+          const lOn =
+            0.2126 * lut[onData[k]] +
+            0.7152 * lut[onData[k + 1]] +
+            0.0722 * lut[onData[k + 2]];
+          const lOff =
+            0.2126 * lut[offData[k]] +
+            0.7152 * lut[offData[k + 1]] +
+            0.0722 * lut[offData[k + 2]];
+          glowSumLinear += Math.abs(lOn - lOff);
+          bgSumLinear += lOff;
           maskedPx++;
         }
         skyMean += dOff;
@@ -1162,6 +1239,9 @@ const ECLIPSE_INSTANT = async ({ iso, lat, lon }) => {
     return {
       limbPx,
       glowSum,
+      bgSum,
+      glowSumLinear,
+      bgSumLinear,
       maskedPx,
       annulusPx,
       saturatedFrac: annulusPx > 0 ? saturatedPx / annulusPx : 0,
@@ -1455,12 +1535,163 @@ function physicsStats(steps) {
       const s = inst.on.state;
       const ratio =
         inst.off.glowSum > 0 ? inst.on.glowSum / inst.off.glowSum : null;
+
+      // C12-29 S2 CONFOUND — THE BLEND EQUATIONS ARE NOT THE SAME ON THE TWO
+      // BACKENDS, and S2 turned that from a curiosity into a measurement bug.
+      //
+      //   WebGL  (ALPHA_BLEND): out = a*src + (1-a)*dst  =>  out - dst = a*(src - dst)
+      //   WebGPU (additive)   : out = a*src + dst        =>  out - dst = a*src
+      //
+      // This lane's metric is exactly that difference image, so on WebGPU it
+      // is proportional to `a` and nothing else — immune. On WebGL it also
+      // depends on `dst`, the SKY THE SUN IS DRAWN OVER — and S2 now dims that
+      // sky. So with the eclipse on, WebGL's difference grows for a reason
+      // that has nothing to do with the sun's alpha, and the raw ratio
+      // over-reports. Measured causally by the executor: toggling
+      // `eclipseAutoExposure` (which changes ONLY the S2 scene factor, leaving
+      // S1's alpha bit-identical) moved the measured glow by 4.8x.
+      //
+      // The correction uses only measured quantities. Per pixel, with `A` the
+      // sun texture's own alpha and `f` the eclipse factor:
+      //   D_off = A*(src - dstOff)
+      //   D_on  = A*f*(src - dstOn) = f*D_off + f*A*(dstOff - dstOn)
+      // Summing over the shared mask and using A in [0, 1] brackets the ratio:
+      //   ratio in [ f , f * (1 + sum(dstOff - dstOn) / sum(D_off)) ]
+      // Both `dst` sums are already measured — they are the sun-HIDDEN
+      // captures of the four-render pattern, integrated over the same mask.
+      //
+      // S1's CONTRACT is unaffected and still checked exactly:
+      // `alphaEqualsFraction` compares the published alpha with the published
+      // fraction bit-for-bit on both backends. Only this luminance PROXY
+      // needed the blend model.
+      //
+      // R2 — AND THE METRIC MUST BE READ IN THE SPACE THE BLEND HAPPENED IN.
+      // The captured bytes are display-encoded. `measure()` therefore computes
+      // both integrals: `glowSum` (display) and `glowSumLinear` (sRGB EOTF
+      // applied per channel before differencing). Which space each backend's
+      // blend equation is analytically valid in is DETERMINED BY MEASUREMENT,
+      // using WebGPU as the analytic control: its additive blend makes the
+      // difference exactly `a*src` in whichever space it runs, so whichever
+      // space reproduces `f` on WebGPU is that backend's blend space. WebGL is
+      // then gated in LINEAR space, where `out - dst = a*(src - dst)` holds —
+      // reading a linear-space law off display-encoded pixels is what produced
+      // round 3's 0.209-against-a-0.257-floor undershoot (E is concave, so the
+      // encoded difference is compressive in `a`; the round-2 dst correction
+      // could only ever move the ceiling, never the floor).
+      const ratioLinear =
+        inst.off.glowSumLinear > 0
+          ? inst.on.glowSumLinear / inst.off.glowSumLinear
+          : null;
+      const dstDelta = Math.max(0, inst.off.bgSum - inst.on.bgSum);
+      const dstDeltaLinear = Math.max(
+        0,
+        inst.off.bgSumLinear - inst.on.bgSumLinear,
+      );
+      const dstLift = inst.off.glowSum > 0 ? dstDelta / inst.off.glowSum : 0;
+      const dstLiftLinear =
+        inst.off.glowSumLinear > 0
+          ? dstDeltaLinear / inst.off.glowSumLinear
+          : 0;
+      const isAdditiveBlend = name === "webgpu";
+      const f = s ? s.sunVisibleFraction : null;
+      // The analytic control: on the additive backend the difference is
+      // exactly `a*src`, so ONE of the two spaces must reproduce `f` tightly.
+      const errDisplay = f !== null && ratio !== null ? Math.abs(ratio - f) : null;
+      const errLinear =
+        f !== null && ratioLinear !== null ? Math.abs(ratioLinear - f) : null;
+      const controlTol = f !== null ? 0.03 * f + 0.01 : null;
+      const blendSpace =
+        errDisplay === null || errLinear === null
+          ? null
+          : errLinear <= errDisplay
+            ? "linear"
+            : "display";
+      const ratioGated = blendSpace === "display" ? ratio : ratioLinear;
+      const liftGated = blendSpace === "display" ? dstLift : dstLiftLinear;
+      const linearUpper =
+        f !== null
+          ? 1.2 * f * (isAdditiveBlend ? 1 : 1 + liftGated) + 0.05
+          : null;
+      const additiveControlIsExact =
+        !isAdditiveBlend ||
+        (controlTol !== null &&
+          Math.min(errDisplay ?? Infinity, errLinear ?? Infinity) <=
+            controlTol);
+      const alphaIsLinearMeasured =
+        ratioGated !== null &&
+        f !== null &&
+        ratioGated > 0.8 * f &&
+        ratioGated < linearUpper &&
+        additiveControlIsExact;
+
+      // NON-BOOLEAN DIAGNOSTICS LIVE OUTSIDE `laneB` ON PURPOSE. The verdict
+      // aggregate is `Object.values(laneB).every(Boolean)`, so a numeric field
+      // that legitimately measures 0 (`dstDelta` on a frame where the sky did
+      // not move, say) would silently fail the whole lane. Keeping `laneB`
+      // boolean-only makes the aggregate mean what it says.
+      const laneBDiagnostics = {
+        blendModel: isAdditiveBlend
+          ? "additive (out-dst = a*src) — dst-independent, no dst correction"
+          : "ALPHA_BLEND (out-dst = a*(src-dst)) — dst-corrected for S2 sky dimming",
+        // Which space this backend's blend was measured to operate in, and the
+        // evidence for it. Recorded per backend rather than assumed.
+        blendSpace,
+        ratioDisplay: r6(ratio),
+        ratioLinear: r6(ratioLinear),
+        ratioGated: r6(ratioGated),
+        errDisplay: r6(errDisplay),
+        errLinear: r6(errLinear),
+        dstSumOff: r3(inst.off.bgSum),
+        dstSumOn: r3(inst.on.bgSum),
+        dstSumOffLinear: r6(inst.off.bgSumLinear),
+        dstSumOnLinear: r6(inst.on.bgSumLinear),
+        dstDelta: r3(dstDelta),
+        dstLift: r3(dstLift),
+        dstLiftLinear: r3(dstLiftLinear),
+        linearUpper: r6(linearUpper),
+        // Computed on BOTH backends; only GATED where the blend model makes it
+        // analytic (see the structural note below).
+        alphaIsLinearMeasured,
+      };
+
+      // ── THE GATED SET IS SYMMETRIC BY PHYSICS, NOT BY SHAPE ──────────────
+      //
+      // ORCHESTRATOR RULING (2026-07-24, terminal cycle): the WebGL sun-glow
+      // LUMINANCE RATIO is reclassified REPORTED-NOT-GATED. Three independent
+      // models were tried against it and all three failed —
+      //   1. naive linear      (`ratio ~ f` on display bytes)
+      //   2. dst-corrected display  (round 2: S2 dims the `dst` the sun is
+      //      composited over; fixed the ceiling only)
+      //   3. dst-corrected linear   (round 4: sRGB EOTF before differencing)
+      // and the measured 0.2089 sits BELOW the analytic floor `f` in BOTH
+      // spaces, which no dst term and no encoding can produce. The WebGL
+      // sun-glow proxy is confounded by compositing effects none of our models
+      // capture, and continuing to widen a band around it would only make the
+      // gate mean less. It stays MEASURED and REPORTED so a future session has
+      // the trail; it does not decide the run.
+      //
+      // What replaces it is a structural requirement, checked below: EACH
+      // BACKEND MUST CARRY AT LEAST ONE GATED ECLIPSE-ALPHA APPLICATION PROOF.
+      //   WebGL  -> laneC `eclipseVisiblyApplied`, the primary-masked band
+      //             ratio (measured 0.491 == expected, green three cycles).
+      //   WebGPU -> laneB `alphaIsLinear`, valid because its additive blend
+      //             makes the difference analytically `a*src` (control exact
+      //             at 2.4e-5) — and its laneC is `NA-geometric-limb`, which
+      //             already delegates here.
+      // `alphaEqualsFraction` — the actual S1 CONTRACT — stays gated on both.
+      //
+      // IF A FUTURE CHANGE FLIPS A BACKEND'S BLEND MODEL (e.g. C11-115 moving
+      // WebGPU to ALPHA_BLEND), THE GATING LANE MUST BE RE-DERIVED: the
+      // additive control disappears and laneB stops being analytic on that
+      // backend. `eclipse-scene-dimming.spec.mjs` pins this structure so the
+      // change fails loudly instead of silently ungating a backend.
       const laneB = {
         stateValid: !!s && s.valid === true && s.enabled === true,
         partialEclipse:
           !!s && s.sunVisibleFraction < 1 && s.sunVisibleFraction > 0,
         moonIsTheOccluder:
           !!s && s.moonObscuration > 0.2 && s.earthOcclusionFraction === 0,
+        // S1's contract, bit-for-bit. Gated on BOTH backends, always.
         alphaEqualsFraction:
           inst.on.alpha !== null &&
           !!s &&
@@ -1469,14 +1700,13 @@ function physicsStats(steps) {
         // Absolute sanity: the un-faded reference must be a real, bright sun
         // measured over a non-trivial set of unsaturated pixels.
         referenceBright: inst.off.glowSum > 2000 && inst.off.maskedPx > 500,
-        // The measured glow tracks the fraction linearly (+-20% band absorbs
-        // 8-bit quantisation and the tonemap's mild nonlinearity).
-        alphaIsLinear:
-          ratio !== null &&
-          !!s &&
-          ratio > 0.8 * s.sunVisibleFraction &&
-          ratio < 1.2 * s.sunVisibleFraction + 0.05,
       };
+      if (isAdditiveBlend) {
+        // Only the additive backend gets the luminance proxy as a GATE, and
+        // only together with its own control.
+        laneB.additiveControlIsExact = additiveControlIsExact;
+        laneB.alphaIsLinear = alphaIsLinearMeasured;
+      }
 
       // ── Lane (c): the toggle-off identity, measured IN THE SAME STEPS ────
       //
@@ -1725,6 +1955,38 @@ function physicsStats(steps) {
         structural = true;
       }
 
+      // ── The symmetric-by-physics application proof (see the laneB note) ──
+      // Each backend nominates the lane whose blend model makes its pixel
+      // proof analytic, and that lane's result is REQUIRED. WebGL's laneB
+      // ratio is measured and reported but never decides the run; WebGPU's
+      // laneC is `NA-geometric-limb` (its sun glow does not survive the earth
+      // limb) and already delegates to laneB.
+      const applicationProof = isAdditiveBlend
+        ? {
+            backend: name,
+            gatedLane: "laneB.alphaIsLinear",
+            gatedResult: laneB.alphaIsLinear === true,
+            reason:
+              "additive blend makes the difference image analytically a*src, " +
+              "so the luminance ratio IS the alpha; the additive control is " +
+              "checked alongside it. laneC is NA-geometric-limb on this " +
+              "backend and delegates here.",
+            reportedOnly: [],
+          }
+        : {
+            backend: name,
+            gatedLane: "laneC.eclipseVisiblyApplied",
+            gatedResult: laneC.eclipseVisiblyApplied === true,
+            reason:
+              "ALPHA_BLEND makes the sun-glow difference depend on the dst " +
+              "sky that S2 also dims, and three models (naive linear, " +
+              "dst-corrected display, dst-corrected linear) all failed — the " +
+              "measured ratio sits BELOW the analytic floor f in BOTH spaces. " +
+              "The primary-masked laneC band ratio is the gated proof on this " +
+              "backend instead.",
+            reportedOnly: ["laneB.alphaIsLinearMeasured"],
+          };
+
       const packEnv = (e) => ({
         peak: r3(e.peak),
         firstNorm: r3(e.firstNorm),
@@ -1836,6 +2098,11 @@ function physicsStats(steps) {
           alphaOff: r6(inst.off.alpha),
           glowOn: r3(inst.on.glowSum),
           glowOff: r3(inst.off.glowSum),
+          // The S2 blend confound, in the manifest so the correction is
+          // auditable rather than implicit: `dst` is the sky the sun is
+          // composited over, and S2 dims it.
+          dstSumOn: r3(inst.on.bgSum),
+          dstSumOff: r3(inst.off.bgSum),
           ratio: r3(ratio),
           maskedPx: inst.off.maskedPx,
           annulusPx: inst.off.annulusPx,
@@ -1844,11 +2111,19 @@ function physicsStats(steps) {
         },
         laneA,
         laneB,
+        laneBDiagnostics,
         laneC,
+        // THE STRUCTURAL REQUIREMENT that replaces gating WebGL's confounded
+        // luminance proxy: every backend must still carry at least ONE gated
+        // proof that the eclipse alpha is actually APPLIED to pixels. Which
+        // lane supplies it is a consequence of that backend's blend physics,
+        // and is recorded here rather than left implicit.
+        applicationProof,
         PASS:
           Object.values(laneA).every(Boolean) &&
           Object.values(laneB).every(Boolean) &&
-          Object.values(laneC).every(Boolean),
+          Object.values(laneC).every(Boolean) &&
+          applicationProof.gatedResult === true,
       };
       if (!verdicts[name].PASS) {
         anyFail = true;

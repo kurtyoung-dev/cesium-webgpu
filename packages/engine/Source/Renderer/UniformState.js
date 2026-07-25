@@ -899,6 +899,57 @@ class UniformState {
       Cartesian3.clone(lightColorHdr, this._lightColor);
     }
 
+    // C12-29 S2 — eclipse dimming of the SUN-driven scene light. One multiply
+    // here reaches, in GLSL, `czm_lightColor` / `czm_lightColorHdr` — GlobeFS'
+    // diffuse term, phong, translucentPhong and the model PBR lighting stage
+    // (`Model/LightingStageFS.glsl`) — and, on WebGPU, `csm_lightColor` /
+    // `csm_lightColorHdr` plus `WebGPUGlobeSurfaceCameraUB`'s `lightColor`
+    // slot. That is why the dimming lives at the JS uniform source rather
+    // than in eight shaders.
+    //
+    // ⚠ IT IS NOT UNIVERSAL ON WEBGPU. `ModelPBRComplete.wgsl` reads NONE of
+    // the `csm_lightColor*` automatic uniforms — its direct term is
+    // `light.sunColor * light.sunIntensity * NdotL`, packed raw from
+    // `frameState.light` by `WebGPUModelRenderer.packLightUniforms`, which
+    // carries its own copy of this multiply (S2 injection site 5) under the
+    // SAME `instanceof SunLight` gate. Any future change to the gating or the
+    // quantity here must be mirrored there, or WebGPU models desynchronise
+    // from the WebGPU globe during an eclipse. `eclipse-scene-dimming.spec.mjs`
+    // pins both halves.
+    //
+    // AFTER the LDR clamp, not before. `_lightColor` is `_lightColorHdr`
+    // renormalised so its brightest channel is <= 1; a pre-clamp multiply
+    // would be entirely swallowed by that renormalisation until the factor
+    // dropped below 1/intensity (0.5 at the default SunLight intensity of
+    // 2.0), giving a light that does not dim at all through the first half of
+    // the eclipse and then dims at double rate. Dimming both AFTER the clamp
+    // is what "the sun got fainter" means in LDR.
+    //
+    // Gated on `light instanceof SunLight` — the branch above — so a
+    // user-supplied DirectionalLight is never touched. WebGPU's aerial-
+    // perspective path swaps in its own derived light, but that light is a
+    // `SunLight` too (`Scene._atmosphereDerivedLight`), so both backends dim.
+    //
+    // The `!== 1.0` guard keeps every non-eclipse frame untouched by
+    // construction rather than by arithmetic.
+    const eclipseSceneLightFactor = frameState.eclipseSceneLightFactor;
+    if (
+      light instanceof SunLight &&
+      typeof eclipseSceneLightFactor === "number" &&
+      eclipseSceneLightFactor !== 1.0
+    ) {
+      Cartesian3.multiplyByScalar(
+        this._lightColorHdr,
+        eclipseSceneLightFactor,
+        this._lightColorHdr,
+      );
+      Cartesian3.multiplyByScalar(
+        this._lightColor,
+        eclipseSceneLightFactor,
+        this._lightColor,
+      );
+    }
+
     // Multi-light: pack additional lights from LightCollection
     const lights = frameState.lights;
     if (defined(lights) && lights.length > 0) {

@@ -896,7 +896,25 @@ function packUniforms(
     skyAtmosphere.atmosphereMieScaleHeight ?? DEFAULT_MIE_SCALE_HEIGHT;
   uniformData[38] =
     skyAtmosphere.atmosphereMieAnisotropy ?? DEFAULT_MIE_ANISOTROPY;
-  uniformData[39] = skyAtmosphere.atmosphereLightIntensity || 50.0;
+  // C12-29 S2 — the WGSL twin of `SkyAtmosphere.js`'s
+  // `u_atmosphereLightIntensity` closure. `u.intensity` is the linear scale on
+  // the inline ray-march (`SkyAtmosphere.wgsl` — the DEFAULT path: the
+  // inscatter LUT is compile-time off via `ENABLE_SKY_INSCATTER_LUT` and the
+  // sky-view LUT needs the opt-in `skyAtmosphere.useScatteringLut`), so one
+  // multiply here dims the shell exactly as the WebGL uniform does.
+  // `_eclipseLightFactor` was refreshed by `SkyAtmosphere.update` before this
+  // renderer ran; 1.0 outside an eclipse, and `x * 1.0` is bit-exact.
+  //
+  // The LUT BAKE input (the `intensity` local in `createOrUpdateLutResources`)
+  // is deliberately NOT multiplied: that bake is debounced on sun DIRECTION,
+  // which barely moves across an eclipse, so a dimmed bake would latch at
+  // whatever factor happened to be current and stay wrong long after totality.
+  // Both LUT paths are off at defaults; carrying the eclipse factor into them
+  // needs the quantised-eclipse debounce input that S3/C13 owns
+  // (ECLIPSE_EFFECTS_RESEARCH_2026-07-24.md §5).
+  uniformData[39] =
+    (skyAtmosphere.atmosphereLightIntensity || 50.0) *
+    (skyAtmosphere._eclipseLightFactor ?? 1.0);
 
   // hsbShift + useLut flag (replaces _pad4 — see SkyAtmosphere.wgsl Uniforms)
   uniformData[40] = skyAtmosphere.hueShift || 0.0;

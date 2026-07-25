@@ -402,6 +402,25 @@ class FrameState {
     this.sunEclipseAlpha = undefined;
 
     /**
+     * Per-frame multiplier applied to every SUN-DRIVEN scene light and
+     * atmosphere intensity during a solar eclipse (C12-29 S2) — the scene
+     * light colour (`UniformState`), the sky-atmosphere shell on both
+     * backends, the globe's ground atmosphere and its fog (through the one
+     * `tileProvider.atmosphereLightIntensity` mirror), and
+     * `frameState.skyBrightness`. Derived from
+     * `eclipseState.moonObscuration` ONLY — never from `sunVisibleFraction`,
+     * whose Earth-limb term saturates through twilight and all night and
+     * would black out every sunset. Linear in the limb-darkened flux
+     * fraction, floored on the ~5-lux twilight constant and carried through
+     * the eye's adaptation exponent unless
+     * `atmosphericConditions.lighting.eclipseAutoExposure` is on. Exactly 1.0
+     * — the multiplicative identity — in every frame that is not a solar
+     * eclipse and in the `enableEclipse = false` position.
+     * @type {number|undefined}
+     */
+    this.eclipseSceneLightFactor = undefined;
+
+    /**
      * Canonical atmospheric conditions facade — forwarded once per frame
      * from `scene.globe.atmosphericConditions`. Renderers read B-series
      * toggles (sun/moon lighting, scattering occlusion, star modulation,

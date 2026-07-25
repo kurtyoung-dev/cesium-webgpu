@@ -148,6 +148,14 @@ class SkyAtmosphere {
 
     this._flags = undefined;
 
+    // C12-29 S2 — per-frame eclipse dimming of the sky shell, refreshed from
+    // `frameState.eclipseSceneLightFactor` at the top of `update()` (which
+    // runs before BOTH the WebGL uniform closure below and the WebGPU feature
+    // renderer's uniform pack, so the two backends multiply one identical
+    // scalar). 1.0 — the multiplicative identity — in every non-eclipse
+    // frame, so the shell is byte-identical there.
+    this._eclipseLightFactor = 1.0;
+
     /**
      * The intensity of the light that is used for computing the sky atmosphere color.
      *
@@ -253,7 +261,10 @@ class SkyAtmosphere {
         return that._hueSaturationBrightness;
       },
       u_atmosphereLightIntensity: function () {
-        return that.atmosphereLightIntensity;
+        // C12-29 S2 — eclipse dimming. `_eclipseLightFactor` is 1.0 outside a
+        // solar eclipse and `x * 1.0` is bit-exact, so this is the historical
+        // value in every other frame.
+        return that.atmosphereLightIntensity * that._eclipseLightFactor;
       },
       u_atmosphereRayleighCoefficient: function () {
         return that.atmosphereRayleighCoefficient;
@@ -297,6 +308,11 @@ class SkyAtmosphere {
    * @private
    */
   update(frameState, globe) {
+    // C12-29 S2 — refreshed unconditionally, and FIRST: it must be current
+    // before the WebGPU feature-renderer branch below packs its uniform
+    // buffer and before the WebGL uniform closure is invoked at draw time.
+    this._eclipseLightFactor = frameState.eclipseSceneLightFactor ?? 1.0;
+
     if (!this.show) {
       return undefined;
     }

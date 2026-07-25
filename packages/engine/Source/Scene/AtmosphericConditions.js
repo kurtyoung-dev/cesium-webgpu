@@ -104,9 +104,10 @@ class AtmosphericConditions {
    * `enableMoonPhase`, and `enableEarthshine` are new Phase 1 state stored
    * on the facade. The C12 moon-wave toggles `enableLunarBRDF`,
    * `enableOppositionSurge`, and `enableMoonSkyWash` (all default ON, both
-   * backends) also live here, as does the C12-29 `enableEclipse` toggle
+   * backends) also live here, as do the C12-29 toggles `enableEclipse`
    * (default ON, both backends — gates application of
-   * `frameState.eclipseState`).
+   * `frameState.eclipseState`) and `eclipseAutoExposure` (default OFF —
+   * ruling E2's camera-metering alternative to the human-eye impression).
    * @type {object}
    * @readonly
    */
@@ -328,6 +329,39 @@ function buildLighting(globe) {
   // probes and tooling can read the physics with the effect switched off.
   // With it false, every consumer multiplies by exactly 1.0 and the frame
   // is byte-identical to the pre-C12-29 engine on both backends.
+  //
+  // C12-29 S2 (2026-07-24) — `eclipseAutoExposure`, DEFAULT OFF by maintainer
+  // ruling E2 (ECLIPSE_EFFECTS_RESEARCH_2026-07-24.md §6a): "human-eye
+  // impression (preserved darkness) is the DEFAULT; camera-autoexposure
+  // compensation becomes a togglable alternative mode". The two modes differ
+  // in the TRANSFER FUNCTION `EclipseState.getEclipseSceneLightFactor`
+  // applies to the flux fraction, not in whether dimming happens:
+  //
+  //   false (default, human eye) — the flux fraction is carried through the
+  //     eye's own adaptation exponent (CIE L* / Stevens, ~1/3) before it
+  //     reaches the lights, because with no auto-exposure in the chain
+  //     nothing else will perform that adaptation. Totality lands on the
+  //     documented ~5-lux twilight floor (render factor ~0.0368) and the
+  //     plunge from 99% obscuration is a ~6x collapse. This is the AE-EXEMPT
+  //     state: the darkness is preserved by construction.
+  //
+  //   true (camera) — the LINEAR radiometric flux fraction is handed to the
+  //     lights instead, and the re-metering is left to the exposure chain,
+  //     which is precisely what a camera does. With
+  //     `scene.highDynamicRange` plus the AutoExposure stage on
+  //     (`PostProcessStageCollection._autoExposureEnabled`, off by default),
+  //     that stage measures the dimmed scene and compensates it, washing the
+  //     darkness out exactly as ruling E2 describes. Without an exposure
+  //     stage it renders the true radiometric plunge — which is what a
+  //     FIXED-exposure camera shows, and is not a degenerate case.
+  //
+  // C12-19 SEAM: C12-19's AE lanes have not landed, so there is no
+  // eclipse-aware metering window, no AE clamp and no eclipse term in the AE
+  // debounce yet. When they land, this flag is the switch they read: the
+  // false path must stay exempt from (or clamped in) the new AE lanes, and
+  // the true path must feed the eclipse-dimmed luminance into them. The
+  // transfer-function split above is the complete, shipped default path;
+  // everything C12-19 adds attaches to the `true` branch.
   const leaf = {
     enableSunLight: true,
     enableMoonLight: true,
@@ -339,6 +373,7 @@ function buildLighting(globe) {
     enableOppositionSurge: true,
     enableMoonSkyWash: true,
     enableEclipse: true,
+    eclipseAutoExposure: false,
   };
   Object.defineProperties(leaf, {
     lambertDiffuseMultiplier: {
