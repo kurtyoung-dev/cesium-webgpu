@@ -233,3 +233,85 @@ the seabed.
 **Bottom line:** your model of the default renderer is right — the ocean is the terrain mesh and WMTS can only paint pixels — but "nothing is possible" is wrong on the strength of your own fork: the ocean-surface primitive, the reserved tideCallback, the exaggeration displacement machinery, and in-tree bathymetry loading mean a real, licence-clean 3D tide (Design A + D, ~1–2 batches after a datum probe) is available now, with the fully-correct bathymetry-split (Design C) already half-built and correctly sized as its own campaign.
 
 Session note (non-blocking): the claude.ai Google Drive MCP connector requires authorization via claude.ai connector settings before its tools can be used; nothing in this task needed it.
+### §5d Slice 2 — HARMONIC STACK IMPLEMENTATION RECORD (2026-07-25, Batch 767)
+
+Rulings T5 (EOT20 + NOAA, default EOT20) and T6 (real dates/timings, phase-locked to the
+actual moon) are now implemented on the CPU side. Four new `Core/` modules — `TidalArguments`,
+`TidalConstituents`, `HarmonicTideModel`, `TideConstituentGrid` — plus the EOT20 bake tool and
+its gates. Nothing under `Renderer/`, `Scene/`, `Shaders/`, `AtmosphericConditions.js` or
+`FrameState.js` was touched; the slice is deliberately Core + Tools only, so it carries no
+scene wiring and no renderer risk.
+
+**The load-bearing discovery.** Cesium's `JulianDate` is NOON-origin (`JulianDate.js`:
+`// JulianDates are noon-based`, `hour = hour - 12`; empirically `fromIso8601("2000-01-02T00:00:00Z")`
+yields `secondsOfDay = 43232 = 43200 + dAT`). The Doodson lunar-time argument τ therefore carries
+a `+180°` term. Omitting it is invisible in every semidiurnal constituent — a 180° error shifts
+V by `n₀ · 180°`, so species 2 moves a full turn — while INVERTING every diurnal one. Injecting
+the omission gives a cosine ratio of exactly `+1.000000` for M2/S2/N2/K2/Mf/Mm and exactly
+`−1.000000` for K1/O1/P1/Q1; correlation against the geometric tide holds at 0.99803 on the
+equator and collapses to −0.37452 at 43 °N. **The negative control must therefore assert at a
+non-equatorial site** — the gate fires everywhere above ~3° latitude and goes silent below ~2°.
+
+**Independent absolute validation of τ.** `τ + s − 180` reproduces this engine's own IAU-82 GMST
+to a CONSTANT 0.0064° (1.53 s) across 1990–2025 with no drift. That single measurement rules out
+three distinct failure modes at once: a missing +180 would show as 180°, a flipped `dAT` sign as
+0.27° steps at every leap second, and a TT leak into τ as a monotonically growing 0.29° offset.
+Separately, S2's argument reduces algebraically to exactly `30 × UT-hours` and lands on
+0/90/180/270° to eight decimals at UTC 00/03/06/09h.
+
+**Time-scale bridge, stated explicitly** because a one-minute error defeats T6 and is invisible
+to correlation tests. `JulianDate` stores TAI. TT = TAI + 32.184 s feeds the five mean longitudes
+only. τ uses UTC via `JulianDate.computeTaiMinusUtc` (whose `LeapSecond.offset` is "seconds TAI is
+ahead of UTC" and is SUBTRACTED, matching `Transforms.computeTemeToPseudoFixedMatrix`). UT1 ≈ UTC
+with DUT1 = 0, matching this engine's default `EarthOrientationParameters.NONE`; an optional third
+argument lets a caller holding real EOP pass it rather than the module reaching into `Transforms`
+and dragging in the XYS/EOP chain. Budget: |DUT1| ≤ 0.9 s = 0.00375° of τ = **under 1 second** of
+tide phase; evaluating τ in TT instead would be 69 s. `computeTaiMinusUtc` clamps its index, so
+pre-1972 and far-future dates yield finite τ with no NaN.
+
+**T6 acceptance, measured.** Two equatorial bulges every time across 120 samples through 2026, at
+the ephemeris sub-lunar longitude and its antipode to 0.000°, antipodal separation 180.000°; the
+harmonic subset tracks the geometric ring to a worst 2.92° over 400 samples (asserted ≤ 4° AND
+> 0.2°, so it cannot secretly BE the geometric ring). Daily lag 50.46–50.47 min against the
+published 50.472, from a 120-day least-squares fit over 232 high waters rather than one interval.
+Spring/neap derives its moon phases from the ephemeris — April 2024's new moon lands within 2.0 min
+of the almanac, and it is the same instant `eclipse-state.spec.mjs` already pins. f(M2) spans
+0.96330–1.03790 against Schureman's 0.963–1.038, extremes at the correct nodal longitudes.
+
+**Which model is the default, and why.** The geometric `TideModel` (Batch 763) stays the default
+and is STRICTLY more accurate: it carries the full equation of centre, evection, variation and
+parallax that a ten-constituent development truncates. The residual between the two — ~7% of
+signal RMS at low/mid latitude, ~11–12% at 62 °N — IS that truncation. The harmonic form exists so
+the atlas seam is never without an answer and so the two can be cross-checked against each other.
+
+**Data-tier honesty.** The EOT20 asset is NOT baked and NOT bundled; `packages/engine/Source/Assets/Tides/`
+does not exist. The reader and the bake tool define the contract and the engine falls back to
+`TideModel` until a bake lands. No download URL is hardcoded — SEANOE serves EOT20 behind a
+versioned path off the DOI, and a rotted URL returning an HTML error page with HTTP 200 would be
+worse than none, so the tool requires `--input <dir>` and documents the DOI resolution step. The
+reader is NetCDF-3 classic/64-bit-offset; HDF5 magic is detected and the exact `nccopy -k classic`
+conversion is printed. **The `(real, imag)` sign convention is no longer guessed** — `--imag-sign`
+is REQUIRED for that branch and is cross-checked node-by-node against any phase variable the
+archive also ships, because the wrong choice time-reverses every tide by up to half an M2 period
+(6.21 h) and looks entirely correct. Dimension order is resolved from the variable's own dimension
+names; when names are unresolvable on a SQUARE grid the tool REFUSES rather than defaulting, since
+a coin flip on the tide's geography is not a default. `scale_factor`/`add_offset` are applied, with
+`_FillValue` tested against the RAW STORED value before unpacking (CF packs the sentinel in the
+stored type, so testing after unpacking misses every land node). A pre-write sanity gate bounds
+ocean coverage, M2 median/max amplitude (the detector for unit and scale errors), and the M2 phase
+circular resultant, and round-trips nodes through the SHIPPED reader sampled by longitude/latitude
+rather than by index.
+
+**Gates.** `tidal-harmonics.spec.mjs` 34/34; the Batch-763 sibling `ocean-tide-datum.spec.mjs` 28/28
+unregressed; `--self-test` PASS (8 constituents, 721×361, 8,329,056 B, 29,392 node samples read back
+through `Core/TideConstituentGrid.js`, worst disagreement 0.705 mm against a 1.1 mm budget, coverage
+88.92%); `gulp build` exit 0 with all four modules in the generated barrel and the bundle. Teeth
+independently reproduced by the executor: removing τ's `+ 180.0` fails exactly 6 of 34, and the file
+restores byte-exact to `93173ad0`. Three header-semantics mutations that previously slipped past
+`--self-test` (unitsPerMetre offset drift, step-units drift, west/north swap) are all caught now that
+the self test routes through the shipped reader.
+
+**Known gap, not a defect.** `.prettierignore` never unignores `.mjs` (all 727 tracked `.mjs` files
+are excluded) and `eslint.config.js` ignores `Tools/**` wholesale, so the three new `.mjs` files are
+not CI-enforced. They were made conformant anyway with the ignores bypassed. Closing the gap is a
+repo-wide reformat and remains a maintainer decision.
