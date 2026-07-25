@@ -202,11 +202,14 @@ const MEASURE = async ({ iso, pfWindow, elMoonDeg, elSunDeg }) => {
   if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
   if (scene.skyBox) {
     scene.skyBox.show = false;
-    // Do NOT set starField.show = false: C12-G1F1 (filed, open) — disabling
-    // the star field kills the ENTIRE WebGPU sky pass including the moon,
-    // which blacked out this probe's WebGPU control lane. The Batch-755
-    // phase-gate probe proved clean ROI stats with the starField left at its
-    // default: its sparse dim points are outside the disc ROI's floors.
+    // The star field is deliberately left at its DEFAULT (shown). It used to
+    // be mandatory — with it off, C12-G1F1 killed the entire WebGPU sky pass
+    // including the moon — but that defect is fixed (Scene/EnvironmentFrustum-
+    // Demand). It stays on now purely to keep this probe's ROI statistics
+    // comparable with the Batch-755/756 baselines: the Batch-755 phase-gate
+    // probe proved clean ROI stats with the starField at its default (its
+    // sparse dim points sit outside the disc ROI's floors), so changing the
+    // scene here would re-baseline the lane for no measurement gain.
   }
   if (scene.sun) scene.sun.show = false;
   if (scene.globe) scene.globe.show = false;
@@ -756,25 +759,19 @@ async function runBackend(browser, renderer, lanes) {
     const judge = laneJudges[name];
     const glChecks = judge(a);
     const gpuChecks = judge(b);
-    // Orchestrator soft-gate (Batch 756): the WebGPU no-atmosphere control
-    // scene renders NO moon in the day/horizon lanes (disc 0/0/0) — a
-    // C12-G1F1-FAMILY engine defect (WebGPU environment-pass scheduling
-    // drops the moon in sparse env configurations; starField.show=false is
-    // one known trigger, and this day-control blackout with the starField
-    // VISIBLE is new evidence that the drop class is broader — filed on the
-    // C12 queue). It is NOT a moon-wave appearance defect: the WebGL
-    // control anchors the reference (hard structural gate below) and the
-    // WebGPU atmosphere pass is fully measured and parity-gated. Convert
-    // the two control-dependent WebGPU checks to a recorded BLOCKED marker
-    // (truthy, so the lane can pass) instead of a silent skip.
-    if (b.control.discMax === 0 && a.control.discMax > 0) {
-      if (gpuChecks.controlSane === false) {
-        gpuChecks.controlSane = "BLOCKED-C12-G1F1-FAMILY";
-      }
-      if (gpuChecks.extinctionDims === false) {
-        gpuChecks.extinctionDims = "BLOCKED-C12-G1F1-FAMILY";
-      }
-    }
+    // The Batch-756 BLOCKED-C12-G1F1-FAMILY soft-gate lived here: the WebGPU
+    // no-atmosphere control scene rendered NO moon in the day/horizon lanes
+    // (disc 0/0/0), so `controlSane` and `extinctionDims` were converted to
+    // truthy BLOCKED markers. Root cause found and fixed: the control scene
+    // hides the atmosphere, the sun, the globe and the skybox, and the star
+    // field self-fades to zero contribution in daylight — leaving NO command
+    // on `frameState.commandList`, hence zero frustums, hence no environment
+    // injection and a dropped WebGPU frame (`View.createPotentiallyVisibleSet`
+    // sky-only fallback keyed only on binned env commands). The frustum
+    // fallback now consults the whole environment layer
+    // (`Scene/EnvironmentFrustumDemand`), so the control lane renders on both
+    // backends and these two checks gate HARD again. Regression net:
+    // `probe-env-pass-matrix.mjs`.
     const glPass = Object.values(glChecks).every(Boolean);
     const gpuPass = Object.values(gpuChecks).every(Boolean);
     // Cross-backend parity on the atmosphere pass.

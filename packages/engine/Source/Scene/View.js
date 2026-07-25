@@ -11,6 +11,7 @@ import Pass from "../Renderer/Pass.js";
 import PassState from "../Renderer/PassState.js";
 import Camera from "./Camera.js";
 import EdgeFramebuffer from "./EdgeFramebuffer.js";
+import { needsEnvironmentOnlyFrustum } from "./EnvironmentFrustumDemand.js";
 import GBufferFramebuffer from "./GBufferFramebuffer.js";
 import FrustumCommands from "./FrustumCommands.js";
 import GlobeDepth from "./GlobeDepth.js";
@@ -409,7 +410,7 @@ class View {
       shadowState.casterCommands = undefined;
     }
 
-    if (near > far && sawEnvironmentNoBV) {
+    if (needsEnvironmentOnlyFrustum(near, far, sawEnvironmentNoBV, scene)) {
       // C10-01: sky-only view — only BV-less Pass.ENVIRONMENT commands were
       // seen, so the accumulators never moved off their +/-MAX_VALUE sentinels.
       // Restore the camera-range window so a frustum still exists to bin and
@@ -417,6 +418,19 @@ class View {
       // without it near stays +MAX, the clamps collapse the range, and nothing
       // renders — a black canvas). Behavior-preserving: this reproduces exactly
       // the frustum(s) sky-only frames produce today.
+      //
+      // C12-G1F1 widens the trigger from "saw a BV-less env command in
+      // commandList" to "this frame has ANY environment content to draw".
+      // Only SkyAtmosphere / Sun / StarField push a binned copy (StarField only
+      // while its daytime fade is non-zero); SkyBox and Moon are inject-only.
+      // So `sawEnvironmentNoBV` alone made frustum existence — and therefore
+      // whether the sky rendered at all on the injection convention — depend on
+      // which OTHER environment elements happened to emit. `starField.show =
+      // false` killed the whole cubemap sky; a moon-only scene rendered at
+      // night (star fade > 0) and blacked out in daylight (star fade 0). The
+      // shared predicate now asks the environment layer directly. Unchanged for
+      // WebGL (no `_alternateSceneRenderer`) and for every frame that already
+      // had geometry (`near <= far` short-circuits before any lookup).
       near = frustum.near;
       far = frustum.far;
     }
