@@ -130,7 +130,14 @@ test("(b) WGSL mip/aniso-aware + RTE-decomposed; GLSL keeps auto-LOD + divisor",
     path.join(root, "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts"),
     "utf8",
   );
-  assert.match(tileUb, /frac\(originU \* OCEAN_OCTAVE_REPEATS\[0\]\)/, "CPU must pack fract(originU*R0) phase offset");
+  // Whitespace-tolerant: prettier wraps this call across three lines once the
+  // enclosing statement exceeds the print width, which a single-line literal
+  // pattern cannot survive. Assert the CALL SHAPE, not its formatting.
+  assert.match(
+    tileUb,
+    /frac\(\s*originU \* OCEAN_OCTAVE_REPEATS\[0\]\s*,?\s*\)/,
+    "CPU must pack fract(originU*R0) phase offset",
+  );
   // GLSL twin: auto-LOD + effective-divisor calibration.
   assert.match(glsl, /czm_getWaterNoise\(u_oceanNormalMap/, "GLSL auto-LOD path missing");
   assert.match(glsl, /OCEAN_GETWATERNOISE_DIVISOR/, "GLSL effective-divisor recalibration (D2) missing");
