@@ -672,7 +672,26 @@ scene.globe.water.types.wetland.enabled
 // ─── Tunables ─────────────────────────────────────────────────────
 scene.globe.water.windSpeedOverride          // null → use AtmosphericConditions
 scene.globe.water.windDirectionOverride
-scene.globe.water.tideCallback               // (positionWC, time) => meters; null → 0 (C5)
+// ─── Sea-level datum + tide (SHIPPED Batch 763, C6-FFT-OCEAN-TIDE-DATUM) ──
+scene.globe.water.oceanVerticalDatum         // "AUTO" | "ELLIPSOID" | "GEOID"
+                                             //   DEFAULT "AUTO" — derived from the
+                                             //   terrain provider. NOT a feature
+                                             //   toggle: the ellipsoid-0 anchor was
+                                             //   a measured 101.64 m defect over
+                                             //   Cesium World Terrain (ruling T2)
+scene.globe.water.tideEnabled                // DEFAULT true; false → tide term is
+                                             //   EXACTLY 0
+scene.globe.water.tideExaggeration           // DEFAULT 1.0 = true scale (ruling T3);
+                                             //   > 1 is explicitly stylised
+scene.globe.water.tideCallback               // (positionWC, time) => meters;
+                                             //   undefined → the in-engine
+                                             //   equilibrium Core/TideModel.js
+                                             //   (ruling T1 SUPERSEDES OQ5's
+                                             //   "null → 0"; use tideEnabled =
+                                             //   false for no tide at all)
+// Read-only per-frame diagnostics on scene.globe.water.ocean:
+//   resolvedVerticalDatum, geoidUndulationMeters, tideHeightMeters,
+//   anchorHeightMeters
 scene.globe.water.imageryTintStrength        // 0..1 blend of imagery vs type-default
 scene.globe.water.refractionStrength
 scene.globe.water.foamThreshold
@@ -795,7 +814,7 @@ pointer table:
 | OQ2 — River width inference in WASM | **WASM with JS fallback** per CLAUDE.md WASM bridge pattern. | C2 |
 | OQ3 — `enableUnderwaterFog` default when no froxel grid | **Cheap exponential depth-fog fallback.** Single multiply + exp per fragment. See §4.4. | C3 |
 | OQ4 — Water vs 3D Tiles classification interaction | **Compose, don't override.** They answer different questions through different APIs. Use `EXT_structural_metadata` for the water semantic — already supported by 3D Tiles 1.1, no spec change needed. See `SESSION_2026-04-08_RESEARCH_REPORT.md §9.3`. | C4 |
-| OQ5 — Tide source | **User-provided callback, default zero** (`scene.globe.water.tideCallback`). Leave room to expand the default later. | C5 |
+| OQ5 — Tide source | **SUPERSEDED 2026-07-24 by maintainer ruling T1** (`TIDES_FEASIBILITY_2026-07-24.md` §5a). The room the original answer left has been used: the callback stays (`scene.globe.water.tideCallback`, `(positionWC, time) => metres`) but its DEFAULT is no longer zero — an undefined callback now falls through to the in-engine equilibrium `Core/TideModel.js` (Simon-1994 ephemerides at the scene clock). "No tide at all" is `scene.globe.water.tideEnabled = false`, which makes the term EXACTLY 0. Amplitude control is `tideExaggeration` (default 1.0 = true scale, ruling T3). Regional prediction (EOT20 atlas, NOAA CO-OPS stations — ruling T5) is the follow-up slice and rides the same hook. Shipped Batch 763 on the FFT ocean anchor together with the vertical-datum term (ruling T2); §5 above is the live surface. | C5 |
 | OQ6 — Per-region wave parameter overrides | **Type-only at v1**, individual Gerstner override at Phase 8. | C6 |
 | OQ7 — Imagery sampling reuse cost | **Investigate during Phase 2** (likely viable via varying — no extra sample cost). | C7 |
 

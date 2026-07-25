@@ -716,14 +716,28 @@ export function decisionFromLanes(lanes) {
         "but CWT itself contributes a zero geoid term.";
       exitCode = 0;
       break;
-    case "GEOID":
+    case "GEOID": {
+      // State-aware: this line used to assert the latent defect
+      // UNCONDITIONALLY, which meant that once the fix landed (Batch 763) the
+      // prose contradicted the probe's own lane-2 verdict — it printed
+      // "LATENT DATUM DEFECT of up to ~100 m" directly above verdict COPLANAR.
+      // The datum classification and the state of the shipped anchor are two
+      // different questions; only lane 2 answers the second.
+      const measured = lanes?.patch?.rawMinusAnchorM;
+      const defectOpen =
+        !isNum(measured) ||
+        Math.abs(measured) > THRESHOLDS.PATCH_COPLANAR_ABS_M;
       implication =
         "CWT's ocean lid carries the geoid. Per ruling T2 the ocean-anchor " +
-        "offset uniform must carry GEOID + TIDE together. This also means the " +
-        "shipped FFT ocean has a LATENT DATUM DEFECT of up to ~100 m against " +
-        "the baked sea, worth fixing independently of tides.";
+        "offset must carry GEOID + TIDE together. " +
+        (defectOpen
+          ? isNum(measured)
+            ? `The shipped FFT ocean anchor is OFF THE LID by ${measured.toFixed(2)} m at the lane-2 site — a latent datum defect worth fixing independently of tides.`
+            : "The shipped FFT ocean's anchor could not be compared with the lid at the lane-2 site, so whether the latent ~100 m datum defect is still open is UNMEASURED here."
+          : `Datum defect RESOLVED at the lane-2 site — the anchor is co-planar with the lid to ${measured.toFixed(2)} m (C6-FFT-OCEAN-TIDE-DATUM). This lane now guards the fix rather than reporting the defect.`);
       exitCode = 0;
       break;
+    }
     case "INSUFFICIENT_DATA":
       implication =
         "Too few sites returned a height to classify the datum. Re-run with " +

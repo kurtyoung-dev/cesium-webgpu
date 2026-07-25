@@ -56,9 +56,81 @@ class GlobeWater {
    */
   get ocean() {
     if (!defined(this._ocean)) {
-      this._ocean = new GlobeWaterOcean(this._scene);
+      this._ocean = new GlobeWaterOcean(this._scene, this._globe);
     }
     return this._ocean;
+  }
+
+  /**
+   * The sea-level vertical datum the FFT ocean surface anchors to — one of
+   * {@link VerticalDatum} (`"AUTO"` | `"ELLIPSOID"` | `"GEOID"`). Delegates to
+   * `scene.globe.water.ocean.verticalDatum`.
+   *
+   * Ruling T2 (`TIDES_FEASIBILITY_2026-07-24.md` §5a). `AUTO` derives the
+   * datum from the globe's terrain provider. This is **default-on correctness
+   * work**: the ellipsoid-0 anchor was a measured 101.64 m above Cesium World
+   * Terrain's baked sea at the Sri Lanka coast.
+   *
+   * @type {string}
+   * @default VerticalDatum.AUTO
+   */
+  get oceanVerticalDatum() {
+    return this.ocean.verticalDatum;
+  }
+
+  set oceanVerticalDatum(v) {
+    this.ocean.verticalDatum = v;
+  }
+
+  /**
+   * Whether the tide term is applied to the water surface. Delegates to
+   * `scene.globe.water.ocean.tideEnabled`. `false` makes the tide contribution
+   * exactly 0.
+   * @type {boolean}
+   * @default true
+   */
+  get tideEnabled() {
+    return this.ocean.tideEnabled;
+  }
+
+  set tideEnabled(v) {
+    this.ocean.tideEnabled = v;
+  }
+
+  /**
+   * Multiplier on the tide term; 1.0 is true scale (ruling T3). Delegates to
+   * `scene.globe.water.ocean.tideExaggeration`. Above 1.0 is explicitly
+   * stylised — the underlying equilibrium tide is ±0.3 m with no basin
+   * amplification and no phase lag, not a prediction.
+   * @type {number}
+   * @default 1.0
+   */
+  get tideExaggeration() {
+    return this.ocean.tideExaggeration;
+  }
+
+  set tideExaggeration(v) {
+    this.ocean.tideExaggeration = v;
+  }
+
+  /**
+   * Application-supplied tide source, `(positionWC, time) => metres`, used in
+   * place of the in-engine {@link TideModel}. Delegates to
+   * `scene.globe.water.ocean.tideCallback`.
+   *
+   * This is the hook reserved by `WATER_RENDERING_DESIGN.md` §5 / OQ5. Its
+   * documented default was "null → 0"; ruling T1 replaced that default with
+   * the in-engine equilibrium {@link TideModel}, so `null` now means "use the
+   * engine's tide" and `tideEnabled = false` means "no tide at all".
+   * @type {Function|undefined}
+   * @default undefined
+   */
+  get tideCallback() {
+    return this.ocean.tideCallback;
+  }
+
+  set tideCallback(v) {
+    this.ocean.tideCallback = v;
   }
 
   /**

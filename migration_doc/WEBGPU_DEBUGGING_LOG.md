@@ -24,6 +24,51 @@
 
 ---
 
+## FFT ocean floated ~102 m above the sea — vertical-datum defect (2026-07-24, C6-FFT-OCEAN-TIDE-DATUM slice 1)
+
+**Premise.** VERIFIED by measurement before any code was written. `probe-ocean-datum.mjs` (Batch 759,
+manifest `Tools/visual-regression/output/ocean-datum.json`) framed the Laccadive Sea at the Sri Lanka
+coast with `scene.globe.water.ocean.enabled = true` and read, at the patch anchor's own lon/lat:
+`terrainRawHeightM = -101.642`, `anchor.heightM = -9.7e-10`, i.e. **`terrain − anchor = −101.642 m`**
+— the FFT patch sitting ~102 m ABOVE the baked Cesium World Terrain sea, verdict
+`PATCH_ABOVE_WATERLINE`. The evidence PNGs (`ocean-datum-patch-{off,on}.png`) show it as a raised
+water plateau with a hard rim. An OFF/OFF/ON canvas control (mean |Δlum| 44.06 against a 1.29
+OFF-vs-OFF baseline) proved the patch was genuinely in frame, so the offset could not be an artifact
+of an absent patch.
+
+**Cause.** A vertical-datum mismatch, not a projection or RTE bug. `OceanSurfacePrimitive.update`
+anchored at `ellipsoid.scaleToGeodeticSurface(cameraPos)` — **ellipsoidal height 0 by construction**
+(the source comment even said "height 0 datum") — while real elevation data is **orthometric**: a
+DEM's "sea level" is the GEOID. Lane 1 of the same probe classified CWT's ocean lid **GEOID** across
+six open-ocean sites (spread 171 m, slope 1.049 vs EGM2008, r² 0.999, sign agreement 1.0). This batch
+sharpened that from a correlation to an identity: an independently baked EGM2008 grid reproduces the
+provider's own measured lid to **0.03–0.31 m** at those six sites (RMS 0.15 m; the Batch 759 report's
+"RMS 3.7 m" was error in its advisory read-off-the-map reference table, not in the lid). The geoid
+undulation at the probe site is −101.2 m, which is the whole of the observed offset. The engine had
+no undulation model at all, so there was nothing for the anchor to consult.
+
+**Fix.** A per-frame vertical offset on the anchor, in backend-agnostic JS, composed as
+`h = N(anchor) + tide·tideExaggeration` then `h' = (h − relativeHeight)·verticalExaggeration +
+relativeHeight`, applied along the already-computed `_a0Up` AFTER the wave-lattice snap and BEFORE
+the spherical-cap radius is taken. **Zero WGSL change**: `WebGPUOceanRenderer` already splits
+`p._anchor` into `OceanUniforms.anchorHigh/anchorLow`, so RTE absorbs the offset and a future WebGL2
+FFT fallback inherits the fix for free (pinned by a spec that fails if `OceanSurface.wgsl` ever
+mentions a datum/tide token). The exaggeration map is applied LAST because lane 3 of the same probe
+measured the terrain lid itself moving under it (India −104 m → −313 m at scale 3.0, exactly
+`(h−0)·3`); composing the other way would re-open the plateau at scale > 1.
+
+*New:* `Core/GeoidUndulationGrid.js` (bundled 0.5° EGM2008 grid, 508 KiB int16 cm, lazily fetched),
+`Core/VerticalDatum.js` (`AUTO`/`ELLIPSOID`/`GEOID` + the terrain-provider derivation), `Core/TideModel.js`
+(equilibrium tide, ruling T1), `Tools/build-geoid-undulation-grid.mjs` (reproducible bake from the
+NGA 2.5′ public-domain grid).
+*Changed:* `Scene/OceanSurfacePrimitive.js`, `Scene/GlobeWaterOcean.js`, `Scene/GlobeWater.js`.
+*Default-ON.* This is correctness containment, not a feature toggle — anchoring at ellipsoidal 0 over
+orthometric terrain was wrong, and `oceanVerticalDatum = "ELLIPSOID"` restores the old anchor for
+anyone who needs it. The off-contract is EXACT: with the datum resolved to ELLIPSOID and the tide off,
+the offset is `0`, not "small" (spec-pinned with `===`).
+*Acceptance:* `probe-ocean-tide-datum.mjs` lane (a) re-measures both halves in one run;
+`ocean-tide-datum.spec.mjs` pins the grid, the model, the composition order and the off-contract.
+
 ## C12 moon wave — sky-wash + Lommel-Seeliger + opposition surge (2026-07-24, C12-30 remainder / C12-20 / C12-23)
 
 **Premise.** After the C11-176b phaseGate deletion, the C12-30 appearance defect had two remaining

@@ -569,7 +569,29 @@ test("(f) exit codes follow the documented decision tree", () => {
   });
   assert.equal(geoid.exitCode, 0);
   assert.match(geoid.implication, /GEOID \+ TIDE together/i);
-  assert.match(geoid.implication, /LATENT DATUM DEFECT/i);
+  // With no lane-2 measurement the state of the shipped anchor is UNMEASURED —
+  // the line must say so rather than assert a defect it did not observe.
+  assert.match(geoid.implication, /UNMEASURED/i);
+
+  // The GEOID implication is STATE-AWARE about the shipped FFT anchor: the
+  // datum classification (lane 1) and whether the anchor still sits off the lid
+  // (lane 2) are different questions. Before C6-FFT-OCEAN-TIDE-DATUM landed the
+  // line asserted the defect unconditionally, which meant that after the fix it
+  // printed "LATENT DATUM DEFECT of up to ~100 m" directly above its own
+  // COPLANAR verdict.
+  const stillBroken = decisionFromLanes({
+    datum: { classification: "GEOID", subLabel: null },
+    patch: { verdict: "PATCH_ABOVE_WATERLINE", rawMinusAnchorM: -101.64 },
+  });
+  assert.match(stillBroken.implication, /latent datum defect/i);
+  assert.match(stillBroken.implication, /-101\.64 m/);
+
+  const fixed = decisionFromLanes({
+    datum: { classification: "GEOID", subLabel: null },
+    patch: { verdict: "COPLANAR", rawMinusAnchorM: -0.6 },
+  });
+  assert.match(fixed.implication, /RESOLVED/i);
+  assert.doesNotMatch(fixed.implication, /latent datum defect/i);
 
   for (const sub of MIXED_SUBLABELS) {
     const mixed = decisionFromLanes({

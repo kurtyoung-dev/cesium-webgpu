@@ -7,8 +7,19 @@
 // Asserts, over an ocean-dominated crop:
 //   (a) mean ocean brightness (WebGPU) within tolerance of WebGL,
 //   (b) spatial wave-noise VARIANCE present on WebGPU comparable to WebGL,
-//   (c) advancing the clock a few frames ANIMATES the WebGPU wave pattern
-//       (temporal frame-to-frame delta over the ocean crop is non-trivial).
+//   (c) advancing the clock a few frames changes the WebGPU wave pattern
+//       (temporal frame-to-frame delta over the ocean crop).
+//
+// STALE-TARGET NOTE (post-Batch-757). (c)'s original ">0.3 = animating" target
+// no longer applies AT THIS VIEW. C11-172 gave the water-mask waves a physical
+// wavelength with a footprint LOD that deliberately fades them out with
+// distance, and this probe frames the ocean from 18 km obliquely — so a low
+// temporal delta here is the DESIGNED behaviour, measured at ~0.037 on clean
+// HEAD by the Batch 763 executor baseline. The near-field animation gate lives
+// in `probe-ocean-wave-lod.mjs` (near lane ~1.26). This probe remains the
+// brightness + spatial-detail instrument for NS-WEBGPU-OCEAN-BRIGHT-NO-WAVES;
+// nothing here gates on the temporal number, and the text is advisory only.
+//
 // READ the emitted PNGs — numbers alone don't prove the artifact is gone.
 import { chromium } from "playwright";
 import fs from "fs";
@@ -199,8 +210,17 @@ async function analyze(paths, crop) {
   const detailRatio = gpu.detail / Math.max(0.001, gl.detail);
   console.log(`  brightness gpu/gl: ${brightRatio.toFixed(3)}  (target ~1.0, <1.35 acceptable)`);
   console.log(`  wave-detail gpu/gl: ${detailRatio.toFixed(3)}  (target >~0.4)`);
-  console.log(`  WebGPU temporal wave delta: ${gpu.temporal}  (target >0.3 = animating)`);
+  console.log(`  WebGPU temporal wave delta: ${gpu.temporal}`);
   console.log(`  WebGL  temporal wave delta: ${gl.temporal}`);
+  console.log(
+    "  NOTE (post-Batch-757): the old \">0.3 = animating\" target is STALE at " +
+      "this 18 km oblique range. C11-172's physical-wavelength footprint LOD " +
+      "deliberately FADES the water-mask waves out with distance, so a LOW " +
+      "temporal delta here is EXPECTED, not a regression — baseline-controlled " +
+      "at ~0.037 on clean HEAD. The near-field animation GATE lives in " +
+      "probe-ocean-wave-lod.mjs, whose near lane animates at ~1.26. Use these " +
+      "two numbers as brightness/detail evidence and read the PNGs.",
+  );
   console.log("PNGs:", glFrames.concat(gpuFrames).join("  "));
   console.log("done");
 })();

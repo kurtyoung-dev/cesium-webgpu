@@ -1043,6 +1043,20 @@ Binary assets shipped **inside the published `@cesium/engine` package** — not 
 
 **This is a documented risk assessment, not legal advice, and not a clearance.** The full analysis — including the points that remain unconfirmed and the specific findings that would reverse it — is recorded in [`migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md`](migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md) §6e. A future maintainer should read that section before relying on, extending, or changing this entry.
 
+### Geoid undulation grid — EGM2008 (NGA)
+
+**File:** `packages/engine/Source/Assets/Geoid/egm2008-0p5deg.i16` (520,594 bytes; consumed by `packages/engine/Source/Core/GeoidUndulationGrid.js` when the ocean vertical datum resolves to `GEOID` — see `packages/engine/Source/Core/VerticalDatum.js`). Fetched lazily at runtime, so applications that never enable a geoid datum never download it.
+
+**Product:** the Earth Gravitational Model 2008 (EGM2008) geoid-undulation grid published by the U.S. National Geospatial-Intelligence Agency. The bundled file is a 0.5° × 0.5° decimation, encoded as int16 centimetres, of the NGA 2.5-arcminute grid as redistributed by the PROJ project at <https://cdn.proj.org/us_nga_egm08_25.tif> (80,585,622 bytes, SHA-256 `4191d471eefebf24091b56dbc604353cb3b8cf8cc70e448bb9ae56a272bef17a`; that file's own TIFF `ImageDescription` reads *"WGS 84 (EPSG:4979) to EGM2008 height (EPSG:3855). Converted from egm08_25.gtx (last modified at 2018/10/08)"*). The decimation is reproducible with `Tools/build-geoid-undulation-grid.mjs`, which verifies the pinned source hash before baking. The 80 MB source is **not** bundled.
+
+**Terms.** The source file's TIFF Copyright tag (33432) reads verbatim:
+
+> Derived from work by NGA. Public Domain
+
+EGM2008 is a work of the U.S. Government and is not subject to copyright protection in the United States. No attribution obligation and no share-alike condition attach; the citation below is given as scholarly good practice, not as a licence term.
+
+**Citation:** Pavlis, N. K., Holmes, S. A., Kenyon, S. C., & Factor, J. K. (2012). *The development and evaluation of the Earth Gravitational Model 2008 (EGM2008).* Journal of Geophysical Research, 117, B04406.
+
 # Example Applications
 
 The CesiumJS example applications include the following third-party libraries and data.

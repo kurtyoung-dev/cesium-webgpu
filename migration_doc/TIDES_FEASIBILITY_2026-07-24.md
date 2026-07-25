@@ -92,6 +92,144 @@ Honest placement, even with C12 live: **tides do not belong in C12.** The equili
 
 **DATUM PROBE RESOLVED (orchestrator Edge run, Batch 759): CWT ocean lid = GEOID** — six open-ocean sites track EGM2008 within RMS 3.7 m (vs 61 m against the ellipsoid; India −104.2 m, Iceland +63.0 m, spread 171 m); the shipped FFT patch anchors at ellipsoidal 0 and measurably floats ~101.6 m ABOVE the baked waterline at the India coast (evidence PNGs in the probe output — a visible raised-water plateau with a shelf edge); `verticalExaggeration` DOES displace the ocean lid (India −104→−313 m at 3.0), so any tide term must compose WITH the exaggeration map. Per ruling T2 the anchor offset uniform carries GEOID + TIDE together — Design A's uniform now doubles as the fix for the confirmed latent FFT datum defect. Manifest: `Tools/visual-regression/output/ocean-datum.json`; design doc `migration_doc/OCEAN_DATUM_PROBE_DESIGN_2026-07-24.md`.
 
+### §5c Design A slice 1 — IMPLEMENTATION RECORD (2026-07-24, Batch 763)
+
+**Shipped: the vertical-datum anchor (a defect fix) + the in-core equilibrium tide (the feature).**
+Rulings satisfied: T1 (TideModel in Core), T2 (multi-vdatum derived from the terrain with a manual
+override; the anchor offset carries GEOID + TIDE together), T3 (`tideExaggeration`, default 1.0),
+T6 (phase-locked to the scene clock + the Simon-1994 ephemerides, acceptance-verified). T5 (EOT20 +
+NOAA CO-OPS) is **NOT** in this slice — it is the regional-realism follow-up.
+
+**The datum architecture.** `Core/VerticalDatum.js` is an `AUTO | ELLIPSOID | GEOID` enum plus the
+derivation. `scene.globe.water.oceanVerticalDatum` (delegating to
+`scene.globe.water.ocean.verticalDatum`) is the manual override; `AUTO` is the default.
+
+| terrain provider | datum | basis |
+|---|---|---|
+| none / `undefined` | ELLIPSOID | nothing to agree with |
+| `EllipsoidTerrainProvider` | ELLIPSOID | **STRUCTURAL** — every height it returns is exactly 0 on the ellipsoid |
+| Cesium World Terrain (`CesiumTerrainProvider`, ion 1) | GEOID | **MEASURED** — Batch 759 probe, plus this batch's EGM2008 grid cross-check (0.03–0.31 m at six sites) |
+| any other terrain provider | GEOID | **ASSUMED** — published DEMs are orthometric; the override is the escape hatch |
+
+The derivation uses `instanceof`, never `constructor.name`: the release build minifies class names, so
+a name check would silently re-open the 101 m defect *only in the shipped bundle*.
+
+**Datum result sharpened.** §5b recorded "six open-ocean sites track EGM2008 within RMS 3.7 m". That
+3.7 m was the advisory reference table's read-off-a-map error, **not** lid error. Against the true
+2.5′ EGM2008 grid the residuals are IND-LOW 0.08, ICE-HIGH 0.05, NGUI-HIGH 0.05, HUDSON-LOW 0.08,
+PAC-MID 0.31, ATL-MID 0.03 m (RMS 0.15 m). CWT's ocean lid **is** EGM2008, not merely geoid-shaped.
+
+**The bundled grid.** `packages/engine/Source/Assets/Geoid/egm2008-0p5deg.i16` — 0.5°, 721 × 361
+node-registered (both longitude seams present so sampling is a clamp with no wrap branch), int16
+centimetres, 32-byte header, **520,594 bytes (508.4 KiB)**, sha256
+`8f4e79d2d7c65f8df0e62f84f788197b0ec19116965c813dd9f9a4619bab8f9e`. Baked by
+`Tools/build-geoid-undulation-grid.mjs` from `https://cdn.proj.org/us_nga_egm08_25.tif`
+(80,585,622 bytes, sha256 `4191d471…bef17a`, pinned and verified by the script), whose own TIFF
+Copyright tag reads verbatim *"Derived from work by NGA. Public Domain"*. The 80 MB source is never
+bundled. LICENSE.md carries the Bundled Engine Assets entry.
+
+**Error budget, measured against all 37,333,440 nodes of the 2.5′ source** (the script prints this):
+
+| region | RMS | max | >1 m | >2 m |
+|---|---|---|---|---|
+| global | 0.195 m | 6.640 m (73.7 W / 10.8 N — Sierra Nevada de Santa Marta, a 5,700 m coastal massif) | 0.597 % | 0.047 % |
+| open water | 0.110 m | 3.598 m (Vitória–Trindade seamounts) | 0.079 % | 0.0045 % |
+
+**Deviation stated plainly:** the task's selection rule was "smallest format keeping worst-case
+interpolation error ≤ ~2 m". No 1° or 0.5° grid meets that GLOBALLY (1° → 15.17 m, 0.5° → 6.64 m);
+0.25° at 2,029 KiB reaches 2.67 m. 0.5° was shipped because the consumer is the ocean anchor, where
+the measured budget is RMS 0.110 m with 99.9955 % of nodes inside 2 m, against a defect of 101.64 m
+being removed — 4× the bytes would buy 2.2 m of worst case in high-relief LAND the anchor never
+evaluates. `--step 0.25` regenerates the tighter grid in one command if a land-side consumer lands.
+
+**The tide model.** `Core/TideModel.js`, degree-2 equilibrium tide from the in-engine Simon-1994
+Moon and Sun rotated to ECEF (with the same ICRF/TEME **branch-keyed** memo lesson `EclipseState`
+learned — a memo built during the XYS-loading window must not freeze under a pinned clock):
+
+  ζ = γ₂ · Σ_b (GM_b/g) · (r²/d_b³) · P₂(cos ψ_b),  γ₂ = 1 + k₂ − h₂ = 0.6944
+
+γ₂ is the **tide-gauge** form (water level relative to the crust), chosen because this engine's
+terrain mesh carries no TIME-VARYING solid-Earth tide and therefore *is* the unmoving crust — using
+the geocentric form (1 + k₂) for the varying part would over-read it by 1.44×. Constants: GM_moon
+4.902800076e12 m³/s² (JPL **DE421**; DE430's 4.902800066e12 differs by 2e-9 relative — value and
+citation are kept in agreement deliberately), GM_sun 1.32712440041e20 m³/s² (JPL DE430), g 9.80665
+m/s² (CGPM 1901), h₂ 0.6078 / k₂ 0.3022 (IERS Conventions 2010 §7.1.1), M2 speed 28.984104 °/h
+(NOAA CO-OPS harmonic constituents). Omitted and documented: degree-3 (~1.7 % of degree 2), ocean
+loading, frequency-dependent Love numbers.
+
+**Permanent tide — the one part γ₂ gets wrong, and how it is split.** The zero-frequency part of P₂
+does not average away, and h₂ must NOT be subtracted from it: the real crust already carries its
+permanent deformation and the terrain mesh is a survey *of* the real crust, so the mesh is not
+"missing" the permanent uplift the way it is missing the time-varying one. EGM2008, meanwhile, ships
+**tide-free**, i.e. the permanent geoid rise (1 + k₂)·ζ̄ has been removed from N. The correct water
+level is therefore
+
+  water = N_tide-free + (1 + k₂)·ζ̄ + γ₂·(ζ − ζ̄) = N_tide-free + γ₂·ζ + h₂·ζ̄
+
+so the model adds `permanentM = h₂·ζ̄` on top of the γ₂-scaled body terms: **+0.060 m at the equator,
+−0.120 m at the poles**. Sub-noise against the 0.5 m geoid grid today; the claim still has to be true.
+
+ζ̄ is closed-form in latitude. By the addition theorem the hour-angle average separates exactly,
+⟨P₂(cos ψ)⟩_H = P₂(sin φ)·⟨P₂(sin δ)⟩ (verified directly from
+⟨cos²ψ⟩_H = sin²φ sin²δ + ½cos²φ cos²δ). For a body moving uniformly in a plane inclined I to the
+equator, ⟨sin²δ⟩ = ⟨sin²I⟩/2 ⇒ ⟨P₂(sin δ)⟩ = (1.5⟨sin²I⟩ − 1)/2. For the Sun I is the obliquity
+(⟨P₂⟩ = −0.38133); for the Moon the inclination to the equator swings 18.3°–28.6° over the 18.6-year
+nodal cycle, and from cos I = cos ε cos i − sin ε sin i cos Ω averaged over Ω,
+⟨cos²I⟩ = cos²ε cos²i + ½sin²ε sin²i (⟨P₂⟩ = −0.37673). With ⟨d⁻³⟩ = a⁻³(1−e²)^(−3/2):
+
+  ζ̄(φ, r) = PERMANENT_TIDE_COEFFICIENT · r² · P₂(sin φ),  coefficient = −4.8730e-15 m⁻¹
+
+which is **−0.19779 m · P₂(sin φ)** at r = 6371 km — the classic −0.198 m permanent-tide coefficient
+(Melchior, *The Tides of the Planet Earth*, 2nd ed. 1983; Ekman, M. (1989), *Impacts of geodynamic
+phenomena on systems for height and gravity*, Bull. Géod. 63:281–296; IERS Conventions (2010) §7.1.1
+tide-free / mean-tide conventions). Spec-pinned at the equator (+0.0991 m) and the pole (−0.1969 m)
+and against the published −0.198 coefficient.
+
+**Composition order** (one place, one function, spec-pinned):
+`h = N(anchor) + tide × tideExaggeration` → `h' = (h − relativeHeight) × verticalExaggeration +
+relativeHeight` → anchor += `_a0Up` × h'. Exaggeration LAST, per the §5b finding that it displaces
+the lid. `_invRadius` is taken from the OFFSET anchor.
+
+**Zero WGSL change — verified, not asserted.** `WebGPUOceanRenderer` already splits `p._anchor` into
+`OceanUniforms.anchorHigh/anchorLow`, so RTE absorbs the offset. A spec test fails if
+`OceanSurface.wgsl` ever mentions `tide`/`geoid`/`undulation`/`datum` or if the renderer starts
+reading the primitive's new fields. Consequence: the deferred WebGL2 FFT fallback inherits the fix.
+
+**Off-contract, exact.** `tideEnabled = false` → tide term `0`; a callback returning 0 → `0`; a
+non-finite callback return → `0`; datum ELLIPSOID → undulation `0`; both → anchor offset `0` (strict
+`===`, and still `0` at exaggeration 3.0 since 0 is a fixed point of the map at the default relative
+height). The FFT ocean itself remains opt-in default-off, so the engine default path is untouched.
+
+**T6 acceptance basis, and its honest limit.** The equilibrium tide has ZERO phase lag by
+construction while every real station lags lunar transit by hours (its high-water lunitidal
+interval), and coastal ranges are 1–16 m against an equilibrium ±0.3 m. Asserting agreement with a
+NOAA predicted high-water *clock time* would therefore assert something false. What is externally
+checkable, and is checked: the **period** against NOAA's published M2 constituent speed (mean lunar
+maximum interval 12.42788 h vs 12.42060 h — 26 s, inside a 0.05 h band; 12.00 h would be S2 and
+fails), the **spring/neap beat** against half a synodic month with every range peak at Sun–Moon
+elongation 3–8° or 169–176° and every trough at 85–102°, and the **phase lock** to the actual Moon
+(lunar-only maxima land on lunar culmination to 0–1 min). The ephemeris underneath is the same
+Simon-1994 chain already pinned against a real event — the 2024-04-08 total solar eclipse — by
+`eclipse-state.spec.mjs`.
+
+**Measured tide behaviour** (2026-07-03 epoch): 25 h range 0.354 m at Portland ME, 0.364 m at the
+equator; spring 0.556 m, neap 0.115 m. `tideEnabled` defaults **true** — the FFT ocean is itself
+opt-in, so nothing in the engine default path changes, and a true-scale ±0.3 m tide is inside the
+grid's own error. Flipping that default is a one-line change in `GlobeWaterOcean`.
+
+**Artifacts.** `Tools/visual-regression/probe-ocean-tide-datum.mjs` (4 lanes, exit 0/1/2),
+`lib/ocean-tide-datum-model.mjs`, `ocean-tide-datum.spec.mjs` (25 tests, green),
+`Tools/build-geoid-undulation-grid.mjs`. **NOT run in-browser by the implementer** — the executor
+runs the Edge lanes.
+
+**Rejected alternative, recorded so it is not re-proposed.** "Skip the grid; sample
+`globe.getHeight()` at the anchor and use that as the datum." It is cheaper and composes with
+exaggeration for free, but it returns TERRAIN (not the water lid) whenever the anchor is over land or
+near a coast, it is undefined until the tile loads, it makes the ocean datum LOD-dependent — the
+exact failure mode the Batch 759 decision tree treats as blocking — and it does not generalise to
+T2's per-provider datum metadata or to bathymetric terrain (Design C), where the sampled height is
+the seabed.
+
 **Bottom line:** your model of the default renderer is right — the ocean is the terrain mesh and WMTS can only paint pixels — but "nothing is possible" is wrong on the strength of your own fork: the ocean-surface primitive, the reserved tideCallback, the exaggeration displacement machinery, and in-tree bathymetry loading mean a real, licence-clean 3D tide (Design A + D, ~1–2 batches after a datum probe) is available now, with the fully-correct bathymetry-split (Design C) already half-built and correctly sized as its own campaign.
 
 Session note (non-blocking): the claude.ai Google Drive MCP connector requires authorization via claude.ai connector settings before its tools can be used; nothing in this task needed it.
