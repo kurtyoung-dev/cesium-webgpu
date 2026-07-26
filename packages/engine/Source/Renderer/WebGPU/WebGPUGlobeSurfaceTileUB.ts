@@ -95,6 +95,26 @@ import {
 } from "./WebGPUGlobeSurfaceTextures.js";
 
 /**
+ * Per-frame increment for the deterministic ocean-wave animation clock.
+ * Exported for the wrap-continuity regression spec; it is not public API.
+ */
+export const OCEAN_WAVE_FRAME_SPEED = 0.15;
+
+/**
+ * Every ocean-advection component multiplied by this period is an integer.
+ * Therefore wrapping the clock preserves the `fract(time * advection)` phase
+ * used by the shader while keeping the f32 time small enough for smooth motion.
+ */
+export const OCEAN_WAVE_TIME_PERIOD = 16000.0;
+
+/**
+ * Allocation-free equivalent of WGSL `fract` for the f64 CPU phase setup.
+ */
+export function fractionalPart(value: number): number {
+  return value - Math.floor(value);
+}
+
+/**
  * The renderer surface the tile-UB packer reaches into.
  *
  *   - `_tileUniformData`: Float32Array scratch, sized to TILE_UNIFORM_FLOATS.
@@ -605,15 +625,16 @@ export function createTileUniformBuffer(
   // a fixed warm-up frame count (regression capture). `OCEAN_WAVE_FRAME_SPEED`
   // is the per-frame phase increment fed into the octave coefficients — tuned
   // for a gentle, WebGL-comparable churn.
-  // C11-172 v3 — mod by 16384 (was 1e6). The WGSL march does `fract(t × velocity)`
+  // C11-172 v3 — mod by 16000 (was 1e6). The WGSL march does `fract(t × velocity)`
   // per octave; with `t` up to 1e6 the largest advection `t × 0.03 ≈ 3e4` had an
   // f32 ulp (~0.004) comparable to the per-frame step (~0.0045), so the ripple
-  // animation stuttered near the top of the range. 16384 keeps `t × 0.03 ≤ 491`
-  // (ulp ~3e-5 ≪ step) — smooth — while wrapping only every ~109k frames (~30 min
-  // at 60 fps); the fract() makes the wrap a benign sub-repeat texture-phase shift.
-  const OCEAN_WAVE_FRAME_SPEED = 0.15;
+  // animation stuttered near the top of the range. 16000 keeps `t × 0.03 ≤ 480`
+  // (ulp ~3e-5 ≪ step) and is commensurate with every shader advection rate:
+  // 16000 × {0.008, 0.012, 0.018, 0.03} is integral. The wrap at ~107k frames
+  // (~30 min at 60 fps) is therefore the same texture phase, not a visible pop.
   const frameNumber = frameState?.frameNumber ?? 0;
-  const waveTime = (frameNumber * OCEAN_WAVE_FRAME_SPEED) % 16384.0;
+  const waveTime =
+    (frameNumber * OCEAN_WAVE_FRAME_SPEED) % OCEAN_WAVE_TIME_PERIOD;
   data[TIME_OFFSET] = waveTime;
   //>>includeStart('debug', pragmas.debug);
   // Batch 56 diagnostic — `CesiumDebug.globeFragmentDebug(name)` (or
@@ -839,23 +860,22 @@ export function createTileUniformBuffer(
     const originV = tile.rectangle.south * ONE_OVER_PI + 0.5;
     const spanU = tile.rectangle.width * ONE_OVER_TWO_PI;
     const spanV = tile.rectangle.height * ONE_OVER_PI;
-    const frac = (v: number): number => v - Math.floor(v);
-    data[OCEAN_WAVE_PHASE_A_OFFSET + 0] = frac(
+    data[OCEAN_WAVE_PHASE_A_OFFSET + 0] = fractionalPart(
       originU * OCEAN_OCTAVE_REPEATS[0],
     );
-    data[OCEAN_WAVE_PHASE_A_OFFSET + 1] = frac(
+    data[OCEAN_WAVE_PHASE_A_OFFSET + 1] = fractionalPart(
       originV * OCEAN_OCTAVE_REPEATS[0],
     );
-    data[OCEAN_WAVE_PHASE_A_OFFSET + 2] = frac(
+    data[OCEAN_WAVE_PHASE_A_OFFSET + 2] = fractionalPart(
       originU * OCEAN_OCTAVE_REPEATS[1],
     );
-    data[OCEAN_WAVE_PHASE_A_OFFSET + 3] = frac(
+    data[OCEAN_WAVE_PHASE_A_OFFSET + 3] = fractionalPart(
       originV * OCEAN_OCTAVE_REPEATS[1],
     );
-    data[OCEAN_WAVE_PHASE_B_OFFSET + 0] = frac(
+    data[OCEAN_WAVE_PHASE_B_OFFSET + 0] = fractionalPart(
       originU * OCEAN_OCTAVE_REPEATS[2],
     );
-    data[OCEAN_WAVE_PHASE_B_OFFSET + 1] = frac(
+    data[OCEAN_WAVE_PHASE_B_OFFSET + 1] = fractionalPart(
       originV * OCEAN_OCTAVE_REPEATS[2],
     );
     data[OCEAN_WAVE_PHASE_B_OFFSET + 2] = spanU;

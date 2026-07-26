@@ -12,6 +12,11 @@ _2026-07-25 handoff: see [`HANDOFF_2026-07-25_TO_SOL.md`](HANDOFF_2026-07-25_TO_
 current execution state — campaign status table, four completed-but-unlanded changesets and their
 worktrees, the executor-cycle contract, and the queued maintainer decisions._
 
+_2026-07-26 continuation audit: see
+[`CLAUDE_PROGRESS_AUDIT_2026-07-26.md`](CLAUDE_PROGRESS_AUDIT_2026-07-26.md)
+for the landed Batches 745–768 review, in-flight changeset readiness, confirmed
+regressions, campaign reconciliation, and verified continuation order._
+
 _2026-07-23 cloud-campaign launch: Campaign 13 is the current live execution queue. Campaign 11
 remains open but is paused; its cloud/weather IDs transferred to Campaign 13 without being renamed
 or double-scheduled. **Campaign 12 LAUNCHED 2026-07-23** and is executing. The current non-cloud performance
@@ -76,6 +81,7 @@ evidence remains in `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`; cloud evid
 | Doc | Role |
 |---|---|
 | [`FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md) | **Current fork-progress/performance audit and second-pass action authority** for Batches through 731; includes current r6 evidence, confirmed defects, rejected shortcuts, and feature-preserving gates. |
+| [`CLAUDE_PROGRESS_AUDIT_2026-07-26.md`](CLAUDE_PROGRESS_AUDIT_2026-07-26.md) | Continuation audit for Batches 745–768: landed-change review, parked-lane readiness, confirmed regressions, campaign truth, and the next landing sequence. |
 | [`CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md`](CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md) | **Current cloud evidence authority**: WGS84/RTE, temporal reconstruction, weather wrapping/bounds, regional variation, deterministic formation randomization, quality, lifecycle, and Takram comparison. |
 | [`audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md`](audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md) · [`_FORK_FEATURE_INVENTORY.md`](audits/2026-04-30_FORK_FEATURE_INVENTORY.md) · [`_MAINTAINABILITY_SURVIVABILITY.md`](audits/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md) | **Live wiring/feature/maintainability audit trio** (supersedes the archived 2026-04-02 WIRING_AUDIT). |
 | [`audits/2026-06-11_ULTRA_REVIEW.md`](audits/2026-06-11_ULTRA_REVIEW.md) (+ `_findings.json`) | **Most-recent deep multi-agent review** (53 agents, 195 confirmed findings, HEAD `f6fd367827`). Per-finding sidecar JSON is the machine-readable index. Source of the A-* findings driving the current campaign phases. |

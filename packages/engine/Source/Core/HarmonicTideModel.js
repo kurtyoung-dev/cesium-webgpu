@@ -241,20 +241,46 @@ HarmonicTideModel.predict = function (
   const constituents = station.constituents;
   const amplitudes = station.amplitudeM;
   const lags = station.phaseLagRadians;
+  if (
+    !defined(constituents) ||
+    !defined(amplitudes) ||
+    !defined(lags) ||
+    !Number.isInteger(constituents.length) ||
+    constituents.length === 0 ||
+    amplitudes.length < constituents.length ||
+    lags.length < constituents.length
+  ) {
+    return out;
+  }
+
   let semidiurnal = 0.0;
   let diurnal = 0.0;
   let longPeriod = 0.0;
+  let hasUsableConstituent = false;
 
   for (let i = 0; i < constituents.length; i++) {
     const c = constituents[i];
     const amplitude = amplitudes[i];
-    if (!(amplitude !== 0.0)) {
-      // Also skips NaN, which is how an atlas marks a land node.
+    const lag = lags[i];
+    // Atlas land/missing-data nodes are represented by NaN. A poisoned row
+    // must never make an otherwise reusable result report `valid: true` with
+    // NaN fields. Mixed stations may still use their remaining finite rows.
+    if (!Number.isFinite(amplitude) || !Number.isFinite(lag)) {
+      continue;
+    }
+    // A finite zero-amplitude row is still usable input and represents a valid
+    // zero tide. Keep it distinct from an all-missing/NaN station.
+    if (amplitude === 0.0) {
+      hasUsableConstituent = true;
       continue;
     }
     const nodal = TidalConstituents.nodalCorrection(c, args.node, scratchNodal);
     const v = TidalConstituents.astronomicalArgument(c, args);
-    const term = nodal.f * amplitude * Math.cos(v + nodal.u - lags[i]);
+    const term = nodal.f * amplitude * Math.cos(v + nodal.u - lag);
+    if (!Number.isFinite(term)) {
+      continue;
+    }
+    hasUsableConstituent = true;
     if (c.species === TidalConstituents.SPECIES_SEMIDIURNAL) {
       semidiurnal += term;
     } else if (c.species === TidalConstituents.SPECIES_DIURNAL) {
@@ -265,6 +291,10 @@ HarmonicTideModel.predict = function (
     if (c === TidalConstituents.M2) {
       out.m2NodalFactor = nodal.f;
     }
+  }
+
+  if (!hasUsableConstituent) {
+    return out;
   }
 
   out.semidiurnalM = semidiurnal;
