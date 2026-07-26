@@ -8,9 +8,13 @@ _2026-07-15 remediation update: Campaign 9 was explicitly launched by the mainta
 frozen historical evidence; its open IDs transferred unchanged and its completed slices remain
 regression gates._
 
+_2026-07-25 handoff: see [`HANDOFF_2026-07-25_TO_SOL.md`](HANDOFF_2026-07-25_TO_SOL.md) for the
+current execution state — campaign status table, four completed-but-unlanded changesets and their
+worktrees, the executor-cycle contract, and the queued maintainer decisions._
+
 _2026-07-23 cloud-campaign launch: Campaign 13 is the current live execution queue. Campaign 11
 remains open but is paused; its cloud/weather IDs transferred to Campaign 13 without being renamed
-or double-scheduled. Campaign 12 remains draft/not launched. The current non-cloud performance
+or double-scheduled. **Campaign 12 LAUNCHED 2026-07-23** and is executing. The current non-cloud performance
 evidence remains in `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`; cloud evidence is in
 `CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md`._
 
@@ -28,7 +32,7 @@ evidence remains in `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`; cloud evid
 | [`QUEUE_2026-07-15_CAMPAIGN9.md`](QUEUE_2026-07-15_CAMPAIGN9.md) | **Closed green at `C9-30`**; retained as the exact implementation/evidence ledger. |
 | [`QUEUE_2026-07-16_CAMPAIGN10.md`](QUEUE_2026-07-16_CAMPAIGN10.md) | **Closed at `C10-30`** with green mechanics and wall-clock evidence explicitly inconclusive. |
 | [`QUEUE_2026-07-18_CAMPAIGN11.md`](QUEUE_2026-07-18_CAMPAIGN11.md) | **Paused / open remainder retained**; cloud/weather rows transferred to Campaign 13, all other open work remains owned here. |
-| [`QUEUE_2026-07-19_CAMPAIGN12.md`](QUEUE_2026-07-19_CAMPAIGN12.md) | **Draft / not launched** celestial-appearance campaign. |
+| [`QUEUE_2026-07-19_CAMPAIGN12.md`](QUEUE_2026-07-19_CAMPAIGN12.md) | **Launched 2026-07-23 / executing** — celestial appearance. Runs interleaved with C11 and C13 under the orchestrator pattern. |
 | [`QUEUE_2026-07-23_CAMPAIGN13.md`](QUEUE_2026-07-23_CAMPAIGN13.md) | **Current live campaign** for planetary volumetric-cloud RTE, temporal reconstruction, weather realism, quality, and performance. |
 | [`WEBGPU_MIGRATION_STATUS.md`](WEBGPU_MIGRATION_STATUS.md) | Single-source migration status + append-only progress log. **Note: batch numbers are non-monotonic — trust dates/hashes.** |
 | [`DEFERRED_WORK.md`](DEFERRED_WORK.md) | Canonical add-only follow-up inventory (NEW-*/C-R*/DP-* IDs). Where open work lives. |
