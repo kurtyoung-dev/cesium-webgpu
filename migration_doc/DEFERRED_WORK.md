@@ -145,6 +145,40 @@ Filed after the WebGPU-vs-WebGL ~50%-FPS investigation (Batch 717 root-cause + f
 
 - **NEW-STARS-BRIGHT-CATALOG** — ✅ SHIPPED (Batch 313). A real Yale Bright Star Catalog (BSC5, public-domain) starfield that AUGMENTS the static `SkyBox` star cubemap on WebGPU with physically-placed, time-correct HDR stars fed through the existing bloom. **Data** `Scene/BrightStarCatalog.js` — a compact embedded subset of the ~230 brightest naked-eye stars (vmag ≲ 3.6), each `[raJ2000°, decJ2000°, vmag, B−V]`. **Renderer** `Renderer/WebGPU/WebGPUStarFieldRenderer.js` (FeatureRendererKey.STAR_FIELD=51) — uploads the catalog ONCE to a per-instance GPU buffer (direction + Pogson intensity + blackbody RGB + size boost) and draws it as instanced point sprites (6 verts × N stars) into the scene framebuffer with PREMULTIPLIED-ADDITIVE blend so bright stars overflow 1.0 and feed the bloom bright-pass. **Technique** (implemented fresh; credited in `StarField.wgsl` to Pogson + Ballesteros + Takram research notes): magnitude→brightness via the Pogson scale (flux gamma-compressed into a `[LO,HI]` band so the faintest stars stay visible while the brightest overflow → bloom + a magnitude-driven `sizeBoost`); B−V color index → blackbody temperature (Ballesteros 2012) → Planckian-locus RGB (Tanner-Helland fit), renormalized so brightness lives in the Pogson term, not the hue. **TEME/J2000 → fixed:** catalog directions are inertial; the renderer rotates them into the Earth-fixed frame each frame via `Transforms.computeTemeToPseudoFixedMatrix` (the SAME matrix SkyBox uses) baked into a translation-free view-projection, so constellations land at the correct RA/Dec for the scene clock. A camera-altitude-gated daytime fade (smoothstep over solar-altitude-sine) dims the field at ground level when the sun is up but keeps it visible above ~100 km. **Wiring / augment-not-replace:** `SkyBox` owns a backend-agnostic `StarField` (`Scene/StarField.js`, FR-seam, never imports `Renderer/WebGPU/`); `Scene.updateEnvironment` drives `skyBox.starField.update(frameState)` and stores the returned command on `environmentState.starFieldCommand`, which `SceneRenderer.js` injects AFTER `skyBoxCommand`. **Why after:** the cubemap is an alpha-over draw injected after the binned ENVIRONMENT commands; an opaque cubemap would overwrite a binned-only starfield. The renderer pushes a binned copy too (frustum guarantee on sky-only views) AND returns a distinct inject instance; Scene only routes the inject when a `skyBoxCommand` exists (so the catalog draws exactly once — binned-then-wiped + injected when a cubemap is present, binned-only otherwise). **Verified:** `Tools/visual-regression/probe-stars-catalog.mjs` (NEW) — camera aimed at Sirius's computed Earth-fixed direction for a pinned clock; with the cubemap ON (augment path), starField ON adds 4527 bright pixels vs 0 OFF, maxLum=255 (bright stars saturate → bloom), Sirius lands a 923-px center cluster vs 104 when aimed at a blank patch (RA/Dec correctness), raising `intensity` grows the bright count (Pogson liveness), the SkyBox cubemap hook stays intact, 0 console errors. Read the PNG — Sirius is the big central disc with the winter constellations at correct relative positions and warm/cool stars by B−V. Standing gates green (collections-regression, bloom-parity, logdepth-zfight, collections-far-camera, sandcastle-smoke, upstream-regression-check 26/26).
 - **NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK** — ✅ SHIPPED (Batch 324). WebGL now draws the SAME physical bright-star catalog as WebGPU via a dedicated GLSL point-sprite `STAR_FIELD` feature renderer, closing the night-sky divergence between the backends. **Shared math extracted (REUSED, not duplicated):** the B−V→blackbody-RGB conversion (`bvToRgb`), the Pogson-magnitude→HDR-brightness per-instance packing (`buildStarInstanceData`), and the camera-altitude-gated daytime fade (`computeStarDayFade`) moved out of `WebGPUStarFieldRenderer.ts` into a new backend-neutral `Scene/StarFieldMath.ts`; BOTH renderers import them, so the two backends place/color/brighten the IDENTICAL stars from the IDENTICAL `BrightStarCatalog.js` records — only the draw path differs (GLSL vs WGSL). The WebGPU renderer's runtime is byte-for-byte unchanged (the extraction is a pure refactor; its probe still passes A–F). **WebGL renderer** `Renderer/WebGLStarFieldRenderer.js` — builds an instanced `VertexArray` (per-vertex quad corner at attribute 0 + the 4 per-instance star attributes at locations 1–4 with `instanceDivisor=1`, sharing one 32-byte-stride vertex buffer) + `ShaderProgram` (`Shaders/StarFieldVS/FS.glsl`) + a premultiplied-additive (`ONE/ONE` add), depth-test-DISABLED, no-cull `RenderState`; returns one instanced `DrawCommand`. **Shaders** `StarFieldVS.glsl` rotates the inertial catalog direction into the Earth-fixed frame with the `czm_temeToPseudoFixed` automatic uniform (same rotation SkyBox uses), places the star at the far-frustum distance in eye space (`czm_viewRotation` + `czm_entireFrustum.y`) and projects normally so the dead-ahead star isn't far-plane-clipped (WebGL's `[-1,1]` NDC z is prone to that when pinning `clip.z=clip.w`), then offsets the sprite corner in clip space; `StarFieldFS.glsl` is a 1:1 GLSL port of the WGSL radial-falloff fragment (premultiplied output). **Wiring:** registered as the WebGL `STAR_FIELD` FR via a lazy loader in `Renderer/Context.js` (avoids a static Renderer→Scene import cycle; warms up over the first frames like the WebGPU async pipeline); executed by `Scene/EnvironmentRenderer.js` right AFTER the SkyBox cubemap and BEFORE sky-atmosphere/sun/moon, mirroring the WebGPU injection order. **Backend-agnostic gate fix:** `StarField.update` now records `wasBinned` (true only when the FR pushed a binned commandList copy — WebGPU); `Scene.updateEnvironment` drops the returned command only when `wasBinned && !skyBoxCommand` (WebGPU double-draw avoidance), so the WebGL command — which is never binned — always executes, even with the cubemap off. (Previously the cubemap-existence gate silently suppressed WebGL stars.) **Verified:** `Tools/visual-regression/probe-starfield-webgl-parity.mjs` (NEW) — camera aimed at Sirius for a pinned clock, cubemap OFF so the catalog renders alone: WebGL goes 0→4342 bright star pixels (was an inert no-op), and the WebGL pattern matches WebGPU EXACTLY — bright-block IoU = 1.000, center-box 903=903, 0 console errors on both. Read the PNGs — the WebGL frame is indistinguishable from WebGPU's (same Sirius disc, same constellation positions, same warm/cool stars by B−V). `tsc --noEmit` clean; `gulp build` exit 0; SkyBox (20) + Sun (10) specs green on Edge.
+- **C12-29 S6 architecture supersession (2026-07-26):** the two preceding
+  shipped-history rows describe the command wiring as it existed in Batches
+  313/324. The live architecture now creates one cached command in each
+  backend feature renderer and returns it through
+  `environmentState.starFieldCommand`, in the shared pre-atmosphere slot.
+  WebGPU no longer pushes a second binned copy; Scene no longer scans or
+  repairs the command list. Batch 761's injected-environment predicate
+  preserves the sky-only frustum guarantee. The same ownership rule now
+  applies to the WebGPU sky atmosphere and sun: their feature renderers return
+  cached commands and Scene decides whether they are visible and where they
+  execute.
+  - The old "visible above ~100 km" text is historical. Both star paths now use
+    `computeAtmosphericColumnFactor(cameraHeight)`: the original low-altitude
+    day fade is restored continuously from 60 to 111 km, then becomes exact
+    identity above the scattering shell. `cameraHeight` is ellipsoidal height
+    supplied by Scene, not ECEF magnitude minus a hard-coded Earth radius.
+  - Star modulation and cloud occlusion are valid only for celestial imagery.
+    `CubeMapPanorama.isStarMap` defaults false and `SkyBox` is the explicit
+    opt-in, protecting generic and Google Street View panoramas from the
+    default-on star law.
+  - `Moon.update` now precedes `frameState.skyBrightness`, so the estimator
+    consumes current-frame direction/phase even in a one-frame
+    request-render-mode clock step. Hidden/absent Moon resets the scalar phase
+    contribution instead of leaking a previous frame.
+  - WebGPU Sun motion is uniform-only: immutable quad directions back a stable
+    vertex buffer, and its bind group/draw command remain cached across clock
+    ticks. Only a genuine texture, format, pipeline, or device invalidator
+    rebuilds those resources.
+  - Probe "same-task capture" means the render and read of the **live GPU
+    canvas** are fused. The PNG byte snapshot is synchronous; decoding that
+    immutable snapshot is allowed to await. The shared Acorn validator rejects
+    unawaited direct/alias captures and floating promise chains, and
+    `settleThen` rechecks its completion predicate after the final animation
+    frame before taking the snapshot.
 - **NEW-STARS-BRIGHT-CATALOG-FULL-DEPTH** (S, optional) — the embedded subset is the ~230 brightest stars; the renderer reads `data.length / STRIDE`, so deepening to mag ~6 (full naked-eye, ~5000 stars) or the whole BSC5 (~9110) needs only appending rows (or loading the catalog as an asset). Bloom carries essentially all the perceived quality from the bright few hundred, so this is cosmetic density, not correctness.
 
 ## 2026-06-16 — Track V-A1: full-Bruneton atmosphere LUTs (Batch 306)
@@ -5938,3 +5972,135 @@ at the resources-ready step. Route the two auto-exposure COMPUTE pipelines throu
 `WebGPUComputePipelineCache`. Then the T-06-a oracle (deterministic set shows as frame-1 cache `hits`)
 becomes fully satisfiable. This is guide H5 Step-4 ("mipmap/reprojection/environment... include if
 budget allows, else surface as follow-on").
+
+## C12-29 S6 read-only performance and lifecycle follow-ups (2026-07-26)
+
+These entries came from the final S6 reconciliation audit. They are deliberately
+filed after—not folded into—the proven scene-dimming and environment-command
+fixes. The current S6/S2 targeted gate is PASS on both backends, and these open
+items must preserve that behavior and every existing feature.
+
+### S6-PERF-MOON-DIRECT-RETURN-RETAINED-RESOURCES
+
+**Status:** OPEN / DEFERRED. `Moon.update` still replaces
+`frameState.commandList` with a module-level scratch list, asks the WebGPU
+feature renderer to push into that list, restores the caller's list, and
+returns element zero. `updateWebGPUMoon` also constructs a new
+`WebGPUDrawCommand` on every visible frame even though its geometry, pipeline
+entry, bind group, and render bundle are retained.
+
+**Fix when picked up:** make the feature renderer return one cached Moon
+command directly, without mutating a command list. Preserve stable command,
+bind-group, and pipeline identity across ordinary clock ticks; rebuild only
+when a real device, attachment format, texture, or render-bundle dependency
+changes. Keep the current RTE high/low position path, eclipse/atmosphere
+appearance, pick behavior, and backend ownership contract intact.
+
+**Acceptance:** no scratch-command-list mutation and no per-frame command
+allocation after warm-up; stable object identity under clock-only motion;
+coherent invalidation under device/format/texture changes; current Moon,
+eclipse, atmosphere, and both-backend visual gates remain green.
+
+### S6-PERF-SUN-MOON-BOUNDING-VOLUMES
+
+**Status:** OPEN / DEFERRED. The WebGPU Sun and Moon draw commands do not carry
+a `boundingVolume`, so `Scene.isVisible` cannot apply normal frustum or
+occluder rejection. Moon has only an early behind-camera dot-product test.
+WebGL Sun already maintains mode-specific 3D/2D volumes.
+
+**Fix when picked up:** maintain allocation-free, in-place, mode-correct Sun
+and Moon bounding volumes using the real body/glow radii and existing RTE
+centers. Update them only when their inputs change, and let the shared Scene
+visibility path reject offscreen or Earth-occluded work. Do not approximate
+away the Sun glow or Moon disc merely to make the cull easier.
+
+**Acceptance:** WebGPU avoids offscreen/occluded celestial draws without
+popping at the frustum or horizon; SCENE3D/2D/Columbus/morph behavior matches
+the existing supported surface; no steady-frame allocations; Sun/Moon
+appearance, eclipse, picking, and both-backend parity gates remain green.
+
+### S6-PANORAMA-SOURCE-SWAP-INVALIDATION
+
+**Status:** OPEN / DEFERRED. On a WebGPU panorama source change,
+`WebGPUCubeMapPanoramaRenderer.update` clears the command but can recreate it
+against the old `cubeMapView` while the replacement texture is still loading.
+The asynchronous completion replaces the texture/view without invalidating
+the command or bind group, does not deterministically retire the old texture,
+and has no generation token to reject stale completion after another swap,
+destroy, or device loss.
+
+**Fix when picked up:** stage each load under a monotonically increasing
+generation, build all dependent resources against the staged view, and publish
+the new texture/view/command/bind group atomically only if that generation is
+still current. Deterministically retire the replaced and stale textures. Keep
+the last valid panorama visible during a load unless the public source contract
+explicitly requires a blank interval.
+
+**Acceptance:** rapid A→B→C swaps can never publish A or B after C; no command
+samples a mismatched or destroyed view; stale/destroyed/device-lost
+completions are harmless; each retired owned texture is destroyed exactly
+once; generic, star-map, and Street View panorama gates remain green.
+
+### S6-ENV-DETERMINISTIC-DESTROY-DEVICE-RECOVERY
+
+**Status:** OPEN / DEFERRED. Environment teardown is not yet symmetric:
+`CubeMapPanorama.destroy()` releases its WebGL resources but does not own/call
+the registered WebGPU feature-renderer destroy path, while `Sun.destroy()` has
+the same gap and the Sun registration has no destroy callback. Device
+invalidation walks scene primitives, ground primitives, shadow maps, and
+post-process stages, but not all environment singletons or panorama WeakMap
+state. Asynchronous image work may consequently complete after destroy or
+device loss.
+
+**Fix when picked up:** define one environment-resource ownership contract for
+explicit destroy and device-generation invalidation. Register every
+environment singleton/panorama cache with it, cancel or generation-reject
+in-flight asynchronous work, destroy owned GPU objects exactly once, and
+recreate lazily on the recovered device without retaining stale views,
+commands, bind groups, bundles, or pipelines.
+
+**Acceptance:** repeated destroy is safe; device loss/recovery cannot reuse an
+old-device object; late async completion cannot resurrect state; resource
+instrumentation balances create/destroy ownership; WebGL teardown remains
+unchanged and both-backend environment probes recover cleanly.
+
+### S6-PANORAMA-MULTI-ORDERING-PARITY
+
+**Status:** OPEN / DEFERRED. WebGL's `EnvironmentRenderer` consumes
+`panoramaCommandList` in reverse order, while the WebGPU scene renderer appends
+the list in forward order. Publication semantics also differ: the WebGPU
+feature renderer contributes each visible panorama every frame, whereas the
+WebGL `CubeMapPanorama` contribution is conditional on
+`_addToPanoramaCommandList`. Single-panorama probes cannot expose either
+difference.
+
+**Fix when picked up:** choose and document one backend-independent ordering
+rule and one every-frame contribution contract, then make both renderers use
+it without allocating or duplicating command identities. Preserve translucent
+blend order, transforms, `isStarMap` isolation, and the shared
+`skyBox -> starField -> skyAtmosphere` environment prefix.
+
+**Acceptance:** a deterministic two-or-more panorama scene has identical
+front/back ordering and persistence on WebGL and WebGPU across multiple
+frames, visibility toggles, and transforms; no panorama command is omitted or
+submitted twice; existing single-panorama and celestial probes remain green.
+
+### NEW-WEBGPU-STEREO-VIEWPORT
+
+**Status:** OPEN / UNSUPPORTED. The S6 in-place background-command
+canonicalizer is idempotent under repeated execution and removes duplicate
+background identities without allocating, but it does not implement WebGPU
+stereo. `Scene.useWebVR` correctly rejects a WebGPU context while
+`supportsStereoViewport === false`: the WebGPU scene renderer still renders a
+full-canvas viewport and does not honor each eye's `passState.viewport`.
+
+**Fix when picked up:** plumb the per-eye viewport, camera/frustum state,
+attachment region, and every viewport-sensitive pass through WebGPU command
+encoding before advertising stereo support. Keep the canonicalizer as a
+duplicate-submission invariant, not as the stereo implementation.
+
+**Acceptance:** left/right eyes render into their assigned viewports with
+correct camera/frustum, depth, post-process, picking, and environment results;
+repeated eye execution leaves each background command exactly once per eye;
+mono rendering is unchanged; the capability flag changes only after a
+both-backend stereo parity probe passes.

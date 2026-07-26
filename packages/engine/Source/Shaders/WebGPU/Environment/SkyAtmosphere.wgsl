@@ -238,7 +238,27 @@ struct Uniforms {
   moonLightDirWC: vec3<f32>,
   _pad9: f32,
   moonControl: vec4<f32>,
+  // C12-29 S6 — 360-degree horizon twilight. APPENDED at the tail (float
+  // offset 116, byte offset 464); the buffer grew 464 -> 480 bytes and no
+  // existing offset moved.
+  //   x = horizon gain, as a multiple of the sky's own luminance along the
+  //       same ray. Exactly 0 in every frame that is not the last ~2% of a
+  //       total eclipse's obscuration seen from inside the atmosphere, and
+  //       the whole block is skipped at 0 — byte-identical.
+  //   y/z/w = reserved
+  eclipseControl: vec4<f32>,
 };
+
+// C12-29 S6 constants — identical values, identical names, in
+// `Shaders/SkyAtmosphereFS.glsl` and `Scene/EclipseState.js`.
+// atan(25 km / 60 km): the elevation the sunlit penumbral atmosphere subtends
+// from the middle of a ~120 km umbral track. Above it the observer is looking
+// at umbral sky, so the band ends there.
+const ECLIPSE_TWILIGHT_ELEVATION: f32 = 0.394791119699762;
+// Rayleigh transmission exp(-0.5 * (550/lambda)^4) at 650/550/450 nm,
+// normalised to a peak of 1 — the same physics that reddens a sunset, over the
+// long slant path out to the penumbra.
+const ECLIPSE_TWILIGHT_TINT: vec3<f32> = vec3<f32>(1.0, 0.784, 0.424);
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -1102,6 +1122,21 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
   // HSB shift moved to AFTER tonemap+gamma so the shift operates on
   // perceptual SDR values (matches WebGL ordering at
   // SkyAtmosphereFS.glsl L41-47).
+  // C12-29 S6 — 360-degree horizon twilight. Added in LINEAR scatter space,
+  // before the tonemap, exactly where `SkyAtmosphereFS.glsl` adds it, so the
+  // two backends composite it identically. Azimuth-independent by
+  // construction: nothing in the band profile references the sun direction,
+  // which is the point — inside the umbra the surrounding penumbra lights the
+  // horizon all the way round.
+  if (u.eclipseControl.x > 0.0) {
+    let upObs = normalize(u.cameraPositionWC);
+    let elevation = asin(clamp(dot(normalize(rayDir), upObs), -1.0, 1.0));
+    var band = max(0.0, 1.0 - max(elevation, 0.0) / ECLIPSE_TWILIGHT_ELEVATION);
+    band = band * band;
+    let skyLuminance = dot(color, vec3<f32>(0.2126, 0.7152, 0.0722));
+    color = color + skyLuminance * ECLIPSE_TWILIGHT_TINT * (u.eclipseControl.x * band);
+  }
+
   var finalColor = pbrNeutralTonemapSky(color);
   // sRGB encode (czm_inverseGamma equivalent — approximate 1/2.2 gamma).
   finalColor = pow(max(finalColor, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));

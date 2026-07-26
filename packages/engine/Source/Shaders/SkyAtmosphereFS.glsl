@@ -31,10 +31,34 @@
 // - GLSL has a `#ifdef GLOBE_TRANSLUCENT` brightening path in
 //   SkyAtmosphereCommon; WGSL ports it as a runtime gate
 //   (`u.atmosControl.w`, GLOBE-TRANSLUCENCY-ALPHA) inside `skyColorForRay`.
+// - C12-29 S6 360-degree horizon twilight is present in BOTH, with the same
+//   constants and the same position in the pipeline (linear scatter space,
+//   before the tonemap): `u_eclipseHorizonTwilight` here,
+//   `u.eclipseControl.x` in the WGSL.
 
 in vec3 v_outerPositionWC;
 
 uniform vec3 u_hsbShift;
+
+// C12-29 S6 — 360-degree horizon twilight. Gain on a warm, horizon-hugging
+// band added during totality, as a MULTIPLE OF THE SKY'S OWN LUMINANCE along
+// the same ray (so it rides the S2 dimming, the tonemap and the user's
+// atmosphereLightIntensity with nothing to calibrate). Exactly 0.0 in every
+// frame that is not the last ~2% of a total eclipse's obscuration seen from
+// inside the atmosphere, and the term is multiplied by it, so the historical
+// sky is untouched. Derivation of the two constants below and of the tint
+// lives in `Scene/EclipseState.js`; WGSL twin: `SkyAtmosphere.wgsl`'s
+// `eclipseControl.x` block.
+uniform float u_eclipseHorizonTwilight;
+
+// atan(25 km / 60 km) — the elevation the sunlit penumbral atmosphere
+// subtends from the middle of a ~120 km umbral track. Above it the observer
+// is looking at umbral sky, so the band ends there.
+const float ECLIPSE_TWILIGHT_ELEVATION = 0.394791119699762;
+// Rayleigh transmission exp(-0.5 * (550/lambda)^4) at 650/550/450 nm,
+// normalised to a peak of 1 — the same physics that reddens a sunset, over
+// the long slant path out to the penumbra.
+const vec3 ECLIPSE_TWILIGHT_TINT = vec3(1.0, 0.784, 0.424);
 
 #ifndef PER_FRAGMENT_ATMOSPHERE
 in vec3 v_mieColor;
@@ -70,6 +94,24 @@ void main (void)
     #endif
 
     vec4 color = computeAtmosphereColor(v_outerPositionWC, lightDirection, rayleighColor, mieColor, opacity);
+
+    // C12-29 S6 — 360-degree horizon twilight, added in LINEAR scatter space
+    // (before the tonemap) so it composites exactly like the scattering it
+    // augments. Azimuth-independent by construction: nothing in the band
+    // profile references the sun direction, which is the whole point — inside
+    // the umbra the surrounding penumbra lights the horizon all the way round.
+    // `translucent == 0.0` mirrors the WGSL, whose translucent-globe branch
+    // returns before this point.
+    if (u_eclipseHorizonTwilight > 0.0 && translucent == 0.0)
+    {
+        vec3 upWC = normalize(czm_viewerPositionWC);
+        vec3 rayDirWC = normalize(v_outerPositionWC - czm_viewerPositionWC);
+        float elevation = asin(clamp(dot(rayDirWC, upWC), -1.0, 1.0));
+        float band = max(0.0, 1.0 - max(elevation, 0.0) / ECLIPSE_TWILIGHT_ELEVATION);
+        band *= band;
+        float skyLuminance = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+        color.rgb += skyLuminance * ECLIPSE_TWILIGHT_TINT * (u_eclipseHorizonTwilight * band);
+    }
 
     #ifndef HDR
         color.rgb = czm_pbrNeutralTonemapping(color.rgb);

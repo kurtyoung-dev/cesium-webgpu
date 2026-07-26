@@ -8,7 +8,12 @@ import {
   createAtmosphereExtinctionCache,
 } from "./computeAtmosphereExtinction.js";
 import SceneMode from "./SceneMode.js";
-import { computeStarDayFade } from "./StarFieldMath.js";
+import {
+  computeStarBrightnessModulation,
+  computeStarDayFade,
+  STAR_MODULATION_INFLECTION,
+  STAR_MODULATION_STEEPNESS,
+} from "./StarFieldMath.js";
 
 /**
  * A real bright-star catalog starfield (Track V-C, NEW-STARS-BRIGHT-CATALOG).
@@ -81,10 +86,6 @@ class StarField {
     // Never read by this class directly.
     this._webgpuCache = undefined;
 
-    // Set each frame by `update`: true when the FR pushed a binned copy of
-    // the draw onto the command list (WebGPU), false otherwise (WebGL).
-    this._wasBinned = false;
-
     // Backend-neutral effective scale for the current render update. Keeping
     // this on the primitive lets both renderers consume the exact same daytime
     // gate without repeating the camera/sun calculation.
@@ -114,7 +115,7 @@ class StarField {
   }
 
   /**
-   * Called when the scene renders to push the starfield's draw command.
+   * Called when the scene renders to produce the starfield's draw command.
    * Delegates entirely to the {@link FeatureRendererKey.STAR_FIELD}
    * feature renderer; a no-op on backends that don't register one.
    *
@@ -123,24 +124,17 @@ class StarField {
    * AFTER the SkyBox cubemap — the catalog augments (draws on top of) the
    * cubemap rather than being overwritten by its alpha-over pass.
    *
-   * Backend draw-path divergence (recorded on {@link StarField#wasBinned}):
-   *   - WebGPU ALSO pushes a binned copy onto `frameState.commandList` (so
-   *     a frustum exists on sky-only views). The returned inject command is
-   *     then only needed when a cubemap command exists; otherwise the binned
-   *     copy alone draws the stars — Scene drops the inject to avoid a
-   *     double draw.
-   *   - WebGL pushes NO binned copy (environment commands run directly via
-   *     EnvironmentRenderer), so the returned command is the ONLY copy and
-   *     must always execute — even with the cubemap off. Scene reads
-   *     `wasBinned` to apply the WebGPU-only gate without branching on the
-   *     backend identity.
+   * Both feature renderers return exactly one reusable environment command.
+   * WebGL executes it directly through `EnvironmentRenderer`; WebGPU injects
+   * it through `SceneRenderer`. `EnvironmentFrustumDemand` observes this
+   * returned command, so WebGPU sky-only views do not need a second binned
+   * copy in `frameState.commandList`.
    *
    * @param {FrameState} frameState
    * @returns {object|undefined} The backend draw command, or undefined.
    * @private
    */
   update(frameState) {
-    this._wasBinned = false;
     this._effectiveIntensityScale = 0.0;
     const { mode, passes } = frameState;
     // Stars are only meaningful in 3D / morph (like SkyBox). 2D / Columbus
@@ -155,12 +149,47 @@ class StarField {
     }
 
     const context = frameState.context;
-    const effectiveIntensityScale =
-      this._intensity *
-      computeStarDayFade(
-        context?.uniformState?.sunDirectionWC,
-        frameState.camera?.positionWC,
+    const dayFade = computeStarDayFade(
+      context?.uniformState?.sunDirectionWC,
+      frameState.camera?.positionWC,
+      frameState.camera?.positionCartographic?.height,
+    );
+    // C12-29 S6 / ruling E3 — ONE reveal law for both star paths.
+    //
+    // The sprites' own gate (`computeStarDayFade`) is purely geometric: it
+    // returns exactly 0 once the sun is ~2.9 deg above the local horizon. That
+    // is right for an ordinary day and WRONG during a total eclipse, where the
+    // sun is up but its light is gone — a totality frame would have shown the
+    // revealed star CUBEMAP with none of the catalogue sprites on top of it.
+    //
+    // When enabled, the shared modulation REPLACES the legacy geometric fade:
+    // both cubemap and catalogue then react identically to daylight, lunar sky
+    // brightness, eclipse dimming, and the ellipsoidal-height column ramp.
+    // Multiplying by the old fade would double-dim twilight; taking a maximum
+    // would leave catalogue sprites at full strength under a full moon while
+    // the cubemap falls to ~1.8%. Replacement is the only one-law result.
+    //
+    // Gated on the same two conditions as the cubemap consumer, so the
+    // `enableStarBrightnessModulation = false` position leaves this line
+    // returning `dayFade` unchanged — bit-for-bit the historical value.
+    const ac = frameState.atmosphericConditions;
+    const skyLeaf =
+      defined(ac) && defined(ac.skyAtmosphere) ? ac.skyAtmosphere : undefined;
+    let reveal = dayFade;
+    if (
+      defined(skyLeaf) &&
+      skyLeaf.enableStarBrightnessModulation === true &&
+      frameState.skyAtmosphereVisible === true
+    ) {
+      const curve = skyLeaf.starModulationCurve;
+      const modulation = computeStarBrightnessModulation(
+        frameState.skyBrightness ?? 1.0,
+        defined(curve) ? curve.inflection : STAR_MODULATION_INFLECTION,
+        defined(curve) ? curve.steepness : STAR_MODULATION_STEEPNESS,
       );
+      reveal = modulation;
+    }
+    const effectiveIntensityScale = this._intensity * reveal;
     this._effectiveIntensityScale = effectiveIntensityScale;
     const zeroContribution = effectiveIntensityScale === 0.0;
 
@@ -239,28 +268,9 @@ class StarField {
       return undefined;
     }
     if (defined(fr) && typeof fr.update === "function") {
-      const commandList = frameState.commandList;
-      const lengthBefore = commandList.length;
-      const command = fr.update(this, frameState, commandList);
-      // A renderer that pushed a binned copy (WebGPU) grew the command
-      // list; one that didn't (WebGL) left it unchanged.
-      this._wasBinned = commandList.length > lengthBefore;
-      return command;
+      return fr.update(this, frameState);
     }
     return undefined;
-  }
-
-  /**
-   * Whether the most recent {@link StarField#update} pushed a binned copy
-   * of the star draw onto the frame command list (WebGPU). When false
-   * (WebGL), the returned command is the only copy and must run regardless
-   * of whether a SkyBox cubemap is present.
-   * @type {boolean}
-   * @readonly
-   * @private
-   */
-  get wasBinned() {
-    return this._wasBinned === true;
   }
 
   /**

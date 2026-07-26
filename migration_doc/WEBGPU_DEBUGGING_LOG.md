@@ -14334,7 +14334,7 @@ if (near > far && sawEnvironmentNoBV) {   // View.js:412 (pre-fix)
 
 **Byte-identical where it must be.** `near > far` short-circuits first, so any frame that has geometry never reaches the lookup. WebGL has no `_alternateSceneRenderer` ⇒ predicate false ⇒ unchanged. Pick / offscreen frames clear `passes.render` (`Scene.js:3371`; `Scene.updateEnvironment` also blanks every command slot when `!renderPass`) ⇒ predicate false ⇒ unchanged. The only frames whose behavior changes are exactly `near > far && !sawEnvironmentNoBV && hasInjectedEnvironmentContent` — the defect class itself.
 
-**Principle 7 check.** `git log -S "sawEnvironmentNoBV"` → single origin `b156079da8` (Batch 693, C10-01-ENV-COMMAND-FRUSTUM-BINNING), whose message describes the sky-only restore as "prevents the black-canvas collapse". It is the same mechanism, not scaffolding for something else — so it was WIDENED, not replaced. StarField's binned copy (`StarField.js:126-136`, "frustum guarantee on sky-only views") is likewise KEPT: with no cubemap it is the only draw of the sprites, and `Scene.js`'s `dropForBinnedNoCubemap` gate still reads `wasBinned`.
+**Principle 7 check at the C12-G1F1 landing point (historical; superseded by C12-29 S6 for StarField wiring).** `git log -S "sawEnvironmentNoBV"` → single origin `b156079da8` (Batch 693, C10-01-ENV-COMMAND-FRUSTUM-BINNING), whose message describes the sky-only restore as "prevents the black-canvas collapse". It is the same mechanism, not scaffolding for something else — so it was WIDENED, not replaced. At that point StarField's binned copy was kept. S6 later removed the duplicate at the producer: the sole returned `environmentState.starFieldCommand` is itself read by `hasInjectedEnvironmentContent`, so the widened predicate preserves the frustum guarantee without a command-list copy.
 
 **Verification.** New `Tools/visual-regression/probe-env-pass-matrix.mjs` — a WebGPU-vs-WebGL matrix over 11 environment-visibility cells × 2 derived lanes (night / day; Simon1994-derived epochs, analytically solved ground observer so moon and sun sit at pinned elevations OUTSIDE the wide sky frame), measuring per-element presence (moon + sun from projected-ephemeris disc ROIs, atmosphere from sky-band luminance + median + blue dominance, star sources from a strict-local-maximum census) and asserting WebGPU presence === WebGL presence per element per cell, plus a per-backend "the cubemap survives the sprite toggle" source-ordering contract. Pre-fix RED cells: night `skybox-only`, night `moon-only`, night `skybox+moon`, day `moon-only`, day `skybox+moon`, and the night source contract. New `Tools/visual-regression/env-frustum-demand.spec.mjs` (11 node tests incl. the full 2^6 element-subset matrix) and `packages/engine/Specs/Scene/EnvironmentFrustumDemandSpec.js` pin the predicate. The Batch-756 `BLOCKED-C12-G1F1-FAMILY` conversion was DELETED from `probe-moon-atmosphere-appearance.mjs` — `controlSane` and `extinctionDims` gate HARD again.
 
@@ -14512,3 +14512,661 @@ Also fixed: `provenance()` read its source files unconditionally, so the probe e
 2. **`NEW-WEBGPU-NEAR-LIMB-GLOBE-ABSENT`** (obs-2 territory — handed to that owner with data, not an impression). In WebGPU's near-limb ROI the globe does not render at all, and it is **shell-independent**: `globeFrac` is exactly 0 and `bgMeanNoGlobe` (155.254) is bit-for-bit identical to `bgMean` (155.254) — hiding the globe changes nothing — while with the SHELL hidden the same ROI reads **1.701 (black)** against WebGL's **36.94**. **A shell cannot cause an absence that persists after the shell is removed**, so this is NOT shell opacity covering the globe; the 155.254 is the shell's own brightness, i.e. the run measures the shell as BRIGHT. WebGL has 67–84% globe coverage in the same ROI (`globeFrac` 0.7725). Corroborating from the other direction: at 400 km `altitudeOpacity → 0`, so the shell should be TRANSPARENT there — which is exactly why WebGL's globe correctly shows through. This is the largest divergence in the entire measurement. (An earlier reading of this data attributed it to the opaque shell replacing the globe; the shell-hidden lane refutes that and the corrected reading is recorded here so it is not re-derived.)
 
 **Round-3 gates:** `npx gulp build` exit 0. `npx tsc --noEmit` clean. `node --test` green — `solar-disc-model` 13/13 (new: the bloom-lever pin + sign discriminator), `sun-orbital-limb-extinction` 5/5, `eclipse-state` 32/32. eslint + prettier clean; `node --check` clean on both probes. No WGSL touched. No engine behaviour changed in this round — probe, specs and documentation only.
+## C12-29 S6 (SKY HALF) — obs-1 root-caused: the WebGPU sky shell never saw the globe's lighting flags, so it was opaque and the stars were behind it (2026-07-25)
+
+**Type:** Correctness (obs-1) + missing subsystem (the totality sky). The corona is the OTHER half of S6 and is not in this entry; nothing here touches `Sun.js`, `SunFS.glsl` or the WebGPU sun path.
+
+### obs-1 — Premise
+
+S2's terminal Edge cycle recorded, as queue evidence rather than as an S2 blocker: at the deepest rung of the 2026-08-12 ladder, with the same pinned state, camera and factor on both backends, `output/eclipse-scene-dimming-webgl-deepestOn.png` shows the star field through the darkened sky while `output/eclipse-scene-dimming-webgpu-deepestOn.png` shows **no stars at all**. The filed hypothesis named the shell's luminance-dependent alpha (`mix(color.b, 1, heightOpacity)`) as the plausible locus.
+
+That hypothesis was half right and pointed one layer too low. **The two shaders' alpha expressions are already identical:**
+
+```glsl
+// Shaders/SkyAtmosphereFS.glsl
+color.a = mix(color.b, 1.0, color.a) * smoothstep(0.0, 1.0, czm_morphTime);
+```
+
+```wgsl
+// Shaders/WebGPU/Environment/SkyAtmosphere.wgsl
+let alpha = mix(finalColor.b, 1.0, opacity);
+```
+
+and so are the two `opacity` derivations (altitude ramp × `pow(nightAlpha, 0.5)`), and both composite ALPHA_BLEND over the skybox (`SceneRenderer.js` pushes `skyBoxCommand` → `starFieldCommand` → `skyAtmosphereCommand`; the WebGPU sky pipeline's blend is `src-alpha` / `one-minus-src-alpha`). Nothing in the shader pair explains obs-1.
+
+### obs-1 — Cause
+
+**The two backends were feeding those identical expressions different values of one enum.** `nightAlpha` — the term that makes the anti-solar sky transparent — is gated on the dynamic-atmosphere-lighting enum:
+
+```glsl
+// Shaders/SkyAtmosphereCommon.glsl:109
+float nightAlpha = (u_radiiAndDynamicAtmosphereColor.z != 0.0) ? clamp(dot(normalize(positionWC), lightDirection), 0.0, 1.0) : 1.0;
+```
+
+```wgsl
+// SkyAtmosphere.wgsl
+let isDynamic = u.radiiAndDynamicAtmosphere.z != 0.0;
+var nightAlpha = select(1.0, clamp(dot(normalize(skyPoint), lightDirWC), 0.0, 1.0), isDynamic);
+```
+
+WebGL's `.z` is whatever `Scene.updateEnvironment` resolved and stored on the `SkyAtmosphere` instance:
+
+```js
+// Scene.js, inside updateEnvironment
+if (defined(globe)) {
+  skyAtmosphere.setDynamicLighting(DynamicAtmosphereLightingType.fromGlobeFlags(globe));
+  ...
+} else {
+  skyAtmosphere.setDynamicLighting(atmosphere.dynamicLighting);
+}
+```
+
+`fromGlobeFlags` returns `SCENE_LIGHT` (1) whenever `globe.enableLighting && globe.dynamicAtmosphereLighting` — and `dynamicAtmosphereLighting` defaults true, so **every lit globe scene resolves 1**. The globe-less branch is the only one that ever reads `scene.atmosphere.dynamicLighting`.
+
+WebGPU's `.z` was resolved independently, and only ever from the branch WebGL takes when there is *no globe*:
+
+```js
+// WebGPUSkyAtmosphereRenderer.js (pre-fix)
+const dynamicLighting = resolveDynamicLighting(frameState);   // frameState.atmosphere?.dynamicLighting ?? 0
+```
+
+`Atmosphere.js:125` ships `dynamicLighting = DynamicAtmosphereLightingType.NONE`, and nothing in Cesium ever writes it from the globe flags. So on any scene with `globe.enableLighting = true` — S2's probe scene, and every lit maintainer scene — WebGL packed **1** and WebGPU packed **0**.
+
+Downstream of a 0: `isDynamic` is false ⇒ `nightAlpha` is pinned at 1.0 ⇒ `opacity = altitudeOpacity`, which for a ground camera is exactly 1.0 ⇒ `alpha = mix(finalColor.b, 1.0, 1.0)` = **exactly 1.0 in every direction**. WebGL with a 1 gets a `nightAlpha` well below 1 and a correspondingly translucent shell, so the background shows through.
+
+**The magnitude, stated properly (corrected after the adversarial pass).** An earlier draft of this entry said WebGL "got `nightAlpha → 0`, `opacity → 0`, `alpha → color.b`". That is the NIGHT limit and it is not what happens here: a total *solar* eclipse has the sun above the horizon by definition, and `nightAlpha = clamp(dot(normalize(skyPoint), lightDirWC))` is dominated by the solar zenith angle at the shell point, not by the look direction. At the 2026-08-12 fixture sites the sun is ~10-25° up, so `nightAlpha ≲ 0.17-0.42`, `opacity = pow(nightAlpha, 0.5) ≈ 0.42-0.65`, and with a dimmed `color.b ≈ 0.05` the shell alpha is **≈ 0.45-0.67**. So the real divergence is **partial (~0.45-0.67) versus EXACTLY 1.0**, not zero versus one — a shell that lets roughly a third to a half of the background through, against one that lets none. That is still decisive for obs-1 (a third of a star field is visible; none of it is not), and it is why lane A's `shellIsTranslucent` floor sits at 0.9 rather than somewhere near 0: it has to separate "partially transparent" from "exactly opaque", not "transparent" from "opaque".
+
+**Blast radius in the pre-S6 two-command architecture, stated precisely (also corrected).** The opaque shell hid exactly the two draws `SceneRenderer` prepended ahead of the binned atmosphere: the **skyBox cubemap** and the **injected star-catalogue copy**. It did NOT hide the moon (`Moon.js` swaps `frameState.commandList` for a scratch array, and `SceneRenderer` injects the moon by APPEND, after the atmosphere), the sun (binned after the atmosphere), or the then-existing binned star copy (also binned after it). An inflated blast radius mis-scopes future regression hunts, so: cubemap and injected sprites only. The final S6 architecture below deletes that second star command.
+
+This is not an eclipse bug — the eclipse only made it visible by dropping `color.b` far enough for the difference to matter.
+
+The enum also selects the light DIRECTION (`NONE` means "lit from directly above", per-fragment), so the same defect additionally gave the WebGPU sky a different scattering geometry on every lit scene. That is a second, larger visual consequence of the same one-line divergence, and it is fixed by the same change.
+
+The module docstring of `WebGPUAtmosphereUniforms.ts` encoded the false premise verbatim — "`dynamicLighting` (the one `scene.atmosphere.*` field WebGL applies to the sky, via `SkyAtmosphere.setDynamicLighting`)". True for the globe-less branch, false for the one every real scene takes. The docstring now carries the correction.
+
+### obs-1 — Fix
+
+`SkyAtmosphere` exposes the resolved value it already stored (`get dynamicLighting()` → `_radiiAndDynamicAtmosphereColor.z`, the exact float WebGL's uniform reads). New `resolveSkyDynamicLighting(skyAtmosphere, frameState)` in `WebGPUAtmosphereUniforms.ts` prefers that instance value and falls back to the old `frameState` pull only when there is none (a `SkyAtmosphere` never passed through `updateEnvironment`), so the historical behaviour is preserved for the only case that could have relied on it. `resolveDynamicLighting` is untouched and still correct for the model IBL fill, whose WebGL twin (`DynamicEnvironmentMapManager`) genuinely does read `scene.atmosphere.dynamicLighting` on both backends.
+
+Blast radius, stated precisely: on a scene with `globe.enableLighting = false` (the Cesium default) `fromGlobeFlags` returns NONE, which is what WebGPU already packed — **byte-identical**. The frames that change are exactly the ones where WebGL and WebGPU disagreed.
+
+### obs-1 — Discriminating measurement
+
+`probe-eclipse-sky-totality.mjs` lane (a) recovers the shell's alpha **algebraically**, with no model of the sky pipeline in it. Under ALPHA_BLEND the captured pixel is `out = a·src + (1−a)·dst`, so rendering the identical frame over two known backgrounds gives
+
+```
+out_white − out_black = (1 − a)
+```
+
+exactly — `a·src` cancels, and with it the tonemap, the gamma, the scattering integral and the sub-linear shell response that cost S2 three modelling rounds. A CONTROL pass with `skyAtmosphere.show = false` measures the same difference with `a = 0` and must read ~1; if it does not, `scene.backgroundColor` is not reaching that backend's clear and the lane is uninstrumented, which the probe classifies **structural (exit 2)**, never a gate failure. Stated prediction, on the record before the run: WebGL recovers a low alpha in the anti-solar sky, WebGPU recovers ~1.0 pre-fix and matches WebGL post-fix (gate: `|Δα| ≤ 0.08`, plus `alphaRecovered < 0.9` on both so the lane cannot pass on a vacuously opaque frame, plus a never-black floor).
+
+The enum itself is also recorded per backend (`scene.skyAtmosphere.dynamicLighting` and `scene.atmosphere.dynamicLighting`), which localises the finding: Scene resolves SCENE_LIGHT on *both* backends — the divergence was always inside the WebGPU renderer.
+
+---
+
+### A latent double additive star draw, un-hidden by the obs-1 fix and fixed in the same change
+
+Found by the adversarial pass, and it gates every E3 number below.
+
+Before S6, `WebGPUStarFieldRenderer` emitted TWO command objects for one catalogue: `cache.command`, pushed onto `frameState.commandList` (then believed necessary for the sky-only-view frustum guarantee), and `cache.injectCommand`, returned for the post-cubemap slot. Its own comment claimed "either way the catalogue is drawn exactly once", reasoning that the cubemap's alpha-over pass wipes the early binned copy. That reasoning was true when the cubemap was injected AFTER the binned commands. It stopped being true when `SceneRenderer` began **PREPENDING** the background commands ahead of the binned atmosphere, and nothing updated the comment. `starField.update` also ran AFTER `skyAtmosphere.update`, so the binned star copy landed after the atmosphere in the ENVIRONMENT bin. The executed order was:
+
+```
+skyBox, starsInject, [atmosphere, starsBinned, sun] (binned), moon
+```
+
+Both star copies execute, additively (`srcFactor: "one" / dstFactor: "one"`), with the atmosphere shell **between them**.
+
+**Why nobody saw it:** the opaque WebGPU shell (obs-1) erased `starsInject`, leaving `starsBinned` as the only visible copy — so the net was 1x, but drawn IN FRONT of the shell at full strength, which is itself a divergence from WebGL (which draws the catalogue once, behind the shell). The moment obs-1 made the shell translucent, the two copies would sum: with shell alpha `a`, the measured sprite contribution becomes `(1 − a)·S + S = (2 − a)·S` against WebGL's `(1 − a)·S`. At the night end, where `a ≈ 0`, that is a clean factor of 2 — and it would have silently mis-calibrated every E3 constant derived below, since those are anchored on rendered star flux.
+
+**Fix at the producer, with no per-frame repair work.** `WebGPUStarFieldRenderer` now creates and caches exactly one `WebGPUDrawCommand`, and returns it without mutating `frameState.commandList`. `StarField.update` likewise returns that command directly. `Scene.updateEnvironment` assigns it to `environmentState.starFieldCommand`; there is no list-length sampling, duplicate-state bookkeeping, reverse scan, or `splice`.
+
+**The one returned command uses the WebGL-equivalent placement.** WebGL executes the environment in one fixed order (`EnvironmentRenderer.renderEnvironment`), with its own comment stating the intent:
+
+```
+skyBox -> starField -> skyAtmosphere -> sun -> moon
+//  ... and BEFORE the sky atmosphere / sun / moon so
+//  those still occlude the stars.
+```
+
+`SceneRenderer` PREPENDS `environmentState.starFieldCommand` into exactly that slot. The deleted binned command landed AFTER the atmosphere, which produced a different picture whenever the shell was not fully transparent. With one command, both backends execute `skyBox -> starField -> skyAtmosphere`; an opaque shell hides the catalogue and a translucent shell attenuates it by `(1 − a)`.
+
+Deleting the binned command cannot cost the frame its frustum even in a sky-only view: Batch 761's `EnvironmentFrustumDemand.hasInjectedEnvironmentContent` already reads `environmentState.starFieldCommand`, so the returned command itself guarantees environment demand. No second command was required for functionality.
+
+**The consequence is a real default-path visual change on WebGPU, and it is NOT self-evidently convergence.** Before the fix the binned copy drew after the atmosphere, so WebGPU showed catalogue sprites at ground level regardless of shell opacity; after the fix the sole copy is behind the shell. Whether that is convergence or regression depends entirely on whether WebGL shows sprites in the same configuration. It is **measured**, not reasoned: probe lane D runs at Cesium's shipped defaults (`globe.enableLighting` untouched, everything else at its constructor default), ground camera, clear night, and recovers shell alpha plus sprite visibility by census on both backends. Its gate is parity — WebGPU must show the catalogue exactly where WebGL shows it — and does not encode the expected answer.
+
+**Cross-instrument evidence from the sun-glow worker (clean main, HEAD 765, near-limb orbital vantage at 400 km), and what it does and does not establish.** Banked here because it arrived from a different probe with different lanes that was not looking for any of this:
+
+| measurement | WebGL | WebGPU |
+| --- | --- | --- |
+| `globeFrac` in the annulus ROI | 0.7725 | **0** |
+| `bgNoGlobe` vs `bg` (shell hidden) | — | **bit-for-bit identical** |
+| ROI with shell hidden | 36.94 | **1.70** (black) |
+| ROI with shell shown | — | 155.25 |
+| resolved enum block, both backends | `dynamicLighting=0`, `fromGlobeFlags=0`, `enableLighting=false`, `dynamicAtmosphereLighting=true`, `…FromSun=false`, `skyAtmosphereShow=true` | same |
+
+*What it establishes.* The enum block is a direct confirmation of this entry's premise from an independent instrument: at Cesium's shipped defaults both backends resolve **NONE**, so obs-1 does not bite at defaults and the two backends' shells should agree there — which is exactly what lane D's parity gate assumes it can rely on. And WebGL's `globeFrac = 0.7725` at 400 km is a positive data point FOR the alpha model: at that altitude `altitudeOpacity = clamp((T − eyeHeight)/T)` is 0, so `alpha = color.b < 1` and the globe correctly shows through a partially transparent shell.
+
+*What it does NOT establish, and this correction matters.* The reading "WebGPU's shell fully replaces the globe" does not follow from these numbers. `bgNoGlobe` is bit-identical to `bg` **with the shell hidden**, and that ROI reads 1.70 — black — with the shell hidden. A shell cannot be the cause of an absence that persists after the shell is removed: the globe simply is not there on WebGPU in that ROI, independently of the shell. That is **obs-2** (the same run's ~20× darker night-side globe), not shell opacity. So `globeFrac = 0` on WebGPU is explained by the dark globe, and the run measures the shell only as "bright" (155.25), not as "opaque". Its vantage is also 400 km, where this entry's model predicts a *transparent* shell — so it is not evidence about the GROUND case at all, which is where the opaque-shell prediction lives.
+
+The practical consequence is a hardening, not a re-plan: **lane D now asserts by `pickEllipsoid` that the globe does not intersect its band**, and treats a hit as STRUCTURAL. Any lane that lets the globe into its ROI inherits the obs-2 confound and can mistake a missing globe for an opaque shell — which is precisely the inference this note declines to make. obs-2 itself is characterised and owned by the sun worker's own row; nothing in this entry depends on it.
+
+**The resolved model, and the contradiction it has to survive.** "Cesium visibly shows stars from the ground at night" is the obvious objection to an opaque ground shell — because the star CUBEMAP is also drawn before the atmosphere, so an opaque shell must hide it too. The model that resolves this, stated so it can be falsified:
+
+At shipped defaults `globe.enableLighting = false`, so `fromGlobeFlags` returns **NONE** on both backends. In the NONE case `lightDirection = normalize(positionWC)` — the shell is lit "from directly above" at every point — so the sky renders as permanent daylight and `nightAlpha` is the constant 1.0 by definition, **there being no night at all** in that configuration (the globe has no terminator either, for the same reason). With `opacity = clamp((outer − cameraHeight)/(outer − inner))` = `(T − eyeHeight)/T` ≈ 1 at ground, the shell alpha is `mix(color.b, 1, 1)` = exactly 1.0. So the prediction is that at shipped defaults, at ground, BOTH the cubemap and the sprites are hidden, on BOTH backends — and the everyday "stars from the ground" experience comes from configurations where the shell is *not* opaque: `enableLighting = true` (`nightAlpha → 0` on the night side), altitude (`altitudeOpacity → 0`), or `skyAtmosphere.show = false`. Lane D measures the cubemap alongside the sprites precisely to test this: both draw before the atmosphere, so an opaque shell must hide **both or neither**, and a disagreement is reported as STRUCTURAL — the model refuted — rather than as an engine verdict. This is the same discipline that corrected the `nightAlpha → 0` magnitude error earlier in this entry.
+
+**Gated by measurement, not by argument.** Probe lane (b4) is model-free: with `S` the no-shell sprite contribution and `a` the shell alpha recovered by lane A's algebra, a single copy measures `(1 − a)·S` and a double measures `(2 − a)·S`. The probe reports which prediction the measurement is nearer and requires the single-draw one, at a night instant where the two are farthest apart and the sprites are at full strength. The single-command producer, direct Scene assignment, absence of command-list mutation, and Batch 761 frustum-demand predicate are pinned in `eclipse-sky-totality.spec.mjs`.
+
+### Ruling E3 — the star-brightness default flips ON, with the two things that made it wrong actually fixed
+
+C11-176 turned `enableStarBrightnessModulation` off for two stated reasons. Flipping it back required closing both rather than reverting the flip.
+
+**(a) There was no WebGL consumer.** C11-176's words: "WebGL's `SkyBoxFS.glsl` is nine lines and applies NO such term, so this was a pure unmatched WebGPU divergence". `SkyBoxFS.glsl` now carries the identical expression — `t = clamp((skyBrightness − inflection)·steepness, 0, 1)`, `factor = 1 − smoothstep(0,1,t)` — fed by `u_starModulation` (inflection, steepness, enableFlag, cloudCover) and `u_skyBrightness` from `CubeMapPanorama.js`, in the same position in the pipeline as the WGSL (modulate → cloud-occlude → gamma; the order matters under HDR, where `k·x^g ≠ (k·x)^g`). The cloud-occlusion term came along for free at `cloudCover = 0`, closing a second pre-existing WebGL gap. The flag is now a both-backend default-path multiplier and satisfies C12 exit-gate item 2.
+
+**(b) The curve zeroed ORBITAL stars.** The measured C11-176 failure was at `skyBrightness = 1.0` "for a camera placed along the sun direction" — an orbital camera on the day side, where the sky really is black and the stars really are there. That is a defect in the ESTIMATOR, not in the flag: `computeSkyBrightness` is a *sky* brightness, produced by sunlight scattering in the air above the observer, and it had no notion of running out of air. `SkyBrightness.computeAtmosphericColumnFactor` now scales the whole estimate by a ramp from 60 km (`exp(−6) ≈ 2.5e−3` of sea-level density at the engine's own 10 km Rayleigh scale height — under 0.3% of the column left) to 111 km (`ATMOSPHERE_THICKNESS`, the shell both sky shaders integrate over; above it they return no inscatter at all, so an estimator reporting a bright sky there would contradict the pixels). The sibling gate `StarFieldMath.computeStarDayFade` has carried a hard 100 km cutoff since it was written, and that step sits inside the ramp. An orbital camera now gets factor 1.0 — byte-identical.
+
+A third guard was added on top, not because C11-176 asked for it but because it is what the mechanism says: the modulation is additionally gated on `frameState.skyAtmosphereVisible === true`. With `skyAtmosphere.show = false` there is no scattering medium in the scene, so dimming the cubemap would be modelling a medium the renderer is not drawing — and that configuration is precisely where "I added a SkyBox and saw nothing" is most likely. Same guard `StarField` already applies to its extinction integrator.
+
+**The curve defaults are derived, not dialled.** The two parameters have exactly two degrees of freedom and are fixed by two anchors:
+
+1. *The night end is the "countryside" claim.* At `skyBrightness = 0` — astronomical night, no moon — the factor is exactly 1.0 for any non-negative inflection: the full vendored catalogue (MAG_CUTOFF 5.0) and the full star cubemap render undimmed. That is a rural sky, Bortle class 4 / naked-eye limiting magnitude ≈ 6.5, against ≈ 4.5 suburban and ≈ 3 inner-city (Bortle, *Sky & Telescope* 2001; Crumey 2014, MNRAS 442:2600, for the NELM↔sky-brightness relation). Ruling E3 forbids light-pollution modelling and there is none: no additive skyglow term exists anywhere in the path, only the natural sources the estimator already carries.
+2. *The steepness is the totality anchor.* At totality the sky is civil twilight (~5 lux against ~100,000 lux full sun — AAS eclipse basics; Optica sky-brightness survey, AO 10(6):1207) and observers see the bright planets plus roughly first- to third-magnitude stars, **not** a full night sky. Target: 6.5 → ≈3.5, i.e. Δm = 3.0, i.e. a Pogson flux multiplier `k = 10^(−1.2) = 0.063096`. `Scene.render` publishes `skyBrightness = computeSkyBrightness(...) × eclipseSceneLightFactor`, and S2's totality value of that factor is `ECLIPSE_TWILIGHT_FLOOR = (5/100000)^(1/3) = 0.0368403`; the strongest-suppression case is a HIGH-sun totality (2027-08-02 Luxor, sun 82° up) where the estimator is 1.0, so `B_totality = 0.0368403`. Solving `1 − smoothstep(0,1,t*) = k` gives `t* = 0.8469590`, hence `steepness = t*/B = 22.990 → 23.0`, `inflection = 0.0`. At the shipped 23.0 the factor at totality is **0.062810**, i.e. −3.00 mag to five figures. The day end falls out for free: at `skyBrightness = 1` the clamp saturates and the factor is exactly 0.
+
+Off-anchor consequences are **recorded rather than tuned away**, because two parameters cannot hit four anchors: a full moon overhead (`skyBrightness` 0.0400) lands at 0.01818, i.e. −4.35 mag, NELM ≈ 2.2 against a published full-moon NELM of ≈ 4.5 — the Milky Way correctly vanishes, but the cut is ~2.3 mag deeper than reality; and mid civil twilight (sun −2°, `skyBrightness` 0.0464) lands at exactly 0, where real observers still have Venus and one or two first-magnitude stars. **Both follow from the estimator, not from the curve:** `computeSkyBrightness`'s sun term is `smoothstep(−0.1, +0.4, sin(alt))`, which collapses to exactly 0 once the sun is below −5.74°, so it has no dynamic range across the twilight decade at all and no choice of these two parameters can separate "late civil twilight" from "astronomical night". A log-luminance estimator is the honest upgrade; it is filed on the C12 queue rather than smuggled in here.
+
+### The star reveal at totality — one law, no parallel path
+
+The eclipse already reaches the star machinery: S2 multiplies `frameState.skyBrightness` by the scene factor, and that is the modulation's only input. Nothing new was wired for the CUBEMAP; the reveal is what the curve above does at `B = 0.0368`.
+
+The SPRITES needed one line, and it is the same law rather than a second one. `StarField`'s own gate is `computeStarDayFade`, which is purely geometric and returns exactly 0 once the sun is ≳2.9° up — right for an ordinary day, wrong during totality, where the sun is up and its light is gone. A totality frame would have revealed the star cubemap with none of the catalogue sprites on top of it. So the sprites adopt the modulation factor as a **floor**:
+
+```js
+reveal = modulation > dayFade ? modulation : dayFade;
+```
+
+`max`, never a product: at night both terms are 1 and at noon both are 0, so the only frames that move are the ones where the two gates disagree — and where they disagree, the modulation factor is the one that knows about the eclipse. Multiplying two independently-derived sun-altitude ramps would double-dim twilight instead. The floor is gated on the same two conditions as the cubemap consumer, so `enableStarBrightnessModulation = false` leaves the line returning `dayFade` bit-for-bit.
+
+At a high-sun totality that floor is 0.0628, so the sprites return at 6.3% — Sirius (I ≈ 5.87) survives, a third-magnitude star does not. "Roughly the brightest stars and planets", by construction.
+
+### The 360-degree horizon twilight
+
+Inside the umbra the observer is surrounded by penumbra. The umbral ground track is only 100–160 km wide (2017: ~115 km; path widths up to ~270 km — NASA/EclipseWise), so in EVERY azimuth the still-sunlit atmosphere begins a few tens of km away and its scattered light arrives as a sunset-coloured band hugging the horizon, all the way round. No camera-anchored dimming scalar can produce it: S2 makes the whole sky darker, uniformly.
+
+**The shape is geometric.** From the umbra centre the near edge of the bright penumbral atmosphere is ~50–80 km away and the scattering layer carrying the glow is ~25 km deep, so the lit region subtends elevations from the horizon up to `atan(25/60) = 22.62°`. That is the shader constant `ECLIPSE_TWILIGHT_ELEVATION = 0.394791119699762`, and it is why the effect reads as a BAND rather than a wash — and why it cannot drown the star reveal happening overhead. The profile is `band = max(0, 1 − max(elev,0)/ELEV)²`.
+
+**The tint is derived.** Rayleigh transmission `exp(−τ·(550/λ)^4)` at `τ = 0.5` (a grazing horizon path) for 650/550/450 nm gives (0.774, 0.607, 0.328), normalised to `(1.0, 0.784, 0.424)` — the same physics that reddens an ordinary sunset, applied to the long slant path out to the penumbra. The spec re-derives it and fails at 1% drift.
+
+**The onset is keyed to obscuration**, the same quantity S2 dims by — `smoothstep` over `[0.98, 1]`, so every partial eclipse is byte-identical. The strength is additionally multiplied by the same atmospheric-column factor E3 introduced, so the term fades out between 60 and 111 km and is exactly 0 from orbit, where a "horizon band" is meaningless.
+
+**Annular exclusion is a SEPARATE, TYPE-LEVEL classifier — corrected after the adversarial pass.** The first draft claimed the 0.98 obscuration onset excluded annular eclipses because "a deep annular ring (ro/rs = 0.97) obscures ~0.94". Driven from this module's own integrand: ratio 0.97 → 0.9674, but **0.98 → 0.9794, 0.99 → 0.9905, 0.995 → 0.9955, 0.999 → 0.9992** — all above the onset. Real hybrid and near-hybrid eclipses (~5% of solar eclipses) run annular phases right through that band, so an obscuration-only gate would have fired an umbra-only effect at near-full gain over a track with NO umbra. The spec's guard probed only 0.97 — constructed just under the threshold and structurally unable to catch it.
+
+The classifier is now the angular-radius ratio `ro / rs`, gated `smoothstep(1.0, 1.001)` and multiplying the obscuration ramp. That is the eclipse magnitude **evaluated at central alignment** — `M(d=0) = (rs+ro)/(2·rs) ≥ 1 ⟺ ro ≥ rs` — which is the usable form of "magnitude is the total-vs-annular discriminator". The INSTANTANEOUS magnitude is not: `M ≥ 1` is algebraically identical to `d ≤ ro − rs`, i.e. to the umbra branch, i.e. to obscuration being **exactly** 1.0, so gating on it would collapse the whole obscuration ramp into a step at second contact. The ratio keeps the ramp and still excludes every annular geometry exactly. The narrow smoothstep rather than a hard step lets a HYBRID eclipse — annular at the ends of its track, total in the middle — cross continuously, which is what a hybrid physically does; a normal total eclipse sits at 1.01-1.08 and is fully inside. Stellarium #3720 is untouched: that trap is about driving the DIMMING SCALAR from magnitude, and the dimming scalar remains obscuration-driven. The spec now sweeps 0.97/0.98/0.99/0.995/0.999 and asserts on the same fixtures that the obscuration ramp ALONE would have fired, so it cannot go vacuous.
+
+**The amplitude is a perceptual constant and is labelled as one.** The mechanism fixes the shape and the direction; it does not hand us a radiance ratio, and the totality sky-brightness literature reports illuminances rather than the zenith-to-horizon contrast a shader needs. So the term is expressed as a multiple of the sky's OWN luminance along the same ray:
+
+```
+color += dot(color, vec3(0.2126, 0.7152, 0.0722)) * TINT * (gain * band)
+```
+
+which is self-scaling under the S2 dimming, the tonemap, the user's `atmosphereLightIntensity` and any future exposure work, with nothing to calibrate and nothing to drift. `ECLIPSE_TWILIGHT_HORIZON_GAIN = 2.0` (the horizon reads three times the local sky at the deepest point of totality). The probe gates on SHAPE — present at every azimuth, confined to the band, warm, and exactly zero off the eclipse — never on that number.
+
+The add sits in linear scatter space, before the tonemap, in BOTH shaders, and nothing in either block references the sun direction: azimuth-independence is the claim, and the spec asserts the absence of `lightDir`/`sunDirection` tokens inside the block rather than trusting the comment.
+
+**Uniforms.** WebGL: one new closure `u_eclipseHorizonTwilight` beside the existing `u_atmosphereLightIntensity`, fed from `SkyAtmosphere._eclipseHorizonTwilight`, refreshed at the top of `update()` alongside S2's `_eclipseLightFactor` (before both the WebGPU FR branch and the WebGL draw-time closure, so the two backends read one identical scalar). WebGPU: `eclipseControl: vec4<f32>` **appended at the tail** of the `Uniforms` struct at float offset 116 / byte offset 464; `UNIFORM_BUFFER_SIZE` 464 → 480 (= 30 × 16, still 16-aligned); floats 117–119 explicitly zeroed and reserved. **No existing offset moved**, no bind-group-layout change, and **no new ShaderDefine bit** — the lo registry is exhausted and everything here is a runtime uniform or a JS gate (C12 exit-gate item 5).
+
+**Register cost (C13-39's negative result heeded).** The WGSL add is a whole-block `if (u.eclipseControl.x > 0.0)` around ~8 instructions: one `normalize`, one `dot`, one `asin`, one `clamp`, two `max`, one multiply-add on a vec3. It is on the SKY shell, not the cloud march — the shader C13-39 measured as occupancy-bound — and the branch is uniform across the draw (the gain is a uniform), so there is no divergence. The cost is a handful of VGPRs live only inside the taken branch, paid by one pipeline. The same applies to the GLSL twin, where it is a `#ifndef`-free runtime `if`.
+
+### Byte-identity, stated per item
+
+| item | off position | why it is exact |
+| --- | --- | --- |
+| obs-1 fix | `globe.enableLighting = false` | `fromGlobeFlags` returns NONE, which is what the frameState pull already returned |
+| star modulation | `enableStarBrightnessModulation = false` | both shaders skip the block; `CubeMapPanorama` packs `enableFlag = 0`; `StarField` returns `dayFade` unchanged |
+| star modulation | orbital camera | `computeAtmosphericColumnFactor` → 0 → `skyBrightness` 0 → factor exactly 1.0 |
+| star modulation | `skyAtmosphere.show = false` | enable flag forced 0 on both backends |
+| horizon twilight | `enableEclipseHorizonTwilight = false`, or `enableEclipse = false`, or obscuration < 0.98, or ANY annular geometry (`ro ≤ rs`), or above 111 km | `getEclipseHorizonTwilightFactor` returns exactly `0.0` and both shaders skip the block on `> 0.0` |
+| star double-draw fix | every backend | each feature renderer returns one cached command; no backend mutates or scans the frame command list |
+
+### Files
+
+`packages/engine/Source/Renderer/WebGPU/WebGPUAtmosphereUniforms.ts` (new `resolveSkyDynamicLighting` + the docstring correction), `Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js` (obs-1 call site, UB 464→480, `uniformData[116..119]`), `Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js` (enable gate + shared curve constants), `Scene/SkyAtmosphere.js` (`get dynamicLighting`, `_eclipseHorizonTwilight`, `u_eclipseHorizonTwilight`), `Scene/SkyBrightness.js` (`computeAtmosphericColumnFactor`), `Scene/StarFieldMath.ts` (`computeStarBrightnessModulation` + the three derived constants + the derivation), `Scene/StarField.js` (the reveal floor and direct one-command return), `Scene/CubeMapPanorama.js` (the WebGL uniform pair + `updateStarModulation`), `Scene/AtmosphericConditions.js` (E3 default flip + curve + `enableEclipseHorizonTwilight`), `Scene/EclipseState.js` (S6 constants, `computeHorizonTwilightStrength`, `getEclipseHorizonTwilightFactor`, two contract fields), `Scene/Scene.js` (publish + option + direct `environmentState.starFieldCommand` assignment), `Scene/FrameState.js` (1 field), `Renderer/WebGPU/WebGPUStarFieldRenderer.ts` (one cached command; no command-list mutation), `Shaders/SkyBoxFS.glsl` (the WebGL modulation consumer), `Shaders/SkyAtmosphereFS.glsl` + `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl` (the twilight add), `Shaders/WebGPU/CubeMapPanorama.wgsl` (comment sync). New `Tools/visual-regression/eclipse-sky-totality.spec.mjs` (44 tests) + `Tools/visual-regression/probe-eclipse-sky-totality.mjs`. `eclipse-state.spec.mjs` CONTRACT_KEYS extended by the two new state fields. `Tools/visual-regression/probe-atmo-resolver-consistency.mjs` — the DP-H47 gate — updated in the SAME change, because the obs-1 fix invalidates it (see below). `packages/engine/Specs/Scene/SkyBrightnessSpec.js` + `StarFieldSpec.js` gained blocks for the column factor and the reveal floor.
+
+### The DP-H47 acceptance probe had to change with the fix
+
+`probe-atmo-resolver-consistency.mjs` drove its SKY leg by flipping `scene.atmosphere.dynamicLighting` 0 → 2 while leaving `scene.globe` DEFINED (it only sets `globe.show = false`) with `globe.enableLighting = false`. With a globe present, `Scene.updateEnvironment` resolves the sky's enum from `fromGlobeFlags(globe)` — NONE for both values — so on WebGL that leg never had a delta at all. It was green only because the WebGPU renderer was re-resolving the field itself, i.e. **the probe was codifying the very divergence obs-1 fixes**, and after the fix both captures are identical and `skyResponse` collapses to ~0. Updated in the same change: the SKY leg now drives `globe.enableLighting` + `dynamicAtmosphereLightingFromSun` (the channel WebGL actually uses with a globe), while the MODEL leg keeps driving `scene.atmosphere.dynamicLighting`, which `DynamicEnvironmentMapManager` genuinely reads on both backends. Both fields are set on every capture, so each consumer sees the flip through its own real channel. The reason is recorded in the probe's own header so the change is not mistaken for a loosened gate.
+
+### Gates run by the worker
+
+`npx tsc --noEmit` clean; `eslint` clean on all touched engine files (the two `.ts` files are outside the eslint config, as they have been throughout the campaign); prettier-stable on every touched engine file (verified modulo the working tree's CRLF, which makes `prettier --check` report every file in the repo); `node --test eclipse-sky-totality.spec.mjs` **26/26** including naga validation of `SkyAtmosphere.wgsl`, `CubeMapPanorama.wgsl` and the JS-embedded production panorama shader; `node --test eclipse-state.spec.mjs` **32/32** (S1 unbroken); `node --check` on both probes.
+
+### THE STAR REVEAL IS DEMONSTRATED (cycle v3)
+
+Four cycles of ambiguity closed. Both backends, at the pinned totality instant:
+
+| | starSumOn | starSumOff | starMaxOn | starMaxNoStarsOn |
+| --- | --- | --- | --- | --- |
+| WebGL | 26.635 | 0 | 18.026 | 13.886 |
+| WebGPU | 26.227 | 0 | 18.026 | 13.958 |
+
+`revealHappens`, `noStarsWithoutTheEclipse` and `revealParity` all true. **The catalogue is submitted and the reveal happens** — not the zero that would have localised it to the draw path. Corroborated from a path sharing no code with the statistic: an independent 5×5 local-maxima census over the top 45% of the sky found **0 peaks in `revealOff` and 14–15 in `revealOn`**, peak luminance 18.0 matching `starMaxOn = 18.026`, with the same stars at the same pixels on both backends — (796,37), (824,158), (336,178).
+
+Also green that cycle: `nightLanesAreDark` true (the `recordInstant` fix holds — both night lanes resolve −8.096 where one previously reported +25.655), `everyLaneAtItsInstant` across all nine lanes, lane A PASS with `alphaParity` 0.008, lane C PASS on both with the warm band visibly present, lane D parity on all three arms, 12 PNGs with 12 distinct hashes.
+
+### The E3 default flip tripped S2's own guard — resolved by MODELLING site 4, not by re-justifying it
+
+`probe-eclipse-scene-dimming` exited 2 STRUCTURAL on exactly one of its four guards: *"enableStarBrightnessModulation is on — site 4 is no longer inert and cannot be excluded from the manual equivalence twin"*. That guard was written by S2 with the note "Asserted, so the exclusion cannot outlive its justification", and it did its job: a previous slice's tripwire catching a later slice's default change. It mattered, because `equivalenceWorstRel` was then **absent, not zero** — S2's equivalence property was unverified against this changeset.
+
+**Why modelling rather than re-justifying.** The exclusion rested on site 4 being byte-inert at defaults. E3 makes it live: `Scene.render` publishes `skyBrightness = computeSkyBrightness(...) × eclipseSceneLightFactor`, the modulation consumes it, so the engine path dims the star cubemap while an unmodelled manual path would not. It cannot be re-justified on any other ground either — **S2's own round-3 finding is that the sky band is not the shell alone**; the cubemap composites through it, so a dimmed cubemap lands inside the very band the equivalence gate measures. The remaining option, turning the modulation off for the capture, would restore the old justification by testing a configuration the engine no longer ships — the bypass the guard exists to prevent.
+
+**The modelling is exact and uses a public knob.** The engine evaluates the modulation curve at `B × f`; the manual twin evaluates the *same* curve at `B` with its inflection re-solved so the curve returns the identical factor. Both paths hand the cubemap shader one number and it is the same number. The solve is then **verified from the manual frame's own published `skyBrightness`** rather than trusted (`site4.matches`, 1e-6), the inflection is restored before anything else renders (`site4.inflectionRestored`), and both are part of the per-rung `ok`. When the modulation is off, `site4` is `null` and the historical inert-exclusion path is untouched.
+
+While in that file, its `engineMirror` pin — a literal `indexOf` carrying an embedded `\n` and a fixed indent, which could not match a CRLF working tree — was converted to a whitespace-tolerant regex. That is the fragile-pin class `lib/provenance-markers.mjs` now rejects mechanically; `eclipse-scene-dimming.spec.mjs` is **31/31** for the first time.
+
+### The stale-uniform class, third instance — `aim()` ate lane B4
+
+`spriteDeltaWithShell` and `spriteDeltaNoShell` both read **exactly 0** while the reveal census found 14 peaks in its own frames. Exactly zero, not small, was the tell: the two captures were byte-identical, so toggling the star field changed nothing in that band.
+
+`aim()` derives the anti-solar direction from `uniformState.sunPositionWC` — the last **rendered** frame — and B4 called it as the first statement inside its night scope, before any render at the night instant. So it aimed anti-solar for the **deepest instant's** sun, hours of Earth rotation away, and the band landed somewhere with no sky in it. Same class as `recordInstant` the round before, and fixed the same way: the render moves **inside** the helper, so the sun direction cannot disagree with the pinned instant whatever the caller did. The spec now holds both helpers to it — checked against code lines only, since their comments legitimately name the uniform they explain.
+
+### `multiplierReachesPixels` measured the wrong quantity — comparand, not engine
+
+`measuredFactor` read 0.938 against a 0.5 target while the reveal demonstrably worked. The modulation scales the **cubemap and sprites**; the band mean is dominated by the **sky shell**, which it never touches. Solving `1 − 0.5c = 0.938` puts the modulated content at `c = 12.4%` of the band — so the ratio is arithmetically pinned near 1 whatever the multiplier does. Third gate this cycle to fail by measuring the right quantity in the wrong place.
+
+The gate now ratios the **modulated component**, isolated by difference (star layers off/on in the same frame), where the sky term cancels instead of diluting: `(0.5·comp)/comp = 0.5` exactly. The band-mean ratio survives as `bandMeanRatioReportedOnly` so the evidence is not lost, and `modulatedComponentMeasurable` guards non-vacuity.
+
+### The star reveal was never measured — the census is arithmetically blind to it
+
+Cycle v2 returned zero point sources in all 12 frames on both backends, `revealHappens: false` and `catalogDrawnOnce: false`, with `revealOn` peaking at luminance 36. The sky darkened 7.3× (band mean 0.388 → 0.053), so the dimming half works. Worked through at the measured background and the shipped constants, **all three failures are instrument arithmetic, not engine behaviour**:
+
+At the deepest instant the sun is +25.65° up, so `computeSkyBrightness` saturates to 1.0; times the S2 totality factor that is `skyBrightness = 0.036840`, and the modulation factor is `k = 0.06281`. The measured band mean 0.053 puts the census background at 13.5/255, so its bar is `max(bg+12, 1.6·bg) = 25.5`.
+
+1. **The cubemap half is un-censusable by construction.** A cubemap star must have source luminance `25.5 / 0.06281 = 406/255` to clear the bar. Impossible — no 8-bit source can. The census literally cannot see the cubemap reveal at totality, whatever the engine does.
+2. **The sprite half is fixture-dependent.** Sirius (`I = 5.87`) lands at 94/255 unattenuated and 29/255 under plausible atmospheric extinction at that elevation, so sprites *are* detectable — but only if a star that bright happens to occupy the ~30°×18° anti-solar patch the band covers, which nothing in the fixture arranges. `revealOffSources = 0` is meanwhile *correct*: eclipse off, sun up, `k = 0`, no stars. So `revealHappens = onSources > offSources` compared 0 > 0 and failed while the physics was right.
+3. **`catalogDrawnOnce: false` was a band MEAN applied to point sources.** The catalogue puts on the order of ten stars in that patch, a few pixels each; over ~138k band pixels that dilutes to ~5.7e-5 — genuinely below the 1e-4 non-vacuity floor, which therefore rejected the measurement **correctly**. The floor was right; the statistic was wrong.
+
+Fixed on the instrument side, without touching the feature:
+
+- **The reveal is now measured directly, by difference.** `starContribution()` toggles the star field and cubemap off/on at each eclipse state and reports the **sum** over the band (means dilute sparse sources) and the **max** pixel — the statistics a point-source population actually moves. `revealHappens` gates on `starSumOn > starSumOff`, with a new converse arm `noStarsWithoutTheEclipse` (daylight with the eclipse off must contribute essentially nothing, since `k` is exactly 0 there). The m1 census stays, reported, as the human-legible number.
+- **Lane B4 boosts `starField.intensity` to 40**, restored before anything else renders. This is the right lever precisely because **the ratio is invariant to it**: intensity scales `spriteDelta(true)` and `spriteDelta(false)` identically, so `deltaWithShell / deltaNoShell` — the quantity the `1−a` vs `2−a` discriminator gates on — is unchanged while both deltas climb clear of the floor. Widening the floor would have made the gate mean less; this makes the same gate measurable. Precedent and rationale are Batch 761's: `intensity` is public, backend-neutral, and consumed by both feature renderers through the identical `StarField._effectiveIntensityScale`, so the boosted lane exercises the same draw path on both backends and cannot mask a divergence.
+
+**What is still unknown, stated plainly:** whether the catalogue is *submitted* at these instants. The measurements above will answer it next cycle — a non-zero `starSumOn` with `starMaxOn > starMaxNoStarsOn` proves submission and reveal together; a zero one localises it to the draw path with the census no longer able to confound the answer.
+
+### Lane A no longer depends on an engine defect
+
+The v2 exit-2 bisected to `scene.sun.show = false`: on WebGPU, with all environment content hidden including the sun, the band renders black and `backgroundColor` is never applied, so the control's black→white swap moves nothing (1 → 0 exactly at that line; WebGL unaffected at every step). That is a `NEW-WEBGPU-ENV-PASS-DROP` member (C12-G1F1 family) that Batch 761's env-frustum root fix does not cover, and it has its own engine lane.
+
+The dependency is **removed**, not worked around: every camera in this probe is anti-solar and the widest frustum is 60°, so the solar disc is geometrically incapable of entering any measured band. Hiding the sun bought nothing the camera did not already buy, and cost a dependency on an unrelated defect — `scene.sun.show` stays `true`. (`scene.sunBloom` was already false, which is the screen-space variable the old line was actually reaching for.) Per Principle 9 the defect is not silently routed around: both control-response structural reasons now append a `BLOCKED-BY-ENGINE` reference naming the defect, so a residual failure reports "blocked by" rather than a bare control failure.
+
+### `recordInstant` was order-dependent; the render moved inside it
+
+`B4-exactlyOnce` reported the correct ISO with elevation +25.655 — the *previous* lane's sun. The elevation derives from `uniformState.sunPositionWC`, which reflects the last **rendered** frame, and B4 recorded before rendering at its instant while lane D recorded after four renders and reported the correct −8.096. The render was always at the right instant; the report was stale. Fixing the call site would have left an order-dependent reporter to drift again, so `recordInstant` now renders first: after that line the uniform state cannot disagree with the ISO being recorded, whatever the caller did. **The gate caught this exactly as designed** — a matching ISO with an absurd elevation is what `nightLanesAreDark` exists to reject, and that arm stays.
+
+### Doc authoring — pipes inside code spans still split table cells
+
+The C12-29 queue row had 8 pipes in a 4-column table, so everything past the fourth column was invisible in rendered GFM. Two causes, both fixed: appended prose had been placed *after* the closing `| L (epic…) | research report |` cells (14,815 characters relocated back into the description cell), and three pipes sat inside inline-code spans — `` `|a_rec - a|` `` and `` `tr -cd '\r' | wc -c` `` — which GFM treats as column separators regardless of the code span, now escaped as `\|`. Every table row in the file was then audited against its own table's column count; all are well-formed.
+
+### The same-task capture defect is a CLASS, and now has a shared enforceable home
+
+It cost two lanes a full executor cycle each, reached from **opposite directions**: C12-29 S6 (this entry) wrote `await frame(); await frame(); readPixels()` from the start; C12-29 S5 (umbra) made its settle helpers `async` to fix tile starvation, which *inserted* yields between render and read. Its symptoms were the same two mechanisms — all-black byte-identical WebGL captures, and a WebGPU sampler reading `0.0000` from a canvas a direct PNG decode showed was 91.4% non-black, with on/off captures byte-identical while the uniforms recorded different state. **A correct probe can acquire this defect by fixing an unrelated bug**, which is what makes it a class rather than a mistake.
+
+So it lives in `Tools/visual-regression/lib/same-task-capture.mjs`, not in doctrine — the same treatment the marker-width check got.
+
+**The API constraint that shapes the module, and which the brief did not anticipate.** These primitives must run inside `page.evaluate`, and module-scope bindings do not cross that boundary: a Playwright page cannot import a Node ESM module. A module that exports functions for probes to call directly is one **neither probe can use**. It therefore exports the CANONICAL SOURCE TEXT, which each probe embeds between `// ==BEGIN same-task-capture==` markers, plus Node-side validators specs run against a probe's text:
+
+- `checkEmbeddedCaptureIsCanonical(probeSource)` — the embedded copy must be byte-identical to the library (dedented first, so indenting it inside an evaluate callback is not treated as drift — requiring column-0 embedding would be exactly the formatting trap this fleet keeps paying for).
+- `checkFusedCaptureUsage(probeSource)` — no unfused read outside `captureNow`, no ad-hoc `getImageData`/`toDataURL`/`drawImage(canvas)` reader beside the shared one, and no double-yield-then-read shape.
+
+Same shape the fleet already uses for `m1PointSourceCensus` and `env-matrix-shape.spec.mjs`'s marker extraction: in-page code lives as text, and the spec holds it to the canonical copy. The `new Function`-it-in-page alternative was rejected — it adds an eval-shaped dependency on page CSP for no benefit, since embed-and-pin already makes drift a spec failure.
+
+`settleThen(maxFrames, done, capture)` is the piece that prevents the umbra lane's path specifically: it keeps the yield on the **loading** side and calls the capture with nothing between the final render and the read, so a probe can fix tile starvation without reintroducing the defect.
+
+Proven non-vacuous by replaying **both** lanes' shipped shapes plus a drifted embed and a probe-local reader, with positive controls (canonical + fused usage passes; indentation is not drift). This probe's private `captureNow`/`grabCanvas`/`readPixelsUnsafe` are gone, replaced by the embedded canonical block and thin aliases; the general assertions moved onto the shared validators and only lane-specific ones remain local.
+
+### DOCTRINE — a capture must RENDER AND READ IN THE SAME TASK, on both backends
+
+The first executor cycle to get past fixture selection reported two failures. They have **one root cause**, and it is a rule this probe's own header states and every one of its helpers violated.
+
+Every measurement did `await frame(); await frame(); readPixels()` — the read crossed a `requestAnimationFrame` yield. Both backends invalidate the canvas across that boundary, differently:
+
+| backend | mechanism | observed |
+| --- | --- | --- |
+| WebGL | drawing buffer cleared after the compositor swap without `preserveDrawingBuffer` | all four PNGs byte-identical, 20,861 bytes, completely black |
+| WebGPU | swap-chain texture invalidated after presentation; the read returns a previously-presented frame | lane D `controlResponse = 0` — the black/white background renders never reached the read |
+
+So "the WebGL lane renders nothing" was not a rendering failure at all: WebGL rendered fine and the probe read an empty buffer. And the background control could not respond on either backend because the reads were not of the renders that set the background. The working reference was in the same directory the whole time — `probe-eclipse-scene-dimming.mjs` does `scene.render(T()); bandStats(...)` with nothing in between.
+
+Fixed by fusing the two operations so the unsafe one is unreachable: `captureNow()` renders and reads in one task and is the ONLY way to obtain pixels; `grabCanvas()` renders before `toDataURL`; `readPixelsUnsafe` has exactly one call site. The spec asserts all three, that no bare `readPixels()` survives in code, and that no capture is preceded by the double-yield shape that shipped.
+
+**The coordinator's alternative hypothesis — that the `atInstant` fix had relocated the boundary so lane D measured at the default instant — is KILLED by line span:** lane D's scope opens at `await atInstant(nightIso, …)` on line 840 and closes on line 1005, and every one of its capture sites (965–1000) lies inside. The uniform blue sky in `webgpu-defaults` is consistent with a stale read AND with this entry's own resolved model (under shipped defaults the enum is NONE, so the shell is lit "from directly above" and renders permanent daylight whatever the sun is doing). Which of the two it was is no longer a matter of argument — see the next doctrine.
+
+### DOCTRINE — the fix for an unobservable defect must itself be observable in the artifacts
+
+The `atInstant` repair could not be confirmed from the executor's output, because the manifest carried no timestamp. That is the same defect one level up: a property was fixed in source and left unmeasurable in evidence.
+
+Every lane now RECORDS the instant it actually rendered at, with the solar elevation, via `recordInstant(lane, expectedIso)`. The verdict gates on `everyLaneAtItsInstant` (recorded ISO must equal the lane's required ISO, ≥ 6 lanes recording), plus two sanity arms so a matching timestamp with an absurd elevation still fails: `nightLanesAreDark` (≤ −5.74°, the derived `computeStarDayFade` edge) and `eclipseLanesAreSunlit` (> 0°). The instants are also printed on the structural path, where they are the most useful thing to see.
+
+### DOCTRINE — a structural abort must preserve the evidence it already computed
+
+The abort path serialised only `derived`, `provenance`, `defaults` and `shotsWritten`; every lane measurement was computed in memory and discarded. With lane D's control response checked first, one instrument defect erased every other lane's numbers — `spriteAttenuatedMeasurable` and every tolerance were unreportable — which is a direct cause of this probe having spent several cycles surfacing one defect at a time.
+
+`judge` now runs defensively on whatever each backend returned (`partialVerdicts`, with a `judgeThrew` field rather than losing the raw data), and the raw `laneA`/`laneB`/`laneC`/`laneD`/`laneInstants` objects ride along in `partialLanes`. One failure now costs one cycle instead of that cycle's entire evidence.
+
+### The headline is now demonstrable in pixels
+
+No artifact had yet shown a star: the shots came from lanes C and D, neither of which frames the star band at the eclipse instant. Lane B now emits `revealOn` / `revealOff` — same pinned instant, same camera, same curve, differing only in the eclipse toggle, captured same-task so they are the frames the numbers were read from rather than a later repaint.
+
+### Line endings — mechanism, and the reliable count
+
+The changeset arrived with CRLF where HEAD and base are pure LF. Mechanism: this worktree has `core.autocrlf = true` with `text: auto`, so every file I touch is CRLF **on disk** while git normalises to LF **on commit**. A git-based transfer is unaffected; a byte-copy transfer is not. Confirmed with the reliable counter the executor supplied — `tr -cd '\r' | wc -c` gives 751 for `FrameState.js`, matching their measurement exactly. `grep -c $'\r'` reports 0 falsely under MSYS because it strips CR before matching.
+
+### DOCTRINE — a lane may not mutate shared instant state; ownership must be structural
+
+A 25-agent adversarial pass found that **the probe had never produced acceptance evidence and could not exit 0 as written**. Lane D pinned the clock to the NIGHT instant and never restored it. Lane D runs first, so Lanes A, B1–B3 and C all rendered hours after the eclipse — `moonObscuration = 0`, horizon-twilight factor exactly 0 — and `fixtureIsDeep`, `revealHappens`, `revealIsPartial` and `presentAtEveryAzimuth` could never pass. Lane B4's own save/restore pair was written to protect a value Lane D had already clobbered: the intent was understood, and remembering it was still not a mechanism.
+
+Fixed structurally, not by adding a restore. The instant is `_pinnedInstant`, read through `T()`, and **`atInstant(iso, body)` is its only writer** — save, set, run, restore in a `finally`, so an early return or a throw inside a lane cannot leak it. Three lanes now enter through it (D, B4, C's clear instant) and the default is never reassigned. The spec holds the property mechanically: the bare `let pinned` must be gone, no `pinned =` may appear, exactly three writes to `_pinnedInstant` must exist, the restore must be in a `finally`, and both `nightIso`/`clearIso` must be entered through the helper.
+
+One hazard the conversion introduced and the same spec now pins: a `return out` inside a scoped callback returns from the CALLBACK, not from `MEASURE`. Lane D's structural exit sets the flag and the caller checks it after the scope closes.
+
+### DOCTRINE — a shared helper must have its SUCCESS path exercised, not just its failures
+
+Both spec call sites for `selectEclipseFixture` asserted `chosen === null`; no `ok: true` row existed anywhere in the suite. A selector that always returned null — broken guard, renamed field, changed return shape — passed 30/30 and would only surface after an Edge launch and two `page.evaluate` passes. That is exactly the failure class the extraction was meant to remove. The success path is now asserted on **identity and fields** (which vantage won, and that `deepest`/`clear`/`night`/`peakMinutes` survive selection), plus a pin that the probe still reads those field paths.
+
+Generalises: when a helper is extracted *because* a failure was expensive to find, the extraction is only complete when the non-failing path is pinned too.
+
+### Honest accounting — the constraint architecture did none of the unblocking
+
+On the real 18-vantage grid the full rejection tally is `{ totalEclipse: 3 }`. Five of six predicates reject nothing. **What unblocked the probe was the −8° relaxation alone.** The architecture is kept because the failure REPORT is only meaningful if every requirement is a predicate — the old diagnostic was a symptom from a rule that existed only in prose — but the module header now says plainly that it is not currently filtering, and the spec drives every predicate's rejection path on synthetic fields so they have demonstrated teeth rather than assumed ones (with a coverage assertion so a new predicate cannot ship without one).
+
+### The night-threshold verdict, computed
+
+The refuted claim was "the relaxation changes nothing any lane measures". Lane A/B4's `nightAlphaRecovered` is measured under the `enableLighting = true` branch, where `nightAlpha` clamps to 0 and `alpha = mix(color.b, 1, 0) = color.b` — the raw scattering integral, unclamped and continuous in solar depression. So `a` genuinely moves with the threshold. **It cannot flip the verdict, and the reason is algebraic:** for a single draw the measured ratio is `(1−a)·S / S = 1−a` and the prediction is `1 − a_recovered` measured at the same instant, so the error is `|a_recovered − a|` — independent of the value of `a` — while the separation between hypotheses is `(2−a) − (1−a) = 1` exactly, also independent of `a`. Both are pinned across `a ∈ [0, 1]` in 0.01 steps, together with the converse (a real double draw must still classify as double).
+
+Even under the pessimistic reading — the whole alpha difference as an *uncancelled* bias — it breaches the 0.25 tolerance only above a linear inscatter of **0.0474** in the anti-solar sky 8° after sunset, which the shell does not produce (linear 0.01 lifts to 0.117 through the gamma; 0.001 to 0.043).
+
+**The real risk the refuter surfaced is vacuity, not a flip:** as `a → 1` the attenuated delta `(1−a)·S` shrinks toward the 8-bit floor and the ratio is measured on noise. At this band size (~138k px) the quantisation on a band mean is ~1.05e-5, so with `S ≥ 0.004` the lane only degenerates above `a ≈ 0.974`. A `spriteAttenuatedMeasurable` guard now makes that self-reporting instead of assumed. **−8° stands.**
+
+### DOCTRINE — a fixture selector must be constrained by EVERY requirement its lanes impose
+
+One stage past the marker fix, the probe failed again in its own derivation: `no astronomical-night instant at this vantage`. Not an engine defect, and not a bad marker — a **selector that encoded one lane's need and silently stranded the others**.
+
+`DERIVE_TOTALITY` picked ONE vantage by MAXIMUM OBSCURATION, then demanded three instants at it: deepest, clear, and night. Those are jointly unsatisfiable for the vantage that rule picks. The sweep visits all nine Iceland vantages before any Spain vantage and the comparison is strictly-greater, so the FIRST vantage to reach obscuration 1.0 wins and nothing later can displace it — while at 62-66°N in mid-August the sun never gets far below the horizon. Measured over the real grid (this batch's own spec, printed from the engine's ephemeris):
+
+| region | obscuration | min sun elevation in the following 24 h |
+| --- | --- | --- |
+| iceland (9 vantages) | 0.9983 – 1.0000 | **−9.68 to −12.70°** |
+| spain (9 vantages) | 0.8578 – 1.0000 | **−31.52 to −34.52°** |
+
+So the headline constraint selected Iceland and the night constraint could only be met in Spain. The probe's own comment explained why night is non-negotiable — `computeStarDayFade` is exactly 0 whenever the sun is up, so a daytime star reference measures 0/0 — but nothing connected that requirement to the selection.
+
+**Two-part fix.**
+
+*(1) The threshold was over-tight, and correcting it is the honest half.* The lanes do not need astronomical night; they need `computeStarDayFade === 1`, which the engine reaches once `sin(elevation) ≤ −0.1`, i.e. at **−5.74°**. `computeSkyBrightness`'s sun term saturates to 0 at the same edge. `FIXTURE_NIGHT_MAX_SUN_ELEV_DEG = −8°` is that edge plus margin, derived from the engine's own constants rather than picked — and at −8° every Iceland vantage qualifies, so the maintainer-facing Iceland showcase stays usable. The fixture is "engine-dark", not "astronomically dark", which is precisely what a test of the engine's own machinery needs.
+
+*(2) The selector now evaluates ALL constraints per candidate.* `Tools/visual-regression/lib/eclipse-fixture-constraints.mjs` owns an explicit predicate list — `totalEclipse` (obscuration ≥ 0.98), `sunHighAtEclipse` (> 8°), `nightReachable` (≤ −8° within 24 h), plus the instant-level `deepestInstant` / `clearInstant` / `nightInstant` — and the in-page pass now **returns a table and selects nothing**. Selection is pure data validation in the Node driver, the same shape as `eclipse-ladder-rungs.mjs` and for the same reason: a predicate behind the `page.evaluate` boundary cannot be unit-tested, so it only ever fails in front of an executor. The driver prints the full constraint table every run, and a total failure names the constraint that eliminated the field (`no vantage satisfies every lane constraint; dominant failure: nightReachable (9 of 9 candidates) — sun reaches ≤ −8° within 24 h (lanes D + B4 need dayFade === 1)`) rather than a bare symptom.
+
+**Caught by a spec, not by an executor.** Two new cases: one runs the real ephemeris over the real vantage grid and asserts a satisfying vantage exists — the assertion the old selector would have failed — and pins the specific trap (every Spain vantage below −18°, no Iceland vantage below −18°, but the derived −8° threshold reachable at both). The other drives an unsatisfiable synthetic field and asserts the reported failure names `nightReachable` with the right tally, with a positive control so the rejection is not vacuous. Same reasoning as the marker enforcement, and the same reason it has to be a spec: **workers cannot run probes, so anything checkable in pure math belongs in a spec.**
+
+### DOCTRINE — a provenance marker must be a string neither the BUNDLER nor the FORMATTER can rewrite
+
+This batch contributed the fifth strike, and it blocked an otherwise-green acceptance run: the probe exited 2 in its own guard on `packages/engine/Source/Scene/CubeMapPanorama.js: marker absent from BUILD`. The marker was `u_starModulation: function () {`. The source has exactly that; the BUILD has `u_starModulation: function() {`, because esbuild re-prints anonymous function expressions without the space. Corroborated by the executor: the bundle holds 1387 occurrences of `function() {` against 2 of `function () {` (both inside embedded shader strings), and the space-stripped search finds the code exactly once. **The code was present the whole time; the marker simply could not match it.** The other eight slices passed because they were GLSL/WGSL string content or plain statements, which esbuild reproduces verbatim — this was the only JS-syntax, formatting-sensitive marker.
+
+The full history the rule now rests on:
+
+| strike | class | what happened |
+| --- | --- | --- |
+| S1 | numeric literal | esbuild wrote `1.0` as `1` |
+| Batch 765 | prettier-wrapped call | the marker spanned a line break the formatter moved |
+| Batch 766 | whitespace | `function ()` emitted as `function()` (this batch) |
+| Batch 766 | identifier renaming | a local `data` emitted as `data2` |
+| Batch 766 | distinctiveness | `data` passed every structural rule while matching unrelated code |
+
+**ALLOWED:** property names, and identifiers inside GLSL/WGSL sources (their text becomes string CONTENT in the bundle and cannot be renamed at all). **FORBIDDEN:** whitespace-adjacent syntax, local variable names, multi-token statements a formatter can wrap, numeric literals, and anything under 12 characters.
+
+**Why it has to be a SPEC and not a habit:** workers cannot run probes, so a probe's provenance guard is never exercised until an executor runs it. Every unsound marker therefore costs a full Edge cycle and surfaces one per cycle. The enforcement was written as a spec case by the C12-29 S5 worker (`eclipse-globe-umbra.spec.mjs`) and is now **extracted into `Tools/visual-regression/lib/provenance-markers.mjs`**, which parses a probe's own `VERBATIM_SLICES` and enforces four properties mechanically: single bare identifier (one regex forecloses whitespace, wrapping, punctuation and leading numerals at once), ≥ 12 characters, rename-proof (property name, or a shader file), and genuinely present in the SOURCE the entry names. Each entry now carries a `why` string justifying its rename-proofness. Both specs import the shared module; neither keeps a private copy, so the next probe inherits the rule instead of rediscovering it.
+
+Proven non-vacuous the same way the S5 worker proved his: all six historical defects are re-injected and asserted rejected, the whitespace case specifically ON SHAPE, plus two positive controls (a sound property marker and a sound shader marker must still be ACCEPTED, or the rejections would be vacuous in the other direction). Extracting it surfaced one robustness bug immediately: the property arm builds a `RegExp` from the marker, and re-injecting the numeric-literal strike (`- earthOcclusion) * (1.0`) made it THROW `Unmatched ')'` rather than reject. A malformed marker must be rejected, never throw — the property arm is now gated on the shape arm having passed.
+
+This batch's seven slices use markers that satisfy all four properties (`_eclipseHorizonTwilight`, `u_starModulation`, `u_eclipseHorizonTwilight`, `eclipseControl`, `eclipseHorizonTwilight`). One honest casualty: **obs-1's fix is a CALL-SITE change with no property-shaped token**, so it has no verbatim slice by construction and is covered by the weaker `REQUIRED_TOKENS` arm (`resolveSkyDynamicLighting`) instead — a weaker gate honestly labelled beats a strong-looking marker that cannot match.
+
+### DOCTRINE — never run `gulp build` from a worktree with a junctioned parent `node_modules`
+
+This generalises well beyond this batch, so it is recorded as doctrine rather than as a footnote.
+
+A worktree has no `node_modules`, and this repo tracks **no `package-lock.json`**, so `npm ci` is impossible (`EUSAGE: can only install with an existing package-lock.json or npm-shrinkwrap.json`). The obvious workaround — junction the parent repo's `node_modules` into the worktree — makes `npx gulp build` **succeed**, and the success is the trap: npm workspaces resolve `@cesium/engine` through that junction to `/f/Dev/GH/cesium-webgpu/packages/engine`, i.e. **the MAIN tree**. The bundle is therefore built from the main tree's sources and written into the *worktree's* `Build/` with a fresh mtime.
+
+Measured on this batch: the resulting `Build/CesiumUnminified/index.js` still contained `const dynamicLighting = resolveDynamicLighting(frameState)` — the pre-fix line — and **none** of the batch's tokens (`resolveSkyDynamicLighting`, `eclipseHorizonTwilight`, `u_starModulation`, …), while being newer than every source file. Every probe in this fleet gates provenance on "bundle mtime ≥ newest source mtime" plus token/marker presence; the mtime arm would have passed, and any run that reached the marker arm would have failed for a reason that looks like a bad edit rather than a bad build. Worse, a probe with weaker markers would have gone **green against the main tree's code while claiming to test the worktree's**.
+
+Rules: worktree workers do not run `gulp build`. The real build, the Jasmine suite and the Edge probes are the orchestrator's, in the main tree. Junctioning the parent `node_modules` is acceptable ONLY for tooling that resolves by path rather than by package specifier — `tsc --noEmit` (its `include` is worktree-relative), `eslint`, `prettier`, `node --test` — and the junction should be removed afterwards. If a worktree build ever happens by accident, delete the resulting `Build/` before anything can run against it.
+
+The specific hazard the fleet raised — a NEW file under `packages/engine/Source/` needing `export default` for the generated `packages/engine/index.js` — **does not apply here**: this batch adds no Source module at all. `git status` shows exactly two untracked files, both under `Tools/visual-regression/`, and the `packages/engine/index.js` that the (main-tree) build regenerated is byte-identical to the committed one. The real build, the Jasmine suite and the Edge probe run remain the orchestrator's, in the main tree, as they have been for every batch in this campaign.
+
+**One pre-existing spec failure, environmental and untouched by this work:** `eclipse-scene-dimming.spec.mjs` 30/31 — its `mirrorRead` assertion does `probe.indexOf("const engineMirror =\n      scene.globe?...")`, an embedded `\n` matched against a CRLF working tree. Neither `probe-eclipse-scene-dimming.mjs` nor `eclipse-scene-dimming.spec.mjs` is modified here (`git status` confirms); the failure reproduces on the unmodified pair.
+
+### Expected probe bands
+
+**Lane D (shipped defaults, ground, clear night) — the four numbers the single-command change turns on, stated as PREDICTIONS before the run:**
+
+| | `alphaRecovered` | catalogue sprites visible | cubemap visible |
+| --- | --- | --- | --- |
+| WebGL, pre-fix | ≈ 1.0 | **no** | **no** |
+| WebGL, post-fix | ≈ 1.0 (unchanged — WebGL is untouched in this configuration) | **no** | **no** |
+| WebGPU, pre-fix | ≈ 1.0 (both backends resolve NONE here, so obs-1 does not bite at defaults) | **yes** — the binned copy draws after the shell | **no** |
+| WebGPU, post-fix | ≈ 1.0 | **no** | **no** |
+
+i.e. the predicted delta is WebGPU losing a draw it should never have had, landing on WebGL's behaviour: `defaultsSpriteParity` false pre-fix, true post-fix. **If instead WebGL measures sprites visible at shipped defaults while WebGPU does not, the prediction is refuted and the parity gate fails** — the gate is written so that outcome fails loudly rather than being absorbed. If sprites and cubemap disagree on either backend, the ordering model itself is wrong and the run exits 2.
+
+Lane A: control response > 0.9 on both backends (else structural); `alphaRecovered` equal within 0.08 and **below 0.9** on both — the floor separates "partially transparent" from "exactly opaque", which is the real shape of the divergence (WebGL's true value at these sun elevations is ≈ 0.45-0.67, not ≈ 0); pre-fix WebGPU ≈ 1.0. Lane B: measured multiplier within 15% of the 0.5 target on both backends; `fullSources ≥ 20`; `revealOnSources > revealOffSources` and `< fullSources`; off-toggle band mean within 0.01 of the full render; and (b4) `spriteRatio` nearer to `1 − a` than to `2 − a` and within 0.25 of it, at the night instant, with `spriteDeltaNoShell > 0.004` for non-vacuity. Lane C: `deltaHorizon > 0.004` at all four azimuths; `|deltaZenith| ≤ 0.25·deltaHorizon`; `deltaR > deltaB`; and at the clear instant `deltaHorizon`/`deltaZenith` **exactly** 0 with `eclipseHorizonTwilight === 0`.
+
+## C12-29 S6 final integration reconciliation (2026-07-26)
+
+This correction is the current-state authority for the S6 entry above. The
+earlier sections remain intentionally as the executor history: their abandoned
+pixel ratios, visibility inference, and pre-integration command ownership
+explain why the final gates have their present shape.
+
+### Environment commands are return-only and Scene-owned
+
+The final rule applies to all three WebGPU environment feature renderers touched
+by the integration:
+
++ `StarField.update` returns one cached command through
+  `environmentState.starFieldCommand`.
++ `SkyAtmosphere.update` returns its cached regular/fullscreen command; it no
+  longer also bins that command before Scene has resolved
+  `isSkyAtmosphereVisible`.
++ `Sun.update` returns its cached draw command; it no longer also bins a copy
+  that bypasses `isSunVisible`.
+
+Scene is therefore the sole visibility and environment-order owner. Batch 761's
+`EnvironmentFrustumDemand` reads the returned environment state, so removing
+the command-list copies does not remove the sky-only frustum. The earlier
+sentence that this sky-half change touched no Sun code was true of the worker's
+original slice and is superseded by this integration hardening.
+
+The WebGPU sun was hardened at the same time. Its quad vertices are immutable
+directions, uploaded once; the moving ECEF center is high/low encoded in the
+uniform payload. The vertex buffer, bind group, and `WebGPUDrawCommand` stay
+stable across ordinary clock ticks. They rebuild only for an actual device,
+pipeline-format, or bake invalidator (glow/size/format/appearance), not merely
+because the Sun moved.
+
+### The probe's final gates supersede the predicted bands above
+
++ **Lane B4 is command telemetry, not a sparse-image ratio.** After a real
+  render it requires one returned `starFieldCommand`, zero owner commands in
+  `frameState.commandList`, and a total submission count of one. Hiding the
+  field must reduce both publication routes to zero; restoring it must schedule
+  exactly one again. This cannot pass because a selected ROI happened to
+  contain no catalogue star. The `spriteRatio`, `nightAlphaRecovered`,
+  `spriteAttenuatedMeasurable`, and `1-a` versus `2-a` discussion above is
+  retained only as the discarded instrument's history.
++ **Lane D is an offline readiness/default-premise gate.** Both derivation and
+  measurement boot with ellipsoid terrain (`offline=true`). The lane must have
+  a rendered globe tile plus `isReadyForAtmosphere` and
+  `isSkyAtmosphereVisible` before it measures. At the shipped NONE enum and
+  ground camera it checks the analytically opaque shell and that both
+  background layers are hidden. It does not compare sparse sprite visibility
+  with cubemap visibility as though the two detectors were equivalent, so a
+  disagreement is no longer a structural abort.
++ Clear-state identity allows `1e-6` readback noise rather than requiring
+  `1e-9`; the shader factor itself must still be exactly zero.
+
+### "Same task" ends at the immutable snapshot, not at decode
+
+The live GPU surface must be rendered and read without yielding:
+`snapshotNow()` calls `renderNow()` and synchronously freezes a PNG data URL.
+`captureNow()` may then asynchronously decode those immutable bytes to
+`ImageData`; that await cannot invalidate the already-frozen image. Likewise,
+`settleThen` may await loading frames, but it rechecks `done()` after the final
+`requestAnimationFrame` and then invokes the fused capture.
+
+`checkFusedCaptureUsage` is now an Acorn AST check rather than a line regex. It
+ignores line/block comments, understands multiline calls, propagates statically
+named capture wrappers/aliases, and rejects the alias call unless that call is
+also awaited. Policy is explicit: direct awaits, awaited
+`Promise.all([capture...])`, and awaited `.then/.catch/.finally` chains are
+accepted; floating aggregates/chains and promises stored for a later,
+control-flow-dependent await are rejected. The embedded in-page source remains
+byte-pinned to the shared canonical source.
+
+### Star effects are celestial-only and consume current ellipsoid-aware state
+
+`CubeMapPanorama.isStarMap` defaults false. `SkyBox` is the explicit opt-in, so
+the default-on E3 modulation and weather cloud attenuation cannot dim a generic
+HDR panorama or Google Street View. One CPU resolver writes the shared
+modulation vector consumed by the WebGL closures and WebGPU uniform packer.
+
+`Moon.update` now publishes current-frame direction/phase before
+`frameState.skyBrightness` is evaluated. Hidden/absent Moon resets the scalar
+phase contribution, and a one-frame request-render-mode clock step cannot leave
+the star law using the prior rendered Moon. Scene also passes ellipsoidal
+`camera.positionCartographic.height`. Both `computeSkyBrightness` and
+`computeStarDayFade` use the same continuous atmospheric-column factor: full
+historical washout below 60 km, a smooth restoration through the 111 km
+scattering shell, exact identity above it. The earlier hard 100 km catalogue
+step and Earth-radius subtraction are superseded.
+
+Finally, when E3 is enabled the catalogue uses the **same modulation as the
+cubemap**, replacing—not multiplying and not taking `max` with—the legacy
+geometric day fade. That avoids double-dimming twilight and prevents catalogue
+sprites from remaining full strength under moonlight while the cubemap is
+attenuated.
+
+Current static gate at this reconciliation: `eclipse-sky-totality.spec.mjs`
+49/49, including the canonical-capture, panorama-isolation, return-only
+ownership, current-Moon ordering, ellipsoid-height, stable-Sun-resource, and
+shader-pair checks. Final Edge/Karma results belong in a later executor result
+paragraph; they are not inferred here.
+
+## C12-29 S6 final targeted executor result (2026-07-26)
+
+The final S6/S2 integration gate is green. This paragraph supersedes only the
+pending-executor sentence immediately above; the earlier failed runs and their
+diagnostic trail remain part of the record.
+
+### The scene-dimming gate now proves its pixels before interpreting them
+
+The first post-integration run exposed three probe defects rather than an
+eclipse-renderer regression:
+
+1. The viewer booted without `offline=true`, so its default Ion imagery/terrain
+   requests could fail before the probe replaced them with deterministic
+   providers.
+2. A non-empty quadtree list proved that tiles were selected, not that the
+   measured ground pixels came from terrain.
+3. The manual-equivalence path read live `frameState.skyBrightness` after the
+   auto-exposure render and compared S2's manual twin against the additional
+   default-on S6 horizon-twilight contribution.
+
+The repaired probe boots both the ladder-derivation and measurement pages
+offline. Readiness requires a non-empty `tilesToRender`, then renders the same
+ground mask with white and black `globe.baseColor`. Only pixels whose absolute
+response exceeds `8 / 255` enter the terrain mask, and a non-trivial responsive
+fraction is a structural prerequisite. This distinguishes raster contribution
+from quadtree bookkeeping without weakening the ground-lighting assertion.
+
+Every state input is now captured immediately after the render it describes.
+The S6 horizon term is switched off only for the real-engine half of the S2
+manual-equivalence pair, then restored. The separate
+`probe-eclipse-sky-totality` lane continues to run the shipped default-on
+horizon effect, so the equivalence isolation cannot hide a missing S6 feature.
+
+Fresh both-backend result:
+
+| backend | responsive pixel fraction | mean white/black response | console errors | gate |
+| --- | ---: | ---: | ---: | --- |
+| WebGL | 1.000000 | 0.9857331 | 0 | PASS |
+| WebGPU | 1.000000 | 0.3388469 | 0 | PASS |
+
+Both backends also pass the S2 identity, factor-curve, floor, monotonicity,
+auto-exposure, exact manual-equivalence, and cross-backend parity arms.
+`equivalenceWorstRel` is 0 on both. The WebGPU ground lane is therefore
+non-vacuous: it is darker than WebGL, but the base-color control proves that it
+is real terrain and that the eclipse response reaches those pixels.
+
+### Background command canonicalization is idempotent and allocation-free
+
+Return-only producer ownership removes the normal duplicate route, but the
+consumer still has to tolerate legacy dual-published commands and repeated
+execution of the same frustum list. New
+`Scene/EnvironmentCommandList.js::prependUniqueEnvironmentCommands` performs
+that repair in place:
+
++ if the active prefix is already `skyBox -> starField` and neither identity
+  appears later, it returns the existing length immediately;
++ otherwise one stable forward compaction removes every copy, the surviving
+  commands shift once, and each valid background identity is written exactly
+  once at the front;
++ no temporary array, closure, or command allocation occurs.
+
+The companion spec drives a legacy duplicate list and then invokes the helper a
+second time, proving the repeated call is an idempotent fast path. This prevents
+repeated-frustum/stereo-shaped calls from accumulating background draws and
+preserves the fixed environment order. It does **not** enable WebGPU stereo:
+`Scene.useWebVR` still rejects contexts whose `supportsStereoViewport` is
+false, because the WebGPU scene renderer still hard-codes a full-canvas
+viewport instead of consuming each eye's `passState.viewport`.
+
+### Read-only performance follow-ups
+
+The final read-only hot-path/lifecycle review found no reason to delay this
+integration, but it did identify separable work that must not be folded into
+S6:
+
++ direct-return and retain the Moon command instead of creating and recovering
+  it through a scratch command list every visible frame;
++ attach allocation-free, mode-correct Sun/Moon bounding volumes so Scene can
+  perform the same frustum/occluder rejection for WebGPU;
++ make panorama source swaps generation-safe and atomically invalidate the
+  texture view, bind group, and command;
++ deterministically destroy environment resources and include them in device
+  recovery, including async work that completes after destroy/invalidation;
++ define and test multi-panorama ordering once for both backends;
++ plumb per-eye viewports before advertising WebGPU stereo.
+
+The canonical acceptance contracts and evidence are queued under the
+`S6-PERF-*`, `S6-PANORAMA-*`, `S6-ENV-*`, and
+`NEW-WEBGPU-STEREO-VIEWPORT` entries in `DEFERRED_WORK.md`; the abbreviated
+inventory appears in `FEATURE_INVENTORY.md`.
+
+### Lazy feature-renderer teardown regression
+
+The first broad SkyBox Karma rerun appeared to fail after all 21 assertions
+with three unhandled `DeveloperError: This object was destroyed` rejections.
+That run was executing a stale package-level `SpecList.js`: both continuations
+of a pending feature-renderer loader still called the private
+`_isFeatureRendererGenerationCurrent` method after `destroyObject()` had
+replaced it with `throwOnDestroyed`.
+
+The production fix is intentionally narrow. Both Promise continuations now use
+the `isDestroyed()` method that `destroyObject` explicitly preserves and
+compare the plain generation array directly; context teardown still invalidates
+every generation before releasing renderers. A regression spec destroys a
+context while its lazy loader is pending, resolves the loader afterward, and
+requires the Promise to settle to `undefined` without installing the renderer
+or calling a replaced method.
+
+After rebuilding the package spec bundle from current sources, real Edge
+reported SkyBox **21/21 PASS** and the `GraphicsContext` include-name slice
+**11/11 PASS**, with no unhandled rejection. The stale-bundle diagnosis
+matters: adding another production workaround before rebuilding would have
+treated generated test drift as a second engine defect.

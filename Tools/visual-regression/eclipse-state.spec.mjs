@@ -272,6 +272,11 @@ const CONTRACT_KEYS = [
   "earthSeparation",
   "moonSeparation",
   "eclipseMagnitude",
+  // C12-29 S6 additions: the 360-degree horizon-twilight toggle and its
+  // geometry-only strength. Same convention as `enabled`/`autoExposure` —
+  // the flag gates APPLICATION, the strength is computed either way.
+  "horizonTwilightEnabled",
+  "horizonTwilightStrength",
 ];
 
 test("published state carries exactly the documented field set", () => {
@@ -787,6 +792,30 @@ test("WebGPU: the sun WGSL multiplies ALPHA by the same factor", () => {
     /uniformData\[31\] = typeof eclipseAlpha === "number" \? eclipseAlpha : 1\.0;/,
   );
   assert.match(envRenderer, /const eclipseAlpha = frameState\.sunEclipseAlpha;/);
+});
+
+test("WebGPU: the moving Sun reuses its command, bind group, and RTE vertex geometry", () => {
+  const start = envRenderer.indexOf("function updateWebGPUSun(");
+  const end = envRenderer.indexOf(
+    "// Moon Renderer — Ray-Marched Analytic Ellipsoid",
+    start,
+  );
+  const update = envRenderer.slice(start, end);
+
+  assert.match(update, /if \(!defined\(cache\.bindGroup\)\) \{/);
+  assert.match(update, /if \(!defined\(cache\.command\)\) \{/);
+  assert.equal(
+    (update.match(/new WebGPUDrawCommand\(/g) ?? []).length,
+    1,
+    "one cached command construction site",
+  );
+  assert.doesNotMatch(update, /Cartesian3\.equals\(cache\.lastSunPos/);
+  assert.doesNotMatch(update, /cache\.vertexBuffer\.destroy\(\)/);
+  assert.match(envRenderer, /encodedSunHigh: vec3<f32>/);
+  assert.match(
+    envRenderer,
+    /let rte = \(u\.encodedSunHigh - u\.encodedCameraHigh\)/,
+  );
 });
 
 test("no new ShaderDefine bit was consumed", () => {

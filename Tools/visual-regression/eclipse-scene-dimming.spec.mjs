@@ -925,9 +925,15 @@ test("the gates are model-free: equivalence, not prediction", () => {
   // flag is then reset WITHOUT a re-render, so `Globe.beginFrame` never runs
   // again and the mirror still holds `base * f_AE` — the CAMERA-mode factor.
   // The comparison failed on a stale read while the engine was correct.
-  const mirrorRead = probe.indexOf(
-    "const engineMirror =\n      scene.globe?._surface?.tileProvider?.atmosphereLightIntensity",
+  // The pin is whitespace-tolerant BY REGEX, not a literal `indexOf`. The
+  // literal form embedded a bare `\n` and a fixed indent, so it could not match
+  // a CRLF working tree and would break on any re-wrap — the fragile-pin class
+  // that has now cost this fleet six cycles (see
+  // `lib/provenance-markers.mjs`, which rejects exactly this shape).
+  const mirrorMatch = /const engineMirror\s*=\s*scene\.globe\?\._surface\?\.tileProvider\?\.atmosphereLightIntensity/.exec(
+    probe,
   );
+  const mirrorRead = mirrorMatch ? mirrorMatch.index : -1;
   const aeRender = probe.indexOf("ac.lighting.eclipseAutoExposure = true;");
   assert.ok(mirrorRead > 0, "the engineMirror read moved or changed shape");
   assert.ok(
@@ -942,6 +948,40 @@ test("the gates are model-free: equivalence, not prediction", () => {
   );
   assert.match(probe, /v\.equivalenceOk =/);
   assert.match(probe, /v\.equivalenceOk &&/, "equivalence must be in PASS");
+  // Batch 770 — S6's additive horizon glow is a separate feature from S2's
+  // multiplicative contract. Keep it on for the shipped ON capture, then turn
+  // it off only for the engine/manual equivalence pair. The dedicated S6 probe
+  // gates the glow itself, so the isolation cannot hide a removed feature.
+  assert.match(
+    probe,
+    /ac\.lighting\.enableEclipseHorizonTwilight = false;\s*scene\.render\(T\(\)\);\s*equivalentOnState = readState\(\);/,
+  );
+  assert.match(probe, /engineReference:\s*\{/);
+  assert.match(probe, /horizonTwilightIsolated/);
+  // The site-4 source must be the isolated human-eye frame. Reading mutable
+  // frameState here observes the intervening auto-exposure render and mixes
+  // factors from two different frames.
+  assert.match(probe, /const B = equivalentOnState\.skyBrightness;/);
+  assert.doesNotMatch(probe, /const B = scene\.frameState\?\.skyBrightness;/);
+  // Browser evidence is offline and non-empty; `tilesLoaded` alone can pass an
+  // empty/no-tile frame.
+  assert.match(probe, /renderer=\$\{renderer\}&offline=true/);
+  assert.match(probe, /tilesToRender > 0/);
+  // Ground claims are restricted to pixels proven responsive by a
+  // white-vs-black globe base-color A/B. Tile counts alone cannot make an
+  // absent near-limb globe pass.
+  assert.match(probe, /groundMask = new Uint8Array\(n\);/);
+  assert.match(probe, /responsiveFraction >= 0\.25/);
+  assert.match(probe, /meanAbsoluteResponse >= 0\.05/);
+  assert.match(probe, /v\.terrainResponsive/);
+  assert.match(probe, /v\.terrainResponsive &&/);
+  assert.match(probe, /const aeLuminanceTolerance = 1e-4;/);
+  assert.match(probe, /v\.aeDimmingNonVacuous/);
+  assert.match(
+    probe,
+    /v\.aeRendersDarker &&\s*v\.aeDimmingNonVacuous/,
+    "the quantisation tolerance must be paired with a non-vacuous dimming gate",
+  );
   // The manual twin must reproduce sites 1, 2 and 3 — and VERIFY site 3's
   // mirror rather than assuming it follows.
   assert.match(probe, /scene\.light = new C\.SunLight\(\{\s*color: new C\.Color\(f, f, f, 1\.0\),/);

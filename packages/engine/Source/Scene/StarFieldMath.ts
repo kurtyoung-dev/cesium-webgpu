@@ -28,6 +28,7 @@ import Cartesian3 from "../Core/Cartesian3.js";
 import CesiumMath from "../Core/Math.js";
 import defined from "../Core/defined.js";
 import BrightStarCatalog from "./BrightStarCatalog.js";
+import { computeAtmosphericColumnFactor } from "./SkyBrightness.js";
 
 // Per-instance vertex layout (floats):
 //   directionFixed (3) + intensity (1) + color (3) + sizeBoost (1) = 8
@@ -228,21 +229,22 @@ export function buildStarInstanceData(): Float32Array {
 
 /**
  * Compute the daytime-fade multiplier for the stars: dim them as the sun
- * climbs above the horizon for a surface-level camera, but keep them at
- * full brightness above ~100 km where the atmosphere no longer scatters
- * enough sunlight to wash them out. Returns 1.0 (no fade) when the sun
- * direction or camera position is unavailable.
+ * climbs above the horizon for a surface-level camera, then continuously
+ * restore them as the atmospheric column falls away. Returns 1.0 (no fade)
+ * when the sun direction or camera position is unavailable.
  *
  * Identical math for both backends so the WebGL fade matches WebGPU.
  *
  * @param {Cartesian3|undefined} sunDirectionWC Unit sun direction (WC).
  * @param {Cartesian3|undefined} cameraPositionWC Camera ECEF position.
+ * @param {number|undefined} cameraHeight Ellipsoidal camera height in metres.
  * @returns {number} Fade multiplier in [0, 1].
  * @private
  */
 export function computeStarDayFade(
   sunDirectionWC: Cartesian3 | undefined,
   cameraPositionWC: Cartesian3 | undefined,
+  cameraHeight?: number,
 ): number {
   let dayFade = 1.0;
   if (!defined(sunDirectionWC) || !defined(cameraPositionWC)) {
@@ -257,16 +259,137 @@ export function computeStarDayFade(
     // smoothstep over sin(altitude): [-0.10, +0.05].
     const t = CesiumMath.clamp((solarAltSin - -0.1) / (0.05 - -0.1), 0.0, 1.0);
     dayFade = 1.0 - t;
-    // Above ~100 km the atmosphere no longer scatters enough sunlight to
-    // wash out stars — keep them visible regardless of solar altitude.
-    // camLen is distance from Earth's center; subtract a mean Earth
-    // radius for a crude altitude (good enough to gate the fade).
-    const altitude = camLen - 6371000.0;
-    if (altitude > 100000.0) {
-      dayFade = 1.0;
-    }
+    // One atmospheric-column law for both star paths. At low altitude the
+    // result is the historical geometric fade. Between 60 and 111 km the
+    // washout disappears smoothly; above the shell it is exactly 1. Scene
+    // supplies ellipsoidal height, so this works at every WGS84 latitude and
+    // on custom globe ellipsoids without an Earth-radius assumption.
+    const column = computeAtmosphericColumnFactor(cameraHeight);
+    dayFade = 1.0 - column * (1.0 - dayFade);
   }
   return dayFade;
+}
+
+// ─── C12-29 S6 / ruling E3 — star-brightness modulation ────────────────────
+//
+// The "star brightness at night" machinery is a single multiplier applied to
+// the star CUBEMAP (`SkyBoxFS.glsl` on WebGL, `CubeMapPanorama.wgsl` on
+// WebGPU) driven by `frameState.skyBrightness`. Ruling E3 flips it on by
+// default at a countryside-like level and routes the reveal at totality
+// through it rather than through a new eclipse-only path. This function is the
+// CPU twin of the shader expression; both shaders and `StarField`'s sprite
+// floor evaluate the same three lines.
+//
+//   t      = clamp((skyBrightness - inflection) * steepness, 0, 1)
+//   factor = 1 - smoothstep(0, 1, t)
+//
+// WHY THESE DEFAULTS (they are derived, not dialled):
+//
+//  1. THE NIGHT END IS THE "COUNTRYSIDE" CLAIM. At `skyBrightness = 0` —
+//     astronomical night, no moon — the factor is exactly 1.0 for any
+//     non-negative inflection, i.e. the full vendored catalogue (MAG_CUTOFF
+//     5.0 above) and the full star cubemap render undimmed. That is a rural
+//     sky: Bortle class 4 / naked-eye limiting magnitude ~6.5, against ~4.5
+//     for a suburban sky and ~3 for an inner city (Bortle, Sky & Telescope
+//     2001, "The Bortle Dark-Sky Scale"; Crumey 2014, MNRAS 442:2600, for the
+//     NELM<->sky-brightness relation). E3 forbids light-pollution modelling,
+//     so there is no additive skyglow term anywhere here — only the natural
+//     sources the estimator already carries (sun, moon, and the eclipse
+//     factor S2 folds into `skyBrightness`).
+//
+//  2. THE STEEPNESS IS SET BY THE TOTALITY ANCHOR. During totality the sky
+//     is civil twilight (~5 lux against ~100,000 lux full sun — AAS eclipse
+//     basics; Optica sky-brightness survey, AO 10(6):1207) and observers see
+//     the bright planets plus roughly first- to third-magnitude stars — not a
+//     full night sky. Target: naked-eye limit 6.5 -> ~3.5, i.e. `dm = 3.0`
+//     magnitudes, i.e. a Pogson flux multiplier
+//
+//       k = 10^(-0.4 * 3.0) = 0.06310
+//
+//     `Scene.updateEnvironment` publishes `skyBrightness =
+//     computeSkyBrightness(...) * eclipseSceneLightFactor`, and S2's totality
+//     value of that factor is
+//     `ECLIPSE_TWILIGHT_FLOOR = (5/100000)^(1/3) = 0.0368403`. The strongest
+//     suppression case is a HIGH-sun totality (2027-08-02 Luxor, sun 82 deg
+//     up) where `computeSkyBrightness` is 1.0, so `B_totality = 0.0368403`.
+//     Solving `1 - smoothstep(0,1,t*) = k` gives `t* = 0.8469590`, hence
+//
+//       steepness = t* / B_totality = 22.990  ->  23.0
+//       inflection = 0.0
+//
+//     At the shipped 23.0 the factor at totality is 0.062810, i.e. -3.00 mag
+//     to five figures. `eclipse-sky-totality.spec.mjs` re-derives both numbers
+//     from the published constants and fails if they drift. A LOW-sun totality
+//     (2026-08-12 Iceland, sun ~10 deg) lands at `B = 0.021026` -> factor
+//     0.5246 -> -0.70 mag: more stars, which is right, because the sky it
+//     started from was already dimmer.
+//
+//  3. THE DAY END FALLS OUT. At `skyBrightness = 1` (sun >= ~23.6 deg up for
+//     an in-atmosphere camera) `t` saturates and the factor is exactly 0 — no
+//     naked-eye stars in daylight, which is the physical answer. C11-176's
+//     regression was NOT this behaviour; it was that the flag also zeroed the
+//     cubemap for ORBITAL cameras on the day side, where the sky really is
+//     black and the stars really are there. That is fixed at the source:
+//     `SkyBrightness.computeAtmosphericColumnFactor` now takes
+//     `skyBrightness` to 0 above the engine's own 111 km scattering shell, so
+//     an orbital camera gets factor 1.0 and is byte-identical.
+//
+// MEASURED CONSEQUENCES elsewhere on the curve, recorded rather than tuned
+// away (the curve has two parameters and three would be needed to hit all of
+// these):
+//   full moon overhead (`skyBrightness` 0.0400) -> factor 0.01818, i.e.
+//     -4.35 mag, NELM ~2.2 against a published full-moon NELM of ~4.5. The
+//     Milky Way correctly vanishes; the cut is ~2.3 mag deeper than reality.
+//   mid civil twilight (sun -2 deg, `skyBrightness` 0.0464) -> factor 0.
+//     Real observers still have Venus and one or two first-magnitude stars.
+// Both follow from `computeSkyBrightness` collapsing to exactly 0 once the
+// sun is below -5.74 deg: it has no dynamic range across the twilight decade
+// at all, so no choice of these two parameters can separate "late civil
+// twilight" from "astronomical night". A log-luminance estimator is the
+// honest upgrade and is filed as such — see the C12 queue.
+
+/** Default modulation-curve inflection (see the derivation above). */
+export const STAR_MODULATION_INFLECTION = 0.0;
+
+/** Default modulation-curve steepness (see the derivation above). */
+export const STAR_MODULATION_STEEPNESS = 23.0;
+
+/**
+ * Reference naked-eye limiting magnitude of the undimmed (factor 1.0) sky —
+ * a rural Bortle-4 night. Used only to state what a given factor means in
+ * magnitudes; nothing reads it at render time.
+ */
+export const STAR_REFERENCE_LIMITING_MAGNITUDE = 6.5;
+
+/**
+ * Evaluate the star-brightness modulation factor. Byte-for-byte the same
+ * expression as `SkyBoxFS.glsl` and `CubeMapPanorama.wgsl`, so the CPU-side
+ * consumers (`StarField`'s sprite floor) and the GPU-side consumers cannot
+ * disagree about how bright the stars are.
+ *
+ * @param {number} skyBrightness `frameState.skyBrightness`, 0..1.
+ * @param {number} inflection Curve inflection (sky brightness at which stars
+ *   start being lost).
+ * @param {number} steepness Curve steepness.
+ * @returns {number} Multiplier in [0, 1]; exactly 1.0 at `skyBrightness = 0`
+ *   for any non-negative inflection.
+ * @private
+ */
+export function computeStarBrightnessModulation(
+  skyBrightness: number,
+  inflection: number,
+  steepness: number,
+): number {
+  if (
+    !isFinite(skyBrightness) ||
+    !isFinite(inflection) ||
+    !isFinite(steepness)
+  ) {
+    return 1.0;
+  }
+  let t = (skyBrightness - inflection) * steepness;
+  t = t < 0.0 ? 0.0 : t > 1.0 ? 1.0 : t;
+  return 1.0 - t * t * (3.0 - 2.0 * t);
 }
 
 export default {
@@ -274,4 +397,8 @@ export default {
   bvToRgb,
   buildStarInstanceData,
   computeStarDayFade,
+  computeStarBrightnessModulation,
+  STAR_MODULATION_INFLECTION,
+  STAR_MODULATION_STEEPNESS,
+  STAR_REFERENCE_LIMITING_MAGNITUDE,
 };

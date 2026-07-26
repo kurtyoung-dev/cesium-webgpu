@@ -7,12 +7,13 @@
 // - The box is always centered on the camera (view rotation only, no translation)
 // - Positions are just direction vectors for cubemap lookup
 //
-// Uniform layout (224 bytes, buffer 256-aligned):
+// Uniform layout (240 bytes, buffer 256-aligned):
 //   projection:         mat4x4<f32>  (offset 0,   64 bytes)
 //   viewRotation:       mat4x4<f32>  (offset 64,  64 bytes) — camera view rotation (3x3 in 4x4)
 //   panoramaTransform:  mat4x4<f32>  (offset 128, 64 bytes) — panorama orientation (identity for SkyBox)
 //   params:             vec4<f32>    (offset 192, 16 bytes) — x=far, y=morphTime, z=debugCubeFace, w=skyBrightness
 //   starModulation:     vec4<f32>    (offset 208, 16 bytes) — x=inflection, y=steepness, z=enableFlag, w=cloudCover
+//   hdr:                vec4<f32>    (offset 224, 16 bytes) — x=gamma in HDR, 0 in SDR
 //
 // Phase 1.3b — Star brightness modulation. The cubemap panorama doubles
 // as the starfield. When the sky is bright (sun above horizon, full moon
@@ -34,6 +35,7 @@ struct CubeMapPanoramaUniforms {
   panoramaTransform: mat4x4<f32>,
   params: vec4<f32>,
   starModulation: vec4<f32>,
+  hdr: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> uniforms: CubeMapPanoramaUniforms;
@@ -91,15 +93,38 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
 
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
-  let color = textureSample(cubeMapTexture, cubeMapSampler, normalize(input.texCoord));
+  let dir = normalize(input.texCoord);
+
+  // Tier 1 debug — isolate one natural cubemap face without changing the
+  // production path (params.z = 0). Face ids: +X, -X, +Y, -Y, +Z, -Z.
+  let requested = i32(uniforms.params.z + 0.5);
+  if (requested != 0) {
+    let absDir = abs(dir);
+    let maxAxis = max(absDir.x, max(absDir.y, absDir.z));
+    var face: i32 = 0;
+    if (absDir.x >= maxAxis) {
+      if (dir.x > 0.0) { face = 1; } else { face = 2; }
+    } else if (absDir.y >= maxAxis) {
+      if (dir.y > 0.0) { face = 3; } else { face = 4; }
+    } else {
+      if (dir.z > 0.0) { face = 5; } else { face = 6; }
+    }
+    if (face != requested) {
+      discard;
+    }
+  }
+
+  let color = textureSample(cubeMapTexture, cubeMapSampler, dir);
 
   let morphTime = uniforms.params.y;
 
   // Phase 1.3b — Star brightness modulation. When enabled, dim the
   // sampled cubemap by a smoothstep over sky brightness so stars fade
-  // out as the sky brightens. Off by default for the .wgsl file path
-  // (the JS-embedded shader is the production path; this file is kept
-  // in sync for documentation, debug pages, and future build flows).
+  // out as the sky brightens. C12-29 S6 / ruling E3: the flag now defaults
+  // ON, with the derived curve documented in `Scene/StarFieldMath.ts` and
+  // mirrored line for line by WebGL's `SkyBoxFS.glsl`. (The JS-embedded
+  // shader in WebGPUCubeMapPanoramaRenderer.js is the production path; this
+  // file is kept in sync for documentation, debug pages, and build flows.)
   // Phase 1.4 — Multiply by `(1 - cloudCover)` so heavy cloud cover
   // hides stars even at night.
   let skyBrightness = uniforms.params.w;
@@ -122,7 +147,9 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // through. The previous unconditional pow(color, 1/2.2) re-encoded
   // sRGB on top of sRGB, brightening dark pixels (star backgrounds
   // appearing like concrete) and washing out the visible cubemap.
-  // TODO: when HDR is on, decode sRGB -> linear (pow(color, 2.2)) so
-  //       the cubemap participates in the linear HDR pipeline.
+  let hdrGamma = uniforms.hdr.x;
+  if (hdrGamma > 0.5) {
+    modulated = pow(modulated, vec3<f32>(hdrGamma));
+  }
   return vec4<f32>(modulated, morphTime);
 }

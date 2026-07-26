@@ -112,7 +112,6 @@ interface StarFieldWebGPUCache {
   uniformData?: Float32Array;
   bindGroup?: GPUBindGroup;
   command?: WebGPUDrawCommand;
-  injectCommand?: WebGPUDrawCommand;
 }
 
 /**
@@ -408,6 +407,7 @@ function ensureStarFieldResources(
     cache.bindGroupLayout = undefined;
     cache.pipelineEntry = undefined;
     cache.pipeline = undefined;
+    cache.command = undefined;
   }
   cache._deviceResourceGeneration = deviceGen;
 
@@ -430,6 +430,7 @@ function ensureStarFieldResources(
   ) {
     cache.pipelineEntry = undefined;
     cache.pipeline = undefined;
+    cache.command = undefined;
   }
 
   if (!defined(cache.pipelineEntry)) {
@@ -570,19 +571,17 @@ function prepareWebGPUStarField(
 
 /**
  * Updates the WebGPU starfield: builds GPU resources once, repacks the
- * per-frame uniform, and pushes one instanced draw command onto the
- * command list (Pass.ENVIRONMENT). Mirrors the Sun renderer's command
- * convention so the SceneRenderer bins it into the ENVIRONMENT pass.
+ * per-frame uniform, and returns one cached instanced environment command.
+ * Scene injects that command after the cubemap and before the atmosphere,
+ * matching WebGL's direct EnvironmentRenderer order.
  *
  * @param {StarField} starField The backend-agnostic starfield primitive.
  * @param {FrameState} frameState
- * @param {Array} commandList The frame's command list to push onto.
  * @private
  */
 function updateWebGPUStarField(
   starField: StarFieldLike,
   frameState: CesiumFrameState,
-  commandList: CesiumAnyDrawCommand[],
 ): WebGPUDrawCommand | undefined {
   if (!starField.show) {
     return;
@@ -599,6 +598,7 @@ function updateWebGPUStarField(
       computeStarDayFade(
         context.uniformState.sunDirectionWC,
         frameState.camera?.positionWC,
+        frameState.camera?.positionCartographic?.height,
       );
   if (effectiveIntensityScale === 0.0) {
     return;
@@ -624,46 +624,25 @@ function updateWebGPUStarField(
     STAR_UNIFORM_BUFFER_SIZE,
   );
 
-  // Two command instances sharing the same GPU resources:
-  //   - `cache.command` is pushed onto the binned command list so a
-  //     frustum is GUARANTEED to exist even on sky-only views (no globe /
-  //     primitives) — same rationale as Sun. It draws EARLY in the
-  //     ENVIRONMENT pass.
-  //   - `cache.injectCommand` is RETURNED so the SceneRenderer can inject
-  //     it AFTER the SkyBox cubemap command. The cubemap (when present) is
-  //     an alpha-over draw injected after the binned ENVIRONMENT commands;
-  //     an opaque/dark cubemap would otherwise overwrite the early binned
-  //     starfield. The late injected copy lands the additive HDR stars ON
-  //     TOP of the cubemap.
-  //
-  // Double-draw avoidance: the caller (Scene.updateEnvironment) only uses
-  // the returned inject command when a `skyBoxCommand` actually exists. So:
-  //   - cubemap present  → early binned draw is wiped by the cubemap, late
-  //     injected draw shows  → net 1× stars on top of the cubemap.
-  //   - no cubemap        → caller drops the inject command; only the early
-  //     binned draw runs     → net 1× stars.
-  // Either way the catalog is drawn exactly once.
-  cache.command = new WebGPUDrawCommand({
-    pipeline: cache.pipeline,
-    bindGroups: [cache.bindGroup],
-    vertexBuffers: [cache.instanceBuffer],
-    vertexCount: 6,
-    instanceCount: cache.starCount,
-    pass: 0, // Pass.ENVIRONMENT
-    owner: starField,
-  });
-  commandList.push(cache.command as unknown as CesiumAnyDrawCommand);
-
-  cache.injectCommand = new WebGPUDrawCommand({
-    pipeline: cache.pipeline,
-    bindGroups: [cache.bindGroup],
-    vertexBuffers: [cache.instanceBuffer],
-    vertexCount: 6,
-    instanceCount: cache.starCount,
-    pass: 0, // Pass.ENVIRONMENT
-    owner: starField,
-  });
-  return cache.injectCommand;
+  // C12-29 S6 — one cached command, not a binned+injected pair. The prior
+  // dual path allocated two commands per contributing frame, pushed one into
+  // the command list, then made Scene scan and splice it back out because
+  // both copies would execute additively. Batch 761's
+  // `EnvironmentFrustumDemand.hasInjectedEnvironmentContent` already treats
+  // the returned `starFieldCommand` as sufficient sky-only frustum demand, so
+  // the transient binned copy provides no remaining functionality.
+  if (!defined(cache.command)) {
+    cache.command = new WebGPUDrawCommand({
+      pipeline: cache.pipeline,
+      bindGroups: [cache.bindGroup],
+      vertexBuffers: [cache.instanceBuffer],
+      vertexCount: 6,
+      instanceCount: cache.starCount,
+      pass: 0, // Pass.ENVIRONMENT
+      owner: starField,
+    });
+  }
+  return cache.command;
 }
 
 /**

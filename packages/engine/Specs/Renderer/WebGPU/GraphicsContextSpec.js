@@ -1,4 +1,4 @@
-import { FeatureRendererKey } from "../../../index.js";
+import { destroyObject, FeatureRendererKey } from "../../../index.js";
 import ContextRegistry from "../../../Source/Renderer/ContextRegistry.js";
 import GraphicsContext from "../../../Source/Renderer/GraphicsContext.js";
 
@@ -30,6 +30,16 @@ class FakeGraphicsContext extends GraphicsContext {
     }
     this._destroyed = true;
     this._destroyFeatureRenderers();
+  }
+}
+
+class DestroyObjectGraphicsContext extends FakeGraphicsContext {
+  destroy() {
+    if (this.isDestroyed()) {
+      return;
+    }
+    this._destroyFeatureRenderers();
+    return destroyObject(this);
   }
 }
 
@@ -227,6 +237,22 @@ describe("Renderer/GraphicsContext", function () {
 
       expect(context.hasFeatureRenderer(key)).toBe(false);
       expect(context.getFeatureRendererStatus(key).kind).toBe("unsupported");
+    });
+
+    it("settles a pending loader after destroyObject without calling replaced methods", async function () {
+      const realDestroyContext = new DestroyObjectGraphicsContext();
+      const key = FeatureRendererKey.CUBE_MAP_PANORAMA;
+      const gate = deferred();
+      realDestroyContext.registerFeatureRendererLoader(key, async function () {
+        return gate.promise;
+      });
+
+      const loading = realDestroyContext.getFeatureRendererReadiness(key);
+      await Promise.resolve();
+      realDestroyContext.destroy();
+      gate.resolve({ update: function () {} });
+
+      await expectAsync(loading.promise).toBeResolvedTo(undefined);
     });
   });
 });

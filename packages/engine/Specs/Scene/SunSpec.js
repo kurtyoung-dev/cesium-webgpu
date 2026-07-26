@@ -46,9 +46,7 @@ describe(
       const featureRenderer = {
         update: jasmine
           .createSpy("featureRenderer.update")
-          .and.callFake(function (_sun, _frameState, commandList) {
-            commandList.push(drawCommand);
-          }),
+          .and.returnValue(drawCommand),
       };
       const frameState = {
         mode: SceneMode.SCENE3D,
@@ -82,10 +80,14 @@ describe(
     }
 
     function updateWithFeatureRenderer(sun, frameState) {
+      const commandListLength = frameState.commandList.length;
       const commands = sun.update(frameState);
+      const featureRenderer =
+        frameState.context.getFeatureRenderer.calls.mostRecent().returnValue;
       expect(commands.drawCommand).toBe(
-        frameState.commandList[frameState.commandList.length - 1],
+        featureRenderer.update.calls.mostRecent().returnValue,
       );
+      expect(frameState.commandList.length).toBe(commandListLength);
     }
 
     it("draws in 3D", function () {
@@ -182,6 +184,22 @@ describe(
       expect(frameStateResult).toEqual(expected);
       expect(primitiveResult).toEqual(expected);
       expect(harness.featureRenderer.update).toHaveBeenCalledTimes(2);
+    });
+
+    it("returns one feature-renderer command without binning a duplicate", function () {
+      const sun = new Sun();
+      const harness = createFeatureRendererHarness();
+
+      const commands = sun.update(harness.frameState);
+
+      expect(commands.drawCommand).toBe(
+        harness.featureRenderer.update.calls.mostRecent().returnValue,
+      );
+      expect(harness.frameState.commandList).toEqual([]);
+      expect(harness.featureRenderer.update).toHaveBeenCalledWith(
+        sun,
+        harness.frameState,
+      );
     });
 
     it("invalidates Sun extinction for exact public scalar and in-place vector mutations", function () {

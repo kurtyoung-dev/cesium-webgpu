@@ -11,12 +11,13 @@
 // {skyBox, starField, atmosphere, sun, moon, globe} must show exactly that
 // subset — matching WebGL semantics exactly.
 //
-// DEFECT UNDER TEST (root-caused before this probe was written):
+// DEFECT UNDER TEST (historical architecture at discovery, root-caused before
+// this probe was written):
 //   `View.createPotentiallyVisibleSet` derives the frustum count from the scene
-//   near/far accumulated over `frameState.commandList`. Only SkyAtmosphere, Sun
-//   and StarField push a binned copy onto that list (StarField only while its
-//   daytime fade is non-zero); SkyBox is inject-only and Moon even redirects
-//   `frameState.commandList` to a scratch array. On the injection convention
+//   near/far accumulated over `frameState.commandList`. Only SkyAtmosphere and
+//   Sun push a binned command onto that list; SkyBox, StarField, and Moon are
+//   inject-only (Moon even redirects `frameState.commandList` to a scratch
+//   array). On the injection convention
 //   (any `scene._alternateSceneRenderer`, i.e. WebGPU) environment commands are
 //   injected into the FARTHEST frustum — and `SceneRenderer.executeCommands`
 //   skips that injection entirely when `frustumCommandsList.length === 0`,

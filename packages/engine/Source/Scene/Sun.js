@@ -276,24 +276,17 @@ class Sun {
     this._glareProfile.z = appearance.glareLegacyEdge;
     this._glareProfile.w = appearance.glareLegacy;
 
-    // Backend-specific rendering via Feature Renderer.
-    //
-    // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 2) — the SkyAtmosphere
-    // convention: the FR pushes its command onto `frameState.commandList`
-    // (a BV-less command spans near→far, guaranteeing a frustum exists even
-    // on sky-only views where nothing else renders) AND we return it so
-    // Scene tracks it as `environmentState.sunDrawCommand`. The WebGPU
-    // scene renderer's ENVIRONMENT injection dedupes commands already
-    // binned from the commandList (SceneRenderer.js) — pre-fix the
-    // injected skyAtmosphere DUPLICATE executed after the binned sun and
-    // its alpha-over shell (alpha ≈ 1 at ground level) overwrote the disk.
+    // Backend-specific rendering via Feature Renderer. Environment commands
+    // are return-only: Scene publishes the result as sunDrawCommand, then the
+    // renderer applies the authoritative visibility result while injecting it
+    // into the ENVIRONMENT pass. EnvironmentFrustumDemand guarantees a
+    // frustum for a visible sun-only frame, so a second binned copy is neither
+    // needed nor correct (it would bypass isSunVisible).
     const fr = frameState.context.getFeatureRenderer(FeatureRendererKey.SUN);
     if (fr) {
-      const lengthBefore = frameState.commandList.length;
-      fr.update(this, frameState, frameState.commandList);
-      if (frameState.commandList.length === lengthBefore + 1) {
-        scratchBackendCommands.drawCommand =
-          frameState.commandList[lengthBefore];
+      const drawCommand = fr.update(this, frameState);
+      scratchBackendCommands.drawCommand = drawCommand;
+      if (defined(drawCommand)) {
         return scratchBackendCommands;
       }
       return undefined;

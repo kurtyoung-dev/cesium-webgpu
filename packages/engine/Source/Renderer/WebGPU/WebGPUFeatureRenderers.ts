@@ -388,10 +388,9 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   });
 
   // Track V-C (Batch 313) — bright-star catalog starfield. The renderer
-  // uploads the Yale BSC subset once to a per-instance GPU buffer and
-  // pushes one instanced draw (6 verts × N stars) onto the command list
-  // each frame; the SceneRenderer bins it into the ENVIRONMENT pass.
-  // Drawn additively into the scene FB so bloom makes bright stars glow.
+  // uploads the Yale BSC subset once and returns one cached instanced draw
+  // (6 verts × N stars) for Scene's environment injection. Drawn additively
+  // into the scene FB so bloom makes bright stars glow.
   context.registerFeatureRenderer(FeatureRendererKey.STAR_FIELD, {
     update: updateWebGPUStarField,
     // Warm-keep on the zero-contribution (daylight) path so the first

@@ -45,7 +45,56 @@ describe("Scene/CubeMapPanorama", function () {
     expect(panorama.show).toBe(true);
     expect(panorama.source).toBeUndefined();
     expect(panorama.transform).toBeUndefined();
+    expect(panorama.isStarMap).toBe(false);
     expect(panorama.isDestroyed()).toBe(false);
+  });
+
+  it("opts celestial star maps into atmospheric modulation explicitly", function () {
+    const panorama = new CubeMapPanorama({
+      sources: validSources,
+      isStarMap: true,
+    });
+
+    expect(panorama.isStarMap).toBe(true);
+  });
+
+  it("keeps generic panoramas unchanged by star and weather attenuation", function () {
+    const featureRenderer = {
+      update: jasmine.createSpy("featureRenderer.update"),
+    };
+    frameState.context.getFeatureRenderer = jasmine
+      .createSpy("getFeatureRenderer")
+      .and.returnValue(featureRenderer);
+    frameState.skyBrightness = 1.0;
+    frameState.skyAtmosphereVisible = true;
+    frameState.atmosphericConditions = {
+      skyAtmosphere: {
+        enableStarBrightnessModulation: true,
+        starModulationCurve: {
+          inflection: 0.0,
+          steepness: 23.0,
+        },
+      },
+      weather: {
+        enabled: true,
+        cloudCover: 1.0,
+      },
+    };
+    const genericPanorama = new CubeMapPanorama({
+      sources: validSources,
+    });
+    const starMap = new CubeMapPanorama({
+      sources: validSources,
+      isStarMap: true,
+    });
+
+    genericPanorama.update(frameState, false);
+    starMap.update(frameState, false);
+
+    expect(genericPanorama._starModulation.z).toBe(0.0);
+    expect(genericPanorama._starModulation.w).toBe(0.0);
+    expect(starMap._starModulation.z).toBe(1.0);
+    expect(starMap._starModulation.w).toBe(1.0);
   });
 
   it("stores transform if provided", function () {

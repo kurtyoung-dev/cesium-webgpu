@@ -9,6 +9,11 @@ execution authority for volumetric-cloud correctness, architecture, quality, and
 bounded `C13-05` WGS84/RTE temporal-history correction and `C13-38` cloud-IBL relevance gate are
 reflected below; older “shipped” labels record implementation presence rather than complete current
 certification.
+**Celestial S6 reconciliation (2026-07-26):** the targeted S6 totality and S2
+compatibility gates are current below. The final scene-dimming run is PASS on
+both backends with a terrain-responsive pixel control and zero console errors;
+the remaining environment performance/lifecycle findings are queued in §D and
+`DEFERRED_WORK.md`, not silently treated as shipped.
 **Purpose:** Exhaustive catalog of every feature in the fork — upstream-inherited, fork-added, work-in-progress, and future/deferred — so that the impact of any change can be scoped against the full feature surface before landing.
 
 **Status taxonomy** (per the user's request — these are the four buckets used throughout):
@@ -590,6 +595,55 @@ Added by this fork (the WebGPU migration). Each tagged with status: **(SHIPPED)*
 - Moon atmospheric sky-wash (in-scattering) — C12-30 (SHIPPED pending Edge gate, 2026-07-24) — additive companion of NS-MOON-ATMOSPHERE-EXTINCTION: `disc = disc × extinction + inscatter`, with `inscatter` from the CPU single-scattering integral `computeAtmosphereInscatter` (`Scene/computeAtmosphereExtinction.js`) that mirrors the sky shader's own model (same shell/coefficients/phase functions/lightIntensity + non-HDR tonemap/alpha chain) so the daytime disc reads pale + sky-blended instead of a dark cutout; exactly (0,0,0) from orbit/night/atmosphere-hidden; both backends (`ATMOSPHERE_INSCATTER` define / `inscatter` UB member); toggle `atmosphericConditions.lighting.enableMoonSkyWash` (default ON)
 - Eclipse / occultation state + continuous sun fade — C12-29 S1 (SHIPPED pending Edge gate, 2026-07-24) — new backend-agnostic CPU modules `Scene/EclipseState.js` + `Scene/computeSolarObscuration.js` publish `frameState.eclipseState` = `{enabled, valid, sunVisibleFraction, earthOcclusionFraction, moonObscuration, moonPositionWC, sunAngularRadius, earthAngularRadius, moonAngularRadius, earthSeparation, moonSeparation, eclipseMagnitude}` every SCENE3D frame in f64 (identity outside SCENE3D — 2D/Columbus/MORPHING put the camera in projected-map coordinates while sun+moon are ECEF, and legacy had no sun occlusion there): limb-darkened (C12-15 law `I(μ)=0.3+0.93μ−0.23μ²`) circle-circle overlap of the solar disc against BOTH the Earth limb (occluder taken straight off `frameState.occluder`, so the fade and the surviving legacy binary cull share one geometry) and the lunar disc (Simon1994 ephemeris computed in-module because `UniformState` discards the world-fixed moon position and `Moon.update` is gated on `moon.show`). The dual-cone umbra/penumbra/antumbra cases are the three branches of that overlap. FIRST consumer: the sun billboard's ALPHA on BOTH backends (`SunFS.glsl` `u_eclipseAlpha` / the sun WGSL's `eclipseAlpha`, reusing the former `_p2` pad at offset 124 — no layout change, no new ShaderDefine bit), which replaces WebGL's frame-N-nothing→frame-N+1-full-glow pop and gives WebGPU (which never culled) the same continuous fade; alpha-only, so it is invariant to the C11-115 blend flip. Toggle `atmosphericConditions.lighting.enableEclipse` (default ON, maintainer ruling E1) gates only APPLICATION — the physics is always computed, and off yields exactly 1.0, a bit-identical multiply. Gates: `eclipse-state.spec.mjs` (32 tests) + `probe-eclipse-sun-fade.mjs` (orbital-sunset continuity / 2026-08-12 partial / toggle-off identity). **S2 (SHIPPED pending Edge gate, 2026-07-24) — scene-light + atmosphere dimming, the maintainer's "actual eye effects and dimming":** `Scene.render` publishes ONE scalar `frameState.eclipseSceneLightFactor` (moved AHEAD of `uniformState.update`, which is re-entered per frame by picking / the viewport executor / offscreen views, so a factor applied afterwards would be dropped; the sun position is consequently derived in-module from `frameState.time` on the same rotation-branch memo as the moon) and four JS uniform sources multiply by it, so BOTH backends inherit one change and no shader was edited: (1) `UniformState` `_lightColorHdr` + `_lightColor` **after** the LDR clamp, `SunLight`-gated → `czm_/csm_lightColor` + `…Hdr` + the WebGPU globe camera UB; (2) the sky-atmosphere shell on both backends (`SkyAtmosphere.js` `_eclipseLightFactor` × the `u_atmosphereLightIntensity` closure; `WebGPUSkyAtmosphereRenderer` `uniformData[39]`); (3) the globe ground atmosphere AND its fog through the single `tileProvider.atmosphereLightIntensity` mirror in `Globe.js`; (4) `frameState.skyBrightness` (inert at defaults). The factor is derived from `moonObscuration` ALONE — never `sunVisibleFraction`, whose Earth-limb term is 1 all night and saturates a few degrees into twilight, so using it would black out every sunset and the day side seen from a night-side orbital camera (and would double-count what N·L already models); pinned by a 24-hour day/night spec sweep demanding EXACTLY 1.0 at all 360 samples. Curve: linear in the limb-darkened flux fraction, lifted onto `ECLIPSE_RADIOMETRIC_FLOOR = 5/100000` (the published totality/full-sun illuminance ratio, standing in for the umbral sky lit from outside the umbra) and carried through the CIE L*/Stevens `1/3` adaptation exponent, giving a `ECLIPSE_TWILIGHT_FLOOR ≈ 0.0368` totality — civil twilight, never black — with the documented perceptual anchors reproduced (50%→0.794, 75%→0.630, 99%→0.216) and a ~5.9× plunge in the last seconds. New toggle `atmosphericConditions.lighting.eclipseAutoExposure` (default OFF, maintainer ruling E2) switches the transfer function to the LINEAR radiometric flux and hands re-metering to the exposure chain — the camera behaviour; the default is the AE-exempt human-eye impression, and C12-19's AE lanes attach to the `true` branch. A FIFTH site exists because one path does NOT share a uniform source: `ModelPBRComplete.wgsl` reads no `csm_lightColor*` at all (its direct term is `light.sunColor * light.sunIntensity * NdotL`, packed raw from `frameState.light`), so `WebGPUModelRenderer.packLightUniforms` carries its own copy of the multiply under the same `instanceof SunLight` gate — without it WebGPU glTF + 3D-Tiles models would stay full-bright over a dimmed world while WebGL models dim, the exit-gate divergence class; its sky-irradiance ambient is dimmed too, while the non-physical 0.2 neutral fallback deliberately is not. Gates: `eclipse-scene-dimming.spec.mjs` (31 tests) + `probe-eclipse-scene-dimming.mjs` (anti-solar ground vantage, five-rung obscuration ladder, three renders per rung). Deliberately NOT dimmed and filed for S3/C13: the WebGPU sky LUT bake and `czm_atmosphereLightIntensity` (it feeds the WebGL IBL radiance-map bake, whose sun-direction debounce would latch a dark IBL past totality). S3-S6 (clouds+IBL, limb glow, globe umbra, totality phenomena) remain in §D
 - Solar-disc appearance model — limb darkening + veiling-glare falloff + WebGPU bake parity — C12-15 / C12-16 / C12-17 (SHIPPED pending Edge gate, 2026-07-25) — new pure `Scene/SolarDiscModel.js` is the SINGLE constants source for the solar disc: the C12-15 quadratic limb-darkening triple `I(mu) = 0.3 + 0.93mu - 0.23mu^2`, the C12-16 glare parameters, and the bake-`radius` -> solar-radii conversion (`rho = radius * sqrt(2) * (1 + 2*glowLengthTS)`). Three consumers read it and none holds a numeric copy: `computeSolarObscuration.js` (the C12-29 eclipse photometry) imports the triple; `Shaders/SunTextureFS.glsl` receives it as the `u_limbDarkening` (vec3) + `u_glareProfile` (vec4) uniforms, so the GLSL contains no `0.93` / `0.23` / `0.275` / `0.55` literal at all; `WebGPUEnvironmentRenderer.createSunTexture`'s CPU bake imports the resolved payload. Resolution happens once in `Scene/SunDiscAppearance.js`, called from `Sun.update` BEFORE the feature-renderer branch and published as `frameState.sunDiscAppearance` (the C7-SUN-STARS-EXTINCTION convention), so both bakes provably consume identical numbers. **C12-15** replaces the disc's binary `step(radius, u_radiusTS)` with `step(...) * I(mu)`; it is arithmetically INERT at SDR defaults (the bake clamps alpha to 1 and the glare term alone is ~0.735 over the disc, so the limb's `0.30 + 0.735` still clamps) and is implemented at the radiance level so **C12-19**'s unclamp — or **C12-18**'s halo separation — lights it up without re-deriving the law. **C12-16** replaces `1 - smoothstep(0, 0.55, r)` with a pedestal-subtracted Lorentzian `(1/(1+(r/0.275)^2) - P)/(1 - P)`, a `1/theta^2` veiling-glare tail (CIE stray-light form) whose pedestal is taken at the billboard's inscribed circle so it reaches EXACTLY zero there: support 8.556 -> 11.0 solar radii, 8-bit-visible tail 8.19 -> 10.79, worst in-band cost -0.098 profile units (-0.074 alpha) at 3.23 R_sun; a genuinely non-terminating tail is impossible on a finite quad and remains C12-18's screen-space halo. The six lens-flare bursts are aperture diffraction and keep their original envelope. **C12-17** gives the WebGPU bake WebGL's own size rule `2^(ceil(log2(max(dbW, dbH))) - 2)` (capped at 1024 — WebGL bakes on the GPU, WebGPU in a JS double loop) and `rgba16float` under `frameState.useHDR` with an explicit binary32->binary16 packer, replacing a hardcoded 256^2 rgba8unorm; the rebuild set now covers glowFactor + size + format + the toggle key. Toggles `atmosphericConditions.lighting.enableSolarLimbDarkening` and `.enableSolarGlareFalloff`, both DEFAULT ON, both with exact identity positions (`(1,0,0)` makes `I(mu) == 1` for every mu — the historical flat disc, not an approximation; `glareLegacy = 1` selects the historical expression verbatim). No ShaderDefine bit consumed; no WGSL touched. Gates: `solar-disc-model.spec.mjs` (7 tests, incl. the arithmetic that REFUTES C12-16/C12-17 as causes of `probe-eclipse-sun-fade`'s WebGPU `glowOffRaw == 0`) + `sun-orbital-limb-extinction.spec.mjs` (4 tests, the C12-29 S4 verdict) + `probe-sun-glow-profile.mjs` (radial luminance profile in solar radii, both backends, open-sky control vs near-limb, globe-shown vs globe-hidden difference profiles). ROUND 2 (2026-07-25): both new modules gained `export default` — `packages/engine/index.js` is generated and emits `export { default as X }` for every `Source/**/*.js`, so a named-exports-only module is unbuildable and `npx tsc --noEmit` cannot catch it; a gulp build is the only gate for that class. `npx gulp build` green end-to-end. The WebGPU bake's `appearance === undefined` fallback key is 0 (matching what `createSunTexture` actually bakes in that case), and the C12-19 hand-off is documented as one clamp site in GLSL versus six in the WebGPU CPU twin.
+- Eclipse totality sky — C12-29 S6 SKY HALF (INTEGRATED; targeted gates PASS,
+  2026-07-26) — WebGPU now consumes the dynamic-lighting enum already resolved
+  on `SkyAtmosphere`, matching WebGL's globe flags instead of independently
+  reading `scene.atmosphere`; both backends share the ruling-E3
+  star-brightness modulation (default ON), totality star-reveal factor, and
+  warm 360-degree near-totality horizon band. The horizon effect has an exact
+  zero outside its onset/type/altitude/toggle gates and consumes no
+  ShaderDefine bit. The modulation and weather attenuation are guarded by
+  `CubeMapPanorama.isStarMap`: `SkyBox` opts in explicitly, while generic and
+  Google Street View panoramas remain exact identity.
+- Return-only environment ownership — C12-29 S6 (INTEGRATED; targeted gates
+  PASS, 2026-07-26) — the WebGPU star field, sky atmosphere, and sun feature
+  renderers return cached commands to `Scene` and do not also push binned
+  command-list copies. `Scene` remains the sole visibility/ordering owner.
+  StarField travels through `environmentState.starFieldCommand` in the shared
+  `skyBox -> starField -> skyAtmosphere` slot; Batch 761's
+  injected-environment predicate preserves sky-only frustum demand. This
+  removes the duplicate star submission route and per-frame scan/splice repair
+  work without claiming that the old cached commands were allocated every
+  frame, and without removing the catalogue, cubemap, atmosphere occlusion, or
+  backend-parity behavior. The consumer canonicalizes the
+  `skyBox -> starField` prefix in place: an already-canonical list returns
+  immediately, while one stable compaction removes repeated or legacy
+  identities without allocating temporary arrays or closures.
+- Current-frame celestial brightness + continuous orbital star law — C12-29 S6
+  (INTEGRATED; targeted gates PASS, 2026-07-26) — `Moon.update` publishes the
+  current frame's direction/phase before `Scene` computes
+  `frameState.skyBrightness`, including a zero phase reset when Moon is
+  hidden/absent. Scene passes ellipsoidal
+  `camera.positionCartographic.height`; both the cubemap estimator and
+  catalogue day fade consume `computeAtmosphericColumnFactor`, a continuous
+  60–111 km ramp. There is no hard 100 km catalogue cutoff and no
+  `|positionWC| - EarthRadius` approximation, so WGS84 latitude and custom
+  ellipsoids remain correct.
+- Stable WebGPU Sun draw resources — C12-29 S6 integration hardening
+  (INTEGRATED; targeted gates PASS, 2026-07-26) — the sun quad stores immutable
+  corner directions and the moving ECEF center is high/low encoded in the
+  per-frame uniform payload. Vertex buffer, bind group, and draw command are
+  cached across clock ticks; rebuilds are limited to device/pipeline or real
+  bake invalidators such as glow, size, format, and appearance changes.
+- S6/S2 eclipse integration certification — C12-29 (VERIFIED, 2026-07-26) —
+  `probe-eclipse-scene-dimming.mjs` boots offline, requires non-empty rendered
+  tiles, and derives its ground mask from white-vs-black `globe.baseColor`
+  response before accepting ground metrics. WebGL and WebGPU both PASS with
+  zero console errors; WebGPU has a terrain-responsive pixel fraction of 1.0
+  and mean absolute response 0.3388469. Matching-frame `skyBrightness` is
+  frozen immediately after each render. S6 horizon twilight is isolated only
+  for the S2 manual-equivalence twin and restored; the dedicated totality lane
+  retains default-on coverage.
 - `czm_getDynamicAtmosphereLightDirection` parity (NONE / SCENE_LIGHT / SUNLIGHT enum) — Batch 20 (SHIPPED) — per-fragment `normalize(positionWC)` for NONE case, scene-light direction for SCENE_LIGHT, sun for SUNLIGHT
 - FrustumCull.wgsl — GPU frustum culling for >50K objects, dispatched by WebGPUGPUCuller (SCAFFOLDED — WASM/JS culling active)
 - HiZPyramid.wgsl / HiZPyramidFromDepth.wgsl — hierarchical-Z pyramid build from prev-frame depth (WIP — built+dispatched every frame in the density gate via WebGPUSceneRenderer, FORK-41 Batch 291)
@@ -1087,6 +1141,12 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 - Bind group caching by content hash (50% fewer creations) (BACKLOG-§11)
 - Texture atlas consolidation (30-50% fewer draws) (BACKLOG-§11)
 - Command buffer reuse via double-buffer encoders (BACKLOG-§11)
+- Moon direct-return + retained WebGPU command/bind/pipeline resources
+  (`S6-PERF-MOON-DIRECT-RETURN-RETAINED-RESOURCES`; see
+  `DEFERRED_WORK.md`)
+- Allocation-free, mode-correct Sun/Moon bounding volumes so Scene visibility
+  can reject offscreen/occluded celestial draws
+  (`S6-PERF-SUN-MOON-BOUNDING-VOLUMES`; see `DEFERRED_WORK.md`)
 - TS-DEBT-1 WebGPUContext public underscore field getter refactor (TS-DEBT-1)
 - TS-DEBT-2 `getGPUBuffer()` helper to drop `'buffer' in vb` narrowing (TS-DEBT-2)
 - TS-DEBT-11 re-tighten `CesiumAnyDrawCommand.boundingVolume` after DrawCommand.d.ts (TS-DEBT-11)
@@ -1102,6 +1162,17 @@ Explicitly punted, gated on external dependencies, or research-stage. Sourced fr
 - BUILD-VAR-SCENE-AUDIT Option A real WebGPU FRs for vector3D / classification / depth-plane / ground-polyline (replaces defensive guards) (BACKLOG-§BUILD-VAR)
 - WebGPUContext.ts decomposition extraction candidates: `_initializeWebGLStub` (~230 LOC), DeviceInvalidationBus (~35), `_clearAllCaches` (~40), feature flag plumbing (~80), enum conversions (~18), statistics (~30) (CONTEXT_DECOMPOSITION)
 - WebGPUSceneRenderer.ts pass orchestration extraction continuing past batches 133-142 (CONTEXT_DECOMPOSITION)
+- Generation-safe panorama source-swap resource invalidation
+  (`S6-PANORAMA-SOURCE-SWAP-INVALIDATION`; see `DEFERRED_WORK.md`)
+- Deterministic environment teardown plus device-loss/recovery invalidation
+  (`S6-ENV-DETERMINISTIC-DESTROY-DEVICE-RECOVERY`; see
+  `DEFERRED_WORK.md`)
+- Multi-panorama every-frame contribution and ordering parity
+  (`S6-PANORAMA-MULTI-ORDERING-PARITY`; see `DEFERRED_WORK.md`)
+- WebGPU per-eye viewport/stereo execution
+  (`NEW-WEBGPU-STEREO-VIEWPORT`; currently unsupported—the allocation-free
+  background-prefix canonicalizer prevents duplicate identities but does not
+  add stereo viewport plumbing; see `DEFERRED_WORK.md`)
 - 42 open upstream issues unaddressed — camera (7), entity/datasource (7), rendering (6), memory leaks (6), 2D/CV (4), 3D Tiles (5), terrain/imagery (3), model/glTF (4), legacy (5) (BACKLOG-§13)
 - Console noise reduction (4.8) ~12 `console.warn/error` to route through `context.log` (BACKLOG-§4.8)
 - WORKER-Naga in worker; cross-browser Firefox/Safari worker rAF fallback (WORKER-7/8)

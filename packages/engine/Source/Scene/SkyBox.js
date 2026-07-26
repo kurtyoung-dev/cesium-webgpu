@@ -44,6 +44,7 @@ class SkyBox {
       sources: this._sources,
       show: this._show,
       returnCommand: true,
+      isStarMap: true,
     });
 
     // Track V-C (NEW-STARS-BRIGHT-CATALOG) — real bright-star catalog

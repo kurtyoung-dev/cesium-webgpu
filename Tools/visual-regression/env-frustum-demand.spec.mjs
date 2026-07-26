@@ -215,8 +215,8 @@ test("C10-01 binned-environment fallback still fires without inject demand", () 
 });
 
 test("moon-only day/night asymmetry is gone (the Batch 756 evidence)", () => {
-  // Night: the star field still emits (day fade > 0) so a binned command
-  // existed and `sawEnvironmentNoBV` was true — this always worked.
+  // Night control: emulate a frame where some other environment producer set
+  // `sawEnvironmentNoBV`; the moon must still request a frustum.
   const night = makeScene();
   ELEMENTS.moon(night);
   ELEMENTS.starField(night);
@@ -224,8 +224,8 @@ test("moon-only day/night asymmetry is gone (the Batch 756 evidence)", () => {
     needsEnvironmentOnlyFrustum(SENTINEL_NEAR, SENTINEL_FAR, true, night),
     true,
   );
-  // Day: star fade 0 -> StarField pushes nothing, `sawEnvironmentNoBV` false.
-  // Pre-fix this yielded zero frustums and the moon vanished.
+  // With no binned producer, `sawEnvironmentNoBV` is false. Pre-fix this
+  // yielded zero frustums and the moon vanished.
   const day = makeScene();
   ELEMENTS.moon(day);
   assert.equal(

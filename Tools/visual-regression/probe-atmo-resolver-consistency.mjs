@@ -7,15 +7,41 @@
 // (WebGPUDynamicEnvironmentMapManager) CPU uniform packing onto it, byte-
 // identical at default `scene.atmosphere` settings.
 //
-// `scene.atmosphere.dynamicLighting` is the ONE `scene.atmosphere.*` field that
-// WebGL applies to BOTH the sky (Scene/SkyAtmosphere.setDynamicLighting) AND the
-// model IBL fill (DynamicEnvironmentMapManager u_radiiAndDynamicAtmosphereColor.z).
-// Both WebGPU consumers now resolve it through the SAME seam
-// (`resolveDynamicLighting`). This probe proves the seam routes that field into
-// BOTH consumers by asserting a visible delta in each when it flips
-// NONE(0) -> SUNLIGHT(2):
+// The dynamic-atmosphere-lighting enum reaches BOTH the sky
+// (Scene/SkyAtmosphere.setDynamicLighting) and the model IBL fill
+// (DynamicEnvironmentMapManager u_radiiAndDynamicAtmosphereColor.z), and both
+// WebGPU consumers resolve it through the SAME seam. This probe proves the
+// seam routes it into BOTH consumers by asserting a visible delta in each
+// when it flips NONE(0) -> SUNLIGHT(2):
 //   (SKY)   fullscreen sky mean color shifts (sky reads the resolved enum).
 //   (MODEL) isolated metallic-IBL model pixels shift (model reads it too).
+//
+// ── WHY THE SKY LEG'S DRIVER CHANGED (C12-29 S6 / obs-1, 2026-07-25) ──
+//
+// The header used to say `scene.atmosphere.dynamicLighting` is "the ONE
+// `scene.atmosphere.*` field WebGL applies to BOTH", and the sky leg drove
+// exactly that field. That was only half true, and the probe was codifying
+// the half that was wrong. `Scene.updateEnvironment` resolves the SKY's enum
+// as:
+//
+//   defined(globe) ? DynamicAtmosphereLightingType.fromGlobeFlags(globe)
+//                  : atmosphere.dynamicLighting
+//
+// so WebGL routes `scene.atmosphere.dynamicLighting` to the sky ONLY when
+// there is no globe. This probe leaves `scene.globe` DEFINED (it merely sets
+// `globe.show = false`) with `globe.enableLighting = false`, so on WebGL the
+// sky's enum was pinned at NONE for BOTH captures all along — the sky leg was
+// green only because the WebGPU renderer was re-resolving the field itself,
+// i.e. because of the divergence obs-1 fixed. With the renderer now reading
+// the value Scene resolved, driving `scene.atmosphere.dynamicLighting` alone
+// makes the two sky captures identical and `skyResponse` collapse to ~0.
+//
+// The SKY leg is therefore driven through the channel WebGL actually uses
+// with a globe present — the legacy globe flags — while the MODEL leg keeps
+// driving `scene.atmosphere.dynamicLighting`, which is genuinely what
+// `DynamicEnvironmentMapManager` reads on BOTH backends. Both fields are set
+// on every capture, so each consumer sees the flip through its own real
+// channel and the probe tests the seam instead of a bug.
 //
 // Byte-identical off-gate: run with PHASE=pre (pre-change build) and PHASE=post
 // (post-change build); the DEFAULT (dynamicLighting NONE) sky + model PNGs must
@@ -68,6 +94,11 @@ async function captureSky(dynEnum) {
       const sky = v.scene.skyAtmosphere;
       sky.show = true;
       sky._webgpuFullscreen = true;
+      // Set BOTH channels on every capture. `scene.atmosphere.dynamicLighting`
+      // is what the model IBL fill reads on both backends and is kept for
+      // completeness; the SKY's enum, with a globe defined, is resolved by
+      // `Scene.updateEnvironment` from the legacy globe flags, so that is what
+      // the sky leg has to drive. See the header for why this changed.
       v.scene.atmosphere.dynamicLighting = dynEnum;
 
       v.scene.globe.showGroundAtmosphere = false;
@@ -76,7 +107,13 @@ async function captureSky(dynEnum) {
       v.scene.skyBox.show = false;
       v.scene.sun.show = false;
       v.scene.moon.show = false;
-      v.scene.globe.enableLighting = false;
+      // DynamicAtmosphereLightingType.fromGlobeFlags: lighting off -> NONE(0);
+      // lighting on + fromSun -> SUNLIGHT(2). Exactly the two states this
+      // probe flips between.
+      const wantSunlight = dynEnum === 2;
+      v.scene.globe.enableLighting = wantSunlight;
+      v.scene.globe.dynamicAtmosphereLighting = true;
+      v.scene.globe.dynamicAtmosphereLightingFromSun = wantSunlight;
       v.scene.backgroundColor = C.Color.BLACK;
 
       for (const sel of [
@@ -316,6 +353,11 @@ const rgbDelta = (a, b) =>
   );
   console.log(`  console errors = ${errs} (want 0)`);
 
+  // C12-29 S6: the sky leg's A/B is now driven by the globe flags, because
+  // that is the channel `Scene.updateEnvironment` uses when a globe exists.
+  // Driving `scene.atmosphere.dynamicLighting` alone would leave both
+  // captures at NONE and collapse this to ~0 — which is what the fix to
+  // obs-1 exposed about the OLD version of this probe.
   const passSky = skyResponse > 8;
   const passModel =
     modelResponse.mismatchPct !== null && modelResponse.mismatchPct > 3;

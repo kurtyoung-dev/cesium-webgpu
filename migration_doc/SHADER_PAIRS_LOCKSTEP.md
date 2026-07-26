@@ -496,15 +496,41 @@ The environment/cube-map shader collection diverges by design — WebGL ships a 
 **Matched pairs:**
 
 | Effect | GLSL | WGSL | Algorithm match |
-|---|---|---|---|
-| Sun billboard | `SunFS.glsl` + `SunVS.glsl` | `Environment/Sun.wgsl` | Same disc + corona algorithm |
+| --- | --- | --- | --- |
+| Sun billboard | `SunFS.glsl` + `SunVS.glsl` | Production inline `SUN_SHADER_WGSL` in `WebGPUEnvironmentRenderer.js` (`Environment/Sun.wgsl` is a reference/prototype, not the compiled billboard shader) | Same disc + corona algorithm. The WebGPU draw path is RTE-safe and resource-stable: immutable quad directions are uploaded once, the moving ECEF center is high/low encoded in the per-frame uniform payload, and the vertex buffer/bind group/draw command are reused across clock ticks unless a real device/pipeline/bake invalidator fires. |
 | Sun DISC BAKE (C12-15 / C12-16, 2026-07-25) — **an unusual pair: GLSL vs a JS CPU LOOP, not GLSL vs WGSL** | `SunTextureFS.glsl`, run once per texture rebuild as a `ComputeCommand` full-screen pass | `WebGPUEnvironmentRenderer.createSunTexture` — a JS double loop that writes the texels directly (`Environment/Sun.wgsl` exists but is NOT the production shader; the renderer compiles an inline `SUN_SHADER_WGSL` string for the BILLBOARD, and the bake never reaches the GPU) | **Matched, and matched STRUCTURALLY rather than by convention.** Both sides read one resolved payload, `frameState.sunDiscAppearance`, published by `Sun.update` before the backend branch from `Scene/SunDiscAppearance.js` over the constants in `Scene/SolarDiscModel.js`. The GLSL takes it as `u_limbDarkening` (vec3) + `u_glareProfile` (vec4) and holds NO numeric copy; the JS loop imports it. So the limb-darkening triple, the glare core/pedestal/legacy-edge and the legacy-branch selector cannot drift — there is no second literal to drift. The JS `sunGlare()` closure is the explicit twin of the GLSL `sunGlare()` function and is commented as such on both sides. Differences that remain and are INTENTIONAL: bake SIZE + FORMAT (C12-17 — both now follow `2^(ceil(log2(max(dbW, dbH))) - 2)` and select half-float under HDR, but WebGPU caps at 1024 because its loop runs on the CPU), and f32-vs-f64 evaluation (both quantise to 8/16-bit afterwards, so the difference is below one code). Pinned by `Tools/visual-regression/solar-disc-model.spec.mjs` (asserts the GLSL carries no literal and that the JS bake reads `appearance.*`) and measured by `probe-sun-glow-profile.mjs` (`geometry_lockstep` + `c12_16_support` + `c12_15_appearance` gate the two backends against each other). |
-| Cube map panorama (loader for HDR environment textures) | `CubeMapPanoramaVS.glsl` (VS only — FS lives in the JS-side panorama orchestrator) | `WebGPU/CubeMapPanorama.wgsl` (single file with VS+FS) | Same equirectangular → cube-face projection |
+| Cube map panorama (loader for HDR environment textures) | `CubeMapPanoramaVS.glsl` (VS only — FS lives in the JS-side panorama orchestrator) | `WebGPU/CubeMapPanorama.wgsl` (single file with VS+FS, mirrored by the renderer's embedded production source) | Same equirectangular → cube-face projection. Star brightness and cloud attenuation are additionally paired only when `CubeMapPanorama.isStarMap === true`; the option defaults false and `SkyBox` opts in, so generic/Street View panoramas retain exact identity. |
 | Sky atmosphere | `SkyAtmosphereVS/FS/Common.glsl` | `Environment/SkyAtmosphere.wgsl` | Documented Phase 3.1 (Batch 76) |
 
 **WebGL-only legacy** (not migrated, intentional):
 
-- **SkyBox (`SkyBoxFS.glsl` + `SkyBoxVS.glsl`)** — the 9-line WebGL legacy skybox renderer. WGSL replaces this with `ProceduralSkyCubemap.wgsl` (compute-baked) + `CubeMapPanorama.wgsl` (HDR equirect loader) — neither is a line-by-line port of the upstream SkyBox shaders, but both subsume its functionality. The WebGL skybox stays for backwards compatibility with apps that explicitly set `scene.skyBox`; WebGPU routes the same scene through the procedural/panorama path automatically.
+- **SkyBox (`SkyBoxFS.glsl` + `SkyBoxVS.glsl`)** — the WebGL legacy skybox renderer. WGSL replaces this with `ProceduralSkyCubemap.wgsl` (compute-baked) + `CubeMapPanorama.wgsl` (HDR equirect loader) — neither is a line-by-line port of the upstream SkyBox shaders, but both subsume its functionality. The WebGL skybox stays for backwards compatibility with apps that explicitly set `scene.skyBox`; WebGPU routes the same scene through the procedural/panorama path automatically.
+  - **PARTIAL LOCKSTEP PAIR SINCE C12-29 S6 (2026-07-25).** `SkyBoxFS.glsl` is no longer nine lines and no longer unpaired: it carries the star-brightness modulation and the cloud-cover occlusion, byte-for-byte the same expressions as `CubeMapPanorama.wgsl` (and its JS-embedded production copy in `WebGPUCubeMapPanoramaRenderer.js`), fed by `u_starModulation` (inflection, steepness, enableFlag, cloudCover) + `u_skyBrightness` from `CubeMapPanorama.js` — the WebGL twin of `params.w` + `starModulation`. **The ORDER is part of the contract**: modulate → cloud-occlude → gamma. `czm_gammaCorrect` is a no-op without HDR, but with HDR on it is an sRGB→linear decode, and `k·x^g ≠ (k·x)^g`, so moving the multiply across it silently desynchronises the two backends. Ruling E3 makes this a DEFAULT-ON path on both backends **for the `SkyBox` celestial panorama only**. `CubeMapPanorama.isStarMap` defaults false, and the shared CPU resolver forces both multipliers to identity for generic and Google Street View panoramas. Pinned by `Tools/visual-regression/eclipse-sky-totality.spec.mjs` ("one expression, four implementations" + ordering + panorama-isolation tests). The cubemap SAMPLING and the procedural bake remain unpaired as described above.
+
+**C12-29 S6 CPU/runtime lockstep correction (2026-07-26).** Shader parity
+depends on feeding the pair the same current state and executing it once:
+
+- `Moon.update` publishes current-frame direction and phase before
+  `frameState.skyBrightness`; a request-render-mode clock step therefore
+  cannot leave the shaders modulating from the previous rendered Moon.
+- Scene passes ellipsoidal `camera.positionCartographic.height`. The cubemap
+  brightness estimator and catalogue sprite path share the continuous 60–111
+  km `computeAtmosphericColumnFactor`; the former hard 100 km catalogue step
+  and hard-coded Earth-radius subtraction are gone.
+- WebGPU StarField, SkyAtmosphere, and Sun are return-only feature renderers.
+  Scene owns visibility and environment order; none also inserts a binned copy
+  into `frameState.commandList`.
+- Scene canonicalizes the `skyBox -> starField` prefix in place. The already
+  canonical path is idempotent, while one stable compaction removes legacy or
+  repeated identities without allocating a temporary command list.
+- Pixel-pair probes must synchronously freeze the live GPU canvas in the render
+  task. Awaiting decode of the immutable PNG is valid; awaiting before the
+  live-canvas read is not.
+- S2 manual-equivalence captures isolate S6 horizon twilight on the engine
+  reference only for that comparison and restore it immediately. The
+  dedicated S6 totality probe keeps the shipped horizon effect default-on, so
+  shader lockstep is certified without asking the S2 twin to reproduce an
+  additional S6 term.
 
 **WebGPU-only enhancements** (intentional Phase 1.3c / Phase 4 / Phase 6 additions):
 
@@ -513,7 +539,7 @@ The environment/cube-map shader collection diverges by design — WebGL ships a 
 - **`Environment/GroundAtmosphere.wgsl`** — the environment-side half of the ground-atmosphere pair (the other half is inlined in `GlobeTerrain.wgsl`, documented in Phase 2.2 Batches 56-72).
 - **`Compute/ProceduralSkyCubemap.wgsl`** — compute-shader baked cubemap for fork-only physically-based ambient lighting. WebGL backend uses pre-baked offline cubemaps via `EnvironmentMapManager` JS.
 
-**Net status:** environment shader pair is **architecturally matched** for shipped WebGL features (Sun + sky atmosphere + cube map panorama loader). WGSL replaces the legacy 9-line SkyBox with a richer procedural + HDR-loader pair (subsumes its function). Moon, ProceduralClouds, ProceduralSkyCubemap are fork-only enhancements with no parity gap to close.
+**Net status:** environment shader pairs are **architecturally matched** for shipped WebGL features (Sun + sky atmosphere + cube map panorama loader). WGSL replaces the legacy SkyBox implementation with a richer procedural + HDR-loader pair while sharing the now-default celestial modulation contract. Moon, ProceduralClouds, and ProceduralSkyCubemap remain fork-specific renderer enhancements.
 
 ---
 

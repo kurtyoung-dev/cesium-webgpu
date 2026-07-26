@@ -267,6 +267,7 @@ function updateWebGLStarField(starField, frameState) {
       computeStarDayFade(
         context.uniformState.sunDirectionWC,
         frameState.camera?.positionWC,
+        frameState.camera?.positionCartographic?.height,
       );
   if (effectiveIntensityScale === 0.0) {
     return undefined;

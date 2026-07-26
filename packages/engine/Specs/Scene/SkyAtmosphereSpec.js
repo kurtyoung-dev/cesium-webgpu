@@ -160,6 +160,32 @@ describe(
       expect(command).not.toBeDefined();
     });
 
+    it("returns one feature-renderer command without binning a duplicate", function () {
+      const s = new SkyAtmosphere();
+      const drawCommand = {};
+      const featureRenderer = {
+        update: jasmine
+          .createSpy("featureRenderer.update")
+          .and.returnValue(drawCommand),
+      };
+      const frameState = {
+        mode: SceneMode.SCENE3D,
+        passes: {
+          render: true,
+        },
+        context: {
+          getFeatureRenderer: jasmine
+            .createSpy("getFeatureRenderer")
+            .and.returnValue(featureRenderer),
+        },
+        commandList: [],
+      };
+
+      expect(s.update(frameState)).toBe(drawCommand);
+      expect(frameState.commandList).toEqual([]);
+      expect(featureRenderer.update).toHaveBeenCalledWith(s, frameState);
+    });
+
     it("gets ellipsoid", function () {
       const s = new SkyAtmosphere(Ellipsoid.UNIT_SPHERE);
       expect(s.ellipsoid).toEqual(Ellipsoid.UNIT_SPHERE);

@@ -112,8 +112,13 @@ function validateBackend(run, failures) {
   ) {
     failures.push(`${prefix}/stable-night-repeat: output or pixel fingerprint changed`);
   }
-  if (!first.after.draw.starScheduled || first.after.effectiveStarScale <= 0) {
-    failures.push(`${prefix}/stable-night-first: night star draw was not scheduled`);
+  if (
+    first.after.draw.submissionCount !== 1 ||
+    first.after.effectiveStarScale <= 0
+  ) {
+    failures.push(
+      `${prefix}/stable-night-first: night star draw was not scheduled exactly once`,
+    );
   }
 
   for (const [label, phase] of [
@@ -172,7 +177,7 @@ function validateBackend(run, failures) {
   }
   if (
     time.after.featureRendererUpdateCalls - time.before.featureRendererUpdateCalls !== 1 ||
-    !time.after.draw.starScheduled
+    time.after.draw.submissionCount !== 1
   ) {
     failures.push(`${prefix}/time-mutation: star orientation/update did not reach its renderer/draw`);
   }
@@ -188,7 +193,7 @@ function validateBackend(run, failures) {
     counterDelta(day.after.starCache, day.before.starCache, "computations") !== 0 ||
     counterDelta(day.after.starCache, day.before.starCache, "hits") !== 0 ||
     day.after.featureRendererUpdateCalls !== day.before.featureRendererUpdateCalls ||
-    day.after.draw.starScheduled
+    day.after.draw.submissionCount !== 0
   ) {
     failures.push(`${prefix}/sun-facing-day: star cache, feature renderer, or draw work was not zero`);
   }
@@ -200,7 +205,7 @@ function validateBackend(run, failures) {
     finalNight.after.featureRendererUpdateCalls -
         finalNight.before.featureRendererUpdateCalls !==
       1 ||
-    !finalNight.after.draw.starScheduled
+    finalNight.after.draw.submissionCount !== 1
   ) {
     failures.push(`${prefix}/final-night: night star publication/render work did not restore`);
   }
@@ -440,6 +445,7 @@ async function runBackend(browser, renderer) {
       ).length;
       const environmentCommand =
         scene._environmentState.starFieldCommand?.owner === starField;
+      const submissionCount = Number(environmentCommand) + ownedCommands;
       return {
         sunCache: cache(sunCache),
         starCache: cache(starCache),
@@ -454,8 +460,8 @@ async function runBackend(browser, renderer) {
         draw: {
           environmentCommand,
           commandListOwnerCount: ownedCommands,
-          wasBinned: starField.wasBinned,
-          starScheduled: environmentCommand || ownedCommands > 0,
+          submissionCount,
+          starScheduled: submissionCount > 0,
         },
         sunPositionWC: vec(graphicsContext.uniformState.sunPositionWC),
         temeToPseudoFixed: matrix(

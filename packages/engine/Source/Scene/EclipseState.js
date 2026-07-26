@@ -34,6 +34,8 @@
 //   earthSeparation         radians  camera->nadir vs camera->sun
 //   moonSeparation          radians  camera->moon vs camera->sun
 //   eclipseMagnitude        >= 0     lunar magnitude, >= 1 means totality
+//   horizonTwilightEnabled  boolean  atmosphericConditions.lighting.enableEclipseHorizonTwilight
+//   horizonTwilightStrength [0,1]    S6's 360-degree horizon glow, geometry only
 //   valid                   boolean  false when inputs were missing this frame
 //
 // TWO OCCLUDERS, ONE INTEGRAND. Both terms come from
@@ -156,6 +158,7 @@ import CesiumMath from "../Core/Math.js";
 import Matrix3 from "../Core/Matrix3.js";
 import Simon1994PlanetaryPositions from "../Core/Simon1994PlanetaryPositions.js";
 import Transforms from "../Core/Transforms.js";
+import { computeAtmosphericColumnFactor } from "./SkyBrightness.js";
 import {
   computeEclipseMagnitude,
   computeSolarObscuration,
@@ -361,6 +364,11 @@ function createEclipseState() {
     earthSeparation: Math.PI,
     moonSeparation: Math.PI,
     eclipseMagnitude: 0.0,
+    // C12-29 S6 — 360-degree horizon twilight. Geometry only (0 outside a
+    // near-total eclipse and above the atmosphere); the toggles are applied by
+    // `getEclipseHorizonTwilightFactor`.
+    horizonTwilightEnabled: true,
+    horizonTwilightStrength: 0.0,
   };
 }
 
@@ -374,9 +382,11 @@ function createEclipseState() {
  * @returns {object} `state`
  * @private
  */
-function resetToIdentity(state, enabled, autoExposure) {
+function resetToIdentity(state, enabled, autoExposure, horizonTwilightEnabled) {
   state.enabled = enabled;
   state.autoExposure = autoExposure;
+  state.horizonTwilightEnabled = horizonTwilightEnabled !== false;
+  state.horizonTwilightStrength = 0.0;
   state.valid = false;
   state.sunVisibleFraction = 1.0;
   state.earthOcclusionFraction = 0.0;
@@ -444,7 +454,15 @@ function angleBetween(a, b) {
  *   (`atmosphericConditions.lighting.eclipseAutoExposure`, ruling E2's
  *   togglable camera mode) instead of the default eye-adapted form. Recorded
  *   on the state; read by {@link getEclipseSceneLightFactor}.
+ * @param {boolean} [options.horizonTwilightEnabled=true] Whether S6's
+ *   360-degree horizon twilight should be APPLIED
+ *   (`atmosphericConditions.lighting.enableEclipseHorizonTwilight`). Like
+ *   `enabled`, it gates application only — `horizonTwilightStrength` is
+ *   computed either way. Read by
+ *   {@link getEclipseHorizonTwilightFactor}.
  * @param {Cartesian3} options.cameraPositionWC Camera position, ECEF metres.
+ * @param {number} [options.cameraHeight=0.0] Ellipsoidal camera height in
+ *   metres, used to fade atmospheric twilight without assuming Earth radius.
  * @param {Cartesian3} [options.sunPositionWC] Sun position, ECEF metres.
  *   Omit it and the solar ephemeris is derived from `options.time` exactly as
  *   `setSunAndMoonDirections` derives `uniformState.sunPositionWC` — which is
@@ -465,10 +483,16 @@ function angleBetween(a, b) {
 function updateEclipseState(state, options) {
   const enabled = options.enabled !== false;
   const autoExposure = options.autoExposure === true;
+  const horizonTwilightEnabled = options.horizonTwilightEnabled !== false;
   const cameraPositionWC = options.cameraPositionWC;
 
   if (options.active === false || !defined(cameraPositionWC)) {
-    return resetToIdentity(state, enabled, autoExposure);
+    return resetToIdentity(
+      state,
+      enabled,
+      autoExposure,
+      horizonTwilightEnabled,
+    );
   }
 
   // C12-29 S2 — the sun is either supplied (specs, and any caller that
@@ -487,7 +511,12 @@ function updateEclipseState(state, options) {
     sunPositionWC = getSunPositionWC(options.time, state.sunPositionWC);
   }
   if (!defined(sunPositionWC)) {
-    return resetToIdentity(state, enabled, autoExposure);
+    return resetToIdentity(
+      state,
+      enabled,
+      autoExposure,
+      horizonTwilightEnabled,
+    );
   }
 
   const toSun = Cartesian3.subtract(
@@ -497,7 +526,12 @@ function updateEclipseState(state, options) {
   );
   const sunDistance = Cartesian3.magnitude(toSun);
   if (!(sunDistance > 0.0)) {
-    return resetToIdentity(state, enabled, autoExposure);
+    return resetToIdentity(
+      state,
+      enabled,
+      autoExposure,
+      horizonTwilightEnabled,
+    );
   }
   Cartesian3.divideByScalar(toSun, sunDistance, toSun);
   const rs = angularRadius(CesiumMath.SOLAR_RADIUS, sunDistance);
@@ -571,6 +605,13 @@ function updateEclipseState(state, options) {
 
   state.enabled = enabled;
   state.autoExposure = autoExposure;
+  state.horizonTwilightEnabled = horizonTwilightEnabled;
+  // C12-29 S6 — geometry only; the toggles are applied by the accessor, per
+  // the S1 convention that the physics is always computed so tooling can read
+  // it with the effect switched off.
+  state.horizonTwilightStrength =
+    computeHorizonTwilightStrength(moonObscuration, rs, moonAngular) *
+    computeAtmosphericColumnFactor(options.cameraHeight);
   state.valid = true;
   state.sunVisibleFraction = visible;
   state.earthOcclusionFraction = earthOcclusion;
@@ -699,11 +740,224 @@ function getEclipseSceneLightFactor(state) {
   return Math.pow(flux, ECLIPSE_ADAPTATION_EXPONENT);
 }
 
+// ─── C12-29 S6: the 360-degree horizon twilight ────────────────────────────
+//
+// WHAT IT IS. Standing in the umbra you are surrounded by penumbra. The umbral
+// ground track is only 100-160 km wide (2017: ~115 km; path widths up to
+// ~270 km — NASA/EclipseWise), so in EVERY azimuth the still-sunlit
+// atmosphere begins a few tens of km away and its scattered light arrives as a
+// sunset-coloured band hugging the horizon, all the way round. It is the most
+// recognisable totality cue after the corona, and no camera-anchored dimming
+// scalar can produce it: S2 makes the whole sky darker, uniformly.
+//
+// THE SHAPE IS GEOMETRIC, NOT TUNED. From the umbra centre the near edge of
+// the bright penumbral atmosphere is ~50-80 km away (half the track width) and
+// the scattering layer that carries the glow is the troposphere plus lower
+// stratosphere, ~25 km deep. So the lit region subtends elevations from the
+// horizon up to roughly
+//
+//   atan(25 km / 60 km) = 22.6 degrees
+//
+// which is the shader's `ECLIPSE_TWILIGHT_ELEVATION_RAD`. Above that the
+// observer is looking at umbral sky and the term is exactly 0 — that is why
+// the effect reads as a BAND rather than a wash, and why it cannot drown the
+// star reveal happening overhead.
+//
+// THE ONSET is keyed to obscuration, the same quantity S2 dims by (never
+// magnitude — the Stellarium #3720 trap is about driving the DIMMING SCALAR
+// from magnitude, and it still applies). Below `ECLIPSE_TWILIGHT_ONSET` the
+// strength is exactly 0, so every partial eclipse is byte-identical.
+//
+// ANNULAR EXCLUSION IS A SEPARATE, TYPE-LEVEL CLASSIFIER, and obscuration
+// cannot do that job. Measured from this module: a concentric annular ring at
+// radius ratio 0.98 obscures 0.9794, at 0.99 it obscures 0.9905, at 0.995
+// 0.9955 and at 0.999 0.9992 — all above the 0.98 onset. Real hybrid and
+// near-hybrid eclipses (~5% of solar eclipses) run annular phases right
+// through that band, so an obscuration-only gate would fire an umbra-only
+// effect at near-full gain over a track with NO UMBRA AT ALL.
+//
+// The discriminator is the angular-radius ratio `ro / rs`: the moon's disc is
+// larger than the sun's if and only if the eclipse is total, and that is a
+// property of the eclipse TYPE rather than of the instant. It is exactly the
+// eclipse magnitude evaluated at central alignment — `M(d=0) = (rs+ro)/(2rs)
+// >= 1  <=>  ro >= rs` — which is why it is the right form of "magnitude is
+// the total-vs-annular discriminator". The INSTANTANEOUS magnitude is not: for
+// a total eclipse `M >= 1` is algebraically identical to `d <= ro - rs`, i.e.
+// to the umbra branch, i.e. to obscuration being EXACTLY 1.0, so gating on it
+// would collapse the whole obscuration ramp into a step at second contact.
+// Using the ratio keeps the ramp and still excludes every annular geometry
+// exactly.
+//
+// The ratio gate carries a narrow smoothstep rather than a hard step so a
+// hybrid eclipse — annular at the ends of its track, total in the middle —
+// crosses it continuously, which is what a hybrid physically does. A true
+// total eclipse sits at ro/rs ~ 1.01-1.08 at greatest eclipse and is fully
+// inside the gate; every annular ratio (< 1 by definition) is exactly 0.
+//
+// THE AMPLITUDE is a perceptual constant, and is labelled as one. The
+// mechanism fixes the shape and the direction; it does not hand us a radiance
+// ratio, and the totality sky-brightness literature reports illuminances
+// rather than the zenith-to-horizon contrast a shader needs. The term is
+// therefore expressed as a multiple of the sky's OWN luminance along the same
+// ray — which makes it self-scaling under the S2 dimming, the tonemap, the
+// user's `atmosphereLightIntensity` and any future exposure work, with no
+// calibration to drift — and the probe gates on SHAPE (present at every
+// azimuth, monotone in obscuration, confined to the band, absent when the
+// toggle is off) rather than on this number.
+
+/**
+ * Obscuration below which there is no 360-degree twilight at all. This is the
+ * STRENGTH ramp only — annular exclusion is
+ * {@link ECLIPSE_TWILIGHT_TOTAL_RATIO_LO}'s job, because annular obscuration
+ * reaches 0.9992 at a 0.999 radius ratio and cannot be separated here.
+ * @type {number}
+ * @private
+ */
+const ECLIPSE_TWILIGHT_ONSET = 0.98;
+
+/**
+ * Moon/sun angular-radius ratio at and below which the eclipse is ANNULAR and
+ * the 360-degree twilight is exactly 0 — there is no umbra on the ground, so
+ * there is no surrounding penumbral horizon to see. Equivalently, the eclipse
+ * magnitude at central alignment is below 1.
+ * @type {number}
+ * @private
+ */
+const ECLIPSE_TWILIGHT_TOTAL_RATIO_LO = 1.0;
+
+/**
+ * Ratio at and above which the eclipse is fully total for this purpose. The
+ * narrow band between the two exists so a HYBRID eclipse — annular at the ends
+ * of its track, total in the middle — crosses continuously instead of popping.
+ * A normal total eclipse sits at 1.01-1.08 at greatest eclipse.
+ * @type {number}
+ * @private
+ */
+const ECLIPSE_TWILIGHT_TOTAL_RATIO_HI = 1.001;
+
+/**
+ * Peak strength of the horizon band, as a multiple of the sky's own luminance
+ * along the same ray. 2.0 means "the horizon reads three times the local sky"
+ * at the deepest point of totality. Perceptual, not measured — see the note
+ * above.
+ * @type {number}
+ * @private
+ */
+const ECLIPSE_TWILIGHT_HORIZON_GAIN = 2.0;
+
+/**
+ * Elevation at which the band has fallen to zero, radians — `atan(25/60)`,
+ * the angle the sunlit penumbral atmosphere subtends from the middle of a
+ * ~120 km umbral track. Consumed by both shaders.
+ * @type {number}
+ * @private
+ */
+const ECLIPSE_TWILIGHT_ELEVATION_RAD = Math.atan2(25000.0, 60000.0);
+
+/**
+ * Warm tint of the band, normalised so the peak channel is 1. Derived, not
+ * picked: Rayleigh transmission `exp(-tau * (550/lambda)^4)` at `tau = 0.5`
+ * (a grazing horizon path) for lambda = 650/550/450 nm gives
+ * (0.774, 0.607, 0.328), which normalises to the triple below — the same
+ * physics that reddens an ordinary sunset, applied to the long slant path out
+ * to the penumbra.
+ * @type {number[]}
+ * @private
+ */
+const ECLIPSE_TWILIGHT_TINT = [1.0, 0.784, 0.424];
+
+/**
+ * Geometric strength of the 360-degree horizon twilight, before the toggles.
+ *
+ * TWO factors, and they answer two different questions. The obscuration ramp
+ * answers "how close to totality is this instant"; the angular-radius ratio
+ * answers "is this eclipse capable of casting an umbra at all". Obscuration
+ * alone cannot do the second — a 0.999-ratio annular ring obscures 0.9992 —
+ * and the instantaneous magnitude cannot do the first, because `M >= 1` is
+ * algebraically the umbra branch and so is true only where obscuration is
+ * already exactly 1. See the section header for the full derivation.
+ *
+ * @param {number} moonObscuration
+ * @param {number} [sunAngularRadius] Solar angular radius, radians. Omitted or
+ *   non-positive means "type unknown", and the type factor is 1 — which is the
+ *   behaviour the pure-obscuration callers (the spec's curve checks) expect.
+ * @param {number} [moonAngularRadius] Lunar angular radius, radians.
+ * @returns {number} in [0, 1]
+ * @private
+ */
+function computeHorizonTwilightStrength(
+  moonObscuration,
+  sunAngularRadius,
+  moonAngularRadius,
+) {
+  if (typeof moonObscuration !== "number" || !(moonObscuration > 0.0)) {
+    return 0.0;
+  }
+  const t =
+    (moonObscuration - ECLIPSE_TWILIGHT_ONSET) / (1.0 - ECLIPSE_TWILIGHT_ONSET);
+  if (!(t > 0.0)) {
+    return 0.0;
+  }
+  const ramp = t >= 1.0 ? 1.0 : t * t * (3.0 - 2.0 * t);
+
+  // Total-vs-annular. Only applied when both radii are supplied and usable;
+  // an unknown type cannot be used to switch the effect off silently.
+  if (
+    typeof sunAngularRadius !== "number" ||
+    typeof moonAngularRadius !== "number" ||
+    !(sunAngularRadius > 0.0) ||
+    !(moonAngularRadius >= 0.0)
+  ) {
+    return ramp;
+  }
+  const ratio = moonAngularRadius / sunAngularRadius;
+  if (ratio <= ECLIPSE_TWILIGHT_TOTAL_RATIO_LO) {
+    return 0.0;
+  }
+  if (ratio >= ECLIPSE_TWILIGHT_TOTAL_RATIO_HI) {
+    return ramp;
+  }
+  const u =
+    (ratio - ECLIPSE_TWILIGHT_TOTAL_RATIO_LO) /
+    (ECLIPSE_TWILIGHT_TOTAL_RATIO_HI - ECLIPSE_TWILIGHT_TOTAL_RATIO_LO);
+  return ramp * u * u * (3.0 - 2.0 * u);
+}
+
+/**
+ * The 360-degree horizon-twilight gain a sky shell should apply, given a
+ * published state. Returns exactly 0.0 — hence a byte-identical shell —
+ * whenever the state is absent, invalid, either toggle is off, or the
+ * obscuration has not reached the onset, which is every frame that is not the
+ * last seconds of a total eclipse seen from inside the atmosphere.
+ *
+ * @param {object|undefined} state
+ * @returns {number} in [0, ECLIPSE_TWILIGHT_HORIZON_GAIN]
+ * @private
+ */
+function getEclipseHorizonTwilightFactor(state) {
+  if (
+    !defined(state) ||
+    state.enabled !== true ||
+    state.horizonTwilightEnabled !== true ||
+    state.valid !== true
+  ) {
+    return 0.0;
+  }
+  const strength = state.horizonTwilightStrength;
+  if (typeof strength !== "number" || !(strength > 0.0)) {
+    return 0.0;
+  }
+  const clamped = strength > 1.0 ? 1.0 : strength;
+  return clamped * ECLIPSE_TWILIGHT_HORIZON_GAIN;
+}
+
 export {
   createEclipseState,
   updateEclipseState,
   getEclipseSunFactor,
   getEclipseSceneLightFactor,
+  getEclipseHorizonTwilightFactor,
+  computeHorizonTwilightStrength,
   computeMoonPositionWC,
   computeSunPositionWC,
   ECLIPSE_FULL_SUN_ILLUMINANCE,
@@ -711,5 +965,11 @@ export {
   ECLIPSE_RADIOMETRIC_FLOOR,
   ECLIPSE_ADAPTATION_EXPONENT,
   ECLIPSE_TWILIGHT_FLOOR,
+  ECLIPSE_TWILIGHT_ONSET,
+  ECLIPSE_TWILIGHT_TOTAL_RATIO_LO,
+  ECLIPSE_TWILIGHT_TOTAL_RATIO_HI,
+  ECLIPSE_TWILIGHT_HORIZON_GAIN,
+  ECLIPSE_TWILIGHT_ELEVATION_RAD,
+  ECLIPSE_TWILIGHT_TINT,
 };
 export default updateEclipseState;

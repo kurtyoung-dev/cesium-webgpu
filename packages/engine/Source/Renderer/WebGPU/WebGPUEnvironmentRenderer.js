@@ -73,6 +73,11 @@ struct Uniforms {
   // stride, alignment, binding or bind-group-layout delta, and no new
   // ShaderDefine bit (the registry is exhausted; C12 exit-gate item 5).
   extinction: vec3<f32>, eclipseAlpha: f32,
+  // Sun position is dynamic uniform state, not vertex state. Keeping it here
+  // lets one immutable six-corner buffer and one draw command survive every
+  // clock tick while retaining encoded high/low RTE precision.
+  encodedSunHigh: vec3<f32>, _sunPad0: f32,
+  encodedSunLow: vec3<f32>, _sunPad1: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var tex: texture_2d<f32>;
@@ -80,9 +85,10 @@ struct Uniforms {
 
 struct VOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
 
-@vertex fn vs(@location(0) posH: vec3<f32>, @location(1) posL: vec3<f32>, @location(2) dir: vec2<f32>) -> VOut {
+@vertex fn vs(@location(0) dir: vec2<f32>) -> VOut {
   var o: VOut;
-  let rte = (posH - u.encodedCameraHigh) + (posL - u.encodedCameraLow);
+  let rte = (u.encodedSunHigh - u.encodedCameraHigh) +
+    (u.encodedSunLow - u.encodedCameraLow);
   var cp = u.mvpRTE * vec4f(rte, 1.0);
   cp.x += dir.x * u.sunSize.x * cp.w;
   cp.y += dir.y * u.sunSize.y * cp.w;
@@ -215,6 +221,7 @@ const scratchEncodedCamera = new EncodedCartesian3();
 const scratchMoonPositionWC = new Cartesian3();
 const scratchCameraToMoon = new Cartesian3();
 const scratchEncodedPos = new EncodedCartesian3();
+const defaultSunPosition = Object.freeze(new Cartesian3(1.5e11, 0.0, 0.0));
 
 // ============================================================
 // Sun Renderer
@@ -435,72 +442,20 @@ function createSunTexture(device, size, glowFactor, format, appearance) {
 }
 
 /**
- * Creates sun quad vertices.
+ * Immutable sun billboard corners. The moving ECEF sun center lives in the
+ * uniform buffer, so this array and its GPU buffer are created once.
  * @private
  */
-function createSunQuadBuffer(device, sunPosition) {
-  EncodedCartesian3.fromCartesian(sunPosition, scratchEncodedPos);
-  const h = scratchEncodedPos.high;
-  const l = scratchEncodedPos.low;
+const SUN_QUAD_DIRECTIONS = new Float32Array([
+  -1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1,
+]);
 
-  // 6 vertices: posHigh(3) + posLow(3) + direction(2) = 8 floats
-  const vertices = new Float32Array([
-    h.x,
-    h.y,
-    h.z,
-    l.x,
-    l.y,
-    l.z,
-    -1,
-    -1,
-    h.x,
-    h.y,
-    h.z,
-    l.x,
-    l.y,
-    l.z,
-    1,
-    -1,
-    h.x,
-    h.y,
-    h.z,
-    l.x,
-    l.y,
-    l.z,
-    1,
-    1,
-    h.x,
-    h.y,
-    h.z,
-    l.x,
-    l.y,
-    l.z,
-    -1,
-    -1,
-    h.x,
-    h.y,
-    h.z,
-    l.x,
-    l.y,
-    l.z,
-    1,
-    1,
-    h.x,
-    h.y,
-    h.z,
-    l.x,
-    l.y,
-    l.z,
-    -1,
-    1,
-  ]);
-
-  const buffer = WebGPUBuffer.createVertexBuffer(
+function createSunQuadBuffer(device) {
+  return WebGPUBuffer.createVertexBuffer(
     device,
-    vertices,
+    SUN_QUAD_DIRECTIONS,
     "Sun vertices",
   );
-  return buffer;
 }
 
 function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
@@ -539,10 +494,8 @@ function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
   // central disc + soft glow halo + lens-flare bursts across the full quad.
   const glowLengthTS = glowFactor * 5.0;
   const sunSizeScale = 1.0 + 2.0 * glowLengthTS;
-  const sunPos = uniformState.sunPositionWC;
-  const sunDist = defined(sunPos)
-    ? Cartesian3.distance(sunPos, frameState.camera.positionWC)
-    : 0.0;
+  const sunPos = uniformState.sunPositionWC ?? defaultSunPosition;
+  const sunDist = Cartesian3.distance(sunPos, frameState.camera.positionWC);
   // Solar angular half-size (radians); fall back to ~0.0046 (the real solar
   // angular radius at 1 AU) if the distance is unavailable.
   const angHalf = sunDist > 0.0 ? CesiumMath.SOLAR_RADIUS / sunDist : 0.0046;
@@ -567,20 +520,35 @@ function packSunUniforms(uniformData, frameState, glowFactor, gamma) {
   // to 1.0 (exact identity) when the publisher hasn't run.
   const eclipseAlpha = frameState.sunEclipseAlpha;
   uniformData[31] = typeof eclipseAlpha === "number" ? eclipseAlpha : 1.0;
+
+  EncodedCartesian3.fromCartesian(sunPos, scratchEncodedPos);
+  uniformData[32] = scratchEncodedPos.high.x;
+  uniformData[33] = scratchEncodedPos.high.y;
+  uniformData[34] = scratchEncodedPos.high.z;
+  uniformData[35] = 0.0;
+  uniformData[36] = scratchEncodedPos.low.x;
+  uniformData[37] = scratchEncodedPos.low.y;
+  uniformData[38] = scratchEncodedPos.low.z;
+  uniformData[39] = 0.0;
 }
 
 /**
  * Updates WebGPU Sun rendering.
  */
-function updateWebGPUSun(sun, frameState, commandList) {
+function updateWebGPUSun(sun, frameState) {
   if (!sun.show) {
     return;
   }
   const context = frameState.context;
   const device = context.device;
 
+  if (defined(sun._webgpuCache) && sun._webgpuCache.device !== device) {
+    destroyWebGPUSunResources(sun);
+  }
   if (!defined(sun._webgpuCache)) {
-    sun._webgpuCache = {};
+    sun._webgpuCache = {
+      device,
+    };
   }
   const cache = sun._webgpuCache;
 
@@ -624,6 +592,8 @@ function updateWebGPUSun(sun, frameState, commandList) {
     cache.sunTexture.destroy();
     cache.sunTexture = undefined;
     cache.sunTextureView = undefined;
+    cache.bindGroup = undefined;
+    cache.command = undefined;
   }
 
   if (!defined(cache.sunTexture)) {
@@ -639,10 +609,12 @@ function updateWebGPUSun(sun, frameState, commandList) {
     cache.lastBakeFormat = bakeFormat;
     cache.lastAppearanceKey = appearanceKey;
     cache.sunTextureView = cache.sunTexture.createView();
-    cache.sampler = device.createSampler({
-      minFilter: "linear",
-      magFilter: "linear",
-    });
+    if (!defined(cache.sampler)) {
+      cache.sampler = device.createSampler({
+        minFilter: "linear",
+        magFilter: "linear",
+      });
+    }
   }
 
   // Batch 110 \u2014 invalidate cached pipeline when scene format changes
@@ -655,6 +627,8 @@ function updateWebGPUSun(sun, frameState, commandList) {
   ) {
     cache.pipelineEntry = undefined;
     cache.pipeline = undefined;
+    cache.bindGroup = undefined;
+    cache.command = undefined;
   }
 
   // C-R7 (Batch 74) \u2014 descriptor + central pipeline cache. Two Sun
@@ -685,12 +659,8 @@ function updateWebGPUSun(sun, frameState, commandList) {
         entryPoint: "vs",
         buffers: [
           {
-            arrayStride: 32,
-            attributes: [
-              { shaderLocation: 0, offset: 0, format: "float32x3" },
-              { shaderLocation: 1, offset: 12, format: "float32x3" },
-              { shaderLocation: 2, offset: 24, format: "float32x2" },
-            ],
+            arrayStride: 8,
+            attributes: [{ shaderLocation: 0, offset: 0, format: "float32x2" }],
           },
         ],
       },
@@ -740,23 +710,8 @@ function updateWebGPUSun(sun, frameState, commandList) {
   }
   cache.pipeline = sunPipeline;
 
-  // Prefer the live rotating sun position from UniformState. `frameState.sunPositionWC`
-  // is not populated anywhere in the engine today, so without this the quad
-  // used to snap back to a static axis-aligned position and never rotated with
-  // Earth's day/night cycle.
-  const sunPos =
-    frameState.context?.uniformState?.sunPositionWC ||
-    frameState.sunPositionWC ||
-    new Cartesian3(1.5e11, 0, 0);
-  if (
-    !defined(cache.vertexBuffer) ||
-    !Cartesian3.equals(cache.lastSunPos, sunPos)
-  ) {
-    if (defined(cache.vertexBuffer)) {
-      cache.vertexBuffer.destroy();
-    }
-    cache.vertexBuffer = createSunQuadBuffer(device, sunPos);
-    cache.lastSunPos = Cartesian3.clone(sunPos);
+  if (!defined(cache.vertexBuffer)) {
+    cache.vertexBuffer = createSunQuadBuffer(device);
   }
 
   if (!defined(cache.uniformBuffer)) {
@@ -783,25 +738,29 @@ function updateWebGPUSun(sun, frameState, commandList) {
     UNIFORM_BUFFER_SIZE,
   );
 
-  cache.bindGroup = device.createBindGroup({
-    layout: cache.bindGroupLayout,
-    entries: [
-      { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
-      { binding: 1, resource: cache.sunTextureView },
-      { binding: 2, resource: cache.sampler },
-    ],
-  });
+  if (!defined(cache.bindGroup)) {
+    cache.bindGroup = device.createBindGroup({
+      layout: cache.bindGroupLayout,
+      entries: [
+        { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
+        { binding: 1, resource: cache.sunTextureView },
+        { binding: 2, resource: cache.sampler },
+      ],
+    });
+  }
 
-  cache.command = new WebGPUDrawCommand({
-    pipeline: cache.pipeline,
-    bindGroups: [cache.bindGroup],
-    vertexBuffers: [cache.vertexBuffer],
-    vertexCount: 6,
-    pass: 0, // Pass.ENVIRONMENT
-    owner: sun,
-  });
+  if (!defined(cache.command)) {
+    cache.command = new WebGPUDrawCommand({
+      pipeline: cache.pipeline,
+      bindGroups: [cache.bindGroup],
+      vertexBuffers: [cache.vertexBuffer],
+      vertexCount: 6,
+      pass: 0, // Pass.ENVIRONMENT
+      owner: sun,
+    });
+  }
 
-  commandList.push(cache.command);
+  return cache.command;
 }
 
 // ============================================================

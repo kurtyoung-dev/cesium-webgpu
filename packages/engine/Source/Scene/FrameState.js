@@ -432,6 +432,20 @@ class FrameState {
     this.eclipseSceneLightFactor = undefined;
 
     /**
+     * Gain on the 360-degree horizon twilight band the sky-atmosphere shell
+     * adds during totality (C12-29 S6), as a multiple of the sky's own
+     * luminance along the same ray. Inside the umbra the observer is
+     * surrounded by penumbra — the umbral track is only 100-160 km wide — so
+     * a sunset-coloured glow rims the horizon at EVERY azimuth. Ramps in over
+     * the last ~2% of obscuration (an annular eclipse cannot reach the onset,
+     * correctly: no umbra, no glow) and fades out above the atmosphere.
+     * Exactly 0.0 — hence a byte-identical shell — in every other frame and
+     * with either `enableEclipse` or `enableEclipseHorizonTwilight` off.
+     * @type {number|undefined}
+     */
+    this.eclipseHorizonTwilight = undefined;
+
+    /**
      * Canonical atmospheric conditions facade — forwarded once per frame
      * from `scene.globe.atmosphericConditions`. Renderers read B-series
      * toggles (sun/moon lighting, scattering occlusion, star modulation,
@@ -443,9 +457,9 @@ class FrameState {
     this.atmosphericConditions = undefined;
 
     /**
-     * Sky brightness scalar (0..1) computed CPU-side once per frame from
-     * sun + moon altitudes. Phase 1.3 will populate this from the
-     * AtmosphereLUT integration; Phase 1.1 leaves it undefined.
+     * Sky brightness scalar (0..1) computed CPU-side once per render frame
+     * from current-frame sun/moon altitudes, eclipse flux and the camera's
+     * ellipsoidal height. Published before star-map consumers update.
      * @type {number|undefined}
      */
     this.skyBrightness = undefined;

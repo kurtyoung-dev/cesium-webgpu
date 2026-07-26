@@ -1,6 +1,10 @@
 import Cartesian3 from "../Core/Cartesian3.js";
 import CloudRenderMode from "./CloudRenderMode.js";
 import defined from "../Core/defined.js";
+import {
+  STAR_MODULATION_INFLECTION,
+  STAR_MODULATION_STEEPNESS,
+} from "./StarFieldMath.js";
 
 /**
  * AtmosphericConditions — canonical facade (Phase 0.3).
@@ -411,6 +415,17 @@ function buildLighting(globe) {
     eclipseAutoExposure: false,
     enableSolarLimbDarkening: true,
     enableSolarGlareFalloff: true,
+    // C12-29 S6 — the 360-degree horizon twilight. Inside the umbra the
+    // observer is surrounded by penumbra: the umbral ground track is only
+    // 100-160 km wide, so in EVERY azimuth the still-sunlit atmosphere begins
+    // ~50-80 km away and its scattered light arrives as a sunset-coloured band
+    // hugging the horizon. It is the most recognisable totality cue after the
+    // corona. Default ON per ruling E1's precedent (eclipse-driven effects are
+    // "the actual simulation that needs to be there"); the geometry is still
+    // computed with it off so tooling can read the physics, and the strength is
+    // exactly 0 in every frame that is not a near-total eclipse, so the off
+    // position is byte-identical rather than merely close.
+    enableEclipseHorizonTwilight: true,
   };
   Object.defineProperties(leaf, {
     lambertDiffuseMultiplier: {
@@ -480,12 +495,38 @@ function buildSkyAtmosphere(scene) {
   //
   // The capability is NOT removed — only its default. Setting it back to true
   // re-enables the dim exactly as before (the probe's A/B relies on that).
+  //
+  // C12-29 S6 / ruling E3 (2026-07-25) — DEFAULT FLIPPED BACK TO TRUE, and the
+  // two things that made the C11-176 default WRONG are fixed rather than
+  // worked around:
+  //
+  //   (a) NO WEBGL CONSUMER. C11-176's stated reason was "WebGL's SkyBoxFS.glsl
+  //       is nine lines and applies NO such term, so this was a pure unmatched
+  //       WebGPU divergence" — correct at the time. `SkyBoxFS.glsl` now carries
+  //       the identical expression, fed by `u_starModulation` /
+  //       `u_skyBrightness` from `CubeMapPanorama.js`, so the flag is a
+  //       both-backend default-path multiplier and satisfies C12 exit-gate
+  //       item 2.
+  //   (b) THE CURVE ZEROED ORBITAL STARS. The measured C11-176 failure was at
+  //       `skyBrightness = 1.0` for a camera "along the sun direction" — an
+  //       ORBITAL camera on the day side, where the sky is genuinely black and
+  //       the stars are genuinely there. `SkyBrightness.computeSkyBrightness`
+  //       now multiplies by `computeAtmosphericColumnFactor`, which is 0 above
+  //       the engine's own 111 km scattering shell, so that camera gets factor
+  //       1.0 and is byte-identical to today.
+  //
+  // The curve defaults move from the C11-176 pair {0.5, 1.0} (which merely
+  // HALVED the star map at full daylight — neither a correct day sky nor a
+  // usable totality reveal) to the derived pair below. The derivation, the
+  // rural-sky "countryside" anchor and the measured off-anchor consequences
+  // live with the constants in `StarFieldMath.ts`; do not edit one without the
+  // other (`eclipse-sky-totality.spec.mjs` pins that they agree).
   const leaf = {
     starModulationCurve: {
-      inflection: 0.5,
-      steepness: 1.0,
+      inflection: STAR_MODULATION_INFLECTION,
+      steepness: STAR_MODULATION_STEEPNESS,
     },
-    enableStarBrightnessModulation: false,
+    enableStarBrightnessModulation: true,
     // NOTE: reserved, currently UNWIRED — this is the only reference to
     // `enableNightSkyDimming` in packages/engine/Source. It was intended for
     // night-sky dimming in the sky-atmosphere shader (see Scene.js:5760-5762

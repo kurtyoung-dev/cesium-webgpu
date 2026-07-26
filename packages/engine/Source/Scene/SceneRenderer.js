@@ -13,6 +13,7 @@ import {
   backToFrontSplats,
   obtainTranslucentCommandExecutionFunction,
 } from "./CommandSorter.js";
+import { prependUniqueEnvironmentCommands } from "./EnvironmentCommandList.js";
 import { debugShowBoundingVolume } from "./SceneDebug.js";
 import { renderEnvironment } from "./EnvironmentRenderer.js";
 import SceneMode from "./SceneMode.js";
@@ -24,6 +25,33 @@ import SceneMode from "./SceneMode.js";
  * Extracted from Scene.js (Phase 5 of decomposition plan).
  * @private
  */
+
+function isExecutableEnvironmentCommand(command) {
+  return defined(command) && typeof command.execute === "function";
+}
+
+function appendUniqueEnvironmentCommand(
+  commands,
+  length,
+  command,
+  scene,
+  label,
+) {
+  if (isExecutableEnvironmentCommand(command)) {
+    for (let i = 0; i < length; i++) {
+      if (commands[i] === command) {
+        return length;
+      }
+    }
+    commands[length] = command;
+    return length + 1;
+  }
+
+  if (defined(command) && !scene._envDiagLogged) {
+    console.warn(`[WebGPU:EnvInject] ${label} skipped: no execute method`);
+  }
+  return length;
+}
 
 function executeCommand(command, scene, passState, debugFramebuffer) {
   const frameState = scene._frameState;
@@ -339,86 +367,69 @@ function executeCommands(scene, passState) {
         const farthest = frustumCommandsList[frustumCommandsList.length - 1];
         const envCmds = farthest.commands[Pass.ENVIRONMENT];
         let envIdx = farthest.indices[Pass.ENVIRONMENT];
+        const envFromCommandList = envIdx;
 
         // Inject any command that has an execute method. The WebGPU
         // scene renderer's executeBatch handles both WebGPU commands
         // (via command.execute(renderPass)) and WebGL-style commands
         // (via command.execute(context, passState)) transparently.
         //
-        // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 2) — dedupe
-        // against commands already binned into this frustum's
-        // ENVIRONMENT slot from frameState.commandList. SkyAtmosphere
-        // and Sun follow the dual-path convention (push to commandList
-        // so a frustum exists on sky-only views AND return for
-        // environmentState); without the dedupe the injected
-        // skyAtmosphere DUPLICATE executed after the binned sun, and
-        // its alpha-over shell (alpha ≈ 1 at ground level) erased the
-        // sun disk WebGL shows. Identity scan is over ≤ a handful of
-        // env commands — negligible.
-        const maybeInject = (cmd, label) => {
-          if (defined(cmd) && typeof cmd.execute === "function") {
-            for (let c = 0; c < envIdx; c++) {
-              if (envCmds[c] === cmd) {
-                return;
-              }
-            }
-            envCmds[envIdx++] = cmd;
-          } else if (defined(cmd) && !scene._envDiagLogged) {
-            console.warn(
-              `[WebGPU:EnvInject] ${label} skipped: no execute method`,
-            );
-          }
-        };
-
-        // Background layers (skyBox cubemap + bright-star starfield) must draw
-        // BEHIND the atmosphere. SkyAtmosphere (and Sun) use the dual-path
-        // convention — they're already BINNED into envCmds[0..envIdx) from
-        // frameState.commandList — and maybeInject only APPENDS, so injecting
-        // the skyBox here would put it AFTER the atmosphere. Its alpha-over pass
-        // (the daytime atmosphere is ~opaque) then erased the blue sky, leaving
-        // the dark cubemap. WebGL draws the skyBox first; match that by PREPENDING
-        // the background commands ahead of the binned atmosphere (starfield right
-        // after the cubemap so its additive HDR stars sit on top of it). Order
-        // becomes: skyBox, starField, [atmosphere, sun] (binned), moon, panoramas.
-        const bgEnv = [];
-        if (
-          defined(envState.skyBoxCommand) &&
-          typeof envState.skyBoxCommand.execute === "function"
-        ) {
-          bgEnv.push(envState.skyBoxCommand);
-        }
-        if (
-          defined(envState.starFieldCommand) &&
-          typeof envState.starFieldCommand.execute === "function"
-        ) {
-          bgEnv.push(envState.starFieldCommand);
-        }
-        if (bgEnv.length > 0) {
-          for (let c = envIdx - 1; c >= 0; c--) {
-            envCmds[c + bgEnv.length] = envCmds[c];
-          }
-          for (let b = 0; b < bgEnv.length; b++) {
-            envCmds[b] = bgEnv[b];
-          }
-          envIdx += bgEnv.length;
-        }
+        // Core environment renderers are return-only. The identity scan is
+        // retained for third-party/legacy feature renderers that may still
+        // publish through both routes, but lives in a module helper so this
+        // hot path allocates neither a closure nor a scratch array per frame.
+        //
+        // Background layers (skyBox cubemap + bright-star starfield) draw
+        // BEHIND the atmosphere, followed by sun, moon and panoramas. Prepend
+        // the two possible background commands ahead of any legacy binned
+        // environment commands without allocating a temporary list.
+        envIdx = prependUniqueEnvironmentCommands(
+          envCmds,
+          envIdx,
+          envState.skyBoxCommand,
+          envState.starFieldCommand,
+        );
         if (envState.isSkyAtmosphereVisible) {
-          maybeInject(envState.skyAtmosphereCommand, "skyAtmosphere");
+          envIdx = appendUniqueEnvironmentCommand(
+            envCmds,
+            envIdx,
+            envState.skyAtmosphereCommand,
+            scene,
+            "skyAtmosphere",
+          );
         }
         if (envState.isSunVisible) {
-          maybeInject(envState.sunDrawCommand, "sun");
+          envIdx = appendUniqueEnvironmentCommand(
+            envCmds,
+            envIdx,
+            envState.sunDrawCommand,
+            scene,
+            "sun",
+          );
         }
         if (envState.isMoonVisible) {
-          maybeInject(envState.moonCommand, "moon");
+          envIdx = appendUniqueEnvironmentCommand(
+            envCmds,
+            envIdx,
+            envState.moonCommand,
+            scene,
+            "moon",
+          );
         }
 
         // Panorama commands (CubeMapPanorama instances not using returnCommand)
         const panoramaCommandList = frameState.panoramaCommandList;
         for (let p = 0; p < panoramaCommandList.length; p++) {
-          maybeInject(panoramaCommandList[p], `panorama[${p}]`);
+          envIdx = appendUniqueEnvironmentCommand(
+            envCmds,
+            envIdx,
+            panoramaCommandList[p],
+            scene,
+            "panorama",
+          );
         }
 
-        const envCount = envIdx - farthest.indices[Pass.ENVIRONMENT];
+        const envCount = envIdx - envFromCommandList;
 
         // Log on first inject, and again when skyBox command appears (async cubemap load)
         const hasSkyBox = defined(envState.skyBoxCommand);
@@ -427,7 +438,6 @@ function executeCommands(scene, passState) {
             scene._envSkyBoxSeen = true;
           }
           scene._envDiagLogged = true;
-          const envFromCommandList = farthest.indices[Pass.ENVIRONMENT];
           console.log(
             `[WebGPU:EnvInject] Injected ${envCount} env commands ` +
               `(${envFromCommandList} already in frustum from commandList). ` +

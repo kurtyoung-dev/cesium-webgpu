@@ -2050,7 +2050,14 @@ export abstract class GraphicsContext {
     const promise = Promise.resolve()
       .then(loader)
       .then((renderer) => {
-        if (!this._isFeatureRendererGenerationCurrent(key, generation)) {
+        // Context destruction uses destroyObject(), which replaces class
+        // methods with throwOnDestroyed. The generation array remains plain
+        // data and is advanced before teardown, so pending imports must guard
+        // against that data directly rather than calling a replaced helper.
+        if (
+          this.isDestroyed() ||
+          this._featureRendererGenerations[key] !== generation
+        ) {
           return undefined;
         }
         if (renderer === undefined || renderer === null) {
@@ -2070,7 +2077,10 @@ export abstract class GraphicsContext {
         return renderer;
       })
       .catch((err): FeatureRenderer | undefined => {
-        if (!this._isFeatureRendererGenerationCurrent(key, generation)) {
+        if (
+          this.isDestroyed() ||
+          this._featureRendererGenerations[key] !== generation
+        ) {
           return undefined;
         }
         const failed: FeatureRendererReadiness = {
@@ -2136,16 +2146,6 @@ export abstract class GraphicsContext {
     return (
       this._featureRendererGenerations[key] ??
       this._advanceFeatureRendererGeneration(key)
-    );
-  }
-
-  private _isFeatureRendererGenerationCurrent(
-    key: number,
-    generation: number,
-  ): boolean {
-    return (
-      this._featureRendererGenerations[key] === generation &&
-      !this.isDestroyed()
     );
   }
 

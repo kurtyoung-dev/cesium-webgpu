@@ -1,5 +1,6 @@
 import BoxGeometry from "../Core/BoxGeometry.js";
 import Cartesian3 from "../Core/Cartesian3.js";
+import Cartesian4 from "../Core/Cartesian4.js";
 import Check from "../Core/Check.js";
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
@@ -23,6 +24,10 @@ import SceneMode from "./SceneMode.js";
 import Pass from "../Renderer/Pass.js";
 import Credit from "../Core/Credit.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import {
+  STAR_MODULATION_INFLECTION,
+  STAR_MODULATION_STEEPNESS,
+} from "./StarFieldMath.js";
 
 /**
  * @typedef {object} CubeMapPanorama.ConstructorOptions
@@ -32,6 +37,7 @@ import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
  * @property {object} [options.sources] The source URL or <code>Image</code> object for each of the six cube map faces.  See the example below.
  * @property {Matrix4} [options.transform] A 4x4 transformation matrix that defines the panorama's position and orientation
  * @property {boolean} [options.show=true] Determines if this primitive will be shown.
+ * @property {boolean} [options.isStarMap=false] Whether this cube map contains celestial star imagery that should respond to atmospheric star brightness and cloud occlusion.
  * @property {Credit|string} [options.credit] A credit for the panorama, which is displayed on the canvas.
  *
  */
@@ -97,6 +103,7 @@ class CubeMapPanorama {
      */
     this.show = options.show ?? true;
 
+    this._isStarMap = options.isStarMap === true;
     this._returnCommand = options.returnCommand ?? false;
     this._addToPanoramaCommandList = !this._returnCommand;
 
@@ -112,6 +119,20 @@ class CubeMapPanorama {
     this._useHdr = undefined;
     this._hasError = false;
     this._error = undefined;
+
+    // C12-29 S6 / ruling E3 — star-brightness modulation inputs for
+    // `SkyBoxFS.glsl`, refreshed once per WebGL update and read by the uniform
+    // closures at draw time. `u_starModulation` = (inflection, steepness,
+    // enableFlag, cloudCover); the identity values below leave the cubemap
+    // untouched, so a panorama that never reaches `update` (or a frame with no
+    // `atmosphericConditions`) renders exactly as it did before.
+    this._starModulation = new Cartesian4(
+      STAR_MODULATION_INFLECTION,
+      STAR_MODULATION_STEEPNESS,
+      0.0,
+      0.0,
+    );
+    this._skyBrightness = 0.0;
 
     // Credit specified by the user.
     let credit = options.credit;
@@ -137,6 +158,18 @@ class CubeMapPanorama {
    */
   get credit() {
     return defined(this._credit) ? this._credit : undefined;
+  }
+
+  /**
+   * Whether this panorama contains celestial star imagery. Only star maps are
+   * attenuated by atmospheric brightness and weather cloud cover; generic
+   * photographic panoramas, including Street View, remain unchanged.
+   *
+   * @type {boolean}
+   * @readonly
+   */
+  get isStarMap() {
+    return this._isStarMap;
   }
 
   /**
@@ -212,13 +245,19 @@ class CubeMapPanorama {
     }
     //>>includeEnd('debug');
 
+    // Resolve once in backend-neutral scene code. Both feature renderers
+    // consume these exact values, preventing a generic photographic panorama
+    // from inheriting SkyBox-only star/weather attenuation.
+    updateStarModulation(this, frameState);
+
     // WebGPU rendering path — delegates to feature renderer
     const fr = context.getFeatureRenderer(FeatureRendererKey.CUBE_MAP_PANORAMA);
     if (fr) {
       return fr.update(this, frameState, useHdr);
     }
 
-    // WebGL rendering path (original, untouched below)
+    // WebGL rendering path.
+
     if (this._sources !== this.sources) {
       this._sources = this.sources;
       const sources = this.sources;
@@ -256,6 +295,12 @@ class CubeMapPanorama {
         },
         u_cubeMapPanoramaTransform: function () {
           return that._transform;
+        },
+        u_starModulation: function () {
+          return that._starModulation;
+        },
+        u_skyBrightness: function () {
+          return that._skyBrightness;
         },
       };
 
@@ -361,6 +406,49 @@ class CubeMapPanorama {
 
     return destroyObject(this);
   }
+}
+
+/**
+ * Resolve the backend-neutral star-modulation inputs for this frame (C12-29
+ * S6, ruling E3). WebGL uniform closures and the WebGPU uniform packer consume
+ * these same values. Generic photographic panoramas resolve exact identity;
+ * only SkyBox's explicitly marked celestial panorama is attenuated.
+ *
+ * @param {CubeMapPanorama} panorama
+ * @param {FrameState} frameState
+ * @private
+ */
+function updateStarModulation(panorama, frameState) {
+  const ac = frameState.atmosphericConditions;
+  const sky =
+    defined(ac) && defined(ac.skyAtmosphere) ? ac.skyAtmosphere : undefined;
+  const curve =
+    defined(sky) && defined(sky.starModulationCurve)
+      ? sky.starModulationCurve
+      : undefined;
+  const enable =
+    panorama._isStarMap === true &&
+    defined(sky) &&
+    sky.enableStarBrightnessModulation === true &&
+    frameState.skyAtmosphereVisible === true;
+  // Weather-gated cloud occlusion, mirroring the WebGPU packing: unread unless
+  // `scene.enableWeather` is on, because `globe.cloudCoverage` defaults to 0.5
+  // and an ungated read would halve every default scene's star map.
+  const weather = defined(ac) && defined(ac.weather) ? ac.weather : undefined;
+  const cloudCover =
+    panorama._isStarMap === true &&
+    defined(weather) &&
+    weather.enabled === true &&
+    typeof weather.cloudCover === "number"
+      ? weather.cloudCover
+      : 0.0;
+
+  const m = panorama._starModulation;
+  m.x = defined(curve) ? curve.inflection : STAR_MODULATION_INFLECTION;
+  m.y = defined(curve) ? curve.steepness : STAR_MODULATION_STEEPNESS;
+  m.z = enable ? 1.0 : 0.0;
+  m.w = cloudCover;
+  panorama._skyBrightness = frameState.skyBrightness ?? 1.0;
 }
 
 export default CubeMapPanorama;

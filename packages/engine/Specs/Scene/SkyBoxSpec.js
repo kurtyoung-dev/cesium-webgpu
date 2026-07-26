@@ -29,6 +29,21 @@ describe(
       scene.destroyForSpecs();
     });
 
+    it("marks only its internal celestial panorama as a star map", function () {
+      skyBox = new SkyBox({
+        sources: {
+          positiveX: loadedImage,
+          negativeX: loadedImage,
+          positiveY: loadedImage,
+          negativeY: loadedImage,
+          positiveZ: loadedImage,
+          negativeZ: loadedImage,
+        },
+      });
+
+      expect(skyBox._panorama.isStarMap).toBe(true);
+    });
+
     it("draws a sky box from Images", function () {
       skyBox = new SkyBox({
         sources: {

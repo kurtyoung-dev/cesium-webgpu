@@ -37,8 +37,8 @@
 //     default      : skyBox.show=true,  starField.show=true   (cubemap+sprites)
 //     cubemap-only : skyBox.show=true,  starField.show=false  (cubemap alone)
 //     sprites-only : skyBox.show=false, starField.show=true   (sprites alone —
-//                    the cubemap command is dropped; on WebGPU the binned star
-//                    copy still draws, on WebGL the returned command always runs)
+//                    the cubemap command is dropped; both backends execute the
+//                    single returned star command)
 //
 // GATE EVIDENCE — EXPOSURE BRACKET (--bracket, C12-02).
 //   An 8-bit readback cannot measure a halo to 1e-3 of peak — the halo is

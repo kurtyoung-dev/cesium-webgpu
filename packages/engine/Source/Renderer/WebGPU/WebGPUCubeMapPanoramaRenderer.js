@@ -76,7 +76,8 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     uniforms.viewRotation[2].xyz,
   );
   let rotated = vr * transformed;
-  output.position = uniforms.projection * vec4<f32>(rotated, 1.0);
+  let clipPos = uniforms.projection * vec4<f32>(rotated, 1.0);
+  output.position = vec4<f32>(clipPos.x, clipPos.y, clipPos.w, clipPos.w);
   output.texCoord = input.position;
   return output;
 }
@@ -114,8 +115,11 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
   // Phase 1.3b — Star brightness modulation. Stars need to dim toward
   // black as the sky brightens (sun above horizon, full moon overhead)
   // so the cubemap doesn't punch through the daytime atmosphere. The
-  // smoothstep curve has two B4-locked tunables (inflection, steepness)
-  // exposed via atmosphericConditions.skyAtmosphere.starModulationCurve.
+  // smoothstep curve has two tunables (inflection, steepness) exposed via
+  // atmosphericConditions.skyAtmosphere.starModulationCurve; C12-29 S6 /
+  // ruling E3 derives their defaults in Scene/StarFieldMath.ts and turns the
+  // flag ON by default, and WebGL's SkyBoxFS.glsl now carries the identical
+  // expression in the identical position (before czm_gammaCorrect).
   // When the toggle is off (enableFlag == 0) the modulation is skipped
   // entirely — same byte cost as before, no visible change.
   // Phase 1.4 — Cloud cover star occlusion. starModulation.w carries
@@ -469,6 +473,7 @@ export function createBindGroups(device, uniformBuffer, sampler, cubeMapView) {
  * @param {Float32Array} uniformData
  * @param {Object} frameState - CesiumJS FrameState (provides uniformState + per-frame debug toggles)
  * @param {Matrix3|Matrix4|undefined} panoramaTransform - Panorama orientation transform
+ * @param {Object|undefined} panorama - Backend-neutral panorama state.
  */
 export function updateUniforms(
   device,
@@ -476,6 +481,7 @@ export function updateUniforms(
   uniformData,
   frameState,
   panoramaTransform,
+  panorama,
 ) {
   const uniformState = frameState.context.uniformState;
 
@@ -511,9 +517,9 @@ export function updateUniforms(
   // The debug field is sourced from frameState rather than a dedicated
   // parameter so future per-frame additions slot in without churning
   // every call site. When the debug toggle is off the value is just 0
-  // (production behavior). skyBrightness is the Phase 1.3a CPU estimate
-  // forwarded from `Scene.updateFrameState()`; defaults to 1.0 (fully
-  // bright sky → stars hidden) when no estimator value is available.
+  // (production behavior). Sky brightness and the modulation vector were
+  // already resolved by CubeMapPanorama before backend dispatch; generic
+  // panoramas therefore carry an explicit identity vector.
   uniformData[48] = uniformState.entireFrustum.y; // far
   // morphTime lives on frameState (czm_morphTime in WebGL also reads
   // `uniformState.frameState.morphTime`). The previous `uniformState.morphTime`
@@ -522,60 +528,15 @@ export function updateUniforms(
   // and the skybox vanished even after the star-modulation default was off.
   uniformData[49] = frameState.morphTime ?? 1.0;
   uniformData[50] = frameState.debugShowCubeMapFace | 0; // 0=all, 1..6=face
-  uniformData[51] = frameState.skyBrightness ?? 1.0;
-
-  // Phase 1.3b — star modulation tunables. Sourced from the canonical
-  // atmospheric conditions home so the user can override per-scene via
-  // `scene.globe.atmosphericConditions.skyAtmosphere.starModulationCurve`.
-  // The B4 locked defaults are inflection=0.3, steepness=4.0, but
-  // AtmosphericConditions ships its own initial values; we read those
-  // here and fall back to the locked values for safety.
-  const ac = frameState.atmosphericConditions;
-  const sky = ac && ac.skyAtmosphere ? ac.skyAtmosphere : undefined;
-  const curve =
-    sky && sky.starModulationCurve
-      ? sky.starModulationCurve
-      : // C11-176 — this fallback was {inflection: 0.3, steepness: 4.0}, which
-        // disagreed with the shipped curve in AtmosphericConditions.js:364-367
-        // ({0.5, 1.0}). That mattered: at skyBrightness = 1.0 the 0.3/4.0 pair
-        // gives t = clamp((1.0 - 0.3) * 4.0) = 1.0 -> factor = 0.0, i.e. a TOTAL
-        // blackout of the star map, strictly worse than the 50% dim C11-176
-        // fixed. Aligned so the opt-in path is deterministic no matter which
-        // object supplied the curve.
-        { inflection: 0.5, steepness: 1.0 };
-  // Default OFF for WebGL parity — the legacy SkyBox shader (SkyBoxFS.glsl)
-  // emits the cubemap unmodulated regardless of sun position, so the night-
-  // sky stars stay visible all day. Star-brightness modulation was added in
-  // Phase 1.3b for atmospheric realism but defaulting it ON broke "I added
-  // a SkyBox and saw nothing" expectations on the WebGPU backend during
-  // daylight scenes (e.g., Hello World at noon zeroed every star). Apps
-  // that want the dimming behavior must opt in:
-  //   scene.globe.atmosphericConditions.skyAtmosphere
-  //     .enableStarBrightnessModulation = true
-  const enableModulation = !!sky && sky.enableStarBrightnessModulation === true;
-  uniformData[52] = curve.inflection;
-  uniformData[53] = curve.steepness;
-  uniformData[54] = enableModulation ? 1.0 : 0.0;
-  // Phase 1.4 — cloud cover star occlusion. Sourced from
-  // `atmosphericConditions.weather.cloudCover` (which delegates to
-  // `globe.cloudCoverage` in AtmosphericConditions). The shader
-  // multiplies the modulated star color by `(1 - cloudCover)` so
-  // overcast skies hide stars completely.
-  // Gated on `weather.enabled` (scene.enableWeather, default false) for
-  // WebGL parity — ENV-SKYBOX-STARMAP (2026-07-02): globe.cloudCoverage
-  // defaults to 0.5, so an ungated read dimmed the skybox cube-map to 50%
-  // on every default scene. The faint milky-way texture fell below the
-  // visible threshold while the bright catalog stars (StarField renderer,
-  // which never applied cloud cover) kept drawing — "star map gone, sparse
-  // dots remain". WebGL's SkyBoxFS.glsl applies no cloud occlusion, so the
-  // occlusion is opt-in alongside the rest of the weather system.
-  const weather = ac && ac.weather ? ac.weather : undefined;
-  const weatherEnabled = !!weather && weather.enabled === true;
-  const cloudCover =
-    weatherEnabled && typeof weather.cloudCover === "number"
-      ? weather.cloudCover
-      : 0;
-  uniformData[55] = cloudCover;
+  // C12-29 S6 — CubeMapPanorama resolves this vector once before backend
+  // dispatch. SkyBox opts into `isStarMap`; generic/Street View panoramas
+  // resolve z=w=0 and remain byte-identical under daylight and weather.
+  const starModulation = panorama?._starModulation;
+  uniformData[51] = panorama?._skyBrightness ?? 1.0;
+  uniformData[52] = starModulation?.x ?? 0.0;
+  uniformData[53] = starModulation?.y ?? 0.0;
+  uniformData[54] = starModulation?.z ?? 0.0;
+  uniformData[55] = starModulation?.w ?? 0.0;
 
   // C4-CUBEMAP-PANORAMA-HDR-DECODE — hdr.x carries czm_gamma
   // (uniformState.gamma, default 2.2) when HDR is active, else 0. The
@@ -900,6 +861,7 @@ export function updateCubeMapPanorama(panorama, frameState, useHdr) {
     state.uniformData,
     frameState,
     panorama._transform,
+    panorama,
   );
 
   // --- Credits ---

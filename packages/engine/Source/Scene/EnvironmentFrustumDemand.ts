@@ -16,16 +16,13 @@
  *     there is nowhere to inject and the whole frame is dropped.
  *
  * `View.createPotentiallyVisibleSet` derives the frustum count from the scene
- * near/far accumulated over `frameState.commandList`. Only SOME environment
- * elements push a binned copy onto that list (SkyAtmosphere, Sun, and StarField
- * — and StarField only while its daytime fade is non-zero); SkyBox and Moon are
- * inject-only (Moon even redirects `frameState.commandList` to a scratch array).
- * So on the injection convention the frustum count — and therefore whether the
- * environment renders AT ALL — depended on which OTHER environment elements
- * happened to emit a binned command that frame. Turning the star field off, or
- * simply looking at a moon-only scene in daylight (star fade 0), collapsed
- * near/far to their sentinels, produced zero frustums, and blacked out the
- * entire sky.
+ * near/far accumulated over `frameState.commandList`. Core environment
+ * renderers are deliberately return-only: Scene owns their authoritative
+ * visibility state and the alternate renderer injects exactly one command
+ * after that state is resolved. Therefore an environment-only frame may have
+ * no binned command at all. Without an explicit demand signal, a skyBox-,
+ * starField-, atmosphere-, sun-, or moon-only scene could collapse near/far
+ * to their sentinels, produce zero frustums, and black out the entire sky.
  *
  * This module owns the shared predicate the frustum-existence decision needs:
  * "does this frame have environment content that a frustum must carry?" It is

@@ -249,6 +249,7 @@ describe("Scene/GoogleStreetViewCubeMapPanoramaProvider", function () {
 
     expect(Resource.fetchImage).toHaveBeenCalledTimes(6);
     expect(panorama).toBeInstanceOf(CubeMapPanorama);
+    expect(panorama.isStarMap).toBe(false);
   });
 
   it("loadPanorama calls getNearestPanoId if panoId not provided", async function () {

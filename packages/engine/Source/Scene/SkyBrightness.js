@@ -24,6 +24,68 @@
 import defined from "../Core/defined.js";
 
 /**
+ * Altitude at which the remaining Rayleigh column stops mattering, metres.
+ * The engine's own default Rayleigh scale height is 10 km
+ * (`SkyAtmosphere.atmosphereRayleighScaleHeight`), so at 60 km the density is
+ * `exp(-6) = 2.5e-3` of sea level: less than 0.3% of the scattering column
+ * remains above it.
+ * @type {number}
+ * @private
+ */
+const ATMOSPHERIC_COLUMN_FADE_START = 60000.0;
+
+/**
+ * Altitude at which the engine has no scattering medium AT ALL, metres. This
+ * is `ATMOSPHERE_THICKNESS` — the shell thickness `czm_computeScattering` and
+ * `SkyAtmosphere.wgsl` both integrate over (inner + 111e3). Above it the sky
+ * shaders return no inscatter, so an estimator that still reported a bright
+ * sky would contradict the pixels.
+ * @type {number}
+ * @private
+ */
+const ATMOSPHERIC_COLUMN_FADE_END = 111000.0;
+
+/**
+ * How much scattering column sits above the camera, as a 0..1 scale on the
+ * whole sky-brightness estimate.
+ *
+ * C12-29 S6 / ruling E3. `computeSkyBrightness` is a SKY brightness — it is
+ * produced by sunlight scattering in the air above the observer. Above the
+ * atmosphere there is no such air, the sky is black, and stars are visible on
+ * the day side; that is why `StarFieldMath.computeStarDayFade` has carried a
+ * 100 km cutoff for the sprite starfield since it was written. Without the
+ * same gate here, flipping `enableStarBrightnessModulation` on by default
+ * would have zeroed the star cubemap across the entire sunlit hemisphere for
+ * an orbital camera — the exact regression C11-176 turned the flag off for.
+ *
+ * A ramp rather than `computeStarDayFade`'s hard cut, so a camera climbing
+ * through the boundary does not pop; the sibling's 100 km step sits inside the
+ * band.
+ *
+ * The caller supplies ellipsoidal height rather than asking this helper to
+ * subtract a hard-coded Earth radius from an ECEF magnitude. Scene already
+ * maintains `camera.positionCartographic.height`; using it is both cheaper and
+ * correct at every latitude and for custom globe ellipsoids.
+ *
+ * @param {number|undefined} cameraHeight Ellipsoidal camera height in metres.
+ * @returns {number} 1.0 at and below {@link ATMOSPHERIC_COLUMN_FADE_START},
+ *   0.0 at and above {@link ATMOSPHERIC_COLUMN_FADE_END}, smooth between.
+ */
+export function computeAtmosphericColumnFactor(cameraHeight) {
+  if (typeof cameraHeight !== "number" || !Number.isFinite(cameraHeight)) {
+    return 1.0;
+  }
+  return (
+    1.0 -
+    smoothstep(
+      ATMOSPHERIC_COLUMN_FADE_START,
+      ATMOSPHERIC_COLUMN_FADE_END,
+      cameraHeight,
+    )
+  );
+}
+
+/**
  * Standard smoothstep — same Hermite curve `smoothstep` from GLSL/WGSL.
  *
  * @param {number} edge0
@@ -55,10 +117,8 @@ function smoothstep(edge0, edge1, x) {
  *   coordinates, normalized. Pass `undefined` to skip sun contribution.
  * @param {Cartesian3|undefined} moonDirWC Moon direction in world (ECEF)
  *   coordinates, normalized. Pass `undefined` to skip moon contribution.
- *   On the first frame this is `undefined` because `Moon.update()` has
- *   not yet run; subsequent frames see the previous frame's value, which
- *   is visually indistinguishable from the current value at any
- *   reasonable simulation rate.
+ *   Scene publishes the current frame's value through `Moon.update()` before
+ *   calling this estimator.
  * @param {number} moonPhaseFraction Moon illuminated fraction in [0..1].
  *   0 = new moon (no contribution), 1 = full moon. When `enableMoonPhase`
  *   is off this should be passed as `1.0` so the moon term acts as a
@@ -66,6 +126,9 @@ function smoothstep(edge0, edge1, x) {
  * @param {Cartesian3} cameraPositionWC Camera position in world coords,
  *   used to derive local up. Must be non-zero — the function returns
  *   `1.0` (full bright) for a degenerate origin camera.
+ * @param {number} [cameraHeight=0.0] Ellipsoidal camera height in metres.
+ *   Scene passes `camera.positionCartographic.height`, which keeps the
+ *   atmospheric-column ramp correct for WGS84 latitude and custom ellipsoids.
  * @returns {number} Sky brightness in [0..1]. `0` = full astronomical
  *   night, `1` = noon under a clear sky.
  */
@@ -74,6 +137,7 @@ export function computeSkyBrightness(
   moonDirWC,
   moonPhaseFraction,
   cameraPositionWC,
+  cameraHeight = 0.0,
 ) {
   if (!defined(cameraPositionWC)) {
     return 1.0;
@@ -120,7 +184,11 @@ export function computeSkyBrightness(
   }
 
   const total = sunContrib + moonContrib;
-  return total < 1.0 ? total : 1.0;
+  const clamped = total < 1.0 ? total : 1.0;
+  // C12-29 S6 / ruling E3 — no scattering column above the camera means no
+  // sky brightness, whatever the sun is doing. Exactly 1.0 (bit-exact
+  // multiply) for every camera below 60 km, i.e. every in-atmosphere frame.
+  return clamped * computeAtmosphericColumnFactor(cameraHeight);
 }
 
 export default computeSkyBrightness;

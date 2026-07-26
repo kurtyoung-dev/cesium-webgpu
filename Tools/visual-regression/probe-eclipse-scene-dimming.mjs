@@ -141,9 +141,10 @@
 //   back out of the measurement and `backgroundRevealExplains` reports whether
 //   it fits inside the measured `B`; if it does not, the reveal hypothesis is
 //   refuted and the report says so. `backgroundIsToggleInvariant` additionally
-//   gates that the background does NOT move with the eclipse toggle, since
-//   star modulation is off by default (C11-176) and S2 reaching the star field
-//   would be an S6/E3 decision, not S2's to make silently.
+//   gates that the background does NOT move with the eclipse toggle. Star
+//   modulation is default-on now, but hiding the atmosphere makes its
+//   applicability false; this control therefore remains full-strength in both
+//   toggle positions.
 //
 //   THE VISUAL LANE IS CAPTURED IN-TASK (finding I3). A post-evaluate
 //   `page.locator('canvas').screenshot()` runs after the page has been
@@ -688,6 +689,17 @@ const LADDER = async ({ lat, lon, ladder }) => {
   if (!("eclipseAutoExposure" in ac.lighting)) {
     return { structuralError: "eclipseAutoExposure toggle is absent" };
   }
+  if (!("enableEclipseHorizonTwilight" in ac.lighting)) {
+    return {
+      structuralError: "enableEclipseHorizonTwilight toggle is absent",
+    };
+  }
+  if (ac.lighting.enableEclipseHorizonTwilight !== true) {
+    return {
+      structuralError:
+        "enableEclipseHorizonTwilight no longer has its shipped default-on value",
+    };
+  }
 
   // ── R1 setup: make the MANUAL path an exact twin of the engine path ───────
   //
@@ -729,18 +741,40 @@ const LADDER = async ({ lat, lon, ladder }) => {
     intensity: BASE_LIGHT_INTENSITY,
   });
 
-  // Site 4 (`frameState.skyBrightness`) has no public setter, so it is EXCLUDED
-  // from the manual twin. That is sound only because it is byte-inert at
-  // defaults: its sole consumer is the cubemap-panorama star modulation, gated
-  // on `enableStarBrightnessModulation`, false since C11-176. Asserted, so the
-  // exclusion cannot outlive its justification.
+  // Site 4 (`frameState.skyBrightness`) has no public setter. It USED to be
+  // excluded from the manual twin, justified by being byte-inert at defaults:
+  // its sole consumer is the cubemap-panorama star modulation, gated on
+  // `enableStarBrightnessModulation`, false since C11-176. That justification
+  // was asserted rather than assumed, precisely so the exclusion could not
+  // outlive it — and it did not.
+  //
+  // ★ C12-29 S6 / ruling E3 ENDED IT. The maintainer's E3 ruling flips
+  // `enableStarBrightnessModulation` to true by default, so site 4 is LIVE:
+  // `Scene.render` publishes `skyBrightness = computeSkyBrightness(...) *
+  // eclipseSceneLightFactor`, the modulation consumes it, and the engine path
+  // therefore dims the star cubemap while an unmodelled manual path would not.
+  // The guard fired exactly as designed and caught a cross-slice regression.
+  //
+  // RESOLVED BY MODELLING SITE 4, not by re-justifying the exclusion. The
+  // exclusion cannot be re-justified: S2's own round-3 finding is that the sky
+  // band is NOT the shell alone — the cubemap composites through it — so a
+  // dimmed cubemap lands inside the very band the equivalence gate measures.
+  // Turning the modulation off for the capture would restore the old
+  // justification, but it would test a configuration the engine no longer
+  // ships, which is the bypass this guard exists to prevent.
+  //
+  // The modelling is exact and uses a public knob: the engine evaluates the
+  // modulation curve at `B * f`, so the manual twin evaluates the SAME curve at
+  // `B` with an inflection re-solved to produce the identical factor. Both
+  // paths then hand the cubemap shader one number, and it is the same number.
   const starModulation =
     ac.skyAtmosphere?.enableStarBrightnessModulation ?? false;
-  if (starModulation === true) {
+  const starCurve = ac.skyAtmosphere?.starModulationCurve;
+  if (starModulation === true && !starCurve) {
     return {
       structuralError:
-        "enableStarBrightnessModulation is on — site 4 is no longer inert and " +
-        "cannot be excluded from the manual equivalence twin",
+        "enableStarBrightnessModulation is on but starModulationCurve is " +
+        "absent — site 4 is live and cannot be modelled in the manual twin",
     };
   }
   // Site 5 (WebGPU model direct lighting) is N/A here: the scene contains no
@@ -769,30 +803,45 @@ const LADDER = async ({ lat, lon, ladder }) => {
   const camPos = C.Cartesian3.fromDegrees(lon, lat, 100.0);
   const ellipsoid = scene.globe ? scene.globe.ellipsoid : C.Ellipsoid.WGS84;
 
-  // Mean luminance of an axis-aligned band of canvas rows, plus the fraction
-  // of pixels that are 8-bit saturated (a saturated band cannot report a
-  // dimming ratio and must not be allowed to pass vacuously).
-  const bandStats = (y0, y1) => {
+  const readBandPixels = (y0, y1) => {
     const x0 = Math.round(canvas.width * 0.15);
     const w = Math.round(canvas.width * 0.7);
     const h = Math.max(1, y1 - y0);
     tmp.width = w;
     tmp.height = h;
     tmpCtx.drawImage(canvas, x0, y0, w, h, 0, 0, w, h);
-    const data = tmpCtx.getImageData(0, 0, w, h).data;
+    return { data: tmpCtx.getImageData(0, 0, w, h).data, w, h };
+  };
+
+  // Mean luminance of an axis-aligned band of canvas rows, plus the fraction
+  // of pixels that are 8-bit saturated (a saturated band cannot report a
+  // dimming ratio and must not be allowed to pass vacuously). The optional
+  // mask is derived from a white-vs-black globe-base-color A/B and limits the
+  // ground statistic to pixels that demonstrably belong to the rendered globe.
+  const bandStats = (y0, y1, mask) => {
+    const { data, w, h } = readBandPixels(y0, y1);
     let sum = 0;
     let sat = 0;
+    let used = 0;
     const n = w * h;
     for (let p = 0, k = 0; p < n; p++, k += 4) {
+      if (mask && mask[p] !== 1) {
+        continue;
+      }
       const r = data[k];
       const g = data[k + 1];
       const b = data[k + 2];
       sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      used++;
       if (r >= 250 && g >= 250 && b >= 250) {
         sat++;
       }
     }
-    return { mean: sum / n / 255, saturated: sat / n };
+    return {
+      mean: used > 0 ? sum / used / 255 : 0,
+      saturated: used > 0 ? sat / used : 0,
+      sampleFraction: used / n,
+    };
   };
 
   const readState = () => {
@@ -842,6 +891,8 @@ const LADDER = async ({ lat, lon, ladder }) => {
   };
 
   let structuralError = null;
+  let groundMask;
+  let terrainResponse;
   for (let i = 0; i < ladder.length && structuralError === null; i++) {
     const rung = ladder[i];
     viewer.clock.currentTime = C.JulianDate.fromIso8601(rung.iso);
@@ -919,18 +970,28 @@ const LADDER = async ({ lat, lon, ladder }) => {
     });
     scene.camera.frustum.fov = C.Math.toRadians(60.0);
 
-    // Globe-tile residency settle BEFORE any capture, so all three captures in
-    // this step see the same globe. Bounded; expiry is recorded, not fatal.
+    // Globe-tile residency settle BEFORE any capture, so all captures in this
+    // step see the same globe. `tilesLoaded` alone is insufficient: it is also
+    // true for an empty/no-tile frame. Require renderable tiles after a current
+    // render, exactly as the S6 totality fixture does.
     let tilesLoaded = true;
+    let tilesToRender = 0;
     if (scene.globe) {
       tilesLoaded = false;
       for (let k = 0; k < 240 && !tilesLoaded; k++) {
-        if (scene.globe.tilesLoaded === true) {
+        scene.render(T());
+        tilesToRender = scene.globe._surface?._tilesToRender?.length ?? 0;
+        if (scene.globe.tilesLoaded === true && tilesToRender > 0) {
           tilesLoaded = true;
           break;
         }
-        scene.render(T());
         await new Promise((r) => requestAnimationFrame(r));
+      }
+      if (!tilesLoaded) {
+        structuralError =
+          `step ${i}: globe never reached non-empty offline readiness ` +
+          `(tilesToRender=${tilesToRender})`;
+        break;
       }
     }
 
@@ -976,9 +1037,71 @@ const LADDER = async ({ lat, lon, ladder }) => {
     ac.lighting.enableEclipse = false;
     ac.lighting.eclipseAutoExposure = false;
     scene.render(T());
-    const offState = readState();
-    const offSky = bandStats(skyY0, skyY1);
-    const offGround = bandStats(groundY0, groundY1);
+    let offState = readState();
+    let offSky = bandStats(skyY0, skyY1);
+    let offGround = bandStats(groundY0, groundY1, groundMask);
+
+    // A non-empty tile list does not prove that the ground ROI contains globe
+    // pixels. Build one stable mask from a white-vs-black base-color A/B on the
+    // clear rung, and require a material response before any ground claim is
+    // allowed to gate. This catches the historical WebGPU near-limb
+    // globe-absent failure instead of accidentally measuring sky/background.
+    if (!groundMask && scene.globe) {
+      const savedBaseColor = C.Color.clone(scene.globe.baseColor);
+
+      scene.globe.baseColor = C.Color.clone(C.Color.WHITE);
+      scene.render(T());
+      const white = readBandPixels(groundY0, groundY1);
+
+      scene.globe.baseColor = C.Color.clone(C.Color.BLACK);
+      scene.render(T());
+      const black = readBandPixels(groundY0, groundY1);
+
+      const n = white.w * white.h;
+      groundMask = new Uint8Array(n);
+      const responseFloor = 8 / 255;
+      let responsivePixels = 0;
+      let responseSum = 0;
+      let whiteSum = 0;
+      let blackSum = 0;
+      for (let p = 0, k = 0; p < n; p++, k += 4) {
+        const whiteLuma =
+          (0.2126 * white.data[k] +
+            0.7152 * white.data[k + 1] +
+            0.0722 * white.data[k + 2]) /
+          255;
+        const blackLuma =
+          (0.2126 * black.data[k] +
+            0.7152 * black.data[k + 1] +
+            0.0722 * black.data[k + 2]) /
+          255;
+        const response = Math.abs(whiteLuma - blackLuma);
+        whiteSum += whiteLuma;
+        blackSum += blackLuma;
+        responseSum += response;
+        if (response >= responseFloor) {
+          groundMask[p] = 1;
+          responsivePixels++;
+        }
+      }
+      const responsiveFraction = responsivePixels / n;
+      const meanAbsoluteResponse = responseSum / n;
+      terrainResponse = {
+        responseFloor,
+        responsivePixels,
+        responsiveFraction,
+        meanAbsoluteResponse,
+        whiteMean: whiteSum / n,
+        blackMean: blackSum / n,
+        pass: responsiveFraction >= 0.25 && meanAbsoluteResponse >= 0.05,
+      };
+
+      scene.globe.baseColor = savedBaseColor;
+      scene.render(T());
+      offState = readState();
+      offSky = bandStats(skyY0, skyY1);
+      offGround = bandStats(groundY0, groundY1, groundMask);
+    }
     if (isDeepest) {
       // Read in the same task as the render above.
       shots.deepestOff = grabCanvas();
@@ -990,7 +1113,7 @@ const LADDER = async ({ lat, lon, ladder }) => {
     scene.render(T());
     const onState = readState();
     const onSky = bandStats(skyY0, skyY1);
-    const onGround = bandStats(groundY0, groundY1);
+    const onGround = bandStats(groundY0, groundY1, groundMask);
     if (isDeepest) {
       shots.deepestOn = grabCanvas();
     }
@@ -1016,12 +1139,36 @@ const LADDER = async ({ lat, lon, ladder }) => {
       typeof f === "number" &&
       f < 1;
 
+    // S6 adds a physically separate horizon-twilight term at deep totality.
+    // Keep the shipped/default-on ON capture above, but isolate that orthogonal
+    // term for S2's manual-equivalence proof. This reference is still the real
+    // engine path with eclipse dimming enabled; only S6's additive glow is off.
+    // The dedicated totality probe independently requires that glow on both
+    // backends, so this isolation cannot hide a missing S6 feature.
+    let equivalentOnState = onState;
+    let equivalentOnSky = onSky;
+    let equivalentOnGround = onGround;
+    let equivalentEngineMirror = engineMirror;
+    let horizonTwilightIsolated = false;
+    if (isEclipsed) {
+      ac.lighting.enableEclipseHorizonTwilight = false;
+      scene.render(T());
+      equivalentOnState = readState();
+      equivalentOnSky = bandStats(skyY0, skyY1);
+      equivalentOnGround = bandStats(groundY0, groundY1, groundMask);
+      equivalentEngineMirror =
+        scene.globe?._surface?.tileProvider?.atmosphereLightIntensity ?? null;
+      horizonTwilightIsolated = true;
+      ac.lighting.enableEclipseHorizonTwilight = true;
+      scene.render(T());
+    }
+
     // ── 3. eclipse ON, ruling-E2 camera mode ──────────────────────────────
     ac.lighting.eclipseAutoExposure = true;
     scene.render(T());
     const aeState = readState();
     const aeSky = bandStats(skyY0, skyY1);
-    const aeGround = bandStats(groundY0, groundY1);
+    const aeGround = bandStats(groundY0, groundY1, groundMask);
     ac.lighting.eclipseAutoExposure = false;
 
     // ── 4-5. BACKGROUND REVEAL: the same pinned state with the atmosphere
@@ -1040,9 +1187,10 @@ const LADDER = async ({ lat, lon, ladder }) => {
     // Hiding the shell gives `B`, the FULLY revealed background: an upper
     // bound on that additive term, since the composite can only ever show
     // `B*(1-alpha)` of it. Two captures rather than one so the probe can SEE
-    // whether the background itself moves with the toggle (at defaults it must
-    // not — `enableStarBrightnessModulation` is false since C11-176 — and if
-    // it does, that is a finding, not a nuisance).
+    // whether the background itself moves with the toggle. With the shell
+    // hidden, current-frame atmosphere visibility disables the default-on star
+    // modulation, so this is intentionally a full-strength control in both
+    // toggle positions.
     // ── 4. THE EQUIVALENCE CAPTURE (R1) — S2's literal contract, model-free.
     //
     // Three rounds of physical modelling (display gamma, PBR-Neutral shoulder,
@@ -1067,12 +1215,13 @@ const LADDER = async ({ lat, lon, ladder }) => {
     //   site 2  skyAtmosphere.atmosphereLightIntensity *= f
     //   site 3  globe.atmosphereLightIntensity *= f   (the tileProvider mirror
     //           follows automatically — VERIFIED below, not assumed)
-    //   site 4  excluded, byte-inert at defaults (asserted at setup)
+    //   site 4  star modulation reproduced by re-solving its public curve
     //   site 5  N/A, no model in this scene
     let manualSky = null;
     let manualGround = null;
     let manualState = null;
     let mirrorMatches = null;
+    let site4Record = null;
     if (isEclipsed) {
       const savedLight = scene.light;
       const savedSkyIntensity = scene.skyAtmosphere
@@ -1082,6 +1231,54 @@ const LADDER = async ({ lat, lon, ladder }) => {
         ? scene.globe.atmosphereLightIntensity
         : null;
       // `engineMirror` was captured right after the ON render — see there.
+
+      // SITE 4, modelled (C12-29 S6 / ruling E3 — see the guard at setup).
+      // The engine path evaluates the star-modulation curve at `B * f`; with
+      // the eclipse off the manual path sees `B`, so its inflection is
+      // re-solved to make the curve return the identical factor at `B`.
+      // `smoothstep` is monotone on [0,1], so the inverse is exact wherever
+      // the target is strictly inside (0,1); at the clamped ends any
+      // inflection on the correct side reproduces the endpoint exactly.
+      const savedInflection = starCurve ? starCurve.inflection : null;
+      let site4 = null;
+      if (starModulation === true && starCurve) {
+        const s = starCurve.steepness;
+        const i0 = starCurve.inflection;
+        const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+        const factorAt = (b) => {
+          const t = clamp01((b - i0) * s);
+          return 1 - t * t * (3 - 2 * t);
+        };
+        // Read the brightness from the isolated engine-reference frame.
+        // Reading `scene.frameState` here would instead observe the intervening
+        // auto-exposure render and mix its radiometric factor with `f` from the
+        // earlier human-eye frame.
+        const B = equivalentOnState.skyBrightness;
+        // The engine's skyBrightness ALREADY carries `f`; divide it back out
+        // to recover the un-eclipsed `B` the manual path will see.
+        const bManual = typeof B === "number" && f > 0 ? B / f : null;
+        const target = typeof B === "number" ? factorAt(B) : null;
+        if (bManual !== null && target !== null) {
+          // Invert `1 - smoothstep(0,1,t) = target` for t, then place the
+          // inflection so `(bManual - i') * s == t`.
+          let lo = 0;
+          let hi = 1;
+          for (let q = 0; q < 200; q++) {
+            const mid = 0.5 * (lo + hi);
+            const sm = mid * mid * (3 - 2 * mid);
+            if (1 - sm > target) lo = mid;
+            else hi = mid;
+          }
+          const tStar = 0.5 * (lo + hi);
+          starCurve.inflection = bManual - tStar / s;
+          site4 = {
+            engineSkyBrightness: B,
+            manualSkyBrightness: bManual,
+            targetFactor: target,
+            solvedInflection: starCurve.inflection,
+          };
+        }
+      }
 
       ac.lighting.enableEclipse = false;
       scene.light = new C.SunLight({
@@ -1095,18 +1292,29 @@ const LADDER = async ({ lat, lon, ladder }) => {
         scene.globe.atmosphereLightIntensity = savedGlobeIntensity * f;
       }
       scene.render(T());
+      // Verify the modelling produced the factor it was solved for, rather
+      // than trusting the algebra: recompute from the manual frame's own
+      // published `skyBrightness`.
+      if (site4 && starCurve) {
+        const bSeen = scene.frameState?.skyBrightness;
+        const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+        const t = clamp01((bSeen - starCurve.inflection) * starCurve.steepness);
+        site4.manualFactorSeen = 1 - t * t * (3 - 2 * t);
+        site4.matches =
+          Math.abs(site4.manualFactorSeen - site4.targetFactor) <= 1e-6;
+      }
       manualState = readState();
       manualSky = bandStats(skyY0, skyY1);
-      manualGround = bandStats(groundY0, groundY1);
+      manualGround = bandStats(groundY0, groundY1, groundMask);
       const manualMirror =
         scene.globe?._surface?.tileProvider?.atmosphereLightIntensity ?? null;
       // Site 3 verification: the engine's dimmed mirror and the manual dimmed
       // mirror must be the same number, or the two paths are not comparable at
       // that site and the whole gate would be measuring the wrong thing.
       mirrorMatches =
-        engineMirror !== null && manualMirror !== null
-          ? Math.abs(engineMirror - manualMirror) <=
-            1e-9 * Math.max(1, Math.abs(engineMirror))
+        equivalentEngineMirror !== null && manualMirror !== null
+          ? Math.abs(equivalentEngineMirror - manualMirror) <=
+            1e-9 * Math.max(1, Math.abs(equivalentEngineMirror))
           : null;
 
       // Leak-proof restore, before anything else renders.
@@ -1117,6 +1325,16 @@ const LADDER = async ({ lat, lon, ladder }) => {
       if (scene.globe) {
         scene.globe.atmosphereLightIntensity = savedGlobeIntensity;
       }
+      if (starCurve && savedInflection !== null) {
+        starCurve.inflection = savedInflection;
+      }
+      ac.lighting.enableEclipseHorizonTwilight = true;
+      manualState = manualState ?? null;
+      if (site4) {
+        site4.inflectionRestored =
+          starCurve && starCurve.inflection === savedInflection;
+      }
+      site4Record = site4;
       ac.lighting.enableEclipse = true;
       scene.render(T());
     }
@@ -1132,12 +1350,12 @@ const LADDER = async ({ lat, lon, ladder }) => {
       ac.lighting.enableEclipse = false;
       scene.render(T());
       bgSkyOff = bandStats(skyY0, skyY1);
-      bgGroundOff = bandStats(groundY0, groundY1);
+      bgGroundOff = bandStats(groundY0, groundY1, groundMask);
 
       ac.lighting.enableEclipse = true;
       scene.render(T());
       bgSkyOn = bandStats(skyY0, skyY1);
-      bgGroundOn = bandStats(groundY0, groundY1);
+      bgGroundOn = bandStats(groundY0, groundY1, groundMask);
 
       scene.skyAtmosphere.show = skyShown;
       scene.render(T());
@@ -1148,6 +1366,8 @@ const LADDER = async ({ lat, lon, ladder }) => {
       targetObscuration: rung.obscuration,
       sunElevationDeg: rung.sunElevationDeg,
       tilesLoaded,
+      tilesToRender,
+      terrainResponse,
       horizonPx,
       off: { state: offState, sky: offSky, ground: offGround },
       on: { state: onState, sky: onSky, ground: onGround },
@@ -1163,10 +1383,17 @@ const LADDER = async ({ lat, lon, ladder }) => {
       // R1 — the manual twin. Null on the clear rung (nothing to reproduce).
       manual: isEclipsed
         ? {
+            engineReference: {
+              state: equivalentOnState,
+              sky: equivalentOnSky,
+              ground: equivalentOnGround,
+              horizonTwilightIsolated,
+            },
             state: manualState,
             sky: manualSky,
             ground: manualGround,
             mirrorMatches,
+            site4: site4Record,
           }
         : null,
       dimSky: offSky.mean > 0 ? onSky.mean / offSky.mean : null,
@@ -1198,7 +1425,7 @@ async function runBackend(browser, renderer, plan) {
   const out = { renderer, consoleErrors: errs };
   try {
     await page.goto(
-      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
       { waitUntil: "domcontentloaded", timeout: 90000 },
     );
     await page.waitForFunction(
@@ -1258,6 +1485,15 @@ async function runBackend(browser, renderer, plan) {
 // ── Verdict ─────────────────────────────────────────────────────────────────
 function judge(steps) {
   const v = {};
+  v.terrainResponse = steps[0]?.terrainResponse ?? null;
+  v.terrainResponsive =
+    v.terrainResponse?.pass === true &&
+    steps.every(
+      (s) =>
+        s.off.ground.sampleFraction >= 0.25 &&
+        s.on.ground.sampleFraction >= 0.25 &&
+        s.ae.ground.sampleFraction >= 0.25,
+    );
 
   // Lane (c) — identity. The OFF position must publish EXACTLY 1.0.
   v.offFactorAllExactlyOne = steps.every((s) => s.off.state.factor === 1);
@@ -1527,7 +1763,13 @@ function judge(steps) {
   const equivalence = [];
   for (const s of eclipsed) {
     const m = s.manual;
-    if (!m || !m.sky || !m.ground) {
+    if (
+      !m ||
+      !m.sky ||
+      !m.ground ||
+      !m.engineReference?.sky ||
+      !m.engineReference?.ground
+    ) {
       equivalence.push({ iso: s.iso, ok: false, reason: "no manual capture" });
       continue;
     }
@@ -1541,8 +1783,8 @@ function judge(steps) {
         ok: Math.abs(engine - manual) <= EQUIV_REL * manual + EQUIV_ABS,
       };
     };
-    const sky = cmp(s.on.sky.mean, m.sky.mean);
-    const ground = cmp(s.on.ground.mean, m.ground.mean);
+    const sky = cmp(m.engineReference.sky.mean, m.sky.mean);
+    const ground = cmp(m.engineReference.ground.mean, m.ground.mean);
     equivalence.push({
       iso: s.iso,
       factor: r6(s.on.state.factor),
@@ -1550,8 +1792,20 @@ function judge(steps) {
       // factor, or it is not an independent reproduction.
       manualFactorIsOne: m.state?.factor === 1,
       manualToggleOff: m.state?.enabled === false,
+      horizonTwilightIsolated:
+        m.engineReference?.horizonTwilightIsolated === true,
       // Site 3's mirror must carry the same number down both paths.
       mirrorMatches: m.mirrorMatches,
+      // Site 4 (C12-29 S6 / ruling E3): live since the star-modulation default
+      // flipped on, so it is MODELLED rather than excluded. The manual twin
+      // re-solves the curve inflection to hand the cubemap shader the same
+      // factor the engine's `skyBrightness * f` produces, and the solve is
+      // verified from the manual frame's own published brightness. `null` when
+      // the modulation is off, where the old inert-exclusion still holds.
+      site4Modelled: m.site4 === null ? null : m.site4?.matches === true,
+      site4InflectionRestored:
+        m.site4 === null ? null : m.site4?.inflectionRestored === true,
+      site4: m.site4,
       sky,
       ground,
       ok:
@@ -1559,7 +1813,12 @@ function judge(steps) {
         ground.ok &&
         m.state?.factor === 1 &&
         m.state?.enabled === false &&
-        m.mirrorMatches !== false,
+        m.engineReference?.horizonTwilightIsolated === true &&
+        m.mirrorMatches !== false &&
+        // Site 4 must have been modelled successfully whenever it is live.
+        // `null` (modulation off) keeps the historical inert-exclusion path.
+        (m.site4 === null || m.site4?.matches === true) &&
+        (m.site4 === null || m.site4?.inflectionRestored === true),
     });
   }
   v.equivalence = equivalence;
@@ -1581,9 +1840,10 @@ function judge(steps) {
   v.backgroundRevealExplainsAll = bracket.every(
     (b) => b.backgroundRevealExplains !== false,
   );
-  // The background itself must not move with the eclipse toggle at defaults
-  // (star modulation is off since C11-176). If it does, S2 is reaching the
-  // star field, which is an S6/E3 decision and not S2's to make silently.
+  // The background itself must not move with the eclipse toggle while the
+  // atmosphere is hidden. Current-frame visibility disables the default-on
+  // star modulation in both captures; a difference would therefore be a real
+  // state leak between the two paths.
   v.backgroundIsToggleInvariant = eclipsed.every((s) => {
     const a = s.bg?.off?.sky?.mean;
     const b = s.bg?.on?.sky?.mean;
@@ -1660,13 +1920,25 @@ function judge(steps) {
 
   // Lane (d) — ruling E2's camera mode publishes the LINEAR radiometric
   // factor, strictly below the eye-adapted default, and renders darker.
+  // Ground comparisons use only the base-color-responsive terrain mask proven
+  // above; an absent WebGPU globe can no longer pass by measuring shell/stars
+  // in a nominally "ground" rectangle. A tiny mean tolerance covers floating
+  // accumulation only, and a separate non-vacuity condition requires material
+  // dimming in both bands.
   v.aeFactorStrictlyLower = eclipsed.every(
     (s) => s.ae.state.factor < s.on.state.factor - 1e-9,
   );
   v.aeIdentityWhenClear = clear.every((s) => s.ae.state.factor === 1);
+  const aeLuminanceTolerance = 1e-4;
+  v.aeLuminanceTolerance = aeLuminanceTolerance;
   v.aeRendersDarker = eclipsed.every(
-    (s) => s.dimSkyAe <= s.dimSky + 1e-3 && s.dimGroundAe <= s.dimGround + 1e-3,
+    (s) =>
+      s.ae.sky.mean <= s.on.sky.mean + aeLuminanceTolerance &&
+      s.ae.ground.mean <= s.on.ground.mean + aeLuminanceTolerance,
   );
+  v.aeDimmingNonVacuous =
+    eclipsed.some((s) => s.on.sky.mean - s.ae.sky.mean > 0.02) &&
+    eclipsed.some((s) => s.on.ground.mean - s.ae.ground.mean > 0.005);
 
   v.PASS =
     v.offFactorAllExactlyOne &&
@@ -1674,6 +1946,7 @@ function judge(steps) {
     v.autoExposureFlagObserved &&
     v.physicsRunsWhenOff &&
     v.ladderNonVacuous &&
+    v.terrainResponsive &&
     v.clearStepIdentity &&
     v.sanityFloors &&
     v.lightUniformCarriesFactor &&
@@ -1688,7 +1961,8 @@ function judge(steps) {
     v.notBlackAtDeepest &&
     v.aeFactorStrictlyLower &&
     v.aeIdentityWhenClear &&
-    v.aeRendersDarker;
+    v.aeRendersDarker &&
+    v.aeDimmingNonVacuous;
   return v;
 }
 

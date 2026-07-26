@@ -13,7 +13,7 @@ import Matrix4 from "../../Core/Matrix4.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import SkyAtmosphereWGSL from "../../Shaders/WebGPU/Environment/SkyAtmosphere.js";
-import { resolveDynamicLighting } from "./WebGPUAtmosphereUniforms.js";
+import { resolveSkyDynamicLighting } from "./WebGPUAtmosphereUniforms.js";
 // Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import {
@@ -63,7 +63,13 @@ function getSkyAtmosphereShaderCache(device) {
 //   moonControl        @112 (phaseFraction / intensityScale)
 // 464 = 29 × 16. ALL default-zero so the sky stays byte-identical with every
 // flag off.
-const UNIFORM_BUFFER_SIZE = 464;
+//
+// C12-29 S6 — bumped 464 → 480 to append ONE vec4 at the TAIL (no existing
+// offset moved):
+//   eclipseControl     @116 (x = 360-degree horizon-twilight gain; y/z/w reserved)
+// 480 = 30 × 16, still 16-aligned. Default zero, and the shader skips the
+// block at zero, so the sky is byte-identical outside totality.
+const UNIFORM_BUFFER_SIZE = 480;
 
 // Default atmosphere parameters
 // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 1) — the SKY shader's
@@ -808,12 +814,25 @@ function packUniforms(
   //                     regardless of `scene.light`).
   // 1 = DynamicAtmosphereLightingType.SCENE_LIGHT (see
   // `Source/Scene/DynamicAtmosphereLightingType.js`).
-  // DP-H47 (Campaign-7) — resolve `scene.atmosphere.dynamicLighting` through
-  // the shared `WebGPUAtmosphereUniforms` seam so the sky and the model IBL
-  // fill resolve the SAME field identically. The sky's scattering coefficients
-  // stay on the SkyAtmosphere instance (WebGL-faithful — see the resolver's
-  // module docstring), so only `dynamicLighting` routes through the seam here.
-  const dynamicLighting = resolveDynamicLighting(frameState);
+  // DP-H47 (Campaign-7) — resolve the dynamic-lighting enum through the shared
+  // `WebGPUAtmosphereUniforms` seam. The sky's scattering coefficients stay on
+  // the SkyAtmosphere instance (WebGL-faithful — see the resolver's module
+  // docstring), so only `dynamicLighting` routes through the seam here.
+  //
+  // C12-29 S6 / obs-1 (2026-07-25) — this was `resolveDynamicLighting(frameState)`,
+  // i.e. `scene.atmosphere.dynamicLighting`, which WebGL hands to the sky ONLY
+  // when there is no globe. With a globe, `Scene.updateEnvironment` calls
+  // `skyAtmosphere.setDynamicLighting(DynamicAtmosphereLightingType.fromGlobeFlags(globe))`,
+  // so any scene with `globe.enableLighting = true` resolved SCENE_LIGHT on
+  // WebGL and NONE here. In the WGSL that turns `isDynamic` false, pins
+  // `nightAlpha` at 1.0, and makes `alpha = mix(finalColor.b, 1.0, opacity)`
+  // exactly 1.0 for a ground camera (altitudeOpacity == 1) — an opaque shell in
+  // every direction. What that hid is exactly the two draws `SceneRenderer`
+  // PREPENDS ahead of the binned atmosphere: the **skyBox cubemap** and the
+  // returned **star-catalogue command**. The moon (appended) and sun (binned
+  // after the atmosphere) execute AFTER the shell. `resolveSkyDynamicLighting`
+  // reads the value Scene already resolved.
+  const dynamicLighting = resolveSkyDynamicLighting(skyAtmosphere, frameState);
   const useSceneLight = dynamicLighting === 1;
   const uniformState = frameState.context?.uniformState;
   const sceneLightWC = uniformState?.lightDirectionWC;
@@ -1112,15 +1131,26 @@ function packUniforms(
   uniformData[113] = acMoon?.moonIntensity ?? 0.12;
   uniformData[114] = 0.0;
   uniformData[115] = 0.0;
+
+  // eclipseControl @116 — C12-29 S6, the 360-degree horizon-twilight gain.
+  // The WGSL twin of `SkyAtmosphere.js`'s `u_eclipseHorizonTwilight` closure;
+  // both read the same `frameState.eclipseHorizonTwilight` scalar through the
+  // instance field `SkyAtmosphere.update` refreshes, so the two backends add
+  // one identical number. Exactly 0.0 outside totality, and the shader skips
+  // the whole block at 0 — byte-identical.
+  uniformData[116] = skyAtmosphere._eclipseHorizonTwilight ?? 0.0;
+  uniformData[117] = 0.0;
+  uniformData[118] = 0.0;
+  uniformData[119] = 0.0;
 }
 
 /**
  * Updates or creates WebGPU draw commands for SkyAtmosphere.
  * @param {SkyAtmosphere} skyAtmosphere
  * @param {FrameState} frameState
- * @param {Array} commandList
+ * @returns {WebGPUDrawCommand|undefined} The cached environment command.
  */
-function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
+function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState) {
   //>>includeStart('debug', pragmas.debug);
   // Diagnostic — one-shot log covering the early-exit reasons so we can
   // tell why `envState.isSkyAtmosphereVisible` stays false in the EnvInject
@@ -1348,7 +1378,6 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
     } else if (cache.fullscreenCommand.bindGroups[1] !== lutInfo.bindGroup) {
       cache.fullscreenCommand.bindGroups[1] = lutInfo.bindGroup;
     }
-    commandList.push(cache.fullscreenCommand);
     return cache.fullscreenCommand;
   }
 
@@ -1369,14 +1398,11 @@ function updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, commandList) {
     cache.command.bindGroups[1] = lutInfo.bindGroup;
   }
 
-  commandList.push(cache.command);
-
   //>>includeStart('debug', pragmas.debug);
   if (!globalScope.__skyAtmoDiagFinalLogged) {
     globalScope.__skyAtmoDiagFinalLogged = true;
     console.log(
-      `[WebGPU:SkyAtmo] command pushed — indexCount=${cache.indexCount} ` +
-        `listLenAfterPush=${commandList.length}`,
+      `[WebGPU:SkyAtmo] command ready — indexCount=${cache.indexCount}`,
     );
   }
   //>>includeEnd('debug');
@@ -1413,8 +1439,8 @@ function destroyWebGPUSkyAtmosphereResources(skyAtmosphere) {
  * @private
  */
 class WebGPUSkyAtmosphereRenderer {
-  update(skyAtmosphere, frameState, globe) {
-    return updateWebGPUSkyAtmosphere(skyAtmosphere, frameState, globe);
+  update(skyAtmosphere, frameState) {
+    return updateWebGPUSkyAtmosphere(skyAtmosphere, frameState);
   }
 
   destroy(skyAtmosphere) {

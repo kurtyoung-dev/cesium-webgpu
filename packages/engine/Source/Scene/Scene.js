@@ -41,6 +41,7 @@ import AtmosphericConditions from "./AtmosphericConditions.js";
 import { computeSkyBrightness } from "./SkyBrightness.js";
 import {
   createEclipseState,
+  getEclipseHorizonTwilightFactor,
   getEclipseSceneLightFactor,
   updateEclipseState,
 } from "./EclipseState.js";
@@ -3692,22 +3693,14 @@ class Scene {
       environmentState.sunDrawCommand = undefined;
       environmentState.sunComputeCommand = undefined;
       environmentState.moonCommand = undefined;
+      environmentState.isSkyAtmosphereVisible = false;
+      frameState.skyAtmosphereVisible = false;
     } else {
-      // Batch 438 (4.4 SKY-MOON) — publish the moon ephemeris BEFORE the sky
-      // atmosphere update. `Moon.update` is what writes `frameState.moonDirectionWC`
-      // + `frameState.moonPhaseFraction`; previously it ran AFTER
-      // `skyAtmosphere.update` (further below), so the sky's inline dual-light
-      // moon march read a one-frame-stale (and, before ICRF settled, plain wrong)
-      // moon direction — the moon glow never matched the actual moon position.
-      // The moon DRAW command is still stored in environmentState and executed
-      // later in the render pipeline; only the ephemeris publish is hoisted, which
-      // is strictly better for every consumer (sky, fog, night lighting). The sun
-      // direction is unaffected (the sky reads it from uniformState, updated even
-      // earlier).
-      environmentState.moonCommand = defined(this.moon)
-        ? this.moon.update(frameState)
-        : undefined;
-
+      // Resolve atmosphere applicability before any celestial consumer runs.
+      // The constructor/show flag alone is not authoritative while a globe is
+      // still waiting for its first renderable tile. Both renderers now read
+      // this same-frame value, so extinction and default-on star modulation
+      // never model an atmosphere shell that the scene has skipped.
       if (defined(skyAtmosphere)) {
         if (defined(globe)) {
           skyAtmosphere.setDynamicLighting(
@@ -3722,7 +3715,50 @@ class Scene {
           skyAtmosphere.setDynamicLighting(dynamicLighting);
           environmentState.isReadyForAtmosphere = true;
         }
+      }
+      frameState.skyAtmosphereVisible =
+        defined(skyAtmosphere) &&
+        skyAtmosphere.show === true &&
+        (frameState.mode === SceneMode.SCENE3D ||
+          frameState.mode === SceneMode.MORPHING) &&
+        environmentState.isReadyForAtmosphere;
 
+      // Batch 438 (4.4 SKY-MOON) — publish the moon ephemeris BEFORE the sky
+      // atmosphere update. `Moon.update` is what writes `frameState.moonDirectionWC`
+      // + `frameState.moonPhaseFraction`; previously it ran AFTER
+      // `skyAtmosphere.update` (further below), so the sky's inline dual-light
+      // moon march read a one-frame-stale (and, before ICRF settled, plain wrong)
+      // moon direction — the moon glow never matched the actual moon position.
+      // The moon DRAW command is still stored in environmentState and executed
+      // later in the render pipeline; only the ephemeris publish is hoisted, which
+      // is strictly better for every consumer (sky, fog, night lighting). The sun
+      // direction is unaffected (the sky reads it from uniformState, updated even
+      // earlier).
+      // A hidden/absent Moon must not leave the previous frame's phase active
+      // in default-on sky brightness. Keep the reusable direction storage but
+      // reset its scalar contribution before the update; a visible Moon
+      // overwrites it with current ephemeris data below.
+      frameState.moonPhaseFraction = 0.0;
+      environmentState.moonCommand = defined(this.moon)
+        ? this.moon.update(frameState)
+        : undefined;
+
+      // Phase 1.3a / C12-29 S6 — derive brightness only after `Moon.update`
+      // has published the current frame's direction and phase. This matters
+      // under requestRenderMode and stepped clocks, where there may be no
+      // follow-up frame to repair a stale value. Scene supplies ellipsoidal
+      // height directly: no duplicate magnitude and no hard-coded Earth radius
+      // at the orbital atmospheric-column boundary.
+      frameState.skyBrightness =
+        computeSkyBrightness(
+          frameState.context.uniformState.sunDirectionWC,
+          frameState.moonDirectionWC,
+          frameState.moonPhaseFraction ?? 1.0,
+          frameState.camera?.positionWC,
+          frameState.camera?.positionCartographic?.height,
+        ) * frameState.eclipseSceneLightFactor;
+
+      if (defined(skyAtmosphere)) {
         environmentState.skyAtmosphereCommand = skyAtmosphere.update(
           frameState,
           globe,
@@ -3733,24 +3769,19 @@ class Scene {
       } else {
         environmentState.skyAtmosphereCommand = undefined;
       }
+      environmentState.isSkyAtmosphereVisible =
+        defined(environmentState.skyAtmosphereCommand) &&
+        environmentState.isReadyForAtmosphere;
+      frameState.skyAtmosphereVisible = environmentState.isSkyAtmosphereVisible;
 
       environmentState.skyBoxCommand = defined(this.skyBox)
         ? this.skyBox.update(frameState, this._hdr)
         : undefined;
       // Track V-C — bright-star catalog starfield (augments the cubemap).
-      // Driven here (not inside SkyBox.update) so its command can be
-      // injected AFTER skyBoxCommand by the SceneRenderer — the additive
-      // HDR stars then land on top of the (often opaque) cubemap rather
-      // than being overwritten by its alpha-over pass. A no-op on backends
-      // without a STAR_FIELD feature renderer (WebGL keeps the cubemap
-      // stars only).
-      //
-      // The renderer ALSO pushes a binned copy onto frameState.commandList
-      // (frustum guarantee on sky-only views). To avoid drawing the
-      // additive stars twice, only route the returned inject command to
-      // the post-skyBox injection slot when a cubemap command actually
-      // exists (which would otherwise wipe the binned copy). With no
-      // cubemap, the binned copy alone is correct and we drop the inject.
+      // Driven here (not inside SkyBox.update) so its single reusable command
+      // is injected AFTER skyBoxCommand and BEFORE the atmosphere by both
+      // EnvironmentRenderer and SceneRenderer. The additive HDR stars land on
+      // top of the cubemap, then the atmosphere can still occlude them.
       const starField =
         defined(this.skyBox) && defined(this.skyBox.starField)
           ? this.skyBox.starField
@@ -3758,19 +3789,10 @@ class Scene {
       const starCommand = defined(starField)
         ? starField.update(frameState)
         : undefined;
-      // Drop the returned command ONLY when the renderer ALSO binned a copy
-      // (WebGPU) AND there's no cubemap: in that case the binned copy alone
-      // draws the stars and routing the inject too would double-draw. When
-      // the renderer didn't bin a copy (WebGL), the returned command is the
-      // only one and must always run — even with the cubemap off. This keeps
-      // the gate backend-agnostic (reads `wasBinned`, not `isWebGPU`).
-      const dropForBinnedNoCubemap =
-        defined(starField) &&
-        starField.wasBinned &&
-        !defined(environmentState.skyBoxCommand);
-      environmentState.starFieldCommand = dropForBinnedNoCubemap
-        ? undefined
-        : starCommand;
+      // Batch 761's environment-demand predicate reads this returned command,
+      // so it also guarantees a far frustum in WebGPU sky-only views without a
+      // duplicate command-list entry.
+      environmentState.starFieldCommand = starCommand;
       const sunCommands = defined(this.sun)
         ? this.sun.update(frameState, view.passState, this._hdr)
         : undefined;
@@ -3826,6 +3848,7 @@ class Scene {
     environmentState.isSkyAtmosphereVisible =
       defined(environmentState.skyAtmosphereCommand) &&
       environmentState.isReadyForAtmosphere;
+    frameState.skyAtmosphereVisible = environmentState.isSkyAtmosphereVisible;
     environmentState.isSunVisible = this.isVisible(
       cullingVolume,
       environmentState.sunDrawCommand,
@@ -5716,6 +5739,7 @@ const scratchEclipseOptions = {
   enabled: true,
   autoExposure: false,
   cameraPositionWC: undefined,
+  cameraHeight: 0.0,
   // C12-29 S2 — deliberately ABSENT (not `undefined`-then-assigned): the sun
   // position is derived inside EclipseState from `time`, because this block
   // now runs before `uniformState.update`.
@@ -5755,13 +5779,11 @@ function render(scene) {
   frameState.backgroundColor = backgroundColor;
 
   frameState.atmosphere = scene.atmosphere;
-  // NS-MOON-ATMOSPHERE-EXTINCTION — publish whether the sky atmosphere is
-  // being rendered so celestial-body renderers (Moon) can gate atmospheric
-  // extinction on it. When the user hides the sky atmosphere the moon stays
-  // byte-identical (no extinction). Set at frame start so it is available
-  // regardless of environment-command build order.
-  frameState.skyAtmosphereVisible =
-    defined(scene.skyAtmosphere) && scene.skyAtmosphere.show === true;
+  // `updateEnvironment` publishes the authoritative same-frame value after
+  // applying render-pass, mode and globe-readiness gates. Reset here so a
+  // skipped environment update cannot leak the prior frame's visibility into
+  // moon/star extinction or default-on star modulation.
+  frameState.skyAtmosphereVisible = false;
   // Phase 1.1: forward the canonical atmospheric conditions facade so
   // renderers can read B-series toggles (sun/moon lighting, scattering
   // occlusion, star modulation, volumetric fog/clouds, weather, night)
@@ -5820,7 +5842,12 @@ function render(scene) {
       : true;
     scratchEclipseOptions.autoExposure =
       eclipseLighting?.eclipseAutoExposure === true;
+    scratchEclipseOptions.horizonTwilightEnabled = defined(eclipseLighting)
+      ? eclipseLighting.enableEclipseHorizonTwilight !== false
+      : true;
     scratchEclipseOptions.cameraPositionWC = frameState.camera?.positionWC;
+    scratchEclipseOptions.cameraHeight =
+      frameState.camera?.positionCartographic?.height ?? 0.0;
     scratchEclipseOptions.time = frameState.time;
     scratchEclipseOptions.earthOccluderRadius = defined(occluder)
       ? occluder.radius
@@ -5835,6 +5862,12 @@ function render(scene) {
     frameState.eclipseSceneLightFactor = getEclipseSceneLightFactor(
       frameState.eclipseState,
     );
+    // C12-29 S6 — the 360-degree horizon twilight gain the sky shell applies.
+    // Exactly 0.0 outside the last ~2% of obscuration and above the
+    // atmosphere, so the shell is byte-identical in every other frame.
+    frameState.eclipseHorizonTwilight = getEclipseHorizonTwilightFactor(
+      frameState.eclipseState,
+    );
   }
 
   uniformState.update(frameState);
@@ -5844,27 +5877,6 @@ function render(scene) {
   // the per-context uniform state. Phase 1.3 atmosphere scattering also
   // relies on this.
   frameState.sunDirectionWC = uniformState.sunDirectionWC;
-
-  // Phase 1.3a: cheap CPU sky brightness estimate consumed by star
-  // modulation in the cubemap panorama shader and (later) by night-sky
-  // dimming in the sky atmosphere shader. Uses the previous frame's
-  // moon direction (still on `frameState.moonDirectionWC` from the
-  // prior `Moon.update()` call) — visually indistinguishable from the
-  // current value at any reasonable simulation rate, and avoids
-  // duplicating the Simon 1994 ephemeris computation here.
-  //
-  // C12-29 S2 — an eclipse removes sun flux that this altitude-only estimate
-  // cannot see, so the same scene factor scales it. `* 1.0` is bit-exact, so
-  // every non-eclipse frame is unchanged; at defaults the whole term is inert
-  // anyway (`enableStarBrightnessModulation` is false since C11-176, and it is
-  // skyBrightness' only consumer).
-  frameState.skyBrightness =
-    computeSkyBrightness(
-      uniformState.sunDirectionWC,
-      frameState.moonDirectionWC,
-      frameState.moonPhaseFraction ?? 1.0,
-      frameState.camera?.positionWC,
-    ) * frameState.eclipseSceneLightFactor;
 
   const shadowMap = scene.shadowMap;
   if (defined(shadowMap) && shadowMap.enabled) {

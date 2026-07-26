@@ -156,6 +156,14 @@ class SkyAtmosphere {
     // frame, so the shell is byte-identical there.
     this._eclipseLightFactor = 1.0;
 
+    // C12-29 S6 — per-frame 360-degree horizon-twilight gain, refreshed from
+    // `frameState.eclipseHorizonTwilight` alongside the dimming factor above
+    // and consumed by BOTH shaders (`u_eclipseHorizonTwilight` in
+    // `SkyAtmosphereFS.glsl`, `eclipseControl.x` in `SkyAtmosphere.wgsl`).
+    // 0.0 — the additive identity, and the shader's early-out — in every
+    // non-totality frame.
+    this._eclipseHorizonTwilight = 0.0;
+
     /**
      * The intensity of the light that is used for computing the sky atmosphere color.
      *
@@ -266,6 +274,12 @@ class SkyAtmosphere {
         // value in every other frame.
         return that.atmosphereLightIntensity * that._eclipseLightFactor;
       },
+      u_eclipseHorizonTwilight: function () {
+        // C12-29 S6 — 360-degree horizon twilight gain. Exactly 0.0 outside
+        // the last ~2% of obscuration, and the shader multiplies the whole
+        // term by it, so the historical sky is untouched.
+        return that._eclipseHorizonTwilight;
+      },
       u_atmosphereRayleighCoefficient: function () {
         return that.atmosphereRayleighCoefficient;
       },
@@ -305,6 +319,23 @@ class SkyAtmosphere {
   }
 
   /**
+   * The dynamic-lighting enum `Scene.updateEnvironment` resolved for this
+   * frame — `DynamicAtmosphereLightingType.fromGlobeFlags(globe)` when a globe
+   * exists, `scene.atmosphere.dynamicLighting` otherwise. WebGL reads it
+   * through `u_radiiAndDynamicAtmosphereColor.z`; the WebGPU feature renderer
+   * reads it here (C12-29 S6 / obs-1 — it previously re-resolved
+   * `scene.atmosphere.dynamicLighting` itself and so never saw the globe
+   * flags, leaving the WGSL shell's day/night alpha term permanently disabled).
+   *
+   * @type {number}
+   * @readonly
+   * @internal
+   */
+  get dynamicLighting() {
+    return this._radiiAndDynamicAtmosphereColor.z;
+  }
+
+  /**
    * @private
    */
   update(frameState, globe) {
@@ -312,6 +343,8 @@ class SkyAtmosphere {
     // before the WebGPU feature-renderer branch below packs its uniform
     // buffer and before the WebGL uniform closure is invoked at draw time.
     this._eclipseLightFactor = frameState.eclipseSceneLightFactor ?? 1.0;
+    // C12-29 S6 — same contract, same position, same reason.
+    this._eclipseHorizonTwilight = frameState.eclipseHorizonTwilight ?? 0.0;
 
     if (!this.show) {
       return undefined;
@@ -327,28 +360,18 @@ class SkyAtmosphere {
       return undefined;
     }
 
-    // Backend-specific path — delegate to feature renderer if available.
-    // The FR creates/updates the draw command and pushes it to the
-    // commandList. We also return it so the environment state tracks it
-    // for proper injection into the ENVIRONMENT pass.
+    // Backend-specific path — delegate to the feature renderer if available.
+    // Environment commands are return-only: Scene publishes this command on
+    // environmentState, where visibility/readiness is resolved once, and the
+    // renderer injects it into the farthest ENVIRONMENT pass. Do not also bin
+    // it through frameState.commandList — that second route bypasses
+    // isSkyAtmosphereVisible while the globe is not ready and makes the shell
+    // render on WebGPU when WebGL correctly skips it.
     const fr = frameState.context.getFeatureRenderer(
       FeatureRendererKey.SKY_ATMOSPHERE,
     );
     if (fr) {
-      const result = fr.update(this, frameState, frameState.commandList);
-      // The FR now returns the draw command directly (also pushed to
-      // commandList). Earlier versions inferred the command from
-      // `commandList.length` after the call — that race-conditioned with
-      // any FR that wrote to the list as a side-effect; trust the
-      // explicit return value when it's defined.
-      if (defined(result)) {
-        return result;
-      }
-      const cmdListBefore = frameState.commandList.length - 1;
-      if (cmdListBefore >= 0) {
-        return frameState.commandList[cmdListBefore];
-      }
-      return undefined;
+      return fr.update(this, frameState);
     }
 
     // Align the ellipsoid geometry so it always faces the same direction as the

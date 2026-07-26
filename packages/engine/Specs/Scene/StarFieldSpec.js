@@ -26,10 +26,7 @@ describe("Scene/StarField", function () {
     const featureRenderer = {
       update: jasmine
         .createSpy("featureRenderer.update")
-        .and.callFake(function (starField, frameState, commandList) {
-          if (options.pushBinnedCommand !== false) {
-            commandList.push({});
-          }
+        .and.callFake(function (starField, frameState) {
           return returnedCommand;
         }),
       // C9-06 warm-keep hook: the zero-contribution (daylight) path calls
@@ -56,6 +53,9 @@ describe("Scene/StarField", function () {
       },
       camera: {
         positionWC: cameraPosition,
+        positionCartographic: {
+          height: 1000.0,
+        },
       },
       commandList: [],
       skyAtmosphereVisible: true,
@@ -73,14 +73,12 @@ describe("Scene/StarField", function () {
   function seedStaleState(starField, frameState) {
     frameState.starZenithTransmittance = new Cartesian3(0.1, 0.2, 0.3);
     starField._zenithTransmittance = new Cartesian3(0.4, 0.5, 0.6);
-    starField._wasBinned = true;
     starField._effectiveIntensityScale = 123.0;
   }
 
   function expectClearedState(starField, frameState) {
     expect(frameState.starZenithTransmittance).toBeUndefined();
     expect(starField._zenithTransmittance).toBeUndefined();
-    expect(starField.wasBinned).toBe(false);
   }
 
   function expectValidExtinction(extinction) {
@@ -141,6 +139,92 @@ describe("Scene/StarField", function () {
     expect(harness.featureRenderer.update).not.toHaveBeenCalled();
   });
 
+  // C12-29 S6 / ruling E3 — ONE reveal law for both star paths. The sprites'
+  // geometric day fade is exactly 0 whenever the sun is up, which is right for
+  // an ordinary day and wrong during totality; the cubemap's modulation factor
+  // replaces it when enabled so the catalogue and star map stay aligned.
+  describe("the shared star-brightness modulation law", function () {
+    // `skyBrightness` at a high-sun totality: `computeSkyBrightness` is 1.0
+    // and the S2 factor is the twilight floor (5/100000)^(1/3).
+    const totalitySkyBrightness = Math.pow(5.0 / 100000.0, 1.0 / 3.0);
+
+    function configure(frameState, enable) {
+      frameState.skyBrightness = totalitySkyBrightness;
+      frameState.atmosphericConditions = {
+        skyAtmosphere: {
+          enableStarBrightnessModulation: enable,
+          starModulationCurve: { inflection: 0.0, steepness: 23.0 },
+        },
+      };
+    }
+
+    it("is not applied at all when the modulation is off", function () {
+      const starField = new StarField();
+      const harness = createHarness({ sunDirection: daySunDirection });
+      configure(harness.frameState, false);
+
+      expect(starField.update(harness.frameState)).toBeUndefined();
+      expect(starField._effectiveIntensityScale).toBe(0.0);
+      expect(harness.featureRenderer.update).not.toHaveBeenCalled();
+    });
+
+    it("reveals the brightest sprites at totality with the sun still up", function () {
+      const starField = new StarField();
+      const harness = createHarness({ sunDirection: daySunDirection });
+      configure(harness.frameState, true);
+
+      expect(starField.update(harness.frameState)).toBe(
+        harness.returnedCommand,
+      );
+      // 1 - smoothstep(0, 1, clamp(B * 23, 0, 1)) at B = 0.0368403.
+      expect(starField._effectiveIntensityScale).toBeCloseTo(0.06281, 5);
+    });
+
+    it("leaves an ordinary daylight frame dark", function () {
+      const starField = new StarField();
+      const harness = createHarness({ sunDirection: daySunDirection });
+      configure(harness.frameState, true);
+      harness.frameState.skyBrightness = 1.0;
+
+      expect(starField.update(harness.frameState)).toBeUndefined();
+      expect(starField._effectiveIntensityScale).toBe(0.0);
+    });
+
+    it("leaves a night frame at full brightness", function () {
+      const starField = new StarField();
+      const harness = createHarness({ sunDirection: nightSunDirection });
+      configure(harness.frameState, true);
+      harness.frameState.skyBrightness = 0.0;
+
+      expect(starField.update(harness.frameState)).toBe(
+        harness.returnedCommand,
+      );
+      expect(starField._effectiveIntensityScale).toBe(1.0);
+    });
+
+    it("dims catalogue and cubemap consistently under a full moon", function () {
+      const starField = new StarField();
+      const harness = createHarness({ sunDirection: nightSunDirection });
+      configure(harness.frameState, true);
+      harness.frameState.skyBrightness = 0.04;
+
+      expect(starField.update(harness.frameState)).toBe(
+        harness.returnedCommand,
+      );
+      expect(starField._effectiveIntensityScale).toBeCloseTo(0.01818, 5);
+    });
+
+    it("is skipped when the sky atmosphere is not being drawn", function () {
+      const starField = new StarField();
+      const harness = createHarness({ sunDirection: daySunDirection });
+      configure(harness.frameState, true);
+      harness.frameState.skyAtmosphereVisible = false;
+
+      expect(starField.update(harness.frameState)).toBeUndefined();
+      expect(starField._effectiveIntensityScale).toBe(0.0);
+    });
+  });
+
   it("immediately restores dispatch and publishes extinction at night and twilight", function () {
     const starField = new StarField();
     const harness = createHarness({ sunDirection: daySunDirection });
@@ -158,7 +242,7 @@ describe("Scene/StarField", function () {
       expect(starField._effectiveIntensityScale).toBeGreaterThan(0.0);
       expectValidExtinction(harness.frameState.starZenithTransmittance);
       expectValidExtinction(starField._zenithTransmittance);
-      expect(starField.wasBinned).toBe(true);
+      expect(harness.frameState.commandList.length).toBe(0);
     }
 
     expect(harness.featureRenderer.update).toHaveBeenCalledTimes(2);
@@ -221,17 +305,14 @@ describe("Scene/StarField", function () {
     expect(harness.featureRenderer.update).toHaveBeenCalledTimes(1);
   });
 
-  it("exposes the effective scale during feature-renderer invocation and detects binned work", function () {
+  it("exposes the effective scale without growing the shared command list", function () {
     const starField = new StarField({ intensity: 2.5 });
     const harness = createHarness();
     const observedScales = [];
-    harness.featureRenderer.update.and.callFake(
-      function (primitive, frameState, commandList) {
-        observedScales.push(primitive._effectiveIntensityScale);
-        commandList.push({});
-        return harness.returnedCommand;
-      },
-    );
+    harness.featureRenderer.update.and.callFake(function (primitive) {
+      observedScales.push(primitive._effectiveIntensityScale);
+      return harness.returnedCommand;
+    });
 
     expect(starField.update(harness.frameState)).toBe(harness.returnedCommand);
 
@@ -242,11 +323,9 @@ describe("Scene/StarField", function () {
     expect(harness.featureRenderer.update).toHaveBeenCalledWith(
       starField,
       harness.frameState,
-      harness.frameState.commandList,
     );
-    expect(starField.wasBinned).toBe(true);
+    expect(harness.frameState.commandList.length).toBe(0);
 
-    harness.frameState.commandList.length = 0;
     harness.featureRenderer.update.and.callFake(function (primitive) {
       observedScales.push(primitive._effectiveIntensityScale);
       return harness.returnedCommand;
@@ -254,6 +333,6 @@ describe("Scene/StarField", function () {
 
     expect(starField.update(harness.frameState)).toBe(harness.returnedCommand);
     expect(observedScales).toEqual([2.5, 2.5]);
-    expect(starField.wasBinned).toBe(false);
+    expect(harness.frameState.commandList.length).toBe(0);
   });
 });
