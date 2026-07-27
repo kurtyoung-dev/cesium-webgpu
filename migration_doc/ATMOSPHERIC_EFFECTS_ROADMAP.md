@@ -86,7 +86,10 @@ no-op on WebGL, like the procedural clouds).
 > off by default (byte-neutral). Phase B **SHIPPED** (Batch 417b). Phase C **SHIPPED** (Batch 420 wiring +
 > 421 scatter rework). Phase D **SHIPPED** (Batch 422 — 22° halo + sun-dogs). Phase E **WIRING SHIPPED**
 > (Batch 423 — `effects.precipitation` → the existing WebGPU weather-particle renderer; data-driven WMO
-> weather-code selection from ingest is deferred).
+> weather-code selection from ingest is deferred). **Phase F — aurora + space weather (solar /
+> geomagnetic storms) — ADDED 2026-07-26 by maintainer ask; PLANNED, not started** (see Phase F below
+> and `EPIC-AURORA-SPACE-WEATHER` in `DEFERRED_WORK.md`). Phases A–E are shipped; **F is the only
+> unbuilt phase in this roadmap.**
 >
 > **Forward-looking quality roadmap:** the opt-in (parity-default) improvement plan for the sky / cloud /
 > fog / reflections subsystems — including the deferred cube-sky / dynamic scene-content env map (C2-25) —
@@ -143,6 +146,74 @@ no-op on WebGL, like the procedural clouds).
   the direct facade; snow renders strongly (4272-px union footprint), rain renders subtly (≈1000 px) but
   clearly beats the 0-px auto-off control; rain ≠ snow; 0 device errors. **Deferred:** data-driven WMO
   weather-code → precip-type selection from the weather-ingest cube, and optional ground accumulation.
+
+- **Phase F — Aurora + space weather (solar / geomagnetic storms). [PLANNED 2026-07-26, not started]**
+  Maintainer ask (2026-07-26): render the **northern (and southern) lights**, and be able to **trigger
+  solar and magnetic storms**; investigate whether open space-weather data exists comparable to the
+  atmospheric-weather ingest. Tracked in `DEFERRED_WORK.md` as **`EPIC-AURORA-SPACE-WEATHER`**.
+
+  **Supersedes the existing scattered aurora backlog entries** — `FEATURE_INVENTORY.md:1133/1135`,
+  `WEBGPU_MIGRATION_BACKLOG.md:708/722`, `CELESTIAL_ATMOSPHERE_DESIGN.md:65`, and the archived
+  2026-03-31 audit rows — all of which scope it as *"procedural shader on the sky dome, 2–3 days"*.
+  **That architecture is wrong for this fork** and the estimate follows from it: on a globe the camera
+  can orbit, the aurora is a **volumetric emission shell at 100–400 km altitude** that must stand
+  *above the limb* when viewed from space and *overhead* when viewed from the ground. A sky-dome
+  texture cannot do both. Do not re-scope from those entries; they are pre-globe-orbit assumptions.
+
+  **Why this is Phase F and not a bolt-on:** the physics is genuinely a *space*-weather layer, not an
+  atmospheric one. It is driven by geomagnetic activity, not by T/Td/RH, so it needs its own data
+  spine — but it lands in the same `effects.*` hierarchy and the same auto-master pattern that Phases
+  A–E established, so the seam already exists.
+
+  **Rendering (what the effect actually is).** Auroral emission is line emission from atmospheric
+  species excited by precipitating particles, so the colours are fixed and non-negotiable if it is to
+  look right: **557.7 nm green** (atomic oxygen, ~100–150 km — the dominant band), **630.0 nm red**
+  (atomic oxygen, >200 km — the high, diffuse crown that appears in strong storms), and **427.8 nm
+  blue/violet** (ionised molecular nitrogen, lower edge). Curtains and rays follow **geomagnetic field
+  lines**, which is why they appear as vertical structure — a plain vertical extrusion reads as
+  plausible from the ground and obviously wrong from orbit. The oval is centred on the **geomagnetic**
+  pole, ~11° off the geographic one, so a geographic-latitude oval will sit visibly in the wrong place.
+  A **tilted-dipole** approximation is cheap and adequate for oval placement and curtain direction;
+  full IGRF is not needed for a visual.
+
+  Architecturally this is a sibling of the existing volumetric raymarchers, not of the screen-space
+  post-process effects: emissive, additive, unlit, depth-tested against the globe, and **gated on
+  night** — reuse the same solar-elevation edge the star field already derives (`computeStarDayFade` /
+  the `SkyBrightness` sun term), since aurora and starlight share the "is it actually dark here"
+  question. Expect the same measurement trap the eclipse star-reveal work hit: **a faint additive
+  signal over a large band is invisible to a band-mean statistic** — gate on point/structure metrics
+  or on an isolated-component difference, never on a mean.
+
+  **Storms (the trigger the maintainer asked for).** Geomagnetic activity has one dominant visual
+  consequence and it is the *equatorward expansion of the oval*: quiet conditions put the oval near
+  ~67° magnetic latitude, and a severe storm drags it toward ~50°, which is what makes aurora visible
+  from mid-latitudes. So "trigger a storm" is principally **one scalar (Kp, or Dst) driving oval
+  latitude + intensity + the red-crown fraction**, plus optional flourishes (substorm onset brightening
+  and poleward surge, ray/curtain turbulence). Design it as a **storm-state scalar with a manual
+  override and an optional data-driven source**, mirroring `effects.auto` — the same shape as every
+  other effect in this roadmap.
+
+  **Open data — and this looks unusually clean.** The atmospheric-weather ingest already established
+  the pattern (NOAA NWS EDR → normalized scalars); the space-weather equivalent is **NOAA SWPC**, and
+  because it is a **US federal government product it is public domain**, which is the same licensing
+  basis that made the weather ingest and the EGM2008 geoid bundle-safe. Candidates to verify:
+  - **Planetary K-index (Kp)** — the storm scalar, near-real-time JSON.
+  - **OVATION Prime auroral-power / probability grid** — SWPC publishes a lat/lon aurora forecast grid.
+    This is close to a drop-in for the oval: a grid the renderer samples, exactly like `weatherTex`.
+  - **Solar wind** (DSCOVR / ACE plasma + magnetometer) — speed, density, and **Bz**, the component
+    that actually controls coupling; a southward Bz is the real "storm is starting" signal.
+  - **GOES X-ray flux** — solar flare class (C/M/X), for the *solar* half of the ask.
+  - **Dst index** (Kyoto WDC) — **licence must be checked before use**; Kyoto is not a US federal
+    product and does not inherit public-domain status. Kp from SWPC is the safe default.
+
+  Same house rules as the weather ingest: nothing bundled whose terms are not stated in `LICENSE.md`'s
+  Bundled Engine Assets section, and the renderer consumes **normalized scalars** so any backend
+  (live SWPC, a baked historical event, or a purely synthetic storm) can drive it. A synthetic/manual
+  driver should ship first — the effect must be demonstrable and testable without a network call.
+
+  **Sequencing note:** this is genuinely independent of the T/Td/RH ingest, so it does not queue behind
+  weather Phases 1–2. Its real prerequisite is a **night-side gate that is already trustworthy**, which
+  the C12 celestial work has now established.
 
 ## Dependencies + sequencing
 
