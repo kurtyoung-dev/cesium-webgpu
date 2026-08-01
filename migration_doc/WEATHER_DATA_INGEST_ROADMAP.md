@@ -152,6 +152,22 @@ full grid at exact resolution.
   (S3 NODD has no browser CORS) + Lambert-Conformal→equirect reprojection isolated in the packer.
   Consider CONUS bounds / larger `WEATHER_TEX_W/H` to avoid smearing 3 km detail. (~1-2 weeks.)
 
+### C13-08 supersedes the Phase-1 "pass the returned bounds into `weatherTexBounds`" plan
+
+Phase 1 above proposed feeding the provider's actual returned bounds into the `weatherTexBounds`
+uniform. **`C13-08` deliberately did NOT do that, and the plan is superseded.** The weather sampler
+repeats in U (`addressModeU: "repeat"`, the C13-07 seam contract), so a regional `weatherTexBounds`
+would TILE the region across the whole planet instead of restricting it — trading one wrong answer
+for another. The shipped contract keeps `weatherTexBounds` GLOBAL and honours the field's rectangle
+in the PACKER, which writes the field only into the texels its bounds cover and fills the rest from a
+declared `WeatherNoDataFill` (the procedural map by default). The source-grid coordinate reference
+(node-centred by default, cell-centred when declared) and the no-data semantics live in one module,
+`Scene/Weather/WeatherFieldGrid.ts`; the CPU twin is
+`Tools/visual-regression/weather-field-bounds.spec.mjs`.
+
+A regional `weatherTexBounds` only becomes the right answer once the map is per-tile rather than one
+global equirectangular texture — that is `C13-14`, not this roadmap phase.
+
 ## Runtime source-swap architecture
 
 `WeatherProvider` holds the active `WeatherSource` and a registry of available backends

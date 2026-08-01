@@ -14,9 +14,15 @@
  *
  * Each station's LOWEST cloud base (the ceiling-relevant layer) drives B, and its
  * MAX amount drives R + the density bias. Stations are interpolated with
- * inverse-distance weighting (IDW, power 2) onto the grid; cells with no station
- * within the influence radius default to CLEAR (coverage 0). This makes the field
- * sparse-station-safe and deterministic (no network in the test path).
+ * inverse-distance weighting (IDW, power 2) onto the grid.
+ *
+ * C13-08: cells with NO station inside the influence radius are NO-DATA (`NaN`),
+ * not clear. METAR is a sparse point network — "no station reported here" is the
+ * absence of an observation, and emitting `0` made every unobserved cell claim an
+ * observed clear sky, which then rendered as a real hole in the deck. The packer
+ * fills those cells from the declared no-data fill (the procedural map by
+ * default). An SKC/CLR/NSC/NCD station still produces an observed coverage of
+ * exactly `0` — clear sky OBSERVED is data, and is unaffected.
  *
  * The live fetch (aviationweather.gov text feed) is optional + network-gated: a
  * `MetarWeatherSource` can be constructed from a provided obs array (the offline
@@ -336,8 +342,11 @@ export class MetarWeatherSource implements WeatherSource {
           densityBias[i] = clamp01(dAcc / wSum);
           type[i] = nearestType;
         } else {
-          // No station in range → default to clear.
-          coverage[i] = 0;
+          // C13-08 — no station in range → NO OBSERVATION, not clear sky. The
+          // packer replaces this cell from the field's no-data fill. G/B/A are
+          // undefined at a no-data cell (coverage carries the validity), so the
+          // neutral values here are never read.
+          coverage[i] = NaN;
           baseMeters[i] = 0;
           densityBias[i] = 0.5;
           type[i] = CT_CUMULUS;
@@ -353,6 +362,9 @@ export class MetarWeatherSource implements WeatherSource {
       baseMeters,
       densityBias,
       bounds,
+      // The loops above place cell 0 ON `west`/`north` and cell `w-1`/`h-1` ON
+      // `east`/`south` — node registration (C13-08), declared rather than assumed.
+      registration: "node",
       source: this.getCapabilities().id,
       attribution: this.getCapabilities().attribution,
     };

@@ -23,7 +23,11 @@
  *
  * @module Scene/Weather/WeatherProvider
  */
-import { packWeatherField } from "./WeatherTexPacker.js";
+import {
+  packWeatherFieldDetailed,
+  type WeatherPackResult,
+} from "./WeatherTexPacker.js";
+import type { WeatherNoDataFill } from "./WeatherFieldGrid.js";
 import type { WeatherSource } from "./WeatherSource.js";
 import type {
   WeatherField,
@@ -31,6 +35,9 @@ import type {
   WeatherPresentWeather,
   WeatherTimeMode,
 } from "./WeatherTypes.js";
+
+/** What the last successful pack did — bounds/no-data evidence for probes. */
+export type WeatherPackStats = Omit<WeatherPackResult, "bytes">;
 
 const HOUR_MS = 3600000;
 
@@ -48,6 +55,12 @@ export class WeatherProvider {
   // until the first field carrying `representativeWw` lands; stays null for
   // coverage-only sources so the data-driven override is a no-op for them.
   private _presentWeather: WeatherPresentWeather | null = null;
+  // C13-08 — what the packer writes where the active field has no observation.
+  // Undefined → the packer's procedural default (the same bytes the renderer
+  // shows with no provider at all), which is what a regional field's remainder
+  // must look like: synthetic, never a fabricated "observed clear".
+  private _noDataFill: WeatherNoDataFill | undefined = undefined;
+  private _packStats: WeatherPackStats | null = null;
   // Bumped ONLY by setSource/setRequest/refresh (NOT by a successful fetch). An
   // in-flight fetch captures it and discards its result if it changed mid-flight,
   // so swapping the source during a slow (network) fetch can't apply stale data.
@@ -103,6 +116,35 @@ export class WeatherProvider {
   getPresentWeather(): WeatherPresentWeather | null {
     return this._presentWeather;
   }
+  /**
+   * C13-08 — how many texels of the last pack came from an observation vs the
+   * no-data fill, plus the resolved registration/fill/global flags. Null until a
+   * field has been packed. This is the cheap, pixel-free way for a probe to prove
+   * a regional field was PLACED rather than stretched.
+   */
+  getPackStats(): WeatherPackStats | null {
+    return this._packStats;
+  }
+
+  /**
+   * C13-08 — override what the packer writes where the field has no observation.
+   * `undefined` restores the procedural default. Drops the cache, because every
+   * cached slice was packed with the previous fill.
+   */
+  setNoDataFill(fill: WeatherNoDataFill | undefined): void {
+    this._noDataFill = fill;
+    this._packed = null;
+    this._cache.clear();
+    this._effectiveKey = null;
+    this._invalidation++;
+    this._version++;
+  }
+
+  /** The active no-data fill override, or undefined for the packer default. */
+  getNoDataFill(): WeatherNoDataFill | undefined {
+    return this._noDataFill;
+  }
+
   /** The active time stance, or null in the legacy single-request mode. */
   getTimeMode(): WeatherTimeMode | null {
     return this._timeMode;
@@ -284,7 +326,22 @@ export class WeatherProvider {
       if (this._invalidation !== gen) {
         return; // superseded by a source/request swap — drop it
       }
-      const packed = packWeatherField(field, texW, texH);
+      const result = packWeatherFieldDetailed(
+        field,
+        texW,
+        texH,
+        this._noDataFill === undefined
+          ? undefined
+          : { noDataFill: this._noDataFill },
+      );
+      const packed = result.bytes;
+      this._packStats = {
+        observedTexels: result.observedTexels,
+        filledTexels: result.filledTexels,
+        registration: result.registration,
+        fillKind: result.fillKind,
+        global: result.global,
+      };
       const present = extractPresentWeather(field);
       if (!timed) {
         this._packed = packed;

@@ -14,6 +14,11 @@
  *                  base, north->south), and A (density bias, west->east), so a
  *                  probe can prove the shader applies G/B/A, not just R.
  *
+ * C13-08: the emitted field carries `request.bounds` when the caller asks for a
+ * sub-region, so the same deterministic patterns double as a REGIONAL fixture
+ * (the packer then places them on that rectangle instead of over the planet).
+ * With no requested bounds the field is global, exactly as before.
+ *
  * @module Scene/Weather/SyntheticWeatherSource
  */
 import type { WeatherSource } from "./WeatherSource.js";
@@ -155,7 +160,13 @@ export class SyntheticWeatherSource implements WeatherSource {
       ww,
       representativeWw: this._present?.ww,
       visibilityKm: this._present?.visibilityKm,
-      bounds: GLOBAL_WEATHER_BOUNDS,
+      // C13-08 — honour a REGIONAL request so the offline path can produce a
+      // deterministic regional field (the packer then places it on that
+      // rectangle instead of stretching it). Omitted → the global extent, i.e.
+      // byte-identical to every existing synthetic probe.
+      bounds: request.bounds ?? GLOBAL_WEATHER_BOUNDS,
+      // The loops above place column 0 ON `west` and column `w-1` ON `east`.
+      registration: "node",
       validTime:
         request.time instanceof Date ? request.time.toISOString() : undefined,
       source: `synthetic:${this._pattern}`,

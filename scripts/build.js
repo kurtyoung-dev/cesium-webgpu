@@ -503,6 +503,10 @@ export async function createCesiumJs(variant = "dual") {
   contents +=
     `\n// Weather data ingest public API (Batch 410).\n` +
     `export { WeatherProvider, EdrWeatherSource, SyntheticWeatherSource, MetarWeatherSource, WcsCoveragesWeatherSource, packWeatherField, CLOUD_BASE_NORM_METERS, GLOBAL_WEATHER_BOUNDS } from '@${scope}/engine';\n` +
+    // C13-08 — bounds/no-data packer contract: the detailed pack (observed vs
+    // filled texel counts) and the texel<->lon/lat convention a probe needs to
+    // prove a regional field was PLACED rather than stretched.
+    `export { packWeatherFieldDetailed, PROCEDURAL_NO_DATA_FILL, DEFAULT_WEATHER_GRID_REGISTRATION, weatherTexelCenterLonLat } from '@${scope}/engine';\n` +
     `export { computeAtmosphericKnobs, computeAtmosphericEffects, applyAtmosphericConditions } from '@${scope}/engine';\n` +
     // Phase E (Batch 423) — precipitation-type enum + index↔string mapping that
     // drives the WebGPU weather particles through the effects hierarchy.
@@ -1409,8 +1413,11 @@ export async function createIndexJs(workspace) {
       `export { SyntheticWeatherSource } from './Source/Scene/Weather/SyntheticWeatherSource.js';${EOL}` +
       `export { MetarWeatherSource } from './Source/Scene/Weather/MetarWeatherSource.js';${EOL}` +
       `export { WcsCoveragesWeatherSource } from './Source/Scene/Weather/WcsCoveragesWeatherSource.js';${EOL}` +
-      `export { packWeatherField, CLOUD_BASE_NORM_METERS } from './Source/Scene/Weather/WeatherTexPacker.js';${EOL}` +
+      `export { packWeatherField, packWeatherFieldDetailed, CLOUD_BASE_NORM_METERS } from './Source/Scene/Weather/WeatherTexPacker.js';${EOL}` +
       `export { GLOBAL_WEATHER_BOUNDS } from './Source/Scene/Weather/WeatherTypes.js';${EOL}` +
+      // C13-08 — the bounds / coordinate-reference / no-data contract surface.
+      `export { PROCEDURAL_NO_DATA_FILL, DEFAULT_WEATHER_GRID_REGISTRATION } from './Source/Scene/Weather/WeatherFieldGrid.js';${EOL}` +
+      `export { weatherTexelCenterLonLat } from './Source/Scene/Weather/WeatherMapSeam.js';${EOL}` +
       `export { computeAtmosphericKnobs, computeAtmosphericEffects, applyAtmosphericConditions } from './Source/Scene/AtmosphericEffects.js';${EOL}` +
       // Phase E (Batch 423) — precipitation-type enum + index↔string mapping.
       `export { PrecipitationType, precipitationTypeToString } from './Source/Scene/AtmosphericEffects.js';${EOL}` +

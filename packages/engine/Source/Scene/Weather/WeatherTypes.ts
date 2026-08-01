@@ -9,8 +9,20 @@
  *
  * See migration_doc/WEATHER_DATA_INGEST_ROADMAP.md.
  */
+import type {
+  WeatherGridRegistration,
+  WeatherNoDataFill,
+} from "./WeatherFieldGrid.js";
 
-/** Geographic bounds in RADIANS. */
+/**
+ * Geographic bounds in RADIANS.
+ *
+ * C13-08: these are LOAD-BEARING — the packer places the field on exactly this
+ * rectangle of the global weather texture. What the bounds mean relative to the
+ * grid samples (node-centred vs cell-centred) and what happens outside them is
+ * decided in ONE place: {@link WeatherFieldGrid}. `west > east` is legal and
+ * means the rectangle straddles the antimeridian.
+ */
 export interface WeatherBounds {
   west: number;
   south: number;
@@ -70,7 +82,37 @@ export interface WeatherField {
    */
   representativeWw?: number;
   bounds: WeatherBounds;
-  /** ISO-8601 valid time of the data (for caching / display). */
+  /**
+   * C13-08 — where this grid's samples sit relative to {@link bounds}. Omitted →
+   * `"node"` (gridline-registered), the convention every shipped source uses.
+   * See {@link WeatherFieldGrid} for the decision and its rationale.
+   */
+  registration?: WeatherGridRegistration;
+  /**
+   * C13-08 — an extra no-data sentinel for wire formats that carry one (e.g.
+   * `-9999`). `NaN` is ALWAYS no-data and needs no declaration; prefer emitting
+   * `NaN` from a source over declaring a sentinel.
+   */
+  noDataValue?: number;
+  /**
+   * C13-08 — what the packer writes into texels this field does not observe
+   * (outside {@link bounds}, or no-data inside them). Omitted → the procedural
+   * map, i.e. the same bytes the renderer shows with no provider at all. NEVER
+   * silently "clear": a gap is not an observation of clear sky.
+   */
+  noDataFill?: WeatherNoDataFill;
+  /**
+   * C13-08 — relative precedence when several sources cover the same texel
+   * (higher wins). DECLARED here so the packer/provider contract carries it;
+   * the composition that CONSUMES it is `C13-20` and is not built yet, so a
+   * single field's priority currently has no effect.
+   */
+  priority?: number;
+  /**
+   * ISO-8601 valid time of the data (for caching / display). This doubles as the
+   * field's REVISION in the C13-08 contract: two packs of the same source with
+   * the same `validTime` describe the same observation.
+   */
   validTime?: string;
   /** Source id (e.g. "edr:noaa-gfs"). */
   source?: string;

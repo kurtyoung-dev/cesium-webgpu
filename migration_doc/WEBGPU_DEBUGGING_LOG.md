@@ -24,6 +24,58 @@
 
 ---
 
+## C13-08 — regional weather fields were stretched over the whole planet, and "no data" was packed as observed clear sky (2026-08-01, Campaign 13 W1)
+
+**Premise.** Confirmed by reading the code and reproduced in a CPU twin, not inferred.
+`WeatherTexPacker` mapped every field onto the FULL texture (`fx = ((tx+0.5)/texW) * (gw-1)`,
+with `WeatherField.bounds` read by nobody), so a regional EDR/WCS/METAR field covering a few
+tens of degrees was smeared across 360°×180°. The transcribed pre-fix packer in the new spec
+demonstrates it: a CONUS-bounded west→east ramp comes out anchored at lon −180 and reading its
+midpoint at lon 0, ~10,000 km from the data. Two more sites fabricated observations out of
+absence — `CoverageJsonParser` turned a `null` range value into coverage `0`, and
+`MetarWeatherSource` turned "no station within the influence radius" into coverage `0`. Zero is
+an OBSERVATION of clear sky, so both rendered a real hole in the deck wherever the feed had a
+gap. C13-07 had also explicitly deferred the source-grid coordinate reference (node- vs
+cell-centred), leaving the packer's `[0, gw-1]` mapping an undocumented assumption.
+
+**Cause.** The packer conflated three different questions that had never been separated: where a
+texel is (C13-07 answered this — texel CENTRES), where a source SAMPLE is relative to its bounds
+(unanswered — the code assumed node-centred without saying so), and what a texel holds when the
+field says nothing about it (unanswered — the code had no concept of "nothing").
+
+**Fix.** One new contract module, `Scene/Weather/WeatherFieldGrid.ts`, decides all three and
+nothing else re-decides them. (1) A field grid is NODE-CENTRED (gridline-registered) by default —
+`bounds.west`/`north` are the coordinates OF column 0 / row 0 — with a declarable `"cell"`
+(pixel-registered) alternative. Node is the default because it is what the shipped packer already
+did (so the global path stays byte-identical), because CoverageJSON `domain.axes` carry sample
+COORDINATES and the GFS/GDPS output behind them is gridline-registered, and because only a
+node-centred global grid has a sample AT the pole — which C13-07's polar low-pass assumes.
+(2) The packer places the field on its true rectangle, wrap-aware, so an antimeridian-straddling
+`170°E → 170°W` window is one contiguous interval. The TEXTURE stays global on purpose: the
+sampler repeats in U, so re-pointing `weatherTexBounds` at a regional rectangle would TILE the
+region across the planet instead of restricting it. (3) Texels outside the bounds, and cells whose
+contributing samples are all no-data (`NaN` always; an optional declared `noDataValue` too), are
+written from a typed `WeatherNoDataFill` — the procedural map by DEFAULT, i.e. exactly the bytes
+the renderer already shows with no provider at all, which is the only fill that cannot be mistaken
+for an observation. A partially-valid tap set renormalizes over its valid taps, so the fill never
+bleeds inward across a data edge.
+
+**Verification.** `Tools/visual-regression/weather-field-bounds.spec.mjs` (29/29) carries the
+pre-fix packer inline as BOTH a byte-identity oracle (a global field packs byte-for-byte
+identically across ramp/rich/uniform/coarse fixtures) and a defect oracle (the same function is
+asserted to exhibit the stretch, so the regional test cannot go inert). `weather-map-seam.spec.mjs`
+still 17/17; the complete cloud spec lane is 132/132; the full pure-Node spec suite is 691/691.
+The committed `/mock-edr` and `/mock-wcs` fixtures are asserted to still derive EXACTLY the global
+rectangle, which is what keeps those probes unchanged. GPU-side acceptance (regional placement
+pixel gate) is the orchestrator checklist in the Campaign 13 queue and is NOT claimed here.
+
+**Files modified.** `Scene/Weather/WeatherFieldGrid.ts` (new), `WeatherTexPacker.ts`,
+`WeatherTypes.ts`, `WeatherProvider.ts`, `CoverageJsonParser.ts`, `MetarWeatherSource.ts`,
+`SyntheticWeatherSource.ts`, `WeatherMapSeam.ts`, `scripts/build.js`,
+`Tools/visual-regression/weather-field-bounds.spec.mjs`.
+
+---
+
 ## FFT ocean floated ~102 m above the sea — vertical-datum defect (2026-07-24, C6-FFT-OCEAN-TIDE-DATUM slice 1)
 
 **Premise.** VERIFIED by measurement before any code was written. `probe-ocean-datum.mjs` (Batch 759,

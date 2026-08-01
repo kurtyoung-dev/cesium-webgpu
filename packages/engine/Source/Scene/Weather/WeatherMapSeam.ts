@@ -34,8 +34,14 @@
  * the NORTH edge, column 0 is the WEST edge, i.e. a node-centred grid whose first
  * and last columns are the SAME meridian for a global field. Under that
  * convention a wrap-aware bilinear fetch is unreachable (the resample coordinate
- * never leaves `[0, gridWidth-1]`), so none is added here; making the coordinate
- * reference explicit per source is `C13-08`.
+ * never leaves `[0, gridWidth-1]`), so none is added here.
+ *
+ * C13-08 has since RATIFIED that convention as the default and made it explicit
+ * and per-field — see {@link WeatherFieldGrid}, which is now the single home for
+ * the source-grid coordinate reference, the regional-bounds placement, and the
+ * no-data semantics. It also adds the wrap-aware fetch exactly where it BECAME
+ * reachable (a cell-registered full-circle field); this module's statement above
+ * remains true for the node-registered default.
  *
  * @module Scene/Weather/WeatherMapSeam
  */

@@ -10,6 +10,24 @@
  * (lat descending), column 0 = WEST (lon ascending), so the packer is a straight
  * resample.
  *
+ * C13-08 — two contract corrections here, both on the PROVIDER side of the
+ * bounds/no-data contract:
+ *
+ *   1. The field's `bounds` are DERIVED from `domain.axes.x/y` (the coverage's
+ *      own sample coordinates) instead of being stamped with the bbox the caller
+ *      REQUESTED. A server is free to snap a request to its native grid, and now
+ *      that the packer places a field on its true rectangle, the requested bbox
+ *      is the wrong answer. `options.bounds` remains the fallback for a coverage
+ *      whose axes are degenerate or outside the valid lon/lat range.
+ *      CoverageJSON axis values are CRS84 DEGREES for these collections, which is
+ *      also the unit the two shipped sources put in their `bbox` query.
+ *   2. A `null` range value is NO-DATA (`NaN`), not `0`. Zero is an OBSERVATION
+ *      of clear sky; a gap in the coverage is not, and the packer must be able to
+ *      tell them apart.
+ *
+ * Axis values are sample COORDINATES, so the parsed field is node-registered —
+ * see {@link WeatherFieldGrid} for what that means.
+ *
  * @module Scene/Weather/CoverageJsonParser
  */
 import { type WeatherBounds, type WeatherField } from "./WeatherTypes.js";
@@ -38,7 +56,10 @@ export interface CoverageJsonParseOptions {
   parameterName?: string;
   /** Source units: "percent" (0-100) → scaled by 1/100, or "fraction" (0-1). */
   units?: "percent" | "fraction";
-  /** Bounds to stamp on the resulting field. */
+  /**
+   * FALLBACK bounds, used only when `domain.axes.x/y` cannot yield a usable
+   * rectangle. C13-08: the field's real bounds come from the axis values.
+   */
   bounds: WeatherBounds;
   /** Source id stamped on the field + used for attribution lookup. */
   source?: string;
@@ -46,6 +67,58 @@ export interface CoverageJsonParseOptions {
 }
 
 const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/** Degrees -> radians. Written so `+-180` and `+-90` land on exact `+-PI`/`+-PI/2`. */
+const toRadians = (deg: number): number => (deg * Math.PI) / 180.0;
+
+/**
+ * Derive the field's true bounds from the coverage's own axis values (C13-08).
+ *
+ * Axis values are node coordinates in CRS84 degrees, so the rectangle is
+ * `[min(x), max(x)] x [min(y), max(y)]` — the WEST/EAST/SOUTH/NORTH samples
+ * themselves. Returns null when the axes cannot describe a rectangle (a single
+ * sample on either axis, non-finite values, or a latitude range outside +-90),
+ * in which case the caller falls back to the requested bbox.
+ *
+ * A grid that straddles the antimeridian legitimately carries longitudes beyond
+ * +-180 (e.g. `170 .. 190`); that is preserved, and `weatherFieldLonSpan` reads
+ * it correctly as a 20-degree window.
+ */
+function boundsFromAxes(xs: number[], ys: number[]): WeatherBounds | null {
+  if (xs.length < 2 || ys.length < 2) {
+    return null;
+  }
+  let west = Infinity;
+  let east = -Infinity;
+  for (const x of xs) {
+    if (!Number.isFinite(x)) {
+      return null;
+    }
+    west = Math.min(west, x);
+    east = Math.max(east, x);
+  }
+  let south = Infinity;
+  let north = -Infinity;
+  for (const y of ys) {
+    if (!Number.isFinite(y)) {
+      return null;
+    }
+    south = Math.min(south, y);
+    north = Math.max(north, y);
+  }
+  if (east - west <= 0 || north - south <= 0) {
+    return null;
+  }
+  if (east - west > 360 + 1e-6 || south < -90 - 1e-6 || north > 90 + 1e-6) {
+    return null;
+  }
+  return {
+    west: toRadians(west),
+    south: toRadians(south),
+    east: toRadians(east),
+    north: toRadians(north),
+  };
+}
 
 /** Resolve a CoverageJSON axis to an explicit value list (handles start/stop/num). */
 export function axisValues(axis: CovJsonAxis | undefined): number[] | null {
@@ -111,15 +184,19 @@ export function parseCoverageJson(
     for (let ox = 0; ox < gw; ox++) {
       const sx = xAscending ? ox : gw - 1 - ox;
       const v = values[sy * gw + sx];
+      // C13-08: a null/absent/non-finite range value is NO-DATA, not clear sky.
       coverage[oy * gw + ox] =
-        v === null || v === undefined ? 0 : clamp01(v * norm);
+        v === null || v === undefined || !Number.isFinite(v)
+          ? NaN
+          : clamp01(v * norm);
     }
   }
   return {
     gridWidth: gw,
     gridHeight: gh,
     coverage,
-    bounds: opt.bounds,
+    bounds: boundsFromAxes(xs, ys) ?? opt.bounds,
+    registration: "node",
     source: opt.source,
     attribution: opt.attribution,
   };
