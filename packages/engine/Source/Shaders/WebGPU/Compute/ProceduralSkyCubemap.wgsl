@@ -38,7 +38,8 @@
 //   - gamma:                 environment gamma.
 //   - groundColor (rgb) + groundAlbedo (a): ground term for down-facing
 //                            directions.
-//   - dynamicLightingEnum:   NONE(0)/SCENE_LIGHT(1)/SUNLIGHT(2).
+//   - dynamicLightingEnum:   NONE(0)/SCENE_LIGHT(1)/SUNLIGHT(2)/
+//                            LEGACY_OVERHEAD(3).
 //   - faceSize:              output cubemap face size.
 //
 // Output (storage texture, 2d-array, 6 layers): rgba8unorm cubemap face.
@@ -729,6 +730,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   //                      frame via the ENU basis (East->localX, Up->localY,
   //                      North->localZ), so the sun disc lands in the
   //                      correct local direction.
+  // C12-31 — LEGACY_OVERHEAD (3) reproduces the historical NONE appearance, so
+  // it takes the same local-up arm NONE does here. This IBL bake intentionally
+  // still uses local up for NONE: its WebGL twin (`ComputeRadianceMapFS.glsl`
+  // via `czm_getDynamicAtmosphereLightDirection`) does, and the two must stay
+  // in parity until that consumer's own migration lands. Only the visible sky
+  // shell moved onto the astronomical sun in this change. For enums 0/1/2 the
+  // predicate below is bit-for-bit the old `enumVal < 0.5`.
   let enumVal = u.dynamicLightingEnum;
   let sunLocal = normalize(vec3<f32>(
     dot(u.sunDirectionWC, u.enuX),
@@ -736,7 +744,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     dot(u.sunDirectionWC, u.enuY),
   ));
   var lightDir: vec3<f32>;
-  if (enumVal < 0.5) {
+  if (enumVal < 0.5 || enumVal > 2.5) {
     lightDir = normalize(skyLocalPos);
   } else {
     lightDir = sunLocal;

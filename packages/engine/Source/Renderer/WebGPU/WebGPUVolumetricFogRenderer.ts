@@ -78,6 +78,11 @@ import type {
 } from "./WebGPURenderPipelineCache.js";
 import type { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
 import { buildVolumetricFogResources } from "./WebGPUVolumetricFogResources.js";
+// C13-06 — the shared cloud-shadow RTE frame owner.
+import {
+  type CloudShadowFrame,
+  writeCloudShadowViewProjectionRelativeToEye,
+} from "./WebGPUCloudShadowFrame.js";
 
 // Per-device shader module cache so two contexts with volumetric fog
 // enabled share one compiled `GPUShaderModule` per source.
@@ -1291,22 +1296,36 @@ class WebGPUVolumetricFogRenderer {
         _cloudCache?: {
           shadowActive?: boolean;
           shadowView?: GPUTextureView | null;
-          shadowSunViewVP?: Float32Array;
           shadowAbsorption?: number;
+          shadowFrame?: CloudShadowFrame;
         };
       }
     )?._cloudCache;
+    // C13-06 — the hi-fi lookup needs an eye-relative sun-view matrix; without a
+    // valid frame the FS would project a camera-relative froxel offset through an
+    // absolute matrix, so the gate stays closed and the legacy local-fbm branch
+    // runs unchanged.
     const cloudShadowHiFiOn =
       vf?.cloudShadowHiFi === true &&
       cloudCacheForFog?.shadowActive === true &&
-      !!cloudCacheForFog.shadowView;
+      !!cloudCacheForFog.shadowView &&
+      cloudCacheForFog.shadowFrame?.valid === true;
     r.paramsData[96] = cloudShadowHiFiOn ? 1.0 : 0.0;
     r.paramsData[97] = cloudCacheForFog?.shadowAbsorption ?? 0.04;
     r.paramsData[98] = 1.0; // strength
     r.paramsData[99] = 0.0;
-    if (cloudShadowHiFiOn && cloudCacheForFog?.shadowSunViewVP) {
-      const vp = cloudCacheForFog.shadowSunViewVP;
-      for (let i = 0; i < 16; i++) r.paramsData[100 + i] = vp[i];
+    if (cloudShadowHiFiOn && cloudCacheForFog?.shadowFrame) {
+      // C13-06 — emitted against THIS pass's camera (`camPos`, packed at slots
+      // 44-46), so the compute kernel projects the froxel's camera-relative
+      // offset. The planet-scale translation cancels here in f64.
+      writeCloudShadowViewProjectionRelativeToEye(
+        r.paramsData,
+        100,
+        cloudCacheForFog.shadowFrame,
+        cx,
+        cy,
+        cz,
+      );
     } else {
       // Identity (never used when the gate is off).
       for (let i = 0; i < 16; i++)

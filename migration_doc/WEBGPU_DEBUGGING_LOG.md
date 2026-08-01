@@ -15846,3 +15846,90 @@ animated-model pixels, shadow-ON pixels, and counterbalanced timing remain open.
 **Trace:** Batches 772-781; `LOCAL_CHANGE_AUDIT_2026-07-31.md` §11;
 `QUEUE_2026-07-18_CAMPAIGN11.md` (the `C11-180`…`C11-211` rows);
 `QUEUE_2026-07-19_CAMPAIGN12.md` (`C12-29` S5); `HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`.
+
+---
+
+## C12-31 — the false broad solar atmospheric aureole: the sky's NONE path substituted local up for the Sun (2026-08-01)
+
+**Symptom (maintainer screenshot, 2026-07-28).** Looking up from inside the
+atmosphere, a broad white patch sits overhead. It moves with the camera, is
+present when the visible Sun is elsewhere in the sky, and is present when the
+Sun is below the horizon. It is NOT the Sun billboard, NOT generic post-process
+bloom, and NOT an RTE failure — it survives with `sun.show = false` and with
+every post-process stage disabled.
+
+**Root cause (shared inherited defect, both backends).**
+
+- `Globe.enableLighting` defaults to `false`, so `Scene.updateEnvironment`
+  resolves the sky's enum through
+  `DynamicAtmosphereLightingType.fromGlobeFlags(globe)` (`Scene.js:3796-3798`)
+  to `NONE` in the default viewer.
+- `czm_getDynamicAtmosphereLightDirection`'s NONE arm
+  (`Builtin/Functions/getDynamicAtmosphereLightDirection.glsl:18` pre-fix)
+  returned `normalize(positionWC)` — a DIFFERENT "Sun directly overhead" at every
+  sample — and `SkyAtmosphere.wgsl:964-965` (pre-fix) mirrored it faithfully with
+  `lightDirWC = normalize(skyPoint)`.
+- `computeAtmosphereColor` (`AtmosphereCommon.glsl:169`) takes
+  `cosAngle = dot(cameraToPositionWCDirection, lightDirection)`. Under that
+  substitution the two vectors are nearly parallel along every ray a ground
+  observer looks down, so `cosAngle ≈ 1` everywhere.
+- At the default `atmosphereMieAnisotropy = 0.9` (`SkyAtmosphere.js:219`), the
+  Mie phase at `cosAngle = 1` is **4869.9×** its 90° value. The result is a
+  bright, view-locked forward lobe that generic (radiance-driven) bloom then
+  amplifies. Bloom amplified the false source; it never created its center.
+- The WebGPU multiple-scattering add was additionally self-inconsistent in NONE:
+  primary scattering used the fake local-up light while the MS term referenced
+  the real `u.sunDirectionWC`. That inconsistency is now closed.
+
+**Fix.** New shared builtin `czm_getSkyAtmosphereLightDirection`
+(`Builtin/Functions/getSkyAtmosphereLightDirection.glsl`), called from both
+`SkyAtmosphereVS.glsl` and `SkyAtmosphereFS.glsl`; the WGSL twin is the
+`isLegacyOverhead` block in `SkyAtmosphere.wgsl`. NONE and SUNLIGHT resolve to
+the astronomical Sun, SCENE_LIGHT is unchanged, and the historical appearance is
+preserved under a new named enum member
+`DynamicAtmosphereLightingType.LEGACY_OVERHEAD = 3`.
+
+**What was deliberately NOT changed, and why.** The enum VALUE stays `NONE`
+rather than being remapped to `SUNLIGHT`. Both backends key the day/night alpha
+ramp on `enum != 0` (`SkyAtmosphereCommon.glsl:109`, `SkyAtmosphere.wgsl`
+`isDynamic`), so a remap would also have flipped the shell's OPACITY on the night
+side — changing star/skybox occlusion and the C12-29 S6 totality reveal. This
+change moves the sky's COLOR anchor only. LUT eligibility is likewise
+byte-identical for enums 0/1/2.
+
+**Verification.** `Tools/visual-regression/sky-light-direction.spec.mjs` (16/16):
+the 4869.9× ratio derived from an independent phase-function implementation and
+pinned against the shipped expression; the Mie argmax anchored to the Sun at 20
+sweep positions; a below-horizon Sun leaving < 5% of the forward peak at ≤ 4°
+elevation on the Sun's azimuth; and non-vacuous negative controls in which the
+legacy selector reproduces the stationary zenith peak. Two mutation runs (WGSL
+predicate reverted, GLSL call site reverted) both fail the contract. Eclipse
+suites `eclipse-{state,scene-dimming,sky-totality,globe-shadow-visual,globe-umbra-rte}`
+stay **138/138**; full Node set 484/487 with the same 3 pre-existing failures
+(`ocean-wave-lod`, `performance-workloads`, `tidal-harmonics`) the worktree base
+already had. `npx tsc --noEmit` clean. Browser probes are still owed — see the
+C12-31 row in `QUEUE_2026-07-19_CAMPAIGN12.md`.
+
+**Files.** `Scene/DynamicAtmosphereLightingType.js`, `Scene/Atmosphere.js`,
+`Scene/SkyAtmosphere.js`,
+`Shaders/Builtin/Functions/getSkyAtmosphereLightDirection.glsl` (new),
+`Shaders/Builtin/Functions/getDynamicAtmosphereLightDirection.glsl`,
+`Shaders/SkyAtmosphereVS.glsl`, `Shaders/SkyAtmosphereFS.glsl`,
+`Shaders/Model/AtmosphereStageFS.glsl`,
+`Shaders/WebGPU/Environment/SkyAtmosphere.wgsl`,
+`Shaders/WebGPU/Compute/ProceduralSkyCubemap.wgsl`,
+`Renderer/WebGPU/WebGPUAtmosphereUniforms.ts`,
+`Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts`,
+`Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js`.
+
+**Still open (deliberately deferred, Principle 9).** The model
+ground-atmosphere/fog stage (`Model/AtmosphereStageVS/FS.glsl`) and the dynamic
+environment map's radiance bake (`ComputeRadianceMapFS.glsl` +
+`ProceduralSkyCubemap.wgsl`) still take the legacy local-up direction in NONE.
+Migrating them is a real change to those subsystems' default output and breaks
+upstream Jasmine contracts that assert the NONE-mode env map is non-directional
+(`DynamicEnvironmentMapManagerSpec` "with static lighting at altitude") and that
+NONE and SUNLIGHT render differently (`ModelSpec` "renders a model in fog"). It
+also needs a WebGL IBL re-bake trigger (WebGL only regenerates on `SUNLIGHT` +
+time; the WebGPU side already re-fills on `sunMoved`). Tracked in
+`DEFERRED_WORK.md` as `C12-31-FOLLOWUP-A/B/C`.

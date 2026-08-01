@@ -6542,3 +6542,63 @@ after it for a mesh-less model.
 
 **Acceptance:** the new spec fails against the pre-fix readiness predicate and
 passes against the current one.
+
+## 2026-08-01 — C12-31 natural-sky light-direction follow-ups
+
+The C12-31 fix moved the SKY SHELL's `DynamicAtmosphereLightingType.NONE` light
+direction from local up onto the astronomical Sun on both backends. The three
+entries below are the consumers it deliberately did NOT move, plus the LUT gate
+it deliberately did not widen. Each is a real change to a subsystem's default
+output, so each needs its own evidence and its own spec updates; none of them is
+a latent half-implementation of C12-31, and the shipped contract
+(`Tools/visual-regression/sky-light-direction.spec.mjs`) pins the current split so
+a future migration has to be a deliberate edit.
+
+### C12-31-FOLLOWUP-A — model ground-atmosphere/fog stage
+
+**Status:** OPEN / SCOPED-OUT OF C12-31. `Model/AtmosphereStageVS.glsl` and
+`Model/AtmosphereStageFS.glsl` still call `czm_getDynamicAtmosphereLightDirection`
+with `czm_atmosphereDynamicLighting` (`scene.atmosphere.dynamicLighting`,
+default NONE), so a model's ground atmosphere and fog are still lit from local
+up by default. Migrating them to `czm_getSkyAtmosphereLightDirection` breaks
+`ModelSpec` "renders a model in fog (sunlight)" and "(scene light)", which take a
+NONE render as the baseline and assert SUNLIGHT differs from it; those baselines
+must move to `DynamicAtmosphereLightingType.LEGACY_OVERHEAD` in the same change.
+The fog `darken` gate (`AtmosphereStageFS.glsl` `applyFog`) also needs a ruling:
+today it skips NONE, and a sun-lit NONE arguably should darken.
+
+**Acceptance:** both ModelSpec fog cases pass with LEGACY_OVERHEAD baselines, and
+a probe shows the model fog color tracking solar azimuth rather than the camera.
+
+### C12-31-FOLLOWUP-B — dynamic environment map radiance bake (IBL)
+
+**Status:** OPEN / SCOPED-OUT OF C12-31. `ComputeRadianceMapFS.glsl` (WebGL) and
+`ProceduralSkyCubemap.wgsl` (WebGPU) still use the legacy local-up direction in
+NONE, matched on both backends. Two blockers: (1)
+`DynamicEnvironmentMapManagerSpec` "with static lighting at altitude" asserts
+`directionality < 1.0` for the NONE bake — a sun-lit bake is directional by
+construction and would fail it; (2) WebGL only regenerates the map when
+`dynamicLighting === SUNLIGHT` and scene time advances past
+`maximumSecondsDifference` (`DynamicEnvironmentMapManager.js` `update`), so a
+sun-lit NONE bake would go stale as the Sun moves, while the WebGPU twin already
+re-fills on its `sunMoved` epsilon test — i.e. migrating without the trigger
+change creates a NEW backend divergence.
+
+**Acceptance:** the WebGL re-bake trigger covers every mode whose direction
+tracks the Sun, the spec's directionality expectation is re-derived rather than
+relaxed, and a probe shows WebGL/WebGPU SH coefficients agreeing after a
+simulated-time sweep.
+
+### C12-31-FOLLOWUP-C — widen sky LUT eligibility to NONE
+
+**Status:** OPEN / DELIBERATELY NOT TAKEN. `SkyAtmosphere.wgsl`'s `lutEligible`
+predicate is byte-identical to the pre-fix `!isNoneCase` for enums 0/1/2, so the
+opt-in inscatter and sky-view LUT fast-paths still do nothing in the default
+lighting mode. After C12-31 the NONE direction is uniform across the frame, so
+the tables are in principle valid there. Widening was skipped because the LUT
+branch bypasses the inline march that the C12-29 eclipse dimming was certified
+against, and both LUT flags are default-off so the deferral costs nothing today.
+
+**Acceptance:** an interleaved A/B showing the LUT and inline paths agree in
+NONE, including through an eclipse obscuration sweep, before the predicate is
+widened.

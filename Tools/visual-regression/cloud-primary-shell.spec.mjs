@@ -522,7 +522,7 @@ test("planetary cloud precision defaults on and retains an explicit false A/B ro
   );
 });
 
-test("visible WGSL uses oblate intersections while the bounded shadow path is unchanged", () => {
+test("visible and shadow WGSL both use the same oblate shell intersections", () => {
   const shader = fs.readFileSync(shaderPath, "utf8");
   const visibleMarch = shader.slice(
     shader.indexOf("fn marchDeck("),
@@ -540,7 +540,17 @@ test("visible WGSL uses oblate intersections while the bounded shadow path is un
   );
   assert.doesNotMatch(visibleMarch, /raySphereIntersect/);
   assert.doesNotMatch(visibleMarch, /rteRadialDistance/);
-  assert.match(shadowMarch, /raySphereIntersect\(columnPoint/);
+  // C13-04 deliberately left the beer-shadow producer on the equatorial sphere
+  // and handed it to C13-06. That row landed: the shadow now intersects the SAME
+  // `cloudShellAxes` boundaries on BOTH its high-precision and A/B branches, so
+  // the cast shadow can no longer march a slab tens of kilometres away from the
+  // rendered deck at high latitude. Detailed coverage lives in
+  // `cloud-shadow-rte.spec.mjs`.
+  assert.doesNotMatch(shadowMarch, /raySphereIntersect/);
+  assert.match(shadowMarch, /cloudShellAxes\(deckBottom\)/);
+  assert.match(shadowMarch, /cloudShellAxes\(deckTop\)/);
+  assert.match(shadowMarch, /rayEllipsoidIntersectRTE\(/);
+  assert.match(shadowMarch, /rayEllipsoidIntersect\(columnPoint/);
 });
 
 test("renderer preserves the WGS84 rows and appends the C13-37 phase layout", () => {

@@ -118,6 +118,11 @@ function Atmosphere() {
   /**
    * When not DynamicAtmosphereLightingType.NONE, the selected light source will
    * be used for dynamically lighting all atmosphere-related rendering effects.
+   * <p>
+   * The sky atmosphere is lit by the astronomical sun in every mode except
+   * {@link DynamicAtmosphereLightingType.LEGACY_OVERHEAD}; see that member for
+   * the pre-C12-31 "lit from directly above" appearance.
+   * </p>
    *
    * @type {DynamicAtmosphereLightingType}
    * @default DynamicAtmosphereLightingType.NONE

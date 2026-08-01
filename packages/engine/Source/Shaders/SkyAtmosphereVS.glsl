@@ -35,7 +35,11 @@ void main(void)
 {
     vec4 positionWC = czm_model * position;
     float lightEnum = u_radiiAndDynamicAtmosphereColor.z;
-    vec3 lightDirection = czm_getDynamicAtmosphereLightDirection(positionWC.xyz, lightEnum);
+    // C12-31 — same natural-sky selector the FS uses. The per-vertex path is the
+    // DEFAULT for a scene with a visible globe (`perFragmentAtmosphere` is false
+    // unless the globe is hidden or translucent), so this call is on the hot
+    // default path, not a fallback.
+    vec3 lightDirection = czm_getSkyAtmosphereLightDirection(positionWC.xyz, lightEnum);
 
     #ifndef PER_FRAGMENT_ATMOSPHERE
         computeAtmosphereScattering(

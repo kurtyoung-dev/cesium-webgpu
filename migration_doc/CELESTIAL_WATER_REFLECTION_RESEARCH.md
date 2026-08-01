@@ -193,9 +193,9 @@ glint *= T_cloud;   // sun glint by day, moonglade + starRefl by night
   the existing map is a good approximation; reuse `sampleCloudGroundShadow` as-is. For the day SUN glint
   it is exact. For the night MOON term the sun-view map is geometrically wrong but visually acceptable as
   a first cut (both are "cloud overhead" columns near the camera).
-- **Accurate path (S5b):** bake a SECOND beer-shadow-map from the **moon** view. `buildSunViewOrthoVP`
-  (`WebGPUProceduralCloudRenderer.ts:1235`) already takes an arbitrary direction; feed it `moonDirWC`.
-  `cloudShadowMain`'s ONLY sun coupling is `cloudShadow.sunDirAndSteps`/`sunViewInvVP` — feed moon values
+- **Accurate path (S5b):** bake a SECOND beer-shadow-map from the **moon** view. `computeCloudShadowFrame`
+  (`WebGPUCloudShadowFrame.ts`, the C13-06 owner) already takes an arbitrary direction; feed it `moonDirWC`.
+  `cloudShadowMain`'s ONLY sun coupling is `cloudShadow.sunDirAndSteps`/`sunViewInvVpRelativeToEye` — feed moon values
   and it bakes a moon-occlusion map with zero shader-logic change. Add a `cloudShadowMoonVP` camera
   uniform + a moon-shadow sampler on the ocean side; write an ocean analog of `sampleCloudGroundShadow`.
 - **Footprint caveat:** even the sun map is a LOCAL camera-centered ortho map (±60 km single / cascades
@@ -251,7 +251,7 @@ and the night moon light source.
 | Water mask + coast AA | EXISTS | `GlobeTerrain.wgsl:~3843–3879` |
 | Cloud beer-shadow-map producer | EXISTS (sun-only) | `cloudShadowMain` `ProceduralClouds.wgsl:1950` |
 | Cloud-shadow O(1) sampler | EXISTS (sun-only) | `sampleCloudGroundShadow` `GlobeTerrain.wgsl:2080` (verified body) |
-| Direction-generic ortho VP builder | EXISTS | `buildSunViewOrthoVP` `WebGPUProceduralCloudRenderer.ts:1235` |
+| Direction-generic ortho VP builder | EXISTS | `computeCloudShadowFrame` + `writeCloudShadow*RelativeToEye` `WebGPUCloudShadowFrame.ts` (C13-06 owner; WGS84 geodetic centre, eye-relative matrices) |
 | Cloud raymarch + density field | EXISTS | `cloudDensity` `:829`, `marchDeck` `:1365`, lighting `:1561–1642` |
 | Moon dir/phase/extinction (CPU) | EXISTS on frameState | `frameState.moonDirectionWC` `FrameState.js:389`, `moonPhaseFraction :397`, `moonAtmosphereExtinction :326` |
 | Moon dir already a GPU uniform elsewhere | EXISTS (other UBs) | `SkyAtmosphere.wgsl:183 moonDirectionWC`; `Moon.wgsl:99 moonDirWC`; `UniformState _moonDirectionEC :205` |
@@ -318,7 +318,7 @@ and the night moon light source.
 
 - **Cheap:** call `sampleCloudGroundShadow(worldPos)` (`GlobeTerrain.wgsl:2080`) directly for path A. For
   path B (FFT ocean), replicate the function + bind `cloudShadowMap` into the ocean bind group.
-- **Accurate (S5b):** clone the shadow producer with the moon direction — `buildSunViewOrthoVP(moonDirWC, …)`
+- **Accurate (S5b):** clone the shadow producer with the moon direction — `computeCloudShadowFrame(…, moonDirWC, …)`
   → new `cloudShadowMoonVP` uniform + `cloudShadowMoonMap` sampler → ocean-side `sampleCloudMoonShadow`.
 
 ### Cloud-top fallback
@@ -330,7 +330,7 @@ and the night moon light source.
 ### Reuse ledger (nothing new required beyond the enable-float + star source)
 
 Fresnel/GGX/Smith chunks; wave normals + tangent→eye; `computeDayNightFade` / `computeTerminatorGlow`;
-`sampleCloudGroundShadow`; `buildSunViewOrthoVP` (direction-generic); `computeAtmosphereExtinctionCached`;
+`sampleCloudGroundShadow`; `WebGPUCloudShadowFrame` (direction-generic, C13-06); `computeAtmosphereExtinctionCached`;
 TAA + `previousViewProjection` for shimmer; `csm_stochasticDither` for banding; CPU moon ephemeris on
 `frameState`.
 
@@ -456,7 +456,7 @@ follow-ups.
 - `packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl` —
   `CloudShadowUniforms.sunDirAndSteps :261`, `cloudShadowMain` sun march `:1963/:1982` (verified);
   `cloudDensity :829`; `marchDeck :1365`; lighting block `~:1561–1642`; `CloudUniforms :19`.
-- `packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts` — `buildSunViewOrthoVP :1235`;
+- `packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts` — the C13-06 frame owner `WebGPUCloudShadowFrame.ts`;
   shadow cache/dispatch `~:158–185/:2202–2360`.
 - BRDF chunks present (verified glob): `csm_distributionGGX.wgsl`, `csm_fresnelSchlick.wgsl`,
   `csm_geometrySmith.wgsl`, `csm_getSpecular.wgsl`, `csm_stochasticDither.wgsl`,

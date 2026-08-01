@@ -48,6 +48,15 @@ import {
   setCloudTransmittanceCapture,
   getCloudTransmittanceView,
 } from "./WebGPUProceduralCloudRenderer.js";
+// C13-06 — the shared cloud-shadow RTE frame owner.
+import {
+  type CloudShadowFrame,
+  writeCloudShadowViewProjectionRelativeToEye,
+} from "./WebGPUCloudShadowFrame.js";
+
+// Reused eye-relative sun-view matrix for the aerial-perspective consumer. One
+// per-module scratch keeps this off the per-frame allocation path.
+const cloudShadowVpScratch = new Float32Array(16);
 
 export interface PostProcessCache {
   initialized: boolean;
@@ -1406,14 +1415,30 @@ function updateAerialPerspectiveFrameData(
         _cloudCache?: {
           shadowActive?: boolean;
           shadowView?: GPUTextureView | null;
-          shadowSunViewVP?: Float32Array;
           shadowAbsorption?: number;
+          shadowFrame?: CloudShadowFrame;
         };
       };
     }
   )?.context?._cloudCache;
   const csActive = cloudCache?.shadowActive === true && !!cloudCache.shadowView;
   fx.setCloudShadowView(csActive ? cloudCache!.shadowView! : null);
+  // C13-06 — emit the sun-view matrix relative to THIS effect's camera so the
+  // fragment shader multiplies a camera-relative offset instead of a full-ECEF
+  // position. The frame owner cancels the planet-scale translation in f64.
+  const cloudShadowFrame = cloudCache?.shadowFrame;
+  let cloudShadowVpRelativeToEye: Float32Array | undefined;
+  if (csActive && cloudShadowFrame?.valid === true) {
+    writeCloudShadowViewProjectionRelativeToEye(
+      cloudShadowVpScratch,
+      0,
+      cloudShadowFrame,
+      cam.x,
+      cam.y,
+      cam.z,
+    );
+    cloudShadowVpRelativeToEye = cloudShadowVpScratch;
+  }
 
   fx.setFrameData({
     cameraPositionWC: [cam.x, cam.y, cam.z],
@@ -1430,8 +1455,10 @@ function updateAerialPerspectiveFrameData(
     atmosphereThickness: AP_ATMOSPHERE_THICKNESS,
     inverseProjection: us.inverseProjection,
     inverseView: us.inverseView,
-    cloudShadowVP: csActive ? cloudCache!.shadowSunViewVP : undefined,
-    cloudShadowActive: csActive,
+    cloudShadowVP: cloudShadowVpRelativeToEye,
+    // A valid eye-relative frame is now part of "active": without it the FS
+    // would project a camera-relative offset through an absolute matrix.
+    cloudShadowActive: csActive && cloudShadowVpRelativeToEye !== undefined,
     cloudShadowAbsorption: cloudCache?.shadowAbsorption ?? 0.04,
   });
 }

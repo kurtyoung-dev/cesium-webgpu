@@ -88,6 +88,13 @@ primary-visible-shell portion, and bounded `C13-05` superseded the temporal-shel
 shadow/mask/capture consumers remain open under `C13-06`; weather and local-tangent wind remain
 separate open work.
 
+**C13-06 reconciliation (implemented, awaiting browser verification):** the beer-shadow producer no
+longer uses a sphere anywhere. Its footprint centre is a WGS84 geodetic surface projection and its
+shell intersection uses the same `cloudShellAxes` expanded ellipsoids as the visible march, on both
+its high-precision and its explicit A/B branch. The god-ray mask was found already compliant (it
+inherits `marchDeck`'s oblate shells), and environment capture already uses a geodetic capture
+radius. Weather and local-tangent wind remain open under `C13-07`/`C13-08`/`C13-18`.
+
 ### 2.2 Cloud RTE is incomplete and default-off
 
 `CloudVolumetrics.cloudHighPrecision` defaults to `false`
@@ -110,6 +117,17 @@ reprojection. The temporal resolve now reconstructs a current-camera-relative sh
 projects it with the previous relative-to-eye transform plus the CPU-`f64`-derived camera delta.
 Shadow/mask/capture/atmosphere consumers remain open under `C13-06`; this bounded temporal fix does
 not claim them.
+
+**C13-06 reconciliation (implemented, awaiting browser verification):** the shadow producer and all
+three shadow consumers now share one camera-relative frame. `WebGPUCloudShadowFrame.ts` emits the
+sun-view projection and its inverse relative to a caller-supplied eye in CPU `f64`; the shadow
+fragment shader reconstructs a camera-relative column and samples density through the same C13-37
+origin phases the visible march uses, and the globe/aerial/fog consumers project `v_positionRTE`,
+`rayDir * eyeDistance`, and the froxel camera offset respectively. The `cloudHighPrecision = false`
+route and the planar-scene-mode absolute matrix are retained as explicit A/B fallbacks. The remaining
+per-consumer approximation in this area is the volumetric fog's DEFAULT local-fbm cloud estimate,
+which is a separate density field rather than an RTE defect; replacing it with reusable cloud
+transmittance is `C13-09`/`C13-22` work.
 
 ### 2.3 The current temporal path is not true 1/16 TAAU
 

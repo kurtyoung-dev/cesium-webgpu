@@ -91,8 +91,12 @@ export interface AerialPerspectiveFrameData {
    */
   inverseView: ArrayLike<number>;
   /**
-   * Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map world→sun-clip matrix
-   * (column-major mat4). Undefined → identity + disabled (no inscatter shadow).
+   * Batch 437 (CLOUD-SHADOWS) / C13-06 — sun-view beer shadow map matrix
+   * (column-major mat4), emitted RELATIVE TO THIS EFFECT'S CAMERA by
+   * `WebGPUCloudShadowFrame.writeCloudShadowViewProjectionRelativeToEye`. The
+   * fragment shader multiplies the fragment's camera-relative offset, so no
+   * planet-scale `f32` matrix product is formed. Undefined → identity + disabled
+   * (no inscatter shadow).
    */
   cloudShadowVP?: ArrayLike<number>;
   /** True when globe.cloudCastShadows is on AND a real shadow map was rendered. */

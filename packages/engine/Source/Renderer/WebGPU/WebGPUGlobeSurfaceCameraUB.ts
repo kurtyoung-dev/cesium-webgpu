@@ -59,6 +59,11 @@ import {
   CAMERA_UNIFORM_BYTES,
   multiplyMat4ColumnMajor,
 } from "./WebGPUGlobeSurfaceTypes.js";
+// C13-06 — the shared cloud-shadow RTE frame owner.
+import {
+  type CloudShadowFrame,
+  writeCloudShadowViewProjectionRelativeToEye,
+} from "./WebGPUCloudShadowFrame.js";
 
 // Scratch state for the SCENE2D / COLUMBUS_VIEW / MORPHING projected
 // tile-rectangle math. Mirrors the WebGL packer's scratch instances in
@@ -817,11 +822,28 @@ export function createCameraUniformBuffer(
         shadowAbsorption?: number;
         shadowCascadeActive?: boolean;
         shadowCascadeVP?: Float32Array;
+        shadowFrame?: CloudShadowFrame;
+        shadowCascadeFrames?: CloudShadowFrame[];
       };
     }
   )?._cloudCache;
   const shadowActive = cloudCache?.shadowActive === true;
   const shadowVP = cloudCache?.shadowSunViewVP;
+  // ─── C13-06 — project through the eye-relative sun-view matrix ───
+  // `cloudShadowVP * vec4(v_positionMC, 1.0)` is the planet-scale `mvp *
+  // vec4(position, 1.0)` the fork's RTE law forbids: both the matrix
+  // translation column and the position are ~6.4e6 m in f32. In SCENE3D the
+  // fragment already carries `v_positionRTE` (the exact high/low camera-relative
+  // vector CSM samples with), so the shared cloud-shadow frame owner emits the
+  // matrix relative to THIS packer's camera and the product stays small.
+  //
+  // The planar modes have no ECEF camera-relative fragment position, so they
+  // keep the absolute matrix + `v_positionMC` — byte-identical to pre-C13-06.
+  const cloudShadowFrame = cloudCache?.shadowFrame;
+  const cloudShadowCascadeFrames = cloudCache?.shadowCascadeFrames;
+  const cloudShadowEyeX = camHigh.x + camLow.x;
+  const cloudShadowEyeY = camHigh.y + camLow.y;
+  const cloudShadowEyeZ = camHigh.z + camLow.z;
   // CLOUD-LOD-R5 — the opt-in cascade tier renders a 3-cascade atlas AND stashes
   // three forward VPs (48 floats). Cascade 0 goes in the existing cloudShadowVP
   // field; cloudShadowControl.w carries the cascade count (3.0) so the FS takes
@@ -829,14 +851,47 @@ export function createCameraUniformBuffer(
   const cascadeActive = cloudCache?.shadowCascadeActive === true;
   const cascadeVP = cloudCache?.shadowCascadeVP;
   const cascadeReady = cascadeActive && !!cascadeVP && cascadeVP.length >= 48;
+  // The flag the FS reads is ALL-OR-NOTHING across every matrix in the struct:
+  // a mix of eye-relative and absolute VPs would silently project the wrong
+  // operand through one cascade. Require every frame this branch will emit.
+  const cloudShadowRelativeToEye =
+    sceneMode === 3 &&
+    cloudShadowFrame?.valid === true &&
+    (!cascadeReady ||
+      (cloudShadowCascadeFrames?.length === 3 &&
+        cloudShadowCascadeFrames.every((frame) => frame.valid)));
   if (cascadeReady) {
-    for (let i = 0; i < 16; i++) data[offset++] = cascadeVP![i]; // cascade 0 VP
+    if (cloudShadowRelativeToEye && cloudShadowCascadeFrames?.[0]) {
+      writeCloudShadowViewProjectionRelativeToEye(
+        data,
+        offset,
+        cloudShadowCascadeFrames[0],
+        cloudShadowEyeX,
+        cloudShadowEyeY,
+        cloudShadowEyeZ,
+      );
+      offset += 16;
+    } else {
+      for (let i = 0; i < 16; i++) data[offset++] = cascadeVP![i]; // cascade 0 VP
+    }
     data[offset++] = 1.0; // x = enabled
     data[offset++] = cloudCache?.shadowAbsorption ?? 0.04; // y = absorption
     data[offset++] = 1.0; // z = strength (full)
     data[offset++] = 3.0; // w = cascade count (cascaded atlas branch)
   } else if (shadowActive && shadowVP && shadowVP.length >= 16) {
-    for (let i = 0; i < 16; i++) data[offset++] = shadowVP[i];
+    if (cloudShadowRelativeToEye) {
+      writeCloudShadowViewProjectionRelativeToEye(
+        data,
+        offset,
+        cloudShadowFrame!,
+        cloudShadowEyeX,
+        cloudShadowEyeY,
+        cloudShadowEyeZ,
+      );
+      offset += 16;
+    } else {
+      for (let i = 0; i < 16; i++) data[offset++] = shadowVP[i];
+    }
     data[offset++] = 1.0; // x = enabled
     data[offset++] = cloudCache?.shadowAbsorption ?? 0.04; // y = absorption
     data[offset++] = 1.0; // z = strength (full)
@@ -1016,14 +1071,35 @@ export function createCameraUniformBuffer(
   // (vec4): x = atlas tile count (3.0). All-zero unless the opt-in cascade tier
   // rendered the atlas this frame → the FS single-map branch stays byte-identical.
   if (cascadeReady) {
-    for (let i = 16; i < 32; i++) data[offset++] = cascadeVP![i]; // cascade 1 VP
-    for (let i = 32; i < 48; i++) data[offset++] = cascadeVP![i]; // cascade 2 VP
+    for (let ci = 1; ci < 3; ci++) {
+      const cascadeFrame = cloudShadowCascadeFrames?.[ci];
+      if (cloudShadowRelativeToEye && cascadeFrame) {
+        writeCloudShadowViewProjectionRelativeToEye(
+          data,
+          offset,
+          cascadeFrame,
+          cloudShadowEyeX,
+          cloudShadowEyeY,
+          cloudShadowEyeZ,
+        );
+        offset += 16;
+      } else {
+        const base = ci * 16;
+        for (let i = base; i < base + 16; i++) data[offset++] = cascadeVP![i];
+      }
+    }
     data[offset++] = 3.0; // x = tile count
-    data[offset++] = 0.0;
+    // C13-06 — y > 0.5 tells the FS the sun-view matrices above are eye-relative
+    // and it must project `v_positionRTE` instead of the full-ECEF `v_positionMC`.
+    data[offset++] = cloudShadowRelativeToEye ? 1.0 : 0.0;
     data[offset++] = 0.0;
     data[offset++] = 0.0;
   } else {
-    for (let i = 0; i < 36; i++) data[offset++] = 0.0;
+    for (let i = 0; i < 32; i++) data[offset++] = 0.0;
+    data[offset++] = 0.0; // x = tile count (single-map branch)
+    data[offset++] = cloudShadowRelativeToEye ? 1.0 : 0.0; // y = eye-relative VP
+    data[offset++] = 0.0;
+    data[offset++] = 0.0;
   }
 
   // NEW-WEBGPU-GLOBE-CLASSIFY-DEPTH-PRECISION — stash the EXACT near/far this

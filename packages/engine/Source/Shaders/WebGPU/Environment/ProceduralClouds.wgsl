@@ -272,10 +272,14 @@ struct CloudUniforms {
 // `cloudDensity`/`cloudBaseDensity` oracle is byte-identical to the visible march —
 // the cast shadow therefore tracks exactly the rendered cloud field.
 struct CloudShadowUniforms {
-  // Inverse of the sun-view orthographic view-projection (clip → world). Used to
-  // reconstruct, for each shadow-map texel, the world point on the shell mid-plane
-  // that the column passes through; the march walks the sun ray from that point.
-  sunViewInvVP: mat4x4<f32>,
+  // C13-06 — inverse of the sun-view orthographic view-projection, expressed
+  // RELATIVE TO THE CAMERA (clip → camera-relative world). `WebGPUCloudShadowFrame`
+  // cancels the planet-scale translation in CPU `f64`, so reconstructing a
+  // shadow-map column here yields a small camera-relative vector rather than a
+  // full-ECEF `f32` position. Every downstream quantity — shell roots, height
+  // fraction, density domains — then stays in the SAME RTE frame the visible
+  // march uses (`encodedCameraHigh/Low` + the CPU-`f64` density origin phases).
+  sunViewInvVpRelativeToEye: mat4x4<f32>,
   // xyz = normalized sun direction (world); w = light-march step count for the
   // optical-depth accumulation along the sun ray (kept low — this is a coarse map).
   sunDirAndSteps: vec4<f32>,
@@ -501,9 +505,25 @@ fn curlNoise3(p: vec3<f32>) -> vec3<f32> {
 // field doesn't need ellipsoidal exactness). lon = atan2(y, x) ∈ [-PI, PI];
 // lat = asin(z / r). Mapped onto [0,1]² via weatherTexBounds; v is flipped so
 // texture row 0 (top) is the north pole.
+//
+// C13-07 seam contract — the CPU twin is `weatherUVFromLonLat` in
+// Scene/Weather/WeatherMapSeam.ts and the producers write TEXEL CENTRES
+// ((tx+0.5)/texW, (ty+0.5)/texH). The two are pinned together by
+// Tools/visual-regression/weather-map-seam.spec.mjs; do not edit one alone.
+// Dateline: the sampler is addressModeU="repeat", which filters texel texW-1
+// against texel 0 across ±180° — seam-free ONLY because the producers are
+// periodic in longitude. Poles: the sampler is addressModeV="clamp-to-edge" and
+// the producers collapse the polar-cap rows to one longitude value, so the pole
+// is single-valued.
 fn worldToWeatherUV(worldPos: vec3<f32>) -> vec2<f32> {
   let r = max(length(worldPos), 1.0);
-  let lon = atan2(worldPos.y, worldPos.x);
+  // C13-07 pole guard: on the spin axis (x = y = 0) atan2 is indeterminate in
+  // WGSL and may yield NaN, which a NaN texture coordinate would propagate into
+  // coverage — and then into density — for a straight-down polar view. The polar
+  // rows are longitude-CONSTANT, so any finite longitude reads the same texel
+  // there and 0 is a safe substitute.
+  let axial = worldPos.x * worldPos.x + worldPos.y * worldPos.y;
+  let lon = select(0.0, atan2(worldPos.y, worldPos.x), axial > 1e-12);
   let lat = asin(clamp(worldPos.z / r, -1.0, 1.0));
   let b = cloud.weatherTexBounds;
   let u = (lon - b.x) / b.z;
@@ -683,10 +703,9 @@ fn cloudDensityCoordinatesAtWorld(
 }
 
 // Primary-view RTE path: CPU-f64 phases already include camera origin and wind;
-// the shader adds only the small camera-relative sample displacement.
-// SCAFFOLDING (Principle 7): defined but not yet called. Intended consumer is
-// C13-05 (RTE temporal reprojection / history origin), which will sample the
-// density field at camera-relative reprojected positions. Do not delete.
+// the shader adds only the small camera-relative sample displacement. Live
+// consumer since C13-06 (`cloudDensityRelativeWithFootprint`, the beer-shadow
+// producer); the primary march inlines the same reconstruction per-ray.
 fn cloudDensityCoordinatesAtRelative(
   relativeWorld: vec3<f32>,
 ) -> CloudDensityCoordinates {
@@ -718,9 +737,8 @@ fn advanceDensityCoordinates(
   );
 }
 
-// SCAFFOLDING (Principle 7): defined but not yet called. Camera-relative
-// morphology origin for the same C13-05 RTE temporal-history reprojection
-// consumer as cloudDensityCoordinatesAtRelative above. Do not delete.
+// Camera-relative morphology origin, paired with
+// cloudDensityCoordinatesAtRelative above. Live consumer since C13-06.
 fn cloudMorphologyCoordinateAtRelative(
   relativeWorld: vec3<f32>,
 ) -> vec3<f32> {
@@ -1312,11 +1330,11 @@ fn cloudDensityAtCoordinates(
   return cloudDensityFromMacro(macroSample, heightFraction);
 }
 
-// Raw-world wrappers keep the standalone shadow and non-RTE diagnostic routes
-// on the same mathematical density field. Their remaining reconstruction
-// precision is explicitly owned by C13-06.
-// SCAFFOLDING (Principle 7): cloudDensity itself is defined but not yet called —
-// its C13-06 shadow/mask/environment-capture consumer is not wired yet
+// Raw-world wrappers keep the non-RTE A/B diagnostic route on the same
+// mathematical density field. C13-06 moved the LIVE shadow route onto the
+// camera-relative twin below; these remain the explicit `cloudHighPrecision =
+// false` escape path and the same-build oracle.
+// SCAFFOLDING (Principle 7): cloudDensity itself is defined but not yet called
 // (cloudDensityWithFootprint below IS live). Do not delete.
 fn cloudDensity(
   worldPos: vec3<f32>,
@@ -1361,9 +1379,47 @@ fn cloudDensityWithFootprint(
   );
 }
 
+// C13-06 — the CAMERA-RELATIVE twin of cloudDensityWithFootprint, and the one
+// density entry point the beer-shadow-map producer uses.
+//
+// The pre-C13-06 shadow pass reconstructed a full-ECEF `vec3<f32>` sample and
+// rebuilt the periodic texture domains from it. That is the raw-world route the
+// visible march abandoned in C13-37: the visible march reconstructs its domains
+// from CPU-`f64` origin phases plus a small camera-relative displacement. Two
+// routes reading "the same field" through different reconstructions is exactly
+// the per-consumer approximation the audit convicted, so the shadow now reads
+// through the identical owner.
+//
+// `relativePos` is the sample position relative to the camera — the same frame
+// `encodedCameraHigh/Low` and the origin phases are anchored at. The world
+// position is reconstructed in the established high-then-low order ONLY for the
+// geographic weather lookup, whose own correctness is C13-07/C13-08's row.
+fn cloudDensityRelativeWithFootprint(
+  relativePos: vec3<f32>,
+  centerHigh: vec3<f32>,
+  centerLow: vec3<f32>,
+  heightFraction: f32,
+  deckBottom: f32,
+  deckTop: f32,
+  footprintMeters: f32,
+) -> f32 {
+  let worldPos = (relativePos - centerHigh) - centerLow;
+  if (!planetDensityEnabled() || !noiseBakedEnabled()) {
+    return legacyCloudDensity(
+      worldPos, heightFraction, deckBottom, deckTop
+    );
+  }
+  let coordinates = cloudDensityCoordinatesAtRelative(relativePos);
+  let morphologyCoordinate = cloudMorphologyCoordinateAtRelative(relativePos);
+  return cloudDensityAtCoordinates(
+    worldPos, coordinates, morphologyCoordinate,
+    heightFraction, deckBottom, deckTop, footprintMeters
+  );
+}
+
 // SCAFFOLDING (Principle 7): cloudBaseDensity is defined but not yet called. It is
-// the cheap no-erosion base oracle for the same C13-06 shadow/mask/capture RTE
-// consumers; wire-up is pending. Do not delete.
+// the cheap no-erosion base oracle retained for the C13-22 shadow redesign's
+// empty-space skipping; wire-up is pending. Do not delete.
 fn cloudBaseDensity(
   worldPos: vec3<f32>,
   heightFraction: f32,
@@ -1404,6 +1460,17 @@ fn cloudBaseDensity(
 // can't fully resolve — removing THAT needs RTE high/low camera (DP emulation in
 // WGSL). The residual is ~1 m and not visibly observed, so the full DP path
 // stays deferred (NEW-WEBGPU-CLOUD-RTE) until a shimmer artifact is seen.
+//
+// RETAINED (Principle 7), NOT dead code: C13-04 moved the visible march and
+// C13-06 moved the beer-shadow producer onto the oblate `rayEllipsoidIntersect*`
+// pair, so this spherical form currently has no caller in this module. It stays
+// because it is the documented numerically-stable primitive the cloud subsystem
+// reaches for whenever a TRUE sphere is the right model (the environment-capture
+// march keeps its own local copy, `cloudShellIntersect` in
+// ProceduralSkyCubemap.wgsl, for exactly that reason), and because C13-22's
+// shadow redesign is queued against this file. Deleting it would mean
+// re-deriving the Haines form and its rationale from scratch. The shader
+// compiler dead-strips an uncalled function, so it costs nothing at runtime.
 fn raySphereIntersect(ro: vec3<f32>, rd: vec3<f32>, radius: f32) -> vec2<f32> {
   let tClosest = -dot(ro, rd);
   let cp = ro + rd * tClosest; // closest point on the ray to the planet center
@@ -2637,39 +2704,78 @@ fn fragmentCloudMaskMain(input: VertexOutput) -> @location(0) f32 {
   return clamp(trans, 0.0, 1.0);
 }
 
-// ─── Batch 437 (CLOUD-SHADOWS) — sun-view beer shadow map ───
+// ─── Batch 437 (CLOUD-SHADOWS) / C13-06 — sun-view beer shadow map ───
 // Rasterized from the SUN's orthographic view into a low-res single-channel target.
-// For each shadow-map texel we reconstruct the world point on the cloud-shell
-// MID plane that the texel's column passes through (via the sun-view inverse VP),
-// then march the cloud DENSITY along the sun ray across the full shell thickness,
-// accumulating OPTICAL DEPTH (Σ density·stepSize). Consumers project a world point
-// into this map and read transmittance = exp(-opticalDepth·absorption): the cloud
-// thickness between that point and the sun. Reuses `cloudDensity` so the cast
-// shadow tracks the EXACT rendered cloud field (no separate fbm approximation).
+// For each shadow-map texel we reconstruct the CAMERA-RELATIVE point on the
+// texel's column (via the frame owner's eye-relative inverse VP), then march the
+// cloud DENSITY along the sun ray across the full shell thickness, accumulating
+// OPTICAL DEPTH (Sum density*stepSize). Consumers project a point into this map and
+// read transmittance = exp(-opticalDepth*absorption): the cloud thickness between
+// that point and the sun.
+//
+// C13-06 closed two defects the audit convicted here:
+//
+//  1. WGS84. The shell was two SPHERES of the equatorial radius and the height
+//     was `length(p) - planetRadius`. WGS84's polar axis is ~21.4 km shorter, so
+//     at high latitude this marched a slab several deck thicknesses ABOVE the
+//     shell the visible march renders — the sun ray met no cloud and the cast
+//     shadow silently vanished. Both branches now intersect the SAME expanded
+//     oblate shells `cloudShellAxes` gives the primary march.
+//  2. RTE. The column point was a full-ECEF `vec3<f32>` from an `f32` matrix
+//     whose translation column was itself ~6.4e6 m, and the density domains were
+//     rebuilt from that raw coordinate. Both are now camera-relative, so the map
+//     is cast by exactly the field the visible march renders.
+//
+// The explicit `cloudHighPrecision = false` escape route retains the absolute
+// reconstruction as an A/B oracle — but on the SAME WGS84 geometry, mirroring
+// how `marchDeck` handles its own A/B branch.
 //
 // Clamp the accumulated optical depth (f16 target — keep it well under 65504 and in
 // a range that exp() resolves; absorption is applied in the consumers so this stores
-// the raw density·length integral).
+// the raw density*length integral).
 @fragment
 fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
-  let innerR = cloud.planetRadius + cloud.cloudLayerBottom;
-  let outerR = cloud.planetRadius + cloud.cloudLayerTop;
-  let layerThickness = max(outerR - innerR, 1.0);
+  let deckBottom = cloud.cloudLayerBottom;
+  let deckTop = cloud.cloudLayerTop;
 
-  // Reconstruct the shell mid-plane world point this shadow texel covers. NDC z=0
-  // is an arbitrary plane in the ortho frustum; we only need a ray ORIGIN on the
-  // column, then we re-anchor it onto the shell by intersecting the sun ray with
-  // the outer shell sphere. UV (0..1) → NDC (-1..1), WebGPU y-down → flip.
+  // C13-06 — the same oblate boundaries the visible march intersects. Batch 443
+  // keeps the map SINGLE-SHELL (the cast shadow tracks the primary cloud layer),
+  // so the deck bounds are the primary layer's.
+  let innerAxes = cloudShellAxes(deckBottom);
+  let outerAxes = cloudShellAxes(deckTop);
+  let innerInverseAxes = vec3<f32>(1.0) / innerAxes;
+  let outerInverseAxes = vec3<f32>(1.0) / outerAxes;
+  let centerHigh = -cloud.encodedCameraHigh;
+  let centerLow = -cloud.encodedCameraLow;
+
+  // Reconstruct the column this shadow texel covers. NDC z=0 is an arbitrary
+  // plane in the ortho frustum; we only need a ray ORIGIN on the column, then we
+  // re-anchor it onto the shell by intersecting the sun ray with the boundaries.
+  // UV (0..1) -> NDC (-1..1), WebGPU y-down -> flip.
   let ndc = vec3<f32>(input.uv.x * 2.0 - 1.0, 1.0 - input.uv.y * 2.0, 0.0);
-  let worldH = cloudShadow.sunViewInvVP * vec4<f32>(ndc, 1.0);
-  let columnPoint = worldH.xyz / worldH.w;
+  let columnH = cloudShadow.sunViewInvVpRelativeToEye * vec4<f32>(ndc, 1.0);
+  let columnRelative = columnH.xyz / columnH.w;
 
   let sunDir = normalize(cloudShadow.sunDirAndSteps.xyz);
   // The sun ray travels TOWARD the surface as -sunDir (sunDir points to the sun).
   // March from the column's entry at the OUTER shell down through to the INNER shell.
   let rayDir = -sunDir;
-  let tOuter = raySphereIntersect(columnPoint, rayDir, outerR);
-  let tInner = raySphereIntersect(columnPoint, rayDir, innerR);
+
+  var tOuter: vec2<f32>;
+  var tInner: vec2<f32>;
+  if (highPrecisionEnabled()) {
+    // Planet centre relative to the COLUMN point. The exact high term is kept
+    // untouched and the small column displacement is folded into the low term,
+    // preserving the high-then-low cancellation order.
+    let columnCenterLow = centerLow - columnRelative;
+    tOuter = rayEllipsoidIntersectRTE(rayDir, centerHigh, columnCenterLow, outerAxes);
+    tInner = rayEllipsoidIntersectRTE(rayDir, centerHigh, columnCenterLow, innerAxes);
+  } else {
+    let columnPoint = cloud.cameraPosition + columnRelative;
+    tOuter = rayEllipsoidIntersect(columnPoint, rayDir, outerAxes);
+    tInner = rayEllipsoidIntersect(columnPoint, rayDir, innerAxes);
+  }
+
   if (tOuter.y < 0.0) {
     // Column misses the shell entirely (sun grazing past the limb) — no shadow.
     return 0.0;
@@ -2688,22 +2794,37 @@ fn cloudShadowMain(input: VertexOutput) -> @location(0) f32 {
   var opticalDepth: f32 = 0.0;
   for (var i: i32 = 0; i < steps; i = i + 1) {
     let t = tStart + (f32(i) + 0.5) * stepSize;
-    let samplePos = columnPoint + rayDir * t;
-    let altitude = length(samplePos) - cloud.planetRadius;
-    let hf = clamp((altitude - cloud.cloudLayerBottom) / layerThickness, 0.0, 1.0);
-    // Batch 443 — the shadow map stays SINGLE-SHELL (the cast shadow tracks the
-    // primary cloud layer). Pass cloudLayerBottom/Top as the deck bounds so the
-    // density evaluation is byte-identical to the pre-443 hardcoded call.
-    opticalDepth += cloudDensityWithFootprint(
-      samplePos,
-      hf,
-      cloud.cloudLayerBottom,
-      cloud.cloudLayerTop,
-      stepSize,
-    ) * stepSize;
+    let sampleRelative = columnRelative + rayDir * t;
+    if (highPrecisionEnabled()) {
+      let hf = ellipsoidShellHeightFractionRTE(
+        sampleRelative, centerHigh, centerLow,
+        innerInverseAxes, outerInverseAxes
+      );
+      opticalDepth += cloudDensityRelativeWithFootprint(
+        sampleRelative,
+        centerHigh,
+        centerLow,
+        hf,
+        deckBottom,
+        deckTop,
+        stepSize,
+      ) * stepSize;
+    } else {
+      let samplePos = cloud.cameraPosition + sampleRelative;
+      let hf = ellipsoidShellHeightFraction(
+        samplePos, innerInverseAxes, outerInverseAxes
+      );
+      opticalDepth += cloudDensityWithFootprint(
+        samplePos,
+        hf,
+        deckBottom,
+        deckTop,
+        stepSize,
+      ) * stepSize;
+    }
   }
   // Clamp to keep the f16 store finite and the consumer's exp() in range. The
-  // raw integral over a dense ~2.5 km shell with densityMultiplier~0.3 is O(10²-10³);
+  // raw integral over a dense ~2.5 km shell with densityMultiplier~0.3 is O(10^2-10^3);
   // cap well under f16 max so a runaway density can't NaN the map.
   return clamp(opticalDepth, 0.0, 8000.0);
 }

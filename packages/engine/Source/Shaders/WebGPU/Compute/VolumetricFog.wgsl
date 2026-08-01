@@ -214,8 +214,9 @@ struct VolumetricFogParams {
   //   z = strength (0..1 darkening scale).
   //   w = reserved.
   cloudShadowHiFi: vec4<f32>,
-  // World ECEF → sun ortho clip matrix (column-major) for the beer-shadow-map
-  // lookup. Identity when the hi-fi flag is off (never used then).
+  // C13-06 — sun-view clip matrix RELATIVE TO THE CAMERA (`worldToSunClip *
+  // translate(camera)`, column-major) for the beer-shadow-map lookup. Identity
+  // when the hi-fi flag is off (never used then).
   cloudShadowSunViewVP: mat4x4<f32>,
 
   // Batch 440 (FOG-MS) — opt-in MULTIPLE-SCATTERING octaves in the
@@ -279,7 +280,11 @@ fn sliceToLinearDepth(k: f32, slices: f32) -> f32 {
 // 3. Sample the unprojected ray direction by reconstructing two clip
 //    points (near and far) and subtracting
 // 4. Place the froxel along the ray at the slice's linear depth
-fn froxelWorldPosition(gid: vec3<u32>) -> vec3<f32> {
+// C13-06 — the froxel's offset FROM THE CAMERA. The cloud-shadow projection
+// consumes this directly so it never multiplies a full-ECEF position by a
+// planet-scale f32 matrix (the `mvp * vec4(position, 1.0)` form the fork's RTE
+// law forbids). `froxelWorldPosition` below simply adds the camera back.
+fn froxelOffsetFromCamera(gid: vec3<u32>) -> vec3<f32> {
   let res = vec3<f32>(u.resolution.xyz);
   let uv = (vec2<f32>(gid.xy) + vec2<f32>(0.5)) / res.xy;
   let ndcXY = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
@@ -297,7 +302,11 @@ fn froxelWorldPosition(gid: vec3<u32>) -> vec3<f32> {
 
   // Place the froxel at log-sliced depth along the ray.
   let linearDepth = sliceToLinearDepth(f32(gid.z) + 0.5, res.z);
-  return u.cameraAndPlanet.xyz + rayDir * linearDepth;
+  return rayDir * linearDepth;
+}
+
+fn froxelWorldPosition(gid: vec3<u32>) -> vec3<f32> {
+  return u.cameraAndPlanet.xyz + froxelOffsetFromCamera(gid);
 }
 
 // Henyey-Greenstein phase function. cosθ is dot(viewDir, lightDir).
@@ -515,7 +524,7 @@ fn sampleSunShadow(worldPos: vec3<f32>) -> f32 {
 // grid resolution (~160 × 90 × 128 froxels for medium quality) the
 // per-froxel cloud shape is much coarser than the screen-pixel cloud
 // render anyway, and reusing the local hash keeps the WGSL slim.
-fn sampleCloudShadow(worldPos: vec3<f32>) -> f32 {
+fn sampleCloudShadow(worldPos: vec3<f32>, offsetFromCamera: vec3<f32>) -> f32 {
   // Batch 437 (CLOUD-SHADOWS) — HI-FI path. When the opt-in `cloudShadowHiFi`
   // sub-flag is on, REPLACE the cheap local-fbm approximation below with a sample
   // of the procedural cloud renderer's beer SHADOW MAP (the ACTUAL rendered cloud
@@ -523,7 +532,10 @@ fn sampleCloudShadow(worldPos: vec3<f32>) -> f32 {
   // field exactly. The legacy local-fbm path runs verbatim when the flag is off
   // (parity default).
   if (u.cloudShadowHiFi.x >= 0.5) {
-    let clip = u.cloudShadowSunViewVP * vec4<f32>(worldPos, 1.0);
+    // C13-06 — `cloudShadowSunViewVP` is `worldToSunClip * translate(camera)`,
+    // emitted by the shared frame owner in CPU f64, so the operand is the
+    // froxel's camera-relative offset rather than its full-ECEF position.
+    let clip = u.cloudShadowSunViewVP * vec4<f32>(offsetFromCamera, 1.0);
     let ndc = clip.xyz / max(abs(clip.w), 1e-6);
     let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
@@ -841,7 +853,7 @@ fn lightScattering(@builtin(global_invocation_id) gid: vec3<u32>) {
   // feature is off, when the froxel is above the cloud layer, or when
   // the sun is at a grazing angle that misses the cloud layer in
   // front of us. See `sampleCloudShadow` for the approximation.
-  let cloudShadowFactor = sampleCloudShadow(worldPos);
+  let cloudShadowFactor = sampleCloudShadow(worldPos, froxelOffsetFromCamera(gid));
   let effectiveSunShadow = sunShadowFactor * cloudShadowFactor;
 
   // Batch 440 (FOG-MS) — decide once whether the multi-octave path runs.

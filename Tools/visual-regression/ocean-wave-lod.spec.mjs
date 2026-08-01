@@ -135,7 +135,7 @@ test("(b) WGSL mip/aniso-aware + RTE-decomposed; GLSL keeps auto-LOD + divisor",
   // pattern cannot survive. Assert the CALL SHAPE, not its formatting.
   assert.match(
     tileUb,
-    /frac\(\s*originU \* OCEAN_OCTAVE_REPEATS\[0\]\s*,?\s*\)/,
+    /fract(?:ionalPart)?\(\s*originU \* OCEAN_OCTAVE_REPEATS\[0\]\s*,?\s*\)/,
     "CPU must pack fract(originU*R0) phase offset",
   );
   // GLSL twin: auto-LOD + effective-divisor calibration.

@@ -1,8 +1,8 @@
 /**
  * Bakes a normalized {@link WeatherField} into the WebGPU cloud renderer's
  * weather-map texture bytes (Phase 0). The output byte layout EXACTLY matches
- * `buildProceduralWeatherMap` in WebGPUProceduralCloudRenderer.ts — a 256x128
- * (default) rgba8unorm equirectangular texture, row 0 = north:
+ * {@link buildProceduralWeatherMap} (Scene/Weather/ProceduralWeatherMap.ts) — a
+ * 256x128 (default) rgba8unorm equirectangular texture, row 0 = north:
  *   R = coverage (0..1 -> 0..255)   — the only channel the shader reads today
  *   G = cloud type / genus (scaffolding, default 128)
  *   B = cloud base, normalized      (scaffolding, default 0)
@@ -13,6 +13,7 @@
  * @module Scene/Weather/WeatherTexPacker
  */
 import type { WeatherField } from "./WeatherTypes.js";
+import { applyEquirectPolarLowPass } from "./WeatherMapSeam.js";
 
 /** 12 km covers cirrus; cloud base metres normalize into [0,1] over this band. */
 export const CLOUD_BASE_NORM_METERS = 12000.0;
@@ -47,7 +48,8 @@ const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 /**
  * Resample a {@link WeatherField} to a `texW x texH` rgba8 weather texture.
  * Assumes the field spans the texture's extent (MVP: a global field into the
- * global weatherTexBounds). Regional subsets are a later phase.
+ * global weatherTexBounds). Honouring `WeatherField.bounds` for REGIONAL fields
+ * is `C13-08`; the seam/pole convention below is `C13-07`.
  *
  * @param field The normalized weather grid.
  * @param texW Texture width (default 256, matches WEATHER_TEX_W).
@@ -70,9 +72,14 @@ export function packWeatherField(
 
   for (let ty = 0; ty < texH; ty++) {
     // Row 0 = north in both the field and the texture, so the v axes align.
-    const fy = texH > 1 ? (ty / (texH - 1)) * (gh - 1) : 0;
+    // C13-07: resample at TEXEL CENTRES — `(ty + 0.5) / texH` — not at texel
+    // indices normalized over `texH - 1`. A `linear` sampler reconstructs the
+    // stored value at the texel CENTRE, so the old edge-anchored mapping put the
+    // field up to half a texel off in longitude, which is exactly the pair of
+    // values `addressModeU: "repeat"` blends across the antimeridian.
+    const fy = ((ty + 0.5) / texH) * (gh - 1);
     for (let tx = 0; tx < texW; tx++) {
-      const fx = texW > 1 ? (tx / (texW - 1)) * (gw - 1) : 0;
+      const fx = ((tx + 0.5) / texW) * (gw - 1);
       const i = (ty * texW + tx) * 4;
 
       out[i] = Math.round(
@@ -106,5 +113,8 @@ export function packWeatherField(
         : 128;
     }
   }
-  return out;
+  // C13-07 — pole-safe: collapse the polar-cap rows to a single longitude value
+  // and taper the longitudinal over-sampling below them, so a straight-down polar
+  // camera does not read a different cell per azimuth. Exact no-op below ~59 deg.
+  return applyEquirectPolarLowPass(out, texW, texH);
 }

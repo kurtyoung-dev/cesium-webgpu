@@ -201,9 +201,16 @@ test("light, shadow, and IBL marches supply their represented intervals", () => 
   const shadowBody = cloudSource.slice(
     cloudSource.indexOf("fn cloudShadowMain("),
   );
+  // C13-06 moved the live shadow route onto the camera-relative density twin
+  // and named its deck bounds; both branches still supply the sun-march step as
+  // the LOD footprint, which is what this row pins.
   assert.match(
     shadowBody,
-    /cloudDensityWithFootprint\([\s\S]*cloud\.cloudLayerTop,\s*stepSize/,
+    /cloudDensityRelativeWithFootprint\([\s\S]*deckTop,\s*\n?\s*stepSize/,
+  );
+  assert.match(
+    shadowBody,
+    /cloudDensityWithFootprint\([\s\S]*deckTop,\s*\n?\s*stepSize/,
   );
 
   assert.match(

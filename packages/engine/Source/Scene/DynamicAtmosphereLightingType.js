@@ -7,8 +7,21 @@
  */
 const DynamicAtmosphereLightingType = {
   /**
-   * Do not use dynamic atmosphere lighting. Atmosphere lighting effects will
-   * be lit from directly above rather than using the scene's light source.
+   * Do not select a scene light source for dynamic atmosphere lighting.
+   * <p>
+   * The <b>sky atmosphere</b> is lit by the astronomical sun in this mode
+   * (C12-31): terrain lighting and natural sky lighting are separate concerns,
+   * so turning <code>globe.enableLighting</code> off must not replace the sky's
+   * sun. The day/night alpha ramp still stays disabled here, exactly as before
+   * — only the color's light direction is affected.
+   * </p>
+   * <p>
+   * The ground-atmosphere/fog stage on models and the dynamic environment map
+   * still use the historical "lit from directly above" direction in this mode;
+   * those consumers migrate under their own tracked work items. Use
+   * {@link DynamicAtmosphereLightingType.LEGACY_OVERHEAD} to get the overhead
+   * direction everywhere, including the sky.
+   * </p>
    *
    * @type {number}
    * @constant
@@ -29,6 +42,22 @@ const DynamicAtmosphereLightingType = {
    * @constant
    */
   SUNLIGHT: 2,
+  /**
+   * Light every atmosphere effect from directly above the sample being shaded
+   * &mdash; the historical appearance of
+   * {@link DynamicAtmosphereLightingType.NONE} before C12-31, kept as an
+   * explicit, named compatibility mode.
+   * <p>
+   * The substituted direction is a different "sun overhead" at every sample, so
+   * the Mie forward-scattering peak follows the viewer rather than the sun. That
+   * is not physical; it is offered only so an application that depends on the
+   * old look can opt back into it.
+   * </p>
+   *
+   * @type {number}
+   * @constant
+   */
+  LEGACY_OVERHEAD: 3,
 };
 
 /**

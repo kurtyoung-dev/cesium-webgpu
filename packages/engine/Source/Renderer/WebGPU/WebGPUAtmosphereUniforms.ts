@@ -97,10 +97,31 @@ export interface ResolvedAtmosphereScattering {
  * identically.
  *
  * @param frameState the current frame state
- * @returns the `DynamicAtmosphereLightingType` enum value (0/1/2)
+ * @returns the `DynamicAtmosphereLightingType` enum value (0/1/2/3)
  */
 export function resolveDynamicLighting(frameState: CesiumFrameState): number {
   return frameState.atmosphere?.dynamicLighting ?? 0;
+}
+
+/**
+ * True when the given `DynamicAtmosphereLightingType` selects an explicit
+ * scene light source &mdash; `SCENE_LIGHT` (1) or `SUNLIGHT` (2).
+ *
+ * C12-31 added `LEGACY_OVERHEAD` (3), the named compatibility mode that
+ * reproduces the historical `NONE` "lit from directly above" appearance. Every
+ * consumer that used to ask `dynamicLighting !== 0` really meant "is there a
+ * single, scene-wide light direction I can bake a table against", and the
+ * answer for mode 3 is no &mdash; its direction varies per texel/fragment,
+ * exactly like the old mode 0. Asking through this predicate keeps mode 3
+ * behaving like the historical NONE without any consumer re-deriving the rule.
+ *
+ * Byte-identical to the old `!== 0` test for enums 0, 1 and 2.
+ *
+ * @param dynamicLighting the `DynamicAtmosphereLightingType` enum value
+ * @returns whether the mode resolves to one scene-wide light direction
+ */
+export function usesSceneLightDirection(dynamicLighting: number): boolean {
+  return dynamicLighting === 1 || dynamicLighting === 2;
 }
 
 /**
@@ -142,9 +163,16 @@ export interface SkyDynamicLightingSource {
  * `updateEnvironment`": `SkyAtmosphere`'s constructor initialises the slot to
  * `0`, so such an instance reports NONE and takes the instance path.
  *
+ * C12-31 (2026-08-01): the value this returns now also decides the sky's LIGHT
+ * DIRECTION rather than only its day/night alpha gate. `NONE` no longer means
+ * "lit from directly above" for the sky shell — the WGSL takes
+ * `u.sunDirectionWC` for every mode except the explicit `LEGACY_OVERHEAD` (3).
+ * The enum value itself is unchanged, so the `!= 0` alpha gate keyed off it is
+ * unchanged too.
+ *
  * @param skyAtmosphere the `SkyAtmosphere` instance being packed, if any
  * @param frameState the current frame state
- * @returns the `DynamicAtmosphereLightingType` enum value (0/1/2)
+ * @returns the `DynamicAtmosphereLightingType` enum value (0/1/2/3)
  */
 export function resolveSkyDynamicLighting(
   skyAtmosphere: SkyDynamicLightingSource | undefined,

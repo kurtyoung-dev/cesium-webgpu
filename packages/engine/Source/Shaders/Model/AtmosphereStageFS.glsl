@@ -45,7 +45,11 @@ void applyFog(inout vec4 color, vec4 groundAtmosphereColor, vec3 lightDirection,
 
     // If there is dynamic lighting, apply that to the fog.
     const float NONE = 0.0;
-    if (czm_atmosphereDynamicLighting != NONE) {
+    // C12-31 — LEGACY_OVERHEAD is the explicit reproduction of the historical
+    // NONE appearance, so it must take the same branch NONE does. Excluding it
+    // here cannot change enums 0/1/2, which is why this is add-only.
+    const float LEGACY_OVERHEAD = 3.0;
+    if (czm_atmosphereDynamicLighting != NONE && czm_atmosphereDynamicLighting != LEGACY_OVERHEAD) {
         float darken = clamp(dot(normalize(czm_viewerPositionWC), lightDirection), czm_fogMinimumBrightness, 1.0);
         fogColor *= darken;
     }

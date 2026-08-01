@@ -8,7 +8,9 @@
 // │                   Shaders/SkyAtmosphereCommon.glsl (81 lines)        │
 // │                   Shaders/Builtin/Functions/computeScattering.glsl   │
 // │                   Shaders/Builtin/Functions/computeAtmosphereColor.glsl │
-// │ Last lockstep audit: 2026-07-03, Batch 513 (through-planet march)    │
+// │                   Shaders/Builtin/Functions/                          │
+// │                     getSkyAtmosphereLightDirection.glsl (C12-31)      │
+// │ Last lockstep audit: 2026-08-01, C12-31 (natural-sky light direction)│
 // └─────────────────────────────────────────────────────────────────────┘
 // Any change in this file MUST land with a matching change in the GLSL
 // counterparts. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
@@ -116,6 +118,18 @@
 //     `Uniforms` struct — innerRadius IS the ellipsoid-radius minus a
 //     distance-adjust quantity that the CPU pre-computes (no in-shader
 //     equivalent to GLSL's runtime `distanceAdjust` math).
+//
+// 12. **Light-direction selection — MATCHED, NOT divergent (C12-31,
+//     2026-08-01).** GLSL calls the shared builtin
+//     `czm_getSkyAtmosphereLightDirection(positionWC, lightEnum)` from
+//     both SkyAtmosphereVS and SkyAtmosphereFS; WGSL inlines the same
+//     selection as the `isLegacyOverhead` block in `skyColorForRay`
+//     (WGSL has no builtin include mechanism). Same four arms, same
+//     answers: NONE/SUNLIGHT → astronomical sun, SCENE_LIGHT → the
+//     scene light (packed into `sunDirectionWC` by the renderer),
+//     LEGACY_OVERHEAD → local up. Any change to one MUST land with the
+//     other; `Tools/visual-regression/sky-light-direction.spec.mjs`
+//     fails if they drift.
 
 struct Uniforms {
   mvpRelativeToEye: mat4x4<f32>,
@@ -876,7 +890,7 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
   // surface. WebGL's SkyAtmosphereCommon.glsl passes the full camera→
   // shell-vertex distance as `primaryRayLength` (czm_computeScattering
   // clamps only against the OUTER-sphere exit), so `skyPoint`, the
-  // NONE-case light direction, and the night-alpha term all reference
+  // LEGACY_OVERHEAD light direction, and the night-alpha term all reference
   // the far shell point — not the ground point — and planet-striking
   // rays MARCH THROUGH the planet interior, where the exponentially-
   // growing optical depth extinguishes them. That extinction is what
@@ -945,27 +959,52 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
 
   // Session 65 Batch 20 — `dynamicLighting` enum at `radiiAndDynamic
   // Atmosphere.z` (matches `DynamicAtmosphereLightingType.js`):
-  //   0 = NONE        → light direction is per-fragment `normalize
-  //                     (positionWC)` ("lit from directly above").
-  //                     Mirrors upstream
-  //                     `czm_getDynamicAtmosphereLightDirection.glsl`.
+  //   0 = NONE        → C12-31: the ASTRONOMICAL SUN. This arm used to be
+  //                     per-fragment `normalize(skyPoint)` ("lit from
+  //                     directly above"), which made `cosAngle` in
+  //                     `computeAtmosphereColor` ≈1 along every ray a
+  //                     ground observer looks down, parking the Mie phase
+  //                     on its forward peak (4869.9× the 90° value at the
+  //                     default g = 0.9) and painting a broad white
+  //                     aureole locked to the VIEW instead of the sun.
+  //                     `globe.enableLighting` defaults false, so
+  //                     `fromGlobeFlags` resolves NONE in the default
+  //                     viewer and every default scene showed it.
   //   1 = SCENE_LIGHT → use the uniform direction (JS packs
   //                     `lightDirectionWC` into `sunDirectionWC` for
   //                     this case — see WebGPUSkyAtmosphereRenderer
   //                     Batch 18).
   //   2 = SUNLIGHT    → use the uniform direction (JS packs the true
   //                     sun direction).
-  // The NONE case can't use the precomputed inscatter LUT because the
-  // LUT was baked for a single fixed light direction; per-fragment
-  // light direction needs the inline `computeScattering` ray-march.
+  //   3 = LEGACY_OVERHEAD → the named compatibility mode that reproduces
+  //                     the historical NONE appearance exactly.
+  // GLSL twin: `czm_getSkyAtmosphereLightDirection`
+  // (`Builtin/Functions/getSkyAtmosphereLightDirection.glsl`), called from
+  // both `SkyAtmosphereVS.glsl` and `SkyAtmosphereFS.glsl`.
+  //
+  // The enum VALUE is deliberately left at NONE rather than remapped to
+  // SUNLIGHT: `isDynamic` below (and its `SkyAtmosphereCommon.glsl` twin)
+  // keys the day/night alpha ramp on `!= 0.0`, so remapping would also
+  // change the shell's OPACITY. This fix moves the color anchor only.
+  //
+  // LEGACY_OVERHEAD is the only mode whose light direction varies per
+  // fragment, so it is the only one the baked single-direction LUTs can
+  // never serve.
   let dynamicLighting = u.radiiAndDynamicAtmosphere.z;
-  let isNoneCase = dynamicLighting < 0.5;
+  let isLegacyOverhead = dynamicLighting > 2.5;
   var lightDirWC: vec3<f32>;
-  if (isNoneCase) {
+  if (isLegacyOverhead) {
     lightDirWC = normalize(skyPoint);
   } else {
     lightDirWC = u.sunDirectionWC;
   }
+  // LUT eligibility is UNCHANGED from Batch 20 — the two explicit scene-light
+  // modes only. NONE is now direction-uniform and could in principle sample
+  // the baked tables, but both LUT opt-ins are default-off and the eclipse
+  // dimming path has not been certified against the LUT branch, so widening
+  // eligibility is deliberately deferred rather than smuggled in here. For
+  // enums 0/1/2 this predicate is bit-for-bit the old `!isNoneCase`.
+  let lutEligible = dynamicLighting > 0.5 && dynamicLighting < 2.5;
 
   // ─── GLOBE-TRANSLUCENCY-ALPHA — translucent-globe sky path ───
   // Port of WebGL's `#ifdef GLOBE_TRANSLUCENT` branch
@@ -1013,7 +1052,7 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
   }
 
   let useLutPath =
-    !isNoneCase &&
+    lutEligible &&
     u.useLut > 0.5 &&
     cameraHeightAboveShell < (outerRadius - innerRadius) * 2.0;
 
@@ -1021,13 +1060,13 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
   // sky-view LUT fast-path. Opt-in via `skyAtmosphere.useScatteringLut`
   // (renderer packs it into `u.debug.z` only when the LUT is baked). Unlike the
   // inscatter LUT (`useLutPath`), the sky-view LUT carries a view↔sun azimuth
-  // axis, so it is correct off the sun meridian. Gated to NON-NONE dynamic-
-  // lighting (the LUT bakes a single light direction) and to cameras near/inside
+  // axis, so it is correct off the sun meridian. Gated to `lutEligible`
+  // (the LUT bakes a single light direction) and to cameras near/inside
   // the shell (same orbit crossover as the inscatter LUT — above that the inline
   // march handles camera-outside geometry). Highest priority so the user opt-in
   // wins over the inscatter fast-path when both happen to be enabled.
   let useSkyViewLut =
-    !isNoneCase &&
+    lutEligible &&
     u.debug.z > 0.5 &&
     cameraHeightAboveShell < (outerRadius - innerRadius) * 2.0;
 
@@ -1109,13 +1148,16 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
     // normalized camera position); rayDir + the SUN direction give the azimuth.
     // The MS LUT was baked against the WORLD sun (frameState.sunDirectionWC),
     // so the azimuth reference MUST be `u.sunDirectionWC` — NOT `lightDirWC`,
-    // which in the NONE dynamic-lighting mode (the default) is the per-fragment
+    // which in the explicit LEGACY_OVERHEAD mode is the per-fragment
     // `normalize(skyPoint)` "lit from above" direction. Using lightDirWC there
     // measures the azimuth against the wrong vector and flattens the MS add to a
-    // view-uniform veil even though the LUT itself is fully directional. The
-    // sky-view fast-path above sidesteps this because it is gated to non-NONE
-    // lighting (where lightDirWC == u.sunDirectionWC); the MS add is NOT so
-    // gated, so it must reference the sun explicitly.
+    // view-uniform veil even though the LUT itself is fully directional.
+    //
+    // C12-31 note: before the natural-sky fix this ALSO made the default (NONE)
+    // sky internally inconsistent — primary scattering used the fake local-up
+    // light while the MS add used the real sun. NONE now resolves to
+    // `u.sunDirectionWC` too, so the two agree in every mode except the
+    // opt-in legacy one, where referencing the sun explicitly remains correct.
     let upDir = normalize(u.cameraPositionWC);
     let msColor = sampleMultipleScatterLut(upDir, rayDir, u.sunDirectionWC);
     // Conservative scale. As of Batch 429 the MS LUT carries the FULL single-

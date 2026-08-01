@@ -150,7 +150,10 @@ These features ship in upstream CesiumJS and are inherited by this fork. Many ha
 - DepthPlane — far-side depth plane preventing see-through-globe
 - Fog — exponential atmospheric fog
 - Atmosphere / SkyAtmosphere / GroundAtmosphere — Bruneton scattering on sky and ground
-- DynamicAtmosphereLightingType — sun / scene-light / none modes
+- DynamicAtmosphereLightingType — sun / scene-light / none modes, plus the fork's
+  `LEGACY_OVERHEAD` compatibility mode (C12-31, 2026-08-01: the sky shell's `NONE`
+  path now uses the astronomical Sun on both backends; `LEGACY_OVERHEAD`
+  reproduces the historical "lit from directly above" appearance)
 - SkyBox — six-face cubemap skybox
 - SkyBrightness — exposure-based sky brightening
 - Sun / SunLight / SunPostProcess — sun billboard + bloom post stage

@@ -251,7 +251,10 @@ class SkyAtmosphere {
       ellipsoid.maximumRadius * outerEllipsoidScale;
     radiiAndDynamicAtmosphereColor.y = ellipsoid.maximumRadius;
 
-    // Toggles whether the sun position is used. 0 treats the sun as always directly overhead.
+    // The `DynamicAtmosphereLightingType` enum for this frame. C12-31: value 0
+    // (NONE) no longer means "treat the sun as always directly overhead" for
+    // the sky shell — only the explicit LEGACY_OVERHEAD (3) does. The value
+    // still gates the day/night alpha ramp exactly as before.
     radiiAndDynamicAtmosphereColor.z = 0;
 
     this._radiiAndDynamicAtmosphereColor = radiiAndDynamicAtmosphereColor;

@@ -802,20 +802,21 @@ function packUniforms(
   // sunDirectionWC — Session 65 Batch 18 + Batch 20: respect
   // `frameState.atmosphere.dynamicLighting` enum, mirroring upstream
   // `czm_getDynamicAtmosphereLightDirection`:
-  //   NONE        (0, default) → per-fragment `normalize(positionWC)`
-  //                     ("lit from directly above"). Handled in
-  //                     `SkyAtmosphere.wgsl` since the direction is
-  //                     per-fragment; the value packed into
-  //                     `sunDirectionWC` here is unused on the NONE
-  //                     path. We still write a defined value (the sun
-  //                     direction as a safe placeholder) so future
-  //                     WGSL changes that read it for non-NONE
-  //                     fallback paths don't blow up.
+  //   NONE        (0, default) → C12-31: the astronomical sun. The value
+  //                     packed here USED to be an unread placeholder on
+  //                     this path (the WGSL substituted per-fragment
+  //                     `normalize(skyPoint)`); it is now the sky's
+  //                     actual light direction, so the
+  //                     `frameState.sunDirectionWC` fallback below is
+  //                     load-bearing rather than defensive.
   //   SCENE_LIGHT (1) → use `uniformState.lightDirectionWC` (honors
   //                     `scene.light` overrides such as a custom
   //                     `DirectionalLight`).
   //   SUNLIGHT    (2) → use `frameState.sunDirectionWC` (force sun
   //                     regardless of `scene.light`).
+  //   LEGACY_OVERHEAD (3) → per-fragment `normalize(skyPoint)`, resolved
+  //                     entirely in `SkyAtmosphere.wgsl`; the packed
+  //                     value is unread on that path.
   // 1 = DynamicAtmosphereLightingType.SCENE_LIGHT (see
   // `Source/Scene/DynamicAtmosphereLightingType.js`).
   // DP-H47 (Campaign-7) — resolve the dynamic-lighting enum through the shared

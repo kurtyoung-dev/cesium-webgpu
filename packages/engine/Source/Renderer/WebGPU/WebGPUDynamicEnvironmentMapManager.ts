@@ -47,6 +47,7 @@ import {
 } from "./WebGPUDynamicEnvironmentMapCapture.js";
 import {
   resolveAtmosphereScattering,
+  usesSceneLightDirection,
   type AtmosphereScatteringDefaults,
 } from "./WebGPUAtmosphereUniforms.js";
 import {
@@ -595,13 +596,16 @@ function updateWebGPUDynamicEnvironmentMap(
   // Item 2.2 (ENV-AERIAL-MS, Batch 430) — re-fill when the effective LUT-path
   // availability flips so a static (non-sun-moving) scene isn't stuck on the
   // wrong path. `wantLut` mirrors the predicate `runProceduralSkyFill` uses
-  // (context flag on AND dynamic lighting non-NONE); if the LUTs aren't baked
-  // yet the fill falls back to the placeholder and leaves `lastUsed...` false,
-  // so this keeps re-trying until the LUTs land, then settles.
+  // (context flag on AND a scene-light dynamic-lighting mode); if the LUTs
+  // aren't baked yet the fill falls back to the placeholder and leaves
+  // `lastUsed...` false, so this keeps re-trying until the LUTs land, then
+  // settles. C12-31: `usesSceneLightDirection` replaced `!== 0` so the new
+  // LEGACY_OVERHEAD enum (3), whose IBL light direction is per-texel local up,
+  // is treated like NONE. Byte-identical for enums 0/1/2.
   const wantLut =
     (frameState.context as unknown as { envMapMultiScatter?: boolean })
       .envMapMultiScatter === true &&
-    (frameState.atmosphere?.dynamicLighting ?? 0) !== 0;
+    usesSceneLightDirection(frameState.atmosphere?.dynamicLighting ?? 0);
   const lutPathChanged = wantLut !== cache.lastUsedMultiScatterLut;
   // Item 4.2 (CLOUD-IBL, Batch 441) — re-fill when the live cloud coverage moved
   // (so a static scene re-darkens its IBL as cloud cover changes). The published
@@ -1605,7 +1609,10 @@ function runProceduralSkyFill(
   };
   let lutSkyViewView: GPUTextureView | null = null;
   let lutMsView: GPUTextureView | null = null;
-  if (ctx.envMapMultiScatter === true && dynamicLighting !== 0) {
+  if (
+    ctx.envMapMultiScatter === true &&
+    usesSceneLightDirection(dynamicLighting)
+  ) {
     const lutRes =
       ctx.performanceManager?.ensureAtmosphereLUTResources?.(device);
     lutSkyViewView = lutRes?.skyViewView ?? null;

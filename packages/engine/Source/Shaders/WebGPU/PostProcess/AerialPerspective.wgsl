@@ -94,9 +94,11 @@ struct AerialUniforms {
   // translation column is ignored (the camera world position is supplied
   // separately via cameraPositionWC).
   inverseViewRotation: mat4x4<f32>,
-  // ── Batch 437 (CLOUD-SHADOWS): sun-view beer shadow map projection ──
-  // `cloudShadowVP` maps a WORLD (ECEF) fragment position into the sun's ortho
-  // clip space; the FS reads the cloud OPTICAL DEPTH column from `cloudShadowTex`
+  // ── Batch 437 (CLOUD-SHADOWS) / C13-06: sun-view beer shadow map ──
+  // `cloudShadowVP` is `worldToSunClip * translate(camera)` — the shared cloud
+  // shadow frame owner cancels the planet-scale translation in CPU f64, so the FS
+  // projects the fragment's CAMERA-RELATIVE offset rather than a full-ECEF
+  // position; the FS reads the cloud OPTICAL DEPTH column from `cloudShadowTex`
   // (binding 7) and ATTENUATES the inscatter by transmittance = exp(-depth·
   // absorption) so the air-light dims under the clouds. `cloudShadowControl`:
   // x = enabled (1.0 when globe.cloudCastShadows + a real map rendered), y =
@@ -215,15 +217,21 @@ fn sampleTransmittance(altitude: f32, cosZenith: f32) -> vec3<f32> {
   return textureSampleLevel(transmittanceTex, texSampler, vec2<f32>(u, v), 0.0).rgb;
 }
 
-// Batch 437 (CLOUD-SHADOWS) — sample the sun-view beer shadow map at a WORLD
-// (ECEF) position and return the cloud transmittance (0..1) used to attenuate the
-// inscatter under the clouds. Returns 1.0 (no attenuation) outside the shadow-map
-// footprint. Only called inside the `cloudShadowControl.x > 0.5` gate, so the
-// placeholder is never read on the default path. Mirrors GlobeTerrain's
-// `sampleCloudGroundShadow` (same projection + Beer-Lambert + 0.35 floor) so the
-// ground shadow and the air-light dimming agree.
-fn sampleCloudInscatterShadow(worldPos: vec3<f32>) -> f32 {
-  let clip = uniforms.cloudShadowVP * vec4<f32>(worldPos, 1.0);
+// Batch 437 (CLOUD-SHADOWS) / C13-06 — sample the sun-view beer shadow map at a
+// CAMERA-RELATIVE position and return the cloud transmittance (0..1) used to
+// attenuate the inscatter under the clouds. Returns 1.0 (no attenuation) outside
+// the shadow-map footprint. Only called inside the `cloudShadowControl.x > 0.5`
+// gate, so the placeholder is never read on the default path. Mirrors
+// GlobeTerrain's `sampleCloudGroundShadow` (same projection + Beer-Lambert + 0.35
+// floor) so the ground shadow and the air-light dimming agree.
+//
+// C13-06 — `cloudShadowVP` is now `worldToSunClip * translate(camera)`, emitted
+// by the shared frame owner in CPU f64. The operand is therefore the fragment's
+// offset from the camera (`rayDir * eyeDistance`), which this shader already
+// forms, instead of the full-ECEF `fragWC`. That removes the planet-scale
+// `mvp * vec4(position, 1.0)` product the fork's RTE law forbids.
+fn sampleCloudInscatterShadow(offsetFromCamera: vec3<f32>) -> f32 {
+  let clip = uniforms.cloudShadowVP * vec4<f32>(offsetFromCamera, 1.0);
   let ndc = clip.xyz / max(abs(clip.w), 1e-6);
   let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 1.0 - (ndc.y * 0.5 + 0.5));
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
@@ -341,8 +349,12 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   );
 
   let cameraWC = uniforms.cameraPositionWC.xyz;
+  // Fragment offset from the camera along the ray at the recovered eye distance.
+  // C13-06 keeps this camera-relative vector as the cloud-shadow projection
+  // operand; the absolute position below stays for the atmospheric march.
+  let fragOffsetWC = rayDir * eyeDistance;
   // Fragment world position along the ray at the recovered eye distance.
-  let fragWC = cameraWC + rayDir * eyeDistance;
+  let fragWC = cameraWC + fragOffsetWC;
 
   let camR = max(length(cameraWC), innerRadius);
 
@@ -364,7 +376,7 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
     );
     var froxelInscatter = ap.rgb;
     if (uniforms.cloudShadowControl.x > 0.5) {
-      froxelInscatter = froxelInscatter * sampleCloudInscatterShadow(fragWC);
+      froxelInscatter = froxelInscatter * sampleCloudInscatterShadow(fragOffsetWC);
     }
     let froxelColor = sceneColor.rgb * ap.a + froxelInscatter;
     return vec4<f32>(froxelColor, sceneColor.a);
@@ -498,7 +510,7 @@ fn fragmentMain(in: VertexOutput) -> @location(0) vec4<f32> {
   // default (globe.cloudCastShadows off) leaves `inscatter` untouched → byte-
   // identical (the placeholder is never read).
   if (uniforms.cloudShadowControl.x > 0.5) {
-    inscatter = inscatter * sampleCloudInscatterShadow(fragWC);
+    inscatter = inscatter * sampleCloudInscatterShadow(fragOffsetWC);
   }
 
   // Camera→fragment transmittance from the marched optical depth (Beer-

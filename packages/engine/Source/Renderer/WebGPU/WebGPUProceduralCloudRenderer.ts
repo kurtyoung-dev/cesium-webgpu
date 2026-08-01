@@ -52,6 +52,17 @@ import {
   writeCloudDensityAdvectedOriginPhases,
   writeCloudMorphologyOriginHighLow,
 } from "./WebGPUCloudDensityDomain.js";
+// C13-06 — the one RTE/WGS84 frame owner shared by the beer-shadow-map producer
+// and every consumer that projects into it.
+import {
+  CLOUD_SHADOW_WGS84_A,
+  CLOUD_SHADOW_WGS84_B,
+  type CloudShadowFrame,
+  computeCloudShadowFrame,
+  createCloudShadowFrame,
+  writeCloudShadowInverseViewProjectionRelativeToEye,
+  writeCloudShadowViewProjection,
+} from "./WebGPUCloudShadowFrame.js";
 // Batch 445 (4.12 CLOUD-RTE) — RTE high/low camera split for the camera-relative
 // high-precision cloud march. Only the encoded floats (slots 120-127) are sourced
 // from this; the WGSL reads them solely inside the CLOUD_QF_HIGH_PRECISION branch.
@@ -82,6 +93,10 @@ import type {
 // data (the WGSL just reads the packed profile floats).
 import CloudTypeProfile from "../../Scene/CloudTypeProfile.js";
 import CloudType from "../../Scene/CloudType.js";
+// C13-07 — the DEFAULT global weather map. Backend-neutral Scene data, shared
+// with the real-data packer so both producers write ONE dateline/pole-safe
+// equirectangular convention (Scene/Weather/WeatherMapSeam.ts).
+import { buildProceduralWeatherMap } from "../../Scene/Weather/ProceduralWeatherMap.js";
 
 // CloudUniforms float count — grown ADD-ONLY: 64→80 (weather seam) → 96 (W1-W8
 // lighting) → 104 (Batch 407 dials 96-103) → 108 (Batch 408 V11 profile 104-107;
@@ -99,8 +114,11 @@ import CloudType from "../../Scene/CloudType.js";
 const CLOUD_UNIFORM_FLOATS = 148 + CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${ProceduralCloudsWGSL}`;
-const WGS84_EQUATORIAL_RADIUS = 6378137.0;
-const WGS84_POLAR_RADIUS = 6356752.314245179;
+// C13-06 — the shell axes the WGSL march reads and the axes the sun-view frame
+// projects the footprint centre onto MUST be one value, or the shadow map lands
+// on a different deck than the one the visible march renders.
+const WGS84_EQUATORIAL_RADIUS = CLOUD_SHADOW_WGS84_A;
+const WGS84_POLAR_RADIUS = CLOUD_SHADOW_WGS84_B;
 // Procedural weather-map texture (coarse global coverage field).
 const WEATHER_TEX_W = 256;
 const WEATHER_TEX_H = 128;
@@ -264,10 +282,11 @@ export interface CloudCache {
   // stays null and consumers read the shared 1×1-white placeholder
   // (`shadowPlaceholderView`, optical depth 0 → transmittance 1). The map stores the
   // cloud optical depth (Σ density·length) along the sun ray, rasterized from the
-  // sun's orthographic view by the `cloudShadowMain` entry point. `shadowSunViewVP`
-  // is the world→sun-clip matrix consumers project a world point through to read the
-  // column's optical depth; `shadowActive` is the per-frame "real map is bound" flag
-  // (consumers gate on it so the off path never samples a stale map).
+  // sun's orthographic view by the `cloudShadowMain` entry point. C13-06 — the
+  // authoritative projection is `shadowFrame` (CPU f64); consumers derive their
+  // own eye-relative matrix from it, and `shadowSunViewVP` is the absolute matrix
+  // kept for the planar scene modes. `shadowActive` is the per-frame "real map is
+  // bound" flag (consumers gate on it so the off path never samples a stale map).
   shadowTexture: GPUTexture | null;
   shadowView: GPUTextureView | null; // r16float, sun-view optical depth
   shadowPlaceholderTexture: GPUTexture | null;
@@ -280,6 +299,14 @@ export interface CloudCache {
   shadowSize: number; // current square shadow-map resolution
   // Stashed each frame for the consumers (globe terrain / aerial / fog / env):
   shadowSunViewVP: Float32Array; // 16 floats, column-major world→sun-clip
+  // C13-06 — the f64 sun-view frame the matrix above is derived from. Consumers
+  // read THIS and emit their own eye-relative matrix against their own camera
+  // (`writeCloudShadowViewProjectionRelativeToEye`), so no consumer forms a
+  // planet-scale `f32` matrix product. `shadowSunViewVP` remains the absolute
+  // fallback for planar scene modes, whose fragments have no ECEF eye-relative
+  // position.
+  shadowFrame: CloudShadowFrame;
+  shadowCascadeFrames: CloudShadowFrame[];
   shadowActive: boolean; // true when the real map was rendered this frame
   shadowAbsorption: number; // absorptionCoeff used so consumers' exp() matches
   // ── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — opt-in 3-cascade atlas ──
@@ -423,6 +450,12 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       shadowUniformData: new Float32Array(CLOUD_SHADOW_UNIFORM_FLOATS),
       shadowSize: 0,
       shadowSunViewVP: new Float32Array(16),
+      shadowFrame: createCloudShadowFrame(),
+      shadowCascadeFrames: [
+        createCloudShadowFrame(),
+        createCloudShadowFrame(),
+        createCloudShadowFrame(),
+      ],
       shadowActive: false,
       shadowAbsorption: 0.04,
       shadowCascadeTexture: null,
@@ -838,7 +871,9 @@ function clampUnit(v: number): number {
 }
 
 // ── Batch 437 (CLOUD-SHADOWS) — beer-shadow-map constants ──
-// CloudShadowUniforms = sunViewInvVP(16) + sunDirAndSteps(4) = 20 floats.
+// CloudShadowUniforms = sunViewInvVpRelativeToEye(16) + sunDirAndSteps(4) = 20
+// floats. C13-06 changed only the MEANING of the matrix (the inverse sun-view VP
+// is now eye-relative), not the layout — no uniform buffer or bind group grew.
 const CLOUD_SHADOW_UNIFORM_FLOATS = 20;
 const CLOUD_SHADOW_UNIFORM_BYTES = CLOUD_SHADOW_UNIFORM_FLOATS * 4;
 // Square low-res shadow map. 512² is plenty for the soft, slowly-moving cloud
@@ -1149,71 +1184,8 @@ function ensureHalfResResources(
 }
 
 // ─── Weather Phase 1 — procedural weather-map producer ───
-// Fills a coarse global coverage field with a value-noise FBM so the feature
-// ships with ZERO data pipeline (the historical-data ingest later writes the
-// SAME texture). R = coverage, G = cloud-type-y (mid), B = base/deck, A =
-// density-bias. Contrast-stretched so distinct cloudy regions + clear gaps form.
-function buildProceduralWeatherMap(w: number, h: number): Uint8Array {
-  const data = new Uint8Array(w * h * 4);
-  const hash = (x: number, y: number): number => {
-    const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
-    return n - Math.floor(n);
-  };
-  const vnoise = (x: number, y: number): number => {
-    const ix = Math.floor(x);
-    const iy = Math.floor(y);
-    const fx = x - ix;
-    const fy = y - iy;
-    const ux = fx * fx * (3 - 2 * fx);
-    const uy = fy * fy * (3 - 2 * fy);
-    const a = hash(ix, iy);
-    const b = hash(ix + 1, iy);
-    const c = hash(ix, iy + 1);
-    const d = hash(ix + 1, iy + 1);
-    return (
-      a * (1 - ux) * (1 - uy) +
-      b * ux * (1 - uy) +
-      c * (1 - ux) * uy +
-      d * ux * uy
-    );
-  };
-  const fbm = (x: number, y: number): number => {
-    let v = 0;
-    let amp = 0.5;
-    let f = 1;
-    for (let i = 0; i < 5; i++) {
-      v += amp * vnoise(x * f, y * f);
-      f *= 2;
-      amp *= 0.5;
-    }
-    return v;
-  };
-  // smoothstep(0,1) on a normalized value.
-  const sstep = (t: number): number => {
-    const c = Math.max(0, Math.min(1, t));
-    return c * c * (3 - 2 * c);
-  };
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const u = x / w;
-      const vv = y / h;
-      // Two octaves of scale so there are continental cloudy/clear REGIONS with
-      // finer internal variation. High-contrast smoothstep so clear regions are
-      // genuinely clear (R≈0) and storm regions genuinely overcast (R≈1) —
-      // distinct weather, not a gentle wash.
-      const big = fbm(u * 6, vv * 6);
-      const fine = fbm(u * 18, vv * 18);
-      const f = big * 0.7 + fine * 0.3;
-      const coverage = sstep((f - 0.42) / 0.18);
-      const i = (y * w + x) * 4;
-      data[i] = Math.round(coverage * 255); // R coverage
-      data[i + 1] = 128; // G type-y (mid)
-      data[i + 2] = 0; // B base/deck
-      data[i + 3] = 128; // A density-bias
-    }
-  }
-  return data;
-}
+// The default global map now lives in Scene/Weather/ProceduralWeatherMap.ts
+// (C13-07) so it and the real-data packer share ONE seam/pole convention.
 
 // Returns the weather texture VIEW to bind this frame, building (once) the
 // procedural map when enabled and a 1×1 white fallback otherwise. The bind group
@@ -1609,204 +1581,13 @@ function resolveCloudQuality(inputs: QualityResolverInputs): {
   return { maxSteps: 48, lightSteps: 4 };
 }
 
-// ─── Batch 437 (CLOUD-SHADOWS) — small column-major mat4 helpers ───
-// Self-contained (no Core import in this hot file). All matrices are length-16
-// Float32Array in Cesium's COLUMN-MAJOR convention (the same convention the WGSL
-// `mat4x4` + every other cloud-renderer pack uses).
-
-// result = a × b (both column-major).
-function mul4(a: Float32Array, b: Float32Array, out: Float32Array): void {
-  for (let c = 0; c < 4; c++) {
-    const b0 = b[c * 4 + 0];
-    const b1 = b[c * 4 + 1];
-    const b2 = b[c * 4 + 2];
-    const b3 = b[c * 4 + 3];
-    for (let r = 0; r < 4; r++) {
-      out[c * 4 + r] =
-        a[0 * 4 + r] * b0 +
-        a[1 * 4 + r] * b1 +
-        a[2 * 4 + r] * b2 +
-        a[3 * 4 + r] * b3;
-    }
-  }
-}
-
-// Invert a column-major 4×4 (general; the sun-view VP is affine·ortho so it always
-// inverts). Returns false (identity-filled) on a singular matrix.
-function invert4(m: Float32Array, out: Float32Array): boolean {
-  const m0 = m[0],
-    m1 = m[1],
-    m2 = m[2],
-    m3 = m[3];
-  const m4 = m[4],
-    m5 = m[5],
-    m6 = m[6],
-    m7 = m[7];
-  const m8 = m[8],
-    m9 = m[9],
-    m10 = m[10],
-    m11 = m[11];
-  const m12 = m[12],
-    m13 = m[13],
-    m14 = m[14],
-    m15 = m[15];
-  const b00 = m0 * m5 - m1 * m4;
-  const b01 = m0 * m6 - m2 * m4;
-  const b02 = m0 * m7 - m3 * m4;
-  const b03 = m1 * m6 - m2 * m5;
-  const b04 = m1 * m7 - m3 * m5;
-  const b05 = m2 * m7 - m3 * m6;
-  const b06 = m8 * m13 - m9 * m12;
-  const b07 = m8 * m14 - m10 * m12;
-  const b08 = m8 * m15 - m11 * m12;
-  const b09 = m9 * m14 - m10 * m13;
-  const b10 = m9 * m15 - m11 * m13;
-  const b11 = m10 * m15 - m11 * m14;
-  let det =
-    b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
-  if (det === 0) {
-    out.set([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-    return false;
-  }
-  det = 1.0 / det;
-  out[0] = (m5 * b11 - m6 * b10 + m7 * b09) * det;
-  out[1] = (m2 * b10 - m1 * b11 - m3 * b09) * det;
-  out[2] = (m13 * b05 - m14 * b04 + m15 * b03) * det;
-  out[3] = (m10 * b04 - m9 * b05 - m11 * b03) * det;
-  out[4] = (m6 * b08 - m4 * b11 - m7 * b07) * det;
-  out[5] = (m0 * b11 - m2 * b08 + m3 * b07) * det;
-  out[6] = (m14 * b02 - m12 * b05 - m15 * b01) * det;
-  out[7] = (m8 * b05 - m10 * b02 + m11 * b01) * det;
-  out[8] = (m4 * b10 - m5 * b08 + m7 * b06) * det;
-  out[9] = (m1 * b08 - m0 * b10 - m3 * b06) * det;
-  out[10] = (m12 * b04 - m13 * b02 + m15 * b00) * det;
-  out[11] = (m9 * b02 - m8 * b04 - m11 * b00) * det;
-  out[12] = (m5 * b07 - m4 * b09 - m6 * b06) * det;
-  out[13] = (m0 * b09 - m1 * b07 + m2 * b06) * det;
-  out[14] = (m13 * b01 - m12 * b03 - m14 * b00) * det;
-  out[15] = (m8 * b03 - m9 * b01 + m10 * b00) * det;
-  return true;
-}
-
-// Build the sun-view ORTHOGRAPHIC view-projection (world → sun-clip, column-major)
-// covering a square footprint of half-extent `halfExtent` centered on `center`
-// (the camera ground point), looking ALONG -sunDir (sun behind the eye). WebGPU
-// clip z ∈ [0,1]. The lookAt eye is pushed `dist` up the sun ray so the whole
-// shell is between the near/far planes; near/far bracket [0, 2·dist].
-//
-// RTE: the lookAt translation cancels the large `center` magnitude, so the
-// world→eye product for points NEAR the footprint stays small (f32-safe). The
-// shell radius (~6.4e6 m) only enters via `center` (the surface point), not as a
-// raw coordinate in the matrix product the consumers evaluate.
-function buildSunViewOrthoVP(
-  center: [number, number, number],
-  sunDir: [number, number, number],
-  halfExtent: number,
-  out: Float32Array,
-  invOut: Float32Array,
-): void {
-  // Normalize sun dir.
-  let sx = sunDir[0],
-    sy = sunDir[1],
-    sz = sunDir[2];
-  const sl = Math.hypot(sx, sy, sz) || 1.0;
-  sx /= sl;
-  sy /= sl;
-  sz /= sl;
-  // Distance to push the eye up the sun ray — comfortably above the shell top so
-  // the ortho near plane sits above the clouds and far plane below the surface.
-  const dist = halfExtent * 2.0 + 12000.0;
-  const eye: [number, number, number] = [
-    center[0] + sx * dist,
-    center[1] + sy * dist,
-    center[2] + sz * dist,
-  ];
-  // Forward = (center - eye) normalized = -sunDir.
-  const fx = -sx,
-    fy = -sy,
-    fz = -sz;
-  // Up reference: avoid degeneracy when the sun is near the world Z axis.
-  let upx = 0,
-    upy = 0,
-    upz = 1;
-  if (Math.abs(fz) > 0.99) {
-    upx = 0;
-    upy = 1;
-    upz = 0;
-  }
-  // right = normalize(cross(forward, up)).
-  let rx = fy * upz - fz * upy;
-  let ry = fz * upx - fx * upz;
-  let rz = fx * upy - fy * upx;
-  const rl = Math.hypot(rx, ry, rz) || 1.0;
-  rx /= rl;
-  ry /= rl;
-  rz /= rl;
-  // trueUp = cross(right, forward).
-  const ux = ry * fz - rz * fy;
-  const uy = rz * fx - rx * fz;
-  const uz = rx * fy - ry * fx;
-  // View matrix (column-major). Rows are right/up/-forward; translation = -R·eye.
-  const tx = -(rx * eye[0] + ry * eye[1] + rz * eye[2]);
-  const ty = -(ux * eye[0] + uy * eye[1] + uz * eye[2]);
-  const tz = rx * 0; // placeholder, replaced below
-  // Standard right-handed lookAt: z-axis points back along +forward·(-1).
-  // view = [ right.x  right.y  right.z  tx
-  //          up.x     up.y     up.z     ty
-  //         -fwd.x   -fwd.y   -fwd.z    tz
-  //          0        0        0        1 ]
-  const zx = -fx,
-    zy = -fy,
-    zz = -fz;
-  const tzz = -(zx * eye[0] + zy * eye[1] + zz * eye[2]);
-  const view = new Float32Array([
-    rx,
-    ux,
-    zx,
-    0,
-    ry,
-    uy,
-    zy,
-    0,
-    rz,
-    uz,
-    zz,
-    0,
-    tx,
-    ty,
-    tzz,
-    1,
-  ]);
-  void tz;
-  // Orthographic projection (WebGPU z ∈ [0,1]). Symmetric L/R/B/T = ±halfExtent.
-  const near = 1.0;
-  const far = dist * 2.0;
-  const invR = 1.0 / halfExtent; // 1/(right) with left=-right
-  const invT = 1.0 / halfExtent;
-  const invFN = 1.0 / (far - near);
-  // Column-major ortho: x' = x/halfExtent, y' = y/halfExtent,
-  // z' = (near - z_eye)/(far-near) mapped to [0,1] for a -z forward eye space.
-  const proj = new Float32Array([
-    invR,
-    0,
-    0,
-    0,
-    0,
-    invT,
-    0,
-    0,
-    0,
-    0,
-    -invFN,
-    0,
-    0,
-    0,
-    -near * invFN,
-    1,
-  ]);
-  mul4(proj, view, out);
-  invert4(out, invOut);
-}
+// ─── C13-06 — the sun-view frame is owned by WebGPUCloudShadowFrame.ts ───
+// The former local mat4 helpers (mul4 / invert4 / buildSunViewOrthoVP) built the
+// world-to-sun-clip matrix and its inverse in f32 from a SPHERICAL 6378137 m
+// footprint centre. Both defects are now closed by the shared f64 frame owner:
+// the centre is a WGS84 geodetic surface projection, and the matrices are
+// emitted relative to a caller-supplied eye so no planet-scale magnitude reaches
+// an f32 matrix entry. See WebGPUCloudShadowFrame.ts for the full contract.
 
 // (Re)allocate the shadow map + pipeline + uniform buffer + placeholder. Builds the
 // dedicated shadow BGL (only the bindings `cloudShadowMain` references: CloudUniforms
@@ -2763,31 +2544,54 @@ export function executeProceduralClouds(
         `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow map allocation failed; falling back to no-shadow placeholder.`,
       );
     } else {
-      // Footprint center = camera ground point (camera position projected to the
-      // ellipsoid surface along its own radial). Sun-relative ortho keeps the
-      // matrix product f32-safe near the footprint.
+      // C13-06 — footprint centre = the camera's WGS84 GEODETIC surface point.
+      // The previous radial projection onto a 6378137 m sphere placed the centre
+      // up to ~21.4 km off in the radial direction at the poles, which at a low
+      // sun swung the whole ±60 km footprint tens of kilometres away from the
+      // ground the camera is looking at.
       const cpx = camPos?.x ?? 0;
       const cpy = camPos?.y ?? 0;
       const cpz = camPos?.z ?? 0;
-      const camLen = Math.hypot(cpx, cpy, cpz) || 1.0;
-      const surf = 6378137.0;
-      const groundCenter: [number, number, number] = [
-        (cpx / camLen) * surf,
-        (cpy / camLen) * surf,
-        (cpz / camLen) * surf,
-      ];
       const sdx = sunDir?.x ?? 0;
       const sdy = sunDir?.y ?? 1;
       const sdz = sunDir?.z ?? 0;
-      buildSunViewOrthoVP(
-        groundCenter,
-        [sdx, sdy, sdz],
+      const frameOk = computeCloudShadowFrame(
+        cache.shadowFrame,
+        cpx,
+        cpy,
+        cpz,
+        sdx,
+        sdy,
+        sdz,
         CLOUD_SHADOW_FOOTPRINT_M,
-        cache.shadowSunViewVP,
-        cache.shadowUniformData, // first 16 floats = sunViewInvVP
+        WGS84_EQUATORIAL_RADIUS,
+        WGS84_POLAR_RADIUS,
       );
-      // CloudShadowUniforms: [0..15] inverse VP (written by buildSunViewOrthoVP into
-      // shadowUniformData), [16..19] sunDir + light steps.
+      if (!frameOk) {
+        // Permanent sentinel (CLAUDE.md): degenerate camera/sun input would
+        // otherwise upload a garbage projection every consumer then samples.
+        console.error(
+          `[CesiumJS:webgpu:ctx-${context.id ?? "?"}] Cloud shadow sun-view frame is degenerate; leaving the shadow map inert this frame.`,
+        );
+      }
+      // The absolute matrix stays published for the planar scene modes, whose
+      // globe fragments carry no ECEF camera-relative position.
+      writeCloudShadowViewProjection(
+        cache.shadowSunViewVP,
+        0,
+        cache.shadowFrame,
+      );
+      // CloudShadowUniforms: [0..15] = inverse VP RELATIVE TO THE CAMERA, so the
+      // shadow FS reconstructs a camera-relative column point and stays in the
+      // same RTE frame as the visible march. [16..19] sunDir + light steps.
+      writeCloudShadowInverseViewProjectionRelativeToEye(
+        cache.shadowUniformData,
+        0,
+        cache.shadowFrame,
+        cpx,
+        cpy,
+        cpz,
+      );
       cache.shadowUniformData[16] = sdx;
       cache.shadowUniformData[17] = sdy;
       cache.shadowUniformData[18] = sdz;
@@ -2828,7 +2632,9 @@ export function executeProceduralClouds(
       shadowPass.setBindGroup(0, shadowBindGroup);
       shadowPass.draw(3);
       shadowPass.end();
-      cache.shadowActive = true;
+      // A degenerate frame leaves the map inert rather than publishing an
+      // identity projection every consumer would then sample as a real shadow.
+      cache.shadowActive = frameOk;
 
       // ── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — opt-in 3-cascade atlas ──
       // Additive on top of the single map (which aerial/fog still read): render
@@ -2853,12 +2659,31 @@ export function executeProceduralClouds(
             // Reuse the shared invVP scratch region (cud[base..base+15]) as the
             // per-cascade inverse VP the shadow FS reconstructs columns from.
             const invVP = cud.subarray(base, base + 16);
-            buildSunViewOrthoVP(
-              groundCenter,
-              [sdx, sdy, sdz],
+            // C13-06 — each cascade is the same geodetic-centred sun frame at a
+            // tighter half-extent. The FS reconstructs camera-relative columns
+            // from its own inverse VP; the forward matrix stays absolute for the
+            // planar-mode consumer branch.
+            const cascadeFrame = cache.shadowCascadeFrames[ci];
+            computeCloudShadowFrame(
+              cascadeFrame,
+              cpx,
+              cpy,
+              cpz,
+              sdx,
+              sdy,
+              sdz,
               CLOUD_SHADOW_CASCADE_FOOTPRINTS_M[ci],
-              fwd,
+              WGS84_EQUATORIAL_RADIUS,
+              WGS84_POLAR_RADIUS,
+            );
+            writeCloudShadowViewProjection(fwd, 0, cascadeFrame);
+            writeCloudShadowInverseViewProjectionRelativeToEye(
               invVP,
+              0,
+              cascadeFrame,
+              cpx,
+              cpy,
+              cpz,
             );
             cud[base + 16] = sdx;
             cud[base + 17] = sdy;
@@ -2916,7 +2741,7 @@ export function executeProceduralClouds(
             cascadePass.draw(3);
           }
           cascadePass.end();
-          cache.shadowCascadeActive = true;
+          cache.shadowCascadeActive = frameOk;
         }
       }
     }

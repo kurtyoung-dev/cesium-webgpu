@@ -4,10 +4,14 @@
 // │       WebGL GLSL helpers: Shaders/SkyAtmosphereCommon.glsl           │
 // │       WebGPU WGSL: Shaders/WebGPU/Environment/SkyAtmosphere.wgsl     │
 // │       (single file containing @vertex + @fragment + helpers)         │
-// │ Last lockstep audit: 2026-05-19, Batch 76                            │
+// │ Last lockstep audit: 2026-08-01, C12-31 (natural-sky light direction)│
 // └─────────────────────────────────────────────────────────────────────┘
 // Any change in this file MUST land with a matching change in the WGSL
 // counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
+//
+// - C12-31 light-direction selection is MATCHED, not divergent: this file
+//   calls `czm_getSkyAtmosphereLightDirection`; the WGSL inlines the same
+//   four-arm selection as its `isLegacyOverhead` block.
 //
 // Structural divergence summary (full ledger in the WGSL counterpart):
 // - 16-step adaptive ray-march (`rayStepLengthIncrease` in
@@ -95,7 +99,12 @@ in float v_translucent;
 void main (void)
 {
     float lightEnum = u_radiiAndDynamicAtmosphereColor.z;
-    vec3 lightDirection = czm_getDynamicAtmosphereLightDirection(v_outerPositionWC, lightEnum);
+    // C12-31 — the NATURAL-SKY selector. Its NONE arm is the astronomical sun;
+    // only the explicit LEGACY_OVERHEAD mode still substitutes local up. See
+    // `Builtin/Functions/getSkyAtmosphereLightDirection.glsl` for the root
+    // cause (view-locked Mie forward peak, 4869.9x at the default g = 0.9).
+    // WGSL twin: the `isLegacyOverhead` block in SkyAtmosphere.wgsl.
+    vec3 lightDirection = czm_getSkyAtmosphereLightDirection(v_outerPositionWC, lightEnum);
 
     vec3 mieColor;
     vec3 rayleighColor;

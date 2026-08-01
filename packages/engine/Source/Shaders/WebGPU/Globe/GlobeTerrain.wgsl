@@ -244,7 +244,12 @@ struct CameraUniforms {
   // Shadow` takes the single-map branch → byte-identical when the tier is off.
   cloudShadowVP1: mat4x4<f32>,
   cloudShadowVP2: mat4x4<f32>,
-  cloudShadowCascadeParams: vec4<f32>, // x = atlas tile count (3.0); y,z,w reserved
+  // x = atlas tile count (3.0 when the cascade atlas is bound, else 0).
+  // y = C13-06 eye-relative flag: > 0.5 means every `cloudShadowVP*` above is
+  //     `worldToSunClip * translate(camera)`, so the FS must project
+  //     `v_positionRTE`. 0 keeps the absolute matrices + `v_positionMC` for the
+  //     planar scene modes. z, w reserved.
+  cloudShadowCascadeParams: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -2113,6 +2118,24 @@ fn cloudShadowProjectUV(vp: mat4x4<f32>, worldPos: vec3<f32>) -> vec3<f32> {
   let inside = select(0.0, 1.0,
     uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0);
   return vec3<f32>(uv, inside);
+}
+
+// C13-06 — pick the position operand that matches the sun-view matrices the CPU
+// published this frame. `cloudShadowCascadeParams.y > 0.5` means the matrices are
+// RELATIVE TO THE EYE, so the fragment must supply `v_positionRTE` — the exact
+// high/low camera-relative vector the vertex stage already builds for CSM.
+// Multiplying the full-ECEF `v_positionMC` by a planet-scale f32 matrix is the
+// `mvp * vec4(position, 1.0)` form the fork's RTE law forbids. Planar scene modes
+// zero `v_positionRTE`, so the CPU keeps them on the absolute matrix and this
+// returns `v_positionMC` — byte-identical to the pre-C13-06 path.
+fn cloudShadowPositionOperand(
+  positionRTE: vec3<f32>,
+  positionMC: vec3<f32>,
+) -> vec3<f32> {
+  if (camera.cloudShadowCascadeParams.y > 0.5) {
+    return positionRTE;
+  }
+  return positionMC;
 }
 
 fn sampleCloudGroundShadow(worldPos: vec3<f32>) -> f32 {
@@ -4508,9 +4531,15 @@ fn fragmentMain(
   // Batch 437 (CLOUD-SHADOWS) — darken lit ground under the procedural clouds by
   // the sun-view beer shadow map. Gated on `cloudShadowControl.x` so the default
   // (globe.cloudCastShadows off) leaves `color` byte-identical (the placeholder is
-  // never read). `v_positionMC` is the fragment's full ECEF world position.
+  // never read). C13-06 — the position operand follows the frame the CPU
+  // published: eye-relative `v_positionRTE` in SCENE3D, absolute `v_positionMC`
+  // in the planar modes.
   if (camera.cloudShadowControl.x > 0.5) {
-    color = color * sampleCloudGroundShadow(input.v_positionMC);
+    color =
+      color *
+      sampleCloudGroundShadow(
+        cloudShadowPositionOperand(input.v_positionRTE, input.v_positionMC),
+      );
   }
 
   // ┌─────────────────────────────────────────────────────────────────────┐
