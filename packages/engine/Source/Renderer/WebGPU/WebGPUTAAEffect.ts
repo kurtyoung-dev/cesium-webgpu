@@ -350,6 +350,27 @@ export class WebGPUTAAEffect implements PostProcessEffect {
   private _gBufferPlaceholderView: GPUTextureView | null = null;
   private _paramsBuffer: GPUBuffer | null = null;
   private _paramsScratch = new Float32Array(TAA_PARAMS_FLOATS);
+  private _paramsU32 = new Uint32Array(this._paramsScratch.buffer);
+  private _resolveBindGroups: [GPUBindGroup | null, GPUBindGroup | null] = [
+    null,
+    null,
+  ];
+  private _resolveBindGroupKeys: [
+    {
+      source: GPUTextureView;
+      history: GPUTextureView;
+      depth: GPUTextureView;
+      motion: GPUTextureView;
+      gBuffer: GPUTextureView;
+    } | null,
+    {
+      source: GPUTextureView;
+      history: GPUTextureView;
+      depth: GPUTextureView;
+      motion: GPUTextureView;
+      gBuffer: GPUTextureView;
+    } | null,
+  ] = [null, null];
 
   // Motion-vector state fed by `updateMotionVectorParams()` before each
   // `execute()` call. Kept as FP64 Float64Arrays so the CPU-side composition
@@ -619,7 +640,7 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     p[0] = 1.0 / this._width;
     p[1] = 1.0 / this._height;
     p[2] = this.blendWeight;
-    const u32View = new Uint32Array(p.buffer);
+    const u32View = this._paramsU32;
     u32View[3] = this._parityManager.frameIndex;
     p[4] = this.resolveJitterUvX;
     p[5] = this.resolveJitterUvY;
@@ -661,21 +682,42 @@ export class WebGPUTAAEffect implements PostProcessEffect {
       // Should never happen — both placeholders are allocated at initialize().
       return sourceView;
     }
-    const bg = this._device.createBindGroup({
-      label: "TAA_BG",
-      layout: this._bindGroupLayout,
-      entries: [
-        { binding: 0, resource: sourceView },
-        { binding: 1, resource: historyReadView },
-        { binding: 2, resource: depthView },
-        { binding: 3, resource: this._sampler },
-        { binding: 4, resource: { buffer: this._paramsBuffer } },
-        { binding: 5, resource: motionBindView },
-        { binding: 6, resource: gBufferBindView },
-        // Batch 244 — non-filtering depth sampler (see `_depthSampler`).
-        { binding: 7, resource: this._depthSampler },
-      ],
-    });
+    const bindGroupSlot = this._parityManager.frameIndex & 1;
+    const cachedKey = this._resolveBindGroupKeys[bindGroupSlot];
+    let bg = this._resolveBindGroups[bindGroupSlot];
+    if (
+      !bg ||
+      !cachedKey ||
+      cachedKey.source !== sourceView ||
+      cachedKey.history !== historyReadView ||
+      cachedKey.depth !== depthView ||
+      cachedKey.motion !== motionBindView ||
+      cachedKey.gBuffer !== gBufferBindView
+    ) {
+      bg = this._device.createBindGroup({
+        label: `TAA_BG_${bindGroupSlot}`,
+        layout: this._bindGroupLayout,
+        entries: [
+          { binding: 0, resource: sourceView },
+          { binding: 1, resource: historyReadView },
+          { binding: 2, resource: depthView },
+          { binding: 3, resource: this._sampler },
+          { binding: 4, resource: { buffer: this._paramsBuffer } },
+          { binding: 5, resource: motionBindView },
+          { binding: 6, resource: gBufferBindView },
+          // Batch 244 — non-filtering depth sampler (see `_depthSampler`).
+          { binding: 7, resource: this._depthSampler },
+        ],
+      });
+      this._resolveBindGroups[bindGroupSlot] = bg;
+      this._resolveBindGroupKeys[bindGroupSlot] = {
+        source: sourceView,
+        history: historyReadView,
+        depth: depthView,
+        motion: motionBindView,
+        gBuffer: gBufferBindView,
+      };
+    }
 
     // Render into the write history slot.
     const pass = encoder.beginRenderPass({
@@ -828,6 +870,8 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     }
     this._pipeline = null;
     this._bindGroupLayout = null;
+    this._resolveBindGroups = [null, null];
+    this._resolveBindGroupKeys = [null, null];
     this._device = null;
   }
 
@@ -870,6 +914,10 @@ export class WebGPUTAAEffect implements PostProcessEffect {
     } else {
       this._parityManager.rebind<GPUTextureView>(this._historySlotId, pair);
     }
+    // History view identity changed. Drop both parity entries in the same
+    // allocation path so no stale texture view can survive a resize.
+    this._resolveBindGroups = [null, null];
+    this._resolveBindGroupKeys = [null, null];
     this._skipNextBlend = true;
   }
 }

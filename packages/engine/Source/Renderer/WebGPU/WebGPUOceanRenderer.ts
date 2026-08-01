@@ -53,6 +53,7 @@ import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
+import { getAvailableFrameCommandEncoder } from "./WebGPUFrameCommandEncoder.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -759,8 +760,15 @@ function updateWebGPUOcean(
   mf[6] = p._foamScale ?? 1.2;
   device.queue.writeBuffer(cache.mergeParamsBuffer!, 0, mergeBuf);
 
-  // ── Compute chain (own encoder, submitted before the scene render) ──
-  const enc = device.createCommandEncoder({ label: "Ocean compute" });
+  // ── Compute chain ──
+  // During normal rendering `beginFrame()` has already opened the shared
+  // command encoder and no render pass is active yet. Record the FFT ladder
+  // there so it stays ordered immediately before the ocean draw without an
+  // extra queue submission. Direct/off-frame update callers retain the
+  // historical private-encoder fallback.
+  const frameEncoder = getAvailableFrameCommandEncoder(context);
+  const enc =
+    frameEncoder ?? device.createCommandEncoder({ label: "Ocean compute" });
   const dispatchPass = (
     pipeline: GPUComputePipeline,
     bg: GPUBindGroup,
@@ -845,7 +853,9 @@ function updateWebGPUOcean(
     DISPATCH,
     "Ocean merge",
   );
-  device.queue.submit([enc.finish()]);
+  if (!frameEncoder) {
+    device.queue.submit([enc.finish()]);
+  }
   cache.frameNumber++;
 
   // ── Render bind group (built once) ──

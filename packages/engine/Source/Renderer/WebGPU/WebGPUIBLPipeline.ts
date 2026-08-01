@@ -68,6 +68,135 @@ interface IBLPipelineCache {
 }
 
 /**
+ * Command-encoding scope shared by every stage of one IBL refresh.
+ *
+ * Each dispatch receives an immutable, alignment-safe slice of one packed
+ * parameter arena. The arena is uploaded once immediately before submission,
+ * which avoids both per-dispatch buffer allocation and late-write aliasing.
+ * The owner destroys the arena only after the command buffer has been queued.
+ */
+interface IBLCommandEncodingScope {
+  encoder: GPUCommandEncoder;
+  parameterBuffer: GPUBuffer;
+  parameterBytes: ArrayBuffer;
+  parameterWords: Uint32Array;
+  parameterAlignment: number;
+  parameterCapacity: number;
+  parameterCount: number;
+  destroyed: boolean;
+}
+
+function createIBLCommandEncodingScope(
+  device: GPUDevice,
+  label: string,
+  parameterCapacity = 64,
+): IBLCommandEncodingScope {
+  const minimumAlignment =
+    device.limits?.minUniformBufferOffsetAlignment ?? 256;
+  const parameterAlignment = Math.max(
+    16,
+    Math.ceil(minimumAlignment / 16) * 16,
+  );
+  const capacity = Math.max(1, Math.ceil(parameterCapacity));
+  const parameterBytes = new ArrayBuffer(capacity * parameterAlignment);
+  return {
+    encoder: device.createCommandEncoder({ label }),
+    parameterBuffer: device.createBuffer({
+      label: `${label} Parameters`,
+      size: capacity * parameterAlignment,
+      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+    }),
+    parameterBytes,
+    parameterWords: new Uint32Array(parameterBytes),
+    parameterAlignment,
+    parameterCapacity: capacity,
+    parameterCount: 0,
+    destroyed: false,
+  };
+}
+
+function allocateIBLParameterBinding(
+  scope: IBLCommandEncodingScope,
+  value0: number,
+  value1: number,
+  value2: number,
+  value3: number,
+): GPUBufferBinding {
+  if (scope.parameterCount >= scope.parameterCapacity) {
+    throw new Error("IBL command parameter arena exhausted.");
+  }
+  const offset = scope.parameterCount * scope.parameterAlignment;
+  const wordOffset = offset / Uint32Array.BYTES_PER_ELEMENT;
+  const words = scope.parameterWords;
+  words[wordOffset] = value0;
+  words[wordOffset + 1] = value1;
+  words[wordOffset + 2] = value2;
+  words[wordOffset + 3] = value3;
+  scope.parameterCount++;
+  return {
+    buffer: scope.parameterBuffer,
+    offset,
+    size: 16,
+  };
+}
+
+function destroyIBLCommandEncodingScope(scope: IBLCommandEncodingScope): void {
+  if (scope.destroyed) {
+    return;
+  }
+  scope.destroyed = true;
+  scope.parameterBuffer.destroy();
+}
+
+function submitIBLCommandEncodingScope(
+  device: GPUDevice,
+  scope: IBLCommandEncodingScope,
+): void {
+  if (scope.parameterCount > 0) {
+    device.queue.writeBuffer(
+      scope.parameterBuffer,
+      0,
+      scope.parameterBytes,
+      0,
+      scope.parameterCount * scope.parameterAlignment,
+    );
+  }
+  try {
+    device.queue.submit([scope.encoder.finish()]);
+  } finally {
+    destroyIBLCommandEncodingScope(scope);
+  }
+}
+
+interface IBLSharedKernel {
+  pipeline: GPUComputePipeline;
+  bgl: GPUBindGroupLayout;
+}
+
+interface IBLDeviceKernelPack {
+  irradiance: IBLSharedKernel | null;
+  radiance: IBLSharedKernel | null;
+  radianceHQ: IBLSharedKernel | null;
+  sampler: GPUSampler | null;
+}
+
+const iblKernelPacks = new WeakMap<GPUDevice, IBLDeviceKernelPack>();
+
+function getIBLDeviceKernelPack(device: GPUDevice): IBLDeviceKernelPack {
+  let pack = iblKernelPacks.get(device);
+  if (!pack) {
+    pack = {
+      irradiance: null,
+      radiance: null,
+      radianceHQ: null,
+      sampler: null,
+    };
+    iblKernelPacks.set(device, pack);
+  }
+  return pack;
+}
+
+/**
  * Creates the compute pipeline for irradiance convolution.
  *
  * C-R7-COMPUTE-PIPELINE-CACHE (Batch 76) — routes through the central
@@ -76,12 +205,16 @@ interface IBLPipelineCache {
 function createIrradiancePipeline(
   device: GPUDevice,
   computePipelineCache:
-    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
-    | null,
+    import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache | null,
 ): {
   pipeline: GPUComputePipeline;
   bgl: GPUBindGroupLayout;
 } {
+  const shared = getIBLDeviceKernelPack(device);
+  if (shared.irradiance) {
+    return shared.irradiance;
+  }
+
   const bgl = makeBindGroupLayout(device, "IBL-Irradiance-BGL", [
     texture(0, Stage.COMPUTE, { viewDimension: "cube" }),
     sampler(1, Stage.COMPUTE),
@@ -105,7 +238,8 @@ function createIrradiancePipeline(
         compute: { module, entryPoint: "main" },
       });
 
-  return { pipeline, bgl };
+  shared.irradiance = { pipeline, bgl };
+  return shared.irradiance;
 }
 
 /**
@@ -114,12 +248,16 @@ function createIrradiancePipeline(
 function createRadiancePipeline(
   device: GPUDevice,
   computePipelineCache:
-    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
-    | null,
+    import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache | null,
 ): {
   pipeline: GPUComputePipeline;
   bgl: GPUBindGroupLayout;
 } {
+  const shared = getIBLDeviceKernelPack(device);
+  if (shared.radiance) {
+    return shared.radiance;
+  }
+
   const bgl = makeBindGroupLayout(device, "IBL-Radiance-BGL", [
     texture(0, Stage.COMPUTE, { viewDimension: "cube" }),
     sampler(1, Stage.COMPUTE),
@@ -143,7 +281,8 @@ function createRadiancePipeline(
         compute: { module, entryPoint: "main" },
       });
 
-  return { pipeline, bgl };
+  shared.radiance = { pipeline, bgl };
+  return shared.radiance;
 }
 
 /**
@@ -155,12 +294,16 @@ function createRadiancePipeline(
 function createRadianceHQPipeline(
   device: GPUDevice,
   computePipelineCache:
-    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
-    | null,
+    import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache | null,
 ): {
   pipeline: GPUComputePipeline;
   bgl: GPUBindGroupLayout;
 } {
+  const shared = getIBLDeviceKernelPack(device);
+  if (shared.radianceHQ) {
+    return shared.radianceHQ;
+  }
+
   const bgl = makeBindGroupLayout(device, "IBL-Radiance-HQ-BGL", [
     texture(0, Stage.COMPUTE, { viewDimension: "cube" }),
     sampler(1, Stage.COMPUTE),
@@ -184,7 +327,8 @@ function createRadianceHQPipeline(
         compute: { module, entryPoint: "mainHQ" },
       });
 
-  return { pipeline, bgl };
+  shared.radianceHQ = { pipeline, bgl };
+  return shared.radianceHQ;
 }
 
 /**
@@ -202,6 +346,7 @@ function dispatchSourceCubeMipChain(
   cache: IBLPipelineCache,
   sourceCube: GPUTexture,
   sourceFormat: GPUTextureFormat,
+  encodingScope: IBLCommandEncodingScope,
 ): boolean {
   const mipLevelCount = sourceCube.mipLevelCount;
   if (mipLevelCount <= 1) {
@@ -250,7 +395,8 @@ function dispatchSourceCubeMipChain(
   }
 
   if (!cache.sampler) {
-    cache.sampler = device.createSampler({
+    const shared = getIBLDeviceKernelPack(device);
+    shared.sampler ??= device.createSampler({
       minFilter: "linear",
       magFilter: "linear",
       mipmapFilter: "linear",
@@ -258,13 +404,11 @@ function dispatchSourceCubeMipChain(
       addressModeV: "clamp-to-edge",
       addressModeW: "clamp-to-edge",
     });
+    cache.sampler = shared.sampler;
   }
 
   const baseSize = sourceCube.width;
-  const encoder = device.createCommandEncoder({
-    label: "IBL-EnvMipDownsample",
-  });
-  const tmpBuffers: GPUBuffer[] = [];
+  const encoder = encodingScope.encoder;
 
   for (let mip = 1; mip < mipLevelCount; mip++) {
     const dstSize = Math.max(1, baseSize >> mip);
@@ -283,15 +427,12 @@ function dispatchSourceCubeMipChain(
       baseArrayLayer: 0,
     });
 
-    const paramsBuffer = device.createBuffer({
-      size: 16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    tmpBuffers.push(paramsBuffer);
-    device.queue.writeBuffer(
-      paramsBuffer,
+    const paramsBinding = allocateIBLParameterBinding(
+      encodingScope,
+      dstSize,
       0,
-      new Uint32Array([dstSize, 0, 0, 0]),
+      0,
+      0,
     );
 
     const bindGroup = device.createBindGroup({
@@ -300,7 +441,7 @@ function dispatchSourceCubeMipChain(
         { binding: 0, resource: srcView },
         { binding: 1, resource: cache.sampler },
         { binding: 2, resource: dstView },
-        { binding: 3, resource: { buffer: paramsBuffer } },
+        { binding: 3, resource: paramsBinding },
       ],
     });
 
@@ -311,10 +452,6 @@ function dispatchSourceCubeMipChain(
     pass.end();
   }
 
-  device.queue.submit([encoder.finish()]);
-  for (const b of tmpBuffers) {
-    b.destroy();
-  }
   return true;
 }
 
@@ -328,7 +465,12 @@ function dispatchIrradianceConvolution(
   computePipelineCache:
     | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
     | null = null,
+  encodingScope?: IBLCommandEncodingScope,
 ): void {
+  const ownsEncodingScope = !encodingScope;
+  const scope =
+    encodingScope ??
+    createIBLCommandEncodingScope(device, "IBL Irradiance Refresh", 6);
   if (!cache.irradiancePipeline || !cache.irradianceBGL) {
     const result = createIrradiancePipeline(device, computePipelineCache);
     cache.irradiancePipeline = result.pipeline;
@@ -365,22 +507,18 @@ function dispatchIrradianceConvolution(
     baseArrayLayer: 0,
   });
 
-  const encoder = device.createCommandEncoder();
+  const encoder = scope.encoder;
 
-  // C-P17: batch per-face param buffers so they can be destroyed in a
-  // single tight loop after queue.submit. Previously each of the 6
-  // faces created an un-tracked 16-byte UBO that leaked across IBL
-  // regenerations. Collect the handles and destroy them once the
-  // submit has queued the compute commands.
-  const leakedParamsBuffers: GPUBuffer[] = [];
+  // Each face receives its own immutable slice of the refresh-owned packed
+  // parameter arena. This replaces the former six tiny GPU buffers/writes.
   for (let face = 0; face < 6; face++) {
-    const paramsData = new Uint32Array([face, IRRADIANCE_SIZE, 0, 0]);
-    const paramsBuffer = device.createBuffer({
-      size: 16,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    leakedParamsBuffers.push(paramsBuffer);
-    device.queue.writeBuffer(paramsBuffer, 0, paramsData);
+    const paramsBinding = allocateIBLParameterBinding(
+      scope,
+      face,
+      IRRADIANCE_SIZE,
+      0,
+      0,
+    );
 
     const bindGroup = device.createBindGroup({
       layout: cache.irradianceBGL!,
@@ -388,7 +526,7 @@ function dispatchIrradianceConvolution(
         { binding: 0, resource: sourceCubeView },
         { binding: 1, resource: cache.sampler! },
         { binding: 2, resource: outputArrayView },
-        { binding: 3, resource: { buffer: paramsBuffer } },
+        { binding: 3, resource: paramsBinding },
       ],
     });
 
@@ -402,12 +540,9 @@ function dispatchIrradianceConvolution(
     pass.end();
   }
 
-  device.queue.submit([encoder.finish()]);
-  // After submit, the 6 params UBOs have been consumed by the GPU
-  // command stream. WebGPU guarantees the buffer contents outlive the
-  // submit; explicit destroy releases VRAM immediately instead of
-  // waiting for GC.
-  for (const b of leakedParamsBuffers) b.destroy();
+  if (ownsEncodingScope) {
+    submitIBLCommandEncodingScope(device, scope);
+  }
 }
 
 /**
@@ -423,6 +558,14 @@ interface RadianceHQOptions {
   sourceFormat?: GPUTextureFormat;
 }
 
+function getIBLRefreshParameterCapacity(hqOptions?: RadianceHQOptions): number {
+  const sourceMipJobs =
+    hqOptions?.quality === "high" && hqOptions.sourceCube
+      ? Math.max(0, hqOptions.sourceCube.mipLevelCount - 1)
+      : 0;
+  return 6 + RADIANCE_MIP_LEVELS * 6 + sourceMipJobs;
+}
+
 /**
  * Dispatches radiance prefiltering for all 6 faces × N mip levels.
  */
@@ -434,7 +577,16 @@ function dispatchRadiancePrefilter(
     | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
     | null = null,
   hqOptions?: RadianceHQOptions,
+  encodingScope?: IBLCommandEncodingScope,
 ): void {
+  const ownsEncodingScope = !encodingScope;
+  const scope =
+    encodingScope ??
+    createIBLCommandEncodingScope(
+      device,
+      "IBL Radiance Refresh",
+      getIBLRefreshParameterCapacity(hqOptions) - 6,
+    );
   // Item 1.3 — high-quality path: box-downsample the source cube into its
   // mip chain, then select the `mainHQ` pipeline (GGX-pdf LOD sampling).
   // Falls back to the parity pipeline if the source has no extra mips.
@@ -447,6 +599,7 @@ function dispatchRadiancePrefilter(
       cache,
       hqOptions.sourceCube,
       fmt,
+      scope,
     );
     if (built) {
       if (!cache.radianceHQPipeline || !cache.radianceHQBGL) {
@@ -494,9 +647,7 @@ function dispatchRadiancePrefilter(
     mipLevelCount: RADIANCE_MIP_LEVELS,
   });
 
-  const encoder = device.createCommandEncoder();
-  // See irradiance path for the rationale on batching destroys.
-  const leakedParamsBuffers: GPUBuffer[] = [];
+  const encoder = scope.encoder;
 
   for (let mip = 0; mip < RADIANCE_MIP_LEVELS; mip++) {
     const mipSize = RADIANCE_BASE_SIZE >> mip;
@@ -509,18 +660,13 @@ function dispatchRadiancePrefilter(
     });
 
     for (let face = 0; face < 6; face++) {
-      const paramsData = new Uint32Array([
+      const paramsBinding = allocateIBLParameterBinding(
+        scope,
         face,
         mip,
         RADIANCE_MIP_LEVELS,
         mipSize,
-      ]);
-      const paramsBuffer = device.createBuffer({
-        size: 16,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-      leakedParamsBuffers.push(paramsBuffer);
-      device.queue.writeBuffer(paramsBuffer, 0, paramsData);
+      );
 
       const bindGroup = device.createBindGroup({
         layout: useHQ ? cache.radianceHQBGL! : cache.radianceBGL!,
@@ -528,7 +674,7 @@ function dispatchRadiancePrefilter(
           { binding: 0, resource: sourceCubeView },
           { binding: 1, resource: cache.sampler! },
           { binding: 2, resource: mipArrayView },
-          { binding: 3, resource: { buffer: paramsBuffer } },
+          { binding: 3, resource: paramsBinding },
         ],
       });
 
@@ -542,8 +688,9 @@ function dispatchRadiancePrefilter(
     }
   }
 
-  device.queue.submit([encoder.finish()]);
-  for (const b of leakedParamsBuffers) b.destroy();
+  if (ownsEncodingScope) {
+    submitIBLCommandEncodingScope(device, scope);
+  }
 }
 
 /**
@@ -602,9 +749,20 @@ function generateIBLMaps(
     | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
     | null = null,
   hqOptions?: RadianceHQOptions,
+  encodingScope?: IBLCommandEncodingScope,
 ): void {
+  const ownsEncodingScope = !encodingScope;
+  const scope =
+    encodingScope ??
+    createIBLCommandEncodingScope(
+      device,
+      "IBL Map Refresh",
+      getIBLRefreshParameterCapacity(hqOptions),
+    );
+
   if (!cache.sampler) {
-    cache.sampler = device.createSampler({
+    const shared = getIBLDeviceKernelPack(device);
+    shared.sampler ??= device.createSampler({
       minFilter: "linear",
       magFilter: "linear",
       mipmapFilter: "linear",
@@ -612,6 +770,7 @@ function generateIBLMaps(
       addressModeV: "clamp-to-edge",
       addressModeW: "clamp-to-edge",
     });
+    cache.sampler = shared.sampler;
   }
 
   try {
@@ -620,6 +779,7 @@ function generateIBLMaps(
       cache,
       sourceCubeView,
       computePipelineCache,
+      scope,
     );
   } catch (e) {
     // Irradiance convolution failed — fall back to default cubemap
@@ -633,13 +793,25 @@ function generateIBLMaps(
       sourceCubeView,
       computePipelineCache,
       hqOptions,
+      scope,
     );
   } catch (e) {
     // Radiance prefilter failed — fall back to sampling source at mip 0
   }
+
+  if (ownsEncodingScope) {
+    submitIBLCommandEncodingScope(device, scope);
+  }
 }
 
 export {
+  createIrradiancePipeline,
+  createRadiancePipeline,
+  createRadianceHQPipeline,
+  createIBLCommandEncodingScope,
+  destroyIBLCommandEncodingScope,
+  getIBLRefreshParameterCapacity,
+  submitIBLCommandEncodingScope,
   generateIBLMaps,
   packSphericalHarmonics,
   dispatchIrradianceConvolution,
@@ -649,4 +821,9 @@ export {
   RADIANCE_MIP_LEVELS,
 };
 
-export type { IBLPipelineCache, RadianceHQOptions, IBLPrefilterQuality };
+export type {
+  IBLCommandEncodingScope,
+  IBLPipelineCache,
+  RadianceHQOptions,
+  IBLPrefilterQuality,
+};

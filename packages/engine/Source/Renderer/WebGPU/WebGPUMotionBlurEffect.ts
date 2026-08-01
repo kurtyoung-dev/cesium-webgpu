@@ -50,6 +50,13 @@ import { _invertMatrix4 } from "./WebGPUTAAEffect.js";
 const PARAMS_BYTES = 256;
 const PARAMS_FLOATS = PARAMS_BYTES / 4;
 
+interface MotionBlurBindGroupEntry {
+  source: GPUTextureView;
+  depth: GPUTextureView;
+  velocity: GPUTextureView;
+  bindGroup: GPUBindGroup;
+}
+
 export interface MotionBlurConfig {
   /** Blur strength multiplier applied to the velocity vector. Default 1.0. */
   intensity?: number;
@@ -68,6 +75,12 @@ export class WebGPUMotionBlurEffect implements PostProcessEffect {
   private _bindGroupLayout: GPUBindGroupLayout | null = null;
   private _paramsBuffer: GPUBuffer | null = null;
   private _paramsScratch = new Float32Array(PARAMS_FLOATS);
+  private _paramsU32 = new Uint32Array(this._paramsScratch.buffer);
+  private _bindGroupCache: [
+    MotionBlurBindGroupEntry | null,
+    MotionBlurBindGroupEntry | null,
+  ] = [null, null];
+  private _nextBindGroupSlot = 0;
 
   private _outputTex: GPUTexture | null = null;
   private _outputView: GPUTextureView | null = null;
@@ -255,7 +268,7 @@ export class WebGPUMotionBlurEffect implements PostProcessEffect {
     p[1] = this._height > 0 ? 1.0 / this._height : 0.0;
     p[2] = this._intensity;
     p[3] = this._sampleCount;
-    const u32View = new Uint32Array(p.buffer);
+    const u32View = this._paramsU32;
     u32View[4] = this._motionVectorsValid ? 1 : 0;
     p[5] = this._maxBlurPx;
     p[6] = 0;
@@ -269,18 +282,39 @@ export class WebGPUMotionBlurEffect implements PostProcessEffect {
     p[59] = 0;
     this._device.queue.writeBuffer(this._paramsBuffer, 0, p);
 
-    const bg = this._device.createBindGroup({
-      label: "MotionBlur_BG",
-      layout: this._bindGroupLayout,
-      entries: [
-        { binding: 0, resource: sourceView },
-        { binding: 1, resource: depthView },
-        { binding: 2, resource: this._sampler },
-        { binding: 3, resource: { buffer: this._paramsBuffer } },
-        { binding: 4, resource: velocityBindView },
-        { binding: 5, resource: this._depthSampler },
-      ],
-    });
+    let bg: GPUBindGroup | null = null;
+    for (let i = 0; i < this._bindGroupCache.length; i++) {
+      const entry = this._bindGroupCache[i];
+      if (
+        entry?.source === sourceView &&
+        entry.depth === depthView &&
+        entry.velocity === velocityBindView
+      ) {
+        bg = entry.bindGroup;
+        break;
+      }
+    }
+    if (!bg) {
+      bg = this._device.createBindGroup({
+        label: "MotionBlur_BG",
+        layout: this._bindGroupLayout,
+        entries: [
+          { binding: 0, resource: sourceView },
+          { binding: 1, resource: depthView },
+          { binding: 2, resource: this._sampler },
+          { binding: 3, resource: { buffer: this._paramsBuffer } },
+          { binding: 4, resource: velocityBindView },
+          { binding: 5, resource: this._depthSampler },
+        ],
+      });
+      this._bindGroupCache[this._nextBindGroupSlot] = {
+        source: sourceView,
+        depth: depthView,
+        velocity: velocityBindView,
+        bindGroup: bg,
+      };
+      this._nextBindGroupSlot = (this._nextBindGroupSlot + 1) & 1;
+    }
 
     const pass = encoder.beginRenderPass({
       label: "MotionBlur_Pass",
@@ -311,6 +345,7 @@ export class WebGPUMotionBlurEffect implements PostProcessEffect {
     }
     this._pipeline = null;
     this._bindGroupLayout = null;
+    this._bindGroupCache = [null, null];
     this._device = null;
   }
 

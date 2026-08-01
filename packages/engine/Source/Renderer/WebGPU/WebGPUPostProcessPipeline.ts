@@ -173,6 +173,13 @@ function normalizeTonemapDitherStrength(strength: number): number {
   return Number.isFinite(strength) ? Math.fround(strength) : 0.0;
 }
 
+function normalizeTonemapExposure(exposure: number): number {
+  // Compare the value the f32 uniform will actually observe. This treats two
+  // JavaScript numbers that quantize to the same GPU value as unchanged and
+  // keeps invalid input from publishing NaN/Infinity into the tone curve.
+  return Number.isFinite(exposure) ? Math.fround(exposure) : 1.0;
+}
+
 /**
  * Color grading config — matches `ColorGrading.wgsl`'s
  * `ColorGradingUniforms` struct. Every field is optional; omitted
@@ -375,6 +382,10 @@ export class WebGPUPostProcessPipeline {
   // Stored separately so auto-exposure can multiply against it without
   // losing the user's bias.
   private _manualExposure: number = 1.0;
+  // Last value actually resident in the GPU tonemap slot. Auto exposure writes
+  // an adapted value into the same slot, so the fixed setter must compare
+  // against this value rather than only against the user's manual preference.
+  private _tonemapUploadedExposure: number = 1.0;
   // C9-05 — actual stable values already present in the tonemap UBO. The
   // configure pass calls the setters every frame; these guards keep unchanged
   // mode and default-off dither at zero allocation/zero queue-write cost.
@@ -729,6 +740,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
   ): void {
     if (this._tonemapStage) return;
     const normalizedMode = normalizeTonemapMode(mode);
+    const normalizedExposure = normalizeTonemapExposure(exposure);
     // Uniforms: exposure, gamma, mode, whitePoint
     // C4-PLAIN-HDR-GAMMA-TAILS (b) — whitePoint defaults to 1.0 to match
     // WebGL's ModifiedReinhardTonemapping `white` uniform (Color.WHITE →
@@ -739,7 +751,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
     // in via setTonemapDither(). The three trailing pads keep the UBO 16-byte
     // aligned (32 bytes total).
     const uniforms = new Float32Array([
-      exposure,
+      normalizedExposure,
       gamma,
       normalizedMode,
       1.0,
@@ -767,6 +779,8 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
       uniforms,
       useShaderF16 ? TonemappingWGSL : undefined,
     );
+    this._manualExposure = normalizedExposure;
+    this._tonemapUploadedExposure = normalizedExposure;
     this._tonemapUniformMode = normalizedMode;
     this._tonemapDitherStrength = 0.0;
   }
@@ -790,13 +804,25 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
    * Update tonemapping exposure.
    */
   setTonemappingExposure(exposure: number): void {
-    this._manualExposure = exposure;
+    const normalizedExposure = normalizeTonemapExposure(exposure);
+    this._manualExposure = normalizedExposure;
+    if (this._tonemapUploadedExposure === normalizedExposure) return;
+    this._writeTonemappingExposure(normalizedExposure);
+  }
+
+  /**
+   * Publish an exposure without applying the fixed/manual dirty gate.
+   * Auto-exposure calls this with its genuinely changing adapted value.
+   */
+  private _writeTonemappingExposure(exposure: number): void {
     if (!this._tonemapStage?.uniformBuffer || !this._device) return;
+    const normalizedExposure = normalizeTonemapExposure(exposure);
     this._device.queue.writeBuffer(
       this._tonemapStage.uniformBuffer,
       0,
-      new Float32Array([exposure]) as Float32Array<ArrayBuffer>,
+      new Float32Array([normalizedExposure]) as Float32Array<ArrayBuffer>,
     );
+    this._tonemapUploadedExposure = normalizedExposure;
   }
 
   /**
@@ -1540,11 +1566,7 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
           // have a CPU-side copy, so we store it separately.
           const manualExposure = this._manualExposure ?? 1.0;
           const adaptedExposure = manualExposure * autoMultiplier;
-          this._device.queue.writeBuffer(
-            this._tonemapStage.uniformBuffer,
-            0,
-            new Float32Array([adaptedExposure]) as Float32Array<ArrayBuffer>,
-          );
+          this._writeTonemappingExposure(adaptedExposure);
         }
       }
     }

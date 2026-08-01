@@ -54,6 +54,7 @@ import Ellipsoid from "../../Core/Ellipsoid.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import PerspectiveFrustum from "../../Core/PerspectiveFrustum.js";
 import Transforms from "../../Core/Transforms.js";
+import { updateEclipseGlobeShadowForFrameState } from "../../Scene/EclipseGlobeShadow.js";
 
 /** Minimal env-cube cache view the capture pass reads/writes. */
 export interface SceneCaptureCache {
@@ -74,6 +75,16 @@ export interface SceneCaptureManager {
   _position: CesiumCartesian3;
   enableSceneCapture?: boolean;
 }
+
+export const SceneCaptureResult = Object.freeze({
+  FAILED: 0,
+  SKY_ONLY: 1,
+  SUBMITTED: 2,
+  PARTIAL: 3,
+} as const);
+
+export type SceneCaptureResultValue =
+  (typeof SceneCaptureResult)[keyof typeof SceneCaptureResult];
 
 /** A single-target globe capture command (subset of `TileDrawDescriptor`). */
 interface CaptureCommand {
@@ -100,9 +111,17 @@ interface CaptureGlobeRenderer {
 
 /** Published per-frame by `GlobeSurfaceTileProviderRendering` (WebGPU path). */
 interface SceneCaptureSources {
+  frameNumber: number;
+  publicationRevision: number;
+  contentRevision: number;
   globeRenderer: CaptureGlobeRenderer;
   tileProvider: {
-    _quadtree?: { _tilesToRender?: unknown[] };
+    _quadtree?: { _tilesToRender?: object[] };
+    _oldVerticalExaggeration?: number;
+    _oldVerticalExaggerationRelativeHeight?: number;
+    _eclipseSurfaceRadius?: number;
+    _eclipseSelectionRevision?: number;
+    _sceneCaptureContentRevision?: number;
   };
 }
 
@@ -133,6 +152,7 @@ interface SceneCaptureModels {
     device: GPUDevice,
     frameState: CesiumFrameState,
     faceFormat: GPUTextureFormat,
+    faceIndex: number,
   ): ModelCaptureCommand[];
 }
 
@@ -280,18 +300,110 @@ function makeFaceCamera(): FaceCamera {
 const faceCameraScratch = makeFaceCamera();
 
 /**
+ * Whether the current frame has a published globe renderer and at least one
+ * selected tile that scene capture can replay.
+ *
+ * The manager uses this preflight only for its periodic/movement refresh
+ * trigger. A newly created/recovered cache still performs one bounded attempt
+ * before publication, then requests one follow-up frame.
+ */
+export function hasRenderableSceneCaptureSources(
+  frameState: CesiumFrameState,
+): boolean {
+  if (frameState.globeVisible === false) {
+    return false;
+  }
+
+  const sources = (
+    frameState.context as unknown as {
+      _webgpuSceneCaptureSources?: SceneCaptureSources | null;
+    }
+  )._webgpuSceneCaptureSources;
+  const tiles = sources?.tileProvider?._quadtree?._tilesToRender;
+  const frameNumber = frameState.frameNumber;
+  const sourcesAreCurrent =
+    sources !== undefined &&
+    sources !== null &&
+    (sources.frameNumber === frameNumber ||
+      sources.frameNumber === frameNumber - 1) &&
+    sources.contentRevision ===
+      (sources.tileProvider._sceneCaptureContentRevision ?? 0);
+  return Boolean(
+    sourcesAreCurrent &&
+    sources.globeRenderer &&
+    tiles !== undefined &&
+    tiles.length > 0,
+  );
+}
+
+/**
+ * Return the revision of a renderable source publication, or `-1` while the
+ * globe producer is absent/stale. The revision advances only when publication
+ * resumes after a gap, switches renderer/provider, or publishes changed
+ * selected resources, so the manager can force exactly one capture on the
+ * requested follow-up frame.
+ */
+export function getRenderableSceneCaptureSourceRevision(
+  frameState: CesiumFrameState,
+): number {
+  if (!hasRenderableSceneCaptureSources(frameState)) {
+    return -1;
+  }
+
+  const sources = (
+    frameState.context as unknown as {
+      _webgpuSceneCaptureSources?: SceneCaptureSources | null;
+    }
+  )._webgpuSceneCaptureSources;
+  return sources?.publicationRevision ?? -1;
+}
+
+function getCurrentSceneCaptureModels(
+  frameState: CesiumFrameState,
+): SceneCaptureModels | null {
+  const models = (
+    frameState.context as unknown as {
+      _webgpuSceneCaptureModels?: SceneCaptureModels | null;
+    }
+  )._webgpuSceneCaptureModels;
+  const frameNumber = frameState.frameNumber;
+  if (
+    !models ||
+    (models.frameNumber !== frameNumber &&
+      models.frameNumber !== frameNumber - 1) ||
+    !models.models ||
+    models.models.length === 0 ||
+    typeof models.buildCaptureCommands !== "function"
+  ) {
+    return null;
+  }
+  return models;
+}
+
+/**
  * Run the 6-face globe scene capture into the env cube. The CALLER owns the
  * debounce (every-K-frames / camera-moved) + the sky-fill-then-capture ordering
- * — `runSceneCapture` always composites terrain over the just-filled compute sky
- * when invoked. It still self-gates on the double opt-in + SCENE3D + a published
- * visible tile set, so it is a no-op (zero GPU work) when capture is OFF.
+ * — `runSceneCapture` composites the requested globe/model sources over the
+ * just-filled compute sky. It still self-gates on the double opt-in + SCENE3D;
+ * a hidden globe may intentionally run the model-only path.
+ *
+ * When `commandEncoder` is supplied, capture records into that encoder and
+ * leaves final submission to the caller. The result still reports `SUBMITTED`
+ * for a complete recorded composite because the manager submits synchronously
+ * before committing debounce state.
+ *
+ * @returns A result that distinguishes a complete recorded/submitted capture,
+ *   an intentional sky-only state, and a missing/partial replay. Only
+ *   `SUBMITTED` is a complete scene composite for debounce bookkeeping.
  */
 export function runSceneCapture(
   device: GPUDevice,
   cache: SceneCaptureCache,
   manager: SceneCaptureManager,
   frameState: CesiumFrameState,
-): void {
+  includeGlobe = true,
+  commandEncoder?: GPUCommandEncoder,
+): SceneCaptureResultValue {
   // ── Gate: double opt-in + SCENE3D ──
   const ctx = frameState.context as unknown as {
     sceneCaptureReflections?: boolean;
@@ -300,6 +412,7 @@ export function runSceneCapture(
     uniformState?: {
       updateCamera(camera: unknown): void;
     };
+    flushPendingUniformUploads?: () => void;
     flushPendingImageryMipJobs?: () => void;
   };
   if (
@@ -308,16 +421,29 @@ export function runSceneCapture(
     frameState.mode !== 3 /* SceneMode.SCENE3D */ ||
     !manager._position
   ) {
-    return;
+    return SceneCaptureResult.FAILED;
   }
 
-  const sources = ctx._webgpuSceneCaptureSources;
+  const sources = includeGlobe ? ctx._webgpuSceneCaptureSources : null;
   const tiles = sources?.tileProvider?._quadtree?._tilesToRender;
   const globeRenderer = sources?.globeRenderer;
-  if (!sources || !globeRenderer || !tiles || tiles.length === 0) {
+  if (
+    includeGlobe &&
+    (!hasRenderableSceneCaptureSources(frameState) ||
+      !sources ||
+      !globeRenderer ||
+      !tiles)
+  ) {
     // Globe hasn't published a visible tile set yet (first frame before
-    // `globe.render`) — nothing to capture this frame.
-    return;
+    // `globe.render`, including the first recovered frame) — nothing to
+    // capture this frame. The producer owns the one-shot publication wake; the
+    // manager records no successful debounce state for this miss.
+    return SceneCaptureResult.FAILED;
+  }
+
+  const captureModels = getCurrentSceneCaptureModels(frameState);
+  if (!includeGlobe && !captureModels) {
+    return SceneCaptureResult.SKY_ONLY;
   }
 
   const uniformState = ctx.uniformState;
@@ -327,27 +453,33 @@ export function runSceneCapture(
   // RTE state precisely (no snapshot approximation).
   const mainCamera = (frameState as unknown as { camera?: unknown }).camera;
   if (!uniformState || !mainCamera) {
-    return;
+    return SceneCaptureResult.FAILED;
+  }
+
+  // The retained source array is mutable and belongs to the previous globe
+  // selection. Refine the one View-owned S5 block against those exact meshes
+  // before any face command snapshots it. If exaggeration changed since the
+  // list was produced, retain the conservative coarse result instead.
+  if (sources && tiles) {
+    const tileProvider = sources.tileProvider;
+    const retainedBoundsCurrent =
+      tileProvider._oldVerticalExaggeration ===
+        frameState.verticalExaggeration &&
+      tileProvider._oldVerticalExaggerationRelativeHeight ===
+        frameState.verticalExaggerationRelativeHeight;
+    updateEclipseGlobeShadowForFrameState(
+      frameState,
+      retainedBoundsCurrent ? tileProvider._eclipseSurfaceRadius : undefined,
+      retainedBoundsCurrent ? tiles : undefined,
+      retainedBoundsCurrent
+        ? tileProvider._eclipseSelectionRevision
+        : undefined,
+    );
   }
 
   const eye = manager._position;
   const faceFormat = cache.cubemapFormat ?? "rgba8unorm";
   const size = cache.size || 256;
-
-  // ── Lazy transient depth target (OFF allocates nothing) ──
-  if (!cache.captureDepthView || cache.captureDepthSize !== size) {
-    if (cache.captureDepthTexture) {
-      cache.captureDepthTexture.destroy();
-    }
-    cache.captureDepthTexture = device.createTexture({
-      label: "DynEnvMap Capture Depth",
-      size: { width: size, height: size },
-      format: "depth24plus",
-      usage: GPUTextureUsage.RENDER_ATTACHMENT,
-    });
-    cache.captureDepthView = cache.captureDepthTexture.createView();
-    cache.captureDepthSize = size;
-  }
 
   // Eye = the reflective owner's bounding-sphere center (NOT the scene camera).
   // Near/far span the planet surface so the 90° face frustum reaches the
@@ -364,18 +496,10 @@ export function runSceneCapture(
   // capture is OFF the model FR never publishes (byte-identical), so this is
   // null and the model replay below is skipped — globe-only capture (Batch 446)
   // is unchanged.
-  const modelSources = ctx._webgpuSceneCaptureModels ?? null;
-  const captureModels =
-    modelSources &&
-    modelSources.models &&
-    modelSources.models.length > 0 &&
-    typeof modelSources.buildCaptureCommands === "function"
-      ? modelSources
-      : null;
-
-  const encoder = device.createCommandEncoder({
-    label: "DynEnvMap Scene Capture",
-  });
+  const ownsEncoder = commandEncoder === undefined;
+  let encoder: GPUCommandEncoder | null = commandEncoder ?? null;
+  let globeDrawCount = 0;
+  let modelDrawCount = 0;
 
   try {
     for (let face = 0; face < 6; face++) {
@@ -389,28 +513,32 @@ export function runSceneCapture(
       // Build this face's globe commands AFTER repointing uniformState so the
       // camera-UB packer bakes the FACE-camera RTE matrices.
       const allCommands: CaptureCommand[] = [];
-      for (let t = 0; t < tiles.length; t++) {
-        const tile = tiles[t] as {
-          level: number;
-          x: number;
-          y: number;
-          rectangle: unknown;
-          data?: unknown;
-        };
-        if (!tile || !tile.data) {
-          continue;
-        }
-        const cmds = globeRenderer.getOrCreateCaptureTileCommands(
-          tile,
-          tile.data,
-          sources.tileProvider,
-          frameState,
-          uniformState,
-          faceFormat,
-        );
-        if (cmds) {
-          for (let c = 0; c < cmds.length; c++) {
-            allCommands.push(cmds[c]);
+      if (includeGlobe && sources && tiles && globeRenderer) {
+        for (let t = 0; t < tiles.length; t++) {
+          const tile = tiles[t] as {
+            level: number;
+            x: number;
+            y: number;
+            rectangle: unknown;
+            data?: unknown;
+          };
+          if (!tile || !tile.data) {
+            continue;
+          }
+          const cmds = globeRenderer.getOrCreateCaptureTileCommands(
+            tile,
+            tile.data,
+            sources.tileProvider,
+            frameState,
+            uniformState,
+            faceFormat,
+          );
+          if (cmds) {
+            for (let c = 0; c < cmds.length; c++) {
+              if (cmds[c].indexCount > 0) {
+                allCommands.push(cmds[c]);
+              }
+            }
           }
         }
       }
@@ -429,12 +557,37 @@ export function runSceneCapture(
             device,
             frameState,
             faceFormat,
+            face,
           );
           for (let c = 0; c < cmds.length; c++) {
-            modelCommands.push(cmds[c]);
+            if (cmds[c].indexCount > 0 && cmds[c].instanceCount > 0) {
+              modelCommands.push(cmds[c]);
+            }
           }
         }
       }
+
+      if (allCommands.length === 0 && modelCommands.length === 0) {
+        continue;
+      }
+
+      // Allocate the transient target and encoder only after at least one real
+      // indexed draw exists. An empty replay must not submit six empty passes
+      // or report a successful scene composite.
+      if (!cache.captureDepthView || cache.captureDepthSize !== size) {
+        cache.captureDepthTexture?.destroy();
+        cache.captureDepthTexture = device.createTexture({
+          label: "DynEnvMap Capture Depth",
+          size: { width: size, height: size },
+          format: "depth24plus",
+          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+        });
+        cache.captureDepthView = cache.captureDepthTexture.createView();
+        cache.captureDepthSize = size;
+      }
+      encoder ??= device.createCommandEncoder({
+        label: "DynEnvMap Scene Capture",
+      });
 
       // Open the per-face pass on the cube face (loadOp 'load' preserves the
       // compute sky the globe composites OVER); globe writes LINEAR.
@@ -472,6 +625,7 @@ export function runSceneCapture(
         pass.setVertexBuffer(0, cmd.vertexBuffer);
         pass.setIndexBuffer(cmd.indexBuffer, cmd.indexFormat);
         pass.drawIndexed(cmd.indexCount);
+        globeDrawCount++;
       }
 
       // C2-25 (Batch 447) — replay the MODEL / 3D-Tiles commands AFTER the globe
@@ -490,6 +644,7 @@ export function runSceneCapture(
         }
         pass.setIndexBuffer(cmd.indexBuffer, cmd.indexFormat);
         pass.drawIndexed(cmd.indexCount, cmd.instanceCount);
+        modelDrawCount++;
       }
       pass.end();
     }
@@ -503,13 +658,25 @@ export function runSceneCapture(
     uniformState.updateCamera(mainCamera);
   }
 
-  // F3 (Batch 686) — this is a PRIVATE mid-frame submit whose passes replay
-  // the globe tile commands with the standard imagery bind groups. A texture
-  // realized earlier THIS frame has its mip chain pending in the context's
-  // frame-owned `"ImageryMipPreparation"` queue (only submitted at endFrame),
-  // so without a flush the capture would sample mips 1..N zero-initialized at
-  // cube-face resolution (darkened env cube). Flush pending mip jobs first so
-  // the queue orders mips → capture passes.
+  if (!encoder || globeDrawCount + modelDrawCount === 0) {
+    return includeGlobe
+      ? SceneCaptureResult.FAILED
+      : SceneCaptureResult.SKY_ONLY;
+  }
+
+  // Camera/tile/S5 payloads above were staged in the frame-owned uniform ring,
+  // whose normal flush is endFrame — too late for either a private capture
+  // submit or the manager-owned refresh submit. Flush those queue writes first,
+  // then imagery mip jobs, so queue order is uniforms → mips → capture passes.
+  // Multiple managers may flush incrementally; the ring uploader tracks the
+  // already-flushed prefix.
+  ctx.flushPendingUniformUploads?.();
   ctx.flushPendingImageryMipJobs?.();
-  device.queue.submit([encoder.finish()]);
+  if (ownsEncoder) {
+    device.queue.submit([encoder.finish()]);
+  }
+  if (includeGlobe && globeDrawCount === 0) {
+    return SceneCaptureResult.PARTIAL;
+  }
+  return SceneCaptureResult.SUBMITTED;
 }

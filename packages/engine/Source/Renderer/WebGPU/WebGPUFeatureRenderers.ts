@@ -156,6 +156,7 @@ import GlobeTerrainShaderCode from "../../Shaders/WebGPU/Globe/GlobeTerrain.js";
 
 // ── Model ──
 import {
+  prepareWebGPUModel,
   updateWebGPUModel,
   destroyWebGPUModelResources,
 } from "./WebGPUModelRenderer.js";
@@ -632,6 +633,7 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
 
   // ── Model ──
   context.registerFeatureRenderer(FeatureRendererKey.MODEL, {
+    prepare: prepareWebGPUModel,
     update: updateWebGPUModel,
     destroy: destroyWebGPUModelResources,
   });

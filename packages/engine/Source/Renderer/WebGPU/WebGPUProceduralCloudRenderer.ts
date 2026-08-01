@@ -111,6 +111,34 @@ const scratchEncodedCamera = new EncodedCartesian3();
 const scratchInverseViewRelativeToEye = new Matrix4();
 const scratchInverseCurrentViewProjectionRelativeToEye = new Matrix4();
 
+export interface CloudMainBindGroupEntry {
+  layout: GPUBindGroupLayout;
+  uniformBuffer: GPUBuffer;
+  colorView: GPUTextureView;
+  depthView: GPUTextureView;
+  mainSampler: GPUSampler;
+  weatherView: GPUTextureView;
+  weatherSampler: GPUSampler;
+  shapeView: GPUTextureView;
+  detailView: GPUTextureView;
+  noiseSampler: GPUSampler;
+  skyView: GPUTextureView;
+  multipleScatterView: GPUTextureView;
+  transmittanceView: GPUTextureView;
+  lutSampler: GPUSampler;
+  bindGroup: GPUBindGroup;
+}
+
+export interface CloudUpscaleBindGroupEntry {
+  layout: GPUBindGroupLayout;
+  uniformBuffer: GPUBuffer;
+  upscaleSourceView: GPUTextureView;
+  colorView: GPUTextureView;
+  depthView: GPUTextureView;
+  sampler: GPUSampler;
+  bindGroup: GPUBindGroup;
+}
+
 function matrix4IsFinite(matrix: ArrayLike<number> | undefined): boolean {
   if (!matrix || matrix.length < 16) {
     return false;
@@ -138,6 +166,11 @@ export interface CloudCache {
   bindGroupLayout: GPUBindGroupLayout | null;
   sampler: GPUSampler | null;
   uniformData: Float32Array;
+  mainBindGroups: [
+    CloudMainBindGroupEntry | null,
+    CloudMainBindGroupEntry | null,
+  ];
+  mainBindGroupNextSlot: number;
   initialized: boolean;
   // Weather Phase 0 — clock-bind. Day-seconds of the first frame, cached so the
   // cloud `time` uniform starts near 0 (keeps the wind offset in f32 precision).
@@ -171,6 +204,11 @@ export interface CloudCache {
   upscaleUniformBuffer: GPUBuffer | null;
   upscaleUniformData: Float32Array;
   upscaleSampler: GPUSampler | null;
+  upscaleBindGroups: [
+    CloudUpscaleBindGroupEntry | null,
+    CloudUpscaleBindGroupEntry | null,
+  ];
+  upscaleBindGroupNextSlot: number;
   // Shared exact integer phase: low 4 bits preserve the Bayer/cone 16-phase
   // sequence; all 6 bits drive C13-36's animated IGN sequence.
   frameCounter: number;
@@ -324,6 +362,8 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       bindGroupLayout: null,
       sampler: null,
       uniformData: new Float32Array(CLOUD_UNIFORM_FLOATS),
+      mainBindGroups: [null, null],
+      mainBindGroupNextSlot: 0,
       initialized: false,
       timeEpoch: null,
       weatherTexture: null,
@@ -346,6 +386,8 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       upscaleUniformBuffer: null,
       upscaleUniformData: new Float32Array(UPSCALE_UNIFORM_FLOATS),
       upscaleSampler: null,
+      upscaleBindGroups: [null, null],
+      upscaleBindGroupNextSlot: 0,
       frameCounter: 0,
       temporalHistory: [null, null],
       temporalHistoryView: [null, null],
@@ -419,6 +461,149 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
     };
   }
   return context._cloudCache;
+}
+
+/** Resolve the cloud march bind group from a bounded exact-identity cache. */
+export function getOrCreateCloudMainBindGroup(
+  device: GPUDevice,
+  cache: CloudCache,
+  colorView: GPUTextureView,
+  depthView: GPUTextureView,
+  weatherView: GPUTextureView,
+  shapeView: GPUTextureView,
+  detailView: GPUTextureView,
+  noiseSampler: GPUSampler,
+  lutViews: CloudLutViews,
+): GPUBindGroup {
+  const mainSampler = cache.sampler!;
+  const weatherSampler = cache.weatherSampler!;
+  const lutSampler = cache.lutSampler!;
+  const layout = cache.bindGroupLayout!;
+  const uniformBuffer = cache.uniformBuffer!;
+  for (let i = 0; i < cache.mainBindGroups.length; i++) {
+    const entry = cache.mainBindGroups[i];
+    if (
+      entry?.layout === layout &&
+      entry.uniformBuffer === uniformBuffer &&
+      entry.colorView === colorView &&
+      entry.depthView === depthView &&
+      entry.mainSampler === mainSampler &&
+      entry.weatherView === weatherView &&
+      entry.weatherSampler === weatherSampler &&
+      entry.shapeView === shapeView &&
+      entry.detailView === detailView &&
+      entry.noiseSampler === noiseSampler &&
+      entry.skyView === lutViews.skyView &&
+      entry.multipleScatterView === lutViews.multipleScatter &&
+      entry.transmittanceView === lutViews.transmittance &&
+      entry.lutSampler === lutSampler
+    ) {
+      return entry.bindGroup;
+    }
+  }
+
+  const bindGroup = device.createBindGroup({
+    layout,
+    entries: [
+      { binding: 0, resource: colorView },
+      { binding: 1, resource: depthView },
+      { binding: 2, resource: mainSampler },
+      { binding: 3, resource: { buffer: uniformBuffer } },
+      { binding: 4, resource: weatherView },
+      { binding: 5, resource: weatherSampler },
+      { binding: 6, resource: shapeView },
+      { binding: 7, resource: detailView },
+      { binding: 8, resource: noiseSampler },
+      { binding: 9, resource: lutViews.skyView },
+      { binding: 10, resource: lutViews.multipleScatter },
+      { binding: 11, resource: lutViews.transmittance },
+      { binding: 12, resource: lutSampler },
+    ],
+  });
+  const slot = cache.mainBindGroupNextSlot;
+  cache.mainBindGroups[slot] = {
+    layout,
+    uniformBuffer,
+    colorView,
+    depthView,
+    mainSampler,
+    weatherView,
+    weatherSampler,
+    shapeView,
+    detailView,
+    noiseSampler,
+    skyView: lutViews.skyView,
+    multipleScatterView: lutViews.multipleScatter,
+    transmittanceView: lutViews.transmittance,
+    lutSampler,
+    bindGroup,
+  };
+  cache.mainBindGroupNextSlot = (slot + 1) & 1;
+  return bindGroup;
+}
+
+/** Resolve the temporal-upscale bind group without parity-frame churn. */
+export function getOrCreateCloudUpscaleBindGroup(
+  device: GPUDevice,
+  cache: CloudCache,
+  upscaleSourceView: GPUTextureView,
+  colorView: GPUTextureView,
+  depthView: GPUTextureView,
+): GPUBindGroup {
+  const sampler = cache.upscaleSampler!;
+  const layout = cache.upscaleBindGroupLayout!;
+  const uniformBuffer = cache.upscaleUniformBuffer!;
+  for (let i = 0; i < cache.upscaleBindGroups.length; i++) {
+    const entry = cache.upscaleBindGroups[i];
+    if (
+      entry?.layout === layout &&
+      entry.uniformBuffer === uniformBuffer &&
+      entry.upscaleSourceView === upscaleSourceView &&
+      entry.colorView === colorView &&
+      entry.depthView === depthView &&
+      entry.sampler === sampler
+    ) {
+      return entry.bindGroup;
+    }
+  }
+
+  const bindGroup = device.createBindGroup({
+    layout,
+    entries: [
+      { binding: 0, resource: upscaleSourceView },
+      { binding: 1, resource: colorView },
+      { binding: 2, resource: depthView },
+      { binding: 3, resource: sampler },
+      { binding: 4, resource: { buffer: uniformBuffer } },
+    ],
+  });
+  const slot = cache.upscaleBindGroupNextSlot;
+  cache.upscaleBindGroups[slot] = {
+    layout,
+    uniformBuffer,
+    upscaleSourceView,
+    colorView,
+    depthView,
+    sampler,
+    bindGroup,
+  };
+  cache.upscaleBindGroupNextSlot = (slot + 1) & 1;
+  return bindGroup;
+}
+
+export function clearCloudCompositeBindGroupCaches(
+  cache: Pick<
+    CloudCache,
+    | "mainBindGroups"
+    | "mainBindGroupNextSlot"
+    | "upscaleBindGroups"
+    | "upscaleBindGroupNextSlot"
+  >,
+): void {
+  cache.mainBindGroups = [null, null];
+  cache.mainBindGroupNextSlot = 0;
+  cache.upscaleBindGroups = [null, null];
+  cache.upscaleBindGroupNextSlot = 0;
 }
 
 /**
@@ -1798,9 +1983,9 @@ export function executeProceduralClouds(
   depthTextureView: GPUTextureView,
   outputView: GPUTextureView,
   config: CloudVolumetricsConfig,
-): void {
+): boolean {
   const device = context._device;
-  if (!device) return;
+  if (!device) return false;
 
   // TAKRAM-9 — reset the per-frame "mask rendered" flag up front so a culled or
   // early-returned frame reports null to the god-ray consumer (no stale map).
@@ -1823,7 +2008,7 @@ export function executeProceduralClouds(
         if (context._cloudCache) {
           markCloudTemporalInactive(context._cloudCache);
         }
-        return; // shell entirely outside the frustum — nothing to draw
+        return false; // shell entirely outside the frustum — nothing to draw
       }
     }
   }
@@ -2535,25 +2720,17 @@ export function executeProceduralClouds(
     aerialLutOn || ambientLutOn,
   );
 
-  // Create bind group
-  const bindGroup = device.createBindGroup({
-    layout: cache.bindGroupLayout!,
-    entries: [
-      { binding: 0, resource: colorTextureView },
-      { binding: 1, resource: depthTextureView },
-      { binding: 2, resource: cache.sampler! },
-      { binding: 3, resource: { buffer: cache.uniformBuffer! } },
-      { binding: 4, resource: weatherView },
-      { binding: 5, resource: cache.weatherSampler! },
-      { binding: 6, resource: noise.shapeView },
-      { binding: 7, resource: noise.detailView },
-      { binding: 8, resource: noise.sampler },
-      { binding: 9, resource: lutViews.skyView },
-      { binding: 10, resource: lutViews.multipleScatter },
-      { binding: 11, resource: lutViews.transmittance },
-      { binding: 12, resource: cache.lutSampler! },
-    ],
-  });
+  const bindGroup = getOrCreateCloudMainBindGroup(
+    device,
+    cache,
+    colorTextureView,
+    depthTextureView,
+    weatherView,
+    noise.shapeView,
+    noise.detailView,
+    noise.sampler,
+    lutViews,
+  );
 
   // Slice 5c-B Batch 127 — record into the main frame encoder so the
   // composite-over-post-process ordering survives. Same fix pattern as
@@ -3003,16 +3180,13 @@ export function executeProceduralClouds(
     ud[11] = 0;
     device.queue.writeBuffer(cache.upscaleUniformBuffer, 0, ud);
 
-    const upscaleBindGroup = device.createBindGroup({
-      layout: cache.upscaleBindGroupLayout,
-      entries: [
-        { binding: 0, resource: upscaleSourceView },
-        { binding: 1, resource: colorTextureView },
-        { binding: 2, resource: depthTextureView },
-        { binding: 3, resource: cache.upscaleSampler },
-        { binding: 4, resource: { buffer: cache.upscaleUniformBuffer } },
-      ],
-    });
+    const upscaleBindGroup = getOrCreateCloudUpscaleBindGroup(
+      device,
+      cache,
+      upscaleSourceView,
+      colorTextureView,
+      depthTextureView,
+    );
     const upscalePass = encoder.beginRenderPass(
       timedCloudPass(context, {
         label: "CloudUpscale composite pass",
@@ -3083,6 +3257,7 @@ export function executeProceduralClouds(
   if (!useMain) {
     device.queue.submit([encoder.finish()]);
   }
+  return true;
 }
 
 /**
@@ -3153,6 +3328,7 @@ export function destroyProceduralCloudResources(
     cache.upscalePipeline = null;
     cache.upscaleBindGroupLayout = null;
     cache.upscaleSampler = null;
+    clearCloudCompositeBindGroupCaches(cache);
     // V10 (Batch 433) — release the temporal ping-pong history + resolve resources.
     cache.temporalHistory[0]?.destroy();
     cache.temporalHistory[1]?.destroy();

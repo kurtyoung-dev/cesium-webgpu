@@ -93,6 +93,7 @@ import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
+import { getAvailableFrameCommandEncoder } from "./WebGPUFrameCommandEncoder.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -1057,13 +1058,13 @@ function updateWebGPUComputeInstanceCollection(
   new Uint32Array(frameParams.buffer)[1] = cache.instanceCount;
   device.queue.writeBuffer(cache.frameParamsBuffer!, 0, frameParams);
 
-  // Dispatch the user kernel on its own encoder (weather pattern) —
-  // submitted now, so queue order places it before the scene's render
-  // submit.
+  // Record on the frame encoder when update runs inside a normal scene frame.
+  // Off-frame tests/callers retain the immediate-submit fallback.
   const workgroups = Math.ceil(cache.instanceCount / COMPUTE_WORKGROUP_SIZE);
-  const encoder = device.createCommandEncoder({
-    label: "ComputeInstance dispatch",
-  });
+  const frameEncoder = getAvailableFrameCommandEncoder(context);
+  const encoder =
+    frameEncoder ??
+    device.createCommandEncoder({ label: "ComputeInstance dispatch" });
   const pass = encoder.beginComputePass({
     label: "ComputeInstance dispatch pass",
   });
@@ -1071,7 +1072,9 @@ function updateWebGPUComputeInstanceCollection(
   pass.setBindGroup(0, cache.computeBindGroups[cur]);
   pass.dispatchWorkgroups(workgroups);
   pass.end();
-  device.queue.submit([encoder.finish()]);
+  if (!frameEncoder) {
+    device.queue.submit([encoder.finish()]);
+  }
 
   // Advance the pickPosition readback staleness clock — the kernel just wrote
   // fresh positions into instanceBuffers[cur], so any pickPosition readback
@@ -1167,8 +1170,7 @@ function updateWebGPUComputeInstanceCollection(
   // Without it the command keeps the historical never-culled,
   // bin-into-all-frustums behavior.
   const boundingSphere = collection.boundingSphere as
-    | CesiumBoundingSphere
-    | undefined;
+    CesiumBoundingSphere | undefined;
   command.boundingVolume = boundingSphere;
   command.cull = boundingSphere !== undefined;
 
@@ -1358,8 +1360,7 @@ function getWebGPUInstanceWorldPosition(
   context: CesiumGraphicsContext,
 ): Cartesian3 | undefined {
   const cache = collection._webgpuCache as unknown as
-    | ComputeInstanceCache
-    | undefined;
+    ComputeInstanceCache | undefined;
   if (!cache) {
     return undefined;
   }
@@ -1377,7 +1378,7 @@ function getWebGPUInstanceWorldPosition(
 
   // Arm/refresh the background readback for this index (dedup + errors handled
   // inside).
-  void _readInstancePositionAsync(device, cache, sourceBuffer, index);
+  void _readInstancePositionAsync(context, device, cache, sourceBuffer, index);
 
   const cached = cache.posCacheValue;
   if (
@@ -1399,6 +1400,7 @@ function getWebGPUInstanceWorldPosition(
  * @private
  */
 async function _readInstancePositionAsync(
+  context: CesiumGraphicsContext,
   device: GPUDevice,
   cache: ComputeInstanceCache,
   sourceBuffer: GPUBuffer,
@@ -1418,9 +1420,25 @@ async function _readInstancePositionAsync(
       });
     }
     const staging = cache.posReadbackBuffer;
-    const encoder = device.createCommandEncoder({
-      label: "ComputeInstance pickPosition readback",
-    });
+    const frameEncoder = getAvailableFrameCommandEncoder(context);
+    let frameSubmission: Promise<boolean> | null = null;
+    let usesFrameEncoder = false;
+    if (frameEncoder && typeof context.enqueueAfterFrameSubmit === "function") {
+      frameSubmission = new Promise<boolean>((resolve) => {
+        usesFrameEncoder = context.enqueueAfterFrameSubmit!.call(
+          context,
+          resolve,
+        );
+      });
+      if (!usesFrameEncoder) {
+        frameSubmission = null;
+      }
+    }
+    const encoder = usesFrameEncoder
+      ? frameEncoder!
+      : device.createCommandEncoder({
+          label: "ComputeInstance pickPosition readback",
+        });
     encoder.copyBufferToBuffer(
       sourceBuffer,
       index * INSTANCE_RECORD_BYTES,
@@ -1428,7 +1446,11 @@ async function _readInstancePositionAsync(
       0,
       INSTANCE_RECORD_BYTES,
     );
-    device.queue.submit([encoder.finish()]);
+    if (!usesFrameEncoder) {
+      device.queue.submit([encoder.finish()]);
+    } else if (frameSubmission && !(await frameSubmission)) {
+      return;
+    }
 
     await staging.mapAsync(GPUMapMode.READ, 0, INSTANCE_RECORD_BYTES);
     const f = new Float32Array(
@@ -1515,8 +1537,7 @@ function destroyWebGPUComputeInstanceResources(
   collection: CesiumObjectWithWebGPUCache,
 ): void {
   const cache = collection._webgpuCache as unknown as
-    | ComputeInstanceCache
-    | undefined;
+    ComputeInstanceCache | undefined;
   if (!cache) {
     return;
   }

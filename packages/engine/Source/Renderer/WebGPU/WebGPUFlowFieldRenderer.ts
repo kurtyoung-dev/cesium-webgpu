@@ -49,6 +49,7 @@ import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
+import { getAvailableFrameCommandEncoder } from "./WebGPUFrameCommandEncoder.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -650,16 +651,20 @@ function updateWebGPUFlowField(
     cache.renderParamsData,
   );
 
-  // Dispatch advection on its own encoder (weather/compute-instance pattern);
-  // queue order places it before the scene render submit.
+  // Join the frame submission when update runs in the normal pre-render phase;
+  // retain the private encoder only for off-frame/direct callers.
   const workgroups = Math.ceil(count / COMPUTE_WORKGROUP_SIZE);
-  const encoder = device.createCommandEncoder({ label: "FlowField advect" });
+  const frameEncoder = getAvailableFrameCommandEncoder(context);
+  const encoder =
+    frameEncoder ?? device.createCommandEncoder({ label: "FlowField advect" });
   const pass = encoder.beginComputePass({ label: "FlowField advect pass" });
   pass.setPipeline(cache.computePipeline!);
   pass.setBindGroup(0, cache.computeBindGroups[cur]!);
   pass.dispatchWorkgroups(workgroups);
   pass.end();
-  device.queue.submit([encoder.finish()]);
+  if (!frameEncoder) {
+    device.queue.submit([encoder.finish()]);
+  }
 
   cache.frameNumber++;
   cache.pingPongIndex = cur;

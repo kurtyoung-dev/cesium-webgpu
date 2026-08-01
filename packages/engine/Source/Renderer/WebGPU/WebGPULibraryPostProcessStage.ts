@@ -316,6 +316,13 @@ interface LibraryPassRuntime {
   bindGroupLayout: GPUBindGroupLayout;
   uniformBuffer: GPUBuffer | null;
   uniformData: Float32Array;
+  lastUniformData: Float32Array;
+  uniformUploaded: boolean;
+  cachedBindGroup: GPUBindGroup | null;
+  cachedColorView: GPUTextureView | null;
+  cachedDepthView: GPUTextureView | null;
+  cachedEdgeView: GPUTextureView | null;
+  cachedSampler: GPUSampler | null;
 }
 
 /**
@@ -430,6 +437,13 @@ export class WebGPULibraryPostProcessStage implements PostProcessEffect {
         bindGroupLayout,
         uniformBuffer,
         uniformData: new Float32Array(spec.uniformFloatCount),
+        lastUniformData: new Float32Array(spec.uniformFloatCount),
+        uniformUploaded: false,
+        cachedBindGroup: null,
+        cachedColorView: null,
+        cachedDepthView: null,
+        cachedEdgeView: null,
+        cachedSampler: null,
       });
     }
 
@@ -470,35 +484,61 @@ export class WebGPULibraryPostProcessStage implements PostProcessEffect {
           this._height,
           this._frame,
         );
-        this._device.queue.writeBuffer(
-          pass.uniformBuffer,
-          0,
-          pass.uniformData as Float32Array<ArrayBuffer>,
-        );
+        let uniformDirty = !pass.uniformUploaded;
+        for (let i = 0; i < pass.uniformData.length && !uniformDirty; i++) {
+          uniformDirty = pass.uniformData[i] !== pass.lastUniformData[i];
+        }
+        if (uniformDirty) {
+          this._device.queue.writeBuffer(
+            pass.uniformBuffer,
+            0,
+            pass.uniformData as Float32Array<ArrayBuffer>,
+          );
+          pass.lastUniformData.set(pass.uniformData);
+          pass.uniformUploaded = true;
+        }
       }
 
-      const entries: GPUBindGroupEntry[] = [];
-      for (let i = 0; i < spec.bindings.length; i++) {
-        const kind = spec.bindings[i];
-        let resource: GPUBindingResource;
-        if (kind === "color") {
-          resource = sourceView;
-        } else if (kind === "depth") {
-          resource = depthView!;
-        } else if (kind === "edge") {
-          resource = this._edgeView!;
-        } else if (kind === "sampler") {
-          resource = sampler;
-        } else {
-          resource = { buffer: pass.uniformBuffer! };
+      const colorView = spec.bindings.includes("color") ? sourceView : null;
+      const boundDepthView = spec.bindings.includes("depth") ? depthView : null;
+      const edgeView = spec.bindings.includes("edge") ? this._edgeView : null;
+      const boundSampler = spec.bindings.includes("sampler") ? sampler : null;
+      let bindGroup = pass.cachedBindGroup;
+      if (
+        !bindGroup ||
+        pass.cachedColorView !== colorView ||
+        pass.cachedDepthView !== boundDepthView ||
+        pass.cachedEdgeView !== edgeView ||
+        pass.cachedSampler !== boundSampler
+      ) {
+        const entries: GPUBindGroupEntry[] = [];
+        for (let i = 0; i < spec.bindings.length; i++) {
+          const kind = spec.bindings[i];
+          let resource: GPUBindingResource;
+          if (kind === "color") {
+            resource = sourceView;
+          } else if (kind === "depth") {
+            resource = depthView!;
+          } else if (kind === "edge") {
+            resource = this._edgeView!;
+          } else if (kind === "sampler") {
+            resource = sampler;
+          } else {
+            resource = { buffer: pass.uniformBuffer! };
+          }
+          entries.push({ binding: i, resource });
         }
-        entries.push({ binding: i, resource });
+        bindGroup = this._device.createBindGroup({
+          label: `LibraryPP-${spec.label}-BG`,
+          layout: pass.bindGroupLayout,
+          entries,
+        });
+        pass.cachedBindGroup = bindGroup;
+        pass.cachedColorView = colorView;
+        pass.cachedDepthView = boundDepthView;
+        pass.cachedEdgeView = edgeView;
+        pass.cachedSampler = boundSampler;
       }
-      const bindGroup = this._device.createBindGroup({
-        label: `LibraryPP-${spec.label}-BG`,
-        layout: pass.bindGroupLayout,
-        entries,
-      });
 
       const targetView =
         spec.target === "edge" ? this._edgeView! : this._outputView;

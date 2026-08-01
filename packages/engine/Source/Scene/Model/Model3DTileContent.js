@@ -275,6 +275,13 @@ class Model3DTileContent {
 
     const tilesetEnvironmentMapManager = tileset.environmentMapManager;
     if (model.environmentMapManager !== tilesetEnvironmentMapManager) {
+      const modelEnvironmentMapManager = model.environmentMapManager;
+      if (
+        modelEnvironmentMapManager.owner === model &&
+        !modelEnvironmentMapManager.isDestroyed()
+      ) {
+        modelEnvironmentMapManager.destroy();
+      }
       model._environmentMapManager = tilesetEnvironmentMapManager;
     }
 
@@ -494,6 +501,10 @@ function makeModelOptions(tileset, tile, content, additionalOptions) {
     colorBlendAmount: tileset.colorBlendAmount,
     lightColor: tileset.lightColor,
     imageBasedLighting: tileset.imageBasedLighting,
+    // Borrow the tileset-owned manager at construction time. Creating a
+    // private manager here only to replace it on the first update creates
+    // avoidable allocations and garbage for every streamed tile model.
+    environmentMapManager: tileset.environmentMapManager,
     featureIdLabel: tileset.featureIdLabel,
     instanceFeatureIdLabel: tileset.instanceFeatureIdLabel,
     pointCloudShading: tileset.pointCloudShading,

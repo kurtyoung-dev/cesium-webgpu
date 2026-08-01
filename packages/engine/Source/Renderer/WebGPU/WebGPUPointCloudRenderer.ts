@@ -30,6 +30,7 @@ import { getOrCreateSharedAdvancedEffectsBG } from "./WebGPUPrimitiveCommands.js
 import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 // Slice 5c-B Phase 1 (Batch 112) — scene-FB target helper.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
+import { getAvailableFrameCommandEncoder } from "./WebGPUFrameCommandEncoder.js";
 import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
@@ -42,6 +43,24 @@ const _pointCloudShaderModuleCaches = new WeakMap<
   GPUDevice,
   WebGPUShaderModuleCache
 >();
+
+/** Record a point-cloud buffer copy on the frame encoder when available. */
+function copyPointCloudBuffer(
+  context: CesiumGraphicsContext,
+  device: GPUDevice,
+  label: string,
+  source: GPUBuffer,
+  destination: GPUBuffer,
+  size: number,
+): void {
+  const frameEncoder = getAvailableFrameCommandEncoder(context);
+  const encoder =
+    frameEncoder ?? device.createCommandEncoder({ label: `${label} (orphan)` });
+  encoder.copyBufferToBuffer(source, 0, destination, 0, size);
+  if (!frameEncoder) {
+    device.queue.submit([encoder.finish()]);
+  }
+}
 
 function getPointCloudShaderModuleCache(
   device: GPUDevice,
@@ -1782,17 +1801,14 @@ function attachPointCloudVelocityCommand(
     // unchanged (INV-1). Geometry velocity is 0 either way; camera-induced
     // velocity comes from `previousViewProjection`, untouched.
     if (cache.prevBufferRevision !== cache.instanceDataRevision) {
-      const encoder = device.createCommandEncoder({
-        label: "PointCloud prev identity-seed",
-      });
-      encoder.copyBufferToBuffer(
+      copyPointCloudBuffer(
+        context,
+        device,
+        "PointCloud prev identity-seed",
         cache.instanceBuffer,
-        0,
         cache.prevInstanceBuffer,
-        0,
         requiredBytes,
       );
-      device.queue.submit([encoder.finish()]);
       cache.prevBufferRevision = cache.instanceDataRevision;
     }
     // else: static & already resident → NOTHING. This is the per-frame win.
@@ -1813,17 +1829,14 @@ function attachPointCloudVelocityCommand(
     // Either way the correct emission is velocity = 0 for this frame;
     // GPU self-copy ensures the prev buffer holds matching bytes so
     // the velocity VS reads (curr, curr) → 0 instead of garbage.
-    const encoder = device.createCommandEncoder({
-      label: "PointCloud prev seed",
-    });
-    encoder.copyBufferToBuffer(
+    copyPointCloudBuffer(
+      context,
+      device,
+      "PointCloud prev seed",
       cache.instanceBuffer,
-      0,
       cache.prevInstanceBuffer,
-      0,
       requiredBytes,
     );
-    device.queue.submit([encoder.finish()]);
     cache.prevBufferRevision = undefined;
   }
 
@@ -2020,9 +2033,10 @@ function _runGPULODPath(
   const lod3 = far;
 
   const camPos = context.uniformState.cameraPosition;
-  const encoder = device.createCommandEncoder({
-    label: "PointCloud LOD dispatch",
-  });
+  const frameEncoder = getAvailableFrameCommandEncoder(context);
+  const encoder =
+    frameEncoder ??
+    device.createCommandEncoder({ label: "PointCloud LOD dispatch" });
   lodProcessor.dispatch(encoder, {
     cameraPositionWC: [camPos.x, camPos.y, camPos.z],
     lod0Distance2: lod0 * lod0,
@@ -2044,7 +2058,9 @@ function _runGPULODPath(
     4,
     4,
   );
-  device.queue.submit([encoder.finish()]);
+  if (!frameEncoder) {
+    device.queue.submit([encoder.finish()]);
+  }
 
   // Emit a drawIndirect command. The scene renderer's execute path
   // recognizes `_drawIndirectBuffer` and routes through drawIndirect
@@ -2156,17 +2172,14 @@ function attachLODPointCloudVelocityCommand(
     cache.lodPrevInstanceBuffer.size >= requiredBytes
   ) {
     if (cache.lodPrevBufferRevision !== cache.instanceDataRevision) {
-      const encoder = device.createCommandEncoder({
-        label: "PointCloud LOD prev identity-seed",
-      });
-      encoder.copyBufferToBuffer(
+      copyPointCloudBuffer(
+        context,
+        device,
+        "PointCloud LOD prev identity-seed",
         cache.instanceBuffer,
-        0,
         cache.lodPrevInstanceBuffer,
-        0,
         requiredBytes,
       );
-      device.queue.submit([encoder.finish()]);
       cache.lodPrevBufferRevision = cache.instanceDataRevision;
     }
     // else: static & already resident → NOTHING.
@@ -2180,17 +2193,14 @@ function attachLODPointCloudVelocityCommand(
     );
     cache.lodPrevBufferRevision = undefined;
   } else {
-    const encoder = device.createCommandEncoder({
-      label: "PointCloud LOD prev seed",
-    });
-    encoder.copyBufferToBuffer(
+    copyPointCloudBuffer(
+      context,
+      device,
+      "PointCloud LOD prev seed",
       cache.instanceBuffer,
-      0,
       cache.lodPrevInstanceBuffer,
-      0,
       requiredBytes,
     );
-    device.queue.submit([encoder.finish()]);
     cache.lodPrevBufferRevision = undefined;
   }
 

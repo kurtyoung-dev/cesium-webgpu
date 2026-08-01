@@ -93,6 +93,24 @@ describe("Renderer/WebGPU/WebGPUGlobeDepth bind-group caching", function () {
     expect(bindGroups.length).toBe(2);
   });
 
+  it("reuses the packed-depth target's stable output view", function () {
+    const globeDepth = new WebGPUGlobeDepth();
+    const texture = {};
+    const view = {};
+    globeDepth._depthCopyTarget = {
+      getColorTexture() {
+        return texture;
+      },
+      getColorTextureView() {
+        return view;
+      },
+    };
+
+    expect(globeDepth.globeDepthTexture).toBe(texture);
+    expect(globeDepth.globeDepthTextureView).toBe(view);
+    expect(globeDepth.globeDepthTextureView).toBe(view);
+  });
+
   it("packs an explicit pick depth checkpoint into the caller-owned view", function () {
     const { device } = makeDevice();
     const globeDepth = prepareGlobeDepth(device);

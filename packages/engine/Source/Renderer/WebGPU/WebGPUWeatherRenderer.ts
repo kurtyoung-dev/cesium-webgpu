@@ -36,6 +36,7 @@ import type {
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
 import type { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
+import { getAvailableFrameCommandEncoder } from "./WebGPUFrameCommandEncoder.js";
 
 // Per-device shader module cache so two contexts with weather enabled
 // share a single compiled `GPUShaderModule` for both the compute and
@@ -87,6 +88,7 @@ export interface WeatherCache {
   renderPipeline: GPURenderPipeline | null;
   renderBindGroupLayout: GPUBindGroupLayout | null;
   renderBindGroup: GPUBindGroup | null;
+  renderBindGroupParticleBuffer: GPUBuffer | null;
   renderUniformBuffer: GPUBuffer | null;
   renderUniformData: Float32Array;
   renderInitialized: boolean;
@@ -123,6 +125,7 @@ function ensureWeatherCache(context: CesiumGraphicsContext): WeatherCache {
       renderPipeline: null,
       renderBindGroupLayout: null,
       renderBindGroup: null,
+      renderBindGroupParticleBuffer: null,
       renderUniformBuffer: null,
       renderUniformData: new Float32Array(RENDER_UNIFORM_SIZE / 4),
       renderInitialized: false,
@@ -370,7 +373,9 @@ export function updateWeatherParticles(
 
   // Dispatch compute passes
   const workgroups = Math.ceil(maxParticles / 256);
-  const encoder = device.createCommandEncoder({ label: "Weather compute" });
+  const frameEncoder = getAvailableFrameCommandEncoder(context);
+  const encoder =
+    frameEncoder ?? device.createCommandEncoder({ label: "Weather compute" });
 
   // Pass 0: Reset counters
   const resetPass = encoder.beginComputePass();
@@ -393,7 +398,9 @@ export function updateWeatherParticles(
   emitPass.dispatchWorkgroups(workgroups);
   emitPass.end();
 
-  device.queue.submit([encoder.finish()]);
+  if (!frameEncoder) {
+    device.queue.submit([encoder.finish()]);
+  }
 }
 
 /**
@@ -598,11 +605,11 @@ export function renderWeatherParticles(
   frameState: CesiumFrameState,
   weatherConfig: CesiumWeatherConfig,
   renderPassEncoder: GPURenderPassEncoder,
-): void {
+): boolean {
   const device: GPUDevice | undefined = context._device;
   const cache = context._weatherCache;
-  if (!device || !cache?.initialized || !cache.particleBuffer) return;
-  if (!weatherConfig?.enabled) return;
+  if (!device || !cache?.initialized || !cache.particleBuffer) return false;
+  if (!weatherConfig?.enabled) return false;
 
   // Phase E (Batch 423) — weather particles composite onto the CANVAS default
   // render pass (env effects run after post-process, Batch 127), so the pipeline
@@ -634,7 +641,7 @@ export function renderWeatherParticles(
   }
 
   initializeRenderPipeline(device, cache, format, depthFormat);
-  if (!cache.renderUniformBuffer) return;
+  if (!cache.renderUniformBuffer) return false;
 
   // C-R7-RENDERER-MIGRATION (Batch 72) — resolve the render pipeline
   // through the central cache. Skip the draw on not-yet-ready frames so
@@ -650,7 +657,7 @@ export function renderWeatherParticles(
         cache,
       )
     ) {
-      return;
+      return false;
     }
   }
 
@@ -733,19 +740,28 @@ export function renderWeatherParticles(
 
   device.queue.writeBuffer(cache.renderUniformBuffer, 0, data);
 
-  // Create render bind group (per-frame — particle buffer may have been recreated)
-  cache.renderBindGroup = device.createBindGroup({
-    layout: cache.renderBindGroupLayout!,
-    entries: [
-      { binding: 0, resource: { buffer: cache.particleBuffer } },
-      { binding: 1, resource: { buffer: cache.renderUniformBuffer } },
-    ],
-  });
+  // The particle buffer changes only when maxParticles forces a resource
+  // rebuild. Reuse the bind group on settled frames; the uniform contents stay
+  // genuinely dynamic and are still uploaded above every rendered frame.
+  if (
+    !cache.renderBindGroup ||
+    cache.renderBindGroupParticleBuffer !== cache.particleBuffer
+  ) {
+    cache.renderBindGroup = device.createBindGroup({
+      layout: cache.renderBindGroupLayout!,
+      entries: [
+        { binding: 0, resource: { buffer: cache.particleBuffer } },
+        { binding: 1, resource: { buffer: cache.renderUniformBuffer } },
+      ],
+    });
+    cache.renderBindGroupParticleBuffer = cache.particleBuffer;
+  }
 
   // Draw: 6 vertices per quad, instanced by particle count
   renderPassEncoder.setPipeline(cache.renderPipeline);
   renderPassEncoder.setBindGroup(0, cache.renderBindGroup);
   renderPassEncoder.draw(6, cache.maxParticles);
+  return true;
 }
 
 export function destroyWeatherResources(context: CesiumGraphicsContext): void {
@@ -766,6 +782,7 @@ export function destroyWeatherResources(context: CesiumGraphicsContext): void {
     cache.renderPipeline = null;
     cache.renderBindGroupLayout = null;
     cache.renderBindGroup = null;
+    cache.renderBindGroupParticleBuffer = null;
     cache.renderUniformBuffer?.destroy();
     cache.renderUniformBuffer = null;
     cache.renderInitialized = false;

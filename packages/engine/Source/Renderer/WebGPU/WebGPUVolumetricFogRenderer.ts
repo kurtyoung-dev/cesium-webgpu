@@ -275,13 +275,12 @@ export interface VolumetricFogResources {
   temporalUniformBuffer: GPUBuffer;
   temporalUniformData: Float32Array;
   temporalSampler: GPUSampler;
-  // The resolve bind group is rebuilt only when the read/write history view
-  // identities change (ping-pong flip / (re)allocation), so steady-state
-  // cost is zero.
-  temporalResolveBindGroup: GPUBindGroup | null;
-  temporalBoundCurrentView: GPUTextureView | null;
-  temporalBoundReadView: GPUTextureView | null;
-  temporalBoundWriteView: GPUTextureView | null;
+  // Exact two-slot cache for the two read/write history parities.
+  temporalResolveBindGroups: [
+    FogTemporalResolveBindGroupEntry | null,
+    FogTemporalResolveBindGroupEntry | null,
+  ];
+  temporalResolveBindGroupNextSlot: number;
 
   // Phase 5c — sun shadow map placeholder + comparison sampler.
   // The placeholder is a 1×1 depth32float texture cleared to 1.0
@@ -346,18 +345,169 @@ export interface VolumetricFogResources {
   compositeUniformBuffer: GPUBuffer;
   compositeUniformData: Float32Array;
   compositeSampler: GPUSampler;
-  // Composite bind group — recreated when the input scene color/depth
-  // texture views change (e.g., on resize). Cached on the bind group
-  // build site to avoid every-frame allocation.
-  compositeBindGroup: GPUBindGroup | null;
-  compositeBoundColorView: GPUTextureView | null;
-  compositeBoundDepthView: GPUTextureView | null;
-  compositeBoundOutputFormat: GPUTextureFormat | null;
-  // Batch 435 (FOG-TEMPORAL) — the 3D fog volume view currently bound at
-  // composite binding 4 (raw integrated volume on the parity path, or the
-  // resolved history view on the temporal path). Part of the bind-group cache
-  // key so the bind group rebuilds when the ping-pong flips / temporal toggles.
-  compositeBoundFogSourceView: GPUTextureView | null;
+  // Exact-identity two-slot cache. Temporal fog alternates between two history
+  // views every frame; a single "last view" cache therefore allocated one bind
+  // group every frame. Two slots cover both parity identities while still
+  // rebuilding on color/depth/format changes.
+  compositeBindGroups: [
+    FogCompositeBindGroupEntry | null,
+    FogCompositeBindGroupEntry | null,
+  ];
+  compositeBindGroupNextSlot: number;
+}
+
+export interface FogCompositeBindGroupEntry {
+  layout: GPUBindGroupLayout;
+  uniformBuffer: GPUBuffer;
+  sampler: GPUSampler;
+  colorView: GPUTextureView;
+  depthView: GPUTextureView;
+  outputFormat: GPUTextureFormat;
+  fogSourceView: GPUTextureView;
+  bindGroup: GPUBindGroup;
+}
+
+export interface FogTemporalResolveBindGroupEntry {
+  layout: GPUBindGroupLayout;
+  uniformBuffer: GPUBuffer;
+  currentView: GPUTextureView;
+  readView: GPUTextureView;
+  sampler: GPUSampler;
+  writeView: GPUTextureView;
+  bindGroup: GPUBindGroup;
+}
+
+export function getOrCreateFogTemporalResolveBindGroup(
+  device: GPUDevice,
+  resources: Pick<
+    VolumetricFogResources,
+    | "temporalResolveBindGroupLayout"
+    | "temporalUniformBuffer"
+    | "temporalSampler"
+    | "temporalResolveBindGroups"
+    | "temporalResolveBindGroupNextSlot"
+  >,
+  currentView: GPUTextureView,
+  readView: GPUTextureView,
+  writeView: GPUTextureView,
+): GPUBindGroup {
+  for (let i = 0; i < resources.temporalResolveBindGroups.length; i++) {
+    const entry = resources.temporalResolveBindGroups[i];
+    if (
+      entry?.layout === resources.temporalResolveBindGroupLayout &&
+      entry.uniformBuffer === resources.temporalUniformBuffer &&
+      entry.currentView === currentView &&
+      entry.readView === readView &&
+      entry.sampler === resources.temporalSampler &&
+      entry.writeView === writeView
+    ) {
+      return entry.bindGroup;
+    }
+  }
+
+  const bindGroup = device.createBindGroup({
+    label: "VolumetricFog_TemporalResolveBindGroup",
+    layout: resources.temporalResolveBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: resources.temporalUniformBuffer } },
+      { binding: 1, resource: currentView },
+      { binding: 2, resource: readView },
+      { binding: 3, resource: resources.temporalSampler },
+      { binding: 4, resource: writeView },
+    ],
+  });
+  const slot = resources.temporalResolveBindGroupNextSlot;
+  resources.temporalResolveBindGroups[slot] = {
+    layout: resources.temporalResolveBindGroupLayout,
+    uniformBuffer: resources.temporalUniformBuffer,
+    currentView,
+    readView,
+    sampler: resources.temporalSampler,
+    writeView,
+    bindGroup,
+  };
+  resources.temporalResolveBindGroupNextSlot = (slot + 1) & 1;
+  return bindGroup;
+}
+
+export function clearFogTemporalResolveBindGroupCache(
+  resources: Pick<
+    VolumetricFogResources,
+    "temporalResolveBindGroups" | "temporalResolveBindGroupNextSlot"
+  >,
+): void {
+  resources.temporalResolveBindGroups = [null, null];
+  resources.temporalResolveBindGroupNextSlot = 0;
+}
+
+/**
+ * Resolve the composite bind group from a bounded exact-identity cache.
+ * Exported for a GPU-free allocation contract test.
+ */
+export function getOrCreateFogCompositeBindGroup(
+  device: GPUDevice,
+  resources: Pick<
+    VolumetricFogResources,
+    | "compositeBindGroupLayout"
+    | "compositeUniformBuffer"
+    | "compositeSampler"
+    | "compositeBindGroups"
+    | "compositeBindGroupNextSlot"
+  >,
+  colorView: GPUTextureView,
+  depthView: GPUTextureView,
+  outputFormat: GPUTextureFormat,
+  fogSourceView: GPUTextureView,
+): GPUBindGroup {
+  for (let i = 0; i < resources.compositeBindGroups.length; i++) {
+    const entry = resources.compositeBindGroups[i];
+    if (
+      entry?.layout === resources.compositeBindGroupLayout &&
+      entry.uniformBuffer === resources.compositeUniformBuffer &&
+      entry.sampler === resources.compositeSampler &&
+      entry.colorView === colorView &&
+      entry.depthView === depthView &&
+      entry.outputFormat === outputFormat &&
+      entry.fogSourceView === fogSourceView
+    ) {
+      return entry.bindGroup;
+    }
+  }
+
+  const bindGroup = device.createBindGroup({
+    label: "VolumetricFog_CompositeBindGroup",
+    layout: resources.compositeBindGroupLayout,
+    entries: [
+      { binding: 0, resource: { buffer: resources.compositeUniformBuffer } },
+      { binding: 1, resource: resources.compositeSampler },
+      { binding: 2, resource: colorView },
+      { binding: 3, resource: depthView },
+      { binding: 4, resource: fogSourceView },
+    ],
+  });
+  const slot = resources.compositeBindGroupNextSlot;
+  resources.compositeBindGroups[slot] = {
+    layout: resources.compositeBindGroupLayout,
+    uniformBuffer: resources.compositeUniformBuffer,
+    sampler: resources.compositeSampler,
+    colorView,
+    depthView,
+    outputFormat,
+    fogSourceView,
+    bindGroup,
+  };
+  resources.compositeBindGroupNextSlot = (slot + 1) & 1;
+  return bindGroup;
+}
+
+export function clearFogCompositeBindGroupCache(
+  resources: Pick<
+    VolumetricFogResources,
+    "compositeBindGroups" | "compositeBindGroupNextSlot"
+  >,
+): void {
+  resources.compositeBindGroups = [null, null];
+  resources.compositeBindGroupNextSlot = 0;
 }
 
 /**
@@ -542,8 +692,10 @@ class WebGPUVolumetricFogRenderer {
     r.temporalHistoryTexture[1]?.destroy();
     r.temporalPlaceholderTexture.destroy();
     r.temporalUniformBuffer.destroy();
+    clearFogTemporalResolveBindGroupCache(r);
     r.paramsBuffer.destroy();
     r.compositeUniformBuffer.destroy();
+    clearFogCompositeBindGroupCache(r);
     this._resources = null;
   }
 
@@ -592,7 +744,7 @@ class WebGPUVolumetricFogRenderer {
       }
       r.temporalRead = 0;
       r.temporalFirstFrame = true;
-      r.temporalResolveBindGroup = null;
+      clearFogTemporalResolveBindGroupCache(r);
       r.temporalHistoryAllocated = true;
       return true;
     } catch (e) {
@@ -1382,36 +1534,19 @@ class WebGPUVolumetricFogRenderer {
           td.byteLength,
         );
 
-        // Rebuild the resolve bind group when the read/write history view
-        // identities change (ping-pong flip / (re)allocation). Steady state
-        // alternates between two cached configurations.
-        if (
-          r.temporalResolveBindGroup === null ||
-          r.temporalBoundCurrentView !== r.integratedSampleView ||
-          r.temporalBoundReadView !== readSampleView ||
-          r.temporalBoundWriteView !== writeStorageView
-        ) {
-          r.temporalResolveBindGroup = device.createBindGroup({
-            label: "VolumetricFog_TemporalResolveBindGroup",
-            layout: r.temporalResolveBindGroupLayout,
-            entries: [
-              { binding: 0, resource: { buffer: r.temporalUniformBuffer } },
-              { binding: 1, resource: r.integratedSampleView },
-              { binding: 2, resource: readSampleView },
-              { binding: 3, resource: r.temporalSampler },
-              { binding: 4, resource: writeStorageView },
-            ],
-          });
-          r.temporalBoundCurrentView = r.integratedSampleView;
-          r.temporalBoundReadView = readSampleView;
-          r.temporalBoundWriteView = writeStorageView;
-        }
+        const temporalResolveBindGroup = getOrCreateFogTemporalResolveBindGroup(
+          device,
+          r,
+          r.integratedSampleView,
+          readSampleView,
+          writeStorageView,
+        );
 
         const tPass = encoder.beginComputePass({
           label: "VolumetricFog_TemporalResolvePass",
         });
         tPass.setPipeline(r.temporalResolvePipeline);
-        tPass.setBindGroup(0, r.temporalResolveBindGroup);
+        tPass.setBindGroup(0, temporalResolveBindGroup);
         // Full 3D dispatch over the froxel volume.
         tPass.dispatchWorkgroups(wgX, wgY, wgZ);
         tPass.end();
@@ -1432,9 +1567,7 @@ class WebGPUVolumetricFogRenderer {
       r.temporalHistoryStorageView = [null, null];
       r.temporalHistorySampleView = [null, null];
       r.temporalHistoryAllocated = false;
-      r.temporalResolveBindGroup = null;
-      r.temporalBoundReadView = null;
-      r.temporalBoundWriteView = null;
+      clearFogTemporalResolveBindGroupCache(r);
     }
 
     this._temporalFrameIndex++;
@@ -1465,8 +1598,8 @@ class WebGPUVolumetricFogRenderer {
     depthView: GPUTextureView,
     outputView: GPUTextureView,
     outputFormat: GPUTextureFormat,
-  ): void {
-    if (this._isDestroyed || !this._resources) return;
+  ): boolean {
+    if (this._isDestroyed || !this._resources) return false;
     const ac = frameState.atmosphericConditions;
     const vf = ac && ac.volumetricFog ? ac.volumetricFog : undefined;
     // Batch 420 — mirror the own-activation gate from `update()`: the
@@ -1474,10 +1607,10 @@ class WebGPUVolumetricFogRenderer {
     // is on OR ground fog is active. Otherwise the integrated volume the
     // ground-fog density pass just wrote would never reach the screen.
     const groundFogActive = ac?.effects?.groundFog?.enabled === true;
-    if (vf?.enabled !== true && !groundFogActive) return;
+    if (vf?.enabled !== true && !groundFogActive) return false;
 
     const device: GPUDevice = context.device;
-    if (!device) return;
+    if (!device) return false;
 
     this._composites++;
     const r = this._resources;
@@ -1538,7 +1671,7 @@ class WebGPUVolumetricFogRenderer {
                 entry.pending = false;
               });
           }
-          return;
+          return false;
         }
       } else {
         // Fallback: no central cache.
@@ -1619,35 +1752,14 @@ class WebGPUVolumetricFogRenderer {
       }
     }
 
-    // (Re)build the composite bind group when the input views change. The fog
-    // source view is part of the cache key so the bind group rebuilds when the
-    // temporal ping-pong flips (or temporal toggles on/off). The output format
-    // check is informational only — the composite pipeline was created with
-    // bgra8unorm; if the actual output format differs the renderpass would
-    // fail (rebuilt in `composite()` above).
-    if (
-      r.compositeBindGroup === null ||
-      r.compositeBoundColorView !== colorView ||
-      r.compositeBoundDepthView !== depthView ||
-      r.compositeBoundOutputFormat !== outputFormat ||
-      r.compositeBoundFogSourceView !== fogSourceView
-    ) {
-      r.compositeBindGroup = device.createBindGroup({
-        label: "VolumetricFog_CompositeBindGroup",
-        layout: r.compositeBindGroupLayout,
-        entries: [
-          { binding: 0, resource: { buffer: r.compositeUniformBuffer } },
-          { binding: 1, resource: r.compositeSampler },
-          { binding: 2, resource: colorView },
-          { binding: 3, resource: depthView },
-          { binding: 4, resource: fogSourceView },
-        ],
-      });
-      r.compositeBoundColorView = colorView;
-      r.compositeBoundDepthView = depthView;
-      r.compositeBoundOutputFormat = outputFormat;
-      r.compositeBoundFogSourceView = fogSourceView;
-    }
+    const compositeBindGroup = getOrCreateFogCompositeBindGroup(
+      device,
+      r,
+      colorView,
+      depthView,
+      outputFormat,
+      fogSourceView,
+    );
 
     // Slice 5c-B Batch 130 — record into the main frame encoder so the
     // composite ordering survives. Same fix pattern as Batch 127 for
@@ -1674,12 +1786,13 @@ class WebGPUVolumetricFogRenderer {
       ],
     });
     pass.setPipeline(r.compositePipeline);
-    pass.setBindGroup(0, r.compositeBindGroup);
+    pass.setBindGroup(0, compositeBindGroup);
     pass.draw(3);
     pass.end();
     if (!useMain) {
       device.queue.submit([encoder.finish()]);
     }
+    return true;
   }
 
   destroy(): void {
@@ -1750,11 +1863,11 @@ export function compositeWebGPUVolumetricFog(
   depthView: GPUTextureView,
   outputView: GPUTextureView,
   outputFormat: GPUTextureFormat,
-): void {
-  if (!context || !context.device) return;
+): boolean {
+  if (!context || !context.device) return false;
   const inst = _instances.get(context);
-  if (!inst) return;
-  inst.composite(
+  if (!inst) return false;
+  return inst.composite(
     context,
     frameState,
     colorView,

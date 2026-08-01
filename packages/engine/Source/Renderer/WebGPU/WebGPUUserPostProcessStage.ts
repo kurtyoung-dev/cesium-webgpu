@@ -146,7 +146,20 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
 
   private _pipeline: GPURenderPipeline | null = null;
   private _bindGroupLayout: GPUBindGroupLayout | null = null;
-  private _uniformBuffer: GPUBuffer | null = null;
+  // One immutable binding target per encoded pass. Queue writes issued while
+  // recording a command buffer all execute before that buffer at submit time;
+  // sharing one UBO would therefore make every pass observe the final pass
+  // index. Persistent per-pass buffers preserve the documented multi-pass
+  // contract without adding settled-frame allocations.
+  private _uniformBuffers: GPUBuffer[] = [];
+  private _uniformScratch = new Float32Array(USER_UNIFORM_FLOAT_COUNT);
+  private _lastUniformScratch: Float32Array[] = [];
+  private _uniformUploaded: boolean[] = [];
+  private _passBindGroups: Array<{
+    source: GPUTextureView;
+    sampler: GPUSampler;
+    bindGroup: GPUBindGroup;
+  } | null> = [];
   // Batch 204 multi-pass — TWO intermediate textures for ping-pong.
   // Single-pass stages use only `_intermediateTextureA`. Multi-pass
   // stages alternate A/B with each `numberOfPasses` iteration. The
@@ -283,11 +296,24 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
       primitive: { topology: "triangle-list" },
     });
 
-    this._uniformBuffer = device.createBuffer({
-      label: `UserPostProcessStage[${this.name}] UBO`,
-      size: USER_UNIFORM_FLOAT_COUNT * 4,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    for (const buffer of this._uniformBuffers) {
+      buffer.destroy();
+    }
+    this._uniformBuffers.length = 0;
+    this._lastUniformScratch.length = 0;
+    this._uniformUploaded.length = 0;
+    this._passBindGroups.length = 0;
+    for (let passIndex = 0; passIndex < this._numberOfPasses; passIndex++) {
+      this._uniformBuffers.push(
+        device.createBuffer({
+          label: `UserPostProcessStage[${this.name}] UBO pass ${passIndex}`,
+          size: USER_UNIFORM_FLOAT_COUNT * 4,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        }),
+      );
+      this._lastUniformScratch.push(new Float32Array(USER_UNIFORM_FLOAT_COUNT));
+      this._uniformUploaded.push(false);
+    }
 
     this._allocateIntermediate(width, height);
   }
@@ -332,7 +358,13 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
         : (this._intermediateViewB ?? this._intermediateViewA);
       lastWrittenView = targetView;
 
-      this._dispatchOnePass(encoder, currentSource, sampler, targetView);
+      this._dispatchOnePass(
+        encoder,
+        passIdx,
+        currentSource,
+        sampler,
+        targetView,
+      );
 
       // Next pass reads what we just wrote.
       currentSource = targetView;
@@ -343,19 +375,36 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
 
   private _dispatchOnePass(
     encoder: GPUCommandEncoder,
+    passIndex: number,
     sourceView: GPUTextureView,
     sampler: GPUSampler,
     targetView: GPUTextureView,
   ): void {
-    const bindGroup = this._device!.createBindGroup({
-      label: `UserPostProcessStage[${this.name}] BG`,
-      layout: this._bindGroupLayout!,
-      entries: [
-        { binding: 0, resource: sourceView },
-        { binding: 1, resource: sampler },
-        { binding: 2, resource: { buffer: this._uniformBuffer! } },
-      ],
-    });
+    const cached = this._passBindGroups[passIndex];
+    let bindGroup = cached?.bindGroup;
+    if (
+      !bindGroup ||
+      cached.source !== sourceView ||
+      cached.sampler !== sampler
+    ) {
+      bindGroup = this._device!.createBindGroup({
+        label: `UserPostProcessStage[${this.name}] BG pass ${passIndex}`,
+        layout: this._bindGroupLayout!,
+        entries: [
+          { binding: 0, resource: sourceView },
+          { binding: 1, resource: sampler },
+          {
+            binding: 2,
+            resource: { buffer: this._uniformBuffers[passIndex] },
+          },
+        ],
+      });
+      this._passBindGroups[passIndex] = {
+        source: sourceView,
+        sampler,
+        bindGroup,
+      };
+    }
 
     const pass = encoder.beginRenderPass({
       label: `UserPostProcessStage[${this.name}] pass`,
@@ -377,14 +426,19 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
   destroy(): void {
     this._intermediateTextureA?.destroy();
     this._intermediateTextureB?.destroy();
-    this._uniformBuffer?.destroy();
+    for (const buffer of this._uniformBuffers) {
+      buffer.destroy();
+    }
     this._pipeline = null;
     this._bindGroupLayout = null;
-    this._uniformBuffer = null;
+    this._uniformBuffers.length = 0;
+    this._lastUniformScratch.length = 0;
+    this._uniformUploaded.length = 0;
     this._intermediateTextureA = null;
     this._intermediateTextureB = null;
     this._intermediateViewA = null;
     this._intermediateViewB = null;
+    this._passBindGroups.length = 0;
     this._device = null;
   }
 
@@ -394,6 +448,7 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
     if (!this._device) return;
     this._intermediateTextureA?.destroy();
     this._intermediateTextureB?.destroy();
+    this._passBindGroups.length = 0;
     const w = Math.max(width, 1);
     const h = Math.max(height, 1);
     const usage =
@@ -432,8 +487,9 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
    * past float index 14.
    */
   private _packUniforms(passIndex: number): void {
-    if (!this._device || !this._uniformBuffer) return;
-    const buf = new Float32Array(USER_UNIFORM_FLOAT_COUNT);
+    if (!this._device || !this._uniformBuffers[passIndex]) return;
+    const buf = this._uniformScratch;
+    buf.fill(0);
     if (this._schema) {
       // Schema-driven: write each uniform at its declared offset.
       for (const key in this._schema) {
@@ -504,6 +560,21 @@ export class WebGPUUserPostProcessStage implements PostProcessEffect {
     }
     // Pass index always at the reserved slot (last float of the UBO).
     buf[PASS_INDEX_OFFSET / 4] = passIndex;
-    this._device.queue.writeBuffer(this._uniformBuffer, 0, buf.buffer);
+    // Each pass owns its buffer, so both single- and multi-pass stages can skip
+    // settled uploads without aliasing another pass's index or user values.
+    const lastUniformScratch = this._lastUniformScratch[passIndex];
+    let uniformDirty = !this._uniformUploaded[passIndex];
+    for (let i = 0; i < buf.length && !uniformDirty; i++) {
+      uniformDirty = buf[i] !== lastUniformScratch[i];
+    }
+    if (uniformDirty) {
+      this._device.queue.writeBuffer(
+        this._uniformBuffers[passIndex],
+        0,
+        buf.buffer,
+      );
+      lastUniformScratch.set(buf);
+      this._uniformUploaded[passIndex] = true;
+    }
   }
 }

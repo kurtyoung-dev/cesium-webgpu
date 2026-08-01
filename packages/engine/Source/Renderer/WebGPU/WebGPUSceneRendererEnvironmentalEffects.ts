@@ -7,14 +7,15 @@
  * SceneRenderer "post-process plumbing" candidate — environmental
  * effects are the leading slice of that work).
  *
- * Composites onto the rendered scene AFTER all geometry passes and
- * BEFORE post-processing. Order is fixed:
+ * Composites onto the post-processed scene snapshot AFTER all geometry and
+ * display-space post-processing passes. Order is fixed:
  *
  *   1. Procedural Clouds — volumetric ray-marched clouds
  *      (atmosphere-level, behind geometry).
- *   2. Screen-Space Reflections — surface reflections.
- *   3. Weather Particles — GPU compute rain/snow/fog/hail + render.
- *   4. Volumetric Fog — froxel-grid populate + composite (Phase 5a).
+ *   2. NPR outlines and contact shadows — optional screen-space overlays.
+ *   3. Screen-Space Reflections — surface reflections.
+ *   4. Weather Particles — GPU compute rain/snow/fog/hail + render.
+ *   5. Volumetric Fog — froxel-grid populate + composite (Phase 5a).
  *
  * Each stage is independently feature-gated:
  *   - Procedural Clouds: a VOLUMETRIC `CloudCollection` (the managed
@@ -38,6 +39,14 @@
 
 import FeatureRendererKey from "../FeatureRendererKey.js";
 import { publishCloudIblCoverage } from "./WebGPUProceduralCloudRenderer.js";
+import {
+  beginEnvironmentalEffectsComposition,
+  commitEnvironmentalFullscreenStage,
+  commitEnvironmentalInPlaceStage,
+  presentEnvironmentalEffectsComposition,
+  selectEnvironmentalWeatherRoute,
+  type EnvironmentalCompositionState,
+} from "./WebGPUEnvironmentalEffectsCompositor.js";
 import type { WebGPURenderFrameConfig } from "./WebGPUSceneRenderer.js";
 
 /**
@@ -175,10 +184,9 @@ export function executeEnvironmentalEffects(
   const ctxAny = context as unknown as {
     _postProcessSnapshotView?: GPUTextureView | null;
   };
+  const snapshotView = ctxAny._postProcessSnapshotView ?? undefined;
   const colorView: GPUTextureView | undefined =
-    ctxAny._postProcessSnapshotView ??
-    context._sceneColorView ??
-    context.currentTextureView;
+    snapshotView ?? context._sceneColorView ?? context.currentTextureView;
   const depthView: GPUTextureView | undefined = context._depthStencilView;
   const outputView: GPUTextureView | undefined = context.currentTextureView;
 
@@ -186,261 +194,259 @@ export function executeEnvironmentalEffects(
     return;
   }
 
-  // 1. Procedural Clouds — volumetric ray-marched clouds. Active when a
-  // VOLUMETRIC CloudCollection published this frame (a USER collection, slice 3,
-  // or the managed default collection, slice 4A). `cloudConfig` is that
-  // collection's CloudVolumetrics snapshot — resolved above. The legacy
-  // `globe.showProceduralClouds` gate was removed in slice 4B.
-  if (useCollectionDeck) {
+  // The post-frustum snapshot copy normally leaves no pass active. End one
+  // defensively once here, then keep every offscreen effect on the shared frame
+  // encoder. The canvas is resumed at most once, at the composition tail.
+  context.endCurrentRenderPass?.();
+
+  const sceneAny = scene as unknown as {
+    _enableNPROutlines?: boolean;
+    _enableContactShadows?: boolean;
+    _view?: {
+      gBufferFramebuffer?: {
+        normalRoughnessTexture: GPUTextureView | null;
+      };
+    };
+  };
+  const normalView =
+    sceneAny._view?.gBufferFramebuffer?.normalRoughnessTexture ?? null;
+  const ac = frameState.atmosphericConditions;
+  const vf = ac?.volumetricFog;
+  const groundFogActive = ac?.effects?.groundFog?.enabled === true;
+  const fogActive = vf?.enabled === true || groundFogActive;
+  const fullscreenEffectDemand =
+    useCollectionDeck ||
+    (sceneAny._enableNPROutlines === true && normalView !== null) ||
+    (sceneAny._enableContactShadows === true && normalView !== null) ||
+    scene._enableSSR === true ||
+    fogActive;
+
+  // Only the real post-process snapshot has the RENDER_ATTACHMENT usage needed
+  // to serve as side A. A missing snapshot is an early-frame readiness case;
+  // full-screen effects wait rather than sample/render aliasing the canvas.
+  let composition: EnvironmentalCompositionState | null =
+    fullscreenEffectDemand && snapshotView
+      ? beginEnvironmentalEffectsComposition(context, snapshotView)
+      : null;
+  let compositionPresented = false;
+
+  // 1. Procedural clouds. Every full-screen stage consumes the previous graph
+  // result and writes the opposite texture. A culled/not-ready stage returns
+  // false and therefore does not advance the graph.
+  if (useCollectionDeck && composition) {
     const cloudFR = context.getFeatureRenderer(
       FeatureRendererKey.PROCEDURAL_CLOUDS,
     );
     if (cloudFR?.execute) {
       try {
-        // End render pass so shaders can sample the depth texture
-        context.endCurrentRenderPass?.();
-        cloudFR.execute(
-          context,
-          frameState,
-          colorView,
-          depthView,
-          outputView,
-          cloudConfig,
-        );
-        context.resumeDefaultRenderPass?.();
+        const recorded =
+          (cloudFR.execute as unknown as (...args: unknown[]) => unknown)(
+            context,
+            frameState,
+            composition.sourceView,
+            depthView,
+            composition.targetView,
+            cloudConfig,
+          ) === true;
+        commitEnvironmentalFullscreenStage(composition, recorded);
       } catch (e: unknown) {
         context.log?.(
           "warn",
           `Procedural clouds failed: ${(e as Error).message}`,
         );
-        context.resumeDefaultRenderPass?.();
       }
     }
   }
 
-  // Slice 5c-B Batch 123 — NPR outlines. Runs BEFORE SSR so silhouette
-  // edges don't get partially eaten by reflection compositing. Reads
-  // G-buffer slot 1 + scene depth, paints edges over scene color.
-  if (
-    (scene as unknown as { _enableNPROutlines?: boolean })._enableNPROutlines
-  ) {
+  // 2. NPR outlines, then contact shadows, then SSR. This preserves the
+  // established visual order while making each stage see the prior result.
+  if (sceneAny._enableNPROutlines === true && normalView && composition) {
     const nprFR = context.getFeatureRenderer(FeatureRendererKey.NPR_OUTLINES);
-    const sceneAny = scene as unknown as {
-      _view?: {
-        gBufferFramebuffer?: {
-          normalRoughnessTexture: GPUTextureView | null;
-        };
-      };
-    };
-    const nprNormalView =
-      sceneAny._view?.gBufferFramebuffer?.normalRoughnessTexture ?? null;
-    if (nprFR?.execute && nprNormalView) {
+    if (nprFR?.execute) {
       try {
-        context.endCurrentRenderPass?.();
-        nprFR.execute(
-          context,
-          frameState,
-          colorView,
-          depthView,
-          nprNormalView,
-          outputView,
-          scene,
-        );
-        context.resumeDefaultRenderPass?.();
+        const recorded =
+          (nprFR.execute as unknown as (...args: unknown[]) => unknown)(
+            context,
+            frameState,
+            composition.sourceView,
+            depthView,
+            normalView,
+            composition.targetView,
+            scene,
+          ) === true;
+        commitEnvironmentalFullscreenStage(composition, recorded);
       } catch (e: unknown) {
         context.log?.("warn", `NPR outlines failed: ${(e as Error).message}`);
-        context.resumeDefaultRenderPass?.();
       }
     }
   }
 
-  // Slice 5c-B Batch 133 — Contact shadows. Runs BEFORE SSR so the
-  // reflection compositing on top includes the shadow darkening at
-  // grounded objects (foliage bases, vehicle wheels meeting road,
-  // building bases meeting terrain). Skipped when the G-buffer
-  // normal view isn't allocated yet.
-  if (
-    (scene as unknown as { _enableContactShadows?: boolean })
-      ._enableContactShadows
-  ) {
-    const csFR = context.getFeatureRenderer(FeatureRendererKey.CONTACT_SHADOWS);
-    const sceneCS = scene as unknown as {
-      _view?: {
-        gBufferFramebuffer?: {
-          normalRoughnessTexture: GPUTextureView | null;
-        };
-      };
-    };
-    const csNormalView =
-      sceneCS._view?.gBufferFramebuffer?.normalRoughnessTexture ?? null;
-    if (csFR?.execute && csNormalView) {
+  if (sceneAny._enableContactShadows === true && normalView && composition) {
+    const contactFR = context.getFeatureRenderer(
+      FeatureRendererKey.CONTACT_SHADOWS,
+    );
+    if (contactFR?.execute) {
       try {
-        context.endCurrentRenderPass?.();
-        csFR.execute(
-          context,
-          frameState,
-          colorView,
-          depthView,
-          csNormalView,
-          outputView,
-          scene,
-        );
-        context.resumeDefaultRenderPass?.();
+        const recorded =
+          (contactFR.execute as unknown as (...args: unknown[]) => unknown)(
+            context,
+            frameState,
+            composition.sourceView,
+            depthView,
+            normalView,
+            composition.targetView,
+            scene,
+          ) === true;
+        commitEnvironmentalFullscreenStage(composition, recorded);
       } catch (e: unknown) {
         context.log?.(
           "warn",
           `Contact shadows failed: ${(e as Error).message}`,
         );
-        context.resumeDefaultRenderPass?.();
       }
     }
   }
 
-  // 2. Screen-Space Reflections — ray-marched reflections
-  if (scene._enableSSR) {
+  if (scene._enableSSR && composition) {
     const ssrFR = context.getFeatureRenderer(
       FeatureRendererKey.SCREEN_SPACE_REFLECTIONS,
     );
     if (ssrFR?.execute) {
       try {
-        context.endCurrentRenderPass?.();
-        // Slice 5c-B Batch 122 — drop the legacy `useDeferredLighting`
-        // gate. The G-buffer is now always allocated (Sub-B, Batch 115b)
-        // and populated by per-shader @location(1) emits (Batches 117-121:
-        // globe, model + B3DM, ellipsoid, Lit Mat primitives). The SSR
-        // shader's sentinel check at L224 (length(normalSample) < 0.1)
-        // skips fragments that came from non-emitting Phase 1 pipelines
-        // (sky, billboards, labels) — they used to be filled by the
-        // compute producer's depth-derived path; now they keep the
-        // load-op clear sentinel (0,0,0,1) and SSR falls back to per-
-        // fragment depth-derivative normals at those pixels via the
-        // flags.x=0 path inside the shader.
-        //
-        // Why this matters: SSR now reads REAL per-fragment material
-        // normals at globe + model + ellipsoid + Lit Mat pixels (the
-        // entire surface area you'd actually want reflections on),
-        // regardless of whether the scene has scene.deferredLighting
-        // enabled. The deferredLighting flag was a producer-era proxy
-        // for "is the G-buffer populated"; that flag is now obsolete.
-        const sceneAny = scene as unknown as {
-          _view?: {
-            gBufferFramebuffer?: {
-              normalRoughnessTexture: GPUTextureView | null;
-            };
-          };
-        };
-        const gBufferNormalView =
-          sceneAny._view?.gBufferFramebuffer?.normalRoughnessTexture ??
-          undefined;
-        ssrFR.execute(
-          context,
-          frameState,
-          colorView,
-          depthView,
-          gBufferNormalView,
-          outputView,
-          scene,
-        );
-        context.resumeDefaultRenderPass?.();
+        const recorded =
+          (ssrFR.execute as unknown as (...args: unknown[]) => unknown)(
+            context,
+            frameState,
+            composition.sourceView,
+            depthView,
+            normalView ?? undefined,
+            composition.targetView,
+            scene,
+          ) === true;
+        commitEnvironmentalFullscreenStage(composition, recorded);
       } catch (e: unknown) {
         context.log?.("warn", `SSR failed: ${(e as Error).message}`);
-        context.resumeDefaultRenderPass?.();
       }
     }
   }
 
-  // 3. Weather Particles — GPU compute rain/snow/fog/hail + render
+  // 3. Weather geometry has an explicit composition point between SSR and fog.
+  // It does not sample scene color, so with fog after it we draw in-place into
+  // the graph's current side. With no following fog, retain the fast path:
+  // weather-only draws directly to canvas with no ping texture/final blit; if
+  // prior full-screen effects exist, present them once and append weather to
+  // that same tail canvas pass.
   if (scene._enableWeather) {
     const weatherFR = context.getFeatureRenderer(
       FeatureRendererKey.WEATHER_PARTICLES,
     );
     if (weatherFR?.update) {
       try {
-        // Phase E (Batch 423) — build the renderer's `CesiumWeatherConfig` from
-        // the flat `scene.weather*` fields. The renderer reads its config off the
-        // object passed here (`weatherConfig.enabled/type/intensity/…`); the flat
-        // fields are the SAME ones the `atmosphericConditions.weather` facade
-        // writes (and the auto-master pushes), so this is the single control
-        // surface for both the manual and automatic precip paths. Passing `scene`
-        // directly (pre-Batch-423) read `scene.enabled`/`scene.type` — which
-        // don't exist — so the renderer's `enabled` gate always returned early
-        // and no particles ever rendered.
         const weatherConfig = buildWeatherConfig(scene);
-
-        // Compute simulation (needs own command encoder)
         weatherFR.update(context, frameState, weatherConfig);
-
-        // Render particles into the default (canvas) render pass. Phase E
-        // (Batch 423): env effects run AFTER post-process (Batch 127), and the
-        // post-frustum chain ENDS the active render pass before this chain runs
-        // (the snapshot copyTextureToTexture at PostFrustumChain:255 fires
-        // whenever any env effect — including weather — is enabled). So
-        // `currentRenderPassEncoder` is null here; the weather render half must
-        // OPEN its own pass like the other compositing effects do. We resume the
-        // default canvas pass with loadOp:"load" (preserving the post-processed
-        // scene) and draw the camera-relative particle quads on top. Without
-        // this, the compute simulation ran every frame but nothing was ever
-        // drawn (renderInitialized stayed false).
         if (weatherFR.render) {
-          let passEncoder = context.currentRenderPassEncoder;
-          if (!passEncoder) {
-            passEncoder = context.resumeDefaultRenderPass?.() ?? null;
-          }
-          if (passEncoder) {
-            weatherFR.render(context, frameState, weatherConfig, passEncoder);
+          const weatherRoute = selectEnvironmentalWeatherRoute(
+            fogActive,
+            composition !== null,
+            composition?.wrote === true,
+          );
+          if (weatherRoute === "offscreen-before-fog" && composition) {
+            const weatherContext = context as unknown as {
+              _depthTextureView?: GPUTextureView | null;
+              depthFormat?: GPUTextureFormat;
+            };
+            const weatherDepth = weatherContext._depthTextureView;
+            if (weatherDepth && composition.sourceView) {
+              const depthFormat =
+                weatherContext.depthFormat ?? "depth24plus-stencil8";
+              const depthAttachment: GPURenderPassDepthStencilAttachment = {
+                view: weatherDepth,
+                depthClearValue: 1.0,
+                depthLoadOp: "clear",
+                depthStoreOp: "store",
+              };
+              if (depthFormat.includes("stencil")) {
+                depthAttachment.stencilClearValue = 0;
+                depthAttachment.stencilLoadOp = "clear";
+                depthAttachment.stencilStoreOp = "store";
+              }
+              const pass = context.beginRenderPass({
+                label: "EnvironmentalEffects weather composition pass",
+                colorAttachments: [
+                  {
+                    view: composition.sourceView,
+                    loadOp: "load",
+                    storeOp: "store",
+                  },
+                ],
+                depthStencilAttachment: depthAttachment,
+              });
+              if (pass) {
+                const recorded =
+                  (
+                    weatherFR.render as unknown as (
+                      ...args: unknown[]
+                    ) => unknown
+                  )(context, frameState, weatherConfig, pass) === true;
+                context.endCurrentRenderPass();
+                commitEnvironmentalInPlaceStage(composition, recorded);
+              }
+            }
+          } else {
+            if (weatherRoute === "present-then-canvas" && composition) {
+              compositionPresented = presentEnvironmentalEffectsComposition(
+                context,
+                composition,
+              );
+            }
+            const priorCompositionReady =
+              composition?.wrote !== true || compositionPresented;
+            if (priorCompositionReady) {
+              const pass =
+                context.currentRenderPassEncoder ??
+                context.resumeDefaultRenderPass();
+              if (pass) {
+                (
+                  weatherFR.render as unknown as (...args: unknown[]) => unknown
+                )(context, frameState, weatherConfig, pass);
+              }
+            }
           }
         }
       } catch (e: unknown) {
+        context.endCurrentRenderPass?.();
         context.log?.("warn", `Weather update failed: ${(e as Error).message}`);
       }
     }
   }
 
-  // 4. Volumetric fog — Phase 5a infrastructure (no visual change).
-  // Runs the three compute passes that populate the froxel grid (Phase
-  // 5a kernels are placeholders that clear their outputs), then the
-  // composite pass that samples the integrated 3D volume in screen UV +
-  // linearized depth and writes the modulated scene color back. Per
-  // B22, this runs AFTER opaque + OIT-resolved color and after the
-  // other environmental effects, BEFORE post-processing.
-  //
-  // Gated on `atmosphericConditions.volumetricFog.enabled` (B18:
-  // default FALSE) — the entire path is skipped when the toggle is
-  // off, so unsubscribed users pay zero cost.
-  //
-  // Batch 420 — GROUND FOG owns its own activation path: when
-  // `atmosphericConditions.effects.groundFog.enabled` is true the froxel
-  // fog must run (to render the near-surface mist) EVEN IF the general
-  // `volumetricFog.enabled` master is off (ground fog implies fog). So the
-  // call-site gate fires on EITHER condition; the renderer's `update()` /
-  // `composite()` apply the same OR-gate internally and supply base-fog
-  // defaults when only ground fog is driving.
-  const ac = frameState.atmosphericConditions;
-  const vf = ac && ac.volumetricFog ? ac.volumetricFog : undefined;
-  const groundFogActive = ac?.effects?.groundFog?.enabled === true;
-  if (vf?.enabled === true || groundFogActive) {
+  // 4. Volumetric fog consumes the fully accumulated clouds/outlines/contact/
+  // SSR/weather result. Its compute passes and composite stay on the frame
+  // encoder; only the composite advances the texture graph.
+  if (fogActive && composition) {
     const fogFR = context.getFeatureRenderer(FeatureRendererKey.VOLUMETRIC_FOG);
     if (fogFR?.update) {
       try {
-        context.endCurrentRenderPass?.();
         fogFR.update(context, frameState, scene);
         if (fogFR.composite) {
-          const fmt: GPUTextureFormat =
-            context.presentationFormat || "bgra8unorm";
-          fogFR.composite(
-            context,
-            frameState,
-            colorView,
-            depthView,
-            outputView,
-            fmt,
-          );
+          const recorded =
+            (fogFR.composite as unknown as (...args: unknown[]) => unknown)(
+              context,
+              frameState,
+              composition.sourceView,
+              depthView,
+              composition.targetView,
+              context.presentationFormat || "bgra8unorm",
+            ) === true;
+          commitEnvironmentalFullscreenStage(composition, recorded);
         }
-        context.resumeDefaultRenderPass?.();
       } catch (e: unknown) {
         context.log?.("warn", `Volumetric fog failed: ${(e as Error).message}`);
-        context.resumeDefaultRenderPass?.();
       }
     }
+  }
+
+  if (composition && !compositionPresented) {
+    presentEnvironmentalEffectsComposition(context, composition);
   }
 }

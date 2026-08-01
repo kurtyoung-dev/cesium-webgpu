@@ -25,12 +25,25 @@ import ProjectRadianceToSHWGSL from "../../Shaders/WebGPU/Compute/ProjectRadianc
 import EnvCubeTemporalBlendWGSL from "../../Shaders/WebGPU/Compute/EnvCubeTemporalBlend.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Transforms from "../../Core/Transforms.js";
-import { generateIBLMaps } from "./WebGPUIBLPipeline.js";
-import type { IBLPipelineCache } from "./WebGPUIBLPipeline.js";
 import {
+  createIBLCommandEncodingScope,
+  destroyIBLCommandEncodingScope,
+  generateIBLMaps,
+  getIBLRefreshParameterCapacity,
+  submitIBLCommandEncodingScope,
+} from "./WebGPUIBLPipeline.js";
+import type {
+  IBLCommandEncodingScope,
+  IBLPipelineCache,
+  RadianceHQOptions,
+} from "./WebGPUIBLPipeline.js";
+import {
+  getRenderableSceneCaptureSourceRevision,
   runSceneCapture,
+  SceneCaptureResult,
   type SceneCaptureCache,
   type SceneCaptureManager,
+  type SceneCaptureResultValue,
 } from "./WebGPUDynamicEnvironmentMapCapture.js";
 import {
   resolveAtmosphereScattering,
@@ -87,6 +100,12 @@ interface DynEnvMapManagerLike {
 }
 
 interface DynEnvMapCache {
+  // GPU objects are valid only for the device generation that created them.
+  // Keep both identities: `device` catches replacement-device swaps directly,
+  // while `resourceGeneration` follows WebGPUContext's recovery epoch even if
+  // a future recovery implementation preserves a wrapper identity.
+  device: GPUDevice;
+  resourceGeneration: number;
   cubemapTexture: GPUTexture | null;
   cubemapTextureView: GPUTextureView | null;
   faceViews: GPUTextureView[];
@@ -198,6 +217,21 @@ interface DynEnvMapCache {
   lastCaptureCameraX: number;
   lastCaptureCameraY: number;
   lastCaptureCameraZ: number;
+  lastCaptureSourceRevision: number;
+  // Failed or empty attempts do not advance the successful-capture debounce
+  // above. These separate fields bound retries without pretending a scene
+  // composite succeeded.
+  framesSinceCaptureAttempt: number;
+  lastCaptureAttemptCameraX: number;
+  lastCaptureAttemptCameraY: number;
+  lastCaptureAttemptCameraZ: number;
+  lastCaptureAttemptSourceRevision: number;
+  // The source state represented by the current radiance cube. Mode changes
+  // (disabled / model-only / globe) and publication changes are temporal
+  // discontinuities and reset history before the next blend.
+  lastSceneCaptureMode: number;
+  lastSceneCaptureSourceRevision: number;
+  lastSceneCaptureResult: SceneCaptureResultValue;
   // C2-25 ENV-TEMPORAL (Batch 449) — temporal-accumulation resources. ALL of
   // these stay null/0 when `envMapTemporalAccumulation` is OFF (the lazy
   // allocation lives entirely inside `runEnvCubeTemporalBlend`, which is only
@@ -247,6 +281,30 @@ interface DynEnvMapCache {
 }
 
 /**
+ * Immutable compute kernels shared by all dynamic-environment managers on one
+ * GPU device generation. Textures, buffers, bind groups, capture state, and
+ * regional/weather uniforms deliberately remain manager-local.
+ */
+interface DynEnvMapKernelPack {
+  skyPipeline: GPUComputePipeline;
+  skyBGL: GPUBindGroupLayout;
+  shPipeline: GPUComputePipeline;
+  shBGL: GPUBindGroupLayout;
+}
+
+interface DynEnvMapDeviceKernelPacks {
+  resourceGeneration: number;
+  byStorageFormat: Map<GPUTextureFormat, DynEnvMapKernelPack>;
+  shPipeline: GPUComputePipeline | null;
+  shBGL: GPUBindGroupLayout | null;
+}
+
+let dynamicEnvironmentKernelPacks = new WeakMap<
+  GPUDevice,
+  DynEnvMapDeviceKernelPacks
+>();
+
+/**
  * Update WebGPU dynamic environment map resources.
  * Creates cubemap textures and schedules re-rendering when needed.
  */
@@ -255,8 +313,37 @@ function updateWebGPUDynamicEnvironmentMap(
   frameState: CesiumFrameState,
 ): void {
   const context = frameState.context;
+  const observeDemand = (
+    context as unknown as {
+      observeEnvironmentMapDemand?: (manager: object) => string;
+    }
+  ).observeEnvironmentMapDemand;
+  if (typeof observeDemand === "function") {
+    // C11-193 telemetry only. Do not branch on the result until the bounded
+    // scheduler and all conservative visibility gates land.
+    observeDemand.call(context, manager);
+  }
   const device: GPUDevice = context.device;
   const mode = frameState.mode;
+  const resourceGeneration =
+    (
+      context as unknown as {
+        resourceGeneration?: number;
+      }
+    ).resourceGeneration ?? 0;
+
+  // A recovered WebGPUContext cannot reuse any texture, view, pipeline, bind
+  // group, sampler, or buffer from the lost device. Invalidate before the
+  // ordinary enabled/update gates so a temporarily disabled manager cannot
+  // continue publishing old-device IBL handles to model/fog consumers.
+  const existingCache = manager._webgpuCache;
+  if (
+    existingCache &&
+    (existingCache.device !== device ||
+      existingCache.resourceGeneration !== resourceGeneration)
+  ) {
+    destroyWebGPUDynamicEnvironmentMapResources(manager);
+  }
 
   // Check basic support conditions
   const isSupported = manager._mipmapLevels >= 1;
@@ -273,6 +360,8 @@ function updateWebGPUDynamicEnvironmentMap(
 
   if (!manager._webgpuCache) {
     manager._webgpuCache = {
+      device,
+      resourceGeneration,
       cubemapTexture: null,
       cubemapTextureView: null,
       faceViews: [],
@@ -320,6 +409,15 @@ function updateWebGPUDynamicEnvironmentMap(
       lastCaptureCameraX: NaN,
       lastCaptureCameraY: NaN,
       lastCaptureCameraZ: NaN,
+      lastCaptureSourceRevision: -1,
+      framesSinceCaptureAttempt: 0,
+      lastCaptureAttemptCameraX: NaN,
+      lastCaptureAttemptCameraY: NaN,
+      lastCaptureAttemptCameraZ: NaN,
+      lastCaptureAttemptSourceRevision: -1,
+      lastSceneCaptureMode: SCENE_CAPTURE_MODE_DISABLED,
+      lastSceneCaptureSourceRevision: -1,
+      lastSceneCaptureResult: SceneCaptureResult.SKY_ONLY,
       // C2-25 ENV-TEMPORAL (Batch 449) — temporal accumulation (all inert OFF).
       historyCube: null,
       historyArrayView: null,
@@ -543,36 +641,42 @@ function updateWebGPUDynamicEnvironmentMap(
     (wantMarch || cache.lastUsedCloudMarch) &&
     liveCloudRevision !== cache.lastCloudRevision;
   const cloudMarchPathChanged = wantMarch !== cache.lastUsedCloudMarch;
-  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — capture refresh gate. `wantCapture`
-  // is the double opt-in + SCENE3D check (cheap; no GPU). When OFF the whole
-  // block below is byte-identical (wantCapture false → captureRefresh false →
-  // no extra gate term, and `runSceneCapture` is never reached). When ON, a
-  // moving eye or every-K-frames re-runs the FULL refresh — because each
+  // C2-25 ENV-SCENE-CAPTURE (Batch 446) — capture refresh gate. Stable OFF has
+  // no capture work. An ON→OFF transition deliberately contributes one mode
+  // edge so a fresh procedural sky erases captured terrain. While ON, a moving
+  // eye, source epoch, or every-K-frames cadence re-runs the FULL refresh,
+  // because each
   // `runProceduralSkyFill` rewrites the whole cube (erasing last capture's
   // terrain), so the terrain composite (`runSceneCapture`, below) must re-run
   // whenever the sky is re-filled, and conversely a camera move must force a
   // sky-fill + re-composite so the reflection tracks the eye.
-  const wantCapture =
+  const sceneCaptureEnabled =
     (frameState.context as unknown as { sceneCaptureReflections?: boolean })
       .sceneCaptureReflections === true &&
     manager.enableSceneCapture === true &&
     frameState.mode === 3; /* SceneMode.SCENE3D */
-  cache.framesSinceCapture++;
-  let captureRefresh = false;
+  const sceneCaptureMode = resolveSceneCaptureMode(
+    sceneCaptureEnabled,
+    frameState.globeVisible,
+  );
+  const wantCapture = sceneCaptureMode !== SCENE_CAPTURE_MODE_DISABLED;
+  const includeGlobe = sceneCaptureMode === SCENE_CAPTURE_MODE_GLOBE;
+  const captureSourceRevision = includeGlobe
+    ? getRenderableSceneCaptureSourceRevision(frameState)
+    : wantCapture
+      ? MODEL_ONLY_SOURCE_REVISION
+      : -1;
   if (wantCapture) {
-    const px = manager._position;
-    const cdx = px.x - cache.lastCaptureCameraX;
-    const cdy = px.y - cache.lastCaptureCameraY;
-    const cdz = px.z - cache.lastCaptureCameraZ;
-    // NaN (first capture) coerces > threshold → captures on the first eligible
-    // frame; otherwise re-capture on >500 m eye move OR every K frames.
-    const captureMoved = !(
-      cdx * cdx + cdy * cdy + cdz * cdz <
-      CAPTURE_CAMERA_MOVE_SQ
-    );
-    captureRefresh =
-      captureMoved || cache.framesSinceCapture >= CAPTURE_EVERY_K_FRAMES;
+    cache.framesSinceCapture++;
+    cache.framesSinceCaptureAttempt++;
   }
+  const captureModeChanged = sceneCaptureMode !== cache.lastSceneCaptureMode;
+  const captureSourceStateChanged =
+    includeGlobe &&
+    captureSourceRevision !== cache.lastSceneCaptureSourceRevision;
+  const captureRefresh =
+    wantCapture &&
+    shouldRefreshSceneCapture(cache, manager._position, captureSourceRevision);
   if (
     cache.needsUpdate ||
     sunMoved ||
@@ -580,52 +684,85 @@ function updateWebGPUDynamicEnvironmentMap(
     cloudCoverageMoved ||
     cloudRevisionChanged ||
     cloudMarchPathChanged ||
+    captureModeChanged ||
+    captureSourceStateChanged ||
     captureRefresh
   ) {
-    runProceduralSkyFill(device, cache, manager, frameState);
-    // C2-25 — composite the opaque globe surface over the just-filled sky, in
-    // all 6 faces, BEFORE the IBL prefilter + SH projection read the cube — so
-    // terrain (not just sky) flows into model / water reflections. No-op when
-    // capture is OFF (the function self-gates). Records its own bookkeeping
-    // (framesSinceCapture / lastCaptureCamera*) only when it actually ran.
+    let sceneCaptureResult: SceneCaptureResultValue =
+      SceneCaptureResult.SKY_ONLY;
+    const hqOptions = resolveIBLHQOptions(cache, frameState);
+    const encodingScope = createIBLCommandEncodingScope(
+      device,
+      "Dynamic Environment Map Refresh",
+      getIBLRefreshParameterCapacity(hqOptions),
+    );
+    const refreshEncoder = encodingScope.encoder;
+    try {
+      runProceduralSkyFill(device, cache, manager, frameState, refreshEncoder);
+      // Composite globe/model sources over the sky before downstream readers.
+      if (wantCapture) {
+        sceneCaptureResult = runSceneCapture(
+          device,
+          cache as unknown as SceneCaptureCache,
+          manager as unknown as SceneCaptureManager,
+          frameState,
+          includeGlobe,
+          refreshEncoder,
+        );
+      }
+      const wantTemporal =
+        (
+          frameState.context as unknown as {
+            envMapTemporalAccumulation?: boolean;
+          }
+        ).envMapTemporalAccumulation === true;
+      if (
+        shouldResetSceneCaptureHistory(
+          cache,
+          sceneCaptureMode,
+          captureSourceRevision,
+          sceneCaptureResult,
+        )
+      ) {
+        // Never blend terrain from the previous provider/content epoch into a
+        // fresh provider, a hidden/disabled globe, or a failed globe replay.
+        cache.historyValid = false;
+      }
+      if (wantTemporal) {
+        runEnvCubeTemporalBlend(device, cache, manager, sunDir, refreshEncoder);
+      }
+      runIBLPrefilter(device, cache, frameState, hqOptions, encodingScope);
+      runSphericalHarmonicProjection(device, cache, manager, refreshEncoder);
+      submitIBLCommandEncodingScope(device, encodingScope);
+    } finally {
+      // Idempotent after submit; releases the arena if encoding throws and the
+      // unfinished command encoder is intentionally abandoned.
+      destroyIBLCommandEncodingScope(encodingScope);
+    }
+    // Commit capture cadence only after the complete refresh has been queued.
     if (wantCapture) {
-      runSceneCapture(
-        device,
-        cache as unknown as SceneCaptureCache,
-        manager as unknown as SceneCaptureManager,
-        frameState,
+      updateSceneCaptureAttemptBookkeeping(
+        cache,
+        manager._position,
+        captureSourceRevision,
       );
-      cache.framesSinceCapture = 0;
-      cache.lastCaptureCameraX = manager._position.x;
-      cache.lastCaptureCameraY = manager._position.y;
-      cache.lastCaptureCameraZ = manager._position.z;
+      updateSceneCaptureBookkeeping(
+        cache,
+        manager._position,
+        sceneCaptureResult === SceneCaptureResult.SUBMITTED,
+        captureSourceRevision,
+      );
     }
-    // C2-25 ENV-TEMPORAL (Batch 449) — temporally accumulate the just-captured
-    // cube BEFORE the prefilter + SH read it, so the prefiltered IBL + SH see
-    // the accumulated (crossfaded) cube. OFF (default) this is a no-op: the
-    // function self-gates on `envMapTemporalAccumulation`, allocating nothing
-    // and running no pass, so the freshly-captured cube flows straight to the
-    // prefilter byte-identically. ON, it blends the new cube with the history
-    // cube (EMA) and copies the result back to history for next frame; on a
-    // large sun/camera delta it resets (alpha=1) so the env map can't smear.
-    const wantTemporal =
-      (
-        frameState.context as unknown as {
-          envMapTemporalAccumulation?: boolean;
-        }
-      ).envMapTemporalAccumulation === true;
-    if (wantTemporal) {
-      runEnvCubeTemporalBlend(device, cache, manager, sunDir);
-    }
-    runIBLPrefilter(device, cache, frameState);
-    // NEW-WEBGPU-KHR-SPECULAR-IBL-OVERBRIGHT (Batch 354) -- project the
-    // freshly-filled radiance cube to SH-L2. Submitted after the sky fill
-    // so the queue serializes the cube write before this read.
-    runSphericalHarmonicProjection(device, cache, manager);
+    // The globe producer requests a follow-up frame when it first publishes
+    // current capture sources. A miss can therefore settle on the sky fallback
+    // here without spinning requestRenderMode or rerunning the prefilter.
     cache.needsUpdate = false;
     cache.lastSunDirX = sunDir.x;
     cache.lastSunDirY = sunDir.y;
     cache.lastSunDirZ = sunDir.z;
+    cache.lastSceneCaptureMode = sceneCaptureMode;
+    cache.lastSceneCaptureSourceRevision = captureSourceRevision;
+    cache.lastSceneCaptureResult = sceneCaptureResult;
     // Item 4.2 (CLOUD-IBL, Batch 441) — record the coverage this fill used.
     cache.lastCloudCoverage = liveCloudCoverage;
     cache.lastCloudRevision = liveCloudRevision;
@@ -674,6 +811,136 @@ const CLOUD_COVERAGE_REFRESH_EPSILON = 1.0 / 256.0;
 // scene still keeps the reflected terrain fresh. Caps the 6-pass capture cost.
 const CAPTURE_CAMERA_MOVE_SQ = 500.0 * 500.0;
 const CAPTURE_EVERY_K_FRAMES = 8;
+const SCENE_CAPTURE_MODE_DISABLED = 0;
+const SCENE_CAPTURE_MODE_MODEL_ONLY = 1;
+const SCENE_CAPTURE_MODE_GLOBE = 2;
+const MODEL_ONLY_SOURCE_REVISION = 0;
+
+function resolveSceneCaptureMode(
+  sceneCaptureEnabled: boolean,
+  globeVisible: boolean | undefined,
+): number {
+  if (!sceneCaptureEnabled) {
+    return SCENE_CAPTURE_MODE_DISABLED;
+  }
+  return globeVisible === false
+    ? SCENE_CAPTURE_MODE_MODEL_ONLY
+    : SCENE_CAPTURE_MODE_GLOBE;
+}
+
+function shouldResetSceneCaptureHistory(
+  cache: Pick<
+    DynEnvMapCache,
+    | "lastSceneCaptureMode"
+    | "lastSceneCaptureSourceRevision"
+    | "lastSceneCaptureResult"
+  >,
+  sceneCaptureMode: number,
+  captureSourceRevision: number,
+  sceneCaptureResult: SceneCaptureResultValue,
+): boolean {
+  return (
+    sceneCaptureMode !== cache.lastSceneCaptureMode ||
+    captureSourceRevision !== cache.lastSceneCaptureSourceRevision ||
+    sceneCaptureResult !== cache.lastSceneCaptureResult ||
+    (sceneCaptureMode === SCENE_CAPTURE_MODE_GLOBE &&
+      sceneCaptureResult !== SceneCaptureResult.SUBMITTED)
+  );
+}
+
+/**
+ * Decide whether a renderable source publication needs a fresh six-face
+ * capture. A publication revision is an immediate trigger so the single
+ * producer-requested follow-up frame cannot be swallowed by the ordinary
+ * movement/cadence debounce.
+ *
+ * @internal
+ */
+function shouldRefreshSceneCapture(
+  cache: Pick<
+    DynEnvMapCache,
+    | "framesSinceCaptureAttempt"
+    | "lastCaptureAttemptCameraX"
+    | "lastCaptureAttemptCameraY"
+    | "lastCaptureAttemptCameraZ"
+    | "lastCaptureAttemptSourceRevision"
+  >,
+  position: Pick<CesiumCartesian3, "x" | "y" | "z">,
+  captureSourceRevision: number,
+): boolean {
+  if (captureSourceRevision < 0) {
+    return false;
+  }
+
+  const cdx = position.x - cache.lastCaptureAttemptCameraX;
+  const cdy = position.y - cache.lastCaptureAttemptCameraY;
+  const cdz = position.z - cache.lastCaptureAttemptCameraZ;
+  // NaN (first capture) coerces the negated comparison to true.
+  const captureMoved = !(
+    cdx * cdx + cdy * cdy + cdz * cdz <
+    CAPTURE_CAMERA_MOVE_SQ
+  );
+  return (
+    captureSourceRevision !== cache.lastCaptureAttemptSourceRevision ||
+    captureMoved ||
+    cache.framesSinceCaptureAttempt >= CAPTURE_EVERY_K_FRAMES
+  );
+}
+
+/**
+ * Bound retries independently of the successful-capture debounce. A failed
+ * replay can be attempted again on a new publication, movement, or the normal
+ * cadence, but it cannot turn one request-render wake into a per-frame loop.
+ *
+ * @internal
+ */
+function updateSceneCaptureAttemptBookkeeping(
+  cache: Pick<
+    DynEnvMapCache,
+    | "framesSinceCaptureAttempt"
+    | "lastCaptureAttemptCameraX"
+    | "lastCaptureAttemptCameraY"
+    | "lastCaptureAttemptCameraZ"
+    | "lastCaptureAttemptSourceRevision"
+  >,
+  position: Pick<CesiumCartesian3, "x" | "y" | "z">,
+  captureSourceRevision: number,
+): void {
+  cache.framesSinceCaptureAttempt = 0;
+  cache.lastCaptureAttemptCameraX = position.x;
+  cache.lastCaptureAttemptCameraY = position.y;
+  cache.lastCaptureAttemptCameraZ = position.z;
+  cache.lastCaptureAttemptSourceRevision = captureSourceRevision;
+}
+
+/**
+ * Commit capture debounce state only after a real scene-capture submission.
+ *
+ * @internal
+ */
+function updateSceneCaptureBookkeeping(
+  cache: Pick<
+    DynEnvMapCache,
+    | "framesSinceCapture"
+    | "lastCaptureCameraX"
+    | "lastCaptureCameraY"
+    | "lastCaptureCameraZ"
+    | "lastCaptureSourceRevision"
+  >,
+  position: Pick<CesiumCartesian3, "x" | "y" | "z">,
+  sceneCaptureRan: boolean,
+  captureSourceRevision: number,
+): void {
+  if (!sceneCaptureRan) {
+    return;
+  }
+
+  cache.framesSinceCapture = 0;
+  cache.lastCaptureCameraX = position.x;
+  cache.lastCaptureCameraY = position.y;
+  cache.lastCaptureCameraZ = position.z;
+  cache.lastCaptureSourceRevision = captureSourceRevision;
+}
 
 // C2-25 ENV-TEMPORAL (Batch 449) — temporal-accumulation tuning.
 //
@@ -714,6 +981,7 @@ function runEnvCubeTemporalBlend(
   cache: DynEnvMapCache,
   manager: DynEnvMapManagerLike,
   sunDir: { x: number; y: number; z: number },
+  encoder: GPUCommandEncoder,
 ): void {
   if (!cache.cubemapTexture) {
     return;
@@ -934,9 +1202,6 @@ function runEnvCubeTemporalBlend(
   }
 
   const groupsXY = Math.ceil(cache.size / 8);
-  const encoder = device.createCommandEncoder({
-    label: "DynEnvMap Temporal Blend Pass",
-  });
   const pass = encoder.beginComputePass();
   pass.setPipeline(cache.blendPipeline);
   pass.setBindGroup(0, cache.blendBindGroup);
@@ -961,8 +1226,6 @@ function runEnvCubeTemporalBlend(
     { texture: cache.historyCube!, mipLevel: 0, origin: { x: 0, y: 0, z: 0 } },
     { width: cache.size, height: cache.size, depthOrArrayLayers: 6 },
   );
-  device.queue.submit([encoder.finish()]);
-
   // Record the eye + sun this accumulated frame was blended from, and mark the
   // history valid so subsequent frames EMA-blend (until the next reset).
   cache.historyValid = true;
@@ -1060,99 +1323,182 @@ const DEFAULT_MAX_RADIUS = 6378137.0;
 // scattering march (ATMOSPHERE_THICKNESS in ProceduralSkyCubemap.wgsl).
 const OUTER_ELLIPSOID_SCALE = 1.025;
 
+/**
+ * Return the immutable dynamic-environment kernels for a device generation.
+ *
+ * The procedural-sky storage format is pipeline-baked, so LDR and HDR keep
+ * distinct sky kernels. SH projection has a fixed layout and is shared across
+ * both formats. A generation change replaces the device entry even when a
+ * recovery implementation happens to retain the same wrapper identity.
+ *
+ * @internal
+ */
+function getOrCreateDynamicEnvironmentKernelPack(
+  device: GPUDevice,
+  resourceGeneration: number,
+  storageFormat: GPUTextureFormat,
+): DynEnvMapKernelPack {
+  let devicePacks = dynamicEnvironmentKernelPacks.get(device);
+  if (!devicePacks || devicePacks.resourceGeneration !== resourceGeneration) {
+    devicePacks = {
+      resourceGeneration,
+      byStorageFormat: new Map(),
+      shPipeline: null,
+      shBGL: null,
+    };
+    dynamicEnvironmentKernelPacks.set(device, devicePacks);
+  }
+
+  const existing = devicePacks.byStorageFormat.get(storageFormat);
+  if (existing) {
+    return existing;
+  }
+
+  const skyBGL = device.createBindGroupLayout({
+    label: "DynEnvMap Sky BGL",
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: "uniform" },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        storageTexture: {
+          access: "write-only",
+          format: storageFormat,
+          viewDimension: "2d-array",
+        },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        sampler: { type: "filtering" },
+      },
+      {
+        binding: 3,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      },
+      {
+        binding: 4,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: "float", viewDimension: "2d" },
+      },
+      {
+        binding: 5,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: "float", viewDimension: "3d" },
+      },
+      {
+        binding: 6,
+        visibility: GPUShaderStage.COMPUTE,
+        texture: { sampleType: "float", viewDimension: "3d" },
+      },
+      {
+        binding: 7,
+        visibility: GPUShaderStage.COMPUTE,
+        sampler: { type: "filtering" },
+      },
+    ],
+  });
+  const skyLayout = device.createPipelineLayout({
+    label: "DynEnvMap Sky PipelineLayout",
+    bindGroupLayouts: [skyBGL],
+  });
+  const skyCode =
+    storageFormat === "rgba8unorm"
+      ? PROCEDURAL_SKY_SOURCE
+      : PROCEDURAL_SKY_SOURCE.replace(
+          "texture_storage_2d_array<rgba8unorm, write>",
+          "texture_storage_2d_array<rgba16float, write>",
+        );
+  const skyModule = device.createShaderModule({
+    label: "ProceduralSkyCubemap",
+    code: skyCode,
+  });
+  const skyPipeline = device.createComputePipeline({
+    label: "DynEnvMap Sky Pipeline",
+    layout: skyLayout,
+    compute: { module: skyModule, entryPoint: "main" },
+  });
+
+  if (!devicePacks.shPipeline || !devicePacks.shBGL) {
+    devicePacks.shBGL = device.createBindGroupLayout({
+      label: "DynEnvMap SH BGL",
+      entries: [
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: { sampleType: "float", viewDimension: "cube" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          sampler: { type: "filtering" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "storage" },
+        },
+        {
+          binding: 3,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "uniform" },
+        },
+      ],
+    });
+    const shLayout = device.createPipelineLayout({
+      label: "DynEnvMap SH PipelineLayout",
+      bindGroupLayouts: [devicePacks.shBGL],
+    });
+    const shModule = device.createShaderModule({
+      label: "ProjectRadianceToSH",
+      code: ProjectRadianceToSHWGSL,
+    });
+    devicePacks.shPipeline = device.createComputePipeline({
+      label: "DynEnvMap SH Pipeline",
+      layout: shLayout,
+      compute: { module: shModule, entryPoint: "main" },
+    });
+  }
+
+  const pack = {
+    skyPipeline,
+    skyBGL,
+    shPipeline: devicePacks.shPipeline,
+    shBGL: devicePacks.shBGL,
+  };
+  devicePacks.byStorageFormat.set(storageFormat, pack);
+  return pack;
+}
+
+/** @internal */
+function resetDynamicEnvironmentKernelPacksForSpecs(): void {
+  dynamicEnvironmentKernelPacks = new WeakMap();
+}
+
 function runProceduralSkyFill(
   device: GPUDevice,
   cache: DynEnvMapCache,
   manager: DynEnvMapManagerLike,
   frameState: CesiumFrameState,
+  encoder: GPUCommandEncoder,
 ): void {
-  // Build pipeline + BGL once per cache.
+  // Kernels are immutable for a device generation and storage format. Share
+  // them across managers; only bind groups, buffers, textures, and state are
+  // probe-local.
   if (!cache.skyPipeline || !cache.skyBGL) {
-    // Item 1.2 (IBL-HDR, Batch 426) — the storage-texture format token
-    // must match the env-cube texture format. Parity default
-    // "rgba8unorm" → byte-identical BGL + the unmodified
-    // `ProceduralSkyCubemap.wgsl` string (which declares `rgba8unorm`).
-    // HDR-on → "rgba16float" in the BGL AND a single in-place swap of the
-    // WGSL `texture_storage_2d_array<...>` format token (the storage
-    // format is a static token; the `//>>ifdef` preprocessor only gates
-    // executable lines, not the storage decl, so a scoped string replace
-    // is the correct lever here).
     const storageFormat: GPUTextureFormat = cache.cubemapFormat ?? "rgba8unorm";
-    cache.skyBGL = device.createBindGroupLayout({
-      label: "DynEnvMap Sky BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          storageTexture: {
-            access: "write-only",
-            format: storageFormat,
-            viewDimension: "2d-array",
-          },
-        },
-        // Item 2.2 (ENV-AERIAL-MS, Batch 430) — sun-relative sky-view + MS LUT
-        // sampler + textures. Bound unconditionally (placeholder when off) so
-        // the BGL/pipeline layout never changes.
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "float", viewDimension: "2d" },
-        },
-        {
-          binding: 4,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "float", viewDimension: "2d" },
-        },
-        // Item 3-C (CLOUD-IBL-FULL, Batch 450) — baked cloud shape + detail 3D
-        // noise + sampler, bound unconditionally (placeholder when the march is
-        // off) so the BGL/pipeline layout never forks.
-        {
-          binding: 5,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "float", viewDimension: "3d" },
-        },
-        {
-          binding: 6,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "float", viewDimension: "3d" },
-        },
-        {
-          binding: 7,
-          visibility: GPUShaderStage.COMPUTE,
-          sampler: { type: "filtering" },
-        },
-      ],
-    });
-    const layout = device.createPipelineLayout({
-      label: "DynEnvMap Sky PipelineLayout",
-      bindGroupLayouts: [cache.skyBGL],
-    });
-    const skyCode =
-      storageFormat === "rgba8unorm"
-        ? PROCEDURAL_SKY_SOURCE
-        : PROCEDURAL_SKY_SOURCE.replace(
-            "texture_storage_2d_array<rgba8unorm, write>",
-            "texture_storage_2d_array<rgba16float, write>",
-          );
-    const module = device.createShaderModule({
-      label: "ProceduralSkyCubemap",
-      code: skyCode,
-    });
-    cache.skyPipeline = device.createComputePipeline({
-      label: "DynEnvMap Sky Pipeline",
-      layout,
-      compute: { module, entryPoint: "main" },
-    });
+    const kernels = getOrCreateDynamicEnvironmentKernelPack(
+      device,
+      cache.resourceGeneration,
+      storageFormat,
+    );
+    cache.skyPipeline = kernels.skyPipeline;
+    cache.skyBGL = kernels.skyBGL;
   }
 
   // Lazy uniform buffer.
@@ -1585,7 +1931,6 @@ function runProceduralSkyFill(
 
   // Dispatch: workgroup_size(8, 8, 1); grid covers face × face × 6.
   const groupsXY = Math.ceil(cache.size / 8);
-  const encoder = device.createCommandEncoder({ label: "DynEnvMap Sky Pass" });
   // C13-39 — this dispatch is the environment/IBL leg of the cloud march (it
   // runs `marchCloudFaceIBL` when `cloudMarch > 0`), so it needs its own GPU
   // timestamp lane. `withComputePassTimestamps` returns the exact descriptor
@@ -1602,7 +1947,6 @@ function runProceduralSkyFill(
   pass.setBindGroup(0, cache.skyBindGroup);
   pass.dispatchWorkgroups(groupsXY, groupsXY, 6);
   pass.end();
-  device.queue.submit([encoder.finish()]);
 }
 
 // ─── SH-L2 projection pass (Batch 354) ───────────────────────────────────
@@ -1617,51 +1961,21 @@ function runSphericalHarmonicProjection(
   device: GPUDevice,
   cache: DynEnvMapCache,
   manager: DynEnvMapManagerLike,
+  encoder: GPUCommandEncoder,
 ): void {
   if (!cache.cubemapTextureView || !cache.sampler) {
     return;
   }
 
-  // Build pipeline + BGL once per cache.
+  // Share the immutable SH kernel with every probe on this device generation.
   if (!cache.shPipeline || !cache.shBGL) {
-    cache.shBGL = device.createBindGroupLayout({
-      label: "DynEnvMap SH BGL",
-      entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: { sampleType: "float", viewDimension: "cube" },
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          sampler: { type: "filtering" },
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "storage" },
-        },
-        {
-          binding: 3,
-          visibility: GPUShaderStage.COMPUTE,
-          buffer: { type: "uniform" },
-        },
-      ],
-    });
-    const layout = device.createPipelineLayout({
-      label: "DynEnvMap SH PipelineLayout",
-      bindGroupLayouts: [cache.shBGL],
-    });
-    const module = device.createShaderModule({
-      label: "ProjectRadianceToSH",
-      code: ProjectRadianceToSHWGSL,
-    });
-    cache.shPipeline = device.createComputePipeline({
-      label: "DynEnvMap SH Pipeline",
-      layout,
-      compute: { module, entryPoint: "main" },
-    });
+    const kernels = getOrCreateDynamicEnvironmentKernelPack(
+      device,
+      cache.resourceGeneration,
+      cache.cubemapFormat ?? "rgba8unorm",
+    );
+    cache.shPipeline = kernels.shPipeline;
+    cache.shBGL = kernels.shBGL;
   }
 
   // SH output buffer: 9 vec4 coeffs + 1 vec4 control = 160 bytes. STORAGE
@@ -1708,13 +2022,11 @@ function runSphericalHarmonicProjection(
   }
 
   // Dispatch 1 workgroup of 9 invocations (one coefficient each).
-  const encoder = device.createCommandEncoder({ label: "DynEnvMap SH Pass" });
   const pass = encoder.beginComputePass();
   pass.setPipeline(cache.shPipeline);
   pass.setBindGroup(0, cache.shBindGroup);
   pass.dispatchWorkgroups(1, 1, 1);
   pass.end();
-  device.queue.submit([encoder.finish()]);
 }
 
 // ─── IBL prefilter trigger (Audit A.12, Batch 131) ───────────────────────
@@ -1723,10 +2035,31 @@ function runSphericalHarmonicProjection(
 // that `WebGPUImageBasedLighting` runs for explicit-source IBL. The
 // only difference is the source: here it's the procedural cubemap we
 // just filled; for explicit IBL it's a user-supplied HDR cubemap.
+function resolveIBLHQOptions(
+  cache: DynEnvMapCache,
+  frameState: CesiumFrameState,
+): RadianceHQOptions | undefined {
+  const quality =
+    (
+      frameState.context as unknown as {
+        iblPrefilterQuality?: "parity" | "high";
+      }
+    ).iblPrefilterQuality ?? "parity";
+  return quality === "high"
+    ? {
+        quality: "high",
+        sourceCube: cache.cubemapTexture,
+        sourceFormat: cache.cubemapFormat ?? ("rgba8unorm" as GPUTextureFormat),
+      }
+    : undefined;
+}
+
 function runIBLPrefilter(
   device: GPUDevice,
   cache: DynEnvMapCache,
   frameState: CesiumFrameState,
+  hqOptions: RadianceHQOptions | undefined,
+  encodingScope: IBLCommandEncodingScope,
 ): void {
   if (!cache.iblCache) {
     cache.iblCache = {
@@ -1754,21 +2087,6 @@ function runIBLPrefilter(
   // byte-identical mip-0 path (no source-mip pass, `main` entry point).
   // 'high' → pass the source cube + format so the prefilter box-downsamples
   // the source mip chain and samples a GGX-pdf-derived LOD (`mainHQ`).
-  const quality =
-    (
-      frameState.context as unknown as {
-        iblPrefilterQuality?: "parity" | "high";
-      }
-    ).iblPrefilterQuality ?? "parity";
-  const hqOptions =
-    quality === "high"
-      ? {
-          quality: "high" as const,
-          sourceCube: cache.cubemapTexture,
-          sourceFormat:
-            cache.cubemapFormat ?? ("rgba8unorm" as GPUTextureFormat),
-        }
-      : undefined;
   generateIBLMaps(
     device,
     cache.iblCache,
@@ -1779,6 +2097,7 @@ function runIBLPrefilter(
       }
     ).webgpuComputePipelineCache ?? null,
     hqOptions,
+    encodingScope,
   );
 }
 
@@ -1799,6 +2118,21 @@ function destroyWebGPUDynamicEnvironmentMapResources(
   if (cache.skyUniformBuffer) {
     cache.skyUniformBuffer.destroy();
   }
+  if (cache.shBuffer) {
+    cache.shBuffer.destroy();
+  }
+  if (cache.shParamBuffer) {
+    cache.shParamBuffer.destroy();
+  }
+  // C2-25 ENV-SCENE-CAPTURE — the manager owns the lazily allocated capture
+  // depth attachment. It is not reachable through the IBL cache and therefore
+  // must be released explicitly on manager destruction or device recovery.
+  if (cache.captureDepthTexture) {
+    cache.captureDepthTexture.destroy();
+  }
+  cache.captureDepthTexture = null;
+  cache.captureDepthView = null;
+  cache.captureDepthSize = 0;
   // C2-25 ENV-TEMPORAL (Batch 449) — release the history + accum cubes + blend
   // uniform buffer (all null on the OFF path → branches skip).
   if (cache.historyCube) {
@@ -1832,14 +2166,24 @@ function destroyWebGPUDynamicEnvironmentMapResources(
   }
 
   manager._webgpuCache = undefined;
+  manager._radianceMap = null;
   manager._webgpuIBLDiffuseView = null;
   manager._webgpuIBLSpecularView = null;
   manager._webgpuIBLSampler = null;
+  manager._webgpuIBLMaxMipLevel = 0;
+  manager._webgpuSHBuffer = null;
 }
 
 export {
   updateWebGPUDynamicEnvironmentMap,
   destroyWebGPUDynamicEnvironmentMapResources,
+  getOrCreateDynamicEnvironmentKernelPack,
+  resetDynamicEnvironmentKernelPacksForSpecs,
+  resolveSceneCaptureMode,
+  shouldRefreshSceneCapture,
+  shouldResetSceneCaptureHistory,
+  updateSceneCaptureAttemptBookkeeping,
+  updateSceneCaptureBookkeeping,
 };
 export default {
   updateWebGPUDynamicEnvironmentMap,

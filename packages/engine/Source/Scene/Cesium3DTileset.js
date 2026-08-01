@@ -1415,6 +1415,15 @@ class Cesium3DTileset {
       tilesetPassState.cullingVolume ?? originalCullingVolume;
 
     if (passOptions.isRender) {
+      // The manager owns a multi-frame generation state machine (radiance ->
+      // convolutions -> irradiance -> spherical harmonics, one stage per call)
+      // and its own reset trigger when the sun moves past
+      // maximumSecondsDifference. It must therefore tick on every render pass,
+      // outside the `show` / `defined(this._root)` / selected-tile gates below:
+      // skipping a call while hidden or while nothing is selected freezes an
+      // in-flight generation and suppresses the regeneration that consumers
+      // will need on re-show. Selected-tile counts feed demand telemetry only
+      // (see updateEnvironmentMapForSelectedConsumers).
       const environmentMapManager = this._environmentMapManager;
       if (defined(this._root)) {
         environmentMapManager.position = this.boundingSphere.center;
@@ -3812,6 +3821,10 @@ function update(tileset, frameState, passStatistics, passOptions) {
     .getTraversal(passOptions)
     .selectTiles(tileset, frameState);
 
+  if (passOptions.isRender) {
+    updateEnvironmentMapForSelectedConsumers(tileset, frameState);
+  }
+
   if (passOptions.requestTiles) {
     requestTiles(tileset);
   }
@@ -3832,6 +3845,36 @@ function update(tileset, frameState, passStatistics, passOptions) {
   }
 
   return ready;
+}
+
+/**
+ * Report how many consumers the current render traversal selected for the
+ * tileset-owned environment map. Selection is only known here, after
+ * selectTiles and before tile/model draw commands are emitted.
+ *
+ * This is C11-193 observe-only registration: it records demand and changes no
+ * behavior. The manager itself is ticked unconditionally once per render pass
+ * in Cesium3DTileset#updateForPass, because its generation state machine spans
+ * multiple frames and owns its own reset trigger — gating that tick on
+ * selection (or on `show`) would freeze a partially generated map and defer the
+ * sun-moved regeneration that consumers need on re-show. A future scheduler may
+ * use this signal for priority, never to skip a refresh.
+ *
+ * @private
+ */
+function updateEnvironmentMapForSelectedConsumers(tileset, frameState) {
+  const context = frameState.context;
+  if (typeof context?.recordEnvironmentMapDemand !== "function") {
+    return;
+  }
+
+  const selectedConsumerCount = tileset._selectedTiles.length;
+  context.recordEnvironmentMapDemand(
+    tileset._environmentMapManager,
+    selectedConsumerCount > 0 ? "demanded" : "proven-none",
+    "tileset-selection",
+    selectedConsumerCount,
+  );
 }
 
 function createCredits(tileset) {
@@ -3918,4 +3961,5 @@ const scratchPickIntersection = new Cartesian3();
  * @param {number} time The time of interpolation generally in the range <code>[0.0, 1.0]</code>.
  * @returns {number} The interpolated value.
  */
+export { updateEnvironmentMapForSelectedConsumers };
 export default Cesium3DTileset;

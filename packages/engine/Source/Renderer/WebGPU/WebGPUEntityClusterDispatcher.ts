@@ -42,6 +42,7 @@ import {
   storageBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { getAvailableFrameCommandEncoder } from "./WebGPUFrameCommandEncoder.js";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 import EntityClusterGridGPUSource from "../../Shaders/WebGPU/Compute/EntityClusterGridGPU.js";
@@ -94,9 +95,8 @@ class WebGPUEntityClusterDispatcher {
   private _paramsScratch = new ArrayBuffer(PARAMS_BYTES);
   private _paramsU32: Uint32Array;
   private _paramsF32: Float32Array;
-  // Reusable zero-fill scratch for clearing the per-cell accumulators;
-  // grown as the cell count grows.
-  private _clearCounts: Uint32Array = new Uint32Array(0);
+  // Reusable fill scratch for the atomic-min representative sentinel; grown as
+  // the cell count grows. Counts are cleared on-GPU with encoder.clearBuffer.
   private _clearRep: Uint32Array = new Uint32Array(0);
 
   constructor(device: GPUDevice) {
@@ -129,11 +129,7 @@ class WebGPUEntityClusterDispatcher {
 
   private _ensureResources(pointCount: number, cellCount: number): boolean {
     const r = this._resources;
-    if (
-      r &&
-      r.pointCapacity >= pointCount &&
-      r.cellCapacity >= cellCount
-    ) {
+    if (r && r.pointCapacity >= pointCount && r.cellCapacity >= cellCount) {
       return true;
     }
     // Grow generously to amortize reallocation across camera moves.
@@ -252,6 +248,7 @@ class WebGPUEntityClusterDispatcher {
     cellSize: number,
     originX: number,
     originY: number,
+    frameContext?: ClusterDispatcherContext,
   ): Promise<ClusterGridResult | null> {
     if (pointCount <= 0 || gridCols <= 0 || gridRows <= 0) {
       return null;
@@ -275,21 +272,13 @@ class WebGPUEntityClusterDispatcher {
       pointCount * 16,
     );
 
-    // Clear per-cell accumulators: counts → 0, rep → EMPTY.
-    if (this._clearCounts.length < cellCount) {
-      this._clearCounts = new Uint32Array(cellCount);
-    }
+    // Clear per-cell accumulators: counts → 0, rep → EMPTY. Counts join the
+    // compute command stream via clearBuffer, avoiding a CPU zero-fill upload.
+    // Atomic-min representatives still require the all-ones sentinel.
     if (this._clearRep.length < cellCount) {
       this._clearRep = new Uint32Array(cellCount);
     }
     this._clearRep.fill(EMPTY, 0, cellCount);
-    device.queue.writeBuffer(
-      r.cellCountsBuffer,
-      0,
-      this._clearCounts.buffer,
-      0,
-      cellCount * 4,
-    );
     device.queue.writeBuffer(
       r.cellRepBuffer,
       0,
@@ -309,9 +298,27 @@ class WebGPUEntityClusterDispatcher {
     this._paramsU32[7] = 0;
     device.queue.writeBuffer(r.paramsBuffer, 0, this._paramsScratch);
 
-    const encoder = device.createCommandEncoder({
-      label: "EntityClusterGrid_Encoder",
-    });
+    const frameEncoder = getAvailableFrameCommandEncoder(frameContext);
+    let frameSubmission: Promise<boolean> | null = null;
+    let usesFrameEncoder = false;
+    if (
+      frameEncoder &&
+      typeof frameContext?.enqueueAfterFrameSubmit === "function"
+    ) {
+      frameSubmission = new Promise<boolean>((resolve) => {
+        usesFrameEncoder = frameContext.enqueueAfterFrameSubmit!.call(
+          frameContext,
+          resolve,
+        );
+      });
+      if (!usesFrameEncoder) {
+        frameSubmission = null;
+      }
+    }
+    const encoder = usesFrameEncoder
+      ? frameEncoder!
+      : device.createCommandEncoder({ label: "EntityClusterGrid_Encoder" });
+    encoder.clearBuffer(r.cellCountsBuffer, 0, cellCount * 4);
     const pass = encoder.beginComputePass({ label: "EntityClusterGrid_Pass" });
     pass.setPipeline(r.pipeline);
     pass.setBindGroup(0, r.bindGroup);
@@ -340,7 +347,9 @@ class WebGPUEntityClusterDispatcher {
       0,
       pointCount * 4,
     );
-    device.queue.submit([encoder.finish()]);
+    if (!usesFrameEncoder) {
+      device.queue.submit([encoder.finish()]);
+    }
 
     this._dispatches++;
     this._lastPointCount = pointCount;
@@ -348,22 +357,23 @@ class WebGPUEntityClusterDispatcher {
 
     this._readbackInFlight = true;
     try {
+      if (frameSubmission && !(await frameSubmission)) {
+        return null;
+      }
       await Promise.all([
         r.cellCountsReadback.mapAsync(GPUMapMode.READ, 0, cellCount * 4),
         r.cellRepReadback.mapAsync(GPUMapMode.READ, 0, cellCount * 4),
         r.pointCellIdReadback.mapAsync(GPUMapMode.READ, 0, pointCount * 4),
       ]);
       const cellCounts = new Uint32Array(
-        new Uint32Array(r.cellCountsReadback.getMappedRange(0, cellCount * 4)),
-      );
+        r.cellCountsReadback.getMappedRange(0, cellCount * 4),
+      ).slice();
       const cellRep = new Uint32Array(
-        new Uint32Array(r.cellRepReadback.getMappedRange(0, cellCount * 4)),
-      );
+        r.cellRepReadback.getMappedRange(0, cellCount * 4),
+      ).slice();
       const pointCellId = new Uint32Array(
-        new Uint32Array(
-          r.pointCellIdReadback.getMappedRange(0, pointCount * 4),
-        ),
-      );
+        r.pointCellIdReadback.getMappedRange(0, pointCount * 4),
+      ).slice();
       r.cellCountsReadback.unmap();
       r.cellRepReadback.unmap();
       r.pointCellIdReadback.unmap();
@@ -421,6 +431,11 @@ class WebGPUEntityClusterDispatcher {
 
 interface ClusterDispatcherContext {
   device: GPUDevice | null | undefined;
+  readonly currentCommandEncoder?: GPUCommandEncoder | null;
+  readonly _currentCommandEncoder?: GPUCommandEncoder | null;
+  readonly hasActiveRenderPass?: boolean;
+  readonly _currentRenderPassEncoder?: GPURenderPassEncoder | null;
+  enqueueAfterFrameSubmit?(callback: (submitted: boolean) => void): boolean;
 }
 
 const _instances = new WeakMap<object, WebGPUEntityClusterDispatcher>();
@@ -468,6 +483,7 @@ function computeWebGPUEntityClusterGrid(
     cellSize,
     originX,
     originY,
+    context,
   );
 }
 

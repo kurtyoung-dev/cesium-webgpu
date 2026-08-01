@@ -45,6 +45,13 @@ import { isWebGPULogDepthActive } from "./WebGPULogDepth.js";
 const SSR_UNIFORM_FLOATS = 48; // matches SSRUniforms struct
 const SSR_UNIFORM_BYTES = SSR_UNIFORM_FLOATS * 4;
 
+interface SSRBindGroupEntry {
+  colorView: GPUTextureView;
+  depthView: GPUTextureView;
+  normalView: GPUTextureView;
+  bindGroup: GPUBindGroup;
+}
+
 export interface SSRCache {
   pipeline: GPURenderPipeline | null;
   uniformBuffer: GPUBuffer | null;
@@ -53,6 +60,8 @@ export interface SSRCache {
   normalTexture: GPUTexture | null;
   normalView: GPUTextureView | null;
   uniformData: Float32Array;
+  bindGroups: [SSRBindGroupEntry | null, SSRBindGroupEntry | null];
+  nextBindGroupSlot: number;
   initialized: boolean;
   width: number;
   height: number;
@@ -69,6 +78,8 @@ function ensureSSRCache(context: CesiumGraphicsContext): SSRCache {
       normalTexture: null,
       normalView: null,
       uniformData: new Float32Array(SSR_UNIFORM_FLOATS),
+      bindGroups: [null, null],
+      nextBindGroupSlot: 0,
       initialized: false,
       width: 0,
       height: 0,
@@ -170,9 +181,9 @@ export function executeSSR(
   normalTextureView: GPUTextureView | null,
   outputView: GPUTextureView,
   scene: CesiumScene,
-): void {
+): boolean {
   const device = context._device;
-  if (!device) return;
+  if (!device) return false;
 
   const cache = ensureSSRCache(context);
   // PARITY-F16-POSTPROCESS — f16 only when opted in AND device-supported.
@@ -283,16 +294,38 @@ export function executeSSR(
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
-  const bindGroup = device.createBindGroup({
-    layout: cache.bindGroupLayout!,
-    entries: [
-      { binding: 0, resource: colorTextureView },
-      { binding: 1, resource: depthTextureView },
-      { binding: 2, resource: normalView },
-      { binding: 3, resource: cache.sampler! },
-      { binding: 4, resource: { buffer: cache.uniformBuffer! } },
-    ],
-  });
+  let bindGroup: GPUBindGroup | null = null;
+  for (let i = 0; i < cache.bindGroups.length; i++) {
+    const entry = cache.bindGroups[i];
+    if (
+      entry?.colorView === colorTextureView &&
+      entry.depthView === depthTextureView &&
+      entry.normalView === normalView
+    ) {
+      bindGroup = entry.bindGroup;
+      break;
+    }
+  }
+  if (!bindGroup) {
+    bindGroup = device.createBindGroup({
+      layout: cache.bindGroupLayout!,
+      entries: [
+        { binding: 0, resource: colorTextureView },
+        { binding: 1, resource: depthTextureView },
+        { binding: 2, resource: normalView },
+        { binding: 3, resource: cache.sampler! },
+        { binding: 4, resource: { buffer: cache.uniformBuffer! } },
+      ],
+    });
+    const slot = cache.nextBindGroupSlot;
+    cache.bindGroups[slot] = {
+      colorView: colorTextureView,
+      depthView: depthTextureView,
+      normalView,
+      bindGroup,
+    };
+    cache.nextBindGroupSlot = (slot + 1) & 1;
+  }
 
   // Slice 5c-B Batch 127 — record into the MAIN frame encoder (parallel
   // change to NPR outlines in this batch). Pre-fix: SSR created its own
@@ -323,6 +356,7 @@ export function executeSSR(
   if (!useMain) {
     device.queue.submit([encoder.finish()]);
   }
+  return true;
 }
 
 export function destroySSRResources(context: CesiumGraphicsContext): void {
@@ -336,6 +370,8 @@ export function destroySSRResources(context: CesiumGraphicsContext): void {
     cache.sampler = null;
     cache.normalTexture = null;
     cache.normalView = null;
+    cache.bindGroups = [null, null];
+    cache.nextBindGroupSlot = 0;
     cache.initialized = false;
     context._ssrCache = undefined;
   }

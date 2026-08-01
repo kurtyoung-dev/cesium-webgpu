@@ -78,6 +78,39 @@ describe("Renderer/WebGPU/WebGPUEffectsStateCache", function () {
     expect(harness.cache.getDiagnostics(480).slotCount).toBe(2);
   });
 
+  it("shares one point-capture slot across cube faces and isolates another eye", function () {
+    const harness = createHarness(16);
+    const key = "point-capture-owner|shadow-resources";
+    const firstEyeBits = new Uint32Array([10, 20, 30]);
+    const secondEyeBits = new Uint32Array([40, 50, 60]);
+    let firstEyeResource;
+
+    // Cube-face cameras rotate around one common eye, so all six point-shadow
+    // Effects payloads are byte-identical and must share one resource.
+    for (let face = 0; face < 6; face++) {
+      const resource = harness.acquire(key, firstEyeBits, 7);
+      firstEyeResource ??= resource;
+      expect(resource).toBe(firstEyeResource);
+    }
+
+    // A second environment-map capture at another eye in the same frame must
+    // retain distinct bytes until both command buffers have been submitted.
+    const secondEyeResource = harness.acquire(key, secondEyeBits, 7);
+    expect(secondEyeResource).not.toBe(firstEyeResource);
+    expect(harness.created).toBe(2);
+    expect(harness.writes).toBe(2);
+
+    // Stable captures on a later frame reuse both resident slots without any
+    // allocation or upload.
+    for (let face = 0; face < 6; face++) {
+      expect(harness.acquire(key, firstEyeBits, 8)).toBe(firstEyeResource);
+    }
+    expect(harness.acquire(key, secondEyeBits, 8)).toBe(secondEyeResource);
+    expect(harness.created).toBe(2);
+    expect(harness.writes).toBe(2);
+    expect(harness.cache.getDiagnostics(480).slotCount).toBe(2);
+  });
+
   it("evicts only groups not referenced by the current frame", function () {
     const harness = createHarness(2);
     harness.acquire("old-a", new Uint32Array([2]), 1);

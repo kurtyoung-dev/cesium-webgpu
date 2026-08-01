@@ -42,12 +42,21 @@ import {
 const NPR_UNIFORM_FLOATS = 12; // params(4) + edgeColor(4) + texelSize(4)
 const NPR_UNIFORM_BYTES = NPR_UNIFORM_FLOATS * 4;
 
+interface NPRBindGroupEntry {
+  colorView: GPUTextureView;
+  depthView: GPUTextureView;
+  normalView: GPUTextureView;
+  bindGroup: GPUBindGroup;
+}
+
 export interface NPROutlineCache {
   pipeline: GPURenderPipeline | null;
   uniformBuffer: GPUBuffer | null;
   bindGroupLayout: GPUBindGroupLayout | null;
   sampler: GPUSampler | null;
   uniformData: Float32Array;
+  bindGroups: [NPRBindGroupEntry | null, NPRBindGroupEntry | null];
+  nextBindGroupSlot: number;
   initialized: boolean;
 }
 
@@ -62,6 +71,8 @@ function ensureCache(context: CesiumGraphicsContext): NPROutlineCache {
       bindGroupLayout: null,
       sampler: null,
       uniformData: new Float32Array(NPR_UNIFORM_FLOATS),
+      bindGroups: [null, null],
+      nextBindGroupSlot: 0,
       initialized: false,
     };
   }
@@ -145,10 +156,10 @@ export function executeNPROutlines(
   normalTextureView: GPUTextureView,
   outputView: GPUTextureView,
   scene: CesiumScene,
-): void {
+): boolean {
   void frameState;
   const device = (context as unknown as { _device?: GPUDevice })._device;
-  if (!device) return;
+  if (!device) return false;
 
   const cache = ensureCache(context);
   const canvasFormat =
@@ -189,16 +200,38 @@ export function executeNPROutlines(
 
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
 
-  const bindGroup = device.createBindGroup({
-    layout: cache.bindGroupLayout!,
-    entries: [
-      { binding: 0, resource: colorTextureView },
-      { binding: 1, resource: depthTextureView },
-      { binding: 2, resource: normalTextureView },
-      { binding: 3, resource: cache.sampler! },
-      { binding: 4, resource: { buffer: cache.uniformBuffer! } },
-    ],
-  });
+  let bindGroup: GPUBindGroup | null = null;
+  for (let i = 0; i < cache.bindGroups.length; i++) {
+    const entry = cache.bindGroups[i];
+    if (
+      entry?.colorView === colorTextureView &&
+      entry.depthView === depthTextureView &&
+      entry.normalView === normalTextureView
+    ) {
+      bindGroup = entry.bindGroup;
+      break;
+    }
+  }
+  if (!bindGroup) {
+    bindGroup = device.createBindGroup({
+      layout: cache.bindGroupLayout!,
+      entries: [
+        { binding: 0, resource: colorTextureView },
+        { binding: 1, resource: depthTextureView },
+        { binding: 2, resource: normalTextureView },
+        { binding: 3, resource: cache.sampler! },
+        { binding: 4, resource: { buffer: cache.uniformBuffer! } },
+      ],
+    });
+    const slot = cache.nextBindGroupSlot;
+    cache.bindGroups[slot] = {
+      colorView: colorTextureView,
+      depthView: depthTextureView,
+      normalView: normalTextureView,
+      bindGroup,
+    };
+    cache.nextBindGroupSlot = (slot + 1) & 1;
+  }
 
   // Slice 5c-B Batch 127 — record into the MAIN frame command encoder
   // instead of a separate one. Pre-fix NPR + SSR + ProceduralClouds
@@ -230,7 +263,7 @@ export function executeNPROutlines(
     pass.draw(3);
     pass.end();
     device.queue.submit([tmp.finish()]);
-    return;
+    return true;
   }
   // Caller (executeEnvironmentalEffects) already called
   // `context.endCurrentRenderPass()` before invoking us, so the main
@@ -251,6 +284,7 @@ export function executeNPROutlines(
   pass.setBindGroup(0, bindGroup);
   pass.draw(3);
   pass.end();
+  return true;
 }
 
 export function destroyNPROutlineResources(
@@ -266,6 +300,8 @@ export function destroyNPROutlineResources(
     cache.uniformBuffer = null;
     cache.bindGroupLayout = null;
     cache.sampler = null;
+    cache.bindGroups = [null, null];
+    cache.nextBindGroupSlot = 0;
     cache.initialized = false;
     ctx._nprOutlineCache = undefined;
   }
