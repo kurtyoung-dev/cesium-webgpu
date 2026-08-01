@@ -134,3 +134,62 @@ fn advanceCloudDensityCoordinates(
     wrapCloudDensityDomain(coordinates.detail + detailDelta),
   );
 }
+
+// ─── Coverage → density-gate threshold (CLOUD-LOW-COVERAGE-CUTOFF) ──────────
+//
+// Every cloud density evaluation gates the base noise with
+// `smoothstep(1 - cEff, 1, base)`, so `1 - cEff` is the base value a sample has
+// to exceed to be cloud at all. The historical gate used `cEff = coverage`
+// directly, which silently assumes the base noise is UNIFORM over [0, 1].
+//
+// It is not. The baked shape channel is a 4-octave periodic value-fBM
+// (`valueFBM(p, 2)` in CloudNoiseBake.wgsl), and its rgba8 values over the
+// whole 128^3 bake measure mean 0.4307, sigma 0.0896, MAXIMUM 0.7176 — a narrow
+// near-Gaussian, not a uniform. A linear threshold therefore walks off the top
+// of the field's support at coverage < 0.283 (1 - c exceeds the field maximum,
+// so the gate is identically zero for every sample in the world), and at 0.35
+// only the top 0.5% of voxels clear it — each with a gate amplitude BELOW the
+// subtractive erosion floor (mean 0.525 * erosionStrength), so the few
+// survivors are zeroed as well. Measured by the C13-01 tour's isolated coverage
+// sweep: contribution exactly 0 at coverage <= 0.40 and 0.0009 at 0.45, i.e.
+// every real-world fair-weather scattered-cumulus sky rendered CLEAR.
+//
+// Re-derivation (not a rescale of the old line): require the cloudy VOLUME
+// fraction P(base > 1 - cEff) to be a smooth, strictly increasing,
+// CONSTANT-ELASTICITY function of coverage instead of a Gaussian tail composed
+// with a linear threshold. Constant elasticity in threshold space is a power
+// law, and three anchors fix it:
+//   A1  cEff(c) = c for c >= CLOUD_COVERAGE_ANCHOR. The two branches cross
+//       exactly at the anchor, so `max` of them reproduces the historical
+//       response bit-for-bit at and above it — every currently-working
+//       high-coverage scene is untouched.
+//   A2  1 - cEff(0.15) = 0.6025 ~ the field's 98th percentile: the sparsest
+//       threshold whose surviving cores still clear the erosion floor, so 0.15
+//       is genuinely sparse yet nonzero rather than a wall.
+//   A3  cEff(0) = 0 -> threshold 1 -> a zero-coverage sky is structurally clear.
+// A1 + A2 give exponent 1/4 at anchor 0.55. The resulting curve is monotone on
+// all of [0, 1], leaves coverage <= 0.08 visually clear (the negative-space
+// control still reads as clear sky), and lifts 0.35 to ~40% of the anchor's sky
+// cover with ~80% of its peak density — scattered puffs, not overcast.
+//
+// Spelled as `anchor * pow(c / anchor, exponent)` rather than a pre-multiplied
+// constant: at c == anchor the ratio is exactly 1 and `pow(1, e)` is exactly 1,
+// so the anchor reproduces itself EXACTLY in f32 and the >= anchor preservation
+// is exact rather than approximate.
+//
+// CPU twin: `cloudEffectiveCoverage` in WebGPUCloudDensityDomain.ts. The two are
+// pinned together by Tools/visual-regression/cloud-coverage-response.spec.mjs —
+// do not edit one alone.
+const CLOUD_COVERAGE_ANCHOR: f32 = 0.55;
+const CLOUD_COVERAGE_EXPONENT: f32 = 0.25;
+
+fn cloudEffectiveCoverage(coverage: f32) -> f32 {
+  if (coverage <= 0.0) {
+    return 0.0;
+  }
+  let c = min(coverage, 1.0);
+  let lifted =
+    CLOUD_COVERAGE_ANCHOR *
+    pow(c / CLOUD_COVERAGE_ANCHOR, CLOUD_COVERAGE_EXPONENT);
+  return max(c, lifted);
+}

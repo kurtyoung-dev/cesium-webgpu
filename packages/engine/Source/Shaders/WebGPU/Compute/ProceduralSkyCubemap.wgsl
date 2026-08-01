@@ -555,7 +555,12 @@ fn cloudDensityIBL(
 
   var density = cloudBakedBaseIBL(coordinates, mipLevels);
   let coverage = clamp(u.cloudCoverage, 0.0, 1.0);
-  density = smoothstep(1.0 - coverage, 1.0, density);
+  // Same coverage response as the visible march — `cloudEffectiveCoverage` is
+  // shared through the CloudDensityDomain chunk this module is composed with,
+  // so the reflected/ambient deck cannot keep the CLOUD-LOW-COVERAGE-CUTOFF
+  // behaviour after the visible deck loses it (that divergence would be
+  // invisible in a screenshot and would silently mis-light every model).
+  density = smoothstep(1.0 - cloudEffectiveCoverage(coverage), 1.0, density);
 
   // BILLOWY vertical gradient (the historical cumulus profile).
   let hg = smoothstep(0.0, 0.15, heightFraction) * smoothstep(1.0, 0.7, heightFraction);

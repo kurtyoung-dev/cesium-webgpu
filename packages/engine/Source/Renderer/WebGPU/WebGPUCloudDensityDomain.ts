@@ -98,6 +98,59 @@ export const CLOUD_DENSITY_MORPHOLOGY_ORIGIN_LOW_OFFSET = 4;
 export const CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS =
   CLOUD_DENSITY_ORIGIN_PHASE_FLOATS + CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS;
 
+/**
+ * Coverage anchor at and above which the cloud density gate is bit-identical to
+ * its historical `1 - coverage` threshold. See `cloudEffectiveCoverage`.
+ */
+export const CLOUD_COVERAGE_ANCHOR = 0.55;
+
+/**
+ * Constant-elasticity exponent of the sub-anchor coverage response. Derived,
+ * not tuned: it is the exponent that places the 0.15 threshold at the baked
+ * base field's ~98th percentile given the anchor. See `cloudEffectiveCoverage`.
+ */
+export const CLOUD_COVERAGE_EXPONENT = 0.25;
+
+/**
+ * CPU twin of `cloudEffectiveCoverage` in CloudDensityDomain.wgsl (the chunk is
+ * prepended to both ProceduralClouds.wgsl and ProceduralSkyCubemap.wgsl, so one
+ * definition serves the visible march, the beer-shadow producer, and the IBL
+ * cube).
+ *
+ * The cloud density gate is `smoothstep(1 - cEff, 1, base)`. Feeding it
+ * `cEff = coverage` assumes the base noise is uniform over [0, 1]; the baked
+ * shape channel is a 4-octave value-fBM measuring mean 0.4307 / sigma 0.0896 /
+ * max 0.7176, so the historical threshold left the field's support entirely
+ * below coverage 0.283 and rendered every fair-weather sky clear
+ * (CLOUD-LOW-COVERAGE-CUTOFF). The re-derived response makes the cloudy volume
+ * fraction a constant-elasticity function of coverage below the anchor while
+ * reproducing the historical response exactly at and above it.
+ *
+ * f32-faithful: every intermediate is rounded the way WGSL evaluates it, so a
+ * spec can compare this against the shader's arithmetic rather than against an
+ * f64 idealisation. `Math.pow` is evaluated in f64 and then rounded, which can
+ * differ from a driver's `exp2(y * log2(x))` decomposition by an ULP for a
+ * general argument — but not at the anchor, where the ratio is exactly 1 and
+ * both spellings return exactly 1.
+ *
+ * @param {number} coverage Requested cloud coverage in [0, 1].
+ * @returns {number} The effective coverage the density gate should use.
+ */
+export function cloudEffectiveCoverage(coverage: number): number {
+  const requested = Math.fround(coverage);
+  if (!(requested > 0.0)) {
+    return 0.0;
+  }
+  // The shader's constants are f32; round them here too so `c === anchor`
+  // divides to exactly 1 and the anchor reproduces itself bit-for-bit.
+  const anchor = Math.fround(CLOUD_COVERAGE_ANCHOR);
+  const exponent = Math.fround(CLOUD_COVERAGE_EXPONENT);
+  const c = Math.min(requested, 1.0);
+  const ratio = Math.fround(c / anchor);
+  const lifted = Math.fround(anchor * Math.fround(Math.pow(ratio, exponent)));
+  return Math.max(c, lifted);
+}
+
 function fract(value: number): number {
   return value - Math.floor(value);
 }

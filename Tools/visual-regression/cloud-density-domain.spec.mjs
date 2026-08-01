@@ -664,13 +664,27 @@ test("primary morphology stays in the unwrapped canonical RTE wind plane", () =>
 });
 
 test("LIVE and bit-13-off preserve the literal legacy density route", () => {
+  // These hashes freeze the C13-37 A/B oracle: the LIVE and bit-13-off routes
+  // must stay a LITERAL copy of the pre-C13-37 density evaluation, so the A/B
+  // lane can attribute a difference to the new domain helpers rather than to a
+  // silently edited control. The freeze is a drift DETECTOR, not a claim that
+  // the density field can never change — a deliberate field change has to move
+  // the legacy route and the macro route together, and re-freeze here with the
+  // reason recorded.
+  //
+  // Re-frozen 2026-08-01 (CLOUD-LOW-COVERAGE-CUTOFF): the coverage gate in all
+  // three evaluations — legacyCloudDensity, legacyCloudBaseDensity and
+  // cloudMacroSampleAt — now routes `effectiveCoverage` through the shared
+  // `cloudEffectiveCoverage` response in CloudDensityDomain.wgsl. That is the
+  // one edit; `legacyBakedBase` is untouched and keeps its original hash, which
+  // is what proves the re-freeze was scoped to the gate.
   const frozenLegacyHashes = {
     legacyBakedBase:
       "63cc67e6e7790a33c3ac39a3958d74335debe667d67d24a0e0e2c35609af4cde",
     legacyCloudDensity:
-      "8ccb1fb9cffef72cbbff7c27f6edf476a20897d9fa21d373b192d8e731196022",
+      "f536b65d2e8095349a94c2b61c7a3bdceade6b262d10f5696e0bf5e3af335ac1",
     legacyCloudBaseDensity:
-      "f3ac2ac8ea2236768b00a9234c7353f3c31a7e443fac5c7d06527d3f6fc281a5",
+      "77512de8fa5aa13fa901c355b39dbc1b4260a54b6fd0a007cb84d9ff5b06800d",
   };
   for (const [name, hash] of Object.entries(frozenLegacyHashes)) {
     assert.equal(

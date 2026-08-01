@@ -249,18 +249,9 @@ export function fixtureClockIso(fixture) {
 const FIXTURES = [
   {
     id: "plains-fairweather-cumulus",
-    // The ceiling below is a KNOWN-GAP pin, not a negative control. The fixture
-    // demands the CORRECT real-world value (35% fair-weather cover) and the
-    // renderer cannot deliver it: an isolated coverage sweep at a known-good
-    // anchor (2026-08-01) measured contribution 0.0076 at coverage 0.55,
-    // 0.0009 at 0.45, and EXACTLY ZERO at <= 0.40 — the coverage response has
-    // a hard cutoff that makes every fair-weather scattered-cumulus sky render
-    // clear. When CLOUD-LOW-COVERAGE-CUTOFF closes, this ceiling fails loudly
-    // and the gate flips back to the original floor (minChangedFraction 0.02).
-    knownGapId: "CLOUD-LOW-COVERAGE-CUTOFF",
     gate: {
-      maxChangedFraction: 0.005,
-      why: "KNOWN GAP CLOUD-LOW-COVERAGE-CUTOFF: coverage 0.35 renders zero cloud today (cutoff measured between 0.45 and 0.40); this ceiling pins the defect and inverts to the 0.02 floor when it closes.",
+      minChangedFraction: 0.02,
+      why: "The original floor, restored 2026-08-01 when CLOUD-LOW-COVERAGE-CUTOFF closed. Its ceiling pinned a renderer defect — the coverage->density gate thresholded a base noise whose support stops at 0.718, so coverage 0.35 rendered EXACTLY zero cloud (sweep: 0 at <= 0.40, 0.0009 at 0.45) — and the re-derived response (cloudEffectiveCoverage, CloudDensityDomain.wgsl) now puts this fixture at roughly 40% of the tradewind anchor's sky cover with ~80% of its peak density. A sparse fair-weather deck sits below the denser fixtures' floors, hence 0.02 rather than their 0.03-0.05.",
     },
     climate: "midlatitude-continental",
     region: "north-american-great-plains",
@@ -718,12 +709,9 @@ const FIXTURES = [
   },
   {
     id: "northatlantic-cirrus-fibratus",
-    // The ceiling below is a KNOWN-GAP pin, not a negative control: it fails
-    // loudly the day the gap closes, forcing the gate back to a floor.
-    knownGapId: "C13-16",
     gate: {
-      maxChangedFraction: 0.005,
-      why: "INVERTED GATE — KNOWN GENUS GAP (2026-08-01 calibration): per-genus rendering (the V11 item, C13-16) is unbuilt, so CloudType.CIRRUS contributes ~nothing today (measured 0.000056 above-deck, 0 at ground, in a fully daylit frame). This ceiling pins that reality: the day genus support lands, cirrus appears, this gate FAILS LOUDLY, and it must flip back to the original floor (minChangedFraction 0.002 — an order of magnitude below the cumulus floors, because a correct wispy render and a missing one differ by a few counts).",
+      minChangedFraction: 0.002,
+      why: "The thinnest genus in the set (extinction 0.1). A cirrus floor has to be an order of magnitude below the cumulus floors or it rejects a correct wispy render. HISTORY: pinned as a knownGapId ceiling 2026-08-01 when CIRRUS rendered ~nothing; the CLOUD-LOW-COVERAGE-CUTOFF fix restored visibility the same day (ground 0.0028, above-deck 0.0148) and the ceiling failed loudly as designed, flipping this back to the authored floor. Genus MORPHOLOGY (fibrous streaks vs generic puffs) remains C13-16.",
     },
     climate: "midlatitude-jetstream",
     region: "north-atlantic",

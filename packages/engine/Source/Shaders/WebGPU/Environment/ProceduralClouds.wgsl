@@ -1114,7 +1114,9 @@ fn legacyCloudDensity(
   } else {
     density = fbmNoise(samplePos);
   }
-  density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
+  density = smoothstep(
+    1.0 - cloudEffectiveCoverage(effectiveCoverage), 1.0, density
+  );
 
   let hForGradient = clamp(
     (heightFraction - wch.baseShiftFrac) /
@@ -1192,7 +1194,9 @@ fn legacyCloudBaseDensity(
   } else {
     density = fbmNoise(samplePos);
   }
-  density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
+  density = smoothstep(
+    1.0 - cloudEffectiveCoverage(effectiveCoverage), 1.0, density
+  );
   let hForGradient = clamp(
     (heightFraction - wch.baseShiftFrac) /
       max(1.0 - wch.baseShiftFrac, 1e-3),
@@ -1257,7 +1261,9 @@ fn cloudMacroSampleAt(
   } else {
     density = fbmNoise(coordinates.canonical);
   }
-  density = smoothstep(1.0 - effectiveCoverage, 1.0, density);
+  density = smoothstep(
+    1.0 - cloudEffectiveCoverage(effectiveCoverage), 1.0, density
+  );
 
   let hForGradient = clamp(
     (heightFraction - wch.baseShiftFrac) /
