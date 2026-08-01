@@ -6604,3 +6604,24 @@ against, and both LUT flags are default-off so the deferral costs nothing today.
 **Acceptance:** an interleaved A/B showing the LUT and inline paths agree in
 NONE, including through an eclipse obscuration sweep, before the predicate is
 widened.
+
+## 2026-08-01 — probe-model-ibl parity gate red on main (attribution owed)
+
+### IBL-PARITY-GATE-ATTRIBUTION — 12.15/14.66 vs the 12.0 gate
+
+**Status:** OPEN / MACHINE-LANE TRIAGE. `probe-model-ibl.mjs` fails its
+cross-backend parity gate on main (`parityAngleA` 12.15, `parityAngleB`
+14.66, `PARITY_MAX` 12.0; orbit-change deltas are clean). Proven
+PRE-EXISTING relative to the C11-193 drain/pool slice by labeled-stash
+bisect at `dc61927466` (identical numbers with and without the changeset).
+Not yet attributed among: Batch 776 (env/effects lane), Batch 785 (cloud
+RTE/seam), Batch 786 (C12-31 sky light direction — its env-capture
+consumers changed even though the IBL bake kept the legacy direction), the
+v1.144 merge, or a drifted probe baseline (the 12.0 threshold sits close
+under the historical passing value, so a 0.2-2.7pt legitimate shift trips
+it). Serial-build bisect across 9afe1a9eb1 -> 65a194d24e -> 31706f07c8 ->
+3900608bb9(785) -> 34965a2b21(786) will attribute it in ~4 rounds.
+
+**Acceptance:** the regressing batch (or the probe's stale expectation) is
+named with before/after numbers, and the gate is either green again or its
+threshold re-derived with a recorded rationale.
