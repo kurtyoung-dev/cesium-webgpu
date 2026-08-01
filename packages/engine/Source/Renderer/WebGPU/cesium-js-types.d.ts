@@ -280,6 +280,7 @@ interface CesiumEnvironmentState {
 // ─── Globe translucency state ───────────────────────────────────────────
 
 interface CesiumGlobeTranslucencyState {
+  translucent: boolean;
   useDepthPlane: boolean;
 }
 
@@ -302,6 +303,7 @@ interface CesiumFrameStatePasses {
 }
 
 interface CesiumFrameStateFog {
+  configuredEnabled: boolean;
   enabled: boolean;
   renderable: boolean;
   density: number | undefined;
@@ -325,6 +327,9 @@ interface CesiumFrameState {
   mapProjection: CesiumOpaqueMapProjection;
   camera: CesiumCamera | undefined;
   cameraUnderground: boolean;
+  useCascadedShadowMaps: boolean;
+  globeVisible: boolean;
+  globeTranslucencyState: CesiumGlobeTranslucencyState | undefined;
   cullingVolume: CesiumOpaqueCullingVolume;
   maximumScreenSpaceError: number | undefined;
   pixelRatio: number;
@@ -453,8 +458,21 @@ interface CesiumFrameState {
   // (`scene.deferredLighting` flag forwarded by `Scene.updateFrameState`).
   useDeferredLighting?: boolean;
   invertClassificationColor: CesiumColor | undefined;
+  highDynamicRange: boolean;
   sunDirectionWC: CesiumCartesian3;
   moonDirectionWC: CesiumCartesian3;
+  /**
+   * C12-29 S5 per-View globe-shadow carrier. Geocentric directions and
+   * inverse ranges keep the payload independent of terrain tile and capture
+   * camera while preserving RTE precision in the fragment shader.
+   */
+  eclipseGlobeShadow?: {
+    revision: number;
+    sunDirectionAndInvRange: CesiumCartesian4;
+    moonDirectionDeltaAndInvRange: CesiumCartesian4;
+    params: CesiumCartesian4;
+    params2: CesiumCartesian4;
+  };
   moonPhaseFraction: number;
   // C7-SUN-STARS-EXTINCTION — per-frame zenith atmospheric transmittance for
   // the starfield (published by StarField.update). Undefined when the effect
@@ -667,6 +685,11 @@ interface CesiumGraphicsContext {
    *  WebGPU-renderer imports — consumers cast to the real interface at
    *  the call site via an explicit `import type`. */
   readonly pointCloudLOD?: object | null;
+  /**
+   * Register work that must begin only after the current frame buffer has been
+   * submitted (for example mapAsync on a frame-owned readback copy).
+   */
+  enqueueAfterFrameSubmit?(callback: (submitted: boolean) => void): boolean;
   /** WebGPU-only: lazy-initialized cascaded shadow map renderer.
    *  `null` until `scene.useCascadedShadowMaps` activates it; absent
    *  on WebGL Context. Same typing-boundary pattern as
@@ -1634,6 +1657,16 @@ interface CesiumShaderCache {
     fragmentShaderSource: string | CesiumOpaqueShaderSource;
     attributeLocations?: Record<string, number> | object;
   }): CesiumOpaqueShaderProgram;
+  getDerivedShaderProgram(
+    shaderProgram: CesiumOpaqueShaderProgram,
+    keyword: string,
+  ): CesiumOpaqueShaderProgram | undefined;
+  scheduleShaderProgramCompilation(program: CesiumOpaqueShaderProgram): boolean;
+  scheduleShaderProgramPreparation(
+    prepareShaderProgram: () => CesiumOpaqueShaderProgram | undefined,
+    owner?: object,
+  ): boolean;
+  cancelShaderProgramPreparations(owner: object): number;
   destroyReleasedShaderPrograms(): void;
   releaseShaderProgram(program: CesiumOpaqueShaderProgram): void;
   isDestroyed(): boolean;
