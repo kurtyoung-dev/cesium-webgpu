@@ -245,6 +245,48 @@ IDs on the ordinary model path. Its model-level pick-ID map and GPU texture are 
 This is a real dense-content allocation/lifetime issue, but demand realization must rebuild retained
 bind groups atomically; an isolated boolean guard is not a safe fix.
 
+### 4.3 F5-17 superseding result — 2026-07-28
+
+F5-17 is no longer only a leading hypothesis. API chronology proved that the seven route-position
+long tasks are blocking first-use `LINK_STATUS` waits. The static-variant baseline created seven
+programs/fourteen shaders, paid seven waits totaling 753.9 ms, and recorded seven long tasks.
+
+The first attempted remedy—automatically scheduling every cache-created base and derived
+program—was a measured regression in architecture and work volume. It created 28 programs/56
+shaders, retained the same seven required waits, and completed 21 programs that were never used.
+That eager policy was removed. Cache creation remains lazy; asynchronous preparation is explicit
+opt-in only.
+
+The accepted implementation gives `ShaderProgram` a pending lifecycle around
+`KHR_parallel_shader_compile`, with `COMPLETION_STATUS_KHR` polling and deferred link
+validation/reflection. An unexpected first bind/getter, missing extension, or lack of idle time
+synchronously completes, preserving every draw. `ShaderCache` separates required compilation from
+an idle preparation queue, and the scheduler selects the exact camera-visible final executable in
+normal derivation order: log depth, HDR, then shadow receive.
+
+For the globe, speculation is bounded to one opposite-FOG companion for the zero- and
+one-imagery-texture cohorts. Persistent `fog.configuredEnabled` carries the user's configuration
+while per-frame `fog.enabled` says whether the current camera may render fog; using the former for
+the companion allows orbit idle time to prepare the fog-on descent variant without changing the
+current draw. Shadow-active, translucent/OIT, debug/pick/depth, and greater-than-one-texture
+variants are excluded. Acquire-before-release replacement and wrapper poisoning prevent stale
+culled tiles from reusing a released program.
+
+The final measured policy creates eight programs/sixteen shaders. Seven reach a real draw and one
+companion is unused; four complete asynchronously, while four still block for 435.1 ms total and
+produce four long tasks. `firstDrawProgram` now distinguishes real draws from `useProgram`, and
+`globeShaderRequests` records camera height, configured versus renderable fog, texture cohort,
+exact FOG/log-depth/HDR/shadow selection, companion eligibility, and preparation/pending counts.
+
+The clean r3 route passes with 1,175 measured frames, CPU p95 7.43 ms, CPU p99 10.152 ms, and four
+long tasks (502 ms total, 139 ms maximum). The current nine-waypoint WebGL/WebGPU/diff image set
+also passes visual inspection with functionality intact. Those are reported measurements, not a
+before/after delta. This is a bounded work-avoidance result — three fewer blocking `LINK_STATUS`
+queries issued on the measured route — not a certified frame-time win and not full renderer-wide
+elimination: four first-encounter stalls remain across the quantization ×
+zero/one-texture cohorts, every excluded family remains future measured work, and the changeset is
+still uncommitted (`C11-180` = PARTIAL), so the counterbalanced timing gate stays open.
+
 ---
 
 ## 5. Second-pass action decisions

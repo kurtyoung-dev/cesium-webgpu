@@ -1,5 +1,15 @@
 # Handoff — 2026-07-25 (orchestrator seat → Sol)
 
+> **SUPERSEDED EXECUTION SNAPSHOT (2026-07-26).** Preserve this document as the
+> Batch-767 handoff record, but do not execute its clean-tree/discard workflow
+> or treat all four listed lanes as unlanded. Main has advanced through Batch
+> 770: S6 is landed, the reconciled S5 work is active in the shared working
+> tree, and its changes must not be discarded. Use
+> [`CLAUDE_PROGRESS_AUDIT_2026-07-26.md`](CLAUDE_PROGRESS_AUDIT_2026-07-26.md),
+> the live campaign queues, and current `git status` as execution authority.
+> The pipeline-aliasing, environment-clear, and globe-readiness worktrees
+> remain parked and require their documented runtime gates.
+
 **Written at:** `main` = Batch 767 `3e99189a6a`, pushed, in sync with `origin/main`.
 **Reason:** weekly capacity limit reached mid-flight. Nothing is broken; four completed
 changesets are parked in worktrees awaiting machine cycles.

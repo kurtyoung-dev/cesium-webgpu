@@ -8,20 +8,38 @@ _2026-07-15 remediation update: Campaign 9 was explicitly launched by the mainta
 frozen historical evidence; its open IDs transferred unchanged and its completed slices remain
 regression gates._
 
-_2026-07-25 handoff: see [`HANDOFF_2026-07-25_TO_SOL.md`](HANDOFF_2026-07-25_TO_SOL.md) for the
-current execution state — campaign status table, four completed-but-unlanded changesets and their
-worktrees, the executor-cycle contract, and the queued maintainer decisions._
+_2026-07-25 historical handoff: see
+[`HANDOFF_2026-07-25_TO_SOL.md`](HANDOFF_2026-07-25_TO_SOL.md) for the
+Batch-767 execution snapshot, worktree inventory, and queued maintainer
+decisions. Its clean-tree/discard procedure and four-unlanded-lanes statement
+are superseded; use the 2026-07-26 audit and live campaign queues for current
+execution state._
 
 _2026-07-26 continuation audit: see
 [`CLAUDE_PROGRESS_AUDIT_2026-07-26.md`](CLAUDE_PROGRESS_AUDIT_2026-07-26.md)
 for the landed Batches 745–768 review, in-flight changeset readiness, confirmed
 regressions, campaign reconciliation, and verified continuation order._
 
-_2026-07-23 cloud-campaign launch: Campaign 13 is the current live execution queue. Campaign 11
-remains open but is paused; its cloud/weather IDs transferred to Campaign 13 without being renamed
-or double-scheduled. **Campaign 12 LAUNCHED 2026-07-23** and is executing. The current non-cloud performance
+_2026-07-28 execution update: Campaign 13 remains the current cloud execution queue. Campaign 11
+remains open and its targeted W1 performance lane has resumed (`C11-180` PARTIAL, `C11-181`
+IMPLEMENTED / VERIFIED / LANDING PENDING); its broader certification remains held. Its cloud/weather IDs transferred to Campaign 13
+without being renamed or double-scheduled. **Campaign 12 LAUNCHED 2026-07-23** and is executing. The current non-cloud performance
 evidence remains in `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`; cloud evidence is in
 `CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md`._
+
+_2026-07-31 local/committed/staged audit: see
+[`LOCAL_CHANGE_AUDIT_2026-07-31.md`](LOCAL_CHANGE_AUDIT_2026-07-31.md).
+Local `main` equals `origin/main` at Batch 771, no changes are staged, and the
+dirty tree is an intentionally uncommitted multi-lane workspace. Canonical
+build/type gates and 45/45 performance-harness contracts are green. The
+corrected attribution lane proves substantial avoided model work, while an
+exact resident pair correctly rejects causal timing because backend-coupled 3D
+Tiles readiness differs; `C11-205` owns that evidence seam._
+
+_2026-07-31 Campaign-11 high-value stopping point: see
+[`HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`](HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md)
+for the implemented/partial split across C11-60/76/193/194/195/202/205/208,
+the new model-readiness/recovery findings, validation state, and restart order._
 
 > **Convention:** docs under `archive/` are historical point-in-time snapshots — do **not** read them as live to-do lists. Their still-open items were lifted into `DEFERRED_WORK.md` ("Carried-forward on archive"). The audit that produced this layout is recorded in `_DOC_AUDIT_PLAN.md`.
 
@@ -36,9 +54,11 @@ evidence remains in `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`; cloud evid
 | [`FORK_PERFORMANCE_RTE_VISIBILITY_REMEDIATION_PLAN_2026-07-15.md`](FORK_PERFORMANCE_RTE_VISIBILITY_REMEDIATION_PLAN_2026-07-15.md) | Campaign-9 source plan and durable design background; execution status is historical. |
 | [`QUEUE_2026-07-15_CAMPAIGN9.md`](QUEUE_2026-07-15_CAMPAIGN9.md) | **Closed green at `C9-30`**; retained as the exact implementation/evidence ledger. |
 | [`QUEUE_2026-07-16_CAMPAIGN10.md`](QUEUE_2026-07-16_CAMPAIGN10.md) | **Closed at `C10-30`** with green mechanics and wall-clock evidence explicitly inconclusive. |
-| [`QUEUE_2026-07-18_CAMPAIGN11.md`](QUEUE_2026-07-18_CAMPAIGN11.md) | **Paused / open remainder retained**; cloud/weather rows transferred to Campaign 13, all other open work remains owned here. |
+| [`QUEUE_2026-07-18_CAMPAIGN11.md`](QUEUE_2026-07-18_CAMPAIGN11.md) | **Open; targeted W1 performance lane resumed 2026-07-28, certification held**; cloud/weather rows transferred to Campaign 13, all other open work remains owned here. |
 | [`QUEUE_2026-07-19_CAMPAIGN12.md`](QUEUE_2026-07-19_CAMPAIGN12.md) | **Launched 2026-07-23 / executing** — celestial appearance. Runs interleaved with C11 and C13 under the orchestrator pattern. |
 | [`QUEUE_2026-07-23_CAMPAIGN13.md`](QUEUE_2026-07-23_CAMPAIGN13.md) | **Current live campaign** for planetary volumetric-cloud RTE, temporal reconstruction, weather realism, quality, and performance. |
+| [`LOCAL_CHANGE_AUDIT_2026-07-31.md`](LOCAL_CHANGE_AUDIT_2026-07-31.md) | Current primary-worktree, staged/index, recent-commit, worktree, renderer-architecture, and moving-performance audit. |
+| [`HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`](HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md) | Current stopping-point handoff for the high-value C11 performance/architecture lane; distinguishes implemented slices from open exit gates. |
 | [`WEBGPU_MIGRATION_STATUS.md`](WEBGPU_MIGRATION_STATUS.md) | Single-source migration status + append-only progress log. **Note: batch numbers are non-monotonic — trust dates/hashes.** |
 | [`DEFERRED_WORK.md`](DEFERRED_WORK.md) | Canonical add-only follow-up inventory (NEW-*/C-R*/DP-* IDs). Where open work lives. |
 | [`FEATURE_INVENTORY.md`](FEATURE_INVENTORY.md) | Feature catalog (EXISTING/NEW/WIP/FUTURE) across 10 subsystems — impact-analysis index (CLAUDE.md Principle 6). |
@@ -47,7 +67,7 @@ evidence remains in `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`; cloud evid
 | [`CAMPAIGN_ROADMAP_2026-06.md`](CAMPAIGN_ROADMAP_2026-06.md) | **Active multi-phase execution plan** (June 2026 onward) — phase-by-phase walk through `DEFERRED_WORK.md`; the current per-workflow stage source. Phases 1–5 DONE; 9–11 in flight. |
 | [`QUEUE_2026-06-23_CAMPAIGN2.md`](QUEUE_2026-06-23_CAMPAIGN2.md) | Historical 25-batch Campaign-2 queue; no longer the current execution frontier. |
 | [`QUEUE_2026-06-22.md`](QUEUE_2026-06-22.md) | Prior 25-batch queue (Batches 355–369 — Tiers 1–3 cleared). Superseded by Campaign 2. |
-| [`NEXT_SESSION_HANDOFF.md`](NEXT_SESSION_HANDOFF.md) | Append-only session handoff log; top section is the latest. |
+| [`NEXT_SESSION_HANDOFF.md`](NEXT_SESSION_HANDOFF.md) | Legacy append-only handoff log whose top entry stops at 2026-05-30 / Batch 185; use the dated 2026-07-26 audit and live campaign queues for current execution. |
 | [`WEBGPU_DEBUGGING_LOG.md`](WEBGPU_DEBUGGING_LOG.md) | Chronological bug log (append-only). Search before debugging a new artifact. |
 
 ## LIVE — reference & guides (keep in sync with code)
@@ -81,7 +101,7 @@ evidence remains in `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`; cloud evid
 | Doc | Role |
 |---|---|
 | [`FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md) | **Current fork-progress/performance audit and second-pass action authority** for Batches through 731; includes current r6 evidence, confirmed defects, rejected shortcuts, and feature-preserving gates. |
-| [`CLAUDE_PROGRESS_AUDIT_2026-07-26.md`](CLAUDE_PROGRESS_AUDIT_2026-07-26.md) | Continuation audit for Batches 745–768: landed-change review, parked-lane readiness, confirmed regressions, campaign truth, and the next landing sequence. |
+| [`CLAUDE_PROGRESS_AUDIT_2026-07-26.md`](CLAUDE_PROGRESS_AUDIT_2026-07-26.md) | Current continuation audit for Batches 745–768 plus the Batch-769/770/S5 reconciliation: landed-change review, parked-lane readiness, confirmed regressions, campaign truth, verification, and next priorities. |
 | [`CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md`](CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md) | **Current cloud evidence authority**: WGS84/RTE, temporal reconstruction, weather wrapping/bounds, regional variation, deterministic formation randomization, quality, lifecycle, and Takram comparison. |
 | [`audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md`](audits/2026-04-30_ARCHITECTURE_PERFORMANCE.md) · [`_FORK_FEATURE_INVENTORY.md`](audits/2026-04-30_FORK_FEATURE_INVENTORY.md) · [`_MAINTAINABILITY_SURVIVABILITY.md`](audits/2026-04-30_MAINTAINABILITY_SURVIVABILITY.md) | **Live wiring/feature/maintainability audit trio** (supersedes the archived 2026-04-02 WIRING_AUDIT). |
 | [`audits/2026-06-11_ULTRA_REVIEW.md`](audits/2026-06-11_ULTRA_REVIEW.md) (+ `_findings.json`) | **Most-recent deep multi-agent review** (53 agents, 195 confirmed findings, HEAD `f6fd367827`). Per-finding sidecar JSON is the machine-readable index. Source of the A-* findings driving the current campaign phases. |

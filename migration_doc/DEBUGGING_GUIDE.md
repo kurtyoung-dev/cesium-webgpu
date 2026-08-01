@@ -430,9 +430,43 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 
 ### Environment / sky / sun / atmosphere
 
+> **C12-29 S5/S6 current-state overlay (2026-07-28, supersedes older
+> counts and in-flight architecture descriptions below):**
+>
+> - Focused executable gates are now S6 **51/51**, S5 RTE **18/18**, S5
+>   visual-source **4/4**, and dynamic-environment recovery **7/7**. The
+>   protected Node set is **145/145** and the core C12-29 set is **134/134**.
+>   The focused Edge/Karma dynamic-environment manager gate is **11/11**.
+> - S5 state is owned by the logical `View`. CPU f64 prepares a
+>   camera-independent Sun common ray plus Moon-minus-Sun differential. Terrain
+>   coverage is two-stage: a provider-wide O(1) conservative envelope rejects
+>   ordinary frames first; only a globally possible shadow scans selected,
+>   skirt-inclusive rendered-mesh spheres. Scene prepares S1/S2/S6 and clears
+>   the S5 alias/memo; retained capture, main globe, and pick each prepare S5
+>   once against their exact owned selection before commands. This removes one
+>   duplicate O(1) broad test per rendered-globe logical `View`/frame and the
+>   repeated fit on active intersecting frames. It is a bounded eclipse-path CPU
+>   cleanup, not an FPS
+>   claim.
+> - Custom-ellipsoid sky orientation uses geodetic up. The `StarField` altitude
+>   bound follows the active ellipsoid's `maximumRadius`, but remains one
+>   scalar/radial radius; do not describe it as a fully triaxial horizon model.
+> - Dynamic-environment recovery distinguishes `FAILED`, `SKY_ONLY`,
+>   `SUBMITTED`, and `PARTIAL`. A terrain/imagery content epoch invalidates
+>   stable-provider publications, zero-draw replay neither allocates capture
+>   depth/encoder resources nor records success, and repeated per-tile
+>   publication calls take an exact same-frame identity/content fast return.
+>
+> These are focused source, Node, and current-device Edge results. They do
+> **not** certify the broader NASA/real-terrain/pick-capture/dense-timing/
+> custom-ellipsoid/multi-View matrix or the replacement-device browser lane.
+> Preserve the longer rows below as the investigation record, but use this
+> overlay when their earlier test counts or interim ownership/bounds language
+> disagrees.
+
 > **C12-29 S6 final-architecture correction (2026-07-26):** the long
 > `probe-eclipse-sky-totality.mjs` row below records several in-flight repair
-> iterations. Its final implementation has FOUR lanes (D/A/B/C) and 48
+> iterations. Its final implementation has FOUR lanes (D/A/B/C) and 51
 > companion Node tests. Lane B4 counts the star command's publication routes
 > directly; it no longer infers a double draw from a sparse pixel ratio. Lane D
 > boots offline, requires a rendered globe tile plus atmosphere
@@ -488,9 +522,140 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 > `meanAbsoluteResponse = 0.3388469`), so the ground lane is measured rather
 > than inferred from tile bookkeeping.
 
-> **Current S6 static count:** `eclipse-sky-totality.spec.mjs` is 49/49. That
+> **Current S6 static count:** `eclipse-sky-totality.spec.mjs` is 51/51. That
 > executable count supersedes the historical 24-test count in the long-form
 > campaign narrative below.
+
+> **C12-29 S5 current gate and remaining executor work (2026-07-28):**
+> `node --test Tools/visual-regression/eclipse-globe-umbra-rte.spec.mjs`
+> passes **18/18**. The visual-source contract is **4/4**, the protected
+> eclipse/recovery set is **145/145**, the core set is **134/134**, recovery is
+> **7/7**, the performance contract is **23/23**, the
+> focused Edge/Karma dynamic-environment-manager lane is **11/11**, and
+> `npx gulp build` plus targeted engine ESLint pass. The earlier terrain-mesh
+> classification lane passed **4/4**; its requested current-tree rerun was
+> blocked before browser launch by the executor approval cap, not by a test
+> failure. The gate covers the direct-position f32/f64
+> common ray, exact local support reject, WGS84/custom-ellipsoid ray horizon,
+> elevated/fill terrain bounds, packed WebGL carrier, static inactive/active
+> WebGL variant, allocation-epoch WebGPU UBO memo, pick rebinding, private
+> capture upload ordering, and device-generation teardown.
+>
+> `node Tools/visual-regression/probe-eclipse-globe-shadow.mjs` now passes both
+> backends at the derived eclipse and control instants. WebGL changed 292,507
+> visible pixels with 101,378 strongly darkened and a 10.299 mean luminance
+> drop; WebGPU changed 287,093 / 99,501 / 10.120. Cross-backend changed-coverage,
+> strong-core, mean-drop, and footprint-edge deltas are 0.00747, 0.00259,
+> 0.01741, and 3 px; both controls report zero changed pixels. This is the
+> required same-task live-canvas proof, not a command-count inference.
+>
+> The same report now carries a fixed-camera selected-terrain lane. The outside
+> target has 81/81 globe rays and exactly 36 stable skirted meshes on both
+> renderers, gate 3, and zero body inverse ranges. Its S2-only capture is a
+> non-vacuous darker negative control; correction returns to identity exactly
+> on WebGL and within one code value on WebGPU. The first inside frame is gate
+> 2 and settles at 25 meshes. The reverse first frame exposes two conservative
+> root fallbacks and remains gate 2, then settles to the exact 36-mesh gate-3
+> state. WebGPU correction and local each add exactly one allocation over gate
+> 0, independent of tile count. Read
+> `Tools/visual-regression/output/eclipse-globe-shadow-report.json`.
+>
+> Gates 3/4 are active correction carriers. WebGPU uses one memoized 64-byte
+> View slice; WebGL uses the active bit-33 shader and packed `mat4`. Zero body
+> ranges bypass common-ray, ellipsoid-horizon, overlap, and limb-fit ALU; the
+> carrier must never grow per tile/pass.
+>
+> For WebGL compile stalls, run the same moving route with
+> `run-performance-campaign.mjs --api-instrumentation --no-gpu-timestamps`.
+> The event lane resets at the measurement boundary and records program
+> creation, shader source, compile/link submission, `LINK_STATUS`, and first
+> use. Before the static S5 variant, all seven long tasks contained exactly one
+> blocking `LINK_STATUS` query (108-138.2 ms; 889.9 ms of 981 ms total long-task
+> time). With the inactive/active variant, the seven waits total 753.9 ms and
+> long tasks total 845 ms at the same measured 55.56 Hz refresh. That one-run
+> directional result justifies the variant but is not a full benchmark claim.
+> A six-pair counterbalanced current-build moving-camera lane now passes all 12
+> executions and certifies renderer parity; because the banked pre-spatial
+> baseline has only one run per lane, it does not prove a stable before/after
+> speedup or isolated S5 cost. Final certification still requires a controlled
+> active/inactive S5 cost comparison, real
+> terrain/exaggeration/fill/provider, behavioral pick/capture, dense timing,
+> custom-ellipsoid runtime, generic multi-View/stereo, and the NASA-SVS
+> footprint with projection/clock/terrain-mask provenance. A genuine
+> replacement-device run also remains; `GPUDevice.destroy()` is terminal and
+> is not replacement evidence. Ordinary WebGPU remains required to show zero
+> S5 ring allocation/upload; an active prepared View/block revision may
+> allocate one memoized 64-byte slice reused across its commands, never one per
+> tile/pass.
+>
+> **WebGL asynchronous-shader current-state overlay (2026-07-28; supersedes
+> only the renderer-lifecycle conclusion above).** Shader-cache creation is
+> still lazy and does **not** schedule work automatically. A caller must
+> explicitly opt in by scheduling either an exact final `ShaderProgram` or an
+> idle preparation callback. `ShaderCache` keeps required compilation and
+> speculative preparation in separate queues; it runs preparation only when
+> there is no active required program and the foreground compilation queue is
+> empty. The globe scheduler chooses the camera-visible executable in actual
+> derivation order—log depth, then HDR, then shadow receive—rather than warming
+> a base program that the draw will not bind.
+>
+> With `KHR_parallel_shader_compile`, link submission deliberately avoids
+> `LINK_STATUS` and readiness polls only `COMPLETION_STATUS_KHR`. Reflection
+> and the ordinary link-status validation happen once completion is reported.
+> An unexpected first bind or reflection getter synchronously completes the
+> program, so direct camera scrubs cannot skip a draw or bind a wrong program.
+> Browsers without the extension, runs without idle time, and excluded command
+> families retain Cesium's synchronous lazy correctness path.
+>
+> The only speculative globe expansion accepted after measurement is one
+> opposite-FOG companion for the bounded zero- and one-imagery-texture cohorts.
+> It is disabled for shadow-active commands and is not applied to translucent/
+> OIT, debug, pick, depth, or greater-than-one-texture variants. Persistent
+> `frameState.fog.configuredEnabled` records the public configuration, while
+> per-frame `frameState.fog.enabled` records whether fog is renderable at the
+> current camera. The companion reads the configured value so an orbit frame
+> can prepare the fog-on executable before descent even though height has made
+> the current frame's `fog.enabled` false.
+>
+> The rejected eager experiment is an important negative control. Scheduling
+> every cache-created base and derived program linked 28 programs/56 shaders,
+> kept the same seven required first-use waits, and produced 21 programs that
+> completed but were never needed. The accepted policy is therefore explicit
+> final-program scheduling plus the single bounded fog companion:
+>
+> | Policy | Programs / shaders | Draw/use outcome | Blocking `LINK_STATUS` | Async completions | Long tasks |
+> | --- | ---: | --- | ---: | ---: | ---: |
+> | Lazy baseline | 7 / 14 | 7 demand-created programs | 7 / 753.9 ms | 0 | 7 |
+> | Rejected eager scheduling | 28 / 56 | 7 required + 21 unused | 7 | 21 unused | 7 |
+> | Accepted final policy | 8 / 16 | 7 drawn + 1 unused companion | 4 / 435.1 ms | 4 | 4 |
+>
+> Program replacement also follows acquire-before-release ownership. Releasing
+> a displaced globe variant destroys it, clears the shared wrapper's
+> `shaderProgram`, and recursively unschedules its derived tree; a stale culled
+> tile therefore cannot fast-return a released executable. Instrumented runs
+> must inspect `firstDrawProgram` (the first real draw, not merely
+> `useProgram`) together with `globeShaderRequests` (camera height, configured
+> and renderable fog state, texture cohort, exact fog choice, companion gate,
+> log-depth/HDR/shadow state, and queue counts).
+>
+> The clean final r3 moving route passes with 1,175 measured frames, CPU p95
+> 7.43 ms, CPU p99 10.152 ms, and four long tasks (502 ms total; 139 ms max).
+> The current nine-waypoint WebGL/WebGPU/diff set also passes visual inspection
+> with scene functionality intact. Four structural first-use stalls remain,
+> corresponding to the first encounters of the quantization × zero/one-texture
+> cohorts. Shadow-active, translucent/OIT, debug/pick/depth, and
+> greater-than-one-imagery-texture variants remain excluded until separately
+> measured; do not describe this targeted result as renderer-wide compile-stall
+> elimination.
+>
+> The logical-view move also changes what a protected source assertion should
+> look for: S1/S2/S6 outputs are assigned first to `view._eclipse*` and
+> published as transient `FrameState` aliases inside
+> `prepareLogicalViewEclipse()`. S5 is cleared there and published only by the
+> exact capture/main/pick owner. The S6 assertion follows that ownership
+> without weakening the factor or ordering checks. The four core
+> C12-29 Node files are **134/134**; the protected visual/recovery set is
+> **145/145**.
 
 | Probe | What it covers |
 | --- | --- |
@@ -550,7 +715,8 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 | `probe-gpu-tex.mjs` / `-tex-format.mjs` | GPU texture format |
 | `probe-gpu-timestamp-profiler.mjs` | Real-adapter timestamp capability, opt-in lifecycle, post-submit readback, named core-pass samples, and browser error gate |
 | `probe-webgpu-allocation-tax.mjs` | Independent Node/Edge API-boundary allocation/upload/pass/submit probe. Fails if explicit WebGPU opens WebGL/WebGL2; `--strict-native` additionally rejects `GL Compatibility` buffer labels for migrated fixtures. It reports `GLStub_*` textures as compatibility-shaped without calling them duplicates: they may be the sole physical realization. Buffer bytes are exact, texture bytes are descriptor estimates, and decoded/backend ownership evidence is still required. |
-| `run-performance-campaign.mjs` + `performance-workloads.json` | Versioned deterministic Node/Edge workload runner. Captures full-Scene CPU p50/p95/p99/MAD, capability-available GPU timestamps/remainder, long tasks/heap diagnostics, startup, and renderer snapshots. CPU/GPU metrics are primary; rAF wall time is diagnostic and may be refresh-limited. |
+| `run-performance-campaign.mjs` + `performance-workloads.json` | Versioned deterministic Node/Edge workload runner. Captures full-Scene CPU p50/p95/p99/MAD, capability-available GPU timestamps/remainder, long tasks/heap diagnostics, startup, renderer snapshots, and a per-run `gpuProvenance` record. The provenance record places `context.getRendererString()` beside WebGPU `adapter.info`; a run cannot PASS without the applicable physical-GPU identity, preventing a silent WebGL/WebGPU adapter mismatch from being mistaken for an engine delta. CPU/GPU metrics are primary; rAF wall time is diagnostic and may be refresh-limited. |
+| `run-performance-campaign.mjs --api-instrumentation --no-gpu-timestamps` | WebGL shader chronology and globe-request attribution. Use `firstDrawProgram` to distinguish actual drawing from `useProgram`, and correlate it with `globeShaderRequests` to audit camera height, `configuredEnabled` versus per-frame fog renderability, imagery-texture cohort, exact FOG/log-depth/HDR/shadow selection, companion eligibility, and preparation/pending counts. |
 | `probe-magenta-clear.mjs` / `-webgpu-grey.mjs` | Sentinel-color clear checks |
 | `probe-shim-debug.mjs` / `-shim-trace.mjs` | GLSL→WGSL stub-translator tracing |
 | `probe-wgsl-doctype.mjs` | WGSL parse sanity |

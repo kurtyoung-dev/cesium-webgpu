@@ -600,3 +600,186 @@ performance, and continuous WebGPU picking remains materially more expensive tha
 response is to attribute and remove the remaining churn at its ownership/pass boundary while retaining
 every feature. Shared-suite regressions must be repaired and the missing integration gates populated
 before this fork can claim upstream-compatible correctness or a completed performance campaign.
+
+## 14. Continuation through 2026-07-28
+
+This section extends the July 15 defense across the later Fable 5, Opus 5.0,
+and Claude-model work and the current Campaign 11 WebGL shader slice. It does
+not rewrite the historical measurements above. The detailed change-by-change
+audits remain:
+
+- [`FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`](FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md)
+  for the 78-commit, 455-file Campaign 9–12 interval;
+- [`CLAUDE_PROGRESS_AUDIT_2026-07-26.md`](CLAUDE_PROGRESS_AUDIT_2026-07-26.md)
+  for the following 24 landed commits and the eclipse/ocean/tide/cloud review;
+- the live Campaign 11–13 queues for ownership and completion status.
+
+Those ranges made substantial changes, but their timings are not
+interchangeable. Each performance claim below is therefore tied to its exact
+artifact rather than presented as a single continuous before/after benchmark.
+
+### 14.1 Structural work retained after July 15
+
+The later audit confirmed that the main architectural reductions survived:
+
+- explicit WebGPU startup creates neither a live WebGL context nor duplicate
+  compatibility GPU buffers; shared scene objects retain only the CPU metadata
+  needed by backend-neutral code;
+- the default 3D scene uses one frustum, scene-color MSAA resolution is
+  demand-driven, and previous-frame/velocity transfers use GPU copies where
+  applicable;
+- stable ocean-normal input no longer performs image copy, mip generation,
+  view creation, and bind-group construction per tile/frame;
+- terrain, model/material, imagery, effects, tonemap, and celestial resources
+  have progressively moved toward context/device ownership and retained exact
+  identities rather than per-command recreation;
+- WebGPU submission and bind-group counts remain close to one per ordinary
+  measured frame even though CPU upload and terrain-lifetime work remains.
+
+Campaign 9's exact close artifact reached a WebGPU/WebGL CPU-p95 ratio of 0.98.
+The later July 22 six-run bundle did not preserve that strict p95 parity:
+WebGL's median p95 was 8.235 ms and WebGPU's was 9.30 ms. Conversely, WebGL
+carried seven deterministic 100–205 ms long tasks per run while WebGPU carried
+none. That evidence separated two real problems instead of hiding them in one
+FPS number: WebGPU retained a higher steady-state CPU floor, while WebGL had a
+shader-first-use tail-latency failure.
+
+This distinction matters to the defense. Resource-retention and submission
+changes were not reverted merely because a later whole-tree bundle moved a
+summary percentile. Their structural counters and ownership benefits remained
+real; the new evidence identified additional work at different boundaries.
+
+### 14.2 Feature work remained performance-conscious
+
+The celestial, ocean, tide, cloud, and eclipse changes did not buy speed by
+removing rendering:
+
+- WebGL and WebGPU received the same physically improved solar-disc profile.
+- Ocean wave coordinates use CPU-f64 phase construction, bounded fractional
+  GPU inputs, antimeridian-continuous repeats, and derivative-driven
+  pixel-footprint LOD. The enhanced presentation remains opt-in; the
+  WebGL-compatible look remains available and the water effect is not removed
+  at altitude.
+- Eclipse state remains backend-neutral and is now owned by the logical
+  `View`. Scene prepares the shared celestial state, while capture, main globe,
+  and pick prepare the exact S5 terrain footprint they own. The active WebGPU
+  correction uses one memoized 64-byte View slice rather than one upload per
+  terrain command; the inactive path uses a renderer-owned inert slice.
+- Dynamic-environment capture distinguishes failed, sky-only, partial, and
+  submitted work. It does not allocate an encoder/depth target or advance
+  success state for a zero-draw replay, and a content epoch invalidates
+  retained terrain/imagery input without per-tile publication objects.
+- Cloud temporal/RTE and IBL-relevance work remains intact. A proposed shared
+  shader-module hoist was rejected when timing showed no material benefit,
+  which avoided adding indirection without a measured payoff.
+
+These changes improve ownership, precision, or bounded optional-path cost.
+They are not all whole-scene FPS wins, and the campaign documents label them
+accordingly.
+
+### 14.3 WebGL asynchronous shader compilation
+
+The July 22 audit's seven recurring WebGL long tasks were traced to synchronous
+`LINK_STATUS` completion queries. The current tree adds a real
+`KHR_parallel_shader_compile` lifecycle:
+
+1. a program starts uninitialized;
+2. explicit scheduling submits compile/link without querying `LINK_STATUS`;
+3. an idle callback polls only `COMPLETION_STATUS_KHR`;
+4. link validation and reflection finalize once completion is reported;
+5. an unexpected first bind or reflection getter synchronously completes the
+   same program, preserving immediate correctness.
+
+`ShaderCache` does not automatically schedule every created program. Callers
+must nominate the exact final executable or enqueue an idle preparation
+factory. Required compilation and speculative source preparation use separate
+queues, and preparation runs only after the active/foreground queue drains.
+`View` selects the same camera-visible derivation chain the draw will use:
+log depth, then HDR, then shadow receive. Pick, depth-only, debug,
+translucent/OIT, alternate-renderer, and extension-unavailable paths keep their
+existing synchronous behavior.
+
+That opt-in rule is justified by a rejected experiment:
+
+| Policy | Programs / shaders | Blocking first-use waits | Async result | Long tasks |
+| --- | ---: | ---: | ---: | ---: |
+| Lazy static-variant baseline | 7 / 14 | 7 / 753.9 ms | 0 | 7 |
+| Rejected automatic eager scheduling | 28 / 56 | same 7 required waits | 21 completed but unused | 7 |
+| Accepted exact-final + bounded fog companion | 8 / 16 | 4 / 435.1 ms | 4 completions | 4 |
+
+Automatic scheduling multiplied source generation and driver work by four
+without removing a required stall. It was removed. The accepted policy adds
+only one measured opposite-FOG globe companion for zero- and
+one-imagery-texture cohorts. It remains disabled for active shadows,
+translucency/OIT, debug/pick/depth, and larger imagery batches.
+
+Fog prediction required separating configuration from current renderability.
+`frameState.fog.configuredEnabled` records the public feature choice even above
+the maximum fog height; `frameState.fog.enabled` remains the exact per-frame
+render/cull decision. An orbital frame may therefore prepare the fog-on
+executable before descent without drawing fog early or changing the scene.
+
+The implementation also repairs globe-program ownership before speculative
+work is allowed. A replacement program is acquired before the displaced
+reference is released. The released wrapper is poisoned and its derived tree
+is unscheduled, so a stale culled tile cannot later fast-return a destroyed
+program.
+
+This is an attribution (work-avoidance) result, not a certified timing win:
+three of seven measured first-use `LINK_STATUS` queries are no longer issued on
+the measured route, and the blocking time attributed to the surviving queries in
+that single directional artifact is 435.1 ms against the 753.9 ms baseline (a
+later principal-review rerun records 403.0 ms for the same four remaining
+waits). Counterbalanced repetitions are still required before any before/after
+frame-time delta may be claimed, and this changeset is uncommitted. It is not
+a claim that every WebGL shader variant is now asynchronous. Four structural
+quantization × zero/one-texture first arrivals remain, and broader shadow,
+translucent/OIT, debug/pick/depth, HDR, and multi-texture policies require their
+own demand/payoff measurements before expansion.
+
+### 14.4 Backend isolation and functionality gates
+
+The WebGL scheduler is reached only from a real WebGL context with the parallel
+compile extension. The WebGPU compatibility stub exposes no such extension and
+does not enter either shader queue. The optimization therefore does not restore
+the old WebGL-object-then-WebGPU-object allocation tax.
+
+The current clean, non-instrumented three-run moving-altitude lane completes all
+eight route segments from 18,000 km to about 301 m. Median CPU p95 is 7.43 ms,
+median wall p99 is 20.8 ms, and each run records four long tasks. API
+instrumentation is used only to attribute shader events; its CPU timings are
+not mixed with the clean lane.
+
+The nine-waypoint WebGL/WebGPU orbit-to-ground visual route settles at every
+waypoint. Mean cross-backend image difference is 0.016% and the maximum is
+0.073%; the orbit and ground captures were manually inspected. Focused
+ShaderProgram, ShaderCache, scheduler, globe-shader, Fog, and WebGPU
+compatibility suites pass, as do TypeScript and the full production build.
+No fog, eclipse, imagery, log-depth, HDR, RTE, picking, or WebGPU feature was
+disabled to obtain the result.
+
+### 14.5 Current defense and next order
+
+The continuation remains defensible for the same reason as the July 15 tranche:
+it moves work to an exact owner and a safer time instead of deleting output.
+It also records negative results when a wider policy increases work.
+
+The next feature-preserving order is:
+
+1. finish measuring the four remaining WebGL structural first-use variants;
+   expand preparation only where a bounded cohort removes a demonstrated
+   stall;
+2. replace the parked caller-name WebGPU pipeline-cache patch with a semantic
+   descriptor key covering shader-module/layout identity, entry points,
+   constants, targets, depth/stencil, primitive state, and multisampling;
+3. measure the synchronous WebGPU Sun texture bake before moving it to a GPU
+   pass or reducing its source resolution;
+4. move temporal history to each logical `View` and commit it once per
+   presented frame, not once per pass-camera update;
+5. connect terrain resource residency to the quadtree lifecycle, then build
+   the retained-packet revision key and static/dynamic uniform split without
+   weakening CPU-f64 RTE reconstruction.
+
+Those items address remaining measured cost or correctness risk. None is
+authorized to remove an effect, reduce visual quality silently, skip exact
+picking, or sacrifice WebGL/WebGPU parity for a benchmark.

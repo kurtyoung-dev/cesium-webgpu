@@ -13,10 +13,79 @@ preserved below.
 
 Status update (2026-07-23): **PAUSED / OPEN REMAINDER RETAINED.** Campaign 11 did not reach its exit
 gate and is not being called closed. The entire `clouds-weather` cluster (`C11-124..130` and
-`C11-SEED-10..18`) transferred, with IDs retained as aliases, to the explicitly launched
-[`Campaign 13`](QUEUE_2026-07-23_CAMPAIGN13.md). `C11-126` was already complete; `C11-125` was
-partial; the other rows keep their actual open/blocked/deferred state. Do not schedule those rows in
-both campaigns. Every non-cloud Campaign-11 row remains owned here and open at its recorded status.
+`C11-SEED-10..18`) transferred to the explicitly launched
+[`Campaign 13`](QUEUE_2026-07-23_CAMPAIGN13.md). **Those C11 IDs are historical aliases only and are
+not schedulable in Campaign 11.** `C11-126` was already complete; `C11-125` was partial; the other
+rows keep their actual open/blocked/deferred state under their C13 owners. The mapping in §1.17 is
+the lookup bridge; Campaign 13's live ledger is the sole scheduling/status authority. Every
+non-cloud Campaign-11 row remains owned here and open at its recorded status.
+
+Status update (2026-07-28): **TARGETED W1 PERFORMANCE LANE RESUMED; CAMPAIGN
+CERTIFICATION STILL HELD.** The WebGL shader first-use investigation now has
+canonical owners `C11-180` and `C11-181` (§1.27). This resumes only the
+non-cloud W1 performance lane; it does not waive the 2026-07-23 ruling that
+the remaining body executes before `C11-137` certification.
+
+Status update (2026-07-31): **LOCAL/COMMITTED/STAGED AUDIT COMPLETE; TARGETED
+W1 EXECUTION CONTINUES; CERTIFICATION STILL HELD.** Local `main` equals
+`origin/main` at Batch 771 (`fe990ab335`) and the index is empty. The dirty
+tree is a reviewed multi-lane workspace, not one landing unit. Canonical build,
+root and engine-package TypeScript, focused lint/format, 138 eclipse contracts,
+and 45 performance-harness contracts are green. Focused `EdgeHeadlessCI`
+Karma launched Edge but executed zero tests, so browser-owned focused rows
+remain open rather than being called green.
+
+The one-pair moving globe-only control remains near parity: WebGL CPU average
+4.816 ms / p95 9.300 ms versus WebGPU 5.123 ms / 9.315 ms, with WebGPU better
+p99 and pacing. This rules against a general globe-quadtree/RTE collapse but is
+not six-pair certification. Representative measurement now fingerprints the
+renderer-neutral logical workload in an untimed deterministic route replay
+after the render trace and all measured snapshots have closed; content scans
+therefore no longer contaminate `Scene.render` CPU samples.
+
+The earlier 600-frame resident pair is retained as directional history only:
+it predated exact logical-workload fingerprints. A fresh current-source pair
+had 600 frames and zero terrain requests/generations in both legs, and terrain
+tile identity matched on every frame, but the pair correctly failed
+comparability because 3D Tiles selection diverged in the San Francisco segment
+(710 WebGL versus 571 WebGPU selected-tile observations, maxima 15 versus 12,
+with no unidentified tiles or statistics/array count mismatch). Backend-emitted
+direct-model commands were also found to be an invalid exact-identity metric
+because C11-185 intentionally removes them; the harness now fingerprints the
+configured/ready model instances instead. The artifact proves a renderer-coupled
+3D Tiles readiness/residency seam, not different traversal math: `C11-205` now
+owns per-tile readiness/request-lifecycle evidence and the resident gate. No
+causal timing percentage is claimed until that gate closes and a new
+counterbalanced pair matches exactly.
+
+`C11-181` is **IMPLEMENTED / VERIFIED / LANDING PENDING**, not complete, while
+its changes remain uncommitted. `C11-192`, `C11-199`, `C11-200`, `C11-201`,
+and `C11-211` are implemented with focused source/static coverage; the narrow
+discarded-manager allocation slice of `C11-193` is also implemented while its
+shared scheduler/demand work remains open. Current moving runtime evidence is
+green where applicable, while focused browser execution remains open.
+`C11-184` and `C11-187` remain **IN PROGRESS**.
+`C11-20` is **PARTIAL**: normal Point/Label collection teardown is fixed and
+covered, while nested model/tileset/clipping and replacement-device invalidation
+remain open. `C11-90` is promoted to a P1 post-performance correctness tail:
+glTF modes LINES, LINE_LOOP, LINE_STRIP, TRIANGLE_STRIP, and TRIANGLE_FAN still
+collapse to triangle-list, and indexed strips require format-keyed pipeline and
+shadow state plus restart-safe uint8 upcast. This is real parity debt, but it is
+not the measured current performance cause.
+
+Stopping-point update (2026-07-31): the requested high-value lane is documented
+in [`HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`](HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md).
+`C11-208` is implemented and verified. `C11-193/194/195/202/205`, `C11-60`,
+and `C11-76` remain **PARTIAL** even where substantial local slices exist.
+Notable new slices are the environment shared refresh encoder/packed parameter
+arena and observe-only demand ledger; exact-device pooled immutable model
+layouts/defaults; RTE-correct capture arenas; bounded fog/cloud post-process
+bind-group caches; and backend-neutral final model realization with native
+async readiness. The remaining gates include ready-tile identity in ordinary
+resident fingerprints, exact model device-generation recovery, the shared
+model frontend's WebGL-only pick/edge allocations, main-view camera/light
+dynamic arenas, remaining private submitters, and focused browser execution.
+The final stopping-boundary edits require a fresh combined build/probe pass.
 
 Status (historical): **PREPARED / NOT LAUNCHED.** Auto-launches when Campaign 10 CLOSES, per the standing
 maintainer directive (2026-07-17: "finish Campaign 9 and then move onto campaign 10" — the same
@@ -82,12 +151,12 @@ in wave/gate prose — prose points back to this table.
 **Placement accounting:** 156 numbered + 3 gated + 26 seeds + 3 intake-conditional = **188 register
 items placed, zero unplaced.** Uniqueness verified mechanically (§1.24).
 
-**Owning-guide caveat (a real finding, surfaced here):** two clusters — `rte-taa` (7 items,
-`C11-51..57`) and `clouds-weather` (16 items, `C11-124..130` + `C11-SEED-10..18`) — have **no
-dedicated cluster guide** (the 10 guides cover 165 of the 188 items; these 23 are guide-less). Their
-rows carry owning guide `—`; a worker on any of them cuts against the register row + the source docs
-directly, and the orchestrator should commission a rte-taa / clouds-weather guide before opening that
-cluster's first non-trivial slice.
+**Owning-guide caveat (historical launch finding):** two clusters — `rte-taa` (7 items,
+`C11-51..57`) and `clouds-weather` (16 items, `C11-124..130` + `C11-SEED-10..18`) — originally had
+**no dedicated cluster guide** (the first 10 guides covered 165 of the 188 items). The live worker
+instruction now applies only to `rte-taa`: commission its guide before opening a non-trivial slice.
+The cloud rows transferred to C13 and must not be opened from this queue; C13's queue and cloud
+planning artifacts supersede the original guide gap for execution.
 
 Columns: **C11-id · canonical register name(s) [aliases] · clusterKey · pri · workClass · effort ·
 guide · wave.**
@@ -129,7 +198,7 @@ guide · wave.**
 | `C11-17` | NEW-WEBGPU-CANVAS-BACKGROUND-COLOR-PARITY | standing-reds | P1 | parity | S | G1 | W1 (cheap rider) · **RATIFIED 2026-07-18: FIX (§7.0)** |
 | `C11-18` | NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME | standing-reds | P1 | correctness | S | G1 | W7 (blocked on C11-26 producer) |
 | `C11-19` | BUG-GLOBE-PIPELINE-NAME-AXES | standing-reds | P1 | correctness | S | G1 | W1 |
-| `C11-20` | C-R12-PER-OBJECT-CACHES | standing-reds | P1 | correctness | S | G1 | W3 |
+| `C11-20` | C-R12-PER-OBJECT-CACHES | standing-reds | P1 | correctness | S | G1 | **W3 — PARTIAL** (Point/Label normal teardown fixed; nested/device-loss walk open) |
 | `C11-21` | BACKLOG-§Material UBO field-name alignment audit | standing-reds | P1 | correctness | M | G1 | W3 |
 | `C11-22` | NEW-WEBGPU-DEBUG-DEPTH-PLANE-GATE-PARITY | standing-reds | P2 | parity | S | G1 | W1 (cheap rider) |
 | `C11-23` | NEW-WEBGPU-OIT-MSAA-RESOLVE-ORDERING | standing-reds | P2 | correctness | M | G1 | W7 (FAR-003 lane) |
@@ -252,7 +321,7 @@ guide · wave.**
 | `C11-87` | Phase-8a Tile↔Hi-Z wiring | tiles-model-parity | P2 | perf | M | G5 | W7 |
 | `C11-88` | KHR_materials_variants / IOR / clearcoat-IOR coupling | tiles-model-parity | P2 | parity | M | G5 | W7 (after C10-08) |
 | `C11-89` | 5 default textures bound per model draw | tiles-model-parity | P2 | perf | S | G5 | W4 (after C10-08 axes) |
-| `C11-90` | GLTF-POINTS-MODE-RESIDUALS | tiles-model-parity | P2 | parity | M | G5 | W7 |
+| `C11-90` | GLTF-POINTS-MODE-RESIDUALS / GLTF-PRIMITIVE-MODE-RESIDUALS | tiles-model-parity | P1 | correctness/parity | M | G5 | **W1 TAIL — AUDITED / NOT STARTED** |
 | `C11-91` | WIRE-MODEL-SILHOUETTE-TRANSLUCENT-DIVERGENCE | tiles-model-parity | P2 | parity | S–M | G5 | **RESOLVED-direction 2026-07-18 (replicate WebGL body-wash); re-scoped 2026-07-19 → `C11-157` Slice D.** Model OIT reachability (C11-157 Slice C) LANDED, but the silhouette body-wash is design-heavy (its own stencil/pass machinery, NOT a ride-along) — DEFERRED as Slice D with a recommended approach recorded in `DEFERRED_WORK.md` (`NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING` → Slice D). The Slice-C `getOITColorConfig` machinery is ready for it. |
 | `C11-92` | NEW-MODEL-WGSL-CUSTOM-SHADER (Q31 Slice C varyings) | tiles-model-parity | P2 | parity | L | G5 | W4 (blocked on `C11-149` define-width) |
 | `C11-93` | NEW-MODEL-SCENE2D-IDL-DUPLICATE | tiles-model-parity | P2 | parity | M | G5 | W7 |
@@ -318,17 +387,19 @@ guide · wave.**
 
 The dedicated legacy intake guide is
 `campaign11_planning/guides/G12-clouds-weather.md`. Campaign 13 supersedes it for execution, while
-this table preserves the original canonical aliases and history.
+this table preserves the original canonical aliases and history. **Execution override: every row in
+this section is a historical alias, not C11 work. Never dispatch it from W7 or any C11 wave.** Use
+the mapped C13 ID and Campaign 13's current status table instead.
 
 | C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
 |---|---|---|---|---|---|---|---|
-| `C11-124` | C7-CLOUD-LIGHTNING (reland = C9 W7-1) | clouds-weather | P2 | feature | M | — | W7 |
-| `C11-125` | C6-CLOUD-STBN-TAAU | clouds-weather | P2 | feature | M | — | W7 (needs offline EA-SEED STBN) |
-| `C11-126` | CLOUD-U4-REMOVE-GLOBE-FLAG | clouds-weather | P2 | infra | L | — | W7 · **RESOLVED 2026-07-18: option (A) — Scene owns a managed default VOLUMETRIC CloudCollection (§7.0)** |
-| `C11-127` | Q36-WEATHER-PHASE-4-GRIB2 | clouds-weather | P2 | feature | L | — | W7 (proxy prereq; env-blocked) |
-| `C11-128` | Live EDR network confirm | clouds-weather | P2 | tooling | S | — | W7 (needs networked session) |
-| `C11-129` | WeatherSystem / scene.weather facade (Phase 3) | clouds-weather | P2 | feature | M | — | W7 |
-| `C11-130` | PRECIP-DATA ground snow-albedo shader consumer | clouds-weather | P2 | feature | S | — | W7 |
+| `C11-124` | C7-CLOUD-LIGHTNING (reland = C9 W7-1) | clouds-weather | P2 | feature | M | — | **HISTORICAL ALIAS ONLY → `C13-25`** (original C11 wave: W7) |
+| `C11-125` | C6-CLOUD-STBN-TAAU | clouds-weather | P2 | feature | M | — | **HISTORICAL ALIAS ONLY → `C13-09..12`** (PARTIAL at transfer; original C11 wave: W7) |
+| `C11-126` | CLOUD-U4-REMOVE-GLOBE-FLAG | clouds-weather | P2 | infra | L | — | **HISTORICAL ALIAS ONLY → `C13-00`; COMPLETE before C13** (original C11 wave: W7; option A resolved §7.0) |
+| `C11-127` | Q36-WEATHER-PHASE-4-GRIB2 | clouds-weather | P2 | feature | L | — | **HISTORICAL ALIAS ONLY → `C13-26`** (proxy/decoder/fixture blocked; original C11 wave: W7) |
+| `C11-128` | Live EDR network confirm | clouds-weather | P2 | tooling | S | — | **HISTORICAL ALIAS ONLY → `C13-27`** (environment-blocked; original C11 wave: W7) |
+| `C11-129` | WeatherSystem / scene.weather facade (Phase 3) | clouds-weather | P2 | feature | M | — | **HISTORICAL ALIAS ONLY → `C13-24`** (original C11 wave: W7) |
+| `C11-130` | PRECIP-DATA ground snow-albedo shader consumer | clouds-weather | P2 | feature | S | — | **HISTORICAL ALIAS ONLY → `C13-28`** (original C11 wave: W7) |
 | `C11-SEED-10` | C7-CLOUD-IMPOSTOR-LOD | clouds-weather | P3 | perf | L | — | seed (dep CLOUD-U4) |
 | `C11-SEED-11` | CLOUD-LOD-R8-PRECIPITATION-COUPLING | clouds-weather | P3 | feature | L | — | seed |
 | `C11-SEED-12` | CLOUD-LOD-R9-PLANET-SCALE-CLOUD-TILING | clouds-weather | P3 | feature | XL | — | seed |
@@ -491,7 +562,7 @@ starting at `C11-166` (`C11-01..165` NOT renumbered or reused).
 |---|---|---|---|---|---|---|---|
 | `C11-166` | NEW-WEBGPU-OCEANNORMAL-PER-CALL-REUPLOAD [filed Batch 685; ocean normal map re-uploaded per tile per frame; source-identity memo `_oceanNormalMapSource`/`_oceanNormalMapView`] | water / terrain-imagery | P0 | perf | S | — | **W1 (TOP) — ✅ COMPLETE Batch 717** |
 | `C11-167` | NEW-WEBGPU-UPLOADIMAGESOURCE-CACHE-CONTRACT-AUDIT [**the systematic follow-up — highest-value open perf item**: `uploadImageSource` never reads its cache, so EVERY caller needs its own guard. Audit all call sites for the same missing-guard defect, then fix the contract at the right altitude (honor the `cache` param, or make the missing guard a type/API error) rather than patching callers one at a time] | terrain-imagery | P0 | perf/correctness | M | — | **W1 — COMPLETE Batch 721** (`d1c3f4373d`) |
-| `C11-168` | NEW-WEBGPU-PERF-REMEASURE-REAL-WORKLOAD [the 11.7× was measured on a STATIC default scene of 9 draw commands / 6 tiles. Re-measure on the canonical moving-altitude campaign + a dense/tileset scene to confirm the win holds under load and to surface the NEXT bottleneck. Until this lands, the headline number is honest but narrow] | test-infra | P0 | tooling/measurement | S–M | G10 | **W1 — PARTIAL** (2026-07-22 clean moving-route audit; representative content lanes open) |
+| `C11-168` | NEW-WEBGPU-PERF-REMEASURE-REAL-WORKLOAD [the 11.7× was measured on a STATIC default scene of 9 draw commands / 6 tiles. Re-measure on the canonical moving-altitude campaign + a dense/tileset scene to confirm the win holds under load and to surface the NEXT bottleneck. Until this lands, the headline number is honest but narrow] | test-infra | P0 | tooling/measurement | S–M | G10 | **W1 — PARTIAL** (globe control green; exact resident pair held by C11-205 readiness evidence) |
 | `C11-169` | NEW-WEBGPU-FRAME-COST-ACCOUNTING-GAP [per-pass CPU profiler saw 0.117 ms of a 10.5 ms frame. Extend instrumentation to cover the whole frame, or at minimum report the UNACCOUNTED remainder, so future perf work is not blind to out-of-pass cost] | test-infra | P1 | tooling | M | G10 | W1 |
 | `C11-170` | NEW-WEBGPU-PERF-REGRESSION-GUARD [wire the new probes into a runnable gate so a re-upload/churn storm cannot silently return. This defect class survived two campaigns undetected] | test-infra | P1 | tooling/gate | M | G10 | W1 |
 | `C11-171` | NEW-WEBGPU-SPLIT-SCREEN-VIEWER-INIT [`Apps/WebGPUTest/split-screen-comparison.html` never exposed both `webglViewer`/`webgpuViewer` within 90 s, with NO console errors (probe-backend-isolation split lane). Blocks the maintainer's own A/B comparison workflow] | build-boot | P1 | correctness | S–M | G9 | W1 |
@@ -602,6 +673,169 @@ background), COUNT of distinguishable point sources above threshold, luminance-h
 colour SATURATION distribution, and for bright stars the RADIAL FALLOFF PROFILE (a blob has a flat
 core then a cliff; a real star has a smooth power-law tail).
 
+### 1.27 WEBGL SHADER-LIFECYCLE appends (2026-07-28 — APPEND-ONLY, collision-verified)
+
+The C12-29 S5 moving-route lane isolated a renderer-wide WebGL first-use
+problem rather than an eclipse-only defect. These rows own the fix separately
+from C12-29; no C12 completion claim depends on them.
+
+| C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
+|---|---|---|---|---|---|---|---|
+| `C11-180` | WEBGL-ASYNC-SHADER-COMPILE-LIFECYCLE [pending-program lifecycle; final-program scheduling; bounded fog companion prewarm] | build-boot | P0 | perf/correctness | M | G9/G10 | **W1 — PARTIAL** |
+| `C11-181` | WEBGL-GLOBE-SHADER-VARIANT-EVICTION-REFERENCE [balanced replacement references; stale-wrapper poisoning] | terrain-imagery | P1 | correctness/resource-lifetime | S | G2 | **W1 — IMPLEMENTED / VERIFIED / LANDING PENDING** |
+| `C11-182` | WEBGPU-MODEL-MATERIAL-DIRTY-UPLOAD [exact byte-dirty suppression for primary/silhouette/translucent material UBOs; no visibility policy change] | models | P0 | perf | S | G5/G10 | **W1 — IMPLEMENTED / ATTRIBUTION GREEN / TIMING CERTIFICATION OPEN** |
+| `C11-183` | WEBGPU-WATER-MASK-SINGLE-REALIZATION [borrow the same-device native compatibility texture; retain cross-device fallback and WebGL orientation] | water / terrain-imagery | P0 | perf/resource-lifetime | S–M | G2/G10 | **W1 — IMPLEMENTED / DOUBLE-REALIZATION REMOVED / VISUAL CERTIFICATION OPEN** |
+| `C11-184` | WEBGPU-MODEL-SHADOW-CANDIDATE-CORRECTNESS [correct `ShadowMode`; one native default light pass; unique caster collection; explicit node-aware/RTE-safe native cast resources; single/CSM/point receive; same-frame resource + fitted-matrix preparation; topology/cull-aware pipelines; persistent bind-group ownership; globe adapter parity; keep active casters through SceneOctree/CPU occlusion; prevent native commands entering WebGL derivation] | models / shadows | P0 | correctness/prerequisite | M–L | G5/G10 | **W1 — IN PROGRESS / FOCUSED + MOVING RUNTIME GATES OPEN** |
+| `C11-185` | WEBGPU-MODEL-VISIBILITY-TRIGGERED-PREPARATION [prepare model camera/material/light resources only after VIEW/SHADOW/CAPTURE admission; retain 2D/VR/capture fallbacks until dynamic-offset arenas exist] | models / scene-core | P0 | perf/architecture | L | G5/G10 | **W1 — SLICES 1–3 IMPLEMENTED / ATTRIBUTION GREEN / TIMING CERTIFICATION OPEN** |
+| `C11-186` | GLOBE-SURFACE-TILE-FRESH-IMAGERY-UPSAMPLE-REGRESSION [focused `GlobeSurfaceTile` spec reproducibly marks fresh-imagery tile as upsampled; discovered during C11-183 broad regression run, outside that slice's state logic] | terrain-imagery | P1 | correctness/test-red | S–M | G2 | **W1 TAIL — QUEUED / DIAGNOSE AFTER PERF PASS** |
+| `C11-187` | HIZ-DEGENERATE-BOUNDING-CONSERVATIVE-FALLBACK [preserve original command identity/order when SOA packing skips unknown, degenerate, unrepresentable, or over-capacity bounds; narrow conservative pass-through only — does not activate or certify Hi-Z] | scene-core / Hi-Z | P1 | correctness | S | G10 | **W1 TAIL — IN PROGRESS / FOCUSED RERUN OPEN** |
+| `C11-188` | WEBGPU-MODEL-TRANSLUCENT-TWIN-NODE-MATRIX [the styled translucent twin packs its material UB with root `modelMatrix` while the primary uses `nodeModelMatrix`; articulated/non-identity nodes therefore have node-correct vertex projection but root-wrong fragment world reconstruction/lighting] | models | P1 | correctness | S | G5 | **W1 TAIL — QUEUED / FIX AFTER PERF PASS** |
+
+**Append accounting:** +9 numbered (`C11-180..188`), zero seeds. Numbered
+range is now contiguous `C11-01..188`. Repository-wide collision search found
+zero earlier uses of this range before each append. The canonical deferred
+names are preserved; no historical ID was renamed or reused.
+
+**C11-184 implementation note (2026-07-28, IN PROGRESS).** Native WebGPU owns
+one fitted directional/spot light map when CSM is off and deduplicates legacy
+per-cascade/per-face command lists before native dispatch. Model and globe
+commands carry exact `ShadowMode`, topology/cull state, stable resource owners,
+and explicit RTE-safe variants; model receive now has distinct single-map,
+CSM, and point-light routes. First-frame depth resources are realized before
+binding, while a frame-owned preparation list refreshes the fitted receive
+prefix after `ShadowMap.update()` and skips unchanged settled uploads. CSM
+intent is frame-owned so cast and receive switch together on first warmup,
+toggle-off, and non-3D frames. Classifiers and non-colour variants remain
+disabled. A recreated GPU buffer forces its first write.
+
+The styled translucent twin remains receive-only: today's cast shader is
+geometry-only and cannot evaluate its feature alpha/style/clipping, while the
+primary remains the single geometric caster even for `ALL_TRANSLUCENT`.
+`C11-189` owns style-aware coverage. Combined skinning + instancing has no
+correct native cast shader (`C11-190`), and morph/custom vertex deformation
+needs its own matching cast route (`C11-191`); unsupported commands fail closed
+instead of corrupting the map through stride inference. No focused-green claim
+is carried forward from the earlier implementation. Closure requires the fresh
+build/spec matrix plus moving pixel routes for default directional, CSM
+warm/toggle, point, Earth-scale motion, globe receive, `ALL_TRANSLUCENT`, and
+settled allocation/upload counters.
+
+### 1.28 WEBGPU SHADOW-COVERAGE residual appends (2026-07-28 — APPEND-ONLY, collision-verified)
+
+| C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
+|---|---|---|---|---|---|---|---|
+| `C11-189` | NEW-WEBGPU-STYLE-AWARE-SHADOW-COVERAGE [one dedicated caster evaluates feature style alpha, clipping, and visibility without duplicating the primary/twin geometry cast] | models / shadows | P1 | correctness | M | G5/G10 | **W1 TAIL — NOT STARTED / AFTER PERF PASS** |
+| `C11-190` | NEW-WEBGPU-MODEL-SKINNED-INSTANCED-SHADOW [combined animated-crowd cast variant with skinning + instance transforms and RTE parity] | models / shadows | P1 | correctness | M | G5/G10 | **W1 TAIL — NOT STARTED / AFTER PERF PASS** |
+| `C11-191` | NEW-WEBGPU-MODEL-SHADOW-DEFORMATION-COVERAGE [morph targets and custom vertex deformation must cast the same silhouette as the colour pipeline; cross-ref C11-92] | models / shadows | P1 | correctness | M–L | G5/G10 | **W1 TAIL — NOT STARTED / AFTER PERF PASS** |
+
+**Append accounting:** +3 numbered (`C11-189..191`), zero seeds. Numbered
+range is now contiguous `C11-01..191`; repository-wide collision search found
+zero earlier uses before this append.
+
+### 1.29 POST-ATTRIBUTION PERFORMANCE/ARCHITECTURE appends (2026-07-31 — APPEND-ONLY, collision-verified)
+
+The moving globe control and exact terrain identities disprove a broad
+globe-quadtree/RTE collapse. Representative attribution localizes substantial
+avoidable model/resource/submission work, while the clean resident lane remains
+held on an exact 3D Tiles selection-parity red. These rows preserve every feature:
+immutable state is shared, proven-unused realization is delayed, conversions
+move to bounded resource jobs, and the last complete resource remains usable
+while a replacement is prepared.
+
+| C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
+|---|---|---|---|---|---|---|---|
+| `C11-192` | WEBGPU-TERRAIN-SHADOW-UB-DEMAND-REALIZATION [do not allocate/upload per-tile shadow-cast UBs while no shadow pass demands them; first ON frame must remain complete] | terrain-imagery / shadows | P1 | perf/resource-lifetime | S–M | G2/G10 | **W1 — IMPLEMENTED / STATIC+OFF-RUNTIME GREEN / ON-PIXEL GATE OPEN** |
+| `C11-193` | WEBGPU-DYNAMIC-ENVIRONMENT-SHARED-KERNEL-JOB-SCHEDULER [one device-generation kernel pack; context-owned bounded refresh jobs; reuse targets; shared encoder/submission; retain per-probe regional/weather outputs] | models / atmosphere-sky / resource-prep | P0 | perf/architecture | L | G5/G8/G10 | **W1 — PARTIAL: BORROWED TILE MANAGER + SHARED REFRESH ENCODER/PACKED PARAMETER ARENA + OBSERVE-ONLY DEMAND LEDGER IMPLEMENTED; BOUNDED CONTEXT JOB DRAIN/TARGET POOL OPEN** |
+| `C11-194` | WEBGPU-MODEL-SHARED-DEVICE-RESOURCES [reference-count immutable model BGL/layout/sampler/placeholder/default-view resources by device generation; keep mutable state model-local] | models / resource-lifetime | P1 | perf/architecture | M | G5/G10 | **W1 — PARTIAL: EXACT-DEVICE IMMUTABLE LAYOUT/DEFAULT POOLS IMPLEMENTED; CACHE GENERATION OWNERSHIP + TILE-CONTENT RECOVERY/DISPOSER GATE OPEN** |
+| `C11-195` | WEBGPU-MODEL-VIEW-LIGHT-DYNAMIC-UNIFORM-ARENA [replace direct per-model camera/light queue writes with dynamic-offset slices; retain per-view/RTE/capture/shadow-camera isolation] | models / scene-core | P0 | perf/architecture | L | G5/G10 | **W1 — PARTIAL: CAPTURE ARENA/RTE + UNCHANGED-WRITE SUPPRESSION IMPLEMENTED; MAIN CAMERA THEN MODEL/VIEW LIGHT DYNAMIC OFFSETS OPEN** |
+| `C11-196` | WEBGPU-MODEL-LAZY-PICK-DERIVATION [retain pick IDs; build/prewarm pick pipeline+command outside ordinary colour rendering and preserve synchronous first-pick fallback] | models / picking | P1 | perf | M | G5/G10 | **W1 — QUEUED / 20 EAGER PIPELINES OBSERVED** |
+| `C11-197` | WEBGPU-LAZY-SCENE-PASS-RESUME [defer pass reopen until a draw or required clear/resolve; preserve depth/stencil/TAA/classification/multifrustum ordering] | scene-core / attachment-topology | P1 | perf/architecture | M | G3/G10 | **W1 — QUEUED / REOPEN-REASON ATTRIBUTION FIRST** |
+| `C11-198` | WEBGPU-MODEL-PERSISTENT-COMMAND-TEMPLATES [retain per-primitive templates or use a frame arena; never mutate state still consumed by another view/shadow/capture list] | models / scene-core | P1 | perf/architecture | M–L | G5/G10 | **W1 — QUEUED / CONSTRUCTOR+GC COUNTERS FIRST** |
+| `C11-199` | WEBGPU-MODEL-PENDING-PIPELINE-EARLY-GUARD [do not rebuild/re-poll a descriptor already represented by the local pending promise] | models / build-boot | P2 | perf | XS | G5/G9 | **W1 — IMPLEMENTED / STATIC VERIFIED / FOCUSED BROWSER OPEN** |
+| `C11-200` | WEBGPU-TONEMAP-EXPOSURE-DIRTY-WRITE [normalize/equality-gate the fixed exposure setter; auto-exposure retains genuinely changing writes] | postprocess | P2 | perf/allocation | XS | G6/G10 | **W1 — IMPLEMENTED / STATIC VERIFIED / FOCUSED BROWSER OPEN** |
+| `C11-201` | WEBGPU-GLOBE-DEPTH-STABLE-VIEW-IDENTITY [cache the packed-depth output view until target/resize/device generation changes so effects keys do not churn] | terrain-imagery / postprocess | P2 | perf/resource-lifetime | S | G2/G6/G10 | **W1 — IMPLEMENTED / MOVING ATTRIBUTION GREEN / ALLOCATION-ONLY CREDIT** |
+| `C11-202` | MODEL-BACKEND-NEUTRAL-PRIMITIVE-DESCRIPTORS [shared immutable descriptor once; WebGL realizes GLSL/VA/DrawCommand and WebGPU realizes only native equivalents; remove remaining legacy CPU-object tax without losing metadata/style/clipping/classification/silhouette/edge/pick/shadow/custom-shader behaviour] | model-frontend / models | P0 | perf/architecture | XL | G4/G5/G10 | **W1 — PARTIAL: FINAL WEBGL PROGRAM/VA/DRAW-COMMAND REALIZATION BYPASSED FOR WEBGPU + ASYNC NATIVE READINESS ADDED; WEBGL-ONLY PIPELINE-STAGE PICK/EDGE TAX, FALLBACK READINESS, AND DEVICE-RECOVERY GATES OPEN** |
+| `C11-203` | WEBGPU-SCENE-CAPTURE-ACTIVE-DEMAND-AND-PER-FACE-CULL [expand ENV-CAPTURE-PER-FACE-LOD: active-manager registry, retained generation list, conservative probe/face spatial admission, no main-camera traversal mutation] | capture-reflection / scene-core | P1 | perf/architecture | L | G5/G8/G10 | **W1 — QUEUED / OPT-IN** |
+| `C11-204` | WEBGPU-GPU-VISIBILITY-STABLE-IDENTITY-RTE [unify GPU cull/Hi-Z producer, stable command+generation IDs, camera-relative spheres/planes, cull=false pass-through, pooled SOA; no post-PVS count-only readback] | scene-core / Hi-Z | P1 | correctness/perf/architecture | L | G10 | **W1 TAIL — QUEUED / KEEP DEFAULT-OFF** |
+| `C11-205` | 3DTILES-VERSIONED-MODEL-STATE-PACKET-AND-REQUEST-CHURN-EVIDENCE [apply broad tileset properties only on version change; fingerprint per-frame visible/SSE/content-ready tile identities and issued/cancelled/reissued request bytes; resident comparison must prove identical ready sets before changing traversal or hysteresis] | tiles3d / models / measurement | P0 | correctness/perf/tooling | M | G4/G5/G10 | **W1 — PARTIAL / MEASUREMENT BLOCKER: STABLE TILE + REQUEST-LIFECYCLE PROTOTYPE PRESENT; ORDINARY READY-SET REJECTION, STABLE CROSS-LEG REQUEST LEDGER, MODEL TRANSITIONS, MULTIPLE-CONTENT COVERAGE, AND VERSIONED STATE PACKET OPEN** |
+| `C11-206` | WEBGL-FINAL-SHADER-STRUCTURAL-REVISION-MEMO [cheap pass exclusions before selector work; do not invalidate settled shader-chain memo for ordinary per-frame globe command dirtiness] | build-boot / terrain-imagery | P2 | perf | S–M | G2/G9/G10 | **W1 TAIL — QUEUED / TRANSITION GATES REQUIRED** |
+| `C11-207` | HIZ-LAZY-SOA-AND-UNSUPPORTED-BACKEND-ACTIVATION [allocate the 1.3125 MiB sphere SOA only after supported WebGPU activation; WebGL opt-in disables once and remains allocation-free] | scene-core / Hi-Z | P2 | perf/resource-lifetime | S | G10 | **W1 TAIL — QUEUED / DEFAULT MEMORY** |
+| `C11-208` | WEBGPU-GLOBE-SPEC-FLOOR-REDUCED-EFFECTS-LAYOUT [globe-specific group-1 layout omits model-only edge textures; retain every globe effect and add a bounded four-imagery-slot tier so limit-16 adapters do not blend one layer per draw] | terrain-imagery / effects-layout | P1 | perf/architecture | M | G2/G6/G10 | **W1 — IMPLEMENTED / FORCED LIMIT-16 ONE+FIVE-LAYER PROBE GREEN; FOUR-SLOT TIER + MULTIPASS OVERFLOW PRESERVE ALL EFFECTS** |
+| `C11-209` | WEBGPU-EFFECTS-PLACEHOLDER-SINGLE-INITIALIZATION-SUBMIT [record depth, four CSM-layer, and six cube-face clears in one initialization encoder; reuse the existing depth view; remove no clear or placeholder] | effects-layout / submit-residency | P2 | perf/startup | S | G6/G10 | **W1 TAIL — QUEUED / 11 SUBMITS STATICALLY PROVEN** |
+| `C11-210` | WEBGPU-COMPUTE-COMMAND-PASS-ENCODER-INTEGRATION [executeComputeCommands currently supplies WebGPUContext where WebGPUComputeCommand requires GPUComputePassEncoder; restore public command-list integration and add an end-to-end contract] | scene-core / compute | P1 | correctness/test-red | S–M | G3/G10 | **W1 TAIL — QUEUED / DORMANT BUSTED FEATURE** |
+| `C11-211` | MODEL-SCENE-GRAPH-JOINT-MATRICES-ONCE-PER-ANIMATION [update every runtime-node transform, then update all skinned-node joint matrices once; preserve WebGL/WebGPU animation, TAA velocity, and shadow variants] | model-frontend / animation | P0 | perf/correctness | S | G4/G5/G10 | **W1 — IMPLEMENTED / SOURCE+BUILD GREEN / ANIMATED BROWSER GATE OPEN** |
+
+**Existing-owner corrections from the same audit (no duplicate IDs):**
+
+- `C11-62` must first repair `SceneOctree` plane-mask constants, conservative
+  root containment, and sphere-only eligibility before persistence or automatic
+  promotion. Globe terrain remains in its quadtree and 3D Tiles in its own
+  traversal.
+- `C11-30/54/87/94` are prerequisites/aliases for `C11-204`; the current
+  post-PVS count-only GPU visibility path is not an architecture to optimize in
+  place.
+- `C11-187` remains the narrow conservative SOA fallback; `C11-207` owns lazy
+  allocation/backend activation and `C11-204` owns identity/RTE/placement.
+- `C11-76` must include active ComputeInstance, FlowField, and opt-in point-cloud
+  GPU-LOD private submitters in addition to Ocean, Weather, and EntityCluster;
+  all should record on the frame encoder and retain only an off-frame fallback.
+- `C11-60` also owns per-frame bind-group/upload churn in user/library stages,
+  motion blur, contact shadows, SSR, and NPR; genuinely dynamic uniforms remain
+  dynamic.
+- `C11-165` also covers synchronous first-toggle pipelines in optional effects
+  and Ocean compute, using generation-tagged async preparation while retaining
+  the last complete pipeline.
+- `C11-193` also owns the selected-consumer demand registry. Its narrow
+  discarded-manager slice is implemented: tile models borrow the tileset
+  manager at construction without taking or destroying tileset ownership;
+  standalone models retain private ownership. The shared kernel/job scheduler
+  and demand registry remain open.
+- `C11-194` now destroys the current per-model `_defaultPropertyTexture` with
+  its other cache-owned defaults. Moving immutable defaults/layouts to
+  per-device-generation shared ownership remains open.
+- `C11-205` must distinguish common traversal inputs from backend-dependent
+  `Model3DTileContent` readiness and frame-rate-sensitive request cancellation;
+  no SSE/hysteresis change is authorized until ready/request identities explain
+  the resident mismatch.
+- Consumer-driven MRT/G-buffer allocation remains `C9-10-CONSUMER-DRIVEN-MRT`
+  / `FAR-403-C0`; do not create a second owner or hard-disable the attachment.
+- `C11-27/29/77/94/185` feed `C11-202`; they do not independently authorize
+  removal of shared Model processing.
+- `C11-34` remains the owner for tying WebGPU terrain-buffer leases to quadtree
+  lifetime and a submission-safe byte-budgeted grace LRU.
+- `C11-77/194` must report logical versus per-device resident bytes without
+  charging shared defaults once per tile.
+- `C11-52` retains the legacy point/spot-light RTE follow-up: absolute ECEF f32
+  light positions should use the camera-relative packing already used by
+  clustered lighting.
+
+**Append accounting:** +20 numbered (`C11-192..211`), zero seeds. Numbered
+range is now contiguous `C11-01..211`; repository-wide collision search found
+zero earlier uses before this append.
+
+**2026-07-28 representative-route attribution note.** The first real-content
+pair proved that equal frame counts do not imply equal streaming work:
+WebGL generated 1,595 terrain tiles while WebGPU generated 1,784 (11.2%
+symmetric delta). Timing from such a pair is not causal renderer evidence.
+`C11-168` now owns two separate lanes:
+
+- production-like streaming remains time-driven and invalidates both legs
+  when terrain requests or generations differ by more than 5%, generated-tile
+  key Jaccard is below 0.95, or measured frame counts differ by more than 5%;
+  an r6 closure needs at least five surviving pairs with at least two AB and
+  two BA;
+- resident/high-cache attribution is fixed-frame, prewarms and convergence-
+  checks the identical moving route, and rejects any measured terrain request,
+  generation, or `globe.tilesLoaded === false` frame. This is renderer
+  attribution, not a claim about production streaming behavior.
+
+Both lanes record exact canvas/drawing-buffer/DPR/resolution scale, current
+direct versus upsampled terrain LOD, validation-phase GPU errors, per-LOD
+terrain work, and runner/helper/manifest/camera-track hashes. The canonical
+1280×720 lane still does not satisfy the maintainer's actual split-session
+capture requirement; isolated exact-pane and simultaneous split lanes remain
+open.
+
 ---
 
 ## 2. Rules (inherited verbatim from Campaign-9/10 §1 — do not weaken)
@@ -697,7 +931,7 @@ evidence paragraph as each slice lands.)
 | `C11-115` (sun-blend ALPHA_BLEND — impl) | **TRANSFERRED to C12 (LD-1, 2026-07-23)** — direction stays RESOLVED per §7.0; the implementation feeds `C12-18`. ID retained as alias. | G8 | LD-1 |
 | `C11-SEED-07` (sun-moon fidelity) | **FOLDED into `C11-179` (LD-2, 2026-07-23)** — duplicate scope; `C11-179` itself is deferred to C12 ownership per the 2026-07-23 audit ruling. | G8 | LD-2 |
 | `C11-117 … C11-123`, `C11-SEED-08/09` (postprocess-effects) | NOT STARTED | G6 §B | evidence-pending |
-| `C11-124 … C11-130`, `C11-SEED-10..18` (clouds-weather) | **TRANSFERRED TO C13 (2026-07-23)** — `C11-126` COMPLETE; `C11-125` PARTIAL; remaining rows retain their open/blocked/deferred truth | §1.17 + G12 + `QUEUE_2026-07-23_CAMPAIGN13.md` | No double scheduling; C13 ledger is authoritative |
+| `C11-124 … C11-130`, `C11-SEED-10..18` (clouds-weather) | **HISTORICAL ALIASES / NOT SCHEDULABLE IN C11 — TRANSFERRED TO C13 (2026-07-23).** `C11-126` was COMPLETE; `C11-125` was PARTIAL; remaining truth continues only under the mapped C13 owners. | §1.17 + G12 + `QUEUE_2026-07-23_CAMPAIGN13.md` | **C13 ledger is the sole live authority; never double-schedule here.** |
 | `C11-131`, `C11-SEED-19` (water) | NOT STARTED | G8 §water | evidence-pending |
 | `C11-GT-01` (reversed-Z measurement spike) | **COMPLETE — NO-GO (2026-07-19, Batch 717)** | G10 §A1 / `REVERSED_Z_MEASUREMENT_SPIKE_2026-07-19.md` | **Verdict STAY-LOG-DEPTH**, adversarially verified (verifier independently recomputed the precision math and confirmed the format claim). Decisive fact: the scene depth attachment is `depth24plus-stencil8` (`WebGPUContext.ts:370`, `grep '_depthFormat *='` → zero reassignments; independently hardcoded at `WebGPUSceneFramebuffer.ts:330,341` and `WebGPUGlobeDepth.ts:300,310`). Reversed-Z's precision gain requires a FLOAT depth buffer — on a fixed-point format the code levels are uniformly spaced and reversing mirrors a uniform ladder, so the gain is **mathematically zero**. `depth32float-stencil8` is an OPTIONAL feature and is **absent from `DESIRED_FEATURES`** (`WebGPUFeatureFlags.ts:40-66`); worse, `depth24plus-stencil8` maps to D24_UNORM_S8 on D3D12 (gain 0×) vs D32_SFLOAT_S8 on Vulkan (~10×) with **no WebGPU query to tell them apart** — migrating today ships a driver-determined, untestable result. Multi-frustum contributes nothing either: reversed-Z NDC is `d≈n/z` so `Δz=ε_rel·z` and the slice near/far cancel. **Consequence: the log-depth pick fleet (82 WGSL `frag_depth` writers / 182 `csm_writeLogDepth` sites / ~24 pick producers) is CLEARED TO KEEP GROWING** — it is not a trap a later migration must rip out. Record in `C11-IC-01` + FAR-707 + `DEFERRED_WORK`. Stale-figure correction: `DEFERRED_WORK.md:5425-5426` cites a "71-file color surface"; measured is **82 WGSL + 28 Renderer files**. |
 | `C11-GT-02 … C11-GT-03` (gated-reversed-z slice work) | DEFERRED (gated tail §6) — **gate CLOSED by `C11-GT-01` NO-GO** | G10 §A2–A3 | Do not open: the measurement spike these were gated behind returned NO-GO. Retain as historical/reopen-only if the depth format ever moves to `depth32float-stencil8`. |
@@ -715,7 +949,7 @@ evidence paragraph as each slice lands.)
 | `C11-165` (deterministic-sync pipeline centralization) | NOT STARTED | §1.23 / G9 | W4 boot chain; C10-07 follow-on |
 | `C11-166` (ocean-normal per-call re-upload) | **COMPLETE (2026-07-19, Batch 717)** | §1.25 / `DEFERRED_WORK` `NEW-WEBGPU-OCEANNORMAL-PER-CALL-REUPLOAD` | **This was the reported ~50% FPS deficit.** `uploadImageSource` never READS the cache Map it is handed (no `cache.get`/`cache.has` in the function); its only dedupe (`_sharedImageryRealizations`) is gated on `logicalOwner === "imagery"`, which neither call site passes — so callers must own the guard and the ocean-normal caller had none. Every `_createWaterOceanMaterialBindGroupInner` call therefore ran `copyExternalImageToTexture` + 9-level mip regen + `createView` **per tile per frame**, and since the group-2 bind-group cache keys on VIEW IDENTITY, a fresh view each call also forced `createBindGroup` every frame (self-perpetuating). **Fix:** source-identity memo `_oceanNormalMapSource`/`_oceanNormalMapView` mirroring the in-file `_materialTextureCache` idiom, reset alongside the texture destroys in teardown — exactly the fix sketch the Batch-685 filing wrote. **Measured** (static settled scene, 9 commands/6 tiles, `requestRenderMode=false` on BOTH): WebGPU `scene.render()` **10.5 ms → 0.9 ms (11.7×)**; ratio **17.5× → 1.5×**; as-shipped idle lane **1.1 ms vs WebGL 1.2 ms (WebGPU now FASTER)**. Profile: `copyExternalImageToTexture` **47% of all CPU self-time → absent from top-18**; WebGPU 68.7% idle ≈ WebGL 69.1%. **Correctness:** `probe-webgpu-ocean-waves` brightness gpu/gl 0.996, wave-detail 1.204, temporal delta **1.818** (>0.3 = animating; frozen-ocean is this fix's documented failure class), PNGs read clean. `tsc --noEmit` clean. |
 | `C11-167` (uploadImageSource cache-contract audit) | **COMPLETE — Batch 721** | §1.25 | All production call sites were audited and guarded; the static ocean upload storm remains fixed. Follow-up from the 2026-07-22 audit: the module-global `reuploadWatch` detector is unbounded and counts before validation/physical realization. Scope and bound it as diagnostic hardening; do not repeat the completed call-site audit or label the sentinel as a current FPS lever. |
-| `C11-168` (perf re-measure on a real workload) | **PARTIAL — canonical moving route complete; representative content lanes open** | §1.25 / G10 | The clean six-repetition AB/BA moving-altitude route is recorded in `audit-2026-07-22-moving-clean-r6-action-review.json`. It establishes current steady-state CPU and WebGL-stall behavior, but still uses local imagery plus ellipsoid terrain. Real water-mask/terrain, dense local 3D Tiles/models, release/minified, and complete GPU-comparison lanes remain required before closure. **⚠ Evidence file is MACHINE-LOCAL, not in git** (`git ls-files` misses it; ~7.4 MB on disk) — commit a summary extract or accept machine-local per the C9-30 anchor precedent before any Gate-D reliance. |
+| `C11-168` (perf re-measure on a real workload) | **PARTIAL — globe control green; exact resident comparability blocked by C11-205; six-pair certification open** | §1.25 / G10 | The 2026-07-22 six-repetition moving route remains the historical steady-state anchor. A 2026-07-31 globe-only control passes near parity. Resident priming now dwells for two stable frames because the production `HeightmapTerrainData.createMesh` throttle advances five tasks at a time; no runtime cache/worker/gate was weakened. The earlier 5.716 ms WebGL versus 7.330 ms WebGPU average resident pair is directional history only because it predates exact workload identity. The fresh pair had exact 600-frame terrain identities and zero terrain work on both legs, but correctly failed: SF 3D Tiles readiness/selection was 710/15 WebGL versus 571/12 WebGPU. C11-205 must fingerprint ready/request identity and close that seam before any causal timing claim. Counterbalanced r6 certification, GPU timestamps/max-FPS, and the maintainer split-pane lane remain open. |
 | `C11-169` (frame-cost accounting gap) | NOT STARTED | §1.25 / G10 | The in-engine per-pass CPU profiler accounted for **0.117 ms of a 10.5 ms frame** — 99% of frame cost fell outside every instrumented pass, so existing tooling could not see this bug *by construction*. Extend instrumentation to cover the whole frame, or at minimum report the UNACCOUNTED remainder, so future perf work is not blind. |
 | `C11-170` (perf regression guard) | NOT STARTED | §1.25 / G10 | Wire the new probes (`probe-cpu-sampling-profile`, `probe-webgpu-frame-breakdown`, `probe-request-render-asymmetry`, `probe-backend-isolation`) into a runnable gate so a re-upload/churn storm cannot silently return. This defect class survived two campaigns undetected. |
 | `C11-171` (split-screen viewer init) | NOT STARTED | §1.25 / G9 | `Apps/WebGPUTest/split-screen-comparison.html` never exposed both `webglViewer`/`webgpuViewer` within 90 s, with **no console errors** (`probe-backend-isolation` split lane; globals confirmed present at `:553-554`). Blocks the maintainer's own A/B comparison workflow — the frame in which the original perf report was made. |
@@ -727,8 +961,21 @@ evidence paragraph as each slice lands.)
 | `C11-177` (bright-star appearance model) | NOT STARTED | §1.26 / G8 | "White blobs" → real stars. Logarithmic magnitude→luminance (5 mag = exactly 100× flux; naive linear mapping is why bright stars clip to flat white); PSF = Gaussian core + wide power-law halo, matching the maintainer's Polaris reference (continuous falloff over many core radii, NOT a hard-edged disc); B−V colour index → blackbody RGB so the field is not monochrome; HDR energy driving bloom rather than a painted-on sprite glow. Note the reference image shows NO diffraction spikes — a naked-eye/window view would not have telescope vanes, so spikes are a stylistic choice, not realism. |
 | `C11-178` (star-map asset upgrade) | **PARTIAL — mechanism LANDED + licence gate CLEARED (2026-07-23 reconcile)** | §1.26 / G8 | `SkyBox.Variant` T3/T5 enum + `defaultVariant` + `createEarthSkyBox(variant)` shipped Batch 728 (`86c895b0d2`), runtime-verified. Licence question CLOSED Batch 731 (`851ce64389`): §6f project-scope ruling in `QUEUE_2026-07-19_CAMPAIGN12.md` — reopen triggers are redistribution/commercial/third-party grant. REMAINING: acquire + bake the six t5 faces (`C12-10` owns the bake pipeline) and the one-line `SkyBox.defaultVariant` flip. Maintainer directive "Default to T5 for now" (Batch 728) is OUTSTANDING — flipping before the faces land would 404 the sky. Original row follows:  Denser Milky Way with dust lanes per the ISS reference. **LICENSING GATES THIS** — MIT repo, so public-domain (NASA SVS Deep Star Maps) strongly preferred; share-alike or non-commercial sources are DISQUALIFIED regardless of quality. Carries the architectural call: texture holds the DIFFUSE Milky Way, bright stars come from a catalogue as point sprites — conflating both in one cubemap is a leading hypothesis for why bright stars read as blobs today. Must land on BOTH backends (Principle 5). |
 | `C11-179` (sun + moon appearance) | NOT STARTED | §1.26 / G8 | **Sun:** correct ~0.53° angular diameter, limb darkening (cheap, high realism-per-effort), HDR-driven glare — and physically, in vacuum there is NO atmospheric scattering halo, so the glow is instrument/eye response. The sun is ~10⁵× brighter than anything else in frame, making it the extreme case for the HDR chain and AutoExposure. **Moon:** non-Lambertian reflectance (Hapke / Lommel-Seeliger — the full moon is far brighter and flatter than Lambertian predicts), opposition surge, earthshine on the dark limb, public-domain LROC/CGI-Moon-Kit albedo + normal maps, correct ~0.52° angular size. **Do NOT double-schedule:** `C11-160` (sunBloom PP wiring), `C11-115` (sun blend → ALPHA_BLEND), `C11-161` (AutoExposure demand-gate) are already queued; prior fork work exists on moon matte-not-sunlit + moon atmosphere extinction. |
+| `C11-180` (WebGL async shader compile lifecycle + bounded final-program scheduling) | **PARTIAL — core lifecycle and measured bounded fog-companion slice integrated and verified in the current working tree (2026-07-28; not yet committed)** | §1.27 / G9/G10 / `DEFERRED_WORK` `WEBGL-ASYNC-SHADER-COMPILE-LIFECYCLE` | Baseline lazy route: 7 programs / 14 shaders, 7 blocking `LINK_STATUS` waits totalling 753.9 ms, 7 long tasks. Rejected eager matrix: 28/56, the same 7 waits, and 21 unused async completions. Principal-review final bounded policy: 8/16, 7 drawn + 1 unused, 4 blocking waits totalling **403.0 ms**, 4 async completions, and 4 long tasks. It schedules the final log-depth/HDR executable and only the measured zero/one-texture fog companion; configured and currently renderable fog can prepare the transition without compiling every structural variant, while material/clipping compatibility, retry/deduplication, shadow/translucency, and WebGPU-isolation gates bind the policy. Fresh clean r3 median CPU p95 **5.5 ms** and wall p99 **21.178 ms**; moving visual track 9/9, mean diff 0.016%, worst 0.073%, no quality red; focused Edge **11/11 + 23/23**. **REMAINS:** four structural first-use stalls plus separately measured shadow/HDR/translucent companion work; no complete-lifecycle or campaign-close claim. |
+| `C11-181` (globe shader variant eviction/reference correctness) | **IMPLEMENTED / VERIFIED / LANDING PENDING (2026-07-31 audit correction)** | §1.27 / G2 / `DEFERRED_WORK` `WEBGL-GLOBE-SHADER-VARIANT-EVICTION-REFERENCE` | Replacement acquires the new cache reference before releasing the displaced wrapper and poisons the shared stale wrapper so a culled tile cannot later return a released program. Focused material, clipping-state, eclipse active/inactive reuse, async-cache ownership, build/type, and moving visual gates are green. The implementation remains uncommitted, so this row cannot be called complete yet. |
+| `C11-182` (model material exact-byte upload suppression) | **PARTIAL — IMPLEMENTED / ATTRIBUTION GREEN / TIMING CERTIFICATION OPEN** | §1.27 / G5/G10 | Exact-byte dirty suppression is wired for primary/silhouette/translucent material UBOs. The 1,093-frame API lane packed 22,324 material blocks and issued **zero** unchanged material uploads; persistent word views also remove transient `DataView` allocation. Multi-pair timing and focused browser coverage for changing materials remain open. |
+| `C11-183` (water-mask single native realization) | **PARTIAL — IMPLEMENTED / DOUBLE-REALIZATION REMOVED / VISUAL CERTIFICATION OPEN** | §1.27 / G2/G10 | Same-device native compatibility textures are borrowed with cross-device and WebGL-orientation fallbacks retained. Historical API evidence contained 595 `GLStub_Texture` plus 385 `Globe water-mask fallback` realizations; current attribution retains the 488 logical/native stub owners and records zero globe fallback copies. This proves the architecture change, not a standalone timing percentage. Broad water-mask visual/device-loss coverage remains open. |
+| `C11-184` (native model/globe shadow correctness architecture) | **IN PROGRESS** | §1.27 / G5/G10 | One-pass default ownership, unique caster collection, RTE cast matrices, single/CSM/point receive, topology/cull pipeline keys, stable bind-group owners, first-frame resource preparation, fitted-prefix refresh, CSM frame intent, and globe `ShadowMode` adaptation are in the working tree. The 2026-07-31 review additionally fixed device-owned model shadow UBO recovery, reused existing camera high/low data instead of repeating matrix inverses, made terrain CSM globals renderer-owned/allocation-free, covered both terrain layouts, and conservatively retained stale/invalid command bounds. Canonical build and package TypeScript are green. Focused Edge/Karma, moving shadow pixels, Earth-scale motion, toggle transitions, strip-index-format topology completion, and settled allocation/upload evidence remain required. |
+| `C11-185` (visibility-triggered model preparation) | **SLICES 1–3 IMPLEMENTED / ATTRIBUTION GREEN / TIMING CERTIFICATION OPEN (2026-07-31)** | §1.27 / G5/G10; FAR-303/FAR-309 | Slice 1 rejects only provably off-frustum standalone cullable models during ordinary SCENE3D colour rendering; its five-plane culling snapshot is cached once per Scene/frame, minimum-pixel-size models bypass early rejection, every uncertain/shadow/capture/tile/classifier/pick/2D/stereo case remains conservative, and readmission resets temporal history. Slice 2 skips absent/GLSL-only native custom-shader prep, removes transient material `DataView`s, and closes root/node 2D-IDL/custom-UB lifetime gaps. Slice 3 creates the root camera/RTE block only when the first pipeline-backed emitted command consumes it; cooking/non-emitting nodes create none, while transformed tile-owned nodes retain their exact node block. Current-bundle attribution: 53,821 candidates = 20,384 view + 1,597 conservative tile-owned + 31,840 frustum rejects; 21,981 admitted runs = 21,981 camera packs/writes/effects/material/light/commands, zero custom-shader prep, zero unchanged material uploads, exact conservation over 1,088 frames, clean teardown. This validates avoided work, not a timing percentage; focused browser and exact counterbalanced clean timing remain open. |
+| `C11-186` (fresh-imagery upsample regression) | **NOT STARTED** | §1.27 / G2 | Focused red remains queued for diagnosis after the performance pass; no feature was removed or weakened. |
+| `C11-187` (Hi-Z degenerate/over-capacity conservative fallback) | **IN PROGRESS** | §1.27 / G10; FAR-003/FAR-500/FAR-501/FAR-503 | Original-list identity/order pass-through is implemented for skipped, non-finite, degenerate, binary32-unrepresentable, and over-capacity entries; focused source cases and the canonical build are green. Focused Edge/Karma execution remains unavailable, so the row stays open. This narrow row does **not** bootstrap, populate, activate, or certify Hi-Z depth provenance, generations, RTE, readback ordering, or automatic consumption. |
+| `C11-188` (styled translucent twin node matrix) | **NOT STARTED** | §1.27 / G5 | Queued correctness fix after the performance pass. |
+| `C11-189` (style-aware shadow coverage) | **NOT STARTED** | §1.28 / G5/G10 | Dedicated visibility-equivalent caster; queued after the performance pass. |
+| `C11-190` (combined skinning + instancing shadow) | **NOT STARTED** | §1.28 / G5/G10 | Animated-crowd native cast variant; queued after the performance pass. |
+| `C11-191` (morph/custom-deformation shadow coverage) | **NOT STARTED** | §1.28 / G5/G10; C11-92 | Colour/cast silhouette parity; queued after the performance pass. |
+| `C11-192 … C11-211` (post-attribution architecture tail) | **EXECUTING; `C11-192/199/200/201/211` + C11-193 ALLOCATION SLICE IMPLEMENTED, `C11-205` NEXT BLOCKER** | §1.29 / G2/G3/G4/G5/G6/G8/G9/G10 | Demand-realized terrain shadow UBs, pending-pipeline ownership, tonemap exposure dirtiness, stable packed-depth view identity, once-per-animation joint updates, and borrowed tileset environment managers are implemented with source/type/build coverage; focused browser/visual gates remain open. C11-205 blocks causal resident timing. The shared C11-193 scheduler/demand architecture and C11-195 remain the highest measured default-path work; C11-208/209/210 preserve features while closing low-limit binding, startup-submit, and dormant compute-command defects. |
 | `C11-176a` (skybox-fade gate probe extension) | **TRANSFERRED to C12 (LD-2, 2026-07-23) — absorbed by `C12-01`** | §1.26 / G8 | Substance half-landed in `probe-skybox-star-modulation.mjs` (Batches 722/724: sunlit + night lanes, runtime A/B, contrast metrics, opt-in gate). Still owed: M1 source census, M2e sky floor, wiring `brightPct` + a default-pair assertion into `probe-env-skybox-stars.mjs`. **`QUEUE_2026-07-19_CAMPAIGN12.md` `C12-01` ABSORBS this** — if C12 launches (LD-2), close here as transferred. |
-| `C11-176b` (moon `phaseGate` deletion) | **IMPLEMENTATION DONE (worker, 2026-07-24) — pending orchestrator review/landing + Edge probe run.** Gate deleted from `Moon.wgsl` (`var color = lit;`); `phaseFraction` UB member + `ud[67]` pack + `frameState.moonPhaseFraction` publication KEPT (C12-21 scaffolding + fog/sky scalar consumers). New `probe-moon-phase-gate.mjs` (3 Simon1994-derived lanes: day-crescent blackout / crescent partial-dim / night-full control; projected-ROI metrics; provenance SHA hard-gate) + `moon-phase-gate.spec.mjs` (5/5, incl. naga). tsc clean. **Batch-517 re-baseline finding: NOT needed** — its crescent lane runs at illumFrac ≈0.43 > 0.3 where the old gate was exactly 1.0, so the deletion is byte-identical there; the Edge re-run is a no-drift confirmation. Log: `WEBGPU_DEBUGGING_LOG.md` C11-176b entry. *(Was: TRANSFERRED to C12 W1 as rider, LD-2 2026-07-23.)* | §1.26 / G8 | `Moon.wgsl:345-346` — third instance of the default-ON WebGPU-only celestial-multiplier class (`enableMoonPhase` defaults true, no GLSL consumer; also a physical double-count vs N·L). Root confirmed 2026-07-24: gate born in `8620f7c171` (2026-04-09) already alongside real `sunDirMC` N·L — an aesthetic double-count from birth, not scaffolding (Principle-7 check clean). It gates `C12-21`/`C12-22` and shares W5’s `Moon.wgsl` region. |
+| `C11-176b` (moon `phaseGate` deletion) | **COMPLETE — Batch 755; targeted moon-phase browser gate PASS.** Gate deleted from `Moon.wgsl` (`var color = lit;`); `phaseFraction` UB member + `ud[67]` pack + `frameState.moonPhaseFraction` publication KEPT (C12-21 scaffolding + fog/sky scalar consumers). `probe-moon-phase-gate.mjs` covers three Simon1994-derived lanes (day-crescent blackout / crescent partial-dim / night-full control) with projected-ROI metrics and provenance SHA gating; `moon-phase-gate.spec.mjs` includes naga validation. **Batch-517 re-baseline finding: NOT needed** — its crescent lane runs at illumFrac ≈0.43 > 0.3 where the old gate was exactly 1.0, so the deletion is byte-identical there. Log: `WEBGPU_DEBUGGING_LOG.md` C11-176b entry. *(Was: TRANSFERRED to C12 W1 as rider, LD-2 2026-07-23.)* | §1.26 / G8 | `Moon.wgsl:345-346` was the third instance of the default-ON WebGPU-only celestial-multiplier class (`enableMoonPhase` defaults true, no GLSL consumer; also a physical double-count vs N·L). Root confirmed 2026-07-24: gate born in `8620f7c171` (2026-04-09) already alongside real `sunDirMC` N·L — an aesthetic double-count from birth, not scaffolding (Principle-7 check clean). |
 | `C11-176c` (celestial stale-comment corrections) | **COMPLETE (Batch 741, as C12 W1 rider per LD-2)** — 6 files corrected incl. two additional stale sites found in-flight (`StarFieldMath.ts:132` HI comment, `SkyBox.js:62-64` getter JSDoc); generated `StarField.js` regenerated | §1.26 / G8 | Four comments assert an HDR/bloom path that is off by default (`StarField.wgsl:14-16,145-146`, `StarFieldFS.glsl:23-24`, `StarFieldMath.ts:118-119`); `StarField.js:63` "~0.34°" for 0.0042 rad (actual 0.2406°); `SkyBox.js:49-55` "inert no-op" falsified by `Renderer/Context.js:766-789`. `LICENSE.md` dead-URL sub-item DISCHARGED by Batch 730. XS, comment-only. |
 | `C11-SEED-27` (C10-30 clean-env r5 re-measure) | DEFERRED (seed) | §1.23 / G10/G9 | Gate-D anchor input |
 
@@ -835,6 +1082,15 @@ BLOCKED-ON-MAINTAINER and do not open on an engineering default; measure, then c
 the reported ~50% FPS deficit. The prior W1 head (`C11-157` OIT wiring) is **already COMPLETE**, and
 the reversed-Z spike is **already CLOSED NO-GO**, so the perf lane inherits the top slot cleanly
 rather than displacing live work.
+
+**2026-07-28 current overlay — supersedes stale status words in the historical
+sequence below.** `C11-167` and `C11-172` are COMPLETE as recorded in §3.2.
+The targeted lane resumed for `C11-181` (IMPLEMENTED / VERIFIED / LANDING
+PENDING) and `C11-180` (PARTIAL).
+The latter removes three of the seven measured blocking first-use waits with a
+bounded final-executable/fog-companion policy; four structural stalls and the
+broader shadow/HDR/translucent matrix remain. Campaign certification is still
+held.
 
 - **★★ TOP OF W1 — PERFORMANCE LANE `C11-166..172` (§1.25, maintainer-directed 2026-07-19).**
   Execution order within the lane:
@@ -999,10 +1255,11 @@ The broad parity/feature wave, and the S10 arc:
   `C11-18`, `C11-105`, `C11-IC-02`.
 - **Classification/voxel:** `C11-100` (sliced; A2-slice-0 triage first), `C11-101` (.vctr fixture
   prereq), `C11-102`, `C11-103`, `C11-104`, `C11-105` (dep `C11-26`), `C11-106`, `C11-107`, `C11-108`.
-- **Shadows/atmosphere/water/clouds:** `C11-110`, `C11-111`, `C11-112`; `C11-113` (gated on checkpoint
+- **Shadows/atmosphere/water:** `C11-110`, `C11-111`, `C11-112`; `C11-113` (gated on checkpoint
   attribution), `C11-114`, `C11-115` (**RESOLVED 2026-07-18: ALPHA_BLEND, §7.0**), `C11-116`; `C11-131`
-  (after define-width / reversed-Z disposition); `C11-124..130` (clouds-weather — commission a guide
-  first; `C11-126` CLOUD-U4 **RESOLVED 2026-07-18: option (A), §7.0**).
+  (after define-width / reversed-Z disposition). **Historical W7 note:** the original plan also listed
+  `C11-124..130`; those cloud IDs later transferred to C13 and are not schedulable in C11. See §1.17
+  for their alias mapping. `C11-126`'s option-A decision remains preserved history, not open work.
 - **Celestial-water epic (Tier-4 / gated):** `C11-163` (C11-CELESTIAL-WATER-REFLECTION) — unified
   sun-by-day + moon/stars-by-night reflection on water + clouds, cloud-occluded via the EXISTING O(1)
   sun-view beer-shadow-map (no per-fragment raymarch), cloud-top specular fallback. **Opt-in
@@ -1020,7 +1277,8 @@ The broad parity/feature wave, and the S10 arc:
 ### W8 — measured checkpoint + gated-tail evaluation
 
 `C11-GATE-D-CHECKPOINT` (measurement-only; predeclare the anchor; clean then API lane; `--workload
-moving-camera-altitude-track-3d --repetitions 5 --renderer both`; never re-derive a fresh baseline).
+moving-camera-altitude-track-3d --repetitions 6 --renderer both`; use the resolved even,
+counterbalanced fresh-process schedule and never re-derive a fresh baseline).
 Its verdict decides which gated-tail items get pulled (§6): the `C11-GT-01` reversed-Z spike verdict
 (if not already run in C10) is recorded in all three sinks; `C11-GT-03` MSAA-default-flip reserve
 triggers only on a MISS with bandwidth-attributed evidence + fresh sign-off.
@@ -1128,17 +1386,19 @@ capability for parity; change the default + keep a toggle.
 - **`forceSceneMRT` default-flip** → requires an **EXPLICIT recorded maintainer sign-off** (like the
   `C11-GT-03` reserve-lever protocol), NOT standing DW-phasing approval (G3 Q3a resolved). Governs
   `C11-43` P2.
-- **CLOUD-U4** (`C11-126`) → option **(A): Scene owns a managed default VOLUMETRIC CloudCollection**
-  (re-point the 4 producers); renderer gates are mechanical once chosen.
+- **CLOUD-U4** (`C11-126`, historical alias → `C13-00`) → option **(A): Scene owns a managed default
+  VOLUMETRIC CloudCollection** (re-point the 4 producers). This decision completed before C13; do not
+  schedule implementation from C11.
 - **High-density / `gpuCullingHint`** (`C11-11`) → **diagnose first** (W1 diagnosis), then a **lean
   repair** — do NOT degrade the feature for the metric; if it traces to the contained GPU-cull path,
   surface per the charter (§2 rule 1).
 
 **Still-deferred after this sweep:** the splat-data-producer placement + offline asset (7.1 #1, still
 BLOCKED-ON-MAINTAINER); FAR-107 public pick-API review (`C11-07`); declutter displacement-threshold
-default (`C11-66`); C9-01 Gate-A closure (`C11-145`) + gate-F baseline refresh (`C11-147`); rte-taa +
-clouds-weather guide commissioning; benchmark-lane workload-file identity (`C11-64`); the absent 2D perf
-lane (`C11-59`); **and the 4 CELESTIAL sub-decisions below.**
+default (`C11-66`); C9-01 Gate-A closure (`C11-145`) + gate-F baseline refresh (`C11-147`); rte-taa
+guide commissioning; benchmark-lane workload-file identity (`C11-64`); the absent 2D perf lane
+(`C11-59`); **and the 4 CELESTIAL sub-decisions below.** The former clouds-weather guide gap is no
+longer C11-deferred work because that cluster transferred to C13.
 
 **The 4 `C11-163` CELESTIAL-WATER-REFLECTION sub-decisions (deferred to when the epic is scheduled):**
 
@@ -1184,9 +1444,10 @@ lane (`C11-59`); **and the 4 CELESTIAL sub-decisions below.**
 > (`forceSceneMRT` sign-off protocol, sun-blend direction, sunBloom direction, HDR AutoExposure
 > altitude-gate, CLOUD-U4, high-density `gpuCullingHint` policy, exit-gate criterion, orchestrator-mode).
 > The bullets that REMAIN OPEN: FAR-107 public pick-API review, declutter displacement-threshold default,
-> C9-01 Gate-A closure + gate-F baseline refresh, rte-taa/clouds-weather guide commissioning,
+> C9-01 Gate-A closure + gate-F baseline refresh, rte-taa guide commissioning,
 > benchmark-lane workload identity, the absent 2D perf lane, define-width sequencing, the
-> checkpoint-attribution gates, and the reversed-Z reconciliation read.
+> checkpoint-attribution gates, and the reversed-Z reconciliation read. Clouds-weather guide work is
+> not open in C11 because the entire cluster transferred to C13.
 
 **Maintainer decisions (beyond the 3 above):**
 
@@ -1214,9 +1475,9 @@ lane (`C11-59`); **and the 4 CELESTIAL sub-decisions below.**
 - **HDR AutoExposure altitude-gate ratification (G6 Q2b):** behavior kept, policy record missing.
 - **ADR accumulation complete-vs-retire (`C11-107`, G6 Q2d):** retire needs explicit Principle-7
   sign-off.
-- **CLOUD-U4 architectural decision (`C11-126`):** (A) Scene/Globe owns a managed default VOLUMETRIC
-  CloudCollection re-pointing 4 producers, or (B) remove/re-home the globe cloud config sink. Renderer
-  gates are mechanical once chosen.
+- **CLOUD-U4 historical decision (`C11-126` → `C13-00`):** RESOLVED as (A), Scene/Globe owns a
+  managed default VOLUMETRIC CloudCollection. It is retained here for decision history only and is
+  not an open C11 choice or schedulable row.
 - **Declutter displacement-threshold default (`C11-66`, G7 Q2):** opt-in (default 0 = today) needs no
   approval; a nonzero default needs sign-off.
 - **C9-01 Gate-A closure (`C11-145`, G9 Q5) + gate-F baseline refresh timing (`C11-147`)** are
@@ -1246,8 +1507,9 @@ lane (`C11-59`); **and the 4 CELESTIAL sub-decisions below.**
 - **Benchmark-lane workload-file identity (G7 Q1):** put the entity lane in a SEPARATE
   `performance-workloads-entity.json` with its own set id (preserves checkpoint comparability) vs a
   bumped id — decide before `C11-64`.
-- **rte-taa + clouds-weather have NO cluster guide:** commission a guide (or a detailed brief pack)
-  before opening `C11-52` (W5) and `C11-124` (W7). Surfaced as a planning gap.
+- **Guide gap:** `rte-taa` still needs a guide (or detailed brief pack) before opening `C11-52`
+  (W5). The clouds-weather half is historical: `C11-124` and its siblings transferred to C13, so
+  opening them in C11 is forbidden; use the §1.17 mapping and C13 planning artifacts.
 - **Doc-hygiene reconciliations to fold into whatever lands first (G1 Q8, G5 Q7/Q8, G6 Q3, G8 Q4,
   G9 Q4):** `WebGPUComputePipelineCache` exists; `WebGPUModelRenderer` already `.ts`; `scene.pickVoxel`
   no longer throws; SHADOW-LAYOUT-QUANTIZED likely doc-close; KHR_materials_variants may be §D FUTURE

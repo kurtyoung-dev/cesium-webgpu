@@ -14,15 +14,14 @@ Anchor: committed `main` HEAD **`851ce64389` (Batch 731)**. The queue and launch
 after the launch/document batch is committed, `git status` contains no unrelated changes, and
 `npx tsc --noEmit` is green.
 
-Publication note: the 2026-07-23 `git push origin main` attempt returned HTTP 403 because the
-configured `kurtyoung-dev/cesium-webgpu` remote and active `KurtTrottr` credential do not authorize
-the same repository. No remote, credential, or account was changed. The maintainer's explicit launch
-directive authorizes local trunk execution; origin publication remains an external coordination
-item, not a reason to bypass or weaken the local gates.
+Publication update: the 2026-07-23 HTTP-403 attempt below is historical. As of
+the 2026-07-31 audit, local `main` and `origin/main` are equal at Batch 771
+(`fe990ab335`). No runtime gate may be bypassed merely because later work is
+present only in the dirty working tree.
 
 Campaign 13 supersedes **only** Campaign 11's `clouds-weather` execution cluster. It does not close
-Campaign 11's unrelated open work, and it does not launch or renumber the existing Campaign 12
-celestial-appearance draft.
+Campaign 11's unrelated open work. Campaign 12 launched on 2026-07-23 and is
+executing independently; Campaign 13 does not close or renumber it.
 
 Operating model: **ORCHESTRATOR**. One worker implements a bounded slice and returns a verified dirty
 tree; an independent reviewer checks the actual diff and evidence; only the orchestrator lands it and
@@ -85,9 +84,10 @@ renumber, reuse, or mint a `C13-*` identifier elsewhere without adding it here f
 | `C13-38` | Suppress cloud-IBL environment refreshes while full cloud IBL is irrelevant | P0 | perf/correctness | S | W2 | `C13-37` |
 | `C13-39` | Hoist density LOD/domain transforms out of per-sample view, light, shadow, and IBL loops | P0 | perf/architecture | L | W2 | `C13-02`, `C13-37` |
 | `C13-40` | Async cloud-noise prewarm plus generation-keyed reconstruction resources and retirement | P1 | perf/architecture | M | W2 | `C13-02`, `C13-37` |
+| `C13-41` | C12-29 S3 rider: eclipse-driven cloud lighting, cloud shadow, and IBL dimming/refresh | P1 | correctness/quality | M | W2 | `C13-GATE-B`, `C13-06`, `C13-38`; informed by `C13-39` |
 | `C13-GATE-A` | Launch and evidence-truth gate | R0 | gate | S | W0 | `C13-01`, `C13-02`, `C13-35` |
 | `C13-GATE-B` | Planetary correctness gate | R0 | gate | M | W1 | `C13-03..08` |
-| `C13-GATE-C` | Temporal reconstruction and measured-performance gate | R0 | gate | M | W2 | `C13-09..13`, `C13-36..40` |
+| `C13-GATE-C` | Temporal reconstruction and measured-performance gate | R0 | gate | M | W2 | `C13-09..13`, `C13-36..41` |
 | `C13-GATE-D` | Regional weather realism gate | R0 | gate | M | W3 | `C13-14..20` |
 | `C13-EXIT` | Feature-preserving cloud certification | R0 | gate | L | EXIT | Gates A-D, selected W4/W5 owners |
 
@@ -601,9 +601,9 @@ landing defect.
 
 | ID(s) | Status | Evidence / next action |
 | --- | --- | --- |
-| `C13-00` | **COMPLETE — Batch 732 (`f4a934e606`)** | Explicit 2026-07-23 maintainer launch authority; C11 transfer map and confirmed findings recorded here; TypeScript, Markdown lint, and Prettier passed. Local `main` contains the launch commit. Publication remains externally blocked because `origin` returned HTTP 403 for the configured account; this does not block the explicitly authorized local-trunk campaign. |
+| `C13-00` | **COMPLETE — Batch 732 (`f4a934e606`)** | Explicit 2026-07-23 maintainer launch authority; C11 transfer map and confirmed findings recorded here; TypeScript, Markdown lint, and Prettier passed. Local `main` contains the launch commit. The original HTTP-403 publication note is historical; `origin/main` now reaches Batch 771. |
 | `C13-01` | **IN PROGRESS — Batches 733–735 evidence follow-up (2026-07-23)** | Batch 733 repaired unified API/config truth, deterministic offline/fixed-time capture, raw-frame metrics, backend-aware workload selection, and the moving WebGPU route. Batch 734 requires an actual procedural execute plus initialized cache/pipeline instead of trusting a loaded lazy handle or fixed warm-up count; the procedural tour now uses same-camera OFF/ON contribution for colored pole/dusk fixtures. The stale `cloudQuality=128` blank claim is superseded by 128/8 full-resolution work with 7,584 cloud cells; Batch 735 supersedes the pre-fix north-pole blank with green WGS84 evidence. Climate/region/type/same-type fixtures, wind/time and temporal-reset sequences, complete per-sequence metrics, and GPU timing remain. |
-| `C13-02` | NOT STARTED | Begins after the repaired tour establishes the measurement surface. |
+| `C13-02` | **PARTIAL** | `C13-39` landed byte-inert GPU timestamp wiring for all seven cloud render passes plus environment Sky Fill. Broader cloud CPU/GPU counters and the repaired-tour measurement surface remain open; pass timing alone does not close this row. |
 | `C13-03` | **COMPLETE — Batch 735** | The active WGS84/RTE coordinate contract, f32-faithful source/math suite, and provenance-bearing moving planetary OFF/ON oracle are landed. The default route is green at 21/21 antimeridian, pole, deck/altitude, regional, and orbit checkpoints with clean WebGPU gates. |
 | `C13-04` | **COMPLETE — Batch 735 (primary visible shell only)** | Both one-part and high/low branches intersect WGS84 expanded ellipsoids; production precision defaults on, CPU-f64 cartographic height drives interval/deck ordering, and view/light/midpoint height fractions share the oblate boundaries without growing the then-current 148-float uniform. The density-domain work that remained open at this landing later closed under `C13-37`, and temporal RTE/coarse reset later closed under `C13-05`; shadow/mask/capture/atmosphere and regional-weather consumers remain explicitly open under `C13-06..08`. |
 | `C13-05` | **COMPLETE — Batch 754 (bounded W1 RTE/reset slice)** | Perspective temporal reprojection now uses inverse-current and previous view-projection-relative-to-eye transforms, CPU-`f64` camera delta, encoded camera origin, and WGS84 configured-deck intersection without rebuilding raw ECEF `f32`. Allocation-free history classification resets on incompatible frame continuity, teleport, scene/projection mode, morph, temporal re-entry, resource resize, deck topology, and observed cull/re-entry; two temporal parity bind groups are retained across frames. The inverse current RTE transform composes the existing inverse projection with translation-free inverse view, while orthographic/morph frames preserve the live current march and remain current-only until reconstruction carries a per-pixel ray origin. Invalid reprojections return before the 3×3 clamp fetch. `cloud-temporal-rte.spec.mjs` passes `11/11`; the complete cloud spec lane passes `64/64`; `probe-cloud-temporal-rte.mjs` is GREEN with 26 finite 60-float uploads, maximum high/low reconstruction error `0.002723 m`, exact/stable source-build provenance, observed cull/re-entry, and clean WebGPU/device/console gates. This does not close color/depth/velocity/moment attachments, true 1/16 current work, or attachment-aware wind/depth/disocclusion rejection; `C13-09/10/12` remain open. |
@@ -642,9 +642,10 @@ landing defect.
 | `C13-38` | **COMPLETE — Batch 754** | Cloud revisions now request the full environment rebuild only while the current or previous environment state uses the full cloud march: `(wantMarch || lastUsedCloudMarch) && revisionChanged`. Animated visible-only clouds therefore cannot trigger the 256²×6 fill, prefilter, and SH projection while full cloud IBL is opted out. First opt-in, active full-march updates, and ON-to-OFF teardown remain refresh-capable. `cloud-ibl-revision.spec.mjs` passes `4/4`, including 100 inert opted-out revisions; `probe-cloud-ibl-optout-revision.mjs` proves both opt-in cycles and teardown with clean WebGPU/device/console gates. This is eliminated irrelevant work, not a measured FPS claim. |
 | `C13-39` | **CLOSED - NEGATIVE RESULT, Batch 762 (2026-07-24).** Instrumentation + baseline LANDED; the optimization itself is REJECTED with the mechanism on record. Two independently-implemented drafts (full hoist set; then a register-light rescope) were each rejected by a drift-controlled interleaved A/B (bundle-swap within one session, reversed-order rounds, byte-identical occupancy fingerprints): the primary straight-route view march regressed +36-54% in BOTH orderings on both drafts, and even the hash-frozen LIVE legacy density route regressed - because WGSL register allocation is STATIC: code compiled into the module inflates every pipeline's register footprint regardless of runtime branches (`lightConeEnabled()` gates execution, not allocation), and the pass is occupancy-bound, not ALU-bound. What LANDED (762): per-pass GPU timestamp wiring for all 7 cloud render passes + the env Sky Fill (`timedCloudPass`/`withComputePassTimestamps`, byte-inert unarmed), `probe-cloud-lod-hoist-perf.mjs` with six workload-verified lanes (bake-readiness render-measure-check, env-map OWNER model - the manager has NO scene-level owner, only Model/Tileset call it - fill attribution, fixed frame-budget clocks) and the MANDATORY interleaved-A/B protocol in its header, plus the banked pre-change baseline manifests. Any future attempt goes through `C13-39B-CLOUD-SHADER-VARIANT-SPLIT` (DEFERRED_WORK): compile cone/straight/shadow/IBL as separate shader variants via the C11-149 hi-word registry so per-route code stops taxing every pipeline - the only vector the evidence supports. |
 | `C13-40` | NOT STARTED | First-use bake/prewarm and broader generation/retirement work; the C13-05 temporal parity bind-group cache is a separately bounded partial. |
+| `C13-41` | **BLOCKED ON GATE B.** Canonical owner for the C12-29 S3 cloud/IBL rider. Feed the backend-neutral eclipse factor into cloud direct lighting, cloud-shadow response, and a quantized environment-refresh input without latching a stale-dark IBL. Preserve one owner with `C13-06`/`C13-38`; do not fold this into `C13-34`, which concerns cloud shadows contributing to environment maps. `C13-39` proved that runtime-gated extra WGSL can still increase static register pressure, so variant/occupancy measurement is mandatory. |
 | `C13-GATE-A` | NOT STARTED | Follows `C13-01/02`. |
-| `C13-GATE-B` | NOT STARTED | Follows `C13-03..08`. |
-| `C13-GATE-C` | NOT STARTED | Follows `C13-09..13` and `C13-36..40`; STBN may remain an explicit blocker if its provenance is unresolved. |
+| `C13-GATE-B` | **PARTIAL / OPEN** | `C13-03`, `C13-04`, and `C13-05` are complete. `C13-06` and `C13-07` are executable next; `C13-08` still depends on the unfinished `C13-01` provider/data evidence. `C13-41` remains blocked until all three close. |
+| `C13-GATE-C` | NOT STARTED | Follows `C13-09..13` and `C13-36..41`; STBN may remain an explicit blocker if its provenance is unresolved. |
 | `C13-GATE-D` | NOT STARTED | Follows `C13-14..20`. |
 | `C13-EXIT` | NOT STARTED | Dead last. |
 

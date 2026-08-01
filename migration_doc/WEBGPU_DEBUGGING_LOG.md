@@ -1005,7 +1005,7 @@ empty-scene byte-identity, remain green.
 
 **Item:** NEW-STARS-BRIGHT-CATALOG (Track V-C, independent of the atmosphere stages). A real Yale Bright Star Catalog starfield that augments the static SkyBox cubemap on WebGPU with physically-placed, time-correct HDR stars fed through bloom.
 
-**Files added:** `Scene/BrightStarCatalog.js` (embedded BSC5 subset, ~230 brightest stars), `Scene/StarField.js` (backend-agnostic FR-seam primitive), `Renderer/WebGPU/WebGPUStarFieldRenderer.js` (FeatureRendererKey.STAR_FIELD=51), `Shaders/WebGPU/Catalog/StarField.wgsl`, `Tools/visual-regression/probe-stars-catalog.mjs`.
+**Files added:** `Scene/BrightStarCatalog.js` (embedded BSC5 factual-field subset; the live table is 263 records spanning visual magnitude -1.46 through 5.0, and its current docblock withdraws the historical public-domain claim), `Scene/StarField.js` (backend-agnostic FR-seam primitive), `Renderer/WebGPU/WebGPUStarFieldRenderer.js` (FeatureRendererKey.STAR_FIELD=51), `Shaders/WebGPU/Catalog/StarField.wgsl`, `Tools/visual-regression/probe-stars-catalog.mjs`.
 
 **Files modified:** `Renderer/FeatureRendererKey.js` (+STAR_FIELD=51, COUNT 51→52), `Renderer/WebGPU/WebGPUShaderDefines.ts` (+ShaderSourceId.STAR_FIELD_CATALOG=37), `Renderer/WebGPU/WebGPUFeatureRenderers.ts` (register FR), `Scene/SkyBox.js` (owns StarField, `starField` getter), `Scene/Scene.js` (`environmentState.starFieldCommand` + drive in updateEnvironment), `Scene/SceneRenderer.js` (inject after skyBox).
 
@@ -15170,3 +15170,616 @@ reported SkyBox **21/21 PASS** and the `GraphicsContext` include-name slice
 **11/11 PASS**, with no unhandled rejection. The stale-bundle diagnosis
 matters: adding another production workaround before rebuilding would have
 treated generated test drift as a second engine defect.
+
+## C12-29 S5 shared-tree architecture reconciliation (2026-07-26)
+
+**Type.** Architecture reconciliation record (multi-defect), not a single-bug
+entry. Root cause and fix are stated per subsection below; the closing
+subsection lists the evidence and the gates that remain open.
+
+This entry records the architecture integrated after the S6 landing. It
+supersedes the parked S5 worktree's independently rounded f32 body positions,
+Scene-global observer state, and proposal to append 64 bytes to every globe
+camera uniform. The targeted both-backend browser pixel gate passes, and the
+moving route now passes as causal instrumentation rather than as a speedup
+certification; NASA-SVS geospatial comparison, counterbalanced active-eclipse cost, real
+terrain/exaggeration, custom-ellipsoid, multi-View/capture, and real device-loss
+certification remain open.
+
+### Eclipse state belongs to the logical View
+
+The eclipse geometry is observer-dependent. A single mutable Scene object could
+serve the default camera but allowed a secondary/pick/offscreen view to inherit
+the wrong angular radii, separations, scene-light factor, or horizon term.
+`View` now owns stable `_eclipseState`, `_eclipseSceneLightFactor`,
+`_eclipseHorizonTwilight`, and `_eclipseGlobeShadow` objects. At the end of
+`Scene.updateFrameState()`, `prepareLogicalViewEclipse()` updates S1/S2/S6 in
+place, publishes their transient aliases onto `FrameState`, and clears the S5
+alias and memo. Retained capture, the main globe, and pick then prepare S5 once
+against their exact owned terrain selection before emitting commands.
+
+This placement is before every normal `UniformState.update(frameState)` entry,
+including the pick/offscreen paths that call `updateFrameState()` themselves.
+Auxiliary pass cameras that call only `UniformState.updateCamera()`—shadow
+cameras and environment-capture cube faces—do not become new eclipse
+observers. Capture faces reuse the capture owner's prepared body-ray block.
+That is intentional because the S5 body representation below is geocentric
+and pass-camera-independent.
+
+This is a correctness foundation, not a multi-view completion claim.
+`Scene.createView` still does not provide a generic scheduler that presents
+multiple logical Views in one frame, and WebGPU stereo still rejects
+`useWebVR` while `supportsStereoViewport` is false. Exact split-screen and
+per-eye behavior remain certification work.
+
+### Raw f32 body positions were rejected in favor of a common-ray differential
+
+The parked payload sent Sun and Moon ECEF positions as f32 and asked the
+fragment shader to subtract a planetary position. High/low encoding of the
+fragment alone would not repair subtraction against raw astronomical f32
+vectors. The integrated CPU path instead derives in f64:
+
+```text
+uS = normalize(S)                 a = 1 / |S|
+dU = normalize(M) - uS            b = 1 / |M|
+```
+
+For an ECEF surface point `P`, both shaders evaluate:
+
+```text
+s = uS - P*a
+D = dU + P*(a-b)
+m = s + D
+d = atan2(length(cross(s, D)), dot(s, m))
+```
+
+The shaders consume their direct exaggerated ECEF `positionMC` varying. Its
+f32 quantization is sub-metre at Earth radius, and each `P*q` is multiplied by
+the small inverse range **before** the common-ray subtraction. WebGL reads
+`v_positionMC`; WebGPU reads `input.v_positionMC`. Neither path depends on a
+mutable render/pick/capture camera, and neither subtracts independently rounded
+astronomical positions. `cross(s,m) = cross(s,D)`, so the small Moon/Sun
+separation retains its useful bits; `atan2` avoids the ill-conditioned
+`acos(dot)` of two near-parallel rays.
+
+The f32-faithful Node emulator compares that shader sequence to an f64
+reference at the surface, LEO, GEO, the north pole, and the antimeridian under
+multiple body directions and support-boundary samples. The current gate has no
+clear/partial/umbra classification disagreement.
+
+### One limb law and one S2 composition on both backends
+
+`EclipseGlobeShadow.js` fits a small endpoint-preserving cubic from uniform-disc
+overlap to the existing limb-darkened `computeSolarObscuration` law. A cheap
+f64 CPU reject uses the current selected-terrain envelope; the fragment path
+then performs an exact algebraic local disc-support reject before inverse trig
+or square roots and retains the exact analytic circle-overlap branches.
+S2-aware composition chooses an absolute factor or removes the already-applied
+camera factor before applying the fragment-local factor, so globe terrain is
+not dimmed twice. Gates 3/4 are correction-only: they restore S2 producers
+without publishing body rays or running local eclipse geometry. They are still
+active carriers: WebGPU uses one memoized 64-byte View slice and WebGL uses the
+bit-33 active shader plus packed `mat4`. Their body inverse ranges are zero,
+the common-ray, ellipsoid-horizon, overlap, and limb-fit ALU is skipped, and
+the carrier must not grow per tile or pass.
+
+Sun and Moon also overlap angularly from the antipodal point through the
+Earth. That is not a second ground shadow. Both shaders transform the direct
+position and Sun ray by the rendered ellipsoid inverse radii, then use
+`|cross(p,d)|² / |d|²` for the closest point of an inward ray. This stable form
+avoids the catastrophic cancellation in `|p|²-dot(p,d)²/|d|²`, handles WGS84
+oblateness, custom ellipsoids, and elevated terrain, and returns exact identity
+when the ray crosses the globe.
+
+The paired files are `GlobeFS.glsl` and
+`Shaders/WebGPU/Globe/GlobeTerrain.wgsl`. Their payload order, common-ray
+differential, analytic support branches, limb-fit expression, horizon gate,
+and S2 composition are one lockstep contract.
+
+### The WebGPU carrier is dedicated and inert off-path
+
+Appending the S5 payload to `CameraUniforms` would charge every WebGPU globe
+tile/pass an extra 64 bytes even on ordinary frames and would couple a
+logical-view value to pass-camera packing. That design was rejected.
+
+WebGPU now has a dedicated 64-byte uniform block at group 0, binding 2 with a
+dynamic offset:
+
+- four `vec4<f32>` fields, exactly matching the columns of WebGL's packed
+  `mat4`;
+- one renderer-owned inert GPU buffer/slice, initialized once;
+- the ordinary hot gate reads `params.x` and returns that inert slice without
+  a uniform-ring allocation or upload;
+- an active block allocates/packs only on a
+  `(block identity, context, allocator allocationEpoch, revision)` miss—never
+  `frameNumber`, because private encoders can rotate ring pages mid-frame;
+- every tile, imagery pass, wireframe command, and environment-capture face
+  reuses the resulting slice and supplies
+  `[cameraOffset, tileOffset, eclipseOffset]`;
+- the group-0 bind-group cache key includes the eclipse buffer identity;
+- destruction releases the inert buffer and replaces the WeakMap memo.
+
+`CAMERA_UNIFORM_FLOATS` remains 232, or 928 bytes. S5 therefore does not add a
+per-tile camera-UB tax, while each active prepared View/block revision pays one
+small upload reused by its commands rather than one upload per draw. WebGL
+command construction captures
+the active View block in `uniformMap.properties` as one packed `mat4`; its
+closure does not lazily follow mutable `FrameState` after another View is
+prepared. `updateForPick` explicitly rebinds pooled WebGL commands to the pick
+View. Private WebGPU capture flushes staged uniform bytes before its submit.
+Device invalidation destroys the ring allocator and clears retained capture
+sources/models; dynamic-environment caches are keyed by `GPUDevice` plus
+resource generation and release capture depth, SH, history, and IBL resources.
+
+### Recovery cannot latch scene reflections to the sky fallback
+
+The first recovery design correctly cleared
+`context._webgpuSceneCaptureSources`, but dynamic-environment update runs before
+the globe draw republishes those sources. A recovered manager could therefore
+fill and prefilter a sky-only cube, advance its capture debounce as if terrain
+had been submitted, and then receive no reason to render again under
+request-render mode.
+
+The fix is producer-edge driven, not a manager retry loop:
+
+- the stable capture-source record is stamped with the publishing frame and is
+  accepted only for the current or immediately previous frame, with a renderer,
+  provider, and nonempty selected-tile list;
+- `runSceneCapture` reports whether it actually encoded and submitted the six
+  faces; a miss does not advance the camera/debounce bookkeeping and does not
+  run temporal accumulation;
+- a first publication after startup, recovery, a hidden-globe gap, or a
+  renderer/provider change reuses the record and queues one hoisted
+  `afterRender` callback that returns `true`;
+- the manager settles the missed frame on the valid sky fallback and clears
+  `needsUpdate`, while that one producer callback requests the follow-up frame
+  in which the current-device globe sources are captured.
+
+This closes the sky-only latch without a perpetual request-render loop and
+removes the former per-tile capture-record allocation. The executable
+`WebGPUDynamicEnvironmentMapManagerSpec` is 4/4, and the protected Node recovery
+contract now includes the frame-stamped producer edge. A real browser
+device-loss/replacement-device run remains part of final S5 certification.
+
+### WebGL compile stalls were measured, not guessed
+
+The moving multi-altitude API-instrumentation lane now timestamps
+`createShader`, `shaderSource`, `compileShader`, `linkProgram`,
+`getProgramParameter`, and first `useProgram` inside the exact measurement
+window. Before specialization, all seven long tasks contained exactly one
+blocking `getProgramParameter(program, LINK_STATUS)` call. The queries cost
+108-138.2 ms each and 889.9 ms total, accounting for 889.9 of 981 ms of long
+tasks. Compile/link submission and first use were otherwise sub-millisecond.
+
+WebGL now uses an arithmetic bit-33 globe cache flag to emit
+`ENABLE_ECLIPSE_GLOBE_SHADOW` only when the current block is active, including
+correction-only gates 3/4. The inactive program has no eclipse uniform, helper
+semantic IR after preprocessing, surface composition, or atmosphere
+correction. The raw combined shader string still carries the guarded helper
+source, so a driver must preprocess it. Direct time scrubs still
+select the full program on the first active frame; a cold link may stall, but
+the renderer never substitutes an incorrect inactive frame. In the immediate
+same-refresh directional rerun, the seven status waits fell to 753.9 ms and
+long tasks to 845 ms. CPU p95 also moved 9.2 to 7.2 ms, but one repetition is
+not enough to claim that as a stable speedup.
+
+This does not solve Cesium's renderer-wide lazy-link architecture. Local Edge
+supports `KHR_parallel_shader_compile`, but the fork has no pending
+`ShaderProgram` lifecycle. A correct follow-up must submit links without
+`LINK_STATUS`, poll only `COMPLETION_STATUS_KHR` from a bounded idle queue,
+finalize reflection once ready, warm the final log-depth/HDR/shadow-derived
+executable, and synchronously finish on an unexpected first bind to preserve
+direct-scrub correctness. A synchronous “prewarm” would only move the same
+100-ms block. Also fix the pre-existing `GlobeSurfaceShaderSet` displaced-
+variant reference leak before broad companion prewarming.
+
+### Current evidence and honest remaining gates
+
+At this checkpoint:
+
+- `eclipse-globe-umbra-rte.spec.mjs`: **14/14 PASS**;
+- protected eclipse/recovery Node set: **134/134 PASS**;
+- focused Edge/Karma fill-classification lane: **4/4 PASS**;
+- full `gulp build` and targeted engine ESLint: PASS;
+- `probe-eclipse-globe-shadow.mjs`: PASS on WebGL and WebGPU, with zero changed
+  control pixels. Changed-coverage, strong-core, mean-darkening, and footprint-
+  edge parity deltas are 0.00747, 0.00259, 0.01741, and 3 px;
+- moving-camera event artifacts prove the synchronous link-status cause and
+  the static variant's directional reduction, but counterbalanced repetitions
+  and valid active-eclipse GPU timings are still required.
+
+Final certification must add real terrain/exaggeration, surface/orbit/pole/
+antimeridian/custom-ellipsoid and multi-View/pick/capture-camera cases, verify
+real device-loss recovery, and only then compare the 2024 footprint to the
+NASA-SVS reference with projection, ephemeris, and terrain-mask provenance.
+
+### Adjacent temporal-history hazard discovered, not fixed here
+
+Moving S1/S2/S6 preparation and the S5 memo reset into `updateFrameState()`,
+with exact S5 preparation retained by each command owner, makes logical-view
+state fresh for re-entrant pick/offscreen work. It also makes an older
+unrelated hazard impossible to ignore: `UniformState.update()` snapshots current
+view-projection, RTE view-projection, and camera position as "previous" on
+**every call**, not once per presented logical-view frame. Pick passes,
+offscreen rays, 2D viewport halves, or repeated view execution can therefore
+collapse the main-view delta to current/current or overwrite it with another
+camera before TAA/motion consumers read it.
+
+Do not fold a speculative fix into S5. The follow-up must separate
+logical-view preparation from temporal-history commit, store history per
+`View`, advance it once at a defined presented-frame boundary, and prove
+main-render + pick/offscreen + split-view/stereo-shaped re-entry without
+regressing TAA, motion blur, morph invalidation, or RTE precision.
+
+## C12-29 S5 current-state reconciliation — supersedes the checkpoint above (2026-07-26)
+
+**Supersession scope.** The historical S5 checkpoint above remains useful for
+the design sequence and the first measurements, but its test counts, capture
+contract, and statement that counterbalanced performance evidence was still
+missing are no longer current. The implementation now uses a two-stage
+selected-terrain classifier:
+
+1. a conservative broad test encloses the ellipsoid, every observed terrain
+   height, fill-skirt allowance, vertical exaggeration, and numeric safety;
+2. only a broad-test hit is refined against the bounds of the terrain meshes
+   actually selected to draw, including fill meshes and skirts, with the
+   quadtree selection revision as the memo key.
+
+Unknown or invalid bounds remain active rather than risking a false negative.
+This preserves the footprint while removing local common-ray,
+ellipsoid-horizon, overlap, and limb-fit work from selected terrain outside the
+penumbra. Correction-only carrier and S2 composition remain active.
+
+**Capture contract now explicit.** Scene capture returns `FAILED`, `SKY_ONLY`,
+`PARTIAL`, or `SUBMITTED`; only a complete `SUBMITTED` globe composite advances
+successful-capture debounce state. A globe-requested capture with zero encoded
+draws returns `FAILED` and does not submit an empty encoder, while an
+intentional model-only zero-draw frame remains `SKY_ONLY`. Selected
+terrain/imagery resource identity feeds a content epoch, so terrain refinement,
+fill replacement, imagery readiness/texture replacement, layer changes, and
+exaggeration invalidate capture content without per-tile records. Repeated
+publication in the same frame returns immediately when frame, renderer,
+provider, and content epoch match.
+
+The fingerprint is deliberately double-opt-in. With scene-capture reflections
+off, the provider pays one branch and creates or consults no resource-identity
+`WeakMap`. With the feature on, it remains an allocation-free but
+**O(T + A)** scan of selected terrain tiles plus their imagery entries; an
+event/revision-driven replacement remains a valid measured follow-up if this
+feature-on CPU cost becomes material.
+
+**Current verification authority:**
+
+- S6 protected source set: **51/51 PASS**;
+- S5 RTE set: **18/18 PASS**;
+- visual-source contract: **4/4 PASS**;
+- recovery contract: **7/7 PASS**;
+- protected aggregate: **145/145 PASS**; core aggregate: **134/134 PASS**;
+- Edge/Karma dynamic-environment manager: **11/11 PASS**;
+- full build and TypeScript gates: PASS; performance contract: **23/23 PASS**;
+- real `probe-eclipse-globe-shadow.mjs`: PASS on WebGL and WebGPU;
+- current six-pair counterbalanced moving-route artifact:
+  `Tools/visual-regression/output/performance/s5-eclipse-spatial-after-counterbalanced-2026.json`.
+
+The counterbalanced route reports healthy current WebGL/WebGPU parity. It does
+**not** establish a stable before/after speedup because the pre-change baseline
+has only one run; no speedup or isolated S5-cost claim should be derived from
+that sample. The full S5 matrix remains open. Within the recovery/device lane,
+the remaining gate is a genuine browser replacement-device run proving that
+old-device buffers/views are released and only new-device resources are
+rebound. Calling `GPUDevice.destroy()` creates terminal loss with
+`reason === "destroyed"` and is not replacement-device evidence.
+
+## C12-29 S5 exact-owner preparation and selected-terrain browser certification (2026-07-28)
+
+The shared tree previously reset the S5 memo and immediately performed a
+consumerless Scene-level coarse preparation. The main globe later advanced its
+selection revision and prepared again against the actual selected meshes, so
+the coarse result could not be reused. The Scene call duplicated one O(1)
+globe-wide test for each rendered-globe logical `View`/frame and repeated the
+limb-darkening fit on active intersecting frames.
+
+`prepareLogicalViewEclipse()` now prepares S1/S2/S6, clears the transient S5
+alias and memo, and stops. Retained capture, main globe, and pick are the sole
+S5 producers; each prepares once against its exact owned terrain set before
+emitting commands. Provider selection revisions, malformed-bound
+conservative-active behavior, first-frame fallback, and pass-camera-independent
+RTE geometry are unchanged. This is a bounded eclipse-path CPU cleanup, not an
+FPS claim.
+
+The extended `probe-eclipse-globe-shadow.mjs` passes both renderers and its
+footprint parity gate. From one fixed orbital camera, the outside target
+records 81/81 globe rays and exactly 36 stable skirted meshes on both
+renderers, with gate 3 and both body inverse ranges zero. The S2-only capture
+is a non-vacuous darker negative control; correction returns to identity
+exactly on WebGL and within one code value on WebGPU. The first inside frame is
+already gate 2 and converges to 25 selected meshes. On the reverse transition,
+the first frame exposes two conservative root fallbacks and remains gate 2;
+settling restores the exact 36-mesh gate-3 selection. WebGPU correction and
+local lanes each consume exactly one allocation above gate 0, independent of
+selected tile count. Artifact:
+`Tools/visual-regression/output/eclipse-globe-shadow-report.json`.
+
+This closes the synthetic correction/local selection-transition lane only.
+NASA-SVS comparison, real terrain/exaggeration/fill/provider transitions,
+behavioral pick/capture, dense timing and isolated S5 cost, custom-ellipsoid
+runtime, generic multi-View/stereo, and genuine replacement-device recovery
+remain required.
+
+## Pipeline-alias worktree disposition — the parked caller-name pipeline-cache patch is DO NOT LAND (2026-07-28)
+
+**Type.** Disposition record for a parked worktree patch; no engine change
+landed from it. **Root cause of the rejection** and the **durable follow-up**
+are stated below.
+
+The parked `agent-a68f438fcb2e102c1` caller-name patch is **DO NOT LAND** as the
+pipeline-cache fix. Its source guard passes by requiring callers to encode
+`LOG_DEPTH` in `descriptor.name`, but the central cache still omits shader
+module, entry point, layout, constants, and several structural pipeline axes.
+Its runtime negative control also computes stripped shadow keys and then probes
+the real map populated with unstripped keys, so several marker forms cannot
+validate the claimed collision.
+
+The durable follow-up belongs in `WebGPURenderPipelineCache`: key the effective
+semantic descriptor, use per-device `WeakMap`-assigned identities for opaque
+shader modules and explicit pipeline layouts, and prove the old collision with
+a fake-device unit test before applying the fix. Debug names remain labels,
+not correctness. The worktree's independent globe `frameState.useLogDepth`
+correction may be rebased separately after resolving current shared-tree
+changes.
+
+## C11-180 — WebGL first-use `LINK_STATUS` stalls: eager scheduling rejected, bounded final preparation verified (2026-07-28)
+
+**Status.** IMPLEMENTED / **PARTIAL** and **uncommitted** in the working tree.
+Per `HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md` only `C11-208` has reached its
+exit gate, so nothing below is a landing, completion, or timing-certification
+claim. The globe-ownership half is `C11-181` (IMPLEMENTED / VERIFIED / LANDING
+PENDING).
+
+**Symptom.** On the canonical moving multi-altitude WebGL route, seven long
+tasks of roughly 100–205 ms each appeared at fixed route positions, dominating
+the frame-time tail, while WebGPU recorded none on the same route.
+
+**Root cause.** Every one of those long tasks contained exactly one blocking
+`getProgramParameter(program, LINK_STATUS)` query at a shader variant's first
+use. Cesium links lazily renderer-wide and queries link status synchronously on
+demand, so each first encounter of a program variant stalls the frame. Local
+Edge exposes `KHR_parallel_shader_compile`, but the fork had no pending
+`ShaderProgram` lifecycle able to use it, and a synchronous "prewarm" would only
+relocate the same block.
+
+**Fix (accepted policy; the subsections below carry the detail).**
+This entry supersedes the pending-lifecycle conclusion in **“WebGL compile
+stalls were measured, not guessed”** above; its baseline measurements and
+causal attribution remain valid. The accepted implementation is deliberately
+opt-in. Retrieving or creating a program in `ShaderCache` never queues it by
+itself. Callers explicitly schedule either the exact final executable or a
+preparation callback. The cache keeps those in separate required-compilation
+and speculative-preparation queues, and invokes preparation only while no
+required program is active and the foreground compile queue is empty.
+
+### Causal result and rejected eager policy
+
+The static-variant baseline created seven programs/fourteen shaders and paid
+seven blocking `LINK_STATUS` waits totaling 753.9 ms, with seven long tasks.
+The first implementation automatically scheduled every cache-created base and
+derived program. It created 28 programs/56 shaders, retained the same seven
+required first-use waits, and completed 21 additional programs that were never
+needed. It therefore multiplied compilation work without removing the stalls
+and was rejected.
+
+The final explicit policy creates eight programs/sixteen shaders: seven
+programs reach a real draw, and one bounded companion is unused on the
+measured route. Four programs complete asynchronously, while four structural
+first-use programs still force `LINK_STATUS`, totaling 435.1 ms. The route has
+four long tasks.
+
+| Policy | Programs / shaders | Actual use | Blocking waits | Async completion | Long tasks |
+| --- | ---: | --- | ---: | ---: | ---: |
+| Lazy baseline | 7 / 14 | 7 demand-created | 7 / 753.9 ms | 0 | 7 |
+| Rejected eager | 28 / 56 | 7 required + 21 unused | same 7 required waits | 21 unused | 7 |
+| Accepted final | 8 / 16 | 7 drawn + 1 unused | 4 / 435.1 ms | 4 | 4 |
+
+### Lifecycle, exact executable, and correctness fallback
+
+`ShaderProgram` now has uninitialized, linking, ready, and failed states.
+Where `KHR_parallel_shader_compile` is available, submission compiles and
+links without querying `LINK_STATUS`; the idle lifecycle polls only
+`COMPLETION_STATUS_KHR`, then performs link validation and reflection once.
+The camera-visible program scheduled for the draw is selected in the same
+order as normal execution: log-depth derivation, then HDR derivation, then
+shadow-receive derivation. Warming a base program cannot be mistaken for
+warming its final executable.
+
+Correctness never depends on idle time. An unexpected first bind or reflection
+getter synchronously finishes the program. A browser without the extension, a
+frame with no idle preparation window, or an excluded command family retains
+the ordinary synchronous lazy path. No draw is skipped and no provisional or
+wrong program is substituted.
+
+### Bounded opposite-FOG globe companion
+
+After rejecting eager scheduling, the only speculative globe policy retained
+is one opposite-FOG companion for zero- and one-imagery-texture cohorts. The
+companion schedules the exact log-depth/HDR final executable and is disabled
+while shadows are active. Translucent/OIT, debug, pick, depth, and
+greater-than-one-texture variants remain outside the policy.
+
+The fog state distinction is load-bearing. `frameState.fog.configuredEnabled`
+is the persistent public configuration copied from `Fog.enabled`;
+`frameState.fog.enabled` is the current frame's renderability and becomes
+false above the fog height or outside the applicable scene mode. The companion
+uses `configuredEnabled`, so an orbit frame can prepare the fog-on program
+before the route descends, while the current draw still uses the exact
+per-frame `fog.enabled` result.
+
+### Ownership and stale-wrapper correction
+
+`GlobeSurfaceShaderSet` now acquires a replacement before releasing the
+displaced variant. Release destroys and poisons the shared wrapper by clearing
+its `shaderProgram`; `ShaderCache` recursively unschedules the released
+derived-program tree. A stale culled tile can no longer fast-return a wrapper
+whose program was released by another tile or variant transition. This fix is
+required before even the bounded companion can be considered lifetime-safe.
+
+### Instrumentation and verification
+
+The API chronology now records shader source identity/defines, compile and link
+submission, `LINK_STATUS`, `COMPLETION_STATUS_KHR`, first `useProgram`, and
+`firstDrawProgram`. The last event tracks the context's current program at the
+first actual `drawArrays`/`drawElements`, preventing speculative bindings from
+being counted as useful programs. New `globeShaderRequests` records camera
+height, configured and renderable fog, imagery-texture cohort, exact FOG
+choice, companion gate, color correction/translucency/shadow/log-depth/HDR
+axes, and preparation/pending queue counts.
+
+The clean final r3 route passes: 1,175 measured frames, CPU p50 3.70 ms, p95
+7.43 ms, p99 10.152 ms, and four long tasks totaling 502 ms (139 ms maximum).
+The current nine-waypoint visual suite produced WebGL, WebGPU, and diff images
+for every waypoint and passes visual inspection; no rendering feature was
+removed to obtain that route result. These are reported measurements of the
+post-change route, not a counterbalanced before/after delta — the credited
+result is the three blocking `LINK_STATUS` queries no longer issued, and the
+timing gate remains open.
+
+Four first-use stalls remain structural on this route: the first encounters of
+the quantization × zero/one-texture cohorts. The opposite-FOG companion removes
+the later fog-transition half of that cost, not every renderer-wide shader
+stall. Shadow-active, translucent/OIT, debug/pick/depth, and
+greater-than-one-imagery-texture variants stay synchronous until their demand,
+payoff, and visual/correctness surface are separately measured.
+
+### 2026-07-28 principal-review rerun and adapter-provenance rider
+
+The final accepted-request mask adjustment was rebuilt and rerun rather than
+being accepted on static checks alone. The engine build passes; the focused
+`EdgeHeadlessCI` suites pass **11/11** for
+`Scene/GlobeSurfaceShaderSet` and **23/23** for `Fog`. A fresh clean
+three-run moving-camera altitude lane is stable: median CPU p95 **5.5 ms**
+(range 5.4..5.5), median wall p99 **21.178 ms**, and exactly four long tasks in
+every repetition. The API-attribution rerun preserves the bounded policy:
+WebGL creates **8 programs / 16 shaders**, 7 reach `firstDrawProgram`, four
+complete asynchronously, and four structural `LINK_STATUS` waits total
+**403.0 ms**. WebGPU records zero WebGL program events and zero globe-companion
+requests. Artifacts:
+`output/performance/webgl-fog-companion-final-clean-r3.json` and
+`output/performance/fog-companion-final-both-events.json`.
+
+The `C12-03` / `C11-175` adapter-provenance rider is also complete.
+`run-performance-campaign.mjs` now emits one `gpuProvenance` record per run
+containing the backend, `context.getRendererString()`, and WebGPU
+`adapter.info`; incomplete backend identity is a hard run failure. The browser
+smoke identifies WebGL as ANGLE on an NVIDIA GeForce GTX 1080 Ti / D3D11 and
+WebGPU as NVIDIA Pascal (subgroup range 32..128), proving that this machine's
+comparison is not silently crossing physical GPU vendors. Artifact:
+`output/performance/adapter-provenance-smoke.json`; Node harness coverage
+**24/24 PASS**.
+
+**Files:** `packages/engine/Source/Renderer/ShaderProgram.js`,
+`Renderer/ShaderCache.js` (+ `ShaderCache.d.ts`), `Renderer/Context.js`,
+`Scene/WebGLShaderProgramScheduler.js` (new), `Scene/GlobeSurfaceShaderSet.js`,
+`Scene/Fog.js`; new specs `Specs/Renderer/ShaderProgramParallelCompileSpec.js`,
+`Specs/Scene/WebGLShaderProgramSchedulerSpec.js`,
+`Specs/Scene/GlobeSurfaceShaderSetSpec.js`, and `Specs/Scene/FogSpec.js`;
+harness `Tools/visual-regression/run-performance-campaign.mjs`. **All
+uncommitted.** **Trace:** `C11-180` (W1 — PARTIAL) and `C11-181`
+(IMPLEMENTED / VERIFIED / LANDING PENDING) in
+`QUEUE_2026-07-18_CAMPAIGN11.md`; `DEFERRED_WORK.md`
+`WEBGL-ASYNC-SHADER-COMPILE-LIFECYCLE` +
+`WEBGL-GLOBE-SHADER-VARIANT-EVICTION-REFERENCE`; `C12-03` / `C11-175` for the
+adapter-provenance rider.
+
+## C11-AUDIT-2026-07-31 — Campaign 11 local-change, attribution, and parallel hot-path audit (2026-07-31)
+
+**Type.** Audit / attribution record covering many items, not a single-defect
+entry and not an engine-change claim of its own. It records **uncommitted**
+Campaign 11 work; it is not a batch/landing or performance-certification claim.
+Per `HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md` only `C11-208` has reached its
+exit gate.
+
+### Verification — measurement truth (attribution only; no timing certification)
+
+The representative runner now performs content inspection in an untimed,
+bounded deterministic replay after `endPerformanceTrace`. Exact resident
+fingerprints use renderer-neutral terrain, ready/configured direct-model, and
+3D Tiles identities; emitted command owners are deliberately excluded because
+`C11-185` can correctly suppress their commands. Node contracts pass 45/45.
+
+The API-only streaming lane completed 1,088 moving frames and conserved 53,821
+model-preparation candidates exactly: 20,384 view admissions, 1,597
+conservative tile-owned admissions, and 31,840 frustum rejects. Every 21,981
+admitted run maps to one camera pack/write, effects/material/light preparation,
+and command build. This proves avoided work, not a timing percentage.
+
+The exact resident pair completed 600 moving frames per backend with identical
+camera/terrain identity and zero terrain requests/generations. It correctly
+failed comparability in the San Francisco 3D Tiles segment: WebGL observed
+710 selected tiles, maximum 15; WebGPU observed 571, maximum 12. The selected
+statistics and internal arrays agree. `C11-205` owns ready-content identity and
+issued/cancelled/reissued request evidence before any SSE/traversal change.
+
+### Root cause → fix, per item (every slice below is implemented but uncommitted)
+
+- `C11-192`: terrain shadow-cast UBs are demand-realized; shadow-OFF terrain
+  pays no per-tile allocation/upload, and shadow-ON retains the complete path.
+- `C11-199`: model pipeline pending promises are descriptor/generation-owned;
+  stale completion cannot replace newer state.
+- `C11-200`: fixed manual exposure writes are exact-value gated; dynamic
+  auto-exposure remains dynamic.
+- `C11-201`: globe packed-depth publishes its render target's stable cached
+  texture view instead of manufacturing a new wrapper identity per frame. A
+  current 1,031-frame attribution rerun remained at 389 bind groups, identical
+  to the pre-change artifact; credit is limited to removed view-wrapper
+  allocation/lifetime churn, not a bind-group or timing win.
+- `C11-211`: model animation is explicitly three-phase—every node transform,
+  one joint-palette update, then every primitive—removing inherited
+  runtime-nodes × skinned-nodes × joints repetition and correcting ordering.
+- `C11-193` narrow allocation slice: tile models borrow their tileset-owned
+  dynamic-environment manager at construction. Standalone models keep private
+  ownership, and model replacement/destruction cannot destroy the borrowed
+  tileset resource.
+
+Canonical `gulp build`, engine TypeScript, focused lint/format, and the source
+contracts are green. Focused Karma did not execute tests in the available Edge
+launcher, so animated pixels, shadow-ON pixels, and other browser-owned gates
+remain explicitly open.
+
+Current-bundle artifact:
+`output/performance/campaign11-streaming-current-attribution-2026-07-31.json`.
+It passes 1,031 moving frames, all eight route segments, exact model-preparation
+conservation, and clean queue/device teardown. It reconfirms 68 per-model
+default property textures and 52 dynamic-environment pipeline packs.
+
+### Parallel audit additions
+
+- `C11-76` private-submit scope also includes ComputeInstance, FlowField, and
+  opt-in point-cloud GPU LOD.
+- `C11-208` owns a globe-specific reduced effects layout. Model-edge textures
+  are not declared by Globe WGSL, yet the shared layout can consume the entire
+  spec-floor fragment-texture budget and force one imagery layer per pass.
+- `C11-60` includes user/library post-process stages, motion blur, contact
+  shadows, SSR, and NPR bind-group/upload churn.
+- `C11-209` owns combining eleven placeholder-clear command buffers into one
+  initialization submission without removing any clear.
+- `C11-210` owns the dormant compute-command mismatch where the context is
+  supplied to a command that requires a `GPUComputePassEncoder`.
+- `C11-194` now explicitly destroys each cache's `_defaultPropertyTexture` and
+  still owns device-generation sharing of immutable model defaults. `C11-202`
+  remains the backend-neutral answer to legacy CPU/WebGL-shaped model graph
+  construction.
+
+No second production native geometry upload was found. WebGPU's confirmed
+remaining compatibility tax is CPU-side legacy graph/GLSL object construction,
+translation, and garbage collection—not duplicate native buffer allocation.
+
+**Files:** deliberately not duplicated here — the per-item file evidence for
+every slice above is enumerated in `LOCAL_CHANGE_AUDIT_2026-07-31.md` §6.1–6.8,
+with its test/verification evidence in §7 and its moving-camera artifacts in §8.
+**Open gates.** Focused Karma did not execute in the available Edge launcher, so
+animated model pixels, shadow-ON pixels, and the stable-depth attribution rerun
+remain browser-owned gates rather than assumed passes; `C11-205` still blocks
+causal resident timing. **Trace:** `C11-60`, `C11-76`, `C11-185`, `C11-192`,
+`C11-193`, `C11-194`, `C11-199`, `C11-200`, `C11-201`, `C11-202`, `C11-205`,
+`C11-208`, `C11-209`, `C11-210`, `C11-211` in `QUEUE_2026-07-18_CAMPAIGN11.md`;
+`LOCAL_CHANGE_AUDIT_2026-07-31.md`;
+`HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`.
