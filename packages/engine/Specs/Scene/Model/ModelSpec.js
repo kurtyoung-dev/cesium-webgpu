@@ -19,6 +19,7 @@ import {
   DirectionalLight,
   DistanceDisplayCondition,
   DynamicAtmosphereLightingType,
+  DynamicEnvironmentMapManager,
   DracoLoader,
   EdgeDisplayMode,
   Ellipsoid,
@@ -163,6 +164,33 @@ describe(
       sceneCV.primitives.removeAll();
       scene.verticalExaggeration = 1.0;
       ResourceCache.clearForSpecs();
+    });
+
+    it("borrows an environment map manager without taking ownership", function () {
+      const tilesetOwner = {};
+      const environmentMapManager = new DynamicEnvironmentMapManager();
+      DynamicEnvironmentMapManager.setOwner(
+        environmentMapManager,
+        tilesetOwner,
+        "environmentMapManager",
+      );
+
+      const model = new Model({
+        loader: {
+          destroy: jasmine.createSpy("loader.destroy"),
+        },
+        resource: {},
+        environmentMapManager: environmentMapManager,
+      });
+
+      expect(model.environmentMapManager).toBe(environmentMapManager);
+      expect(environmentMapManager.owner).toBe(tilesetOwner);
+
+      model.destroy();
+
+      expect(environmentMapManager.isDestroyed()).toBe(false);
+      expect(environmentMapManager.owner).toBe(tilesetOwner);
+      environmentMapManager.destroy();
     });
 
     function zoomTo(model, zoom) {

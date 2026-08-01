@@ -1,6 +1,10 @@
 import {
+  createPackedMaterialUploadState,
+  destroyWebGPUModelResources,
   getOrCreateMergedMaterialBindGroup,
   getOrCreateModelIBLEntries,
+  shouldPrepareModelCustomShaderResources,
+  uploadPackedMaterialUniformsIfChanged,
 } from "../../../Source/Renderer/WebGPU/WebGPUModelRenderer.js";
 
 // C9-17 Slice A — certifies the per-primitive merged group-1 (material + light +
@@ -313,6 +317,129 @@ describe("Renderer/WebGPU/WebGPUModel material bind-group cache", function () {
     expect(afterDeviceChange).not.toBe(first);
     expect(deviceA.bindGroups.length).toBe(1);
     expect(deviceB.bindGroups.length).toBe(1);
+  });
+});
+
+describe("Renderer/WebGPU/WebGPUModel material uniform uploads", function () {
+  function makeDevice() {
+    const writes = [];
+    return {
+      writes: writes,
+      queue: {
+        writeBuffer: function (buffer, offset, source, sourceOffset, size) {
+          writes.push({
+            buffer: buffer,
+            offset: offset,
+            source: source,
+            sourceOffset: sourceOffset,
+            size: size,
+          });
+        },
+      },
+    };
+  }
+
+  it("uploads the first packed block even when every byte is zero", function () {
+    const device = makeDevice();
+    const buffer = { label: "material" };
+    const data = new Float32Array(8);
+    const state = createPackedMaterialUploadState(data);
+
+    expect(
+      uploadPackedMaterialUniformsIfChanged(device, buffer, data, state),
+    ).toBe(true);
+    expect(device.writes.length).toBe(1);
+    expect(device.writes[0].buffer).toBe(buffer);
+    expect(device.writes[0].size).toBe(data.byteLength);
+  });
+
+  it("skips queue.writeBuffer when the packed bytes are unchanged", function () {
+    const device = makeDevice();
+    const data = new Float32Array([1.0, -0.0, Number.NaN, 4.0]);
+    const state = createPackedMaterialUploadState(data);
+    const currentWords = state.currentWords;
+    const uploadedWords = state.uploadedWords;
+
+    uploadPackedMaterialUniformsIfChanged(device, {}, data, state);
+    expect(uploadPackedMaterialUniformsIfChanged(device, {}, data, state)).toBe(
+      false,
+    );
+
+    expect(device.writes.length).toBe(1);
+    expect(state.currentWords).toBe(currentWords);
+    expect(state.uploadedWords).toBe(uploadedWords);
+  });
+
+  it("uploads again after any packed material byte changes", function () {
+    const device = makeDevice();
+    const buffer = { label: "material" };
+    const data = new Float32Array([1.0, 2.0, 3.0, 4.0]);
+    const state = createPackedMaterialUploadState(data);
+
+    uploadPackedMaterialUniformsIfChanged(device, buffer, data, state);
+    data[2] = 30.0;
+
+    expect(
+      uploadPackedMaterialUniformsIfChanged(device, buffer, data, state),
+    ).toBe(true);
+    expect(device.writes.length).toBe(2);
+  });
+});
+
+describe("Renderer/WebGPU/WebGPUModel no-op preparation and lifetime", function () {
+  it("skips GLSL-only custom shaders but observes native WGSL and cached retirement", function () {
+    const cache = {};
+    const model = {
+      customShader: {
+        fragmentShaderText: "void fragmentMain() {}",
+      },
+    };
+
+    expect(shouldPrepareModelCustomShaderResources(model, cache)).toBe(false);
+
+    model.customShader.wgslFragmentShaderText = "fn fragmentMain() {}";
+    expect(shouldPrepareModelCustomShaderResources(model, cache)).toBe(true);
+
+    delete model.customShader.wgslFragmentShaderText;
+    cache._customShader = { uboBuffer: { destroy: function () {} } };
+    expect(shouldPrepareModelCustomShaderResources(model, cache)).toBe(true);
+
+    cache._customShader = null;
+    expect(shouldPrepareModelCustomShaderResources(model, cache)).toBe(false);
+  });
+
+  it("destroys custom-shader and root/node 2D-IDL buffers with their model", function () {
+    const destroyed = [];
+    const makeDestroyable = (label) => ({
+      destroy: function () {
+        destroyed.push(label);
+      },
+    });
+    const model = {
+      _webgpuCache: {
+        primitives: {},
+        nodes: {
+          0: {
+            cameraBuffer2DIdl: makeDestroyable("node-idl"),
+          },
+        },
+        pipelineCache: makeDestroyable("pipeline-cache"),
+        cameraBuffer2DIdl: makeDestroyable("root-idl"),
+        _customShader: {
+          uboBuffer: makeDestroyable("custom-ubo"),
+        },
+      },
+    };
+
+    destroyWebGPUModelResources(model);
+
+    expect(destroyed).toEqual([
+      "root-idl",
+      "node-idl",
+      "custom-ubo",
+      "pipeline-cache",
+    ]);
+    expect(model._webgpuCache).toBeUndefined();
   });
 });
 

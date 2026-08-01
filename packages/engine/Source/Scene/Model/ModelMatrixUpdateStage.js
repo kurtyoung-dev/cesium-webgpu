@@ -90,11 +90,11 @@ function updateRuntimeNode(
   const primitivesLength = runtimeNode.runtimePrimitives.length;
   for (i = 0; i < primitivesLength; i++) {
     const runtimePrimitive = runtimeNode.runtimePrimitives[i];
-    updateDrawCommand(
-      runtimePrimitive.drawCommand,
-      modelMatrix,
-      transformToRoot,
-    );
+    const realization =
+      runtimePrimitive.drawCommand ?? runtimePrimitive.backendNeutralDescriptor;
+    if (realization) {
+      updateDrawCommand(realization, modelMatrix, transformToRoot);
+    }
   }
 
   const childrenLength = runtimeNode.children.length;

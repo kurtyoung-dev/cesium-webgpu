@@ -109,6 +109,17 @@ class ModelRuntimePrimitive {
     this.drawCommand = undefined;
 
     /**
+     * Backend-neutral state produced by the shared model pipeline before a
+     * renderer realizes native commands. WebGL continues to use drawCommand;
+     * native feature renderers consume this descriptor without paying for a
+     * WebGL ShaderProgram, VertexArray, or derived command graph.
+     *
+     * @type {object|undefined}
+     * @private
+     */
+    this.backendNeutralDescriptor = undefined;
+
+    /**
      * The bounding sphere of this primitive in object-space.
      *
      * @type {BoundingSphere}

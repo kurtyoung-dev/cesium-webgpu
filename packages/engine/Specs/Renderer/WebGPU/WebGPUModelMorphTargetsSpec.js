@@ -1,7 +1,16 @@
 import {
+  ensureMorphTargetResources,
   packMorphTargetDeltas,
   FLOATS_PER_VERTEX_PER_TARGET,
 } from "../../../Source/Renderer/WebGPU/WebGPUModelMorphTargets.js";
+
+if (typeof globalThis.GPUBufferUsage === "undefined") {
+  globalThis.GPUBufferUsage = {
+    COPY_DST: 0x0008,
+    UNIFORM: 0x0040,
+    STORAGE: 0x0080,
+  };
+}
 
 // DP-H35 — glTF morph-target NORMAL deltas on WebGPU (Batch 329). C2-4 (Batch
 // 373) added TANGENT deltas. The CPU pack (packMorphTargetDeltas) writes THREE
@@ -12,6 +21,36 @@ import {
 describe("Renderer/WebGPU/WebGPUModelMorphTargets pack layout", function () {
   it("FLOATS_PER_VERTEX_PER_TARGET is 12 (POSITION + NORMAL + TANGENT vec4)", function () {
     expect(FLOATS_PER_VERTEX_PER_TARGET).toBe(12);
+  });
+
+  it("resets previous weights to current after a visibility-admission gap", function () {
+    const device = {
+      createBuffer: function (descriptor) {
+        return {
+          descriptor: descriptor,
+          destroy: function () {},
+        };
+      },
+      queue: {
+        writeBuffer: function () {},
+      },
+    };
+    const primCache = {};
+    const geometry = {
+      morphTargetCount: 1,
+      vertexCount: 1,
+      morphTargets: [
+        {
+          positionData: new Float32Array([1.0, 0.0, 0.0]),
+        },
+      ],
+    };
+
+    ensureMorphTargetResources(device, primCache, geometry, [0.25]);
+    ensureMorphTargetResources(device, primCache, geometry, [0.75], true);
+
+    expect(primCache._morphWeightData[0]).toBe(0.75);
+    expect(primCache._morphWeightDataPrev[0]).toBe(0.75);
   });
 
   it("packs position@0-2 + normal@4-6 + tangent@8-10 with zero vec4 padding at 3/7/11", function () {

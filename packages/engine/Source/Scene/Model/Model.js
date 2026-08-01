@@ -172,6 +172,7 @@ import ModelImagery from "./ModelImagery.js";
  * @privateParam {Cartesian3} [options.lightColor] The light color when shading the model. When <code>undefined</code> the scene's light color is used instead.
  * @privateParam {ImageBasedLighting} [options.imageBasedLighting] The properties for managing image-based lighting on this model.
  * @privateParam {DynamicEnvironmentMapManager.ConstructorOptions} [options.environmentMapOptions] The properties for managing dynamic environment maps on this model. Affects lighting.
+ * @privateParam {DynamicEnvironmentMapManager} [options.environmentMapManager] An existing environment-map manager to borrow without taking ownership. Used internally by 3D Tiles models that share their tileset's manager.
  * @privateParam {boolean} [options.backFaceCulling=true] Whether to cull back-facing geometry. When true, back face culling is determined by the material's doubleSided property; when false, back face culling is disabled. Back faces are not culled if the model's color is translucent.
  * @privateParam {Credit|string} [options.credit] A credit for the data source, which is displayed on the canvas.
  * @privateParam {boolean} [options.showCreditsOnScreen=false] Whether to display the credits of this model on screen.
@@ -275,6 +276,10 @@ class Model {
 
     this._resourcesLoaded = false;
     this._drawCommandsBuilt = false;
+    // C11-202 — records which renderer realization owns the current shared
+    // model descriptors. A Model normally stays on one context, but tracking
+    // the owner keeps an explicit WebGL/WebGPU context switch correct.
+    this._drawCommandsBackend = undefined;
 
     this._ready = false;
     this._customShader = options.customShader;
@@ -416,14 +421,26 @@ class Model {
     // destroy() can release per-model GPU resources on tile eviction.
     this._featureRenderer = undefined;
 
-    const environmentMapManager = new DynamicEnvironmentMapManager(
-      options.environmentMapOptions,
-    );
-    DynamicEnvironmentMapManager.setOwner(
-      environmentMapManager,
-      this,
-      "_environmentMapManager",
-    );
+    // C11-185 — declared up front so the first off-frustum rejection does not
+    // change the Model object's hidden class. The native renderer flips this
+    // only across a reject/readmit gap to reset temporal history.
+    this._webgpuPreparationAdmissionGap = false;
+
+    const environmentMapManager = options.environmentMapManager;
+    if (defined(environmentMapManager)) {
+      // Tileset models borrow the manager already owned and updated by their
+      // tileset. Do not claim it here or destroy it with the individual model.
+      this._environmentMapManager = environmentMapManager;
+    } else {
+      const ownedEnvironmentMapManager = new DynamicEnvironmentMapManager(
+        options.environmentMapOptions,
+      );
+      DynamicEnvironmentMapManager.setOwner(
+        ownedEnvironmentMapManager,
+        this,
+        "_environmentMapManager",
+      );
+    }
 
     this._backFaceCulling = options.backFaceCulling ?? true;
     this._backFaceCullingDirty = false;
@@ -658,6 +675,7 @@ class Model {
    */
   resetDrawCommands() {
     this._drawCommandsBuilt = false;
+    this._drawCommandsBackend = undefined;
   }
 
   /**
@@ -771,7 +789,7 @@ class Model {
 
     this._defaultTexture = frameState.context.defaultTexture;
 
-    buildDrawCommands(this, frameState);
+    const rendererResourcesReady = buildDrawCommands(this, frameState);
     updateModelMatrix(this, frameState);
 
     // Many features (e.g. image-based lighting, clipping planes) depend on the model
@@ -785,6 +803,14 @@ class Model {
     // zooming to the bounding sphere can account for any modifications
     // from the clamp-to-ground setting.
     if (!this._ready) {
+      // A backend may have started asynchronous native pipeline preparation.
+      // Keep Model.ready truthful without blocking this update or emitting a
+      // placeholder/missing-feature frame. Its async-resource monitor wakes
+      // the scene when preparation resolves, and this cheap poll then admits
+      // the normal afterRender ready transition.
+      if (!rendererResourcesReady) {
+        return;
+      }
       // Set the model as ready after the first frame render since the user might set up events subscribed to
       // the post render event, and the model may not be ready for those past the first frame.
       frameState.afterRender.push(() => {
@@ -1943,6 +1969,12 @@ class Model {
     //>>includeEnd('debug');
 
     if (value !== this.environmentMapManager) {
+      // A 3D Tiles model may currently borrow its tileset's manager. Detach a
+      // borrowed manager before setOwner so replacing the model-local value
+      // cannot destroy a resource owned by the tileset.
+      if (this._environmentMapManager.owner !== this) {
+        this._environmentMapManager = undefined;
+      }
       DynamicEnvironmentMapManager.setOwner(
         value,
         this,
@@ -2308,6 +2340,18 @@ function updateEnvironmentMap(model, frameState) {
   const environmentMapManager = model._environmentMapManager;
   const picking = frameState.passes.pick || frameState.passes.pickVoxel;
   if (model._ready && environmentMapManager.owner === model && !picking) {
+    const context = frameState.context;
+    if (typeof context.recordEnvironmentMapDemand === "function") {
+      // C11-193 telemetry only. Model.update does not prove camera visibility,
+      // so standalone ownership stays conservative until the future scheduler
+      // has a selected-consumer registry for ordinary primitives.
+      context.recordEnvironmentMapDemand(
+        environmentMapManager,
+        "unknown",
+        "standalone-owner",
+        1,
+      );
+    }
     environmentMapManager.position = model._boundingSphere.center;
     environmentMapManager.shouldUpdate =
       !defined(model._imageBasedLighting.sphericalHarmonicCoefficients) ||
@@ -2499,11 +2543,38 @@ function updateVerticalExaggeration(model, frameState) {
 }
 
 function buildDrawCommands(model, frameState) {
-  if (!model._drawCommandsBuilt) {
+  const nativeModelRenderer = frameState.context.getFeatureRenderer(
+    FeatureRendererKey.MODEL,
+  );
+  const hasNativeModelRenderer = defined(nativeModelRenderer);
+  const drawCommandsBackend = hasNativeModelRenderer ? "native" : "legacy";
+  if (
+    !model._drawCommandsBuilt ||
+    model._drawCommandsBackend !== drawCommandsBackend
+  ) {
     model.destroyPipelineResources();
-    model._sceneGraph.buildDrawCommands(frameState);
+    if (hasNativeModelRenderer) {
+      model._sceneGraph.buildBackendNeutralPrimitiveDescriptors(frameState);
+    } else {
+      model._sceneGraph.buildDrawCommands(frameState);
+    }
     model._drawCommandsBuilt = true;
+    model._drawCommandsBackend = drawCommandsBackend;
   }
+  if (
+    hasNativeModelRenderer &&
+    !model._ready &&
+    typeof nativeModelRenderer.prepare === "function"
+  ) {
+    // Native preparation may allocate device resources and start asynchronous
+    // pipeline compilation before submitDrawCommands() gets a chance to cache
+    // the renderer owner. Attach it at the preparation boundary so destroying
+    // a still-preparing (or failed-to-prepare) model deterministically releases
+    // its native cache as well as its shared device-resource lease.
+    model._featureRenderer = nativeModelRenderer;
+    return nativeModelRenderer.prepare(model, frameState) !== false;
+  }
+  return true;
 }
 
 function updateModelMatrix(model, frameState) {
@@ -3293,6 +3364,7 @@ function makeModelOptions(loader, modelType, options) {
     clippingPolygons: options.clippingPolygons,
     lightColor: options.lightColor,
     imageBasedLighting: options.imageBasedLighting,
+    environmentMapManager: options.environmentMapManager,
     backFaceCulling: options.backFaceCulling,
     credit: options.credit,
     showCreditsOnScreen: options.showCreditsOnScreen,

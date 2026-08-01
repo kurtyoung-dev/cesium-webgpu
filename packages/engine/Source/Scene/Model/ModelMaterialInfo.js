@@ -64,6 +64,37 @@ const AlphaModes = Object.freeze({
   BLEND: 2,
 });
 
+const ownedArrayProperties = Object.freeze([
+  "baseColorFactor",
+  "emissiveFactor",
+  "specularFactor",
+  "diffuseFactor",
+  "specularExtColorFactor",
+  "sheenColorFactor",
+  "attenuationColor",
+]);
+
+let materialInfoCache = new WeakMap();
+let materialInfoCacheDiagnosticsEnabled = false;
+const materialInfoCacheDiagnostics = {
+  hitCount: 0,
+  missCount: 0,
+  invalidationCount: 0,
+  descriptorBuildCount: 0,
+  viewBuildCount: 0,
+  viewResetCount: 0,
+};
+
+function freezeMaterialInfo(info) {
+  for (let i = 0; i < ownedArrayProperties.length; i++) {
+    const value = info[ownedArrayProperties[i]];
+    if (Array.isArray(value)) {
+      Object.freeze(value);
+    }
+  }
+  return Object.freeze(info);
+}
+
 /**
  * Extracts a renderer-agnostic material descriptor from a ModelComponents.Material.
  *
@@ -73,6 +104,9 @@ const AlphaModes = Object.freeze({
  * @returns {ModelMaterialInfo} Flat material descriptor
  */
 function extractMaterialInfo(material, hasVertexColors, hasNormals) {
+  if (materialInfoCacheDiagnosticsEnabled) {
+    materialInfoCacheDiagnostics.descriptorBuildCount++;
+  }
   const info = {
     // Material type
     // Upstream parity (MaterialPipelineStage.js): a primitive without a
@@ -82,9 +116,9 @@ function extractMaterialInfo(material, hasVertexColors, hasNormals) {
     // zeros past vertex 0) and the model renders black
     // (NEW-WEBGPU-INSTANCED-VA-DIVISORS verification surfaced this,
     // Batch 245 — BoxInstancedNoNormals rendered black-on-black).
-    isUnlit: material.unlit === true || !hasNormals,
-    isSpecularGlossiness: defined(material.specularGlossiness),
-    isDoubleSided: material.doubleSided === true,
+    isUnlit: material?.unlit === true || !hasNormals,
+    isSpecularGlossiness: defined(material?.specularGlossiness),
+    isDoubleSided: material?.doubleSided === true,
 
     // Alpha
     alphaMode: AlphaModes.OPAQUE,
@@ -460,6 +494,130 @@ function extractMaterialInfo(material, hasVertexColors, hasNormals) {
 }
 
 /**
+ * Returns a cached immutable base descriptor for a runtime primitive.
+ *
+ * glTF material components are stable after loader finalization. Their object
+ * identity, together with the two geometry capabilities that affect material
+ * extraction, is therefore the complete cache signature. Texture readers are
+ * retained as live external handles so their asynchronously resolved images
+ * remain observable without rebuilding this descriptor.
+ *
+ * @param {ModelRuntimePrimitive} runtimePrimitive
+ * @param {ModelComponents.Material} material
+ * @param {boolean} hasVertexColors
+ * @param {boolean} hasNormals
+ * @returns {ModelMaterialInfo}
+ * @private
+ */
+function getOrCreateMaterialInfo(
+  runtimePrimitive,
+  material,
+  hasVertexColors,
+  hasNormals,
+) {
+  const vertexColors = hasVertexColors === true;
+  // Match extractMaterialInfo's historical capability semantics exactly:
+  // vertex colors require literal true, while normals use truthiness.
+  const normals = Boolean(hasNormals);
+  const canCache =
+    (typeof runtimePrimitive === "object" && runtimePrimitive !== null) ||
+    typeof runtimePrimitive === "function";
+
+  if (!canCache) {
+    if (materialInfoCacheDiagnosticsEnabled) {
+      materialInfoCacheDiagnostics.missCount++;
+    }
+    return freezeMaterialInfo(
+      extractMaterialInfo(material, vertexColors, normals),
+    );
+  }
+
+  const cached = materialInfoCache.get(runtimePrimitive);
+  if (
+    defined(cached) &&
+    cached.material === material &&
+    cached.hasVertexColors === vertexColors &&
+    cached.hasNormals === normals
+  ) {
+    if (materialInfoCacheDiagnosticsEnabled) {
+      materialInfoCacheDiagnostics.hitCount++;
+    }
+    return cached.info;
+  }
+
+  if (materialInfoCacheDiagnosticsEnabled) {
+    if (defined(cached)) {
+      materialInfoCacheDiagnostics.invalidationCount++;
+    }
+    materialInfoCacheDiagnostics.missCount++;
+  }
+
+  const info = freezeMaterialInfo(
+    extractMaterialInfo(material, vertexColors, normals),
+  );
+  materialInfoCache.set(runtimePrimitive, {
+    material: material,
+    hasVertexColors: vertexColors,
+    hasNormals: normals,
+    info: info,
+  });
+  return info;
+}
+
+/**
+ * Creates a renderer-owned mutable view over an immutable material base.
+ * This is a once-per-source-generation shallow copy. The base's owned factor
+ * arrays are frozen and remain shared; only top-level effective state such as
+ * alphaMode may be changed by the renderer.
+ *
+ * @param {ModelMaterialInfo} baseInfo
+ * @returns {ModelMaterialInfo}
+ * @private
+ */
+function createMaterialInfoView(baseInfo) {
+  if (materialInfoCacheDiagnosticsEnabled) {
+    materialInfoCacheDiagnostics.viewBuildCount++;
+  }
+  return { ...baseInfo };
+}
+
+/**
+ * Restores dynamic renderer state before a new view update. Custom-shader
+ * translucency is the sole dynamic override today; resetting it explicitly
+ * prevents a previous TRANSLUCENT/OPAQUE view from contaminating INHERIT.
+ *
+ * @param {ModelMaterialInfo} view
+ * @param {ModelMaterialInfo} baseInfo
+ * @returns {ModelMaterialInfo}
+ * @private
+ */
+function resetMaterialInfoView(view, baseInfo) {
+  if (materialInfoCacheDiagnosticsEnabled) {
+    materialInfoCacheDiagnostics.viewResetCount++;
+  }
+  view.alphaMode = baseInfo.alphaMode;
+  return view;
+}
+
+function getMaterialInfoCacheDiagnostics() {
+  return Object.freeze({ ...materialInfoCacheDiagnostics });
+}
+
+function setMaterialInfoCacheDiagnosticsEnabled(enabled) {
+  materialInfoCacheDiagnosticsEnabled = enabled === true;
+}
+
+function resetMaterialInfoCacheForSpecs() {
+  materialInfoCache = new WeakMap();
+  materialInfoCacheDiagnosticsEnabled = false;
+  for (const key in materialInfoCacheDiagnostics) {
+    if (Object.hasOwn(materialInfoCacheDiagnostics, key)) {
+      materialInfoCacheDiagnostics[key] = 0;
+    }
+  }
+}
+
+/**
  * Computes the materialFlags bitfield from the material info.
  * @param {object} info
  * @returns {number}
@@ -529,5 +687,24 @@ function computeFlags(info) {
   return flags;
 }
 
-export { extractMaterialInfo, MaterialFlags, AlphaModes };
-export default { extractMaterialInfo, MaterialFlags, AlphaModes };
+export {
+  extractMaterialInfo,
+  getOrCreateMaterialInfo,
+  createMaterialInfoView,
+  resetMaterialInfoView,
+  getMaterialInfoCacheDiagnostics,
+  setMaterialInfoCacheDiagnosticsEnabled,
+  resetMaterialInfoCacheForSpecs,
+  MaterialFlags,
+  AlphaModes,
+};
+export default {
+  extractMaterialInfo,
+  getOrCreateMaterialInfo,
+  createMaterialInfoView,
+  resetMaterialInfoView,
+  getMaterialInfoCacheDiagnostics,
+  setMaterialInfoCacheDiagnosticsEnabled,
+  MaterialFlags,
+  AlphaModes,
+};

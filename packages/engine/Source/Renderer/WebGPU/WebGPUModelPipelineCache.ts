@@ -4,7 +4,7 @@
  * and presentation format.
  *
  * All variants share the same vertex layout (7 attribute slots) and the
- * 4 bind group layouts produced by `createBindGroupLayouts`:
+ * 4 bind group layouts composed from device-shared model layouts:
  *   Group 0 — camera UBO (per-frame).
  *   Group 1 — merged material UBO + light UBO + 24 PBR/KHR textures +
  *             7 featureId entries (per-material).
@@ -51,7 +51,6 @@ import type { WebGPUPipelineConfig } from "./WebGPUDrawCommand.js";
 import {
   makeBindGroupLayout,
   sampler,
-  storageBuffer,
   texture,
   uniformBuffer,
   Stage,
@@ -77,6 +76,12 @@ import type {
   WebGPURenderPipelineCache,
   WebGPURenderPipelineDescriptor,
 } from "./WebGPURenderPipelineCache.js";
+import {
+  acquireWebGPUModelDeviceResources,
+  getOrCreateWebGPUModelPipelineLayoutCache,
+  releaseWebGPUModelDeviceResources,
+  type WebGPUModelDeviceResources,
+} from "./WebGPUModelDeviceResources.js";
 // DP-H46c/d — property-texture + property-table binding numbers, shared with
 // the codegen + renderer so the BGL, shader, and bind-group entries all agree.
 import {
@@ -613,49 +618,6 @@ function buildMaterialBGL(
  * @param {GPUDevice} device
  * @returns {{ cameraBGL, instanceBGL }}
  */
-function createBindGroupLayouts(device: GPUDevice): {
-  cameraBGL: GPUBindGroupLayout;
-  instanceBGL: GPUBindGroupLayout;
-} {
-  // ── Group 0: CAMERA ── per-frame, shared across all models.
-  const cameraBGL = makeBindGroupLayout(device, "Model Camera BGL", [
-    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
-  ]);
-
-  // ── Group 2: INSTANCE ── per-instance vertex stage data.
-  // Audit A.5 (Batch 130) — binding 4 carries the PREVIOUS frame's
-  // joint matrices so the velocity pass can compute prevPositionMC
-  // by re-running skinning with the previous-frame poses. Without it,
-  // TAA reprojects from `previousModelMatrix * currentSkinnedPosition`
-  // — phantom motion vectors that ghost across animated characters.
-  // Defaults to the identity-matrix buffer (same as binding 0's
-  // default) so non-skinned primitives degrade to "prev == current"
-  // → zero skinning velocity contribution.
-  const instanceBGL = makeBindGroupLayout(device, "Model Instance BGL", [
-    storageBuffer(0, Stage.VERTEX, { readOnly: true }), // joint matrices
-    storageBuffer(1, Stage.VERTEX, { readOnly: true }), // morph deltas
-    uniformBuffer(2, Stage.VERTEX), // morph weights
-    storageBuffer(3, Stage.VERTEX, { readOnly: true }), // instance transforms
-    storageBuffer(4, Stage.VERTEX, { readOnly: true }), // PREV joint matrices (TAA velocity)
-    // NEW-TAA-MORPH-PREV (Batch 134) -- previous-frame morph weights
-    // for the velocity pass. Defaults to the current weights buffer
-    // when no morph history is established (first frame), producing
-    // zero velocity contribution from morph deltas.
-    uniformBuffer(5, Stage.VERTEX),
-    // NEW-TAA-INSTANCE-PREV (Batch 134) -- previous-frame instance
-    // transforms. Today's GPU instancing is static (uploaded once,
-    // never updated), so the prev buffer aliases the current one and
-    // adds zero velocity contribution from instance deltas. Animated
-    // EXT_mesh_gpu_instancing assets would override the alias.
-    storageBuffer(6, Stage.VERTEX, { readOnly: true }),
-  ]);
-
-  return {
-    cameraBGL,
-    instanceBGL,
-  };
-}
-
 // WebGL GL_* sampler-enum constants → GPU strings. Module-scope helpers
 // so `getSamplerForReader` (method on the pipeline cache class) can use
 // them without a per-call closure.
@@ -1866,7 +1828,10 @@ class WebGPUModelPipelineCache {
   // COLOR pipeline's `resolveGlobePipelineEntry`-style ready-gate. Null when
   // no central cache is available (falls back to the synchronous build path).
   declare _centralPipelineCache: WebGPURenderPipelineCache | null;
-  declare _pendingColorPipelines: Set<string | number>;
+  declare _pendingColorPipelines: Map<
+    string | number,
+    Promise<GPURenderPipeline>
+  >;
   declare _errorShaderModule: GPUShaderModule | null;
   declare _errorPipelines: Map<string | number, GPURenderPipeline>;
   declare _errorSwapGeneration: number;
@@ -1884,6 +1849,7 @@ class WebGPUModelPipelineCache {
   declare _cameraBGL: GPUBindGroupLayout;
   declare _instanceBGL: GPUBindGroupLayout;
   declare _effectsBGL: GPUBindGroupLayout;
+  declare _modelDeviceResources: WebGPUModelDeviceResources | null;
   declare _materialBGLCache: Map<number, GPUBindGroupLayout>;
   declare _pipelineLayoutCache: Map<number, GPUPipelineLayout>;
   declare _shaderModuleCache: Map<string | number, GPUShaderModule>;
@@ -1916,8 +1882,11 @@ class WebGPUModelPipelineCache {
   declare _pipelineLayout: GPUPipelineLayout;
   declare _shaderModule: GPUShaderModule;
   declare _defaultWhiteTexture: GPUTexture;
+  declare _defaultWhiteTextureView: GPUTextureView;
   declare _defaultNormalTexture: GPUTexture;
+  declare _defaultNormalTextureView: GPUTextureView;
   declare _defaultBlackTexture: GPUTexture;
+  declare _defaultBlackTextureView: GPUTextureView;
   declare _defaultSampler: GPUSampler;
   declare _defaultIBLCubemap: GPUTexture;
   declare _defaultIBLCubemapView: GPUTextureView;
@@ -1968,7 +1937,7 @@ class WebGPUModelPipelineCache {
   ) {
     this._device = device;
     this._centralPipelineCache = centralPipelineCache;
-    this._pendingColorPipelines = new Set();
+    this._pendingColorPipelines = new Map();
     this._presentationFormat = presentationFormat;
     // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — construction-time clamp; the
     // authoritative `context.pickPipelineFormat` is mirrored on the first
@@ -2081,31 +2050,48 @@ class WebGPUModelPipelineCache {
     // byte-identical (no allocation when pickMetadata is never called).
     this._pickMetadataPipelines = new Map();
 
-    // Create shared bind group layouts (NEW-BG-CONSOLIDATION, 4 groups).
-    const bgls = createBindGroupLayouts(device);
-    this._cameraBGL = bgls.cameraBGL;
-    this._instanceBGL = bgls.instanceBGL; // merged: skinning+morph+instancing
+    // C11-194 — immutable placeholders and their camera/instance layouts are
+    // device-generation resources, not model resources. The exact GPUDevice
+    // identity is the generation key; the pool retains them until the last
+    // model cache releases its reference.
+    const modelDeviceResources = acquireWebGPUModelDeviceResources(device);
+    this._modelDeviceResources = modelDeviceResources;
+    this._cameraBGL = modelDeviceResources.cameraBGL;
+    this._instanceBGL = modelDeviceResources.instanceBGL;
     // Effects BGL (group 3) — shared with globe + primitive via
     // `getEffectsBindGroupLayout` factory.
-    this._effectsBGL = getEffectsBindGroupLayout(device);
+    try {
+      this._effectsBGL = getEffectsBindGroupLayout(device);
+    } catch (error) {
+      releaseWebGPUModelDeviceResources(device, modelDeviceResources);
+      this._modelDeviceResources = null;
+      throw error;
+    }
 
     // Batch 174 — B.4 KHR materialBGL split. Per-variant caches keyed
     // by `materialDefines: number` (a bitmask of ShaderDefine bits
     // gating which KHR bindings are present). A primitive's effective
     // variant = OR of the gate defines for the KHR extensions its
     // material flags activate (today coarse: all-or-nothing on
-    // `MODEL_HAS_KHR_TEXTURES`; tomorrow per-extension granular).
+    // `MODEL_HAS_KHR_TEXTURES`; tomorrow per-extension granular). Material
+    // layouts depend only on the normalized mask and are device-shared. Full
+    // pipeline layouts are also shared, but partitioned by the exact effects
+    // BGL identity because that owner generation can roll over on the same
+    // GPUDevice. This shares the common case without ever combining a current
+    // pipeline with a stale group-3 layout.
     //
     // The maps are populated lazily from `getOrCreateMaterialBGL` /
     // `getOrCreatePipelineLayout` so a scene with only basic-variant
     // models never builds the full layout, and a scene with only
-    // full-variant models never builds the basic layout. Maps live for
-    // the lifetime of the cache (= one Model). Pipelines themselves
+    // full-variant models never builds the basic layout. Pipelines themselves
     // (color / pick / depth-write / velocity / classification) cache
     // independently, keyed on the same `materialDefines` plus
     // alphaMode / doubleSided.
-    this._materialBGLCache = new Map();
-    this._pipelineLayoutCache = new Map();
+    this._materialBGLCache = modelDeviceResources.materialBGLCache;
+    this._pipelineLayoutCache = getOrCreateWebGPUModelPipelineLayoutCache(
+      modelDeviceResources,
+      this._effectsBGL,
+    );
     this._shaderModuleCache = new Map();
 
     // DP-H46b — per-metadata-class shader-module cache. The generated
@@ -2185,303 +2171,73 @@ class WebGPUModelPipelineCache {
     // as split / model-color.
     this._silhouetteEnabled = false;
 
-    this._materialBGL_basic = this._getOrCreateMaterialBGL(0);
-    this._pipelineLayout_basic = this._getOrCreatePipelineLayout(0);
-    this._shaderModule_basic = this._getOrCreateShaderModule(0);
+    try {
+      this._materialBGL_basic = this._getOrCreateMaterialBGL(0);
+      this._pipelineLayout_basic = this._getOrCreatePipelineLayout(0);
+      this._shaderModule_basic = this._getOrCreateShaderModule(0);
 
-    // Eagerly build the full-KHR variant too — this is the historical
-    // default before the split, and exposed via the `materialBGL`
-    // getter for compatibility with callers that don't yet pass a
-    // variant key.
-    this._materialBGL = this._getOrCreateMaterialBGL(
-      ShaderDefine.MODEL_HAS_KHR_TEXTURES,
-    );
-    this._pipelineLayout = this._getOrCreatePipelineLayout(
-      ShaderDefine.MODEL_HAS_KHR_TEXTURES,
-    );
-    this._shaderModule = this._getOrCreateShaderModule(
-      ShaderDefine.MODEL_HAS_KHR_TEXTURES,
-    );
-
-    // Create default 1x1 textures for missing material textures
-    this._defaultWhiteTexture = this._createDefaultTexture(
-      255,
-      255,
-      255,
-      255,
-      "default-white",
-    );
-    this._defaultNormalTexture = this._createDefaultTexture(
-      128,
-      128,
-      255,
-      255,
-      "default-normal",
-    );
-    this._defaultBlackTexture = this._createDefaultTexture(
-      0,
-      0,
-      0,
-      255,
-      "default-black",
-    );
-    this._defaultSampler = device.createSampler({
-      label: "Model default sampler",
-      magFilter: "linear",
-      minFilter: "linear",
-      mipmapFilter: "linear",
-      addressModeU: "repeat",
-      addressModeV: "repeat",
-    });
-
-    // Audit A.9 (Batch 130) — placeholder cubemap for IBL bindings 33
-    // and 34 when a model has no `imageBasedLighting` configured. 1×1
-    // mid-grey on all 6 faces so the FS samples (0.5, 0.5, 0.5) ambient
-    // — same intensity as the previous hardcoded `vec3(0.2)` baseline,
-    // just routed through the texture path. Skinned/material code never
-    // overrides the binding when no IBL is set up; the FS doesn't gate
-    // the sample on an `iblEnabled` flag, so the placeholder must
-    // produce a sane reflection level on its own.
-    this._defaultIBLCubemap = device.createTexture({
-      label: "default-ibl-cubemap",
-      size: [1, 1, 6],
-      format: "rgba16float",
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    {
-      // half-float 0.5 = 0x3800; rgba16f payload per texel = 4 × 2 bytes.
-      const halfHalf = new Uint16Array([0x3800, 0x3800, 0x3800, 0x3c00]);
-      for (let face = 0; face < 6; face++) {
-        device.queue.writeTexture(
-          { texture: this._defaultIBLCubemap, origin: [0, 0, face] },
-          halfHalf,
-          { bytesPerRow: 8 },
-          { width: 1, height: 1 },
-        );
-      }
+      // Eagerly build the full-KHR variant too — this is the historical
+      // default before the split, and exposed via the `materialBGL`
+      // getter for compatibility with callers that don't yet pass a
+      // variant key.
+      this._materialBGL = this._getOrCreateMaterialBGL(
+        ShaderDefine.MODEL_HAS_KHR_TEXTURES,
+      );
+      this._pipelineLayout = this._getOrCreatePipelineLayout(
+        ShaderDefine.MODEL_HAS_KHR_TEXTURES,
+      );
+      this._shaderModule = this._getOrCreateShaderModule(
+        ShaderDefine.MODEL_HAS_KHR_TEXTURES,
+      );
+    } catch (error) {
+      releaseWebGPUModelDeviceResources(device, modelDeviceResources);
+      this._modelDeviceResources = null;
+      throw error;
     }
-    this._defaultIBLCubemapView = this._defaultIBLCubemap.createView({
-      dimension: "cube",
-    });
-    this._defaultIBLSampler = device.createSampler({
-      label: "default-ibl-sampler",
-      magFilter: "linear",
-      minFilter: "linear",
-      mipmapFilter: "linear",
-      addressModeU: "clamp-to-edge",
-      addressModeV: "clamp-to-edge",
-    });
-    // SH UBO is 9 vec3 + 1 active flag = 9 × 16 + 16 = 160 bytes
-    // (vec3 in WGSL uniform layout is padded to 16). Default = all
-    // zeros + active = 0 so the shader's `useSH` branch falls back
-    // to the placeholder cubemap.
-    this._defaultSHBuffer = device.createBuffer({
-      label: "default-ibl-sh",
-      size: 160,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(this._defaultSHBuffer, 0, new Float32Array(40));
 
-    // NEW-MODEL-IBL-BRDF-LUT (Batch 287) — 1×1 placeholder BRDF
-    // integration LUT (bindings 37/38) for models drawn before
-    // `BrdfLutGenerator` has produced the real 256×256 table. (scale=1,
-    // bias=0) makes the split-sum term collapse to `radiance * F0`,
-    // matching the pre-LUT behaviour so the placeholder frame doesn't
-    // flash a different specular intensity. rg32float is non-filterable;
-    // the sampler is `non-filtering` to satisfy validation.
-    this._defaultBrdfLut = device.createTexture({
-      label: "default-brdf-lut",
-      size: [1, 1],
-      format: "rg32float",
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    device.queue.writeTexture(
-      { texture: this._defaultBrdfLut },
-      new Float32Array([1.0, 0.0]),
-      { bytesPerRow: 8 },
-      { width: 1, height: 1 },
-    );
-    this._defaultBrdfLutView = this._defaultBrdfLut.createView();
-    this._defaultBrdfLutSampler = device.createSampler({
-      label: "default-brdf-lut-sampler",
-      magFilter: "nearest",
-      minFilter: "nearest",
-      addressModeU: "clamp-to-edge",
-      addressModeV: "clamp-to-edge",
-    });
-
-    // DP-H46c — placeholder property-texture (1×1 black, rgba8unorm/linear)
-    // + a clamp-to-edge sampler. Property metadata values are raw byte
-    // channels, never gamma-encoded, so the placeholder + sampler stay
-    // linear. The placeholder fills the MAX_PROPERTY_TEXTURES BGL slots the
-    // generated shader does NOT sample (a pipeline may use a subset of its
-    // layout's bindings, but the bind group must satisfy every entry), AND
-    // backs a property texture whose glTF image hasn't resolved yet.
-    this._defaultPropertyTexture = device.createTexture({
-      label: "default-property-texture",
-      size: [1, 1],
-      format: "rgba8unorm",
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    device.queue.writeTexture(
-      { texture: this._defaultPropertyTexture },
-      new Uint8Array([0, 0, 0, 255]),
-      { bytesPerRow: 4 },
-      { width: 1, height: 1 },
-    );
+    // C11-194 — all immutable fallback textures, views, samplers and buffers
+    // are aliases into the exact-device pool acquired above. Model-specific
+    // pipelines and mutable material/camera data remain privately owned.
+    this._defaultWhiteTexture = modelDeviceResources.defaultWhiteTexture;
+    this._defaultWhiteTextureView =
+      modelDeviceResources.defaultWhiteTextureView;
+    this._defaultNormalTexture = modelDeviceResources.defaultNormalTexture;
+    this._defaultNormalTextureView =
+      modelDeviceResources.defaultNormalTextureView;
+    this._defaultBlackTexture = modelDeviceResources.defaultBlackTexture;
+    this._defaultBlackTextureView =
+      modelDeviceResources.defaultBlackTextureView;
+    this._defaultSampler = modelDeviceResources.defaultSampler;
+    this._defaultIBLCubemap = modelDeviceResources.defaultIBLCubemap;
+    this._defaultIBLCubemapView = modelDeviceResources.defaultIBLCubemapView;
+    this._defaultIBLSampler = modelDeviceResources.defaultIBLSampler;
+    this._defaultSHBuffer = modelDeviceResources.defaultSHBuffer;
+    this._defaultBrdfLut = modelDeviceResources.defaultBrdfLut;
+    this._defaultBrdfLutView = modelDeviceResources.defaultBrdfLutView;
+    this._defaultBrdfLutSampler = modelDeviceResources.defaultBrdfLutSampler;
+    this._defaultPropertyTexture = modelDeviceResources.defaultPropertyTexture;
     this._defaultPropertyTextureView =
-      this._defaultPropertyTexture.createView();
-    // glTF property textures default to NEAREST sampling in the corpus
-    // (SimplePropertyTexture's sampler is magFilter/minFilter NEAREST), and
-    // metadata sampling must NOT interpolate raw byte values across texels —
-    // nearest is the correct default for data textures.
-    this._propertyTextureSampler = device.createSampler({
-      label: "property-texture-sampler",
-      magFilter: "nearest",
-      minFilter: "nearest",
-      addressModeU: "clamp-to-edge",
-      addressModeV: "clamp-to-edge",
-    });
+      modelDeviceResources.defaultPropertyTextureView;
+    this._propertyTextureSampler = modelDeviceResources.propertyTextureSampler;
+    this._samplerCache = modelDeviceResources.samplerCache;
 
-    // Per-textureInfo sampler cache. glTF textures each carry a
-    // `sampler` object with magFilter / minFilter / wrapS / wrapT values;
-    // creating a new GPUSampler per distinct combination and reusing it
-    // avoids thrashing the device with duplicate samplers when a tileset
-    // has thousands of glTF textures that share sampler state (common —
-    // glTF authoring pipelines usually emit one sampler per material
-    // repeated across all textures).
-    this._samplerCache = new Map();
-
-    // Create default vertex buffers for missing attributes
-    this._defaultNormalBuffer = this._createDefaultVertexBuffer(
-      new Float32Array([0, 1, 0]),
-      "default-normal-vb",
-    );
-    this._defaultTangentBuffer = this._createDefaultVertexBuffer(
-      new Float32Array([1, 0, 0, 1]),
-      "default-tangent-vb",
-    );
-    this._defaultUVBuffer = this._createDefaultVertexBuffer(
-      new Float32Array([0, 0]),
-      "default-uv-vb",
-    );
-    this._defaultColorBuffer = this._createDefaultVertexBuffer(
-      new Float32Array([1, 1, 1, 1]),
-      "default-color-vb",
-    );
-    // Skinning defaults: zero joints and zero weights
-    this._defaultJointsBuffer = this._createDefaultVertexBuffer(
-      new Uint32Array([0, 0, 0, 0]),
-      "default-joints-vb",
-    );
-    this._defaultWeightsBuffer = this._createDefaultVertexBuffer(
-      new Float32Array([0, 0, 0, 0]),
-      "default-weights-vb",
-    );
-    // Audit B.2 (Batch 130) — single-element default for slot 8
-    // (featureId0). The FS only reads the value when
-    // FLAG_HAS_FEATURE_ID_ATTRIBUTE is set, so the zero default never
-    // reaches the batch / pick lookup paths for primitives that lack
-    // an authored feature id.
-    this._defaultFeatureIdBuffer = this._createDefaultVertexBuffer(
-      new Float32Array([0]),
-      "default-featureId-vb",
-    );
-
-    // Default skinning bind group: 1-element identity matrix storage buffer
-    // Used when a primitive has no skinning (FLAG_HAS_SKINNING will be false)
-    const identityData = new Float32Array(16);
-    identityData[0] = 1;
-    identityData[5] = 1;
-    identityData[10] = 1;
-    identityData[15] = 1;
-    this._defaultJointBuffer = device.createBuffer({
-      label: "default-joint-matrices",
-      size: 64, // 1 mat4 = 64 bytes
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(this._defaultJointBuffer, 0, identityData);
-    // NEW-BG-CONSOLIDATION (Batch 122) — no standalone skinning BG.
-    // The renderer composes the merged group 2 BG per-frame from this
-    // joint buffer + morph deltas + morph weights + instance transforms.
-
-    // Morph delta storage (1-vec4 zero), morph weight UBO (12 floats zero).
-    this._defaultMorphDeltaBuffer = device.createBuffer({
-      label: "default-morph-deltas",
-      size: 16,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    const zeroWeights = new Float32Array(12);
-    this._defaultMorphWeightBuffer = device.createBuffer({
-      label: "default-morph-weights",
-      size: 48,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(this._defaultMorphWeightBuffer, 0, zeroWeights);
-
-    // Identity instance transform storage.
-    // DP-H36 (Batch 325) — the per-instance element is now the 24-float / 96-byte
-    // `InstanceTransform` struct (linear mat4x4 + translationHigh/Low vec4s), so
-    // the placeholder buffer must be a full element. Identity = identity linear
-    // matrix + zero translation. FLAG_HAS_INSTANCING gates the read, so these
-    // contents are never consumed; the size just satisfies binding validation.
-    // MUST stay byte-consistent with FLOATS_PER_INSTANCE in WebGPUModelInstancing.js
-    // and the WGSL InstanceTransform struct in ModelPBRComplete.wgsl.
-    const instanceIdentityData = new Float32Array(24);
-    instanceIdentityData[0] = 1; // linear col0.x
-    instanceIdentityData[5] = 1; // linear col1.y
-    instanceIdentityData[10] = 1; // linear col2.z
-    instanceIdentityData[15] = 1; // linear col3.w
-    // floats 16..23 (translationHigh + translationLow) stay zero
-    this._defaultInstancingBuffer = device.createBuffer({
-      label: "default-instance-transforms",
-      size: 96,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(
-      this._defaultInstancingBuffer,
-      0,
-      instanceIdentityData,
-    );
-
-    // NEW-BG-CONSOLIDATION (Batch 122) — merged group 2 default bind group.
-    // Used when a primitive has none of skinning / morph / instancing.
-    // All four resources are placeholder defaults; the shader checks
-    // FLAG_HAS_SKINNING / FLAG_HAS_MORPH_TARGETS / FLAG_HAS_INSTANCING
-    // before reading any of the underlying storage so the placeholder
-    // contents are never consumed.
-    this._defaultInstanceBG = device.createBindGroup({
-      layout: this._instanceBGL,
-      entries: [
-        { binding: 0, resource: { buffer: this._defaultJointBuffer } },
-        { binding: 1, resource: { buffer: this._defaultMorphDeltaBuffer } },
-        { binding: 2, resource: { buffer: this._defaultMorphWeightBuffer } },
-        { binding: 3, resource: { buffer: this._defaultInstancingBuffer } },
-        // Audit A.5 (Batch 130) — prev joint matrices fall back to the
-        // SAME identity buffer as binding 0 when no skinning is active.
-        // Skinned primitives override with the per-node prev-frame
-        // joint buffer in `buildMergedInstanceBindGroup`.
-        { binding: 4, resource: { buffer: this._defaultJointBuffer } },
-        // NEW-TAA-MORPH-PREV (Batch 134) -- prev morph weights default
-        // to the same zero-weights buffer as binding 2.
-        { binding: 5, resource: { buffer: this._defaultMorphWeightBuffer } },
-        // NEW-TAA-INSTANCE-PREV (Batch 134) -- prev instance transforms
-        // default to the same identity buffer as binding 3.
-        { binding: 6, resource: { buffer: this._defaultInstancingBuffer } },
-      ],
-    });
-    // Feature ID default UBO (14 floats — `featurePickEnabled = 0`).
-    const zeroFeatureUniforms = new Float32Array(14);
-    this._defaultFeatureUniformBuffer = device.createBuffer({
-      label: "default-feature-uniforms",
-      size: 56,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
-    device.queue.writeBuffer(
-      this._defaultFeatureUniformBuffer,
-      0,
-      zeroFeatureUniforms,
-    );
+    this._defaultNormalBuffer = modelDeviceResources.defaultNormalBuffer;
+    this._defaultTangentBuffer = modelDeviceResources.defaultTangentBuffer;
+    this._defaultUVBuffer = modelDeviceResources.defaultUVBuffer;
+    this._defaultColorBuffer = modelDeviceResources.defaultColorBuffer;
+    this._defaultJointsBuffer = modelDeviceResources.defaultJointsBuffer;
+    this._defaultWeightsBuffer = modelDeviceResources.defaultWeightsBuffer;
+    this._defaultFeatureIdBuffer = modelDeviceResources.defaultFeatureIdBuffer;
+    this._defaultJointBuffer = modelDeviceResources.defaultJointBuffer;
+    this._defaultMorphDeltaBuffer =
+      modelDeviceResources.defaultMorphDeltaBuffer;
+    this._defaultMorphWeightBuffer =
+      modelDeviceResources.defaultMorphWeightBuffer;
+    this._defaultInstancingBuffer =
+      modelDeviceResources.defaultInstancingBuffer;
+    this._defaultInstanceBG = modelDeviceResources.defaultInstanceBG;
+    this._defaultFeatureUniformBuffer =
+      modelDeviceResources.defaultFeatureUniformBuffer;
     // NEW-BG-CONSOLIDATION (Batch 122) — feature ID resources moved into
     // the merged group 1 (bindings 26-32). The default placeholder
     // entries are exposed as a function so callers can splice them
@@ -2489,15 +2245,15 @@ class WebGPUModelPipelineCache {
     // standalone feature-ID bind group anymore; the renderer always
     // builds the merged group 1.
     this._defaultFeatureIdEntries = () => [
-      { binding: 26, resource: this._defaultWhiteTexture.createView() },
+      { binding: 26, resource: this._defaultWhiteTextureView },
       { binding: 27, resource: this._defaultSampler },
-      { binding: 28, resource: this._defaultWhiteTexture.createView() },
+      { binding: 28, resource: this._defaultWhiteTextureView },
       { binding: 29, resource: this._defaultSampler },
       {
         binding: 30,
         resource: { buffer: this._defaultFeatureUniformBuffer },
       },
-      { binding: 31, resource: this._defaultWhiteTexture.createView() },
+      { binding: 31, resource: this._defaultWhiteTextureView },
       { binding: 32, resource: this._defaultSampler },
     ];
   }
@@ -3385,6 +3141,17 @@ class WebGPUModelPipelineCache {
       return cached;
     }
 
+    // C11-199 — the local promise already owns descriptor construction and the
+    // central-cache lookup for this exact variant. Rebuilding the descriptor
+    // and re-polling `getPipelineSync` while that promise is unresolved cannot
+    // produce a different result; it only inflates CPU work and central miss
+    // counters once per model per frame. The promise completion handlers below
+    // still remove the key and publish either the resolved pipeline or the
+    // generation-correct error fallback, so a later call resumes normally.
+    if (this._pendingColorPipelines.has(key)) {
+      return null;
+    }
+
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
     // DP-H46a — metadata vertex slot 9 variant (mode 2 = widened MAT3/MAT4
@@ -3434,15 +3201,21 @@ class WebGPUModelPipelineCache {
         return sync;
       }
       if (!this._pendingColorPipelines.has(key)) {
-        this._pendingColorPipelines.add(key);
         // Capture the scene-format generation so a resolution that lands
         // AFTER a runtime HDR/log-depth/format toggle (which cleared
         // `_pipelines` + bumped the generation) is dropped instead of
         // writing a stale-format pipeline back into the cache.
         const kickGeneration = this._sceneFormatGeneration;
-        central
-          .getPipeline(centralDesc)
+        const pendingPipeline = central.getPipeline(centralDesc);
+        this._pendingColorPipelines.set(key, pendingPipeline);
+        pendingPipeline
           .then((p) => {
+            // Cache invalidation clears ownership, and a later request may
+            // already own the same key. An older completion must neither
+            // delete that replacement nor publish its stale descriptor.
+            if (this._pendingColorPipelines.get(key) !== pendingPipeline) {
+              return;
+            }
             this._pendingColorPipelines.delete(key);
             if (this._sceneFormatGeneration === kickGeneration) {
               this._pipelines.set(key, p);
@@ -3457,6 +3230,9 @@ class WebGPUModelPipelineCache {
             // `_errorSwapGeneration` so the renderer's `errorSwapped` refetch
             // reaches the built command. `_getOrCreateErrorPipeline` bakes the
             // current format, so guard on the generation too.
+            if (this._pendingColorPipelines.get(key) !== pendingPipeline) {
+              return;
+            }
             this._pendingColorPipelines.delete(key);
             if (this._sceneFormatGeneration === kickGeneration) {
               console.error(
@@ -4288,6 +4064,20 @@ class WebGPUModelPipelineCache {
     return this._defaultBlackTexture;
   }
 
+  /** @returns {GPUTextureView} Stable view for a device-shared fallback texture. */
+  getDefaultTextureView(texture: GPUTexture) {
+    if (texture === this._defaultWhiteTexture) {
+      return this._defaultWhiteTextureView;
+    }
+    if (texture === this._defaultNormalTexture) {
+      return this._defaultNormalTextureView;
+    }
+    if (texture === this._defaultBlackTexture) {
+      return this._defaultBlackTextureView;
+    }
+    return texture.createView();
+  }
+
   /** @returns {GPUSampler} Default linear-repeat sampler */
   get defaultSampler() {
     return this._defaultSampler;
@@ -4546,47 +4336,6 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * Creates a 1×1 RGBA texture with the given color.
-   * @private
-   */
-  _createDefaultTexture(
-    r: number,
-    g: number,
-    b: number,
-    a: number,
-    label: string,
-  ) {
-    const texture = this._device.createTexture({
-      label,
-      size: [1, 1, 1],
-      format: "rgba8unorm",
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-    });
-    this._device.queue.writeTexture(
-      { texture },
-      new Uint8Array([r, g, b, a]),
-      { bytesPerRow: 4 },
-      { width: 1, height: 1 },
-    );
-    return texture;
-  }
-
-  /**
-   * Creates a small vertex buffer for default attribute values.
-   * Used with instance step mode when an attribute is missing.
-   * @private
-   */
-  _createDefaultVertexBuffer(data: BufferSource, label: string) {
-    const buffer = this._device.createBuffer({
-      label,
-      size: data.byteLength,
-      usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
-    });
-    this._device.queue.writeBuffer(buffer, 0, data);
-    return buffer;
-  }
-
-  /**
    * Destroys all cached pipelines and default resources.
    */
   destroy() {
@@ -4599,24 +4348,13 @@ class WebGPUModelPipelineCache {
     // are released via GC once all references go away; clearing the map
     // releases the cache's reference. Same lifecycle as `_pipelines`.
     this._pickPipelines.clear();
-    this._defaultWhiteTexture?.destroy();
-    this._defaultNormalTexture?.destroy();
-    this._defaultBlackTexture?.destroy();
-    this._defaultNormalBuffer?.destroy();
-    this._defaultTangentBuffer?.destroy();
-    this._defaultUVBuffer?.destroy();
-    this._defaultColorBuffer?.destroy();
-    this._defaultJointsBuffer?.destroy();
-    this._defaultWeightsBuffer?.destroy();
-    this._defaultFeatureIdBuffer?.destroy();
-    this._defaultIBLCubemap?.destroy();
-    this._defaultSHBuffer?.destroy();
-    this._defaultBrdfLut?.destroy();
-    this._defaultJointBuffer?.destroy();
-    this._defaultMorphDeltaBuffer?.destroy();
-    this._defaultMorphWeightBuffer?.destroy();
-    this._defaultInstancingBuffer?.destroy();
-    this._defaultFeatureUniformBuffer?.destroy();
+    if (this._modelDeviceResources) {
+      releaseWebGPUModelDeviceResources(
+        this._device,
+        this._modelDeviceResources,
+      );
+      this._modelDeviceResources = null;
+    }
   }
 }
 

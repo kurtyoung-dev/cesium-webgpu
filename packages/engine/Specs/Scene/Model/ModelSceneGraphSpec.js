@@ -1,5 +1,7 @@
 import {
   Axis,
+  BoundingSphere,
+  Cartesian3,
   Cesium3DTileStyle,
   Color,
   CustomShader,
@@ -12,7 +14,9 @@ import {
   ModelSceneGraph,
   ModelUtility,
   Pass,
+  PrimitiveType,
   ResourceCache,
+  SceneMode,
 } from "../../../index.js";
 import createScene from "../../../../../Specs/createScene.js";
 import loadAndZoomToModelAsync from "./loadAndZoomToModelAsync.js";
@@ -45,6 +49,77 @@ describe(
       scene.primitives.removeAll();
       scene.fog = new Fog();
       ResourceCache.clearForSpecs();
+    });
+
+    it("builds native descriptors without realizing legacy draw commands", function () {
+      const sceneGraph = Object.create(ModelSceneGraph.prototype);
+      const resources = {};
+      spyOn(sceneGraph, "buildRenderResources").and.returnValue(resources);
+      spyOn(sceneGraph, "computeBoundingVolumes");
+      spyOn(sceneGraph, "createBackendNeutralPrimitiveDescriptors");
+      spyOn(sceneGraph, "createDrawCommands");
+      const frameState = { mode: SceneMode.SCENE3D };
+
+      sceneGraph.buildBackendNeutralPrimitiveDescriptors(frameState);
+
+      expect(sceneGraph.buildRenderResources).toHaveBeenCalledOnceWith(
+        frameState,
+      );
+      expect(sceneGraph.computeBoundingVolumes).toHaveBeenCalledOnceWith(
+        resources,
+      );
+      expect(
+        sceneGraph.createBackendNeutralPrimitiveDescriptors,
+      ).toHaveBeenCalledOnceWith(resources, frameState);
+      expect(sceneGraph.createDrawCommands).not.toHaveBeenCalled();
+    });
+
+    it("retains base render-state, transform, and bounds in a native descriptor", function () {
+      const sceneGraph = Object.create(ModelSceneGraph.prototype);
+      sceneGraph._computedModelMatrix = Matrix4.clone(Matrix4.IDENTITY);
+      const runtimePrimitive = {
+        drawCommand: { legacy: true },
+        backendNeutralDescriptor: undefined,
+        boundingSphere2D: undefined,
+      };
+      const runtimeNode = {
+        computedTransform: Matrix4.clone(Matrix4.IDENTITY),
+        runtimePrimitives: [runtimePrimitive],
+      };
+      sceneGraph._runtimeNodes = [runtimeNode];
+      const model = {
+        sceneGraph,
+        _projectTo2D: false,
+        backFaceCulling: true,
+        shadows: 1,
+        debugShowBoundingVolume: false,
+      };
+      const primitiveRenderResources = {
+        model,
+        runtimeNode,
+        runtimePrimitive,
+        boundingSphere: new BoundingSphere(Cartesian3.ZERO, 3.0),
+        renderStateOptions: {},
+        primitiveType: PrimitiveType.TRIANGLES,
+      };
+      const modelRenderResources = {
+        nodeRenderResources: [
+          { primitiveRenderResources: [primitiveRenderResources] },
+        ],
+      };
+
+      sceneGraph.createBackendNeutralPrimitiveDescriptors(
+        modelRenderResources,
+        { mode: SceneMode.SCENE3D, scene3DOnly: false },
+      );
+
+      expect(runtimePrimitive.drawCommand).toBeUndefined();
+      const descriptor = runtimePrimitive.backendNeutralDescriptor;
+      expect(descriptor.renderState).toBeDefined();
+      expect(descriptor.modelMatrix).toEqual(Matrix4.IDENTITY);
+      expect(descriptor.boundingVolume.center).toEqual(Cartesian3.ZERO);
+      expect(descriptor.boundingVolume.radius).toBe(3.0);
+      expect(descriptor.primitiveType).toBe(PrimitiveType.TRIANGLES);
     });
 
     it("creates runtime nodes and runtime primitives from a model", async function () {
@@ -253,6 +328,49 @@ describe(
       expect(skinnedNodes[0]).toEqual(0);
 
       expect(runtimeNodes[0].computedJointMatrices.length).toEqual(2);
+    });
+
+    it("updates joint matrices once after all runtime node transforms", function () {
+      const calls = [];
+      const makeRuntimeNode = (name) => ({
+        updateStages: [
+          {
+            update() {
+              calls.push(`${name}:node`);
+            },
+          },
+        ],
+        runtimePrimitives: [
+          {
+            updateStages: [
+              {
+                update() {
+                  calls.push(`${name}:primitive`);
+                },
+              },
+            ],
+          },
+        ],
+      });
+      const sceneGraph = Object.create(ModelSceneGraph.prototype);
+      sceneGraph._model = { _projectTo2D: false };
+      sceneGraph._runtimeNodes = [
+        makeRuntimeNode("first"),
+        makeRuntimeNode("second"),
+      ];
+      sceneGraph.updateJointMatrices = function () {
+        calls.push("joints");
+      };
+
+      sceneGraph.update({ mode: SceneMode.SCENE3D }, true);
+
+      expect(calls).toEqual([
+        "first:node",
+        "second:node",
+        "joints",
+        "first:primitive",
+        "second:primitive",
+      ]);
     });
 
     it("creates articulation from model", async function () {

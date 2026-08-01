@@ -1,10 +1,12 @@
 import BoundingSphere from "../../Core/BoundingSphere.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import Check from "../../Core/Check.js";
+import clone from "../../Core/clone.js";
 import Frozen from "../../Core/Frozen.js";
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Transforms from "../../Core/Transforms.js";
+import RenderState from "../../Renderer/RenderState.js";
 import SceneMode from "../SceneMode.js";
 import SplitDirection from "../SplitDirection.js";
 import TilesetPipelineStage from "./TilesetPipelineStage.js";
@@ -184,6 +186,27 @@ class ModelSceneGraph {
     const modelRenderResources = this.buildRenderResources(frameState);
     this.computeBoundingVolumes(modelRenderResources);
     this.createDrawCommands(modelRenderResources, frameState);
+  }
+
+  /**
+   * Run the shared model pipeline and retain only renderer-neutral primitive
+   * state. Native feature renderers consume the components/runtime graph
+   * directly, so realizing WebGL ShaderPrograms, VertexArrays, and derived
+   * command graphs here is duplicate CPU/resource work.
+   *
+   * WebGL still calls {@link ModelSceneGraph#buildDrawCommands}; this path does
+   * not remove or weaken any WebGL feature realization.
+   *
+   * @param {FrameState} frameState
+   * @private
+   */
+  buildBackendNeutralPrimitiveDescriptors(frameState) {
+    const modelRenderResources = this.buildRenderResources(frameState);
+    this.computeBoundingVolumes(modelRenderResources);
+    this.createBackendNeutralPrimitiveDescriptors(
+      modelRenderResources,
+      frameState,
+    );
   }
 
   /**
@@ -416,7 +439,40 @@ class ModelSceneGraph {
           primitiveRenderResources,
           frameState,
         );
+        runtimePrimitive.backendNeutralDescriptor = undefined;
         runtimePrimitive.drawCommand = drawCommand;
+      }
+    }
+  }
+
+  /**
+   * Create the renderer-neutral counterpart of the legacy base DrawCommand.
+   * The descriptor deliberately carries the same cached RenderState and
+   * transform/bounds semantics so dynamic model updates retain one shared
+   * contract while native renderers realize only their own command objects.
+   *
+   * @param {ModelRenderResources} modelRenderResources
+   * @param {FrameState} frameState
+   * @private
+   */
+  createBackendNeutralPrimitiveDescriptors(modelRenderResources, frameState) {
+    for (let i = 0; i < this._runtimeNodes.length; i++) {
+      const runtimeNode = this._runtimeNodes[i];
+      if (!defined(runtimeNode)) {
+        continue;
+      }
+
+      const nodeRenderResources = modelRenderResources.nodeRenderResources[i];
+      for (let j = 0; j < runtimeNode.runtimePrimitives.length; j++) {
+        const runtimePrimitive = runtimeNode.runtimePrimitives[j];
+        const primitiveRenderResources =
+          nodeRenderResources.primitiveRenderResources[j];
+        runtimePrimitive.drawCommand = undefined;
+        runtimePrimitive.backendNeutralDescriptor =
+          buildBackendNeutralPrimitiveDescriptor(
+            primitiveRenderResources,
+            frameState,
+          );
       }
     }
   }
@@ -480,6 +536,14 @@ class ModelSceneGraph {
   update(frameState, updateForAnimations) {
     let i, j, k;
 
+    const disableAnimations =
+      frameState.mode !== SceneMode.SCENE3D && this._model._projectTo2D;
+
+    // C11-211 — update every node transform before deriving any skinning
+    // matrix. The old loop called updateJointMatrices() once per runtime node,
+    // and each call walked every skinned node and joint. Besides multiplying
+    // animation cost, early primitives could observe joint transforms before
+    // later runtime nodes had completed their update stages.
     for (i = 0; i < this._runtimeNodes.length; i++) {
       const runtimeNode = this._runtimeNodes[i];
 
@@ -493,11 +557,20 @@ class ModelSceneGraph {
         const nodeUpdateStage = runtimeNode.updateStages[j];
         nodeUpdateStage.update(runtimeNode, this, frameState);
       }
+    }
 
-      const disableAnimations =
-        frameState.mode !== SceneMode.SCENE3D && this._model._projectTo2D;
-      if (updateForAnimations && !disableAnimations) {
-        this.updateJointMatrices();
+    if (updateForAnimations && !disableAnimations) {
+      this.updateJointMatrices();
+    }
+
+    // Primitive stages consume the final node/joint state. Keep this as a
+    // separate phase so WebGL and WebGPU see the same complete animation
+    // snapshot, including temporal-history and shadow consumers.
+    for (i = 0; i < this._runtimeNodes.length; i++) {
+      const runtimeNode = this._runtimeNodes[i];
+
+      if (!defined(runtimeNode)) {
+        continue;
       }
 
       for (j = 0; j < runtimeNode.runtimePrimitives.length; j++) {
@@ -717,6 +790,70 @@ class ModelSceneGraph {
   get boundingSphere() {
     return this._boundingSphere;
   }
+}
+
+/**
+ * Build the shared CPU description that precedes backend-specific command
+ * realization. This mirrors the base-command transform, bounds, and cached
+ * RenderState construction without allocating a ShaderProgram, VertexArray,
+ * DrawCommand, or derived-command family.
+ *
+ * @param {PrimitiveRenderResources} primitiveRenderResources
+ * @param {FrameState} frameState
+ * @returns {object}
+ * @private
+ */
+function buildBackendNeutralPrimitiveDescriptor(
+  primitiveRenderResources,
+  frameState,
+) {
+  const model = primitiveRenderResources.model;
+  const sceneGraph = model.sceneGraph;
+  const is3D = frameState.mode === SceneMode.SCENE3D;
+  let modelMatrix;
+  let boundingVolume;
+
+  if (!is3D && !frameState.scene3DOnly && model._projectTo2D) {
+    modelMatrix = Matrix4.multiplyTransformation(
+      sceneGraph._computedModelMatrix,
+      primitiveRenderResources.runtimeNode.computedTransform,
+      new Matrix4(),
+    );
+    boundingVolume = primitiveRenderResources.runtimePrimitive.boundingSphere2D;
+  } else {
+    const computedModelMatrix = is3D
+      ? sceneGraph._computedModelMatrix
+      : sceneGraph._computedModelMatrix2D;
+    modelMatrix = Matrix4.multiplyTransformation(
+      computedModelMatrix,
+      primitiveRenderResources.runtimeNode.computedTransform,
+      new Matrix4(),
+    );
+    boundingVolume = BoundingSphere.transform(
+      primitiveRenderResources.boundingSphere,
+      modelMatrix,
+    );
+  }
+
+  let renderState = clone(
+    RenderState.fromCache(primitiveRenderResources.renderStateOptions),
+    true,
+  );
+  renderState.cull.face = ModelUtility.getCullFace(
+    modelMatrix,
+    primitiveRenderResources.primitiveType,
+  );
+  renderState = RenderState.fromCache(renderState);
+
+  return {
+    renderState,
+    modelMatrix,
+    boundingVolume,
+    primitiveType: primitiveRenderResources.primitiveType,
+    backFaceCulling: model.backFaceCulling,
+    shadows: model.shadows,
+    debugShowBoundingVolume: model.debugShowBoundingVolume,
+  };
 }
 
 function initialize(sceneGraph) {
@@ -1019,8 +1156,11 @@ const scratchBackFaceCullingOptions = {
 
 // Callback is defined here to avoid allocating a closure in the render loop
 function updatePrimitiveBackFaceCulling(runtimePrimitive, options) {
-  const drawCommand = runtimePrimitive.drawCommand;
-  drawCommand.backFaceCulling = options.backFaceCulling;
+  const realization =
+    runtimePrimitive.drawCommand ?? runtimePrimitive.backendNeutralDescriptor;
+  if (defined(realization)) {
+    realization.backFaceCulling = options.backFaceCulling;
+  }
 }
 
 const scratchShadowOptions = {
@@ -1029,8 +1169,11 @@ const scratchShadowOptions = {
 
 // Callback is defined here to avoid allocating a closure in the render loop
 function updatePrimitiveShadows(runtimePrimitive, options) {
-  const drawCommand = runtimePrimitive.drawCommand;
-  drawCommand.shadows = options.shadowMode;
+  const realization =
+    runtimePrimitive.drawCommand ?? runtimePrimitive.backendNeutralDescriptor;
+  if (defined(realization)) {
+    realization.shadows = options.shadowMode;
+  }
 }
 
 const scratchShowBoundingVolumeOptions = {
@@ -1039,8 +1182,11 @@ const scratchShowBoundingVolumeOptions = {
 
 // Callback is defined here to avoid allocating a closure in the render loop
 function updatePrimitiveShowBoundingVolume(runtimePrimitive, options) {
-  const drawCommand = runtimePrimitive.drawCommand;
-  drawCommand.debugShowBoundingVolume = options.debugShowBoundingVolume;
+  const realization =
+    runtimePrimitive.drawCommand ?? runtimePrimitive.backendNeutralDescriptor;
+  if (defined(realization)) {
+    realization.debugShowBoundingVolume = options.debugShowBoundingVolume;
+  }
 }
 
 const scratchSilhouetteCommands = [];

@@ -39,9 +39,17 @@ const MORPH_UNIFORM_SIZE = 48; // 12 floats × 4 bytes = 48 bytes, aligned to 16
  * @param {object} primCache - The per-primitive cache from WebGPUModelRenderer
  * @param {object} geometry - The extracted ModelPrimitiveGeometry with morphTargets
  * @param {number[]} morphWeights - Active morph weights from the model
+ * @param {boolean} [resetPreviousToCurrent=false] Whether a visibility-admission
+ *        gap requires previous weights to match the current pose.
  * @returns {object|null} Morph target resources, or null if no morph targets
  */
-function ensureMorphTargetResources(device, primCache, geometry, morphWeights) {
+function ensureMorphTargetResources(
+  device,
+  primCache,
+  geometry,
+  morphWeights,
+  resetPreviousToCurrent = false,
+) {
   if (!defined(geometry) || geometry.morphTargetCount === 0) {
     return null;
   }
@@ -93,14 +101,16 @@ function ensureMorphTargetResources(device, primCache, geometry, morphWeights) {
   // NEW-TAA-MORPH-PREV (Batch 134) -- save current weights as prev
   // BEFORE overwriting with this frame's weights. Same swap pattern
   // as `prevPackedJointMatrices` in `WebGPUModelRenderer.js`.
-  primCache._morphWeightDataPrev.set(primCache._morphWeightData);
-  device.queue.writeBuffer(
-    primCache._morphWeightBufferPrev.buffer,
-    0,
-    primCache._morphWeightDataPrev.buffer,
-    0,
-    MORPH_UNIFORM_SIZE,
-  );
+  if (!resetPreviousToCurrent) {
+    primCache._morphWeightDataPrev.set(primCache._morphWeightData);
+    device.queue.writeBuffer(
+      primCache._morphWeightBufferPrev.buffer,
+      0,
+      primCache._morphWeightDataPrev.buffer,
+      0,
+      MORPH_UNIFORM_SIZE,
+    );
+  }
 
   // Pack weights into uniform buffer
   const weightData = primCache._morphWeightData;
@@ -123,6 +133,20 @@ function ensureMorphTargetResources(device, primCache, geometry, morphWeights) {
     0,
     MORPH_UNIFORM_SIZE,
   );
+
+  // C11-185 — after one or more rejected frames, the previous GPU pose is the
+  // last visible pose, not t-1. Reset it to the just-packed current pose so TAA
+  // sees zero velocity on readmission instead of a multi-frame jump.
+  if (resetPreviousToCurrent) {
+    primCache._morphWeightDataPrev.set(weightData);
+    device.queue.writeBuffer(
+      primCache._morphWeightBufferPrev.buffer,
+      0,
+      primCache._morphWeightDataPrev.buffer,
+      0,
+      MORPH_UNIFORM_SIZE,
+    );
+  }
 
   return {
     storageBuffer: primCache._morphStorageBuffer,
