@@ -506,6 +506,9 @@ class Context extends GraphicsContext {
     ]);
     this._fragDepth = !!getExtension(gl, ["EXT_frag_depth"]);
     this._debugShaders = getExtension(gl, ["WEBGL_debug_shaders"]);
+    this._parallelShaderCompile = getExtension(gl, [
+      "KHR_parallel_shader_compile",
+    ]);
 
     this._textureFloat = !!getExtension(gl, ["OES_texture_float"]);
     this._textureHalfFloat = !!getExtension(gl, ["OES_texture_half_float"]);

@@ -15,8 +15,20 @@ interface ShaderProgramOptions {
   attributeLocations?: Record<string, number> | object;
 }
 
+interface ShaderCacheOptions {
+  requestIdleCallback?: (
+    callback: IdleRequestCallback,
+    options?: IdleRequestOptions,
+  ) => number;
+  cancelIdleCallback?: (handle: number) => void;
+  maximumPendingShaderPreparations?: number;
+  minimumShaderPreparationTimeRemaining?: number;
+  shaderCompileIdleTimeout?: number;
+  getTimestamp?: () => number;
+}
+
 declare class ShaderCache {
-  constructor(context: CesiumGraphicsContext);
+  constructor(context: CesiumGraphicsContext, options?: ShaderCacheOptions);
 
   readonly _context: CesiumGraphicsContext;
   readonly numberOfShaders: number;
@@ -36,6 +48,14 @@ declare class ShaderCache {
     keyword: string,
     options: ShaderProgramOptions,
   ): CesiumOpaqueShaderProgram;
+  scheduleShaderProgramCompilation(
+    shaderProgram: CesiumOpaqueShaderProgram,
+  ): boolean;
+  scheduleShaderProgramPreparation(
+    prepareShaderProgram: () => CesiumOpaqueShaderProgram | undefined,
+    owner?: object,
+  ): boolean;
+  cancelShaderProgramPreparations(owner: object): number;
   replaceDerivedShaderProgram(
     shaderProgram: CesiumOpaqueShaderProgram,
     keyword: string,

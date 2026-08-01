@@ -3,9 +3,14 @@
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
 import TerrainQuantization from "../Core/TerrainQuantization.js";
+import DrawCommand from "../Renderer/DrawCommand.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
+import DerivedCommand from "./DerivedCommand.js";
 import getClippingFunction from "./getClippingFunction.js";
 import SceneMode from "./SceneMode.js";
+
+const companionPreparationRetryFrames = 30;
+const perFragmentGroundAtmosphereFlag = 1 << 15;
 
 /** @import ClippingPlaneCollection from "./ClippingPlaneCollection.js"; */
 /** @import ClippingPolygonCollection from "./ClippingPolygonCollection.js"; */
@@ -21,6 +26,8 @@ class GlobeSurfaceShader {
    * @param {number} numberOfDayTextures
    * @param {number} flags
    * @param {*} material
+   * @param {Context} context
+   * @param {*} shaderCache
    * @param {ShaderProgram} shaderProgram
    * @param {number} clippingShaderState
    * @param {number} clippingPolygonShaderState
@@ -29,6 +36,8 @@ class GlobeSurfaceShader {
     numberOfDayTextures,
     flags,
     material,
+    context,
+    shaderCache,
     shaderProgram,
     clippingShaderState,
     clippingPolygonShaderState,
@@ -37,10 +46,26 @@ class GlobeSurfaceShader {
     this.numberOfDayTextures = numberOfDayTextures;
     this.flags = flags;
     this.material = material;
-    /** @type {ShaderProgram} */
+    this.context = context;
+    this.shaderCache = shaderCache;
+    /** @type {ShaderProgram | undefined} */
     this.shaderProgram = shaderProgram;
     this.clippingShaderState = clippingShaderState;
     this.clippingPolygonShaderState = clippingPolygonShaderState;
+    this.fogCompanionRequestMask = 0;
+    this.fogCompanionRequestContext = context;
+    this.fogCompanionRequestShaderCache = shaderCache;
+    this.fogCompanionRequestMaterial = material;
+    this.fogCompanionRequestMaterialGeneration = 0;
+    this.fogCompanionRejectedMask = 0;
+    this.fogCompanionRetryAfterFrame = 0;
+    this.groundAtmosphereCompanionRequestMask = 0;
+    this.groundAtmosphereCompanionRequestContext = context;
+    this.groundAtmosphereCompanionRequestShaderCache = shaderCache;
+    this.groundAtmosphereCompanionRequestMaterial = material;
+    this.groundAtmosphereCompanionRequestMaterialGeneration = 0;
+    this.groundAtmosphereCompanionRejectedMask = 0;
+    this.groundAtmosphereCompanionRetryAfterFrame = 0;
   }
 }
 
@@ -81,7 +106,38 @@ class GlobeSurfaceShader {
  * @property {boolean} [hasExaggeration]
  * @property {boolean} [showUndergroundColor]
  * @property {boolean} [translucent]
+ * @property {boolean} [enableEclipseGlobeShadow]
+ * @property {boolean} [baseColorCorrect]
+ * @property {boolean} [fogCompanionEnabled]
+ * @property {boolean} [groundAtmosphereCompanionEnabled]
+ * @property {boolean} [_skipFogCompanionPrewarm]
+ * @property {boolean} [_skipGroundAtmosphereCompanionPrewarm]
  * @ignore
+ */
+
+/**
+ * @typedef {object} ShaderCompanionToken
+ * @property {*} material
+ * @property {Context} context
+ * @property {*} shaderCache
+ * @property {GlobeSurfaceShaderContextBucket} shaderBucket
+ * @property {GlobeSurfaceShader} surfaceShader
+ * @property {number} materialGeneration
+ * @property {number} numberOfDayTextures
+ * @property {number} sourceFlags
+ * @property {boolean} completed
+ * @property {boolean} prepared
+ */
+
+/**
+ * @typedef {object} GlobeSurfaceShaderContextBucket
+ * @property {GlobeSurfaceShader[][]} shadersByTexturesFlags
+ * @property {object} preparationOwner
+ * @property {Set<*>} shaderCaches
+ * @property {boolean} groundAtmosphereCompanionBandActive
+ * @property {GlobeSurfaceShader | undefined} groundAtmosphereCompanionBandSource
+ * @property {number} groundAtmosphereCompanionBandFinalConfig
+ * @property {number} groundAtmosphereCompanionBandMaterialGeneration
  */
 
 /**
@@ -96,13 +152,56 @@ class GlobeSurfaceShaderSet {
 
     /** @type {GlobeSurfaceShader[][]} */
     this._shadersByTexturesFlags = [];
+    /** @type {Map<Context, GlobeSurfaceShaderContextBucket>} */
+    this._shadersByContext = new Map();
+    /** @type {Context | undefined} */
+    this._activeContext = undefined;
+    /** @type {GlobeSurfaceShaderContextBucket | undefined} */
+    this._activeShaderBucket = undefined;
+    this._pendingFogCompanions = new Map();
+    this._pendingGroundAtmosphereCompanions = new Map();
+    this._destroyed = false;
 
-    this.material = undefined;
+    /** @type {*} */
+    this._material = undefined;
+    this._materialGeneration = 0;
+  }
+
+  /** @returns {*} */
+  get material() {
+    return this._material;
+  }
+
+  /** @param {*} value */
+  set material(value) {
+    if (this._material !== value) {
+      this._material = value;
+      ++this._materialGeneration;
+    }
   }
 
   /** @param {GlobeSurfaceShaderSetOptions} options */
   getShaderProgram(options) {
     const frameState = options.frameState;
+    const context = /** @type {Context} */ (frameState.context);
+    const shaderCache = context.shaderCache;
+    let shaderBucket = this._activeShaderBucket;
+    if (this._activeContext !== context) {
+      shaderBucket = this._shadersByContext.get(context);
+      if (!defined(shaderBucket)) {
+        shaderBucket = createShaderBucket();
+        this._shadersByContext.set(context, shaderBucket);
+      }
+      this._activeContext = context;
+      this._activeShaderBucket = shaderBucket;
+      this._shadersByTexturesFlags = shaderBucket.shadersByTexturesFlags;
+    }
+    const shadersByTexturesFlags = shaderBucket.shadersByTexturesFlags;
+    updateGroundAtmosphereCompanionBand(
+      shaderBucket,
+      options.groundAtmosphereCompanionEnabled === true,
+      this._materialGeneration,
+    );
     const surfaceTile = options.surfaceTile;
     const numberOfDayTextures = options.numberOfDayTextures;
     const applyBrightness = options.applyBrightness;
@@ -138,6 +237,7 @@ class GlobeSurfaceShaderSet {
     const hasExaggeration = options.hasExaggeration;
     const showUndergroundColor = options.showUndergroundColor;
     const translucent = options.translucent;
+    const enableEclipseGlobeShadow = options.enableEclipseGlobeShadow;
 
     let quantization = 0;
     let quantizationDefine = "";
@@ -201,7 +301,8 @@ class GlobeSurfaceShaderSet {
         (+showUndergroundColor << 30) |
         (+translucent << 31)) >>>
         0) +
-      (applyDayNightAlpha ? 0x100000000 : 0);
+      (applyDayNightAlpha ? 0x100000000 : 0) +
+      (enableEclipseGlobeShadow ? 0x200000000 : 0);
 
     let currentClippingShaderState = 0;
     if (defined(clippingPlanes) && clippingPlanes.length > 0) {
@@ -222,6 +323,9 @@ class GlobeSurfaceShaderSet {
     let surfaceShader = surfaceTile.surfaceShader;
     if (
       defined(surfaceShader) &&
+      defined(surfaceShader.shaderProgram) &&
+      surfaceShader.context === context &&
+      surfaceShader.shaderCache === shaderCache &&
       surfaceShader.numberOfDayTextures === numberOfDayTextures &&
       surfaceShader.flags === flags &&
       surfaceShader.material === this.material &&
@@ -229,46 +333,48 @@ class GlobeSurfaceShaderSet {
       surfaceShader.clippingPolygonShaderState ===
         currentClippingPolygonsShaderState
     ) {
+      scheduleConfiguredCompanions(
+        this,
+        surfaceShader,
+        shaderBucket,
+        options,
+        flags,
+        currentClippingShaderState,
+        currentClippingPolygonsShaderState,
+      );
       return surfaceShader.shaderProgram;
     }
 
     // New tile, or tile changed number of textures, flags, or clipping planes
-    let shadersByFlags = this._shadersByTexturesFlags[numberOfDayTextures];
+    let shadersByFlags = shadersByTexturesFlags[numberOfDayTextures];
     if (!defined(shadersByFlags)) {
-      shadersByFlags = this._shadersByTexturesFlags[numberOfDayTextures] = [];
+      shadersByFlags = shadersByTexturesFlags[numberOfDayTextures] = [];
     }
 
     surfaceShader = shadersByFlags[flags];
     if (
       !defined(surfaceShader) ||
+      surfaceShader.context !== context ||
+      surfaceShader.shaderCache !== shaderCache ||
       surfaceShader.material !== this.material ||
       surfaceShader.clippingShaderState !== currentClippingShaderState ||
       surfaceShader.clippingPolygonShaderState !==
         currentClippingPolygonsShaderState
     ) {
       // Cache miss - we've never seen this combination of numberOfDayTextures and flags before.
+      const displacedSurfaceShader = surfaceShader;
       const vs = this.baseVertexShaderSource.clone();
       const fs = this.baseFragmentShaderSource.clone();
 
       // Need to go before GlobeFS
       if (currentClippingShaderState !== 0) {
-        fs.sources.unshift(
-          getClippingFunction(clippingPlanes, frameState.context),
-        );
+        fs.sources.unshift(getClippingFunction(clippingPlanes, context));
       }
 
       // Need to go before GlobeFS
       if (currentClippingPolygonsShaderState !== 0) {
-        fs.sources.unshift(
-          getPolygonClippingFunction(
-            /** @type {Context} */ (frameState.context),
-          ),
-        );
-        vs.sources.unshift(
-          getUnpackClippingFunction(
-            /** @type {Context} */ (frameState.context),
-          ),
-        );
+        fs.sources.unshift(getPolygonClippingFunction(context));
+        vs.sources.unshift(getUnpackClippingFunction(context));
       }
 
       vs.defines.push(quantizationDefine);
@@ -398,6 +504,10 @@ class GlobeSurfaceShaderSet {
         vs.defines.push("EXAGGERATION");
       }
 
+      if (enableEclipseGlobeShadow) {
+        fs.defines.push("ENABLE_ECLIPSE_GLOBE_SHADOW");
+      }
+
       let computeDayColor =
         "\
       vec4 computeDayColor(vec4 initialColor, vec3 textureCoordinates, float nightBlend)\n\
@@ -457,51 +567,832 @@ class GlobeSurfaceShaderSet {
       vs.sources.push(get2DYPositionFraction(useWebMercatorProjection));
 
       const shader = ShaderProgram.fromCache({
-        context: frameState.context,
+        context: context,
         vertexShaderSource: vs,
         fragmentShaderSource: fs,
         attributeLocations: terrainEncoding.getAttributeLocations(),
       });
 
-      surfaceShader = shadersByFlags[flags] = new GlobeSurfaceShader(
+      const replacementSurfaceShader = new GlobeSurfaceShader(
         numberOfDayTextures,
         flags,
         this.material,
+        context,
+        shaderCache,
         shader,
         currentClippingShaderState,
         currentClippingPolygonsShaderState,
       );
+
+      // Acquire the replacement before releasing the displaced reference. The
+      // shader cache may return the same ShaderProgram for equivalent source,
+      // in which case this keeps its reference count continuously owned.
+      //
+      // Every tile using this variant shares the displaced GlobeSurfaceShader
+      // wrapper. Poisoning it prevents a culled tile from later fast-returning
+      // a released (and eventually final-destroyed) program if the old
+      // material or clipping state recurs.
+      releaseSurfaceShader(displacedSurfaceShader);
+      surfaceShader = shadersByFlags[flags] = replacementSurfaceShader;
     }
 
     surfaceTile.surfaceShader = surfaceShader;
+    scheduleConfiguredCompanions(
+      this,
+      surfaceShader,
+      shaderBucket,
+      options,
+      flags,
+      currentClippingShaderState,
+      currentClippingPolygonsShaderState,
+    );
     return surfaceShader.shaderProgram;
   }
 
   destroy() {
-    let flags;
-    let shader;
+    this._destroyed = true;
+    this._pendingFogCompanions.clear();
+    this._pendingGroundAtmosphereCompanions.clear();
 
-    const shadersByTexturesFlags = this._shadersByTexturesFlags;
-    for (const textureCount in shadersByTexturesFlags) {
-      if (shadersByTexturesFlags.hasOwnProperty(textureCount)) {
-        const shadersByFlags = shadersByTexturesFlags[textureCount];
-        if (!defined(shadersByFlags)) {
-          continue;
-        }
-
-        for (flags in shadersByFlags) {
-          if (shadersByFlags.hasOwnProperty(flags)) {
-            shader = shadersByFlags[flags];
-            if (defined(shader)) {
-              shader.shaderProgram.destroy();
-            }
-          }
-        }
-      }
+    for (const shaderBucket of this._shadersByContext.values()) {
+      retireShaderBucket(shaderBucket);
     }
+    this._shadersByContext.clear();
+    this._activeContext = undefined;
+    this._activeShaderBucket = undefined;
+    this._shadersByTexturesFlags = [];
 
     return destroyObject(this);
   }
+}
+
+/** @returns {GlobeSurfaceShaderContextBucket} */
+function createShaderBucket() {
+  return {
+    shadersByTexturesFlags: [],
+    preparationOwner: {},
+    shaderCaches: new Set(),
+    groundAtmosphereCompanionBandActive: false,
+    groundAtmosphereCompanionBandSource: undefined,
+    groundAtmosphereCompanionBandFinalConfig: -1,
+    groundAtmosphereCompanionBandMaterialGeneration: 0,
+  };
+}
+
+function retireShaderBucket(
+  /** @type {GlobeSurfaceShaderContextBucket} */ shaderBucket,
+) {
+  for (const shaderCache of shaderBucket.shaderCaches) {
+    if (typeof shaderCache?.cancelShaderProgramPreparations === "function") {
+      shaderCache.cancelShaderProgramPreparations(
+        shaderBucket.preparationOwner,
+      );
+    }
+  }
+  shaderBucket.shaderCaches.clear();
+  releaseShaderBuckets(shaderBucket.shadersByTexturesFlags);
+}
+
+function releaseShaderBuckets(
+  /** @type {GlobeSurfaceShader[][]} */ shadersByTexturesFlags,
+) {
+  for (const textureCount in shadersByTexturesFlags) {
+    if (!shadersByTexturesFlags.hasOwnProperty(textureCount)) {
+      continue;
+    }
+    const shadersByFlags = shadersByTexturesFlags[textureCount];
+    if (!defined(shadersByFlags)) {
+      continue;
+    }
+
+    for (const flags in shadersByFlags) {
+      if (!shadersByFlags.hasOwnProperty(flags)) {
+        continue;
+      }
+      const shader = shadersByFlags[flags];
+      if (defined(shader)) {
+        releaseSurfaceShader(shader);
+      }
+    }
+  }
+}
+
+function updateGroundAtmosphereCompanionBand(
+  /** @type {GlobeSurfaceShaderContextBucket} */ shaderBucket,
+  /** @type {boolean} */ active,
+  /** @type {number} */ materialGeneration,
+) {
+  if (!active) {
+    if (
+      !shaderBucket.groundAtmosphereCompanionBandActive &&
+      !defined(shaderBucket.groundAtmosphereCompanionBandSource) &&
+      shaderBucket.groundAtmosphereCompanionBandMaterialGeneration ===
+        materialGeneration
+    ) {
+      return;
+    }
+    shaderBucket.groundAtmosphereCompanionBandActive = false;
+    shaderBucket.groundAtmosphereCompanionBandSource = undefined;
+    shaderBucket.groundAtmosphereCompanionBandFinalConfig = -1;
+    shaderBucket.groundAtmosphereCompanionBandMaterialGeneration =
+      materialGeneration;
+    return;
+  }
+
+  if (
+    !shaderBucket.groundAtmosphereCompanionBandActive ||
+    shaderBucket.groundAtmosphereCompanionBandMaterialGeneration !==
+      materialGeneration
+  ) {
+    shaderBucket.groundAtmosphereCompanionBandActive = true;
+    shaderBucket.groundAtmosphereCompanionBandSource = undefined;
+    shaderBucket.groundAtmosphereCompanionBandFinalConfig = -1;
+    shaderBucket.groundAtmosphereCompanionBandMaterialGeneration =
+      materialGeneration;
+  }
+}
+
+function scheduleConfiguredCompanions(
+  /** @type {GlobeSurfaceShaderSet} */
+  shaderSet,
+  /** @type {GlobeSurfaceShader} */
+  surfaceShader,
+  /** @type {GlobeSurfaceShaderContextBucket} */
+  shaderBucket,
+  /** @type {GlobeSurfaceShaderSetOptions} */
+  options,
+  /** @type {number} */
+  flags,
+  /** @type {number} */
+  clippingShaderState,
+  /** @type {number} */
+  clippingPolygonShaderState,
+) {
+  if (options.frameState.shadowState?.lightShadowsEnabled === true) {
+    return;
+  }
+
+  if (options.groundAtmosphereCompanionEnabled === true) {
+    scheduleGroundAtmosphereCompanion(
+      shaderSet,
+      surfaceShader,
+      shaderBucket,
+      options,
+      flags,
+      clippingShaderState,
+      clippingPolygonShaderState,
+    );
+  }
+
+  // A band crossing owns at most one exact atmosphere cohort. Do not enqueue
+  // the orthogonal fog companion in the same crossing; doing so would turn
+  // two single-axis policies into a fog × atmosphere fan-out.
+  if (
+    options.fogCompanionEnabled === true &&
+    !defined(shaderBucket.groundAtmosphereCompanionBandSource)
+  ) {
+    scheduleFogCompanion(
+      shaderSet,
+      surfaceShader,
+      shaderBucket,
+      options,
+      flags,
+      clippingShaderState,
+      clippingPolygonShaderState,
+    );
+  }
+}
+
+function scheduleFogCompanion(
+  /** @type {GlobeSurfaceShaderSet} */
+  shaderSet,
+  /** @type {GlobeSurfaceShader} */
+  surfaceShader,
+  /** @type {GlobeSurfaceShaderContextBucket} */
+  shaderBucket,
+  /** @type {GlobeSurfaceShaderSetOptions} */
+  options,
+  /** @type {number} */
+  flags,
+  /** @type {number} */
+  clippingShaderState,
+  /** @type {number} */
+  clippingPolygonShaderState,
+) {
+  const shaderBuckets = shaderBucket.shadersByTexturesFlags;
+  const frameState = options.frameState;
+  const context = /** @type {Context} */ (frameState.context);
+  const shaderCache = context.shaderCache;
+  const useLogDepth = frameState.useLogDepth === true;
+  const highDynamicRange = frameState.highDynamicRange === true;
+  const finalConfig =
+    +useLogDepth |
+    (+highDynamicRange << 1) |
+    (+(options.baseColorCorrect === false) << 2);
+  const requestBit = 1 << finalConfig;
+  if (options._skipFogCompanionPrewarm) {
+    return;
+  }
+  if (
+    surfaceShader.fogCompanionRequestContext !== context ||
+    surfaceShader.fogCompanionRequestShaderCache !== shaderCache ||
+    surfaceShader.fogCompanionRequestMaterial !== shaderSet.material ||
+    surfaceShader.fogCompanionRequestMaterialGeneration !==
+      shaderSet._materialGeneration
+  ) {
+    surfaceShader.fogCompanionRequestMask = 0;
+    surfaceShader.fogCompanionRejectedMask = 0;
+    surfaceShader.fogCompanionRetryAfterFrame = 0;
+    surfaceShader.fogCompanionRequestContext = context;
+    surfaceShader.fogCompanionRequestShaderCache = shaderCache;
+    surfaceShader.fogCompanionRequestMaterial = shaderSet.material;
+    surfaceShader.fogCompanionRequestMaterialGeneration =
+      shaderSet._materialGeneration;
+  }
+  if ((surfaceShader.fogCompanionRequestMask & requestBit) !== 0) {
+    return;
+  }
+  const frameNumber = frameState.frameNumber ?? 0;
+  if ((surfaceShader.fogCompanionRejectedMask & requestBit) !== 0) {
+    if (frameNumber < surfaceShader.fogCompanionRetryAfterFrame) {
+      return;
+    }
+    surfaceShader.fogCompanionRejectedMask &= ~requestBit;
+  }
+  if (
+    options.baseColorCorrect !== false ||
+    options.translucent ||
+    // @ts-expect-error Missing types.
+    !defined(context._parallelShaderCompile) ||
+    typeof shaderCache?.scheduleShaderProgramPreparation !== "function"
+  ) {
+    surfaceShader.fogCompanionRequestMask |= requestBit;
+    return;
+  }
+
+  const numberOfDayTextures = options.numberOfDayTextures;
+  // The measured route proves value for the zero/one-texture terrain cohorts.
+  // Keep speculative ownership bounded instead of doubling every rare imagery
+  // batching variant that happens to pass through the shader set.
+  if (numberOfDayTextures > 1) {
+    surfaceShader.fogCompanionRequestMask |= requestBit;
+    return;
+  }
+
+  const companionFlags = options.enableFog
+    ? flags - (1 << 18)
+    : flags + (1 << 18);
+  const shadersByFlags = shaderBuckets[numberOfDayTextures];
+  const companionSurfaceShader = shadersByFlags?.[companionFlags];
+  const compatibleCompanionSurfaceShader =
+    defined(companionSurfaceShader) &&
+    companionSurfaceShader.numberOfDayTextures === numberOfDayTextures &&
+    companionSurfaceShader.flags === companionFlags &&
+    companionSurfaceShader.context === context &&
+    companionSurfaceShader.shaderCache === shaderCache &&
+    companionSurfaceShader.material === shaderSet.material &&
+    companionSurfaceShader.clippingShaderState === clippingShaderState &&
+    companionSurfaceShader.clippingPolygonShaderState ===
+      clippingPolygonShaderState
+      ? companionSurfaceShader
+      : undefined;
+  let preparedFinalProgram = compatibleCompanionSurfaceShader?.shaderProgram;
+  if (useLogDepth && defined(preparedFinalProgram)) {
+    preparedFinalProgram = /** @type {ShaderProgram | undefined} */ (
+      shaderCache.getDerivedShaderProgram(preparedFinalProgram, "logDepth")
+    );
+  }
+  if (highDynamicRange && defined(preparedFinalProgram)) {
+    preparedFinalProgram = /** @type {ShaderProgram | undefined} */ (
+      shaderCache.getDerivedShaderProgram(preparedFinalProgram, "HDR")
+    );
+  }
+  if (
+    defined(preparedFinalProgram) &&
+    preparedFinalProgram._linkState !== "uninitialized"
+  ) {
+    surfaceShader.fogCompanionRequestMask |= requestBit;
+    return;
+  }
+
+  const key = `${numberOfDayTextures}:${companionFlags}:${clippingShaderState}:${clippingPolygonShaderState}:${finalConfig}`;
+  const pendingCompanions = shaderSet._pendingFogCompanions;
+  const existingToken = findPendingCompanion(
+    pendingCompanions,
+    key,
+    context,
+    shaderCache,
+    shaderSet.material,
+    shaderSet._materialGeneration,
+    shaderBucket,
+  );
+  if (defined(existingToken)) {
+    return;
+  }
+
+  const token = {
+    material: shaderSet.material,
+    context: context,
+    shaderCache: shaderCache,
+    shaderBucket: shaderBucket,
+    surfaceShader: surfaceShader,
+    materialGeneration: shaderSet._materialGeneration,
+    numberOfDayTextures: numberOfDayTextures,
+    sourceFlags: flags,
+    completed: false,
+    prepared: false,
+  };
+  addPendingCompanion(pendingCompanions, key, token);
+
+  const sourceFrameState = options.frameState;
+  const sceneMode = sourceFrameState.mode;
+  const companionOptions = {
+    ...options,
+    frameState: sourceFrameState,
+    surfaceTile: /** @type {GlobeSurfaceTile} */ ({
+      renderedMesh: {
+        encoding: options.surfaceTile.renderedMesh.encoding,
+      },
+    }),
+    enableFog: !options.enableFog,
+    colorCorrect: false,
+    _skipFogCompanionPrewarm: true,
+    _skipGroundAtmosphereCompanionPrewarm: true,
+  };
+  const clippingPlanes = options.clippingPlanes;
+  const clippingPolygons = options.clippingPolygons;
+
+  shaderBucket.shaderCaches.add(shaderCache);
+  let accepted = false;
+  try {
+    accepted = shaderCache.scheduleShaderProgramPreparation(function () {
+      let prepared = false;
+      try {
+        if (!removePendingCompanion(pendingCompanions, key, token)) {
+          return undefined;
+        }
+
+        if (
+          shaderSet._destroyed ||
+          sourceFrameState.mode !== sceneMode ||
+          sourceFrameState.context !== token.context ||
+          token.context.shaderCache !== token.shaderCache ||
+          shaderSet._shadersByContext.get(token.context) !==
+            token.shaderBucket ||
+          shaderSet.material !== token.material ||
+          shaderSet._materialGeneration !== token.materialGeneration ||
+          token.shaderBucket.shadersByTexturesFlags[
+            token.numberOfDayTextures
+          ]?.[token.sourceFlags] !== token.surfaceShader ||
+          getClippingState(clippingPlanes, options.enableClippingPlanes) !==
+            clippingShaderState ||
+          getClippingPolygonState(
+            clippingPolygons,
+            options.enableClippingPolygons,
+          ) !== clippingPolygonShaderState
+        ) {
+          return undefined;
+        }
+
+        const baseShaderProgram = shaderSet.getShaderProgram(companionOptions);
+        let command = new DrawCommand({
+          shaderProgram: baseShaderProgram,
+        });
+        if (useLogDepth) {
+          command = DerivedCommand.createLogDepthCommand(
+            command,
+            context,
+          ).command;
+        }
+        if (highDynamicRange) {
+          command = DerivedCommand.createHdrCommand(command, context).command;
+        }
+        const finalProgram = command.shaderProgram;
+        prepared = defined(finalProgram);
+        return finalProgram;
+      } finally {
+        token.completed = true;
+        token.prepared = prepared;
+        if (!prepared) {
+          clearFogCompanionRequest(token, requestBit);
+        }
+      }
+    }, shaderBucket.preparationOwner);
+  } finally {
+    if (!accepted) {
+      removePendingCompanion(pendingCompanions, key, token);
+      clearFogCompanionRequest(token, requestBit);
+      surfaceShader.fogCompanionRejectedMask |= requestBit;
+      surfaceShader.fogCompanionRetryAfterFrame =
+        frameNumber + companionPreparationRetryFrames;
+    }
+  }
+  if (accepted && (!token.completed || token.prepared)) {
+    surfaceShader.fogCompanionRejectedMask &= ~requestBit;
+    // Treat queued and completed preparation as the same bounded request. This
+    // avoids rebuilding the structural string key for every tile while the
+    // idle callback is pending. The callback clears the bit on every
+    // stale/canceled/failed outcome so a later frame can retry.
+    surfaceShader.fogCompanionRequestMask |= requestBit;
+  }
+}
+
+function scheduleGroundAtmosphereCompanion(
+  /** @type {GlobeSurfaceShaderSet} */
+  shaderSet,
+  /** @type {GlobeSurfaceShader} */
+  surfaceShader,
+  /** @type {GlobeSurfaceShaderContextBucket} */
+  shaderBucket,
+  /** @type {GlobeSurfaceShaderSetOptions} */
+  options,
+  /** @type {number} */
+  flags,
+  /** @type {number} */
+  clippingShaderState,
+  /** @type {number} */
+  clippingPolygonShaderState,
+) {
+  if (options._skipGroundAtmosphereCompanionPrewarm) {
+    return;
+  }
+
+  const frameState = options.frameState;
+  const context = /** @type {Context} */ (frameState.context);
+  const shaderCache = context.shaderCache;
+  const useLogDepth = frameState.useLogDepth === true;
+  const highDynamicRange = frameState.highDynamicRange === true;
+  const finalConfig = +useLogDepth | (+highDynamicRange << 1);
+  const requestBit = 1 << finalConfig;
+
+  if (
+    surfaceShader.groundAtmosphereCompanionRequestContext !== context ||
+    surfaceShader.groundAtmosphereCompanionRequestShaderCache !== shaderCache ||
+    surfaceShader.groundAtmosphereCompanionRequestMaterial !==
+      shaderSet.material ||
+    surfaceShader.groundAtmosphereCompanionRequestMaterialGeneration !==
+      shaderSet._materialGeneration
+  ) {
+    surfaceShader.groundAtmosphereCompanionRequestMask = 0;
+    surfaceShader.groundAtmosphereCompanionRejectedMask = 0;
+    surfaceShader.groundAtmosphereCompanionRetryAfterFrame = 0;
+    surfaceShader.groundAtmosphereCompanionRequestContext = context;
+    surfaceShader.groundAtmosphereCompanionRequestShaderCache = shaderCache;
+    surfaceShader.groundAtmosphereCompanionRequestMaterial = shaderSet.material;
+    surfaceShader.groundAtmosphereCompanionRequestMaterialGeneration =
+      shaderSet._materialGeneration;
+  }
+  if ((surfaceShader.groundAtmosphereCompanionRequestMask & requestBit) !== 0) {
+    return;
+  }
+
+  const frameNumber = frameState.frameNumber ?? 0;
+  if (
+    (surfaceShader.groundAtmosphereCompanionRejectedMask & requestBit) !==
+    0
+  ) {
+    if (frameNumber < surfaceShader.groundAtmosphereCompanionRetryAfterFrame) {
+      return;
+    }
+    surfaceShader.groundAtmosphereCompanionRejectedMask &= ~requestBit;
+  }
+
+  const numberOfDayTextures = options.numberOfDayTextures;
+  if (
+    !shaderBucket.groundAtmosphereCompanionBandActive ||
+    frameState.mode !== SceneMode.SCENE3D ||
+    options.showGroundAtmosphere !== true ||
+    options.baseColorCorrect !== false ||
+    options.colorCorrect === true ||
+    options.translucent ||
+    (numberOfDayTextures !== 0 && numberOfDayTextures !== 1) ||
+    context.isWebGPU === true ||
+    frameState.shadowState?.lightShadowsEnabled === true ||
+    // @ts-expect-error Missing types.
+    !defined(context._parallelShaderCompile) ||
+    typeof shaderCache?.scheduleShaderProgramPreparation !== "function"
+  ) {
+    surfaceShader.groundAtmosphereCompanionRequestMask |= requestBit;
+    return;
+  }
+
+  const selectedSource = shaderBucket.groundAtmosphereCompanionBandSource;
+  if (
+    defined(selectedSource) &&
+    (selectedSource !== surfaceShader ||
+      shaderBucket.groundAtmosphereCompanionBandFinalConfig !== finalConfig)
+  ) {
+    return;
+  }
+  if (!defined(selectedSource)) {
+    shaderBucket.groundAtmosphereCompanionBandSource = surfaceShader;
+    shaderBucket.groundAtmosphereCompanionBandFinalConfig = finalConfig;
+  }
+
+  const companionFlags = options.perFragmentGroundAtmosphere
+    ? flags - perFragmentGroundAtmosphereFlag
+    : flags + perFragmentGroundAtmosphereFlag;
+  const shaderBuckets = shaderBucket.shadersByTexturesFlags;
+  const shadersByFlags = shaderBuckets[numberOfDayTextures];
+  const companionSurfaceShader = shadersByFlags?.[companionFlags];
+  const compatibleCompanionSurfaceShader =
+    defined(companionSurfaceShader) &&
+    companionSurfaceShader.numberOfDayTextures === numberOfDayTextures &&
+    companionSurfaceShader.flags === companionFlags &&
+    companionSurfaceShader.context === context &&
+    companionSurfaceShader.shaderCache === shaderCache &&
+    companionSurfaceShader.material === shaderSet.material &&
+    companionSurfaceShader.clippingShaderState === clippingShaderState &&
+    companionSurfaceShader.clippingPolygonShaderState ===
+      clippingPolygonShaderState
+      ? companionSurfaceShader
+      : undefined;
+  let preparedFinalProgram = compatibleCompanionSurfaceShader?.shaderProgram;
+  if (useLogDepth && defined(preparedFinalProgram)) {
+    preparedFinalProgram = /** @type {ShaderProgram | undefined} */ (
+      shaderCache.getDerivedShaderProgram(preparedFinalProgram, "logDepth")
+    );
+  }
+  if (highDynamicRange && defined(preparedFinalProgram)) {
+    preparedFinalProgram = /** @type {ShaderProgram | undefined} */ (
+      shaderCache.getDerivedShaderProgram(preparedFinalProgram, "HDR")
+    );
+  }
+  if (
+    defined(preparedFinalProgram) &&
+    preparedFinalProgram._linkState !== "uninitialized"
+  ) {
+    surfaceShader.groundAtmosphereCompanionRequestMask |= requestBit;
+    return;
+  }
+
+  const key = `${numberOfDayTextures}:${companionFlags}:${clippingShaderState}:${clippingPolygonShaderState}:${finalConfig}`;
+  const pendingCompanions = shaderSet._pendingGroundAtmosphereCompanions;
+  const existingToken = findPendingCompanion(
+    pendingCompanions,
+    key,
+    context,
+    shaderCache,
+    shaderSet.material,
+    shaderSet._materialGeneration,
+    shaderBucket,
+  );
+  if (defined(existingToken)) {
+    return;
+  }
+
+  const token = {
+    material: shaderSet.material,
+    context: context,
+    shaderCache: shaderCache,
+    shaderBucket: shaderBucket,
+    surfaceShader: surfaceShader,
+    materialGeneration: shaderSet._materialGeneration,
+    numberOfDayTextures: numberOfDayTextures,
+    sourceFlags: flags,
+    completed: false,
+    prepared: false,
+  };
+  addPendingCompanion(pendingCompanions, key, token);
+
+  const sourceFrameState = options.frameState;
+  const sceneMode = sourceFrameState.mode;
+  const companionOptions = {
+    ...options,
+    frameState: sourceFrameState,
+    surfaceTile: /** @type {GlobeSurfaceTile} */ ({
+      renderedMesh: {
+        encoding: options.surfaceTile.renderedMesh.encoding,
+      },
+    }),
+    perFragmentGroundAtmosphere: !options.perFragmentGroundAtmosphere,
+    _skipFogCompanionPrewarm: true,
+    _skipGroundAtmosphereCompanionPrewarm: true,
+  };
+  const clippingPlanes = options.clippingPlanes;
+  const clippingPolygons = options.clippingPolygons;
+
+  shaderBucket.shaderCaches.add(shaderCache);
+  let accepted = false;
+  try {
+    accepted = shaderCache.scheduleShaderProgramPreparation(function () {
+      let prepared = false;
+      try {
+        if (!removePendingCompanion(pendingCompanions, key, token)) {
+          return undefined;
+        }
+
+        if (
+          shaderSet._destroyed ||
+          sourceFrameState.mode !== sceneMode ||
+          sourceFrameState.mode !== SceneMode.SCENE3D ||
+          sourceFrameState.context !== token.context ||
+          token.context.shaderCache !== token.shaderCache ||
+          // @ts-expect-error Missing types.
+          !defined(token.context._parallelShaderCompile) ||
+          sourceFrameState.shadowState?.lightShadowsEnabled === true ||
+          shaderSet._shadersByContext.get(token.context) !==
+            token.shaderBucket ||
+          shaderSet.material !== token.material ||
+          shaderSet._materialGeneration !== token.materialGeneration ||
+          token.shaderBucket.groundAtmosphereCompanionBandSource !==
+            token.surfaceShader ||
+          token.shaderBucket.groundAtmosphereCompanionBandFinalConfig !==
+            finalConfig ||
+          token.shaderBucket.shadersByTexturesFlags[
+            token.numberOfDayTextures
+          ]?.[token.sourceFlags] !== token.surfaceShader ||
+          getClippingState(clippingPlanes, options.enableClippingPlanes) !==
+            clippingShaderState ||
+          getClippingPolygonState(
+            clippingPolygons,
+            options.enableClippingPolygons,
+          ) !== clippingPolygonShaderState
+        ) {
+          return undefined;
+        }
+
+        const baseShaderProgram = shaderSet.getShaderProgram(companionOptions);
+        let command = new DrawCommand({
+          shaderProgram: baseShaderProgram,
+        });
+        if (useLogDepth) {
+          command = DerivedCommand.createLogDepthCommand(
+            command,
+            context,
+          ).command;
+        }
+        if (highDynamicRange) {
+          command = DerivedCommand.createHdrCommand(command, context).command;
+        }
+        const finalProgram = command.shaderProgram;
+        prepared = defined(finalProgram);
+        return finalProgram;
+      } finally {
+        token.completed = true;
+        token.prepared = prepared;
+        if (!prepared) {
+          clearGroundAtmosphereCompanionRequest(token, requestBit, true);
+        }
+      }
+    }, shaderBucket.preparationOwner);
+  } finally {
+    if (!accepted) {
+      removePendingCompanion(pendingCompanions, key, token);
+      clearGroundAtmosphereCompanionRequest(token, requestBit, false);
+      surfaceShader.groundAtmosphereCompanionRejectedMask |= requestBit;
+      surfaceShader.groundAtmosphereCompanionRetryAfterFrame =
+        frameNumber + companionPreparationRetryFrames;
+    }
+  }
+  if (accepted && (!token.completed || token.prepared)) {
+    surfaceShader.groundAtmosphereCompanionRejectedMask &= ~requestBit;
+    surfaceShader.groundAtmosphereCompanionRequestMask |= requestBit;
+  }
+}
+
+function findPendingCompanion(
+  /** @type {Map<string, ShaderCompanionToken[]>} */ pendingCompanions,
+  /** @type {string} */ key,
+  /** @type {Context} */ context,
+  /** @type {*} */ shaderCache,
+  /** @type {*} */ material,
+  /** @type {number} */ materialGeneration,
+  /** @type {GlobeSurfaceShaderContextBucket} */ shaderBucket,
+) {
+  const tokens = pendingCompanions.get(key);
+  if (!defined(tokens)) {
+    return undefined;
+  }
+
+  for (let i = 0; i < tokens.length; ++i) {
+    const token = tokens[i];
+    if (
+      token.context === context &&
+      token.shaderCache === shaderCache &&
+      token.material === material &&
+      token.materialGeneration === materialGeneration &&
+      token.shaderBucket === shaderBucket
+    ) {
+      return token;
+    }
+  }
+  return undefined;
+}
+
+function addPendingCompanion(
+  /** @type {Map<string, ShaderCompanionToken[]>} */ pendingCompanions,
+  /** @type {string} */ key,
+  /** @type {ShaderCompanionToken} */ token,
+) {
+  let tokens = pendingCompanions.get(key);
+  if (!defined(tokens)) {
+    tokens = [];
+    pendingCompanions.set(key, tokens);
+  }
+  tokens.push(token);
+}
+
+function removePendingCompanion(
+  /** @type {Map<string, ShaderCompanionToken[]>} */ pendingCompanions,
+  /** @type {string} */ key,
+  /** @type {ShaderCompanionToken} */ token,
+) {
+  const tokens = pendingCompanions.get(key);
+  if (!defined(tokens)) {
+    return false;
+  }
+
+  const index = tokens.indexOf(token);
+  if (index === -1) {
+    return false;
+  }
+  tokens.splice(index, 1);
+  if (tokens.length === 0) {
+    pendingCompanions.delete(key);
+  }
+  return true;
+}
+
+function clearFogCompanionRequest(
+  /** @type {ShaderCompanionToken} */ token,
+  /** @type {number} */ requestBit,
+) {
+  const surfaceShader = token.surfaceShader;
+  if (
+    surfaceShader.fogCompanionRequestContext === token.context &&
+    surfaceShader.fogCompanionRequestShaderCache === token.shaderCache &&
+    surfaceShader.fogCompanionRequestMaterial === token.material &&
+    surfaceShader.fogCompanionRequestMaterialGeneration ===
+      token.materialGeneration
+  ) {
+    surfaceShader.fogCompanionRequestMask &= ~requestBit;
+  }
+}
+
+function clearGroundAtmosphereCompanionRequest(
+  /** @type {ShaderCompanionToken} */ token,
+  /** @type {number} */ requestBit,
+  /** @type {boolean} */ releaseBandSelection,
+) {
+  const surfaceShader = token.surfaceShader;
+  if (
+    surfaceShader.groundAtmosphereCompanionRequestContext === token.context &&
+    surfaceShader.groundAtmosphereCompanionRequestShaderCache ===
+      token.shaderCache &&
+    surfaceShader.groundAtmosphereCompanionRequestMaterial === token.material &&
+    surfaceShader.groundAtmosphereCompanionRequestMaterialGeneration ===
+      token.materialGeneration
+  ) {
+    surfaceShader.groundAtmosphereCompanionRequestMask &= ~requestBit;
+  }
+
+  const shaderBucket = token.shaderBucket;
+  if (
+    releaseBandSelection &&
+    shaderBucket.groundAtmosphereCompanionBandSource === token.surfaceShader &&
+    shaderBucket.groundAtmosphereCompanionBandMaterialGeneration ===
+      token.materialGeneration
+  ) {
+    shaderBucket.groundAtmosphereCompanionBandSource = undefined;
+    shaderBucket.groundAtmosphereCompanionBandFinalConfig = -1;
+  }
+}
+
+function getClippingState(
+  /** @type {ClippingPlaneCollection | undefined} */
+  clippingPlanes,
+  /** @type {boolean | undefined} */
+  enabled,
+) {
+  return defined(clippingPlanes) && clippingPlanes.length > 0 && enabled
+    ? // @ts-expect-error Missing types.
+      clippingPlanes.clippingPlanesState
+    : 0;
+}
+
+function getClippingPolygonState(
+  /** @type {ClippingPolygonCollection | undefined} */
+  clippingPolygons,
+  /** @type {boolean | undefined} */
+  enabled,
+) {
+  return defined(clippingPolygons) && clippingPolygons.length > 0 && enabled
+    ? // @ts-expect-error Missing types.
+      clippingPolygons.clippingPolygonsState
+    : 0;
+}
+
+// Releasing through the shared wrapper also invalidates every tile that still
+// references it, so no tile can fast-return a program after its cache ownership
+// has been released.
+// @ts-expect-error Missing types.
+function releaseSurfaceShader(surfaceShader) {
+  if (!defined(surfaceShader) || !defined(surfaceShader.shaderProgram)) {
+    return;
+  }
+
+  surfaceShader.shaderProgram = surfaceShader.shaderProgram.destroy();
 }
 
 /**

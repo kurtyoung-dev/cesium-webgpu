@@ -207,6 +207,15 @@ class DrawCommand {
      * @internal
      */
     this.derivedCommands = {};
+
+    // Scalar-only memo for camera-visible WebGL final-program scheduling.
+    // Declaring these here keeps the steady-state binning path from changing
+    // DrawCommand hidden classes or allocating a per-command memo object.
+    this._webGLFinalShaderProgramBase = undefined;
+    this._webGLFinalShaderProgramCommand = undefined;
+    this._webGLFinalShaderProgram = undefined;
+    this._webGLFinalShaderProgramSelector = -1;
+    this._webGLFinalShaderProgramLinkState = undefined;
   }
 
   /**

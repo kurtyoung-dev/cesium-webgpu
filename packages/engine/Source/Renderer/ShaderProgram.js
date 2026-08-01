@@ -10,6 +10,13 @@ import createUniformArray from "./createUniformArray.js";
 
 let nextShaderProgramId = 0;
 
+const ShaderProgramLinkState = Object.freeze({
+  UNINITIALIZED: "uninitialized",
+  LINKING: "linking",
+  READY: "ready",
+  FAILED: "failed",
+});
+
 /**
  * @private
  */
@@ -35,9 +42,15 @@ class ShaderProgram {
     this._gl = options.gl;
     this._logShaderCompilation = options.logShaderCompilation;
     this._debugShaders = options.debugShaders;
+    this._parallelShaderCompile = options.parallelShaderCompile;
     this._attributeLocations = options.attributeLocations;
 
     this._program = undefined;
+    this._linkResources = undefined;
+    this._linkState = ShaderProgramLinkState.UNINITIALIZED;
+    this._linkError = undefined;
+    this._linkErrorMessages = undefined;
+    this._linkErrorReported = false;
     this._numberOfVertexAttributes = undefined;
     this._vertexAttributes = undefined;
     this._uniformsByName = undefined;
@@ -169,8 +182,83 @@ class ShaderProgram {
   }
 
   finalDestroy() {
-    this._gl.deleteProgram(this._program);
+    const cachedShader = this._cachedShader;
+    if (defined(cachedShader)) {
+      cachedShader.cache._shaderProgramCompilationFinished(this);
+    }
+
+    deleteLinkResources(this._gl, this._linkResources, true);
+    this._linkResources = undefined;
+
+    if (defined(this._program)) {
+      this._gl.deleteProgram(this._program);
+      this._program = undefined;
+    }
+
     return destroyObject(this);
+  }
+
+  _startLink() {
+    if (this._linkState !== ShaderProgramLinkState.UNINITIALIZED) {
+      return this._linkState === ShaderProgramLinkState.LINKING;
+    }
+
+    try {
+      this._linkResources = submitLink(this._gl, this);
+      this._linkState = ShaderProgramLinkState.LINKING;
+    } catch (error) {
+      cacheUnexpectedLinkError(this, error);
+    }
+
+    return this._linkState === ShaderProgramLinkState.LINKING;
+  }
+
+  _isLinkPending() {
+    return (
+      this._linkState === ShaderProgramLinkState.UNINITIALIZED ||
+      this._linkState === ShaderProgramLinkState.LINKING
+    );
+  }
+
+  _pollLinkCompletion() {
+    if (this._linkState !== ShaderProgramLinkState.LINKING) {
+      return this._linkState !== ShaderProgramLinkState.UNINITIALIZED;
+    }
+
+    const extension = this._parallelShaderCompile;
+    if (!defined(extension)) {
+      return false;
+    }
+
+    let completed;
+    try {
+      completed = this._gl.getProgramParameter(
+        this._linkResources.program,
+        extension.COMPLETION_STATUS_KHR,
+      );
+    } catch (error) {
+      cacheUnexpectedLinkError(this, error);
+      return true;
+    }
+
+    if (!completed) {
+      return false;
+    }
+
+    finalizeLink(this);
+    return true;
+  }
+
+  _forceLinkCompletion() {
+    if (this._linkState === ShaderProgramLinkState.UNINITIALIZED) {
+      this._startLink();
+    }
+
+    if (this._linkState === ShaderProgramLinkState.LINKING) {
+      finalizeLink(this);
+    }
+
+    return this._linkState === ShaderProgramLinkState.READY;
   }
 
   static fromCache(options) {
@@ -252,103 +340,338 @@ function handleUniformPrecisionMismatches(
 
 const consolePrefix = "[Cesium WebGL] ";
 
-function createAndLinkProgram(gl, shader) {
+function submitLink(gl, shader) {
   const vsSource = shader._vertexShaderText;
   const fsSource = shader._fragmentShaderText;
+  const resources = {
+    vertexShader: undefined,
+    fragmentShader: undefined,
+    program: undefined,
+  };
 
-  const vertexShader = gl.createShader(gl.VERTEX_SHADER);
-  gl.shaderSource(vertexShader, vsSource);
-  gl.compileShader(vertexShader);
+  try {
+    const vertexShader = gl.createShader(gl.VERTEX_SHADER);
+    resources.vertexShader = vertexShader;
+    gl.shaderSource(vertexShader, vsSource);
+    gl.compileShader(vertexShader);
 
-  const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
-  gl.shaderSource(fragmentShader, fsSource);
-  gl.compileShader(fragmentShader);
+    const fragmentShader = gl.createShader(gl.FRAGMENT_SHADER);
+    resources.fragmentShader = fragmentShader;
+    gl.shaderSource(fragmentShader, fsSource);
+    gl.compileShader(fragmentShader);
 
-  const program = gl.createProgram();
-  gl.attachShader(program, vertexShader);
-  gl.attachShader(program, fragmentShader);
+    const program = gl.createProgram();
+    resources.program = program;
+    gl.attachShader(program, vertexShader);
+    gl.attachShader(program, fragmentShader);
 
-  const attributeLocations = shader._attributeLocations;
-  if (defined(attributeLocations)) {
-    for (const attribute in attributeLocations) {
-      if (Object.hasOwn(attributeLocations, attribute)) {
-        gl.bindAttribLocation(
-          program,
-          attributeLocations[attribute],
-          attribute,
-        );
-      }
-    }
-  }
-
-  gl.linkProgram(program);
-  let log;
-
-  // For performance: if linker succeeds, return without checking compile status
-  if (gl.getProgramParameter(program, gl.LINK_STATUS)) {
-    if (shader._logShaderCompilation) {
-      log = gl.getShaderInfoLog(vertexShader);
-      if (defined(log) && log.length > 0) {
-        console.log(`${consolePrefix}Vertex shader compile log: ${log}`);
-      }
-
-      log = gl.getShaderInfoLog(fragmentShader);
-      if (defined(log) && log.length > 0) {
-        console.log(`${consolePrefix}Fragment shader compile log: ${log}`);
-      }
-
-      log = gl.getProgramInfoLog(program);
-      if (defined(log) && log.length > 0) {
-        console.log(`${consolePrefix}Shader program link log: ${log}`);
+    const attributeLocations = shader._attributeLocations;
+    if (defined(attributeLocations)) {
+      for (const attribute in attributeLocations) {
+        if (Object.hasOwn(attributeLocations, attribute)) {
+          gl.bindAttribLocation(
+            program,
+            attributeLocations[attribute],
+            attribute,
+          );
+        }
       }
     }
 
-    gl.deleteShader(vertexShader);
-    gl.deleteShader(fragmentShader);
-
-    return program;
+    gl.linkProgram(program);
+  } catch (error) {
+    deleteLinkResources(gl, resources, true);
+    throw error;
   }
 
-  // Program failed to link. Try to find and report the reason
+  return resources;
+}
+
+function finalizeLink(shader) {
+  if (shader._linkState !== ShaderProgramLinkState.LINKING) {
+    return;
+  }
+
+  const gl = shader._gl;
+  const resources = shader._linkResources;
+  const program = resources.program;
+
+  let linked;
+  try {
+    linked = gl.getProgramParameter(program, gl.LINK_STATUS);
+  } catch (error) {
+    deleteLinkResources(gl, resources, true);
+    shader._linkResources = undefined;
+    cacheUnexpectedLinkError(shader, error);
+    return;
+  }
+
+  if (!linked) {
+    let failure;
+    try {
+      failure = createLinkFailure(shader, resources);
+    } catch (error) {
+      failure = createUnexpectedLinkFailure(error);
+    }
+
+    deleteLinkResources(gl, resources, true);
+    shader._linkResources = undefined;
+    cacheLinkFailure(shader, failure);
+    return;
+  }
+
+  try {
+    logSuccessfulCompilation(shader, resources);
+    const programInfo = createProgramInfo(shader, program);
+    installSpectorHook(shader, program);
+    deleteLinkResources(gl, resources, false);
+    shader._linkResources = undefined;
+    publishProgramInfo(shader, programInfo);
+    shader._linkState = ShaderProgramLinkState.READY;
+    shader._linkError = undefined;
+    shader._linkErrorMessages = undefined;
+    shader._linkErrorReported = false;
+  } catch (error) {
+    deleteLinkResources(gl, resources, true);
+    shader._linkResources = undefined;
+    cacheUnexpectedLinkError(shader, error);
+  }
+}
+
+function createLinkFailure(shader, resources) {
+  const gl = shader._gl;
+  const vertexShader = resources.vertexShader;
+  const fragmentShader = resources.fragmentShader;
+  const program = resources.program;
+  const vsSource = shader._vertexShaderText;
+  const fsSource = shader._fragmentShaderText;
+  const messages = [];
   let errorMessage;
-  const debugShaders = shader._debugShaders;
+  let log;
 
   if (!gl.getShaderParameter(fragmentShader, gl.COMPILE_STATUS)) {
     log = gl.getShaderInfoLog(fragmentShader);
-    console.error(`${consolePrefix}Fragment shader compile log: ${log}`);
-    console.error(`${consolePrefix} Fragment shader source:\n${fsSource}`);
+    messages.push(`${consolePrefix}Fragment shader compile log: ${log}`);
+    messages.push(`${consolePrefix} Fragment shader source:\n${fsSource}`);
     errorMessage = `Fragment shader failed to compile.  Compile log: ${log}`;
   } else if (!gl.getShaderParameter(vertexShader, gl.COMPILE_STATUS)) {
     log = gl.getShaderInfoLog(vertexShader);
-    console.error(`${consolePrefix}Vertex shader compile log: ${log}`);
-    console.error(`${consolePrefix} Vertex shader source:\n${vsSource}`);
+    messages.push(`${consolePrefix}Vertex shader compile log: ${log}`);
+    messages.push(`${consolePrefix} Vertex shader source:\n${vsSource}`);
     errorMessage = `Vertex shader failed to compile.  Compile log: ${log}`;
   } else {
     log = gl.getProgramInfoLog(program);
-    console.error(`${consolePrefix}Shader program link log: ${log}`);
-    logTranslatedSource(vertexShader, "vertex");
-    logTranslatedSource(fragmentShader, "fragment");
+    messages.push(`${consolePrefix}Shader program link log: ${log}`);
+    appendTranslatedSource(shader, vertexShader, "vertex", messages);
+    appendTranslatedSource(shader, fragmentShader, "fragment", messages);
     errorMessage = `Program failed to link.  Link log: ${log}`;
   }
 
-  gl.deleteShader(vertexShader);
-  gl.deleteShader(fragmentShader);
-  gl.deleteProgram(program);
-  throw new RuntimeError(errorMessage);
+  return {
+    error: new RuntimeError(errorMessage),
+    messages: messages,
+  };
+}
 
-  function logTranslatedSource(compiledShader, name) {
-    if (!defined(debugShaders)) {
-      return;
-    }
-    const translation = debugShaders.getTranslatedShaderSource(compiledShader);
-    if (translation === "") {
-      console.error(`${consolePrefix}${name} shader translation failed.`);
-      return;
-    }
-    console.error(
-      `${consolePrefix}Translated ${name} shaderSource:\n${translation}`,
-    );
+function appendTranslatedSource(shader, compiledShader, name, messages) {
+  const debugShaders = shader._debugShaders;
+  if (!defined(debugShaders)) {
+    return;
   }
+
+  const translation = debugShaders.getTranslatedShaderSource(compiledShader);
+  if (translation === "") {
+    messages.push(`${consolePrefix}${name} shader translation failed.`);
+    return;
+  }
+
+  messages.push(
+    `${consolePrefix}Translated ${name} shaderSource:\n${translation}`,
+  );
+}
+
+function logSuccessfulCompilation(shader, resources) {
+  if (!shader._logShaderCompilation) {
+    return;
+  }
+
+  const gl = shader._gl;
+  let log = gl.getShaderInfoLog(resources.vertexShader);
+  if (defined(log) && log.length > 0) {
+    console.log(`${consolePrefix}Vertex shader compile log: ${log}`);
+  }
+
+  log = gl.getShaderInfoLog(resources.fragmentShader);
+  if (defined(log) && log.length > 0) {
+    console.log(`${consolePrefix}Fragment shader compile log: ${log}`);
+  }
+
+  log = gl.getProgramInfoLog(resources.program);
+  if (defined(log) && log.length > 0) {
+    console.log(`${consolePrefix}Shader program link log: ${log}`);
+  }
+}
+
+function createProgramInfo(shader, program) {
+  const gl = shader._gl;
+  const numberOfVertexAttributes = gl.getProgramParameter(
+    program,
+    gl.ACTIVE_ATTRIBUTES,
+  );
+  const vertexAttributes = findVertexAttributes(
+    gl,
+    program,
+    numberOfVertexAttributes,
+  );
+  const uniforms = findUniforms(gl, program);
+  const partitionedUniforms = partitionUniforms(
+    shader,
+    uniforms.uniformsByName,
+  );
+  const maximumTextureUnitIndex = setSamplerUniforms(
+    gl,
+    program,
+    uniforms.samplerUniforms,
+  );
+
+  return {
+    program: program,
+    numberOfVertexAttributes: numberOfVertexAttributes,
+    vertexAttributes: vertexAttributes,
+    uniformsByName: uniforms.uniformsByName,
+    uniforms: uniforms.uniforms,
+    automaticUniforms: partitionedUniforms.automaticUniforms,
+    manualUniforms: partitionedUniforms.manualUniforms,
+    maximumTextureUnitIndex: maximumTextureUnitIndex,
+  };
+}
+
+function publishProgramInfo(shader, programInfo) {
+  shader._program = programInfo.program;
+  shader._numberOfVertexAttributes = programInfo.numberOfVertexAttributes;
+  shader._vertexAttributes = programInfo.vertexAttributes;
+  shader._uniformsByName = programInfo.uniformsByName;
+  shader._uniforms = programInfo.uniforms;
+  shader._automaticUniforms = programInfo.automaticUniforms;
+  shader._manualUniforms = programInfo.manualUniforms;
+  shader.maximumTextureUnitIndex = programInfo.maximumTextureUnitIndex;
+}
+
+function cacheLinkFailure(shader, failure) {
+  shader._linkState = ShaderProgramLinkState.FAILED;
+  shader._linkError = failure.error;
+  shader._linkErrorMessages = failure.messages;
+  shader._linkErrorReported = false;
+
+  // A speculatively prepared program may never be bound, so the compile and link
+  // logs have to reach the console when the failure is discovered instead of only
+  // when the program is first used. reportLinkFailure() stays quiet afterward.
+  logLinkFailure(shader);
+}
+
+function createUnexpectedLinkFailure(error) {
+  const message = defined(error) ? error.message : undefined;
+  return {
+    error:
+      error instanceof RuntimeError
+        ? error
+        : new RuntimeError(
+            defined(message) ? message : "Shader program failed to link.",
+          ),
+    messages: [],
+  };
+}
+
+function cacheUnexpectedLinkError(shader, error) {
+  deleteLinkResources(shader._gl, shader._linkResources, true);
+  shader._linkResources = undefined;
+  cacheLinkFailure(shader, createUnexpectedLinkFailure(error));
+}
+
+function logLinkFailure(shader) {
+  if (shader._linkErrorReported) {
+    return;
+  }
+
+  const messages = shader._linkErrorMessages;
+  if (defined(messages)) {
+    for (let i = 0; i < messages.length; ++i) {
+      console.error(messages[i]);
+    }
+  }
+  shader._linkErrorReported = true;
+}
+
+function reportLinkFailure(shader) {
+  logLinkFailure(shader);
+
+  throw shader._linkError;
+}
+
+function deleteLinkResources(gl, resources, deleteProgram) {
+  if (!defined(resources)) {
+    return;
+  }
+
+  const vertexShader = resources.vertexShader;
+  const fragmentShader = resources.fragmentShader;
+  const program = resources.program;
+  resources.vertexShader = undefined;
+  resources.fragmentShader = undefined;
+  if (deleteProgram) {
+    resources.program = undefined;
+  }
+
+  if (defined(vertexShader)) {
+    gl.deleteShader(vertexShader);
+  }
+  if (defined(fragmentShader)) {
+    gl.deleteShader(fragmentShader);
+  }
+  if (deleteProgram && defined(program)) {
+    gl.deleteProgram(program);
+  }
+}
+
+function installSpectorHook(shader, program) {
+  // If SpectorJS is active, add the hook to make the shader editor work.
+  // https://github.com/BabylonJS/Spector.js/blob/master/documentation/extension.md#shader-editor
+  if (typeof spector === "undefined") {
+    return;
+  }
+
+  program.__SPECTOR_rebuildProgram = function (
+    vertexSourceCode, // The new vertex shader source
+    fragmentSourceCode, // The new fragment shader source
+    onCompiled, // Callback triggered by your engine when the compilation is successful. It needs to send back the new linked program.
+    onError, // Callback triggered by your engine in case of error. It needs to send the WebGL error to allow the editor to display the error in the gutter.
+  ) {
+    const originalVS = shader._vertexShaderText;
+    const originalFS = shader._fragmentShaderText;
+
+    // SpectorJS likes to replace `!=` with `! =` for unknown reasons,
+    // and that causes glsl compile failures. So fix that up.
+    const regex = / ! = /g;
+    shader._vertexShaderText = vertexSourceCode.replace(regex, " != ");
+    shader._fragmentShaderText = fragmentSourceCode.replace(regex, " != ");
+
+    try {
+      reinitializeSynchronously(shader);
+      onCompiled(shader._program);
+    } catch (e) {
+      shader._vertexShaderText = originalVS;
+      shader._fragmentShaderText = originalFS;
+
+      // Only pass on the WebGL error:
+      const errorMatcher = /(?:Compile|Link) error: ([^]*)/;
+      const match = errorMatcher.exec(e.message);
+      if (match) {
+        onError(match[1]);
+      } else {
+        onError(e.message);
+      }
+    }
+  };
 }
 
 function findVertexAttributes(gl, program, numberOfAttributes) {
@@ -527,86 +850,88 @@ function setSamplerUniforms(gl, program, samplerUniforms) {
 }
 
 function initialize(shader) {
-  if (defined(shader._program)) {
+  if (shader._linkState === ShaderProgramLinkState.READY) {
     return;
   }
 
-  reinitialize(shader);
+  if (shader._linkState === ShaderProgramLinkState.FAILED) {
+    reportLinkFailure(shader);
+  }
+
+  const cachedShader = shader._cachedShader;
+  const cache = defined(cachedShader) ? cachedShader.cache : undefined;
+  if (defined(cache)) {
+    cache._prepareShaderProgramForImmediateUse(shader);
+  }
+
+  shader._forceLinkCompletion();
+
+  if (defined(cache)) {
+    cache._shaderProgramCompilationFinished(shader);
+  }
+
+  if (shader._linkState === ShaderProgramLinkState.FAILED) {
+    reportLinkFailure(shader);
+  }
 }
 
-function reinitialize(shader) {
+function reinitializeSynchronously(shader) {
   const oldProgram = shader._program;
-
   const gl = shader._gl;
-  const program = createAndLinkProgram(gl, shader, shader._debugShaders);
-  const numberOfVertexAttributes = gl.getProgramParameter(
-    program,
-    gl.ACTIVE_ATTRIBUTES,
-  );
-  const uniforms = findUniforms(gl, program);
-  const partitionedUniforms = partitionUniforms(
-    shader,
-    uniforms.uniformsByName,
-  );
-
-  shader._program = program;
-  shader._numberOfVertexAttributes = numberOfVertexAttributes;
-  shader._vertexAttributes = findVertexAttributes(
-    gl,
-    program,
-    numberOfVertexAttributes,
-  );
-  shader._uniformsByName = uniforms.uniformsByName;
-  shader._uniforms = uniforms.uniforms;
-  shader._automaticUniforms = partitionedUniforms.automaticUniforms;
-  shader._manualUniforms = partitionedUniforms.manualUniforms;
-
-  shader.maximumTextureUnitIndex = setSamplerUniforms(
-    gl,
-    program,
-    uniforms.samplerUniforms,
-  );
-
-  if (oldProgram) {
-    shader._gl.deleteProgram(oldProgram);
+  const cachedShader = shader._cachedShader;
+  if (defined(cachedShader)) {
+    cachedShader.cache._prepareShaderProgramForImmediateUse(shader);
   }
 
-  // If SpectorJS is active, add the hook to make the shader editor work.
-  // https://github.com/BabylonJS/Spector.js/blob/master/documentation/extension.md#shader-editor
-  if (typeof spector !== "undefined") {
-    shader._program.__SPECTOR_rebuildProgram = function (
-      vertexSourceCode, // The new vertex shader source
-      fragmentSourceCode, // The new fragment shader source
-      onCompiled, // Callback triggered by your engine when the compilation is successful. It needs to send back the new linked program.
-      onError, // Callback triggered by your engine in case of error. It needs to send the WebGL error to allow the editor to display the error in the gutter.
-    ) {
-      const originalVS = shader._vertexShaderText;
-      const originalFS = shader._fragmentShaderText;
-
-      // SpectorJS likes to replace `!=` with `! =` for unknown reasons,
-      // and that causes glsl compile failures. So fix that up.
-      const regex = / ! = /g;
-      shader._vertexShaderText = vertexSourceCode.replace(regex, " != ");
-      shader._fragmentShaderText = fragmentSourceCode.replace(regex, " != ");
-
-      try {
-        reinitialize(shader);
-        onCompiled(shader._program);
-      } catch (e) {
-        shader._vertexShaderText = originalVS;
-        shader._fragmentShaderText = originalFS;
-
-        // Only pass on the WebGL error:
-        const errorMatcher = /(?:Compile|Link) error: ([^]*)/;
-        const match = errorMatcher.exec(e.message);
-        if (match) {
-          onError(match[1]);
-        } else {
-          onError(e.message);
-        }
-      }
-    };
+  const resources = submitLink(gl, shader);
+  const program = resources.program;
+  let linked;
+  try {
+    linked = gl.getProgramParameter(program, gl.LINK_STATUS);
+  } catch (error) {
+    deleteLinkResources(gl, resources, true);
+    throw createUnexpectedLinkFailure(error).error;
   }
+
+  if (!linked) {
+    let failure;
+    try {
+      failure = createLinkFailure(shader, resources);
+    } catch (error) {
+      failure = createUnexpectedLinkFailure(error);
+    }
+    deleteLinkResources(gl, resources, true);
+    reportFailure(failure);
+  }
+
+  let programInfo;
+  try {
+    logSuccessfulCompilation(shader, resources);
+    programInfo = createProgramInfo(shader, program);
+    installSpectorHook(shader, program);
+  } catch (error) {
+    deleteLinkResources(gl, resources, true);
+    throw createUnexpectedLinkFailure(error).error;
+  }
+
+  deleteLinkResources(gl, resources, false);
+  publishProgramInfo(shader, programInfo);
+  shader._linkState = ShaderProgramLinkState.READY;
+  shader._linkError = undefined;
+  shader._linkErrorMessages = undefined;
+  shader._linkErrorReported = false;
+
+  if (defined(oldProgram)) {
+    gl.deleteProgram(oldProgram);
+  }
+}
+
+function reportFailure(failure) {
+  const messages = failure.messages;
+  for (let i = 0; i < messages.length; ++i) {
+    console.error(messages[i]);
+  }
+  throw failure.error;
 }
 
 export default ShaderProgram;
