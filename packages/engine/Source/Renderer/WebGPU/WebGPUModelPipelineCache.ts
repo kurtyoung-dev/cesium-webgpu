@@ -47,6 +47,15 @@ import ClusteredLightingChunk from "../../Shaders/WebGPU/chunks/structs/Clustere
 // for the model OIT accumulation variant. The module cache preprocesses
 // internally; the OIT path needs the concrete WGSL for injectOITOutput.
 import { preprocess as preprocessShaderSource } from "./WebGPUShaderPreprocessor.js";
+// C11-90 — the topology axis (topology + stripIndexFormat) has ONE home. This
+// file neither spells those two fields out nor builds the key segment itself.
+import {
+  MODEL_TOPOLOGY_TRIANGLE_LIST,
+  buildModelTopologyVariantKey,
+  modelPrimitiveState,
+  modelTopologyRealizationFrom,
+} from "./WebGPUModelTopology.js";
+import type { ModelTopologyRealization } from "./WebGPUModelTopology.js";
 import type { WebGPUPipelineConfig } from "./WebGPUDrawCommand.js";
 import {
   makeBindGroupLayout,
@@ -352,25 +361,27 @@ function computeKey(
 }
 
 /**
- * GLTF-POINTS-MODE — folds the primitive topology into a pipeline cache
- * key. Triangle-list (the historical default and the overwhelmingly
- * common case) returns the key UNCHANGED — numeric for the numeric-keyed
- * caches, string for the string-keyed ones — so pre-existing triangle
- * pipelines keep byte-identical cache keys. Non-triangle topologies
- * (today: "point-list" for glTF mode-0 POINTS primitives) get a distinct
- * string key so a model mixing POINTS and TRIANGLES primitives with the
- * same material identity builds both variants.
+ * GLTF-POINTS-MODE / C11-90 — folds the primitive topology axis into a
+ * pipeline cache key. Delegates to the single home in `WebGPUModelTopology`
+ * so this file cannot drift from the shadow path's copy of the same axis;
+ * kept as a local alias only because ~10 call sites read better with the
+ * short name.
+ *
+ * Triangle-list still returns the key UNCHANGED, so every pre-existing
+ * triangle pipeline keeps a byte-identical cache key. Strips additionally
+ * carry their `stripIndexFormat` — a uint16 and a uint32 `triangle-strip`
+ * are different pipelines and must not share an entry.
  *
  * @param {number|string} key base cache key
- * @param {string} topology GPUPrimitiveTopology
+ * @param {ModelTopologyRealization} topology realized topology axis
  * @returns {number|string}
  * @private
  */
 function topologyVariantKey(
   key: number | string,
-  topology: string,
+  topology: ModelTopologyRealization,
 ): number | string {
-  return topology === "triangle-list" ? key : `${key}:${topology}`;
+  return buildModelTopologyVariantKey(key, topology);
 }
 
 /**
@@ -870,7 +881,7 @@ function buildColorPipelineDescriptor(
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE — GPUPrimitiveTopology keyed off the glTF
   // primitive.mode. Default preserves the historical hardcoded value.
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ): GPURenderPipelineDescriptor {
   const cullMode = doubleSided ? "none" : "back";
 
@@ -934,10 +945,7 @@ function buildColorPipelineDescriptor(
     },
     // cullMode has no effect for non-triangle topologies per the WebGPU
     // spec, so forwarding it unchanged is safe for point-list.
-    primitive: {
-      topology,
-      cullMode,
-    },
+    primitive: modelPrimitiveState(topology, cullMode),
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled,
@@ -963,7 +971,7 @@ function createPipeline(
   hasFeatureId0: boolean,
   sampleCount: number = 1,
   hasMetadata: number | boolean = false,
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ) {
   return device.createRenderPipeline(
     buildColorPipelineDescriptor(
@@ -1019,7 +1027,7 @@ function createSilhouetteModelPipeline(
   hasMetadata: number | boolean,
   invisible: boolean,
   // GLTF-POINTS-MODE
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   let blend: GPUBlendState | undefined;
@@ -1068,10 +1076,7 @@ function createSilhouetteModelPipeline(
       entryPoint: "fragmentMain",
       targets,
     },
-    primitive: {
-      topology,
-      cullMode,
-    },
+    primitive: modelPrimitiveState(topology, cullMode),
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled,
@@ -1113,7 +1118,7 @@ function createSilhouetteColorPipeline(
   hasMetadata: number | boolean,
   translucent: boolean,
   // GLTF-POINTS-MODE
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ) {
   const stencilNotEqual: GPUStencilFaceState = {
     compare: "not-equal",
@@ -1142,10 +1147,7 @@ function createSilhouetteColorPipeline(
       entryPoint: "fragmentMain",
       targets,
     },
-    primitive: {
-      topology,
-      cullMode: "none",
-    },
+    primitive: modelPrimitiveState(topology, "none"),
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: translucent !== true,
@@ -1194,7 +1196,7 @@ function createPickPipeline(
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
   // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — when the pick-fleet switch is on
   // the passed `shaderModule` is the LOG_DEPTH variant (fragmentPickMain writes
   // log `@builtin(frag_depth)`); tag the label `[ld]`. Only OPAQUE/MASK picks
@@ -1252,10 +1254,7 @@ function createPickPipeline(
       entryPoint: "fragmentPickMain",
       targets: [{ format: presentationFormat }],
     },
-    primitive: {
-      topology,
-      cullMode,
-    },
+    primitive: modelPrimitiveState(topology, cullMode),
     depthStencil: {
       format: depthFormat,
       // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — the pick-log switch changes the
@@ -1297,7 +1296,7 @@ function createPickMetadataPipeline(
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
   // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — see createPickPipeline.
   pickLogActive: boolean = false,
 ) {
@@ -1322,10 +1321,7 @@ function createPickMetadataPipeline(
       entryPoint: "fragmentPickMetadataMain",
       targets: [{ format: presentationFormat }],
     },
-    primitive: {
-      topology,
-      cullMode,
-    },
+    primitive: modelPrimitiveState(topology, cullMode),
     depthStencil: {
       format: depthFormat,
       // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — see createPickPipeline. Opaque/mask
@@ -1373,7 +1369,7 @@ function createCapturePipeline(
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ) {
   return device.createRenderPipeline({
     label: `Model PBR capture [face=${faceFormat},ds=${doubleSided}]`,
@@ -1393,11 +1389,8 @@ function createCapturePipeline(
       // CAPTURE_MODE module emits FragOutput { @location(0) color } only.
       targets: [{ format: faceFormat, writeMask: 0xf }],
     },
-    primitive: {
-      topology,
-      // disableCulling — cube-face render is left-handed; depth picks nearest.
-      cullMode: "none",
-    },
+    // disableCulling — cube-face render is left-handed; depth picks nearest.
+    primitive: modelPrimitiveState(topology, "none"),
     depthStencil: {
       format: "depth24plus",
       depthWriteEnabled: true,
@@ -1429,7 +1422,7 @@ function createPickHoverPipeline(
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
   // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — see createPickPipeline. Depth-write
   // is already true here (dither-gated blend competes on the standard depth test).
   pickLogActive: boolean = false,
@@ -1455,7 +1448,7 @@ function createPickHoverPipeline(
       entryPoint: "fragmentPickHoverMain",
       targets: [{ format: presentationFormat }],
     },
-    primitive: { topology, cullMode },
+    primitive: modelPrimitiveState(topology, cullMode),
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: true,
@@ -1490,7 +1483,7 @@ function createPickPrecisePass1Pipeline(
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
   // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — reuses fragmentPickMain, so it
   // MUST take the same pick-gated module; tag `[ld]` when active. Depth-write is
   // already true (this pass records the closest translucent log depth).
@@ -1541,7 +1534,7 @@ function createPickPrecisePass1Pipeline(
       // stencil writes apply.
       targets: [{ format: presentationFormat, writeMask: 0 }],
     },
-    primitive: { topology, cullMode },
+    primitive: modelPrimitiveState(topology, cullMode),
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: true,
@@ -1580,7 +1573,7 @@ function createPickPrecisePass2Pipeline(
   hasFeatureId0: boolean,
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
   // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — reuses fragmentPickMain, so it
   // MUST take the same pick-gated module; tag `[ld]` when active. Depth-write
   // STAYS false: this pass depth-tests `equal` against the log depth pass1 wrote
@@ -1630,7 +1623,7 @@ function createPickPrecisePass2Pipeline(
       entryPoint: "fragmentPickMain",
       targets: [{ format: presentationFormat }],
     },
-    primitive: { topology, cullMode },
+    primitive: modelPrimitiveState(topology, cullMode),
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
@@ -1677,7 +1670,7 @@ function createVelocityPipeline(
   // DP-H46a — metadata vertex slot 9.
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ) {
   void sampleCount;
   const cullMode = doubleSided ? "none" : "back";
@@ -1699,10 +1692,7 @@ function createVelocityPipeline(
       entryPoint: "fragmentVelocityMain",
       targets: [{ format: "rg16float" }],
     },
-    primitive: {
-      topology,
-      cullMode,
-    },
+    primitive: modelPrimitiveState(topology, cullMode),
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
@@ -1760,7 +1750,7 @@ function createClassificationPipeline(
   // DP-H46a — metadata vertex slot 9.
   hasMetadata: number | boolean = false,
   // GLTF-POINTS-MODE
-  topology: GPUPrimitiveTopology = "triangle-list",
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
 ) {
   const cullMode = doubleSided ? "none" : "back";
   const label = `Model classification [alpha=${alphaMode},ds=${doubleSided}]`;
@@ -1795,7 +1785,7 @@ function createClassificationPipeline(
       // helper. Classification draws translucent overlays into scene FB.
       targets: makeSceneFBTargets(presentationFormat, { blend }),
     },
-    primitive: { topology, cullMode },
+    primitive: modelPrimitiveState(topology, cullMode),
     depthStencil: {
       format: depthFormat,
       depthWriteEnabled: false,
@@ -1863,7 +1853,7 @@ class WebGPUModelPipelineCache {
   declare _metadataPickClassHash: number;
   declare _customShaderWGSL: string;
   declare _customShaderClassHash: number;
-  declare _primitiveTopology: GPUPrimitiveTopology;
+  declare _primitiveTopology: ModelTopologyRealization;
   declare _logDepthEnabled: boolean;
   // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet log-depth
   // switch, mirrored from `context._pickLogDepthWriteEnabled` via
@@ -2148,7 +2138,7 @@ class WebGPUModelPipelineCache {
     // above — `applyPrimitiveMetadataToPipelineCache` writes all three).
     // "triangle-list" is the historical hardcoded value; triangle
     // primitives keep byte-identical cache keys + pipeline descriptors.
-    this._primitiveTopology = "triangle-list";
+    this._primitiveTopology = MODEL_TOPOLOGY_TRIANGLE_LIST;
 
     // Eagerly build the basic variant (materialDefines = 0). Most
     // scenes have at least one non-KHR primitive and the basic layout
@@ -2792,23 +2782,29 @@ class WebGPUModelPipelineCache {
   }
 
   /**
-   * GLTF-POINTS-MODE — set the GPUPrimitiveTopology for the primitive whose
-   * pipeline is about to be (re)built. Same sticky-state contract as
-   * `setMetadataWGSL` / `setCustomShaderWGSL`: the renderer writes it
-   * immediately before each primitive's `getPipeline*` calls (via
-   * `applyPrimitiveMetadataToPipelineCache`), and passing anything other
-   * than a known non-triangle topology resets to the "triangle-list"
-   * default so a stale point-list can't leak into a triangle primitive.
+   * GLTF-POINTS-MODE / C11-90 — set the realized topology axis for the
+   * primitive whose pipeline is about to be (re)built. Same sticky-state
+   * contract as `setMetadataWGSL` / `setCustomShaderWGSL`: the renderer writes
+   * it immediately before each primitive's `getPipeline*` calls (via
+   * `applyPrimitiveMetadataToPipelineCache`), and anything that is not a
+   * recognized topology (or a strip missing its index format) resets to the
+   * `triangle-list` default so stale state can never leak into a triangle
+   * primitive.
    *
-   * Today only "point-list" (glTF mode-0 POINTS) is supported beyond the
-   * default; LINES / LINE_STRIP / TRIANGLE_STRIP remain deferred (strip
-   * topologies additionally need `stripIndexFormat` plumbing).
+   * Both fields are decided ONCE in preparation by
+   * `realizeModelPrimitiveTopology`; this setter only replays that decision.
+   * It does not decide anything itself, which is why the strip index format is
+   * a required companion rather than something this method could infer.
    *
    * @param {string} topology GPUPrimitiveTopology
+   * @param {string} [stripIndexFormat] GPUIndexFormat — REQUIRED for
+   *   `line-strip` / `triangle-strip`, forbidden otherwise.
    */
-  setPrimitiveTopology(topology: string) {
-    this._primitiveTopology =
-      topology === "point-list" ? "point-list" : "triangle-list";
+  setPrimitiveTopology(topology: string, stripIndexFormat?: string) {
+    this._primitiveTopology = modelTopologyRealizationFrom(
+      topology,
+      stripIndexFormat,
+    );
   }
 
   /**
@@ -3293,7 +3289,7 @@ class WebGPUModelPipelineCache {
    */
   _getOrCreateErrorPipeline(
     md: number,
-    topology: GPUPrimitiveTopology = "triangle-list",
+    topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
   ) {
     const key = topologyVariantKey(md, topology);
     let ep = this._errorPipelines.get(key);
@@ -3329,7 +3325,7 @@ class WebGPUModelPipelineCache {
           emitsGBuffer: true,
         }),
       },
-      primitive: { topology, cullMode: "none" },
+      primitive: modelPrimitiveState(topology, "none"),
       depthStencil: {
         format: this._depthFormat,
         depthWriteEnabled: true,

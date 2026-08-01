@@ -52,6 +52,7 @@ import {
   _getOrCreateCastPipeline,
   _inferShadowLayoutKey,
   getShadowCastCullMode,
+  getShadowCastStripIndexFormat,
   getShadowCastTopology,
   getShadowCastVariant,
 } from "./WebGPUShadowMapRenderer.js";
@@ -698,6 +699,9 @@ export function renderCSMCastPass(
         vbStride,
         getShadowCastTopology(cmd),
         getShadowCastCullMode(cmd),
+        // C11-90 — CSM shares the cast pipeline factory with the single
+        // shadow map, so it must pass the same complete topology axis.
+        getShadowCastStripIndexFormat(cmd),
       );
       if (!pipelineEntry) continue;
 

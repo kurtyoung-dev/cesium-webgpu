@@ -583,6 +583,17 @@ function buildPrimitiveGeometry(runtimePrimitive, source, gltfPrim) {
     indexCount: 0,
     indexType: null, // "UNSIGNED_SHORT" or "UNSIGNED_INT"
 
+    // C11-90 — byte width of the ORIGINAL glTF index accessor (1 / 2 / 4),
+    // recorded because `indexType` cannot express it: WebGPU has no uint8
+    // index format, so a UNSIGNED_BYTE accessor is upcast to Uint16Array
+    // below and its type is reported as "UNSIGNED_SHORT". That upcast turns
+    // the uint8 primitive-restart sentinel 0xFF into the ordinary index
+    // 0x00FF. The WebGPU topology realization repairs that — but ONLY for the
+    // four modes `KHR_mesh_primitive_restart` permits, which is a decision
+    // that belongs to the renderer, not the extractor. So the extractor
+    // records the fact and stays backend-agnostic.
+    indexSourceComponentBytes: 0,
+
     // GLTF-POINTS-MODE — the glTF primitive draw mode (`PrimitiveType` /
     // WebGL enum: POINTS=0, ..., TRIANGLES=4). WebGL consumes it via
     // `PrimitiveRenderResources.primitiveType` → `DrawCommand.primitiveType`;
@@ -761,6 +772,12 @@ function buildPrimitiveGeometry(runtimePrimitive, source, gltfPrim) {
       // size (20)` warning every frame, model never renders.)
       // Session 65 Batch 7 (2026-05-12) — NEW-VR-CZML-MODEL-
       // ARTICULATIONS-INDEXCOUNT.
+      //
+      // C11-90 — record the ORIGINAL accessor width before the upcast erases
+      // it. `indexType` below can only report "UNSIGNED_SHORT"/"UNSIGNED_INT",
+      // so without this the restart-sentinel repair downstream would have no
+      // way to know a 0x00FF used to be a 0xFF restart.
+      result.indexSourceComponentBytes = idxData.BYTES_PER_ELEMENT;
       if (idxData instanceof Uint8Array) {
         const upcast = new Uint16Array(idxData.length);
         for (let i = 0; i < idxData.length; i++) {
@@ -868,6 +885,11 @@ function resetPrimitiveGeometryView(view, baseGeometry) {
   view.indexData = baseGeometry.indexData;
   view.indexCount = baseGeometry.indexCount;
   view.indexType = baseGeometry.indexType;
+  // C11-90 — restored with the rest of the index tuple so a renderer that
+  // rewrites the view's index list (LINE_LOOP closure, TRIANGLE_FAN expansion,
+  // restart repair, non-indexed synthesis) can never leave the view claiming a
+  // source width that no longer describes `view.indexData`.
+  view.indexSourceComponentBytes = baseGeometry.indexSourceComponentBytes;
   view.featureId0Data = baseGeometry.featureId0Data;
   view.hasFeatureId0 = baseGeometry.hasFeatureId0;
   view.metadataData = null;

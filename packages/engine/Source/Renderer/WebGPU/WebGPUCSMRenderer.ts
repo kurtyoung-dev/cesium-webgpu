@@ -251,6 +251,8 @@ export interface CastCommandShape {
   instanceCount?: number;
   _shadowCastLayout?: string;
   _shadowCastTopology?: GPUPrimitiveTopology;
+  // C11-90 — REQUIRED companion of `_shadowCastTopology` for strip casters.
+  _shadowCastStripIndexFormat?: GPUIndexFormat;
   _shadowCastCullMode?: GPUCullMode;
   // Slice 2 — per-command extra bindings (populated by WebGPUModelRenderer
   // when the command's variant declares `extraBindings`). The CSM cast

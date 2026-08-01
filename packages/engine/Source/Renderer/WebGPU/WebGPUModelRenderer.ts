@@ -28,7 +28,9 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
-import PrimitiveType from "../../Core/PrimitiveType.js";
+// C11-90 — the glTF-mode → WebGPU-topology decision lives in ONE module. This
+// renderer no longer knows which modes map where; it stores what it is handed.
+import { realizeModelPrimitiveTopology } from "./WebGPUModelTopology.js";
 import {
   createMaterialInfoView,
   getOrCreateMaterialInfo,
@@ -289,6 +291,11 @@ interface PrimitiveGeometry {
   indexCount: number;
   indexType: string | number;
   indexData?: Uint16Array | Uint32Array | null;
+  // C11-90 — byte width of the ORIGINAL glTF index accessor (1 / 2 / 4). Only
+  // `1` changes behavior: it tells the topology realization that `0x00FF`
+  // entries in `indexData` were `0xFF` primitive-restart sentinels before the
+  // extractor's mandatory uint8 → uint16 upcast.
+  indexSourceComponentBytes?: number;
   primitiveType: number;
   morphTargetCount: number;
   positionData?: Float32Array | null;
@@ -377,6 +384,10 @@ interface PrimitiveRenderData {
   indexFormat: GPUIndexFormat;
   vertexCount: number;
   topology: GPUPrimitiveTopology;
+  // C11-90 — the strip index format is HALF the topology axis and travels with
+  // it everywhere: pipeline descriptor, pipeline cache key, shadow cast key.
+  // `undefined` for every non-strip topology.
+  stripIndexFormat: GPUIndexFormat | undefined;
   materialBindGroup: GPUBindGroup | null;
   textureBindGroup: GPUBindGroup | null;
   pipeline: GPUPipelineOrNull;
@@ -814,6 +825,10 @@ interface ModelLike {
 type ModelDrawCommand = WebGPUDrawCommand & {
   _shadowCastLayout?: string;
   _shadowCastTopology?: GPUPrimitiveTopology;
+  // C11-90 — the shadow cast pipeline bakes the same topology axis as the
+  // color pipeline, so it needs the same second field. Without it a uint16 and
+  // a uint32 strip caster would share one cast pipeline entry.
+  _shadowCastStripIndexFormat?: GPUIndexFormat;
   _shadowCastModelUB?: unknown;
   _shadowCastJointMatricesSB?: unknown;
   _shadowCastInstancingSB?: unknown;
@@ -959,6 +974,7 @@ interface CaptureRecord {
   metadataClassHash?: number;
   metadataMatTransport?: boolean;
   topology?: GPUPrimitiveTopology;
+  stripIndexFormat?: GPUIndexFormat;
   mergedInstanceBG?: GPUBindGroup;
   effectsBG?: GPUBindGroup;
   [key: string]: unknown;
@@ -1742,9 +1758,13 @@ function getOrCreateModelCaptureCommands(
     } else {
       pipelineCache.clearMetadataWGSL();
     }
-    // GLTF-POINTS-MODE — sticky-topology contract: set per record before the
-    // capture pipeline build (records from older publishes default triangle).
-    pipelineCache.setPrimitiveTopology(rec.topology ?? "triangle-list");
+    // GLTF-POINTS-MODE / C11-90 — sticky-topology contract: set per record
+    // before the capture pipeline build (records from older publishes default
+    // triangle). Both halves of the axis travel on the record.
+    pipelineCache.setPrimitiveTopology(
+      rec.topology ?? "triangle-list",
+      rec.stripIndexFormat,
+    );
     const pipeline = pipelineCache.getCapturePipeline(
       rec.alphaMode,
       rec.doubleSided,
@@ -2940,37 +2960,19 @@ function ensurePrevJointMatricesBuffer(
  * @param {object} primCache per-primitive cache slot
  * @private
  */
-/**
- * GLTF-POINTS-MODE — map a glTF primitive draw mode (`PrimitiveType` WebGL
- * enum, carried on `geometry.primitiveType` by `extractPrimitiveGeometry`)
- * to the GPUPrimitiveTopology the model pipelines bake in.
- *
- * Only POINTS (mode 0) maps away from the historical triangle-list today —
- * WebGL parity: `GeometryPipelineStage` adds `PRIMITIVE_TYPE_POINTS` and
- * `ModelVS.glsl` emits `gl_PointSize = 1.0` for unstyled POINTS glTFs,
- * which matches WebGPU point-list's fixed 1px rasterization. LINES /
- * LINE_STRIP / TRIANGLE_STRIP stay on the default (strip topologies also
- * need `stripIndexFormat` plumbing) — deferred until an asset needs them.
- * Note POINTS === 0, so compare with the enum, never truthiness.
- *
- * @param {number|undefined} primitiveType `PrimitiveType` value
- * @returns {string} GPUPrimitiveTopology
- * @private
- */
-function topologyForPrimitiveType(primitiveType: number): GPUPrimitiveTopology {
-  return primitiveType === PrimitiveType.POINTS
-    ? "point-list"
-    : "triangle-list";
-}
-
 function applyPrimitiveMetadataToPipelineCache(
   pipelineCache: PipelineCacheLike,
   primCache: PrimitiveRenderData,
 ) {
-  // GLTF-POINTS-MODE — sticky topology rides the same "set before every
-  // getPipeline* build" contract as the metadata/customShader chunks below.
-  // Defaults to triangle-list for records that predate the field.
-  pipelineCache.setPrimitiveTopology(primCache?.topology ?? "triangle-list");
+  // GLTF-POINTS-MODE / C11-90 — sticky topology rides the same "set before
+  // every getPipeline* build" contract as the metadata/customShader chunks
+  // below. Both halves of the axis are replayed together; the decision itself
+  // was made once in preparation by `realizeModelPrimitiveTopology`. Defaults
+  // to triangle-list for records that predate the field.
+  pipelineCache.setPrimitiveTopology(
+    primCache?.topology ?? "triangle-list",
+    primCache?.stripIndexFormat,
+  );
   if (defined(primCache?._metadataWGSL)) {
     pipelineCache.setMetadataWGSL(
       primCache._metadataWGSL,
@@ -3285,6 +3287,21 @@ function ensurePrimitiveCache(
     return cache.primitives[primKey];
   }
 
+  // C11-90 — THE topology realization, computed ONCE per primitive here in
+  // preparation and never revisited at draw time. It resolves the glTF draw
+  // mode to a WebGPU topology, decides the strip index format, repairs uint8
+  // primitive-restart sentinels for the restart-capable modes, closes
+  // LINE_LOOPs, expands TRIANGLE_FANs, and synthesizes indices for the
+  // non-indexed modes that need them. Everything downstream — the index
+  // buffer, every pipeline descriptor, every pipeline cache key, and the
+  // shadow cast key — reads this record rather than re-deriving any of it.
+  const topologyRealization = realizeModelPrimitiveTopology({
+    primitiveType: geometry.primitiveType,
+    indexData: geometry.indexData,
+    vertexCount: geometry.vertexCount,
+    indexSourceComponentBytes: geometry.indexSourceComponentBytes,
+  });
+
   const primCache: PrimitiveRenderData = {
     positionBuffer: null,
     normalBuffer: null,
@@ -3318,10 +3335,11 @@ function ensurePrimitiveCache(
     indexCount: 0,
     indexFormat: "uint16",
     vertexCount: geometry.vertexCount,
-    // GLTF-POINTS-MODE — GPUPrimitiveTopology keyed off the glTF
-    // primitive.mode. Every pipeline (re)build for this primitive feeds it
-    // to the pipeline cache via `applyPrimitiveMetadataToPipelineCache`.
-    topology: topologyForPrimitiveType(geometry.primitiveType),
+    // GLTF-POINTS-MODE / C11-90 — the realized topology axis. Every pipeline
+    // (re)build for this primitive feeds BOTH fields to the pipeline cache via
+    // `applyPrimitiveMetadataToPipelineCache`.
+    topology: topologyRealization.topology,
+    stripIndexFormat: topologyRealization.stripIndexFormat,
     materialBindGroup: null,
     textureBindGroup: null,
     pipeline: null,
@@ -3525,9 +3543,12 @@ function ensurePrimitiveCache(
     primCache._metadataMatTransport = geometry.metadataMatTransport === true;
   }
 
-  // GLTF-POINTS-MODE — non-indexed POINTS primitives (the common shape for
-  // mode-0 glTFs, e.g. PointCloudWithRGBColors) synthesize sequential
-  // indices so the command takes the drawIndexed path. Rationale: WebGPU
+  // GLTF-POINTS-MODE / C11-90 — the realized index list. `realizedIndexData`
+  // is the source array BY REFERENCE whenever nothing had to change, so the
+  // TRIANGLES and already-native paths allocate nothing here.
+  //
+  // The non-indexed synthesis this replaces was introduced for POINTS and now
+  // covers every mode except TRIANGLES. Rationale (unchanged): WebGPU
   // validates a non-indexed `draw(vertexCount)` CPU-side against EVERY
   // vertex-step buffer's bound size, and the missing-attribute slots
   // (normal/tangent/uv/joints/weights on a typical point cloud) bind the
@@ -3535,27 +3556,26 @@ function ensurePrimitiveCache(
   // whose out-of-range vertex fetches clamp to zero via robust access
   // (the Batch 245 BoxInstancedNoNormals precedent), but a hard
   // validation error for `draw()` ("Vertex range requires a larger
-  // buffer"). Sequential indices are GPU-equivalent for point-list.
+  // buffer"). Sequential indices are GPU-equivalent for every topology.
   // Non-indexed TRIANGLES primitives keep the historical draw() path
-  // untouched (off-gate: topology + this synthesis key strictly off
-  // primitive.mode); they share the same validation gap when attributes
-  // are missing — tracked as follow-up, not papered over here.
-  if (!defined(geometry.indexData) && primCache.topology === "point-list") {
-    const n = geometry.vertexCount;
-    const seq = n < 65536 ? new Uint16Array(n) : new Uint32Array(n);
-    for (let i = 0; i < n; i++) {
-      seq[i] = i;
-    }
-    geometry.indexData = seq;
-    geometry.indexCount = n;
-    geometry.indexType = n < 65536 ? "UNSIGNED_SHORT" : "UNSIGNED_INT";
-  }
+  // untouched; they share the same validation gap when attributes are
+  // missing — tracked as follow-up, not papered over here.
+  //
+  // The realized list is written to the geometry VIEW (never the cached base
+  // descriptor — `resetPrimitiveGeometryView` restores these three fields from
+  // the base on every reuse) so downstream readers see the list that was
+  // actually uploaded.
+  const realizedIndexData = topologyRealization.indexData;
+  if (defined(realizedIndexData)) {
+    geometry.indexData = realizedIndexData;
+    geometry.indexCount = topologyRealization.indexCount;
+    geometry.indexType =
+      topologyRealization.indexFormat === "uint32"
+        ? "UNSIGNED_INT"
+        : "UNSIGNED_SHORT";
 
-  // Index buffer
-  if (defined(geometry.indexData)) {
-    primCache.indexFormat =
-      geometry.indexType === "UNSIGNED_INT" ? "uint32" : "uint16";
-    primCache.indexCount = geometry.indexCount;
+    primCache.indexFormat = topologyRealization.indexFormat;
+    primCache.indexCount = topologyRealization.indexCount;
     // WebGPU requires `writeBuffer` source byteLength to be a multiple
     // of 4. Uint16 index buffers with an odd index count produce
     // `byteLength % 4 === 2`, which the original code passed straight
@@ -3564,7 +3584,7 @@ function ensurePrimitiveCache(
     // source to the nearest 4 bytes; the extra slot is never read
     // because `indexCount` stays at the geometry's authoritative
     // value (Session 65 Batch 5, 2026-05-11).
-    const indexByteLength = geometry.indexData.byteLength;
+    const indexByteLength = realizedIndexData.byteLength;
     const alignedIndexByteLength = (indexByteLength + 3) & ~3;
     primCache.indexBuffer = device.createBuffer({
       label: `Prim index`,
@@ -3572,13 +3592,13 @@ function ensurePrimitiveCache(
       usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
     });
     if (alignedIndexByteLength === indexByteLength) {
-      device.queue.writeBuffer(primCache.indexBuffer, 0, geometry.indexData);
+      device.queue.writeBuffer(primCache.indexBuffer, 0, realizedIndexData);
     } else {
       const padded = new Uint8Array(alignedIndexByteLength);
       padded.set(
         new Uint8Array(
-          geometry.indexData.buffer,
-          geometry.indexData.byteOffset,
+          realizedIndexData.buffer,
+          realizedIndexData.byteOffset,
           indexByteLength,
         ),
       );
@@ -6821,9 +6841,12 @@ function updateWebGPUModel(
           alphaMode: matInfo.alphaMode,
           doubleSided: matInfo.isDoubleSided,
           materialDefines: primCache.materialDefines | 0,
-          // GLTF-POINTS-MODE — capture replay builds its pipeline next frame
-          // from the record alone, so carry the topology with it.
+          // GLTF-POINTS-MODE / C11-90 — capture replay builds its pipeline
+          // next frame from the record alone, so carry BOTH halves of the
+          // topology axis with it. A strip record without its index format
+          // would build an invalid pipeline.
           topology: primCache.topology,
+          stripIndexFormat: primCache.stripIndexFormat,
           // DP-H46b — carry the generated metadata chunk + class hash so the
           // capture replay (`getOrCreateModelCaptureCommands`) can prepend the
           // same `struct Metadata` before building the capture pipeline.
@@ -6931,7 +6954,11 @@ function updateWebGPUModel(
             primCache._shadowCastBindGroupCacheHost ??
             (primCache._shadowCastBindGroupCacheHost = {});
           webgpuCmd._shadowCastLayout = shadowCastLayout;
+          // C11-90 — the shadow caster rasterizes the SAME realized topology as
+          // the color pass. Both halves travel together so a strip caster gets
+          // its own pipeline per index format instead of aliasing.
           webgpuCmd._shadowCastTopology = primCache.topology;
+          webgpuCmd._shadowCastStripIndexFormat = primCache.stripIndexFormat;
           webgpuCmd._shadowCastModelUB = nodeShadowCastModelUB;
           if (shadowCastLayout === "modelSkinned") {
             webgpuCmd._shadowCastJointMatricesSB = nodeCache.jointBuffer;

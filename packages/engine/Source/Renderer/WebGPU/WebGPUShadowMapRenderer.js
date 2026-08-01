@@ -18,6 +18,13 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { prepareTerrainShadowCastCommandUniforms } from "./WebGPUGlobeSurfaceTileBuffers.js";
 import { getOrCreateShadowCastBindGroup } from "./WebGPUShadowCastBindGroupCache.js";
+// C11-90 — the shadow cast path bakes the SAME topology axis as the color
+// path, so it reads it from the same home instead of restating the format.
+import {
+  modelPrimitiveState,
+  modelTopologyAxisToken,
+  modelTopologyRealizationFrom,
+} from "./WebGPUModelTopology.js";
 
 const SHADOW_MAP_SIZE = 2048;
 const SHADOW_UNIFORM_SIZE = 128;
@@ -742,6 +749,20 @@ function getShadowCastTopology(command) {
   return command?._shadowCastTopology ?? DEFAULT_SHADOW_CAST_TOPOLOGY;
 }
 
+/**
+ * C11-90 — the second half of the topology axis. A caster that rasterizes a
+ * strip topology bakes the strip's index format into its pipeline (WebGPU
+ * derives the implicit primitive-restart value from it), so uint16 and uint32
+ * strip casters are DIFFERENT pipelines. Producers set this alongside
+ * `_shadowCastTopology`; anything else keeps `undefined`, which is what a
+ * non-strip pipeline must declare.
+ *
+ * @private
+ */
+function getShadowCastStripIndexFormat(command) {
+  return command?._shadowCastStripIndexFormat;
+}
+
 function getShadowCastCullMode(command, invertWinding = false) {
   const explicit = command?._shadowCastCullMode;
   let cullMode;
@@ -761,8 +782,31 @@ function getShadowCastCullMode(command, invertWinding = false) {
   return cullMode === "back" ? "front" : "back";
 }
 
-function getShadowCastPipelineCacheKey(layoutKey, stride, topology, cullMode) {
-  return `${layoutKey}|s${stride}|t${topology}|c${cullMode}`;
+/**
+ * C11-90 — the cast pipeline cache key. Its topology segment comes from
+ * `modelTopologyAxisToken`, the SAME home the model color key is built from,
+ * rather than from a second literal here — because a topology axis spelled out
+ * in two files is a topology axis that will eventually disagree between them
+ * (the Batch-788 globe-key defect, exactly).
+ *
+ * `triangle-list` — every caster that existed before C11-90 — appends
+ * `|ttriangle-list`, byte-identical to the pre-C11-90 key. Strips append their
+ * index format too, so a uint16 and a uint32 `triangle-strip` caster cannot
+ * collapse onto one entry.
+ *
+ * @private
+ */
+function getShadowCastPipelineCacheKey(
+  layoutKey,
+  stride,
+  topology,
+  cullMode,
+  stripIndexFormat,
+) {
+  const axis = modelTopologyAxisToken(
+    modelTopologyRealizationFrom(topology, stripIndexFormat),
+  );
+  return `${layoutKey}|s${stride}|t${axis}|c${cullMode}`;
 }
 
 /**
@@ -791,6 +835,9 @@ function _getOrCreateCastPipeline(
   overrideStride,
   topology = DEFAULT_SHADOW_CAST_TOPOLOGY,
   cullMode = DEFAULT_SHADOW_CAST_CULL_MODE,
+  // C11-90 — REQUIRED for `line-strip` / `triangle-strip`, forbidden
+  // otherwise. Undefined for every pre-C11-90 caster.
+  stripIndexFormat = undefined,
 ) {
   if (!defined(cache.castPipelines)) {
     cache.castPipelines = new Map();
@@ -808,11 +855,13 @@ function _getOrCreateCastPipeline(
     ? overrideStride
     : declaredStride;
   const strideDiffers = effectiveStride !== declaredStride;
+  const castTopology = modelTopologyRealizationFrom(topology, stripIndexFormat);
   const effectiveKey = getShadowCastPipelineCacheKey(
     layoutKey,
     effectiveStride,
     topology,
     cullMode,
+    stripIndexFormat,
   );
 
   let entry = cache.castPipelines.get(effectiveKey);
@@ -854,7 +903,9 @@ function _getOrCreateCastPipeline(
     layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
     vertex: { module: mod, entryPoint: "vs", buffers },
     fragment: { module: mod, entryPoint: "fs", targets: [] },
-    primitive: { topology, cullMode },
+    // C11-90 — same builder as the model color pipelines: topology and its
+    // strip index format are emitted together or not at all.
+    primitive: modelPrimitiveState(castTopology, cullMode),
     depthStencil: {
       format: "depth32float",
       depthWriteEnabled: true,
@@ -1601,6 +1652,7 @@ function _drawCastCommandsToPass(
       vbStride,
       topology,
       cullMode,
+      getShadowCastStripIndexFormat(cmd),
     );
     if (!defined(entry)) {
       continue;
@@ -1792,6 +1844,7 @@ export {
   computeWebGPUPointShadowCastRteMatrix,
   resolveShadowCastCameraPosition,
   getShadowCastTopology,
+  getShadowCastStripIndexFormat,
   getShadowCastCullMode,
   getShadowCastPipelineCacheKey,
   getPointLightCubeLayer,
