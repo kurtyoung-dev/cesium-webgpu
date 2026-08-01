@@ -210,6 +210,27 @@ export interface PipelineCacheStats {
 }
 
 /**
+ * One row of {@link WebGPURenderPipelineCache.listPipelineVariants}.
+ */
+export interface PipelineCacheVariantInfo {
+  /** The full cache key, as produced by the cache's own key generator. */
+  key: string;
+  /**
+   * `descriptor.name` — the leading segment of `key`. Two rows sharing a
+   * `name` are distinguished only by the descriptor/variant markers that
+   * follow it; a producer that fails to vary the name for a
+   * pipeline-identity-affecting change is how two logical variants alias
+   * onto one `GPURenderPipeline`.
+   */
+  name: string;
+  pipeline: GPURenderPipeline;
+  /** Creation timestamp (`Date.now()`). */
+  created: number;
+  /** Most recent hit (`Date.now()`). */
+  lastAccessed: number;
+}
+
+/**
  * Pipeline cache entry
  */
 interface PipelineCacheEntry {
@@ -792,6 +813,52 @@ export class WebGPURenderPipelineCache {
       evicted: this.stats.evicted,
       maxSize: this.maxSize,
     };
+  }
+
+  /**
+   * Enumerate the cache's actual contents.
+   *
+   * `getStats()` reports only counters, which is why a cache can look healthy
+   * while serving the wrong pipeline: aliasing (two logically distinct
+   * pipelines colliding on one key) RAISES the hit rate, so no counter in
+   * `getStats()` can expose it. This returns the keys themselves, in LRU order
+   * (least-recently-used first, matching the eviction order), so a diagnostic
+   * or spec can inspect what is actually stored rather than infer it.
+   *
+   * @returns one row per cached pipeline
+   */
+  listPipelineVariants(): PipelineCacheVariantInfo[] {
+    const rows: PipelineCacheVariantInfo[] = [];
+    for (const [key, entry] of this.cache) {
+      rows.push({
+        key,
+        name: entry.descriptor.name,
+        pipeline: entry.pipeline,
+        created: entry.created,
+        lastAccessed: entry.lastAccessed,
+      });
+    }
+    return rows;
+  }
+
+  /**
+   * The cache key this cache WOULD use for a descriptor + variant — the same
+   * string `getPipeline` / `has` / `remove` compute internally.
+   *
+   * Exposed so a caller can correlate its own bookkeeping with this cache
+   * without re-deriving the key format. Re-deriving it independently is the
+   * exact defect that left four globe pipeline accessors returning `null` for
+   * ~15 months after the key format grew a marker.
+   *
+   * @param descriptor pipeline descriptor
+   * @param variant variant configuration
+   * @returns the cache key
+   */
+  describeCacheKey(
+    descriptor: WebGPURenderPipelineDescriptor,
+    variant?: PipelineVariant,
+  ): string {
+    return this.generateCacheKey(descriptor, variant);
   }
 
   /**

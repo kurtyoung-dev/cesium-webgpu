@@ -41,6 +41,7 @@ import {
   getProductionShaderModule as getProductionShaderModuleHelper,
   type ShaderFactoryHost,
 } from "./WebGPUGlobeSurfaceShaders.js";
+import { buildGlobePipelineCacheKey } from "./WebGPUGlobeSurfacePipelineKey.js";
 import { resolveGlobePipelineEntry } from "./WebGPUGlobeSurfacePipelines.js";
 import type { PipelineHost } from "./WebGPUGlobeSurfacePipelines.js";
 import type { GlobePipelineEntry } from "./WebGPUGlobeSurfaceTypes.js";
@@ -94,7 +95,14 @@ export function selectWireframePipeline(
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
-  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}_${strideBytes}|${defines.toString(16)}`;
+  const cacheKey = buildGlobePipelineCacheKey({
+    kind: "wireframe",
+    isQuantized,
+    hasNormals,
+    hasWebMercatorT,
+    strideBytes,
+    defines,
+  });
   let entry = host._wireframePipelineCache.get(cacheKey);
   if (!entry) {
     const descriptor = buildWireframePipelineDescriptor(

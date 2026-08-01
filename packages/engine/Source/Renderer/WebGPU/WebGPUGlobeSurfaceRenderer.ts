@@ -37,6 +37,15 @@ import {
   descriptorToGPU,
 } from "./WebGPUGlobeSurfacePipelines.js";
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
+import {
+  buildGlobePipelineCacheKey,
+  findGlobePipelineVariant,
+  listGlobePipelineVariants,
+} from "./WebGPUGlobeSurfacePipelineKey.js";
+import type {
+  GlobePipelineVariantInfo,
+  GlobePipelineVariantKind,
+} from "./WebGPUGlobeSurfacePipelineKey.js";
 import { preprocess as preprocessWGSL } from "./WebGPUShaderPreprocessor.js";
 import {
   getTileKey as getTileKeyHelper,
@@ -544,14 +553,27 @@ export class WebGPUGlobeSurfaceRenderer {
       this._materialPipelineCache.set(material.type, entry);
     }
 
-    // Geometry variant key — same shape as the base pipeline cache key
-    // minus the debug-fragment and translucent-back-face axes (those
-    // variants don't currently route through the material path).
-    const ncSuffix = disableCulling ? "_NC" : "";
+    // Geometry variant key — the same grammar as the base pipeline cache key
+    // minus the debug-fragment and translucent-back-face axes (those variants
+    // don't currently route through the material path) and minus
+    // clip-distances, which the material path never requests. Built through
+    // the shared key module rather than inline: this map was a FIFTH private
+    // copy of the format, i.e. the same latent defect that left the four
+    // pipeline accessors reading a key shape the producer had abandoned.
     const defines = hasGeodeticSurfaceNormals
       ? ShaderDefine.GEODETIC_NORMAL
       : 0;
-    const geomKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${ncSuffix}|${defines.toString(16)}`;
+    const geomKey = buildGlobePipelineCacheKey({
+      kind: "color",
+      isQuantized,
+      hasNormals,
+      hasWebMercatorT,
+      isBlend,
+      strideBytes,
+      useClipDistances: false,
+      disableCulling,
+      defines,
+    });
 
     let pipeline = entry.pipelines.get(geomKey);
     if (!pipeline) {
@@ -2702,28 +2724,126 @@ export class WebGPUGlobeSurfaceRenderer {
   // Pipeline Access
   // ═══════════════════════════════════════════════════════════════════════
 
-  // C-R7-RENDERER-MIGRATION (Batch 75) — these legacy getters look up
-  // specific pipeline variants by their hardcoded cache keys. After the
-  // migration to entry-based caching the keys also carry a `|defines`
-  // suffix; preserve the original key form (`UNO_28` etc.) by appending
-  // `|0` for the no-defines (baseline) variant. Returns `null` when the
-  // central pipeline cache hasn't yet materialized that variant —
-  // unchanged from the prior behavior, which also returned null when the
-  // variant hadn't been requested by `_selectPipeline` yet.
+  /**
+   * Enumerate every renderer-local pipeline cache truthfully.
+   *
+   * Replaces key-string spelunking as the way to ask what this renderer has
+   * built. Covers all four maps — `_pipelineCache` (which holds the color,
+   * pick, translucent-back-face and both depth-only kinds),
+   * `_capturePipelineCache`, `_debugFragmentPipelineCache` and
+   * `_wireframePipelineCache` — and reports one row per stored entry, so the
+   * row count always equals the sum of the map sizes.
+   *
+   * Each row carries the parsed key fields, or `fields: null` when the stored
+   * key does not match the grammar in `WebGPUGlobeSurfacePipelineKey`. That
+   * null is deliberate and load-bearing: the four getters below silently
+   * returned `null` for ~15 months because they assumed a key shape the
+   * producer had stopped writing, and nothing reported the mismatch. An
+   * unparseable row is the visible version of that failure.
+   *
+   * `descriptorName` is the leading segment of the CENTRAL cache key
+   * (`WebGPURenderPipelineCache.describeCacheKey`), so two rows with distinct
+   * `key`s but an identical `descriptorName` are exactly the shape that
+   * aliases one `GPURenderPipeline` across two logical variants.
+   *
+   * @param kind optional filter on the parsed variant kind. Rows whose key
+   *   does not parse are excluded when a filter is supplied (they have no
+   *   known kind to match) and always included when it is not.
+   * @returns one row per cached entry
+   */
+  listPipelineVariants(
+    kind?: GlobePipelineVariantKind,
+  ): GlobePipelineVariantInfo[] {
+    const rows = [
+      ...listGlobePipelineVariants(this._pipelineCache, "pipeline"),
+      ...listGlobePipelineVariants(this._capturePipelineCache, "capture"),
+      ...listGlobePipelineVariants(
+        this._debugFragmentPipelineCache,
+        "debugFragment",
+      ),
+      ...listGlobePipelineVariants(this._wireframePipelineCache, "wireframe"),
+    ];
+    if (kind === undefined) {
+      return rows;
+    }
+    return rows.filter((row) => row.fields?.kind === kind);
+  }
+
+  // C-R7-RENDERER-MIGRATION (Batch 75), repaired 2026-08-01 — these four
+  // legacy accessors named a semantic variant ("uncompressed, with normals,
+  // opaque, no extra defines") but looked it up through a hardcoded key
+  // string. `831e2f189b` (2026-04-04) inserted the webMercatorT marker as a
+  // fourth letter, so `UNO_28|0` and its three siblings stopped matching any
+  // key the producer writes and all four returned `null` unconditionally for
+  // ~15 months, with no caller and no signal.
+  //
+  // They now resolve through `findGlobePipelineVariant`, which parses the key
+  // grammar from its single owning module and compares only the axes these
+  // getters actually mean:
+  //
+  //   quantized / normals / opaque / no clip-distances / cull enabled /
+  //   no active shader defines
+  //
+  // Two axes the old keys pinned by accident are deliberately left FREE:
+  //   - webMercatorT — never part of any getter's name; pinning it is the
+  //     precise bug being fixed.
+  //   - stride — varies with the terrain encoding actually loaded (12/16/
+  //     20/24/28/32/36/40+ bytes depending on quantization, webMercatorT,
+  //     normals and DP-H25 geodetic surface normals), so the single
+  //     hardcoded value was never more than a guess at one encoding.
+  //
+  // SHAPE CHANGE, deliberate: several materialized variants can satisfy one
+  // getter. The lexicographically-smallest key wins so repeat calls are
+  // stable rather than load-order dependent. Callers needing every match
+  // should use `listPipelineVariants()`. Still returns `null` when no
+  // matching variant has materialized — unchanged, and now for the honest
+  // reason rather than because the key could never match.
   get pipeline(): GPURenderPipeline | null {
-    return this._pipelineCache.get("UNO_28|0")?.pipeline ?? null;
+    return findGlobePipelineVariant(this._pipelineCache, {
+      kind: "color",
+      isQuantized: false,
+      hasNormals: true,
+      isBlend: false,
+      useClipDistances: false,
+      disableCulling: false,
+      defines: 0,
+    });
   }
 
   get pipelineNoNormals(): GPURenderPipeline | null {
-    return this._pipelineCache.get("UXO_24|0")?.pipeline ?? null;
+    return findGlobePipelineVariant(this._pipelineCache, {
+      kind: "color",
+      isQuantized: false,
+      hasNormals: false,
+      isBlend: false,
+      useClipDistances: false,
+      disableCulling: false,
+      defines: 0,
+    });
   }
 
   get pipelineQuantized(): GPURenderPipeline | null {
-    return this._pipelineCache.get("QNO_16|0")?.pipeline ?? null;
+    return findGlobePipelineVariant(this._pipelineCache, {
+      kind: "color",
+      isQuantized: true,
+      hasNormals: true,
+      isBlend: false,
+      useClipDistances: false,
+      disableCulling: false,
+      defines: 0,
+    });
   }
 
   get pipelineQuantizedNoNormals(): GPURenderPipeline | null {
-    return this._pipelineCache.get("QXO_12|0")?.pipeline ?? null;
+    return findGlobePipelineVariant(this._pipelineCache, {
+      kind: "color",
+      isQuantized: true,
+      hasNormals: false,
+      isBlend: false,
+      useClipDistances: false,
+      disableCulling: false,
+      defines: 0,
+    });
   }
 
   get bindGroupLayout0(): GPUBindGroupLayout | null {

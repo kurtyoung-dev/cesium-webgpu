@@ -41,6 +41,7 @@
  */
 
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
+import { buildGlobePipelineCacheKey } from "./WebGPUGlobeSurfacePipelineKey.js";
 import {
   getProductionShaderModule as getProductionShaderModuleHelper,
   getDebugFragmentShaderModule as getDebugFragmentShaderModuleHelper,
@@ -728,13 +729,25 @@ export function selectPipeline(
   // `cameraUnderground || globeTranslucencyState.translucent`.
   // Without this variant, underground tiles render with cull-back and
   // their interior faces disappear at the rim.
-  const cdSuffix = useClipDistances ? "_CD" : "";
-  const ncSuffix = disableCulling ? "_NC" : "";
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
-  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}${cdSuffix}${ncSuffix}|${defines.toString(16)}`;
+  // Key format owned by `WebGPUGlobeSurfacePipelineKey` so the diagnostic
+  // readers (`listPipelineVariants`, the four legacy pipeline getters) parse
+  // the same grammar this writes. Building the string inline here is what let
+  // those readers rot for 15 months against a stale copy of the format.
+  const cacheKey = buildGlobePipelineCacheKey({
+    kind: "color",
+    isQuantized,
+    hasNormals,
+    hasWebMercatorT,
+    isBlend,
+    strideBytes,
+    useClipDistances,
+    disableCulling,
+    defines,
+  });
   let entry = host._pipelineCache.get(cacheKey);
   let entryWasJustCreated = false;
   if (!entry) {
@@ -832,7 +845,16 @@ export function selectCapturePipeline(
     (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0) |
     ShaderDefine.CAPTURE_MODE;
-  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}O_${strideBytes}_CAP_${captureFaceFormat}|${defines.toString(16)}`;
+  const cacheKey = buildGlobePipelineCacheKey({
+    kind: "capture",
+    isQuantized,
+    hasNormals,
+    hasWebMercatorT,
+    isBlend: false, // capture is opaque (depth-write)
+    strideBytes,
+    captureFaceFormat,
+    defines,
+  });
   let entry = host._capturePipelineCache.get(cacheKey);
   if (!entry) {
     const descriptor = buildPipelineDescriptor(
@@ -891,7 +913,6 @@ export function selectPickPipeline(
   useClipDistances: boolean = false,
   hasGeodeticSurfaceNormals: boolean = false,
 ): GPURenderPipeline | null {
-  const cdSuffix = useClipDistances ? "_CD" : "";
   // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the globe PICK module gates
   // LOG_DEPTH on the SEPARATE pick-fleet master switch, NOT the scene switch,
   // so the pick FBO is uniformly hyperbolic OR log across the whole fleet.
@@ -900,7 +921,16 @@ export function selectPickPipeline(
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (pickLogActive ? ShaderDefine.LOG_DEPTH : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
-  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}O_${strideBytes}${cdSuffix}_PICK|${defines.toString(16)}`;
+  const cacheKey = buildGlobePipelineCacheKey({
+    kind: "pick",
+    isQuantized,
+    hasNormals,
+    hasWebMercatorT,
+    isBlend: false, // pick is opaque (depth-write)
+    strideBytes,
+    useClipDistances,
+    defines,
+  });
   let entry = host._pipelineCache.get(cacheKey);
   if (!entry) {
     const colorDescriptor = buildPipelineDescriptor(
@@ -999,7 +1029,6 @@ export function selectTranslucentBackFacePipeline(
   useClipDistances: boolean = false,
   hasGeodeticSurfaceNormals: boolean = false,
 ): GPURenderPipeline | null {
-  const cdSuffix = useClipDistances ? "_CD" : "";
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
@@ -1008,7 +1037,16 @@ export function selectTranslucentBackFacePipeline(
   // back-face) suffix distinguishes from the standard blend variant
   // which cullMode: "back" (front-face). _TBF means cullMode: "front"
   // (back-face) with the same alpha blend.
-  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}B_${strideBytes}${cdSuffix}_TBF|${defines.toString(16)}`;
+  const cacheKey = buildGlobePipelineCacheKey({
+    kind: "translucentBackFace",
+    isQuantized,
+    hasNormals,
+    hasWebMercatorT,
+    isBlend: true, // translucent back-face uses ALPHA blend
+    strideBytes,
+    useClipDistances,
+    defines,
+  });
   let entry = host._pipelineCache.get(cacheKey);
   if (!entry) {
     const descriptor = buildPipelineDescriptor(
@@ -1071,7 +1109,6 @@ export function selectDepthOnlyBackFacePipeline(
   useClipDistances: boolean = false,
   hasGeodeticSurfaceNormals: boolean = false,
 ): GPURenderPipeline | null {
-  const cdSuffix = useClipDistances ? "_CD" : "";
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
@@ -1079,7 +1116,16 @@ export function selectDepthOnlyBackFacePipeline(
   // Use the same cache key shape as `selectPipeline` for diagnostic
   // readability. `isBlend=false` and `disableCulling=false` are
   // hardcoded since the depth-only override supersedes both axes.
-  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}O_${strideBytes}${cdSuffix}_DOB|${defines.toString(16)}`;
+  const cacheKey = buildGlobePipelineCacheKey({
+    kind: "depthOnlyBackFace",
+    isQuantized,
+    hasNormals,
+    hasWebMercatorT,
+    isBlend: false,
+    strideBytes,
+    useClipDistances,
+    defines,
+  });
   let entry = host._pipelineCache.get(cacheKey);
   if (!entry) {
     const descriptor = buildPipelineDescriptor(
@@ -1130,12 +1176,20 @@ export function selectDepthOnlyFrontFacePipeline(
   useClipDistances: boolean = false,
   hasGeodeticSurfaceNormals: boolean = false,
 ): GPURenderPipeline | null {
-  const cdSuffix = useClipDistances ? "_CD" : "";
   const defines =
     (hasGeodeticSurfaceNormals ? ShaderDefine.GEODETIC_NORMAL : 0) |
     (host._logDepthEnabled ? ShaderDefine.LOG_DEPTH : 0) |
     (host._imageryReduced ? ShaderDefine.GLOBE_IMAGERY_REDUCED : 0);
-  const cacheKey = `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}O_${strideBytes}${cdSuffix}_DOF|${defines.toString(16)}`;
+  const cacheKey = buildGlobePipelineCacheKey({
+    kind: "depthOnlyFrontFace",
+    isQuantized,
+    hasNormals,
+    hasWebMercatorT,
+    isBlend: false,
+    strideBytes,
+    useClipDistances,
+    defines,
+  });
   let entry = host._pipelineCache.get(cacheKey);
   if (!entry) {
     const descriptor = buildPipelineDescriptor(
@@ -1201,7 +1255,16 @@ export function selectDebugFragmentPipeline(
   if (!getDebugFragmentShaderModuleHelper(host, defines)) {
     return null;
   }
-  const cacheKey = `${mode}_${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}|${defines.toString(16)}`;
+  const cacheKey = buildGlobePipelineCacheKey({
+    kind: "debugFragment",
+    debugFragmentMode: mode,
+    isQuantized,
+    hasNormals,
+    hasWebMercatorT,
+    isBlend,
+    strideBytes,
+    defines,
+  });
   let entry = host._debugFragmentPipelineCache.get(cacheKey);
   if (!entry) {
     const descriptor = buildPipelineDescriptor(
