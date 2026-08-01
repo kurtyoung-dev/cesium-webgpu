@@ -899,13 +899,11 @@ function getContextWaterMaskData(context) {
     });
     allWaterTexture.referenceCount = 1;
     // NEW-GLOBE-BELOWSURFACE-FIX — retain the raw mask payload for the
-    // WebGPU backend. The WebGL Texture class does not keep its source
-    // after upload, but the WebGPU globe renderer re-uploads water masks
-    // into its own GPUTexture cache (WebGPUGlobeSurfaceTextures.
-    // getOrCreateWaterMaskTexture) and needs the texels. Without this the
-    // renderer bound a 1×1 WHITE placeholder — waterMask=1.0 everywhere —
-    // which ran the ocean shader over entire land tiles (Batch 510
-    // attribution). A reference only: no extra copy is made.
+    // WebGPU backend. Same-device WebGPU renderers borrow Texture's native
+    // compatibility realization; the retained payload is still required by
+    // the rare cross-device fallback. Without either path the renderer binds
+    // a 1×1 WHITE placeholder — waterMask=1.0 everywhere — which runs the
+    // ocean shader over entire land tiles. A reference only: no extra copy.
     allWaterTexture._webgpuSource = {
       arrayBufferView: new Uint8Array([255]),
       width: 1,
@@ -977,9 +975,9 @@ function createWaterMaskTextureIfNeeded(
       skipColorSpaceConversion: true,
     });
     // NEW-GLOBE-BELOWSURFACE-FIX — see getContextWaterMaskData: the WebGPU
-    // renderer re-uploads the mask and needs the source retained. The
-    // ImageBitmap is already retained by terrainData.waterMask, so this
-    // adds a reference, not a copy.
+    // cross-device fallback needs the source retained. The ImageBitmap is
+    // already retained by terrainData.waterMask, so this adds a reference,
+    // not a copy.
     texture._webgpuSource = waterMask;
   } else if (waterMaskLength === 1) {
     // Length 1 means the tile is entirely land or entirely water.
@@ -1007,9 +1005,9 @@ function createWaterMaskTextureIfNeeded(
 
     texture.referenceCount = 0;
     // NEW-GLOBE-BELOWSURFACE-FIX — see getContextWaterMaskData: the WebGPU
-    // renderer re-uploads the mask and needs the source retained.
-    // `waterMask` aliases terrainData.waterMask (already retained), so
-    // this is a reference, not a copy.
+    // cross-device fallback needs the source retained. `waterMask` aliases
+    // terrainData.waterMask (already retained), so this is a reference, not
+    // a copy.
     texture._webgpuSource = {
       width: textureSize,
       height: textureSize,

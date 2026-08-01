@@ -247,6 +247,11 @@ struct Uniforms {
   //       the whole block is skipped at 0 — byte-identical.
   //   y/z/w = reserved
   eclipseControl: vec4<f32>,
+  // Active atmosphere ellipsoid gradient weights. APPENDED at the tail
+  // (float offset 120, byte offset 480) so no established field moves.
+  // xyz = 1 / (radii * radii); w-equivalent is the explicit pad below.
+  ellipsoidInverseRadiiSquared: vec3<f32>,
+  _pad10: f32,
 };
 
 // C12-29 S6 constants — identical values, identical names, in
@@ -261,6 +266,27 @@ const ECLIPSE_TWILIGHT_ELEVATION: f32 = 0.394791119699762;
 const ECLIPSE_TWILIGHT_TINT: vec3<f32> = vec3<f32>(1.0, 0.784, 0.424);
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
+
+// Match SkyAtmosphereFS.glsl's local-horizon calculation. The ellipsoid
+// gradient is the geodetic up direction; radial then +Z fallbacks keep
+// degenerate inputs from reaching normalize(vec3(0.0)).
+fn getEclipseObserverUp(
+  positionWC: vec3<f32>,
+  ellipsoidInverseRadiiSquared: vec3<f32>,
+) -> vec3<f32> {
+  var radialUp = vec3<f32>(0.0, 0.0, 1.0);
+  let radialMagnitudeSquared = dot(positionWC, positionWC);
+  if (radialMagnitudeSquared > 0.0) {
+    radialUp = positionWC * inverseSqrt(radialMagnitudeSquared);
+  }
+
+  let geodeticGradient = positionWC * ellipsoidInverseRadiiSquared;
+  let gradientMagnitudeSquared = dot(geodeticGradient, geodeticGradient);
+  if (gradientMagnitudeSquared > 0.0) {
+    return geodeticGradient * inverseSqrt(gradientMagnitudeSquared);
+  }
+  return radialUp;
+}
 
 // Precomputed atmosphere LUTs. Bound unconditionally so the pipeline
 // layout never changes. The transmittance LUT (256×64) stores extinction
@@ -1129,7 +1155,10 @@ fn skyColorForRay(rayOrigin: vec3<f32>, rayDir: vec3<f32>) -> vec4<f32> {
   // which is the point — inside the umbra the surrounding penumbra lights the
   // horizon all the way round.
   if (u.eclipseControl.x > 0.0) {
-    let upObs = normalize(u.cameraPositionWC);
+    let upObs = getEclipseObserverUp(
+      u.cameraPositionWC,
+      u.ellipsoidInverseRadiiSquared,
+    );
     let elevation = asin(clamp(dot(normalize(rayDir), upObs), -1.0, 1.0));
     var band = max(0.0, 1.0 - max(elevation, 0.0) / ECLIPSE_TWILIGHT_ELEVATION);
     band = band * band;

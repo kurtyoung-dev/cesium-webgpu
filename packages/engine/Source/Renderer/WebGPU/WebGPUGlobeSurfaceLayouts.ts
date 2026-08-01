@@ -10,7 +10,7 @@
  * Moves the four `_create*` init helpers off the renderer class:
  *
  *   - `createBindGroupLayouts(host)` — builds the four bind-group layouts
- *     (camera+tile UBs, 16-slot imagery + sampler, water-mask + ocean
+ *     (camera+tile+eclipse UBs, 16-slot imagery + sampler, water-mask + ocean
  *     normal map, effects) and writes them into the host. Pulls the
  *     placeholder effects bind-group from the shared cache.
  *   - `createPipelineLayout(host)` — composes the four bind-group layouts
@@ -37,8 +37,8 @@
  */
 
 import {
-  getEffectsBindGroupLayout,
-  getPlaceholderEffects,
+  getGlobeEffectsBindGroupLayout,
+  getGlobePlaceholderEffects,
 } from "./WebGPUEffectsBindGroup.js";
 import {
   makeBindGroupLayout,
@@ -47,6 +47,7 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { ECLIPSE_UNIFORM_BYTES } from "./WebGPUGlobeEclipseUniforms.js";
 
 /**
  * The renderer surface the layout builders reach into. `_device` is
@@ -58,7 +59,7 @@ export interface LayoutsHost {
   readonly _device: GPUDevice | null;
   /**
    * NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — per-device
-   * imagery slot count (16 full / 1 reduced), computed by
+   * imagery slot count (16 full / 4 reduced), computed by
    * `computeGlobeImagerySlotCount` at renderer init. Group 1 is built
    * with this many texture bindings; the sampler stays at binding 16
    * in both shapes (sparse binding indices are valid in WebGPU).
@@ -83,14 +84,15 @@ export interface LayoutsHost {
 export function createBindGroupLayouts(host: LayoutsHost): void {
   const device = host._device!;
 
-  // Group 0: Camera + Tile uniform buffers.
+  // Group 0: Camera + Tile + per-View eclipse uniform buffers.
   //
-  // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — both bindings use
+  // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — all bindings use
   // dynamic offsets. The bind group is built ONCE over the ring
-  // allocator's page buffer (offset 0, size = struct width) and keyed
-  // only on the (camera page, tile page) buffer identities — never on
+  // allocator's page buffer (offset 0, size = struct width) and keyed only on
+  // the (camera page, tile page, eclipse page/buffer) identities — never on
   // the per-allocation byte offset. The actual slice offset is supplied
-  // per-draw via `setBindGroup(0, bg0, [camOffset, tileOffset])`.
+  // per-draw via
+  // `setBindGroup(0, bg0, [camOffset, tileOffset, eclipseOffset])`.
   //
   // Why this matters: the camera/tile UBs are sub-allocated from the
   // per-frame ring allocator, so their byte offset within a page shifts
@@ -101,15 +103,19 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
   // converges to ~pageCount group-0 entries (one per ring page) and
   // stays at ~100% hit-rate while panning.
   //
-  // `minBindingSize: 0` keeps the layout shape-agnostic; the camera
-  // struct (CAMERA_UNIFORM_BYTES) and the tile struct have different
-  // widths and the binding view supplies the exact size at build time.
+  // `minBindingSize: 0` keeps camera/tile shape-agnostic; their binding
+  // views supply exact struct widths. EclipseUniforms is a fixed four-vec4
+  // carrier and pins its minimum size to 64 bytes.
   host._bindGroupLayout0 = makeBindGroupLayout(
     device,
     "Globe terrain uniforms layout (dynamic offset)",
     [
       uniformBuffer(0, Stage.VERTEX_FRAGMENT, { hasDynamicOffset: true }),
       uniformBuffer(1, Stage.VERTEX_FRAGMENT, { hasDynamicOffset: true }),
+      uniformBuffer(2, Stage.FRAGMENT, {
+        hasDynamicOffset: true,
+        minBindingSize: ECLIPSE_UNIFORM_BYTES,
+      }),
     ],
   );
 
@@ -117,7 +123,7 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
   // Batch 58 (C-R5): bumped from 4 to 16 imagery slots. Batch 246
   // (NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT): the slot count is now
   // per-device — 16 on adapters whose `maxSampledTexturesPerShaderStage`
-  // covers the full 31-texture pipeline layout, 1 on default-limit
+  // covers the full 28-texture pipeline layout, 4 on default-limit
   // adapters (spec floor 16, e.g. SwiftShader CI / compat mode) so the
   // whole layout fits exactly 16. The sampler keeps binding 16 in both
   // shapes (WebGPU allows sparse binding indices) so the WGSL
@@ -164,9 +170,12 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
     ],
   );
 
-  // Group 3: Effects (shadow receive + clipping planes) — shared layout
-  host._effectsBGL = getEffectsBindGroupLayout(device);
-  const placeholder = getPlaceholderEffects(device);
+  // Group 3: Globe effects (shadow receive + clipping planes). Model-only
+  // edge and clustered/area-light resources are deliberately absent: the
+  // globe WGSL never declares them, and charging them to this pipeline would
+  // unnecessarily consume five sampled-texture slots on low-limit adapters.
+  host._effectsBGL = getGlobeEffectsBindGroupLayout(device);
+  const placeholder = getGlobePlaceholderEffects(device);
   host._placeholderEffectsBG = placeholder.bindGroup;
 }
 

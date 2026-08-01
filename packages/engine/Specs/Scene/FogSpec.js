@@ -23,6 +23,7 @@ describe("Fog", () => {
 
       frameState.camera.positionCartographic.height = 800001;
       fog.update(frameState);
+      expect(frameState.fog.configuredEnabled).toBeTrue();
       expect(frameState.fog.enabled)
         .withContext(`at height 800001`)
         .toBeFalse();
@@ -38,6 +39,40 @@ describe("Fog", () => {
       frameState.camera.positionCartographic.height = 4000;
       fog.update(frameState);
       expect(frameState.fog.enabled).withContext(`at height 4000`).toBeTrue();
+    });
+
+    it("tracks the configured feature state independently of render range", () => {
+      const frameState = scene.frameState;
+      frameState.camera.positionCartographic.height = fog.maxHeight + 1;
+
+      fog.enabled = true;
+      fog.update(frameState);
+      expect(frameState.fog.configuredEnabled).toBeTrue();
+      expect(frameState.fog.enabled).toBeFalse();
+
+      fog.enabled = false;
+      fog.update(frameState);
+      expect(frameState.fog.configuredEnabled).toBeFalse();
+      expect(frameState.fog.enabled).toBeFalse();
+    });
+
+    it("tracks shader renderability independently of configuration and range", () => {
+      const frameState = scene.frameState;
+
+      fog.enabled = true;
+      fog.renderable = false;
+      frameState.camera.positionCartographic.height = 1000;
+      fog.update(frameState);
+      expect(frameState.fog.configuredEnabled).toBeTrue();
+      expect(frameState.fog.enabled).toBeTrue();
+      expect(frameState.fog.renderable).toBeFalse();
+
+      fog.renderable = true;
+      frameState.camera.positionCartographic.height = fog.maxHeight + 1;
+      fog.update(frameState);
+      expect(frameState.fog.configuredEnabled).toBeTrue();
+      expect(frameState.fog.enabled).toBeFalse();
+      expect(frameState.fog.renderable).toBeTrue();
     });
 
     it("passes through expected values unaltered", () => {

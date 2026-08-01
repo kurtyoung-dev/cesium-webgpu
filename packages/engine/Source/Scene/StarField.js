@@ -204,6 +204,12 @@ class StarField {
     // identical (pow(1, x) === 1). This shared helper is the SAME integrator
     // the Moon (B629) and Sun use, keeping all three consistent.
     if (!zeroContribution) {
+      // `FrameState.mapProjection` is the backend-neutral owner Scene already
+      // publishes for the active ellipsoid. The extinction helper remains a
+      // scalar-sphere approximation, but its sphere now follows custom scenes
+      // instead of silently retaining WGS84's maximum radius.
+      const extinctionEllipsoid =
+        frameState.mapProjection?.ellipsoid ?? Ellipsoid.default;
       const camPos = defined(frameState.camera)
         ? frameState.camera.positionWC
         : undefined;
@@ -234,7 +240,7 @@ class StarField {
         camPos,
         hasZenithBody ? scratchZenithBody : undefined,
         frameState.atmosphere,
-        Ellipsoid.default.maximumRadius,
+        extinctionEllipsoid.maximumRadius,
       );
       if (extinctionEnabled && hasZenithBody) {
         if (!defined(this._frameStateZenithTransmittanceStorage)) {

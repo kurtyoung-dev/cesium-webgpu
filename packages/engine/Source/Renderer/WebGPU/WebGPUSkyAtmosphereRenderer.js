@@ -69,7 +69,11 @@ function getSkyAtmosphereShaderCache(device) {
 //   eclipseControl     @116 (x = 360-degree horizon-twilight gain; y/z/w reserved)
 // 480 = 30 × 16, still 16-aligned. Default zero, and the shader skips the
 // block at zero, so the sky is byte-identical outside totality.
-const UNIFORM_BUFFER_SIZE = 480;
+//
+// Custom-ellipsoid horizon correctness — bumped 480 → 496 to append the
+// active atmosphere ellipsoid's inverse-radii-squared at float offset 120
+// (+ pad @123). No established offset moved.
+const UNIFORM_BUFFER_SIZE = 496;
 
 // Default atmosphere parameters
 // Batch 247 (NEW-GROUND-VIEW-ENV-DIVERGENCES fix 1) — the SKY shader's
@@ -1142,6 +1146,16 @@ function packUniforms(
   uniformData[117] = 0.0;
   uniformData[118] = 0.0;
   uniformData[119] = 0.0;
+
+  // ellipsoidInverseRadiiSquared @120 (+ pad @123). This is the gradient
+  // weight used to derive the observer's geodetic up direction in the S6
+  // horizon-twilight block. `ellipsoid` is the same active SkyAtmosphere
+  // ellipsoid used above for shell geometry and scattering radii.
+  const inverseRadiiSquared = ellipsoid.oneOverRadiiSquared;
+  uniformData[120] = inverseRadiiSquared.x;
+  uniformData[121] = inverseRadiiSquared.y;
+  uniformData[122] = inverseRadiiSquared.z;
+  uniformData[123] = 0.0;
 }
 
 /**

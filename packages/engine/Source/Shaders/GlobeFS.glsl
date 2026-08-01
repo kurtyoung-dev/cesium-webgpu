@@ -133,6 +133,24 @@ uniform float u_lambertDiffuseMultiplier;
 uniform float u_vertexShadowDarkness;
 #endif
 
+// C12-29 S5 — per-fragment lunar shadow on the globe. The two body vectors
+// are a geocentric, range-normalized differential:
+//   sun.xyz  = normalize(S), sun.w = 1 / length(S)
+//   moon.xyz = normalize(M) - normalize(S), moon.w = 1 / length(M)
+// where S/M are ECEF body positions. This preserves the tiny Sun/Moon angular
+// difference through the f64->f32 boundary and is independent of whichever
+// pass camera executes the command. The inactive WebGL shader variant omits
+// this block entirely; active gates 1-4 use one manual mat4 per terrain draw.
+// Matrix columns preserve the logical 4xvec4 block shared with WebGPU's
+// dedicated 64-byte UBO.
+#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW
+uniform mat4 u_eclipseGlobeShadow;
+#define u_eclipseSunDirectionAndInvRange u_eclipseGlobeShadow[0]
+#define u_eclipseMoonDirectionDeltaAndInvRange u_eclipseGlobeShadow[1]
+#define u_eclipseParams u_eclipseGlobeShadow[2]
+#define u_eclipseParams2 u_eclipseGlobeShadow[3]
+#endif
+
 in vec3 v_positionMC;
 in vec3 v_positionEC;
 in vec3 v_textureCoordinates;
@@ -364,6 +382,202 @@ vec3 computeEllipsoidPosition()
     return (czm_inverseView * vec4(ellipsoidPosition, 1.0)).xyz;
 }
 
+#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW
+// ┌─────────────────────────────────────────────────────────────────────┐
+// │ PAIR-SECTION: Eclipse globe shadow (GLSL) ↔ WGSL                     │
+// │   WGSL: Shaders/WebGPU/Globe/GlobeTerrain.wgsl                       │
+// │ Last lockstep audit: 2026-07-26, C12-29 S5                           │
+// └─────────────────────────────────────────────────────────────────────┘
+// Exact support comes from the analytic circle-overlap branches. A small
+// per-frame cubic maps uniform-disc overlap to the same limb-darkened flux
+// law used by EclipseState without putting its quadrature in the hot shader.
+float eclipseGeometricObscuration(float rs, float ro, float d)
+{
+    if (d >= rs + ro)
+    {
+        return 0.0;
+    }
+    if (d + rs <= ro)
+    {
+        return 1.0;
+    }
+    if (d + ro <= rs)
+    {
+        float ratio = ro / rs;
+        return ratio * ratio;
+    }
+
+    float d2 = d * d;
+    float rs2 = rs * rs;
+    float ro2 = ro * ro;
+    float alpha = acos(clamp((d2 + rs2 - ro2) / (2.0 * d * rs), -1.0, 1.0));
+    float beta = acos(clamp((d2 + ro2 - rs2) / (2.0 * d * ro), -1.0, 1.0));
+    float product = max(
+        (-d + rs + ro) * (d + rs - ro) *
+        (d - rs + ro) * (d + rs + ro),
+        0.0
+    );
+    float lens = rs2 * alpha + ro2 * beta - 0.5 * sqrt(product);
+    return clamp(lens / (czm_pi * rs2), 0.0, 1.0);
+}
+
+float eclipseLimbDarken(float geometricObscuration)
+{
+    float a = geometricObscuration;
+    return a + a * (1.0 - a) *
+        (u_eclipseParams.z + u_eclipseParams.w * a +
+         u_eclipseParams2.w * a * a);
+}
+
+// Absolute per-fragment factor G(O_fragment). positionMC is the exaggerated
+// ECEF globe varying. Its sub-metre f32 quantization is tiny relative to the
+// footprint, and multiplying it by each inverse astronomical range before the
+// common-ray subtraction keeps all operands conditioned and pass-camera-free.
+const float eclipseF32SafetyFactor = 0.999996185302734375;
+
+float eclipseFragmentFactor(vec3 positionMC)
+{
+    float invSunRange = u_eclipseSunDirectionAndInvRange.w;
+    float invMoonRange = u_eclipseMoonDirectionDeltaAndInvRange.w;
+
+    // v_positionMC is the exaggerated ECEF globe position. Its Earth-scale
+    // f32 quantization is sub-metre, while scaling before the astronomical
+    // subtraction keeps the common-ray operands O(1). This is independent of
+    // render/capture cameras and avoids rebuilding P through camera RTE terms.
+    vec3 positionScaledForSun =
+        positionMC * invSunRange;
+    vec3 toSunScaled =
+        u_eclipseSunDirectionAndInvRange.xyz - positionScaledForSun;
+
+    float rangeDelta = invSunRange - invMoonRange;
+    vec3 positionScaledForDelta =
+        positionMC * rangeDelta;
+    vec3 moonMinusSunScaled =
+        u_eclipseMoonDirectionDeltaAndInvRange.xyz +
+        positionScaledForDelta;
+
+    float sunLength2 = dot(toSunScaled, toSunScaled);
+    float sunDeltaDot = dot(toSunScaled, moonMinusSunScaled);
+    float moonLength2 = max(
+        sunLength2 + 2.0 * sunDeltaDot +
+        dot(moonMinusSunScaled, moonMinusSunScaled),
+        1.0e-30
+    );
+    if (!(sunLength2 > 0.0))
+    {
+        return 1.0;
+    }
+
+    // Exact local disc-support rejection without inverse trig or square roots.
+    // Let ks=sin(rs)|s| and km=sin(ro)|m|. Then:
+    //   |s||m|cos(rs+ro)
+    //     = sqrt((s²-ks²)(m²-km²)) - ks*km.
+    // A fragment can overlap only when q=dot(s,m)+ks*km is positive and
+    // q² exceeds the radicand. The safety factor rounds the comparison
+    // outward under permitted f32 fusion/reassociation; false positives fall
+    // through to the exact analytic lens test below.
+    float dotSunMoon = sunLength2 + sunDeltaDot;
+    float sunAngularScale = czm_solarRadius * invSunRange;
+    const float lunarRadius = 1737400.0;
+    float moonAngularScale = lunarRadius * invMoonRange;
+    float supportDot =
+        dotSunMoon + sunAngularScale * moonAngularScale;
+    float supportRadicand =
+        max(sunLength2 - sunAngularScale * sunAngularScale, 0.0) *
+        max(moonLength2 - moonAngularScale * moonAngularScale, 0.0);
+    if (supportDot <= 0.0 ||
+        supportDot * supportDot <=
+            eclipseF32SafetyFactor * supportRadicand)
+    {
+        return 1.0;
+    }
+
+    // Angular overlap also exists through the solid body from the antipode.
+    // Transform the ray to the globe ellipsoid's unit sphere. An inward ray
+    // is visible only when its closest point clears that sphere, which handles
+    // WGS84/custom oblateness and elevated terrain without a spherical-normal
+    // terminator error.
+    vec3 ellipsoidPosition =
+        positionMC * czm_ellipsoidInverseRadii;
+    vec3 ellipsoidSunRay =
+        toSunScaled * czm_ellipsoidInverseRadii;
+    float ellipsoidRayLength2 =
+        dot(ellipsoidSunRay, ellipsoidSunRay);
+    float ellipsoidPositionDotRay =
+        dot(ellipsoidPosition, ellipsoidSunRay);
+    if (!(ellipsoidRayLength2 > 0.0))
+    {
+        return 1.0;
+    }
+    if (ellipsoidPositionDotRay < 0.0)
+    {
+        vec3 ellipsoidLimb =
+            cross(ellipsoidPosition, ellipsoidSunRay);
+        float closestEllipsoidRadius2 =
+            dot(ellipsoidLimb, ellipsoidLimb) / ellipsoidRayLength2;
+        if (closestEllipsoidRadius2 < eclipseF32SafetyFactor)
+        {
+            return 1.0;
+        }
+    }
+
+    float invSunLength = inversesqrt(sunLength2);
+    float invMoonLength = inversesqrt(moonLength2);
+    float rs = asin(clamp(
+        sunAngularScale * invSunLength,
+        0.0,
+        1.0
+    ));
+    float ro = asin(clamp(
+        moonAngularScale * invMoonLength,
+        0.0,
+        1.0
+    ));
+
+    // atan(|cross|, dot), evaluated from the common-ray differential, is
+    // well-conditioned at umbral angles. Do not replace with acos(dot) or
+    // normalize two independently-rounded near-parallel vectors.
+    float separation = atan(
+        length(cross(toSunScaled, moonMinusSunScaled)),
+        dotSunMoon
+    );
+    float geometric = eclipseGeometricObscuration(rs, ro, separation);
+    if (geometric <= 0.0)
+    {
+        return 1.0;
+    }
+
+    float obscuration;
+    if (geometric >= 1.0)
+    {
+        obscuration = 1.0;
+    }
+    else
+    {
+        float inner = rs - ro;
+        if (inner > 0.0 && separation <= inner)
+        {
+            float t = separation / inner;
+            obscuration = clamp(
+                eclipseLimbDarken(geometric) +
+                u_eclipseParams2.z * (1.0 - t * t),
+                0.0,
+                1.0
+            );
+        }
+        else
+        {
+            obscuration = clamp(eclipseLimbDarken(geometric), 0.0, 1.0);
+        }
+    }
+
+    float visible = 1.0 - obscuration;
+    float flux =
+        visible + u_eclipseParams2.x * (1.0 - visible);
+    return pow(flux, u_eclipseParams2.y);
+}
+#endif
+
 void main()
 {
 #ifdef TILE_LIMIT_RECTANGLE
@@ -457,10 +671,10 @@ void main()
 // - This file gates the whole block with `#if defined(HAS_WATER_MASK)
 //   && (defined(SHOW_REFLECTIVE_OCEAN) || defined(APPLY_MATERIAL))`.
 //   WGSL gates at runtime via `tile.flags.x > 0.5`.
-// - This file applies a `waterMaskTextureCoordinates.y = 1.0 - .y`
-//   flip after the translation/scale. WGSL doesn't — the WebGPU
-//   `copyExternalImageToTexture` upload path lands the mask data
-//   row-aligned for direct sampling at `geoUV.y`.
+// - Both files apply `waterMaskTextureCoordinates.y = 1.0 - .y` after
+//   translation/scale. WebGPU preserves this source-row convention so its
+//   globe path can borrow the GPUTexture already realized by Texture instead
+//   of allocating and uploading a second, vertically reversed copy.
 // - `computeWaterColor` is hand-written GLSL in this file (NOT
 //   runtime-generated by material codegen — earlier audit notes that
 //   claimed otherwise were incorrect; the actual source is
@@ -600,6 +814,36 @@ void main()
     vec4 finalColor = color;
 #endif
 
+#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW
+    // S2 applies a camera-anchored factor to some globe terms. S5 replaces it
+    // with the fragment's factor without double-counting:
+    //   absolute = G(O_fragment)
+    //   relative = G(O_fragment) / G(O_camera)
+    float eclipseAbsolute = 1.0;
+    float eclipseRelative = 1.0;
+    if (u_eclipseParams.x > 0.5)
+    {
+        // Gates 3/4 are correction-only: the selected terrain bound proves no
+        // globe fragment can be shadowed. Restore only the producers S2
+        // actually dimmed without executing the local eclipse geometry.
+        if (u_eclipseParams.x < 2.5)
+        {
+            eclipseAbsolute = eclipseFragmentFactor(v_positionMC);
+        }
+        eclipseRelative = eclipseAbsolute * u_eclipseParams.y;
+    }
+#if defined(ENABLE_VERTEX_LIGHTING) || defined(ENABLE_DAYNIGHT_SHADING)
+    // Gates 2/3 mean SunLight already carried S2 through czm_lightColor.
+    // Gates 1/4 use a custom DirectionalLight and keep the absolute surface.
+    finalColor.rgb *=
+        u_eclipseParams.x > 1.5 && u_eclipseParams.x < 3.5
+            ? eclipseRelative
+            : eclipseAbsolute;
+#else
+    finalColor.rgb *= eclipseAbsolute;
+#endif
+#endif
+
 #ifdef ENABLE_CLIPPING_PLANES
     vec4 clippingPlanesEdgeColor = vec4(1.0);
     clippingPlanesEdgeColor.rgb = u_clippingPlanesEdgeStyle.rgb;
@@ -703,6 +947,12 @@ void main()
         #endif
 
         vec4 groundAtmosphereColor = computeAtmosphereColor(positionWC, lightDirection, rayleighColor, mieColor, opacity);
+        // Ground-atmosphere radiance and fog already carry S2 through
+        // u_atmosphereLightIntensity, so replace that camera factor with the
+        // per-fragment factor. Alpha is geometric opacity and remains intact.
+#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW
+        groundAtmosphereColor.rgb *= eclipseRelative;
+#endif
 
         // Fog is applied to tiles selected for fog, close to the Earth.
         #ifdef FOG

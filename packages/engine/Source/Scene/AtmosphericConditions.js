@@ -330,12 +330,20 @@ function buildLighting(globe) {
   //    moon reads pale/sky-washed instead of a dark cutout. Only active
   //    while the sky atmosphere is visible; exactly zero from orbit.
   //
+  // C12-29 S5 (2026-07-25) — `enableEclipseGlobeShadow`, DEFAULT ON. Gates
+  // only the per-fragment lunar umbra on the globe surface, leaving S1's sun
+  // fade and S2's observer-anchored scene dimming untouched. S5 deliberately
+  // supersedes S2 on the globe: the surface dims by G(O_fragment), not
+  // uniformly by G(O_camera). Turning this sub-effect off preserves the
+  // complete S1/S2 contract for isolation and equivalence probes.
+  //
   // C12-29 S1 (2026-07-24) — `enableEclipse`, DEFAULT ON by maintainer
   // ruling E1 ("this is the actual simulation that needs to be there",
   // ECLIPSE_EFFECTS_RESEARCH_2026-07-24.md §6a). It gates only whether
-  // consumers APPLY `frameState.eclipseState.sunVisibleFraction`; the
-  // eclipse geometry itself is computed unconditionally every frame so
-  // probes and tooling can read the physics with the effect switched off.
+  // consumers APPLY the active logical View's
+  // `frameState.eclipseState.sunVisibleFraction`; the eclipse geometry itself
+  // is computed unconditionally whenever that View is prepared so probes and
+  // tooling can read the physics with the effect switched off.
   // With it false, every consumer multiplies by exactly 1.0 and the frame
   // is byte-identical to the pre-C12-29 engine on both backends.
   //
@@ -413,6 +421,7 @@ function buildLighting(globe) {
     enableMoonSkyWash: true,
     enableEclipse: true,
     eclipseAutoExposure: false,
+    enableEclipseGlobeShadow: true,
     enableSolarLimbDarkening: true,
     enableSolarGlareFalloff: true,
     // C12-29 S6 — the 360-degree horizon twilight. Inside the umbra the

@@ -71,7 +71,7 @@ export interface ShaderFactoryHost {
   /**
    * NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — true when the
    * device's `maxSampledTexturesPerShaderStage` can't fit the full
-   * 31-texture globe layout and the renderer runs the 1-imagery-slot
+   * 28-texture globe layout and the renderer runs the 4-imagery-slot
    * variant. Every defines computation (pipelines, wireframe, material,
    * prewarm) ORs `ShaderDefine.GLOBE_IMAGERY_REDUCED` when set. Fixed
    * per device — captured once at renderer `initialize()`.

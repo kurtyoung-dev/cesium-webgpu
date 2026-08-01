@@ -459,10 +459,14 @@ const lightingStageGlsl = readEngine("Shaders/Model/LightingStageFS.glsl");
 test("Scene.js publishes ONE factor, before anything can consume it", () => {
   assert.match(
     sceneJs,
-    /frameState\.eclipseSceneLightFactor = getEclipseSceneLightFactor\(/,
+    /view\._eclipseSceneLightFactor = getEclipseSceneLightFactor\(/,
+  );
+  assert.match(
+    sceneJs,
+    /frameState\.eclipseSceneLightFactor = view\._eclipseSceneLightFactor;/,
   );
   const publishIndex = sceneJs.indexOf(
-    "frameState.eclipseSceneLightFactor = getEclipseSceneLightFactor(",
+    "frameState.eclipseSceneLightFactor = view._eclipseSceneLightFactor;",
   );
   const updateIndex = sceneJs.indexOf("uniformState.update(frameState);");
   assert.ok(publishIndex > 0 && updateIndex > 0);

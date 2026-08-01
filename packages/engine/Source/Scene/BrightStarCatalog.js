@@ -27,9 +27,9 @@
  * written confirmation from CDS (`cds-question@unistra.fr`) and/or Yale that no
  * restriction is asserted on redistribution of the factual fields.
  *
- * This module embeds the brightest ~230 stars (visual magnitude ≲ 3.6 — the
- * constellation-defining naked-eye stars) as a flat numeric table so the
- * starfield renderer can build a GPU point set without a network fetch.
+ * This module embeds 263 catalog entries spanning visual magnitude -1.46
+ * through 5.0 as a flat numeric table so the starfield renderer can build a
+ * GPU point set without a network fetch.
  *
  * Each star is four consecutive numbers in {@link BrightStarCatalog.data}:
  *

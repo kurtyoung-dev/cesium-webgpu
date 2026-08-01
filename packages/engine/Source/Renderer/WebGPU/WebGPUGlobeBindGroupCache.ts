@@ -17,18 +17,14 @@
  * (textures' cached views, buffers, offsets), never on per-frame
  * wrapper objects.
  *
- *   - Group 0 (camera UB + tile UB): keyed on
- *     `(buffer id, byte offset)` for both slices. The UBs are
- *     sub-allocated from the per-frame ring allocator
- *     (`WebGPURingBufferAllocator`, N pages cycling). At a settled
- *     camera the per-frame allocation sequence is deterministic, so
- *     the same (page, offset) tuples recur with period = pageCount and
- *     the cache converges to ~pageCount entries per tile-pass with
- *     ZERO steady-state creations. When the allocation sequence shifts
- *     (tile churn during pan), keys miss and fresh entries are created
- *     — exactly the pre-cache behavior, never worse. The full fix for
- *     offset-churn during motion is dynamic-offset BGL conversion
- *     (NEW-GLOBE-DYNAMIC-OFFSET-UBO) — tracked, out of scope here.
+ *   - Group 0 (camera UB + tile UB + eclipse UB): keyed on the three
+ *     backing-buffer identities only. Camera/tile and active eclipse slices
+ *     are sub-allocated from the per-frame ring; ordinary frames bind the
+ *     renderer-owned inert eclipse buffer. Per-allocation offsets are supplied
+ *     as dynamic offsets and never enter the key, so tile churn does not
+ *     create offset-only misses. Including the eclipse buffer identity is
+ *     required when its once-per-View allocation crosses a ring-page boundary
+ *     independently of the per-tile slices.
  *   - Group 1 (16 imagery texture views + sampler): keyed on the 16
  *     view identities. Views are stable per texture — they're created
  *     once and cached in `_imageryTextureCache` /
@@ -96,7 +92,7 @@ export interface GlobeBindGroupCacheStats {
   frameNumber: number;
   /**
    * Per-group lifetime creation counts, indexed by the leading key
-   * token (`"0"` camera+tile UB, `"1"` imagery views, `"2"` water/
+   * token (`"0"` camera+tile+eclipse UB, `"1"` imagery views, `"2"` water/
    * ocean/material). Debug builds only — empty in production.
    * NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) uses `byGroup["0"]` to
    * prove group-0 creations stay flat under sustained camera motion.
@@ -134,7 +130,7 @@ export class WebGPUGlobeBindGroupCache {
   private _lastFrameCreates = 0;
   private _lastFrameHits = 0;
   // Per-group creation counters, keyed by the leading key token. Lets
-  // the regression probe isolate group-0 (camera+tile UB) churn from
+  // the regression probe isolate group-0 (camera+tile+eclipse UB) churn from
   // group-1 (imagery) churn — the dynamic-offset conversion only
   // targets group 0. Debug-pragma'd: never written in production.
   private _createsByGroup: Record<string, number> = {};

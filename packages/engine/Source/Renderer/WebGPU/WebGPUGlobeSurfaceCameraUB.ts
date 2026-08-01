@@ -106,6 +106,46 @@ export function createCameraUniformBuffer(
 ): { buffer: GPUBuffer; offset: number; size: number } {
   const data = host._cameraUniformData;
   let offset = 0;
+  const ellipsoid =
+    (
+      tileProvider as CesiumGlobeTileProvider & {
+        tilingScheme?: {
+          ellipsoid?: {
+            maximumRadius?: number;
+            oneOverRadii?: { x: number; y: number; z: number };
+          };
+        };
+        _ellipsoid?: {
+          maximumRadius?: number;
+          oneOverRadii?: { x: number; y: number; z: number };
+        };
+        ellipsoid?: {
+          maximumRadius?: number;
+          oneOverRadii?: { x: number; y: number; z: number };
+        };
+      }
+    ).tilingScheme?.ellipsoid ??
+    (
+      tileProvider as CesiumGlobeTileProvider & {
+        _ellipsoid?: {
+          maximumRadius?: number;
+          oneOverRadii?: { x: number; y: number; z: number };
+        };
+      }
+    )._ellipsoid ??
+    (
+      tileProvider as CesiumGlobeTileProvider & {
+        ellipsoid?: {
+          maximumRadius?: number;
+          oneOverRadii?: { x: number; y: number; z: number };
+        };
+      }
+    ).ellipsoid;
+  const ellipsoidInverseRadii = ellipsoid?.oneOverRadii ?? {
+    x: 1.0 / 6378137.0,
+    y: 1.0 / 6378137.0,
+    z: 1.0 / 6356752.314245179,
+  };
 
   // ─── SCENE2D / COLUMBUS_VIEW / MORPHING projected-rectangle setup ───
   // Mirrors `GlobeSurfaceTileProviderRendering.js:1139-1164` (upstream
@@ -241,14 +281,17 @@ export function createCameraUniformBuffer(
   data[offset++] = camHigh.x;
   data[offset++] = camHigh.y;
   data[offset++] = camHigh.z;
-  data[offset++] = 0;
+  // Reuse the three existing vec3 alignment lanes for the rendered globe
+  // ellipsoid's inverse radii. S5's fragment horizon test consumes them;
+  // no CameraUniforms growth or additional upload bytes are required.
+  data[offset++] = ellipsoidInverseRadii.x;
 
   // encodedCameraLow (vec3 + pad)
   const camLow = uniformState.encodedCameraPositionMCLow;
   data[offset++] = camLow.x;
   data[offset++] = camLow.y;
   data[offset++] = camLow.z;
-  data[offset++] = 0;
+  data[offset++] = ellipsoidInverseRadii.y;
 
   //>>includeStart('debug', pragmas.debug);
   // RTE round-trip: verify that high+low reconstructs the unencoded camera
@@ -355,7 +398,7 @@ export function createCameraUniformBuffer(
   data[offset++] = cxHigh;
   data[offset++] = cyHigh;
   data[offset++] = czHigh;
-  data[offset++] = 0;
+  data[offset++] = ellipsoidInverseRadii.z;
   // center3DLow (vec3 + pad)
   data[offset++] = cxLow;
   data[offset++] = cyLow;
@@ -399,9 +442,7 @@ export function createCameraUniformBuffer(
   // detects a zero and substitutes the WGS84 fallback constant.
   data[offset++] = encoding?.minimumHeight ?? 0.0;
   data[offset++] = encoding?.maximumHeight ?? 0.0;
-  const ell = (tileProvider?._ellipsoid ?? tileProvider?.ellipsoid) as
-    { maximumRadius?: number } | undefined;
-  data[offset++] = ell?.maximumRadius ?? 0.0;
+  data[offset++] = ellipsoid?.maximumRadius ?? 0.0;
   data[offset++] = 0; // reserved (future minor-axis radius)
 
   // ─── 2D / Columbus View support ───

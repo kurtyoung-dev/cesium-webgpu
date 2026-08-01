@@ -290,15 +290,15 @@ export const MAX_IMAGERY_LAYERS = 16;
 // group-1 imagery slots:
 //   group 2 (5): water mask, ocean normal, material image, material heights,
 //     cloud shadow map (Batch 437, binding 9)
-//   group 3 effects (11): shadow depth, clipping planes, polygon SDF,
-//     2× atmosphere LUT, CSM cascade array, 4× edge/globe-depth, point-
-//     light cube depth (see WebGPUEffectsBindGroup.js bindings 1/3/5/7/8/
-//     11/12-15/17 — the effects BGL is shared with model/primitive
-//     pipelines and is NOT reducible per-consumer).
-// Full layout total = 16 + MAX_IMAGERY_LAYERS = 32. Keep this in sync
-// when adding sampled textures to group 2 or the effects BGL — drift
+//   group 3 globe effects (7): shadow depth, clipping planes, polygon SDF,
+//     2× atmosphere LUT, CSM cascade array, point-light cube depth (see
+//     WebGPUEffectsBindGroup.js bindings 1/3/5/7/8/11/17). Model-only edge,
+//     globe-depth, clustered, and area-light resources live in the complete
+//     model/primitive effects layout and are intentionally not charged here.
+// Full layout total = 12 + MAX_IMAGERY_LAYERS = 28. Keep this in sync
+// when adding sampled textures to group 2 or the globe effects BGL — drift
 // here silently re-breaks default-limit adapters.
-export const GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES = 16;
+export const GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES = 12;
 
 /**
  * Per-device imagery slot count for the globe terrain layout.
@@ -307,16 +307,16 @@ export const GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES = 16;
  * (`ShaderDefine.GLOBE_IMAGERY_REDUCED`), so the only two shapes are:
  *
  *   - 16 slots (full, single-pass up to 16 layers) when the device's
- *     `maxSampledTexturesPerShaderStage` covers the full layout's 31
+ *     `maxSampledTexturesPerShaderStage` covers the full layout's 28
  *     fragment-stage sampled textures, and
- *   - 1 slot (reduced, one blend pass per layer) otherwise — sized so
- *     the layout needs exactly 16, the WebGPU spec floor that every
+ *   - 4 slots (reduced, up to four layers per blend pass) otherwise — sized
+ *     so the layout needs exactly 16, the WebGPU spec floor that every
  *     compliant adapter (incl. SwiftShader CI / compat mode) guarantees.
  *
- * Devices in the 17..30 band conservatively take the reduced layout;
+ * Devices in the 17..27 band conservatively take the reduced layout;
  * in practice the pool's adaptive negotiator opts capable adapters up
  * to 64, so the band is essentially empty (adapters either sit at the
- * spec floor or well above 31).
+ * spec floor or well above 28).
  *
  * @private
  */
@@ -326,7 +326,7 @@ export function computeGlobeImagerySlotCount(
   const limit = limits?.maxSampledTexturesPerShaderStage ?? 16;
   return limit >= GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES + MAX_IMAGERY_LAYERS
     ? MAX_IMAGERY_LAYERS
-    : 1;
+    : 4;
 }
 
 /**
@@ -460,11 +460,21 @@ export interface TileGPUResources {
   // reference detects the swap and forces a rebuild; an unchanged mesh keeps
   // the identical reference and the cache stays a byte-for-byte hit.
   sourceVertices: Float32Array;
-  // Per-tile shadow cast uniform buffer for the `quantized12` variant.
-  // Holds scaleAndBias (mat4), center3D (vec3+pad), and minMaxHeight
-  // (vec2+pad). Only populated for quantized tiles; uncompressed tiles
-  // don't need the extra UB because the rte24 variant handles them.
+  // C11-192 — retain the source mesh without allocating a CPU payload or GPU
+  // buffer on the default no-cast path. First real cast demand packs the
+  // shared 96-byte quantized/uncompressed layout, realizes the UB, and then
+  // releases this extra mesh reference.
+  shadowCastMesh?: CesiumTerrainMesh;
+  shadowCastUniformData?: Float32Array;
+  // Device identity for the optional lazy realization. A changed identity
+  // forces deterministic retirement/recreation after device recovery.
+  shadowCastDevice?: GPUDevice;
   shadowCastUB?: GPUBuffer;
+  // Instrumented campaigns publish one nullable sink per renderer. Retaining
+  // it here lets demand realization and eviction account for the resource
+  // without threading a renderer host through the shadow-pass command.
+  shadowCastCounters?: WebGPUGlobeLogicalCounters | null;
+  shadowCastTileKey?: string;
 }
 
 /** Cached imagery texture */
@@ -522,6 +532,14 @@ export interface WebGPUGlobeLogicalCounters {
   tileBufferLiveBytes?: number;
   tileBufferHighWaterEntries?: number;
   tileBufferHighWaterBytes?: number;
+  terrainShadowUniformDataPacks?: number;
+  terrainShadowUniformBufferCreations?: number;
+  terrainShadowUniformBufferWrites?: number;
+  terrainShadowUniformBufferRetirements?: number;
+  terrainShadowUniformBufferLiveEntries?: number;
+  terrainShadowUniformBufferLiveBytes?: number;
+  terrainShadowUniformBufferHighWaterEntries?: number;
+  terrainShadowUniformBufferHighWaterBytes?: number;
   imageryTextureCacheHits?: number;
   imageryTextureCacheMisses?: number;
   imageryDirectUploads?: number;
@@ -565,15 +583,16 @@ export interface TileDrawDescriptor {
   pickPipeline?: GPURenderPipeline | null;
   bindGroups: GPUBindGroup[];
   // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — dynamic byte offsets for
-  // group 0's two uniform-buffer bindings (camera UB, tile UB). The
+  // group 0's three uniform-buffer bindings (camera UB, tile UB, per-View
+  // eclipse UB). The
   // group-0 bind group is built over the ring page at offset 0 and
-  // these two values shift it to this draw's actual slice at
+  // these three values shift it to this draw's actual slices at
   // `setBindGroup(0, bg0, bindGroup0DynamicOffsets)` time. Always a
-  // 2-element array `[cameraOffset, tileOffset]` when group 0 uses the
-  // dynamic-offset layout (the standard path); omitted only for the
-  // legacy/wireframe descriptors that don't route through group 0
-  // dynamically. The scene-adapter execute closure passes it straight
-  // through to `renderPass.setBindGroup`.
+  // 3-element array `[cameraOffset, tileOffset, eclipseOffset]` when group 0
+  // uses the dynamic-offset layout (the standard path); omitted only for the
+  // legacy/wireframe descriptors that don't route through group 0 dynamically.
+  // The scene-adapter execute closure passes it straight through to
+  // `renderPass.setBindGroup`.
   bindGroup0DynamicOffsets?: number[];
   vertexBuffer: GPUBuffer;
   indexBuffer: GPUBuffer;
@@ -603,6 +622,12 @@ export interface TileDrawDescriptor {
   // Without this the GPU walks the buffer at the variant's declared
   // default stride, silently misaligning every vertex.
   strideBytes?: number;
+  // C11-184 — persistent owner for shadow-cast bind-group reuse. Globe tile
+  // draw descriptors and their scene commands are rebuilt every frame, while
+  // the TileGPUResources record survives for the lifetime of the cached mesh.
+  // The renderer publishes that stable record here so the shadow renderer
+  // does not fall back to caching on a transient command object.
+  shadowCastBindGroupCacheHost?: object;
 }
 
 /**

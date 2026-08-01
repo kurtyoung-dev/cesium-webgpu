@@ -12,8 +12,9 @@
  *     `GPUTextureView`. Fast-path for already-uploaded tiles, with a
  *     special branch for tiles that the WebGPU imagery reprojection
  *     pipeline pre-uploaded into a `GPUTexture`.
- *   - `getOrCreateWaterMaskTexture(host, waterMaskTex)` — caches per-
- *     water-mask textures keyed by their WebGL `_id`.
+ *   - `getOrCreateWaterMaskTexture(host, waterMaskTex)` — borrows an
+ *     already-realized compatibility-stub texture when it belongs to the
+ *     renderer's device, otherwise caches a cross-device fallback upload.
  *   - `uploadImageSource(host, source, cacheKey, cache)` — the shared
  *     upload primitive: validates the source is a GPU-copyable type,
  *     allocates a `GPUTexture`, runs `copyExternalImageToTexture`, and
@@ -140,6 +141,18 @@ export interface TextureCacheHost {
   _webgpuContext?: ImageryRealizationContext | null;
   _diagShouldLog(): boolean;
 }
+
+type StubBackedWaterMaskTexture = Omit<CesiumTextureWithSource, "_texture"> & {
+  _context?: {
+    device?: GPUDevice | null;
+  };
+  _texture?: {
+    _webgpuTexture?: {
+      texture: GPUTexture;
+      view: GPUTextureView;
+    } | null;
+  };
+};
 
 function incrementLogicalCounter(
   counters: WebGPUGlobeLogicalCounters | null | undefined,
@@ -547,41 +560,45 @@ export function getOrCreateImageryTexture(
 /**
  * Resolve a `GPUTextureView` for a water-mask texture.
  *
- * NEW-GLOBE-BELOWSURFACE-FIX (Batch 510 attribution → this fix). The
- * water mask arrives as a Cesium `Texture` object whose texel payload is
- * retained by `GlobeSurfaceTile.js` on `_webgpuSource` (the Texture class
- * itself does not keep its source after upload — the previous
- * `wm._source || wm.image` extraction was ALWAYS undefined, so every
- * water-masked tile fell back to the renderer's 1×1 WHITE placeholder:
- * `waterMask = 1.0` across the whole tile, running the enhanced-ocean
- * shader over entire land tiles. That full-tile bluish haze was the
- * dominant below-surface/translucency darkening term).
+ * On a WebGPU context, the Cesium `Texture` object's compatibility-stub
+ * handle already owns the native `GPUTexture` populated by `Texture.create`.
+ * Borrowing its stable view avoids a second allocation, upload, and destroy.
+ * The nested device-identity check is load-bearing for multi-context scenes:
+ * pooled contexts sharing one `GPUDevice` may borrow, while a texture
+ * realized on another device must use the retained `_webgpuSource` fallback.
  *
- * Two source shapes (see `createWaterMaskTextureIfNeeded`):
+ * The fallback payload has two source shapes (see
+ * `createWaterMaskTextureIfNeeded`):
  *
  *   - `{width, height, arrayBufferView}` — LUMINANCE typed array (the
  *     quantized-mesh 256×256 mask and the shared 1×1 all-water texture).
- *     Uploaded as single-mip `r8unorm` via `writeTexture`, with rows
- *     REVERSED: the source is north-first (WebGL uploads it to v=0 and
- *     applies `y = 1 - y` in GlobeFS.glsl AFTER the translation/scale),
- *     while the WGSL samples directly at south-origin
- *     `geoUV * wmTS.zw + wmTS.xy`. South-first rows make direct sampling
- *     byte-equivalent to WebGL's flip-after-TS, including for inherited
- *     ancestor masks (wmTS stays south-origin in both conventions).
+ *     Uploaded unchanged as single-mip `r8unorm` via `writeTexture`.
  *   - `ImageBitmap` — uploaded via `copyExternalImageToTexture` with
- *     `flipY: true` for the same north-first → south-first conversion
- *     (WebGL uploads bitmap masks with `flipY: false` + shader V-flip).
+ *     `flipY: false`, matching `Texture.create({ flipY: false })`.
  *
- * The mask is consumed via `textureSampleLevel(…, 0.0)` so no mip chain
- * is generated. Cached per WebGL-texture `_id`; `GlobeSurfaceTile.js`
- * invokes the registered `_webgpuTextureCacheCleanup` when the WebGL
- * texture's refcount hits zero so the GPU copy is released with it.
+ * Both routes preserve WebGL's north-first texture row order.
+ * `GlobeTerrain.wgsl` applies WebGL's post-translation `1.0 - y` coordinate
+ * transform at sampling time, including inherited ancestor-mask transforms.
+ * Only fallback uploads enter `_waterMaskTextureCache`; their registered
+ * cleanup runs at refcount zero. Stub-native textures remain solely owned and
+ * destroyed by `Texture`.
  */
 export function getOrCreateWaterMaskTexture(
   host: TextureCacheHost,
   waterMaskTex: CesiumOpaqueTexture,
 ): GPUTextureView | null {
-  const wm = waterMaskTex as CesiumTextureWithSource;
+  const wm = waterMaskTex as StubBackedWaterMaskTexture;
+  const device = host._device;
+  const native = wm._texture?._webgpuTexture;
+  if (
+    device !== null &&
+    wm._context?.device === device &&
+    native?.texture &&
+    native.view
+  ) {
+    return native.view;
+  }
+
   const cacheKey = `wm_${wm._id || "default"}`;
   const cached = host._waterMaskTextureCache.get(cacheKey);
   if (cached) return cached.view;
@@ -589,7 +606,7 @@ export function getOrCreateWaterMaskTexture(
   const source = wm._webgpuSource ?? wm._source ?? wm.image;
   if (!source) return null;
 
-  const device = host._device!;
+  if (device === null) return null;
   const cache = host._waterMaskTextureCache;
   try {
     let texture: GPUTexture;
@@ -621,7 +638,7 @@ export function getOrCreateWaterMaskTexture(
           GPUTextureUsage.RENDER_ATTACHMENT,
       });
       device.queue.copyExternalImageToTexture(
-        { source, flipY: true },
+        { source, flipY: false },
         { texture, colorSpace: "srgb" },
         [width, height],
       );
@@ -644,16 +661,9 @@ export function getOrCreateWaterMaskTexture(
         format: "r8unorm",
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
-      // Reverse row order (north-first → south-first); see the function
-      // docstring for why direct south-origin sampling requires it.
-      const flipped = new Uint8Array(width * height);
-      for (let row = 0; row < height; row++) {
-        const srcStart = (height - 1 - row) * width;
-        flipped.set(data.subarray(srcStart, srcStart + width), row * width);
-      }
       device.queue.writeTexture(
         { texture },
-        flipped,
+        data,
         { bytesPerRow: width, rowsPerImage: height },
         [width, height],
       );
@@ -669,7 +679,9 @@ export function getOrCreateWaterMaskTexture(
     // Release the GPU copy when the owning WebGL texture is destroyed
     // (GlobeSurfaceTile.freeResources → refcount 0). Identity-guarded so
     // a later re-upload under a reused `_id` is not clobbered.
+    const previousCleanup = wm._webgpuTextureCacheCleanup;
     wm._webgpuTextureCacheCleanup = () => {
+      previousCleanup?.();
       if (cache.get(cacheKey)?.texture === texture) {
         cache.delete(cacheKey);
         texture.destroy();

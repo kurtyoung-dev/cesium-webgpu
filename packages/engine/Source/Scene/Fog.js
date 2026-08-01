@@ -114,7 +114,8 @@ class Fog {
    * @private
    */
   update(frameState) {
-    const enabled = (frameState.fog.enabled = this.enabled);
+    const enabled = (frameState.fog.configuredEnabled = this.enabled);
+    frameState.fog.enabled = enabled;
     if (!enabled) {
       return;
     }

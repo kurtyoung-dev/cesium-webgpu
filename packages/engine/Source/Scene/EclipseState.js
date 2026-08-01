@@ -699,6 +699,23 @@ const ECLIPSE_TWILIGHT_FLOOR = Math.pow(
 );
 
 /**
+ * S2's scene-light transfer curve, isolated so the globe-shadow path can
+ * evaluate the identical law at a fragment's obscuration.
+ *
+ * @param {number} obscuration Blocked solar flux fraction in [0, 1].
+ * @param {boolean} [autoExposure=false] Return linear radiometry when true.
+ * @returns {number} A multiplier in [ECLIPSE_TWILIGHT_FLOOR, 1].
+ * @private
+ */
+function eclipseSceneLightCurve(obscuration, autoExposure) {
+  const visible = obscuration >= 1.0 ? 0.0 : 1.0 - obscuration;
+  const flux = visible + ECLIPSE_RADIOMETRIC_FLOOR * (1.0 - visible);
+  return autoExposure === true
+    ? flux
+    : Math.pow(flux, ECLIPSE_ADAPTATION_EXPONENT);
+}
+
+/**
  * The multiplier S2's consumers apply to every SUN-DRIVEN light and
  * atmosphere intensity: scene light colour (`UniformState`), the sky
  * atmosphere shell (both backends), the globe's ground atmosphere and its
@@ -727,17 +744,7 @@ function getEclipseSceneLightFactor(state) {
   if (typeof obscuration !== "number" || !(obscuration > 0.0)) {
     return 1.0;
   }
-  const visible = obscuration >= 1.0 ? 0.0 : 1.0 - obscuration;
-  // Linear in the limb-darkened flux fraction, lifted onto the twilight
-  // floor. Exactly `visible` when `visible === 1`, and exactly the floor at
-  // totality.
-  const flux = visible + ECLIPSE_RADIOMETRIC_FLOOR * (1.0 - visible);
-  if (state.autoExposure === true) {
-    // Ruling E2's camera mode: hand the true linear radiometry to the
-    // exposure chain and let it re-meter.
-    return flux;
-  }
-  return Math.pow(flux, ECLIPSE_ADAPTATION_EXPONENT);
+  return eclipseSceneLightCurve(obscuration, state.autoExposure === true);
 }
 
 // ─── C12-29 S6: the 360-degree horizon twilight ────────────────────────────
@@ -956,6 +963,7 @@ export {
   updateEclipseState,
   getEclipseSunFactor,
   getEclipseSceneLightFactor,
+  eclipseSceneLightCurve,
   getEclipseHorizonTwilightFactor,
   computeHorizonTwilightStrength,
   computeMoonPositionWC,

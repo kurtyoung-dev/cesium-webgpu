@@ -4,6 +4,7 @@ import {
   createSamplers,
   createPlaceholderTexture,
 } from "../../../Source/Renderer/WebGPU/WebGPUGlobeSurfaceLayouts.js";
+import { computeGlobeImagerySlotCount } from "../../../Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.js";
 
 // These specs exercise the PURE descriptor-construction logic of the four
 // globe-surface layout builders. None of them depend on real GPU behavior:
@@ -139,7 +140,7 @@ function createRecordingDevice() {
 
 // A LayoutsHost with a recording device and the 11 write-target slots
 // nulled, matching the renderer's pre-initialize state.
-function createHost() {
+function createHost(imagerySlotCount = 16) {
   const device = createRecordingDevice();
   return {
     _device: device,
@@ -147,8 +148,8 @@ function createHost() {
     // imagery slot count drives the group-1 texture-binding count + the
     // device-shape-aware label. The renderer computes this via
     // `computeGlobeImagerySlotCount` at init; mirror the full-limit value
-    // (16) here so the spec exercises the 31-texture pipeline-layout shape.
-    _imagerySlotCount: 16,
+    // (16) here so the spec exercises the 28-texture pipeline-layout shape.
+    _imagerySlotCount: imagerySlotCount,
     _bindGroupLayout0: null,
     _bindGroupLayout1: null,
     _bindGroupLayout2: null,
@@ -164,6 +165,32 @@ function createHost() {
 }
 
 describe("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts", function () {
+  describe("computeGlobeImagerySlotCount", function () {
+    it("uses four imagery slots at the 16-texture spec floor", function () {
+      expect(
+        computeGlobeImagerySlotCount({
+          maxSampledTexturesPerShaderStage: 16,
+        }),
+      ).toBe(4);
+    });
+
+    it("keeps the reduced shape through limit 27", function () {
+      expect(
+        computeGlobeImagerySlotCount({
+          maxSampledTexturesPerShaderStage: 27,
+        }),
+      ).toBe(4);
+    });
+
+    it("uses all sixteen imagery slots at limit 28", function () {
+      expect(
+        computeGlobeImagerySlotCount({
+          maxSampledTexturesPerShaderStage: 28,
+        }),
+      ).toBe(16);
+    });
+  });
+
   describe("exported surface", function () {
     it("exports the four layout builders as functions", function () {
       expect(typeof createBindGroupLayouts).toBe("function");
@@ -275,28 +302,45 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts", function () {
       expect(host._placeholderEffectsBG).not.toBeNull();
     });
 
-    // Group 0 — two uniform buffers (camera + tile), both vertex+fragment.
-    describe("group 0 — camera + tile uniforms", function () {
+    it("keeps model-only bindings out of the globe effects layout", function () {
+      const layout = host._effectsBGL.descriptor;
+      expect(layout.label).toBe("Globe effects BGL (shadow + clipping)");
+      expect(layout.entries.map((entry) => entry.binding)).toEqual([
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 17,
+      ]);
+      expect(layout.entries.filter((entry) => entry.texture).length).toBe(7);
+    });
+
+    // Group 0 — camera + tile UBs are vertex/fragment-visible; the dedicated
+    // per-View eclipse carrier is fragment-only.
+    describe("group 0 — camera + tile + eclipse uniforms", function () {
       let layout;
       beforeEach(function () {
         layout = host._bindGroupLayout0.descriptor;
       });
 
-      it("is labeled and has two entries", function () {
+      it("is labeled and has three entries", function () {
         expect(layout.label).toBe(
           "Globe terrain uniforms layout (dynamic offset)",
         );
-        expect(layout.entries.length).toBe(2);
+        expect(layout.entries.length).toBe(3);
       });
 
-      it("binds two uniform buffers at 0 and 1, both VERTEX|FRAGMENT", function () {
+      it("binds camera/tile at 0/1 and the 64-byte fragment eclipse block at 2", function () {
         const vf = GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT;
         expect(layout.entries[0].binding).toBe(0);
         expect(layout.entries[0].buffer.type).toBe("uniform");
         expect(layout.entries[0].visibility).toBe(vf);
+        expect(layout.entries[0].buffer.hasDynamicOffset).toBe(true);
         expect(layout.entries[1].binding).toBe(1);
         expect(layout.entries[1].buffer.type).toBe("uniform");
         expect(layout.entries[1].visibility).toBe(vf);
+        expect(layout.entries[1].buffer.hasDynamicOffset).toBe(true);
+        expect(layout.entries[2].binding).toBe(2);
+        expect(layout.entries[2].buffer.type).toBe("uniform");
+        expect(layout.entries[2].visibility).toBe(GPUShaderStage.FRAGMENT);
+        expect(layout.entries[2].buffer.hasDynamicOffset).toBe(true);
+        expect(layout.entries[2].buffer.minBindingSize).toBe(64);
       });
     });
 
@@ -310,7 +354,7 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts", function () {
       it("is labeled and has 17 entries (16 textures + 1 sampler)", function () {
         // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246): the label
         // carries the per-device slot count so devtools can tell the
-        // full-limit (16) shape apart from the reduced (1) compat shape.
+        // full-limit (16) shape apart from the reduced (4) compat shape.
         expect(layout.label).toBe("Globe terrain textures layout (16 slots)");
         expect(layout.entries.length).toBe(17);
       });
@@ -333,6 +377,16 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts", function () {
         expect(e.visibility).toBe(GPUShaderStage.FRAGMENT);
         expect(e.sampler).toBeDefined();
         expect(e.sampler.type).toBe("filtering");
+      });
+
+      it("uses four texture entries plus the stable sampler on a reduced device", function () {
+        const reducedHost = createHost(4);
+        createBindGroupLayouts(reducedHost);
+        const reduced = reducedHost._bindGroupLayout1.descriptor;
+        expect(reduced.label).toBe("Globe terrain textures layout (4 slots)");
+        expect(reduced.entries.map((entry) => entry.binding)).toEqual([
+          0, 1, 2, 3, 16,
+        ]);
       });
     });
 

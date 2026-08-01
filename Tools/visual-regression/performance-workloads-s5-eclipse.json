@@ -1,0 +1,33 @@
+{
+  "$schema": "./performance-workloads.schema.json",
+  "schemaVersion": 1,
+  "id": "c12-s5-eclipse-spatial-v1",
+  "description": "Feature-preserving C12-29 S5 characterization at the 2026-08-12 Iceland/Spain eclipse instant while the canonical route remains over the Pacific, western North America, and the Himalaya. The camera stays in continuous motion across altitude bands; per-frame evidence records whether selected terrain activates the globe-shadow shader.",
+  "baseUrl": "http://localhost:8080/Apps/CesiumViewer/index.html",
+  "protocol": {
+    "browser": "msedge",
+    "viewport": { "width": 1280, "height": 720, "deviceScaleFactor": 1 },
+    "fixedClock": "2026-08-12T17:42:42Z",
+    "warmupFrames": 120,
+    "measuredFrames": 600,
+    "settleStableFrames": 30,
+    "settleTimeoutMs": 45000,
+    "gpuReadbackDelayMs": 300,
+    "repetitions": 6,
+    "counterbalancedPairs": 6
+  },
+  "workloads": [
+    {
+      "id": "moving-camera-eclipse-altitude-track-3d",
+      "description": "Continuous orbit-to-ground route at a real eclipse instant, retaining every default globe feature. Far-region segments should use the inactive or correction-only S5 carrier without dropping the eclipse where selected terrain intersects the penumbra.",
+      "mode": "3d",
+      "action": "camera-track",
+      "content": "globe-only",
+      "contentProfile": "local-grid-ellipsoid",
+      "featureProfile": "default-globe",
+      "evidenceProfile": "eclipse-globe-shadow",
+      "trackId": "orbit-to-ground-global-v1",
+      "measuredSeconds": 20
+    }
+  ]
+}

@@ -408,7 +408,7 @@ export function buildPipelineDescriptor(
   // (plus structural fields); the reduced-imagery variant has a
   // different pipeline layout + shader module, so it MUST carry a
   // distinct name to avoid stale-pipeline aliasing in any shared cache.
-  const imgLabel = host._imageryReduced ? ", imagery1" : "";
+  const imgLabel = host._imageryReduced ? ", imagery4" : "";
   const cullMode: GPUCullMode =
     depthOnlyBackFace || translucentBackFace
       ? "front"

@@ -243,7 +243,7 @@ export function buildWireframePipelineDescriptor(
   // is wiped on the flag flip — see `_applyEnhancedOceanState`).
   const oceanLabel = host._enhancedOceanEnabled ? ", enhOcean" : "";
   return {
-    name: `Globe wireframe (${quantLabel}, ${normLabel}, ${mercLabel}, ${strideBytes}b${host._imageryReduced ? ", imagery1" : ""}${oceanLabel})`,
+    name: `Globe wireframe (${quantLabel}, ${normLabel}, ${mercLabel}, ${strideBytes}b${host._imageryReduced ? ", imagery4" : ""}${oceanLabel})`,
     layout: host._pipelineLayout!,
     vertex: {
       module: shaderModule,

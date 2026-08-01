@@ -721,7 +721,7 @@ test("Scene.js gates the eclipse computation on SCENE3D", () => {
   assert.match(sceneJs, /const scratchEclipseOptions = \{/);
   assert.doesNotMatch(
     sceneJs,
-    /updateEclipseState\(scene\._eclipseState, \{/,
+    /updateEclipseState\([^,]+,\s*\{/,
     "the options literal must not be allocated per frame",
   );
 });
@@ -755,6 +755,7 @@ test("a moon farther away than the sun is not an occluder", () => {
 const sunFs = readEngine("Shaders/SunFS.glsl");
 const sunJs = readEngine("Scene/Sun.js");
 const sceneJs = readEngine("Scene/Scene.js");
+const viewJs = readEngine("Scene/View.js");
 const conditions = readEngine("Scene/AtmosphericConditions.js");
 const envRenderer = readEngine("Renderer/WebGPU/WebGPUEnvironmentRenderer.js");
 const frameStateJs = readEngine("Scene/FrameState.js");
@@ -834,7 +835,13 @@ test("no new ShaderDefine bit was consumed", () => {
 
 test("Scene.js publishes the state and leaves the legacy cull untouched", () => {
   assert.match(sceneJs, /frameState\.eclipseState = updateEclipseState\(/);
-  assert.match(sceneJs, /this\._eclipseState = createEclipseState\(\);/);
+  assert.match(sceneJs, /view\._eclipseState,\s*scratchEclipseOptions,/);
+  assert.match(viewJs, /this\._eclipseState = createEclipseState\(\);/);
+  assert.doesNotMatch(
+    sceneJs,
+    /this\._eclipseState = createEclipseState\(\);/,
+    "Scene must not own camera-dependent eclipse state",
+  );
   // The Earth occluder comes from the very sphere the legacy binary cull
   // uses, so the fade and the cull can never disagree about the geometry.
   assert.match(
@@ -863,13 +870,44 @@ test("Scene.environmentState still exposes the binary-cull result", () => {
 
 test("the toggle exists on AtmosphericConditions and defaults ON", () => {
   assert.match(conditions, /enableEclipse: true,/);
+  assert.match(conditions, /enableEclipseGlobeShadow: true,/);
   // Ruling E1 (research report §6a) — default-on, both backends.
   assert.match(conditions, /C12-29 S1/);
 });
 
-test("FrameState declares both published fields", () => {
+test("FrameState declares the active-View eclipse aliases", () => {
+  assert.match(frameStateJs, /this\.view = undefined;/);
   assert.match(frameStateJs, /this\.eclipseState = undefined;/);
+  assert.match(frameStateJs, /this\.eclipseGlobeShadow = undefined;/);
   assert.match(frameStateJs, /this\.sunEclipseAlpha = undefined;/);
+});
+
+test("logical Views own eclipse state and updateFrameState publishes it", () => {
+  assert.match(viewJs, /this\._eclipseState = createEclipseState\(\);/);
+  assert.match(
+    viewJs,
+    /this\._eclipseGlobeShadow = createEclipseGlobeShadow\(\);/,
+  );
+  assert.match(sceneJs, /frameState\.view = this\._view;/);
+  assert.match(sceneJs, /prepareLogicalViewEclipse\(this\);/);
+  assert.match(
+    sceneJs,
+    /frameState\.eclipseGlobeShadow = undefined;[\s\S]*frameState\.eclipseGlobeShadowPrepared = false;[\s\S]*frameState\.eclipseGlobeShadowSurfaceRadius = undefined;[\s\S]*frameState\.eclipseGlobeShadowSelectionRevision = undefined;/,
+    "logical-View preparation must clear the transient S5 alias and memo",
+  );
+  assert.doesNotMatch(
+    sceneJs,
+    /updateEclipseGlobeShadowForFrameState/,
+    "Scene must defer exact-set S5 preparation to capture, terrain, and pick owners",
+  );
+
+  const renderStart = sceneJs.indexOf("function render(scene)");
+  const renderBody = sceneJs.slice(renderStart);
+  assert.doesNotMatch(
+    renderBody,
+    /updateEclipseState\(/,
+    "main render must use the updateFrameState logical-View seam",
+  );
 });
 
 test("the WebGPU sun shader passes naga validation", async () => {

@@ -231,6 +231,17 @@ export class WebGPUGlobeDepth {
   }
 
   /**
+   * Stable view of {@link globeDepthTexture}. WebGPURenderTarget owns this
+   * view for the lifetime of the packed-depth target, so callers must reuse it
+   * instead of calling `createView()` every frame. The identity changes only
+   * when update() recreates the target for a resize, HDR/sample-count change,
+   * or replacement device.
+   */
+  get globeDepthTextureView(): GPUTextureView | undefined {
+    return this._depthCopyTarget?.getColorTextureView() ?? undefined;
+  }
+
+  /**
    * The color texture from the globe rendering pass.
    */
   get colorTexture(): GPUTexture | undefined {

@@ -4,31 +4,33 @@
 // DEFAULT limits — specifically `maxSampledTexturesPerShaderStage = 16`
 // (the spec floor; what SwiftShader CI, compat-mode adapters, and
 // low-end mobile report). The full globe terrain pipeline layout needs
-// 31 fragment-stage sampled textures (16 imagery + 4 group-2 + 11
-// effects); without the reduced-layout fallback, pipeline-layout
+// 28 fragment-stage sampled textures (16 imagery + 5 group-2 + 7
+// globe effects); without the reduced-layout fallback, pipeline-layout
 // creation fails validation and the globe never draws.
 //
 // The probe constructs its OWN CesiumWidget on a bare page (root
 // index.html — no auto-created viewer, so the device pool's primary
 // device is OURS) with `contextOptions.requiredLimits` pinning
-// maxSampledTexturesPerShaderStage to 16. Pinned limits are honored
+// maxSampledTexturesPerShaderStage to the requested test tier (16 by default).
+// Pinned limits are honored
 // verbatim by the pool's negotiator (user-supplied values are never
 // raised), so `device.limits.maxSampledTexturesPerShaderStage` reads
-// exactly 16 — a true default-limit device on real hardware.
+// exactly as requested — limit 16 is a true default-limit device on real hardware.
 //
 //   (A) LIMIT — the created device actually reports the forced limit of
 //       16 (guards against the pool/negotiator silently raising it,
 //       which would make every other check vacuous).
 //   (B) FALLBACK — the globe surface renderer selected the reduced
-//       1-slot imagery layout (`globalThis.__webgpuGlobeImagerySlotCount
-//       === 1`, published by WebGPUGlobeSurfaceRenderer.initialize).
+//       4-slot imagery layout (`globalThis.__webgpuGlobeImagerySlotCount
+//       === 4`, published by WebGPUGlobeSurfaceRenderer.initialize).
 //   (C) RENDER — the globe is visually present: >8% non-black coverage
 //       with imagery color diversity (offline NaturalEarthII base layer
 //       — no network/Ion dependency; flat clear ≈ 1 color bucket,
 //       imagery ≫ 100).
-//   (D) MULTI-PASS — adding a second imagery layer (GridImageryProvider,
-//       local) exercises the 1-slot multi-pass blend path (2 layers →
-//       2 passes). The grid lattice must change a visible fraction of
+//   (D) MULTI-PASS — adding enough local GridImageryProvider layers to
+//       exceed the selected tier by one exercises a two-pass blend path
+//       (5 layers on the 4-slot tier, 17 on the 16-slot tier). The grid
+//       lattice must change a visible fraction of
 //       pixels vs the single-layer snap, and the scene must stay
 //       non-black (a broken blend pass would either no-op or kill the
 //       command buffer → black).
@@ -41,7 +43,8 @@
 //
 // Usage: node Tools/visual-regression/probe-globe-default-limits.mjs
 // Env:   PROBE_BASE (default http://localhost:8134)
-// Out:   Tools/visual-regression/output/globe-default-limits-{1,2}layer.png
+//        PROBE_TEXTURE_LIMIT (default 16; use 64 to exercise the full tier)
+// Out:   Tools/visual-regression/output/globe-limit-<limit>-{1,N}layer.png
 
 import { chromium } from "playwright";
 import { mkdirSync, writeFileSync } from "fs";
@@ -49,6 +52,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
+const TEXTURE_LIMIT = Number(process.env.PROBE_TEXTURE_LIMIT ?? 16);
 const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), "output");
 mkdirSync(OUT_DIR, { recursive: true });
 
@@ -71,7 +75,7 @@ page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
 // created.
 await page.goto(`${BASE}/index.html`, { waitUntil: "domcontentloaded" });
 
-const out = await page.evaluate(async () => {
+const out = await page.evaluate(async (textureLimit) => {
   const C = await import("/Build/CesiumUnminified/index.js");
 
   // The bare page has no widgets CSS — without the 100% rules the
@@ -99,17 +103,18 @@ const out = await page.evaluate(async () => {
   const widget = await C.CesiumWidget.createAsync(div, {
     contextOptions: {
       renderer: "webgpu",
-      // Force the WebGPU spec-floor sampled-texture limit. User-pinned
-      // limits are honored verbatim by WebGPUDevicePool._negotiate
-      // (never auto-raised), so the device reports exactly 16.
-      requiredLimits: { maxSampledTexturesPerShaderStage: 16 },
+      // Force the requested sampled-texture tier. User-pinned limits are
+      // honored verbatim by WebGPUDevicePool._negotiate (never auto-raised).
+      requiredLimits: {
+        maxSampledTexturesPerShaderStage: textureLimit,
+      },
     },
     baseLayer,
   });
   const scene = widget.scene;
   widget.clock.shouldAnimate = false;
 
-  // (A) the device actually got the forced default limit.
+  // (A) the device actually got the forced test limit.
   const device = scene.context._device ?? scene.context.device;
   const deviceLimit = device?.limits?.maxSampledTexturesPerShaderStage ?? -1;
 
@@ -219,16 +224,20 @@ const out = await page.evaluate(async () => {
   const a1 = analyze(img1);
   const slotCount = globalThis.__webgpuGlobeImagerySlotCount ?? -1;
 
-  // ── Phase 2: second layer → 1-slot multi-pass blend path ──
-  scene.imageryLayers.addImageryProvider(
-    new C.GridImageryProvider({ cells: 4 }),
-  );
+  // ── Phase 2: slotCount+1 total layers → a two-pass blend path ──
+  // Local grid layers plus NaturalEarthII force exactly one overflow layer on
+  // both the four-slot compatibility tier and the sixteen-slot full tier.
+  for (let i = 0; i < slotCount; i++) {
+    scene.imageryLayers.addImageryProvider(
+      new C.GridImageryProvider({ cells: 4 }),
+    );
+  }
   const loaded2 =
     (await renderUntilLoaded(900, 20)) && (await renderUntilDiskVisible(300));
   const img2 = await snap();
   const a2 = analyze(img2);
 
-  // Pixel diff between the two phases — the grid layer from the second
+  // Pixel diff between the two phases — the grid layers, including the second
   // (blend) pass must actually land on screen. Two metrics:
   //   - changedPct: raw fraction of pixels that moved (informational —
   //     also picks up tile-refinement noise between snaps).
@@ -274,12 +283,12 @@ const out = await page.evaluate(async () => {
     png1: img1.png,
     png2: img2.png,
   };
-});
+}, TEXTURE_LIMIT);
 
 // Save screenshots for spot-checking.
 for (const [name, dataUrl] of [
-  ["globe-default-limits-1layer.png", out.png1],
-  ["globe-default-limits-2layer.png", out.png2],
+  [`globe-limit-${TEXTURE_LIMIT}-1layer.png`, out.png1],
+  [`globe-limit-${TEXTURE_LIMIT}-${out.slotCount + 1}layer.png`, out.png2],
 ]) {
   writeFileSync(
     join(OUT_DIR, name),
@@ -294,8 +303,9 @@ await browser.close();
 // buckets at 1024x768; the pre-imagery failure mode (atmosphere ring
 // over a dark disk) measures ~80. 150 splits the two cleanly.
 const BUCKETS_MIN = 150;
-const aOK = out.deviceLimit === 16;
-const bOK = out.slotCount === 1;
+const expectedSlots = TEXTURE_LIMIT >= 28 ? 16 : 4;
+const aOK = out.deviceLimit === TEXTURE_LIMIT;
+const bOK = out.slotCount === expectedSlots;
 const cOK =
   out.loaded1 &&
   out.phase1.nonBlackPct > 0.08 &&
@@ -310,17 +320,17 @@ const dOK =
 const eOK = errors.length === 0;
 
 console.log(
-  `(A) forced default limit: maxSampledTexturesPerShaderStage=${out.deviceLimit} (expect 16) ${aOK ? "OK" : "FAIL"}`,
+  `(A) forced texture limit: maxSampledTexturesPerShaderStage=${out.deviceLimit} (expect ${TEXTURE_LIMIT}) ${aOK ? "OK" : "FAIL"}`,
 );
 console.log(
-  `(B) reduced layout selected: imagerySlotCount=${out.slotCount} (expect 1) ${bOK ? "OK" : "FAIL"}`,
+  `(B) imagery layout selected: imagerySlotCount=${out.slotCount} (expect ${expectedSlots}) ${bOK ? "OK" : "FAIL"}`,
 );
 console.log(
   `(C) 1-layer render: loaded=${out.loaded1}, nonBlack=${(out.phase1.nonBlackPct * 100).toFixed(1)}% (>8%), ` +
     `colorBuckets=${out.phase1.colorBuckets} (>${BUCKETS_MIN}) ${cOK ? "OK" : "FAIL"}`,
 );
 console.log(
-  `(D) 2-layer multi-pass: loaded=${out.loaded2}, nonBlack=${(out.phase2.nonBlackPct * 100).toFixed(1)}% (>8%), ` +
+  `(D) ${out.slotCount + 1}-layer multi-pass: loaded=${out.loaded2}, nonBlack=${(out.phase2.nonBlackPct * 100).toFixed(1)}% (>8%), ` +
     `colorBuckets=${out.phase2.colorBuckets} (>${BUCKETS_MIN}), greenShift=${out.greenShift.toFixed(1)} (>2 — grid layer's ` +
     `green background wash from the blend pass), changedPct=${(out.changedPct * 100).toFixed(2)}% ${dOK ? "OK" : "FAIL"}`,
 );

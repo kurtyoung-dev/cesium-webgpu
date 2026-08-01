@@ -60,6 +60,31 @@ const float ECLIPSE_TWILIGHT_ELEVATION = 0.394791119699762;
 // the long slant path out to the penumbra.
 const vec3 ECLIPSE_TWILIGHT_TINT = vec3(1.0, 0.784, 0.424);
 
+// The eclipse band is defined relative to the observer's local geodetic
+// horizon, not the geocentric/radial horizon. `czm_ellipsoidInverseRadii`
+// follows the active frame ellipsoid; squaring it gives the gradient weights
+// for that ellipsoid's implicit surface. The two fallbacks keep a malformed
+// or origin-centred camera from feeding normalize(vec3(0.0)) into asin().
+vec3 getEclipseObserverUp(vec3 positionWC)
+{
+    vec3 radialUp = vec3(0.0, 0.0, 1.0);
+    float radialMagnitudeSquared = dot(positionWC, positionWC);
+    if (radialMagnitudeSquared > 0.0)
+    {
+        radialUp = positionWC * inversesqrt(radialMagnitudeSquared);
+    }
+
+    vec3 ellipsoidInverseRadiiSquared =
+        czm_ellipsoidInverseRadii * czm_ellipsoidInverseRadii;
+    vec3 geodeticGradient = positionWC * ellipsoidInverseRadiiSquared;
+    float gradientMagnitudeSquared = dot(geodeticGradient, geodeticGradient);
+    if (gradientMagnitudeSquared > 0.0)
+    {
+        return geodeticGradient * inversesqrt(gradientMagnitudeSquared);
+    }
+    return radialUp;
+}
+
 #ifndef PER_FRAGMENT_ATMOSPHERE
 in vec3 v_mieColor;
 in vec3 v_rayleighColor;
@@ -104,7 +129,7 @@ void main (void)
     // returns before this point.
     if (u_eclipseHorizonTwilight > 0.0 && translucent == 0.0)
     {
-        vec3 upWC = normalize(czm_viewerPositionWC);
+        vec3 upWC = getEclipseObserverUp(czm_viewerPositionWC);
         vec3 rayDirWC = normalize(v_outerPositionWC - czm_viewerPositionWC);
         float elevation = asin(clamp(dot(rayDirWC, upWC), -1.0, 1.0));
         float band = max(0.0, 1.0 - max(elevation, 0.0) / ECLIPSE_TWILIGHT_ELEVATION);

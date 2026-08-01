@@ -1,47 +1,93 @@
 import {
   getTileKey,
   getOrCreateTileBuffers,
+  ensureTerrainShadowCastUniformBuffer,
+  prepareTerrainShadowCastCommandUniforms,
   evictStaleResources,
   removeImageryTexture,
 } from "../../../Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileBuffers.js";
 
 // ── Scope ───────────────────────────────────────────────────────────
 //
-// getOrCreateTileBuffers() is mostly device-bound: as soon as it accepts
-// a mesh it calls device.createBuffer() + device.queue.writeBuffer().
-// Those paths require a live GPUDevice/queue and are SKIPPED here.
-//
-// But the module also has a meaningful pure surface that runs BEFORE any
-// device touch, and two cache-accounting helpers that only manipulate the
-// host's Maps + call .destroy() on values the test controls:
-//
-//   - getTileKey(tile) — pure `${level}_${x}_${y}` key generator.
-//   - getOrCreateTileBuffers() early returns that fire before the first
-//     device.createBuffer() call (line 165 in the source):
-//       * cache HIT with matching meshGeneration → returns cached.
-//       * empty/missing vertices or indices → returns null (and first
-//         destroys a stale cached entry's buffers when present).
-//       * fill-tile stride correction failure → returns null.
-//   - evictStaleResources(host, activeKeys) — drops cache entries whose
-//     key isn't active, destroying their GPU buffers.
-//   - removeImageryTexture(host, cacheKey) — destroys + removes an
-//     imagery texture cache entry.
-//
-// SKIPPED (device-bound — need a real GPUDevice/queue): every
-// getOrCreateTileBuffers() path that reaches device.createBuffer() /
-// device.queue.writeBuffer() (the vertex/index buffer build, the stride
-// re-inference success path, the shadow-cast UB allocation +
-// writeTerrainShadowUB). The internal writeTerrainShadowUB is not
-// exported and only callable through that device-bound path.
+// Pure early-return/cache paths use a null device. A recording fake device
+// covers the full VB/IB build plus C11-192's lazy terrain-shadow realization,
+// device replacement, mesh replacement, counters, and destruction without
+// requiring navigator.gpu.
+
+if (typeof globalThis.GPUBufferUsage === "undefined") {
+  globalThis.GPUBufferUsage = {
+    COPY_DST: 0x08,
+    INDEX: 0x10,
+    VERTEX: 0x20,
+    UNIFORM: 0x40,
+  };
+}
 
 // A stub GPU buffer whose destroy() flips a flag so we can assert the
 // helpers free what they should. Stands in for a GPUBuffer in the cache.
-function fakeBuffer(tag) {
+function fakeBuffer(tag, size = 0) {
   return {
     __tag: tag,
+    size: size,
     destroyed: false,
     destroy() {
       this.destroyed = true;
+    },
+  };
+}
+
+function makeRecordingDevice(name) {
+  const device = {
+    name: name,
+    createdBuffers: [],
+    writes: [],
+    createBuffer(descriptor) {
+      const buffer = fakeBuffer(descriptor.label, descriptor.size);
+      buffer.usage = descriptor.usage;
+      this.createdBuffers.push(buffer);
+      return buffer;
+    },
+  };
+  device.queue = {
+    writeBuffer(...args) {
+      device.writes.push(args);
+    },
+  };
+  return device;
+}
+
+function makeRenderableMesh(positionOffset = 0) {
+  return {
+    _webgpuGeneration: 0,
+    vertices: new Float32Array([
+      positionOffset + 1,
+      2,
+      3,
+      4,
+      0,
+      0,
+      positionOffset + 5,
+      6,
+      7,
+      8,
+      1,
+      0,
+      positionOffset + 9,
+      10,
+      11,
+      12,
+      0,
+      1,
+    ]),
+    indices: new Uint16Array([0, 1, 2]),
+    center: { x: 101, y: 202, z: 303 },
+    encoding: {
+      stride: 6,
+      hasVertexNormals: false,
+      hasWebMercatorT: false,
+      quantization: 0,
+      minimumHeight: -12,
+      maximumHeight: 34,
     },
   };
 }
@@ -82,11 +128,12 @@ function fakeResources(meshGeneration, withShadowUB) {
 // A host with empty caches and a null device. The pure paths never read
 // the device, so null is safe (the source uses `host._device!`, a TS-only
 // assertion erased at runtime).
-function makeHost() {
+function makeHost(device = null, counters) {
   return {
-    _device: null,
+    _device: device,
     _tileBufferCache: new Map(),
     _imageryTextureCache: new Map(),
+    _logicalCounters: counters,
   };
 }
 
@@ -179,6 +226,7 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceTileBuffers", function () {
       // the cached buffers are destroyed, then the empty-data check returns
       // null. Exercises the stale-eviction destroy without a device.
       const stale = fakeResources(1, /* withShadowUB */ true);
+      const staleShadowBuffer = stale.shadowCastUB;
       host._tileBufferCache.set("2_0_0", stale);
 
       const mesh = {
@@ -191,7 +239,8 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceTileBuffers", function () {
       expect(result).toBeNull();
       expect(stale.vertexBuffer.destroyed).toBe(true);
       expect(stale.indexBuffer.destroyed).toBe(true);
-      expect(stale.shadowCastUB.destroyed).toBe(true);
+      expect(staleShadowBuffer.destroyed).toBe(true);
+      expect(stale.shadowCastUB).toBeUndefined();
     });
   });
 
@@ -268,6 +317,7 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceTileBuffers", function () {
     it("destroys and removes entries whose key is not active", function () {
       const host = makeHost();
       const stale = fakeResources(0, /* withShadowUB */ true);
+      const staleShadowBuffer = stale.shadowCastUB;
       host._tileBufferCache.set("9_9_9", stale);
 
       evictStaleResources(host, new Set(["0_0_0"]));
@@ -275,7 +325,8 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceTileBuffers", function () {
       expect(host._tileBufferCache.has("9_9_9")).toBe(false);
       expect(stale.vertexBuffer.destroyed).toBe(true);
       expect(stale.indexBuffer.destroyed).toBe(true);
-      expect(stale.shadowCastUB.destroyed).toBe(true);
+      expect(staleShadowBuffer.destroyed).toBe(true);
+      expect(stale.shadowCastUB).toBeUndefined();
     });
 
     it("does not require a shadowCastUB to evict", function () {
@@ -303,6 +354,109 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceTileBuffers", function () {
       expect(keep.vertexBuffer.destroyed).toBe(false);
       expect(drop.vertexBuffer.destroyed).toBe(true);
       expect(host._tileBufferCache.size).toBe(1);
+    });
+  });
+
+  describe("lazy terrain shadow uniforms", function () {
+    it("pays zero shadow allocation while off and completes first cast demand", function () {
+      const counters = {};
+      const deviceA = makeRecordingDevice("A");
+      const host = makeHost(deviceA, counters);
+      const mesh = makeRenderableMesh();
+      const resources = getOrCreateTileBuffers(host, "4_2_3", mesh);
+
+      expect(resources).not.toBeNull();
+      expect(deviceA.createdBuffers.length).toBe(2);
+      expect(deviceA.writes.length).toBe(2);
+      expect(resources.shadowCastMesh).toBe(mesh);
+      expect(resources.shadowCastUniformData).toBeUndefined();
+      expect(resources.shadowCastUB).toBeUndefined();
+      expect(counters.terrainShadowUniformBufferCreations).toBeUndefined();
+      expect(counters.tileBufferLiveBytes).toBe(80);
+
+      const command = {
+        _shadowCastLayout: "terrainUncompressed",
+        _shadowCastBindGroupCacheHost: resources,
+      };
+      expect(prepareTerrainShadowCastCommandUniforms(deviceA, [command])).toBe(
+        1,
+      );
+      const bufferA = resources.shadowCastUB;
+      const packedData = resources.shadowCastUniformData;
+      expect(command._shadowCastTerrainUB).toBe(bufferA);
+      expect(resources.shadowCastMesh).toBeUndefined();
+      expect(packedData).toEqual(jasmine.any(Float32Array));
+      expect(packedData[16]).toBe(101);
+      expect(packedData[17]).toBe(202);
+      expect(packedData[18]).toBe(303);
+      expect(packedData[20]).toBe(-12);
+      expect(packedData[21]).toBe(34);
+      expect(deviceA.createdBuffers.length).toBe(3);
+      expect(deviceA.writes.length).toBe(3);
+      expect(counters.terrainShadowUniformDataPacks).toBe(1);
+      expect(counters.terrainShadowUniformBufferCreations).toBe(1);
+      expect(counters.terrainShadowUniformBufferWrites).toBe(1);
+      expect(counters.terrainShadowUniformBufferLiveEntries).toBe(1);
+      expect(counters.terrainShadowUniformBufferLiveBytes).toBe(96);
+      expect(counters.tileBufferLiveBytes).toBe(176);
+
+      expect(prepareTerrainShadowCastCommandUniforms(deviceA, [command])).toBe(
+        1,
+      );
+      expect(deviceA.createdBuffers.length).toBe(3);
+      expect(deviceA.writes.length).toBe(3);
+
+      const deviceB = makeRecordingDevice("B");
+      const bufferB = ensureTerrainShadowCastUniformBuffer(deviceB, resources);
+      expect(bufferA.destroyed).toBe(true);
+      expect(bufferB).not.toBe(bufferA);
+      expect(resources.shadowCastUniformData).toBe(packedData);
+      expect(counters.terrainShadowUniformDataPacks).toBe(1);
+      expect(counters.terrainShadowUniformBufferCreations).toBe(2);
+      expect(counters.terrainShadowUniformBufferWrites).toBe(2);
+      expect(counters.terrainShadowUniformBufferRetirements).toBe(1);
+      expect(counters.terrainShadowUniformBufferLiveEntries).toBe(1);
+      expect(counters.tileBufferLiveBytes).toBe(176);
+
+      evictStaleResources(host, new Set());
+      expect(bufferB.destroyed).toBe(true);
+      expect(counters.terrainShadowUniformBufferRetirements).toBe(2);
+      expect(counters.terrainShadowUniformBufferLiveEntries).toBe(0);
+      expect(counters.terrainShadowUniformBufferLiveBytes).toBe(0);
+      expect(counters.tileBufferLiveEntries).toBe(0);
+      expect(counters.tileBufferLiveBytes).toBe(0);
+    });
+
+    it("retires a realized UB when the tile mesh is replaced", function () {
+      const counters = {};
+      const device = makeRecordingDevice("mesh-replacement");
+      const host = makeHost(device, counters);
+      const first = getOrCreateTileBuffers(host, "5_8_9", makeRenderableMesh());
+      const firstBuffer = ensureTerrainShadowCastUniformBuffer(device, first);
+
+      const replacementMesh = makeRenderableMesh(1000);
+      const replacement = getOrCreateTileBuffers(
+        host,
+        "5_8_9",
+        replacementMesh,
+      );
+      expect(firstBuffer.destroyed).toBe(true);
+      expect(replacement).not.toBe(first);
+      expect(replacement.shadowCastMesh).toBe(replacementMesh);
+      expect(replacement.shadowCastUniformData).toBeUndefined();
+      expect(replacement.shadowCastUB).toBeUndefined();
+      expect(counters.terrainShadowUniformBufferRetirements).toBe(1);
+      expect(counters.terrainShadowUniformBufferLiveEntries).toBe(0);
+      expect(counters.tileBufferLiveEntries).toBe(1);
+      expect(counters.tileBufferLiveBytes).toBe(80);
+
+      const replacementBuffer = ensureTerrainShadowCastUniformBuffer(
+        device,
+        replacement,
+      );
+      expect(replacementBuffer.destroyed).toBe(false);
+      expect(counters.terrainShadowUniformBufferLiveEntries).toBe(1);
+      expect(counters.tileBufferLiveBytes).toBe(176);
     });
   });
 

@@ -66,6 +66,7 @@ import {
   shortlistVantages,
 } from "./lib/eclipse-fixture-constraints.mjs";
 import Cartesian3 from "../../packages/engine/Source/Core/Cartesian3.js";
+import Ellipsoid from "../../packages/engine/Source/Core/Ellipsoid.js";
 import JulianDate from "../../packages/engine/Source/Core/JulianDate.js";
 import Matrix3 from "../../packages/engine/Source/Core/Matrix3.js";
 import Simon1994PlanetaryPositions from "../../packages/engine/Source/Core/Simon1994PlanetaryPositions.js";
@@ -74,7 +75,11 @@ import { prependUniqueEnvironmentCommands } from "../../packages/engine/Source/S
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "../..");
-const read = (rel) => fs.readFileSync(path.join(root, rel), "utf8");
+// Source-order pins must not depend on a checkout's LF/CRLF policy. The handoff
+// explicitly calls out lone-CR normalization hazards in these generated/source
+// comparisons, so canonicalize before every structural assertion.
+const read = (rel) =>
+  fs.readFileSync(path.join(root, rel), "utf8").replace(/\r\n?/g, "\n");
 
 const starFieldMathTs = read("packages/engine/Source/Scene/StarFieldMath.ts");
 const skyBrightnessJs = read("packages/engine/Source/Scene/SkyBrightness.js");
@@ -845,7 +850,11 @@ test("S6: the twilight fades out above the atmosphere", () => {
 test("S6: Scene publishes the factor and FrameState declares it", () => {
   assert.match(
     sceneJs,
-    /frameState\.eclipseHorizonTwilight = getEclipseHorizonTwilightFactor\(/,
+    /view\._eclipseHorizonTwilight = getEclipseHorizonTwilightFactor\(/,
+  );
+  assert.match(
+    sceneJs,
+    /frameState\.eclipseHorizonTwilight = view\._eclipseHorizonTwilight;/,
   );
   assert.match(
     sceneJs,
@@ -902,6 +911,111 @@ test("S6: both shaders carry the same constants and the same add", () => {
   }
 });
 
+test("S6: both shaders derive a safe geodetic up from the active ellipsoid", () => {
+  const glslHelper = skyAtmosphereFs.slice(
+    skyAtmosphereFs.indexOf("vec3 getEclipseObserverUp"),
+    skyAtmosphereFs.indexOf("#ifndef PER_FRAGMENT_ATMOSPHERE"),
+  );
+  const wgslHelper = skyAtmosphereWgsl.slice(
+    skyAtmosphereWgsl.indexOf("fn getEclipseObserverUp"),
+    skyAtmosphereWgsl.indexOf("// Precomputed atmosphere LUTs"),
+  );
+
+  assert.match(
+    glslHelper,
+    /czm_ellipsoidInverseRadii \* czm_ellipsoidInverseRadii/,
+  );
+  assert.match(
+    wgslHelper,
+    /positionWC \* ellipsoidInverseRadiiSquared/,
+  );
+  for (const [name, helper] of [
+    ["GLSL", glslHelper],
+    ["WGSL", wgslHelper],
+  ]) {
+    assert.match(
+      helper,
+      /radialUp = vec3(?:<f32>)?\(0\.0, 0\.0, 1\.0\)/,
+      `${name}: origin fallback must be +Z`,
+    );
+    assert.match(
+      helper,
+      /gradientMagnitudeSquared > 0\.0/,
+      `${name}: degenerate ellipsoid gradient must take the radial fallback`,
+    );
+    assert.match(helper, /return radialUp;/);
+  }
+  assert.match(
+    skyAtmosphereFs,
+    /getEclipseObserverUp\(czm_viewerPositionWC\)/,
+  );
+  assert.match(
+    skyAtmosphereWgsl,
+    /getEclipseObserverUp\(\s*u\.cameraPositionWC,\s*u\.ellipsoidInverseRadiiSquared,/,
+  );
+  assert.match(
+    skyRendererJs,
+    /const inverseRadiiSquared = ellipsoid\.oneOverRadiiSquared;/,
+  );
+
+  // Independent numeric check of the shader formula on WGS84. At principal
+  // axes it is exactly the historical radial up; at mid-latitudes it makes
+  // the small, intentional correction to the ellipsoid's true surface normal.
+  function safeGeodeticUp(position, inverseRadiiSquared) {
+    const radialMagnitude = Math.hypot(...position);
+    const radial =
+      radialMagnitude > 0.0
+        ? position.map((value) => value / radialMagnitude)
+        : [0.0, 0.0, 1.0];
+    const gradient = position.map(
+      (value, index) => value * inverseRadiiSquared[index],
+    );
+    const gradientMagnitude = Math.hypot(...gradient);
+    return gradientMagnitude > 0.0
+      ? gradient.map((value) => value / gradientMagnitude)
+      : radial;
+  }
+
+  const radii = [
+    Ellipsoid.WGS84.radii.x,
+    Ellipsoid.WGS84.radii.y,
+    Ellipsoid.WGS84.radii.z,
+  ];
+  const inverseRadiiSquared = radii.map((radius) => 1.0 / (radius * radius));
+  assert.deepEqual(
+    safeGeodeticUp([radii[0], 0.0, 0.0], inverseRadiiSquared),
+    [1.0, 0.0, 0.0],
+  );
+  assert.deepEqual(
+    safeGeodeticUp([0.0, 0.0, 0.0], inverseRadiiSquared),
+    [0.0, 0.0, 1.0],
+  );
+  const parameter = Math.PI / 4.0;
+  const position = [
+    radii[0] * Math.cos(parameter),
+    0.0,
+    radii[2] * Math.sin(parameter),
+  ];
+  const tangent = [
+    -radii[0] * Math.sin(parameter),
+    0.0,
+    radii[2] * Math.cos(parameter),
+  ];
+  const up = safeGeodeticUp(position, inverseRadiiSquared);
+  const tangentDot = up.reduce(
+    (sum, component, index) => sum + component * tangent[index],
+    0.0,
+  );
+  assert.ok(Math.abs(tangentDot) < 1e-9);
+  const radialUp = safeGeodeticUp(position, [0.0, 0.0, 0.0]);
+  const upDotRadial = up.reduce(
+    (sum, component, index) => sum + component * radialUp[index],
+    0.0,
+  );
+  const correction = Math.acos(Math.min(1.0, Math.max(-1.0, upDotRadial)));
+  assert.ok(correction > 0.003 && correction < 0.004);
+});
+
 test("S6: the add sits in linear scatter space in BOTH shaders", () => {
   // GLSL: after computeAtmosphereColor, before the tonemap.
   const glslAdd = skyAtmosphereFs.indexOf("u_eclipseHorizonTwilight > 0.0");
@@ -945,8 +1059,8 @@ test("S6: the add sits in linear scatter space in BOTH shaders", () => {
   }
 });
 
-test("S6: the uniform buffer grew add-only at the tail", () => {
-  assert.match(skyRendererJs, /const UNIFORM_BUFFER_SIZE = 480;/);
+test("S6: the WebGPU ellipsoid input grows the uniform buffer add-only", () => {
+  assert.match(skyRendererJs, /const UNIFORM_BUFFER_SIZE = 496;/);
   assert.match(skyRendererJs, /uniformData\[116\]\s*=\s*skyAtmosphere\._eclipseHorizonTwilight/);
   for (const i of [117, 118, 119]) {
     assert.ok(
@@ -958,13 +1072,36 @@ test("S6: the uniform buffer grew add-only at the tail", () => {
   // moonControl at 112..115.
   assert.match(skyRendererJs, /uniformData\[112\] = dualLightInline/);
   assert.match(skyRendererJs, /uniformData\[115\] = 0\.0;/);
-  // The WGSL struct appends exactly one vec4 after moonControl.
+  // The original S6 field stays fixed after moonControl. The custom-ellipsoid
+  // input is one new 16-byte tail block, so no established offset moves.
   const structTail = skyAtmosphereWgsl.slice(
     skyAtmosphereWgsl.indexOf("moonControl: vec4<f32>,"),
   );
-  assert.match(structTail.slice(0, 1200), /eclipseControl: vec4<f32>,\s*\r?\n\};/);
-  // 480 = 30 * 16.
-  assert.equal(480 % 16, 0);
+  assert.match(
+    structTail.slice(0, 1600),
+    /eclipseControl: vec4<f32>,[\s\S]*ellipsoidInverseRadiiSquared: vec3<f32>,\s*_pad10: f32,\s*\};/,
+  );
+  for (const i of [120, 121, 122]) {
+    assert.match(
+      skyRendererJs,
+      new RegExp(`uniformData\\[${i}\\] = inverseRadiiSquared\\.[xyz];`),
+    );
+  }
+  assert.match(skyRendererJs, /uniformData\[123\] = 0\.0;/);
+  // 496 = 31 * 16.
+  assert.equal(496 % 16, 0);
+});
+
+test("S6: star extinction follows the active map-projection ellipsoid radius", () => {
+  assert.match(
+    starFieldJs,
+    /frameState\.mapProjection\?\.ellipsoid \?\? Ellipsoid\.default/,
+  );
+  assert.match(
+    starFieldJs,
+    /computeAtmosphereExtinctionCached\([\s\S]*extinctionEllipsoid\.maximumRadius,/,
+  );
+  assert.doesNotMatch(starFieldJs, /Ellipsoid\.default\.maximumRadius/);
 });
 
 test("S6: the WebGL uniform closure and the WGSL slot read one scalar", () => {

@@ -1,4 +1,5 @@
 /// <reference types="@webgpu/types" />
+import ShadowMode from "../../Scene/ShadowMode.js";
 import { createEffectsBindGroup } from "./WebGPUEffectsBindGroup.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import {
@@ -44,6 +45,7 @@ import {
   removeImageryTexture as removeImageryTextureHelper,
 } from "./WebGPUGlobeSurfaceTileBuffers.js";
 import { createCameraUniformBuffer as createCameraUniformBufferHelper } from "./WebGPUGlobeSurfaceCameraUB.js";
+import { WebGPUGlobeEclipseUniforms } from "./WebGPUGlobeEclipseUniforms.js";
 import { createTileUniformBuffer as createTileUniformBufferHelper } from "./WebGPUGlobeSurfaceTileUB.js";
 import { WebGPUGlobeBindGroupCache } from "./WebGPUGlobeBindGroupCache.js";
 import {
@@ -70,6 +72,13 @@ import type {
   TileDrawDescriptor,
   WebGPUGlobeLogicalCounters,
 } from "./WebGPUGlobeSurfaceTypes.js";
+
+// ShadowMode.js adds its helper functions after constructing the enum object.
+// TypeScript sees only the initial enum literals across the JS module boundary,
+// so preserve the canonical runtime helper with its complete structural shape.
+const shadowModeRuntime = ShadowMode as typeof ShadowMode & {
+  receiveShadows(shadowMode: unknown): boolean;
+};
 
 // Re-export the public surface so existing import sites that pull
 // `TileDrawDescriptor` / `DebugFragmentMode` from this file keep compiling.
@@ -353,7 +362,7 @@ export class WebGPUGlobeSurfaceRenderer {
   private _scenePipelineFormatGeneration: number = -1;
 
   // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — per-device
-  // imagery slot count (16 full / 1 reduced) and the matching
+  // imagery slot count (16 full / 4 reduced) and the matching
   // `GLOBE_IMAGERY_REDUCED` shader-define flag. Captured ONCE at
   // `initialize()` from `device.limits.maxSampledTexturesPerShaderStage`
   // (a device's limits are immutable, so this never flips at runtime).
@@ -383,6 +392,10 @@ export class WebGPUGlobeSurfaceRenderer {
   // `CesiumDebug.globeBindGroups()` / `globalThis.__webgpuGlobeBindGroupCache`.
   private _bindGroupCache: WebGPUGlobeBindGroupCache =
     new WebGPUGlobeBindGroupCache();
+  // C12-29 S5 — one dedicated 64-byte carrier per logical View/frame.
+  // Active payloads are ring-allocated once and shared by every tile/pass;
+  // inactive frames bind one stable renderer-owned inert buffer.
+  private _eclipseUniforms = new WebGPUGlobeEclipseUniforms();
 
   // Per-tile GPU resource caches
   // Public underscore: shared with the tile-buffer helpers (Batch 151).
@@ -609,12 +622,13 @@ export class WebGPUGlobeSurfaceRenderer {
         `[CesiumJS:WebGPU] Globe imagery layout reduced to ` +
           `${this._imagerySlotCount} slot(s)/pass: device ` +
           `maxSampledTexturesPerShaderStage=` +
-          `${device.limits?.maxSampledTexturesPerShaderStage} < 31 ` +
+          `${device.limits?.maxSampledTexturesPerShaderStage} < 28 ` +
           `(full globe layout). Multi-layer tiles will multi-pass.`,
       );
     }
 
     this._initShaderCache(shaderCode);
+    this._eclipseUniforms.initialize(device);
     createBindGroupLayoutsHelper(this);
     createPipelineLayoutHelper(this);
     createSamplersHelper(this);
@@ -791,8 +805,13 @@ export class WebGPUGlobeSurfaceRenderer {
     // source (cascades, spot, directional all land there post-update).
     // Gated on `lightShadowsEnabled` to match Scene.js:4389.
     const shadowState = frameState?.shadowState;
+    const receivesShadows =
+      shadowModeRuntime.receiveShadows(tileProvider.shadows) &&
+      frameState.globeTranslucencyState?.translucent !== true;
     const receiveShadowMap =
-      shadowState?.lightShadowsEnabled && shadowState?.lightShadowMaps?.[0]
+      receivesShadows &&
+      shadowState?.lightShadowsEnabled &&
+      shadowState?.lightShadowMaps?.[0]
         ? shadowState.lightShadowMaps[0]
         : undefined;
 
@@ -816,6 +835,8 @@ export class WebGPUGlobeSurfaceRenderer {
     const csmCandidate = frameState.context?.csmRenderer as
       CSMRendererView | null | undefined;
     const csmBinding =
+      receivesShadows &&
+      frameState.useCascadedShadowMaps === true &&
       csmCandidate &&
       csmCandidate.enabled === true &&
       csmCandidate.cascadeParamsBuffer &&
@@ -904,6 +925,7 @@ export class WebGPUGlobeSurfaceRenderer {
       csmBinding !== undefined
     ) {
       const fxRes = createEffectsBindGroup(device, frameState, {
+        consumer: "globe",
         // Stable per-Scene/view owner. Camera movement updates one bounded
         // effects slot shared by every terrain tile in this frame.
         owner: frameState,
@@ -1345,6 +1367,12 @@ export class WebGPUGlobeSurfaceRenderer {
     // is "see through the globe").
     const disableCulling = !providerCullEnabled || cameraUnderground;
 
+    // C12-29 S5 — terrain-global for this logical View/frame. `prepare`
+    // returns a memoized active ring slice, or the stable inert slice without
+    // allocating/uploading on ordinary frames. Every tile and imagery pass
+    // binds this same carrier; only camera/tile UBs remain per-pass.
+    const eclipseUB = this._eclipseUniforms.prepare(device, frameState);
+
     for (let pass = 0; pass < passCount; pass++) {
       const isSubsequentPass = pass > 0;
       const layerStart = pass * imagerySlots;
@@ -1538,7 +1566,12 @@ export class WebGPUGlobeSurfaceRenderer {
           Math.ceil(tileUB.size / 256) * 256;
       }
 
-      const bg0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
+      const bg0 = this._getOrCreateBindGroup0(
+        device,
+        cameraUB,
+        tileUB,
+        eclipseUB,
+      );
       const bindGroup0 = bg0.bindGroup;
       const bindGroup0DynamicOffsets = bg0.dynamicOffsets;
 
@@ -1720,6 +1753,7 @@ export class WebGPUGlobeSurfaceRenderer {
             shadowCastTerrainUB: gpuResources.shadowCastUB,
             hasGeodeticSurfaceNormals: gpuResources.hasGeodeticSurfaceNormals,
             strideBytes: gpuResources.strideBytes,
+            shadowCastBindGroupCacheHost: gpuResources,
           });
         }
         // If `selectDepthOnlyBackFacePipelineHelper` returns null the
@@ -1763,6 +1797,7 @@ export class WebGPUGlobeSurfaceRenderer {
             shadowCastTerrainUB: gpuResources.shadowCastUB,
             hasGeodeticSurfaceNormals: gpuResources.hasGeodeticSurfaceNormals,
             strideBytes: gpuResources.strideBytes,
+            shadowCastBindGroupCacheHost: gpuResources,
           });
         }
         // Same async-fallback semantics as the depth-only command:
@@ -1820,6 +1855,7 @@ export class WebGPUGlobeSurfaceRenderer {
             shadowCastTerrainUB: gpuResources.shadowCastUB,
             hasGeodeticSurfaceNormals: gpuResources.hasGeodeticSurfaceNormals,
             strideBytes: gpuResources.strideBytes,
+            shadowCastBindGroupCacheHost: gpuResources,
           });
         }
         // Null pipeline → the central cache is still materializing this
@@ -1894,6 +1930,7 @@ export class WebGPUGlobeSurfaceRenderer {
         shadowCastTerrainUB: gpuResources.shadowCastUB,
         hasGeodeticSurfaceNormals: gpuResources.hasGeodeticSurfaceNormals,
         strideBytes: gpuResources.strideBytes,
+        shadowCastBindGroupCacheHost: gpuResources,
       });
     }
 
@@ -1950,30 +1987,30 @@ export class WebGPUGlobeSurfaceRenderer {
   // ═══════════════════════════════════════════════════════════════════════
 
   /**
-   * Group 0 (camera UB + tile UB), cached on (buffer identity, byte
-   * offset) of both ring-allocator slices. At a settled camera the
-   * ring allocator reproduces the same (page, offset) tuples with
-   * period = pageCount, so steady-state lookups hit. During tile churn
-   * the offsets shift and this degrades gracefully to the pre-cache
-   * create-per-call behavior. NEW-GLOBE-BINDGROUP-CACHE (Batch 241);
-   * the offset-churn-proof fix is dynamic-offset BGL conversion
-   * (NEW-GLOBE-DYNAMIC-OFFSET-UBO, deferred).
+   * Group 0 (camera UB + tile UB + eclipse UB), cached on the three backing
+   * buffer identities. Per-allocation offsets are dynamic and therefore do
+   * not participate in the key. The eclipse identity is load-bearing: active
+   * slices may land on a different ring page than camera/tile, while ordinary
+   * frames use the renderer-owned inert buffer.
    */
   private _getOrCreateBindGroup0(
     device: GPUDevice,
     cameraUB: { buffer: GPUBuffer; offset: number; size: number },
     tileUB: { buffer: GPUBuffer; offset: number; size: number },
+    eclipseUB: { buffer: GPUBuffer; offset: number; size: number },
   ): { bindGroup: GPUBindGroup; dynamicOffsets: number[] } {
     const cache = this._bindGroupCache;
     // NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292) — the bind group is built
     // over the ring page at offset 0 (size = struct width). Its key is
-    // ONLY the (camera page, tile page) buffer identities — the
+    // ONLY the (camera page, tile page, eclipse page/buffer) identities — the
     // per-allocation byte offset is supplied per-draw as a dynamic
     // offset instead. Under camera motion the page identities cycle
     // through the ring's pageCount and recur every pageCount frames, so
     // the cache converges to ~pageCount group-0 entries and stays at
     // ~100% hit-rate even while the byte offsets shift each frame.
-    const key = `0|${cache.idOf(cameraUB.buffer)}|${cache.idOf(tileUB.buffer)}`;
+    const key =
+      `0|${cache.idOf(cameraUB.buffer)}|${cache.idOf(tileUB.buffer)}|` +
+      `${cache.idOf(eclipseUB.buffer)}`;
     const bindGroup = cache.getOrCreate(key, () =>
       device.createBindGroup({
         layout: this._bindGroupLayout0!,
@@ -1994,14 +2031,25 @@ export class WebGPUGlobeSurfaceRenderer {
               size: tileUB.size,
             },
           },
+          {
+            binding: 2,
+            resource: {
+              buffer: eclipseUB.buffer,
+              offset: 0,
+              size: eclipseUB.size,
+            },
+          },
         ],
       }),
     );
     // Dynamic offsets must be multiples of minUniformBufferOffsetAlignment
     // (256). The ring allocator aligns every allocation to 256, and the
     // first-frame fallback path returns offset 0 — both satisfy the
-    // constraint. The array order matches the binding order (0, 1).
-    return { bindGroup, dynamicOffsets: [cameraUB.offset, tileUB.offset] };
+    // constraint. The array order matches the binding order (0, 1, 2).
+    return {
+      bindGroup,
+      dynamicOffsets: [cameraUB.offset, tileUB.offset, eclipseUB.offset],
+    };
   }
 
   private _createTextureBindGroup(
@@ -2010,7 +2058,7 @@ export class WebGPUGlobeSurfaceRenderer {
   ): GPUBindGroup {
     const textureViews: GPUTextureView[] = [];
     // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — entry count
-    // follows the per-device group-1 layout width (16 full / 1 reduced).
+    // follows the per-device group-1 layout width (16 full / 4 reduced).
     const imagerySlots = this._imagerySlotCount;
 
     for (
@@ -2428,7 +2476,13 @@ export class WebGPUGlobeSurfaceRenderer {
       false,
     );
 
-    const bg0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
+    const eclipseUB = this._eclipseUniforms.prepare(device, frameState);
+    const bg0 = this._getOrCreateBindGroup0(
+      device,
+      cameraUB,
+      tileUB,
+      eclipseUB,
+    );
 
     // Real imagery textures (matches createTileCommands' first pass) so the
     // wireframe lines are imagery-colored, not the base-color black.
@@ -2457,6 +2511,7 @@ export class WebGPUGlobeSurfaceRenderer {
           (tile.boundingVolume as CesiumBoundingSphere | undefined) ||
           surfaceTile.boundingSphere3D,
         isSubsequentPass: false,
+        shadowCastBindGroupCacheHost: gpuResources,
       },
     ];
   }
@@ -2590,7 +2645,15 @@ export class WebGPUGlobeSurfaceRenderer {
       false,
     );
 
-    const bg0 = this._getOrCreateBindGroup0(device, cameraUB, tileUB);
+    // The carrier is geocentric, so every cube-face capture camera can reuse
+    // the logical View's one S5 payload; only the camera UBO changes per face.
+    const eclipseUB = this._eclipseUniforms.prepare(device, frameState);
+    const bg0 = this._getOrCreateBindGroup0(
+      device,
+      cameraUB,
+      tileUB,
+      eclipseUB,
+    );
     const bindGroup1 = this._createTextureBindGroup(device, captureLayers);
     const bindGroup2 = this._createWaterOceanBindGroup(
       device,
@@ -2780,6 +2843,7 @@ export class WebGPUGlobeSurfaceRenderer {
     if (g.__webgpuGlobeBindGroupCache === this._bindGroupCache) {
       g.__webgpuGlobeBindGroupCache = undefined;
     }
+    this._eclipseUniforms.destroy();
     if (this._shaderModuleCache) {
       this._shaderModuleCache.destroy();
       this._shaderModuleCache = null;
