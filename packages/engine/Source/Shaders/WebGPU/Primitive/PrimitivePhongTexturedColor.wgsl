@@ -48,13 +48,14 @@ struct CameraUniforms {
     // TAA / motion-vector reprojection. Sourced from
     // `UniformState._previousViewProjection` (f32 mat4).
     previousViewProjection: mat4x4<f32>,
+    inverseViewQuaternion: vec4<f32>,
     // ─── Renderer-wide log depth (Approach A) ───
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved.
     // Packed by WebGPUPrimitiveCommands.writeRTEUniformsLit into the
-    // 16-byte tail appended after previousViewProjection (LIT_CAMERA_BYTES
-    // 304 -> 320). Inert until `_logDepthWriteEnabled` flips and the
+    // 16-byte tail appended after inverseViewQuaternion (LIT_CAMERA_BYTES
+    // 320 -> 336). Inert until `_logDepthWriteEnabled` flips and the
     // LOG_DEPTH pipeline define is set. See WebGPULogDepth.ts.
     logDepth: vec4<f32>,
 }
@@ -96,7 +97,7 @@ var<private> g_fragLogDepth: f32;
 // primitive shader doesn't consume every field (no clipping-polygon
 // path, no inline-edge stage, no CSM-only `pointLightControl` etc.) but
 // the struct must extend through every field this shader DOES read so
-// trailing offsets are correct. We stop at `pointLightPositionWC`
+// trailing offsets are correct. We stop at `pointLightPositionRTE`
 // (offset 336) — the polygon-clipping array tail (Batch 160) isn't used
 // here.
 struct EffectsUniforms {
@@ -118,7 +119,7 @@ struct EffectsUniforms {
     csmControl: vec4<f32>,
     // edgeControl + edgeViewport: padding only — primitives don't
     // run the inline edge stage, but the trailing fields after them
-    // (`pointLightControl`, `pointLightPositionWC`) need their byte
+    // (`pointLightControl`, `pointLightPositionRTE`) need their byte
     // offsets to match the UBO.
     edgeControl: vec4<f32>,
     edgeViewport: vec4<f32>,
@@ -126,9 +127,9 @@ struct EffectsUniforms {
     // .x = enabled flag; .y = farPlane; .z = nearPlane; .w = depthBias.
     // See `samplePointShadow` below; mirrors `ModelPBRComplete.wgsl`.
     pointLightControl: vec4<f32>,
-    // .xyz = world-space light position; .w = pcfRadius (cube-face texels;
-    // 0 = hard sample).
-    pointLightPositionWC: vec4<f32>,
+    // .xyz = camera-relative light position in world axes; .w = pcfRadius
+    // (cube-face texels; 0 = hard sample).
+    pointLightPositionRTE: vec4<f32>,
 }
 
 // CSM cascade parameters (bindings 10/11). Layout matches
@@ -177,6 +178,11 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(highDiff + lowDiff, 1.0);
 }
 
+fn rotateEyeToWorld(vector: vec3<f32>, quaternion: vec4<f32>) -> vec3<f32> {
+    let t = 2.0 * cross(quaternion.xyz, vector);
+    return vector + quaternion.w * t + cross(quaternion.xyz, t);
+}
+
 @vertex
 fn vertexMain(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
@@ -184,8 +190,6 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     output.clipPosition = camera.mvpRelativeToEye * eyePos;
     output.color = input.color;
     output.texCoord = input.texCoord;
-    output.eyePosition = eyePos.xyz;
-
     let transformedNormal = normalize(
         mat3x3<f32>(
             camera.normalMatrix[0].xyz,
@@ -194,7 +198,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
         ) * input.normal
     );
     output.worldNormal = transformedNormal;
-    output.viewPosition = (camera.modelViewRelativeToEye * eyePos).xyz;
+    let viewPosition = (camera.modelViewRelativeToEye * eyePos).xyz;
+    output.viewPosition = viewPosition;
+    output.eyePosition = rotateEyeToWorld(viewPosition, camera.inverseViewQuaternion);
 
     //>>ifdef LOG_DEPTH
     // Renderer-wide log depth: interpolate the linear depthFromNearPlusOne and
@@ -327,17 +333,17 @@ fn computeShadowFactorCSM(
 // scaleBias remap + optional 5-tap cross PCF — but now amortized
 // across every primitive lit shader that opts in via the
 // `// @chunk csm_samplePointShadow` marker.
-fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
+fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
     let visibility = csm_samplePointShadow(
         pointLightCubeDepth,
         shadowCompSampler,
-        fragWC,
-        effects.pointLightPositionWC.xyz,
+        fragRTE,
+        effects.pointLightPositionRTE.xyz,
         effects.pointLightControl.z,
         effects.pointLightControl.y,
         effects.pointLightControl.w,
-        effects.pointLightPositionWC.w,
+        effects.pointLightPositionRTE.w,
         effects.shadowMapSize.x,
     );
     return mix(effects.shadowDarkness, 1.0, visibility);
@@ -410,7 +416,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     //>>endif
 
     // Clipping plane discard (early out)
-    if (clipByPlanes(input.eyePosition)) { discard; }
+    if (clipByPlanes(input.viewPosition)) { discard; }
 
     // Clipping edge highlight
     if (effects.clippingPlaneCount > 0u && effects.clippingEdgeWidth > 0.0) {
@@ -421,7 +427,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
             let texelU = (f32(i) + 0.5) / texWidth;
             let planeData = textureSampleLevel(clippingPlaneTex, clippingPlaneSampler,
                                                vec2<f32>(texelU, 0.5), 0.0);
-            let dist = abs(dot(input.eyePosition, planeData.xyz) + planeData.w);
+            let dist = abs(dot(input.viewPosition, planeData.xyz) + planeData.w);
             minDist = min(minDist, dist);
         }
         if (minDist < effects.clippingEdgeWidth) {
@@ -461,7 +467,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
                 + max(dot(normal, vec3<f32>(0.0, 1.0, 0.0)), 0.0);
 
     // CSM Slice 1 — route through the cascaded path when
-    // `effects.csmControl.x > 0.5`. viewDepth = |eyePosition.z| since
+    // `effects.csmControl.x > 0.5`. viewDepth = |viewPosition.z| since
     // the eye-space looking -Z convention puts in-front points at
     // negative z. `input.eyePosition` is the RTE-precise camera-relative
     // vector from the vertex stage; feed it straight into the RTE-aware
@@ -474,11 +480,9 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
     // in Cesium, so this only matters during transitions; checking
     // pointLightControl first matches the Model FS gate order.
     if (effects.pointLightControl.x > 0.5) {
-        let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
-        let fragWC = cameraWC + input.eyePosition;
-        shadowFactor = computeShadowFactorPointLight(fragWC);
+        shadowFactor = computeShadowFactorPointLight(input.eyePosition);
     } else if (effects.csmControl.x > 0.5) {
-        let viewDepth = abs(input.eyePosition.z);
+        let viewDepth = abs(input.viewPosition.z);
         shadowFactor = computeShadowFactorCSM(
             input.eyePosition,
             viewDepth,
@@ -486,7 +490,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
             lightDir,
         );
     } else {
-        shadowFactor = computeShadowFactor(input.eyePosition);
+        shadowFactor = computeShadowFactor(input.viewPosition);
     }
     let lighting = 0.5 + 0.5 * diffuse * shadowFactor;
     // (As in PrimitivePhongColor: the shadow factor darkens only the diffuse

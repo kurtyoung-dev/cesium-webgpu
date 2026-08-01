@@ -19,11 +19,6 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import defined from "../../Core/defined.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
-import {
-  _getOrCreateCastPipeline,
-  _inferShadowLayoutKey,
-  getShadowCastVariant,
-} from "./WebGPUShadowMapRenderer.js";
 import { renderCSMCastPass } from "./WebGPUCSMCastPass.js";
 import type { DebugStatsObject } from "../GraphicsContext.js";
 
@@ -152,6 +147,14 @@ function _rayEllipsoidEntryDistance(
 export const CSM_CAST_UBO_SIZE = 128;
 
 /**
+ * Scene-wide terrain shadow controls shared by every cascade/tile draw.
+ * The logical payload is one vec4: exaggeration, relative height, scene mode,
+ * and padding. WebGPUBuffer rounds the physical uniform allocation up to the
+ * device-required alignment, but only these 16 bytes are written/read.
+ */
+export const CSM_TERRAIN_GLOBALS_SIZE = 16;
+
+/**
  * Scratch EncodedCartesian3 reused across cast-pass invocations. Not
  * thread-safe; this is fine for the single-threaded main-frame path
  * but worth flagging if the renderer ever moves to a worker.
@@ -191,13 +194,20 @@ export interface CSMCastPassHost {
     viewProjectionRTE: Float32Array | number[];
   }[];
   _castDispatches: number;
+  _shadowContentState: "uninitialized" | "casters" | "empty";
   _cascadeCastBuffers: GPUBuffer[] | null;
   _cascadeCastBufferData: Float32Array[] | null;
   _cascadeCastBindGroups: Map<string, GPUBindGroup>[] | null;
+  _terrainGlobalsUB: WebGPUBuffer | null;
+  _terrainGlobalsData: Float32Array;
   _sharedPipelineCache: {
     castPipelines: Map<
       string,
-      { pipeline: GPURenderPipeline; bgl: GPUBindGroupLayout }
+      {
+        pipeline: GPURenderPipeline;
+        bgl: GPUBindGroupLayout;
+        cacheKey: string;
+      }
     >;
   } | null;
   enabled: boolean;
@@ -240,6 +250,8 @@ export interface CastCommandShape {
   _vertexCount?: number;
   instanceCount?: number;
   _shadowCastLayout?: string;
+  _shadowCastTopology?: GPUPrimitiveTopology;
+  _shadowCastCullMode?: GPUCullMode;
   // Slice 2 — per-command extra bindings (populated by WebGPUModelRenderer
   // when the command's variant declares `extraBindings`). The CSM cast
   // loop reads these via the variant's `perCommandBindingFields` names.
@@ -247,12 +259,9 @@ export interface CastCommandShape {
   _shadowCastJointMatricesSB?: unknown;
   _shadowCastInstancingSB?: unknown;
   _shadowCastInstanceVB?: unknown;
-  // Per-cascade bind-group cache. Indexed by cascade; each entry is the
-  // GPUBindGroup binding this command's per-command extras to the
-  // matching cascade's shared cast UBO. Layout key is tracked in parallel
-  // so a variant change (unlikely but defensive) rebuilds the cache.
-  _shadowCastCSMBindGroups?: Array<GPUBindGroup | undefined>;
-  _shadowCastCSMBindGroupKeys?: Array<string | undefined>;
+  // Stable resource owner used when the draw command itself is rebuilt each
+  // frame (models). Other command families fall back to command-local caching.
+  _shadowCastBindGroupCacheHost?: Record<string, unknown>;
 }
 
 export interface CSMConfig {
@@ -334,6 +343,15 @@ export class WebGPUCSMRenderer {
   public _cascadeCastBuffers: GPUBuffer[] | null = null;
   public _cascadeCastBufferData: Float32Array[] | null = null;
   public _cascadeCastBindGroups: Map<string, GPUBindGroup>[] | null = null;
+  // Both terrain cast variants consume one scene-wide vec4 at binding 2.
+  // Keep it renderer-owned rather than command-owned so every tile/cascade
+  // shares one stable buffer and therefore one cache identity.
+  public _terrainGlobalsUB: WebGPUBuffer | null = null;
+  public _terrainGlobalsData = new Float32Array(
+    CSM_TERRAIN_GLOBALS_SIZE / Float32Array.BYTES_PER_ELEMENT,
+  );
+  public _shadowContentState: "uninitialized" | "casters" | "empty" =
+    "uninitialized";
   /**
    * Shared pipeline cache passed to the cross-module cast-pipeline
    * factory. Holds the compiled per-vertex-layout pipelines keyed by
@@ -343,7 +361,11 @@ export class WebGPUCSMRenderer {
   public _sharedPipelineCache: {
     castPipelines: Map<
       string,
-      { pipeline: GPURenderPipeline; bgl: GPUBindGroupLayout }
+      {
+        pipeline: GPURenderPipeline;
+        bgl: GPUBindGroupLayout;
+        cacheKey: string;
+      }
     >;
   } | null = null;
 
@@ -448,6 +470,7 @@ export class WebGPUCSMRenderer {
    */
   initialize(device: GPUDevice): void {
     this._device = device;
+    this._shadowContentState = "uninitialized";
 
     // Texture array: 4 layers of depth32float.
     this._cascadeTexture = device.createTexture({
@@ -503,6 +526,12 @@ export class WebGPUCSMRenderer {
       size: paramsByteSize,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+
+    this._terrainGlobalsUB = WebGPUBuffer.createUniformBuffer(
+      device,
+      CSM_TERRAIN_GLOBALS_SIZE,
+      "CSM_TerrainGlobals",
+    );
   }
 
   /**
@@ -865,11 +894,6 @@ export class WebGPUCSMRenderer {
    * pipeline (`rte24`, `p12`, `quantized12`, `modelP12`,
    * `modelInstancedSB`, `modelSkinned`) works without modification.
    *
-   * Slice 1 scope: only `rte24` commands are dispatched. Other
-   * variants hit the same `_inferShadowLayoutKey` logic as the
-   * single-shadow-map path and are silently skipped with a one-time
-   * warning — slice 2 wires them all up.
-   *
    * @param encoder Active command encoder (one pass per cascade is
    *                 recorded into it).
    * @param castCommands Shadow-casting draw commands for this frame.
@@ -880,6 +904,11 @@ export class WebGPUCSMRenderer {
     encoder: GPUCommandEncoder,
     castCommands: ReadonlyArray<unknown>,
     cameraPositionWC: CesiumCartesian3,
+    frameState?: {
+      mode?: number;
+      verticalExaggeration?: number;
+      verticalExaggerationRelativeHeight?: number;
+    },
     context?: {
       getGPUCullerForCascade?: (idx: number) => unknown;
       gpuCullingHint?: "auto" | "always" | "never";
@@ -904,7 +933,8 @@ export class WebGPUCSMRenderer {
       encoder,
       castCommands,
       cameraPositionWC,
-      context as Parameters<typeof renderCSMCastPass>[4],
+      frameState,
+      context as Parameters<typeof renderCSMCastPass>[5],
     );
   }
 
@@ -1086,15 +1116,22 @@ export class WebGPUCSMRenderer {
       this._cascadeParamsBuffer.destroy();
       this._cascadeParamsBuffer = null;
     }
+    if (this._terrainGlobalsUB) {
+      this._terrainGlobalsUB.destroy();
+      this._terrainGlobalsUB = null;
+    }
     this._cascadeViews = [];
     this._cascadeArrayView = null;
-    // Cast-pass resources: WebGPUBuffer.createUniformBuffer returns a
-    // wrapper whose underlying GPUBuffer is GC-safe once references
-    // drop. We null the arrays; the GPU buffers release on next GC.
+    if (this._cascadeCastBuffers) {
+      for (let i = 0; i < this._cascadeCastBuffers.length; i++) {
+        this._cascadeCastBuffers[i]?.destroy();
+      }
+    }
     this._cascadeCastBuffers = null;
     this._cascadeCastBufferData = null;
     this._cascadeCastBindGroups = null;
     this._sharedPipelineCache = null;
+    this._shadowContentState = "uninitialized";
     this._device = null;
   }
 }

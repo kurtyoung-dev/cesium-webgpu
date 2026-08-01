@@ -9,17 +9,37 @@
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import Pass from "../Pass.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import {
   makeBindGroupLayout,
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import { prepareTerrainShadowCastCommandUniforms } from "./WebGPUGlobeSurfaceTileBuffers.js";
+import { getOrCreateShadowCastBindGroup } from "./WebGPUShadowCastBindGroupCache.js";
 
 const SHADOW_MAP_SIZE = 2048;
 const SHADOW_UNIFORM_SIZE = 128;
 
 const scratchEncodedCamera = new EncodedCartesian3();
+const scratchLightViewProjection = new Matrix4();
+const scratchCameraTranslation = new Matrix4();
+
+const DEFAULT_SHADOW_CAST_TOPOLOGY = "triangle-list";
+const DEFAULT_SHADOW_CAST_CULL_MODE = "back";
+// Legacy point passes are ordered -X,-Y,-Z,+X,+Y,+Z. WebGPU cube array
+// layers are +X,-X,+Y,-Y,+Z,-Z, so cast attachment selection needs an
+// explicit mapping for direction-based cube sampling to read the same face.
+const POINT_LIGHT_PASS_TO_CUBE_LAYER = Object.freeze([1, 3, 5, 0, 2, 4]);
+
+function getPointLightCubeLayer(passIndex) {
+  return POINT_LIGHT_PASS_TO_CUBE_LAYER[passIndex];
+}
+
+function isTerrainShadowCaster(command) {
+  return command?.pass === Pass.GLOBE;
+}
 
 /**
  * Creates shadow map depth texture and render target.
@@ -76,10 +96,8 @@ function createPointLightCubeShadowMap(device, size) {
     });
   }
 
-  // Cube view for the color pass's shadow-receive shader. Not consumed
-  // today (the receive shaders still declare `texture_depth_2d`); this
-  // is kept so future receive-side work can sample via direction
-  // without re-creating the view.
+  // Cube view for the color pass's point-shadow receive shader. Directional
+  // and spot receivers continue to use the separate 2D binding.
   const cubeView = texture.createView({
     label: "Shadow cube view (point light)",
     dimension: "cube",
@@ -113,9 +131,10 @@ function createPointLightCubeShadowMap(device, size) {
  * @typedef {object} ShadowCastVariant
  * @property {string} vsCode - WGSL vertex shader body. Must declare
  *   `@vertex fn vs(...) -> @builtin(position) vec4<f32>` and apply
- *   `u.depthBias` to the Z coordinate. Any additional bind group
- *   bindings beyond `u` at @group(0) @binding(0) should reference the
- *   bindings declared in `extraBindings` below.
+ *   `u.depthBias` to the Z coordinate. `u.lightVP` transforms
+ *   scene-camera-relative world coordinates into the light's clip space.
+ *   Any additional bind group bindings beyond `u` at @group(0) @binding(0)
+ *   should reference the bindings declared in `extraBindings` below.
  * @property {GPUVertexBufferLayout[]} buffers - Vertex buffer layout
  *   array exactly matching the commands this variant targets.
  * @property {GPUBindGroupLayoutEntry[]} [extraBindings] - Additional
@@ -131,8 +150,9 @@ function createPointLightCubeShadowMap(device, size) {
  */
 
 const SHADOW_CAST_VARIANTS = {
-  // RTE primitives: positionHigh + positionLow, stride 24, two float32x3.
-  // The current default — covers all RTE-encoded primitive geometry.
+  // World-space RTE geometry: positionHigh + positionLow, stride 24, two
+  // float32x3 attributes. Generic Primitive geometry uses primitiveRte24
+  // below because its encoded positions remain in Primitive/model space.
   rte24: {
     vsCode: `
 @vertex fn vs(@location(0) pH: vec3<f32>, @location(1) pL: vec3<f32>) -> @builtin(position) vec4<f32> {
@@ -151,15 +171,55 @@ const SHADOW_CAST_VARIANTS = {
       },
     ],
   },
+  // Generic Primitive RTE positions are encoded in primitive/model space, not
+  // necessarily world space. Binding 1 carries the Primitive.modelMatrix
+  // linear part plus the scene camera encoded in that same coordinate system.
+  // Keeping the world-scale translation out of f32 makes translation,
+  // rotation, and nonuniform scale follow the color path without sacrificing
+  // the plain `rte24` route used by truly world-space command producers.
+  primitiveRte24: {
+    vsCode: `
+struct PrimitiveShadowUniforms {
+  modelLinear: mat4x4<f32>,
+  cameraMCHigh: vec4<f32>,
+  cameraMCLow: vec4<f32>,
+};
+@group(0) @binding(1) var<uniform> p: PrimitiveShadowUniforms;
+@vertex fn vs(@location(0) pH: vec3<f32>, @location(1) pL: vec3<f32>) -> @builtin(position) vec4<f32> {
+  let rteMC = (pH - p.cameraMCHigh.xyz) + (pL - p.cameraMCLow.xyz);
+  let rteWC = (p.modelLinear * vec4f(rteMC, 0.0)).xyz;
+  var pos = u.lightVP * vec4f(rteWC, 1.0);
+  pos.z += u.depthBias;
+  return pos;
+}`,
+    buffers: [
+      {
+        arrayStride: 24,
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: "float32x3" },
+          { shaderLocation: 1, offset: 12, format: "float32x3" },
+        ],
+      },
+    ],
+    extraBindings: [
+      {
+        binding: 1,
+        visibility: 1 /* GPUShaderStage.VERTEX */,
+        buffer: { type: "uniform" },
+      },
+    ],
+    perCommandBindingFields: ["_shadowCastPrimitiveUB"],
+  },
   // Non-RTE single-position world-space: one float32x3 at offset 0,
   // stride 12. Assumes the caller already wrote world coordinates.
   // Used by small objects near origin, debug primitives, and ad-hoc
-  // world-space meshes. The camera subtract that RTE needs is skipped
-  // because the position isn't split into high/low halves.
+  // world-space meshes. The position itself is not split, but it must
+  // still be rebased around the scene camera before applying lightVP.
   p12: {
     vsCode: `
 @vertex fn vs(@location(0) p: vec3<f32>) -> @builtin(position) vec4<f32> {
-  var pos = u.lightVP * vec4f(p, 1.0);
+  let rte = (p - u.camH) - u.camL;
+  var pos = u.lightVP * vec4f(rte, 1.0);
   pos.z += u.depthBias;
   return pos;
 }`,
@@ -178,18 +238,16 @@ const SHADOW_CAST_VARIANTS = {
   // renderer owns the buffer via `cmd._shadowCastModelUB`.
   modelP12: {
     vsCode: `
-struct ModelShadowUniforms { modelMatrix: mat4x4<f32> };
+struct ModelShadowUniforms {
+  modelLinear: mat4x4<f32>,
+  cameraMCHigh: vec4<f32>,
+  cameraMCLow: vec4<f32>,
+};
 @group(0) @binding(1) var<uniform> m: ModelShadowUniforms;
 @vertex fn vs(@location(0) p: vec3<f32>) -> @builtin(position) vec4<f32> {
-  let worldPos = (m.modelMatrix * vec4f(p, 1.0)).xyz;
-  // RTE-preserving subtraction: subtract cameraHigh first (both
-  // world-scale, result is small) then subtract cameraLow. This keeps
-  // the intermediate in a well-conditioned range and matches the
-  // precision behavior of czm_modelViewRelativeToEye — avoids the
-  // ~1-meter shadow artifacts at planetary scale that the naive
-  // 'worldPos - (camH + camL)' reduction produces.
-  let rte = (worldPos - u.camH) - u.camL;
-  var pos = u.lightVP * vec4f(rte, 1.0);
+  let rteMC = (-m.cameraMCHigh.xyz) + (p - m.cameraMCLow.xyz);
+  let rteWC = (m.modelLinear * vec4f(rteMC, 0.0)).xyz;
+  var pos = u.lightVP * vec4f(rteWC, 1.0);
   pos.z += u.depthBias;
   return pos;
 }`,
@@ -220,7 +278,11 @@ struct ModelShadowUniforms { modelMatrix: mat4x4<f32> };
   // `vertexBufferSourceSlots` map below.
   modelSkinned: {
     vsCode: `
-struct ModelShadowUniforms { modelMatrix: mat4x4<f32> };
+struct ModelShadowUniforms {
+  modelLinear: mat4x4<f32>,
+  cameraMCHigh: vec4<f32>,
+  cameraMCLow: vec4<f32>,
+};
 @group(0) @binding(1) var<uniform> m: ModelShadowUniforms;
 @group(0) @binding(2) var<storage, read> jointMatrices: array<mat4x4<f32>>;
 
@@ -237,10 +299,10 @@ struct ModelShadowUniforms { modelMatrix: mat4x4<f32> };
                  + weights0.z * jointMatrices[joints0.z]
                  + weights0.w * jointMatrices[joints0.w];
   let skinnedPos = (skinMatrix * vec4f(p, 1.0)).xyz;
-  let worldPos = (m.modelMatrix * vec4f(skinnedPos, 1.0)).xyz;
-  // RTE-preserving subtraction (see modelP12 comment).
-  let rte = (worldPos - u.camH) - u.camL;
-  var pos = u.lightVP * vec4f(rte, 1.0);
+  let rteMC = (-m.cameraMCHigh.xyz)
+            + (skinnedPos - m.cameraMCLow.xyz);
+  let rteWC = (m.modelLinear * vec4f(rteMC, 0.0)).xyz;
+  var pos = u.lightVP * vec4f(rteWC, 1.0);
   pos.z += u.depthBias;
   return pos;
 }`,
@@ -297,7 +359,11 @@ struct ModelShadowUniforms { modelMatrix: mat4x4<f32> };
   // + both UBs.
   modelInstancedSB: {
     vsCode: `
-struct ModelShadowUniforms { modelMatrix: mat4x4<f32> };
+struct ModelShadowUniforms {
+  modelLinear: mat4x4<f32>,
+  cameraMCHigh: vec4<f32>,
+  cameraMCLow: vec4<f32>,
+};
 // DP-H36 (Batch 325) — per-instance element matches the color pass's
 // InstanceTransform layout: linear mat4x4 (rotation+scale, col3 zeroed)
 // + translationHigh/Low vec4. MUST stay byte-consistent with
@@ -314,21 +380,17 @@ struct InstanceTransform {
   @location(0) p: vec3<f32>,
   @builtin(instance_index) iidx: u32,
 ) -> @builtin(position) vec4<f32> {
-  // glTF instancing semantics: position goes through instance transform
-  // first (local → instanced-local), then through the node's model
-  // matrix (instanced-local → world). Matches the color pass in
-  // WebGPUModelInstancing / ModelPBRComplete.wgsl. The instance translation
-  // is recombined from its high/low split here; the shadow cast already
-  // does a full-magnitude world-space RTE subtract below (the depth-only
-  // pass tolerates the residual ~1 m), so the split is only needed to read
-  // the new buffer layout consistently with the color pass.
+  // Match the color path's model-space RTE exactly: keep the instance
+  // translation split until it cancels the encoded model-space camera, add
+  // the small local vertex afterward, then rotate/scale the relative vector
+  // into camera-relative world coordinates without a translation column.
   let inst = instanceMatrices[iidx];
   let linear3 = mat3x3<f32>(inst.linear[0].xyz, inst.linear[1].xyz, inst.linear[2].xyz);
-  let instTranslation = inst.translationHigh.xyz + inst.translationLow.xyz;
-  let instancedLocal = linear3 * p + instTranslation;
-  let worldPos = (m.modelMatrix * vec4f(instancedLocal, 1.0)).xyz;
-  let rte = (worldPos - u.camH) - u.camL;
-  var pos = u.lightVP * vec4f(rte, 1.0);
+  let rteMC = (inst.translationHigh.xyz - m.cameraMCHigh.xyz)
+            + (inst.translationLow.xyz - m.cameraMCLow.xyz)
+            + linear3 * p;
+  let rteWC = (m.modelLinear * vec4f(rteMC, 0.0)).xyz;
+  var pos = u.lightVP * vec4f(rteWC, 1.0);
   pos.z += u.depthBias;
   return pos;
 }`,
@@ -676,12 +738,38 @@ struct U { lightVP: mat4x4<f32>, camH: vec3<f32>, _p0: f32, camL: vec3<f32>, _p1
 @fragment fn fs() {}
 `;
 
+function getShadowCastTopology(command) {
+  return command?._shadowCastTopology ?? DEFAULT_SHADOW_CAST_TOPOLOGY;
+}
+
+function getShadowCastCullMode(command, invertWinding = false) {
+  const explicit = command?._shadowCastCullMode;
+  let cullMode;
+  if (explicit === "none" || explicit === "back" || explicit === "front") {
+    cullMode = explicit;
+  } else {
+    const cull = command?.renderState?.cull;
+    cullMode = cull?.enabled === false ? "none" : DEFAULT_SHADOW_CAST_CULL_MODE;
+  }
+  // WebGL ShadowMap derives every enabled caster against the shadow map's
+  // back-face render state; it only inherits the source command's enabled/
+  // disabled bit (ShadowMap.js createCastDerivedCommand). Do not copy a color
+  // pipeline's front-face choice into the depth caster.
+  if (!invertWinding || cullMode === "none") {
+    return cullMode;
+  }
+  return cullMode === "back" ? "front" : "back";
+}
+
+function getShadowCastPipelineCacheKey(layoutKey, stride, topology, cullMode) {
+  return `${layoutKey}|s${stride}|t${topology}|c${cullMode}`;
+}
+
 /**
  * Builds (and caches) the shadow cast pipeline for a given layout variant.
  * Pipelines are cached on the shadow map's `_webgpuCache.castPipelines` Map
- * keyed by variant name (+ optional stride override), so each shadow map
- * only pays creation cost once per `(layoutKey, stride)` tuple it actually
- * encounters.
+ * keyed by layout, stride, topology, and cull mode, so each shadow map only
+ * pays creation cost once per pipeline-baked state tuple it encounters.
  *
  * Batch 24 — the `overrideStride` parameter (optional) replaces the
  * variant's declared `arrayStride` for the first vertex buffer. The
@@ -694,13 +782,16 @@ struct U { lightVP: mat4x4<f32>, camH: vec3<f32>, _p0: f32, camL: vec3<f32>, _p1
  * the pipeline's GPU-side stride matches the actual VB contents and
  * the shadow cast reads the right position data for every vertex.
  *
- * Cache keying: when `overrideStride` is defined AND differs from the
- * variant's declared stride, the cache key becomes `${layoutKey}|s${stride}`
- * so stride-divergent callers don't collide.
- *
  * @private
  */
-function _getOrCreateCastPipeline(device, cache, layoutKey, overrideStride) {
+function _getOrCreateCastPipeline(
+  device,
+  cache,
+  layoutKey,
+  overrideStride,
+  topology = DEFAULT_SHADOW_CAST_TOPOLOGY,
+  cullMode = DEFAULT_SHADOW_CAST_CULL_MODE,
+) {
   if (!defined(cache.castPipelines)) {
     cache.castPipelines = new Map();
     cache.castBindGroups = new Map();
@@ -710,20 +801,19 @@ function _getOrCreateCastPipeline(device, cache, layoutKey, overrideStride) {
     return null;
   }
 
-  // Work out the effective arrayStride for the first vertex buffer.
-  // Variants that don't set `overrideStride` fall back to the declared
-  // stride; we only prepend the stride suffix to the cache key when
-  // the override actually differs, so single-stride callers (rte24,
-  // p12, modelP12, etc.) keep their original keys.
+  // Work out the effective arrayStride for the first vertex buffer. Variants
+  // that don't set `overrideStride` fall back to their declared stride.
   const declaredStride = variant.buffers?.[0]?.arrayStride ?? 0;
   const effectiveStride = defined(overrideStride)
     ? overrideStride
     : declaredStride;
-  const strideDiffers =
-    defined(overrideStride) && overrideStride !== declaredStride;
-  const effectiveKey = strideDiffers
-    ? `${layoutKey}|s${effectiveStride}`
-    : layoutKey;
+  const strideDiffers = effectiveStride !== declaredStride;
+  const effectiveKey = getShadowCastPipelineCacheKey(
+    layoutKey,
+    effectiveStride,
+    topology,
+    cullMode,
+  );
 
   let entry = cache.castPipelines.get(effectiveKey);
   if (defined(entry)) {
@@ -764,7 +854,7 @@ function _getOrCreateCastPipeline(device, cache, layoutKey, overrideStride) {
     layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
     vertex: { module: mod, entryPoint: "vs", buffers },
     fragment: { module: mod, entryPoint: "fs", targets: [] },
-    primitive: { topology: "triangle-list", cullMode: "front" },
+    primitive: { topology, cullMode },
     depthStencil: {
       format: "depth32float",
       depthWriteEnabled: true,
@@ -775,7 +865,7 @@ function _getOrCreateCastPipeline(device, cache, layoutKey, overrideStride) {
     },
   });
 
-  entry = { pipeline, bgl };
+  entry = { pipeline, bgl, cacheKey: effectiveKey };
   cache.castPipelines.set(effectiveKey, entry);
   return entry;
 }
@@ -896,6 +986,24 @@ function initWebGPUShadowMap(shadowMap, frameState) {
     );
     cache.uniformData = new Float32Array(SHADOW_UNIFORM_SIZE / 4);
   }
+  // Point faces are encoded into one command buffer and submitted together.
+  // Rewriting one UBO six times before submit makes every pass observe the
+  // final face matrix, so each legacy face owns persistent uniform contents
+  // and a no-extra-bindings cache. Directional/spot maps pay none of this.
+  if (cache.isCube && !defined(cache.pointFaceUniformBuffers)) {
+    cache.pointFaceUniformBuffers = new Array(6);
+    cache.pointFaceUniformData = new Array(6);
+    cache.pointFaceCastBindGroups = new Array(6);
+    for (let i = 0; i < 6; i++) {
+      cache.pointFaceUniformBuffers[i] = WebGPUBuffer.createUniformBuffer(
+        device,
+        SHADOW_UNIFORM_SIZE,
+        `Point shadow face ${i} uniforms`,
+      );
+      cache.pointFaceUniformData[i] = new Float32Array(SHADOW_UNIFORM_SIZE / 4);
+      cache.pointFaceCastBindGroups[i] = new Map();
+    }
+  }
 
   // Scene-wide terrain shadow globals (exaggeration + sceneMode).
   // Small (16 bytes) and shared across all terrain tiles in this
@@ -913,18 +1021,132 @@ function initWebGPUShadowMap(shadowMap, frameState) {
   }
 }
 
+function ensureTerrainShadowCastUniforms(device, cache) {
+  if (defined(cache.terrainCastUniformBuffer)) {
+    return;
+  }
+  cache.terrainCastUniformBuffer = WebGPUBuffer.createUniformBuffer(
+    device,
+    SHADOW_UNIFORM_SIZE,
+    "Shadow terrain uniforms",
+  );
+  cache.terrainCastUniformData = new Float32Array(SHADOW_UNIFORM_SIZE / 4);
+  cache.terrainCastBindGroups = new Map();
+}
+
+function computeShadowCastRteMatrix(
+  lightCamera,
+  sceneCameraPositionWC,
+  result,
+  viewMatrix = lightCamera.viewMatrix,
+) {
+  const frustum = lightCamera.frustum;
+  const projection =
+    typeof frustum.getProjectionMatrix === "function"
+      ? frustum.getProjectionMatrix(lightCamera.clipSpaceConvention)
+      : frustum.projectionMatrix;
+
+  Matrix4.multiply(projection, viewMatrix, scratchLightViewProjection);
+  // Cast shaders emit scene-camera-relative world coordinates. Reintroduce
+  // that origin in double precision before the matrix is packed to f32.
+  Matrix4.fromTranslation(sceneCameraPositionWC, scratchCameraTranslation);
+  return Matrix4.multiply(
+    scratchLightViewProjection,
+    scratchCameraTranslation,
+    result,
+  );
+}
+
+const scratchShadowCastMatrix = new Matrix4();
+const scratchPointShadowViewMatrix = new Matrix4();
+
+function resolveShadowCastCameraPosition(frameState) {
+  return (
+    frameState?.context?.uniformState?.cameraPosition ??
+    frameState?.camera?.positionWC
+  );
+}
+
+/**
+ * Computes the native WebGPU point-shadow cast transform for one legacy
+ * ShadowMap cube-face camera.
+ *
+ * Cesium's shared point cameras retain WebGL's bottom-left cube-face
+ * convention. WebGPU render attachments use a top-left framebuffer origin,
+ * while `texture_depth_cube` lookup follows the face basis used by the
+ * repository's dynamic-environment capture. Negating the camera view's Y row
+ * mirrors only the rendered face vertically, preserving the shared WebGL
+ * cameras and their frustum volumes. The corresponding winding reflection is
+ * handled by `getShadowCastCullMode(command, true)` in the point pass.
+ *
+ * @private
+ */
+function computeWebGPUPointShadowCastRteMatrix(
+  lightCamera,
+  sceneCameraPositionWC,
+  result,
+) {
+  Matrix4.clone(lightCamera.viewMatrix, scratchPointShadowViewMatrix);
+  scratchPointShadowViewMatrix[1] = -scratchPointShadowViewMatrix[1];
+  scratchPointShadowViewMatrix[5] = -scratchPointShadowViewMatrix[5];
+  scratchPointShadowViewMatrix[9] = -scratchPointShadowViewMatrix[9];
+  scratchPointShadowViewMatrix[13] = -scratchPointShadowViewMatrix[13];
+  return computeShadowCastRteMatrix(
+    lightCamera,
+    sceneCameraPositionWC,
+    result,
+    scratchPointShadowViewMatrix,
+  );
+}
+
+function packShadowCastMatrix(
+  data,
+  lightCamera,
+  sceneCameraPositionWC,
+  webgpuPointFace = false,
+) {
+  const computeMatrix = webgpuPointFace
+    ? computeWebGPUPointShadowCastRteMatrix
+    : computeShadowCastRteMatrix;
+  computeMatrix(lightCamera, sceneCameraPositionWC, scratchShadowCastMatrix);
+  Matrix4.pack(scratchShadowCastMatrix, data, 0);
+}
+
 /**
  * Packs shadow cast uniforms.
  * @private
  */
-function packShadowCastUniforms(data, shadowMap, frameState) {
-  const lightVP = shadowMap._shadowMapMatrix || Matrix4.IDENTITY;
-  Matrix4.pack(lightVP, data, 0);
+function packShadowCastBias(data, shadowMap, isTerrain = false) {
+  // Point shadows apply `_pointBias.depthBias` once during cube receive, just
+  // like WebGL; adding caster bias here would double-bias the comparison.
+  // Directional/spot native casting keeps separate primitive and terrain
+  // payloads because the legacy renderer gives those families different
+  // separation values.
+  const isPointLight = shadowMap._isPointLight === true;
+  const bias = isTerrain
+    ? (shadowMap._terrainBias ?? shadowMap._primitiveBias ?? {})
+    : (shadowMap._primitiveBias ?? shadowMap._terrainBias ?? {});
+  data[24] = isPointLight ? 0.0 : (bias.depthBias ?? 0.00002);
+  data[25] = bias.normalShadingSmooth ?? 0.0;
+  data[26] = 0.0;
+  data[27] = 0.0;
+}
 
-  EncodedCartesian3.fromCartesian(
-    frameState.camera.positionWC,
-    scratchEncodedCamera,
-  );
+function packShadowCastUniforms(
+  data,
+  shadowMap,
+  frameState,
+  sceneCameraPositionWC = resolveShadowCastCameraPosition(frameState),
+) {
+  // `_shadowMapMatrix` is the eye-to-texture receive transform. The cast pass
+  // needs the pass camera's raw world-to-clip transform instead.
+  const lightCamera =
+    shadowMap._passes?.[0]?.camera ??
+    shadowMap._shadowMapCamera ??
+    shadowMap._lightCamera;
+  packShadowCastMatrix(data, lightCamera, sceneCameraPositionWC);
+
+  EncodedCartesian3.fromCartesian(sceneCameraPositionWC, scratchEncodedCamera);
   data[16] = scratchEncodedCamera.high.x;
   data[17] = scratchEncodedCamera.high.y;
   data[18] = scratchEncodedCamera.high.z;
@@ -934,12 +1156,7 @@ function packShadowCastUniforms(data, shadowMap, frameState) {
   data[22] = scratchEncodedCamera.low.z;
   data[23] = 0.0;
 
-  // Shadow bias comes from the appropriate bias object (primitive, terrain, or point)
-  const bias = shadowMap._primitiveBias || shadowMap._terrainBias || {};
-  data[24] = bias.depthBias || 0.005;
-  data[25] = bias.normalShadingSmooth || 0.0;
-  data[26] = 0.0;
-  data[27] = 0.0;
+  packShadowCastBias(data, shadowMap, false);
 }
 
 /**
@@ -970,21 +1187,22 @@ function getShadowPassDescriptor(shadowMap) {
  * of the 6 cast passes writes to a distinct layer of the cube texture.
  *
  * @param {ShadowMap} shadowMap
- * @param {number} faceIndex 0..5
+ * @param {number} passIndex Legacy ShadowMap pass index, 0..5.
  * @returns {GPURenderPassDescriptor|null}
  * @private
  */
-function getPointLightFacePassDescriptor(shadowMap, faceIndex) {
+function getPointLightFacePassDescriptor(shadowMap, passIndex) {
   const cache = shadowMap._webgpuCache;
   if (!defined(cache) || !cache.isCube) {
     return null;
   }
-  const view = cache.cubeFaceViews?.[faceIndex];
+  const layer = getPointLightCubeLayer(passIndex);
+  const view = cache.cubeFaceViews?.[layer];
   if (!defined(view)) {
     return null;
   }
   return {
-    label: `Shadow cube face ${faceIndex} pass`,
+    label: `Shadow point pass ${passIndex} -> cube layer ${layer}`,
     colorAttachments: [],
     depthStencilAttachment: {
       view,
@@ -1037,9 +1255,9 @@ function getShadowMapResources(shadowMap) {
     view: cache.depthTextureView,
     sampler: cache.comparisonSampler,
     matrix: shadowMap._shadowMapMatrix || Matrix4.IDENTITY,
-    size: cache.size || SHADOW_MAP_SIZE,
-    darkness: shadowMap.darkness || 0.3,
-    softShadows: shadowMap.softShadows || false,
+    size: cache.size ?? SHADOW_MAP_SIZE,
+    darkness: shadowMap.darkness ?? 0.3,
+    softShadows: shadowMap.softShadows ?? false,
     // C-R10-POINT-LIGHT-RECEIVE additions. Undefined for directional /
     // spot shadow maps so existing callers can continue ignoring them.
     isPointLight,
@@ -1063,31 +1281,52 @@ function getShadowMapResources(shadowMap) {
  * @param {ShadowMap} shadowMap - The shadow map with cached WebGPU resources
  * @param {FrameState} frameState
  * @param {Array} castCommands - Array of WebGPUDrawCommands that cast shadows
+ * @returns {boolean} Whether a draw or clear-only pass was encoded.
  */
 function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
   const cache = shadowMap._webgpuCache;
   if (!defined(cache) || !defined(cache.depthTextureView)) {
-    return;
+    return false;
   }
-  if (!castCommands || castCommands.length === 0) {
-    return;
+  const hasCasters = defined(castCommands) && castCommands.length > 0;
+  if (!hasCasters) {
+    if (cache.shadowContentState === "empty") {
+      return false;
+    }
+    if (shadowMap._isPointLight) {
+      for (let face = 0; face < 6; face++) {
+        const descriptor = getPointLightFacePassDescriptor(shadowMap, face);
+        if (defined(descriptor)) {
+          encoder.beginRenderPass(descriptor).end();
+        }
+      }
+    } else {
+      const descriptor = getShadowPassDescriptor(shadowMap);
+      if (defined(descriptor)) {
+        encoder.beginRenderPass(descriptor).end();
+      }
+    }
+    cache.shadowContentState = "empty";
+    return true;
   }
 
   // Update shadow uniforms
-  packShadowCastUniforms(cache.uniformData, shadowMap, frameState);
   const context = frameState?.context;
   const device = context?.device ?? context?._device;
   if (!device) {
-    return;
+    return false;
   }
-  device.queue.writeBuffer(
-    cache.uniformBuffer.buffer,
-    0,
-    cache.uniformData.buffer,
-    0,
-    SHADOW_UNIFORM_SIZE,
+  // Capture one authoritative cast origin for the whole pass. UniformState is
+  // the active-view authority used by model/primitive RTE resources; the frame
+  // camera remains the conservative fallback for older/direct callers.
+  const shadowCastCameraPositionWC =
+    resolveShadowCastCameraPosition(frameState);
+  packShadowCastUniforms(
+    cache.uniformData,
+    shadowMap,
+    frameState,
+    shadowCastCameraPositionWC,
   );
-
   // Update the scene-wide terrain globals. Exaggeration comes from
   // frameState (set by Scene.js from `scene.verticalExaggeration`
   // and `scene.verticalExaggerationRelativeHeight`). In 2D / Columbus
@@ -1118,17 +1357,19 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
   // stable across frames (buffer never reallocates), so the bind
   // group cache on each command stays valid — we're only writing a
   // handle that was already there on subsequent frames.
+  let hasTerrainCaster = false;
   for (let si = 0; si < castCommands.length; si++) {
     const c = castCommands[si];
+    hasTerrainCaster ||= isTerrainShadowCaster(c);
     if (
       c &&
-      c._shadowCastLayout === "quantized12" &&
+      (c._shadowCastLayout === "quantized12" ||
+        c._shadowCastLayout === "terrainUncompressed") &&
       c._shadowCastTerrainGlobalsUB !== cache.terrainGlobalsUB
     ) {
       c._shadowCastTerrainGlobalsUB = cache.terrainGlobalsUB;
-      // Invalidate any cached bind group on this command — it held a
-      // reference to a null or stale globals UB before.
-      c._shadowCastBindGroup = undefined;
+      // The identity-aware bind-group cache observes the changed buffer
+      // handle and realizes the replacement group on demand.
     }
   }
 
@@ -1142,18 +1383,56 @@ function renderShadowCastPass(encoder, shadowMap, frameState, castCommands) {
       device,
       cache,
       shadowMap,
+      shadowCastCameraPositionWC,
       castCommands,
     );
-    return;
+    cache.shadowContentState = "casters";
+    return true;
+  }
+
+  device.queue.writeBuffer(
+    cache.uniformBuffer.buffer,
+    0,
+    cache.uniformData.buffer,
+    0,
+    SHADOW_UNIFORM_SIZE,
+  );
+  if (hasTerrainCaster) {
+    ensureTerrainShadowCastUniforms(device, cache);
+    cache.terrainCastUniformData.set(cache.uniformData);
+    packShadowCastBias(cache.terrainCastUniformData, shadowMap, true);
+    device.queue.writeBuffer(
+      cache.terrainCastUniformBuffer.buffer,
+      0,
+      cache.terrainCastUniformData.buffer,
+      0,
+      SHADOW_UNIFORM_SIZE,
+    );
   }
 
   const passDesc = getShadowPassDescriptor(shadowMap);
   if (!passDesc) {
-    return;
+    return false;
   }
+  // C11-192 — only commands entering a real cast pass realize their per-tile
+  // terrain UB. Do this before beginning the pass so the first enabled frame
+  // has complete bindings rather than dropping terrain until frame two.
+  prepareTerrainShadowCastCommandUniforms(device, castCommands);
   const pass = encoder.beginRenderPass(passDesc);
-  _drawCastCommandsToPass(pass, device, cache, castCommands);
+  _drawCastCommandsToPass(
+    pass,
+    device,
+    cache,
+    castCommands,
+    cache.uniformBuffer.buffer,
+    cache.castBindGroups,
+    false,
+    cache.terrainCastUniformBuffer?.buffer,
+    cache.terrainCastBindGroups,
+  );
   pass.end();
+  cache.shadowContentState = "casters";
+  return true;
 }
 
 /**
@@ -1174,6 +1453,7 @@ function _renderPointLightCubeCastPasses(
   device,
   cache,
   shadowMap,
+  sceneCameraPositionWC,
   castCommands,
 ) {
   const passes = shadowMap._passes;
@@ -1185,21 +1465,55 @@ function _renderPointLightCubeCastPasses(
     if (!passDesc) {
       continue;
     }
-    // Overwrite just the lightVP (first 64 bytes of the UB). The
-    // RTE camera encoding + shadow bias below it stays constant
-    // across the 6 faces, so we don't need to re-pack the whole UB.
-    const faceVP = passes[face].camera.getViewProjection();
-    Matrix4.pack(faceVP, cache.uniformData, 0);
+    // ShadowMap's legacy point-light passes already contain a per-face
+    // frustum-culled command list. WebGPUContext deliberately preserves those
+    // lists until this loop completes. Falling back to the unique union keeps
+    // direct/internal callers that provide camera-only pass objects working,
+    // while an explicitly empty list remains empty so off-face casters are not
+    // redrawn into all six cube layers.
+    const faceCommands = Array.isArray(passes[face]?.commandList)
+      ? passes[face].commandList
+      : castCommands;
+    const faceData = cache.pointFaceUniformData?.[face];
+    const faceBuffer = cache.pointFaceUniformBuffers?.[face];
+    const faceBindGroups = cache.pointFaceCastBindGroups?.[face];
+    if (
+      !defined(faceData) ||
+      !defined(faceBuffer) ||
+      !defined(faceBindGroups)
+    ) {
+      continue;
+    }
+    // Per-face legacy command lists are already spatially culled. Realize only
+    // terrain that this cube face will actually draw.
+    prepareTerrainShadowCastCommandUniforms(device, faceCommands);
+    // Copy the common encoded-camera/bias fields, then replace this face's
+    // matrix. The distinct GPUBuffer keeps these bytes immutable until submit.
+    faceData.set(cache.uniformData);
+    packShadowCastMatrix(
+      faceData,
+      passes[face].camera,
+      sceneCameraPositionWC,
+      true,
+    );
     device.queue.writeBuffer(
-      cache.uniformBuffer.buffer,
+      faceBuffer.buffer,
       0,
-      cache.uniformData.buffer,
+      faceData.buffer,
       0,
-      64,
+      SHADOW_UNIFORM_SIZE,
     );
 
     const pass = encoder.beginRenderPass(passDesc);
-    _drawCastCommandsToPass(pass, device, cache, castCommands);
+    _drawCastCommandsToPass(
+      pass,
+      device,
+      cache,
+      faceCommands,
+      faceBuffer.buffer,
+      faceBindGroups,
+      true,
+    );
     pass.end();
   }
 }
@@ -1212,12 +1526,22 @@ function _renderPointLightCubeCastPasses(
  *
  * @private
  */
-function _drawCastCommandsToPass(pass, device, cache, castCommands) {
-  // Per-layout pipeline switching — track the currently-bound variant so we
-  // only call setPipeline/setBindGroup when the layout actually changes.
-  // Sorting commands by layout key upstream would amortize this further but
-  // is not required for correctness.
-  let currentLayoutKey = null;
+function _drawCastCommandsToPass(
+  pass,
+  device,
+  cache,
+  castCommands,
+  sharedUniformBuffer,
+  sharedCastBindGroups,
+  invertWinding = false,
+  terrainUniformBuffer,
+  terrainCastBindGroups,
+) {
+  // Pipeline topology, culling, vertex layout, and stride are all baked in
+  // WebGPU. Track the complete key so adjacent commands only share state when
+  // every baked field is compatible.
+  let currentPipelineKey = null;
+  let currentUniformBuffer = null;
 
   // Draw each shadow-casting command's geometry through the matching cast
   // pipeline. Commands declare their layout via `cmd._shadowCastLayout` or
@@ -1264,92 +1588,88 @@ function _drawCastCommandsToPass(pass, device, cache, castCommands) {
     // callers (uncompressed terrain with vertex normals / web-mercator-T
     // / geodetic surface normal) get a pipeline whose `arrayStride`
     // matches their actual VB stride. Variants with a fixed stride
-    // (rte24, p12, modelP12, modelInstanced, quantized12, modelSkinned)
+    // (rte24, primitiveRte24, p12, modelP12, modelInstanced, quantized12,
+    // modelSkinned)
     // don't set `vertexStride` on their commands, so `vbStride` would
     // match the variant's declared stride and no override kicks in.
-    const entry = _getOrCreateCastPipeline(device, cache, layoutKey, vbStride);
+    const topology = getShadowCastTopology(cmd);
+    const cullMode = getShadowCastCullMode(cmd, invertWinding);
+    const entry = _getOrCreateCastPipeline(
+      device,
+      cache,
+      layoutKey,
+      vbStride,
+      topology,
+      cullMode,
+    );
     if (!defined(entry)) {
       continue;
     }
     const variant = SHADOW_CAST_VARIANTS[layoutKey];
     const hasExtraBindings =
       defined(variant.extraBindings) && variant.extraBindings.length > 0;
+    const useTerrainUniforms =
+      defined(terrainUniformBuffer) && isTerrainShadowCaster(cmd);
+    const commandUniformBuffer = useTerrainUniforms
+      ? terrainUniformBuffer
+      : (sharedUniformBuffer ?? cache.uniformBuffer.buffer);
+    const commandSharedBindGroups = useTerrainUniforms
+      ? terrainCastBindGroups
+      : (sharedCastBindGroups ?? cache.castBindGroups);
 
     // For variants with no per-command bindings (rte24, p12,
     // modelInstanced) we can share a single bind group for the whole
     // pass. For variants with extraBindings (modelP12, quantized12)
     // we build one per command using the per-variant field map.
     if (!hasExtraBindings) {
-      if (layoutKey !== currentLayoutKey) {
-        let bg = cache.castBindGroups.get(layoutKey);
+      if (
+        entry.cacheKey !== currentPipelineKey ||
+        commandUniformBuffer !== currentUniformBuffer
+      ) {
+        const bindGroupCache = commandSharedBindGroups;
+        let bg = bindGroupCache.get(entry.cacheKey);
         if (!defined(bg)) {
           bg = device.createBindGroup({
-            label: `Shadow cast bind group (${layoutKey})`,
+            label: `Shadow cast bind group (${entry.cacheKey})`,
             layout: entry.bgl,
             entries: [
               {
                 binding: 0,
-                resource: { buffer: cache.uniformBuffer.buffer },
+                resource: {
+                  buffer: commandUniformBuffer,
+                },
               },
             ],
           });
-          cache.castBindGroups.set(layoutKey, bg);
+          bindGroupCache.set(entry.cacheKey, bg);
         }
         pass.setPipeline(entry.pipeline);
         pass.setBindGroup(0, bg);
-        currentLayoutKey = layoutKey;
+        currentPipelineKey = entry.cacheKey;
+        currentUniformBuffer = commandUniformBuffer;
       }
     } else {
-      // Per-command bind group — rebuild every command unless we
-      // detect a stable cache on the command itself. The cached bind
-      // group is invalidated by the renderer when its UB contents
-      // change (by nulling `cmd._shadowCastBindGroup`).
-      if (layoutKey !== currentLayoutKey) {
+      // Per-resource bind group. Model and generic Primitive commands publish
+      // a persistent cache host because draw commands can be rebuilt. Other
+      // command families fall back to the command itself.
+      if (entry.cacheKey !== currentPipelineKey) {
         pass.setPipeline(entry.pipeline);
-        currentLayoutKey = layoutKey;
+        currentPipelineKey = entry.cacheKey;
       }
       const fields = variant.perCommandBindingFields || [];
-      const extraEntries = [];
-      let missingBinding = false;
-      for (let fi = 0; fi < fields.length; fi++) {
-        const field = fields[fi];
-        const buffer = cmd[field];
-        const extraBinding = variant.extraBindings[fi];
-        if (!defined(buffer)) {
-          missingBinding = true;
-          break;
-        }
-        // Unwrap WebGPUBuffer or accept a raw GPUBuffer
-        const raw = defined(buffer.buffer) ? buffer.buffer : buffer;
-        extraEntries.push({
-          binding: extraBinding.binding,
-          resource: { buffer: raw },
-        });
-      }
-      if (missingBinding) {
+      const cacheHost = cmd._shadowCastBindGroupCacheHost || cmd;
+      const bg = getOrCreateShadowCastBindGroup(
+        device,
+        cacheHost,
+        `Shadow cast bind group (${layoutKey})`,
+        entry.bgl,
+        commandUniformBuffer,
+        variant.extraBindings,
+        fields,
+        cmd,
+      );
+      if (!defined(bg)) {
         continue;
-      }
-
-      let bg = cmd._shadowCastBindGroup;
-      if (
-        !defined(bg) ||
-        cmd._shadowCastBindGroupLayoutKey !== layoutKey ||
-        cmd._shadowCastBindGroupSharedUB !== cache.uniformBuffer.buffer
-      ) {
-        bg = device.createBindGroup({
-          label: `Shadow cast bind group (${layoutKey})`,
-          layout: entry.bgl,
-          entries: [
-            {
-              binding: 0,
-              resource: { buffer: cache.uniformBuffer.buffer },
-            },
-            ...extraEntries,
-          ],
-        });
-        cmd._shadowCastBindGroup = bg;
-        cmd._shadowCastBindGroupLayoutKey = layoutKey;
-        cmd._shadowCastBindGroupSharedUB = cache.uniformBuffer.buffer;
       }
       pass.setBindGroup(0, bg);
     }
@@ -1358,8 +1678,9 @@ function _drawCastCommandsToPass(pass, device, cache, castCommands) {
     //
     // Two shapes of variant binding here:
     //
-    //   1. Single-VB variants (rte24, p12, modelP12, quantized12,
-    //      modelInstancedSB) — slot 0 only, already-resolved above.
+    //   1. Single-VB variants (rte24, primitiveRte24, p12, modelP12,
+    //      quantized12, modelInstancedSB) — slot 0 only, already-resolved
+    //      above.
     //
     //   2. Multi-VB variants — variant declares `vertexBufferSourceSlots`
     //      that maps each of its N `buffers` entries to an index in
@@ -1432,6 +1753,16 @@ function destroyWebGPUShadowMapResources(shadowMap) {
   if (defined(cache.uniformBuffer)) {
     cache.uniformBuffer.destroy();
   }
+  if (defined(cache.terrainCastUniformBuffer)) {
+    cache.terrainCastUniformBuffer.destroy();
+    cache.terrainCastBindGroups?.clear();
+  }
+  if (defined(cache.pointFaceUniformBuffers)) {
+    for (let i = 0; i < cache.pointFaceUniformBuffers.length; i++) {
+      cache.pointFaceUniformBuffers[i]?.destroy();
+      cache.pointFaceCastBindGroups?.[i]?.clear();
+    }
+  }
   if (defined(cache.terrainGlobalsUB)) {
     cache.terrainGlobalsUB.destroy();
   }
@@ -1449,6 +1780,7 @@ function destroyWebGPUShadowMapResources(shadowMap) {
 export {
   initWebGPUShadowMap,
   packShadowCastUniforms,
+  packShadowCastBias,
   getShadowPassDescriptor,
   getShadowMapResources,
   renderShadowCastPass,
@@ -1456,6 +1788,14 @@ export {
   registerShadowCastVariant,
   getRegisteredShadowCastVariantKeys,
   getShadowCastVariant,
+  computeShadowCastRteMatrix,
+  computeWebGPUPointShadowCastRteMatrix,
+  resolveShadowCastCameraPosition,
+  getShadowCastTopology,
+  getShadowCastCullMode,
+  getShadowCastPipelineCacheKey,
+  getPointLightCubeLayer,
+  isTerrainShadowCaster,
   _inferShadowLayoutKey,
   _resetShadowLayoutWarningsForSpec,
   _resetShadowCastVariantRegistryForSpec,
@@ -1477,4 +1817,5 @@ export default {
   destroyWebGPUShadowMapResources,
   registerShadowCastVariant,
   getRegisteredShadowCastVariantKeys,
+  getPointLightCubeLayer,
 };

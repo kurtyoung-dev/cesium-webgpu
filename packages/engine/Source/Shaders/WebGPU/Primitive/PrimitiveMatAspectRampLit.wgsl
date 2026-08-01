@@ -42,13 +42,14 @@ struct CameraUniforms {
     _pad1: f32,
     lightDirection: vec4<f32>,
     previousViewProjection: mat4x4<f32>,
+    inverseViewQuaternion: vec4<f32>,
     //>>ifdef LOG_DEPTH
     // ─── Renderer-wide log depth (Approach A) ───
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsLit
-    // into the 16-byte tail appended after previousViewProjection
-    // (LIT_CAMERA_BYTES 304 -> 320). See WebGPULogDepth.ts.
+    // into the 16-byte tail appended after inverseViewQuaternion
+    // (LIT_CAMERA_BYTES 320 -> 336). See WebGPULogDepth.ts.
     logDepth: vec4<f32>,
     //>>endif
 }
@@ -74,7 +75,7 @@ struct EffectsUniforms {
     edgeControl: vec4<f32>,
     edgeViewport: vec4<f32>,
     pointLightControl: vec4<f32>,
-    pointLightPositionWC: vec4<f32>,
+    pointLightPositionRTE: vec4<f32>,
 }
 
 struct CSMParams {
@@ -121,6 +122,11 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
     let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
+}
+
+fn rotateEyeToWorld(vector: vec3<f32>, quaternion: vec4<f32>) -> vec3<f32> {
+    let t = 2.0 * cross(quaternion.xyz, vector);
+    return vector + quaternion.w * t + cross(quaternion.xyz, t);
 }
 
 fn selectCascade(viewDepth: f32, splits: vec4<f32>) -> u32 {
@@ -202,17 +208,17 @@ fn sampleCascadeShadow(
 }
 
 // Batch 167 - B.12 chunk-based point-light receive.
-fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
+fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
     let visibility = csm_samplePointShadow(
         pointLightCubeDepth,
         shadowCompSampler,
-        fragWC,
-        effects.pointLightPositionWC.xyz,
+        fragRTE,
+        effects.pointLightPositionRTE.xyz,
         effects.pointLightControl.z,
         effects.pointLightControl.y,
         effects.pointLightControl.w,
-        effects.pointLightPositionWC.w,
+        effects.pointLightPositionRTE.w,
         effects.shadowMapSize.x,
     );
     return mix(effects.shadowDarkness, 1.0, visibility);
@@ -235,7 +241,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     let posRTE = translateRelativeToEye(input.positionHigh, input.positionLow);
     output.clipPosition = camera.mvpRelativeToEye * posRTE;
     output.worldNormal = (camera.normalMatrix * vec4<f32>(input.normal, 0.0)).xyz;
-    output.viewPosition = (camera.modelViewRelativeToEye * posRTE).xyz;
+    let viewPosition = (camera.modelViewRelativeToEye * posRTE).xyz;
+    output.viewPosition = viewPosition;
+    output.eyePosition = rotateEyeToWorld(viewPosition, camera.inverseViewQuaternion);
     output.texCoord = input.texCoord;
 
     // Compute aspect: compass direction of the steepest slope
@@ -263,7 +271,6 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
     var aspect = atan2(eastComp, northComp); // 0 = north, increases clockwise
     if (aspect < 0.0) { aspect = aspect + TWO_PI; }
     output.aspectT = aspect / TWO_PI;
-    output.eyePosition = posRTE.xyz;
 
     //>>ifdef LOG_DEPTH
     // Renderer-wide log depth: interpolate linear depthFromNearPlusOne and clamp
@@ -314,9 +321,7 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
 
     // Batch 167 - point-light cube shadows take precedence over CSM.
     if (effects.pointLightControl.x > 0.5) {
-        let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
-        let fragWC = cameraWC + input.eyePosition;
-        let shadowFactor = computeShadowFactorPointLight(fragWC);
+        let shadowFactor = computeShadowFactorPointLight(input.eyePosition);
         directTerm = directTerm * shadowFactor;
         spec = spec * shadowFactor;
     } else if (effects.csmControl.x > 0.5) {

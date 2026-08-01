@@ -28,6 +28,7 @@ import Camera from "./Camera.js";
 import DebugCameraPrimitive from "./DebugCameraPrimitive.js";
 import PerInstanceColorAppearance from "./PerInstanceColorAppearance.js";
 import Primitive from "./Primitive.js";
+import { computePointShadowFaceCullingVolume } from "./ShadowMapPointCulling.js";
 
 // ---------- Framebuffer management ----------
 
@@ -630,14 +631,17 @@ const rights = [
 
 function computeOmnidirectional(shadowMap, frameState) {
   // All sides share the same frustum
-  const frustum = new PerspectiveFrustum();
+  const frustum =
+    shadowMap._pointLightFrustum ??
+    (shadowMap._pointLightFrustum = new PerspectiveFrustum());
   frustum.fov = CesiumMath.PI_OVER_TWO;
   frustum.near = 1.0;
   frustum.far = shadowMap._pointLightRadius;
   frustum.aspectRatio = 1.0;
 
   for (let i = 0; i < 6; ++i) {
-    const camera = shadowMap._passes[i].camera;
+    const pass = shadowMap._passes[i];
+    const camera = pass.camera;
     camera.positionWC = shadowMap._shadowMapCamera.positionWC;
     camera.positionCartographic =
       frameState.mapProjection.ellipsoid.cartesianToCartographic(
@@ -658,6 +662,11 @@ function computeOmnidirectional(shadowMap, frameState) {
     Matrix4.inverse(camera.viewMatrix, camera.inverseViewMatrix);
 
     camera.frustum = frustum;
+    pass.cullingVolume = computePointShadowFaceCullingVolume(
+      frustum,
+      camera,
+      pass.cullingVolume,
+    );
   }
 }
 

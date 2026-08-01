@@ -27,8 +27,8 @@ struct VertexOutput {
     @location(0) color: vec4<f32>,
     @location(1) worldNormal: vec3<f32>,
     // View-space position (kept legacy name for diff minimization).
-    // Consumers: `V = normalize(-worldPosition)` — view-space view dir.
-    @location(2) worldPosition: vec3<f32>,
+    // Consumers: `V = normalize(-viewPosition)` — view-space view dir.
+    @location(2) viewPosition: vec3<f32>,
     // RTE (camera-relative world) position for CSM cascade VP sampling.
     // Same vector the globe + Phong receivers use.
     @location(3) eyePosition: vec3<f32>,
@@ -51,12 +51,13 @@ struct CameraUniforms {
     // TAA / motion-vector reprojection. Sourced from
     // `UniformState._previousViewProjection` (f32 mat4).
     previousViewProjection: mat4x4<f32>,
+    inverseViewQuaternion: vec4<f32>,
     //>>ifdef LOG_DEPTH
     // ─── Renderer-wide log depth (Approach A) ───
     //   x = frustum near, y = frustum far,
     //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
     //   w = reserved. Packed by WebGPUPrimitiveCommands.writeRTEUniformsLit
-    // into the 16-byte LIT UB tail (LIT_CAMERA_BYTES 304 -> 320).
+    // into the 16-byte LIT UB tail (LIT_CAMERA_BYTES 320 -> 336).
     logDepth: vec4<f32>,
     //>>endif
 }
@@ -74,7 +75,7 @@ struct MaterialUniforms {
 // PBRSimple has no texture group, so effects lands at `@group(2)` —
 // matches PrimitivePhongColor's convention. Layout MUST match the
 // 480-byte UBO in WebGPUEffectsBindGroup.js. Struct extends through
-// `pointLightPositionWC` (offset 336) to expose the Batch 161
+// `pointLightPositionRTE` (offset 336) to expose the Batch 161
 // point-light fields; the Batch 160 polygon-clipping array tail isn't
 // used by primitives.
 struct EffectsUniforms {
@@ -98,7 +99,7 @@ struct EffectsUniforms {
     edgeViewport: vec4<f32>,
     // Batch 161 — B.12 point-light cube-shadow receive control.
     pointLightControl: vec4<f32>,
-    pointLightPositionWC: vec4<f32>,
+    pointLightPositionRTE: vec4<f32>,
 }
 
 struct CSMParams {
@@ -159,6 +160,11 @@ fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>) -> vec4<f32> {
     if (length(highDiff) == 0.0) { highDiff = vec3<f32>(0.0); }
     let lowDiff = low - camera.encodedCameraLow;
     return vec4<f32>(highDiff + lowDiff, 1.0);
+}
+
+fn rotateEyeToWorld(vector: vec3<f32>, quaternion: vec4<f32>) -> vec3<f32> {
+    let t = 2.0 * cross(quaternion.xyz, vector);
+    return vector + quaternion.w * t + cross(quaternion.xyz, t);
 }
 
 fn distributionGGX(N: vec3<f32>, H: vec3<f32>, roughness: f32) -> f32 {
@@ -278,17 +284,17 @@ fn computeShadowFactorCSM(
 // inline implementation has been replaced by a call to the reusable
 // `csm_samplePointShadow` chunk function. See PrimitivePhongTexturedColor
 // for the same pattern.
-fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
+fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
     if (effects.shadowDarkness >= 1.0) { return 1.0; }
     let visibility = csm_samplePointShadow(
         pointLightCubeDepth,
         shadowCompSampler,
-        fragWC,
-        effects.pointLightPositionWC.xyz,
+        fragRTE,
+        effects.pointLightPositionRTE.xyz,
         effects.pointLightControl.z,
         effects.pointLightControl.y,
         effects.pointLightControl.w,
-        effects.pointLightPositionWC.w,
+        effects.pointLightPositionRTE.w,
         effects.shadowMapSize.x,
     );
     return mix(effects.shadowDarkness, 1.0, visibility);
@@ -309,9 +315,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
         ) * input.normal
     );
     output.worldNormal = transformedNormal;
-    output.worldPosition = (camera.modelViewRelativeToEye * eyePos).xyz;
-    output.eyePosition = eyePos.xyz;
-
+    let viewPosition = (camera.modelViewRelativeToEye * eyePos).xyz;
+    output.viewPosition = viewPosition;
+    output.eyePosition = rotateEyeToWorld(viewPosition, camera.inverseViewQuaternion);
     //>>ifdef LOG_DEPTH
     // Renderer-wide log depth: interpolate linear depthFromNearPlusOne and clamp
     // clip-z so the FS-written log depth isn't pre-empted by clipping.
@@ -332,7 +338,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     //>>endif
     let albedo = input.color.rgb;
     let N = normalize(input.worldNormal);
-    let V = normalize(-input.worldPosition);
+    let V = normalize(-input.viewPosition);
     let L = normalize(camera.lightDirection.xyz);
     let H = normalize(V + L);
 
@@ -361,14 +367,12 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
     // per standard PBR convention (environment irradiance isn't
     // occluded by the active shadow map).
     if (effects.pointLightControl.x > 0.5) {
-        let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
-        let fragWC = cameraWC + input.eyePosition;
-        let shadowFactor = computeShadowFactorPointLight(fragWC);
+        let shadowFactor = computeShadowFactorPointLight(input.eyePosition);
         direct = direct * shadowFactor;
     } else if (effects.csmControl.x > 0.5) {
-        // `viewDepth = |worldPosition.z|` because `worldPosition` here
+        // `viewDepth = |viewPosition.z|` because `viewPosition` here
         // is view-space (the field name is legacy).
-        let viewDepth = abs(input.worldPosition.z);
+        let viewDepth = abs(input.viewPosition.z);
         let shadowFactor = computeShadowFactorCSM(
             input.eyePosition,
             viewDepth,

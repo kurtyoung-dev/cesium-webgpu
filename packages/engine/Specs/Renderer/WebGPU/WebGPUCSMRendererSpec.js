@@ -7,12 +7,204 @@ import {
   computeCastClipPosition,
   snapToTexelGrid,
 } from "../../../Source/Renderer/WebGPU/WebGPUCSMRenderer.js";
+import {
+  filterCSMCastCommandsConservatively,
+  prepareCSMTerrainGlobals,
+} from "../../../Source/Renderer/WebGPU/WebGPUCSMCastPass.js";
+
+function makeClearOnlyEncoder() {
+  const passDescriptors = [];
+  const passes = [];
+  return {
+    passDescriptors,
+    passes,
+    beginRenderPass: function (descriptor) {
+      passDescriptors.push(descriptor);
+      const pass = {
+        ended: false,
+        end: function () {
+          this.ended = true;
+        },
+      };
+      passes.push(pass);
+      return pass;
+    },
+  };
+}
 
 // Pure-CPU specs for the CSM math helpers. No GPU device required —
 // these verify the math that `WebGPUCSMRenderer.computeCascadeVPs`
 // invokes, isolated from the GPU resource allocation path.
 
 describe("Renderer/WebGPU/WebGPUCSMRenderer", function () {
+  describe("terrain shadow globals", function () {
+    it("stamps the shared globals on quantized and uncompressed terrain", function () {
+      const writeBuffer = jasmine.createSpy("writeBuffer");
+      const rawTerrainBuffer = {};
+      const terrainGlobals = {
+        isDestroyed: false,
+        buffer: rawTerrainBuffer,
+      };
+      const host = {
+        _device: { queue: { writeBuffer: writeBuffer } },
+        _terrainGlobalsUB: terrainGlobals,
+        _terrainGlobalsData: new Float32Array(4),
+      };
+      const quantized = { _shadowCastLayout: "quantized12" };
+      const uncompressed = { _shadowCastLayout: "terrainUncompressed" };
+      const model = { _shadowCastLayout: "modelP12" };
+
+      expect(
+        prepareCSMTerrainGlobals(host, [quantized, uncompressed, model], {
+          mode: 3,
+          verticalExaggeration: 2.5,
+          verticalExaggerationRelativeHeight: 125.0,
+        }),
+      ).toBe(true);
+
+      expect(quantized._shadowCastTerrainGlobalsUB).toBe(terrainGlobals);
+      expect(uncompressed._shadowCastTerrainGlobalsUB).toBe(terrainGlobals);
+      expect(model._shadowCastTerrainGlobalsUB).toBeUndefined();
+      expect(Array.from(host._terrainGlobalsData)).toEqual([
+        2.5, 125.0, 3.0, 0.0,
+      ]);
+      expect(writeBuffer).toHaveBeenCalledOnceWith(
+        rawTerrainBuffer,
+        0,
+        host._terrainGlobalsData.buffer,
+        host._terrainGlobalsData.byteOffset,
+        host._terrainGlobalsData.byteLength,
+      );
+    });
+  });
+
+  describe("stale cascade cull readback", function () {
+    const cascade = {
+      sphereCenter: new Float32Array([0.0, 0.0, 0.0]),
+      sphereRadius: 10.0,
+    };
+
+    function command(x, y, z, radius) {
+      return {
+        boundingVolume: {
+          center: { x: x, y: y, z: z },
+          radius: radius,
+        },
+      };
+    }
+
+    it("does not let reordered stale flags suppress a current in-cascade caster", function () {
+      const inside = command(0.0, 0.0, 0.0, 1.0);
+      const outside = command(100.0, 0.0, 0.0, 1.0);
+      const filtered = [];
+
+      // This zero belonged to a different, outside command last frame. After
+      // reordering it now indexes the inside caster and therefore must be
+      // rejected by the current-sphere/current-cascade validation.
+      filterCSMCastCommandsConservatively(
+        [inside, outside],
+        new Uint32Array([0, 1]),
+        cascade,
+        filtered,
+      );
+      expect(filtered).toEqual([inside, outside]);
+
+      // A zero may still remove a command that is definitely outside NOW.
+      filterCSMCastCommandsConservatively(
+        [inside, outside],
+        new Uint32Array([1, 0]),
+        cascade,
+        filtered,
+      );
+      expect(filtered).toEqual([inside]);
+    });
+
+    it("passes through invalid, non-f32, and non-positive spheres", function () {
+      const invalid = [
+        command(Number.NaN, 0.0, 0.0, 1.0),
+        command(Number.MAX_VALUE, 0.0, 0.0, 1.0),
+        command(100.0, 0.0, 0.0, 0.0),
+        command(100.0, 0.0, 0.0, Number.MIN_VALUE),
+        {},
+      ];
+      const filtered = [];
+
+      filterCSMCastCommandsConservatively(
+        invalid,
+        new Uint32Array(invalid.length),
+        cascade,
+        filtered,
+      );
+      expect(filtered).toEqual(invalid);
+    });
+  });
+
+  describe("resource cleanup", function () {
+    it("destroys every raw cascade cast buffer and the terrain globals", function () {
+      const renderer = new WebGPUCSMRenderer({ cascadeCount: 2 });
+      const firstDestroy = jasmine.createSpy("firstDestroy");
+      const secondDestroy = jasmine.createSpy("secondDestroy");
+      const terrainDestroy = jasmine.createSpy("terrainDestroy");
+      renderer["_cascadeCastBuffers"] = [
+        { destroy: firstDestroy },
+        { destroy: secondDestroy },
+      ];
+      renderer["_terrainGlobalsUB"] = {
+        destroy: terrainDestroy,
+      };
+
+      renderer.destroy();
+
+      expect(firstDestroy).toHaveBeenCalledTimes(1);
+      expect(secondDestroy).toHaveBeenCalledTimes(1);
+      expect(terrainDestroy).toHaveBeenCalledTimes(1);
+      expect(renderer["_cascadeCastBuffers"]).toBeNull();
+      expect(renderer["_terrainGlobalsUB"]).toBeNull();
+    });
+  });
+
+  describe("empty caster transitions", function () {
+    it("clears every cascade once and leaves settled empty frames pass-free", function () {
+      const renderer = new WebGPUCSMRenderer({
+        cascadeCount: 4,
+        enabled: true,
+      });
+      const cascadeViews = [
+        { label: "cascade-0" },
+        { label: "cascade-1" },
+        { label: "cascade-2" },
+        { label: "cascade-3" },
+      ];
+      renderer["_device"] = {};
+      renderer["_cascadeTexture"] = {};
+      renderer["_cascadeViews"] = cascadeViews;
+      renderer["_shadowContentState"] = "casters";
+      const encoder = makeClearOnlyEncoder();
+
+      renderer.renderCastPass(encoder, [], { x: 6378137.0, y: 0.0, z: 0.0 });
+
+      expect(encoder.passDescriptors.length).toBe(4);
+      expect(
+        encoder.passDescriptors.map(
+          (descriptor) => descriptor.depthStencilAttachment.view,
+        ),
+      ).toEqual(cascadeViews);
+      expect(
+        encoder.passDescriptors.every(
+          (descriptor) =>
+            descriptor.depthStencilAttachment.depthLoadOp === "clear",
+        ),
+      ).toBe(true);
+      expect(encoder.passes.every((pass) => pass.ended)).toBe(true);
+      expect(renderer["_shadowContentState"]).toBe("empty");
+      expect(renderer["_castDispatches"]).toBe(0);
+
+      renderer.renderCastPass(encoder, [], { x: 6378137.0, y: 0.0, z: 0.0 });
+      expect(encoder.passDescriptors.length).toBe(4);
+      expect(renderer["_castDispatches"]).toBe(0);
+    });
+  });
+
   describe("split distribution", function () {
     it("constructs with configurable cascade count + lambda", function () {
       const r = new WebGPUCSMRenderer({

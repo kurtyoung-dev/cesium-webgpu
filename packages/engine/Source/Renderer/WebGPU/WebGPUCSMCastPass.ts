@@ -46,9 +46,13 @@ import Cartesian3 from "../../Core/Cartesian3.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import defined from "../../Core/defined.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
+import { prepareTerrainShadowCastCommandUniforms } from "./WebGPUGlobeSurfaceTileBuffers.js";
+import { getOrCreateShadowCastBindGroup } from "./WebGPUShadowCastBindGroupCache.js";
 import {
   _getOrCreateCastPipeline,
   _inferShadowLayoutKey,
+  getShadowCastCullMode,
+  getShadowCastTopology,
   getShadowCastVariant,
 } from "./WebGPUShadowMapRenderer.js";
 import { CSM_CAST_UBO_SIZE, BASE_MIN_BIAS } from "./WebGPUCSMRenderer.js";
@@ -84,6 +88,31 @@ interface CSMCastContext {
   gpuCullingHint?: "auto" | "always" | "never";
   _currentCommandEncoder?: GPUCommandEncoder | null;
 }
+
+interface CSMTerrainFrameState {
+  mode?: number;
+  verticalExaggeration?: number;
+  verticalExaggerationRelativeHeight?: number;
+}
+
+interface CommandSphereScratch {
+  x: number;
+  y: number;
+  z: number;
+  radius: number;
+}
+
+interface CascadeCullBounds {
+  sphereCenter: Float32Array | number[];
+  sphereRadius: number;
+}
+
+const _commandSphereScratch: CommandSphereScratch = {
+  x: 0,
+  y: 0,
+  z: 0,
+  radius: 0,
+};
 
 /**
  * Build 6 axis-aligned plane equations bounding the cube
@@ -153,23 +182,221 @@ function updateCascadeGate(
   return count >= hi;
 }
 
+function isFiniteF32(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    Number.isFinite(Math.fround(value))
+  );
+}
+
+/**
+ * Resolve a command's current conservative sphere without allocating. Values
+ * that cannot make a finite, positive f32 GPU sphere fail closed: callers must
+ * retain that command rather than risk a false-negative shadow cull.
+ */
+function readCurrentCommandSphere(
+  rawCommand: unknown,
+  result: CommandSphereScratch,
+): boolean {
+  const command = rawCommand as
+    | {
+        boundingVolume?: {
+          center?: { x?: unknown; y?: unknown; z?: unknown };
+          radius?: unknown;
+          boundingSphere?: {
+            center?: { x?: unknown; y?: unknown; z?: unknown };
+            radius?: unknown;
+          };
+        };
+      }
+    | undefined;
+  const volume = command?.boundingVolume;
+  const nestedSphere = volume?.boundingSphere;
+  const center = volume?.center ?? nestedSphere?.center;
+  const radius = volume?.radius ?? nestedSphere?.radius;
+  if (
+    !center ||
+    !isFiniteF32(center.x) ||
+    !isFiniteF32(center.y) ||
+    !isFiniteF32(center.z) ||
+    !isFiniteF32(radius) ||
+    !(radius > 0.0) ||
+    !(Math.fround(radius) > 0.0)
+  ) {
+    return false;
+  }
+
+  result.x = center.x;
+  result.y = center.y;
+  result.z = center.z;
+  result.radius = radius;
+  return true;
+}
+
+/**
+ * Current-frame conservative validation for a stale GPU "outside" result.
+ * Returning true means the command must remain in the cast list. An invalid
+ * command/cascade bound always passes through.
+ */
+function currentSphereMayIntersectCascadeAABB(
+  rawCommand: unknown,
+  cascade: CascadeCullBounds,
+): boolean {
+  if (!readCurrentCommandSphere(rawCommand, _commandSphereScratch)) {
+    return true;
+  }
+
+  const center = cascade?.sphereCenter;
+  const radius = cascade?.sphereRadius;
+  const cx = center?.[0];
+  const cy = center?.[1];
+  const cz = center?.[2];
+  if (
+    !isFiniteF32(cx) ||
+    !isFiniteF32(cy) ||
+    !isFiniteF32(cz) ||
+    !isFiniteF32(radius) ||
+    !(radius > 0.0) ||
+    !(Math.fround(radius) > 0.0)
+  ) {
+    return true;
+  }
+
+  const sphere = _commandSphereScratch;
+  return !(
+    sphere.x + sphere.radius < cx - radius ||
+    sphere.x - sphere.radius > cx + radius ||
+    sphere.y + sphere.radius < cy - radius ||
+    sphere.y - sphere.radius > cy + radius ||
+    sphere.z + sphere.radius < cz - radius ||
+    sphere.z - sphere.radius > cz + radius
+  );
+}
+
+/**
+ * Apply one-frame-late GPU visibility flags without allowing stale identity,
+ * ordering, or camera/cascade state to remove a current caster incorrectly.
+ * A zero flag is honored only when the CURRENT command sphere is definitely
+ * outside the CURRENT cascade AABB. All other values conservatively retain.
+ *
+ * Exported for focused correctness specs.
+ */
+export function filterCSMCastCommandsConservatively(
+  castCommands: ReadonlyArray<unknown>,
+  visibilityFlags: Uint32Array,
+  cascade: CascadeCullBounds,
+  result: unknown[],
+): unknown[] {
+  result.length = 0;
+  for (let i = 0; i < castCommands.length; i++) {
+    if (
+      visibilityFlags[i] !== 0 ||
+      currentSphereMayIntersectCascadeAABB(castCommands[i], cascade)
+    ) {
+      result.push(castCommands[i]);
+    }
+  }
+  return result;
+}
+
+/**
+ * Update and publish the renderer-owned terrain globals block. Both terrain
+ * layouts require the same binding-2 resource; stamping happens once before
+ * the cascade loop so every per-command bind-group lookup sees it.
+ *
+ * Exported for focused layout/publication specs.
+ */
+export function prepareCSMTerrainGlobals(
+  host: Pick<
+    CSMCastPassHost,
+    "_device" | "_terrainGlobalsUB" | "_terrainGlobalsData"
+  >,
+  castCommands: ReadonlyArray<unknown>,
+  frameState?: CSMTerrainFrameState,
+): boolean {
+  const terrainGlobals = host._terrainGlobalsUB;
+  const device = host._device;
+  if (!device || !terrainGlobals || terrainGlobals.isDestroyed) {
+    return false;
+  }
+
+  let hasTerrainCaster = false;
+  for (let i = 0; i < castCommands.length; i++) {
+    const command = castCommands[i] as
+      | {
+          _shadowCastLayout?: string;
+          _shadowCastTerrainGlobalsUB?: WebGPUBuffer;
+        }
+      | undefined;
+    const layout = command?._shadowCastLayout;
+    if (layout === "quantized12" || layout === "terrainUncompressed") {
+      command!._shadowCastTerrainGlobalsUB = terrainGlobals;
+      hasTerrainCaster = true;
+    }
+  }
+  if (!hasTerrainCaster) {
+    return false;
+  }
+
+  const data = host._terrainGlobalsData;
+  const sceneMode = frameState?.mode ?? 3;
+  data[0] = sceneMode >= 3 ? (frameState?.verticalExaggeration ?? 1.0) : 1.0;
+  data[1] = frameState?.verticalExaggerationRelativeHeight ?? 0.0;
+  data[2] = sceneMode;
+  data[3] = 0.0;
+  // Avoid WebGPUBuffer.write(), which constructs a Uint8Array view on every
+  // call. This path runs once per active CSM frame, so publish the existing
+  // typed-array storage directly through the queue's source-buffer overload.
+  device.queue.writeBuffer(
+    terrainGlobals.buffer,
+    0,
+    data.buffer,
+    data.byteOffset,
+    data.byteLength,
+  );
+  return true;
+}
+
 export function renderCSMCastPass(
   host: CSMCastPassHost,
   encoder: GPUCommandEncoder,
   castCommands: ReadonlyArray<unknown>,
   cameraPositionWC: { x: number; y: number; z: number },
+  frameState?: CSMTerrainFrameState,
   context?: CSMCastContext,
 ): void {
   if (
     !host._device ||
     !host.enabled ||
     !host._cascadeTexture ||
-    host._cascadeViews.length !== host._cascadeCount ||
-    castCommands.length === 0
+    host._cascadeViews.length !== host._cascadeCount
   ) {
     return;
   }
+  if (castCommands.length === 0) {
+    if (host._shadowContentState === "empty") {
+      return;
+    }
+    for (let ci = 0; ci < host._cascadeCount; ci++) {
+      const pass = encoder.beginRenderPass({
+        label: `CSM cascade ${ci} clear-only`,
+        colorAttachments: [],
+        depthStencilAttachment: {
+          view: host._cascadeViews[ci],
+          depthClearValue: 1.0,
+          depthLoadOp: "clear",
+          depthStoreOp: "store",
+        },
+      });
+      pass.end();
+    }
+    host._shadowContentState = "empty";
+    return;
+  }
   host._castDispatches++;
+
+  prepareCSMTerrainGlobals(host, castCommands, frameState);
 
   // NEW-SHADOW-CAST-GPU-CULL-PHASE-2 (Batch 226) — lazy per-cascade
   // cull-state arrays sized to `_cascadeCount`. Re-sized when
@@ -231,6 +458,7 @@ export function renderCSMCastPass(
         {
           pipeline: GPURenderPipeline;
           bgl: GPUBindGroupLayout;
+          cacheKey: string;
         }
       >(),
     };
@@ -329,33 +557,22 @@ export function renderCSMCastPass(
           const interleaved = soa.interleaved;
           let allValid = true;
           for (let i = 0; i < totalCount; i++) {
-            const cmd = castCommands[i] as
-              | {
-                  boundingVolume?: {
-                    center?: { x: number; y: number; z: number };
-                    radius?: number;
-                    boundingSphere?: { radius?: number };
-                  };
-                }
-              | undefined;
-            const c = cmd?.boundingVolume?.center;
-            if (!c) {
+            if (
+              !readCurrentCommandSphere(castCommands[i], _commandSphereScratch)
+            ) {
               allValid = false;
               break;
             }
-            const r =
-              cmd?.boundingVolume?.radius ??
-              cmd?.boundingVolume?.boundingSphere?.radius ??
-              0;
-            soa.centerX[i] = c.x;
-            soa.centerY[i] = c.y;
-            soa.centerZ[i] = c.z;
-            soa.radius[i] = r;
+            const sphere = _commandSphereScratch;
+            soa.centerX[i] = sphere.x;
+            soa.centerY[i] = sphere.y;
+            soa.centerZ[i] = sphere.z;
+            soa.radius[i] = sphere.radius;
             const off = i * 4;
-            interleaved[off] = c.x;
-            interleaved[off + 1] = c.y;
-            interleaved[off + 2] = c.z;
-            interleaved[off + 3] = r;
+            interleaved[off] = sphere.x;
+            interleaved[off + 1] = sphere.y;
+            interleaved[off + 2] = sphere.z;
+            interleaved[off + 3] = sphere.radius;
           }
 
           if (allValid) {
@@ -393,11 +610,12 @@ export function renderCSMCastPass(
           const prev = host._cascadeCullLastResults[ci];
           if (prev && prev.visibilityFlags && prev.objectCount === totalCount) {
             const filtered = host._cascadeCullFilterPool[ci];
-            filtered.length = 0;
-            const flags = prev.visibilityFlags;
-            for (let i = 0; i < totalCount; i++) {
-              if (flags[i] === 1) filtered.push(castCommands[i]);
-            }
+            filterCSMCastCommandsConservatively(
+              castCommands,
+              prev.visibilityFlags,
+              cascade,
+              filtered,
+            );
             host._cascadeCullLastInput[ci] = totalCount;
             host._cascadeCullLastFiltered[ci] = filtered.length;
             castIter = filtered as ReadonlyArray<unknown>;
@@ -405,6 +623,10 @@ export function renderCSMCastPass(
         }
       }
     }
+
+    // C11-192 — the filtered list is the exact demand set for this cascade.
+    // First-cascade realization is reused by later cascades and future frames.
+    prepareTerrainShadowCastCommandUniforms(host._device, castIter);
 
     const pass = encoder.beginRenderPass({
       label: `CSM_Cascade_${ci}_CastPass`,
@@ -459,8 +681,8 @@ export function renderCSMCastPass(
       // Slice 2 — accept every registered variant that the single-
       // shadow-map path knows about. The pipeline factory (shared with
       // WebGPUShadowMapRenderer via `_getOrCreateCastPipeline`) compiles
-      // at first use; subsequent frames hit the per-cascade bind-group
-      // cache. See SHADOW_CAST_VARIANTS in WebGPUShadowMapRenderer.js
+      // at first use; subsequent frames hit the persistent resource-owner
+      // bind-group cache. See SHADOW_CAST_VARIANTS in WebGPUShadowMapRenderer.js
       // for the canonical list (rte24, p12, modelP12, modelInstanced,
       // modelInstancedSB, quantized12, modelSkinned).
       const layoutKey = _inferShadowLayoutKey(cmd, vbStride);
@@ -474,6 +696,8 @@ export function renderCSMCastPass(
         host._sharedPipelineCache,
         layoutKey,
         vbStride,
+        getShadowCastTopology(cmd),
+        getShadowCastCullMode(cmd),
       );
       if (!pipelineEntry) continue;
 
@@ -494,14 +718,18 @@ export function renderCSMCastPass(
       // `extraBindings` add per-command buffers at bindings 1..n
       // (modelP12: modelMatrix UB; modelInstancedSB: modelMatrix UB +
       // instancing SB; modelSkinned: modelMatrix UB + joint-matrices
-      // SB). We cache shared bind groups on the CSM renderer and
-      // per-command bind groups on the command (indexed by cascade).
+      // SB). Shared groups live on the CSM renderer; resource-specific
+      // groups live on the command's stable cache owner.
       let bg: GPUBindGroup | undefined;
       if (!hasExtraBindings) {
-        bg = host._cascadeCastBindGroups![ci].get(layoutKey);
+        // The factory creates an explicit BGL for each baked pipeline tuple.
+        // Key by that complete tuple, not just the vertex-layout name, so a
+        // line/triangle, cull-mode, or stride variant never reuses a group
+        // created against a sibling pipeline's layout object.
+        bg = host._cascadeCastBindGroups![ci].get(pipelineEntry.cacheKey);
         if (!bg) {
           bg = host._device.createBindGroup({
-            label: `CSM_Cascade_${ci}_CastBG_${layoutKey}`,
+            label: `CSM_Cascade_${ci}_CastBG_${pipelineEntry.cacheKey}`,
             layout: pipelineEntry.bgl,
             entries: [
               {
@@ -510,53 +738,22 @@ export function renderCSMCastPass(
               },
             ],
           });
-          host._cascadeCastBindGroups![ci].set(layoutKey, bg);
+          host._cascadeCastBindGroups![ci].set(pipelineEntry.cacheKey, bg);
         }
       } else {
         const fields = perCommandFields ?? [];
-        const extraEntries: GPUBindGroupEntry[] = [];
-        let missingBinding = false;
-        for (let fi = 0; fi < fields.length; fi++) {
-          const field = fields[fi];
-          // `field` is a runtime-provided property name from the variant's
-          // `vertexBufferSourceSlots` config; indexing by string requires
-          // a Record view but not the `unknown` intermediate.
-          const source = (cmd as Record<string, unknown>)[field];
-          const extraBinding = extraBindings![fi];
-          if (!defined(source)) {
-            missingBinding = true;
-            break;
-          }
-          const raw = defined((source as { buffer?: GPUBuffer }).buffer)
-            ? (source as { buffer: GPUBuffer }).buffer
-            : (source as GPUBuffer);
-          extraEntries.push({
-            binding: extraBinding.binding,
-            resource: { buffer: raw },
-          });
-        }
-        if (missingBinding) continue;
-
-        if (!cmd._shadowCastCSMBindGroups) {
-          cmd._shadowCastCSMBindGroups = new Array(host._cascadeCount);
-          cmd._shadowCastCSMBindGroupKeys = new Array(host._cascadeCount);
-        }
-        bg = cmd._shadowCastCSMBindGroups[ci];
-        if (!bg || cmd._shadowCastCSMBindGroupKeys![ci] !== layoutKey) {
-          bg = host._device.createBindGroup({
-            label: `CSM_Cascade_${ci}_CastBG_${layoutKey}_cmd`,
-            layout: pipelineEntry.bgl,
-            entries: [
-              {
-                binding: 0,
-                resource: { buffer: host._cascadeCastBuffers![ci] },
-              },
-              ...extraEntries,
-            ],
-          });
-          cmd._shadowCastCSMBindGroups[ci] = bg;
-          cmd._shadowCastCSMBindGroupKeys![ci] = layoutKey;
-        }
+        const cacheHost = cmd._shadowCastBindGroupCacheHost ?? cmd;
+        bg = getOrCreateShadowCastBindGroup(
+          host._device,
+          cacheHost,
+          `CSM_Cascade_${ci}_CastBG_${layoutKey}_cmd`,
+          pipelineEntry.bgl,
+          host._cascadeCastBuffers![ci],
+          extraBindings!,
+          fields,
+          cmd,
+        );
+        if (!defined(bg)) continue;
       }
 
       pass.setPipeline(pipelineEntry.pipeline);
@@ -578,9 +775,7 @@ export function renderCSMCastPass(
         for (let slotIdx = 0; slotIdx < sourceSlots.length; slotIdx++) {
           const src = sourceSlots[slotIdx];
           const srcEntry = cmd.vertexBuffers?.[src] as
-            | { buffer?: GPUBuffer }
-            | GPUBuffer
-            | undefined;
+            { buffer?: GPUBuffer } | GPUBuffer | undefined;
           if (!defined(srcEntry)) {
             allResolved = false;
             break;
@@ -606,9 +801,7 @@ export function renderCSMCastPass(
       }
 
       const ibRef = (cmd.indexBuffer ?? cmd._indexBuffer) as
-        | { buffer?: GPUBuffer }
-        | GPUBuffer
-        | undefined;
+        { buffer?: GPUBuffer } | GPUBuffer | undefined;
       if (ibRef) {
         const ib =
           (ibRef as { buffer?: GPUBuffer }).buffer ?? (ibRef as GPUBuffer);
@@ -625,4 +818,5 @@ export function renderCSMCastPass(
 
     pass.end();
   }
+  host._shadowContentState = "casters";
 }

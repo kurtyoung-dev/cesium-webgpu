@@ -3,7 +3,8 @@
 // Mirrors the algorithm in ModelPBRComplete.wgsl:samplePointShadow:
 // dominant cube-face axis -> perspective-Z + scaleBias remap -> comparison
 // sample against the 6-face cube depth target. Optional 5-tap cross PCF
-// when pcfRadius > 0 (kernel scaled by texelStep = 1.0 / shadowMapSize).
+// when pcfRadius > 0 (kernel advances 2 * radius / shadowMapSize in projected
+// cube-face coordinates).
 //
 // Returns a visibility factor in [0, 1] — 1.0 = fully lit, 0.0 = fully
 // shadowed. Caller mixes against effects.shadowDarkness to get the
@@ -19,22 +20,30 @@
 fn csm_samplePointShadow(
   cubeDepth: texture_depth_cube,
   compSampler: sampler_comparison,
-  fragWC: vec3<f32>,
-  lightWC: vec3<f32>,
+  fragRTE: vec3<f32>,
+  lightRTE: vec3<f32>,
   nearPlane: f32,
   farPlane: f32,
   depthBias: f32,
   pcfRadius: f32,
   shadowMapSize: f32,
 ) -> f32 {
-  let direction = fragWC - lightWC;
+  // Both operands are camera-relative world-axis vectors. Their subtraction
+  // retains meter-scale separation at planetary ECEF magnitudes while
+  // producing the same world-aligned cube direction as the absolute-space
+  // subtraction, without first quantizing either Earth-scale operand.
+  let direction = fragRTE - lightRTE;
   let absDir = abs(direction);
+  let lightDistanceSquared = dot(direction, direction);
   // Dominant cube-face axis distance — what the per-face camera saw as
   // |z_eye| for this fragment; converted to depth via the perspective-Z
   // formula below.
   let axisDist = max(absDir.x, max(absDir.y, absDir.z));
-  // Outside the cube far plane → cleared depth (1.0); treat as fully lit.
-  if (axisDist >= farPlane) { return 1.0; }
+  // The point light's radius is spherical. Dominant-axis distance remains the
+  // correct cube-camera projection depth, but cannot admit diagonal fragments
+  // whose Euclidean distance is already outside the light. Compare squared
+  // lengths to avoid a per-fragment square root.
+  if (lightDistanceSquared >= farPlane * farPlane) { return 1.0; }
   let depthRange = farPlane - nearPlane;
   // WebGPU [0,1] depth convention. The cast projection is constructed with
   // the owning context's convention, so it wrote values in this range too.
@@ -66,8 +75,12 @@ fn csm_samplePointShadow(
     minorA = vec3<f32>(1.0, 0.0, 0.0);
     minorB = vec3<f32>(0.0, 1.0, 0.0);
   }
-  let texelStep = 1.0 / max(shadowMapSize, 1.0);
-  let offset = pcfRadius * texelStep;
+  // A cube face spans projected coordinates [-1, 1], so one texel is 2/N.
+  // `direction` is meter-scale; scale the minor-axis perturbation by the
+  // dominant component so division by that component during cube projection
+  // moves exactly `2 * pcfRadius / N` across the face.
+  let offset =
+    2.0 * axisDist * pcfRadius / max(shadowMapSize, 1.0);
   var sum = textureSampleCompareLevel(
     cubeDepth, compSampler, direction, refDepth,
   );

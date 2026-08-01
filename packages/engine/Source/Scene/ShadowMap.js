@@ -494,6 +494,7 @@ class ShadowMap {
 
     this._isPointLight = options.isPointLight ?? false;
     this._pointLightRadius = options.pointLightRadius ?? 100.0;
+    this._pointLightFrustum = undefined;
 
     this._cascadesEnabled = this._isPointLight
       ? false
@@ -720,6 +721,22 @@ class ShadowMap {
   update(frameState) {
     updateCameras(this, frameState);
 
+    // A backend that owns cascades natively renders one depth target from the
+    // fitted whole-frustum light camera instead of the four-viewport atlas, so
+    // it reads pass 0's camera as the cast transform and `_shadowMapMatrix` as
+    // the eye-to-light receive transform. Both of those are otherwise only
+    // published in the single-pass configuration, which would leave the receive
+    // matrix at its zero-initialized value here. Publish them from
+    // `_shadowMapCamera` — the camera `fitShadowMapToScene` just fitted to the
+    // whole view frustum — so cast and receive agree on one light volume while
+    // the cascade sub-frusta keep doing their real job: per-pass caster culling
+    // whose union is the native renderer's unique caster set. WebGL leaves this
+    // `false` and is unaffected.
+    const nativeCascadeLightCamera =
+      this._cascadesEnabled &&
+      !this._isPointLight &&
+      frameState.context?.managesSceneShadowCascadesNatively === true;
+
     if (this._needsUpdate) {
       // WebGPU path — skip WebGL framebuffer creation; WebGPUShadowMapRenderer
       // manages its own depth32float texture + comparison sampler.
@@ -728,7 +745,12 @@ class ShadowMap {
         FeatureRendererKey.SHADOW_MAP,
       );
       if (shadowFr) {
-        shadowFr.init(this, context);
+        // Feature-renderer shadow initialization consumes the complete frame
+        // state (including its active context). Passing the context itself
+        // made `initWebGPUShadowMap` read `context.context` and silently defer
+        // allocation, which breaks cast-only shadows with no receive-side
+        // effects initialization to repair them later in the frame.
+        shadowFr.init(this, frameState);
         this._featureRenderer = shadowFr;
       } else {
         updateFramebuffer(this, context);
@@ -754,7 +776,7 @@ class ShadowMap {
         this._shadowMapCullingVolume =
           shadowMapCamera.frustum.computeCullingVolume(position, direction, up);
 
-        if (this._passes.length === 1) {
+        if (this._passes.length === 1 || nativeCascadeLightCamera) {
           this._passes[0].camera.clone(shadowMapCamera);
         }
       } else {
@@ -764,7 +786,16 @@ class ShadowMap {
       }
     }
 
-    if (this._passes.length === 1) {
+    // The native-cascade term additionally requires `_needsUpdate`, which in the
+    // cascaded branch of `checkVisibility` is true on exactly the in-view frames
+    // — the frames on which `fitShadowMapToScene` ran just above. Reading the
+    // light frustum without it would hit an unfitted OrthographicOffCenterFrustum
+    // on an out-of-view first frame, and out-of-view maps are skipped by every
+    // consumer anyway.
+    if (
+      this._passes.length === 1 ||
+      (nativeCascadeLightCamera && this._needsUpdate)
+    ) {
       const inverseView = this._sceneCamera.inverseViewMatrix;
       Matrix4.multiply(
         this._shadowMapCamera.getViewProjection(),

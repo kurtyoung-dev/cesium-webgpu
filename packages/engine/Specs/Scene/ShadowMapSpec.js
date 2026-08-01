@@ -205,6 +205,33 @@ describe(
       return Promise.all(modelPromises);
     });
 
+    it("passes the active frame state to WebGPU feature initialization", function () {
+      const featureRenderer = {
+        init: jasmine.createSpy("shadowFeatureInit"),
+        destroy: jasmine.createSpy("shadowFeatureDestroy"),
+      };
+      spyOn(scene.context, "getFeatureRenderer").and.returnValue(
+        featureRenderer,
+      );
+      const shadowMap = new ShadowMap({
+        context: scene.context,
+        lightCamera: scene.camera,
+        cascadesEnabled: false,
+        size: 1,
+      });
+
+      try {
+        shadowMap.update(scene.frameState);
+        expect(featureRenderer.init).toHaveBeenCalledWith(
+          shadowMap,
+          scene.frameState,
+        );
+      } finally {
+        shadowMap.destroy();
+      }
+      expect(featureRenderer.destroy).toHaveBeenCalledWith(shadowMap);
+    });
+
     it("maps shadow near/far depth to texture space for both clip conventions", function () {
       const context = scene.context;
       const originalConvention = context._clipSpaceConvention;

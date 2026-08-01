@@ -3,7 +3,9 @@ import {
   ATMOSPHERE_LUT_CONTROL_OFFSET,
   CSM_CONTROL_OFFSET,
   CSM_PARAMS_PLACEHOLDER_BYTES,
+  refreshShadowReceiveUniformPrefix,
 } from "../../../Source/Renderer/WebGPU/WebGPUEffectsBindGroup.js";
+import Matrix4 from "../../../Source/Core/Matrix4.js";
 
 // Pure-constant specs for the CSM Slice 1 extension of the effects UBO
 // + BGL. We keep CSM bindings (10/11) in lockstep with the WGSL struct
@@ -60,5 +62,65 @@ describe("Renderer/WebGPU/WebGPUEffectsBindGroup CSM layout", function () {
     // Must be at least the shader-visible struct size (the real
     // minBindingSize invariant for binding 10).
     expect(CSM_PARAMS_PLACEHOLDER_BYTES).toBeGreaterThanOrEqual(320);
+  });
+
+  it("refreshes the fitted single-map prefix without touching the UBO tail", function () {
+    const writes = [];
+    const device = {
+      queue: {
+        writeBuffer(buffer, offset, source, sourceOffset, size) {
+          writes.push({
+            buffer,
+            offset,
+            data: new Float32Array(
+              new Uint8Array(source, sourceOffset, size).slice().buffer,
+            ),
+          });
+        },
+      },
+    };
+    const uniformBuffer = {};
+    const matrix = Matrix4.fromTranslation(
+      { x: 4.0, y: 5.0, z: 6.0 },
+      new Matrix4(),
+    );
+    const shadowMap = {
+      _shadowMapMatrix: matrix,
+      darkness: 0.25,
+      softShadows: true,
+      _webgpuCache: {
+        depthTexture: {},
+        depthTextureView: {},
+        comparisonSampler: {},
+        size: 2048,
+      },
+    };
+
+    expect(
+      refreshShadowReceiveUniformPrefix(device, uniformBuffer, shadowMap),
+    ).toBe(true);
+
+    expect(writes.length).toBe(1);
+    expect(writes[0].buffer).toBe(uniformBuffer);
+    expect(writes[0].offset).toBe(0);
+    expect(writes[0].data.length).toBe(20);
+    expect(Array.from(writes[0].data.slice(0, 16))).toEqual(
+      Matrix4.pack(matrix, new Array(16)),
+    );
+    expect(Array.from(writes[0].data.slice(16))).toEqual([2048, 2048, 0.25, 1]);
+
+    // A settled shadow prefix must not enqueue an identical 80-byte upload on
+    // every frame.
+    expect(
+      refreshShadowReceiveUniformPrefix(device, uniformBuffer, shadowMap),
+    ).toBe(false);
+    expect(writes.length).toBe(1);
+
+    shadowMap.darkness = 0.5;
+    expect(
+      refreshShadowReceiveUniformPrefix(device, uniformBuffer, shadowMap),
+    ).toBe(true);
+    expect(writes.length).toBe(2);
+    expect(writes[1].data[18]).toBe(0.5);
   });
 });
