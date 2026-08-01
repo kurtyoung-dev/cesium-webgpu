@@ -314,8 +314,12 @@ export function ensureResources(
   const canvasW = (context._canvas?.width ?? 1) | 0;
   const canvasH = (context._canvas?.height ?? 1) | 0;
   const ppFormat = context.presentationFormat ?? "bgra8unorm";
+  const snapshotOwner = context as unknown as {
+    _postProcessSnapshotDevice?: GPUDevice | null;
+  };
   const needsSnapshotRealloc =
     !context._postProcessSnapshotTexture ||
+    snapshotOwner._postProcessSnapshotDevice !== device ||
     context._postProcessSnapshotWidth !== canvasW ||
     context._postProcessSnapshotHeight !== canvasH;
   if (needsSnapshotRealloc && canvasW > 0 && canvasH > 0) {
@@ -324,7 +328,15 @@ export function ensureResources(
       label: "PostProcessSnapshot",
       size: { width: canvasW, height: canvasH, depthOrArrayLayers: 1 },
       format: ppFormat,
-      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.TEXTURE_BINDING,
+      // C11-60 — this is side A of the environmental-effects ping-pong graph.
+      // It is copied from the canvas first, then may become a render target for
+      // the second/fourth full-screen effect. Sampling and attachment use never
+      // overlap in one pass because the compositor always selects the opposite
+      // side as its target.
+      usage:
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.RENDER_ATTACHMENT,
       sampleCount: 1,
     });
     context._postProcessSnapshotView =
@@ -333,6 +345,7 @@ export function ensureResources(
       });
     context._postProcessSnapshotWidth = canvasW;
     context._postProcessSnapshotHeight = canvasH;
+    snapshotOwner._postProcessSnapshotDevice = device;
   }
 
   // Batch 110 — bump the scene pipeline format generation when the

@@ -234,10 +234,14 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       expect(ShaderDefineHi.HI_WORD_PROBE).toBe(1 << 0);
     });
 
+    it("pins enhanced ocean to hi-word bit 1", function () {
+      expect(ShaderDefineHi.ENHANCED_OCEAN).toBe(1 << 1);
+    });
+
     it("pins every declared hi define (no unpinned additions)", function () {
       // Same discipline as the lo table: a newly-claimed hi bit must come
       // with its own explicit pin above; bump this count with it.
-      expect(Object.keys(ShaderDefineHi).length).toBe(1);
+      expect(Object.keys(ShaderDefineHi).length).toBe(2);
     });
 
     it("uses each hi bit exactly once, as a power of two, below bit 31", function () {

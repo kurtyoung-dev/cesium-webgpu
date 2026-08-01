@@ -996,6 +996,7 @@ class LabelCollection {
       FeatureRendererKey.LABEL_COLLECTION,
     );
     if (labelFR) {
+      this._featureRenderer = labelFR;
       // The WebGL fallback below calls `billboardCollection.update()` on each
       // child collection, which runs the shared scene-logic prologue (atlas GPU
       // upload schedule + `_baseVolume`/`_boundingVolume` computation). The
@@ -1053,6 +1054,12 @@ class LabelCollection {
     this._glyphBillboardCollection = this._glyphBillboardCollection.destroy();
     this._backgroundBillboardCollection =
       this._backgroundBillboardCollection.destroy();
+    if (
+      defined(this._featureRenderer) &&
+      defined(this._featureRenderer.destroy)
+    ) {
+      this._featureRenderer.destroy(this);
+    }
 
     return destroyObject(this);
   }

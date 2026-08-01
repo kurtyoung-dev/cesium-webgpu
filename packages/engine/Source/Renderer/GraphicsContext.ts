@@ -322,6 +322,13 @@ export interface FeatureRenderer {
   // different renderer types implement different subsets. Callers check
   // existence before calling (duck-typed dispatch).
   update?(...args: unknown[]): void;
+  /**
+   * Optional asynchronous-resource preparation hook. A `false` result means
+   * the backend has started non-blocking work but is not render-ready yet.
+   * Scene owners may defer their public ready transition until a later call
+   * returns true; the hook must never submit or emit visible commands.
+   */
+  prepare?(...args: unknown[]): boolean | void;
   execute?(...args: unknown[]): void;
   render?(...args: unknown[]): void;
   composite?(...args: unknown[]): void;
@@ -1238,6 +1245,29 @@ export abstract class GraphicsContext {
   }
 
   /**
+   * True when the backend owns scene-light cascades outside the legacy
+   * `ShadowMap.passes` array: its native renderer consumes the unique
+   * light-frustum caster set unioned across those passes and performs its own
+   * dispatch into a single depth target.
+   *
+   * This is NOT a signal to construct the scene's `ShadowMap` with
+   * `cascadesEnabled: false`. That flag selects the entire directional-light
+   * lifecycle — orthographic light frustum, `fitShadowMapToScene`, the
+   * below-horizon cull, the terminator darkness fade, and the per-frame
+   * `_needsUpdate` — and disabling it degrades the scene map to a spot light at
+   * a camera position `Scene` never writes. `ShadowMap.update` reads this getter
+   * for the narrow thing a native backend actually needs: publishing the fitted
+   * whole-frustum light camera through pass 0 and keeping `_shadowMapMatrix`
+   * current, so the native cast and receive transforms agree on one light volume.
+   *
+   * WebGL defaults false — it dispatches the four legacy cascade passes directly
+   * and its receive shader reads `shadowMap_cascadeMatrices` instead.
+   */
+  get managesSceneShadowCascadesNatively(): boolean {
+    return false;
+  }
+
+  /**
    * True if this backend exposes the triangulation-debug helper
    * (`scene.triangulationDebug`). Only WebGPU wires up the primitive
    * index-utilities compute module today; WebGL returns false.
@@ -1304,6 +1334,16 @@ export abstract class GraphicsContext {
 
   abstract beginFrame(): void;
   abstract endFrame(): void;
+
+  /**
+   * Establish the ordering boundary before a second viewport updates the same
+   * scene resources in one logical frame. Immediate-mode backends already
+   * consume the first viewport before those updates, so the default is a no-op.
+   * Explicit-command backends may submit/rotate an encoder segment here to
+   * prevent later uniform or compute writes from overtaking the first view.
+   */
+  beginSecondaryViewport(): void {}
+
   abstract clear(clearCommand: unknown, passState?: unknown): void;
   abstract resize(): void;
 

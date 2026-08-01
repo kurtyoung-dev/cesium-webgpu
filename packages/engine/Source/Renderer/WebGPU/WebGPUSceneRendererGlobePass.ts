@@ -61,8 +61,8 @@ import {
  * `executeBatch`, with a markedly worse p90 (build-cost spikes).
  *
  * It also can't be safely cached: each globe command records
- * `setBindGroup(0, bg0, [cameraOffset, tileOffset])` with the
- * per-tile ring-allocator byte offsets BAKED IN at record time. Those
+ * `setBindGroup(0, bg0, [cameraOffset, tileOffset, eclipseOffset])` with
+ * the ring-allocator byte offsets BAKED IN at record time. Those
  * offsets rotate every frame (the per-frame ring allocator cycles
  * pages by design — NEW-GLOBE-DYNAMIC-OFFSET-UBO made the bind-GROUP
  * object stable across motion, but the dynamic-OFFSET values still

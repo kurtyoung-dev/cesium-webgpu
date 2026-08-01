@@ -774,6 +774,13 @@ describe("Renderer/WebGPU/WebGLCompatibilityStub", function () {
       expect(gl.getExtension("EXT_does_not_exist")).toBeNull();
     });
 
+    it("does not advertise WebGL parallel shader compilation", function () {
+      expect(gl.getExtension("KHR_parallel_shader_compile")).toBeNull();
+      expect(gl.getSupportedExtensions()).not.toContain(
+        "KHR_parallel_shader_compile",
+      );
+    });
+
     it("getSupportedExtensions lists the known extension keys", function () {
       const names = gl.getSupportedExtensions();
       expect(names).toContain("OES_texture_float");

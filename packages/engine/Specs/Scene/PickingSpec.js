@@ -789,6 +789,26 @@ describe(
           }, offscreenRay);
         });
 
+        it("restores the default View and frame uniforms when offscreen rendering throws", function () {
+          const defaultView = scene.defaultView;
+          const context = scene.context;
+          spyOn(context, "endFrame").and.callThrough();
+          spyOn(scene, "updateEnvironment").and.throwError(
+            "injected offscreen pick failure",
+          );
+
+          expect(function () {
+            scene.pickFromRay(primitiveRay);
+          }).toThrowError("injected offscreen pick failure");
+
+          expect(scene.view).toBe(defaultView);
+          expect(scene.frameState.camera).toBe(defaultView.camera);
+          expect(context.endFrame).toHaveBeenCalled();
+          expect(context.uniformState.view).toEqual(
+            defaultView.camera.viewMatrix,
+          );
+        });
+
         it("does not pick primitives when show is false", function () {
           const rectangle = createLargeRectangle(0.0);
           rectangle.show = false;

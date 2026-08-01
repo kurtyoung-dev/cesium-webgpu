@@ -264,20 +264,26 @@ class OcclusionCulling {
     const visibility = this._soaLayout.visibility;
     const count = this._soaLayout.count;
 
-    for (let i = 0; i < count; i++) {
-      const cmdIdx = this._soaLayout.commandIndices[i];
-      if (visibility[i] === 1) {
-        visible.push(commands[cmdIdx]);
-      } else {
-        occluded.push(commands[cmdIdx]);
+    // C11-187 — Walk the original list once so represented and conservative
+    // pass-through commands retain their input-relative order. SOA population
+    // can skip commands without a usable sphere and stops at capacity.
+    let representedIndex = 0;
+    for (let commandIndex = 0; commandIndex < commands.length; commandIndex++) {
+      const command = commands[commandIndex];
+      const isRepresented =
+        representedIndex < count &&
+        this._soaLayout.commandIndices[representedIndex] === commandIndex;
+      if (!isRepresented) {
+        visible.push(command);
+        continue;
       }
-    }
 
-    // Add commands without bounding volumes (always visible)
-    for (let i = 0; i < commands.length; i++) {
-      if (!defined(commands[i].boundingVolume)) {
-        visible.push(commands[i]);
+      if (visibility[representedIndex] === 1) {
+        visible.push(command);
+      } else {
+        occluded.push(command);
       }
+      representedIndex++;
     }
 
     this.visibleCommands = visible;

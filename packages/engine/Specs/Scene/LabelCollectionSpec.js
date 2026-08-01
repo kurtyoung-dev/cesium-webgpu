@@ -22,6 +22,7 @@ import {
 
 import createScene from "../../../../Specs/createScene.js";
 import pollToPromise from "../../../../Specs/pollToPromise.js";
+import { destroyWebGPULabelResources } from "../../Source/Renderer/WebGPU/WebGPULabelRenderer.js";
 
 describe("Scene/LabelCollection", function () {
   let labels;
@@ -192,6 +193,68 @@ describe("Scene/LabelCollection", function () {
 
   it("is not destroyed", function () {
     expect(labels.isDestroyed()).toEqual(false);
+  });
+
+  it("destroys parent WebGPU resources and child collections exactly once", function () {
+    const collection = new LabelCollection();
+    const glyphCollection = collection._glyphBillboardCollection;
+    const backgroundCollection = collection._backgroundBillboardCollection;
+    spyOn(glyphCollection, "prepareForFeatureRenderer").and.returnValue(true);
+    spyOn(backgroundCollection, "prepareForFeatureRenderer").and.returnValue(
+      true,
+    );
+
+    const sdfInstanceManager = {
+      destroy: jasmine.createSpy("sdfInstanceManager.destroy"),
+    };
+    const uniformBuffer = {
+      destroy: jasmine.createSpy("uniformBuffer.destroy"),
+    };
+    const placeholderTexture = {
+      destroy: jasmine.createSpy("placeholderTexture.destroy"),
+    };
+    collection._webgpuLabelCache = {
+      sdfInstanceManager: sdfInstanceManager,
+      uniformBuffer: uniformBuffer,
+      placeholderTexture: placeholderTexture,
+    };
+
+    const featureRenderer = {
+      update: jasmine.createSpy("featureRenderer.update"),
+      destroy: jasmine
+        .createSpy("featureRenderer.destroy")
+        .and.callFake(destroyWebGPULabelResources),
+    };
+    const frameState = {
+      context: {
+        getFeatureRenderer: jasmine
+          .createSpy("getFeatureRenderer")
+          .and.returnValue(featureRenderer),
+      },
+      commandList: [],
+    };
+
+    collection.update(frameState);
+    expect(featureRenderer.update).toHaveBeenCalledOnceWith(
+      collection,
+      frameState,
+      frameState.commandList,
+    );
+
+    collection.destroy();
+
+    expect(featureRenderer.destroy).toHaveBeenCalledOnceWith(collection);
+    expect(sdfInstanceManager.destroy).toHaveBeenCalledTimes(1);
+    expect(uniformBuffer.destroy).toHaveBeenCalledTimes(1);
+    expect(placeholderTexture.destroy).toHaveBeenCalledTimes(1);
+    expect(collection._webgpuLabelCache).toBeUndefined();
+    expect(glyphCollection.isDestroyed()).toBe(true);
+    expect(backgroundCollection.isDestroyed()).toBe(true);
+
+    expect(function () {
+      collection.destroy();
+    }).toThrowDeveloperError();
+    expect(featureRenderer.destroy).toHaveBeenCalledTimes(1);
   });
 
   it("can add and remove multiple labels", function () {

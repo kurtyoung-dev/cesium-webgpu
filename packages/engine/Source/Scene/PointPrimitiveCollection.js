@@ -502,6 +502,7 @@ class PointPrimitiveCollection {
       FeatureRendererKey.POINT_PRIMITIVE_COLLECTION,
     );
     if (fr) {
+      this._featureRenderer = fr;
       this._pointPrimitivesLength = this._pointPrimitives.length;
       // The WebGL path below computes the collection bounding volume (after its
       // own vertex build) via `updateBoundingVolume`, which the draw command's
@@ -879,12 +880,17 @@ class PointPrimitiveCollection {
    * @see PointPrimitiveCollection#isDestroyed
    */
   destroy() {
-    // Feature renderers are cleaned up by the context's _destroyFeatureRenderers()
     this._sp = this._sp && this._sp.destroy();
     this._spTranslucent = this._spTranslucent && this._spTranslucent.destroy();
     this._spPick = this._spPick && this._spPick.destroy();
     this._vaf = this._vaf && this._vaf.destroy();
     destroyPointPrimitives(this._pointPrimitives);
+    if (
+      defined(this._featureRenderer) &&
+      defined(this._featureRenderer.destroy)
+    ) {
+      this._featureRenderer.destroy(this);
+    }
 
     return destroyObject(this);
   }

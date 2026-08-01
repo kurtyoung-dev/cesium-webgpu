@@ -82,6 +82,28 @@ describe("Renderer/WebGPU/WebGPURingBufferAllocator", function () {
     expect(pageIndices).toEqual([1, 2, 0, 1, 2, 0]);
   });
 
+  it("advances an allocation epoch even when the ring wraps to the same page", function () {
+    const { device } = makeMockDevice();
+    const alloc = new WebGPURingBufferAllocator(device, {
+      pageSize: 4096,
+      pageCount: 3,
+    });
+
+    expect(alloc.allocationEpoch).toBe(0);
+    const epochs = [];
+    const buffers = [];
+    for (let i = 0; i < 4; i++) {
+      alloc.beginFrame();
+      epochs.push(alloc.allocationEpoch);
+      buffers.push(alloc.currentBuffer);
+      alloc.endFrame();
+    }
+
+    expect(epochs).toEqual([1, 2, 3, 4]);
+    expect(buffers[0]).toBe(buffers[3]);
+    expect(epochs[0]).not.toBe(epochs[3]);
+  });
+
   it("aligns offsets to minAlignment and sizes to 4 bytes", function () {
     const { device } = makeMockDevice();
     const alloc = new WebGPURingBufferAllocator(device, {

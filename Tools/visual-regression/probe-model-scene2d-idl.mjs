@@ -36,6 +36,7 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const MODEL = "/Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb";
 const W = 800;
 const H = 600;
+const PIPELINE_SETTLE_MS = Number(process.env.PROBE_PIPELINE_SETTLE_MS ?? 0);
 
 // lonMode: "idl" -> model on the antimeridian (crossing); "center" -> lon 0.
 async function run(renderer, lonMode) {
@@ -54,7 +55,7 @@ async function run(renderer, lonMode) {
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const info = await page.evaluate(
-    async ({ modelUrl, lonMode }) => {
+    async ({ modelUrl, lonMode, pipelineSettleMs }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
@@ -104,6 +105,13 @@ async function run(renderer, lonMode) {
         scene.render();
         await new Promise((r) => requestAnimationFrame(r));
       }
+      if (pipelineSettleMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, pipelineSettleMs));
+        for (let i = 0; i < 10; i++) {
+          scene.render();
+          await new Promise((resolve) => requestAnimationFrame(resolve));
+        }
+      }
 
       // Read the CANVAS FRAMEBUFFER directly (drawImage into a 2D context) so
       // no DOM widget chrome is included — element screenshots would composite
@@ -146,9 +154,57 @@ async function run(renderer, lonMode) {
       const pngB64 = btoa(b64);
 
       const bs2D = model.sceneGraph._boundingSphere2D;
+      const modelCommands = scene._frameState.commandList.filter(
+        (command) => command?.owner === model,
+      );
+      const commandDiagnostics = modelCommands.slice(0, 6).map((command) => ({
+        pass: command.pass,
+        pipeline: command.pipeline?.label ?? null,
+        matrixTranslation: command.modelMatrix
+          ? [command.modelMatrix[12], command.modelMatrix[13], command.modelMatrix[14]]
+          : null,
+        boundingCenter: command.boundingVolume?.center
+          ? [
+              command.boundingVolume.center.x,
+              command.boundingVolume.center.y,
+              command.boundingVolume.center.z,
+            ]
+          : null,
+        boundingRadius: command.boundingVolume?.radius ?? null,
+        cull: command.cull ?? null,
+      }));
+      const runtimePrimitives = model.sceneGraph._runtimeNodes.flatMap((node) =>
+        node?.runtimePrimitives ?? [],
+      );
+      const nativePrimitiveCaches = Object.values(
+        model._webgpuCache?.primitives ?? {},
+      );
+      const nativePipelineCache = model._webgpuCache?.pipelineCache;
       return {
         ready: !!model.ready,
         sceneMode: scene.mode,
+        drawCommandsBackend: model._drawCommandsBackend,
+        nativeCommandCount: modelCommands.length,
+        commandDiagnostics,
+        runtimeDescriptorCount: runtimePrimitives.filter(
+          (primitive) => primitive.backendNeutralDescriptor,
+        ).length,
+        runtimeDrawCommandCount: runtimePrimitives.filter(
+          (primitive) => primitive.drawCommand,
+        ).length,
+        nativeCacheCount: nativePrimitiveCaches.length,
+        nativePendingPipelineCount:
+          nativePipelineCache?._pendingColorPipelines?.size ?? null,
+        nativeResolvedPipelineCount:
+          nativePipelineCache?._pipelines?.size ?? null,
+        centralPipelineStats:
+          scene.context.webgpuPipelineCache?.getStats?.() ?? null,
+        nativePipelines: nativePrimitiveCaches.map((primitive) => ({
+          pipeline: primitive.pipeline?.label ?? null,
+          refetch: primitive._pipelineNeedsRefetch ?? null,
+          vertexCount: primitive.vertexCount ?? null,
+          indexCount: primitive.indexCount ?? null,
+        })),
         bs2DcenterY: bs2D ? bs2D.center.y : null,
         bs2Dradius: bs2D ? bs2D.radius : null,
         w,
@@ -161,7 +217,7 @@ async function run(renderer, lonMode) {
         renderErrorCount: window.__renderErrors.length,
       };
     },
-    { modelUrl: MODEL, lonMode },
+    { modelUrl: MODEL, lonMode, pipelineSettleMs: PIPELINE_SETTLE_MS },
   );
 
   const gateArm = await armWebGPUDevices(page);
@@ -190,6 +246,18 @@ function line(label, r) {
   );
   if (r.renderErrorCount > 0) {
     console.log(`    renderError[0]: ${r.renderErrors[0]}`);
+  }
+  console.log(
+    `    backend=${r.drawCommandsBackend} nativeCommands=${r.nativeCommandCount} descriptors=${r.runtimeDescriptorCount} legacy=${r.runtimeDrawCommandCount} nativeCaches=${r.nativeCacheCount} localPending=${r.nativePendingPipelineCount} localResolved=${r.nativeResolvedPipelineCount}`,
+  );
+  if (r.centralPipelineStats) {
+    console.log(`    centralPipelines: ${JSON.stringify(r.centralPipelineStats)}`);
+  }
+  if (r.commandDiagnostics.length > 0) {
+    console.log(`    command[0]: ${JSON.stringify(r.commandDiagnostics[0])}`);
+  }
+  if (r.nativePipelines.length > 0) {
+    console.log(`    nativePipeline[0]: ${JSON.stringify(r.nativePipelines[0])}`);
   }
 }
 

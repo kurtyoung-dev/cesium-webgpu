@@ -212,75 +212,112 @@ function getRayIntersection(
 
   const view = picking._pickOffscreenView;
   scene.view = view;
+  let hadPrimaryError = false;
+  let primaryError;
+  let hadCleanupError = false;
+  let cleanupError;
+  let result;
+  try {
+    updateOffscreenCameraFromRay(picking, ray, width, view.camera);
 
-  updateOffscreenCameraFromRay(picking, ray, width, view.camera);
+    const drawingBufferRectangle = BoundingRectangle.clone(
+      view.viewport,
+      scratchRectangle,
+    );
 
-  const drawingBufferRectangle = BoundingRectangle.clone(
-    view.viewport,
-    scratchRectangle,
-  );
+    const passState = view.pickFramebuffer.begin(
+      drawingBufferRectangle,
+      view.viewport,
+    );
 
-  const passState = view.pickFramebuffer.begin(
-    drawingBufferRectangle,
-    view.viewport,
-  );
+    scene.jobScheduler.disableThisFrame();
 
-  scene.jobScheduler.disableThisFrame();
+    scene.updateFrameState();
+    frameState.invertClassification = false;
+    frameState.passes.pick = true;
+    frameState.passes.offscreen = true;
 
-  scene.updateFrameState();
-  frameState.invertClassification = false;
-  frameState.passes.pick = true;
-  frameState.passes.offscreen = true;
+    if (mostDetailed) {
+      frameState.tilesetPassState = mostDetailedPickTilesetPassState;
+    } else {
+      frameState.tilesetPassState = pickTilesetPassState;
+    }
 
-  if (mostDetailed) {
-    frameState.tilesetPassState = mostDetailedPickTilesetPassState;
-  } else {
-    frameState.tilesetPassState = pickTilesetPassState;
-  }
+    uniformState.update(frameState);
 
-  uniformState.update(frameState);
+    scene.updateEnvironment();
+    scene.updateAndExecuteCommands(passState, scratchColorZero);
+    scene.resolveFramebuffers(passState);
 
-  scene.updateEnvironment();
-  scene.updateAndExecuteCommands(passState, scratchColorZero);
-  scene.resolveFramebuffers(passState);
+    let position;
+    const object = view.pickFramebuffer.end(drawingBufferRectangle, 1)[0];
 
-  let position;
-  const object = view.pickFramebuffer.end(drawingBufferRectangle, 1)[0];
-
-  if (scene.context.depthTexture) {
-    const { frustumCommandsList } = view;
-    const numFrustums = frustumCommandsList.length;
-    for (let i = 0; i < numFrustums; ++i) {
-      const pickDepth = picking.getPickDepth(scene, i);
-      const depth = pickDepth.getDepth(context, 0, 0);
-      if (!defined(depth)) {
-        continue;
+    if (scene.context.depthTexture) {
+      const { frustumCommandsList } = view;
+      const numFrustums = frustumCommandsList.length;
+      for (let i = 0; i < numFrustums; ++i) {
+        const pickDepth = picking.getPickDepth(scene, i);
+        const depth = pickDepth.getDepth(context, 0, 0);
+        if (!defined(depth)) {
+          continue;
+        }
+        if (depth > 0.0 && depth < 1.0) {
+          const renderedFrustum = frustumCommandsList[i];
+          const near =
+            renderedFrustum.near *
+            (i !== 0 ? scene.opaqueFrustumNearOffset : 1.0);
+          const far = renderedFrustum.far;
+          const distance = near + depth * (far - near);
+          position = Ray.getPoint(ray, distance);
+          break;
+        }
       }
-      if (depth > 0.0 && depth < 1.0) {
-        const renderedFrustum = frustumCommandsList[i];
-        const near =
-          renderedFrustum.near *
-          (i !== 0 ? scene.opaqueFrustumNearOffset : 1.0);
-        const far = renderedFrustum.far;
-        const distance = near + depth * (far - near);
-        position = Ray.getPoint(ray, distance);
-        break;
+    }
+
+    if (defined(object) || defined(position)) {
+      result = {
+        object: object,
+        position: position,
+        exclude:
+          (!defined(position) && requirePosition) ||
+          isExcluded(object, objectsToExclude),
+      };
+    }
+  } catch (error) {
+    hadPrimaryError = true;
+    primaryError = error;
+  } finally {
+    // The offscreen View borrows Scene's one mutable FrameState/UniformState.
+    // Restore all three owners even when command generation, readback, or
+    // submission throws; otherwise the next default-view translucent-depth
+    // pick can render with the offscreen camera and eclipse block.
+    scene.view = scene.defaultView;
+    try {
+      context.endFrame();
+    } catch (error) {
+      hadCleanupError = true;
+      cleanupError = error;
+    }
+    try {
+      scene.updateFrameState();
+      uniformState.update(frameState);
+    } catch (error) {
+      if (!hadCleanupError) {
+        hadCleanupError = true;
+        cleanupError = error;
       }
     }
   }
 
-  scene.view = scene.defaultView;
-  context.endFrame();
-
-  if (defined(object) || defined(position)) {
-    return {
-      object: object,
-      position: position,
-      exclude:
-        (!defined(position) && requirePosition) ||
-        isExcluded(object, objectsToExclude),
-    };
+  // Preserve the original render/readback exception. A cleanup failure is
+  // surfaced only when it is the first failure.
+  if (hadPrimaryError) {
+    throw primaryError;
   }
+  if (hadCleanupError) {
+    throw cleanupError;
+  }
+  return result;
 }
 
 // ---- Drill pick from ray ----

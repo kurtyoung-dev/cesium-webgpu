@@ -8,6 +8,120 @@ import {
 import { shouldAllocateWebGPUOIT } from "../../../Source/Renderer/WebGPU/WebGPUSceneRendererEnsureResources.js";
 
 describe("Renderer/WebGPU unsafe default containment", function () {
+  it("rejects queued frame readbacks when the context is destroyed", function () {
+    const context = new WebGPUContext(document.createElement("canvas"), {});
+    const callback = jasmine.createSpy("afterFrameSubmit");
+    context._currentCommandEncoder = {};
+
+    expect(context.enqueueAfterFrameSubmit(callback)).toBe(true);
+    context.destroy();
+
+    expect(callback).toHaveBeenCalledOnceWith(false);
+    expect(context._currentCommandEncoder).toBeNull();
+  });
+
+  it("rejects queued frame readbacks immediately on device loss", function () {
+    const context = new WebGPUContext(document.createElement("canvas"), {});
+    const callback = jasmine.createSpy("afterFrameSubmit");
+    context._currentCommandEncoder = {};
+
+    expect(context.enqueueAfterFrameSubmit(callback)).toBe(true);
+    context._clearAllCaches(null);
+
+    expect(callback).toHaveBeenCalledOnceWith(false);
+    expect(context._currentCommandEncoder).toBeNull();
+    context.destroy();
+  });
+
+  it("rejects queued frame readbacks when frame finalization fails", function () {
+    const context = new WebGPUContext(document.createElement("canvas"), {});
+    const callback = jasmine.createSpy("afterFrameSubmit");
+    const allocator = {
+      flush: function () {
+        throw new Error("flush failed");
+      },
+      endFrame: jasmine.createSpy("allocator.endFrame"),
+    };
+    context._device = {};
+    context._currentCommandEncoder = {};
+    context._uniformAllocator = allocator;
+
+    expect(context.enqueueAfterFrameSubmit(callback)).toBe(true);
+    expect(function () {
+      context.endFrame();
+    }).toThrowError("flush failed");
+
+    expect(callback).toHaveBeenCalledOnceWith(false);
+    expect(allocator.endFrame).toHaveBeenCalledTimes(1);
+    expect(context._currentCommandEncoder).toBeNull();
+
+    context._uniformAllocator = null;
+    context._device = null;
+    context.destroy();
+  });
+
+  it("submits the first wrapped viewport before reusing frame resources", function () {
+    const context = new WebGPUContext(document.createElement("canvas"), {});
+    const firstBuffer = {};
+    const secondBuffer = {};
+    const firstEncoder = {
+      finish: jasmine.createSpy("first.finish").and.returnValue(firstBuffer),
+    };
+    const secondEncoder = {
+      finish: jasmine.createSpy("second.finish").and.returnValue(secondBuffer),
+    };
+    const activePass = { end: jasmine.createSpy("pass.end") };
+    const submit = jasmine.createSpy("queue.submit");
+    const createCommandEncoder = jasmine
+      .createSpy("createCommandEncoder")
+      .and.returnValue(secondEncoder);
+    const allocator = {
+      flush: jasmine.createSpy("allocator.flush"),
+      endFrame: jasmine.createSpy("allocator.endFrame"),
+    };
+    const callback = jasmine.createSpy("afterFrameSubmit");
+    const textureView = {};
+
+    context._device = {
+      queue: { submit: submit },
+      createCommandEncoder: createCommandEncoder,
+    };
+    context._uniformAllocator = allocator;
+    context._currentCommandEncoder = firstEncoder;
+    context._currentRenderPassEncoder = activePass;
+    context._activePassTarget = "scene-framebuffer";
+    context._currentTextureView = textureView;
+    context._canvasColorTouchedThisFrame = true;
+    context._canvasDepthTouchedThisFrame = true;
+    expect(context.enqueueAfterFrameSubmit(callback)).toBe(true);
+
+    context.beginSecondaryViewport();
+
+    expect(activePass.end).toHaveBeenCalledTimes(1);
+    expect(allocator.flush).toHaveBeenCalledTimes(1);
+    expect(firstEncoder.finish).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledWith([firstBuffer]);
+    expect(createCommandEncoder).toHaveBeenCalledOnceWith({
+      label: "Secondary Viewport Continuation Encoder",
+    });
+    expect(context._currentCommandEncoder).toBe(secondEncoder);
+    expect(context._currentTextureView).toBe(textureView);
+    expect(context._canvasColorTouchedThisFrame).toBe(true);
+    expect(context._canvasDepthTouchedThisFrame).toBe(true);
+    expect(callback).not.toHaveBeenCalled();
+    expect(allocator.endFrame).not.toHaveBeenCalled();
+
+    context.endFrame();
+
+    expect(submit.calls.allArgs()).toEqual([[firstBuffer], [secondBuffer]]);
+    expect(callback).toHaveBeenCalledOnceWith(true);
+    expect(allocator.endFrame).toHaveBeenCalledTimes(1);
+
+    context._uniformAllocator = null;
+    context._device = null;
+    context.destroy();
+  });
+
   it("defaults a standalone WebGPUContext closed without lazy culler allocation", function () {
     // TypeScript's private constructor is an API guard; at runtime this focused
     // unit test can instantiate the pre-initialization state without requesting

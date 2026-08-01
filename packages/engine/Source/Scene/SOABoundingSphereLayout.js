@@ -181,17 +181,35 @@ class SOABoundingSphereLayout {
       // culling behavior.
       const center = boundingVolumeCenter(cmd.boundingVolume);
       const r = boundingVolumeRadius(cmd.boundingVolume);
-      if (center === undefined || !isFinite(r)) {
+      if (center === undefined) {
         // Unknown/degenerate bounding volume — skip rather than poison
-        // the SOA with NaN. The command stays conservative-visible via
-        // the "no bounding volume" fallback path in OcclusionCulling.
+        // the SOA with NaN. C11-187 keeps every unrepresented command
+        // conservative-visible in OcclusionCulling.
         continue;
       }
 
-      this.centerX[writeIndex] = center.x;
-      this.centerY[writeIndex] = center.y;
-      this.centerZ[writeIndex] = center.z;
-      this.radius[writeIndex] = r;
+      // Validate the exact f32 values consumed by the SIMD path. A finite f64
+      // can overflow to Infinity during Float32Array assignment, and a zero or
+      // negative radius is not a useful conservative sphere. Leave all such
+      // commands unrepresented so OcclusionCulling passes them through.
+      const centerX = Math.fround(center.x);
+      const centerY = Math.fround(center.y);
+      const centerZ = Math.fround(center.z);
+      const radius = Math.fround(r);
+      if (
+        !Number.isFinite(centerX) ||
+        !Number.isFinite(centerY) ||
+        !Number.isFinite(centerZ) ||
+        !Number.isFinite(radius) ||
+        radius <= 0.0
+      ) {
+        continue;
+      }
+
+      this.centerX[writeIndex] = centerX;
+      this.centerY[writeIndex] = centerY;
+      this.centerZ[writeIndex] = centerZ;
+      this.radius[writeIndex] = radius;
       this.commandIndices[writeIndex] = i;
       writeIndex++;
     }

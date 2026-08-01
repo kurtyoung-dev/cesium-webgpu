@@ -118,6 +118,11 @@ export class WebGPURingBufferAllocator {
   private _currentOffset: number = 0;
   private _frameAllocations: number = 0;
   private _isInFrame: boolean = false;
+  // Monotonic allocation-lifetime epoch. Unlike Cesium's scene frame number,
+  // this advances for every allocator beginFrame(), including standalone pick
+  // mini-frames. Caches holding ring slices must key on this value: after a
+  // page-count wrap the same GPUBuffer/offset can contain unrelated bytes.
+  private _allocationEpoch: number = 0;
 
   // Statistics
   private _peakFrameUsage: number = 0;
@@ -192,6 +197,7 @@ export class WebGPURingBufferAllocator {
     this._currentOffset = 0;
     this._frameAllocations = 0;
     this._isInFrame = true;
+    this._allocationEpoch++;
   }
 
   /**
@@ -439,6 +445,17 @@ export class WebGPURingBufferAllocator {
    */
   get currentBuffer(): GPUBuffer {
     return this._pages[this._currentPageIndex].buffer;
+  }
+
+  /**
+   * Monotonic serial for the current allocation window.
+   *
+   * This advances on every {@link beginFrame} call, including WebGPU pick
+   * mini-frames that do not advance Cesium's logical frame number. Consumers
+   * may memoize a returned ring slice only while this value is unchanged.
+   */
+  get allocationEpoch(): number {
+    return this._allocationEpoch;
   }
 
   /**

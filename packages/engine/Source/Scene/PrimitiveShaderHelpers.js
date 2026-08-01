@@ -445,9 +445,8 @@ function depthClampFS(fragmentShaderSource) {
  * @private
  */
 function validateShaderMatching(shaderProgram, attributeLocations) {
-  const shaderAttributes = shaderProgram.vertexAttributes;
-
   //>>includeStart('debug', pragmas.debug);
+  const shaderAttributes = shaderProgram.vertexAttributes;
   for (const name in shaderAttributes) {
     if (Object.hasOwn(shaderAttributes, name)) {
       if (!defined(attributeLocations[name])) {

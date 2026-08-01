@@ -11,10 +11,12 @@ import {
   BlendOption,
   PointPrimitive,
   PointPrimitiveCollection,
+  SceneMode,
   SplitDirection,
 } from "../../index.js";
 
 import createScene from "../../../../Specs/createScene.js";
+import { destroyWebGPUPointResources } from "../../Source/Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js";
 
 describe(
   "Scene/PointPrimitiveCollection",
@@ -167,6 +169,68 @@ describe(
 
     it("is not destroyed", function () {
       expect(pointPrimitives.isDestroyed()).toEqual(false);
+    });
+
+    it("destroys feature-renderer resources exactly once", function () {
+      const collection = new PointPrimitiveCollection();
+      const instanceManager = {
+        destroy: jasmine.createSpy("instanceManager.destroy"),
+      };
+      const pickInstanceBuffer = {
+        destroy: jasmine.createSpy("pickInstanceBuffer.destroy"),
+      };
+      const uniformBuffer = {
+        destroy: jasmine.createSpy("uniformBuffer.destroy"),
+      };
+      collection._webgpuCache = {
+        instanceManager: instanceManager,
+        pickInstanceBuffer: pickInstanceBuffer,
+        uniformBuffer: uniformBuffer,
+      };
+
+      const featureRenderer = {
+        update: jasmine.createSpy("featureRenderer.update"),
+        destroy: jasmine
+          .createSpy("featureRenderer.destroy")
+          .and.callFake(destroyWebGPUPointResources),
+      };
+      const frameState = {
+        mode: SceneMode.SCENE3D,
+        context: {
+          limits: {
+            maximumAliasedPointSize: 64.0,
+          },
+          drawingBufferWidth: 1,
+          drawingBufferHeight: 1,
+          getFeatureRenderer: jasmine
+            .createSpy("getFeatureRenderer")
+            .and.returnValue(featureRenderer),
+        },
+        camera: {
+          getPixelSize: jasmine.createSpy("getPixelSize").and.returnValue(0.0),
+        },
+        commandList: [],
+      };
+
+      collection.update(frameState);
+      expect(featureRenderer.update).toHaveBeenCalledOnceWith(
+        collection,
+        frameState,
+        frameState.commandList,
+      );
+
+      collection.destroy();
+
+      expect(featureRenderer.destroy).toHaveBeenCalledOnceWith(collection);
+      expect(instanceManager.destroy).toHaveBeenCalledTimes(1);
+      expect(pickInstanceBuffer.destroy).toHaveBeenCalledTimes(1);
+      expect(uniformBuffer.destroy).toHaveBeenCalledTimes(1);
+      expect(collection._webgpuCache).toBeUndefined();
+
+      expect(function () {
+        collection.destroy();
+      }).toThrowDeveloperError();
+      expect(featureRenderer.destroy).toHaveBeenCalledTimes(1);
     });
 
     it("renders pointPrimitive in multiple passes", function () {
