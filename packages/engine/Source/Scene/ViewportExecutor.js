@@ -15,6 +15,12 @@ import {
 import { updateDebugFrustumPlanes } from "./SceneDebug.js";
 import SceneMode from "./SceneMode.js";
 
+const isShadowedPass = [];
+isShadowedPass[Pass.GLOBE] = true;
+isShadowedPass[Pass.CESIUM_3D_TILE] = true;
+isShadowedPass[Pass.OPAQUE] = true;
+isShadowedPass[Pass.TRANSLUCENT] = true;
+
 /**
  * 2D/3D/VR viewport dispatch. Manages camera and frustum setup for each
  * viewport configuration, then delegates to SceneRenderer for command execution.
@@ -89,6 +95,14 @@ function updateAndRenderPrimitives(scene) {
 
   updateDebugFrustumPlanes(scene);
   updateShadowMaps(scene);
+  // WebGPU model and primitive effects groups are prepared before the current
+  // light camera is fitted. Flush their deduplicated resource-preparation list now, after
+  // ShadowMap.update() and before globe/color command execution. WebGL has no
+  // such queue and falls through this optional backend hook.
+  // Multi-view/override renders may provide a frame-local context that is not
+  // `scene.context`. The queue was populated through `frameState.context`, so
+  // flush that same owner or its refreshes remain stranded for this viewport.
+  frameState.context.flushShadowReceiveUniformRefreshes?.();
 
   if (scene._globe) {
     scene._globe.render(frameState);
@@ -360,6 +374,8 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
   const view = scene._view;
   const { renderTranslucentDepthForPick } = scene._environmentState;
 
+  beginSecondaryViewportSegment(firstViewport, scene);
+
   if (!firstViewport) {
     scene.frameState.commandList.length = 0;
   }
@@ -397,14 +413,23 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
     scheduler.maintainMaterialSortIds(cmdList, materialIdConsumerDemanded);
   }
 
-  // Octree-accelerated PVS when enabled and command count exceeds threshold
   const octree = scheduler.octree;
+  const occlusionCulling = scheduler.occlusionCulling;
+  const shadowState = scene.frameState.shadowState;
+  // Every viewport starts with an empty side channel. Populate it only if a
+  // camera-only filter actually removes/reorders the command list.
+  collectPrePvsShadowCasters(cmdList, shadowState, false);
+  let prePvsShadowCastersCaptured = false;
+
+  // Octree-accelerated PVS when enabled and command count exceeds threshold
   if (octree.enabled) {
     const buildResult = octree.build(
       scene.frameState.commandList,
       scene.frameState.frameNumber,
     );
     if (buildResult.useOctree) {
+      collectPrePvsShadowCasters(cmdList, shadowState, true);
+      prePvsShadowCastersCaptured = shadowState.shadowsEnabled === true;
       // Replace commandList with octree-visible + bypass commands
       const cullingVolume = scene.frameState.cullingVolume;
       const occluder =
@@ -425,7 +450,6 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
   }
 
   // Occlusion culling (opt-in, requires compute shader support)
-  const occlusionCulling = scheduler.occlusionCulling;
   if (occlusionCulling.enabled) {
     occlusionCulling.beginFrame(null);
     const occResult = occlusionCulling.testCommands(
@@ -434,6 +458,9 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
     // When results are ready, only pass visible commands forward.
     // When not ready (async), all commands pass through (conservative).
     if (occResult.occluded.length > 0) {
+      if (!prePvsShadowCastersCaptured) {
+        collectPrePvsShadowCasters(cmdList, shadowState, true);
+      }
       scene.frameState.commandList.length = 0;
       for (let oi = 0; oi < occResult.visible.length; oi++) {
         scene.frameState.commandList.push(occResult.visible[oi]);
@@ -516,7 +543,62 @@ function executeCommandsInViewport(firstViewport, scene, passState) {
   }
 }
 
+/**
+ * Establish the explicit-backend ordering boundary before a wrapped second
+ * viewport updates resources. Use the frame-local context: override/capture
+ * renders may intentionally differ from `scene.context`, and that is the
+ * encoder which owns the commands recorded by this viewport.
+ *
+ * @private
+ */
+function beginSecondaryViewportSegment(firstViewport, scene) {
+  if (!firstViewport && scene._is2DViewportSplit === true) {
+    scene.frameState.context.beginSecondaryViewport?.();
+  }
+}
+
+/**
+ * Capture active shadow casters before optional camera-only visibility filters
+ * mutate the command list. View later merges only filtered-out candidates into
+ * the shadow list; these references never re-enter camera bins.
+ *
+ * The target array and dedupe Set are frame-owned and reused. When capture is
+ * not required or shadows are off, this is a constant-time reset.
+ *
+ * @param {Array} commandList The pre-filter command list.
+ * @param {FrameState.ShadowState} shadowState Current shadow state.
+ * @param {boolean} captureRequired Whether a camera filter will mutate the
+ * command list before View's PVS walk.
+ * @returns {DrawCommand[]} The reusable candidate array.
+ * @private
+ */
+function collectPrePvsShadowCasters(commandList, shadowState, captureRequired) {
+  const candidates = shadowState.prePvsCasterCommands;
+  const candidateSet = shadowState.prePvsCasterCommandSet;
+  candidates.length = 0;
+  candidateSet.clear();
+  if (!captureRequired || shadowState.shadowsEnabled !== true) {
+    return candidates;
+  }
+
+  for (let i = 0; i < commandList.length; i++) {
+    const command = commandList[i];
+    if (
+      command.castShadows === true &&
+      isShadowedPass[command.pass] === true &&
+      !candidateSet.has(command)
+    ) {
+      candidateSet.add(command);
+      candidates.push(command);
+    }
+  }
+  candidateSet.clear();
+  return candidates;
+}
+
 export {
+  beginSecondaryViewportSegment,
+  collectPrePvsShadowCasters,
   executeCommandsInViewport,
   execute2DViewportCommands,
   executeWebVRCommands,

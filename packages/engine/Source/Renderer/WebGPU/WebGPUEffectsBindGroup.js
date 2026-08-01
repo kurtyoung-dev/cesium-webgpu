@@ -2,7 +2,7 @@
  * Creates and manages the combined shadow-receive + clipping-planes bind group
  * used by lit/flat primitive shaders and the globe terrain shader.
  *
- * Bind group layout (23 bindings):
+ * Full model bind group layout (25 entries; bindings 0..23 and 25):
  *   0: EffectsUniforms       (uniform buffer, 480 bytes)
  *   1: Shadow depth          (texture_depth_2d)
  *   2: Shadow sampler        (sampler_comparison)
@@ -30,7 +30,7 @@
  *                                    a perspective-Z reference depth derived
  *                                    from `lightPositionWC` + `farPlane` in
  *                                    `EffectsUniforms.pointLightControl` /
- *                                    `pointLightPositionWC`. Placeholder is a
+ *                                    `pointLightPositionRTE`. Placeholder is a
  *                                    1×1×6 cube cleared to 1.0 so non-point-
  *                                    light pipelines that share the BGL stay
  *                                    valid; the shader gates on
@@ -67,7 +67,10 @@
 import defined from "../../Core/defined.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
-import { getShadowMapResources } from "./WebGPUShadowMapRenderer.js";
+import {
+  getShadowMapResources,
+  initWebGPUShadowMap,
+} from "./WebGPUShadowMapRenderer.js";
 import {
   computeClipPlaneDPrimes,
   CLIP_DPRIME_FLOAT_COUNT,
@@ -143,27 +146,26 @@ import WebGPUEffectsStateCache from "./WebGPUEffectsStateCache.js";
 //     w = depthBias (small offset subtracted from the reference depth
 //         before the comparison sample to suppress shadow acne — same
 //         role as `pointBias.depthBias` in WebGL).
-//   offset 320 — `pointLightPositionWC: vec4<f32>` —
-//     xyz = world-space light position (meters);
+//   offset 320 — `pointLightPositionRTE: vec4<f32>` —
+//     xyz = light position relative to the active camera origin (meters).
+//           JavaScript subtracts the two f64 ECEF positions before the result
+//           is quantized to f32, preserving meter/sub-meter light offsets at
+//           planetary scale. Receiver shaders subtract an already-relative
+//           fragment position in the same world-axis frame.
 //     w   = pcfRadius (Batch 63 — soft point-light shadows). Units are
 //           cube-face texels; 0 = hard sampling (single tap, identical
 //           to Batch 57's behavior). Typical soft values are 1.0–2.0
-//           texels; the receive shader scales by `1.0 / shadowMapSize.x`
-//           to convert to a unit-direction offset on the unit cube,
-//           then runs a 5-tap cross PCF kernel along the two minor
-//           cube-face axes. NOT the same role as `effects.shadowDarkness`
+//           texels; the receive shader converts this to a projected cube-face
+//           shift of `2 * radius / shadowMapSize.x`, then runs a 5-tap cross
+//           PCF kernel along the two minor cube-face axes. NOT the same role
+//           as `effects.shadowDarkness`
 //           (that drives the visibility-→-RGB mix at the call site;
 //           pcfRadius drives kernel width here). Defaults to 0 so the
 //           hard path stays the default for back-compat.
-//     The receive shader reconstructs `fragWC = cameraWC + rotated-rteMC`
-//     and computes `direction = fragWC - lightWC` for both the cube
-//     sample direction AND the dominant-axis distance fed into the
-//     perspective-Z formula. xyz is in absolute world coordinates, NOT
-//     camera-relative — this is fine for shadow casting where the
-//     relative magnitudes are bounded by `farPlane` (sub-radius scale,
-//     well within f32 precision after the `fragWC - lightWC` subtract).
-//     Holding the absolute vector lets the receive math stay agnostic
-//     to which camera frame the cast was done in.
+//     The receive shader computes `direction = fragRTE - lightRTE` for both
+//     the cube sample direction and dominant-axis distance. Both operands are
+//     camera-relative world-axis vectors, so camera translation cancels while
+//     the cube-face orientation remains aligned with the cast cameras.
 // 336 → 480 bytes (Batch 160, AUDIT_2026_05_02 A.6 NEW-MODEL-CLIPPING-POLYGONS):
 // appended polygon-clipping atlas control + per-extent UV remap so the model FS
 // can sample `clippingPolygonTex` at the correct atlas slot for the fragment's
@@ -213,6 +215,57 @@ const EDGE_VIEWPORT_OFFSET = 72; // 288 bytes / 4
 const POINT_LIGHT_CONTROL_OFFSET = 76; // 304 bytes / 4
 const POINT_LIGHT_POSITION_OFFSET = 80; // 320 bytes / 4
 const CLIP_DPRIME_FLOAT_OFFSET = 28;
+
+/**
+ * Resolve the camera origin used by renderer RTE uniform blocks.
+ *
+ * UniformState is authoritative because offscreen/multi-view passes may
+ * temporarily publish a camera that differs from `frameState.camera`. The
+ * frame-state camera remains a compatibility fallback for isolated callers.
+ *
+ * @param {object} frameState
+ * @returns {object|undefined}
+ * @private
+ */
+function resolvePointShadowCameraPosition(frameState) {
+  return (
+    frameState?.context?.uniformState?.cameraPosition ??
+    frameState?.camera?.positionWC
+  );
+}
+
+/**
+ * Pack an absolute point-light position as a camera-relative f32 vector.
+ *
+ * The subtraction happens in JavaScript number precision before assigning to
+ * the Float32Array. This is the precision-critical ordering: independently
+ * quantizing Earth-scale light/camera coordinates and subtracting them in WGSL
+ * loses meter-scale separation.
+ *
+ * @param {{x:number,y:number,z:number}} lightPositionWC
+ * @param {{x:number,y:number,z:number}|undefined} cameraPositionWC
+ * @param {number} pcfRadius
+ * @param {Float32Array} result
+ * @param {number} [offset=POINT_LIGHT_POSITION_OFFSET]
+ * @returns {Float32Array}
+ * @private
+ */
+function packPointLightPositionRelativeToCamera(
+  lightPositionWC,
+  cameraPositionWC,
+  pcfRadius,
+  result,
+  offset = POINT_LIGHT_POSITION_OFFSET,
+) {
+  const cameraX = cameraPositionWC?.x ?? 0.0;
+  const cameraY = cameraPositionWC?.y ?? 0.0;
+  const cameraZ = cameraPositionWC?.z ?? 0.0;
+  result[offset + 0] = lightPositionWC.x - cameraX;
+  result[offset + 1] = lightPositionWC.y - cameraY;
+  result[offset + 2] = lightPositionWC.z - cameraZ;
+  result[offset + 3] = pcfRadius;
+  return result;
+}
 
 // CSM params UBO size. Must match `WebGPUCSMRenderer._cascadeParamsData`
 // (272 floats = 1088 bytes). The WGSL CSMParams struct is only 80 floats /
@@ -547,6 +600,50 @@ function getEffectsBindGroupLayout(device) {
   ]);
 
   return cache.bgl;
+}
+
+/**
+ * Returns the globe-only effects layout. Globe terrain consumes the shared
+ * shadow, clipping, atmosphere, CSM, and point-light resources, but its WGSL
+ * does not declare the model edge-detection or clustered/area-light bindings.
+ * Keeping those model-only bindings out of the globe pipeline layout lowers
+ * its fragment sampled-texture footprint from 12 effects textures to 7.
+ *
+ * @param {GPUDevice} device
+ * @returns {GPUBindGroupLayout}
+ */
+function getGlobeEffectsBindGroupLayout(device) {
+  const cache = getOrCreateEffectsDeviceCache(device);
+  if (defined(cache.globeBgl)) {
+    return cache.globeBgl;
+  }
+
+  cache.globeBgl = makeBindGroupLayout(
+    device,
+    "Globe effects BGL (shadow + clipping)",
+    [
+      uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+      texture(1, Stage.FRAGMENT, { sampleType: "depth" }),
+      sampler(2, Stage.FRAGMENT, "comparison"),
+      texture(3, Stage.FRAGMENT, { sampleType: "unfilterable-float" }),
+      sampler(4, Stage.FRAGMENT, "non-filtering"),
+      texture(5, Stage.FRAGMENT),
+      sampler(6, Stage.FRAGMENT),
+      texture(7, Stage.FRAGMENT, { sampleType: "float" }),
+      texture(8, Stage.FRAGMENT, { sampleType: "float" }),
+      sampler(9, Stage.FRAGMENT),
+      uniformBuffer(10, Stage.FRAGMENT),
+      texture(11, Stage.FRAGMENT, {
+        sampleType: "depth",
+        viewDimension: "2d-array",
+      }),
+      texture(17, Stage.FRAGMENT, {
+        sampleType: "depth",
+        viewDimension: "cube",
+      }),
+    ],
+  );
+  return cache.globeBgl;
 }
 
 /**
@@ -909,8 +1006,98 @@ function getPlaceholderEffects(device) {
   };
 }
 
+/**
+ * Returns a placeholder matching {@link getGlobeEffectsBindGroupLayout}.
+ * Placeholder textures and buffers remain device-shared with the complete
+ * effects layout; only the bind-group shape is specialized per consumer.
+ *
+ * @param {GPUDevice} device
+ * @returns {{ bindGroup: GPUBindGroup, uniformBuffer: GPUBuffer }}
+ */
+function getGlobePlaceholderEffects(device) {
+  // Initialize the canonical placeholder resource set once. Models and
+  // primitives may share the same physical device with the globe, so the
+  // resources themselves stay centralized while the cheap binding wrapper is
+  // specialized to avoid charging the globe pipeline model-only limits.
+  getPlaceholderEffects(device);
+  const cache = getOrCreateEffectsDeviceCache(device);
+  if (!defined(cache.globePlaceholderBindGroup)) {
+    cache.globePlaceholderBindGroup = device.createBindGroup({
+      label: "Globe placeholder effects BG",
+      layout: getGlobeEffectsBindGroupLayout(device),
+      entries: [
+        {
+          binding: 0,
+          resource: { buffer: cache.placeholderUniformBuffer },
+        },
+        { binding: 1, resource: cache.placeholderDepthView },
+        { binding: 2, resource: cache.placeholderCompSampler },
+        { binding: 3, resource: cache.placeholderClipView },
+        { binding: 4, resource: cache.placeholderClipSampler },
+        { binding: 5, resource: cache.placeholderSDFView },
+        { binding: 6, resource: cache.placeholderSDFSampler },
+        { binding: 7, resource: cache.placeholderLutView },
+        { binding: 8, resource: cache.placeholderLutView },
+        { binding: 9, resource: cache.placeholderLutSampler },
+        {
+          binding: 10,
+          resource: { buffer: cache.placeholderCsmParamsBuffer },
+        },
+        { binding: 11, resource: cache.placeholderCsmDepthArrayView },
+        { binding: 17, resource: cache.placeholderCubeDepthView },
+      ],
+    });
+  }
+  return {
+    bindGroup: cache.globePlaceholderBindGroup,
+    uniformBuffer: cache.placeholderUniformBuffer,
+  };
+}
+
 const _scratchEffectsData = new Float32Array(EFFECTS_UNIFORM_FLOATS);
 const _scratchEffectsBits = new Uint32Array(_scratchEffectsData.buffer);
+// The post-light-fit partial write covers exactly the first 20 words / 80
+// bytes: shadowMatrix(16) + shadowMapSize(2) + darkness(1) + soft(1).
+const SHADOW_RECEIVE_PREFIX_WORDS = 20;
+const _scratchShadowReceivePrefix = new Float32Array(
+  SHADOW_RECEIVE_PREFIX_WORDS,
+);
+const _scratchShadowReceivePrefixBits = new Uint32Array(
+  _scratchShadowReceivePrefix.buffer,
+);
+// Tracks the first 80 bytes actually resident in each live effects UBO. The
+// state cache owns full-payload comparisons against its own slot arrays; this
+// weak sidecar is private to this module and holds only the prefix, so a
+// settled static shadow skips its queue.writeBuffer without either aliasing or
+// mutating cache-owned storage, and without retaining retired GPUBuffers.
+const _shadowReceivePrefixByBuffer = new WeakMap();
+
+function recordShadowReceivePrefix(uniformBuffer, uniformBits) {
+  let cached = _shadowReceivePrefixByBuffer.get(uniformBuffer);
+  if (!defined(cached)) {
+    cached = new Uint32Array(SHADOW_RECEIVE_PREFIX_WORDS);
+    _shadowReceivePrefixByBuffer.set(uniformBuffer, cached);
+  }
+  // `uniformBits` may be a full-payload view; only the prefix is copied.
+  for (let i = 0; i < SHADOW_RECEIVE_PREFIX_WORDS; i++) {
+    cached[i] = uniformBits[i];
+  }
+}
+
+// Prefix-only comparison against `_scratchShadowReceivePrefixBits`. A
+// whole-array compare (`bitsEqual`) is wrong here: it rejects on length alone,
+// so the gate below never fired and every frame paid the 80-byte write.
+function shadowReceivePrefixMatches(cached) {
+  if (!defined(cached)) {
+    return false;
+  }
+  for (let i = 0; i < SHADOW_RECEIVE_PREFIX_WORDS; i++) {
+    if (cached[i] !== _scratchShadowReceivePrefixBits[i]) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /**
  * Creates an active effects bind group with real shadow and/or clipping resources.
@@ -1004,10 +1191,21 @@ const _scratchEffectsBits = new Uint32Array(_scratchEffectsData.buffer);
  * @param {GPUBuffer} [options.clusteredLighting.perClusterLightCount]
  * @param {GPUBuffer} [options.clusteredLighting.perClusterLightIndices]
  * @param {GPUBuffer} [options.clusteredLighting.params]
+ * @param {"globe"} [options.consumer] - Selects the reduced globe layout,
+ *   which omits model-only edge and clustered/area-light bindings.
  * @returns {{ bindGroup: GPUBindGroup, uniformBuffer: GPUBuffer }}
  */
 function createEffectsBindGroup(device, frameState, options) {
+  const globeConsumer = options?.consumer === "globe";
   const shadowMap = options?.shadowMap;
+  // Model/globe effects bindings are assembled during primitive update,
+  // before ViewportExecutor updates the fitted light camera. Allocate the
+  // backend resources now so the first shadowed frame binds the real depth
+  // view; the later ShadowMap update fills the current matrix and the cast
+  // pass writes the texture before color commands execute.
+  if (defined(shadowMap) && shadowMap.enabled) {
+    initWebGPUShadowMap(shadowMap, frameState);
+  }
   const clippingPlanes = options?.clippingPlanes;
   const clippingPolygons = options?.clippingPolygons;
   const cameraInPlaneSpace = options?.cameraInPlaneSpace;
@@ -1109,8 +1307,12 @@ function createEffectsBindGroup(device, frameState, options) {
   }
   const hasPointLight = pointLightConfig !== null;
 
-  const placeholder = getPlaceholderEffects(device);
-  const bgl = getEffectsBindGroupLayout(device);
+  const placeholder = globeConsumer
+    ? getGlobePlaceholderEffects(device)
+    : getPlaceholderEffects(device);
+  const bgl = globeConsumer
+    ? getGlobeEffectsBindGroupLayout(device)
+    : getEffectsBindGroupLayout(device);
 
   // Shadow resources (2D path — directional / spot lights). When the
   // shadow map is a point light, the cube path takes over via
@@ -1222,8 +1424,8 @@ function createEffectsBindGroup(device, frameState, options) {
     // config (auto-populated from `shadowMap.darkness` when the path
     // came from the auto-detect branch). Batch 63: shadowMapSize.x
     // carries the cube-face edge length so the model FS's PCF kernel
-    // can scale `pcfRadius` (texels) by `1.0 / shadowMapSize.x` →
-    // unit-direction perturbation. .y is unused on this path; we
+    // can scale `pcfRadius` (texels) to a `2 * radius / shadowMapSize.x`
+    // projected cube-face perturbation. .y is unused on this path; we
     // mirror .x to keep the field square (no shader currently reads
     // .y but a future round-cube probe might).
     const cubeFaceSize = pointLightConfig.cubeFaceSize ?? 1024;
@@ -1408,11 +1610,10 @@ function createEffectsBindGroup(device, frameState, options) {
   //   .w — depthBias (subtracted from the reference depth before
   //     `textureSampleCompareLevel` — same role as `pointBias.depthBias`
   //     in the WebGL pipeline).
-  // pointLightPositionWC.xyz — world-space light position. Receive
-  // shader computes `direction = fragWC - lightWC` for both the cube
-  // face-direction sample AND the dominant-axis distance feeding
-  // refDepth. .w is reserved; future slices may pack a soft-shadow
-  // radius or a per-light tint there.
+  // pointLightPositionRTE.xyz — light position relative to the same active
+  // camera origin used by renderer RTE UBs. The f64 JS subtraction happens
+  // before f32 packing; receiver shaders use their existing camera-relative
+  // fragment vector directly. .w remains the soft-shadow PCF radius.
   if (hasPointLight) {
     const lightPos = pointLightConfig.lightPositionWC;
     const farPlane = pointLightConfig.farPlane;
@@ -1428,10 +1629,12 @@ function createEffectsBindGroup(device, frameState, options) {
     ud[POINT_LIGHT_CONTROL_OFFSET + 1] = farPlane;
     ud[POINT_LIGHT_CONTROL_OFFSET + 2] = nearPlane;
     ud[POINT_LIGHT_CONTROL_OFFSET + 3] = depthBias;
-    ud[POINT_LIGHT_POSITION_OFFSET + 0] = lightPos.x;
-    ud[POINT_LIGHT_POSITION_OFFSET + 1] = lightPos.y;
-    ud[POINT_LIGHT_POSITION_OFFSET + 2] = lightPos.z;
-    ud[POINT_LIGHT_POSITION_OFFSET + 3] = pcfRadius;
+    packPointLightPositionRelativeToCamera(
+      lightPos,
+      resolvePointShadowCameraPosition(frameState),
+      pcfRadius,
+      ud,
+    );
   } else {
     ud[POINT_LIGHT_CONTROL_OFFSET + 0] = 0.0;
     ud[POINT_LIGHT_CONTROL_OFFSET + 1] = 0.0;
@@ -1533,19 +1736,22 @@ function createEffectsBindGroup(device, frameState, options) {
   // string and therefore hit the same cache entry. Identity is a
   // stable >0 integer assigned to each resource object via WeakMap;
   // GC reclaims the WeakMap slot once the resource is unreachable.
-  const resKey =
+  const coreResKey =
     `${_idFor(bgCache, bDepthView)}|${_idFor(bgCache, bCompSampler)}|` +
     `${_idFor(bgCache, bClipView)}|${_idFor(bgCache, bClipSampler)}|` +
     `${_idFor(bgCache, bSDFView)}|${_idFor(bgCache, bSDFSampler)}|` +
     `${_idFor(bgCache, bLutT)}|${_idFor(bgCache, bLutI)}|` +
-    `${_idFor(bgCache, bCsmBuffer)}|${_idFor(bgCache, bCsmView)}|` +
-    `${_idFor(bgCache, bEdgeColor)}|${_idFor(bgCache, bEdgeId)}|` +
-    `${_idFor(bgCache, bEdgeDepth)}|${_idFor(bgCache, bGlobeDepth)}|` +
-    `${_idFor(bgCache, bCubeDepth)}|` +
-    `${_idFor(bgCache, bClusterLights)}|${_idFor(bgCache, bClusterAABBs)}|` +
-    `${_idFor(bgCache, bClusterCount)}|${_idFor(bgCache, bClusterIndices)}|` +
-    `${_idFor(bgCache, bClusterParams)}|` +
-    `${_idFor(bgCache, bLtcLUTView)}|${_idFor(bgCache, bAreaLights)}`;
+    `${_idFor(bgCache, bCsmBuffer)}|${_idFor(bgCache, bCsmView)}|`;
+  const resKey = globeConsumer
+    ? `globe|${coreResKey}${_idFor(bgCache, bCubeDepth)}`
+    : `shared|${coreResKey}` +
+      `${_idFor(bgCache, bEdgeColor)}|${_idFor(bgCache, bEdgeId)}|` +
+      `${_idFor(bgCache, bEdgeDepth)}|${_idFor(bgCache, bGlobeDepth)}|` +
+      `${_idFor(bgCache, bCubeDepth)}|` +
+      `${_idFor(bgCache, bClusterLights)}|${_idFor(bgCache, bClusterAABBs)}|` +
+      `${_idFor(bgCache, bClusterCount)}|${_idFor(bgCache, bClusterIndices)}|` +
+      `${_idFor(bgCache, bClusterParams)}|` +
+      `${_idFor(bgCache, bLtcLUTView)}|${_idFor(bgCache, bAreaLights)}`;
 
   // Stable owner identity groups byte variants that may safely reuse the
   // same bounded slots across frames. The exact UBO bytes still distinguish
@@ -1584,38 +1790,59 @@ function createEffectsBindGroup(device, frameState, options) {
       });
       const bg = device.createBindGroup({
         layout: bgl,
-        entries: [
-          { binding: 0, resource: { buffer: ub } },
-          { binding: 1, resource: bDepthView },
-          { binding: 2, resource: bCompSampler },
-          { binding: 3, resource: bClipView },
-          { binding: 4, resource: bClipSampler },
-          { binding: 5, resource: bSDFView },
-          { binding: 6, resource: bSDFSampler },
-          { binding: 7, resource: bLutT },
-          { binding: 8, resource: bLutI },
-          { binding: 9, resource: pCache.placeholderLutSampler },
-          { binding: 10, resource: { buffer: bCsmBuffer } },
-          { binding: 11, resource: bCsmView },
-          { binding: 12, resource: bEdgeColor },
-          { binding: 13, resource: bEdgeId },
-          { binding: 14, resource: bEdgeDepth },
-          { binding: 15, resource: bGlobeDepth },
-          { binding: 16, resource: pCache.edgeSampler },
-          { binding: 17, resource: bCubeDepth },
-          { binding: 18, resource: { buffer: bClusterLights } },
-          { binding: 19, resource: { buffer: bClusterAABBs } },
-          { binding: 20, resource: { buffer: bClusterCount } },
-          { binding: 21, resource: { buffer: bClusterIndices } },
-          { binding: 22, resource: { buffer: bClusterParams } },
-          { binding: 23, resource: bLtcLUTView },
-          { binding: 25, resource: { buffer: bAreaLights } },
-        ],
+        entries: globeConsumer
+          ? [
+              { binding: 0, resource: { buffer: ub } },
+              { binding: 1, resource: bDepthView },
+              { binding: 2, resource: bCompSampler },
+              { binding: 3, resource: bClipView },
+              { binding: 4, resource: bClipSampler },
+              { binding: 5, resource: bSDFView },
+              { binding: 6, resource: bSDFSampler },
+              { binding: 7, resource: bLutT },
+              { binding: 8, resource: bLutI },
+              { binding: 9, resource: pCache.placeholderLutSampler },
+              { binding: 10, resource: { buffer: bCsmBuffer } },
+              { binding: 11, resource: bCsmView },
+              { binding: 17, resource: bCubeDepth },
+            ]
+          : [
+              { binding: 0, resource: { buffer: ub } },
+              { binding: 1, resource: bDepthView },
+              { binding: 2, resource: bCompSampler },
+              { binding: 3, resource: bClipView },
+              { binding: 4, resource: bClipSampler },
+              { binding: 5, resource: bSDFView },
+              { binding: 6, resource: bSDFSampler },
+              { binding: 7, resource: bLutT },
+              { binding: 8, resource: bLutI },
+              { binding: 9, resource: pCache.placeholderLutSampler },
+              { binding: 10, resource: { buffer: bCsmBuffer } },
+              { binding: 11, resource: bCsmView },
+              { binding: 12, resource: bEdgeColor },
+              { binding: 13, resource: bEdgeId },
+              { binding: 14, resource: bEdgeDepth },
+              { binding: 15, resource: bGlobeDepth },
+              { binding: 16, resource: pCache.edgeSampler },
+              { binding: 17, resource: bCubeDepth },
+              { binding: 18, resource: { buffer: bClusterLights } },
+              { binding: 19, resource: { buffer: bClusterAABBs } },
+              { binding: 20, resource: { buffer: bClusterCount } },
+              { binding: 21, resource: { buffer: bClusterIndices } },
+              { binding: 22, resource: { buffer: bClusterParams } },
+              { binding: 23, resource: bLtcLUTView },
+              { binding: 25, resource: { buffer: bAreaLights } },
+            ],
       });
       return { buffer: ub, bindGroup: bg };
     },
     (resource, bits) => {
       device.queue.writeBuffer(resource.buffer, 0, bits);
+      // Record the prefix that just landed on the GPU in this module's own
+      // sidecar. Never alias the state cache's slot comparison array here: the
+      // partial refresh below would then rewrite words 0..19 of the cache's
+      // payload identity in place.
+      recordShadowReceivePrefix(resource.buffer, bits);
     },
     (resources) => {
       retireEffectsResources(device, resources);
@@ -1763,6 +1990,48 @@ function updateEffectsUniforms(
   ud[POINT_LIGHT_POSITION_OFFSET + 3] = 0.0;
 
   device.queue.writeBuffer(uniformBuffer, 0, ud);
+  // `_scratchEffectsBits` aliases the same backing store as `ud`. Reuse it
+  // instead of allocating a new typed-array view for every effects refresh.
+  recordShadowReceivePrefix(uniformBuffer, _scratchEffectsBits);
+}
+
+/**
+ * Refresh the fitted single-shadow-map prefix after ShadowMap.update().
+ *
+ * Model commands prepare their effects bind groups before the PVS computes the
+ * current light camera. The bind group and depth texture are stable, but the
+ * first 80 uniform bytes (matrix, map size, darkness, softness) must be written
+ * after that fit and before color execution. WebGPUContext batches these
+ * writes through a frame-owned resource-preparation list.
+ *
+ * @param {GPUDevice} device
+ * @param {GPUBuffer} uniformBuffer
+ * @param {object} shadowMap
+ * @private
+ */
+function refreshShadowReceiveUniformPrefix(device, uniformBuffer, shadowMap) {
+  const data = _scratchShadowReceivePrefix;
+  const res = getShadowMapResources(shadowMap);
+  if (defined(res)) {
+    Matrix4.pack(res.matrix, data, 0);
+    data[16] = res.size;
+    data[17] = res.size;
+    data[18] = res.darkness;
+    data[19] = res.softShadows ? 1.0 : 0.0;
+  } else {
+    Matrix4.pack(Matrix4.IDENTITY, data, 0);
+    data[16] = 1.0;
+    data[17] = 1.0;
+    data[18] = 1.0;
+    data[19] = 0.0;
+  }
+  const cached = _shadowReceivePrefixByBuffer.get(uniformBuffer);
+  if (shadowReceivePrefixMatches(cached)) {
+    return false;
+  }
+  device.queue.writeBuffer(uniformBuffer, 0, data.buffer, 0, data.byteLength);
+  recordShadowReceivePrefix(uniformBuffer, _scratchShadowReceivePrefixBits);
+  return true;
 }
 
 /**
@@ -1831,9 +2100,14 @@ export {
   destroyEffectsDeviceCache as _destroyEffectsDeviceCache,
   _ensureEffectsBgCache,
   getEffectsBindGroupLayout,
+  getGlobeEffectsBindGroupLayout,
   getPlaceholderEffects,
+  getGlobePlaceholderEffects,
   createEffectsBindGroup,
   updateEffectsUniforms,
+  refreshShadowReceiveUniformPrefix,
+  resolvePointShadowCameraPosition,
+  packPointLightPositionRelativeToCamera,
   retainEffectsPlaceholderCacheForContext,
   releaseEffectsPlaceholderCacheForContext,
   clearEffectsPlaceholderCacheForDevice,
@@ -1850,9 +2124,14 @@ export {
 
 export default {
   getEffectsBindGroupLayout,
+  getGlobeEffectsBindGroupLayout,
   getPlaceholderEffects,
+  getGlobePlaceholderEffects,
   createEffectsBindGroup,
   updateEffectsUniforms,
+  refreshShadowReceiveUniformPrefix,
+  resolvePointShadowCameraPosition,
+  packPointLightPositionRelativeToCamera,
   retainEffectsPlaceholderCacheForContext,
   releaseEffectsPlaceholderCacheForContext,
   clearEffectsPlaceholderCacheForDevice,

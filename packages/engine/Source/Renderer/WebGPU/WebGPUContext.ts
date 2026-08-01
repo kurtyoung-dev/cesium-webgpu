@@ -59,6 +59,13 @@ import {
   type AttachmentDemandSceneLike,
 } from "./WebGPUAttachmentDemandRegistry.js";
 import {
+  WebGPUEnvironmentDemand,
+  WebGPUEnvironmentDemandReason,
+  WebGPUEnvironmentDemandRegistry,
+  type WebGPUEnvironmentDemandTelemetry,
+  type WebGPUEnvironmentDemandValue,
+} from "./WebGPUEnvironmentDemandRegistry.js";
+import {
   WebGPUViewportQuad,
   type ViewportQuadCommand,
   type ViewportQuadCommandOptions,
@@ -105,7 +112,9 @@ import { WebGPUIndirectDrawManager } from "./WebGPUIndirectDrawManager.js";
 import { WebGPUCSMRenderer } from "./WebGPUCSMRenderer.js";
 import { WebGPUBufferMapper } from "./WebGPUBufferMapper.js";
 import { WebGPURingBufferAllocator } from "./WebGPURingBufferAllocator.js";
+import { destroyEnvironmentalEffectsCompositor } from "./WebGPUEnvironmentalEffectsCompositor.js";
 import {
+  refreshShadowReceiveUniformPrefix,
   releaseEffectsPlaceholderCacheForContext,
   retainEffectsPlaceholderCacheForContext,
 } from "./WebGPUEffectsBindGroup.js";
@@ -330,6 +339,37 @@ export interface WebGPUContextOptions extends GraphicsContextOptions {
   useDeterministicPointCloudLOD?: boolean;
 }
 
+interface ShadowPassCommandList {
+  commandList: CesiumAnyDrawCommand[];
+}
+
+/**
+ * Flatten legacy per-cascade/per-face shadow lists into the unique command set
+ * expected by native WebGPU shadow renderers. First occurrence wins so command
+ * ordering stays deterministic.
+ *
+ * Callers provide persistent scratch containers; both are reset here.
+ */
+export function collectUniqueShadowCastCommands(
+  passes: ReadonlyArray<ShadowPassCommandList>,
+  target: CesiumAnyDrawCommand[],
+  seen: Set<CesiumAnyDrawCommand>,
+): CesiumAnyDrawCommand[] {
+  target.length = 0;
+  seen.clear();
+  for (let j = 0; j < passes.length; ++j) {
+    const commandList = passes[j].commandList;
+    for (let k = 0; k < commandList.length; ++k) {
+      const command = commandList[k];
+      if (!seen.has(command)) {
+        seen.add(command);
+        target.push(command);
+      }
+    }
+  }
+  return target;
+}
+
 /**
  * WebGPU implementation of GraphicsContext.
  * Manages the WebGPU device, adapter, and rendering pipeline.
@@ -404,6 +444,7 @@ export class WebGPUContext extends GraphicsContext {
       this._currentRenderPassEncoder = null;
       this._activePassTarget = null;
       this._currentCommandEncoder = null;
+      this._drainAfterFrameSubmitCallbacks(false);
     }
   }
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
@@ -418,6 +459,18 @@ export class WebGPUContext extends GraphicsContext {
   // `scheduleTextureDestroy()` instead; `endFrame()` frees the batch only
   // after the just-submitted GPU work completes (`onSubmittedWorkDone`).
   private _pendingTextureDestroys: GPUTexture[] = [];
+
+  // C11-184 — native shadow rendering consumes a unique command set, not the
+  // legacy per-cascade/per-cube-face lists flattened with duplicates. Both
+  // containers persist with the context so the shadow hot path allocates
+  // neither a temporary array nor a Set each frame.
+  private _shadowCastCommandsScratch: CesiumAnyDrawCommand[] = [];
+  private _shadowCastCommandsSeen: Set<CesiumAnyDrawCommand> = new Set();
+  // Model and primitive effects groups are prepared before the current light
+  // camera is fitted. Queue their stable UBs and refresh the shadow prefix in one
+  // post-ShadowMap preparation phase, before any color command executes.
+  private _shadowReceiveUniformRefreshes: unknown[] = [];
+  private _shadowReceiveUniformRefreshSet: Set<GPUBuffer> = new Set();
 
   // C9-12A (hardened Batch 686) — imagery mip-generation jobs deferred out of
   // draw emission. A tile that realizes a new imagery GPUTexture during
@@ -445,6 +498,12 @@ export class WebGPUContext extends GraphicsContext {
   // Frame state for command recording — public for cross-renderer access
   public _currentCommandEncoder: GPUCommandEncoder | null = null;
   public _currentRenderPassEncoder: GPURenderPassEncoder | null = null;
+
+  // C11-76 — callbacks that must start only after the frame command buffer is
+  // actually submitted. Readback clients use this seam to record copies on the
+  // shared encoder without calling mapAsync while the staging buffer is still
+  // referenced by an unsubmitted command buffer.
+  private _afterFrameSubmitCallbacks: Array<(submitted: boolean) => void> = [];
 
   // C9-07 / FAR-405-C0 — explicit render-pass target tracking. The
   // clear() guard used to infer "is a scene-owned pass active?" from
@@ -515,6 +574,10 @@ export class WebGPUContext extends GraphicsContext {
   // pipeline-variant generation, defer non-critical compute work, etc.
   // Always-on; cost is one subscriber + ~1 KB resident.
   private _asyncResourceTelemetry: AsyncResourceTelemetry | null = null;
+  // C11-193 — observe-only, GPU-free selected-consumer ledger. This does not
+  // gate refresh work in this slice; it establishes conservative admission
+  // semantics and evidence for the later context-owned bounded job scheduler.
+  private _environmentDemandRegistry = new WebGPUEnvironmentDemandRegistry();
   // Public underscore: shared with the frame-statistics extract (Batch 144).
   public _samplerCache: Map<string, GPUSampler> = new Map();
   public _bindGroupLayoutCache: Map<string, GPUBindGroupLayout> = new Map();
@@ -671,17 +734,16 @@ export class WebGPUContext extends GraphicsContext {
   // C-R8-EDGE-INLINE — packed globe depth view from
   // `WebGPUGlobeDepth.executeCopyDepth`. Published each frame after
   // `executeCopyDepth` runs so downstream effects (the inline edge
-  // detection stage in Model FS) have a single, stable place to read
-  // it from. `null` when globe depth wasn't computed this frame.
+  // detection stage in Model FS) have a single place to read it from. The
+  // view identity is target-owned and stable until resize/device recreation;
+  // `null` means globe depth was not computed in the current frame.
   public _globeDepthView: GPUTextureView | null = null;
   /** Pick-scoped packed depth; never falls back to a previous render frame. */
   public _pickClassificationDepthView: GPUTextureView | null = null;
   // Batch 139 (NEW-LABEL-SDF-BIND-GROUP-CACHING) — published
-  // alongside `_globeDepthView` so collection renderers can compare
-  // by underlying texture identity (stable across frames; only
-  // rotates on viewport resize). The view object itself is fresh
-  // every frame, so view-identity comparison rebuilds bind groups
-  // unnecessarily. `null` when globe depth wasn't computed this frame.
+  // alongside `_globeDepthView` so collection renderers with their own view
+  // policy can compare the underlying texture identity. Both rotate only on
+  // target recreation. `null` when globe depth was not computed this frame.
   public _globeDepthTexture: GPUTexture | null = null;
   // NEW-GROUNDPRIM-CLASSIFIER-PER-FRUSTUM-UBO (Batch 173) — per-slice
   // frustum state published by the multi-frustum loop right after
@@ -1693,6 +1755,20 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * WebGPU's optional `WebGPUCSMRenderer` owns cascade textures, matrices, and
+   * per-cascade dispatch; `WebGPUShadowMapRenderer` renders the non-CSM default
+   * (`useCascadedShadowMaps === false`) into one depth target. Both consume the
+   * caster set `collectUniqueShadowCastCommands` unions across
+   * `ShadowMap.passes`, so the legacy pass count is irrelevant to them — what
+   * they read from the scene `ShadowMap` is pass 0's camera (cast transform)
+   * and `_shadowMapMatrix` (receive transform). See the base-class doc: the
+   * scene `ShadowMap` keeps `cascadesEnabled: true` here as it does on WebGL.
+   */
+  override get managesSceneShadowCascadesNatively(): boolean {
+    return true;
+  }
+
+  /**
    * AUDIT_2026_05_02 — WebGPU has no `GPUBuffer.getBufferData()` analog.
    * Consumers (Model renderer, EdgeVisibility stage, b3dm path) must
    * read vertex data from the loader's typed-array cache rather than
@@ -1944,12 +2020,19 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
+    // A truncated prior frame must not strand readback promises. Normal frames
+    // drain this list immediately after queue.submit in endFrame().
+    this._drainAfterFrameSubmitCallbacks(false);
+
     // Reset frame statistics
     this._drawCallCount = 0;
     this._triangleCount = 0;
     this._frameCount++;
+    this._environmentDemandRegistry.beginFrame(this._deviceResourceGeneration);
     this._clearCallsThisFrame = 0;
     this._clearOverflowWarned = false;
+    this._shadowReceiveUniformRefreshes.length = 0;
+    this._shadowReceiveUniformRefreshSet.clear();
 
     // C9-07 / FAR-405-C0 — reset the canvas demand flags + pass target.
     // Reset here (and in beginPickFrame), never in endFrame — see the
@@ -2052,6 +2135,10 @@ export class WebGPUContext extends GraphicsContext {
     // mini-frame must NOT wipe them, or the render's present fallback would
     // re-clear the blit. Only reset the demand flags for a standalone pick.
     const renderFrameInFlight = this._currentTextureView !== null;
+    if (!renderFrameInFlight) {
+      this._shadowReceiveUniformRefreshes.length = 0;
+      this._shadowReceiveUniformRefreshSet.clear();
+    }
     this._activePassTarget = null;
     // C10-03 — pick mini-frames render to a single-sample pick FBO, so the
     // ensure helper is inert (I5); reset conservatively regardless.
@@ -2071,6 +2158,64 @@ export class WebGPUContext extends GraphicsContext {
       label: "Pick Frame Command Encoder",
     });
     this._performanceManager?.beginTimestampFrame();
+  }
+
+  /**
+   * Establish a queue-ordering boundary before Scene2D renders its second
+   * wrapped viewport. Both viewport updates belong to one logical Cesium
+   * frame, but several backend resources (including legacy persistent model
+   * uniforms) are rewritten in-place by the second update. Submitting the
+   * first encoder segment before those writes prevents them from changing
+   * data that the first viewport has only recorded, not yet consumed.
+   *
+   * The frame's swap view, demand flags, uniform-allocation page, timestamp
+   * frame, deferred destroys, and after-submit callbacks remain owned by the
+   * logical frame. Only the command encoder is rotated. WebGL inherits the
+   * no-op implementation from GraphicsContext because its first viewport has
+   * already executed when the second update begins.
+   */
+  override beginSecondaryViewport(): void {
+    if (
+      this._isDeviceUnavailable ||
+      !this._device ||
+      !this._currentCommandEncoder
+    ) {
+      return;
+    }
+
+    try {
+      this.endCurrentRenderPass();
+
+      // Ring allocations referenced by the first segment must reach the queue
+      // before the segment itself. Later allocations stay on the same logical
+      // frame page but occupy distinct slices.
+      this._uniformAllocator?.flush();
+
+      // Imagery realized during the first viewport must have complete mip
+      // chains before that viewport samples it. Keep the established isolated
+      // prep submit so a validation failure cannot invalidate the scene work.
+      const prepBuffer = this._encodePendingImageryMipJobs();
+      if (prepBuffer) {
+        this._device.queue.submit([prepBuffer]);
+      }
+
+      const firstViewportBuffer = this._currentCommandEncoder.finish();
+      this._device.queue.submit([firstViewportBuffer]);
+      this._currentCommandEncoder = this._device.createCommandEncoder({
+        label: "Secondary Viewport Continuation Encoder",
+      });
+    } catch (error) {
+      // The segment cannot be retried safely after finish/submit starts. Match
+      // endFrame's abandonment contract so readback promises and the allocator
+      // cannot leak into a future request-render frame.
+      this._drainAfterFrameSubmitCallbacks(false);
+      this._currentRenderPassEncoder = null;
+      this._activePassTarget = null;
+      this._currentCommandEncoder = null;
+      this._currentTextureView = null;
+      this._uniformAllocator?.endFrame();
+      throw error;
+    }
   }
 
   /**
@@ -2389,6 +2534,44 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * Run a callback immediately after the current frame command buffer is
+   * submitted. Returns false when no frame owns an encoder, allowing callers
+   * to retain an off-frame private-submit fallback.
+   *
+   * @param callback Receives true after submit, false if the frame is
+   * abandoned or the device becomes unavailable before submission.
+   * @returns Whether the callback was accepted by the active frame.
+   * @private
+   */
+  enqueueAfterFrameSubmit(callback: (submitted: boolean) => void): boolean {
+    if (
+      typeof callback !== "function" ||
+      this._isDeviceUnavailable ||
+      !this._currentCommandEncoder
+    ) {
+      return false;
+    }
+    this._afterFrameSubmitCallbacks.push(callback);
+    return true;
+  }
+
+  private _drainAfterFrameSubmitCallbacks(submitted: boolean): void {
+    if (this._afterFrameSubmitCallbacks.length === 0) {
+      return;
+    }
+    const callbacks = this._afterFrameSubmitCallbacks;
+    this._afterFrameSubmitCallbacks = [];
+    for (let i = 0; i < callbacks.length; i++) {
+      try {
+        callbacks[i](submitted);
+      } catch {
+        // Readback owners surface their own failures. One callback must never
+        // prevent the rest of the frame's post-submit notifications.
+      }
+    }
+  }
+
+  /**
    * Get the current canvas texture view (the render target for the default pass).
    * Available between beginFrame() and endFrame().
    *
@@ -2573,6 +2756,53 @@ export class WebGPUContext extends GraphicsContext {
     }
   }
 
+  /**
+   * Flush staged frame-ring uniform bytes before a private mid-frame submit.
+   *
+   * Normal scene work relies on endFrame() doing this once immediately before
+   * the frame command buffer is submitted. A renderer that owns a separate
+   * encoder/submit (dynamic environment capture) must establish the same queue
+   * ordering explicitly or its commands can observe stale ring contents.
+   */
+  flushPendingUniformUploads(): void {
+    this._uniformAllocator?.flush();
+  }
+
+  /**
+   * Queue one stable effects UBO for post-light-fit shadow refresh.
+   * Repeated primitives of the same model share the buffer and dedupe here.
+   */
+  enqueueShadowReceiveUniformRefresh(
+    uniformBuffer: GPUBuffer,
+    shadowMap: object,
+  ): void {
+    if (this._shadowReceiveUniformRefreshSet.has(uniformBuffer)) {
+      return;
+    }
+    this._shadowReceiveUniformRefreshSet.add(uniformBuffer);
+    this._shadowReceiveUniformRefreshes.push(uniformBuffer, shadowMap);
+  }
+
+  /**
+   * Flush the frame's shadow-receive resource list after ShadowMap.update()
+   * fitted the current light camera and before color execution.
+   */
+  flushShadowReceiveUniformRefreshes(): void {
+    const device = this._device;
+    const refreshes = this._shadowReceiveUniformRefreshes;
+    if (device) {
+      for (let i = 0; i < refreshes.length; i += 2) {
+        refreshShadowReceiveUniformPrefix(
+          device,
+          refreshes[i] as GPUBuffer,
+          refreshes[i + 1] as object,
+        );
+      }
+    }
+    refreshes.length = 0;
+    this._shadowReceiveUniformRefreshSet.clear();
+  }
+
   endFrame(): void {
     if (this._isDeviceUnavailable) {
       //>>includeStart('debug', pragmas.debug);
@@ -2589,97 +2819,116 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
-    // End render pass if active
-    if (this._currentRenderPassEncoder) {
-      this._currentRenderPassEncoder.end();
-      this._currentRenderPassEncoder = null;
-      this._activePassTarget = null;
-    }
-
-    // C9-07 / FAR-405-C0 — deferred clear/present fallback. An acquired
-    // swap texture that nothing writes presents WebGPU lazy-zeros; the
-    // historical behavior was one beginFrame clear pass every frame. The
-    // ONLY frames that pay this open+end are frames where no consumer
-    // touched the canvas color (empty scene, post-process missing,
-    // exception-truncated frames). Pick mini-frames never acquire a swap
-    // view (`beginPickFrame`), so `_currentTextureView === null` excludes
-    // them naturally. The distinct label keeps API-lane evidence
-    // self-describing (nothing in live code matches pass labels).
-    if (
-      this._currentTextureView !== null &&
-      !this._canvasColorTouchedThisFrame
-    ) {
-      this._beginDefaultRenderPass("Canvas Demand Clear Pass");
+    let uniformAllocatorFrameEnded = false;
+    try {
+      // End render pass if active
       if (this._currentRenderPassEncoder) {
-        const fallbackPass = this
-          ._currentRenderPassEncoder as GPURenderPassEncoder;
-        fallbackPass.end();
+        this._currentRenderPassEncoder.end();
         this._currentRenderPassEncoder = null;
         this._activePassTarget = null;
       }
-    }
 
-    // Coalesce per-draw uniform uploads into one queue write per dirty ring
-    // page. Queue writes issued before submit are ordered before the command
-    // buffer that consumes them.
-    this._uniformAllocator?.flush();
+      // C9-07 / FAR-405-C0 — deferred clear/present fallback. An acquired
+      // swap texture that nothing writes presents WebGPU lazy-zeros; the
+      // historical behavior was one beginFrame clear pass every frame. The
+      // ONLY frames that pay this open+end are frames where no consumer
+      // touched the canvas color (empty scene, post-process missing,
+      // exception-truncated frames). Pick mini-frames never acquire a swap
+      // view (`beginPickFrame`), so `_currentTextureView === null` excludes
+      // them naturally. The distinct label keeps API-lane evidence
+      // self-describing (nothing in live code matches pass labels).
+      if (
+        this._currentTextureView !== null &&
+        !this._canvasColorTouchedThisFrame
+      ) {
+        this._beginDefaultRenderPass("Canvas Demand Clear Pass");
+        if (this._currentRenderPassEncoder) {
+          const fallbackPass = this
+            ._currentRenderPassEncoder as GPURenderPassEncoder;
+          fallbackPass.end();
+          this._currentRenderPassEncoder = null;
+          this._activePassTarget = null;
+        }
+      }
 
-    // Timestamp queries must resolve after every frame pass has ended and
-    // before this encoder is finished. The manager is lazy and endFrame is
-    // idempotent, so pick/empty frames that never began profiling are no-ops.
-    this._performanceManager?.endFrame(this._currentCommandEncoder);
+      // Coalesce per-draw uniform uploads into one queue write per dirty ring
+      // page. Queue writes issued before submit are ordered before the command
+      // buffer that consumes them.
+      this._uniformAllocator?.flush();
 
-    // C9-12A (hardened Batch 686) — encode all imagery mip jobs deferred out
-    // of draw emission into one prep encoder and submit it BEFORE the frame
-    // encoder as its OWN submit (F8 — same-queue ordering is guaranteed, and
-    // an invalid prep buffer can no longer invalidate the whole frame submit).
-    // Queue ordering (copyExternalImageToTexture at update time → these mip
-    // passes → scene passes) guarantees the frame that realized the texture
-    // samples complete mips. Only textures destroyed INLINE this frame are
-    // skipped (F7); scheduled-destroy textures are live through this submit
-    // and still get their mips.
-    const prepBuffer = this._encodePendingImageryMipJobs();
-    if (prepBuffer) {
-      this._device.queue.submit([prepBuffer]);
-    }
+      // Timestamp queries must resolve after every frame pass has ended and
+      // before this encoder is finished. The manager is lazy and endFrame is
+      // idempotent, so pick/empty frames that never began profiling are no-ops.
+      this._performanceManager?.endFrame(this._currentCommandEncoder);
 
-    // Submit command buffer
-    const commandBuffer = this._currentCommandEncoder.finish();
-    this._device.queue.submit([commandBuffer]);
-    this._timestampProfiler?.afterSubmit();
+      // C9-12A (hardened Batch 686) — encode all imagery mip jobs deferred out
+      // of draw emission into one prep encoder and submit it BEFORE the frame
+      // encoder as its OWN submit (F8 — same-queue ordering is guaranteed, and
+      // an invalid prep buffer can no longer invalidate the whole frame submit).
+      // Queue ordering (copyExternalImageToTexture at update time → these mip
+      // passes → scene passes) guarantees the frame that realized the texture
+      // samples complete mips. Only textures destroyed INLINE this frame are
+      // skipped (F7); scheduled-destroy textures are live through this submit
+      // and still get their mips.
+      const prepBuffer = this._encodePendingImageryMipJobs();
+      if (prepBuffer) {
+        this._device.queue.submit([prepBuffer]);
+      }
 
-    // Drain deferred texture destroys: any texture the scene evicted this
-    // frame is now safe to free once the work just submitted (which may bind
-    // it) finishes on the GPU. Captured-then-cleared so a destroy enqueued
-    // after this point rides the next frame's drain instead of this one's.
-    if (this._pendingTextureDestroys.length > 0) {
-      const toDestroy = this._pendingTextureDestroys;
-      this._pendingTextureDestroys = [];
-      this._device.queue.onSubmittedWorkDone().then(
-        () => {
-          for (let i = 0; i < toDestroy.length; ++i) {
-            try {
-              toDestroy[i].destroy();
-            } catch {
-              // Device lost / already destroyed — destroy() is a safe no-op.
+      // Submit command buffer
+      const commandBuffer = this._currentCommandEncoder.finish();
+      this._device.queue.submit([commandBuffer]);
+      this._drainAfterFrameSubmitCallbacks(true);
+      this._timestampProfiler?.afterSubmit();
+
+      // Drain deferred texture destroys: any texture the scene evicted this
+      // frame is now safe to free once the work just submitted (which may bind
+      // it) finishes on the GPU. Captured-then-cleared so a destroy enqueued
+      // after this point rides the next frame's drain instead of this one's.
+      if (this._pendingTextureDestroys.length > 0) {
+        const toDestroy = this._pendingTextureDestroys;
+        this._pendingTextureDestroys = [];
+        this._device.queue.onSubmittedWorkDone().then(
+          () => {
+            for (let i = 0; i < toDestroy.length; ++i) {
+              try {
+                toDestroy[i].destroy();
+              } catch {
+                // Device lost / already destroyed — destroy() is a safe no-op.
+              }
             }
-          }
-        },
-        () => {
-          // onSubmittedWorkDone rejected (device lost) — the device teardown
-          // reclaims these textures; just drop our references.
-        },
-      );
-    }
+          },
+          () => {
+            // onSubmittedWorkDone rejected (device lost) — the device teardown
+            // reclaims these textures; just drop our references.
+          },
+        );
+      }
 
-    // Finalize ring buffer frame
-    if (this._uniformAllocator) {
-      this._uniformAllocator.endFrame();
-    }
+      // Finalize ring buffer frame
+      if (this._uniformAllocator) {
+        uniformAllocatorFrameEnded = true;
+        this._uniformAllocator.endFrame();
+      }
 
-    // Clear frame state
-    this._currentCommandEncoder = null;
-    this._currentTextureView = null;
+      // Clear frame state
+      this._currentCommandEncoder = null;
+      this._currentTextureView = null;
+    } catch (error) {
+      // C11-76 — any failure before the frame submit completes abandons every
+      // frame-owned readback copy. Do not leave promises queued for a future
+      // beginFrame: request-render scenes may stop immediately after an error.
+      this._drainAfterFrameSubmitCallbacks(false);
+      this._currentRenderPassEncoder = null;
+      this._activePassTarget = null;
+      this._currentCommandEncoder = null;
+      this._currentTextureView = null;
+      if (!uniformAllocatorFrameEnded && this._uniformAllocator) {
+        uniformAllocatorFrameEnded = true;
+        this._uniformAllocator.endFrame();
+      }
+      throw error;
+    }
   }
 
   /**
@@ -4012,8 +4261,14 @@ export class WebGPUContext extends GraphicsContext {
     // bounds. Morph mode is blended and unstable; skip too. Slice 3
     // adds altitude-adaptive ortho-mode splits.
     const isScene3D = scene.frameState?.mode === 3; /* SceneMode.SCENE3D */
-    const useCSM = scene.useCascadedShadowMaps === true && isScene3D;
-    if (useCSM) {
+    const csmRequested = scene.useCascadedShadowMaps === true && isScene3D;
+    // Effects bind groups are assembled earlier during primitive update. A
+    // CSM renderer created here is therefore not visible to this frame's
+    // receivers yet. Warm it now, but keep the current frame on the complete
+    // one-pass path; the next frame sees the persistent renderer and switches
+    // cast + receive together.
+    const useCSM = csmRequested && !!this._csmRenderer;
+    if (csmRequested) {
       if (!this._csmRenderer) {
         // Scene.cascadedShadowMapResolution is a user-tunable surface
         // (scene property) — honor it at lazy-init time. Subsequent
@@ -4025,7 +4280,7 @@ export class WebGPUContext extends GraphicsContext {
         );
       }
       const csm = this._csmRenderer;
-      if (csm) {
+      if (useCSM && csm) {
         const camera = scene.frameState.camera;
         const frustum = camera.frustum;
         // Light direction: prefer the shadow map's lightCamera direction
@@ -4059,18 +4314,29 @@ export class WebGPUContext extends GraphicsContext {
       if (shadowMap.outOfView) {
         continue;
       }
-      // Collect cast commands from all shadow passes.
+      // Collect each caster once for single-map/CSM scheduling and the
+      // no-caster transition test. Keep the legacy pass lists populated until
+      // after native encoding: point-light cube rendering consumes each
+      // face's own culled list instead of drawing this union six times.
       const { passes } = shadowMap;
-      const castCommands: CesiumAnyDrawCommand[] = [];
-      for (let j = 0; j < passes.length; ++j) {
-        for (let k = 0; k < passes[j].commandList.length; ++k) {
-          castCommands.push(passes[j].commandList[k]);
-        }
-      }
-      for (let j = 0; j < passes.length; ++j) {
-        passes[j].commandList.length = 0;
-      }
-      if (castCommands.length > 0) {
+      const castCommands = collectUniqueShadowCastCommands(
+        passes,
+        this._shadowCastCommandsScratch,
+        this._shadowCastCommandsSeen,
+      );
+      const activeShadowContentState =
+        useCSM && i === 0 && this._csmRenderer
+          ? this._csmRenderer._shadowContentState
+          : (
+              shadowMap as {
+                _webgpuCache?: { shadowContentState?: string };
+              }
+            )._webgpuCache?.shadowContentState;
+      // A transition from populated -> no casters still needs one clear-only
+      // pass or receivers sample stale depth indefinitely. Once empty, both
+      // renderers suppress repeated clears so the settled no-caster path stays
+      // pass-free.
+      if (castCommands.length > 0 || activeShadowContentState !== "empty") {
         this.endCurrentRenderPass();
 
         if (useCSM && this._csmRenderer) {
@@ -4091,6 +4357,7 @@ export class WebGPUContext extends GraphicsContext {
               encoder,
               castCommands as ReadonlyArray<unknown>,
               camera.positionWC,
+              scene._frameState,
               this,
             );
           } else {
@@ -4113,6 +4380,11 @@ export class WebGPUContext extends GraphicsContext {
 
         this.resumeDefaultRenderPass();
       }
+      for (let j = 0; j < passes.length; ++j) {
+        passes[j].commandList.length = 0;
+      }
+      castCommands.length = 0;
+      this._shadowCastCommandsSeen.clear();
     }
     return true;
   }
@@ -4369,6 +4641,16 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
+    // C11-76 — reject readbacks that recorded a copy into the current frame
+    // but were waiting for endFrame() to submit it. Context teardown can occur
+    // before endFrame (and a pooled GPUDevice may remain alive), so leaving the
+    // callbacks queued would strand their promises and retain feature buffers.
+    // Abandon the unfinished encoder before destroying those feature owners.
+    this._drainAfterFrameSubmitCallbacks(false);
+    this._currentRenderPassEncoder = null;
+    this._activePassTarget = null;
+    this._currentCommandEncoder = null;
+
     // Unregister from the global ContextRegistry before destroying resources
     this._unregisterFromRegistry();
     this._destroyFeatureRenderers();
@@ -4456,9 +4738,14 @@ export class WebGPUContext extends GraphicsContext {
       this._bufferMapper.destroy();
       this._bufferMapper = null;
     }
+    if (this._uniformAllocator) {
+      this._uniformAllocator.destroy();
+      this._uniformAllocator = null;
+    }
 
     // Context-owned textures/caches must be released explicitly because a
     // pooled GPUDevice may outlive this context (including failed creates).
+    destroyEnvironmentalEffectsCompositor(this);
     this._depthTexture?.destroy();
     this._depthTexture = null;
     this._depthTextureView = null;
@@ -4477,6 +4764,7 @@ export class WebGPUContext extends GraphicsContext {
     this._pendingTextureDestroys.length = 0;
     // C9-12A — drop any undelivered imagery mip jobs on teardown.
     this._pendingImageryMipJobs.length = 0;
+    this._environmentDemandRegistry.reset(this._deviceResourceGeneration);
 
     this._shaderCache.destroy();
     const textureCache = this._textureCache as { destroy?: () => void };
@@ -5401,6 +5689,51 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * C11-193 observe-only registration seam used by backend-neutral Scene
+   * producers. No refresh work is gated here; UNKNOWN remains conservative.
+   */
+  recordEnvironmentMapDemand(
+    manager: object,
+    demand: WebGPUEnvironmentDemandValue,
+    reason: "tileset-selection" | "standalone-owner",
+    consumerCount = 0,
+  ): void {
+    const reasonBit =
+      reason === "tileset-selection"
+        ? WebGPUEnvironmentDemandReason.TILESET_SELECTION
+        : WebGPUEnvironmentDemandReason.STANDALONE_OWNER;
+
+    if (demand === WebGPUEnvironmentDemand.DEMANDED) {
+      this._environmentDemandRegistry.registerDemand(
+        manager,
+        reasonBit,
+        consumerCount,
+      );
+    } else if (demand === WebGPUEnvironmentDemand.PROVEN_NONE) {
+      this._environmentDemandRegistry.registerProvenNoDemand(
+        manager,
+        reasonBit,
+      );
+    } else {
+      this._environmentDemandRegistry.registerUnknown(
+        manager,
+        reasonBit,
+        consumerCount,
+      );
+    }
+  }
+
+  /** Record what today's unconditional manager update observed. */
+  observeEnvironmentMapDemand(manager: object): WebGPUEnvironmentDemandValue {
+    return this._environmentDemandRegistry.observeUpdate(manager);
+  }
+
+  /** Allocation-bearing debug snapshot; never used to gate renderer work. */
+  getEnvironmentMapDemandStats(): WebGPUEnvironmentDemandTelemetry {
+    return this._environmentDemandRegistry.getTelemetry();
+  }
+
+  /**
    * Phase 6 debug surface — overrides {@link GraphicsContext#getRendererStatistics}
    * to expose WebGPU-specific introspection: bundle cache state, fog
    * froxel grid state, GPU memory pool usage, indirect draw counters,
@@ -5526,6 +5859,9 @@ export class WebGPUContext extends GraphicsContext {
         stats.pipelineCache = { error: String((e as Error)?.message ?? e) };
       }
     }
+    stats.environmentMapDemand = {
+      ...this._environmentDemandRegistry.getTelemetry(),
+    };
     const ppCacheSource = this._postProcessCacheStatsSource;
     if (ppCacheSource && !ppCacheSource.isDestroyed) {
       try {
@@ -6058,6 +6394,16 @@ export class WebGPUContext extends GraphicsContext {
       .register("uniformBufferPool", () => {
         this._uniformBufferPool = [];
       })
+      .register("uniformAllocator", () => {
+        // Every page belongs to the current physical GPUDevice generation.
+        // A recovered device must never receive a bind group backed by an
+        // old-generation ring slice.
+        this._uniformAllocator?.destroy();
+        this._uniformAllocator = null;
+      })
+      .register("environmentalEffectsCompositor", () => {
+        destroyEnvironmentalEffectsCompositor(this);
+      })
       .register("depthTexture", () => {
         this._depthTexture = null;
         this._depthTextureView = null;
@@ -6110,6 +6456,15 @@ export class WebGPUContext extends GraphicsContext {
    */
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _clearAllCaches(previousDevice?: GPUDevice | null): void {
+    // A device-loss edge abandons the current encoder permanently. Reject
+    // frame-owned readbacks immediately; request-render scenes may never start
+    // another frame, and terminal loss has no future frame by definition.
+    this._drainAfterFrameSubmitCallbacks(false);
+    this._currentRenderPassEncoder = null;
+    this._activePassTarget = null;
+    this._currentCommandEncoder = null;
+    this._currentTextureView = null;
+
     // Per-cache try/catch + named error logs live inside the registry
     // (Batch 131). What stays inline:
     //   - effects-cache lease transfer — moves this context from the lost
@@ -6127,6 +6482,23 @@ export class WebGPUContext extends GraphicsContext {
     // frame, so nulling here is safe by construction.
     (this as unknown as { _globeEffectsHandle?: unknown })._globeEffectsHandle =
       null;
+
+    // Dynamic-environment capture intentionally consumes the previous globe
+    // frame's published renderer/tile references before the next main globe
+    // draw republishes them. After recovery those references contain
+    // old-device pipelines, bind groups, and buffers, so invalidate both
+    // producer snapshots explicitly.
+    (
+      this as unknown as {
+        _webgpuSceneCaptureSources?: unknown;
+        _webgpuSceneCaptureModels?: unknown;
+      }
+    )._webgpuSceneCaptureSources = null;
+    (
+      this as unknown as {
+        _webgpuSceneCaptureModels?: unknown;
+      }
+    )._webgpuSceneCaptureModels = null;
 
     // Stable WebGL-shaped handles survive recovery, but their native buffers
     // belong to the old device generation. Release every registered native
@@ -6160,6 +6532,7 @@ export class WebGPUContext extends GraphicsContext {
     // independently from the scene-format generation, so command owners cannot
     // mistake "same format" for "same resource lifetime".
     this._deviceResourceGeneration += 1;
+    this._environmentDemandRegistry.reset(this._deviceResourceGeneration);
 
     // C-R12 (Batch 33) — fire the invalidation event so every
     // subscribed subsystem / feature renderer / per-object cache

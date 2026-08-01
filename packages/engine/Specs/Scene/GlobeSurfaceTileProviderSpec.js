@@ -152,6 +152,42 @@ describe(
       "WebGL",
     );
 
+    it("classifies a selected tile without a rendered mesh as fill terrain", function () {
+      const provider = scene.globe._surface.tileProvider;
+      const loadedMesh = {};
+      const tile = {
+        data: {
+          imagery: [],
+          mesh: loadedMesh,
+          renderedMesh: undefined,
+          tileBoundingRegion: {
+            minimumHeight: 0.0,
+            maximumHeight: 0.0,
+          },
+        },
+        tilingScheme: {
+          ellipsoid: Ellipsoid.WGS84,
+        },
+      };
+
+      provider.beginUpdate(scene.frameState);
+      provider.showTileThisFrame(tile, scene.frameState);
+      expect(provider._hasFillTilesThisFrame).toBe(true);
+      expect(provider._hasLoadedTilesThisFrame).toBe(false);
+
+      tile.data.renderedMesh = loadedMesh;
+      provider.beginUpdate(scene.frameState);
+      provider.showTileThisFrame(tile, scene.frameState);
+      expect(provider._hasFillTilesThisFrame).toBe(false);
+      expect(provider._hasLoadedTilesThisFrame).toBe(true);
+
+      tile.data.renderedMesh = {};
+      provider.beginUpdate(scene.frameState);
+      provider.showTileThisFrame(tile, scene.frameState);
+      expect(provider._hasFillTilesThisFrame).toBe(true);
+      expect(provider._hasLoadedTilesThisFrame).toBe(false);
+    });
+
     describe(
       "layer updating",
       function () {

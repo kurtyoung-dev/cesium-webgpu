@@ -40,7 +40,6 @@ import Atmosphere from "./Atmosphere.js";
 import AtmosphericConditions from "./AtmosphericConditions.js";
 import { computeSkyBrightness } from "./SkyBrightness.js";
 import {
-  createEclipseState,
   getEclipseHorizonTwilightFactor,
   getEclipseSceneLightFactor,
   updateEclipseState,
@@ -102,6 +101,7 @@ import {
   resolveFramebuffers as resolveFramebuffersImpl,
 } from "./FramebufferOrchestrator.js";
 import { executeOverlayCommands } from "./SceneRenderer.js";
+import scheduleFinalWebGLShaderProgram from "./WebGLShaderProgramScheduler.js";
 import {
   executeCommandsInViewport,
   execute2DViewportCommands,
@@ -305,9 +305,6 @@ class Scene {
     this._ellipsoid = options.ellipsoid ?? Ellipsoid.default;
     this._globe = undefined;
     this._globeTranslucencyState = new GlobeTranslucencyState();
-    // C12-29 S1 — one eclipse-state object for the scene's lifetime; it is
-    // mutated in place each frame and published on `frameState.eclipseState`.
-    this._eclipseState = createEclipseState();
     this._primitives = new PrimitiveCollection({ countReferences });
     this._groundPrimitives = new PrimitiveCollection({ countReferences });
 
@@ -1063,6 +1060,17 @@ class Scene {
       context: context,
       lightCamera: this._shadowMapCamera,
       enabled: options.shadows ?? false,
+      // `cascadesEnabled` stays at its default `true` on BOTH backends. It does
+      // not merely pick a pass count: it selects the whole directional-light
+      // lifecycle — the orthographic light frustum, `fitShadowMapToScene`, the
+      // below-horizon cull, terminator darkness fade, and the every-frame
+      // `_needsUpdate`. Turning it off makes `ShadowMap` treat this scene's
+      // `_shadowMapCamera` as a spot light, and `Scene` only ever writes that
+      // camera's `.direction` (see `updateAndExecuteCommands`), so the light
+      // would sit at a default camera position with a 60-degree perspective
+      // frustum. Backends that own cascades natively instead publish the fitted
+      // whole-frustum light camera through pass 0 in `ShadowMap.update`, gated
+      // on `context.managesSceneShadowCascadesNatively`.
     });
 
     /**
@@ -3283,13 +3291,24 @@ class Scene {
   /**
    * @private
    */
-  updateDerivedCommands(command) {
+  updateDerivedCommands(command, scheduleFinalShaderProgram = false) {
     const { derivedCommands } = command;
     if (!defined(derivedCommands)) {
       // Is not a DrawCommand
       return;
     }
 
+    // Native WebGPU commands own their pick, depth, shadow, HDR, and OIT
+    // variants. Running the WebGL factories below would build DrawCommands
+    // whose shaderProgram/vertexArray state cannot execute on WebGPU.
+    if (command.isWebGPUDrawCommand === true) {
+      return;
+    }
+
+    const isWebGLCommand =
+      !this._alternateSceneRenderer && command.isWebGPUDrawCommand !== true;
+    const scheduleWebGLFinalShaderProgram =
+      scheduleFinalShaderProgram && isWebGLCommand;
     const frameState = this._frameState;
     const { shadowState, useLogDepth } = this._frameState;
     const context = this._context;
@@ -3323,9 +3342,27 @@ class Scene {
       needsUpdateForMetadataPicking;
 
     if (!command.dirty) {
+      // Camera-visible commands revisit this method after their exact derived
+      // tree has already been built. Keep polling/scheduling that final
+      // executable until it finishes linking without rebuilding any derived
+      // commands. Off-camera and alternate-renderer paths pass false; pick and
+      // debug paths remain conservatively rejected by the scheduler.
+      if (scheduleWebGLFinalShaderProgram) {
+        scheduleFinalWebGLShaderProgram(this, command);
+      }
       return;
     }
 
+    if (isWebGLCommand) {
+      // Any derived-tree rebuild can replace the selected final command while
+      // retaining the same base program and frame selector. Clear strong
+      // references too: an off-camera rebuild must not pin a displaced tree.
+      command._webGLFinalShaderProgramBase = undefined;
+      command._webGLFinalShaderProgramCommand = undefined;
+      command._webGLFinalShaderProgram = undefined;
+      command._webGLFinalShaderProgramSelector = -1;
+      command._webGLFinalShaderProgramLinkState = undefined;
+    }
     command.dirty = false;
 
     const { shadowsEnabled, shadowMaps } = shadowState;
@@ -3370,6 +3407,10 @@ class Scene {
     if (hasDerivedCommands || needsDerivedCommands) {
       updateDerivedCommands(this, command, shadowsDirty);
     }
+
+    if (scheduleWebGLFinalShaderProgram) {
+      scheduleFinalWebGLShaderProgram(this, command);
+    }
   }
 
   /**
@@ -3400,6 +3441,7 @@ class Scene {
     frameState.mode = this._mode;
     frameState.morphTime = this.morphTime;
     frameState.mapProjection = this.mapProjection;
+    frameState.view = this._view;
     frameState.camera = camera;
     frameState.cullingVolume = camera.frustum.computeCullingVolume(
       camera.positionWC,
@@ -3429,6 +3471,7 @@ class Scene {
         this.camera.frustum instanceof OrthographicFrustum ||
         this.camera.frustum instanceof OrthographicOffCenterFrustum
       );
+    frameState.highDynamicRange = this._hdr;
     frameState.light = this.light;
     // Track V-A3 (NEW-ATMO-DERIVED-LIGHTING) — when the unified aerial-
     // perspective atmosphere is active (WebGPU), derive the directional SUN
@@ -3483,6 +3526,16 @@ class Scene {
     }
     frameState.lights = this.lights;
     frameState.cameraUnderground = this._cameraUnderground;
+    // Publish current CSM intent before models, primitives, and globe commands
+    // prepare their effects bindings. The renderer object persists after its
+    // first use, so its mere existence cannot distinguish an active CSM frame
+    // from a later toggle-off or non-3D frame.
+    frameState.useCascadedShadowMaps =
+      this.useCascadedShadowMaps === true && this._mode === SceneMode.SCENE3D;
+    // Shared scene truth, published before model / tileset updates can invoke
+    // renderer-specific environment capture. A retained prior-frame terrain
+    // list is not renderable while the owning globe is hidden.
+    frameState.globeVisible = defined(this.globe) && this.globe.show;
     frameState.globeTranslucencyState = this._globeTranslucencyState;
     // WGF-6: Per-frame debug flag for triangulation visualization. Feature
     // renderers that opt in (Globe surface today, future BufferPrimitive +
@@ -3611,6 +3664,7 @@ class Scene {
     this.clearPasses(frameState.passes);
 
     frameState.tilesetPassState = undefined;
+    prepareLogicalViewEclipse(this);
   }
 
   /**
@@ -3764,7 +3818,10 @@ class Scene {
           globe,
         );
         if (defined(environmentState.skyAtmosphereCommand)) {
-          this.updateDerivedCommands(environmentState.skyAtmosphereCommand);
+          this.updateDerivedCommands(
+            environmentState.skyAtmosphereCommand,
+            true,
+          );
         }
       } else {
         environmentState.skyAtmosphereCommand = undefined;
@@ -5738,6 +5795,7 @@ const scratchEclipseOptions = {
   active: true,
   enabled: true,
   autoExposure: false,
+  horizonTwilightEnabled: true,
   cameraPositionWC: undefined,
   cameraHeight: 0.0,
   // C12-29 S2 — deliberately ABSENT (not `undefined`-then-assigned): the sun
@@ -5746,6 +5804,101 @@ const scratchEclipseOptions = {
   time: undefined,
   earthOccluderRadius: undefined,
 };
+
+/**
+ * Prepare camera-dependent eclipse state for the active logical View.
+ *
+ * C12-29 S1/S2/S6 — the mutable state belongs to `View`, while FrameState
+ * exposes aliases for the active update/render path. This function is called
+ * by `Scene.updateFrameState()` after the camera, occluder, mode, light, and
+ * globe-translucency state are current, and therefore before every full
+ * `UniformState.update(frameState)` entry (main render, pick, and offscreen
+ * logical views). Pass-camera-only overrides intentionally use
+ * `UniformState.updateCamera()` and do not enter here.
+ *
+ * The computation remains unconditional (a couple of dot products and two
+ * asin in the common no-occlusion case, which early-outs before quadrature);
+ * `enableEclipse` gates only whether consumers APPLY the result.
+ *
+ * The Earth occluder is taken straight off `frameState.occluder` — the same
+ * sphere `Scene.updateEnvironment` feeds to the legacy binary
+ * `Occluder.isBoundingSphereVisible` cull. Reading its radius reproduces every
+ * `SceneUtilities.getOccluder` guard: 2D/Columbus view, a hidden globe, an
+ * underground camera and a translucent globe all leave it undefined.
+ *
+ * SCENE3D ONLY: in 2D, Columbus view and MORPHING the camera is in projected
+ * coordinates while the sun and moon are ECEF. Identity is the legacy and
+ * frame-correct result in those modes.
+ *
+ * Publication must precede `UniformState.update(frameState)`, because
+ * UniformState consumes the scene-light factor and is re-entered by picking
+ * and offscreen views. Sun/moon world positions are derived from
+ * `frameState.time` inside EclipseState, avoiding the previous-frame value in
+ * UniformState before its update.
+ *
+ * @param {Scene} scene
+ * @private
+ */
+function prepareLogicalViewEclipse(scene) {
+  const frameState = scene._frameState;
+  const view = frameState.view;
+
+  // Phase 1.1: forward the canonical atmospheric-conditions facade here so
+  // every logical-view preparation, including pick/offscreen paths, resolves
+  // the toggles before deriving eclipse state.
+  frameState.atmosphericConditions = defined(scene.globe)
+    ? scene.globe.atmosphericConditions
+    : undefined;
+
+  const eclipseLighting = frameState.atmosphericConditions?.lighting;
+  const occluder = scene._globeTranslucencyState.sunVisibleThroughGlobe
+    ? undefined
+    : frameState.occluder;
+  scratchEclipseOptions.active = frameState.mode === SceneMode.SCENE3D;
+  scratchEclipseOptions.enabled = defined(eclipseLighting)
+    ? eclipseLighting.enableEclipse !== false
+    : true;
+  scratchEclipseOptions.autoExposure =
+    eclipseLighting?.eclipseAutoExposure === true;
+  scratchEclipseOptions.horizonTwilightEnabled = defined(eclipseLighting)
+    ? eclipseLighting.enableEclipseHorizonTwilight !== false
+    : true;
+  scratchEclipseOptions.cameraPositionWC = frameState.camera?.positionWC;
+  scratchEclipseOptions.cameraHeight =
+    frameState.camera?.positionCartographic?.height ?? 0.0;
+  scratchEclipseOptions.time = frameState.time;
+  scratchEclipseOptions.earthOccluderRadius = defined(occluder)
+    ? occluder.radius
+    : undefined;
+
+  frameState.eclipseState = updateEclipseState(
+    view._eclipseState,
+    scratchEclipseOptions,
+  );
+  // C12-29 S2 — ONE scalar every scene-dimming consumer reads. Exactly 1.0
+  // outside an enabled lunar eclipse.
+  view._eclipseSceneLightFactor = getEclipseSceneLightFactor(
+    frameState.eclipseState,
+  );
+  frameState.eclipseSceneLightFactor = view._eclipseSceneLightFactor;
+
+  // C12-29 S5 — a FrameState is reused across logical Views and mini-frames,
+  // so begin a fresh memo window and clear the prior View's transient alias.
+  // Classification is deferred to the command owner that has the exact
+  // terrain set: dynamic-environment capture uses its retained sources, the
+  // main globe uses its current selection, and pick uses its rebuilt set.
+  frameState.eclipseGlobeShadow = undefined;
+  frameState.eclipseGlobeShadowPrepared = false;
+  frameState.eclipseGlobeShadowSurfaceRadius = undefined;
+  frameState.eclipseGlobeShadowSelectionRevision = undefined;
+
+  // C12-29 S6 — the 360-degree horizon-twilight gain. Exactly 0.0 outside
+  // near-totality and above the atmosphere.
+  view._eclipseHorizonTwilight = getEclipseHorizonTwilightFactor(
+    frameState.eclipseState,
+  );
+  frameState.eclipseHorizonTwilight = view._eclipseHorizonTwilight;
+}
 
 function render(scene) {
   const frameState = scene._frameState;
@@ -5784,91 +5937,7 @@ function render(scene) {
   // skipped environment update cannot leak the prior frame's visibility into
   // moon/star extinction or default-on star modulation.
   frameState.skyAtmosphereVisible = false;
-  // Phase 1.1: forward the canonical atmospheric conditions facade so
-  // renderers can read B-series toggles (sun/moon lighting, scattering
-  // occlusion, star modulation, volumetric fog/clouds, weather, night)
-  // through one stable reference. Undefined if no globe attached.
-  frameState.atmosphericConditions = defined(scene.globe)
-    ? scene.globe.atmosphericConditions
-    : undefined;
   scene.fog.update(frameState);
-
-  // C12-29 S1 — per-frame eclipse / occultation state. Computed
-  // unconditionally (a couple of dot products and two asin in the common
-  // no-occlusion case, which early-outs before any quadrature); the
-  // `enableEclipse` toggle gates only whether consumers APPLY the result.
-  //
-  // The Earth occluder is taken straight off `frameState.occluder` — the
-  // very sphere `Scene.updateEnvironment` feeds to the legacy binary
-  // `Occluder.isBoundingSphereVisible` cull. Reading its radius (rather
-  // than rebuilding `ellipsoid.minimumRadius + minimumTerrainHeight`)
-  // guarantees the continuous fade and the surviving binary cull are
-  // derived from identical geometry, and reproduces every guard
-  // `SceneUtilities.getOccluder` applies for free: 2D/Columbus view, a
-  // hidden globe, an underground camera and a translucent globe all leave
-  // `frameState.occluder` undefined, so the Earth term is exactly 0 there —
-  // matching today's "sun is always visible" behaviour in those modes.
-  // `sunVisibleThroughGlobe` is the one extra guard `updateEnvironment`
-  // applies on top, mirrored here.
-  //
-  // SCENE3D ONLY: in 2D, Columbus view and MORPHING the camera position is
-  // in projected-map coordinates while the sun and moon are ECEF. Gating
-  // only the Earth term there (its occluder is already absent) would leave
-  // the MOON term running on mixed frames — direction errors of up to ~1.5
-  // degrees, several solar diameters. Legacy had no sun occlusion in those
-  // modes at all, so `valid = false` and a factor of exactly 1.0 is correct
-  // by definition, not a compromise.
-  //
-  // C12-29 S2 — this block MOVED AHEAD of `uniformState.update(frameState)`.
-  // `UniformState` is now one of the consumers (it dims the sun-driven scene
-  // light colour), and `uniformState.update` is re-entered several times per
-  // frame from picking, the viewport executor and offscreen views; a factor
-  // applied after the fact would be dropped by every one of those re-entries.
-  // Everything this block reads is already current here: `frameState.occluder`
-  // and `frameState.camera` are set by `updateFrameState` above, and the sun's
-  // world position is now derived inside `EclipseState` from `frameState.time`
-  // with `setSunAndMoonDirections`' own pair of calls (before
-  // `uniformState.update`, `uniformState.sunPositionWC` still holds the
-  // PREVIOUS frame's value — negligible at 60 Hz, a whole step wrong under the
-  // stepped clocks every probe uses).
-  {
-    const eclipseLighting = frameState.atmosphericConditions?.lighting;
-    const occluder = scene._globeTranslucencyState.sunVisibleThroughGlobe
-      ? undefined
-      : frameState.occluder;
-    scratchEclipseOptions.active = frameState.mode === SceneMode.SCENE3D;
-    scratchEclipseOptions.enabled = defined(eclipseLighting)
-      ? eclipseLighting.enableEclipse !== false
-      : true;
-    scratchEclipseOptions.autoExposure =
-      eclipseLighting?.eclipseAutoExposure === true;
-    scratchEclipseOptions.horizonTwilightEnabled = defined(eclipseLighting)
-      ? eclipseLighting.enableEclipseHorizonTwilight !== false
-      : true;
-    scratchEclipseOptions.cameraPositionWC = frameState.camera?.positionWC;
-    scratchEclipseOptions.cameraHeight =
-      frameState.camera?.positionCartographic?.height ?? 0.0;
-    scratchEclipseOptions.time = frameState.time;
-    scratchEclipseOptions.earthOccluderRadius = defined(occluder)
-      ? occluder.radius
-      : undefined;
-    frameState.eclipseState = updateEclipseState(
-      scene._eclipseState,
-      scratchEclipseOptions,
-    );
-    // C12-29 S2 — ONE scalar every scene-dimming consumer reads, published
-    // before anything can consume it. Exactly 1.0 in every non-eclipse frame
-    // and in the off position, which is what makes those frames identical.
-    frameState.eclipseSceneLightFactor = getEclipseSceneLightFactor(
-      frameState.eclipseState,
-    );
-    // C12-29 S6 — the 360-degree horizon twilight gain the sky shell applies.
-    // Exactly 0.0 outside the last ~2% of obscuration and above the
-    // atmosphere, so the shell is byte-identical in every other frame.
-    frameState.eclipseHorizonTwilight = getEclipseHorizonTwilightFactor(
-      frameState.eclipseState,
-    );
-  }
 
   uniformState.update(frameState);
 

@@ -799,14 +799,11 @@ function executeOverlayCommands(scene, passState) {
 // allocated a `shadowedPasses` array per call, and linear-`.includes`-tested
 // each command's pass — all duplicating the walk the PVS pass already made. The
 // sublist already excludes non-casters and non-shadowed passes, and every entry
-// already carries this frame's derived cast command (camera-visible casters via
-// `insertIntoBin`; camera-invisible casters via collection-time
-// `updateDerivedCommands` in View.js — INV-2). So the only work left per caster
-// is the light/cascade `isVisible` culling, which needs the shadow-map volumes
-// (computed after PVS) and therefore stays here (INV-3). Output — the populated
-// `shadowMap.passes[j].commandList` and each command's `derivedCommands.shadows`
-// — is byte-identical to the old full-scan; only how the caster set is gathered
-// changed.
+// is ready for its backend: WebGL commands carry the derived cast command built
+// by `insertIntoBin` or View's off-camera path, while native WebGPU commands
+// remain raw and carry `_shadowCast*` layout/resource tags. So the only work
+// left per caster is the light/cascade `isVisible` culling, which needs the
+// shadow-map volumes (computed after PVS) and therefore stays here (INV-3).
 function insertShadowCastCommands(scene, casters, shadowMap) {
   const { shadowMapCullingVolume, isPointLight, passes } = shadowMap;
   const numberOfPasses = passes.length;
@@ -821,7 +818,14 @@ function insertShadowCastCommands(scene, casters, shadowMap) {
 
     if (isPointLight) {
       for (let k = 0; k < numberOfPasses; ++k) {
-        passes[k].commandList.push(command);
+        const pass = passes[k];
+        const faceCullingVolume = pass.cullingVolume;
+        if (
+          !defined(faceCullingVolume) ||
+          scene.isVisible(faceCullingVolume, command)
+        ) {
+          pass.commandList.push(command);
+        }
       }
     } else if (numberOfPasses === 1) {
       passes[0].commandList.push(command);
@@ -872,9 +876,9 @@ function executeShadowMapCastCommands(scene) {
   // when the WebGPU cast pass iterated it. Result: zero WebGPU shadow
   // casters reached the cast pass (`csmRenderer._castDispatches` stayed 0)
   // and nothing cast a shadow, on both the single shadow map and the CSM
-  // path. Hoisting the population so it runs unconditionally fixes both:
-  // the WebGPU context now reads a populated cast list, and the WebGL
-  // execute loop below consumes the same lists exactly as before.
+  // path. Hoisting the backend-neutral light/cascade population fixes both:
+  // WebGPU consumes raw commands with `_shadowCast*` tags, while WebGL
+  // consumes the derived cast commands prepared during PVS.
   for (let i = 0; i < shadowMaps.length; ++i) {
     const shadowMap = shadowMaps[i];
     if (shadowMap.outOfView) {

@@ -137,6 +137,16 @@ class FrameState {
     this.mapProjection = undefined;
 
     /**
+     * The active logical {@link View}. View-dependent derived state is owned
+     * by this object and published on FrameState only for the duration of its
+     * update/render path.
+     *
+     * @type {View}
+     * @default undefined
+     */
+    this.view = undefined;
+
+    /**
      * The current camera.
      *
      * @type {Camera}
@@ -151,6 +161,27 @@ class FrameState {
      * @default false
      */
     this.cameraUnderground = false;
+
+    /**
+     * Whether native cascaded shadow receiving is requested for this frame.
+     * Scene publishes this before primitive updates so WebGPU receivers never
+     * infer activity merely from a persistent renderer object left over from a
+     * prior frame. Restricted to SCENE3D by Scene.updateFrameState.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.useCascadedShadowMaps = false;
+
+    /**
+     * Whether the scene's globe is enabled for this frame. This is published
+     * before primitive updates so backend feature renderers can reject retained
+     * globe work immediately when the shared Scene has hidden the globe.
+     *
+     * @type {boolean}
+     * @default false
+     */
+    this.globeVisible = false;
 
     /**
      * The {@link GlobeTranslucencyState} object used by the scene.
@@ -276,6 +307,7 @@ class FrameState {
     /**
      * @typedef FrameState.Fog
      * @type {object}
+     * @property {boolean} configuredEnabled <code>true</code> if the user-facing fog feature is enabled, even when fog is outside its current render range.
      * @property {boolean} enabled <code>true</code> if fog is enabled, <code>false</code> otherwise. This affects both fog culling and rendering.
      * @property {boolean} renderable <code>true</code> if fog should be rendered, <code>false</code> if not. This flag should be checked in combination with fog.enabled.
      * @property {number | undefined} density A positive number used to mix the color and fog color based on camera distance.
@@ -289,6 +321,7 @@ class FrameState {
      */
 
     this.fog = {
+      configuredEnabled: false,
       /**
        * @default false
        */
@@ -376,16 +409,18 @@ class FrameState {
     this.starZenithTransmittance = undefined;
 
     /**
-     * Per-frame eclipse / occultation state (C12-29 S1). Computed
-     * unconditionally by {@link EclipseState} once per frame from the
-     * camera-anchored dual-cone geometry of the solar disc against the Earth
-     * limb and the lunar disc, in f64. Carries `sunVisibleFraction` (the
+     * Eclipse / occultation state for the active logical {@link View}
+     * (C12-29 S1). Computed unconditionally when that View is prepared from
+     * the observer-camera-anchored dual-cone geometry of the solar disc
+     * against the Earth limb and the lunar disc, in f64. Carries
+     * `sunVisibleFraction` (the
      * limb-darkened surviving flux fraction the sun billboard fades by),
      * `earthOcclusionFraction`, `moonObscuration`, `moonPositionWC` (ECEF,
      * for the S5 per-fragment umbra term) plus angular diagnostics. The
      * `enabled` field mirrors `atmosphericConditions.lighting.enableEclipse`
      * and gates only whether consumers APPLY the fraction — the physics is
-     * always available for probes. One object, mutated in place.
+     * always available for probes. This is a transient alias to one stable
+     * object owned and mutated in place by the active View.
      * @type {object|undefined}
      */
     this.eclipseState = undefined;
@@ -430,6 +465,46 @@ class FrameState {
      * @type {number|undefined}
      */
     this.eclipseSceneLightFactor = undefined;
+
+    /**
+     * Per-fragment Moon-shadow block for the globe (C12-29 S5), owned by the
+     * active logical {@link View}. The geocentric body-ray payload is
+     * pass-camera-independent; its fit and S2 composition terms remain
+     * observer-dependent. `params.x === 0` is the inert shader gate.
+     * This FrameState field is only a transient alias to the View-owned block.
+     *
+     * @type {object|undefined}
+     */
+    this.eclipseGlobeShadow = undefined;
+
+    /**
+     * Internal same-logical-view memo for S5 terrain-bound classification.
+     * Each command owner prepares S5 against its exact retained or selected
+     * terrain set. A repeated owner call may reuse the already-published block
+     * only when both its surface radius and selection revision still match.
+     *
+     * @type {boolean}
+     * @private
+     */
+    this.eclipseGlobeShadowPrepared = false;
+
+    /**
+     * Radius paired with {@link FrameState#eclipseGlobeShadowPrepared}.
+     *
+     * @type {number|undefined}
+     * @private
+     */
+    this.eclipseGlobeShadowSurfaceRadius = undefined;
+
+    /**
+     * Selected-terrain generation paired with the refined S5 classification.
+     * A retained mutable quadtree array can keep the same identity while its
+     * contents change, so memoization uses the provider's generation instead.
+     *
+     * @type {number|undefined}
+     * @private
+     */
+    this.eclipseGlobeShadowSelectionRevision = undefined;
 
     /**
      * Gain on the 360-degree horizon twilight band the sky-atmosphere shell
@@ -515,6 +590,12 @@ class FrameState {
      * @property {number} closestObjectSize The size of the bounding volume that is closest to the camera. This is used to place more shadow detail near the object.
      * @property {number} lastDirtyTime The time when a shadow map was last dirty
      * @property {boolean} outOfView Whether the shadows maps are out of view this frame
+     * @property {DrawCommand[]} prePvsCasterCommands Reusable side channel of
+     * active casters captured before optional camera-only octree/Hi-Z filters.
+     * View merges missing entries into `casterCommands` without camera-binning
+     * them, so shadow correctness does not disable camera visibility work.
+     * @property {Set<DrawCommand>} prePvsCasterCommandSet Reusable dedupe
+     * scratch for `prePvsCasterCommands`; cleared before publication.
      * @property {DrawCommand[]} [casterCommands] C10-10 — the per-frame shadow-caster sublist collected during {@link View#createPotentiallyVisibleSet} (all `castShadows` commands in a shadowed pass, camera-visible or not). {@link SceneRenderer.executeShadowMapCastCommands} iterates this instead of re-scanning the full command list per shadow map. `undefined` when shadows are disabled this frame.
      */
 
@@ -549,6 +630,14 @@ class FrameState {
        * @default true
        */
       outOfView: true,
+      /**
+       * C11-184 shadow-only side channel. Persistent and reset by length so
+       * optional camera visibility filters never force casters back into the
+       * camera command list.
+       * @type {DrawCommand[]}
+       */
+      prePvsCasterCommands: [],
+      prePvsCasterCommandSet: new Set(),
       /**
        * C10-10 shadow-caster sublist; populated by the PVS walk when shadows
        * are enabled, `undefined` otherwise.

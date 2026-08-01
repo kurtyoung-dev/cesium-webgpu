@@ -11,12 +11,18 @@ import Intersect from "../Core/Intersect.js";
 import CesiumMath from "../Core/Math.js";
 import OrthographicFrustum from "../Core/OrthographicFrustum.js";
 import Rectangle from "../Core/Rectangle.js";
+import VerticalExaggeration from "../Core/VerticalExaggeration.js";
 import Visibility from "../Core/Visibility.js";
 import RenderState from "../Renderer/RenderState.js";
 import BlendingState from "./BlendingState.js";
 import ClippingPlaneCollection from "./ClippingPlaneCollection.js";
 import ClippingPolygonCollection from "./ClippingPolygonCollection.js";
 import DepthFunction from "./DepthFunction.js";
+import {
+  TERRAIN_ECLIPSE_BOUND_RELATIVE_SAFETY,
+  TERRAIN_ECLIPSE_BOUND_SAFETY_METERS,
+  updateEclipseGlobeShadowForFrameState,
+} from "./EclipseGlobeShadow.js";
 import GlobeSurfaceTile from "./GlobeSurfaceTile.js";
 import ImageryState from "./ImageryState.js";
 import QuadtreeTileLoadState from "./QuadtreeTileLoadState.js";
@@ -37,6 +43,224 @@ import {
 const boundingSphereScratch = new BoundingSphere();
 const rectangleIntersectionScratch = new Rectangle();
 const tileDirectionScratch = new Cartesian3();
+// HeightmapTerrainData caps synthesized fill skirts at 1000 m. Fill vertices
+// interpolate loaded source meshes, so extending the resource-level minimum by
+// that cap encloses fill geometry without revisiting selected tiles.
+const ECLIPSE_FILL_SKIRT_ALLOWANCE_METERS = 1000.0;
+
+function resetKnownTerrainEclipseBounds(tileProvider) {
+  tileProvider._eclipseKnownMeshes = new WeakSet();
+  tileProvider._eclipseKnownMinimumHeight = 0.0;
+  tileProvider._eclipseKnownMaximumHeight = 0.0;
+  tileProvider._eclipseKnownBoundsValid = true;
+}
+
+/**
+ * Fold a newly realized terrain resource into the provider-wide raw-height
+ * envelope. This runs on the asynchronous tile-load path once per mesh, not
+ * in selection or command generation.
+ *
+ * @param {GlobeSurfaceTileProvider} tileProvider
+ * @param {object} mesh
+ * @private
+ */
+function observeTerrainMeshForEclipse(tileProvider, mesh) {
+  if (!defined(mesh) || tileProvider._eclipseKnownMeshes.has(mesh)) {
+    return;
+  }
+  tileProvider._eclipseKnownMeshes.add(mesh);
+
+  let minimumHeight = mesh.encoding?.minimumHeight;
+  let maximumHeight = mesh.encoding?.maximumHeight;
+  if (!Number.isFinite(minimumHeight) || !Number.isFinite(maximumHeight)) {
+    const indexLength = mesh.indices?.length;
+    const noSkirtsProven =
+      Number.isFinite(indexLength) &&
+      Number.isFinite(mesh.indexCountWithoutSkirts) &&
+      indexLength === mesh.indexCountWithoutSkirts;
+    if (!noSkirtsProven) {
+      tileProvider._eclipseKnownBoundsValid = false;
+      return;
+    }
+    minimumHeight = mesh.minimumHeight;
+    maximumHeight = mesh.maximumHeight;
+  }
+  if (!Number.isFinite(minimumHeight) || !Number.isFinite(maximumHeight)) {
+    tileProvider._eclipseKnownBoundsValid = false;
+    return;
+  }
+
+  tileProvider._eclipseKnownMinimumHeight = Math.min(
+    tileProvider._eclipseKnownMinimumHeight,
+    minimumHeight,
+  );
+  tileProvider._eclipseKnownMaximumHeight = Math.max(
+    tileProvider._eclipseKnownMaximumHeight,
+    maximumHeight,
+  );
+}
+
+/**
+ * Compute an origin-centred sphere enclosing every terrain resource observed
+ * by the provider, including possible fill skirts and current exaggeration.
+ *
+ * @param {GlobeSurfaceTileProvider} tileProvider
+ * @param {FrameState} frameState
+ * @returns {number|undefined}
+ * @private
+ */
+function computeKnownTerrainEclipseSurfaceRadius(tileProvider, frameState) {
+  const ellipsoidMaximumRadius =
+    tileProvider.tilingScheme?.ellipsoid?.maximumRadius;
+  if (
+    tileProvider._eclipseKnownBoundsValid !== true ||
+    !Number.isFinite(ellipsoidMaximumRadius)
+  ) {
+    return undefined;
+  }
+
+  const exaggeration = frameState.verticalExaggeration ?? 1.0;
+  const relativeHeight = frameState.verticalExaggerationRelativeHeight ?? 0.0;
+  const exaggeratedMinimumHeight = VerticalExaggeration.getHeight(
+    tileProvider._eclipseKnownMinimumHeight -
+      ECLIPSE_FILL_SKIRT_ALLOWANCE_METERS,
+    exaggeration,
+    relativeHeight,
+  );
+  const exaggeratedMaximumHeight = VerticalExaggeration.getHeight(
+    tileProvider._eclipseKnownMaximumHeight,
+    exaggeration,
+    relativeHeight,
+  );
+  if (
+    !Number.isFinite(exaggeratedMinimumHeight) ||
+    !Number.isFinite(exaggeratedMaximumHeight)
+  ) {
+    return undefined;
+  }
+
+  const unprotectedRadius =
+    ellipsoidMaximumRadius +
+    Math.max(
+      Math.abs(exaggeratedMinimumHeight),
+      Math.abs(exaggeratedMaximumHeight),
+    );
+  const safety = Math.max(
+    TERRAIN_ECLIPSE_BOUND_SAFETY_METERS,
+    unprotectedRadius * TERRAIN_ECLIPSE_BOUND_RELATIVE_SAFETY,
+  );
+  return unprotectedRadius + safety;
+}
+
+function markSceneCaptureContentChanged(tileProvider) {
+  tileProvider._sceneCaptureContentRevision =
+    (tileProvider._sceneCaptureContentRevision ?? 0) + 1;
+}
+
+function getSceneCaptureResourceId(tileProvider, resource) {
+  if (
+    !defined(resource) ||
+    (typeof resource !== "object" && typeof resource !== "function")
+  ) {
+    return 0;
+  }
+
+  let resourceIds = tileProvider._sceneCaptureResourceIds;
+  if (!defined(resourceIds)) {
+    resourceIds = new WeakMap();
+    tileProvider._sceneCaptureResourceIds = resourceIds;
+  }
+
+  let id = resourceIds.get(resource);
+  if (!defined(id)) {
+    id = tileProvider._nextSceneCaptureResourceId++;
+    resourceIds.set(resource, id);
+  }
+  return id;
+}
+
+function mixSceneCaptureHash(hash, value, prime) {
+  return Math.imul(hash ^ (value >>> 0), prime) >>> 0;
+}
+
+/**
+ * Advance the producer content epoch when the selected terrain or imagery
+ * resources change. This scan is feature-gated, reuses two scalar hashes, and
+ * allocates no per-tile records. Resource identities live in a lazy WeakMap so
+ * mesh/imagery replacement is visible even when tile coordinates stay fixed.
+ *
+ * @param {GlobeSurfaceTileProvider} tileProvider
+ * @param {FrameState} frameState
+ * @private
+ */
+function updateSceneCaptureContentRevision(tileProvider, frameState) {
+  if (frameState.context.sceneCaptureReflections !== true) {
+    return;
+  }
+
+  const tiles = tileProvider._quadtree._tilesToRender;
+  let hashA = 2166136261;
+  let hashB = 2246822519;
+  for (let i = 0; i < tiles.length; i++) {
+    const tile = tiles[i];
+    const surfaceTile = tile.data;
+    const mesh = surfaceTile?.renderedMesh;
+    const meshId = getSceneCaptureResourceId(tileProvider, mesh);
+    const vertexId = getSceneCaptureResourceId(tileProvider, mesh?.vertices);
+    const indexId = getSceneCaptureResourceId(tileProvider, mesh?.indices);
+
+    hashA = mixSceneCaptureHash(hashA, tile.level, 16777619);
+    hashA = mixSceneCaptureHash(hashA, tile.x, 16777619);
+    hashA = mixSceneCaptureHash(hashA, tile.y, 16777619);
+    hashA = mixSceneCaptureHash(hashA, meshId, 16777619);
+    hashA = mixSceneCaptureHash(hashA, vertexId, 16777619);
+    hashA = mixSceneCaptureHash(hashA, indexId, 16777619);
+    hashA = mixSceneCaptureHash(
+      hashA,
+      mesh === surfaceTile?.mesh ? 1 : 0,
+      16777619,
+    );
+
+    hashB = mixSceneCaptureHash(hashB, tile.level, 3266489917);
+    hashB = mixSceneCaptureHash(hashB, tile.x, 3266489917);
+    hashB = mixSceneCaptureHash(hashB, tile.y, 3266489917);
+    hashB = mixSceneCaptureHash(hashB, meshId, 3266489917);
+    hashB = mixSceneCaptureHash(hashB, vertexId, 3266489917);
+    hashB = mixSceneCaptureHash(hashB, indexId, 3266489917);
+
+    const imagery = surfaceTile?.imagery;
+    const imageryLength = imagery?.length ?? 0;
+    hashA = mixSceneCaptureHash(hashA, imageryLength, 16777619);
+    hashB = mixSceneCaptureHash(hashB, imageryLength, 3266489917);
+    for (let j = 0; j < imageryLength; j++) {
+      const readyImagery = imagery[j].readyImagery;
+      const texture = readyImagery?.texture ?? readyImagery;
+      const imageryResourceId = getSceneCaptureResourceId(
+        tileProvider,
+        readyImagery,
+      );
+      const imageryId = getSceneCaptureResourceId(tileProvider, texture);
+      const layerIndex = readyImagery?.imageryLayer?._layerIndex ?? -1;
+      hashA = mixSceneCaptureHash(hashA, imageryResourceId, 16777619);
+      hashA = mixSceneCaptureHash(hashA, imageryId, 16777619);
+      hashA = mixSceneCaptureHash(hashA, layerIndex, 16777619);
+      hashB = mixSceneCaptureHash(hashB, imageryResourceId, 3266489917);
+      hashB = mixSceneCaptureHash(hashB, imageryId, 3266489917);
+      hashB = mixSceneCaptureHash(hashB, layerIndex, 3266489917);
+    }
+  }
+
+  if (
+    tileProvider._sceneCaptureSelectionLength !== tiles.length ||
+    tileProvider._sceneCaptureSelectionHashA !== hashA ||
+    tileProvider._sceneCaptureSelectionHashB !== hashB
+  ) {
+    tileProvider._sceneCaptureSelectionLength = tiles.length;
+    tileProvider._sceneCaptureSelectionHashA = hashA;
+    tileProvider._sceneCaptureSelectionHashB = hashB;
+    markSceneCaptureContentChanged(tileProvider);
+  }
+}
 
 /**
  * Provides quadtree tiles representing the surface of the globe.  This type is intended to be used
@@ -187,6 +411,24 @@ class GlobeSurfaceTileProvider {
     this._oldVerticalExaggeration = undefined;
     this._oldVerticalExaggerationRelativeHeight = undefined;
     this._oldSceneMode = SceneMode.SCENE3D;
+
+    // C12-29 S5 — retained O(1) rendered-terrain activation envelope. Raw
+    // height extrema are folded in once when mesh resources become ready;
+    // ordinary selection/command generation therefore does no eclipse work.
+    this._eclipseSurfaceRadius = undefined;
+    this._eclipseSelectionRevision = 0;
+    resetKnownTerrainEclipseBounds(this);
+
+    // Dynamic-environment scene capture consumes the prior frame's selected
+    // resources. Keep one producer epoch for identity/content changes so a
+    // stationary request-render scene gets one fresh capture instead of
+    // waiting for the ordinary eight-frame cadence.
+    this._sceneCaptureContentRevision = 0;
+    this._sceneCaptureSelectionLength = -1;
+    this._sceneCaptureSelectionHashA = undefined;
+    this._sceneCaptureSelectionHashB = undefined;
+    this._sceneCaptureResourceIds = undefined;
+    this._nextSceneCaptureResourceId = 1;
   }
 
   /**
@@ -271,6 +513,9 @@ class GlobeSurfaceTileProvider {
     }
 
     this._terrainProvider = terrainProvider;
+    markSceneCaptureContentChanged(this);
+    this._eclipseSurfaceRadius = undefined;
+    resetKnownTerrainEclipseBounds(this);
 
     if (defined(this._quadtree)) {
       this._quadtree.invalidateAllTiles();
@@ -411,6 +656,7 @@ class GlobeSurfaceTileProvider {
     this._oldVerticalExaggerationRelativeHeight = exaggerationRelativeHeight;
 
     if (exaggerationChanged) {
+      markSceneCaptureContentChanged(this);
       quadtree.forEachLoadedTile(function (tile) {
         const surfaceTile = tile.data;
         surfaceTile.updateExaggeration(tile, frameState, quadtree);
@@ -426,6 +672,23 @@ class GlobeSurfaceTileProvider {
         surfaceTile.updateSceneMode(frameState.mode);
       });
     }
+
+    this._eclipseSurfaceRadius = computeKnownTerrainEclipseSurfaceRadius(
+      this,
+      frameState,
+    );
+    this._eclipseSelectionRevision++;
+
+    // C12-29 S5 — current selection/exaggeration bounds are authoritative.
+    // Reclassify before any tile command captures/binds the View-owned block.
+    updateEclipseGlobeShadowForFrameState(
+      frameState,
+      this._eclipseSurfaceRadius,
+      this._quadtree._tilesToRender,
+      this._eclipseSelectionRevision,
+    );
+
+    updateSceneCaptureContentRevision(this, frameState);
 
     // C9-02 — optional visibility/execution ownership audit. The performance
     // runner attaches this observer only in its separately instrumented lane.
@@ -485,6 +748,16 @@ class GlobeSurfaceTileProvider {
    * @param {FrameState} frameState The frame state.
    */
   updateForPick(frameState) {
+    // Pick mini-frames reuse the retained render list but prepare a fresh
+    // logical View/frame. Rebind S5 against those exact tile bounds before
+    // WebGPU rebuilds commands or WebGL re-pushes its retained commands.
+    updateEclipseGlobeShadowForFrameState(
+      frameState,
+      this._eclipseSurfaceRadius,
+      this._quadtree._tilesToRender,
+      this._eclipseSelectionRevision,
+    );
+
     const ownershipDiagnostics =
       frameState.context._visibilityExecutionOwnershipDiagnostics;
     const ownershipCommandListStart = defined(ownershipDiagnostics)
@@ -505,6 +778,12 @@ class GlobeSurfaceTileProvider {
     if (!webGPUHandled) {
       const drawCommands = this._drawCommands;
       for (let i = 0, length = this._usedDrawCommands; i < length; ++i) {
+        // The pooled WebGL command was built by the prior on-screen View.
+        // Rebind the property-backed S5 block before an offscreen/pick View
+        // re-pushes it; otherwise the derived pick fragment shader executes
+        // eclipse ALU with the default View's geometry.
+        this._uniformMaps[i].properties.eclipseGlobeShadow =
+          frameState.eclipseGlobeShadow;
         pushCommand(drawCommands[i], frameState);
       }
     }
@@ -585,6 +864,11 @@ class GlobeSurfaceTileProvider {
         );
       }
     }
+
+    // Resource publication edge: fold each realized mesh into S5's global
+    // height envelope once. This is deliberately outside the render-selection
+    // and command hot paths.
+    observeTerrainMeshForEclipse(this, tile.data?.mesh);
   }
 
   /**
@@ -917,7 +1201,8 @@ class GlobeSurfaceTileProvider {
     tileSet.push(tile);
 
     const surfaceTile = tile.data;
-    if (!defined(surfaceTile.vertexArray)) {
+    const renderedMesh = surfaceTile.renderedMesh;
+    if (!defined(renderedMesh) || renderedMesh !== surfaceTile.mesh) {
       this._hasFillTilesThisFrame = true;
     } else {
       this._hasLoadedTilesThisFrame = true;
@@ -1080,6 +1365,7 @@ class GlobeSurfaceTileProvider {
       });
 
       this._layerOrderChanged = true;
+      markSceneCaptureContentChanged(this);
       tileImageryUpdatedEvent.raiseEvent();
     }
   }
@@ -1116,11 +1402,13 @@ class GlobeSurfaceTileProvider {
       layer.imageryProvider._reload = undefined;
     }
 
+    markSceneCaptureContentChanged(this);
     this._imageryLayersUpdatedEvent.raiseEvent();
   }
 
   _onLayerMoved(layer, newIndex, oldIndex) {
     this._layerOrderChanged = true;
+    markSceneCaptureContentChanged(this);
     this._imageryLayersUpdatedEvent.raiseEvent();
   }
 

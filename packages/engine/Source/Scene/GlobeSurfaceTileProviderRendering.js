@@ -28,6 +28,7 @@ import DrawCommand from "../Renderer/DrawCommand.js";
 import Pass from "../Renderer/Pass.js";
 import VertexArray from "../Renderer/VertexArray.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import { createEclipseGlobeShadow } from "./EclipseGlobeShadow.js";
 import GlobeSurfaceTile from "./GlobeSurfaceTile.js";
 import ImageryLayer from "./ImageryLayer.js";
 import PerInstanceColorAppearance from "./PerInstanceColorAppearance.js";
@@ -56,9 +57,9 @@ import TileBoundingRegion from "./TileBoundingRegion.js";
 function executeWebGPUGlobeTileCommand(renderPass) {
   renderPass.setPipeline(this._pipeline);
   for (let i = 0; i < this._bindGroups.length; i++) {
-    // Group 0 carries dynamic offsets (camera + tile UB slices in the ring
-    // page); pass them so the bind group built once over the page resolves to
-    // this command's actual UB region.
+    // Group 0 carries dynamic offsets (camera + tile + eclipse UB slices in
+    // their ring pages); pass them so the bind group resolves to this
+    // command's actual UB regions.
     if (i === 0 && this._bindGroup0DynamicOffsets !== undefined) {
       renderPass.setBindGroup(
         0,
@@ -72,6 +73,108 @@ function executeWebGPUGlobeTileCommand(renderPass) {
   renderPass.setVertexBuffer(0, this._vertexBuffer);
   renderPass.setIndexBuffer(this._indexBuffer, this._indexFormat);
   renderPass.drawIndexed(this._indexCount);
+}
+
+/**
+ * Apply the backend-agnostic globe shadow contract to a native WebGPU tile
+ * command. This deliberately mirrors the WebGL command path: all four
+ * ShadowMode values map exactly, and translucent globe commands neither cast
+ * nor receive shadows.
+ *
+ * The cache host is the stable TileGPUResources record supplied by the feature
+ * renderer. The command wrapper itself is rebuilt every frame, so caching
+ * shadow bind groups on it would pay a createBindGroup miss every frame.
+ *
+ * @param {object} command Native WebGPU tile command.
+ * @param {number} shadowMode Globe ShadowMode.
+ * @param {boolean} translucent Whether globe translucency is active.
+ * @param {object|undefined} shadowCastBindGroupCacheHost Stable tile resource.
+ * @param {GPUPrimitiveTopology} [topology="triangle-list"] Native primitive
+ * topology used by the tile command.
+ * @param {boolean} [cullEnabled=true] Whether the shadow caster should use
+ * WebGL's back-face culling state.
+ * @private
+ */
+function configureWebGPUGlobeShadowCommand(
+  command,
+  shadowMode,
+  translucent,
+  shadowCastBindGroupCacheHost,
+  topology = "triangle-list",
+  cullEnabled = true,
+) {
+  command.castShadows = !translucent && ShadowMode.castShadows(shadowMode);
+  command.receiveShadows =
+    !translucent && ShadowMode.receiveShadows(shadowMode);
+  command._shadowCastBindGroupCacheHost = shadowCastBindGroupCacheHost;
+  command._shadowCastTopology = topology;
+  command._shadowCastCullMode = cullEnabled ? "back" : "none";
+}
+
+function requestRenderForSceneCapturePublication() {
+  return true;
+}
+
+/**
+ * Publish frame-current globe capture sources without a per-tile object
+ * allocation. When publication resumes after startup/recovery/a hidden-globe
+ * gap, or selected content changes, request exactly one following frame so the
+ * earlier dynamic-environment update can consume the now-current sources.
+ *
+ * @param {object} context
+ * @param {object} globeRenderer
+ * @param {object} tileProvider
+ * @param {FrameState} frameState
+ * @private
+ */
+function publishWebGPUSceneCaptureSources(
+  context,
+  globeRenderer,
+  tileProvider,
+  frameState,
+) {
+  const frameNumber = frameState.frameNumber;
+  const contentRevision = tileProvider._sceneCaptureContentRevision ?? 0;
+  let sources = context._webgpuSceneCaptureSources;
+  if (
+    defined(sources) &&
+    Number.isFinite(sources.publicationRevision) &&
+    sources.frameNumber === frameNumber &&
+    sources.globeRenderer === globeRenderer &&
+    sources.tileProvider === tileProvider &&
+    sources.contentRevision === contentRevision
+  ) {
+    return;
+  }
+  const sourcesWereCurrent =
+    defined(sources) &&
+    Number.isFinite(sources.publicationRevision) &&
+    (sources.frameNumber === frameNumber ||
+      sources.frameNumber === frameNumber - 1) &&
+    sources.globeRenderer === globeRenderer &&
+    sources.tileProvider === tileProvider &&
+    sources.contentRevision === contentRevision;
+
+  if (!defined(sources)) {
+    sources = {
+      publicationRevision: 0,
+    };
+    context._webgpuSceneCaptureSources = sources;
+  }
+  if (!sourcesWereCurrent) {
+    sources.publicationRevision = (sources.publicationRevision ?? 0) + 1;
+  }
+  sources.frameNumber = frameNumber;
+  sources.globeRenderer = globeRenderer;
+  sources.tileProvider = tileProvider;
+  sources.contentRevision = contentRevision;
+
+  if (
+    !sourcesWereCurrent &&
+    !frameState.afterRender.includes(requestRenderForSceneCapturePublication)
+  ) {
+    frameState.afterRender.push(requestRenderForSceneCapturePublication);
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -99,6 +202,8 @@ const otherPassesInitialColor = new Cartesian4(0.0, 0.0, 0.0, 0.0);
 
 const defaultUndergroundColor = Color.TRANSPARENT;
 const defaultUndergroundColorAlphaByDistance = new NearFarScalar();
+const groundAtmosphereCompanionMinimumDistanceRatio = 0.75;
+const groundAtmosphereCompanionMaximumDistanceRatio = 1.25;
 
 const surfaceShaderSetOptionsScratch = {
   frameState: undefined,
@@ -119,6 +224,7 @@ const surfaceShaderSetOptionsScratch = {
   dynamicAtmosphereLightingFromSun: undefined,
   showGroundAtmosphere: undefined,
   perFragmentGroundAtmosphere: undefined,
+  groundAtmosphereCompanionEnabled: undefined,
   hasVertexNormals: undefined,
   useWebMercatorProjection: undefined,
   enableFog: undefined,
@@ -132,6 +238,7 @@ const surfaceShaderSetOptionsScratch = {
   colorToAlpha: undefined,
   hasGeodeticSurfaceNormals: undefined,
   hasExaggeration: undefined,
+  enableEclipseGlobeShadow: undefined,
 };
 
 const scratchClippingPlanesMatrix = new Matrix4();
@@ -174,6 +281,18 @@ function isUndergroundVisible(tileProvider, frameState) {
   }
 
   return false;
+}
+
+function isGroundAtmosphereCompanionDistance(cameraDistance, fadeOutDistance) {
+  if (!(fadeOutDistance > 0.0)) {
+    return false;
+  }
+
+  const distanceRatio = cameraDistance / fadeOutDistance;
+  return (
+    distanceRatio >= groundAtmosphereCompanionMinimumDistanceRatio &&
+    distanceRatio <= groundAtmosphereCompanionMaximumDistanceRatio
+  );
 }
 
 function pushCommand(command, frameState) {
@@ -392,6 +511,11 @@ function updateTileBoundingRegion(tile, tileProvider, frameState) {
 // Uniform map creation
 // ═══════════════════════════════════════════════════════════════════════════
 
+// C12-29 S5 — immutable fallback for commands produced before a logical View
+// has published its eclipse block. The shader gate is closed and the
+// composition reciprocal is the identity.
+const defaultEclipseGlobeShadow = createEclipseGlobeShadow();
+
 function createTileUniformMap(frameState, globeSurfaceTileProvider) {
   const uniformMap = {
     u_initialColor: function () {
@@ -580,6 +704,13 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
     u_minimumBrightness: function () {
       return frameState.fog.minimumBrightness;
     },
+    // C12-29 S5 — the command captures the active logical View's persistent
+    // block through `properties`, rather than lazily following the one mutable
+    // FrameState object. That prevents an offscreen/secondary View prepared
+    // later in the same tick from changing this command's eclipse geometry.
+    u_eclipseGlobeShadow: function () {
+      return this.properties.eclipseGlobeShadow.webglPackedUniform;
+    },
     u_hsbShift: function () {
       return this.properties.hsbShift;
     },
@@ -659,6 +790,7 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
       undergroundColorAlphaByDistance: new Cartesian4(),
       lambertDiffuseMultiplier: 0.0,
       vertexShadowDarkness: 0.0,
+      eclipseGlobeShadow: defaultEclipseGlobeShadow,
     },
   };
 
@@ -968,10 +1100,12 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
   // frame-stable and the visible tile set barely changes per frame. Gated on
   // the context flag so OFF (the default) publishes nothing → byte-identical.
   if (context.sceneCaptureReflections === true) {
-    context._webgpuSceneCaptureSources = {
-      globeRenderer: _webgpuGlobeRenderer,
-      tileProvider: tileProvider,
-    };
+    publishWebGPUSceneCaptureSources(
+      context,
+      _webgpuGlobeRenderer,
+      tileProvider,
+      frameState,
+    );
   }
 
   const uniformState = context.uniformState;
@@ -1159,6 +1293,15 @@ function addWebGPUDrawCommandsForTile(tileProvider, tile, frameState, fr) {
       vertexStride: cmdDesc.isQuantized ? 16 : (cmdDesc.strideBytes ?? 24),
       execute: executeWebGPUGlobeTileCommand,
     };
+    configureWebGPUGlobeShadowCommand(
+      command,
+      tileProvider.shadows,
+      isTranslucent,
+      cmdDesc.shadowCastBindGroupCacheHost,
+      useWireframe ? "line-list" : "triangle-list",
+      tileProvider.backFaceCulling !== false &&
+        frameState.cameraUnderground !== true,
+    );
     if (logicalCounters) {
       logicalCounters.adapterCommandObjects =
         (logicalCounters.adapterCommandObjects ?? 0) + 1;
@@ -1325,12 +1468,18 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     CesiumMath.equalsEpsilon(saturationShift, 0.0, CesiumMath.EPSILON7) &&
     CesiumMath.equalsEpsilon(brightnessShift, 0.0, CesiumMath.EPSILON7)
   );
+  const baseColorCorrect = colorCorrect;
 
   let perFragmentGroundAtmosphere = false;
+  let groundAtmosphereCompanionEnabled = false;
   if (showGroundAtmosphere) {
     const cameraDistance = Cartesian3.magnitude(frameState.camera.positionWC);
     const fadeOutDistance = tileProvider.nightFadeOutDistance;
     perFragmentGroundAtmosphere = cameraDistance > fadeOutDistance;
+    groundAtmosphereCompanionEnabled = isGroundAtmosphereCompanionDistance(
+      cameraDistance,
+      fadeOutDistance,
+    );
   }
 
   if (hasWaterMask) {
@@ -1463,10 +1612,14 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     tileProvider.atmosphereMieAnisotropy;
   surfaceShaderSetOptions.perFragmentGroundAtmosphere =
     perFragmentGroundAtmosphere;
+  surfaceShaderSetOptions.groundAtmosphereCompanionEnabled =
+    groundAtmosphereCompanionEnabled;
   surfaceShaderSetOptions.hasVertexNormals = hasVertexNormals;
   surfaceShaderSetOptions.useWebMercatorProjection = useWebMercatorProjection;
   surfaceShaderSetOptions.clippedByBoundaries = surfaceTile.clippedByBoundaries;
   surfaceShaderSetOptions.hasGeodeticSurfaceNormals = hasGeodeticSurfaceNormals;
+  surfaceShaderSetOptions.enableEclipseGlobeShadow =
+    frameState.eclipseGlobeShadow?.active === true;
   surfaceShaderSetOptions.hasExaggeration = hasExaggeration;
 
   const tileImageryCollection = surfaceTile.imagery;
@@ -1541,6 +1694,8 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     }
 
     const uniformMapProperties = uniformMap.properties;
+    uniformMapProperties.eclipseGlobeShadow =
+      frameState.eclipseGlobeShadow ?? defaultEclipseGlobeShadow;
     Cartesian4.clone(initialColor, uniformMapProperties.initialColor);
     uniformMapProperties.oceanNormalMap = oceanNormalMap;
     uniformMapProperties.lightingFadeDistance.x =
@@ -1912,6 +2067,11 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
     surfaceShaderSetOptions.clippingPolygons = clippingPolygons;
     surfaceShaderSetOptions.hasImageryLayerCutout = applyCutout;
     surfaceShaderSetOptions.colorCorrect = colorCorrect;
+    surfaceShaderSetOptions.baseColorCorrect = baseColorCorrect;
+    surfaceShaderSetOptions.fogCompanionEnabled =
+      frameState.fog.configuredEnabled &&
+      frameState.fog.renderable &&
+      !cameraUnderground;
     surfaceShaderSetOptions.highlightFillTile = highlightFillTile;
     surfaceShaderSetOptions.colorToAlpha = applyColorToAlpha;
     surfaceShaderSetOptions.showUndergroundColor = showUndergroundColor;
@@ -2061,6 +2221,8 @@ function updateWebGPUForPick(tileProvider, frameState) {
 
 export {
   addDrawCommandsForTile,
+  configureWebGPUGlobeShadowCommand,
+  publishWebGPUSceneCaptureSources,
   updateWebGPUForPick,
   updateTileBoundingRegion,
   createTileUniformMap,
@@ -2070,6 +2232,7 @@ export {
   getDebugBoundingSphere,
   pushCommand,
   isUndergroundVisible,
+  isGroundAtmosphereCompanionDistance,
   clipRectangleAntimeridian,
   warmUpGlobeRenderer,
 };
@@ -2085,6 +2248,7 @@ const GlobeSurfaceTileProviderRendering = {
   getDebugBoundingSphere,
   pushCommand,
   isUndergroundVisible,
+  isGroundAtmosphereCompanionDistance,
   clipRectangleAntimeridian,
   warmUpGlobeRenderer,
 };

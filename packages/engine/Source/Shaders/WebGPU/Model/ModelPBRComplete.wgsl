@@ -298,9 +298,10 @@ struct MaterialUniforms {
 // Audit B.3 (Batch 131) + re-review (Batch 134) -- per-light data
 // structure matching the JS `LightCollection.pack()` output (20 floats
 // / 80 bytes per light). Slot semantics depend on `lightType`:
-//   DIRECTIONAL (0) : posOrDir = direction; spotDirection ignored
-//   POINT       (1) : posOrDir = position; spotDirection ignored
-//   SPOT        (2) : posOrDir = position; spotDirection = forward
+//   DIRECTIONAL (0) : posOrDir = world direction; spotDirection ignored
+//   POINT       (1) : posOrDir = camera-relative world position
+//   SPOT        (2) : posOrDir = camera-relative world position;
+//                     spotDirection = world forward
 //                     (the direction the spot is aimed); inner/outer
 //                     cone angles active
 //
@@ -367,8 +368,9 @@ struct LightUniforms {
   // localized reflections. Opt-in via
   // `DynamicEnvironmentMapManager.reflectionProxy`; when unset, `control.x`
   // (mode) packs to 0.0 and the specular-IBL path takes the raw reflection
-  // vector verbatim (byte-identical to the pre-451 behavior — the bytes below
-  // are written but never read when mode == 0). When set, the reflection ray
+  // vector verbatim. Proxy center/extents are ignored when mode == 0; the
+  // eye-to-world rotation remains live for punctual-light frame conversion.
+  // When set, the reflection ray
   // (fragment world position + reflection vector R) is intersected with a
   // per-manager bounding proxy and the cube sample direction is re-projected
   // as `normalize(P - proxyCenter)`, so nearby geometry/interiors reflect at
@@ -381,8 +383,9 @@ struct LightUniforms {
   // camera-relative world position `rteWC = modelMatrix * vec4(rteMC, 0)`.
   // The box is world-axis-aligned (matching the Cartesian3 center/halfExtents
   // the user supplies). `eyeToWorldRotation` is the eye→world rotation
-  // (UniformState.inverseViewRotation) used to lift the eye-space reflection
-  // R into world space for the intersection, then transposed to push the
+  // (UniformState.inverseViewRotation) used by both punctual lighting and to
+  // lift the eye-space reflection R into world space for the intersection,
+  // then transposed to push the
   // corrected world direction back to eye space so the existing
   // `iblReferenceFrameMatrix * dir` cube-sample path is reused unchanged.
   reflectionProxyControl: vec4<f32>,
@@ -641,18 +644,17 @@ struct EffectsUniforms {
   //      sample to suppress shadow acne — same role as
   //      `pointBias.depthBias` in the WebGL ShadowMap pipeline).
   pointLightControl: vec4<f32>,
-  // .xyz = world-space light position (meters; absolute world coords,
-  // not camera-relative). The receive shader reconstructs `fragWC =
-  // cameraPositionWC + (modelMatrix * vec4(rteMC, 0)).xyz` and computes
-  // `direction = fragWC - lightWC`.
+  // .xyz = light position relative to the active camera origin, in world
+  // axes. JavaScript subtracts f64 ECEF positions before f32 packing; the
+  // receive shader subtracts the camera-relative fragment directly.
   // .w = PCF radius (Batch 63). Units are cube-face texels — the
-  //      receive shader scales the perturbation by `1.0 / shadowMapSize.x`
-  //      to convert texels → unit-direction offsets. 0.0 means hard
+  //      receive shader converts texels to a projected cube-face shift of
+  //      `2 * radius / shadowMapSize.x`. 0.0 means hard
   //      sampling (single tap, identical to Batch 57's behavior); >0
   //      activates the 5-tap cross PCF kernel. Not the same role as
   //      `effects.shadowDarkness` — darkness drives `mix()` in the
   //      caller; pcfRadius drives kernel width here.
-  pointLightPositionWC: vec4<f32>,
+  pointLightPositionRTE: vec4<f32>,
   // Batch 160 — AUDIT_2026_05_02 A.6 NEW-MODEL-CLIPPING-POLYGONS.
   // Polygon-clipping atlas control + per-extent UV remap.
   // .x = extentsCount (number of merged-extent groups in the SDF atlas;
@@ -1547,6 +1549,59 @@ fn computeMotionVectorScreenSpace(input: FragmentInput) -> vec2<f32> {
   return (curNdc - prevNdc) * material.motionFlags.y;
 }
 
+// ─── Single shadow-map sampling ──────────────────────────────────────────────
+//
+// The default WebGPU scene shadow route is one fitted directional/spot map.
+// `effects.shadowMatrix` transforms the fragment's eye-space position into
+// that light's clip space, matching the globe receiver. CSM and point lights
+// have their own explicit controls and take priority at the call site.
+
+fn sampleSingleShadow(positionEC: vec3<f32>) -> f32 {
+  let shadowPos = effects.shadowMatrix * vec4<f32>(positionEC, 1.0);
+  let coord = shadowPos.xyz / shadowPos.w;
+  let uv = vec2<f32>(
+    coord.x * 0.5 + 0.5,
+    1.0 - (coord.y * 0.5 + 0.5),
+  );
+  let outOfBounds =
+    uv.x < 0.0 || uv.x > 1.0 ||
+    uv.y < 0.0 || uv.y > 1.0 ||
+    coord.z < 0.0 || coord.z > 1.0;
+
+  if (effects.shadowSoftShadows <= 0.5) {
+    let visibility = textureSampleCompareLevel(
+      shadowDepthTex,
+      shadowCompSampler,
+      uv,
+      coord.z,
+    );
+    return select(visibility, 1.0, outOfBounds);
+  }
+
+  let texelSize = 1.0 / max(effects.shadowMapSize, vec2<f32>(1.0));
+  var visibility = 0.0;
+  for (var x: i32 = -1; x <= 1; x++) {
+    for (var y: i32 = -1; y <= 1; y++) {
+      let offset = vec2<f32>(f32(x), f32(y)) * texelSize;
+      visibility = visibility + textureSampleCompareLevel(
+        shadowDepthTex,
+        shadowCompSampler,
+        uv + offset,
+        coord.z,
+      );
+    }
+  }
+  return select(visibility * (1.0 / 9.0), 1.0, outOfBounds);
+}
+
+fn computeShadowFactorSingle(positionEC: vec3<f32>) -> f32 {
+  if (effects.shadowDarkness >= 1.0) {
+    return 1.0;
+  }
+  let visibility = sampleSingleShadow(positionEC);
+  return mix(effects.shadowDarkness, 1.0, visibility);
+}
+
 // ─── CSM cascade sampling ────────────────────────────────────────────────────
 // Inlined from ShadowReceiveCSM.wgsl (the WGSL preprocessor's #include path
 // isn't wired for this shader yet; sharing the file across receivers is
@@ -1679,18 +1734,21 @@ fn computeShadowFactorCSM(
 //                = far/(far-near) - far*near / (d * (far-near))
 //   z_attached = z_ndc_webgpu                 (already [0,1])
 //
-// The cube sample direction must be in world space (NOT eye space) and
-// matches `direction = fragWC - lightWC`. Magnitude is irrelevant —
+// The cube sample direction must be in world axes (NOT eye axes). Both the
+// fragment and light operands are camera-relative, so camera translation
+// cancels in `direction = fragRTE - lightRTE`. Magnitude is irrelevant —
 // `textureSampleCompareLevel` normalizes internally for cube samplers.
 //
-// Per-fragment performance: one direction subtract, one max3 for the
-// dominant axis, one division for the perspective-Z, one cube sample.
+// Per-fragment performance: one direction subtract, one length for the
+// spherical light-volume gate, one max3 for the dominant projection axis,
+// one division for the perspective-Z, and one cube sample.
 // Cheaper than CSM (no cascade loop, no eye-space → cascade-clip
 // transform).
-fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
-  let lightWC = effects.pointLightPositionWC.xyz;
-  let direction = fragWC - lightWC;
+fn samplePointShadow(fragRTE: vec3<f32>) -> f32 {
+  let lightRTE = effects.pointLightPositionRTE.xyz;
+  let direction = fragRTE - lightRTE;
   let absDir = abs(direction);
+  let lightDistanceSquared = dot(direction, direction);
   // Dominant cube-face axis distance. `axisDist` is what the per-face
   // camera saw as |z_eye| for this fragment; the perspective-Z formula
   // below converts it to the depth value the cast pipeline wrote.
@@ -1698,12 +1756,10 @@ fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
   let nearPlane = effects.pointLightControl.z;
   let farPlane = effects.pointLightControl.y;
   let depthBias = effects.pointLightControl.w;
-  // Outside the cube's far plane → the cast pipeline never wrote a
-  // depth here (or wrote 1.0 = cleared). Treat as fully lit. Without
-  // this gate, a fragment beyond `farPlane` would compare its
-  // ref > 1.0 against the cleared texel (1.0) and `compare: less`
-  // would yield 0 (shadowed) — the wrong direction.
-  if (axisDist >= farPlane) { return 1.0; }
+  // The point-light radius is spherical. Keep dominant-axis distance for the
+  // cube-camera perspective depth below, but use squared Euclidean distance
+  // to reject diagonal fragments outside the light volume without a sqrt.
+  if (lightDistanceSquared >= farPlane * farPlane) { return 1.0; }
   // Standard perspective-Z formula, WebGPU [0,1] convention. The
   // cast pipeline output values in this range too because it constructs the
   // projection with the owning context's WebGPU clip-space convention.
@@ -1715,7 +1771,7 @@ fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
   let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
   // Batch 63 — Soft point-light shadows via 5-tap cross PCF.
   //
-  // `effects.pointLightPositionWC.w` carries the PCF radius in
+  // `effects.pointLightPositionRTE.w` carries the PCF radius in
   // cube-face texels (0 → hard sampling; the typical soft setting is
   // 1.0–2.0 texels). When the radius is zero we drop straight through
   // to the single comparison sample — identical performance + output
@@ -1729,17 +1785,11 @@ fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
   // perspective-Z written by a different per-face camera and produce
   // banding at face seams).
   //
-  // Perturbation magnitude: `radiusTexels * texelStep` where
-  // `texelStep = 1.0 / shadowMapSize.x` — this converts a "1 texel"
-  // request into a unit-direction offset on the unit cube. The cube
-  // face is unit-sized in clip space so 1 texel = 1/N of a face.
-  // The cube sampler normalizes the direction internally, so the
-  // small perturbation cleanly biases which texel is sampled without
-  // affecting which face is hit (radius is bounded well below the
-  // dominant axis magnitude in any reasonable scene — even radius=4
-  // texels at shadowMapSize=512 = 0.0078 unit-direction offset, vs
-  // the dominant axis being normalized to ≥0.577).
-  let pcfRadius = effects.pointLightPositionWC.w;
+  // Perturbation magnitude: a cube face spans projected coordinates [-1, 1],
+  // so one texel is 2/N. The sample direction is meter-scale; multiplying by
+  // axisDist makes the projected minor-axis shift exactly
+  // `2 * radiusTexels / shadowMapSize.x`.
+  let pcfRadius = effects.pointLightPositionRTE.w;
   if (pcfRadius <= 0.0) {
     return textureSampleCompareLevel(
       pointLightCubeDepth,
@@ -1774,8 +1824,8 @@ fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
   // the per-face render-target size — typically 1024 or 2048). Falling
   // back to 1.0 / 1024.0 if shadowMapSize.x is zero (placeholder UB)
   // keeps the kernel scaled sensibly even before resources are wired.
-  let texelStep = 1.0 / max(effects.shadowMapSize.x, 1.0);
-  let offset = pcfRadius * texelStep;
+  let offset =
+    2.0 * axisDist * pcfRadius / max(effects.shadowMapSize.x, 1.0);
   // 5-tap cross kernel — center + 4 perturbed taps along ±minorA / ±minorB.
   // The 9-tap version (center + 4 axial + 4 diagonal) is materially more
   // expensive on cube samplers because every comparison sample touches
@@ -1819,9 +1869,9 @@ fn samplePointShadow(fragWC: vec3<f32>) -> f32 {
   return sum * 0.2; // average of 5 taps
 }
 
-fn computeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
+fn computeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
   if (effects.shadowDarkness >= 1.0) { return 1.0; }
-  let visibility = samplePointShadow(fragWC);
+  let visibility = samplePointShadow(fragRTE);
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
@@ -3160,24 +3210,19 @@ struct FragOutput {
   // route through cube sampling. Checked BEFORE the CSM gate (only one
   // shadow map is active at a time in Cesium; if both flags ever fire
   // the cube path takes precedence because point lights can't be
-  // expressed as cascades). `fragWC` reconstructs the absolute world
-  // position from the RTE-encoded model-space delta, in two steps that
-  // preserve f32 precision:
+  // expressed as cascades). The point light is packed relative to the same
+  // camera origin as the RTE-encoded model-space delta:
   //   1. rotate `rteMC` (model-space RTE = positionMC - encodedCameraMC)
   //      through `material.modelMatrix` with w=0 → world-space camera-
   //      relative direction (rteWC). The matrix's translation column
   //      doesn't contribute, so this is exactly `pWC - camWC`.
-  //   2. add `camera.cameraPositionWC` → absolute world position. The
-  //      receive math then takes `direction = fragWC - lightWC`, where
-  //      both summands are absolute world coords; the subtract collapses
-  //      back to a small relative vector well within f32 precision (any
-  //      fragment beyond `farPlane = lightRadius` early-outs as lit).
+  //   2. subtract the camera-relative light position directly. No absolute
+  //      f32 ECEF reconstruction occurs in the fragment hot path.
   //
   // Ambient / emissive remain unshadowed per PBR convention.
   if (effects.pointLightControl.x > 0.5) {
     let rteWC = (material.modelMatrix * vec4<f32>(input.rteMC, 0.0)).xyz;
-    let fragWC = camera.cameraPositionWC + rteWC;
-    let shadowFactor = computeShadowFactorPointLight(fragWC);
+    let shadowFactor = computeShadowFactorPointLight(rteWC);
     direct = direct * shadowFactor;
   } else if (effects.csmControl.x > 0.5) {
     // CSM Slice 2c — route direct sunlight through the cascaded shadow
@@ -3197,6 +3242,11 @@ struct FragOutput {
       L,
     );
     direct = direct * shadowFactor;
+  } else if (effects.shadowDarkness < 1.0) {
+    // Default directional/spot route. The placeholder effects UBO stores
+    // darkness=1, so disabled/uninitialized shadows skip the sample exactly.
+    let shadowFactor = computeShadowFactorSingle(input.positionEC);
+    direct = direct * shadowFactor;
   }
 
   // ── Punctual lights (Audit B.3, Batch 131) ───────────────────────────────
@@ -3208,13 +3258,23 @@ struct FragOutput {
   // augmentation). Loop is bounded by `light.punctualLightCount` so
   // unused slots don't pay sample cost.
   let pCount = i32(light.punctualLightCount);
+  var punctualNWC = vec3<f32>(0.0);
+  var punctualVWC = vec3<f32>(0.0);
+  if (pCount > 0) {
+    // The shared model BRDF operates in eye space. Punctual positions are kept
+    // camera-relative in WORLD space so Earth-scale ECEF never enters f32;
+    // rotate N/V once per fragment and keep every punctual vector coherent.
+    // The branch preserves the zero-light path's prior cost.
+    punctualNWC = normalize(light.eyeToWorldRotation * N);
+    punctualVWC = normalize(light.eyeToWorldRotation * V);
+  }
   for (var li = 0; li < pCount; li = li + 1) {
     let pl = light.punctualLights[li];
     let pType = i32(pl.lightType);
 
     // Compute per-light L vector + attenuation. Directional lights use
-    // posOrDir as direction (already unit-length from JS pack); point
-    // and spot use posOrDir as a world-space position.
+    // posOrDir as a world direction (already unit-length from JS pack); point
+    // and spot use posOrDir as a camera-relative world position.
     var Lp: vec3<f32>;
     var atten: f32 = 1.0;
     if (pType == 0) {
@@ -3222,18 +3282,12 @@ struct FragOutput {
       // (matches WebGL `light_directional` convention).
       Lp = normalize(pl.posOrDir);
     } else {
-      // Point / spot: world-space position. Convert model's fragment
-      // position to world via modelMatrix * positionEC, but
-      // positionEC is eye-space so we'd need the inverse view -- use
-      // the cached `material.modelMatrix * input.rteMC` shortcut +
-      // re-add the camera position for absolute world.
-      // Reconstruct absolute world-space fragment position:
-      //   rteWC = modelMatrix * vec4(rteMC, 0)  (camera-relative WC)
-      //   worldFrag = cameraPositionWC + rteWC
-      // Mirrors the CSM block's pattern at line ~1913.
+      // Point / spot: compare two camera-relative world positions. CPU packing
+      // subtracts the active camera in f64 before writing pl.posOrDir; rteWC is
+      // reconstructed without translation from the model-space RTE varying.
+      // Never reconstruct absolute f32 ECEF here.
       let rteWC = (material.modelMatrix * vec4<f32>(input.rteMC, 0.0)).xyz;
-      let worldFrag = camera.cameraPositionWC + rteWC;
-      let toLight = pl.posOrDir - worldFrag;
+      let toLight = pl.posOrDir - rteWC;
       let dist = length(toLight);
       Lp = toLight / max(dist, 0.0001);
       // Range-based smooth attenuation (glTF KHR_lights_punctual spec
@@ -3266,11 +3320,11 @@ struct FragOutput {
       }
     }
 
-    let NdotLp = max(dot(N, Lp), 0.0);
+    let NdotLp = max(dot(punctualNWC, Lp), 0.0);
     if (NdotLp > 0.0 && atten > 0.0) {
-      let Hp = normalize(V + Lp);
-      let NdotHp = max(dot(N, Hp), 0.0);
-      let VdotHp = max(dot(V, Hp), 0.0);
+      let Hp = normalize(punctualVWC + Lp);
+      let NdotHp = max(dot(punctualNWC, Hp), 0.0);
+      let VdotHp = max(dot(punctualVWC, Hp), 0.0);
       // NEW-MODEL-DIRECT-BRDF-PARITY (Batch 355) -- same Smith-joint + f90
       // BRDF as the sun path above, for analytic point/spot lights.
       let alphaRoughnessP = roughness * roughness;

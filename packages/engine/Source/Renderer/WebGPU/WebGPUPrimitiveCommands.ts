@@ -23,9 +23,12 @@ import ComponentDatatype from "../../Core/ComponentDatatype.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import GeometryAttribute from "../../Core/GeometryAttribute.js";
+import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Pass from "../Pass.js";
 import PrimitiveType from "../../Core/PrimitiveType.js";
+import SceneMode from "../../Scene/SceneMode.js";
+import ShadowMode from "../../Scene/ShadowMode.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import type { WebGPUCommandOwner } from "./WebGPUDrawCommand.js";
@@ -92,6 +95,12 @@ import PrimitiveDepthFailColorSource from "../../Shaders/WebGPU/Primitive/Primit
 // stay stable across the conversion).
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
 import type { CesiumRenderStateLike } from "./RenderStateToPipelineVariant.js";
+import { writeNormalizedInverseViewQuaternion } from "./WebGPUPrimitiveCameraQuaternion.js";
+import {
+  configurePrimitiveShadowCastCommand,
+  updatePrimitiveShadowCastCommand,
+} from "./WebGPUPrimitiveShadowCast.js";
+import type { PrimitiveShadowCastHost } from "./WebGPUPrimitiveShadowCast.js";
 
 // ─── JS-interop type façades (type-only; erase at compile) ──────────────────
 // Minimal structural shapes over the untyped-JS objects this module consumes
@@ -266,6 +275,7 @@ interface AppearanceLike {
 interface PrimitiveLike {
   appearance?: AppearanceLike;
   modelMatrix?: Matrix4;
+  shadows?: number;
   _geometries?: GeometryLike[];
   _webgpuGeometryData?: GeometryLike[];
   _numberOfInstances?: number;
@@ -287,7 +297,7 @@ interface PrimitiveLike {
 // types; the `[key: string]: unknown` index signature absorbs the many
 // write-only literal fields plus the dynamic `cache[k.<slot>]` accesses in
 // ensureMaterialTextureBindGroup (which cast at the member-access sites).
-interface CacheLike {
+interface CacheLike extends PrimitiveShadowCastHost {
   shaderType?: string;
   shaderModule?: ShaderModuleLike;
   pipeline?: GPURenderPipeline;
@@ -386,6 +396,9 @@ type PrimitiveDrawCommand = WebGPUDrawCommand & {
   _webgpuMaterialUB?: MaterialUniformBufferLike;
   _webgpuMaterialUploadState?: MaterialUploadStateLike;
   _shadowCastLayout?: string;
+  _shadowCastPrimitiveUB?: WebGPUBuffer;
+  _shadowCastBindGroupCacheHost?: object;
+  _primitiveShadowCastHost?: PrimitiveShadowCastHost;
   _webgpuPickColor?: unknown;
   _isPickCommand?: boolean;
 };
@@ -420,6 +433,7 @@ declare global {
   }
   interface CesiumUniformState {
     gamma?: number;
+    inverseViewRotation?: Matrix3;
     viewportOrthographic?: CesiumMatrix4;
   }
   interface CesiumGraphicsContext {
@@ -430,6 +444,10 @@ declare global {
     _primitiveEffectsBG?: GPUBindGroup | null;
     _primitiveEffectsBGFrameNumber?: number;
     _primitiveEffectsBGToggleHash?: number;
+    enqueueShadowReceiveUniformRefresh?(
+      uniformBuffer: GPUBuffer,
+      shadowMap: object,
+    ): void;
     performanceManager?: PerformanceManagerLike | null;
     createTextureFromImage?(
       source: unknown,
@@ -451,9 +469,9 @@ const scratchCameraPositionMC = new Cartesian3();
 const scratchEncodedCamera = new EncodedCartesian3();
 // Scratch for encoding a single vertex position
 const scratchEncodedPosition = new EncodedCartesian3();
-// RTE camera uniform scratch buffers (80 floats = 320 bytes max for lit with
-// prevVP + the renderer-wide log-depth tail, see LIT_CAMERA_BYTES below).
-const scratchRTEUniformData = new Float32Array(80);
+// RTE camera uniform scratch buffers (84 floats = 336 bytes max for lit with
+// prevVP + inverse-view quaternion + the renderer-wide log-depth tail).
+const scratchRTEUniformData = new Float32Array(84);
 
 // Camera-only UBO sizes (no material fields)
 // DP-H41 (Batch 27) — each variant now carries previousViewProjection (mat4x4,
@@ -466,16 +484,20 @@ const scratchRTEUniformData = new Float32Array(80);
 // define is set (no shader struct declares the tail field otherwise and the
 // extra 16 bytes are simply unread). 160 -> 176.
 const FLAT_CAMERA_BYTES = 176; // mvpRTE(64) + camHigh(16) + camLow(16) + prevVP(64) + logDepth(16)
-// Log-depth epic Slice 2b — lit variant gains a 16-byte logDepth vec4 tail
-// (near, far, factor, reserved) AFTER prevVP. Read only by the
+// Lit variants append an always-present normalized inverse-view quaternion
+// after prevVP, followed by the 16-byte logDepth vec4 tail (near, far, factor,
+// reserved). The quaternion rotates eye-space positions back into world-axis
+// camera-relative space for shadow and atmosphere effects without carrying a
+// full matrix. Log depth is read only by the
 // `//>>ifdef LOG_DEPTH` blocks in PrimitivePhongColor / PrimitivePhongTexturedColor
 // (and any future lit producer). The tail is packed unconditionally by
 // writeRTEUniformsLit — it is inert until the LOG_DEPTH pipeline define is set
 // (Slice 4 flip), because no shader struct declares the tail field otherwise
-// and the extra 16 bytes are simply unread. Mat*Lit material shaders keep their
-// 304-byte CameraUniforms struct and read only the first 304 bytes of this
-// 320-byte buffer — valid WebGPU, byte-identical behavior.
-const LIT_CAMERA_BYTES = 320; // ...prevVP(64) + logDepth(16)
+// and the extra 16 bytes are simply unread.
+const LIT_CAMERA_BYTES = 336; // ...prevVP(64) + inverseViewQuaternion(16) + logDepth(16)
+const LIT_PREVIOUS_VIEW_PROJECTION_OFFSET = 60;
+const LIT_INVERSE_VIEW_QUATERNION_OFFSET = 76;
+const LIT_LOG_DEPTH_OFFSET = 80;
 // C10-11-PICK-FLEET-LOG-DEPTH — grown 160 -> 176 to carry the FLAT logDepth
 // vec4 tail (floats 40-43: near, far, factor, reserved) that
 // writeRTEUniformsFlat already writes. The pick camera buffer AND its scratch
@@ -1172,8 +1194,8 @@ function writeLogDepthTail(
 /**
  * Writes RTE uniform data for a lit (Phong/PBR) shader.
  * Layout: mvpRTE(16) + mvRTE(16) + normalMatrix(16) + camHigh(4) + camLow(4)
- *       + lightDir(4) + prevVP(16) + logDepth(4) = 80 floats = 320 bytes
- *       (DP-H41 prevVP, Batch 27; logDepth tail log-depth epic Slice 2b)
+ *       + lightDir(4) + prevVP(16) + inverseViewQuaternion(4) + logDepth(4)
+ *       = 84 floats = 336 bytes
  * @private
  */
 function writeRTEUniformsLit(
@@ -1210,10 +1232,19 @@ function writeRTEUniformsLit(
     ud[58] = 0.5;
   }
   ud[59] = 0.0;
-  writePreviousViewProjection(ud, 60, uniformState);
-  // Log-depth epic Slice 2b — logDepth tail at floats 76-79 (after prevVP).
+  writePreviousViewProjection(
+    ud,
+    LIT_PREVIOUS_VIEW_PROJECTION_OFFSET,
+    uniformState,
+  );
+  writeNormalizedInverseViewQuaternion(
+    ud,
+    LIT_INVERSE_VIEW_QUATERNION_OFFSET,
+    uniformState.inverseViewRotation,
+  );
+  // Log-depth epic Slice 2b — logDepth tail at floats 80-83.
   // Inert until the LOG_DEPTH define is set on the lit pipeline.
-  writeLogDepthTail(ud, 76, uniformState);
+  writeLogDepthTail(ud, LIT_LOG_DEPTH_OFFSET, uniformState);
 }
 
 /**
@@ -1430,6 +1461,7 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState: CesiumFrameState) {
 
   const csmCandidate = context.csmRenderer as CsmRendererLike | undefined;
   const hasCsm =
+    frameState.useCascadedShadowMaps === true &&
     defined(csmCandidate) &&
     csmCandidate.enabled === true &&
     defined(csmCandidate.cascadeParamsBuffer) &&
@@ -1536,6 +1568,22 @@ function _getOrCreateSharedPrimitiveEffectsBG(frameState: CesiumFrameState) {
     // placeholder fast path is preserved when clustered lighting is off.
     clusteredLighting: hasClustered ? clusteredBuffers : undefined,
   });
+  // Primitive command construction runs before ViewportExecutor fits the
+  // current directional/spot light camera. Match the model path by queuing the
+  // shared receiver UBO for one post-fit 80-byte prefix refresh. Point shadows
+  // use camera-relative light metadata instead of the 2D matrix, while CSM
+  // owns its fitted cascade-parameter buffer, so neither belongs in this lane.
+  const receiveShadowMapIsPointLight =
+    (
+      receiveShadowMap as
+        (CesiumShadowMap & { _isPointLight?: boolean }) | undefined
+    )?._isPointLight === true;
+  if (defined(receiveShadowMap) && !receiveShadowMapIsPointLight && !hasCsm) {
+    context.enqueueShadowReceiveUniformRefresh?.(
+      fxRes.uniformBuffer,
+      receiveShadowMap,
+    );
+  }
   context._primitiveEffectsBG = fxRes.bindGroup;
   context._primitiveEffectsBGFrameNumber = frameNumber;
   context._primitiveEffectsBGToggleHash = toggleHash;
@@ -1573,6 +1621,53 @@ function _refreshPrimitiveEffectsSlot(
   if (bgArray[idx] !== activeBG) {
     bgArray[idx] = activeBG;
   }
+}
+
+function _refreshPrimitiveShadowCastTransform(
+  device: GPUDevice,
+  command: PrimitiveDrawCommand,
+  frameState: CesiumFrameState,
+  modelMatrix: Matrix4,
+  rte?: RTEMatrices,
+): void {
+  if (!defined(command._primitiveShadowCastHost)) {
+    return;
+  }
+  const primitive = command.owner as unknown as PrimitiveLike;
+  const shadowMode = primitive?.shadows;
+  if (
+    (shadowMode !== ShadowMode.ENABLED &&
+      shadowMode !== ShadowMode.CAST_ONLY) ||
+    frameState.shadowMaps.length === 0 ||
+    frameState.passes.pick === true ||
+    frameState.passes.pickVoxel === true ||
+    frameState.mode !== SceneMode.SCENE3D
+  ) {
+    return;
+  }
+
+  const cameraPositionWC =
+    frameState.context.uniformState?.cameraPosition ??
+    frameState.camera.positionWC;
+  // The color camera pack has already transformed and encoded the camera into
+  // model space. Reuse it on the ordinary single-view path so shadow support
+  // does not add a second Matrix4.inverse per Primitive while the camera moves.
+  // Offscreen/multi-view overrides can publish a different UniformState camera;
+  // those keep the independent correctness path.
+  const frameCameraPositionWC = frameState.camera.positionWC;
+  const canReuseColorRte =
+    defined(rte) &&
+    cameraPositionWC.x === frameCameraPositionWC.x &&
+    cameraPositionWC.y === frameCameraPositionWC.y &&
+    cameraPositionWC.z === frameCameraPositionWC.z;
+  updatePrimitiveShadowCastCommand(
+    device,
+    command,
+    modelMatrix,
+    cameraPositionWC,
+    canReuseColorRte ? rte.camHigh : undefined,
+    canReuseColorRte ? rte.camLow : undefined,
+  );
 }
 
 // =========================================================================
@@ -1618,6 +1713,13 @@ function updateWebGPUCommandUniforms(
       context.uniformState,
       frameState.camera,
       modelMatrix,
+    );
+    _refreshPrimitiveShadowCastTransform(
+      device,
+      command,
+      frameState,
+      modelMatrix,
+      rtePoly,
     );
     const udPoly = scratchPolylineUniformData;
     writeRTEUniformsPolyline(udPoly, rtePoly, context.uniformState, context);
@@ -1672,6 +1774,13 @@ function updateWebGPUCommandUniforms(
     context.uniformState,
     frameState.camera,
     modelMatrix,
+  );
+  _refreshPrimitiveShadowCastTransform(
+    device,
+    command,
+    frameState,
+    modelMatrix,
+    rte,
   );
   const ud = scratchRTEUniformData;
 
@@ -2867,7 +2976,7 @@ function createWebGPUCommands(
   // (PrimitiveBasicColor / PrimitiveBasicTexturedColor) gain `//>>ifdef LOG_DEPTH`
   // blocks that emit logarithmic @builtin(frag_depth). Both shader families now
   // carry the gated blocks (the lit ones read camera.logDepth from the LIT UB
-  // tail at floats 76-79; the basic ones read it from the FLAT UB tail at floats
+  // tail at floats 80-83; the basic ones read it from the FLAT UB tail at floats
   // 40-43, added by writeRTEUniformsFlat). Activate the define whenever the
   // master switch + per-frame flag are on. Defaults FALSE, so this is inert
   // (defines=0 → historical else-branch, byte-identical). `logDepthChanged`
@@ -3781,17 +3890,10 @@ function createWebGPUCommands(
       cmd._webgpuCameraBuffer = cache.cameraBuffers[i];
       cmd._webgpuShaderType = shaderInfo.type;
       cmd._label = label;
-      // NEW-CSM-CAST-NO-DISPATCH-VIEWER (Batch 296) — shadow-cast metadata.
-      // The interleaved primitive vertex buffer always begins with
-      // positionHigh(3) + positionLow(3) (the first 24 bytes; see the
-      // vertexData packing above), so the canonical `rte24` cast variant
-      // reads it correctly — its declared stride of 24 just needs to be
-      // overridden to this primitive's real interleaved stride
-      // (`fpv * 4` bytes). `_inferShadowLayoutKey` can't sniff this from
-      // the stride alone (it isn't 24), so we set the layout explicitly
-      // and expose the stride for the cast pass's pipeline override.
-      cmd._shadowCastLayout = "rte24";
-      cmd.vertexStride = fpv * 4;
+      // The interleaved buffer begins with positionHigh + positionLow, but
+      // those values are in Primitive/model coordinates. The transform-aware
+      // variant shares one stable UBO and bind-group cache on this primitive.
+      configurePrimitiveShadowCastCommand(cmd, cache, fpv * 4);
       // C11-157 Slice A — attach the OIT accumulation variant inputs to
       // translucent color commands. `executeTranslucentPass` auto-builds the
       // MRT pipeline from `_shaderCode` + `_pipelineConfig` ONLY when the
@@ -3878,8 +3980,7 @@ function createWebGPUCommands(
       dfCmd._webgpuCameraBuffer = cache.cameraBuffers[i];
       dfCmd._webgpuShaderType = "primitiveDepthFailColor";
       dfCmd._label = "depth-fail pass";
-      dfCmd._shadowCastLayout = "rte24";
-      dfCmd.vertexStride = fpv * 4;
+      configurePrimitiveShadowCastCommand(dfCmd, cache, fpv * 4);
       validCommands.push(dfCmd);
     }
 
@@ -4340,7 +4441,7 @@ function createMaterialPipelineAndCache(
   // (logDepth UB tail read + csm_vertexLogDepth varying + csm_updatePositionDepth
   // clip-z clamp + csm_writeLogDepth frag_depth). With the master switch off this
   // is 0 and the else-branch (no frag_depth, hyperbolic) is byte-identical.
-  // Lit Mat shaders read the tail from the LIT UB (floats 76-79); Flat Mat and
+  // Lit Mat shaders read the tail from the LIT UB (floats 80-83); Flat Mat and
   // PBR read from the FLAT/LIT UB tail respectively — both packed unconditionally.
   const shaderDefines = logDepth ? ShaderDefine.LOG_DEPTH : 0;
   cache.shaderModule = WebGPUShaderModule.create({
@@ -5329,13 +5430,9 @@ function createWebGPUMaterialCommands(
     cmd._webgpuMaterialBuffer = cache.materialBuffer;
     cmd._webgpuMaterialUB = matUB;
     cmd._webgpuMaterialUploadState = cache.materialUploadState;
-    // NEW-CSM-CAST-NO-DISPATCH-VIEWER (Batch 296) — shadow-cast metadata.
-    // The material vertex buffer (buildMaterialVertexData) is interleaved
-    // posHigh(3) + posLow(3) + ... so the first 24 bytes match the `rte24`
-    // cast variant; only the stride differs (8 floats flat / 11 floats lit).
-    // See the matching block in the PerInstanceColor path above.
-    cmd._shadowCastLayout = "rte24";
-    cmd.vertexStride = (isLit ? 11 : 8) * 4;
+    // Material vertices use the same model-space high/low prefix as color
+    // primitives and therefore share the transform-aware cast resource.
+    configurePrimitiveShadowCastCommand(cmd, cache, (isLit ? 11 : 8) * 4);
     validCommands.push(cmd);
 
     // NEW-WEBGPU-DEPTHFAIL-MATERIAL (Batch 419) — emit the depthFail twin
@@ -5423,8 +5520,7 @@ function createWebGPUMaterialCommands(
       // effects-slot refresh must skip it (else it clobbers the texture).
       dfCmd._noEffectsSlot = cache.dfNeedsTexture === true;
       dfCmd._label = "depth-fail material pass";
-      dfCmd._shadowCastLayout = "rte24";
-      dfCmd.vertexStride = (dfIsLit ? 11 : 8) * 4;
+      configurePrimitiveShadowCastCommand(dfCmd, cache, (dfIsLit ? 11 : 8) * 4);
       validCommands.push(dfCmd);
     }
 
@@ -5523,14 +5619,14 @@ function createWebGPUMaterialCommands(
 // =========================================================================
 
 // Scratch buffer for per-frame material camera uniform updates
-// 80 floats = 320 bytes for the lit/PBR camera UBO (mvpRTE+mvRTE+normalMatrix
-// +camHigh+camLow+lightDir+prevVP + the log-depth logDepth tail;
-// writeRTEUniformsLit writes through float 79). Sized for the larger of the two
+// 84 floats = 336 bytes for the lit/PBR camera UBO (mvpRTE+mvRTE+normalMatrix
+// +camHigh+camLow+lightDir+prevVP+inverseViewQuaternion+logDepth;
+// writeRTEUniformsLit writes through float 83). Sized for the larger of the two
 // layouts; flat/material shaders fit comfortably in the same scratch (flat now
 // writes through float 43 for its own logDepth tail). Log-depth epic Slice 5 —
-// Mat*Lit/PBR read the LIT tail (floats 76-79), Mat*Flat read the FLAT tail
+// Mat*Lit/PBR read the LIT tail (floats 80-83), Mat*Flat read the FLAT tail
 // (floats 40-43); both inert until the LOG_DEPTH pipeline define is set.
-const scratchMaterialCameraData = new Float32Array(80);
+const scratchMaterialCameraData = new Float32Array(84);
 
 /**
  * Updates camera matrices for a material/PBR draw command each frame.
@@ -5555,6 +5651,13 @@ function updateWebGPUMaterialCommandUniforms(
     context.uniformState,
     frameState.camera,
     modelMatrix,
+  );
+  _refreshPrimitiveShadowCastTransform(
+    device,
+    command,
+    frameState,
+    modelMatrix,
+    rte,
   );
   const shaderType = command._webgpuShaderType;
   const isLit2 = isMaterialLitShader(shaderType) || isPBRShader(shaderType);
@@ -5620,6 +5723,11 @@ export {
   updateWebGPUCommandUniforms,
   updateWebGPUMaterialCommandUniforms,
   updateWebGPUPickCommandUniforms,
+  writeRTEUniformsLit,
+  LIT_CAMERA_BYTES,
+  LIT_PREVIOUS_VIEW_PROJECTION_OFFSET,
+  LIT_INVERSE_VIEW_QUATERNION_OFFSET,
+  LIT_LOG_DEPTH_OFFSET,
   // FEAT-GAP-09 (Batch 100) — exported so Advanced renderers (Voxel,
   // GaussianSplat, PointCloud) can reuse the per-frame effects-BG
   // resolver. Keeps the (shadow, csm, atmosphereLut) toggle hash +

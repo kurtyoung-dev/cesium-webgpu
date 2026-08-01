@@ -43,9 +43,9 @@ struct CameraUniforms {
   // encoding is meaningless. Matches WebGL u_modifiedModelViewProjection.
   modifiedModelViewProjection: mat4x4<f32>,
   encodedCameraHigh: vec3<f32>,
-  _pad0: f32,
+  ellipsoidInverseRadiiX: f32,
   encodedCameraLow: vec3<f32>,
-  _pad1: f32,
+  ellipsoidInverseRadiiY: f32,
   // Tile encoding center in ECEF, emulated f64 via high/low split.
   // Raw f32 center3D (up to ~6.4e6 m for Earth) loses ~0.5 m of precision
   // per component, which defeats the RTE emulation when combined with
@@ -53,7 +53,7 @@ struct CameraUniforms {
   // proper (center3DHigh - encodedCameraHigh) + (center3DLow - encodedCameraLow)
   // subtraction and preserve sub-meter precision at orbital altitudes.
   center3DHigh: vec3<f32>,
-  _pad2a: f32,
+  ellipsoidInverseRadiiZ: f32,
   center3DLow: vec3<f32>,
   _pad2b: f32,
   sunDirectionEC: vec3<f32>,
@@ -249,6 +249,32 @@ struct CameraUniforms {
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
 
+// ─── C12-29 S5 Eclipse Uniforms (Group 0, Binding 2) ───
+//
+// Dedicated terrain-global carrier, prepared once per logical View/frame and
+// reused by every tile/pass. It deliberately does not live in CameraUniforms:
+// camera UBs are per tile/pass, while this 64-byte payload changes only with
+// the eclipse geometry/View. The two body vectors are geocentric so capture
+// cameras can reuse the same carrier:
+//   sunDirectionAndInvRange.xyz       = normalize(S_ECEF)
+//   sunDirectionAndInvRange.w         = 1 / length(S_ECEF)
+//   moonDirectionDeltaAndInvRange.xyz = normalize(M_ECEF) - normalize(S_ECEF)
+//   moonDirectionDeltaAndInvRange.w   = 1 / length(M_ECEF)
+// params.x is the five-state gate (0 inert, 1 active/custom light,
+// 2 active/SunLight, 3 correction-only/SunLight, 4 correction-only/custom);
+// params.y is the S2
+// reciprocal and params.zw + params2.w are the limb-darkening fit. params2.x
+// is the radiometric floor; params2.yz carry the exposure exponent and
+// antumbral lift.
+struct EclipseUniforms {
+  sunDirectionAndInvRange: vec4<f32>,
+  moonDirectionDeltaAndInvRange: vec4<f32>,
+  params: vec4<f32>,
+  params2: vec4<f32>,
+};
+
+@group(0) @binding(2) var<uniform> eclipseUniforms: EclipseUniforms;
+
 //>>ifdef LOG_DEPTH
 // Renderer-wide log depth (Approach A). The globe shader is fully inline
 // (it does not use the #import chunk system), so these mirror the canonical
@@ -412,19 +438,18 @@ struct TileUniforms {
 // 16 is the safe ceiling without device-limit probing. Tiles with >16 layers
 // fall back to multi-pass rendering (CPU-side, see createTileCommands).
 @group(1) @binding(0)  var dayTexture0:  texture_2d<f32>;
-//>>ifdef GLOBE_IMAGERY_REDUCED
-// NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — reduced layout for
-// default-limit adapters (maxSampledTexturesPerShaderStage = 16, e.g.
-// SwiftShader CI / compat mode). Only dayTexture0 is declared; the full
-// pipeline layout's other 15 sampled textures (4 in group 2 + 11 in the
-// effects group) bring the total to exactly 16. Multi-layer tiles
-// multi-pass at one layer per pass (CPU-side slicing keys off the
-// renderer's `_imagerySlotCount`). `texSampler` stays at @binding(16) in
-// BOTH variants so the JS bind-group builder shares one shape.
-//>>else
 @group(1) @binding(1)  var dayTexture1:  texture_2d<f32>;
 @group(1) @binding(2)  var dayTexture2:  texture_2d<f32>;
 @group(1) @binding(3)  var dayTexture3:  texture_2d<f32>;
+//>>ifdef GLOBE_IMAGERY_REDUCED
+// NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — reduced layout for
+// default-limit adapters (maxSampledTexturesPerShaderStage = 16, e.g.
+// SwiftShader CI / compat mode). dayTexture0..3 are declared; the globe's
+// 12 non-imagery sampled textures bring the total to exactly 16. Multi-layer
+// tiles multi-pass at up to four layers per pass (CPU-side slicing keys off the
+// renderer's `_imagerySlotCount`). `texSampler` stays at @binding(16) in
+// BOTH variants so the JS bind-group builder shares one shape.
+//>>else
 @group(1) @binding(4)  var dayTexture4:  texture_2d<f32>;
 @group(1) @binding(5)  var dayTexture5:  texture_2d<f32>;
 @group(1) @binding(6)  var dayTexture6:  texture_2d<f32>;
@@ -516,10 +541,11 @@ struct EffectsUniforms {
     //   .w = depth bias
     // Matches model shader's `pointLightControl` at offset 304.
     pointLightControl: vec4<f32>,
-    // .xyz = light position in world coords (ECEF for SCENE3D).
+    // .xyz = light position relative to the active camera origin, in world
+    // axes (ECEF axes for SCENE3D).
     // .w = PCF radius in cube-face texels (0 → hard sampling). Matches
-    // model shader's `pointLightPositionWC` at offset 320.
-    pointLightPositionWC: vec4<f32>,
+    // model shader's `pointLightPositionRTE` at offset 320.
+    pointLightPositionRTE: vec4<f32>,
     // GLOBE-CLIPPOLY-GEODETIC — polygon-clipping atlas control + merged-
     // extent UV remap (offsets 336/352, Batch 160 layout — see the model
     // shader's EffectsUniforms tail + `WebGPUEffectsBindGroup.js`):
@@ -2996,26 +3022,25 @@ fn globeComputeShadowFactorCSM(
 // adapted from `samplePointShadow` in ModelPBRComplete.wgsl. Math is
 // identical: pick the dominant cube-face axis, derive the depth value
 // the cast pipeline wrote at that axis distance, sample the cube with
-// `direction = fragWC - lightWC`. The 5-tap cross PCF runs when
-// `pointLightPositionWC.w > 0` for soft shadows; zero radius drops
+// `direction = fragRTE - lightRTE`. The 5-tap cross PCF runs when
+// `pointLightPositionRTE.w > 0` for soft shadows; zero radius drops
 // to a single hardware-comparison sample.
 //
-// Globe-specific: `fragWC` reconstruction uses the camera high/low
-// split rather than a `cameraPositionWC` field (the globe camera UB
-// doesn't expose a single-precision world-space position). Adding
-// `encodedCameraHigh + encodedCameraLow` reconstructs camera position
-// at f32 quantization, which is fine for the light-distance comparison
-// (the comparison's resolution is bounded by `farPlane`, not by the
-// camera position's absolute precision).
-fn globeSamplePointShadow(fragWC: vec3<f32>) -> f32 {
-  let lightWC = effects.pointLightPositionWC.xyz;
-  let direction = fragWC - lightWC;
+// Globe-specific: `v_positionRTE` is already the camera-relative world-axis
+// fragment vector. The CPU packs the light relative to the same camera origin
+// in f64, so the shader never reconstructs either absolute ECEF operand.
+fn globeSamplePointShadow(fragRTE: vec3<f32>) -> f32 {
+  let lightRTE = effects.pointLightPositionRTE.xyz;
+  let direction = fragRTE - lightRTE;
   let absDir = abs(direction);
+  let lightDistanceSquared = dot(direction, direction);
   let axisDist = max(absDir.x, max(absDir.y, absDir.z));
   let nearPlane = effects.pointLightControl.z;
   let farPlane = effects.pointLightControl.y;
   let depthBias = effects.pointLightControl.w;
-  if (axisDist >= farPlane) { return 1.0; }
+  // The point-light radius is spherical; axisDist is retained only for the
+  // cube-camera perspective-depth reconstruction.
+  if (lightDistanceSquared >= farPlane * farPlane) { return 1.0; }
   let depthRange = farPlane - nearPlane;
   let zNdcWebGpu =
     farPlane / depthRange - (farPlane * nearPlane) / (axisDist * depthRange);
@@ -3024,7 +3049,7 @@ fn globeSamplePointShadow(fragWC: vec3<f32>) -> f32 {
   // samplePointShadow and chunks/functions/csm_samplePointShadow.wgsl.
   let zAttached = zNdcWebGpu;
   let refDepth = clamp(zAttached - depthBias, 0.0, 1.0);
-  let pcfRadius = effects.pointLightPositionWC.w;
+  let pcfRadius = effects.pointLightPositionRTE.w;
   if (pcfRadius <= 0.0) {
     return textureSampleCompareLevel(
       pointLightCubeDepth,
@@ -3049,8 +3074,11 @@ fn globeSamplePointShadow(fragWC: vec3<f32>) -> f32 {
     minorA = vec3<f32>(1.0, 0.0, 0.0);
     minorB = vec3<f32>(0.0, 1.0, 0.0);
   }
-  let texelStep = 1.0 / max(effects.shadowMapSize.x, 1.0);
-  let offset = pcfRadius * texelStep;
+  // One projected cube-face texel spans 2/N. Scale the meter-space raw
+  // direction by its dominant axis so the minor-axis perturbation moves the
+  // requested radius in face texels rather than vanishing at Earth scale.
+  let offset =
+    2.0 * axisDist * pcfRadius / max(effects.shadowMapSize.x, 1.0);
   var sum = 0.0;
   sum = sum + textureSampleCompareLevel(
     pointLightCubeDepth, shadowCompSampler, direction, refDepth,
@@ -3070,9 +3098,9 @@ fn globeSamplePointShadow(fragWC: vec3<f32>) -> f32 {
   return sum * 0.2;
 }
 
-fn globeComputeShadowFactorPointLight(fragWC: vec3<f32>) -> f32 {
+fn globeComputeShadowFactorPointLight(fragRTE: vec3<f32>) -> f32 {
   if (effects.shadowDarkness >= 1.0) { return 1.0; }
-  let visibility = globeSamplePointShadow(fragWC);
+  let visibility = globeSamplePointShadow(fragRTE);
   return mix(effects.shadowDarkness, 1.0, visibility);
 }
 
@@ -3157,6 +3185,187 @@ fn czm_fastApproximateAtan2(x: f32, y: f32) -> f32 {
   if (x < 0.0) { t = PI_F - t; }
   if (y < 0.0) { t = -t; }
   return t;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// C12-29 S5 — per-fragment lunar shadow on the globe
+// ═══════════════════════════════════════════════════════════════════════
+//
+// The CPU owns the expensive once-per-View limb-darkening fit and publishes
+// geocentric body directions/inverse ranges. The fragment path reconstructs
+// only the direct exaggerated ECEF varying scaled by those inverse ranges.
+// Its sub-metre f32 quantization is tiny relative to the eclipse footprint,
+// and no pass-camera reconstruction or near-parallel body subtraction occurs.
+const GLOBE_ECLIPSE_SOLAR_RADIUS: f32 = 695500000.0;
+const GLOBE_ECLIPSE_LUNAR_RADIUS: f32 = 1737400.0;
+const GLOBE_ECLIPSE_F32_SAFETY_FACTOR: f32 = 0.999996185302734375;
+
+// Uniform-disc (geometric) obscuration: exact support branches plus the
+// closed-form circle/circle lens overlap in the partial regime.
+fn globe_eclipseGeometricObscuration(rs: f32, ro: f32, d: f32) -> f32 {
+  if (d >= rs + ro) {
+    return 0.0;
+  }
+  if (d + rs <= ro) {
+    return 1.0;
+  }
+  if (d + ro <= rs) {
+    let ratio = ro / rs;
+    return ratio * ratio;
+  }
+
+  let d2 = d * d;
+  let rs2 = rs * rs;
+  let ro2 = ro * ro;
+  let alpha = acos(clamp((d2 + rs2 - ro2) / (2.0 * d * rs), -1.0, 1.0));
+  let beta = acos(clamp((d2 + ro2 - rs2) / (2.0 * d * ro), -1.0, 1.0));
+  let product = max(
+    (-d + rs + ro) * (d + rs - ro) *
+      (d - rs + ro) * (d + rs + ro),
+    0.0,
+  );
+  let lens = rs2 * alpha + ro2 * beta - 0.5 * sqrt(product);
+  let piF: f32 = 3.14159265358979;
+  return clamp(lens / (piF * rs2), 0.0, 1.0);
+}
+
+// Geometric obscuration -> the CPU-fitted limb-darkened flux fraction.
+// h(0)=0 and h(1)=1 structurally for every coefficient set.
+fn globe_eclipseLimbDarken(a: f32) -> f32 {
+  return a + a * (1.0 - a) * (
+    eclipseUniforms.params.z +
+    eclipseUniforms.params.w * a +
+    eclipseUniforms.params2.w * a * a
+  );
+}
+
+// Absolute per-fragment radiance factor G(O_frag). positionMC is the
+// exaggerated ECEF globe position. Scaling it before astronomical subtraction
+// keeps the common-ray operands conditioned while remaining pass-camera
+// independent; the CPU closes params.x in every projected scene mode.
+fn globe_eclipseFragmentFactor(positionMC: vec3<f32>) -> f32 {
+  let sunInvRange = eclipseUniforms.sunDirectionAndInvRange.w;
+  let moonInvRange = eclipseUniforms.moonDirectionDeltaAndInvRange.w;
+  if (sunInvRange <= 0.0 || moonInvRange <= 0.0) {
+    return 1.0;
+  }
+
+  // s = (S - P) / |S|. v_positionMC is already the exaggerated ECEF
+  // position emitted by the globe VS. Its sub-metre f32 quantization is tiny
+  // relative to the eclipse footprint and avoids reintroducing the retired
+  // coarse-tile camera-RTE reconstruction.
+  let pScaledSun = positionMC * sunInvRange;
+  let s = eclipseUniforms.sunDirectionAndInvRange.xyz - pScaledSun;
+
+  // D = m - s, where m = (M - P) / |M|. The geocentric direction delta
+  // cancels the two near-parallel unit vectors on the CPU in f64; the shader
+  // adds only the range-difference position term in the same RTE form.
+  let invRangeDelta = sunInvRange - moonInvRange;
+  let D =
+    eclipseUniforms.moonDirectionDeltaAndInvRange.xyz +
+    positionMC * invRangeDelta;
+
+  // |m|² = |s + D|² and dot(s,m) = |s|² + dot(s,D). These identities
+  // avoid materializing a second nearly-parallel body vector.
+  let s2 = dot(s, s);
+  let sDotD = dot(s, D);
+  let moon2 = s2 + 2.0 * sDotD + dot(D, D);
+  if (s2 <= 0.0 || moon2 <= 0.0) {
+    return 1.0;
+  }
+
+  // Exact local support reject. With ks=sin(rs)|s| and km=sin(ro)|m|:
+  //   |s||m|cos(rs+ro)
+  //     = sqrt((s²-ks²)(m²-km²)) - ks*km.
+  // Therefore overlap requires q=dot(s,m)+ks*km > 0 and q² greater than
+  // the radicand. The safety factor expands support under permitted WGSL f32
+  // fusion/reassociation; false positives reach the exact lens test below.
+  let dotSunMoon = s2 + sDotD;
+  let sunAngularScale = GLOBE_ECLIPSE_SOLAR_RADIUS * sunInvRange;
+  let moonAngularScale = GLOBE_ECLIPSE_LUNAR_RADIUS * moonInvRange;
+  let supportDot = dotSunMoon + sunAngularScale * moonAngularScale;
+  let supportRadicand =
+    max(s2 - sunAngularScale * sunAngularScale, 0.0) *
+    max(moon2 - moonAngularScale * moonAngularScale, 0.0);
+  if (
+    supportDot <= 0.0 ||
+    supportDot * supportDot <=
+      GLOBE_ECLIPSE_F32_SAFETY_FACTOR * supportRadicand
+  ) {
+    return 1.0;
+  }
+
+  // Reject the antipodal angular overlap with an exact ray/ellipsoid limb
+  // test. Transform P and the Sun ray by the rendered globe's inverse radii;
+  // an inward ray is visible only if its closest point clears the unit sphere.
+  // This is correct for WGS84/custom oblateness and elevated terrain.
+  let ellipsoidInverseRadii = vec3<f32>(
+    camera.ellipsoidInverseRadiiX,
+    camera.ellipsoidInverseRadiiY,
+    camera.ellipsoidInverseRadiiZ,
+  );
+  let ellipsoidPosition = positionMC * ellipsoidInverseRadii;
+  let ellipsoidSunRay = s * ellipsoidInverseRadii;
+  let ellipsoidRayLength2 = dot(ellipsoidSunRay, ellipsoidSunRay);
+  let ellipsoidPositionDotRay = dot(ellipsoidPosition, ellipsoidSunRay);
+  if (ellipsoidRayLength2 <= 0.0) {
+    return 1.0;
+  }
+  if (ellipsoidPositionDotRay < 0.0) {
+    let ellipsoidLimb = cross(ellipsoidPosition, ellipsoidSunRay);
+    let closestEllipsoidRadius2 =
+      dot(ellipsoidLimb, ellipsoidLimb) / ellipsoidRayLength2;
+    if (
+      closestEllipsoidRadius2 < GLOBE_ECLIPSE_F32_SAFETY_FACTOR
+    ) {
+      return 1.0;
+    }
+  }
+
+  let sunDistanceScaled = sqrt(s2);
+  let moonDistanceScaled = sqrt(moon2);
+  let rs = asin(clamp(
+    sunAngularScale / sunDistanceScaled,
+    0.0,
+    1.0,
+  ));
+  let ro = asin(clamp(
+    moonAngularScale / moonDistanceScaled,
+    0.0,
+    1.0,
+  ));
+
+  // Well-conditioned signed-angle magnitude. cross(s,D) == cross(s,m), and
+  // the denominator is dot(s,m). Unlike acos(dot(normalize(s),normalize(m))),
+  // atan2 retains the ~1e-4-radian separation that defines the umbral edge.
+  let separation = atan2(length(cross(s, D)), dotSunMoon);
+  let geometric = globe_eclipseGeometricObscuration(rs, ro, separation);
+  if (geometric <= 0.0) {
+    return 1.0;
+  }
+
+  var obscuration: f32;
+  if (geometric >= 1.0) {
+    obscuration = 1.0;
+  } else {
+    let antumbraInner = rs - ro;
+    if (antumbraInner > 0.0 && separation <= antumbraInner) {
+      let t = separation / antumbraInner;
+      obscuration = clamp(
+        globe_eclipseLimbDarken(geometric) +
+          eclipseUniforms.params2.z * (1.0 - t * t),
+        0.0,
+        1.0,
+      );
+    } else {
+      obscuration = clamp(globe_eclipseLimbDarken(geometric), 0.0, 1.0);
+    }
+  }
+
+  let visible = 1.0 - obscuration;
+  let flux =
+    visible + eclipseUniforms.params2.x * (1.0 - visible);
+  return pow(flux, eclipseUniforms.params2.y);
 }
 
 fn globeClipByPolygon(positionWC: vec3<f32>) -> bool {
@@ -3510,10 +3719,6 @@ fn fragmentMain(
     return makeFragOutput(vec4<f32>(1.0, 0.0, 1.0, 1.0), normalEC);
   }
   // Batch 56 — direct imagery sample for layer 1.
-  //>>ifdef GLOBE_IMAGERY_REDUCED
-  // Reduced layout has no dayTexture1 binding — the layer-1 debug
-  // sentinel is unavailable (each pass carries one layer in slot 0).
-  //>>else
   if (tile.time > 4.5e9 && tile.time < 5.5e9) {
     if (u32(tile.layerCount) >= 2u) {
       let useWMT = tile.useWebMercatorTLayer[0].y;
@@ -3525,7 +3730,6 @@ fn fragmentMain(
     }
     return makeFragOutput(vec4<f32>(0.0, 1.0, 1.0, 1.0), normalEC); // cyan = no layer 1
   }
-  //>>endif
   // Batch 56 — texSample.a debug. Visualize the imagery's alpha channel
   // for layer 0. RED = layer 0's tex.a. If alpha is 0, the composite
   // multiplier kills imagery contribution → BLACK output even with
@@ -3545,10 +3749,6 @@ fn fragmentMain(
   // upload path has alpha=0. Reprojected layers force alpha=1 (after
   // Batch 56 fix); direct uploads via uploadImageSource for opaque JPEGs
   // may have alpha=0.
-  //>>ifdef GLOBE_IMAGERY_REDUCED
-  // Reduced layout has no dayTexture1 binding — see the layer-1 debug
-  // sentinel note above.
-  //>>else
   if (tile.time > 6.5e9 && tile.time < 7.5e9) {
     if (u32(tile.layerCount) >= 2u) {
       let useWMT = tile.useWebMercatorTLayer[0].y;
@@ -3560,7 +3760,6 @@ fn fragmentMain(
     }
     return makeFragOutput(vec4<f32>(0.0, 1.0, 1.0, 1.0), normalEC); // cyan = no layer 1
   }
-  //>>endif
 
   // Compute shadow factor early — textureSampleCompare must be called
   // from uniform control flow (before any non-uniform discard/return).
@@ -3593,19 +3792,12 @@ fn fragmentMain(
   if (shadowModeActive) {
     if (effects.pointLightControl.x > 0.5) {
       // C-R10-POINT-LIGHT-RECEIVE-GLOBE (Batch 108) — point-light
-      // cube-shadow path. Reconstructs world-space fragment position
-      // from the camera high/low split (the globe camera UB doesn't
-      // expose a single `cameraPositionWC` field) plus v_positionRTE
-      // which is camera-relative world space. The reconstruction
-      // loses ~1m of f32 precision at orbital camera distances, but
-      // the comparison's resolution is bounded by `farPlane`
-      // (the light radius), so this only matters for fragments
-      // within ~1m of `farPlane` — visually imperceptible. Takes
-      // priority over CSM when both are enabled (point + sun
-      // shadows together would need an OR-combine, deferred).
-      let cameraWC = camera.encodedCameraHigh + camera.encodedCameraLow;
-      let fragWC = cameraWC + input.v_positionRTE;
-      shadowFactor = globeComputeShadowFactorPointLight(fragWC);
+      // cube-shadow path. `v_positionRTE` and the packed light are
+      // camera-relative in the same world-axis frame, preserving point-shadow
+      // direction and distance without an absolute f32 ECEF reconstruction.
+      // Takes priority over CSM when both are enabled (point + sun shadows
+      // together would need an OR-combine, deferred).
+      shadowFactor = globeComputeShadowFactorPointLight(input.v_positionRTE);
     } else if (effects.csmControl.x > 0.5) {
       // RTE precision path — feed the camera-relative position straight
       // into the RTE-aware cascade VP. No reconstruction of worldPos =
@@ -3740,12 +3932,6 @@ fn fragmentMain(
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
-  //>>ifdef GLOBE_IMAGERY_REDUCED
-  // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (Batch 246) — reduced layout
-  // carries exactly one imagery slot per pass; slots 1..15 don't exist.
-  // The CPU multi-pass slicer caps `tile.layerCount` at 1 per pass, so
-  // the composite loop above is complete.
-  //>>else
   if (count >= 2u) {
     let layer = tile.layers[1];
     let useWMT = tile.useWebMercatorTLayer[0].y;
@@ -3785,6 +3971,12 @@ fn fragmentMain(
     color = r.color; alpha = r.alpha;
     color = applyNightLightsEmission(color, r.adjustedColor, nightBlend, dna.y, dna.x);
   }
+  //>>ifdef GLOBE_IMAGERY_REDUCED
+  // NEW-WEBGPU-DEFAULT-LIMIT-GLOBE-LAYOUT (C11-208) — reduced layout
+  // carries four imagery slots per pass; slots 4..15 don't exist. The CPU
+  // multi-pass slicer caps `tile.layerCount` at four, so the blocks above
+  // still composite every layer in this pass without feature loss.
+  //>>else
   if (count >= 5u) {
     let layer = tile.layers[4];
     let useWMT = tile.useWebMercatorTLayer[1].x;
@@ -4050,16 +4242,11 @@ fn fragmentMain(
   //    REFLECTIVE_OCEAN) || defined(APPLY_MATERIAL))`. WGSL: runtime
   //    `tile.flags.x > 0.5` (CPU-side: `showReflectiveOcean =
   //    hasWaterMask && tileProvider.showWaterEffect === true`).
-  // 2. **Water-mask UV Y-flip**. GLSL applies
-  //    `waterMaskTextureCoordinates.y = 1.0 - .y` after the
-  //    translation/scale (line 478). WGSL doesn't — the WebGPU upload
-  //    (WebGPUGlobeSurfaceTextures.getOrCreateWaterMaskTexture,
-  //    NEW-GLOBE-BELOWSURFACE-FIX) reverses the mask's row order at
-  //    upload (north-first source → south-first texture; `flipY: true`
-  //    for bitmap masks), which makes direct south-origin sampling at
-  //    `geoUV * wmTS.zw + wmTS.xy` byte-equivalent to WebGL's
-  //    flip-after-TS, including inherited ancestor masks (wmTS stays
-  //    south-origin in both conventions).
+  // 2. **Water-mask resource realization**. Both shaders apply the same
+  //    post-translation UV Y-flip. On WebGPU the globe borrows the native
+  //    GPUTexture already realized by Texture/WebGLStubTexture whenever it
+  //    belongs to the same GPUDevice; the rare cross-device fallback upload
+  //    preserves the same source-row order.
   // 3. **Function home**. GLSL `computeWaterColor` is hand-written in
   //    GlobeFS.glsl L777-849 behind `#ifdef SHOW_REFLECTIVE_OCEAN`.
   //    WGSL `computeEnhancedOcean` is hand-inlined in this shader
@@ -4101,10 +4288,11 @@ fn fragmentMain(
   //    for future enhancement; GLSL has no equivalent.
   //
   // ─── Enhanced Water mask + ocean rendering ───
-  if (tile.flags.x > 0.5) {
-    let wmTS = tile.waterMaskTranslationAndScale;
-    let waterUV = geoUV * wmTS.zw + wmTS.xy;
-    let waterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV, 0.0).r;
+    if (tile.flags.x > 0.5) {
+      let wmTS = tile.waterMaskTranslationAndScale;
+      let waterUVUnflipped = geoUV * wmTS.zw + wmTS.xy;
+      let waterUV = vec2<f32>(waterUVUnflipped.x, 1.0 - waterUVUnflipped.y);
+      let waterMask = textureSampleLevel(waterMaskTexture, waterMaskSampler, waterUV, 0.0).r;
 
     // NS-WATER-MASK-COAST-AA — screen-space anti-aliased coast coverage.
     // The water mask is a low-resolution bitmap; a single bilinear sample
@@ -4120,11 +4308,13 @@ fn fragmentMain(
     //
     // WGSL forbids `fwidth` here (this is downstream of non-uniform
     // discards), so we reconstruct the mask's per-pixel footprint from the
-    // UV derivatives hoisted to fragment entry (geoUV_dx/geoUV_dy, computed
-    // in uniform control flow). waterUV = geoUV*wmTS.zw + wmTS.xy, so one
-    // screen pixel steps `geoUV_d* * wmTS.zw * wmDim` texels; near a coast
-    // the bilinear mask changes ≈1.0 per texel, making this the fwidth(mask)
-    // analogue. Twin of the GLSL fwidth path in GlobeFS.glsl.
+      // UV derivatives hoisted to fragment entry (geoUV_dx/geoUV_dy, computed
+      // in uniform control flow). The post-transform Y flip reverses one
+      // derivative component's sign, which does not change the vector lengths
+      // below. One screen pixel therefore still steps
+      // `geoUV_d* * wmTS.zw * wmDim` texels; near a coast the bilinear mask
+      // changes ≈1.0 per texel, making this the fwidth(mask) analogue. Twin of
+      // the GLSL fwidth path in GlobeFS.glsl.
     let wmDim = vec2<f32>(textureDimensions(waterMaskTexture, 0));
     let maskTexelDx = geoUV_dx * wmTS.zw * wmDim;
     let maskTexelDy = geoUV_dy * wmTS.zw * wmDim;
@@ -4238,6 +4428,22 @@ fn fragmentMain(
   //    DAYNIGHT_SHADING-analogue path via `camera.lighting.z`
   //    (hasVertexNormals flag from `terrainProvider.hasVertexNormals`).
   //
+  // ─── C12-29 S5 — fragment-local eclipse factors ───
+  // S2 already applied a camera-anchored factor to selected radiance
+  // producers. Absolute is for an undimmed term; relative divides S2's camera
+  // factor back out before applying this fragment's factor. The uniform gate
+  // is zero in ordinary/non-3D frames, leaving both exact identities.
+  var eclipseAbsolute: f32 = 1.0;
+  var eclipseRelative: f32 = 1.0;
+  if (eclipseUniforms.params.x > 0.5) {
+    // Gates 3/4 restore only the producers S2 actually dimmed without paying
+    // common-ray, ellipsoid-horizon, overlap, or limb-fit ALU.
+    if (eclipseUniforms.params.x < 2.5) {
+      eclipseAbsolute = globe_eclipseFragmentFactor(input.v_positionMC);
+    }
+    eclipseRelative = eclipseAbsolute * eclipseUniforms.params.y;
+  }
+
   // ─── Lambert diffuse lighting + shadow receive ───
   if (camera.enableLighting > 0.5) {
     let NdotL = max(dot(normal, sunDir), 0.0);
@@ -4274,8 +4480,21 @@ fn fragmentMain(
     // Default is (1,1,1) so non-customized scenes are unchanged.
     color = color * diffuse * camera.lightColor.rgb;
 
-    // Terminator glow: warm atmosphere color right at the day-night boundary
-    color += computeTerminatorGlow(normal, sunDir);
+    // The surface product carries S2 only for active/correction SunLight
+    // gates 2/3. Custom-light gates 1/4 keep the absolute surface factor;
+    // dividing a factor it never carried would invert the eclipse.
+    color = color * select(
+      eclipseAbsolute,
+      eclipseRelative,
+      eclipseUniforms.params.x > 1.5 &&
+        eclipseUniforms.params.x < 3.5,
+    );
+
+    // The additive terminator glow contains no S2-scaled light quantity.
+    color += computeTerminatorGlow(normal, sunDir) * eclipseAbsolute;
+  } else {
+    // Raw imagery/ocean surface: S2 never reached it.
+    color = color * eclipseAbsolute;
   }
 
   // NEW-CSM-CAST-NO-DISPATCH-VIEWER (Batch 296) — apply the shadow receive
@@ -4448,6 +4667,18 @@ fn fragmentMain(
     } else {
       groundAtmoColor = atmosphereColor;
     }
+
+    // The air column above the surface shadow is solar radiance too. The
+    // Nishita ground-scattering producer includes the S2-scaled atmosphere
+    // intensity, while the analytic fallback and LUT do not; select the
+    // relative or absolute factor at the producer boundary and leave geometric
+    // opacity untouched.
+    let atmoCarriesSceneFactor = camera.atmosphereParams.w > 0.5;
+    groundAtmoColor = groundAtmoColor * select(
+      eclipseAbsolute,
+      eclipseRelative,
+      atmoCarriesSceneFactor,
+    );
 
     if (fogDensity > 0.0) {
       // FOG branch — close to the ground. Mirrors GlobeFS.glsl lines
@@ -4756,10 +4987,11 @@ fn fragmentMain(
   // `flags.x` gate is correctly identifying water vs land tiles after
   // the Batch 58 showReflectiveOcean fix.
   if (tile.time > 19.5e9 && tile.time < 20.5e9) {
-    if (tile.flags.x > 0.5) {
-      let wmTS = tile.waterMaskTranslationAndScale;
-      let waterUV = geoUV * wmTS.zw + wmTS.xy;
-      let waterMask = textureSampleLevel(
+      if (tile.flags.x > 0.5) {
+        let wmTS = tile.waterMaskTranslationAndScale;
+        let waterUVUnflipped = geoUV * wmTS.zw + wmTS.xy;
+        let waterUV = vec2<f32>(waterUVUnflipped.x, 1.0 - waterUVUnflipped.y);
+        let waterMask = textureSampleLevel(
         waterMaskTexture, waterMaskSampler, waterUV, 0.0,
       ).r;
       if (waterMask > 0.01) {

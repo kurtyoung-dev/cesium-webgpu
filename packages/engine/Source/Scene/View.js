@@ -11,6 +11,8 @@ import Pass from "../Renderer/Pass.js";
 import PassState from "../Renderer/PassState.js";
 import Camera from "./Camera.js";
 import EdgeFramebuffer from "./EdgeFramebuffer.js";
+import { createEclipseGlobeShadow } from "./EclipseGlobeShadow.js";
+import { createEclipseState } from "./EclipseState.js";
 import { needsEnvironmentOnlyFrustum } from "./EnvironmentFrustumDemand.js";
 import GBufferFramebuffer from "./GBufferFramebuffer.js";
 import FrustumCommands from "./FrustumCommands.js";
@@ -98,6 +100,16 @@ class View {
     this._cameraStartFired = false;
     this._cameraMovedTime = undefined;
 
+    // C12-29 — eclipse outputs are observer-camera-dependent, so their
+    // lifetime follows the logical View rather than the Scene. The active
+    // View's objects are published as short-lived FrameState aliases by
+    // Scene.updateFrameState(). Auxiliary pass cameras (shadow maps and
+    // environment-capture faces) deliberately do not replace these objects.
+    this._eclipseState = createEclipseState();
+    this._eclipseSceneLightFactor = 1.0;
+    this._eclipseHorizonTwilight = 0.0;
+    this._eclipseGlobeShadow = createEclipseGlobeShadow();
+
     this.viewport = viewport;
     this.passState = passState;
     // Use context factory for backend-appropriate pick framebuffer.
@@ -140,6 +152,10 @@ class View {
     // only light/cascade-culls this small set instead of re-scanning the full
     // command list per shadow map.
     this._shadowCasters = [];
+    // C11-184 — reused only when an optional pre-PVS camera visibility filter
+    // is active. It deduplicates the shadow-only side channel against commands
+    // that survived into the ordinary PVS walk.
+    this._shadowCasterSeen = new Set();
   }
 
   /**
@@ -254,6 +270,13 @@ class View {
     let sawEnvironmentNoBV = false;
 
     const { shadowsEnabled } = shadowState;
+    const prePvsShadowCasters = shadowState.prePvsCasterCommands;
+    const mergePrePvsShadowCasters =
+      shadowsEnabled &&
+      defined(prePvsShadowCasters) &&
+      prePvsShadowCasters.length > 0;
+    const shadowCasterSeen = this._shadowCasterSeen;
+    shadowCasterSeen.clear();
     let shadowNear = +Number.MAX_VALUE;
     let shadowFar = -Number.MAX_VALUE;
     let shadowClosestObjectSize = Number.MAX_VALUE;
@@ -291,6 +314,9 @@ class View {
           shadowsEnabled &&
           command.castShadows === true &&
           isShadowedPass[pass] === true;
+        if (isCaster && mergePrePvsShadowCasters) {
+          shadowCasterSeen.add(command);
+        }
 
         if (defined(boundingVolume)) {
           if (!scene.isVisible(cullingVolume, command, occluder)) {
@@ -392,6 +418,17 @@ class View {
         commandExtentCount++;
       }
     }
+
+    if (mergePrePvsShadowCasters) {
+      mergeShadowOnlyCasterCandidates(
+        scene,
+        prePvsShadowCasters,
+        shadowCasters,
+        shadowCasterSeen,
+      );
+    }
+    prePvsShadowCasters.length = 0;
+    shadowCasterSeen.clear();
 
     if (shadowsEnabled) {
       shadowNear = Math.min(Math.max(shadowNear, frustum.near), frustum.far);
@@ -634,10 +671,55 @@ function insertIntoBin(view, scene, commandExtent) {
     ++debugFrustumStatistics.totalCommands;
   }
 
-  scene.updateDerivedCommands(command);
+  // This is the camera-visible binning path. Off-camera shadow casters also
+  // update derived commands, but must not precompile an unused color variant.
+  if (!scene._alternateSceneRenderer && command.isWebGPUDrawCommand !== true) {
+    scene.updateDerivedCommands(command, true);
+  } else {
+    // WebGPU still needs the backend-neutral derived-command bookkeeping, but
+    // must never enter the WebGL final-program scheduler.
+    scene.updateDerivedCommands(command);
+  }
 }
 
 const scratchCullingVolume = new CullingVolume();
 const scratchNearFarInterval = new Interval();
 
+/**
+ * Merge candidates removed by camera-only filters into the shadow-caster
+ * sublist. Commands already observed by View are skipped; missing commands get
+ * their WebGL cast derivative prepared but are never inserted into camera bins.
+ *
+ * @param {Scene} scene The owning scene.
+ * @param {DrawCommand[]} candidates Pre-filter caster references.
+ * @param {DrawCommand[]} shadowCasters Destination shadow list.
+ * @param {Set<DrawCommand>} seen Commands that survived to View's PVS walk.
+ * @returns {DrawCommand[]} The destination list.
+ * @private
+ */
+function mergeShadowOnlyCasterCandidates(
+  scene,
+  candidates,
+  shadowCasters,
+  seen,
+) {
+  // The pre-filter snapshot is the stable ordering authority whenever the
+  // side channel is active. Rebuild the destination in that order instead of
+  // appending filtered candidates after octree/Hi-Z survivors.
+  shadowCasters.length = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const command = candidates[i];
+    if (command.castShadows !== true || isShadowedPass[command.pass] !== true) {
+      continue;
+    }
+    if (!seen.has(command)) {
+      scene.updateDerivedCommands(command);
+    }
+    shadowCasters.push(command);
+    seen.add(command);
+  }
+  return shadowCasters;
+}
+
+export { insertIntoBin, mergeShadowOnlyCasterCandidates };
 export default View;

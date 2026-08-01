@@ -15,17 +15,20 @@
  *     in this batch (~245 LOC). Builds the per-tile vertex+index GPU
  *     buffers, handles `Uint8Array` index up-conversion, validates
  *     stride against actual vertex data (fill-tile correction), pads to
- *     4-byte alignment, allocates the shadow-cast UB, and caches the
- *     result. Returns null on any unrecoverable encoding mismatch.
+ *     4-byte alignment, retains the shadow-cast mesh source, and caches
+ *     the result. Returns null on any unrecoverable encoding mismatch.
+ *   - `ensureTerrainShadowCastUniformBuffer(device, resources)` lazily
+ *     packs, realizes, and uploads the per-tile shadow UB on the first real
+ *     cast pass, then reuses it until mesh replacement, eviction, or device
+ *     loss.
  *   - `evictStaleResources(host, activeTileKeys)` — culls cache entries
  *     whose key isn't in the active set, destroying their GPU buffers.
  *   - `removeImageryTexture(host, cacheKey)` — destroys an imagery
  *     texture and removes its cache entry.
  *
- * Internal helper: `writeTerrainShadowUB(device, buffer, mesh)` writes
- * the 96-byte `quantized12` shadow-cast UB layout (scaleAndBias + center3D
- * + minMaxHeight). Not exported — only called from
- * `getOrCreateTileBuffers`.
+ * Internal helper: `packTerrainShadowUniformData(mesh)` packs the shared
+ * 96-byte terrain shadow layout (scaleAndBias + center3D + minMaxHeight)
+ * without allocating a GPU resource.
  *
  * The renderer keeps `evictStaleResources` and `removeImageryTexture`
  * as public-API delegators (2-line wrappers) since they're part of the
@@ -48,6 +51,8 @@ import type {
   WebGPUGlobeLogicalCounters,
 } from "./WebGPUGlobeSurfaceTypes.js";
 import type { WebGPUSharedImageryRealizations } from "./WebGPUSharedImageryRealizations.js";
+
+const TERRAIN_SHADOW_UNIFORM_SIZE = 96;
 
 /**
  * The renderer surface the tile-buffer helpers reach into.
@@ -114,6 +119,64 @@ function recordTileResourcesRetired(
   );
 }
 
+function recordTerrainShadowUniformBufferCreated(
+  resources: TileGPUResources,
+  byteSize: number,
+): void {
+  const counters = resources.shadowCastCounters;
+  if (!counters) return;
+  counters.terrainShadowUniformBufferCreations =
+    (counters.terrainShadowUniformBufferCreations ?? 0) + 1;
+  counters.terrainShadowUniformBufferWrites =
+    (counters.terrainShadowUniformBufferWrites ?? 0) + 1;
+  counters.terrainShadowUniformBufferLiveEntries =
+    (counters.terrainShadowUniformBufferLiveEntries ?? 0) + 1;
+  counters.terrainShadowUniformBufferLiveBytes =
+    (counters.terrainShadowUniformBufferLiveBytes ?? 0) + byteSize;
+  counters.terrainShadowUniformBufferHighWaterEntries = Math.max(
+    counters.terrainShadowUniformBufferHighWaterEntries ?? 0,
+    counters.terrainShadowUniformBufferLiveEntries,
+  );
+  counters.terrainShadowUniformBufferHighWaterBytes = Math.max(
+    counters.terrainShadowUniformBufferHighWaterBytes ?? 0,
+    counters.terrainShadowUniformBufferLiveBytes,
+  );
+  counters.tileBufferLiveBytes = (counters.tileBufferLiveBytes ?? 0) + byteSize;
+  counters.tileBufferHighWaterBytes = Math.max(
+    counters.tileBufferHighWaterBytes ?? 0,
+    counters.tileBufferLiveBytes,
+  );
+}
+
+function retireTerrainShadowCastUniformBuffer(
+  resources: TileGPUResources,
+): void {
+  const buffer = resources.shadowCastUB;
+  if (!buffer) return;
+
+  const byteSize = buffer.size ?? TERRAIN_SHADOW_UNIFORM_SIZE;
+  buffer.destroy();
+  resources.shadowCastUB = undefined;
+  resources.shadowCastDevice = undefined;
+
+  const counters = resources.shadowCastCounters;
+  if (!counters) return;
+  counters.terrainShadowUniformBufferRetirements =
+    (counters.terrainShadowUniformBufferRetirements ?? 0) + 1;
+  counters.terrainShadowUniformBufferLiveEntries = Math.max(
+    0,
+    (counters.terrainShadowUniformBufferLiveEntries ?? 0) - 1,
+  );
+  counters.terrainShadowUniformBufferLiveBytes = Math.max(
+    0,
+    (counters.terrainShadowUniformBufferLiveBytes ?? 0) - byteSize,
+  );
+  counters.tileBufferLiveBytes = Math.max(
+    0,
+    (counters.tileBufferLiveBytes ?? 0) - byteSize,
+  );
+}
+
 /** Stable per-tile cache key. Pure function — no host needed. */
 export function getTileKey(tile: {
   level: number;
@@ -164,10 +227,12 @@ export function getOrCreateTileBuffers(
 
   const replacesCachedResources = cached !== undefined;
   if (cached) {
+    // Retire the optional lazy UB first so generic tile accounting subtracts
+    // its bytes exactly once; the remaining record then contains VB+IB only.
+    retireTerrainShadowCastUniformBuffer(cached);
     recordTileResourcesRetired(host, cached);
     cached.vertexBuffer.destroy();
     cached.indexBuffer.destroy();
-    cached.shadowCastUB?.destroy();
     // Never leave destroyed resources addressable after a failed rebuild.
     // Validation below can legitimately return null; a later retry must see a
     // clean miss rather than retire/destroy the same dead entry again.
@@ -325,6 +390,9 @@ export function getOrCreateTileBuffers(
             hasGeodeticSurfaceNormals: inferredHasGeoNormal,
             meshGeneration: generation,
             sourceVertices: vertices,
+            shadowCastMesh: mesh,
+            shadowCastCounters: counters,
+            shadowCastTileKey: tileKey,
           };
           if (replacesCachedResources && counters) {
             counters.tileBufferRebuilds =
@@ -377,29 +445,10 @@ export function getOrCreateTileBuffers(
     hasGeodeticSurfaceNormals: encoding.hasGeodeticSurfaceNormals === true,
     meshGeneration: generation,
     sourceVertices: vertices,
+    shadowCastMesh: mesh,
+    shadowCastCounters: counters,
+    shadowCastTileKey: tileKey,
   };
-
-  // Allocate a shadow cast UB for every tile regardless of quantization.
-  // Before Batch 24 this was quantized-only, which meant uncompressed
-  // tiles fell through to the `rte24` variant via stride-inference —
-  // and `rte24` reads two vec3s (positionHigh + positionLow) where
-  // the uncompressed VB actually has `position3DAndHeight` + tex
-  // coords. The resulting RTE math produced shadow coordinates
-  // unrelated to the actual terrain. Batch 24's new
-  // `terrainUncompressed` shadow cast variant consumes the same UB
-  // layout as `quantized12` (scaleAndBias + center3D + minMaxHeight),
-  // so every tile — quantized or not — needs the buffer populated.
-  // The buffer is static for the tile's lifetime; when the tile's
-  // mesh is regenerated we rebuild it alongside the vertex buffer
-  // (next cache-miss path).
-  const shadowUB = device.createBuffer({
-    label: `Terrain shadow cast UB (${tileKey})`,
-    // 96 bytes: scaleAndBias(64) + center3D+pad(16) + minMaxHeight+pad(16)
-    size: 96,
-    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-  });
-  writeTerrainShadowUB(device, shadowUB, mesh);
-  resources.shadowCastUB = shadowUB;
 
   if (replacesCachedResources && counters) {
     counters.tileBufferRebuilds = (counters.tileBufferRebuilds ?? 0) + 1;
@@ -410,8 +459,8 @@ export function getOrCreateTileBuffers(
 }
 
 /**
- * Writes the `quantized12` shadow-cast variant's uniform data for
- * a tile. Layout (96 bytes, must match
+ * Packs the terrain shadow-cast variants' uniform data for a tile. Layout
+ * (96 bytes, must match
  * WebGPUShadowMapRenderer.js::SHADOW_CAST_VARIANTS.quantized12):
  *
  *   offset  0: scaleAndBias: mat4x4<f32>  (from mesh.encoding.matrix)
@@ -420,16 +469,14 @@ export function getOrCreateTileBuffers(
  *   offset 80: minMaxHeight: vec2<f32>
  *   offset 88: _pad1:        vec2<f32>
  *
- * Internal helper, not exported. Only called from
- * `getOrCreateTileBuffers` immediately after allocating the buffer.
+ * Internal helper, not exported. GPU allocation and upload remain deferred
+ * until a real cast pass requests them.
  * @private
  */
-function writeTerrainShadowUB(
-  device: GPUDevice,
-  buffer: GPUBuffer,
-  mesh: CesiumTerrainMesh,
-): void {
-  const data = new Float32Array(24); // 96 bytes
+function packTerrainShadowUniformData(mesh: CesiumTerrainMesh): Float32Array {
+  const data = new Float32Array(
+    TERRAIN_SHADOW_UNIFORM_SIZE / Float32Array.BYTES_PER_ELEMENT,
+  );
   const encoding = mesh.encoding;
   if (encoding && encoding.matrix) {
     const m = m4Values(encoding.matrix);
@@ -447,7 +494,99 @@ function writeTerrainShadowUB(
   data[21] = encoding?.maximumHeight ?? 0;
   data[22] = 0;
   data[23] = 0;
-  device.queue.writeBuffer(buffer, 0, data.buffer, 0, 96);
+  return data;
+}
+
+/**
+ * Return the persistent per-tile shadow UB, realizing it only on first cast
+ * demand. Device identity is part of the realization: recovery retires the
+ * old buffer before creating and uploading the replacement.
+ */
+export function ensureTerrainShadowCastUniformBuffer(
+  device: GPUDevice,
+  resources: TileGPUResources,
+): GPUBuffer | undefined {
+  if (resources.shadowCastUB && resources.shadowCastDevice === device) {
+    return resources.shadowCastUB;
+  }
+
+  if (resources.shadowCastUB) {
+    retireTerrainShadowCastUniformBuffer(resources);
+  }
+
+  let data = resources.shadowCastUniformData;
+  if (!data) {
+    const mesh = resources.shadowCastMesh;
+    if (!mesh) return undefined;
+    data = packTerrainShadowUniformData(mesh);
+    resources.shadowCastUniformData = data;
+    resources.shadowCastMesh = undefined;
+    const counters = resources.shadowCastCounters;
+    if (counters) {
+      counters.terrainShadowUniformDataPacks =
+        (counters.terrainShadowUniformDataPacks ?? 0) + 1;
+    }
+  }
+
+  const buffer = device.createBuffer({
+    label: `Terrain shadow cast UB (${resources.shadowCastTileKey ?? "tile"})`,
+    size: TERRAIN_SHADOW_UNIFORM_SIZE,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  try {
+    device.queue.writeBuffer(
+      buffer,
+      0,
+      data.buffer,
+      data.byteOffset,
+      TERRAIN_SHADOW_UNIFORM_SIZE,
+    );
+  } catch (error) {
+    buffer.destroy();
+    throw error;
+  }
+
+  resources.shadowCastUB = buffer;
+  resources.shadowCastDevice = device;
+  recordTerrainShadowUniformBufferCreated(resources, buffer.size);
+  return buffer;
+}
+
+interface TerrainShadowCastCommand {
+  _shadowCastLayout?: string;
+  _shadowCastTerrainUB?: GPUBuffer;
+  _shadowCastBindGroupCacheHost?: object;
+}
+
+/**
+ * Realize and publish terrain UBs for commands that will enter a real cast
+ * pass. Existing direct-buffer callers remain valid when no cache host exists.
+ */
+export function prepareTerrainShadowCastCommandUniforms(
+  device: GPUDevice,
+  commands: ReadonlyArray<unknown>,
+): number {
+  let readyCount = 0;
+  for (let i = 0; i < commands.length; i++) {
+    const command = commands[i] as TerrainShadowCastCommand | undefined;
+    const layout = command?._shadowCastLayout;
+    if (layout !== "quantized12" && layout !== "terrainUncompressed") {
+      continue;
+    }
+
+    const resources = command?._shadowCastBindGroupCacheHost as
+      TileGPUResources | undefined;
+    if (resources) {
+      const buffer = ensureTerrainShadowCastUniformBuffer(device, resources);
+      if (buffer) {
+        command!._shadowCastTerrainUB = buffer;
+      }
+    }
+    if (command?._shadowCastTerrainUB) {
+      readyCount++;
+    }
+  }
+  return readyCount;
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -460,10 +599,10 @@ export function evictStaleResources(
 ): void {
   for (const [key, resources] of host._tileBufferCache) {
     if (!activeTileKeys.has(key)) {
+      retireTerrainShadowCastUniformBuffer(resources);
       recordTileResourcesRetired(host, resources);
       resources.vertexBuffer.destroy();
       resources.indexBuffer.destroy();
-      resources.shadowCastUB?.destroy();
       host._tileBufferCache.delete(key);
     }
   }
