@@ -55,6 +55,7 @@ import Matrix4 from "../../Core/Matrix4.js";
 import PerspectiveFrustum from "../../Core/PerspectiveFrustum.js";
 import Transforms from "../../Core/Transforms.js";
 import { updateEclipseGlobeShadowForFrameState } from "../../Scene/EclipseGlobeShadow.js";
+import type { PooledDepthTarget } from "./WebGPUEnvironmentTargetPool.js";
 
 /** Minimal env-cube cache view the capture pass reads/writes. */
 export interface SceneCaptureCache {
@@ -74,6 +75,19 @@ export interface SceneCaptureCache {
 export interface SceneCaptureManager {
   _position: CesiumCartesian3;
   enableSceneCapture?: boolean;
+}
+
+/**
+ * C11-193 — minimal view of {@link WebGPUEnvironmentTargetPool} this module
+ * needs. Structural so the capture pass keeps no dependency on the pool module.
+ */
+export interface SceneCaptureTargetPool {
+  acquireDepthTarget(
+    size: number,
+    format: GPUTextureFormat,
+    label: string,
+  ): PooledDepthTarget;
+  releaseDepthTarget(handle: PooledDepthTarget | null): void;
 }
 
 export const SceneCaptureResult = Object.freeze({
@@ -403,6 +417,7 @@ export function runSceneCapture(
   frameState: CesiumFrameState,
   includeGlobe = true,
   commandEncoder?: GPUCommandEncoder,
+  targetPool?: SceneCaptureTargetPool | null,
 ): SceneCaptureResultValue {
   // ── Gate: double opt-in + SCENE3D ──
   const ctx = frameState.context as unknown as {
@@ -500,6 +515,10 @@ export function runSceneCapture(
   let encoder: GPUCommandEncoder | null = commandEncoder ?? null;
   let globeDrawCount = 0;
   let modelDrawCount = 0;
+  // C11-193 — borrowed depth target for this replay. Non-null only when the
+  // context pool is available; the manager-local fallback below is unchanged so
+  // standalone/spec callers keep the historical lifetime.
+  let pooledDepth: PooledDepthTarget | null = null;
 
   try {
     for (let face = 0; face < 6; face++) {
@@ -574,7 +593,32 @@ export function runSceneCapture(
       // Allocate the transient target and encoder only after at least one real
       // indexed draw exists. An empty replay must not submit six empty passes
       // or report a successful scene composite.
-      if (!cache.captureDepthView || cache.captureDepthSize !== size) {
+      //
+      // C11-193 — this target is `depthStoreOp: "discard"` and every face pass
+      // clears it, so it has no cross-refresh contents worth owning per manager.
+      // When the context pool is available, borrow one context-wide target for
+      // the whole replay and give it back in the `finally` below; several
+      // managers then share a single `size x size` depth allocation.
+      if (pooledDepth === null && targetPool) {
+        pooledDepth = targetPool.acquireDepthTarget(
+          size,
+          "depth24plus",
+          "DynEnvMap Capture Depth",
+        );
+        // A manager that previously owned a private target must release it, or
+        // it would sit resident for the rest of the manager's life alongside
+        // the pooled one.
+        if (cache.captureDepthTexture) {
+          cache.captureDepthTexture.destroy();
+          cache.captureDepthTexture = null;
+          cache.captureDepthView = null;
+          cache.captureDepthSize = 0;
+        }
+      }
+      if (
+        pooledDepth === null &&
+        (!cache.captureDepthView || cache.captureDepthSize !== size)
+      ) {
         cache.captureDepthTexture?.destroy();
         cache.captureDepthTexture = device.createTexture({
           label: "DynEnvMap Capture Depth",
@@ -584,6 +628,16 @@ export function runSceneCapture(
         });
         cache.captureDepthView = cache.captureDepthTexture.createView();
         cache.captureDepthSize = size;
+      }
+      const depthView = pooledDepth?.view ?? cache.captureDepthView;
+      if (!depthView) {
+        // Permanent null-target guard: opening a depth-stencil attachment with
+        // a null view invalidates the whole command buffer, which would take
+        // the frame's scene passes down with it.
+        console.error(
+          "[CesiumJS:webgpu] DynEnvMap scene capture has no depth target view; skipping face.",
+        );
+        continue;
       }
       encoder ??= device.createCommandEncoder({
         label: "DynEnvMap Scene Capture",
@@ -601,7 +655,7 @@ export function runSceneCapture(
           },
         ],
         depthStencilAttachment: {
-          view: cache.captureDepthView!,
+          view: depthView,
           depthClearValue: 1.0,
           depthLoadOp: "clear",
           depthStoreOp: "discard",
@@ -656,6 +710,14 @@ export function runSceneCapture(
     // previousViewProjection tail AND the _logDepthEncodeNearFar stash; a throw
     // mid-loop must not leak the face camera into the main scene.
     uniformState.updateCamera(mainCamera);
+    // C11-193 — give the borrowed depth target back on EVERY exit, including a
+    // throw. Release is not destroy: the pool retains the texture, so the
+    // commands recorded against it above stay valid until they are submitted
+    // (and the pool's idle trim refuses to destroy anything used this frame).
+    if (pooledDepth !== null && targetPool) {
+      targetPool.releaseDepthTarget(pooledDepth);
+      pooledDepth = null;
+    }
   }
 
   if (!encoder || globeDrawCount + modelDrawCount === 0) {

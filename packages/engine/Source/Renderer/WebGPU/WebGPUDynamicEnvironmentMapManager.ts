@@ -34,6 +34,7 @@ import {
 } from "./WebGPUIBLPipeline.js";
 import type {
   IBLCommandEncodingScope,
+  IBLParameterArenaPool,
   IBLPipelineCache,
   RadianceHQOptions,
 } from "./WebGPUIBLPipeline.js";
@@ -44,6 +45,7 @@ import {
   type SceneCaptureCache,
   type SceneCaptureManager,
   type SceneCaptureResultValue,
+  type SceneCaptureTargetPool,
 } from "./WebGPUDynamicEnvironmentMapCapture.js";
 import {
   resolveAtmosphereScattering,
@@ -305,6 +307,109 @@ let dynamicEnvironmentKernelPacks = new WeakMap<
   DynEnvMapDeviceKernelPacks
 >();
 
+// C11-193 — literals mirroring `WebGPUEnvironmentDemandRegistry` /
+// `WebGPUEnvironmentRefreshScheduler`. Kept as literals here so this module
+// keeps its structural (duck-typed) relationship with the context and stays
+// loadable when the scheduler seams are absent.
+const ENV_DEMAND_UNKNOWN = "unknown";
+const ENV_DEMAND_PROVEN_NONE = "proven-none";
+const ENV_REFRESH_URGENCY_MANDATORY = 0;
+const ENV_REFRESH_URGENCY_HIGH = 1;
+const ENV_REFRESH_URGENCY_NORMAL = 2;
+const ENV_REFRESH_DECISION_DEFER = "defer";
+
+/** Structural view of the scheduling/pooling seams on WebGPUContext. */
+interface EnvironmentRefreshContextSeams {
+  scheduleEnvironmentRefresh?: (manager: object, urgency: number) => string;
+  noteEnvironmentRefreshSubmitted?: (manager: object) => void;
+  consumeEnvironmentRefreshResume?: () => boolean;
+  getEnvironmentTargetPool?: () => EnvironmentRefreshTargetPool | null;
+}
+
+/** Union of the pool surface the two refresh consumers need. */
+type EnvironmentRefreshTargetPool = IBLParameterArenaPool &
+  SceneCaptureTargetPool;
+
+/**
+ * C11-193 resume path. Re-arms a render so a `requestRenderMode` scene cannot
+ * idle while deferred refresh work is still owed a frame. One callback per
+ * frame at most: the context arms the flag only for the frame's first deferral,
+ * and `afterRender` is drained (and its truthy return turned into
+ * `scene.requestRender()`) by `callAfterRenderFunctions`.
+ */
+function requestRenderForEnvironmentRefreshResume(): boolean {
+  return true;
+}
+
+/**
+ * Offer a refresh to the context-owned bounded drain.
+ *
+ * Returns true when the caller must run the refresh now. A context without the
+ * seam (a WebGL stub, or a context predating this slice) always runs, which is
+ * the historical unconditional behavior.
+ *
+ * On a deferral this arms the resume path BEFORE returning false, so there is
+ * no path on which work is deferred without a frame to resume on.
+ */
+function scheduleEnvironmentRefresh(
+  context: CesiumGraphicsContext,
+  manager: object,
+  urgency: number,
+  frameState: CesiumFrameState,
+): boolean {
+  const seams = context as unknown as EnvironmentRefreshContextSeams;
+  const schedule = seams.scheduleEnvironmentRefresh;
+  if (typeof schedule !== "function") {
+    return true;
+  }
+  const decision = schedule.call(context, manager, urgency);
+  if (decision !== ENV_REFRESH_DECISION_DEFER) {
+    return true;
+  }
+
+  const afterRender = frameState.afterRender;
+  const consumeResume = seams.consumeEnvironmentRefreshResume;
+  const armResume =
+    typeof consumeResume === "function" ? consumeResume.call(context) : true;
+  if (armResume && afterRender) {
+    // `includes` is a belt-and-braces dedupe alongside the context's
+    // once-per-frame flag; the same precedent guards the scene-capture
+    // publication request in GlobeSurfaceTileProviderRendering.
+    if (!afterRender.includes(requestRenderForEnvironmentRefreshResume)) {
+      afterRender.push(requestRenderForEnvironmentRefreshResume);
+    }
+  } else if (armResume && !afterRender) {
+    // Permanent sentinel: without an afterRender list a deferral has no resume
+    // path, which is the freeze shape this design exists to prevent.
+    console.error(
+      "[CesiumJS:webgpu] Environment refresh deferred with no frameState.afterRender to resume on.",
+    );
+  }
+  return false;
+}
+
+function noteEnvironmentRefreshSubmitted(
+  context: CesiumGraphicsContext,
+  manager: object,
+): void {
+  const note = (context as unknown as EnvironmentRefreshContextSeams)
+    .noteEnvironmentRefreshSubmitted;
+  if (typeof note === "function") {
+    note.call(context, manager);
+  }
+}
+
+function getEnvironmentTargetPool(
+  context: CesiumGraphicsContext,
+): EnvironmentRefreshTargetPool | null {
+  const get = (context as unknown as EnvironmentRefreshContextSeams)
+    .getEnvironmentTargetPool;
+  if (typeof get !== "function") {
+    return null;
+  }
+  return get.call(context) ?? null;
+}
+
 /**
  * Update WebGPU dynamic environment map resources.
  * Creates cubemap textures and schedules re-rendering when needed.
@@ -319,10 +424,13 @@ function updateWebGPUDynamicEnvironmentMap(
       observeEnvironmentMapDemand?: (manager: object) => string;
     }
   ).observeEnvironmentMapDemand;
+  let demand = ENV_DEMAND_UNKNOWN;
   if (typeof observeDemand === "function") {
-    // C11-193 telemetry only. Do not branch on the result until the bounded
-    // scheduler and all conservative visibility gates land.
-    observeDemand.call(context, manager);
+    // C11-193 — the classification is now read, but it may only influence
+    // PRIORITY inside the bounded drain. It can never decide whether a refresh
+    // happens: PROVEN_NONE goes last, never nowhere. See
+    // `WebGPUEnvironmentRefreshScheduler` and `C11-REVIEW-2026-08-01` defect 3.
+    demand = observeDemand.call(context, manager);
   }
   const device: GPUDevice = context.device;
   const mode = frameState.mode;
@@ -681,7 +789,13 @@ function updateWebGPUDynamicEnvironmentMap(
   const captureRefresh =
     wantCapture &&
     shouldRefreshSceneCapture(cache, manager._position, captureSourceRevision);
-  if (
+  // C11-193 — the complete dirty predicate, hoisted so the bounded drain sees
+  // exactly the same condition the refresh body used to be inlined under. Every
+  // term is a LEVEL comparison of live state against committed `cache.last*`
+  // bookkeeping, never a consumed edge, which is what makes a deferral lossless:
+  // the deferred path commits no bookkeeping, so this identical expression
+  // re-evaluates true on the next frame.
+  const refreshRequested =
     cache.needsUpdate ||
     sunMoved ||
     lutPathChanged ||
@@ -690,15 +804,33 @@ function updateWebGPUDynamicEnvironmentMap(
     cloudMarchPathChanged ||
     captureModeChanged ||
     captureSourceStateChanged ||
-    captureRefresh
-  ) {
+    captureRefresh;
+
+  // A refresh is only deferrable while this manager still has valid, published
+  // resources for its consumers to keep reading. Anything else is MANDATORY and
+  // bypasses the per-frame budget entirely.
+  const hasPublishedResources =
+    !cache.needsUpdate && cache.iblCache !== null && cache.shBuffer !== null;
+  const refreshUrgency = !hasPublishedResources
+    ? ENV_REFRESH_URGENCY_MANDATORY
+    : demand === ENV_DEMAND_PROVEN_NONE
+      ? ENV_REFRESH_URGENCY_NORMAL
+      : ENV_REFRESH_URGENCY_HIGH;
+
+  const refreshGranted =
+    refreshRequested &&
+    scheduleEnvironmentRefresh(context, manager, refreshUrgency, frameState);
+
+  if (refreshGranted) {
     let sceneCaptureResult: SceneCaptureResultValue =
       SceneCaptureResult.SKY_ONLY;
     const hqOptions = resolveIBLHQOptions(cache, frameState);
+    const targetPool = getEnvironmentTargetPool(context);
     const encodingScope = createIBLCommandEncodingScope(
       device,
       "Dynamic Environment Map Refresh",
       getIBLRefreshParameterCapacity(hqOptions),
+      targetPool,
     );
     const refreshEncoder = encodingScope.encoder;
     try {
@@ -712,6 +844,7 @@ function updateWebGPUDynamicEnvironmentMap(
           frameState,
           includeGlobe,
           refreshEncoder,
+          targetPool,
         );
       }
       const wantTemporal =
@@ -738,6 +871,10 @@ function updateWebGPUDynamicEnvironmentMap(
       runIBLPrefilter(device, cache, frameState, hqOptions, encodingScope);
       runSphericalHarmonicProjection(device, cache, manager, refreshEncoder);
       submitIBLCommandEncodingScope(device, encodingScope);
+      // Only a real submission updates the drain's fairness anchor. A refresh
+      // that throws mid-encode simply re-requests next frame through the
+      // unchanged level-triggered predicate above.
+      noteEnvironmentRefreshSubmitted(context, manager);
     } finally {
       // Idempotent after submit; releases the arena if encoding throws and the
       // unfinished command encoder is intentionally abandoned.

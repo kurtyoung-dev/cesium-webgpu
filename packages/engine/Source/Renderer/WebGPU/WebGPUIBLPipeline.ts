@@ -28,6 +28,7 @@ import {
   sampler,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import type { PooledParameterBuffer } from "./WebGPUEnvironmentTargetPool.js";
 
 const IRRADIANCE_SIZE = 32;
 const RADIANCE_BASE_SIZE = 128;
@@ -84,12 +85,30 @@ interface IBLCommandEncodingScope {
   parameterCapacity: number;
   parameterCount: number;
   destroyed: boolean;
+  // C11-193 — when the arena came from the context-owned pool, teardown returns
+  // it instead of destroying it. `null` keeps the historical own-and-destroy
+  // lifetime for callers that have no pool (specs, standalone entry points).
+  parameterPool: IBLParameterArenaPool | null;
+  parameterHandle: PooledParameterBuffer | null;
+}
+
+/**
+ * C11-193 — minimal view of {@link WebGPUEnvironmentTargetPool} this module
+ * needs. Structural so the IBL pipeline keeps no dependency on the pool module.
+ */
+interface IBLParameterArenaPool {
+  acquireParameterBuffer(
+    byteLength: number,
+    label: string,
+  ): PooledParameterBuffer;
+  releaseParameterBuffer(handle: PooledParameterBuffer | null): void;
 }
 
 function createIBLCommandEncodingScope(
   device: GPUDevice,
   label: string,
   parameterCapacity = 64,
+  parameterPool: IBLParameterArenaPool | null = null,
 ): IBLCommandEncodingScope {
   const minimumAlignment =
     device.limits?.minUniformBufferOffsetAlignment ?? 256;
@@ -98,20 +117,30 @@ function createIBLCommandEncodingScope(
     Math.ceil(minimumAlignment / 16) * 16,
   );
   const capacity = Math.max(1, Math.ceil(parameterCapacity));
-  const parameterBytes = new ArrayBuffer(capacity * parameterAlignment);
+  const byteLength = capacity * parameterAlignment;
+  const parameterBytes = new ArrayBuffer(byteLength);
+  const parameterHandle =
+    parameterPool !== null
+      ? parameterPool.acquireParameterBuffer(byteLength, `${label} Parameters`)
+      : null;
   return {
     encoder: device.createCommandEncoder({ label }),
-    parameterBuffer: device.createBuffer({
-      label: `${label} Parameters`,
-      size: capacity * parameterAlignment,
-      usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    }),
+    parameterBuffer:
+      parameterHandle !== null
+        ? parameterHandle.buffer
+        : device.createBuffer({
+            label: `${label} Parameters`,
+            size: byteLength,
+            usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+          }),
     parameterBytes,
     parameterWords: new Uint32Array(parameterBytes),
     parameterAlignment,
     parameterCapacity: capacity,
     parameterCount: 0,
     destroyed: false,
+    parameterPool: parameterHandle !== null ? parameterPool : null,
+    parameterHandle,
   };
 }
 
@@ -145,6 +174,15 @@ function destroyIBLCommandEncodingScope(scope: IBLCommandEncodingScope): void {
     return;
   }
   scope.destroyed = true;
+  // C11-193 — returning to the pool is safe before submit: WebGPU keeps a
+  // buffer alive for commands already recorded against it unless `destroy()` is
+  // called, and the pool never destroys an entry used on the current frame.
+  if (scope.parameterPool !== null && scope.parameterHandle !== null) {
+    scope.parameterPool.releaseParameterBuffer(scope.parameterHandle);
+    scope.parameterHandle = null;
+    scope.parameterPool = null;
+    return;
+  }
   scope.parameterBuffer.destroy();
 }
 
@@ -823,6 +861,7 @@ export {
 
 export type {
   IBLCommandEncodingScope,
+  IBLParameterArenaPool,
   IBLPipelineCache,
   RadianceHQOptions,
   IBLPrefilterQuality,

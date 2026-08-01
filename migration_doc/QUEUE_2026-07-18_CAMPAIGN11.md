@@ -760,7 +760,7 @@ while a replacement is prepared.
 | C11-id | Canonical name / aliases | cluster | pri | workClass | effort | guide | wave |
 |---|---|---|---|---|---|---|---|
 | `C11-192` | WEBGPU-TERRAIN-SHADOW-UB-DEMAND-REALIZATION [do not allocate/upload per-tile shadow-cast UBs while no shadow pass demands them; first ON frame must remain complete] | terrain-imagery / shadows | P1 | perf/resource-lifetime | S–M | G2/G10 | **W1 — IMPLEMENTED / LANDED (Batch 775, 2026-08-01) / STATIC+OFF-RUNTIME GREEN / ON-PIXEL GATE OPEN** |
-| `C11-193` | WEBGPU-DYNAMIC-ENVIRONMENT-SHARED-KERNEL-JOB-SCHEDULER [one device-generation kernel pack; context-owned bounded refresh jobs; reuse targets; shared encoder/submission; retain per-probe regional/weather outputs] | models / atmosphere-sky / resource-prep | P0 | perf/architecture | L | G5/G8/G10 | **W1 — PARTIAL (LANDED Batch 776, 2026-08-01): BORROWED TILE MANAGER + SHARED REFRESH ENCODER/PACKED PARAMETER ARENA + OBSERVE-ONLY DEMAND LEDGER IMPLEMENTED; BOUNDED CONTEXT JOB DRAIN/TARGET POOL OPEN** |
+| `C11-193` | WEBGPU-DYNAMIC-ENVIRONMENT-SHARED-KERNEL-JOB-SCHEDULER [one device-generation kernel pack; context-owned bounded refresh jobs; reuse targets; shared encoder/submission; retain per-probe regional/weather outputs] | models / atmosphere-sky / resource-prep | P0 | perf/architecture | L | G5/G8/G10 | **W1 — PARTIAL (Batch 776 + IMPLEMENTED 2026-08-01): BORROWED TILE MANAGER + SHARED REFRESH ENCODER/PACKED PARAMETER ARENA + OBSERVE-ONLY DEMAND LEDGER (776); CONTEXT-OWNED BOUNDED JOB DRAIN (`WebGPUEnvironmentRefreshScheduler`) + PERSISTENT GENERATION-KEYED TARGET POOL (`WebGPUEnvironmentTargetPool`) IMPLEMENTED, 42/42 Node contracts + 12/12 mutations. Demand now sets PRIORITY ONLY — deferral is bounded at `MAX_DEFERRAL_FRAMES + 1` frames, unpublished managers are MANDATORY, and every deferral arms an `afterRender` resume. OPEN: MEASURED queue/submission credit (browser), the demand registry's remaining conservative visibility gates before PROVEN_NONE may mean anything stronger than "last", and a per-probe regional/weather output retention pass.** |
 | `C11-194` | WEBGPU-MODEL-SHARED-DEVICE-RESOURCES [reference-count immutable model BGL/layout/sampler/placeholder/default-view resources by device generation; keep mutable state model-local] | models / resource-lifetime | P1 | perf/architecture | M | G5/G10 | **W1 — PARTIAL (LANDED Batch 774, 2026-08-01): EXACT-DEVICE IMMUTABLE LAYOUT/DEFAULT POOLS IMPLEMENTED; CACHE GENERATION OWNERSHIP + TILE-CONTENT RECOVERY/DISPOSER GATE OPEN** |
 | `C11-195` | WEBGPU-MODEL-VIEW-LIGHT-DYNAMIC-UNIFORM-ARENA [replace direct per-model camera/light queue writes with dynamic-offset slices; retain per-view/RTE/capture/shadow-camera isolation] | models / scene-core | P0 | perf/architecture | L | G5/G10 | **W1 — PARTIAL (LANDED Batches 772/780, 2026-08-01): CAPTURE ARENA/RTE + UNCHANGED-WRITE SUPPRESSION IMPLEMENTED; MAIN CAMERA THEN MODEL/VIEW LIGHT DYNAMIC OFFSETS OPEN** |
 | `C11-196` | WEBGPU-MODEL-LAZY-PICK-DERIVATION [retain pick IDs; build/prewarm pick pipeline+command outside ordinary colour rendering and preserve synchronous first-pick fallback] | models / picking | P1 | perf | M | G5/G10 | **W1 — QUEUED / 20 EAGER PIPELINES OBSERVED** |
@@ -808,8 +808,12 @@ while a replacement is prepared.
 - `C11-193` also owns the selected-consumer demand registry. Its narrow
   discarded-manager slice is implemented: tile models borrow the tileset
   manager at construction without taking or destroying tileset ownership;
-  standalone models retain private ownership. The shared kernel/job scheduler
-  and demand registry remain open.
+  standalone models retain private ownership. The bounded job drain and the
+  persistent target pool are now implemented; the demand registry supplies
+  PRIORITY to that drain and must never gate a refresh — see the no-starvation
+  contract in `WebGPUEnvironmentRefreshScheduler`'s module docs and
+  `C11-REVIEW-2026-08-01` defect 3. Measured queue/submission credit remains
+  open, as does retaining per-probe regional/weather outputs.
 - `C11-194` now destroys the current per-model `_defaultPropertyTexture` with
   its other cache-owned defaults. Moving immutable defaults/layouts to
   per-device-generation shared ownership remains open.

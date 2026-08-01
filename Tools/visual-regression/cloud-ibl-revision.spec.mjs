@@ -61,9 +61,13 @@ test("the environment-map cache edge-triggers fills from cloud revisions", () =>
     /const cloudRevisionChanged\s*=\s*\(wantMarch\s*\|\|\s*cache\.lastUsedCloudMarch\)\s*&&\s*liveCloudRevision\s*!==\s*cache\.lastCloudRevision;/,
   );
 
+  // C11-193 (Batch 782) hoisted the dirty predicate into `refreshRequested` so
+  // the context-owned bounded drain can see the same condition the refresh body
+  // used to be inlined under. The block asserted below therefore spans the
+  // predicate AND the granted branch; the ordering contracts are unchanged.
   const fillBlock = sourceSection(
     manager,
-    "if (\n    cache.needsUpdate ||",
+    "const refreshRequested =\n    cache.needsUpdate ||",
     "// Expose cubemap + prefiltered IBL views for shader consumption.",
   );
   assert.match(fillBlock, /\|\|\s*cloudRevisionChanged\s*\|\|/);

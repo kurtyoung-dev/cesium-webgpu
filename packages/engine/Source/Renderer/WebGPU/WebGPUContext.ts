@@ -66,6 +66,16 @@ import {
   type WebGPUEnvironmentDemandValue,
 } from "./WebGPUEnvironmentDemandRegistry.js";
 import {
+  WebGPUEnvironmentRefreshScheduler,
+  type WebGPUEnvironmentRefreshDecisionValue,
+  type WebGPUEnvironmentRefreshTelemetry,
+  type WebGPUEnvironmentRefreshUrgencyValue,
+} from "./WebGPUEnvironmentRefreshScheduler.js";
+import {
+  WebGPUEnvironmentTargetPool,
+  type WebGPUEnvironmentTargetPoolTelemetry,
+} from "./WebGPUEnvironmentTargetPool.js";
+import {
   WebGPUViewportQuad,
   type ViewportQuadCommand,
   type ViewportQuadCommandOptions,
@@ -578,6 +588,16 @@ export class WebGPUContext extends GraphicsContext {
   // gate refresh work in this slice; it establishes conservative admission
   // semantics and evidence for the later context-owned bounded job scheduler.
   private _environmentDemandRegistry = new WebGPUEnvironmentDemandRegistry();
+  // C11-193 — context-owned bounded refresh drain. It may reorder and bound
+  // environment-refresh work; it may never drop it. See the module docs for the
+  // no-starvation contract the 2026-08-01 review defect established.
+  private _environmentRefreshScheduler =
+    new WebGPUEnvironmentRefreshScheduler();
+  // C11-193 — persistent, generation-keyed pool for the refresh path's
+  // transient parameter arenas and capture depth targets. Lazily created on
+  // first use so a context that never runs a dynamic environment map (and a
+  // failed device create) pays nothing.
+  private _environmentTargetPool: WebGPUEnvironmentTargetPool | null = null;
   // Public underscore: shared with the frame-statistics extract (Batch 144).
   public _samplerCache: Map<string, GPUSampler> = new Map();
   public _bindGroupLayoutCache: Map<string, GPUBindGroupLayout> = new Map();
@@ -2029,6 +2049,18 @@ export class WebGPUContext extends GraphicsContext {
     this._triangleCount = 0;
     this._frameCount++;
     this._environmentDemandRegistry.beginFrame(this._deviceResourceGeneration);
+    // C11-193 — advance the bounded refresh drain and re-anchor the target pool
+    // on the current device generation before any producer can request work.
+    this._environmentRefreshScheduler.beginFrame(
+      this._deviceResourceGeneration,
+    );
+    if (this._environmentTargetPool !== null) {
+      this._environmentTargetPool.beginFrame(
+        this._frameCount,
+        this._device,
+        this._deviceResourceGeneration,
+      );
+    }
     this._clearCallsThisFrame = 0;
     this._clearOverflowWarned = false;
     this._shadowReceiveUniformRefreshes.length = 0;
@@ -2055,6 +2087,10 @@ export class WebGPUContext extends GraphicsContext {
     this._internalFrameId++;
     if (this._internalFrameId % WebGPUContext.IDLE_DECAY_CHECK_INTERVAL === 0) {
       this._reapIdleAuxCullers();
+      // C11-193 — same amortized cadence for the environment target pool. The
+      // trim refuses to destroy anything used on the current frame, so it can
+      // never race a recorded-but-unsubmitted command.
+      this._environmentTargetPool?.trim(this._frameCount);
     }
 
     // Create command encoder for this frame
@@ -4765,6 +4801,9 @@ export class WebGPUContext extends GraphicsContext {
     // C9-12A — drop any undelivered imagery mip jobs on teardown.
     this._pendingImageryMipJobs.length = 0;
     this._environmentDemandRegistry.reset(this._deviceResourceGeneration);
+    this._environmentRefreshScheduler.reset(this._deviceResourceGeneration);
+    this._environmentTargetPool?.destroy();
+    this._environmentTargetPool = null;
 
     this._shaderCache.destroy();
     const textureCache = this._textureCache as { destroy?: () => void };
@@ -5734,6 +5773,80 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
+   * C11-193 bounded-drain admission seam.
+   *
+   * Returns `"run"` when the caller must perform the refresh this frame, or
+   * `"defer"` when it must skip the refresh, commit NO bookkeeping (so its
+   * level-triggered dirty predicate re-fires unchanged), and arm the resume
+   * path via {@link WebGPUContext#consumeEnvironmentRefreshResume}.
+   *
+   * Deferral is bounded: after `MAX_DEFERRAL_FRAMES` consecutive deferrals a
+   * request escalates to MANDATORY and runs regardless of budget. Callers whose
+   * consumers have no valid published resource must request MANDATORY directly.
+   */
+  scheduleEnvironmentRefresh(
+    manager: object,
+    urgency: WebGPUEnvironmentRefreshUrgencyValue,
+  ): WebGPUEnvironmentRefreshDecisionValue {
+    return this._environmentRefreshScheduler.requestRefresh(manager, urgency);
+  }
+
+  /** Record that a granted refresh actually reached `queue.submit`. */
+  noteEnvironmentRefreshSubmitted(manager: object): void {
+    this._environmentRefreshScheduler.noteRefreshSubmitted(manager);
+  }
+
+  /**
+   * True exactly once per frame, for the first deferral of that frame. A
+   * `requestRenderMode` scene MUST turn this into a render request, otherwise
+   * deferred refresh work has no frame to resume on.
+   */
+  consumeEnvironmentRefreshResume(): boolean {
+    return this._environmentRefreshScheduler.consumeResumeRequest();
+  }
+
+  /** True while at least one deferred refresh is still owed a frame. */
+  hasPendingEnvironmentRefreshWork(): boolean {
+    return this._environmentRefreshScheduler.hasPendingWork();
+  }
+
+  /**
+   * Context-owned persistent pool for the environment refresh path's transient
+   * parameter arenas and capture depth targets. Created on first use and always
+   * anchored to the current `(device, resourceGeneration)` pair.
+   */
+  getEnvironmentTargetPool(): WebGPUEnvironmentTargetPool | null {
+    if (!this._device || this._isDeviceUnavailable) {
+      return null;
+    }
+    if (this._environmentTargetPool === null) {
+      this._environmentTargetPool = new WebGPUEnvironmentTargetPool(
+        this._device,
+        this._deviceResourceGeneration,
+      );
+    } else {
+      // Producers can reach the pool outside `beginFrame` (compute-only /
+      // offscreen paths). Re-anchor here too so a recovered device can never
+      // hand out an object created for the lost one.
+      this._environmentTargetPool.adopt(
+        this._device,
+        this._deviceResourceGeneration,
+      );
+    }
+    return this._environmentTargetPool;
+  }
+
+  /** Allocation-bearing debug snapshot; never used to gate renderer work. */
+  getEnvironmentRefreshStats(): WebGPUEnvironmentRefreshTelemetry {
+    return this._environmentRefreshScheduler.getTelemetry();
+  }
+
+  /** Allocation-bearing debug snapshot; never used to gate renderer work. */
+  getEnvironmentTargetPoolStats(): WebGPUEnvironmentTargetPoolTelemetry | null {
+    return this._environmentTargetPool?.getTelemetry() ?? null;
+  }
+
+  /**
    * Phase 6 debug surface — overrides {@link GraphicsContext#getRendererStatistics}
    * to expose WebGPU-specific introspection: bundle cache state, fog
    * froxel grid state, GPU memory pool usage, indirect draw counters,
@@ -5862,6 +5975,16 @@ export class WebGPUContext extends GraphicsContext {
     stats.environmentMapDemand = {
       ...this._environmentDemandRegistry.getTelemetry(),
     };
+    // C11-193 — bounded-drain + target-pool credit. `deferred` with a zero
+    // `maxDeferredFramesObserved` past the cap is the healthy shape; a non-zero
+    // `staleReleases` after a recovery is expected exactly once per borrower.
+    stats.environmentRefreshDrain = {
+      ...this._environmentRefreshScheduler.getTelemetry(),
+    };
+    const environmentPoolStats = this._environmentTargetPool?.getTelemetry();
+    if (environmentPoolStats) {
+      stats.environmentTargetPool = { ...environmentPoolStats };
+    }
     const ppCacheSource = this._postProcessCacheStatsSource;
     if (ppCacheSource && !ppCacheSource.isDestroyed) {
       try {
@@ -6533,6 +6656,18 @@ export class WebGPUContext extends GraphicsContext {
     // mistake "same format" for "same resource lifetime".
     this._deviceResourceGeneration += 1;
     this._environmentDemandRegistry.reset(this._deviceResourceGeneration);
+    // C11-193 — every queued refresh described work against the lost device.
+    // Drop the queue; each producer re-derives a MANDATORY post-recovery
+    // request from its own invalidated cache, so nothing is lost. The pool
+    // destroys its entire cache for the old generation before it can hand out
+    // an object the replacement device cannot use.
+    this._environmentRefreshScheduler.reset(this._deviceResourceGeneration);
+    if (this._environmentTargetPool !== null && this._device) {
+      this._environmentTargetPool.adopt(
+        this._device,
+        this._deviceResourceGeneration,
+      );
+    }
 
     // C-R12 (Batch 33) — fire the invalidation event so every
     // subscribed subsystem / feature renderer / per-object cache
