@@ -6512,8 +6512,9 @@ framebuffer and resolves `undefined` rather than throwing. Full parity needs a
 WebGPU RGBA32F snap target + snap pipeline variant in the pick pass family.
 
 **Acceptance:** `Scene.snap` returns equivalent hits on both backends for the
-upstream multifrustum snapping Sandcastle scene, or a documented maintainer
-ruling records the API as WebGL-only.
+upstream multifrustum snapping Sandcastle scene. Maintainer ruling 2026-08-01:
+WebGPU implementation REQUIRED (the WebGL-only option was rejected); scheduled
+as Campaign 11 row `C11-212` (W7 parity wave).
 
 ### UP144-VECTOR-LAYER-WGSL — clamped vector-tile polylines WGSL twin
 
@@ -6528,8 +6529,9 @@ and `VectorTileData` GPU textures are created through the WebGL texture path
 only. SHADER_PAIRS_LOCKSTEP applies once the WGSL twin lands.
 
 **Acceptance:** a draped BufferPolylineCollection renders on both backends in
-the split-screen probe with matching line placement, or the feature is
-recorded as WebGL-only by maintainer ruling.
+the split-screen probe with matching line placement. Maintainer ruling
+2026-08-01: WGSL twin REQUIRED (the WebGL-only option was rejected); scheduled
+as Campaign 11 row `C11-213` (W7 parity wave).
 
 ### UP144-MODEL-READY-ZERO-PRIM-SPEC — zero-primitive readiness regression spec
 
