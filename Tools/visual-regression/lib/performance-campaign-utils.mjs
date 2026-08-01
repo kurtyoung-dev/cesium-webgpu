@@ -748,7 +748,106 @@ const representativeWorkloadFingerprintMetricNames = Object.freeze([
   "tilesetSelectionIdentityB",
   "tilesetSelectionCountMismatch",
   "tilesetUnidentifiedSelected",
+  // C11-205 ready-tile identity. Must stay byte-identical, and in the same
+  // order, as `representativeFingerprintMetricNames` in
+  // `representative-performance-content.mjs` — the per-metric hash salt is the
+  // array index, so a reordering silently re-bases every signature.
+  "tilesetsWithReadyContent",
+  "tilesetContentReady",
+  "tilesetReadyIdentityA",
+  "tilesetReadyIdentityB",
+  "tilesetReadyCountMismatch",
+  "tilesetUnidentifiedReady",
 ]);
+
+/**
+ * Identity-bearing metric groups.
+ *
+ * The single per-frame signature already fails a pair whose work differed, but
+ * "the signature differs" is not an answer to WHICH renderer did different
+ * work. Each group is therefore compared metric-by-metric so a rejection names
+ * the set that diverged, and each group declares the completeness metrics that
+ * must be zero for its identities to mean anything at all.
+ */
+const representativeWorkloadIdentityGroups = Object.freeze([
+  Object.freeze({
+    key: "terrainSelection",
+    label: "terrain selection",
+    counts: Object.freeze(["terrainTilesToRender", "terrainMeshTiles"]),
+    identityA: "terrainSelectionIdentityA",
+    identityB: "terrainSelectionIdentityB",
+    completeness: Object.freeze([
+      Object.freeze({
+        metric: "terrainUnidentifiedTiles",
+        description: "terrain tiles without an x/y/level identity",
+      }),
+    ]),
+  }),
+  Object.freeze({
+    key: "directModel",
+    label: "direct model",
+    counts: Object.freeze([
+      "directModelInstancesConfigured",
+      "directModelInstancesReady",
+    ]),
+    identityA: "directModelIdentityA",
+    identityB: "directModelIdentityB",
+    completeness: Object.freeze([]),
+  }),
+  Object.freeze({
+    key: "tilesetSelected",
+    label: "3D Tiles selected",
+    counts: Object.freeze(["tilesetsWithSelection", "tilesetSelected"]),
+    identityA: "tilesetSelectionIdentityA",
+    identityB: "tilesetSelectionIdentityB",
+    completeness: Object.freeze([
+      Object.freeze({
+        metric: "tilesetUnidentifiedSelected",
+        description: "selected tiles without a path identity",
+      }),
+      Object.freeze({
+        metric: "tilesetSelectionCountMismatch",
+        description:
+          "disagreement between statistics.selected and the _selectedTiles set",
+      }),
+    ]),
+  }),
+  Object.freeze({
+    key: "tilesetReady",
+    label: "3D Tiles ready",
+    counts: Object.freeze(["tilesetsWithReadyContent", "tilesetContentReady"]),
+    identityA: "tilesetReadyIdentityA",
+    identityB: "tilesetReadyIdentityB",
+    completeness: Object.freeze([
+      Object.freeze({
+        metric: "tilesetUnidentifiedReady",
+        description: "resident ready tiles without a path identity",
+      }),
+      Object.freeze({
+        metric: "tilesetReadyCountMismatch",
+        description:
+          "disagreement between statistics.numberOfTilesWithContentReady and the resident ready set",
+      }),
+    ]),
+  }),
+]);
+
+function fingerprintMetricsAgree(left, right, name) {
+  const leftMetric = left?.[name];
+  const rightMetric = right?.[name];
+  return (
+    leftMetric?.total === rightMetric?.total &&
+    leftMetric?.min === rightMetric?.min &&
+    leftMetric?.max === rightMetric?.max
+  );
+}
+
+function describeFingerprintMetric(metrics, name) {
+  const metric = metrics?.[name];
+  return `total ${metric?.total ?? "n/a"} min ${metric?.min ?? "n/a"} max ${
+    metric?.max ?? "n/a"
+  }`;
+}
 
 function hasValidFingerprintMetrics(metrics) {
   return representativeWorkloadFingerprintMetricNames.every((name) => {
@@ -780,10 +879,29 @@ function validateRepresentativeWorkloadFingerprint(
         0,
       )
     : 0;
-  const identitiesComplete =
-    fingerprint?.metrics?.terrainUnidentifiedTiles?.max === 0 &&
-    fingerprint?.metrics?.tilesetSelectionCountMismatch?.max === 0 &&
-    fingerprint?.metrics?.tilesetUnidentifiedSelected?.max === 0;
+  // Every identity-bearing group states the defects that would make its hashes
+  // meaningless. Reporting them individually is the difference between "this
+  // pair is not comparable" and an answer a maintainer can act on. The detail
+  // is only emitted once the metric block is structurally sound; on a missing
+  // or malformed fingerprint the umbrella reason below is the honest one.
+  const metricsWellFormed = hasValidFingerprintMetrics(fingerprint?.metrics);
+  const identityDefects = [];
+  for (const group of representativeWorkloadIdentityGroups) {
+    for (const entry of group.completeness) {
+      const metric = fingerprint?.metrics?.[entry.metric];
+      if (metric?.max !== 0) {
+        identityDefects.push(
+          `${label} resident ${group.label} identity is incomplete: ` +
+            `${entry.metric} (${entry.description}) reached ` +
+            `${metric?.max ?? "an unreported value"} on a replay frame`,
+        );
+      }
+    }
+  }
+  const identitiesComplete = identityDefects.length === 0;
+  if (metricsWellFormed) {
+    reasons.push(...identityDefects);
+  }
   // `causal` must be decomposed into the two facts that produce it, otherwise
   // a single boolean restating the workload's configured terrain mode would
   // again certify the replay rather than the timed window it stands in for.
@@ -819,7 +937,7 @@ function validateRepresentativeWorkloadFingerprint(
     fingerprint.frameCount === expectedFrames &&
     signaturePattern.test(fingerprint?.signature) &&
     fingerprint?.invalidSampleCount === 0 &&
-    hasValidFingerprintMetrics(fingerprint?.metrics) &&
+    metricsWellFormed &&
     segmentsValid &&
     segmentFrameCount === fingerprint.frameCount &&
     identitiesComplete &&
@@ -832,10 +950,44 @@ function validateRepresentativeWorkloadFingerprint(
   return valid;
 }
 
+/**
+ * Name the first replay frame on which the attribution-only 3D Tiles lifecycle
+ * diagnostics saw the two legs hold different ready sets, and the first tile
+ * identity that differed.
+ *
+ * This can only ever ENRICH a rejection the ordinary fingerprint already
+ * produced. The diagnostics are opt-in and explicitly non-certifying, so their
+ * absence must never soften a rejection and their presence must never create
+ * comparability — hence a plain `null` when they are missing rather than a
+ * fallback that would make the reason read as if it had been checked.
+ */
+function describeFirstDivergentReadyIdentity(tilesetLifecycle) {
+  const mismatch =
+    tilesetLifecycle?.available === true
+      ? tilesetLifecycle.comparison?.firstReadyMismatch
+      : null;
+  if (!mismatch) {
+    return null;
+  }
+  return {
+    frameIndex: mismatch.frameIndex ?? null,
+    segmentIndex: mismatch.segmentIndex ?? null,
+    routeProgress: mismatch.routeProgress ?? null,
+    webglCount: mismatch.webglCount ?? null,
+    webgpuCount: mismatch.webgpuCount ?? null,
+    firstWebglOnlyIdentity: mismatch.webglOnly?.identities?.[0] ?? null,
+    firstWebgpuOnlyIdentity: mismatch.webgpuOnly?.identities?.[0] ?? null,
+    webglOnlyCount: mismatch.webglOnly?.total ?? null,
+    webgpuOnlyCount: mismatch.webgpuOnly?.total ?? null,
+    source: "attribution-only-tileset-lifecycle-diagnostics",
+  };
+}
+
 function compareRepresentativeWorkloadFingerprints(
   webglRun,
   webgpuRun,
   reasons,
+  tilesetLifecycle = null,
 ) {
   const webgl = readRepresentativeWorkloadFingerprint(webglRun);
   const webgpu = readRepresentativeWorkloadFingerprint(webgpuRun);
@@ -853,6 +1005,8 @@ function compareRepresentativeWorkloadFingerprints(
   );
 
   const segmentComparisons = [];
+  const identityGroupComparisons = [];
+  let firstDivergentReadyIdentity = null;
   let signatureMatch = false;
   if (webglValid && webgpuValid) {
     signatureMatch = webgl.signature === webgpu.signature;
@@ -868,6 +1022,109 @@ function compareRepresentativeWorkloadFingerprints(
     const webgpuSegments = new Map(
       webgpu.segments.map((segment) => [segment.segmentIndex, segment]),
     );
+    for (const group of representativeWorkloadIdentityGroups) {
+      const groupMetricNames = [
+        ...group.counts,
+        group.identityA,
+        group.identityB,
+      ];
+      const differingMetrics = groupMetricNames.filter(
+        (name) => !fingerprintMetricsAgree(webgl.metrics, webgpu.metrics, name),
+      );
+      // Find the first segment that disagrees so a long route reports where the
+      // sets parted rather than only that they did.
+      let firstDivergentSegmentIndex = null;
+      for (const webgpuSegment of webgpu.segments) {
+        const webglSegment = webglSegments.get(webgpuSegment.segmentIndex);
+        const segmentDiffers = groupMetricNames.some(
+          (name) =>
+            !fingerprintMetricsAgree(
+              webglSegment?.metrics,
+              webgpuSegment?.metrics,
+              name,
+            ),
+        );
+        if (segmentDiffers) {
+          firstDivergentSegmentIndex = webgpuSegment.segmentIndex;
+          break;
+        }
+      }
+      const identityAMatch = fingerprintMetricsAgree(
+        webgl.metrics,
+        webgpu.metrics,
+        group.identityA,
+      );
+      const identityBMatch = fingerprintMetricsAgree(
+        webgl.metrics,
+        webgpu.metrics,
+        group.identityB,
+      );
+      const comparison = {
+        key: group.key,
+        label: group.label,
+        match: differingMetrics.length === 0,
+        identityAMatch,
+        identityBMatch,
+        // The whole point of carrying two algebraically independent hashes: if
+        // exactly one of them matches, the matching one collided and would
+        // have validated a set the other rejects.
+        collisionCaughtBySecondConstruction: identityAMatch !== identityBMatch,
+        differingMetrics,
+        firstDivergentSegmentIndex,
+        metrics: Object.fromEntries(
+          groupMetricNames.map((name) => [
+            name,
+            {
+              webgl: webgl.metrics?.[name] ?? null,
+              webgpu: webgpu.metrics?.[name] ?? null,
+              match: fingerprintMetricsAgree(
+                webgl.metrics,
+                webgpu.metrics,
+                name,
+              ),
+            },
+          ]),
+        ),
+      };
+      if (group.key === "tilesetReady" && !comparison.match) {
+        firstDivergentReadyIdentity =
+          describeFirstDivergentReadyIdentity(tilesetLifecycle);
+        comparison.firstDivergentIdentity = firstDivergentReadyIdentity;
+      }
+      identityGroupComparisons.push(comparison);
+
+      if (!comparison.match) {
+        for (const name of differingMetrics) {
+          reasons.push(
+            `resident ${group.label} identity differs between renderer legs: ` +
+              `${name} WebGL ${describeFingerprintMetric(webgl.metrics, name)} ` +
+              `vs WebGPU ${describeFingerprintMetric(webgpu.metrics, name)}` +
+              (firstDivergentSegmentIndex === null
+                ? ""
+                : ` (first divergent route segment ${firstDivergentSegmentIndex})`),
+          );
+        }
+        if (comparison.collisionCaughtBySecondConstruction) {
+          reasons.push(
+            `resident ${group.label} identity hashes disagree asymmetrically ` +
+              `(${group.identityA} match=${identityAMatch}, ${group.identityB} ` +
+              `match=${identityBMatch}) — one construction collided and the ` +
+              `second refused it`,
+          );
+        }
+        if (firstDivergentReadyIdentity) {
+          reasons.push(
+            `first divergent resident ready tile (attribution-only lifecycle ` +
+              `evidence, replay frame ${firstDivergentReadyIdentity.frameIndex}, ` +
+              `segment ${firstDivergentReadyIdentity.segmentIndex}): ` +
+              `WebGL-only ${firstDivergentReadyIdentity.firstWebglOnlyIdentity ?? "none"} / ` +
+              `WebGPU-only ${firstDivergentReadyIdentity.firstWebgpuOnlyIdentity ?? "none"} ` +
+              `(${firstDivergentReadyIdentity.webglCount}/${firstDivergentReadyIdentity.webgpuCount} ready)`,
+          );
+        }
+      }
+    }
+
     const segmentIndexes = [
       ...new Set([...webglSegments.keys(), ...webgpuSegments.keys()]),
     ].sort((left, right) => left - right);
@@ -906,11 +1163,23 @@ function compareRepresentativeWorkloadFingerprints(
     }
   }
 
+  const readyIdentity =
+    identityGroupComparisons.find(
+      (comparison) => comparison.key === "tilesetReady",
+    ) ?? null;
   return {
     webgl: summarizeRepresentativeWorkloadFingerprint(webgl),
     webgpu: summarizeRepresentativeWorkloadFingerprint(webgpu),
     signatureMatch,
     segmentComparisons,
+    identityGroups: identityGroupComparisons,
+    // Promoted to the top of the block because "were the ready sets identical"
+    // is the question that gates every causal resident timing claim. `false`
+    // when the legs disagreed, `null` when neither leg produced a valid
+    // fingerprint to compare — the two are not the same and must not read the
+    // same in the report.
+    readyIdentityMatch: readyIdentity ? readyIdentity.match : null,
+    firstDivergentReadyIdentity,
   };
 }
 
@@ -1526,15 +1795,19 @@ export function assessRepresentativePairComparability(
   if (!webglDelta || !webgpuDelta) {
     reasons.push("representative terrain activity is missing");
   }
+  // Computed first so a ready-set rejection can name the tile that diverged.
+  // It is passed in as attribution only: the fingerprint comparison rejects on
+  // its own evidence and never consults this to pass.
+  const tilesetLifecycle =
+    compareRepresentativeTilesetLifecycleDiagnostics(webglRun, webgpuRun);
   const workloadFingerprint = causalRendererComparison
     ? compareRepresentativeWorkloadFingerprints(
         webglRun,
         webgpuRun,
         reasons,
+        tilesetLifecycle,
       )
     : null;
-  const tilesetLifecycle =
-    compareRepresentativeTilesetLifecycleDiagnostics(webglRun, webgpuRun);
 
   const requestDeltaRatio = symmetricDeltaRatio(
     webglDelta?.requestCount,

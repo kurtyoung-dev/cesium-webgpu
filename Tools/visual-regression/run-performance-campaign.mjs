@@ -4954,6 +4954,16 @@ try {
         return pairRecord;
       });
       const validPairs = pairs.filter((pair) => pair.valid);
+      // C11-205: ready-tile identity is now an ordinary member of the resident
+      // fingerprint, so a pair whose 3D Tiles ready sets differed is already
+      // excluded above. It is surfaced separately here because "the legs did
+      // not have the same tiles resident" is the one exclusion a reader must
+      // not mistake for run-to-run noise — it is the reason the timing numbers
+      // in this report cannot carry a causal claim.
+      const readySetExcludedPairs = pairs.filter(
+        (pair) =>
+          pair.metrics?.workloadFingerprint?.readyIdentityMatch === false,
+      );
       const certificationEligiblePairs = validPairs.filter(
         (pair) => pair.certificationEligible,
       );
@@ -4996,6 +5006,11 @@ try {
           `counterbalanced order coverage fell below ${minimumPairsPerOrder} comparable pairs per order`,
         );
       }
+      if (readySetExcludedPairs.length > 0) {
+        closureReasons.push(
+          `${readySetExcludedPairs.length}/${pairs.length} pairs held different 3D Tiles ready sets, so no causal renderer timing claim can be made from this workload`,
+        );
+      }
       report.representativePairSummaries[workload.id] = {
         valid: closureReasons.length === 0,
         status: attributionOnlyCampaign
@@ -5018,6 +5033,13 @@ try {
           validPairs: validPairs.length,
           certificationEligiblePairs: certificationEligiblePairs.length,
           orderCounts,
+          readySetExcludedPairs: readySetExcludedPairs.map((pair) => ({
+            repetition: pair.repetition,
+            order: pair.order,
+            firstDivergentReadyIdentity:
+              pair.metrics?.workloadFingerprint?.firstDivergentReadyIdentity ??
+              null,
+          })),
         },
         pairs,
       };

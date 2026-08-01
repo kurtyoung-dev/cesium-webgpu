@@ -612,6 +612,26 @@ const tilesetLifecycleEventLimit = 4096;
 const tilesetLifecycleFrameLimit = 2048;
 const tilesetLifecycleIdentityListLimit = 128;
 
+/**
+ * Membership test for the resident 3D Tiles content set.
+ *
+ * This mirrors the exact condition under which the engine increments
+ * `statistics.numberOfTilesWithContentReady` (`Cesium3DTile.process`): content
+ * that actually loaded, excluding empty, external-tileset, and implicit
+ * placeholder tiles. Keeping one predicate matters because the certifying
+ * workload fingerprint and the attribution-only lifecycle diagnostics are read
+ * together — a rejection produced from one definition must never be explained
+ * with identities collected under a different one.
+ */
+export function isRepresentativeContentReadyTile(tile) {
+  return (
+    tile?.contentReady === true &&
+    tile.hasEmptyContent !== true &&
+    tile.hasTilesetContent !== true &&
+    tile.hasImplicitContent !== true
+  );
+}
+
 function createRepresentativeTileIdentityRegistry(tilesets) {
   const identities = new WeakMap();
 
@@ -1018,9 +1038,7 @@ export function createRepresentativeTilesetLifecycleTracker(
         const allTiles = [];
         collectRepresentativeTiles(tileset?._root, allTiles);
         const ready = allTiles
-          .filter(
-            (tile) => tile.contentReady === true && tile.hasEmptyContent !== true,
-          )
+          .filter(isRepresentativeContentReadyTile)
           .map((tile) => identities.get(tile)?.id ?? "unidentified")
           .sort();
         const selectedTiles = tileset?._selectedTiles || [];
@@ -1150,11 +1168,30 @@ const representativeFingerprintMetricNames = Object.freeze([
   "tilesetSelectionIdentityB",
   "tilesetSelectionCountMismatch",
   "tilesetUnidentifiedSelected",
+  // C11-205 ready-tile identity. Selection alone cannot establish that two
+  // renderer legs did the same work: the SF pair that failed on 2026-07-31 had
+  // 710/571 ready tiles behind 15/12 selected. Ready identity is therefore an
+  // ordinary member of the post-measurement fingerprint, not opt-in evidence.
+  // Append-only — the per-metric hash salt is the array index.
+  "tilesetsWithReadyContent",
+  "tilesetContentReady",
+  "tilesetReadyIdentityA",
+  "tilesetReadyIdentityB",
+  "tilesetReadyCountMismatch",
+  "tilesetUnidentifiedReady",
 ]);
 
 const fingerprintHashSeedA = 0x811c9dc5;
 const fingerprintHashSeedB = 0x9e3779b9;
 const fingerprintHashPrime = 0x01000193;
+// Odd seed for the multiplicative ready-set hash. Odd residues mod 2^32 form a
+// group under `Math.imul`, so the product can neither absorb to zero nor lose
+// earlier factors however many tiles are folded in.
+const fingerprintMultiplicativeSeed = 0x27d4eb2f;
+// A malformed or cyclic tile graph must not be able to wedge the untimed
+// replay. Truncating the walk leaves ready tiles unidentified, which the
+// count-vs-set gate rejects — it never certifies a partial set.
+const representativeTileWalkNodeLimit = 131072;
 
 function mixFingerprintInteger(hash, value) {
   let result = hash >>> 0;
@@ -1319,41 +1356,67 @@ export function createRepresentativeEvidenceTracker(
   const tilesetsWithCommands = new Set();
   const tilesetsWithSelection = new Set();
   const tilesetsWithReadyContent = new Set();
-  const selectedTileIdentities = new WeakMap();
-  const cacheSelectedTileIdentities = (
-    tile,
-    tilesetIndex,
-    pathHashA,
-    pathHashB,
-  ) => {
-    if (!tile || selectedTileIdentities.has(tile)) return;
-    selectedTileIdentities.set(tile, {
-      a: mixFingerprintInteger(
-        mixFingerprintInteger(fingerprintHashSeedA, tilesetIndex),
-        pathHashA,
-      ),
-      b: mixFingerprintInteger(
-        mixFingerprintInteger(fingerprintHashSeedB, tilesetIndex),
-        pathHashB,
-      ),
-    });
-    const children = tile.children || [];
-    for (let childIndex = 0; childIndex < children.length; childIndex++) {
-      cacheSelectedTileIdentities(
-        children[childIndex],
-        tilesetIndex,
-        mixFingerprintInteger(pathHashA, childIndex + 1),
-        mixFingerprintInteger(pathHashB, children.length - childIndex),
-      );
+  const tileIdentities = new WeakMap();
+  // Both path recurrences are pure functions of (tilesetIndex, child-index
+  // path), so the same tile earns the same identity on both renderer legs and
+  // at any point during subtree loading. The B recurrence deliberately does NOT
+  // read `children.length`: 3D Tiles children materialize as subtrees load, so
+  // a sibling-count-dependent hash would give one tile two identities on two
+  // legs that first observed it at different load states, and a false ready-set
+  // rejection is just as wrong an answer as a false pass.
+  const childPathHashA = (pathHash, childIndex) =>
+    mixFingerprintInteger(pathHash, childIndex + 1);
+  const childPathHashB = (pathHash, childIndex, depth) =>
+    mixFingerprintInteger(
+      pathHash,
+      (Math.imul(childIndex + 1, 0x85ebca6b) ^ (depth + 1)) >>> 0,
+    );
+  // Re-walked on every sampled frame rather than only at construction, because
+  // a tile that appeared after construction would otherwise be permanently
+  // unidentified.
+  const refreshTilesetTileIdentities = (tilesetIndex) => {
+    const root = assets.tilesets[tilesetIndex]?._root;
+    if (!root) {
+      return;
+    }
+    const rootPathHash = tilesetIndex + 1;
+    const stack = [
+      {
+        tile: root,
+        pathHashA: rootPathHash,
+        pathHashB: rootPathHash,
+        depth: 0,
+      },
+    ];
+    let visited = 0;
+    while (stack.length > 0 && visited < representativeTileWalkNodeLimit) {
+      const entry = stack.pop();
+      visited++;
+      tileIdentities.set(entry.tile, {
+        a: mixFingerprintInteger(
+          mixFingerprintInteger(fingerprintHashSeedA, tilesetIndex),
+          entry.pathHashA,
+        ),
+        b: mixFingerprintInteger(
+          mixFingerprintInteger(fingerprintHashSeedB, tilesetIndex),
+          entry.pathHashB,
+        ),
+      });
+      const children = entry.tile.children || [];
+      for (let childIndex = 0; childIndex < children.length; childIndex++) {
+        const child = children[childIndex];
+        if (!child) continue;
+        stack.push({
+          tile: child,
+          pathHashA: childPathHashA(entry.pathHashA, childIndex),
+          pathHashB: childPathHashB(entry.pathHashB, childIndex, entry.depth),
+          depth: entry.depth + 1,
+        });
+      }
     }
   };
   for (let index = 0; index < assets.tilesets.length; index++) {
-    cacheSelectedTileIdentities(
-      assets.tilesets[index]._root,
-      index,
-      index + 1,
-      index + 1,
-    );
+    refreshTilesetTileIdentities(index);
   }
   const workloadFingerprint =
     createRepresentativeWorkloadFingerprintAccumulator();
@@ -1374,6 +1437,12 @@ export function createRepresentativeEvidenceTracker(
     tilesetSelectionIdentityB: 0,
     tilesetSelectionCountMismatch: 0,
     tilesetUnidentifiedSelected: 0,
+    tilesetsWithReadyContent: 0,
+    tilesetContentReady: 0,
+    tilesetReadyIdentityA: 0,
+    tilesetReadyIdentityB: 0,
+    tilesetReadyCountMismatch: 0,
+    tilesetUnidentifiedReady: 0,
   };
   const terrainDiagnosticsStart = terrain.snapshotDiagnostics();
   const evidence = {
@@ -1456,13 +1525,69 @@ export function createRepresentativeEvidenceTracker(
         directModelIdentityB = (directModelIdentityB + identity.b) >>> 0;
       }
 
+      // Readiness is the seam C11-205 exists to close, so it is measured from
+      // three sources the engine maintains independently of each other: the
+      // scalar `numberOfTilesWithContentReady` counter, the resident-content
+      // cache list, and the tile graph the path identities are derived from.
+      // A disagreement between any two of them is reported, never reconciled.
+      //
+      // Both aggregations are order-independent by construction because the
+      // cache list is ordered by selection recency, which legitimately differs
+      // between legs. They are also algebraically independent of each other —
+      // an additive multiset hash over path hash A and a multiplicative one
+      // over path hash B — so a collision in one cannot silently validate a
+      // ready set that the other rejects.
       let tilesetsWithSelectionThisFrame = 0;
+      let tilesetsWithReadyContentThisFrame = 0;
       let tilesetSelected = 0;
       let tilesetSelectionIdentityA = 0;
       let tilesetSelectionIdentityB = 0;
       let tilesetSelectionCountMismatch = 0;
       let tilesetUnidentifiedSelected = 0;
-      for (const tileset of assets.tilesets) {
+      let tilesetContentReady = 0;
+      let tilesetReadyIdentityA = 0;
+      let tilesetReadyIdentityB = fingerprintMultiplicativeSeed;
+      let tilesetReadyCountMismatch = 0;
+      let tilesetUnidentifiedReady = 0;
+      for (
+        let tilesetIndex = 0;
+        tilesetIndex < assets.tilesets.length;
+        tilesetIndex++
+      ) {
+        const tileset = assets.tilesets[tilesetIndex];
+        refreshTilesetTileIdentities(tilesetIndex);
+
+        let readyThisTileset = 0;
+        let cacheNode = tileset._cache?._list?.head;
+        let visitedCacheNodes = 0;
+        while (
+          cacheNode &&
+          visitedCacheNodes < representativeTileWalkNodeLimit
+        ) {
+          visitedCacheNodes++;
+          const readyTile = cacheNode.item;
+          cacheNode = cacheNode.next;
+          if (!isRepresentativeContentReadyTile(readyTile)) {
+            continue;
+          }
+          readyThisTileset++;
+          const identity = tileIdentities.get(readyTile);
+          if (identity) {
+            tilesetReadyIdentityA =
+              (tilesetReadyIdentityA + identity.a) >>> 0;
+            tilesetReadyIdentityB =
+              Math.imul(tilesetReadyIdentityB, identity.b | 1) >>> 0;
+          } else {
+            tilesetUnidentifiedReady++;
+          }
+        }
+        tilesetContentReady += readyThisTileset;
+        tilesetReadyCountMismatch += Math.abs(
+          (tileset.statistics?.numberOfTilesWithContentReady || 0) -
+            readyThisTileset,
+        );
+        if (readyThisTileset > 0) tilesetsWithReadyContentThisFrame++;
+
         const selected = tileset.statistics?.selected || 0;
         const selectedTiles = tileset._selectedTiles || [];
         tilesetSelected += selected;
@@ -1470,7 +1595,7 @@ export function createRepresentativeEvidenceTracker(
           selected - selectedTiles.length,
         );
         for (const selectedTile of selectedTiles) {
-          const identity = selectedTileIdentities.get(selectedTile);
+          const identity = tileIdentities.get(selectedTile);
           if (identity) {
             tilesetSelectionIdentityA =
               (tilesetSelectionIdentityA + identity.a) >>> 0;
@@ -1509,6 +1634,15 @@ export function createRepresentativeEvidenceTracker(
         tilesetSelectionCountMismatch;
       workloadFingerprintSample.tilesetUnidentifiedSelected =
         tilesetUnidentifiedSelected;
+      workloadFingerprintSample.tilesetsWithReadyContent =
+        tilesetsWithReadyContentThisFrame;
+      workloadFingerprintSample.tilesetContentReady = tilesetContentReady;
+      workloadFingerprintSample.tilesetReadyIdentityA = tilesetReadyIdentityA;
+      workloadFingerprintSample.tilesetReadyIdentityB = tilesetReadyIdentityB;
+      workloadFingerprintSample.tilesetReadyCountMismatch =
+        tilesetReadyCountMismatch;
+      workloadFingerprintSample.tilesetUnidentifiedReady =
+        tilesetUnidentifiedReady;
       return workloadFingerprint.observe(workloadFingerprintSample);
     },
 

@@ -38,11 +38,13 @@ import {
   selectWorkloadsForRenderers,
 } from "./lib/performance-workload-selection.mjs";
 import {
+  createRepresentativeEvidenceTracker,
   createRepresentativeTilesetLifecycleTracker,
   createRepresentativeWorkloadFingerprintAccumulator,
   createRepresentativeTerrain,
   createRepresentativeWaterMask,
   diffRepresentativeTerrainDiagnostics,
+  isRepresentativeContentReadyTile,
   isRepresentativeResidentRoutePassQuiescent,
   REPRESENTATIVE_CONTENT,
   REPRESENTATIVE_CONTENT_PROFILE,
@@ -83,13 +85,23 @@ const representativeWarmManifest = JSON.parse(
     "utf8",
   ),
 );
-const runnerSource = await readFile(
-  resolve(directory, "run-performance-campaign.mjs"),
-  "utf8",
+// Source-text contracts slice on exact newline markers, so they must read a
+// canonical newline. `core.autocrlf=true` checkouts hand back CRLF and silently
+// turn every such assertion red for reasons that have nothing to do with the
+// behaviour under test.
+const readSourceText = async (...segments) =>
+  (await readFile(resolve(directory, ...segments), "utf8")).replace(
+    /\r\n/g,
+    "\n",
+  );
+const runnerSource = await readSourceText("run-performance-campaign.mjs");
+const representativeContentSource = await readSourceText(
+  "lib",
+  "representative-performance-content.mjs",
 );
-const representativeContentSource = await readFile(
-  resolve(directory, "lib", "representative-performance-content.mjs"),
-  "utf8",
+const campaignUtilsSource = await readSourceText(
+  "lib",
+  "performance-campaign-utils.mjs",
 );
 
 test("performance workload manifest has stable unique identities", () => {
@@ -1124,6 +1136,12 @@ test("resident workload fingerprints preserve identities and reject one-frame pa
     tilesetSelectionIdentityB: 606,
     tilesetSelectionCountMismatch: 0,
     tilesetUnidentifiedSelected: 0,
+    tilesetsWithReadyContent: 2,
+    tilesetContentReady: 7,
+    tilesetReadyIdentityA: 707,
+    tilesetReadyIdentityB: 808,
+    tilesetReadyCountMismatch: 0,
+    tilesetUnidentifiedReady: 0,
     tilesetsWithCommands: 2,
     tilesetCommands: 2,
     ...overrides,
@@ -1322,6 +1340,485 @@ test("resident workload fingerprints preserve identities and reject one-frame pa
     invalidQuality.certificationExclusions.some((reason) =>
       reason.includes("both ordinary renderer legs"),
     ),
+  );
+});
+
+test("the page sampler and the Node gate share one fingerprint metric list", () => {
+  // The per-metric hash salt is the array index, so a name added on one side
+  // only, or the same names in a different order, produces two signatures that
+  // are computed from different things and compared anyway.
+  const extractMetricNames = (source, declaration) => {
+    const start = source.indexOf(declaration);
+    assert.ok(start >= 0, `${declaration} was not found`);
+    const end = source.indexOf("]);", start);
+    assert.ok(end > start);
+    return [...source.slice(start, end).matchAll(/"([A-Za-z]+)"/g)].map(
+      (match) => match[1],
+    );
+  };
+  const pageMetricNames = extractMetricNames(
+    representativeContentSource,
+    "const representativeFingerprintMetricNames = Object.freeze([",
+  );
+  const gateMetricNames = extractMetricNames(
+    campaignUtilsSource,
+    "const representativeWorkloadFingerprintMetricNames = Object.freeze([",
+  );
+  assert.deepEqual(gateMetricNames, pageMetricNames);
+  for (const name of [
+    "tilesetsWithReadyContent",
+    "tilesetContentReady",
+    "tilesetReadyIdentityA",
+    "tilesetReadyIdentityB",
+    "tilesetReadyCountMismatch",
+    "tilesetUnidentifiedReady",
+  ]) {
+    assert.ok(pageMetricNames.includes(name), `${name} is missing`);
+  }
+});
+
+test("the resident sampler reads ready tiles from the engine's own resident set", () => {
+  const makeTile = (overrides = {}) => ({
+    children: [],
+    contentReady: true,
+    hasEmptyContent: false,
+    ...overrides,
+  });
+  const makeCacheList = (tiles) => {
+    // The engine's cache list carries a sentinel node with no item, and its
+    // order tracks selection recency — which legitimately differs between
+    // legs. Both facts are reproduced here so the sampler is proven to tolerate
+    // them rather than merely never having met them.
+    const nodes = [{ item: undefined }, ...tiles.map((tile) => ({ item: tile }))];
+    for (let index = 0; index < nodes.length - 1; index++) {
+      nodes[index].next = nodes[index + 1];
+    }
+    return { head: nodes[0] };
+  };
+  const makeTileset = (root, cachedTiles, statisticsReady) => ({
+    _root: root,
+    _selectedTiles: [],
+    _cache: { _list: makeCacheList(cachedTiles) },
+    statistics: {
+      selected: 0,
+      numberOfTilesWithContentReady:
+        statisticsReady ??
+        cachedTiles.filter(isRepresentativeContentReadyTile).length,
+    },
+    tilesLoaded: true,
+  });
+  const scene = {
+    globe: { _surface: { _tilesToRender: [] } },
+    frameState: { commandList: [] },
+  };
+  const terrain = {
+    snapshotDiagnostics: () => ({
+      requestCount: 0,
+      cacheHitCount: 0,
+      tileGenerationCount: 0,
+      uniqueTileCount: 0,
+      nonFlatTilesGenerated: 0,
+      maximumRequestedLevel: 0,
+      maximumLevel: 0,
+      waterMasksGenerated: { mixed: 0 },
+    }),
+    ownsTerrainData: () => false,
+  };
+  const sampleMetrics = (tilesets, mutate) => {
+    const assets = {
+      models: [],
+      tilesets,
+      placement: {
+        minimumModelTerrainClearance: 1,
+        minimumTilesetTerrainClearance: 1,
+      },
+    };
+    const tracker = createRepresentativeEvidenceTracker(
+      scene,
+      terrain,
+      assets,
+    );
+    mutate?.();
+    assert.equal(tracker.sampleWorkloadFingerprint(0), true);
+    const fingerprint = tracker.snapshot({ phase: "measurement" })
+      .workloadFingerprint;
+    assert.ok(fingerprint);
+    return Object.fromEntries(
+      Object.entries(fingerprint.metrics).map(([name, metric]) => [
+        name,
+        metric.total,
+      ]),
+    );
+  };
+
+  const rootA = makeTile();
+  const childA = makeTile();
+  rootA.children.push(childA);
+  const baseline = sampleMetrics([makeTileset(rootA, [rootA, childA])]);
+  assert.equal(baseline.tilesetContentReady, 2);
+  assert.equal(baseline.tilesetsWithReadyContent, 1);
+  assert.equal(baseline.tilesetUnidentifiedReady, 0);
+  assert.equal(baseline.tilesetReadyCountMismatch, 0);
+
+  // Same two tiles, opposite cache order: an order-dependent aggregation would
+  // report a workload difference where the engine only reordered its LRU list.
+  const rootOrder = makeTile();
+  const childOrder = makeTile();
+  rootOrder.children.push(childOrder);
+  const reordered = sampleMetrics([
+    makeTileset(rootOrder, [childOrder, rootOrder]),
+  ]);
+  assert.equal(reordered.tilesetReadyIdentityA, baseline.tilesetReadyIdentityA);
+  assert.equal(reordered.tilesetReadyIdentityB, baseline.tilesetReadyIdentityB);
+
+  // One tile fewer must move BOTH independent constructions.
+  const rootOne = makeTile();
+  const childOne = makeTile({ contentReady: false });
+  rootOne.children.push(childOne);
+  const oneTileFewer = sampleMetrics([makeTileset(rootOne, [rootOne])]);
+  assert.equal(oneTileFewer.tilesetContentReady, 1);
+  assert.notEqual(
+    oneTileFewer.tilesetReadyIdentityA,
+    baseline.tilesetReadyIdentityA,
+  );
+  assert.notEqual(
+    oneTileFewer.tilesetReadyIdentityB,
+    baseline.tilesetReadyIdentityB,
+  );
+
+  // A different tile at the same cardinality must also move both hashes: a
+  // count-only fingerprint would call these two ready sets identical.
+  const rootSwap = makeTile();
+  const firstChild = makeTile({ contentReady: false });
+  const secondChild = makeTile();
+  rootSwap.children.push(firstChild, secondChild);
+  const swapped = sampleMetrics([
+    makeTileset(rootSwap, [rootSwap, secondChild]),
+  ]);
+  assert.equal(swapped.tilesetContentReady, baseline.tilesetContentReady);
+  assert.notEqual(swapped.tilesetReadyIdentityA, baseline.tilesetReadyIdentityA);
+  assert.notEqual(swapped.tilesetReadyIdentityB, baseline.tilesetReadyIdentityB);
+
+  // Engine membership: empty, external-tileset, and implicit placeholder tiles
+  // never increment numberOfTilesWithContentReady, so they must not enter the
+  // set either — otherwise the count-vs-set gate would fire on every frame.
+  const rootExcluded = makeTile();
+  const emptyTile = makeTile({ hasEmptyContent: true });
+  const externalTile = makeTile({ hasTilesetContent: true });
+  const implicitTile = makeTile({ hasImplicitContent: true });
+  rootExcluded.children.push(emptyTile, externalTile, implicitTile);
+  const excluded = sampleMetrics([
+    makeTileset(rootExcluded, [
+      rootExcluded,
+      emptyTile,
+      externalTile,
+      implicitTile,
+    ]),
+  ]);
+  assert.equal(excluded.tilesetContentReady, 1);
+  assert.equal(excluded.tilesetReadyCountMismatch, 0);
+
+  // Children materialize as subtrees load. A tile that appeared after the
+  // tracker was built must still earn its path identity.
+  const rootLate = makeTile();
+  const lateChild = makeTile();
+  const lateLoaded = sampleMetrics(
+    [makeTileset(rootLate, [rootLate, lateChild], 2)],
+    () => rootLate.children.push(lateChild),
+  );
+  assert.equal(lateLoaded.tilesetContentReady, 2);
+  assert.equal(lateLoaded.tilesetUnidentifiedReady, 0);
+
+  // A resident tile the tile graph cannot reach has no stable identity, and is
+  // reported as such instead of being quietly dropped from the set.
+  const rootDetached = makeTile();
+  const detached = makeTile();
+  const detachedMetrics = sampleMetrics([
+    makeTileset(rootDetached, [rootDetached, detached], 2),
+  ]);
+  assert.equal(detachedMetrics.tilesetContentReady, 2);
+  assert.equal(detachedMetrics.tilesetUnidentifiedReady, 1);
+
+  // The engine's own scalar counter is the third independent source; a
+  // disagreement with the resident set is reported, never reconciled.
+  const rootCounted = makeTile();
+  const countMismatch = sampleMetrics([
+    makeTileset(rootCounted, [rootCounted], 5),
+  ]);
+  assert.equal(countMismatch.tilesetContentReady, 1);
+  assert.equal(countMismatch.tilesetReadyCountMismatch, 4);
+});
+
+test("resident comparability rejects unequal 3D Tiles ready sets by name", () => {
+  const makeSample = (overrides = {}) => ({
+    segmentIndex: 0,
+    terrainTilesToRender: 4,
+    terrainMeshTiles: 4,
+    terrainSelectionIdentityA: 101,
+    terrainSelectionIdentityB: 202,
+    terrainUnidentifiedTiles: 0,
+    directModelInstancesConfigured: 3,
+    directModelInstancesReady: 3,
+    directModelIdentityA: 303,
+    directModelIdentityB: 404,
+    tilesetsWithSelection: 2,
+    tilesetSelected: 2,
+    tilesetSelectionIdentityA: 505,
+    tilesetSelectionIdentityB: 606,
+    tilesetSelectionCountMismatch: 0,
+    tilesetUnidentifiedSelected: 0,
+    tilesetsWithReadyContent: 2,
+    tilesetContentReady: 710,
+    tilesetReadyIdentityA: 909,
+    tilesetReadyIdentityB: 1010,
+    tilesetReadyCountMismatch: 0,
+    tilesetUnidentifiedReady: 0,
+    ...overrides,
+  });
+  const makeFingerprint = (samples) => {
+    const accumulator = createRepresentativeWorkloadFingerprintAccumulator();
+    for (const sample of samples) {
+      assert.equal(accumulator.observe(sample), true);
+    }
+    const fingerprint = accumulator.snapshot();
+    fingerprint.provenance = {
+      timed: false,
+      phase: "post-measurement-untimed-replay",
+      traceEndedBeforeReplay: true,
+      measurementSnapshotsFrozenBeforeReplay: true,
+      replayModeFixedFrame: true,
+      renderedProgressIdentical: true,
+      causal: true,
+    };
+    return fingerprint;
+  };
+  const baseSamples = [
+    makeSample(),
+    makeSample({ segmentIndex: 1, tilesetContentReady: 711 }),
+  ];
+  const makeLifecycleFrame = (index, readyIdentities, signature) => ({
+    index,
+    segmentIndex: index,
+    routeProgress: index,
+    selectedIdentitySignature: "aaaaaaaa",
+    readyIdentitySignature: signature,
+    selectedCount: 0,
+    readyCount: readyIdentities.length,
+    identityListsTruncated: false,
+    tilesets: [
+      {
+        tilesetIndex: 0,
+        selected: [],
+        selectedDetails: [],
+        ready: readyIdentities,
+      },
+    ],
+  });
+  const makeLifecycle = (frames) => ({
+    schemaVersion: 1,
+    enabled: true,
+    nonCertifying: true,
+    provenance: {
+      timed: false,
+      phase: "post-measurement-untimed-replay",
+      traceEndedBeforeReplay: true,
+      measurementSnapshotsFrozenBeforeReplay: true,
+    },
+    totals: {},
+    eventsTruncated: false,
+    framesTruncated: false,
+    events: [],
+    frames,
+  });
+  const makeRun = (fingerprint, lifecycleFrames = null) => ({
+    measuredFrames: 2,
+    quality: {
+      status: "clean",
+      attributionOnly: false,
+      certificationEligible: true,
+    },
+    apiCounters: { enabled: false },
+    representativeContentEvidence: {
+      measurementTerrainActivity: {
+        delta: {
+          requestCount: 0,
+          tileGenerationCount: 0,
+          requestsByLevel: {},
+          generationsByLevel: {},
+          generatedTileKeys: [],
+        },
+      },
+      measurementContent: { workloadFingerprint: fingerprint },
+      ...(lifecycleFrames
+        ? { tilesetLifecycleDiagnostics: makeLifecycle(lifecycleFrames) }
+        : {}),
+    },
+  });
+  const options = {
+    measurementTerrainMode: "resident",
+    maximumDeltaRatio: 0.05,
+  };
+
+  // Identical ready sets stay comparable and certification-eligible.
+  const identical = assessRepresentativePairComparability(
+    makeRun(makeFingerprint(baseSamples)),
+    makeRun(makeFingerprint(baseSamples.map((sample) => ({ ...sample })))),
+    options,
+  );
+  assert.equal(identical.valid, true);
+  assert.equal(identical.certificationEligible, true);
+  assert.equal(
+    identical.metrics.workloadFingerprint.readyIdentityMatch,
+    true,
+  );
+
+  // One resident tile of difference on the second route segment.
+  const oneTimeDifferentSamples = [
+    baseSamples[0],
+    {
+      ...baseSamples[1],
+      tilesetContentReady: 710,
+      tilesetReadyIdentityA: 908,
+      tilesetReadyIdentityB: 1011,
+    },
+  ];
+  const oneTileDifferent = assessRepresentativePairComparability(
+    makeRun(makeFingerprint(baseSamples), [
+      makeLifecycleFrame(0, ["tileset-0/root"], "11111111"),
+      makeLifecycleFrame(1, ["tileset-0/root", "tileset-0/root/3"], "22222222"),
+    ]),
+    makeRun(makeFingerprint(oneTimeDifferentSamples), [
+      makeLifecycleFrame(0, ["tileset-0/root"], "11111111"),
+      makeLifecycleFrame(1, ["tileset-0/root", "tileset-0/root/4"], "33333333"),
+    ]),
+    options,
+  );
+  assert.equal(oneTileDifferent.valid, false);
+  assert.equal(
+    oneTileDifferent.metrics.workloadFingerprint.readyIdentityMatch,
+    false,
+  );
+  const readyGroup =
+    oneTileDifferent.metrics.workloadFingerprint.identityGroups.find(
+      (group) => group.key === "tilesetReady",
+    );
+  assert.deepEqual(readyGroup.differingMetrics, [
+    "tilesetContentReady",
+    "tilesetReadyIdentityA",
+    "tilesetReadyIdentityB",
+  ]);
+  assert.equal(readyGroup.firstDivergentSegmentIndex, 1);
+  assert.ok(
+    oneTileDifferent.reasons.some(
+      (reason) =>
+        reason.includes("resident 3D Tiles ready identity differs") &&
+        reason.includes("tilesetContentReady") &&
+        reason.includes("first divergent route segment 1"),
+    ),
+  );
+  // The unequal set must be named, not merely counted.
+  assert.ok(
+    oneTileDifferent.reasons.some(
+      (reason) =>
+        reason.includes("first divergent resident ready tile") &&
+        reason.includes("tileset-0/root/3") &&
+        reason.includes("tileset-0/root/4"),
+    ),
+  );
+  assert.equal(
+    oneTileDifferent.metrics.workloadFingerprint.firstDivergentReadyIdentity
+      .frameIndex,
+    1,
+  );
+  // Selection was identical on both legs, so only the ready group may fail.
+  const selectedGroup =
+    oneTileDifferent.metrics.workloadFingerprint.identityGroups.find(
+      (group) => group.key === "tilesetSelected",
+    );
+  assert.equal(selectedGroup.match, true);
+
+  // A collision in one construction must not validate: when only one of the
+  // two hashes agrees, that is reported as the second construction refusing it.
+  const collisionSamples = [
+    baseSamples[0],
+    { ...baseSamples[1], tilesetReadyIdentityB: 1011 },
+  ];
+  const collision = assessRepresentativePairComparability(
+    makeRun(makeFingerprint(baseSamples)),
+    makeRun(makeFingerprint(collisionSamples)),
+    options,
+  );
+  assert.equal(collision.valid, false);
+  const collisionGroup =
+    collision.metrics.workloadFingerprint.identityGroups.find(
+      (group) => group.key === "tilesetReady",
+    );
+  assert.equal(collisionGroup.identityAMatch, true);
+  assert.equal(collisionGroup.identityBMatch, false);
+  assert.equal(collisionGroup.collisionCaughtBySecondConstruction, true);
+  assert.ok(
+    collision.reasons.some((reason) =>
+      reason.includes("identity hashes disagree asymmetrically"),
+    ),
+  );
+
+  // Missing lifecycle diagnostics must never soften the rejection.
+  assert.equal(
+    collision.metrics.workloadFingerprint.firstDivergentReadyIdentity,
+    null,
+  );
+
+  // Unidentified resident tiles invalidate the leg that produced them.
+  const unidentified = assessRepresentativePairComparability(
+    makeRun(
+      makeFingerprint(
+        baseSamples.map((sample) => ({
+          ...sample,
+          tilesetUnidentifiedReady: 1,
+        })),
+      ),
+    ),
+    makeRun(makeFingerprint(baseSamples)),
+    options,
+  );
+  assert.equal(unidentified.valid, false);
+  assert.ok(
+    unidentified.reasons.some(
+      (reason) =>
+        reason.includes("WebGL resident 3D Tiles ready identity is incomplete") &&
+        reason.includes("tilesetUnidentifiedReady"),
+    ),
+  );
+
+  // A leg whose own ready count disagrees with the engine counter cannot
+  // certify anything, even against an otherwise identical partner.
+  const forgedCount = structuredClone(makeFingerprint(baseSamples));
+  forgedCount.metrics.tilesetReadyCountMismatch.max = 3;
+  forgedCount.metrics.tilesetReadyCountMismatch.total = 3;
+  const countDisagreement = assessRepresentativePairComparability(
+    makeRun(makeFingerprint(baseSamples)),
+    makeRun(forgedCount),
+    options,
+  );
+  assert.equal(countDisagreement.valid, false);
+  assert.ok(
+    countDisagreement.reasons.some(
+      (reason) =>
+        reason.includes("WebGPU resident 3D Tiles ready identity is incomplete") &&
+        reason.includes("tilesetReadyCountMismatch") &&
+        reason.includes("numberOfTilesWithContentReady"),
+    ),
+  );
+
+  // The campaign summary must surface a ready-set exclusion as its own closure
+  // reason rather than letting it read as ordinary pair attrition.
+  assert.match(
+    runnerSource,
+    /pair\.metrics\?\.workloadFingerprint\?\.readyIdentityMatch === false/,
+  );
+  assert.match(
+    runnerSource,
+    /pairs held different 3D Tiles ready sets, so no causal renderer timing claim can be made/,
   );
 });
 
@@ -2445,6 +2942,12 @@ test("replay provenance is measured from rendered phase, never restated from con
     "tilesetSelectionIdentityB",
     "tilesetSelectionCountMismatch",
     "tilesetUnidentifiedSelected",
+    "tilesetsWithReadyContent",
+    "tilesetContentReady",
+    "tilesetReadyIdentityA",
+    "tilesetReadyIdentityB",
+    "tilesetReadyCountMismatch",
+    "tilesetUnidentifiedReady",
   ];
   const zeroMetrics = () =>
     Object.fromEntries(
