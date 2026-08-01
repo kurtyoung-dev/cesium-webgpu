@@ -143,6 +143,12 @@ interface SceneCaptureSources {
 interface ModelCaptureCommand {
   pipeline: GPURenderPipeline;
   bindGroups: GPUBindGroup[];
+  /**
+   * C11-195 — the model group-0 camera layout declares `hasDynamicOffset`,
+   * so this face's camera slice is addressed by offset rather than by a
+   * per-record bind group. Always present for arena-built records.
+   */
+  bindGroup0DynamicOffsets?: number[];
   vertexBuffers: GPUBuffer[];
   indexBuffer: GPUBuffer;
   indexCount: number;
@@ -684,14 +690,25 @@ export function runSceneCapture(
 
       // C2-25 (Batch 447) — replay the MODEL / 3D-Tiles commands AFTER the globe
       // so the shared depth buffer occludes correctly (model over globe, globe
-      // over sky). Each model command carries its own 4 bind groups (per-face
-      // camera + neutral-IBL material + instance + effects) and full vertex
-      // buffer list (no group-0 dynamic offsets).
+      // over sky). Each model command carries its own 4 bind groups
+      // (neutral-IBL material + instance + effects, plus the shared group-0
+      // camera arena page) and full vertex buffer list. C11-195 — group 0 is
+      // now a dynamic-offset binding: the per-face, per-record camera slice
+      // is selected by `bindGroup0DynamicOffsets`, so it MUST be forwarded or
+      // every record would read the same (wrong) block.
       for (let i = 0; i < modelCommands.length; i++) {
         const cmd = modelCommands[i];
         pass.setPipeline(cmd.pipeline);
         for (let bg = 0; bg < cmd.bindGroups.length; bg++) {
-          pass.setBindGroup(bg, cmd.bindGroups[bg]);
+          if (bg === 0 && cmd.bindGroup0DynamicOffsets !== undefined) {
+            pass.setBindGroup(
+              0,
+              cmd.bindGroups[0],
+              cmd.bindGroup0DynamicOffsets,
+            );
+          } else {
+            pass.setBindGroup(bg, cmd.bindGroups[bg]);
+          }
         }
         for (let vb = 0; vb < cmd.vertexBuffers.length; vb++) {
           pass.setVertexBuffer(vb, cmd.vertexBuffers[vb]);

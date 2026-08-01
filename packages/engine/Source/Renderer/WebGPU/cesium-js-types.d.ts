@@ -1378,6 +1378,9 @@ interface CesiumObjectWithWebGPUCache {
 // ─── Duck-typed command dispatch ─────────────────────────────────────────
 
 interface CesiumAnyDrawCommand {
+  /** Per-bind-group dynamic offsets (C11-195 camera arena); index = group,
+   *  value = the offsets array passed to setBindGroup, undefined = none. */
+  bindGroupDynamicOffsets?: Array<number[] | undefined>;
   /** Bounding sphere — typed loosely because JS-sourced DrawCommand
    *  instances have their `boundingVolume` inferred as `{}` from the
    *  untyped `options.boundingVolume` field. All sphere fields are

@@ -113,10 +113,20 @@ import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import type { WebGPUPipelineConfig } from "./WebGPUDrawCommand.js";
 // C2-25 ENV-SCENE-CAPTURE (Batch 447) — per-frame uniform ring allocator. The
-// capture pass packs a face-camera UB per visible primitive per face; it MUST
-// ride the ring (not `cache.cameraBuffer`/`nc.cameraBuffer`, which the main
-// pass reads later this same frame) because capture precedes the main render.
+// capture pass packs a face-view LIGHT UB per model replay; it MUST ride the
+// ring because capture precedes the main render and the persistent light UB
+// belongs to the on-screen view.
 import { writeUniformSlice } from "./WebGPUGlobeSurfaceCameraUB.js";
+// C11-195 — every group-0 camera block (main view, transformed node, SCENE2D
+// IDL duplicate, env-capture face) is acquired here. `cameraBGL` declares
+// `hasDynamicOffset`, so this is the ONLY sanctioned producer of a group-0
+// bind group for the model path.
+import {
+  MODEL_CAMERA_UNIFORM_BYTES,
+  type ModelCameraArenaAllocator,
+  type ModelCameraBinding,
+  type WebGPUModelCameraArena,
+} from "./WebGPUModelCameraArena.js";
 import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
 import { createEffectsBindGroup } from "./WebGPUEffectsBindGroup.js";
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
@@ -570,9 +580,10 @@ interface SkinData {
 // Fields shared by the per-node cache and (for identity-transform models) the
 // model-level cache when hosting the SCENE2D IDL-duplicate camera resources.
 interface Idl2DHost {
-  cameraBuffer2DIdl?: WebGPUBuffer | null;
+  // C11-195 — CPU staging only. The IDL duplicate's camera block rides the
+  // per-frame arena exactly like the primary view's; only the pack target is
+  // retained here so the y-shifted matrix does not re-allocate per frame.
   cameraData2DIdl?: Float32Array | null;
-  cameraBG2DIdl?: GPUBindGroup | null;
   idlModelMatrix2D?: Matrix4 | null;
   idlBoundingSphere2D?: BoundingSphere | null;
 }
@@ -584,15 +595,18 @@ interface NodeCache extends Idl2DHost, ModelShadowCastUniformHost {
   jointBufferSize?: number;
   packedJointMatrices?: Float32Array | null;
   prevPackedJointMatrices?: Float32Array | null;
-  cameraBuffer?: WebGPUBuffer | null;
+  // C11-195 — CPU staging for this node's packed camera block. Retained (the
+  // shadow-cast UB reads the model-space RTE eye back out of it); the GPU
+  // bytes live in the per-frame arena, never in a per-node buffer.
   cameraData?: Float32Array | null;
-  cameraBG?: GPUBindGroup | null;
   skinningBG?: GPUBindGroup | null;
   prevNodeModelMatrix?: Matrix4 | null;
 }
 
 interface PipelineCacheLike {
   cameraBGL: GPUBindGroupLayout;
+  // C11-195 — device-shared per-frame group-0 camera arena.
+  cameraArena: WebGPUModelCameraArena;
   instanceBGL: GPUBindGroupLayout;
   defaultInstanceBindGroup: GPUBindGroup;
   defaultSampler: GPUSampler;
@@ -667,8 +681,8 @@ interface ModelWebGPUCache extends Idl2DHost, ModelShadowCastUniformHost {
   geometryViews?: { [key: string]: PrimitiveGeometryViewRecord };
   nodes: { [key: string]: NodeCache };
   pipelineCache: PipelineCacheLike;
-  cameraBuffer?: WebGPUBuffer | null;
-  cameraBG?: GPUBindGroup | null;
+  // C11-195 — CPU staging for the model-level (identity-transform) camera
+  // block. See NodeCache.cameraData; the GPU bytes live in the arena.
   cameraData?: Float32Array | null;
   effectsBG?: GPUBindGroup | null;
   edgeEmitterCache?: EdgeEmitterCache | null;
@@ -1012,6 +1026,11 @@ interface ModelRenderContext {
     shadowMap: object,
   ) => void;
   uniformState: CesiumUniformState;
+  /**
+   * C11-195 — the context's shared per-frame uniform ring. Null while the
+   * device is unavailable; the camera arena degrades to private buffers then.
+   */
+  uniformAllocator?: ModelCameraArenaAllocator | null;
   drawingBufferWidth: number;
   drawingBufferHeight: number;
   depthFormat?: GPUTextureFormat;
@@ -1086,7 +1105,10 @@ interface CustomShaderResourcesLike {
 //   mat4(previousViewProjection)  = 320 bytes.
 // DP-H41 (Batch 27) — previousViewProjection added at the tail for TAA /
 // motion-vector reprojection. 16-byte alignment preserved (20 vec4s).
-const CAMERA_UNIFORM_SIZE = 320;
+// C11-195 — the width now also drives the layout's `minBindingSize`, so it
+// lives with the arena that owns the layout and is re-exported here for the
+// existing call sites.
+const CAMERA_UNIFORM_SIZE = MODEL_CAMERA_UNIFORM_BYTES;
 // Material uniform buffer: mat4(model) + vec4(baseColor) + vec3+f(emissive+metallic)
 //   + 4f(rough/alpha/normal/occ) + u32(flags) + 3f(specRGB) + f(gloss) +
 //   4f(diffuseRGBA) + 3f(padding) + ... = expanded for KHR extensions.
@@ -1351,6 +1373,46 @@ function isIdentityMatrix4(m: ArrayLike<number>) {
 
 // ─── Camera Uniform Packing ─────────────────────────────────────────────────
 
+/**
+ * C11-195 — read the frame's uniform ring off the context. Kept as one helper
+ * so every camera acquisition observes the same allocator identity within a
+ * frame; a mid-frame swap would leave the arena's bind groups pointing at
+ * destroyed pages.
+ */
+function resolveModelCameraAllocator(
+  frameState: CesiumFrameState,
+): ModelCameraArenaAllocator | null {
+  const context = frameState?.context as unknown as
+    ModelRenderContext | undefined;
+  return context?.uniformAllocator ?? null;
+}
+
+/**
+ * C11-195 — acquire one group-0 camera binding for `data` from the device
+ * arena. Ticks the arena on the current frame first, which is idempotent
+ * within a frame and clears the bind-group cache when the context has rebuilt
+ * its ring (device recovery on the same `GPUDevice`).
+ */
+function acquireModelCameraBinding(
+  device: GPUDevice,
+  frameState: CesiumFrameState,
+  pipelineCache: PipelineCacheLike,
+  data: Float32Array,
+  label: string,
+): ModelCameraBinding {
+  const allocator = resolveModelCameraAllocator(frameState);
+  const arena = pipelineCache.cameraArena;
+  arena.beginFrame(frameState?.frameNumber ?? 0, allocator);
+  return arena.acquire(
+    device,
+    allocator,
+    pipelineCache.cameraBGL,
+    data,
+    CAMERA_UNIFORM_SIZE,
+    label,
+  );
+}
+
 type PreviousMatrixHost = {
   prevModelMatrix?: Matrix4 | null;
   prevNodeModelMatrix?: Matrix4 | null;
@@ -1551,10 +1613,12 @@ function overrideProject2DNormalMatrix(
  * packed here bakes the FACE-camera RTE eye.
  *
  * Per record:
- *   - pack the face-camera UB into the per-frame ring (`writeUniformSlice`),
- *     NEVER `cache.cameraBuffer`/`nc.cameraBuffer` — the main pass reads those
- *     later this same frame, and capture precedes the main render.
- *   - build a fresh group-0 camera bind group on the ring slice.
+ *   - acquire a FRESH per-frame arena slice for the face-camera UB (C11-195).
+ *     The slice must be its own: `captureCameraData` is a shared staging array
+ *     the next record overwrites, and the main pass renders later in this same
+ *     frame from its own slices.
+ *   - reuse the arena's shared group-0 bind group and address this record's
+ *     block by dynamic offset (`bindGroup0DynamicOffsets`).
  *   - pack one face-view light UB into another ring slice and bind it for every
  *     record in this model replay; NEVER reuse the persistent on-screen light
  *     UB because its camera-relative positions/rotation belong to another view.
@@ -1628,27 +1692,23 @@ function getOrCreateModelCaptureCommands(
     // Pack the FACE-camera UB against the record's snapshot model matrix. The
     // eye-swap (uniformState.cameraPosition) means the repointed face camera
     // reaches the model eye automatically.
+    //
+    // C11-195 — one fresh arena slice PER RECORD PER FACE. The slice must be
+    // distinct because `captureCameraData` is a single shared staging array
+    // that the next record immediately overwrites, and because the main pass
+    // renders later in this same frame from its own slices. The bind group,
+    // by contrast, is shared: it addresses the whole ring page, and the
+    // dynamic offset selects this record's block. That collapses what used to
+    // be one `createBindGroup` per primitive per cube face into ~one per ring
+    // page for the entire refresh.
     packCameraUniforms(captureCameraData, frameState, rec.nodeModelMatrix);
-    const slice = writeUniformSlice(
+    const cameraBinding = acquireModelCameraBinding(
       device,
       frameState,
+      pipelineCache,
       captureCameraData,
-      CAMERA_UNIFORM_SIZE,
       "Model capture camera",
     );
-    const cameraBG = device.createBindGroup({
-      layout: pipelineCache.cameraBGL,
-      entries: [
-        {
-          binding: 0,
-          resource: {
-            buffer: slice.buffer,
-            offset: slice.offset,
-            size: slice.size,
-          },
-        },
-      ],
-    });
     if (!captureLightSlice) {
       packLightUniforms(captureLightData, frameState, model);
       captureLightSlice = writeUniformSlice(
@@ -1694,11 +1754,14 @@ function getOrCreateModelCaptureCommands(
     commands.push({
       pipeline,
       bindGroups: [
-        cameraBG,
+        cameraBinding.bindGroup,
         materialBG,
         rec.mergedInstanceBG,
         captureEffectsBG ?? rec.effectsBG,
       ],
+      // C11-195 — `cameraBGL` is a dynamic-offset layout; the capture replay
+      // loop in `WebGPUDynamicEnvironmentMapCapture` must forward this.
+      bindGroup0DynamicOffsets: cameraBinding.dynamicOffsets,
       vertexBuffers: rec.vertexBuffers,
       indexBuffer: rec.indexBuffer,
       indexCount: rec.indexCount,
@@ -4882,9 +4945,9 @@ function updateWebGPUModel(
   if (!defined(model._webgpuCache)) {
     model._webgpuCache = {
       pipelineCache: null,
-      cameraBuffer: null,
+      // C11-195 — CPU staging only; the camera GPU bytes live in the
+      // device-shared per-frame arena.
       cameraData: null,
-      cameraBG: null,
       primitives: {}, // keyed by "nodeIdx_primIdx"
       geometryViews: {}, // mutable annotation views, keyed like primitives
       nodes: {}, // per-node skinning data, keyed by nodeIdx
@@ -5434,6 +5497,11 @@ function updateWebGPUModel(
   // command. Transformed tile-owned nodes bind their own node camera block and
   // never realize/pack the unused model-level block.
   let rootCameraPreparedThisFrame = false;
+  // C11-195 — the model-level camera binding for this update. Deliberately an
+  // update-scoped local, NOT a cache field: an arena slice belongs to one
+  // allocation epoch, so persisting it would let a later frame bind bytes the
+  // ring has already handed to someone else.
+  let rootCameraBinding: ModelCameraBinding | undefined;
   // Shadow transform buffers are demand-created at the first emitted caster.
   // Identity-transform nodes share the model host; this per-update memo avoids
   // even repacking/comparing that host when a model has several identity nodes.
@@ -5526,10 +5594,9 @@ function updateWebGPUModel(
         packedJointMatrices: null,
         prevJointBuffer: null,
         prevPackedJointMatrices: null,
-        // Per-node camera resources (Batch 152, NEW-MODEL-NODE-TRANSFORMS).
-        cameraBuffer: null,
+        // Per-node camera staging (Batch 152, NEW-MODEL-NODE-TRANSFORMS;
+        // C11-195 moved the GPU bytes to the per-frame arena).
         cameraData: null,
-        cameraBG: null,
         // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175) — per-node previous
         // frame's `nodeModelMatrix`. Pre-Batch-175 the velocity pack
         // pulled `cache.prevModelMatrix` (the model-level matrix), which
@@ -5640,42 +5707,35 @@ function updateWebGPUModel(
     // below. This remains undefined for nodes whose pipelines are still
     // cooking or whose primitives never emit a command.
     let nodeCameraBG: GPUBindGroup | null | undefined;
+    // C11-195 — the group-0 dynamic offset that pairs with `nodeCameraBG`.
+    // Every command variant built for this node (color, IDL duplicate,
+    // classifier second pass, pick + its variants, velocity, silhouette,
+    // translucent twin) shares this one array; it is never mutated after the
+    // arena returns it, so sharing the reference is allocation-free and safe.
+    let nodeCameraOffsets: number[] | undefined;
 
     // C-MODEL-2DIDL-DUPLICATE — build the y-shifted camera bind group for the
     // IDL-crossing duplicate. Mirrors WebGL `updateModelMatrix2D`: clone the
     // matrix the primary command's camera UB was packed against
     // (`nodeModelMatrix`) and move its translation to the opposite side of the
-    // map (`ty -= sign(ty)·2πR`), then pack an RTE camera UB from it. The bind
-    // group reuses the exact `pipelineCache.cameraBGL` the primary command
-    // uses, so the shifted copy binds into @group(0) with no pipeline change.
-    // Resources are lazy-allocated on the same cache object that owns the
-    // primary camera BG (`cache` for identity nodes, `cache.nodes[nodeIdx]`
-    // otherwise) and only when `idlDuplicateActive` — off-IDL / 3D / CV never
-    // allocate or write anything here.
-    let nodeIdlCameraBG = null;
+    // map (`ty -= sign(ty)·2πR`), then pack an RTE camera UB from it. C11-195 —
+    // the duplicate takes its own slice from the same per-frame arena as the
+    // primary view, so it usually shares the primary command's @group(0) bind
+    // group and differs only in the dynamic offset; no pipeline change either
+    // way. The CPU staging array is lazy-allocated on the same cache object
+    // that hosts the primary view's (`cache` for identity nodes,
+    // `cache.nodes[nodeIdx]` otherwise) and only when `idlDuplicateActive` —
+    // off-IDL / 3D / CV never allocate or write anything here.
+    let nodeIdlCameraBG: GPUBindGroup | null = null;
+    let nodeIdlCameraOffsets: number[] | null = null;
     let nodeIdlModelMatrix2D = null;
     let nodeIdlBoundingSphere2D = null;
     if (idlDuplicateActive && !pipelineWarmupOnly) {
       const idlHost = transformIsIdentity ? cache : cache.nodes[nodeIdx];
       const idlMat = Matrix4.clone(nodeModelMatrix, scratchIdl2DModelMatrix);
       idlMat[13] -= Math.sign(nodeModelMatrix[13]) * idlShiftAmount2D;
-      if (!defined(idlHost.cameraBuffer2DIdl)) {
-        idlHost.cameraBuffer2DIdl = WebGPUBuffer.createUniformBuffer(
-          device,
-          CAMERA_UNIFORM_SIZE,
-          "Model camera 2D-IDL",
-        );
+      if (!defined(idlHost.cameraData2DIdl)) {
         idlHost.cameraData2DIdl = new Float32Array(CAMERA_UNIFORM_SIZE / 4);
-        idlHost.cameraBG2DIdl = device.createBindGroup({
-          label: "Model camera BG 2D-IDL",
-          layout: pipelineCache.cameraBGL,
-          entries: [
-            {
-              binding: 0,
-              resource: { buffer: idlHost.cameraBuffer2DIdl.buffer },
-            },
-          ],
-        });
       }
       if (defined(preparationWork)) {
         preparationWork.cameraPacks++;
@@ -5684,14 +5744,19 @@ function updateWebGPUModel(
       if (defined(preparationWork)) {
         preparationWork.cameraWrites++;
       }
-      device.queue.writeBuffer(
-        idlHost.cameraBuffer2DIdl.buffer,
-        0,
-        idlHost.cameraData2DIdl.buffer,
-        0,
-        CAMERA_UNIFORM_SIZE,
+      // C11-195 — the IDL duplicate is a SECOND view of the same node in the
+      // same frame. It takes its own arena slice, so its dynamic offset is
+      // necessarily distinct from the primary view's while both share one
+      // group-0 bind group over the ring page.
+      const idlBinding = acquireModelCameraBinding(
+        device,
+        frameState,
+        pipelineCache,
+        idlHost.cameraData2DIdl,
+        "Model camera 2D-IDL",
       );
-      nodeIdlCameraBG = idlHost.cameraBG2DIdl;
+      nodeIdlCameraBG = idlBinding.bindGroup;
+      nodeIdlCameraOffsets = idlBinding.dynamicOffsets;
       // Persist the shifted matrix + bounding volume so the per-primitive
       // duplicate command (emitted below) holds stable references — the
       // `scratchIdl2DModelMatrix` is reused across nodes. The bounding volume
@@ -6591,22 +6656,8 @@ function updateWebGPUModel(
       if (!defined(nodeCameraBG)) {
         if (transformIsIdentity) {
           if (!rootCameraPreparedThisFrame) {
-            if (!defined(cache.cameraBuffer)) {
-              cache.cameraBuffer = WebGPUBuffer.createUniformBuffer(
-                device,
-                CAMERA_UNIFORM_SIZE,
-                "Model camera",
-              );
+            if (!defined(cache.cameraData)) {
               cache.cameraData = new Float32Array(CAMERA_UNIFORM_SIZE / 4);
-              cache.cameraBG = device.createBindGroup({
-                layout: pipelineCache.cameraBGL,
-                entries: [
-                  {
-                    binding: 0,
-                    resource: { buffer: cache.cameraBuffer.buffer },
-                  },
-                ],
-              });
             }
             if (defined(preparationWork)) {
               preparationWork.cameraPacks++;
@@ -6624,32 +6675,25 @@ function updateWebGPUModel(
             if (defined(preparationWork)) {
               preparationWork.cameraWrites++;
             }
-            device.queue.writeBuffer(
-              cache.cameraBuffer.buffer,
-              0,
-              cache.cameraData.buffer,
-              0,
-              CAMERA_UNIFORM_SIZE,
+            // C11-195 — one arena slice per model per update instead of one
+            // persistent buffer plus one `queue.writeBuffer` per frame. The
+            // staged bytes reach the queue in the ring's single per-page
+            // flush, which the context runs before the frame is submitted.
+            rootCameraBinding = acquireModelCameraBinding(
+              device,
+              frameState,
+              pipelineCache,
+              cache.cameraData,
+              "Model camera",
             );
             rootCameraPreparedThisFrame = true;
           }
-          nodeCameraBG = cache.cameraBG;
+          nodeCameraBG = rootCameraBinding!.bindGroup;
+          nodeCameraOffsets = rootCameraBinding!.dynamicOffsets;
         } else {
           const nc = cache.nodes[nodeIdx];
-          if (!defined(nc.cameraBuffer)) {
-            nc.cameraBuffer = WebGPUBuffer.createUniformBuffer(
-              device,
-              CAMERA_UNIFORM_SIZE,
-              `Model camera node[${nodeIdx}]`,
-            );
+          if (!defined(nc.cameraData)) {
             nc.cameraData = new Float32Array(CAMERA_UNIFORM_SIZE / 4);
-            nc.cameraBG = device.createBindGroup({
-              label: `Model camera BG node[${nodeIdx}]`,
-              layout: pipelineCache.cameraBGL,
-              entries: [
-                { binding: 0, resource: { buffer: nc.cameraBuffer.buffer } },
-              ],
-            });
           }
           if (defined(preparationWork)) {
             preparationWork.cameraPacks++;
@@ -6658,14 +6702,15 @@ function updateWebGPUModel(
           if (defined(preparationWork)) {
             preparationWork.cameraWrites++;
           }
-          device.queue.writeBuffer(
-            nc.cameraBuffer.buffer,
-            0,
-            nc.cameraData.buffer,
-            0,
-            CAMERA_UNIFORM_SIZE,
+          const nodeBinding = acquireModelCameraBinding(
+            device,
+            frameState,
+            pipelineCache,
+            nc.cameraData,
+            `Model camera node[${nodeIdx}]`,
           );
-          nodeCameraBG = nc.cameraBG;
+          nodeCameraBG = nodeBinding.bindGroup;
+          nodeCameraOffsets = nodeBinding.dynamicOffsets;
         }
       }
 
@@ -6698,6 +6743,13 @@ function updateWebGPUModel(
           mergedMaterialBG, // group 1 (material + light + textures + featureId)
           mergedInstanceBG, // group 2 (skinning + morph + instancing)
           cache.effectsBG, // group 3 (was group 7)
+        ],
+        // C11-195 — group 0 is a dynamic-offset layout; groups 1-3 are not.
+        bindGroupDynamicOffsets: [
+          nodeCameraOffsets,
+          undefined,
+          undefined,
+          undefined,
         ],
         vertexBuffers: vertexBuffers,
         indexBuffer: primCache.indexBuffer || undefined,
@@ -6925,6 +6977,9 @@ function updateWebGPUModel(
             mergedInstanceBG,
             cache.effectsBG,
           ],
+          // C11-195 — pick renders the same view as the color command, so it
+          // binds the same group-0 slice.
+          bindGroupDynamicOffsets: webgpuCmdArgs.bindGroupDynamicOffsets,
           vertexBuffers: vertexBuffers,
           indexBuffer: primCache.indexBuffer || undefined,
           indexCount: primCache.indexCount || 0,
@@ -7095,6 +7150,7 @@ function updateWebGPUModel(
               mergedInstanceBG,
               cache.effectsBG,
             ],
+            bindGroupDynamicOffsets: webgpuCmdArgs.bindGroupDynamicOffsets,
             vertexBuffers: vertexBuffers,
             indexBuffer: primCache.indexBuffer || undefined,
             indexCount: primCache.indexCount || 0,
@@ -7157,6 +7213,9 @@ function updateWebGPUModel(
             mergedInstanceBG,
             cache.effectsBG,
           ],
+          // C11-195 — motion vectors are derived from the same camera block
+          // (including its `previousViewProjection` tail), so same slice.
+          bindGroupDynamicOffsets: webgpuCmdArgs.bindGroupDynamicOffsets,
           vertexBuffers: vertexBuffers,
           indexBuffer: primCache.indexBuffer || undefined,
           indexCount: primCache.indexCount || 0,
@@ -7203,9 +7262,16 @@ function updateWebGPUModel(
       ) {
         const idlBindGroups = webgpuCmdArgs.bindGroups.slice();
         idlBindGroups[0] = nodeIdlCameraBG;
+        // C11-195 — under the arena the duplicate usually shares the primary
+        // command's group-0 bind group (same ring page) and differs ONLY in
+        // its dynamic offset. Swap both so the wrapped copy can never read
+        // the primary view's slice.
+        const idlDynamicOffsets = webgpuCmdArgs.bindGroupDynamicOffsets.slice();
+        idlDynamicOffsets[0] = nodeIdlCameraOffsets ?? undefined;
         const idlCmd = new WebGPUDrawCommand({
           ...webgpuCmdArgs,
           bindGroups: idlBindGroups,
+          bindGroupDynamicOffsets: idlDynamicOffsets,
           boundingVolume: nodeIdlBoundingSphere2D,
           modelMatrix: nodeIdlModelMatrix2D,
           ...nonColorShadowFlags,
@@ -7338,6 +7404,7 @@ function updateWebGPUModel(
             mergedInstanceBG,
             cache.effectsBG,
           ],
+          bindGroupDynamicOffsets: webgpuCmdArgs.bindGroupDynamicOffsets,
           vertexBuffers: vertexBuffers,
           indexBuffer: primCache.indexBuffer || undefined,
           indexCount: primCache.indexCount || 0,
@@ -7545,6 +7612,7 @@ function updateWebGPUModel(
               mergedInstanceBG,
               cache.effectsBG,
             ],
+            bindGroupDynamicOffsets: webgpuCmdArgs.bindGroupDynamicOffsets,
             vertexBuffers: vertexBuffers,
             indexBuffer: primCache.indexBuffer || undefined,
             indexCount: primCache.indexCount || 0,
@@ -8079,12 +8147,10 @@ function destroyWebGPUModelResources(model: ModelLike) {
     return;
   }
 
-  if (defined(cache.cameraBuffer)) {
-    cache.cameraBuffer.destroy();
-  }
-  if (defined(cache.cameraBuffer2DIdl)) {
-    cache.cameraBuffer2DIdl.destroy();
-  }
+  // C11-195 — the model-level and 2D/IDL camera GPU buffers no longer exist:
+  // their bytes come from the device-shared per-frame arena, which is owned
+  // and torn down by `WebGPUModelDeviceResources`. Only the CPU staging
+  // arrays live on this cache, and those are plain GC.
   if (defined(cache.shadowCastUB)) {
     cache.shadowCastUB.destroy();
     cache.shadowCastUB = undefined;
@@ -8124,13 +8190,8 @@ function destroyWebGPUModelResources(model: ModelLike) {
       nc.shadowCastUB.destroy();
       nc.shadowCastUB = undefined;
     }
-    // AUDIT_2026_05_02 B.8 (Batch 152) — release per-node camera buffer.
-    if (defined(nc.cameraBuffer)) {
-      nc.cameraBuffer.destroy();
-    }
-    if (defined(nc.cameraBuffer2DIdl)) {
-      nc.cameraBuffer2DIdl.destroy();
-    }
+    // C11-195 — per-node camera buffers are gone; see the model-level note
+    // above. Nothing per-node to release for the camera block.
     destroyInstancingResources(nc);
   }
 

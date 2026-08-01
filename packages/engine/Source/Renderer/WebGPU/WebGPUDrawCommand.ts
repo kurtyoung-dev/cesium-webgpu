@@ -118,6 +118,25 @@ function resolveBufferSize(buf: AnyGPUBuffer): number {
 }
 
 /**
+ * C11-195 — deep copy of the per-group dynamic-offset arrays used by
+ * {@link WebGPUDrawCommand.clone}. Preserves `undefined` holes (groups with no
+ * dynamic bindings) so a clone's `setBindGroup` arity matches the original's.
+ */
+function cloneDynamicOffsets(
+  offsets: Array<number[] | undefined> | undefined,
+): Array<number[] | undefined> | undefined {
+  if (offsets === undefined) {
+    return undefined;
+  }
+  const copy: Array<number[] | undefined> = new Array(offsets.length);
+  for (let i = 0; i < offsets.length; i++) {
+    const entry = offsets[i];
+    copy[i] = entry === undefined ? undefined : entry.slice();
+  }
+  return copy;
+}
+
+/**
  * Options for constructing a WebGPUDrawCommand.
  */
 interface WebGPUDrawCommandOptions {
@@ -231,6 +250,21 @@ interface WebGPUDrawCommandOptions {
    * (graceful no-op when the per-frustum source isn't published yet).
    */
   bindGroupResolvers?: Array<undefined | (() => GPUBindGroup | null)>;
+  /**
+   * C11-195 — per-@group dynamic-offset arrays, indexed the same way as
+   * `bindGroups`. An entry is required for exactly those groups whose layout
+   * declares `hasDynamicOffset` on one or more bindings, and its length must
+   * equal that layout's dynamic-binding count in binding order. Absent /
+   * `undefined` entries bind with no offsets (the historical behavior).
+   *
+   * The model path uses this for its group-0 camera block: one shared bind
+   * group over the per-frame ring page plus a one-element offset selecting
+   * this draw's 256-aligned slice. See `WebGPUModelCameraArena`.
+   *
+   * Arrays are treated as immutable after construction; `clone()` copies them
+   * so a derived command can never alias a base command's offsets.
+   */
+  bindGroupDynamicOffsets?: Array<number[] | undefined>;
 }
 
 /**
@@ -371,6 +405,15 @@ class WebGPUDrawCommand {
    */
   bindGroupResolvers?: Array<undefined | (() => GPUBindGroup | null)>;
 
+  /**
+   * C11-195 — per-@group dynamic-offset arrays. See
+   * `WebGPUDrawCommandOptions.bindGroupDynamicOffsets` for the contract.
+   * Applied in `execute()` to the bind group actually bound for that index,
+   * whether it came from the static array or from a resolver — a resolver
+   * swaps the RESOURCE, never the dynamic-offset layout.
+   */
+  bindGroupDynamicOffsets?: Array<number[] | undefined>;
+
   // Flag to identify this as a WebGPU draw command (for Scene.js type checking)
   readonly isWebGPUDrawCommand: boolean = true;
 
@@ -485,6 +528,7 @@ class WebGPUDrawCommand {
       options.depthForTranslucentClassification ?? false;
     this.classificationDepthPipeline = options.classificationDepthPipeline;
     this.bindGroupResolvers = options.bindGroupResolvers;
+    this.bindGroupDynamicOffsets = options.bindGroupDynamicOffsets;
   }
 
   /**
@@ -597,10 +641,23 @@ class WebGPUDrawCommand {
     // keeping the command functional when the per-frustum source isn't
     // published yet (first frame, viewport resize, no translucent
     // tiles this frustum).
+    // C11-195 — a group whose layout declares `hasDynamicOffset` MUST be bound
+    // with its offset array; omitting it is a validation error that
+    // invalidates the frame's command buffer. `undefined` for groups with no
+    // dynamic bindings reproduces the two-argument call exactly.
     for (let i = 0; i < this.bindGroups.length; i++) {
       const resolver = this.bindGroupResolvers?.[i];
       const resolved = resolver ? resolver() : null;
-      passEncoder.setBindGroup(i, resolved ?? this.bindGroups[i]);
+      const dynamicOffsets = this.bindGroupDynamicOffsets?.[i];
+      if (dynamicOffsets !== undefined) {
+        passEncoder.setBindGroup(
+          i,
+          resolved ?? this.bindGroups[i],
+          dynamicOffsets,
+        );
+      } else {
+        passEncoder.setBindGroup(i, resolved ?? this.bindGroups[i]);
+      }
     }
 
     // Set all vertex buffers
@@ -663,6 +720,16 @@ class WebGPUDrawCommand {
     return new WebGPUDrawCommand({
       pipeline: this.pipeline,
       bindGroups: [...this.bindGroups],
+      // C11-195 — a derived command (WebGPUDerivedCommand.deriveCommand) that
+      // dropped these would bind group 0 at dynamic offset 0, i.e. some other
+      // model's camera slice. Deep-copy so a base and its derivations can
+      // never alias one offset array.
+      bindGroupDynamicOffsets: cloneDynamicOffsets(
+        this.bindGroupDynamicOffsets,
+      ),
+      bindGroupResolvers: this.bindGroupResolvers
+        ? [...this.bindGroupResolvers]
+        : undefined,
       vertexBuffers: [...this.vertexBuffers],
       indexBuffer: this.indexBuffer,
       indexFormat: this.indexFormat,

@@ -602,6 +602,7 @@ export function executeBatchIndirect(
     // pulls from the bound state rather than the per-call params).
     const headPipeline = head.pipeline ?? head._pipeline;
     const headBindGroups = head.bindGroups;
+    const headDynamicOffsets = head.bindGroupDynamicOffsets;
     const headVertexBuffers = head.vertexBuffers;
     const headIndexBuffer = head.indexBuffer;
     const headIndexFormat = head.indexFormat ?? "uint16";
@@ -615,6 +616,20 @@ export function executeBatchIndirect(
       if (next.indexBuffer !== headIndexBuffer) break;
       // Cheap structural check on bind groups: same length, same refs.
       if (!sameBindGroupArray(next.bindGroups, headBindGroups)) break;
+      // C11-195 — bind-group identity is no longer sufficient. Under a
+      // dynamic-offset arena two different models on the same ring page share
+      // one group-0 bind group and differ ONLY in their byte offset, so
+      // merging them into one run would draw the second with the first's
+      // camera block. The offsets are part of the bound state a
+      // `drawIndexedIndirect` inherits, so they must match to merge.
+      if (
+        !sameDynamicOffsetArray(
+          next.bindGroupDynamicOffsets,
+          headDynamicOffsets,
+        )
+      ) {
+        break;
+      }
       if (!sameVertexBufferArray(next.vertexBuffers, headVertexBuffers)) break;
       if ((next.indexFormat ?? "uint16") !== headIndexFormat) break;
       runEnd++;
@@ -650,7 +665,14 @@ export function executeBatchIndirect(
     renderPass.setPipeline(headPipeline);
     if (headBindGroups) {
       for (let g = 0; g < headBindGroups.length; g++) {
-        renderPass.setBindGroup(g, headBindGroups[g]);
+        // C11-195 — every command in this run was proven to carry identical
+        // dynamic offsets above, so binding the head's is binding all of them.
+        const offsets = headDynamicOffsets?.[g];
+        if (offsets !== undefined) {
+          renderPass.setBindGroup(g, headBindGroups[g], offsets);
+        } else {
+          renderPass.setBindGroup(g, headBindGroups[g]);
+        }
       }
     }
     if (headVertexBuffers) {
@@ -679,6 +701,33 @@ function sameBindGroupArray(
   if (!a || !b || a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
     if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * C11-195 — structural equality for per-group dynamic-offset arrays. Compares
+ * BY VALUE, not by reference: two commands built from the same arena slice
+ * legitimately hold different array instances holding the same offset, and
+ * refusing to merge those would silently undo the indirect batching win.
+ */
+function sameDynamicOffsetArray(
+  a: ReadonlyArray<number[] | undefined> | undefined,
+  b: ReadonlyArray<number[] | undefined> | undefined,
+): boolean {
+  if (a === b) return true;
+  const aLength = a?.length ?? 0;
+  const bLength = b?.length ?? 0;
+  if (aLength !== bLength) return false;
+  for (let i = 0; i < aLength; i++) {
+    const ai = a![i];
+    const bi = b![i];
+    if (ai === bi) continue;
+    if (ai === undefined || bi === undefined) return false;
+    if (ai.length !== bi.length) return false;
+    for (let j = 0; j < ai.length; j++) {
+      if (ai[j] !== bi[j]) return false;
+    }
   }
   return true;
 }

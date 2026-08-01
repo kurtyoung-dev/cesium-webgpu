@@ -6,9 +6,25 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+import {
+  MODEL_CAMERA_UNIFORM_BYTES,
+  WebGPUModelCameraArena,
+} from "./WebGPUModelCameraArena.js";
 
 export interface WebGPUModelDeviceResources {
+  /**
+   * Group-0 camera layout. C11-195 — binding 0 declares `hasDynamicOffset`,
+   * so EVERY bind group built against it must be bound with a one-element
+   * dynamic-offset array. `WebGPUModelCameraArena` is the only sanctioned
+   * producer; see its module docs for why the offset is dynamic.
+   */
   readonly cameraBGL: GPUBindGroupLayout;
+  /**
+   * C11-195 — per-device owner of the per-frame group-0 camera arena. Shared
+   * by every model on this device (main view, transformed nodes, the SCENE2D
+   * IDL duplicate, and the environment-capture face replays).
+   */
+  readonly cameraArena: WebGPUModelCameraArena;
   readonly instanceBGL: GPUBindGroupLayout;
   readonly materialBGLCache: Map<number, GPUBindGroupLayout>;
   /**
@@ -96,8 +112,16 @@ function createDefaultVertexBuffer(
 }
 
 function createResources(device: GPUDevice): WebGPUModelDeviceResources {
+  // C11-195 — dynamic-offset group 0. One bind group per ring page serves
+  // every model/node/IDL/capture camera block on this device; the per-draw
+  // slice is selected by the offset supplied at setBindGroup time.
+  // `minBindingSize` makes a short binding a layout-creation error instead of
+  // a silent out-of-range read in the vertex stage.
   const cameraBGL = makeBindGroupLayout(device, "Model Camera BGL", [
-    uniformBuffer(0, Stage.VERTEX_FRAGMENT),
+    uniformBuffer(0, Stage.VERTEX_FRAGMENT, {
+      hasDynamicOffset: true,
+      minBindingSize: MODEL_CAMERA_UNIFORM_BYTES,
+    }),
   ]);
   const instanceBGL = makeBindGroupLayout(device, "Model Instance BGL", [
     storageBuffer(0, Stage.VERTEX, { readOnly: true }),
@@ -299,6 +323,7 @@ function createResources(device: GPUDevice): WebGPUModelDeviceResources {
 
   return {
     cameraBGL,
+    cameraArena: new WebGPUModelCameraArena(),
     instanceBGL,
     materialBGLCache: new Map(),
     pipelineLayoutCachesByEffectsLayout: new WeakMap(),
@@ -403,4 +428,8 @@ export function releaseWebGPUModelDeviceResources(
   resources.defaultFeatureUniformBuffer.destroy();
   resources.samplerCache.clear();
   resources.materialBGLCache.clear();
+  // C11-195 — the arena caches bind groups over ring pages owned by the
+  // context. Releasing the last lease on this device means those pages are
+  // going away with it; drop every reference and free fallback buffers.
+  resources.cameraArena.invalidate();
 }

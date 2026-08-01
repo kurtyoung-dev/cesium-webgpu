@@ -249,17 +249,33 @@ export function executeTranslucentPass(
             // the in-range per-slice UB into the OIT path too. A resolver
             // returning null falls back to the static group (single-frustum /
             // first frame), unchanged.
-            const resolvers = (
-              cmd as unknown as {
-                bindGroupResolvers?: Array<
-                  undefined | (() => GPUBindGroup | null)
-                >;
-              }
-            ).bindGroupResolvers;
+            const commandBindings = cmd as unknown as {
+              bindGroupResolvers?: Array<
+                undefined | (() => GPUBindGroup | null)
+              >;
+              bindGroupDynamicOffsets?: Array<number[] | undefined>;
+            };
+            const resolvers = commandBindings.bindGroupResolvers;
+            // C11-195 — the OIT accumulation variant is built against the SAME
+            // pipeline layout as the color pipeline, so a group whose layout
+            // declares `hasDynamicOffset` (the model's group 0) must be bound
+            // with its offset here too. Omitting it is a validation error, and
+            // binding offset 0 instead would draw the translucent model with
+            // some other draw's camera block.
+            const dynamicOffsets = commandBindings.bindGroupDynamicOffsets;
             for (let bi = 0; bi < cmd.bindGroups.length; bi++) {
               const resolver = resolvers?.[bi];
               const resolved = resolver ? resolver() : null;
-              accPass.setBindGroup(bi, resolved ?? cmd.bindGroups[bi]);
+              const offsets = dynamicOffsets?.[bi];
+              if (offsets !== undefined) {
+                accPass.setBindGroup(
+                  bi,
+                  resolved ?? cmd.bindGroups[bi],
+                  offsets,
+                );
+              } else {
+                accPass.setBindGroup(bi, resolved ?? cmd.bindGroups[bi]);
+              }
             }
             for (let vi = 0; vi < cmd.vertexBuffers.length; vi++) {
               accPass.setVertexBuffer(

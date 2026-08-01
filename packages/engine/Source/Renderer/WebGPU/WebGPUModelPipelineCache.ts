@@ -82,6 +82,7 @@ import {
   releaseWebGPUModelDeviceResources,
   type WebGPUModelDeviceResources,
 } from "./WebGPUModelDeviceResources.js";
+import type { WebGPUModelCameraArena } from "./WebGPUModelCameraArena.js";
 // DP-H46c/d — property-texture + property-table binding numbers, shared with
 // the codegen + renderer so the BGL, shader, and bind-group entries all agree.
 import {
@@ -1847,6 +1848,7 @@ class WebGPUModelPipelineCache {
   declare _capturePipelines: Map<string | number, GPURenderPipeline>;
   declare _pickMetadataPipelines: Map<string | number, GPURenderPipeline>;
   declare _cameraBGL: GPUBindGroupLayout;
+  declare _cameraArena: WebGPUModelCameraArena;
   declare _instanceBGL: GPUBindGroupLayout;
   declare _effectsBGL: GPUBindGroupLayout;
   declare _modelDeviceResources: WebGPUModelDeviceResources | null;
@@ -2057,6 +2059,10 @@ class WebGPUModelPipelineCache {
     const modelDeviceResources = acquireWebGPUModelDeviceResources(device);
     this._modelDeviceResources = modelDeviceResources;
     this._cameraBGL = modelDeviceResources.cameraBGL;
+    // C11-195 — the arena travels with the camera layout it builds groups
+    // against, so a model that holds one holds the other from the same
+    // device-generation lease.
+    this._cameraArena = modelDeviceResources.cameraArena;
     this._instanceBGL = modelDeviceResources.instanceBGL;
     // Effects BGL (group 3) — shared with globe + primitive via
     // `getEffectsBindGroupLayout` factory.
@@ -4022,6 +4028,15 @@ class WebGPUModelPipelineCache {
   /** @returns {GPUBindGroupLayout} */
   get cameraBGL() {
     return this._cameraBGL;
+  }
+
+  /**
+   * C11-195 — device-shared per-frame group-0 camera arena. Every group-0
+   * bind group for this layout must come from here so the dynamic-offset
+   * contract of `cameraBGL` is satisfied exactly once, in one place.
+   */
+  get cameraArena(): WebGPUModelCameraArena {
+    return this._cameraArena;
   }
 
   /** @returns {GPUBindGroupLayout} */
