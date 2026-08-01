@@ -5,6 +5,7 @@ import {
   getOrCreateModelCaptureCommands,
   packPunctualLights,
 } from "../../../Source/Renderer/WebGPU/WebGPUModelRenderer.js";
+import WebGPUModelCameraArena from "../../../Source/Renderer/WebGPU/WebGPUModelCameraArena.js";
 import ModelPBRComplete from "../../../Source/Shaders/WebGPU/Model/ModelPBRComplete.js";
 
 describe("Renderer/WebGPU model punctual-light RTE", function () {
@@ -124,6 +125,7 @@ describe("Renderer/WebGPU model punctual-light RTE", function () {
     const allocations = [];
     let nextOffset = 0;
     const allocator = {
+      allocationEpoch: 1,
       allocateAndWrite(data, size) {
         const snapshot = new Float32Array(
           data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
@@ -148,6 +150,9 @@ describe("Renderer/WebGPU model punctual-light RTE", function () {
     };
     const pipelineCache = {
       cameraBGL: {},
+      // C11-195 — the real arena: the capture path's camera AND light blocks
+      // both come out of it, so a double would prove nothing about either.
+      cameraArena: new WebGPUModelCameraArena(),
       defaultIBLCubemapView: {},
       defaultIBLSampler: {},
       defaultSHBuffer: {},
@@ -185,6 +190,9 @@ describe("Renderer/WebGPU model punctual-light RTE", function () {
           instanceCount: 1,
           nodeModelMatrix: Matrix4.IDENTITY,
           materialBuffer: { buffer: { label: "material-buffer" } },
+          // C11-195 — records no longer carry a light buffer. Left here as a
+          // hostile leftover: a stale publish from an older frame must not be
+          // able to smuggle the on-screen view's light block into a capture.
           lightBuffer: { buffer: persistentLightGPUBuffer },
           textureEntries: [],
           featureIdEntries: [],
@@ -211,7 +219,12 @@ describe("Renderer/WebGPU model punctual-light RTE", function () {
       context: { uniformState, uniformAllocator: allocator },
       lights,
     };
+    // C11-195 — the light rides group 0 binding 1 with a dynamic offset, so
+    // the per-face isolation lives in TWO places that must agree: the bound
+    // resource (one ring page, shared) and the per-command dynamic offset
+    // (one per face). Collect both.
     const lightBindings = [];
+    const lightOffsets = [];
 
     for (let face = 0; face < 6; face++) {
       uniformState.inverseViewRotation = Matrix3.fromRotationZ(
@@ -226,28 +239,32 @@ describe("Renderer/WebGPU model punctual-light RTE", function () {
       );
       expect(commands.length).toBe(1);
       lightBindings.push(
-        commands[0].bindGroups[1].descriptor.entries.find(
+        commands[0].bindGroups[0].descriptor.entries.find(
           (bindEntry) => bindEntry.binding === 1,
         ).resource,
       );
+      // [cameraOffset, lightOffset], ordered by binding index.
+      expect(commands[0].bindGroup0DynamicOffsets.length).toBe(2);
+      lightOffsets.push(commands[0].bindGroup0DynamicOffsets[1]);
     }
 
     const lightAllocations = allocations.filter(
       (allocation) => allocation.size === 864,
     );
     expect(lightAllocations.length).toBe(6);
-    expect(new Set(lightBindings.map((binding) => binding.offset)).size).toBe(
-      6,
-    );
+    // Six faces, six distinct slices — a shared offset would light five faces
+    // with another face's camera-relative positions.
+    expect(new Set(lightOffsets).size).toBe(6);
     expect(
       lightBindings.every(
         (binding) =>
           binding.buffer === ringBuffer &&
           binding.size === 864 &&
+          binding.offset === 0 &&
           binding.buffer !== persistentLightGPUBuffer,
       ),
     ).toBeTrue();
-    expect(lightBindings.map((binding) => binding.offset)).toEqual(
+    expect(lightOffsets).toEqual(
       lightAllocations.map((allocation) => allocation.offset),
     );
 

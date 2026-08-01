@@ -5,8 +5,9 @@
  *
  * All variants share the same vertex layout (7 attribute slots) and the
  * 4 bind group layouts composed from device-shared model layouts:
- *   Group 0 — camera UBO (per-frame).
- *   Group 1 — merged material UBO + light UBO + 24 PBR/KHR textures +
+ *   Group 0 — camera UBO + model/view light UBO (per-frame, both
+ *             dynamic-offset — C11-195).
+ *   Group 1 — merged material UBO + 24 PBR/KHR textures +
  *             7 featureId entries (per-material).
  *   Group 2 — merged joint matrices + morph deltas + morph weights +
  *             instance transforms (per-instance vertex).
@@ -412,9 +413,13 @@ function buildMaterialBGL(
   materialDefines: number,
 ): GPUBindGroupLayout {
   const entries = [
-    // 0-1: Material + Light UBOs (always)
+    // 0: Material UBO (always). C11-195 — binding 1 (the light UBO) MOVED to
+    // group 0 binding 1: it is a per (model, view) block, not a per-primitive
+    // one, and leaving it here would have forced this per-primitive bind group
+    // to reference a rotating ring page. Binding 1 is intentionally left
+    // vacant rather than renumbered — the KHR/featureId/IBL binding numbers
+    // are load-bearing across the layout, the WGSL, and the entries arrays.
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
-    uniformBuffer(1, Stage.FRAGMENT),
     // 2-11: Five PBR texture + sampler pairs (always)
     texture(2, Stage.FRAGMENT),
     sampler(3, Stage.FRAGMENT),
@@ -609,9 +614,10 @@ function buildMaterialBGL(
  * `_materialBGLCache` keyed by `materialDefines: number`.
  *
  * Layout:
- *   Group 0 — CAMERA (1 binding, V+F)
- *   Group 1 — MATERIAL+TEXTURES+FEATURE (per-variant, 23-37 bindings)
- *     0-1   : material UBO + light UBO
+ *   Group 0 — CAMERA + LIGHT (2 dynamic-offset bindings; 0 = camera V+F,
+ *             1 = model/view light F). C11-195.
+ *   Group 1 — MATERIAL+TEXTURES+FEATURE (per-variant, 22-36 bindings)
+ *     0     : material UBO (binding 1 vacated by C11-195)
  *     2-11  : 5 PBR texture+sampler pairs
  *     12-25 : KHR textures + sampler (gated per-variant via manifest)
  *     26-32 : featureId / batch / featurePick

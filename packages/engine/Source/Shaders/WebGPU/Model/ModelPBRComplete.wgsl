@@ -396,9 +396,16 @@ struct LightUniforms {
 
 // ─── Bind Groups ─────────────────────────────────────────────────────────────
 
+// C11-195 — group 0 carries the two blocks that belong to the (model, view)
+// pair, not to any primitive: the RTE camera and the light. Both are packed
+// once per model per view into the shared per-frame ring and addressed by
+// dynamic offset (`WebGPUModelCameraArena`). The light's punctual positions,
+// proxy center, and eye→world rotation are relative to the SAME encoded eye
+// the camera block carries, so keeping them in one bind group is what makes
+// that RTE pairing structural. Group 1 stays purely per-primitive.
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
+@group(0) @binding(1) var<uniform> light: LightUniforms;
 @group(1) @binding(0) var<uniform> material: MaterialUniforms;
-@group(1) @binding(1) var<uniform> light: LightUniforms;
 
 // Textures — bind 1x1 default textures when not available
 @group(1) @binding(2) var baseColorTexture: texture_2d<f32>;

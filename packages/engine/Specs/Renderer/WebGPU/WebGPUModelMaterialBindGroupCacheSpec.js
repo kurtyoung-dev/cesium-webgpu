@@ -7,10 +7,15 @@ import {
   uploadPackedMaterialUniformsIfChanged,
 } from "../../../Source/Renderer/WebGPU/WebGPUModelRenderer.js";
 
-// C9-17 Slice A — certifies the per-primitive merged group-1 (material + light +
+// C9-17 Slice A — certifies the per-primitive merged group-1 (material +
 // textures + featureId + IBL) bind-group cache and the memoized IBL entries
 // resolution. Mirrors WebGPUModelInstanceBindGroupCacheSpec's mock-device
 // pattern: no real GPUDevice, just identity bookkeeping.
+//
+// C11-195 — the light UB left this group for the group-0 arena, so it is no
+// longer a key component here. That is deliberate: a per-frame ring slice in
+// this per-primitive cache would have forced the rotating ring page into the
+// key and multiplied every primitive's resident bind groups by the page count.
 
 const SLOT_PRIMARY = 0;
 const SLOT_SILHOUETTE = 1;
@@ -23,7 +28,7 @@ function makeGpuBuffer(label) {
 }
 
 // A WebGPUBuffer wrapper exposes the underlying GPUBuffer via `.buffer`; the
-// builder reads `materialBuffer.buffer` / `lightBuffer.buffer`.
+// builder reads `materialBuffer.buffer`.
 function makeUniformBuffer(label) {
   return { label: label, buffer: makeGpuBuffer(`${label}-gpu`) };
 }
@@ -79,7 +84,6 @@ function getMaterialBindGroup(
     device,
     pipelineCache,
     opts.materialBuffer ?? makeUniformBuffer("material"),
-    opts.lightBuffer ?? makeUniformBuffer("light"),
     opts.textureEntries ?? [],
     "featureIdEntries" in opts ? opts.featureIdEntries : null,
     opts.iblEntries ?? makeIblEntries("ibl"),
@@ -95,7 +99,6 @@ describe("Renderer/WebGPU/WebGPUModel material bind-group cache", function () {
     const pipelineCache = makePipelineCache();
     const shared = {
       materialBuffer: makeUniformBuffer("material"),
-      lightBuffer: makeUniformBuffer("light"),
       textureEntries: [{ binding: 2, resource: { label: "tex" } }],
       featureIdEntries: [{ binding: 26, resource: { label: "fid" } }],
       iblEntries: makeIblEntries("ibl"),
@@ -130,16 +133,30 @@ describe("Renderer/WebGPU/WebGPUModel material bind-group cache", function () {
     expect(device.bindGroups[0].descriptor.label).toBe(MATERIAL_LABEL);
   });
 
+  it("no longer binds a light UB at group-1 binding 1 (C11-195)", function () {
+    const primCache = {};
+    const device = makeDevice("device-a");
+    const pipelineCache = makePipelineCache();
+
+    getMaterialBindGroup(primCache, SLOT_PRIMARY, device, pipelineCache, {
+      textureEntries: [{ binding: 2, resource: { label: "tex" } }],
+    });
+
+    const bindings = device.bindGroups[0].descriptor.entries.map(
+      (entry) => entry.binding,
+    );
+    // Binding 1 moved to the group-0 arena and this group's layout no longer
+    // declares it; emitting an entry for it would be a validation error.
+    expect(bindings).not.toContain(1);
+    expect(bindings[0]).toBe(0);
+  });
+
   it("rebuilds exactly once for each key-component identity change", function () {
     // Each entry mutates one key component off a stable baseline and asserts a
     // single fresh create.
     const mutators = [
       function (opts, pipelineCache) {
         opts.materialBuffer = makeUniformBuffer("material-2");
-        return pipelineCache;
-      },
-      function (opts, pipelineCache) {
-        opts.lightBuffer = makeUniformBuffer("light-2");
         return pipelineCache;
       },
       function (opts, pipelineCache) {
@@ -167,7 +184,6 @@ describe("Renderer/WebGPU/WebGPUModel material bind-group cache", function () {
       const pipelineCache = makePipelineCache();
       const opts = {
         materialBuffer: makeUniformBuffer("material"),
-        lightBuffer: makeUniformBuffer("light"),
         textureEntries: [{ binding: 2, resource: { label: "tex" } }],
         featureIdEntries: [{ binding: 26, resource: { label: "fid" } }],
         iblEntries: makeIblEntries("ibl"),
@@ -200,7 +216,6 @@ describe("Renderer/WebGPU/WebGPUModel material bind-group cache", function () {
     const pipelineCache = makePipelineCache();
     const baseline = {
       materialBuffer: makeUniformBuffer("material"),
-      lightBuffer: makeUniformBuffer("light"),
       textureEntries: [],
       featureIdEntries: null,
       iblEntries: makeIblEntries("ibl"),
@@ -241,11 +256,9 @@ describe("Renderer/WebGPU/WebGPUModel material bind-group cache", function () {
     const primCache = {};
     const device = makeDevice("device-a");
     const pipelineCache = makePipelineCache();
-    const light = makeUniformBuffer("light");
     const ibl = makeIblEntries("ibl");
     const opts = (materialLabel) => ({
       materialBuffer: makeUniformBuffer(materialLabel),
-      lightBuffer: light,
       textureEntries: [],
       featureIdEntries: null,
       iblEntries: ibl,
@@ -293,7 +306,6 @@ describe("Renderer/WebGPU/WebGPUModel material bind-group cache", function () {
     const pipelineCache = makePipelineCache();
     const shared = {
       materialBuffer: makeUniformBuffer("material"),
-      lightBuffer: makeUniformBuffer("light"),
       textureEntries: [],
       featureIdEntries: null,
       iblEntries: makeIblEntries("ibl"),

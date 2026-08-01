@@ -114,19 +114,17 @@ import WebGPUBuffer from "./WebGPUBuffer.js";
 import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 import type { WebGPUPipelineConfig } from "./WebGPUDrawCommand.js";
-// C2-25 ENV-SCENE-CAPTURE (Batch 447) — per-frame uniform ring allocator. The
-// capture pass packs a face-view LIGHT UB per model replay; it MUST ride the
-// ring because capture precedes the main render and the persistent light UB
-// belongs to the on-screen view.
-import { writeUniformSlice } from "./WebGPUGlobeSurfaceCameraUB.js";
-// C11-195 — every group-0 camera block (main view, transformed node, SCENE2D
-// IDL duplicate, env-capture face) is acquired here. `cameraBGL` declares
-// `hasDynamicOffset`, so this is the ONLY sanctioned producer of a group-0
-// bind group for the model path.
+// C11-195 — every group-0 block (the camera for the main view / a transformed
+// node / the SCENE2D IDL duplicate / an env-capture face, and the ONE
+// model-and-view-wide light block those cameras pair with) is acquired here.
+// Both `cameraBGL` bindings declare `hasDynamicOffset`, so this is the ONLY
+// sanctioned producer of a group-0 bind group for the model path.
 import {
   MODEL_CAMERA_UNIFORM_BYTES,
+  MODEL_LIGHT_UNIFORM_BYTES,
   type ModelCameraArenaAllocator,
   type ModelCameraBinding,
+  type ModelViewLightSlice,
   type WebGPUModelCameraArena,
 } from "./WebGPUModelCameraArena.js";
 import WebGPUModelPipelineCache from "./WebGPUModelPipelineCache.js";
@@ -366,15 +364,12 @@ interface PrimitiveRenderData {
   materialBuffer?: WebGPUBuffer | null;
   materialBufferSilhouette?: WebGPUBuffer | null;
   materialBufferTranslucent?: WebGPUBuffer | null;
-  lightBuffer?: WebGPUBuffer | null;
   materialData?: Float32Array | null;
   materialDataSilhouette?: Float32Array | null;
   materialDataTranslucent?: Float32Array | null;
   materialUploadState?: PackedMaterialUploadState | null;
   materialUploadStateSilhouette?: PackedMaterialUploadState | null;
   materialUploadStateTranslucent?: PackedMaterialUploadState | null;
-  lightData?: Float32Array | null;
-  lightUploadState?: PackedMaterialUploadState | null;
   _metadataMatTransport: boolean;
   _propertyTextureResources: unknown;
   propertyTextureEntries: GPUBindGroupEntry[] | null;
@@ -439,7 +434,6 @@ interface MergedMaterialBindGroupCache {
   device: GPUDevice;
   layout: GPUBindGroupLayout;
   materialBuffer: WebGPUBuffer | null;
-  lightBuffer: WebGPUBuffer | null;
   textureEntries: GPUBindGroupEntry[] | null | undefined;
   featureIdEntries: GPUBindGroupEntry[] | null | undefined;
   iblEntries: GPUBindGroupEntry[] | null | undefined;
@@ -450,12 +444,6 @@ interface PackedMaterialUploadState {
   currentWords: Uint32Array;
   uploadedWords: Uint32Array;
   uploaded: boolean;
-}
-
-interface UniformBufferSlice {
-  buffer: GPUBuffer;
-  offset: number;
-  size: number;
 }
 
 interface ModelShadowCastUniformHost {
@@ -695,6 +683,10 @@ interface ModelWebGPUCache extends Idl2DHost, ModelShadowCastUniformHost {
   // C11-195 — CPU staging for the model-level (identity-transform) camera
   // block. See NodeCache.cameraData; the GPU bytes live in the arena.
   cameraData?: Float32Array | null;
+  // C11-195 — CPU staging for the model-and-view-wide light block, packed at
+  // most once per update. Model-level because the block is: it was previously
+  // duplicated byte-for-byte into one UB per primitive.
+  lightData?: Float32Array | null;
   effectsBG?: GPUBindGroup | null;
   edgeEmitterCache?: EdgeEmitterCache | null;
   hasEdgeFeatureIds?: boolean;
@@ -966,7 +958,6 @@ interface CaptureRecord {
   indexCount?: number;
   nodeModelMatrix?: Matrix4;
   materialBuffer?: WebGPUBuffer | null;
-  lightBuffer?: WebGPUBuffer | null;
   textureEntries?: GPUBindGroupEntry[] | null;
   featureIdEntries?: GPUBindGroupEntry[] | null;
   materialDefines?: number;
@@ -1211,7 +1202,11 @@ const MATERIAL_UNIFORM_SIZE = 768;
 //                       3 vec4-padded columns @ floats 204-206 / 208-210 / 212-214
 // Total: 64 + 656 + 48 + 96 = 864 bytes. Keep in sync with struct
 // LightUniforms in ModelPBRComplete.wgsl.
-const LIGHT_UNIFORM_SIZE = 864;
+//
+// C11-195 — the width itself now lives with the arena that binds it (group 0
+// binding 1 declares it as `minBindingSize`), so there is exactly one number
+// to keep in lockstep with the WGSL struct.
+const LIGHT_UNIFORM_SIZE = MODEL_LIGHT_UNIFORM_BYTES;
 
 // materialFlags bit for skinning (bit 13 = 8192)
 const FLAG_HAS_SKINNING = 8192;
@@ -1404,10 +1399,16 @@ function resolveModelCameraAllocator(
 }
 
 /**
- * C11-195 — acquire one group-0 camera binding for `data` from the device
- * arena. Ticks the arena on the current frame first, which is idempotent
- * within a frame and clears the bind-group cache when the context has rebuilt
- * its ring (device recovery on the same `GPUDevice`).
+ * C11-195 — acquire one group-0 binding pair for `data` + `lightSlice` from
+ * the device arena. Ticks the arena on the current frame first, which is
+ * idempotent within a frame and clears the bind-group cache when the context
+ * has rebuilt its ring (device recovery on the same `GPUDevice`).
+ *
+ * `lightSlice` is the caller's ONE light block for this model and view (see
+ * {@link acquireModelLightSlice}). It is not re-staged here: several camera
+ * blocks (root, each transformed node, the IDL duplicate) address the same
+ * light bytes, which is the entire point of hoisting the pack out of the
+ * per-primitive loop.
  */
 function acquireModelCameraBinding(
   device: GPUDevice,
@@ -1415,6 +1416,7 @@ function acquireModelCameraBinding(
   pipelineCache: PipelineCacheLike,
   data: Float32Array,
   label: string,
+  lightSlice: ModelViewLightSlice,
 ): ModelCameraBinding {
   const allocator = resolveModelCameraAllocator(frameState);
   const arena = pipelineCache.cameraArena;
@@ -1426,7 +1428,89 @@ function acquireModelCameraBinding(
     data,
     CAMERA_UNIFORM_SIZE,
     label,
+    lightSlice,
+    LIGHT_UNIFORM_SIZE,
   );
+}
+
+/**
+ * C11-195 — pack and stage the ONE light block this model and view share.
+ *
+ * The block depends only on `frameState` (scene light, eclipse factor, sky
+ * irradiance, punctual lights, active RTE eye) and `model` (IBL factors,
+ * asset lights, reflection proxy) — never on the primitive — so a model with
+ * `N` primitives packed and uploaded `N` byte-identical copies of it before
+ * this. Camera-relative punctual positions also meant the byte-comparison
+ * that guarded those uploads only suppressed anything while the camera stood
+ * perfectly still, so under motion the per-primitive cost was real.
+ *
+ * Callers memoize the result in an UPDATE-SCOPED local (never on the model
+ * cache): the slice belongs to one allocation epoch, so a later frame would
+ * bind bytes the ring has already handed to someone else.
+ */
+function acquireModelLightSlice(
+  device: GPUDevice,
+  frameState: CesiumFrameState,
+  pipelineCache: PipelineCacheLike,
+  data: Float32Array,
+  label: string,
+): ModelViewLightSlice {
+  const allocator = resolveModelCameraAllocator(frameState);
+  const arena = pipelineCache.cameraArena;
+  arena.beginFrame(frameState?.frameNumber ?? 0, allocator);
+  return arena.acquireLightSlice(
+    device,
+    allocator,
+    data,
+    LIGHT_UNIFORM_SIZE,
+    label,
+  );
+}
+
+/** The two work counters {@link prepareModelViewLightSlice} touches. */
+interface ModelLightWorkCounters {
+  lightPacks: number;
+  lightWrites: number;
+}
+
+/**
+ * C11-195 — realize this update's single light slice: allocate the model-level
+ * staging array on first use, pack it, and stage it into the frame arena.
+ *
+ * Called at most once per model per update through the callers' update-scoped
+ * memo. `lightPacks` therefore counts models, not primitives, and `lightWrites`
+ * counts light blocks that reached the GPU (staged into the ring page the
+ * context flushes once before submit) rather than individual `writeBuffer`
+ * calls, which this path no longer makes.
+ *
+ * @private
+ */
+function prepareModelViewLightSlice(
+  device: GPUDevice,
+  frameState: CesiumFrameState,
+  pipelineCache: PipelineCacheLike,
+  cache: ModelWebGPUCache,
+  model: ModelLike,
+  preparationWork: ModelLightWorkCounters | undefined,
+): ModelViewLightSlice {
+  if (!defined(cache.lightData)) {
+    cache.lightData = new Float32Array(LIGHT_UNIFORM_SIZE / 4);
+  }
+  if (defined(preparationWork)) {
+    preparationWork.lightPacks++;
+  }
+  packLightUniforms(cache.lightData, frameState, model);
+  const slice = acquireModelLightSlice(
+    device,
+    frameState,
+    pipelineCache,
+    cache.lightData,
+    "Model light",
+  );
+  if (defined(preparationWork)) {
+    preparationWork.lightWrites++;
+  }
+  return slice;
 }
 
 type PreviousMatrixHost = {
@@ -1634,10 +1718,12 @@ function overrideProject2DNormalMatrix(
  *     the next record overwrites, and the main pass renders later in this same
  *     frame from its own slices.
  *   - reuse the arena's shared group-0 bind group and address this record's
- *     block by dynamic offset (`bindGroup0DynamicOffsets`).
- *   - pack one face-view light UB into another ring slice and bind it for every
- *     record in this model replay; NEVER reuse the persistent on-screen light
- *     UB because its camera-relative positions/rotation belong to another view.
+ *     camera block AND the face light block by dynamic offset
+ *     (`bindGroup0DynamicOffsets`, ordered `[camera, light]`).
+ *   - pack ONE face-view light UB into another ring slice before the first
+ *     record and pair it with every camera slice of this model replay; NEVER
+ *     reuse the on-screen light block, whose camera-relative
+ *     positions/rotation belong to another view.
  *   - rebuild the material bind group with a NEUTRAL IBL (`iblEntries = null` →
  *     `defaultIBLEntries`) to avoid a 1-frame recursive self-reflection (the
  *     model sampling the env cube it is being captured INTO).
@@ -1699,7 +1785,10 @@ function getOrCreateModelCaptureCommands(
     }).bindGroup;
   }
   const commands = [];
-  let captureLightSlice: UniformBufferSlice | null = null;
+  // C11-195 — ONE face-view light block per model replay, shared by every
+  // record of this face. NEVER the on-screen light: its camera-relative
+  // positions and eye→world rotation belong to another view.
+  let captureLightSlice: ModelViewLightSlice | null = null;
   for (let r = 0; r < records.length; r++) {
     const rec = records[r];
     if (!rec.indexBuffer || rec.indexCount === 0) {
@@ -1717,6 +1806,16 @@ function getOrCreateModelCaptureCommands(
     // dynamic offset selects this record's block. That collapses what used to
     // be one `createBindGroup` per primitive per cube face into ~one per ring
     // page for the entire refresh.
+    if (!captureLightSlice) {
+      packLightUniforms(captureLightData, frameState, model);
+      captureLightSlice = acquireModelLightSlice(
+        device,
+        frameState,
+        pipelineCache,
+        captureLightData,
+        "Model capture light",
+      );
+    }
     packCameraUniforms(captureCameraData, frameState, rec.nodeModelMatrix);
     const cameraBinding = acquireModelCameraBinding(
       device,
@@ -1724,22 +1823,12 @@ function getOrCreateModelCaptureCommands(
       pipelineCache,
       captureCameraData,
       "Model capture camera",
+      captureLightSlice,
     );
-    if (!captureLightSlice) {
-      packLightUniforms(captureLightData, frameState, model);
-      captureLightSlice = writeUniformSlice(
-        device,
-        frameState,
-        captureLightData,
-        LIGHT_UNIFORM_SIZE,
-        "Model capture light",
-      );
-    }
     const materialBG = buildMergedMaterialBindGroup(
       device,
       pipelineCache,
       rec.materialBuffer,
-      captureLightSlice,
       rec.textureEntries,
       rec.featureIdEntries,
       null, // neutral IBL — no recursive self-reflection
@@ -3951,14 +4040,12 @@ function buildMergedMaterialBindGroup(
   device: GPUDevice,
   pipelineCache: PipelineCacheLike,
   materialBuffer: WebGPUBuffer | null,
-  lightBuffer: WebGPUBuffer | UniformBufferSlice | null,
   textureEntries: GPUBindGroupEntry[] | null | undefined,
   featureIdEntries: GPUBindGroupEntry[] | null | undefined,
   iblEntries: GPUBindGroupEntry[] | null | undefined,
   materialDefines: number,
   frameState: CesiumFrameState,
 ) {
-  const lightBinding = lightBuffer as UniformBufferSlice;
   return device.createBindGroup({
     // C9-17 Slice A — label group 1 so the settled-frame bind-group probe
     // (and the API-instrumentation lane) can attribute merged-material creates
@@ -3966,16 +4053,11 @@ function buildMergedMaterialBindGroup(
     label: "Model merged material bind group",
     layout: pipelineCache.getOrCreateMaterialBGL(materialDefines | 0),
     entries: [
+      // C11-195 — binding 1 (light) is gone from this group; it is a per
+      // (model, view) block bound from the group-0 arena. Every resource left
+      // here is per-primitive, which is what keeps this bind group's identity
+      // stable across frames and its cache at a 100% hit rate.
       { binding: 0, resource: { buffer: materialBuffer.buffer } },
-      {
-        binding: 1,
-        resource: {
-          buffer: lightBinding.buffer,
-          ...(defined(lightBinding.offset)
-            ? { offset: lightBinding.offset, size: lightBinding.size }
-            : {}),
-        },
-      },
       ...textureEntries,
       ...(featureIdEntries ?? pipelineCache.defaultFeatureIdEntries()),
       ...(iblEntries ?? defaultIBLEntries(pipelineCache, frameState)),
@@ -4385,14 +4467,13 @@ const MERGED_MATERIAL_SLOT_TRANSLUCENT = 2;
 
 /**
  * C9-17 Slice A (FAR-309 / audit #21) — per-primitive merged group-1 (material +
- * light + textures + featureId + IBL) bind-group cache, mirroring the Batch-665
+ * textures + featureId + IBL) bind-group cache, mirroring the Batch-665
  * group-2 instance cache. Bind groups are immutable but the buffers/textures
- * they reference are updated in place every frame (material UBO writeBuffer, sun
- * direction, etc.), so rebuilding this group every frame provides no freshness
+ * they reference are updated in place every frame (material UBO writeBuffer,
+ * etc.), so rebuilding this group every frame provides no freshness
  * benefit. Exact resource identity catches every real replacement:
  *   - `layout`          — per-`materialDefines` variant BGL (Batch 174)
  *   - `materialBuffer`  — primary / silhouette / translucent UB (slot-keyed)
- *   - `lightBuffer`     — per-primitive light UB
  *   - `textureEntries`  — rebuilt only on deferred-placeholder upgrade /
  *                         refraction-view change, so its ARRAY IDENTITY is the
  *                         invalidation token (trap #4 — never clone it)
@@ -4403,6 +4484,11 @@ const MERGED_MATERIAL_SLOT_TRANSLUCENT = 2;
  *                         (invariant 2), one reference summarising the five IBL
  *                         identities
  * Cache hit ⇒ zero `createBindGroup`; any identity change ⇒ exactly one rebuild.
+ *
+ * C11-195 — the light UB left this key with the binding. Had it stayed and
+ * merely become a ring slice, this cache would have had to key on the ring
+ * PAGE (which rotates every frame), multiplying every loaded primitive's
+ * resident group-1 bind groups by the ring's page count.
  * @private
  */
 function getOrCreateMergedMaterialBindGroup(
@@ -4411,7 +4497,6 @@ function getOrCreateMergedMaterialBindGroup(
   device: GPUDevice,
   pipelineCache: PipelineCacheLike,
   materialBuffer: WebGPUBuffer | null,
-  lightBuffer: WebGPUBuffer | null,
   textureEntries: GPUBindGroupEntry[] | null | undefined,
   featureIdEntries: GPUBindGroupEntry[] | null | undefined,
   iblEntries: GPUBindGroupEntry[] | null | undefined,
@@ -4433,7 +4518,6 @@ function getOrCreateMergedMaterialBindGroup(
     cached.device === device &&
     cached.layout === layout &&
     cached.materialBuffer === materialBuffer &&
-    cached.lightBuffer === lightBuffer &&
     cached.textureEntries === textureEntries &&
     cached.featureIdEntries === featureIdEntries &&
     cached.iblEntries === iblEntries
@@ -4445,7 +4529,6 @@ function getOrCreateMergedMaterialBindGroup(
     device,
     pipelineCache,
     materialBuffer,
-    lightBuffer,
     textureEntries,
     featureIdEntries,
     iblEntries,
@@ -4456,7 +4539,6 @@ function getOrCreateMergedMaterialBindGroup(
     device,
     layout,
     materialBuffer,
-    lightBuffer,
     textureEntries,
     featureIdEntries,
     iblEntries,
@@ -4965,9 +5047,12 @@ function updateWebGPUModel(
   if (!defined(model._webgpuCache)) {
     model._webgpuCache = {
       pipelineCache: null,
-      // C11-195 — CPU staging only; the camera GPU bytes live in the
-      // device-shared per-frame arena.
+      // C11-195 — CPU staging only; the camera and light GPU bytes live in
+      // the device-shared per-frame arena. `lightData` is model-level because
+      // the block it stages is model-level: every primitive used to own a
+      // byte-identical copy of it.
       cameraData: null,
+      lightData: null,
       primitives: {}, // keyed by "nodeIdx_primIdx"
       geometryViews: {}, // mutable annotation views, keyed like primitives
       nodes: {}, // per-node skinning data, keyed by nodeIdx
@@ -5522,6 +5607,12 @@ function updateWebGPUModel(
   // allocation epoch, so persisting it would let a later frame bind bytes the
   // ring has already handed to someone else.
   let rootCameraBinding: ModelCameraBinding | undefined;
+  // C11-195 (light slice) — the ONE light block this model and view share,
+  // under the same update-scoped-local rule and the same lazy realization as
+  // the camera above: a model whose primitives all skip (pipelines still
+  // cooking, warmup-only pass) never packs or stages it. Every camera
+  // acquisition of this update pairs with this exact slice.
+  let modelLightSlice: ModelViewLightSlice | undefined;
   // Shadow transform buffers are demand-created at the first emitted caster.
   // Identity-transform nodes share the model host; this per-update memo avoids
   // even repacking/comparing that host when a model has several identity nodes.
@@ -5767,13 +5858,27 @@ function updateWebGPUModel(
       // C11-195 — the IDL duplicate is a SECOND view of the same node in the
       // same frame. It takes its own arena slice, so its dynamic offset is
       // necessarily distinct from the primary view's while both share one
-      // group-0 bind group over the ring page.
+      // group-0 bind group over the ring page. The LIGHT offset is deliberately
+      // the SAME: the wrapped copy shifts the model matrix, not the eye, so the
+      // camera-relative light block is byte-identical for both halves of the
+      // IDL — exactly as it was when both read one per-primitive light UB.
+      if (!defined(modelLightSlice)) {
+        modelLightSlice = prepareModelViewLightSlice(
+          device,
+          frameState,
+          pipelineCache,
+          cache,
+          model,
+          preparationWork,
+        );
+      }
       const idlBinding = acquireModelCameraBinding(
         device,
         frameState,
         pipelineCache,
         idlHost.cameraData2DIdl,
         "Model camera 2D-IDL",
+        modelLightSlice,
       );
       nodeIdlCameraBG = idlBinding.bindGroup;
       nodeIdlCameraOffsets = idlBinding.dynamicOffsets;
@@ -6174,10 +6279,14 @@ function updateWebGPUModel(
         );
       }
 
-      // Create per-primitive material + light uniform buffers (once).
-      // The merged group 1 bind group is built per-frame at the draw
-      // command emission site (combines material UBO + light UBO +
-      // texture entries + featureId entries into one BG).
+      // Create the per-primitive material uniform buffer (once). The merged
+      // group 1 bind group is built per-frame at the draw command emission
+      // site (material UBO + texture entries + featureId entries in one BG).
+      //
+      // C11-195 — there is deliberately no per-primitive LIGHT buffer here
+      // any more. The light block is a property of the (model, view) pair, so
+      // every primitive of a model held a byte-identical copy of it and paid
+      // its own pack + upload; it now rides one arena slice on group 0.
       if (!defined(primCache.materialBuffer)) {
         primCache.materialBuffer = WebGPUBuffer.createUniformBuffer(
           device,
@@ -6187,15 +6296,6 @@ function updateWebGPUModel(
         primCache.materialData = new Float32Array(MATERIAL_UNIFORM_SIZE / 4);
         primCache.materialUploadState = createPackedMaterialUploadState(
           primCache.materialData,
-        );
-        primCache.lightBuffer = WebGPUBuffer.createUniformBuffer(
-          device,
-          LIGHT_UNIFORM_SIZE,
-          `Prim light`,
-        );
-        primCache.lightData = new Float32Array(LIGHT_UNIFORM_SIZE / 4);
-        primCache.lightUploadState = createPackedMaterialUploadState(
-          primCache.lightData,
         );
       }
       // Determine if this specific primitive has skinning
@@ -6392,29 +6492,13 @@ function updateWebGPUModel(
         }
       }
 
-      // Keep camera-dependent light blocks primitive-owned until the command
-      // API can bind frame-arena slices with dynamic offsets. Exact-byte
-      // suppression is safe here because it does not change resource identity
-      // or the existing per-view/capture lifetime.
-      if (defined(preparationWork)) {
-        preparationWork.lightPacks++;
-      }
-      packLightUniforms(primCache.lightData, frameState, model);
-      if (
-        uploadPackedMaterialUniformsIfChanged(
-          device,
-          primCache.lightBuffer.buffer,
-          primCache.lightData,
-          primCache.lightUploadState ??
-            (primCache.lightUploadState = createPackedMaterialUploadState(
-              primCache.lightData,
-            )),
-        )
-      ) {
-        if (defined(preparationWork)) {
-          preparationWork.lightWrites++;
-        }
-      }
+      // C11-195 — the per-primitive light pack + byte-compare + upload that
+      // used to sit here is gone. It ran once per primitive for a block that
+      // depends only on `frameState` + `model`, and its unchanged-write
+      // suppression could only ever fire while the camera was perfectly still
+      // (the block's punctual positions and eye→world rotation are relative to
+      // the live RTE eye). `prepareModelViewLightSlice` now packs it once per
+      // model per view, ahead of the first group-0 acquisition.
 
       // Session 62 NEW-VR-VERTEX-BUFFER-VARIANT (+ Session 65 follow-up)
       // — variant-aware vertex buffer slots. When MODEL_HAS_TEXCOORD_1
@@ -6597,7 +6681,6 @@ function updateWebGPUModel(
         device,
         pipelineCache,
         primCache.materialBuffer,
-        primCache.lightBuffer,
         primCache.textureEntries,
         featureIdEntries,
         iblEntries,
@@ -6674,6 +6757,19 @@ function updateWebGPUModel(
       // block at the first command that consumes it. Identity nodes share one
       // model-level block per update; transformed nodes own one node block.
       if (!defined(nodeCameraBG)) {
+        // C11-195 — realize this model's ONE light block at the first command
+        // that will bind it, mirroring the camera's lazy realization. Both
+        // branches below pair their camera slice with this exact slice.
+        if (!defined(modelLightSlice)) {
+          modelLightSlice = prepareModelViewLightSlice(
+            device,
+            frameState,
+            pipelineCache,
+            cache,
+            model,
+            preparationWork,
+          );
+        }
         if (transformIsIdentity) {
           if (!rootCameraPreparedThisFrame) {
             if (!defined(cache.cameraData)) {
@@ -6705,6 +6801,7 @@ function updateWebGPUModel(
               pipelineCache,
               cache.cameraData,
               "Model camera",
+              modelLightSlice,
             );
             rootCameraPreparedThisFrame = true;
           }
@@ -6728,6 +6825,7 @@ function updateWebGPUModel(
             pipelineCache,
             nc.cameraData,
             `Model camera node[${nodeIdx}]`,
+            modelLightSlice,
           );
           nodeCameraBG = nodeBinding.bindGroup;
           nodeCameraOffsets = nodeBinding.dynamicOffsets;
@@ -6859,7 +6957,9 @@ function updateWebGPUModel(
           // its pipeline with the same widened-transport variant.
           metadataMatTransport: primCache._metadataMatTransport === true,
           materialBuffer: primCache.materialBuffer,
-          lightBuffer: primCache.lightBuffer,
+          // C11-195 — no light buffer travels with the record: the replay
+          // packs its OWN face-view light block, which it must, because the
+          // block is relative to the face eye.
           textureEntries: primCache.textureEntries,
           featureIdEntries,
           mergedInstanceBG,
@@ -7291,8 +7391,10 @@ function updateWebGPUModel(
         idlBindGroups[0] = nodeIdlCameraBG;
         // C11-195 — under the arena the duplicate usually shares the primary
         // command's group-0 bind group (same ring page) and differs ONLY in
-        // its dynamic offset. Swap both so the wrapped copy can never read
-        // the primary view's slice.
+        // its dynamic offsets. Swap both so the wrapped copy can never read
+        // the primary view's camera slice. The LIGHT offset inside that array
+        // is deliberately identical: the duplicate shifts the model matrix,
+        // not the eye, so it reads the same camera-relative light block.
         const idlDynamicOffsets = webgpuCmdArgs.bindGroupDynamicOffsets.slice();
         idlDynamicOffsets[0] = nodeIdlCameraOffsets ?? undefined;
         const idlCmd = new WebGPUDrawCommand({
@@ -7416,7 +7518,6 @@ function updateWebGPUModel(
           device,
           pipelineCache,
           primCache.materialBufferSilhouette,
-          primCache.lightBuffer,
           primCache.textureEntries,
           featureIdEntries,
           iblEntries,
@@ -7616,7 +7717,6 @@ function updateWebGPUModel(
           device,
           pipelineCache,
           primCache.materialBufferTranslucent,
-          primCache.lightBuffer,
           primCache.textureEntries,
           featureIdEntries,
           iblEntries,
@@ -8144,7 +8244,8 @@ function destroyPrimitiveCacheResources(pc: PrimitiveRenderData | undefined) {
   pc.materialBufferTranslucent?.destroy();
   // WIRE-MODEL-SILHOUETTE — silhouette-pass alternate material UB.
   pc.materialBufferSilhouette?.destroy();
-  pc.lightBuffer?.destroy();
+  // C11-195 — no per-primitive light UB to destroy: the light block rides the
+  // context-owned per-frame ring, which no model owns or frees.
 
   // Destroy created GPU textures (not default ones)
   for (const tex of pc.gpuTextures) {

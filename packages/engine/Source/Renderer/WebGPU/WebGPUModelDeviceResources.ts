@@ -8,21 +8,25 @@ import {
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import {
   MODEL_CAMERA_UNIFORM_BYTES,
+  MODEL_LIGHT_UNIFORM_BYTES,
   WebGPUModelCameraArena,
 } from "./WebGPUModelCameraArena.js";
 
 export interface WebGPUModelDeviceResources {
   /**
-   * Group-0 camera layout. C11-195 — binding 0 declares `hasDynamicOffset`,
-   * so EVERY bind group built against it must be bound with a one-element
-   * dynamic-offset array. `WebGPUModelCameraArena` is the only sanctioned
-   * producer; see its module docs for why the offset is dynamic.
+   * Group-0 view layout: camera at binding 0, model/view light at binding 1.
+   * C11-195 — BOTH declare `hasDynamicOffset`, so EVERY bind group built
+   * against it must be bound with a TWO-element dynamic-offset array ordered
+   * by binding index (`[cameraOffset, lightOffset]`).
+   * `WebGPUModelCameraArena` is the only sanctioned producer; see its module
+   * docs for why the offsets are dynamic and why the light lives here rather
+   * than in the merged per-primitive group 1.
    */
   readonly cameraBGL: GPUBindGroupLayout;
   /**
-   * C11-195 — per-device owner of the per-frame group-0 camera arena. Shared
-   * by every model on this device (main view, transformed nodes, the SCENE2D
-   * IDL duplicate, and the environment-capture face replays).
+   * C11-195 — per-device owner of the per-frame group-0 camera + light arena.
+   * Shared by every model on this device (main view, transformed nodes, the
+   * SCENE2D IDL duplicate, and the environment-capture face replays).
    */
   readonly cameraArena: WebGPUModelCameraArena;
   readonly instanceBGL: GPUBindGroupLayout;
@@ -113,14 +117,23 @@ function createDefaultVertexBuffer(
 
 function createResources(device: GPUDevice): WebGPUModelDeviceResources {
   // C11-195 — dynamic-offset group 0. One bind group per ring page serves
-  // every model/node/IDL/capture camera block on this device; the per-draw
-  // slice is selected by the offset supplied at setBindGroup time.
+  // every model/node/IDL/capture camera AND light block on this device; the
+  // per-draw slices are selected by the offsets supplied at setBindGroup time.
   // `minBindingSize` makes a short binding a layout-creation error instead of
   // a silent out-of-range read in the vertex stage.
+  //
+  // Binding 1 is the model/view light block. It is FRAGMENT-only (no vertex
+  // stage in ModelPBRComplete.wgsl reads `light`) and it is per (model, view)
+  // exactly like the camera — which is why it belongs here and not in the
+  // per-primitive merged group 1. See WebGPUModelCameraArena's module docs.
   const cameraBGL = makeBindGroupLayout(device, "Model Camera BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT, {
       hasDynamicOffset: true,
       minBindingSize: MODEL_CAMERA_UNIFORM_BYTES,
+    }),
+    uniformBuffer(1, Stage.FRAGMENT, {
+      hasDynamicOffset: true,
+      minBindingSize: MODEL_LIGHT_UNIFORM_BYTES,
     }),
   ]);
   const instanceBGL = makeBindGroupLayout(device, "Model Instance BGL", [

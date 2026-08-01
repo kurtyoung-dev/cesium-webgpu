@@ -46,6 +46,7 @@ const moduleUrl = `data:text/javascript;base64,${Buffer.from(
 const {
   WebGPUModelCameraArena,
   MODEL_CAMERA_UNIFORM_BYTES,
+  MODEL_LIGHT_UNIFORM_BYTES,
   MODEL_CAMERA_DYNAMIC_OFFSET_ALIGNMENT,
 } = await import(moduleUrl);
 
@@ -163,7 +164,23 @@ const cameraBlock = (seed) => {
   return data;
 };
 
-function acquire(arena, device, allocator, data, label = "cam") {
+// C11-195 (light slice) — group 0 now carries the model/view light block at
+// binding 1, so every acquisition supplies one. These camera contracts pin one
+// light slice per arena so the camera axis stays isolated; the light's own
+// contracts live in model-light-arena.spec.mjs.
+function lightSliceFor(arena, device, allocator, seed = 0) {
+  const data = new Float32Array(MODEL_LIGHT_UNIFORM_BYTES / 4);
+  data[0] = seed;
+  return arena.acquireLightSlice(
+    device,
+    allocator,
+    data,
+    MODEL_LIGHT_UNIFORM_BYTES,
+    "light",
+  );
+}
+
+function acquire(arena, device, allocator, data, label = "cam", light) {
   return arena.acquire(
     device,
     allocator,
@@ -171,6 +188,8 @@ function acquire(arena, device, allocator, data, label = "cam") {
     data,
     MODEL_CAMERA_UNIFORM_BYTES,
     label,
+    light ?? lightSliceFor(arena, device, allocator),
+    MODEL_LIGHT_UNIFORM_BYTES,
   );
 }
 
@@ -197,7 +216,12 @@ test("every dynamic offset is a multiple of the 256-byte granularity", () => {
   const seen = [];
   for (let i = 0; i < 64; i++) {
     const binding = acquire(arena, device, allocator, cameraBlock(i));
-    assert.equal(binding.dynamicOffsets.length, 1);
+    // [cameraOffset, lightOffset] — ordered by binding index, which is what
+    // WebGPU requires of a group with two dynamic bindings.
+    assert.equal(binding.dynamicOffsets.length, 2);
+    for (const each of binding.dynamicOffsets) {
+      assert.equal(each % MODEL_CAMERA_DYNAMIC_OFFSET_ALIGNMENT, 0);
+    }
     const offset = binding.dynamicOffsets[0];
     assert.equal(
       offset % MODEL_CAMERA_DYNAMIC_OFFSET_ALIGNMENT,
@@ -227,11 +251,16 @@ test("one bind group serves a whole ring page; offsets carry the variation", () 
 
   const descriptor = device.created.bindGroups[0].descriptor;
   assert.equal(descriptor.layout, LAYOUT);
-  assert.equal(descriptor.entries.length, 1);
-  // The bind group addresses the page from 0 with exactly the struct width;
-  // the per-draw offset is what selects the slice.
+  // Camera at binding 0, model/view light at binding 1 (C11-195).
+  assert.equal(descriptor.entries.length, 2);
+  // Each entry addresses its page from 0 with exactly the struct width; the
+  // per-draw offsets are what select the slices.
+  assert.equal(descriptor.entries[0].binding, 0);
   assert.equal(descriptor.entries[0].resource.offset, 0);
   assert.equal(descriptor.entries[0].resource.size, MODEL_CAMERA_UNIFORM_BYTES);
+  assert.equal(descriptor.entries[1].binding, 1);
+  assert.equal(descriptor.entries[1].resource.offset, 0);
+  assert.equal(descriptor.entries[1].resource.size, MODEL_LIGHT_UNIFORM_BYTES);
 });
 
 test("bind-group creation stays flat across a full ring rotation", () => {
@@ -379,11 +408,12 @@ test("invalidate() clears the cache and frees fallback buffers", () => {
   allocator.beginFrame();
   arena.beginFrame(1, allocator);
   acquire(arena, device, allocator, cameraBlock(1));
-  // Two fallback acquisitions (no allocator at all).
+  // Two fallback acquisitions (no allocator at all). Each mints a private
+  // buffer for BOTH group-0 blocks — camera and light.
   acquire(arena, device, null, cameraBlock(2));
   acquire(arena, device, null, cameraBlock(3));
-  assert.equal(arena.getStats().fallbackAllocations, 2);
-  assert.equal(device.created.buffers.length, 2);
+  assert.equal(arena.getStats().fallbackAllocations, 4);
+  assert.equal(device.created.buffers.length, 4);
 
   arena.invalidate();
   assert.equal(arena.getStats().entries, 0);
@@ -397,16 +427,18 @@ test("no allocator degrades to a private buffer bound at offset 0", () => {
   arena.beginFrame(1, null);
 
   const binding = acquire(arena, device, null, cameraBlock(1), "fallback cam");
-  assert.deepEqual(binding.dynamicOffsets, [0]);
-  assert.equal(device.created.buffers.length, 1);
-  assert.equal(device.created.buffers[0].descriptor.size, 320);
-  assert.equal(device.created.writes.length, 1);
+  assert.deepEqual(binding.dynamicOffsets, [0, 0]);
+  // One private buffer per group-0 block: the light (allocated first) and the
+  // camera.
+  assert.equal(device.created.buffers.length, 2);
+  assert.equal(device.created.buffers[0].descriptor.size, 864);
+  assert.equal(device.created.buffers[1].descriptor.size, 320);
+  assert.equal(device.created.writes.length, 2);
   // Dynamic offset 0 is always alignment-legal, so the degraded path is still
   // valid against the `hasDynamicOffset` layout.
-  assert.equal(
-    binding.dynamicOffsets[0] % MODEL_CAMERA_DYNAMIC_OFFSET_ALIGNMENT,
-    0,
-  );
+  for (const offset of binding.dynamicOffsets) {
+    assert.equal(offset % MODEL_CAMERA_DYNAMIC_OFFSET_ALIGNMENT, 0);
+  }
 });
 
 test("a misaligned ring offset is rejected, never forwarded to setBindGroup", () => {
@@ -420,16 +452,20 @@ test("a misaligned ring offset is rejected, never forwarded to setBindGroup", ()
   console.error = (...args) => errors.push(args.join(" "));
   try {
     const binding = acquire(arena, device, bad, cameraBlock(1));
-    assert.deepEqual(binding.dynamicOffsets, [0]);
-    assert.notEqual(
-      device.created.bindGroups[0].descriptor.entries[0].resource.buffer,
-      bad.page,
-      "the misaligned page must not be bound",
-    );
+    assert.deepEqual(binding.dynamicOffsets, [0, 0]);
+    for (const entry of device.created.bindGroups[0].descriptor.entries) {
+      assert.notEqual(
+        entry.resource.buffer,
+        bad.page,
+        "the misaligned page must not be bound",
+      );
+    }
   } finally {
     console.error = originalError;
   }
-  assert.equal(arena.getStats().misalignedRejections, 1);
+  // Both group-0 blocks were rejected (light first, then camera); the report
+  // itself stays once-per-arena.
+  assert.equal(arena.getStats().misalignedRejections, 2);
   assert.equal(errors.length, 1);
   assert.match(errors[0], /not a multiple of 256/);
 });
