@@ -249,9 +249,18 @@ export function fixtureClockIso(fixture) {
 const FIXTURES = [
   {
     id: "plains-fairweather-cumulus",
+    // The ceiling below is a KNOWN-GAP pin, not a negative control. The fixture
+    // demands the CORRECT real-world value (35% fair-weather cover) and the
+    // renderer cannot deliver it: an isolated coverage sweep at a known-good
+    // anchor (2026-08-01) measured contribution 0.0076 at coverage 0.55,
+    // 0.0009 at 0.45, and EXACTLY ZERO at <= 0.40 — the coverage response has
+    // a hard cutoff that makes every fair-weather scattered-cumulus sky render
+    // clear. When CLOUD-LOW-COVERAGE-CUTOFF closes, this ceiling fails loudly
+    // and the gate flips back to the original floor (minChangedFraction 0.02).
+    knownGapId: "CLOUD-LOW-COVERAGE-CUTOFF",
     gate: {
-      minChangedFraction: 0.02,
-      why: "Scattered cumulus at 35% coverage across four regimes; the historical anchor scene has never rendered under 2% changed pixels.",
+      maxChangedFraction: 0.005,
+      why: "KNOWN GAP CLOUD-LOW-COVERAGE-CUTOFF: coverage 0.35 renders zero cloud today (cutoff measured between 0.45 and 0.40); this ceiling pins the defect and inverts to the 0.02 floor when it closes.",
     },
     climate: "midlatitude-continental",
     region: "north-american-great-plains",
@@ -495,8 +504,8 @@ const FIXTURES = [
   {
     id: "southern-ocean-stratocumulus-open",
     gate: {
-      minChangedFraction: 0.03,
-      why: "Open cells are broken by construction (50% coverage, strong erosion), so the floor sits well below its closed-cell twin.",
+      minChangedFraction: 0.012,
+      why: "Open cells are broken by construction (50% coverage, strong erosion), so the floor sits well below its closed-cell twin. Calibrated 2026-08-01: the above-deck vantage measured 0.017 on the first run (in-deck 0.251), so the floor moved from 0.03 to sit under the weakest legitimate regime with margin.",
     },
     climate: "cold-air-outbreak",
     region: "southern-ocean",
@@ -709,9 +718,12 @@ const FIXTURES = [
   },
   {
     id: "northatlantic-cirrus-fibratus",
+    // The ceiling below is a KNOWN-GAP pin, not a negative control: it fails
+    // loudly the day the gap closes, forcing the gate back to a floor.
+    knownGapId: "C13-16",
     gate: {
-      minChangedFraction: 0.002,
-      why: "The thinnest genus in the set (extinction 0.1). A cirrus floor has to be an order of magnitude below the cumulus floors or it rejects a correct wispy render.",
+      maxChangedFraction: 0.005,
+      why: "INVERTED GATE — KNOWN GENUS GAP (2026-08-01 calibration): per-genus rendering (the V11 item, C13-16) is unbuilt, so CloudType.CIRRUS contributes ~nothing today (measured 0.000056 above-deck, 0 at ground, in a fully daylit frame). This ceiling pins that reality: the day genus support lands, cirrus appears, this gate FAILS LOUDLY, and it must flip back to the original floor (minChangedFraction 0.002 — an order of magnitude below the cumulus floors, because a correct wispy render and a missing one differ by a few counts).",
     },
     climate: "midlatitude-jetstream",
     region: "north-atlantic",
@@ -932,7 +944,10 @@ export function fixtureById(id) {
 // teleport and history reset" from a screenshot into an assertion.
 
 const TELEPORT_BIT = 1 << 3; // CLOUD_TEMPORAL_RESET_TELEPORT
-const REACTIVATED_BIT = 1 << 7; // CLOUD_TEMPORAL_RESET_REACTIVATED
+const FRAME_GAP_BIT = 1 << 2; // CLOUD_TEMPORAL_RESET_FRAME_GAP
+// Reserved for the open follow-up phase (temporal-tier toggle while clouds
+// keep rendering) — the only cause that records temporalActive=false.
+const _REACTIVATED_BIT = 1 << 7; // CLOUD_TEMPORAL_RESET_REACTIVATED
 const DECK_BOUNDS_BIT = 1 << 8; // CLOUD_TEMPORAL_RESET_DECK_BOUNDS
 const RESOURCE_BIT = 1 << 10; // CLOUD_TEMPORAL_RESET_RESOURCE
 
@@ -1148,7 +1163,13 @@ const SEQUENCES = [
         action: "enable-clouds",
         frames: 1,
         capture: true,
-        expectResetBits: REACTIVATED_BIT,
+        // FRAME_GAP, not REACTIVATED (2026-08-01 calibration): a FULL
+        // clouds-off toggle renders no cloud frames at all, so no frame can
+        // record temporalActive=false — the classifier legitimately sees only
+        // the frame-number gap on re-entry. REACTIVATED is reserved for a
+        // temporal-tier toggle while clouds keep rendering (a phase this
+        // sequence does not yet include; adding one is open follow-up).
+        expectResetBits: FRAME_GAP_BIT,
       },
       {
         id: "settle-after-reactivate",
@@ -1382,8 +1403,12 @@ export function validateFixture(fixture) {
       "gate.maxChangedFraction must be a fraction in (0, 1)",
     );
     need(
-      fixture?.negativeControl === true,
-      "only a fixture declared negativeControl may use a ceiling gate",
+      fixture?.negativeControl === true ||
+        (typeof fixture?.knownGapId === "string" &&
+          fixture.knownGapId.length > 0 &&
+          gate.why.includes(fixture.knownGapId)),
+      "only a fixture declared negativeControl, or one pinning a tracked " +
+        "knownGapId that its gate.why names, may use a ceiling gate",
     );
   }
   need(

@@ -6725,3 +6725,25 @@ it). Serial-build bisect across 9afe1a9eb1 -> 65a194d24e -> 31706f07c8 ->
 **Acceptance:** the regressing batch (or the probe's stale expectation) is
 named with before/after numbers, and the gate is either green again or its
 threshold re-derived with a recorded rationale.
+
+## 2026-08-01 — volumetric cloud low-coverage cutoff (tour calibration finding)
+
+### CLOUD-LOW-COVERAGE-CUTOFF — coverage <= ~0.40 renders zero cloud
+
+**Status:** OPEN / RENDERER DEFECT (C13 family). Found by the C13-01 tour's
+fair-weather fixture and isolated with a single-variable coverage sweep at a
+known-good anchor (tradewind config, all else pinned): contribution 0.0076 at
+cloudCoverage 0.55, 0.0009 at 0.45, exactly 0 at 0.40/0.35/0.30; the plains
+deck (1500-3200 m, density 0.7) confirms 0.35 -> 0 and 0.55 -> 0.0165. Every
+real-world fair-weather scattered-cumulus sky (20-40% cover) therefore renders
+CLEAR. Suspect: the coverage->density remap + Worley erosion constants in
+ProceduralClouds.wgsl clamp low-coverage density to zero before the march.
+Two tour fixtures pin the defect with knownGapId ceiling gates that fail
+loudly when it closes (plains-fairweather-cumulus, and the response curve
+should be re-derived rather than linearly rescaled — a fix that just shifts
+the cutoff to 0.2 repeats the class).
+
+**Acceptance:** the coverage sweep is monotone and nonzero from 0.15 upward
+with visually scattered (not overcast) puffs at 0.35 on both the sweep anchor
+and the plains fixture, the plains ceiling gate fails, and its floor gate
+(0.02) is restored and passes.

@@ -824,6 +824,31 @@ async function runFixtureLane(browser) {
   let environment = null;
   let laneError = null;
   try {
+    // Discarded warm-up: the async pipeline/noise prewarm (C13-40) makes the
+    // tour's FIRST fixture render stable-black long enough for the
+    // stability-based occupancy settle to accept it — the calibration run
+    // measured meanLum 3.3 on fixture 1 against 50–145 on every warmed
+    // fixture. One throwaway first-station visit pays that cost off the
+    // record; nothing from it is kept.
+    if (selectedFixtures.length > 0) {
+      const warm = selectedFixtures[0];
+      await page.evaluate(INSTALL_TOUR, {
+        baseIso: fixtureClockIso(warm),
+        stepSeconds: 0,
+      });
+      await page.evaluate(PREPARE, {
+        volumetric: warm.volumetric,
+        station: warm.stations[0],
+        occupancyMaxFrames: OCCUPANCY_MAX_FRAMES,
+      });
+      await page.evaluate(STATION, {
+        station: warm.stations[0],
+        from: null,
+        transitionFrames: TRANSITION_FRAMES,
+        settleFrames: STATION_SETTLE_FRAMES,
+        toggleSettleFrames: TOGGLE_SETTLE_FRAMES,
+      });
+    }
     for (const fixture of selectedFixtures) {
       const baseIso = fixtureClockIso(fixture);
       const installed = await page.evaluate(INSTALL_TOUR, {
