@@ -148,9 +148,7 @@ const movingOK = out.movingCalls >= 1;
 const plRenders = out.cyan > 100;
 // Pre-existing cloud scene-FB pipeline mismatch is allowed in console errors;
 // everything else fails the probe.
-const realErrors = errors.filter(
-  (e) => !/CloudCollection pipeline/.test(e),
-);
+const realErrors = errors.filter((e) => !/CloudCollection pipeline/.test(e));
 console.log(
   `polyline _updatePolyline/frame: ${out.plCallsPerFrame} ${plOK ? "OK" : "FAIL"} | cloud _updateCloud/frame: ${out.cloudCallsPerFrame} ${cloudOK ? "OK" : "FAIL"}`,
 );
@@ -165,7 +163,12 @@ console.log(
 );
 realErrors.slice(0, 5).forEach((e) => console.log("  ERR:", e.slice(0, 160)));
 const pass =
-  plOK && cloudOK && queueOK && movingOK && plRenders && realErrors.length === 0;
+  plOK &&
+  cloudOK &&
+  queueOK &&
+  movingOK &&
+  plRenders &&
+  realErrors.length === 0;
 console.log(pass ? "PASS" : "FAIL");
 await browser.close();
 process.exit(pass ? 0 : 1);

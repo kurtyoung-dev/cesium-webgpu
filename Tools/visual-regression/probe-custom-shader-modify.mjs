@@ -76,7 +76,15 @@ async function capture(renderer, useCustomShader) {
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const info = await page.evaluate(
-    async ({ modelUrl, heading, pitch, useCustomShader, tint, glslFrag, wgslFrag }) => {
+    async ({
+      modelUrl,
+      heading,
+      pitch,
+      useCustomShader,
+      tint,
+      glslFrag,
+      wgslFrag,
+    }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
@@ -89,7 +97,9 @@ async function capture(renderer, useCustomShader) {
         ".cesium-navigation-help",
         ".cesium-viewer-fullscreenContainer",
       ]) {
-        document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
+        document
+          .querySelectorAll(sel)
+          .forEach((e) => (e.style.display = "none"));
       }
 
       // Isolate the model on a black background. Keep default sun lighting so the
@@ -131,7 +141,11 @@ async function capture(renderer, useCustomShader) {
 
       v.camera.viewBoundingSphere(
         model.boundingSphere,
-        new C.HeadingPitchRange(heading, pitch, model.boundingSphere.radius * 3.0),
+        new C.HeadingPitchRange(
+          heading,
+          pitch,
+          model.boundingSphere.radius * 3.0,
+        ),
       );
       v.camera.lookAtTransform(C.Matrix4.IDENTITY);
       for (let i = 0; i < 40; i++) {
@@ -156,7 +170,9 @@ async function capture(renderer, useCustomShader) {
   await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
   const gate = await collectGateErrors(page);
 
-  const png = await page.locator('canvas[data-cs="1"]').screenshot({ type: "png" });
+  const png = await page
+    .locator('canvas[data-cs="1"]')
+    .screenshot({ type: "png" });
   const decoded = await page.evaluate(async (b64) => {
     const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
     const bmp = await createImageBitmap(blob);
@@ -214,23 +230,39 @@ function lumStats(img) {
   for (let i = 0; i < img.data.length; i += 4) {
     const sum = img.data[i] + img.data[i + 1] + img.data[i + 2];
     if (sum <= 12) continue;
-    lums.push(0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2]);
+    lums.push(
+      0.2126 * img.data[i] +
+        0.7152 * img.data[i + 1] +
+        0.0722 * img.data[i + 2],
+    );
   }
   if (lums.length === 0) return { n: 0, mean: 0, cov: 0 };
   const mean = lums.reduce((a, b) => a + b, 0) / lums.length;
-  const varr = lums.reduce((a, b) => a + (b - mean) * (b - mean), 0) / lums.length;
+  const varr =
+    lums.reduce((a, b) => a + (b - mean) * (b - mean), 0) / lums.length;
   const cov = mean > 0 ? Math.sqrt(varr) / mean : 0;
   return { n: lums.length, mean: +mean.toFixed(1), cov: +cov.toFixed(3) };
 }
 
 function meanColor(img) {
-  let r = 0, g = 0, b = 0, n = 0;
+  let r = 0,
+    g = 0,
+    b = 0,
+    n = 0;
   for (let i = 0; i < img.data.length; i += 4) {
     if (img.data[i] + img.data[i + 1] + img.data[i + 2] <= 12) continue;
-    r += img.data[i]; g += img.data[i + 1]; b += img.data[i + 2]; n++;
+    r += img.data[i];
+    g += img.data[i + 1];
+    b += img.data[i + 2];
+    n++;
   }
   return n
-    ? { r: +(r / n).toFixed(1), g: +(g / n).toFixed(1), b: +(b / n).toFixed(1), n }
+    ? {
+        r: +(r / n).toFixed(1),
+        g: +(g / n).toFixed(1),
+        b: +(b / n).toFixed(1),
+        n,
+      }
     : { r: 0, g: 0, b: 0, n: 0 };
 }
 
@@ -246,7 +278,8 @@ const CRC_TABLE = (() => {
 })();
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 function encodePNG({ w, h, data }) {
@@ -254,7 +287,10 @@ function encodePNG({ w, h, data }) {
   const raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -288,10 +324,22 @@ const gpuBase = await capture("webgpu", false);
 
 const fs = await import("fs");
 fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-fs.writeFileSync("Tools/visual-regression/output/cs-modify-webgl.png", encodePNG(glCustom.decoded));
-fs.writeFileSync("Tools/visual-regression/output/cs-modify-webgpu.png", encodePNG(gpuCustom.decoded));
-fs.writeFileSync("Tools/visual-regression/output/cs-modify-webgl-base.png", encodePNG(glBase.decoded));
-fs.writeFileSync("Tools/visual-regression/output/cs-modify-webgpu-base.png", encodePNG(gpuBase.decoded));
+fs.writeFileSync(
+  "Tools/visual-regression/output/cs-modify-webgl.png",
+  encodePNG(glCustom.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/cs-modify-webgpu.png",
+  encodePNG(gpuCustom.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/cs-modify-webgl-base.png",
+  encodePNG(glBase.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/cs-modify-webgpu-base.png",
+  encodePNG(gpuBase.decoded),
+);
 
 const crossCustom = diffModelPixels(glCustom.decoded, gpuCustom.decoded);
 const crossBase = diffModelPixels(glBase.decoded, gpuBase.decoded);
@@ -299,35 +347,63 @@ const gpuLum = lumStats(gpuCustom.decoded);
 const glLum = lumStats(glCustom.decoded);
 
 const gateErrors = [
-  ...glCustom.gateErrors, ...gpuCustom.gateErrors,
-  ...glBase.gateErrors, ...gpuBase.gateErrors,
+  ...glCustom.gateErrors,
+  ...gpuCustom.gateErrors,
+  ...glBase.gateErrors,
+  ...gpuBase.gateErrors,
 ];
 const deviceLost =
-  glCustom.deviceLost || gpuCustom.deviceLost || glBase.deviceLost || gpuBase.deviceLost;
+  glCustom.deviceLost ||
+  gpuCustom.deviceLost ||
+  glBase.deviceLost ||
+  gpuBase.deviceLost;
 
 const report = {
-  webglCustom: { ready: glCustom.ready, mean: meanColor(glCustom.decoded), lum: glLum },
-  webgpuCustom: { ready: gpuCustom.ready, mean: meanColor(gpuCustom.decoded), lum: gpuLum },
+  webglCustom: {
+    ready: glCustom.ready,
+    mean: meanColor(glCustom.decoded),
+    lum: glLum,
+  },
+  webgpuCustom: {
+    ready: gpuCustom.ready,
+    mean: meanColor(gpuCustom.decoded),
+    lum: gpuLum,
+  },
   crossBackend_customShader_diffPct: crossCustom.mismatchPct,
   crossBackend_baseline_diffPct: crossBase.mismatchPct,
   webgpu_shading_cov: gpuLum.cov,
   gateErrors,
   deviceLost,
   consoleFaults: [
-    ...glCustom.consoleFaults, ...gpuCustom.consoleFaults,
-    ...glBase.consoleFaults, ...gpuBase.consoleFaults,
+    ...glCustom.consoleFaults,
+    ...gpuCustom.consoleFaults,
+    ...glBase.consoleFaults,
+    ...gpuBase.consoleFaults,
   ].slice(0, 6),
 };
 console.log(JSON.stringify(report, null, 2));
 
-const converged = crossCustom.mismatchPct !== null && crossCustom.mismatchPct < 25;
+const converged =
+  crossCustom.mismatchPct !== null && crossCustom.mismatchPct < 25;
 const shaded = gpuLum.cov > 0.18;
 const pass =
-  glCustom.ready && gpuCustom.ready && glBase.ready && gpuBase.ready &&
-  gateErrors.length === 0 && !deviceLost &&
-  converged && shaded;
+  glCustom.ready &&
+  gpuCustom.ready &&
+  glBase.ready &&
+  gpuBase.ready &&
+  gateErrors.length === 0 &&
+  !deviceLost &&
+  converged &&
+  shaded;
 
-console.log(JSON.stringify({ converged, shaded, crossCustom: crossCustom.mismatchPct, gpuCov: gpuLum.cov }));
+console.log(
+  JSON.stringify({
+    converged,
+    shaded,
+    crossCustom: crossCustom.mismatchPct,
+    gpuCov: gpuLum.cov,
+  }),
+);
 console.log(
   pass
     ? "GATE PASS — MODIFY customShader runs pre-lighting on WebGPU: the constant diffuse is SHADED (WebGPU CoV > 0.18) and CONVERGES with the WebGL render (< 25% cross-backend mismatch), device-error-free"

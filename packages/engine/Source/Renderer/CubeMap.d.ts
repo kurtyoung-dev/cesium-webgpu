@@ -10,7 +10,8 @@
 
 import type Cartesian3 from "../Core/Cartesian3.js";
 import type Sampler from "./Sampler.js";
-import type Texture, { TextureSource } from "./Texture.js";
+import type Texture from "./Texture.js";
+import type { TextureSource } from "./Texture.js";
 
 /** Face name string enum; values match GL cube-map face suffixes. */
 export type CubeMapFaceName =

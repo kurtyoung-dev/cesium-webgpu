@@ -11,9 +11,16 @@ async function captureModel(renderer) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text().slice(0, 400));
@@ -29,10 +36,14 @@ async function captureModel(renderer) {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
 
-    const lon = -75.61, lat = 40.04, h = 100.0;
+    const lon = -75.61,
+      lat = 40.04,
+      h = 100.0;
     const model = await C.Model.fromGltfAsync({
       url: "/Apps/SampleData/models/CesiumAir/Cesium_Air.glb",
-      modelMatrix: C.Transforms.eastNorthUpToFixedFrame(C.Cartesian3.fromDegrees(lon, lat, h)),
+      modelMatrix: C.Transforms.eastNorthUpToFixedFrame(
+        C.Cartesian3.fromDegrees(lon, lat, h),
+      ),
       scale: 4.0,
     });
     v.scene.primitives.add(model);
@@ -44,7 +55,11 @@ async function captureModel(renderer) {
     }
 
     // Aim camera at the model from above with a tilt
-    const offset = new C.HeadingPitchRange(0, -C.Math.PI_OVER_FOUR, model.boundingSphere.radius * 4);
+    const offset = new C.HeadingPitchRange(
+      0,
+      -C.Math.PI_OVER_FOUR,
+      model.boundingSphere.radius * 4,
+    );
     v.camera.viewBoundingSphere(model.boundingSphere, offset);
 
     for (let i = 0; i < 60; i++) {
@@ -58,17 +73,21 @@ async function captureModel(renderer) {
 
     // Pixel histogram
     const canvas = v.canvas;
-    const w = canvas.width, h2 = canvas.height;
+    const w = canvas.width,
+      h2 = canvas.height;
     const tmp = document.createElement("canvas");
-    tmp.width = w; tmp.height = h2;
+    tmp.width = w;
+    tmp.height = h2;
     tmp.getContext("2d").drawImage(canvas, 0, 0);
     const px = tmp.getContext("2d").getImageData(0, 0, w, h2).data;
     const buckets = {};
     for (let i = 0; i < px.length; i += 16) {
-      const k = `${px[i]},${px[i+1]},${px[i+2]}`;
+      const k = `${px[i]},${px[i + 1]},${px[i + 2]}`;
       buckets[k] = (buckets[k] || 0) + 1;
     }
-    const top = Object.entries(buckets).sort((a,b)=>b[1]-a[1]).slice(0, 8);
+    const top = Object.entries(buckets)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8);
 
     return {
       modelReady: model.ready,
@@ -92,13 +111,24 @@ async function captureModel(renderer) {
   const fs = await import("fs");
   console.log("=== WebGL ===");
   const wgl = await captureModel("webgl");
-  fs.writeFileSync("Tools/visual-regression/output/glb-webgl.png", wgl.screenshot);
+  fs.writeFileSync(
+    "Tools/visual-regression/output/glb-webgl.png",
+    wgl.screenshot,
+  );
   console.log(JSON.stringify(wgl.result, null, 2));
-  if (wgl.errors.length) console.log(`WebGL errors (${wgl.errors.length}):`, wgl.errors.slice(0, 3));
+  if (wgl.errors.length)
+    console.log(`WebGL errors (${wgl.errors.length}):`, wgl.errors.slice(0, 3));
 
   console.log("\n=== WebGPU ===");
   const wgp = await captureModel("webgpu");
-  fs.writeFileSync("Tools/visual-regression/output/glb-webgpu.png", wgp.screenshot);
+  fs.writeFileSync(
+    "Tools/visual-regression/output/glb-webgpu.png",
+    wgp.screenshot,
+  );
   console.log(JSON.stringify(wgp.result, null, 2));
-  if (wgp.errors.length) console.log(`WebGPU errors (${wgp.errors.length}):`, wgp.errors.slice(0, 3));
+  if (wgp.errors.length)
+    console.log(
+      `WebGPU errors (${wgp.errors.length}):`,
+      wgp.errors.slice(0, 3),
+    );
 })();

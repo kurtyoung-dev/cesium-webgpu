@@ -37,11 +37,15 @@ const BASE = "http://localhost:8080";
       powerPreference: "high-performance",
     });
     const adapterLimits = {};
-    for (const key of ["maxBindGroups", "maxBindGroupsPlusVertexBuffers", "maxSampledTexturesPerShaderStage"]) {
+    for (const key of [
+      "maxBindGroups",
+      "maxBindGroupsPlusVertexBuffers",
+      "maxSampledTexturesPerShaderStage",
+    ]) {
       adapterLimits[key] = adapter?.limits?.[key];
     }
     // Try creating a device requesting maxBindGroups=5.
-    let directDevTest = null;
+    let directDevTest;
     try {
       const dev = await adapter.requestDevice({
         requiredLimits: { maxBindGroups: 5 },

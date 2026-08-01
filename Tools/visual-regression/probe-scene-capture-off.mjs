@@ -101,9 +101,7 @@ async function diffPngs(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const a = await decode(ba);

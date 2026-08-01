@@ -1,7 +1,7 @@
 // Probe Bloom.html with scene.msaaSamples = 1 (MSAA disabled) to see
 // if the missing-terrain issue is MSAA-related.
-import { chromium } from 'playwright';
-import fs from 'fs';
+import { chromium } from "playwright";
+import fs from "fs";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -22,43 +22,69 @@ const RENDERER_OVERRIDE_SHIM = `
 })();
 `;
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
-const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+const browser = await chromium.launch({ channel: "msedge", headless: true });
+const ctx = await browser.newContext({ viewport: { width: 800, height: 600 } });
 const page = await ctx.newPage();
 await page.addInitScript({ content: `window.__FORCED_RENDERER__ = 'webgpu';` });
 await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
+await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
   const response = await route.fetch();
-  const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-  await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
-});
-await page.goto('http://localhost:8080/Apps/Sandcastle/gallery/Bloom.html', { waitUntil: 'load', timeout: 60000 });
-await page.waitForTimeout(10000);
-const png = await page.screenshot({ type: 'png' });
-fs.writeFileSync('Tools/visual-regression/output/bloom-no-msaa-webgpu.png', png);
-const stats = await page.evaluate(async (durl) => {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = img.width; c.height = img.height;
-      const cx = c.getContext('2d');
-      cx.drawImage(img, 0, 0);
-      const d = cx.getImageData(0, 0, c.width, c.height).data;
-      let black = 0, colored = 0, gray = 0;
-      const total = d.length / 4;
-      for (let i = 0; i < d.length; i += 4) {
-        const r = d[i], g = d[i+1], b = d[i+2];
-        if (r < 8 && g < 8 && b < 8) black++;
-        else if (Math.abs(r-g) < 5 && Math.abs(g-b) < 5) gray++;
-        else colored++;
-      }
-      // Sample middle of canvas
-      const mid = cx.getImageData(400, 400, 1, 1).data;
-      resolve({ pctBlack: (black/total*100).toFixed(1), pctGray: (gray/total*100).toFixed(1), pctColored: (colored/total*100).toFixed(1), midPx: [mid[0], mid[1], mid[2]] });
-    };
-    img.src = durl;
+  const txt = (await response.text()).replace(
+    /new\s+Cesium\.Viewer\s*\(/g,
+    "await Cesium.Viewer.createAsync(",
+  );
+  await route.fulfill({
+    status: response.status(),
+    headers: response.headers(),
+    body: txt,
   });
-}, `data:image/png;base64,${png.toString('base64')}`);
-console.log('WebGPU Bloom.html (msaa=1):', JSON.stringify(stats));
+});
+await page.goto("http://localhost:8080/Apps/Sandcastle/gallery/Bloom.html", {
+  waitUntil: "load",
+  timeout: 60000,
+});
+await page.waitForTimeout(10000);
+const png = await page.screenshot({ type: "png" });
+fs.writeFileSync(
+  "Tools/visual-regression/output/bloom-no-msaa-webgpu.png",
+  png,
+);
+const stats = await page.evaluate(
+  async (durl) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = img.width;
+        c.height = img.height;
+        const cx = c.getContext("2d");
+        cx.drawImage(img, 0, 0);
+        const d = cx.getImageData(0, 0, c.width, c.height).data;
+        let black = 0,
+          colored = 0,
+          gray = 0;
+        const total = d.length / 4;
+        for (let i = 0; i < d.length; i += 4) {
+          const r = d[i],
+            g = d[i + 1],
+            b = d[i + 2];
+          if (r < 8 && g < 8 && b < 8) black++;
+          else if (Math.abs(r - g) < 5 && Math.abs(g - b) < 5) gray++;
+          else colored++;
+        }
+        // Sample middle of canvas
+        const mid = cx.getImageData(400, 400, 1, 1).data;
+        resolve({
+          pctBlack: ((black / total) * 100).toFixed(1),
+          pctGray: ((gray / total) * 100).toFixed(1),
+          pctColored: ((colored / total) * 100).toFixed(1),
+          midPx: [mid[0], mid[1], mid[2]],
+        });
+      };
+      img.src = durl;
+    });
+  },
+  `data:image/png;base64,${png.toString("base64")}`,
+);
+console.log("WebGPU Bloom.html (msaa=1):", JSON.stringify(stats));
 await browser.close();

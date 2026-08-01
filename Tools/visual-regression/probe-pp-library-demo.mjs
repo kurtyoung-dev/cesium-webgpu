@@ -68,272 +68,299 @@ await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
 });
 await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
-const out = await page.evaluate(async ({ modelUrl }) => {
-  const C = await import("/Build/CesiumUnminified/index.js");
-  const v = window.viewer;
-  const scene = v.scene;
+const out = await page.evaluate(
+  async ({ modelUrl }) => {
+    const C = await import("/Build/CesiumUnminified/index.js");
+    const v = window.viewer;
+    const scene = v.scene;
 
-  window.__gpuErrors = [];
-  const dev = scene.context._device || scene.context.device;
-  if (dev && dev.addEventListener) {
-    dev.addEventListener("uncapturederror", (e) => {
-      window.__gpuErrors.push(String(e.error && e.error.message));
-    });
-  }
-
-  // ── demo scene, made deterministic for pixel gates ──
-  scene.requestRenderMode = false;
-  v.clock.shouldAnimate = false; // demo animates; freeze for byte-stability
-  v.clock.currentTime = C.JulianDate.fromIso8601("2026-06-21T18:00:00Z");
-  scene.fog.enabled = false;
-  if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
-  if (scene.skyBox) scene.skyBox.show = false;
-  if (scene.sun) scene.sun.show = true; // demo keeps the sun (LensFlare needs it)
-  if (scene.moon) scene.moon.show = false;
-  scene.globe.showGroundAtmosphere = false;
-  scene.terrainProvider = new C.EllipsoidTerrainProvider();
-  scene.globe.showWaterEffect = false;
-  scene.globe.baseColor = new C.Color(0.12, 0.15, 0.2, 1.0);
-  v.imageryLayers.removeAll();
-
-  // demo: CesiumMan entity. The demo tracks the entity interactively; the
-  // probe uses an equivalent FIXED lookAt pose instead — trackedEntity's
-  // easing flight is not frame-deterministic and can alias the settle loop.
-  const modelPosition = C.Cartesian3.fromDegrees(-123.0744619, 44.0503706);
-  v.entities.add({
-    name: "Cesium Man",
-    position: modelPosition,
-    model: { uri: modelUrl },
-  });
-  const goModelView = () => {
-    v.camera.lookAt(
-      modelPosition,
-      new C.HeadingPitchRange(C.Math.toRadians(90.0), C.Math.toRadians(-15.0), 6.0),
-    );
-  };
-  goModelView();
-
-  const oncePostRender = () =>
-    new Promise((resolve) => {
-      const remove = scene.postRender.addEventListener(() => {
-        remove();
-        resolve();
+    window.__gpuErrors = [];
+    const dev = scene.context._device || scene.context.device;
+    if (dev && dev.addEventListener) {
+      dev.addEventListener("uncapturederror", (e) => {
+        window.__gpuErrors.push(String(e.error && e.error.message));
       });
-    });
-  const renderFrames = async (n) => {
-    for (let i = 0; i < n; i++) await oncePostRender();
-  };
-  const grab = () =>
-    new Promise((resolve) => {
-      const remove = scene.postRender.addEventListener(() => {
-        remove();
-        const c = scene.canvas;
-        const off = document.createElement("canvas");
-        off.width = c.width;
-        off.height = c.height;
-        const cx = off.getContext("2d");
-        cx.drawImage(c, 0, 0);
-        const u8 = new Uint8Array(
-          cx.getImageData(0, 0, c.width, c.height).data.buffer,
-        );
-        let bin = "";
-        const chunk = 0x8000;
-        for (let i = 0; i < u8.length; i += chunk) {
-          bin += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
-        }
-        resolve({ b64: btoa(bin), png: off.toDataURL("image/png") });
-      });
-    });
-  const bytesEqual = (a, b) => a.b64 === b.b64;
-  const settleAndGrab = async () => {
-    let prev = await grab();
-    for (let i = 0; i < 40; i++) {
-      await renderFrames(10);
-      const cur = await grab();
-      if (scene.globe.tilesLoaded && bytesEqual(prev, cur)) return cur;
-      prev = cur;
     }
-    return prev;
-  };
 
-  // Strip the async default ion imagery until tiles settle (it arrives
-  // AFTER setup; a one-shot removeAll leaves it landing mid-run and
-  // shifting every later capture), then let the model load.
-  let stable = 0;
-  for (let i = 0; i < 600 && stable < 5; i++) {
-    if (v.imageryLayers.length > 0) v.imageryLayers.removeAll();
-    await oncePostRender();
-    stable = scene.globe.tilesLoaded ? stable + 1 : 0;
-  }
-  await renderFrames(120);
+    // ── demo scene, made deterministic for pixel gates ──
+    scene.requestRenderMode = false;
+    v.clock.shouldAnimate = false; // demo animates; freeze for byte-stability
+    v.clock.currentTime = C.JulianDate.fromIso8601("2026-06-21T18:00:00Z");
+    scene.fog.enabled = false;
+    if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
+    if (scene.skyBox) scene.skyBox.show = false;
+    if (scene.sun) scene.sun.show = true; // demo keeps the sun (LensFlare needs it)
+    if (scene.moon) scene.moon.show = false;
+    scene.globe.showGroundAtmosphere = false;
+    scene.terrainProvider = new C.EllipsoidTerrainProvider();
+    scene.globe.showWaterEffect = false;
+    scene.globe.baseColor = new C.Color(0.12, 0.15, 0.2, 1.0);
+    v.imageryLayers.removeAll();
 
-  const captures = {};
-  // TRUE no-PP baseline (before the demo adds any stage)
-  captures.noPP = await settleAndGrab();
+    // demo: CesiumMan entity. The demo tracks the entity interactively; the
+    // probe uses an equivalent FIXED lookAt pose instead — trackedEntity's
+    // easing flight is not frame-deterministic and can alias the settle loop.
+    const modelPosition = C.Cartesian3.fromDegrees(-123.0744619, 44.0503706);
+    v.entities.add({
+      name: "Cesium Man",
+      position: modelPosition,
+      model: { uri: modelUrl },
+    });
+    const goModelView = () => {
+      v.camera.lookAt(
+        modelPosition,
+        new C.HeadingPitchRange(
+          C.Math.toRadians(90.0),
+          C.Math.toRadians(-15.0),
+          6.0,
+        ),
+      );
+    };
+    goModelView();
 
-  // ── the demo's stage factories, verbatim ──
-  const lib = C.PostProcessStageLibrary;
-  const stages = scene.postProcessStages;
-  const effects = [
-    {
-      key: "blackAndWhite",
-      settle: true,
-      create: () => {
-        const stage = lib.createBlackAndWhiteStage();
-        stage.uniforms.gradations = 5.0;
-        return stage;
+    const oncePostRender = () =>
+      new Promise((resolve) => {
+        const remove = scene.postRender.addEventListener(() => {
+          remove();
+          resolve();
+        });
+      });
+    const renderFrames = async (n) => {
+      for (let i = 0; i < n; i++) await oncePostRender();
+    };
+    const grab = () =>
+      new Promise((resolve) => {
+        const remove = scene.postRender.addEventListener(() => {
+          remove();
+          const c = scene.canvas;
+          const off = document.createElement("canvas");
+          off.width = c.width;
+          off.height = c.height;
+          const cx = off.getContext("2d");
+          cx.drawImage(c, 0, 0);
+          const u8 = new Uint8Array(
+            cx.getImageData(0, 0, c.width, c.height).data.buffer,
+          );
+          let bin = "";
+          const chunk = 0x8000;
+          for (let i = 0; i < u8.length; i += chunk) {
+            bin += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
+          }
+          resolve({ b64: btoa(bin), png: off.toDataURL("image/png") });
+        });
+      });
+    const bytesEqual = (a, b) => a.b64 === b.b64;
+    const settleAndGrab = async () => {
+      let prev = await grab();
+      for (let i = 0; i < 40; i++) {
+        await renderFrames(10);
+        const cur = await grab();
+        if (scene.globe.tilesLoaded && bytesEqual(prev, cur)) return cur;
+        prev = cur;
+      }
+      return prev;
+    };
+
+    // Strip the async default ion imagery until tiles settle (it arrives
+    // AFTER setup; a one-shot removeAll leaves it landing mid-run and
+    // shifting every later capture), then let the model load.
+    let stable = 0;
+    for (let i = 0; i < 600 && stable < 5; i++) {
+      if (v.imageryLayers.length > 0) v.imageryLayers.removeAll();
+      await oncePostRender();
+      stable = scene.globe.tilesLoaded ? stable + 1 : 0;
+    }
+    await renderFrames(120);
+
+    const captures = {};
+    // TRUE no-PP baseline (before the demo adds any stage)
+    captures.noPP = await settleAndGrab();
+
+    // ── the demo's stage factories, verbatim ──
+    const lib = C.PostProcessStageLibrary;
+    const stages = scene.postProcessStages;
+    const effects = [
+      {
+        key: "blackAndWhite",
+        settle: true,
+        create: () => {
+          const stage = lib.createBlackAndWhiteStage();
+          stage.uniforms.gradations = 5.0;
+          return stage;
+        },
       },
-    },
-    {
-      key: "brightness",
-      settle: true,
-      create: () => {
-        const stage = lib.createBrightnessStage();
-        stage.uniforms.brightness = 0.5;
-        return stage;
+      {
+        key: "brightness",
+        settle: true,
+        create: () => {
+          const stage = lib.createBrightnessStage();
+          stage.uniforms.brightness = 0.5;
+          return stage;
+        },
       },
-    },
-    { key: "nightVision", settle: false, create: () => lib.createNightVisionStage() },
-    // Silhouette draws only a thin outline around the model — far fewer
-    // changed bytes than the fullscreen effects; visually verified PNG.
-    // maxDiff caps the diff so a STALE fullscreen frame (the _userStagesRefs
-    // rebuild-detection bug renders the previously-added effect, ~1.9M diff
-    // bytes) can't masquerade as a thin outline (~20K correct).
-    {
-      key: "silhouette",
-      settle: true,
-      minDiff: 2000,
-      maxDiff: 500000,
-      create: () => {
-        const stage = lib.createSilhouetteStage();
-        stage.uniforms.color = C.Color.YELLOW;
-        return stage;
+      {
+        key: "nightVision",
+        settle: false,
+        create: () => lib.createNightVisionStage(),
       },
-    },
-    // Edge composite draws thin outlines like silhouette — small byte diff,
-    // same stale-frame cap.
-    {
-      key: "edgeDetection",
-      settle: true,
-      minDiff: 2000,
-      maxDiff: 500000,
-      create: () => lib.createSilhouetteStage([lib.createEdgeDetectionStage()]),
-    },
-    {
-      key: "lensFlare",
-      settle: true,
-      space: true,
-      create: () => {
-        const stage = lib.createLensFlareStage();
-        stage.uniforms.intensity = 2.0;
-        return stage;
+      // Silhouette draws only a thin outline around the model — far fewer
+      // changed bytes than the fullscreen effects; visually verified PNG.
+      // maxDiff caps the diff so a STALE fullscreen frame (the _userStagesRefs
+      // rebuild-detection bug renders the previously-added effect, ~1.9M diff
+      // bytes) can't masquerade as a thin outline (~20K correct).
+      {
+        key: "silhouette",
+        settle: true,
+        minDiff: 2000,
+        maxDiff: 500000,
+        create: () => {
+          const stage = lib.createSilhouetteStage();
+          stage.uniforms.color = C.Color.YELLOW;
+          return stage;
+        },
       },
-    },
-    { key: "depthView", settle: true, create: () => lib.createDepthViewStage() },
-  ];
+      // Edge composite draws thin outlines like silhouette — small byte diff,
+      // same stale-frame cap.
+      {
+        key: "edgeDetection",
+        settle: true,
+        minDiff: 2000,
+        maxDiff: 500000,
+        create: () =>
+          lib.createSilhouetteStage([lib.createEdgeDetectionStage()]),
+      },
+      {
+        key: "lensFlare",
+        settle: true,
+        space: true,
+        create: () => {
+          const stage = lib.createLensFlareStage();
+          stage.uniforms.intensity = 2.0;
+          return stage;
+        },
+      },
+      {
+        key: "depthView",
+        settle: true,
+        create: () => lib.createDepthViewStage(),
+      },
+    ];
 
-  // OFF-GATE capture: demo's initial "None" state — one add/remove cycle has
-  // run (exercises the B486 removeStages compaction on WebGPU) and the
-  // collection is empty again.
-  const warmup = stages.add(effects[0].create());
-  await renderFrames(10);
-  stages.remove(warmup);
-  await renderFrames(10);
-  captures.allOff = await settleAndGrab();
+    // OFF-GATE capture: demo's initial "None" state — one add/remove cycle has
+    // run (exercises the B486 removeStages compaction on WebGPU) and the
+    // collection is empty again.
+    const warmup = stages.add(effects[0].create());
+    await renderFrames(10);
+    stages.remove(warmup);
+    await renderFrames(10);
+    captures.allOff = await settleAndGrab();
 
-  // ── the demo's goSpaceView, verbatim ──
-  const FLARE_TIME = C.JulianDate.fromIso8601("2026-06-21T08:00:00Z");
-  const goSpaceView = () => {
-    v.camera.lookAtTransform(C.Matrix4.IDENTITY);
-    v.clock.currentTime = FLARE_TIME.clone();
-    const sunICRF =
-      C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
-        FLARE_TIME,
+    // ── the demo's goSpaceView, verbatim ──
+    const FLARE_TIME = C.JulianDate.fromIso8601("2026-06-21T08:00:00Z");
+    const goSpaceView = () => {
+      v.camera.lookAtTransform(C.Matrix4.IDENTITY);
+      v.clock.currentTime = FLARE_TIME.clone();
+      const sunICRF =
+        C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+          FLARE_TIME,
+          new C.Cartesian3(),
+        );
+      const icrfToFixed =
+        C.Transforms.computeIcrfToFixedMatrix(FLARE_TIME, new C.Matrix3()) ??
+        C.Transforms.computeTemeToPseudoFixedMatrix(
+          FLARE_TIME,
+          new C.Matrix3(),
+        );
+      const sunWC = C.Matrix3.multiplyByVector(
+        icrfToFixed,
+        sunICRF,
         new C.Cartesian3(),
       );
-    const icrfToFixed =
-      C.Transforms.computeIcrfToFixedMatrix(FLARE_TIME, new C.Matrix3()) ??
-      C.Transforms.computeTemeToPseudoFixedMatrix(FLARE_TIME, new C.Matrix3());
-    const sunWC = C.Matrix3.multiplyByVector(
-      icrfToFixed,
-      sunICRF,
-      new C.Cartesian3(),
-    );
-    const camPos = C.Cartesian3.fromDegrees(130.0, 0.0, 12756000.0);
-    const dir = C.Cartesian3.normalize(
-      C.Cartesian3.subtract(sunWC, camPos, new C.Cartesian3()),
-      new C.Cartesian3(),
-    );
-    let right = C.Cartesian3.cross(
-      dir,
-      C.Cartesian3.normalize(camPos, new C.Cartesian3()),
-      new C.Cartesian3(),
-    );
-    if (C.Cartesian3.magnitude(right) < 1e-6) {
-      right = C.Cartesian3.cross(dir, C.Cartesian3.UNIT_Z, right);
-    }
-    C.Cartesian3.normalize(right, right);
-    const aim = C.Cartesian3.normalize(
-      C.Cartesian3.add(
-        dir,
-        C.Cartesian3.multiplyByScalar(right, 0.27, new C.Cartesian3()),
+      const camPos = C.Cartesian3.fromDegrees(130.0, 0.0, 12756000.0);
+      const dir = C.Cartesian3.normalize(
+        C.Cartesian3.subtract(sunWC, camPos, new C.Cartesian3()),
         new C.Cartesian3(),
-      ),
-      new C.Cartesian3(),
-    );
-    const up = C.Cartesian3.normalize(
-      C.Cartesian3.cross(right, aim, new C.Cartesian3()),
-      new C.Cartesian3(),
-    );
-    v.camera.setView({ destination: camPos, orientation: { direction: aim, up } });
-  };
+      );
+      let right = C.Cartesian3.cross(
+        dir,
+        C.Cartesian3.normalize(camPos, new C.Cartesian3()),
+        new C.Cartesian3(),
+      );
+      if (C.Cartesian3.magnitude(right) < 1e-6) {
+        right = C.Cartesian3.cross(dir, C.Cartesian3.UNIT_Z, right);
+      }
+      C.Cartesian3.normalize(right, right);
+      const aim = C.Cartesian3.normalize(
+        C.Cartesian3.add(
+          dir,
+          C.Cartesian3.multiplyByScalar(right, 0.27, new C.Cartesian3()),
+          new C.Cartesian3(),
+        ),
+        new C.Cartesian3(),
+      );
+      const up = C.Cartesian3.normalize(
+        C.Cartesian3.cross(right, aim, new C.Cartesian3()),
+        new C.Cartesian3(),
+      );
+      v.camera.setView({
+        destination: camPos,
+        orientation: { direction: aim, up },
+      });
+    };
 
-  // ── cycle each effect exactly as the demo's selectEffect does:
-  //    add the freshly-created stage, capture, remove it ──
-  for (const effect of effects) {
-    if (effect.space) {
-      goSpaceView();
-      await renderFrames(30);
-      // flare baseline: same space view, no stage yet
-      captures.flareBase = await settleAndGrab();
+    // ── cycle each effect exactly as the demo's selectEffect does:
+    //    add the freshly-created stage, capture, remove it ──
+    for (const effect of effects) {
+      if (effect.space) {
+        goSpaceView();
+        await renderFrames(30);
+        // flare baseline: same space view, no stage yet
+        captures.flareBase = await settleAndGrab();
+      }
+      const stage = stages.add(effect.create());
+      if (!effect.space) {
+        goModelView();
+      }
+      await renderFrames(15);
+      captures[effect.key] = effect.settle
+        ? await settleAndGrab()
+        : await grab();
+      stages.remove(stage);
+      if (effect.space) {
+        // The interactive demo restores the animated clock on leaving the
+        // space view; the probe restores the exact deterministic time so the
+        // post-cycle "None" frame can be compared byte-wise against noPP.
+        v.clock.currentTime = C.JulianDate.fromIso8601("2026-06-21T18:00:00Z");
+        goModelView();
+        await renderFrames(30);
+      }
     }
-    const stage = stages.add(effect.create());
-    if (!effect.space) {
-      goModelView();
-    }
-    await renderFrames(15);
-    captures[effect.key] = effect.settle ? await settleAndGrab() : await grab();
-    stages.remove(stage);
-    if (effect.space) {
-      // The interactive demo restores the animated clock on leaving the
-      // space view; the probe restores the exact deterministic time so the
-      // post-cycle "None" frame can be compared byte-wise against noPP.
-      v.clock.currentTime = C.JulianDate.fromIso8601("2026-06-21T18:00:00Z");
-      goModelView();
-      await renderFrames(30);
-    }
-  }
 
-  // back to the demo's "None" selection — collection empty again
-  await renderFrames(10);
-  captures.restored = await settleAndGrab();
+    // back to the demo's "None" selection — collection empty again
+    await renderFrames(10);
+    captures.restored = await settleAndGrab();
 
-  return {
-    captures,
-    effectMeta: effects.map((e) => ({
-      key: e.key,
-      minDiff: e.minDiff || 5000,
-      maxDiff: e.maxDiff || 0, // 0 = no cap
-    })),
-    gpuErrors: window.__gpuErrors,
-  };
-}, { modelUrl: MODEL_URL });
+    return {
+      captures,
+      effectMeta: effects.map((e) => ({
+        key: e.key,
+        minDiff: e.minDiff || 5000,
+        maxDiff: e.maxDiff || 0, // 0 = no cap
+      })),
+      gpuErrors: window.__gpuErrors,
+    };
+  },
+  { modelUrl: MODEL_URL },
+);
 
 await browser.close();
 
 // ---- adjudicate ----
 function savePng(name, img) {
-  writeFileSync(join(OUT_DIR, name), Buffer.from(img.png.split(",")[1], "base64"));
+  writeFileSync(
+    join(OUT_DIR, name),
+    Buffer.from(img.png.split(",")[1], "base64"),
+  );
 }
 function diffImgs(a, b) {
   const A = Buffer.from(a.b64, "base64");
@@ -364,7 +391,8 @@ const dOff = diffImgs(out.captures.allOff, out.captures.noPP);
 console.log(
   `off-gate allOff vs noPP: ${dOff.diffBytes === 0 ? "BYTE-IDENTICAL" : `diffBytes=${dOff.diffBytes} max=${dOff.maxDelta}`}`,
 );
-if (dOff.diffBytes !== 0) fails.push("off-gate: allOff not byte-identical to noPP");
+if (dOff.diffBytes !== 0)
+  fails.push("off-gate: allOff not byte-identical to noPP");
 const dRes = diffImgs(out.captures.restored, out.captures.noPP);
 console.log(
   `off-gate restored vs noPP: ${dRes.diffBytes === 0 ? "BYTE-IDENTICAL" : `diffBytes=${dRes.diffBytes} max=${dRes.maxDelta}`}`,

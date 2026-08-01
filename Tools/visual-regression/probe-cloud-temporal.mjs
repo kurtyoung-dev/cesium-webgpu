@@ -50,7 +50,9 @@ const SCENE = {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   const gpuConsoleErrors = attachConsoleErrorGate(page);
   page.on("console", (m) => {

@@ -49,7 +49,9 @@ function read(rel) {
 const lutTs = read(join("Renderer", "WebGPU", "WebGPUAtmosphereLUT.ts"));
 
 // ── The four consumer shaders ──
-const skyFs = read(join("Shaders", "WebGPU", "Environment", "SkyAtmosphere.wgsl"));
+const skyFs = read(
+  join("Shaders", "WebGPU", "Environment", "SkyAtmosphere.wgsl"),
+);
 const envCube = read(
   join("Shaders", "WebGPU", "Compute", "ProceduralSkyCubemap.wgsl"),
 );
@@ -83,7 +85,10 @@ const checks = [
   {
     name: "shared LUT — single skyView + multipleScatter texture allocation",
     src: lutTs,
-    all: ['label: "AtmosphereLUT_Sun_SkyView"', 'label: "AtmosphereLUT_Sun_MultipleScatter"'],
+    all: [
+      'label: "AtmosphereLUT_Sun_SkyView"',
+      'label: "AtmosphereLUT_Sun_MultipleScatter"',
+    ],
   },
   {
     name: "shared LUT — single extended bake (computeSkyView + computeMultipleScattering)",
@@ -95,7 +100,10 @@ const checks = [
   {
     name: "sky FS — declares shared skyView + MS LUT bindings",
     src: skyFs,
-    all: ["var skyViewLut: texture_2d<f32>", "var multipleScatterLut: texture_2d<f32>"],
+    all: [
+      "var skyViewLut: texture_2d<f32>",
+      "var multipleScatterLut: texture_2d<f32>",
+    ],
   },
   {
     name: "sky FS — samples the shared LUT (sampleSkyViewLut / sampleMultipleScatterLut)",
@@ -117,7 +125,10 @@ const checks = [
   {
     name: "env-cube FS — declares shared skyView + MS LUT bindings",
     src: envCube,
-    all: ["var skyViewLut: texture_2d<f32>", "var multipleScatterLut: texture_2d<f32>"],
+    all: [
+      "var skyViewLut: texture_2d<f32>",
+      "var multipleScatterLut: texture_2d<f32>",
+    ],
   },
   {
     name: "env-cube FS — samples the shared LUT (sampleSkyViewLut / sampleMultipleScatterLut)",
@@ -139,7 +150,10 @@ const checks = [
   {
     name: "aerial FS — declares shared skyView + MS LUT bindings",
     src: aerial,
-    all: ["var skyViewTex: texture_2d<f32>", "var multipleScatterTex: texture_2d<f32>"],
+    all: [
+      "var skyViewTex: texture_2d<f32>",
+      "var multipleScatterTex: texture_2d<f32>",
+    ],
   },
   {
     name: "aerial FS — samples the shared LUT (sampleSkyViewLut / sampleMultipleScatterLut)",
@@ -149,14 +163,22 @@ const checks = [
   {
     name: "PP collection — feeds aerial the SHARED lut.skyViewView / multipleScatterView",
     src: ppCollection,
-    all: ["fx.setSkyViewView(", "fx.setMultipleScatterView(", "skyViewView", "multipleScatterView"],
+    all: [
+      "fx.setSkyViewView(",
+      "fx.setMultipleScatterView(",
+      "skyViewView",
+      "multipleScatterView",
+    ],
   },
 
   // ── Consumer 4: cloud ambient heuristic -> shared LUT ──
   {
     name: "cloud FS — declares shared cloud skyView + MS LUT bindings",
     src: clouds,
-    all: ["var cloudSkyViewLut: texture_2d<f32>", "var cloudMultipleScatterLut: texture_2d<f32>"],
+    all: [
+      "var cloudSkyViewLut: texture_2d<f32>",
+      "var cloudMultipleScatterLut: texture_2d<f32>",
+    ],
   },
   {
     name: "cloud FS — samples the shared LUT (cloudSampleSkyViewLut) under the ambient gate",
@@ -210,7 +232,8 @@ for (const c of checks) {
   } else {
     failed++;
     console.log(`  FAIL  ${c.name}`);
-    for (const m of missing) console.log(`          missing: ${JSON.stringify(m)}`);
+    for (const m of missing)
+      console.log(`          missing: ${JSON.stringify(m)}`);
   }
 }
 

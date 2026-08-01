@@ -85,7 +85,10 @@ export function observeWebGPUModelPreparationStatistics(
   }
   const frameNumber = statistics.frameNumber;
   if (!isNonnegativeFiniteInteger(frameNumber)) {
-    addViolation(accumulator, "frameNumber is not a nonnegative finite integer");
+    addViolation(
+      accumulator,
+      "frameNumber is not a nonnegative finite integer",
+    );
     accumulator.invalidFrameCount++;
     return false;
   }
@@ -269,10 +272,8 @@ export function summarizeWebGPUModelPreparationEvidence(
     conservation: {
       valid: conservationValid,
       invalidFrameCount: accumulator.invalidFrameCount,
-      demandFailureCount:
-        accumulator.demandConservationFailureCount,
-      reasonFailureCount:
-        accumulator.reasonConservationFailureCount,
+      demandFailureCount: accumulator.demandConservationFailureCount,
+      reasonFailureCount: accumulator.reasonConservationFailureCount,
       violations,
     },
   };

@@ -84,7 +84,9 @@ const FACE_NAMES = [
   const page = await browser.newPage({ viewport: { width: 512, height: 512 } });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
@@ -191,7 +193,11 @@ const FACE_NAMES = [
       scene.camera.setView({
         destination: new Cesium.Cartesian3(eye.x, eye.y, eye.z),
         orientation: {
-          direction: new Cesium.Cartesian3(fc.direction.x, fc.direction.y, fc.direction.z),
+          direction: new Cesium.Cartesian3(
+            fc.direction.x,
+            fc.direction.y,
+            fc.direction.z,
+          ),
           up: new Cesium.Cartesian3(fc.up.x, fc.up.y, fc.up.z),
         },
       });
@@ -230,7 +236,10 @@ const FACE_NAMES = [
     }, face);
     gtMeans.push(mean);
     await page.screenshot({
-      path: path.join(OUT_DIR, `cardinal-face${face}-${FACE_NAMES[face]}-gt.png`),
+      path: path.join(
+        OUT_DIR,
+        `cardinal-face${face}-${FACE_NAMES[face]}-gt.png`,
+      ),
     });
   }
 
@@ -297,7 +306,10 @@ const FACE_NAMES = [
 
     const cache = manager._webgpuCache;
     if (!cache || !cache.cubemapTexture) {
-      return { error: "no cube allocated", diag: { flag: scene.context.sceneCaptureReflections } };
+      return {
+        error: "no cube allocated",
+        diag: { flag: scene.context.sceneCaptureReflections },
+      };
     }
     const device = scene.context.device;
     const size = cache.size;
@@ -380,13 +392,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     enc.copyBufferToBuffer(outBuf, 0, readBuf, 0, 6 * FACE_FLOATS * 4);
     device.queue.submit([enc.finish()]);
     await readBuf.mapAsync(GPUMapMode.READ);
-    const floats = Array.from(new Float32Array(readBuf.getMappedRange().slice(0)));
+    const floats = Array.from(
+      new Float32Array(readBuf.getMappedRange().slice(0)),
+    );
     readBuf.unmap();
-    return { size, fmt, GRID, FACE_FLOATS, floats, tileDiag: window.__tileDiag };
+    return {
+      size,
+      fmt,
+      GRID,
+      FACE_FLOATS,
+      floats,
+      tileDiag: window.__tileDiag,
+    };
   }, EYE);
 
   if (cap.error) {
-    console.log("[cardinal] CAPTURE ERROR:", cap.error, JSON.stringify(cap.diag));
+    console.log(
+      "[cardinal] CAPTURE ERROR:",
+      cap.error,
+      JSON.stringify(cap.diag),
+    );
     await browser.close();
     return;
   }
@@ -515,8 +540,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   console.log("  ENU North:", setup.North.map((v) => v.toFixed(3)).join(","));
   console.log("");
   console.log("  capture-time tile diag:", JSON.stringify(cap.tileDiag));
-  console.log("  (bottom-center band = ground below the horizon for side faces)");
-  console.log("  face       GROUND-TRUTH(on-screen)          CAPTURED(cube face)            bottomStdDev");
+  console.log(
+    "  (bottom-center band = ground below the horizon for side faces)",
+  );
+  console.log(
+    "  face       GROUND-TRUTH(on-screen)          CAPTURED(cube face)            bottomStdDev",
+  );
   for (let i = 0; i < report.faces.length; i++) {
     const f = report.faces[i];
     console.log(
@@ -528,5 +557,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     console.log(`  ${errs.length} console errors (first 5):`);
     errs.slice(0, 5).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
   }
-  console.log("  PNGs: Tools/visual-regression/output/cardinal-face*-{gt,cap}.png");
+  console.log(
+    "  PNGs: Tools/visual-regression/output/cardinal-face*-{gt,cap}.png",
+  );
 })();

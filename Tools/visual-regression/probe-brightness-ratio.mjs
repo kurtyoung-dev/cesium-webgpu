@@ -48,7 +48,9 @@ async function measure(rendererArg, distance) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(
     `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
     { waitUntil: "networkidle" },
@@ -59,7 +61,11 @@ async function measure(rendererArg, distance) {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
     v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(d.longitude, d.latitude, d.altitude),
+      destination: C.Cartesian3.fromDegrees(
+        d.longitude,
+        d.latitude,
+        d.altitude,
+      ),
     });
     for (let i = 0; i < 800; i++) {
       v.scene.render();
@@ -74,7 +80,10 @@ async function measure(rendererArg, distance) {
   // ImageData. This sidesteps the preserveDrawingBuffer=false footgun
   // where reading the WebGL/WebGPU canvas directly returns all-zeros.
   const screenshotBuffer = await page.screenshot({ fullPage: false });
-  const out = path.join(OUT_DIR, `brightness-${distance.name}-${rendererArg}.png`);
+  const out = path.join(
+    OUT_DIR,
+    `brightness-${distance.name}-${rendererArg}.png`,
+  );
   fs.writeFileSync(out, screenshotBuffer);
 
   // Encode PNG → base64 → decode in page → read pixels
@@ -98,14 +107,21 @@ async function measure(rendererArg, distance) {
     const x1 = Math.floor(w * 0.8);
     const y0 = Math.floor(h * 0.2);
     const y1 = Math.floor(h * 0.8);
-    let rSum = 0, gSum = 0, bSum = 0, n = 0;
+    let rSum = 0,
+      gSum = 0,
+      bSum = 0,
+      n = 0;
     let globePx = 0;
     let blackPx = 0;
-    let rGlobe = 0, gGlobe = 0, bGlobe = 0;
+    let rGlobe = 0,
+      gGlobe = 0,
+      bGlobe = 0;
     for (let y = y0; y < y1; y++) {
       for (let x = x0; x < x1; x++) {
         const i = (y * w + x) * 4;
-        const r = data[i], g = data[i + 1], b = data[i + 2];
+        const r = data[i],
+          g = data[i + 1],
+          b = data[i + 2];
         rSum += r;
         gSum += g;
         bSum += b;
@@ -114,7 +130,9 @@ async function measure(rendererArg, distance) {
         // background is pure black RGB 0,0,0).
         if (r + g + b > 12) {
           globePx++;
-          rGlobe += r; gGlobe += g; bGlobe += b;
+          rGlobe += r;
+          gGlobe += g;
+          bGlobe += b;
         } else {
           blackPx++;
         }
@@ -147,7 +165,9 @@ function colorize(value, lo, hi) {
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log(`[probe-brightness-ratio] WebGL vs WebGPU mean-RGB across distances`);
+  console.log(
+    `[probe-brightness-ratio] WebGL vs WebGPU mean-RGB across distances`,
+  );
   console.log();
   console.log(
     `${"distance".padEnd(12)} ${"WebGL globe-only".padStart(17)} ${"WebGPU globe-only".padStart(17)} ${"WebGL/WebGPU".padStart(14)}`,
@@ -182,7 +202,9 @@ function colorize(value, lo, hi) {
   console.log();
   console.log("Per-distance PNGs:");
   for (const r of rows) {
-    console.log(`  brightness-${r.d.name}-webgl.png  vs  brightness-${r.d.name}-webgpu.png`);
+    console.log(
+      `  brightness-${r.d.name}-webgl.png  vs  brightness-${r.d.name}-webgpu.png`,
+    );
   }
 
   // Write a JSON report for diff-against-baseline tracking

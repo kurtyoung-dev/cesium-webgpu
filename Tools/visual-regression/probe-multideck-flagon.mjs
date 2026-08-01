@@ -39,7 +39,8 @@ async function capture(page, multiDeck) {
       g.defaultCloudCollection.enableVolumetric = true;
       g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // cinematic full-res for a clean read
       g.defaultCloudCollection.volumetric.cloudCoverage = 0.5;
-      if ("cloudMultiDeck" in g) g.defaultCloudCollection.volumetric.cloudMultiDeck = multiDeck;
+      if ("cloudMultiDeck" in g)
+        g.defaultCloudCollection.volumetric.cloudMultiDeck = multiDeck;
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(
           camera.lon,
@@ -81,7 +82,9 @@ async function capture(page, multiDeck) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());

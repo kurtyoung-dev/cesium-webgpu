@@ -1,7 +1,6 @@
 // Scan a vertical strip of pixels for Hello World to find where the
 // bluish off-disk halo actually starts in WebGPU vs WebGL.
-import { chromium } from 'playwright';
-import fs from 'fs';
+import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -15,27 +14,42 @@ const RENDERER_OVERRIDE_SHIM = `
 `;
 
 async function probe(renderer) {
-  const browser = await chromium.launch({ channel: 'msedge', headless: true });
-  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
-  const page = await ctx.newPage();
-  await page.addInitScript((r) => { window.__FORCED_RENDERER__ = r; }, renderer);
-  await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-  await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
-    const response = await route.fetch();
-    const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-    await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const ctx = await browser.newContext({
+    viewport: { width: 800, height: 600 },
   });
-  await page.goto('http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html', { waitUntil: 'load', timeout: 60000 });
+  const page = await ctx.newPage();
+  await page.addInitScript((r) => {
+    window.__FORCED_RENDERER__ = r;
+  }, renderer);
+  await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
+  await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
+    const response = await route.fetch();
+    const txt = (await response.text()).replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    );
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      body: txt,
+    });
+  });
+  await page.goto(
+    "http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html",
+    { waitUntil: "load", timeout: 60000 },
+  );
   await page.waitForTimeout(8000);
-  const png = await page.screenshot({ type: 'png' });
-  const dataUrl = `data:image/png;base64,${png.toString('base64')}`;
+  const png = await page.screenshot({ type: "png" });
+  const dataUrl = `data:image/png;base64,${png.toString("base64")}`;
   const result = await page.evaluate(async (durl) => {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
-        const c = document.createElement('canvas');
-        c.width = img.width; c.height = img.height;
-        const cx = c.getContext('2d');
+        const c = document.createElement("canvas");
+        c.width = img.width;
+        c.height = img.height;
+        const cx = c.getContext("2d");
         cx.drawImage(img, 0, 0);
         // Scan horizontal row y=300, every 25 pixels
         const samples = [];
@@ -52,15 +66,20 @@ async function probe(renderer) {
   return result;
 }
 
-const wgl = await probe('webgl');
-const wgpu = await probe('webgpu');
+const wgl = await probe("webgl");
+const wgpu = await probe("webgpu");
 
-console.log('x    | wgl R,G,B      | wgpu R,G,B     | Δ');
-console.log('-----|----------------|----------------|------');
+console.log("x    | wgl R,G,B      | wgpu R,G,B     | Δ");
+console.log("-----|----------------|----------------|------");
 for (let i = 0; i < wgl.length; i++) {
-  const a = wgl[i]; const b = wgpu[i];
-  const dr = b.r - a.r, dg = b.g - a.g, db = b.b - a.b;
+  const a = wgl[i];
+  const b = wgpu[i];
+  const dr = b.r - a.r,
+    dg = b.g - a.g,
+    db = b.b - a.b;
   const sumD = Math.abs(dr) + Math.abs(dg) + Math.abs(db);
-  const flag = sumD > 60 ? ' ⚠️' : '';
-  console.log(`${a.x.toString().padStart(4)} | (${a.r.toString().padStart(3)},${a.g.toString().padStart(3)},${a.b.toString().padStart(3)})  | (${b.r.toString().padStart(3)},${b.g.toString().padStart(3)},${b.b.toString().padStart(3)})  | (${dr.toString().padStart(4)},${dg.toString().padStart(4)},${db.toString().padStart(4)})${flag}`);
+  const flag = sumD > 60 ? " ⚠️" : "";
+  console.log(
+    `${a.x.toString().padStart(4)} | (${a.r.toString().padStart(3)},${a.g.toString().padStart(3)},${a.b.toString().padStart(3)})  | (${b.r.toString().padStart(3)},${b.g.toString().padStart(3)},${b.b.toString().padStart(3)})  | (${dr.toString().padStart(4)},${dg.toString().padStart(4)},${db.toString().padStart(4)})${flag}`,
+  );
 }

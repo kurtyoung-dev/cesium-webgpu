@@ -24,14 +24,25 @@ const OUT_DIR = "Tools/visual-regression/output";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 800 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
+    waitUntil: "networkidle",
+  });
   await page.waitForFunction(() => !!window.viewer);
 
   const result = await page.evaluate(async () => {
@@ -42,7 +53,9 @@ const OUT_DIR = "Tools/visual-regression/output";
     // Mirror the demo's contextOptions (the served viewer was created without
     // the flag; set it on the context the same way the probes do).
     if (!ctx._options) ctx._options = {};
-    ctx._options.webgpu = Object.assign({}, ctx._options.webgpu, { sceneCaptureReflections: true });
+    ctx._options.webgpu = Object.assign({}, ctx._options.webgpu, {
+      sceneCaptureReflections: true,
+    });
 
     scene.light = new Cesium.SunLight();
 
@@ -66,7 +79,8 @@ const OUT_DIR = "Tools/visual-regression/output";
       });
     }
 
-    const lon = -75.6121, lat = 40.0425;
+    const lon = -75.6121,
+      lat = 40.0425;
     const mirrorPos = Cesium.Cartesian3.fromDegrees(lon - 0.0006, lat, 40);
     const mirror = scene.primitives.add(
       await Cesium.Model.fromGltfAsync({
@@ -82,8 +96,16 @@ const OUT_DIR = "Tools/visual-regression/output";
     manager.enabled = true;
 
     viewer.camera.setView({
-      destination: Cesium.Cartesian3.fromDegrees(lon - 0.0022, lat - 0.0004, 95),
-      orientation: { heading: Cesium.Math.toRadians(70), pitch: Cesium.Math.toRadians(-8), roll: 0 },
+      destination: Cesium.Cartesian3.fromDegrees(
+        lon - 0.0022,
+        lat - 0.0004,
+        95,
+      ),
+      orientation: {
+        heading: Cesium.Math.toRadians(70),
+        pitch: Cesium.Math.toRadians(-8),
+        roll: 0,
+      },
     });
 
     for (let i = 0; i < 300; i++) {
@@ -91,7 +113,11 @@ const OUT_DIR = "Tools/visual-regression/output";
       manager.update(scene._frameState);
       await new Promise((r) => requestAnimationFrame(r));
     }
-    const recordsOn = ctx._webgpuSceneCaptureModels?.models?.reduce((a, m) => a + (m.records?.length ?? 0), 0) ?? 0;
+    const recordsOn =
+      ctx._webgpuSceneCaptureModels?.models?.reduce(
+        (a, m) => a + (m.records?.length ?? 0),
+        0,
+      ) ?? 0;
     const entriesOn = ctx._webgpuSceneCaptureModels?.models?.length ?? 0;
 
     // Demo toggle path: disable capture + swap roughness + reset.
@@ -103,7 +129,11 @@ const OUT_DIR = "Tools/visual-regression/output";
       manager.update(scene._frameState);
       await new Promise((r) => requestAnimationFrame(r));
     }
-    const recordsOff = ctx._webgpuSceneCaptureModels?.models?.reduce((a, m) => a + (m.records?.length ?? 0), 0) ?? 0;
+    const recordsOff =
+      ctx._webgpuSceneCaptureModels?.models?.reduce(
+        (a, m) => a + (m.records?.length ?? 0),
+        0,
+      ) ?? 0;
 
     return {
       mirrorReady: mirror.ready,
@@ -115,7 +145,9 @@ const OUT_DIR = "Tools/visual-regression/output";
     };
   });
 
-  await page.screenshot({ path: path.join(OUT_DIR, "probe-sandcastle-scene-capture.png") });
+  await page.screenshot({
+    path: path.join(OUT_DIR, "probe-sandcastle-scene-capture.png"),
+  });
   await browser.close();
   const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   console.log("[sandcastle-runtime]", JSON.stringify(result));
@@ -128,6 +160,12 @@ const OUT_DIR = "Tools/visual-regression/output";
   // buildings) vs sky-only, proven visually in probe-tileset-capture-face-zoom.
   // The demo-runtime invariant here is: logic runs clean + records publish +
   // cube allocated, with zero console/validation errors.
-  const ok = errs.length === 0 && result.recordsOn > 0 && result.cubeAllocated && result.mirrorReady;
-  console.log(`  VERDICT: ${ok ? "PASS — demo logic runs clean (mirror ready, tileset active, cube allocated, capture records published, 0 console errors)" : "FAIL"}`);
+  const ok =
+    errs.length === 0 &&
+    result.recordsOn > 0 &&
+    result.cubeAllocated &&
+    result.mirrorReady;
+  console.log(
+    `  VERDICT: ${ok ? "PASS — demo logic runs clean (mirror ready, tileset active, cube allocated, capture records published, 0 console errors)" : "FAIL"}`,
+  );
 })();

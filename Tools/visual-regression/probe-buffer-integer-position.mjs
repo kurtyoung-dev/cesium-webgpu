@@ -45,7 +45,9 @@ const browser = await chromium.launch({
 
 // mode: "int" (normalized SHORT) | "double" (plain DOUBLE control)
 async function runCase(renderer, mode) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -158,8 +160,7 @@ async function runCase(renderer, mode) {
     await frame(3);
     const img = await snap();
 
-    const isYellow = (d, i) =>
-      d[i] > 150 && d[i + 1] > 130 && d[i + 2] < 100;
+    const isYellow = (d, i) => d[i] > 150 && d[i + 1] > 130 && d[i + 2] < 100;
     let n = 0;
     let sx = 0;
     let sy = 0;
@@ -223,24 +224,57 @@ const glD = cases["webgl-double"];
 const gpI = cases["webgpu-int"];
 const gpD = cases["webgpu-double"];
 
-check("vis-webgl-int", glI.count >= COUNT_MIN, `WebGL int-normalized visible: ${glI.count} (>=${COUNT_MIN})`);
-check("vis-webgl-double", glD.count >= COUNT_MIN, `WebGL double control visible: ${glD.count} (>=${COUNT_MIN})`);
-check("vis-webgpu-int", gpI.count >= COUNT_MIN, `WebGPU int-normalized visible: ${gpI.count} (>=${COUNT_MIN})`);
-check("vis-webgpu-double", gpD.count >= COUNT_MIN, `WebGPU double control visible: ${gpD.count} (>=${COUNT_MIN})`);
+check(
+  "vis-webgl-int",
+  glI.count >= COUNT_MIN,
+  `WebGL int-normalized visible: ${glI.count} (>=${COUNT_MIN})`,
+);
+check(
+  "vis-webgl-double",
+  glD.count >= COUNT_MIN,
+  `WebGL double control visible: ${glD.count} (>=${COUNT_MIN})`,
+);
+check(
+  "vis-webgpu-int",
+  gpI.count >= COUNT_MIN,
+  `WebGPU int-normalized visible: ${gpI.count} (>=${COUNT_MIN})`,
+);
+check(
+  "vis-webgpu-double",
+  gpD.count >= COUNT_MIN,
+  `WebGPU double control visible: ${gpD.count} (>=${COUNT_MIN})`,
+);
 
 if (glI.count > 0 && glD.count > 0)
-  check("coincide-webgl", dist(glI, glD) <= COINCIDE_MAX, `WebGL int vs double centroid ${dist(glI, glD).toFixed(2)}px (<=${COINCIDE_MAX})`);
+  check(
+    "coincide-webgl",
+    dist(glI, glD) <= COINCIDE_MAX,
+    `WebGL int vs double centroid ${dist(glI, glD).toFixed(2)}px (<=${COINCIDE_MAX})`,
+  );
 if (gpI.count > 0 && gpD.count > 0)
-  check("coincide-webgpu", dist(gpI, gpD) <= COINCIDE_MAX, `WebGPU int vs double centroid ${dist(gpI, gpD).toFixed(2)}px (<=${COINCIDE_MAX}) — THE FIX`);
+  check(
+    "coincide-webgpu",
+    dist(gpI, gpD) <= COINCIDE_MAX,
+    `WebGPU int vs double centroid ${dist(gpI, gpD).toFixed(2)}px (<=${COINCIDE_MAX}) — THE FIX`,
+  );
 if (glI.count > 0 && gpI.count > 0)
-  check("cross-int", dist(glI, gpI) <= CROSS_MAX, `WebGL↔WebGPU int-normalized centroid ${dist(glI, gpI).toFixed(2)}px (<=${CROSS_MAX})`);
+  check(
+    "cross-int",
+    dist(glI, gpI) <= CROSS_MAX,
+    `WebGL↔WebGPU int-normalized centroid ${dist(glI, gpI).toFixed(2)}px (<=${CROSS_MAX})`,
+  );
 if (glD.count > 0 && gpD.count > 0)
-  check("cross-double", dist(glD, gpD) <= CROSS_MAX, `WebGL↔WebGPU double centroid ${dist(glD, gpD).toFixed(2)}px (<=${CROSS_MAX})`);
+  check(
+    "cross-double",
+    dist(glD, gpD) <= CROSS_MAX,
+    `WebGL↔WebGPU double centroid ${dist(glD, gpD).toFixed(2)}px (<=${CROSS_MAX})`,
+  );
 
 const allErrs = Object.values(cases).reduce((a, c) => a + c.errors.length, 0);
 check("errs", allErrs === 0, `console errors total: ${allErrs}`);
 for (const [k, c] of Object.entries(cases))
-  for (const e of c.errors.slice(0, 4)) console.log(`    ${k} ERR: ${e.slice(0, 160)}`);
+  for (const e of c.errors.slice(0, 4))
+    console.log(`    ${k} ERR: ${e.slice(0, 160)}`);
 
 console.log(ok ? "PASS" : "FAIL");
 await browser.close();

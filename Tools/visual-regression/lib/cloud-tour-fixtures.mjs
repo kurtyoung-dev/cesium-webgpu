@@ -124,11 +124,11 @@ export function utcIsoForLocalSolarHour(
     throw new Error(`dateIso must be YYYY-MM-DD, received ${String(dateIso)}`);
   }
   const wrappedLon = ((((lonDegrees + 180) % 360) + 360) % 360) - 180;
-  const offsetSeconds = Math.round(
-    (localSolarHour - wrappedLon / 15) * 3600,
-  );
+  const offsetSeconds = Math.round((localSolarHour - wrappedLon / 15) * 3600);
   const base = Date.parse(`${dateIso}T00:00:00Z`);
-  return new Date(base + offsetSeconds * 1000).toISOString().replace(/\.000Z$/, "Z");
+  return new Date(base + offsetSeconds * 1000)
+    .toISOString()
+    .replace(/\.000Z$/, "Z");
 }
 
 // ── Stable identity ────────────────────────────────────────────────────────
@@ -1317,11 +1317,13 @@ export function validateFixture(fixture) {
     "missing rationale (say what this fixture is evidence FOR)",
   );
   need(
-    CloudType.validate?.(fixture?.cloudType) ?? isFiniteNumber(fixture?.cloudType),
+    CloudType.validate?.(fixture?.cloudType) ??
+      isFiniteNumber(fixture?.cloudType),
     `cloudType ${String(fixture?.cloudType)} is not a CloudType genus`,
   );
   need(
-    isFiniteNumber(fixture?.anchor?.lon) && isFiniteNumber(fixture?.anchor?.lat),
+    isFiniteNumber(fixture?.anchor?.lon) &&
+      isFiniteNumber(fixture?.anchor?.lat),
     "anchor must carry finite lon/lat",
   );
   need(
@@ -1338,7 +1340,10 @@ export function validateFixture(fixture) {
   );
   const bottom = volumetric.cloudLayerBottom;
   const top = volumetric.cloudLayerTop;
-  need(isFiniteNumber(bottom) && bottom >= 0, "cloudLayerBottom must be finite");
+  need(
+    isFiniteNumber(bottom) && bottom >= 0,
+    "cloudLayerBottom must be finite",
+  );
   need(isFiniteNumber(top) && top > bottom, "cloudLayerTop must exceed bottom");
   need(
     volumetric.cloudCoverage >= 0 && volumetric.cloudCoverage <= 1,
@@ -1413,7 +1418,11 @@ export function validateFixture(fixture) {
     }
     // Regime vs the fixture's OWN deck — the check that catches an
     // "inside-deck" station authored above the deck it claims to occupy.
-    if (isFiniteNumber(station.height) && isFiniteNumber(bottom) && isFiniteNumber(top)) {
+    if (
+      isFiniteNumber(station.height) &&
+      isFiniteNumber(bottom) &&
+      isFiniteNumber(top)
+    ) {
       const h = station.height;
       if (station.regime === "ground" && !(h < bottom)) {
         failures.push(
@@ -1431,7 +1440,9 @@ export function validateFixture(fixture) {
         );
       }
       if (station.regime === "orbital" && !(h >= 1e6)) {
-        failures.push(`${label}: regime orbital but height ${h} is below 1e6 m`);
+        failures.push(
+          `${label}: regime orbital but height ${h} is below 1e6 m`,
+        );
       }
     }
   }
@@ -1495,7 +1506,8 @@ export function validateFixtureSet(fixtures = CLOUD_TOUR_FIXTURES) {
         continue;
       }
       const declaredTwin =
-        fixture?.twinOf === previous || byId.get(previous)?.twinOf === fixtureId;
+        fixture?.twinOf === previous ||
+        byId.get(previous)?.twinOf === fixtureId;
       if (!declaredTwin) {
         failures.push(
           `${group.genus}: ${previous} and ${fixtureId} share an identical volumetric ` +
@@ -1511,11 +1523,14 @@ export function validateFixtureSet(fixtures = CLOUD_TOUR_FIXTURES) {
     }
     const partner = byId.get(fixture.twinOf);
     if (!partner) {
-      failures.push(`${fixture.id}: twinOf names unknown fixture ${fixture.twinOf}`);
+      failures.push(
+        `${fixture.id}: twinOf names unknown fixture ${fixture.twinOf}`,
+      );
       continue;
     }
     if (
-      stableStringify(fixture.volumetric) !== stableStringify(partner.volumetric)
+      stableStringify(fixture.volumetric) !==
+      stableStringify(partner.volumetric)
     ) {
       failures.push(
         `${fixture.id}: declares twinOf ${partner.id} but their volumetric ` +
@@ -1654,7 +1669,10 @@ export function validateSequence(sequence, fixtures = CLOUD_TOUR_FIXTURES) {
   };
 
   need(typeof sequence?.id === "string", "missing id");
-  need(SEQUENCE_KINDS.includes(sequence?.kind), `unknown kind ${String(sequence?.kind)}`);
+  need(
+    SEQUENCE_KINDS.includes(sequence?.kind),
+    `unknown kind ${String(sequence?.kind)}`,
+  );
   need(
     typeof sequence?.rationale === "string" && sequence.rationale.length > 40,
     "missing rationale (say what this sequence is evidence FOR)",
@@ -1664,12 +1682,14 @@ export function validateSequence(sequence, fixtures = CLOUD_TOUR_FIXTURES) {
   need(!!fixture, `unknown fixtureId ${String(sequence?.fixtureId)}`);
 
   need(
-    isFiniteNumber(sequence?.clock?.stepSeconds) && sequence.clock.stepSeconds >= 0,
+    isFiniteNumber(sequence?.clock?.stepSeconds) &&
+      sequence.clock.stepSeconds >= 0,
     "clock.stepSeconds must be a finite, non-negative constant — a sequence " +
       "that advances time by wall clock is not replayable",
   );
   need(
-    Number.isInteger(sequence?.clock?.warmFrames) && sequence.clock.warmFrames >= 0,
+    Number.isInteger(sequence?.clock?.warmFrames) &&
+      sequence.clock.warmFrames >= 0,
     "clock.warmFrames must be a non-negative integer",
   );
   need(
@@ -1726,19 +1746,29 @@ export function validateSequence(sequence, fixtures = CLOUD_TOUR_FIXTURES) {
     }
     if (phase.action === "set-deck") {
       const deck = phase.deck ?? {};
-      if (!(isFiniteNumber(deck.bottom) && isFiniteNumber(deck.top) && deck.top > deck.bottom)) {
+      if (!(
+        isFiniteNumber(deck.bottom) &&
+        isFiniteNumber(deck.top) &&
+        deck.top > deck.bottom
+      )) {
         failures.push(`${label}: set-deck requires deck.bottom < deck.top`);
       }
     }
     if (phase.action === "resize") {
       const viewport = phase.viewport ?? {};
-      if (!(Number.isInteger(viewport.width) && Number.isInteger(viewport.height))) {
-        failures.push(`${label}: resize requires an integer viewport width/height`);
+      if (!(
+        Number.isInteger(viewport.width) && Number.isInteger(viewport.height)
+      )) {
+        failures.push(
+          `${label}: resize requires an integer viewport width/height`,
+        );
       }
     }
     if (phase.action === "pan") {
       const pan = phase.pan ?? {};
-      if (!(isFiniteNumber(pan.headingDeltaDegrees) && Number.isInteger(pan.frames))) {
+      if (!(
+        isFiniteNumber(pan.headingDeltaDegrees) && Number.isInteger(pan.frames)
+      )) {
         failures.push(
           `${label}: pan requires a finite headingDeltaDegrees and an integer frame count`,
         );
@@ -1763,7 +1793,9 @@ export function validateSequence(sequence, fixtures = CLOUD_TOUR_FIXTURES) {
         !Number.isInteger(phase.resetAssertFromFrame) ||
         phase.resetAssertFromFrame < 0
       ) {
-        failures.push(`${label}: resetAssertFromFrame must be a non-negative integer`);
+        failures.push(
+          `${label}: resetAssertFromFrame must be a non-negative integer`,
+        );
       } else if (
         Number.isInteger(phase.frames) &&
         phase.resetAssertFromFrame >= phase.frames
@@ -1800,13 +1832,20 @@ export function validateSequence(sequence, fixtures = CLOUD_TOUR_FIXTURES) {
       failures.push(`${label}: expectResetBits and forbidResetBits overlap`);
     }
   }
-  need(capturedPhases > 0, "no phase captures a frame — the sequence produces no pixels");
-  need(sawStation, "no phase names a camera station — the camera pose is unauthored");
+  need(
+    capturedPhases > 0,
+    "no phase captures a frame — the sequence produces no pixels",
+  );
+  need(
+    sawStation,
+    "no phase names a camera station — the camera pose is unauthored",
+  );
 
   // A sequence that asserts a history reset must run on a tier that HAS a
   // history. Asserting reset bits on T3 would pass vacuously.
   const assertsReset = phases.some(
-    (phase) => Number.isInteger(phase.expectResetBits) && phase.expectResetBits !== 0,
+    (phase) =>
+      Number.isInteger(phase.expectResetBits) && phase.expectResetBits !== 0,
   );
   if (assertsReset) {
     const tier = sequence?.volumetric?.cloudVolumetricQuality;
@@ -1851,7 +1890,9 @@ export function validateSequenceSet(
 
   // The wind/time lanes are only evidence as a SET: three lanes over one
   // fixture differing by exactly one variable each.
-  const windLanes = sequences.filter((sequence) => sequence.kind === "wind-time");
+  const windLanes = sequences.filter(
+    (sequence) => sequence.kind === "wind-time",
+  );
   if (windLanes.length < 3) {
     failures.push(
       `only ${windLanes.length} wind-time lanes — advection cannot be separated ` +

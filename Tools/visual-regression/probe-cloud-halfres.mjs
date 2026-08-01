@@ -165,7 +165,9 @@ async function setupAndCapture(page, quality) {
     console.log(`cloudish delta (half vs full): ${dCloud}%`);
   }
   console.log(
-    newErrs.length ? `\nNEW console errors:\n${newErrs.slice(0, 6).join("\n")}` : "\nNo new console errors.",
+    newErrs.length
+      ? `\nNEW console errors:\n${newErrs.slice(0, 6).join("\n")}`
+      : "\nNo new console errors.",
   );
   console.log(
     "\nPNGs: Tools/visual-regression/output/cloud-halfres/{fullres,halfres}-webgpu.png",

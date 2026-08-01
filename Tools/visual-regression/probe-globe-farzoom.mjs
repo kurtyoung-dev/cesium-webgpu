@@ -64,7 +64,9 @@ async function capture(renderer, atmo) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const errs = [];
   page.on("pageerror", (e) => errs.push(e.message));
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
@@ -96,11 +98,16 @@ async function capture(renderer, atmo) {
     { ...VIEW, atmo, det: DET_BROWSER_SETUP, iso: DETERMINISTIC_CLOCK_ISO },
   );
   await page.waitForTimeout(2000);
-  const out = path.join(OUT_DIR, `${atmo ? "atmoOn" : "atmoOff"}-${renderer}.png`);
+  const out = path.join(
+    OUT_DIR,
+    `${atmo ? "atmoOn" : "atmoOff"}-${renderer}.png`,
+  );
   await page.screenshot({ path: out, fullPage: false });
   await browser.close();
   if (errs.length) {
-    console.log(`  [${renderer}/${atmo ? "on" : "off"}] page errors: ${errs[0]}`);
+    console.log(
+      `  [${renderer}/${atmo ? "on" : "off"}] page errors: ${errs[0]}`,
+    );
   }
   return out;
 }
@@ -137,7 +144,8 @@ async function analyze(pngGl, pngGpu, label) {
       const W = A.w,
         H = A.h;
       const CROP = { x0: 250, x1: 1010, y0: 45, y1: 640 };
-      const lum = (d, i) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      const lum = (d, i) =>
+        0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
       const cw = CROP.x1 - CROP.x0,
         ch = CROP.y1 - CROP.y0;
       const mmask = new Uint8Array(cw * ch);
@@ -368,9 +376,7 @@ async function selfDiff(pngOn, pngOff) {
       }
       return {
         changedPct: +((100 * changed) / cropPx).toFixed(2),
-        meanLumDelta_onMinusOff: changed
-          ? +(sumDelta / changed).toFixed(1)
-          : 0,
+        meanLumDelta_onMinusOff: changed ? +(sumDelta / changed).toFixed(1) : 0,
       };
     },
     { ba, bb },
@@ -419,14 +425,22 @@ fs.writeFileSync(
 const pr = (label, a) => {
   console.log(`  ${label}: mismatch ${a.mismatchPct}% (${a.mismatchPx}px)`);
   const b = a.buckets;
-  for (const k of ["interiorBlobGpuBrighter", "interiorBlobGlBrighter", "seamThin", "limb", "space"]) {
+  for (const k of [
+    "interiorBlobGpuBrighter",
+    "interiorBlobGlBrighter",
+    "seamThin",
+    "limb",
+    "space",
+  ]) {
     const e = b[k];
     console.log(
       `    ${k.padEnd(24)} ${String(e.pctOfMismatch).padStart(5)}% | ${e.pctOfCrop}%  px=${e.px}  meanΔ(gpu−gl)=${e.meanDelta_gpuMinusGl ? JSON.stringify(e.meanDelta_gpuMinusGl) : "-"}`,
     );
   }
   if (a.gpuBlobCentroid)
-    console.log(`    gpuBlob centroid (px, full-frame): ${JSON.stringify(a.gpuBlobCentroid)}`);
+    console.log(
+      `    gpuBlob centroid (px, full-frame): ${JSON.stringify(a.gpuBlobCentroid)}`,
+    );
 };
 
 console.log("\n=== GPU-vs-GL, ground-atmosphere ON (baseline) ===");
@@ -434,8 +448,12 @@ pr("atmoOn", on);
 console.log("\n=== GPU-vs-GL, ground-atmosphere OFF ===");
 pr("atmoOff", off);
 console.log("\n=== drape magnitude (same-backend On−Off) ===");
-console.log(`    webgl : ${glDrape.changedPct}% pixels changed, mean lum Δ(on−off) ${glDrape.meanLumDelta_onMinusOff}`);
-console.log(`    webgpu: ${gpuDrape.changedPct}% pixels changed, mean lum Δ(on−off) ${gpuDrape.meanLumDelta_onMinusOff}`);
+console.log(
+  `    webgl : ${glDrape.changedPct}% pixels changed, mean lum Δ(on−off) ${glDrape.meanLumDelta_onMinusOff}`,
+);
+console.log(
+  `    webgpu: ${gpuDrape.changedPct}% pixels changed, mean lum Δ(on−off) ${gpuDrape.meanLumDelta_onMinusOff}`,
+);
 console.log("\n=== VERDICT — bucket (b) interiorBlobGpuBrighter ===");
 console.log(`    atmo ON : ${bOn} px`);
 console.log(`    atmo OFF: ${bOff} px`);

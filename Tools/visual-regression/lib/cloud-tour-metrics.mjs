@@ -110,7 +110,13 @@ export const CHANGED_PIXEL_THRESHOLD = 18;
  */
 export function imageDeltaMetrics(a, b, options = {}) {
   const threshold = options.threshold ?? CHANGED_PIXEL_THRESHOLD;
-  if (!a || !b || a.length !== b.length || a.length === 0 || a.length % 4 !== 0) {
+  if (
+    !a ||
+    !b ||
+    a.length !== b.length ||
+    a.length === 0 ||
+    a.length % 4 !== 0
+  ) {
     // A structural mismatch is NOT a delta of zero. Returning `null` metrics
     // forces the caller to treat it as the structural failure it is.
     return {
@@ -390,13 +396,14 @@ export function deriveCloudTier(realization = {}, bits = CLOUD_QF_BITS) {
   const evidence = {
     qualityFlags: flags,
     lightSteps,
-    maxSteps: Number.isFinite(realization.maxSteps) ? realization.maxSteps : null,
+    maxSteps: Number.isFinite(realization.maxSteps)
+      ? realization.maxSteps
+      : null,
     baked: flags === null ? null : (flags & bits.NOISE_BAKED) !== 0,
     halfRes: flags === null ? null : (flags & bits.HALF_RES) !== 0,
     temporal: flags === null ? null : (flags & bits.TEMPORAL) !== 0,
     lightCone: flags === null ? null : (flags & bits.LIGHT_CONE) !== 0,
-    planetDensity:
-      flags === null ? null : (flags & bits.PLANET_DENSITY) !== 0,
+    planetDensity: flags === null ? null : (flags & bits.PLANET_DENSITY) !== 0,
   };
   if (flags === null) {
     return {
@@ -434,7 +441,12 @@ export function deriveCloudTier(realization = {}, bits = CLOUD_QF_BITS) {
   if (!evidence.halfRes && !evidence.temporal && !evidence.lightCone) {
     return { tier: 3, tierName: "T3-cinematic", confidence: "exact", evidence };
   }
-  return { tier: null, tierName: "unmatched", confidence: "ambiguous", evidence };
+  return {
+    tier: null,
+    tierName: "unmatched",
+    confidence: "ambiguous",
+    evidence,
+  };
 }
 
 // ── GPU timestamps ─────────────────────────────────────────────────────────
@@ -582,7 +594,11 @@ export function validateSequenceMetricRecord(record) {
       if (typeof phase?.id !== "string") {
         failures.push(`${id}: a temporal phase entry lacks an id`);
       }
-      if (phase?.reset !== undefined && phase.reset?.ok === false && !phase.reset.reason) {
+      if (
+        phase?.reset !== undefined &&
+        phase.reset?.ok === false &&
+        !phase.reset.reason
+      ) {
         // A failing reset assessment must name what was missing/unexpected.
         if (
           (phase.reset.missing?.length ?? 0) === 0 &&
@@ -674,7 +690,9 @@ export function parseControlPasses(spec, sequences) {
       .map((name) => name.trim())
       .filter(Boolean);
     if (id.length === 0 || passes.length === 0) {
-      throw new Error(`control-pass entry names no sequence or no pass: ${entry}`);
+      throw new Error(
+        `control-pass entry names no sequence or no pass: ${entry}`,
+      );
     }
     controls[id] = passes;
   }
@@ -694,7 +712,12 @@ function environmentKey(manifest) {
 
 function passDelta(preMs, postMs) {
   if (!Number.isFinite(preMs) || !Number.isFinite(postMs) || preMs <= 0) {
-    return { preMs: preMs ?? null, postMs: postMs ?? null, deltaMs: null, deltaPct: null };
+    return {
+      preMs: preMs ?? null,
+      postMs: postMs ?? null,
+      deltaMs: null,
+      deltaPct: null,
+    };
   }
   const deltaMs = +(postMs - preMs).toFixed(6);
   return {
@@ -736,9 +759,16 @@ export function assessInterleavedAb(input = {}) {
   const failures = [];
 
   if (manifests.length === 0) {
-    return { status: "no-manifests", failures: ["no manifests supplied"], rounds: [], verdict: null };
+    return {
+      status: "no-manifests",
+      failures: ["no manifests supplied"],
+      rounds: [],
+      verdict: null,
+    };
   }
-  const pairIds = new Set(manifests.map((manifest) => manifest?.pairId ?? null));
+  const pairIds = new Set(
+    manifests.map((manifest) => manifest?.pairId ?? null),
+  );
   if (pairIds.size !== 1 || pairIds.has(null)) {
     return {
       status: "incomparable-pair",
@@ -766,10 +796,15 @@ export function assessInterleavedAb(input = {}) {
   for (const manifest of manifests) {
     const round = manifest?.round;
     if (!Number.isInteger(round) || round < 0) {
-      failures.push(`a manifest carries a non-integer round (${String(round)})`);
+      failures.push(
+        `a manifest carries a non-integer round (${String(round)})`,
+      );
       continue;
     }
-    const entry = byRound.get(round) ?? { round, order: manifest?.order ?? null };
+    const entry = byRound.get(round) ?? {
+      round,
+      order: manifest?.order ?? null,
+    };
     if (manifest?.tag === "pre") {
       entry.pre = manifest;
     } else if (manifest?.tag === "post") {
@@ -790,7 +825,14 @@ export function assessInterleavedAb(input = {}) {
     const roundFailures = [];
     if (!entry.pre || !entry.post) {
       roundFailures.push("incomplete round (needs one pre and one post)");
-      rounds.push({ round: entry.round, order: entry.order, complete: false, usable: false, failures: roundFailures, sequences: [] });
+      rounds.push({
+        round: entry.round,
+        order: entry.order,
+        complete: false,
+        usable: false,
+        failures: roundFailures,
+        sequences: [],
+      });
       continue;
     }
     const preSha = entry.pre.source?.runtimeBundle?.sha256;

@@ -27,7 +27,8 @@ import { chromium } from "playwright";
 import zlib from "zlib";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const LON = -75, LAT = 40;
+const LON = -75,
+  LAT = 40;
 // Waypoints: one close oblique (C2-10 original framing — exercises anisotropic
 // screen-space derivatives) + two nadir zooms (subject guaranteed in-frame;
 // 700/2000 m ASL = 400/1700 m above the 300 m extruded top face). The zoom
@@ -41,67 +42,127 @@ const WAYPOINTS = [
 const RATIO_PAIR = ["nadir-700", "nadir-2000"];
 
 async function capture(renderer, waypoint) {
-  const browser = await chromium.launch({ channel: "msedge", headless: true, args: ["--enable-unsafe-webgpu"] });
+  const browser = await chromium.launch({
+    channel: "msedge",
+    headless: true,
+    args: ["--enable-unsafe-webgpu"],
+  });
   try {
-    const page = await browser.newPage({ viewport: { width: 600, height: 600 } });
+    const page = await browser.newPage({
+      viewport: { width: 600, height: 600 },
+    });
     const errs = [];
-    page.on("console", (m) => { if (m.type() === "error") errs.push(m.text().slice(0, 800)); });
-    page.on("pageerror", (e) => errs.push(`PAGEERROR: ${String(e).slice(0, 800)}`));
-    await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, { waitUntil: "networkidle", timeout: 90000 });
+    page.on("console", (m) => {
+      if (m.type() === "error") errs.push(m.text().slice(0, 800));
+    });
+    page.on("pageerror", (e) =>
+      errs.push(`PAGEERROR: ${String(e).slice(0, 800)}`),
+    );
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      { waitUntil: "networkidle", timeout: 90000 },
+    );
     await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
-    await page.evaluate(async ({ lon, lat, alt, pitch, southOffset }) => {
-      const C = await import("/Build/CesiumUnminified/index.js");
-      const v = window.viewer, s = v.scene;
-      s.requestRenderMode = false;
-      s.globe.show = false; s.skyBox.show = false; s.skyAtmosphere.show = false;
-      if (s.sun) s.sun.show = false;
-      s.backgroundColor = C.Color.BLACK;
-      for (const sel of [".cesium-viewer-toolbar", ".cesium-viewer-animationContainer",
-        ".cesium-viewer-timelineContainer", ".cesium-viewer-bottom", ".cesium-viewer-fullscreenContainer"]) {
-        document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
-      }
-      const d = 0.002;
-      const material = C.Material.fromType("Grid", {
-        color: C.Color.YELLOW,
-        cellAlpha: 0.1,
-        lineCount: new C.Cartesian2(8, 8),
-        lineThickness: new C.Cartesian2(2, 2),
-      });
-      // EXTRUDED polygon (top face carries st) — the FLAT-polygon grid renders
-      // solid on WebGPU (pre-existing st issue, both old+new shader). The extruded
-      // top face is the path matparity uses, where the grid pattern renders.
-      const prim = new C.Primitive({
-        geometryInstances: new C.GeometryInstance({
-          geometry: new C.PolygonGeometry({
-            polygonHierarchy: new C.PolygonHierarchy(C.Cartesian3.fromDegreesArray([
-              lon - d, lat - d, lon + d, lat - d, lon + d, lat + d, lon - d, lat + d,
-            ])),
-            height: 0, extrudedHeight: 300,
-            vertexFormat: C.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
+    await page.evaluate(
+      async ({ lon, lat, alt, pitch, southOffset }) => {
+        const C = await import("/Build/CesiumUnminified/index.js");
+        const v = window.viewer,
+          s = v.scene;
+        s.requestRenderMode = false;
+        s.globe.show = false;
+        s.skyBox.show = false;
+        s.skyAtmosphere.show = false;
+        if (s.sun) s.sun.show = false;
+        s.backgroundColor = C.Color.BLACK;
+        for (const sel of [
+          ".cesium-viewer-toolbar",
+          ".cesium-viewer-animationContainer",
+          ".cesium-viewer-timelineContainer",
+          ".cesium-viewer-bottom",
+          ".cesium-viewer-fullscreenContainer",
+        ]) {
+          document
+            .querySelectorAll(sel)
+            .forEach((e) => (e.style.display = "none"));
+        }
+        const d = 0.002;
+        const material = C.Material.fromType("Grid", {
+          color: C.Color.YELLOW,
+          cellAlpha: 0.1,
+          lineCount: new C.Cartesian2(8, 8),
+          lineThickness: new C.Cartesian2(2, 2),
+        });
+        // EXTRUDED polygon (top face carries st) — the FLAT-polygon grid renders
+        // solid on WebGPU (pre-existing st issue, both old+new shader). The extruded
+        // top face is the path matparity uses, where the grid pattern renders.
+        const prim = new C.Primitive({
+          geometryInstances: new C.GeometryInstance({
+            geometry: new C.PolygonGeometry({
+              polygonHierarchy: new C.PolygonHierarchy(
+                C.Cartesian3.fromDegreesArray([
+                  lon - d,
+                  lat - d,
+                  lon + d,
+                  lat - d,
+                  lon + d,
+                  lat + d,
+                  lon - d,
+                  lat + d,
+                ]),
+              ),
+              height: 0,
+              extrudedHeight: 300,
+              vertexFormat:
+                C.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
+            }),
           }),
-        }),
-        appearance: new C.MaterialAppearance({ material, flat: true }),
-        asynchronous: false,
-      });
-      s.primitives.add(prim);
-      v.camera.setView({
-        destination: C.Cartesian3.fromDegrees(lon, lat - d * southOffset, alt),
-        orientation: { heading: 0, pitch: C.Math.toRadians(pitch), roll: 0 },
-      });
-      // Deterministic settle: primitive ready first (bounded), then fixed frames.
-      for (let i = 0; i < 600 && !prim.ready; i++) { s.render(); await new Promise((r) => requestAnimationFrame(r)); }
-      for (let i = 0; i < 120; i++) { s.render(); await new Promise((r) => requestAnimationFrame(r)); }
-      s.canvas.setAttribute("data-grid", "1");
-    }, { lon: LON, lat: LAT, alt: waypoint.alt, pitch: waypoint.pitch, southOffset: waypoint.southOffset });
+          appearance: new C.MaterialAppearance({ material, flat: true }),
+          asynchronous: false,
+        });
+        s.primitives.add(prim);
+        v.camera.setView({
+          destination: C.Cartesian3.fromDegrees(
+            lon,
+            lat - d * southOffset,
+            alt,
+          ),
+          orientation: { heading: 0, pitch: C.Math.toRadians(pitch), roll: 0 },
+        });
+        // Deterministic settle: primitive ready first (bounded), then fixed frames.
+        for (let i = 0; i < 600 && !prim.ready; i++) {
+          s.render();
+          await new Promise((r) => requestAnimationFrame(r));
+        }
+        for (let i = 0; i < 120; i++) {
+          s.render();
+          await new Promise((r) => requestAnimationFrame(r));
+        }
+        s.canvas.setAttribute("data-grid", "1");
+      },
+      {
+        lon: LON,
+        lat: LAT,
+        alt: waypoint.alt,
+        pitch: waypoint.pitch,
+        southOffset: waypoint.southOffset,
+      },
+    );
 
-    const png = await page.locator('canvas[data-grid="1"]').screenshot({ type: "png" });
+    const png = await page
+      .locator('canvas[data-grid="1"]')
+      .screenshot({ type: "png" });
     const decoded = await page.evaluate(async (b64) => {
       const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
       const bmp = await createImageBitmap(blob);
       const off = new OffscreenCanvas(bmp.width, bmp.height);
-      const cx = off.getContext("2d"); cx.drawImage(bmp, 0, 0);
-      return { w: bmp.width, h: bmp.height, data: Array.from(cx.getImageData(0, 0, bmp.width, bmp.height).data) };
+      const cx = off.getContext("2d");
+      cx.drawImage(bmp, 0, 0);
+      return {
+        w: bmp.width,
+        h: bmp.height,
+        data: Array.from(cx.getImageData(0, 0, bmp.width, bmp.height).data),
+      };
     }, Buffer.from(png).toString("base64"));
     return { errs: errs.slice(0, 40), decoded };
   } finally {
@@ -118,8 +179,10 @@ async function capture(renderer, waypoint) {
 function lineWidth(img) {
   const widths = [];
   const interiorWidths = [];
-  const y0 = (img.h * 0.4) | 0, y1 = (img.h * 0.6) | 0;
-  const xInner0 = (img.w / 3) | 0, xInner1 = ((2 * img.w) / 3) | 0;
+  const y0 = (img.h * 0.4) | 0,
+    y1 = (img.h * 0.6) | 0;
+  const xInner0 = (img.w / 3) | 0,
+    xInner1 = ((2 * img.w) / 3) | 0;
   for (let y = y0; y < y1; y++) {
     let run = 0;
     for (let x = 0; x <= img.w; x++) {
@@ -129,8 +192,9 @@ function lineWidth(img) {
           img.data[(y * img.w + x) * 4 + 1] +
           img.data[(y * img.w + x) * 4 + 2] >
           250;
-      if (bright) { run++; }
-      else if (run > 0) {
+      if (bright) {
+        run++;
+      } else if (run > 0) {
         if (run < img.w * 0.5) {
           widths.push(run);
           const start = x - run;
@@ -154,15 +218,50 @@ function lineWidth(img) {
   };
 }
 
-const CRC = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
-function crc32(b) { let c = 0xffffffff; for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; }
+const CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(b) {
+  let c = 0xffffffff;
+  for (let i = 0; i < b.length; i++) c = CRC[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
 function encodePNG({ w, h, data }) {
-  const bpr = w * 4, raw = Buffer.alloc((bpr + 1) * h);
-  for (let y = 0; y < h; y++) { raw[y * (bpr + 1)] = 0; Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1); }
+  const bpr = w * 4,
+    raw = Buffer.alloc((bpr + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (bpr + 1)] = 0;
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
+  }
   const idat = zlib.deflateSync(raw);
-  const chunk = (type, body) => { const len = Buffer.alloc(4); len.writeUInt32BE(body.length, 0); const tb = Buffer.from(type, "ascii"); const cb = Buffer.alloc(4); cb.writeUInt32BE(crc32(Buffer.concat([tb, body])), 0); return Buffer.concat([len, tb, body, cb]); };
-  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6;
-  return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", Buffer.alloc(0))]);
+  const chunk = (type, body) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(body.length, 0);
+    const tb = Buffer.from(type, "ascii");
+    const cb = Buffer.alloc(4);
+    cb.writeUInt32BE(crc32(Buffer.concat([tb, body])), 0);
+    return Buffer.concat([len, tb, body, cb]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", idat),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
 }
 
 const fs = await import("fs");
@@ -172,25 +271,48 @@ for (const r of ["webgl", "webgpu"]) {
   res[r] = {};
   for (const wp of WAYPOINTS) {
     const cap = await capture(r, wp);
-    fs.writeFileSync(`Tools/visual-regression/output/grid-multizoom-${r}-${wp.name}.png`, encodePNG(cap.decoded));
-    res[r][wp.name] = { ...lineWidth(cap.decoded), errCount: cap.errs.length, errs: cap.errs };
+    fs.writeFileSync(
+      `Tools/visual-regression/output/grid-multizoom-${r}-${wp.name}.png`,
+      encodePNG(cap.decoded),
+    );
+    res[r][wp.name] = {
+      ...lineWidth(cap.decoded),
+      errCount: cap.errs.length,
+      errs: cap.errs,
+    };
   }
 }
 const ratio = (r) => {
-  const w0 = res[r][RATIO_PAIR[0]].interiorMedianW, w1 = res[r][RATIO_PAIR[1]].interiorMedianW;
+  const w0 = res[r][RATIO_PAIR[0]].interiorMedianW,
+    w1 = res[r][RATIO_PAIR[1]].interiorMedianW;
   return w0 && w1 ? +(Math.max(w0, w1) / Math.min(w0, w1)).toFixed(2) : 0;
 };
-const gpuRatio = ratio("webgpu"), glRatio = ratio("webgl");
+const gpuRatio = ratio("webgpu"),
+  glRatio = ratio("webgl");
 console.log(JSON.stringify(res, null, 2));
-console.log(`Zoom ratio over ${RATIO_PAIR.join("/")} interior medians — WebGPU: ${gpuRatio} | WebGL: ${glRatio}`);
+console.log(
+  `Zoom ratio over ${RATIO_PAIR.join("/")} interior medians — WebGPU: ${gpuRatio} | WebGL: ${glRatio}`,
+);
 // Gates (F9-hardened): interior lines at EVERY waypoint on WebGPU; interior
 // line width ~pixel-constant across the nadir zoom pair on BOTH backends.
-const gpuRenders = WAYPOINTS.every((wp) => res.webgpu[wp.name].interiorLines > 2);
+const gpuRenders = WAYPOINTS.every(
+  (wp) => res.webgpu[wp.name].interiorLines > 2,
+);
 const gpuConstant = gpuRatio > 0 && gpuRatio < 1.8;
 const glConstant = glRatio > 0 && glRatio < 1.8;
 const pass = gpuRenders && gpuConstant && glConstant;
-console.log(`(A) WebGPU interior grid lines at every waypoint (oblique + both zooms): ${gpuRenders ? "PASS" : "FAIL"}`);
-console.log(`(B) WebGPU line width ~pixel-constant across zoom (ratio<1.8): ${gpuConstant ? "PASS" : "FAIL"}`);
-console.log(`(B-gl) WebGL reference line width ~pixel-constant across zoom (ratio<1.8): ${glConstant ? "PASS" : "FAIL"}`);
-console.log(pass ? "GATE PASS — grid lines are constant-pixel-width AA on both backends (GridMaterial.glsl parity)." : "GATE FAIL.");
+console.log(
+  `(A) WebGPU interior grid lines at every waypoint (oblique + both zooms): ${gpuRenders ? "PASS" : "FAIL"}`,
+);
+console.log(
+  `(B) WebGPU line width ~pixel-constant across zoom (ratio<1.8): ${gpuConstant ? "PASS" : "FAIL"}`,
+);
+console.log(
+  `(B-gl) WebGL reference line width ~pixel-constant across zoom (ratio<1.8): ${glConstant ? "PASS" : "FAIL"}`,
+);
+console.log(
+  pass
+    ? "GATE PASS — grid lines are constant-pixel-width AA on both backends (GridMaterial.glsl parity)."
+    : "GATE FAIL.",
+);
 process.exit(pass ? 0 : 1);

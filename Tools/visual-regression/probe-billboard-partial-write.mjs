@@ -78,10 +78,8 @@ const out = await page.evaluate(async () => {
       h: c.height,
     };
   };
-  const isMagenta = (d, i) =>
-    d[i] > 180 && d[i + 2] > 180 && d[i + 1] < 90;
-  const isCyan = (d, i) =>
-    d[i + 1] > 180 && d[i + 2] > 180 && d[i] < 90;
+  const isMagenta = (d, i) => d[i] > 180 && d[i + 2] > 180 && d[i + 1] < 90;
+  const isCyan = (d, i) => d[i + 1] > 180 && d[i + 2] > 180 && d[i] < 90;
   const countIn = (img, pred, x0, y0, x1, y1) => {
     let n = 0;
     const xa = Math.max(0, Math.floor(x0));
@@ -167,14 +165,7 @@ const out = await page.evaluate(async () => {
 
   // (C) + (D-before): render + mover-destination window clean.
   const before = grab();
-  const magentaBefore = countIn(
-    before,
-    isMagenta,
-    0,
-    0,
-    before.w,
-    before.h,
-  );
+  const magentaBefore = countIn(before, isMagenta, 0, 0, before.w, before.h);
   const newPos = C.Cartesian3.fromDegrees(-74.965, 40.0, 1000.0);
   const win = scene.cartesianToCanvasCoordinates(newPos);
   const cyanAtNewBefore = win

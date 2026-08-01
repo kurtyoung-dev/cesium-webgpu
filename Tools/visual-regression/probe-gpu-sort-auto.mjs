@@ -185,7 +185,11 @@ async function run() {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 1024, height: 768 },
@@ -299,7 +303,9 @@ async function run() {
     `  gate: errors=${res.gate.errors.length} deviceLost=${res.gate.deviceLost} armed=${res.gate.armedDevices}`,
   );
   if (res.gate.errors.length)
-    console.log(`  gate.errors: ${JSON.stringify(res.gate.errors.slice(0, 5))}`);
+    console.log(
+      `  gate.errors: ${JSON.stringify(res.gate.errors.slice(0, 5))}`,
+    );
 
   const a = res.autoStats;
   const nvA = res.neverStatsA;

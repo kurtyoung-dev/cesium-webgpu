@@ -722,10 +722,7 @@ function createDeclutterCallback(entityCluster) {
             continue;
           }
           point.clustered = true;
-          addNonClusteredItem(
-            point.collection.get(point.index),
-            entityCluster,
-          );
+          addNonClusteredItem(point.collection.get(point.index), entityCluster);
         }
 
         // Finalize the cluster collections + bookkeeping exactly as the CPU

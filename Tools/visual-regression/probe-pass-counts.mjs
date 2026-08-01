@@ -5,7 +5,8 @@
 
 import { chromium } from "playwright";
 
-const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
 
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
 const ctx = await browser.newContext({
@@ -73,7 +74,11 @@ const result = await page.evaluate(() => {
     hasBoundingVolume: !!c.boundingVolume,
     bvType: c.boundingVolume?.constructor?.name ?? null,
     bvCenter: c.boundingVolume?.center
-      ? [c.boundingVolume.center.x, c.boundingVolume.center.y, c.boundingVolume.center.z]
+      ? [
+          c.boundingVolume.center.x,
+          c.boundingVolume.center.y,
+          c.boundingVolume.center.z,
+        ]
       : null,
     bvRadius: c.boundingVolume?.radius ?? null,
     enabled: c.enabled,

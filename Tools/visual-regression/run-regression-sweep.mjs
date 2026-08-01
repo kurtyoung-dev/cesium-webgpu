@@ -37,11 +37,9 @@ function runProbe(probe) {
     let stdout = "";
     let stderr = "";
     let killed = false;
-    const proc = spawn(
-      "node",
-      [`Tools/visual-regression/${probe}`],
-      { shell: false },
-    );
+    const proc = spawn("node", [`Tools/visual-regression/${probe}`], {
+      shell: false,
+    });
     const timer = setTimeout(() => {
       killed = true;
       proc.kill("SIGKILL");

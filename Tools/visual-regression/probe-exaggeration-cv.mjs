@@ -14,18 +14,32 @@
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
-import { errorGateInit, armWebGPUDevices, collectGateErrors, attachConsoleErrorGate } from "../lib/webgpu-error-gate.mjs";
+import {
+  errorGateInit,
+  armWebGPUDevices,
+  collectGateErrors,
+  attachConsoleErrorGate,
+} from "../lib/webgpu-error-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
 const OUT_DIR = "Tools/visual-regression/output";
 const EXAG = Number(process.env.EXAG ?? 10);
 
 async function capture(rendererArg) {
-  const browser = await chromium.launch({ channel: "msedge", headless: true, args: ["--enable-unsafe-webgpu"] });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const browser = await chromium.launch({
+    channel: "msedge",
+    headless: true,
+    args: ["--enable-unsafe-webgpu"],
+  });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`, { waitUntil: "networkidle" });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
+    { waitUntil: "networkidle" },
+  );
   await page.waitForFunction(() => !!window.viewer);
   await armWebGPUDevices(page);
 
@@ -35,7 +49,7 @@ async function capture(rendererArg) {
     v.scene.verticalExaggeration = exagValue;
     // Oblique view over the Himalayas (Everest ~27.99N 86.92E) so terrain
     // height is visible as relief in Columbus View.
-    function setHimalayaView() {
+    function _setHimalayaView() {
       c.setView({
         destination: window.Cesium
           ? window.Cesium.Cartesian3.fromDegrees(86.9, 27.0, 250000)
@@ -46,8 +60,15 @@ async function capture(rendererArg) {
     // window.Cesium not exposed → use camera lon/lat via flyTo-less setView with
     // Cartographic through the scene globe ellipsoid.
     const ell = v.scene.ellipsoid ?? v.scene.globe.ellipsoid;
-    const dest = ell.cartographicToCartesian({ longitude: (86.9 * Math.PI) / 180, latitude: (27.0 * Math.PI) / 180, height: 250000 });
-    c.setView({ destination: dest, orientation: { heading: 0.0, pitch: -0.45, roll: 0.0 } });
+    const dest = ell.cartographicToCartesian({
+      longitude: (86.9 * Math.PI) / 180,
+      latitude: (27.0 * Math.PI) / 180,
+      height: 250000,
+    });
+    c.setView({
+      destination: dest,
+      orientation: { heading: 0.0, pitch: -0.45, roll: 0.0 },
+    });
 
     v.scene.morphToColumbusView(0);
     // Settle: terrain tiles must stream in for relief to show.
@@ -57,7 +78,10 @@ async function capture(rendererArg) {
       await new Promise((r) => requestAnimationFrame(r));
     }
     // re-assert the view (morph may have moved the camera) and settle again
-    c.setView({ destination: dest, orientation: { heading: 0.0, pitch: -0.45, roll: 0.0 } });
+    c.setView({
+      destination: dest,
+      orientation: { heading: 0.0, pitch: -0.45, roll: 0.0 },
+    });
     for (let i = 0; i < 180; i++) {
       v.scene.initializeFrame();
       v.scene.render();
@@ -71,8 +95,12 @@ async function capture(rendererArg) {
     const cx = off.getContext("2d");
     cx.drawImage(cv, 0, 0);
     const d = cx.getImageData(0, 0, cv.width, cv.height).data;
-    let nb = 0, t = 0;
-    for (let p = 0; p < d.length; p += 64) { t++; if (d[p] > 8 || d[p + 1] > 8 || d[p + 2] > 8) nb++; }
+    let nb = 0,
+      t = 0;
+    for (let p = 0; p < d.length; p += 64) {
+      t++;
+      if (d[p] > 8 || d[p + 1] > 8 || d[p + 2] > 8) nb++;
+    }
     return {
       mode: v.scene.mode,
       exaggeration: v.scene.verticalExaggeration,
@@ -87,12 +115,16 @@ async function capture(rendererArg) {
   const gate = await collectGateErrors(page);
   await browser.close();
   const fatal = [...consoleErrors, ...gate.errors];
-  console.log(`${rendererArg}: mode=${out.mode} exag=${out.exaggeration} nonBlack=${out.nonBlackPct}% fatal=${fatal.length} saved ${file}`);
+  console.log(
+    `${rendererArg}: mode=${out.mode} exag=${out.exaggeration} nonBlack=${out.nonBlackPct}% fatal=${fatal.length} saved ${file}`,
+  );
   return out;
 }
 
 (async () => {
   await capture("webgl");
   await capture("webgpu");
-  console.log("[probe-exaggeration-cv] done — READ the PNGs: WebGPU CV relief should match WebGL.");
+  console.log(
+    "[probe-exaggeration-cv] done — READ the PNGs: WebGPU CV relief should match WebGL.",
+  );
 })();

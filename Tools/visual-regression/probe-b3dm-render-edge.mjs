@@ -31,7 +31,9 @@ async function captureRenderer(renderer) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
 

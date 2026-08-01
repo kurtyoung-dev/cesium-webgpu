@@ -349,7 +349,8 @@ const out = await page.evaluate(async () => {
     );
   };
   const beforeWin = {};
-  for (const k of Object.keys(windows)) beforeWin[k] = winCount(before, windows[k]);
+  for (const k of Object.keys(windows))
+    beforeWin[k] = winCount(before, windows[k]);
 
   // ---- (4): mutate one primitive of each kind → updated within 2 frames -
   bbs.get(0).position = destBB;
@@ -364,7 +365,8 @@ const out = await page.evaluate(async () => {
   await frame(1);
   const after = await snap(true); // snap renders frame 2 post-mutation
   const afterWin = {};
-  for (const k of Object.keys(windows)) afterWin[k] = winCount(after, windows[k]);
+  for (const k of Object.keys(windows))
+    afterWin[k] = winCount(after, windows[k]);
 
   return {
     warmupFrames,
@@ -406,7 +408,13 @@ const r = out.renders;
 // oversized cloud. With the *0.5 half-extent fix the 3 small clouds now render
 // ~85 green px (correct, WebGL-matching size); 50 keeps a "clouds render" gate
 // with margin while reflecting the corrected footprint.
-const renderMin = { billboard: 500, point: 300, label: 150, polyline: 500, cloud: 50 };
+const renderMin = {
+  billboard: 500,
+  point: 300,
+  label: 150,
+  polyline: 500,
+  cloud: 50,
+};
 const c1 = Object.keys(renderMin).every((k) => r[k] > renderMin[k]);
 const c2 = Object.values(out.counts).every((n) => n === 0);
 const c3 = Object.values(out.uploads).every((n) => n === 0);

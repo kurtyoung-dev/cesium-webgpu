@@ -243,8 +243,7 @@ async function captureRenderer(renderer, fs) {
   // 4. No WebGPU device errors / loss across all three modes.
   checks.push([
     "no uncaptured WebGPU errors",
-    (caps.webgpu.gate.errors.length ?? 0) === 0 &&
-      !caps.webgpu.gate.deviceLost,
+    (caps.webgpu.gate.errors.length ?? 0) === 0 && !caps.webgpu.gate.deviceLost,
   ]);
 
   let allPass = true;

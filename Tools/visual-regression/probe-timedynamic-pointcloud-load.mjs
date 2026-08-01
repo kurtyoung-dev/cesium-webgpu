@@ -173,7 +173,10 @@ function encodePNG({ w, h, data }) {
     raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -237,7 +240,9 @@ const bsReady = gpu.info.bsReady && gpu.info.radiusFinite;
 const memAccounted = gpu.info.totalMemoryUsageInBytes > 0;
 const noErrs = filterErrs(gpu.errs).length === 0;
 
-console.log(`(A) WebGPU renders content (px=${gpuPx}): ${renders ? "PASS" : "FAIL"}`);
+console.log(
+  `(A) WebGPU renders content (px=${gpuPx}): ${renders ? "PASS" : "FAIL"}`,
+);
 console.log(
   `(B) WebGPU boundingSphere ready (frame ${gpu.info.bsReadyFrame}, r=${gpu.info.radius}): ${bsReady ? "PASS" : "FAIL"}`,
 );

@@ -37,11 +37,15 @@ async function capture(deferredLighting) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
@@ -54,7 +58,9 @@ async function capture(deferredLighting) {
       const v = window.viewer;
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
 
@@ -83,9 +89,7 @@ async function capture(deferredLighting) {
       const ctx = v.scene.context;
       const pm =
         ctx &&
-        (ctx.performanceManager ??
-          ctx._performanceManager ??
-          ctx.perfManager);
+        (ctx.performanceManager ?? ctx._performanceManager ?? ctx.perfManager);
       // Try to peek at the depth-only view to confirm it's wired (the
       // accessor is `depthOnlyTextureView`).
       const depthOnly = ctx && ctx.depthOnlyTextureView;
@@ -95,7 +99,8 @@ async function capture(deferredLighting) {
         envStateDeferred:
           v.scene._environmentState?.useDeferredLighting ?? null,
         gBufferAlloc: !!v.scene._view?.gBufferFramebuffer?.framebuffer,
-        gBufferOutputView: !!v.scene._view?.gBufferFramebuffer?.normalRoughnessTexture,
+        gBufferOutputView:
+          !!v.scene._view?.gBufferFramebuffer?.normalRoughnessTexture,
         gBufferResources: !!pm?._gbufferComputeResources,
         depthOnlyView: !!depthOnly,
         computeDispatches: pm?.computeDispatches ?? null,
@@ -111,9 +116,7 @@ async function capture(deferredLighting) {
   await page.screenshot({ path: out });
   await browser.close();
 
-  const errors = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
-  );
+  const errors = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   return { out, stats, errors };
 }
 
@@ -136,9 +139,7 @@ async function diffPngs(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const a = await decode(ba);

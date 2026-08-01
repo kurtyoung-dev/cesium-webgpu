@@ -35,7 +35,9 @@ const TIME_ISO = "2026-06-21T17:00:00Z";
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -61,7 +63,8 @@ const TIME_ISO = "2026-06-21T17:00:00Z";
       g.defaultCloudCollection.enableVolumetric = true;
       g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // cinematic → renderResScale=1, no temporal
       g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
-      if ("cloudMultiDeck" in g) g.defaultCloudCollection.volumetric.cloudMultiDeck = false;
+      if ("cloudMultiDeck" in g)
+        g.defaultCloudCollection.volumetric.cloudMultiDeck = false;
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(
           camera.lon,

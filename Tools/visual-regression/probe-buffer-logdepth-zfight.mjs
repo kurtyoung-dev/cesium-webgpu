@@ -208,7 +208,11 @@ const out = await page.evaluate(async () => {
   });
   const linePts = new Float64Array(3 * 8);
   for (let k = 0; k < 8; k++) {
-    const c = C.Cartesian3.fromDegrees(LON + 0.36, LAT - 0.4 + (0.8 * k) / 7, ALT);
+    const c = C.Cartesian3.fromDegrees(
+      LON + 0.36,
+      LAT - 0.4 + (0.8 * k) / 7,
+      ALT,
+    );
     linePts[k * 3] = c.x;
     linePts[k * 3 + 1] = c.y;
     linePts[k * 3 + 2] = c.z;
@@ -302,7 +306,8 @@ check(
   `flip off→on exercises the Buffer LOG_DEPTH flip-rebuild guard with NO validation error (masterSwitch back=${out.masterSwitch})`,
 );
 check("4", errors.length === 0, `console errors: ${errors.length}`);
-if (errors.length) for (const e of errors.slice(0, 8)) console.log(`  ERR: ${e}`);
+if (errors.length)
+  for (const e of errors.slice(0, 8)) console.log(`  ERR: ${e}`);
 
 console.log(ok ? "PASS" : "FAIL");
 await browser.close();

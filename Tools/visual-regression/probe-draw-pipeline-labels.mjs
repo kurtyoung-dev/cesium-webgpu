@@ -3,7 +3,8 @@
 
 import { chromium } from "playwright";
 
-const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
 
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
 const ctx = await browser.newContext({
@@ -183,7 +184,9 @@ const result = await page.evaluate(() => {
   }));
 });
 
-console.log("[probe-draw-pipeline-labels] mid-test scene FB passes with draws:");
+console.log(
+  "[probe-draw-pipeline-labels] mid-test scene FB passes with draws:",
+);
 console.log(JSON.stringify(result, null, 2));
 
 await browser.close();

@@ -219,8 +219,7 @@ export class WebGPUEdgeFramebuffer {
    * `EdgeFramebuffer.js:41-46`.
    */
   buildDepthStencilAttachment():
-    | GPURenderPassDepthStencilAttachment
-    | undefined {
+    GPURenderPassDepthStencilAttachment | undefined {
     if (!this._depthStencilView) return undefined;
     return {
       view: this._depthStencilView,

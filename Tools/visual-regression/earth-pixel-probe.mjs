@@ -109,12 +109,18 @@ async function captureFromRenderer(renderer) {
 const wg = await captureFromRenderer("webgl");
 const wp = await captureFromRenderer("webgpu");
 
-console.log(`\n=== Earth pixel probe (camera: lon ${CAMERA_LON}, lat ${CAMERA_LAT}, alt ${CAMERA_ALT}) ===`);
+console.log(
+  `\n=== Earth pixel probe (camera: lon ${CAMERA_LON}, lat ${CAMERA_LAT}, alt ${CAMERA_ALT}) ===`,
+);
 console.log(`Canvas WebGL : ${wg.width}x${wg.height}`);
 console.log(`Canvas WebGPU: ${wp.width}x${wp.height}\n`);
 
-console.log("Sample point         |  WebGL R G B    |  WebGPU R G B   |   ΔR    ΔG    ΔB");
-console.log("---------------------|-----------------|-----------------|------------------");
+console.log(
+  "Sample point         |  WebGL R G B    |  WebGPU R G B   |   ΔR    ΔG    ΔB",
+);
+console.log(
+  "---------------------|-----------------|-----------------|------------------",
+);
 for (let i = 0; i < wg.samples.length; i++) {
   const a = wg.samples[i];
   const b = wp.samples[i];

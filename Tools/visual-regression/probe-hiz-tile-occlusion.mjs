@@ -27,14 +27,17 @@ import path from "path";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
-const TILESET =
-  "/Apps/SampleData/Cesium3DTiles/Tilesets/Tileset/tileset.json";
+const TILESET = "/Apps/SampleData/Cesium3DTiles/Tilesets/Tileset/tileset.json";
 
 async function run(rendererArg) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 1280, height: 720 },
@@ -143,11 +146,7 @@ async function run(rendererArg) {
       for (let i = 0; i < populatedCount; i++) {
         const cmdIdx = layout.commandIndices[i];
         const bv = commandList[cmdIdx].boundingVolume;
-        if (
-          bv &&
-          bv.halfAxes &&
-          typeof bv.radius !== "number"
-        ) {
+        if (bv && bv.halfAxes && typeof bv.radius !== "number") {
           C.BoundingSphere.fromOrientedBoundingBox(bv, tmp);
           const err =
             Math.abs(tmp.radius - layout.radius[i]) / (tmp.radius || 1);
@@ -176,7 +175,10 @@ async function run(rendererArg) {
     };
   }, TILESET);
 
-  const outPng = path.join(OUT_DIR, `probe-hiz-tile-occlusion-${rendererArg}.png`);
+  const outPng = path.join(
+    OUT_DIR,
+    `probe-hiz-tile-occlusion-${rendererArg}.png`,
+  );
   const buf = await page.screenshot({ path: outPng, fullPage: false });
   await browser.close();
   return { result, outPng, pngBytes: buf.length, errs };
@@ -205,9 +207,7 @@ async function diffAndCoverage(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const A = await decode(ba);
@@ -275,14 +275,24 @@ async function diffAndCoverage(a, b) {
   const passNoNaN = R.nanCount === 0 && R.populatedCount > 0;
   const passRadius = R.radiiChecked > 0 && R.maxRadiusErr < 1e-3;
   const passCoverage =
-    diff && !diff.error && Number(diff.coverageRatio) > 0.5 &&
+    diff &&
+    !diff.error &&
+    Number(diff.coverageRatio) > 0.5 &&
     Number(diff.coverageRatio) < 2.0;
 
   console.log("\n=== VERDICT ===");
-  console.log(`  OBB-bounded commands present : ${passOBB ? "PASS" : "FAIL"} (obbCount=${R.obbCount})`);
-  console.log(`  No NaN in radius SOA         : ${passNoNaN ? "PASS" : "FAIL"} (nanCount=${R.nanCount}, populated=${R.populatedCount})`);
-  console.log(`  OBB radius == BS.fromOBB     : ${passRadius ? "PASS" : "FAIL"} (checked=${R.radiiChecked}, maxErr=${R.maxRadiusErr})`);
-  console.log(`  WebGPU tileset not blanked   : ${passCoverage ? "PASS" : "FAIL"} (coverageRatio=${diff.coverageRatio})`);
+  console.log(
+    `  OBB-bounded commands present : ${passOBB ? "PASS" : "FAIL"} (obbCount=${R.obbCount})`,
+  );
+  console.log(
+    `  No NaN in radius SOA         : ${passNoNaN ? "PASS" : "FAIL"} (nanCount=${R.nanCount}, populated=${R.populatedCount})`,
+  );
+  console.log(
+    `  OBB radius == BS.fromOBB     : ${passRadius ? "PASS" : "FAIL"} (checked=${R.radiiChecked}, maxErr=${R.maxRadiusErr})`,
+  );
+  console.log(
+    `  WebGPU tileset not blanked   : ${passCoverage ? "PASS" : "FAIL"} (coverageRatio=${diff.coverageRatio})`,
+  );
   const allPass = passOBB && passNoNaN && passRadius && passCoverage;
   console.log(`\n  OVERALL: ${allPass ? "PASS" : "FAIL"}`);
   console.log("[probe-hiz-tile-occlusion] done");

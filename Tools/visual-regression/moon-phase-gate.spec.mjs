@@ -106,7 +106,10 @@ test("C12-21 scaffolding intact: phaseFraction still packed and published", () =
   // Scene/Moon.js still publishes frameState.moonPhaseFraction — consumed by
   // the sky atmosphere, volumetric fog, and sky brightness as a moonlight
   // intensity proxy (legitimate scalar uses, unlike the deleted disc gate).
-  assert.match(sceneMoonSource, /frameState\.moonPhaseFraction = phaseFraction;/);
+  assert.match(
+    sceneMoonSource,
+    /frameState\.moonPhaseFraction = phaseFraction;/,
+  );
   assert.match(
     sceneMoonSource,
     /phaseFraction = 0\.5 \* \(1\.0 - cosAngle\);/,
@@ -127,7 +130,10 @@ test("no GLSL moon file gained a phase multiplier (parity direction check)", () 
 });
 
 test("Moon.wgsl passes naga validation", async () => {
-  const nagaDirectory = path.join(root, "Tools/shader-pipeline/naga-wasm-tools");
+  const nagaDirectory = path.join(
+    root,
+    "Tools/shader-pipeline/naga-wasm-tools",
+  );
   const naga = await import(
     pathToFileURL(path.join(nagaDirectory, "naga_wasm_tools.js")).href
   );

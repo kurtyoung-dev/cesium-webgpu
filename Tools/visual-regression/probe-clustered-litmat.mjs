@@ -137,7 +137,11 @@ const OUT_ON = "Tools/visual-regression/output/clustered-litmat-on.png";
     C.Cartesian3.normalize(camDir, camDir);
     const lightPos = C.Cartesian3.add(
       bs.center,
-      C.Cartesian3.multiplyByScalar(camDir, bs.radius * 1.5, new C.Cartesian3()),
+      C.Cartesian3.multiplyByScalar(
+        camDir,
+        bs.radius * 1.5,
+        new C.Cartesian3(),
+      ),
       new C.Cartesian3(),
     );
     // High intensity: the matte box (F0=0.04, roughness=0.5, no specular
@@ -238,7 +242,9 @@ const OUT_ON = "Tools/visual-regression/output/clustered-litmat-on.png";
   await decoderBrowser.close();
 
   console.log("[probe-clustered-litmat] result:");
-  console.log(`  dispatcher.lastActiveLightCount when ON: ${phase2.lastActive}`);
+  console.log(
+    `  dispatcher.lastActiveLightCount when ON: ${phase2.lastActive}`,
+  );
   console.log(`  context._clusteredLightingActive: ${phase2.clusteredActive}`);
   console.log(`  mean RGB-sum OFF: ${stats.meanOff.toFixed(2)}`);
   console.log(`  mean RGB-sum ON:  ${stats.meanOn.toFixed(2)}`);
@@ -258,7 +264,9 @@ const OUT_ON = "Tools/visual-regression/output/clustered-litmat-on.png";
 
   let pass = true;
   if (phase2.lastActive < 1) {
-    console.log(`FAIL: lastActiveLightCount = ${phase2.lastActive}, expected ≥1`);
+    console.log(
+      `FAIL: lastActiveLightCount = ${phase2.lastActive}, expected ≥1`,
+    );
     pass = false;
   }
   if (stats.changedPx < 50) {

@@ -11,7 +11,9 @@ const BASE = "http://localhost:8080";
 
 function decodePngMean(buf) {
   let off = 8;
-  let width = 0, height = 0, colorType = 0;
+  let width = 0,
+    height = 0,
+    colorType = 0;
   const idatChunks = [];
   while (off < buf.length) {
     const len = buf.readUInt32BE(off);
@@ -31,7 +33,10 @@ function decodePngMean(buf) {
   const decompressed = zlib.inflateSync(Buffer.concat(idatChunks));
   const channels = colorType === 2 ? 3 : 4;
   const stride = 1 + width * channels;
-  let mr = 0, mg = 0, mb = 0, count = 0;
+  let mr = 0,
+    mg = 0,
+    mb = 0,
+    count = 0;
   for (let y = 0; y < height; y++) {
     const rowStart = y * stride + 1;
     for (let x = 0; x < width; x++) {
@@ -51,9 +56,15 @@ async function run(renderer) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
@@ -85,7 +96,9 @@ async function run(renderer) {
     const w = canvas.width;
     const h = canvas.height;
     const data = ctx2d.getImageData(0, 0, w, h).data;
-    let mr = 0, mg = 0, mb = 0;
+    let mr = 0,
+      mg = 0,
+      mb = 0;
     const n = w * h;
     for (let i = 0; i < n; i++) {
       mr += data[i * 4];

@@ -34,7 +34,8 @@ export const SGP4_CPU_FLOATS_PER_INSTANCE = 42;
 // WGS-72 constants (must match sgp4-reference.mjs / sgp4-kernel.mjs).
 const RADIUSEARTHKM = 6378.135;
 const MU = 398600.8;
-const XKE = 60.0 / Math.sqrt((RADIUSEARTHKM * RADIUSEARTHKM * RADIUSEARTHKM) / MU);
+const XKE =
+  60.0 / Math.sqrt((RADIUSEARTHKM * RADIUSEARTHKM * RADIUSEARTHKM) / MU);
 const J2 = 0.001082616;
 const X2O3 = 2.0 / 3.0;
 const TWOPI = 2.0 * Math.PI;
@@ -184,7 +185,8 @@ export function propagateSgp4FromParams(params, base, timeSeconds) {
   const temp1 = 0.5 * J2 * tempB;
   const temp2 = temp1 * tempB;
 
-  const mrt = rl * (1.0 - 1.5 * temp2 * betal * con41) + 0.5 * temp1 * x1mth2 * cos2u;
+  const mrt =
+    rl * (1.0 - 1.5 * temp2 * betal * con41) + 0.5 * temp1 * x1mth2 * cos2u;
   su = su - 0.25 * temp2 * x7thm1 * sin2u;
   const xnode = nodep + 1.5 * temp2 * cosip * sin2u;
   const xinc = xincp + 1.5 * temp2 * cosip * sinip * cos2u;

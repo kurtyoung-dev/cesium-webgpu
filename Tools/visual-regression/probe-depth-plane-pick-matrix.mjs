@@ -110,13 +110,14 @@ function validatePhase(phase, failures) {
     );
   }
   if (
-    phase.uniformCapacity <
-    Math.max(phase.frustums.scene, phase.frustums.pick)
+    phase.uniformCapacity < Math.max(phase.frustums.scene, phase.frustums.pick)
   ) {
     failures.push(`${prefix}: uniform ring capacity is below frustum demand`);
   }
   if (phase.pickResultId !== "depth-plane-matrix-center") {
-    failures.push(`${prefix}: center point pick did not survive depth-plane draw`);
+    failures.push(
+      `${prefix}: center point pick did not survive depth-plane draw`,
+    );
   }
   if (phase.newGateErrors.length) {
     failures.push(`${prefix}: ${phase.newGateErrors.length} GPU gate errors`);
@@ -315,10 +316,10 @@ async function runPhase(configuration) {
           passKind === "pick" ? this._pickPipeline : this._pipeline;
         const willDraw = Boolean(
           this._enabled &&
-            pipeline &&
-            this._vertexBuffer &&
-            this._bindGroup &&
-            this._vertexCount > 0,
+          pipeline &&
+          this._vertexBuffer &&
+          this._bindGroup &&
+          this._vertexCount > 0,
         );
         const result = originalExecute.call(this, renderPass, passKind);
         if (willDraw) {
@@ -359,9 +360,7 @@ async function runPhase(configuration) {
     const sceneRecord = passRecords.findLast(
       (record) => record.kind === "scene",
     );
-    const pickRecord = passRecords.findLast(
-      (record) => record.kind === "pick",
-    );
+    const pickRecord = passRecords.findLast((record) => record.kind === "pick");
     const gateErrors = globalThis.__webgpuGate?.errors ?? [];
     return {
       label: requested.label,
@@ -412,9 +411,7 @@ for (const requested of [
 }
 
 await page.setViewportSize(resizedViewport);
-phases.push(
-  await runPhase({ label: "resize-hdr-msaa4", hdr: true, msaa: 4 }),
-);
+phases.push(await runPhase({ label: "resize-hdr-msaa4", hdr: true, msaa: 4 }));
 phases.push(
   await runPhase({
     label: "device-invalidation-rebuild",

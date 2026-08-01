@@ -108,8 +108,12 @@ async function run() {
     const polylines = new C.PolylineCollection();
     polylines.add({
       positions: C.Cartesian3.fromDegreesArrayHeights([
-        lon - 0.002, lat + 0.001, h,
-        lon + 0.002, lat + 0.001, h,
+        lon - 0.002,
+        lat + 0.001,
+        h,
+        lon + 0.002,
+        lat + 0.001,
+        h,
       ]),
       width: 3,
       material: C.Material.fromType("Color", { color: C.Color.MAGENTA }),
@@ -121,8 +125,10 @@ async function run() {
       geometryInstances: new C.GeometryInstance({
         geometry: new C.GroundPolylineGeometry({
           positions: C.Cartesian3.fromDegreesArray([
-            lon - 0.003, lat - 0.001,
-            lon + 0.003, lat - 0.001,
+            lon - 0.003,
+            lat - 0.001,
+            lon + 0.003,
+            lat - 0.001,
           ]),
           width: 4.0,
         }),
@@ -176,7 +182,9 @@ async function run() {
       .slice(0, 5)
       .forEach((e) => console.log(`  - ${e.text?.slice(0, 240)}`));
   } else {
-    console.log("  PASS: zero device errors with MSAA=4 + all 6 collection types");
+    console.log(
+      "  PASS: zero device errors with MSAA=4 + all 6 collection types",
+    );
   }
   console.log(`[probe-collections-msaa] screenshot: ${out}`);
 
@@ -188,9 +196,9 @@ async function run() {
   );
   if (interesting.length) {
     console.log("[probe-collections-msaa] pipeline-related console messages:");
-    interesting.slice(0, 8).forEach((m) =>
-      console.log(`  [${m.t}] ${m.text.slice(0, 240)}`),
-    );
+    interesting
+      .slice(0, 8)
+      .forEach((m) => console.log(`  [${m.t}] ${m.text.slice(0, 240)}`));
   }
 
   process.exit(deviceErrors.length ? 1 : 0);

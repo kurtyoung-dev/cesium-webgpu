@@ -37,7 +37,7 @@ const W = 1024,
 const OUT = "Tools/visual-regression/output";
 
 const SETUP = async () => {
-  const C = await import("/Build/CesiumUnminified/index.js");
+  const _C = await import("/Build/CesiumUnminified/index.js");
   const v = window.viewer;
   const s = v.scene;
   v.useDefaultRenderLoop = false; // manual render so render(jd) drives the sun
@@ -63,7 +63,7 @@ const RENDER_AT = async (cfg) => {
     await new Promise((r) => requestAnimationFrame(r));
   }
   // Confirm the extended LUT path materialized its target (proves we exercised it).
-  let lutPresent = false;
+  let lutPresent;
   try {
     const pm =
       s.context && s.context.performanceManager

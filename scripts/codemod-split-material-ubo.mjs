@@ -41,14 +41,18 @@ function processFile(filePath) {
   let source = readFileSync(filePath, "utf8");
 
   // Skip files that don't have the monolithic pattern
-  if (!source.includes("struct Uniforms {")) {return false;}
-  if (source.includes("struct CameraUniforms")) {return false;} // already split
+  if (!source.includes("struct Uniforms {")) {
+    return false;
+  }
+  if (source.includes("struct CameraUniforms")) {
+    return false;
+  } // already split
 
   // Extract the struct Uniforms block
-  const structMatch = source.match(
-    /struct Uniforms \{([^}]+)\}/s
-  );
-  if (!structMatch) {return false;}
+  const structMatch = source.match(/struct Uniforms \{([^}]+)\}/s);
+  if (!structMatch) {
+    return false;
+  }
 
   const structBody = structMatch[1];
   const fields = structBody
@@ -62,41 +66,45 @@ function processFile(filePath) {
   for (const field of fields) {
     // Parse "fieldName: type," or "fieldName: type"
     const fieldMatch = field.match(/^(\w+)\s*:\s*(.+?),?\s*$/);
-    if (!fieldMatch) {continue;}
+    if (!fieldMatch) {
+      continue;
+    }
     const [, fieldName] = fieldMatch;
 
     if (CAMERA_FIELDS.has(fieldName)) {
-      cameraFields.push(field.endsWith(",") ? field : `${field  },`);
+      cameraFields.push(field.endsWith(",") ? field : `${field},`);
     } else {
-      materialFields.push(field.endsWith(",") ? field : `${field  },`);
+      materialFields.push(field.endsWith(",") ? field : `${field},`);
     }
   }
 
   // If no material fields, nothing to split
-  if (materialFields.length === 0) {return false;}
+  if (materialFields.length === 0) {
+    return false;
+  }
 
   // Build new structs
-  const cameraStruct =
-    `struct CameraUniforms {\n    ${cameraFields.join("\n    ")}\n}`;
-  const materialStruct =
-    `struct MaterialUniforms {\n    ${materialFields.join("\n    ")}\n}`;
+  const cameraStruct = `struct CameraUniforms {\n    ${cameraFields.join("\n    ")}\n}`;
+  const materialStruct = `struct MaterialUniforms {\n    ${materialFields.join("\n    ")}\n}`;
 
   // Replace the monolithic struct
   source = source.replace(
     /struct Uniforms \{[^}]+\}/s,
-    `${cameraStruct}\n\n${materialStruct}`
+    `${cameraStruct}\n\n${materialStruct}`,
   );
 
   // Replace the binding declaration
   source = source.replace(
     /@group\(0\) @binding\(0\) var<uniform> uniforms: Uniforms;/,
-    `@group(0) @binding(0) var<uniform> camera: CameraUniforms;\n@group(1) @binding(0) var<uniform> material: MaterialUniforms;`
+    `@group(0) @binding(0) var<uniform> camera: CameraUniforms;\n@group(1) @binding(0) var<uniform> material: MaterialUniforms;`,
   );
 
   // Replace field access: uniforms.cameraField → camera.cameraField
   for (const field of cameraFields) {
     const nameMatch = field.match(/^(\w+)\s*:/);
-    if (!nameMatch) {continue;}
+    if (!nameMatch) {
+      continue;
+    }
     const name = nameMatch[1];
     const regex = new RegExp(`uniforms\\.${name}`, "g");
     source = source.replace(regex, `camera.${name}`);
@@ -105,7 +113,9 @@ function processFile(filePath) {
   // Replace field access: uniforms.materialField → material.materialField
   for (const field of materialFields) {
     const nameMatch = field.match(/^(\w+)\s*:/);
-    if (!nameMatch) {continue;}
+    if (!nameMatch) {
+      continue;
+    }
     const name = nameMatch[1];
     const regex = new RegExp(`uniforms\\.${name}`, "g");
     source = source.replace(regex, `material.${name}`);
@@ -114,7 +124,7 @@ function processFile(filePath) {
   // Update the comment header if it mentions "Uniform:"
   source = source.replace(
     /\/\/ Uniform:.*$/m,
-    "// Camera UBO: group(0) binding(0) — Material UBO: group(1) binding(0)"
+    "// Camera UBO: group(0) binding(0) — Material UBO: group(1) binding(0)",
   );
 
   writeFileSync(filePath, source, "utf8");

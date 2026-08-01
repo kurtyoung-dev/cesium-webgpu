@@ -63,7 +63,9 @@ async function capture(rendererArg, isolation) {
   const page = await browser.newPage({ viewport: { width: W, height: H } });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   // Default CesiumViewer view = the Hello World framing.
   const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`;
@@ -152,14 +154,15 @@ async function measureRingWidth(pngPath) {
     c.height = img.naturalHeight;
     const ctx = c.getContext("2d");
     ctx.drawImage(img, 0, 0);
-    const w = c.width, h = c.height;
+    const w = c.width,
+      h = c.height;
     const data = ctx.getImageData(0, 0, w, h).data;
     const at = (x, y) => {
       const i = (y * w + x) * 4;
       return [data[i], data[i + 1], data[i + 2]];
     };
     const lum = (r, g, b) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    const SPACE_LUM = 4;        // empty black sky
+    const SPACE_LUM = 4; // empty black sky
     // The visible limb HALO is the strongly-BLUE band hugging the disk's
     // perimeter (Rayleigh glow). We measure its radial thickness at the left &
     // right disk edges: from the outermost non-black pixel inward to where the
@@ -167,8 +170,8 @@ async function measureRingWidth(pngPath) {
     // hysteresis so a 1px speckle doesn't end the band. In the shell-isolated
     // mode (globe hidden) the band is the thin shell rim; in drape mode it is
     // the wider drape-over-surface band.
-    const HAZE_BLUE = 40;       // B - R >= this ⇒ haze-dominated blue band
-    const SURFACE_BLUE = 28;    // B - R <  this ⇒ ordinary surface / black
+    const HAZE_BLUE = 40; // B - R >= this ⇒ haze-dominated blue band
+    const SURFACE_BLUE = 28; // B - R <  this ⇒ ordinary surface / black
 
     // Robust disk center: the disk+haze (or the shell rim ring) is the largest
     // contiguous NON-BLACK structure against pure-black space. Find the longest
@@ -177,20 +180,37 @@ async function measureRingWidth(pngPath) {
     // shell). Allow small black gaps (dark ocean / terminator / hollow shell
     // interior) inside the run.
     const longestRun = (coords, read, gapTol) => {
-      let bs = -1, be = -1, cs = -1, gap = 0;
+      let bs = -1,
+        be = -1,
+        cs = -1,
+        gap = 0;
       for (const i of coords) {
-        if (read(i) > SPACE_LUM) { if (cs < 0) cs = i; gap = 0; }
-        else if (cs >= 0) {
+        if (read(i) > SPACE_LUM) {
+          if (cs < 0) cs = i;
+          gap = 0;
+        } else if (cs >= 0) {
           gap++;
-          if (gap > gapTol) { if (i - cs > be - bs) { bs = cs; be = i - gap; } cs = -1; gap = 0; }
+          if (gap > gapTol) {
+            if (i - cs > be - bs) {
+              bs = cs;
+              be = i - gap;
+            }
+            cs = -1;
+            gap = 0;
+          }
         }
       }
       const last = coords[coords.length - 1];
-      if (cs >= 0 && last - cs > be - bs) { bs = cs; be = last; }
+      if (cs >= 0 && last - cs > be - bs) {
+        bs = cs;
+        be = last;
+      }
       return [bs, be];
     };
-    const xs = []; for (let x = 0; x < w; x++) xs.push(x);
-    const ys = []; for (let y = 0; y < h; y++) ys.push(y);
+    const xs = [];
+    for (let x = 0; x < w; x++) xs.push(x);
+    const ys = [];
+    for (let y = 0; y < h; y++) ys.push(y);
     // Use a generous gap tolerance so the hollow interior of a shell-only frame
     // (globe hidden → black inside the rim) is treated as one disk-spanning run.
     const midY = Math.round(h / 2);
@@ -199,7 +219,8 @@ async function measureRingWidth(pngPath) {
     const [vy0, vy1] = longestRun(ys, (y) => lum(...at(cx, y)), 220);
     const cy = Math.round((vy0 + vy1) / 2);
     const diskRadiusPx = Math.round((hx1 - hx0) / 2);
-    if (diskRadiusPx < 50) return { error: "no disk found", cx, cy, diskRadiusPx };
+    if (diskRadiusPx < 50)
+      return { error: "no disk found", cx, cy, diskRadiusPx };
 
     // Per row, per side: find the outermost non-black pixel (outer haze edge),
     // then walk inward while the band stays blue. Halo width = outer - innerBlue.
@@ -210,12 +231,18 @@ async function measureRingWidth(pngPath) {
         if (lum(...at(x, y)) > SPACE_LUM) outer = x;
       }
       if (outer < 0) return null;
-      let innerBlue = outer, belowRun = 0;
+      let innerBlue = outer,
+        belowRun = 0;
       for (let x = outer; x >= 0 && x < w; x -= dir) {
-        const [R, G, B] = at(x, y);
+        const [R, _G, B] = at(x, y);
         const bias = B - R;
-        if (bias >= HAZE_BLUE) { innerBlue = x; belowRun = 0; }
-        else if (bias < SURFACE_BLUE) { belowRun++; if (belowRun >= 3) break; }
+        if (bias >= HAZE_BLUE) {
+          innerBlue = x;
+          belowRun = 0;
+        } else if (bias < SURFACE_BLUE) {
+          belowRun++;
+          if (belowRun >= 3) break;
+        }
         if (Math.abs(x - outer) > diskRadiusPx) break; // safety
       }
       return { outer, innerBlue, width: Math.abs(outer - innerBlue) };
@@ -230,16 +257,25 @@ async function measureRingWidth(pngPath) {
         const m = measureSide(y, dir);
         if (m && m.width >= 1 && m.width < diskRadiusPx) {
           widths.push(m.width);
-          detail.push({ y, side: dir < 0 ? "L" : "R", outer: m.outer, innerBlue: m.innerBlue, width: m.width });
+          detail.push({
+            y,
+            side: dir < 0 ? "L" : "R",
+            outer: m.outer,
+            innerBlue: m.innerBlue,
+            width: m.width,
+          });
         }
       }
     }
-    if (widths.length < 8) return { error: "too few rows", samples: widths.length, cx, cy };
+    if (widths.length < 8)
+      return { error: "too few rows", samples: widths.length, cx, cy };
     widths.sort((p, q) => p - q);
     const median = widths[Math.floor(widths.length / 2)];
     const mean = widths.reduce((s, v) => s + v, 0) / widths.length;
     return {
-      cx, cy, diskRadiusPx,
+      cx,
+      cy,
+      diskRadiusPx,
       samples: widths.length,
       meanWidth: +mean.toFixed(2),
       medianWidth: median,
@@ -317,7 +353,9 @@ async function measureRingWidth(pngPath) {
       "  (drape diagnostic measurement error — non-fatal; gate stands on the shell result)",
     );
   } else {
-    const drapeDelta = +(gpuDrapeM.medianWidth - glDrapeM.medianWidth).toFixed(2);
+    const drapeDelta = +(gpuDrapeM.medianWidth - glDrapeM.medianWidth).toFixed(
+      2,
+    );
     console.log(
       `\n  [DIAG] median drape limb-band width  WebGL=${glDrapeM.medianWidth}px  WebGPU=${gpuDrapeM.medianWidth}px`,
     );

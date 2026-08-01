@@ -52,22 +52,36 @@ const RENDERER_OVERRIDE = `
 
 async function probe(forced) {
   const browser = await chromium.launch({ headless: true, channel: "msedge" });
-  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 } });
+  const ctx = await browser.newContext({
+    viewport: { width: 800, height: 600 },
+  });
   const page = await ctx.newPage();
-  await page.addInitScript((r) => { window.__FORCED_RENDERER__ = r; }, forced);
+  await page.addInitScript((r) => {
+    window.__FORCED_RENDERER__ = r;
+  }, forced);
   await page.addInitScript({ content: RENDERER_OVERRIDE });
   if (forced === "webgpu") {
     await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
       const r = await route.fetch();
       const t = await r.text();
       const rewritten = t
-        .replace(/new\s+Cesium\.Viewer\s*\(/g, "await Cesium.Viewer.createAsync(")
+        .replace(
+          /new\s+Cesium\.Viewer\s*\(/g,
+          "await Cesium.Viewer.createAsync(",
+        )
         .replace(/new\s+Viewer\s*\(/g, "await Cesium.Viewer.createAsync(");
-      await route.fulfill({ status: r.status(), headers: r.headers(), body: rewritten });
+      await route.fulfill({
+        status: r.status(),
+        headers: r.headers(),
+        body: rewritten,
+      });
     });
   }
   page.setDefaultTimeout(30000);
-  await page.goto(`http://localhost:8080/Apps/Sandcastle/gallery/${encodeURIComponent(DEMO)}.html`, { waitUntil: "domcontentloaded" });
+  await page.goto(
+    `http://localhost:8080/Apps/Sandcastle/gallery/${encodeURIComponent(DEMO)}.html`,
+    { waitUntil: "domcontentloaded" },
+  );
   await page.waitForFunction(() => {
     const c = document.querySelector(".cesium-widget canvas");
     return c && c.width > 0 && c.height > 0;
@@ -81,22 +95,28 @@ async function probe(forced) {
     return {
       renderer: v.scene.context.rendererType,
       position: {
-        x: cam.position.x, y: cam.position.y, z: cam.position.z
+        x: cam.position.x,
+        y: cam.position.y,
+        z: cam.position.z,
       },
       heading: cam.heading,
       pitch: cam.pitch,
       roll: cam.roll,
-      cartographic: cam.positionCartographic ? {
-        lon: Cesium.Math.toDegrees(cam.positionCartographic.longitude),
-        lat: Cesium.Math.toDegrees(cam.positionCartographic.latitude),
-        h: cam.positionCartographic.height,
-      } : null,
-      trackedEntity: trackedEntity ? {
-        id: trackedEntity.id,
-        name: trackedEntity.name,
-        hasPosition: !!trackedEntity.position,
-        hasModel: !!trackedEntity.model,
-      } : null,
+      cartographic: cam.positionCartographic
+        ? {
+            lon: Cesium.Math.toDegrees(cam.positionCartographic.longitude),
+            lat: Cesium.Math.toDegrees(cam.positionCartographic.latitude),
+            h: cam.positionCartographic.height,
+          }
+        : null,
+      trackedEntity: trackedEntity
+        ? {
+            id: trackedEntity.id,
+            name: trackedEntity.name,
+            hasPosition: !!trackedEntity.position,
+            hasModel: !!trackedEntity.model,
+          }
+        : null,
       entityCount: v.entities.values.length,
       hasEntityView: !!cam._currentEntityView || !!cam._entityViewSpriteFrame,
       requestRenderMode: v.scene.requestRenderMode,

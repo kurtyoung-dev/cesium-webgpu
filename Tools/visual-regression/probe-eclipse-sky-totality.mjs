@@ -477,7 +477,12 @@ const DERIVE_CANDIDATES = async () => {
 // ── In-page: refine the shortlisted vantages to instants ───────────────────
 // Only the candidates the Node-side constraint pass kept, so the cost is
 // bounded by FIXTURE_MAX_REFINED rather than by the vantage grid.
-const REFINE_VANTAGES = async ({ shortlist, baseIso, nightMaxElevDeg, minSunElevDeg }) => {
+const REFINE_VANTAGES = async ({
+  shortlist,
+  baseIso,
+  nightMaxElevDeg,
+  minSunElevDeg,
+}) => {
   const C = await import("/Build/CesiumUnminified/index.js");
 
   const SOLAR_RADIUS = 6.955e8;
@@ -596,7 +601,14 @@ const REFINE_VANTAGES = async ({ shortlist, baseIso, nightMaxElevDeg, minSunElev
 };
 
 // ── In-page: all three lanes ───────────────────────────────────────────────
-const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor }) => {
+const MEASURE = async ({
+  lat,
+  lon,
+  deepestIso,
+  clearIso,
+  nightIso,
+  targetFactor,
+}) => {
   const C = await import("/Build/CesiumUnminified/index.js");
   const viewer = window.viewer;
   const scene = viewer.scene;
@@ -666,8 +678,9 @@ const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor 
     const decodeSnapshot = async (snapshot) => {
       const image = new Image();
       const loaded = new Promise((resolve, reject) => {
+        const decodeFailed = "same-task PNG decode failed";
         image.onload = resolve;
-        image.onerror = () => reject(new Error("same-task PNG decode failed"));
+        image.onerror = () => reject(new Error(decodeFailed));
       });
       image.src = snapshot;
       await loaded;
@@ -698,7 +711,8 @@ const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor 
       if (!settled && typeof done === "function") {
         settled = done() === true;
       }
-      const result = typeof capture === "function" ? await capture() : undefined;
+      const hasCapture = typeof capture === "function";
+      const result = hasCapture ? await capture() : undefined;
       return { settled, result };
     };
     return { renderNow, captureNow, grabNow, settleThen };
@@ -710,7 +724,13 @@ const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor 
     canvas,
     T,
   );
+  // `settleThen` and `render` are pinned by eclipse-sky-totality.spec.mjs's
+  // "this probe's own aliases must point at the shared primitives" contract.
+  // Neither is called on the current lane path, so they are voided rather
+  // than deleted — removing them would break the spec's alias assertions.
+  void settleThen;
   const render = renderNow;
+  void render;
   const grabCanvas = grabNow;
   const frame = async () => {
     renderNow();
@@ -867,8 +887,7 @@ const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor 
     return {
       tilesLoaded: scene.globe?.tilesLoaded === true,
       tilesToRender,
-      atmosphereReady:
-        scene._environmentState?.isReadyForAtmosphere === true,
+      atmosphereReady: scene._environmentState?.isReadyForAtmosphere === true,
       atmosphereVisible:
         scene._environmentState?.isSkyAtmosphereVisible === true,
     };
@@ -949,13 +968,24 @@ const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor 
     // in frame at a night instant, and no globe in the band.
     const dirD = C.Cartesian3.normalize(
       C.Cartesian3.add(
-        C.Cartesian3.multiplyByScalar(eastD, Math.cos(Math.PI / 4), new C.Cartesian3()),
-        C.Cartesian3.multiplyByScalar(upD, Math.sin(Math.PI / 4), new C.Cartesian3()),
+        C.Cartesian3.multiplyByScalar(
+          eastD,
+          Math.cos(Math.PI / 4),
+          new C.Cartesian3(),
+        ),
+        C.Cartesian3.multiplyByScalar(
+          upD,
+          Math.sin(Math.PI / 4),
+          new C.Cartesian3(),
+        ),
         new C.Cartesian3(),
       ),
       new C.Cartesian3(),
     );
-    scene.camera.setView({ destination: camPosD, orientation: { direction: dirD, up: upD } });
+    scene.camera.setView({
+      destination: camPosD,
+      orientation: { direction: dirD, up: upD },
+    });
     scene.camera.frustum.fov = C.Math.toRadians(60.0);
     laneD.readiness = await settleTiles(180, true);
     if (!laneD.readiness.settled) {
@@ -1009,7 +1039,13 @@ const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor 
       for (const [px, py] of probePts) {
         scratchPick.x = px / dpr;
         scratchPick.y = py / dpr;
-        if (scene.camera.pickEllipsoid(scratchPick, ellipsoidD, new C.Cartesian3())) {
+        if (
+          scene.camera.pickEllipsoid(
+            scratchPick,
+            ellipsoidD,
+            new C.Cartesian3(),
+          )
+        ) {
           globeInBand = true;
           break;
         }
@@ -1227,7 +1263,11 @@ const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor 
       new C.Cartesian3(),
     );
     if (C.Cartesian3.magnitude(horiz) < 1e-6) {
-      horiz = C.Cartesian3.cross(up, new C.Cartesian3(0, 0, 1), new C.Cartesian3());
+      horiz = C.Cartesian3.cross(
+        up,
+        new C.Cartesian3(0, 0, 1),
+        new C.Cartesian3(),
+      );
     }
     C.Cartesian3.normalize(horiz, horiz);
     const east = C.Cartesian3.normalize(
@@ -1294,7 +1334,12 @@ const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor 
     const bandOf = () => {
       const w = W();
       const h = H();
-      return [Math.round(w * 0.3), Math.round(h * 0.1), Math.round(w * 0.7), Math.round(h * 0.3)];
+      return [
+        Math.round(w * 0.3),
+        Math.round(h * 0.1),
+        Math.round(w * 0.7),
+        Math.round(h * 0.3),
+      ];
     };
 
     const measureOverBackground = async (color) => {
@@ -1354,7 +1399,12 @@ const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor 
     const band = () => {
       const w = W();
       const h = H();
-      return [Math.round(w * 0.25), Math.round(h * 0.05), Math.round(w * 0.75), Math.round(h * 0.35)];
+      return [
+        Math.round(w * 0.25),
+        Math.round(h * 0.05),
+        Math.round(w * 0.75),
+        Math.round(h * 0.35),
+      ];
     };
 
     const measureBand = async () => {
@@ -1578,8 +1628,7 @@ const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor 
         return {
           environmentCommand,
           commandListOwnerCount,
-          submissionCount:
-            Number(environmentCommand) + commandListOwnerCount,
+          submissionCount: Number(environmentCommand) + commandListOwnerCount,
         };
       };
 
@@ -1620,12 +1669,22 @@ const MEASURE = async ({ lat, lon, deepestIso, clearIso, nightIso, targetFactor 
       const h = H();
       // The camera is pitched so the horizon sits near 3/4 height; the band
       // just above it is where the twilight lives.
-      return [Math.round(w * 0.2), Math.round(h * 0.55), Math.round(w * 0.8), Math.round(h * 0.72)];
+      return [
+        Math.round(w * 0.2),
+        Math.round(h * 0.55),
+        Math.round(w * 0.8),
+        Math.round(h * 0.72),
+      ];
     };
     const zenithBand = () => {
       const w = W();
       const h = H();
-      return [Math.round(w * 0.2), Math.round(h * 0.02), Math.round(w * 0.8), Math.round(h * 0.12)];
+      return [
+        Math.round(w * 0.2),
+        Math.round(h * 0.02),
+        Math.round(w * 0.8),
+        Math.round(h * 0.12),
+      ];
     };
 
     const measureToggle = async () => {
@@ -1752,7 +1811,10 @@ async function runBackend(browser, renderer, plan) {
     const shots = out.result?.shots ?? {};
     out.shotsWritten = [];
     for (const [key, dataUrl] of Object.entries(shots)) {
-      if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/png")) {
+      if (
+        typeof dataUrl !== "string" ||
+        !dataUrl.startsWith("data:image/png")
+      ) {
         continue;
       }
       const file = path.join(
@@ -1859,8 +1921,7 @@ function judge(result) {
     // brightest star present must clear the local sky, while the total
     // contribution stays below the undimmed reference.
     revealIsPartial:
-      (b.starMaxOn ?? 0) > (b.starMaxNoStarsOn ?? 0) &&
-      (b.starSumOn ?? 0) > 0,
+      (b.starMaxOn ?? 0) > (b.starMaxNoStarsOn ?? 0) && (b.starSumOn ?? 0) > 0,
     // The off position must restore the undimmed cubemap exactly, even with a
     // curve that would otherwise black it out.
     offToggleRestoresFull:
@@ -1915,7 +1976,8 @@ function judge(result) {
     presentAtEveryAzimuth: az.length === 4 && deltas.every((d) => d > 0.004),
     // Confined to the band — nothing above 22.6 deg elevation.
     confinedToBand: az.every(
-      (x) => Math.abs(x.deltaZenith ?? 0) <= 0.25 * Math.abs(x.deltaHorizon ?? 1),
+      (x) =>
+        Math.abs(x.deltaZenith ?? 0) <= 0.25 * Math.abs(x.deltaHorizon ?? 1),
     ),
     // Sunset-coloured.
     isWarm: az.every((x) => (x.deltaR ?? 0) > (x.deltaB ?? 0)),
@@ -1995,7 +2057,8 @@ function judge(result) {
     .filter((e) => e.lane.startsWith("C-az") || e.lane === "A-shellAlpha")
     .every((e) => (e.sunElevationDeg ?? -90) > 0);
 
-  const laneOk = (lane) => Object.values(lane).every((x) => typeof x !== "boolean" || x);
+  const laneOk = (lane) =>
+    Object.values(lane).every((x) => typeof x !== "boolean" || x);
   v.PASS =
     laneOk(v.laneA) &&
     laneOk(v.laneB) &&
@@ -2067,8 +2130,9 @@ function judge(result) {
         ? row.ok
           ? "OK"
           : `FAIL ${row.failed.join(",")}`
-        : (cheapRejections.find((r) => r.lat === c.lat && r.lon === c.lon)
-            ?.failed ?? ["not-refined"]
+        : (
+            cheapRejections.find((r) => r.lat === c.lat && r.lon === c.lon)
+              ?.failed ?? ["not-refined"]
           ).join(",");
       console.log(
         `  ${c.name.padEnd(8)} ${r3(c.lat).toString().padStart(7)},${r3(c.lon).toString().padStart(8)}  ` +
@@ -2125,7 +2189,8 @@ function judge(result) {
   const structuralReasons = [];
   if (gl.error) structuralReasons.push(`webgl: ${gl.error}`);
   if (gpu.error) structuralReasons.push(`webgpu: ${gpu.error}`);
-  if (gl.backendMismatch) structuralReasons.push(`webgl: ${gl.backendMismatch}`);
+  if (gl.backendMismatch)
+    structuralReasons.push(`webgl: ${gl.backendMismatch}`);
   if (gpu.backendMismatch)
     structuralReasons.push(`webgpu: ${gpu.backendMismatch}`);
   for (const [name, side] of [

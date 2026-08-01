@@ -250,7 +250,11 @@ function check(name, cond, detail) {
       8,
     );
     const ad = def.attachmentDemand;
-    check("default: attachmentDemand present", !!ad && !!ad.record, JSON.stringify(ad).slice(0, 200));
+    check(
+      "default: attachmentDemand present",
+      !!ad && !!ad.record,
+      JSON.stringify(ad).slice(0, 200),
+    );
     if (ad && ad.record) {
       const r = ad.record;
       const a = ad.actual;
@@ -261,7 +265,10 @@ function check(name, cond, detail) {
         r.gbufferReadersDemand === false && r.gbufferReadersMask === 0,
         JSON.stringify(r.gbufferReaders),
       );
-      check("default: gbufferDemanded (forced) true", r.gbufferDemanded === true);
+      check(
+        "default: gbufferDemanded (forced) true",
+        r.gbufferDemanded === true,
+      );
       check(
         "default: actual 2 color attachments",
         a.sceneColorAttachmentCount === 2,
@@ -280,7 +287,10 @@ function check(name, cond, detail) {
       check(
         "default: recordMatchesActual",
         ad.recordMatchesActual === true,
-        JSON.stringify({ topo: r.topology, count: a.sceneColorAttachmentCount }),
+        JSON.stringify({
+          topo: r.topology,
+          count: a.sceneColorAttachmentCount,
+        }),
       );
       // D. MSAA companion accounting (default msaaSamples>1 expected).
       if (setup.msaaSamples > 1) {
@@ -295,14 +305,28 @@ function check(name, cond, detail) {
         );
       }
     }
-    results.artifacts.push(await grabPng(page, "attachment-demand-default.png"));
+    results.artifacts.push(
+      await grabPng(page, "attachment-demand-default.png"),
+    );
 
     // ── B. Each consumer ON independently ──
     const consumerCases = [
-      { name: "deferredLighting", flags: { deferredLighting: true }, reader: "deferredLighting" },
+      {
+        name: "deferredLighting",
+        flags: { deferredLighting: true },
+        reader: "deferredLighting",
+      },
       { name: "SSR", flags: { enableSSR: true }, reader: "ssr" },
-      { name: "NPROutlines", flags: { enableNPROutlines: true }, reader: "nprOutlines" },
-      { name: "contactShadows", flags: { enableContactShadows: true }, reader: "contactShadows" },
+      {
+        name: "NPROutlines",
+        flags: { enableNPROutlines: true },
+        reader: "nprOutlines",
+      },
+      {
+        name: "contactShadows",
+        flags: { enableContactShadows: true },
+        reader: "contactShadows",
+      },
       {
         name: "debugOverlay",
         flags: { deferredLighting: true, debugShowGBufferNormals: true },
@@ -340,8 +364,12 @@ function check(name, cond, detail) {
       check(`${cc.name}: topology stays mrt`, !!r && r.topology === "mrt");
       check(
         `${cc.name}: recordMatchesActual`,
-        !!res.attachmentDemand && res.attachmentDemand.recordMatchesActual === true,
-        JSON.stringify({ topo: r?.topology, count: a?.sceneColorAttachmentCount }),
+        !!res.attachmentDemand &&
+          res.attachmentDemand.recordMatchesActual === true,
+        JSON.stringify({
+          topo: r?.topology,
+          count: a?.sceneColorAttachmentCount,
+        }),
       );
     }
 
@@ -370,7 +398,9 @@ function check(name, cond, detail) {
         rr.topology === "mrt" &&
         restore.attachmentDemand.recordMatchesActual === true,
     );
-    results.artifacts.push(await grabPng(page, "attachment-demand-restore.png"));
+    results.artifacts.push(
+      await grabPng(page, "attachment-demand-restore.png"),
+    );
 
     // Visual sanity: the default globe must actually render (non-black center),
     // proving the observe-only wiring did not blank the scene.
@@ -384,7 +414,17 @@ function check(name, cond, detail) {
       c.height = 60;
       const cx = c.getContext("2d", { willReadFrequently: true });
       // sample the center third of the canvas (globe interior)
-      cx.drawImage(cv, cv.width / 3, cv.height / 3, cv.width / 3, cv.height / 3, 0, 0, 60, 60);
+      cx.drawImage(
+        cv,
+        cv.width / 3,
+        cv.height / 3,
+        cv.width / 3,
+        cv.height / 3,
+        0,
+        0,
+        60,
+        60,
+      );
       const d = cx.getImageData(0, 0, 60, 60).data;
       let sum = 0;
       for (let i = 0; i < d.length; i += 4) sum += d[i] + d[i + 1] + d[i + 2];
@@ -397,7 +437,11 @@ function check(name, cond, detail) {
     );
 
     // console errors (device/page)
-    check("no console/page errors", errs.length === 0, JSON.stringify(errs.slice(0, 5)));
+    check(
+      "no console/page errors",
+      errs.length === 0,
+      JSON.stringify(errs.slice(0, 5)),
+    );
     results.errors = errs;
 
     const jsonPath = path.join(

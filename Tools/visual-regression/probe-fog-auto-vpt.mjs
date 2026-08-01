@@ -123,9 +123,15 @@ async function applyFog(page, vptEnabled) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -193,15 +199,14 @@ async function applyFog(page, vptEnabled) {
     (e) => !/AtmosphereLUT|default layout|favicon/.test(e),
   );
 
-  console.log(JSON.stringify({ tierUnit, vptOff, vptOn, pngOff, pngOn }, null, 1));
+  console.log(
+    JSON.stringify({ tierUnit, vptOff, vptOn, pngOff, pngOn }, null, 1),
+  );
 
   const tiers = { low: 0, medium: 1, high: 2 };
   console.log("\n=== ANALYSIS ===");
   const checks = [
-    [
-      `TIER UNIT: service exported`,
-      tierUnit.exported === true,
-    ],
+    [`TIER UNIT: service exported`, tierUnit.exported === true],
     [
       `TIER UNIT: null device → low (${tierUnit.nullDevice})`,
       tierUnit.nullDevice === "low",

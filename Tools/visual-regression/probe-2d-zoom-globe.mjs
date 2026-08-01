@@ -23,10 +23,15 @@ async function sample(renderer) {
     args: ["--enable-unsafe-webgpu"],
   });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
-  page.on("pageerror", (e) => console.log(`>> [${renderer}] pageerror: ${e.message.slice(0, 160)}`));
-  await page.goto(`${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-  });
+  page.on("pageerror", (e) =>
+    console.log(`>> [${renderer}] pageerror: ${e.message.slice(0, 160)}`),
+  );
+  await page.goto(
+    `${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   const out = await page.evaluate(async () => {
@@ -59,8 +64,12 @@ async function sample(renderer) {
         camHeight: Math.round(v.camera.positionCartographic?.height ?? -1),
         frustumType: f?.constructor?.name ?? "?",
         frustum: {
-          left: f?.left, right: f?.right, top: f?.top, bottom: f?.bottom,
-          near: f?.near, far: f?.far,
+          left: f?.left,
+          right: f?.right,
+          top: f?.top,
+          bottom: f?.bottom,
+          near: f?.near,
+          far: f?.far,
         },
         commandListLen: cl.length,
         globeCmds,
@@ -76,7 +85,9 @@ async function sample(renderer) {
     };
 
     // (A) Full-globe 2D — known good on WebGPU.
-    v.camera.setView({ destination: C.Rectangle.fromDegrees(-170, -80, 170, 80) });
+    v.camera.setView({
+      destination: C.Rectangle.fromDegrees(-170, -80, 170, 80),
+    });
     await render(220);
     const full = snapshot("full-globe");
 
@@ -101,7 +112,10 @@ const wgpu = await sample("webgpu");
 console.log("=== NEW-WEBGPU-GLOBE-2D-REGIONAL-ZOOM diagnostic ===\n");
 for (const view of ["full", "regional"]) {
   console.log(`── ${view} 2D view ──`);
-  for (const [name, r] of [["webgl", wgl], ["webgpu", wgpu]]) {
+  for (const [name, r] of [
+    ["webgl", wgl],
+    ["webgpu", wgpu],
+  ]) {
     const d = r[view];
     console.log(
       `  ${name}: mode=${d.mode} camH=${d.camHeight} tilesToRender=${d.tilesToRender} ` +

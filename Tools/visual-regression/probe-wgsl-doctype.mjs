@@ -1,5 +1,5 @@
 // Probe demos for the WGSL parser DOCTYPE error.
-import { chromium } from 'playwright';
+import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -14,47 +14,72 @@ const RENDERER_OVERRIDE_SHIM = `
 
 const demos = process.argv.slice(2);
 if (demos.length === 0) {
-  demos.push('CZML Billboard and Label.html', 'Map Pins.html', 'Particle System Fireworks.html');
+  demos.push(
+    "CZML Billboard and Label.html",
+    "Map Pins.html",
+    "Particle System Fireworks.html",
+  );
 }
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
+const browser = await chromium.launch({ channel: "msedge", headless: true });
 for (const demo of demos) {
-  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+  const ctx = await browser.newContext({
+    viewport: { width: 800, height: 600 },
+  });
   const page = await ctx.newPage();
   const msgs = [];
   const failedFetches = [];
-  page.on('console', m => msgs.push(`[${m.type()}] ${m.text()}`));
-  page.on('pageerror', e => msgs.push(`[PAGEERROR] ${e.message}`));
-  page.on('response', async (resp) => {
+  page.on("console", (m) => msgs.push(`[${m.type()}] ${m.text()}`));
+  page.on("pageerror", (e) => msgs.push(`[PAGEERROR] ${e.message}`));
+  page.on("response", async (resp) => {
     if (resp.status() === 404) {
       failedFetches.push(`404: ${resp.url()}`);
     }
   });
 
-  await page.addInitScript(() => { window.__FORCED_RENDERER__ = 'webgpu'; });
+  await page.addInitScript(() => {
+    window.__FORCED_RENDERER__ = "webgpu";
+  });
   await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-  await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
+  await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
     const response = await route.fetch();
-    const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-    await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+    const txt = (await response.text()).replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    );
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      body: txt,
+    });
   });
 
   const url = `http://localhost:8080/Apps/Sandcastle/gallery/${encodeURIComponent(demo)}`;
   try {
-    await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+    await page.goto(url, { waitUntil: "load", timeout: 60000 });
     await page.waitForTimeout(8000);
   } catch (e) {
     msgs.push(`[NAV ERROR] ${e.message}`);
   }
 
-  const doctype = msgs.filter(m => /<!DOCTYPE html>|unexpected token.*DOCTYPE/i.test(m));
-  const wgslErr = msgs.filter(m => /Error while parsing WGSL|createShaderModule/i.test(m));
+  const doctype = msgs.filter((m) =>
+    /<!DOCTYPE html>|unexpected token.*DOCTYPE/i.test(m),
+  );
+  const wgslErr = msgs.filter((m) =>
+    /Error while parsing WGSL|createShaderModule/i.test(m),
+  );
 
   console.log(`\n=== ${demo} ===`);
-  console.log(`msgs=${msgs.length} doctype=${doctype.length} wgsl-parse=${wgslErr.length} 404s=${failedFetches.length}`);
-  doctype.slice(0, 3).forEach(e => console.log('  DOCTYPE:', e.substring(0, 400)));
-  wgslErr.slice(0, 3).forEach(e => console.log('  WGSL:', e.substring(0, 400)));
-  failedFetches.slice(0, 10).forEach(u => console.log(' ', u));
+  console.log(
+    `msgs=${msgs.length} doctype=${doctype.length} wgsl-parse=${wgslErr.length} 404s=${failedFetches.length}`,
+  );
+  doctype
+    .slice(0, 3)
+    .forEach((e) => console.log("  DOCTYPE:", e.substring(0, 400)));
+  wgslErr
+    .slice(0, 3)
+    .forEach((e) => console.log("  WGSL:", e.substring(0, 400)));
+  failedFetches.slice(0, 10).forEach((u) => console.log(" ", u));
   await ctx.close();
 }
 await browser.close();

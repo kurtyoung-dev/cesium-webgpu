@@ -574,7 +574,9 @@ async function run(renderer) {
     const errs = wgpu.errs.length;
     gate("WebGPU device errors", errs === 0, `${errs} errors`);
     if (errs > 0) {
-      wgpu.errs.slice(0, 6).forEach((e) => console.log(`    - ${e.slice(0, 180)}`));
+      wgpu.errs
+        .slice(0, 6)
+        .forEach((e) => console.log(`    - ${e.slice(0, 180)}`));
     }
   }
 

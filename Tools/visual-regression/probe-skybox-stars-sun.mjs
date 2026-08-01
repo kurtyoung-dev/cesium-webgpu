@@ -34,9 +34,15 @@ async function capture(rendererArg) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
 
@@ -130,7 +136,9 @@ async function analyze(pngPath) {
     // Histogram of max-channel value to characterise the field.
     const hist = new Array(8).fill(0);
     for (let i = 0; i < d.length; i += 4) {
-      const r = d[i], g = d[i + 1], b = d[i + 2];
+      const r = d[i],
+        g = d[i + 1],
+        b = d[i + 2];
       const mx = Math.max(r, g, b);
       const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
       lumSum += lum;
@@ -181,7 +189,8 @@ async function diffPngs(a, b) {
       const B = await decode(bb);
       if (A.w !== B.w || A.h !== B.h) return { error: "size mismatch" };
       const total = A.w * A.h;
-      let mismatch = 0, sum = 0;
+      let mismatch = 0,
+        sum = 0;
       for (let i = 0; i < A.data.length; i += 4) {
         const dr = Math.abs(A.data[i] - B.data[i]);
         const dg = Math.abs(A.data[i + 1] - B.data[i + 1]);
@@ -210,9 +219,15 @@ async function diffPngs(a, b) {
 
   console.log("\n-- WebGPU --");
   console.log("  meta:", JSON.stringify(gpu.meta));
-  console.log("  gate errors:", gpu.gate.errors.length, "deviceLost:", gpu.gate.deviceLost);
+  console.log(
+    "  gate errors:",
+    gpu.gate.errors.length,
+    "deviceLost:",
+    gpu.gate.deviceLost,
+  );
   console.log("  console faults:", gpu.consoleErrors.length);
-  if (gpu.consoleErrors.length) gpu.consoleErrors.slice(0, 5).forEach((e) => console.log("    " + e));
+  if (gpu.consoleErrors.length)
+    gpu.consoleErrors.slice(0, 5).forEach((e) => console.log("    " + e));
 
   console.log("\n-- WebGL --");
   console.log("  meta:", JSON.stringify(gl.meta));

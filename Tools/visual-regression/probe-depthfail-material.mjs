@@ -181,7 +181,12 @@ function decode(page, dataUrl) {
         b = d[i + 2];
       if (r > 120 && g < 90 && b < 90) red++;
       else if (b > 120 && r < 100 && g < 110) blue++;
-      else if (r > 90 && r < 200 && Math.abs(r - g) < 30 && Math.abs(g - b) < 30)
+      else if (
+        r > 90 &&
+        r < 200 &&
+        Math.abs(r - g) < 30 &&
+        Math.abs(g - b) < 30
+      )
         grey++;
     }
     const total = c.width * c.height;
@@ -236,14 +241,22 @@ async function run() {
   log(`    WebGPU ${JSON.stringify(aGpu.counts)} errs:${aGpu.newErrs.length}`);
   log(`    WebGL  ${JSON.stringify(aGl.counts)} errs:${aGl.newErrs.length}`);
   const aRedPct = (100 * aGpu.counts.red) / aGpu.counts.total;
-  const aRedRatio =
-    aGl.counts.red > 0 ? aGpu.counts.red / aGl.counts.red : 0;
+  const aRedRatio = aGl.counts.red > 0 ? aGpu.counts.red / aGl.counts.red : 0;
   const aGreyRatio =
     aGl.counts.grey > 0 ? aGpu.counts.grey / aGl.counts.grey : 0;
   const aChecks = [
-    [`A: RED present (material depth-fail renders): ${aRedPct.toFixed(2)}% > 1%`, aRedPct > 1],
-    [`A: red parity vs WebGL (ratio ${aRedRatio.toFixed(2)} in 0.7–1.4)`, ratioOk(aGpu.counts.red, aGl.counts.red)],
-    [`A: grey occluder parity (ratio ${aGreyRatio.toFixed(2)} in 0.7–1.4)`, ratioOk(aGpu.counts.grey, aGl.counts.grey)],
+    [
+      `A: RED present (material depth-fail renders): ${aRedPct.toFixed(2)}% > 1%`,
+      aRedPct > 1,
+    ],
+    [
+      `A: red parity vs WebGL (ratio ${aRedRatio.toFixed(2)} in 0.7–1.4)`,
+      ratioOk(aGpu.counts.red, aGl.counts.red),
+    ],
+    [
+      `A: grey occluder parity (ratio ${aGreyRatio.toFixed(2)} in 0.7–1.4)`,
+      ratioOk(aGpu.counts.grey, aGl.counts.grey),
+    ],
     [`A: WebGL also shows RED (reference valid)`, aGl.counts.red > 0],
     [`A: no NEW WebGPU device errors`, aGpu.newErrs.length === 0],
   ];
@@ -265,11 +278,26 @@ async function run() {
   // close to WebGL's red.
   const bRedPctGpu = (100 * bGpu.counts.red) / bGpu.counts.total;
   const bChecks = [
-    [`B: WebGPU red collapses to ~0 (cull honored): ${bRedPctGpu.toFixed(3)}% < 1%`, bRedPctGpu < 1],
-    [`B: WebGL red ~0 (reference: closed depthFail → no red): ${bGl.counts.red}`, bGl.counts.red < bGl.counts.total * 0.01],
-    [`B: |WebGPU red − WebGL red| small (${Math.abs(bGpu.counts.red - bGl.counts.red)} < 0.5% canvas)`, Math.abs(bGpu.counts.red - bGl.counts.red) < bGpu.counts.total * 0.005],
-    [`B: blue (all-blue) parity vs WebGL (ratio ${bBlueRatio.toFixed(2)} in 0.7–1.4)`, ratioOk(bGpu.counts.blue, bGl.counts.blue)],
-    [`B: grey occluder parity (ratio ${bGreyRatio.toFixed(2)} in 0.7–1.4)`, ratioOk(bGpu.counts.grey, bGl.counts.grey)],
+    [
+      `B: WebGPU red collapses to ~0 (cull honored): ${bRedPctGpu.toFixed(3)}% < 1%`,
+      bRedPctGpu < 1,
+    ],
+    [
+      `B: WebGL red ~0 (reference: closed depthFail → no red): ${bGl.counts.red}`,
+      bGl.counts.red < bGl.counts.total * 0.01,
+    ],
+    [
+      `B: |WebGPU red − WebGL red| small (${Math.abs(bGpu.counts.red - bGl.counts.red)} < 0.5% canvas)`,
+      Math.abs(bGpu.counts.red - bGl.counts.red) < bGpu.counts.total * 0.005,
+    ],
+    [
+      `B: blue (all-blue) parity vs WebGL (ratio ${bBlueRatio.toFixed(2)} in 0.7–1.4)`,
+      ratioOk(bGpu.counts.blue, bGl.counts.blue),
+    ],
+    [
+      `B: grey occluder parity (ratio ${bGreyRatio.toFixed(2)} in 0.7–1.4)`,
+      ratioOk(bGpu.counts.grey, bGl.counts.grey),
+    ],
     [`B: no NEW WebGPU device errors`, bGpu.newErrs.length === 0],
   ];
 

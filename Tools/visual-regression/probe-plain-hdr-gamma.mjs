@@ -36,10 +36,14 @@ async function capture(rendererArg, hdr) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`;
   await page.goto(url, { waitUntil: "networkidle" });
@@ -85,7 +89,10 @@ async function capture(rendererArg, hdr) {
   await page.waitForTimeout(1500);
 
   const label = hdr ? "hdr" : "sdr";
-  const out = path.join(OUT_DIR, `probe-plain-hdr-gamma-${label}-${rendererArg}.png`);
+  const out = path.join(
+    OUT_DIR,
+    `probe-plain-hdr-gamma-${label}-${rendererArg}.png`,
+  );
   await page.screenshot({ path: out, fullPage: false });
   await browser.close();
 
@@ -116,9 +123,7 @@ async function diffPngs(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const a = await decode(ba);

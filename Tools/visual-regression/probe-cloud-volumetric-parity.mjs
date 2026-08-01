@@ -131,11 +131,17 @@ console.log(
 console.log(
   `WebGPU cloud: filled=${gpu.count}px  bbox=${gpu.bboxW}x${gpu.bboxH}  errors=${gpu.errors.length}`,
 );
-gpu.errors.slice(0, 5).forEach((e) => console.log("  GPU ERR:", e.slice(0, 160)));
+gpu.errors
+  .slice(0, 5)
+  .forEach((e) => console.log("  GPU ERR:", e.slice(0, 160)));
 
 // Parity heuristic: WebGPU footprint area within 2x of WebGL (was ~4-5x).
 const glArea = gl.bboxW * gl.bboxH || 1;
 const gpuArea = gpu.bboxW * gpu.bboxH || 1;
 const ratio = gpuArea / glArea;
-console.log(`bbox area ratio WebGPU/WebGL = ${ratio.toFixed(2)} (target <= 2.0)`);
-console.log("PNGs: output/cloud-volumetric-webgl.png, output/cloud-volumetric-webgpu.png");
+console.log(
+  `bbox area ratio WebGPU/WebGL = ${ratio.toFixed(2)} (target <= 2.0)`,
+);
+console.log(
+  "PNGs: output/cloud-volumetric-webgl.png, output/cloud-volumetric-webgpu.png",
+);

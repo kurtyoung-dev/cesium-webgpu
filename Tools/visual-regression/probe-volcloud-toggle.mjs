@@ -2,8 +2,8 @@
 // `scene.globe.atmosphericConditions.clouds.enableVolumetric = true`
 // should activate the procedural cloud renderer (which is the
 // Schneider-style volumetric raymarcher).
-import { chromium } from 'playwright';
-import fs from 'fs';
+import { chromium } from "playwright";
+import fs from "fs";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -34,22 +34,37 @@ const RENDERER_OVERRIDE_SHIM = `
 })();
 `;
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
-const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+const browser = await chromium.launch({ channel: "msedge", headless: true });
+const ctx = await browser.newContext({ viewport: { width: 800, height: 600 } });
 const page = await ctx.newPage();
 const errs = [];
-page.on('console', m => { if (m.type() === 'error') errs.push(m.text()); });
-await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
-  const response = await route.fetch();
-  const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-  await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+page.on("console", (m) => {
+  if (m.type() === "error") errs.push(m.text());
 });
-await page.goto('http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html', { waitUntil: 'load', timeout: 60000 });
+await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
+await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
+  const response = await route.fetch();
+  const txt = (await response.text()).replace(
+    /new\s+Cesium\.Viewer\s*\(/g,
+    "await Cesium.Viewer.createAsync(",
+  );
+  await route.fulfill({
+    status: response.status(),
+    headers: response.headers(),
+    body: txt,
+  });
+});
+await page.goto(
+  "http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html",
+  { waitUntil: "load", timeout: 60000 },
+);
 await page.waitForTimeout(10000);
-const png = await page.screenshot({ type: 'png' });
-fs.writeFileSync('Tools/visual-regression/output/volcloud-enabled-webgpu.png', png);
+const png = await page.screenshot({ type: "png" });
+fs.writeFileSync(
+  "Tools/visual-regression/output/volcloud-enabled-webgpu.png",
+  png,
+);
 const echo = await page.evaluate(() => window.__toggleEcho);
-console.log('Toggle echo:', JSON.stringify(echo));
-console.log('Errors:', errs.length, errs.slice(0, 3).join(' | '));
+console.log("Toggle echo:", JSON.stringify(echo));
+console.log("Errors:", errs.length, errs.slice(0, 3).join(" | "));
 await browser.close();

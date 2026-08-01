@@ -45,10 +45,14 @@ async function run() {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
   await page.goto(url, { waitUntil: "networkidle" });
@@ -176,7 +180,9 @@ async function run() {
 
   await browser.close();
 
-  console.log("\n[probe-hdr-toggle-invalidation] GPU-validation errors per phase:");
+  console.log(
+    "\n[probe-hdr-toggle-invalidation] GPU-validation errors per phase:",
+  );
   let totalPostToggle = 0;
   for (const [name, errs] of Object.entries(phases)) {
     console.log(`  ${name}: ${errs.length}`);

@@ -55,7 +55,11 @@ const result = await page.evaluate(async (ktx2Url) => {
     //     (positiveX/negativeX/…), each value a CompressedTextureBuffer.
     // Dig to one real CompressedTextureBuffer leaf and read its getters.
     const findLeaf = (o) => {
-      if (o && typeof o.bufferView !== "undefined" && typeof o.width === "number") {
+      if (
+        o &&
+        typeof o.bufferView !== "undefined" &&
+        typeof o.width === "number"
+      ) {
         return o;
       }
       if (Array.isArray(o)) {
@@ -81,7 +85,13 @@ const result = await page.evaluate(async (ktx2Url) => {
           internalFormat: String(leaf.internalFormat),
           hasBufferView: !!leaf.bufferView,
         }
-      : { shape, width: 0, height: 0, internalFormat: "none", hasBufferView: false };
+      : {
+          shape,
+          width: 0,
+          height: 0,
+          internalFormat: "none",
+          hasBufferView: false,
+        };
   } catch (e) {
     err = String(e && e.message ? e.message : e);
   }
@@ -110,8 +120,12 @@ const c =
   !(result.err && /supportedTargetFormats/i.test(result.err));
 
 console.log(`(A) context is WebGPU: ${a ? "PASS" : "FAIL"}`);
-console.log(`(B) loadKTX2 resolved with a valid buffer: ${b ? "PASS" : "FAIL"}`);
-console.log(`(C) immutable keyed context targets supplied: ${c ? "PASS" : "FAIL"}`);
+console.log(
+  `(B) loadKTX2 resolved with a valid buffer: ${b ? "PASS" : "FAIL"}`,
+);
+console.log(
+  `(C) immutable keyed context targets supplied: ${c ? "PASS" : "FAIL"}`,
+);
 if (result.err) console.log(`    (loadKTX2 error was: ${result.err})`);
 
 const pass = a && b && c;

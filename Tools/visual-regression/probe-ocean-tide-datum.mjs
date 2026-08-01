@@ -88,7 +88,9 @@ const RENDERER = "webgpu"; // the FFT ocean is a documented WebGL no-op
 // datum probe — four lanes each stream CWT tiles from ion at two coasts.
 const HARD_LIMIT_MS = 480000;
 const watchdog = setTimeout(() => {
-  console.error("[probe-ocean-tide-datum] WATCHDOG FIRED (480s) — forcing exit");
+  console.error(
+    "[probe-ocean-tide-datum] WATCHDOG FIRED (480s) — forcing exit",
+  );
   process.exit(2);
 }, HARD_LIMIT_MS);
 if (watchdog.unref) {
@@ -488,9 +490,7 @@ const TIDE_LANE = async ({
     const t = at(i * phaseLock.stepSeconds);
     lunar.push(C.TideModel.evaluate(t, eq, result).lunarM);
     C.TideModel.computeMoonPositionFixed(t, moon);
-    altitude.push(
-      C.Cartesian3.dot(C.Cartesian3.normalize(moon, moon), eqDir),
-    );
+    altitude.push(C.Cartesian3.dot(C.Cartesian3.normalize(moon, moon), eqDir));
   }
   const lunarMax = maximaOf(lunar, phaseLock.stepSeconds);
   const culminations = extremaOf(altitude, phaseLock.stepSeconds);
@@ -541,16 +541,17 @@ const TIDE_LANE = async ({
     const c =
       C.Cartesian3.dot(moon, sun) /
       (C.Cartesian3.magnitude(moon) * C.Cartesian3.magnitude(sun));
-    elongations.push(
-      (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI,
-    );
+    elongations.push((Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI);
   }
   let springElongationMaxDeg = null;
   let neapElongationMaxDeg = null;
   const springDays = [];
   const neapDays = [];
   for (let i = 1; i < spring.days - 1; i++) {
-    if (dailyRanges[i] > dailyRanges[i - 1] && dailyRanges[i] >= dailyRanges[i + 1]) {
+    if (
+      dailyRanges[i] > dailyRanges[i - 1] &&
+      dailyRanges[i] >= dailyRanges[i + 1]
+    ) {
       springDays.push(i);
       const e = elongations[i];
       springElongationMaxDeg = Math.max(
@@ -558,7 +559,10 @@ const TIDE_LANE = async ({
         Math.min(e, Math.abs(180 - e)),
       );
     }
-    if (dailyRanges[i] < dailyRanges[i - 1] && dailyRanges[i] <= dailyRanges[i + 1]) {
+    if (
+      dailyRanges[i] < dailyRanges[i - 1] &&
+      dailyRanges[i] <= dailyRanges[i + 1]
+    ) {
       neapDays.push(i);
       neapElongationMaxDeg = Math.max(
         neapElongationMaxDeg ?? 0,
@@ -748,7 +752,9 @@ const OFF_LANE = async ({ site, dayIso, frames }) => {
   globe.water.ocean.tideCallback = undefined;
   globe.water.ocean.verticalDatum = "ELLIPSOID";
   await settle(frames.afterDatumChange);
-  const ellipsoidUndulationMeters = num(globe.water.ocean.geoidUndulationMeters);
+  const ellipsoidUndulationMeters = num(
+    globe.water.ocean.geoidUndulationMeters,
+  );
 
   // (4) both off -> the anchor must be back on the ellipsoid surface.
   globe.water.ocean.tideEnabled = false;
@@ -898,7 +904,10 @@ function writePng(dataUrl, file) {
       laneA.beforeDataUrl,
       "ocean-tide-datum-before.png",
     );
-    pngs.datumAfter = writePng(laneA.afterDataUrl, "ocean-tide-datum-after.png");
+    pngs.datumAfter = writePng(
+      laneA.afterDataUrl,
+      "ocean-tide-datum-after.png",
+    );
     delete laneA.beforeDataUrl;
     delete laneA.afterDataUrl;
   }
@@ -913,8 +922,9 @@ function writePng(dataUrl, file) {
     }
   }
   const rendererActual =
-    [laneA, laneB, laneC, laneD].map((l) => l && l.rendererType).find(Boolean) ??
-    null;
+    [laneA, laneB, laneC, laneD]
+      .map((l) => l && l.rendererType)
+      .find(Boolean) ?? null;
   if (rendererActual && rendererActual !== RENDERER) {
     structuralFailures.push(
       `backend fell back: rendererType "${rendererActual}" !== requested "${RENDERER}"`,

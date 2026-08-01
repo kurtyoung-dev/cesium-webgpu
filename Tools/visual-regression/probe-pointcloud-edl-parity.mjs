@@ -129,7 +129,7 @@ async function capture(renderer, edlOn) {
       framed,
       rendererType: s.context.rendererType,
       radius: bs ? bs.radius : 0,
-      hasFR: !!(pc._pointCloudEyeDomeLighting?._featureRenderer),
+      hasFR: !!pc._pointCloudEyeDomeLighting?._featureRenderer,
     };
   }, edlOn);
 

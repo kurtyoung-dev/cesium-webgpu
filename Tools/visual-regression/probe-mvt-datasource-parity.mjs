@@ -59,7 +59,8 @@ function encodeString(fieldNumber, value) {
 }
 function encodePackedVarints(fieldNumber, values) {
   const payload = [];
-  for (let i = 0; i < values.length; i++) payload.push(...encodeVarint(values[i]));
+  for (let i = 0; i < values.length; i++)
+    payload.push(...encodeVarint(values[i]));
   return encodeBytes(fieldNumber, payload);
 }
 function encodeFeature(options) {
@@ -200,27 +201,30 @@ async function run(renderer) {
   fs.writeFileSync(`${OUT}/_mvt-${renderer}.png`, buf);
 
   // Count non-black (white polygon) pixels to confirm something rendered.
-  const nonBlack = await page.evaluate(async (dataUrl) => {
-    const img = new Image();
-    await new Promise((res, rej) => {
-      img.onload = res;
-      img.onerror = rej;
-      img.src = dataUrl;
-    });
-    const cv = document.createElement("canvas");
-    cv.width = img.width;
-    cv.height = img.height;
-    const ctx = cv.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
-    let lit = 0,
-      total = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      total++;
-      if (d[i] + d[i + 1] + d[i + 2] > 90) lit++;
-    }
-    return { litPct: ((lit / total) * 100).toFixed(2) };
-  }, "data:image/png;base64," + buf.toString("base64"));
+  const nonBlack = await page.evaluate(
+    async (dataUrl) => {
+      const img = new Image();
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = rej;
+        img.src = dataUrl;
+      });
+      const cv = document.createElement("canvas");
+      cv.width = img.width;
+      cv.height = img.height;
+      const ctx = cv.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+      let lit = 0,
+        total = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        total++;
+        if (d[i] + d[i + 1] + d[i + 2] > 90) lit++;
+      }
+      return { litPct: ((lit / total) * 100).toFixed(2) };
+    },
+    "data:image/png;base64," + buf.toString("base64"),
+  );
 
   await browser.close();
   return { info, errs, litPct: nonBlack.litPct };
@@ -231,10 +235,22 @@ const webgpu = await run("webgpu");
 
 console.log("=== WebGL ===");
 console.log(JSON.stringify(webgl.info, null, 1));
-console.log("litPct:", webgl.litPct, "errs:", webgl.errs.length, webgl.errs.slice(0, 3));
+console.log(
+  "litPct:",
+  webgl.litPct,
+  "errs:",
+  webgl.errs.length,
+  webgl.errs.slice(0, 3),
+);
 console.log("=== WebGPU ===");
 console.log(JSON.stringify(webgpu.info, null, 1));
-console.log("litPct:", webgpu.litPct, "errs:", webgpu.errs.length, webgpu.errs.slice(0, 3));
+console.log(
+  "litPct:",
+  webgpu.litPct,
+  "errs:",
+  webgpu.errs.length,
+  webgpu.errs.slice(0, 3),
+);
 
 // Pixel-diff the two canvases.
 const browser = await chromium.launch({ channel: "msedge", headless: true });
@@ -288,8 +304,10 @@ const diff = await page.evaluate(
     };
   },
   [
-    "data:image/png;base64," + fs.readFileSync(`${OUT}/_mvt-webgl.png`).toString("base64"),
-    "data:image/png;base64," + fs.readFileSync(`${OUT}/_mvt-webgpu.png`).toString("base64"),
+    "data:image/png;base64," +
+      fs.readFileSync(`${OUT}/_mvt-webgl.png`).toString("base64"),
+    "data:image/png;base64," +
+      fs.readFileSync(`${OUT}/_mvt-webgpu.png`).toString("base64"),
   ],
 );
 await browser.close();

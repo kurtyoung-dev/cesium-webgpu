@@ -50,9 +50,13 @@ async function run() {
 
   {
     const state = {};
-    await runKarmaTestServer(makeFakeKarmaServer(1, state), {}, {
-      failTaskOnError: false,
-    });
+    await runKarmaTestServer(
+      makeFakeKarmaServer(1, state),
+      {},
+      {
+        failTaskOnError: false,
+      },
+    );
     assert.equal(
       state.started,
       true,

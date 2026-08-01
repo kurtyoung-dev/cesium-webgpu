@@ -63,7 +63,7 @@ await page.waitForFunction(() => !!window.Cesium, { timeout: 30000 });
 
 const out = await page.evaluate(async () => {
   const Cesium = window.Cesium;
-  const log = [];
+  const _log = [];
 
   // ── CHECK A — Scene-wiring opt-in flag on PointCloudShading ──────────
   const defShading = new Cesium.PointCloudShading();
@@ -103,10 +103,7 @@ const out = await page.evaluate(async () => {
     // Trigger lazy processor creation; poll until pipelines are compiled.
     let proc = ctx.pointCloudLOD;
     const t0 = performance.now();
-    while (
-      (!proc || !proc.isReady) &&
-      performance.now() - t0 < 20000
-    ) {
+    while ((!proc || !proc.isReady) && performance.now() - t0 < 20000) {
       await new Promise((r) => setTimeout(r, 50));
       proc = ctx.pointCloudLOD;
     }
@@ -137,8 +134,8 @@ const out = await page.evaluate(async () => {
 
     // Permissive params: every point LOD-0, box frustum passes all points.
     const planes = [
-      1, 0, 0, 1e6, -1, 0, 0, 1e6, 0, 1, 0, 1e6, 0, -1, 0, 1e6, 0, 0, 1, 1e6,
-      0, 0, -1, 1e6,
+      1, 0, 0, 1e6, -1, 0, 0, 1e6, 0, 1, 0, 1e6, 0, -1, 0, 1e6, 0, 0, 1, 1e6, 0,
+      0, -1, 1e6,
     ];
     proc.dispatch(encoder, {
       cameraPositionWC: [0, 0, 0],

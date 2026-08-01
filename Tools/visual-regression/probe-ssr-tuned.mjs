@@ -67,10 +67,14 @@ async function capture(label, { ssr, maxDistance, strength, steps }) {
           geometry: new C.PolygonGeometry({
             polygonHierarchy: new C.PolygonHierarchy(
               C.Cartesian3.fromDegreesArray([
-                view.lon - 0.004, view.lat - 0.002,
-                view.lon + 0.004, view.lat - 0.002,
-                view.lon + 0.004, view.lat + 0.002,
-                view.lon - 0.004, view.lat + 0.002,
+                view.lon - 0.004,
+                view.lat - 0.002,
+                view.lon + 0.004,
+                view.lat - 0.002,
+                view.lon + 0.004,
+                view.lat + 0.002,
+                view.lon - 0.004,
+                view.lat + 0.002,
               ]),
             ),
             height: 240,
@@ -96,10 +100,14 @@ async function capture(label, { ssr, maxDistance, strength, steps }) {
           geometry: new C.PolygonGeometry({
             polygonHierarchy: new C.PolygonHierarchy(
               C.Cartesian3.fromDegreesArray([
-                view.lon - 0.003, view.lat + 0.00203,
-                view.lon + 0.003, view.lat + 0.00203,
-                view.lon + 0.003, view.lat + 0.00208,
-                view.lon - 0.003, view.lat + 0.00208,
+                view.lon - 0.003,
+                view.lat + 0.00203,
+                view.lon + 0.003,
+                view.lat + 0.00203,
+                view.lon + 0.003,
+                view.lat + 0.00208,
+                view.lon - 0.003,
+                view.lat + 0.00208,
               ]),
             ),
             height: 240,
@@ -193,17 +201,28 @@ async function diffPngs(a, b) {
         c.width = img.naturalWidth;
         c.height = img.naturalHeight;
         c.getContext("2d").drawImage(img, 0, 0);
-        return { w: c.width, h: c.height, d: c.getContext("2d").getImageData(0, 0, c.width, c.height).data };
+        return {
+          w: c.width,
+          h: c.height,
+          d: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
+        };
       };
       const a = await decode(ba);
       const b = await decode(bb);
-      let mm = 0, sum = 0;
+      let mm = 0,
+        sum = 0;
       for (let i = 0; i < a.d.length; i += 4) {
-        const d = Math.abs(a.d[i] - b.d[i]) + Math.abs(a.d[i + 1] - b.d[i + 1]) + Math.abs(a.d[i + 2] - b.d[i + 2]);
+        const d =
+          Math.abs(a.d[i] - b.d[i]) +
+          Math.abs(a.d[i + 1] - b.d[i + 1]) +
+          Math.abs(a.d[i + 2] - b.d[i + 2]);
         sum += d;
         if (d > 20) mm++;
       }
-      return { mismatchPct: (100 * mm) / (a.w * a.h), meanDelta: sum / (a.w * a.h) };
+      return {
+        mismatchPct: (100 * mm) / (a.w * a.h),
+        meanDelta: sum / (a.w * a.h),
+      };
     },
     { ba, bb },
   );
@@ -215,11 +234,46 @@ async function diffPngs(a, b) {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
   const cells = [];
-  cells.push(await capture("a-ssr-off", { ssr: false, maxDistance: 50, strength: 0, steps: 64 }));
-  cells.push(await capture("b-default", { ssr: true, maxDistance: 50, strength: 1.0, steps: 64 }));
-  cells.push(await capture("c-md200", { ssr: true, maxDistance: 200, strength: 1.0, steps: 64 }));
-  cells.push(await capture("d-md500", { ssr: true, maxDistance: 500, strength: 1.0, steps: 128 }));
-  cells.push(await capture("e-md500-soft", { ssr: true, maxDistance: 500, strength: 0.7, steps: 128 }));
+  cells.push(
+    await capture("a-ssr-off", {
+      ssr: false,
+      maxDistance: 50,
+      strength: 0,
+      steps: 64,
+    }),
+  );
+  cells.push(
+    await capture("b-default", {
+      ssr: true,
+      maxDistance: 50,
+      strength: 1.0,
+      steps: 64,
+    }),
+  );
+  cells.push(
+    await capture("c-md200", {
+      ssr: true,
+      maxDistance: 200,
+      strength: 1.0,
+      steps: 64,
+    }),
+  );
+  cells.push(
+    await capture("d-md500", {
+      ssr: true,
+      maxDistance: 500,
+      strength: 1.0,
+      steps: 128,
+    }),
+  );
+  cells.push(
+    await capture("e-md500-soft", {
+      ssr: true,
+      maxDistance: 500,
+      strength: 0.7,
+      steps: 128,
+    }),
+  );
 
   console.log("[probe-ssr-tuned] cell diagnostics:");
   for (const c of cells) {
@@ -230,7 +284,7 @@ async function diffPngs(a, b) {
     const n = c.diag.samples.length;
     console.log(
       `  [${c.label}] errors=${c.deviceErrors.length}  ssr=${c.diag.ssr} maxDist=${c.diag.maxDistance} strength=${c.diag.strength}` +
-      `  avgPix=rgba(${Math.round(avg.r / n)}, ${Math.round(avg.g / n)}, ${Math.round(avg.b / n)})`,
+        `  avgPix=rgba(${Math.round(avg.r / n)}, ${Math.round(avg.g / n)}, ${Math.round(avg.b / n)})`,
     );
   }
 

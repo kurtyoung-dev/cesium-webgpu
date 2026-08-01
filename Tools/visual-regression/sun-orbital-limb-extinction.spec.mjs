@@ -170,12 +170,18 @@ test("S4: the limb ramp already exists — monotone, multi-decade, reddening", a
   let prevRatio = 1.0;
   for (let h = 110; h >= 0; h -= 1) {
     const t = transmittanceAt(h);
-    assert.ok(t.x <= prev.x, `red must not brighten as the ray sinks (${h} km)`);
+    assert.ok(
+      t.x <= prev.x,
+      `red must not brighten as the ray sinks (${h} km)`,
+    );
     assert.ok(t.y <= prev.y, `green must not brighten (${h} km)`);
     assert.ok(t.z <= prev.z, `blue must not brighten (${h} km)`);
     assert.ok(t.x >= t.y && t.y >= t.z, `red >= green >= blue (${h} km)`);
     const ratio = t.x / Math.max(t.z, Number.MIN_VALUE);
-    assert.ok(ratio >= prevRatio - 1e-12, `reddening must not reverse (${h} km)`);
+    assert.ok(
+      ratio >= prevRatio - 1e-12,
+      `reddening must not reverse (${h} km)`,
+    );
     prev = t;
     prevRatio = ratio;
   }
@@ -183,7 +189,7 @@ test("S4: the limb ramp already exists — monotone, multi-decade, reddening", a
   // Measured anchors (Edge-free, pure CPU): the ramp is not marginal.
   const at = (h) => transmittanceAt(h);
   assert.ok(at(50).z > 0.85 && at(50).z < 0.92, `blue at 50 km: ${at(50).z}`);
-  assert.ok(at(25).z > 0.20 && at(25).z < 0.25, `blue at 25 km: ${at(25).z}`);
+  assert.ok(at(25).z > 0.2 && at(25).z < 0.25, `blue at 25 km: ${at(25).z}`);
   assert.ok(at(10).z < 1e-3, `blue at 10 km: ${at(10).z}`);
   assert.ok(at(0).z < 1e-10, `blue at 0 km: ${at(0).z}`);
   assert.ok(at(0).x > 1e-6 && at(0).x < 1e-4, `red at 0 km: ${at(0).x}`);
@@ -233,8 +239,7 @@ test("S4 deferred limit: differential extinction across the disc, measured", asy
   // Angular half-diameter of the sun -> the tangent-height span it subtends
   // at the limb. d(theta)/d(tangent radius) = 1 / (rCam * sqrt(1-(R/rCam)^2)).
   const angRadius = SOLAR_RADIUS / SUN_DISTANCE;
-  const dThetaPerMetre =
-    1.0 / (rCam * Math.sqrt(1.0 - (R_EARTH / rCam) ** 2));
+  const dThetaPerMetre = 1.0 / (rCam * Math.sqrt(1.0 - (R_EARTH / rCam) ** 2));
   const spanKm = (2.0 * angRadius) / dThetaPerMetre / 1000.0;
   assert.ok(
     Math.abs(spanKm - 21.33) < 0.15,
@@ -275,7 +280,10 @@ test("S4 deferred limit: differential extinction across the disc, measured", asy
 
   // The retired "5.6x in blue" claim: true only in a narrow high band, and
   // wrong by many orders of magnitude where an orbital sunset is visible.
-  assert.ok(ratio(33, "z") > 4.5 && ratio(33, "z") < 7.0, "5.6x lives at ~33 km");
+  assert.ok(
+    ratio(33, "z") > 4.5 && ratio(33, "z") < 7.0,
+    "5.6x lives at ~33 km",
+  );
   assert.ok(
     ratio(10, "z") > 1e9,
     "…and understates the 10 km case by >8 orders of magnitude",
@@ -284,7 +292,10 @@ test("S4 deferred limit: differential extinction across the disc, measured", asy
   let prev = 0;
   for (let h = 60; h >= 0; h -= 2) {
     const v = ratio(h, "z");
-    assert.ok(v >= prev, `disc grading must increase as the sun sinks (${h} km)`);
+    assert.ok(
+      v >= prev,
+      `disc grading must increase as the sun sinks (${h} km)`,
+    );
     prev = v;
   }
 });

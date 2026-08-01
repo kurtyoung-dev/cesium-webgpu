@@ -141,15 +141,20 @@ function launch() {
 }
 
 async function newViewerPage(browser, rendererArg, setup) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 640 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 640 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
   });
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
   await page.evaluate(
     async ({ setup, hide }) => {
@@ -258,7 +263,10 @@ const f2 = (n) => (n >= 0 ? "+" : "") + n.toFixed(2);
     console.log(`\n[diag-belowsurface] scenario: ${scenario.name}`);
     // WebGL reference (no debug mode — the sentinels are WebGPU-only).
     const gl = await newViewerPage(browser, "webgl", scenario.setup);
-    const glPng = await shot(gl.page, `diag-belowsurface-${scenario.name}-webgl.png`);
+    const glPng = await shot(
+      gl.page,
+      `diag-belowsurface-${scenario.name}-webgl.png`,
+    );
     await gl.page.close();
 
     // One WebGPU page; all variants captured from the same tile state.
@@ -314,7 +322,9 @@ const f2 = (n) => (n >= 0 ? "+" : "") + n.toFixed(2);
       const own = r.vsControl;
       console.log(
         `  ${variant.padEnd(22)}` +
-          `${f2(own.dR)}/${f2(own.dG)}/${f2(own.dB)} (${own.mismatchPct.toFixed(2)}%px)`.padEnd(28) +
+          `${f2(own.dR)}/${f2(own.dG)}/${f2(own.dB)} (${own.mismatchPct.toFixed(2)}%px)`.padEnd(
+            28,
+          ) +
           `${r.vsGL.mismatchPct.toFixed(2).padStart(7)}%   ${f2(towardGL)}`,
       );
       rows[variant].towardGL = towardGL;
@@ -337,7 +347,9 @@ const f2 = (n) => (n >= 0 ? "+" : "") + n.toFixed(2);
     for (const term of scenario.mustMove) {
       const moved = rows[term].vsControl.mismatchPct > 0.05;
       if (!moved) {
-        console.log(`  DEAD BYPASS: ${term} moved no pixels in ${scenario.name}`);
+        console.log(
+          `  DEAD BYPASS: ${term} moved no pixels in ${scenario.name}`,
+        );
         instrumentationDead = true;
       }
     }
@@ -355,7 +367,9 @@ const f2 = (n) => (n >= 0 ? "+" : "") + n.toFixed(2);
     }
   }
   const overall = Object.entries(totals).sort((a, b) => b[1] - a[1]);
-  console.log("\n[diag-belowsurface] summed toward-GL attribution (all scenarios):");
+  console.log(
+    "\n[diag-belowsurface] summed toward-GL attribution (all scenarios):",
+  );
   for (const [variant, t] of overall) {
     console.log(`  ${variant.padEnd(22)} ${f2(t)}`);
   }

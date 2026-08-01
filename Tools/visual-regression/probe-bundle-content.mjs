@@ -3,7 +3,8 @@
 
 import { chromium } from "playwright";
 
-const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
 
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
 const ctx = await browser.newContext({

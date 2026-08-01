@@ -21,7 +21,9 @@ async function run(renderer, fs) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -47,11 +49,14 @@ async function run(renderer, fs) {
       // Moderate coverage frames distinct clouds against the sky. NB: high
       // coverage (≥0.8) + a camera INSIDE the 1500-4000m layer white-outs the
       // sky (physically a fog-out, not a bug — confirmed by the coverage sweep).
-      if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.5;
-      if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+      if ("cloudCoverage" in g)
+        g.defaultCloudCollection.volumetric.cloudCoverage = 0.5;
+      if ("cloudDensity" in g)
+        g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
       info.cloudCoverage = g.defaultCloudCollection.volumetric.cloudCoverage;
       info.cloudDensity = g.defaultCloudCollection.volumetric.cloudDensity;
-      info.cloudLayerBottom = g.defaultCloudCollection.volumetric.cloudLayerBottom;
+      info.cloudLayerBottom =
+        g.defaultCloudCollection.volumetric.cloudLayerBottom;
       info.cloudLayerTop = g.defaultCloudCollection.volumetric.cloudLayerTop;
     } catch (e) {
       info.enableErr = e.message;
@@ -117,7 +122,10 @@ async function run(renderer, fs) {
     buf,
   );
   await browser.close();
-  return { res, errs: errs.filter((e) => !/AtmosphereLUT|default layout/.test(e)) };
+  return {
+    res,
+    errs: errs.filter((e) => !/AtmosphereLUT|default layout/.test(e)),
+  };
 }
 
 const fs = await import("fs");

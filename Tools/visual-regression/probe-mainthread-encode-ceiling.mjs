@@ -86,7 +86,9 @@ const browser = await chromium.launch({
 });
 
 async function runBackend(renderer) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -142,7 +144,10 @@ async function runBackend(renderer) {
           for (let cc = 0; cc < side && added < count; cc++) {
             const lon = LON0 - SPAN / 2 + (SPAN * cc) / (side - 1);
             const lat = LAT0 - SPAN / 2 + (SPAN * r) / (side - 1);
-            collection.add({ position: C.Cartesian3.fromDegrees(lon, lat, ALT) }, tmp);
+            collection.add(
+              { position: C.Cartesian3.fromDegrees(lon, lat, ALT) },
+              tmp,
+            );
             collection.get(added, tmp);
             tmp.setMaterial(mat);
             added++;
@@ -196,7 +201,8 @@ async function runBackend(renderer) {
             let cyan = 0;
             for (let p = 0; p < c.width * c.height; p++) {
               const i = 4 * p;
-              if (data[i] < 120 && data[i + 1] > 140 && data[i + 2] > 140) cyan++;
+              if (data[i] < 120 && data[i + 1] > 140 && data[i + 2] > 140)
+                cyan++;
             }
             resolve({ cyan, png: off.toDataURL("image/png") });
           });

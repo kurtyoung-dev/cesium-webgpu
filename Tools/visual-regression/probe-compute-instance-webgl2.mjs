@@ -172,8 +172,7 @@ async function runBackend(renderer) {
             });
           });
         });
-      const isMagenta = (d, i) =>
-        d[i] > 150 && d[i + 2] > 150 && d[i + 1] < 90;
+      const isMagenta = (d, i) => d[i] > 150 && d[i + 2] > 150 && d[i + 1] < 90;
       const analyze = (img) => {
         let count = 0;
         let sx = 0;
@@ -263,8 +262,12 @@ console.log(
 console.log(
   `(D) console/validation errors: webgl=${webgl.errors.length} webgpu=${webgpu.errors.length} ${dOK ? "OK" : "FAIL"}`,
 );
-webgl.errors.slice(0, 5).forEach((e) => console.log("  WEBGL ERR:", e.slice(0, 220)));
-webgpu.errors.slice(0, 5).forEach((e) => console.log("  WEBGPU ERR:", e.slice(0, 220)));
+webgl.errors
+  .slice(0, 5)
+  .forEach((e) => console.log("  WEBGL ERR:", e.slice(0, 220)));
+webgpu.errors
+  .slice(0, 5)
+  .forEach((e) => console.log("  WEBGPU ERR:", e.slice(0, 220)));
 
 const pass = aOK && bOK && pathOK && cOK && dOK;
 console.log(pass ? "PASS" : "FAIL");

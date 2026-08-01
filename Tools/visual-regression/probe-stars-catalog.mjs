@@ -219,7 +219,10 @@ async function runBackend(renderer) {
       const n = img.w * img.h;
       for (let p = 0; p < n; p++) {
         const i = 4 * p;
-        const l = 0.2126 * img.data[i] + 0.7152 * img.data[i + 1] + 0.0722 * img.data[i + 2];
+        const l =
+          0.2126 * img.data[i] +
+          0.7152 * img.data[i + 1] +
+          0.0722 * img.data[i + 2];
         if (l > mx) mx = l;
         if (l > 4) nonBlack++;
       }
@@ -230,7 +233,7 @@ async function runBackend(renderer) {
     const brightDiag = maxLumOf(imgBright);
 
     // Pull the FR statistics (star count, pipeline ready).
-    let stats = null;
+    let stats;
     try {
       stats = scene.skyBox.starField.getDebugStatistics(scene.frameState);
     } catch (e) {
@@ -339,7 +342,9 @@ console.log(
   `(B/C) Sirius-aimed center cluster >> blank-aimed: ${bcOK ? "OK" : "FAIL"}`,
 );
 console.log(`(D) higher intensity grows bright count: ${dOK ? "OK" : "FAIL"}`);
-console.log(`(E) starField hook present (cubemap intact): ${eOK ? "OK" : "FAIL"}`);
+console.log(
+  `(E) starField hook present (cubemap intact): ${eOK ? "OK" : "FAIL"}`,
+);
 console.log(`(F) zero console errors: ${fOK ? "OK" : "FAIL"}`);
 console.log(`PNGs: ${OUT_DIR}`);
 

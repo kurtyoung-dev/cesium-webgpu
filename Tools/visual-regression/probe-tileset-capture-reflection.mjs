@@ -46,7 +46,9 @@ async function run(captureOn) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
   page.on("pageerror", (e) =>
@@ -349,15 +351,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  console.log("[tileset-capture] capturing with flags OFF (buildings absent from faces)…");
+  console.log(
+    "[tileset-capture] capturing with flags OFF (buildings absent from faces)…",
+  );
   const off = await run(false);
-  console.log("[tileset-capture] capturing with flags ON (buildings in faces)…");
+  console.log(
+    "[tileset-capture] capturing with flags ON (buildings in faces)…",
+  );
   const on = await run(true);
 
   const printFaces = (label, r) => {
     console.log(`\n  === ${label} ===`);
     if (r.report.error) {
-      console.log("  ERROR:", r.report.error, JSON.stringify(r.report.diag || {}));
+      console.log(
+        "  ERROR:",
+        r.report.error,
+        JSON.stringify(r.report.diag || {}),
+      );
       return;
     }
     console.log(

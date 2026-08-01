@@ -13,7 +13,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage();
   page.on("pageerror", () => {});
@@ -37,7 +41,8 @@ const BASE = "http://localhost:8080";
       fabric: {
         type: "NormalMap",
         uniforms: {
-          image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgAAIAAAUAAen63NgAAAAASUVORK5CYII=",
+          image:
+            "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgAAIAAAUAAen63NgAAAAASUVORK5CYII=",
           strength: 1.0,
           repeat: { x: 1, y: 1 },
         },
@@ -49,7 +54,9 @@ const BASE = "http://localhost:8080";
         label,
         type: m.type,
         uniformsKeys: Object.keys(m.uniforms),
-        templateUniformsKeys: m._template?.uniforms ? Object.keys(m._template.uniforms) : null,
+        templateUniformsKeys: m._template?.uniforms
+          ? Object.keys(m._template.uniforms)
+          : null,
         templateChannels: m._template?.uniforms?.channels,
         bufferByteLength: m._uniformBuffer?.gpuData?.byteLength,
         bufferTotalFloats: m._uniformBuffer?._totalFloats,
@@ -63,7 +70,13 @@ const BASE = "http://localhost:8080";
           : null,
         // Show actual byte values to check what the shader will read
         gpuDataFloats: m._uniformBuffer?.gpuData
-          ? Array.from(new Float32Array(m._uniformBuffer.gpuData.buffer, m._uniformBuffer.gpuData.byteOffset, m._uniformBuffer.gpuData.byteLength / 4))
+          ? Array.from(
+              new Float32Array(
+                m._uniformBuffer.gpuData.buffer,
+                m._uniformBuffer.gpuData.byteOffset,
+                m._uniformBuffer.gpuData.byteLength / 4,
+              ),
+            )
           : null,
       };
     }

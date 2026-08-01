@@ -28,8 +28,7 @@ import path from "path";
 
 const BASE = "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
-const MODEL_URL =
-  "/Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb";
+const MODEL_URL = "/Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb";
 
 async function run(captureOn) {
   const browser = await chromium.launch({
@@ -42,7 +41,9 @@ async function run(captureOn) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
   page.on("pageerror", (e) =>
@@ -325,7 +326,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  console.log("[model-capture-on] capturing with flags OFF (model absent from faces)…");
+  console.log(
+    "[model-capture-on] capturing with flags OFF (model absent from faces)…",
+  );
   const off = await run(false);
   console.log("[model-capture-on] capturing with flags ON (model in faces)…");
   const on = await run(true);
@@ -333,7 +336,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   const printFaces = (label, r) => {
     console.log(`\n  === ${label} ===`);
     if (r.report.error) {
-      console.log("  ERROR:", r.report.error, JSON.stringify(r.report.diag || {}));
+      console.log(
+        "  ERROR:",
+        r.report.error,
+        JSON.stringify(r.report.diag || {}),
+      );
       return;
     }
     console.log(
@@ -358,9 +365,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   const onBright = on.report.totalModelPixels ?? 0;
   const offBright = off.report.totalModelPixels ?? 0;
   const noValidationErr =
-    on.errs.filter(
-      (e) =>
-        /color.?target|fragment output|validation|MRT|attachment/i.test(e.text),
+    on.errs.filter((e) =>
+      /color.?target|fragment output|validation|MRT|attachment/i.test(e.text),
     ).length === 0;
   const ok =
     !on.report.error &&

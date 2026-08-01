@@ -352,7 +352,7 @@ async function capture(webgpuOptions, label) {
   }, Buffer.from(png).toString("base64"));
 
   await browser.close();
-  let radStats = null;
+  let radStats;
   try {
     radStats = info.radStatsJson ? JSON.parse(info.radStatsJson) : null;
   } catch {
@@ -529,7 +529,11 @@ function diff(a, b) {
         mm++;
     }
   }
-  return { modelPx: n, mismatch: mm, mismatchPct: n ? +((100 * mm) / n).toFixed(2) : null };
+  return {
+    modelPx: n,
+    mismatch: mm,
+    mismatchPct: n ? +((100 * mm) / n).toFixed(2) : null,
+  };
 }
 
 const report = {
@@ -635,7 +639,9 @@ console.log(
     radiance_mip4_fireflies_parity_informational: haveRad
       ? rp.mip4.fireflies
       : null,
-    radiance_mip4_fireflies_hq_informational: haveRad ? rh.mip4.fireflies : null,
+    radiance_mip4_fireflies_hq_informational: haveRad
+      ? rh.mip4.fireflies
+      : null,
     hdrPeakHigher,
     hdrPeakExceedsOne,
     hqRadianceDiffers,

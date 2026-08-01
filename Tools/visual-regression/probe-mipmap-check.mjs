@@ -10,22 +10,33 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   page.on("console", (m) => {
     const t = m.type();
     if (t === "error") console.log(`  ${t}: ${m.text()}`);
   });
   page.on("pageerror", (e) => console.log(`  pageerror: ${e.message}`));
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
+    waitUntil: "networkidle",
+  });
   await page.waitForFunction(() => !!window.viewer);
 
   await page.evaluate(async () => {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
-    v.camera.setView({ destination: C.Cartesian3.fromDegrees(-100, 40, 20_000_000) });
+    v.camera.setView({
+      destination: C.Cartesian3.fromDegrees(-100, 40, 20_000_000),
+    });
     for (let i = 0; i < 600; i++) {
       v.scene.render();
       await new Promise((r) => requestAnimationFrame(r));

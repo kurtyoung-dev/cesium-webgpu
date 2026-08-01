@@ -42,7 +42,8 @@ const CONSOLE_RE = new RegExp(
   `\\bconsole\\.(?:${FLAGGED_METHODS.join("|")})\\s*\\(`,
 );
 
-const PRAGMA_START_RE = /\/\/>>includeStart\(\s*['"]debug['"]\s*,\s*pragmas\.debug\s*\)/;
+const PRAGMA_START_RE =
+  /\/\/>>includeStart\(\s*['"]debug['"]\s*,\s*pragmas\.debug\s*\)/;
 const PRAGMA_END_RE = /\/\/>>includeEnd\(\s*['"]debug['"]\s*\)/;
 
 async function collectFiles(dir) {
@@ -133,21 +134,19 @@ async function main() {
         2,
       )}\n`,
     );
+  } else if (allOffenders.length === 0) {
+    console.log(
+      `lint-debug-pragmas: clean — ${files.length} files scanned, no unguarded debug console calls.`,
+    );
   } else {
-    if (allOffenders.length === 0) {
-      console.log(
-        `lint-debug-pragmas: clean — ${files.length} files scanned, no unguarded debug console calls.`,
-      );
-    } else {
-      console.log(
-        `lint-debug-pragmas: ${allOffenders.length} unguarded debug console call(s) found in ${files.length} files scanned.`,
-      );
-      console.log(
-        "(per-frame/init/informational logs must be wrapped in //>>includeStart('debug', pragmas.debug) ... //>>includeEnd('debug'))\n",
-      );
-      for (const o of allOffenders) {
-        console.log(`${o.file}:${o.line}  ${o.text}`);
-      }
+    console.log(
+      `lint-debug-pragmas: ${allOffenders.length} unguarded debug console call(s) found in ${files.length} files scanned.`,
+    );
+    console.log(
+      "(per-frame/init/informational logs must be wrapped in //>>includeStart('debug', pragmas.debug) ... //>>includeEnd('debug'))\n",
+    );
+    for (const o of allOffenders) {
+      console.log(`${o.file}:${o.line}  ${o.text}`);
     }
   }
 

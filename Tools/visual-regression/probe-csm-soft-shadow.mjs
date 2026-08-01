@@ -138,10 +138,14 @@ async function capture(label, { renderer, useCsm, csmSoft, webglSoft }) {
       // shadow is long under the low afternoon sun. East-facing edge of
       // the shadow runs roughly N-S → vertical-ish boundary in screen.
       const wallCoords = C.Cartesian3.fromDegreesArray([
-        view.lon - 0.0004, view.lat - 0.0030,
-        view.lon + 0.0004, view.lat - 0.0030,
-        view.lon + 0.0004, view.lat + 0.0030,
-        view.lon - 0.0004, view.lat + 0.0030,
+        view.lon - 0.0004,
+        view.lat - 0.003,
+        view.lon + 0.0004,
+        view.lat - 0.003,
+        view.lon + 0.0004,
+        view.lat + 0.003,
+        view.lon - 0.0004,
+        view.lat + 0.003,
       ]);
       // FLAT appearance (no diffuse lighting) is REQUIRED for this probe.
       // The metric counts ROI pixels whose luminance sits in the penumbra
@@ -250,11 +254,9 @@ async function capture(label, { renderer, useCsm, csmSoft, webglSoft }) {
         useCsm: v.scene.useCascadedShadowMaps,
         csmSoft: v.scene.cascadedShadowMapSoftShadows,
         webglSoft: v.scene.shadowMap?.softShadows,
-        csmEnabledOnContext:
-          v.scene.context?.csmRenderer?.enabled === true,
+        csmEnabledOnContext: v.scene.context?.csmRenderer?.enabled === true,
         csmPcfRadius: v.scene.context?.csmRenderer?.pcfRadius ?? null,
-        csmSoftShadowsGetter:
-          v.scene.context?.csmRenderer?.softShadows ?? null,
+        csmSoftShadowsGetter: v.scene.context?.csmRenderer?.softShadows ?? null,
         tilesLoaded: v.scene.globe.tilesLoaded,
         primitives: v.scene.primitives.length,
         canvas: { w: W, h: H },
@@ -467,7 +469,9 @@ async function diffPngsMasked(a, b, roi) {
   console.log(
     `  B.perEdge/C.perEdge=${ratioVsWebGL.toFixed(2)} in [0.25, 4.0] → WebGL softness parity ballpark: ${parityBallpark ? "PASS" : "FAIL"}`,
   );
-  console.log(`  total device errors=${errAll} → ${errAll === 0 ? "PASS" : "FAIL"}`);
+  console.log(
+    `  total device errors=${errAll} → ${errAll === 0 ? "PASS" : "FAIL"}`,
+  );
 
   const pass =
     pcfChangesOutput &&

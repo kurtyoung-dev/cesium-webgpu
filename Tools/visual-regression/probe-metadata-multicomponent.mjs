@@ -99,7 +99,11 @@ async function capture(label, { metadataDebug }) {
 
       const scale = 12.0;
       const modelHeight = 400;
-      const modelPos = C.Cartesian3.fromDegrees(view.lon, view.lat, modelHeight);
+      const modelPos = C.Cartesian3.fromDegrees(
+        view.lon,
+        view.lat,
+        modelHeight,
+      );
       const orientation = C.Transforms.headingPitchRollQuaternion(
         modelPos,
         new C.HeadingPitchRoll(0, 0, 0),
@@ -192,10 +196,11 @@ async function capture(label, { metadataDebug }) {
                   inspect.wgslVec3Field = /faceColor:\s*vec3<f32>/.test(w);
                   inspect.wgslXyzSwizzle =
                     /metadata\.faceColor\s*=\s*metadataValue\.xyz/.test(w);
-                  inspect.wgslHasDebugColor = /fn\s+metadataDebugColor\b/.test(w);
-                  inspect.wgslHasDebugScalar = /fn\s+metadataDebugScalar\b/.test(
+                  inspect.wgslHasDebugColor = /fn\s+metadataDebugColor\b/.test(
                     w,
                   );
+                  inspect.wgslHasDebugScalar =
+                    /fn\s+metadataDebugScalar\b/.test(w);
                 }
               }
               if (bit) break;
@@ -331,7 +336,9 @@ async function capture(label, { metadataDebug }) {
       .forEach((e) => console.log(`      device: ${e.text?.slice(0, 200)}`));
     pageErrors
       .slice(0, 2)
-      .forEach((e) => console.log(`      pageerror: ${(e.text ?? "").slice(0, 200)}`));
+      .forEach((e) =>
+        console.log(`      pageerror: ${(e.text ?? "").slice(0, 200)}`),
+      );
     consoleErrs
       .slice(0, 3)
       .forEach((e) =>

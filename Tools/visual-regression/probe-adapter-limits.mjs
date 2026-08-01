@@ -9,15 +9,32 @@ const BASE = "http://localhost:8080";
 
 const configs = [
   { label: "default (DXGI on Windows)", args: ["--enable-unsafe-webgpu"] },
-  { label: "explicit Vulkan", args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"] },
-  { label: "high-performance preference", args: ["--enable-unsafe-webgpu"], powerPreference: "high-performance" },
+  {
+    label: "explicit Vulkan",
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
+  },
+  {
+    label: "high-performance preference",
+    args: ["--enable-unsafe-webgpu"],
+    powerPreference: "high-performance",
+  },
 ];
 
 for (const cfg of configs) {
-  const browser = await chromium.launch({ channel: "msedge", headless: true, args: cfg.args });
+  const browser = await chromium.launch({
+    channel: "msedge",
+    headless: true,
+    args: cfg.args,
+  });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "networkidle", timeout: 90_000,
+    waitUntil: "networkidle",
+    timeout: 90_000,
   });
   await page.waitForFunction(() => !!window.viewer, { timeout: 90_000 });
 
@@ -34,12 +51,16 @@ for (const cfg of configs) {
       },
       keyLimits: {
         maxBindGroups: adapter.limits.maxBindGroups,
-        maxBindGroupsPlusVertexBuffers: adapter.limits.maxBindGroupsPlusVertexBuffers,
+        maxBindGroupsPlusVertexBuffers:
+          adapter.limits.maxBindGroupsPlusVertexBuffers,
         maxBindingsPerBindGroup: adapter.limits.maxBindingsPerBindGroup,
-        maxSampledTexturesPerShaderStage: adapter.limits.maxSampledTexturesPerShaderStage,
+        maxSampledTexturesPerShaderStage:
+          adapter.limits.maxSampledTexturesPerShaderStage,
         maxSamplersPerShaderStage: adapter.limits.maxSamplersPerShaderStage,
-        maxStorageBuffersPerShaderStage: adapter.limits.maxStorageBuffersPerShaderStage,
-        maxUniformBuffersPerShaderStage: adapter.limits.maxUniformBuffersPerShaderStage,
+        maxStorageBuffersPerShaderStage:
+          adapter.limits.maxStorageBuffersPerShaderStage,
+        maxUniformBuffersPerShaderStage:
+          adapter.limits.maxUniformBuffersPerShaderStage,
         maxVertexBuffers: adapter.limits.maxVertexBuffers,
       },
     };

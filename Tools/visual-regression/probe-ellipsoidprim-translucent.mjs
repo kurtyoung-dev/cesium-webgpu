@@ -54,7 +54,9 @@ const browser = await chromium.launch({
 // the WebGL leg keeps the globe ON with a dark baseColor (well below the green
 // threshold) to give the shell a depth context.
 async function measureShell(renderer, alpha, globeOn) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 700 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 700 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -183,7 +185,9 @@ const check = (label, pass, detail) => {
 const webglOpaque = await measureShell("webgl", 1.0, true);
 check(
   "a",
-  webglOpaque.count > 2000 && webglOpaque.meanG > 60 && webglOpaque.errors.length === 0,
+  webglOpaque.count > 2000 &&
+    webglOpaque.meanG > 60 &&
+    webglOpaque.errors.length === 0,
   `WebGL EllipsoidPrimitive renders post-hoist: shellPx=${webglOpaque.count} meanG=${webglOpaque.meanG.toFixed(1)} errors=${webglOpaque.errors.length}`,
 );
 
@@ -194,7 +198,9 @@ const webgpuTrans = await measureShell("webgpu", 0.5, false);
 
 check(
   "b1",
-  webgpuOpaque.count > 2000 && webgpuOpaque.meanG > 60 && webgpuOpaque.errors.length === 0,
+  webgpuOpaque.count > 2000 &&
+    webgpuOpaque.meanG > 60 &&
+    webgpuOpaque.errors.length === 0,
   `WebGPU opaque shell reference: shellPx=${webgpuOpaque.count} meanG=${webgpuOpaque.meanG.toFixed(1)} errors=${webgpuOpaque.errors.length}`,
 );
 check(
@@ -206,7 +212,8 @@ check(
 // Ratio translucent/opaque: single blend ~0.5, double blend ~0.75. Midpoint
 // 0.62 is the discriminator. Pre-fix (cullMode none) this is ~0.75 → FAIL;
 // post-fix (cullMode back) ~0.5 → PASS.
-const ratio = webgpuOpaque.meanG > 0 ? webgpuTrans.meanG / webgpuOpaque.meanG : 0;
+const ratio =
+  webgpuOpaque.meanG > 0 ? webgpuTrans.meanG / webgpuOpaque.meanG : 0;
 check(
   "b3",
   ratio > 0.34 && ratio < 0.62,

@@ -71,7 +71,10 @@ async function pickSunTime(page, targetElevDeg) {
             t,
             new C.Cartesian3(),
           );
-        const toFixed = C.Transforms.computeIcrfToFixedMatrix(t, new C.Matrix3());
+        const toFixed = C.Transforms.computeIcrfToFixedMatrix(
+          t,
+          new C.Matrix3(),
+        );
         const sunFixed = toFixed
           ? C.Matrix3.multiplyByVector(toFixed, sunICRF, new C.Cartesian3())
           : sunICRF;
@@ -107,7 +110,7 @@ async function aimAtSun(page, iso, fovDeg) {
       const up = C.Cartesian3.normalize(camPos, new C.Cartesian3());
 
       const sunDirWC = s.context.uniformState.sunDirectionWC;
-      let sunDir = C.Cartesian3.normalize(sunDirWC, new C.Cartesian3());
+      const sunDir = C.Cartesian3.normalize(sunDirWC, new C.Cartesian3());
       const sunUpDot = C.Cartesian3.dot(sunDir, up);
       let horiz = C.Cartesian3.subtract(
         sunDir,
@@ -128,13 +131,24 @@ async function aimAtSun(page, iso, fovDeg) {
       const sunElevDeg = C.Math.toDegrees(Math.asin(Math.min(1, sunUpDot)));
       const aimElevRad = C.Math.toRadians(Math.max(2.0, sunElevDeg) + 18.0);
       const dir = C.Cartesian3.add(
-        C.Cartesian3.multiplyByScalar(horiz, Math.cos(aimElevRad), new C.Cartesian3()),
-        C.Cartesian3.multiplyByScalar(up, Math.sin(aimElevRad), new C.Cartesian3()),
+        C.Cartesian3.multiplyByScalar(
+          horiz,
+          Math.cos(aimElevRad),
+          new C.Cartesian3(),
+        ),
+        C.Cartesian3.multiplyByScalar(
+          up,
+          Math.sin(aimElevRad),
+          new C.Cartesian3(),
+        ),
         new C.Cartesian3(),
       );
       C.Cartesian3.normalize(dir, dir);
 
-      v.camera.setView({ destination: camPos, orientation: { direction: dir, up } });
+      v.camera.setView({
+        destination: camPos,
+        orientation: { direction: dir, up },
+      });
       if (fov) s.camera.frustum.fov = C.Math.toRadians(fov);
       s.render();
 
@@ -222,7 +236,11 @@ function analyzeRadial(page, offDU, onDU, sunXY) {
           profile[i] >= profile[i - 1] &&
           profile[i] >= profile[i + 1]
         ) {
-          peaks.push({ bin: i, px: Math.round(i * binW), val: +profile[i].toFixed(2) });
+          peaks.push({
+            bin: i,
+            px: Math.round(i * binW),
+            val: +profile[i].toFixed(2),
+          });
         }
       }
       // Merge peaks that are within 3 bins (same ring).
@@ -299,7 +317,8 @@ function analyzePillar(page, offDU, onDU, sunXY) {
       for (let dy = NEAR; dy <= FAR; dy++) {
         for (const sgn of [-1, 1]) {
           let strip = 0;
-          for (let dx = -HALF; dx <= HALF; dx++) strip += lumAdd(cx + dx, cy + sgn * dy);
+          for (let dx = -HALF; dx <= HALF; dx++)
+            strip += lumAdd(cx + dx, cy + sgn * dy);
           const m = strip / (2 * HALF + 1);
           if (m > 6) {
             vSum += m;
@@ -313,7 +332,8 @@ function analyzePillar(page, offDU, onDU, sunXY) {
       for (let dx = NEAR; dx <= FAR; dx++) {
         for (const sgn of [-1, 1]) {
           let strip = 0;
-          for (let dy = -HALF; dy <= HALF; dy++) strip += lumAdd(cx + sgn * dx, cy + dy);
+          for (let dy = -HALF; dy <= HALF; dy++)
+            strip += lumAdd(cx + sgn * dx, cy + dy);
           const m = strip / (2 * HALF + 1);
           if (m > 6) {
             hSum += m;
@@ -339,15 +359,25 @@ async function run() {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
   await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   // Helper: set the clock to an ISO, then wait for real RAF frames so the
@@ -371,9 +401,13 @@ async function run() {
   const setupA = await aimAtSun(page, isoA, 100.0);
   console.log("[hq] setup A (high sun, wide FOV):", JSON.stringify(setupA));
   await page
-    .waitForFunction(() => window.viewer.scene.globe.tilesLoaded === true, null, {
-      timeout: 20000,
-    })
+    .waitForFunction(
+      () => window.viewer.scene.globe.tilesLoaded === true,
+      null,
+      {
+        timeout: 20000,
+      },
+    )
     .catch(() => {});
   await page.waitForTimeout(1200);
 
@@ -395,11 +429,14 @@ async function run() {
   const advA = await shot(page, "cold-optics-hq-advanced-webgpu");
 
   const radial = await analyzeRadial(page, legacyA, advA, setupA.sunWindow);
-  console.log("[hq] radial (advanced - legacy):", JSON.stringify({
-    binW: radial.binW,
-    peaks: radial.peaks,
-    leanAtPeaks: radial.leanAtPeaks,
-  }));
+  console.log(
+    "[hq] radial (advanced - legacy):",
+    JSON.stringify({
+      binW: radial.binW,
+      peaks: radial.peaks,
+      leanAtPeaks: radial.leanAtPeaks,
+    }),
+  );
   // Ratio of the two largest-radius peaks (expect ~46/22 ~ 2.09).
   if (radial.peaks.length >= 2) {
     const sorted = [...radial.peaks].sort((a, b) => a.px - b.px);
@@ -430,15 +467,21 @@ async function run() {
   const advB = await shot(page, "cold-optics-hq-lowsun-advanced-webgpu");
 
   const pillar = await analyzePillar(page, legacyB, advB, setupB.sunWindow);
-  console.log("[hq] pillar (advanced - legacy, low sun):", JSON.stringify(pillar));
+  console.log(
+    "[hq] pillar (advanced - legacy, low sun):",
+    JSON.stringify(pillar),
+  );
 
   const gate = await collectGateErrors(page);
-  const errCount = gate.errors.length + (gate.deviceLost ? 1 : 0) + consoleErrors.length;
+  const errCount =
+    gate.errors.length + (gate.deviceLost ? 1 : 0) + consoleErrors.length;
   console.log(
     `[hq] gate errors=${gate.errors.length} deviceLost=${gate.deviceLost} consoleFaults=${consoleErrors.length}`,
   );
-  if (gate.errors.length) console.log(JSON.stringify(gate.errors.slice(0, 8), null, 2));
-  if (consoleErrors.length) consoleErrors.slice(0, 8).forEach((e) => console.log("  console:", e));
+  if (gate.errors.length)
+    console.log(JSON.stringify(gate.errors.slice(0, 8), null, 2));
+  if (consoleErrors.length)
+    consoleErrors.slice(0, 8).forEach((e) => console.log("  console:", e));
 
   await browser.close();
 
@@ -447,7 +490,9 @@ async function run() {
   const pillarTall = pillar.aspect >= 1.8 && pillar.verticalExtentPx >= 20;
   console.log("\n==== COLD-OPTICS-HQ VERDICT ====");
   console.log(`two distinct halos: ${twoHalos} (${radial.peaks.length} peaks)`);
-  console.log(`pillar tall+narrow: ${pillarTall} (aspect ${pillar.aspect}, vExtent ${pillar.verticalExtentPx}px)`);
+  console.log(
+    `pillar tall+narrow: ${pillarTall} (aspect ${pillar.aspect}, vExtent ${pillar.verticalExtentPx}px)`,
+  );
   console.log(`device errors: ${errCount}`);
   process.exit(errCount === 0 ? 0 : 1);
 }

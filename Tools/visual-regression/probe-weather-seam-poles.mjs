@@ -46,7 +46,9 @@ const browser = await chromium.launch({
 try {
   // --- WebGL load sanity ---------------------------------------------------
   {
-    const page = await browser.newPage({ viewport: { width: 640, height: 480 } });
+    const page = await browser.newPage({
+      viewport: { width: 640, height: 480 },
+    });
     const errs = [];
     page.on("console", (m) => m.type() === "error" && errs.push(m.text()));
     page.on("pageerror", (e) => errs.push("PE:" + e.message));
@@ -64,7 +66,9 @@ try {
   }
 
   // --- WebGPU pixel lanes --------------------------------------------------
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   page.on("console", (m) => m.type() === "error" && errs.push(m.text()));
   page.on("pageerror", (e) => errs.push("PE:" + e.message));
@@ -179,7 +183,11 @@ try {
               rr = Math.sqrt(dx * dx + dy * dy);
             if (rr < r0 || rr > r1) continue;
             const k =
-              (Math.floor(((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI)) * 12) + 12) % 12;
+              (Math.floor(
+                ((Math.atan2(dy, dx) + Math.PI) / (2 * Math.PI)) * 12,
+              ) +
+                12) %
+              12;
             secSum[k] += lum(x, y);
             secN[k]++;
           }

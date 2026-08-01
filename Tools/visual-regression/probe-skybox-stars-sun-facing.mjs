@@ -27,9 +27,15 @@ async function capture(rendererArg) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
 
@@ -62,7 +68,8 @@ async function capture(rendererArg) {
     s.render();
 
     // Sun position in world (WGS84) coords for the pinned time.
-    const sunPos = s.context.uniformState.sunPositionWC || s.sun?._boundingVolume?.center;
+    const sunPos =
+      s.context.uniformState.sunPositionWC || s.sun?._boundingVolume?.center;
     // Fall back to the well-known Simon1994 sun direction via UniformState.
     let dir;
     if (sunPos) {
@@ -73,7 +80,11 @@ async function capture(rendererArg) {
     // Place the camera on the OPPOSITE side of the sun direction, far out,
     // and aim back toward the sun so the sun disc sits roughly centre-frame
     // against the star field (Earth not necessarily in view).
-    const camPos = C.Cartesian3.multiplyByScalar(dir, -1.0e8, new C.Cartesian3());
+    const camPos = C.Cartesian3.multiplyByScalar(
+      dir,
+      -1.0e8,
+      new C.Cartesian3(),
+    );
     v.camera.setView({
       destination: camPos,
       orientation: {
@@ -90,7 +101,9 @@ async function capture(rendererArg) {
     return {
       renderer: s.context.rendererType,
       sunShow: !!(s.sun && s.sun.show),
-      sunDir: dir ? [dir.x.toFixed(3), dir.y.toFixed(3), dir.z.toFixed(3)] : null,
+      sunDir: dir
+        ? [dir.x.toFixed(3), dir.y.toFixed(3), dir.z.toFixed(3)]
+        : null,
       hadSunPos: !!sunPos,
     };
   });
@@ -112,22 +125,37 @@ async function brightest(pngPath) {
     const img = new Image();
     img.src = "data:image/png;base64," + b64;
     await img.decode();
-    const w = img.naturalWidth, h = img.naturalHeight;
+    const w = img.naturalWidth,
+      h = img.naturalHeight;
     const cv = document.createElement("canvas");
-    cv.width = w; cv.height = h;
+    cv.width = w;
+    cv.height = h;
     const ctx = cv.getContext("2d");
     ctx.drawImage(img, 0, 0);
     const d = ctx.getImageData(0, 0, w, h).data;
-    let bx = 0, by = 0, bv = -1, brightCount = 0;
+    let bx = 0,
+      by = 0,
+      bv = -1,
+      brightCount = 0;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = (y * w + x) * 4;
         const lum = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
         if (lum >= 240) brightCount++;
-        if (lum > bv) { bv = lum; bx = x; by = y; }
+        if (lum > bv) {
+          bv = lum;
+          bx = x;
+          by = y;
+        }
       }
     }
-    return { w, h, brightestLum: bv, brightestXY: [bx, by], nearWhiteCount: brightCount };
+    return {
+      w,
+      h,
+      brightestLum: bv,
+      brightestXY: [bx, by],
+      nearWhiteCount: brightCount,
+    };
   }, b64);
   await browser.close();
   return r;
@@ -139,7 +167,14 @@ async function brightest(pngPath) {
   const gpu = await capture("webgpu");
   const gl = await capture("webgl");
   console.log("\n-- WebGPU --", JSON.stringify(gpu.meta));
-  console.log("  gate errors:", gpu.gate.errors.length, "deviceLost:", gpu.gate.deviceLost, "console faults:", gpu.consoleErrors.length);
+  console.log(
+    "  gate errors:",
+    gpu.gate.errors.length,
+    "deviceLost:",
+    gpu.gate.deviceLost,
+    "console faults:",
+    gpu.consoleErrors.length,
+  );
   console.log("-- WebGL  --", JSON.stringify(gl.meta));
   const bg = await brightest(gpu.out);
   const bl = await brightest(gl.out);

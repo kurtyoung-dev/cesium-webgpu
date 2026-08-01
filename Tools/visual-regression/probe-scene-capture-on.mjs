@@ -45,7 +45,9 @@ const OUT_DIR = "Tools/visual-regression/output";
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
   page.on("pageerror", (e) =>
@@ -326,7 +328,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (report.error) {
     console.log("  ERROR:", report.error);
   } else {
-    console.log(`  cube: ${report.size}px ${report.format}, ${report.capturePipelineVariants}`);
+    console.log(
+      `  cube: ${report.size}px ${report.format}, ${report.capturePipelineVariants}`,
+    );
     report.faces.forEach((f) =>
       console.log(
         `  face ${f.layer} (${f.name}): meanRGB=${JSON.stringify(f.meanRGB)} lum=${f.lum} → ${f.classification}`,
@@ -337,5 +341,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     console.log(`  ${errs.length} console errors:`);
     errs.slice(0, 8).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
   }
-  console.log("  output: Tools/visual-regression/output/probe-scene-capture-on-faces.png");
+  console.log(
+    "  output: Tools/visual-regression/output/probe-scene-capture-on-faces.png",
+  );
 })();

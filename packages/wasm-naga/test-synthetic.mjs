@@ -90,16 +90,34 @@ void main() {
 `;
 
 const CASES = [
-  { name: "MINIMAL_FS (solid red fragment)", source: MINIMAL_FS, stage: "fragment" },
-  { name: "MINIMAL_VS (fullscreen triangle)", source: MINIMAL_VS, stage: "vertex" },
-  { name: "TEXTURED_FS (sampler + UBO)", source: TEXTURED_FS, stage: "fragment" },
-  { name: "COMPUTE_CS (storage buffer add-one)", source: COMPUTE_CS, stage: "compute" },
+  {
+    name: "MINIMAL_FS (solid red fragment)",
+    source: MINIMAL_FS,
+    stage: "fragment",
+  },
+  {
+    name: "MINIMAL_VS (fullscreen triangle)",
+    source: MINIMAL_VS,
+    stage: "vertex",
+  },
+  {
+    name: "TEXTURED_FS (sampler + UBO)",
+    source: TEXTURED_FS,
+    stage: "fragment",
+  },
+  {
+    name: "COMPUTE_CS (storage buffer add-one)",
+    source: COMPUTE_CS,
+    stage: "compute",
+  },
 ];
 
 function previewWgsl(wgsl, lines = 12) {
   const split = wgsl.split("\n");
   const head = split.slice(0, lines).join("\n");
-  if (split.length > lines) {return `${head  }\n    … (${split.length - lines} more lines)`;}
+  if (split.length > lines) {
+    return `${head}\n    … (${split.length - lines} more lines)`;
+  }
   return head;
 }
 
@@ -114,7 +132,7 @@ async function main() {
       console.log(`✓ ${tc.name}`);
       console.log(`  → ${wgsl.length} bytes of WGSL`);
       console.log("  preview:");
-      console.log(`    ${  previewWgsl(wgsl).replace(/\n/g, "\n    ")}`);
+      console.log(`    ${previewWgsl(wgsl).replace(/\n/g, "\n    ")}`);
       console.log();
       pass++;
     } catch (err) {

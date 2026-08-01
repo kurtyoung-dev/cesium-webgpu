@@ -30,7 +30,9 @@ async function measure(renderer) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1000, height: 1000 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 1000 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -99,8 +101,12 @@ async function measure(renderer) {
 const gl = await measure("webgl");
 const gpu = await measure("webgpu");
 
-console.log(`WebGL  HDR sky: bright(>120)=${gl.bright}  saturated=${gl.sat}  maxLum=${gl.maxL}  errors=${gl.errs.length}`);
-console.log(`WebGPU HDR sky: bright(>120)=${gpu.bright}  saturated=${gpu.sat}  maxLum=${gpu.maxL}  errors=${gpu.errs.length}`);
+console.log(
+  `WebGL  HDR sky: bright(>120)=${gl.bright}  saturated=${gl.sat}  maxLum=${gl.maxL}  errors=${gl.errs.length}`,
+);
+console.log(
+  `WebGPU HDR sky: bright(>120)=${gpu.bright}  saturated=${gpu.sat}  maxLum=${gpu.maxL}  errors=${gpu.errs.length}`,
+);
 
 // The fix: WebGPU must no longer be crushed to black. (Before: bright=0,
 // maxLum=0.) Gate generously — residual catalog-sprite brightness gap vs WebGL
@@ -117,8 +123,12 @@ console.log(`WebGPU HDR sky: bright(>120)=${gpu.bright}  saturated=${gpu.sat}  m
 const notCrushed = gpu.bright > 100 && gpu.maxL > 200;
 const tonemapEngaged = gpu.maxL <= gl.maxL + 30;
 const errorsOK = gpu.errs.length === 0 && gl.errs.length === 0;
-console.log(`WebGPU not crushed (bright>100 & maxLum>200): ${notCrushed ? "OK" : "FAIL"}`);
-console.log(`tonemap engaged (gpu maxLum ${gpu.maxL} <= gl ${gl.maxL}+30): ${tonemapEngaged ? "OK" : "FAIL"}`);
+console.log(
+  `WebGPU not crushed (bright>100 & maxLum>200): ${notCrushed ? "OK" : "FAIL"}`,
+);
+console.log(
+  `tonemap engaged (gpu maxLum ${gpu.maxL} <= gl ${gl.maxL}+30): ${tonemapEngaged ? "OK" : "FAIL"}`,
+);
 console.log(`console errors: ${errorsOK ? "OK" : "FAIL"}`);
 const pass = notCrushed && tonemapEngaged && errorsOK;
 console.log(pass ? "PASS" : "FAIL");

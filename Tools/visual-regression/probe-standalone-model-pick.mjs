@@ -94,9 +94,10 @@ async function runLeg(renderer) {
           defined: true,
           isModelPrimitive: p.primitive === model,
           hasDetailModel: !!(p.detail && p.detail.model === model),
-          primType: p.primitive && p.primitive.constructor
-            ? p.primitive.constructor.name
-            : typeof p.primitive,
+          primType:
+            p.primitive && p.primitive.constructor
+              ? p.primitive.constructor.name
+              : typeof p.primitive,
         };
       }
 
@@ -146,7 +147,9 @@ async function runLeg(renderer) {
 
   // Screenshot for visual confirmation.
   await page
-    .screenshot({ path: path.join(OUTDIR, `standalone-model-pick-${renderer}.png`) })
+    .screenshot({
+      path: path.join(OUTDIR, `standalone-model-pick-${renderer}.png`),
+    })
     .catch(() => {});
 
   await page.close();
@@ -183,23 +186,36 @@ if (webgl.fatal) failures.push(`WebGL fatal: ${webgl.fatal}`);
 if (webgpu.fatal) failures.push(`WebGPU fatal: ${webgpu.fatal}`);
 
 function hitModel(leg) {
-  return !!(leg.bestCenter && (leg.bestCenter.isModelPrimitive || leg.bestCenter.hasDetailModel));
+  return !!(
+    leg.bestCenter &&
+    (leg.bestCenter.isModelPrimitive || leg.bestCenter.hasDetailModel)
+  );
 }
 function offClean(leg) {
   // Off-model pick must NOT return the model.
-  return !(leg.offResult && (leg.offResult.isModelPrimitive || leg.offResult.hasDetailModel));
+  return !(
+    leg.offResult &&
+    (leg.offResult.isModelPrimitive || leg.offResult.hasDetailModel)
+  );
 }
 
-if (!hitModel(webgl)) failures.push("WebGL: center pick did NOT return the standalone model");
-if (!hitModel(webgpu)) failures.push("WebGPU: center pick did NOT return the standalone model");
+if (!hitModel(webgl))
+  failures.push("WebGL: center pick did NOT return the standalone model");
+if (!hitModel(webgpu))
+  failures.push("WebGPU: center pick did NOT return the standalone model");
 if (!offClean(webgl)) failures.push("WebGL: off-model pick returned the model");
-if (!offClean(webgpu)) failures.push("WebGPU: off-model pick returned the model");
-if (webgl.errors?.length) failures.push(`WebGL console errors: ${webgl.errors.length}`);
-if (webgpu.errors?.length) failures.push(`WebGPU console errors: ${webgpu.errors.length}`);
+if (!offClean(webgpu))
+  failures.push("WebGPU: off-model pick returned the model");
+if (webgl.errors?.length)
+  failures.push(`WebGL console errors: ${webgl.errors.length}`);
+if (webgpu.errors?.length)
+  failures.push(`WebGPU console errors: ${webgpu.errors.length}`);
 
 console.log("");
 if (failures.length === 0) {
-  console.log("PROBE PASS: standalone Model.fromGltfAsync picks on both backends");
+  console.log(
+    "PROBE PASS: standalone Model.fromGltfAsync picks on both backends",
+  );
   process.exit(0);
 } else {
   console.log("PROBE FAIL:");

@@ -74,13 +74,19 @@ function extract(name) {
 
 // The extracted regions declare `const shapeStatsFromPixels = ...` /
 // `function presenceOf(...)`; evaluate them and hand back the bindings.
+// eslint-disable-next-line no-new-func -- in-page snippet compiled from source text; that is the probe harness contract
 const shapeStatsFromPixels = new Function(
   `${extract("shapeStatsFromPixels")}\nreturn shapeStatsFromPixels;`,
 )();
-const presenceOf = new Function(`${extract("presenceOf")}\nreturn presenceOf;`)();
+// eslint-disable-next-line no-new-func -- in-page snippet compiled from source text; that is the probe harness contract
+const presenceOf = new Function(
+  `${extract("presenceOf")}\nreturn presenceOf;`,
+)();
+// eslint-disable-next-line no-new-func -- in-page snippet compiled from source text; that is the probe harness contract
 const evaluateNightSourceContract = new Function(
   `${extract("evaluateNightSourceContract")}\nreturn evaluateNightSourceContract;`,
 )();
+// eslint-disable-next-line no-new-func -- in-page snippet compiled from source text; that is the probe harness contract
 const starCensusFromBand = new Function(
   `${extract("starCensusFromBand")}\nreturn starCensusFromBand;`,
 )();
@@ -152,7 +158,8 @@ function buildRoi({
 }
 
 const stats = (data) => shapeStatsFromPixels(data, SIZE, SIZE, HALF, R_DEV);
-const moonPresent = (s) => presenceOf({ moonROI: s, sunROI: s, sky: null }).moon;
+const moonPresent = (s) =>
+  presenceOf({ moonROI: s, sunROI: s, sky: null }).moon;
 const sunPresent = (s) => presenceOf({ moonROI: s, sunROI: s, sky: null }).sun;
 
 // A daylight crescent: opaque disc, black except the outer ~15% on one side.
@@ -187,8 +194,14 @@ test("A2 — star field plus a bright band crossing disc AND ring reads ABSENT",
   const s = stats(buildRoi(STARFIELD_BAND));
   assert.equal(moonPresent(s), false);
   // The band raises the ring's own tail, so the threshold rises with it.
-  assert.ok(s.ringP99 >= 80, `ringP99 ${s.ringP99} should track the band level`);
-  assert.ok(s.litThreshold > 90, `litThreshold ${s.litThreshold} should clear the band`);
+  assert.ok(
+    s.ringP99 >= 80,
+    `ringP99 ${s.ringP99} should track the band level`,
+  );
+  assert.ok(
+    s.litThreshold > 90,
+    `litThreshold ${s.litThreshold} should clear the band`,
+  );
   // The decisive fact: with NO body present the band alone produces a disc/ring
   // mean step of ~+37 — comfortably past the +20 any mean- or max-based test
   // would use. Absolute luminance cannot separate this case; shape can.
@@ -196,15 +209,27 @@ test("A2 — star field plus a bright band crossing disc AND ring reads ABSENT",
     s.discMean >= s.ringMean + 20,
     `no-body mean step ${s.discMean - s.ringMean} should exceed the +20 an absolute test would use`,
   );
-  assert.ok(s.maxLitComponentPx < 200, `band pixels are not a blob: ${s.maxLitComponentPx}`);
+  assert.ok(
+    s.maxLitComponentPx < 200,
+    `band pixels are not a blob: ${s.maxLitComponentPx}`,
+  );
 });
 
 test("B — daylight crescent over the SAME star field reads PRESENT", () => {
   const s = stats(buildRoi({ ...STARFIELD, body: crescent }));
   assert.equal(moonPresent(s), true);
-  assert.ok(s.litFrac >= 0.05 && s.litFrac <= 0.15, `crescent litFrac ${s.litFrac}`);
-  assert.ok(s.maxLitComponentPx > 2000, `crescent is one blob: ${s.maxLitComponentPx}`);
-  assert.ok(s.maxLitComponentFrac >= 0.9, `and essentially all of it: ${s.maxLitComponentFrac}`);
+  assert.ok(
+    s.litFrac >= 0.05 && s.litFrac <= 0.15,
+    `crescent litFrac ${s.litFrac}`,
+  );
+  assert.ok(
+    s.maxLitComponentPx > 2000,
+    `crescent is one blob: ${s.maxLitComponentPx}`,
+  );
+  assert.ok(
+    s.maxLitComponentFrac >= 0.9,
+    `and essentially all of it: ${s.maxLitComponentFrac}`,
+  );
   // The load-bearing property: because the crescent's own disc is mostly the
   // UNLIT face occluding a bright skybox, the disc/ring MEAN step is ~1 LSB —
   // nowhere near the +20 margin a mean- or max-based test needs. Only the
@@ -261,7 +286,8 @@ test("E2 — alpha-blended sun (bright, non-saturated) over near-saturated glare
       // the 1.25-1.55r annulus down to ~181 at its outer edge. That gives the
       // ring a high P99 (the D2 trap: the bar is set by the tail) while its MEAN
       // still sits well below the disc (which is why the mean arm survives).
-      radial: (r) => 250 - 100 * Math.min(1, Math.max(0, r / R_DEV - 1.0) / 0.8),
+      radial: (r) =>
+        250 - 100 * Math.min(1, Math.max(0, r / R_DEV - 1.0) / 0.8),
       // Disc bright but alpha-blended — 250 at the core easing to ~217 at the
       // limb, never saturating.
       body: (dx, dy, r) => 250 - 35 * (r / R_DEV),
@@ -280,10 +306,16 @@ test("E2 — alpha-blended sun (bright, non-saturated) over near-saturated glare
     `ring-relative litFrac ${s.litFrac} collapses (this is what broke day sun-only)`,
   );
   // ...while every arm the sun predicate actually uses holds comfortably.
-  assert.ok(s.discMean >= s.ringMean + 20, `mean step ${s.discMean - s.ringMean}`);
+  assert.ok(
+    s.discMean >= s.ringMean + 20,
+    `mean step ${s.discMean - s.ringMean}`,
+  );
   assert.ok(s.discMax >= 200, `discMax ${s.discMax}`);
   assert.ok(s.absLitFrac >= 0.9, `absLitFrac ${s.absLitFrac}`);
-  assert.ok(s.absMaxComponentFrac >= 0.9, `absMaxComponentFrac ${s.absMaxComponentFrac}`);
+  assert.ok(
+    s.absMaxComponentFrac >= 0.9,
+    `absMaxComponentFrac ${s.absMaxComponentFrac}`,
+  );
 });
 
 test("E3 — the absolute sun bar does not leak into the MOON predicate", () => {
@@ -291,7 +323,10 @@ test("E3 — the absolute sun bar does not leak into the MOON predicate", () => 
   // as a moon: the moon stays ring-relative, so disc and ring cancel.
   const s = stats(buildRoi({ seed: 17, background: 210 }));
   assert.equal(moonPresent(s), false);
-  assert.ok(s.absLitFrac > 0.9, `precondition: the field IS above the sun bar (${s.absLitFrac})`);
+  assert.ok(
+    s.absLitFrac > 0.9,
+    `precondition: the field IS above the sun bar (${s.absLitFrac})`,
+  );
   // And it is not a sun either — no disc-over-ring step exists.
   assert.equal(sunPresent(s), false);
 });
@@ -315,11 +350,20 @@ const BAND_H = 160;
 
 // Builds a sky band: uniform `level`, +/-`ditherAmp` LSB of deterministic
 // noise, and `starCount` bright isolated peaks at `starLevel`.
-function buildBand({ seed = 21, level = 0, ditherAmp = 0, starCount = 0, starLevel = 200 }) {
+function buildBand({
+  seed = 21,
+  level = 0,
+  ditherAmp = 0,
+  starCount = 0,
+  starLevel = 200,
+}) {
   const rand = rng(seed);
   const data = new Uint8ClampedArray(BAND_W * BAND_H * 4);
   for (let p = 0; p < BAND_W * BAND_H; p++) {
-    const v = Math.max(0, Math.min(255, Math.round(level + (rand() - 0.5) * 2 * ditherAmp)));
+    const v = Math.max(
+      0,
+      Math.min(255, Math.round(level + (rand() - 0.5) * 2 * ditherAmp)),
+    );
     const i = 4 * p;
     data[i] = v;
     data[i + 1] = v;
@@ -344,7 +388,11 @@ test("E2 — a lit, dithered twilight sky censuses ZERO stars", () => {
   // The atmosphere-only night lane: a lit sky with 8-bit dither and no stars.
   for (const level of [30, 60, 120]) {
     const c = censusOf({ level, ditherAmp: 2 });
-    assert.equal(c.brightPoints, 0, `level ${level} dither must not read as stars`);
+    assert.equal(
+      c.brightPoints,
+      0,
+      `level ${level} dither must not read as stars`,
+    );
   }
   // Even aggressive dither stays under the prominence bar.
   assert.equal(censusOf({ level: 60, ditherAmp: 5 }).brightPoints, 0);
@@ -354,10 +402,16 @@ test("E2 — real stars are still counted, on black AND over a lit sky", () => {
   assert.equal(censusOf({ starCount: 25, level: 0 }).brightPoints, 25);
   // Over a dithered twilight sky the same stars must survive: prominence is
   // measured against the LOCAL annulus, not an absolute bar.
-  assert.equal(censusOf({ starCount: 25, level: 60, ditherAmp: 2 }).brightPoints, 25);
+  assert.equal(
+    censusOf({ starCount: 25, level: 60, ditherAmp: 2 }).brightPoints,
+    25,
+  );
   // A star that fails the 1.6x peak ratio against a bright background is
   // correctly rejected — that is the arm which kills dither.
-  assert.equal(censusOf({ starCount: 25, level: 150, starLevel: 170 }).brightPoints, 0);
+  assert.equal(
+    censusOf({ starCount: 25, level: 150, starLevel: 170 }).brightPoints,
+    0,
+  );
 });
 
 test("E2 — the census is the m1 algorithm, not a re-invention", () => {
@@ -385,8 +439,16 @@ const MEASURED_PRE_FIX = {
 
 test("D3 — the measured PRE-fix reference is SANE and the gate is RED", () => {
   const c = evaluateNightSourceContract(MEASURED_PRE_FIX);
-  assert.equal(c.referenceOk, true, "WebGL's own numbers must never read as structural");
-  assert.equal(c.gateOk, false, "WebGPU cubemapOnly 0 is the G1F1 kill — must gate RED");
+  assert.equal(
+    c.referenceOk,
+    true,
+    "WebGL's own numbers must never read as structural",
+  );
+  assert.equal(
+    c.gateOk,
+    false,
+    "WebGPU cubemapOnly 0 is the G1F1 kill — must gate RED",
+  );
   assert.equal(c.cubemapOnlyRatio_webgpu_over_webgl, 0);
 });
 
@@ -398,7 +460,11 @@ test("D3 — spritesOnly = 2 must NOT be able to fail the reference", () => {
       webgl: { ...MEASURED_PRE_FIX.webgl, spritesOnly },
       webgpu: { ...MEASURED_PRE_FIX.webgpu, spritesOnly },
     });
-    assert.equal(c.referenceOk, true, `spritesOnly ${spritesOnly} must stay informational`);
+    assert.equal(
+      c.referenceOk,
+      true,
+      `spritesOnly ${spritesOnly} must stay informational`,
+    );
   }
   // And it is still RECORDED, so the sprite census remains visible evidence.
   const c = evaluateNightSourceContract(MEASURED_PRE_FIX);
@@ -427,7 +493,11 @@ test("D3 — a genuinely broken reference is STRUCTURAL, not a gate failure", ()
     webgl: { cubemapOnly: 5, spritesOnly: 2, both: 5 },
     webgpu: { cubemapOnly: 5, spritesOnly: 2, both: 5 },
   });
-  assert.equal(tooFew.referenceOk, false, "below the census floor — the instrument is wrong");
+  assert.equal(
+    tooFew.referenceOk,
+    false,
+    "below the census floor — the instrument is wrong",
+  );
   // Adding sprites must never REMOVE cubemap sources; that is the ordering claim.
   const wentBackwards = evaluateNightSourceContract({
     webgl: { cubemapOnly: 1094, spritesOnly: 2, both: 900 },

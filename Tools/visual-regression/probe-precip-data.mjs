@@ -91,7 +91,11 @@ async function diffPngs(page, fileA, fileB) {
         if (d > 16) diff++;
       }
       const total = a.w * a.h;
-      return { total, diffPx: diff, diffPct: ((100 * diff) / total).toFixed(2) };
+      return {
+        total,
+        diffPx: diff,
+        diffPct: ((100 * diff) / total).toFixed(2),
+      };
     },
     { bA, bB },
   );
@@ -104,15 +108,23 @@ async function run() {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({ viewport: { width: 960, height: 640 } });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
   await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   // ── 1. Pure WMO mapping assertions + camera setup ──────────────────────────
@@ -169,7 +181,8 @@ async function run() {
           visibilityKm: o.visibilityKm,
         });
         const provider =
-          s.globe.defaultCloudCollection.volumetric.weatherProvider instanceof C.WeatherProvider
+          s.globe.defaultCloudCollection.volumetric.weatherProvider instanceof
+          C.WeatherProvider
             ? s.globe.defaultCloudCollection.volumetric.weatherProvider
             : new C.WeatherProvider(src);
         provider.setSource(src);
@@ -207,7 +220,8 @@ async function run() {
 
       return {
         present: cond.effects.precipitation.dataDriven
-          ? s.globe.defaultCloudCollection.volumetric.weatherProvider?.getPresentWeather?.() ?? null
+          ? (s.globe.defaultCloudCollection.volumetric.weatherProvider?.getPresentWeather?.() ??
+            null)
           : null,
         precipLeaf: {
           enabled: cond.effects.precipitation.enabled,
@@ -318,8 +332,14 @@ async function run() {
   const c = api.cases;
   // PrecipitationType: NONE0 RAIN1 SNOW2 FOG3 HAIL4
   const checks = [
-    ["precipFromWmoCode + helpers exported", api.hasMap && api.hasSnowAccum && api.hasVisScale],
-    ["SyntheticWeatherSource + WeatherProvider exported", api.hasSynthetic && api.hasProvider],
+    [
+      "precipFromWmoCode + helpers exported",
+      api.hasMap && api.hasSnowAccum && api.hasVisScale,
+    ],
+    [
+      "SyntheticWeatherSource + WeatherProvider exported",
+      api.hasSynthetic && api.hasProvider,
+    ],
     [`ww 5 → NONE (type=${c.c5.type})`, c.c5.type === 0],
     [`ww 45 → FOG (type=${c.c45.type})`, c.c45.type === 3],
     [`ww 53 → RAIN drizzle (type=${c.c53.type})`, c.c53.type === 1],
@@ -333,12 +353,19 @@ async function run() {
     ],
     [`snow ramp up (${api.snowRamp.toFixed(3)} > 0)`, api.snowRamp > 0],
     [`snow melt down (${api.snowMelt.toFixed(3)} < 0.5)`, api.snowMelt < 0.5],
-    [`vis coupling: low(${api.visLow.toFixed(2)}) > high(${api.visHigh.toFixed(2)}) ≈ 1`, api.visLow > api.visHigh && Math.abs(api.visHigh - 1) < 0.01 && api.visNone === 1],
+    [
+      `vis coupling: low(${api.visLow.toFixed(2)}) > high(${api.visHigh.toFixed(2)}) ≈ 1`,
+      api.visLow > api.visHigh &&
+        Math.abs(api.visHigh - 1) < 0.01 &&
+        api.visNone === 1,
+    ],
 
     // PARITY OFF — manual RAIN survives, snow ww does NOT leak in.
     [
       `PARITY OFF: dataDriven=false keeps manual RAIN (weatherType=${off.sceneWeatherType} === 0, present=${JSON.stringify(off.present)})`,
-      off.sceneWeatherType === 0 && off.sceneEnableWeather === true && off.present === null,
+      off.sceneWeatherType === 0 &&
+        off.sceneEnableWeather === true &&
+        off.present === null,
     ],
     [
       `PARITY OFF: no densityScale/snowCover written (densityScale=${off.sceneDensityScale}, snowCover=${off.sceneSnowCover})`,
@@ -349,7 +376,9 @@ async function run() {
     // FLAG ON SNOW
     [
       `FLAG ON SNOW: provider present ww=${snow.present?.ww}, scene flips to SNOW (weatherType=${snow.sceneWeatherType} === 1, enabled=${snow.sceneEnableWeather})`,
-      snow.present?.ww === 73 && snow.sceneWeatherType === 1 && snow.sceneEnableWeather === true,
+      snow.present?.ww === 73 &&
+        snow.sceneWeatherType === 1 &&
+        snow.sceneEnableWeather === true,
     ],
     [
       `FLAG ON SNOW: snowCover ramped > 0 (${snow.snowCoverFinal?.toFixed?.(3)})`,
@@ -359,7 +388,9 @@ async function run() {
     // FLAG ON RAIN
     [
       `FLAG ON RAIN: ww=${rain.present?.ww} → scene RAIN (weatherType=${rain.sceneWeatherType} === 0, enabled=${rain.sceneEnableWeather})`,
-      rain.present?.ww === 63 && rain.sceneWeatherType === 0 && rain.sceneEnableWeather === true,
+      rain.present?.ww === 63 &&
+        rain.sceneWeatherType === 0 &&
+        rain.sceneEnableWeather === true,
     ],
 
     // VISIBILITY coupling end-to-end

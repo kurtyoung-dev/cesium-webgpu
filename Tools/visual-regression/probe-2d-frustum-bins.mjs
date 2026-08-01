@@ -38,7 +38,7 @@ const out = await page.evaluate(
 
     const pos = C.Cartesian3.fromDegrees(lon, lat, 0.0);
     const bb = scene.primitives.add(new C.BillboardCollection());
-    const billboard = bb.add({
+    const _billboard = bb.add({
       position: pos,
       image: (() => {
         const cv = document.createElement("canvas");
@@ -115,7 +115,7 @@ const out = await page.evaluate(
 
     const view = scene._view;
     const fcl = view.frustumCommandsList;
-    const Pass = C.Pass ?? null;
+    const _Pass = C.Pass ?? null;
     // Pass IDs we care about. From Renderer/Pass.js ordering.
     // GLOBE and OPAQUE are the relevant opaque writers; TRANSLUCENT is where
     // billboards live.
@@ -176,7 +176,10 @@ const out = await page.evaluate(
           );
           bbExtent = { start: +iv.start.toFixed(2), stop: +iv.stop.toFixed(2) };
         }
-        if (cmd.pass === PASS_GLOBE2 && cmd.boundingVolume.computePlaneDistances) {
+        if (
+          cmd.pass === PASS_GLOBE2 &&
+          cmd.boundingVolume.computePlaneDistances
+        ) {
           const iv = cmd.boundingVolume.computePlaneDistances(
             cam.positionWC,
             cam.directionWC,
@@ -184,13 +187,13 @@ const out = await page.evaluate(
           globeExtents.push({
             start: +iv.start.toFixed(0),
             stop: +iv.stop.toFixed(0),
-            r: +((cmd.boundingVolume.radius ?? 0)).toFixed(0),
+            r: +(cmd.boundingVolume.radius ?? 0).toFixed(0),
           });
         }
       }
     }
     // Globe tile selection stats: how many tiles rendered + their levels.
-    let tileLevels = null;
+    let tileLevels;
     try {
       const surf = scene.globe?._surface;
       const tilesToRender = surf?._tilesToRender ?? [];
@@ -213,9 +216,7 @@ const out = await page.evaluate(
       translucentBins: binsForPass(PASS_TRANSLUCENT),
       billboardBins,
       bbExtent,
-      globeExtents: globeExtents
-        .slice()
-        .sort((a, b) => a.start - b.start),
+      globeExtents: globeExtents.slice().sort((a, b) => a.start - b.start),
       tileLevels,
       snap,
     };

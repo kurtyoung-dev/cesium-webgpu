@@ -11,9 +11,16 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   page.on("console", (m) => {
     const t = m.type();
     if (t === "error") console.log(`[err] ${m.text().slice(0, 400)}`);
@@ -59,7 +66,11 @@ const BASE = "http://localhost:8080";
     const bs = model?.boundingSphere;
     if (bs) {
       // Place camera 3x radius away looking at center
-      const offset = new C.HeadingPitchRange(0, -C.Math.PI_OVER_FOUR, bs.radius * 3);
+      const offset = new C.HeadingPitchRange(
+        0,
+        -C.Math.PI_OVER_FOUR,
+        bs.radius * 3,
+      );
       v.camera.viewBoundingSphere(bs, offset);
     }
     for (let i = 0; i < 60; i++) {
@@ -90,14 +101,19 @@ const BASE = "http://localhost:8080";
     const runtimeNodes = sg?._runtimeNodes;
     const firstNode = runtimeNodes?.find((n) => n?.runtimePrimitives?.length);
     const firstRP = firstNode?.runtimePrimitives?.[0];
-    const primCacheVal = firstRP ? Object.values(wgpuCache?.primitives ?? {})[0] : null;
+    const primCacheVal = firstRP
+      ? Object.values(wgpuCache?.primitives ?? {})[0]
+      : null;
 
     // Sample canvas pixels at model center (canvas center)
     const canvas = v.canvas;
-    const w = canvas.width, h = canvas.height;
-    const cx = Math.floor(w / 2), cy = Math.floor(h / 2);
+    const w = canvas.width,
+      h = canvas.height;
+    const cx = Math.floor(w / 2),
+      cy = Math.floor(h / 2);
     const tmp = document.createElement("canvas");
-    tmp.width = 4; tmp.height = 4;
+    tmp.width = 4;
+    tmp.height = 4;
     const tctx = tmp.getContext("2d");
     tctx.drawImage(canvas, cx - 2, cy - 2, 4, 4, 0, 0, 4, 4);
     const px = tctx.getImageData(0, 0, 4, 4).data;
@@ -108,12 +124,13 @@ const BASE = "http://localhost:8080";
 
     // Also probe wider — diagonal
     const wideTmp = document.createElement("canvas");
-    wideTmp.width = w; wideTmp.height = h;
+    wideTmp.width = w;
+    wideTmp.height = h;
     wideTmp.getContext("2d").drawImage(canvas, 0, 0, w, h);
     const wide = wideTmp.getContext("2d").getImageData(0, 0, w, h).data;
     const colorBuckets = {};
     for (let i = 0; i < wide.length; i += 16) {
-      const key = `${wide[i]},${wide[i+1]},${wide[i+2]}`;
+      const key = `${wide[i]},${wide[i + 1]},${wide[i + 2]}`;
       colorBuckets[key] = (colorBuckets[key] || 0) + 1;
     }
     const topColors = Object.entries(colorBuckets)
@@ -129,17 +146,25 @@ const BASE = "http://localhost:8080";
       commandListCount: cmds.length,
       cmdInfo,
       hasWebgpuCache: !!wgpuCache,
-      primCacheKeyCount: wgpuCache ? Object.keys(wgpuCache.primitives ?? {}).length : null,
-      primCacheValue: primCacheVal ? {
-        keys: Object.keys(primCacheVal).slice(0, 30),
-        hasOpaquePipeline: !!primCacheVal.opaquePipeline,
-        hasTranslucentPipeline: !!primCacheVal.translucentPipeline,
-        hasMaterialBG: !!primCacheVal.materialBG, // Old API — should be undefined
-        hasMergedMaterialBG: !!primCacheVal._mergedMaterialBG || !!primCacheVal.mergedMaterialBG,
-        hasMergedInstanceBG: !!primCacheVal._mergedInstanceBG || !!primCacheVal.mergedInstanceBG,
-        opaqueDrawCount: primCacheVal.opaqueDrawCount,
-        translucentDrawCount: primCacheVal.translucentDrawCount,
-      } : null,
+      primCacheKeyCount: wgpuCache
+        ? Object.keys(wgpuCache.primitives ?? {}).length
+        : null,
+      primCacheValue: primCacheVal
+        ? {
+            keys: Object.keys(primCacheVal).slice(0, 30),
+            hasOpaquePipeline: !!primCacheVal.opaquePipeline,
+            hasTranslucentPipeline: !!primCacheVal.translucentPipeline,
+            hasMaterialBG: !!primCacheVal.materialBG, // Old API — should be undefined
+            hasMergedMaterialBG:
+              !!primCacheVal._mergedMaterialBG ||
+              !!primCacheVal.mergedMaterialBG,
+            hasMergedInstanceBG:
+              !!primCacheVal._mergedInstanceBG ||
+              !!primCacheVal.mergedInstanceBG,
+            opaqueDrawCount: primCacheVal.opaqueDrawCount,
+            translucentDrawCount: primCacheVal.translucentDrawCount,
+          }
+        : null,
       runtimeNodesCount: runtimeNodes?.length,
       firstRPExists: !!firstRP,
       centerCanvasPx: samples,

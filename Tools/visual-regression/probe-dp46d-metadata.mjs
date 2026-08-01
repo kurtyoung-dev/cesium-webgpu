@@ -60,7 +60,9 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
@@ -237,9 +239,10 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
                     /@group\(1\)\s*@binding\(\d+\)\s*var\s+metadataPropertyTableTexture/.test(
                       pc._metadataWGSL,
                     );
-                  inspect.wgslHasTextureLoad = /textureLoad\(metadataPropertyTableTexture/.test(
-                    pc._metadataWGSL,
-                  );
+                  inspect.wgslHasTextureLoad =
+                    /textureLoad\(metadataPropertyTableTexture/.test(
+                      pc._metadataWGSL,
+                    );
                   const bm = pc._metadataWGSL.match(
                     /@binding\((\d+)\)\s*var\s+metadataPropertyTableTexture/g,
                   );
@@ -255,7 +258,9 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
                   inspect.wgslHasMetadataClassStruct =
                     /struct\s+\w+MetadataClass\s*\{/.test(pc._metadataWGSL);
                   inspect.wgslHasMetadataStatisticsStruct =
-                    /struct\s+\w+MetadataStatistics\s*\{/.test(pc._metadataWGSL);
+                    /struct\s+\w+MetadataStatistics\s*\{/.test(
+                      pc._metadataWGSL,
+                    );
                 }
               }
               if (tblBit) break;
@@ -369,7 +374,9 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
     const ins = cell.diagnostics.inspect;
     const pageErrors = (cell.messages ?? []).filter((m) => m.t === "pageerror");
     const consoleErrs = (cell.messages ?? []).filter((m) => m.t === "error");
-    console.log(`  [${cell.label}]  ${cell.diagnostics.modelUrl.split("/").pop()}`);
+    console.log(
+      `  [${cell.label}]  ${cell.diagnostics.modelUrl.split("/").pop()}`,
+    );
     console.log(
       `    metadataDebug=${cell.diagnostics.metadataDebug} modelReady=${cell.diagnostics.modelReady} framed=${cell.diagnostics.framed} tilesLoaded=${cell.diagnostics.tilesLoaded} loadErr=${cell.diagnostics.modelLoadError ?? "none"} frameErr=${cell.diagnostics.frameError ?? "none"}`,
     );
@@ -385,13 +392,34 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
     console.log(
       `    errors: device=${cell.deviceErrors.length} pageerror=${pageErrors.length} console.error=${consoleErrs.length}`,
     );
-    cell.deviceErrors.slice(0, 4).forEach((e) => console.log(`      device: ${e.text?.slice(0, 240)}`));
-    pageErrors.slice(0, 2).forEach((e) => console.log(`      pageerror: ${(e.text ?? "").slice(0, 240)}`));
-    consoleErrs.slice(0, 6).forEach((e) => console.log(`      console.error: ${(e.text ?? "").split("\n")[0].slice(0, 240)}`));
+    cell.deviceErrors
+      .slice(0, 4)
+      .forEach((e) => console.log(`      device: ${e.text?.slice(0, 240)}`));
+    pageErrors
+      .slice(0, 2)
+      .forEach((e) =>
+        console.log(`      pageerror: ${(e.text ?? "").slice(0, 240)}`),
+      );
+    consoleErrs
+      .slice(0, 6)
+      .forEach((e) =>
+        console.log(
+          `      console.error: ${(e.text ?? "").split("\n")[0].slice(0, 240)}`,
+        ),
+      );
     if (cell.label === "a-proptable-on" && ins.generatedWGSL) {
-      console.log("\n    ===== GENERATED METADATA WGSL CHUNK (property table) =====");
-      console.log(ins.generatedWGSL.split("\n").map((l) => "    | " + l).join("\n"));
-      console.log("    ==========================================================\n");
+      console.log(
+        "\n    ===== GENERATED METADATA WGSL CHUNK (property table) =====",
+      );
+      console.log(
+        ins.generatedWGSL
+          .split("\n")
+          .map((l) => "    | " + l)
+          .join("\n"),
+      );
+      console.log(
+        "    ==========================================================\n",
+      );
     }
     report.cells.push({
       label: cell.label,

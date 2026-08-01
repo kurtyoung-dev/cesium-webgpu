@@ -131,7 +131,10 @@ const result = await page.evaluate(async () => {
   g.defaultCloudCollection.volumetric.cloudLayerBottom = 1500.0;
   g.defaultCloudCollection.volumetric.cloudLayerTop = 4000.0;
   g.defaultCloudCollection.volumetric.cloudWindSpeed = 22.0;
-  g.defaultCloudCollection.volumetric.cloudWindDirection = new C.Cartesian2(0.7, 0.3);
+  g.defaultCloudCollection.volumetric.cloudWindDirection = new C.Cartesian2(
+    0.7,
+    0.3,
+  );
   g.defaultCloudCollection.volumetric.cloudContributesIBL = true;
   g.defaultCloudCollection.volumetric.cloudCastShadows = true;
   g.defaultCloudCollection.volumetric.cloudSilverLiningIntensity = 0.85;
@@ -176,9 +179,7 @@ await browser.close();
 const filtered = errors.filter((e) => !/AtmosphereLUT|default layout/.test(e));
 console.log(`=== CLOUD-U2 (${TAG}) ===`);
 console.log(`  renderer=${result.renderer}`);
-console.log(
-  `  OFF hash=${result.off.hash} cloudish=${result.off.cloudish}`,
-);
+console.log(`  OFF hash=${result.off.hash} cloudish=${result.off.cloudish}`);
 console.log(
   `  ON  hash=${result.on.hash} cloudish=${result.on.cloudish} (${result.on.w}x${result.on.h})`,
 );

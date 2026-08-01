@@ -187,7 +187,10 @@ test("manifest entries must be reviewed and match the captured environment", () 
   assert.equal(mismatch.certifying, false);
   assert.ok(mismatch.reasons.includes("MANIFEST_MISMATCH:adapterClass"));
 
-  const dirty = validateManifestEntry(validEntry({ sourceDirty: true }), actual);
+  const dirty = validateManifestEntry(
+    validEntry({ sourceDirty: true }),
+    actual,
+  );
   assert.equal(dirty.certifying, false);
   assert.ok(dirty.reasons.includes("MANIFEST_SOURCE_DIRTY"));
 

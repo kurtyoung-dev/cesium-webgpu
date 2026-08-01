@@ -6,7 +6,8 @@
 
 import { chromium } from "playwright";
 
-const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
 
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
 const ctx = await browser.newContext({
@@ -98,8 +99,7 @@ const result = await page.evaluate(async () => {
   const x0 = Math.floor((w - sampleSize) / 2);
   const y0 = Math.floor((h - sampleSize) / 2);
   // Bytes per pixel: 8 for rgba16float, 4 for bgra8unorm/rgba8unorm
-  const bpp =
-    fmt === "rgba16float" ? 8 : fmt === "rgba32float" ? 16 : 4;
+  const bpp = fmt === "rgba16float" ? 8 : fmt === "rgba32float" ? 16 : 4;
   // bytesPerRow must be 256-aligned
   const bytesPerRow = Math.ceil((sampleSize * bpp) / 256) * 256;
   const buf = dev.createBuffer({
@@ -123,10 +123,14 @@ const result = await page.evaluate(async () => {
   let totalChecked = 0;
   if (fmt === "rgba16float") {
     // f16 → just read raw u16 magnitudes; non-zero means content.
-    const u16 = new Uint16Array(range.buffer, range.byteOffset, range.byteLength / 2);
+    const u16 = new Uint16Array(
+      range.buffer,
+      range.byteOffset,
+      range.byteLength / 2,
+    );
     for (let py = 0; py < sampleSize; py++) {
       for (let px = 0; px < sampleSize; px++) {
-        const off = (py * (bytesPerRow / 2)) + px * 4;
+        const off = py * (bytesPerRow / 2) + px * 4;
         const r = u16[off],
           g = u16[off + 1],
           b = u16[off + 2];
@@ -184,7 +188,11 @@ const result = await page.evaluate(async () => {
               hasExecute: typeof cmd?.execute === "function",
               ownerName: cmd?.owner?.constructor?.name ?? null,
               isWebGPUDrawCommand: !!cmd?.isWebGPUDrawCommand,
-              cmdKeys: cmd ? Object.keys(cmd).filter((k) => !k.startsWith("_")).slice(0, 20) : [],
+              cmdKeys: cmd
+                ? Object.keys(cmd)
+                    .filter((k) => !k.startsWith("_"))
+                    .slice(0, 20)
+                : [],
             });
             break;
           }

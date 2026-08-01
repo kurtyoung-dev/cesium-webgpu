@@ -61,24 +61,69 @@ async function main() {
 
   const parsed = JSON.parse(jsonText);
   console.log(`\n─── Parsed ───\n`);
-  console.log(`Entry points: ${parsed.entryPoints.map((e) => `${e.name} (${e.stage})`).join(", ")}`);
+  console.log(
+    `Entry points: ${parsed.entryPoints.map((e) => `${e.name} (${e.stage})`).join(", ")}`,
+  );
   console.log(`Bindings: ${parsed.bindings.length}`);
   console.log();
 
   const expected = [
     { name: "u", group: 0, binding: 0, kind: "uniform-buffer" },
-    { name: "data", group: 0, binding: 1, kind: "storage-buffer", access: "read_write" },
-    { name: "tex", group: 0, binding: 2, kind: "texture", sampleType: "float", viewDimension: "2d", multisampled: false },
-    { name: "samp", group: 0, binding: 3, kind: "sampler", sampleType: "filtering" },
-    { name: "storageTex", group: 0, binding: 4, kind: "storage-texture", viewDimension: "2d", access: "write" },
-    { name: "depthTex", group: 1, binding: 0, kind: "texture", sampleType: "depth", viewDimension: "2d" },
-    { name: "cmpSamp", group: 1, binding: 1, kind: "sampler", sampleType: "comparison" },
+    {
+      name: "data",
+      group: 0,
+      binding: 1,
+      kind: "storage-buffer",
+      access: "read_write",
+    },
+    {
+      name: "tex",
+      group: 0,
+      binding: 2,
+      kind: "texture",
+      sampleType: "float",
+      viewDimension: "2d",
+      multisampled: false,
+    },
+    {
+      name: "samp",
+      group: 0,
+      binding: 3,
+      kind: "sampler",
+      sampleType: "filtering",
+    },
+    {
+      name: "storageTex",
+      group: 0,
+      binding: 4,
+      kind: "storage-texture",
+      viewDimension: "2d",
+      access: "write",
+    },
+    {
+      name: "depthTex",
+      group: 1,
+      binding: 0,
+      kind: "texture",
+      sampleType: "depth",
+      viewDimension: "2d",
+    },
+    {
+      name: "cmpSamp",
+      group: 1,
+      binding: 1,
+      kind: "sampler",
+      sampleType: "comparison",
+    },
   ];
 
   let pass = 0;
   for (const exp of expected) {
     const actual = parsed.bindings.find(
-      (b) => b.name === exp.name && b.group === exp.group && b.binding === exp.binding,
+      (b) =>
+        b.name === exp.name &&
+        b.group === exp.group &&
+        b.binding === exp.binding,
     );
     if (!actual) {
       console.log(`✗ missing: ${exp.name} @ (${exp.group}, ${exp.binding})`);
@@ -87,13 +132,17 @@ async function main() {
     let ok = true;
     for (const [k, v] of Object.entries(exp)) {
       if (actual[k] !== v) {
-        console.log(`✗ ${exp.name}.${k}: expected ${JSON.stringify(v)}, got ${JSON.stringify(actual[k])}`);
+        console.log(
+          `✗ ${exp.name}.${k}: expected ${JSON.stringify(v)}, got ${JSON.stringify(actual[k])}`,
+        );
         ok = false;
       }
     }
     if (ok) {
       pass++;
-      console.log(`✓ ${exp.name}: kind=${actual.kind}${actual.sampleType ? ` sampleType=${actual.sampleType}` : ""}${actual.viewDimension ? ` dim=${actual.viewDimension}` : ""}${actual.access ? ` access=${actual.access}` : ""}`);
+      console.log(
+        `✓ ${exp.name}: kind=${actual.kind}${actual.sampleType ? ` sampleType=${actual.sampleType}` : ""}${actual.viewDimension ? ` dim=${actual.viewDimension}` : ""}${actual.access ? ` access=${actual.access}` : ""}`,
+      );
     }
   }
 

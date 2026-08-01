@@ -1,5 +1,5 @@
 // Patch Camera class to capture aspectRatio + dbW/H at construction.
-import { chromium } from 'playwright';
+import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -51,17 +51,31 @@ const RENDERER_OVERRIDE_SHIM = `
 `;
 
 async function probe(renderer) {
-  const browser = await chromium.launch({ channel: 'msedge', headless: true });
-  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
-  const page = await ctx.newPage();
-  await page.addInitScript((r) => { window.__FORCED_RENDERER__ = r; }, renderer);
-  await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-  await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
-    const response = await route.fetch();
-    const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-    await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const ctx = await browser.newContext({
+    viewport: { width: 800, height: 600 },
   });
-  await page.goto('http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html', { waitUntil: 'load', timeout: 60000 });
+  const page = await ctx.newPage();
+  await page.addInitScript((r) => {
+    window.__FORCED_RENDERER__ = r;
+  }, renderer);
+  await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
+  await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
+    const response = await route.fetch();
+    const txt = (await response.text()).replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    );
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      body: txt,
+    });
+  });
+  await page.goto(
+    "http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html",
+    { waitUntil: "load", timeout: 60000 },
+  );
   await page.waitForTimeout(8000);
   const result = await page.evaluate(() => ({
     cameraInits: window.__cameraInits || [],
@@ -70,9 +84,9 @@ async function probe(renderer) {
   return result;
 }
 
-const wgl = await probe('webgl');
-const wgpu = await probe('webgpu');
-console.log('=== WebGL Camera inits ===');
+const wgl = await probe("webgl");
+const wgpu = await probe("webgpu");
+console.log("=== WebGL Camera inits ===");
 console.log(JSON.stringify(wgl.cameraInits, null, 2));
-console.log('\n=== WebGPU Camera inits ===');
+console.log("\n=== WebGPU Camera inits ===");
 console.log(JSON.stringify(wgpu.cameraInits, null, 2));

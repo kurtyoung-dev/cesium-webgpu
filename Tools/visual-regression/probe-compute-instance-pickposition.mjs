@@ -54,7 +54,9 @@ const POSITIONS = [
 ];
 
 async function runLeg(renderer) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -158,9 +160,14 @@ async function runLeg(renderer) {
       const canvasH = scene.canvas.clientHeight || 768;
       const mirrorY = renderer === "webgpu";
       const project = (p) => {
-        const w = scene.cartesianToCanvasCoordinates(new C.Cartesian3(p.x, p.y, p.z));
+        const w = scene.cartesianToCanvasCoordinates(
+          new C.Cartesian3(p.x, p.y, p.z),
+        );
         if (!w || !isFinite(w.x) || !isFinite(w.y)) return null;
-        return { x: Math.round(w.x), y: Math.round(mirrorY ? canvasH - w.y : w.y) };
+        return {
+          x: Math.round(w.x),
+          y: Math.round(mirrorY ? canvasH - w.y : w.y),
+        };
       };
       const screen = POSITIONS.map(project);
 
@@ -174,13 +181,18 @@ async function runLeg(renderer) {
       // records the sync contract (never a Promise).
       const MAX_CONVERGE = 40;
       const eq = (a, b) =>
-        a && b && Math.abs(a.x - b.x) < 1 && Math.abs(a.y - b.y) < 1 && Math.abs(a.z - b.z) < 1;
+        a &&
+        b &&
+        Math.abs(a.x - b.x) < 1 &&
+        Math.abs(a.y - b.y) < 1 &&
+        Math.abs(a.z - b.z) < 1;
       // Frames to settle the one-frame-stale pick FBO at a NEW pixel before
       // trusting a result (the pick rasterized at the previous pixel can leak
       // into the first couple of reads here). WebGL is synchronous → 0.
       const SETTLE = renderer === "webgpu" ? 8 : 0;
       const pickPositionConverge = async (px) => {
-        if (!px) return { kind: "no-screen", pos: null, frame0Kind: "no-screen" };
+        if (!px)
+          return { kind: "no-screen", pos: null, frame0Kind: "no-screen" };
         let frame0Kind = null;
         // Settle phase: drive pickPosition at this pixel a few frames so the
         // pick FBO + readback catch up from the previous query's pixel.
@@ -215,7 +227,11 @@ async function runLeg(renderer) {
           else if (res && typeof res.x === "number") kind = `NaN(${res.x})`;
           else kind = "undefined";
           if (frame0Kind === null) frame0Kind = kind;
-          if (kind === "Promise" || kind.startsWith("NaN") || kind.startsWith("THREW")) {
+          if (
+            kind === "Promise" ||
+            kind.startsWith("NaN") ||
+            kind.startsWith("THREW")
+          ) {
             return { kind, pos: null, frame0Kind };
           }
           const pos =
@@ -313,7 +329,9 @@ function printLeg(name, leg) {
     `  empty @ (${leg.emptyPx.x},${leg.emptyPx.y}): kind=${leg.emptyKind}`,
   );
   console.log(`  console errors: ${leg.errors.length}`);
-  leg.errors.slice(0, 8).forEach((e) => console.log("   ERR:", e.slice(0, 250)));
+  leg.errors
+    .slice(0, 8)
+    .forEach((e) => console.log("   ERR:", e.slice(0, 250)));
 }
 printLeg("WebGL", webgl);
 printLeg("WebGPU", webgpu);
@@ -344,7 +362,9 @@ for (const [name, leg] of [
     }
     // (D) sync contract — no Promise ever.
     if (h.frame0Kind === "Promise") {
-      failures.push(`${name} index ${h.index}: frame-0 pickPosition was a Promise`);
+      failures.push(
+        `${name} index ${h.index}: frame-0 pickPosition was a Promise`,
+      );
     }
   }
   // (B) empty space → undefined.

@@ -267,13 +267,16 @@ const glslStage = await page.evaluate(async () => {
   const s = await P.snap();
   return { userStageCount: st.userStageCount, nonBlack: P.nonBlack(s) };
 });
-const warnsAfterGlsl = warns.length;
+const _warnsAfterGlsl = warns.length;
 
 // ── Assertions ─────────────────────────────────────────────────────────
 const resolveRan =
   taa.resolveCount1 > 0 && taa.resolveCount2 > taa.resolveCount1;
 const taaStateOK =
-  taa.hasTaaEffect && taa.taaEnabled && resolveRan && taa.settledNonBlack > 1500;
+  taa.hasTaaEffect &&
+  taa.taaEnabled &&
+  resolveRan &&
+  taa.settledNonBlack > 1500;
 const taaStableOK = taa.settledDiff < 0.01;
 const taaNoSmearOK =
   taa.movedDiff > 0.004 &&
@@ -291,9 +294,9 @@ const wgslOK =
 // GLSL-only stage was SKIPPED (user-stage count stays 1 — the WGSL one)
 // and the drop warning fired with the expected text. oneTimeWarning
 // dedupes, so exactly one new warn containing the GLSL marker.
-const glslWarnTexts = warns.slice(warnsBeforeGlsl).filter((w) =>
-  /GLSL custom shaders are not transpiled/.test(w),
-);
+const glslWarnTexts = warns
+  .slice(warnsBeforeGlsl)
+  .filter((w) => /GLSL custom shaders are not transpiled/.test(w));
 const glslWarnedOK = glslWarnTexts.length >= 1;
 const glslNoCrashOK =
   glslStage.userStageCount === 1 && glslStage.nonBlack > 1500;
@@ -319,9 +322,7 @@ console.log(
 console.log(
   `(2b) GLSL-only no-crash: count:${glslStage.userStageCount}==1 nonBlack:${glslStage.nonBlack} -> ${glslNoCrashOK ? "OK" : "FAIL"}`,
 );
-console.log(
-  `(e) console errors: ${errors.length} -> ${eOK ? "OK" : "FAIL"}`,
-);
+console.log(`(e) console errors: ${errors.length} -> ${eOK ? "OK" : "FAIL"}`);
 if (glslWarnTexts[0]) console.log("  WARN:", glslWarnTexts[0].slice(0, 200));
 errors.slice(0, 8).forEach((e) => console.log("  ERR:", e.slice(0, 300)));
 

@@ -123,7 +123,11 @@ async function ensureImagery(page) {
       };
       for (let i = 0; i < layers.length; i++) {
         const layer = layers.get(i);
-        if (layer && layer.imageryProvider && layer.imageryProvider.errorEvent) {
+        if (
+          layer &&
+          layer.imageryProvider &&
+          layer.imageryProvider.errorEvent
+        ) {
           layer.imageryProvider.errorEvent.addEventListener(onErr);
         }
       }
@@ -156,7 +160,8 @@ async function ensureImagery(page) {
         out.providerName = "TileMapServiceImageryProvider(NaturalEarthII)";
         out.why = String(e && e.message ? e.message : e);
       } catch (e2) {
-        out.why = "fallback also failed: " + String(e2 && e2.message ? e2.message : e2);
+        out.why =
+          "fallback also failed: " + String(e2 && e2.message ? e2.message : e2);
       }
       return out;
     }
@@ -192,7 +197,12 @@ async function setView(page, { atmoOn, heightMm, pitchDeg, bg }) {
             v.scene.skyBox.show = false;
             v.scene.skyBox = undefined;
           }
-          v.scene.backgroundColor = new C.Color(bg.r / 255, bg.g / 255, bg.b / 255, 1);
+          v.scene.backgroundColor = new C.Color(
+            bg.r / 255,
+            bg.g / 255,
+            bg.b / 255,
+            1,
+          );
         }
 
         v.camera.setView({
@@ -264,7 +274,8 @@ async function settle(page) {
         // Coarse weighted checksum — sensitive to disc shape/content changing as
         // tiles + pipelines materialize, cheap (stride 16).
         let s = 0;
-        for (let i = 0; i < d.length; i += 16) s += d[i] + d[i + 1] * 3 + d[i + 2] * 7;
+        for (let i = 0; i < d.length; i += 16)
+          s += d[i] + d[i + 1] * 3 + d[i + 2] * 7;
         lastSig = s;
       } catch (e) {
         lastSig = -1;
@@ -281,11 +292,17 @@ async function settle(page) {
       if (scene.globe.tilesLoaded && tilesLoadedAt < 0) tilesLoadedAt = i;
       const sig = lastSig;
       const rel =
-        prevSig <= 0 ? Infinity : Math.abs(sig - prevSig) / Math.max(1, Math.abs(prevSig));
+        prevSig <= 0
+          ? Infinity
+          : Math.abs(sig - prevSig) / Math.max(1, Math.abs(prevSig));
       if (rel < 0.0015) stable++;
       else stable = 0;
       prevSig = sig;
-      if (i >= MIN_FRAMES && stable >= STABLE_NEEDED && scene.globe.tilesLoaded) {
+      if (
+        i >= MIN_FRAMES &&
+        stable >= STABLE_NEEDED &&
+        scene.globe.tilesLoaded
+      ) {
         settledFrame = i;
         break;
       }
@@ -486,7 +503,8 @@ async function measureDiscAndTear(page, glPath, gpuPath, bg) {
             // Only count if both flanking runs are substantial (real disc, not
             // an isolated speck) and the gap is non-trivial.
             const flankL = runs[0][1] - runs[0][0] + 1;
-            const flankR = runs[runs.length - 1][1] - runs[runs.length - 1][0] + 1;
+            const flankR =
+              runs[runs.length - 1][1] - runs[runs.length - 1][0] + 1;
             if (rowGap >= 8 && flankL >= 12 && flankR >= 12) {
               tornRows++;
               if (rowGap > maxInternalGap) {
@@ -539,7 +557,10 @@ async function measureDiscAndTear(page, glPath, gpuPath, bg) {
           w,
           h,
           bbox: { x0, x1, y0, y1, w: bboxW, h: bboxH },
-          center: { x: cx != null ? +cx.toFixed(1) : null, y: cy != null ? +cy.toFixed(1) : null },
+          center: {
+            x: cx != null ? +cx.toFixed(1) : null,
+            y: cy != null ? +cy.toFixed(1) : null,
+          },
           area,
           widthAtCenter,
           heightAtCenter,

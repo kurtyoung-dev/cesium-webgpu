@@ -46,11 +46,26 @@ mkdirSync(OUT_DIR, { recursive: true });
 // + whether the stage output is stable enough for the settle loop
 // (NightVision animates noise every frame → plain render+grab).
 const STAGES = [
-  { key: "blackAndWhite", create: "createBlackAndWhiteStage", tol: 8, settle: true },
+  {
+    key: "blackAndWhite",
+    create: "createBlackAndWhiteStage",
+    tol: 8,
+    settle: true,
+  },
   { key: "brightness", create: "createBrightnessStage", tol: 8, settle: true },
-  { key: "nightVision", create: "createNightVisionStage", tol: 20, settle: false },
+  {
+    key: "nightVision",
+    create: "createNightVisionStage",
+    tol: 20,
+    settle: false,
+  },
   { key: "silhouette", create: "createSilhouetteStage", tol: 15, settle: true },
-  { key: "edgeDetection", create: "createEdgeDetectionStage", tol: 12, settle: true },
+  {
+    key: "edgeDetection",
+    create: "createEdgeDetectionStage",
+    tol: 12,
+    settle: true,
+  },
   { key: "depthView", create: "createDepthViewStage", tol: 45, settle: true },
 ];
 // LensFlare is exercised separately: WebGL's flare is a PASS-THROUGH
@@ -509,7 +524,12 @@ function diffImgs(a, b) {
   const A = Buffer.from(a.b64, "base64");
   const B = Buffer.from(b.b64, "base64");
   if (A.length !== B.length)
-    return { fracDiff: 1, meanDelta: 255, diffBytes: -1, note: "size mismatch" };
+    return {
+      fracDiff: 1,
+      meanDelta: 255,
+      diffBytes: -1,
+      note: "size mismatch",
+    };
   let diffBytes = 0;
   let maxDelta = 0;
   let sum = 0;
@@ -571,9 +591,7 @@ for (const s of [...STAGES, LENS_FLARE]) {
       ? gpu.out.captures.flareBase
       : gpu.out.captures.default;
   const wBase =
-    s.key === "lensFlare"
-      ? gl.out.captures.flareBase
-      : gl.out.captures.default;
+    s.key === "lensFlare" ? gl.out.captures.flareBase : gl.out.captures.default;
   if (s.key === "lensFlare") {
     savePng("webgpu-flareBase.png", gBase);
     savePng("webgl-flareBase.png", wBase);
@@ -728,7 +746,9 @@ console.log(
     `hdr(webgpu-console=${gpuHdr.consoleErrors.length} webgl-console=${glHdr.consoleErrors.length} gpu=${gpuHdr.out.gpuErrors.length}) ` +
     `${allErrors.length === 0 ? "OK" : "FAIL"}`,
 );
-allErrors.slice(0, 10).forEach((e) => console.log("  ERR:", String(e).slice(0, 250)));
+allErrors
+  .slice(0, 10)
+  .forEach((e) => console.log("  ERR:", String(e).slice(0, 250)));
 pass = pass && allErrors.length === 0;
 
 console.log(`PNGs: ${OUT_DIR}`);

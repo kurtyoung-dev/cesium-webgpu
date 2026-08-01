@@ -14,7 +14,9 @@ async function run(renderer, useEllipsoid) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 700 },
+  });
   page.on("pageerror", (e) =>
     console.log(`>> [${renderer}] pageerror: ${e.message.slice(0, 160)}`),
   );
@@ -66,8 +68,8 @@ async function run(renderer, useEllipsoid) {
     const d = cx.getImageData(0, 0, W, H).data;
     let gray = 0,
       total = 0;
-    for (let y = (H * 0.3) | 0; y < (H * 0.7) | 0; y += 2) {
-      for (let x = (W * 0.35) | 0; x < (W * 0.65) | 0; x += 2) {
+    for (let y = (H * 0.3) | 0; (y < H * 0.7) | 0; y += 2) {
+      for (let x = (W * 0.35) | 0; (x < W * 0.65) | 0; x += 2) {
         const i = (y * W + x) * 4;
         const r = d[i],
           g = d[i + 1],
@@ -77,7 +79,11 @@ async function run(renderer, useEllipsoid) {
           gray++;
       }
     }
-    return { grayBuildingPx: gray, total, camHeight: v.camera.positionCartographic.height };
+    return {
+      grayBuildingPx: gray,
+      total,
+      camHeight: v.camera.positionCartographic.height,
+    };
   }, useEllipsoid);
 
   const buf = await page.screenshot();

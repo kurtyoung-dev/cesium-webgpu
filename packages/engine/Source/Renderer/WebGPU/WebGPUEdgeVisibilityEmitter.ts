@@ -356,8 +356,7 @@ const _scratchN = new Cartesian3();
 // array ([r,g,b,a]), matching WebGL `createQuadEdgeGeometry`'s
 // `setColorFromOverride`, which reads both shapes.
 type EdgeColorLike =
-  | { x: number; y: number; z: number; w?: number }
-  | ArrayLike<number>;
+  { x: number; y: number; z: number; w?: number } | ArrayLike<number>;
 
 // Resolved per-edge color: [r, g, b, a] in 0..1, or null = no override.
 type EdgeColorRGBA = [number, number, number, number];

@@ -63,7 +63,9 @@ async function newViewerPage(browser, rendererArg) {
   const page = await browser.newPage({ viewport: { width: W, height: H } });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
   await page.goto(
     `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
     { waitUntil: "networkidle" },
@@ -116,7 +118,11 @@ async function runSun(browser, rendererArg, config) {
       const e = C.Math.toRadians(config.elevationDeg);
       const U = C.Cartesian3.normalize(
         C.Cartesian3.add(
-          C.Cartesian3.multiplyByScalar(sunDir, Math.sin(e), new C.Cartesian3()),
+          C.Cartesian3.multiplyByScalar(
+            sunDir,
+            Math.sin(e),
+            new C.Cartesian3(),
+          ),
           C.Cartesian3.multiplyByScalar(perp, Math.cos(e), new C.Cartesian3()),
           new C.Cartesian3(),
         ),
@@ -168,18 +174,25 @@ async function runSun(browser, rendererArg, config) {
 
       let maxLum = 0;
       for (let i = 0; i < img.length; i += 4) {
-        const lum =
-          0.2126 * img[i] + 0.7152 * img[i + 1] + 0.0722 * img[i + 2];
+        const lum = 0.2126 * img[i] + 0.7152 * img[i + 1] + 0.0722 * img[i + 2];
         if (lum > maxLum) maxLum = lum;
       }
       // "disc" = the brightest cluster (sun), threshold relative to peak.
       const thresh = Math.max(40, maxLum * 0.6);
-      let dR = 0, dG = 0, dB = 0, dN = 0;
+      let dR = 0,
+        dG = 0,
+        dB = 0,
+        dN = 0;
       for (let i = 0; i < img.length; i += 4) {
-        const r = img[i], g = img[i + 1], b = img[i + 2];
+        const r = img[i],
+          g = img[i + 1],
+          b = img[i + 2];
         const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
         if (lum >= thresh) {
-          dR += r; dG += g; dB += b; dN++;
+          dR += r;
+          dG += g;
+          dB += b;
+          dN++;
         }
       }
       const discLum =
@@ -338,7 +351,8 @@ async function runStars(browser, rendererArg, config, atmOn) {
         const dOff = off.ctx.getImageData(0, y0, x1, y1 - y0).data;
         let sum = 0;
         for (let i = 0; i < dOn.length; i += 4) {
-          const lOn = 0.2126 * dOn[i] + 0.7152 * dOn[i + 1] + 0.0722 * dOn[i + 2];
+          const lOn =
+            0.2126 * dOn[i] + 0.7152 * dOn[i + 1] + 0.0722 * dOn[i + 2];
           const lOff =
             0.2126 * dOff[i] + 0.7152 * dOff[i + 1] + 0.0722 * dOff[i + 2];
           const d = lOn - lOff;
@@ -427,7 +441,7 @@ const STAR_CONFIGS = [
       hi.extinction &&
       h.extinction.z < hi.extinction.z * 0.5 && // dimmer (blue heavily lost)
       h.extinction.x / Math.max(h.extinction.z, 1e-4) >
-        hi.extinction.x / Math.max(hi.extinction.z, 1e-4) * 1.5; // warmer
+        (hi.extinction.x / Math.max(hi.extinction.z, 1e-4)) * 1.5; // warmer
     const orbitExtOne =
       orb.extinction &&
       orb.extinction.x > 0.999 &&
@@ -494,8 +508,7 @@ const STAR_CONFIGS = [
     // transmittance is the rigorous off-gate.)
     const o = stars[backend]["orbit"];
     const ozt = o.on.zenithT;
-    const orbitOne =
-      ozt && ozt.x > 0.999 && ozt.y > 0.999 && ozt.z > 0.999;
+    const orbitOne = ozt && ozt.x > 0.999 && ozt.y > 0.999 && ozt.z > 0.999;
     console.log(
       `[STARS ${backend}] orbit off-gate zenithT=${ozt ? `(${ozt.x.toFixed(3)},${ozt.y.toFixed(3)},${ozt.z.toFixed(3)})` : "null"} unity=${orbitOne}`,
     );
@@ -506,9 +519,7 @@ const STAR_CONFIGS = [
   const gl = sun.webgl["horizon-low"].extinction;
   const gpu = sun.webgpu["horizon-low"].extinction;
   const parity =
-    gl && gpu &&
-    Math.abs(gl.x - gpu.x) < 0.02 &&
-    Math.abs(gl.z - gpu.z) < 0.02;
+    gl && gpu && Math.abs(gl.x - gpu.x) < 0.02 && Math.abs(gl.z - gpu.z) < 0.02;
   console.log(`[PARITY] sun horizon ext WebGL vs WebGPU match=${parity}`);
   if (!parity) pass = false;
 
@@ -516,7 +527,8 @@ const STAR_CONFIGS = [
   const sgl = stars.webgl["surface"].on.zenithT;
   const sgpu = stars.webgpu["surface"].on.zenithT;
   const starParity =
-    sgl && sgpu &&
+    sgl &&
+    sgpu &&
     Math.abs(sgl.x - sgpu.x) < 0.02 &&
     Math.abs(sgl.z - sgpu.z) < 0.02;
   console.log(`[PARITY] star zenithT WebGL vs WebGPU match=${starParity}`);

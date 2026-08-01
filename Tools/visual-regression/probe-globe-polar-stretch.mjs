@@ -109,7 +109,9 @@ async function capture(renderer, view) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const errs = [];
   page.on("pageerror", (e) => errs.push(e.message));
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
@@ -191,7 +193,8 @@ async function analyze(pngA, pngB) {
         H = A.h;
       // Crop out CesiumViewer UI chrome (toolbar, help panel, timeline).
       const CROP = { x0: 250, x1: 1010, y0: 45, y1: 640 };
-      const lum = (d, i) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      const lum = (d, i) =>
+        0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
 
       const cw = CROP.x1 - CROP.x0,
         ch = CROP.y1 - CROP.y0;
@@ -390,7 +393,8 @@ async function analyze(pngA, pngB) {
               Bl = d[i + 2];
             n++;
             const L = 0.2126 * R + 0.7152 * G + 0.0722 * Bl;
-            const isIce = L > 130 && Math.abs(R - Bl) < 40 && Math.abs(R - G) < 40;
+            const isIce =
+              L > 130 && Math.abs(R - Bl) < 40 && Math.abs(R - G) < 40;
             const isLand = isIce || (R > Bl + 8 && L > 30);
             if (isIce) ice++;
             if (isLand) land++;
@@ -444,8 +448,10 @@ async function analyze(pngA, pngB) {
         discRadius: +PA.r.toFixed(1),
         icePxA: PA.icePx,
         icePxB: PB.icePx,
-        iceCentroidYA: PA.iceCentroidY === null ? null : +PA.iceCentroidY.toFixed(1),
-        iceCentroidYB: PB.iceCentroidY === null ? null : +PB.iceCentroidY.toFixed(1),
+        iceCentroidYA:
+          PA.iceCentroidY === null ? null : +PA.iceCentroidY.toFixed(1),
+        iceCentroidYB:
+          PB.iceCentroidY === null ? null : +PB.iceCentroidY.toFixed(1),
         bestShift_discUnits: +shifts[0].s.toFixed(3),
         buckets,
         seamBluePx: seamBlue,
@@ -479,8 +485,7 @@ for (const view of VIEWS) {
     res.iceCentroidYA !== null && res.iceCentroidYB !== null
       ? Math.abs(res.iceCentroidYA - res.iceCentroidYB) / res.discRadius
       : 0;
-  const iceRatio =
-    res.icePxA > 200 ? res.icePxB / res.icePxA : 1; // skip when little ice visible
+  const iceRatio = res.icePxA > 200 ? res.icePxB / res.icePxA : 1; // skip when little ice visible
   checks.push({
     name: "ice centroid Y shift",
     val: +centroidShift.toFixed(4),
@@ -533,5 +538,7 @@ fs.writeFileSync(
   JSON.stringify(report, null, 2),
 );
 console.log(`[polar-stretch] PNGs + report.json in ${OUT_DIR}`);
-console.log(failed ? "[polar-stretch] OVERALL: FAIL" : "[polar-stretch] OVERALL: PASS");
+console.log(
+  failed ? "[polar-stretch] OVERALL: FAIL" : "[polar-stretch] OVERALL: PASS",
+);
 process.exit(failed ? 1 : 0);

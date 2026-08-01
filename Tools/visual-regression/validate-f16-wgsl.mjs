@@ -13,13 +13,21 @@
 import { readFileSync, readdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import init, { validate_wgsl } from "../shader-pipeline/naga-wasm-tools/naga_wasm_tools.js";
+import init, {
+  validate_wgsl,
+} from "../shader-pipeline/naga-wasm-tools/naga_wasm_tools.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
 await init({
   module_or_path: readFileSync(
-    join(here, "..", "shader-pipeline", "naga-wasm-tools", "naga_wasm_tools_bg.wasm"),
+    join(
+      here,
+      "..",
+      "shader-pipeline",
+      "naga-wasm-tools",
+      "naga_wasm_tools_bg.wasm",
+    ),
   ),
 });
 

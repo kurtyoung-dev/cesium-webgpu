@@ -147,7 +147,10 @@ test("no eclipse is the exact multiplicative identity", () => {
     getEclipseSceneLightFactor(stateWith(0.5, { enabled: false })),
     1.0,
   );
-  assert.equal(getEclipseSceneLightFactor(stateWith(0.5, { valid: false })), 1.0);
+  assert.equal(
+    getEclipseSceneLightFactor(stateWith(0.5, { valid: false })),
+    1.0,
+  );
   // Garbage in the field must not produce garbage light.
   assert.equal(getEclipseSceneLightFactor(stateWith(NaN)), 1.0);
   assert.equal(getEclipseSceneLightFactor(stateWith(-0.2)), 1.0);
@@ -155,9 +158,15 @@ test("no eclipse is the exact multiplicative identity", () => {
 });
 
 test("totality lands exactly on the twilight floor and never on black", () => {
-  assert.equal(getEclipseSceneLightFactor(stateWith(1.0)), ECLIPSE_TWILIGHT_FLOOR);
+  assert.equal(
+    getEclipseSceneLightFactor(stateWith(1.0)),
+    ECLIPSE_TWILIGHT_FLOOR,
+  );
   // Beyond-total (clamped inputs) must not undershoot.
-  assert.equal(getEclipseSceneLightFactor(stateWith(1.5)), ECLIPSE_TWILIGHT_FLOOR);
+  assert.equal(
+    getEclipseSceneLightFactor(stateWith(1.5)),
+    ECLIPSE_TWILIGHT_FLOOR,
+  );
   assert.ok(ECLIPSE_TWILIGHT_FLOOR > 0.0, "never pure black");
 });
 
@@ -244,10 +253,15 @@ test("eclipseAutoExposure switches the transfer function, not the dimming", () =
   for (let i = 1; i <= 200; i++) {
     const o = i / 200;
     const eye = getEclipseSceneLightFactor(stateWith(o));
-    const cam = getEclipseSceneLightFactor(stateWith(o, { autoExposure: true }));
+    const cam = getEclipseSceneLightFactor(
+      stateWith(o, { autoExposure: true }),
+    );
     assert.ok(eye > cam, `eye ${eye} must exceed camera ${cam} at ${o}`);
     assert.ok(cam <= prevCam + 1e-12, `camera mode not monotone at ${o}`);
-    assert.ok(cam >= ECLIPSE_RADIOMETRIC_FLOOR - 1e-15, `camera mode below floor at ${o}`);
+    assert.ok(
+      cam >= ECLIPSE_RADIOMETRIC_FLOOR - 1e-15,
+      `camera mode below floor at ${o}`,
+    );
     prevCam = cam;
   }
 });
@@ -292,7 +306,11 @@ test("a night frame does not dim the world even though the sun is fully occulted
   // fragment with N.L, and a global multiplier would black out the day side
   // visible from the same vantage.
   const s = stateWith(0.0);
-  assert.equal(getEclipseSunFactor(s), 0.0, "S1's billboard fade still uses it");
+  assert.equal(
+    getEclipseSunFactor(s),
+    0.0,
+    "S1's billboard fade still uses it",
+  );
   assert.equal(getEclipseSceneLightFactor(s), 1.0, "S2 must not");
 });
 
@@ -402,7 +420,10 @@ test("2024-04-08 Dallas: the deep partial dims measurably but is far from the fl
   assert.ok(state.moonObscuration > 0.55 && state.moonObscuration < 0.66);
   const f = getEclipseSceneLightFactor(state);
   assert.ok(f > 0.7 && f < 0.8, `deep-partial factor ${f}`);
-  assert.ok(f > 10.0 * ECLIPSE_TWILIGHT_FLOOR, "must not be near the floor yet");
+  assert.ok(
+    f > 10.0 * ECLIPSE_TWILIGHT_FLOOR,
+    "must not be near the floor yet",
+  );
 });
 
 test("the scene factor tracks the eclipse monotonically across real time", () => {
@@ -428,14 +449,20 @@ test("the scene factor tracks the eclipse monotonically across real time", () =>
   const min = Math.min(...series);
   const argmin = series.indexOf(min);
   assert.equal(min, ECLIPSE_TWILIGHT_FLOOR, "the sweep must reach totality");
-  assert.ok(argmin > 2 && argmin < series.length - 3, "totality must be interior");
+  assert.ok(
+    argmin > 2 && argmin < series.length - 3,
+    "totality must be interior",
+  );
   assert.equal(series[0], 1.0, "must start un-eclipsed");
   assert.equal(series[series.length - 1], 1.0, "must recover to identity");
   for (let i = 1; i <= argmin; i++) {
     assert.ok(series[i] <= series[i - 1] + 1e-12, `not falling at step ${i}`);
   }
   for (let i = argmin + 1; i < series.length; i++) {
-    assert.ok(series[i] >= series[i - 1] - 1e-12, `not recovering at step ${i}`);
+    assert.ok(
+      series[i] >= series[i - 1] - 1e-12,
+      `not recovering at step ${i}`,
+    );
   }
 });
 
@@ -448,9 +475,7 @@ const frameStateJs = readEngine("Scene/FrameState.js");
 const uniformStateJs = readEngine("Renderer/UniformState.js");
 const globeJs = readEngine("Scene/Globe.js");
 const skyAtmosphereJs = readEngine("Scene/SkyAtmosphere.js");
-const webgpuSky = readEngine(
-  "Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js",
-);
+const webgpuSky = readEngine("Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js");
 const conditions = readEngine("Scene/AtmosphericConditions.js");
 const webgpuModel = readEngine("Renderer/WebGPU/WebGPUModelRenderer.ts");
 const modelPbrWgsl = readEngine("Shaders/WebGPU/Model/ModelPBRComplete.wgsl");
@@ -525,7 +550,10 @@ test("UniformState dims the scene light AFTER the LDR clamp, SunLight only", () 
   const dimIndex = uniformStateJs.indexOf(
     "const eclipseSceneLightFactor = frameState.eclipseSceneLightFactor;",
   );
-  assert.ok(clampIndex > 0 && dimIndex > clampIndex, "multiply must follow the clamp");
+  assert.ok(
+    clampIndex > 0 && dimIndex > clampIndex,
+    "multiply must follow the clamp",
+  );
 });
 
 test("Globe.js dims the ground atmosphere + fog through the one shared mirror", () => {
@@ -562,7 +590,10 @@ test("both backends dim the sky-atmosphere shell with the same scalar", () => {
     "this._eclipseLightFactor = frameState.eclipseSceneLightFactor ?? 1.0;",
   );
   const modeGuard = skyAtmosphereJs.indexOf("const mode = frameState.mode;");
-  assert.ok(updateIndex > 0 && setIndex > updateIndex, "must live inside update()");
+  assert.ok(
+    updateIndex > 0 && setIndex > updateIndex,
+    "must live inside update()",
+  );
   assert.ok(
     modeGuard > setIndex,
     "must precede update()'s show / mode / pass early-returns",
@@ -614,7 +645,10 @@ test("WebGPU model direct lighting carries the factor too (site 5)", () => {
   // scalar. The aerial-perspective derived light is itself a `SunLight`
   // (`Scene._atmosphereDerivedLight`), so that sub-case is covered by the
   // same branch rather than by a second one.
-  assert.match(webgpuModel, /import SunLight from "\.\.\/\.\.\/Scene\/SunLight\.js";/);
+  assert.match(
+    webgpuModel,
+    /import SunLight from "\.\.\/\.\.\/Scene\/SunLight\.js";/,
+  );
   assert.match(
     webgpuModel,
     /const eclipseFactorRaw = frameState\.eclipseSceneLightFactor;/,
@@ -783,7 +817,10 @@ test("the ladder tolerates realistic pick jitter, and still rejects a collapse",
   assert.ok(Math.abs(bad.failedPair.gap - 0.02) < 1e-9);
   assert.match(bad.reason, /between rung 3 and rung 4/);
   assert.match(bad.reason, /gap of 0\.020000/);
-  assert.match(bad.predicate, /obscuration\[k\] >= obscuration\[k-1\] \+ 0\.05/);
+  assert.match(
+    bad.predicate,
+    /obscuration\[k\] >= obscuration\[k-1\] \+ 0\.05/,
+  );
 });
 
 test("the ladder targets are ascending, separated, and headroomed", () => {
@@ -822,9 +859,15 @@ test("the probe reads its targets from the shared module, not a literal", () => 
     "utf8",
   );
   assert.match(probe, /from "\.\/eclipse-ladder-rungs\.mjs"/);
-  assert.match(probe, /const targets = \[\.\.\.fixedTargets, Math\.min\(best\.o, 1\.0\)\];/);
+  assert.match(
+    probe,
+    /const targets = \[\.\.\.fixedTargets, Math\.min\(best\.o, 1\.0\)\];/,
+  );
   assert.match(probe, /fixedTargets: LADDER_TARGETS,/);
-  assert.match(probe, /const separation = validateLadderSeparation\(derived\.ladder\);/);
+  assert.match(
+    probe,
+    /const separation = validateLadderSeparation\(derived\.ladder\);/,
+  );
   // The in-page copy must be GONE — two predicates would drift.
   assert.doesNotMatch(probe, /ladder rungs collapsed: \$\{picks/);
   assert.doesNotMatch(
@@ -883,7 +926,10 @@ test("the probe instruments survive the three Edge-cycle findings", () => {
   //   WebGPU additive   : out - dst = a*src           <- immune
   // S2 dims `dst`, so WebGL's raw ratio over-reports. The correction uses the
   // measured sun-hidden sums that the four-render pattern already produces.
-  assert.match(sunFade, /const dstDelta = Math\.max\(0, inst\.off\.bgSum - inst\.on\.bgSum\);/);
+  assert.match(
+    sunFade,
+    /const dstDelta = Math\.max\(0, inst\.off\.bgSum - inst\.on\.bgSum\);/,
+  );
   assert.match(sunFade, /const isAdditiveBlend = name === "webgpu";/);
   // The dst lift is applied on the ALPHA_BLEND backend only. (R2 later made
   // the lift space-aware — `liftGated` — so the pin tracks that name.)
@@ -920,7 +966,11 @@ test("the gates are model-free: equivalence, not prediction", () => {
   // must stay in the file with the constants they justify.
   assert.match(probe, /const EQUIV_REL = 1\.0e-4;/);
   assert.match(probe, /const EQUIV_ABS = 1\.0e-5;/);
-  assert.match(probe, /5\.876e-7/, "the calibration evidence must stay recorded");
+  assert.match(
+    probe,
+    /5\.876e-7/,
+    "the calibration evidence must stay recorded",
+  );
   assert.match(probe, /BIT-IDENTICAL, 8 of 8 bands/);
 
   // F1 — site 3's mirror must be read IMMEDIATELY AFTER the ON render. It used
@@ -934,9 +984,10 @@ test("the gates are model-free: equivalence, not prediction", () => {
   // a CRLF working tree and would break on any re-wrap — the fragile-pin class
   // that has now cost this fleet six cycles (see
   // `lib/provenance-markers.mjs`, which rejects exactly this shape).
-  const mirrorMatch = /const engineMirror\s*=\s*scene\.globe\?\._surface\?\.tileProvider\?\.atmosphereLightIntensity/.exec(
-    probe,
-  );
+  const mirrorMatch =
+    /const engineMirror\s*=\s*scene\.globe\?\._surface\?\.tileProvider\?\.atmosphereLightIntensity/.exec(
+      probe,
+    );
   const mirrorRead = mirrorMatch ? mirrorMatch.index : -1;
   const aeRender = probe.indexOf("ac.lighting.eclipseAutoExposure = true;");
   assert.ok(mirrorRead > 0, "the engineMirror read moved or changed shape");
@@ -988,7 +1039,10 @@ test("the gates are model-free: equivalence, not prediction", () => {
   );
   // The manual twin must reproduce sites 1, 2 and 3 — and VERIFY site 3's
   // mirror rather than assuming it follows.
-  assert.match(probe, /scene\.light = new C\.SunLight\(\{\s*color: new C\.Color\(f, f, f, 1\.0\),/);
+  assert.match(
+    probe,
+    /scene\.light = new C\.SunLight\(\{\s*color: new C\.Color\(f, f, f, 1\.0\),/,
+  );
   assert.match(
     probe,
     /scene\.skyAtmosphere\.atmosphereLightIntensity = savedSkyIntensity \* f;/,
@@ -1045,7 +1099,10 @@ test("the gates are model-free: equivalence, not prediction", () => {
     /laneB\.additiveControlIsExact = additiveControlIsExact;/,
   );
   // The dst correction has to be computed in the SAME space as the ratio.
-  assert.match(sunFade, /const liftGated = blendSpace === "display" \? dstLift : dstLiftLinear;/);
+  assert.match(
+    sunFade,
+    /const liftGated = blendSpace === "display" \? dstLift : dstLiftLinear;/,
+  );
 });
 
 test("each backend carries a GATED eclipse-alpha application proof", () => {

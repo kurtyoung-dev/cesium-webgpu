@@ -10,7 +10,9 @@ import fs from "node:fs";
 import path from "node:path";
 
 const DIR = "packages/engine/Source/Shaders/WebGPU/Primitive";
-const files = ["PrimitivePBRSimple", "PrimitivePBRTextured"].map((n) => `${n}.wgsl`);
+const files = ["PrimitivePBRSimple", "PrimitivePBRTextured"].map(
+  (n) => `${n}.wgsl`,
+);
 
 const VARYING_BLOCK = `    //>>ifdef LOG_DEPTH
     // Interpolated linear depthFromNearPlusOne; the FS converts it to frag_depth.
@@ -62,7 +64,8 @@ const VS_BLOCK = `    //>>ifdef LOG_DEPTH
     //>>endif
     return output;`;
 
-const SIG_OLD = "@fragment\nfn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {";
+const SIG_OLD =
+  "@fragment\nfn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {";
 const SIG_NEW = `@fragment
 //>>ifdef LOG_DEPTH
 fn fragmentMain(input: VertexOutput) -> FragOut {
@@ -76,7 +79,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 let changed = 0;
 for (const file of files) {
   const fp = path.join(DIR, file);
-  let raw = fs.readFileSync(fp, "utf8");
+  const raw = fs.readFileSync(fp, "utf8");
   if (raw.includes("v_logDepth")) {
     console.log(`SKIP (already has log depth): ${file}`);
     continue;
@@ -90,39 +93,47 @@ for (const file of files) {
   src = src.replace(voMatch[0], `${voMatch[1]}${VARYING_BLOCK}${voMatch[2]}`);
 
   // 2. CameraUniforms tail.
-  const camMatch = src.match(/    previousViewProjection: mat4x4<f32>,\n(\})/);
-  if (!camMatch) throw new Error(`CameraUniforms prevVP anchor not found in ${file}`);
+  const camMatch = src.match(/ {4}previousViewProjection: mat4x4<f32>,\n(\})/);
+  if (!camMatch)
+    throw new Error(`CameraUniforms prevVP anchor not found in ${file}`);
   src = src.replace(camMatch[0], `${CAMERA_TAIL}${camMatch[1]}`);
 
   // 3. Helpers + FragOut struct — before the first translateRelativeToEye fn.
-  const trIdx = src.indexOf("fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>)");
+  const trIdx = src.indexOf(
+    "fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>)",
+  );
   if (trIdx < 0) throw new Error(`translateRelativeToEye not found in ${file}`);
   src = src.slice(0, trIdx) + HELPERS_BLOCK + src.slice(trIdx);
 
   // 4. vertexMain — replace the lone `    return output;`.
-  if ((src.match(/\n    return output;/g) || []).length !== 1)
+  if ((src.match(/\n {4}return output;/g) || []).length !== 1)
     throw new Error(`expected exactly one 'return output;' in ${file}`);
   src = src.replace("\n    return output;", `\n${VS_BLOCK}`);
 
   // 5. fragmentMain signature → dual + stash.
-  if (!src.includes(SIG_OLD)) throw new Error(`fragmentMain signature not found in ${file}`);
+  if (!src.includes(SIG_OLD))
+    throw new Error(`fragmentMain signature not found in ${file}`);
   src = src.replace(SIG_OLD, SIG_NEW);
 
   // 6. fragmentMain return — only the body after the fragmentMain signature has
   //    the single `return finalColor;` we must wrap (all helper-fn returns are
   //    above the signature).
-  const sigIdx = src.indexOf("fn fragmentMain(input: VertexOutput) -> FragOut {");
+  const sigIdx = src.indexOf(
+    "fn fragmentMain(input: VertexOutput) -> FragOut {",
+  );
   const head = src.slice(0, sigIdx);
   let body = src.slice(sigIdx);
-  if ((body.match(/\n    return finalColor;/g) || []).length !== 1)
-    throw new Error(`expected exactly one 'return finalColor;' in fragmentMain of ${file}`);
+  if ((body.match(/\n {4}return finalColor;/g) || []).length !== 1)
+    throw new Error(
+      `expected exactly one 'return finalColor;' in fragmentMain of ${file}`,
+    );
   body = body.replace(
     "\n    return finalColor;",
     "\n    //>>ifdef LOG_DEPTH\n" +
-    "    return FragOut(finalColor, csm_writeLogDepth(g_fragLogDepth, camera.logDepth.z));\n" +
-    "    //>>else\n" +
-    "    return finalColor;\n" +
-    "    //>>endif",
+      "    return FragOut(finalColor, csm_writeLogDepth(g_fragLogDepth, camera.logDepth.z));\n" +
+      "    //>>else\n" +
+      "    return finalColor;\n" +
+      "    //>>endif",
   );
   src = head + body;
 

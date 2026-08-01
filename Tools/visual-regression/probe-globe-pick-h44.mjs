@@ -41,7 +41,9 @@ const browser = await chromium.launch({
 });
 
 async function runLeg(renderer) {
-  const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 700 },
+  });
   const errors = [];
   const gpuErrors = [];
   page.on("console", (m) => {
@@ -165,7 +167,9 @@ const failures = [];
 
 // WebGPU assertions.
 if (webgpu.pickGlobeFalse.isGlobe) {
-  failures.push("WebGPU pickable=false returned the globe (expected undefined)");
+  failures.push(
+    "WebGPU pickable=false returned the globe (expected undefined)",
+  );
 }
 if (!webgpu.pickPoint.defined || webgpu.pickPoint.id !== "fg-point") {
   failures.push(

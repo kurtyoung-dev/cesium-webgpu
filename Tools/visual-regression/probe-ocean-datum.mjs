@@ -178,7 +178,9 @@ const SURVEY = async ({ sites, levels, timeoutMs }) => {
       provider && provider._resource ? provider._resource.url : null,
     ),
     tilingSchemeEllipsoidRadii: radii(
-      provider && provider.tilingScheme ? provider.tilingScheme.ellipsoid : null,
+      provider && provider.tilingScheme
+        ? provider.tilingScheme.ellipsoid
+        : null,
     ),
     ellipsoidWgs84Radii: radii(C.Ellipsoid.WGS84),
     ellipsoidDefaultRadii: radii(C.Ellipsoid.default),
@@ -377,11 +379,16 @@ const PATCH = async ({ site, dayIso, frames, timeoutMs }) => {
   let terrainRenderedHeightM = null;
   const anchorGeo = primitiveState.anchor ?? primitiveState.a0 ?? null;
   if (anchorGeo) {
-    const carto = C.Cartographic.fromDegrees(anchorGeo.lonDeg, anchorGeo.latDeg);
+    const carto = C.Cartographic.fromDegrees(
+      anchorGeo.lonDeg,
+      anchorGeo.latDeg,
+    );
     terrainRenderedHeightM = num(globe.getHeight(carto));
     const provider = globe.terrainProvider;
     if (provider && provider.availability) {
-      const ps = [C.Cartographic.fromDegrees(anchorGeo.lonDeg, anchorGeo.latDeg)];
+      const ps = [
+        C.Cartographic.fromDegrees(anchorGeo.lonDeg, anchorGeo.latDeg),
+      ];
       await withTimeout(
         C.sampleTerrainMostDetailed(provider, ps, false),
         timeoutMs,
@@ -513,7 +520,9 @@ async function runLane(browser, label, fn, arg) {
       consoleErrors.push(m.text().slice(0, 220));
     }
   });
-  page.on("pageerror", (e) => consoleErrors.push(String(e.message).slice(0, 220)));
+  page.on("pageerror", (e) =>
+    consoleErrors.push(String(e.message).slice(0, 220)),
+  );
   page.on("requestfailed", (req) => {
     const url = req.url();
     if (/cesium\.com|ion\.cesium/.test(url)) {
@@ -652,7 +661,12 @@ function writePng(dataUrl, file) {
   const datum =
     lane1 && lane1.ok
       ? classifyDatum(lane1.samples)
-      : { classification: "INSUFFICIENT_DATA", subLabel: null, reasons: [], stats: null };
+      : {
+          classification: "INSUFFICIENT_DATA",
+          subLabel: null,
+          reasons: [],
+          stats: null,
+        };
 
   const patch =
     lane2 && lane2.ok
@@ -794,7 +808,9 @@ function writePng(dataUrl, file) {
   fs.writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2));
 
   // ── console summary ──
-  console.log("== ocean-lid vertical-datum probe (TIDES + OCEAN-DYNAMICS W0) ==");
+  console.log(
+    "== ocean-lid vertical-datum probe (TIDES + OCEAN-DYNAMICS W0) ==",
+  );
   if (lane1 && lane1.ok) {
     console.log("\nLANE 1 — datum survey (ellipsoidal metres from CWT):");
     for (const s of manifest.lane1_datumSurvey.sites) {
@@ -862,7 +878,9 @@ function writePng(dataUrl, file) {
   }
 
   console.log("\nDECISION:");
-  console.log(`  datum hypothesis : ${decision.datumHypothesis}${decision.subLabel ? ` / ${decision.subLabel}` : ""}`);
+  console.log(
+    `  datum hypothesis : ${decision.datumHypothesis}${decision.subLabel ? ` / ${decision.subLabel}` : ""}`,
+  );
   console.log(`  implication      : ${decision.implication}`);
   console.log(`  patch            : ${decision.patchImplication}`);
   console.log(`  exaggeration     : ${decision.exaggerationImplication}`);
@@ -876,7 +894,9 @@ function writePng(dataUrl, file) {
       lane.failedIonRequests.forEach((f) => console.log(`    - ${f}`));
     }
     if (lane && lane.consoleErrors && lane.consoleErrors.length) {
-      lane.consoleErrors.forEach((e) => console.log(`  [${lane.label}] console: ${e}`));
+      lane.consoleErrors.forEach((e) =>
+        console.log(`  [${lane.label}] console: ${e}`),
+      );
     }
   }
 

@@ -43,7 +43,9 @@ async function capture(label, configure) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
@@ -63,7 +65,9 @@ async function capture(label, configure) {
 
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
 
@@ -78,6 +82,7 @@ async function capture(label, configure) {
 
       // Apply per-capture configuration. Stringified so it crosses the
       // Playwright boundary.
+      // eslint-disable-next-line no-new-func -- in-page snippet compiled from source text; that is the probe harness contract
       const configFn = new Function("v", "C", configureSrc);
       configFn(v, C);
 
@@ -124,7 +129,10 @@ async function capture(label, configure) {
     {
       view: VIEW,
       clockUTC: FIXED_CLOCK_UTC,
-      configureSrc: configure.toString().replace(/^function[^{]*{/, "").replace(/\}$/, ""),
+      configureSrc: configure
+        .toString()
+        .replace(/^function[^{]*{/, "")
+        .replace(/\}$/, ""),
     },
   );
   console.log(`    diag: ${JSON.stringify(diagnostics)}`);
@@ -134,9 +142,7 @@ async function capture(label, configure) {
   await page.screenshot({ path: out });
   await browser.close();
 
-  const errors = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
-  );
+  const errors = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   return { out, errors, diagnostics };
 }
 
@@ -267,7 +273,9 @@ const CONFIGS = {
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[probe-pp-effects-audit] capturing per-effect engagement matrix");
+  console.log(
+    "[probe-pp-effects-audit] capturing per-effect engagement matrix",
+  );
 
   console.log("\n  [baseline-A] all PP off (noise-floor base)");
   const baselineA = await capture("baseline", CONFIGS.baseline);
@@ -313,8 +321,14 @@ const CONFIGS = {
         view: VIEW,
         noiseFloor: noiseDiff,
         captures: {
-          baselineA: { diag: baselineA.diagnostics, errors: baselineA.errors.length },
-          baselineB: { diag: baselineB.diagnostics, errors: baselineB.errors.length },
+          baselineA: {
+            diag: baselineA.diagnostics,
+            errors: baselineA.errors.length,
+          },
+          baselineB: {
+            diag: baselineB.diagnostics,
+            errors: baselineB.errors.length,
+          },
           ...Object.fromEntries(
             Object.entries(results).map(([k, v]) => [
               k,

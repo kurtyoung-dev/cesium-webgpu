@@ -35,9 +35,7 @@ function regionDiff(page, duA, duB, yLo, yHi) {
         c.width = img.naturalWidth;
         c.height = img.naturalHeight;
         c.getContext("2d").drawImage(img, 0, 0);
-        return c
-          .getContext("2d")
-          .getImageData(0, 0, c.width, c.height);
+        return c.getContext("2d").getImageData(0, 0, c.width, c.height);
       };
       const A = await dec(a);
       const B = await dec(b);
@@ -82,12 +80,18 @@ async function run() {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 720 },
+  });
   await page.addInitScript(errorGateInit);
   await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   // Low oblique view over the central US: textured ground low, sky high.
@@ -111,9 +115,13 @@ async function run() {
   // tiles streaming in between captures).
   const waitTiles = async () => {
     await page
-      .waitForFunction(() => window.viewer.scene.globe.tilesLoaded === true, null, {
-        timeout: 20000,
-      })
+      .waitForFunction(
+        () => window.viewer.scene.globe.tilesLoaded === true,
+        null,
+        {
+          timeout: 20000,
+        },
+      )
       .catch(() => {});
     await page.waitForTimeout(1200);
   };
@@ -138,17 +146,22 @@ async function run() {
   const offStable = await regionDiff(page, off1, off2, 0.66, 1.0);
 
   console.log(
-    JSON.stringify(
-      { lowerOnOff, upperOnOff, lowerAnim, offStable },
-      null,
-      1,
-    ),
+    JSON.stringify({ lowerOnOff, upperOnOff, lowerAnim, offStable }, null, 1),
   );
 
   const checks = [
-    [`OFF is stable across frames (offStable ${offStable} < 1)`, offStable < 1.0],
-    [`shimmer warps the lower (ground) frame (lowerOnOff ${lowerOnOff} > 2)`, lowerOnOff > 2.0],
-    [`warp is concentrated low, not sky (lower ${lowerOnOff} > upper ${upperOnOff}*2)`, lowerOnOff > upperOnOff * 2.0],
+    [
+      `OFF is stable across frames (offStable ${offStable} < 1)`,
+      offStable < 1.0,
+    ],
+    [
+      `shimmer warps the lower (ground) frame (lowerOnOff ${lowerOnOff} > 2)`,
+      lowerOnOff > 2.0,
+    ],
+    [
+      `warp is concentrated low, not sky (lower ${lowerOnOff} > upper ${upperOnOff}*2)`,
+      lowerOnOff > upperOnOff * 2.0,
+    ],
     [`warp is ANIMATED (on1 vs on2 lower ${lowerAnim} > 1)`, lowerAnim > 1.0],
   ];
   console.log("\n=== ANALYSIS ===");

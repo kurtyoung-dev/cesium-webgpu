@@ -21,7 +21,9 @@ async function introspect(renderer) {
       "--use-vulkan",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
@@ -35,7 +37,8 @@ async function introspect(renderer) {
     // Active backend
     const ctxType =
       canvas.getContext?.constructor?.name ??
-      (scene.context?.rendererType ?? "?");
+      scene.context?.rendererType ??
+      "?";
 
     // WebGL attributes (if WebGL backend)
     let glAttrs = null;
@@ -67,11 +70,7 @@ async function introspect(renderer) {
     const ppStages = [];
     try {
       const coll = scene.postProcessStages;
-      const propsToShow = [
-        "name",
-        "enabled",
-        "ready",
-      ];
+      const propsToShow = ["name", "enabled", "ready"];
       if (coll && coll.length !== undefined) {
         for (let i = 0; i < coll.length; i++) {
           const stage = coll.get(i);

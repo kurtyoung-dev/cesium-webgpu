@@ -93,7 +93,11 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
       // Place the box high above terrain so it sits against the sky
       // (no terrain clutter behind it) and frame the camera tightly on it.
       const modelHeight = 400;
-      const modelPos = C.Cartesian3.fromDegrees(view.lon, view.lat, modelHeight);
+      const modelPos = C.Cartesian3.fromDegrees(
+        view.lon,
+        view.lat,
+        modelHeight,
+      );
       const headingPitchRoll = new C.HeadingPitchRoll(0, 0, 0);
       const orientation = C.Transforms.headingPitchRollQuaternion(
         modelPos,
@@ -224,8 +228,7 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
             const py = Math.max(0, Math.min(canvas.height - 1, cy + dy));
             const d = ctx2d.getImageData(px, py, 1, 1).data;
             // Quantize to 16 levels per channel to ignore AA noise.
-            const q =
-              ((d[0] >> 4) << 8) | ((d[1] >> 4) << 4) | (d[2] >> 4);
+            const q = ((d[0] >> 4) << 8) | ((d[1] >> 4) << 4) | (d[2] >> 4);
             seen.add(q);
             grid.samples.push({ dx, dy, r: d[0], g: d[1], b: d[2] });
           }
@@ -260,7 +263,7 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
   return { label, out, diagnostics, deviceErrors, messages };
 }
 
-async function diffPngs(a, b) {
+async function _diffPngs(a, b) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   const page = await browser.newPage();
   await page.setContent("<html><body></body></html>");
@@ -335,7 +338,9 @@ async function diffPngs(a, b) {
     const ins = cell.diagnostics.inspect;
     const pageErrors = (cell.messages ?? []).filter((m) => m.t === "pageerror");
     const consoleErrs = (cell.messages ?? []).filter((m) => m.t === "error");
-    console.log(`\n  [${cell.label}]  ${cell.diagnostics.modelUrl.split("/").pop()}`);
+    console.log(
+      `\n  [${cell.label}]  ${cell.diagnostics.modelUrl.split("/").pop()}`,
+    );
     console.log(
       `    metadataDebug=${cell.diagnostics.metadataDebug} entities=${cell.diagnostics.entityCount} tilesLoaded=${cell.diagnostics.tilesLoaded}`,
     );
@@ -348,9 +353,21 @@ async function diffPngs(a, b) {
     console.log(
       `    errors: device=${cell.deviceErrors.length} pageerror=${pageErrors.length} console.error=${consoleErrs.length}`,
     );
-    cell.deviceErrors.slice(0, 3).forEach((e) => console.log(`      device: ${e.text?.slice(0, 160)}`));
-    pageErrors.slice(0, 2).forEach((e) => console.log(`      pageerror: ${(e.text ?? "").slice(0, 160)}`));
-    consoleErrs.slice(0, 3).forEach((e) => console.log(`      console.error: ${(e.text ?? "").split("\n")[0].slice(0, 160)}`));
+    cell.deviceErrors
+      .slice(0, 3)
+      .forEach((e) => console.log(`      device: ${e.text?.slice(0, 160)}`));
+    pageErrors
+      .slice(0, 2)
+      .forEach((e) =>
+        console.log(`      pageerror: ${(e.text ?? "").slice(0, 160)}`),
+      );
+    consoleErrs
+      .slice(0, 3)
+      .forEach((e) =>
+        console.log(
+          `      console.error: ${(e.text ?? "").split("\n")[0].slice(0, 160)}`,
+        ),
+      );
     report.cells.push({
       label: cell.label,
       screenshot: cell.out,
@@ -368,7 +385,9 @@ async function diffPngs(a, b) {
   // be pixel-identical (different textures), but both must show NO debug
   // gradient. The strongest parity assertion is: B and C both render as a
   // normal box (low distinctColors relative to the debug-ON gradient).
-  console.log("\n  [proof] A(debug-on) distinctColors should be MUCH higher than B/C (gradient = metadata reached FS)");
+  console.log(
+    "\n  [proof] A(debug-on) distinctColors should be MUCH higher than B/C (gradient = metadata reached FS)",
+  );
   console.log(
     `    A=${A.diagnostics.grid.distinctColors}  B=${B.diagnostics.grid.distinctColors}  C=${Cp.diagnostics.grid.distinctColors}`,
   );

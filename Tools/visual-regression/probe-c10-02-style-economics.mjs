@@ -154,7 +154,7 @@ const result = await page.evaluate(
       const data = ctx.getImageData(0, 0, w, h).data;
       let nonBlack = 0;
       let rSum = 0;
-      let aSemi = 0;
+      const _aSemi = 0;
       for (let i = 0; i < data.length; i += 4) {
         const lum = data[i] + data[i + 1] + data[i + 2];
         if (lum > 15) nonBlack++;
@@ -229,7 +229,8 @@ const result = await page.evaluate(
 );
 
 console.log(JSON.stringify(result, null, 2));
-if (errors.length) console.log("CONSOLE_ERRORS:", JSON.stringify(errors.slice(0, 8), null, 2));
+if (errors.length)
+  console.log("CONSOLE_ERRORS:", JSON.stringify(errors.slice(0, 8), null, 2));
 const buf = await page.screenshot();
 fs.writeFileSync(
   `Tools/visual-regression/output/probe-c10-02-${renderer}.png`,

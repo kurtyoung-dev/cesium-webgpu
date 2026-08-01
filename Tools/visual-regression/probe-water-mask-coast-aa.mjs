@@ -45,12 +45,21 @@ async function capture(rendererArg, label) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}&${VIEW}`;
   await page.goto(url, { waitUntil: "networkidle" });
@@ -86,7 +95,8 @@ async function capture(rendererArg, label) {
   await page.screenshot({ path: out, fullPage: false });
   await browser.close();
   const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
-  if (errs.length) errs.slice(0, 3).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
+  if (errs.length)
+    errs.slice(0, 3).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
   return out;
 }
 
@@ -99,7 +109,10 @@ async function analyze(pngA, pngB, prevPng) {
   const inp = {
     a: fs.readFileSync(pngA).toString("base64"),
     b: fs.readFileSync(pngB).toString("base64"),
-    prev: prevPng && fs.existsSync(prevPng) ? fs.readFileSync(prevPng).toString("base64") : null,
+    prev:
+      prevPng && fs.existsSync(prevPng)
+        ? fs.readFileSync(prevPng).toString("base64")
+        : null,
   };
   const result = await page.evaluate(async ({ a, b, prev }) => {
     const decode = async (b64) => {
@@ -110,19 +123,27 @@ async function analyze(pngA, pngB, prevPng) {
       c.width = img.naturalWidth;
       c.height = img.naturalHeight;
       c.getContext("2d").drawImage(img, 0, 0);
-      return { w: img.naturalWidth, h: img.naturalHeight, data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data };
+      return {
+        w: img.naturalWidth,
+        h: img.naturalHeight,
+        data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
+      };
     };
     const gray = (im) => {
       const g = new Float32Array(im.w * im.h);
       for (let p = 0, i = 0; p < g.length; p++, i += 4)
-        g[p] = 0.2126 * im.data[i] + 0.7152 * im.data[i + 1] + 0.0722 * im.data[i + 2];
+        g[p] =
+          0.2126 * im.data[i] +
+          0.7152 * im.data[i + 1] +
+          0.0722 * im.data[i + 2];
       return g;
     };
     // Mean Laplacian magnitude inside [x0,x1)x[y0,y1). Higher = more
     // high-frequency (jaggy) content.
     const hfEnergy = (g, w, h, box) => {
       const { x0, y0, x1, y1 } = box;
-      let sum = 0, n = 0;
+      let sum = 0,
+        n = 0;
       for (let y = Math.max(1, y0); y < Math.min(h - 1, y1); y++) {
         for (let x = Math.max(1, x0); x < Math.min(w - 1, x1); x++) {
           const p = y * w + x;
@@ -137,19 +158,24 @@ async function analyze(pngA, pngB, prevPng) {
     const A = await decode(a); // webgl this run
     const B = await decode(b); // webgpu this run
     if (A.w !== B.w || A.h !== B.h) return { error: "size mismatch A/B" };
-    const gA = gray(A), gB = gray(B);
+    const gA = gray(A),
+      gB = gray(B);
     const full = { x0: 0, y0: 0, x1: A.w, y1: A.h };
 
     // Cross-backend mismatch (this run).
     let mism = 0;
     for (let i = 0; i < A.data.length; i += 4) {
-      const d = Math.abs(A.data[i] - B.data[i]) + Math.abs(A.data[i + 1] - B.data[i + 1]) + Math.abs(A.data[i + 2] - B.data[i + 2]);
+      const d =
+        Math.abs(A.data[i] - B.data[i]) +
+        Math.abs(A.data[i + 1] - B.data[i + 1]) +
+        Math.abs(A.data[i + 2] - B.data[i + 2]);
       if (d > 30) mism++;
     }
 
     const out = {
-      w: A.w, h: A.h,
-      crossMismatchPct: (100 * mism / (A.w * A.h)).toFixed(3),
+      w: A.w,
+      h: A.h,
+      crossMismatchPct: ((100 * mism) / (A.w * A.h)).toFixed(3),
       webgl: { hfFull: hfEnergy(gA, A.w, A.h, full).hf.toFixed(3) },
       webgpu: { hfFull: hfEnergy(gB, B.w, B.h, full).hf.toFixed(3) },
     };
@@ -160,21 +186,32 @@ async function analyze(pngA, pngB, prevPng) {
       const P = await decode(prev); // same backend, previous run
       // prev corresponds to arg order: caller passes prev matching pngA's backend.
       if (P.w === A.w && P.h === A.h) {
-        let minx = A.w, miny = A.h, maxx = 0, maxy = 0, changed = 0;
+        let minx = A.w,
+          miny = A.h,
+          maxx = 0,
+          maxy = 0,
+          changed = 0;
         for (let y = 0; y < A.h; y++) {
           for (let x = 0; x < A.w; x++) {
             const i = (y * A.w + x) * 4;
-            const d = Math.abs(A.data[i] - P.data[i]) + Math.abs(A.data[i + 1] - P.data[i + 1]) + Math.abs(A.data[i + 2] - P.data[i + 2]);
+            const d =
+              Math.abs(A.data[i] - P.data[i]) +
+              Math.abs(A.data[i + 1] - P.data[i + 1]) +
+              Math.abs(A.data[i + 2] - P.data[i + 2]);
             if (d > 8) {
               changed++;
-              if (x < minx) minx = x; if (x > maxx) maxx = x;
-              if (y < miny) miny = y; if (y > maxy) maxy = y;
+              if (x < minx) minx = x;
+              if (x > maxx) maxx = x;
+              if (y < miny) miny = y;
+              if (y > maxy) maxy = y;
             }
           }
         }
-        const box = changed ? { x0: minx, y0: miny, x1: maxx + 1, y1: maxy + 1 } : full;
+        const box = changed
+          ? { x0: minx, y0: miny, x1: maxx + 1, y1: maxy + 1 }
+          : full;
         const gP = gray(P);
-        out.changedPct = (100 * changed / (A.w * A.h)).toFixed(3);
+        out.changedPct = ((100 * changed) / (A.w * A.h)).toFixed(3);
         out.coastBox = box;
         out.hfCoast_before = hfEnergy(gP, P.w, P.h, box).hf.toFixed(3);
         out.hfCoast_after = hfEnergy(gA, A.w, A.h, box).hf.toFixed(3);
@@ -193,15 +230,26 @@ async function analyze(pngA, pngB, prevPng) {
   const gpu = await capture("webgpu", LABEL);
 
   // For the 'after' run, diff each backend against its own 'before' capture.
-  const prevGl = LABEL === "after" ? path.join(OUT_DIR, "probe-coast-aa-before-webgl.png") : null;
-  const prevGpu = LABEL === "after" ? path.join(OUT_DIR, "probe-coast-aa-before-webgpu.png") : null;
+  const prevGl =
+    LABEL === "after"
+      ? path.join(OUT_DIR, "probe-coast-aa-before-webgl.png")
+      : null;
+  const prevGpu =
+    LABEL === "after"
+      ? path.join(OUT_DIR, "probe-coast-aa-before-webgpu.png")
+      : null;
 
   const rGl = await analyze(gl, gpu, prevGl); // HF for both + coast box vs webgl-before
   // Re-run coast-box analysis for webgpu vs its own before:
   let coastGpu = null;
   if (prevGpu) {
     const rGpu = await analyze(gpu, gpu, prevGpu);
-    coastGpu = { changedPct: rGpu.changedPct, coastBox: rGpu.coastBox, hfCoast_before: rGpu.hfCoast_before, hfCoast_after: rGpu.hfCoast_after };
+    coastGpu = {
+      changedPct: rGpu.changedPct,
+      coastBox: rGpu.coastBox,
+      hfCoast_before: rGpu.hfCoast_before,
+      hfCoast_after: rGpu.hfCoast_after,
+    };
   }
 
   console.log("cross-backend + webgl coast:");

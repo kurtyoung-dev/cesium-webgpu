@@ -69,18 +69,25 @@ function validateBackend(run, failures) {
     failures.push(`${prefix}: STAR_FIELD renderer was not safely instrumented`);
   }
   if (!run.setup.pipelineReady) {
-    failures.push(`${prefix}: STAR_FIELD pipeline did not warm before measurement`);
+    failures.push(
+      `${prefix}: STAR_FIELD pipeline did not warm before measurement`,
+    );
   }
-  if (run.pageErrors.length) failures.push(`${prefix}: ${run.pageErrors.length} page errors`);
+  if (run.pageErrors.length)
+    failures.push(`${prefix}: ${run.pageErrors.length} page errors`);
   if (run.gpuConsoleErrors.length) {
-    failures.push(`${prefix}: ${run.gpuConsoleErrors.length} GPU console errors`);
+    failures.push(
+      `${prefix}: ${run.gpuConsoleErrors.length} GPU console errors`,
+    );
   }
   if (run.gate.errors.length) {
     failures.push(`${prefix}: ${run.gate.errors.length} uncaptured GPU errors`);
   }
   if (run.gate.deviceLost) failures.push(`${prefix}: ${run.gate.deviceLost}`);
   if (run.externalRequests.length) {
-    failures.push(`${prefix}: ${run.externalRequests.length} external requests`);
+    failures.push(
+      `${prefix}: ${run.externalRequests.length} external requests`,
+    );
   }
   if (
     prefix === "webgpu" &&
@@ -92,25 +99,50 @@ function validateBackend(run, failures) {
   const first = p.stableNightFirst;
   const repeat = p.stableNightRepeat;
   if (
-    counterDelta(first.after.sunCache, first.before.sunCache, "computations") !== 1 ||
-    counterDelta(first.after.starCache, first.before.starCache, "computations") !== 1
+    counterDelta(
+      first.after.sunCache,
+      first.before.sunCache,
+      "computations",
+    ) !== 1 ||
+    counterDelta(
+      first.after.starCache,
+      first.before.starCache,
+      "computations",
+    ) !== 1
   ) {
-    failures.push(`${prefix}/stable-night-first: Sun and star did not each compute exactly once`);
+    failures.push(
+      `${prefix}/stable-night-first: Sun and star did not each compute exactly once`,
+    );
   }
   if (
-    counterDelta(repeat.after.sunCache, repeat.before.sunCache, "computations") !== 0 ||
-    counterDelta(repeat.after.starCache, repeat.before.starCache, "computations") !== 0 ||
+    counterDelta(
+      repeat.after.sunCache,
+      repeat.before.sunCache,
+      "computations",
+    ) !== 0 ||
+    counterDelta(
+      repeat.after.starCache,
+      repeat.before.starCache,
+      "computations",
+    ) !== 0 ||
     counterDelta(repeat.after.sunCache, repeat.before.sunCache, "hits") !== 1 ||
     counterDelta(repeat.after.starCache, repeat.before.starCache, "hits") !== 1
   ) {
-    failures.push(`${prefix}/stable-night-repeat: exact repeat was not one cache hit per body`);
+    failures.push(
+      `${prefix}/stable-night-repeat: exact repeat was not one cache hit per body`,
+    );
   }
   if (
     !equal(first.after.sunExtinction, repeat.after.sunExtinction) ||
-    !equal(first.after.starZenithTransmittance, repeat.after.starZenithTransmittance) ||
+    !equal(
+      first.after.starZenithTransmittance,
+      repeat.after.starZenithTransmittance,
+    ) ||
     first.after.pixelFingerprint.sha256 !== repeat.after.pixelFingerprint.sha256
   ) {
-    failures.push(`${prefix}/stable-night-repeat: output or pixel fingerprint changed`);
+    failures.push(
+      `${prefix}/stable-night-repeat: output or pixel fingerprint changed`,
+    );
   }
   if (
     first.after.draw.submissionCount !== 1 ||
@@ -126,29 +158,56 @@ function validateBackend(run, failures) {
     ["atmosphere-mutation", p.atmosphereMutation],
   ]) {
     if (
-      counterDelta(phase.after.sunCache, phase.before.sunCache, "computations") !== 1 ||
-      counterDelta(phase.after.starCache, phase.before.starCache, "computations") !== 1
+      counterDelta(
+        phase.after.sunCache,
+        phase.before.sunCache,
+        "computations",
+      ) !== 1 ||
+      counterDelta(
+        phase.after.starCache,
+        phase.before.starCache,
+        "computations",
+      ) !== 1
     ) {
-      failures.push(`${prefix}/${label}: exact input mutation did not recompute both caches`);
+      failures.push(
+        `${prefix}/${label}: exact input mutation did not recompute both caches`,
+      );
     }
   }
-  if (p.atmosphereMutation.mutatedRayleighX === p.atmosphereMutation.originalRayleighX) {
-    failures.push(`${prefix}/atmosphere-mutation: in-place scalar did not change`);
+  if (
+    p.atmosphereMutation.mutatedRayleighX ===
+    p.atmosphereMutation.originalRayleighX
+  ) {
+    failures.push(
+      `${prefix}/atmosphere-mutation: in-place scalar did not change`,
+    );
   }
 
   if (!equal(p.atmosphereOff.after.sunExtinction, [1, 1, 1])) {
     failures.push(`${prefix}/atmosphere-off: Sun extinction was not exact ONE`);
   }
   if (p.atmosphereOff.after.starZenithTransmittance !== null) {
-    failures.push(`${prefix}/atmosphere-off: star publication was not undefined`);
+    failures.push(
+      `${prefix}/atmosphere-off: star publication was not undefined`,
+    );
   }
 
   const restored = p.atmosphereRestored;
   if (
-    counterDelta(restored.after.sunCache, restored.before.sunCache, "computations") !== 1 ||
-    counterDelta(restored.after.starCache, restored.before.starCache, "computations") !== 1
+    counterDelta(
+      restored.after.sunCache,
+      restored.before.sunCache,
+      "computations",
+    ) !== 1 ||
+    counterDelta(
+      restored.after.starCache,
+      restored.before.starCache,
+      "computations",
+    ) !== 1
   ) {
-    failures.push(`${prefix}/atmosphere-restored: enabled values did not recompute after disabled mode`);
+    failures.push(
+      `${prefix}/atmosphere-restored: enabled values did not recompute after disabled mode`,
+    );
   }
   if (
     !equal(restored.after.sunExtinction, first.after.sunExtinction) ||
@@ -156,46 +215,70 @@ function validateBackend(run, failures) {
       restored.after.starZenithTransmittance,
       first.after.starZenithTransmittance,
     ) ||
-    restored.after.pixelFingerprint.sha256 !== first.after.pixelFingerprint.sha256
+    restored.after.pixelFingerprint.sha256 !==
+      first.after.pixelFingerprint.sha256
   ) {
-    failures.push(`${prefix}/atmosphere-restored: exact values or pixels did not return to baseline`);
+    failures.push(
+      `${prefix}/atmosphere-restored: exact values or pixels did not return to baseline`,
+    );
   }
 
   const time = p.timeMutation;
   if (
-    counterDelta(time.after.sunCache, time.before.sunCache, "computations") !== 1 ||
-    counterDelta(time.after.starCache, time.before.starCache, "computations") !== 0 ||
+    counterDelta(time.after.sunCache, time.before.sunCache, "computations") !==
+      1 ||
+    counterDelta(
+      time.after.starCache,
+      time.before.starCache,
+      "computations",
+    ) !== 0 ||
     counterDelta(time.after.starCache, time.before.starCache, "hits") !== 1
   ) {
-    failures.push(`${prefix}/time-mutation: Sun invalidation and independent star hit diverged`);
+    failures.push(
+      `${prefix}/time-mutation: Sun invalidation and independent star hit diverged`,
+    );
   }
   if (
     equal(time.before.sunPositionWC, time.after.sunPositionWC) ||
     equal(time.before.temeToPseudoFixed, time.after.temeToPseudoFixed)
   ) {
-    failures.push(`${prefix}/time-mutation: celestial body/orientation state did not advance`);
+    failures.push(
+      `${prefix}/time-mutation: celestial body/orientation state did not advance`,
+    );
   }
   if (
-    time.after.featureRendererUpdateCalls - time.before.featureRendererUpdateCalls !== 1 ||
+    time.after.featureRendererUpdateCalls -
+      time.before.featureRendererUpdateCalls !==
+      1 ||
     time.after.draw.submissionCount !== 1
   ) {
-    failures.push(`${prefix}/time-mutation: star orientation/update did not reach its renderer/draw`);
+    failures.push(
+      `${prefix}/time-mutation: star orientation/update did not reach its renderer/draw`,
+    );
   }
 
   const day = p.sunFacingDay;
   if (day.after.effectiveStarScale !== 0) {
-    failures.push(`${prefix}/sun-facing-day: effective star scale was not exact zero`);
+    failures.push(
+      `${prefix}/sun-facing-day: effective star scale was not exact zero`,
+    );
   }
   if (day.after.starZenithTransmittance !== null) {
-    failures.push(`${prefix}/sun-facing-day: stale star extinction remained published`);
+    failures.push(
+      `${prefix}/sun-facing-day: stale star extinction remained published`,
+    );
   }
   if (
-    counterDelta(day.after.starCache, day.before.starCache, "computations") !== 0 ||
+    counterDelta(day.after.starCache, day.before.starCache, "computations") !==
+      0 ||
     counterDelta(day.after.starCache, day.before.starCache, "hits") !== 0 ||
-    day.after.featureRendererUpdateCalls !== day.before.featureRendererUpdateCalls ||
+    day.after.featureRendererUpdateCalls !==
+      day.before.featureRendererUpdateCalls ||
     day.after.draw.submissionCount !== 0
   ) {
-    failures.push(`${prefix}/sun-facing-day: star cache, feature renderer, or draw work was not zero`);
+    failures.push(
+      `${prefix}/sun-facing-day: star cache, feature renderer, or draw work was not zero`,
+    );
   }
 
   const finalNight = p.finalNightRestore;
@@ -203,11 +286,13 @@ function validateBackend(run, failures) {
     finalNight.after.effectiveStarScale <= 0 ||
     finalNight.after.starZenithTransmittance === null ||
     finalNight.after.featureRendererUpdateCalls -
-        finalNight.before.featureRendererUpdateCalls !==
+      finalNight.before.featureRendererUpdateCalls !==
       1 ||
     finalNight.after.draw.submissionCount !== 1
   ) {
-    failures.push(`${prefix}/final-night: night star publication/render work did not restore`);
+    failures.push(
+      `${prefix}/final-night: night star publication/render work did not restore`,
+    );
   }
   if (
     !equal(finalNight.after.sunExtinction, first.after.sunExtinction) ||
@@ -215,9 +300,12 @@ function validateBackend(run, failures) {
       finalNight.after.starZenithTransmittance,
       first.after.starZenithTransmittance,
     ) ||
-    finalNight.after.pixelFingerprint.sha256 !== first.after.pixelFingerprint.sha256
+    finalNight.after.pixelFingerprint.sha256 !==
+      first.after.pixelFingerprint.sha256
   ) {
-    failures.push(`${prefix}/final-night: exact night values or pixels did not restore`);
+    failures.push(
+      `${prefix}/final-night: exact night values or pixels did not restore`,
+    );
   }
 }
 
@@ -324,8 +412,7 @@ async function runBackend(browser, renderer) {
       scene.render(viewer.clock.currentTime);
       await nextFrame();
     };
-    const vec = (value) =>
-      value ? [value.x, value.y, value.z] : null;
+    const vec = (value) => (value ? [value.x, value.y, value.z] : null);
     const cache = (value) => ({
       computations: value?.computations ?? null,
       hits: value?.hits ?? null,
@@ -342,7 +429,10 @@ async function runBackend(browser, renderer) {
       const bytes = twoD.getImageData(0, 0, capture.width, capture.height).data;
       const digest = await crypto.subtle.digest(
         "SHA-256",
-        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+        bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength,
+        ),
       );
       let nonBlackPixels = 0;
       let rgbSum = 0;
@@ -370,10 +460,7 @@ async function runBackend(browser, renderer) {
       graphicsContext.uniformState.sunDirectionWC,
       new C.Cartesian3(),
     );
-    const nightUp = C.Cartesian3.negate(
-      fixedSunDirection,
-      new C.Cartesian3(),
-    );
+    const nightUp = C.Cartesian3.negate(fixedSunDirection, new C.Cartesian3());
     const axis =
       Math.abs(nightUp.z) < 0.9 ? C.Cartesian3.UNIT_Z : C.Cartesian3.UNIT_X;
     const tangent = C.Cartesian3.normalize(
@@ -452,9 +539,7 @@ async function runBackend(browser, renderer) {
         sunExtinction: vec(scene.sun._atmosphereExtinction),
         frameSunExtinction: vec(frameState.sunAtmosphereExtinction),
         starZenithTransmittance: vec(starField._zenithTransmittance),
-        frameStarZenithTransmittance: vec(
-          frameState.starZenithTransmittance,
-        ),
+        frameStarZenithTransmittance: vec(frameState.starZenithTransmittance),
         effectiveStarScale: starField._effectiveIntensityScale,
         featureRendererUpdateCalls,
         draw: {
@@ -533,11 +618,7 @@ async function runBackend(browser, renderer) {
         ? C.Cartesian3.UNIT_Z
         : C.Cartesian3.UNIT_X;
     const dayUp = C.Cartesian3.normalize(
-      C.Cartesian3.cross(
-        restoredSunDirection,
-        dayAxis,
-        new C.Cartesian3(),
-      ),
+      C.Cartesian3.cross(restoredSunDirection, dayAxis, new C.Cartesian3()),
       new C.Cartesian3(),
     );
     setCamera(dayPosition, restoredSunDirection, dayUp);

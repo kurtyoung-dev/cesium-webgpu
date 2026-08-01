@@ -413,7 +413,7 @@ export function createTextureStubs(
           // wants a mip chain. Single-level filters (LINEAR / NEAREST)
           // imply they don't.
           desc.wantsMipmaps =
-            param !== GL_LINEAR && param >= 0x2700 /* NEAREST_MIPMAP_NEAREST */;
+            param !== GL_LINEAR && param >= 0x2700; /* NEAREST_MIPMAP_NEAREST */
           break;
         case GL_TEXTURE_WRAP_S:
           desc.addressModeU = webglWrapToWebGPU(param);

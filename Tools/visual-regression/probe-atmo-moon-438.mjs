@@ -55,9 +55,7 @@ async function run(moonOn) {
     const start = C.JulianDate.fromIso8601("2026-01-01T00:00:00Z");
     const stop = C.JulianDate.fromIso8601("2026-01-15T00:00:00Z");
     try {
-      await C.Transforms.preloadIcrfFixed(
-        new C.TimeInterval({ start, stop }),
-      );
+      await C.Transforms.preloadIcrfFixed(new C.TimeInterval({ start, stop }));
     } catch (e) {
       /* fallback transform still works, just less accurate */
     }

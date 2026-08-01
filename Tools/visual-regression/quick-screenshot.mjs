@@ -15,7 +15,9 @@ const BASE = "http://localhost:8080";
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   // Capture WebGPU
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
@@ -35,7 +37,10 @@ const BASE = "http://localhost:8080";
     }
   });
   const webgpuShot = await page.screenshot({ omitBackground: false });
-  fs.writeFileSync("Tools/visual-regression/output/webgpu-current.png", webgpuShot);
+  fs.writeFileSync(
+    "Tools/visual-regression/output/webgpu-current.png",
+    webgpuShot,
+  );
   console.log("WebGPU shot saved:", webgpuShot.length, "bytes");
 
   // Capture WebGL
@@ -56,7 +61,10 @@ const BASE = "http://localhost:8080";
     }
   });
   const webglShot = await page.screenshot({ omitBackground: false });
-  fs.writeFileSync("Tools/visual-regression/output/webgl-current.png", webglShot);
+  fs.writeFileSync(
+    "Tools/visual-regression/output/webgl-current.png",
+    webglShot,
+  );
   console.log("WebGL shot saved:", webglShot.length, "bytes");
 
   await browser.close();

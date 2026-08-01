@@ -97,9 +97,7 @@ async function run(rendererArg) {
 
   await page.evaluate(async (setup) => {
     // eslint-disable-next-line no-new-func
-    const fn = new Function(
-      "return (async () => {" + setup + "})();",
-    );
+    const fn = new Function("return (async () => {" + setup + "})();");
     await fn();
   }, SETUP);
 
@@ -133,8 +131,7 @@ async function run(rendererArg) {
     for (let x = 0; x < W; x += 8) {
       const picked = scene.pick(new window.__Cesium.Cartesian2(x, y));
       const isModel =
-        picked &&
-        (picked.primitive === model || picked.primitive === model);
+        picked && (picked.primitive === model || picked.primitive === model);
       cols.push({ x, hit: !!isModel });
     }
     return { W, H, y, cols };
@@ -142,9 +139,7 @@ async function run(rendererArg) {
 
   await browser.close();
 
-  const errs = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
-  );
+  const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   return { out, pickScan, errs };
 }
 
@@ -170,9 +165,7 @@ async function diffPngs(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const a = await decode(ba);
@@ -246,9 +239,7 @@ function summarizePick(scan) {
     gpuPick.left === 0 ? "left" : gpuPick.right === 0 ? "right" : "none";
   const glEmptySide =
     glPick.left === 0 ? "left" : glPick.right === 0 ? "right" : "none";
-  console.log(
-    `  clipped side  webgpu=${gpuEmptySide}  webgl=${glEmptySide}`,
-  );
+  console.log(`  clipped side  webgpu=${gpuEmptySide}  webgl=${glEmptySide}`);
 
   const pickParity =
     gpuEmptySide !== "none" &&

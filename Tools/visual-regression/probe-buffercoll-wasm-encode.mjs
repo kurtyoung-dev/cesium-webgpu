@@ -52,7 +52,9 @@ const browser = await chromium.launch({
 });
 
 async function runBackend(renderer) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -104,8 +106,7 @@ async function runBackend(renderer) {
           scene.render();
         });
 
-      const isCyan = (d, i) =>
-        d[i] < 120 && d[i + 1] > 140 && d[i + 2] > 140;
+      const isCyan = (d, i) => d[i] < 120 && d[i + 1] > 140 && d[i + 2] > 140;
       const cyanMask = (img) => {
         const m = new Uint8Array(img.w * img.h);
         let n = 0;
@@ -264,14 +265,20 @@ async function runBackend(renderer) {
         maskDiff: maskDiff(batchStats.mask, scalarStats.mask),
         canvasPixels: imgBatch.w * imgBatch.h,
         // instrumentation
-        batchWasmRepacks: batchCache ? batchCache.wasmEncodeRepacks ?? 0 : -1,
-        batchScalarRepacks: batchCache ? batchCache.scalarEncodeRepacks ?? 0 : -1,
-        scalarWasmRepacks: scalarCache ? scalarCache.wasmEncodeRepacks ?? 0 : -1,
-        scalarScalarRepacks: scalarCache
-          ? scalarCache.scalarEncodeRepacks ?? 0
+        batchWasmRepacks: batchCache ? (batchCache.wasmEncodeRepacks ?? 0) : -1,
+        batchScalarRepacks: batchCache
+          ? (batchCache.scalarEncodeRepacks ?? 0)
           : -1,
-        smallWasmRepacks: smallCache ? smallCache.wasmEncodeRepacks ?? 0 : -1,
-        smallScalarRepacks: smallCache ? smallCache.scalarEncodeRepacks ?? 0 : -1,
+        scalarWasmRepacks: scalarCache
+          ? (scalarCache.wasmEncodeRepacks ?? 0)
+          : -1,
+        scalarScalarRepacks: scalarCache
+          ? (scalarCache.scalarEncodeRepacks ?? 0)
+          : -1,
+        smallWasmRepacks: smallCache ? (smallCache.wasmEncodeRepacks ?? 0) : -1,
+        smallScalarRepacks: smallCache
+          ? (smallCache.scalarEncodeRepacks ?? 0)
+          : -1,
         wasmReady,
         bridgeCreated: !!(batchCache && batchCache.rteBridge),
         // Diagnostics after the full-collection re-encode (the render where the
@@ -287,9 +294,11 @@ async function runBackend(renderer) {
             ? batchDiag.wasmReady
             : null,
         // moved-grid check: every point shifted east → centroid shifts east.
-        movedWasmRepacks: movedCache ? movedCache.wasmEncodeRepacks ?? 0 : -1,
+        movedWasmRepacks: movedCache ? (movedCache.wasmEncodeRepacks ?? 0) : -1,
         movedDelta:
-          cxBeforeMove >= 0 && imgMoved.cx >= 0 ? imgMoved.cx - cxBeforeMove : 0,
+          cxBeforeMove >= 0 && imgMoved.cx >= 0
+            ? imgMoved.cx - cxBeforeMove
+            : 0,
         pngBatch: imgBatch.png,
         pngScalar: imgScalar.png,
       };
@@ -393,7 +402,10 @@ for (const renderer of ["webgpu", "webgl"]) {
   // stays 0 — surfacing a regression of the load fix without failing unrelated
   // runs. Any OTHER error (WebGPU validation, JS exceptions) still fails.
   const realErrors = r.errors.filter(
-    (e) => !/Failed to load resource.*404|cesium_wasm.*\.wasm|404 \(Not Found\)/i.test(e),
+    (e) =>
+      !/Failed to load resource.*404|cesium_wasm.*\.wasm|404 \(Not Found\)/i.test(
+        e,
+      ),
   );
   if (r.errors.length !== realErrors.length) {
     console.log(

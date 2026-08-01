@@ -128,7 +128,7 @@ async function capture(label, { ao, deferred }) {
       // ellipsoid placement — that's why we also sample at a few
       // offset positions where the ellipsoid should be.
       const canvas = v.canvas;
-      let centerPixel = null;
+      let centerPixel;
       try {
         const tmp = document.createElement("canvas");
         tmp.width = canvas.width;
@@ -153,9 +153,7 @@ async function capture(label, { ao, deferred }) {
           v.scene._environmentState?.useDeferredLighting ?? null,
         centerPixel,
         canvasIsBlack:
-          centerPixel?.r === 0 &&
-          centerPixel?.g === 0 &&
-          centerPixel?.b === 0,
+          centerPixel?.r === 0 && centerPixel?.g === 0 && centerPixel?.b === 0,
         ellipsoidPrimitiveCount: v.scene.primitives.length,
       };
     },
@@ -191,9 +189,7 @@ async function diffPngs(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const a = await decode(ba);
@@ -252,9 +248,7 @@ async function diffPngs(a, b) {
     } else {
       console.log(`    ✓ no device errors`);
     }
-    const pageErrors = (cell.messages ?? []).filter(
-      (m) => m.t === "pageerror",
-    );
+    const pageErrors = (cell.messages ?? []).filter((m) => m.t === "pageerror");
     const consoleErrs = (cell.messages ?? []).filter((m) => m.t === "error");
     if (pageErrors.length || consoleErrs.length) {
       console.log(

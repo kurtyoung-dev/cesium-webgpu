@@ -75,7 +75,9 @@ async function capture(browser, renderer, view, lakeMaskOn, outPath) {
   });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(
     `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&${view}`,
@@ -214,7 +216,9 @@ function p(name) {
       for (const r of RENDERERS) {
         const out = p(`base-${label}-${r}`);
         const errs = await capture(browser, r, view, false, out);
-        console.log(`  captured ${out}${errs.length ? ` (${errs.length} console errors)` : ""}`);
+        console.log(
+          `  captured ${out}${errs.length ? ` (${errs.length} console errors)` : ""}`,
+        );
         errs.slice(0, 2).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
       }
     }
@@ -226,8 +230,20 @@ function p(name) {
   console.log("== C7-LAKE-WATER-MASK :: accept (post-change) ==");
   for (const [label, view] of VIEWS) {
     for (const r of RENDERERS) {
-      const offErrs = await capture(browser, r, view, false, p(`off-${label}-${r}`));
-      const onErrs = await capture(browser, r, view, true, p(`on-${label}-${r}`));
+      const offErrs = await capture(
+        browser,
+        r,
+        view,
+        false,
+        p(`off-${label}-${r}`),
+      );
+      const onErrs = await capture(
+        browser,
+        r,
+        view,
+        true,
+        p(`on-${label}-${r}`),
+      );
       const errs = [...offErrs, ...onErrs];
       if (errs.length) {
         console.log(`  [${label}/${r}] ${errs.length} console errors:`);
@@ -266,7 +282,12 @@ function p(name) {
   console.log("\n-- EFFECT: flag-on vs flag-off per backend --");
   for (const [label, , kind] of VIEWS) {
     for (const r of RENDERERS) {
-      const d = await diffPngs(page, p(`off-${label}-${r}`), p(`on-${label}-${r}`), 30);
+      const d = await diffPngs(
+        page,
+        p(`off-${label}-${r}`),
+        p(`on-${label}-${r}`),
+        30,
+      );
       let ok;
       let expect;
       if (kind === "lake") {
@@ -297,8 +318,18 @@ function p(name) {
   const cross = {};
   for (const [label] of VIEWS) {
     cross[label] = {
-      off: await diffPngs(page, p(`off-${label}-webgl`), p(`off-${label}-webgpu`), 30),
-      on: await diffPngs(page, p(`on-${label}-webgl`), p(`on-${label}-webgpu`), 30),
+      off: await diffPngs(
+        page,
+        p(`off-${label}-webgl`),
+        p(`off-${label}-webgpu`),
+        30,
+      ),
+      on: await diffPngs(
+        page,
+        p(`on-${label}-webgl`),
+        p(`on-${label}-webgpu`),
+        30,
+      ),
     };
   }
   for (const [label, , , parityRef] of VIEWS) {
@@ -316,7 +347,11 @@ function p(name) {
   }
 
   await browser.close();
-  console.log(`\n${failures === 0 ? "ALL GATES PASS" : `${failures} GATE FAILURE(S)`}`);
-  console.log("Now READ the PNGs (on-* lake views: water effect + shoreline AA).");
+  console.log(
+    `\n${failures === 0 ? "ALL GATES PASS" : `${failures} GATE FAILURE(S)`}`,
+  );
+  console.log(
+    "Now READ the PNGs (on-* lake views: water effect + shoreline AA).",
+  );
   process.exit(failures === 0 ? 0 : 1);
 })();

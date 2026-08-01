@@ -133,7 +133,9 @@ function getGitMetadata() {
       }).trim().length > 0;
     return { sourceCommit, sourceDirty };
   } catch (error) {
-    throw new Error(`Unable to capture Git provenance: ${error.message}`);
+    throw new Error(`Unable to capture Git provenance: ${error.message}`, {
+      cause: error,
+    });
   }
 }
 
@@ -327,15 +329,17 @@ async function promoteBaselineCandidates({
 async function decodePngInPage(page, pngBuffer) {
   const base64 = Buffer.from(pngBuffer).toString("base64");
   return await page.evaluate(async (b64) => {
-    const blob = await (
-      await fetch(`data:image/png;base64,${b64}`)
-    ).blob();
+    const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
     const bitmap = await createImageBitmap(blob);
     const off = new OffscreenCanvas(bitmap.width, bitmap.height);
     const ctx = off.getContext("2d");
     ctx.drawImage(bitmap, 0, 0);
     const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
-    return { width: bitmap.width, height: bitmap.height, data: Array.from(data) };
+    return {
+      width: bitmap.width,
+      height: bitmap.height,
+      data: Array.from(data),
+    };
   }, base64);
 }
 
@@ -534,10 +538,7 @@ async function applyScene(page, scene, settleFrames) {
   // helpers.
   let setupSrc = null;
   if (typeof scene.setupFile === "string") {
-    const filePath = path.resolve(
-      path.dirname(SCENES_PATH),
-      scene.setupFile,
-    );
+    const filePath = path.resolve(path.dirname(SCENES_PATH), scene.setupFile);
     setupSrc = await fs.readFile(filePath, "utf8");
   } else if (typeof scene.setup === "string") {
     setupSrc = scene.setup;
@@ -577,9 +578,7 @@ async function applyScene(page, scene, settleFrames) {
           const globe = viewer?.scene?.globe;
           return !globe || globe.tilesLoaded === true;
         }
-        return (
-          tilesDone(window.webglViewer) && tilesDone(window.webgpuViewer)
-        );
+        return tilesDone(window.webglViewer) && tilesDone(window.webgpuViewer);
       },
       null,
       { timeout: 90_000 },
@@ -729,9 +728,7 @@ async function main() {
           return false;
         }
       }
-      return (
-        globeReady(window.webglViewer) && globeReady(window.webgpuViewer)
-      );
+      return globeReady(window.webglViewer) && globeReady(window.webgpuViewer);
     },
     null,
     { timeout: 120_000 },
@@ -966,7 +963,9 @@ async function main() {
     faultConsole: gateConsoleErrors,
   };
   if (gateFaults.length > 0) {
-    console.log(`\n[visual-regression] WebGPU gate FAILED — ${gateFaults.length} fault(s):`);
+    console.log(
+      `\n[visual-regression] WebGPU gate FAILED — ${gateFaults.length} fault(s):`,
+    );
     for (const f of gateFaults.slice(0, 30)) console.log(`  · ${f}`);
   } else {
     console.log(

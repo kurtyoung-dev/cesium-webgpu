@@ -40,7 +40,11 @@ async function run(rendererMode) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
@@ -70,9 +74,7 @@ async function run(rendererMode) {
   let bucketFrame = null;
   const deadline = Date.now() + 20000;
   while (Date.now() < deadline) {
-    bucketFrame = page
-      .frames()
-      .find((f) => /bucket\.html/.test(f.url()));
+    bucketFrame = page.frames().find((f) => /bucket\.html/.test(f.url()));
     if (bucketFrame) {
       break;
     }
@@ -80,14 +82,24 @@ async function run(rendererMode) {
   }
   if (!bucketFrame) {
     await browser.close();
-    return { rendererMode, ok: false, reason: "bucket iframe never appeared", messages };
+    return {
+      rendererMode,
+      ok: false,
+      reason: "bucket iframe never appeared",
+      messages,
+    };
   }
 
   // Give the demo time to run (module load + Viewer construction + first frames).
   await page.waitForTimeout(9000);
 
   // Loading overlay gone + a canvas exists inside the bucket frame.
-  let frameState = { hasCanvas: false, loading: true, nonBlackFrac: 0, mean: 0 };
+  let frameState = {
+    hasCanvas: false,
+    loading: true,
+    nonBlackFrac: 0,
+    mean: 0,
+  };
   try {
     frameState = await bucketFrame.evaluate(() => ({
       hasCanvas: !!document.querySelector("canvas"),
@@ -97,7 +109,10 @@ async function run(rendererMode) {
     frameState.error = String(e);
   }
 
-  const outPng = path.join(OUT_DIR, `sandcastle2-${rendererMode}-${DEMO_ID}.png`);
+  const outPng = path.join(
+    OUT_DIR,
+    `sandcastle2-${rendererMode}-${DEMO_ID}.png`,
+  );
   await page.screenshot({ path: outPng });
 
   // Live GPU canvases don't preserve their drawing buffer, so reading them back
@@ -105,10 +120,7 @@ async function run(rendererMode) {
   // screenshot of the bucket iframe, decoded back into a 2D canvas (a PNG raster,
   // not a live GPU surface, so getImageData is reliable).
   try {
-    const shot = await page
-      .locator("iframe.fullFrame")
-      .first()
-      .screenshot();
+    const shot = await page.locator("iframe.fullFrame").first().screenshot();
     const dataUrl = `data:image/png;base64,${shot.toString("base64")}`;
     const stats = await page.evaluate(async (url) => {
       const img = new Image();

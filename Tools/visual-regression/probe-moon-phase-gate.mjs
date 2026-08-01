@@ -74,11 +74,17 @@ function sha256(bytes) {
 }
 function fileFingerprint(p) {
   const bytes = fs.readFileSync(p);
-  return { path: p.replaceAll("\\", "/"), byteLength: bytes.byteLength, sha256: sha256(bytes) };
+  return {
+    path: p.replaceAll("\\", "/"),
+    byteLength: bytes.byteLength,
+    sha256: sha256(bytes),
+  };
 }
 function provenance() {
-  const sourcePath = "packages/engine/Source/Shaders/WebGPU/Environment/Moon.wgsl";
-  const builtPath = "Build/CesiumUnminified/Shaders/WebGPU/Environment/Moon.wgsl";
+  const sourcePath =
+    "packages/engine/Source/Shaders/WebGPU/Environment/Moon.wgsl";
+  const builtPath =
+    "Build/CesiumUnminified/Shaders/WebGPU/Environment/Moon.wgsl";
   const source = fileFingerprint(sourcePath);
   let built = null;
   let exactMatch = false;
@@ -106,8 +112,9 @@ function provenance() {
       staleBundleFiles.push(file.replaceAll("\\", "/"));
     }
   }
-  const sourceGateDeleted =
-    !fs.readFileSync(sourcePath, "utf8").includes("let phaseGate");
+  const sourceGateDeleted = !fs
+    .readFileSync(sourcePath, "utf8")
+    .includes("let phaseGate");
   return {
     shaderPair: { source, built, exactMatch },
     sourceGateDeleted,
@@ -123,8 +130,16 @@ const DERIVE_EPOCHS = async () => {
   const sunScratch = new C.Cartesian3();
   const moonScratch = new C.Cartesian3();
   const phaseFractionAt = (t) => {
-    const sun = C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(t, sunScratch);
-    const moon = C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(t, moonScratch);
+    const sun =
+      C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+        t,
+        sunScratch,
+      );
+    const moon =
+      C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+        t,
+        moonScratch,
+      );
     const cos =
       C.Cartesian3.dot(sun, moon) /
       (C.Cartesian3.magnitude(sun) * C.Cartesian3.magnitude(moon));
@@ -203,13 +218,17 @@ const MEASURE = async ({ iso, pfWindow }) => {
   let icrfToFixed = C.Transforms.computeIcrfToFixedMatrix(t, new C.Matrix3());
   let usedIcrf = true;
   if (!icrfToFixed) {
-    icrfToFixed = C.Transforms.computeTemeToPseudoFixedMatrix(t, new C.Matrix3());
+    icrfToFixed = C.Transforms.computeTemeToPseudoFixedMatrix(
+      t,
+      new C.Matrix3(),
+    );
     usedIcrf = false;
   }
-  const moonPos = C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
-    t,
-    new C.Cartesian3(),
-  );
+  const moonPos =
+    C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+      t,
+      new C.Cartesian3(),
+    );
   C.Matrix3.multiplyByVector(icrfToFixed, moonPos, moonPos);
   const moonDir = C.Cartesian3.normalize(moonPos, new C.Cartesian3());
 
@@ -218,17 +237,29 @@ const MEASURE = async ({ iso, pfWindow }) => {
   // is structurally invalid.
   const sunDir = scene.context.uniformState.sunDirectionWC;
   const phaseFraction =
-    0.5 * (1.0 - C.Cartesian3.dot(moonDir, C.Cartesian3.normalize(sunDir, new C.Cartesian3())));
+    0.5 *
+    (1.0 -
+      C.Cartesian3.dot(
+        moonDir,
+        C.Cartesian3.normalize(sunDir, new C.Cartesian3()),
+      ));
   const pfInWindow = phaseFraction > pfWindow[0] && phaseFraction < pfWindow[1];
 
   // Camera: 8000 km from Earth center along the sub-lunar direction, aimed
   // at the moon, narrow FOV so the ~0.5 deg disc spans >~100 px.
-  const camPos = C.Cartesian3.multiplyByScalar(moonDir, 8.0e6, new C.Cartesian3());
+  const camPos = C.Cartesian3.multiplyByScalar(
+    moonDir,
+    8.0e6,
+    new C.Cartesian3(),
+  );
   const dir = C.Cartesian3.normalize(
     C.Cartesian3.subtract(moonPos, camPos, new C.Cartesian3()),
     new C.Cartesian3(),
   );
-  const seed = Math.abs(dir.z) < 0.9 ? new C.Cartesian3(0, 0, 1) : new C.Cartesian3(1, 0, 0);
+  const seed =
+    Math.abs(dir.z) < 0.9
+      ? new C.Cartesian3(0, 0, 1)
+      : new C.Cartesian3(1, 0, 0);
   const right = C.Cartesian3.normalize(
     C.Cartesian3.cross(dir, seed, new C.Cartesian3()),
     new C.Cartesian3(),
@@ -237,7 +268,10 @@ const MEASURE = async ({ iso, pfWindow }) => {
     C.Cartesian3.cross(right, dir, new C.Cartesian3()),
     new C.Cartesian3(),
   );
-  scene.camera.setView({ destination: camPos, orientation: { direction: dir, up } });
+  scene.camera.setView({
+    destination: camPos,
+    orientation: { direction: dir, up },
+  });
   scene.camera.frustum.fov = C.Math.toRadians(3.0);
 
   for (let i = 0; i < 12; i++) {
@@ -247,13 +281,25 @@ const MEASURE = async ({ iso, pfWindow }) => {
 
   // Project the moon center + a limb point => ROI. No hardcoded pixels.
   scene.render(T());
-  const center = C.SceneTransforms.worldToWindowCoordinates(scene, moonPos, new C.Cartesian2());
+  const center = C.SceneTransforms.worldToWindowCoordinates(
+    scene,
+    moonPos,
+    new C.Cartesian2(),
+  );
   const limbWorld = C.Cartesian3.add(
     moonPos,
-    C.Cartesian3.multiplyByScalar(up, C.Ellipsoid.MOON.maximumRadius, new C.Cartesian3()),
+    C.Cartesian3.multiplyByScalar(
+      up,
+      C.Ellipsoid.MOON.maximumRadius,
+      new C.Cartesian3(),
+    ),
     new C.Cartesian3(),
   );
-  const limb = C.SceneTransforms.worldToWindowCoordinates(scene, limbWorld, new C.Cartesian2());
+  const limb = C.SceneTransforms.worldToWindowCoordinates(
+    scene,
+    limbWorld,
+    new C.Cartesian2(),
+  );
   if (!center || !limb) {
     return { structuralError: "moon center/limb did not project", iso };
   }
@@ -269,7 +315,11 @@ const MEASURE = async ({ iso, pfWindow }) => {
   const x0 = Math.round(cx - half);
   const y0 = Math.round(cy - half);
   const roiValid =
-    rDev >= 3 && x0 >= 0 && y0 >= 0 && x0 + 2 * half < canvas.width && y0 + 2 * half < canvas.height;
+    rDev >= 3 &&
+    x0 >= 0 &&
+    y0 >= 0 &&
+    x0 + 2 * half < canvas.width &&
+    y0 + 2 * half < canvas.height;
   if (!roiValid) {
     return { structuralError: `ROI invalid (r=${rDev}px at ${cx},${cy})`, iso };
   }
@@ -285,7 +335,17 @@ const MEASURE = async ({ iso, pfWindow }) => {
     const probeCtx = probeCanvas.getContext("2d");
     for (let i = 0; i < 90; i++) {
       scene.render(T());
-      probeCtx.drawImage(canvas, Math.round(cx) - 4, Math.round(cy) - 4, 9, 9, 0, 0, 9, 9);
+      probeCtx.drawImage(
+        canvas,
+        Math.round(cx) - 4,
+        Math.round(cy) - 4,
+        9,
+        9,
+        0,
+        0,
+        9,
+        9,
+      );
       const px = probeCtx.getImageData(0, 0, 9, 9).data;
       let anyLit = false;
       for (let p = 0; p < px.length; p += 4) {
@@ -307,11 +367,21 @@ const MEASURE = async ({ iso, pfWindow }) => {
   tmp.width = 2 * half + 1;
   tmp.height = 2 * half + 1;
   const ctx = tmp.getContext("2d");
-  ctx.drawImage(canvas, x0, y0, tmp.width, tmp.height, 0, 0, tmp.width, tmp.height);
+  ctx.drawImage(
+    canvas,
+    x0,
+    y0,
+    tmp.width,
+    tmp.height,
+    0,
+    0,
+    tmp.width,
+    tmp.height,
+  );
   const data = ctx.getImageData(0, 0, tmp.width, tmp.height).data;
 
   // Disc statistics: pixels inside 1.05*r of the projected center.
-  const discR2 = (rDev * 1.05) * (rDev * 1.05);
+  const discR2 = rDev * 1.05 * (rDev * 1.05);
   let discPx = 0;
   let litPx = 0;
   let lumSum = 0;
@@ -363,7 +433,9 @@ const MEASURE = async ({ iso, pfWindow }) => {
 };
 
 async function runBackend(browser, renderer, lanes) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+  });
   const page = await context.newPage();
   const errs = [];
   page.on("console", (m) => {
@@ -371,12 +443,16 @@ async function runBackend(browser, renderer, lanes) {
   });
   const out = { renderer, lanes: {}, consoleErrors: errs };
   try {
-    await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000,
-    });
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      },
+    );
     await page.waitForFunction(
-      () => !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
+      () =>
+        !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
       null,
       { timeout: 90000 },
     );
@@ -425,15 +501,23 @@ async function runBackend(browser, renderer, lanes) {
   try {
     // Derive the three epochs once (pure ephemeris math, deterministic).
     const derivePage = await (await browser.newContext()).newPage();
-    await derivePage.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgl`, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000,
-    });
+    await derivePage.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=webgl`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      },
+    );
     lanes = await derivePage.evaluate(DERIVE_EPOCHS);
-    await derivePage.context().close().catch(() => {});
+    await derivePage
+      .context()
+      .close()
+      .catch(() => {});
     for (const [name, lane] of Object.entries(lanes)) {
       if (!lane.iso) {
-        console.error(`[probe-moon-phase-gate] no epoch found for lane ${name}`);
+        console.error(
+          `[probe-moon-phase-gate] no epoch found for lane ${name}`,
+        );
         process.exit(2);
       }
       console.log(`lane ${name}: ${lane.iso} (phaseFraction ${r3(lane.pf)})`);
@@ -454,16 +538,32 @@ async function runBackend(browser, renderer, lanes) {
     "night-full": { litFrac: 0.55, meanLumLit: 30 },
   };
   const laneVerdicts = {};
-  let structural = !!(gl.error || gpu.error || gl.backendMismatch || gpu.backendMismatch);
+  let structural = !!(
+    gl.error ||
+    gpu.error ||
+    gl.backendMismatch ||
+    gpu.backendMismatch
+  );
   let anyFail = false;
   for (const name of Object.keys(lanes)) {
     const a = gl.lanes[name];
     const b = gpu.lanes[name];
     const v = { lane: name, iso: lanes[name].iso };
-    if (!a || !b || a.structuralError || b.structuralError || !a.pfInWindow || !b.pfInWindow) {
+    if (
+      !a ||
+      !b ||
+      a.structuralError ||
+      b.structuralError ||
+      !a.pfInWindow ||
+      !b.pfInWindow
+    ) {
       v.structural = {
-        webgl: a ? (a.structuralError ?? (a.pfInWindow ? null : "pf outside window")) : "missing",
-        webgpu: b ? (b.structuralError ?? (b.pfInWindow ? null : "pf outside window")) : "missing",
+        webgl: a
+          ? (a.structuralError ?? (a.pfInWindow ? null : "pf outside window"))
+          : "missing",
+        webgpu: b
+          ? (b.structuralError ?? (b.pfInWindow ? null : "pf outside window"))
+          : "missing",
       };
       structural = true;
       laneVerdicts[name] = v;
@@ -476,7 +576,8 @@ async function runBackend(browser, renderer, lanes) {
       a.meanLumLit >= floors.meanLumLit &&
       a.meanLumLit <= 255;
     const litFracRatio = a.litFrac > 0 ? b.litFrac / a.litFrac : null;
-    const meanLumLitRatio = a.meanLumLit > 0 ? b.meanLumLit / a.meanLumLit : null;
+    const meanLumLitRatio =
+      a.meanLumLit > 0 ? b.meanLumLit / a.meanLumLit : null;
     const blackoutDetected = litFracRatio !== null && litFracRatio < 0.3;
     const parityOk =
       litFracRatio !== null &&
@@ -487,8 +588,16 @@ async function runBackend(browser, renderer, lanes) {
       meanLumLitRatio < 1.4;
     Object.assign(v, {
       phaseFraction: r3(a.phaseFraction),
-      webgl: { litFrac: r3(a.litFrac), meanLumLit: r3(a.meanLumLit), discRadiusPx: a.discRadiusPx },
-      webgpu: { litFrac: r3(b.litFrac), meanLumLit: r3(b.meanLumLit), discRadiusPx: b.discRadiusPx },
+      webgl: {
+        litFrac: r3(a.litFrac),
+        meanLumLit: r3(a.meanLumLit),
+        discRadiusPx: a.discRadiusPx,
+      },
+      webgpu: {
+        litFrac: r3(b.litFrac),
+        meanLumLit: r3(b.meanLumLit),
+        discRadiusPx: b.discRadiusPx,
+      },
       litFracRatio: r3(litFracRatio),
       meanLumLitRatio: r3(meanLumLitRatio),
       backgroundClean,

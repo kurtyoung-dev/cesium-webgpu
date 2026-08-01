@@ -69,18 +69,68 @@ function extract(src, re, what, file) {
 }
 
 // EXTRACTED shared band + cutoff (single source of truth = the shaders).
-const FADE_LO_W = extract(wgsl, new RegExp(`const OCEAN_OCTAVE_FADE_LO: f32 = ${NUM};`), "FADE_LO", "wgsl");
-const FADE_HI_W = extract(wgsl, new RegExp(`const OCEAN_OCTAVE_FADE_HI: f32 = ${NUM};`), "FADE_HI", "wgsl");
-const CUTOFF_W = extract(wgsl, new RegExp(`const OCEAN_WAVE_MARCH_CUTOFF: f32 = ${NUM};`), "CUTOFF", "wgsl");
+const FADE_LO_W = extract(
+  wgsl,
+  new RegExp(`const OCEAN_OCTAVE_FADE_LO: f32 = ${NUM};`),
+  "FADE_LO",
+  "wgsl",
+);
+const FADE_HI_W = extract(
+  wgsl,
+  new RegExp(`const OCEAN_OCTAVE_FADE_HI: f32 = ${NUM};`),
+  "FADE_HI",
+  "wgsl",
+);
+const CUTOFF_W = extract(
+  wgsl,
+  new RegExp(`const OCEAN_WAVE_MARCH_CUTOFF: f32 = ${NUM};`),
+  "CUTOFF",
+  "wgsl",
+);
 
 // EXTRACTED WGSL octave repeat counts + importance weights + circumference.
-const CIRC = extract(wgsl, new RegExp(`const OCEAN_CIRCUMFERENCE_M: f32 = ${NUM};`), "CIRC", "wgsl");
-const R1 = extract(wgsl, new RegExp(`const OCEAN_OCTAVE_REPEATS_1: f32 = ${NUM};`), "R1", "wgsl");
-const R2 = extract(wgsl, new RegExp(`const OCEAN_OCTAVE_REPEATS_2: f32 = ${NUM};`), "R2", "wgsl");
-const R3 = extract(wgsl, new RegExp(`const OCEAN_OCTAVE_REPEATS_3: f32 = ${NUM};`), "R3", "wgsl");
-const IW1 = extract(wgsl, new RegExp(`const OCEAN_OCTAVE_WEIGHT_1: f32 = ${NUM};`), "W1", "wgsl");
-const IW2 = extract(wgsl, new RegExp(`const OCEAN_OCTAVE_WEIGHT_2: f32 = ${NUM};`), "W2", "wgsl");
-const IW3 = extract(wgsl, new RegExp(`const OCEAN_OCTAVE_WEIGHT_3: f32 = ${NUM};`), "W3", "wgsl");
+const CIRC = extract(
+  wgsl,
+  new RegExp(`const OCEAN_CIRCUMFERENCE_M: f32 = ${NUM};`),
+  "CIRC",
+  "wgsl",
+);
+const R1 = extract(
+  wgsl,
+  new RegExp(`const OCEAN_OCTAVE_REPEATS_1: f32 = ${NUM};`),
+  "R1",
+  "wgsl",
+);
+const R2 = extract(
+  wgsl,
+  new RegExp(`const OCEAN_OCTAVE_REPEATS_2: f32 = ${NUM};`),
+  "R2",
+  "wgsl",
+);
+const R3 = extract(
+  wgsl,
+  new RegExp(`const OCEAN_OCTAVE_REPEATS_3: f32 = ${NUM};`),
+  "R3",
+  "wgsl",
+);
+const IW1 = extract(
+  wgsl,
+  new RegExp(`const OCEAN_OCTAVE_WEIGHT_1: f32 = ${NUM};`),
+  "W1",
+  "wgsl",
+);
+const IW2 = extract(
+  wgsl,
+  new RegExp(`const OCEAN_OCTAVE_WEIGHT_2: f32 = ${NUM};`),
+  "W2",
+  "wgsl",
+);
+const IW3 = extract(
+  wgsl,
+  new RegExp(`const OCEAN_OCTAVE_WEIGHT_3: f32 = ${NUM};`),
+  "W3",
+  "wgsl",
+);
 
 const REPEATS = [R1, R2, R3];
 const IMPORTANCE = [IW1, IW2, IW3];
@@ -95,14 +145,35 @@ function f32ulp(x) {
 
 // ---------------------------------------------------------------------------
 test("(a) fade band + cutoff are shared WGSL<->GLSL (increasing smoothstep)", () => {
-  const FADE_LO_G = extract(glsl, new RegExp(`const float OCEAN_OCTAVE_FADE_LO = ${NUM};`), "FADE_LO", "glsl");
-  const FADE_HI_G = extract(glsl, new RegExp(`const float OCEAN_OCTAVE_FADE_HI = ${NUM};`), "FADE_HI", "glsl");
-  const CUTOFF_G = extract(glsl, new RegExp(`const float OCEAN_WAVE_MARCH_CUTOFF = ${NUM};`), "CUTOFF", "glsl");
+  const FADE_LO_G = extract(
+    glsl,
+    new RegExp(`const float OCEAN_OCTAVE_FADE_LO = ${NUM};`),
+    "FADE_LO",
+    "glsl",
+  );
+  const FADE_HI_G = extract(
+    glsl,
+    new RegExp(`const float OCEAN_OCTAVE_FADE_HI = ${NUM};`),
+    "FADE_HI",
+    "glsl",
+  );
+  const CUTOFF_G = extract(
+    glsl,
+    new RegExp(`const float OCEAN_WAVE_MARCH_CUTOFF = ${NUM};`),
+    "CUTOFF",
+    "glsl",
+  );
   assert.equal(FADE_LO_W, FADE_LO_G, "FADE_LO drift WGSL<->GLSL");
   assert.equal(FADE_HI_W, FADE_HI_G, "FADE_HI drift WGSL<->GLSL");
   assert.equal(CUTOFF_W, CUTOFF_G, "CUTOFF drift WGSL<->GLSL");
-  assert.ok(FADE_LO_W < FADE_HI_W, "FADE_LO must be < FADE_HI (increasing edges)");
-  assert.ok(CUTOFF_W > 0 && CUTOFF_W < 0.1, "cutoff must be a small positive sum");
+  assert.ok(
+    FADE_LO_W < FADE_HI_W,
+    "FADE_LO must be < FADE_HI (increasing edges)",
+  );
+  assert.ok(
+    CUTOFF_W > 0 && CUTOFF_W < 0.1,
+    "cutoff must be a small positive sum",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -112,13 +183,36 @@ test("(b) WGSL mip/aniso-aware + RTE-decomposed; GLSL keeps auto-LOD + divisor",
     wgsl.indexOf("fn computeFoam"),
   );
   assert.ok(march.length > 0, "sampleOceanWaveNormals body not found");
-  assert.equal((march.match(/textureSampleGrad\(/g) || []).length, 3, "expected 3 mip/aniso samples");
-  assert.ok(!/textureSampleLevel\(\s*oceanNormalMap/.test(march), "octave sampled at a fixed LOD — not mip-aware");
+  assert.equal(
+    (march.match(/textureSampleGrad\(/g) || []).length,
+    3,
+    "expected 3 mip/aniso samples",
+  );
+  assert.ok(
+    !/textureSampleLevel\(\s*oceanNormalMap/.test(march),
+    "octave sampled at a fixed LOD — not mip-aware",
+  );
   // RTE decomposition: samples phaseᵢ + euvLocal × Rᵢ, reads packed phase fields.
-  assert.match(march, /phase1 \+ euvLocal \* OCEAN_OCTAVE_REPEATS_1/, "octave 1 must sample phase + euvLocal*R (RTE)");
-  assert.match(wgsl, /tile\.oceanWavePhaseA/, "must read the packed phase-A field");
-  assert.match(wgsl, /tile\.oceanWavePhaseB/, "must read the packed phase-B/span field");
-  assert.match(wgsl, /let spanNorm = tile\.oceanWavePhaseB\.zw/, "span must come from the UB (not east-west in the FS)");
+  assert.match(
+    march,
+    /phase1 \+ euvLocal \* OCEAN_OCTAVE_REPEATS_1/,
+    "octave 1 must sample phase + euvLocal*R (RTE)",
+  );
+  assert.match(
+    wgsl,
+    /tile\.oceanWavePhaseA/,
+    "must read the packed phase-A field",
+  );
+  assert.match(
+    wgsl,
+    /tile\.oceanWavePhaseB/,
+    "must read the packed phase-B/span field",
+  );
+  assert.match(
+    wgsl,
+    /let spanNorm = tile\.oceanWavePhaseB\.zw/,
+    "span must come from the UB (not east-west in the FS)",
+  );
   // Anisotropy on the ocean sampler.
   assert.match(
     samplerTs,
@@ -127,7 +221,10 @@ test("(b) WGSL mip/aniso-aware + RTE-decomposed; GLSL keeps auto-LOD + divisor",
   );
   // CPU packs f64 fract phase offsets.
   const tileUb = fs.readFileSync(
-    path.join(root, "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts"),
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTileUB.ts",
+    ),
     "utf8",
   );
   // Whitespace-tolerant: prettier wraps this call across three lines once the
@@ -139,23 +236,54 @@ test("(b) WGSL mip/aniso-aware + RTE-decomposed; GLSL keeps auto-LOD + divisor",
     "CPU must pack fract(originU*R0) phase offset",
   );
   // GLSL twin: auto-LOD + effective-divisor calibration.
-  assert.match(glsl, /czm_getWaterNoise\(u_oceanNormalMap/, "GLSL auto-LOD path missing");
-  assert.match(glsl, /OCEAN_GETWATERNOISE_DIVISOR/, "GLSL effective-divisor recalibration (D2) missing");
+  assert.match(
+    glsl,
+    /czm_getWaterNoise\(u_oceanNormalMap/,
+    "GLSL auto-LOD path missing",
+  );
+  assert.match(
+    glsl,
+    /OCEAN_GETWATERNOISE_DIVISOR/,
+    "GLSL effective-divisor recalibration (D2) missing",
+  );
 });
 
 // ---------------------------------------------------------------------------
 test("(c) hard far cutoff branch present in both shaders", () => {
-  assert.match(wgsl, /w1 \+ w2 \+ w3 < OCEAN_WAVE_MARCH_CUTOFF/, "WGSL cutoff branch missing");
+  assert.match(
+    wgsl,
+    /w1 \+ w2 \+ w3 < OCEAN_WAVE_MARCH_CUTOFF/,
+    "WGSL cutoff branch missing",
+  );
   assert.match(glsl, /< OCEAN_WAVE_MARCH_CUTOFF/, "GLSL cutoff branch missing");
 });
 
 // ---------------------------------------------------------------------------
 test("(d) fade is a true amplitude fade (.xy scaled by weight, .z kept)", () => {
-  assert.match(wgsl, /vec3<f32>\(n1\.xy \* w1, n1\.z \* OCEAN_OCTAVE_WEIGHT_1\)/, "WGSL octave 1 amplitude fade missing");
-  assert.match(wgsl, /vec3<f32>\(n3\.xy \* w3, n3\.z \* OCEAN_OCTAVE_WEIGHT_3\)/, "WGSL octave 3 amplitude fade missing");
-  assert.ok(!/normalize\(n1 \* w1 \+ n2 \* w2 \+ n3 \* w3\)/.test(wgsl), "WGSL must not scale whole vectors inside normalize");
-  assert.match(glsl, /normalTangentSpaceHighAltitude\.xy \*= highLodWeight/, "GLSL high-layer amplitude fade missing");
-  assert.match(glsl, /normalTangentSpaceLowAltitude\.xy \*= lowLodWeight/, "GLSL low-layer amplitude fade missing");
+  assert.match(
+    wgsl,
+    /vec3<f32>\(n1\.xy \* w1, n1\.z \* OCEAN_OCTAVE_WEIGHT_1\)/,
+    "WGSL octave 1 amplitude fade missing",
+  );
+  assert.match(
+    wgsl,
+    /vec3<f32>\(n3\.xy \* w3, n3\.z \* OCEAN_OCTAVE_WEIGHT_3\)/,
+    "WGSL octave 3 amplitude fade missing",
+  );
+  assert.ok(
+    !/normalize\(n1 \* w1 \+ n2 \* w2 \+ n3 \* w3\)/.test(wgsl),
+    "WGSL must not scale whole vectors inside normalize",
+  );
+  assert.match(
+    glsl,
+    /normalTangentSpaceHighAltitude\.xy \*= highLodWeight/,
+    "GLSL high-layer amplitude fade missing",
+  );
+  assert.match(
+    glsl,
+    /normalTangentSpaceLowAltitude\.xy \*= lowLodWeight/,
+    "GLSL low-layer amplitude fade missing",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -170,33 +298,62 @@ function lodWeight(repeatsPerPixel) {
 
 test("(e) repeats are integer (exact wrap), ascend, imply ~150/50/15 m, match TS", () => {
   for (let i = 0; i < REPEATS.length; i++) {
-    assert.equal(REPEATS[i], Math.round(REPEATS[i]), `repeat ${i} must be integer (exact ±180° wrap, P3)`);
+    assert.equal(
+      REPEATS[i],
+      Math.round(REPEATS[i]),
+      `repeat ${i} must be integer (exact ±180° wrap, P3)`,
+    );
     const wavelength = CIRC / REPEATS[i];
     assert.ok(
-      Math.abs(wavelength - TARGET_WAVELENGTHS[i]) / TARGET_WAVELENGTHS[i] < 0.01,
+      Math.abs(wavelength - TARGET_WAVELENGTHS[i]) / TARGET_WAVELENGTHS[i] <
+        0.01,
       `octave ${i} wavelength ${wavelength.toFixed(2)} m off target ${TARGET_WAVELENGTHS[i]}`,
     );
     // integer repeats must be exactly f32-representable (< 2^24) for CPU/GPU agreement.
-    assert.ok(REPEATS[i] < 2 ** 24, `repeat ${i} not exactly f32-representable`);
+    assert.ok(
+      REPEATS[i] < 2 ** 24,
+      `repeat ${i} not exactly f32-representable`,
+    );
   }
-  assert.ok(R1 < R2 && R2 < R3, `repeats must ascend swell<medium<ripple (${R1},${R2},${R3})`);
+  assert.ok(
+    R1 < R2 && R2 < R3,
+    `repeats must ascend swell<medium<ripple (${R1},${R2},${R3})`,
+  );
   const sum = IMPORTANCE.reduce((a, b) => a + b, 0);
-  assert.ok(Math.abs(sum - 1.0) < 1e-6, `importance weights sum ${sum} != ~1.0`);
-  assert.ok(IW1 >= IW2 && IW2 >= IW3, "swell should be the dominant importance");
+  assert.ok(
+    Math.abs(sum - 1.0) < 1e-6,
+    `importance weights sum ${sum} != ~1.0`,
+  );
+  assert.ok(
+    IW1 >= IW2 && IW2 >= IW3,
+    "swell should be the dominant importance",
+  );
 
   // WGSL <-> TS lockstep: the CPU phase decomposition is only correct if the
   // packer uses the SAME integer repeats as the shader.
   const tsArr = typesTs.match(/OCEAN_OCTAVE_REPEATS\s*=\s*\[([^\]]+)\]/);
   assert.ok(tsArr, "TS OCEAN_OCTAVE_REPEATS array not found");
   const tsReps = tsArr[1].split(",").map((s) => parseFloat(s.trim()));
-  assert.deepEqual(tsReps, REPEATS, "TS OCEAN_OCTAVE_REPEATS must match the WGSL repeats");
+  assert.deepEqual(
+    tsReps,
+    REPEATS,
+    "TS OCEAN_OCTAVE_REPEATS must match the WGSL repeats",
+  );
 });
 
 test("(e) LOD weight: full near, monotone, exactly 0 past FADE_HI; largest R fades first", () => {
   for (const R of REPEATS) {
     assert.equal(lodWeight(0.0), 1.0, "weight not 1 at zero footprint");
-    assert.equal(lodWeight(R * ((FADE_LO_W * 0.999) / R)), 1.0, "octave faded before FADE_LO");
-    assert.equal(lodWeight(R * (FADE_HI_W / R)), 0.0, "octave nonzero at FADE_HI");
+    assert.equal(
+      lodWeight(R * ((FADE_LO_W * 0.999) / R)),
+      1.0,
+      "octave faded before FADE_LO",
+    );
+    assert.equal(
+      lodWeight(R * (FADE_HI_W / R)),
+      0.0,
+      "octave nonzero at FADE_HI",
+    );
     let prev = 1.0;
     for (let k = 0; k <= 40; k++) {
       const wv = lodWeight((FADE_HI_W / R) * (k / 40) * R);
@@ -205,7 +362,8 @@ test("(e) LOD weight: full near, monotone, exactly 0 past FADE_HI; largest R fad
     }
   }
   const halfFoot = (R) => {
-    let lo = 0, hi = FADE_HI_W / R;
+    let lo = 0,
+      hi = FADE_HI_W / R;
     for (let i = 0; i < 60; i++) {
       const mid = 0.5 * (lo + hi);
       if (lodWeight(R * mid) > 0.5) lo = mid;
@@ -214,7 +372,10 @@ test("(e) LOD weight: full near, monotone, exactly 0 past FADE_HI; largest R fad
     return 0.5 * (lo + hi);
   };
   const hf = REPEATS.map(halfFoot);
-  assert.ok(hf[2] < hf[1] && hf[1] < hf[0], "shortest wavelength (largest R) must reach half-weight first");
+  assert.ok(
+    hf[2] < hf[1] && hf[1] < hf[0],
+    "shortest wavelength (largest R) must reach half-weight first",
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -258,8 +419,11 @@ test("(f) v3 DECOMPOSED coordinate ulp < 1% of a repeat for ALL octaves at 60N/1
   const lonRad = (170 * Math.PI) / 180;
   const originU = lonRad * ONE_OVER_TWO_PI + 0.5;
   for (const R of REPEATS) {
-    const phase = (originU * R) - Math.floor(originU * R);
+    const phase = originU * R - Math.floor(originU * R);
     assert.ok(phase >= 0 && phase < 1, "phase offset must be in [0,1)");
-    assert.ok(f32ulp(phase) < REPEAT_ULP_LIMIT, "packed phase offset must be f32-precise");
+    assert.ok(
+      f32ulp(phase) < REPEAT_ULP_LIMIT,
+      "packed phase offset must be f32-precise",
+    );
   }
 });

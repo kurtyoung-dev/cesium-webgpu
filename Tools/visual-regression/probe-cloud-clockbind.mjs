@@ -39,9 +39,12 @@ const result = await page.evaluate(async () => {
     s = v.scene,
     g = s.globe;
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.45;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
-  if ("cloudWindSpeed" in g) g.defaultCloudCollection.volumetric.cloudWindSpeed = 4000; // strong wind so advection is obvious
+  if ("cloudCoverage" in g)
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.45;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+  if ("cloudWindSpeed" in g)
+    g.defaultCloudCollection.volumetric.cloudWindSpeed = 4000; // strong wind so advection is obvious
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
   if (s.moon) s.moon.show = false;
@@ -81,7 +84,7 @@ const result = await page.evaluate(async () => {
           n = 0;
         for (let yy = 0; yy < ch; yy += 3) {
           for (let xx = 0; xx < cw; xx += 3) {
-            const px0 = (gx * cw + xx),
+            const px0 = gx * cw + xx,
               py0 = gy * ch + yy;
             const i = (py0 * w + px0) * 4;
             sum += Math.max(px[i], px[i + 1], px[i + 2]);

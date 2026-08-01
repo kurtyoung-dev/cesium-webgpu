@@ -91,8 +91,15 @@ test("(a) the reference table is well-formed (ids, coords, bands, provenance)", 
       s.lonDeg >= -180 && s.lonDeg <= 180,
       `${s.id}: longitude out of range`,
     );
-    assert.ok(s.latDeg >= -90 && s.latDeg <= 90, `${s.id}: latitude out of range`);
-    assert.equal(s.water, true, `${s.id}: every survey site must be open water`);
+    assert.ok(
+      s.latDeg >= -90 && s.latDeg <= 90,
+      `${s.id}: latitude out of range`,
+    );
+    assert.equal(
+      s.water,
+      true,
+      `${s.id}: every survey site must be open water`,
+    );
     assert.ok(
       Number.isFinite(s.toleranceM) && s.toleranceM > 0,
       `${s.id}: toleranceM must be positive and finite`,
@@ -414,7 +421,11 @@ test("(d) a geoid-carrying lid at -100 m drops to -300 m at scale 3", () => {
   assert.equal(r.predictedH3M, -300);
   assert.equal(r.renderedDeltaM, -200);
   assert.equal(r.modelResidualM, 0);
-  assert.equal(r.rawInvariant, true, "raw sampleTerrain must be exaggeration-free");
+  assert.equal(
+    r.rawInvariant,
+    true,
+    "raw sampleTerrain must be exaggeration-free",
+  );
 });
 
 test("(d) a non-zero relativeHeight shifts the fixed point", () => {
@@ -611,7 +622,10 @@ test("(f) lane 2 / lane 3 implications are reported for every verdict", () => {
   const d = decisionFromLanes({
     datum: { classification: "GEOID", subLabel: null },
     patch: { verdict: "PATCH_ABOVE_WATERLINE" },
-    exaggeration: [{ verdict: "DISPLACES_AS_MODELED" }, { verdict: "NO_DISPLACEMENT" }],
+    exaggeration: [
+      { verdict: "DISPLACES_AS_MODELED" },
+      { verdict: "NO_DISPLACEMENT" },
+    ],
   });
   assert.match(d.patchImplication, /ABOVE/);
   assert.match(d.exaggerationImplication, /DOES displace/);
@@ -619,7 +633,10 @@ test("(f) lane 2 / lane 3 implications are reported for every verdict", () => {
   const flat = decisionFromLanes({
     datum: { classification: "ELLIPSOID_ZERO", subLabel: null },
     patch: { verdict: "COPLANAR" },
-    exaggeration: [{ verdict: "NO_DISPLACEMENT" }, { verdict: "NO_DISPLACEMENT" }],
+    exaggeration: [
+      { verdict: "NO_DISPLACEMENT" },
+      { verdict: "NO_DISPLACEMENT" },
+    ],
   });
   assert.match(flat.patchImplication, /co-planar/i);
   assert.match(flat.exaggerationImplication, /fixed point/i);
@@ -655,13 +672,18 @@ test("(g) the probe imports its math from the model (no inlined duplicate)", () 
 });
 
 test("(g) the probe's exaggeration lane targets real, declared sites", () => {
-  const m = probeSource.match(/EXAG_SITE_IDS\s*=\s*Object\.freeze\(\[([^\]]*)\]\)/);
+  const m = probeSource.match(
+    /EXAG_SITE_IDS\s*=\s*Object\.freeze\(\[([^\]]*)\]\)/,
+  );
   assert.ok(m, "EXAG_SITE_IDS not found in the probe");
   const ids = m[1]
     .split(",")
     .map((s) => s.trim().replace(/^["']|["']$/g, ""))
     .filter((s) => s.length > 0);
-  assert.ok(ids.length >= 2, "the exaggeration lane needs a lever and a control");
+  assert.ok(
+    ids.length >= 2,
+    "the exaggeration lane needs a lever and a control",
+  );
   for (const id of ids) {
     assert.ok(siteById(id), `EXAG_SITE_IDS references unknown site ${id}`);
   }
@@ -679,10 +701,16 @@ test("(g) the probe's exaggeration lane targets real, declared sites", () => {
 });
 
 test("(g) survey levels ascend, skip the over-coarse tiles, and can detect drift", () => {
-  assert.ok(SURVEY_LEVELS.length >= 2, "need >= 2 fixed levels to detect LOD drift");
+  assert.ok(
+    SURVEY_LEVELS.length >= 2,
+    "need >= 2 fixed levels to detect LOD drift",
+  );
   for (let i = 0; i < SURVEY_LEVELS.length; i++) {
     assert.ok(Number.isInteger(SURVEY_LEVELS[i]), "levels must be integers");
-    assert.ok(SURVEY_LEVELS[i] >= 4 && SURVEY_LEVELS[i] <= 15, "level out of range");
+    assert.ok(
+      SURVEY_LEVELS[i] >= 4 && SURVEY_LEVELS[i] <= 15,
+      "level out of range",
+    );
     if (i > 0) {
       assert.ok(SURVEY_LEVELS[i] > SURVEY_LEVELS[i - 1], "levels must ascend");
     }
@@ -699,7 +727,10 @@ test("(g) survey levels ascend, skip the over-coarse tiles, and can detect drift
 test("(g) the patch lane's baseline span equals its ocean span (fair control)", () => {
   const baseline = probeSource.match(/patchBaseline:\s*(\d+)/);
   const ocean = probeSource.match(/patchOcean:\s*(\d+)/);
-  assert.ok(baseline && ocean, "patchBaseline/patchOcean frame counts not found");
+  assert.ok(
+    baseline && ocean,
+    "patchBaseline/patchOcean frame counts not found",
+  );
   assert.equal(
     baseline[1],
     ocean[1],
@@ -708,15 +739,31 @@ test("(g) the patch lane's baseline span equals its ocean span (fair control)", 
 });
 
 test("(g) the probe declares a watchdog, bounded loops and the 0/1/2 exit contract", () => {
-  assert.match(probeSource, /HARD_LIMIT_MS\s*=\s*\d+/, "watchdog limit missing");
+  assert.match(
+    probeSource,
+    /HARD_LIMIT_MS\s*=\s*\d+/,
+    "watchdog limit missing",
+  );
   assert.match(probeSource, /watchdog\.unref/, "watchdog must be unref'd");
   assert.match(probeSource, /process\.exit\(2\)/, "structural exit 2 missing");
-  assert.match(probeSource, /IN_PAGE_TIMEOUT_MS/, "in-page awaits must be bounded");
+  assert.match(
+    probeSource,
+    /IN_PAGE_TIMEOUT_MS/,
+    "in-page awaits must be bounded",
+  );
   assert.ok(
     !/while\s*\(\s*true\s*\)/.test(probeSource),
     "no unbounded while(true) loops",
   );
   // Fleet capture rules: canvas-element PNG via a 2d copy, same-task grab.
-  assert.match(probeSource, /toDataURL\("image\/png"\)/, "canvas-element PNG missing");
-  assert.match(probeSource, /useDefaultRenderLoop = false/, "default render loop must be off");
+  assert.match(
+    probeSource,
+    /toDataURL\("image\/png"\)/,
+    "canvas-element PNG missing",
+  );
+  assert.match(
+    probeSource,
+    /useDefaultRenderLoop = false/,
+    "default render loop must be off",
+  );
 });

@@ -105,8 +105,9 @@ async function measure(page, { timeIso, headingDeg }) {
         const decodeSnapshot = async (snapshot) => {
           const image = new Image();
           const loaded = new Promise((resolve, reject) => {
+            const decodeFailed = "same-task PNG decode failed";
             image.onload = resolve;
-            image.onerror = () => reject(new Error("same-task PNG decode failed"));
+            image.onerror = () => reject(new Error(decodeFailed));
           });
           image.src = snapshot;
           await loaded;
@@ -137,7 +138,8 @@ async function measure(page, { timeIso, headingDeg }) {
           if (!settled && typeof done === "function") {
             settled = done() === true;
           }
-          const result = typeof capture === "function" ? await capture() : undefined;
+          const hasCapture = typeof capture === "function";
+          const result = hasCapture ? await capture() : undefined;
           return { settled, result };
         };
         return { renderNow, captureNow, grabNow, settleThen };
@@ -203,7 +205,11 @@ async function measure(page, { timeIso, headingDeg }) {
         new C.Matrix3(),
       );
       const sunFixed = icrfToFixed
-        ? C.Matrix3.multiplyByVector(icrfToFixed, sunInertial, new C.Cartesian3())
+        ? C.Matrix3.multiplyByVector(
+            icrfToFixed,
+            sunInertial,
+            new C.Cartesian3(),
+          )
         : sunInertial;
       const sunDir = C.Cartesian3.normalize(
         C.Cartesian3.subtract(sunFixed, origin, new C.Cartesian3()),
@@ -215,12 +221,13 @@ async function measure(page, { timeIso, headingDeg }) {
         new C.Cartesian3(),
       );
       const sunAzimuth =
-        ((((Math.atan2(sunLocal.x, sunLocal.y) * 180) / Math.PI) % 360) + 360) % 360;
+        ((((Math.atan2(sunLocal.x, sunLocal.y) * 180) / Math.PI) % 360) + 360) %
+        360;
       const sunElevation =
         (Math.asin(Math.max(-1, Math.min(1, sunLocal.z))) * 180) / Math.PI;
 
       const heading =
-        headingDeg === null ? sunAzimuth : (((headingDeg % 360) + 360) % 360);
+        headingDeg === null ? sunAzimuth : ((headingDeg % 360) + 360) % 360;
       scene.camera.setView({
         destination: origin,
         orientation: {
@@ -288,7 +295,13 @@ async function measure(page, { timeIso, headingDeg }) {
         png: capture.grabNow(),
       };
     },
-    { site: SITE, timeIso, headingDeg, pitchDeg: PITCH_DEG, rows: MEASURE_ROWS },
+    {
+      site: SITE,
+      timeIso,
+      headingDeg,
+      pitchDeg: PITCH_DEG,
+      rows: MEASURE_ROWS,
+    },
   );
 }
 
@@ -303,7 +316,9 @@ function writePng(dataUrl, name) {
 }
 
 async function runBackend(browser, backend, failures) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 640 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 640 },
+  });
   const consoleErrors = [];
   page.on("console", (message) => {
     if (message.type() === "error") {
@@ -449,7 +464,9 @@ async function runBackend(browser, backend, failures) {
 
   console.log("");
   if (failures.length === 0) {
-    console.log("[sky-aureole-anchor] PASS — the sky's bright lobe is sun-anchored.");
+    console.log(
+      "[sky-aureole-anchor] PASS — the sky's bright lobe is sun-anchored.",
+    );
     process.exit(0);
   }
   console.log(`[sky-aureole-anchor] FAIL — ${failures.length} gate(s):`);

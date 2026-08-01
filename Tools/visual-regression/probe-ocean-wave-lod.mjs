@@ -108,7 +108,11 @@ const MEASURE = async ({ lane, lon, lat, dayIso }) => {
 
   scene.camera.setView({
     destination: C.Cartesian3.fromDegrees(lon, lat, lane.alt),
-    orientation: { heading: 0.0, pitch: C.Math.toRadians(lane.pitch), roll: 0.0 },
+    orientation: {
+      heading: 0.0,
+      pitch: C.Math.toRadians(lane.pitch),
+      roll: 0.0,
+    },
   });
 
   // Settle tiles at the pinned clock (bounded).
@@ -228,12 +232,16 @@ async function runBackend(browser, renderer, laneName) {
   });
   page.on("pageerror", (e) => errs.push(String(e.message).slice(0, 200)));
   try {
-    await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000,
-    });
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      },
+    );
     await page.waitForFunction(
-      () => !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
+      () =>
+        !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
       null,
       { timeout: 90000 },
     );
@@ -253,7 +261,13 @@ async function runBackend(browser, renderer, laneName) {
       );
     }
     delete stats.dataUrl;
-    return { ok: true, renderer, laneName, stats, consoleErrors: errs.slice(0, 4) };
+    return {
+      ok: true,
+      renderer,
+      laneName,
+      stats,
+      consoleErrors: errs.slice(0, 4),
+    };
   } catch (e) {
     return {
       ok: false,
@@ -305,7 +319,8 @@ function evaluateMid(gpu) {
     g.overallMeanLum != null &&
     g.overallMeanLum >= LIT_MIN &&
     g.overallMeanLum <= LIT_MAX;
-  const renderedOk = g.overallLapVar != null && g.overallLapVar > MID_RENDER_FLOOR;
+  const renderedOk =
+    g.overallLapVar != null && g.overallLapVar > MID_RENDER_FLOOR;
   const notNoiseOk = g.nearBand.lapVar <= NEAR_VAR_MAX;
   const pass = litOk && renderedOk && notNoiseOk;
   return {
@@ -363,7 +378,8 @@ function evaluateMid(gpu) {
   const midGlSane = midGl && midGl.ok && midGl.stats.overallMeanLum >= LIT_MIN;
 
   const anyLaneFailed = [lowGl, lowGpu, midGl, midGpu].some((l) => l && !l.ok);
-  const incomplete = low.verdict === "INCOMPLETE" || mid.verdict === "INCOMPLETE";
+  const incomplete =
+    low.verdict === "INCOMPLETE" || mid.verdict === "INCOMPLETE";
   const structural = anyLaneFailed || incomplete || !identityOk;
   const gatePass =
     low.verdict === "PASS" && mid.verdict === "PASS" && lowGlSane && midGlSane;
@@ -400,10 +416,14 @@ function evaluateMid(gpu) {
   console.log(JSON.stringify(verdict, null, 2));
   for (const laneRes of [lowGl, lowGpu, midGl, midGpu]) {
     if (laneRes && !laneRes.ok)
-      console.log(`${laneRes.renderer}/${laneRes.laneName} FAILED: ${laneRes.error}`);
+      console.log(
+        `${laneRes.renderer}/${laneRes.laneName} FAILED: ${laneRes.error}`,
+      );
     if (laneRes && laneRes.consoleErrors && laneRes.consoleErrors.length)
       laneRes.consoleErrors.forEach((e) =>
-        console.log(`  [${laneRes.renderer}/${laneRes.laneName}] console: ${e}`),
+        console.log(
+          `  [${laneRes.renderer}/${laneRes.laneName}] console: ${e}`,
+        ),
       );
   }
   console.log(`\n[full report: ${outPath}]`);

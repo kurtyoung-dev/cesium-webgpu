@@ -126,7 +126,11 @@ async function capture(renderer, sceneKind) {
         ...(sceneKind === "pointcloud"
           ? { style: new C.Cesium3DTileStyle({ pointSize: 8 }) }
           : {}),
-        shading: { attenuation: true, maximumAttenuation: 10, eyeDomeLighting: false },
+        shading: {
+          attenuation: true,
+          maximumAttenuation: 10,
+          eyeDomeLighting: false,
+        },
       });
       s.primitives.add(pc);
       const fixedBS = new C.BoundingSphere(
@@ -180,7 +184,10 @@ async function capture(renderer, sceneKind) {
     }
     const bs = new C.BoundingSphere(center, 80.0);
     for (let i = 0; i < 90; i++) {
-      v.camera.viewBoundingSphere(bs, new C.HeadingPitchRange(0.0, -0.6, 300.0));
+      v.camera.viewBoundingSphere(
+        bs,
+        new C.HeadingPitchRange(0.0, -0.6, 300.0),
+      );
       v.camera.lookAtTransform(C.Matrix4.IDENTITY);
       s.render();
       await new Promise((r) => requestAnimationFrame(r));
@@ -371,7 +378,10 @@ function encodePNG({ w, h, data }) {
     raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -464,7 +474,8 @@ const pcRendered =
   nonBlack(pcGL.decoded) > 3000 && nonBlack(pcGPU.decoded) > 3000;
 const pcaRendered =
   nonBlack(pcaGL.decoded) > 3000 && nonBlack(pcaGPU.decoded) > 3000;
-const ppRendered = nonBlack(ppGL.decoded) > 500 && nonBlack(ppGPU.decoded) > 500;
+const ppRendered =
+  nonBlack(ppGL.decoded) > 500 && nonBlack(ppGPU.decoded) > 500;
 // Point-cloud gates use the gain-NORMALIZED ds4 (tint-immune, see
 // header); a broken sprite shape/size (round or mis-sized quads) is
 // spatial and survives normalization at 20%+.
@@ -476,7 +487,9 @@ const noErrs =
   filterErrs(pcaGPU.errs).length === 0 &&
   filterErrs(ppGPU.errs).length === 0;
 
-console.log(`(A) Both backends render the point cloud: ${pcRendered ? "PASS" : "FAIL"}`);
+console.log(
+  `(A) Both backends render the point cloud: ${pcRendered ? "PASS" : "FAIL"}`,
+);
 console.log(
   `(B) Point cloud normalized-ds4 ${pcNorm?.pct}% < 16% (ds4 ${pcDiffDS?.pct}%, raw ${pcDiff?.pct}%, gains ${JSON.stringify(pcNorm?.gains)}): ${pcPass ? "PASS" : "FAIL"}`,
 );
@@ -486,11 +499,19 @@ console.log(
 console.log(
   `(D) Attenuation-only normalized-ds4 ${pcaNorm?.pct}% < 16% (ds4 ${pcaDiffDS?.pct}%, raw ${pcaDiff?.pct}%, gains ${JSON.stringify(pcaNorm?.gains)}): ${pcaPass ? "PASS" : "FAIL"}`,
 );
-console.log(`(E) Both backends render point primitives: ${ppRendered ? "PASS" : "FAIL"}`);
+console.log(
+  `(E) Both backends render point primitives: ${ppRendered ? "PASS" : "FAIL"}`,
+);
 console.log(
   `(F) Point primitive ds4 mismatch ${ppDiffDS?.pct}% < 5% (raw ${ppDiff?.pct}%): ${ppPass ? "PASS" : "FAIL"}`,
 );
 console.log(`(G) 0 WebGPU device errors: ${noErrs ? "PASS" : "FAIL"}`);
 const pass =
-  pcRendered && pcPass && pcaRendered && pcaPass && ppRendered && ppPass && noErrs;
+  pcRendered &&
+  pcPass &&
+  pcaRendered &&
+  pcaPass &&
+  ppRendered &&
+  ppPass &&
+  noErrs;
 console.log(pass ? "GATE PASS" : "GATE FAIL");

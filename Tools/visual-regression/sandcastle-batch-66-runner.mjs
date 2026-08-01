@@ -28,7 +28,11 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = process.env.CESIUM_REPO_ROOT || "F:/Dev/GH/cesium-webgpu";
 const GALLERY_DIR = path.join(REPO_ROOT, "Apps", "Sandcastle", "gallery");
-const SCREENSHOT_DIR = path.join(__dirname, "screenshots", "sandcastle-batch-66");
+const SCREENSHOT_DIR = path.join(
+  __dirname,
+  "screenshots",
+  "sandcastle-batch-66",
+);
 const REPORT_PATH = path.join(SCREENSHOT_DIR, "report.json");
 
 const BASE_URL = "http://localhost:8080";
@@ -200,7 +204,7 @@ async function runDemo(browser, fileName) {
       configurable: true,
     });
     // Watch for window.viewer being set
-    let _v = undefined;
+    let _v;
     Object.defineProperty(window, "viewer", {
       configurable: true,
       get() {
@@ -213,7 +217,11 @@ async function runDemo(browser, fileName) {
     });
     // Also wrap Cesium.Viewer constructor when Cesium loads
     const checkInterval = setInterval(() => {
-      if (window.Cesium && window.Cesium.Viewer && !window.Cesium.__viewerWrapped) {
+      if (
+        window.Cesium &&
+        window.Cesium.Viewer &&
+        !window.Cesium.__viewerWrapped
+      ) {
         const Original = window.Cesium.Viewer;
         function WrappedViewer(...args) {
           const inst = new Original(...args);
@@ -354,10 +362,7 @@ async function runDemo(browser, fileName) {
     result.notes.push(`runner exception: ${err.message}`);
     try {
       const baseName = fileName.replace(/\.html$/, "");
-      const screenshotPath = path.join(
-        SCREENSHOT_DIR,
-        `${baseName}-error.png`,
-      );
+      const screenshotPath = path.join(SCREENSHOT_DIR, `${baseName}-error.png`);
       await page.screenshot({ path: screenshotPath, fullPage: false });
       result.screenshot = screenshotPath;
     } catch (_) {

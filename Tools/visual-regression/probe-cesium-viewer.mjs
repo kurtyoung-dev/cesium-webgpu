@@ -3,7 +3,8 @@
 
 import { chromium } from "playwright";
 
-const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
 
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
 const context = await browser.newContext({
@@ -18,7 +19,9 @@ page.on("console", (msg) => {
 });
 page.on("pageerror", (e) => errors.push(`[pageerror] ${e.message}`));
 
-console.log("[probe] navigating to standalone CesiumViewer with renderer=webgpu");
+console.log(
+  "[probe] navigating to standalone CesiumViewer with renderer=webgpu",
+);
 await page.goto(URL, { waitUntil: "networkidle" });
 
 // Wait for window.viewer
@@ -51,27 +54,31 @@ const result = await page.evaluate(() => {
   // black, the bug is in the scene rendering itself.
   // Easier: just check that `colorTarget` exists.
   const sceneFB = renderer?._sceneFramebuffer;
-  const sceneFBState = sceneFB ? {
-    hasColorTarget: !!sceneFB.colorTarget,
-    width: sceneFB._width,
-    height: sceneFB._height,
-    colorTexCount: sceneFB.colorTarget?.getColorTextureViewCount?.() ?? 0,
-  } : null;
-  const ppState = pp ? {
-    hasActiveStages: pp.hasActiveStages,
-    tonemap: pp._tonemapStage?.enabled,
-    colorGrading: pp._colorGradingStage?.enabled,
-    fxaa: pp._fxaaStage?.enabled,
-    hdrOutputMode: pp._hdrOutputMode,
-    width: pp._width,
-    height: pp._height,
-    intermediateFormat: pp._intermediateFormat,
-    canvasFormat: pp._canvasFormat,
-    hdr: pp._hdr,
-    hasIdentityPipeline: !!pp._identityPipeline,
-    pingTexture: !!pp._pingTexture,
-    pongTexture: !!pp._pongTexture,
-  } : null;
+  const sceneFBState = sceneFB
+    ? {
+        hasColorTarget: !!sceneFB.colorTarget,
+        width: sceneFB._width,
+        height: sceneFB._height,
+        colorTexCount: sceneFB.colorTarget?.getColorTextureViewCount?.() ?? 0,
+      }
+    : null;
+  const ppState = pp
+    ? {
+        hasActiveStages: pp.hasActiveStages,
+        tonemap: pp._tonemapStage?.enabled,
+        colorGrading: pp._colorGradingStage?.enabled,
+        fxaa: pp._fxaaStage?.enabled,
+        hdrOutputMode: pp._hdrOutputMode,
+        width: pp._width,
+        height: pp._height,
+        intermediateFormat: pp._intermediateFormat,
+        canvasFormat: pp._canvasFormat,
+        hdr: pp._hdr,
+        hasIdentityPipeline: !!pp._identityPipeline,
+        pingTexture: !!pp._pingTexture,
+        pongTexture: !!pp._pongTexture,
+      }
+    : null;
   const dataUrl = canvas.toDataURL("image/png");
   // Decode + sample center pixel
   return new Promise((resolve) => {

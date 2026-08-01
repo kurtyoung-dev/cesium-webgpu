@@ -282,10 +282,7 @@ export function reprojectWebMercatorWebGPU(
 export function reprojectImageSourceWebGPU(
   device: GPUDevice,
   imageSource:
-    | ImageBitmap
-    | HTMLCanvasElement
-    | HTMLImageElement
-    | OffscreenCanvas,
+    ImageBitmap | HTMLCanvasElement | HTMLImageElement | OffscreenCanvas,
   width: number,
   height: number,
   southLatitude: number,
@@ -365,10 +362,7 @@ export function reprojectImageSourceWebGPU(
 export function uploadAndReprojectMercatorImage(
   device: GPUDevice,
   imageSource:
-    | ImageBitmap
-    | HTMLCanvasElement
-    | HTMLImageElement
-    | OffscreenCanvas,
+    ImageBitmap | HTMLCanvasElement | HTMLImageElement | OffscreenCanvas,
   width: number,
   height: number,
   southLatitude: number,

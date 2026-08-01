@@ -27,7 +27,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
@@ -49,9 +53,7 @@ const BASE = "http://localhost:8080";
 
   const result = await page.evaluate(async () => {
     // Import the renderer module directly.
-    const mod = await import(
-      "/Build/CesiumUnminified/index.js"
-    );
+    const mod = await import("/Build/CesiumUnminified/index.js");
     const device = window.viewer.scene.context._device;
 
     // Pull WebGPUClusterBoundsRenderer from the main bundle (Batch 147
@@ -85,12 +87,26 @@ const BASE = "http://localhost:8080";
 
     // Dispatch once.
     const encoder1 = device.createCommandEncoder({ label: "cluster-test-1" });
-    const did1 = renderer.dispatch(encoder1, 800, 600, 1.0, 1000.0, invProjArray);
+    const did1 = renderer.dispatch(
+      encoder1,
+      800,
+      600,
+      1.0,
+      1000.0,
+      invProjArray,
+    );
     device.queue.submit([encoder1.finish()]);
 
     // Dispatch again with identical inputs — should skip.
     const encoder2 = device.createCommandEncoder({ label: "cluster-test-2" });
-    const did2 = renderer.dispatch(encoder2, 800, 600, 1.0, 1000.0, invProjArray);
+    const did2 = renderer.dispatch(
+      encoder2,
+      800,
+      600,
+      1.0,
+      1000.0,
+      invProjArray,
+    );
     device.queue.submit([encoder2.finish()]);
 
     // Read back via staging buffer.
@@ -100,7 +116,9 @@ const BASE = "http://localhost:8080";
       size: BYTES,
       usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
     });
-    const copyEncoder = device.createCommandEncoder({ label: "cluster-readback" });
+    const copyEncoder = device.createCommandEncoder({
+      label: "cluster-readback",
+    });
     copyEncoder.copyBufferToBuffer(
       renderer.storageBuffer,
       0,
@@ -161,8 +179,12 @@ const BASE = "http://localhost:8080";
     process.exit(1);
   }
   console.log(`  did1 (first dispatch): ${result.did1} (expect true)`);
-  console.log(`  did2 (second dispatch, same inputs): ${result.did2} (expect false — dirty-tracking skip)`);
-  console.log(`  read back: ${result.bytesRead} bytes / ${result.totalClustersRead} clusters`);
+  console.log(
+    `  did2 (second dispatch, same inputs): ${result.did2} (expect false — dirty-tracking skip)`,
+  );
+  console.log(
+    `  read back: ${result.bytesRead} bytes / ${result.totalClustersRead} clusters`,
+  );
   console.log("\n  sampled clusters:");
   for (const s of result.samples) {
     const a = s.aabb;
@@ -172,7 +194,9 @@ const BASE = "http://localhost:8080";
   }
   console.log(`\nDevice errors: ${errs.length}`);
   if (errs.length) {
-    errs.slice(0, 3).forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
+    errs
+      .slice(0, 3)
+      .forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
   }
 
   // Sanity assertions.
@@ -182,7 +206,9 @@ const BASE = "http://localhost:8080";
     pass = false;
   }
   if (result.did2 !== false) {
-    console.log("FAIL: second dispatch returned true (expected false — dirty-tracking skip)");
+    console.log(
+      "FAIL: second dispatch returned true (expected false — dirty-tracking skip)",
+    );
     pass = false;
   }
   // sliceZ=0 should be near (|Z| ≈ 1.0); sliceZ=23 should approach
@@ -220,7 +246,9 @@ const BASE = "http://localhost:8080";
     pass = false;
   }
   if (pass) {
-    console.log("\nPASS: cluster bounds populated + dirty tracking works + 0 device errors");
+    console.log(
+      "\nPASS: cluster bounds populated + dirty tracking works + 0 device errors",
+    );
   }
   process.exit(pass ? 0 : 1);
 })();

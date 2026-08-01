@@ -28,7 +28,8 @@ const SHIM = `(function() {
 
 async function probe(label, mods) {
   const browser = await chromium.launch({
-    channel: "msedge", headless: true,
+    channel: "msedge",
+    headless: true,
     args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan"],
   });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
@@ -36,16 +37,29 @@ async function probe(label, mods) {
   await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
     const r = await route.fetch();
     const t = await r.text();
-    await route.fulfill({ status: r.status(), headers: r.headers(),
-      body: t.replace(/new\s+Cesium\.Viewer\s*\(/g, "await Cesium.Viewer.createAsync(") });
+    await route.fulfill({
+      status: r.status(),
+      headers: r.headers(),
+      body: t.replace(
+        /new\s+Cesium\.Viewer\s*\(/g,
+        "await Cesium.Viewer.createAsync(",
+      ),
+    });
   });
-  await page.goto("http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html", {
-    waitUntil: "domcontentloaded", timeout: 60000,
-  });
-  await page.waitForFunction(() => {
-    const c = document.querySelector(".cesium-widget canvas");
-    return c && c.width > 0;
-  }, { timeout: 60000 });
+  await page.goto(
+    "http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html",
+    {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    },
+  );
+  await page.waitForFunction(
+    () => {
+      const c = document.querySelector(".cesium-widget canvas");
+      return c && c.width > 0;
+    },
+    { timeout: 60000 },
+  );
   await page.waitForTimeout(5000);
 
   await page.evaluate(async (m) => {
@@ -56,7 +70,7 @@ async function probe(label, mods) {
     if (m.skyBoxOff) v.scene.skyBox.show = false;
     for (let i = 0; i < 30; i++) {
       v.scene.render();
-      await new Promise(r => requestAnimationFrame(r));
+      await new Promise((r) => requestAnimationFrame(r));
     }
   }, mods);
   await page.waitForTimeout(2000);
@@ -67,15 +81,23 @@ async function probe(label, mods) {
   });
   const fs = await import("node:fs/promises");
   const path = `Tools/visual-regression/output/probe-sc-${label}.png`;
-  await fs.writeFile(path, Buffer.from(dataUrl.replace(/^data:image\/png;base64,/, ""), "base64"));
+  await fs.writeFile(
+    path,
+    Buffer.from(dataUrl.replace(/^data:image\/png;base64,/, ""), "base64"),
+  );
   await browser.close();
 
   const sharp = (await import("sharp")).default;
-  const { data, info } = await sharp(path).raw().toBuffer({ resolveWithObject: true });
+  const { data, info } = await sharp(path)
+    .raw()
+    .toBuffer({ resolveWithObject: true });
   console.log(label);
-  for (const [n, x, y] of [['mid-Pacific', 230, 320], ['continent', 360, 280]]) {
+  for (const [n, x, y] of [
+    ["mid-Pacific", 230, 320],
+    ["continent", 360, 280],
+  ]) {
     const idx = (info.width * y + x) * info.channels;
-    console.log("  " + n.padEnd(15), data[idx], data[idx+1], data[idx+2]);
+    console.log("  " + n.padEnd(15), data[idx], data[idx + 1], data[idx + 2]);
   }
 }
 
@@ -83,4 +105,9 @@ await probe("all-on", {});
 await probe("fog-off", { fogOff: true });
 await probe("skyatmo-off", { skyOff: true });
 await probe("ground-off", { groundOff: true });
-await probe("all-off", { skyOff: true, groundOff: true, fogOff: true, skyBoxOff: true });
+await probe("all-off", {
+  skyOff: true,
+  groundOff: true,
+  fogOff: true,
+  skyBoxOff: true,
+});

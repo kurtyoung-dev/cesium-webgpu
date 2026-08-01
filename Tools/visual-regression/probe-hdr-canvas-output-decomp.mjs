@@ -64,10 +64,14 @@ async function run() {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
   await page.goto(url, { waitUntil: "networkidle" });
@@ -136,7 +140,10 @@ async function run() {
       unsubType = typeof unsub;
       window.__hdrUnsub = unsub;
     }
-    return { hasApi: typeof ctx.setHDRFallbackListener === "function", unsubType };
+    return {
+      hasApi: typeof ctx.setHDRFallbackListener === "function",
+      unsubType,
+    };
   });
 
   const renderBurst = async (frames) => {
@@ -257,7 +264,7 @@ async function run() {
     } catch (_) {
       unsubOk = false;
     }
-    let clearOk = false;
+    let clearOk;
     try {
       ctx.clearAllHDRFallbackListeners();
       clearOk = true;

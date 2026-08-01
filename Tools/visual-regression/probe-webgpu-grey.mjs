@@ -30,9 +30,12 @@ await page.waitForSelector("#btnLaunch", { timeout: 10_000 });
 await page.click("#btnLaunch");
 
 console.log("[probe] waiting for viewers");
-await page.waitForFunction(() => !!(window.webglViewer && window.webgpuViewer), {
-  timeout: 60_000,
-});
+await page.waitForFunction(
+  () => !!(window.webglViewer && window.webgpuViewer),
+  {
+    timeout: 60_000,
+  },
+);
 
 // Let the scene render for ~3s
 await page.evaluate(
@@ -50,7 +53,7 @@ await page.evaluate(
 const snap = await page.evaluate(() => {
   const wgpu = window.webgpuViewer;
   if (!wgpu) return { error: "no webgpu viewer" };
-  let debugSnap = null;
+  let debugSnap;
   try {
     debugSnap = wgpu.scene.getDebugSnapshot
       ? wgpu.scene.getDebugSnapshot()
@@ -82,7 +85,11 @@ console.log(JSON.stringify(snap, null, 2));
 // Print errors / warnings only
 console.log("\n[probe] Console messages (errors + warnings only):");
 for (const msg of consoleMessages) {
-  if (msg.type === "error" || msg.type === "warning" || msg.type === "pageerror") {
+  if (
+    msg.type === "error" ||
+    msg.type === "warning" ||
+    msg.type === "pageerror"
+  ) {
     console.log(`  [${msg.type}] ${msg.text}`);
   }
 }

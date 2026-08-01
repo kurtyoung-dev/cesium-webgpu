@@ -52,11 +52,16 @@ async function run(rendererArg, config) {
   const page = await browser.newPage({ viewport: { width: W, height: H } });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer, { timeout: 30000 });
 
   const metrics = await page.evaluate(
@@ -210,7 +215,8 @@ async function run(rendererArg, config) {
         litLum,
         litN,
         litRB,
-        litMean: litN > 0 ? { r: litR / litN, g: litG / litN, b: litB / litN } : null,
+        litMean:
+          litN > 0 ? { r: litR / litN, g: litG / litN, b: litB / litN } : null,
         canvasW: canvas.width,
         canvasH: canvas.height,
       };

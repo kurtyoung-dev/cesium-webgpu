@@ -197,7 +197,11 @@ async function decodePngInPage(page, pngBuffer) {
     const ctx = off.getContext("2d");
     ctx.drawImage(bitmap, 0, 0);
     const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height).data;
-    return { width: bitmap.width, height: bitmap.height, data: Array.from(data) };
+    return {
+      width: bitmap.width,
+      height: bitmap.height,
+      data: Array.from(data),
+    };
   }, base64);
 }
 
@@ -211,88 +215,100 @@ async function captureReprojectedTexture(headless) {
     headless,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgl`, {
     waitUntil: "networkidle",
   });
   await page.waitForFunction(() => !!window.viewer);
 
-  const result = await page.evaluate(async ({ view }) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const v = window.viewer;
-    const vm = v.baseLayerPicker.viewModel;
-    const wgs84 = vm.terrainProviderViewModels.find((t) =>
-      String(t.name || "").toLowerCase().includes("wgs84"),
-    );
-    if (wgs84) vm.selectedTerrain = wgs84;
-    v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
-    });
-    for (let i = 0; i < 1500; i++) {
-      v.scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
-      if (v.scene.globe.tilesLoaded && i > 300) break;
-    }
-
-    // Collect ALL polar reproject tiles (useWebMercatorT === false, Mercator
-    // provider, has a reprojected texture) and pick deterministically by the
-    // lexicographically-smallest imagery key so the golden is reproducible.
-    const candidates = [];
-    for (const t of v.scene._globe._surface._tilesToRender) {
-      for (const skel of t.data?.imagery ?? []) {
-        const im = skel?.readyImagery;
-        if (!im?.imageryLayer) continue;
-        if (skel.useWebMercatorT) continue;
-        if (!im.texture || !im.texture._texture) continue;
-        const isMercatorProvider = !(
-          im.imageryLayer._imageryProvider.tilingScheme.projection instanceof
-          C.GeographicProjection
-        );
-        if (!isMercatorProvider) continue;
-        candidates.push(im);
+  const result = await page.evaluate(
+    async ({ view }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      const vm = v.baseLayerPicker.viewModel;
+      const wgs84 = vm.terrainProviderViewModels.find((t) =>
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
+      );
+      if (wgs84) vm.selectedTerrain = wgs84;
+      v.camera.setView({
+        destination: C.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
+      });
+      for (let i = 0; i < 1500; i++) {
+        v.scene.render();
+        await new Promise((r) => requestAnimationFrame(r));
+        if (v.scene.globe.tilesLoaded && i > 300) break;
       }
-    }
-    if (candidates.length === 0) {
-      return { error: "no polar reproject tile with readable texture" };
-    }
-    // Deterministic pick: smallest (level, x, y) tuple. imagery.key is not a
-    // stable string here, so tile coords are the reproducible identity.
-    candidates.sort(
-      (a, b) => a.level - b.level || a.x - b.x || a.y - b.y,
-    );
-    const im = candidates[0];
 
-    const gl = v.scene.context._gl;
-    const tex = im.texture;
-    const w = tex.width;
-    const h = tex.height;
-    const fb = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    gl.framebufferTexture2D(
-      gl.FRAMEBUFFER,
-      gl.COLOR_ATTACHMENT0,
-      gl.TEXTURE_2D,
-      tex._texture,
-      0,
-    );
-    let data = null;
-    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) {
-      const buf = new Uint8Array(w * h * 4);
-      gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-      data = Array.from(buf);
-    }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.deleteFramebuffer(fb);
-    if (!data) return { error: "FBO readback incomplete" };
+      // Collect ALL polar reproject tiles (useWebMercatorT === false, Mercator
+      // provider, has a reprojected texture) and pick deterministically by the
+      // lexicographically-smallest imagery key so the golden is reproducible.
+      const candidates = [];
+      for (const t of v.scene._globe._surface._tilesToRender) {
+        for (const skel of t.data?.imagery ?? []) {
+          const im = skel?.readyImagery;
+          if (!im?.imageryLayer) continue;
+          if (skel.useWebMercatorT) continue;
+          if (!im.texture || !im.texture._texture) continue;
+          const isMercatorProvider = !(
+            im.imageryLayer._imageryProvider.tilingScheme.projection instanceof
+            C.GeographicProjection
+          );
+          if (!isMercatorProvider) continue;
+          candidates.push(im);
+        }
+      }
+      if (candidates.length === 0) {
+        return { error: "no polar reproject tile with readable texture" };
+      }
+      // Deterministic pick: smallest (level, x, y) tuple. imagery.key is not a
+      // stable string here, so tile coords are the reproducible identity.
+      candidates.sort((a, b) => a.level - b.level || a.x - b.x || a.y - b.y);
+      const im = candidates[0];
 
-    return {
-      imagery: { id: `${im.level}/${im.x}/${im.y}`, level: im.level, x: im.x, y: im.y },
-      candidateCount: candidates.length,
-      width: w,
-      height: h,
-      data,
-    };
-  }, { view: VIEW });
+      const gl = v.scene.context._gl;
+      const tex = im.texture;
+      const w = tex.width;
+      const h = tex.height;
+      const fb = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0,
+        gl.TEXTURE_2D,
+        tex._texture,
+        0,
+      );
+      let data = null;
+      if (
+        gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE
+      ) {
+        const buf = new Uint8Array(w * h * 4);
+        gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+        data = Array.from(buf);
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.deleteFramebuffer(fb);
+      if (!data) return { error: "FBO readback incomplete" };
+
+      return {
+        imagery: {
+          id: `${im.level}/${im.x}/${im.y}`,
+          level: im.level,
+          x: im.x,
+          y: im.y,
+        },
+        candidateCount: candidates.length,
+        width: w,
+        height: h,
+        data,
+      };
+    },
+    { view: VIEW },
+  );
 
   await browser.close();
   return result;
@@ -438,6 +454,8 @@ function diffBuffers(a, b, width, height, tol) {
     );
     process.exit(1);
   }
-  console.log("[reproject-baseline] PASS: WebGL reproject output within tolerance.");
+  console.log(
+    "[reproject-baseline] PASS: WebGL reproject output within tolerance.",
+  );
   process.exit(0);
 })();

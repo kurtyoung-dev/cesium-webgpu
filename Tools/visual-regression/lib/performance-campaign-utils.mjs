@@ -259,8 +259,7 @@ export function summarizeMovingPickMetrics(
   telemetryOrPickCallCount,
 ) {
   const telemetry =
-    telemetryOrPickCallCount &&
-    typeof telemetryOrPickCallCount === "object"
+    telemetryOrPickCallCount && typeof telemetryOrPickCallCount === "object"
       ? telemetryOrPickCallCount
       : null;
   const pickCallCount = telemetry
@@ -268,8 +267,7 @@ export function summarizeMovingPickMetrics(
     : telemetryOrPickCallCount;
   const positions = evidence.filter(
     (entry) =>
-      Number.isFinite(entry.normalizedX) &&
-      Number.isFinite(entry.normalizedY),
+      Number.isFinite(entry.normalizedX) && Number.isFinite(entry.normalizedY),
   );
   const normalizedX = positions.map((entry) => entry.normalizedX);
   const normalizedY = positions.map((entry) => entry.normalizedY);
@@ -446,7 +444,9 @@ export function summarizeEclipseGlobeShadowEvidence(samples, evidence) {
   }
 
   if (invalidGateCount > 0) {
-    reasons.push(`${invalidGateCount} eclipse evidence rows have invalid gates`);
+    reasons.push(
+      `${invalidGateCount} eclipse evidence rows have invalid gates`,
+    );
   }
   if (invalidRevisionCount > 0) {
     reasons.push(
@@ -489,8 +489,7 @@ export function summarizeEclipseGlobeShadowEvidence(samples, evidence) {
 export function assessPerformanceRunQuality(run, options = {}) {
   const minTrackSegmentSamples = options.minTrackSegmentSamples ?? 30;
   const attributionOnly =
-    run.apiInstrumentationEnabled === true ||
-    run.apiCounters?.enabled === true;
+    run.apiInstrumentationEnabled === true || run.apiCounters?.enabled === true;
   const reasons = [];
   const warnings = [];
   const elapsedMs = run.measurement?.elapsedMs || 0;
@@ -639,8 +638,7 @@ export function assessPerformanceRunStability(runs) {
     const cpuP95 = usable
       .map(
         (run) =>
-          run.pickMetrics?.combinedCpuMs?.p95 ??
-          run.trace?.summary?.cpuMs?.p95,
+          run.pickMetrics?.combinedCpuMs?.p95 ?? run.trace?.summary?.cpuMs?.p95,
       )
       .filter((value) => Number.isFinite(value) && value > 0);
     if (cpuP95.length >= 2) {
@@ -907,11 +905,9 @@ function validateRepresentativeWorkloadFingerprint(
   // again certify the replay rather than the timed window it stands in for.
   const provenanceValid =
     fingerprint?.provenance?.timed === false &&
-    fingerprint?.provenance?.phase ===
-      "post-measurement-untimed-replay" &&
+    fingerprint?.provenance?.phase === "post-measurement-untimed-replay" &&
     fingerprint?.provenance?.traceEndedBeforeReplay === true &&
-    fingerprint?.provenance?.measurementSnapshotsFrozenBeforeReplay ===
-      true &&
+    fingerprint?.provenance?.measurementSnapshotsFrozenBeforeReplay === true &&
     fingerprint?.provenance?.replayModeFixedFrame === true &&
     fingerprint?.provenance?.renderedProgressIdentical === true &&
     fingerprint?.provenance?.causal === true;
@@ -1358,14 +1354,10 @@ export function compareRepresentativeTilesetLifecycleDiagnostics(
   };
 }
 
-export function assessWebGPUModelPreparationEvidence(
-  evidence,
-  options = {},
-) {
+export function assessWebGPUModelPreparationEvidence(evidence, options = {}) {
   const renderer = options.renderer;
   const apiInstrumentation = options.apiInstrumentation === true;
-  const modelAttributionContent =
-    options.modelAttributionContent === true;
+  const modelAttributionContent = options.modelAttributionContent === true;
   const reasons = [];
 
   if (renderer === "webgl") {
@@ -1503,7 +1495,8 @@ export function compareFixedFrameProgressSequences(
     replayFrameCount: replayed.length,
     comparedFrames,
     firstDivergenceIndex,
-    maximumAbsoluteDifference: comparedFrames > 0 ? maximumAbsoluteDifference : null,
+    maximumAbsoluteDifference:
+      comparedFrames > 0 ? maximumAbsoluteDifference : null,
     divergenceCount,
     divergences,
     divergencesTruncated:
@@ -1584,10 +1577,8 @@ export function assessRepresentativeMeasurementEvidence(
   representativeContentEvidence,
   options = {},
 ) {
-  const measurementTerrainMode =
-    options.measurementTerrainMode ?? "streaming";
-  const activity =
-    representativeContentEvidence?.measurementTerrainActivity;
+  const measurementTerrainMode = options.measurementTerrainMode ?? "streaming";
+  const activity = representativeContentEvidence?.measurementTerrainActivity;
   const delta = activity?.delta;
   const content = representativeContentEvidence?.measurementContent;
   const reasons = [];
@@ -1679,7 +1670,10 @@ export function assessRepresentativeMeasurementEvidence(
       ["terrain water effect", content.waterEffectFrames],
       ["direct model command", content.directModelCommandFrames],
       ["3D Tiles command", content.tilesetCommandFrames],
-      ["combined terrain/model/3D Tiles command", content.allContentCommandFrames],
+      [
+        "combined terrain/model/3D Tiles command",
+        content.allContentCommandFrames,
+      ],
     ]) {
       if (!(value > 0)) {
         reasons.push(`${label} work was absent from the representative replay`);
@@ -1694,7 +1688,10 @@ export function assessRepresentativeMeasurementEvidence(
     if (!(delta.tileGenerationCount > 0)) {
       reasons.push("streaming measurement generated no terrain tiles");
     }
-    if (!Array.isArray(delta.generatedTileKeys) || delta.generatedTileKeys.length < 1) {
+    if (
+      !Array.isArray(delta.generatedTileKeys) ||
+      delta.generatedTileKeys.length < 1
+    ) {
       reasons.push("streaming measurement generated no terrain-key evidence");
     }
   }
@@ -1728,11 +1725,9 @@ export function assessRepresentativeMeasurementEvidence(
       sampledContentCheckpoints: content?.sampledFrames ?? null,
       terrainMeshCheckpoints: content?.terrainMeshFrames ?? null,
       waterEffectCheckpoints: content?.waterEffectFrames ?? null,
-      directModelCommandCheckpoints:
-        content?.directModelCommandFrames ?? null,
+      directModelCommandCheckpoints: content?.directModelCommandFrames ?? null,
       tilesetCommandCheckpoints: content?.tilesetCommandFrames ?? null,
-      allContentCommandCheckpoints:
-        content?.allContentCommandFrames ?? null,
+      allContentCommandCheckpoints: content?.allContentCommandFrames ?? null,
       commandTriggeredPreWaypointSamples:
         content?.sampling?.commandTriggeredPreWaypoint?.sampledFrames ?? null,
     },
@@ -1753,8 +1748,7 @@ export function assessRepresentativePairComparability(
   webgpuRun,
   options = {},
 ) {
-  const measurementTerrainMode =
-    options.measurementTerrainMode ?? "streaming";
+  const measurementTerrainMode = options.measurementTerrainMode ?? "streaming";
   const causalRendererComparison = measurementTerrainMode === "resident";
   const attributionOnly =
     webglRun?.quality?.attributionOnly === true ||
@@ -1766,20 +1760,16 @@ export function assessRepresentativePairComparability(
     webglRun?.quality?.certificationEligible === true &&
     webgpuRun?.quality?.status === "clean" &&
     webgpuRun?.quality?.certificationEligible === true;
-  const certificationEligible =
-    !attributionOnly && ordinaryQualityEligible;
+  const certificationEligible = !attributionOnly && ordinaryQualityEligible;
   const maximumDeltaRatio = options.maximumDeltaRatio ?? 0.05;
-  const minimumGeneratedKeyJaccard =
-    options.minimumGeneratedKeyJaccard ?? 0.95;
+  const minimumGeneratedKeyJaccard = options.minimumGeneratedKeyJaccard ?? 0.95;
   const requireGeneratedKeySimilarity =
     options.requireGeneratedKeySimilarity ??
     measurementTerrainMode === "streaming";
   const webglDelta =
-    webglRun?.representativeContentEvidence?.measurementTerrainActivity
-      ?.delta;
+    webglRun?.representativeContentEvidence?.measurementTerrainActivity?.delta;
   const webgpuDelta =
-    webgpuRun?.representativeContentEvidence?.measurementTerrainActivity
-      ?.delta;
+    webgpuRun?.representativeContentEvidence?.measurementTerrainActivity?.delta;
   const reasons = [];
   const outcomeDifferences = [];
   const certificationExclusions = [];
@@ -1798,8 +1788,10 @@ export function assessRepresentativePairComparability(
   // Computed first so a ready-set rejection can name the tile that diverged.
   // It is passed in as attribution only: the fingerprint comparison rejects on
   // its own evidence and never consults this to pass.
-  const tilesetLifecycle =
-    compareRepresentativeTilesetLifecycleDiagnostics(webglRun, webgpuRun);
+  const tilesetLifecycle = compareRepresentativeTilesetLifecycleDiagnostics(
+    webglRun,
+    webgpuRun,
+  );
   const workloadFingerprint = causalRendererComparison
     ? compareRepresentativeWorkloadFingerprints(
         webglRun,

@@ -66,8 +66,7 @@ test("cloud probe configuration round-trips through the collection contract", ()
 });
 
 test("core cloud probes never gate volumetric fields on Globe", () => {
-  const staleGlobeGuard =
-    /if\s*\(\s*["']cloud[A-Za-z0-9_]+["']\s+in\s+g\s*\)/g;
+  const staleGlobeGuard = /if\s*\(\s*["']cloud[A-Za-z0-9_]+["']\s+in\s+g\s*\)/g;
 
   for (const file of probeFiles) {
     const source = fs.readFileSync(path.join(here, file), "utf8");

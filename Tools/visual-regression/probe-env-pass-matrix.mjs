@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/* global console, process, window, document, requestAnimationFrame, setTimeout, clearTimeout */
 // probe-env-pass-matrix.mjs — C12-G1F1 (WIDENED) environment-pass independence
 // matrix, WebGPU vs WebGL.
 //
@@ -209,7 +208,8 @@ const watchdog = setTimeout(() => {
 }, HARD_LIMIT_MS);
 if (watchdog.unref) watchdog.unref();
 
-const r3 = (x) => (x == null || !Number.isFinite(x) ? null : Math.round(x * 1000) / 1000);
+const r3 = (x) =>
+  x == null || !Number.isFinite(x) ? null : Math.round(x * 1000) / 1000;
 
 // ── The matrix. Each cell is the exact enabled subset of the six toggles. ────
 const off = () => ({
@@ -339,7 +339,7 @@ function provenance() {
   }
   const bundleDir = "Build/CesiumUnminified";
   const candidates = [];
-  let bundlePresent = false;
+  let bundlePresent;
   try {
     for (const name of fs.readdirSync(bundleDir)) {
       if (name.endsWith(".js")) {
@@ -360,13 +360,16 @@ function provenance() {
   }
   // Fix token — REPORTED, never gated, so a pre-fix baseline run still reaches
   // the cell measurements instead of exiting structural.
-  const tokens = ["hasInjectedEnvironmentContent", "needsEnvironmentOnlyFrustum"];
+  const tokens = [
+    "hasInjectedEnvironmentContent",
+    "needsEnvironmentOnlyFrustum",
+  ];
   const hits = {};
   for (const t of tokens) {
     hits[t] = false;
   }
   for (const file of candidates) {
-    let text = "";
+    let text;
     try {
       text = fs.readFileSync(file, "utf8");
     } catch {
@@ -393,14 +396,16 @@ const DERIVE_EPOCHS = async () => {
   const sunScratch = new C.Cartesian3();
   const moonScratch = new C.Cartesian3();
   const phaseFractionAt = (t) => {
-    const sun = C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
-      t,
-      sunScratch,
-    );
-    const moon = C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
-      t,
-      moonScratch,
-    );
+    const sun =
+      C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+        t,
+        sunScratch,
+      );
+    const moon =
+      C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+        t,
+        moonScratch,
+      );
     const cos =
       C.Cartesian3.dot(sun, moon) /
       (C.Cartesian3.magnitude(sun) * C.Cartesian3.magnitude(moon));
@@ -412,7 +417,14 @@ const DERIVE_EPOCHS = async () => {
   //   night: zdMoon 20, zdSun 110 ->  90 < gamma < 130  (pf 0.60..0.78)
   //   day  : zdMoon 20, zdSun  35 ->  15 < gamma <  55  (pf 0.10..0.20)
   const lanes = {
-    night: { lo: 0.6, hi: 0.78, elMoonDeg: 70, elSunDeg: -20, iso: null, pf: null },
+    night: {
+      lo: 0.6,
+      hi: 0.78,
+      elMoonDeg: 70,
+      elSunDeg: -20,
+      iso: null,
+      pf: null,
+    },
     day: { lo: 0.1, hi: 0.2, elMoonDeg: 70, elSunDeg: 55, iso: null, pf: null },
   };
   const scratchT = new C.JulianDate();
@@ -432,7 +444,8 @@ const DERIVE_EPOCHS = async () => {
 // ── In-page: pin the clock, settle, solve the ground observer for the lane ──
 const SETUP_LANE = async ({ iso, elMoonDeg, elSunDeg, pfWindow }) => {
   // ALL helpers live inside this callback (serialization boundary).
-  const r3 = (x) => (x == null || !Number.isFinite(x) ? null : Math.round(x * 1000) / 1000);
+  const r3 = (x) =>
+    x == null || !Number.isFinite(x) ? null : Math.round(x * 1000) / 1000;
   const C = await import("/Build/CesiumUnminified/index.js");
   const viewer = window.viewer;
   const scene = viewer.scene;
@@ -472,13 +485,17 @@ const SETUP_LANE = async ({ iso, elMoonDeg, elSunDeg, pfWindow }) => {
   let icrfToFixed = C.Transforms.computeIcrfToFixedMatrix(t, new C.Matrix3());
   let usedIcrf = true;
   if (!icrfToFixed) {
-    icrfToFixed = C.Transforms.computeTemeToPseudoFixedMatrix(t, new C.Matrix3());
+    icrfToFixed = C.Transforms.computeTemeToPseudoFixedMatrix(
+      t,
+      new C.Matrix3(),
+    );
     usedIcrf = false;
   }
-  const moonPos = C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
-    t,
-    new C.Cartesian3(),
-  );
+  const moonPos =
+    C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+      t,
+      new C.Cartesian3(),
+    );
   C.Matrix3.multiplyByVector(icrfToFixed, moonPos, moonPos);
   const moonDir = C.Cartesian3.normalize(moonPos, new C.Cartesian3());
   const sunDir = C.Cartesian3.normalize(
@@ -487,7 +504,10 @@ const SETUP_LANE = async ({ iso, elMoonDeg, elSunDeg, pfWindow }) => {
   );
   const phaseFraction = 0.5 * (1.0 - C.Cartesian3.dot(moonDir, sunDir));
   if (!(phaseFraction > pfWindow[0] && phaseFraction < pfWindow[1])) {
-    return { structuralError: `phaseFraction ${r3(phaseFraction)} outside window`, iso };
+    return {
+      structuralError: `phaseFraction ${r3(phaseFraction)} outside window`,
+      iso,
+    };
   }
 
   // Observer solve: up = a*m + b*s + w*(m x s)/|m x s| with dot(up,m)=sin(elMoon),
@@ -508,7 +528,10 @@ const SETUP_LANE = async ({ iso, elMoonDeg, elSunDeg, pfWindow }) => {
   );
   const qLenSq = C.Cartesian3.magnitudeSquared(q);
   if (qLenSq > 1.0) {
-    return { structuralError: `observer infeasible (|q|^2=${r3(qLenSq)})`, iso };
+    return {
+      structuralError: `observer infeasible (|q|^2=${r3(qLenSq)})`,
+      iso,
+    };
   }
   const w = Math.sqrt(Math.max(1.0 - qLenSq, 0.0));
   const cross = C.Cartesian3.normalize(
@@ -519,14 +542,20 @@ const SETUP_LANE = async ({ iso, elMoonDeg, elSunDeg, pfWindow }) => {
     new C.Cartesian3(q.x + w * cross.x, q.y + w * cross.y, q.z + w * cross.z),
     new C.Cartesian3(),
   );
-  const camPos = C.Cartesian3.multiplyByScalar(up, 6378137.0 + 400.0, new C.Cartesian3());
+  const camPos = C.Cartesian3.multiplyByScalar(
+    up,
+    6378137.0 + 400.0,
+    new C.Cartesian3(),
+  );
 
   const toMoon = C.Cartesian3.normalize(
     C.Cartesian3.subtract(moonPos, camPos, new C.Cartesian3()),
     new C.Cartesian3(),
   );
-  const elMoonActual = 90.0 - (Math.acos(C.Cartesian3.dot(up, toMoon)) * 180.0) / Math.PI;
-  const elSunActual = 90.0 - (Math.acos(C.Cartesian3.dot(up, sunDir)) * 180.0) / Math.PI;
+  const elMoonActual =
+    90.0 - (Math.acos(C.Cartesian3.dot(up, toMoon)) * 180.0) / Math.PI;
+  const elSunActual =
+    90.0 - (Math.acos(C.Cartesian3.dot(up, sunDir)) * 180.0) / Math.PI;
   if (
     Math.abs(elMoonActual - elMoonDeg) > 3.5 ||
     Math.abs(elSunActual - elSunDeg) > 3.5
@@ -547,7 +576,9 @@ const SETUP_LANE = async ({ iso, elMoonDeg, elSunDeg, pfWindow }) => {
     : undefined;
   const defaultStarIntensity =
     priorDefault ??
-    (scene.skyBox && scene.skyBox.starField ? scene.skyBox.starField.intensity : 1.0);
+    (scene.skyBox && scene.skyBox.starField
+      ? scene.skyBox.starField.intensity
+      : 1.0);
   window.__envMatrix = {
     C,
     camPos,
@@ -583,7 +614,9 @@ const MEASURE_CELL = async ({ elements, settleFrames }) => {
   // --- helpers (all inside the callback) ---
   const aimAt = (targetDir, fovDeg) => {
     const seed =
-      Math.abs(targetDir.z) < 0.9 ? new C.Cartesian3(0, 0, 1) : new C.Cartesian3(1, 0, 0);
+      Math.abs(targetDir.z) < 0.9
+        ? new C.Cartesian3(0, 0, 1)
+        : new C.Cartesian3(1, 0, 0);
     const right = C.Cartesian3.normalize(
       C.Cartesian3.cross(targetDir, seed, new C.Cartesian3()),
       new C.Cartesian3(),
@@ -682,7 +715,11 @@ const MEASURE_CELL = async ({ elements, settleFrames }) => {
         const dx = x - half;
         const dy = y - half;
         const d2 = dx * dx + dy * dy;
-        if (d2 >= ringInner2 && d2 <= ringOuter2 && lumBuf[y * W + x] > litThreshold) {
+        if (
+          d2 >= ringInner2 &&
+          d2 <= ringOuter2 &&
+          lumBuf[y * W + x] > litThreshold
+        ) {
           ringLitPx++;
         }
       }
@@ -906,7 +943,9 @@ const MEASURE_CELL = async ({ elements, settleFrames }) => {
       new C.Cartesian3(),
     );
     const seed =
-      Math.abs(toBody.z) < 0.9 ? new C.Cartesian3(0, 0, 1) : new C.Cartesian3(1, 0, 0);
+      Math.abs(toBody.z) < 0.9
+        ? new C.Cartesian3(0, 0, 1)
+        : new C.Cartesian3(1, 0, 0);
     const limbDir = C.Cartesian3.normalize(
       C.Cartesian3.cross(toBody, seed, new C.Cartesian3()),
       new C.Cartesian3(),
@@ -929,19 +968,18 @@ const MEASURE_CELL = async ({ elements, settleFrames }) => {
     const dprY = canvas.height / canvas.clientHeight;
     const cx = center.x * dprX;
     const cy = center.y * dprY;
-    const rDev = Math.hypot(limb.x - center.x, limb.y - center.y) * Math.max(dprX, dprY);
+    const rDev =
+      Math.hypot(limb.x - center.x, limb.y - center.y) * Math.max(dprX, dprY);
     const half = Math.ceil(rDev * 1.7);
     const x0 = Math.round(cx - half);
     const y0 = Math.round(cy - half);
-    if (
-      !(
-        rDev >= 3 &&
-        x0 >= 0 &&
-        y0 >= 0 &&
-        x0 + 2 * half < canvas.width &&
-        y0 + 2 * half < canvas.height
-      )
-    ) {
+    if (!(
+      rDev >= 3 &&
+      x0 >= 0 &&
+      y0 >= 0 &&
+      x0 + 2 * half < canvas.width &&
+      y0 + 2 * half < canvas.height
+    )) {
       return { roiError: `ROI invalid (r=${rDev} at ${cx},${cy})` };
     }
     // SAME-TASK capture: render then read with no await between.
@@ -950,7 +988,17 @@ const MEASURE_CELL = async ({ elements, settleFrames }) => {
     tmp.width = 2 * half + 1;
     tmp.height = 2 * half + 1;
     const ctx = tmp.getContext("2d");
-    ctx.drawImage(canvas, x0, y0, tmp.width, tmp.height, 0, 0, tmp.width, tmp.height);
+    ctx.drawImage(
+      canvas,
+      x0,
+      y0,
+      tmp.width,
+      tmp.height,
+      0,
+      0,
+      tmp.width,
+      tmp.height,
+    );
     const data = ctx.getImageData(0, 0, tmp.width, tmp.height).data;
     // D1 (orchestrator pre-fix run): an ABSOLUTE-luminance disc test
     // false-positived on the TYCHO_T5 skybox — its bright Milky Way pixels land
@@ -1018,7 +1066,11 @@ const MEASURE_CELL = async ({ elements, settleFrames }) => {
   const horiz = C.Cartesian3.normalize(
     C.Cartesian3.subtract(
       toMoon,
-      C.Cartesian3.multiplyByScalar(up, C.Cartesian3.dot(toMoon, up), new C.Cartesian3()),
+      C.Cartesian3.multiplyByScalar(
+        up,
+        C.Cartesian3.dot(toMoon, up),
+        new C.Cartesian3(),
+      ),
       new C.Cartesian3(),
     ),
     new C.Cartesian3(),
@@ -1046,15 +1098,43 @@ const MEASURE_CELL = async ({ elements, settleFrames }) => {
   band.width = canvas.width;
   band.height = skyH + gndH;
   const bctx = band.getContext("2d");
-  bctx.drawImage(canvas, 0, skyY0, canvas.width, skyH, 0, 0, canvas.width, skyH);
-  bctx.drawImage(canvas, 0, gndY0, canvas.width, gndH, 0, skyH, canvas.width, gndH);
+  bctx.drawImage(
+    canvas,
+    0,
+    skyY0,
+    canvas.width,
+    skyH,
+    0,
+    0,
+    canvas.width,
+    skyH,
+  );
+  bctx.drawImage(
+    canvas,
+    0,
+    gndY0,
+    canvas.width,
+    gndH,
+    0,
+    skyH,
+    canvas.width,
+    gndH,
+  );
   const skyData = bctx.getImageData(0, 0, canvas.width, skyH).data;
   const gndData = bctx.getImageData(0, skyH, canvas.width, gndH).data;
 
   const W = canvas.width;
   const H = skyH;
   const census = starCensusFromBand(skyData, W, H);
-  const { mean: skyMeanL, median, meanR, meanG, meanB, brightPoints, brightPeak } = census;
+  const {
+    mean: skyMeanL,
+    median,
+    meanR,
+    meanG,
+    meanB,
+    brightPoints,
+    brightPeak,
+  } = census;
 
   // Ground band (diagnostic only).
   let gSum = 0;
@@ -1139,7 +1219,8 @@ function presenceOf(measurement) {
     // sparse bright pixels while its median stays at the black floor. Requiring
     // both (plus Rayleigh blue dominance) keeps a bright cubemap from reading as
     // atmosphere — the same absolute-luminance artifact class as D1.
-    atmosphere: !!sky && sky.mean >= 8 && sky.median >= 4 && sky.meanB > sky.meanR * 1.05,
+    atmosphere:
+      !!sky && sky.mean >= 8 && sky.median >= 4 && sky.meanB > sky.meanR * 1.05,
     // The star census is background-RELATIVE and now PROMINENCE-based (E2): it
     // is the fleet's trust-anchored m1PointSourceCensus algorithm — strict 3x3
     // local maximum, annulus-median local background, `v - bg >= 12` and
@@ -1216,12 +1297,16 @@ async function runBackend(browser, renderer, lanes) {
   });
   const out = { renderer, lanes: {}, consoleErrors };
   try {
-    await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000,
-    });
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      },
+    );
     await page.waitForFunction(
-      () => !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
+      () =>
+        !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
       null,
       { timeout: 90000 },
     );
@@ -1244,7 +1329,10 @@ async function runBackend(browser, renderer, lanes) {
         continue;
       }
       for (const [cellName, elements] of Object.entries(CELLS)) {
-        const m = await page.evaluate(MEASURE_CELL, { elements, settleFrames: 8 });
+        const m = await page.evaluate(MEASURE_CELL, {
+          elements,
+          settleFrames: 8,
+        });
         laneOut.cells[cellName] = m;
         if (m && m.rendererType && m.rendererType !== renderer) {
           out.backendMismatch = `requested ${renderer}, got ${m.rendererType}`;
@@ -1290,10 +1378,13 @@ async function runBackend(browser, renderer, lanes) {
   let gpu;
   try {
     const derivePage = await (await browser.newContext()).newPage();
-    await derivePage.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgl`, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000,
-    });
+    await derivePage.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=webgl`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      },
+    );
     lanes = await derivePage.evaluate(DERIVE_EPOCHS);
     await derivePage
       .context()
@@ -1301,7 +1392,9 @@ async function runBackend(browser, renderer, lanes) {
       .catch(() => {});
     for (const [name, lane] of Object.entries(lanes)) {
       if (!lane.iso) {
-        console.error(`[probe-env-pass-matrix] no epoch found for lane ${name}`);
+        console.error(
+          `[probe-env-pass-matrix] no epoch found for lane ${name}`,
+        );
         clearTimeout(watchdog);
         process.exit(2);
       }
@@ -1314,7 +1407,12 @@ async function runBackend(browser, renderer, lanes) {
   }
 
   // ── Verdict ───────────────────────────────────────────────────────────────
-  let structural = !!(gl.error || gpu.error || gl.backendMismatch || gpu.backendMismatch);
+  let structural = !!(
+    gl.error ||
+    gpu.error ||
+    gl.backendMismatch ||
+    gpu.backendMismatch
+  );
   const structuralNotes = [];
   if (gl.error) {
     structuralNotes.push(`webgl: ${gl.error}`);
@@ -1336,10 +1434,17 @@ async function runBackend(browser, renderer, lanes) {
     const gpuLane = gpu.lanes[laneName];
     const report = { cells: {} };
     laneReports[laneName] = report;
-    if (!glLane || !gpuLane || glLane.setup.structuralError || gpuLane.setup.structuralError) {
+    if (
+      !glLane ||
+      !gpuLane ||
+      glLane.setup.structuralError ||
+      gpuLane.setup.structuralError
+    ) {
       report.structural = {
         webgl: glLane ? (glLane.setup.structuralError ?? "missing") : "missing",
-        webgpu: gpuLane ? (gpuLane.setup.structuralError ?? "missing") : "missing",
+        webgpu: gpuLane
+          ? (gpuLane.setup.structuralError ?? "missing")
+          : "missing",
       };
       structural = true;
       continue;

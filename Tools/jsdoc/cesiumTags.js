@@ -1,3 +1,5 @@
+"use strict";
+
 exports.defineTags = function (dictionary) {
   // @internalConstructor defines some formatting options, but otherwise
   // is formatted like a class.

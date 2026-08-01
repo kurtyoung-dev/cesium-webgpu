@@ -28,7 +28,13 @@ const TAG = process.env.PARITY_TAG || "tag";
 // A lit-terrain saved view with the sun up so the diffuse term is non-trivial
 // (so a cloud-shadow multiply, if it leaked, would move pixels). Pittsburgh-ish,
 // looking across terrain with sun mid-sky.
-const CAMERA = { lon: -109.5, lat: 38.5, height: 6000, heading: 30, pitch: -18 };
+const CAMERA = {
+  lon: -109.5,
+  lat: 38.5,
+  height: 6000,
+  heading: 30,
+  pitch: -18,
+};
 const TIME_ISO = "2026-06-21T17:00:00Z";
 
 const SCENES = {
@@ -38,14 +44,16 @@ const SCENES = {
     s.globe.show = true;
     s.globe.enableLighting = true;
     g.defaultCloudCollection.enableVolumetric = false;
-    if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
+    if ("cloudCastShadows" in g)
+      g.defaultCloudCollection.volumetric.cloudCastShadows = false;
   },
   // (b) aerial perspective on
   aerial: (g, s, ac) => {
     s.globe.show = true;
     s.globe.enableLighting = true;
     g.defaultCloudCollection.enableVolumetric = false;
-    if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
+    if ("cloudCastShadows" in g)
+      g.defaultCloudCollection.volumetric.cloudCastShadows = false;
     if (ac) {
       ac.aerialPerspective = ac.aerialPerspective || {};
       ac.aerialPerspective.enabled = true;
@@ -56,7 +64,8 @@ const SCENES = {
     s.globe.show = true;
     s.globe.enableLighting = true;
     g.defaultCloudCollection.enableVolumetric = false;
-    if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
+    if ("cloudCastShadows" in g)
+      g.defaultCloudCollection.volumetric.cloudCastShadows = false;
     if (ac) {
       ac.volumetricFog = ac.volumetricFog || {};
       ac.volumetricFog.enabled = true;
@@ -77,7 +86,9 @@ const SCENES = {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -110,13 +121,15 @@ const SCENES = {
             s.globe.show = true;
             s.globe.enableLighting = true;
             g.defaultCloudCollection.enableVolumetric = false;
-            if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
+            if ("cloudCastShadows" in g)
+              g.defaultCloudCollection.volumetric.cloudCastShadows = false;
           },
           aerial: () => {
             s.globe.show = true;
             s.globe.enableLighting = true;
             g.defaultCloudCollection.enableVolumetric = false;
-            if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
+            if ("cloudCastShadows" in g)
+              g.defaultCloudCollection.volumetric.cloudCastShadows = false;
             if (ac) {
               ac.aerialPerspective = ac.aerialPerspective || {};
               ac.aerialPerspective.enabled = true;
@@ -126,7 +139,8 @@ const SCENES = {
             s.globe.show = true;
             s.globe.enableLighting = true;
             g.defaultCloudCollection.enableVolumetric = false;
-            if ("cloudCastShadows" in g) g.defaultCloudCollection.volumetric.cloudCastShadows = false;
+            if ("cloudCastShadows" in g)
+              g.defaultCloudCollection.volumetric.cloudCastShadows = false;
             if (ac) {
               ac.volumetricFog = ac.volumetricFog || {};
               ac.volumetricFog.enabled = true;

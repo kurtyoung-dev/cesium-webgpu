@@ -36,16 +36,25 @@ async function launch() {
   return chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
 }
 
 async function sampleWaterMask() {
   const browser = await launch();
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgl`, {
     waitUntil: "networkidle",
@@ -102,9 +111,15 @@ async function sampleWaterMask() {
             c.height = wm.height;
             const ctx = c.getContext("2d");
             ctx.drawImage(wm, 0, 0);
-            const px = Math.min(wm.width - 1, Math.max(0, Math.floor(u * wm.width)));
+            const px = Math.min(
+              wm.width - 1,
+              Math.max(0, Math.floor(u * wm.width)),
+            );
             // Mask texture is sampled with y flipped in-shader; row 0 = north.
-            const py = Math.min(wm.height - 1, Math.max(0, Math.floor((1 - vv) * wm.height)));
+            const py = Math.min(
+              wm.height - 1,
+              Math.max(0, Math.floor((1 - vv) * wm.height)),
+            );
             const d = ctx.getImageData(px, py, 1, 1).data;
             value = d[0];
             size = `${wm.width}x${wm.height}`;
@@ -125,13 +140,27 @@ async function sampleWaterMask() {
             for (let i = 0; i < wm.length; i++) if (wm[i] > mx) mx = wm[i];
             kindStr += ` tileMax=${mx}`;
           }
-          picked = { level, value, size, kindStr, u: +u.toFixed(3), v: +vv.toFixed(3) };
+          picked = {
+            level,
+            value,
+            size,
+            kindStr,
+            u: +u.toFixed(3),
+            v: +vv.toFixed(3),
+          };
           break;
         } catch (e) {
           picked = { level, error: String(e && e.message ? e.message : e) };
         }
       }
-      out.push({ name, lon, lat, kind, hasWaterMask: provider.hasWaterMask, result: picked });
+      out.push({
+        name,
+        lon,
+        lat,
+        kind,
+        hasWaterMask: provider.hasWaterMask,
+        result: picked,
+      });
     }
     return out;
   }, POINTS);
@@ -143,13 +172,20 @@ async function sampleWaterMask() {
 
 async function captureView(rendererArg, view, label) {
   const browser = await launch();
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}&${view}`, {
-    waitUntil: "networkidle",
-  });
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}&${view}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
   await page.evaluate(async () => {
     const v = window.viewer;
@@ -172,13 +208,16 @@ async function captureView(rendererArg, view, label) {
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  console.log("== STEP (i): sample terrain-provider water mask at test points ==");
+  console.log(
+    "== STEP (i): sample terrain-provider water mask at test points ==",
+  );
   const { results, errs } = await sampleWaterMask();
   for (const r of results) {
     console.log(`  ${r.name} [${r.kind}]  hasWaterMask=${r.hasWaterMask}`);
     console.log(`      ${JSON.stringify(r.result)}`);
   }
-  if (errs.length) errs.slice(0, 4).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
+  if (errs.length)
+    errs.slice(0, 4).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
 
   console.log("\n== STEP (ii): capture Lake Michigan view (both backends) ==");
   // Low-oblique view over southern Lake Michigan looking north.

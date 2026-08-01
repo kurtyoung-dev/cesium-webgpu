@@ -39,19 +39,28 @@ const PROBE_BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const VERDICT_THRESHOLD = 1.3; // brighter:darker hemisphere luminance ratio
 
 async function probe(browser, renderer) {
-  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 } });
-  const page = await ctx.newPage();
-  page.on("pageerror", (e) => console.log(`>> [${renderer}] pageerror: ${e.message}`));
-  await page.goto(`${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
+  const ctx = await browser.newContext({
+    viewport: { width: 800, height: 600 },
   });
+  const page = await ctx.newPage();
+  page.on("pageerror", (e) =>
+    console.log(`>> [${renderer}] pageerror: ${e.message}`),
+  );
+  await page.goto(
+    `${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   // Capture WebGPU uncaptured device errors.
   await page.evaluate(() => {
     window.__probeErrors = [];
     const dev = window.viewer?.scene?.context?._device;
-    if (dev) dev.onuncapturederror = (ev) => window.__probeErrors.push(ev?.error?.message ?? "");
+    if (dev)
+      dev.onuncapturederror = (ev) =>
+        window.__probeErrors.push(ev?.error?.message ?? "");
   });
 
   await page.evaluate(async () => {
@@ -93,47 +102,64 @@ async function probe(browser, renderer) {
   // Sample left/right halves over the globe region (skip UI overlay band
   // along the top, skip near-black space pixels) and compute mean
   // luminance per side.
-  const stats = await page.evaluate(async (durl) => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        const c = document.createElement("canvas");
-        c.width = img.width;
-        c.height = img.height;
-        const cx = c.getContext("2d");
-        cx.drawImage(img, 0, 0);
-        const data = cx.getImageData(0, 0, img.width, img.height).data;
-        const halfW = img.width >> 1;
-        const yStart = img.height >> 2; // skip top UI band
-        const yEnd = img.height - 50; // skip bottom timeline
-        let lR = 0, lG = 0, lB = 0, lN = 0, rR = 0, rG = 0, rB = 0, rN = 0;
-        for (let y = yStart; y < yEnd; y += 2) {
-          for (let x = 0; x < img.width; x += 2) {
-            const i = (y * img.width + x) * 4;
-            const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-            if (lum < 8) continue; // skip space/sky
-            if (x < halfW) {
-              lR += data[i]; lG += data[i + 1]; lB += data[i + 2]; lN++;
-            } else {
-              rR += data[i]; rG += data[i + 1]; rB += data[i + 2]; rN++;
+  const stats = await page.evaluate(
+    async (durl) => {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const cx = c.getContext("2d");
+          cx.drawImage(img, 0, 0);
+          const data = cx.getImageData(0, 0, img.width, img.height).data;
+          const halfW = img.width >> 1;
+          const yStart = img.height >> 2; // skip top UI band
+          const yEnd = img.height - 50; // skip bottom timeline
+          let lR = 0,
+            lG = 0,
+            lB = 0,
+            lN = 0,
+            rR = 0,
+            rG = 0,
+            rB = 0,
+            rN = 0;
+          for (let y = yStart; y < yEnd; y += 2) {
+            for (let x = 0; x < img.width; x += 2) {
+              const i = (y * img.width + x) * 4;
+              const lum =
+                0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+              if (lum < 8) continue; // skip space/sky
+              if (x < halfW) {
+                lR += data[i];
+                lG += data[i + 1];
+                lB += data[i + 2];
+                lN++;
+              } else {
+                rR += data[i];
+                rG += data[i + 1];
+                rB += data[i + 2];
+                rN++;
+              }
             }
           }
-        }
-        const mk = (r, g, b, n) =>
-          n > 0
-            ? {
-                r: Math.round(r / n),
-                g: Math.round(g / n),
-                b: Math.round(b / n),
-                n,
-                lum: Math.round((0.299 * r + 0.587 * g + 0.114 * b) / n),
-              }
-            : { r: 0, g: 0, b: 0, n: 0, lum: 0 };
-        resolve({ left: mk(lR, lG, lB, lN), right: mk(rR, rG, rB, rN) });
-      };
-      img.src = durl;
-    });
-  }, `data:image/png;base64,${png.toString("base64")}`);
+          const mk = (r, g, b, n) =>
+            n > 0
+              ? {
+                  r: Math.round(r / n),
+                  g: Math.round(g / n),
+                  b: Math.round(b / n),
+                  n,
+                  lum: Math.round((0.299 * r + 0.587 * g + 0.114 * b) / n),
+                }
+              : { r: 0, g: 0, b: 0, n: 0, lum: 0 };
+          resolve({ left: mk(lR, lG, lB, lN), right: mk(rR, rG, rB, rN) });
+        };
+        img.src = durl;
+      });
+    },
+    `data:image/png;base64,${png.toString("base64")}`,
+  );
 
   const errs = await page.evaluate(() => window.__probeErrors ?? []);
   await ctx.close();
@@ -157,12 +183,17 @@ console.log(`  right  RGB=${JSON.stringify(wgl.stats.right)}`);
 console.log(`         RGB=${JSON.stringify(wgpu.stats.right)}`);
 
 const ratio = (s) =>
-  Math.max(s.left.lum, s.right.lum) / Math.max(1, Math.min(s.left.lum, s.right.lum));
+  Math.max(s.left.lum, s.right.lum) /
+  Math.max(1, Math.min(s.left.lum, s.right.lum));
 const wglRatio = ratio(wgl.stats);
 const wgpuRatio = ratio(wgpu.stats);
 console.log("");
-console.log(`  WebGL  brighter:darker hemisphere ratio: ${wglRatio.toFixed(2)}:1`);
-console.log(`  WebGPU brighter:darker hemisphere ratio: ${wgpuRatio.toFixed(2)}:1`);
+console.log(
+  `  WebGL  brighter:darker hemisphere ratio: ${wglRatio.toFixed(2)}:1`,
+);
+console.log(
+  `  WebGPU brighter:darker hemisphere ratio: ${wgpuRatio.toFixed(2)}:1`,
+);
 console.log("  (Direction-agnostic — checks the terminator produces clear");
 console.log("   hemisphere asymmetry, not which side is lit.)");
 
@@ -170,9 +201,17 @@ const wglPass = wglRatio > VERDICT_THRESHOLD;
 const wgpuPass = wgpuRatio > VERDICT_THRESHOLD;
 const wgpuNoErr = wgpu.errs.length === 0;
 console.log("");
-console.log(`  WebGL  ${wglPass ? "✓" : "✗"} (threshold ${VERDICT_THRESHOLD}:1)`);
-console.log(`  WebGPU ${wgpuPass ? "✓" : "✗"} (threshold ${VERDICT_THRESHOLD}:1)`);
+console.log(
+  `  WebGL  ${wglPass ? "✓" : "✗"} (threshold ${VERDICT_THRESHOLD}:1)`,
+);
+console.log(
+  `  WebGPU ${wgpuPass ? "✓" : "✗"} (threshold ${VERDICT_THRESHOLD}:1)`,
+);
 console.log(`  WebGPU device errors: ${wgpu.errs.length}`);
-wgpu.errs.slice(0, 5).forEach((e) => console.log(`    - ${(e ?? "").slice(0, 160)}`));
-console.log("\n  Output: Tools/visual-regression/output/dusk-{webgl,webgpu}.png");
+wgpu.errs
+  .slice(0, 5)
+  .forEach((e) => console.log(`    - ${(e ?? "").slice(0, 160)}`));
+console.log(
+  "\n  Output: Tools/visual-regression/output/dusk-{webgl,webgpu}.png",
+);
 process.exit(wglPass && wgpuPass && wgpuNoErr ? 0 : 1);

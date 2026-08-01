@@ -37,41 +37,59 @@ const VIEWS = [
 
 async function capture(renderer, view) {
   const browser = await chromium.launch({
-    channel: "msedge", headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    channel: "msedge",
+    headless: true,
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, { waitUntil: "networkidle" });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
+    waitUntil: "networkidle",
+  });
   await page.waitForFunction(() => !!window.viewer);
 
-  await page.evaluate(async ({ view, clockUTC }) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const v = window.viewer;
-    const vm = v.baseLayerPicker.viewModel;
-    const wgs84 = vm.terrainProviderViewModels.find((t) =>
-      String(t.name || "").toLowerCase().includes("wgs84"));
-    if (wgs84) vm.selectedTerrain = wgs84;
-    // Pin the clock — matches probe-polar-multi-plain.mjs.
-    const fixed = C.JulianDate.fromIso8601(clockUTC);
-    v.clock.currentTime = fixed.clone();
-    v.clock.startTime = fixed.clone();
-    v.clock.stopTime = fixed.clone();
-    v.clock.shouldAnimate = false;
-    v.clock.multiplier = 0;
-    if (C.DebugTileImageryProvider) {
-      v.imageryLayers.addImageryProvider(new C.DebugTileImageryProvider({
-        colorByLevel: true,
-      }));
-    }
-    v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
-    });
-    for (let i = 0; i < 1500; i++) {
-      v.scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
-      if (v.scene.globe.tilesLoaded && i > 300) break;
-    }
-  }, { view, clockUTC: FIXED_CLOCK_UTC });
+  await page.evaluate(
+    async ({ view, clockUTC }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      const vm = v.baseLayerPicker.viewModel;
+      const wgs84 = vm.terrainProviderViewModels.find((t) =>
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
+      );
+      if (wgs84) vm.selectedTerrain = wgs84;
+      // Pin the clock — matches probe-polar-multi-plain.mjs.
+      const fixed = C.JulianDate.fromIso8601(clockUTC);
+      v.clock.currentTime = fixed.clone();
+      v.clock.startTime = fixed.clone();
+      v.clock.stopTime = fixed.clone();
+      v.clock.shouldAnimate = false;
+      v.clock.multiplier = 0;
+      if (C.DebugTileImageryProvider) {
+        v.imageryLayers.addImageryProvider(
+          new C.DebugTileImageryProvider({
+            colorByLevel: true,
+          }),
+        );
+      }
+      v.camera.setView({
+        destination: C.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
+      });
+      for (let i = 0; i < 1500; i++) {
+        v.scene.render();
+        await new Promise((r) => requestAnimationFrame(r));
+        if (v.scene.globe.tilesLoaded && i > 300) break;
+      }
+    },
+    { view, clockUTC: FIXED_CLOCK_UTC },
+  );
   await page.waitForTimeout(2000);
   const out = path.join(OUT_DIR, `polar-multi-${view.name}-${renderer}.png`);
   await page.screenshot({ path: out });
@@ -81,7 +99,9 @@ async function capture(renderer, view) {
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[polar-multi-angle] WGS84 + DebugTileImageryProvider, both backends");
+  console.log(
+    "[polar-multi-angle] WGS84 + DebugTileImageryProvider, both backends",
+  );
   for (const view of VIEWS) {
     for (const renderer of ["webgl", "webgpu"]) {
       console.log(`  ${view.name} ${renderer}`);

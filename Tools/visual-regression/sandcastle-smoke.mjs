@@ -328,5 +328,7 @@ for (const demo of DEMOS) {
 }
 
 await browser.close();
-console.log(`\n${allOK ? "PASS" : "FAIL"}: sandcastle-smoke (${DEMOS.length} demos)`);
+console.log(
+  `\n${allOK ? "PASS" : "FAIL"}: sandcastle-smoke (${DEMOS.length} demos)`,
+);
 process.exit(allOK ? 0 : 1);

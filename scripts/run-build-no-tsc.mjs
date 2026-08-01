@@ -1,4 +1,9 @@
-import { wgslToJavaScript, buildEngine, buildWidgets, buildCesium } from "./build.js";
+import {
+  wgslToJavaScript,
+  buildEngine,
+  buildWidgets,
+  buildCesium,
+} from "./build.js";
 
 console.log("Converting WGSL shaders...");
 await wgslToJavaScript(false, "Build/minifyShaders.state", "engine");

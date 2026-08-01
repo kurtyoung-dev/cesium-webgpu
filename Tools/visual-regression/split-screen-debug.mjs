@@ -12,7 +12,9 @@ import { chromium } from "playwright";
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   page.on("console", (m) => console.log(`[console.${m.type()}]`, m.text()));
   page.on("pageerror", (e) => console.log(`[pageerror]`, e.message));
@@ -60,8 +62,12 @@ import { chromium } from "playwright";
     let webgpuNonBlack = 0;
     for (let i = 0; i < a.data.length; i += 4) {
       total++;
-      const r1 = a.data[i], g1 = a.data[i + 1], b1 = a.data[i + 2];
-      const r2 = b.data[i], g2 = b.data[i + 1], bz = b.data[i + 2];
+      const r1 = a.data[i],
+        g1 = a.data[i + 1],
+        b1 = a.data[i + 2];
+      const r2 = b.data[i],
+        g2 = b.data[i + 1],
+        bz = b.data[i + 2];
       if (r1 + g1 + b1 > 30) webglNonBlack++;
       if (r2 + g2 + bz > 30) webgpuNonBlack++;
       const dr = Math.abs(r1 - r2);

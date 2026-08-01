@@ -71,8 +71,10 @@ const SCENE = {
     // New flags left at their DEFAULTS — set them explicitly to be sure the
     // parity capture exercises the default ('heuristic' / 'constant') path even
     // on a build where the setters exist.
-    if ("cloudAerialMode" in g) g.defaultCloudCollection.volumetric.cloudAerialMode = "heuristic";
-    if ("cloudAmbientSource" in g) g.defaultCloudCollection.volumetric.cloudAmbientSource = "constant";
+    if ("cloudAerialMode" in g)
+      g.defaultCloudCollection.volumetric.cloudAerialMode = "heuristic";
+    if ("cloudAmbientSource" in g)
+      g.defaultCloudCollection.volumetric.cloudAmbientSource = "constant";
     v.camera.setView({
       destination: C.Cartesian3.fromDegrees(
         scene.camera.lon,
@@ -102,6 +104,8 @@ const SCENE = {
   );
   console.log(`[parity:${TAG}] wrote ${path}`);
   console.log(
-    newErrs.length ? `NEW errs: ${newErrs.slice(0, 4).join(" | ")}` : "no new console errors",
+    newErrs.length
+      ? `NEW errs: ${newErrs.slice(0, 4).join(" | ")}`
+      : "no new console errors",
   );
 })();

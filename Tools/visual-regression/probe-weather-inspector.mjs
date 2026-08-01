@@ -105,8 +105,8 @@ function cloudStats(page, dataUrl) {
     cx.drawImage(img, 0, 0);
     const d = cx.getImageData(0, 0, c.width, c.height).data;
     let cloudPx = 0,
-      sky = 0,
-      n = d.length / 4;
+      sky = 0;
+    const n = d.length / 4;
     for (let i = 0; i < d.length; i += 4) {
       const r = d[i],
         g = d[i + 1],
@@ -122,7 +122,10 @@ function cloudStats(page, dataUrl) {
         sky++;
       }
     }
-    return { cloudPct: +((100 * cloudPx) / n).toFixed(2), skyPct: +((100 * sky) / n).toFixed(2) };
+    return {
+      cloudPct: +((100 * cloudPx) / n).toFixed(2),
+      skyPct: +((100 * sky) / n).toFixed(2),
+    };
   }, dataUrl);
 }
 
@@ -142,8 +145,8 @@ async function diff(page, a, b) {
       };
       const da = await load(ua),
         db = await load(ub);
-      let acc = 0,
-        n = da.length / 4;
+      let acc = 0;
+      const n = da.length / 4;
       for (let i = 0; i < da.length; i += 4) {
         acc += Math.abs(
           0.299 * da[i] +
@@ -184,9 +187,13 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   // Capture the way the canonical gallery runner does: let the viewer's OWN
@@ -195,7 +202,10 @@ async function run() {
   const canvas = await page.$(".cesium-widget canvas");
   const shot = async (name) => {
     await canvas.screenshot({ path: `${OUT}/${name}.png` });
-    return "data:image/png;base64," + fs.readFileSync(`${OUT}/${name}.png`).toString("base64");
+    return (
+      "data:image/png;base64," +
+      fs.readFileSync(`${OUT}/${name}.png`).toString("base64")
+    );
   };
   const SETTLE = 9000;
 
@@ -208,16 +218,29 @@ async function run() {
   }));
   const defDU = await shot("weather-inspector-default");
   const defStats = await cloudStats(page, defDU);
-  console.log("default", JSON.stringify(defStats), "panel", JSON.stringify(panelInfo));
+  console.log(
+    "default",
+    JSON.stringify(defStats),
+    "panel",
+    JSON.stringify(panelInfo),
+  );
 
   // 2) drive Coverage 0.45 -> 0.95
-  const covId = "wi-globe.defaultCloudCollection.volumetric.cloudCoverage-Coverage";
+  const covId =
+    "wi-globe.defaultCloudCollection.volumetric.cloudCoverage-Coverage";
   const setCov = await page.evaluate(SET_SLIDER, { id: covId, value: 0.95 });
   await page.waitForTimeout(3500);
   const covDU = await shot("weather-inspector-coverage-hi");
   const covStats = await cloudStats(page, covDU);
   const covDiff = await diff(page, defDU, covDU);
-  console.log("coverage0.95", JSON.stringify(covStats), "diff", covDiff, "set", JSON.stringify(setCov));
+  console.log(
+    "coverage0.95",
+    JSON.stringify(covStats),
+    "diff",
+    covDiff,
+    "set",
+    JSON.stringify(setCov),
+  );
 
   // 3) OVC St preset (button click) — overcast 8/8, and confirm UI refresh
   await page.evaluate(CLICK, { id: "wi-preset-OVCst" });
@@ -230,14 +253,31 @@ async function run() {
   const gate = await collectGateErrors(page);
   const newErrs = (gate.errors || [])
     .concat(consoleErrors)
-    .filter((e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon|bucket\.css|Sandcastle-header|load-cesium-es6/i.test(e));
+    .filter(
+      (e) =>
+        !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon|bucket\.css|Sandcastle-header|load-cesium-es6/i.test(
+          e,
+        ),
+    );
 
   const checks = [
-    ["demo booted on WebGPU + panel built (8 groups, 8 presets)", panelInfo.rows >= 15 && panelInfo.presets === 8 && panelInfo.groups >= 7],
-    [`clouds render in default sky (cloudPct ${defStats.cloudPct} > 2)`, defStats.cloudPct > 2],
-    [`Coverage slider wired (set ok, diff ${covDiff} > 0.5)`, setCov.ok && covDiff > 0.5],
+    [
+      "demo booted on WebGPU + panel built (8 groups, 8 presets)",
+      panelInfo.rows >= 15 && panelInfo.presets === 8 && panelInfo.groups >= 7,
+    ],
+    [
+      `clouds render in default sky (cloudPct ${defStats.cloudPct} > 2)`,
+      defStats.cloudPct > 2,
+    ],
+    [
+      `Coverage slider wired (set ok, diff ${covDiff} > 0.5)`,
+      setCov.ok && covDiff > 0.5,
+    ],
     [`OVC St preset changes sky (diff ${stormyDiff} > 1.0)`, stormyDiff > 1.0],
-    [`OVC St preset refreshes UI (coverage slider ${covAfterPreset} ~ 0.98)`, covAfterPreset != null && covAfterPreset > 0.9],
+    [
+      `OVC St preset refreshes UI (coverage slider ${covAfterPreset} ~ 0.98)`,
+      covAfterPreset != null && covAfterPreset > 0.9,
+    ],
     [`no NEW device/runtime errors (${newErrs.length})`, newErrs.length === 0],
   ];
   console.log("\n=== ANALYSIS ===");

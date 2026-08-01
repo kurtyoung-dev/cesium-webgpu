@@ -15,21 +15,42 @@ const SHIM = `(function(){
   function pSC(){const SC=window.Sandcastle;if(!SC||_oFL)return;_oFL=SC.finishedLoading;SC.finishedLoading=function(){if(_sp||typeof _s==="function"){dFL();return;}_oFL.call(SC);_flC=true;};}
   function tp(){if(window.Sandcastle)pSC();else requestAnimationFrame(tp);}tp();
 })();`;
-const browser=await chromium.launch({channel:"msedge",headless:true,args:["--enable-unsafe-webgpu","--enable-features=Vulkan"]});
-const page=await browser.newPage({viewport:{width:800,height:600}});
-await page.addInitScript({content:SHIM});
-await page.route("**/Apps/Sandcastle/gallery/**.html",async route=>{
-  const r=await route.fetch();const t=await r.text();
-  await route.fulfill({status:r.status(),headers:r.headers(),body:t.replace(/new\s+Cesium\.Viewer\s*\(/g,"await Cesium.Viewer.createAsync(")});
+const browser = await chromium.launch({
+  channel: "msedge",
+  headless: true,
+  args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan"],
 });
-await page.goto("http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html",{waitUntil:"domcontentloaded",timeout:60000});
-await page.waitForFunction(()=>{const c=document.querySelector(".cesium-widget canvas");return c&&c.width>0;},{timeout:60000});
+const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+await page.addInitScript({ content: SHIM });
+await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
+  const r = await route.fetch();
+  const t = await r.text();
+  await route.fulfill({
+    status: r.status(),
+    headers: r.headers(),
+    body: t.replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    ),
+  });
+});
+await page.goto(
+  "http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html",
+  { waitUntil: "domcontentloaded", timeout: 60000 },
+);
+await page.waitForFunction(
+  () => {
+    const c = document.querySelector(".cesium-widget canvas");
+    return c && c.width > 0;
+  },
+  { timeout: 60000 },
+);
 await page.waitForTimeout(8000);
 
-const state=await page.evaluate(()=>{
-  const v=window.__capturedViewer;
-  const pp=v.scene.postProcessStages;
-  const wgppp=v.scene.context._sceneRenderer?._postProcess;
+const state = await page.evaluate(() => {
+  const v = window.__capturedViewer;
+  const pp = v.scene.postProcessStages;
+  const wgppp = v.scene.context._sceneRenderer?._postProcess;
   return {
     pp_tonemapping_enabled: pp._tonemapping?.enabled,
     pp_fxaa_enabled: pp.fxaa?.enabled,

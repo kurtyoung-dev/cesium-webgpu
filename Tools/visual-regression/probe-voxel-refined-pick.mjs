@@ -68,7 +68,9 @@ function expectedColor(octant, c) {
 }
 
 async function capture(renderer) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = [];
   page.on("console", (m) => {
     if (m.type() === "error") consoleErrors.push(m.text());
@@ -131,11 +133,7 @@ async function capture(renderer) {
         const octantIndex = cx + 2 * cy + 4 * cz;
         return makeTile(
           (lx, ly, lz) => cy * tile + ly === cz * tile + lz,
-          (lx, ly, lz) => [
-            octantIndex / 8,
-            (lx + 4 * ly + 16 * lz) / 64,
-            0.5,
-          ],
+          (lx, ly, lz) => [octantIndex / 8, (lx + 4 * ly + 16 * lz) / 64, 0.5],
         );
       }
       const provider = {
@@ -152,7 +150,9 @@ async function capture(renderer) {
         requestData: function (options) {
           const level = options.tileLevel ?? 0;
           if (level === 0) {
-            return Promise.resolve(C.VoxelContent.fromMetadataArray([rootData]));
+            return Promise.resolve(
+              C.VoxelContent.fromMetadataArray([rootData]),
+            );
           }
           if (level === 1) {
             return Promise.resolve(
@@ -294,7 +294,9 @@ let pass = true;
 const webgl = await capture("webgl");
 const webgpu = await capture("webgpu");
 
-console.log("=== NS-VOXEL-REFINED-TILE-CELL-RETENTION — refined scene.pickVoxel ===");
+console.log(
+  "=== NS-VOXEL-REFINED-TILE-CELL-RETENTION — refined scene.pickVoxel ===",
+);
 console.log(`renderers: webgl=${webgl.renderer} webgpu=${webgpu.renderer}`);
 console.log(
   "WebGPU setup:",

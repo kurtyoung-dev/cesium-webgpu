@@ -1,5 +1,5 @@
 // NEW-VR2-1 forensics — probe Bloom.html GLOBE PASS commands.
-import { chromium } from 'playwright';
+import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -13,17 +13,31 @@ const RENDERER_OVERRIDE_SHIM = `
 `;
 
 async function probe(renderer) {
-  const browser = await chromium.launch({ channel: 'msedge', headless: true });
-  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
-  const page = await ctx.newPage();
-  await page.addInitScript((r) => { window.__FORCED_RENDERER__ = r; }, renderer);
-  await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-  await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
-    const response = await route.fetch();
-    const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-    await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const ctx = await browser.newContext({
+    viewport: { width: 800, height: 600 },
   });
-  await page.goto('http://localhost:8080/Apps/Sandcastle/gallery/Bloom.html', { waitUntil: 'load', timeout: 60000 });
+  const page = await ctx.newPage();
+  await page.addInitScript((r) => {
+    window.__FORCED_RENDERER__ = r;
+  }, renderer);
+  await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
+  await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
+    const response = await route.fetch();
+    const txt = (await response.text()).replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    );
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      body: txt,
+    });
+  });
+  await page.goto("http://localhost:8080/Apps/Sandcastle/gallery/Bloom.html", {
+    waitUntil: "load",
+    timeout: 60000,
+  });
   await page.waitForTimeout(10000);
   const state = await page.evaluate(() => {
     const v = window.viewer || window.__capturedViewer;
@@ -33,12 +47,20 @@ async function probe(renderer) {
     const frameState = scene._frameState;
     // Sample mid-canvas pixel to verify what's there
     const canvas = scene.canvas;
-    const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+    const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
     let mid = null;
     try {
       if (gl) {
         const px = new Uint8Array(4);
-        gl.readPixels(canvas.width / 2 | 0, canvas.height / 2 | 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        gl.readPixels(
+          (canvas.width / 2) | 0,
+          (canvas.height / 2) | 0,
+          1,
+          1,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          px,
+        );
         mid = { r: px[0], g: px[1], b: px[2], a: px[3] };
       }
     } catch (e) {}
@@ -53,7 +75,7 @@ async function probe(renderer) {
     const passCounts = {};
     if (frameState?.commandList) {
       for (const cmd of frameState.commandList) {
-        const pass = cmd?.pass ?? 'unknown';
+        const pass = cmd?.pass ?? "unknown";
         passCounts[pass] = (passCounts[pass] || 0) + 1;
       }
     }
@@ -66,20 +88,22 @@ async function probe(renderer) {
       cmdListLen,
       passCounts,
       midPixelFromGL: mid,
-      framebufferSummary: snap?.scene ? {
-        frameNumber: snap.scene.frameNumber,
-        primitivesCount: snap.scene.primitivesCount,
-        useHdr: snap.scene.useHdr,
-      } : null,
+      framebufferSummary: snap?.scene
+        ? {
+            frameNumber: snap.scene.frameNumber,
+            primitivesCount: snap.scene.primitivesCount,
+            useHdr: snap.scene.useHdr,
+          }
+        : null,
     };
   });
   await browser.close();
   return state;
 }
 
-const wgl = await probe('webgl');
-const wgpu = await probe('webgpu');
-console.log('=== WebGL ===');
+const wgl = await probe("webgl");
+const wgpu = await probe("webgpu");
+console.log("=== WebGL ===");
 console.log(JSON.stringify(wgl, null, 2));
-console.log('\n=== WebGPU ===');
+console.log("\n=== WebGPU ===");
 console.log(JSON.stringify(wgpu, null, 2));

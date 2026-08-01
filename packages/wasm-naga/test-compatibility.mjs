@@ -22,13 +22,7 @@ import { join, basename } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const __dirname = fileURLToPath(new URL(".", import.meta.url));
-const SHADER_ROOT = join(
-  __dirname,
-  "..",
-  "engine",
-  "Source",
-  "Shaders",
-);
+const SHADER_ROOT = join(__dirname, "..", "engine", "Source", "Shaders");
 
 const VERBOSE = process.argv.includes("--verbose");
 const FRAGMENTS_ONLY = process.argv.includes("--fragments-only");
@@ -59,9 +53,15 @@ async function loadNaga() {
  */
 function inferStage(filename) {
   const base = basename(filename, ".glsl");
-  if (/VS(_.*)?$/.test(base)) {return "vertex";}
-  if (/FS(_.*)?$/.test(base)) {return "fragment";}
-  if (/CS(_.*)?$/.test(base)) {return "compute";}
+  if (/VS(_.*)?$/.test(base)) {
+    return "vertex";
+  }
+  if (/FS(_.*)?$/.test(base)) {
+    return "fragment";
+  }
+  if (/CS(_.*)?$/.test(base)) {
+    return "compute";
+  }
   return null; // not a standalone stage
 }
 
@@ -71,7 +71,9 @@ async function* walkShaders(root) {
     const full = join(root, e.name);
     if (e.isDirectory()) {
       // Skip the WebGPU subtree (.wgsl) — we're testing naga's GLSL input.
-      if (e.name === "WebGPU" || e.name === "Generated") {continue;}
+      if (e.name === "WebGPU" || e.name === "Generated") {
+        continue;
+      }
       yield* walkShaders(full);
     } else if (e.name.endsWith(".glsl")) {
       yield full;
@@ -82,22 +84,44 @@ async function* walkShaders(root) {
 function classifyError(msg) {
   // Categorise failure modes so we can report which kinds are fixable
   // via a preprocessor pass vs. which need real fixes.
-  if (/precision\s+(highp|mediump|lowp)/i.test(msg)) {return "precision";}
-  if (/version\s+\d{3}/i.test(msg)) {return "version";}
-  if (/#extension/i.test(msg)) {return "extension";}
-  if (/sampler(1D|2D|3D|Cube)Shadow/i.test(msg)) {return "shadow-sampler";}
-  if (/\bvarying\b|\battribute\b/i.test(msg)) {return "webgl-keywords";}
-  if (/layout.*std140|layout.*std430/i.test(msg)) {return "ubo-layout";}
-  if (/cannot find|undeclared/i.test(msg)) {return "missing-symbol";}
-  if (/ParseError|parse error/i.test(msg)) {return "parse-error";}
-  if (/type.*mismatch|expected.*got/i.test(msg)) {return "type-error";}
+  if (/precision\s+(highp|mediump|lowp)/i.test(msg)) {
+    return "precision";
+  }
+  if (/version\s+\d{3}/i.test(msg)) {
+    return "version";
+  }
+  if (/#extension/i.test(msg)) {
+    return "extension";
+  }
+  if (/sampler(1D|2D|3D|Cube)Shadow/i.test(msg)) {
+    return "shadow-sampler";
+  }
+  if (/\bvarying\b|\battribute\b/i.test(msg)) {
+    return "webgl-keywords";
+  }
+  if (/layout.*std140|layout.*std430/i.test(msg)) {
+    return "ubo-layout";
+  }
+  if (/cannot find|undeclared/i.test(msg)) {
+    return "missing-symbol";
+  }
+  if (/ParseError|parse error/i.test(msg)) {
+    return "parse-error";
+  }
+  if (/type.*mismatch|expected.*got/i.test(msg)) {
+    return "type-error";
+  }
   return "other";
 }
 
 async function main() {
   console.log("Loading naga-wasm…");
   const naga = await loadNaga();
-  console.log(`  exports: ${Object.keys(naga).filter((k) => typeof naga[k] === "function").join(", ")}`);
+  console.log(
+    `  exports: ${Object.keys(naga)
+      .filter((k) => typeof naga[k] === "function")
+      .join(", ")}`,
+  );
   console.log();
 
   const stats = {
@@ -116,7 +140,9 @@ async function main() {
       stats.skipped++;
       continue;
     }
-    if (FRAGMENTS_ONLY && stage !== "fragment") {continue;}
+    if (FRAGMENTS_ONLY && stage !== "fragment") {
+      continue;
+    }
 
     stats.tested++;
     const source = await readFile(file, "utf8");
@@ -140,7 +166,8 @@ async function main() {
       stats.byStage[stage][1]++;
       const msg = err.message ?? String(err);
       const category = classifyError(msg);
-      stats.errorCategories[category] = (stats.errorCategories[category] ?? 0) + 1;
+      stats.errorCategories[category] =
+        (stats.errorCategories[category] ?? 0) + 1;
       stats.failedFiles.push({ file: relPath, stage, error: msg, category });
       if (VERBOSE) {
         console.log(`✗ ${relPath} (${stage}) [${category}]`);
@@ -151,15 +178,21 @@ async function main() {
 
   console.log("\n─".repeat(60));
   console.log(`Total tested : ${stats.tested}`);
-  console.log(`  Succeeded  : ${stats.succeeded}  (${((stats.succeeded / stats.tested) * 100).toFixed(1)}%)`);
+  console.log(
+    `  Succeeded  : ${stats.succeeded}  (${((stats.succeeded / stats.tested) * 100).toFixed(1)}%)`,
+  );
   console.log(`  Failed     : ${stats.failed}`);
   console.log(`  Skipped    : ${stats.skipped} (not a standalone stage)`);
   console.log();
   console.log(`By stage:`);
   for (const [stage, [ok, fail]] of Object.entries(stats.byStage)) {
     const total = ok + fail;
-    if (total === 0) {continue;}
-    console.log(`  ${stage.padEnd(10)} ${ok}/${total}  (${((ok / total) * 100).toFixed(1)}%)`);
+    if (total === 0) {
+      continue;
+    }
+    console.log(
+      `  ${stage.padEnd(10)} ${ok}/${total}  (${((ok / total) * 100).toFixed(1)}%)`,
+    );
   }
 
   if (stats.failed > 0) {

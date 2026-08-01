@@ -27,7 +27,8 @@ const SHIM = `(function() {
 })();`;
 
 const browser = await chromium.launch({
-  channel: "msedge", headless: true,
+  channel: "msedge",
+  headless: true,
   args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan"],
 });
 const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
@@ -35,16 +36,29 @@ await page.addInitScript({ content: SHIM });
 await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
   const r = await route.fetch();
   const t = await r.text();
-  await route.fulfill({ status: r.status(), headers: r.headers(),
-    body: t.replace(/new\s+Cesium\.Viewer\s*\(/g, "await Cesium.Viewer.createAsync(") });
+  await route.fulfill({
+    status: r.status(),
+    headers: r.headers(),
+    body: t.replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    ),
+  });
 });
-await page.goto("http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html", {
-  waitUntil: "domcontentloaded", timeout: 60000,
-});
-await page.waitForFunction(() => {
-  const c = document.querySelector(".cesium-widget canvas");
-  return c && c.width > 0;
-}, { timeout: 60000 });
+await page.goto(
+  "http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html",
+  {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  },
+);
+await page.waitForFunction(
+  () => {
+    const c = document.querySelector(".cesium-widget canvas");
+    return c && c.width > 0;
+  },
+  { timeout: 60000 },
+);
 await page.waitForTimeout(8000);
 
 const dataUrl = await page.evaluate(() => {
@@ -52,14 +66,24 @@ const dataUrl = await page.evaluate(() => {
   return v.scene.canvas.toDataURL("image/png");
 });
 const fs = await import("node:fs/promises");
-await fs.writeFile("Tools/visual-regression/output/probe-hello-sc.png",
-  Buffer.from(dataUrl.replace(/^data:image\/png;base64,/, ""), "base64"));
+await fs.writeFile(
+  "Tools/visual-regression/output/probe-hello-sc.png",
+  Buffer.from(dataUrl.replace(/^data:image\/png;base64,/, ""), "base64"),
+);
 
 await browser.close();
 
 const sharp = (await import("sharp")).default;
-const { data, info } = await sharp("Tools/visual-regression/output/probe-hello-sc.png").raw().toBuffer({ resolveWithObject: true });
-for (const [n, x, y] of [['mid-Pacific', 230, 320], ['continent', 360, 280], ['dead-center', 400, 300]]) {
+const { data, info } = await sharp(
+  "Tools/visual-regression/output/probe-hello-sc.png",
+)
+  .raw()
+  .toBuffer({ resolveWithObject: true });
+for (const [n, x, y] of [
+  ["mid-Pacific", 230, 320],
+  ["continent", 360, 280],
+  ["dead-center", 400, 300],
+]) {
   const idx = (info.width * y + x) * info.channels;
-  console.log(n, data[idx], data[idx+1], data[idx+2]);
+  console.log(n, data[idx], data[idx + 1], data[idx + 2]);
 }

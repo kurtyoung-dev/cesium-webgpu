@@ -44,9 +44,12 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false; // take manual control so render(jd) drives the sun
   s.requestRenderMode = false;
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.5;
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.75;
+  if ("cloudCoverage" in g)
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.5;
+  if ("cloudWeatherMap" in g)
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.75;
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
@@ -78,9 +81,9 @@ const RENDER_AT = async (cfg) => {
   const sunWC = s.context.uniformState.sunDirectionWC;
   const sinElev = C.Cartesian3.dot(sunWC, up);
   return {
-    elevDeg: +C.Math.toDegrees(Math.asin(Math.max(-1, Math.min(1, sinElev)))).toFixed(
-      1,
-    ),
+    elevDeg: +C.Math.toDegrees(
+      Math.asin(Math.max(-1, Math.min(1, sinElev))),
+    ).toFixed(1),
     dataUrl: s.canvas.toDataURL("image/png"),
   };
 };

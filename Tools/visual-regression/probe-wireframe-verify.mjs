@@ -19,7 +19,9 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = path.join(__dirname, "output");
 
 async function boot(browser, renderer) {
-  const page = await browser.newPage({ viewport: { width: 1000, height: 1000 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 1000 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -81,35 +83,51 @@ async function settle(page, frames) {
   return await page.evaluate(async (frames) => {
     const v = window.viewer;
     const scene = v.scene;
-    const SW = 200, SH = 200;
+    const SW = 200,
+      SH = 200;
     const sampler = document.createElement("canvas");
-    sampler.width = SW; sampler.height = SH;
+    sampler.width = SW;
+    sampler.height = SH;
     const sctx = sampler.getContext("2d", { willReadFrequently: true });
-    let lastSig = 0, nonBlackFrac = 0;
+    let lastSig = 0,
+      nonBlackFrac = 0;
     const sign = () => {
       try {
         sctx.clearRect(0, 0, SW, SH);
         sctx.drawImage(scene.canvas, 0, 0, SW, SH);
         const d = sctx.getImageData(0, 0, SW, SH).data;
-        let s = 0, nb = 0;
-        for (let i = 0; i < d.length; i += 16) s += d[i] + d[i + 1] * 3 + d[i + 2] * 7;
+        let s = 0,
+          nb = 0;
+        for (let i = 0; i < d.length; i += 16)
+          s += d[i] + d[i + 1] * 3 + d[i + 2] * 7;
         for (let i = 0; i < d.length; i += 4)
           if (d[i] > 16 || d[i + 1] > 16 || d[i + 2] > 16) nb++;
-        lastSig = s; nonBlackFrac = nb / (SW * SH);
-      } catch (e) { lastSig = -1; }
+        lastSig = s;
+        nonBlackFrac = nb / (SW * SH);
+      } catch (e) {
+        lastSig = -1;
+      }
     };
     const remove = scene.postRender.addEventListener(sign);
-    let prev = -1, stable = 0;
+    let prev = -1,
+      stable = 0;
     for (let i = 0; i < frames; i++) {
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));
-      const rel = prev <= 0 ? Infinity : Math.abs(lastSig - prev) / Math.max(1, Math.abs(prev));
-      if (rel < 0.0015) stable++; else stable = 0;
+      const rel =
+        prev <= 0
+          ? Infinity
+          : Math.abs(lastSig - prev) / Math.max(1, Math.abs(prev));
+      if (rel < 0.0015) stable++;
+      else stable = 0;
       prev = lastSig;
       if (i >= 120 && stable >= 30) break;
     }
     remove();
-    for (let i = 0; i < 10; i++) { scene.render(); await new Promise((r) => requestAnimationFrame(r)); }
+    for (let i = 0; i < 10; i++) {
+      scene.render();
+      await new Promise((r) => requestAnimationFrame(r));
+    }
     return { nonBlackFrac: +nonBlackFrac.toFixed(4) };
   }, frames);
 }
@@ -120,8 +138,11 @@ async function capture(page, outPath) {
     return await new Promise((resolve) => {
       const remove = v.scene.postRender.addEventListener(() => {
         remove();
-        try { resolve(v.scene.canvas.toDataURL("image/png").split(",")[1]); }
-        catch (e) { resolve(null); }
+        try {
+          resolve(v.scene.canvas.toDataURL("image/png").split(",")[1]);
+        } catch (e) {
+          resolve(null);
+        }
       });
       v.scene.requestRender();
       v.scene.render();
@@ -135,8 +156,14 @@ async function capture(page, outPath) {
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
   const browser = await chromium.launch({
-    channel: "msedge", headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    channel: "msedge",
+    headless: true,
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
   const gpu = await boot(browser, "webgpu");
   const gl = await boot(browser, "webgl");
@@ -146,8 +173,18 @@ async function capture(page, outPath) {
   const stgl = await settle(gl.page, 300);
   await capture(gpu.page, path.join(OUT_DIR, "wireframe-webgpu.png"));
   await capture(gl.page, path.join(OUT_DIR, "wireframe-webgl.png"));
-  console.error("gpu setup:", JSON.stringify(sgpu), "settle:", JSON.stringify(stgpu));
-  console.error("gl  setup:", JSON.stringify(sgl), "settle:", JSON.stringify(stgl));
+  console.error(
+    "gpu setup:",
+    JSON.stringify(sgpu),
+    "settle:",
+    JSON.stringify(stgpu),
+  );
+  console.error(
+    "gl  setup:",
+    JSON.stringify(sgl),
+    "settle:",
+    JSON.stringify(stgl),
+  );
   console.error("gpu errs:", JSON.stringify(gpu.errs.slice(0, 5)));
   await browser.close();
 })();

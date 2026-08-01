@@ -111,7 +111,11 @@ const OUT_ON = "Tools/visual-regression/output/clustered-phong-on.png";
       new C.PointLight({
         position: C.Cartesian3.add(
           bs.center,
-          C.Cartesian3.multiplyByScalar(camDir, bs.radius * 1.5, new C.Cartesian3()),
+          C.Cartesian3.multiplyByScalar(
+            camDir,
+            bs.radius * 1.5,
+            new C.Cartesian3(),
+          ),
           new C.Cartesian3(),
         ),
         color: C.Color.WHITE,
@@ -124,7 +128,8 @@ const OUT_ON = "Tools/visual-regression/output/clustered-phong-on.png";
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));
     }
-    const d = scene._alternateSceneRenderer?._clusteredLightingDispatcher ?? null;
+    const d =
+      scene._alternateSceneRenderer?._clusteredLightingDispatcher ?? null;
     return {
       lastActive: d?.lastActiveLightCount ?? -1,
       clusteredActive: scene.context._clusteredLightingActive === true,
@@ -161,18 +166,31 @@ const OUT_ON = "Tools/visual-regression/output/clustered-phong-on.png";
         x1 = (off.w * 0.7) | 0,
         y0 = (off.h * 0.3) | 0,
         y1 = (off.h * 0.7) | 0;
-      let so = 0, sn = 0, n = 0, ch = 0, md = 0;
+      let so = 0,
+        sn = 0,
+        n = 0,
+        ch = 0,
+        md = 0;
       for (let y = y0; y < y1; y++)
         for (let x = x0; x < x1; x++) {
           const i = (y * off.w + x) * 4;
           const a = off.data[i] + off.data[i + 1] + off.data[i + 2];
           const b = on.data[i] + on.data[i + 1] + on.data[i + 2];
-          so += a; sn += b; n++;
+          so += a;
+          sn += b;
+          n++;
           const dd = Math.abs(b - a);
           if (dd > 5) ch++;
           if (dd > md) md = dd;
         }
-      return { meanOff: so / n, meanOn: sn / n, delta: (sn - so) / n, changedPx: ch, maxDelta: md, n };
+      return {
+        meanOff: so / n,
+        meanOn: sn / n,
+        delta: (sn - so) / n,
+        changedPx: ch,
+        maxDelta: md,
+        n,
+      };
     },
     { offB64, onB64 },
   );
@@ -197,9 +215,23 @@ const OUT_ON = "Tools/visual-regression/output/clustered-phong-on.png";
     });
   }
   let pass = true;
-  if (phase2.lastActive < 1) { console.log(`FAIL: lastActiveLightCount = ${phase2.lastActive}`); pass = false; }
-  if (stats.changedPx < 50) { console.log(`FAIL: only ${stats.changedPx} px changed (max ${stats.maxDelta}) — phong likely still routing to unlit basic`); pass = false; }
-  if (errs.length) { console.log(`FAIL: ${errs.length} device errors`); pass = false; }
-  if (pass) console.log("\nPASS: PerInstanceColorAppearance routes to lit phong + clustered lighting visible + 0 device errors");
+  if (phase2.lastActive < 1) {
+    console.log(`FAIL: lastActiveLightCount = ${phase2.lastActive}`);
+    pass = false;
+  }
+  if (stats.changedPx < 50) {
+    console.log(
+      `FAIL: only ${stats.changedPx} px changed (max ${stats.maxDelta}) — phong likely still routing to unlit basic`,
+    );
+    pass = false;
+  }
+  if (errs.length) {
+    console.log(`FAIL: ${errs.length} device errors`);
+    pass = false;
+  }
+  if (pass)
+    console.log(
+      "\nPASS: PerInstanceColorAppearance routes to lit phong + clustered lighting visible + 0 device errors",
+    );
   process.exit(pass ? 0 : 1);
 })();

@@ -59,10 +59,9 @@ async function run() {
   });
   page.on("pageerror", (e) => errors.push(String(e)));
 
-  await page.goto(
-    `${BASE}/Apps/CesiumViewer/index.html?renderer=${RENDERER}`,
-    { waitUntil: "networkidle" },
-  );
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${RENDERER}`, {
+    waitUntil: "networkidle",
+  });
   await page.waitForFunction(() => !!window.viewer);
 
   const result = await page.evaluate(
@@ -145,11 +144,9 @@ async function run() {
 
         // Flat-buffer footprint (observable): number of point primitives held
         // by the bulk collection (each ~ a few floats of vertex/instance data).
-        let bulkPrimCount = -1;
+        let bulkPrimCount;
         try {
-          bulkPrimCount = bulkVis._collection
-            ? bulkVis._collection.length
-            : -1;
+          bulkPrimCount = bulkVis._collection ? bulkVis._collection.length : -1;
         } catch (e) {
           bulkPrimCount = -1;
         }
@@ -177,9 +174,7 @@ async function run() {
         legacyVis.update(time); // first settled update
         const legacySetupMs = performance.now() - ls0;
 
-        const legacyItemCount = legacyVis._items
-          ? legacyVis._items.length
-          : -1;
+        const legacyItemCount = legacyVis._items ? legacyVis._items.length : -1;
 
         const legacyPerFrame = avgUpdate(
           () => legacyVis.update(time),

@@ -14,20 +14,32 @@ async function captureRenderer(renderer) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const errors = [];
   const warnings = [];
   page.on("console", (m) => {
     const t = m.type();
     const txt = m.text();
     if (t === "error") errors.push(txt.slice(0, 400));
-    else if (t === "warning" && (txt.includes("validation") || txt.includes("WebGPU"))) {
+    else if (
+      t === "warning" &&
+      (txt.includes("validation") || txt.includes("WebGPU"))
+    ) {
       warnings.push(txt.slice(0, 400));
     }
   });
-  page.on("pageerror", (err) => errors.push(`pageerror: ${err.message}`.slice(0, 400)));
+  page.on("pageerror", (err) =>
+    errors.push(`pageerror: ${err.message}`.slice(0, 400)),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
@@ -97,7 +109,9 @@ async function captureRenderer(renderer) {
       sceneMode: v.scene.mode,
       cameraHeight: v.camera.positionCartographic?.height,
       hasWebgpuCache: !!wgpuCache,
-      primCacheKeyCount: wgpuCache ? Object.keys(wgpuCache.primitives ?? {}).length : null,
+      primCacheKeyCount: wgpuCache
+        ? Object.keys(wgpuCache.primitives ?? {}).length
+        : null,
       runtimeNodesCount: runtimeNodes?.length,
       firstRPExists: !!firstRP,
       firstRPHasAttrs: firstRP?.primitive?.attributes?.length ?? 0,
@@ -119,7 +133,9 @@ async function captureRenderer(renderer) {
           let nonBg = 0;
           let bgBlueish = 0;
           for (let i = 0; i < px.length; i += 4) {
-            const r = px[i], g = px[i + 1], b = px[i + 2];
+            const r = px[i],
+              g = px[i + 1],
+              b = px[i + 2];
             // Cesium default sky is pretty dark blue → high B, low R/G
             if (b > r + 20 && b > g + 20 && r < 100) bgBlueish++;
             else nonBg++;
@@ -142,18 +158,33 @@ async function captureRenderer(renderer) {
   fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
   console.log("=== Capturing WebGL ===");
   const wgl = await captureRenderer("webgl");
-  fs.writeFileSync("Tools/visual-regression/output/b3dm-webgl.png", wgl.screenshot);
+  fs.writeFileSync(
+    "Tools/visual-regression/output/b3dm-webgl.png",
+    wgl.screenshot,
+  );
   console.log(JSON.stringify(wgl.result, null, 2));
   console.log(`PNG: ${wgl.screenshot.length} bytes`);
-  if (wgl.errors.length) console.log(`WebGL errors (${wgl.errors.length}):`, wgl.errors.slice(0, 5));
+  if (wgl.errors.length)
+    console.log(`WebGL errors (${wgl.errors.length}):`, wgl.errors.slice(0, 5));
 
   console.log("\n=== Capturing WebGPU ===");
   const wgp = await captureRenderer("webgpu");
-  fs.writeFileSync("Tools/visual-regression/output/b3dm-webgpu.png", wgp.screenshot);
+  fs.writeFileSync(
+    "Tools/visual-regression/output/b3dm-webgpu.png",
+    wgp.screenshot,
+  );
   console.log(JSON.stringify(wgp.result, null, 2));
   console.log(`PNG: ${wgp.screenshot.length} bytes`);
-  if (wgp.errors.length) console.log(`WebGPU errors (${wgp.errors.length}):`, wgp.errors.slice(0, 8));
-  if (wgp.warnings.length) console.log(`WebGPU warnings (${wgp.warnings.length}):`, wgp.warnings.slice(0, 5));
+  if (wgp.errors.length)
+    console.log(
+      `WebGPU errors (${wgp.errors.length}):`,
+      wgp.errors.slice(0, 8),
+    );
+  if (wgp.warnings.length)
+    console.log(
+      `WebGPU warnings (${wgp.warnings.length}):`,
+      wgp.warnings.slice(0, 5),
+    );
 
   console.log("\n=== Compare ===");
   console.log(`WebGL non-bg pixels:  ${wgl.result.pixelsSampled?.nonBg}`);

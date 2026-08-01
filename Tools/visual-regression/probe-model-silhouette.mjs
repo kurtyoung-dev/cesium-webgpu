@@ -74,7 +74,9 @@ async function capture(renderer, silhouetteMode) {
         ".cesium-navigation-help",
         ".cesium-viewer-fullscreenContainer",
       ]) {
-        document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
+        document
+          .querySelectorAll(sel)
+          .forEach((e) => (e.style.display = "none"));
       }
 
       // Isolate the model on a black background.
@@ -108,7 +110,11 @@ async function capture(renderer, silhouetteMode) {
 
       v.camera.viewBoundingSphere(
         model.boundingSphere,
-        new C.HeadingPitchRange(heading, pitch, model.boundingSphere.radius * 3.0),
+        new C.HeadingPitchRange(
+          heading,
+          pitch,
+          model.boundingSphere.radius * 3.0,
+        ),
       );
       v.camera.lookAtTransform(C.Matrix4.IDENTITY);
       for (let i = 0; i < 40; i++) {
@@ -125,7 +131,9 @@ async function capture(renderer, silhouetteMode) {
   await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
   const gate = await collectGateErrors(page);
 
-  const png = await page.locator('canvas[data-cs="1"]').screenshot({ type: "png" });
+  const png = await page
+    .locator('canvas[data-cs="1"]')
+    .screenshot({ type: "png" });
   const decoded = await page.evaluate(async (b64) => {
     const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
     const bmp = await createImageBitmap(blob);
@@ -257,7 +265,8 @@ const CRC_TABLE = (() => {
 })();
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 function encodePNG({ w, h, data }) {
@@ -265,7 +274,10 @@ function encodePNG({ w, h, data }) {
   const raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {

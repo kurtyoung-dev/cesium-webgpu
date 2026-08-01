@@ -182,15 +182,19 @@ const OUT_DIR = "Tools/visual-regression/output";
 
 const HARD_LIMIT_MS = 420000;
 const watchdog = setTimeout(() => {
-  console.error("[probe-eclipse-sun-fade] WATCHDOG FIRED (420s) — forcing exit");
+  console.error(
+    "[probe-eclipse-sun-fade] WATCHDOG FIRED (420s) — forcing exit",
+  );
   process.exit(2);
 }, HARD_LIMIT_MS);
 if (watchdog.unref) {
   watchdog.unref();
 }
 
-const r3 = (x) => (x === null || x === undefined ? null : Math.round(x * 1000) / 1000);
-const r6 = (x) => (x === null || x === undefined ? null : Math.round(x * 1e6) / 1e6);
+const r3 = (x) =>
+  x === null || x === undefined ? null : Math.round(x * 1000) / 1000;
+const r6 = (x) =>
+  x === null || x === undefined ? null : Math.round(x * 1e6) / 1e6;
 
 // ── Provenance: the probe must not run against a stale build ────────────────
 // Every source file this change touches OR that eclipse-state.spec.mjs
@@ -374,15 +378,17 @@ const DERIVE_ECLIPSE_INSTANT = async () => {
 
   const bodiesAt = (t) => {
     const rot = C.Transforms.computeIcrfToCentralBodyFixedMatrix(t, m3);
-    const sun = C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
-      t,
-      sunScratch,
-    );
+    const sun =
+      C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+        t,
+        sunScratch,
+      );
     C.Matrix3.multiplyByVector(rot, sun, sun);
-    const moon = C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
-      t,
-      moonScratch,
-    );
+    const moon =
+      C.Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
+        t,
+        moonScratch,
+      );
     C.Matrix3.multiplyByVector(rot, moon, moon);
     return { sun, moon };
   };
@@ -436,7 +442,11 @@ const DERIVE_ECLIPSE_INSTANT = async () => {
           name: region.name,
           lat: region.lat + dLat,
           lon: region.lon + dLon,
-          pos: C.Cartesian3.fromDegrees(region.lon + dLon, region.lat + dLat, 100.0),
+          pos: C.Cartesian3.fromDegrees(
+            region.lon + dLon,
+            region.lat + dLat,
+            100.0,
+          ),
         });
       }
     }
@@ -1207,9 +1217,7 @@ const ECLIPSE_INSTANT = async ({ iso, lat, lon }) => {
     // in is DETERMINED BY MEASUREMENT below, not presumed.
     const srgbToLinear = (b) => {
       const c = b / 255;
-      return c <= 0.04045
-        ? c / 12.92
-        : Math.pow((c + 0.055) / 1.055, 2.4);
+      return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
     };
     const lut = new Float32Array(256);
     for (let b = 0; b < 256; b++) {
@@ -1237,7 +1245,9 @@ const ECLIPSE_INSTANT = async ({ iso, lat, lon }) => {
         const dOn =
           0.2126 * onData[k] + 0.7152 * onData[k + 1] + 0.0722 * onData[k + 2];
         const dOff =
-          0.2126 * offData[k] + 0.7152 * offData[k + 1] + 0.0722 * offData[k + 2];
+          0.2126 * offData[k] +
+          0.7152 * offData[k + 1] +
+          0.0722 * offData[k + 2];
         const dx = x - half;
         const dy = y - half;
         const d2 = dx * dx + dy * dy;
@@ -1301,7 +1311,10 @@ const ECLIPSE_INSTANT = async ({ iso, lat, lon }) => {
   }
   const off = measure(null);
   if (off.structuralError) {
-    return { rendererType: scene.context.rendererType, structuralError: off.structuralError };
+    return {
+      rendererType: scene.context.rendererType,
+      structuralError: off.structuralError,
+    };
   }
 
   // Pass 2 — eclipse ON (the shipped default), masked by the OFF pass.
@@ -1313,7 +1326,10 @@ const ECLIPSE_INSTANT = async ({ iso, lat, lon }) => {
   }
   const on = measure(off.mask);
   if (on.structuralError) {
-    return { rendererType: scene.context.rendererType, structuralError: on.structuralError };
+    return {
+      rendererType: scene.context.rendererType,
+      structuralError: on.structuralError,
+    };
   }
   // Drop the masks before returning — they must not cross the serialization
   // boundary (and are meaningless outside the page).
@@ -1351,12 +1367,16 @@ async function runBackend(browser, renderer, plan) {
   });
   const out = { renderer, consoleErrors: errs };
   try {
-    await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000,
-    });
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      },
+    );
     await page.waitForFunction(
-      () => !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
+      () =>
+        !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
       null,
       { timeout: 90000 },
     );
@@ -1371,7 +1391,9 @@ async function runBackend(browser, renderer, plan) {
     await page
       .locator("canvas")
       .first()
-      .screenshot({ path: path.join(OUT_DIR, `eclipse-sun-fade-sweep-${renderer}.png`) })
+      .screenshot({
+        path: path.join(OUT_DIR, `eclipse-sun-fade-sweep-${renderer}.png`),
+      })
       .catch(() => {});
 
     out.instant = await page.evaluate(ECLIPSE_INSTANT, {
@@ -1382,7 +1404,9 @@ async function runBackend(browser, renderer, plan) {
     await page
       .locator("canvas")
       .first()
-      .screenshot({ path: path.join(OUT_DIR, `eclipse-sun-fade-instant-${renderer}.png`) })
+      .screenshot({
+        path: path.join(OUT_DIR, `eclipse-sun-fade-instant-${renderer}.png`),
+      })
       .catch(() => {});
 
     for (const key of ["sweep", "instant"]) {
@@ -1477,10 +1501,13 @@ function physicsStats(steps) {
   try {
     const deriveContext = await browser.newContext();
     const derivePage = await deriveContext.newPage();
-    await derivePage.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgl`, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000,
-    });
+    await derivePage.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=webgl`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      },
+    );
     derived = await derivePage.evaluate(DERIVE_ECLIPSE_INSTANT);
     await deriveContext.close().catch(() => {});
     if (!derived || derived.structuralError) {
@@ -1563,8 +1590,7 @@ function physicsStats(steps) {
         // glow above the limb persists at full brightness.
         endsDark: on.valid && on.lastNorm <= 0.02,
         // The physics actually swept a full occultation this run.
-        sweptFullRange:
-          phys.maxFraction > 0.99 && phys.minFraction < 0.01,
+        sweptFullRange: phys.maxFraction > 0.99 && phys.minFraction < 0.01,
         // The published alpha is exactly the published fraction.
         alphaTracksFraction: phys.alphaTracksFraction,
       };
@@ -1634,7 +1660,8 @@ function physicsStats(steps) {
       const f = s ? s.sunVisibleFraction : null;
       // The analytic control: on the additive backend the difference is
       // exactly `a*src`, so ONE of the two spaces must reproduce `f` tightly.
-      const errDisplay = f !== null && ratio !== null ? Math.abs(ratio - f) : null;
+      const errDisplay =
+        f !== null && ratio !== null ? Math.abs(ratio - f) : null;
       const errLinear =
         f !== null && ratioLinear !== null ? Math.abs(ratioLinear - f) : null;
       const controlTol = f !== null ? 0.03 * f + 0.01 : null;
@@ -2051,7 +2078,8 @@ function physicsStats(steps) {
           offFlipStep: offFlip,
           onFlipElevDeg: onFlip >= 0 ? r3(steps[onFlip].elevDeg) : null,
           onFlipFraction: onFlip >= 0 ? r6(steps[onFlip].fraction) : null,
-          sunCommandHasBV: steps.length > 0 ? steps[0].cullOn.sunCommandHasBV : null,
+          sunCommandHasBV:
+            steps.length > 0 ? steps[0].cullOn.sunCommandHasBV : null,
           postRenderFrames: side.sweep.postRenderFrames,
         },
         tiles: {
@@ -2096,7 +2124,10 @@ function physicsStats(steps) {
             (m, x) => Math.min(m, x.maskedPx),
             Number.POSITIVE_INFINITY,
           ),
-          partialMaskedPxMax: partialBand.reduce((m, x) => Math.max(m, x.maskedPx), 0),
+          partialMaskedPxMax: partialBand.reduce(
+            (m, x) => Math.max(m, x.maskedPx),
+            0,
+          ),
           partialMaskedPxWideMin: partialBand.reduce(
             (m, x) => Math.min(m, x.maskedPxWide),
             Number.POSITIVE_INFINITY,

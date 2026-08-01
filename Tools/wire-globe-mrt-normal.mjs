@@ -115,9 +115,7 @@ function patch() {
   if (hadCRLF) src = src.replace(/\n/g, "\r\n");
 
   fs.writeFileSync(FILE, src, "utf8");
-  console.log(
-    `  wired: ${FILE} (${replacedCount} returns rewrapped)`,
-  );
+  console.log(`  wired: ${FILE} (${replacedCount} returns rewrapped)`);
 }
 
 console.log("[wire-globe-mrt-normal] patching GlobeTerrain.wgsl");

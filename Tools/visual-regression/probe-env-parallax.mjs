@@ -77,7 +77,9 @@ async function capture(proxyKind) {
         ".cesium-navigation-help",
         ".cesium-viewer-fullscreenContainer",
       ]) {
-        document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
+        document
+          .querySelectorAll(sel)
+          .forEach((e) => (e.style.display = "none"));
       }
 
       scene.globe.show = false;
@@ -142,7 +144,11 @@ async function capture(proxyKind) {
 
       v.camera.viewBoundingSphere(
         model.boundingSphere,
-        new C.HeadingPitchRange(heading, pitch, model.boundingSphere.radius * 3.0),
+        new C.HeadingPitchRange(
+          heading,
+          pitch,
+          model.boundingSphere.radius * 3.0,
+        ),
       );
       v.camera.lookAtTransform(C.Matrix4.IDENTITY);
       for (let i = 0; i < 40; i++) {
@@ -159,7 +165,9 @@ async function capture(proxyKind) {
   await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
   const gate = await collectGateErrors(page);
 
-  const png = await page.locator('canvas[data-px="1"]').screenshot({ type: "png" });
+  const png = await page
+    .locator('canvas[data-px="1"]')
+    .screenshot({ type: "png" });
   const decoded = await page.evaluate(async (b64) => {
     const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
     const bmp = await createImageBitmap(blob);
@@ -222,7 +230,8 @@ const CRC_TABLE = (() => {
 })();
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 function encodePNG({ w, h, data }) {
@@ -230,7 +239,10 @@ function encodePNG({ w, h, data }) {
   const raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -262,10 +274,22 @@ const onSphere = await capture("sphere");
 
 const fs = await import("fs");
 fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-fs.writeFileSync("Tools/visual-regression/output/parallax-off.png", encodePNG(off.decoded));
-fs.writeFileSync("Tools/visual-regression/output/parallax-off2.png", encodePNG(off2.decoded));
-fs.writeFileSync("Tools/visual-regression/output/parallax-box.png", encodePNG(onBox.decoded));
-fs.writeFileSync("Tools/visual-regression/output/parallax-sphere.png", encodePNG(onSphere.decoded));
+fs.writeFileSync(
+  "Tools/visual-regression/output/parallax-off.png",
+  encodePNG(off.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/parallax-off2.png",
+  encodePNG(off2.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/parallax-box.png",
+  encodePNG(onBox.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/parallax-sphere.png",
+  encodePNG(onSphere.decoded),
+);
 
 const offStability = diffModelPixels(off.decoded, off2.decoded); // must be ~0
 const boxVsOff = diffModelPixels(off.decoded, onBox.decoded); // must be > 0

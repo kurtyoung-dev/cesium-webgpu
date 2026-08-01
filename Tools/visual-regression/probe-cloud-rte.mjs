@@ -106,8 +106,10 @@ async function settleAndShoot(page, highPrecision, file) {
         configTruth,
         readiness,
         showProceduralClouds: g.defaultCloudCollection.enableVolumetric,
-        cloudHighPrecision: g.defaultCloudCollection.volumetric.cloudHighPrecision,
-        cloudVolumetricQuality: g.defaultCloudCollection.volumetric.cloudVolumetricQuality,
+        cloudHighPrecision:
+          g.defaultCloudCollection.volumetric.cloudHighPrecision,
+        cloudVolumetricQuality:
+          g.defaultCloudCollection.volumetric.cloudVolumetricQuality,
       };
     },
     { camera: CAMERA, timeIso: TIME_ISO, highPrecision },
@@ -171,7 +173,11 @@ async function diffPngs(page, fileA, fileB) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 1024, height: 768 },
@@ -210,9 +216,7 @@ async function diffPngs(page, fileA, fileB) {
         ? ["WebGPU error gate did not find a device"]
         : []),
     ]),
-  ].filter(
-    (e) => !/AtmosphereLUT|default layout|favicon/.test(e),
-  );
+  ].filter((e) => !/AtmosphereLUT|default layout|favicon/.test(e));
 
   console.log("\n=== ANALYSIS ===");
   const checks = [

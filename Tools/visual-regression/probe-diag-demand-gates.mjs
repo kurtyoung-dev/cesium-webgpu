@@ -61,7 +61,7 @@ const STABLE_NEEDED = 20;
 const MAX_FRAMES = 900;
 const REL_EPS = 0.002;
 
-function sleep(ms) {
+function _sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
@@ -136,7 +136,10 @@ async function main() {
     const rendererType = await page.evaluate(() => {
       const v = window.viewer;
       v.scene.requestRenderMode = false;
-      return v.scene.context.rendererType || (v.scene.context.isWebGPU ? "webgpu" : "webgl");
+      return (
+        v.scene.context.rendererType ||
+        (v.scene.context.isWebGPU ? "webgpu" : "webgl")
+      );
     });
     report.rendererType = rendererType;
 
@@ -221,7 +224,11 @@ async function main() {
       const p = window.viewer.scene._alternateSceneRenderer.getCpuPassProfile();
       const passes = {};
       for (const [k, val] of Object.entries(p.passes))
-        passes[k] = { samples: val.samples, avgMs: val.avgMs, lastMs: val.lastMs };
+        passes[k] = {
+          samples: val.samples,
+          avgMs: val.avgMs,
+          lastMs: val.lastMs,
+        };
       return { enabled: p.enabled, frameCount: p.frameCount, passes };
     });
     report.phases.enabled = profEnabled;
@@ -240,12 +247,17 @@ async function main() {
     const enabledHasBuckets =
       profEnabled.enabled === true &&
       ["globe", "opaque", "postFrustumChain"].every(
-        (n) => passesEnabled[n] && passesEnabled[n].samples > 0 &&
+        (n) =>
+          passesEnabled[n] &&
+          passesEnabled[n].samples > 0 &&
           Number.isFinite(passesEnabled[n].avgMs),
       );
     report.checks = {
       rendererIsWebGPU: rendererType === "webgpu",
-      defaultDisabled: profBefore && profBefore.enabled === false && profBefore.passCount === 0,
+      defaultDisabled:
+        profBefore &&
+        profBefore.enabled === false &&
+        profBefore.passCount === 0,
       // The settled 600 km nadir frame is filled by the globe base color.
       renderedNonBlank: nonBlank.globePixels > 50,
       noConsoleErrors: errs.length === 0,

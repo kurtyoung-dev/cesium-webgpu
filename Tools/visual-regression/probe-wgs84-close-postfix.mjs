@@ -2,7 +2,6 @@
 // Verify close-zoom doesn't regress after Batch 56's per-fragment ground atmo fix.
 
 import { chromium } from "playwright";
-import fs from "fs";
 import path from "path";
 
 const BASE = "http://localhost:8080";
@@ -12,19 +11,32 @@ async function capture(rendererArg) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`, {
-    waitUntil: "networkidle",
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
   });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
   await page.evaluate(async () => {
     const C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
     const vm = v.baseLayerPicker.viewModel;
     const wgs84 = vm.terrainProviderViewModels.find((t) =>
-      String(t.name || "").toLowerCase().includes("wgs84"));
+      String(t.name || "")
+        .toLowerCase()
+        .includes("wgs84"),
+    );
     if (wgs84) vm.selectedTerrain = wgs84;
     v.camera.setView({
       destination: C.Cartesian3.fromDegrees(-100, 40, 1000000), // Texas, 1 Mm altitude

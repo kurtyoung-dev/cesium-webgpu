@@ -323,8 +323,7 @@ async function setupAndCapture(page, scene) {
         }
       }
       meanContributionDelta =
-        totalDelta /
-        Math.max(1, onCapture.width * onCapture.height * 3);
+        totalDelta / Math.max(1, onCapture.width * onCapture.height * 3);
     }
 
     return {
@@ -350,77 +349,79 @@ async function runBackend(renderer, scenes, fs) {
     args: ["--enable-unsafe-webgpu"],
   });
   try {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
-  const errs = [];
-  const gpuConsoleErrors =
-    renderer === "webgpu" ? attachConsoleErrorGate(page) : [];
-  page.on("console", (m) => {
-    if (m.type() === "error") errs.push(m.text());
-  });
-  page.on("pageerror", (error) => errs.push(`pageerror: ${error.message}`));
-  if (renderer === "webgpu") {
-    await page.addInitScript(errorGateInit);
-  }
-  await installCloudProbeHarnessOnPage(page);
-  await page.goto(
-    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
-    {
-      waitUntil: "networkidle",
-      timeout: 90_000,
-    },
-  );
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90_000 });
-  const armState =
-    renderer === "webgpu"
-      ? await armWebGPUDevices(page)
-      : { armed: 0, found: 0, total: 0 };
-
-  const results = {};
-  for (const scene of scenes) {
-    const captured = await setupAndCapture(page, scene);
-    const { dataUrl, ...res } = captured;
-    const out = `Tools/visual-regression/output/cloud-tour/${scene.name}-${renderer}.png`;
-    fs.writeFileSync(out, Buffer.from(dataUrl.split(",")[1], "base64"));
-    const evidencePixels =
-      scene.system === "procedural" ? res.contributionPixels : res.cloudish;
-    res.visibility = {
-      metric:
-        scene.system === "procedural"
-          ? "same-camera-off-on-delta"
-          : "bright-neutral-pixels",
-      minCloudish: scene.minCloudish ?? 0,
-      evidencePixels,
-      pass: evidencePixels >= (scene.minCloudish ?? 0),
-    };
-    results[scene.name] = res;
-    console.log(
-      `  [${renderer}] ${scene.name}: cloudish=${res.cloudish} contribution=${res.contributionPixels ?? "n/a"} meanLum=${res.cloudMeanLum} visible=${res.visibility.pass} config=${JSON.stringify(res.configTruth.config)} → ${out}`,
+    const page = await browser.newPage({
+      viewport: { width: 1024, height: 768 },
+    });
+    const errs = [];
+    const gpuConsoleErrors =
+      renderer === "webgpu" ? attachConsoleErrorGate(page) : [];
+    page.on("console", (m) => {
+      if (m.type() === "error") errs.push(m.text());
+    });
+    page.on("pageerror", (error) => errs.push(`pageerror: ${error.message}`));
+    if (renderer === "webgpu") {
+      await page.addInitScript(errorGateInit);
+    }
+    await installCloudProbeHarnessOnPage(page);
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}&offline=true`,
+      {
+        waitUntil: "networkidle",
+        timeout: 90_000,
+      },
     );
-  }
-  const gpuGate =
-    renderer === "webgpu"
-      ? await collectGateErrors(page)
-      : { errors: [], deviceLost: null, armedDevices: 0 };
-  const fatalErrors = [
-    ...errs,
-    ...gpuConsoleErrors,
-    ...gpuGate.errors,
-    ...(gpuGate.deviceLost ? [gpuGate.deviceLost] : []),
-    ...(renderer === "webgpu" && armState.found < 1
-      ? ["WebGPU error gate did not find a device"]
-      : []),
-  ];
-  await browser.close();
-  return {
-    results,
-    errs: [...new Set(fatalErrors)].filter(
-      (e) => !/AtmosphereLUT|default layout/.test(e),
-    ),
-    gpuGate: {
-      ...gpuGate,
-      armState,
-    },
-  };
+    await page.waitForFunction(() => !!window.viewer, { timeout: 90_000 });
+    const armState =
+      renderer === "webgpu"
+        ? await armWebGPUDevices(page)
+        : { armed: 0, found: 0, total: 0 };
+
+    const results = {};
+    for (const scene of scenes) {
+      const captured = await setupAndCapture(page, scene);
+      const { dataUrl, ...res } = captured;
+      const out = `Tools/visual-regression/output/cloud-tour/${scene.name}-${renderer}.png`;
+      fs.writeFileSync(out, Buffer.from(dataUrl.split(",")[1], "base64"));
+      const evidencePixels =
+        scene.system === "procedural" ? res.contributionPixels : res.cloudish;
+      res.visibility = {
+        metric:
+          scene.system === "procedural"
+            ? "same-camera-off-on-delta"
+            : "bright-neutral-pixels",
+        minCloudish: scene.minCloudish ?? 0,
+        evidencePixels,
+        pass: evidencePixels >= (scene.minCloudish ?? 0),
+      };
+      results[scene.name] = res;
+      console.log(
+        `  [${renderer}] ${scene.name}: cloudish=${res.cloudish} contribution=${res.contributionPixels ?? "n/a"} meanLum=${res.cloudMeanLum} visible=${res.visibility.pass} config=${JSON.stringify(res.configTruth.config)} → ${out}`,
+      );
+    }
+    const gpuGate =
+      renderer === "webgpu"
+        ? await collectGateErrors(page)
+        : { errors: [], deviceLost: null, armedDevices: 0 };
+    const fatalErrors = [
+      ...errs,
+      ...gpuConsoleErrors,
+      ...gpuGate.errors,
+      ...(gpuGate.deviceLost ? [gpuGate.deviceLost] : []),
+      ...(renderer === "webgpu" && armState.found < 1
+        ? ["WebGPU error gate did not find a device"]
+        : []),
+    ];
+    await browser.close();
+    return {
+      results,
+      errs: [...new Set(fatalErrors)].filter(
+        (e) => !/AtmosphereLUT|default layout/.test(e),
+      ),
+      gpuGate: {
+        ...gpuGate,
+        armState,
+      },
+    };
   } finally {
     // Guarantee headless Edge teardown even if capture/analysis throws
     // (pairs with the force-exit watchdog above).
@@ -430,9 +431,13 @@ async function runBackend(renderer, scenes, fs) {
 
 (async () => {
   const fs = await import("fs");
-  fs.mkdirSync("Tools/visual-regression/output/cloud-tour", { recursive: true });
+  fs.mkdirSync("Tools/visual-regression/output/cloud-tour", {
+    recursive: true,
+  });
   const unknownScenes = [
-    ...new Set(ONLY.filter((name) => !SCENES.some((scene) => scene.name === name))),
+    ...new Set(
+      ONLY.filter((name) => !SCENES.some((scene) => scene.name === name)),
+    ),
   ];
   if (unknownScenes.length > 0) {
     throw new Error(`Unknown TOUR_SCENES: ${unknownScenes.join(", ")}`);
@@ -444,7 +449,9 @@ async function runBackend(renderer, scenes, fs) {
     throw new Error("Cloud tour selected zero scenes");
   }
 
-  const billboardScenes = scenes.filter((scene) => scene.system === "billboard");
+  const billboardScenes = scenes.filter(
+    (scene) => scene.system === "billboard",
+  );
   console.log(
     `=== Cloud tour: ${scenes.length} WebGPU scenes; ${billboardScenes.length} billboard parity scenes ===`,
   );
@@ -457,7 +464,9 @@ async function runBackend(renderer, scenes, fs) {
       })()
     : { results: {}, errs: [] };
 
-  console.log("\n=== SUMMARY (visibility-evidence px / neutral-cloud mean lum) ===");
+  console.log(
+    "\n=== SUMMARY (visibility-evidence px / neutral-cloud mean lum) ===",
+  );
   console.log(
     "scene".padEnd(30),
     "webgpu".padEnd(18),
@@ -478,8 +487,7 @@ async function runBackend(renderer, scenes, fs) {
   }
   if (wgpu.errs.length)
     console.log("\nwebgpu NEW errs:", wgpu.errs.slice(0, 4));
-  if (wgl.errs.length)
-    console.log("\nwebgl NEW errs:", wgl.errs.slice(0, 4));
+  if (wgl.errs.length) console.log("\nwebgl NEW errs:", wgl.errs.slice(0, 4));
   const truthPath =
     "Tools/visual-regression/output/cloud-tour/cloud-tour-truth.json";
   fs.writeFileSync(

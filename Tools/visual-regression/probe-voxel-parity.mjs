@@ -404,15 +404,22 @@ async function captureCells(renderer) {
             const px = o[0] + rd[0] * tt;
             const py = o[1] + rd[1] * tt;
             const pz = o[2] + rd[2] * tt;
-            if (
-              px < -1 || px > 1 || py < -1 || py > 1 || pz < -1 || pz > 1
-            ) {
+            if (px < -1 || px > 1 || py < -1 || py > 1 || pz < -1 || pz > 1) {
               continue;
             }
             inBox++;
-            const cx = Math.min(dims.x - 1, Math.floor(((px + 1) / 2) * dims.x));
-            const cy = Math.min(dims.y - 1, Math.floor(((py + 1) / 2) * dims.y));
-            const cz = Math.min(dims.z - 1, Math.floor(((pz + 1) / 2) * dims.z));
+            const cx = Math.min(
+              dims.x - 1,
+              Math.floor(((px + 1) / 2) * dims.x),
+            );
+            const cy = Math.min(
+              dims.y - 1,
+              Math.floor(((py + 1) / 2) * dims.y),
+            );
+            const cz = Math.min(
+              dims.z - 1,
+              Math.floor(((pz + 1) / 2) * dims.z),
+            );
             if (filled(cx, cy, cz)) {
               inFilled++;
             }
@@ -452,7 +459,12 @@ async function captureCells(renderer) {
           const x = Math.round(pt[0]);
           const y = Math.round(pt[1]);
           const half = 3;
-          const d = ctx.getImageData(x - half, y - half, 2 * half + 1, 2 * half + 1).data;
+          const d = ctx.getImageData(
+            x - half,
+            y - half,
+            2 * half + 1,
+            2 * half + 1,
+          ).data;
           let sr = 0;
           let sg = 0;
           let sb = 0;
@@ -650,7 +662,10 @@ console.log(
 );
 console.log("footprintMatch (IoU>=0.85):", footprintMatch);
 console.log("noErrors:", noErrors);
-console.log(`colorMatch (colorL1 ${colorL1} <= ${COLOR_L1_TOLERANCE}):`, colorMatch);
+console.log(
+  `colorMatch (colorL1 ${colorL1} <= ${COLOR_L1_TOLERANCE}):`,
+  colorMatch,
+);
 console.log(
   `webgpuNeutral (channel spread ${webgpuChannelSpread} <= 40, not green-cast):`,
   webgpuNeutral,

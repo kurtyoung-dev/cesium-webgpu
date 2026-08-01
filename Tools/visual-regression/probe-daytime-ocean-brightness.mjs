@@ -24,12 +24,21 @@ async function capture(rendererArg, { clockIso, bypass, label }) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}&${VIEW}`;
   await page.goto(url, { waitUntil: "networkidle" });
@@ -41,7 +50,11 @@ async function capture(rendererArg, { clockIso, bypass, label }) {
       const JulianDate = v.clock.currentTime.constructor;
       v.clock.shouldAnimate = false;
       v.clock.currentTime = JulianDate.fromIso8601(clockIso);
-      if (bypass && window.CesiumDebug && window.CesiumDebug.globeFragmentDebug) {
+      if (
+        bypass &&
+        window.CesiumDebug &&
+        window.CesiumDebug.globeFragmentDebug
+      ) {
         window.CesiumDebug.globeFragmentDebug(bypass);
       }
       for (let i = 0; i < 300; i++) {
@@ -58,7 +71,8 @@ async function capture(rendererArg, { clockIso, bypass, label }) {
   await page.screenshot({ path: out, fullPage: false });
   await browser.close();
   const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
-  if (errs.length) errs.slice(0, 3).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
+  if (errs.length)
+    errs.slice(0, 3).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
   return out;
 }
 
@@ -78,25 +92,43 @@ async function diffPngs(a, b) {
         c.width = img.naturalWidth;
         c.height = img.naturalHeight;
         c.getContext("2d").drawImage(img, 0, 0);
-        return { w: img.naturalWidth, h: img.naturalHeight, data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data };
+        return {
+          w: img.naturalWidth,
+          h: img.naturalHeight,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
+        };
       };
-      const A = await decode(ba), B = await decode(bb);
+      const A = await decode(ba),
+        B = await decode(bb);
       if (A.w !== B.w || A.h !== B.h) return { error: "size mismatch" };
       const total = A.w * A.h;
-      let mismatch = 0, sum = 0, nonBg = 0, sumRatio = 0, lumASum = 0, lumBSum = 0;
+      let mismatch = 0,
+        sum = 0,
+        nonBg = 0,
+        sumRatio = 0,
+        lumASum = 0,
+        lumBSum = 0;
       for (let i = 0; i < A.data.length; i += 4) {
-        const ra = A.data[i], ga = A.data[i + 1], ba2 = A.data[i + 2];
-        const rb = B.data[i], gb = B.data[i + 1], bb2 = B.data[i + 2];
+        const ra = A.data[i],
+          ga = A.data[i + 1],
+          ba2 = A.data[i + 2];
+        const rb = B.data[i],
+          gb = B.data[i + 1],
+          bb2 = B.data[i + 2];
         const d = Math.abs(ra - rb) + Math.abs(ga - gb) + Math.abs(ba2 - bb2);
         sum += d;
         if (d > 30) mismatch++;
         const lumA = 0.2126 * ra + 0.7152 * ga + 0.0722 * ba2;
         const lumB = 0.2126 * rb + 0.7152 * gb + 0.0722 * bb2;
-        lumASum += lumA; lumBSum += lumB;
-        if (lumA > 5 || lumB > 5) { nonBg++; sumRatio += (lumB + 1) / (lumA + 1); }
+        lumASum += lumA;
+        lumBSum += lumB;
+        if (lumA > 5 || lumB > 5) {
+          nonBg++;
+          sumRatio += (lumB + 1) / (lumA + 1);
+        }
       }
       return {
-        mismatchPct: (100 * mismatch / total).toFixed(2),
+        mismatchPct: ((100 * mismatch) / total).toFixed(2),
         meanDelta: (sum / total).toFixed(2),
         meanBrightnessRatio_BoverA: (sumRatio / Math.max(1, nonBg)).toFixed(3),
         meanLumA: (lumASum / total).toFixed(1),
@@ -121,14 +153,31 @@ async function diffPngs(a, b) {
   // 2. Day baseline.
   console.log("== DAY baseline ==");
   const dGl = await capture("webgl", { clockIso: DAY_ISO, label: "day" });
-  const dGpu = await capture("webgpu", { clockIso: DAY_ISO, label: "day", bypass: "bypass-none" });
-  console.log("  day gpu(none)-vs-gl:", JSON.stringify(await diffPngs(dGpu, dGl)));
+  const dGpu = await capture("webgpu", {
+    clockIso: DAY_ISO,
+    label: "day",
+    bypass: "bypass-none",
+  });
+  console.log(
+    "  day gpu(none)-vs-gl:",
+    JSON.stringify(await diffPngs(dGpu, dGl)),
+  );
 
   // 3. Per-term WebGPU bypasses (day) — how much each WebGPU term contributes.
   for (const bypass of ["bypass-glint", "bypass-drape", "bypass-fog"]) {
-    const b = await capture("webgpu", { clockIso: DAY_ISO, label: bypass, bypass });
-    console.log(`  day ${bypass}-vs-gl:`, JSON.stringify(await diffPngs(b, dGl)));
-    console.log(`  day ${bypass}-vs-none:`, JSON.stringify(await diffPngs(b, dGpu)));
+    const b = await capture("webgpu", {
+      clockIso: DAY_ISO,
+      label: bypass,
+      bypass,
+    });
+    console.log(
+      `  day ${bypass}-vs-gl:`,
+      JSON.stringify(await diffPngs(b, dGl)),
+    );
+    console.log(
+      `  day ${bypass}-vs-none:`,
+      JSON.stringify(await diffPngs(b, dGpu)),
+    );
   }
   console.log("done");
 })();

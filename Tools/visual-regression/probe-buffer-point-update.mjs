@@ -154,13 +154,20 @@ async function runBackend(renderer) {
     );
     movingPoint.setMaterial(cyanMat);
     const anchor = new C.BufferPoint();
-    points.add({ position: C.Cartesian3.fromDegrees(LON0, LAT - 0.3, ALT) }, anchor);
+    points.add(
+      { position: C.Cartesian3.fromDegrees(LON0, LAT - 0.3, ALT) },
+      anchor,
+    );
     anchor.setMaterial(redMat);
 
     // Look straight down at the midpoint between the two longitudes so both
     // lon0 and lon1 are comfortably on-screen and horizontally separated.
     v.camera.setView({
-      destination: C.Cartesian3.fromDegrees((LON0 + LON1) / 2, LAT - 0.15, 120000.0),
+      destination: C.Cartesian3.fromDegrees(
+        (LON0 + LON1) / 2,
+        LAT - 0.15,
+        120000.0,
+      ),
       orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
     });
 
@@ -230,7 +237,11 @@ for (const renderer of ["webgpu", "webgl"]) {
     r.redCount >= CYAN_MIN && r.redShift >= 0 && r.redShift <= 3,
     `static red anchor stays put (control): redCount=${r.redCount} redShift=${r.redShift.toFixed(2)}px (<= 3)`,
   );
-  check(`${renderer}-4`, r.errors.length === 0, `console errors: ${r.errors.length}`);
+  check(
+    `${renderer}-4`,
+    r.errors.length === 0,
+    `console errors: ${r.errors.length}`,
+  );
   if (r.errors.length)
     for (const e of r.errors.slice(0, 6)) console.log(`    ERR: ${e}`);
 }

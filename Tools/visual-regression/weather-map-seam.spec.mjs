@@ -37,15 +37,12 @@ const {
   WEATHER_MAP_LON_RANGE,
   WEATHER_MAP_MIN_LAT,
   WEATHER_MAP_MIN_LON,
-} = await import(
-  "../../packages/engine/Source/Scene/Weather/WeatherMapSeam.ts"
-);
-const { buildProceduralWeatherMap } = await import(
-  "../../packages/engine/Source/Scene/Weather/ProceduralWeatherMap.ts"
-);
-const { packWeatherField } = await import(
-  "../../packages/engine/Source/Scene/Weather/WeatherTexPacker.ts"
-);
+} =
+  await import("../../packages/engine/Source/Scene/Weather/WeatherMapSeam.ts");
+const { buildProceduralWeatherMap } =
+  await import("../../packages/engine/Source/Scene/Weather/ProceduralWeatherMap.ts");
+const { packWeatherField } =
+  await import("../../packages/engine/Source/Scene/Weather/WeatherTexPacker.ts");
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -208,7 +205,9 @@ test("producer texel centres invert the sampler's UV mapping exactly", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 test("the weather sampler wraps in longitude and clamps at the poles", () => {
-  const index = rendererSource.indexOf("cache.weatherSampler = device.createSampler(");
+  const index = rendererSource.indexOf(
+    "cache.weatherSampler = device.createSampler(",
+  );
   assert.notEqual(index, -1, "weatherSampler creation missing");
   const block = rendererSource.slice(index, index + 300);
   assert.ok(
@@ -307,8 +306,7 @@ test("the procedural map has no antimeridian discontinuity", () => {
   for (let ty = 0; ty < TEX_H; ty++) {
     for (let channel = 0; channel < 4; channel++) {
       const step = Math.abs(
-        channelAt(map, 0, ty, channel) -
-          channelAt(map, TEX_W - 1, ty, channel),
+        channelAt(map, 0, ty, channel) - channelAt(map, TEX_W - 1, ty, channel),
       );
       assert.ok(
         step <= interiorMax,
@@ -510,7 +508,11 @@ test("packWeatherField preserves a uniform field exactly (feature-preserving)", 
   );
   const expected = Math.round(0.8 * 255);
   for (let i = 0; i < TEX_W * TEX_H; i++) {
-    assert.equal(packed[i * 4], expected, `uniform coverage broke at texel ${i}`);
+    assert.equal(
+      packed[i * 4],
+      expected,
+      `uniform coverage broke at texel ${i}`,
+    );
     assert.equal(packed[i * 4 + 1], 128);
     assert.equal(packed[i * 4 + 2], 0);
     assert.equal(packed[i * 4 + 3], 128);

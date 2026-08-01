@@ -26,8 +26,7 @@ import path from "path";
 
 const BASE = "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
-const MODEL_URL =
-  "/Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb";
+const MODEL_URL = "/Apps/SampleData/models/CesiumMilkTruck/CesiumMilkTruck.glb";
 
 async function run(rendererArg) {
   const browser = await chromium.launch({
@@ -40,16 +39,21 @@ async function run(rendererArg) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
   page.on("pageerror", (e) =>
     messages.push({ t: "pageerror", text: e.message }),
   );
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   const result = await page.evaluate(
@@ -154,7 +158,7 @@ async function run(rendererArg) {
       }
 
       // MULTI-VIEW: a second Scene on a fresh canvas sharing the same renderer.
-      let secondView = null;
+      let secondView;
       try {
         const canvas2 = document.createElement("canvas");
         canvas2.width = 256;
@@ -257,7 +261,9 @@ async function diffPngs(a, b) {
 
   console.log("\n  webgpu state:", JSON.stringify(gpu.result, null, 2));
   if (gpu.result.cameraParity) {
-    console.log("\n  CAMERA PARITY (uniformState.cameraPosition vs camera.positionWC):");
+    console.log(
+      "\n  CAMERA PARITY (uniformState.cameraPosition vs camera.positionWC):",
+    );
     for (const m of gpu.result.cameraParity) {
       console.log(
         `    ${m.mode}: equal=${m.equal} delta=${m.delta?.toExponential?.(3)}`,

@@ -60,10 +60,15 @@ async function capture(rendererArg, useKit, tag) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 640 } });
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`, {
-    waitUntil: "networkidle",
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 640 },
   });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   await page.evaluate(
@@ -88,7 +93,10 @@ async function capture(rendererArg, useKit, tag) {
         // this page loaded), then settle. Sky stays ON — the frozen sky is
         // exactly what we are proving reproducible.
         window.__det.pinClock(C, v, scene, iso);
-        await window.__det.settleTiles(scene, { stableFrames: 30, maxFrames: 1500 });
+        await window.__det.settleTiles(scene, {
+          stableFrames: 30,
+          maxFrames: 1500,
+        });
       } else {
         // Legacy: leave the clock at wall-clock "now" (set shouldAnimate on so
         // the sky also advances DURING the run, matching the historical
@@ -101,7 +109,12 @@ async function capture(rendererArg, useKit, tag) {
         }
       }
     },
-    { det: DET_BROWSER_SETUP, useKit, iso: DETERMINISTIC_CLOCK_ISO, camera: CAMERA_JS },
+    {
+      det: DET_BROWSER_SETUP,
+      useKit,
+      iso: DETERMINISTIC_CLOCK_ISO,
+      camera: CAMERA_JS,
+    },
   );
   if (!useKit) await page.waitForTimeout(1200);
 
@@ -159,7 +172,9 @@ async function reproducibility(useKit, rendererArg) {
   const mode = useKit ? "kit" : "baseline";
   const shots = [];
   for (let i = 0; i < N; i++) {
-    shots.push(await capture(rendererArg, useKit, `${mode}-${rendererArg}-run${i}`));
+    shots.push(
+      await capture(rendererArg, useKit, `${mode}-${rendererArg}-run${i}`),
+    );
   }
   let maxDiff = 0;
   const diffs = [];

@@ -22,6 +22,9 @@
  * scene.
  */
 
+/* global params */
+// `params` is the formal parameter of the `new Function("params", src)`
+// wrapper that capture-and-diff.mjs's applyScene compiles this file into.
 const Cesium = window.Cesium;
 const p = params;
 

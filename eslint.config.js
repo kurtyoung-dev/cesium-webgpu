@@ -18,10 +18,19 @@ export default [
       "Documentation/**/*",
       "Source/*",
       "**/ThirdParty/",
-      "Tools/**/*",
+      // Vendored/generated content under Tools/ stays ignored; the rest of
+      // Tools/ is linted by the dedicated blocks near the bottom of this file.
+      // - naga-wasm-tools: wasm-bindgen output (also declared vendored in
+      //   lint-staged.config.js).
+      // - jsdoc template static/: bundled third-party browser scripts
+      //   (prism.js, the html5 shiv) shipped with the doc theme.
+      "Tools/shader-pipeline/naga-wasm-tools/",
+      "Tools/jsdoc/cesium_template/static/",
       // wasm-bindgen build outputs + local scratch — git-ignored, but
       // present in local working trees. CI never sees these; ignoring
       // them keeps local `npm run eslint` equivalent to the CI run.
+      // .claude/ is harness scratch (agent worktrees, workflow scripts).
+      ".claude/",
       "packages/wasm/pkg/",
       "packages/wasm-naga/pkg/",
       "packages/wasm-naga/pkg-tooling/",
@@ -199,6 +208,130 @@ export default [
     files: [".github/**/*"],
     rules: {
       "n/no-missing-import": "off",
+    },
+  },
+  // -------------------------------------------------------------------------
+  // Tools/** — the Playwright probe + spec fleet.
+  //
+  // These are Node-hosted ESM scripts that ALSO carry browser code: nearly
+  // every probe hands a function to `page.evaluate()`, so `window`,
+  // `document`, `performance`, `getComputedStyle`, ... appear as free
+  // identifiers inside an otherwise Node module. ESLint has no way to scope
+  // those callbacks to the page, so the block declares BOTH global sets and
+  // keeps `no-undef` on — it still catches real typos against every name that
+  // neither environment defines.
+  //
+  // Policy: correctness rules on, stylistic rules delegated to Prettier.
+  // `cesium/recommended` already folds in eslint-config-prettier, so the
+  // formatting rules are off; the `rules` block below only relaxes the
+  // *house-style* rules that encode CesiumJS engine-source conventions and
+  // carry no correctness signal for throwaway diagnostic scripts.
+  // -------------------------------------------------------------------------
+  {
+    files: ["Tools/**/*.js", "Tools/**/*.mjs"],
+    ignores: [
+      "Tools/jsdoc/**/*.js",
+      "Tools/rollup-plugin-strip-pragma/**/*.js",
+    ],
+    ...configCesium.configs.recommended,
+    languageOptions: {
+      sourceType: "module",
+      ecmaVersion: 2023,
+      globals: {
+        ...globals.node,
+        ...globals.browser,
+        // Injected into the page by the fork's viewer/debug harnesses and
+        // read from inside page.evaluate() callbacks.
+        Cesium: "readonly",
+        CesiumDebug: "readonly",
+      },
+    },
+    rules: {
+      ...configCesium.configs.recommended.rules,
+      // --- correctness, explicitly pinned -------------------------------
+      // Probes routinely destructure a wide result object and use a subset,
+      // and catch blocks legitimately ignore the error. Keep the rule ON for
+      // real dead bindings but allow the conventional `_` escape hatch.
+      "no-unused-vars": [
+        "error",
+        {
+          vars: "all",
+          args: "none",
+          caughtErrors: "none",
+          varsIgnorePattern: "^_",
+          destructuredArrayIgnorePattern: "^_",
+        },
+      ],
+      // `new Function(...)` / `eval` are how in-page snippets are injected by
+      // the harness, so the fleet already annotates each intentional use with
+      // a local disable. Keep both rules ON so those annotations stay
+      // meaningful and a NEW unannotated use is caught.
+      "no-new-func": "error",
+      "no-eval": "error",
+      // `ignoreReadBeforeAssign` — the harness declares `let remove;` /
+      // `let timeoutId;` above a settle() closure that reads them, then
+      // assigns after wiring the listener. Without this option the rule's own
+      // suggestion (`const`) would introduce a TDZ throw.
+      "prefer-const": ["error", { ignoreReadBeforeAssign: true }],
+      // Same rationale as the engine block above: module-scope constants are
+      // routinely declared below the helpers that close over them, which is
+      // fine at runtime because the helper is not called until later.
+      "no-use-before-define": [
+        "error",
+        { variables: false, functions: false, classes: false },
+      ],
+      // --- half-relaxed rules: correctness half kept, idiom half off ----
+      // Keep `===` enforcement for value comparisons, but allow the
+      // deliberate `x == null` / `x != null` nullish test — every one of the
+      // 57 loose comparisons in the fleet is that idiom, and rewriting them
+      // to `x === null || x === undefined` would be a semantic change.
+      eqeqeq: ["error", "always", { null: "ignore" }],
+      // `try { ... } catch {}` is the fleet's best-effort cleanup/teardown
+      // idiom (page already closed, device already lost). Empty blocks of
+      // any OTHER kind are still errors.
+      "no-empty": ["error", { allowEmptyCatch: true }],
+      // Keep `newIsCap` (with property checking) — that is the half that
+      // catches the real bug `new Cesium.Cartesian3.fromDegrees(...)`. Drop
+      // `capIsNew`: probes alias helpers to single uppercase letters
+      // (`const T = () => JulianDate.fromIso8601(...)`) inside page.evaluate
+      // bodies where brevity matters, and `T()` is not a constructor call.
+      "new-cap": ["error", { capIsNew: false }],
+      // --- house-style rules relaxed for the probe idiom ----------------
+      // Brace style: 3577 violations across the fleet, all `if (x) return;`
+      // guard chains. Zero correctness signal, and reflowing every probe
+      // would bury real review signal in mechanical noise. Prettier already
+      // fixes the indentation of whichever form the author chose.
+      curly: "off",
+      // Probes build fixed-width report tables by concatenating padded
+      // numeric columns (385 violations); template literals make those
+      // strictly less readable.
+      "prefer-template": "off",
+    },
+  },
+  {
+    // jsdoc template plugins + the rollup pragma plugin are CommonJS scripts
+    // loaded by their host tools, not ESM.
+    files: ["Tools/jsdoc/**/*.js", "Tools/rollup-plugin-strip-pragma/**/*.js"],
+    ...configCesium.configs.node,
+    rules: {
+      ...configCesium.configs.node.rules,
+      // These files predate the fork and mirror jsdoc/rollup plugin
+      // conventions; modernizing them is out of scope for lint coverage.
+      "no-var": "off",
+      "prefer-const": "off",
+      "prefer-template": "off",
+      curly: "off",
+      "no-else-return": "off",
+      // jsdoc tag handlers receive the full (doclet, tag) signature whether
+      // or not a given handler needs both.
+      "no-unused-vars": [
+        "error",
+        { vars: "all", args: "none", caughtErrors: "none" },
+      ],
+      // jsdoc/rollup host modules are resolved by the host tool at runtime,
+      // not from this package's dependency tree.
+      "n/no-missing-require": "off",
+      "n/no-extraneous-require": "off",
     },
   },
 ];

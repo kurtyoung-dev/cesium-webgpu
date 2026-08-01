@@ -96,12 +96,7 @@ test("footprint LOD begins after two voxels, is monotonic, and clamps", () => {
 
     const footprints = [0, 5, 25, 100, 500, 2_500, 25_000, 1_000_000];
     const levels = footprints.map((footprint) =>
-      mipLevel(
-        footprint,
-        domain.scale,
-        domain.resolution,
-        domain.levels,
-      ),
+      mipLevel(footprint, domain.scale, domain.resolution, domain.levels),
     );
     for (let index = 1; index < levels.length; index++) {
       assert.ok(
@@ -151,10 +146,7 @@ test("visible base and erosion share one bundled footprint evaluation", () => {
     cloudSource,
     /return CloudMacroSample\([\s\S]*mipLevels\.detail/,
   );
-  assert.match(
-    cloudSource,
-    /coordinates\.detail[\s\S]*sample\.detailMipLevel/,
-  );
+  assert.match(cloudSource, /coordinates\.detail[\s\S]*sample\.detailMipLevel/);
 
   const marchBody = cloudSource.slice(
     cloudSource.indexOf("fn marchDeck("),
@@ -213,10 +205,7 @@ test("light, shadow, and IBL marches supply their represented intervals", () => 
     /cloudDensityWithFootprint\([\s\S]*deckTop,\s*\n?\s*stepSize/,
   );
 
-  assert.match(
-    iblSource,
-    /fn cloudDensityIBL\([\s\S]*footprintMeters:\s*f32/,
-  );
+  assert.match(iblSource, /fn cloudDensityIBL\([\s\S]*footprintMeters:\s*f32/);
   assert.match(iblSource, /cloudDensityIBL\(sp, hf, stepLen\)/);
   assert.match(iblSource, /cloudDensityIBL\(p, hf, stepLen\)/);
   assert.match(

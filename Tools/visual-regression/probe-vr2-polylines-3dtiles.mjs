@@ -28,15 +28,22 @@ async function run(renderer) {
     args: ["--enable-unsafe-webgpu"],
   });
   const page = await browser.newPage({ viewport: { width: 900, height: 600 } });
-  page.on("pageerror", (e) => console.log(`>> [${renderer}] pageerror: ${e.message}`));
-  await page.goto(`${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-  });
+  page.on("pageerror", (e) =>
+    console.log(`>> [${renderer}] pageerror: ${e.message}`),
+  );
+  await page.goto(
+    `${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
   await page.evaluate(() => {
     window.__probeErrors = [];
     const dev = window.viewer?.scene?.context?._device;
-    if (dev) dev.onuncapturederror = (ev) => window.__probeErrors.push(ev?.error?.message ?? "");
+    if (dev)
+      dev.onuncapturederror = (ev) =>
+        window.__probeErrors.push(ev?.error?.message ?? "");
   });
 
   const setup = await page.evaluate(async () => {
@@ -70,7 +77,8 @@ async function run(renderer) {
         await new Promise((r) => requestAnimationFrame(r));
         bs = powerPlant.boundingSphere;
       }
-      if (!(bs && bs.radius > 0)) return { err: "tileset boundingSphere never ready" };
+      if (!(bs && bs.radius > 0))
+        return { err: "tileset boundingSphere never ready" };
       v.camera.viewBoundingSphere(
         bs,
         new C.HeadingPitchRange(0.5, C.Math.toRadians(-25), bs.radius * 1.6),
@@ -94,30 +102,37 @@ async function run(renderer) {
 
   // Quantify the artifact: near-pure cyan (low R, high G+B) or near-pure red
   // (high R, low G+B) saturated panels that WebGL does not produce.
-  const stats = await page.evaluate(async (durl) => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        const c = document.createElement("canvas");
-        c.width = img.width;
-        c.height = img.height;
-        const cx = c.getContext("2d");
-        cx.drawImage(img, 0, 0);
-        const d = cx.getImageData(0, 0, c.width, c.height).data;
-        let cyan = 0, red = 0, n = 0;
-        for (let i = 0; i < d.length; i += 4) {
-          const r = d[i], g = d[i + 1], b = d[i + 2];
-          n++;
-          // saturated cyan: G & B high, R low
-          if (g > 150 && b > 150 && r < 90) cyan++;
-          // saturated red: R high, G & B low
-          if (r > 170 && g < 90 && b < 90) red++;
-        }
-        resolve({ cyan, red, n });
-      };
-      img.src = durl;
-    });
-  }, `data:image/png;base64,${(await fs.promises.readFile(out)).toString("base64")}`);
+  const stats = await page.evaluate(
+    async (durl) => {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const cx = c.getContext("2d");
+          cx.drawImage(img, 0, 0);
+          const d = cx.getImageData(0, 0, c.width, c.height).data;
+          let cyan = 0,
+            red = 0,
+            n = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            const r = d[i],
+              g = d[i + 1],
+              b = d[i + 2];
+            n++;
+            // saturated cyan: G & B high, R low
+            if (g > 150 && b > 150 && r < 90) cyan++;
+            // saturated red: R high, G & B low
+            if (r > 170 && g < 90 && b < 90) red++;
+          }
+          resolve({ cyan, red, n });
+        };
+        img.src = durl;
+      });
+    },
+    `data:image/png;base64,${(await fs.promises.readFile(out)).toString("base64")}`,
+  );
 
   await browser.close();
   return { setup, errs, stats, out };
@@ -128,11 +143,18 @@ async function run(renderer) {
   const wgl = await run("webgl");
   const wgpu = await run("webgpu");
   console.log("=== NEW-VR2-5 polylines-on-3DTiles reproduction ===\n");
-  for (const [name, r] of [["webgl", wgl], ["webgpu", wgpu]]) {
+  for (const [name, r] of [
+    ["webgl", wgl],
+    ["webgpu", wgpu],
+  ]) {
     console.log(`  ${name}: setup=${JSON.stringify(r.setup)}`);
-    console.log(`    saturated cyan px: ${r.stats.cyan}   saturated red px: ${r.stats.red}   (of ${r.stats.n})`);
+    console.log(
+      `    saturated cyan px: ${r.stats.cyan}   saturated red px: ${r.stats.red}   (of ${r.stats.n})`,
+    );
     console.log(`    device errors: ${r.errs.length}`);
-    r.errs.slice(0, 4).forEach((e) => console.log(`      - ${(e ?? "").slice(0, 140)}`));
+    r.errs
+      .slice(0, 4)
+      .forEach((e) => console.log(`      - ${(e ?? "").slice(0, 140)}`));
     console.log(`    png: ${r.out}`);
   }
   console.log("\n  (Artifact present if WebGPU cyan/red >> WebGL.)");

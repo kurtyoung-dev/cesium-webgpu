@@ -32,7 +32,8 @@
 import { chromium } from "playwright";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const ATMO_LUT_RE = /AtmosphereLUT|default layout|atmosphereLUT|SkyAtmosphere LUT/;
+const ATMO_LUT_RE =
+  /AtmosphereLUT|default layout|atmosphereLUT|SkyAtmosphere LUT/;
 
 async function captureRenderer(renderer, fs) {
   const browser = await chromium.launch({
@@ -40,7 +41,9 @@ async function captureRenderer(renderer, fs) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -196,7 +199,8 @@ async function captureRenderer(renderer, fs) {
   if (wgpu.newErrs.length)
     console.log("  webgpu NEW errs:", wgpu.newErrs.slice(0, 4));
 
-  const cyanRatio = wgl.render.cyan > 0 ? wgpu.render.cyan / wgl.render.cyan : 0;
+  const cyanRatio =
+    wgl.render.cyan > 0 ? wgpu.render.cyan / wgl.render.cyan : 0;
   const magRatio =
     wgl.render.magenta > 0 ? wgpu.render.magenta / wgl.render.magenta : 0;
 
@@ -231,7 +235,10 @@ async function captureRenderer(renderer, fs) {
       "webgpu glow cache built with LOG_DEPTH active",
       wgpu.render.glowLogDepth === true,
     ],
-    ["no NEW webgpu device errors (AtmosphereLUT filtered)", wgpu.newErrs.length === 0],
+    [
+      "no NEW webgpu device errors (AtmosphereLUT filtered)",
+      wgpu.newErrs.length === 0,
+    ],
   ];
 
   let pass = true;

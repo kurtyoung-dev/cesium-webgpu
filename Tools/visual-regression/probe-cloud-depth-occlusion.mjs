@@ -120,9 +120,13 @@ async function run() {
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
   await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
   await page.evaluate(async () => {
     if (!window.Cesium) {
@@ -143,11 +147,12 @@ async function run() {
   const newErrs = (gate.errors || [])
     .concat(consoleErrors)
     .filter(
-      (e) =>
-        !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(e),
+      (e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(e),
     );
 
-  console.log(`TAG=${TAG} cloud%% disc=${frac.disc} full=${frac.full} errs=${newErrs.length}`);
+  console.log(
+    `TAG=${TAG} cloud%% disc=${frac.disc} full=${frac.full} errs=${newErrs.length}`,
+  );
 
   // Single-run sanity gate (no-regression): the cloud pass still renders the
   // deck over the lit globe with the depth fix, no device errors. The OCCLUSION
@@ -161,7 +166,10 @@ async function run() {
   // and the sky-view-unchanged check (probe-cloud-diagonal stays GREEN). Do NOT
   // read a GREEN here as "occlusion verified".
   const checks = [
-    [`[smoke] clouds render over the lit globe (full ${frac.full}% > 0.3)`, frac.full > 0.3],
+    [
+      `[smoke] clouds render over the lit globe (full ${frac.full}% > 0.3)`,
+      frac.full > 0.3,
+    ],
     [`[smoke] no NEW device errors (${newErrs.length})`, newErrs.length === 0],
   ];
   let pass = true;

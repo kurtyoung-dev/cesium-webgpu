@@ -96,7 +96,7 @@ async function capture(label, { ssr, deferred }) {
       }
 
       const canvas = v.canvas;
-      let centerPixel = null;
+      let centerPixel;
       try {
         const tmp = document.createElement("canvas");
         tmp.width = canvas.width;
@@ -185,7 +185,9 @@ async function diffPngs(a, b) {
   console.log("[probe-ssr-consumer] capturing 4-cell matrix");
 
   const cells = [];
-  cells.push(await capture("a-ssr-off-def-off", { ssr: false, deferred: false }));
+  cells.push(
+    await capture("a-ssr-off-def-off", { ssr: false, deferred: false }),
+  );
   cells.push(await capture("b-ssr-on-def-off", { ssr: true, deferred: false }));
   cells.push(await capture("c-ssr-on-def-on", { ssr: true, deferred: true }));
   cells.push(await capture("d-ssr-off-def-on", { ssr: false, deferred: true }));

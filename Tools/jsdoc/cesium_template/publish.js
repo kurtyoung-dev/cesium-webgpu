@@ -3,16 +3,13 @@
 
 var fs = require("jsdoc/fs");
 var helper = require("jsdoc/util/templateHelper");
-var logger = require("jsdoc/util/logger");
 var path = require("jsdoc/path");
 var taffy = require("taffydb").taffy;
 var template = require("jsdoc/template");
-var util = require("util");
 
 var htmlsafe = helper.htmlsafe;
 var linkto = helper.linkto;
 var resolveAuthorLinks = helper.resolveAuthorLinks;
-var scopeToPunc = helper.scopeToPunc;
 var hasOwnProp = Object.prototype.hasOwnProperty;
 
 var data;
@@ -211,10 +208,7 @@ function attachModuleSymbols(doclets, modules) {
  */
 function buildNav(members) {
   var nav = '<div id="ClassList">',
-    seen = {},
-    hasClassList = false,
-    classNav = "",
-    globalNav = "";
+    seen = {};
 
   var items = members.modules
     .concat(members.classes)
@@ -242,10 +236,13 @@ function buildNav(members) {
   };
 
   if (process.env.CESIUM_PACKAGES) {
-    process.env.CESIUM_PACKAGES.split(",").forEach((package) => {
-      nav += `<h5>${package}</h5>`;
+    // `package` is a future-reserved word in strict mode, and this file opens
+    // with "use strict" — naming the parameter `package` made the whole
+    // template a parse error.
+    process.env.CESIUM_PACKAGES.split(",").forEach((packageName) => {
+      nav += `<h5>${packageName}</h5>`;
       nav += "<ul>";
-      addItems(items.filter((item) => item.meta.package === package));
+      addItems(items.filter((item) => item.meta.package === packageName));
       nav += "</ul>";
     });
   } else {
@@ -375,7 +372,7 @@ exports.publish = function (taffyData, opts, tutorials) {
           .replace("{filename}", docletPath);
         if (process.env.CESIUM_PACKAGES) {
           doclet.meta.package = process.env.CESIUM_PACKAGES.split(",").find(
-            (package) => doclet.meta.sourceUrl.indexOf(package) > -1,
+            (packageName) => doclet.meta.sourceUrl.indexOf(packageName) > -1,
           );
         }
       }

@@ -72,8 +72,7 @@ console.log(`fragmentMain body: lines ${funcOpenIdx + 1}..${funcCloseIdx + 1}`);
 // We deliberately match only single-line returns; multi-line return
 // expressions in fragmentMain don't exist (verified by inspecting the
 // 36-return list before running this).
-const RETURN_RE =
-  /^(\s*)return (.+);(\s*(?:\/\/.*)?)$/;
+const RETURN_RE = /^(\s*)return (.+);(\s*(?:\/\/.*)?)$/;
 let count = 0;
 let skipped = 0;
 for (let i = funcOpenIdx + 1; i < funcCloseIdx; i++) {

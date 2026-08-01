@@ -83,17 +83,20 @@ async function capture(label, { ao, deferred }) {
       // The extruded box has top + 4 side faces, each with its own
       // surface normal — exercises per-face normal divergence.
       const polygonPositions = C.Cartesian3.fromDegreesArray([
-        view.lon - 0.001, view.lat - 0.001,
-        view.lon + 0.001, view.lat - 0.001,
-        view.lon + 0.001, view.lat + 0.001,
-        view.lon - 0.001, view.lat + 0.001,
+        view.lon - 0.001,
+        view.lat - 0.001,
+        view.lon + 0.001,
+        view.lat - 0.001,
+        view.lon + 0.001,
+        view.lat + 0.001,
+        view.lon - 0.001,
+        view.lat + 0.001,
       ]);
       const geom = new C.PolygonGeometry({
         polygonHierarchy: new C.PolygonHierarchy(polygonPositions),
         extrudedHeight: 300,
         height: 280,
-        vertexFormat:
-          C.MaterialAppearance.MaterialSupport.BASIC.vertexFormat,
+        vertexFormat: C.MaterialAppearance.MaterialSupport.BASIC.vertexFormat,
       });
       const primitive = new C.Primitive({
         geometryInstances: new C.GeometryInstance({ geometry: geom }),
@@ -126,7 +129,7 @@ async function capture(label, { ao, deferred }) {
       }
 
       const canvas = v.canvas;
-      let centerPixel = null;
+      let centerPixel;
       try {
         const tmp = document.createElement("canvas");
         tmp.width = canvas.width;
@@ -210,7 +213,9 @@ async function diffPngs(a, b) {
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[probe-litmat-mrt] capturing 4-cell matrix with extruded polygon");
+  console.log(
+    "[probe-litmat-mrt] capturing 4-cell matrix with extruded polygon",
+  );
 
   const cells = [];
   cells.push(await capture("a-ao-off-def-off", { ao: false, deferred: false }));
@@ -241,11 +246,13 @@ async function diffPngs(a, b) {
     );
     if (errs.length) {
       console.log(`    ✗ ${errs.length} console err / pageerror events`);
-      errs.slice(0, 2).forEach((e) =>
-        console.log(
-          `      ${e.t}: ${(e.text ?? "").split("\n")[0].slice(0, 200)}`,
-        ),
-      );
+      errs
+        .slice(0, 2)
+        .forEach((e) =>
+          console.log(
+            `      ${e.t}: ${(e.text ?? "").split("\n")[0].slice(0, 200)}`,
+          ),
+        );
     }
   }
 

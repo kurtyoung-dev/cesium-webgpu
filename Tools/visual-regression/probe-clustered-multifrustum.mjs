@@ -128,7 +128,10 @@ const OUT_ON = "Tools/visual-regression/output/clustered-multifrustum-on.png";
     };
   });
   if (setupResult?.earlyExitErr) {
-    console.log("[probe-clustered-multifrustum] EARLY-EXIT:", setupResult.earlyExitErr);
+    console.log(
+      "[probe-clustered-multifrustum] EARLY-EXIT:",
+      setupResult.earlyExitErr,
+    );
     await browser.close();
     process.exit(1);
   }
@@ -148,7 +151,11 @@ const OUT_ON = "Tools/visual-regression/output/clustered-multifrustum-on.png";
     C.Cartesian3.normalize(camDir, camDir);
     const lightPos = C.Cartesian3.add(
       bs.center,
-      C.Cartesian3.multiplyByScalar(camDir, bs.radius * 1.5, new C.Cartesian3()),
+      C.Cartesian3.multiplyByScalar(
+        camDir,
+        bs.radius * 1.5,
+        new C.Cartesian3(),
+      ),
       new C.Cartesian3(),
     );
     scene.lights.add(
@@ -177,7 +184,10 @@ const OUT_ON = "Tools/visual-regression/output/clustered-multifrustum-on.png";
   const errs = await page.evaluate(() => window.__probeErrors ?? []);
   await browser.close();
 
-  const decoderBrowser = await chromium.launch({ channel: "msedge", headless: true });
+  const decoderBrowser = await chromium.launch({
+    channel: "msedge",
+    headless: true,
+  });
   const dp = await decoderBrowser.newPage();
   await dp.setContent("<html><body></body></html>");
   const offB64 = fs.readFileSync(OUT_OFF).toString("base64");
@@ -193,30 +203,47 @@ const OUT_ON = "Tools/visual-regression/output/clustered-multifrustum-on.png";
         c.height = img.naturalHeight;
         const ctx = c.getContext("2d");
         ctx.drawImage(img, 0, 0);
-        return { w: c.width, h: c.height, data: ctx.getImageData(0, 0, c.width, c.height).data };
+        return {
+          w: c.width,
+          h: c.height,
+          data: ctx.getImageData(0, 0, c.width, c.height).data,
+        };
       };
       const off = await decode(offB64);
       const on = await decode(onB64);
-      const x0 = Math.floor(off.w * 0.30);
-      const x1 = Math.floor(off.w * 0.70);
+      const x0 = Math.floor(off.w * 0.3);
+      const x1 = Math.floor(off.w * 0.7);
       const y0 = Math.floor(off.h * 0.35);
       const y1 = Math.floor(off.h * 0.75);
-      let sumOff = 0, sumOn = 0, n = 0, changed = 0, maxDelta = 0;
+      let sumOff = 0,
+        sumOn = 0,
+        n = 0,
+        changed = 0,
+        maxDelta = 0;
       for (let y = y0; y < y1; y++) {
         for (let x = x0; x < x1; x++) {
           const i = (y * off.w + x) * 4;
           const sOff = off.data[i] + off.data[i + 1] + off.data[i + 2];
           const sOn = on.data[i] + on.data[i + 1] + on.data[i + 2];
-          sumOff += sOff; sumOn += sOn; n += 1;
+          sumOff += sOff;
+          sumOn += sOn;
+          n += 1;
           const d = Math.abs(sOn - sOff);
           if (d > 5) changed += 1;
           if (d > maxDelta) maxDelta = d;
         }
       }
       return {
-        w: off.w, h: off.h, boxX: [x0, x1], boxY: [y0, y1], n,
-        meanOff: sumOff / n, meanOn: sumOn / n, delta: (sumOn - sumOff) / n,
-        changedPx: changed, maxDelta,
+        w: off.w,
+        h: off.h,
+        boxX: [x0, x1],
+        boxY: [y0, y1],
+        n,
+        meanOff: sumOff / n,
+        meanOn: sumOn / n,
+        delta: (sumOn - sumOff) / n,
+        changedPx: changed,
+        maxDelta,
       };
     },
     { offB64, onB64 },
@@ -224,9 +251,15 @@ const OUT_ON = "Tools/visual-regression/output/clustered-multifrustum-on.png";
   await decoderBrowser.close();
 
   console.log("[probe-clustered-multifrustum] result:");
-  console.log(`  numberOfFrustums OFF: ${setupResult.numFrustumsOff}  ON: ${phase2.numFrustumsOn}  (farToNearRatio=${setupResult.farToNearRatio})`);
-  console.log(`  dispatcher.lastActiveLightCount when ON: ${phase2.lastActive}`);
-  console.log(`  central box x=[${stats.boxX[0]}..${stats.boxX[1]}] y=[${stats.boxY[0]}..${stats.boxY[1]}] (image ${stats.w}x${stats.h}, n=${stats.n})`);
+  console.log(
+    `  numberOfFrustums OFF: ${setupResult.numFrustumsOff}  ON: ${phase2.numFrustumsOn}  (farToNearRatio=${setupResult.farToNearRatio})`,
+  );
+  console.log(
+    `  dispatcher.lastActiveLightCount when ON: ${phase2.lastActive}`,
+  );
+  console.log(
+    `  central box x=[${stats.boxX[0]}..${stats.boxX[1]}] y=[${stats.boxY[0]}..${stats.boxY[1]}] (image ${stats.w}x${stats.h}, n=${stats.n})`,
+  );
   console.log(`  mean RGB-sum OFF: ${stats.meanOff.toFixed(2)}`);
   console.log(`  mean RGB-sum ON:  ${stats.meanOn.toFixed(2)}`);
   console.log(`  delta (on − off): ${stats.delta.toFixed(2)}`);
@@ -244,17 +277,26 @@ const OUT_ON = "Tools/visual-regression/output/clustered-multifrustum-on.png";
   }
 
   let pass = true;
-  const numFrustums = Math.max(setupResult.numFrustumsOff ?? 0, phase2.numFrustumsOn ?? 0);
+  const numFrustums = Math.max(
+    setupResult.numFrustumsOff ?? 0,
+    phase2.numFrustumsOn ?? 0,
+  );
   if (numFrustums < 2) {
-    console.log(`FAIL: numberOfFrustums = ${numFrustums}; expected >=2 (multi-frustum condition not established)`);
+    console.log(
+      `FAIL: numberOfFrustums = ${numFrustums}; expected >=2 (multi-frustum condition not established)`,
+    );
     pass = false;
   }
   if (phase2.lastActive < 1) {
-    console.log(`FAIL: dispatcher.lastActiveLightCount = ${phase2.lastActive}, expected >=1`);
+    console.log(
+      `FAIL: dispatcher.lastActiveLightCount = ${phase2.lastActive}, expected >=1`,
+    );
     pass = false;
   }
   if (stats.changedPx < 50) {
-    console.log(`FAIL: only ${stats.changedPx} pixels changed (max delta ${stats.maxDelta}); expected >=50`);
+    console.log(
+      `FAIL: only ${stats.changedPx} pixels changed (max delta ${stats.maxDelta}); expected >=50`,
+    );
     pass = false;
   }
   if (errs.length > 0) {
@@ -262,7 +304,9 @@ const OUT_ON = "Tools/visual-regression/output/clustered-multifrustum-on.png";
     pass = false;
   }
   if (pass) {
-    console.log("\nPASS: multi-frustum scene (>=2 frustums) + correct single-grid clustered-lighting contribution + 0 device errors");
+    console.log(
+      "\nPASS: multi-frustum scene (>=2 frustums) + correct single-grid clustered-lighting contribution + 0 device errors",
+    );
   }
   process.exit(pass ? 0 : 1);
 })();

@@ -80,7 +80,7 @@ async function capture(label, { useNormalMap, contactShadows }) {
       nmCanvas.height = 64;
       const nctx = nmCanvas.getContext("2d");
       for (let x = 0; x < 64; x++) {
-        const tilt = ((x >> 3) & 1) ? 0.8 : -0.8; // left/right tilt
+        const tilt = (x >> 3) & 1 ? 0.8 : -0.8; // left/right tilt
         // RGB encoding: R = tx*0.5+0.5, G = ty*0.5+0.5 (0.5), B = tz
         const r = Math.floor((tilt * 0.5 + 0.5) * 255);
         const g = 128;
@@ -96,16 +96,19 @@ async function capture(label, { useNormalMap, contactShadows }) {
           geometry: new C.PolygonGeometry({
             polygonHierarchy: new C.PolygonHierarchy(
               C.Cartesian3.fromDegreesArray([
-                view.lon - 0.0015, view.lat,
-                view.lon + 0.0015, view.lat,
-                view.lon + 0.0015, view.lat + 0.0005,
-                view.lon - 0.0015, view.lat + 0.0005,
+                view.lon - 0.0015,
+                view.lat,
+                view.lon + 0.0015,
+                view.lat,
+                view.lon + 0.0015,
+                view.lat + 0.0005,
+                view.lon - 0.0015,
+                view.lat + 0.0005,
               ]),
             ),
             height: 240,
             extrudedHeight: 260, // 20m thick
-            vertexFormat:
-              C.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
+            vertexFormat: C.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
           }),
         }),
         appearance: new C.MaterialAppearance({
@@ -200,7 +203,8 @@ async function diffPngs(a, b) {
       const a = await decode(ba);
       const b = await decode(bb);
       if (a.w !== b.w || a.h !== b.h) return { error: "size mismatch" };
-      let mismatch = 0, sum = 0;
+      let mismatch = 0,
+        sum = 0;
       const total = a.w * a.h;
       for (let i = 0; i < a.data.length; i += 4) {
         const d =
@@ -223,9 +227,18 @@ async function diffPngs(a, b) {
   console.log("[probe-normalmap-gbuffer] capturing 3-cell matrix");
 
   const cells = [];
-  cells.push(await capture("a-plain-nocs", { useNormalMap: false, contactShadows: false }));
-  cells.push(await capture("b-nm-nocs", { useNormalMap: true, contactShadows: false }));
-  cells.push(await capture("c-nm-cs", { useNormalMap: true, contactShadows: true }));
+  cells.push(
+    await capture("a-plain-nocs", {
+      useNormalMap: false,
+      contactShadows: false,
+    }),
+  );
+  cells.push(
+    await capture("b-nm-nocs", { useNormalMap: true, contactShadows: false }),
+  );
+  cells.push(
+    await capture("c-nm-cs", { useNormalMap: true, contactShadows: true }),
+  );
 
   for (const cell of cells) {
     console.log(`\n  [${cell.label}] errors=${cell.deviceErrors.length}`);
@@ -238,11 +251,19 @@ async function diffPngs(a, b) {
 
   console.log("\n[probe-normalmap-gbuffer] diffs:");
   const ab = await diffPngs(cells[0].out, cells[1].out);
-  console.log(`  [A plain vs B normalmap-no-cs]: mismatch=${ab.mismatchPct.toFixed(3)}% meanDelta=${ab.meanDelta.toFixed(3)}`);
+  console.log(
+    `  [A plain vs B normalmap-no-cs]: mismatch=${ab.mismatchPct.toFixed(3)}% meanDelta=${ab.meanDelta.toFixed(3)}`,
+  );
   const bc = await diffPngs(cells[1].out, cells[2].out);
-  console.log(`  [B nm-nocs vs C nm-cs]:        mismatch=${bc.mismatchPct.toFixed(3)}% meanDelta=${bc.meanDelta.toFixed(3)}`);
-  console.log("    A vs B > 0% → normal map produces visible lighting difference");
-  console.log("    B vs C > 0% → contact shadows now reading G-buffer normal contribute additional darkening");
+  console.log(
+    `  [B nm-nocs vs C nm-cs]:        mismatch=${bc.mismatchPct.toFixed(3)}% meanDelta=${bc.meanDelta.toFixed(3)}`,
+  );
+  console.log(
+    "    A vs B > 0% → normal map produces visible lighting difference",
+  );
+  console.log(
+    "    B vs C > 0% → contact shadows now reading G-buffer normal contribute additional darkening",
+  );
 
   const report = {
     runAt: new Date().toISOString(),
@@ -258,5 +279,7 @@ async function diffPngs(a, b) {
     path.join(OUT_DIR, "normalmap-gbuffer-report.json"),
     JSON.stringify(report, null, 2),
   );
-  console.log(`\n  report: ${path.join(OUT_DIR, "normalmap-gbuffer-report.json")}`);
+  console.log(
+    `\n  report: ${path.join(OUT_DIR, "normalmap-gbuffer-report.json")}`,
+  );
 })();

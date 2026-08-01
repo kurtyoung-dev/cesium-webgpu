@@ -587,7 +587,9 @@ const DERIVE_ECLIPSE_LADDER = async ({ fixedTargets }) => {
     }
   }
   if (best.o < 0.6) {
-    return { structuralError: `no deep 2026-08-12 eclipse found (max o=${best.o})` };
+    return {
+      structuralError: `no deep 2026-08-12 eclipse found (max o=${best.o})`,
+    };
   }
 
   // Walk 100 minutes of seconds-resolution on either side of the maximum and
@@ -620,7 +622,9 @@ const DERIVE_ECLIPSE_LADDER = async ({ fixedTargets }) => {
     }
   }
   if (picks.some((p) => p === null)) {
-    return { structuralError: "ladder rung unreachable above 8 deg sun elevation" };
+    return {
+      structuralError: "ladder rung unreachable above 8 deg sun elevation",
+    };
   }
   // The rung-separation check deliberately does NOT live here. It is pure data
   // validation over the returned array, so it runs in the Node driver via
@@ -795,7 +799,7 @@ const LADDER = async ({ lat, lon, ladder }) => {
   };
 
   const canvas = scene.canvas;
-  const dprX = canvas.width / canvas.clientWidth;
+  const _dprX = canvas.width / canvas.clientWidth;
   const dprY = canvas.height / canvas.clientHeight;
   const tmp = document.createElement("canvas");
   const tmpCtx = tmp.getContext("2d", { willReadFrequently: true });
@@ -950,7 +954,11 @@ const LADDER = async ({ lat, lon, ladder }) => {
     const pitch = (10.0 * Math.PI) / 180.0;
     const dir = C.Cartesian3.normalize(
       C.Cartesian3.subtract(
-        C.Cartesian3.multiplyByScalar(horiz, Math.cos(pitch), new C.Cartesian3()),
+        C.Cartesian3.multiplyByScalar(
+          horiz,
+          Math.cos(pitch),
+          new C.Cartesian3(),
+        ),
         C.Cartesian3.multiplyByScalar(up, Math.sin(pitch), new C.Cartesian3()),
         new C.Cartesian3(),
       ),
@@ -1004,7 +1012,11 @@ const LADDER = async ({ lat, lon, ladder }) => {
     const hitsGlobe = (yCss) => {
       scratch2.x = cxCss;
       scratch2.y = yCss;
-      return !!scene.camera.pickEllipsoid(scratch2, ellipsoid, new C.Cartesian3());
+      return !!scene.camera.pickEllipsoid(
+        scratch2,
+        ellipsoid,
+        new C.Cartesian3(),
+      );
     };
     if (hitsGlobe(loCss) || !hitsGlobe(hiCss)) {
       structuralError = `step ${i}: horizon not inside the viewport`;
@@ -1451,7 +1463,10 @@ async function runBackend(browser, renderer, plan) {
     const shots = out.ladder?.shots ?? {};
     out.shotsWritten = [];
     for (const [key, dataUrl] of Object.entries(shots)) {
-      if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:image/png")) {
+      if (
+        typeof dataUrl !== "string" ||
+        !dataUrl.startsWith("data:image/png")
+      ) {
         continue;
       }
       const file = path.join(
@@ -1501,14 +1516,16 @@ function judge(steps) {
     (s) => s.off.state.enabled === false && s.on.state.enabled === true,
   );
   v.autoExposureFlagObserved = steps.every(
-    (s) => s.on.state.autoExposure === false && s.ae.state.autoExposure === true,
+    (s) =>
+      s.on.state.autoExposure === false && s.ae.state.autoExposure === true,
   );
   // The physics must keep running with the effect OFF (that is the whole
   // point of gating application rather than computation).
   v.physicsRunsWhenOff = steps.every(
     (s) =>
       typeof s.off.state.moonObscuration === "number" &&
-      Math.abs(s.off.state.moonObscuration - s.on.state.moonObscuration) < 1e-12,
+      Math.abs(s.off.state.moonObscuration - s.on.state.moonObscuration) <
+        1e-12,
   );
 
   // N1 — the two classes must PARTITION the rungs. A rung landing in the old
@@ -1588,7 +1605,9 @@ function judge(steps) {
   // Lane (a) — monotone tracking. Sorted by DESCENDING published factor, both
   // measured dim series must be non-increasing (2% slack for tile/dither
   // noise). Ratios, so the sun-elevation differences between rungs cancel.
-  const byFactor = [...steps].sort((a, b) => b.on.state.factor - a.on.state.factor);
+  const byFactor = [...steps].sort(
+    (a, b) => b.on.state.factor - a.on.state.factor,
+  );
   const monotone = (key) => {
     let worstRise = 0;
     for (let i = 1; i < byFactor.length; i++) {
@@ -1683,7 +1702,9 @@ function judge(steps) {
     const bSky = s.bg?.on?.sky?.mean ?? null;
     const predSkyLow = predictDim(s.off.sky.mean, f);
     const predSkyHigh =
-      bSky === null ? predSkyLow : predictWithBackground(s.off.sky.mean, f, bSky);
+      bSky === null
+        ? predSkyLow
+        : predictWithBackground(s.off.sky.mean, f, bSky);
     const predGround = predictDim(s.off.ground.mean, f);
     const cRecovered = recoverC(s.off.sky.mean, s.on.sky.mean, f);
     bracket.push({
@@ -1775,7 +1796,9 @@ function judge(steps) {
     }
     const cmp = (engine, manual) => {
       const rel =
-        manual > 0 ? Math.abs(engine - manual) / manual : Math.abs(engine - manual);
+        manual > 0
+          ? Math.abs(engine - manual) / manual
+          : Math.abs(engine - manual);
       return {
         engine: r3(engine),
         manual: r3(manual),
@@ -2111,9 +2134,7 @@ function judge(steps) {
       );
       maxObscurationDelta = Math.max(
         maxObscurationDelta,
-        Math.abs(
-          a[i].on.state.moonObscuration - b[i].on.state.moonObscuration,
-        ),
+        Math.abs(a[i].on.state.moonObscuration - b[i].on.state.moonObscuration),
       );
       maxDimSkyDelta = Math.max(
         maxDimSkyDelta,

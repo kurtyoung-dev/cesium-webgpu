@@ -150,11 +150,12 @@ test("C12-16 glare profile: endpoints, monotonicity, inverse-square tail", async
   // 65/257 = 0.2529 at 8->16 — converging to 1/4 from above, as a
   // Lorentzian must.)
   const raw = (r) => 1.0 / (1.0 + (r / M.SOLAR_GLARE_CORE) ** 2);
-  const octave = (n) => raw(2 * n * M.SOLAR_GLARE_CORE) / raw(n * M.SOLAR_GLARE_CORE);
+  const octave = (n) =>
+    raw(2 * n * M.SOLAR_GLARE_CORE) / raw(n * M.SOLAR_GLARE_CORE);
   const r2 = octave(2);
   const r4 = octave(4);
   const r8 = octave(8);
-  assert.ok(r2 > 0.25 && r2 < 0.30, `octave ratio 2->4 core radii: ${r2}`);
+  assert.ok(r2 > 0.25 && r2 < 0.3, `octave ratio 2->4 core radii: ${r2}`);
   assert.ok(r4 > 0.25 && r4 < 0.27, `octave ratio 4->8 core radii: ${r4}`);
   assert.ok(r8 > 0.25 && r8 < 0.256, `octave ratio 8->16 core radii: ${r8}`);
   assert.ok(r8 < r4 && r4 < r2, "must approach the inverse square from above");
@@ -201,7 +202,7 @@ test("C12-16/C12-17 are REFUTED as causes of the measured glowOffRaw == 0", asyn
     ]) {
       const alpha = 0.75 * fn(r);
       assert.ok(
-        alpha > 0.15 && alpha < 0.70,
+        alpha > 0.15 && alpha < 0.7,
         `${name} alpha at ${rho} R_sun is ${alpha} — the annulus is never faint`,
       );
       assert.ok(
@@ -310,7 +311,10 @@ test("C12-17: WebGPU bake size/format parity with WebGL", () => {
   const wgpu = readEngine("Renderer/WebGPU/WebGPUEnvironmentRenderer.js");
   const sun = readEngine("Scene/Sun.js");
   // WebGL's rule, still present.
-  assert.match(sun, /Math\.ceil\(Math\.log\(size\) \/ Math\.log\(2\.0\)\) - 2\.0/);
+  assert.match(
+    sun,
+    /Math\.ceil\(Math\.log\(size\) \/ Math\.log\(2\.0\)\) - 2\.0/,
+  );
   // WebGPU now derives from the drawing buffer instead of a hardcoded 256.
   assert.match(wgpu, /function sunTextureSize\(/);
   assert.match(wgpu, /context\.drawingBufferWidth/);
@@ -340,7 +344,10 @@ test("C12-17: WebGPU bake size/format parity with WebGL", () => {
 // again without `node --test` going red.
 function loadProbeGeometry() {
   const src = fs
-    .readFileSync(path.join(root, "Tools/visual-regression/probe-sun-glow-profile.mjs"), "utf8")
+    .readFileSync(
+      path.join(root, "Tools/visual-regression/probe-sun-glow-profile.mjs"),
+      "utf8",
+    )
     .replace(/\r\n/g, "\n");
   const slice = (name) => {
     const a = src.indexOf(`// ==BEGIN ${name}==`);
@@ -414,7 +421,10 @@ test("probe geometry: the feasibility function actually rejects the round-1 set"
 test("probe geometry: the in-page arithmetic matches the pure feasibility model", () => {
   const { PROBE_CONSTANTS: k, roiFeasibility } = loadProbeGeometry();
   const probe = fs
-    .readFileSync(path.join(root, "Tools/visual-regression/probe-sun-glow-profile.mjs"), "utf8")
+    .readFileSync(
+      path.join(root, "Tools/visual-regression/probe-sun-glow-profile.mjs"),
+      "utf8",
+    )
     .replace(/\r\n/g, "\n");
   // The in-page guard and the pure model must use the same expressions, or
   // the pre-launch check can pass while the run still rejects.
@@ -430,11 +440,14 @@ test("probe geometry: the in-page arithmetic matches the pure feasibility model"
   );
   assert.match(
     probe,
-    /Math\.floor\(0\.45 \* Math\.min\(canvas\.width, canvas\.height\)\)/,
+    /Math\.floor\(\s*0\.45 \* Math\.min\(canvas\.width, canvas\.height\),?\s*\)/,
     "in-page maxHalf must be the one the model mirrors",
   );
   // The pre-launch feasibility check must exist and be fatal.
-  assert.match(probe, /if \(!feas\.perihelion\.feasible \|\| !feas\.aphelion\.feasible\)/);
+  assert.match(
+    probe,
+    /if \(!feas\.perihelion\.feasible \|\| !feas\.aphelion\.feasible\)/,
+  );
   assert.match(probe, /ROI geometry is unsatisfiable/);
   // The viewport must come FROM the constants, not a second literal.
   assert.match(probe, /width: plan\.k\.viewportWidth/);
@@ -448,18 +461,27 @@ test("probe geometry: the in-page arithmetic matches the pure feasibility model"
 
 test("probe classifier: absence is settled at STATE level, saturation before occlusion", () => {
   const probe = fs
-    .readFileSync(path.join(root, "Tools/visual-regression/probe-sun-glow-profile.mjs"), "utf8")
+    .readFileSync(
+      path.join(root, "Tools/visual-regression/probe-sun-glow-profile.mjs"),
+      "utf8",
+    )
     .replace(/\r\n/g, "\n");
   const body = probe.slice(probe.indexOf("function classify("));
   const iAbsentBuilt = body.indexOf("commandBuiltSteps === 0");
   const iAbsentCull = body.indexOf("cullFiredSteps === steps.length");
   const iSat = body.indexOf("saturationSource !== null");
   const iOccl = body.indexOf('hypothesis = "H-OCCL');
-  assert.ok(iAbsentBuilt > 0 && iAbsentCull > 0, "state-level absence arms must exist");
+  assert.ok(
+    iAbsentBuilt > 0 && iAbsentCull > 0,
+    "state-level absence arms must exist",
+  );
   assert.ok(iSat > 0, "the saturation arm must exist");
   assert.ok(iOccl > 0, "the occlusion arm must exist");
   // M2: absence is decided before any pixel-difference branch.
-  assert.ok(iAbsentBuilt < iSat && iAbsentCull < iSat, "absence must precede pixels");
+  assert.ok(
+    iAbsentBuilt < iSat && iAbsentCull < iSat,
+    "absence must precede pixels",
+  );
   // M1: saturation is decided before occlusion.
   assert.ok(
     iSat < iOccl,
@@ -531,7 +553,10 @@ test("probe: scene.sun.show is pinned against the WebGL bloom lever, and the res
   // The extinguished-step selector must require BOTH a built command and a
   // ~zero extinction, or "nothing drawn" would be scored as "black".
   assert.match(probe, /s\.hasSunCommand === true &&/);
-  assert.match(probe, /s\.extinctionL0\.every\(\(c\) => c !== null && c < 5e-4\)/);
+  assert.match(
+    probe,
+    /s\.extinctionL0\.every\(\(c\) => c !== null && c < 5e-4\)/,
+  );
 
   // The prediction must be on the record BEFORE the run, in both directions.
   assert.match(probe, /PREDICTION, STATED BEFORE THE RUN/);
@@ -540,7 +565,10 @@ test("probe: scene.sun.show is pinned against the WebGL bloom lever, and the res
 
 test("probe provenance: a missing source degrades, never throws", () => {
   const probe = fs
-    .readFileSync(path.join(root, "Tools/visual-regression/probe-sun-glow-profile.mjs"), "utf8")
+    .readFileSync(
+      path.join(root, "Tools/visual-regression/probe-sun-glow-profile.mjs"),
+      "utf8",
+    )
     .replace(/\r\n/g, "\n");
   const fn = probe.slice(
     probe.indexOf("function provenance()"),
@@ -564,10 +592,9 @@ test("C12-17: half-float packing round-trips the bake's value range", async () =
   // Re-implement the decode side only; the encoder under test is the one
   // shipped in WebGPUEnvironmentRenderer.js, extracted by source so the
   // spec cannot drift from it.
-  const src = readEngine("Renderer/WebGPU/WebGPUEnvironmentRenderer.js").replace(
-    /\r\n/g,
-    "\n",
-  );
+  const src = readEngine(
+    "Renderer/WebGPU/WebGPUEnvironmentRenderer.js",
+  ).replace(/\r\n/g, "\n");
   const start = src.indexOf("function floatToHalfBits(");
   assert.ok(start > 0, "floatToHalfBits must exist in the WebGPU bake");
   const close = src.indexOf("\n}", start);

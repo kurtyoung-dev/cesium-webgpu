@@ -105,7 +105,11 @@ const EXTENSIONS = [
     const browser = await chromium.launch({
       channel: "msedge",
       headless: true,
-      args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+      args: [
+        "--enable-unsafe-webgpu",
+        "--enable-features=Vulkan",
+        "--use-vulkan",
+      ],
     });
     const page = await browser.newPage({
       viewport: { width: 800, height: 600 },
@@ -150,7 +154,11 @@ const EXTENSIONS = [
 
         if (!loadErr) {
           v.camera.setView({
-            destination: C.Cartesian3.fromDegrees(lon, lat - 0.002, height + 80),
+            destination: C.Cartesian3.fromDegrees(
+              lon,
+              lat - 0.002,
+              height + 80,
+            ),
             orientation: { pitch: C.Math.toRadians(-25) },
           });
           for (let i = 0; i < 800; i++) {
@@ -172,11 +180,11 @@ const EXTENSIONS = [
         let materialBufferSize = null;
         if (model?._webgpuCache?.primitives) {
           const prims = model._webgpuCache.primitives;
-          for (const key in prims) {
+          for (const key of Object.keys(prims)) {
             const pc = prims[key];
             if (pc?.materialData) {
               actualSlots = {};
-              for (const slot in expectedSlots) {
+              for (const slot of Object.keys(expectedSlots)) {
                 actualSlots[slot] = pc.materialData[Number(slot)];
               }
               materialBufferSize = pc.materialData.byteLength;
@@ -192,7 +200,10 @@ const EXTENSIONS = [
           materialBufferSize,
         };
       },
-      { url: `Apps/SampleData/models/TestKHRExtensions/${ext.file}`, expectedSlots: ext.expectedFactorSlots },
+      {
+        url: `Apps/SampleData/models/TestKHRExtensions/${ext.file}`,
+        expectedSlots: ext.expectedFactorSlots,
+      },
     );
 
     const errs = await page.evaluate(() => window.__probeErrors ?? []);
@@ -202,7 +213,7 @@ const EXTENSIONS = [
     let slotsMatch = true;
     const slotDiffs = [];
     if (diag.actualSlots) {
-      for (const slot in ext.expectedFactorSlots) {
+      for (const slot of Object.keys(ext.expectedFactorSlots)) {
         const expected = ext.expectedFactorSlots[slot];
         const actual = diag.actualSlots[slot];
         const diff = Math.abs((actual ?? 0) - expected);
@@ -215,7 +226,9 @@ const EXTENSIONS = [
       }
     } else {
       slotsMatch = false;
-      slotDiffs.push("  could not inspect material UB (model not ready or cache not found)");
+      slotDiffs.push(
+        "  could not inspect material UB (model not ready or cache not found)",
+      );
     }
 
     results.push({
@@ -231,14 +244,13 @@ const EXTENSIONS = [
       sampleErrors: errs.slice(0, 3).map((e) => (e.text ?? "").slice(0, 180)),
     });
 
-    const status =
-      diag.loadErr
-        ? "LOAD-FAIL"
-        : errs.length > 0
-          ? `${errs.length} DEV-ERRS`
-          : !slotsMatch
-            ? "SLOT-MISMATCH"
-            : "OK";
+    const status = diag.loadErr
+      ? "LOAD-FAIL"
+      : errs.length > 0
+        ? `${errs.length} DEV-ERRS`
+        : !slotsMatch
+          ? "SLOT-MISMATCH"
+          : "OK";
     console.log(
       `  ${status.padEnd(16)} ${ext.name.padEnd(14)} modelReady=${diag.modelReady} bufSize=${diag.materialBufferSize}`,
     );
@@ -246,9 +258,11 @@ const EXTENSIONS = [
       console.log(`    LOAD-ERR: ${diag.loadErr.slice(0, 200)}`);
     }
     if (errs.length > 0) {
-      errs.slice(0, 2).forEach((e) =>
-        console.log(`    DEV-ERR: ${(e.text ?? "").slice(0, 200)}`),
-      );
+      errs
+        .slice(0, 2)
+        .forEach((e) =>
+          console.log(`    DEV-ERR: ${(e.text ?? "").slice(0, 200)}`),
+        );
     }
     if (!slotsMatch) {
       slotDiffs.forEach((d) => console.log(d));
@@ -263,14 +277,13 @@ const EXTENSIONS = [
   console.log("\n[probe-khr-extensions] summary:");
   let totalFails = 0;
   for (const r of results) {
-    const status =
-      r.loadErr
-        ? "LOAD-FAIL"
-        : r.errorCount > 0
-          ? `${r.errorCount} DEV-ERRS`
-          : !r.slotsMatch
-            ? "SLOT-MISMATCH"
-            : "OK";
+    const status = r.loadErr
+      ? "LOAD-FAIL"
+      : r.errorCount > 0
+        ? `${r.errorCount} DEV-ERRS`
+        : !r.slotsMatch
+          ? "SLOT-MISMATCH"
+          : "OK";
     console.log(`  ${status.padEnd(16)} ${r.name}`);
     if (status !== "OK") totalFails++;
   }

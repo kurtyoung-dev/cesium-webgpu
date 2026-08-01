@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -11,34 +11,53 @@ const RENDERER_OVERRIDE_SHIM = `
 })();
 `;
 
-const demo = process.argv[2] || 'CZML Rectangle.html';
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
-const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+const demo = process.argv[2] || "CZML Rectangle.html";
+const browser = await chromium.launch({ channel: "msedge", headless: true });
+const ctx = await browser.newContext({ viewport: { width: 800, height: 600 } });
 const page = await ctx.newPage();
 const msgs = [];
-page.on('console', m => msgs.push(`[${m.type()}] ${m.text()}`));
-page.on('pageerror', e => msgs.push(`[PAGEERROR] ${e.message}\n${e.stack || ''}`));
+page.on("console", (m) => msgs.push(`[${m.type()}] ${m.text()}`));
+page.on("pageerror", (e) =>
+  msgs.push(`[PAGEERROR] ${e.message}\n${e.stack || ""}`),
+);
 
-await page.addInitScript(() => { window.__FORCED_RENDERER__ = 'webgpu'; });
+await page.addInitScript(() => {
+  window.__FORCED_RENDERER__ = "webgpu";
+});
 await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
+await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
   const response = await route.fetch();
-  const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-  await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+  const txt = (await response.text()).replace(
+    /new\s+Cesium\.Viewer\s*\(/g,
+    "await Cesium.Viewer.createAsync(",
+  );
+  await route.fulfill({
+    status: response.status(),
+    headers: response.headers(),
+    body: txt,
+  });
 });
 
 const url = `http://localhost:8080/Apps/Sandcastle/gallery/${encodeURIComponent(demo)}`;
-await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+await page.goto(url, { waitUntil: "load", timeout: 60000 });
 await page.waitForTimeout(8000);
 
-const bufErrs = msgs.filter(m =>
-  /writeBuffer|createBuffer|Number of bytes|byte count/i.test(m)
+const bufErrs = msgs.filter((m) =>
+  /writeBuffer|createBuffer|Number of bytes|byte count/i.test(m),
 );
-const includesErrs = msgs.filter(m => /\.includes is not a function/i.test(m));
-const vec4Errs = msgs.filter(m => /Invalid vec4 value|UniformArrayFloatVec4/i.test(m));
-const wgslDoctype = msgs.filter(m => /unexpected token <!DOCTYPE/i.test(m));
-const errs = msgs.filter(m => m.includes('[error]') || m.includes('PAGEERROR'));
-console.log(`msgs=${msgs.length} buf=${bufErrs.length} includes=${includesErrs.length} vec4=${vec4Errs.length} doctype=${wgslDoctype.length} all-errs=${errs.length}`);
-console.log('\n=== Errors (last 8) — full ===');
-errs.slice(-8).forEach(e => console.log(' ', e.substring(0, 1500)));
+const includesErrs = msgs.filter((m) =>
+  /\.includes is not a function/i.test(m),
+);
+const vec4Errs = msgs.filter((m) =>
+  /Invalid vec4 value|UniformArrayFloatVec4/i.test(m),
+);
+const wgslDoctype = msgs.filter((m) => /unexpected token <!DOCTYPE/i.test(m));
+const errs = msgs.filter(
+  (m) => m.includes("[error]") || m.includes("PAGEERROR"),
+);
+console.log(
+  `msgs=${msgs.length} buf=${bufErrs.length} includes=${includesErrs.length} vec4=${vec4Errs.length} doctype=${wgslDoctype.length} all-errs=${errs.length}`,
+);
+console.log("\n=== Errors (last 8) — full ===");
+errs.slice(-8).forEach((e) => console.log(" ", e.substring(0, 1500)));
 await browser.close();

@@ -47,7 +47,9 @@ async function capture(rendererArg, target) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 700 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -218,7 +220,9 @@ async function capture(rendererArg, target) {
     const gl = await capture("webgl", target);
     const gp = await capture("webgpu", target);
 
-    console.log(`  errors: webgl=${gl.errors.length} webgpu=${gp.errors.length}`);
+    console.log(
+      `  errors: webgl=${gl.errors.length} webgpu=${gp.errors.length}`,
+    );
     gp.errors.slice(0, 4).forEach((e) => console.log(`    GPU-ERR: ${e}`));
 
     const glB = Object.fromEntries(gl.bins.map((b) => [b.bin, b]));
@@ -230,9 +234,15 @@ async function capture(rendererArg, target) {
       const g = glB[b];
       const p = gpB[b];
       if (!g && !p) continue;
-      const gs = g ? `${g.magenta}/${g.yellow}/${g.lime} [${g.count}]` : "-- (no GL frame)";
-      const ps = p ? `${p.magenta}/${p.yellow}/${p.lime} [${p.count}]` : "-- (no GPU frame)";
-      console.log(`  ${String(b).padStart(2)}             | ${gs.padEnd(18)} ${ps}`);
+      const gs = g
+        ? `${g.magenta}/${g.yellow}/${g.lime} [${g.count}]`
+        : "-- (no GL frame)";
+      const ps = p
+        ? `${p.magenta}/${p.yellow}/${p.lime} [${p.count}]`
+        : "-- (no GPU frame)";
+      console.log(
+        `  ${String(b).padStart(2)}             | ${gs.padEnd(18)} ${ps}`,
+      );
       // Vanish: GL SUBSTANTIALLY shows a marker in this bin (>30 px, above
       // near-horizon / AA noise), GPU shows none. A loose >8 floor false-
       // triggers on borderline near-horizon bins where GL itself barely
@@ -247,13 +257,19 @@ async function capture(rendererArg, target) {
     }
 
     if (gp.errors.length > 0) {
-      console.log(`  RESULT(${target.name}): FAIL — webgpu device/console errors`);
+      console.log(
+        `  RESULT(${target.name}): FAIL — webgpu device/console errors`,
+      );
       anyFail = true;
     } else if (vanish) {
-      console.log(`  RESULT(${target.name}): FAIL — marker VANISHED in a morph bin on WebGPU`);
+      console.log(
+        `  RESULT(${target.name}): FAIL — marker VANISHED in a morph bin on WebGPU`,
+      );
       anyFail = true;
     } else {
-      console.log(`  RESULT(${target.name}): PASS — markers tracked through morph, no errors`);
+      console.log(
+        `  RESULT(${target.name}): PASS — markers tracked through morph, no errors`,
+      );
     }
   }
   console.log(`\n[probe-collections-morph-blend] ${anyFail ? "FAIL" : "PASS"}`);

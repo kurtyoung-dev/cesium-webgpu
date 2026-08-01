@@ -24,7 +24,9 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = path.join(__dirname, "output");
 
 async function boot(browser, renderer) {
-  const page = await browser.newPage({ viewport: { width: 1000, height: 1000 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 1000 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -93,7 +95,11 @@ async function longSettle(page, frames) {
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));
       if (i === 30 || i === 100 || i === 250 || i === frames - 1) {
-        snaps.push({ frame: i, tilesLoaded: scene.globe.tilesLoaded, ...levelHist() });
+        snaps.push({
+          frame: i,
+          tilesLoaded: scene.globe.tilesLoaded,
+          ...levelHist(),
+        });
       }
     }
     return snaps;
@@ -126,7 +132,12 @@ async function capture(page, outPath) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
   const gpu = await boot(browser, "webgpu");
   const s = await setup(gpu.page);

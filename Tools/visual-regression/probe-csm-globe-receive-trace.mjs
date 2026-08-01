@@ -41,10 +41,14 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
@@ -80,10 +84,14 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
       v.scene.cascadedShadowMapResolution = 1024;
 
       const wallCoords = C.Cartesian3.fromDegreesArray([
-        view.lon - 0.0004, view.lat - 0.0030,
-        view.lon + 0.0004, view.lat - 0.0030,
-        view.lon + 0.0004, view.lat + 0.0030,
-        view.lon - 0.0004, view.lat + 0.0030,
+        view.lon - 0.0004,
+        view.lat - 0.003,
+        view.lon + 0.0004,
+        view.lat - 0.003,
+        view.lon + 0.0004,
+        view.lat + 0.003,
+        view.lon - 0.0004,
+        view.lat + 0.003,
       ]);
       const wall = new C.Primitive({
         geometryInstances: new C.GeometryInstance({
@@ -142,10 +150,22 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
       // along the light ray is the WALL, so stored depth should be << ground
       // ndcZ (ground is farther from the light than the wall it hides behind).
       const groundPoints = {
-        umbra_near: C.Cartesian3.fromDegrees(view.lon + 0.0006, view.lat + 0.0034, 0),
-        umbra_mid: C.Cartesian3.fromDegrees(view.lon + 0.0010, view.lat + 0.0040, 0),
-        umbra_far: C.Cartesian3.fromDegrees(view.lon + 0.0014, view.lat + 0.0046, 0),
-        lit: C.Cartesian3.fromDegrees(view.lon + 0.0040, view.lat + 0.0080, 0),
+        umbra_near: C.Cartesian3.fromDegrees(
+          view.lon + 0.0006,
+          view.lat + 0.0034,
+          0,
+        ),
+        umbra_mid: C.Cartesian3.fromDegrees(
+          view.lon + 0.001,
+          view.lat + 0.004,
+          0,
+        ),
+        umbra_far: C.Cartesian3.fromDegrees(
+          view.lon + 0.0014,
+          view.lat + 0.0046,
+          0,
+        ),
+        lit: C.Cartesian3.fromDegrees(view.lon + 0.004, view.lat + 0.008, 0),
         wallTop: C.Cartesian3.fromDegrees(view.lon, view.lat, 120),
       };
 
@@ -174,7 +194,10 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
       // Layer-content sanity: is there ANY non-cleared depth in each cascade?
       const layerScans = [];
       for (let ci = 0; ci < mats.length; ci++) {
-        layerScans.push({ cascade: ci, ...(await csm.debugScanCascadeLayer(ci)) });
+        layerScans.push({
+          cascade: ci,
+          ...(await csm.debugScanCascadeLayer(ci)),
+        });
       }
 
       // column-major mat4 * vec4
@@ -188,7 +211,11 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
       const projectThrough = (vpRTE, eye) => {
         const clip = mulMat4Vec4(vpRTE, eye.x, eye.y, eye.z, 1.0);
         if (clip.w === 0) return null;
-        const ndc = { x: clip.x / clip.w, y: clip.y / clip.w, z: clip.z / clip.w };
+        const ndc = {
+          x: clip.x / clip.w,
+          y: clip.y / clip.w,
+          z: clip.z / clip.w,
+        };
         const uv = { x: ndc.x * 0.5 + 0.5, y: 1.0 - (ndc.y * 0.5 + 0.5) };
         return { ndc, uv, w: clip.w };
       };
@@ -201,14 +228,30 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
       // hand-picked points, whether cross-object alignment works at all.
       const wallCornersWC = [
         ...C.Cartesian3.fromDegreesArrayHeights([
-          view.lon - 0.0004, view.lat - 0.0030, 0,
-          view.lon + 0.0004, view.lat - 0.0030, 0,
-          view.lon + 0.0004, view.lat + 0.0030, 0,
-          view.lon - 0.0004, view.lat + 0.0030, 0,
-          view.lon - 0.0004, view.lat - 0.0030, 120,
-          view.lon + 0.0004, view.lat - 0.0030, 120,
-          view.lon + 0.0004, view.lat + 0.0030, 120,
-          view.lon - 0.0004, view.lat + 0.0030, 120,
+          view.lon - 0.0004,
+          view.lat - 0.003,
+          0,
+          view.lon + 0.0004,
+          view.lat - 0.003,
+          0,
+          view.lon + 0.0004,
+          view.lat + 0.003,
+          0,
+          view.lon - 0.0004,
+          view.lat + 0.003,
+          0,
+          view.lon - 0.0004,
+          view.lat - 0.003,
+          120,
+          view.lon + 0.0004,
+          view.lat - 0.003,
+          120,
+          view.lon + 0.0004,
+          view.lat + 0.003,
+          120,
+          view.lon - 0.0004,
+          view.lat + 0.003,
+          120,
         ]),
       ];
       const globeCamSumC = globeCamSum;
@@ -216,33 +259,45 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
         const eye = C.Cartesian3.subtract(wp, globeCamSumC, new C.Cartesian3());
         return projectThrough(mats[0].viewProjectionRTE, eye);
       };
-      let wuMin = 1, wuMax = 0, wvMin = 1, wvMax = 0;
+      let wuMin = 1,
+        wuMax = 0,
+        wvMin = 1,
+        wvMax = 0;
       for (const c of wallCornersWC) {
         const p = projC0(c);
         if (!p) continue;
-        wuMin = Math.min(wuMin, p.uv.x); wuMax = Math.max(wuMax, p.uv.x);
-        wvMin = Math.min(wvMin, p.uv.y); wvMax = Math.max(wvMax, p.uv.y);
+        wuMin = Math.min(wuMin, p.uv.x);
+        wuMax = Math.max(wuMax, p.uv.x);
+        wvMin = Math.min(wvMin, p.uv.y);
+        wvMax = Math.max(wvMax, p.uv.y);
       }
       const wallFootprint = {
-        uMin: Number(wuMin.toFixed(4)), uMax: Number(wuMax.toFixed(4)),
-        vMin: Number(wvMin.toFixed(4)), vMax: Number(wvMax.toFixed(4)),
+        uMin: Number(wuMin.toFixed(4)),
+        uMax: Number(wuMax.toFixed(4)),
+        vMin: Number(wvMin.toFixed(4)),
+        vMax: Number(wvMax.toFixed(4)),
       };
 
       // Sweep ground grid; count points landing in the wall footprint and
       // whether they read an occluding (stored < ndcZ) texel there.
-      let inFootprint = 0, occludedInFootprint = 0, sweepTotal = 0;
+      let inFootprint = 0,
+        occludedInFootprint = 0,
+        sweepTotal = 0;
       const sampleHits = [];
       for (let gi = 0; gi <= 30; gi++) {
         for (let gj = 0; gj <= 30; gj++) {
-          const lon = view.lon - 0.0010 + (gi / 30) * 0.0040;
-          const lat = view.lat - 0.0010 + (gj / 30) * 0.0060;
+          const lon = view.lon - 0.001 + (gi / 30) * 0.004;
+          const lat = view.lat - 0.001 + (gj / 30) * 0.006;
           const wp = C.Cartesian3.fromDegrees(lon, lat, 0);
           const p = projC0(wp);
           sweepTotal++;
-          if (!p || p.uv.x < 0 || p.uv.x > 1 || p.uv.y < 0 || p.uv.y > 1) continue;
+          if (!p || p.uv.x < 0 || p.uv.x > 1 || p.uv.y < 0 || p.uv.y > 1)
+            continue;
           const inFp =
-            p.uv.x >= wuMin && p.uv.x <= wuMax &&
-            p.uv.y >= wvMin && p.uv.y <= wvMax;
+            p.uv.x >= wuMin &&
+            p.uv.x <= wuMax &&
+            p.uv.y >= wvMin &&
+            p.uv.y <= wvMax;
           if (inFp) {
             inFootprint++;
             const stored = await csm.debugReadCascadeDepth(0, p.uv.x, p.uv.y);
@@ -272,8 +327,16 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
         },
       };
       for (const [name, wp] of Object.entries(groundPoints)) {
-        const globeEye = C.Cartesian3.subtract(wp, globeCamSum, new C.Cartesian3());
-        const castEye = C.Cartesian3.subtract(wp, castCamSum, new C.Cartesian3());
+        const globeEye = C.Cartesian3.subtract(
+          wp,
+          globeCamSum,
+          new C.Cartesian3(),
+        );
+        const castEye = C.Cartesian3.subtract(
+          wp,
+          castCamSum,
+          new C.Cartesian3(),
+        );
         const eyeDelta = C.Cartesian3.magnitude(
           C.Cartesian3.subtract(globeEye, castEye, new C.Cartesian3()),
         );
@@ -298,7 +361,10 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
               ? {
                   uv: [Number(g.uv.x.toFixed(5)), Number(g.uv.y.toFixed(5))],
                   ndcZ: Number(g.ndc.z.toFixed(6)),
-                  stored: storedGlobe === null ? null : Number(storedGlobe.toFixed(6)),
+                  stored:
+                    storedGlobe === null
+                      ? null
+                      : Number(storedGlobe.toFixed(6)),
                   occluded:
                     storedGlobe !== null && g.ndc.z > storedGlobe + 1e-5,
                 }
@@ -307,9 +373,9 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
               ? {
                   uv: [Number(k.uv.x.toFixed(5)), Number(k.uv.y.toFixed(5))],
                   ndcZ: Number(k.ndc.z.toFixed(6)),
-                  stored: storedCast === null ? null : Number(storedCast.toFixed(6)),
-                  occluded:
-                    storedCast !== null && k.ndc.z > storedCast + 1e-5,
+                  stored:
+                    storedCast === null ? null : Number(storedCast.toFixed(6)),
+                  occluded: storedCast !== null && k.ndc.z > storedCast + 1e-5,
                 }
               : null,
             uvDelta:
@@ -335,7 +401,11 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
           camWC: [camWC.x, camWC.y, camWC.z],
           globeVsCastMeters: Number(
             C.Cartesian3.magnitude(
-              C.Cartesian3.subtract(globeCamSum, castCamSum, new C.Cartesian3()),
+              C.Cartesian3.subtract(
+                globeCamSum,
+                castCamSum,
+                new C.Cartesian3(),
+              ),
             ).toFixed(6),
           ),
           globeVsTrueMeters: Number(
@@ -360,9 +430,7 @@ const FIXED_CLOCK_UTC = "2026-06-15T21:10:00Z";
 
   console.log("[probe-csm-globe-receive-trace]\n");
   console.log(JSON.stringify(out, null, 2));
-  const errs = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
-  );
+  const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   if (errs.length) {
     console.log(`\n${errs.length} console errors:`);
     errs.slice(0, 6).forEach((e) => console.log("  " + e.text?.slice(0, 200)));

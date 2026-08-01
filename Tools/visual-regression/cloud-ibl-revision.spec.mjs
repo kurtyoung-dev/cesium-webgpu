@@ -74,9 +74,7 @@ test("the environment-map cache edge-triggers fills from cloud revisions", () =>
 
   const fillIndex = fillBlock.indexOf("runProceduralSkyFill(");
   const prefilterIndex = fillBlock.indexOf("runIBLPrefilter(");
-  const projectionIndex = fillBlock.indexOf(
-    "runSphericalHarmonicProjection(",
-  );
+  const projectionIndex = fillBlock.indexOf("runSphericalHarmonicProjection(");
   const revisionCommitIndex = fillBlock.indexOf(
     "cache.lastCloudRevision = liveCloudRevision;",
   );
@@ -101,8 +99,7 @@ test("cloud revisions refresh only a current or previous full reflection march",
     lastUsedCloudMarch,
     liveRevision,
     lastRevision,
-  }) =>
-    (wantMarch || lastUsedCloudMarch) && liveRevision !== lastRevision;
+  }) => (wantMarch || lastUsedCloudMarch) && liveRevision !== lastRevision;
 
   const cases = [
     {
@@ -156,11 +153,7 @@ test("cloud revisions refresh only a current or previous full reflection march",
   ];
 
   for (const fixture of cases) {
-    assert.equal(
-      revisionRequestsFill(fixture),
-      fixture.expected,
-      fixture.name,
-    );
+    assert.equal(revisionRequestsFill(fixture), fixture.expected, fixture.name);
   }
 
   for (let liveRevision = 1; liveRevision <= 100; liveRevision++) {

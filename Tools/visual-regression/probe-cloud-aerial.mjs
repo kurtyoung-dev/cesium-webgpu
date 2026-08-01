@@ -56,7 +56,11 @@ function aerialColorForElevDeg(elevDeg) {
   const sinElev = Math.max(0, Math.min(1, Math.sin((elevDeg * Math.PI) / 180)));
   const e = Math.max(0, Math.min(1, sinElev / 0.35));
   const t = e * e * (3 - 2 * e);
-  return [0.8 + (0.62 - 0.8) * t, 0.62 + (0.72 - 0.62) * t, 0.5 + (0.85 - 0.5) * t];
+  return [
+    0.8 + (0.62 - 0.8) * t,
+    0.62 + (0.72 - 0.62) * t,
+    0.5 + (0.85 - 0.5) * t,
+  ];
 }
 
 const SETUP = async (cfg) => {
@@ -67,9 +71,12 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+  if ("cloudCoverage" in g)
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  if ("cloudWeatherMap" in g)
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
@@ -91,12 +98,17 @@ const RENDER = async (cfg) => {
   const s = v.scene;
   s.globe.defaultCloudCollection.volumetric.cloudAerialStrength = cfg.strength;
   if (cfg.layerBottom !== undefined) {
-    s.globe.defaultCloudCollection.volumetric.cloudLayerBottom = cfg.layerBottom; // move the deck up to change its
+    s.globe.defaultCloudCollection.volumetric.cloudLayerBottom =
+      cfg.layerBottom; // move the deck up to change its
     s.globe.defaultCloudCollection.volumetric.cloudLayerTop = cfg.layerTop; //      distance from the fixed camera
   }
   if (cfg.pitch !== undefined) {
     v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(cfg.LON, cfg.LAT, cfg.alt ?? cfg.ALT),
+      destination: C.Cartesian3.fromDegrees(
+        cfg.LON,
+        cfg.LAT,
+        cfg.alt ?? cfg.ALT,
+      ),
       orientation: {
         heading: C.Math.toRadians(90.0),
         pitch: C.Math.toRadians(cfg.pitch),
@@ -110,7 +122,11 @@ const RENDER = async (cfg) => {
     s.render(jd);
     await new Promise((r) => requestAnimationFrame(r));
   }
-  const camCarto = C.Cartesian3.fromDegrees(cfg.LON, cfg.LAT, cfg.alt ?? cfg.ALT);
+  const camCarto = C.Cartesian3.fromDegrees(
+    cfg.LON,
+    cfg.LAT,
+    cfg.alt ?? cfg.ALT,
+  );
   const up = C.Cartesian3.normalize(camCarto, new C.Cartesian3());
   const sunWC = s.context.uniformState.sunDirectionWC;
   const sinElev = C.Cartesian3.dot(sunWC, up);
@@ -209,10 +225,22 @@ async function run() {
   // artifact (excluded by the lum<40 gate) and to screen-space band confusion.
   const layerAB = async (label, layerBottom, layerTop) => {
     const off = await page.evaluate(RENDER, {
-      LON, LAT, ALT, iso: NOON, strength: 0, layerBottom, layerTop,
+      LON,
+      LAT,
+      ALT,
+      iso: NOON,
+      strength: 0,
+      layerBottom,
+      layerTop,
     });
     const on = await page.evaluate(RENDER, {
-      LON, LAT, ALT, iso: NOON, strength: 1, layerBottom, layerTop,
+      LON,
+      LAT,
+      ALT,
+      iso: NOON,
+      strength: 1,
+      layerBottom,
+      layerTop,
     });
     write(label, on);
     const ref = aerialColorForElevDeg(on.elevDeg);
@@ -231,7 +259,14 @@ async function run() {
 
   // Beauty: normal layer, low sun, oblique — the visual money shot.
   const beauty = await page.evaluate(RENDER, {
-    LON, LAT, ALT, iso: DUSK, strength: 1, layerBottom: 1500, layerTop: 4000, pitch: 12,
+    LON,
+    LAT,
+    ALT,
+    iso: DUSK,
+    strength: 1,
+    layerBottom: 1500,
+    layerTop: 4000,
+    pitch: 12,
   });
   write("beauty", beauty);
 
@@ -259,12 +294,18 @@ async function run() {
       "both layers populated with clouds",
       nearLayer.cloud > 3000 && farLayer.cloud > 3000,
     ],
-    [`far layer blends toward aerialColor (a_far ${farLayer.a} > 0.3)`, farLayer.a > 0.3],
+    [
+      `far layer blends toward aerialColor (a_far ${farLayer.a} > 0.3)`,
+      farLayer.a > 0.3,
+    ],
     [
       `distance-graded: far deck hazes more than near deck (Δa ${dGrade} > 0.08)`,
       dGrade > 0.08,
     ],
-    [`near deck less hazed than far (a_near ${nearLayer.a} < a_far ${farLayer.a})`, nearLayer.a < farLayer.a],
+    [
+      `near deck less hazed than far (a_near ${nearLayer.a} < a_far ${farLayer.a})`,
+      nearLayer.a < farLayer.a,
+    ],
     ["no NEW device errors", newErrs.length === 0],
   ];
   let pass = true;

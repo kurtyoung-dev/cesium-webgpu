@@ -356,8 +356,7 @@ test("(c) r_1e-3 / r_core >= 8 for the new PSF; old truncated Gaussian < 2", (t)
   const newRatio = r1e3PxNew / rCorePxNew;
 
   // OLD: same definitions on the historical shader at its base quad.
-  const rCorePxOld =
-    Math.sqrt(Math.log(2.0) / OLD.GAUSS_K) * oldBasePxHalf;
+  const rCorePxOld = Math.sqrt(Math.log(2.0) / OLD.GAUSS_K) * oldBasePxHalf;
   const r1e3QuadOld = bisectRadius((r) => oldProfile(r, OLD.HI), 1e-3);
   const r1e3PxOld = r1e3QuadOld * oldBasePxHalf;
   const oldRatio = r1e3PxOld / rCorePxOld;
@@ -366,7 +365,10 @@ test("(c) r_1e-3 / r_core >= 8 for the new PSF; old truncated Gaussian < 2", (t)
     `NEW r_core=${rCorePxNew.toFixed(3)}px r_1e-3=${r1e3PxNew.toFixed(2)}px ratio=${newRatio.toFixed(1)} | OLD r_core=${rCorePxOld.toFixed(2)}px r_1e-3=${r1e3PxOld.toFixed(2)}px ratio=${oldRatio.toFixed(2)}`,
   );
   assert.ok(newRatio >= 8.0, `G2 headline FAIL: new ratio ${newRatio} < 8`);
-  assert.ok(oldRatio < 2.0, `old reference ratio ${oldRatio} unexpectedly >= 2`);
+  assert.ok(
+    oldRatio < 2.0,
+    `old reference ratio ${oldRatio} unexpectedly >= 2`,
+  );
 
   // The 1e-3 isophote must sit INSIDE the AA window start, or the window
   // (not the wing) sets the measured extent.
@@ -427,9 +429,7 @@ test("C12-06: core pixel size is boost-invariant; glare capped at 1 degree", (t)
   const coreOnly = (r, qs) =>
     Math.exp(-(r * qs * (r * qs)) / (2.0 * REF.SIGMA * REF.SIGMA));
   const hwhmPx = (qs) =>
-    bisectRadius((r) => coreOnly(r, qs), 0.5, 0.0, 1.4 / qs) *
-    basePxHalf *
-    qs;
+    bisectRadius((r) => coreOnly(r, qs), 0.5, 0.0, 1.4 / qs) * basePxHalf * qs;
   const qsMax = quadScale(I_MAX);
   assert.ok(qsMax > 1.0, "brightest star gets no halo extent");
   assert.ok(
@@ -439,8 +439,7 @@ test("C12-06: core pixel size is boost-invariant; glare capped at 1 degree", (t)
 
   // Total glare (quad) angular diameter <= 1 degree for every star.
   assert.ok(
-    qsMax * REF.BASE_QUAD_DIAMETER_RAD <=
-      REF.GLARE_MAX_DIAMETER_RAD + 1e-12,
+    qsMax * REF.BASE_QUAD_DIAMETER_RAD <= REF.GLARE_MAX_DIAMETER_RAD + 1e-12,
     "glare diameter exceeds the 1-degree Celestia bound",
   );
 

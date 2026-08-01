@@ -90,7 +90,11 @@ function coolShift(page, offUrl, onUrl) {
         c.height = img.naturalHeight;
         const cx = c.getContext("2d");
         cx.drawImage(img, 0, 0);
-        return { d: cx.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height };
+        return {
+          d: cx.getImageData(0, 0, c.width, c.height).data,
+          w: c.width,
+          h: c.height,
+        };
       };
       const A = await load(uo),
         B = await load(un);
@@ -145,11 +149,13 @@ async function diff(page, a, b) {
       };
       const da = await load(ua),
         db = await load(ub);
-      let acc = 0,
-        n = da.length / 4;
+      let acc = 0;
+      const n = da.length / 4;
       for (let i = 0; i < da.length; i += 4) {
         acc += Math.abs(
-          0.299 * da[i] + 0.587 * da[i + 1] + 0.114 * da[i + 2] -
+          0.299 * da[i] +
+            0.587 * da[i + 1] +
+            0.114 * da[i + 2] -
             (0.299 * db[i] + 0.587 * db[i + 1] + 0.114 * db[i + 2]),
         );
       }
@@ -183,9 +189,13 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   const canvas = await page.$(".cesium-widget canvas");
@@ -230,11 +240,19 @@ async function run() {
   const duOff2 = await shot("special-off2");
 
   // Noctilucent — electric silvery-blue billow bands.
-  await set({ cloudSpecial: "noctilucent", cloudSpecialShadeStrength: 0.9, cloudSpecialShadeScale: 1.0 });
+  await set({
+    cloudSpecial: "noctilucent",
+    cloudSpecialShadeStrength: 0.9,
+    cloudSpecialShadeScale: 1.0,
+  });
   const duNlc = await shot("special-noctilucent");
 
   // Nacreous — pastel mother-of-pearl iridescence.
-  await set({ cloudSpecial: "nacreous", cloudSpecialShadeStrength: 0.9, cloudSpecialShadeScale: 1.0 });
+  await set({
+    cloudSpecial: "nacreous",
+    cloudSpecialShadeStrength: 0.9,
+    cloudSpecialShadeScale: 1.0,
+  });
   const duNac = await shot("special-nacreous");
 
   // Restore OFF — clean toggle, no residual.
@@ -275,12 +293,30 @@ async function run() {
   );
 
   const checks = [
-    [`OFF is deterministic w/ grown UBO (off-vs-off2 ${diffOffOff} < 0.25)`, diffOffOff < 0.25],
-    [`noctilucent ON substantially changes the render (${diffNlc} > 1.0)`, diffNlc > 1.0],
-    [`noctilucent COOLS the changed cloud pixels (Δb-Δr ${coolNlc.cool} > 3)`, coolNlc.cool > 3],
-    [`nacreous ON substantially changes the render (${diffNac} > 1.0)`, diffNac > 1.0],
-    [`nacreous differs from noctilucent (nlc-vs-nac ${diffNlcNac} > 0.5)`, diffNlcNac > 0.5],
-    [`restoring OFF returns to baseline (restore-vs-off ${diffRestore} < 0.25)`, diffRestore < 0.25],
+    [
+      `OFF is deterministic w/ grown UBO (off-vs-off2 ${diffOffOff} < 0.25)`,
+      diffOffOff < 0.25,
+    ],
+    [
+      `noctilucent ON substantially changes the render (${diffNlc} > 1.0)`,
+      diffNlc > 1.0,
+    ],
+    [
+      `noctilucent COOLS the changed cloud pixels (Δb-Δr ${coolNlc.cool} > 3)`,
+      coolNlc.cool > 3,
+    ],
+    [
+      `nacreous ON substantially changes the render (${diffNac} > 1.0)`,
+      diffNac > 1.0,
+    ],
+    [
+      `nacreous differs from noctilucent (nlc-vs-nac ${diffNlcNac} > 0.5)`,
+      diffNlcNac > 0.5,
+    ],
+    [
+      `restoring OFF returns to baseline (restore-vs-off ${diffRestore} < 0.25)`,
+      diffRestore < 0.25,
+    ],
     [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
   ];
   console.log("\n=== ANALYSIS ===");

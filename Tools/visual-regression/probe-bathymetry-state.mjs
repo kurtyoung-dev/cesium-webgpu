@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -11,22 +11,34 @@ const RENDERER_OVERRIDE_SHIM = `
 })();
 `;
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
-const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+const browser = await chromium.launch({ channel: "msedge", headless: true });
+const ctx = await browser.newContext({ viewport: { width: 800, height: 600 } });
 const page = await ctx.newPage();
 const msgs = [];
-page.on('console', m => msgs.push(`[${m.type()}] ${m.text()}`));
-page.on('pageerror', e => msgs.push(`[PAGEERROR] ${e.message}`));
+page.on("console", (m) => msgs.push(`[${m.type()}] ${m.text()}`));
+page.on("pageerror", (e) => msgs.push(`[PAGEERROR] ${e.message}`));
 
-await page.addInitScript(() => { window.__FORCED_RENDERER__ = 'webgpu'; });
+await page.addInitScript(() => {
+  window.__FORCED_RENDERER__ = "webgpu";
+});
 await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
+await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
   const response = await route.fetch();
-  const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-  await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+  const txt = (await response.text()).replace(
+    /new\s+Cesium\.Viewer\s*\(/g,
+    "await Cesium.Viewer.createAsync(",
+  );
+  await route.fulfill({
+    status: response.status(),
+    headers: response.headers(),
+    body: txt,
+  });
 });
 
-await page.goto('http://localhost:8080/Apps/Sandcastle/gallery/Bathymetry.html', { waitUntil: 'load', timeout: 60000 });
+await page.goto(
+  "http://localhost:8080/Apps/Sandcastle/gallery/Bathymetry.html",
+  { waitUntil: "load", timeout: 60000 },
+);
 await page.waitForTimeout(8000);
 
 const state = await page.evaluate(() => {
@@ -37,27 +49,33 @@ const state = await page.evaluate(() => {
   if (!mat) return { hasMaterial: false };
 
   // Dump the composite's wgslShaderSource (what gets prepended to GlobeTerrain.wgsl)
-  const wgslSource = mat.wgslShaderSource || '';
+  const wgslSource = mat.wgslShaderSource || "";
 
   // Inspect composite + sub-material uniforms directly
   const inspect = (m) => {
     if (!m) return null;
     const keys = [];
     try {
-      for (const k in m.uniforms) keys.push(k);
+      for (const k of Object.keys(m.uniforms)) keys.push(k);
     } catch (e) {}
     const valuesByKey = {};
     for (const k of keys) {
       let val;
-      try { val = m.uniforms[k]; } catch (e) { val = `<error: ${e.message}>`; }
-      valuesByKey[k] = val == null
-        ? String(val)
-        : (val instanceof HTMLCanvasElement ? 'HTMLCanvasElement'
-        : (val.constructor?.name || typeof val));
+      try {
+        val = m.uniforms[k];
+      } catch (e) {
+        val = `<error: ${e.message}>`;
+      }
+      valuesByKey[k] =
+        val == null
+          ? String(val)
+          : val instanceof HTMLCanvasElement
+            ? "HTMLCanvasElement"
+            : val.constructor?.name || typeof val;
     }
     return {
       type: m.type,
-      wgslLen: (m.wgslShaderSource || '').length,
+      wgslLen: (m.wgslShaderSource || "").length,
       keys,
       values: valuesByKey,
     };
@@ -71,17 +89,18 @@ const state = await page.evaluate(() => {
     }
   }
   // Also test what the WGSL fabric's `image` lookup returns when walking sub-materials manually
-  let imageFromSubMaterials = 'not found';
+  let imageFromSubMaterials = "not found";
   if (mat.materials) {
     for (const k of Object.keys(mat.materials)) {
       const sub = mat.materials[k];
-      if (sub && sub.uniforms && 'image' in sub.uniforms) {
+      if (sub && sub.uniforms && "image" in sub.uniforms) {
         const img = sub.uniforms.image;
-        imageFromSubMaterials = img == null
-          ? String(img)
-          : (img instanceof HTMLCanvasElement
-            ? `HTMLCanvasElement(${img.width}x${img.height})`
-            : (img.constructor?.name || typeof img));
+        imageFromSubMaterials =
+          img == null
+            ? String(img)
+            : img instanceof HTMLCanvasElement
+              ? `HTMLCanvasElement(${img.width}x${img.height})`
+              : img.constructor?.name || typeof img;
         break;
       }
     }

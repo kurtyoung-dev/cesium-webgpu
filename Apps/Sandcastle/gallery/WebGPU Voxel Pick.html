@@ -46,7 +46,10 @@
        the globe, NOT the voxel primitive. Proves the AABB-intersection in
        `fragmentPickMain` matches the AABB in the color path.
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
       #pickReadout {
@@ -127,10 +130,13 @@
             );
           }
           const dimensions = this.dimensions;
-          const channelCount = Cesium.MetadataType.getComponentCount(this.types[0]);
+          const channelCount = Cesium.MetadataType.getComponentCount(
+            this.types[0],
+          );
           const voxelCount = dimensions.x * dimensions.y * dimensions.z;
           const data = new Float32Array(voxelCount * channelCount);
-          const seed = tileZ * dimensions.y * dimensions.x + tileY * dimensions.x + tileX;
+          const seed =
+            tileZ * dimensions.y * dimensions.x + tileY * dimensions.x + tileX;
           Cesium.Math.setRandomNumberSeed(seed);
           for (let i = 0; i < voxelCount; i++) {
             const h = Cesium.Math.nextRandomNumber();

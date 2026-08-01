@@ -72,7 +72,9 @@ const BUILD_SCENE = async (grid) => {
   scene.requestRenderMode = false;
   scene.globe.show = false; // isolate the boxes (occlusion target), no terrain depth.
 
-  const lon0 = -105.0, lat0 = 39.0, span = 0.6;
+  const lon0 = -105.0,
+    lat0 = 39.0,
+    span = 0.6;
   const boxDim = new Cesium.Cartesian3(6000.0, 6000.0, 90000.0);
   const geom = Cesium.BoxGeometry.fromDimensions({
     vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
@@ -95,17 +97,32 @@ const BUILD_SCENE = async (grid) => {
           ),
         },
       });
-      prims.add(new Cesium.Primitive({
-        geometryInstances: inst,
-        appearance: new Cesium.PerInstanceColorAppearance({ translucent: false, closed: true }),
-        asynchronous: false,
-      }));
+      prims.add(
+        new Cesium.Primitive({
+          geometryInstances: inst,
+          appearance: new Cesium.PerInstanceColorAppearance({
+            translucent: false,
+            closed: true,
+          }),
+          asynchronous: false,
+        }),
+      );
       created++;
     }
   }
-  const center = Cesium.Cartesian3.fromDegrees(lon0 + span / 2, lat0 + span / 2, 50000);
-  scene.camera.lookAt(center, new Cesium.HeadingPitchRange(
-    Cesium.Math.toRadians(20), Cesium.Math.toRadians(-18), 180000));
+  const center = Cesium.Cartesian3.fromDegrees(
+    lon0 + span / 2,
+    lat0 + span / 2,
+    50000,
+  );
+  scene.camera.lookAt(
+    center,
+    new Cesium.HeadingPitchRange(
+      Cesium.Math.toRadians(20),
+      Cesium.Math.toRadians(-18),
+      180000,
+    ),
+  );
   scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
   return { created, primCount: prims.length };
 };
@@ -163,7 +180,11 @@ async function run() {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({ viewport: { width: W, height: H } });
   const consoleErrors = attachConsoleErrorGate(page);
@@ -179,18 +200,26 @@ async function run() {
 
   // OFF baseline first (no GPU culling at all) so nothing the occlusion path
   // does can leak state into the baseline.
-  const off = await page.evaluate(RENDER_AND_CAPTURE, { hint: "never", frames: 120 });
+  const off = await page.evaluate(RENDER_AND_CAPTURE, {
+    hint: "never",
+    frames: 120,
+  });
   // ON: auto -> HiZ gate engages above threshold.
-  const on = await page.evaluate(RENDER_AND_CAPTURE, { hint: "auto", frames: 200 });
+  const on = await page.evaluate(RENDER_AND_CAPTURE, {
+    hint: "auto",
+    frames: 200,
+  });
 
   const offRgba = await decodePngToRgba(page, off.dataUrl);
   const onRgba = await decodePngToRgba(page, on.dataUrl);
 
   // Pixel diff (luma threshold) + amplified diff image.
-  const a = offRgba.data, b = onRgba.data;
+  const a = offRgba.data,
+    b = onRgba.data;
   const n = Math.min(a.length, b.length);
   const diff = new Uint8ClampedArray(n);
-  let mismatch = 0, total = (offRgba.w * offRgba.h);
+  let mismatch = 0;
+  const total = offRgba.w * offRgba.h;
   for (let i = 0; i < n; i += 4) {
     const dr = Math.abs(a[i] - b[i]);
     const dg = Math.abs(a[i + 1] - b[i + 1]);
@@ -198,35 +227,57 @@ async function run() {
     const dl = 0.2126 * dr + 0.7152 * dg + 0.0722 * db;
     if (dl > 24) {
       mismatch++;
-      diff[i] = 255; diff[i + 1] = 0; diff[i + 2] = 0; diff[i + 3] = 255;
+      diff[i] = 255;
+      diff[i + 1] = 0;
+      diff[i + 2] = 0;
+      diff[i + 3] = 255;
     } else {
-      diff[i] = a[i]; diff[i + 1] = a[i + 1]; diff[i + 2] = a[i + 2]; diff[i + 3] = 60;
+      diff[i] = a[i];
+      diff[i + 1] = a[i + 1];
+      diff[i + 2] = a[i + 2];
+      diff[i + 3] = 60;
     }
   }
   const mismatchPct = (100 * mismatch) / total;
 
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
   const writePng = (name, du) =>
-    fs.writeFileSync(path.join(OUT_DIR, name), Buffer.from(du.replace(/^data:image\/png;base64,/, ""), "base64"));
+    fs.writeFileSync(
+      path.join(OUT_DIR, name),
+      Buffer.from(du.replace(/^data:image\/png;base64,/, ""), "base64"),
+    );
   writePng("fork41-occlusion-off.png", off.dataUrl);
   writePng("fork41-occlusion-on.png", on.dataUrl);
 
   // Encode diff via the page canvas.
-  const diffUrl = await page.evaluate((args) => {
-    const { data, w, h } = args;
-    const c = document.createElement("canvas");
-    c.width = w; c.height = h;
-    const ctx = c.getContext("2d");
-    const id = new ImageData(new Uint8ClampedArray(data), w, h);
-    ctx.putImageData(id, 0, 0);
-    return c.toDataURL("image/png");
-  }, { data: Array.from(diff), w: offRgba.w, h: offRgba.h });
+  const diffUrl = await page.evaluate(
+    (args) => {
+      const { data, w, h } = args;
+      const c = document.createElement("canvas");
+      c.width = w;
+      c.height = h;
+      const ctx = c.getContext("2d");
+      const id = new ImageData(new Uint8ClampedArray(data), w, h);
+      ctx.putImageData(id, 0, 0);
+      return c.toDataURL("image/png");
+    },
+    { data: Array.from(diff), w: offRgba.w, h: offRgba.h },
+  );
   writePng("fork41-occlusion-diff.png", diffUrl);
 
   const gate = await collectGateErrors(page);
   await browser.close();
 
-  return { buildInfo, off, on, mismatch, total, mismatchPct, consoleErrors: consoleErrors.slice(0, 8), gate };
+  return {
+    buildInfo,
+    off,
+    on,
+    mismatch,
+    total,
+    mismatchPct,
+    consoleErrors: consoleErrors.slice(0, 8),
+    gate,
+  };
 }
 
 (async () => {
@@ -242,30 +293,48 @@ async function run() {
   console.log(`  built: ${JSON.stringify(res.buildInfo)}`);
   console.log(`  OFF stats: ${JSON.stringify(res.off.stats)}`);
   console.log(`  ON  stats: ${JSON.stringify(res.on.stats)}`);
-  console.log(`  pixel mismatch on-vs-off: ${res.mismatch}/${res.total} (${res.mismatchPct.toFixed(3)}%)  budget=${MISMATCH_BUDGET_PCT}%`);
-  console.log(`  gate: errors=${res.gate.errors.length} deviceLost=${res.gate.deviceLost} armed=${res.gate.armedDevices}`);
-  if (res.gate.errors.length) console.log(`  gate.errors: ${JSON.stringify(res.gate.errors.slice(0, 5))}`);
-  if (res.consoleErrors.length) console.log(`  consoleErrors: ${JSON.stringify(res.consoleErrors)}`);
+  console.log(
+    `  pixel mismatch on-vs-off: ${res.mismatch}/${res.total} (${res.mismatchPct.toFixed(3)}%)  budget=${MISMATCH_BUDGET_PCT}%`,
+  );
+  console.log(
+    `  gate: errors=${res.gate.errors.length} deviceLost=${res.gate.deviceLost} armed=${res.gate.armedDevices}`,
+  );
+  if (res.gate.errors.length)
+    console.log(
+      `  gate.errors: ${JSON.stringify(res.gate.errors.slice(0, 5))}`,
+    );
+  if (res.consoleErrors.length)
+    console.log(`  consoleErrors: ${JSON.stringify(res.consoleErrors)}`);
 
   const s = res.on.stats || {};
   const checks = [];
   checks.push(["occlusion DISPATCHES (path runs)", (s.hiZDispatches || 0) > 0]);
   checks.push(["occlusion is ACTIVE (gate latched)", s.hiZActive === true]);
-  checks.push(["SAFE DEFAULT: no false-cull (pixels match)", res.mismatchPct <= MISMATCH_BUDGET_PCT]);
-  checks.push(["no validation errors / device loss", res.gate.errors.length === 0 && !res.gate.deviceLost]);
+  checks.push([
+    "SAFE DEFAULT: no false-cull (pixels match)",
+    res.mismatchPct <= MISMATCH_BUDGET_PCT,
+  ]);
+  checks.push([
+    "no validation errors / device loss",
+    res.gate.errors.length === 0 && !res.gate.deviceLost,
+  ]);
 
   // INFORMATIONAL — the actual command DROP is gated OFF by default pending
   // the remaining OcclusionTest correctness fix (FORK-41). A future fix flips
   // this from 0 to >0; the probe records it but does NOT fail on 0 (the
   // shipped default is intentionally inert + safe).
   const culls = (s.hiZHitRatio || 0) > 0;
-  console.log(`  [INFO] occlusion currently CULLS (hitRatio>0): ${culls} (gated OFF by default; expected 0 until correctness fix lands)`);
+  console.log(
+    `  [INFO] occlusion currently CULLS (hitRatio>0): ${culls} (gated OFF by default; expected 0 until correctness fix lands)`,
+  );
 
   let allPass = true;
   for (const [name, ok] of checks) {
     console.log(`  [${ok ? "PASS" : "FAIL"}] ${name}`);
     if (!ok) allPass = false;
   }
-  console.log(`[probe-fork41-occlusion] ${allPass ? "ALL PASS" : "FAILURES PRESENT"}`);
+  console.log(
+    `[probe-fork41-occlusion] ${allPass ? "ALL PASS" : "FAILURES PRESENT"}`,
+  );
   process.exit(allPass ? 0 : 1);
 })();

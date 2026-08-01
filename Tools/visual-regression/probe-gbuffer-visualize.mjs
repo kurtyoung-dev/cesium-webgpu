@@ -45,7 +45,9 @@ async function capture() {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   const messages = [];
   page.on("console", (m) => {
@@ -53,11 +55,12 @@ async function capture() {
     messages.push({ t: m.type(), text });
     // Mirror Phase8a logs to node stdout for live diagnostics
     if (text.includes("[Phase8a")) {
-      // eslint-disable-next-line no-console
       console.log(`  [browser] ${text}`);
     }
   });
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
@@ -70,7 +73,9 @@ async function capture() {
       const v = window.viewer;
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
 
@@ -120,7 +125,8 @@ async function capture() {
         deferredLighting: v.scene.deferredLighting,
         debugFlag: v.scene.debugShowGBufferNormals,
         gBufferAlloc: !!v.scene._view?.gBufferFramebuffer?.framebuffer,
-        gBufferOutputView: !!v.scene._view?.gBufferFramebuffer?.normalRoughnessTexture,
+        gBufferOutputView:
+          !!v.scene._view?.gBufferFramebuffer?.normalRoughnessTexture,
       };
 
       // Sample the canvas pixels to verify the overlay actually ran
@@ -144,9 +150,15 @@ async function capture() {
       );
       const pix = tctx.getImageData(0, 0, 100, 100).data;
       // Tally per-channel mean + count of magenta-sentinel pixels.
-      let sumR = 0, sumG = 0, sumB = 0, sentinel = 0, total = 0;
+      let sumR = 0,
+        sumG = 0,
+        sumB = 0,
+        sentinel = 0,
+        total = 0;
       for (let i = 0; i < pix.length; i += 4) {
-        sumR += pix[i]; sumG += pix[i + 1]; sumB += pix[i + 2];
+        sumR += pix[i];
+        sumG += pix[i + 1];
+        sumB += pix[i + 2];
         // Magenta sentinel ≈ (255, 0, 255)
         if (pix[i] > 200 && pix[i + 1] < 50 && pix[i + 2] > 200) {
           sentinel++;
@@ -170,9 +182,7 @@ async function capture() {
   await page.screenshot({ path: out });
   await browser.close();
 
-  const errors = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
-  );
+  const errors = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   return { out, histo, errors };
 }
 
@@ -184,9 +194,9 @@ async function capture() {
   console.log(`  center 100×100 histogram:`, histo);
   if (errors.length) {
     console.log(`  ${errors.length} errors:`);
-    errors.slice(0, 3).forEach((e) =>
-      console.log(`    ${e.t}: ${e.text.slice(0, 150)}`),
-    );
+    errors
+      .slice(0, 3)
+      .forEach((e) => console.log(`    ${e.t}: ${e.text.slice(0, 150)}`));
   }
 
   // Heuristic check: if the center region is all-magenta sentinel the
@@ -196,12 +206,20 @@ async function capture() {
   // the overlay is showing real surface normals.
   console.log(`\n  interpretation:`);
   if (histo.sentinelPct > 90) {
-    console.log(`    !! mostly magenta sentinel (${histo.sentinelPct.toFixed(1)}%) — producer didn't write normals at center.`);
-    console.log(`       likely: scene.deferredLighting didn't take effect, or compute pass failed.`);
+    console.log(
+      `    !! mostly magenta sentinel (${histo.sentinelPct.toFixed(1)}%) — producer didn't write normals at center.`,
+    );
+    console.log(
+      `       likely: scene.deferredLighting didn't take effect, or compute pass failed.`,
+    );
   } else if (histo.sentinelPct < 5) {
-    console.log(`    ✓ globe visible with real normals (${histo.sentinelPct.toFixed(1)}% sentinel) — producer is writing meaningful data.`);
+    console.log(
+      `    ✓ globe visible with real normals (${histo.sentinelPct.toFixed(1)}% sentinel) — producer is writing meaningful data.`,
+    );
   } else {
-    console.log(`    ~ partial visibility (${histo.sentinelPct.toFixed(1)}% sentinel) — globe at edge of view, or partial coverage.`);
+    console.log(
+      `    ~ partial visibility (${histo.sentinelPct.toFixed(1)}% sentinel) — globe at edge of view, or partial coverage.`,
+    );
   }
 
   // RGB variation across the 100×100 sample — if all three channels
@@ -213,5 +231,7 @@ async function capture() {
     Math.abs(histo.meanG - 127),
     Math.abs(histo.meanB - 127),
   );
-  console.log(`    channel spread from neutral (127): ${channelSpread.toFixed(1)}`);
+  console.log(
+    `    channel spread from neutral (127): ${channelSpread.toFixed(1)}`,
+  );
 })();

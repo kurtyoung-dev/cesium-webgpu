@@ -49,7 +49,11 @@ const SETVIEW = async (cfg) => {
   // for the orbit no-op comparison to isolate the SSGI term from animation.
   if (v.clock) v.clock.shouldAnimate = false;
   v.camera.setView({
-    destination: window.Cesium.Cartesian3.fromDegrees(cfg.LON, cfg.LAT, cfg.ALT),
+    destination: window.Cesium.Cartesian3.fromDegrees(
+      cfg.LON,
+      cfg.LAT,
+      cfg.ALT,
+    ),
     orientation: {
       heading: window.Cesium.Math.toRadians(90.0),
       pitch: window.Cesium.Math.toRadians(-18.0),
@@ -333,7 +337,9 @@ async function run() {
   const checks = [];
   checks.push([
     "SSGI effect built and reports algorithm=ssgi",
-    onState.hasEffect && onState.algorithm === "ssgi" && onState.isSSGI === true,
+    onState.hasEffect &&
+      onState.algorithm === "ssgi" &&
+      onState.isSSGI === true,
     `hasEffect=${onState.hasEffect} algo=${onState.algorithm} isSSGI=${onState.isSSGI}`,
   ]);
   checks.push([

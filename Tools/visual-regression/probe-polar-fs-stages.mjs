@@ -31,31 +31,38 @@ async function capture(stage) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
   });
   await page.waitForFunction(() => !!window.viewer);
   await page.waitForFunction(() => !!window.CesiumDebug, { timeout: 5000 });
 
-  await page.evaluate(async ({ stage }) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const v = window.viewer;
-    const vm = v.baseLayerPicker.viewModel;
-    const wgs84 = vm.terrainProviderViewModels.find((t) =>
-      String(t.name || "").toLowerCase().includes("wgs84"),
-    );
-    if (wgs84) vm.selectedTerrain = wgs84;
-    window.CesiumDebug.globeFragmentDebug(stage);
-    v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(0, -89, 3_000_000),
-    });
-    for (let i = 0; i < 1200; i++) {
-      v.scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
-      if (v.scene.globe.tilesLoaded && i > 200) break;
-    }
-  }, { stage });
+  await page.evaluate(
+    async ({ stage }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      const vm = v.baseLayerPicker.viewModel;
+      const wgs84 = vm.terrainProviderViewModels.find((t) =>
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
+      );
+      if (wgs84) vm.selectedTerrain = wgs84;
+      window.CesiumDebug.globeFragmentDebug(stage);
+      v.camera.setView({
+        destination: C.Cartesian3.fromDegrees(0, -89, 3_000_000),
+      });
+      for (let i = 0; i < 1200; i++) {
+        v.scene.render();
+        await new Promise((r) => requestAnimationFrame(r));
+        if (v.scene.globe.tilesLoaded && i > 200) break;
+      }
+    },
+    { stage },
+  );
   await page.waitForTimeout(1500);
   const out = path.join(OUT, `polar-stage-${stage}-webgpu.png`);
   await page.screenshot({ path: out });

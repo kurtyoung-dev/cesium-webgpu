@@ -87,7 +87,11 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
       v.scene.globe.enableLighting = false;
 
       const modelHeight = 400;
-      const modelPos = C.Cartesian3.fromDegrees(view.lon, view.lat, modelHeight);
+      const modelPos = C.Cartesian3.fromDegrees(
+        view.lon,
+        view.lat,
+        modelHeight,
+      );
       const headingPitchRoll = new C.HeadingPitchRoll(0, 0, 0);
       const orientation = C.Transforms.headingPitchRollQuaternion(
         modelPos,
@@ -277,7 +281,9 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
     const ins = cell.diagnostics.inspect;
     const pageErrors = (cell.messages ?? []).filter((m) => m.t === "pageerror");
     const consoleErrs = (cell.messages ?? []).filter((m) => m.t === "error");
-    console.log(`  [${cell.label}]  ${cell.diagnostics.modelUrl.split("/").pop()}`);
+    console.log(
+      `  [${cell.label}]  ${cell.diagnostics.modelUrl.split("/").pop()}`,
+    );
     console.log(
       `    metadataDebug=${cell.diagnostics.metadataDebug} entities=${cell.diagnostics.entityCount}`,
     );
@@ -293,13 +299,28 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
     console.log(
       `    errors: device=${cell.deviceErrors.length} pageerror=${pageErrors.length} console.error=${consoleErrs.length}`,
     );
-    cell.deviceErrors.slice(0, 3).forEach((e) => console.log(`      device: ${e.text?.slice(0, 200)}`));
-    pageErrors.slice(0, 2).forEach((e) => console.log(`      pageerror: ${(e.text ?? "").slice(0, 200)}`));
-    consoleErrs.slice(0, 3).forEach((e) => console.log(`      console.error: ${(e.text ?? "").split("\n")[0].slice(0, 200)}`));
+    cell.deviceErrors
+      .slice(0, 3)
+      .forEach((e) => console.log(`      device: ${e.text?.slice(0, 200)}`));
+    pageErrors
+      .slice(0, 2)
+      .forEach((e) =>
+        console.log(`      pageerror: ${(e.text ?? "").slice(0, 200)}`),
+      );
+    consoleErrs
+      .slice(0, 3)
+      .forEach((e) =>
+        console.log(
+          `      console.error: ${(e.text ?? "").split("\n")[0].slice(0, 200)}`,
+        ),
+      );
     if (cell.label === "a-meta-debug-on" && ins.generatedWGSL) {
       console.log("\n    ===== GENERATED METADATA WGSL CHUNK =====");
       console.log(
-        ins.generatedWGSL.split("\n").map((l) => "    | " + l).join("\n"),
+        ins.generatedWGSL
+          .split("\n")
+          .map((l) => "    | " + l)
+          .join("\n"),
       );
       console.log("    =========================================\n");
     }

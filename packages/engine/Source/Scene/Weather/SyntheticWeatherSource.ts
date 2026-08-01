@@ -26,11 +26,7 @@ import {
 import { CLOUD_BASE_NORM_METERS } from "./WeatherTexPacker.js";
 
 export type SyntheticPattern =
-  | "uniform"
-  | "eastwest"
-  | "bands"
-  | "drift"
-  | "rich";
+  "uniform" | "eastwest" | "bands" | "drift" | "rich";
 
 const HOUR_MS = 3600000;
 // "drift" parameters: 3 longitude bands that complete one full rotation per day.

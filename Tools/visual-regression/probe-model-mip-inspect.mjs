@@ -48,8 +48,16 @@ try {
       );
 
     const specs = [
-      { name: "BoxTextured", url: "/Specs/Data/Models/glTF-2.0/BoxTextured/glTF-Binary/BoxTextured.glb", east: -500_000 },
-      { name: "Duck", url: "/Specs/Data/Models/glTF-2.0/Duck/glTF-Binary/Duck.glb", east: 0 },
+      {
+        name: "BoxTextured",
+        url: "/Specs/Data/Models/glTF-2.0/BoxTextured/glTF-Binary/BoxTextured.glb",
+        east: -500_000,
+      },
+      {
+        name: "Duck",
+        url: "/Specs/Data/Models/glTF-2.0/Duck/glTF-Binary/Duck.glb",
+        east: 0,
+      },
     ];
     const models = [];
     for (const spec of specs) {
@@ -73,16 +81,22 @@ try {
 
     function minFilterName(f) {
       const map = {
-        9728: "NEAREST", 9729: "LINEAR",
-        9984: "NEAREST_MIPMAP_NEAREST", 9985: "LINEAR_MIPMAP_NEAREST",
-        9986: "NEAREST_MIPMAP_LINEAR", 9987: "LINEAR_MIPMAP_LINEAR",
+        9728: "NEAREST",
+        9729: "LINEAR",
+        9984: "NEAREST_MIPMAP_NEAREST",
+        9985: "LINEAR_MIPMAP_NEAREST",
+        9986: "NEAREST_MIPMAP_LINEAR",
+        9987: "LINEAR_MIPMAP_LINEAR",
       };
       return map[f] ?? String(f);
     }
 
     const out = [];
     for (const { name, model, error } of models) {
-      if (error) { out.push({ name, error }); continue; }
+      if (error) {
+        out.push({ name, error });
+        continue;
+      }
       const prims = Object.values(model._webgpuCache?.primitives ?? {});
       const primInfo = prims.map((pc) => {
         const mi = pc.matInfo || {};
@@ -90,12 +104,15 @@ try {
         const readerSlots = {
           baseColor: mi.baseColorTextureReader || mi.diffuseTextureReader,
           normal: mi.normalTextureReader,
-          metallicRoughness: mi.metallicRoughnessTextureReader || mi.specGlossTextureReader,
+          metallicRoughness:
+            mi.metallicRoughnessTextureReader || mi.specGlossTextureReader,
           emissive: mi.emissiveTextureReader,
           occlusion: mi.occlusionTextureReader,
         };
         for (const [slot, reader] of Object.entries(readerSlots)) {
-          if (!reader || !reader.texture) { continue; }
+          if (!reader || !reader.texture) {
+            continue;
+          }
           const cesiumTex = reader.texture;
           const stub = cesiumTex._texture && cesiumTex._texture._webgpuTexture;
           const sampler = cesiumTex._sampler || cesiumTex.sampler;
@@ -104,7 +121,9 @@ try {
             mipLevelCount: stub ? stub.mipLevelCount : undefined,
             width: stub ? stub.width : undefined,
             height: stub ? stub.height : undefined,
-            minFilter: sampler ? minFilterName(sampler.minificationFilter ?? sampler.minFilter) : "?",
+            minFilter: sampler
+              ? minFilterName(sampler.minificationFilter ?? sampler.minFilter)
+              : "?",
           };
         }
         return { ready: model.ready, defines: pc.materialDefines | 0, slots };

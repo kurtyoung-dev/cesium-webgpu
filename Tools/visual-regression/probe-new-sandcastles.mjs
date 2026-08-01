@@ -26,7 +26,9 @@ async function capture(demoName) {
       "--use-vulkan",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
@@ -62,9 +64,7 @@ async function capture(demoName) {
 
   await browser.close();
 
-  const errors = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
-  );
+  const errors = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   return { out, errorCount: errors.length, errors: errors.slice(0, 3) };
 }
 

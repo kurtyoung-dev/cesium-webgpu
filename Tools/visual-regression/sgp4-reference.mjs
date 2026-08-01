@@ -20,8 +20,9 @@
 // WGS-72 (the constant set SGP4 was tuned against; do NOT use WGS-84 here).
 const MU = 398600.8; // km^3/s^2
 const RADIUSEARTHKM = 6378.135;
-const XKE = 60.0 / Math.sqrt((RADIUSEARTHKM * RADIUSEARTHKM * RADIUSEARTHKM) / MU);
-const TUMIN = 1.0 / XKE;
+const XKE =
+  60.0 / Math.sqrt((RADIUSEARTHKM * RADIUSEARTHKM * RADIUSEARTHKM) / MU);
+const _TUMIN = 1.0 / XKE;
 const J2 = 0.001082616;
 const J3 = -0.00000253881;
 const J4 = -0.00000165597;
@@ -84,7 +85,7 @@ function jdayFromYearDoy(year, doy) {
   // Jan 0.0 of `year` as a JD, then add the day-of-year. Matches Vallado.
   const jan1 =
     367.0 * year -
-    Math.floor(7 * (year + Math.floor(10 / 12)) / 4) +
+    Math.floor((7 * (year + Math.floor(10 / 12))) / 4) +
     Math.floor((275 * 1) / 9) +
     1 +
     1721013.5; // Jan 1, 00:00 of `year`
@@ -110,17 +111,18 @@ export function sgp4init(line1, line2) {
   const ak = Math.pow(XKE / noKozai, X2O3);
   const d1 = (0.75 * J2 * (3.0 * cosio2 - 1.0)) / (rteosq * omeosq);
   let del = d1 / (ak * ak);
-  const adel = ak * (1.0 - del * del - del * (1.0 / 3.0 + (134.0 * del * del) / 81.0));
+  const adel =
+    ak * (1.0 - del * del - del * (1.0 / 3.0 + (134.0 * del * del) / 81.0));
   del = d1 / (adel * adel);
   const noUnkozai = noKozai / (1.0 + del);
 
   const ao = Math.pow(XKE / noUnkozai, X2O3);
-  const sinio2 = sinio * sinio;
+  const _sinio2 = sinio * sinio;
   const po = ao * omeosq;
   const con42 = 1.0 - 5.0 * cosio2;
   const con41 = -con42 - cosio2 - cosio2; // 3*cosio2 - 1
   const x1mth2 = 1.0 - cosio2;
-  const x7thm1 = 7.0 * cosio2 - 1.0;
+  const _x7thm1 = 7.0 * cosio2 - 1.0;
 
   // Deep-space test: orbital period >= 225 minutes -> SDP4 (we DEFER it).
   const periodMin = TWOPI / noUnkozai;
@@ -153,7 +155,9 @@ export function sgp4init(line1, line2) {
     coef1 *
     noUnkozai *
     (ao * (1.0 + 1.5 * etasq + eeta * (4.0 + etasq)) +
-      (0.375 * J2 * tsi) / psisq * con41 * (8.0 + 3.0 * etasq * (8.0 + etasq)));
+      ((0.375 * J2 * tsi) / psisq) *
+        con41 *
+        (8.0 + 3.0 * etasq * (8.0 + etasq)));
   const cc1 = bstar * cc2;
 
   let cc3 = 0.0;
@@ -171,7 +175,10 @@ export function sgp4init(line1, line2) {
       ecco * (0.5 + 2.0 * etasq) -
       ((J2 * tsi) / (ao * psisq)) *
         (-3.0 * con41 * (1.0 - 2.0 * eeta + etasq * (1.5 - 0.5 * eeta)) +
-          0.75 * x1mth2_ * (2.0 * etasq - eeta * (1.0 + etasq)) * Math.cos(2.0 * argpo)));
+          0.75 *
+            x1mth2_ *
+            (2.0 * etasq - eeta * (1.0 + etasq)) *
+            Math.cos(2.0 * argpo)));
   const cc5 =
     2.0 * coef1 * ao * omeosq * (1.0 + 2.75 * (etasq + eeta) + eeta * etasq);
 
@@ -190,7 +197,8 @@ export function sgp4init(line1, line2) {
   const xhdot1 = -temp1 * cosio;
   const nodedot =
     xhdot1 +
-    (0.5 * temp2 * (4.0 - 19.0 * cosio2) + 2.0 * temp3 * (3.0 - 7.0 * cosio2)) * cosio;
+    (0.5 * temp2 * (4.0 - 19.0 * cosio2) + 2.0 * temp3 * (3.0 - 7.0 * cosio2)) *
+      cosio;
   const xpidot = argpdot + nodedot;
   const omgcof = bstar * cc3 * Math.cos(argpo);
   let xmcof = 0.0;
@@ -230,7 +238,10 @@ export function sgp4init(line1, line2) {
     t4cof = 0.25 * (3.0 * d3 + cc1 * (12.0 * d2 + 10.0 * cc1sq));
     t5cof =
       0.2 *
-      (3.0 * d4 + 12.0 * cc1 * d3 + 6.0 * d2 * d2 + 15.0 * cc1sq * (2.0 * d3 + cc1sq));
+      (3.0 * d4 +
+        12.0 * cc1 * d3 +
+        6.0 * d2 * d2 +
+        15.0 * cc1sq * (2.0 * d3 + cc1sq));
   }
 
   // GMST at epoch (Vallado uses gstime(jdsatepoch + jdsatepochF)).
@@ -321,8 +332,6 @@ export function sgp4(s, tsince) {
     d3,
     d4,
     isimp,
-    cosio,
-    sinio,
   } = s;
 
   // ── Secular update of mean elements (gravity + drag) ──
@@ -356,7 +365,7 @@ export function sgp4(s, tsince) {
   const inclm = inclo;
 
   const am = Math.pow(XKE / nm, X2O3) * tempa * tempa;
-  const nmNew = XKE / Math.pow(am, 1.5);
+  const _nmNew = XKE / Math.pow(am, 1.5);
   em = em - tempe;
 
   // guard (near-circular / sanity)
@@ -389,7 +398,7 @@ export function sgp4(s, tsince) {
   const xl = mp + argpp + nodep + temp * xlcof * axnl;
 
   // ── Solve Kepler's equation for (E + omega) ──
-  let u = (xl - nodep) % TWOPI;
+  const u = (xl - nodep) % TWOPI;
   let eo1 = u;
   let tem5 = 9999.9;
   let ktr = 1;
@@ -411,8 +420,8 @@ export function sgp4(s, tsince) {
   const el2 = axnl * axnl + aynl * aynl;
   const pl = am * (1.0 - el2);
   const rl = am * (1.0 - ecose);
-  const rdotl = (Math.sqrt(am) * esine) / rl;
-  const rvdotl = Math.sqrt(pl) / rl;
+  const _rdotl = (Math.sqrt(am) * esine) / rl;
+  const _rvdotl = Math.sqrt(pl) / rl;
   const betal = Math.sqrt(1.0 - el2);
   const tempA = esine / (1.0 + betal);
   const sinu = (am / rl) * (sineo1 - aynl - axnl * tempA);
@@ -425,7 +434,8 @@ export function sgp4(s, tsince) {
   const temp2 = temp1 * tempB;
 
   // Update for short-period periodics.
-  const mrt = rl * (1.0 - 1.5 * temp2 * betal * con41) + 0.5 * temp1 * x1mth2 * cos2u;
+  const mrt =
+    rl * (1.0 - 1.5 * temp2 * betal * con41) + 0.5 * temp1 * x1mth2 * cos2u;
   su = su - 0.25 * temp2 * x7thm1 * sin2u;
   const xnode = nodep + 1.5 * temp2 * cosip * sin2u;
   const xinc = xincp + 1.5 * temp2 * cosip * sinip * cos2u;
@@ -455,11 +465,7 @@ export function temeToEcef(rTeme, gmst) {
   const x = rTeme[0],
     y = rTeme[1],
     z = rTeme[2];
-  return [
-    (cg * x + sg * y) * 1000.0,
-    (-sg * x + cg * y) * 1000.0,
-    z * 1000.0,
-  ];
+  return [(cg * x + sg * y) * 1000.0, (-sg * x + cg * y) * 1000.0, z * 1000.0];
 }
 
 // ── self-validation against python-sgp4 vectors (run directly) ──
@@ -473,9 +479,15 @@ if (_entry && import.meta.url === _entry) {
   const iss2 =
     "2 25544  51.6416 247.4627 0006703 130.5360 325.0288 15.50125623 18883";
   const s = sgp4init(iss1, iss2);
-  console.log("ISS init: deepSpace=%s period=%s min", s.isDeepSpace, s.periodMin.toFixed(3));
+  console.log(
+    "ISS init: deepSpace=%s period=%s min",
+    s.isDeepSpace,
+    s.periodMin.toFixed(3),
+  );
   for (const tmin of [0, 90, 360, 720, 1440]) {
     const r = sgp4(s, tmin);
-    console.log(`t=${tmin} TEME km: [${r.map((v) => v.toFixed(3)).join(", ")}]`);
+    console.log(
+      `t=${tmin} TEME km: [${r.map((v) => v.toFixed(3)).join(", ")}]`,
+    );
   }
 }

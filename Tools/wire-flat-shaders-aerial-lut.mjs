@@ -129,7 +129,8 @@ function patch(filePath) {
   // anchor on the existing `output.position = camera.mvpRelativeToEye * <var>;`
   // line. The local var name varies across shaders (`eyePos` /
   // `posRTE` / etc.), so capture it from the match.
-  const mvpRe = /(\s+)output\.position\s*=\s*camera\.mvpRelativeToEye\s*\*\s*(\w+);/;
+  const mvpRe =
+    /(\s+)output\.position\s*=\s*camera\.mvpRelativeToEye\s*\*\s*(\w+);/;
   const mvpMatch = src.match(mvpRe);
   if (!mvpMatch) {
     console.log(`  SKIP (no mvp*<var> line): ${fileName}`);
@@ -178,7 +179,7 @@ function patch(filePath) {
     console.log(`  SKIP (no fragmentMain): ${fileName}`);
     return false;
   }
-  let body = fnMatch[1];
+  const body = fnMatch[1];
   // Find the LAST return statement in the body. Use a lazy match in
   // reverse by splitting on `return`.
   const lastReturnIdx = body.lastIndexOf("return ");
@@ -198,7 +199,10 @@ function patch(filePath) {
   const expr = exprMatch[1].trim();
   const indent = "    ";
   const wrapped = `${beforeReturn}var finalColor = ${expr};\n${fogBlock("finalColor")}\n${indent}return finalColor;\n`;
-  src = src.replace(fnMatch[0], `${fnMatch[0].slice(0, fnMatch[0].indexOf("{") + 1)}${wrapped}}`);
+  src = src.replace(
+    fnMatch[0],
+    `${fnMatch[0].slice(0, fnMatch[0].indexOf("{") + 1)}${wrapped}}`,
+  );
 
   fs.writeFileSync(filePath, src, "utf8");
   console.log(`  wired (effects@group(${effectsGroup})): ${fileName}`);

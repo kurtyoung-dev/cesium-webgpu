@@ -71,10 +71,7 @@ function dot(left, right) {
 
 function dotF32(left, right) {
   return addF32(
-    addF32(
-      multiplyF32(left[0], right[0]),
-      multiplyF32(left[1], right[1]),
-    ),
+    addF32(multiplyF32(left[0], right[0]), multiplyF32(left[1], right[1])),
     multiplyF32(left[2], right[2]),
   );
 }
@@ -89,11 +86,7 @@ function normalize(vector) {
 }
 
 function divideVector(left, right) {
-  return [
-    left[0] / right[0],
-    left[1] / right[1],
-    left[2] / right[2],
-  ];
+  return [left[0] / right[0], left[1] / right[1], left[2] / right[2]];
 }
 
 function divideVectorF32(left, right) {
@@ -123,17 +116,14 @@ function wgs84Cartesian(latitudeDegrees, longitudeDegrees, height) {
   const cosLatitude = Math.cos(latitude);
   const sinLongitude = Math.sin(longitude);
   const cosLongitude = Math.cos(longitude);
-  const eccentricitySquared =
-    1.0 - (WGS84_B * WGS84_B) / (WGS84_A * WGS84_A);
+  const eccentricitySquared = 1.0 - (WGS84_B * WGS84_B) / (WGS84_A * WGS84_A);
   const primeVerticalRadius =
-    WGS84_A /
-    Math.sqrt(1.0 - eccentricitySquared * sinLatitude * sinLatitude);
+    WGS84_A / Math.sqrt(1.0 - eccentricitySquared * sinLatitude * sinLatitude);
 
   return [
     (primeVerticalRadius + height) * cosLatitude * cosLongitude,
     (primeVerticalRadius + height) * cosLatitude * sinLongitude,
-    (primeVerticalRadius * (1.0 - eccentricitySquared) + height) *
-      sinLatitude,
+    (primeVerticalRadius * (1.0 - eccentricitySquared) + height) * sinLatitude,
   ];
 }
 
@@ -172,12 +162,7 @@ function encodedNegativeCenter(camera) {
  * The current camera is the local origin. The ellipsoid center is supplied as
  * encoded negative-camera high/low parts, so no full-ECEF f32 anchor is formed.
  */
-function rayEllipsoidIntersectRteF32(
-  direction,
-  centerHigh,
-  centerLow,
-  axes,
-) {
+function rayEllipsoidIntersectRteF32(direction, centerHigh, centerLow, axes) {
   const directionF32 = direction.map(Math.fround);
   const axesF32 = axes.map(Math.fround);
   const directionScaled = divideVectorF32(directionF32, axesF32);
@@ -196,24 +181,15 @@ function rayEllipsoidIntersectRteF32(
   );
   const closest = [
     subtractF32(
-      subtractF32(
-        multiplyF32(directionScaled[0], closestT),
-        highScaled[0],
-      ),
+      subtractF32(multiplyF32(directionScaled[0], closestT), highScaled[0]),
       lowScaled[0],
     ),
     subtractF32(
-      subtractF32(
-        multiplyF32(directionScaled[1], closestT),
-        highScaled[1],
-      ),
+      subtractF32(multiplyF32(directionScaled[1], closestT), highScaled[1]),
       lowScaled[1],
     ),
     subtractF32(
-      subtractF32(
-        multiplyF32(directionScaled[2], closestT),
-        highScaled[2],
-      ),
+      subtractF32(multiplyF32(directionScaled[2], closestT), highScaled[2]),
       lowScaled[2],
     ),
   ];
@@ -223,10 +199,7 @@ function rayEllipsoidIntersectRteF32(
   );
   assert.ok(halfChordSquared >= 0.0, "RTE ray must hit");
   const halfChord = Math.fround(Math.sqrt(halfChordSquared));
-  return [
-    subtractF32(closestT, halfChord),
-    addF32(closestT, halfChord),
-  ];
+  return [subtractF32(closestT, halfChord), addF32(closestT, halfChord)];
 }
 
 function nearestNonnegativeRoot(roots) {
@@ -261,11 +234,7 @@ function legacyRawEcefSphereHitF32(camera, direction, radius) {
   return near > 0.0 ? near : far > 0.0 ? far : -1.0;
 }
 
-function directionForScaledClosestApproach(
-  camera,
-  axes,
-  closestScaledRadius,
-) {
+function directionForScaledClosestApproach(camera, axes, closestScaledRadius) {
   const scaledCamera = divideVector(camera, axes);
   const radial = normalize(scaledCamera);
   const seed = Math.abs(radial[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0];
@@ -277,8 +246,7 @@ function directionForScaledClosestApproach(
   const sinAngle = closestScaledRadius / scaledCameraRadius;
   const cosAngle = Math.sqrt(1.0 - sinAngle * sinAngle);
   const scaledDirection = radial.map(
-    (component, index) =>
-      -cosAngle * component + sinAngle * tangent[index],
+    (component, index) => -cosAngle * component + sinAngle * tangent[index],
   );
   return normalize(
     scaledDirection.map((component, index) => component * axes[index]),
@@ -370,12 +338,7 @@ test("desired WGS84/RTE temporal anchor is bounded at equator, dateline, and pol
     );
     const center = encodedNegativeCenter(camera);
     const rte = nearestNonnegativeRoot(
-      rayEllipsoidIntersectRteF32(
-        fixture.down,
-        center.high,
-        center.low,
-        axes,
-      ),
+      rayEllipsoidIntersectRteF32(fixture.down, center.high, center.low, axes),
     );
 
     assert.ok(reference > 0.0, `${fixture.name}: reference hit`);
@@ -396,12 +359,7 @@ test("desired WGS84/RTE temporal anchor remains bounded near the orbit horizon",
   );
   const center = encodedNegativeCenter(camera);
   const rte = nearestNonnegativeRoot(
-    rayEllipsoidIntersectRteF32(
-      direction,
-      center.high,
-      center.low,
-      axes,
-    ),
+    rayEllipsoidIntersectRteF32(direction, center.high, center.low, axes),
   );
 
   assert.ok(reference > 0.0);
@@ -535,9 +493,7 @@ test("coarse history classifier handles one-shot discontinuities and current-onl
     reactivatedState,
     reactivated,
   );
-  assert.ok(
-    (reactivatedReasons & CLOUD_TEMPORAL_RESET_REACTIVATED) !== 0,
-  );
+  assert.ok((reactivatedReasons & CLOUD_TEMPORAL_RESET_REACTIVATED) !== 0);
   assert.ok((reactivatedReasons & CLOUD_TEMPORAL_RESET_FRAME_GAP) !== 0);
   commitCloudTemporalHistoryState(reactivatedState, reactivated, true);
   assert.equal(

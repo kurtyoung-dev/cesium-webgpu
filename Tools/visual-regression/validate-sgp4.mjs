@@ -2,7 +2,7 @@
 // python-sgp4 2.25 reference vectors. Not a probe; a dev gate that proves the
 // JS reference IS SGP4 before the GPU kernel is checked against it.
 import { readFileSync } from "node:fs";
-import { sgp4init, sgp4, gstime } from "./sgp4-reference.mjs";
+import { sgp4init, sgp4 } from "./sgp4-reference.mjs";
 
 const ref = JSON.parse(readFileSync("/tmp/sgp4_ref.json", "utf8"));
 let worst = 0;
@@ -29,7 +29,9 @@ for (const [name, sat] of Object.entries(ref)) {
       worst = errM;
       worstName = `${name}@${rec.tmin}min`;
     }
-    console.log(`  t=${String(rec.tmin).padStart(5)}min  err=${errM.toFixed(4)} m`);
+    console.log(
+      `  t=${String(rec.tmin).padStart(5)}min  err=${errM.toFixed(4)} m`,
+    );
   }
 }
 console.log(`\nWORST JS-vs-python err: ${worst.toFixed(4)} m (${worstName})`);

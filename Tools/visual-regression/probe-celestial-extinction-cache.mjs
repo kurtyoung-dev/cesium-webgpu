@@ -98,7 +98,9 @@ function validateBackend(run, failures) {
     failures.push(`${prefix}: ${run.pageErrors.length} page errors`);
   }
   if (run.gpuConsoleErrors.length) {
-    failures.push(`${prefix}: ${run.gpuConsoleErrors.length} GPU console errors`);
+    failures.push(
+      `${prefix}: ${run.gpuConsoleErrors.length} GPU console errors`,
+    );
   }
   if (run.gate.errors.length) {
     failures.push(`${prefix}: ${run.gate.errors.length} uncaptured GPU errors`);
@@ -107,7 +109,9 @@ function validateBackend(run, failures) {
     failures.push(`${prefix}: ${run.gate.deviceLost}`);
   }
   if (run.externalRequests.length) {
-    failures.push(`${prefix}: ${run.externalRequests.length} external requests`);
+    failures.push(
+      `${prefix}: ${run.externalRequests.length} external requests`,
+    );
   }
   if (
     prefix === "webgpu" &&
@@ -135,14 +139,22 @@ function validateBackend(run, failures) {
   const first = p.moonNightFirst;
   const repeat = p.moonNightRepeat;
   if (
-    counterDelta(first.after.moonCache, first.before.moonCache, "computations") !==
-    1
+    counterDelta(
+      first.after.moonCache,
+      first.before.moonCache,
+      "computations",
+    ) !== 1
   ) {
-    failures.push(`${prefix}/moon-night-first: moon did not compute exactly once`);
+    failures.push(
+      `${prefix}/moon-night-first: moon did not compute exactly once`,
+    );
   }
   if (
-    counterDelta(repeat.after.moonCache, repeat.before.moonCache, "computations") !==
-      0 ||
+    counterDelta(
+      repeat.after.moonCache,
+      repeat.before.moonCache,
+      "computations",
+    ) !== 0 ||
     counterDelta(repeat.after.moonCache, repeat.before.moonCache, "hits") !== 1
   ) {
     failures.push(
@@ -161,7 +173,8 @@ function validateBackend(run, failures) {
 
   const cam = p.moonCameraMutation;
   if (
-    counterDelta(cam.after.moonCache, cam.before.moonCache, "computations") !== 1
+    counterDelta(cam.after.moonCache, cam.before.moonCache, "computations") !==
+    1
   ) {
     failures.push(
       `${prefix}/moon-camera-mutation: camera move did not recompute the moon cache`,
@@ -170,8 +183,11 @@ function validateBackend(run, failures) {
 
   const atmo = p.moonAtmosphereMutation;
   if (
-    counterDelta(atmo.after.moonCache, atmo.before.moonCache, "computations") !==
-    1
+    counterDelta(
+      atmo.after.moonCache,
+      atmo.before.moonCache,
+      "computations",
+    ) !== 1
   ) {
     failures.push(
       `${prefix}/moon-atmosphere-mutation: scalar mutation did not recompute the moon cache`,
@@ -191,8 +207,11 @@ function validateBackend(run, failures) {
 
   const restored = p.moonAtmosphereRestored;
   if (
-    counterDelta(restored.after.moonCache, restored.before.moonCache, "computations") !==
-    1
+    counterDelta(
+      restored.after.moonCache,
+      restored.before.moonCache,
+      "computations",
+    ) !== 1
   ) {
     failures.push(
       `${prefix}/moon-atmosphere-restored: enabled value did not recompute after disabled mode`,

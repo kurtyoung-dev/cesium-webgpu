@@ -32,7 +32,11 @@ await page.addInitScript(() => {
         for (const e of errs) {
           const ln = e.lineNum | 0;
           const ctx = [];
-          for (let i = Math.max(1, ln - 2); i <= Math.min(lines.length, ln + 2); i++) {
+          for (
+            let i = Math.max(1, ln - 2);
+            i <= Math.min(lines.length, ln + 2);
+            i++
+          ) {
             ctx.push(`${i === ln ? ">>" : "  "}${i}: ${lines[i - 1]}`);
           }
           console.log(
@@ -51,25 +55,32 @@ await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
 });
 await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
-await page.evaluate(async ({ modelUrl }) => {
-  const C = await import("/Build/CesiumUnminified/index.js");
-  const v = window.viewer;
-  const s = v.scene;
-  s.globe.show = false;
-  const modelMatrix = C.Transforms.eastNorthUpToFixedFrame(
-    C.Cartesian3.fromDegrees(-75, 40, 0),
-  );
-  const model = await C.Model.fromGltfAsync({ url: modelUrl, modelMatrix, scale: 1.0 });
-  s.primitives.add(model);
-  for (let i = 0; i < 400 && !model.ready; i++) {
-    s.render();
-    await new Promise((r) => requestAnimationFrame(r));
-  }
-  for (let i = 0; i < 60; i++) {
-    s.render();
-    await new Promise((r) => requestAnimationFrame(r));
-  }
-}, { modelUrl: MODEL });
+await page.evaluate(
+  async ({ modelUrl }) => {
+    const C = await import("/Build/CesiumUnminified/index.js");
+    const v = window.viewer;
+    const s = v.scene;
+    s.globe.show = false;
+    const modelMatrix = C.Transforms.eastNorthUpToFixedFrame(
+      C.Cartesian3.fromDegrees(-75, 40, 0),
+    );
+    const model = await C.Model.fromGltfAsync({
+      url: modelUrl,
+      modelMatrix,
+      scale: 1.0,
+    });
+    s.primitives.add(model);
+    for (let i = 0; i < 400 && !model.ready; i++) {
+      s.render();
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    for (let i = 0; i < 60; i++) {
+      s.render();
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+  },
+  { modelUrl: MODEL },
+);
 
 await page.evaluate(() => new Promise((r) => setTimeout(r, 500)));
 await browser.close();

@@ -71,9 +71,13 @@ async function runBackend(renderer) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errors = [];
-  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message.slice(0, 240)}`));
+  page.on("pageerror", (e) =>
+    errors.push(`pageerror: ${e.message.slice(0, 240)}`),
+  );
   page.on("console", (m) => {
     const t = m.text();
     if (m.type() === "error" && !t.includes("favicon")) {
@@ -91,7 +95,9 @@ async function runBackend(renderer) {
     const dev = window.viewer?.scene?.context?._device;
     if (dev) {
       dev.onuncapturederror = (ev) =>
-        window.__probeDeviceErrors.push(ev?.error?.message?.slice(0, 240) ?? "uncaptured");
+        window.__probeDeviceErrors.push(
+          ev?.error?.message?.slice(0, 240) ?? "uncaptured",
+        );
     }
   });
 
@@ -280,16 +286,24 @@ async function runBackend(renderer) {
       }
     });
   }
-  await page.screenshot({ path: path.join(OUT_DIR, `metadata-uint16-${renderer}.png`) });
+  await page.screenshot({
+    path: path.join(OUT_DIR, `metadata-uint16-${renderer}.png`),
+  });
   await browser.close();
   return { ...result, consoleErrors: errors };
 }
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[probe-metadata-uint16] UINT16/UINT32 property-texture round-trip\n");
-  console.log(`  authored u16: ${JSON.stringify(U16_AUTHORED)} → expected pick ${JSON.stringify(U16_PICK)}`);
-  console.log(`  authored u32: ${JSON.stringify(U32_AUTHORED)} → expected pick ${JSON.stringify(U32_PICK)}\n`);
+  console.log(
+    "[probe-metadata-uint16] UINT16/UINT32 property-texture round-trip\n",
+  );
+  console.log(
+    `  authored u16: ${JSON.stringify(U16_AUTHORED)} → expected pick ${JSON.stringify(U16_PICK)}`,
+  );
+  console.log(
+    `  authored u32: ${JSON.stringify(U32_AUTHORED)} → expected pick ${JSON.stringify(U32_PICK)}\n`,
+  );
 
   const webgpu = await runBackend("webgpu");
   const webgl = await runBackend("webgl");
@@ -324,7 +338,9 @@ async function runBackend(renderer) {
       const exactStripes = new Set();
       for (const d of vals) {
         if (d.value === null) {
-          fails.push(`${b.renderer} ${prop} stripe ${d.stripe} (k=${d.k}): pickMetadata returned null`);
+          fails.push(
+            `${b.renderer} ${prop} stripe ${d.stripe} (k=${d.k}): pickMetadata returned null`,
+          );
         } else if (d.value !== expected[d.stripe]) {
           fails.push(
             `${b.renderer} ${prop} stripe ${d.stripe} (k=${d.k}): decoded ${d.value}, expected EXACTLY ${expected[d.stripe]}`,
@@ -334,12 +350,18 @@ async function runBackend(renderer) {
         }
       }
       if (exactStripes.size < 4) {
-        fails.push(`${b.renderer} ${prop}: only ${exactStripes.size}/4 stripes decoded exactly`);
+        fails.push(
+          `${b.renderer} ${prop}: only ${exactStripes.size}/4 stripes decoded exactly`,
+        );
       }
     }
     // Cross-backend agreement on shared sample points.
-    const gp = new Map((webgpu.perProperty?.[prop]?.values ?? []).map((d) => [d.k, d.value]));
-    const gl = new Map((webgl.perProperty?.[prop]?.values ?? []).map((d) => [d.k, d.value]));
+    const gp = new Map(
+      (webgpu.perProperty?.[prop]?.values ?? []).map((d) => [d.k, d.value]),
+    );
+    const gl = new Map(
+      (webgl.perProperty?.[prop]?.values ?? []).map((d) => [d.k, d.value]),
+    );
     for (const [k, gv] of gp) {
       if (gl.has(k) && gl.get(k) !== gv) {
         fails.push(`${prop} sample k=${k}: WebGPU=${gv} != WebGL=${gl.get(k)}`);
@@ -365,7 +387,9 @@ async function runBackend(renderer) {
     }
   }
   if (displayStripes.size < 4) {
-    fails.push(`display: only ${displayStripes.size}/4 stripes painted the expected red level`);
+    fails.push(
+      `display: only ${displayStripes.size}/4 stripes painted the expected red level`,
+    );
   }
 
   const report = {
@@ -403,6 +427,8 @@ async function runBackend(renderer) {
     console.log("  FAILS:");
     fails.forEach((f) => console.log(`    - ${f}`));
   }
-  console.log(`\n  report: ${path.join(OUT_DIR, "metadata-uint16-report.json")}`);
+  console.log(
+    `\n  report: ${path.join(OUT_DIR, "metadata-uint16-report.json")}`,
+  );
   process.exit(report.PASS ? 0 : 1);
 })();

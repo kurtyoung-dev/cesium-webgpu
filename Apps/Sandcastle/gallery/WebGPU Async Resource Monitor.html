@@ -41,7 +41,12 @@
   -->
   <body
     class="sandcastle-loading"
-    style="background-color: #000; color: #eee; font-family: sans-serif; margin: 0"
+    style="
+      background-color: #000;
+      color: #eee;
+      font-family: sans-serif;
+      margin: 0;
+    "
   >
     <style>
       #monitorPanel {
@@ -172,7 +177,9 @@
           const div = document.createElement("div");
           div.className = `ev-${evt.kind}`;
           const dur =
-            evt.durationMs !== undefined ? ` ${evt.durationMs.toFixed(0)}ms` : "";
+            evt.durationMs !== undefined
+              ? ` ${evt.durationMs.toFixed(0)}ms`
+              : "";
           div.textContent = `[${evt.kind}] ${evt.token.kind}${dur} ${evt.token.label || evt.token.key}`;
           eventLog.insertBefore(div, eventLog.firstChild);
           while (eventLog.childNodes.length > 80) {
@@ -282,7 +289,8 @@
         window.startup(Cesium).catch((error) => {
           "use strict";
           console.error(error);
-          document.querySelector("#loadingOverlay").innerHTML = `Error loading: ${error}`;
+          document.querySelector("#loadingOverlay").innerHTML =
+            `Error loading: ${error}`;
         });
       }
     </script>

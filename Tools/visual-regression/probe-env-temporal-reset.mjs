@@ -35,7 +35,9 @@ const BASE = "http://localhost:8080";
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
   page.on("pageerror", (e) =>
@@ -277,8 +279,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // would have popped; if it equalled convA nothing moved.
   const fadeSpan = refSmallL - convAL;
   const fadeMoved = afterSmallL - convAL;
-  const fadeFrac =
-    Math.abs(fadeSpan) > 0.01 ? fadeMoved / fadeSpan : 0;
+  const fadeFrac = Math.abs(fadeSpan) > 0.01 ? fadeMoved / fadeSpan : 0;
   console.log(
     `\n(A) SMALL-delta crossfade fraction toward new sun: ${(fadeFrac * 100).toFixed(1)}%  (expect a PARTIAL blend ~10-30%, NOT ~100% pop)`,
   );

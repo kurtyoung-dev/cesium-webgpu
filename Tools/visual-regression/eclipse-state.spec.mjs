@@ -46,8 +46,12 @@ const {
   pathToFileURL(enginePath("Scene/computeSolarObscuration.js")).href
 );
 
-const { createEclipseState, updateEclipseState, getEclipseSunFactor, computeSunPositionWC } =
-  await import(pathToFileURL(enginePath("Scene/EclipseState.js")).href);
+const {
+  createEclipseState,
+  updateEclipseState,
+  getEclipseSunFactor,
+  computeSunPositionWC,
+} = await import(pathToFileURL(enginePath("Scene/EclipseState.js")).href);
 
 const { default: Cartesian3 } = await import(
   pathToFileURL(enginePath("Core/Cartesian3.js")).href
@@ -69,7 +73,7 @@ const { default: Transforms } = await import(
 
 // Angular radius of the sun at 1 AU, the working scale for every geometry
 // test below.
-const RS = 0.004650;
+const RS = 0.00465;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. The overlap math
@@ -138,7 +142,10 @@ test("limb darkening blocks more flux than area when it covers the centre", () =
       sawStrictCentral = true;
     }
   }
-  assert.ok(sawStrictCentral, "limb darkening never differed from the uniform disc");
+  assert.ok(
+    sawStrictCentral,
+    "limb darkening never differed from the uniform disc",
+  );
 
   // Grazing contact: the surviving overlap lies entirely in the darkened
   // limb, so limb darkening now removes LESS than area.
@@ -228,7 +235,9 @@ test("degenerate and out-of-domain inputs return 0, never NaN", () => {
   // unguarded expressions drift a few ULP outside [-1, 1].
   for (const eps of [0, 1e-18, -1e-18, 1e-12, -1e-12]) {
     assert.ok(Number.isFinite(computeSolarObscuration(RS, RS, 2.0 * RS + eps)));
-    assert.ok(Number.isFinite(computeUniformObscuration(RS, RS, 2.0 * RS + eps)));
+    assert.ok(
+      Number.isFinite(computeUniformObscuration(RS, RS, 2.0 * RS + eps)),
+    );
   }
 });
 
@@ -245,7 +254,11 @@ test("eclipse magnitude crosses 1 exactly at totality", () => {
     const m = computeEclipseMagnitude(RS, 1.1 * RS, d);
     const f = computeSolarObscuration(RS, 1.1 * RS, d);
     if (m >= 1.0) {
-      assert.equal(f, 1.0, `magnitude ${m} >= 1 but obscuration ${f} at d=${d}`);
+      assert.equal(
+        f,
+        1.0,
+        `magnitude ${m} >= 1 but obscuration ${f} at d=${d}`,
+      );
     }
   }
 });
@@ -425,7 +438,9 @@ test("orbital sunset is a continuous, monotone ramp — not a step", () => {
   const sun = computeSunPositionWC(time, new Cartesian3());
   const sunDir = Cartesian3.normalize(sun, new Cartesian3());
   const seed =
-    Math.abs(sunDir.z) < 0.9 ? new Cartesian3(0, 0, 1) : new Cartesian3(1, 0, 0);
+    Math.abs(sunDir.z) < 0.9
+      ? new Cartesian3(0, 0, 1)
+      : new Cartesian3(1, 0, 0);
   const perp = Cartesian3.normalize(
     Cartesian3.cross(
       Cartesian3.cross(sunDir, seed, new Cartesian3()),
@@ -546,7 +561,11 @@ test("2024-04-08 Dallas: totality is reached inside the published window", () =>
       };
     }
   }
-  assert.equal(best.o, 1.0, `peak obscuration ${best.o} (must be exact totality)`);
+  assert.equal(
+    best.o,
+    1.0,
+    `peak obscuration ${best.o} (must be exact totality)`,
+  );
   assert.ok(
     best.magnitude >= 1.0,
     `peak magnitude ${best.magnitude} must be >= 1 at totality`,
@@ -571,7 +590,11 @@ test("2024-04-08 Dallas: exactly zero outside the published partial window", () 
     dallasAt(state, iso);
     assert.equal(state.moonObscuration, 0.0, `non-zero obscuration at ${iso}`);
     assert.equal(state.sunVisibleFraction, 1.0, `sun dimmed at ${iso}`);
-    assert.equal(state.earthOcclusionFraction, 0.0, `Earth term fired at ${iso}`);
+    assert.equal(
+      state.earthOcclusionFraction,
+      0.0,
+      `Earth term fired at ${iso}`,
+    );
   }
 });
 
@@ -775,9 +798,16 @@ test("WebGL: Sun.js exposes the uniform and publishes the shared scalar", () => 
   assert.match(sunJs, /frameState\.sunEclipseAlpha\s*=\s*eclipseAlpha;/);
   // Published BEFORE the feature-renderer branch, so both backends read one
   // scalar (the C7-SUN-STARS-EXTINCTION convention).
-  const publishIndex = sunJs.indexOf("frameState.sunEclipseAlpha = eclipseAlpha;");
-  const branchIndex = sunJs.indexOf("getFeatureRenderer(FeatureRendererKey.SUN)");
-  assert.ok(publishIndex > 0 && branchIndex > publishIndex, "publish must precede the backend branch");
+  const publishIndex = sunJs.indexOf(
+    "frameState.sunEclipseAlpha = eclipseAlpha;",
+  );
+  const branchIndex = sunJs.indexOf(
+    "getFeatureRenderer(FeatureRendererKey.SUN)",
+  );
+  assert.ok(
+    publishIndex > 0 && branchIndex > publishIndex,
+    "publish must precede the backend branch",
+  );
 });
 
 test("WebGPU: the sun WGSL multiplies ALPHA by the same factor", () => {
@@ -792,7 +822,10 @@ test("WebGPU: the sun WGSL multiplies ALPHA by the same factor", () => {
     envRenderer,
     /uniformData\[31\] = typeof eclipseAlpha === "number" \? eclipseAlpha : 1\.0;/,
   );
-  assert.match(envRenderer, /const eclipseAlpha = frameState\.sunEclipseAlpha;/);
+  assert.match(
+    envRenderer,
+    /const eclipseAlpha = frameState\.sunEclipseAlpha;/,
+  );
 });
 
 test("WebGPU: the moving Sun reuses its command, bind group, and RTE vertex geometry", () => {
@@ -923,7 +956,10 @@ test("the WebGPU sun shader passes naga validation", async () => {
   );
   assert.ok(!shaderSource.includes("${"), "template interpolation in the WGSL");
 
-  const nagaDirectory = path.join(root, "Tools/shader-pipeline/naga-wasm-tools");
+  const nagaDirectory = path.join(
+    root,
+    "Tools/shader-pipeline/naga-wasm-tools",
+  );
   const naga = await import(
     pathToFileURL(path.join(nagaDirectory, "naga_wasm_tools.js")).href
   );

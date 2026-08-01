@@ -21,7 +21,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
@@ -77,7 +81,7 @@ const BASE = "http://localhost:8080";
               openPassLabel,
               attemptedPassLabel:
                 methodName === "beginRenderPass"
-                  ? mArgs[0]?.label ?? "(unlabeled)"
+                  ? (mArgs[0]?.label ?? "(unlabeled)")
                   : null,
               encoderLabel: args[0]?.label ?? "(unlabeled)",
               stack: stack ? stack.slice(0, 2500) : "(no stack)",
@@ -150,9 +154,13 @@ const BASE = "http://localhost:8080";
     `[probe-cesium-man-race] encoders created: ${result.encoderCount}, method calls: ${JSON.stringify(result.methodCallCounts)}`,
   );
   console.log(`[probe-cesium-man-race] errors: ${result.errors.length}`);
-  result.errors.slice(0, 5).forEach((e) =>
-    console.log(`  frame=${e.frame} t=${e.when.toFixed(1)}ms: ${e.text.slice(0, 200)}`),
-  );
+  result.errors
+    .slice(0, 5)
+    .forEach((e) =>
+      console.log(
+        `  frame=${e.frame} t=${e.when.toFixed(1)}ms: ${e.text.slice(0, 200)}`,
+      ),
+    );
 
   console.log(
     `\n[probe-cesium-man-race] suspect calls (encoder ops during open pass): ${result.suspectCalls.length}`,
@@ -163,8 +171,9 @@ const BASE = "http://localhost:8080";
     console.log(`  open pass: "${s.openPassLabel}"`);
     console.log(`  frame=${s.frame} t=${s.when.toFixed(1)}ms`);
     console.log(`  stack (first 30 lines):`);
-    s.stack.split("\n").slice(0, 30).forEach((line) =>
-      console.log(`    ${line}`),
-    );
+    s.stack
+      .split("\n")
+      .slice(0, 30)
+      .forEach((line) => console.log(`    ${line}`));
   });
 })();

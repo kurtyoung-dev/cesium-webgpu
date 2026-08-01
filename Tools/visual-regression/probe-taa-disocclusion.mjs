@@ -122,7 +122,7 @@ async function capture(label, { taa, orbit }) {
       }
 
       const canvas = v.canvas;
-      let centerPixel = null;
+      let centerPixel;
       try {
         const tmp = document.createElement("canvas");
         tmp.width = canvas.width;

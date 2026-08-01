@@ -25,7 +25,9 @@ const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 700 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -140,9 +142,7 @@ const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
   console.log(
     `\nbulk(static)   perFrame=${result.bulk.perFrame.toFixed(3)}ms lanes=${result.bulk.lane.static}/${result.bulk.lane.fallback}`,
   );
-  console.log(
-    `legacy(static) perFrame=${result.legacy.perFrame.toFixed(3)}ms`,
-  );
+  console.log(`legacy(static) perFrame=${result.legacy.perFrame.toFixed(3)}ms`);
   if (realErrors.length) {
     console.log("\nERRORS:\n" + realErrors.join("\n"));
   }

@@ -391,7 +391,7 @@ console.log(
 allErrors.slice(0, 10).forEach((e) => console.log("  ERR:", e.slice(0, 300)));
 
 // (E) SDR off-gate: byte-compare vs pre-change baseline.
-let eOK = true;
+let eOK;
 const binPath = join(OUT_DIR, "baseline-sdr.bin");
 if (!existsSync(binPath)) {
   console.log(

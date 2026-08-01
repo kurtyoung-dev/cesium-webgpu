@@ -60,7 +60,9 @@ const out = await page.evaluate(async () => {
   if (!BufferPointMaterial || !ComponentDatatype) {
     return { fatal: "BufferPointMaterial / ComponentDatatype not exported" };
   }
-  if (typeof BufferPointMaterial.detectUnsupportedPositionEncoding !== "function") {
+  if (
+    typeof BufferPointMaterial.detectUnsupportedPositionEncoding !== "function"
+  ) {
     return { fatal: "detectUnsupportedPositionEncoding guard missing" };
   }
 
@@ -102,8 +104,7 @@ const out = await page.evaluate(async () => {
   // that by checking the FIRST warn happened only after an unsupported call.
   const followupWarn = warns.find(
     (w) =>
-      w.includes("batch-bufferprimitive-parity") &&
-      w.includes("not yet wired"),
+      w.includes("batch-bufferprimitive-parity") && w.includes("not yet wired"),
   );
 
   // (3) DOUBLE UNAFFECTED — a real default collection round-trips DOUBLE and

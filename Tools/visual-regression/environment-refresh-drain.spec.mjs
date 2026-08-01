@@ -594,7 +594,11 @@ test("adopting a new device generation destroys the whole cache", () => {
   const recovered = createFakeDevice("recovered");
   p.adopt(recovered, 1);
   assert.equal(liveCount(device, "buffer"), 0, "lost-device arenas destroyed");
-  assert.equal(liveCount(device, "texture"), 0, "lost-device targets destroyed");
+  assert.equal(
+    liveCount(device, "texture"),
+    0,
+    "lost-device targets destroyed",
+  );
   assert.equal(p.resourceGeneration, 1);
   assert.equal(p.device, recovered);
   assert.equal(p.getTelemetry().generationResets, 1);
@@ -727,7 +731,9 @@ const contextSource = readSource(
 const iblSource = readSource(
   "packages/engine/Source/Renderer/WebGPU/WebGPUIBLPipeline.ts",
 );
-const tilesetSource = readSource("packages/engine/Source/Scene/Cesium3DTileset.js");
+const tilesetSource = readSource(
+  "packages/engine/Source/Scene/Cesium3DTileset.js",
+);
 
 function sourceSection(source, start, end) {
   const startIndex = source.indexOf(start);

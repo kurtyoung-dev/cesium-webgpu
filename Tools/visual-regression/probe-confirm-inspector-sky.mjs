@@ -72,7 +72,7 @@ const SETUP = async (cfg) => {
   return { ok: true };
 };
 
-const RENDER = async () => {
+const _RENDER = async () => {
   const v = window.viewer;
   const s = v.scene;
   for (let i = 0; i < 140; i++) {
@@ -82,7 +82,7 @@ const RENDER = async () => {
   return s.canvas.toDataURL("image/png");
 };
 
-function skyStats(page, dataUrl) {
+function _skyStats(page, dataUrl) {
   return page.evaluate(async (du) => {
     const img = new Image();
     img.src = du;
@@ -164,7 +164,11 @@ async function run() {
   await page.screenshot({ path: `${OUT}/confirm-inspector-sky-${TAG}.png` });
 
   // Measure the upper-center sky region (clear of the left panel + right help).
-  const du = "data:image/png;base64," + fs.readFileSync(`${OUT}/confirm-inspector-sky-${TAG}.png`).toString("base64");
+  const du =
+    "data:image/png;base64," +
+    fs
+      .readFileSync(`${OUT}/confirm-inspector-sky-${TAG}.png`)
+      .toString("base64");
   const sky = await page.evaluate(async (u) => {
     const img = new Image();
     img.src = u;
@@ -177,9 +181,12 @@ async function run() {
     const x0 = Math.floor(c.width * 0.34),
       x1 = Math.floor(c.width * 0.62),
       y0 = Math.floor(c.height * 0.06),
-      y1 = Math.floor(c.height * 0.30);
+      y1 = Math.floor(c.height * 0.3);
     const d = cx.getImageData(x0, y0, x1 - x0, y1 - y0).data;
-    let r = 0, g = 0, b = 0, n = 0;
+    let r = 0,
+      g = 0,
+      b = 0,
+      n = 0;
     for (let i = 0; i < d.length; i += 4) {
       r += d[i];
       g += d[i + 1];

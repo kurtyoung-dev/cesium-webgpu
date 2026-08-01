@@ -243,7 +243,9 @@ const OUT_DIR = "Tools/visual-regression/output";
 
 const HARD_LIMIT_MS = 420000;
 const watchdog = setTimeout(() => {
-  console.error("[probe-sun-glow-profile] WATCHDOG FIRED (420s) — forcing exit");
+  console.error(
+    "[probe-sun-glow-profile] WATCHDOG FIRED (420s) — forcing exit",
+  );
   process.exit(2);
 }, HARD_LIMIT_MS);
 if (watchdog.unref) {
@@ -301,7 +303,9 @@ function roiFeasibility(k, sunDistanceMeters) {
     aspect > 1.0 ? Math.tan(fov * 0.5) / aspect : Math.tan(fov * 0.5);
   const angHalf = SOLAR_RADIUS / sunDistanceMeters;
   const limbPx = (angHalf / tanHalfFovY) * (k.viewportHeight * 0.5);
-  const maxHalf = Math.floor(0.45 * Math.min(k.viewportWidth, k.viewportHeight));
+  const maxHalf = Math.floor(
+    0.45 * Math.min(k.viewportWidth, k.viewportHeight),
+  );
   const half = Math.min(
     Math.ceil((k.maxRsun + k.roiMarginRsun) * limbPx),
     maxHalf,
@@ -605,7 +609,9 @@ const PROFILE = async ({ iso, vantages, k }) => {
       let stableRun = 0;
       for (let i = 0; i < 180 && stableRun < 10; i++) {
         scene.render(T());
-        const cur = C.Cartesian3.clone(scene.context.uniformState.sunDirectionWC);
+        const cur = C.Cartesian3.clone(
+          scene.context.uniformState.sunDirectionWC,
+        );
         if (prev && C.Cartesian3.distance(cur, prev) < 1e-9) {
           stableRun++;
         } else {
@@ -731,7 +737,11 @@ const PROFILE = async ({ iso, vantages, k }) => {
       }
 
       const stepRecords = [];
-      for (let i = 0; i < vantage.elevs.length && structuralError === null; i++) {
+      for (
+        let i = 0;
+        i < vantage.elevs.length && structuralError === null;
+        i++
+      ) {
         const elevDeg = vantage.elevs[i];
         const theta = ((90.0 - elevDeg) * Math.PI) / 180.0;
         const up = C.Cartesian3.normalize(
@@ -808,7 +818,8 @@ const PROFILE = async ({ iso, vantages, k }) => {
           try {
             fromGlobeFlags =
               C.DynamicAtmosphereLightingType &&
-              typeof C.DynamicAtmosphereLightingType.fromGlobeFlags === "function"
+              typeof C.DynamicAtmosphereLightingType.fromGlobeFlags ===
+                "function"
                 ? C.DynamicAtmosphereLightingType.fromGlobeFlags(scene.globe)
                 : null;
           } catch {
@@ -820,7 +831,9 @@ const PROFILE = async ({ iso, vantages, k }) => {
                 ? (fsL0.atmosphere.dynamicLighting ?? null)
                 : null,
             fromGlobeFlags,
-            globeEnableLighting: scene.globe ? scene.globe.enableLighting : null,
+            globeEnableLighting: scene.globe
+              ? scene.globe.enableLighting
+              : null,
             globeDynamicAtmosphereLighting: scene.globe
               ? scene.globe.dynamicAtmosphereLighting
               : null,
@@ -866,7 +879,9 @@ const PROFILE = async ({ iso, vantages, k }) => {
         const limbPx =
           Math.hypot(limb.x - center.x, limb.y - center.y) *
           Math.max(dprX, dprY);
-        const maxHalf = Math.floor(0.45 * Math.min(canvas.width, canvas.height));
+        const maxHalf = Math.floor(
+          0.45 * Math.min(canvas.width, canvas.height),
+        );
         const half = Math.min(
           Math.ceil((k.maxRsun + k.roiMarginRsun) * limbPx),
           maxHalf,
@@ -1149,12 +1164,16 @@ async function runBackend(browser, renderer, plan) {
   });
   const out = { renderer, consoleErrors: errs };
   try {
-    await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000,
-    });
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      },
+    );
     await page.waitForFunction(
-      () => !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
+      () =>
+        !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
       null,
       { timeout: 90000 },
     );
@@ -1165,7 +1184,9 @@ async function runBackend(browser, renderer, plan) {
     await page
       .locator("canvas")
       .first()
-      .screenshot({ path: path.join(OUT_DIR, `sun-glow-profile-${renderer}.png`) })
+      .screenshot({
+        path: path.join(OUT_DIR, `sun-glow-profile-${renderer}.png`),
+      })
       .catch(() => {});
   } catch (e) {
     out.error = String(e).slice(0, 400);
@@ -1247,7 +1268,9 @@ function classify(vantage) {
 
   const steps = vantage.steps;
   const backendHasBV = steps.some((s) => s.sunCommandHasBV === true);
-  const commandBuiltSteps = steps.filter((s) => s.hasSunCommand === true).length;
+  const commandBuiltSteps = steps.filter(
+    (s) => s.hasSunCommand === true,
+  ).length;
   const cullFiredSteps = steps.filter((s) => s.isSunVisible === false).length;
   const state = {
     backendHasBV,
@@ -1366,7 +1389,8 @@ function bloomMechanism(vantage) {
 
   let verdict;
   if (off < 1) {
-    verdict = "no-residual: this backend measures ~0 where the billboard is black";
+    verdict =
+      "no-residual: this backend measures ~0 where the billboard is black";
   } else if (offSigned < -0.5 * off) {
     verdict =
       "blend-darkening CONFIRMED: the residual is NEGATIVE — a black " +
@@ -1407,7 +1431,10 @@ async function main() {
   // Earth-Sun distance range. The round-1 blocker exited 2 at step 0 of a
   // browser run; this makes an unsatisfiable set impossible to ship.
   const feas = {
-    perihelion: roiFeasibility(PROBE_CONSTANTS, PROBE_CONSTANTS.sunDistanceMinM),
+    perihelion: roiFeasibility(
+      PROBE_CONSTANTS,
+      PROBE_CONSTANTS.sunDistanceMinM,
+    ),
     aphelion: roiFeasibility(PROBE_CONSTANTS, PROBE_CONSTANTS.sunDistanceMaxM),
   };
   if (!feas.perihelion.feasible || !feas.aphelion.feasible) {

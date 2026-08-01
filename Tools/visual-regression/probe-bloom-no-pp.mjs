@@ -1,6 +1,6 @@
 // Probe Bloom.html with bloom disabled. Models should still render.
-import { chromium } from 'playwright';
-import fs from 'fs';
+import { chromium } from "playwright";
+import fs from "fs";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -20,60 +20,79 @@ const RENDERER_OVERRIDE_SHIM = `
 })();
 `;
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
-const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+const browser = await chromium.launch({ channel: "msedge", headless: true });
+const ctx = await browser.newContext({ viewport: { width: 800, height: 600 } });
 const page = await ctx.newPage();
 await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
+await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
   const response = await route.fetch();
-  const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-  await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
-});
-await page.goto('http://localhost:8080/Apps/Sandcastle/gallery/Bloom.html', { waitUntil: 'load', timeout: 60000 });
-await page.waitForTimeout(12000);  // Extra wait for models
-const png = await page.screenshot({ type: 'png' });
-fs.writeFileSync('Tools/visual-regression/output/bloom-no-bloom-webgpu.png', png);
-// Sample various pixels
-const samples = await page.evaluate(async (durl) => {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = img.width; c.height = img.height;
-      const cx = c.getContext('2d');
-      cx.drawImage(img, 0, 0);
-      const points = [
-        { name: 'top-center', x: 400, y: 100 },
-        { name: 'mid-canvas', x: 400, y: 300 },
-        { name: 'bottom-center', x: 400, y: 500 },
-        { name: 'where-balloon-1', x: 250, y: 300 },
-        { name: 'where-balloon-2', x: 350, y: 280 },
-        { name: 'where-balloon-3', x: 450, y: 290 },
-        { name: 'lower-left', x: 100, y: 450 },
-      ];
-      const result = points.map(p => {
-        const d = cx.getImageData(p.x, p.y, 1, 1).data;
-        return { ...p, r: d[0], g: d[1], b: d[2] };
-      });
-      resolve(result);
-    };
-    img.src = durl;
+  const txt = (await response.text()).replace(
+    /new\s+Cesium\.Viewer\s*\(/g,
+    "await Cesium.Viewer.createAsync(",
+  );
+  await route.fulfill({
+    status: response.status(),
+    headers: response.headers(),
+    body: txt,
   });
-}, `data:image/png;base64,${png.toString('base64')}`);
-console.log('Bloom.html WebGPU (bloom disabled):');
+});
+await page.goto("http://localhost:8080/Apps/Sandcastle/gallery/Bloom.html", {
+  waitUntil: "load",
+  timeout: 60000,
+});
+await page.waitForTimeout(12000); // Extra wait for models
+const png = await page.screenshot({ type: "png" });
+fs.writeFileSync(
+  "Tools/visual-regression/output/bloom-no-bloom-webgpu.png",
+  png,
+);
+// Sample various pixels
+const samples = await page.evaluate(
+  async (durl) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = img.width;
+        c.height = img.height;
+        const cx = c.getContext("2d");
+        cx.drawImage(img, 0, 0);
+        const points = [
+          { name: "top-center", x: 400, y: 100 },
+          { name: "mid-canvas", x: 400, y: 300 },
+          { name: "bottom-center", x: 400, y: 500 },
+          { name: "where-balloon-1", x: 250, y: 300 },
+          { name: "where-balloon-2", x: 350, y: 280 },
+          { name: "where-balloon-3", x: 450, y: 290 },
+          { name: "lower-left", x: 100, y: 450 },
+        ];
+        const result = points.map((p) => {
+          const d = cx.getImageData(p.x, p.y, 1, 1).data;
+          return { ...p, r: d[0], g: d[1], b: d[2] };
+        });
+        resolve(result);
+      };
+      img.src = durl;
+    });
+  },
+  `data:image/png;base64,${png.toString("base64")}`,
+);
+console.log("Bloom.html WebGPU (bloom disabled):");
 for (const s of samples) {
-  console.log(`  ${s.name.padEnd(20)} @ (${s.x},${s.y}) = (${s.r}, ${s.g}, ${s.b})`);
+  console.log(
+    `  ${s.name.padEnd(20)} @ (${s.x},${s.y}) = (${s.r}, ${s.g}, ${s.b})`,
+  );
 }
 const entities = await page.evaluate(() => {
   const v = window.viewer || window.__capturedViewer;
   if (!v) return null;
   const ent = v.entities.values;
-  return ent.slice(0, 3).map(e => ({
+  return ent.slice(0, 3).map((e) => ({
     name: e.name,
     hasModel: !!e.model,
     modelUri: e.model?.uri?.getValue?.(),
     position: e.position?.getValue?.(v.clock.currentTime),
   }));
 });
-console.log('\nFirst 3 entities:', JSON.stringify(entities, null, 2));
+console.log("\nFirst 3 entities:", JSON.stringify(entities, null, 2));
 await browser.close();

@@ -1,8 +1,8 @@
 // Probe NEW-VR2-3-IMAGERY-WASH-OUT — sample globe-disk pixels in WebGL
 // vs WebGPU for the affected demos. Reports center-disk RGB so we can
 // see if atmosphere is bleeding cyan onto the ocean.
-import { chromium } from 'playwright';
-import fs from 'fs';
+import { chromium } from "playwright";
+import fs from "fs";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -17,82 +17,114 @@ const RENDERER_OVERRIDE_SHIM = `
 
 const demos = process.argv.slice(2);
 if (demos.length === 0) {
-  demos.push('Hello World.html', 'Star Burst.html', 'Box.html', 'Polygon.html', 'Polyline.html', 'Sentinel-2.html');
+  demos.push(
+    "Hello World.html",
+    "Star Burst.html",
+    "Box.html",
+    "Polygon.html",
+    "Polyline.html",
+    "Sentinel-2.html",
+  );
 }
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
+const browser = await chromium.launch({ channel: "msedge", headless: true });
 
 // Sample several points across the canvas to find disk + sky pixels
-function samplePoints(pngBuf, width, height) {
+function _samplePoints(pngBuf, width, height) {
   // Returns RGB at: center, mid-left disk, upper-right sky
   // Simple PNG parsing — use canvas via page would be more reliable.
   return null;
 }
 
 async function probeDemo(demo, renderer) {
-  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+  const ctx = await browser.newContext({
+    viewport: { width: 800, height: 600 },
+  });
   const page = await ctx.newPage();
-  await page.addInitScript((r) => { window.__FORCED_RENDERER__ = r; }, renderer);
+  await page.addInitScript((r) => {
+    window.__FORCED_RENDERER__ = r;
+  }, renderer);
   await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-  await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
+  await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
     const response = await route.fetch();
-    const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-    await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+    const txt = (await response.text()).replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    );
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      body: txt,
+    });
   });
   try {
-    await page.goto(`http://localhost:8080/Apps/Sandcastle/gallery/${encodeURIComponent(demo)}`, { waitUntil: 'load', timeout: 60000 });
+    await page.goto(
+      `http://localhost:8080/Apps/Sandcastle/gallery/${encodeURIComponent(demo)}`,
+      { waitUntil: "load", timeout: 60000 },
+    );
     await page.waitForTimeout(8000);
   } catch (e) {
     await ctx.close();
     return { error: e.message };
   }
-  const outName = demo.replace(/\.html$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-  const png = await page.screenshot({ type: 'png' });
-  fs.writeFileSync(`Tools/visual-regression/output/disk-bleed-${outName}-${renderer}.png`, png);
+  const outName = demo.replace(/\.html$/, "").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const png = await page.screenshot({ type: "png" });
+  fs.writeFileSync(
+    `Tools/visual-regression/output/disk-bleed-${outName}-${renderer}.png`,
+    png,
+  );
 
   // Use the page's own canvas to sample points
-  const samples = await page.evaluate(async (durl) => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        const c = document.createElement('canvas');
-        c.width = img.width; c.height = img.height;
-        const cx = c.getContext('2d');
-        cx.drawImage(img, 0, 0);
-        const pts = [
-          { name: 'center', x: 400, y: 300 },           // center of canvas
-          { name: 'mid-upper', x: 400, y: 200 },        // upper region (likely sky/atmosphere)
-          { name: 'mid-lower', x: 400, y: 400 },        // lower region (likely disk)
-          { name: 'left-disk', x: 200, y: 300 },        // disk left
-          { name: 'right-disk', x: 600, y: 300 },       // disk right
-        ];
-        const result = pts.map(p => {
-          const d = cx.getImageData(p.x, p.y, 1, 1).data;
-          return { ...p, r: d[0], g: d[1], b: d[2], a: d[3] };
-        });
-        resolve(result);
-      };
-      img.src = durl;
-    });
-  }, `data:image/png;base64,${png.toString('base64')}`);
+  const samples = await page.evaluate(
+    async (durl) => {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const cx = c.getContext("2d");
+          cx.drawImage(img, 0, 0);
+          const pts = [
+            { name: "center", x: 400, y: 300 }, // center of canvas
+            { name: "mid-upper", x: 400, y: 200 }, // upper region (likely sky/atmosphere)
+            { name: "mid-lower", x: 400, y: 400 }, // lower region (likely disk)
+            { name: "left-disk", x: 200, y: 300 }, // disk left
+            { name: "right-disk", x: 600, y: 300 }, // disk right
+          ];
+          const result = pts.map((p) => {
+            const d = cx.getImageData(p.x, p.y, 1, 1).data;
+            return { ...p, r: d[0], g: d[1], b: d[2], a: d[3] };
+          });
+          resolve(result);
+        };
+        img.src = durl;
+      });
+    },
+    `data:image/png;base64,${png.toString("base64")}`,
+  );
   await ctx.close();
   return { samples };
 }
 
 for (const demo of demos) {
-  const wgl = await probeDemo(demo, 'webgl');
-  const wgpu = await probeDemo(demo, 'webgpu');
+  const wgl = await probeDemo(demo, "webgl");
+  const wgpu = await probeDemo(demo, "webgpu");
   console.log(`\n=== ${demo} ===`);
   if (wgl.error || wgpu.error) {
-    console.log('  ERROR:', wgl.error || wgpu.error);
+    console.log("  ERROR:", wgl.error || wgpu.error);
     continue;
   }
   for (let i = 0; i < wgl.samples.length; i++) {
     const a = wgl.samples[i];
     const b = wgpu.samples[i];
-    const dr = b.r - a.r, dg = b.g - a.g, db = b.b - a.b;
-    const flag = (Math.abs(dr) + Math.abs(dg) + Math.abs(db)) > 60 ? ' ⚠️' : '';
-    console.log(`  ${a.name.padEnd(11)} wgl=(${a.r.toString().padStart(3)},${a.g.toString().padStart(3)},${a.b.toString().padStart(3)})  wgpu=(${b.r.toString().padStart(3)},${b.g.toString().padStart(3)},${b.b.toString().padStart(3)})  Δ=(${dr.toString().padStart(4)},${dg.toString().padStart(4)},${db.toString().padStart(4)})${flag}`);
+    const dr = b.r - a.r,
+      dg = b.g - a.g,
+      db = b.b - a.b;
+    const flag = Math.abs(dr) + Math.abs(dg) + Math.abs(db) > 60 ? " ⚠️" : "";
+    console.log(
+      `  ${a.name.padEnd(11)} wgl=(${a.r.toString().padStart(3)},${a.g.toString().padStart(3)},${a.b.toString().padStart(3)})  wgpu=(${b.r.toString().padStart(3)},${b.g.toString().padStart(3)},${b.b.toString().padStart(3)})  Δ=(${dr.toString().padStart(4)},${dg.toString().padStart(4)},${db.toString().padStart(4)})${flag}`,
+    );
   }
 }
 await browser.close();

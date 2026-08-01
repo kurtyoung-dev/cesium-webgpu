@@ -34,7 +34,7 @@ const OUT_DIR = "Tools/visual-regression/output";
 const MODE = (process.argv[2] || "off").toLowerCase(); // off | on
 const AZIMUTH = (process.argv[3] || "toward").toLowerCase(); // toward|side|anti
 const TAG = process.argv[4] || "";
-const LUT_ON = MODE === "on";
+const _LUT_ON = MODE === "on";
 const ALSO_MS = process.env.SKY_VIEW_MS === "1"; // bonus: MS on too
 
 const TIME_ISO = process.env.SKY_VIEW_TIME || "2026-05-19T23:30:00Z";
@@ -168,7 +168,9 @@ async function capture(mode, azimuth, tag) {
 // Band luminance + optional byte-diff vs a reference PNG.
 async function analyze(pngPath, refPath) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.setContent("<!doctype html><html><body></body></html>");
   const b64 = fs.readFileSync(pngPath).toString("base64");
   const refB64 = refPath ? fs.readFileSync(refPath).toString("base64") : null;

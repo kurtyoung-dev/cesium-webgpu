@@ -161,7 +161,11 @@ async function run(renderer, lonMode) {
         pass: command.pass,
         pipeline: command.pipeline?.label ?? null,
         matrixTranslation: command.modelMatrix
-          ? [command.modelMatrix[12], command.modelMatrix[13], command.modelMatrix[14]]
+          ? [
+              command.modelMatrix[12],
+              command.modelMatrix[13],
+              command.modelMatrix[14],
+            ]
           : null,
         boundingCenter: command.boundingVolume?.center
           ? [
@@ -173,8 +177,8 @@ async function run(renderer, lonMode) {
         boundingRadius: command.boundingVolume?.radius ?? null,
         cull: command.cull ?? null,
       }));
-      const runtimePrimitives = model.sceneGraph._runtimeNodes.flatMap((node) =>
-        node?.runtimePrimitives ?? [],
+      const runtimePrimitives = model.sceneGraph._runtimeNodes.flatMap(
+        (node) => node?.runtimePrimitives ?? [],
       );
       const nativePrimitiveCaches = Object.values(
         model._webgpuCache?.primitives ?? {},
@@ -251,13 +255,17 @@ function line(label, r) {
     `    backend=${r.drawCommandsBackend} nativeCommands=${r.nativeCommandCount} descriptors=${r.runtimeDescriptorCount} legacy=${r.runtimeDrawCommandCount} nativeCaches=${r.nativeCacheCount} localPending=${r.nativePendingPipelineCount} localResolved=${r.nativeResolvedPipelineCount}`,
   );
   if (r.centralPipelineStats) {
-    console.log(`    centralPipelines: ${JSON.stringify(r.centralPipelineStats)}`);
+    console.log(
+      `    centralPipelines: ${JSON.stringify(r.centralPipelineStats)}`,
+    );
   }
   if (r.commandDiagnostics.length > 0) {
     console.log(`    command[0]: ${JSON.stringify(r.commandDiagnostics[0])}`);
   }
   if (r.nativePipelines.length > 0) {
-    console.log(`    nativePipeline[0]: ${JSON.stringify(r.nativePipelines[0])}`);
+    console.log(
+      `    nativePipeline[0]: ${JSON.stringify(r.nativePipelines[0])}`,
+    );
   }
 }
 

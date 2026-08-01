@@ -53,7 +53,10 @@
        in the corner regions and compare against perspective-Z values written
        by a different per-face camera (visible swimming during camera moves).
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
       #toolbar {
@@ -173,12 +176,16 @@
         // WebGPUEffectsBindGroup.js auto-detect path and resolves to
         // pcfRadius = 1.5 cube-face texels when true. False keeps the
         // Batch 57 hard-edged single-tap path bit-exact.
-        Sandcastle.addToggleButton("Soft shadows (5-tap PCF)", false, (checked) => {
-          const sm = scene.shadowMap;
-          if (Cesium.defined(sm)) {
-            sm.softShadows = checked;
-          }
-        });
+        Sandcastle.addToggleButton(
+          "Soft shadows (5-tap PCF)",
+          false,
+          (checked) => {
+            const sm = scene.shadowMap;
+            if (Cesium.defined(sm)) {
+              sm.softShadows = checked;
+            }
+          },
+        );
 
         Sandcastle.addToggleButton("Shadows enabled", true, (checked) => {
           viewer.shadows = checked;

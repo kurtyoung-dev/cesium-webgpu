@@ -107,9 +107,7 @@ async function capture(renderer) {
         names: ["color"],
         types: [C.MetadataType.VEC4],
         componentTypes: [C.MetadataComponentType.FLOAT32],
-        globalTransform: C.Matrix4.fromScale(
-          new C.Cartesian3(R, R, R * 0.6),
-        ),
+        globalTransform: C.Matrix4.fromScale(new C.Cartesian3(R, R, R * 0.6)),
         availableLevels: 1,
         requestData: function (options) {
           if (options.tileLevel >= 1) {
@@ -316,9 +314,7 @@ for (let gy = 1; gy < GH - 1; gy++) {
     const idx = gy * GW + gx;
     const nbr = [idx - 1, idx + 1, idx - GW, idx + GW];
     const interior =
-      a[idx] &&
-      b[idx] &&
-      nbr.every((nIdx) => a[nIdx] && b[nIdx]);
+      a[idx] && b[idx] && nbr.every((nIdx) => a[nIdx] && b[nIdx]);
     if (!interior) continue;
     const ca = webgl.px.cellRGB[idx];
     const cb = webgpu.px.cellRGB[idx];
@@ -363,8 +359,7 @@ console.log(
 );
 
 const bothRender = webgl.px.maskCells > 200 && webgpu.px.maskCells > 200;
-const bounded =
-  covGL < 92 && covGPU < 92 && covGL > 8 && covGPU > 8;
+const bounded = covGL < 92 && covGPU < 92 && covGL > 8 && covGPU > 8;
 const footprintMatch = iou >= 0.85;
 const areaMatch = areaRatioDelta <= 0.15;
 // B23 — the color pipeline must be the USER-customShader variant (the probe
@@ -391,7 +386,10 @@ console.log(
   "cellColorsMatch (>=100 interior cells, >=85% match):",
   cellColorsMatch,
 );
-console.log("colorGateDiscriminates (GL R+G spread > 30):", colorGateDiscriminates);
+console.log(
+  "colorGateDiscriminates (GL R+G spread > 30):",
+  colorGateDiscriminates,
+);
 console.log("noErrors:", noErrors);
 
 const pass =

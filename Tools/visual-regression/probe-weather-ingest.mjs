@@ -76,15 +76,20 @@ const SET_PROVIDER = async (value) => {
       new C.SyntheticWeatherSource("uniform", value),
     );
   } else {
-    g.defaultCloudCollection.volumetric.weatherProvider.setSource(new C.SyntheticWeatherSource("uniform", value));
+    g.defaultCloudCollection.volumetric.weatherProvider.setSource(
+      new C.SyntheticWeatherSource("uniform", value),
+    );
   }
   window.viewer.scene.requestRender();
   return { ok: true };
 };
 
 const PROVIDER_STATE = async () => {
-  const p = window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
-  return p ? { hasData: p.hasData, version: p.version, lastError: p.lastError } : null;
+  const p =
+    window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
+  return p
+    ? { hasData: p.hasData, version: p.version, lastError: p.lastError }
+    : null;
 };
 
 // Whitish/grey cloud-deck fraction in the sky region (upper-centre, right of HUD).
@@ -134,9 +139,13 @@ async function run() {
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
   await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
   const setup = await page.evaluate(SETUP);
   await page.waitForTimeout(9000);
@@ -185,12 +194,21 @@ async function run() {
   const checks = [
     [
       "Weather API exported (Provider/Edr/Synthetic/packer)",
-      setup.api.hasProvider && setup.api.hasEdr && setup.api.hasSynthetic && setup.api.hasPacker,
+      setup.api.hasProvider &&
+        setup.api.hasEdr &&
+        setup.api.hasSynthetic &&
+        setup.api.hasPacker,
     ],
     [`EdrWeatherSource.buildUrl() is a valid EDR cube URL`, edrOk],
-    [`provider fetched data (hasData true, version > 0)`, !!stateHi && stateHi.hasData && stateHi.version > 0],
+    [
+      `provider fetched data (hasData true, version > 0)`,
+      !!stateHi && stateHi.hasData && stateHi.version > 0,
+    ],
     [`uniform-0.95 renders a deck (deck ${deckHi}% > 5)`, deckHi > 5],
-    [`uniform-0.0 CLEARS the deck (deck ${deckLo}% < ${deckHi} - 5, i.e. data drives coverage)`, deckLo < deckHi - 5],
+    [
+      `uniform-0.0 CLEARS the deck (deck ${deckLo}% < ${deckHi} - 5, i.e. data drives coverage)`,
+      deckLo < deckHi - 5,
+    ],
     [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
   ];
   console.log("\n=== ANALYSIS ===");

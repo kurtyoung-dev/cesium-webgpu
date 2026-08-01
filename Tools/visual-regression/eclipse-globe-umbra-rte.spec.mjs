@@ -37,9 +37,7 @@ const {
   eclipseSunVisibleAboveEllipsoid,
   updateEclipseGlobeShadow,
   updateEclipseGlobeShadowForFrameState,
-} = await import(
-  pathToFileURL(sourcePath("Scene/EclipseGlobeShadow.js")).href
-);
+} = await import(pathToFileURL(sourcePath("Scene/EclipseGlobeShadow.js")).href);
 const {
   ECLIPSE_RADIOMETRIC_FLOOR,
   ECLIPSE_ADAPTATION_EXPONENT,
@@ -67,11 +65,7 @@ test("S5 CPU laws retain exact endpoints, fitted support, and composition", () =
   const rs = 0.00465;
   const ro = 0.00483;
   const anchorSeparation = 0.55 * (rs + ro);
-  const anchorObscuration = computeSolarObscuration(
-    rs,
-    ro,
-    anchorSeparation,
-  );
+  const anchorObscuration = computeSolarObscuration(rs, ro, anchorSeparation);
   const fit = fitEclipseLimbDarkening(
     rs,
     ro,
@@ -93,7 +87,7 @@ test("S5 CPU laws retain exact endpoints, fitted support, and composition", () =
         fit.c2,
         fit.c3,
         fit.annularLift,
-      ) - anchorObscuration
+      ) - anchorObscuration,
     ) < 1.0e-12,
     "the camera anchor must survive the fitted shader law",
   );
@@ -101,8 +95,7 @@ test("S5 CPU laws retain exact endpoints, fitted support, and composition", () =
   const supportStart = Math.abs(rs - ro);
   const supportEnd = rs + ro;
   for (let i = 1; i < 20; i++) {
-    const separation =
-      supportStart + ((supportEnd - supportStart) * i) / 20.0;
+    const separation = supportStart + ((supportEnd - supportStart) * i) / 20.0;
     maxFitError = Math.max(
       maxFitError,
       Math.abs(
@@ -161,7 +154,7 @@ test("S5 CPU laws retain exact endpoints, fitted support, and composition", () =
         obscuration,
         false,
         true,
-      ) - absolute
+      ) - absolute,
     ) <= Number.EPSILON,
     "S5 must replace S2, not double-dim the terrain",
   );
@@ -213,11 +206,7 @@ test("surface activation includes elevated terrain that the base ellipsoid misse
     "the exact local f32 support test must not clip the elevated penumbra",
   );
 
-  const maxSupport = maximumSurfaceDiscSupport(
-    AU,
-    moonRange,
-    elevatedRadius,
-  );
+  const maxSupport = maximumSurfaceDiscSupport(AU, moonRange, elevatedRadius);
   assert.ok(maxSupport > 0.009);
   assert.ok(maxSupport < 0.011);
 });
@@ -239,14 +228,9 @@ test("the CPU broad reject is exactly conservative across the footprint edge", (
     const chord = Cartesian3.magnitude(
       Cartesian3.subtract(sunUnit, moonUnit, new Cartesian3()),
     );
-    const centreSeparation =
-      2.0 * Math.asin(Math.min(1.0, 0.5 * chord));
+    const centreSeparation = 2.0 * Math.asin(Math.min(1.0, 0.5 * chord));
     const support =
-      maximumSurfaceDiscSupport(
-        sunRange,
-        currentMoonRange,
-        surfaceRadius,
-      ) +
+      maximumSurfaceDiscSupport(sunRange, currentMoonRange, surfaceRadius) +
       Math.asin(Math.min(1.0, surfaceRadius / sunRange)) +
       Math.asin(Math.min(1.0, surfaceRadius / currentMoonRange));
     return centreSeparation < support;
@@ -280,8 +264,7 @@ test("selected terrain spheres conservatively classify the solid penumbra cone",
   const sinHalfAngle = radiiSum / bodySeparation;
   const cosHalfAngle = Math.sqrt(1.0 - sinHalfAngle * sinHalfAngle);
   const tanHalfAngle = sinHalfAngle / cosHalfAngle;
-  const apexX =
-    AU - (SOLAR_RADIUS / radiiSum) * bodySeparation;
+  const apexX = AU - (SOLAR_RADIUS / radiiSum) * bodySeparation;
   const earthPlaneRadius = apexX * tanHalfAngle;
   const tileRadius = 100_000.0;
 
@@ -326,11 +309,7 @@ test("selected terrain spheres conservatively classify the solid penumbra cone",
     eclipsePenumbraIntersectsBoundingSphere(sun, moon, {
       center: Cartesian3.subtract(
         apex,
-        Cartesian3.multiplyByScalar(
-          axis,
-          tileRadius * 2.0,
-          new Cartesian3(),
-        ),
+        Cartesian3.multiplyByScalar(axis, tileRadius * 2.0, new Cartesian3()),
         new Cartesian3(),
       ),
       radius: tileRadius,
@@ -341,11 +320,7 @@ test("selected terrain spheres conservatively classify the solid penumbra cone",
     eclipsePenumbraIntersectsBoundingSphere(sun, moon, {
       center: Cartesian3.subtract(
         apex,
-        Cartesian3.multiplyByScalar(
-          axis,
-          tileRadius * 0.5,
-          new Cartesian3(),
-        ),
+        Cartesian3.multiplyByScalar(axis, tileRadius * 0.5, new Cartesian3()),
         new Cartesian3(),
       ),
       radius: tileRadius,
@@ -462,10 +437,8 @@ test("rendered mesh bounds include skirts, exaggeration, and safe fallbacks", ()
   // placement; the classifier must consume the mesh's actual ECEF transform,
   // never rebuild a WGS84-specific bound.
   const fromScaledENU = [
-    20.0, 0.0, 0.0, 0.0,
-    0.0, 40.0, 0.0, 0.0,
-    0.0, 0.0, 100.0, 0.0,
-    -10.0, -20.0, -100.0, 1.0,
+    20.0, 0.0, 0.0, 0.0, 0.0, 40.0, 0.0, 0.0, 0.0, 0.0, 100.0, 0.0, -10.0,
+    -20.0, -100.0, 1.0,
   ];
   const skirtedMesh = {
     boundingSphere3D: {
@@ -484,18 +457,12 @@ test("rendered mesh bounds include skirts, exaggeration, and safe fallbacks", ()
     center: new Cartesian3(),
     radius: 0.0,
   };
-  computeRenderedMeshEclipseBoundingSphere(
-    skirtedMesh,
-    1.0,
-    0.0,
-    result,
-  );
+  computeRenderedMeshEclipseBoundingSphere(skirtedMesh, 1.0, 0.0, result);
   const baseRadius = 0.5 * Math.hypot(20.0, 40.0, 100.0);
   assert.deepEqual(result.center, new Cartesian3(0.0, 0.0, -50.0));
   assert.ok(
     Math.abs(
-      result.radius -
-        (baseRadius + TERRAIN_ECLIPSE_BOUND_SAFETY_METERS),
+      result.radius - (baseRadius + TERRAIN_ECLIPSE_BOUND_SAFETY_METERS),
     ) < 1.0e-12,
     "the skirt-inclusive encoding AABB must replace the tiny server sphere",
   );
@@ -510,12 +477,7 @@ test("rendered mesh bounds include skirts, exaggeration, and safe fallbacks", ()
     }
   }
 
-  computeRenderedMeshEclipseBoundingSphere(
-    skirtedMesh,
-    3.0,
-    50.0,
-    result,
-  );
+  computeRenderedMeshEclipseBoundingSphere(skirtedMesh, 3.0, 50.0, result);
   assert.ok(
     Math.abs(
       result.radius -
@@ -579,20 +541,12 @@ test("rendered mesh bounds include skirts, exaggeration, and safe fallbacks", ()
     indices: new Uint16Array(3),
     indexCountWithoutSkirts: 3,
   };
-  computeRenderedMeshEclipseBoundingSphere(
-    largeCustomMesh,
-    1.0,
-    0.0,
-    result,
-  );
+  computeRenderedMeshEclipseBoundingSphere(largeCustomMesh, 1.0, 0.0, result);
   assert.ok(
     result.radius - largeCustomMesh.boundingSphere3D.radius > 32.0,
     "large custom ellipsoids need more than an Earth-specific metre floor",
   );
-  assert.equal(
-    TERRAIN_ECLIPSE_BOUND_RELATIVE_SAFETY,
-    8.0 * Math.pow(2.0, -23),
-  );
+  assert.equal(TERRAIN_ECLIPSE_BOUND_RELATIVE_SAFETY, 8.0 * Math.pow(2.0, -23));
 });
 
 test("selected terrain refinement preserves correction-only and ordinary O(1) paths", () => {
@@ -628,12 +582,7 @@ test("selected terrain refinement preserves correction-only and ordinary O(1) pa
     false,
   );
   assert.equal(
-    selectedTerrainIntersectsPenumbra(
-      eclipseState,
-      [{ data: {} }],
-      1.0,
-      0.0,
-    ),
+    selectedTerrainIntersectsPenumbra(eclipseState, [{ data: {} }], 1.0, 0.0),
     false,
   );
   assert.equal(
@@ -908,10 +857,7 @@ function commonRayVectorsF32(sun, moon, position) {
   const D = add3(directionDelta, scale3(positionMC, invRangeDelta));
   const s2 = dot32(s, s);
   const sDotD = dot32(s, D);
-  const moon2 = add32(
-    add32(s2, mul32(2.0, sDotD)),
-    dot32(D, D),
-  );
+  const moon2 = add32(add32(s2, mul32(2.0, sDotD)), dot32(D, D));
   return {
     D,
     invMoonRange,
@@ -924,13 +870,11 @@ function commonRayVectorsF32(sun, moon, position) {
 }
 
 function localDiscSupportRejectF32(sun, moon, position) {
-  const {
-    invMoonRange,
-    invSunRange,
-    moon2,
-    s2,
-    sDotD,
-  } = commonRayVectorsF32(sun, moon, position);
+  const { invMoonRange, invSunRange, moon2, s2, sDotD } = commonRayVectorsF32(
+    sun,
+    moon,
+    position,
+  );
   if (!(s2 > 0.0) || !(moon2 > 0.0)) {
     return true;
   }
@@ -959,28 +903,21 @@ function localDiscSupportRejectF32(sun, moon, position) {
 }
 
 function commonRayF32(sun, moon, position) {
-  const {
-    D,
-    invMoonRange,
-    invSunRange,
-    moon2,
-    s,
-    s2,
-    sDotD,
-  } = commonRayVectorsF32(sun, moon, position);
+  const { D, invMoonRange, invSunRange, moon2, s, s2, sDotD } =
+    commonRayVectorsF32(sun, moon, position);
   const sunLength = f32(Math.sqrt(s2));
   const moonLength = f32(Math.sqrt(moon2));
   const rs = f32(
-    Math.asin(Math.min(1.0, div32(mul32(SOLAR_RADIUS, invSunRange), sunLength))),
+    Math.asin(
+      Math.min(1.0, div32(mul32(SOLAR_RADIUS, invSunRange), sunLength)),
+    ),
   );
   const ro = f32(
     Math.asin(
       Math.min(1.0, div32(mul32(LUNAR_RADIUS, invMoonRange), moonLength)),
     ),
   );
-  const separation = f32(
-    Math.atan2(length32(cross32(s, D)), add32(s2, sDotD)),
-  );
+  const separation = f32(Math.atan2(length32(cross32(s, D)), add32(s2, sDotD)));
   return { ro, rs, separation };
 }
 
@@ -1012,8 +949,7 @@ function classify({ rs, ro, separation }) {
 }
 
 function tangentTo(direction) {
-  const seed =
-    Math.abs(direction[2]) < 0.8 ? [0.0, 0.0, 1.0] : [0.0, 1.0, 0.0];
+  const seed = Math.abs(direction[2]) < 0.8 ? [0.0, 0.0, 1.0] : [0.0, 1.0, 0.0];
   return normalize64(cross64(direction, seed));
 }
 
@@ -1033,9 +969,7 @@ test("exact local f32 support reject is conservative and removes clear samples",
   for (const position of observerPositions) {
     const toSun = normalize64(sub64(sun, position));
     const tangent = tangentTo(toSun);
-    const rs = Math.asin(
-      SOLAR_RADIUS / length64(sub64(sun, position)),
-    );
+    const rs = Math.asin(SOLAR_RADIUS / length64(sub64(sun, position)));
     const ro = Math.asin(LUNAR_RADIUS / moonObserverRange);
     for (const supportFraction of [0.0, 0.25, 0.9, 0.999, 0.99999]) {
       const separation = supportFraction * (rs + ro);
@@ -1043,10 +977,7 @@ test("exact local f32 support reject is conservative and removes clear samples",
         scale64(toSun, Math.cos(separation)),
         scale64(tangent, Math.sin(separation)),
       );
-      const moon = add64(
-        position,
-        scale64(moonDirection, moonObserverRange),
-      );
+      const moon = add64(position, scale64(moonDirection, moonObserverRange));
       const expected = referenceF64(sun, moon, position);
       assert.ok(expected.separation < expected.rs + expected.ro);
       assert.equal(
@@ -1122,11 +1053,7 @@ function elevatedTangentRay(radii, altitude) {
   const scaledRadius = (radii.x + altitude) / radii.x;
   const tangentX = -Math.sqrt(scaledRadius * scaledRadius - 1.0) / scaledRadius;
   const tangentY = 1.0 / scaledRadius;
-  return new Cartesian3(
-    tangentX * radii.x,
-    tangentY * radii.y,
-    0.0,
-  );
+  return new Cartesian3(tangentX * radii.x, tangentY * radii.y, 0.0);
 }
 
 test("ray/ellipsoid horizon supports WGS84, custom globes, and stable grazing rays", () => {
@@ -1237,10 +1164,7 @@ test("direct-position f32 common rays agree with f64 and are camera-independent"
           scale64(toSun, Math.cos(targetSeparation)),
           scale64(tangent, Math.sin(targetSeparation)),
         );
-        const moon = add64(
-          position,
-          scale64(moonDirection, moonObserverRange),
-        );
+        const moon = add64(position, scale64(moonDirection, moonObserverRange));
         const expected = referenceF64(sun, moon, position);
         const actual = commonRayF32(sun, moon, position);
         // Render, pick, and six-face capture cameras can all consume the same
@@ -1289,16 +1213,12 @@ test("WebGL and WebGPU pin direct rays, exact support, ellipsoid limb, and floor
   const webgpuEclipse = readSource(
     "Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
   );
-  const glslEclipseStart = glsl.indexOf(
-    "PAIR-SECTION: Eclipse globe shadow",
-  );
+  const glslEclipseStart = glsl.indexOf("PAIR-SECTION: Eclipse globe shadow");
   const glslEclipse = glsl.slice(
     glslEclipseStart,
     glsl.indexOf("void main()", glslEclipseStart),
   );
-  const wgslEclipseStart = wgsl.indexOf(
-    "fn globe_eclipseGeometricObscuration",
-  );
+  const wgslEclipseStart = wgsl.indexOf("fn globe_eclipseGeometricObscuration");
   const wgslEclipse = wgsl.slice(
     wgslEclipseStart,
     wgsl.indexOf("@fragment", wgslEclipseStart),
@@ -1314,9 +1234,7 @@ test("WebGL and WebGPU pin direct rays, exact support, ellipsoid limb, and floor
   ]) {
     assert.match(
       glsl,
-      new RegExp(
-        `#define u_eclipse${name} u_eclipseGlobeShadow\\[[0-3]\\]`,
-      ),
+      new RegExp(`#define u_eclipse${name} u_eclipseGlobeShadow\\[[0-3]\\]`),
     );
     const wgslName = name[0].toLowerCase() + name.slice(1);
     assert.match(wgsl, new RegExp(`${wgslName}: vec4<f32>`));
@@ -1374,14 +1292,8 @@ test("WebGL and WebGPU pin direct rays, exact support, ellipsoid limb, and floor
 
   // The horizon test transforms the ray to the ellipsoid's unit sphere and
   // retains the stable cross-product closest-distance form.
-  assert.match(
-    glslEclipse,
-    /positionMC \* czm_ellipsoidInverseRadii/,
-  );
-  assert.match(
-    glslEclipse,
-    /toSunScaled \* czm_ellipsoidInverseRadii/,
-  );
+  assert.match(glslEclipse, /positionMC \* czm_ellipsoidInverseRadii/);
+  assert.match(glslEclipse, /toSunScaled \* czm_ellipsoidInverseRadii/);
   assert.match(
     glslEclipse,
     /ellipsoidLimb =\s*cross\(ellipsoidPosition, ellipsoidSunRay\)/,
@@ -1413,10 +1325,7 @@ test("WebGL and WebGPU pin direct rays, exact support, ellipsoid limb, and floor
 
   // params2.x is exclusively the shared radiometric floor, not a geometry
   // threshold. The CPU block, inert WebGPU bytes, and both shaders agree.
-  assert.match(
-    eclipseCpu,
-    /shadow\.params2\.x = ECLIPSE_RADIOMETRIC_FLOOR;/,
-  );
+  assert.match(eclipseCpu, /shadow\.params2\.x = ECLIPSE_RADIOMETRIC_FLOOR;/);
   assert.match(
     webgpuEclipse,
     /params2\.x retains EclipseState's 5e-5[\s\S]*radiometric floor/,
@@ -1438,10 +1347,7 @@ test("WebGL and WebGPU pin direct rays, exact support, ellipsoid limb, and floor
     glslEclipse,
     /length\(cross\(toSunScaled, moonMinusSunScaled\)\)/,
   );
-  assert.match(
-    wgslEclipse,
-    /atan2\(length\(cross\(s, D\)\), dotSunMoon\)/,
-  );
+  assert.match(wgslEclipse, /atan2\(length\(cross\(s, D\)\), dotSunMoon\)/);
   assert.doesNotMatch(wgslEclipse, /normalize\(.*sun.*-.*position/i);
   assert.doesNotMatch(glslEclipse.replace(/\/\/.*$/gm, ""), /acos\s*\(\s*dot/);
 
@@ -1451,10 +1357,7 @@ test("WebGL and WebGPU pin direct rays, exact support, ellipsoid limb, and floor
     eclipseCpu,
     /setCorrectionOnlyEclipseGlobeShadow\(\s*shadow,\s*invSceneLightFactor,\s*sceneLightDimmed,\s*\)/,
   );
-  assert.match(
-    eclipseCpu,
-    /const gate = sceneLightDimmed \? 3\.0 : 4\.0;/,
-  );
+  assert.match(eclipseCpu, /const gate = sceneLightDimmed \? 3\.0 : 4\.0;/);
   assert.match(
     glsl,
     /if \(u_eclipseParams\.x < 2\.5\)[\s\S]*eclipseFragmentFactor\(v_positionMC\)/,
@@ -1463,10 +1366,7 @@ test("WebGL and WebGPU pin direct rays, exact support, ellipsoid limb, and floor
     wgsl,
     /if \(eclipseUniforms\.params\.x < 2\.5\)[\s\S]*globe_eclipseFragmentFactor\(input\.v_positionMC\)/,
   );
-  assert.match(
-    glsl,
-    /u_eclipseParams\.x > 1\.5 && u_eclipseParams\.x < 3\.5/,
-  );
+  assert.match(glsl, /u_eclipseParams\.x > 1\.5 && u_eclipseParams\.x < 3\.5/);
   assert.match(
     wgsl,
     /eclipseUniforms\.params\.x > 1\.5 &&\s*eclipseUniforms\.params\.x < 3\.5/,
@@ -1497,10 +1397,7 @@ test("WebGL excludes S5 from inactive globe shader variants", () => {
     /#ifdef ENABLE_ECLIPSE_GLOBE_SHADOW\s+groundAtmosphereColor\.rgb \*= eclipseRelative;\s+#endif/,
   );
 
-  assert.match(
-    shaderSet,
-    /\(enableEclipseGlobeShadow \? 0x200000000 : 0\)/,
-  );
+  assert.match(shaderSet, /\(enableEclipseGlobeShadow \? 0x200000000 : 0\)/);
   assert.match(
     shaderSet,
     /if \(enableEclipseGlobeShadow\) \{\s*fs\.defines\.push\("ENABLE_ECLIPSE_GLOBE_SHADOW"\);\s*\}/,
@@ -1515,12 +1412,8 @@ test("WebGPU uses a dedicated third dynamic UBO without widening CameraUniforms"
   const layouts = readSource("Renderer/WebGPU/WebGPUGlobeSurfaceLayouts.ts");
   const renderer = readSource("Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts");
   const types = readSource("Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts");
-  const cameraUB = readSource(
-    "Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts",
-  );
-  const terrainShader = readSource(
-    "Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
-  );
+  const cameraUB = readSource("Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts");
+  const terrainShader = readSource("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
   const eclipseUniforms = readSource(
     "Renderer/WebGPU/WebGPUGlobeEclipseUniforms.ts",
   );
@@ -1532,7 +1425,10 @@ test("WebGPU uses a dedicated third dynamic UBO without widening CameraUniforms"
     layouts,
     /uniformBuffer\(2, Stage\.FRAGMENT, \{\s*hasDynamicOffset: true,\s*minBindingSize: ECLIPSE_UNIFORM_BYTES,/,
   );
-  assert.match(renderer, /binding: 2,\s*resource: \{\s*buffer: eclipseUB\.buffer/);
+  assert.match(
+    renderer,
+    /binding: 2,\s*resource: \{\s*buffer: eclipseUB\.buffer/,
+  );
   assert.match(
     renderer,
     /dynamicOffsets: \[cameraUB\.offset, tileUB\.offset, eclipseUB\.offset\]/,
@@ -1575,7 +1471,9 @@ test("WebGPU uses a dedicated third dynamic UBO without widening CameraUniforms"
       "center3DLow: vec3<f32>",
     ]
       .map((field) => wgslCamera.indexOf(field))
-      .every((offset, index, offsets) => index === 0 || offset > offsets[index - 1]),
+      .every(
+        (offset, index, offsets) => index === 0 || offset > offsets[index - 1],
+      ),
   );
   assert.match(
     cameraUB,
@@ -1596,7 +1494,10 @@ test("logical View, selection refinement, capture, and pick stay integrated", ()
     "Renderer/WebGPU/WebGPUDynamicEnvironmentMapCapture.ts",
   );
 
-  assert.match(view, /this\._eclipseGlobeShadow = createEclipseGlobeShadow\(\);/);
+  assert.match(
+    view,
+    /this\._eclipseGlobeShadow = createEclipseGlobeShadow\(\);/,
+  );
   assert.match(frameState, /this\.eclipseGlobeShadow = undefined;/);
   assert.match(conditions, /enableEclipseGlobeShadow: true,/);
   assert.match(scene, /function prepareLogicalViewEclipse\(scene\)/);
@@ -1623,7 +1524,9 @@ test("logical View, selection refinement, capture, and pick stay integrated", ()
     "WebGL must not restore the five per-draw manual eclipse uniforms",
   );
 
-  const prepareStart = scene.indexOf("function prepareLogicalViewEclipse(scene)");
+  const prepareStart = scene.indexOf(
+    "function prepareLogicalViewEclipse(scene)",
+  );
   const prepareEnd = scene.indexOf("\nfunction render(scene)", prepareStart);
   const prepare = scene.slice(prepareStart, prepareEnd);
   assert.ok(prepareStart >= 0 && prepareEnd > prepareStart);
@@ -1634,14 +1537,19 @@ test("logical View, selection refinement, capture, and pick stay integrated", ()
   );
 
   const updateStart = scene.indexOf("updateFrameState() {");
-  const prepareCall = scene.indexOf("prepareLogicalViewEclipse(this)", updateStart);
+  const prepareCall = scene.indexOf(
+    "prepareLogicalViewEclipse(this)",
+    updateStart,
+  );
   const nextMethod = scene.indexOf("isVisible(", prepareCall);
   assert.ok(updateStart >= 0 && prepareCall > updateStart);
   assert.ok(nextMethod > prepareCall);
 
   const beginUpdateStart = tileProvider.indexOf("beginUpdate(frameState)");
   const endUpdateStart = tileProvider.indexOf("endUpdate(frameState)");
-  const showTileStart = tileProvider.indexOf("showTileThisFrame(tile, frameState)");
+  const showTileStart = tileProvider.indexOf(
+    "showTileThisFrame(tile, frameState)",
+  );
   const updateForPickStart = tileProvider.indexOf("updateForPick(frameState)");
   assert.doesNotMatch(
     tileProvider.slice(beginUpdateStart, endUpdateStart),
@@ -1705,11 +1613,11 @@ test("logical View, selection refinement, capture, and pick stay integrated", ()
   const pickRefinement = pickSource.indexOf(
     "updateEclipseGlobeShadowForFrameState(",
   );
-  const pickPush = pickSource.indexOf("pushCommand(drawCommands[i], frameState)");
+  const pickPush = pickSource.indexOf(
+    "pushCommand(drawCommands[i], frameState)",
+  );
   assert.ok(
-    pickRefinement >= 0 &&
-      pickRebind > pickRefinement &&
-      pickPush > pickRebind,
+    pickRefinement >= 0 && pickRebind > pickRefinement && pickPush > pickRebind,
     "pick must prepare its rebuilt terrain set before rebinding and pushing commands",
   );
   assert.match(
@@ -1814,14 +1722,9 @@ test("uniform ring and retained capture snapshots cannot survive device teardown
   const registryStart = context.indexOf(
     "private _registerResourceCaches(): void",
   );
-  const registryEnd = context.indexOf(
-    "public _clearAllCaches(",
-    registryStart,
-  );
+  const registryEnd = context.indexOf("public _clearAllCaches(", registryStart);
   const registry = context.slice(registryStart, registryEnd);
-  const uniformRegistryStart = registry.indexOf(
-    '.register("uniformAllocator"',
-  );
+  const uniformRegistryStart = registry.indexOf('.register("uniformAllocator"');
   const uniformRegistryEnd = registry.indexOf(
     '.register("depthTexture"',
     uniformRegistryStart,

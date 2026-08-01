@@ -45,7 +45,9 @@ async function makePage(browser, renderer) {
       const world =
         vm &&
         vm.terrainProviderViewModels.find((t) =>
-          String(t.name || "").toLowerCase().includes("world"),
+          String(t.name || "")
+            .toLowerCase()
+            .includes("world"),
         );
       if (world) vm.selectedTerrain = world;
     } catch (e) {
@@ -217,7 +219,9 @@ async function settle(page, band) {
       path: path.join(OUT_DIR, `popping-${band.name}-webgpu.png`),
     });
   }
-  console.log("PART B: wrote popping-{high9m,limb2m,ground3k}-{webgl,webgpu}.png");
+  console.log(
+    "PART B: wrote popping-{high9m,limb2m,ground3k}-{webgl,webgpu}.png",
+  );
   console.log("GL console errors:", gl.errs.slice(0, 5));
   console.log("GPU console errors:", gpu.errs.slice(0, 5));
   await browser.close();
@@ -226,6 +230,10 @@ async function settle(page, band) {
   const pass =
     gpuWedge.framesWithWedge <= glWedge.framesWithWedge &&
     gpuWedge.max <= glWedge.max + 2;
-  console.log(pass ? "RESULT: PASS (WebGPU at parity with WebGL)" : "RESULT: FAIL (WebGPU-only black wedges present)");
+  console.log(
+    pass
+      ? "RESULT: PASS (WebGPU at parity with WebGL)"
+      : "RESULT: FAIL (WebGPU-only black wedges present)",
+  );
   process.exit(pass ? 0 : 1);
 })();

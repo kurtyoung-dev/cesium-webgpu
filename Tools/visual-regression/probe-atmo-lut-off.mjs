@@ -41,7 +41,9 @@ async function capture(renderer, view, disableLut) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
@@ -53,7 +55,9 @@ async function capture(renderer, view, disableLut) {
       const v = window.viewer;
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
 
@@ -121,9 +125,7 @@ async function diffPngs(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const a = await decode(ba);
@@ -136,8 +138,12 @@ async function diffPngs(a, b) {
         sumDG = 0,
         sumDB = 0;
       for (let i = 0; i < a.data.length; i += 4) {
-        const ra = a.data[i], ga = a.data[i + 1], ba2 = a.data[i + 2];
-        const rb = b.data[i], gb = b.data[i + 1], bb2 = b.data[i + 2];
+        const ra = a.data[i],
+          ga = a.data[i + 1],
+          ba2 = a.data[i + 2];
+        const rb = b.data[i],
+          gb = b.data[i + 1],
+          bb2 = b.data[i + 2];
         const dr = Math.abs(ra - rb);
         const dg = Math.abs(ga - gb);
         const db = Math.abs(ba2 - bb2);
@@ -181,6 +187,9 @@ async function diffPngs(a, b) {
     results.push({ view: view.name, ...diff });
   }
   const reportPath = path.join(OUT_DIR, "atmo-lut-off-report.json");
-  fs.writeFileSync(reportPath, JSON.stringify({ runAt: new Date().toISOString(), results }, null, 2));
+  fs.writeFileSync(
+    reportPath,
+    JSON.stringify({ runAt: new Date().toISOString(), results }, null, 2),
+  );
   console.log(`[probe-atmo-lut-off] report: ${reportPath}`);
 })();

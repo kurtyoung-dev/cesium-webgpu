@@ -42,10 +42,7 @@ import fs from "fs";
 import path from "path";
 import process from "process";
 
-const SOURCES = [
-  "ne_10m_lakes.geojson",
-  "ne_10m_lakes_north_america.geojson",
-];
+const SOURCES = ["ne_10m_lakes.geojson", "ne_10m_lakes_north_america.geojson"];
 const BASE_URL =
   "https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/";
 const DEFAULT_OUT = path.join(

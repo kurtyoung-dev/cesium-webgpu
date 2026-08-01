@@ -11,7 +11,10 @@
       name="description"
       content="Dual-light atmospheric scattering — the WebGPU sky atmosphere shader samples a SECOND inscatter LUT for the moon in addition to the sun, scaled by moon-phase fraction. Toggle dual-light + moon intensity to see the moon contribution at night-side viewpoints."
     />
-    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases, Atmosphere" />
+    <meta
+      name="cesium-sandcastle-labels"
+      content="WebGPU, Showcases, Atmosphere"
+    />
     <title>Cesium Demo</title>
     <script type="text/javascript" src="../Sandcastle-header.js"></script>
     <script
@@ -42,7 +45,10 @@
     of the atmosphere picks up the moon's blue scattered glow when
     dual-light is ON, and stays pitch-black when it's OFF.
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
     </style>
@@ -118,7 +124,9 @@
 
         function applyConfig() {
           const ac = globe.atmosphericConditions;
-          ac.lighting.enableDualLightAtmosphere = Boolean(viewModel.dualLightEnabled);
+          ac.lighting.enableDualLightAtmosphere = Boolean(
+            viewModel.dualLightEnabled,
+          );
           ac.lighting.moonIntensity = Number(viewModel.moonIntensity);
 
           // Pin the clock to a specific UTC hour on a fixed date so
@@ -144,7 +152,9 @@
         Cesium.knockout.applyBindings(viewModel, toolbar);
         for (const name in viewModel) {
           if (Object.prototype.hasOwnProperty.call(viewModel, name)) {
-            Cesium.knockout.getObservable(viewModel, name).subscribe(applyConfig);
+            Cesium.knockout
+              .getObservable(viewModel, name)
+              .subscribe(applyConfig);
           }
         }
         applyConfig();

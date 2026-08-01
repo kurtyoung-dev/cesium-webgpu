@@ -50,11 +50,16 @@ import fs from "fs";
 import os from "os";
 import { build } from "esbuild";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
 
 const failures = [];
 const note = (ok, name, detail) => {
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
+  console.log(
+    `${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`,
+  );
   if (!ok) failures.push(name);
 };
 
@@ -65,7 +70,10 @@ const EMITTER_TS = path.join(
   ROOT,
   "packages/engine/Source/Renderer/WebGPU/WebGPUEdgeVisibilityEmitter.ts",
 );
-const tmpOut = path.join(os.tmpdir(), `probe-edge-linestrings-${process.pid}.mjs`);
+const tmpOut = path.join(
+  os.tmpdir(),
+  `probe-edge-linestrings-${process.pid}.mjs`,
+);
 await build({
   entryPoints: [EMITTER_TS],
   bundle: true,
@@ -76,10 +84,7 @@ await build({
 const { extractEdgeGeometry } = await import(
   `file:///${tmpOut.replace(/\\/g, "/")}`
 );
-note(
-  typeof extractEdgeGeometry === "function",
-  "extractEdgeGeometry exported",
-);
+note(typeof extractEdgeGeometry === "function", "extractEdgeGeometry exported");
 
 // 19 floats / vertex. Layout: [0..2] pos, [3] edgeType, [4..6] nA,
 // [7..9] nB, [10..12] otherPos, [13] edgeOffset, [14] featureId,
@@ -95,18 +100,28 @@ const readVec = (g, edge, off) => {
 const readF = (g, edge, off) => g.vertices[edgeBase(edge) + off];
 const readColor = (g, edge) => {
   const b = edgeBase(edge) + 15;
-  return [g.vertices[b], g.vertices[b + 1], g.vertices[b + 2], g.vertices[b + 3]];
+  return [
+    g.vertices[b],
+    g.vertices[b + 1],
+    g.vertices[b + 2],
+    g.vertices[b + 3],
+  ];
 };
 const near = (a, b) => Math.abs(a - b) < 1e-6;
-const vecEq = (a, b) => near(a[0], b[0]) && near(a[1], b[1]) && near(a[2], b[2]);
+const vecEq = (a, b) =>
+  near(a[0], b[0]) && near(a[1], b[1]) && near(a[2], b[2]);
 // Collect the set of undirected {A,B} endpoint pairs an emitted geometry
 // covers, keyed by the endpoint POSITIONS (position uniquely identifies a
 // vertex in these synthetic meshes).
 const edgeKeySet = (g) => {
   const s = new Set();
   for (let e = 0; e < g.edgeCount; e++) {
-    const a = readVec(g, e, 0).map((x) => x.toFixed(3)).join(":");
-    const b = readVec(g, e, 10).map((x) => x.toFixed(3)).join(":");
+    const a = readVec(g, e, 0)
+      .map((x) => x.toFixed(3))
+      .join(":");
+    const b = readVec(g, e, 10)
+      .map((x) => x.toFixed(3))
+      .join(":");
     s.add(a < b ? `${a}|${b}` : `${b}|${a}`);
   }
   return s;
@@ -114,11 +129,21 @@ const edgeKeySet = (g) => {
 
 // A row of 5 collinear-ish vertices used by the lineStrings-only checks.
 const linePositions = new Float32Array([
-  0, 0, 0, // 0
-  1, 0, 0, // 1
-  2, 0, 0, // 2
-  3, 0, 0, // 3
-  4, 0, 0, // 4
+  0,
+  0,
+  0, // 0
+  1,
+  0,
+  0, // 1
+  2,
+  0,
+  0, // 2
+  3,
+  0,
+  0, // 3
+  4,
+  0,
+  0, // 4
 ]);
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -214,10 +239,18 @@ const linePositions = new Float32Array([
   // (2,0). A lineString re-lists edge (0,1) plus a NEW edge (2,3). The
   // duplicate (0,1) must be emitted once; total = 3 + 1 = 4.
   const positions = new Float32Array([
-    0, 0, 0, // 0
-    1, 0, 0, // 1
-    0, 1, 0, // 2
-    2, 2, 0, // 3 (lineString-only endpoint)
+    0,
+    0,
+    0, // 0
+    1,
+    0,
+    0, // 1
+    0,
+    1,
+    0, // 2
+    2,
+    2,
+    0, // 3 (lineString-only endpoint)
   ]);
   const visibility = new Uint8Array(1);
   // 3 edge slots, all HARD (=2): 0b101010 = 42.
@@ -289,7 +322,11 @@ const linePositions = new Float32Array([
       `c1=[${c1.map((x) => x.toFixed(2))}]`,
     );
   } else {
-    note(false, "per-lineString color primitive produced 2 edges", `edgeCount=${g?.edgeCount}`);
+    note(
+      false,
+      "per-lineString color primitive produced 2 edges",
+      `edgeCount=${g?.edgeCount}`,
+    );
   }
 }
 
@@ -298,7 +335,10 @@ const linePositions = new Float32Array([
 // ─────────────────────────────────────────────────────────────────────────
 {
   const g = extractEdgeGeometry(
-    { edgeVisibility: { materialColor: { x: 1, y: 1, z: 1, w: 1 } }, attributes: [{ count: 5 }] },
+    {
+      edgeVisibility: { materialColor: { x: 1, y: 1, z: 1, w: 1 } },
+      attributes: [{ count: 5 }],
+    },
     linePositions,
     null,
     null,

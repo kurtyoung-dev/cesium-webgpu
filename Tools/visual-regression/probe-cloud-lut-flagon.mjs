@@ -52,9 +52,12 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+  if ("cloudCoverage" in g)
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  if ("cloudWeatherMap" in g)
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
   // KEY: sky atmosphere ON so the atmosphere LUTs bake (the physical/sky-lut
   // paths self-heal to legacy when the LUTs are unbaked, so we MUST bake them).
   s.skyBox.show = true;
@@ -79,11 +82,15 @@ const RENDER = async (cfg) => {
   const s = v.scene;
   const g = s.globe;
   g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high"; // T3 full-res (no half-res/temporal)
-  if (cfg.aerialMode !== undefined) g.defaultCloudCollection.volumetric.cloudAerialMode = cfg.aerialMode;
-  if (cfg.ambientSource !== undefined) g.defaultCloudCollection.volumetric.cloudAmbientSource = cfg.ambientSource;
+  if (cfg.aerialMode !== undefined)
+    g.defaultCloudCollection.volumetric.cloudAerialMode = cfg.aerialMode;
+  if (cfg.ambientSource !== undefined)
+    g.defaultCloudCollection.volumetric.cloudAmbientSource = cfg.ambientSource;
   // For the 3.4 ambient isolation, kill the heuristic aerial wash so the ambient
   // TINT on the shadow side isn't masked by the distance-haze tint.
-  if (cfg.aerialStrength !== undefined) g.defaultCloudCollection.volumetric.cloudAerialStrength = cfg.aerialStrength;
+  if (cfg.aerialStrength !== undefined)
+    g.defaultCloudCollection.volumetric.cloudAerialStrength =
+      cfg.aerialStrength;
   if (cfg.layerBottom !== undefined) {
     g.defaultCloudCollection.volumetric.cloudLayerBottom = cfg.layerBottom;
     g.defaultCloudCollection.volumetric.cloudLayerTop = cfg.layerTop;
@@ -196,12 +203,24 @@ async function run() {
 
   // ── 3.3 — physical aerial: distant deck (~28 km up), low sun, looking up ──
   const aerH = await page.evaluate(RENDER, {
-    LON, LAT, ALT, iso: DUSK, aerialMode: "heuristic",
-    layerBottom: 28000, layerTop: 31000, pitch: 8,
+    LON,
+    LAT,
+    ALT,
+    iso: DUSK,
+    aerialMode: "heuristic",
+    layerBottom: 28000,
+    layerTop: 31000,
+    pitch: 8,
   });
   const aerP = await page.evaluate(RENDER, {
-    LON, LAT, ALT, iso: DUSK, aerialMode: "physical",
-    layerBottom: 28000, layerTop: 31000, pitch: 8,
+    LON,
+    LAT,
+    ALT,
+    iso: DUSK,
+    aerialMode: "physical",
+    layerBottom: 28000,
+    layerTop: 31000,
+    pitch: 8,
   });
   write("aerial-heuristic", aerH);
   write("aerial-physical", aerP);
@@ -212,25 +231,52 @@ async function run() {
 
   // Reset aerial mode for the ambient test.
   await page.evaluate(RENDER, {
-    LON, LAT, ALT, iso: DUSK, aerialMode: "heuristic",
-    layerBottom: 1500, layerTop: 4000, pitch: 14,
+    LON,
+    LAT,
+    ALT,
+    iso: DUSK,
+    aerialMode: "heuristic",
+    layerBottom: 1500,
+    layerTop: 4000,
+    pitch: 14,
   });
 
   // ── 3.4 — sky-lut ambient: normal deck, camera below looking up. Aerial wash
   // OFF (strength 0) so the ambient TINT on the shadow side is visible. Capture at
   // DUSK (warm sky) and NOON (blue sky) to show the time-of-day color tracking. ──
   const ambC = await page.evaluate(RENDER, {
-    LON, LAT, ALT, iso: DUSK, ambientSource: "constant", aerialStrength: 0,
-    layerBottom: 1500, layerTop: 4000, pitch: 16,
+    LON,
+    LAT,
+    ALT,
+    iso: DUSK,
+    ambientSource: "constant",
+    aerialStrength: 0,
+    layerBottom: 1500,
+    layerTop: 4000,
+    pitch: 16,
   });
   const ambS = await page.evaluate(RENDER, {
-    LON, LAT, ALT, iso: DUSK, ambientSource: "sky-lut", aerialStrength: 0,
-    layerBottom: 1500, layerTop: 4000, pitch: 16,
+    LON,
+    LAT,
+    ALT,
+    iso: DUSK,
+    ambientSource: "sky-lut",
+    aerialStrength: 0,
+    layerBottom: 1500,
+    layerTop: 4000,
+    pitch: 16,
   });
   const NOON = "2026-06-21T18:20:00Z";
   const ambSnoon = await page.evaluate(RENDER, {
-    LON, LAT, ALT, iso: NOON, ambientSource: "sky-lut", aerialStrength: 0,
-    layerBottom: 1500, layerTop: 4000, pitch: 16,
+    LON,
+    LAT,
+    ALT,
+    iso: NOON,
+    ambientSource: "sky-lut",
+    aerialStrength: 0,
+    layerBottom: 1500,
+    layerTop: 4000,
+    pitch: 16,
   });
   write("ambient-constant", ambC);
   write("ambient-skylut", ambS);
@@ -257,7 +303,12 @@ async function run() {
   const aerDelta =
     aerHm.mean && aerPm.mean ? +dist(aerHm.mean, aerPm.mean).toFixed(4) : 0;
   console.log("  |physical - heuristic| color dist:", aerDelta);
-  console.log("  warmth (R-B) heuristic:", warmth(aerHm), " physical:", warmth(aerPm));
+  console.log(
+    "  warmth (R-B) heuristic:",
+    warmth(aerHm),
+    " physical:",
+    warmth(aerPm),
+  );
   console.log("  sun elev (deg):", aerP.elevDeg);
 
   console.log("\n=== 3.4 SKY-LUT AMBIENT (undersides, aerial OFF) ===");
@@ -267,8 +318,14 @@ async function run() {
   const ambDelta =
     ambCm.mean && ambSm.mean ? +dist(ambCm.mean, ambSm.mean).toFixed(4) : 0;
   console.log("  |sky-lut - constant| (dusk) color dist:", ambDelta);
-  console.log("  warmth (R-B) constant-dusk:", warmth(ambCm),
-    " sky-lut-dusk:", warmth(ambSm), " sky-lut-noon:", warmth(ambSnoonm));
+  console.log(
+    "  warmth (R-B) constant-dusk:",
+    warmth(ambCm),
+    " sky-lut-dusk:",
+    warmth(ambSm),
+    " sky-lut-noon:",
+    warmth(ambSnoonm),
+  );
   // Time-of-day tracking: the sky-lut ambient should be WARMER (higher R-B) at dusk
   // than at noon — that is the whole point of coupling to the real sky.
   const todTracks =
@@ -280,12 +337,25 @@ async function run() {
   if (newErrs.length) console.log("\nNEW errs:", newErrs.slice(0, 3));
 
   const checks = [
-    ["3.3 both modes render clouds", (aerHm.n ?? 0) > 2000 && (aerPm.n ?? 0) > 2000],
-    ["3.3 physical differs from heuristic (color dist > 0.01)", aerDelta > 0.01],
-    ["3.4 both modes render clouds", (ambCm.n ?? 0) > 2000 && (ambSm.n ?? 0) > 2000],
+    [
+      "3.3 both modes render clouds",
+      (aerHm.n ?? 0) > 2000 && (aerPm.n ?? 0) > 2000,
+    ],
+    [
+      "3.3 physical differs from heuristic (color dist > 0.01)",
+      aerDelta > 0.01,
+    ],
+    [
+      "3.4 both modes render clouds",
+      (ambCm.n ?? 0) > 2000 && (ambSm.n ?? 0) > 2000,
+    ],
     ["3.4 sky-lut differs from constant (color dist > 0.01)", ambDelta > 0.01],
-    ["3.4 sky-lut undersides not blown out (mean lum < 0.99)",
-      !ambSm.mean || (0.299 * ambSm.mean[0] + 0.587 * ambSm.mean[1] + 0.114 * ambSm.mean[2]) < 0.99],
+    [
+      "3.4 sky-lut undersides not blown out (mean lum < 0.99)",
+      !ambSm.mean ||
+        0.299 * ambSm.mean[0] + 0.587 * ambSm.mean[1] + 0.114 * ambSm.mean[2] <
+          0.99,
+    ],
     ["3.4 sky-lut tracks time-of-day (dusk warmer than noon)", todTracks],
     ["no NEW device errors", newErrs.length === 0],
   ];

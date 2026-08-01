@@ -27,7 +27,9 @@ async function captureAndMeasure(renderer, view) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
@@ -39,7 +41,9 @@ async function captureAndMeasure(renderer, view) {
       const v = window.viewer;
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
       // Pin the clock for cross-session reproducibility (Batch 70).
@@ -79,9 +83,7 @@ async function captureAndMeasure(renderer, view) {
         near: cam.frustum.near,
         far: cam.frustum.far,
         distFromCenter: Math.sqrt(
-          cam.positionWC.x ** 2 +
-            cam.positionWC.y ** 2 +
-            cam.positionWC.z ** 2,
+          cam.positionWC.x ** 2 + cam.positionWC.y ** 2 + cam.positionWC.z ** 2,
         ),
       };
     },
@@ -187,7 +189,8 @@ async function captureAndMeasure(renderer, view) {
     console.log(
       `  camera identical: pos=${posSame} dir=${dirSame} dist=${wgpu.cameraDump.distFromCenter.toFixed(0)}m`,
     );
-    if (!posSame) console.log(`    posΔ=${camDelta.pos.map((x) => x.toFixed(3))}`);
+    if (!posSame)
+      console.log(`    posΔ=${camDelta.pos.map((x) => x.toFixed(3))}`);
     if (!dirSame) console.log(`    dirΔ=${camDelta.dir}`);
     console.log();
   }

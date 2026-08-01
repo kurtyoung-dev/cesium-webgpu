@@ -10,11 +10,21 @@ const OUT_DIR = "Tools/visual-regression/output";
 
 async function capture(renderer) {
   const browser = await chromium.launch({
-    channel: "msedge", headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    channel: "msedge",
+    headless: true,
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, { waitUntil: "networkidle" });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
+    waitUntil: "networkidle",
+  });
   await page.waitForFunction(() => !!window.viewer);
 
   await page.evaluate(async () => {
@@ -22,7 +32,10 @@ async function capture(renderer) {
     const v = window.viewer;
     const vm = v.baseLayerPicker.viewModel;
     const wgs84 = vm.terrainProviderViewModels.find((t) =>
-      String(t.name || "").toLowerCase().includes("wgs84"));
+      String(t.name || "")
+        .toLowerCase()
+        .includes("wgs84"),
+    );
     if (wgs84) vm.selectedTerrain = wgs84;
     v.scene.globe.backFaceCulling = false;
     v.camera.setView({

@@ -45,9 +45,12 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.6;
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.85;
+  if ("cloudCoverage" in g)
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.6;
+  if ("cloudWeatherMap" in g)
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.85;
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
@@ -122,11 +125,13 @@ async function diff(page, a, b) {
       };
       const da = await load(ua),
         db = await load(ub);
-      let acc = 0,
-        n = da.length / 4;
+      let acc = 0;
+      const n = da.length / 4;
       for (let i = 0; i < da.length; i += 4) {
         acc += Math.abs(
-          (0.299 * da[i] + 0.587 * da[i + 1] + 0.114 * da[i + 2]) -
+          0.299 * da[i] +
+            0.587 * da[i + 1] +
+            0.114 * da[i + 2] -
             (0.299 * db[i] + 0.587 * db[i + 1] + 0.114 * db[i + 2]),
         );
       }
@@ -157,24 +162,41 @@ async function run() {
   const defR = await page.evaluate(RENDER_WITH, { iso: NOON });
   const def = defR.dataUrl;
   const hasLeaf = defR.hasLeaf;
-  fs.writeFileSync(`${OUT}/cloud-config-${TAG}-default.png`, Buffer.from(def.split(",")[1], "base64"));
+  fs.writeFileSync(
+    `${OUT}/cloud-config-${TAG}-default.png`,
+    Buffer.from(def.split(",")[1], "base64"),
+  );
   const defStats = await meanLum(page, def);
   fs.writeFileSync(`${OUT}/cloud-config-${TAG}.json`, JSON.stringify(defStats));
 
   const gate0 = await collectGateErrors(page);
 
-  let pass = hasLeaf && defStats.cloudPx > 5000;
+  let pass;
   console.log(`[${TAG}] hasLeaf=${hasLeaf} default`, JSON.stringify(defStats));
 
   if (TAG === "config") {
-    const ambR = await page.evaluate(RENDER_WITH, { iso: NOON, prop: "ambientIntensity", value: 4.0 });
+    const ambR = await page.evaluate(RENDER_WITH, {
+      iso: NOON,
+      prop: "ambientIntensity",
+      value: 4.0,
+    });
     const amb = ambR.dataUrl;
-    fs.writeFileSync(`${OUT}/cloud-config-ambientHi.png`, Buffer.from(amb.split(",")[1], "base64"));
+    fs.writeFileSync(
+      `${OUT}/cloud-config-ambientHi.png`,
+      Buffer.from(amb.split(",")[1], "base64"),
+    );
     const ambStats = await meanLum(page, amb);
     const ambDiff = await diff(page, def, amb);
-    const silR = await page.evaluate(RENDER_WITH, { iso: NOON, prop: "silverLining", value: 3.0 });
+    const silR = await page.evaluate(RENDER_WITH, {
+      iso: NOON,
+      prop: "silverLining",
+      value: 3.0,
+    });
     const sil = silR.dataUrl;
-    fs.writeFileSync(`${OUT}/cloud-config-silverHi.png`, Buffer.from(sil.split(",")[1], "base64"));
+    fs.writeFileSync(
+      `${OUT}/cloud-config-silverHi.png`,
+      Buffer.from(sil.split(",")[1], "base64"),
+    );
     const silDiff = await diff(page, def, sil);
 
     const gate = await collectGateErrors(page);
@@ -187,17 +209,25 @@ async function run() {
     if (fs.existsSync(`${OUT}/cloud-config-base-default.png`)) {
       const baseDu =
         "data:image/png;base64," +
-        fs.readFileSync(`${OUT}/cloud-config-base-default.png`).toString("base64");
+        fs
+          .readFileSync(`${OUT}/cloud-config-base-default.png`)
+          .toString("base64");
       presMismatch = await diff(page, def, baseDu);
     }
 
-    console.log(`  ambientHi mean ${ambStats.mean} (default ${defStats.mean}) diff ${ambDiff}`);
+    console.log(
+      `  ambientHi mean ${ambStats.mean} (default ${defStats.mean}) diff ${ambDiff}`,
+    );
     console.log(`  silverHi diff vs default ${silDiff}`);
-    if (presMismatch !== null) console.log(`  default preservation mismatch vs base: ${presMismatch}`);
+    if (presMismatch !== null)
+      console.log(`  default preservation mismatch vs base: ${presMismatch}`);
 
     const checks = [
       ["config leaf exposes dials", hasLeaf],
-      [`ambientIntensity dial is LIVE (render diff ${ambDiff} > 0.3, mean ${ambStats.mean}>${defStats.mean})`, ambDiff > 0.3 && ambStats.mean > defStats.mean],
+      [
+        `ambientIntensity dial is LIVE (render diff ${ambDiff} > 0.3, mean ${ambStats.mean}>${defStats.mean})`,
+        ambDiff > 0.3 && ambStats.mean > defStats.mean,
+      ],
       [`silverLining dial is LIVE (diff ${silDiff} > 0.3)`, silDiff > 0.3],
       [
         presMismatch === null
@@ -216,8 +246,12 @@ async function run() {
     console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}`);
   } else {
     // base build: just leave cloud-config-base-default.png for the config run to diff.
-    fs.copyFileSync(`${OUT}/cloud-config-${TAG}-default.png`, `${OUT}/cloud-config-base-default.png`);
-    const newErrs = (gate0.errors || []).concat(consoleErrors)
+    fs.copyFileSync(
+      `${OUT}/cloud-config-${TAG}-default.png`,
+      `${OUT}/cloud-config-base-default.png`,
+    );
+    const newErrs = (gate0.errors || [])
+      .concat(consoleErrors)
       .filter((e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout/i.test(e));
     console.log(`(base default captured; errs ${newErrs.length})`);
     pass = newErrs.length === 0 && defStats.cloudPx > 5000;

@@ -148,8 +148,7 @@ async function runRenderer(browser, renderer) {
           },
         });
 
-        const finiteOrNull = (value) =>
-          Number.isFinite(value) ? value : null;
+        const finiteOrNull = (value) => (Number.isFinite(value) ? value : null);
         const tileId = (tile) => `${tile.level}/${tile.x}/${tile.y}`;
         const portableTile = (tile) => {
           const surfaceTile = tile.data;
@@ -207,7 +206,7 @@ async function runRenderer(browser, renderer) {
               imagery,
               waterMaskPresent: Boolean(
                 surfaceTile?.waterMaskTexture ||
-                  surfaceTile?.terrainData?.waterMask,
+                surfaceTile?.terrainData?.waterMask,
               ),
             },
           };
@@ -216,7 +215,8 @@ async function runRenderer(browser, renderer) {
           const selectedObjects = [...(surface._tilesToRender || [])];
           const selectedSet = new Set(selectedObjects);
           const bucketCounts = new Map();
-          for (const bucket of tileProvider._tilesToRenderByTextureCount || []) {
+          for (const bucket of tileProvider._tilesToRenderByTextureCount ||
+            []) {
             for (const tile of bucket || []) {
               bucketCounts.set(tile, (bucketCounts.get(tile) || 0) + 1);
             }
@@ -299,9 +299,9 @@ async function runRenderer(browser, renderer) {
     checkpoints.push(checkpoint);
   }
 
-  const deviceErrors = await page.evaluate(
-    () => [...(globalThis.__terrainParityDeviceErrors || [])],
-  );
+  const deviceErrors = await page.evaluate(() => [
+    ...(globalThis.__terrainParityDeviceErrors || []),
+  ]);
   await context.close();
   return {
     renderer,
@@ -336,9 +336,7 @@ try {
       exact: leftJson === rightJson,
       webglHash: left.selectedSetHash,
       webgpuHash: right.selectedSetHash,
-      missingInWebGPU: [...leftById.keys()].filter(
-        (id) => !rightById.has(id),
-      ),
+      missingInWebGPU: [...leftById.keys()].filter((id) => !rightById.has(id)),
       extraInWebGPU: [...rightById.keys()].filter((id) => !leftById.has(id)),
       revisionMismatches: [...leftById.keys()].filter(
         (id) =>
@@ -351,7 +349,9 @@ try {
   const failures = [];
   for (const run of [webgl, webgpu]) {
     if (run.deviceErrors.length) {
-      failures.push(`${run.renderer}: ${run.deviceErrors.length} device errors`);
+      failures.push(
+        `${run.renderer}: ${run.deviceErrors.length} device errors`,
+      );
     }
     if (run.pageErrors.length) {
       failures.push(`${run.renderer}: ${run.pageErrors.length} page errors`);
@@ -400,15 +400,21 @@ try {
 
 await mkdir(dirname(outputPath), { recursive: true });
 await writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`);
-console.log(JSON.stringify({
-  result: report.result,
-  failures: report.failures,
-  comparisons: report.comparisons.map((comparison) => ({
-    name: comparison.name,
-    exact: comparison.exact,
-    webglHash: comparison.webglHash,
-    webgpuHash: comparison.webgpuHash,
-  })),
-  output: outputPath,
-}, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      result: report.result,
+      failures: report.failures,
+      comparisons: report.comparisons.map((comparison) => ({
+        name: comparison.name,
+        exact: comparison.exact,
+        webglHash: comparison.webglHash,
+        webgpuHash: comparison.webgpuHash,
+      })),
+      output: outputPath,
+    },
+    null,
+    2,
+  ),
+);
 process.exitCode = report.result === "pass" ? 0 : 1;

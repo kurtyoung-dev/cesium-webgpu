@@ -17,10 +17,7 @@
  *   the browser has a navigator.gpu context.
  */
 import { chromium } from "playwright";
-import {
-  errorGateInit,
-  collectGateErrors,
-} from "../lib/webgpu-error-gate.mjs";
+import { errorGateInit, collectGateErrors } from "../lib/webgpu-error-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
 
@@ -61,7 +58,8 @@ const result = await page.evaluate(async () => {
   device.queue.writeBuffer(buf, 0, new Uint8Array(256));
   await new Promise((r) => setTimeout(r, 200));
   const faultCount = window.__webgpuGate.errors.length;
-  const faultMsg = window.__webgpuGate.errors[window.__webgpuGate.errors.length - 1] || null;
+  const faultMsg =
+    window.__webgpuGate.errors[window.__webgpuGate.errors.length - 1] || null;
 
   // TEARDOWN: destroy() → device.lost reason "destroyed" → must be ignored.
   device.destroy();
@@ -97,8 +95,12 @@ for (const c of checks) {
   console.log(`  ${c.pass ? "PASS" : "FAIL"} — ${c.name}`);
 }
 console.log(`  caught fault message: ${result.faultMsg}`);
-console.log(`  final gate snapshot: errors=${gate.errors.length} deviceLost=${gate.deviceLost ? "YES" : "no"} armed=${gate.armedDevices}`);
+console.log(
+  `  final gate snapshot: errors=${gate.errors.length} deviceLost=${gate.deviceLost ? "YES" : "no"} armed=${gate.armedDevices}`,
+);
 
 const allPass = checks.every((c) => c.pass);
-console.log(allPass ? "\nALL PASS — gate is functional" : "\nFAILED — gate is broken");
+console.log(
+  allPass ? "\nALL PASS — gate is functional" : "\nFAILED — gate is broken",
+);
 process.exit(allPass ? 0 : 1);

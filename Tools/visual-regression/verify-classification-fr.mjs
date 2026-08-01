@@ -35,7 +35,9 @@ const phases = [];
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   page.on("console", (m) => {
     const t = m.type();

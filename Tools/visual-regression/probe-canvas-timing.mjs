@@ -1,5 +1,5 @@
 // Snapshot canvas dimensions over time during load.
-import { chromium } from 'playwright';
+import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -27,45 +27,70 @@ const RENDERER_OVERRIDE_SHIM = `
 `;
 
 async function probe(renderer) {
-  const browser = await chromium.launch({ channel: 'msedge', headless: true });
-  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
-  const page = await ctx.newPage();
-  await page.addInitScript((r) => { window.__FORCED_RENDERER__ = r; }, renderer);
-  await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-  await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
-    const response = await route.fetch();
-    const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-    await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+  const browser = await chromium.launch({ channel: "msedge", headless: true });
+  const ctx = await browser.newContext({
+    viewport: { width: 800, height: 600 },
   });
-  await page.goto('http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html', { waitUntil: 'load', timeout: 60000 });
+  const page = await ctx.newPage();
+  await page.addInitScript((r) => {
+    window.__FORCED_RENDERER__ = r;
+  }, renderer);
+  await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
+  await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
+    const response = await route.fetch();
+    const txt = (await response.text()).replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    );
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      body: txt,
+    });
+  });
+  await page.goto(
+    "http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html",
+    { waitUntil: "load", timeout: 60000 },
+  );
   await page.waitForTimeout(3000);
   const result = await page.evaluate(() => ({
-    snaps: (window.__canvasSnaps || []).filter((_, i, arr) => {
-      // Dedupe consecutive same-value snaps
-      if (i === 0) return true;
-      const prev = arr[i - 1];
-      const cur = arr[i];
-      return prev.width !== cur.width || prev.height !== cur.height ||
-             prev.cssWidth !== cur.cssWidth || prev.cssHeight !== cur.cssHeight ||
-             cur.label !== 'tick';
-    }).slice(0, 30),
-    finalCameraHeight: (window.viewer || window.__capturedViewer)?.scene?.camera?.positionCartographic?.height,
+    snaps: (window.__canvasSnaps || [])
+      .filter((_, i, arr) => {
+        // Dedupe consecutive same-value snaps
+        if (i === 0) return true;
+        const prev = arr[i - 1];
+        const cur = arr[i];
+        return (
+          prev.width !== cur.width ||
+          prev.height !== cur.height ||
+          prev.cssWidth !== cur.cssWidth ||
+          prev.cssHeight !== cur.cssHeight ||
+          cur.label !== "tick"
+        );
+      })
+      .slice(0, 30),
+    finalCameraHeight: (window.viewer || window.__capturedViewer)?.scene?.camera
+      ?.positionCartographic?.height,
   }));
   await browser.close();
   return result;
 }
 
-const wgl = await probe('webgl');
-const wgpu = await probe('webgpu');
-console.log('=== WebGL ===');
+const wgl = await probe("webgl");
+const wgpu = await probe("webgpu");
+console.log("=== WebGL ===");
 console.log(`Final cameraHeight: ${wgl.finalCameraHeight}`);
-console.log('Canvas dimension snaps:');
+console.log("Canvas dimension snaps:");
 for (const s of wgl.snaps) {
-  console.log(`  t=${s.t.toFixed(0).padStart(6)}ms [${s.label.padEnd(20)}] w=${s.width} h=${s.height} cssW=${s.cssWidth} cssH=${s.cssHeight}`);
+  console.log(
+    `  t=${s.t.toFixed(0).padStart(6)}ms [${s.label.padEnd(20)}] w=${s.width} h=${s.height} cssW=${s.cssWidth} cssH=${s.cssHeight}`,
+  );
 }
-console.log('\n=== WebGPU ===');
+console.log("\n=== WebGPU ===");
 console.log(`Final cameraHeight: ${wgpu.finalCameraHeight}`);
-console.log('Canvas dimension snaps:');
+console.log("Canvas dimension snaps:");
 for (const s of wgpu.snaps) {
-  console.log(`  t=${s.t.toFixed(0).padStart(6)}ms [${s.label.padEnd(20)}] w=${s.width} h=${s.height} cssW=${s.cssWidth} cssH=${s.cssHeight}`);
+  console.log(
+    `  t=${s.t.toFixed(0).padStart(6)}ms [${s.label.padEnd(20)}] w=${s.width} h=${s.height} cssW=${s.cssWidth} cssH=${s.cssHeight}`,
+  );
 }

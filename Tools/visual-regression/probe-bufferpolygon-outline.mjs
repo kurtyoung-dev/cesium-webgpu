@@ -310,32 +310,35 @@ async function diffPngs(pathA, pathB) {
 async function countColors(pngPath) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   const page = await browser.newPage();
-  const out = await page.evaluate(async (dataUrl) => {
-    const img = new Image();
-    await new Promise((res, rej) => {
-      img.onload = res;
-      img.onerror = rej;
-      img.src = dataUrl;
-    });
-    const cv = document.createElement("canvas");
-    cv.width = img.width;
-    cv.height = img.height;
-    const ctx = cv.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
-    let red = 0;
-    let green = 0;
-    let fill = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      const r = d[i];
-      const g = d[i + 1];
-      const b = d[i + 2];
-      if (r > 150 && g < 90 && b < 90) red++;
-      else if (g > 150 && r < 90 && b < 90) green++;
-      else if (b > 130 && r < 110 && g < 120) fill++;
-    }
-    return { red, green, fill };
-  }, "data:image/png;base64," + fs.readFileSync(pngPath).toString("base64"));
+  const out = await page.evaluate(
+    async (dataUrl) => {
+      const img = new Image();
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = rej;
+        img.src = dataUrl;
+      });
+      const cv = document.createElement("canvas");
+      cv.width = img.width;
+      cv.height = img.height;
+      const ctx = cv.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+      let red = 0;
+      let green = 0;
+      let fill = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i];
+        const g = d[i + 1];
+        const b = d[i + 2];
+        if (r > 150 && g < 90 && b < 90) red++;
+        else if (g > 150 && r < 90 && b < 90) green++;
+        else if (b > 130 && r < 110 && g < 120) fill++;
+      }
+      return { red, green, fill };
+    },
+    "data:image/png;base64," + fs.readFileSync(pngPath).toString("base64"),
+  );
   await browser.close();
   return out;
 }
@@ -344,7 +347,11 @@ const webgl = await run("webgl");
 const webgpu = await run("webgpu");
 
 console.log("=== WebGL ===  errs:", webgl.errs.length, webgl.errs.slice(0, 4));
-console.log("=== WebGPU === errs:", webgpu.errs.length, webgpu.errs.slice(0, 4));
+console.log(
+  "=== WebGPU === errs:",
+  webgpu.errs.length,
+  webgpu.errs.slice(0, 4),
+);
 
 if (BASELINE_ONLY) {
   const ok = webgl.errs.length === 0 && webgpu.errs.length === 0;
@@ -362,8 +369,14 @@ const check = (label, cond) => {
 };
 
 console.log("\n=== Device / console errors (0 required) ===");
-check(`WebGL console errors == 0 (got ${webgl.errs.length})`, webgl.errs.length === 0);
-check(`WebGPU console errors == 0 (got ${webgpu.errs.length})`, webgpu.errs.length === 0);
+check(
+  `WebGL console errors == 0 (got ${webgl.errs.length})`,
+  webgl.errs.length === 0,
+);
+check(
+  `WebGPU console errors == 0 (got ${webgpu.errs.length})`,
+  webgpu.errs.length === 0,
+);
 
 console.log("\n=== ON scene — internal outline collection state ===");
 for (const [name, r] of [
@@ -384,8 +397,14 @@ for (const name of ["webgl", "webgpu"]) {
   const c = await countColors(`${OUT}/_bpoutline-on-${name}-3d.png`);
   console.log(`  ${name} 3D: red=${c.red} green=${c.green} fill=${c.fill}`);
   check(`${name} 3D: outline rendered (red >= ${MIN_RED})`, c.red >= MIN_RED);
-  check(`${name} 3D: outlineWidth=0 polygon has NO outline (green < 20)`, c.green < 20);
-  check(`${name} 3D: fill still renders (fill >= ${MIN_RED})`, c.fill >= MIN_RED);
+  check(
+    `${name} 3D: outlineWidth=0 polygon has NO outline (green < 20)`,
+    c.green < 20,
+  );
+  check(
+    `${name} 3D: fill still renders (fill >= ${MIN_RED})`,
+    c.fill >= MIN_RED,
+  );
 }
 
 console.log("\n=== ON scene — WebGL vs WebGPU parity (3D) ===");
@@ -429,11 +448,16 @@ for (const name of ["webgl", "webgpu"]) {
   }
   const d = await diffPngs(pre, post);
   console.log(`  ${name} pre-vs-post: ${JSON.stringify(d)}`);
-  check(`${name}: OFF fill identical to pre-change (mismatch == 0%)`, d.mismatchPct === 0);
+  check(
+    `${name}: OFF fill identical to pre-change (mismatch == 0%)`,
+    d.mismatchPct === 0,
+  );
 }
 
 console.log(
   "\nRESULT:",
-  pass ? "PASS — BufferPolygon outline renders on both backends; off-gate clean" : "FAIL",
+  pass
+    ? "PASS — BufferPolygon outline renders on both backends; off-gate clean"
+    : "FAIL",
 );
 process.exit(pass ? 0 : 1);

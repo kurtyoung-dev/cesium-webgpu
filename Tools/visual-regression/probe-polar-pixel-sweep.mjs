@@ -25,14 +25,15 @@ function decodeCenterPixel(pngBuf) {
   // Parse PNG: concatenate all IDAT chunks then inflate.
   let off = 8;
   const idats = [];
-  let width = 0, bpp = 4;
+  let _width = 0,
+    bpp = 4;
   while (off < pngBuf.length) {
     const len = pngBuf.readUInt32BE(off);
     off += 4;
     const type = pngBuf.toString("ascii", off, off + 4);
     off += 4;
     if (type === "IHDR") {
-      width = pngBuf.readUInt32BE(off);
+      _width = pngBuf.readUInt32BE(off);
       const colorType = pngBuf[off + 9];
       bpp = colorType === 6 ? 4 : colorType === 2 ? 3 : 4;
     }
@@ -80,7 +81,9 @@ for (const mode of MODES) {
     const v = window.viewer;
     const vm = v.baseLayerPicker.viewModel;
     const wgs84 = vm.terrainProviderViewModels.find((t) =>
-      String(t.name || "").toLowerCase().includes("wgs84"),
+      String(t.name || "")
+        .toLowerCase()
+        .includes("wgs84"),
     );
     if (wgs84) vm.selectedTerrain = wgs84;
     if (mode === "production") window.CesiumDebug.globeFragmentDebug(null);
@@ -100,14 +103,17 @@ for (const mode of MODES) {
   for (const [, x, y] of POINTS) {
     const png = await page.screenshot({ clip: { x, y, width: 2, height: 2 } });
     const px = decodeCenterPixel(png);
-    row.push(px ? `${px[0].toString().padStart(3)},${px[1].toString().padStart(3)},${px[2].toString().padStart(3)},${px[3].toString().padStart(3)}` : "????");
+    row.push(
+      px
+        ? `${px[0].toString().padStart(3)},${px[1].toString().padStart(3)},${px[2].toString().padStart(3)},${px[3].toString().padStart(3)}`
+        : "????",
+    );
   }
   console.log(row.join("  "));
 }
 
 console.log(
-  "\n" + " ".repeat(22) + "  " +
-  POINTS.map(([n]) => n.padEnd(15)).join("  "),
+  "\n" + " ".repeat(22) + "  " + POINTS.map(([n]) => n.padEnd(15)).join("  "),
 );
 
 await browser.close();

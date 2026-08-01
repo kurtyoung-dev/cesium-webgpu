@@ -2,7 +2,6 @@
 // Check tex.a values after the alpha=1 force in reprojection FS.
 
 import { chromium } from "playwright";
-import fs from "fs";
 import path from "path";
 
 const BASE = "http://localhost:8080";
@@ -19,7 +18,9 @@ async function capture(label) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   page.on("console", (m) => {
     const t = m.type();
     if (t === "error" || t === "warning") console.log(`  ${t}: ${m.text()}`);
@@ -35,7 +36,9 @@ async function capture(label) {
     const blp = v.baseLayerPicker;
     const vm = blp.viewModel;
     const wgs84Tvm = vm.terrainProviderViewModels.find((t) =>
-      String(t.name || "").toLowerCase().includes("wgs84"),
+      String(t.name || "")
+        .toLowerCase()
+        .includes("wgs84"),
     );
     if (wgs84Tvm) vm.selectedTerrain = wgs84Tvm;
     // Set tex alpha debug flag BEFORE rendering settles

@@ -389,7 +389,11 @@ const clearDir = Math.abs(clearTB.ratio - 1);
 const overcastDir = Math.abs(overcastTB.ratio - 1);
 
 const report = {
-  ready: { clear: clear.ready, overcast: overcast.ready, flagOff: flagOff.ready },
+  ready: {
+    clear: clear.ready,
+    overcast: overcast.ready,
+    flagOff: flagOff.ready,
+  },
   gateArmed: clear.gateArmed,
   gateErrors,
   deviceLost,

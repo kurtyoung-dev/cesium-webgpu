@@ -116,7 +116,9 @@ async function runBackend(renderer) {
     args: ["--enable-unsafe-webgpu"],
   });
   try {
-    const page = await browser.newPage({ viewport: { width: 800, height: 500 } });
+    const page = await browser.newPage({
+      viewport: { width: 800, height: 500 },
+    });
     const errors = [];
     page.on("console", (message) => {
       if (message.type() === "error") {
@@ -144,130 +146,131 @@ async function runBackend(renderer) {
         : { armed: 0, found: 0, total: 0 };
 
     const result = await page.evaluate(async (applySrc) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const applyAllVolumetricFlags = new Function(
-      "C",
-      "coll",
-      `(${applySrc})(C, coll);`,
-    );
-    const v = window.viewer,
-      scene = v.scene;
-
-    v.useDefaultRenderLoop = false;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-    v.clock.shouldAnimate = false;
-    const frameTime = C.JulianDate.fromIso8601("2026-07-23T18:00:00Z");
-    v.clock.currentTime = frameTime;
-    scene.globe.show = false;
-    if (scene.skyBox) scene.skyBox.show = false;
-    if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
-    if (scene.sun) scene.sun.show = false;
-    if (scene.moon) scene.moon.show = false;
-    scene.backgroundColor = C.Color.BLACK;
-    scene.camera.setView({
-      destination: C.Cartesian3.fromDegrees(-98.0, 40.0, 16000.0),
-    });
-
-    async function hashAfter(buildFn) {
-      const coll = scene.primitives.add(new C.CloudCollection());
-      buildFn(coll);
-      for (let i = 0; i < 12; i++) {
-        scene.render(frameTime);
-        await new Promise((r) => requestAnimationFrame(r));
-      }
-      const canvas = scene.canvas;
-      const tmp = document.createElement("canvas");
-      tmp.width = canvas.width;
-      tmp.height = canvas.height;
-      const ctx2d = tmp.getContext("2d");
-      ctx2d.drawImage(canvas, 0, 0);
-      const data = ctx2d.getImageData(0, 0, tmp.width, tmp.height).data;
-      const digest = new Uint8Array(
-        await crypto.subtle.digest("SHA-256", data),
+      const C = await import("/Build/CesiumUnminified/index.js");
+      // eslint-disable-next-line no-new-func -- in-page snippet compiled from source text; that is the probe harness contract
+      const applyAllVolumetricFlags = new Function(
+        "C",
+        "coll",
+        `(${applySrc})(C, coll);`,
       );
-      const sha256 = Array.from(digest, (byte) =>
-        byte.toString(16).padStart(2, "0"),
-      ).join("");
-      let h = 0x811c9dc5;
-      let bright = 0;
-      for (let i = 0; i < data.length; i += 4) {
-        const r = data[i],
-          g = data[i + 1],
-          b = data[i + 2];
-        if (r + g + b > 60) bright++;
-        h ^= r;
-        h = Math.imul(h, 0x01000193);
-        h ^= g;
-        h = Math.imul(h, 0x01000193);
-        h ^= b;
-        h = Math.imul(h, 0x01000193);
-      }
-      scene.primitives.remove(coll);
-      return { hash: h >>> 0, sha256, bright };
-    }
+      const v = window.viewer,
+        scene = v.scene;
 
-    const puffs = [
-      [-98.02, 40.0],
-      [-98.0, 40.0],
-      [-97.98, 40.0],
-      [-98.0, 40.02],
-      [-98.0, 39.98],
-    ];
-    function addPuffs(coll) {
-      for (const [lon, lat] of puffs) {
-        coll.add({
-          position: C.Cartesian3.fromDegrees(lon, lat, 3000.0),
-          scale: new C.Cartesian2(2000.0, 1300.0),
-          maximumSize: new C.Cartesian3(2000.0, 1300.0, 900.0),
-          brightness: 1.0,
-        });
-      }
-    }
+      v.useDefaultRenderLoop = false;
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      v.clock.shouldAnimate = false;
+      const frameTime = C.JulianDate.fromIso8601("2026-07-23T18:00:00Z");
+      v.clock.currentTime = frameTime;
+      scene.globe.show = false;
+      if (scene.skyBox) scene.skyBox.show = false;
+      if (scene.skyAtmosphere) scene.skyAtmosphere.show = false;
+      if (scene.sun) scene.sun.show = false;
+      if (scene.moon) scene.moon.show = false;
+      scene.backgroundColor = C.Color.BLACK;
+      scene.camera.setView({
+        destination: C.Cartesian3.fromDegrees(-98.0, 40.0, 16000.0),
+      });
 
-    // (A) BILLBOARD byte-identity: baseline vs full-flag-surface, renderMode
-    //     stays BILLBOARD.
-    let applyThrew = false;
-    const baseline = await hashAfter((coll) => addPuffs(coll));
-    const withFlags = await hashAfter((coll) => {
-      addPuffs(coll);
+      async function hashAfter(buildFn) {
+        const coll = scene.primitives.add(new C.CloudCollection());
+        buildFn(coll);
+        for (let i = 0; i < 12; i++) {
+          scene.render(frameTime);
+          await new Promise((r) => requestAnimationFrame(r));
+        }
+        const canvas = scene.canvas;
+        const tmp = document.createElement("canvas");
+        tmp.width = canvas.width;
+        tmp.height = canvas.height;
+        const ctx2d = tmp.getContext("2d");
+        ctx2d.drawImage(canvas, 0, 0);
+        const data = ctx2d.getImageData(0, 0, tmp.width, tmp.height).data;
+        const digest = new Uint8Array(
+          await crypto.subtle.digest("SHA-256", data),
+        );
+        const sha256 = Array.from(digest, (byte) =>
+          byte.toString(16).padStart(2, "0"),
+        ).join("");
+        let h = 0x811c9dc5;
+        let bright = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i],
+            g = data[i + 1],
+            b = data[i + 2];
+          if (r + g + b > 60) bright++;
+          h ^= r;
+          h = Math.imul(h, 0x01000193);
+          h ^= g;
+          h = Math.imul(h, 0x01000193);
+          h ^= b;
+          h = Math.imul(h, 0x01000193);
+        }
+        scene.primitives.remove(coll);
+        return { hash: h >>> 0, sha256, bright };
+      }
+
+      const puffs = [
+        [-98.02, 40.0],
+        [-98.0, 40.0],
+        [-97.98, 40.0],
+        [-98.0, 40.02],
+        [-98.0, 39.98],
+      ];
+      function addPuffs(coll) {
+        for (const [lon, lat] of puffs) {
+          coll.add({
+            position: C.Cartesian3.fromDegrees(lon, lat, 3000.0),
+            scale: new C.Cartesian2(2000.0, 1300.0),
+            maximumSize: new C.Cartesian3(2000.0, 1300.0, 900.0),
+            brightness: 1.0,
+          });
+        }
+      }
+
+      // (A) BILLBOARD byte-identity: baseline vs full-flag-surface, renderMode
+      //     stays BILLBOARD.
+      let applyThrew = false;
+      const baseline = await hashAfter((coll) => addPuffs(coll));
+      const withFlags = await hashAfter((coll) => {
+        addPuffs(coll);
+        try {
+          applyAllVolumetricFlags(C, coll); // renderMode NOT changed -> BILLBOARD
+        } catch (e) {
+          applyThrew = true;
+        }
+      });
+
+      // (B) WebGL no-op: renderMode VOLUMETRIC + full flags must not throw / error.
+      let volumetricSetupThrew = false;
       try {
-        applyAllVolumetricFlags(C, coll); // renderMode NOT changed -> BILLBOARD
+        const volColl = scene.primitives.add(new C.CloudCollection());
+        addPuffs(volColl);
+        applyAllVolumetricFlags(C, volColl);
+        volColl.renderMode = C.CloudRenderMode.VOLUMETRIC; // exclusive toggle
+        volColl.enableVolumetric = true;
+        for (let i = 0; i < 8; i++) {
+          scene.render(frameTime);
+          await new Promise((r) => requestAnimationFrame(r));
+        }
+        scene.primitives.remove(volColl);
       } catch (e) {
-        applyThrew = true;
+        volumetricSetupThrew = true;
       }
-    });
 
-    // (B) WebGL no-op: renderMode VOLUMETRIC + full flags must not throw / error.
-    let volumetricSetupThrew = false;
-    try {
-      const volColl = scene.primitives.add(new C.CloudCollection());
-      addPuffs(volColl);
-      applyAllVolumetricFlags(C, volColl);
-      volColl.renderMode = C.CloudRenderMode.VOLUMETRIC; // exclusive toggle
-      volColl.enableVolumetric = true;
-      for (let i = 0; i < 8; i++) {
-        scene.render(frameTime);
-        await new Promise((r) => requestAnimationFrame(r));
-      }
-      scene.primitives.remove(volColl);
-    } catch (e) {
-      volumetricSetupThrew = true;
-    }
+      const shotUrl = scene.canvas.toDataURL("image/png");
 
-    const shotUrl = scene.canvas.toDataURL("image/png");
-
-    return {
-      baselineHash: baseline.hash,
-      withFlagsHash: withFlags.hash,
-      baselineSha256: baseline.sha256,
-      withFlagsSha256: withFlags.sha256,
-      baselineBright: baseline.bright,
-      withFlagsBright: withFlags.bright,
-      identical: baseline.sha256 === withFlags.sha256,
-      applyThrew,
-      volumetricSetupThrew,
-      shotUrl,
-    };
+      return {
+        baselineHash: baseline.hash,
+        withFlagsHash: withFlags.hash,
+        baselineSha256: baseline.sha256,
+        withFlagsSha256: withFlags.sha256,
+        baselineBright: baseline.bright,
+        withFlagsBright: withFlags.bright,
+        identical: baseline.sha256 === withFlags.sha256,
+        applyThrew,
+        volumetricSetupThrew,
+        shotUrl,
+      };
     }, applyAllVolumetricFlags.toString());
 
     const gpuGate =
@@ -276,10 +279,7 @@ async function runBackend(renderer) {
         : { errors: [], deviceLost: null, armedDevices: 0 };
     const b64 = result.shotUrl.split(",")[1];
     mkdirSync(OUTPUT_DIR, { recursive: true });
-    writeFileSync(
-      `${OUTPUT_DIR}/${renderer}.png`,
-      Buffer.from(b64, "base64"),
-    );
+    writeFileSync(`${OUTPUT_DIR}/${renderer}.png`, Buffer.from(b64, "base64"));
     delete result.shotUrl;
 
     return {
@@ -307,8 +307,7 @@ for (const res of results) {
     billboardBaselineVisible:
       res.baselineBright > 1000 && res.withFlagsBright > 1000,
     strongDigestPresent:
-      res.baselineSha256?.length === 64 &&
-      res.withFlagsSha256?.length === 64,
+      res.baselineSha256?.length === 64 && res.withFlagsSha256?.length === 64,
     applyDidNotThrow: !res.applyThrew,
     volumetricSetupDidNotThrow: !res.volumetricSetupThrew,
     zeroErrors:
@@ -343,5 +342,7 @@ for (const res of results) {
     console.log(`  GPU gate: ${JSON.stringify(res.gpuGate)}`);
 }
 
-console.log(`\n${ok ? "PASS" : "FAIL"} — CLOUD-U8-DOCS-DEMO-PROBES off-identity`);
+console.log(
+  `\n${ok ? "PASS" : "FAIL"} — CLOUD-U8-DOCS-DEMO-PROBES off-identity`,
+);
 process.exit(ok ? 0 : 1);

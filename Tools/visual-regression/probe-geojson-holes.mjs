@@ -170,7 +170,11 @@ async function run(renderer) {
         flagOff,
       };
     },
-    { featureCollection: FEATURE_COLLECTION, fillSample: FILL_SAMPLE, holeSample: HOLE_SAMPLE },
+    {
+      featureCollection: FEATURE_COLLECTION,
+      fillSample: FILL_SAMPLE,
+      holeSample: HOLE_SAMPLE,
+    },
   );
 
   // Capture the "debug OFF" frame.
@@ -320,14 +324,18 @@ for (const [side, r, a] of [
     fails.push(`${side}: ${r.errs.length} console/page errors`);
   }
   if (r.info.polygonPrimitiveCount !== 1) {
-    fails.push(`${side}: polygonPrimitiveCount ${r.info.polygonPrimitiveCount} != 1`);
+    fails.push(
+      `${side}: polygonPrimitiveCount ${r.info.polygonPrimitiveCount} != 1`,
+    );
   }
   if (r.info.polygonHoleCount !== 1) {
     fails.push(`${side}: polygonHoleCount ${r.info.polygonHoleCount} != 1`);
   }
   // HOLE PARITY: fill pixel yellow, hole pixel base color (hole cut out).
   if (!isYellow(a.fill)) {
-    fails.push(`${side}: fill sample ${JSON.stringify(a.fill)} not polygon color`);
+    fails.push(
+      `${side}: fill sample ${JSON.stringify(a.fill)} not polygon color`,
+    );
   }
   if (!isBase(a.hole)) {
     fails.push(
@@ -337,10 +345,14 @@ for (const [side, r, a] of [
   // WIRING: constructor OFF flag false, runtime setter propagates true to all
   // defined collections.
   if (r.info.flagOff.loader !== false || r.info.flagOff.polygons !== false) {
-    fails.push(`${side}: debugShowBoundingVolume not false when constructed off`);
+    fails.push(
+      `${side}: debugShowBoundingVolume not false when constructed off`,
+    );
   }
   if (r.flagOn.loader !== true || r.flagOn.polygons !== true) {
-    fails.push(`${side}: runtime debugShowBoundingVolume setter did not propagate`);
+    fails.push(
+      `${side}: runtime debugShowBoundingVolume setter did not propagate`,
+    );
   }
 }
 // Both backends MUST render the bounding-volume overlay (flag is wired AND

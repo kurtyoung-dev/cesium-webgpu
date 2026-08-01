@@ -9,9 +9,12 @@ const browser = await chromium.launch({
   args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
 });
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-await page.goto(`http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-  waitUntil: "networkidle",
-});
+await page.goto(
+  `http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu`,
+  {
+    waitUntil: "networkidle",
+  },
+);
 await page.waitForFunction(() => !!window.viewer);
 await page.evaluate(async () => {
   for (let i = 0; i < 60; i++) {

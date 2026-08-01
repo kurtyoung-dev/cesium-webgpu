@@ -28,7 +28,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
@@ -117,7 +121,9 @@ const BASE = "http://localhost:8080";
   console.log(JSON.stringify(result, null, 2));
   console.log(`\nDevice errors: ${errs.length}`);
   if (errs.length) {
-    errs.slice(0, 5).forEach((e) => console.log(`  - ${e.text?.slice(0, 220)}`));
+    errs
+      .slice(0, 5)
+      .forEach((e) => console.log(`  - ${e.text?.slice(0, 220)}`));
   }
 
   // Assertions
@@ -130,7 +136,9 @@ const BASE = "http://localhost:8080";
     // 3 lights declared, but 4 node references (PointLight is referenced twice)
     // — each reference should produce its own entry in lightsFromGltf with its
     // own resolved world position.
-    console.log(`\nFAIL: expected 4 light instances (3 lights, 1 duplicate ref), got ${result.lightCount}`);
+    console.log(
+      `\nFAIL: expected 4 light instances (3 lights, 1 duplicate ref), got ${result.lightCount}`,
+    );
     pass = false;
   }
   if (errs.length > 0) {
@@ -138,7 +146,9 @@ const BASE = "http://localhost:8080";
     pass = false;
   }
   if (pass) {
-    console.log("\nPASS: KHR_lights_punctual loader produces 3 lights, 0 device errors");
+    console.log(
+      "\nPASS: KHR_lights_punctual loader produces 3 lights, 0 device errors",
+    );
   }
   process.exit(pass ? 0 : 1);
 })();

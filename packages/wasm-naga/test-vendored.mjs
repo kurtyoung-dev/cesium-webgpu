@@ -33,7 +33,11 @@ async function main() {
   console.log(`Loading vendored glue: ${glueUrl}`);
   const mod = await import(glueUrl);
 
-  console.log(`  exported functions: ${Object.keys(mod).filter((k) => typeof mod[k] === "function").join(", ")}`);
+  console.log(
+    `  exported functions: ${Object.keys(mod)
+      .filter((k) => typeof mod[k] === "function")
+      .join(", ")}`,
+  );
 
   const wasmBytes = await readFile(join(VENDORED_DIR, "naga_wasm_bg.wasm"));
   console.log(`  WASM size: ${(wasmBytes.length / 1024).toFixed(1)} KB`);
@@ -45,10 +49,14 @@ async function main() {
   const tests = [
     {
       name: "glsl_to_wgsl",
-      run: () => mod.glsl_to_wgsl(`#version 450
+      run: () =>
+        mod.glsl_to_wgsl(
+          `#version 450
 layout(location = 0) out vec4 o;
 void main() { o = vec4(1.0); }
-`, "fragment"),
+`,
+          "fragment",
+        ),
     },
     {
       name: "normalize_wgsl",

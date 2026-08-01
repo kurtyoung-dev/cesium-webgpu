@@ -19,7 +19,9 @@ const BASE = "http://localhost:8080";
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   page.on("console", (m) => {
     const t = m.type();
@@ -51,7 +53,10 @@ const BASE = "http://localhost:8080";
   });
 
   const buf = await page.screenshot({ omitBackground: false });
-  fs.writeFileSync("Tools/visual-regression/output/verify-initial-hdr.png", buf);
+  fs.writeFileSync(
+    "Tools/visual-regression/output/verify-initial-hdr.png",
+    buf,
+  );
   console.log(`PNG bytes: ${buf.length}`);
 
   await browser.close();

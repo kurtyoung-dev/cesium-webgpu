@@ -11,13 +11,27 @@ import path from "node:path";
 
 const DIR = "packages/engine/Source/Shaders/WebGPU/Primitive";
 const files = [
-  "PrimitiveMatAlphaMapFlat", "PrimitiveMatAspectRampFlat", "PrimitiveMatBumpMapFlat",
-  "PrimitiveMatCheckerFlat", "PrimitiveMatColorFlat", "PrimitiveMatDotFlat",
-  "PrimitiveMatElevBandFlat", "PrimitiveMatElevContourFlat", "PrimitiveMatElevRampFlat",
-  "PrimitiveMatEmissionMapFlat", "PrimitiveMatFadeFlat", "PrimitiveMatGridFlat",
-  "PrimitiveMatImageFlat", "PrimitiveMatNormalMapFlat", "PrimitiveMatRimLightingFlat",
-  "PrimitiveMatSlopeRampFlat", "PrimitiveMatSpecularMapFlat", "PrimitiveMatStripeFlat",
-  "PrimitiveMatWaterFlat", "PrimitiveBasicColor", "PrimitiveBasicTexturedColor",
+  "PrimitiveMatAlphaMapFlat",
+  "PrimitiveMatAspectRampFlat",
+  "PrimitiveMatBumpMapFlat",
+  "PrimitiveMatCheckerFlat",
+  "PrimitiveMatColorFlat",
+  "PrimitiveMatDotFlat",
+  "PrimitiveMatElevBandFlat",
+  "PrimitiveMatElevContourFlat",
+  "PrimitiveMatElevRampFlat",
+  "PrimitiveMatEmissionMapFlat",
+  "PrimitiveMatFadeFlat",
+  "PrimitiveMatGridFlat",
+  "PrimitiveMatImageFlat",
+  "PrimitiveMatNormalMapFlat",
+  "PrimitiveMatRimLightingFlat",
+  "PrimitiveMatSlopeRampFlat",
+  "PrimitiveMatSpecularMapFlat",
+  "PrimitiveMatStripeFlat",
+  "PrimitiveMatWaterFlat",
+  "PrimitiveBasicColor",
+  "PrimitiveBasicTexturedColor",
 ].map((n) => `${n}.wgsl`);
 
 // VertexOutput: append v_logDepth varying before the struct close. These shaders
@@ -78,7 +92,8 @@ const VS_BLOCK = `    //>>ifdef LOG_DEPTH
     return output;`;
 
 // fragmentMain signature: dual — FragOut when LOG_DEPTH, bare vec4 otherwise.
-const SIG_OLD = "@fragment\nfn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {";
+const SIG_OLD =
+  "@fragment\nfn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {";
 const SIG_NEW = `@fragment
 //>>ifdef LOG_DEPTH
 fn fragmentMain(input: VertexOutput) -> FragOut {
@@ -92,7 +107,7 @@ fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 let changed = 0;
 for (const file of files) {
   const fp = path.join(DIR, file);
-  let raw = fs.readFileSync(fp, "utf8");
+  const raw = fs.readFileSync(fp, "utf8");
   if (raw.includes("v_logDepth")) {
     console.log(`SKIP (already has log depth): ${file}`);
     continue;
@@ -112,7 +127,8 @@ for (const file of files) {
   //     //>>else branch is genuinely byte-identical-working, not byte-identical-
   //     broken. ColorFlat already carries it (the one shader Batch 97 got right).
   const voBlock = src.match(/struct VertexOutput \{\n[\s\S]*?\n\}/)[0];
-  const usesEye = src.includes("output.eyePosition") || src.includes("input.eyePosition");
+  const usesEye =
+    src.includes("output.eyePosition") || src.includes("input.eyePosition");
   if (usesEye && !voBlock.includes("eyePosition")) {
     const nextLoc =
       Math.max(
@@ -136,28 +152,34 @@ for (const file of files) {
   src = src.replace(voMatch[0], `${voMatch[1]}${VARYING_BLOCK}${voMatch[2]}`);
 
   // 2. CameraUniforms tail.
-  const camMatch = src.match(/    previousViewProjection: mat4x4<f32>,\n(\})/);
-  if (!camMatch) throw new Error(`CameraUniforms prevVP anchor not found in ${file}`);
+  const camMatch = src.match(/ {4}previousViewProjection: mat4x4<f32>,\n(\})/);
+  if (!camMatch)
+    throw new Error(`CameraUniforms prevVP anchor not found in ${file}`);
   src = src.replace(camMatch[0], `${CAMERA_TAIL}${camMatch[1]}`);
 
   // 3. Helpers + FragOut struct — before the first translateRelativeToEye fn.
-  const trIdx = src.indexOf("fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>)");
+  const trIdx = src.indexOf(
+    "fn translateRelativeToEye(high: vec3<f32>, low: vec3<f32>)",
+  );
   if (trIdx < 0) throw new Error(`translateRelativeToEye not found in ${file}`);
   src = src.slice(0, trIdx) + HELPERS_BLOCK + src.slice(trIdx);
 
   // 4. vertexMain — replace the lone `    return output;`.
-  if ((src.match(/\n    return output;/g) || []).length !== 1)
+  if ((src.match(/\n {4}return output;/g) || []).length !== 1)
     throw new Error(`expected exactly one 'return output;' in ${file}`);
   src = src.replace("\n    return output;", `\n${VS_BLOCK}`);
 
   // 5. fragmentMain signature → dual + stash.
-  if (!src.includes(SIG_OLD)) throw new Error(`fragmentMain signature not found in ${file}`);
+  if (!src.includes(SIG_OLD))
+    throw new Error(`fragmentMain signature not found in ${file}`);
   src = src.replace(SIG_OLD, SIG_NEW);
 
   // 6. fragmentMain return sites. The only returns AFTER the fragmentMain
   //    signature are the bare-vec4 returns we must wrap. Walk from the signature
   //    forward and gate each `return <expr>;`.
-  const sigIdx = src.indexOf("fn fragmentMain(input: VertexOutput) -> FragOut {");
+  const sigIdx = src.indexOf(
+    "fn fragmentMain(input: VertexOutput) -> FragOut {",
+  );
   const head = src.slice(0, sigIdx);
   let body = src.slice(sigIdx);
   // Gate `return finalColor;` (4-space, final) and `return effects.clippingEdgeColor;`

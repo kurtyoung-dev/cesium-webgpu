@@ -82,7 +82,13 @@ await browser.close();
 
 const straight = (s1.msPerFrame + s2.msPerFrame) / 2;
 const cone = (c1.msPerFrame + c2.msPerFrame) / 2;
-console.log(`STRAIGHT msPerFrame: ${s1.msPerFrame}, ${s2.msPerFrame} (avg ${straight.toFixed(3)})`);
-console.log(`CONE     msPerFrame: ${c1.msPerFrame}, ${c2.msPerFrame} (avg ${cone.toFixed(3)})`);
-console.log(`cone/straight = ${(cone / straight).toFixed(3)}  (lower = cheaper)`);
+console.log(
+  `STRAIGHT msPerFrame: ${s1.msPerFrame}, ${s2.msPerFrame} (avg ${straight.toFixed(3)})`,
+);
+console.log(
+  `CONE     msPerFrame: ${c1.msPerFrame}, ${c2.msPerFrame} (avg ${cone.toFixed(3)})`,
+);
+console.log(
+  `cone/straight = ${(cone / straight).toFixed(3)}  (lower = cheaper)`,
+);
 console.log(`hasDevice=${s1.hasDevice} errors=${errors.length}`);

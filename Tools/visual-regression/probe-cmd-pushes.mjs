@@ -2,9 +2,12 @@
 // course of a test run.
 import { chromium } from "playwright";
 
-const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+const ctx = await browser.newContext({
+  viewport: { width: 1280, height: 720 },
+});
 const page = await ctx.newPage();
 
 await page.goto(URL, { waitUntil: "networkidle" });
@@ -27,7 +30,8 @@ await page.evaluate(() => {
       globalThis.__dbgAnyPushes += items.length;
       for (const it of items) {
         const p = it?.pass ?? "(undef)";
-        globalThis.__dbgPassPushes[p] = (globalThis.__dbgPassPushes[p] || 0) + 1;
+        globalThis.__dbgPassPushes[p] =
+          (globalThis.__dbgPassPushes[p] || 0) + 1;
         globalThis.__dbgTotalPushes++;
       }
       return Array.prototype.push.apply(this, items);
@@ -38,10 +42,33 @@ await page.evaluate(() => {
   return true;
 });
 
-await page.evaluate(() => new Promise((r) => { let n=0; (function tick(){ if(n++>240) r(); else requestAnimationFrame(tick);})(); }));
+await page.evaluate(
+  () =>
+    new Promise((r) => {
+      let n = 0;
+      (function tick() {
+        if (n++ > 240) r();
+        else requestAnimationFrame(tick);
+      })();
+    }),
+);
 
 const result = await page.evaluate(() => {
-  const passNames = ["ENVIRONMENT","COMPUTE","GLOBE","TERRAIN_CLASSIFICATION","CESIUM_3D_TILE_EDGES","CESIUM_3D_TILE","CESIUM_3D_TILE_CLASSIFICATION","CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW","OPAQUE","TRANSLUCENT","VOXELS","GAUSSIAN_SPLATS","OVERLAY"];
+  const passNames = [
+    "ENVIRONMENT",
+    "COMPUTE",
+    "GLOBE",
+    "TERRAIN_CLASSIFICATION",
+    "CESIUM_3D_TILE_EDGES",
+    "CESIUM_3D_TILE",
+    "CESIUM_3D_TILE_CLASSIFICATION",
+    "CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW",
+    "OPAQUE",
+    "TRANSLUCENT",
+    "VOXELS",
+    "GAUSSIAN_SPLATS",
+    "OVERLAY",
+  ];
   const pushes = globalThis.__dbgPassPushes ?? {};
   const named = {};
   for (const k of Object.keys(pushes)) {
@@ -50,7 +77,7 @@ const result = await page.evaluate(() => {
   }
   // Inspect the actual items in commandList
   const cmdList = window.viewer.scene._frameState.commandList;
-  const items = cmdList.map((c) => ({
+  const _items = cmdList.map((c) => ({
     keys: Object.keys(c).slice(0, 15),
     pass: c.pass,
     passType: typeof c.pass,

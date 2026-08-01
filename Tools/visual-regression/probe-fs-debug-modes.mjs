@@ -37,7 +37,9 @@ async function capture(mode) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
   });
@@ -49,7 +51,9 @@ async function capture(mode) {
       const v = window.viewer;
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
       v.camera.setView({

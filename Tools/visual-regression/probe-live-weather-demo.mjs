@@ -89,8 +89,8 @@ function cloudPct(page, dataUrl) {
     const cx = c.getContext("2d");
     cx.drawImage(img, 0, 0);
     const d = cx.getImageData(0, 0, c.width, c.height).data;
-    let cloud = 0,
-      n = d.length / 4;
+    let cloud = 0;
+    const n = d.length / 4;
     for (let i = 0; i < d.length; i += 4) {
       const r = d[i],
         g = d[i + 1],
@@ -130,9 +130,13 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
   // Let the render loop kick the provider fetch (→ proxy → 502) + settle clouds.
   await page.waitForTimeout(12000);
@@ -164,14 +168,26 @@ async function run() {
 
   const checks = [
     ["demo booted + weatherProvider set", st.hasProvider === true],
-    [`provider source is EDR (${st.sourceId})`, typeof st.sourceId === "string" && st.sourceId.startsWith("edr:")],
+    [
+      `provider source is EDR (${st.sourceId})`,
+      typeof st.sourceId === "string" && st.sourceId.startsWith("edr:"),
+    ],
     [
       `live fetch attempted + failed GRACEFULLY here (lastError: ${st.lastError}) — proves the proxy path; live data needs a networked browser`,
       st.hasData === false && reachedNetworkBoundary,
     ],
-    [`clouds STILL render via procedural fallback (cloudPct ${pct} > 1)`, pct > 1],
-    [`status panel shows the feed state`, typeof st.panelText === "string" && st.panelText.length > 0],
-    [`no NEW (non-feed) device/runtime errors (${newErrs.length})`, newErrs.length === 0],
+    [
+      `clouds STILL render via procedural fallback (cloudPct ${pct} > 1)`,
+      pct > 1,
+    ],
+    [
+      `status panel shows the feed state`,
+      typeof st.panelText === "string" && st.panelText.length > 0,
+    ],
+    [
+      `no NEW (non-feed) device/runtime errors (${newErrs.length})`,
+      newErrs.length === 0,
+    ],
   ];
   console.log("\n=== ANALYSIS ===");
   let pass = true;
@@ -184,7 +200,9 @@ async function run() {
   if (newErrs.length) {
     console.log("  errors:", newErrs.slice(0, 5));
   }
-  console.log(`\nRESULT: ${pass ? "GREEN" : "RED"}  (live DATA path unverified — needs network)`);
+  console.log(
+    `\nRESULT: ${pass ? "GREEN" : "RED"}  (live DATA path unverified — needs network)`,
+  );
   await browser.close();
   process.exitCode = pass ? 0 : 1;
 }

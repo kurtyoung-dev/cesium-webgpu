@@ -354,7 +354,8 @@ console.log(
   `    reference magenta billboards (already log-depth): ON=${out.onMag} OFF=${out.offMag} (stable across flip)`,
 );
 check("5", errors.length === 0, `console errors: ${errors.length}`);
-if (errors.length) for (const e of errors.slice(0, 8)) console.log(`  ERR: ${e}`);
+if (errors.length)
+  for (const e of errors.slice(0, 8)) console.log(`  ERR: ${e}`);
 
 console.log(ok ? "PASS" : "FAIL");
 await browser.close();

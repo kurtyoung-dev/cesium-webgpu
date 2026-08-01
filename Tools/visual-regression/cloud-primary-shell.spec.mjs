@@ -40,11 +40,7 @@ function dot(a, b) {
 }
 
 function addScaled(a, b, scale) {
-  return [
-    a[0] + b[0] * scale,
-    a[1] + b[1] * scale,
-    a[2] + b[2] * scale,
-  ];
+  return [a[0] + b[0] * scale, a[1] + b[1] * scale, a[2] + b[2] * scale];
 }
 
 function divide(a, b) {
@@ -82,10 +78,7 @@ function divideF32(left, right) {
 
 function dotF32(left, right) {
   return addF32(
-    addF32(
-      multiplyF32(left[0], right[0]),
-      multiplyF32(left[1], right[1]),
-    ),
+    addF32(multiplyF32(left[0], right[0]), multiplyF32(left[1], right[1])),
     multiplyF32(left[2], right[2]),
   );
 }
@@ -109,17 +102,14 @@ function wgs84Cartesian(latitudeDegrees, longitudeDegrees, height) {
   const cosLatitude = Math.cos(latitude);
   const sinLongitude = Math.sin(longitude);
   const cosLongitude = Math.cos(longitude);
-  const eccentricitySquared =
-    1.0 - (WGS84_B * WGS84_B) / (WGS84_A * WGS84_A);
+  const eccentricitySquared = 1.0 - (WGS84_B * WGS84_B) / (WGS84_A * WGS84_A);
   const primeVerticalRadius =
-    WGS84_A /
-    Math.sqrt(1.0 - eccentricitySquared * sinLatitude * sinLatitude);
+    WGS84_A / Math.sqrt(1.0 - eccentricitySquared * sinLatitude * sinLatitude);
 
   return [
     (primeVerticalRadius + height) * cosLatitude * cosLongitude,
     (primeVerticalRadius + height) * cosLatitude * sinLongitude,
-    (primeVerticalRadius * (1.0 - eccentricitySquared) + height) *
-      sinLatitude,
+    (primeVerticalRadius * (1.0 - eccentricitySquared) + height) * sinLatitude,
   ];
 }
 
@@ -163,12 +153,7 @@ function encodedNegativeCenter(camera) {
  * WGSL; a driver may contract a dot product, so browser evidence remains the
  * final authority.
  */
-function rayEllipsoidIntersectRteF32(
-  direction,
-  centerHigh,
-  centerLow,
-  axes,
-) {
+function rayEllipsoidIntersectRteF32(direction, centerHigh, centerLow, axes) {
   const directionF32 = direction.map(Math.fround);
   const centerHighF32 = centerHigh.map(Math.fround);
   const centerLowF32 = centerLow.map(Math.fround);
@@ -189,24 +174,15 @@ function rayEllipsoidIntersectRteF32(
   );
   const closest = [
     subtractF32(
-      subtractF32(
-        multiplyF32(directionScaled[0], closestT),
-        highScaled[0],
-      ),
+      subtractF32(multiplyF32(directionScaled[0], closestT), highScaled[0]),
       lowScaled[0],
     ),
     subtractF32(
-      subtractF32(
-        multiplyF32(directionScaled[1], closestT),
-        highScaled[1],
-      ),
+      subtractF32(multiplyF32(directionScaled[1], closestT), highScaled[1]),
       lowScaled[1],
     ),
     subtractF32(
-      subtractF32(
-        multiplyF32(directionScaled[2], closestT),
-        highScaled[2],
-      ),
+      subtractF32(multiplyF32(directionScaled[2], closestT), highScaled[2]),
       lowScaled[2],
     ),
   ];
@@ -216,10 +192,7 @@ function rayEllipsoidIntersectRteF32(
   );
   assert.ok(halfChordSquared >= 0.0, "RTE ray must intersect the shell");
   const halfChord = Math.fround(Math.sqrt(Math.fround(halfChordSquared)));
-  return [
-    subtractF32(closestT, halfChord),
-    addF32(closestT, halfChord),
-  ];
+  return [subtractF32(closestT, halfChord), addF32(closestT, halfChord)];
 }
 
 /**
@@ -246,8 +219,7 @@ function directionForScaledClosestApproach(
   const sinAngle = closestScaledRadius / scaledCameraRadius;
   const cosAngle = Math.sqrt(1.0 - sinAngle * sinAngle);
   const scaledDirection = scaledCameraDirection.map(
-    (component, index) =>
-      -cosAngle * component + sinAngle * tangent[index],
+    (component, index) => -cosAngle * component + sinAngle * tangent[index],
   );
   return normalize(
     scaledDirection.map((component, index) => component * axes[index]),
@@ -325,14 +297,8 @@ test("WGS84 shell intersections cover equator, antimeridian, and both poles", ()
       Math.abs(inner[0] - 18500.0) < 1e-4,
       `${name}: legacy inner root`,
     );
-    assert.ok(
-      Math.abs(outerRte[0] - 16000.0) < 1.0,
-      `${name}: RTE outer root`,
-    );
-    assert.ok(
-      Math.abs(innerRte[0] - 18500.0) < 1.0,
-      `${name}: RTE inner root`,
-    );
+    assert.ok(Math.abs(outerRte[0] - 16000.0) < 1.0, `${name}: RTE outer root`);
+    assert.ok(Math.abs(innerRte[0] - 18500.0) < 1.0, `${name}: RTE inner root`);
     assert.ok(outerRte[0] < innerRte[0], `${name}: near interval ordering`);
   }
 });
@@ -361,11 +327,7 @@ test("below, inside, and above-deck cameras select the near visible interval", (
 
   for (const { name, height, direction, expected } of cases) {
     const camera = wgs84Cartesian(0.0, 0.0, height);
-    const outer = rayEllipsoidIntersect(
-      camera,
-      direction,
-      shellAxes(DECK_TOP),
-    );
+    const outer = rayEllipsoidIntersect(camera, direction, shellAxes(DECK_TOP));
     const inner = rayEllipsoidIntersect(
       camera,
       direction,
@@ -491,11 +453,7 @@ test("oblate height fractions preserve both deck boundaries without square roots
     top[axis] = shellAxes(DECK_TOP)[axis];
 
     assert.equal(
-      shellHeightFraction(
-        bottom,
-        shellAxes(DECK_BOTTOM),
-        shellAxes(DECK_TOP),
-      ),
+      shellHeightFraction(bottom, shellAxes(DECK_BOTTOM), shellAxes(DECK_TOP)),
       0.0,
     );
     assert.ok(
@@ -566,13 +524,7 @@ test("renderer preserves the WGS84 rows and appends the C13-37 phase layout", ()
   );
   assert.match(renderer, /writeCloudDensityAdvectedOriginPhases\(/);
   assert.match(renderer, /writeCloudMorphologyOriginHighLow\(/);
-  assert.match(
-    renderer,
-    /offset \+= CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;/,
-  );
-  assert.match(
-    renderer,
-    /offset \+= CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS;/,
-  );
+  assert.match(renderer, /offset \+= CLOUD_DENSITY_ORIGIN_PHASE_FLOATS;/);
+  assert.match(renderer, /offset \+= CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS;/);
   assert.match(renderer, /\.cloudHighPrecision !== false;/);
 });

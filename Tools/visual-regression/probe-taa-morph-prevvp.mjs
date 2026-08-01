@@ -181,9 +181,18 @@ check(
   out.sawInvalidDuringMorph === true,
   `MORPH-TAA-PREVVP guard fired: TAA motion-vector validity went false during MORPHING (history invalidated, no stale reproject): sawInvalidDuringMorph=${out.sawInvalidDuringMorph}`,
 );
-check("4", out.finalMode === "3D", `morph completes back to 3D: finalMode=${out.finalMode}`);
-check("5", errors.length === 0, `console / WebGPU validation errors: ${errors.length}`);
-if (errors.length) for (const e of errors.slice(0, 8)) console.log(`  ERR: ${e}`);
+check(
+  "4",
+  out.finalMode === "3D",
+  `morph completes back to 3D: finalMode=${out.finalMode}`,
+);
+check(
+  "5",
+  errors.length === 0,
+  `console / WebGPU validation errors: ${errors.length}`,
+);
+if (errors.length)
+  for (const e of errors.slice(0, 8)) console.log(`  ERR: ${e}`);
 
 console.log(ok ? "PASS" : "FAIL");
 await browser.close();

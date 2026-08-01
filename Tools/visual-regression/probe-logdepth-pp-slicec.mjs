@@ -180,10 +180,14 @@ async function run() {
     v.clock.shouldAnimate = false;
     v.clock.multiplier = 0;
     const lakeCoords = C.Cartesian3.fromDegreesArray([
-      view.lon - 0.003, view.lat - 0.0015,
-      view.lon + 0.003, view.lat - 0.0015,
-      view.lon + 0.003, view.lat + 0.0015,
-      view.lon - 0.003, view.lat + 0.0015,
+      view.lon - 0.003,
+      view.lat - 0.0015,
+      view.lon + 0.003,
+      view.lat - 0.0015,
+      view.lon + 0.003,
+      view.lat + 0.0015,
+      view.lon - 0.003,
+      view.lat + 0.0015,
     ]);
     v.scene.primitives.add(
       new C.Primitive({
@@ -191,7 +195,8 @@ async function run() {
           geometry: new C.PolygonGeometry({
             polygonHierarchy: new C.PolygonHierarchy(lakeCoords),
             height: 240,
-            vertexFormat: C.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat,
+            vertexFormat:
+              C.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat,
           }),
         }),
         appearance: new C.MaterialAppearance({
@@ -204,10 +209,14 @@ async function run() {
       }),
     );
     const wallCoords = C.Cartesian3.fromDegreesArray([
-      view.lon - 0.001, view.lat + 0.002,
-      view.lon + 0.001, view.lat + 0.002,
-      view.lon + 0.001, view.lat + 0.0025,
-      view.lon - 0.001, view.lat + 0.0025,
+      view.lon - 0.001,
+      view.lat + 0.002,
+      view.lon + 0.001,
+      view.lat + 0.002,
+      view.lon + 0.001,
+      view.lat + 0.0025,
+      view.lon - 0.001,
+      view.lat + 0.0025,
     ]);
     v.scene.primitives.add(
       new C.Primitive({
@@ -216,7 +225,8 @@ async function run() {
             polygonHierarchy: new C.PolygonHierarchy(wallCoords),
             height: 240,
             extrudedHeight: 400,
-            vertexFormat: C.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat,
+            vertexFormat:
+              C.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat,
           }),
         }),
         appearance: new C.MaterialAppearance({
@@ -229,8 +239,15 @@ async function run() {
       }),
     );
     v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(view.lon, view.lat - 0.005, view.height),
-      orientation: { heading: C.Math.toRadians(0), pitch: C.Math.toRadians(-15) },
+      destination: C.Cartesian3.fromDegrees(
+        view.lon,
+        view.lat - 0.005,
+        view.height,
+      ),
+      orientation: {
+        heading: C.Math.toRadians(0),
+        pitch: C.Math.toRadians(-15),
+      },
     });
   }, ssrView);
   await warm(page);
@@ -291,10 +308,14 @@ async function run() {
     v.clock.multiplier = 0;
     s.globe.enableLighting = true;
     const wallCoords = C.Cartesian3.fromDegreesArray([
-      view.lon - 0.002, view.lat,
-      view.lon + 0.002, view.lat,
-      view.lon + 0.002, view.lat + 0.0003,
-      view.lon - 0.002, view.lat + 0.0003,
+      view.lon - 0.002,
+      view.lat,
+      view.lon + 0.002,
+      view.lat,
+      view.lon + 0.002,
+      view.lat + 0.0003,
+      view.lon - 0.002,
+      view.lat + 0.0003,
     ]);
     const wall = new C.Primitive({
       geometryInstances: new C.GeometryInstance({
@@ -302,7 +323,8 @@ async function run() {
           polygonHierarchy: new C.PolygonHierarchy(wallCoords),
           height: 240,
           extrudedHeight: 280,
-          vertexFormat: C.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat,
+          vertexFormat:
+            C.MaterialAppearance.MaterialSupport.TEXTURED.vertexFormat,
         }),
       }),
       appearance: new C.MaterialAppearance({
@@ -315,8 +337,15 @@ async function run() {
     });
     v.scene.primitives.add(wall);
     v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(view.lon, view.lat - 0.005, view.height),
-      orientation: { heading: C.Math.toRadians(0), pitch: C.Math.toRadians(-25) },
+      destination: C.Cartesian3.fromDegrees(
+        view.lon,
+        view.lat - 0.005,
+        view.height,
+      ),
+      orientation: {
+        heading: C.Math.toRadians(0),
+        pitch: C.Math.toRadians(-25),
+      },
     });
   }, csView);
   await warm(page);

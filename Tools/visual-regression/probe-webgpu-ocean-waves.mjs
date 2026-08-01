@@ -39,17 +39,29 @@ async function launch() {
   return chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
 }
 
 // Capture N sequential frames (for animation check). Returns array of PNG paths.
-async function captureFrames(rendererArg, { label, frames = 1, animate = false }) {
+async function captureFrames(
+  rendererArg,
+  { label, frames = 1, animate = false },
+) {
   const browser = await launch();
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}&${VIEW}`;
   await page.goto(url, { waitUntil: "networkidle" });
@@ -108,13 +120,17 @@ async function captureFrames(rendererArg, { label, frames = 1, animate = false }
       );
       await page.waitForTimeout(300);
     }
-    const p = path.join(OUT_DIR, `ocean-waves-${label}-${rendererArg}-f${f}.png`);
+    const p = path.join(
+      OUT_DIR,
+      `ocean-waves-${label}-${rendererArg}-f${f}.png`,
+    );
     await page.screenshot({ path: p, fullPage: false });
     out.push(p);
   }
   await browser.close();
   const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
-  if (errs.length) errs.slice(0, 3).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
+  if (errs.length)
+    errs.slice(0, 3).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
   return out;
 }
 
@@ -144,10 +160,12 @@ async function analyze(paths, crop) {
       const imgs = [];
       for (const b of b64s) imgs.push(await decode(b));
       const A = imgs[0];
-      const lum = (d, i) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      const lum = (d, i) =>
+        0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
       const idx = (x, y) => (y * A.w + x) * 4;
       // Mean luminance over crop.
-      let sum = 0, n = 0;
+      let sum = 0,
+        n = 0;
       for (let y = crop.y0; y < crop.y1; y++) {
         for (let x = crop.x0; x < crop.x1; x++) {
           sum += lum(A.data, idx(x, y));
@@ -156,7 +174,8 @@ async function analyze(paths, crop) {
       }
       const meanLum = sum / n;
       // Spatial detail: mean abs Laplacian (4-neighbor) over crop.
-      let lap = 0, ln = 0;
+      let lap = 0,
+        ln = 0;
       for (let y = crop.y0 + 1; y < crop.y1 - 1; y++) {
         for (let x = crop.x0 + 1; x < crop.x1 - 1; x++) {
           const c = lum(A.data, idx(x, y));
@@ -175,7 +194,8 @@ async function analyze(paths, crop) {
       let temporal = null;
       if (imgs.length > 1) {
         const B = imgs[1];
-        let td = 0, tn = 0;
+        let td = 0,
+          tn = 0;
         for (let y = crop.y0; y < crop.y1; y++) {
           for (let x = crop.x0; x < crop.x1; x++) {
             const i = idx(x, y);
@@ -185,7 +205,11 @@ async function analyze(paths, crop) {
         }
         temporal = td / tn;
       }
-      return { meanLum: +meanLum.toFixed(2), detail: +detail.toFixed(3), temporal: temporal === null ? null : +temporal.toFixed(3) };
+      return {
+        meanLum: +meanLum.toFixed(2),
+        detail: +detail.toFixed(3),
+        temporal: temporal === null ? null : +temporal.toFixed(3),
+      };
     },
     { b64s, crop },
   );
@@ -208,12 +232,16 @@ async function analyze(paths, crop) {
 
   const brightRatio = gpu.meanLum / Math.max(1, gl.meanLum);
   const detailRatio = gpu.detail / Math.max(0.001, gl.detail);
-  console.log(`  brightness gpu/gl: ${brightRatio.toFixed(3)}  (target ~1.0, <1.35 acceptable)`);
-  console.log(`  wave-detail gpu/gl: ${detailRatio.toFixed(3)}  (target >~0.4)`);
+  console.log(
+    `  brightness gpu/gl: ${brightRatio.toFixed(3)}  (target ~1.0, <1.35 acceptable)`,
+  );
+  console.log(
+    `  wave-detail gpu/gl: ${detailRatio.toFixed(3)}  (target >~0.4)`,
+  );
   console.log(`  WebGPU temporal wave delta: ${gpu.temporal}`);
   console.log(`  WebGL  temporal wave delta: ${gl.temporal}`);
   console.log(
-    "  NOTE (post-Batch-757): the old \">0.3 = animating\" target is STALE at " +
+    '  NOTE (post-Batch-757): the old ">0.3 = animating" target is STALE at ' +
       "this 18 km oblique range. C11-172's physical-wavelength footprint LOD " +
       "deliberately FADES the water-mask waves out with distance, so a LOW " +
       "temporal delta here is EXPECTED, not a regression — baseline-controlled " +

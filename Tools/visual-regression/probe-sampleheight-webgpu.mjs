@@ -198,7 +198,9 @@ if (webgpu.sampleHeightResults[0].kind !== "undefined")
   failures.push(
     `WebGPU sampleHeight cold-cache: frame 0 expected undefined, got ${webgpu.sampleHeightResults[0].kind}`,
   );
-const gpuHeightHit = webgpu.sampleHeightResults.find((r) => r.kind === "number");
+const gpuHeightHit = webgpu.sampleHeightResults.find(
+  (r) => r.kind === "number",
+);
 if (!gpuHeightHit)
   failures.push("WebGPU sampleHeight never converged to a finite number");
 if (webgpu.clampResults[0].kind !== "undefined")
@@ -215,7 +217,8 @@ if (glHeightHit && gpuHeightHit) {
   console.log(
     `\ncross-backend sampleHeight delta: dH=${dH.toFixed(1)} m (WebGL=${glHeightHit.value.toFixed(1)} WebGPU=${gpuHeightHit.value.toFixed(1)})`,
   );
-  if (dH > 1500) failures.push(`sampleHeight dHeight ${dH.toFixed(1)} m > 1500 m`);
+  if (dH > 1500)
+    failures.push(`sampleHeight dHeight ${dH.toFixed(1)} m > 1500 m`);
 }
 
 if (webgpu.errors.length > 0)

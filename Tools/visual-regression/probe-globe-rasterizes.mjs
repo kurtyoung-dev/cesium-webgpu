@@ -36,7 +36,9 @@ async function capture(rendererArg) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
 
@@ -86,7 +88,9 @@ async function capture(rendererArg) {
     let brownish = 0; // terrain
     let near0 = 0; // pure black
     for (let i = 0; i < data.length; i += 4) {
-      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const r = data[i],
+        g = data[i + 1],
+        b = data[i + 2];
       const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
       sumLum += lum;
       if (lum < 8) near0++;
@@ -98,11 +102,13 @@ async function capture(rendererArg) {
       if (r > b + 20 && g > b + 10 && r > 40) brownish++;
     }
     return {
-      w, h, total,
+      w,
+      h,
+      total,
       nonBgPx: nonBg,
-      nonBgPct: +(100 * nonBg / total).toFixed(2),
+      nonBgPct: +((100 * nonBg) / total).toFixed(2),
       near0Px: near0,
-      near0Pct: +(100 * near0 / total).toFixed(2),
+      near0Pct: +((100 * near0) / total).toFixed(2),
       meanLum: +(sumLum / total).toFixed(2),
       blueishPx: blueish,
       greenishPx: greenish,
@@ -115,9 +121,16 @@ async function capture(rendererArg) {
   // uniformly 1.0 (the BUG-11 symptom) it returns undefined; if the globe
   // rasterized, it returns a cartesian on the globe surface (~6.37e6 mag).
   const depthInfo = await page.evaluate(async () => {
-    const out = { hasCesiumDebug: !!window.CesiumDebug, hasShowDepth: false, note: null };
+    const out = {
+      hasCesiumDebug: !!window.CesiumDebug,
+      hasShowDepth: false,
+      note: null,
+    };
     try {
-      if (window.CesiumDebug && typeof window.CesiumDebug.showDepth === "function") {
+      if (
+        window.CesiumDebug &&
+        typeof window.CesiumDebug.showDepth === "function"
+      ) {
         out.hasShowDepth = true;
       }
     } catch (e) {
@@ -131,13 +144,21 @@ async function capture(rendererArg) {
       const w = scene.canvas.clientWidth;
       const h = scene.canvas.clientHeight;
       const pts = [
-        [0.5, 0.5], [0.4, 0.4], [0.6, 0.6], [0.5, 0.4], [0.5, 0.6],
+        [0.5, 0.5],
+        [0.4, 0.4],
+        [0.6, 0.6],
+        [0.5, 0.4],
+        [0.5, 0.6],
       ];
       const hits = [];
       for (const [fx, fy] of pts) {
         const px = new C.Cartesian2(w * fx, h * fy);
         let picked;
-        try { picked = scene.pickPosition(px); } catch (e) { picked = undefined; }
+        try {
+          picked = scene.pickPosition(px);
+        } catch (e) {
+          picked = undefined;
+        }
         if (picked) {
           hits.push(+Math.hypot(picked.x, picked.y, picked.z).toFixed(0));
         }
@@ -176,9 +197,15 @@ async function capture(rendererArg) {
     cx.drawImage(img, 0, 0);
     const data = cx.getImageData(0, 0, c.width, c.height).data;
     const total = c.width * c.height;
-    let nonBg = 0, sumLum = 0, blueish = 0, greenish = 0, brownish = 0;
+    let nonBg = 0,
+      sumLum = 0,
+      blueish = 0,
+      greenish = 0,
+      brownish = 0;
     for (let i = 0; i < data.length; i += 4) {
-      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const r = data[i],
+        g = data[i + 1],
+        b = data[i + 2];
       const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
       sumLum += lum;
       if (lum >= 8) nonBg++;
@@ -187,10 +214,15 @@ async function capture(rendererArg) {
       if (r > b + 20 && g > b + 10 && r > 40) brownish++;
     }
     return {
-      w: c.width, h: c.height, total,
-      nonBgPx: nonBg, nonBgPct: +(100 * nonBg / total).toFixed(2),
+      w: c.width,
+      h: c.height,
+      total,
+      nonBgPx: nonBg,
+      nonBgPct: +((100 * nonBg) / total).toFixed(2),
       meanLum: +(sumLum / total).toFixed(2),
-      blueishPx: blueish, greenishPx: greenish, brownishPx: brownish,
+      blueishPx: blueish,
+      greenishPx: greenish,
+      brownishPx: brownish,
     };
   }, fs.readFileSync(out).toString("base64"));
 
@@ -209,9 +241,15 @@ async function capture(rendererArg) {
     console.log(`  png:        ${res.out}`);
     console.log(`  pngStats:   ${JSON.stringify(res.pngStats)}`);
     console.log(`  depth/pick: ${JSON.stringify(res.depthInfo)}`);
-    console.log(`  gate:       armed=${res.gate.armedDevices} errors=${res.gate.errors.length} deviceLost=${res.gate.deviceLost || "no"}`);
-    if (res.gate.errors.length) res.gate.errors.slice(0, 5).forEach((e) => console.log(`    GATE: ${e}`));
-    if (res.consoleErrors.length) res.consoleErrors.slice(0, 5).forEach((e) => console.log(`    CONSOLE: ${e}`));
+    console.log(
+      `  gate:       armed=${res.gate.armedDevices} errors=${res.gate.errors.length} deviceLost=${res.gate.deviceLost || "no"}`,
+    );
+    if (res.gate.errors.length)
+      res.gate.errors.slice(0, 5).forEach((e) => console.log(`    GATE: ${e}`));
+    if (res.consoleErrors.length)
+      res.consoleErrors
+        .slice(0, 5)
+        .forEach((e) => console.log(`    CONSOLE: ${e}`));
   }
   console.log("[globe-rasterizes] done");
 })();

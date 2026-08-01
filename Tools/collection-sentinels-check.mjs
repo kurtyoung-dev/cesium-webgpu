@@ -52,14 +52,8 @@ const stubResident = resolve(tmp, "WebGPUResidentInstanceBuffer.js");
 const stubModuleCache = resolve(tmp, "WebGPUShaderModuleCache.js");
 writeFileSync(stubBuffer, "export default class WebGPUBuffer {}\n");
 writeFileSync(stubScene, "export default { SCENE3D: 3 };\n");
-writeFileSync(
-  stubResident,
-  "export class WebGPUResidentInstanceBuffer {}\n",
-);
-writeFileSync(
-  stubModuleCache,
-  "export class WebGPUShaderModuleCache {}\n",
-);
+writeFileSync(stubResident, "export class WebGPUResidentInstanceBuffer {}\n");
+writeFileSync(stubModuleCache, "export class WebGPUShaderModuleCache {}\n");
 
 const result = await build({
   entryPoints: [baseSrc],
@@ -71,7 +65,9 @@ const result = await build({
     {
       name: "stub-imports",
       setup(b) {
-        b.onResolve({ filter: /WebGPUBuffer\.js$/ }, () => ({ path: stubBuffer }));
+        b.onResolve({ filter: /WebGPUBuffer\.js$/ }, () => ({
+          path: stubBuffer,
+        }));
         b.onResolve({ filter: /SceneMode\.js$/ }, () => ({ path: stubScene }));
         b.onResolve({ filter: /WebGPUResidentInstanceBuffer\.js$/ }, () => ({
           path: stubResident,
@@ -146,33 +142,40 @@ resetErrors();
   const cache = {};
   endCollectionFrame(cache);
   endCollectionFrame(cache);
-  check("S1 endCollectionFrame never goes below 0", cache._frameReentryDepth === 0);
+  check(
+    "S1 endCollectionFrame never goes below 0",
+    cache._frameReentryDepth === 0,
+  );
 }
 
 // ── Sentinel 2 — null-target guard ────────────────────────────────────
 resetErrors();
 check(
   "S2 sync OK (5 visible, buffer set) → true, no log",
-  validateInstanceSyncResult({ visibleCount: 5, buffer: { size: 1024 } }, "X") ===
-    true && errors.length === 0,
+  validateInstanceSyncResult(
+    { visibleCount: 5, buffer: { size: 1024 } },
+    "X",
+  ) === true && errors.length === 0,
 );
 resetErrors();
 check(
   "S2 empty (0 visible) → false, no log",
-  validateInstanceSyncResult({ visibleCount: 0, buffer: null }, "X") === false &&
-    errors.length === 0,
+  validateInstanceSyncResult({ visibleCount: 0, buffer: null }, "X") ===
+    false && errors.length === 0,
 );
 resetErrors();
 check(
   "S2 null buffer w/ 7 visible → false + permanent error",
-  validateInstanceSyncResult({ visibleCount: 7, buffer: null }, "X") === false &&
+  validateInstanceSyncResult({ visibleCount: 7, buffer: null }, "X") ===
+    false &&
     errors.length === 1 &&
     /null buffer/.test(errors[0]),
 );
 resetErrors();
 check(
   "S2 validateDrawTargets all live (wrapper + raw) → true, no log",
-  validateDrawTargets([{ buffer: {} }, {}], "Y") === true && errors.length === 0,
+  validateDrawTargets([{ buffer: {} }, {}], "Y") === true &&
+    errors.length === 0,
 );
 resetErrors();
 check(

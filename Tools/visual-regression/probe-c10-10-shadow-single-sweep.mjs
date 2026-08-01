@@ -59,10 +59,14 @@ async function capture(label, { renderer, useCsm }) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
@@ -109,10 +113,14 @@ async function capture(label, { renderer, useCsm }) {
 
       // In-view caster: 120 m wall throwing a visible ground shadow.
       const wallCoords = C.Cartesian3.fromDegreesArray([
-        view.lon - 0.0004, view.lat - 0.003,
-        view.lon + 0.0004, view.lat - 0.003,
-        view.lon + 0.0004, view.lat + 0.003,
-        view.lon - 0.0004, view.lat + 0.003,
+        view.lon - 0.0004,
+        view.lat - 0.003,
+        view.lon + 0.0004,
+        view.lat - 0.003,
+        view.lon + 0.0004,
+        view.lat + 0.003,
+        view.lon - 0.0004,
+        view.lat + 0.003,
       ]);
       const wall = new C.Primitive({
         geometryInstances: new C.GeometryInstance({
@@ -128,7 +136,10 @@ async function capture(label, { renderer, useCsm }) {
             ),
           },
         }),
-        appearance: new C.PerInstanceColorAppearance({ translucent: false, flat: false }),
+        appearance: new C.PerInstanceColorAppearance({
+          translucent: false,
+          flat: false,
+        }),
         asynchronous: false,
         shadows: C.ShadowMode.ENABLED,
       });
@@ -139,10 +150,14 @@ async function capture(label, { renderer, useCsm }) {
       // shadow caster in a shadowed (OPAQUE) pass.
       const offLon = view.lon + 0.02;
       const boxCoords = C.Cartesian3.fromDegreesArray([
-        offLon - 0.0006, view.lat - 0.0006,
-        offLon + 0.0006, view.lat - 0.0006,
-        offLon + 0.0006, view.lat + 0.0006,
-        offLon - 0.0006, view.lat + 0.0006,
+        offLon - 0.0006,
+        view.lat - 0.0006,
+        offLon + 0.0006,
+        view.lat - 0.0006,
+        offLon + 0.0006,
+        view.lat + 0.0006,
+        offLon - 0.0006,
+        view.lat + 0.0006,
       ]);
       const offBox = new C.Primitive({
         geometryInstances: new C.GeometryInstance({
@@ -158,7 +173,10 @@ async function capture(label, { renderer, useCsm }) {
             ),
           },
         }),
-        appearance: new C.PerInstanceColorAppearance({ translucent: false, flat: false }),
+        appearance: new C.PerInstanceColorAppearance({
+          translucent: false,
+          flat: false,
+        }),
         asynchronous: false,
         shadows: C.ShadowMode.ENABLED,
       });
@@ -166,7 +184,9 @@ async function capture(label, { renderer, useCsm }) {
 
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(
-          view.lon + 0.0012, view.lat + 0.0012, 1700.0,
+          view.lon + 0.0012,
+          view.lat + 0.0012,
+          1700.0,
         ),
         orientation: { heading: 0, pitch: C.Math.toRadians(-90), roll: 0 },
       });
@@ -190,18 +210,20 @@ async function capture(label, { renderer, useCsm }) {
       // Candidate caster set the OLD full-scan would produce.
       const oldSet = [];
       for (const c of commandList) {
-        if (c && c.castShadows === true && SHADOWED[c.pass] === 1) oldSet.push(c);
+        if (c && c.castShadows === true && SHADOWED[c.pass] === 1)
+          oldSet.push(c);
       }
       const K = oldSet.length;
 
       // Camera visibility for each candidate caster (PVS uses a far-plane-
       // dropped culling volume; frameState.cullingVolume is the same source).
       const camCull = fs2?.cullingVolume;
-      const occluder = scene.mode === C.SceneMode.SCENE3D ? fs2.occluder : undefined;
+      const occluder =
+        scene.mode === C.SceneMode.SCENE3D ? fs2.occluder : undefined;
       let camInvisCasters = 0;
       const camInvisSet = new Set();
       for (const c of oldSet) {
-        let vis = true;
+        let vis;
         try {
           vis = scene.isVisible(camCull, c, occluder);
         } catch (e) {
@@ -230,7 +252,8 @@ async function capture(label, { renderer, useCsm }) {
         for (const c of casterCommands) if (!oldRefSet.has(c)) extra++;
         setEqual = missing === 0 && extra === 0 && casterCommandsLen === K;
         camInvisInSublist = 0;
-        for (const c of casterCommands) if (camInvisSet.has(c)) camInvisInSublist++;
+        for (const c of casterCommands)
+          if (camInvisSet.has(c)) camInvisInSublist++;
       }
 
       const passLens = [];
@@ -249,12 +272,17 @@ async function capture(label, { renderer, useCsm }) {
       tmp.height = canvas.height;
       const ctx2d = tmp.getContext("2d");
       ctx2d.drawImage(canvas, 0, 0);
-      const W = tmp.width, H = tmp.height;
-      const rx0 = Math.floor(W * 0.18), rx1 = Math.floor(W * 0.66);
-      const ry0 = Math.floor(H * 0.18), ry1 = Math.floor(H * 0.72);
-      const roiW = rx1 - rx0, roiH = ry1 - ry0;
+      const W = tmp.width,
+        H = tmp.height;
+      const rx0 = Math.floor(W * 0.18),
+        rx1 = Math.floor(W * 0.66);
+      const ry0 = Math.floor(H * 0.18),
+        ry1 = Math.floor(H * 0.72);
+      const roiW = rx1 - rx0,
+        roiH = ry1 - ry0;
       const img = ctx2d.getImageData(rx0, ry0, roiW, roiH).data;
-      let minLum = 255, maxLum = 0;
+      let minLum = 255,
+        maxLum = 0;
       const lums = new Array(roiW * roiH);
       for (let p = 0, j = 0; p < img.length; p += 4, j++) {
         const lum = 0.299 * img[p] + 0.587 * img[p + 1] + 0.114 * img[p + 2];
@@ -270,15 +298,24 @@ async function capture(label, { renderer, useCsm }) {
       return {
         renderer: scene.context?.isWebGPU ? "webgpu" : "webgl",
         useCsm: scene.useCascadedShadowMaps,
-        N, K, maps, cascades,
-        casterCommandsLen, hasSublist, setEqual,
-        camInvisCasters, camInvisInSublist,
+        N,
+        K,
+        maps,
+        cascades,
+        casterCommandsLen,
+        hasSublist,
+        setEqual,
+        camInvisCasters,
+        camInvisInSublist,
         passLens,
         castDispatches: scene.context?.csmRenderer?._castDispatches ?? null,
         tilesLoaded: scene.globe.tilesLoaded,
         primitives: scene.primitives.length,
-        minLum: Math.round(minLum), maxLum: Math.round(maxLum),
-        umbraCut: Math.round(umbraCut), umbraPx, roiTotal: roiW * roiH,
+        minLum: Math.round(minLum),
+        maxLum: Math.round(maxLum),
+        umbraCut: Math.round(umbraCut),
+        umbraPx,
+        roiTotal: roiW * roiH,
       };
     },
     { view: VIEW, clockUTC: FIXED_CLOCK_UTC, useCsm, SHADOWED },
@@ -297,22 +334,36 @@ async function capture(label, { renderer, useCsm }) {
   console.log(`[probe-c10-10-shadow-single-sweep] TAG=${TAG} BASE=${BASE}\n`);
 
   const cells = [];
-  cells.push(await capture("a-webgpu-csm", { renderer: "webgpu", useCsm: true }));
-  cells.push(await capture("b-webgpu-single", { renderer: "webgpu", useCsm: false }));
+  cells.push(
+    await capture("a-webgpu-csm", { renderer: "webgpu", useCsm: true }),
+  );
+  cells.push(
+    await capture("b-webgpu-single", { renderer: "webgpu", useCsm: false }),
+  );
   cells.push(await capture("c-webgl", { renderer: "webgl", useCsm: false }));
 
   for (const cell of cells) {
     const d = cell.diagnostics;
     console.log(`  [${cell.label}] renderer=${d.renderer} csm=${d.useCsm}`);
-    console.log(`    N(commandList)=${d.N} K(casters)=${d.K} maps=${d.maps} cascades=${d.cascades}`);
-    console.log(`    sublist: has=${d.hasSublist} len=${d.casterCommandsLen} setEqual=${d.setEqual}`);
-    console.log(`    camInvisCasters=${d.camInvisCasters} camInvisInSublist=${d.camInvisInSublist}`);
+    console.log(
+      `    N(commandList)=${d.N} K(casters)=${d.K} maps=${d.maps} cascades=${d.cascades}`,
+    );
+    console.log(
+      `    sublist: has=${d.hasSublist} len=${d.casterCommandsLen} setEqual=${d.setEqual}`,
+    );
+    console.log(
+      `    camInvisCasters=${d.camInvisCasters} camInvisInSublist=${d.camInvisInSublist}`,
+    );
     console.log(`    passLens=${JSON.stringify(d.passLens)}`);
-    console.log(`    castDispatches=${d.castDispatches} umbraPx=${d.umbraPx}/${d.roiTotal} lum[${d.minLum},${d.maxLum},cut=${d.umbraCut}]`);
+    console.log(
+      `    castDispatches=${d.castDispatches} umbraPx=${d.umbraPx}/${d.roiTotal} lum[${d.minLum},${d.maxLum},cut=${d.umbraCut}]`,
+    );
     console.log(`    tilesLoaded=${d.tilesLoaded} prims=${d.primitives}`);
     if (cell.deviceErrors.length) {
       console.log(`    X ${cell.deviceErrors.length} device errors`);
-      cell.deviceErrors.slice(0, 3).forEach((e) => console.log(`      ${e.text?.slice(0, 200)}`));
+      cell.deviceErrors
+        .slice(0, 3)
+        .forEach((e) => console.log(`      ${e.text?.slice(0, 200)}`));
     } else {
       console.log(`    OK no device errors`);
     }
@@ -334,7 +385,9 @@ async function capture(label, { renderer, useCsm }) {
   });
   // POST-only assertions (sublist present)
   const postCells = cells.filter((c) => c.diagnostics.hasSublist);
-  const setEqualOk = postCells.length === 0 || postCells.every((c) => c.diagnostics.setEqual === true);
+  const setEqualOk =
+    postCells.length === 0 ||
+    postCells.every((c) => c.diagnostics.setEqual === true);
   const inv1Ok =
     postCells.length === 0 ||
     postCells.every(
@@ -344,11 +397,21 @@ async function capture(label, { renderer, useCsm }) {
     );
 
   console.log("[probe-c10-10-shadow-single-sweep] assertions:");
-  console.log(`  0 device errors: ${errAll === 0 ? "PASS" : "FAIL"} (${errAll})`);
-  console.log(`  umbraPx>200 all cells (shadow renders): ${umbraOk ? "PASS" : "FAIL"}`);
-  console.log(`  cast populated (WebGL lists / WebGPU dispatch): ${castOk ? "PASS" : "FAIL"}`);
-  console.log(`  [POST] setEqual (fold caster set == old full-scan set): ${postCells.length ? (setEqualOk ? "PASS" : "FAIL") : "N/A (pre)"}`);
-  console.log(`  [POST] INV-1 off-camera casters preserved: ${postCells.length ? (inv1Ok ? "PASS" : "FAIL") : "N/A (pre)"}`);
+  console.log(
+    `  0 device errors: ${errAll === 0 ? "PASS" : "FAIL"} (${errAll})`,
+  );
+  console.log(
+    `  umbraPx>200 all cells (shadow renders): ${umbraOk ? "PASS" : "FAIL"}`,
+  );
+  console.log(
+    `  cast populated (WebGL lists / WebGPU dispatch): ${castOk ? "PASS" : "FAIL"}`,
+  );
+  console.log(
+    `  [POST] setEqual (fold caster set == old full-scan set): ${postCells.length ? (setEqualOk ? "PASS" : "FAIL") : "N/A (pre)"}`,
+  );
+  console.log(
+    `  [POST] INV-1 off-camera casters preserved: ${postCells.length ? (inv1Ok ? "PASS" : "FAIL") : "N/A (pre)"}`,
+  );
 
   const pass = errAll === 0 && umbraOk && castOk && setEqualOk && inv1Ok;
   console.log(`\n  OVERALL: ${pass ? "PASS" : "FAIL"}`);

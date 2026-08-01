@@ -7,14 +7,21 @@
  *  - Reports whether the polyline left ANY red footprint on screen
  */
 import { chromium } from "playwright";
-import fs from "fs";
 const BASE = "http://localhost:8080";
 (async () => {
   const browser = await chromium.launch({
-    channel: "msedge", headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    channel: "msedge",
+    headless: true,
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   page.on("console", (m) => {
     const t = m.type();
     if (t === "error" || (t === "warning" && m.text().includes("validation"))) {
@@ -22,7 +29,8 @@ const BASE = "http://localhost:8080";
     }
   });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "networkidle", timeout: 90_000,
+    waitUntil: "networkidle",
+    timeout: 90_000,
   });
   await page.waitForFunction(() => !!window.viewer, { timeout: 90_000 });
 
@@ -62,11 +70,13 @@ const BASE = "http://localhost:8080";
 
     // Read canvas red pixels.
     const canvas = v.canvas;
-    const w = canvas.width, h = canvas.height;
+    const w = canvas.width,
+      h = canvas.height;
     // Use a 2D draw-image trick: copy the WebGPU canvas to a 2D canvas
     // so we can getImageData (WebGPU canvases don't support it directly).
     const c2 = document.createElement("canvas");
-    c2.width = w; c2.height = h;
+    c2.width = w;
+    c2.height = h;
     const ctx = c2.getContext("2d");
     ctx.drawImage(canvas, 0, 0);
     const img = ctx.getImageData(0, 0, w, h);
@@ -78,7 +88,9 @@ const BASE = "http://localhost:8080";
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const i = (y * w + x) * 4;
-        const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+        const r = pixels[i],
+          g = pixels[i + 1],
+          b = pixels[i + 2];
         if (r > g + 10 && r > b + 10 && r > 50) {
           redPixels++;
           if (r > 180 && g < 80 && b < 80) {
@@ -96,17 +108,19 @@ const BASE = "http://localhost:8080";
         batchInstanceCount: cache?.batchInstanceCount,
       },
       uboFirst96Floats: ud,
-      uboKeyFields: ud ? {
-        mvRTE_diag: [ud[0], ud[5], ud[10], ud[15]],
-        proj_diag: [ud[16], ud[21], ud[26], ud[31]],
-        normal0: ud.slice(48, 52),
-        camH: ud.slice(60, 64),
-        camL: ud.slice(64, 68),
-        viewport: ud.slice(68, 72),
-        color: ud.slice(72, 76),
-        misc_widthPixels_globeMinAlt_geomTol: [ud[80], ud[82], ud[83]],
-        flags_debugVolume_batchCount_is3D_morphTime: ud.slice(84, 88),
-      } : null,
+      uboKeyFields: ud
+        ? {
+            mvRTE_diag: [ud[0], ud[5], ud[10], ud[15]],
+            proj_diag: [ud[16], ud[21], ud[26], ud[31]],
+            normal0: ud.slice(48, 52),
+            camH: ud.slice(60, 64),
+            camL: ud.slice(64, 68),
+            viewport: ud.slice(68, 72),
+            color: ud.slice(72, 76),
+            misc_widthPixels_globeMinAlt_geomTol: [ud[80], ud[82], ud[83]],
+            flags_debugVolume_batchCount_is3D_morphTime: ud.slice(84, 88),
+          }
+        : null,
       pixels: { redPixels, strongRedPixels, firstRedXY, totalPixels: w * h },
     };
   });

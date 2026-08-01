@@ -26,10 +26,7 @@ const frameStatePath = path.join(
   root,
   "packages/engine/Source/Scene/FrameState.js",
 );
-const scenePath = path.join(
-  root,
-  "packages/engine/Source/Scene/Scene.js",
-);
+const scenePath = path.join(root, "packages/engine/Source/Scene/Scene.js");
 const managerSource = fs
   .readFileSync(managerPath, "utf8")
   .replace(/\r\n/g, "\n");
@@ -45,9 +42,7 @@ const tileProviderSource = fs
 const frameStateSource = fs
   .readFileSync(frameStatePath, "utf8")
   .replace(/\r\n/g, "\n");
-const sceneSource = fs
-  .readFileSync(scenePath, "utf8")
-  .replace(/\r\n/g, "\n");
+const sceneSource = fs.readFileSync(scenePath, "utf8").replace(/\r\n/g, "\n");
 
 function sourceSection(source, start, end) {
   const startIndex = source.indexOf(start);
@@ -71,9 +66,7 @@ test("dynamic environment caches are owned by one device generation", () => {
     "function updateWebGPUDynamicEnvironmentMap(",
     "// Audit re-review (Batch 134)",
   );
-  const mismatchIndex = update.indexOf(
-    "existingCache.device !== device ||",
-  );
+  const mismatchIndex = update.indexOf("existingCache.device !== device ||");
   const generationIndex = update.indexOf(
     "existingCache.resourceGeneration !== resourceGeneration",
   );
@@ -148,9 +141,7 @@ test("cache destruction releases capture depth and clears published handles", ()
   const destroyDepthIndex = destroy.indexOf(
     "cache.captureDepthTexture.destroy();",
   );
-  const nullTextureIndex = destroy.indexOf(
-    "cache.captureDepthTexture = null;",
-  );
+  const nullTextureIndex = destroy.indexOf("cache.captureDepthTexture = null;");
   const nullViewIndex = destroy.indexOf("cache.captureDepthView = null;");
   const resetSizeIndex = destroy.indexOf("cache.captureDepthSize = 0;");
   const discardCacheIndex = destroy.indexOf(
@@ -219,15 +210,15 @@ test("recovered scene capture wakes from a frame/content-stamped producer edge",
     "function publishWebGPUSceneCaptureSources(",
     "\n}\n\n// ═",
   );
-  assert.match(publication, /let sources = context\._webgpuSceneCaptureSources;/);
+  assert.match(
+    publication,
+    /let sources = context\._webgpuSceneCaptureSources;/,
+  );
   assert.match(
     publication,
     /sources\.publicationRevision =\s*\(sources\.publicationRevision \?\? 0\) \+ 1;/,
   );
-  assert.match(
-    publication,
-    /sources\.contentRevision === contentRevision/,
-  );
+  assert.match(publication, /sources\.contentRevision === contentRevision/);
   assert.match(
     publication,
     /sources\.frameNumber = frameNumber;\s*sources\.globeRenderer = globeRenderer;\s*sources\.tileProvider = tileProvider;\s*sources\.contentRevision = contentRevision;/,
@@ -301,7 +292,11 @@ test("hidden and opt-out transitions erase retained globe state without a retry 
   const wakeMatches = publication.match(
     /frameState\.afterRender\.push\(requestRenderForSceneCapturePublication\);/g,
   );
-  assert.equal(wakeMatches?.length, 1, "the producer owns exactly one wake site");
+  assert.equal(
+    wakeMatches?.length,
+    1,
+    "the producer owns exactly one wake site",
+  );
   assert.doesNotMatch(
     managerSource,
     /afterRender\.push\([^)]*SceneCapture/,
@@ -322,11 +317,20 @@ test("stable-provider selection and resource changes advance one content epoch",
     /frameState\.context\.sceneCaptureReflections !== true/,
     "the selection scan must remain opt-in",
   );
-  assert.match(contentUpdate, /const tiles = tileProvider\._quadtree\._tilesToRender;/);
+  assert.match(
+    contentUpdate,
+    /const tiles = tileProvider\._quadtree\._tilesToRender;/,
+  );
   assert.match(contentUpdate, /surfaceTile\?\.renderedMesh/);
   assert.match(contentUpdate, /readyImagery\?\.texture \?\? readyImagery/);
-  assert.match(contentUpdate, /markSceneCaptureContentChanged\(tileProvider\);/);
-  assert.match(tileProviderSource, /this\._sceneCaptureResourceIds = undefined;/);
+  assert.match(
+    contentUpdate,
+    /markSceneCaptureContentChanged\(tileProvider\);/,
+  );
+  assert.match(
+    tileProviderSource,
+    /this\._sceneCaptureResourceIds = undefined;/,
+  );
   assert.match(
     tileProviderSource,
     /this\._terrainProvider = terrainProvider;\s*markSceneCaptureContentChanged\(this\);/,
@@ -336,8 +340,8 @@ test("stable-provider selection and resource changes advance one content epoch",
     /updateSceneCaptureContentRevision\(this, frameState\);/,
   );
   assert.ok(
-    tileProviderSource.match(/markSceneCaptureContentChanged\(this\);/g)?.length >=
-      4,
+    tileProviderSource.match(/markSceneCaptureContentChanged\(this\);/g)
+      ?.length >= 4,
     "terrain, exaggeration, and imagery mutations must feed the epoch",
   );
   assert.doesNotMatch(

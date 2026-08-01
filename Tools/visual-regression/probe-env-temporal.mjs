@@ -43,7 +43,9 @@ const OUT_DIR = "Tools/visual-regression/output";
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
   page.on("pageerror", (e) =>
@@ -194,7 +196,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     // ── Sub-test 1: OFF (default) ──
-    ctx.uniformState; // touch
+    void ctx.uniformState; // touch
     const off = await runManager({
       temporal: false,
       captureOn: false,

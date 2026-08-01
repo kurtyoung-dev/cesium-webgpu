@@ -261,7 +261,11 @@ async function run() {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({ viewport: { width: 960, height: 640 } });
   const consoleErrors = attachConsoleErrorGate(page);
@@ -391,8 +395,7 @@ async function run() {
   // honest sparse-particle signal: snow flakes are bright/round (strong), rain
   // is thin near-transparent streaks (weaker) — both clearly beat the static
   // OFF baseline once the moving particles' footprint is union-swept.
-  const renders = (d) =>
-    d && !d.error && d.diffPx > 400 && d.brightDelta > 30;
+  const renders = (d) => d && !d.error && d.diffPx > 400 && d.brightDelta > 30;
 
   const checks = [
     ["applyAtmosphericConditions exported", api.hasApply],

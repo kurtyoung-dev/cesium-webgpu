@@ -402,8 +402,7 @@ export function summarizeSamples(samples) {
 
   // Sign agreement over sites whose undulation is large enough to be a real test.
   const signRows = withH.filter(
-    (r) =>
-      Math.abs(r.undulationM) >= THRESHOLDS.SIGN_TEST_MIN_ABS_UNDULATION_M,
+    (r) => Math.abs(r.undulationM) >= THRESHOLDS.SIGN_TEST_MIN_ABS_UNDULATION_M,
   );
   const signHits = signRows.filter(
     (r) => Math.sign(r.heightM) === Math.sign(r.undulationM),
@@ -767,7 +766,8 @@ export function decisionFromLanes(lanes) {
   const exagVerdicts = (lanes?.exaggeration ?? []).map((e) => e.verdict);
   const anyDisplaced = exagVerdicts.some((v) => v && v.startsWith("DISPLACES"));
   const allNo =
-    exagVerdicts.length > 0 && exagVerdicts.every((v) => v === "NO_DISPLACEMENT");
+    exagVerdicts.length > 0 &&
+    exagVerdicts.every((v) => v === "NO_DISPLACEMENT");
   const exaggerationImplication = anyDisplaced
     ? "verticalExaggeration DOES displace the ocean lid — Design B inherits the full lake/ocean gating bill, and any tide term must compose with the exaggeration map rather than be added after it."
     : allNo

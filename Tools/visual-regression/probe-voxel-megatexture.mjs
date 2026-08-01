@@ -326,7 +326,7 @@ const stream = await page2.evaluate(
     // NEAR: demand jumps to 2 → level-1 + level-2 tiles stream in. Poll
     // until fully streamed (bounded).
     setCam(10);
-    let near = null;
+    let near;
     for (let iter = 0; iter < 40; iter++) {
       await renderFrames(15);
       near = snap();
@@ -359,31 +359,34 @@ fs.writeFileSync(
   "Tools/visual-regression/output/probe-voxel-megatexture-streaming.png",
   buf2,
 );
-const px2 = await page2.evaluate(async (url) => {
-  const img = new Image();
-  await new Promise((r) => {
-    img.onload = r;
-    img.src = url;
-  });
-  const cv = document.createElement("canvas");
-  cv.width = img.width;
-  cv.height = img.height;
-  const ctx = cv.getContext("2d");
-  ctx.drawImage(img, 0, 0);
-  const rx = Math.floor(img.width * 0.3);
-  const ry = Math.floor(img.height * 0.3);
-  const d = ctx.getImageData(
-    rx,
-    ry,
-    Math.floor(img.width * 0.4),
-    Math.floor(img.height * 0.4),
-  ).data;
-  let nonBlack = 0;
-  for (let i = 0; i < d.length; i += 4) {
-    if (d[i] + d[i + 1] + d[i + 2] > 12) nonBlack++;
-  }
-  return { nonBlackPixels: nonBlack };
-}, `data:image/png;base64,${buf2.toString("base64")}`);
+const px2 = await page2.evaluate(
+  async (url) => {
+    const img = new Image();
+    await new Promise((r) => {
+      img.onload = r;
+      img.src = url;
+    });
+    const cv = document.createElement("canvas");
+    cv.width = img.width;
+    cv.height = img.height;
+    const ctx = cv.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    const rx = Math.floor(img.width * 0.3);
+    const ry = Math.floor(img.height * 0.3);
+    const d = ctx.getImageData(
+      rx,
+      ry,
+      Math.floor(img.width * 0.4),
+      Math.floor(img.height * 0.4),
+    ).data;
+    let nonBlack = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      if (d[i] + d[i + 1] + d[i + 2] > 12) nonBlack++;
+    }
+    return { nonBlackPixels: nonBlack };
+  },
+  `data:image/png;base64,${buf2.toString("base64")}`,
+);
 console.log("PART 2 near-view pixels:", JSON.stringify(px2));
 console.log("PART 2 console errors:", consoleErrors2.length);
 if (consoleErrors2.length) {
@@ -540,7 +543,7 @@ const evictA1 = await page3.evaluate(
 
     const P = window.__evictProbe;
     P.setCorner(1);
-    let s = null;
+    let s;
     let maxResident = 0;
     for (let iter = 0; iter < 60; iter++) {
       await P.renderFrames(15);
@@ -567,7 +570,7 @@ fs.writeFileSync(
 const evictB = await page3.evaluate(async () => {
   const P = window.__evictProbe;
   P.setCorner(-1);
-  let s = null;
+  let s;
   let maxResident = 0;
   for (let iter = 0; iter < 60; iter++) {
     await P.renderFrames(15);
@@ -587,7 +590,7 @@ console.log("PART 3 corner B (eviction):", JSON.stringify(evictB));
 const evictA2 = await page3.evaluate(async (wantResident) => {
   const P = window.__evictProbe;
   P.setCorner(1);
-  let s = null;
+  let s;
   let maxResident = 0;
   const want = JSON.stringify(wantResident);
   for (let iter = 0; iter < 60; iter++) {
@@ -649,7 +652,12 @@ const diffA = await page3.evaluate(
       }
     }
     const total = (da.length / 4) | 0;
-    return { total, nonBlackA, mismatch, mismatchPct: (100 * mismatch) / total };
+    return {
+      total,
+      nonBlackA,
+      mismatch,
+      mismatchPct: (100 * mismatch) / total,
+    };
   },
   {
     urlA: `data:image/png;base64,${shotA1.toString("base64")}`,
@@ -699,8 +707,7 @@ const reuploaded =
   evictA2.maxResident <= 4 &&
   slotsInPool(evictA2);
 // Re-uploaded tiles render the SAME frame as the original visit.
-const pixelsMatch =
-  diffA.nonBlackA > 500 && diffA.mismatchPct < 1.5;
+const pixelsMatch = diffA.nonBlackA > 500 && diffA.mismatchPct < 1.5;
 const passPart3 =
   cappedAtlas &&
   overDemandNoOverflow &&

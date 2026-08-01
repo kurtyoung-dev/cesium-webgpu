@@ -169,7 +169,9 @@ const out = await page.evaluate(async () => {
 //    routes through czm_raySphereIntersectionInterval via
 //    computeScattering) must render a coherent blue limb at a horizon
 //    view from orbit, with no NaN/black wedge. ──
-const wglPage = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+const wglPage = await browser.newPage({
+  viewport: { width: 1024, height: 768 },
+});
 const wglErrors = [];
 wglPage.on("console", (m) => {
   if (m.type() === "error") wglErrors.push(m.text());
@@ -294,16 +296,22 @@ if (uploadErrors.length === 0) {
 // (3) NEW-RAYSPHERE-PRECISION-BACKPORT — WebGL sky atmosphere ring (the
 //     path that compiles the modified GLSL builtin) renders a blue ring.
 if (atmo.limbBluePct >= 10) {
-  pass(`(3) WebGL atmosphere ring renders (ray-sphere GLSL): limbBlue=${atmo.limbBluePct.toFixed(1)}%`);
+  pass(
+    `(3) WebGL atmosphere ring renders (ray-sphere GLSL): limbBlue=${atmo.limbBluePct.toFixed(1)}%`,
+  );
 } else {
-  fail(`(3) WebGL atmosphere ring too dark/garbled: limbBlue=${atmo.limbBluePct.toFixed(1)}%`);
+  fail(
+    `(3) WebGL atmosphere ring too dark/garbled: limbBlue=${atmo.limbBluePct.toFixed(1)}%`,
+  );
 }
 
 // (4) NEW-BILLBOARD-UPDATEMODE-ORDERING — billboards visible after single updateMode.
 if (out.magenta >= 30) {
   pass(`(4) billboards render after updateMode dedup: magenta=${out.magenta}`);
 } else {
-  fail(`(4) billboards missing (updateMode/bounding-volume regression): magenta=${out.magenta}`);
+  fail(
+    `(4) billboards missing (updateMode/bounding-volume regression): magenta=${out.magenta}`,
+  );
 }
 
 // (5) no console errors at all (both backends).
@@ -311,7 +319,10 @@ if (errors.length === 0 && wglErrors.length === 0) {
   pass(`(5) console errors: 0 (webgpu) 0 (webgl)`);
 } else {
   fail(
-    `(5) console errors: webgpu=${errors.length} webgl=${wglErrors.length} — ${[...errors, ...wglErrors]
+    `(5) console errors: webgpu=${errors.length} webgl=${wglErrors.length} — ${[
+      ...errors,
+      ...wglErrors,
+    ]
       .slice(0, 3)
       .join(" | ")}`,
   );

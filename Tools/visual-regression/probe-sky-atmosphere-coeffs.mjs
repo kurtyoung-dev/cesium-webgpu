@@ -157,7 +157,9 @@ const rbDelta = (a, b) => Math.abs(a.r - b.r) + Math.abs(a.b - b.b);
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[sky-atmosphere-coeffs] SkyAtmosphere coefficient response parity");
+  console.log(
+    "[sky-atmosphere-coeffs] SkyAtmosphere coefficient response parity",
+  );
   const data = {};
   let totalErrors = 0;
   for (const renderer of ["webgl", "webgpu"]) {
@@ -182,14 +184,22 @@ const rbDelta = (a, b) => Math.abs(a.r - b.r) + Math.abs(a.b - b.b);
   const baseParity = rbDelta(wgl.base, wgpu.base);
 
   console.log("");
-  console.log(`  (A) default cross-backend |dR|+|dB| = ${baseParity.toFixed(1)} (want < 12)`);
-  console.log(`  (B) skyInstance-override response  WebGL=${skyRespWgl.toFixed(1)}  WebGPU=${skyRespWgpu.toFixed(1)} (want BOTH > 120, close)`);
-  console.log(`  (C) sceneAtmosphere-override response WebGL=${atmoRespWgl.toFixed(1)}  WebGPU=${atmoRespWgpu.toFixed(1)} (want BOTH < 8 — sky ignores it on both)`);
+  console.log(
+    `  (A) default cross-backend |dR|+|dB| = ${baseParity.toFixed(1)} (want < 12)`,
+  );
+  console.log(
+    `  (B) skyInstance-override response  WebGL=${skyRespWgl.toFixed(1)}  WebGPU=${skyRespWgpu.toFixed(1)} (want BOTH > 120, close)`,
+  );
+  console.log(
+    `  (C) sceneAtmosphere-override response WebGL=${atmoRespWgl.toFixed(1)}  WebGPU=${atmoRespWgpu.toFixed(1)} (want BOTH < 8 — sky ignores it on both)`,
+  );
   console.log(`  (D) total console/device errors = ${totalErrors} (want 0)`);
 
   const passA = baseParity < 12;
   const passB =
-    skyRespWgl > 120 && skyRespWgpu > 120 && Math.abs(skyRespWgl - skyRespWgpu) < 20;
+    skyRespWgl > 120 &&
+    skyRespWgpu > 120 &&
+    Math.abs(skyRespWgl - skyRespWgpu) < 20;
   const passC = atmoRespWgl < 8 && atmoRespWgpu < 8;
   const passD = totalErrors === 0;
   const pass = passA && passB && passC && passD;

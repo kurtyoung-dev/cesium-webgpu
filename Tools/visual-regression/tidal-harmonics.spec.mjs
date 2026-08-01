@@ -1614,7 +1614,9 @@ test("the harmonic modules stay out of the renderer", () => {
       );
     }
     assert.ok(
-      /\nexport default \w+;\n?$/.test(text),
+      // `\r?\n` on both sides: the working tree is CRLF on Windows
+      // (core.autocrlf=true) and LF in CI, and the anchor must hold on both.
+      /\r?\nexport default \w+;(\r?\n)?$/.test(text),
       `${file} must end in an export default (the generated engine barrel requires it)`,
     );
   }

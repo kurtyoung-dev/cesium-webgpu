@@ -31,15 +31,22 @@ async function run(renderer) {
     args: ["--enable-unsafe-webgpu"],
   });
   const page = await browser.newPage({ viewport: { width: 900, height: 700 } });
-  page.on("pageerror", (e) => console.log(`>> [${renderer}] pageerror: ${e.message}`));
-  await page.goto(`${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-  });
+  page.on("pageerror", (e) =>
+    console.log(`>> [${renderer}] pageerror: ${e.message}`),
+  );
+  await page.goto(
+    `${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
   await page.evaluate(() => {
     window.__probeErrors = [];
     const dev = window.viewer?.scene?.context?._device;
-    if (dev) dev.onuncapturederror = (ev) => window.__probeErrors.push(ev?.error?.message ?? "");
+    if (dev)
+      dev.onuncapturederror = (ev) =>
+        window.__probeErrors.push(ev?.error?.message ?? "");
   });
 
   const setup = await page.evaluate(async (dark) => {
@@ -82,59 +89,74 @@ async function run(renderer) {
 
   // Block-grid brightness analysis over the globe region (center area, away
   // from UI). Find the largest mean-luminance jump between adjacent blocks.
-  const stats = await page.evaluate(async (durl) => {
-    return new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        const c = document.createElement("canvas");
-        c.width = img.width;
-        c.height = img.height;
-        const cx = c.getContext("2d");
-        cx.drawImage(img, 0, 0);
-        const data = cx.getImageData(0, 0, c.width, c.height).data;
-        // Restrict to the globe disk region (avoid UI top-right + dark space).
-        const x0 = 40, x1 = c.width - 260, y0 = 80, y1 = c.height - 60;
-        const BS = 24; // block size px
-        const cols = Math.floor((x1 - x0) / BS);
-        const rows = Math.floor((y1 - y0) / BS);
-        const lum = []; // [row][col] mean luminance, or null if mostly space
-        for (let r = 0; r < rows; r++) {
-          lum[r] = [];
-          for (let col = 0; col < cols; col++) {
-            let s = 0, n = 0;
-            for (let yy = 0; yy < BS; yy += 3) {
-              for (let xx = 0; xx < BS; xx += 3) {
-                const px = x0 + col * BS + xx;
-                const py = y0 + r * BS + yy;
-                const i = (py * c.width + px) * 4;
-                const L = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-                s += L; n++;
+  const stats = await page.evaluate(
+    async (durl) => {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const cx = c.getContext("2d");
+          cx.drawImage(img, 0, 0);
+          const data = cx.getImageData(0, 0, c.width, c.height).data;
+          // Restrict to the globe disk region (avoid UI top-right + dark space).
+          const x0 = 40,
+            x1 = c.width - 260,
+            y0 = 80,
+            y1 = c.height - 60;
+          const BS = 24; // block size px
+          const cols = Math.floor((x1 - x0) / BS);
+          const rows = Math.floor((y1 - y0) / BS);
+          const lum = []; // [row][col] mean luminance, or null if mostly space
+          for (let r = 0; r < rows; r++) {
+            lum[r] = [];
+            for (let col = 0; col < cols; col++) {
+              let s = 0,
+                n = 0;
+              for (let yy = 0; yy < BS; yy += 3) {
+                for (let xx = 0; xx < BS; xx += 3) {
+                  const px = x0 + col * BS + xx;
+                  const py = y0 + r * BS + yy;
+                  const i = (py * c.width + px) * 4;
+                  const L =
+                    0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+                  s += L;
+                  n++;
+                }
+              }
+              const m = s / n;
+              lum[r][col] = m > 12 ? m : null; // skip near-black space blocks
+            }
+          }
+          // Largest jump between horizontally/vertically adjacent globe blocks.
+          let maxJump = 0,
+            jx = -1,
+            jy = -1;
+          for (let r = 0; r < rows; r++) {
+            for (let col = 0; col < cols; col++) {
+              const a = lum[r][col];
+              if (a == null) continue;
+              const right = col + 1 < cols ? lum[r][col + 1] : null;
+              const down = r + 1 < rows ? lum[r + 1][col] : null;
+              for (const b of [right, down]) {
+                if (b == null) continue;
+                const d = Math.abs(a - b);
+                if (d > maxJump) {
+                  maxJump = d;
+                  jx = x0 + col * BS;
+                  jy = y0 + r * BS;
+                }
               }
             }
-            const m = s / n;
-            lum[r][col] = m > 12 ? m : null; // skip near-black space blocks
           }
-        }
-        // Largest jump between horizontally/vertically adjacent globe blocks.
-        let maxJump = 0, jx = -1, jy = -1;
-        for (let r = 0; r < rows; r++) {
-          for (let col = 0; col < cols; col++) {
-            const a = lum[r][col];
-            if (a == null) continue;
-            const right = col + 1 < cols ? lum[r][col + 1] : null;
-            const down = r + 1 < rows ? lum[r + 1][col] : null;
-            for (const b of [right, down]) {
-              if (b == null) continue;
-              const d = Math.abs(a - b);
-              if (d > maxJump) { maxJump = d; jx = x0 + col * BS; jy = y0 + r * BS; }
-            }
-          }
-        }
-        resolve({ rows, cols, maxJump: Math.round(maxJump), jx, jy });
-      };
-      img.src = durl;
-    });
-  }, `data:image/png;base64,${(await fs.promises.readFile(out)).toString("base64")}`);
+          resolve({ rows, cols, maxJump: Math.round(maxJump), jx, jy });
+        };
+        img.src = durl;
+      });
+    },
+    `data:image/png;base64,${(await fs.promises.readFile(out)).toString("base64")}`,
+  );
 
   await browser.close();
   return { setup, errs, stats, out };
@@ -144,11 +166,23 @@ async function run(renderer) {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const wgl = await run("webgl");
   const wgpu = await run("webgpu");
-  console.log(`=== NEW-VR2-7 per-tile brightness reproduction${DARK ? " (lighting OFF)" : ""} ===\n`);
-  for (const [name, r] of [["webgl", wgl], ["webgpu", wgpu]]) {
-    console.log(`  ${name}: maxAdjacentBlockJump=${r.stats.maxJump} (at ${r.stats.jx},${r.stats.jy}) grid=${r.stats.rows}x${r.stats.cols} errs=${r.errs.length}`);
+  console.log(
+    `=== NEW-VR2-7 per-tile brightness reproduction${DARK ? " (lighting OFF)" : ""} ===\n`,
+  );
+  for (const [name, r] of [
+    ["webgl", wgl],
+    ["webgpu", wgpu],
+  ]) {
+    console.log(
+      `  ${name}: maxAdjacentBlockJump=${r.stats.maxJump} (at ${r.stats.jx},${r.stats.jy}) grid=${r.stats.rows}x${r.stats.cols} errs=${r.errs.length}`,
+    );
     console.log(`    png: ${r.out}`);
   }
-  const ratio = wgl.stats.maxJump > 0 ? (wgpu.stats.maxJump / wgl.stats.maxJump).toFixed(2) : "inf";
-  console.log(`\n  WebGPU/WebGL max-jump ratio: ${ratio}  (anomaly if WebGPU jump >> WebGL)`);
+  const ratio =
+    wgl.stats.maxJump > 0
+      ? (wgpu.stats.maxJump / wgl.stats.maxJump).toFixed(2)
+      : "inf";
+  console.log(
+    `\n  WebGPU/WebGL max-jump ratio: ${ratio}  (anomaly if WebGPU jump >> WebGL)`,
+  );
 })();

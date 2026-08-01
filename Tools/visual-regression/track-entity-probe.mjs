@@ -133,10 +133,13 @@ async function probe(renderer) {
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
-    if (m.text().startsWith("[probe]")) console.log(`  [${renderer}] ${m.text()}`);
+    if (m.text().startsWith("[probe]"))
+      console.log(`  [${renderer}] ${m.text()}`);
   });
 
-  await page.addInitScript((r) => { window.__FORCED_RENDERER__ = r; }, renderer);
+  await page.addInitScript((r) => {
+    window.__FORCED_RENDERER__ = r;
+  }, renderer);
   await page.addInitScript({ content: SHIM });
 
   // For WebGPU runs, rewrite the demo's HTML on the wire
@@ -145,7 +148,10 @@ async function probe(renderer) {
       const response = await route.fetch();
       const original = await response.text();
       const rewritten = original
-        .replace(/new\s+Cesium\.Viewer\s*\(/g, "await Cesium.Viewer.createAsync(")
+        .replace(
+          /new\s+Cesium\.Viewer\s*\(/g,
+          "await Cesium.Viewer.createAsync(",
+        )
         .replace(/new\s+Viewer\s*\(/g, "await Cesium.Viewer.createAsync(");
       await route.fulfill({
         status: response.status(),
@@ -170,13 +176,14 @@ async function probe(renderer) {
     await page.waitForTimeout(2000);
     const s = await page.evaluate(() => {
       const v = window.__capturedViewer;
-      if (!v) return {
-        error: "no viewer",
-        hasGlobalCesium: typeof window.Cesium !== "undefined",
-        hasGlobalViewer: typeof window.viewer !== "undefined",
-        hasGlobalStartup: typeof window.startup === "function",
-        startupCalled: !!window.startupCalled,
-      };
+      if (!v)
+        return {
+          error: "no viewer",
+          hasGlobalCesium: typeof window.Cesium !== "undefined",
+          hasGlobalViewer: typeof window.viewer !== "undefined",
+          hasGlobalStartup: typeof window.startup === "function",
+          startupCalled: !!window.startupCalled,
+        };
       const cam = v.scene.camera;
       const ent = v.trackedEntity;
       let bsState = null;
@@ -215,6 +222,7 @@ for (const r of [wg, wp]) {
   }
   if (r.errors.length > 0) {
     console.log(`  errors (${r.errors.length}):`);
-    for (const e of r.errors.slice(0, 6)) console.log(`    ${e.substring(0, 200)}`);
+    for (const e of r.errors.slice(0, 6))
+      console.log(`    ${e.substring(0, 200)}`);
   }
 }

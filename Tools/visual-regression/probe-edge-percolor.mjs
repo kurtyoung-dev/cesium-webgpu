@@ -180,7 +180,9 @@ async function captureRenderer(renderer, fs) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
   await page.addInitScript((url) => {
@@ -224,8 +226,12 @@ async function captureRenderer(renderer, fs) {
   console.log(`\n=== ANALYSIS ===`);
   const wgl = caps.webgl.render;
   const wgpu = caps.webgpu.render;
-  console.log(`webgl  chroma=${wgl.chroma} avgChromaRGB=${JSON.stringify(wgl.avgChromaRGB)} blueDom=${wgl.blueDomPct}%`);
-  console.log(`webgpu chroma=${wgpu.chroma} avgChromaRGB=${JSON.stringify(wgpu.avgChromaRGB)} blueDom=${wgpu.blueDomPct}%`);
+  console.log(
+    `webgl  chroma=${wgl.chroma} avgChromaRGB=${JSON.stringify(wgl.avgChromaRGB)} blueDom=${wgl.blueDomPct}%`,
+  );
+  console.log(
+    `webgpu chroma=${wgpu.chroma} avgChromaRGB=${JSON.stringify(wgpu.avgChromaRGB)} blueDom=${wgpu.blueDomPct}%`,
+  );
 
   const blueAvg = (c) =>
     !!c.avgChromaRGB &&

@@ -89,7 +89,11 @@ const BUILD_SCENE = async () => {
     for (let j = 0; j < grid; j++) {
       const dLon = (i / grid - 0.5) * 0.55;
       const dLat = (j / grid - 0.5) * 0.55;
-      const pos = Cesium.Cartesian3.fromDegrees(lon0 + dLon, lat0 + dLat, 30000.0);
+      const pos = Cesium.Cartesian3.fromDegrees(
+        lon0 + dLon,
+        lat0 + dLat,
+        30000.0,
+      );
       prims.add(
         new Cesium.Primitive({
           geometryInstances: new Cesium.GeometryInstance({
@@ -122,12 +126,15 @@ const BUILD_SCENE = async () => {
 };
 
 const RENDER_AND_CAPTURE = async (cfg) => {
-  const Cesium = await import("/Build/CesiumUnminified/index.js");
+  const _Cesium = await import("/Build/CesiumUnminified/index.js");
   const v = window.viewer;
   const scene = v.scene;
   scene.gpuCullingHint = cfg.hint;
   // Toggle the consume flag via the debug hook.
-  if (window.CesiumDebug && typeof window.CesiumDebug.hiZConsume === "function") {
+  if (
+    window.CesiumDebug &&
+    typeof window.CesiumDebug.hiZConsume === "function"
+  ) {
     window.CesiumDebug.hiZConsume(cfg.consume === true);
   }
   for (let i = 0; i < cfg.frames; i++) {
@@ -245,7 +252,10 @@ async function run() {
   const checks = [
     ["occlusion path runs (dispatches > 0)", (s.hiZDispatches || 0) > 0],
     ["occlusion active (gate latched)", s.hiZActive === true],
-    [`CULL WORKS (hitRatio ${(s.hiZHitRatio || 0).toFixed(3)} > 0.5)`, (s.hiZHitRatio || 0) > 0.5],
+    [
+      `CULL WORKS (hitRatio ${(s.hiZHitRatio || 0).toFixed(3)} > 0.5)`,
+      (s.hiZHitRatio || 0) > 0.5,
+    ],
     [
       `PIXEL-SAFE: consume matches no-cull (${mismatchPct.toFixed(3)}% <= ${MISMATCH_BUDGET_PCT}%)`,
       mismatchPct <= MISMATCH_BUDGET_PCT,

@@ -57,8 +57,7 @@ function getTransientAttachmentBit(device: GPUDevice): number {
   // the TypeScript build to a specific @webgpu/types version.
   const bit =
     (Reflect.get(GPUTextureUsage, "TRANSIENT_ATTACHMENT") as
-      | number
-      | undefined) ?? 0x10;
+      number | undefined) ?? 0x10;
   // Two possible feature names depending on spec snapshot — accept either.
   if (
     device.features.has("transient-attachments" as GPUFeatureName) ||

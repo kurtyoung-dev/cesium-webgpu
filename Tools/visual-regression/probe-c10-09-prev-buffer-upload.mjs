@@ -51,7 +51,11 @@ function installCounters() {
     const typed = data && data.BYTES_PER_ELEMENT;
     if (size != null) return typed ? size * data.BYTES_PER_ELEMENT : size;
     const bpe = typed ? data.BYTES_PER_ELEMENT : 1;
-    const total = typed ? data.length : data && data.byteLength ? data.byteLength : 0;
+    const total = typed
+      ? data.length
+      : data && data.byteLength
+        ? data.byteLength
+        : 0;
     return (total - (dataOffset || 0)) * bpe;
   };
   const q = GPUQueue.prototype;
@@ -193,7 +197,11 @@ async function runCloudLeg() {
 
     // ── Mutation exactness: edit ONE cloud position -> exactly one re-upload ──
     window.__ul.reset();
-    items[0].position = C.Cartesian3.fromDegrees(LON + 0.05, LAT + 0.03, 5000.0);
+    items[0].position = C.Cartesian3.fromDegrees(
+      LON + 0.05,
+      LAT + 0.03,
+      5000.0,
+    );
     // Frame with the edit (rebuild -> identity re-seed via copyBufferToBuffer).
     await onPost();
     const mutFrame = {

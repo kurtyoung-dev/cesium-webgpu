@@ -141,7 +141,12 @@ function decode(page, dataUrl) {
         b = d[i + 2];
       if (r > 120 && g < 90 && b < 90) red++;
       else if (b > 120 && r < 100 && g < 110) blue++;
-      else if (r > 90 && r < 200 && Math.abs(r - g) < 30 && Math.abs(g - b) < 30)
+      else if (
+        r > 90 &&
+        r < 200 &&
+        Math.abs(r - g) < 30 &&
+        Math.abs(g - b) < 30
+      )
         grey++;
     }
     const total = c.width * c.height;
@@ -183,7 +188,12 @@ async function capture(renderer) {
 async function run() {
   const gpu = await capture("webgpu");
   const gl = await capture("webgl");
-  console.log("WebGPU:", JSON.stringify(gpu.counts), "errs:", gpu.newErrs.length);
+  console.log(
+    "WebGPU:",
+    JSON.stringify(gpu.counts),
+    "errs:",
+    gpu.newErrs.length,
+  );
   console.log("WebGL :", JSON.stringify(gl.counts), "errs:", gl.newErrs.length);
 
   const c = gpu.counts;

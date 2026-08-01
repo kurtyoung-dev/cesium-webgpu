@@ -175,7 +175,7 @@ async function pickAtCenter(page) {
     // coordinate system, not the page coordinate system.
     const x = canvas.width / (window.devicePixelRatio || 1) / 2;
     const y = canvas.height / (window.devicePixelRatio || 1) / 2;
-    let picked = null;
+    let picked;
     try {
       picked = v.scene.pick(new Cesium.Cartesian2(x, y));
     } catch (e) {
@@ -290,7 +290,7 @@ async function runDemo(browser, fileName) {
       },
       configurable: true,
     });
-    let _v = undefined;
+    let _v;
     Object.defineProperty(window, "viewer", {
       configurable: true,
       get() {
@@ -345,7 +345,7 @@ async function runDemo(browser, fileName) {
     // Intercept `window.Cesium = ns` assignments. We can't wrap the
     // namespace directly (frozen), but we CAN squirrel away the reference
     // for prototype hooking in `tryInstallHooks`.
-    let _cesium = undefined;
+    let _cesium;
     Object.defineProperty(window, "Cesium", {
       configurable: true,
       get() {
@@ -546,10 +546,7 @@ async function runDemo(browser, fileName) {
     result.notes.push(`runner exception: ${err.message}`);
     try {
       const baseName = fileName.replace(/\.html$/, "");
-      const screenshotPath = path.join(
-        SCREENSHOT_DIR,
-        `${baseName}-error.png`,
-      );
+      const screenshotPath = path.join(SCREENSHOT_DIR, `${baseName}-error.png`);
       await page.screenshot({ path: screenshotPath, fullPage: false });
       result.screenshot = screenshotPath;
     } catch (_) {

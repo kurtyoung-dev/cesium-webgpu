@@ -187,7 +187,9 @@ async function runPass(enableF16) {
     const pp = scene.postProcessStages;
     // DoF stage added up-front (disabled) so the collection's
     // czm_depth_of_field lookup finds it when toggled.
-    const dofStage = pp.add(C.PostProcessStageLibrary.createDepthOfFieldStage());
+    const dofStage = pp.add(
+      C.PostProcessStageLibrary.createDepthOfFieldStage(),
+    );
     dofStage.enabled = false;
     await renderFrames(2);
 
@@ -271,7 +273,8 @@ for (const [tag, r] of [
   ["off", off],
   ["on", on],
 ]) {
-  for (const k of ["base", ...EFFECTS]) savePng(`${tag}-${k}.png`, r.captures[k]);
+  for (const k of ["base", ...EFFECTS])
+    savePng(`${tag}-${k}.png`, r.captures[k]);
 }
 
 const offF16Modules = off.modules.filter((m) => m.f16);
@@ -292,7 +295,7 @@ console.log(
 );
 
 // (A) f16 module coverage in the ON pass (only when device supports it).
-let aOK = true;
+let aOK;
 if (supportsF16) {
   const labels = onF16Modules.map((m) => m.label.toLowerCase());
   const expect = [

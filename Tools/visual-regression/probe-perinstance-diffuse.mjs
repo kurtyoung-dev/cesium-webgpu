@@ -95,10 +95,14 @@ async function capture(rendererArg) {
       // vertex format → routes to the `phong` WGSL shader.
       const span = 0.01;
       const coords = C.Cartesian3.fromDegreesArray([
-        lon - span, lat - span,
-        lon + span, lat - span,
-        lon + span, lat + span,
-        lon - span, lat + span,
+        lon - span,
+        lat - span,
+        lon + span,
+        lat - span,
+        lon + span,
+        lat + span,
+        lon - span,
+        lat + span,
       ]);
       const litPrim = new C.Primitive({
         geometryInstances: new C.GeometryInstance({
@@ -144,7 +148,7 @@ async function capture(rendererArg) {
       // background). This separates the lit primitive body from the backdrop
       // regardless of the lighting scale factor.
       const canvas = v.scene.canvas;
-      const gl =
+      const _gl =
         canvas.getContext("webgl2") ||
         canvas.getContext("webgl") ||
         canvas.getContext("webgpu");
@@ -192,13 +196,14 @@ async function capture(rendererArg) {
     { primColor: PRIM_COLOR },
   );
 
-  const out = path.join(OUT_DIR, `probe-perinstance-diffuse-${rendererArg}.png`);
+  const out = path.join(
+    OUT_DIR,
+    `probe-perinstance-diffuse-${rendererArg}.png`,
+  );
   await page.screenshot({ path: out, fullPage: false });
   await browser.close();
 
-  const errs = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
-  );
+  const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   return { sample, out, errors: errs };
 }
 
@@ -229,10 +234,18 @@ async function capture(rendererArg) {
   const ratio = lumGL > 0 ? lumGPU / lumGL : 0;
   const relErr = lumGL > 0 ? Math.abs(lumGPU - lumGL) / lumGL : 1;
 
-  console.log("\n  ── PerInstanceColorAppearance (flat:false) body luminance ──");
-  console.log(`  WebGL  meanLum: ${lumGL.toFixed(1)}  (px ${gl.sample.primPixelCount})`);
-  console.log(`  WebGPU meanLum: ${lumGPU.toFixed(1)}  (px ${gpu.sample.primPixelCount})`);
-  console.log(`  ratio WebGPU/WebGL: ${ratio.toFixed(3)}  relErr: ${(relErr * 100).toFixed(1)}%`);
+  console.log(
+    "\n  ── PerInstanceColorAppearance (flat:false) body luminance ──",
+  );
+  console.log(
+    `  WebGL  meanLum: ${lumGL.toFixed(1)}  (px ${gl.sample.primPixelCount})`,
+  );
+  console.log(
+    `  WebGPU meanLum: ${lumGPU.toFixed(1)}  (px ${gpu.sample.primPixelCount})`,
+  );
+  console.log(
+    `  ratio WebGPU/WebGL: ${ratio.toFixed(3)}  relErr: ${(relErr * 100).toFixed(1)}%`,
+  );
 
   let pass = true;
   const fail = (msg) => {
@@ -241,12 +254,19 @@ async function capture(rendererArg) {
   };
 
   if (gl.sample.primPixelCount < 1000)
-    fail(`WebGL primitive pixel count too low (${gl.sample.primPixelCount}) — scene didn't render`);
+    fail(
+      `WebGL primitive pixel count too low (${gl.sample.primPixelCount}) — scene didn't render`,
+    );
   if (gpu.sample.primPixelCount < 1000)
-    fail(`WebGPU primitive pixel count too low (${gpu.sample.primPixelCount}) — scene didn't render`);
-  if (gpu.errors.length > 0) fail(`WebGPU produced ${gpu.errors.length} console/page errors`);
+    fail(
+      `WebGPU primitive pixel count too low (${gpu.sample.primPixelCount}) — scene didn't render`,
+    );
+  if (gpu.errors.length > 0)
+    fail(`WebGPU produced ${gpu.errors.length} console/page errors`);
   if (relErr > LUM_TOL)
-    fail(`WebGPU body luminance off by ${(relErr * 100).toFixed(1)}% (> ${(LUM_TOL * 100).toFixed(0)}% tol) — still darker/brighter than WebGL`);
+    fail(
+      `WebGPU body luminance off by ${(relErr * 100).toFixed(1)}% (> ${(LUM_TOL * 100).toFixed(0)}% tol) — still darker/brighter than WebGL`,
+    );
 
   console.log(`\n[probe-perinstance-diffuse] ${pass ? "PASS" : "FAIL"}`);
   process.exit(pass ? 0 : 1);

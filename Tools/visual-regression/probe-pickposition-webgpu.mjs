@@ -321,7 +321,9 @@ if (webgpu.camBefore && webgpu.zoom) {
     );
   }
   if (webgpu.zoom.h <= 0 || !isFinite(webgpu.zoom.h)) {
-    failures.push(`WebGPU camera height after zoom is garbage: ${webgpu.zoom.h}`);
+    failures.push(
+      `WebGPU camera height after zoom is garbage: ${webgpu.zoom.h}`,
+    );
   }
   if (
     Math.abs(webgpu.zoom.lat - LAT) > 5 ||

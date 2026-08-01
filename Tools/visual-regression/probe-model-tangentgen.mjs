@@ -74,7 +74,9 @@ async function captureBackend(renderer, model) {
     args: ["--enable-unsafe-webgpu"],
   });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
-  page.on("pageerror", (e) => console.log(`>> [${renderer}] pageerror: ${e.message}`));
+  page.on("pageerror", (e) =>
+    console.log(`>> [${renderer}] pageerror: ${e.message}`),
+  );
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
@@ -83,7 +85,9 @@ async function captureBackend(renderer, model) {
   await page.evaluate(() => {
     window.__probeErrors = [];
     const dev = window.viewer?.scene?.context?._device;
-    if (dev) dev.onuncapturederror = (ev) => window.__probeErrors.push(ev?.error?.message ?? "");
+    if (dev)
+      dev.onuncapturederror = (ev) =>
+        window.__probeErrors.push(ev?.error?.message ?? "");
   });
 
   const setup = await page.evaluate(async (m) => {
@@ -120,7 +124,11 @@ async function captureBackend(renderer, model) {
     const bs = model.boundingSphere;
     v.camera.viewBoundingSphere(
       bs,
-      new C.HeadingPitchRange(C.Math.toRadians(20), C.Math.toRadians(-25), bs.radius * 2.2),
+      new C.HeadingPitchRange(
+        C.Math.toRadians(20),
+        C.Math.toRadians(-25),
+        bs.radius * 2.2,
+      ),
     );
     v.camera.lookAtTransform(C.Matrix4.IDENTITY);
 
@@ -154,21 +162,31 @@ async function diff(pngA, pngB) {
         c.width = img.naturalWidth;
         c.height = img.naturalHeight;
         c.getContext("2d").drawImage(img, 0, 0);
-        return { w: c.width, h: c.height, data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data };
+        return {
+          w: c.width,
+          h: c.height,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
+        };
       };
       const A = await dec(aB64);
       const B = await dec(bB64);
       // Consider only non-background pixels (the model) in EITHER image, so
       // we measure surface-shading agreement, not the empty dark backdrop.
       const bg = 0x0a * 3; // backgroundColor #0a0a0a rgb-sum threshold
-      let modelPx = 0, mismatch = 0, sumAbs = 0, maxD = 0;
+      let modelPx = 0,
+        mismatch = 0,
+        sumAbs = 0,
+        maxD = 0;
       for (let i = 0; i < A.data.length; i += 4) {
         const sa = A.data[i] + A.data[i + 1] + A.data[i + 2];
         const sb = B.data[i] + B.data[i + 1] + B.data[i + 2];
         const isModel = sa > bg + 12 || sb > bg + 12;
         if (!isModel) continue;
         modelPx++;
-        const d = Math.abs(A.data[i] - B.data[i]) + Math.abs(A.data[i + 1] - B.data[i + 1]) + Math.abs(A.data[i + 2] - B.data[i + 2]);
+        const d =
+          Math.abs(A.data[i] - B.data[i]) +
+          Math.abs(A.data[i + 1] - B.data[i + 1]) +
+          Math.abs(A.data[i + 2] - B.data[i + 2]);
         sumAbs += d;
         if (d > 30) mismatch++; // >10/channel avg
         if (d > maxD) maxD = d;
@@ -196,21 +214,31 @@ async function diff(pngA, pngB) {
     const webgl = await captureBackend("webgl", model);
     const webgpu = await captureBackend("webgpu", model);
     if (webgl.setup?.err || webgpu.setup?.err) {
-      console.log(`[${model.key}] SETUP ERR webgl=${webgl.setup?.err} webgpu=${webgpu.setup?.err}`);
+      console.log(
+        `[${model.key}] SETUP ERR webgl=${webgl.setup?.err} webgpu=${webgpu.setup?.err}`,
+      );
       pass = false;
       continue;
     }
     const d = await diff(webgl.out, webgpu.out);
     summary.push({ model, d, webgpuErrs: webgpu.errs });
 
-    console.log(`\n[${model.key}] (hasTangents=${model.hasTangents})  LABEL=${LABEL}`);
+    console.log(
+      `\n[${model.key}] (hasTangents=${model.hasTangents})  LABEL=${LABEL}`,
+    );
     console.log(`  webgl  → ${webgl.out}`);
     console.log(`  webgpu → ${webgpu.out}`);
     console.log(`  model pixels: ${d.modelPx}`);
-    console.log(`  WebGL↔WebGPU mismatch: ${d.mismatchPx} px (${d.mismatchPct.toFixed(2)}%)`);
-    console.log(`  mean abs diff (rgb-sum): ${d.meanAbsDiff.toFixed(2)}   max: ${d.maxD}`);
+    console.log(
+      `  WebGL↔WebGPU mismatch: ${d.mismatchPx} px (${d.mismatchPct.toFixed(2)}%)`,
+    );
+    console.log(
+      `  mean abs diff (rgb-sum): ${d.meanAbsDiff.toFixed(2)}   max: ${d.maxD}`,
+    );
     console.log(`  webgpu device errors: ${webgpu.errs.length}`);
-    webgpu.errs.slice(0, 5).forEach((e) => console.log(`    - ${(e ?? "").slice(0, 200)}`));
+    webgpu.errs
+      .slice(0, 5)
+      .forEach((e) => console.log(`    - ${(e ?? "").slice(0, 200)}`));
 
     if (webgpu.errs.length > 0) pass = false;
   }

@@ -11,7 +11,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
@@ -44,7 +48,7 @@ const BASE = "http://localhost:8080";
     const lat = 40.4406;
     const height = 800;
 
-    const entity = v.entities.add({
+    const _entity = v.entities.add({
       position: C.Cartesian3.fromDegrees(lon, lat, height),
       model: {
         uri: "/Apps/SampleData/models/CesiumMan/Cesium_Man.glb",
@@ -59,7 +63,7 @@ const BASE = "http://localhost:8080";
     });
 
     const phases = { early: 0, mid: 0, late: 0 };
-    const phaseFrames = { early: [0, 60], mid: [200, 260], late: [500, 560] };
+    const _phaseFrames = { early: [0, 60], mid: [200, 260], late: [500, 560] };
     window.__frameCounter = 0;
 
     for (let i = 0; i < 600; i++) {
@@ -81,7 +85,11 @@ const BASE = "http://localhost:8080";
     let foundModel = null;
     for (let i = 0; i < scene.primitives.length; i++) {
       const p = scene.primitives.get(i);
-      if (p && typeof p.update === "function" && p.constructor.name === "ModelVisualizer") {
+      if (
+        p &&
+        typeof p.update === "function" &&
+        p.constructor.name === "ModelVisualizer"
+      ) {
         foundModel = "ModelVisualizer";
         break;
       }
@@ -92,7 +100,9 @@ const BASE = "http://localhost:8080";
       totalErrors: errs.length,
       firstError: errs[0] ?? null,
       lastError: errs[errs.length - 1] ?? null,
-      uniqueErrorMessages: Array.from(new Set(errs.map((e) => e.text.slice(0, 120)))),
+      uniqueErrorMessages: Array.from(
+        new Set(errs.map((e) => e.text.slice(0, 120))),
+      ),
       primitivesCount: v.scene.primitives.length,
       entitiesCount: v.entities.values.length,
       foundModel,

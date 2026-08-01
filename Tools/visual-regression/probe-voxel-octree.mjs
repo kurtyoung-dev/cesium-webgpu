@@ -519,7 +519,7 @@ const rootFar = webgpu.far.lastTargetLevel === 0;
 
 // FAR view: WebGL-vs-WebGPU center-crop mean abs diff (both render the ROOT
 // level; the box is small on screen, so the diff must be tiny).
-let farDiff = 0;
+let farDiff;
 {
   const a = webgl.far.crop;
   const b = webgpu.far.crop;

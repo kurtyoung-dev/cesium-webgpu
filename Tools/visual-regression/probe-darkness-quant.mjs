@@ -9,9 +9,10 @@ import { chromium } from "playwright";
 
 const BASE = "http://localhost:8080";
 
-const CAM = process.env.PROBE_VIEW === "tile-edge"
-  ? { lon: -122.4, lat: 37.7, height: 500_000 }
-  : { lon: 10, lat: 50, height: 4_000_000 };
+const CAM =
+  process.env.PROBE_VIEW === "tile-edge"
+    ? { lon: -122.4, lat: 37.7, height: 500_000 }
+    : { lon: 10, lat: 50, height: 4_000_000 };
 
 async function capture(renderer) {
   const browser = await chromium.launch({
@@ -23,7 +24,9 @@ async function capture(renderer) {
       "--use-vulkan",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
@@ -108,8 +111,26 @@ function meanMax(samples) {
 
   const wgl = meanMax(webglSamples);
   const wgp = meanMax(webgpuSamples);
-  console.log("\nWebGL  mean RGB:", wgl.meanR.toFixed(1), wgl.meanG.toFixed(1), wgl.meanB.toFixed(1), " max:", wgl.maxR, wgl.maxG, wgl.maxB);
-  console.log("WebGPU mean RGB:", wgp.meanR.toFixed(1), wgp.meanG.toFixed(1), wgp.meanB.toFixed(1), " max:", wgp.maxR, wgp.maxG, wgp.maxB);
+  console.log(
+    "\nWebGL  mean RGB:",
+    wgl.meanR.toFixed(1),
+    wgl.meanG.toFixed(1),
+    wgl.meanB.toFixed(1),
+    " max:",
+    wgl.maxR,
+    wgl.maxG,
+    wgl.maxB,
+  );
+  console.log(
+    "WebGPU mean RGB:",
+    wgp.meanR.toFixed(1),
+    wgp.meanG.toFixed(1),
+    wgp.meanB.toFixed(1),
+    " max:",
+    wgp.maxR,
+    wgp.maxG,
+    wgp.maxB,
+  );
   console.log("\nRatios webgpu/webgl:");
   console.log("  meanR:", (wgp.meanR / wgl.meanR).toFixed(3));
   console.log("  meanG:", (wgp.meanG / wgl.meanG).toFixed(3));
@@ -142,11 +163,11 @@ function meanMax(samples) {
   console.log(
     `\nBest-fit single gamma exponent: ${bestG.toFixed(2)} (rmse=${Math.sqrt(bestErr).toFixed(3)})`,
   );
-  console.log(
-    "  gamma ≈ 2.2 → WebGPU outputs linear values displayed as sRGB",
-  );
+  console.log("  gamma ≈ 2.2 → WebGPU outputs linear values displayed as sRGB");
   console.log(
     "  gamma ≈ 1/2.2 = 0.45 → WebGPU outputs over-encoded sRGB values",
   );
-  console.log("  gamma ≈ 1.0 → not a gamma issue (uniform multiplier or other)");
+  console.log(
+    "  gamma ≈ 1.0 → not a gamma issue (uniform multiplier or other)",
+  );
 })();

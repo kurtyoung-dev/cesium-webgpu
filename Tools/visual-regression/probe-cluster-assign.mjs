@@ -33,7 +33,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
@@ -123,22 +127,14 @@ const BASE = "http://localhost:8080";
     const encoderAssign1 = device.createCommandEncoder({
       label: "probe-cluster-assign:dispatch1",
     });
-    const did1 = assign.dispatch(
-      encoderAssign1,
-      bounds.storageBuffer,
-      lights,
-    );
+    const did1 = assign.dispatch(encoderAssign1, bounds.storageBuffer, lights);
     device.queue.submit([encoderAssign1.finish()]);
 
     // 4. Second dispatch with same lights — should skip.
     const encoderAssign2 = device.createCommandEncoder({
       label: "probe-cluster-assign:dispatch2",
     });
-    const did2 = assign.dispatch(
-      encoderAssign2,
-      bounds.storageBuffer,
-      lights,
-    );
+    const did2 = assign.dispatch(encoderAssign2, bounds.storageBuffer, lights);
     device.queue.submit([encoderAssign2.finish()]);
 
     // 5. Read back perClusterLightCount.
@@ -239,17 +235,25 @@ const BASE = "http://localhost:8080";
     console.log(`  EARLY-EXIT: ${result.earlyExitErr}`);
     process.exit(1);
   }
-  console.log(`  did1: ${result.did1}  did2: ${result.did2} (expect true, false)`);
-  console.log(`  totalOverlap=${result.totalOverlap} across ${result.TOTAL} clusters`);
+  console.log(
+    `  did1: ${result.did1}  did2: ${result.did2} (expect true, false)`,
+  );
+  console.log(
+    `  totalOverlap=${result.totalOverlap} across ${result.TOTAL} clusters`,
+  );
   console.log(`  maxPerCluster=${result.maxPerCluster}`);
   console.log(`  clusters with ≥3 lights: ${result.clustersWith3Lights}`);
   console.log(`  clusters with ≥2 lights: ${result.clustersWith2Lights}`);
   console.log("  sampled clusters (count):");
-  result.samples.forEach((s) => console.log(`    idx=${s.idx}  count=${s.count}`));
+  result.samples.forEach((s) =>
+    console.log(`    idx=${s.idx}  count=${s.count}`),
+  );
   console.log(`  indices[0..5]=[${result.indexBufferFirst6.join(", ")}]`);
   console.log(`\nDevice errors: ${errs.length}`);
   if (errs.length) {
-    errs.slice(0, 3).forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
+    errs
+      .slice(0, 3)
+      .forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
   }
 
   let pass = true;
@@ -290,7 +294,9 @@ const BASE = "http://localhost:8080";
   }
 
   if (pass) {
-    console.log("\nPASS: cluster-assign produces sane per-cluster counts + dirty tracking + 0 device errors");
+    console.log(
+      "\nPASS: cluster-assign produces sane per-cluster counts + dirty tracking + 0 device errors",
+    );
   }
   process.exit(pass ? 0 : 1);
 })();

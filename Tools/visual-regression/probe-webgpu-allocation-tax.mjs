@@ -177,10 +177,8 @@ try {
 
     function ownerFromLabel(label) {
       const normalized = String(label || "");
-      return (
-        normalized.includes("GL Compatibility") ||
+      return normalized.includes("GL Compatibility") ||
         normalized.startsWith("GLStub_")
-      )
         ? "compatibility"
         : "unclassified-native";
     }

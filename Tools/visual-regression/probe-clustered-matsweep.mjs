@@ -63,11 +63,7 @@ const MATERIALS = [
     for (let i = 0; i < MATERIALS.length; i++) {
       const type = MATERIALS[i];
       const offset = (i - (MATERIALS.length - 1) / 2) * 60;
-      const pos = C.Cartesian3.fromDegrees(
-        lon + offset / 90000.0,
-        lat,
-        height,
-      );
+      const pos = C.Cartesian3.fromDegrees(lon + offset / 90000.0, lat, height);
       const mm = C.Transforms.eastNorthUpToFixedFrame(pos);
       let material;
       try {
@@ -80,7 +76,8 @@ const MATERIALS = [
         new C.Primitive({
           geometryInstances: new C.GeometryInstance({
             geometry: C.BoxGeometry.fromDimensions({
-              vertexFormat: C.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
+              vertexFormat:
+                C.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
               dimensions: new C.Cartesian3(30, 30, 30),
             }),
             modelMatrix: mm,
@@ -144,7 +141,9 @@ const MATERIALS = [
   console.log(`  dispatcher.lastActiveLightCount: ${result.lastActive}`);
   console.log(`  clusteredLightingActive: ${result.clusteredActive}`);
   if (Object.keys(result.perType).length) {
-    console.log(`  material construct issues: ${JSON.stringify(result.perType)}`);
+    console.log(
+      `  material construct issues: ${JSON.stringify(result.perType)}`,
+    );
   }
   console.log(`\nDevice errors: ${errs.length}`);
   if (errs.length) {
@@ -159,7 +158,9 @@ const MATERIALS = [
 
   let pass = true;
   if (result.lastActive < 1) {
-    console.log(`FAIL: lastActiveLightCount = ${result.lastActive}, expected ≥1`);
+    console.log(
+      `FAIL: lastActiveLightCount = ${result.lastActive}, expected ≥1`,
+    );
     pass = false;
   }
   if (errs.length > 0) {

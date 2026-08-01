@@ -29,18 +29,27 @@ async function sunAzimuth(page) {
       const origin = C.Cartographic.toCartesian(carto);
       const enu = C.Transforms.eastNorthUpToFixedFrame(origin);
       const inv = C.Matrix4.inverseTransformation(enu, new C.Matrix4());
-      const sunPos = C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+      const sunPos =
+        C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+          fixed,
+          new C.Cartesian3(),
+        );
+      const icrf = C.Transforms.computeIcrfToFixedMatrix(
         fixed,
-        new C.Cartesian3(),
+        new C.Matrix3(),
       );
-      const icrf = C.Transforms.computeIcrfToFixedMatrix(fixed, new C.Matrix3());
       let sunFixed = sunPos;
-      if (icrf) sunFixed = C.Matrix3.multiplyByVector(icrf, sunPos, new C.Cartesian3());
+      if (icrf)
+        sunFixed = C.Matrix3.multiplyByVector(icrf, sunPos, new C.Cartesian3());
       const sunDir = C.Cartesian3.normalize(
         C.Cartesian3.subtract(sunFixed, origin, new C.Cartesian3()),
         new C.Cartesian3(),
       );
-      const sl = C.Matrix4.multiplyByPointAsVector(inv, sunDir, new C.Cartesian3());
+      const sl = C.Matrix4.multiplyByPointAsVector(
+        inv,
+        sunDir,
+        new C.Cartesian3(),
+      );
       const az = (Math.atan2(sl.x, sl.y) * 180) / Math.PI;
       const elev = (Math.asin(Math.max(-1, Math.min(1, sl.z))) * 180) / Math.PI;
       return { azimuth: ((az % 360) + 360) % 360, elevation: elev };
@@ -109,43 +118,46 @@ async function capture(page, headingDeg, msOn, label) {
 // frame, unsaturated — where the directional MS signal shows through).
 async function halves(analyzer, png) {
   const b64 = fs.readFileSync(png).toString("base64");
-  return await analyzer.evaluate(async ({ b64 }) => {
-    const img = new Image();
-    img.src = "data:image/png;base64," + b64;
-    await img.decode();
-    const cv = document.createElement("canvas");
-    cv.width = img.width;
-    cv.height = img.height;
-    const ctx = cv.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const d = ctx.getImageData(0, 0, img.width, img.height);
-    const w = d.width,
-      h = d.height,
-      da = d.data;
-    function lumOf(y0, y1, x0, x1) {
-      let s = 0,
-        n = 0;
-      for (let y = y0; y < y1; y++) {
-        for (let x = x0; x < x1; x++) {
-          const i = (y * w + x) * 4;
-          s += 0.2126 * da[i] + 0.7152 * da[i + 1] + 0.0722 * da[i + 2];
-          n++;
+  return await analyzer.evaluate(
+    async ({ b64 }) => {
+      const img = new Image();
+      img.src = "data:image/png;base64," + b64;
+      await img.decode();
+      const cv = document.createElement("canvas");
+      cv.width = img.width;
+      cv.height = img.height;
+      const ctx = cv.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, img.width, img.height);
+      const w = d.width,
+        h = d.height,
+        da = d.data;
+      function lumOf(y0, y1, x0, x1) {
+        let s = 0,
+          n = 0;
+        for (let y = y0; y < y1; y++) {
+          for (let x = x0; x < x1; x++) {
+            const i = (y * w + x) * 4;
+            s += 0.2126 * da[i] + 0.7152 * da[i + 1] + 0.0722 * da[i + 2];
+            n++;
+          }
         }
+        return s / n;
       }
-      return s / n;
-    }
-    function band(f0, f1) {
-      const y0 = Math.floor(h * f0),
-        y1 = Math.floor(h * f1);
-      return {
-        left: lumOf(y0, y1, 0, Math.floor(w / 3)),
-        right: lumOf(y0, y1, Math.floor((2 * w) / 3), w),
-      };
-    }
-    // Horizon band just above the horizon; mid-sky band = upper-middle
-    // (unsaturated, looking ~30-45° up where azimuth variation is visible).
-    return { horizon: band(0.42, 0.5), mid: band(0.18, 0.32) };
-  }, { b64 });
+      function band(f0, f1) {
+        const y0 = Math.floor(h * f0),
+          y1 = Math.floor(h * f1);
+        return {
+          left: lumOf(y0, y1, 0, Math.floor(w / 3)),
+          right: lumOf(y0, y1, Math.floor((2 * w) / 3), w),
+        };
+      }
+      // Horizon band just above the horizon; mid-sky band = upper-middle
+      // (unsaturated, looking ~30-45° up where azimuth variation is visible).
+      return { horizon: band(0.42, 0.5), mid: band(0.18, 0.32) };
+    },
+    { b64 },
+  );
 }
 
 (async () => {
@@ -155,7 +167,9 @@ async function halves(analyzer, png) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -173,7 +187,9 @@ async function halves(analyzer, png) {
     `[sky-ms-dir] time=${TIME_ISO} sun az=${sun.azimuth.toFixed(1)}° elev=${sun.elevation.toFixed(1)}°  heading=${heading.toFixed(1)}° (sun to the LEFT)`,
   );
 
-  const analyzer = await browser.newPage({ viewport: { width: 64, height: 64 } });
+  const analyzer = await browser.newPage({
+    viewport: { width: 64, height: 64 },
+  });
   await analyzer.setContent("<!doctype html><html><body></body></html>");
 
   const offPng = await capture(page, heading, false, "off");

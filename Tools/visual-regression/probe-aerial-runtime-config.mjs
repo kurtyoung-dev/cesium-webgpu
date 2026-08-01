@@ -63,7 +63,10 @@ const setup = await page.evaluate(async () => {
 
   // Aerial perspective ON, LOW starting intensity — set BEFORE first enable so
   // the effect inits with this config; runtime mutation is what we then test.
-  window.viewer.scene.aerialPerspectiveConfig = { intensity: 0.1, inscatterScale: 0.05 };
+  window.viewer.scene.aerialPerspectiveConfig = {
+    intensity: 0.1,
+    inscatterScale: 0.05,
+  };
   scene.aerialPerspective = true;
 
   v.camera.setView({

@@ -85,7 +85,7 @@ const out = await page.evaluate(async () => {
   scene.backgroundColor = C.Color.BLACK;
 
   // Ensure the lazy Gaussian-splat feature renderer is loaded (key 16).
-  let frLoaded = false;
+  let frLoaded;
   try {
     await ctx.getFeatureRendererAsync(16);
     frLoaded = !!ctx.getFeatureRenderer(16);
@@ -404,7 +404,8 @@ check(
   `log-depth flip OFF->ON drives the flip-rebuild guard (cache.logDepthEnabled tracks the master switch, pipelines recompile): flipGuardOk=${out.flipGuardOk}`,
 );
 check("6", errors.length === 0, `console errors: ${errors.length}`);
-if (errors.length) for (const e of errors.slice(0, 8)) console.log(`  ERR: ${e}`);
+if (errors.length)
+  for (const e of errors.slice(0, 8)) console.log(`  ERR: ${e}`);
 
 console.log(ok ? "PASS" : "FAIL");
 await browser.close();

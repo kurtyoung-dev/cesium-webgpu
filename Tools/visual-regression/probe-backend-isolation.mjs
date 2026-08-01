@@ -34,15 +34,21 @@ const MEASURE_FRAMES = 90;
 // ── HARD watchdog: force-exit if anything hangs (machine safety) ──
 const HARD_LIMIT_MS = 240000;
 const watchdog = setTimeout(() => {
-  console.error("[probe-backend-isolation] WATCHDOG FIRED (240s) — forcing exit");
+  console.error(
+    "[probe-backend-isolation] WATCHDOG FIRED (240s) — forcing exit",
+  );
   process.exit(2);
 }, HARD_LIMIT_MS);
 if (watchdog.unref) watchdog.unref();
 
 function summarize(arr) {
-  const a = arr.filter((x) => typeof x === "number" && isFinite(x)).slice().sort((x, y) => x - y);
+  const a = arr
+    .filter((x) => typeof x === "number" && isFinite(x))
+    .slice()
+    .sort((x, y) => x - y);
   if (!a.length) return null;
-  const q = (p) => a[Math.min(a.length - 1, Math.max(0, Math.floor(p * (a.length - 1))))];
+  const q = (p) =>
+    a[Math.min(a.length - 1, Math.max(0, Math.floor(p * (a.length - 1))))];
   return {
     n: a.length,
     median: q(0.5),
@@ -67,7 +73,10 @@ const INSTRUMENT = () => {
       threw = String(e && e.message);
       throw e;
     } finally {
-      const stack = (new Error().stack || "").split("\n").slice(2, 7).join(" | ");
+      const stack = (new Error().stack || "")
+        .split("\n")
+        .slice(2, 7)
+        .join(" | ");
       window.__ctxCalls.push({
         type: String(type),
         returnedNull: result == null,
@@ -99,7 +108,8 @@ async function timeRenders(page, globalNames, warmup, measure) {
   return page.evaluate(
     async ({ names, warmup, measure }) => {
       const viewers = names.map((n) => window[n]).filter(Boolean);
-      if (!viewers.length) return { error: "no viewers found for " + names.join(",") };
+      if (!viewers.length)
+        return { error: "no viewers found for " + names.join(",") };
       const scenes = viewers.map((v) => v.scene);
       // Warm up: let caches/pipelines settle so we measure steady state.
       for (let i = 0; i < warmup; i++) {
@@ -178,7 +188,9 @@ async function inspectContexts(page, globalNames) {
 }
 
 async function runLane(browser, { name, url, globals }) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+  });
   await context.addInitScript(INSTRUMENT);
   const page = await context.newPage();
   const consoleErrors = [];
@@ -197,7 +209,10 @@ async function runLane(browser, { name, url, globals }) {
       lane.timingError = t.error;
     } else {
       lane.frameMs = summarize(t.samples);
-      lane.perScene = t.perScene.map((s, i) => ({ scene: globals[i] ?? `scene${i}`, ...summarize(s) }));
+      lane.perScene = t.perScene.map((s, i) => ({
+        scene: globals[i] ?? `scene${i}`,
+        ...summarize(s),
+      }));
     }
     lane.consoleErrors = consoleErrors.slice(0, 6);
     lane.ok = true;
@@ -249,13 +264,16 @@ async function runLane(browser, { name, url, globals }) {
     const k = gpuSolo?.contexts?.byKind;
     if (!k) return "UNKNOWN";
     const gl = k.webgl;
-    if (!gl || gl.count === 0) return "NO — zero WebGL getContext calls in webgpu mode";
-    if (gl.nonNull === 0) return `ATTEMPTED-BUT-NULL — ${gl.count} webgl getContext call(s), all returned null`;
+    if (!gl || gl.count === 0)
+      return "NO — zero WebGL getContext calls in webgpu mode";
+    if (gl.nonNull === 0)
+      return `ATTEMPTED-BUT-NULL — ${gl.count} webgl getContext call(s), all returned null`;
     return `YES — ${gl.nonNull} live WebGL context(s) created from ${gl.count} call(s)`;
   })();
 
   const splitVsSolo = (() => {
-    if (!split?.frameMs || !gpuSolo?.frameMs || !glSolo?.frameMs) return "UNKNOWN";
+    if (!split?.frameMs || !gpuSolo?.frameMs || !glSolo?.frameMs)
+      return "UNKNOWN";
     const soloSum = gpuSolo.frameMs.median + glSolo.frameMs.median;
     const ratio = split.frameMs.median / soloSum;
     return {
@@ -286,8 +304,7 @@ async function runLane(browser, { name, url, globals }) {
       Q1_webgl_running_in_webgpu_mode: webglInWebgpuMode,
       Q2_split_vs_solo: splitVsSolo,
       webgpu_over_webgl_render_ms_ratio: backendRatio,
-      note:
-        "ratio > 1 means WebGPU spends MORE ms per scene.render() than WebGL. This measures CPU wall-clock around render(), not GPU time.",
+      note: "ratio > 1 means WebGPU spends MORE ms per scene.render() than WebGL. This measures CPU wall-clock around render(), not GPU time.",
     },
     lanes,
   };

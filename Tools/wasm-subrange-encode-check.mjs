@@ -77,7 +77,8 @@ function check(name, cond, detail) {
 function installWasmFetchShim(wasmBytes) {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
-    const url = typeof input === "string" ? input : input?.href ?? String(input);
+    const url =
+      typeof input === "string" ? input : (input?.href ?? String(input));
     if (url.includes("cesium_wasm_bg.wasm")) {
       // Plain object (NOT a real Response) so the glue's
       // `module instanceof Response` check is false and it takes the
@@ -140,12 +141,17 @@ function f32BytesEqual(a, b) {
 async function main() {
   // Redirect the bridge's build-layout-relative wasm glue import to the
   // canonical glue so the REAL bridge runs under raw node.
-  register("./wasm-subrange-loader.mjs", pathToFileURL(__dirname + path.sep).href);
+  register(
+    "./wasm-subrange-loader.mjs",
+    pathToFileURL(__dirname + path.sep).href,
+  );
 
   const wasmBytes = await readFile(wasmBinPath);
   const restoreFetch = installWasmFetchShim(wasmBytes);
 
-  const { default: WasmRTEBridge } = await import(pathToFileURL(bridgePath).href);
+  const { default: WasmRTEBridge } = await import(
+    pathToFileURL(bridgePath).href
+  );
 
   const bridge = new WasmRTEBridge();
   const ok = await bridge.loadWasm();
@@ -282,9 +288,23 @@ async function main() {
     const jsLow = new Float32Array(len).fill(-42);
 
     bridge.threshold = 1;
-    bridge.batchEncodeRange(positions, srcOffset, count, wasmHigh, wasmLow, dstOffset);
+    bridge.batchEncodeRange(
+      positions,
+      srcOffset,
+      count,
+      wasmHigh,
+      wasmLow,
+      dstOffset,
+    );
     bridge.threshold = 1e9;
-    bridge.batchEncodeRange(positions, srcOffset, count, jsHigh, jsLow, dstOffset);
+    bridge.batchEncodeRange(
+      positions,
+      srcOffset,
+      count,
+      jsHigh,
+      jsLow,
+      dstOffset,
+    );
 
     check(
       "Test2: src!=dst small slice WASM==JS high",

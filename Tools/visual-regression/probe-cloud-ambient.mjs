@@ -42,9 +42,12 @@ const SETUP = async (cfg) => {
   const g = s.globe;
   s.requestRenderMode = false;
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.5;
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.75;
+  if ("cloudCoverage" in g)
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.5;
+  if ("cloudWeatherMap" in g)
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.75;
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
@@ -57,7 +60,11 @@ const SETUP = async (cfg) => {
   s.initializeFrame();
   s.render();
   const sunWC = s.context.uniformState.sunDirectionWC;
-  const local = C.Matrix4.multiplyByPointAsVector(invEnu, sunWC, new C.Cartesian3());
+  const local = C.Matrix4.multiplyByPointAsVector(
+    invEnu,
+    sunWC,
+    new C.Cartesian3(),
+  );
   const n = C.Cartesian3.normalize(local, new C.Cartesian3());
   const sunHeading = Math.atan2(n.x, n.y);
   // Side-lit: look 90deg off the sun azimuth so clouds show a lit + shadow face.
@@ -109,7 +116,7 @@ function measure(page, dataUrl) {
         const mx = Math.max(r, gg, b);
         if (mx <= 18) continue; // sky/background
         lums.push(mx);
-        const blue = (r + gg + b) > 0 ? b / (r + gg + b) : 0;
+        const blue = r + gg + b > 0 ? b / (r + gg + b) : 0;
         if (y < band * 0.4) {
           topBlue += blue;
           topN++;

@@ -11,7 +11,10 @@
       name="description"
       content="Translucent 3D Tile classification on the WebGPU backend; toggle between MSAA-on and MSAA-off configurations."
     />
-    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases, 3D Tiles" />
+    <meta
+      name="cesium-sandcastle-labels"
+      content="WebGPU, Showcases, 3D Tiles"
+    />
     <title>Cesium Demo</title>
     <script type="text/javascript" src="../Sandcastle-header.js"></script>
     <script
@@ -54,7 +57,10 @@
     3. Both configurations should match WebGL's classification output to
        eye-tolerance.
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
       #toolbar {
@@ -182,11 +188,15 @@
           },
         ]);
 
-        Sandcastle.addToggleButton("Show classification volume", true, (checked) => {
-          if (Cesium.defined(classificationPrimitive)) {
-            classificationPrimitive.show = checked;
-          }
-        });
+        Sandcastle.addToggleButton(
+          "Show classification volume",
+          true,
+          (checked) => {
+            if (Cesium.defined(classificationPrimitive)) {
+              classificationPrimitive.show = checked;
+            }
+          },
+        );
 
         //Sandcastle_End
         Sandcastle.finishedLoading();

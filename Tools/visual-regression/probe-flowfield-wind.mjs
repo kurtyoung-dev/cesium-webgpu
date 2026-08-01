@@ -109,9 +109,7 @@ async function diffPngs(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const A = await decode(ba);
@@ -153,24 +151,21 @@ async function diffPngs(a, b) {
   const baseline = await shot(page, "baseline");
 
   // (2) OFF-GATE — add the layer but show=false; must be byte-identical.
-  await page.evaluate(
-    (url) => {
-      const v = window.viewer;
-      window.__wind = v.scene.primitives.add(
-        new window.__C.FlowFieldWindLayer({
-          url,
-          particleCount: 120000,
-          show: false,
-          pixelSize: 3.0,
-          alpha: 1.0,
-          speedScale: 0.0016,
-          colorSlow: new window.__C.Color(1.0, 0.9, 0.2, 1.0),
-          colorFast: new window.__C.Color(1.0, 0.15, 0.1, 1.0),
-        }),
-      );
-    },
-    WIND_URL,
-  );
+  await page.evaluate((url) => {
+    const v = window.viewer;
+    window.__wind = v.scene.primitives.add(
+      new window.__C.FlowFieldWindLayer({
+        url,
+        particleCount: 120000,
+        show: false,
+        pixelSize: 3.0,
+        alpha: 1.0,
+        speedScale: 0.0016,
+        colorSlow: new window.__C.Color(1.0, 0.9, 0.2, 1.0),
+        colorFast: new window.__C.Color(1.0, 0.15, 0.1, 1.0),
+      }),
+    );
+  }, WIND_URL);
   // Let the velocity source load; still show=false, so nothing must render.
   await renderFrames(page, 90);
   const off = await shot(page, "off");
@@ -186,9 +181,7 @@ async function diffPngs(a, b) {
 
   await browser.close();
 
-  const errs = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
-  );
+  const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   console.log(`[probe-flowfield] console errors: ${errs.length}`);
   errs.slice(0, 8).forEach((e) => console.log(`   ${e.t}: ${e.text}`));
 
@@ -201,9 +194,15 @@ async function diffPngs(a, b) {
   console.log(`  off      : ${off}`);
   console.log(`  on-early : ${onEarly}`);
   console.log(`  on-late  : ${onLate}`);
-  console.log(`  OFF-GATE  (baseline vs off,      expect ~0): ${JSON.stringify(offGate)}`);
-  console.log(`  ON        (baseline vs on-late,  expect >0): ${JSON.stringify(onVsBase)}`);
-  console.log(`  MOTION    (on-early vs on-late,  expect >0): ${JSON.stringify(motion)}`);
+  console.log(
+    `  OFF-GATE  (baseline vs off,      expect ~0): ${JSON.stringify(offGate)}`,
+  );
+  console.log(
+    `  ON        (baseline vs on-late,  expect >0): ${JSON.stringify(onVsBase)}`,
+  );
+  console.log(
+    `  MOTION    (on-early vs on-late,  expect >0): ${JSON.stringify(motion)}`,
+  );
 
   const offOk = parseFloat(offGate.mismatchPct) < 0.02;
   const onOk = parseFloat(onVsBase.mismatchPct) > 0.3;

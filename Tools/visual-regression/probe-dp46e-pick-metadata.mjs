@@ -53,9 +53,13 @@ async function runBackend(renderer) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errors = [];
-  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message.slice(0, 240)}`));
+  page.on("pageerror", (e) =>
+    errors.push(`pageerror: ${e.message.slice(0, 240)}`),
+  );
   page.on("console", (m) => {
     const t = m.text();
     if (m.type() === "error" && !t.includes("favicon")) {
@@ -73,7 +77,9 @@ async function runBackend(renderer) {
     const dev = window.viewer?.scene?.context?._device;
     if (dev) {
       dev.onuncapturederror = (ev) =>
-        window.__probeDeviceErrors.push(ev?.error?.message?.slice(0, 240) ?? "uncaptured");
+        window.__probeDeviceErrors.push(
+          ev?.error?.message?.slice(0, 240) ?? "uncaptured",
+        );
     }
   });
 
@@ -171,7 +177,9 @@ async function runBackend(renderer) {
           else serial = val;
           values.push({ x: pos.x, y: pos.y, value: serial });
         }
-        const nonNull = values.filter((d) => d.value !== null && d.value !== undefined);
+        const nonNull = values.filter(
+          (d) => d.value !== null && d.value !== undefined,
+        );
         const distinct = new Set(
           nonNull.map((d) =>
             typeof d.value === "number" ? d.value.toFixed(4) : String(d.value),
@@ -193,7 +201,12 @@ async function runBackend(renderer) {
         deviceErrors: window.__probeDeviceErrors ?? [],
       };
     },
-    { modelUrl: MODEL_URL, className: CLASS_NAME, properties: PROPERTIES, rendererName: renderer },
+    {
+      modelUrl: MODEL_URL,
+      className: CLASS_NAME,
+      properties: PROPERTIES,
+      rendererName: renderer,
+    },
   );
 
   await page.screenshot({ path: path.join(OUT_DIR, `dp46e-${renderer}.png`) });
@@ -225,8 +238,16 @@ async function runBackend(renderer) {
     const gp = webgpu.perProperty?.[prop];
     const gl = webgl.perProperty?.[prop];
     summary[prop] = {
-      webgpu: { nonNull: gp?.nonNullCount, distinct: gp?.distinctCount, values: gp?.distinctValues },
-      webgl: { nonNull: gl?.nonNullCount, distinct: gl?.distinctCount, values: gl?.distinctValues },
+      webgpu: {
+        nonNull: gp?.nonNullCount,
+        distinct: gp?.distinctCount,
+        values: gp?.distinctValues,
+      },
+      webgl: {
+        nonNull: gl?.nonNullCount,
+        distinct: gl?.distinctCount,
+        values: gl?.distinctValues,
+      },
     };
 
     console.log(`  Property: ${prop}`);
@@ -239,13 +260,17 @@ async function runBackend(renderer) {
 
     // (1) WebGPU returns non-null.
     if (!gp || gp.nonNullCount === 0) {
-      fails.push(`${prop}: WebGPU pickMetadata returned only null/undefined (producer not firing)`);
+      fails.push(
+        `${prop}: WebGPU pickMetadata returned only null/undefined (producer not firing)`,
+      );
     }
     // (2) WebGPU feature/pixel-varying (>=2 distinct decoded values).
     if (gp && gp.distinctCount < 2) {
       // insulation can be uniform on a small framing; downgrade to a NOTE only
       // when at least the other two properties varied.
-      notes.push(`${prop}: WebGPU distinct=${gp.distinctCount} (low variation at this framing)`);
+      notes.push(
+        `${prop}: WebGPU distinct=${gp.distinctCount} (low variation at this framing)`,
+      );
     }
     // (3) Cross-check: the DECODE is backend-identical. Per-position exact
     //     matching is too sensitive to sub-pixel camera differences across
@@ -267,7 +292,9 @@ async function runBackend(renderer) {
       const glMin = Math.min(...glNums);
       const glMax = Math.max(...glNums);
       const tol = 1e-3 + (glMax - glMin) * 0.02;
-      const inRange = gpNums.filter((n) => n >= glMin - tol && n <= glMax + tol).length;
+      const inRange = gpNums.filter(
+        (n) => n >= glMin - tol && n <= glMax + tol,
+      ).length;
       const glSet = new Set(glNums.map((n) => n.toFixed(3)));
       const overlap = gpNums.filter((n) => glSet.has(n.toFixed(3))).length;
       console.log(
@@ -300,21 +327,36 @@ async function runBackend(renderer) {
     (p) => (webgpu.perProperty?.[p]?.distinctCount ?? 0) >= 2,
   ).length;
   if (varyingCount < 2) {
-    fails.push(`feature-varying: only ${varyingCount}/3 WebGPU properties showed >=2 distinct values`);
+    fails.push(
+      `feature-varying: only ${varyingCount}/3 WebGPU properties showed >=2 distinct values`,
+    );
   }
 
   const report = {
     runAt: new Date().toISOString(),
-    webgpu: { positionCount: webgpu.positionCount, deviceErrors: webgpu.deviceErrors, consoleErrors: webgpu.consoleErrors },
-    webgl: { positionCount: webgl.positionCount, deviceErrors: webgl.deviceErrors, consoleErrors: webgl.consoleErrors },
+    webgpu: {
+      positionCount: webgpu.positionCount,
+      deviceErrors: webgpu.deviceErrors,
+      consoleErrors: webgpu.consoleErrors,
+    },
+    webgl: {
+      positionCount: webgl.positionCount,
+      deviceErrors: webgl.deviceErrors,
+      consoleErrors: webgl.consoleErrors,
+    },
     summary,
     notes,
     PASS: fails.length === 0,
     fails,
   };
-  fs.writeFileSync(path.join(OUT_DIR, "dp46e-report.json"), JSON.stringify(report, null, 2));
+  fs.writeFileSync(
+    path.join(OUT_DIR, "dp46e-report.json"),
+    JSON.stringify(report, null, 2),
+  );
 
-  console.log(`\n  positions: webgpu=${webgpu.positionCount} webgl=${webgl.positionCount}`);
+  console.log(
+    `\n  positions: webgpu=${webgpu.positionCount} webgl=${webgl.positionCount}`,
+  );
   console.log("  Notes:");
   notes.forEach((n) => console.log(`    - ${n}`));
   console.log(`\n  PASS=${report.PASS}`);

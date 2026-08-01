@@ -39,7 +39,8 @@ async function resolveSun(page) {
       v.clock.currentTime = fixed.clone();
       v.clock.shouldAnimate = false;
       // Sun direction in WC.
-      const sunWC = C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame
+      const _sunWC = C.Simon1994PlanetaryPositions
+        .computeSunPositionInEarthInertialFrame
         ? null
         : null;
       // Use Cesium's scene sun position via the existing helper through the
@@ -49,24 +50,37 @@ async function resolveSun(page) {
       const enu = C.Transforms.eastNorthUpToFixedFrame(origin);
       const inv = C.Matrix4.inverseTransformation(enu, new C.Matrix4());
       // Sun position (WC) at this time.
-      const sunPos = C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
-        fixed,
-        new C.Cartesian3(),
-      );
+      const sunPos =
+        C.Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+          fixed,
+          new C.Cartesian3(),
+        );
       // Inertial→fixed.
-      const icrfToFixed = C.Transforms.computeIcrfToFixedMatrix(fixed, new C.Matrix3());
+      const icrfToFixed = C.Transforms.computeIcrfToFixedMatrix(
+        fixed,
+        new C.Matrix3(),
+      );
       let sunFixed = sunPos;
       if (icrfToFixed) {
-        sunFixed = C.Matrix3.multiplyByVector(icrfToFixed, sunPos, new C.Cartesian3());
+        sunFixed = C.Matrix3.multiplyByVector(
+          icrfToFixed,
+          sunPos,
+          new C.Cartesian3(),
+        );
       }
       const sunDir = C.Cartesian3.normalize(
         C.Cartesian3.subtract(sunFixed, origin, new C.Cartesian3()),
         new C.Cartesian3(),
       );
-      const sunLocal = C.Matrix4.multiplyByPointAsVector(inv, sunDir, new C.Cartesian3());
+      const sunLocal = C.Matrix4.multiplyByPointAsVector(
+        inv,
+        sunDir,
+        new C.Cartesian3(),
+      );
       // sunLocal = (east, north, up). Azimuth from north, CW.
       const az = (Math.atan2(sunLocal.x, sunLocal.y) * 180) / Math.PI;
-      const elev = (Math.asin(Math.max(-1, Math.min(1, sunLocal.z))) * 180) / Math.PI;
+      const elev =
+        (Math.asin(Math.max(-1, Math.min(1, sunLocal.z))) * 180) / Math.PI;
       return { azimuth: ((az % 360) + 360) % 360, elevation: elev };
     },
     { view: VIEW, timeIso: TIME_ISO },
@@ -138,46 +152,49 @@ async function captureHeading(page, headingDeg, msOn, label) {
 // pitch -2°, rows [0.42, 0.50]).
 async function bandStats(analyzerPage, pngPath) {
   const b64 = fs.readFileSync(pngPath).toString("base64");
-  return await analyzerPage.evaluate(async ({ b64 }) => {
-    const img = new Image();
-    img.src = "data:image/png;base64," + b64;
-    await img.decode();
-    const cv = document.createElement("canvas");
-    cv.width = img.width;
-    cv.height = img.height;
-    const ctx = cv.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const d = ctx.getImageData(0, 0, img.width, img.height);
-    const w = d.width,
-      h = d.height,
-      da = d.data;
-    function band(f0, f1) {
-      const y0 = Math.floor(h * f0),
-        y1 = Math.floor(h * f1);
-      let sum = 0,
-        n = 0,
-        rS = 0,
-        gS = 0,
-        bS = 0;
-      for (let y = y0; y < y1; y++) {
-        for (let x = 0; x < w; x++) {
-          const i = (y * w + x) * 4;
-          const r = da[i],
-            g = da[i + 1],
-            b = da[i + 2];
-          rS += r;
-          gS += g;
-          bS += b;
-          sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
-          n++;
+  return await analyzerPage.evaluate(
+    async ({ b64 }) => {
+      const img = new Image();
+      img.src = "data:image/png;base64," + b64;
+      await img.decode();
+      const cv = document.createElement("canvas");
+      cv.width = img.width;
+      cv.height = img.height;
+      const ctx = cv.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, img.width, img.height);
+      const w = d.width,
+        h = d.height,
+        da = d.data;
+      function band(f0, f1) {
+        const y0 = Math.floor(h * f0),
+          y1 = Math.floor(h * f1);
+        let sum = 0,
+          n = 0,
+          rS = 0,
+          gS = 0,
+          bS = 0;
+        for (let y = y0; y < y1; y++) {
+          for (let x = 0; x < w; x++) {
+            const i = (y * w + x) * 4;
+            const r = da[i],
+              g = da[i + 1],
+              b = da[i + 2];
+            rS += r;
+            gS += g;
+            bS += b;
+            sum += 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            n++;
+          }
         }
+        return { lum: sum / n, r: rS / n, g: gS / n, b: bS / n };
       }
-      return { lum: sum / n, r: rS / n, g: gS / n, b: bS / n };
-    }
-    // Horizon band just above the horizon line; zenith band = upper sky
-    // (darker / unsaturated, where the MS lift shows through the tonemap).
-    return { horizon: band(0.42, 0.5), zenith: band(0.05, 0.2) };
-  }, { b64 });
+      // Horizon band just above the horizon line; zenith band = upper sky
+      // (darker / unsaturated, where the MS lift shows through the tonemap).
+      return { horizon: band(0.42, 0.5), zenith: band(0.05, 0.2) };
+    },
+    { b64 },
+  );
 }
 
 (async () => {
@@ -187,7 +204,9 @@ async function bandStats(analyzerPage, pngPath) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const consoleErrors = [];
   page.on("console", (m) => {
     if (m.type() === "error") consoleErrors.push(m.text());
@@ -208,7 +227,9 @@ async function bandStats(analyzerPage, pngPath) {
     { name: "anti", deg: (sun.azimuth + 180) % 360 },
   ];
 
-  const analyzer = await browser.newPage({ viewport: { width: 64, height: 64 } });
+  const analyzer = await browser.newPage({
+    viewport: { width: 64, height: 64 },
+  });
   await analyzer.setContent("<!doctype html><html><body></body></html>");
 
   console.log(

@@ -90,11 +90,7 @@ async function captureRender(page, arcTypeName) {
     const center = C.Cartesian3.fromDegrees(-73.0, 35.5, 0.0);
     v.camera.lookAt(
       center,
-      new C.HeadingPitchRange(
-        0.0,
-        C.Math.toRadians(-90.0),
-        300000.0,
-      ),
+      new C.HeadingPitchRange(0.0, C.Math.toRadians(-90.0), 300000.0),
     );
     v.camera.lookAtTransform(C.Matrix4.IDENTITY);
 
@@ -177,7 +173,9 @@ async function captureRenderer(renderer, arcTypeName, fs) {
   for (const arcTypeName of ["GEODESIC", "NONE"]) {
     results[arcTypeName] = {};
     for (const renderer of ["webgl", "webgpu"]) {
-      console.log(`\n=== Capturing ${renderer.toUpperCase()} / ${arcTypeName} ===`);
+      console.log(
+        `\n=== Capturing ${renderer.toUpperCase()} / ${arcTypeName} ===`,
+      );
       results[arcTypeName][renderer] = await captureRenderer(
         renderer,
         arcTypeName,

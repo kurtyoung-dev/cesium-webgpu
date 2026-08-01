@@ -162,10 +162,7 @@ function parseArguments(argv) {
     ["--viewport-width", options.viewportWidth],
     ["--viewport-height", options.viewportHeight],
   ]) {
-    if (
-      value !== undefined &&
-      (!Number.isInteger(value) || value < 1)
-    ) {
+    if (value !== undefined && (!Number.isInteger(value) || value < 1)) {
       throw new Error(`${name} must be a positive integer`);
     }
   }
@@ -173,10 +170,7 @@ function parseArguments(argv) {
     ["--device-scale-factor", options.deviceScaleFactor],
     ["--resolution-scale", options.resolutionScale],
   ]) {
-    if (
-      value !== undefined &&
-      (!Number.isFinite(value) || value <= 0)
-    ) {
+    if (value !== undefined && (!Number.isFinite(value) || value <= 0)) {
       throw new Error(`${name} must be a positive number`);
     }
   }
@@ -230,8 +224,7 @@ function aggregateRuns(runs) {
   ).length;
   const cpuRuns = runs.filter(
     (run) =>
-      run.result === "pass" &&
-      run.quality?.validForCpuAggregation !== false,
+      run.result === "pass" && run.quality?.validForCpuAggregation !== false,
   );
   const gpuRuns = runs.filter(
     (run) =>
@@ -254,18 +247,9 @@ function aggregateRuns(runs) {
     stable: stability.stable,
     stabilityReasons: stability.reasons,
     cpuP95AcrossRuns: {
-      p50: percentile(
-        cpuMetric(readCpuP95),
-        0.5,
-      ),
-      min: percentile(
-        cpuMetric(readCpuP95),
-        0,
-      ),
-      max: percentile(
-        cpuMetric(readCpuP95),
-        1,
-      ),
+      p50: percentile(cpuMetric(readCpuP95), 0.5),
+      min: percentile(cpuMetric(readCpuP95), 0),
+      max: percentile(cpuMetric(readCpuP95), 1),
     },
     gpuP95AcrossRuns: {
       p50: percentile(
@@ -388,8 +372,7 @@ async function runOne(
         if (webglProgramEvents.length >= 512) {
           webglProgramEventsTruncated = true;
           if (globalThis.__perfCampaignDiagnostics) {
-            globalThis.__perfCampaignDiagnostics.webglProgramEventsTruncated =
-              true;
+            globalThis.__perfCampaignDiagnostics.webglProgramEventsTruncated = true;
           }
           return;
         }
@@ -495,8 +478,7 @@ async function runOne(
           }
           return generation;
         };
-        const finiteOrNull = (value) =>
-          Number.isFinite(value) ? value : null;
+        const finiteOrNull = (value) => (Number.isFinite(value) ? value : null);
         const tileId = (tile) =>
           tile &&
           Number.isInteger(tile.level) &&
@@ -534,9 +516,7 @@ async function runOne(
             quantization: finiteOrNull(mesh.encoding?.quantization),
             minimumHeight: finiteOrNull(mesh.minimumHeight),
             maximumHeight: finiteOrNull(mesh.maximumHeight),
-            indexCountWithoutSkirts: finiteOrNull(
-              mesh.indexCountWithoutSkirts,
-            ),
+            indexCountWithoutSkirts: finiteOrNull(mesh.indexCountWithoutSkirts),
             vertexCountWithoutSkirts: finiteOrNull(
               mesh.vertexCountWithoutSkirts,
             ),
@@ -565,7 +545,8 @@ async function runOne(
               textureGeneration: objectGeneration(texture),
               imageWidth: image?.width ?? image?.naturalWidth ?? null,
               imageHeight: image?.height ?? image?.naturalHeight ?? null,
-              imageUrl: imagery.imageUrl || image?.currentSrc || image?.src || null,
+              imageUrl:
+                imagery.imageUrl || image?.currentSrc || image?.src || null,
             });
           }
           return result;
@@ -614,7 +595,7 @@ async function runOne(
             imagery: portableImagery,
             waterMaskPresent: Boolean(
               surfaceTile?.waterMaskTexture ||
-                surfaceTile?.terrainData?.waterMask,
+              surfaceTile?.terrainData?.waterMask,
             ),
           });
           const exactSignature = JSON.stringify({
@@ -758,7 +739,11 @@ async function runOne(
           const commandOwners = new Set();
           let commandCount = 0;
           const primaryCommands = [];
-          for (let index = commandListStart; index < commandList.length; index++) {
+          for (
+            let index = commandListStart;
+            index < commandList.length;
+            index++
+          ) {
             const command = commandList[index];
             commandCount++;
             const owner = command?.owner;
@@ -772,15 +757,16 @@ async function runOne(
             }
             primaryCommands.push({ command, owner });
           }
-          const postCompileSelected = active.selectedObjects.map(makeTileRecord);
+          const postCompileSelected =
+            active.selectedObjects.map(makeTileRecord);
           const revisionTransitions = postCompileSelected
             .map((record, index) => ({
               id: record.id,
               before: active.selectedRecords[index].revision,
               after: record.revision,
-              beforeRevisionRecord:
-                active.selected[index].revisionRecord,
-              afterRevisionRecord: registerRevisionRecord(record).revisionRecord,
+              beforeRevisionRecord: active.selected[index].revisionRecord,
+              afterRevisionRecord:
+                registerRevisionRecord(record).revisionRecord,
             }))
             .filter(
               (entry) =>
@@ -875,7 +861,11 @@ async function runOne(
 
             const visitedDerived = new WeakSet();
             const visitDerived = (node, path) => {
-              if (!node || typeof node !== "object" || visitedDerived.has(node)) {
+              if (
+                !node ||
+                typeof node !== "object" ||
+                visitedDerived.has(node)
+              ) {
                 return;
               }
               visitedDerived.add(node);
@@ -896,9 +886,7 @@ async function runOne(
                       path: childPath,
                       owner: describeOwner(value.owner),
                     };
-                    snapshot.commands.backendVariantViolations.push(
-                      violation,
-                    );
+                    snapshot.commands.backendVariantViolations.push(violation);
                     totals.backendVariantViolations++;
                   }
                   if (
@@ -913,7 +901,10 @@ async function runOne(
                     snapshot.commands.variantOwnerViolations.push(violation);
                     totals.variantOwnerViolations++;
                   }
-                  visitDerived(value.derivedCommands, `${childPath}.derivedCommands`);
+                  visitDerived(
+                    value.derivedCommands,
+                    `${childPath}.derivedCommands`,
+                  );
                 } else {
                   visitDerived(value, childPath);
                 }
@@ -954,12 +945,7 @@ async function runOne(
             commandList,
             commandListStart,
           ) {
-            endCompilation(
-              "pick",
-              frameNumber,
-              commandList,
-              commandListStart,
-            );
+            endCompilation("pick", frameNumber, commandList, commandListStart);
           },
           snapshot() {
             return {
@@ -1052,30 +1038,29 @@ async function runOne(
         const depthOrLayers = Array.isArray(size)
           ? size[2] || 1
           : size?.depthOrArrayLayers || 1;
-        const block =
-          {
-            r8unorm: [1, 1, 1],
-            r16float: [1, 1, 2],
-            rg8unorm: [1, 1, 2],
-            rg16float: [1, 1, 4],
-            rg32float: [1, 1, 8],
-            rgba8unorm: [1, 1, 4],
-            "rgba8unorm-srgb": [1, 1, 4],
-            bgra8unorm: [1, 1, 4],
-            "bgra8unorm-srgb": [1, 1, 4],
-            rgba16float: [1, 1, 8],
-            rgba32float: [1, 1, 16],
-            depth16unorm: [1, 1, 2],
-            depth24plus: [1, 1, 4],
-            "depth24plus-stencil8": [1, 1, 4],
-            depth32float: [1, 1, 4],
-            "bc1-rgba-unorm": [4, 4, 8],
-            "bc1-rgba-unorm-srgb": [4, 4, 8],
-            "bc3-rgba-unorm": [4, 4, 16],
-            "bc3-rgba-unorm-srgb": [4, 4, 16],
-            "bc7-rgba-unorm": [4, 4, 16],
-            "bc7-rgba-unorm-srgb": [4, 4, 16],
-          }[descriptor?.format] || [1, 1, 4];
+        const block = {
+          r8unorm: [1, 1, 1],
+          r16float: [1, 1, 2],
+          rg8unorm: [1, 1, 2],
+          rg16float: [1, 1, 4],
+          rg32float: [1, 1, 8],
+          rgba8unorm: [1, 1, 4],
+          "rgba8unorm-srgb": [1, 1, 4],
+          bgra8unorm: [1, 1, 4],
+          "bgra8unorm-srgb": [1, 1, 4],
+          rgba16float: [1, 1, 8],
+          rgba32float: [1, 1, 16],
+          depth16unorm: [1, 1, 2],
+          depth24plus: [1, 1, 4],
+          "depth24plus-stencil8": [1, 1, 4],
+          depth32float: [1, 1, 4],
+          "bc1-rgba-unorm": [4, 4, 8],
+          "bc1-rgba-unorm-srgb": [4, 4, 8],
+          "bc3-rgba-unorm": [4, 4, 16],
+          "bc3-rgba-unorm-srgb": [4, 4, 16],
+          "bc7-rgba-unorm": [4, 4, 16],
+          "bc7-rgba-unorm-srgb": [4, 4, 16],
+        }[descriptor?.format] || [1, 1, 4];
         const samples = descriptor?.sampleCount || 1;
         const mipLevels = descriptor?.mipLevelCount || 1;
         let bytes = 0;
@@ -1343,7 +1328,10 @@ async function runOne(
               return original.apply(this, args);
             },
         );
-        for (const method of ["dispatchWorkgroups", "dispatchWorkgroupsIndirect"]) {
+        for (const method of [
+          "dispatchWorkgroups",
+          "dispatchWorkgroupsIndirect",
+        ]) {
           patch(
             globalThis.GPUComputePassEncoder?.prototype,
             method,
@@ -1387,7 +1375,8 @@ async function runOne(
               for (const commandBuffer of commandBuffers || []) {
                 incrementLabel(
                   "webgpuCommandBuffersSubmitted",
-                  commandBufferLabels.get(commandBuffer) || commandBuffer?.label,
+                  commandBufferLabels.get(commandBuffer) ||
+                    commandBuffer?.label,
                 );
               }
               return original.call(this, commandBuffers);
@@ -1405,10 +1394,7 @@ async function runOne(
                 `${normalizeLabel(buffer?.label)}|offset=${bufferOffset ?? 0}`,
               );
               const bytes = writeBufferByteLength(data, dataOffset, size);
-              increment(
-                "webgpuWriteBufferBytes",
-                bytes,
-              );
+              increment("webgpuWriteBufferBytes", bytes);
               incrementLabel("webgpuWriteBufferBytes", buffer?.label, bytes);
               return original.call(
                 this,
@@ -1538,12 +1524,11 @@ async function runOne(
                   if (shader) {
                     webglShaderIds.set(shader, shaderId);
                   }
-                  recordWebGLProgramEvent(
-                    "createShader",
-                    startTime,
-                    duration,
-                    { prefix, shaderId, shaderType: type },
-                  );
+                  recordWebGLProgramEvent("createShader", startTime, duration, {
+                    prefix,
+                    shaderId,
+                    shaderType: type,
+                  });
                   return shader;
                 },
             );
@@ -1557,16 +1542,11 @@ async function runOne(
                   const startTime = performance.now();
                   const result = original.call(this, shader, source);
                   const duration = performance.now() - startTime;
-                  recordWebGLProgramEvent(
-                    "shaderSource",
-                    startTime,
-                    duration,
-                    {
-                      prefix,
-                      shaderId: webglShaderIds.get(shader) ?? 0,
-                      ...summarizeWebGLShaderSource(source),
-                    },
-                  );
+                  recordWebGLProgramEvent("shaderSource", startTime, duration, {
+                    prefix,
+                    shaderId: webglShaderIds.get(shader) ?? 0,
+                    ...summarizeWebGLShaderSource(source),
+                  });
                   return result;
                 },
             );
@@ -1582,8 +1562,7 @@ async function runOne(
                   const result = original.call(this, first, second);
                   const duration = performance.now() - startTime;
                   const shader = method === "compileShader" ? first : second;
-                  const program =
-                    method === "attachShader" ? first : undefined;
+                  const program = method === "attachShader" ? first : undefined;
                   recordWebGLProgramEvent(method, startTime, duration, {
                     prefix,
                     programId: webglProgramIds.get(program) ?? 0,
@@ -1602,15 +1581,10 @@ async function runOne(
                   const startTime = performance.now();
                   const result = original.call(this, program);
                   const duration = performance.now() - startTime;
-                  recordWebGLProgramEvent(
-                    "linkProgram",
-                    startTime,
-                    duration,
-                    {
-                      prefix,
-                      programId: webglProgramIds.get(program) ?? 0,
-                    },
-                  );
+                  recordWebGLProgramEvent("linkProgram", startTime, duration, {
+                    prefix,
+                    programId: webglProgramIds.get(program) ?? 0,
+                  });
                   return result;
                 },
             );
@@ -1868,9 +1842,7 @@ async function runOne(
             return;
           }
           restoreWebGPUModelPreparationDiagnosticsPending = false;
-          if (
-            previousWebGPUModelPreparationDiagnosticsEnabled === undefined
-          ) {
+          if (previousWebGPUModelPreparationDiagnosticsEnabled === undefined) {
             delete context._webgpuModelPreparationDiagnosticsEnabled;
           } else {
             context._webgpuModelPreparationDiagnosticsEnabled =
@@ -1886,9 +1858,7 @@ async function runOne(
         }
         const webgpuModelPreparationEvidenceModule =
           webgpuModelPreparationDiagnosticsEnabled
-            ? await import(
-                "/Tools/visual-regression/lib/webgpu-model-preparation-evidence.mjs"
-              )
+            ? await import("/Tools/visual-regression/lib/webgpu-model-preparation-evidence.mjs")
             : null;
         const globeShaderRequests = [];
         const globeShaderRequestStates = new Set();
@@ -1904,12 +1874,10 @@ async function runOne(
             const preparationQueue =
               shaderCache?._parallelShaderPreparationQueue;
             const preparationCountBefore = preparationQueue?.length ?? null;
-            const pendingCountBefore =
-              this._pendingFogCompanions?.size ?? null;
+            const pendingCountBefore = this._pendingFogCompanions?.size ?? null;
             const result = originalGetShaderProgram.call(this, options);
             const preparationCountAfter = preparationQueue?.length ?? null;
-            const pendingCountAfter =
-              this._pendingFogCompanions?.size ?? null;
+            const pendingCountAfter = this._pendingFogCompanions?.size ?? null;
             const stateKey = [
               result?.flags,
               options.enableFog,
@@ -1932,8 +1900,8 @@ async function runOne(
               globeShaderRequests.push({
                 time: performance.now(),
                 frameNumber: options.frameState?.frameNumber,
-                cameraHeight: options.frameState?.camera?.positionCartographic
-                  ?.height,
+                cameraHeight:
+                  options.frameState?.camera?.positionCartographic?.height,
                 fogEnabled: options.frameState?.fog?.enabled,
                 fogRenderable: options.frameState?.fog?.renderable,
                 numberOfDayTextures: options.numberOfDayTextures,
@@ -1970,8 +1938,7 @@ async function runOne(
           workloadDefinition.action === "camera-track-pick";
 
         scene.requestRenderMode = false;
-        viewer.resolutionScale =
-          protocolDefinition.resolutionScale ?? 1;
+        viewer.resolutionScale = protocolDefinition.resolutionScale ?? 1;
         viewer.clock.shouldAnimate = false;
         viewer.clock.currentTime = C.JulianDate.fromIso8601(
           protocolDefinition.fixedClock,
@@ -1993,12 +1960,10 @@ async function runOne(
         // shared campaign utilities rather than reimplemented in-page.
         let campaignUtilsModule = null;
         if (representativeWorkload) {
-          representativeModule = await import(
-            "/Tools/visual-regression/lib/representative-performance-content.mjs"
-          );
-          campaignUtilsModule = await import(
-            "/Tools/visual-regression/lib/performance-campaign-utils.mjs"
-          );
+          representativeModule =
+            await import("/Tools/visual-regression/lib/representative-performance-content.mjs");
+          campaignUtilsModule =
+            await import("/Tools/visual-regression/lib/performance-campaign-utils.mjs");
           const validationFailures =
             representativeModule.validateRepresentativeConfig(
               workloadDefinition.representativeConfig,
@@ -2043,9 +2008,8 @@ async function runOne(
         }
         let cloudVolumetrics = null;
         if (workloadDefinition.featureProfile === "volumetric-clouds") {
-          const { installCloudProbeHarness } = await import(
-            "/Tools/visual-regression/lib/cloud-probe-harness.mjs"
-          );
+          const { installCloudProbeHarness } =
+            await import("/Tools/visual-regression/lib/cloud-probe-harness.mjs");
           installCloudProbeHarness();
           cloudVolumetrics = globalThis.__cloudProbe.configure({
             requireWebGPU: true,
@@ -2287,10 +2251,7 @@ async function runOne(
           const progress = Math.min(1, Math.max(0, routeProgress));
           const segmentCount = cameraTrack.length - 1;
           const scaled = progress * segmentCount;
-          const segmentIndex = Math.min(
-            segmentCount - 1,
-            Math.floor(scaled),
-          );
+          const segmentIndex = Math.min(segmentCount - 1, Math.floor(scaled));
           const amount =
             segmentIndex === segmentCount - 1 && progress === 1
               ? 1
@@ -2344,9 +2305,7 @@ async function runOne(
                   (_, index) =>
                     index / Math.max(1, configuredRoutePrimeSamples - 1),
                 )
-              : cameraTrack.map(
-                  (_, index) => index / (cameraTrack.length - 1),
-                );
+              : cameraTrack.map((_, index) => index / (cameraTrack.length - 1));
           for (
             let primeIndex = 0;
             primeIndex < primeProgresses.length;
@@ -2669,11 +2628,9 @@ async function runOne(
           // Relatively-prime cycle counts prevent a short repeated line while
           // guaranteeing both axes visit the viewport-safe edges.
           const xAmount =
-            0.5 +
-            0.5 * Math.sin(routeProgress * Math.PI * 2 * 3 - Math.PI / 2);
+            0.5 + 0.5 * Math.sin(routeProgress * Math.PI * 2 * 3 - Math.PI / 2);
           const yAmount =
-            0.5 +
-            0.5 * Math.sin(routeProgress * Math.PI * 2 * 2 + Math.PI / 2);
+            0.5 + 0.5 * Math.sin(routeProgress * Math.PI * 2 * 2 + Math.PI / 2);
           pickPosition.x = Math.round(
             insetX + (width - 1 - insetX * 2) * xAmount,
           );
@@ -2722,8 +2679,7 @@ async function runOne(
               movingPickTelemetry.maxPendingCalls,
               movingPickTelemetry.pendingCalls,
             );
-            let tracked;
-            tracked = Promise.resolve(pickPromise)
+            const tracked = Promise.resolve(pickPromise)
               .then((result) => {
                 movingPickTelemetry.completedCalls++;
                 if (pickDrainStarted) {
@@ -2866,7 +2822,11 @@ async function runOne(
             ];
             const entries = [];
             const unresolved = { high: 0, medium: 0, low: 0 };
-            for (let queueIndex = 0; queueIndex < queueDefinitions.length; queueIndex++) {
+            for (
+              let queueIndex = 0;
+              queueIndex < queueDefinitions.length;
+              queueIndex++
+            ) {
               const [queueName, queue] = queueDefinitions[queueIndex];
               const unresolvedKey = ["high", "medium", "low"][queueIndex];
               for (let tileIndex = 0; tileIndex < queue.length; tileIndex++) {
@@ -2883,7 +2843,11 @@ async function runOne(
                   : [];
                 let loadingImageryCount = 0;
                 let readyImageryCount = 0;
-                for (let imageryIndex = 0; imageryIndex < imagery.length; imageryIndex++) {
+                for (
+                  let imageryIndex = 0;
+                  imageryIndex < imagery.length;
+                  imageryIndex++
+                ) {
                   if (imagery[imageryIndex]?.loadingImagery) {
                     loadingImageryCount++;
                   }
@@ -3013,8 +2977,8 @@ async function runOne(
             cameraTrackFrameIndex = 1;
             let globeTilesNotLoadedFrames = 0;
             const residentQueueDiagnostics = [];
-            const removeConvergenceEvidence =
-              scene.postRender.addEventListener(() => {
+            const removeConvergenceEvidence = scene.postRender.addEventListener(
+              () => {
                 if (scene.globe.tilesLoaded !== true) {
                   globeTilesNotLoadedFrames++;
                   if (
@@ -3026,7 +2990,8 @@ async function runOne(
                     );
                   }
                 }
-              });
+              },
+            );
             actionRunning = true;
             try {
               await waitFrames(
@@ -3073,8 +3038,7 @@ async function runOne(
             passes: convergencePasses,
           };
           if (
-            !representativeHarness.primeEvidence.residentConvergence
-              .converged
+            !representativeHarness.primeEvidence.residentConvergence.converged
           ) {
             throw new Error(
               `representative resident route failed to converge to zero terrain work: ${JSON.stringify(convergencePasses)}`,
@@ -3222,8 +3186,7 @@ async function runOne(
           clientHeight: scene.canvas.clientHeight,
           canvasWidth: scene.canvas.width,
           canvasHeight: scene.canvas.height,
-          drawingBufferWidth:
-            context.drawingBufferWidth ?? scene.canvas.width,
+          drawingBufferWidth: context.drawingBufferWidth ?? scene.canvas.width,
           drawingBufferHeight:
             context.drawingBufferHeight ?? scene.canvas.height,
           devicePixelRatio: globalThis.devicePixelRatio,
@@ -3246,8 +3209,7 @@ async function runOne(
                 measurementPostRenderFrameCount++;
                 if (cameraTrackEnabled && currentTrackState) {
                   const evidence = { ...currentTrackState };
-                  evidence.globeTilesLoaded =
-                    scene.globe?.tilesLoaded === true;
+                  evidence.globeTilesLoaded = scene.globe?.tilesLoaded === true;
                   // C12-29 S5 — preserve the per-frame activation decision so
                   // eclipse-time moving routes can distinguish shader work
                   // from an idle/no-eclipse benchmark. This reads existing
@@ -3266,11 +3228,9 @@ async function runOne(
                     evidence.y = currentPickState.y;
                     evidence.normalizedX = currentPickState.normalizedX;
                     evidence.normalizedY = currentPickState.normalizedY;
-                    evidence.pickRouteProgress =
-                      currentPickState.routeProgress;
+                    evidence.pickRouteProgress = currentPickState.routeProgress;
                     evidence.pickSequence = currentPickState.sequence;
-                    evidence.pickPublicCallCpuMs =
-                      publicPickCpuSinceLastRender;
+                    evidence.pickPublicCallCpuMs = publicPickCpuSinceLastRender;
                     evidence.pickAsyncExecutionCpuMs =
                       asyncPickExecutionCpuSinceLastRender;
                     evidence.pickCpuMs =
@@ -3317,8 +3277,7 @@ async function runOne(
         }
         const representativeValidationRouteProgress =
           representativeValidationWaypointIndex >= 0
-            ? representativeValidationWaypointIndex /
-              (cameraTrack.length - 1)
+            ? representativeValidationWaypointIndex / (cameraTrack.length - 1)
             : null;
         const representativeCommandWindowStartRouteProgress =
           representativeValidationWaypointIndex > 0
@@ -3327,10 +3286,9 @@ async function runOne(
             : null;
         const representativeCommandWindowEndRouteProgress =
           representativeValidationRouteProgress;
-        const representativeCommandSampleLimit =
-          representativeHarness
-            ? workloadDefinition.representativeConfig.primeStableFrames
-            : 0;
+        const representativeCommandSampleLimit = representativeHarness
+          ? workloadDefinition.representativeConfig.primeStableFrames
+          : 0;
         const representativeCommandWindowTilesets = representativeHarness
           ? representativeHarness.assets.tilesets
           : null;
@@ -3348,7 +3306,10 @@ async function runOne(
             terrainOwnershipDiagnostics;
           originalSceneUpdateDerivedCommands = scene.updateDerivedCommands;
           scene.updateDerivedCommands = function (command) {
-            const result = originalSceneUpdateDerivedCommands.call(this, command);
+            const result = originalSceneUpdateDerivedCommands.call(
+              this,
+              command,
+            );
             terrainOwnershipDiagnostics.recordTerrainCommandAfterDerivedRefresh(
               command,
             );
@@ -3476,7 +3437,7 @@ async function runOne(
           return publicDiagnostics;
         };
         const representativeContentEvidence = representativeHarness
-            ? {
+          ? {
               prime: representativeHarness.primeEvidence,
               measurementContent: null,
               measurementTerrainActivity: {
@@ -3501,15 +3462,16 @@ async function runOne(
           scene.updateDerivedCommands = originalSceneUpdateDerivedCommands;
         }
         context._visibilityExecutionOwnershipDiagnostics = undefined;
-        const terrainSelectionAudit = terrainOwnershipDiagnostics?.snapshot() || {
-          schemaVersion: 2,
-          enabled: false,
-          attached: false,
-          backend: expectedRenderer,
-          snapshots: [],
-          totals: {},
-          truncated: false,
-        };
+        const terrainSelectionAudit =
+          terrainOwnershipDiagnostics?.snapshot() || {
+            schemaVersion: 2,
+            enabled: false,
+            attached: false,
+            backend: expectedRenderer,
+            snapshots: [],
+            totals: {},
+            truncated: false,
+          };
         const statisticsEnd = context.getRendererStatistics?.() || {};
         const frameStatisticsEnd = context.getStatistics?.() || null;
         const apiCountersEnd = { ...diagnostics.apiCounters };
@@ -3543,8 +3505,8 @@ async function runOne(
         await new Promise((resolveObserverBoundary) =>
           setTimeout(resolveObserverBoundary, 0),
         );
-        for (const entry of
-          diagnostics.longTaskObserver?.takeRecords?.() || []) {
+        for (const entry of diagnostics.longTaskObserver?.takeRecords?.() ||
+          []) {
           diagnostics.longTasks.push({
             startTime: entry.startTime,
             duration: entry.duration,
@@ -3591,8 +3553,7 @@ async function runOne(
             movingPickTelemetry.errors.push(internalDrain.error);
           }
           movingPickTelemetry.executionCpuUnbucketedMs =
-            publicPickCpuSinceLastRender +
-            asyncPickExecutionCpuSinceLastRender;
+            publicPickCpuSinceLastRender + asyncPickExecutionCpuSinceLastRender;
           recordPickTelemetry = false;
           if (originalPickAsyncWithMode) {
             picking._pickAsyncWithMode = originalPickAsyncWithMode;
@@ -3669,8 +3630,7 @@ async function runOne(
             const routeProgress =
               representativeReplayFrameCount === 1
                 ? 0
-                : replayFrameIndex /
-                  (representativeReplayFrameCount - 1);
+                : replayFrameIndex / (representativeReplayFrameCount - 1);
             currentTrackState = applyCameraTrackProgress(routeProgress);
             await waitFrames(1, "representative-replay");
 
@@ -3682,17 +3642,14 @@ async function runOne(
               currentTrackState.segmentIndex,
               routeProgress,
             );
-            representativeReplaySegments.add(
-              currentTrackState.segmentIndex,
-            );
+            representativeReplaySegments.add(currentTrackState.segmentIndex);
             representativeReplayTailSampled ||= routeProgress >= 0.95;
             representativeReplayEndSampled ||= routeProgress >= 0.99;
 
             if (
               representativeCommandSamplesTaken <
                 representativeCommandSampleLimit &&
-              routeProgress >=
-                representativeCommandWindowStartRouteProgress &&
+              routeProgress >= representativeCommandWindowStartRouteProgress &&
               routeProgress < representativeCommandWindowEndRouteProgress
             ) {
               representativeCommandWindowInspectedFrames++;
@@ -3772,28 +3729,21 @@ async function runOne(
             tailSampled: representativeReplayTailSampled,
             endSampled: representativeReplayEndSampled,
             validationWaypoint: {
-              name:
-                workloadDefinition.representativeConfig.validationWaypoint,
+              name: workloadDefinition.representativeConfig.validationWaypoint,
               routeProgress: representativeValidationRouteProgress,
             },
             commandTriggeredPreWaypoint: {
-              startRouteProgress:
-                representativeCommandWindowStartRouteProgress,
-              endRouteProgress:
-                representativeCommandWindowEndRouteProgress,
+              startRouteProgress: representativeCommandWindowStartRouteProgress,
+              endRouteProgress: representativeCommandWindowEndRouteProgress,
               endExclusive: true,
-              configuredTilesets:
-                representativeCommandWindowTilesets.length,
-              inspectedFrames:
-                representativeCommandWindowInspectedFrames,
+              configuredTilesets: representativeCommandWindowTilesets.length,
+              inspectedFrames: representativeCommandWindowInspectedFrames,
               maximumSamples: representativeCommandSampleLimit,
               sampledFrames: representativeCommandSamplesTaken,
               firstSampleRouteProgress:
                 representativeCommandFirstSampleProgress,
-              lastSampleRouteProgress:
-                representativeCommandLastSampleProgress,
-              maximumObservedCommands:
-                representativeCommandMaximumObserved,
+              lastSampleRouteProgress: representativeCommandLastSampleProgress,
+              maximumObservedCommands: representativeCommandMaximumObserved,
             },
           };
           if (representativeMeasurementContent.workloadFingerprint) {
@@ -3870,16 +3820,14 @@ async function runOne(
             phase: "validation",
           });
           validationEvidence.stableFrames = validationStableFrames;
-          validationEvidence.requiredStableFrames =
-            requiredValidationFrames;
+          validationEvidence.requiredStableFrames = requiredValidationFrames;
           if (validationStableFrames < requiredValidationFrames) {
             validationEvidence.valid = false;
             validationEvidence.failures.unshift(
               "post-measurement representative validation timed out",
             );
           }
-          representativeContentEvidence.validation =
-            validationEvidence;
+          representativeContentEvidence.validation = validationEvidence;
           const queueDone = context.device?.queue?.onSubmittedWorkDone?.();
           if (queueDone) {
             let validationDrainTimeout;
@@ -4000,9 +3948,7 @@ async function runOne(
             renderedFrames: trace?.samples?.length || 0,
           },
           trackEvidence,
-          movingPickTelemetry: movingPickEnabled
-            ? movingPickTelemetry
-            : null,
+          movingPickTelemetry: movingPickEnabled ? movingPickTelemetry : null,
           timestampResults: statisticsAfterReadback.timestamps || null,
           rendererStatisticsStart: statisticsStart,
           rendererStatisticsEnd: statisticsEnd,
@@ -4188,14 +4134,13 @@ async function runOne(
       browserResult.trace?.samples || [],
       browserResult.displayRefresh?.refreshHz,
     );
-    browserResult.trackMetrics =
-      usesCameraTrack(workload.action)
-        ? summarizeTrackMetrics(
-            browserResult.trace?.samples || [],
-            browserResult.trackEvidence || [],
-            GLOBE_CAMERA_TRACK,
-          )
-        : null;
+    browserResult.trackMetrics = usesCameraTrack(workload.action)
+      ? summarizeTrackMetrics(
+          browserResult.trace?.samples || [],
+          browserResult.trackEvidence || [],
+          GLOBE_CAMERA_TRACK,
+        )
+      : null;
     browserResult.pickMetrics = usesMovingPick(workload.action)
       ? summarizeMovingPickMetrics(
           browserResult.trace?.samples || [],
@@ -4217,19 +4162,16 @@ async function runOne(
         `resolved ${browserResult.actualRenderer}, expected ${renderer}`,
       );
     }
-    const modelPreparationAssessment =
-      assessWebGPUModelPreparationEvidence(
-        browserResult.webgpuModelPreparationEvidence,
-        {
-          renderer,
-          apiInstrumentation,
-          modelAttributionContent:
-            workload.contentProfile ===
-            "local-procedural-terrain-assets",
-        },
-      );
-    browserResult.webgpuModelPreparationAssessment =
-      modelPreparationAssessment;
+    const modelPreparationAssessment = assessWebGPUModelPreparationEvidence(
+      browserResult.webgpuModelPreparationEvidence,
+      {
+        renderer,
+        apiInstrumentation,
+        modelAttributionContent:
+          workload.contentProfile === "local-procedural-terrain-assets",
+      },
+    );
+    browserResult.webgpuModelPreparationAssessment = modelPreparationAssessment;
     if (!modelPreparationAssessment.valid) {
       failures.push(...modelPreparationAssessment.reasons);
       browserResult.quality.status = "invalid";
@@ -4237,9 +4179,7 @@ async function runOne(
       browserResult.quality.validForCpuAggregation = false;
       browserResult.quality.validForGpuAggregation = false;
       browserResult.quality.reasons ??= [];
-      browserResult.quality.reasons.push(
-        ...modelPreparationAssessment.reasons,
-      );
+      browserResult.quality.reasons.push(...modelPreparationAssessment.reasons);
     }
     if (pageErrors.length) failures.push(`${pageErrors.length} page errors`);
     if (externalRequests.length) {
@@ -4313,8 +4253,7 @@ async function runOne(
       workload.contentProfile === "local-procedural-terrain-assets" &&
       browserResult.representativeContentEvidence?.validation?.valid !== true
     ) {
-      const evidence =
-        browserResult.representativeContentEvidence?.validation;
+      const evidence = browserResult.representativeContentEvidence?.validation;
       const reason = `representative content coverage invalid: ${
         evidence?.failures?.join("; ") || "missing validation evidence"
       }`;
@@ -4326,9 +4265,7 @@ async function runOne(
       browserResult.quality.reasons ??= [];
       browserResult.quality.reasons.push(reason);
     }
-    if (
-      workload.contentProfile === "local-procedural-terrain-assets"
-    ) {
+    if (workload.contentProfile === "local-procedural-terrain-assets") {
       const assessment = assessRepresentativeMeasurementEvidence(
         browserResult.representativeContentEvidence,
         {
@@ -4350,12 +4287,9 @@ async function runOne(
         browserResult.quality.reasons.push(reason);
       }
     }
-    if (
-      workload.representativeConfig?.measurementTerrainMode === "resident"
-    ) {
+    if (workload.representativeConfig?.measurementTerrainMode === "resident") {
       const activity =
-        browserResult.representativeContentEvidence
-          ?.measurementTerrainActivity;
+        browserResult.representativeContentEvidence?.measurementTerrainActivity;
       const delta = activity?.delta;
       if (
         !delta ||
@@ -4421,19 +4355,24 @@ async function runOne(
           failures.push("terrain selection ownership audit was truncated");
         }
         if ((totals.renderSnapshots || 0) < 1) {
-          failures.push("terrain selection ownership audit saw no render snapshots");
+          failures.push(
+            "terrain selection ownership audit saw no render snapshots",
+          );
         }
         if (
           usesMovingPick(workload.action) &&
           (totals.pickSnapshots || 0) < 1
         ) {
-          failures.push("terrain selection ownership audit saw no pick snapshots");
+          failures.push(
+            "terrain selection ownership audit saw no pick snapshots",
+          );
         }
         if (usesCameraTrack(workload.action)) {
           const expectedSegments = GLOBE_CAMERA_TRACK.length - 1;
           if (
             audit.routeCoverage?.segmentIndices.length !== expectedSegments ||
-            audit.routeCoverage?.segmentsWithCommands.length !== expectedSegments
+            audit.routeCoverage?.segmentsWithCommands.length !==
+              expectedSegments
           ) {
             failures.push(
               "terrain selection ownership audit did not cover emitted terrain work in every camera segment",
@@ -4492,20 +4431,19 @@ async function runOne(
         settleFrames: browserResult.settleFrames,
       },
       ...browserResult,
-      featureFindings:
-        usesCameraTrack(workload.action)
-          ? {
-              requiresPostPerformanceReview:
-                pageErrors.length > 0 ||
-                (browserResult.deviceErrors?.length || 0) > 0 ||
-                consoleErrors.length > 0 ||
-                externalRequests.length > 0,
-              pageErrors,
-              deviceErrors: browserResult.deviceErrors || [],
-              consoleErrors: consoleErrors.slice(0, 25),
-              externalRequests: externalRequests.slice(0, 25),
-            }
-          : null,
+      featureFindings: usesCameraTrack(workload.action)
+        ? {
+            requiresPostPerformanceReview:
+              pageErrors.length > 0 ||
+              (browserResult.deviceErrors?.length || 0) > 0 ||
+              consoleErrors.length > 0 ||
+              externalRequests.length > 0,
+            pageErrors,
+            deviceErrors: browserResult.deviceErrors || [],
+            consoleErrors: consoleErrors.slice(0, 25),
+            externalRequests: externalRequests.slice(0, 25),
+          }
+        : null,
       pageErrors,
       consoleErrors: consoleErrors.slice(0, 25),
       externalRequests: externalRequests.slice(0, 25),
@@ -4599,10 +4537,7 @@ async function runOne(
             (error) => ({ status: "rejected", message: String(error) }),
           ),
           new Promise((resolveTimeout) =>
-            setTimeout(
-              () => resolveTimeout({ status: "timeout" }),
-              2_000,
-            ),
+            setTimeout(() => resolveTimeout({ status: "timeout" }), 2_000),
           ),
         ]);
         return {
@@ -4683,18 +4618,13 @@ manifest.protocol = {
   ...manifest.protocol,
   viewport: {
     ...manifest.protocol.viewport,
-    width:
-      options.viewportWidth ?? manifest.protocol.viewport.width,
-    height:
-      options.viewportHeight ?? manifest.protocol.viewport.height,
+    width: options.viewportWidth ?? manifest.protocol.viewport.width,
+    height: options.viewportHeight ?? manifest.protocol.viewport.height,
     deviceScaleFactor:
-      options.deviceScaleFactor ??
-      manifest.protocol.viewport.deviceScaleFactor,
+      options.deviceScaleFactor ?? manifest.protocol.viewport.deviceScaleFactor,
   },
   resolutionScale:
-    options.resolutionScale ??
-    manifest.protocol.resolutionScale ??
-    1,
+    options.resolutionScale ?? manifest.protocol.resolutionScale ?? 1,
 };
 const bundlePath = resolve(
   repositoryDirectory,
@@ -4710,16 +4640,9 @@ const toolingIdentities = Object.fromEntries(
       ["manifest", options.manifestPath],
       [
         "representativeContentHelper",
-        resolve(
-          toolDirectory,
-          "lib",
-          "representative-performance-content.mjs",
-        ),
+        resolve(toolDirectory, "lib", "representative-performance-content.mjs"),
       ],
-      [
-        "cameraTrack",
-        resolve(toolDirectory, "lib", "globe-camera-track.mjs"),
-      ],
+      ["cameraTrack", resolve(toolDirectory, "lib", "globe-camera-track.mjs")],
     ].map(async ([name, path]) => [name, await fileIdentity(path)]),
   ),
 );
@@ -4878,10 +4801,7 @@ try {
         }
         report.runs.push(run);
         runsByRenderer.get(renderer).push(run);
-        if (
-          run.result !== "pass" ||
-          run.quality?.status === "invalid"
-        ) {
+        if (run.result !== "pass" || run.quality?.status === "invalid") {
           report.result = "fail";
         }
       }
@@ -4912,14 +4832,9 @@ try {
               "streaming",
           },
         );
-        if (
-          webglRun?.result !== "pass" ||
-          webgpuRun?.result !== "pass"
-        ) {
+        if (webglRun?.result !== "pass" || webgpuRun?.result !== "pass") {
           comparison.valid = false;
-          comparison.reasons.unshift(
-            "one or both renderer legs did not pass",
-          );
+          comparison.reasons.unshift("one or both renderer legs did not pass");
         }
         const order = scheduled.order.join("-");
         const pairRecord = {
@@ -4998,9 +4913,7 @@ try {
       }
       if (
         minimumPairsPerOrder > 0 &&
-        Object.values(orderCounts).some(
-          (count) => count < minimumPairsPerOrder,
-        )
+        Object.values(orderCounts).some((count) => count < minimumPairsPerOrder)
       ) {
         closureReasons.push(
           `counterbalanced order coverage fell below ${minimumPairsPerOrder} comparable pairs per order`,

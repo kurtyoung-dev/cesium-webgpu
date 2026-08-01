@@ -129,7 +129,9 @@ async function captureRenderer(renderer) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = [];
   page.on("console", (m) => {
     if (m.type() === "error") consoleErrors.push(m.text());
@@ -214,7 +216,11 @@ function matricesClose(a, b, eps) {
   // 4. WebGPU viewportTransformation must MATCH WebGL (depth-range-agnostic).
   checks.push([
     `webgpu viewportTransformation matches webgl (eps 1e-3)`,
-    matricesClose(wgpu.viewportTransformation, wgl.viewportTransformation, 1e-3),
+    matricesClose(
+      wgpu.viewportTransformation,
+      wgl.viewportTransformation,
+      1e-3,
+    ),
   ]);
 
   // 5. Screen-space ribbon still renders on WebGPU (no regression).

@@ -1,7 +1,7 @@
 // Scan a list of demos for any "Attachment state of [RenderPipeline ...]"
 // validation warnings — they indicate format/sample-count drift between a
 // cached pipeline and the render pass it's bound against.
-import { chromium } from 'playwright';
+import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -17,55 +17,79 @@ const RENDERER_OVERRIDE_SHIM = `
 const demos = process.argv.slice(2);
 if (demos.length === 0) {
   demos.push(
-    'Atmosphere.html',
-    'High Dynamic Range.html',
-    'Bloom.html',
-    'Ambient Occlusion.html',
-    'Depth of Field.html',
-    'Lighting.html',
-    'Shadows.html',
-    'Custom Per-Feature Post Process.html',
-    'Post Processing.html',
-    'WebGPU Edge Visibility.html',
+    "Atmosphere.html",
+    "High Dynamic Range.html",
+    "Bloom.html",
+    "Ambient Occlusion.html",
+    "Depth of Field.html",
+    "Lighting.html",
+    "Shadows.html",
+    "Custom Per-Feature Post Process.html",
+    "Post Processing.html",
+    "WebGPU Edge Visibility.html",
   );
 }
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
+const browser = await chromium.launch({ channel: "msedge", headless: true });
 const summary = [];
 for (const demo of demos) {
-  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+  const ctx = await browser.newContext({
+    viewport: { width: 800, height: 600 },
+  });
   const page = await ctx.newPage();
   const msgs = [];
-  page.on('console', m => msgs.push(`[${m.type()}] ${m.text()}`));
-  page.on('pageerror', e => msgs.push(`[PAGEERROR] ${e.message}`));
+  page.on("console", (m) => msgs.push(`[${m.type()}] ${m.text()}`));
+  page.on("pageerror", (e) => msgs.push(`[PAGEERROR] ${e.message}`));
 
-  await page.addInitScript(() => { window.__FORCED_RENDERER__ = 'webgpu'; });
+  await page.addInitScript(() => {
+    window.__FORCED_RENDERER__ = "webgpu";
+  });
   await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-  await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
+  await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
     const response = await route.fetch();
-    const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-    await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+    const txt = (await response.text()).replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    );
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      body: txt,
+    });
   });
 
   const url = `http://localhost:8080/Apps/Sandcastle/gallery/${encodeURIComponent(demo)}`;
   try {
-    await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+    await page.goto(url, { waitUntil: "load", timeout: 60000 });
     await page.waitForTimeout(8000);
   } catch (e) {
     msgs.push(`[NAV ERROR] ${e.message}`);
   }
 
-  const attachmentMismatch = msgs.filter(m => /Attachment state of \[RenderPipeline/i.test(m));
-  const depthPlane = attachmentMismatch.filter(m => /DepthPlane/i.test(m));
-  const edge = attachmentMismatch.filter(m => /EdgeEmitter/i.test(m));
-  const other = attachmentMismatch.filter(m => !/DepthPlane|EdgeEmitter/i.test(m));
-  summary.push({ demo, total: attachmentMismatch.length, depthPlane: depthPlane.length, edge: edge.length, other: other.length, sample: attachmentMismatch[0]?.substring(0, 280) });
+  const attachmentMismatch = msgs.filter((m) =>
+    /Attachment state of \[RenderPipeline/i.test(m),
+  );
+  const depthPlane = attachmentMismatch.filter((m) => /DepthPlane/i.test(m));
+  const edge = attachmentMismatch.filter((m) => /EdgeEmitter/i.test(m));
+  const other = attachmentMismatch.filter(
+    (m) => !/DepthPlane|EdgeEmitter/i.test(m),
+  );
+  summary.push({
+    demo,
+    total: attachmentMismatch.length,
+    depthPlane: depthPlane.length,
+    edge: edge.length,
+    other: other.length,
+    sample: attachmentMismatch[0]?.substring(0, 280),
+  });
   await ctx.close();
 }
 await browser.close();
 
-console.log('\n=== Summary ===');
+console.log("\n=== Summary ===");
 for (const s of summary) {
-  console.log(`${s.demo}: total=${s.total} depthPlane=${s.depthPlane} edge=${s.edge} other=${s.other}`);
-  if (s.sample) console.log('  sample:', s.sample);
+  console.log(
+    `${s.demo}: total=${s.total} depthPlane=${s.depthPlane} edge=${s.edge} other=${s.other}`,
+  );
+  if (s.sample) console.log("  sample:", s.sample);
 }

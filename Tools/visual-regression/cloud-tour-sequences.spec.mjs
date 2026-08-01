@@ -116,8 +116,9 @@ const probeSource = fs
  */
 const probeCode = probeSource
   .replace(/\/\*[\s\S]*?\*\//g, (block) => block.replace(/[^\n]/g, " "))
-  .replace(/(^|[^:])\/\/[^\n]*/g, (match, lead) =>
-    lead + " ".repeat(match.length - lead.length),
+  .replace(
+    /(^|[^:])\/\/[^\n]*/g,
+    (match, lead) => lead + " ".repeat(match.length - lead.length),
   );
 
 // ── 1. Coverage ───────────────────────────────────────────────────────────
@@ -138,10 +139,16 @@ test("fixtures answer the C13-01 row's coverage words", () => {
     coverage.climates.length >= 4,
     `climates: ${coverage.climates.join(", ")}`,
   );
-  assert.ok(coverage.regions.length >= 4, `regions: ${coverage.regions.join(", ")}`);
+  assert.ok(
+    coverage.regions.length >= 4,
+    `regions: ${coverage.regions.join(", ")}`,
+  );
 
   // "at least three cloud types, including multiple same-type formations"
-  assert.ok(coverage.genera.length >= 3, `genera: ${coverage.genera.join(", ")}`);
+  assert.ok(
+    coverage.genera.length >= 3,
+    `genera: ${coverage.genera.join(", ")}`,
+  );
   assert.ok(
     coverage.sameTypeGroups.length >= 2,
     "at least two genera must carry multiple formations",
@@ -179,14 +186,17 @@ test("sequences answer the row's wind/time, teleport and history-reset words", (
   assert.equal(windLanes.length, 3);
   assert.equal(new Set(windLanes.map((lane) => lane.fixtureId)).size, 1);
   const signature = windLanes
-    .map((lane) => `${lane.clock.stepSeconds}/${lane.volumetric.cloudWindSpeed}`)
+    .map(
+      (lane) => `${lane.clock.stepSeconds}/${lane.volumetric.cloudWindSpeed}`,
+    )
     .sort();
   assert.deepEqual(signature, ["0/0", "60/0", "60/15"]);
 
   // Teleport and reset sequences must run where a history exists.
   for (const sequence of CLOUD_TOUR_SEQUENCES) {
     const asserts = sequence.phases.some(
-      (phase) => Number.isInteger(phase.expectResetBits) && phase.expectResetBits !== 0,
+      (phase) =>
+        Number.isInteger(phase.expectResetBits) && phase.expectResetBits !== 0,
     );
     if (asserts) {
       assert.ok(
@@ -213,7 +223,10 @@ test("sequences answer the row's wind/time, teleport and history-reset words", (
 test("every sequence has a constant, bounded frame budget", () => {
   for (const sequence of CLOUD_TOUR_SEQUENCES) {
     const budget = sequenceFrameBudget(sequence);
-    assert.ok(Number.isInteger(budget) && budget > 0 && budget < 2000, sequence.id);
+    assert.ok(
+      Number.isInteger(budget) && budget > 0 && budget < 2000,
+      sequence.id,
+    );
   }
 });
 
@@ -224,7 +237,9 @@ test("validateFixture rejects a station whose regime contradicts its own deck", 
   const broken = {
     ...fixture,
     stations: fixture.stations.map((station) =>
-      station.regime === "inside-deck" ? { ...station, height: 40000 } : station,
+      station.regime === "inside-deck"
+        ? { ...station, height: 40000 }
+        : station,
     ),
   };
   const failures = validateFixture(broken);
@@ -284,14 +299,21 @@ test("validateSequence rejects an unbounded phase and an unknown action", () => 
     ),
   };
   assert.ok(
-    validateSequence(bogus).some((failure) => /unknown action warp-drive/.test(failure)),
+    validateSequence(bogus).some((failure) =>
+      /unknown action warp-drive/.test(failure),
+    ),
   );
 });
 
 test("the reset grace window is bounded and never applied to an expected reset", () => {
   const sequence = sequenceById("history-reset-taxonomy");
-  const settle = sequence.phases.find((phase) => phase.id === "settle-after-resize");
-  assert.ok(settle.resetAssertFromFrame > 0, "a settle phase needs a grace window");
+  const settle = sequence.phases.find(
+    (phase) => phase.id === "settle-after-resize",
+  );
+  assert.ok(
+    settle.resetAssertFromFrame > 0,
+    "a settle phase needs a grace window",
+  );
   assert.ok(settle.resetAssertFromFrame <= settle.frames / 2);
 
   // Grace that swallows the whole phase is a vacuous assertion.
@@ -303,7 +325,9 @@ test("the reset grace window is bounded and never applied to an expected reset",
         : phase,
     ),
   };
-  assert.ok(validateSequence(vacuous).some((failure) => /vacuous/.test(failure)));
+  assert.ok(
+    validateSequence(vacuous).some((failure) => /vacuous/.test(failure)),
+  );
 
   // A phase that EXPECTS a reset must watch from frame 0 — the edge it is
   // looking for is at the start of the phase.
@@ -314,7 +338,9 @@ test("the reset grace window is bounded and never applied to an expected reset",
     ),
   };
   assert.ok(
-    validateSequence(blinded).some((failure) => /must observe from frame 0/.test(failure)),
+    validateSequence(blinded).some((failure) =>
+      /must observe from frame 0/.test(failure),
+    ),
   );
 
   // No phase that expects a reset carries a grace.
@@ -362,19 +388,32 @@ test("local-solar-hour clocks are correct, pinned and stable", () => {
   // 90W is six hours behind.
   assert.equal(utcIsoForLocalSolarHour(-90, 12), "2026-06-21T18:00:00Z");
   // Longitude wrapping is equivalent, not merely tolerated.
-  assert.equal(utcIsoForLocalSolarHour(190, 9), utcIsoForLocalSolarHour(-170, 9));
+  assert.equal(
+    utcIsoForLocalSolarHour(190, 9),
+    utcIsoForLocalSolarHour(-170, 9),
+  );
   // Same inputs, same output, always.
-  assert.equal(utcIsoForLocalSolarHour(37.5, 7.25), utcIsoForLocalSolarHour(37.5, 7.25));
+  assert.equal(
+    utcIsoForLocalSolarHour(37.5, 7.25),
+    utcIsoForLocalSolarHour(37.5, 7.25),
+  );
   assert.throws(() => utcIsoForLocalSolarHour(0, 24), /localSolarHour/);
   assert.throws(() => utcIsoForLocalSolarHour(Number.NaN, 12), /longitude/);
-  assert.throws(() => utcIsoForLocalSolarHour(0, 12, "21-06-2026"), /YYYY-MM-DD/);
+  assert.throws(
+    () => utcIsoForLocalSolarHour(0, 12, "21-06-2026"),
+    /YYYY-MM-DD/,
+  );
 });
 
 test("every fixture pins a whole-second UTC instant", () => {
   for (const fixture of CLOUD_TOUR_FIXTURES) {
     const iso = fixtureClockIso(fixture);
     assert.match(iso, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, fixture.id);
-    assert.equal(iso, fixtureClockIso(fixture), `${fixture.id} clock is not stable`);
+    assert.equal(
+      iso,
+      fixtureClockIso(fixture),
+      `${fixture.id} clock is not stable`,
+    );
   }
 });
 
@@ -399,21 +438,35 @@ test("replay keys are stable, sensitive to render inputs, and blind to gates", (
     // A render input moves the key ...
     const moved = {
       ...fixture,
-      volumetric: { ...fixture.volumetric, cloudCoverage: fixture.volumetric.cloudCoverage / 2 },
+      volumetric: {
+        ...fixture.volumetric,
+        cloudCoverage: fixture.volumetric.cloudCoverage / 2,
+      },
     };
     assert.notEqual(replayKeyFor(fixtureReplaySubset(moved)), key, fixture.id);
 
     // ... and a judgement threshold does not.
-    const regated = { ...fixture, gate: { ...fixture.gate, why: "revised wording here" } };
+    const regated = {
+      ...fixture,
+      gate: { ...fixture.gate, why: "revised wording here" },
+    };
     assert.equal(replayKeyFor(fixtureReplaySubset(regated)), key, fixture.id);
   }
   const keys = new Set(
-    CLOUD_TOUR_FIXTURES.map((fixture) => replayKeyFor(fixtureReplaySubset(fixture))),
+    CLOUD_TOUR_FIXTURES.map((fixture) =>
+      replayKeyFor(fixtureReplaySubset(fixture)),
+    ),
   );
-  assert.equal(keys.size, CLOUD_TOUR_FIXTURES.length, "fixture replay keys collide");
+  assert.equal(
+    keys.size,
+    CLOUD_TOUR_FIXTURES.length,
+    "fixture replay keys collide",
+  );
 
   const sequenceKeys = new Set(
-    CLOUD_TOUR_SEQUENCES.map((sequence) => replayKeyFor(sequenceReplaySubset(sequence))),
+    CLOUD_TOUR_SEQUENCES.map((sequence) =>
+      replayKeyFor(sequenceReplaySubset(sequence)),
+    ),
   );
   assert.equal(sequenceKeys.size, CLOUD_TOUR_SEQUENCES.length);
 });
@@ -477,7 +530,9 @@ test("tier derivation agrees with the engine's own preset table", () => {
       continue; // T0 does not run the cloud pass, so nothing is realized.
     }
     const flags =
-      (preset.noiseSource === CloudNoiseSource.BAKED ? CLOUD_QF_NOISE_BAKED : 0) |
+      (preset.noiseSource === CloudNoiseSource.BAKED
+        ? CLOUD_QF_NOISE_BAKED
+        : 0) |
       (preset.renderResScale < 1 ? CLOUD_QF_HALF_RES : 0) |
       (preset.temporalEnabled ? CLOUD_QF_TEMPORAL : 0) |
       (preset.lightConeSampling ? CLOUD_QF_LIGHT_CONE : 0);
@@ -486,7 +541,11 @@ test("tier derivation agrees with the engine's own preset table", () => {
       lightSteps: preset.lightSteps,
       maxSteps: preset.primarySteps,
     });
-    assert.equal(derived.tier, preset.tier, `tier ${preset.tier} flags ${flags}`);
+    assert.equal(
+      derived.tier,
+      preset.tier,
+      `tier ${preset.tier} flags ${flags}`,
+    );
     assert.equal(derived.confidence, "exact");
   }
 });
@@ -502,17 +561,15 @@ test("tier derivation refuses to guess", () => {
   // A degraded T1/T2 whose history allocation failed keeps the half-res + cone
   // bits but loses TEMPORAL. That is not T3 and it is not T1.
   const degraded = deriveCloudTier({
-    qualityFlags: CLOUD_QF_NOISE_BAKED | CLOUD_QF_HALF_RES | CLOUD_QF_LIGHT_CONE,
+    qualityFlags:
+      CLOUD_QF_NOISE_BAKED | CLOUD_QF_HALF_RES | CLOUD_QF_LIGHT_CONE,
     lightSteps: 3,
     maxSteps: 24,
   });
   assert.equal(degraded.tier, null);
   assert.equal(degraded.confidence, "ambiguous");
   // Nothing realized at all.
-  assert.equal(
-    deriveCloudTier({}).confidence,
-    "unrealized",
-  );
+  assert.equal(deriveCloudTier({}).confidence, "unrealized");
 });
 
 test("every fixture names a real CloudType genus", () => {
@@ -527,7 +584,11 @@ test("every fixture names a real CloudType genus", () => {
 test("frame distribution reports percentiles and never invents a zero", () => {
   const empty = frameDistribution([]);
   assert.equal(empty.count, 0);
-  assert.equal(empty.p95Ms, null, "an empty sample must not read as a 0 ms frame");
+  assert.equal(
+    empty.p95Ms,
+    null,
+    "an empty sample must not read as a 0 ms frame",
+  );
   const stats = frameDistribution([5, 1, 3, 2, 4]);
   assert.equal(stats.count, 5);
   assert.equal(stats.p50Ms, 3);
@@ -564,13 +625,18 @@ test("framewise series needs two frames and propagates a structural failure", ()
   const frame = new Uint8ClampedArray([1, 2, 3, 255]);
   assert.equal(framewiseDeltaSeries([frame]).ok, false);
   assert.equal(framewiseDeltaSeries([frame, frame]).meanAbsRgbDelta, 0);
-  const bad = framewiseDeltaSeries([frame, new Uint8ClampedArray([1, 2, 3, 255, 4, 5, 6, 255])]);
+  const bad = framewiseDeltaSeries([
+    frame,
+    new Uint8ClampedArray([1, 2, 3, 255, 4, 5, 6, 255]),
+  ]);
   assert.equal(bad.ok, false);
   assert.equal(bad.meanAbsRgbDelta, null);
 });
 
 test("the ghost oracle is the same-pose residual, anchored to the run's own floor", () => {
-  const reference = new Uint8ClampedArray([100, 100, 100, 255, 100, 100, 100, 255]);
+  const reference = new Uint8ClampedArray([
+    100, 100, 100, 255, 100, 100, 100, 255,
+  ]);
   const clean = ghostMetrics({
     reference,
     reconverged: reference,
@@ -581,11 +647,16 @@ test("the ghost oracle is the same-pose residual, anchored to the run's own floo
 
   const ghosted = ghostMetrics({
     reference,
-    reconverged: new Uint8ClampedArray([130, 130, 130, 255, 100, 100, 100, 255]),
+    reconverged: new Uint8ClampedArray([
+      130, 130, 130, 255, 100, 100, 100, 255,
+    ]),
     floorMeanAbsRgbDelta: 0.5,
   });
   assert.ok(ghosted.residual.meanAbsRgbDelta > 0);
-  assert.ok(ghosted.ghostOverFloor > 1, "a real residual must exceed the noise floor");
+  assert.ok(
+    ghosted.ghostOverFloor > 1,
+    "a real residual must exceed the noise floor",
+  );
 
   // Without a floor the number is reported but NOT turned into a ratio — an
   // unanchored ghost figure is not a verdict.
@@ -597,7 +668,10 @@ test("the ghost oracle is the same-pose residual, anchored to the run's own floo
 
 test("phase reset assessment is two-sided", () => {
   const expectTeleport = { expectResetBits: CLOUD_TEMPORAL_RESET_TELEPORT };
-  assert.equal(assessPhaseReset(expectTeleport, CLOUD_TEMPORAL_RESET_TELEPORT).ok, true);
+  assert.equal(
+    assessPhaseReset(expectTeleport, CLOUD_TEMPORAL_RESET_TELEPORT).ok,
+    true,
+  );
 
   const missed = assessPhaseReset(expectTeleport, 0);
   assert.equal(missed.ok, false);
@@ -613,7 +687,10 @@ test("phase reset assessment is two-sided", () => {
   assert.deepEqual(settled.unexpected, ["FRAME_GAP"]);
 
   const forbidden = assessPhaseReset(
-    { expectResetBits: CLOUD_TEMPORAL_RESET_INITIAL, forbidResetBits: CLOUD_TEMPORAL_RESET_TELEPORT },
+    {
+      expectResetBits: CLOUD_TEMPORAL_RESET_INITIAL,
+      forbidResetBits: CLOUD_TEMPORAL_RESET_TELEPORT,
+    },
     CLOUD_TEMPORAL_RESET_INITIAL | CLOUD_TEMPORAL_RESET_TELEPORT,
   );
   assert.equal(forbidden.ok, false);
@@ -625,7 +702,11 @@ test("phase reset assessment is two-sided", () => {
 
 test("a pass the profiler never saw is absent, not fast", () => {
   const summary = summarizeGpuPasses(
-    { enabled: true, frameCount: 60, passes: { "ProceduralClouds pass": { avgMs: 1.5 } } },
+    {
+      enabled: true,
+      frameCount: 60,
+      passes: { "ProceduralClouds pass": { avgMs: 1.5 } },
+    },
     ["ProceduralClouds pass", "CloudShadow map pass"],
   );
   assert.equal(summary.passes["ProceduralClouds pass"].present, true);
@@ -651,7 +732,11 @@ function completeRecord() {
     replayKey: "abcdef01",
     provenance: {
       commit: "0".repeat(40),
-      runtimeBundle: { path: "Build/CesiumUnminified/Cesium.js", byteLength: 1, sha256: "a".repeat(64) },
+      runtimeBundle: {
+        path: "Build/CesiumUnminified/Cesium.js",
+        byteLength: 1,
+        sha256: "a".repeat(64),
+      },
     },
     environment: {
       adapterInfo: { vendor: "nvidia" },
@@ -670,7 +755,9 @@ function completeRecord() {
     cpuFrames: { count: 40, p50Ms: 3, p95Ms: 6, p99Ms: 8 },
     gpu: { supported: true, passes: {}, profiler: { enabled: true } },
     temporal: { phases: [], framewise: [], ghost: null },
-    screenshots: [{ phase: "hold-first", path: `${"x"}.png`, sha256: "b".repeat(64) }],
+    screenshots: [
+      { phase: "hold-first", path: `${"x"}.png`, sha256: "b".repeat(64) },
+    ],
     structural: { ok: true },
   };
 }
@@ -702,13 +789,17 @@ test("record validation catches an unusable screenshot and an unverifiable clock
   const noSha = completeRecord();
   noSha.screenshots = [{ phase: "hold", path: "a.png" }];
   assert.ok(
-    validateSequenceMetricRecord(noSha).some((failure) => /sha256/.test(failure)),
+    validateSequenceMetricRecord(noSha).some((failure) =>
+      /sha256/.test(failure),
+    ),
   );
 
   const advancing = completeRecord();
   advancing.clock.stepSeconds = 60;
   assert.ok(
-    validateSequenceMetricRecord(advancing).some((failure) => /end instant/.test(failure)),
+    validateSequenceMetricRecord(advancing).some((failure) =>
+      /end instant/.test(failure),
+    ),
   );
 
   const lying = completeRecord();
@@ -758,10 +849,30 @@ const CONTROLS = { "wind-time-advection": ["CloudUpscale composite pass"] };
 test("one binary measured twice is not an A/B", () => {
   const result = assessInterleavedAb({
     manifests: [
-      manifest({ tag: "pre", round: 0, order: "pre-first", sha: "a".repeat(64) }),
-      manifest({ tag: "post", round: 0, order: "pre-first", sha: "a".repeat(64) }),
-      manifest({ tag: "pre", round: 1, order: "post-first", sha: "a".repeat(64) }),
-      manifest({ tag: "post", round: 1, order: "post-first", sha: "a".repeat(64) }),
+      manifest({
+        tag: "pre",
+        round: 0,
+        order: "pre-first",
+        sha: "a".repeat(64),
+      }),
+      manifest({
+        tag: "post",
+        round: 0,
+        order: "pre-first",
+        sha: "a".repeat(64),
+      }),
+      manifest({
+        tag: "pre",
+        round: 1,
+        order: "post-first",
+        sha: "a".repeat(64),
+      }),
+      manifest({
+        tag: "post",
+        round: 1,
+        order: "post-first",
+        sha: "a".repeat(64),
+      }),
     ],
     controlPasses: CONTROLS,
   });
@@ -776,8 +887,18 @@ test("one binary measured twice is not an A/B", () => {
 test("a single round cannot answer the question", () => {
   const result = assessInterleavedAb({
     manifests: [
-      manifest({ tag: "pre", round: 0, order: "pre-first", sha: "a".repeat(64) }),
-      manifest({ tag: "post", round: 0, order: "pre-first", sha: "b".repeat(64) }),
+      manifest({
+        tag: "pre",
+        round: 0,
+        order: "pre-first",
+        sha: "a".repeat(64),
+      }),
+      manifest({
+        tag: "post",
+        round: 0,
+        order: "pre-first",
+        sha: "b".repeat(64),
+      }),
     ],
     controlPasses: CONTROLS,
   });
@@ -787,10 +908,32 @@ test("a single round cannot answer the question", () => {
 test("every round in the same order is rejected", () => {
   const result = assessInterleavedAb({
     manifests: [
-      manifest({ tag: "pre", round: 0, order: "pre-first", sha: "a".repeat(64) }),
-      manifest({ tag: "post", round: 0, order: "pre-first", sha: "b".repeat(64), deltas: { march: 7 } }),
-      manifest({ tag: "pre", round: 1, order: "pre-first", sha: "a".repeat(64) }),
-      manifest({ tag: "post", round: 1, order: "pre-first", sha: "b".repeat(64), deltas: { march: 7 } }),
+      manifest({
+        tag: "pre",
+        round: 0,
+        order: "pre-first",
+        sha: "a".repeat(64),
+      }),
+      manifest({
+        tag: "post",
+        round: 0,
+        order: "pre-first",
+        sha: "b".repeat(64),
+        deltas: { march: 7 },
+      }),
+      manifest({
+        tag: "pre",
+        round: 1,
+        order: "pre-first",
+        sha: "a".repeat(64),
+      }),
+      manifest({
+        tag: "post",
+        round: 1,
+        order: "pre-first",
+        sha: "b".repeat(64),
+        deltas: { march: 7 },
+      }),
     ],
     controlPasses: CONTROLS,
   });
@@ -800,7 +943,12 @@ test("every round in the same order is rejected", () => {
 test("a round whose control pass moved is discarded, not interpreted", () => {
   const result = assessInterleavedAb({
     manifests: [
-      manifest({ tag: "pre", round: 0, order: "pre-first", sha: "a".repeat(64) }),
+      manifest({
+        tag: "pre",
+        round: 0,
+        order: "pre-first",
+        sha: "a".repeat(64),
+      }),
       // Control moved 2 -> 3 (+50%): this is the 2026-07-24 drift signature.
       manifest({
         tag: "post",
@@ -809,7 +957,12 @@ test("a round whose control pass moved is discarded, not interpreted", () => {
         sha: "b".repeat(64),
         deltas: { march: 7, control: 3 },
       }),
-      manifest({ tag: "pre", round: 1, order: "post-first", sha: "a".repeat(64) }),
+      manifest({
+        tag: "pre",
+        round: 1,
+        order: "post-first",
+        sha: "a".repeat(64),
+      }),
       manifest({
         tag: "post",
         round: 1,
@@ -829,10 +982,32 @@ test("a round whose control pass moved is discarded, not interpreted", () => {
 test("a reproducing effect across two orders is reported as reproducible", () => {
   const result = assessInterleavedAb({
     manifests: [
-      manifest({ tag: "pre", round: 0, order: "pre-first", sha: "a".repeat(64) }),
-      manifest({ tag: "post", round: 0, order: "pre-first", sha: "b".repeat(64), deltas: { march: 7 } }),
-      manifest({ tag: "pre", round: 1, order: "post-first", sha: "a".repeat(64) }),
-      manifest({ tag: "post", round: 1, order: "post-first", sha: "b".repeat(64), deltas: { march: 7.2 } }),
+      manifest({
+        tag: "pre",
+        round: 0,
+        order: "pre-first",
+        sha: "a".repeat(64),
+      }),
+      manifest({
+        tag: "post",
+        round: 0,
+        order: "pre-first",
+        sha: "b".repeat(64),
+        deltas: { march: 7 },
+      }),
+      manifest({
+        tag: "pre",
+        round: 1,
+        order: "post-first",
+        sha: "a".repeat(64),
+      }),
+      manifest({
+        tag: "post",
+        round: 1,
+        order: "post-first",
+        sha: "b".repeat(64),
+        deltas: { march: 7.2 },
+      }),
     ],
     controlPasses: CONTROLS,
   });
@@ -840,25 +1015,48 @@ test("a reproducing effect across two orders is reported as reproducible", () =>
   const march = result.verdict["wind-time-advection / ProceduralClouds pass"];
   assert.equal(march.direction, "faster");
   assert.equal(march.reproducible, true);
-  const control = result.verdict["wind-time-advection / CloudUpscale composite pass"];
+  const control =
+    result.verdict["wind-time-advection / CloudUpscale composite pass"];
   assert.equal(control.direction, "unchanged");
 });
 
 test("halves that replayed different definitions are not comparable", () => {
-  const post = manifest({ tag: "post", round: 0, order: "pre-first", sha: "b".repeat(64) });
+  const post = manifest({
+    tag: "post",
+    round: 0,
+    order: "pre-first",
+    sha: "b".repeat(64),
+  });
   post.sequences[0].replayKey = "key-2";
   const result = assessInterleavedAb({
     manifests: [
-      manifest({ tag: "pre", round: 0, order: "pre-first", sha: "a".repeat(64) }),
+      manifest({
+        tag: "pre",
+        round: 0,
+        order: "pre-first",
+        sha: "a".repeat(64),
+      }),
       post,
-      manifest({ tag: "pre", round: 1, order: "post-first", sha: "a".repeat(64) }),
-      manifest({ tag: "post", round: 1, order: "post-first", sha: "b".repeat(64) }),
+      manifest({
+        tag: "pre",
+        round: 1,
+        order: "post-first",
+        sha: "a".repeat(64),
+      }),
+      manifest({
+        tag: "post",
+        round: 1,
+        order: "post-first",
+        sha: "b".repeat(64),
+      }),
     ],
     controlPasses: CONTROLS,
   });
   assert.equal(result.status, "session-drifting");
   assert.ok(
-    result.rounds[0].failures.some((failure) => /replay keys differ/.test(failure)),
+    result.rounds[0].failures.some((failure) =>
+      /replay keys differ/.test(failure),
+    ),
   );
 });
 
@@ -878,29 +1076,50 @@ test("the default drift controls are the non-march passes, and are overridable",
   // ... and a march-only sequence contributes no control, because the pass it
   // declares is the one under test.
   for (const sequence of CLOUD_TOUR_SEQUENCES) {
-    if (sequence.gpuPasses.every((name) => name.startsWith("ProceduralClouds"))) {
+    if (
+      sequence.gpuPasses.every((name) => name.startsWith("ProceduralClouds"))
+    ) {
       assert.equal(controls[sequence.id], undefined, sequence.id);
     }
   }
 
   assert.deepEqual(
-    parseControlPasses("a:One pass|Two pass,b:Three pass", CLOUD_TOUR_SEQUENCES),
+    parseControlPasses(
+      "a:One pass|Two pass,b:Three pass",
+      CLOUD_TOUR_SEQUENCES,
+    ),
     { a: ["One pass", "Two pass"], b: ["Three pass"] },
   );
   assert.deepEqual(
     parseControlPasses("", CLOUD_TOUR_SEQUENCES),
     defaultControlPasses(CLOUD_TOUR_SEQUENCES),
   );
-  assert.throws(() => parseControlPasses("no-colon", CLOUD_TOUR_SEQUENCES), /sequenceId/);
-  assert.throws(() => parseControlPasses("a:", CLOUD_TOUR_SEQUENCES), /no pass/);
+  assert.throws(
+    () => parseControlPasses("no-colon", CLOUD_TOUR_SEQUENCES),
+    /sequenceId/,
+  );
+  assert.throws(
+    () => parseControlPasses("a:", CLOUD_TOUR_SEQUENCES),
+    /no pass/,
+  );
 });
 
 test("a mismatched environment is refused outright", () => {
-  const other = manifest({ tag: "post", round: 0, order: "pre-first", sha: "b".repeat(64) });
+  const other = manifest({
+    tag: "post",
+    round: 0,
+    order: "pre-first",
+    sha: "b".repeat(64),
+  });
   other.environment.adapterInfo = { vendor: "amd" };
   const result = assessInterleavedAb({
     manifests: [
-      manifest({ tag: "pre", round: 0, order: "pre-first", sha: "a".repeat(64) }),
+      manifest({
+        tag: "pre",
+        round: 0,
+        order: "pre-first",
+        sha: "a".repeat(64),
+      }),
       other,
     ],
   });
@@ -988,7 +1207,10 @@ test("the probe cannot substitute wall time for its authored instant", () => {
   );
   // The single render call site lives inside the canonical block and renders
   // whatever the probe's own time function returns.
-  assert.match(probeSource, /renderNow\s*=\s*\(\)\s*=>\s*scene\.render\(timeFn\(\)\)/);
+  assert.match(
+    probeSource,
+    /renderNow\s*=\s*\(\)\s*=>\s*scene\.render\(timeFn\(\)\)/,
+  );
 });
 
 test("the probe carries a watchdog sized from the declared frame budgets", () => {
@@ -1011,13 +1233,24 @@ test("the probe has no unbounded loop", () => {
 test("the comment-stripping used by the forbidding pins actually works", () => {
   // Without this the pins above could silently pass because `probeCode` was
   // empty, or fail because a URL's `//` swallowed a line of real code.
-  assert.equal(probeCode.length, probeSource.length, "line/char alignment lost");
-  assert.match(probeCode, /const\s+OCCUPANCY_MAX_FRAMES\s*=/, "code was stripped");
+  assert.equal(
+    probeCode.length,
+    probeSource.length,
+    "line/char alignment lost",
+  );
+  assert.match(
+    probeCode,
+    /const\s+OCCUPANCY_MAX_FRAMES\s*=/,
+    "code was stripped",
+  );
   assert.ok(
     probeSource.includes("scene.render()"),
     "the probe should still DOCUMENT the argument-less-render trap",
   );
-  assert.ok(!probeCode.includes("scene.render()"), "the comment survived stripping");
+  assert.ok(
+    !probeCode.includes("scene.render()"),
+    "the comment survived stripping",
+  );
   // A protocol-relative-looking `http://` inside a template literal must not eat
   // the rest of its line.
   assert.match(probeCode, /renderer=webgpu&offline=true/);
@@ -1038,7 +1271,10 @@ test("the probe implements every action the sequence table can name", () => {
       sequence.phases.map((phase) => phase.action),
     ),
   )) {
-    assert.ok(PHASE_ACTIONS.includes(action), `sequence uses unregistered action ${action}`);
+    assert.ok(
+      PHASE_ACTIONS.includes(action),
+      `sequence uses unregistered action ${action}`,
+    );
   }
 });
 

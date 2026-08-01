@@ -45,7 +45,7 @@ function read(relative) {
   return fs.readFileSync(path.join(root, relative), "utf8");
 }
 
-const ownerSource = read(
+const _ownerSource = read(
   "packages/engine/Source/Renderer/WebGPU/WebGPUCloudShadowFrame.ts",
 );
 const rendererSource = read(

@@ -51,14 +51,18 @@ const OUT_DIR = "Tools/visual-regression/output";
 const CLOCK_ISO = "2026-06-21T18:00:00Z";
 const VIEWPORT = { width: 800, height: 600 };
 
-const watchdog = setTimeout(() => {
-  console.error("[probe-oitmodel] WATCHDOG 3min — forcing exit(3)");
-  process.exit(3);
-}, 3 * 60 * 1000);
+const watchdog = setTimeout(
+  () => {
+    console.error("[probe-oitmodel] WATCHDOG 3min — forcing exit(3)");
+    process.exit(3);
+  },
+  3 * 60 * 1000,
+);
 
 const TILESETS = {
   twin: "/Apps/SampleData/Cesium3DTiles/Batched/BatchedWithBatchTable/tileset.json",
-  blend: "/Apps/SampleData/Cesium3DTiles/Batched/BatchedTranslucent/tileset.json",
+  blend:
+    "/Apps/SampleData/Cesium3DTiles/Batched/BatchedTranslucent/tileset.json",
 };
 
 async function setupViewer(page, { sceneKind }) {
@@ -237,7 +241,11 @@ function diffPixels(a, b, thr = 16) {
     if (m > maxDelta) maxDelta = m;
     if (dr > thr || dg > thr || db > thr) mismatch++;
   }
-  return { mismatch, pct: px ? +((100 * mismatch) / px).toFixed(3) : null, maxDelta };
+  return {
+    mismatch,
+    pct: px ? +((100 * mismatch) / px).toFixed(3) : null,
+    maxDelta,
+  };
 }
 
 function centralMean(img) {
@@ -258,7 +266,11 @@ function centralMean(img) {
       n++;
     }
   }
-  return { r: +(r / n).toFixed(1), g: +(g / n).toFixed(1), b: +(b / n).toFixed(1) };
+  return {
+    r: +(r / n).toFixed(1),
+    g: +(g / n).toFixed(1),
+    b: +(b / n).toFixed(1),
+  };
 }
 
 const CRC_TABLE = (() => {
@@ -272,7 +284,8 @@ const CRC_TABLE = (() => {
 })();
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 function encodePNG({ w, h, data }) {
@@ -280,7 +293,10 @@ function encodePNG({ w, h, data }) {
   const raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -304,7 +320,8 @@ function encodePNG({ w, h, data }) {
   ]);
 }
 
-const BENIGN_TEARDOWN_RE = /reason:\s*destroyed|Device was destroyed|Device lost: destroyed/i;
+const BENIGN_TEARDOWN_RE =
+  /reason:\s*destroyed|Device was destroyed|Device lost: destroyed/i;
 function realFaults(consoleErrors) {
   return consoleErrors.filter((e) => !BENIGN_TEARDOWN_RE.test(e));
 }

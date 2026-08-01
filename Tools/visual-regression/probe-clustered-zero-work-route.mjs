@@ -54,13 +54,22 @@ const CLUSTER_LABEL_RE =
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1000, height: 1000 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 1000 },
+  });
   page.on("pageerror", () => {});
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   const result = await page.evaluate(
@@ -307,7 +316,9 @@ const CLUSTER_LABEL_RE =
   }
 
   console.log("[probe-clustered-zero-work-route]");
-  console.log(`  default scene.clusteredLightingEnabled: ${result.defaultEnabled}`);
+  console.log(
+    `  default scene.clusteredLightingEnabled: ${result.defaultEnabled}`,
+  );
   console.log("  --- Phase A (defaults / moving route) ---");
   console.log(`    clustered WORK labels (must be ZERO): ${a.workTotal}`);
   console.log(`    clustered compute passes (must be ZERO): ${a.computeWork}`);
@@ -333,7 +344,9 @@ const CLUSTER_LABEL_RE =
     );
   }
   if (a.computeWork !== 0) {
-    fail(`Phase A ran ${a.computeWork} clustered compute passes at defaults (expected ZERO)`);
+    fail(
+      `Phase A ran ${a.computeWork} clustered compute passes at defaults (expected ZERO)`,
+    );
   }
   if (a.maxFallbackCount > 1) {
     fail(

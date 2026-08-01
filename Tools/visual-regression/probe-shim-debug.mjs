@@ -80,9 +80,12 @@ await page.addInitScript((r) => {
 }, "webgpu");
 await page.addInitScript({ content: SHIM });
 
-await page.goto("http://localhost:8080/Apps/Sandcastle/gallery/3D%20Models.html", {
-  waitUntil: "domcontentloaded",
-});
+await page.goto(
+  "http://localhost:8080/Apps/Sandcastle/gallery/3D%20Models.html",
+  {
+    waitUntil: "domcontentloaded",
+  },
+);
 await page.waitForFunction(() => {
   const c = document.querySelector(".cesium-widget canvas");
   return c && c.width > 0 && c.height > 0;
@@ -90,13 +93,19 @@ await page.waitForFunction(() => {
 await page.waitForTimeout(3000);
 
 const logAndState = await page.evaluate(() => {
-  const counts = typeof window.__viewerGetCount === "function" ? window.__viewerGetCount() : null;
+  const counts =
+    typeof window.__viewerGetCount === "function"
+      ? window.__viewerGetCount()
+      : null;
   return {
     log: window.__shimLog || [],
     capturedViewerExists: !!window.__capturedViewer,
     rendererType: window.__capturedViewer?.scene?.context?.rendererType ?? null,
     cesiumExists: !!window.Cesium,
-    cesiumIsProxy: typeof window.Cesium === "object" && Object.getPrototypeOf(window.Cesium) !== Object.prototype && typeof window.Cesium.Viewer === "function",
+    cesiumIsProxy:
+      typeof window.Cesium === "object" &&
+      Object.getPrototypeOf(window.Cesium) !== Object.prototype &&
+      typeof window.Cesium.Viewer === "function",
     cesiumViewerName: window.Cesium?.Viewer?.name,
     proxyCounts: counts,
   };

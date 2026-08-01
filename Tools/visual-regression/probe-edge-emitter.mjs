@@ -1,4 +1,4 @@
-import { chromium } from 'playwright';
+import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -13,55 +13,85 @@ const RENDERER_OVERRIDE_SHIM = `
 
 const demos = process.argv.slice(2);
 if (demos.length === 0) {
-  demos.push('Atmosphere.html', 'High Dynamic Range.html', 'WebGPU Edge Visibility.html', 'WebGPU Edge Feature ID.html');
+  demos.push(
+    "Atmosphere.html",
+    "High Dynamic Range.html",
+    "WebGPU Edge Visibility.html",
+    "WebGPU Edge Feature ID.html",
+  );
 }
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
+const browser = await chromium.launch({ channel: "msedge", headless: true });
 for (const demo of demos) {
-  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+  const ctx = await browser.newContext({
+    viewport: { width: 800, height: 600 },
+  });
   const page = await ctx.newPage();
   const msgs = [];
-  page.on('console', m => msgs.push(`[${m.type()}] ${m.text()}`));
-  page.on('pageerror', e => msgs.push(`[PAGEERROR] ${e.message}`));
+  page.on("console", (m) => msgs.push(`[${m.type()}] ${m.text()}`));
+  page.on("pageerror", (e) => msgs.push(`[PAGEERROR] ${e.message}`));
 
-  await page.addInitScript(() => { window.__FORCED_RENDERER__ = 'webgpu'; });
+  await page.addInitScript(() => {
+    window.__FORCED_RENDERER__ = "webgpu";
+  });
   await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-  await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
+  await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
     const response = await route.fetch();
-    const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-    await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+    const txt = (await response.text()).replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    );
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      body: txt,
+    });
   });
 
   const url = `http://localhost:8080/Apps/Sandcastle/gallery/${encodeURIComponent(demo)}`;
   try {
-    await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+    await page.goto(url, { waitUntil: "load", timeout: 60000 });
     await page.waitForTimeout(8000);
   } catch (e) {
     msgs.push(`[NAV ERROR] ${e.message}`);
   }
 
-  const edgeErrs = msgs.filter(m => /EdgeEmitter|EDGE_EMITTER|color targets but render pass expects|Attachment state of \[RenderPipeline "EdgeEmitter/i.test(m));
-  const depthPlaneErrs = msgs.filter(m => /DepthPlane/i.test(m));
-  const attachmentMismatch = msgs.filter(m => /Attachment state of \[RenderPipeline/i.test(m));
-  const allErrs = msgs.filter(m => m.includes('[error]') || m.includes('PAGEERROR'));
+  const edgeErrs = msgs.filter((m) =>
+    /EdgeEmitter|EDGE_EMITTER|color targets but render pass expects|Attachment state of \[RenderPipeline "EdgeEmitter/i.test(
+      m,
+    ),
+  );
+  const depthPlaneErrs = msgs.filter((m) => /DepthPlane/i.test(m));
+  const attachmentMismatch = msgs.filter((m) =>
+    /Attachment state of \[RenderPipeline/i.test(m),
+  );
+  const allErrs = msgs.filter(
+    (m) => m.includes("[error]") || m.includes("PAGEERROR"),
+  );
 
   console.log(`\n=== ${demo} ===`);
-  console.log(`msgs=${msgs.length} edge=${edgeErrs.length} depthPlane=${depthPlaneErrs.length} attach-mismatch=${attachmentMismatch.length} all-errs=${allErrs.length}`);
+  console.log(
+    `msgs=${msgs.length} edge=${edgeErrs.length} depthPlane=${depthPlaneErrs.length} attach-mismatch=${attachmentMismatch.length} all-errs=${allErrs.length}`,
+  );
   if (depthPlaneErrs.length > 0) {
-    console.log('DepthPlane messages (first 3):');
-    depthPlaneErrs.slice(0, 3).forEach(e => console.log(' ', e.substring(0, 400)));
+    console.log("DepthPlane messages (first 3):");
+    depthPlaneErrs
+      .slice(0, 3)
+      .forEach((e) => console.log(" ", e.substring(0, 400)));
   }
   if (attachmentMismatch.length > 0) {
-    console.log('Attachment mismatches (first 3):');
-    attachmentMismatch.slice(0, 3).forEach(e => console.log(' ', e.substring(0, 400)));
+    console.log("Attachment mismatches (first 3):");
+    attachmentMismatch
+      .slice(0, 3)
+      .forEach((e) => console.log(" ", e.substring(0, 400)));
   }
   if (edgeErrs.length > 0) {
-    console.log('Edge errors (first 3):');
-    edgeErrs.slice(0, 3).forEach(e => console.log(' ', e.substring(0, 400)));
+    console.log("Edge errors (first 3):");
+    edgeErrs.slice(0, 3).forEach((e) => console.log(" ", e.substring(0, 400)));
   }
   if (allErrs.length > 0) {
-    console.log('All errors (first 3):');
-    allErrs.slice(0, 3).forEach(e => console.log(' ', e.substring(0, 400)));
+    console.log("All errors (first 3):");
+    allErrs.slice(0, 3).forEach((e) => console.log(" ", e.substring(0, 400)));
   }
   await ctx.close();
 }

@@ -58,7 +58,10 @@
     4. The per-layer alpha slider is the simplest pre-existing knob — works
        both pre- and post-Batch-58 — included as a regression sanity check.
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
       #toolbar {
@@ -191,7 +194,9 @@
             {
               name: "Grid (political-style boundary)",
               alpha: 0.6,
-              providerPromise: Promise.resolve(new Cesium.GridImageryProvider()),
+              providerPromise: Promise.resolve(
+                new Cesium.GridImageryProvider(),
+              ),
             },
           ];
 

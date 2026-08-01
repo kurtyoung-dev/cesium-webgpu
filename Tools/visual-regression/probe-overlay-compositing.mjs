@@ -29,7 +29,9 @@ async function capture(renderer, view) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
@@ -41,7 +43,9 @@ async function capture(renderer, view) {
       const v = window.viewer;
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
       // Layer 2: DebugTileImageryProvider overlay on top of base Ion imagery.
@@ -70,7 +74,9 @@ async function capture(renderer, view) {
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[overlay-compositing] Ion + DebugTileImageryProvider overlay, both backends");
+  console.log(
+    "[overlay-compositing] Ion + DebugTileImageryProvider overlay, both backends",
+  );
   for (const view of VIEWS) {
     for (const renderer of ["webgl", "webgpu"]) {
       console.log(`  ${view.name} ${renderer}`);

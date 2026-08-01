@@ -174,7 +174,7 @@ async function captureCell(label, { ao, deferred }) {
       // {0,0,0,255} we're confirming the "black canvas" failure mode.
       // (Doing it here instead of post-screenshot avoids encoding ambiguity.)
       const canvas = v.canvas;
-      let centerPixel = null;
+      let centerPixel;
       try {
         // WebGPU canvas can't be re-read with 2D context, so blit through
         // a temp canvas. We only need 1 pixel for the failure-mode signal.
@@ -194,11 +194,11 @@ async function captureCell(label, { ao, deferred }) {
       // G-buffer / MRT mode diagnostics. These tell us whether the
       // changes we're testing actually engaged (vs. silently no-op'd).
       const ctx = v.scene.context;
-      let mrtMode = null;
+      const mrtMode = null;
       try {
-        const helpers = await import(
-          "/Build/CesiumUnminified/index.js"
-        ).then(() => null);
+        const helpers = await import("/Build/CesiumUnminified/index.js").then(
+          () => null,
+        );
         // The helper module is internal — peek via the globe pipeline
         // cache that imports it. If it landed in the dual bundle it'll
         // be reachable from a renderer that uses it.
@@ -236,9 +236,7 @@ async function captureCell(label, { ao, deferred }) {
         // confirmed. Non-black with errors = partial failure (some
         // passes recovered).
         canvasIsBlack:
-          centerPixel?.r === 0 &&
-          centerPixel?.g === 0 &&
-          centerPixel?.b === 0,
+          centerPixel?.r === 0 && centerPixel?.g === 0 && centerPixel?.b === 0,
         gBuffer: gb,
         mrtMode,
       };
@@ -365,22 +363,18 @@ function printCellSummary(cell) {
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[probe-mrt-validation] capturing 4-cell matrix with GPU error capture");
+  console.log(
+    "[probe-mrt-validation] capturing 4-cell matrix with GPU error capture",
+  );
 
   const cells = [];
   // Same matrix as probe-slice4-verify so cell labels are comparable.
   cells.push(
     await captureCell("ao-off-def-off", { ao: false, deferred: false }),
   );
-  cells.push(
-    await captureCell("ao-off-def-on", { ao: false, deferred: true }),
-  );
-  cells.push(
-    await captureCell("ao-on-def-off", { ao: true, deferred: false }),
-  );
-  cells.push(
-    await captureCell("ao-on-def-on", { ao: true, deferred: true }),
-  );
+  cells.push(await captureCell("ao-off-def-on", { ao: false, deferred: true }));
+  cells.push(await captureCell("ao-on-def-off", { ao: true, deferred: false }));
+  cells.push(await captureCell("ao-on-def-on", { ao: true, deferred: true }));
 
   console.log("\n[probe-mrt-validation] per-cell summary:");
   cells.forEach(printCellSummary);

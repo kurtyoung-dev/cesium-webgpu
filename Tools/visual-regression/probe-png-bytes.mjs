@@ -19,7 +19,7 @@ function decodePng(buf) {
   let off = 8;
   let width = 0,
     height = 0,
-    bitDepth = 0,
+    _bitDepth = 0,
     colorType = 0;
   const idatChunks = [];
   while (off < buf.length) {
@@ -33,7 +33,7 @@ function decodePng(buf) {
     if (type === "IHDR") {
       width = data.readUInt32BE(0);
       height = data.readUInt32BE(4);
-      bitDepth = data[8];
+      _bitDepth = data[8];
       colorType = data[9];
     } else if (type === "IDAT") {
       idatChunks.push(data);

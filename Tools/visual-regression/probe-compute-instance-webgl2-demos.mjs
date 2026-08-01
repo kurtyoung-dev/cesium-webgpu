@@ -48,7 +48,11 @@ import {
 } from "../lib/webgpu-error-gate.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const OUTPUT_DIR = path.join(__dirname, "output", "compute-instance-webgl2-demos");
+const OUTPUT_DIR = path.join(
+  __dirname,
+  "output",
+  "compute-instance-webgl2-demos",
+);
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
 const SETTLE_MS = parseInt(process.env.SANDCASTLE_SETTLE_MS, 10) || 7000;
 // Both demos animate at clock.multiplier=60, so wall-clock seconds * 60 = sim
@@ -249,7 +253,8 @@ async function runLeg(browser, demo, renderer) {
     result.errors = [...fatal];
     result.suppressedCount = suppressed.length;
 
-    const rendersOK = result.countA >= demo.minBright && result.countB >= demo.minBright;
+    const rendersOK =
+      result.countA >= demo.minBright && result.countB >= demo.minBright;
     const movesOK = result.movedPx >= demo.minMovedPx;
     // Backend identity: webgpu MUST arm a device; webgl MUST NOT.
     const backendOK =

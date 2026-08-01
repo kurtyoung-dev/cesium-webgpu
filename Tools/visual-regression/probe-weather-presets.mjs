@@ -153,8 +153,8 @@ async function diff(page, a, b) {
       };
       const da = await load(ua),
         db = await load(ub);
-      let acc = 0,
-        n = da.length / 4;
+      let acc = 0;
+      const n = da.length / 4;
       for (let i = 0; i < da.length; i += 4) {
         acc += Math.abs(
           0.299 * da[i] +
@@ -194,9 +194,13 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   const canvas = await page.$(".cesium-widget canvas");
@@ -250,7 +254,10 @@ async function run() {
   const clearLum = (stats.SKC.lum + stats.FEWcu.lum + stats.Ci.lum) / 3;
   const stormLum = (stats.OVCst.lum + stats.Ns.lum + stats.Cb.lum) / 3;
   const checks = [
-    [`SKC leaves the wedge bright/open (lum ${stats.SKC.lum} > 150)`, stats.SKC.lum > 150],
+    [
+      `SKC leaves the wedge bright/open (lum ${stats.SKC.lum} > 150)`,
+      stats.SKC.lum > 150,
+    ],
     [
       `OVC St darkens the wedge (overcast deck, lum ${stats.OVCst.lum} < 145)`,
       stats.OVCst.lum < 145,

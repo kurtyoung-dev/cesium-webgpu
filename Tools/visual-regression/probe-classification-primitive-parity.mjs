@@ -49,7 +49,7 @@ const ROI = { x0: 250, y0: 170, x1: 560, y1: 440 };
 // dark globe baseColor. The box color is (1.0, 0.1, 0.1, 0.5) premultiplied
 // over a dark surface, so the composited red channel stays high while G/B stay
 // low.
-function isRed(r, g, b) {
+function _isRed(r, g, b) {
   return r > 90 && r > g + 40 && r > b + 40;
 }
 
@@ -84,7 +84,9 @@ async function run(renderer) {
     v.useDefaultRenderLoop = false;
     const scene = v.scene;
     scene.renderError.addEventListener((_scene, error) => {
-      window.__probeErrors.push(error?.stack ?? error?.message ?? String(error));
+      window.__probeErrors.push(
+        error?.stack ?? error?.message ?? String(error),
+      );
     });
     scene.skyBox.show = false;
     scene.skyAtmosphere.show = false;
@@ -190,17 +192,18 @@ async function run(renderer) {
     let picked;
     let pickError = null;
     try {
-      picked = renderer === "webgpu" && scene.pickAsync
-        ? await Promise.race([
-            scene.pickAsync(centerPixel, 5, 5),
-            new Promise((_resolve, reject) =>
-              setTimeout(
-                () => reject(new Error("classification pick timed out")),
-                20_000,
+      picked =
+        renderer === "webgpu" && scene.pickAsync
+          ? await Promise.race([
+              scene.pickAsync(centerPixel, 5, 5),
+              new Promise((_resolve, reject) =>
+                setTimeout(
+                  () => reject(new Error("classification pick timed out")),
+                  20_000,
+                ),
               ),
-            ),
-          ])
-        : scene.pick(centerPixel, 5, 5);
+            ])
+          : scene.pick(centerPixel, 5, 5);
     } catch (error) {
       pickError = error?.stack ?? error?.message ?? String(error);
     }
@@ -274,9 +277,7 @@ async function run(renderer) {
   const wrapperPickIdAllocated = await page.evaluate(
     () => window.__classWrapperPickIdAllocated === true,
   );
-  const pickError = await page.evaluate(
-    () => window.__classPickError ?? null,
-  );
+  const pickError = await page.evaluate(() => window.__classPickError ?? null);
   const errs = await page.evaluate(() => window.__probeErrors ?? []);
   await browser.close();
   return {

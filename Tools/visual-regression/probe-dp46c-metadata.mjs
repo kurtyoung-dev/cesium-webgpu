@@ -54,7 +54,9 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
@@ -77,7 +79,15 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
   });
 
   const diagnostics = await page.evaluate(
-    async ({ view, clockUTC, modelUrl, metadataDebug, scale, propTexBit, metaBit }) => {
+    async ({
+      view,
+      clockUTC,
+      modelUrl,
+      metadataDebug,
+      scale,
+      propTexBit,
+      metaBit,
+    }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
 
@@ -92,7 +102,11 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
       v.scene.globe.enableLighting = false;
 
       const modelHeight = 400;
-      const modelPos = C.Cartesian3.fromDegrees(view.lon, view.lat, modelHeight);
+      const modelPos = C.Cartesian3.fromDegrees(
+        view.lon,
+        view.lat,
+        modelHeight,
+      );
       const headingPitchRoll = new C.HeadingPitchRoll(0, 0, 0);
       const orientation = C.Transforms.headingPitchRollQuaternion(
         modelPos,
@@ -299,7 +313,9 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
     const ins = cell.diagnostics.inspect;
     const pageErrors = (cell.messages ?? []).filter((m) => m.t === "pageerror");
     const consoleErrs = (cell.messages ?? []).filter((m) => m.t === "error");
-    console.log(`  [${cell.label}]  ${cell.diagnostics.modelUrl.split("/").pop()}`);
+    console.log(
+      `  [${cell.label}]  ${cell.diagnostics.modelUrl.split("/").pop()}`,
+    );
     console.log(
       `    metadataDebug=${cell.diagnostics.metadataDebug} entities=${cell.diagnostics.entityCount}`,
     );
@@ -315,13 +331,34 @@ async function capture(label, { modelUrl, metadataDebug, scale }) {
     console.log(
       `    errors: device=${cell.deviceErrors.length} pageerror=${pageErrors.length} console.error=${consoleErrs.length}`,
     );
-    cell.deviceErrors.slice(0, 3).forEach((e) => console.log(`      device: ${e.text?.slice(0, 200)}`));
-    pageErrors.slice(0, 2).forEach((e) => console.log(`      pageerror: ${(e.text ?? "").slice(0, 200)}`));
-    consoleErrs.slice(0, 4).forEach((e) => console.log(`      console.error: ${(e.text ?? "").split("\n")[0].slice(0, 200)}`));
+    cell.deviceErrors
+      .slice(0, 3)
+      .forEach((e) => console.log(`      device: ${e.text?.slice(0, 200)}`));
+    pageErrors
+      .slice(0, 2)
+      .forEach((e) =>
+        console.log(`      pageerror: ${(e.text ?? "").slice(0, 200)}`),
+      );
+    consoleErrs
+      .slice(0, 4)
+      .forEach((e) =>
+        console.log(
+          `      console.error: ${(e.text ?? "").split("\n")[0].slice(0, 200)}`,
+        ),
+      );
     if (cell.label === "a-proptex-on" && ins.generatedWGSL) {
-      console.log("\n    ===== GENERATED METADATA WGSL CHUNK (property texture) =====");
-      console.log(ins.generatedWGSL.split("\n").map((l) => "    | " + l).join("\n"));
-      console.log("    ============================================================\n");
+      console.log(
+        "\n    ===== GENERATED METADATA WGSL CHUNK (property texture) =====",
+      );
+      console.log(
+        ins.generatedWGSL
+          .split("\n")
+          .map((l) => "    | " + l)
+          .join("\n"),
+      );
+      console.log(
+        "    ============================================================\n",
+      );
     }
     report.cells.push({
       label: cell.label,

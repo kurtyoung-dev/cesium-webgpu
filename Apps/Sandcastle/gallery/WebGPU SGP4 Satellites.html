@@ -54,7 +54,10 @@
     compute kernel, so the catalog renders on both backends. (A worker/WASM
     kernel host for the WebGL2 leg is a tracked perf-only follow-up.)
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
     </style>
@@ -93,7 +96,8 @@
         // from the demo — on WebGL2 the engine runs the JS SGP4 update each
         // frame instead of the WGSL compute kernel.
         const requestedRenderer =
-          new URLSearchParams(window.location.search).get("renderer") || "webgpu";
+          new URLSearchParams(window.location.search).get("renderer") ||
+          "webgpu";
         const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
           contextOptions: { renderer: requestedRenderer },
           shouldAnimate: true,
@@ -140,7 +144,9 @@
           if (!m) {
             return sign * (parseFloat(`0.${body}`) || 0.0);
           }
-          return sign * parseFloat(`0.${m[1]}`) * Math.pow(10, parseInt(m[2], 10));
+          return (
+            sign * parseFloat(`0.${m[1]}`) * Math.pow(10, parseInt(m[2], 10))
+          );
         }
 
         function jdayFromYearDoy(year, doy) {
@@ -172,7 +178,8 @@
           const ecco = parseFloat(`0.${line2.substring(26, 33).trim()}`);
           const argpo = parseFloat(line2.substring(34, 42)) * DEG2RAD;
           const mo = parseFloat(line2.substring(43, 51)) * DEG2RAD;
-          const noKozai = (parseFloat(line2.substring(52, 63)) * TWOPI) / 1440.0;
+          const noKozai =
+            (parseFloat(line2.substring(52, 63)) * TWOPI) / 1440.0;
           const { jd, jdFrac } = jdayFromYearDoy(year, days);
 
           const cosio = Math.cos(inclo);
@@ -186,7 +193,8 @@
           const d1 = (0.75 * J2 * (3.0 * cosio2 - 1.0)) / (rteosq * omeosq);
           let del = d1 / (ak * ak);
           const adel =
-            ak * (1.0 - del * del - del * (1.0 / 3.0 + (134.0 * del * del) / 81.0));
+            ak *
+            (1.0 - del * del - del * (1.0 / 3.0 + (134.0 * del * del) / 81.0));
           del = d1 / (adel * adel);
           const noU = noKozai / (1.0 + del);
           const ao = Math.pow(XKE / noU, X2O3);
@@ -223,7 +231,9 @@
             coef1 *
             noU *
             (ao * (1.0 + 1.5 * etasq + eeta * (4.0 + etasq)) +
-              ((0.375 * J2 * tsi) / psisq) * con41 * (8.0 + 3.0 * etasq * (8.0 + etasq)));
+              ((0.375 * J2 * tsi) / psisq) *
+                con41 *
+                (8.0 + 3.0 * etasq * (8.0 + etasq)));
           const cc1 = bstar * cc2;
           let cc3 = 0.0;
           if (ecco > 1.0e-4) {
@@ -238,13 +248,19 @@
             (eta * (2.0 + 0.5 * etasq) +
               ecco * (0.5 + 2.0 * etasq) -
               ((J2 * tsi) / (ao * psisq)) *
-                (-3.0 * con41 * (1.0 - 2.0 * eeta + etasq * (1.5 - 0.5 * eeta)) +
+                (-3.0 *
+                  con41 *
+                  (1.0 - 2.0 * eeta + etasq * (1.5 - 0.5 * eeta)) +
                   0.75 *
                     x1mth2 *
                     (2.0 * etasq - eeta * (1.0 + etasq)) *
                     Math.cos(2.0 * argpo)));
           const cc5 =
-            2.0 * coef1 * ao * omeosq * (1.0 + 2.75 * (etasq + eeta) + eeta * etasq);
+            2.0 *
+            coef1 *
+            ao *
+            omeosq *
+            (1.0 + 2.75 * (etasq + eeta) + eeta * etasq);
 
           const cosio4 = cosio2 * cosio2;
           const temp1 = 1.5 * J2 * pinvsq * noU;
@@ -261,7 +277,8 @@
           const xhdot1 = -temp1 * cosio;
           const nodedot =
             xhdot1 +
-            (0.5 * temp2 * (4.0 - 19.0 * cosio2) + 2.0 * temp3 * (3.0 - 7.0 * cosio2)) *
+            (0.5 * temp2 * (4.0 - 19.0 * cosio2) +
+              2.0 * temp3 * (3.0 - 7.0 * cosio2)) *
               cosio;
           const omgcof = bstar * cc3 * Math.cos(argpo);
           let xmcof = 0.0;
@@ -272,7 +289,8 @@
           const t2cof = 1.5 * cc1;
           let xlcof;
           if (Math.abs(cosio + 1.0) > 1.5e-12) {
-            xlcof = (-0.25 * J3OJ2 * sinio * (3.0 + 5.0 * cosio)) / (1.0 + cosio);
+            xlcof =
+              (-0.25 * J3OJ2 * sinio * (3.0 + 5.0 * cosio)) / (1.0 + cosio);
           } else {
             xlcof = (-0.25 * J3OJ2 * sinio * (3.0 + 5.0 * cosio)) / 1.5e-12;
           }
@@ -734,7 +752,8 @@
           const temp2 = temp1 * tempB;
 
           const mrt =
-            rl * (1.0 - 1.5 * temp2 * betal * con41) + 0.5 * temp1 * x1mth2 * cos2u;
+            rl * (1.0 - 1.5 * temp2 * betal * con41) +
+            0.5 * temp1 * x1mth2 * cos2u;
           su = su - 0.25 * temp2 * x7thm1 * sin2u;
           const xnode = nodep + 1.5 * temp2 * cosip * sin2u;
           const xinc = xincp + 1.5 * temp2 * cosip * sinip * cos2u;
@@ -802,7 +821,8 @@
         // jitter is applied to the RAW elements BEFORE sgp4init so each copy is
         // a fully independent SGP4 object.
         function jitterLine2(line2, dNodeDeg, dMdeg) {
-          const n0 = (parseFloat(line2.substring(17, 25)) + dNodeDeg + 360) % 360;
+          const n0 =
+            (parseFloat(line2.substring(17, 25)) + dNodeDeg + 360) % 360;
           const m0 = (parseFloat(line2.substring(43, 51)) + dMdeg + 360) % 360;
           const node = n0.toFixed(4).padStart(8);
           const mAn = m0.toFixed(4).padStart(8);
@@ -821,7 +841,10 @@
             // WebGL2 fallback (ignored on WebGPU) — same SGP4 update on CPU.
             cpuKernel: sgp4CpuKernel,
             floatsPerInstance: FLOATS_PER_INSTANCE,
-            boundingSphere: new Cesium.BoundingSphere(Cesium.Cartesian3.ZERO, 1.0e7),
+            boundingSphere: new Cesium.BoundingSphere(
+              Cesium.Cartesian3.ZERO,
+              1.0e7,
+            ),
           }),
         );
 

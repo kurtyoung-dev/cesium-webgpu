@@ -46,7 +46,11 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
   v.camera.setView({
-    destination: window.Cesium.Cartesian3.fromDegrees(cfg.LON, cfg.LAT, cfg.ALT),
+    destination: window.Cesium.Cartesian3.fromDegrees(
+      cfg.LON,
+      cfg.LAT,
+      cfg.ALT,
+    ),
     orientation: {
       heading: window.Cesium.Math.toRadians(90.0),
       pitch: window.Cesium.Math.toRadians(-20.0),
@@ -84,7 +88,11 @@ async function diff(page, a, b) {
       let changed = 0;
       const n = da.length / 4;
       for (let i = 0; i < da.length; i += 4) {
-        if (da[i] !== db[i] || da[i + 1] !== db[i + 1] || da[i + 2] !== db[i + 2]) {
+        if (
+          da[i] !== db[i] ||
+          da[i + 1] !== db[i + 1] ||
+          da[i + 2] !== db[i + 2]
+        ) {
           changed++;
         }
       }

@@ -21,7 +21,8 @@ import {
 } from "../lib/webgpu-error-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
-const MODEL = "/Apps/SampleData/models/TestKHRExtensions/TestKhrAnisotropy.gltf";
+const MODEL =
+  "/Apps/SampleData/models/TestKHRExtensions/TestKhrAnisotropy.gltf";
 
 async function capture(renderer) {
   const browser = await chromium.launch({
@@ -49,7 +50,9 @@ async function capture(renderer) {
     scene.skyAtmosphere.show = false;
     scene.backgroundColor = C.Color.BLACK;
 
-    const lon = -75, lat = 40, height = 0;
+    const lon = -75,
+      lat = 40,
+      height = 0;
     const modelMatrix = C.Transforms.eastNorthUpToFixedFrame(
       C.Cartesian3.fromDegrees(lon, lat, height),
     );
@@ -87,7 +90,9 @@ async function capture(renderer) {
     const c = window.viewer.scene.canvas;
     c.setAttribute("data-aniso", "1");
   });
-  const png = await page.locator('canvas[data-aniso="1"]').screenshot({ type: "png" });
+  const png = await page
+    .locator('canvas[data-aniso="1"]')
+    .screenshot({ type: "png" });
   const decoded = await page.evaluate(async (b64) => {
     const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
     const bmp = await createImageBitmap(blob);
@@ -115,8 +120,10 @@ const wgpu = await capture("webgpu");
 const wgl = await capture("webgl");
 
 // Diff over non-black (model) pixels only.
-const a = wgl.decoded, b = wgpu.decoded;
-let modelPx = 0, mismatch = 0;
+const a = wgl.decoded,
+  b = wgpu.decoded;
+let modelPx = 0,
+  mismatch = 0;
 if (a.w === b.w && a.h === b.h) {
   for (let i = 0; i < a.data.length; i += 4) {
     const aLum = a.data[i] + a.data[i + 1] + a.data[i + 2];
@@ -137,12 +144,33 @@ const fs = await import("fs");
 fs.writeFileSync("Tools/visual-regression/output/aniso-webgpu.png", wgpu.png);
 fs.writeFileSync("Tools/visual-regression/output/aniso-webgl.png", wgl.png);
 
-console.log(JSON.stringify({
-  webgpu: { ready: wgpu.ready, gateArmed: wgpu.gateArmed, gateErrors: wgpu.gateErrors, deviceLost: wgpu.deviceLost, consoleFaults: wgpu.consoleFaults.slice(0, 5) },
-  webgl: { ready: wgl.ready },
-  diff: { modelPx, mismatch, mismatchPct: modelPx ? +(100 * mismatch / modelPx).toFixed(2) : null },
-}, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      webgpu: {
+        ready: wgpu.ready,
+        gateArmed: wgpu.gateArmed,
+        gateErrors: wgpu.gateErrors,
+        deviceLost: wgpu.deviceLost,
+        consoleFaults: wgpu.consoleFaults.slice(0, 5),
+      },
+      webgl: { ready: wgl.ready },
+      diff: {
+        modelPx,
+        mismatch,
+        mismatchPct: modelPx ? +((100 * mismatch) / modelPx).toFixed(2) : null,
+      },
+    },
+    null,
+    2,
+  ),
+);
 
-const pass = wgpu.ready && wgl.ready && wgpu.gateErrors.length === 0 && !wgpu.deviceLost;
-console.log(pass ? "GATE PASS — anisotropy IBL path executes clean on WebGPU" : "GATE FAIL");
+const pass =
+  wgpu.ready && wgl.ready && wgpu.gateErrors.length === 0 && !wgpu.deviceLost;
+console.log(
+  pass
+    ? "GATE PASS — anisotropy IBL path executes clean on WebGPU"
+    : "GATE FAIL",
+);
 process.exit(pass ? 0 : 1);

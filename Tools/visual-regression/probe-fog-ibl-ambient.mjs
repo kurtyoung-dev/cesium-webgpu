@@ -49,10 +49,14 @@ async function capture(label, settings) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
@@ -151,18 +155,25 @@ async function bandRGB(a, b, labelA, labelB) {
       const y0 = Math.floor(A.h * 0.4);
       const y1 = Math.floor(A.h * 0.8);
       const mean = (D) => {
-        let r = 0, g = 0, bl = 0, n = 0;
+        let r = 0,
+          g = 0,
+          bl = 0,
+          n = 0;
         for (let y = y0; y < y1; y++) {
           for (let x = 0; x < A.w; x++) {
             const i = (y * A.w + x) * 4;
-            r += D[i]; g += D[i + 1]; bl += D[i + 2]; n++;
+            r += D[i];
+            g += D[i + 1];
+            bl += D[i + 2];
+            n++;
           }
         }
         return { r: r / n, g: g / n, b: bl / n };
       };
       // Also count any fully-saturated (blown-out) pixels in the band.
       const blown = (D) => {
-        let c = 0, n = 0;
+        let c = 0,
+          n = 0;
         for (let y = y0; y < y1; y++) {
           for (let x = 0; x < A.w; x++) {
             const i = (y * A.w + x) * 4;
@@ -175,13 +186,25 @@ async function bandRGB(a, b, labelA, labelB) {
       const mA = mean(A.data);
       const mB = mean(B.data);
       return {
-        A: { r: mA.r.toFixed(1), g: mA.g.toFixed(1), b: mA.b.toFixed(1),
-             warmRB: (mA.r - mA.b).toFixed(1), blownPct: blown(A.data).toFixed(2) },
-        B: { r: mB.r.toFixed(1), g: mB.g.toFixed(1), b: mB.b.toFixed(1),
-             warmRB: (mB.r - mB.b).toFixed(1), blownPct: blown(B.data).toFixed(2) },
-        warmShift_BminusA: ((mB.r - mB.b) - (mA.r - mA.b)).toFixed(1),
+        A: {
+          r: mA.r.toFixed(1),
+          g: mA.g.toFixed(1),
+          b: mA.b.toFixed(1),
+          warmRB: (mA.r - mA.b).toFixed(1),
+          blownPct: blown(A.data).toFixed(2),
+        },
+        B: {
+          r: mB.r.toFixed(1),
+          g: mB.g.toFixed(1),
+          b: mB.b.toFixed(1),
+          warmRB: (mB.r - mB.b).toFixed(1),
+          blownPct: blown(B.data).toFixed(2),
+        },
+        warmShift_BminusA: (mB.r - mB.b - (mA.r - mA.b)).toFixed(1),
         lumShift_BminusA: (
-          (0.2126 * mB.r + 0.7152 * mB.g + 0.0722 * mB.b) -
+          0.2126 * mB.r +
+          0.7152 * mB.g +
+          0.0722 * mB.b -
           (0.2126 * mA.r + 0.7152 * mA.g + 0.0722 * mA.b)
         ).toFixed(1),
       };
@@ -216,13 +239,25 @@ async function bandRGB(a, b, labelA, labelB) {
   }
 
   console.log("\n  Fog-band RGB — off (A) vs on-low (B): warm shift expected");
-  console.log("   ", JSON.stringify(await bandRGB(off.out, onLow.out, "off", "on-low")));
-  console.log("\n  Fog-band RGB — on-low (A) vs on-high (B): brighter/cooler expected");
-  console.log("   ", JSON.stringify(await bandRGB(onLow.out, onHigh.out, "on-low", "on-high")));
+  console.log(
+    "   ",
+    JSON.stringify(await bandRGB(off.out, onLow.out, "off", "on-low")),
+  );
+  console.log(
+    "\n  Fog-band RGB — on-low (A) vs on-high (B): brighter/cooler expected",
+  );
+  console.log(
+    "   ",
+    JSON.stringify(await bandRGB(onLow.out, onHigh.out, "on-low", "on-high")),
+  );
 
   console.log("\nManual checks (read the PNGs):");
-  console.log("  on-low:  fog band reads as warm atmospheric haze (sky-tinted),");
-  console.log("           warmer than off; no over-bright blowout, no SH banding.");
+  console.log(
+    "  on-low:  fog band reads as warm atmospheric haze (sky-tinted),",
+  );
+  console.log(
+    "           warmer than off; no over-bright blowout, no SH banding.",
+  );
   console.log("  on-high: fog band brighter / more neutral than on-low.");
   console.log("  off:     unchanged flat-grey haze (parity baseline).");
   console.log("[probe-fog-ibl-ambient] done");

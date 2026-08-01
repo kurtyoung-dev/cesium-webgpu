@@ -50,9 +50,7 @@ const notes = [];
 // types (Depth)"). Same family as NEW-WEBGPU-SCENE-PASS-MSAA-FLIP-TRANSITION
 // (QUEUE_2026-07-15_CAMPAIGN9.md §3.2). Allowlisted so this probe gates the
 // demand-open slice, not that pre-existing race; any OTHER error still fails.
-const PREEXISTING_ERROR_ALLOWLIST = [
-  "SceneFramebuffer-Color_depth_resolve_ss",
-];
+const PREEXISTING_ERROR_ALLOWLIST = ["SceneFramebuffer-Color_depth_resolve_ss"];
 
 function filterErrors(errors) {
   return errors.filter(
@@ -79,7 +77,9 @@ async function newViewerPage(browser, renderer) {
     viewport: { width: 960, height: 640 },
   });
   const errors = [];
-  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message.slice(0, 200)}`));
+  page.on("pageerror", (e) =>
+    errors.push(`pageerror: ${e.message.slice(0, 200)}`),
+  );
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(`console: ${m.text().slice(0, 200)}`);
   });
@@ -241,7 +241,9 @@ async function run(renderer) {
     const overlayLen = await page.evaluate(
       () => window.viewer.scene._overlayCommandList.length,
     );
-    notes.push(`${renderer} default route _overlayCommandList.length=${overlayLen}`);
+    notes.push(
+      `${renderer} default route _overlayCommandList.length=${overlayLen}`,
+    );
 
     // ── Case 5 (same page, webgpu only): debug overlays ──
     if (renderer === "webgpu") {
@@ -427,7 +429,11 @@ async function run(renderer) {
       `${renderer} request-render frame presents`,
       `nonBlack=${stc.nonBlack}`,
     );
-    ok(errors.length === 0, `${renderer} request-render zero errors`, errors[0]);
+    ok(
+      errors.length === 0,
+      `${renderer} request-render zero errors`,
+      errors[0],
+    );
     await page.close();
   }
 

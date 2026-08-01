@@ -73,10 +73,14 @@ async function capture(label, { renderer, modelUrl, metadataDebug, doPick }) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
@@ -92,7 +96,15 @@ async function capture(label, { renderer, modelUrl, metadataDebug, doPick }) {
   });
 
   const diagnostics = await page.evaluate(
-    async ({ view, clockUTC, modelUrl, metadataDebug, doPick, metaBit, propTableBit }) => {
+    async ({
+      view,
+      clockUTC,
+      modelUrl,
+      metadataDebug,
+      doPick,
+      metaBit,
+      propTableBit,
+    }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       globalThis.CesiumWebGPUMetadataDebug = metadataDebug === true;
@@ -188,7 +200,9 @@ async function capture(label, { renderer, modelUrl, metadataDebug, doPick }) {
                   pc._metadataWGSL,
                 );
                 inspect.wgslHasTableLoad =
-                  /textureLoad\(metadataPropertyTableTexture/.test(pc._metadataWGSL);
+                  /textureLoad\(metadataPropertyTableTexture/.test(
+                    pc._metadataWGSL,
+                  );
                 inspect.wgslUsesAttributeCol =
                   /let metadataTableCol = i32\(metadataFeatureId\);/.test(
                     pc._metadataWGSL,
@@ -279,7 +293,7 @@ async function capture(label, { renderer, modelUrl, metadataDebug, doPick }) {
             await render();
           }
           picks[k] = val;
-          let pmv = "unset";
+          let pmv;
           try {
             pmv = v.scene.pickMetadata(
               new C.Cartesian2(p.x, p.y),
@@ -304,7 +318,15 @@ async function capture(label, { renderer, modelUrl, metadataDebug, doPick }) {
         pickMetadataValues,
       };
     },
-    { view: VIEW, clockUTC: FIXED_CLOCK_UTC, modelUrl, metadataDebug, doPick, metaBit: META_BIT, propTableBit: PROP_TABLE_BIT },
+    {
+      view: VIEW,
+      clockUTC: FIXED_CLOCK_UTC,
+      modelUrl,
+      metadataDebug,
+      doPick,
+      metaBit: META_BIT,
+      propTableBit: PROP_TABLE_BIT,
+    },
   );
 
   const deviceErrors = await page.evaluate(() => window.__probeErrors ?? []);
@@ -313,17 +335,29 @@ async function capture(label, { renderer, modelUrl, metadataDebug, doPick }) {
   await browser.close();
   const pageErrors = messages.filter((m) => m.t === "pageerror");
   const consoleErrs = messages.filter((m) => m.t === "error");
-  return { label, renderer, out, diagnostics, deviceErrors, pageErrors, consoleErrs };
+  return {
+    label,
+    renderer,
+    out,
+    diagnostics,
+    deviceErrors,
+    pageErrors,
+    consoleErrs,
+  };
 }
 
 function distinctPixelCount(pixels) {
-  const s = new Set(Object.values(pixels).map((p) => `${p.r >> 3},${p.g >> 3},${p.b >> 3}`));
+  const s = new Set(
+    Object.values(pixels).map((p) => `${p.r >> 3},${p.g >> 3},${p.b >> 3}`),
+  );
   return s.size;
 }
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[probe-metadata-table-texture] METADATA-TABLE-SOURCES acceptance\n");
+  console.log(
+    "[probe-metadata-table-texture] METADATA-TABLE-SOURCES acceptance\n",
+  );
 
   const cells = [];
   cells.push(
@@ -385,15 +419,31 @@ function distinctPixelCount(pixels) {
     );
     if (d.picks) console.log(`    feature picks: ${JSON.stringify(d.picks)}`);
     if (d.pickMetadataValues)
-      console.log(`    pickMetadata (expect null): ${JSON.stringify(d.pickMetadataValues)}`);
+      console.log(
+        `    pickMetadata (expect null): ${JSON.stringify(d.pickMetadataValues)}`,
+      );
     console.log(
       `    errors: device=${c.deviceErrors.length} page=${c.pageErrors.length} console=${c.consoleErrs.length}`,
     );
-    c.deviceErrors.slice(0, 3).forEach((e) => console.log(`      device: ${e.text?.slice(0, 220)}`));
-    c.pageErrors.slice(0, 3).forEach((e) => console.log(`      page: ${e.text?.slice(0, 220)}`));
-    c.consoleErrs.slice(0, 5).forEach((e) => console.log(`      console: ${e.text?.split("\n")[0].slice(0, 220)}`));
-    if (c.deviceErrors.length || c.pageErrors.length || c.consoleErrs.length) pass = false;
-    report.cells.push({ label: c.label, renderer: c.renderer, screenshot: c.out, ...d });
+    c.deviceErrors
+      .slice(0, 3)
+      .forEach((e) => console.log(`      device: ${e.text?.slice(0, 220)}`));
+    c.pageErrors
+      .slice(0, 3)
+      .forEach((e) => console.log(`      page: ${e.text?.slice(0, 220)}`));
+    c.consoleErrs
+      .slice(0, 5)
+      .forEach((e) =>
+        console.log(`      console: ${e.text?.split("\n")[0].slice(0, 220)}`),
+      );
+    if (c.deviceErrors.length || c.pageErrors.length || c.consoleErrs.length)
+      pass = false;
+    report.cells.push({
+      label: c.label,
+      renderer: c.renderer,
+      screenshot: c.out,
+      ...d,
+    });
   }
 
   // ── Assertions ────────────────────────────────────────────────────────────
@@ -409,10 +459,23 @@ function distinctPixelCount(pixels) {
   };
 
   console.log("");
-  check("A: MODEL_HAS_PROPERTY_TABLES bit set (texture-sourced)", A.inspect.tableBitSet === true);
-  check("A: generated WGSL samples featureIdTexture + unpackFeatureId", A.inspect.wgslSamplesFidTexture === true && A.inspect.wgslUnpacksFeatureId === true);
-  check("A: generated WGSL loads the property table", A.inspect.wgslHasTableLoad === true);
-  check("A: 4 distinct quadrant debug colors", distinctPixelCount(A.pixels) === 4);
+  check(
+    "A: MODEL_HAS_PROPERTY_TABLES bit set (texture-sourced)",
+    A.inspect.tableBitSet === true,
+  );
+  check(
+    "A: generated WGSL samples featureIdTexture + unpackFeatureId",
+    A.inspect.wgslSamplesFidTexture === true &&
+      A.inspect.wgslUnpacksFeatureId === true,
+  );
+  check(
+    "A: generated WGSL loads the property table",
+    A.inspect.wgslHasTableLoad === true,
+  );
+  check(
+    "A: 4 distinct quadrant debug colors",
+    distinctPixelCount(A.pixels) === 4,
+  );
   // Region → screen mapping: Cesium applies the glTF axis correction
   // (Y_UP_TO_Z_UP then Z_UP_TO_X_UP), so glTF +X → local north and glTF +Z →
   // local east. With the authored quad (u along glTF x, v along glTF z) that
@@ -422,12 +485,19 @@ function distinctPixelCount(pixels) {
   // fract(intensity): NE(id3, fract 0) < SW(id0,.25) < NW(id1,.5) < SE(id2,.75).
   check(
     "A: quadrant red ordering matches authored fract(intensity)",
-    A.pixels.NE.r < A.pixels.SW.r && A.pixels.SW.r < A.pixels.NW.r && A.pixels.NW.r < A.pixels.SE.r,
+    A.pixels.NE.r < A.pixels.SW.r &&
+      A.pixels.SW.r < A.pixels.NW.r &&
+      A.pixels.NW.r < A.pixels.SE.r,
   );
 
   const near = (a, b) => typeof a === "number" && Math.abs(a - b) < 0.01;
   // Same axis-corrected mapping as cell A (see comment above).
-  const expected = { NW: AUTHORED[1], NE: AUTHORED[3], SW: AUTHORED[0], SE: AUTHORED[2] };
+  const expected = {
+    NW: AUTHORED[1],
+    NE: AUTHORED[3],
+    SW: AUTHORED[0],
+    SE: AUTHORED[2],
+  };
   for (const k of ["NW", "NE", "SW", "SE"]) {
     check(
       `B1 WebGPU feature pick ${k}.intensity == ${expected[k]}`,
@@ -441,18 +511,30 @@ function distinctPixelCount(pixels) {
   check(
     "B: pickMetadata for a TABLE property is undefined on BOTH backends (upstream #12225 parity)",
     ["NW", "NE", "SW", "SE"].every(
-      (k) => B1.pickMetadataValues?.[k] === null && B2.pickMetadataValues?.[k] === null,
+      (k) =>
+        B1.pickMetadataValues?.[k] === null &&
+        B2.pickMetadataValues?.[k] === null,
     ),
   );
 
   check("C: implicit-sourced tableBit set", Cc.inspect.tableBitSet === true);
-  check("C: implicit WGSL uses attribute column (no fid-texture sample)", Cc.inspect.wgslUsesAttributeCol === true && Cc.inspect.wgslSamplesFidTexture === false);
-  check("C: implicit debug paint varies (≥2 distinct colors)", distinctPixelCount(Cc.pixels) >= 2);
+  check(
+    "C: implicit WGSL uses attribute column (no fid-texture sample)",
+    Cc.inspect.wgslUsesAttributeCol === true &&
+      Cc.inspect.wgslSamplesFidTexture === false,
+  );
+  check(
+    "C: implicit debug paint varies (≥2 distinct colors)",
+    distinctPixelCount(Cc.pixels) >= 2,
+  );
 
   // D (off-gate): debug off → no metadata paint. The debug palette always has
   // g == 0; the lit white quad has g ≈ r ≈ b, so a green channel well above 0
   // in all quadrants proves the override is off.
-  check("D: debug off → normal render (no red/blue metadata paint)", Object.values(D.pixels).every((p) => p.g > 40));
+  check(
+    "D: debug off → normal render (no red/blue metadata paint)",
+    Object.values(D.pixels).every((p) => p.g > 40),
+  );
 
   fs.writeFileSync(
     path.join(OUT_DIR, "metadata-table-texture-report.json"),

@@ -31,21 +31,33 @@ function launch() {
   return chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
 }
 
 // mode: "off" | "on" | "toggle"; hideGlobe isolates the patch.
 async function session(name, { mode, hideGlobe }) {
   const browser = await launch();
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const errs = [];
-  page.on("console", (m) => { if (m.type() === "error") errs.push(m.text()); });
+  page.on("console", (m) => {
+    if (m.type() === "error") errs.push(m.text());
+  });
   page.on("pageerror", (e) => errs.push("pageerror: " + e.message));
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&${VIEW}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&${VIEW}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   await page.evaluate(
@@ -99,7 +111,8 @@ async function analyze(paths, crop) {
   const page = await browser.newPage();
   await page.setContent("<html><body></body></html>");
   const b64 = {};
-  for (const [k, v] of Object.entries(paths)) if (v) b64[k] = fs.readFileSync(v).toString("base64");
+  for (const [k, v] of Object.entries(paths))
+    if (v) b64[k] = fs.readFileSync(v).toString("base64");
   const res = await page.evaluate(
     async ({ b64, crop }) => {
       const decode = async (s) => {
@@ -107,26 +120,34 @@ async function analyze(paths, crop) {
         img.src = "data:image/png;base64," + s;
         await img.decode();
         const c = document.createElement("canvas");
-        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
         c.getContext("2d").drawImage(img, 0, 0);
-        return { w: img.naturalWidth, data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data };
+        return {
+          w: img.naturalWidth,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
+        };
       };
       const imgs = {};
       for (const [k, s] of Object.entries(b64)) imgs[k] = await decode(s);
-      const lum = (d, i) => 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      const lum = (d, i) =>
+        0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
       const idx = (w, x, y) => (y * w + x) * 4;
       const diff = (A, B) => {
-        let s = 0, n = 0;
+        let s = 0,
+          n = 0;
         for (let y = crop.y0; y < crop.y1; y++)
           for (let x = crop.x0; x < crop.x1; x++) {
             const i = idx(A.w, x, y);
-            s += Math.abs(lum(A.data, i) - lum(B.data, i)); n++;
+            s += Math.abs(lum(A.data, i) - lum(B.data, i));
+            n++;
           }
         return s / n;
       };
       // Non-background coverage (pixels brighter than near-black) in crop.
       const coverage = (A) => {
-        let n = 0, tot = 0;
+        let n = 0,
+          tot = 0;
         for (let y = crop.y0; y < crop.y1; y++)
           for (let x = crop.x0; x < crop.x1; x++) {
             if (lum(A.data, idx(A.w, x, y)) > 20) n++;
@@ -172,17 +193,32 @@ async function analyze(paths, crop) {
 
   const a = await analyze(
     {
-      off1: off1.p1, off1b: off1b.p1, off2: off2.p1,
-      isoOff: isoOff.p1, isoOn: isoOn.p1, isoOnT2: isoOn.p2,
+      off1: off1.p1,
+      off1b: off1b.p1,
+      off2: off2.p1,
+      isoOff: isoOff.p1,
+      isoOn: isoOn.p1,
+      isoOnT2: isoOn.p2,
     },
     CROP,
   );
   console.log("  metrics:", JSON.stringify(a));
   console.log("");
-  console.log(`  (a) OFF-gate delta (off1 vs off2): ${a.offGate}  vs base noise floor (off1 vs off1b): ${a.noiseFloor}`);
-  console.log(`      → off-gate is byte-identical iff offGate ≈ noiseFloor (both = base nondeterminism)`);
-  console.log(`  (b) isolated coverage off/on     : ${a.isoCoverageOff} / ${a.isoCoverageOn}  (on >> off = patch renders)`);
-  console.log(`  (c) isolated temporal delta      : ${a.isoTemporal}  (target > 0.5 = animating)`);
-  console.log("PNGs:", [off1.p1, isoOff.p1, isoOn.p1, isoOn.p2, ctxOn.p1].join("  "));
+  console.log(
+    `  (a) OFF-gate delta (off1 vs off2): ${a.offGate}  vs base noise floor (off1 vs off1b): ${a.noiseFloor}`,
+  );
+  console.log(
+    `      → off-gate is byte-identical iff offGate ≈ noiseFloor (both = base nondeterminism)`,
+  );
+  console.log(
+    `  (b) isolated coverage off/on     : ${a.isoCoverageOff} / ${a.isoCoverageOn}  (on >> off = patch renders)`,
+  );
+  console.log(
+    `  (c) isolated temporal delta      : ${a.isoTemporal}  (target > 0.5 = animating)`,
+  );
+  console.log(
+    "PNGs:",
+    [off1.p1, isoOff.p1, isoOn.p1, isoOn.p2, ctxOn.p1].join("  "),
+  );
   console.log("done");
 })();

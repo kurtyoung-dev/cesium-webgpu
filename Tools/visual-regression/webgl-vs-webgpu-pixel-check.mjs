@@ -51,7 +51,7 @@ async function probe(rendererMode) {
     }
 
     const canvas = v.scene.canvas;
-    let result = { rendererType: v.scene.context.rendererType };
+    const result = { rendererType: v.scene.context.rendererType };
     try {
       const dataUrl = canvas.toDataURL("image/png");
       const img = new Image();

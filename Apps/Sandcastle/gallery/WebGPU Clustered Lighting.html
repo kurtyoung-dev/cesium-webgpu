@@ -47,7 +47,10 @@
     dominant illumination and the per-light falloff is obvious. Toggle
     clustered lighting off to see the models fall back to sun + ambient only.
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
       #toolbar {
@@ -105,7 +108,8 @@
           new Cesium.Primitive({
             geometryInstances: new Cesium.GeometryInstance({
               geometry: Cesium.BoxGeometry.fromDimensions({
-                vertexFormat: Cesium.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
+                vertexFormat:
+                  Cesium.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
                 dimensions: new Cesium.Cartesian3(400.0, 400.0, 2.0),
               }),
               modelMatrix: Cesium.Matrix4.multiplyByTranslation(
@@ -182,7 +186,9 @@
         scene.clusteredLightingEnabled = true;
 
         // Local night so the colored lights dominate.
-        viewer.clock.currentTime = Cesium.JulianDate.fromIso8601("2026-06-21T04:30:00Z");
+        viewer.clock.currentTime = Cesium.JulianDate.fromIso8601(
+          "2026-06-21T04:30:00Z",
+        );
 
         // Frame the scene.
         viewer.camera.lookAt(

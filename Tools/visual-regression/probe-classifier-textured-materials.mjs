@@ -196,17 +196,24 @@ async function captureMaterial(renderer, mat) {
   });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   page.on("pageerror", (e) =>
-    console.log(`>> [${renderer}/${mat.name}] pageerror: ${e.message.slice(0, 160)}`),
+    console.log(
+      `>> [${renderer}/${mat.name}] pageerror: ${e.message.slice(0, 160)}`,
+    ),
   );
-  await page.goto(`${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   await page.evaluate(() => {
     window.__probeErrors = [];
     const dev = window.viewer?.scene?.context?._device;
-    if (dev) dev.onuncapturederror = (ev) => window.__probeErrors.push(ev?.error?.message ?? "");
+    if (dev)
+      dev.onuncapturederror = (ev) =>
+        window.__probeErrors.push(ev?.error?.message ?? "");
   });
 
   await page.evaluate(
@@ -312,7 +319,11 @@ async function captureMaterial(renderer, mat) {
       while (performance.now() - t0 < 90_000) {
         scene.requestRender();
         scene.render();
-        if (ground.ready && scene.globe.tilesLoaded && globeCommandCount() > 0) {
+        if (
+          ground.ready &&
+          scene.globe.tilesLoaded &&
+          globeCommandCount() > 0
+        ) {
           break;
         }
         // setTimeout (not RAF) so wall time elapses while the async
@@ -347,13 +358,19 @@ async function captureMaterial(renderer, mat) {
           const d = cx.getImageData(0, 0, c.width, c.height).data;
 
           let lit = 0;
-          let r2 = 0, g2 = 0, b2 = 0;
-          let r1 = 0, g1 = 0, b1 = 0;
+          let r2 = 0,
+            g2 = 0,
+            b2 = 0;
+          let r1 = 0,
+            g1 = 0,
+            b1 = 0;
           let nLit = 0;
           for (let y = roi.y0; y < roi.y1; y++) {
             for (let x = roi.x0; x < roi.x1; x++) {
               const i = (y * c.width + x) * 4;
-              const r = d[i], g = d[i + 1], b = d[i + 2];
+              const r = d[i],
+                g = d[i + 1],
+                b = d[i + 2];
               const sum = r + g + b;
               if (sum < litThreshold) continue;
               lit++;
@@ -361,14 +378,20 @@ async function captureMaterial(renderer, mat) {
               // material that produces alternating red/blue stripes
               // gives high variance, while a flat-color polygon gives
               // near-zero variance, independent of polygon size.
-              r1 += r; g1 += g; b1 += b;
-              r2 += r * r; g2 += g * g; b2 += b * b;
+              r1 += r;
+              g1 += g;
+              b1 += b;
+              r2 += r * r;
+              g2 += g * g;
+              b2 += b * b;
               nLit++;
             }
           }
           let variance = 0;
           if (nLit > 0) {
-            const rMean = r1 / nLit, gMean = g1 / nLit, bMean = b1 / nLit;
+            const rMean = r1 / nLit,
+              gMean = g1 / nLit,
+              bMean = b1 / nLit;
             const rVar = Math.max(0, r2 / nLit - rMean * rMean);
             const gVar = Math.max(0, g2 / nLit - gMean * gMean);
             const bVar = Math.max(0, b2 / nLit - bMean * bMean);
@@ -394,7 +417,9 @@ async function captureMaterial(renderer, mat) {
 (async () => {
   fs.mkdirSync(OUT_DIR, { recursive: true });
 
-  console.log("=== Classifier textured-materials probe (GroundPrimitive) ===\n");
+  console.log(
+    "=== Classifier textured-materials probe (GroundPrimitive) ===\n",
+  );
   console.log(
     "  material         WebGL lit  WebGL var | WebGPU lit  WebGPU var  errs | verdict",
   );
@@ -408,11 +433,18 @@ async function captureMaterial(renderer, mat) {
 
     let verdict;
     if (mat.name === "Color") {
-      verdict = litRatio >= MIN_COLOR_RATIO && wgpu.errs.length === 0 ? "OK" : "FAIL";
+      verdict =
+        litRatio >= MIN_COLOR_RATIO && wgpu.errs.length === 0 ? "OK" : "FAIL";
     } else {
       const texturedOk =
-        varRatio >= MIN_TEXTURED_RATIO && litRatio >= MIN_COLOR_RATIO && wgpu.errs.length === 0;
-      verdict = texturedOk ? "OK" : ENFORCE_TEXTURED ? "FAIL" : "known-open(textured)";
+        varRatio >= MIN_TEXTURED_RATIO &&
+        litRatio >= MIN_COLOR_RATIO &&
+        wgpu.errs.length === 0;
+      verdict = texturedOk
+        ? "OK"
+        : ENFORCE_TEXTURED
+          ? "FAIL"
+          : "known-open(textured)";
     }
 
     console.log(
@@ -424,7 +456,9 @@ async function captureMaterial(renderer, mat) {
     if (verdict === "FAIL") pass = false;
   }
 
-  console.log(`\n  PNGs: ${OUT_DIR}/texmat-{Color,Stripe,Checkerboard,Grid,Image}-{webgl,webgpu}.png`);
+  console.log(
+    `\n  PNGs: ${OUT_DIR}/texmat-{Color,Stripe,Checkerboard,Grid,Image}-{webgl,webgpu}.png`,
+  );
   console.log(pass ? "\nPASS" : "\nFAIL");
   process.exit(pass ? 0 : 1);
 })();

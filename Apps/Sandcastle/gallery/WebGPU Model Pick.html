@@ -51,7 +51,10 @@
     No edge / shadow / classification work is required — this is the raw
     pick-only path.
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
       #pickReadout {
@@ -71,7 +74,8 @@
     <div id="loadingOverlay"><h1>Loading...</h1></div>
     <div id="toolbar">
       <div id="pickReadout">
-        Click a model to pick it. <span id="pickResult">(nothing picked yet)</span>
+        Click a model to pick it.
+        <span id="pickResult">(nothing picked yet)</span>
       </div>
     </div>
     <script id="cesium_sandcastle_script">
@@ -95,8 +99,16 @@
 
         // Two distinct models so the user can verify pick discriminates between
         // primitives. Both are local SampleData assets so no network is needed.
-        const truckPosition = Cesium.Cartesian3.fromDegrees(-123.0744619, 44.0503706, 0);
-        const manPosition = Cesium.Cartesian3.fromDegrees(-123.0742619, 44.0503706, 0);
+        const truckPosition = Cesium.Cartesian3.fromDegrees(
+          -123.0744619,
+          44.0503706,
+          0,
+        );
+        const manPosition = Cesium.Cartesian3.fromDegrees(
+          -123.0742619,
+          44.0503706,
+          0,
+        );
 
         function makeOrientation(position, headingDeg) {
           const heading = Cesium.Math.toRadians(headingDeg);

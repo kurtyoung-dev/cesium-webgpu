@@ -32,7 +32,9 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[probe-atmo-luts] Track V-A1 — multiple-scattering + irradiance LUTs");
+  console.log(
+    "[probe-atmo-luts] Track V-A1 — multiple-scattering + irradiance LUTs",
+  );
 
   const browser = await chromium.launch({
     channel: "msedge",
@@ -44,11 +46,15 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
@@ -71,7 +77,9 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
       // WGS84 ellipsoid (no Ion terrain in headless).
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
 
@@ -94,7 +102,10 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
       const pm = ctx && ctx.performanceManager;
       const device = ctx && ctx.device;
       if (!pm || !device) {
-        return { fatal: "no perf manager / device", rendererType: ctx?.rendererType };
+        return {
+          fatal: "no perf manager / device",
+          rendererType: ctx?.rendererType,
+        };
       }
 
       // Make sure the resources exist + the extension views are reachable.
@@ -148,9 +159,29 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
       const bgl0 = device.createBindGroupLayout({
         label: "probeLUT_g0",
         entries: [
-          { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-          { binding: 1, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: "rgba16float", access: "write-only", viewDimension: "2d" } },
-          { binding: 2, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: "rgba16float", access: "write-only", viewDimension: "2d" } },
+          {
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "uniform" },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: {
+              format: "rgba16float",
+              access: "write-only",
+              viewDimension: "2d",
+            },
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: {
+              format: "rgba16float",
+              access: "write-only",
+              viewDimension: "2d",
+            },
+          },
         ],
       });
       const bg0 = device.createBindGroup({
@@ -177,18 +208,60 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
       // extended kernels (which reference @group(1)) are satisfied. group 0
       // is unused by those kernels. We provide an empty group-0 layout to
       // place group 1 at index 1.
-      const emptyBgl = device.createBindGroupLayout({ label: "probe_empty", entries: [] });
-      const emptyBg = device.createBindGroup({ label: "probe_empty_bg", layout: emptyBgl, entries: [] });
-      const sampler = device.createSampler({ magFilter: "linear", minFilter: "linear" });
+      const emptyBgl = device.createBindGroupLayout({
+        label: "probe_empty",
+        entries: [],
+      });
+      const emptyBg = device.createBindGroup({
+        label: "probe_empty_bg",
+        layout: emptyBgl,
+        entries: [],
+      });
+      const sampler = device.createSampler({
+        magFilter: "linear",
+        minFilter: "linear",
+      });
       const bgl1 = device.createBindGroupLayout({
         label: "probeLUT_g1",
         entries: [
-          { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
-          { binding: 1, visibility: GPUShaderStage.COMPUTE, sampler: { type: "filtering" } },
-          { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension: "2d" } },
-          { binding: 3, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: "float", viewDimension: "2d" } },
-          { binding: 4, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: "rgba16float", access: "write-only", viewDimension: "2d" } },
-          { binding: 5, visibility: GPUShaderStage.COMPUTE, storageTexture: { format: "rgba16float", access: "write-only", viewDimension: "2d" } },
+          {
+            binding: 0,
+            visibility: GPUShaderStage.COMPUTE,
+            buffer: { type: "uniform" },
+          },
+          {
+            binding: 1,
+            visibility: GPUShaderStage.COMPUTE,
+            sampler: { type: "filtering" },
+          },
+          {
+            binding: 2,
+            visibility: GPUShaderStage.COMPUTE,
+            texture: { sampleType: "float", viewDimension: "2d" },
+          },
+          {
+            binding: 3,
+            visibility: GPUShaderStage.COMPUTE,
+            texture: { sampleType: "float", viewDimension: "2d" },
+          },
+          {
+            binding: 4,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: {
+              format: "rgba16float",
+              access: "write-only",
+              viewDimension: "2d",
+            },
+          },
+          {
+            binding: 5,
+            visibility: GPUShaderStage.COMPUTE,
+            storageTexture: {
+              format: "rgba16float",
+              access: "write-only",
+              viewDimension: "2d",
+            },
+          },
         ],
       });
       const bg1 = device.createBindGroup({
@@ -203,7 +276,9 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
           { binding: 5, resource: lut.irradianceView },
         ],
       });
-      const pl1 = device.createPipelineLayout({ bindGroupLayouts: [emptyBgl, bgl1] });
+      const pl1 = device.createPipelineLayout({
+        bindGroupLayouts: [emptyBgl, bgl1],
+      });
       const pipeMS = device.createComputePipeline({
         layout: pl1,
         compute: { module, entryPoint: "computeMultipleScattering" },
@@ -216,7 +291,7 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
       const enc = device.createCommandEncoder({ label: "probeLUTdispatch" });
       const wgX = Math.ceil(lut.width / 16);
       // transmittance/irradiance height = 64; inscatter/MS height = 128.
-      let p = enc.beginComputePass();
+      const p = enc.beginComputePass();
       p.setPipeline(pipeTrans);
       p.setBindGroup(0, bg0);
       p.dispatchWorkgroups(wgX, Math.ceil(lut.transmittanceHeight / 16), 1);
@@ -225,7 +300,7 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
       p.dispatchWorkgroups(wgX, Math.ceil(lut.inscatterHeight / 16), 1);
       p.end();
 
-      let p2 = enc.beginComputePass();
+      const p2 = enc.beginComputePass();
       p2.setPipeline(pipeMS);
       p2.setBindGroup(0, emptyBg);
       p2.setBindGroup(1, bg1);
@@ -323,8 +398,7 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
       };
 
       // ── Metric helpers ──
-      const lum = (px) =>
-        0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
+      const lum = (px) => 0.2126 * px[0] + 0.7152 * px[1] + 0.0722 * px[2];
       function meanLum(rows) {
         let s = 0,
           n = 0,
@@ -403,7 +477,11 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
         single: singleStats,
         multi: multiStats,
         irradiance: irrStats,
-        skyBand: { single: singleBand, multi: multiBand, ratio: multiBand / singleBand },
+        skyBand: {
+          single: singleBand,
+          multi: multiBand,
+          ratio: multiBand / singleBand,
+        },
         irrFalloff: { high: irrHigh, mid: irrMid, horiz: irrHoriz },
       };
     },
@@ -448,7 +526,9 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
   const checks = [];
   const push = (name, ok, detail) => {
     checks.push({ name, ok, detail });
-    console.log(`  ${ok ? "PASS" : "FAIL"}  ${name}${detail ? " — " + detail : ""}`);
+    console.log(
+      `  ${ok ? "PASS" : "FAIL"}  ${name}${detail ? " — " + detail : ""}`,
+    );
   };
 
   if (result.fatal) {
@@ -456,7 +536,11 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
     process.exit(2);
   }
 
-  push("renderer is webgpu", result.rendererType === "webgpu", result.rendererType);
+  push(
+    "renderer is webgpu",
+    result.rendererType === "webgpu",
+    result.rendererType,
+  );
   push("extended LUT views reachable", result.extViewsExist === true);
   push(
     "multiple-scattering non-trivial",
@@ -475,7 +559,9 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
   );
   push(
     "irradiance positive",
-    result.irradiance.min >= -1e-6 && result.irradiance.max > 1e-5 && result.irradiance.nan === 0,
+    result.irradiance.min >= -1e-6 &&
+      result.irradiance.max > 1e-5 &&
+      result.irradiance.nan === 0,
     `min=${result.irradiance.min?.toExponential(3)} max=${result.irradiance.max?.toExponential(3)} nan=${result.irradiance.nan}`,
   );
   push(
@@ -484,12 +570,26 @@ const FIXED_CLOCK_UTC = "2026-06-21T12:00:00Z";
       result.irrFalloff.mid >= result.irrFalloff.horiz - 1e-6,
     `high=${result.irrFalloff.high?.toExponential(3)} mid=${result.irrFalloff.mid?.toExponential(3)} horiz=${result.irrFalloff.horiz?.toExponential(3)}`,
   );
-  push("zero validation/page errors", errors.length === 0, `count=${errors.length}`);
+  push(
+    "zero validation/page errors",
+    errors.length === 0,
+    `count=${errors.length}`,
+  );
 
   const reportPath = path.join(OUT_DIR, "atmo-luts-report.json");
   fs.writeFileSync(
     reportPath,
-    JSON.stringify({ runAt: new Date().toISOString(), clock: FIXED_CLOCK_UTC, result, errors, checks }, null, 2),
+    JSON.stringify(
+      {
+        runAt: new Date().toISOString(),
+        clock: FIXED_CLOCK_UTC,
+        result,
+        errors,
+        checks,
+      },
+      null,
+      2,
+    ),
   );
   console.log(`\n  report: ${reportPath}`);
 

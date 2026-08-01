@@ -36,7 +36,11 @@ async function run(rendererArg) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 1024, height: 768 },
@@ -126,8 +130,7 @@ async function run(rendererArg) {
     const scene = v.scene;
     const samples = [];
     const dbg = window.CesiumDebug;
-    const hasStats =
-      dbg && typeof dbg.highDensityCull === "function";
+    const hasStats = dbg && typeof dbg.highDensityCull === "function";
     for (let i = 0; i < 180; i++) {
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));
@@ -141,7 +144,11 @@ async function run(rendererArg) {
             typeof renderer.getHighDensityCullStats === "function"
           ) {
             const s = renderer.getHighDensityCullStats();
-            samples.push({ frame: i, hiZ: s.hiZ, gpuCullerOpaque: s.gpuCullerOpaque });
+            samples.push({
+              frame: i,
+              hiZ: s.hiZ,
+              gpuCullerOpaque: s.gpuCullerOpaque,
+            });
           }
         } catch (e) {
           samples.push({ frame: i, error: String(e) });
@@ -237,7 +244,9 @@ async function run(rendererArg) {
         `  gate: errors=${res.gate.errors.length} deviceLost=${res.gate.deviceLost} armed=${res.gate.armedDevices}`,
       );
       if (res.gate.errors.length)
-        console.log(`  gate.errors: ${JSON.stringify(res.gate.errors.slice(0, 5))}`);
+        console.log(
+          `  gate.errors: ${JSON.stringify(res.gate.errors.slice(0, 5))}`,
+        );
     } catch (e) {
       console.log(`  FAILED: ${e.message}`);
       results[r] = { error: e.message };

@@ -22,7 +22,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
@@ -50,7 +54,7 @@ const BASE = "http://localhost:8080";
     // MSAA defaults to 4; verify.
     const msaa = v.scene.msaaSamples;
 
-    const entity = v.entities.add({
+    const _entity = v.entities.add({
       position: C.Cartesian3.fromDegrees(-79.9959, 40.4406, 800),
       model: {
         uri: "/Apps/SampleData/models/CesiumMan/Cesium_Man.glb",
@@ -98,8 +102,12 @@ const BASE = "http://localhost:8080";
   const errs = await page.evaluate(() => window.__probeErrors ?? []);
   await browser.close();
 
-  console.log(`[probe-model-taa-msaa] taaEnabled=${result.taaEnabled} msaaSamples=${result.msaa}`);
-  console.log(`  velocityCommands found: ${result.velocityCommandsFound} / ${result.totalCommandsScanned} scanned`);
+  console.log(
+    `[probe-model-taa-msaa] taaEnabled=${result.taaEnabled} msaaSamples=${result.msaa}`,
+  );
+  console.log(
+    `  velocityCommands found: ${result.velocityCommandsFound} / ${result.totalCommandsScanned} scanned`,
+  );
   console.log(`Device errors: ${errs.length}`);
   if (errs.length) {
     console.log("First 5 unique errors:");

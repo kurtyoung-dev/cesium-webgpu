@@ -84,7 +84,10 @@ const out = await page.evaluate(async (wgslUrl) => {
   const f = new Float32Array(64);
   const u = new Uint32Array(f.buffer);
   // cameraPositionWC = origin
-  f[0] = 0; f[1] = 0; f[2] = 0; f[3] = 0;
+  f[0] = 0;
+  f[1] = 0;
+  f[2] = 0;
+  f[3] = 0;
   // LOD distance² thresholds — make lod0Distance2 huge so EVERY point is
   // LOD 0 (keep-all). The others just need to be >= lod0.
   f[4] = 1e30; // lod0Distance2
@@ -96,7 +99,7 @@ const out = await page.evaluate(async (wgslUrl) => {
   // of a generous axis-aligned box centered at origin, half-extent 1e6.
   // Plane form: dot(n, p) + w >= 0  (inside = positive).
   const planes = [
-    [1, 0, 0, 1e6],  // +X face:  x + 1e6 >= 0
+    [1, 0, 0, 1e6], // +X face:  x + 1e6 >= 0
     [-1, 0, 0, 1e6], // -X face: -x + 1e6 >= 0
     [0, 1, 0, 1e6],
     [0, -1, 0, 1e6],
@@ -130,7 +133,7 @@ const out = await page.evaluate(async (wgslUrl) => {
     // Prepend `enable subgroups;` for the subgroup variant, else strip the
     // subgroup block — exactly what WebGPUPointCloudLODProcessor.initialize
     // does.
-    let code = rawShader;
+    let code;
     if (entryPoint === "computeMainSubgroups") {
       code = `enable subgroups;\n${rawShader}`;
     } else {
@@ -156,7 +159,14 @@ const out = await page.evaluate(async (wgslUrl) => {
     const CD = GPUBufferUsage.COPY_DST;
     const CS = GPUBufferUsage.COPY_SRC;
 
-    const paramsBuf = mk(PARAMS_BYTES, GPUBufferUsage.UNIFORM | CD, f.buffer.slice(0, PARAMS_BYTES > f.byteLength ? f.byteLength : PARAMS_BYTES));
+    const paramsBuf = mk(
+      PARAMS_BYTES,
+      GPUBufferUsage.UNIFORM | CD,
+      f.buffer.slice(
+        0,
+        PARAMS_BYTES > f.byteLength ? f.byteLength : PARAMS_BYTES,
+      ),
+    );
     // f is 64 floats (256 bytes) — write the whole thing.
     device.queue.writeBuffer(paramsBuf, 0, f.buffer, 0, PARAMS_BYTES);
     const bufX = mk(POINT_COUNT * 4, ST | CD, posX);

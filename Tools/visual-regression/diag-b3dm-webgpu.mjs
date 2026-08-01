@@ -11,16 +11,25 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const errors = [];
   page.on("console", (m) => {
     const t = m.type();
     const txt = m.text();
     if (t === "error") errors.push(txt.slice(0, 600));
   });
-  page.on("pageerror", (err) => errors.push(`pageerror: ${err.message}`.slice(0, 600)));
+  page.on("pageerror", (err) =>
+    errors.push(`pageerror: ${err.message}`.slice(0, 600)),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
@@ -75,7 +84,10 @@ const BASE = "http://localhost:8080";
     let nonBlackCount = 0;
     let nonBlackSample = null;
     for (let i = 0; i < fullData.length; i += 4) {
-      const r = fullData[i], g = fullData[i + 1], b = fullData[i + 2], a = fullData[i + 3];
+      const r = fullData[i],
+        g = fullData[i + 1],
+        b = fullData[i + 2],
+        a = fullData[i + 3];
       if (r > 5 || g > 5 || b > 5) {
         nonBlackCount++;
         if (!nonBlackSample) {
@@ -91,7 +103,8 @@ const BASE = "http://localhost:8080";
     const wgpuCache = model?._webgpuCache;
     const sg = model?._sceneGraph;
     const runtimeNodes = sg?._runtimeNodes;
-    const firstRP = runtimeNodes?.find((n) => n?.runtimePrimitives?.length)?.runtimePrimitives?.[0];
+    const firstRP = runtimeNodes?.find((n) => n?.runtimePrimitives?.length)
+      ?.runtimePrimitives?.[0];
 
     // Camera vs bounding sphere
     const cam = v.camera;
@@ -107,14 +120,22 @@ const BASE = "http://localhost:8080";
       modelFound: !!model,
       modelReady: model?.ready,
       modelShow: model?.show,
-      modelBS: model?.boundingSphere ? {
-        center: [model.boundingSphere.center.x, model.boundingSphere.center.y, model.boundingSphere.center.z],
-        radius: model.boundingSphere.radius,
-      } : null,
-      tilesetBS: bs ? {
-        center: [bs.center.x, bs.center.y, bs.center.z],
-        radius: bs.radius,
-      } : null,
+      modelBS: model?.boundingSphere
+        ? {
+            center: [
+              model.boundingSphere.center.x,
+              model.boundingSphere.center.y,
+              model.boundingSphere.center.z,
+            ],
+            radius: model.boundingSphere.radius,
+          }
+        : null,
+      tilesetBS: bs
+        ? {
+            center: [bs.center.x, bs.center.y, bs.center.z],
+            radius: bs.radius,
+          }
+        : null,
       cameraPos: [camPos.x, camPos.y, camPos.z],
       distanceToTilesetCenter: dist,
       cameraHeight: cam.positionCartographic?.height,
@@ -125,16 +146,20 @@ const BASE = "http://localhost:8080";
       pixelsTotal: fullData.length / 4,
       firstNonBlackPx: nonBlackSample,
       hasWebgpuCache: !!wgpuCache,
-      primCacheKeyCount: wgpuCache ? Object.keys(wgpuCache.primitives ?? {}).length : null,
+      primCacheKeyCount: wgpuCache
+        ? Object.keys(wgpuCache.primitives ?? {}).length
+        : null,
       runtimeNodesCount: runtimeNodes?.length,
       firstRPExists: !!firstRP,
       // Did the scene framebuffer get blitted to the canvas?
-      sceneRendererInfo: sceneRenderer ? {
-        sceneFramebuffer: !!sceneRenderer._sceneFramebuffer,
-        canvasTexView: !!sceneRenderer._canvasTextureView,
-        postProcessActive: !!sceneRenderer._postProcess,
-        executeCommandsCount: sceneRenderer._diagExecuteCount,
-      } : null,
+      sceneRendererInfo: sceneRenderer
+        ? {
+            sceneFramebuffer: !!sceneRenderer._sceneFramebuffer,
+            canvasTexView: !!sceneRenderer._canvasTextureView,
+            postProcessActive: !!sceneRenderer._postProcess,
+            executeCommandsCount: sceneRenderer._diagExecuteCount,
+          }
+        : null,
     };
   });
 

@@ -466,7 +466,10 @@ async function captureRenderer(page, demoFile, forcedRenderer) {
       // `await Cesium.Viewer.createAsync(`. Multiline-safe since we
       // operate on a flat string and the args list is left intact.
       const rewritten = original
-        .replace(/new\s+Cesium\.Viewer\s*\(/g, "await Cesium.Viewer.createAsync(")
+        .replace(
+          /new\s+Cesium\.Viewer\s*\(/g,
+          "await Cesium.Viewer.createAsync(",
+        )
         .replace(/new\s+Viewer\s*\(/g, "await Cesium.Viewer.createAsync(");
       await route.fulfill({
         status: response.status(),
@@ -509,10 +512,7 @@ async function captureRenderer(page, demoFile, forcedRenderer) {
     await page.waitForTimeout(SETTLE_MS);
     actualRenderer = await page
       .evaluate(() => {
-        const v =
-          window.__capturedViewer ||
-          window.viewer ||
-          window.viewer1;
+        const v = window.__capturedViewer || window.viewer || window.viewer1;
         return v?.scene?.context?.rendererType || null;
       })
       .catch(() => null);
@@ -720,8 +720,10 @@ async function main() {
   console.log(`[runner] ${demos.length} demos to run`);
   if (LIMIT > 0) console.log(`[runner] limited to first ${LIMIT}`);
   if (FILTER) console.log(`[runner] filter: "${FILTER}"`);
-  if (INCLUDE.length > 0) console.log(`[runner] include: [${INCLUDE.join(", ")}]`);
-  if (EXCLUDE.length > 0) console.log(`[runner] exclude: [${EXCLUDE.join(", ")}]`);
+  if (INCLUDE.length > 0)
+    console.log(`[runner] include: [${INCLUDE.join(", ")}]`);
+  if (EXCLUDE.length > 0)
+    console.log(`[runner] exclude: [${EXCLUDE.join(", ")}]`);
   if (EXACT.length > 0) console.log(`[runner] exact: [${EXACT.join(", ")}]`);
   if (LIST_ONLY) {
     console.log("[runner] --list: selected demos:");
@@ -758,8 +760,7 @@ async function main() {
     const wgl = result.webgl?.ok ? "OK" : "FAIL";
     const wgpu = result.webgpu?.ok ? "OK" : "FAIL";
     const diffPct = result.diff?.diffPercent;
-    const diffStr =
-      diffPct !== undefined ? ` diff=${diffPct.toFixed(2)}%` : "";
+    const diffStr = diffPct !== undefined ? ` diff=${diffPct.toFixed(2)}%` : "";
     console.log(`webgl=${wgl} webgpu=${wgpu}${diffStr}`);
     // Write report incrementally so a crash mid-run still produces partial data.
     await fs.writeFile(REPORT_PATH, JSON.stringify(report, null, 2));

@@ -93,7 +93,11 @@ page.on("response", (resp) => {
 page.on("requestfailed", (req) => {
   const url = req.url();
   if (/cesium_wasm/.test(url)) {
-    wasmRequests.push({ url, status: "FAILED", error: req.failure()?.errorText });
+    wasmRequests.push({
+      url,
+      status: "FAILED",
+      error: req.failure()?.errorText,
+    });
   }
 });
 
@@ -124,96 +128,116 @@ if (IIFE_MODE) {
   await page.waitForFunction(() => !!window.viewer);
 }
 
-const result = await page.evaluate(async ({ BRIDGES, IIFE_MODE }) => {
-  const C = IIFE_MODE
-    ? window.__Cesium
-    : await import("/Build/CesiumUnminified/index.js");
+const result = await page.evaluate(
+  async ({ BRIDGES, IIFE_MODE }) => {
+    const C = IIFE_MODE
+      ? window.__Cesium
+      : await import("/Build/CesiumUnminified/index.js");
 
-  const out = { perBridge: {}, rte: null, missingExports: [] };
+    const out = { perBridge: {}, rte: null, missingExports: [] };
 
-  // ---- (1) Every bridge loads its WASM module --------------------------
-  for (const name of BRIDGES) {
-    const Ctor = C[name];
-    if (typeof Ctor !== "function") {
-      out.missingExports.push(name);
-      continue;
+    // ---- (1) Every bridge loads its WASM module --------------------------
+    for (const name of BRIDGES) {
+      const Ctor = C[name];
+      if (typeof Ctor !== "function") {
+        out.missingExports.push(name);
+        continue;
+      }
+      const bridge = new Ctor();
+      let loaded = false;
+      let err = null;
+      try {
+        loaded = await bridge.loadWasm();
+      } catch (e) {
+        err = String(e && e.message ? e.message : e);
+      }
+      out.perBridge[name] = {
+        loadResolvedTrue: loaded === true,
+        wasmReady: bridge.wasmReady === true,
+        error: err,
+      };
     }
-    const bridge = new Ctor();
-    let loaded = false;
-    let err = null;
-    try {
-      loaded = await bridge.loadWasm();
-    } catch (e) {
-      err = String(e && e.message ? e.message : e);
+
+    // ---- (3) RTE kernel genuinely executes (byte-identity + no fallback) --
+    const RTE = C.WasmRTEBridge;
+    if (typeof RTE === "function") {
+      const bridge = new RTE();
+      const ok = await bridge.loadWasm();
+
+      // Deterministic ECEF-scale positions that stress the high/low split.
+      const N = 256;
+      const positions = new Float64Array(N * 3);
+      for (let i = 0; i < N; i++) {
+        positions[i * 3] = -6378137.123456789 + i * 12345.6789;
+        positions[i * 3 + 1] = 1234567.987654321 - i * 9876.54321;
+        positions[i * 3 + 2] =
+          (i % 2 === 0 ? 1 : -1) * (8888888.25 + i * 333.0625);
+      }
+      const srcOffset = 37;
+      const count = 100;
+      const dstOffset = 0;
+      const len = count * 3;
+
+      const wasmHigh = new Float32Array(len);
+      const wasmLow = new Float32Array(len);
+      const jsHigh = new Float32Array(len);
+      const jsLow = new Float32Array(len);
+
+      bridge.threshold = 1; // force WASM path
+      bridge.batchEncodeRange(
+        positions,
+        srcOffset,
+        count,
+        wasmHigh,
+        wasmLow,
+        dstOffset,
+      );
+      const wasmPathUsed = bridge._lastWasmUsed === true;
+
+      bridge.threshold = 1e9; // force JS path
+      bridge.batchEncodeRange(
+        positions,
+        srcOffset,
+        count,
+        jsHigh,
+        jsLow,
+        dstOffset,
+      );
+      const jsPathUsed = bridge._lastWasmUsed === false;
+
+      // Byte-level identity over the f32 outputs.
+      const ua = new Uint8Array(wasmHigh.buffer);
+      const ub = new Uint8Array(jsHigh.buffer);
+      const la = new Uint8Array(wasmLow.buffer);
+      const lb = new Uint8Array(jsLow.buffer);
+      let highEqual = ua.length === ub.length;
+      for (let i = 0; highEqual && i < ua.length; i++)
+        if (ua[i] !== ub[i]) highEqual = false;
+      let lowEqual = la.length === lb.length;
+      for (let i = 0; lowEqual && i < la.length; i++)
+        if (la[i] !== lb[i]) lowEqual = false;
+
+      // Q16 (WASM-BRIDGE-BUNDLE-LOAD) off-gate: not merely "the kernel loaded"
+      // but "the SIMD kernel actually loads" — assert the module was compiled with
+      // SIMD AND the browser supports it, so the SIMD lane (not just a scalar wasm
+      // build) is live. simdActive === (module.has_simd() && browser SIMD support).
+      const diag = bridge.getDiagnostics();
+
+      out.rte = {
+        loaded: ok === true,
+        wasmReady: bridge.wasmReady === true,
+        wasmPathUsed,
+        jsPathUsed,
+        highEqual,
+        lowEqual,
+        simdActive: diag.simdActive === true,
+      };
     }
-    out.perBridge[name] = {
-      loadResolvedTrue: loaded === true,
-      wasmReady: bridge.wasmReady === true,
-      error: err,
-    };
-  }
 
-  // ---- (3) RTE kernel genuinely executes (byte-identity + no fallback) --
-  const RTE = C.WasmRTEBridge;
-  if (typeof RTE === "function") {
-    const bridge = new RTE();
-    const ok = await bridge.loadWasm();
-
-    // Deterministic ECEF-scale positions that stress the high/low split.
-    const N = 256;
-    const positions = new Float64Array(N * 3);
-    for (let i = 0; i < N; i++) {
-      positions[i * 3] = -6378137.123456789 + i * 12345.6789;
-      positions[i * 3 + 1] = 1234567.987654321 - i * 9876.54321;
-      positions[i * 3 + 2] = (i % 2 === 0 ? 1 : -1) * (8888888.25 + i * 333.0625);
-    }
-    const srcOffset = 37;
-    const count = 100;
-    const dstOffset = 0;
-    const len = count * 3;
-
-    const wasmHigh = new Float32Array(len);
-    const wasmLow = new Float32Array(len);
-    const jsHigh = new Float32Array(len);
-    const jsLow = new Float32Array(len);
-
-    bridge.threshold = 1; // force WASM path
-    bridge.batchEncodeRange(positions, srcOffset, count, wasmHigh, wasmLow, dstOffset);
-    const wasmPathUsed = bridge._lastWasmUsed === true;
-
-    bridge.threshold = 1e9; // force JS path
-    bridge.batchEncodeRange(positions, srcOffset, count, jsHigh, jsLow, dstOffset);
-    const jsPathUsed = bridge._lastWasmUsed === false;
-
-    // Byte-level identity over the f32 outputs.
-    const ua = new Uint8Array(wasmHigh.buffer);
-    const ub = new Uint8Array(jsHigh.buffer);
-    const la = new Uint8Array(wasmLow.buffer);
-    const lb = new Uint8Array(jsLow.buffer);
-    let highEqual = ua.length === ub.length;
-    for (let i = 0; highEqual && i < ua.length; i++) if (ua[i] !== ub[i]) highEqual = false;
-    let lowEqual = la.length === lb.length;
-    for (let i = 0; lowEqual && i < la.length; i++) if (la[i] !== lb[i]) lowEqual = false;
-
-    // Q16 (WASM-BRIDGE-BUNDLE-LOAD) off-gate: not merely "the kernel loaded"
-    // but "the SIMD kernel actually loads" — assert the module was compiled with
-    // SIMD AND the browser supports it, so the SIMD lane (not just a scalar wasm
-    // build) is live. simdActive === (module.has_simd() && browser SIMD support).
-    const diag = bridge.getDiagnostics();
-
-    out.rte = {
-      loaded: ok === true,
-      wasmReady: bridge.wasmReady === true,
-      wasmPathUsed,
-      jsPathUsed,
-      highEqual,
-      lowEqual,
-      simdActive: diag.simdActive === true,
-    };
-  }
-
-  return out;
-}, { BRIDGES, IIFE_MODE });
+    return out;
+  },
+  { BRIDGES, IIFE_MODE },
+);
 
 console.log(
   `\n=== NEW-WASM-BRIDGE-BUNDLE-LOAD probe (${IIFE_MODE ? "IIFE Build/Cesium" : "ESM Build/CesiumUnminified"}) ===\n`,
@@ -231,7 +255,9 @@ for (const name of BRIDGES) {
   check(
     `${name}: loadWasm() resolved true`,
     r.loadResolvedTrue,
-    r.error ? `error: ${r.error}` : "loadWasm returned false (glue/binary did not load)",
+    r.error
+      ? `error: ${r.error}`
+      : "loadWasm returned false (glue/binary did not load)",
   );
   check(`${name}: wasmReady === true`, r.wasmReady);
 }
@@ -247,7 +273,9 @@ check(
   wasmBad.map((r) => `${r.status} ${r.url}`).join(" | "),
 );
 const sawGlue = wasmRequests.some((r) => /cesium_wasm\.js(\?|$)/.test(r.url));
-const sawBinary = wasmRequests.some((r) => /cesium_wasm_bg\.wasm(\?|$)/.test(r.url));
+const sawBinary = wasmRequests.some((r) =>
+  /cesium_wasm_bg\.wasm(\?|$)/.test(r.url),
+);
 check("glue module (cesium_wasm.js) was fetched OK", sawGlue);
 check("binary (cesium_wasm_bg.wasm) was fetched OK", sawBinary);
 
@@ -295,7 +323,5 @@ if (tempHtmlPath) {
   }
 }
 
-console.log(
-  `\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}\n`,
-);
+console.log(`\n${failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`}\n`);
 process.exit(failures === 0 ? 0 : 1);

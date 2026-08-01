@@ -25,7 +25,10 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 
   const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
   await page.goto(url, { waitUntil: "networkidle", timeout: 90_000 });
-  await page.waitForFunction(() => !!window.viewer, { timeout: 90_000, polling: 500 });
+  await page.waitForFunction(() => !!window.viewer, {
+    timeout: 90_000,
+    polling: 500,
+  });
 
   const result = await page.evaluate(async () => {
     const C = await import("/Build/CesiumUnminified/index.js");
@@ -49,9 +52,14 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
     // Find the scene framebuffer color texture via the alternate scene renderer
     const sr = v.scene._alternateSceneRenderer;
     const sfb = sr?._sceneFramebuffer;
-    if (!sfb) return { error: "no sceneFramebuffer on alternate scene renderer", srKeys: Object.keys(sr || {}) };
+    if (!sfb)
+      return {
+        error: "no sceneFramebuffer on alternate scene renderer",
+        srKeys: Object.keys(sr || {}),
+      };
     const colorTexture = sfb.colorTexture;
-    if (!colorTexture) return { error: "no colorTexture", sfbKeys: Object.keys(sfb) };
+    if (!colorTexture)
+      return { error: "no colorTexture", sfbKeys: Object.keys(sfb) };
 
     const W = colorTexture.width;
     const H = colorTexture.height;
@@ -88,19 +96,23 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
     // Sample 100 pixels evenly distributed
     const samples = [];
     let nonBlack = 0;
-    let sum = [0, 0, 0, 0];
+    const sum = [0, 0, 0, 0];
     for (let i = 0; i < 100; i++) {
-      const tx = Math.floor((i % 10) * W / 10) + Math.floor(W / 20);
-      const ty = Math.floor(Math.floor(i / 10) * H / 10) + Math.floor(H / 20);
+      const tx = Math.floor(((i % 10) * W) / 10) + Math.floor(W / 20);
+      const ty = Math.floor((Math.floor(i / 10) * H) / 10) + Math.floor(H / 20);
       const off = ty * bytesPerRow + tx * 4;
       const px = [data[off], data[off + 1], data[off + 2], data[off + 3]];
-      sum[0] += px[0]; sum[1] += px[1]; sum[2] += px[2]; sum[3] += px[3];
+      sum[0] += px[0];
+      sum[1] += px[1];
+      sum[2] += px[2];
+      sum[3] += px[3];
       if (px[0] + px[1] + px[2] > 5) nonBlack++;
       if (i < 5) samples.push(`(${tx},${ty})=${px.join(",")}`);
     }
     return {
       colorFormat: sfb.colorFormat,
-      W, H,
+      W,
+      H,
       avg: sum.map((v) => Math.round(v / 100)),
       nonBlack,
       samples,
@@ -118,32 +130,47 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
     "Tools/visual-regression/output/canvas-black-reverify.png",
     png,
   );
-  const canvasSample = await page.evaluate(async (durl) => {
-    return await new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        const c = document.createElement("canvas");
-        c.width = img.width;
-        c.height = img.height;
-        const cx = c.getContext("2d");
-        cx.drawImage(img, 0, 0);
-        const d = cx.getImageData(0, 0, c.width, c.height).data;
-        // Sample a centered region (avoid the right-side help panel + bottom
-        // timeline). 30%-70% horizontally, 20%-60% vertically.
-        let nonBlack = 0;
-        let total = 0;
-        for (let y = (img.height * 0.2) | 0; y < (img.height * 0.6) | 0; y += 7) {
-          for (let x = (img.width * 0.3) | 0; x < (img.width * 0.7) | 0; x += 7) {
-            const i = (y * img.width + x) * 4;
-            total++;
-            if (d[i] + d[i + 1] + d[i + 2] > 12) nonBlack++;
+  const canvasSample = await page.evaluate(
+    async (durl) => {
+      return await new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const cx = c.getContext("2d");
+          cx.drawImage(img, 0, 0);
+          const d = cx.getImageData(0, 0, c.width, c.height).data;
+          // Sample a centered region (avoid the right-side help panel + bottom
+          // timeline). 30%-70% horizontally, 20%-60% vertically.
+          let nonBlack = 0;
+          let total = 0;
+          for (
+            let y = (img.height * 0.2) | 0;
+            (y < img.height * 0.6) | 0;
+            y += 7
+          ) {
+            for (
+              let x = (img.width * 0.3) | 0;
+              (x < img.width * 0.7) | 0;
+              x += 7
+            ) {
+              const i = (y * img.width + x) * 4;
+              total++;
+              if (d[i] + d[i + 1] + d[i + 2] > 12) nonBlack++;
+            }
           }
-        }
-        resolve({ total, nonBlack, fraction: +(nonBlack / total).toFixed(3) });
-      };
-      img.src = durl;
-    });
-  }, `data:image/png;base64,${png.toString("base64")}`);
+          resolve({
+            total,
+            nonBlack,
+            fraction: +(nonBlack / total).toFixed(3),
+          });
+        };
+        img.src = durl;
+      });
+    },
+    `data:image/png;base64,${png.toString("base64")}`,
+  );
 
   await browser.close();
   console.log("Result:", JSON.stringify(result, null, 2));

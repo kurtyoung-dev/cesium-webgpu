@@ -205,7 +205,8 @@ const bOK =
   b.point.prevBufferWired &&
   b.velocityTextureAllocated &&
   b.msaaSamples === 1;
-const cOK = c.billboard.found && !c.billboard.hasVelocity && !c.point.hasVelocity;
+const cOK =
+  c.billboard.found && !c.billboard.hasVelocity && !c.point.hasVelocity;
 const eOK = errsAfterC === 0;
 
 const fmt = (s) =>

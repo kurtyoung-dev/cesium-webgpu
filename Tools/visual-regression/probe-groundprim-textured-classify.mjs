@@ -132,17 +132,24 @@ async function captureMaterial(renderer, mat) {
   });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   page.on("pageerror", (e) =>
-    console.log(`>> [${renderer}/${mat.name}] pageerror: ${e.message.slice(0, 160)}`),
+    console.log(
+      `>> [${renderer}/${mat.name}] pageerror: ${e.message.slice(0, 160)}`,
+    ),
   );
-  await page.goto(`${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   await page.evaluate(() => {
     window.__probeErrors = [];
     const dev = window.viewer?.scene?.context?._device;
-    if (dev) dev.onuncapturederror = (ev) => window.__probeErrors.push(ev?.error?.message ?? "");
+    if (dev)
+      dev.onuncapturederror = (ev) =>
+        window.__probeErrors.push(ev?.error?.message ?? "");
   });
 
   const setup = await page.evaluate(
@@ -165,9 +172,12 @@ async function captureMaterial(renderer, mat) {
         const sc = solid.getContext("2d");
         sc.fillStyle = "#26262c";
         sc.fillRect(0, 0, 4, 4);
-        const prov = await C.SingleTileImageryProvider.fromUrl(solid.toDataURL(), {
-          rectangle: C.Rectangle.fromDegrees(-180, -90, 180, 90),
-        });
+        const prov = await C.SingleTileImageryProvider.fromUrl(
+          solid.toDataURL(),
+          {
+            rectangle: C.Rectangle.fromDegrees(-180, -90, 180, 90),
+          },
+        );
         scene.imageryLayers.removeAll();
         scene.imageryLayers.addImageryProvider(prov);
       }
@@ -216,7 +226,11 @@ async function captureMaterial(renderer, mat) {
       while (performance.now() - t0 < 90_000) {
         scene.requestRender();
         scene.render();
-        if (ground.ready && scene.globe.tilesLoaded && globeCommandCount() > 0) {
+        if (
+          ground.ready &&
+          scene.globe.tilesLoaded &&
+          globeCommandCount() > 0
+        ) {
           ready = true;
           break;
         }
@@ -255,27 +269,42 @@ async function captureMaterial(renderer, mat) {
           cx.drawImage(img, 0, 0);
           const d = cx.getImageData(0, 0, c.width, c.height).data;
           let lit = 0;
-          let r1 = 0, g1 = 0, b1 = 0, r2 = 0, g2 = 0, b2 = 0, n = 0;
+          let r1 = 0,
+            g1 = 0,
+            b1 = 0,
+            r2 = 0,
+            g2 = 0,
+            b2 = 0,
+            n = 0;
           const roiPixels = [];
           for (let y = roi.y0; y < roi.y1; y++) {
             for (let x = roi.x0; x < roi.x1; x++) {
               const i = (y * c.width + x) * 4;
-              const r = d[i], g = d[i + 1], b = d[i + 2];
+              const r = d[i],
+                g = d[i + 1],
+                b = d[i + 2];
               roiPixels.push(r, g, b);
               if (r + g + b < litThreshold) continue;
               lit++;
-              r1 += r; g1 += g; b1 += b;
-              r2 += r * r; g2 += g * g; b2 += b * b;
+              r1 += r;
+              g1 += g;
+              b1 += b;
+              r2 += r * r;
+              g2 += g * g;
+              b2 += b * b;
               n++;
             }
           }
           let variance = 0;
           if (n > 0) {
-            const rm = r1 / n, gm = g1 / n, bm = b1 / n;
+            const rm = r1 / n,
+              gm = g1 / n,
+              bm = b1 / n;
             variance = Math.round(
               (Math.max(0, r2 / n - rm * rm) +
                 Math.max(0, g2 / n - gm * gm) +
-                Math.max(0, b2 / n - bm * bm)) / 3,
+                Math.max(0, b2 / n - bm * bm)) /
+                3,
             );
           }
           resolve({ lit, variance, roiPixels });
@@ -315,7 +344,9 @@ function roiMismatch(a, b) {
 
 (async () => {
   fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("=== GroundPrimitive textured-classification acceptance probe ===\n");
+  console.log(
+    "=== GroundPrimitive textured-classification acceptance probe ===\n",
+  );
   console.log(
     "  material         WebGL lit/var | WebGPU lit/var  errs  gpuCmds  waitMs | roiDiff | verdict",
   );
@@ -347,7 +378,9 @@ function roiMismatch(a, b) {
     );
   }
 
-  console.log(`\n  PNGs: ${OUT_DIR}/gptc-{Color,Stripe,Checkerboard,Grid,Image}-{webgl,webgpu}.png`);
+  console.log(
+    `\n  PNGs: ${OUT_DIR}/gptc-{Color,Stripe,Checkerboard,Grid,Image}-{webgl,webgpu}.png`,
+  );
   console.log(pass ? "\nPASS" : "\nFAIL");
   process.exit(pass ? 0 : 1);
 })();

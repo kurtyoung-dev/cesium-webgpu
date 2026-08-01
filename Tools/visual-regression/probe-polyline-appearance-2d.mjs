@@ -94,7 +94,8 @@ async function captureMode(page, mode, material) {
 
       if (mode === "2D") s.morphTo2D(0.0);
       else if (mode === "CV") s.morphToColumbusView(0.0);
-      else if (mode === "MORPH") s.morphToColumbusView(2.0); // animate → capture mid
+      else if (mode === "MORPH")
+        s.morphToColumbusView(2.0); // animate → capture mid
       else s.morphTo3D(0.0);
 
       const center = C.Cartesian3.fromDegrees(-73.0, 35.5, 0.0);
@@ -160,7 +161,9 @@ async function run(renderer, fs) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
     timeout: 90_000,

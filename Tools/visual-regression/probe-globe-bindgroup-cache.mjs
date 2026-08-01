@@ -27,10 +27,7 @@ import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
-const OUT_DIR = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "output",
-);
+const OUT_DIR = join(dirname(fileURLToPath(import.meta.url)), "output");
 mkdirSync(OUT_DIR, { recursive: true });
 
 const browser = await chromium.launch({
@@ -117,8 +114,7 @@ const out = await page.evaluate(async () => {
       creates: s1.creates - s0.creates,
       hits: s1.hits - s0.hits,
       createsPerFrame: (s1.creates - s0.creates) / frames,
-      requestsPerFrame:
-        (s1.creates - s0.creates + s1.hits - s0.hits) / frames,
+      requestsPerFrame: (s1.creates - s0.creates + s1.hits - s0.hits) / frames,
       entries: s1.entries,
     };
   };

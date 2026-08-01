@@ -46,10 +46,15 @@ import { fileURLToPath } from "url";
 import path from "path";
 import fs from "fs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
 const failures = [];
 const note = (ok, name, detail) => {
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
+  console.log(
+    `${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`,
+  );
   if (!ok) failures.push(name);
 };
 
@@ -60,10 +65,18 @@ const note = (ok, name, detail) => {
 // `createDegenerateTrianglePrimitive`.
 // ─────────────────────────────────────────────────────────────────────────
 const positions = new Float32Array([
-  0.0, 0.0, 0.0, // vertex 0
-  0.0, 0.0, 0.0, // vertex 1 (coincident with vertex 0 → degenerate)
-  1.0, 1.0, 0.0, // vertex 2
-  0.0, 1.0, 0.0, // vertex 3
+  0.0,
+  0.0,
+  0.0, // vertex 0
+  0.0,
+  0.0,
+  0.0, // vertex 1 (coincident with vertex 0 → degenerate)
+  1.0,
+  1.0,
+  0.0, // vertex 2
+  0.0,
+  1.0,
+  0.0, // vertex 3
 ]);
 const indices = new Uint16Array([0, 1, 2, 0, 2, 3]);
 
@@ -159,8 +172,16 @@ if (geom !== null) {
   let maxNormalLen = 0;
   for (let v = 0; v * FLOATS < geom.vertices.length; v++) {
     const o = v * FLOATS;
-    const nA = [geom.vertices[o + 4], geom.vertices[o + 5], geom.vertices[o + 6]];
-    const nB = [geom.vertices[o + 7], geom.vertices[o + 8], geom.vertices[o + 9]];
+    const nA = [
+      geom.vertices[o + 4],
+      geom.vertices[o + 5],
+      geom.vertices[o + 6],
+    ];
+    const nB = [
+      geom.vertices[o + 7],
+      geom.vertices[o + 8],
+      geom.vertices[o + 9],
+    ];
     for (const c of [...nA, ...nB]) {
       if (!isFiniteNum(c)) sawNaNNormal = true;
     }

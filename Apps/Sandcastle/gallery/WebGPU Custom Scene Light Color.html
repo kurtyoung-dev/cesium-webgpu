@@ -11,7 +11,10 @@
       name="description"
       content="Custom scene-light color (czm_lightColor) propagates to the globe Lambert path on WebGPU. Tint the globe with a custom directional light — sunset orange, blue moon, or any color — and the Lambert diffuse picks up the tint."
     />
-    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases, Lighting" />
+    <meta
+      name="cesium-sandcastle-labels"
+      content="WebGPU, Showcases, Lighting"
+    />
     <title>Cesium Demo</title>
     <script type="text/javascript" src="../Sandcastle-header.js"></script>
     <script
@@ -40,7 +43,10 @@
     not by `scene.light.color` — so the sky stays its physical color
     while the globe Lambert tints.
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
     </style>
@@ -52,7 +58,10 @@
           <tr>
             <td>Light color</td>
             <td>
-              <input type="color" data-bind="value: lightColor, valueUpdate: 'input'" />
+              <input
+                type="color"
+                data-bind="value: lightColor, valueUpdate: 'input'"
+              />
               <span data-bind="text: lightColor"></span>
             </td>
           </tr>
@@ -133,7 +142,9 @@
         Cesium.knockout.applyBindings(viewModel, toolbar);
         for (const name in viewModel) {
           if (Object.prototype.hasOwnProperty.call(viewModel, name)) {
-            Cesium.knockout.getObservable(viewModel, name).subscribe(applyConfig);
+            Cesium.knockout
+              .getObservable(viewModel, name)
+              .subscribe(applyConfig);
           }
         }
         applyConfig();

@@ -158,7 +158,11 @@ async function capture(renderer, heading, specularFactor) {
 
       v.camera.viewBoundingSphere(
         model.boundingSphere,
-        new C.HeadingPitchRange(heading, pitch, model.boundingSphere.radius * 3.0),
+        new C.HeadingPitchRange(
+          heading,
+          pitch,
+          model.boundingSphere.radius * 3.0,
+        ),
       );
       v.camera.lookAtTransform(C.Matrix4.IDENTITY);
       for (let i = 0; i < 40; i++) {
@@ -168,7 +172,13 @@ async function capture(renderer, heading, specularFactor) {
       scene.canvas.setAttribute("data-ibl", "1");
       return { ready: !!model.ready, iblReady: !!window.__iblReady };
     },
-    { modelUrl: MODEL, heading, pitch: PITCH, specularFactor, iso: DETERMINISTIC_CLOCK_ISO },
+    {
+      modelUrl: MODEL,
+      heading,
+      pitch: PITCH,
+      specularFactor,
+      iso: DETERMINISTIC_CLOCK_ISO,
+    },
   );
 
   const gateArm = await armWebGPUDevices(page);
@@ -316,11 +326,26 @@ const wglB = await capture("webgl", HEADING_B, 1.0);
 
 const fs = await import("fs");
 fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-fs.writeFileSync("Tools/visual-regression/output/ibl-webgpu-A.png", encodePNG(wgpuA.decoded));
-fs.writeFileSync("Tools/visual-regression/output/ibl-webgpu-B.png", encodePNG(wgpuB.decoded));
-fs.writeFileSync("Tools/visual-regression/output/ibl-webgpu-specOff.png", encodePNG(wgpuSpecOff.decoded));
-fs.writeFileSync("Tools/visual-regression/output/ibl-webgl-A.png", encodePNG(wglA.decoded));
-fs.writeFileSync("Tools/visual-regression/output/ibl-webgl-B.png", encodePNG(wglB.decoded));
+fs.writeFileSync(
+  "Tools/visual-regression/output/ibl-webgpu-A.png",
+  encodePNG(wgpuA.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/ibl-webgpu-B.png",
+  encodePNG(wgpuB.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/ibl-webgpu-specOff.png",
+  encodePNG(wgpuSpecOff.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/ibl-webgl-A.png",
+  encodePNG(wglA.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/ibl-webgl-B.png",
+  encodePNG(wglB.decoded),
+);
 
 const parityA = diffModelPixels(wglA.decoded, wgpuA.decoded);
 const parityB = diffModelPixels(wglB.decoded, wgpuB.decoded);
@@ -340,7 +365,8 @@ const gateErrors = [
   ...wgpuB.gateErrors,
   ...wgpuSpecOff.gateErrors,
 ];
-const deviceLost = wgpuA.deviceLost || wgpuB.deviceLost || wgpuSpecOff.deviceLost;
+const deviceLost =
+  wgpuA.deviceLost || wgpuB.deviceLost || wgpuSpecOff.deviceLost;
 
 const report = {
   webgpu: {
@@ -418,7 +444,10 @@ const pass =
   orbitRelDelta < 0.5;
 
 console.log(
-  JSON.stringify({ orbitAbsDelta: +orbitAbsDelta.toFixed(3), orbitRelDelta: +orbitRelDelta.toFixed(3) }),
+  JSON.stringify({
+    orbitAbsDelta: +orbitAbsDelta.toFixed(3),
+    orbitRelDelta: +orbitRelDelta.toFixed(3),
+  }),
 );
 console.log(
   pass

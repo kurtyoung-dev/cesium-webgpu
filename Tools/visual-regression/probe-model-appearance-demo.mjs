@@ -378,32 +378,49 @@ writeFileSync(
 
 const cap = out.captures;
 const baseMean = meanModelColor(cap.baseline);
-console.log(`baseline model px=${baseMean.n} mean rgb=(${baseMean.r},${baseMean.g},${baseMean.b})`);
-if (baseMean.n < 5000) fails.push(`baseline model coverage too small (${baseMean.n} px) — model not rendering`);
+console.log(
+  `baseline model px=${baseMean.n} mean rgb=(${baseMean.r},${baseMean.g},${baseMean.b})`,
+);
+if (baseMean.n < 5000)
+  fails.push(
+    `baseline model coverage too small (${baseMean.n} px) — model not rendering`,
+  );
 // baseline truck is yellow/white: healthy green + blue means
 if (!(baseMean.g > 30 && baseMean.b > 30)) {
-  fails.push("baseline is channel-collapsed — scene not in the expected default state");
+  fails.push(
+    "baseline is channel-collapsed — scene not in the expected default state",
+  );
 }
 
 // (2a) color signatures
 for (const key of ["colorHighlight", "colorReplace", "colorMixFull"]) {
   const m = meanModelColor(cap[key]);
-  console.log(`${key.padEnd(14)} model px=${m.n} mean rgb=(${m.r},${m.g},${m.b})`);
+  console.log(
+    `${key.padEnd(14)} model px=${m.n} mean rgb=(${m.r},${m.g},${m.b})`,
+  );
   if (!(m.g < 20 && m.b < 20)) {
-    fails.push(`${key}: green/blue not collapsed (g=${m.g} b=${m.b}) — red tint not applied`);
+    fails.push(
+      `${key}: green/blue not collapsed (g=${m.g} b=${m.b}) — red tint not applied`,
+    );
   }
   if (m.n < baseMean.n * 0.5) {
-    fails.push(`${key}: model coverage collapsed (${m.n} vs baseline ${baseMean.n})`);
+    fails.push(
+      `${key}: model coverage collapsed (${m.n} vs baseline ${baseMean.n})`,
+    );
   }
 }
 {
   const m = meanModelColor(cap.colorMixHalf);
   console.log(`colorMixHalf   model px=${m.n} mean rgb=(${m.r},${m.g},${m.b})`);
   if (!(m.r > baseMean.r + 5)) {
-    fails.push(`colorMixHalf: mean red ${m.r} not raised vs baseline ${baseMean.r}`);
+    fails.push(
+      `colorMixHalf: mean red ${m.r} not raised vs baseline ${baseMean.r}`,
+    );
   }
   if (!(m.g < baseMean.g - 5 && m.g > 5)) {
-    fails.push(`colorMixHalf: mean green ${m.g} not in the half-mix band (baseline ${baseMean.g})`);
+    fails.push(
+      `colorMixHalf: mean green ${m.g} not in the half-mix band (baseline ${baseMean.g})`,
+    );
   }
 }
 
@@ -412,8 +429,10 @@ for (const key of ["colorHighlight", "colorReplace", "colorMixFull"]) {
   const baseLime = limeCount(cap.baseline);
   const rimLime = limeCount(cap.silhouette);
   console.log(`lime px baseline=${baseLime} silhouette=${rimLime}`);
-  if (baseLime >= 50) fails.push(`baseline already has ${baseLime} lime px — mask invalid`);
-  if (rimLime < 300) fails.push(`silhouette: lime rim too small (${rimLime} px)`);
+  if (baseLime >= 50)
+    fails.push(`baseline already has ${baseLime} lime px — mask invalid`);
+  if (rimLime < 300)
+    fails.push(`silhouette: lime rim too small (${rimLime} px)`);
 }
 
 // (2c) split signature
@@ -424,26 +443,38 @@ for (const key of ["colorHighlight", "colorReplace", "colorMixFull"]) {
     `coverage baseline L=${baseHalf.left} R=${baseHalf.right} | splitLeft L=${splitHalf.left} R=${splitHalf.right}`,
   );
   if (baseHalf.right < 500) {
-    fails.push("baseline has no right-half coverage — camera pose can't discriminate the split");
+    fails.push(
+      "baseline has no right-half coverage — camera pose can't discriminate the split",
+    );
   }
   if (splitHalf.right > baseHalf.right * 0.02) {
-    fails.push(`splitLeft: right half not emptied (${splitHalf.right} vs baseline ${baseHalf.right})`);
+    fails.push(
+      `splitLeft: right half not emptied (${splitHalf.right} vs baseline ${baseHalf.right})`,
+    );
   }
   if (splitHalf.left < baseHalf.left * 0.5) {
-    fails.push(`splitLeft: left half lost coverage (${splitHalf.left} vs baseline ${baseHalf.left})`);
+    fails.push(
+      `splitLeft: left half lost coverage (${splitHalf.left} vs baseline ${baseHalf.left})`,
+    );
   }
 }
 
 // (3) OFF-GATE: defaults restored ⇒ byte-identical to baseline
 {
   const d = diffBytes(cap.restored, cap.baseline);
-  console.log(`off-gate restored vs baseline: ${d === 0 ? "BYTE-IDENTICAL" : `diffBytes=${d}`}`);
-  if (d !== 0) fails.push(`off-gate: restored not byte-identical to baseline (diffBytes=${d})`);
+  console.log(
+    `off-gate restored vs baseline: ${d === 0 ? "BYTE-IDENTICAL" : `diffBytes=${d}`}`,
+  );
+  if (d !== 0)
+    fails.push(
+      `off-gate: restored not byte-identical to baseline (diffBytes=${d})`,
+    );
 }
 
 // (4) zero errors
 const allErrors = [...consoleErrors, ...out.gpuErrors];
-if (allErrors.length) fails.push(`errors: ${allErrors.slice(0, 3).join(" | ")}`);
+if (allErrors.length)
+  fails.push(`errors: ${allErrors.slice(0, 3).join(" | ")}`);
 
 console.log(`assetServes=${assetServes} errors=${allErrors.length}`);
 console.log(`PNGs + thumbnail: ${OUT_DIR}`);

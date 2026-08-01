@@ -24,7 +24,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
@@ -82,8 +86,20 @@ const BASE = "http://localhost:8080";
     // Point at eye-space (0, 0, -50), big range so it covers most
     // pixels in slice ~10.
     const lights = [
-      { type: 0, posOrDir: { x: 0, y: -1, z: -1 }, color: { r: 1, g: 1, b: 1 }, intensity: 1, range: 0 },
-      { type: 1, posOrDir: { x: 0, y: 0, z: -50 }, color: { r: 1, g: 0, b: 0 }, intensity: 5, range: 80 },
+      {
+        type: 0,
+        posOrDir: { x: 0, y: -1, z: -1 },
+        color: { r: 1, g: 1, b: 1 },
+        intensity: 1,
+        range: 0,
+      },
+      {
+        type: 1,
+        posOrDir: { x: 0, y: 0, z: -50 },
+        color: { r: 1, g: 0, b: 0 },
+        intensity: 5,
+        range: 80,
+      },
     ];
     const assign = new AssignCtor(device);
     const ea = device.createCommandEncoder({ label: "assign" });
@@ -97,9 +113,7 @@ const BASE = "http://localhost:8080";
       label: "cluster-debug-target",
       size: [W, H, 1],
       format: targetFormat,
-      usage:
-        GPUTextureUsage.RENDER_ATTACHMENT |
-        GPUTextureUsage.COPY_SRC,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
     });
     const targetView = targetTex.createView();
 
@@ -184,15 +198,23 @@ const BASE = "http://localhost:8080";
   }
   const r = result;
   console.log(`  total pixels: ${r.totalPixels}`);
-  console.log(`  black   (count=0): ${r.countBlack} (${((100 * r.countBlack) / r.totalPixels).toFixed(1)}%)`);
-  console.log(`  red     (count=1): ${r.countRed} (${((100 * r.countRed) / r.totalPixels).toFixed(1)}%)`);
-  console.log(`  yellow  (count=2): ${r.countYellow} (${((100 * r.countYellow) / r.totalPixels).toFixed(1)}%)`);
+  console.log(
+    `  black   (count=0): ${r.countBlack} (${((100 * r.countBlack) / r.totalPixels).toFixed(1)}%)`,
+  );
+  console.log(
+    `  red     (count=1): ${r.countRed} (${((100 * r.countRed) / r.totalPixels).toFixed(1)}%)`,
+  );
+  console.log(
+    `  yellow  (count=2): ${r.countYellow} (${((100 * r.countYellow) / r.totalPixels).toFixed(1)}%)`,
+  );
   console.log(`  orange  (count=3): ${r.countOrange}`);
   console.log(`  white   (count≥4): ${r.countWhite}`);
   console.log(`  other:             ${r.countOther}`);
   console.log(`\nDevice errors: ${errs.length}`);
   if (errs.length) {
-    errs.slice(0, 3).forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
+    errs
+      .slice(0, 3)
+      .forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
   }
 
   let pass = true;

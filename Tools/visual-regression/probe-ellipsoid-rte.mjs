@@ -189,10 +189,14 @@ async function runCell(label, { renderer, scale }) {
       const sceneEllipsoid = v.scene.ellipsoid;
       const wallCoords = C.Cartesian3.fromDegreesArray(
         [
-          view.lon - 0.0004, view.lat - 0.0030,
-          view.lon + 0.0004, view.lat - 0.0030,
-          view.lon + 0.0004, view.lat + 0.0030,
-          view.lon - 0.0004, view.lat + 0.0030,
+          view.lon - 0.0004,
+          view.lat - 0.003,
+          view.lon + 0.0004,
+          view.lat - 0.003,
+          view.lon + 0.0004,
+          view.lat + 0.003,
+          view.lon - 0.0004,
+          view.lat + 0.003,
         ],
         sceneEllipsoid,
       );
@@ -257,7 +261,12 @@ async function runCell(label, { renderer, scale }) {
       const rt = cam.rightWC;
       let truthGroundFar = 0;
       let truthAnyHit = false;
-      for (const [sW, sH] of [[-1, 1], [1, 1], [-1, -1], [1, -1]]) {
+      for (const [sW, sH] of [
+        [-1, 1],
+        [1, 1],
+        [-1, -1],
+        [1, -1],
+      ]) {
         const dir = new C.Cartesian3(
           fwd.x + sW * tanW * rt.x + sH * tanH * up.x,
           fwd.y + sW * tanW * rt.y + sH * tanH * up.y,
@@ -299,8 +308,7 @@ async function runCell(label, { renderer, scale }) {
         csmGroundFar,
         csmEnabled: csm?.enabled ?? null,
         csmCastDispatches: csm?._castDispatches ?? null,
-        cascadeSplitFars:
-          csmStats?.cascades?.map((c) => c.splitFar) ?? null,
+        cascadeSplitFars: csmStats?.cascades?.map((c) => c.splitFar) ?? null,
         tilesLoaded: v.scene.globe.tilesLoaded,
       };
     },
@@ -342,11 +350,13 @@ async function analyzePair(a, b, roi) {
       const total = roi.w * roi.h;
       let mismatch = 0;
       let sum = 0;
-      const lum = (d, i) =>
-        0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+      const lum = (d, i) => 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
       const la = new Float32Array(total);
       const lb = new Float32Array(total);
-      let aMin = 255, aMax = 0, bMin = 255, bMax = 0;
+      let aMin = 255,
+        aMax = 0,
+        bMin = 255,
+        bMax = 0;
       for (let i = 0, j = 0; i < da.length; i += 4, j++) {
         const d =
           Math.abs(da[i] - db[i]) +
@@ -364,7 +374,10 @@ async function analyzePair(a, b, roi) {
       // Umbra = below 40% of each image's own lum span (shadow pixels).
       const aCut = aMin + (aMax - aMin) * 0.4;
       const bCut = bMin + (bMax - bMin) * 0.4;
-      let inter = 0, union = 0, aUmbra = 0, bUmbra = 0;
+      let inter = 0,
+        union = 0,
+        aUmbra = 0,
+        bUmbra = 0;
       for (let j = 0; j < total; j++) {
         const ua = la[j] <= aCut;
         const ub = lb[j] <= bCut;
@@ -479,10 +492,7 @@ async function analyzePair(a, b, roi) {
 
   // 7. Off-gate — default WGS84 must be byte-identical to the baseline.
   const baselinePng = path.join(OUT_DIR, "ellipsoid-rte-wgs84-baseline.png");
-  const baselineJson = path.join(
-    OUT_DIR,
-    "ellipsoid-rte-wgs84-baseline.json",
-  );
+  const baselineJson = path.join(OUT_DIR, "ellipsoid-rte-wgs84-baseline.json");
   if (SAVE_BASELINE) {
     fs.copyFileSync(cells.wgs84.out, baselinePng);
     fs.writeFileSync(
@@ -517,7 +527,9 @@ async function analyzePair(a, b, roi) {
 
   console.log("[probe-ellipsoid-rte] assertions:");
   const line = (name, ok, detail) =>
-    console.log(`  ${name}: ${ok ? "PASS" : "FAIL"}${detail ? ` (${detail})` : ""}`);
+    console.log(
+      `  ${name}: ${ok ? "PASS" : "FAIL"}${detail ? ` (${detail})` : ""}`,
+    );
   line(
     "wgs84 groundFar agrees with IntersectionTests reference",
     results.wgs84GroundFarAgrees,
@@ -575,7 +587,9 @@ async function analyzePair(a, b, roi) {
         results.offGatePixel ? results.offGateGroundFarExact === true : true,
       ];
   const pass = required.every(Boolean);
-  console.log(`\n  OVERALL: ${pass ? "PASS" : "FAIL"}${SAVE_BASELINE ? " (baseline mode — scaled-cell divergence expected pre-fix, reported above)" : ""}`);
+  console.log(
+    `\n  OVERALL: ${pass ? "PASS" : "FAIL"}${SAVE_BASELINE ? " (baseline mode — scaled-cell divergence expected pre-fix, reported above)" : ""}`,
+  );
 
   fs.writeFileSync(
     path.join(OUT_DIR, "ellipsoid-rte-report.json"),

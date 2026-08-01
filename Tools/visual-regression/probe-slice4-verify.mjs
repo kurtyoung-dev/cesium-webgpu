@@ -48,7 +48,9 @@ async function capture(label, { ao, deferred }) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
@@ -124,7 +126,9 @@ async function capture(label, { ao, deferred }) {
       let frRegistry = null;
       if (ctx?._featureRenderers && Array.isArray(ctx._featureRenderers)) {
         frRegistry = ctx._featureRenderers
-          .map((entry, idx) => (entry ? { idx, methods: Object.keys(entry) } : null))
+          .map((entry, idx) =>
+            entry ? { idx, methods: Object.keys(entry) } : null,
+          )
           .filter((x) => x !== null);
       } else if (ctx?._featureRenderers) {
         frRegistry = Object.keys(ctx._featureRenderers);
@@ -194,7 +198,7 @@ async function capture(label, { ao, deferred }) {
         stagesKeys,
         sceneRendererKey,
         sceneRendererType: sceneRenderer
-          ? sceneRenderer.constructor?.name ?? "unknown"
+          ? (sceneRenderer.constructor?.name ?? "unknown")
           : null,
         pipeline_exists: !!pipeline,
         aoEffect_exists: !!aoEffect,
@@ -202,7 +206,9 @@ async function capture(label, { ao, deferred }) {
         pipeline_hasActiveStages: pipeline?.hasActiveStages ?? null,
         ctxKeys,
         frRegistryCount: Array.isArray(frRegistry) ? frRegistry.length : null,
-        frRegistry: Array.isArray(frRegistry) ? frRegistry.slice(0, 8) : frRegistry,
+        frRegistry: Array.isArray(frRegistry)
+          ? frRegistry.slice(0, 8)
+          : frRegistry,
         fr26_exists: !!fr26,
         fr26_methods,
         sceneDeferredLighting: v.scene.deferredLighting,
@@ -224,9 +230,7 @@ async function capture(label, { ao, deferred }) {
   await page.screenshot({ path: out });
   await browser.close();
 
-  const errors = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
-  );
+  const errors = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   return { out, errors, diagnostics };
 }
 
@@ -250,9 +254,7 @@ async function diffPngs(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const a = await decode(ba);
@@ -339,9 +341,7 @@ async function diffPngs(a, b) {
     `    mismatch=${slice4Diff.mismatchPct.toFixed(3)}% meanDelta=${slice4Diff.meanDelta.toFixed(3)}`,
   );
   if (!aoEngaged) {
-    console.log(
-      `    ? can't interpret — AO didn't engage in either case`,
-    );
+    console.log(`    ? can't interpret — AO didn't engage in either case`);
   } else if (slice4Diff.mismatchPct > noiseFloor) {
     console.log(
       `    ✓ Slice 4 ENGAGED — G-buffer normal source visibly changes AO above noise floor`,
@@ -384,11 +384,11 @@ async function diffPngs(a, b) {
         view: VIEW,
         clock: FIXED_CLOCK_UTC,
         captures: {
-          A: { ...A.errors.length && { errorCount: A.errors.length } },
-          A2: { ...A2.errors.length && { errorCount: A2.errors.length } },
-          B: { ...B.errors.length && { errorCount: B.errors.length } },
-          C: { ...C.errors.length && { errorCount: C.errors.length } },
-          D: { ...D.errors.length && { errorCount: D.errors.length } },
+          A: { ...(A.errors.length && { errorCount: A.errors.length }) },
+          A2: { ...(A2.errors.length && { errorCount: A2.errors.length }) },
+          B: { ...(B.errors.length && { errorCount: B.errors.length }) },
+          C: { ...(C.errors.length && { errorCount: C.errors.length }) },
+          D: { ...(D.errors.length && { errorCount: D.errors.length }) },
         },
         diffs: {
           noiseFloor: noiseDiff,

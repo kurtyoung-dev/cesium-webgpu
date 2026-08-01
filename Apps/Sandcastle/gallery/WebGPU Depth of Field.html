@@ -21,7 +21,10 @@
     ></script>
     <script type="module" src="../load-cesium-es6.js"></script>
   </head>
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
     </style>
@@ -125,7 +128,9 @@
         Cesium.knockout.applyBindings(viewModel, toolbar);
         for (const name in viewModel) {
           if (viewModel.hasOwnProperty(name)) {
-            Cesium.knockout.getObservable(viewModel, name).subscribe(updatePostProcess);
+            Cesium.knockout
+              .getObservable(viewModel, name)
+              .subscribe(updatePostProcess);
           }
         }
 

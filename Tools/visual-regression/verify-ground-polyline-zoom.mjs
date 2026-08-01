@@ -20,28 +20,30 @@ const BASE = "http://localhost:8080";
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   page.on("console", (m) => {
     const t = m.type();
     if (t === "error") console.log(`[error] ${m.text().slice(0, 250)}`);
     if (
       t === "warning" &&
-      (m.text().includes("Attachment state") ||
-        m.text().includes("validation"))
+      (m.text().includes("Attachment state") || m.text().includes("validation"))
     )
       console.log(`[warn] ${m.text().slice(0, 250)}`);
-    if (m.text().includes("GroundPolyline") || m.text().includes("GroundPoly") || m.text().includes("GP-DIAG"))
+    if (
+      m.text().includes("GroundPolyline") ||
+      m.text().includes("GroundPoly") ||
+      m.text().includes("GP-DIAG")
+    )
       console.log(`[info] ${m.text().slice(0, 250)}`);
   });
 
   const renderer = process.argv[2] || "webgpu";
-  await page.goto(
-    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
-    {
-      waitUntil: "networkidle",
-      timeout: 90_000,
-    },
-  );
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
+    waitUntil: "networkidle",
+    timeout: 90_000,
+  });
   await page.waitForFunction(() => !!window.viewer, { timeout: 90_000 });
 
   // Add a thick red ground polyline + zoom in close.

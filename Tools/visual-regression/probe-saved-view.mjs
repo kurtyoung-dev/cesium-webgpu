@@ -47,10 +47,14 @@ async function capture(rendererArg, view) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
   // Surface SkyAtm diagnostic immediately so we see it during the run.
   page.on("console", (m) => {
     const txt = m.text();
@@ -73,7 +77,10 @@ async function capture(rendererArg, view) {
   });
   await page.waitForTimeout(2000);
 
-  const out = path.join(OUT_DIR, `probe-saved-view-${view.name}-${rendererArg}.png`);
+  const out = path.join(
+    OUT_DIR,
+    `probe-saved-view-${view.name}-${rendererArg}.png`,
+  );
   await page.screenshot({ path: out, fullPage: false });
   await browser.close();
 
@@ -106,23 +113,34 @@ async function diffPngs(a, b) {
         c.width = img.naturalWidth;
         c.height = img.naturalHeight;
         c.getContext("2d").drawImage(img, 0, 0);
-        return { w: img.naturalWidth, h: img.naturalHeight, data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data };
+        return {
+          w: img.naturalWidth,
+          h: img.naturalHeight,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
+        };
       };
       const a = await decode(ba);
       const b = await decode(bb);
       if (a.w !== b.w || a.h !== b.h) return { error: "size mismatch" };
       const total = a.w * a.h;
-      let mismatch = 0, sum = 0;
+      let mismatch = 0,
+        sum = 0;
       // Track per-channel mean signed delta: helps distinguish gamma
       // (uniformly darker) from hue shifts (one channel off).
-      let sumDR = 0, sumDG = 0, sumDB = 0;
+      let sumDR = 0,
+        sumDG = 0,
+        sumDB = 0;
       // Track histogram of brightness ratios — a uniform gamma off-by
       // produces a tight cluster; mixed lighting produces a wide spread.
       let nonBg = 0;
       let sumRatio = 0;
       for (let i = 0; i < a.data.length; i += 4) {
-        const ra = a.data[i], ga = a.data[i + 1], ba2 = a.data[i + 2];
-        const rb = b.data[i], gb = b.data[i + 1], bb2 = b.data[i + 2];
+        const ra = a.data[i],
+          ga = a.data[i + 1],
+          ba2 = a.data[i + 2];
+        const rb = b.data[i],
+          gb = b.data[i + 1],
+          bb2 = b.data[i + 2];
         const dr = Math.abs(ra - rb);
         const dg = Math.abs(ga - gb);
         const db = Math.abs(ba2 - bb2);
@@ -142,7 +160,7 @@ async function diffPngs(a, b) {
       return {
         totalPx: total,
         mismatchPx: mismatch,
-        mismatchPct: (100 * mismatch / total).toFixed(2),
+        mismatchPct: ((100 * mismatch) / total).toFixed(2),
         meanDelta: (sum / total).toFixed(2),
         // Positive = WebGPU darker on that channel
         meanSignedDR: (sumDR / total).toFixed(2),

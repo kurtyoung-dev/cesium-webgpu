@@ -26,11 +26,14 @@ import fs from "node:fs";
 const OUTPUT_DIR = "Tools/visual-regression/output";
 fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
-const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
 
 async function captureWithLightingConfig(multiplier) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const ctx = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+  });
   const page = await ctx.newPage();
   const consoleErrors = [];
   page.on("console", (m) => {
@@ -42,38 +45,41 @@ async function captureWithLightingConfig(multiplier) {
   await page.waitForFunction(() => !!window.viewer, { timeout: 30000 });
 
   // Switch terrain provider to one with vertex normals; enable lighting.
-  await page.evaluate(async ({ multiplier }) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const v = window.viewer;
-    v.scene.globe.enableLighting = true;
-    v.scene.globe.lambertDiffuseMultiplier = multiplier;
-    v.scene.globe.vertexShadowDarkness = 0.3;
-    try {
-      const tp = await C.createWorldTerrainAsync({
-        requestVertexNormals: true,
+  await page.evaluate(
+    async ({ multiplier }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      v.scene.globe.enableLighting = true;
+      v.scene.globe.lambertDiffuseMultiplier = multiplier;
+      v.scene.globe.vertexShadowDarkness = 0.3;
+      try {
+        const tp = await C.createWorldTerrainAsync({
+          requestVertexNormals: true,
+        });
+        v.scene.globe.terrainProvider = tp;
+      } catch (e) {
+        console.error("terrain swap failed:", e.message);
+      }
+      // Camera at a midlat view so terrain lighting is clearly visible.
+      v.camera.setView({
+        destination: C.Cartesian3.fromDegrees(-122.0, 37.5, 50000.0),
+        orientation: { heading: 0, pitch: -C.Math.PI_OVER_FOUR, roll: 0 },
       });
-      v.scene.globe.terrainProvider = tp;
-    } catch (e) {
-      console.error("terrain swap failed:", e.message);
-    }
-    // Camera at a midlat view so terrain lighting is clearly visible.
-    v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(-122.0, 37.5, 50000.0),
-      orientation: { heading: 0, pitch: -C.Math.PI_OVER_FOUR, roll: 0 },
-    });
-    // Pin clock for cross-run stability.
-    const fixed = C.JulianDate.fromIso8601("2026-05-19T18:00:00Z");
-    v.clock.currentTime = fixed.clone();
-    v.clock.startTime = fixed.clone();
-    v.clock.stopTime = fixed.clone();
-    v.clock.shouldAnimate = false;
-    v.clock.multiplier = 0;
-    for (let i = 0; i < 1200; i++) {
-      v.scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
-      if (v.scene.globe.tilesLoaded && i > 200) break;
-    }
-  }, { multiplier });
+      // Pin clock for cross-run stability.
+      const fixed = C.JulianDate.fromIso8601("2026-05-19T18:00:00Z");
+      v.clock.currentTime = fixed.clone();
+      v.clock.startTime = fixed.clone();
+      v.clock.stopTime = fixed.clone();
+      v.clock.shouldAnimate = false;
+      v.clock.multiplier = 0;
+      for (let i = 0; i < 1200; i++) {
+        v.scene.render();
+        await new Promise((r) => requestAnimationFrame(r));
+        if (v.scene.globe.tilesLoaded && i > 200) break;
+      }
+    },
+    { multiplier },
+  );
 
   // Wait for tiles + a few render frames.
   await page.waitForTimeout(8000);

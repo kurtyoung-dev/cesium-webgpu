@@ -87,14 +87,20 @@ const starFieldJs = read("packages/engine/Source/Scene/StarField.js");
 const atmosphericConditionsJs = read(
   "packages/engine/Source/Scene/AtmosphericConditions.js",
 );
-const cubeMapPanoramaJs = read("packages/engine/Source/Scene/CubeMapPanorama.js");
+const cubeMapPanoramaJs = read(
+  "packages/engine/Source/Scene/CubeMapPanorama.js",
+);
 const skyBoxFs = read("packages/engine/Source/Shaders/SkyBoxFS.glsl");
-const panoramaWgsl = read("packages/engine/Source/Shaders/WebGPU/CubeMapPanorama.wgsl");
+const panoramaWgsl = read(
+  "packages/engine/Source/Shaders/WebGPU/CubeMapPanorama.wgsl",
+);
 const panoramaRendererJs = read(
   "packages/engine/Source/Renderer/WebGPU/WebGPUCubeMapPanoramaRenderer.js",
 );
 const skyAtmosphereJs = read("packages/engine/Source/Scene/SkyAtmosphere.js");
-const skyAtmosphereFs = read("packages/engine/Source/Shaders/SkyAtmosphereFS.glsl");
+const skyAtmosphereFs = read(
+  "packages/engine/Source/Shaders/SkyAtmosphereFS.glsl",
+);
 const skyAtmosphereWgsl = read(
   "packages/engine/Source/Shaders/WebGPU/Environment/SkyAtmosphere.wgsl",
 );
@@ -231,7 +237,10 @@ test("obs-1: the WGSL alpha path that made the divergence visible is unchanged",
     skyAtmosphereWgsl,
     /clamp\(dot\(normalize\(skyPoint\), lightDirWC\), 0\.0, 1\.0\),/,
   );
-  assert.match(skyAtmosphereWgsl, /let alpha = mix\(finalColor\.b, 1\.0, opacity\);/);
+  assert.match(
+    skyAtmosphereWgsl,
+    /let alpha = mix\(finalColor\.b, 1\.0, opacity\);/,
+  );
   // WebGL's twin, same shape, same file it always lived in.
   assert.match(
     read("packages/engine/Source/Shaders/SkyAtmosphereCommon.glsl"),
@@ -251,9 +260,14 @@ test("E3: the modulation default is ON and reads the derived curve constants", (
     atmosphericConditionsJs,
     /inflection: STAR_MODULATION_INFLECTION,/,
   );
-  assert.match(atmosphericConditionsJs, /steepness: STAR_MODULATION_STEEPNESS,/);
+  assert.match(
+    atmosphericConditionsJs,
+    /steepness: STAR_MODULATION_STEEPNESS,/,
+  );
   assert.ok(
-    !/inflection: 0\.5,\s*\r?\n\s*steepness: 1\.0,/.test(atmosphericConditionsJs),
+    !/inflection: 0\.5,\s*\r?\n\s*steepness: 1\.0,/.test(
+      atmosphericConditionsJs,
+    ),
     "the C11-176 placeholder curve must be gone",
   );
 });
@@ -334,7 +348,10 @@ test("E3: one expression, four implementations", () => {
     starFieldMathTs,
     /let t = \(skyBrightness - inflection\) \* steepness;/,
   );
-  assert.match(starFieldMathTs, /return 1\.0 - t \* t \* \(3\.0 - 2\.0 \* t\);/);
+  assert.match(
+    starFieldMathTs,
+    /return 1\.0 - t \* t \* \(3\.0 - 2\.0 \* t\);/,
+  );
   // WebGL — the consumer C11-176 said did not exist.
   assert.match(
     skyBoxFs,
@@ -441,7 +458,10 @@ test("E3: the C11-176 orbital regression is closed at the source", () => {
     starFieldMathTs,
     /const column = computeAtmosphericColumnFactor\(cameraHeight\);/,
   );
-  assert.match(starFieldMathTs, /dayFade = 1\.0 - column \* \(1\.0 - dayFade\);/);
+  assert.match(
+    starFieldMathTs,
+    /dayFade = 1\.0 - column \* \(1\.0 - dayFade\);/,
+  );
   assert.doesNotMatch(starFieldMathTs, /6371000\.0|altitude > 100000\.0/);
 });
 
@@ -463,10 +483,7 @@ test("E3: Scene publishes current-frame moon brightness before star consumers", 
       skyBoxUpdate > atmosphereUpdate,
     "Moon.update < skyBrightness < atmosphere/skybox consumers",
   );
-  assert.match(
-    sceneJs,
-    /frameState\.camera\?\.positionCartographic\?\.height/,
-  );
+  assert.match(sceneJs, /frameState\.camera\?\.positionCartographic\?\.height/);
   assert.doesNotMatch(
     sceneJs,
     /Uses the previous frame's|visually indistinguishable from the current/,
@@ -478,7 +495,9 @@ test("E3: the star catalogue draws EXACTLY ONCE (the double-draw obs-1 would hav
   // frustum. The clean S6 architecture therefore emits one cached command,
   // instead of allocating a binned+inject pair and publishing through two
   // command routes every frame.
-  const envRenderer = read("packages/engine/Source/Scene/EnvironmentRenderer.js");
+  const envRenderer = read(
+    "packages/engine/Source/Scene/EnvironmentRenderer.js",
+  );
   const glSkyBox = envRenderer.indexOf("environmentState.skyBoxCommand");
   const glStars = envRenderer.indexOf("environmentState.starFieldCommand");
   const glAtmo = envRenderer.indexOf("environmentState.isSkyAtmosphereVisible");
@@ -636,7 +655,10 @@ test("the WebGPU sun keeps immutable geometry, bind state, and one command acros
 
 test("E3: the sprite star field adopts the same modulation law, gated off", () => {
   assert.match(starFieldJs, /reveal = modulation;/);
-  assert.match(starFieldJs, /const effectiveIntensityScale = this\._intensity \* reveal;/);
+  assert.match(
+    starFieldJs,
+    /const effectiveIntensityScale = this\._intensity \* reveal;/,
+  );
   assert.match(starFieldJs, /skyLeaf\.enableStarBrightnessModulation === true/);
   assert.match(starFieldJs, /frameState\.skyAtmosphereVisible === true/);
   // Replacement, never a product: both star paths consume this same result,
@@ -648,11 +670,7 @@ test("E3: the sprite star field adopts the same modulation law, gated off", () =
   assert.equal(atNoon, 0);
   // Totality with a high sun: dayFade is exactly 0 (sun ~82 deg up) and the
   // shared factor is what brings the catalogue sprites back.
-  const atTotality = modulation(
-    ECLIPSE_TWILIGHT_FLOOR,
-    0,
-    SHIPPED_STEEPNESS,
-  );
+  const atTotality = modulation(ECLIPSE_TWILIGHT_FLOOR, 0, SHIPPED_STEEPNESS);
   assert.ok(atTotality > 0.06 && atTotality < 0.07);
 });
 
@@ -727,11 +745,19 @@ test("S6: total and hybrid geometries keep the effect", () => {
   // The hybrid crossing is continuous, not a pop: exactly 0 at the annular
   // side, exactly full at the total side, monotone between.
   assert.equal(
-    computeHorizonTwilightStrength(1.0, rs, ECLIPSE_TWILIGHT_TOTAL_RATIO_LO * rs),
+    computeHorizonTwilightStrength(
+      1.0,
+      rs,
+      ECLIPSE_TWILIGHT_TOTAL_RATIO_LO * rs,
+    ),
     0,
   );
   assert.equal(
-    computeHorizonTwilightStrength(1.0, rs, ECLIPSE_TWILIGHT_TOTAL_RATIO_HI * rs),
+    computeHorizonTwilightStrength(
+      1.0,
+      rs,
+      ECLIPSE_TWILIGHT_TOTAL_RATIO_HI * rs,
+    ),
     1.0,
   );
   let prev = -1;
@@ -925,10 +951,7 @@ test("S6: both shaders derive a safe geodetic up from the active ellipsoid", () 
     glslHelper,
     /czm_ellipsoidInverseRadii \* czm_ellipsoidInverseRadii/,
   );
-  assert.match(
-    wgslHelper,
-    /positionWC \* ellipsoidInverseRadiiSquared/,
-  );
+  assert.match(wgslHelper, /positionWC \* ellipsoidInverseRadiiSquared/);
   for (const [name, helper] of [
     ["GLSL", glslHelper],
     ["WGSL", wgslHelper],
@@ -945,10 +968,7 @@ test("S6: both shaders derive a safe geodetic up from the active ellipsoid", () 
     );
     assert.match(helper, /return radialUp;/);
   }
-  assert.match(
-    skyAtmosphereFs,
-    /getEclipseObserverUp\(czm_viewerPositionWC\)/,
-  );
+  assert.match(skyAtmosphereFs, /getEclipseObserverUp\(czm_viewerPositionWC\)/);
   assert.match(
     skyAtmosphereWgsl,
     /getEclipseObserverUp\(\s*u\.cameraPositionWC,\s*u\.ellipsoidInverseRadiiSquared,/,
@@ -1019,7 +1039,9 @@ test("S6: both shaders derive a safe geodetic up from the active ellipsoid", () 
 test("S6: the add sits in linear scatter space in BOTH shaders", () => {
   // GLSL: after computeAtmosphereColor, before the tonemap.
   const glslAdd = skyAtmosphereFs.indexOf("u_eclipseHorizonTwilight > 0.0");
-  const glslColor = skyAtmosphereFs.indexOf("vec4 color = computeAtmosphereColor");
+  const glslColor = skyAtmosphereFs.indexOf(
+    "vec4 color = computeAtmosphereColor",
+  );
   // Again the statement, not the header comment's mention of it.
   const glslTonemap = skyAtmosphereFs.indexOf(
     "color.rgb = czm_pbrNeutralTonemapping(color.rgb);",
@@ -1050,7 +1072,12 @@ test("S6: the add sits in linear scatter space in BOTH shaders", () => {
     ["GLSL", glslBlock],
     ["WGSL", wgslBlock],
   ]) {
-    for (const token of ["lightDir", "sunDirection", "lightDirWC", "sunDirectionWC"]) {
+    for (const token of [
+      "lightDir",
+      "sunDirection",
+      "lightDirWC",
+      "sunDirectionWC",
+    ]) {
       assert.ok(
         !block.includes(token),
         `${name}: the twilight band must not reference ${token}`,
@@ -1061,7 +1088,10 @@ test("S6: the add sits in linear scatter space in BOTH shaders", () => {
 
 test("S6: the WebGPU ellipsoid input grows the uniform buffer add-only", () => {
   assert.match(skyRendererJs, /const UNIFORM_BUFFER_SIZE = 496;/);
-  assert.match(skyRendererJs, /uniformData\[116\]\s*=\s*skyAtmosphere\._eclipseHorizonTwilight/);
+  assert.match(
+    skyRendererJs,
+    /uniformData\[116\]\s*=\s*skyAtmosphere\._eclipseHorizonTwilight/,
+  );
   for (const i of [117, 118, 119]) {
     assert.ok(
       skyRendererJs.includes(`uniformData[${i}] = 0.0;`),
@@ -1197,7 +1227,10 @@ test("PINNED INSTANT has exactly ONE writer, and every lane scope restores it", 
     /\/\/ NOT `return out` — this body is an `atInstant` callback/,
     "the structural-exit hazard inside a scoped callback must stay documented",
   );
-  assert.match(probe, /if \(out\.structuralError\) \{\s*\r?\n\s*return \{ \.\.\.out, laneD \};/);
+  assert.match(
+    probe,
+    /if \(out\.structuralError\) \{\s*\r?\n\s*return \{ \.\.\.out, laneD \};/,
+  );
 });
 
 test("CAPTURE is same-task: no read may cross a requestAnimationFrame yield", () => {
@@ -1238,7 +1271,10 @@ test("CAPTURE is same-task: no read may cross a requestAnimationFrame yield", ()
 
   // LANE-SPECIFIC: this probe's own aliases must point at the shared
   // primitives rather than at re-implementations.
-  assert.match(probe, /const \{ renderNow, captureNow, grabNow, settleThen \} = makeSameTaskCapture\(/);
+  assert.match(
+    probe,
+    /const \{ renderNow, captureNow, grabNow, settleThen \} = makeSameTaskCapture\(/,
+  );
   assert.match(probe, /const render = renderNow;/);
   assert.match(probe, /const grabCanvas = grabNow;/);
   // The old private names must be gone from this probe entirely.
@@ -1383,7 +1419,7 @@ const sample = () => {
   // snapshot, so callers receive ImageData rather than a nested Promise.
   assert.match(
     SAME_TASK_CAPTURE_SOURCE,
-    /const result = typeof capture === "function" \? await capture\(\) : undefined;/,
+    /const hasCapture = typeof capture === "function";\s*\n\s*const result = hasCapture \? await capture\(\) : undefined;/,
     "settleThen must await the immutable capture",
   );
   assert.match(
@@ -1404,7 +1440,10 @@ test("PER-LANE INSTANT is emitted and gated, so a wrong-time lane is visible", (
   );
   assert.match(probe, /const recordInstant = \(lane, expectedIso\) =>/);
   assert.match(probe, /matches: iso === expectedIso/);
-  assert.match(probe, /sunElevationDeg = 90 - \(Math\.acos\(d\) \* 180\) \/ Math\.PI/);
+  assert.match(
+    probe,
+    /sunElevationDeg = 90 - \(Math\.acos\(d\) \* 180\) \/ Math\.PI/,
+  );
 
   // Every lane records, and each records against the instant it requires.
   for (const [lane, iso] of [
@@ -1516,7 +1555,7 @@ test("THE REVEAL is measured by contribution, not by a census that cannot see it
 
   // And a band MEAN is the wrong statistic for ~10 sparse point sources.
   const bandPx = Math.round(1280 * 0.5) * Math.round(720 * 0.3);
-  const meanOfTenStars = ((10 * 4 * 50) / 255) / bandPx;
+  const meanOfTenStars = (10 * 4 * 50) / 255 / bandPx;
   assert.ok(
     meanOfTenStars < 1e-4,
     `ten stars move the band mean by ${meanOfTenStars}, below the 1e-4 floor — the floor was right, the statistic was wrong`,
@@ -1528,7 +1567,10 @@ test("THE REVEAL is measured by contribution, not by a census that cannot see it
   );
   // The gate is now the star CONTRIBUTION, measured by difference.
   assert.match(probe, /const starContribution = async \(\) => \{/);
-  assert.match(probe, /revealHappens: \(b\.starSumOn \?\? 0\) > \(b\.starSumOff \?\? 0\)/);
+  assert.match(
+    probe,
+    /revealHappens: \(b\.starSumOn \?\? 0\) > \(b\.starSumOff \?\? 0\)/,
+  );
   assert.match(probe, /noStarsWithoutTheEclipse:/);
   assert.match(probe, /const bandMax = \(img, x0, y0, x1, y1\) =>/);
   // The census survives as a REPORTED diagnostic, not a gate.
@@ -1561,10 +1603,7 @@ test("the browser fixture is offline, render-current, and non-vacuously atmosphe
     settle.indexOf("await frame();") < settle.indexOf("sceneReadiness();"),
     "settleTiles must render the current camera before sampling readiness",
   );
-  assert.match(
-    settle,
-    /!requireVisibleTile \|\| readiness\.tilesToRender > 0/,
-  );
+  assert.match(settle, /!requireVisibleTile \|\| readiness\.tilesToRender > 0/);
   assert.match(settle, /readiness\.atmosphereReady/);
   assert.match(settle, /readiness\.atmosphereVisible/);
   assert.match(
@@ -1631,7 +1670,11 @@ test("THE MULTIPLIER is measured on the modulated component, not the band mean",
   const bandRatio = (sky + 0.5 * comp) / (sky + comp);
   const compRatio = (0.5 * comp) / comp;
   assert.ok(Math.abs(bandRatio - 0.945) < 0.01, `band ratio ${bandRatio}`);
-  assert.equal(compRatio, 0.5, "the component ratio recovers the factor exactly");
+  assert.equal(
+    compRatio,
+    0.5,
+    "the component ratio recovers the factor exactly",
+  );
 
   const probe = fs.readFileSync(
     path.join(here, "probe-eclipse-sky-totality.mjs"),
@@ -1664,8 +1707,9 @@ test("STRUCTURAL ABORT preserves the evidence it computed", () => {
   assert.match(probe, /const rawLanes = \(side\) => \(\{/);
   for (const lane of ["laneA", "laneB", "laneC", "laneD", "laneInstants"]) {
     assert.ok(
-      new RegExp(`${lane}: side\\?\\.result\\?\\.${lane} \\?\\? null`).test(probe) ||
-        lane === "laneInstants",
+      new RegExp(`${lane}: side\\?\\.result\\?\\.${lane} \\?\\? null`).test(
+        probe,
+      ) || lane === "laneInstants",
       `${lane} is not preserved on the abort path`,
     );
   }
@@ -1711,10 +1755,11 @@ test("FIXTURE SELECTION: a vantage satisfying EVERY lane constraint exists (pure
     const rot =
       Transforms.computeIcrfToFixedMatrix(t, m3) ??
       Transforms.computeTemeToPseudoFixedMatrix(t, m3);
-    const sun = Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
-      t,
-      new Cartesian3(),
-    );
+    const sun =
+      Simon1994PlanetaryPositions.computeSunPositionInEarthInertialFrame(
+        t,
+        new Cartesian3(),
+      );
     Matrix3.multiplyByVector(rot, sun, sun);
     const moon =
       Simon1994PlanetaryPositions.computeMoonPositionInEarthInertialFrame(
@@ -2043,7 +2088,10 @@ test("B4 telemetry accepts return-only once and rejects hidden or duplicate rout
   assert.match(probe, /catalogDrawnOnce:/);
   assert.match(probe, /hiddenStopsSubmission:/);
   assert.match(probe, /restoreSchedulesOnce:/);
-  assert.doesNotMatch(probe, /spriteRatio|singleDrawPrediction|doubleDrawPrediction/);
+  assert.doesNotMatch(
+    probe,
+    /spriteRatio|singleDrawPrediction|doubleDrawPrediction/,
+  );
 
   // The night threshold still protects the timestamp/elevation fixture even
   // though the exactly-once instrument no longer depends on pixel density.
@@ -2147,7 +2195,11 @@ test("PROVENANCE MARKERS satisfy all four properties (shared enforcement)", () =
     probeSource: probe,
     readSource: (file) => fs.readFileSync(path.join(root, file), "utf8"),
   });
-  assert.deepEqual(failures, [], `provenance markers are unsound:\n${failures.join("\n")}`);
+  assert.deepEqual(
+    failures,
+    [],
+    `provenance markers are unsound:\n${failures.join("\n")}`,
+  );
   assert.ok(entries.length >= 6, `only ${entries.length} provenance slices`);
 
   // The rule must stay written where the next author will see it, with the
@@ -2197,7 +2249,8 @@ test("SOURCE PINS are width-safe, and the lib REFUSES to author a fragile one", 
   // rejecting everything.
   assert.deepEqual(
     checkSourcePinWidth({
-      pattern: /resolveSkyDynamicLighting\(\s*skyAtmosphere\s*,\s*frameState\s*\)/,
+      pattern:
+        /resolveSkyDynamicLighting\(\s*skyAtmosphere\s*,\s*frameState\s*\)/,
       sourceText: target,
       label: "shipped-fixed",
     }),
@@ -2227,7 +2280,11 @@ test("SOURCE PINS are width-safe, and the lib REFUSES to author a fragile one", 
     /uniformData\[116\]\s*=\s*skyAtmosphere\._eclipseHorizonTwilight/,
   ]) {
     assert.deepEqual(
-      checkSourcePinWidth({ pattern, sourceText: target, label: String(pattern) }),
+      checkSourcePinWidth({
+        pattern,
+        sourceText: target,
+        label: String(pattern),
+      }),
       [],
     );
   }
@@ -2250,13 +2307,20 @@ test("PROVENANCE enforcement is NON-VACUOUS: every historical defect is rejected
 
   const rejected = (entry, source, label) => {
     const f = validateProvenanceMarker(entry, source);
-    assert.ok(f.length > 0, `NOT REJECTED — ${label}: ${JSON.stringify(entry.marker)}`);
+    assert.ok(
+      f.length > 0,
+      `NOT REJECTED — ${label}: ${JSON.stringify(entry.marker)}`,
+    );
     return f;
   };
 
   // Strike 1 — numeric literal (esbuild rewrote `1.0` as `1`).
   rejected(
-    { file: "packages/engine/Source/Scene/Scene.js", marker: "- earthOcclusion) * (1.0", why },
+    {
+      file: "packages/engine/Source/Scene/Scene.js",
+      marker: "- earthOcclusion) * (1.0",
+      why,
+    },
     sceneSource,
     "numeric literal",
   );
@@ -2264,7 +2328,8 @@ test("PROVENANCE enforcement is NON-VACUOUS: every historical defect is rejected
   rejected(
     {
       file: "packages/engine/Source/Scene/Scene.js",
-      marker: "frameState.eclipseHorizonTwilight = getEclipseHorizonTwilightFactor(",
+      marker:
+        "frameState.eclipseHorizonTwilight = getEclipseHorizonTwilightFactor(",
       why,
     },
     sceneSource,
@@ -2286,7 +2351,11 @@ test("PROVENANCE enforcement is NON-VACUOUS: every historical defect is rejected
   );
   // Strike 4 — a renameable LOCAL binding, long enough to clear the floor.
   rejected(
-    { file: "packages/engine/Source/Scene/Scene.js", marker: "starCopiesResolved", why },
+    {
+      file: "packages/engine/Source/Scene/Scene.js",
+      marker: "starCopiesResolved",
+      why,
+    },
     "const starCopiesResolved = 1;\n",
     "renameable local",
   );
@@ -2298,7 +2367,11 @@ test("PROVENANCE enforcement is NON-VACUOUS: every historical defect is rejected
   );
   // Strike 6 — a shape the named file has never had.
   rejected(
-    { file: "packages/engine/Source/Scene/Scene.js", marker: "neverExistedHere", why },
+    {
+      file: "packages/engine/Source/Scene/Scene.js",
+      marker: "neverExistedHere",
+      why,
+    },
     sceneSource,
     "absent from source",
   );
@@ -2341,7 +2414,10 @@ test("PROVENANCE enforcement is NON-VACUOUS: every historical defect is rejected
 });
 
 test("S6: the sky WGSL passes naga validation", async () => {
-  const nagaDirectory = path.join(root, "Tools/shader-pipeline/naga-wasm-tools");
+  const nagaDirectory = path.join(
+    root,
+    "Tools/shader-pipeline/naga-wasm-tools",
+  );
   const naga = await import(
     pathToFileURL(path.join(nagaDirectory, "naga_wasm_tools.js")).href
   );

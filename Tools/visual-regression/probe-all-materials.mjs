@@ -52,13 +52,19 @@ const MATERIALS = [
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
   });
   const allMessages = [];
-  page.on("pageerror", (e) => allMessages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    allMessages.push({ t: "pageerror", text: e.message }),
+  );
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
   });
@@ -85,7 +91,7 @@ const MATERIALS = [
       for (let i = 0; i < materials.length; i++) {
         const m = materials[i];
         let material;
-        let constructorError = null;
+        let constructorError;
         try {
           if (m.path === "direct") {
             material = new C.Material({
@@ -163,9 +169,7 @@ const MATERIALS = [
 
         const errsAfter = window.__probeErrors.length;
         const ub = material._uniformBuffer;
-        const layoutKeys = ub?._layout
-          ? Array.from(ub._layout.keys())
-          : null;
+        const layoutKeys = ub?._layout ? Array.from(ub._layout.keys()) : null;
         const layoutDetails = ub?._layout
           ? Array.from(ub._layout.entries()).map(([k, v]) => ({
               k,
@@ -214,23 +218,34 @@ const MATERIALS = [
     if (r.layoutDetails && r.layoutDetails.length > 0) {
       r.layoutDetails.forEach((d) => {
         if (d.size > 0) {
-          console.log(`      ${d.k.padEnd(18)} offset=${d.offset.toString().padStart(2)}  size=${d.size}  type=${d.type}`);
+          console.log(
+            `      ${d.k.padEnd(18)} offset=${d.offset.toString().padStart(2)}  size=${d.size}  type=${d.type}`,
+          );
         }
       });
     }
     if (r.error) console.log(`      ERR: ${r.error.slice(0, 200)}`);
-    if (r.primError) console.log(`      PRIM-ERR: ${r.primError.slice(0, 200)}`);
+    if (r.primError)
+      console.log(`      PRIM-ERR: ${r.primError.slice(0, 200)}`);
     totalErrors += r.newErrors || 0;
   }
 
   console.log(`\n[probe-all-materials] total device errors: ${totalErrors}`);
   if (errs.length) {
     console.log(`\nFirst 5 device error messages:`);
-    errs.slice(0, 5).forEach((e) => console.log(`  - ${e.text?.slice(0, 220)}`));
+    errs
+      .slice(0, 5)
+      .forEach((e) => console.log(`  - ${e.text?.slice(0, 220)}`));
   }
   fs.writeFileSync(
     "Tools/visual-regression/output/all-materials-report.json",
-    JSON.stringify({ result, totalErrors, sampleErrors: errs.slice(0, 10) }, null, 2),
+    JSON.stringify(
+      { result, totalErrors, sampleErrors: errs.slice(0, 10) },
+      null,
+      2,
+    ),
   );
-  console.log(`\nReport: Tools/visual-regression/output/all-materials-report.json`);
+  console.log(
+    `\nReport: Tools/visual-regression/output/all-materials-report.json`,
+  );
 })();

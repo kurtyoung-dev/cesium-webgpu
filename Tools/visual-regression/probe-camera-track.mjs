@@ -122,7 +122,12 @@ async function setupScene(page, useTerrain) {
     async ({ useTerrain }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
-      const out = { terrain: "ellipsoid", imagery: null, usedFallback: false, why: null };
+      const out = {
+        terrain: "ellipsoid",
+        imagery: null,
+        usedFallback: false,
+        why: null,
+      };
 
       // Continuous render — never request-render-mode for a motion track.
       v.scene.requestRenderMode = false;
@@ -245,7 +250,8 @@ async function settle(page, params) {
           // Coarse weighted checksum — sensitive to content changing as tiles +
           // pipelines materialize, cheap (stride 16).
           let s = 0;
-          for (let i = 0; i < d.length; i += 16) s += d[i] + d[i + 1] * 3 + d[i + 2] * 7;
+          for (let i = 0; i < d.length; i += 16)
+            s += d[i] + d[i + 1] * 3 + d[i + 2] * 7;
           lastSig = s;
         } catch (e) {
           lastSig = -1;
@@ -266,7 +272,9 @@ async function settle(page, params) {
         if (scene.globe.tilesLoaded && tilesLoadedAt < 0) tilesLoadedAt = i;
         const sig = lastSig;
         const rel =
-          prevSig <= 0 ? Infinity : Math.abs(sig - prevSig) / Math.max(1, Math.abs(prevSig));
+          prevSig <= 0
+            ? Infinity
+            : Math.abs(sig - prevSig) / Math.max(1, Math.abs(prevSig));
         if (rel < REL_EPS) stable++;
         else stable = 0;
         prevSig = sig;
@@ -338,13 +346,20 @@ async function pixelDiff(page, glPath, gpuPath, diffPath, tol) {
         c.height = img.naturalHeight;
         const cx = c.getContext("2d", { willReadFrequently: true });
         cx.drawImage(img, 0, 0);
-        return { w: c.width, h: c.height, data: cx.getImageData(0, 0, c.width, c.height).data };
+        return {
+          w: c.width,
+          h: c.height,
+          data: cx.getImageData(0, 0, c.width, c.height).data,
+        };
       };
 
       const A = await decode(glB64);
       const B = await decode(gpuB64);
       if (A.w !== B.w || A.h !== B.h) {
-        return { ok: false, why: `size mismatch gl=${A.w}x${A.h} gpu=${B.w}x${B.h}` };
+        return {
+          ok: false,
+          why: `size mismatch gl=${A.w}x${A.h} gpu=${B.w}x${B.h}`,
+        };
       }
 
       const w = A.w,
@@ -412,7 +427,12 @@ async function run() {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: !HEADED,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
 
   const gl = await bootViewer(browser, "webgl");
@@ -499,13 +519,17 @@ async function run() {
     .sort((a, b) => b.diff.diffPct - a.diff.diffPct)[0];
   report.summary = {
     waypointCount: WAYPOINTS.length,
-    captured: report.waypoints.filter((wp) => wp.captured.webgl && wp.captured.webgpu).length,
+    captured: report.waypoints.filter(
+      (wp) => wp.captured.webgl && wp.captured.webgpu,
+    ).length,
     meanDiffPct:
       diffPcts.length > 0
         ? +(diffPcts.reduce((a, b) => a + b, 0) / diffPcts.length).toFixed(3)
         : null,
     maxDiffPct: diffPcts.length > 0 ? Math.max(...diffPcts) : null,
-    worstWaypoint: worst ? { name: worst.name, diffPct: worst.diff.diffPct } : null,
+    worstWaypoint: worst
+      ? { name: worst.name, diffPct: worst.diff.diffPct }
+      : null,
     anySettleCeilingHit: report.waypoints.some(
       (wp) => !wp.settle.webgpu.stableHit || !wp.settle.webgl.stableHit,
     ),
@@ -526,7 +550,13 @@ async function run() {
     console.log(JSON.stringify(result, null, 2));
   } catch (e) {
     console.error("[track] FATAL:", e && e.stack ? e.stack : String(e));
-    console.log(JSON.stringify({ loaded: false, fatal: String(e && e.message ? e.message : e) }, null, 2));
+    console.log(
+      JSON.stringify(
+        { loaded: false, fatal: String(e && e.message ? e.message : e) },
+        null,
+        2,
+      ),
+    );
     process.exit(1);
   }
 })();

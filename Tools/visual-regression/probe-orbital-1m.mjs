@@ -200,9 +200,11 @@ const out = await page.evaluate(
       // Max full 64-B records that fit ONE storage binding.
       maxRecordsPerBinding: Math.floor(bindCeil / recBytes),
       recordsBytes1M,
-      recordsFitsOneBinding: recordsBytes1M <= bindCeil && recordsBytes1M <= bufCeil,
+      recordsFitsOneBinding:
+        recordsBytes1M <= bindCeil && recordsBytes1M <= bufCeil,
       paramsBytes1M,
-      paramsFitsOneBinding: paramsBytes1M <= bindCeil && paramsBytes1M <= bufCeil,
+      paramsFitsOneBinding:
+        paramsBytes1M <= bindCeil && paramsBytes1M <= bufCeil,
       pickBytes1M,
       pickFitsOneBinding: pickBytes1M <= bindCeil && pickBytes1M <= bufCeil,
       // Dispatch headroom: how many instances the single-dimension
@@ -290,9 +292,21 @@ const out = await page.evaluate(
 
     const computeBGL = device.createBindGroupLayout({
       entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "read-only-storage" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "storage" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "uniform" },
+        },
       ],
     });
     const computePipeline = device.createComputePipeline({
@@ -347,23 +361,37 @@ const out = await page.evaluate(
       const nf = 1.0 / (near - far);
       // WebGPU clip-z [0,1].
       return [
-        f / aspect, 0, 0, 0,
-        0, f, 0, 0,
-        0, 0, far * nf, -1,
-        0, 0, far * near * nf, 0,
+        f / aspect,
+        0,
+        0,
+        0,
+        0,
+        f,
+        0,
+        0,
+        0,
+        0,
+        far * nf,
+        -1,
+        0,
+        0,
+        far * near * nf,
+        0,
       ];
     }
     function lookAtRotation(eye, center, up) {
       // Returns the VIEW matrix with translation column zeroed (RTE: the
       // camera-relative translation is applied per-vertex via encodedCamera).
-      const zx = eye[0] - center[0], zy = eye[1] - center[1], zz = eye[2] - center[2];
-      let zl = Math.hypot(zx, zy, zz);
+      const zx = eye[0] - center[0],
+        zy = eye[1] - center[1],
+        zz = eye[2] - center[2];
+      const zl = Math.hypot(zx, zy, zz);
       const fz = [zx / zl, zy / zl, zz / zl];
       // x = normalize(cross(up, z))
       const xx = up[1] * fz[2] - up[2] * fz[1];
       const xy = up[2] * fz[0] - up[0] * fz[2];
       const xz = up[0] * fz[1] - up[1] * fz[0];
-      let xl = Math.hypot(xx, xy, xz);
+      const xl = Math.hypot(xx, xy, xz);
       const fx = [xx / xl, xy / xl, xz / xl];
       // y = cross(z, x)
       const fy = [
@@ -373,10 +401,22 @@ const out = await page.evaluate(
       ];
       // Column-major view with zero translation.
       return [
-        fx[0], fy[0], fz[0], 0,
-        fx[1], fy[1], fz[1], 0,
-        fx[2], fy[2], fz[2], 0,
-        0, 0, 0, 1,
+        fx[0],
+        fy[0],
+        fz[0],
+        0,
+        fx[1],
+        fy[1],
+        fz[1],
+        0,
+        fx[2],
+        fy[2],
+        fz[2],
+        0,
+        0,
+        0,
+        0,
+        1,
       ];
     }
     function mul(a, b) {
@@ -411,10 +451,17 @@ const out = await page.evaluate(
     const [hx, lx] = encode(eye[0]);
     const [hy, ly] = encode(eye[1]);
     const [hz, lz] = encode(eye[2]);
-    camData[20] = hx; camData[21] = hy; camData[22] = hz;
-    camData[24] = lx; camData[25] = ly; camData[26] = lz;
+    camData[20] = hx;
+    camData[21] = hy;
+    camData[22] = hz;
+    camData[24] = lx;
+    camData[25] = ly;
+    camData[26] = lz;
     // previousViewProjection (28..43) — identity (unused without TAA).
-    camData[28] = 1; camData[33] = 1; camData[38] = 1; camData[43] = 1;
+    camData[28] = 1;
+    camData[33] = 1;
+    camData[38] = 1;
+    camData[43] = 1;
     device.queue.writeBuffer(camUB, 0, camData);
 
     // [-1,1] quad VB (6 verts), matches the renderer.
@@ -427,8 +474,16 @@ const out = await page.evaluate(
 
     const renderBGL = device.createBindGroupLayout({
       entries: [
-        { binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: { type: "uniform" } },
-        { binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
+        {
+          binding: 0,
+          visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT,
+          buffer: { type: "uniform" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.VERTEX,
+          buffer: { type: "read-only-storage" },
+        },
       ],
     });
     const renderPipeline = device.createRenderPipeline({
@@ -451,7 +506,10 @@ const out = await page.evaluate(
           {
             format: "rgba8unorm",
             blend: {
-              color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" },
+              color: {
+                srcFactor: "src-alpha",
+                dstFactor: "one-minus-src-alpha",
+              },
               alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" },
             },
           },
@@ -514,7 +572,9 @@ const out = await page.evaluate(
     for (let y = 0; y < H; y++) {
       for (let x = 0; x < W; x++) {
         const o = y * bytesPerRow + x * 4;
-        const r = pixels[o], g = pixels[o + 1], b = pixels[o + 2];
+        const r = pixels[o],
+          g = pixels[o + 1],
+          b = pixels[o + 2];
         if (r < 120 && g > 120 && b > 120) cyan++;
       }
     }
@@ -571,7 +631,9 @@ console.log("── Negotiated device limits ──");
 console.log(
   `  maxStorageBufferBindingSize = ${fmtMB(out.negotiated.maxStorageBufferBindingSize)} (${fmtN(out.negotiated.maxStorageBufferBindingSize)} B)`,
 );
-console.log(`  maxBufferSize               = ${fmtMB(out.negotiated.maxBufferSize)}`);
+console.log(
+  `  maxBufferSize               = ${fmtMB(out.negotiated.maxBufferSize)}`,
+);
 console.log(
   `  maxComputeWorkgroupsPerDim  = ${fmtN(out.negotiated.maxComputeWorkgroupsPerDimension)}`,
 );
@@ -622,8 +684,10 @@ if (out.renderCompileErrs?.length) {
   console.log("  render compile errors:");
   out.renderCompileErrs.forEach((m) => console.log("    ", m));
 }
-if (out.computeScopeErr) console.log(`  compute scope error: ${out.computeScopeErr}`);
-if (out.renderScopeErr) console.log(`  render scope error: ${out.renderScopeErr}`);
+if (out.computeScopeErr)
+  console.log(`  compute scope error: ${out.computeScopeErr}`);
+if (out.renderScopeErr)
+  console.log(`  render scope error: ${out.renderScopeErr}`);
 
 // ── Assertions ──
 // (A) The 1M target fits a single storage binding for all three SSBOs AND the
@@ -657,7 +721,9 @@ console.log(
   `(C) zero validation/compile/console errors: gpu=${out.validationErrors?.length ?? 0} page=${errors.length} ${cOK ? "OK" : "FAIL"}`,
 );
 errors.slice(0, 6).forEach((e) => console.log("  ERR:", e.slice(0, 200)));
-out.validationErrors?.slice(0, 6).forEach((e) => console.log("  VAL:", e.slice(0, 200)));
+out.validationErrors
+  ?.slice(0, 6)
+  .forEach((e) => console.log("  VAL:", e.slice(0, 200)));
 
 const pass = aOK && bOK && cOK;
 console.log(pass ? "PASS" : "FAIL");

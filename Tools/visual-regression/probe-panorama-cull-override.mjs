@@ -154,12 +154,17 @@ async function coverageOf(pngPath) {
     const total = c.width * c.height;
     let colored = 0;
     for (let i = 0; i < data.length; i += 4) {
-      const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+      const lum =
+        0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
       if (lum > 12) {
         colored++;
       }
     }
-    return { total, colored, coveragePct: ((100 * colored) / total).toFixed(2) };
+    return {
+      total,
+      colored,
+      coveragePct: ((100 * colored) / total).toFixed(2),
+    };
   }, b64);
   await browser.close();
   return result;

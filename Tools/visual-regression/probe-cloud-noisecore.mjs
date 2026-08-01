@@ -55,9 +55,12 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+  if ("cloudCoverage" in g)
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  if ("cloudWeatherMap" in g)
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
   // Leave cloudVolumetricQuality "auto" + cloudQuality 64 → at ALT 800 the tier
   // resolves to HIGH → noiseSource = BAKED. (Setting cloudQuality != 64 would trip
   // the power-user escape hatch → LIVE, defeating the test.)
@@ -94,9 +97,13 @@ const RENDER_AND_TIME = async (cfg) => {
   if (device) await device.queue.onSubmittedWorkDone();
   const t1 = performance.now();
   // Read whether the baked core is actually active this frame.
-  let noiseBaked = false;
+  let noiseBaked;
   try {
-    noiseBaked = !!(s.context && s.context._cloudCache && s.context._cloudCache.noiseBaked);
+    noiseBaked = !!(
+      s.context &&
+      s.context._cloudCache &&
+      s.context._cloudCache.noiseBaked
+    );
   } catch (e) {
     noiseBaked = false;
   }
@@ -129,7 +136,8 @@ function lumStats(page, dataUrl) {
     if (!lums.length) return { cloudPx: 0 };
     lums.sort((a, b) => a - b);
     const mean = lums.reduce((a, b) => a + b, 0) / lums.length;
-    const p = (q) => lums[Math.min(lums.length - 1, Math.floor(q * lums.length))];
+    const p = (q) =>
+      lums[Math.min(lums.length - 1, Math.floor(q * lums.length))];
     let vs = 0;
     for (const l of lums) vs += (l - mean) * (l - mean);
     return {
@@ -171,8 +179,16 @@ async function run() {
     .concat(consoleErrors)
     .filter((e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout/i.test(e));
 
-  const rec = { tag: TAG, msPerFrame: r.msPerFrame, noiseBaked: r.noiseBaked, ...stats };
-  fs.writeFileSync(`${OUT}/cloud-noisecore-${TAG}.json`, JSON.stringify(rec, null, 2));
+  const rec = {
+    tag: TAG,
+    msPerFrame: r.msPerFrame,
+    noiseBaked: r.noiseBaked,
+    ...stats,
+  };
+  fs.writeFileSync(
+    `${OUT}/cloud-noisecore-${TAG}.json`,
+    JSON.stringify(rec, null, 2),
+  );
   console.log(`[${TAG}]`, JSON.stringify(rec));
   if (newErrs.length) console.log("NEW errs:", newErrs.slice(0, 3));
 
@@ -184,18 +200,27 @@ async function run() {
     const baked = TAG === "baked" ? rec : o;
     const live = TAG === "live" ? rec : o;
     const cellRatio = baked.cells / Math.max(1, live.cells);
-    const speedup = +(live.msPerFrame / Math.max(0.0001, baked.msPerFrame)).toFixed(3);
+    const speedup = +(
+      live.msPerFrame / Math.max(0.0001, baked.msPerFrame)
+    ).toFixed(3);
     const range = +(baked.p90 - baked.p10).toFixed(3);
     console.log("\n=== A/B (baked vs live) ===");
     console.log(`  baked noiseBaked=${baked.noiseBaked}`);
     console.log(`  cloud-cell ratio baked/live: ${cellRatio.toFixed(3)}`);
-    console.log(`  frame time baked ${baked.msPerFrame}ms live ${live.msPerFrame}ms speedup ×${speedup}`);
-    console.log(`  baked tonal: p10 ${baked.p10} p90 ${baked.p90} range ${range} stdev ${baked.stdev}`);
+    console.log(
+      `  frame time baked ${baked.msPerFrame}ms live ${live.msPerFrame}ms speedup ×${speedup}`,
+    );
+    console.log(
+      `  baked tonal: p10 ${baked.p10} p90 ${baked.p90} range ${range} stdev ${baked.stdev}`,
+    );
 
     const checks = [
       ["baked core active (noiseBaked)", baked.noiseBaked === true],
       [`baked renders clouds (${baked.cloudPx} px)`, baked.cloudPx > 5000],
-      [`cloud-cell ratio in 0.5–1.7 (${cellRatio.toFixed(3)})`, cellRatio >= 0.5 && cellRatio <= 1.7],
+      [
+        `cloud-cell ratio in 0.5–1.7 (${cellRatio.toFixed(3)})`,
+        cellRatio >= 0.5 && cellRatio <= 1.7,
+      ],
       [`baked not slower (×${speedup} ≥ 0.95)`, speedup >= 0.95],
       [`W1 tonal range preserved (p90-p10 ${range} ≥ 0.10)`, range >= 0.1],
       [`W2 shadow floor lifted (p10 ${baked.p10} ≥ 0.02)`, baked.p10 >= 0.02],

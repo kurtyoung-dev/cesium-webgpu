@@ -129,7 +129,8 @@ function decodeStats(page, dataUrl) {
     if (!lums.length) return { cloudPx: 0 };
     lums.sort((a, b) => a - b);
     const mean = lums.reduce((a, b) => a + b, 0) / lums.length;
-    const p = (q) => lums[Math.min(lums.length - 1, Math.floor(q * lums.length))];
+    const p = (q) =>
+      lums[Math.min(lums.length - 1, Math.floor(q * lums.length))];
     let vs = 0;
     for (const l of lums) vs += (l - mean) * (l - mean);
     return {

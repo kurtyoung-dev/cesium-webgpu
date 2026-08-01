@@ -102,7 +102,10 @@ try {
     }
 
     viewer.camera.viewBoundingSphere(
-      new C.BoundingSphere(C.Cartesian3.fromDegrees(-75.0, 40.0, 300_000.0), 1_500_000.0),
+      new C.BoundingSphere(
+        C.Cartesian3.fromDegrees(-75.0, 40.0, 300_000.0),
+        1_500_000.0,
+      ),
       new C.HeadingPitchRange(0.0, -0.4, 5_000_000.0),
     );
     viewer.camera.lookAtTransform(C.Matrix4.IDENTITY);
@@ -115,13 +118,18 @@ try {
     }
 
     await renderFrames(80);
-    const ready = models.map(({ name, model }) => ({ name, ready: model.ready }));
+    const ready = models.map(({ name, model }) => ({
+      name,
+      ready: model.ready,
+    }));
 
     function cacheSnapshot() {
       return models.map(({ name, model }) => {
         const primitives = Object.values(model._webgpuCache?.primitives ?? {});
         const privateGroups = primitives
-          .map((primitive) => primitive._mergedInstanceBindGroupCache?.bindGroup)
+          .map(
+            (primitive) => primitive._mergedInstanceBindGroupCache?.bindGroup,
+          )
           .filter(Boolean);
         return {
           name,
@@ -161,7 +169,9 @@ try {
 
     return {
       ready,
-      before: before.map(({ privateGroups: _privateGroups, ...entry }) => entry),
+      before: before.map(
+        ({ privateGroups: _privateGroups, ...entry }) => entry,
+      ),
       after: after.map(({ privateGroups: _privateGroups, ...entry }) => entry),
       settledFrames: 40,
       settledMergedInstanceBindGroupCreates: mergedCreates,

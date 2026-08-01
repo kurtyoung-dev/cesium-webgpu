@@ -102,7 +102,11 @@ async function captureOne(renderer, name) {
       if (model.ready && model.boundingSphere) {
         v.camera.viewBoundingSphere(
           model.boundingSphere,
-          new C.HeadingPitchRange(0.3, -0.35, model.boundingSphere.radius * 3.0),
+          new C.HeadingPitchRange(
+            0.3,
+            -0.35,
+            model.boundingSphere.radius * 3.0,
+          ),
         );
         v.camera.lookAtTransform(C.Matrix4.IDENTITY);
       }
@@ -193,7 +197,7 @@ const results = [];
 for (const r of renderers) {
   for (const m of MODELS) {
     process.stderr.write(`[probe] ${r} / ${m} ...\n`);
-    // eslint-disable-next-line no-await-in-loop
+
     const res = await captureOne(r, m);
     results.push(res);
     process.stderr.write(

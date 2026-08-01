@@ -56,12 +56,16 @@ const out = await page.evaluate(
     } else {
       scene.morphTo2D(0);
     }
-    v.camera.setView({ destination: C.Cartesian3.fromDegrees(lon, lat, 1500000.0) });
+    v.camera.setView({
+      destination: C.Cartesian3.fromDegrees(lon, lat, 1500000.0),
+    });
     for (let i = 0; i < 100; i++) {
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));
     }
-    v.camera.setView({ destination: C.Cartesian3.fromDegrees(lon, lat, 1500000.0) });
+    v.camera.setView({
+      destination: C.Cartesian3.fromDegrees(lon, lat, 1500000.0),
+    });
     for (let i = 0; i < 20; i++) {
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));
@@ -82,7 +86,12 @@ const out = await page.evaluate(
       : null;
     const bv2d = bb._baseVolume2D;
     report.baseVolume2D = bv2d
-      ? { cx: bv2d.center.x, cy: bv2d.center.y, cz: bv2d.center.z, r: bv2d.radius }
+      ? {
+          cx: bv2d.center.x,
+          cy: bv2d.center.y,
+          cz: bv2d.center.z,
+          r: bv2d.radius,
+        }
       : null;
 
     // 3. is the WebGPU color command built, and is it in the command list?
@@ -103,7 +112,7 @@ const out = await page.evaluate(
 
     // 4. scene.isVisible against the current culling volume (does it survive?)
     try {
-      const us = scene.context.uniformState;
+      const _us = scene.context.uniformState;
       const fs = scene._view?.frameState || scene.frameState;
       const cullingVolume = fs?.cullingVolume;
       report.haveCullingVolume = !!cullingVolume;
@@ -132,11 +141,19 @@ const out = await page.evaluate(
       );
       report.clip = { x: clip.x, y: clip.y, z: clip.z, w: clip.w };
       if (clip.w !== 0) {
-        report.ndc = { x: clip.x / clip.w, y: clip.y / clip.w, z: clip.z / clip.w };
+        report.ndc = {
+          x: clip.x / clip.w,
+          y: clip.y / clip.w,
+          z: clip.z / clip.w,
+        };
       }
       // camera position in the view frame (what my fix encodes)
       const invView = C.Matrix4.inverse(view, new C.Matrix4());
-      report.camInViewFrame = { x: invView[12], y: invView[13], z: invView[14] };
+      report.camInViewFrame = {
+        x: invView[12],
+        y: invView[13],
+        z: invView[14],
+      };
       report.cameraPositionWC = {
         x: scene.camera.positionWC.x,
         y: scene.camera.positionWC.y,
@@ -163,10 +180,12 @@ const out = await page.evaluate(
       );
       report.eyeSpace = { x: eye.x, y: eye.y, z: eye.z, w: eye.w };
       // projection matrix (column-major flat)
-      report.projection = Array.from({ length: 16 }, (_, i) => us.projection[i]);
+      report.projection = Array.from(
+        { length: 16 },
+        (_, i) => us.projection[i],
+      );
       // multifrustum
-      const fcl =
-        scene._view?.frustumCommandsList || scene.frustumCommandsList;
+      const fcl = scene._view?.frustumCommandsList || scene.frustumCommandsList;
       report.numFrustums = fcl ? fcl.length : "n/a";
       if (fcl) {
         report.frustumNearFars = fcl.map((f) => ({ near: f.near, far: f.far }));
@@ -180,9 +199,7 @@ const out = await page.evaluate(
       const fs = scene._view?.frameState || scene.frameState;
       const cl = fs?.commandList || [];
       report.commandListLength = cl.length;
-      report.billboardCommands = cl.filter(
-        (c) => c && c.owner === bb,
-      ).length;
+      report.billboardCommands = cl.filter((c) => c && c.owner === bb).length;
     } catch (e) {
       report.cmdError = String(e);
     }

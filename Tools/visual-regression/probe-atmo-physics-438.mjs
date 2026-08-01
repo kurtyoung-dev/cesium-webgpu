@@ -190,14 +190,20 @@ async function capture(mode, tag) {
               Math.PI;
           const sunElev = sd
             ? 90 -
-              (Math.acos(Math.max(-1, Math.min(1, C.Cartesian3.dot(sd, upWC)))) *
+              (Math.acos(
+                Math.max(-1, Math.min(1, C.Cartesian3.dot(sd, upWC))),
+              ) *
                 180) /
                 Math.PI
             : 999;
           window.__moonElev = moonElev;
           window.__sunElev = sunElev;
           // Aim the camera straight at the moon direction.
-          const camPos = C.Cartesian3.fromDegrees(view.lon, view.lat, view.height);
+          const camPos = C.Cartesian3.fromDegrees(
+            view.lon,
+            view.lat,
+            view.height,
+          );
           v.camera.setView({
             destination: camPos,
             orientation: {
@@ -245,7 +251,9 @@ async function capture(mode, tag) {
 // Region stats + optional byte-diff vs a reference PNG.
 async function analyze(pngPath, refPath) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.setContent("<!doctype html><html><body></body></html>");
   const b64 = fs.readFileSync(pngPath).toString("base64");
   const refB64 = refPath ? fs.readFileSync(refPath).toString("base64") : null;

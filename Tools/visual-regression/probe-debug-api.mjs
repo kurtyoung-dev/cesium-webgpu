@@ -3,7 +3,6 @@
 // Loads CesiumViewer, calls the API to enable each mode, captures screenshot.
 
 import { chromium } from "playwright";
-import fs from "fs";
 import path from "path";
 
 const BASE = "http://localhost:8080";
@@ -13,13 +12,22 @@ const OUT_DIR = "Tools/visual-regression/output";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const consoleMessages = [];
   page.on("console", (m) => consoleMessages.push(`${m.type()}: ${m.text()}`));
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
+    waitUntil: "networkidle",
+  });
   await page.waitForFunction(() => !!window.viewer);
 
   // Wait for CesiumDebug to load
@@ -43,7 +51,9 @@ const OUT_DIR = "Tools/visual-regression/output";
   await page.evaluate(() => window.CesiumDebug.globeFragmentDebug());
 
   // Test setting a known mode
-  await page.evaluate(() => window.CesiumDebug.globeFragmentDebug("post-composite-color"));
+  await page.evaluate(() =>
+    window.CesiumDebug.globeFragmentDebug("post-composite-color"),
+  );
   await page.evaluate(async () => {
     for (let i = 0; i < 600; i++) {
       window.viewer.scene.render();
@@ -57,7 +67,9 @@ const OUT_DIR = "Tools/visual-regression/output";
   console.log(`  Screenshot: ${out}`);
 
   // Test setting an unknown mode (should warn once)
-  await page.evaluate(() => window.CesiumDebug.globeFragmentDebug("bogus-mode-name"));
+  await page.evaluate(() =>
+    window.CesiumDebug.globeFragmentDebug("bogus-mode-name"),
+  );
   await page.evaluate(async () => {
     for (let i = 0; i < 30; i++) {
       window.viewer.scene.render();
@@ -83,7 +95,13 @@ const OUT_DIR = "Tools/visual-regression/output";
 
   console.log("\nConsole messages:");
   const relevantMessages = consoleMessages
-    .filter((m) => m.includes("CesiumDebug") || m.includes("globeFragmentDebug") || m.includes("bogus") || m.toLowerCase().includes("unknown"))
+    .filter(
+      (m) =>
+        m.includes("CesiumDebug") ||
+        m.includes("globeFragmentDebug") ||
+        m.includes("bogus") ||
+        m.toLowerCase().includes("unknown"),
+    )
     .slice(0, 30);
   for (const m of relevantMessages) console.log(`  ${m}`);
 })();

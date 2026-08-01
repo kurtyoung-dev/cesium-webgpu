@@ -114,9 +114,13 @@ async function run() {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   await page.addInitScript(errorGateInit);
   await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
   const r = await page.evaluate(TEST);
   console.log(JSON.stringify(r, null, 1));
@@ -125,16 +129,51 @@ async function run() {
   const hy = r.hierarchy;
   const a = r.auto;
   const checks = [
-    ["computeAtmosphericEffects + applyAtmosphericConditions exported", r.api.hasComputeEffects && r.api.hasApply],
-    [`hot → shimmer on (intensity ${p.hotShimmerI} > 0)`, p.hotShimmer === true && p.hotShimmerI > 0],
-    [`cold → optics on (halo ${p.coldHalo} > 0)`, p.coldOptics === true && p.coldHalo > 0],
+    [
+      "computeAtmosphericEffects + applyAtmosphericConditions exported",
+      r.api.hasComputeEffects && r.api.hasApply,
+    ],
+    [
+      `hot → shimmer on (intensity ${p.hotShimmerI} > 0)`,
+      p.hotShimmer === true && p.hotShimmerI > 0,
+    ],
+    [
+      `cold → optics on (halo ${p.coldHalo} > 0)`,
+      p.coldOptics === true && p.coldHalo > 0,
+    ],
     [`humid + small spread → groundFog on`, p.foggyGroundFog === true],
-    [`neutral → all effects off`, p.neutralShimmer === false && p.neutralOptics === false && p.neutralGroundFog === false],
-    [`effects hierarchy present (shimmer/groundFog/optics/precipitation)`, hy.hasEffects && hy.hasShimmer && hy.hasGroundFog && hy.hasOptics && hy.hasPrecip],
+    [
+      `neutral → all effects off`,
+      p.neutralShimmer === false &&
+        p.neutralOptics === false &&
+        p.neutralGroundFog === false,
+    ],
+    [
+      `effects hierarchy present (shimmer/groundFog/optics/precipitation)`,
+      hy.hasEffects &&
+        hy.hasShimmer &&
+        hy.hasGroundFog &&
+        hy.hasOptics &&
+        hy.hasPrecip,
+    ],
     [`auto defaults OFF (byte-neutral)`, hy.autoDefault === false],
-    [`auto OFF → applyAtmosphericConditions does NOT touch shimmer (scene=${a.offShimmer}, leaf=${a.offLeaf})`, a.offShimmer === false && a.offLeaf === false],
-    [`auto ON + hot → shimmer leaf + scene flag set (leaf=${a.onLeaf}, flag=${a.onSceneFlag}, I=${a.onIntensity})`, a.onLeaf === true && a.onSceneFlag === true && a.onIntensity > 0 && a.onSceneIntensity > 0],
-    [`auto ON + cold → shimmer off, optics on (shimmer=${a.coldShimmer}, optics=${a.coldOptics}, flag=${a.coldSceneFlag})`, a.coldShimmer === false && a.coldOptics === true && a.coldSceneFlag === false],
+    [
+      `auto OFF → applyAtmosphericConditions does NOT touch shimmer (scene=${a.offShimmer}, leaf=${a.offLeaf})`,
+      a.offShimmer === false && a.offLeaf === false,
+    ],
+    [
+      `auto ON + hot → shimmer leaf + scene flag set (leaf=${a.onLeaf}, flag=${a.onSceneFlag}, I=${a.onIntensity})`,
+      a.onLeaf === true &&
+        a.onSceneFlag === true &&
+        a.onIntensity > 0 &&
+        a.onSceneIntensity > 0,
+    ],
+    [
+      `auto ON + cold → shimmer off, optics on (shimmer=${a.coldShimmer}, optics=${a.coldOptics}, flag=${a.coldSceneFlag})`,
+      a.coldShimmer === false &&
+        a.coldOptics === true &&
+        a.coldSceneFlag === false,
+    ],
   ];
   console.log("\n=== ANALYSIS ===");
   let pass = true;

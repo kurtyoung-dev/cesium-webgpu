@@ -320,8 +320,7 @@ const ANALYZE_IMAGES = async ({ current, other, currentTag }) => {
           integral[y0 * stride + x1 + 1] -
           integral[(y1 + 1) * stride + x0] +
           integral[y0 * stride + x0];
-        blurred[y * width + x] =
-          sum / ((x1 - x0 + 1) * (y1 - y0 + 1));
+        blurred[y * width + x] = sum / ((x1 - x0 + 1) * (y1 - y0 + 1));
       }
     }
     return blurred;
@@ -433,9 +432,7 @@ const ANALYZE_IMAGES = async ({ current, other, currentTag }) => {
       coherentJumpPixels,
       coherentComponents,
       largestComponent,
-      coherentJumpDensity: bodyPixels
-        ? coherentJumpPixels / bodyPixels
-        : 0,
+      coherentJumpDensity: bodyPixels ? coherentJumpPixels / bodyPixels : 0,
       rawMask: raw,
     };
   };
@@ -480,10 +477,8 @@ const ANALYZE_IMAGES = async ({ current, other, currentTag }) => {
     }
     return {
       differentPixels,
-      differentPixelFraction:
-        differentPixels / (left.width * left.height),
-      meanAbsoluteChannelDelta:
-        absoluteChannelDelta / left.pixels.length / 255,
+      differentPixelFraction: differentPixels / (left.width * left.height),
+      meanAbsoluteChannelDelta: absoluteChannelDelta / left.pixels.length / 255,
       maxChannelDelta,
     };
   };
@@ -502,10 +497,8 @@ const ANALYZE_IMAGES = async ({ current, other, currentTag }) => {
   if (!other) return result;
 
   const otherDecoded = await decodeSet(other);
-  const before =
-    currentTag === "before" ? currentDecoded : otherDecoded;
-  const after =
-    currentTag === "after" ? currentDecoded : otherDecoded;
+  const before = currentTag === "before" ? currentDecoded : otherDecoded;
+  const after = currentTag === "after" ? currentDecoded : otherDecoded;
   const beforeMask = before.settledSummary.rawMask;
   const afterMask = after.settledSummary.rawMask;
   let intersection = 0;
@@ -591,10 +584,7 @@ function dataUrlFromFile(filePath) {
 }
 
 function artifactPath(tag, phase) {
-  return path.join(
-    OUT_DIR,
-    `cloud-banding-${QUALITY}-${tag}-${phase}.png`,
-  );
+  return path.join(OUT_DIR, `cloud-banding-${QUALITY}-${tag}-${phase}.png`);
 }
 
 async function main() {
@@ -606,283 +596,278 @@ async function main() {
     args: ["--enable-unsafe-webgpu"],
   });
   try {
-  const browserVersion = browser.version();
-  const page = await browser.newPage({
-    viewport: { width: WIDTH, height: HEIGHT },
-  });
-  const pageErrors = [];
-  const gpuConsoleErrors = attachConsoleErrorGate(page);
-  page.on("console", (message) => {
-    if (message.type() === "error") pageErrors.push(message.text());
-  });
-  page.on("pageerror", (error) => {
-    pageErrors.push(`pageerror: ${error.message}`);
-  });
-  await page.addInitScript(errorGateInit);
-  await installCloudProbeHarnessOnPage(page);
-  await page.goto(URL, {
-    waitUntil: "networkidle",
-    timeout: 90_000,
-  });
-  await page.waitForFunction(
-    () => Boolean(globalThis.viewer),
-    undefined,
-    { timeout: 90_000 },
-  );
-  const armState = await armWebGPUDevices(page);
-  const capture = await page.evaluate(CAPTURE_SCENE, {
-    fixedTime: FIXED_TIME,
-    quality: QUALITY,
-  });
+    const browserVersion = browser.version();
+    const page = await browser.newPage({
+      viewport: { width: WIDTH, height: HEIGHT },
+    });
+    const pageErrors = [];
+    const gpuConsoleErrors = attachConsoleErrorGate(page);
+    page.on("console", (message) => {
+      if (message.type() === "error") pageErrors.push(message.text());
+    });
+    page.on("pageerror", (error) => {
+      pageErrors.push(`pageerror: ${error.message}`);
+    });
+    await page.addInitScript(errorGateInit);
+    await installCloudProbeHarnessOnPage(page);
+    await page.goto(URL, {
+      waitUntil: "networkidle",
+      timeout: 90_000,
+    });
+    await page.waitForFunction(() => Boolean(globalThis.viewer), undefined, {
+      timeout: 90_000,
+    });
+    const armState = await armWebGPUDevices(page);
+    const capture = await page.evaluate(CAPTURE_SCENE, {
+      fixedTime: FIXED_TIME,
+      quality: QUALITY,
+    });
 
-  for (const phase of ["off", "single", "settled"]) {
-    fs.writeFileSync(
-      artifactPath(TAG, phase),
-      Buffer.from(capture[phase].split(",")[1], "base64"),
+    for (const phase of ["off", "single", "settled"]) {
+      fs.writeFileSync(
+        artifactPath(TAG, phase),
+        Buffer.from(capture[phase].split(",")[1], "base64"),
+      );
+    }
+    const artifactFingerprints = Object.fromEntries(
+      ["off", "single", "settled"].map((phase) => [
+        phase,
+        fileFingerprint(artifactPath(TAG, phase)),
+      ]),
     );
-  }
-  const artifactFingerprints = Object.fromEntries(
-    ["off", "single", "settled"].map((phase) => [
-      phase,
-      fileFingerprint(artifactPath(TAG, phase)),
-    ]),
-  );
 
-  const currentImages = {
-    off: capture.off,
-    single: capture.single,
-    settled: capture.settled,
-  };
-  const currentAnalysis = await page.evaluate(ANALYZE_IMAGES, {
-    current: currentImages,
-    other: null,
-    currentTag: TAG,
-  });
+    const currentImages = {
+      off: capture.off,
+      single: capture.single,
+      settled: capture.settled,
+    };
+    const currentAnalysis = await page.evaluate(ANALYZE_IMAGES, {
+      current: currentImages,
+      other: null,
+      currentTag: TAG,
+    });
 
-  const otherTag = TAG === "before" ? "after" : "before";
-  const otherJsonPath = path.join(
-    OUT_DIR,
-    `cloud-banding-${QUALITY}-${otherTag}.json`,
-  );
-  let otherRecord = null;
-  let comparison = {
-    status: PAIR_ID === null ? "not-requested" : "missing-companion",
-    pairId: PAIR_ID,
-    otherTag,
-  };
-  if (fs.existsSync(otherJsonPath)) {
-    otherRecord = JSON.parse(fs.readFileSync(otherJsonPath, "utf8"));
-    const requiredOtherArtifacts = ["off", "single", "settled"].map((phase) =>
-      artifactPath(otherTag, phase),
+    const otherTag = TAG === "before" ? "after" : "before";
+    const otherJsonPath = path.join(
+      OUT_DIR,
+      `cloud-banding-${QUALITY}-${otherTag}.json`,
     );
-    const reasons = [];
-    if (PAIR_ID === null) reasons.push("no CLOUD_BANDING_PAIR_ID requested");
-    if (otherRecord.probeVersion !== PROBE_VERSION)
-      reasons.push("probe version differs");
-    if (otherRecord.pairId !== PAIR_ID) reasons.push("pair ID differs");
-    if (
-      JSON.stringify(otherRecord.configTruth?.config) !==
-      JSON.stringify(capture.configTruth.config)
-    ) {
-      reasons.push("cloud configuration differs");
-    }
-    if (
-      JSON.stringify(otherRecord.adapterInfo) !==
-      JSON.stringify(capture.adapterInfo)
-    ) {
-      reasons.push("GPU adapter differs");
-    }
-    if (otherRecord.browserVersion !== browserVersion)
-      reasons.push("browser version differs");
-    if (
-      JSON.stringify(otherRecord.canvas) !== JSON.stringify(capture.canvas)
-    ) {
-      reasons.push("canvas dimensions differ");
-    }
-    if (
-      otherRecord.source?.buildFingerprint === source.buildFingerprint
-    ) {
-      reasons.push("cloud build fingerprint is identical");
-    }
-    if (!requiredOtherArtifacts.every((filePath) => fs.existsSync(filePath))) {
-      reasons.push("companion PNG set is incomplete");
-    } else {
-      for (const [phase, filePath] of [
-        ["off", requiredOtherArtifacts[0]],
-        ["single", requiredOtherArtifacts[1]],
-        ["settled", requiredOtherArtifacts[2]],
-      ]) {
-        const recorded = otherRecord.artifacts?.[phase];
-        const actual = fileFingerprint(filePath);
-        if (
-          recorded?.sha256 !== actual.sha256 ||
-          recorded?.byteLength !== actual.byteLength
-        ) {
-          reasons.push(`companion ${phase} PNG differs from its manifest`);
+    let otherRecord = null;
+    let comparison = {
+      status: PAIR_ID === null ? "not-requested" : "missing-companion",
+      pairId: PAIR_ID,
+      otherTag,
+    };
+    if (fs.existsSync(otherJsonPath)) {
+      otherRecord = JSON.parse(fs.readFileSync(otherJsonPath, "utf8"));
+      const requiredOtherArtifacts = ["off", "single", "settled"].map((phase) =>
+        artifactPath(otherTag, phase),
+      );
+      const reasons = [];
+      if (PAIR_ID === null) reasons.push("no CLOUD_BANDING_PAIR_ID requested");
+      if (otherRecord.probeVersion !== PROBE_VERSION)
+        reasons.push("probe version differs");
+      if (otherRecord.pairId !== PAIR_ID) reasons.push("pair ID differs");
+      if (
+        JSON.stringify(otherRecord.configTruth?.config) !==
+        JSON.stringify(capture.configTruth.config)
+      ) {
+        reasons.push("cloud configuration differs");
+      }
+      if (
+        JSON.stringify(otherRecord.adapterInfo) !==
+        JSON.stringify(capture.adapterInfo)
+      ) {
+        reasons.push("GPU adapter differs");
+      }
+      if (otherRecord.browserVersion !== browserVersion)
+        reasons.push("browser version differs");
+      if (
+        JSON.stringify(otherRecord.canvas) !== JSON.stringify(capture.canvas)
+      ) {
+        reasons.push("canvas dimensions differ");
+      }
+      if (otherRecord.source?.buildFingerprint === source.buildFingerprint) {
+        reasons.push("cloud build fingerprint is identical");
+      }
+      if (
+        !requiredOtherArtifacts.every((filePath) => fs.existsSync(filePath))
+      ) {
+        reasons.push("companion PNG set is incomplete");
+      } else {
+        for (const [phase, filePath] of [
+          ["off", requiredOtherArtifacts[0]],
+          ["single", requiredOtherArtifacts[1]],
+          ["settled", requiredOtherArtifacts[2]],
+        ]) {
+          const recorded = otherRecord.artifacts?.[phase];
+          const actual = fileFingerprint(filePath);
+          if (
+            recorded?.sha256 !== actual.sha256 ||
+            recorded?.byteLength !== actual.byteLength
+          ) {
+            reasons.push(`companion ${phase} PNG differs from its manifest`);
+          }
         }
+      }
+
+      if (reasons.length === 0) {
+        const pairedAnalysis = await page.evaluate(ANALYZE_IMAGES, {
+          current: currentImages,
+          other: {
+            off: dataUrlFromFile(artifactPath(otherTag, "off")),
+            single: dataUrlFromFile(artifactPath(otherTag, "single")),
+            settled: dataUrlFromFile(artifactPath(otherTag, "settled")),
+          },
+          currentTag: TAG,
+        });
+        comparison = {
+          status: "compared",
+          pairId: PAIR_ID,
+          otherTag,
+          ...pairedAnalysis.comparison,
+        };
+      } else if (PAIR_ID !== null) {
+        comparison = {
+          status: "noncomparable-companion",
+          pairId: PAIR_ID,
+          otherTag,
+          reasons,
+        };
       }
     }
 
-    if (reasons.length === 0) {
-      const pairedAnalysis = await page.evaluate(ANALYZE_IMAGES, {
-        current: currentImages,
-        other: {
-          off: dataUrlFromFile(artifactPath(otherTag, "off")),
-          single: dataUrlFromFile(artifactPath(otherTag, "single")),
-          settled: dataUrlFromFile(artifactPath(otherTag, "settled")),
-        },
-        currentTag: TAG,
-      });
-      comparison = {
-        status: "compared",
-        pairId: PAIR_ID,
-        otherTag,
-        ...pairedAnalysis.comparison,
-      };
-    } else if (PAIR_ID !== null) {
-      comparison = {
-        status: "noncomparable-companion",
-        pairId: PAIR_ID,
-        otherTag,
-        reasons,
-      };
-    }
-  }
+    const gpuGate = await collectGateErrors(page);
+    await browser.close();
+    const errors = [
+      ...pageErrors,
+      ...gpuConsoleErrors,
+      ...gpuGate.errors,
+      ...(gpuGate.deviceLost ? [gpuGate.deviceLost] : []),
+      ...(armState.found < 1
+        ? ["WebGPU error gate did not find a device"]
+        : []),
+    ].filter(
+      (error) =>
+        !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(error),
+    );
+    const uniqueErrors = [...new Set(errors)];
+    const flags = Math.trunc(capture.realization.qualityFlags ?? 0);
+    const halfResEnabled = (flags & HALF_RES_BIT) !== 0;
+    const temporalEnabled = (flags & TEMPORAL_BIT) !== 0;
+    const jitterEnabled = (flags & JITTER_BIT) !== 0;
+    const expectedJitterEnabled = TAG === "after";
+    const temporalQuality = QUALITY === "low";
+    const artifactValid =
+      capture.configTruth.ok === true &&
+      capture.onTruth.ok === true &&
+      capture.readiness.ok === true &&
+      capture.readiness.executeCalls > 0 &&
+      capture.realization.initialized === true &&
+      capture.realization.pipelineReady === true &&
+      capture.realization.maxSteps === (temporalQuality ? 24 : 96) &&
+      capture.realization.halfWidth ===
+        (temporalQuality ? capture.canvas.width * 0.5 : 0) &&
+      capture.realization.halfHeight ===
+        (temporalQuality ? capture.canvas.height * 0.5 : 0) &&
+      capture.realization.temporalWidth ===
+        (temporalQuality ? capture.canvas.width * 0.5 : 0) &&
+      capture.realization.temporalHeight ===
+        (temporalQuality ? capture.canvas.height * 0.5 : 0) &&
+      halfResEnabled === temporalQuality &&
+      temporalEnabled === temporalQuality &&
+      (temporalQuality ||
+        currentAnalysis.current.singleToSettled.differentPixels === 0) &&
+      currentAnalysis.current.single.bodyPixels > 5000 &&
+      currentAnalysis.current.settled.bodyPixels > 5000 &&
+      jitterEnabled === expectedJitterEnabled &&
+      capture.hasDevice &&
+      capture.adapterInfo !== null &&
+      uniqueErrors.length === 0;
+    const comparisonPassed =
+      comparison.status === "compared"
+        ? comparison.passed === true &&
+          artifactValid &&
+          otherRecord?.artifactValid === true
+        : null;
 
-  const gpuGate = await collectGateErrors(page);
-  await browser.close();
-  const errors = [
-    ...pageErrors,
-    ...gpuConsoleErrors,
-    ...gpuGate.errors,
-    ...(gpuGate.deviceLost ? [gpuGate.deviceLost] : []),
-    ...(armState.found < 1
-      ? ["WebGPU error gate did not find a device"]
-      : []),
-  ].filter(
-    (error) =>
-      !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(error),
-  );
-  const uniqueErrors = [...new Set(errors)];
-  const flags = Math.trunc(capture.realization.qualityFlags ?? 0);
-  const halfResEnabled = (flags & HALF_RES_BIT) !== 0;
-  const temporalEnabled = (flags & TEMPORAL_BIT) !== 0;
-  const jitterEnabled = (flags & JITTER_BIT) !== 0;
-  const expectedJitterEnabled = TAG === "after";
-  const temporalQuality = QUALITY === "low";
-  const artifactValid =
-    capture.configTruth.ok === true &&
-    capture.onTruth.ok === true &&
-    capture.readiness.ok === true &&
-    capture.readiness.executeCalls > 0 &&
-    capture.realization.initialized === true &&
-    capture.realization.pipelineReady === true &&
-    capture.realization.maxSteps === (temporalQuality ? 24 : 96) &&
-    capture.realization.halfWidth ===
-      (temporalQuality ? capture.canvas.width * 0.5 : 0) &&
-    capture.realization.halfHeight ===
-      (temporalQuality ? capture.canvas.height * 0.5 : 0) &&
-    capture.realization.temporalWidth ===
-      (temporalQuality ? capture.canvas.width * 0.5 : 0) &&
-    capture.realization.temporalHeight ===
-      (temporalQuality ? capture.canvas.height * 0.5 : 0) &&
-    halfResEnabled === temporalQuality &&
-    temporalEnabled === temporalQuality &&
-    (temporalQuality ||
-      currentAnalysis.current.singleToSettled.differentPixels === 0) &&
-    currentAnalysis.current.single.bodyPixels > 5000 &&
-    currentAnalysis.current.settled.bodyPixels > 5000 &&
-    jitterEnabled === expectedJitterEnabled &&
-    capture.hasDevice &&
-    capture.adapterInfo !== null &&
-    uniqueErrors.length === 0;
-  const comparisonPassed =
-    comparison.status === "compared"
-      ? comparison.passed === true &&
-        artifactValid &&
-        otherRecord?.artifactValid === true
-      : null;
+    const record = {
+      probeVersion: PROBE_VERSION,
+      measurementKind: "visual-quality-cloud-ray-banding",
+      explicitlyNotPerformanceEvidence: true,
+      pairId: PAIR_ID,
+      tag: TAG,
+      quality: QUALITY,
+      source,
+      artifacts: artifactFingerprints,
+      browserVersion,
+      adapterInfo: capture.adapterInfo,
+      canvas: capture.canvas,
+      fixedTime: capture.effectiveTimeIso,
+      configTruth: capture.configTruth,
+      onTruth: capture.onTruth,
+      readiness: capture.readiness,
+      singleRealization: capture.singleRealization,
+      realization: capture.realization,
+      expectedJitterEnabled,
+      halfResEnabled,
+      temporalEnabled,
+      jitterEnabled,
+      metrics: currentAnalysis.current,
+      comparison,
+      limitations: [
+        "The first-frame capture forces cache.frameCounter=-1 and temporalFirstFrame=true; it isolates a deterministic sample but does not certify production history invalidation.",
+        temporalQuality
+          ? "The settled low-quality capture includes the current half-resolution Bayer UV sequence, temporal reprojection, history clamp, and blend; it cannot attribute every settled-frame difference to IGN alone."
+          : "The high-quality route is full-resolution and temporal-off; it characterizes static spatial IGN but not temporal reconstruction.",
+        "For high quality, exact single/settled identity certifies only this fixed-camera, fixed-time, zero-wind full-resolution route.",
+        "Cloud-aware god rays are disabled, so fragmentCloudMaskMain and its intentionally unjittered mask march are not exercised.",
+        "The coherent-contour metric is a provisional banding oracle and does not certify baked-noise periodicity, regional variety, or complete cloud appearance.",
+        "No CPU/GPU duration is measured; these artifacts are not performance evidence.",
+      ],
+      gpuGate: {
+        ...gpuGate,
+        armState,
+      },
+      errors: uniqueErrors,
+      artifactValid,
+    };
+    const jsonPath = path.join(OUT_DIR, `cloud-banding-${QUALITY}-${TAG}.json`);
+    fs.writeFileSync(jsonPath, JSON.stringify(record, null, 2));
 
-  const record = {
-    probeVersion: PROBE_VERSION,
-    measurementKind: "visual-quality-cloud-ray-banding",
-    explicitlyNotPerformanceEvidence: true,
-    pairId: PAIR_ID,
-    tag: TAG,
-    quality: QUALITY,
-    source,
-    artifacts: artifactFingerprints,
-    browserVersion,
-    adapterInfo: capture.adapterInfo,
-    canvas: capture.canvas,
-    fixedTime: capture.effectiveTimeIso,
-    configTruth: capture.configTruth,
-    onTruth: capture.onTruth,
-    readiness: capture.readiness,
-    singleRealization: capture.singleRealization,
-    realization: capture.realization,
-    expectedJitterEnabled,
-    halfResEnabled,
-    temporalEnabled,
-    jitterEnabled,
-    metrics: currentAnalysis.current,
-    comparison,
-    limitations: [
-      "The first-frame capture forces cache.frameCounter=-1 and temporalFirstFrame=true; it isolates a deterministic sample but does not certify production history invalidation.",
-      temporalQuality
-        ? "The settled low-quality capture includes the current half-resolution Bayer UV sequence, temporal reprojection, history clamp, and blend; it cannot attribute every settled-frame difference to IGN alone."
-        : "The high-quality route is full-resolution and temporal-off; it characterizes static spatial IGN but not temporal reconstruction.",
-      "For high quality, exact single/settled identity certifies only this fixed-camera, fixed-time, zero-wind full-resolution route.",
-      "Cloud-aware god rays are disabled, so fragmentCloudMaskMain and its intentionally unjittered mask march are not exercised.",
-      "The coherent-contour metric is a provisional banding oracle and does not certify baked-noise periodicity, regional variety, or complete cloud appearance.",
-      "No CPU/GPU duration is measured; these artifacts are not performance evidence.",
-    ],
-    gpuGate: {
-      ...gpuGate,
-      armState,
-    },
-    errors: uniqueErrors,
-    artifactValid,
-  };
-  const jsonPath = path.join(
-    OUT_DIR,
-    `cloud-banding-${QUALITY}-${TAG}.json`,
-  );
-  fs.writeFileSync(jsonPath, JSON.stringify(record, null, 2));
-
-  console.log(
-    `[cloud-banding:${QUALITY}:${TAG}] artifact=${artifactValid ? "VALID" : "INVALID"} ` +
-      `jitter=${jitterEnabled} expected=${expectedJitterEnabled} ` +
-      `singleDensity=${record.metrics.single.coherentJumpDensity.toFixed(6)} ` +
-      `settledDensity=${record.metrics.settled.coherentJumpDensity.toFixed(6)}`,
-  );
-  console.log(
-    `[cloud-banding:${QUALITY}:${TAG}] comparison=${comparison.status} manifest=${jsonPath}`,
-  );
-  if (comparison.status === "compared") {
-    for (const check of comparison.checks) {
+    console.log(
+      `[cloud-banding:${QUALITY}:${TAG}] artifact=${artifactValid ? "VALID" : "INVALID"} ` +
+        `jitter=${jitterEnabled} expected=${expectedJitterEnabled} ` +
+        `singleDensity=${record.metrics.single.coherentJumpDensity.toFixed(6)} ` +
+        `settledDensity=${record.metrics.settled.coherentJumpDensity.toFixed(6)}`,
+    );
+    console.log(
+      `[cloud-banding:${QUALITY}:${TAG}] comparison=${comparison.status} manifest=${jsonPath}`,
+    );
+    if (comparison.status === "compared") {
+      for (const check of comparison.checks) {
+        console.log(
+          `  [${check.passed ? "PASS" : "FAIL"}] ${check.name}: ${check.value}`,
+        );
+      }
       console.log(
-        `  [${check.passed ? "PASS" : "FAIL"}] ${check.name}: ${check.value}`,
+        `BANDING RESULT: ${comparisonPassed ? "GREEN" : "RED"} (manual PNG inspection still required)`,
+      );
+    } else if (comparison.status !== "not-requested") {
+      console.log(
+        `BANDING RESULT: RED (${comparison.status}; requested pairs fail closed)`,
+      );
+    } else {
+      console.log(
+        "BANDING RESULT: characterization only (no paired improvement claim)",
       );
     }
-    console.log(
-      `BANDING RESULT: ${comparisonPassed ? "GREEN" : "RED"} (manual PNG inspection still required)`,
-    );
-  } else if (comparison.status !== "not-requested") {
-    console.log(
-      `BANDING RESULT: RED (${comparison.status}; requested pairs fail closed)`,
-    );
-  } else {
-    console.log(
-      "BANDING RESULT: characterization only (no paired improvement claim)",
-    );
-  }
 
-  const processPassed =
-    artifactValid &&
-    (PAIR_ID === null ||
-      (comparison.status === "compared" && comparisonPassed === true));
-  process.exitCode = processPassed ? 0 : 1;
+    const processPassed =
+      artifactValid &&
+      (PAIR_ID === null ||
+        (comparison.status === "compared" && comparisonPassed === true));
+    process.exitCode = processPassed ? 0 : 1;
   } finally {
     // Guarantee headless Edge teardown even if capture/analysis throws
     // (pairs with the force-exit watchdog above).

@@ -53,7 +53,9 @@ function expectedSampleIndex(cell, dims) {
 }
 
 async function run() {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = [];
   page.on("console", (m) => {
     if (m.type() === "error") consoleErrors.push(m.text());
@@ -71,6 +73,7 @@ async function run() {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
+      // eslint-disable-next-line no-new-func -- in-page snippet compiled from source text; that is the probe harness contract
       const filled = new Function(`return (${filledSrc});`)();
 
       // FORCE the pick-fleet log-depth gate ON (C10-11 will do this fleet-wide).
@@ -132,7 +135,10 @@ async function run() {
     material.alpha = fsInput.metadata.color.a;
 }`,
       });
-      const prim = new C.VoxelPrimitive({ provider: makeProvider(), customShader });
+      const prim = new C.VoxelPrimitive({
+        provider: makeProvider(),
+        customShader,
+      });
       prim.nearestSampling = true;
       scene.primitives.add(prim);
 
@@ -264,7 +270,9 @@ async function run() {
         metadataOrder: C.VoxelMetadataOrder.Y_UP,
         requestData: function (options) {
           if (options.tileLevel >= 1) return Promise.reject("single tile");
-          return Promise.resolve(C.VoxelContent.fromMetadataArray([blockerData]));
+          return Promise.resolve(
+            C.VoxelContent.fromMetadataArray([blockerData]),
+          );
         },
       };
       const blocker = new C.VoxelPrimitive({
@@ -328,7 +336,9 @@ const ldOk =
   ins.pickVoxelName.includes("[ld]") &&
   ins.pickVoxelDepthWrite === true;
 if (!ldOk) pass = false;
-console.log(`  [struct] [ld] pick pipelines + depthWriteEnabled: ${ldOk ? "ok" : "MISMATCH"}`);
+console.log(
+  `  [struct] [ld] pick pipelines + depthWriteEnabled: ${ldOk ? "ok" : "MISMATCH"}`,
+);
 
 // Cell pick correctness (same voxel picked, gate on).
 for (let i = 0; i < TARGETS.length; i++) {
@@ -345,13 +355,17 @@ for (let i = 0; i < TARGETS.length; i++) {
 // Object pick correctness.
 const objOk = r.objectPick && r.objectPick.hit && r.objectPick.isVoxel;
 if (!objOk) pass = false;
-console.log(`  [object pick] voxel primitive returned: ${JSON.stringify(r.objectPick)} ${objOk ? "ok" : "MISMATCH"}`);
+console.log(
+  `  [object pick] voxel primitive returned: ${JSON.stringify(r.objectPick)} ${objOk ? "ok" : "MISMATCH"}`,
+);
 
 // Front/back occlusion: nearer blocker wins the shared pick FBO depth test.
 const occ = r.occlusion || {};
 const occOk = occ.hit && occ.isBlocker === true;
 if (!occOk) pass = false;
-console.log(`  [occlusion] nearer voxel wins (log depth written+ordered): ${JSON.stringify(occ)} ${occOk ? "ok" : "MISMATCH"}`);
+console.log(
+  `  [occlusion] nearer voxel wins (log depth written+ordered): ${JSON.stringify(occ)} ${occOk ? "ok" : "MISMATCH"}`,
+);
 
 const errTotal = (r.consoleErrors?.length || 0) + (r.deviceErrors?.length || 0);
 if (errTotal > 0) {
@@ -361,7 +375,9 @@ if (errTotal > 0) {
     device: r.deviceErrors?.slice(0, 4),
   });
 } else {
-  console.log("  [errors] 0 device/console errors (LOG_DEPTH pipelines compiled) ok");
+  console.log(
+    "  [errors] 0 device/console errors (LOG_DEPTH pipelines compiled) ok",
+  );
 }
 
 console.log(pass ? "PROBE VERDICT: PASS" : "PROBE VERDICT: FAIL");

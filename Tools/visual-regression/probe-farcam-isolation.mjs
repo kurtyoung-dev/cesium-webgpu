@@ -24,7 +24,9 @@ const OUT_DIR = path.join(__dirname, "output");
 const HEIGHTS_MM = [12, 20, 35, 50];
 
 async function boot(browser, renderer) {
-  const page = await browser.newPage({ viewport: { width: 1000, height: 1000 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 1000 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -90,7 +92,10 @@ async function setViewAndSettle(page, heightMm, frames) {
         await new Promise((r) => requestAnimationFrame(r));
       }
       remove();
-      return { tilesLoaded: v.scene.globe.tilesLoaded, lastCov: +lastCov.toFixed(3) };
+      return {
+        tilesLoaded: v.scene.globe.tilesLoaded,
+        lastCov: +lastCov.toFixed(3),
+      };
     },
     { heightMm, frames },
   );
@@ -122,7 +127,12 @@ async function capture(page, outPath) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
   const gpu = await boot(browser, "webgpu");
   const gl = await boot(browser, "webgl");
@@ -134,7 +144,9 @@ async function capture(page, outPath) {
     const sgl = await setViewAndSettle(gl.page, h, 200);
     await capture(gpu.page, path.join(OUT_DIR, `iso-h${h}-webgpu.png`));
     await capture(gl.page, path.join(OUT_DIR, `iso-h${h}-webgl.png`));
-    console.error(`h${h}: gpu cov=${sgpu.lastCov} tl=${sgpu.tilesLoaded} | gl cov=${sgl.lastCov}`);
+    console.error(
+      `h${h}: gpu cov=${sgpu.lastCov} tl=${sgpu.tilesLoaded} | gl cov=${sgl.lastCov}`,
+    );
   }
   console.error("gpu errs:", JSON.stringify(gpu.errs.slice(0, 6)));
   await browser.close();

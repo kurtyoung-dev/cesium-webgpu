@@ -87,7 +87,9 @@ function verifyBuildContainsS5() {
     const source = fs.readFileSync(file, "utf8");
     for (const token of [...required]) {
       if (source.includes(token)) {
-        foundIn[token] = path.relative(process.cwd(), file).replaceAll("\\", "/");
+        foundIn[token] = path
+          .relative(process.cwd(), file)
+          .replaceAll("\\", "/");
         required.delete(token);
       }
     }
@@ -206,8 +208,9 @@ const MEASURE = async ({
     const decodeSnapshot = async (snapshot) => {
       const image = new Image();
       const loaded = new Promise((resolve, reject) => {
+        const decodeFailed = "same-task PNG decode failed";
         image.onload = resolve;
-        image.onerror = () => reject(new Error("same-task PNG decode failed"));
+        image.onerror = () => reject(new Error(decodeFailed));
       });
       image.src = snapshot;
       await loaded;
@@ -238,7 +241,8 @@ const MEASURE = async ({
       if (!settled && typeof done === "function") {
         settled = done() === true;
       }
-      const result = typeof capture === "function" ? await capture() : undefined;
+      const hasCapture = typeof capture === "function";
+      const result = hasCapture ? await capture() : undefined;
       return { settled, result };
     };
     return { renderNow, captureNow, grabNow, settleThen };
@@ -309,11 +313,7 @@ const MEASURE = async ({
       if (lat < -75.0 || lat > 75.0) {
         continue;
       }
-      for (
-        let lon = lon0 - radius;
-        lon <= lon0 + radius + 1e-9;
-        lon += step
-      ) {
+      for (let lon = lon0 - radius; lon <= lon0 + radius + 1e-9; lon += step) {
         const wrapped = ((lon + 540.0) % 360.0) - 180.0;
         const score = observerScore(wrapped, lat);
         if (!candidate || score.totalityMargin > candidate.totalityMargin) {
@@ -435,8 +435,7 @@ const MEASURE = async ({
       skirtlessMeshCount,
       unknownSkirtMeshCount,
       totalIndices,
-      providerSelectionRevision:
-        provider?._eclipseSelectionRevision ?? null,
+      providerSelectionRevision: provider?._eclipseSelectionRevision ?? null,
     };
   };
   const summarizeAllocator = () => {
@@ -461,17 +460,14 @@ const MEASURE = async ({
       valid: state?.valid ?? null,
       moonObscuration: state?.moonObscuration ?? null,
       eclipseMagnitude: state?.eclipseMagnitude ?? null,
-      sceneLightFactor:
-        scene.frameState?.eclipseSceneLightFactor ?? null,
+      sceneLightFactor: scene.frameState?.eclipseSceneLightFactor ?? null,
       blockActive: shadow?.active ?? null,
       blockRevision: shadow?.revision ?? null,
       blockGate: shadow?.params?.x ?? null,
       anchorWeight: shadow?.anchorWeight ?? null,
       sunInvRange: shadow?.sunDirectionAndInvRange?.w ?? null,
-      moonInvRange:
-        shadow?.moonDirectionDeltaAndInvRange?.w ?? null,
-      prepared:
-        scene.frameState?.eclipseGlobeShadowPrepared ?? null,
+      moonInvRange: shadow?.moonDirectionDeltaAndInvRange?.w ?? null,
+      prepared: scene.frameState?.eclipseGlobeShadowPrepared ?? null,
       preparedSelectionRevision:
         scene.frameState?.eclipseGlobeShadowSelectionRevision ?? null,
       preparedSurfaceRadius:
@@ -506,8 +502,7 @@ const MEASURE = async ({
       height: image.height,
       nonBlackPixels: nonBlack,
       nonBlackPct: nonBlack / (image.width * image.height),
-      meanVisibleLuminance:
-        nonBlack > 0 ? luminanceSum / nonBlack : 0.0,
+      meanVisibleLuminance: nonBlack > 0 ? luminanceSum / nonBlack : 0.0,
       colorBuckets: buckets.size,
     };
   };
@@ -569,9 +564,7 @@ const MEASURE = async ({
       }
     }
     const bboxPixels =
-      maxX >= minX && maxY >= minY
-        ? (maxX - minX + 1) * (maxY - minY + 1)
-        : 0;
+      maxX >= minX && maxY >= minY ? (maxX - minX + 1) * (maxY - minY + 1) : 0;
     return {
       visiblePixels: visible,
       changedPixels: changed,
@@ -579,11 +572,9 @@ const MEASURE = async ({
       darkenedPixels: darkened,
       brightenedPixels: brightened,
       strongDarkenedPixels: strongDarkened,
-      strongDarkenedPctVisible:
-        visible > 0 ? strongDarkened / visible : 0.0,
+      strongDarkenedPctVisible: visible > 0 ? strongDarkened / visible : 0.0,
       unchangedVisiblePixels: unchangedVisible,
-      meanLuminanceDrop:
-        visible > 0 ? signedLuminanceDelta / visible : 0.0,
+      meanLuminanceDrop: visible > 0 ? signedLuminanceDelta / visible : 0.0,
       maxLuminanceDrop,
       maxChannelDelta,
       changedBounds:
@@ -601,10 +592,7 @@ const MEASURE = async ({
     const png = grabNow();
     return { image, png, state: summarizeState() };
   };
-  const captureSettledConfiguration = async (
-    masterEnabled,
-    s5Enabled,
-  ) => {
+  const captureSettledConfiguration = async (masterEnabled, s5Enabled) => {
     setEclipseConfiguration(masterEnabled, s5Enabled);
     let previousSelection = null;
     let stableSelectionStreak = 0;
@@ -629,10 +617,7 @@ const MEASURE = async ({
         break;
       }
     }
-    const captured = await captureConfiguration(
-      masterEnabled,
-      s5Enabled,
-    );
+    const captured = await captureConfiguration(masterEnabled, s5Enabled);
     return {
       ...captured,
       settle: {
@@ -657,10 +642,7 @@ const MEASURE = async ({
     const warmup = await captureNow();
     warmupStats = analyze(warmup);
     warmupCaptures++;
-    if (
-      warmupStats.nonBlackPct > 0.2 &&
-      warmupStats.colorBuckets > 80
-    ) {
+    if (warmupStats.nonBlackPct > 0.2 && warmupStats.colorBuckets > 80) {
       break;
     }
   }
@@ -750,11 +732,7 @@ const MEASURE = async ({
       new C.Cartesian3(),
     );
     if (C.Cartesian3.magnitudeSquared(right) < 1.0e-12) {
-      right = C.Cartesian3.cross(
-        direction,
-        C.Cartesian3.UNIT_Y,
-        right,
-      );
+      right = C.Cartesian3.cross(direction, C.Cartesian3.UNIT_Y, right);
     }
     C.Cartesian3.normalize(right, right);
     const up = C.Cartesian3.normalize(
@@ -781,16 +759,12 @@ const MEASURE = async ({
     const angularDistance = C.Math.toRadians(angularDistanceDegrees);
     const destinationLatitude = Math.asin(
       Math.sin(latitude) * Math.cos(angularDistance) +
-        Math.cos(latitude) *
-          Math.sin(angularDistance) *
-          Math.cos(bearing),
+        Math.cos(latitude) * Math.sin(angularDistance) * Math.cos(bearing),
     );
     const destinationLongitude =
       longitude +
       Math.atan2(
-        Math.sin(bearing) *
-          Math.sin(angularDistance) *
-          Math.cos(latitude),
+        Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(latitude),
         Math.cos(angularDistance) -
           Math.sin(latitude) * Math.sin(destinationLatitude),
       );
@@ -798,8 +772,7 @@ const MEASURE = async ({
       bearingDegrees,
       angularDistanceDegrees,
       longitude:
-        ((C.Math.toDegrees(destinationLongitude) + 540.0) % 360.0) -
-        180.0,
+        ((C.Math.toDegrees(destinationLongitude) + 540.0) % 360.0) - 180.0,
       latitude: C.Math.toDegrees(destinationLatitude),
     };
   };
@@ -839,11 +812,7 @@ const MEASURE = async ({
       }
       // Once a fully resident selection has repeatedly classified to the
       // opposite gate, additional frames cannot make this candidate useful.
-      if (
-        frames >= 23 &&
-        loadedStreakForAim >= 8 &&
-        matchingStreak === 0
-      ) {
+      if (frames >= 23 && loadedStreakForAim >= 8 && matchingStreak === 0) {
         break;
       }
     }
@@ -883,11 +852,12 @@ const MEASURE = async ({
   );
   const outsideCandidates = [];
   for (const angularDistanceDegrees of [45.0, 50.0, 55.0]) {
-    for (let bearingDegrees = 0.0; bearingDegrees < 360.0; bearingDegrees += 45.0) {
-      const candidate = destinationAt(
-        bearingDegrees,
-        angularDistanceDegrees,
-      );
+    for (
+      let bearingDegrees = 0.0;
+      bearingDegrees < 360.0;
+      bearingDegrees += 45.0
+    ) {
+      const candidate = destinationAt(bearingDegrees, angularDistanceDegrees);
       const score = observerScore(candidate.longitude, candidate.latitude);
       outsideCandidates.push({
         ...candidate,
@@ -917,10 +887,7 @@ const MEASURE = async ({
       );
       attempt.ellipsoidRayCoverage = measureEllipsoidRayCoverage();
       attemptedOutsideCandidates.push(attempt);
-      if (
-        attempt.settled &&
-        attempt.ellipsoidRayCoverage.fraction > 0.95
-      ) {
+      if (attempt.settled && attempt.ellipsoidRayCoverage.fraction > 0.95) {
         outsideDiscovery = attempt;
         break;
       }
@@ -1017,14 +984,8 @@ const MEASURE = async ({
         state: outsideCorrection.state,
         settle: outsideCorrection.settle,
       },
-      s2OnlyVsIdentity: compare(
-        outsideIdentity.image,
-        outsideS2Only.image,
-      ),
-      s2OnlyVsCorrection: compare(
-        outsideS2Only.image,
-        outsideCorrection.image,
-      ),
+      s2OnlyVsIdentity: compare(outsideIdentity.image, outsideS2Only.image),
+      s2OnlyVsCorrection: compare(outsideS2Only.image, outsideCorrection.image),
       correctionVsIdentity: compare(
         outsideIdentity.image,
         outsideCorrection.image,
@@ -1165,8 +1126,7 @@ function judge(side) {
   const insideIdentity = transition.inside?.identity ?? {};
   const insideLocal = transition.inside?.local ?? {};
   const insideFirst = transition.insideFirstFrame?.state ?? {};
-  const outsideReverseFirst =
-    transition.outsideReverseFirstFrame?.state ?? {};
+  const outsideReverseFirst = transition.outsideReverseFirstFrame?.state ?? {};
   const outsideReverse = transition.outsideReverse?.state ?? {};
   const eclipseDiff = eclipse.diff ?? {};
   const controlDiff = control.diff ?? {};
@@ -1211,8 +1171,7 @@ function judge(side) {
     rendererResolved:
       measurement.rendererType === side.requestedRenderer &&
       !side.structuralError,
-    noStructuralError:
-      !side.structuralError && !measurement.structuralError,
+    noStructuralError: !side.structuralError && !measurement.structuralError,
     noBrowserErrors: side.errors.length === 0,
     gpuErrorGateClean:
       (side.gpuGate?.errors?.length ?? 0) === 0 &&
@@ -1294,8 +1253,7 @@ function judge(side) {
         Number.POSITIVE_INFINITY) < 1.0e-3 &&
       isLocalState(insideFirst) &&
       Number.isFinite(insideFirst.blockRevision) &&
-      insideFirst.blockRevision !==
-        outsideCorrection.state?.blockRevision,
+      insideFirst.blockRevision !== outsideCorrection.state?.blockRevision,
     reverseFirstFrameIsConservativeFallback:
       (transition.outsideReverseFirstFrame?.cameraPositionError ??
         Number.POSITIVE_INFINITY) < 1.0e-3 &&
@@ -1371,8 +1329,7 @@ const strongCoverageDelta = Math.abs(
 const meanDropRelativeDelta =
   (glDiff.meanLuminanceDrop ?? 0.0) > 0.0
     ? Math.abs(
-        (glDiff.meanLuminanceDrop ?? 0.0) -
-          (gpuDiff.meanLuminanceDrop ?? 0.0),
+        (glDiff.meanLuminanceDrop ?? 0.0) - (gpuDiff.meanLuminanceDrop ?? 0.0),
       ) / glDiff.meanLuminanceDrop
     : Number.POSITIVE_INFINITY;
 const parity = {

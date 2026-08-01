@@ -180,8 +180,7 @@ async function analyzeOne(page, b64) {
           if (y > maxY) maxY = y;
         }
       }
-    if (maxX < 0)
-      return { litCount: 0, data: Array.from(d), w: W, h: H };
+    if (maxX < 0) return { litCount: 0, data: Array.from(d), w: W, h: H };
     // Geometric disc center/radius = bbox (disc rim is where lum crosses 18,
     // and the disc spans the same footprint regardless of phase because the
     // ellipsoid silhouette is lit-independent... except at crescent the dark
@@ -328,6 +327,8 @@ async function runPhase(tag, iso, label) {
   );
 
   const pass = limbPass && termPass;
-  console.log(`\n${pass ? "PASS" : "FAIL"} — moon reads as sun-lit on both backends`);
+  console.log(
+    `\n${pass ? "PASS" : "FAIL"} — moon reads as sun-lit on both backends`,
+  );
   process.exit(pass ? 0 : 1);
 })();

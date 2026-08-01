@@ -42,7 +42,9 @@ const errors = [];
 page.on("console", (m) => {
   if (m.type() === "error") errors.push(m.text().slice(0, 180));
 });
-page.on("pageerror", (e) => errors.push(`PAGEERROR: ${e.message.slice(0, 160)}`));
+page.on("pageerror", (e) =>
+  errors.push(`PAGEERROR: ${e.message.slice(0, 160)}`),
+);
 
 await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
   waitUntil: "load",
@@ -141,10 +143,7 @@ const out = await page.evaluate(async () => {
         // offset the sub-camera point (lon 0, lat 0) by central angle `ang`
         // along bearing `b`
         const lat = Math.asin(Math.cos(ang) * 0 + Math.sin(ang) * Math.cos(b));
-        const lon = Math.atan2(
-          Math.sin(b) * Math.sin(ang),
-          Math.cos(ang),
-        );
+        const lon = Math.atan2(Math.sin(b) * Math.sin(ang), Math.cos(ang));
         const id = `vf-${idx++}`;
         points.add({
           id,

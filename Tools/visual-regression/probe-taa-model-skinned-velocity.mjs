@@ -29,7 +29,7 @@
 // Env:   PROBE_BASE (default http://localhost:8080)
 
 import { chromium } from "playwright";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 

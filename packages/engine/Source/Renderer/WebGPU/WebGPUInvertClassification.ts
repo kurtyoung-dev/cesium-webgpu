@@ -511,8 +511,7 @@ function executeInvertClassificationComposite(
   invertHasStencilData?: boolean,
 ): void {
   const cache = invertClass._webgpuCache as
-    | InvertClassificationCache
-    | undefined;
+    InvertClassificationCache | undefined;
   if (!cache || !cache.initialized || !cache.bindGroup) {
     return;
   }
@@ -601,8 +600,7 @@ function buildInvertClassificationColorAttachment(
   invertClass: CesiumObjectWithWebGPUCache,
 ): GPURenderPassColorAttachment | null {
   const cache = invertClass._webgpuCache as
-    | InvertClassificationCache
-    | undefined;
+    InvertClassificationCache | undefined;
   if (!cache?.initialized || !cache.classifiedTextureView) {
     return null;
   }
@@ -639,8 +637,7 @@ function buildInvertClassificationDepthStencilAttachment(
   stencilLoadOp: GPULoadOp = "clear",
 ): GPURenderPassDepthStencilAttachment | null {
   const cache = invertClass._webgpuCache as
-    | InvertClassificationCache
-    | undefined;
+    InvertClassificationCache | undefined;
   if (!cache?.depthStencilView) {
     return null;
   }
@@ -665,8 +662,7 @@ function isInvertClassificationReady(
   invertClass: CesiumObjectWithWebGPUCache,
 ): boolean {
   const cache = invertClass._webgpuCache as
-    | InvertClassificationCache
-    | undefined;
+    InvertClassificationCache | undefined;
   return !!(
     cache?.initialized &&
     cache.classifiedTextureView &&
@@ -688,8 +684,7 @@ function getInvertClassificationSampleCount(
   invertClass: CesiumObjectWithWebGPUCache,
 ): number {
   const cache = invertClass._webgpuCache as
-    | InvertClassificationCache
-    | undefined;
+    InvertClassificationCache | undefined;
   return cache?.sampleCount ?? 1;
 }
 
@@ -711,8 +706,7 @@ function getInvertClassificationDepthTexture(
   invertClass: CesiumObjectWithWebGPUCache,
 ): GPUTexture | undefined {
   const cache = invertClass._webgpuCache as
-    | InvertClassificationCache
-    | undefined;
+    InvertClassificationCache | undefined;
   return cache?.depthStencilTexture ?? undefined;
 }
 
@@ -720,8 +714,7 @@ function destroyWebGPUInvertClassificationResources(
   invertClass: CesiumObjectWithWebGPUCache,
 ): void {
   const cache = invertClass._webgpuCache as
-    | InvertClassificationCache
-    | undefined;
+    InvertClassificationCache | undefined;
   if (!cache) {
     return;
   }

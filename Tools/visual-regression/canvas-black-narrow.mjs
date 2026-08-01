@@ -70,7 +70,7 @@ async function probe(label, modeFn) {
     }
 
     const canvas = v.scene.canvas;
-    let result = {};
+    const result = {};
     try {
       const dataUrl = canvas.toDataURL("image/png");
       const img = new Image();
@@ -113,7 +113,11 @@ async function probe(label, modeFn) {
       `${mode.padEnd(14)}: nonBlack=${result.nonBlackCount}/50  avg=${result.avg}  errs=${errors}`,
     );
     for (const m of allMsgs) {
-      if (m.text.startsWith("[CANVAS-BLACK") || m.text.includes("PostProcess]") || m.text.includes("MISSING")) {
+      if (
+        m.text.startsWith("[CANVAS-BLACK") ||
+        m.text.includes("PostProcess]") ||
+        m.text.includes("MISSING")
+      ) {
         console.log(`   ↳ [${m.type}] ${m.text.slice(0, 250)}`);
       }
     }

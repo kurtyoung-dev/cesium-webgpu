@@ -53,10 +53,13 @@ const VIEWPORT = { width: 800, height: 600 };
 
 // 3-minute HARD watchdog (machine safety: kill a hung Edge/device rather than
 // wedge the box). Cleared on normal completion.
-const watchdog = setTimeout(() => {
-  console.error("[probe-oitprim] WATCHDOG 3min — forcing exit(3)");
-  process.exit(3);
-}, 3 * 60 * 1000);
+const watchdog = setTimeout(
+  () => {
+    console.error("[probe-oitprim] WATCHDOG 3min — forcing exit(3)");
+    process.exit(3);
+  },
+  3 * 60 * 1000,
+);
 
 async function setupViewer(page, { sceneKind }) {
   return await page.evaluate(
@@ -141,12 +144,19 @@ async function setupViewer(page, { sceneKind }) {
         const radii = new C.Cartesian3(60, 60, 60);
         const ellipsoids = [
           { off: [0, dLat], color: new C.Color(1.0, 0.15, 0.15, 0.5) },
-          { off: [-dLon, -dLat * 0.6], color: new C.Color(0.15, 1.0, 0.2, 0.5) },
+          {
+            off: [-dLon, -dLat * 0.6],
+            color: new C.Color(0.15, 1.0, 0.2, 0.5),
+          },
           { off: [dLon, -dLat * 0.6], color: new C.Color(0.2, 0.35, 1.0, 0.5) },
         ];
         for (const e of ellipsoids) {
           v.entities.add({
-            position: C.Cartesian3.fromDegrees(LON + e.off[0], LAT + e.off[1], H),
+            position: C.Cartesian3.fromDegrees(
+              LON + e.off[0],
+              LAT + e.off[1],
+              H,
+            ),
             ellipsoid: { radii, material: e.color, outline: false },
           });
         }
@@ -203,7 +213,11 @@ async function setupViewer(page, { sceneKind }) {
       const center = C.Cartesian3.fromDegrees(LON, LAT, H);
       v.camera.lookAt(
         center,
-        new C.HeadingPitchRange(C.Math.toRadians(35), C.Math.toRadians(-22), 420),
+        new C.HeadingPitchRange(
+          C.Math.toRadians(35),
+          C.Math.toRadians(-22),
+          420,
+        ),
       );
       v.camera.lookAtTransform(C.Matrix4.IDENTITY);
 
@@ -258,7 +272,8 @@ function nonBlackFrac(img) {
 }
 
 function diffPixels(a, b, thr = 16) {
-  if (!a || !b || a.w !== b.w || a.h !== b.h) return { mismatch: 0, pct: null, maxDelta: null };
+  if (!a || !b || a.w !== b.w || a.h !== b.h)
+    return { mismatch: 0, pct: null, maxDelta: null };
   let px = 0;
   let mismatch = 0;
   let maxDelta = 0;
@@ -271,7 +286,11 @@ function diffPixels(a, b, thr = 16) {
     if (m > maxDelta) maxDelta = m;
     if (dr > thr || dg > thr || db > thr) mismatch++;
   }
-  return { mismatch, pct: px ? +((100 * mismatch) / px).toFixed(3) : null, maxDelta };
+  return {
+    mismatch,
+    pct: px ? +((100 * mismatch) / px).toFixed(3) : null,
+    maxDelta,
+  };
 }
 
 function centralMean(img) {
@@ -292,7 +311,11 @@ function centralMean(img) {
       n++;
     }
   }
-  return { r: +(r / n).toFixed(1), g: +(g / n).toFixed(1), b: +(b / n).toFixed(1) };
+  return {
+    r: +(r / n).toFixed(1),
+    g: +(g / n).toFixed(1),
+    b: +(b / n).toFixed(1),
+  };
 }
 
 // ── zero-dep PNG encoder ──
@@ -307,7 +330,8 @@ const CRC_TABLE = (() => {
 })();
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 function encodePNG({ w, h, data }) {
@@ -315,7 +339,10 @@ function encodePNG({ w, h, data }) {
   const raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -339,7 +366,8 @@ function encodePNG({ w, h, data }) {
   ]);
 }
 
-const BENIGN_TEARDOWN_RE = /reason:\s*destroyed|Device was destroyed|Device lost: destroyed/i;
+const BENIGN_TEARDOWN_RE =
+  /reason:\s*destroyed|Device was destroyed|Device lost: destroyed/i;
 function realFaults(consoleErrors) {
   return consoleErrors.filter((e) => !BENIGN_TEARDOWN_RE.test(e));
 }
@@ -465,8 +493,7 @@ try {
       r.onNonBlack > 8 &&
       r.onVsOff_diffPct !== null &&
       r.onVsOff_diffPct > 0.5 &&
-      r.restoreVsOff_mismatchPx <=
-        Math.max(r.noiseFloor_mismatchPx * 3, 3);
+      r.restoreVsOff_mismatchPx <= Math.max(r.noiseFloor_mismatchPx * 3, 3);
     r.pass = pass;
     if (!pass) overallPass = false;
   }

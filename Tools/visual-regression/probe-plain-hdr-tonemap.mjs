@@ -22,7 +22,7 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
 
 // Sample a small box of pixels centred at (cx,cy), return mean rgb.
-function meanRegion(data, w, cx, cy, r) {
+function _meanRegion(data, w, cx, cy, r) {
   let R = 0,
     G = 0,
     B = 0,
@@ -55,7 +55,9 @@ async function capture(rendererArg, cfg) {
   });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`;
   await page.goto(url, { waitUntil: "networkidle" });
@@ -176,7 +178,12 @@ async function capture(rendererArg, cfg) {
     { tag: "op-pbrneutral", hdr: true, tonemapper: "PBR_NEUTRAL" },
     // (a) exposure sync — HDR on, PBR neutral, exposure bumped
     { tag: "exposure-2x", hdr: true, tonemapper: "PBR_NEUTRAL", exposure: 2.0 },
-    { tag: "exposure-half", hdr: true, tonemapper: "PBR_NEUTRAL", exposure: 0.5 },
+    {
+      tag: "exposure-half",
+      hdr: true,
+      tonemapper: "PBR_NEUTRAL",
+      exposure: 0.5,
+    },
   ];
 
   for (const cfg of cases) {

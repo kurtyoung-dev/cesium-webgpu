@@ -10,10 +10,14 @@ const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
 await page.setContent("<!doctype html><html><body></body></html>");
 
 const a = fs
-  .readFileSync("Tools/visual-regression/output/polar-fixed-northpole-close-webgl.png")
+  .readFileSync(
+    "Tools/visual-regression/output/polar-fixed-northpole-close-webgl.png",
+  )
   .toString("base64");
 const b = fs
-  .readFileSync("Tools/visual-regression/output/polar-fixed-northpole-close-webgpu.png")
+  .readFileSync(
+    "Tools/visual-regression/output/polar-fixed-northpole-close-webgpu.png",
+  )
   .toString("base64");
 
 const r = await page.evaluate(
@@ -76,6 +80,9 @@ const r = await page.evaluate(
 console.log("Best (dx, dy) shifts to align WebGPU onto WebGL per region:");
 for (const [name, top] of Object.entries(r)) {
   console.log(`\n${name}:`);
-  for (const t of top) console.log(`  dx=${t.dx.toString().padStart(2)}  dy=${t.dy.toString().padStart(2)}  meanDelta=${t.s.toFixed(2)}`);
+  for (const t of top)
+    console.log(
+      `  dx=${t.dx.toString().padStart(2)}  dy=${t.dy.toString().padStart(2)}  meanDelta=${t.s.toFixed(2)}`,
+    );
 }
 await browser.close();

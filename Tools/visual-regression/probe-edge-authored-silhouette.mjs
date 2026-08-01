@@ -65,7 +65,9 @@ const EDGES_ONLY = 2;
 
 const failures = [];
 const note = (ok, name, detail) => {
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
+  console.log(
+    `${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`,
+  );
   if (!ok) failures.push(name);
 };
 
@@ -106,12 +108,24 @@ note(
 //   | / | \ |     tris: [0,1,2] [0,2,3] [3,2,4] [2,5,4]
 //   0---3---4
 const positions = new Float32Array([
-  0, 0, 0, // v0
-  0, 1, 0, // v1
-  1, 1, 0.4, // v2 (lifted so faces have distinct derived normals)
-  1, 0, 0, // v3
-  2, 0, 0, // v4
-  2, 1, 0, // v5
+  0,
+  0,
+  0, // v0
+  0,
+  1,
+  0, // v1
+  1,
+  1,
+  0.4, // v2 (lifted so faces have distinct derived normals)
+  1,
+  0,
+  0, // v3
+  2,
+  0,
+  0, // v4
+  2,
+  1,
+  0, // v5
 ]);
 const indices = new Uint16Array([0, 1, 2, 0, 2, 3, 3, 2, 4, 2, 5, 4]);
 // 12 edge slots (4 tris x 3), 2 bits each, little-endian within a byte.
@@ -165,7 +179,8 @@ const readVec = (g, edge, off) => [
   g.vertices[edge * 4 * STRIDE + off + 2],
 ];
 const near = (a, b) => Math.abs(a - b) < 1e-6;
-const vecEq = (a, b) => near(a[0], b[0]) && near(a[1], b[1]) && near(a[2], b[2]);
+const vecEq = (a, b) =>
+  near(a[0], b[0]) && near(a[1], b[1]) && near(a[2], b[2]);
 
 // Edge emission (dedupe) order: (0,1)e0 (1,2)e1 (2,0)e2=SIL#0 (2,3)e3
 // (3,0)e4 (2,4)e5=SIL#1 (4,3)e6 (2,5)e7 (5,4)e8.
@@ -175,7 +190,11 @@ const gAuth = extractEdgeGeometry(
   null,
   null,
 );
-note(gAuth !== null && gAuth.edgeCount === 9, "[A] 9 deduped edges", `edgeCount=${gAuth?.edgeCount}`);
+note(
+  gAuth !== null && gAuth.edgeCount === 9,
+  "[A] 9 deduped edges",
+  `edgeCount=${gAuth?.edgeCount}`,
+);
 if (gAuth) {
   const exp = rawPairs.map(decodeWebGL);
   note(
@@ -191,7 +210,8 @@ if (gAuth) {
   // HARD edge normals are zero on the authored path (inert in the VS —
   // matches WebGL generateEdgeFaceNormals, which only fills SILHOUETTE rows).
   note(
-    vecEq(readVec(gAuth, 0, 4), [0, 0, 0]) && vecEq(readVec(gAuth, 0, 7), [0, 0, 0]),
+    vecEq(readVec(gAuth, 0, 4), [0, 0, 0]) &&
+      vecEq(readVec(gAuth, 0, 7), [0, 0, 0]),
     "[A] HARD edge normals zero on authored path",
   );
 }
@@ -207,7 +227,8 @@ const gShort = extractEdgeGeometry(
 );
 if (gShort) {
   note(
-    vecEq(readVec(gShort, 5, 4), [0, 0, 0]) && vecEq(readVec(gShort, 5, 7), [0, 0, 0]),
+    vecEq(readVec(gShort, 5, 4), [0, 0, 0]) &&
+      vecEq(readVec(gShort, 5, 7), [0, 0, 0]),
     "[A] out-of-range authored pair -> zero normals (WebGL bounds-skip parity)",
   );
   note(
@@ -336,8 +357,7 @@ async function captureRenderer(renderer) {
         for (let y = y0; y < y1; y++) {
           for (let x = 0; x < w; x++) {
             const i = (y * w + x) * 4;
-            const on =
-              Math.max(px[i], px[i + 1], px[i + 2]) > 60 ? 1 : 0;
+            const on = Math.max(px[i], px[i + 1], px[i + 2]) > 60 ? 1 : 0;
             mask.push(on);
             lit += on;
           }
@@ -351,7 +371,9 @@ async function captureRenderer(renderer) {
   const shot = await page.screenshot();
   const out = `Tools/visual-regression/output/edge-authored-silhouette-${renderer}.png`;
   fs.writeFileSync(out, shot);
-  console.log(`  [${renderer}] lit(230)=${views[230].lit} lit(50)=${views[50].lit}  PNG: ${out}`);
+  console.log(
+    `  [${renderer}] lit(230)=${views[230].lit} lit(50)=${views[50].lit}  PNG: ${out}`,
+  );
 
   const gate = await collectGateErrors(page);
   await browser.close();

@@ -113,7 +113,11 @@ function quadrantDeck(page, dataUrl) {
         }
         n++;
       }
-      return { deck: +((100 * deck) / n).toFixed(1), lum: +(lum / n).toFixed(0), n };
+      return {
+        deck: +((100 * deck) / n).toFixed(1),
+        lum: +(lum / n).toFixed(0),
+        n,
+      };
     }
     const midX = Math.floor(Wd * 0.5),
       midY = Math.floor(Hd * 0.5),
@@ -152,9 +156,13 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   const canvas = await page.$(".cesium-widget canvas");
@@ -194,10 +202,19 @@ async function run() {
   const lrBottom = Math.abs(q.botLeft.deck - q.botRight.deck);
   const lrTop = Math.abs(q.topLeft.deck - q.topRight.deck);
   const checks = [
-    [`bottom-RIGHT now has the deck (was ~0 with the diagonal) (${q.botRight.deck}% > 50)`, q.botRight.deck > 50],
+    [
+      `bottom-RIGHT now has the deck (was ~0 with the diagonal) (${q.botRight.deck}% > 50)`,
+      q.botRight.deck > 50,
+    ],
     [`bottom-LEFT has the deck (${q.botLeft.deck}% > 50)`, q.botLeft.deck > 50],
-    [`deck is left-right symmetric in the bottom (|${q.botLeft.deck}-${q.botRight.deck}| = ${lrBottom.toFixed(1)} < 15) -> no TL->BR diagonal`, lrBottom < 15],
-    [`top is left-right symmetric (|${q.topLeft.deck}-${q.topRight.deck}| = ${lrTop.toFixed(1)} < 15) -> no diagonal`, lrTop < 15],
+    [
+      `deck is left-right symmetric in the bottom (|${q.botLeft.deck}-${q.botRight.deck}| = ${lrBottom.toFixed(1)} < 15) -> no TL->BR diagonal`,
+      lrBottom < 15,
+    ],
+    [
+      `top is left-right symmetric (|${q.topLeft.deck}-${q.topRight.deck}| = ${lrTop.toFixed(1)} < 15) -> no diagonal`,
+      lrTop < 15,
+    ],
     [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
   ];
   console.log("\n=== ANALYSIS ===");

@@ -231,9 +231,7 @@ async function runBackend(renderer) {
       toSun,
       new C.Cartesian3(),
     );
-    const sunElevationRad = Math.asin(
-      dEnu.z / C.Cartesian3.magnitude(dEnu),
-    );
+    const sunElevationRad = Math.asin(dEnu.z / C.Cartesian3.magnitude(dEnu));
     const sunHeadingRad = Math.atan2(dEnu.x, dEnu.y); // east-of-north
 
     if (scene.sun) scene.sun.show = true;

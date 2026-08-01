@@ -28,7 +28,9 @@ async function run(rendererArg) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 700 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -217,9 +219,7 @@ async function run(rendererArg) {
       const renderEntities = renderDS.entities;
       outer: for (let dy = -20; dy <= 20 && !pickedIsEntity; dy += 2) {
         for (let dx = -20; dx <= 20; dx += 2) {
-          const picked = scene.pick(
-            new C.Cartesian2(cxp + dx, cyp + dy),
-          );
+          const picked = scene.pick(new C.Cartesian2(cxp + dx, cyp + dy));
           if (picked && picked.id) {
             const id = picked.id;
             // id should be the Entity itself.
@@ -260,13 +260,17 @@ async function run(rendererArg) {
   );
   for (const r of result.rows) {
     const speedup =
-      r.dynUpdateMs > 0 ? (r.dynUpdateMs / Math.max(r.staticUpdateMs, 1e-6)).toFixed(1) : "n/a";
+      r.dynUpdateMs > 0
+        ? (r.dynUpdateMs / Math.max(r.staticUpdateMs, 1e-6)).toFixed(1)
+        : "n/a";
     console.log(
       `  ${String(r.n).padEnd(6)} ${String(r.setupStatic).padEnd(11)} ${String(
         r.setupDyn,
       ).padEnd(9)} ${String(r.staticUpdateMs).padEnd(10)} ${String(
         r.dynUpdateMs,
-      ).padEnd(9)} ${String(speedup + "x").padEnd(8)} ${r.staticCount}/${r.fallbackCount} (dyn fb=${r.dynFallback})`,
+      ).padEnd(
+        9,
+      )} ${String(speedup + "x").padEnd(8)} ${r.staticCount}/${r.fallbackCount} (dyn fb=${r.dynFallback})`,
     );
   }
   console.log(
@@ -313,6 +317,8 @@ async function run(rendererArg) {
       `\n[${res.rendererArg}] renders=${renders} fastLane=${fastLane} dynLane=${dynLane} faster=${faster} ${pickNote} noErr=${noErr} => ${pass ? "PASS" : "FAIL"}`,
     );
   }
-  console.log(`\n[probe-entity-bulk] ${ok ? "PASS" : "FAIL"} — READ entity-bulk-*.png`);
+  console.log(
+    `\n[probe-entity-bulk] ${ok ? "PASS" : "FAIL"} — READ entity-bulk-*.png`,
+  );
   process.exit(ok ? 0 : 1);
 })();

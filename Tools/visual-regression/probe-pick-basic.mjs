@@ -33,13 +33,16 @@ const out = await page.evaluate(async () => {
   const dev = scene.context?._device;
   if (dev) {
     dev.onuncapturederror = (ev) => {
-      // eslint-disable-next-line no-console
       console.log(`[PICKDIAG-ERR] ${ev?.error?.message?.slice(0, 300)}`);
     };
   }
 
-  const cx = Math.floor((scene.canvas.clientWidth || scene.canvas.width || 1024) / 2);
-  const cy = Math.floor((scene.canvas.clientHeight || scene.canvas.height || 768) / 2);
+  const cx = Math.floor(
+    (scene.canvas.clientWidth || scene.canvas.width || 1024) / 2,
+  );
+  const cy = Math.floor(
+    (scene.canvas.clientHeight || scene.canvas.height || 768) / 2,
+  );
 
   // Add a big Box primitive over -75,40.
   scene.primitives.add(
@@ -77,10 +80,9 @@ const out = await page.evaluate(async () => {
   // box wherever it landed in the attachment — if the box's pick color renders
   // ANYWHERE the [PICKDIAG] nonZeroAlphaPx will be > 0 (coordinate/Y-flip
   // mismatch); if 0, the draw produced nothing.
-  let hit;
   const tried = [];
   scene.render();
-  hit = await scene.pickAsync(new C.Cartesian2(cx, cy), 400, 400);
+  const hit = await scene.pickAsync(new C.Cartesian2(cx, cy), 400, 400);
   scene.render();
   await new Promise((r) => requestAnimationFrame(r));
   tried.push({ dy: 0, defined: C.defined(hit), id: hit?.id });

@@ -11,7 +11,10 @@
       name="description"
       content="Toggle scene.deferredLighting to enable the Phase 8a G-buffer producer. SSAO + SSR consumers read surface normals from the G-buffer instead of reconstructing them from depth, yielding sharper edges at silhouettes."
     />
-    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases, Lighting" />
+    <meta
+      name="cesium-sandcastle-labels"
+      content="WebGPU, Showcases, Lighting"
+    />
     <title>Cesium Demo</title>
     <script type="text/javascript" src="../Sandcastle-header.js"></script>
     <script
@@ -47,7 +50,10 @@
     No WebGL implementation exists. Deferred lighting is a
     WebGPU-only path in this fork.
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
     </style>
@@ -124,7 +130,9 @@
             window.CesiumDebug.showGBufferNormals();
             // Also reflect the auto-enable back in the model.
             viewModel.deferredEnabled = true;
-            Cesium.knockout.getObservable(viewModel, "deferredEnabled").valueHasMutated();
+            Cesium.knockout
+              .getObservable(viewModel, "deferredEnabled")
+              .valueHasMutated();
           } else if (window.CesiumDebug) {
             window.CesiumDebug.hideGBufferNormals();
           }
@@ -137,7 +145,9 @@
         Cesium.knockout.applyBindings(viewModel, toolbar);
         for (const name in viewModel) {
           if (Object.prototype.hasOwnProperty.call(viewModel, name)) {
-            Cesium.knockout.getObservable(viewModel, name).subscribe(applyConfig);
+            Cesium.knockout
+              .getObservable(viewModel, name)
+              .subscribe(applyConfig);
           }
         }
         applyConfig();
@@ -147,7 +157,11 @@
         // forward/backward-difference normals visibly improve over
         // the consumer's depth-only reconstruction.
         viewer.camera.setView({
-          destination: Cesium.Cartesian3.fromDegrees(-122.4194, 37.7749, 150_000),
+          destination: Cesium.Cartesian3.fromDegrees(
+            -122.4194,
+            37.7749,
+            150_000,
+          ),
           orientation: {
             heading: Cesium.Math.toRadians(0),
             pitch: Cesium.Math.toRadians(-25),

@@ -142,10 +142,7 @@ const out = await page.evaluate(async () => {
 
   // Project the point + billboard world positions to screen pixels so we
   // click exactly on each.
-  const ptWin = C.SceneTransforms.worldToWindowCoordinates(
-    scene,
-    pt.position,
-  );
+  const ptWin = C.SceneTransforms.worldToWindowCoordinates(scene, pt.position);
   const pt2Win = C.SceneTransforms.worldToWindowCoordinates(
     scene,
     pt2.position,
@@ -154,10 +151,7 @@ const out = await page.evaluate(async () => {
     scene,
     pt3.position,
   );
-  const bbWin = C.SceneTransforms.worldToWindowCoordinates(
-    scene,
-    bb.position,
-  );
+  const bbWin = C.SceneTransforms.worldToWindowCoordinates(scene, bb.position);
 
   // SYNCHRONOUS scene.pick — the exact API the bug report targets.
   const doPickSync = (x, y) => scene.pick(new C.Cartesian2(x, y), 9, 9);

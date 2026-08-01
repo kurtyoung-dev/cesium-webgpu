@@ -124,15 +124,42 @@ async function run() {
   const h = r.h || {};
   const v = r.v || {};
   const checks = [
-    ["time-model API exported (setTimeMode/tick/setTime/...)", r.hasApi === true],
-    ['SyntheticWeatherSource("drift") advertises supportsTime', r.supportsTime === true],
-    [`live tick advances the field (h0 ${h.h0} != h6 ${h.h6})`, h.h0 != null && h.h6 != null && h.h0 !== h.h6],
-    [`sub-quantum tick does NOT bump version (vSame ${v.vSame} === v6 ${v.v6})`, v.vSame === v6Safe(v)],
-    [`historical resolves a distinct slice (hH ${h.hH} != h0 ${h.h0})`, h.hH != null && h.hH !== h.h0],
-    [`projected resolves a distinct slice (hP ${h.hP} != h0 ${h.h0})`, h.hP != null && h.hP !== h.h0],
-    [`scrub-back is an instant LRU cache hit (immediate=${r.cacheHitImmediate}, hBack ${h.hBack} === h6)`, r.cacheHitImmediate === true && h.hBack === h.h6],
-    [`slice change on scrub-back bumped version (vBack ${v.vBack} > v6 ${v.v6})`, v.vBack > v.v6],
-    [`legacy provider has no time mode + still serves data (mode=${r.legacyMode}, data=${r.legacyHasData})`, r.legacyMode === null && r.legacyHasData === true],
+    [
+      "time-model API exported (setTimeMode/tick/setTime/...)",
+      r.hasApi === true,
+    ],
+    [
+      'SyntheticWeatherSource("drift") advertises supportsTime',
+      r.supportsTime === true,
+    ],
+    [
+      `live tick advances the field (h0 ${h.h0} != h6 ${h.h6})`,
+      h.h0 != null && h.h6 != null && h.h0 !== h.h6,
+    ],
+    [
+      `sub-quantum tick does NOT bump version (vSame ${v.vSame} === v6 ${v.v6})`,
+      v.vSame === v6Safe(v),
+    ],
+    [
+      `historical resolves a distinct slice (hH ${h.hH} != h0 ${h.h0})`,
+      h.hH != null && h.hH !== h.h0,
+    ],
+    [
+      `projected resolves a distinct slice (hP ${h.hP} != h0 ${h.h0})`,
+      h.hP != null && h.hP !== h.h0,
+    ],
+    [
+      `scrub-back is an instant LRU cache hit (immediate=${r.cacheHitImmediate}, hBack ${h.hBack} === h6)`,
+      r.cacheHitImmediate === true && h.hBack === h.h6,
+    ],
+    [
+      `slice change on scrub-back bumped version (vBack ${v.vBack} > v6 ${v.v6})`,
+      v.vBack > v.v6,
+    ],
+    [
+      `legacy provider has no time mode + still serves data (mode=${r.legacyMode}, data=${r.legacyHasData})`,
+      r.legacyMode === null && r.legacyHasData === true,
+    ],
   ];
   console.log("\n=== ANALYSIS ===");
   let pass = true;

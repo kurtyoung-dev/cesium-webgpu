@@ -92,6 +92,8 @@ const SCENE = {
   );
   console.log(`[parity:${TAG}] wrote ${path}`);
   console.log(
-    newErrs.length ? `NEW errs: ${newErrs.slice(0, 4).join(" | ")}` : "no new console errors",
+    newErrs.length
+      ? `NEW errs: ${newErrs.slice(0, 4).join(" | ")}`
+      : "no new console errors",
   );
 })();

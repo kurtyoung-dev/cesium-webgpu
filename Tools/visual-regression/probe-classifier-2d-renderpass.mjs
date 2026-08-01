@@ -24,11 +24,15 @@ const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
 const consoleMsgs = [];
 page.on("console", (m) => {
   const t = m.text();
-  if (/error|warn|render pass|RenderPass|classif|GroundPrim|endCurrent/i.test(t)) {
+  if (
+    /error|warn|render pass|RenderPass|classif|GroundPrim|endCurrent/i.test(t)
+  ) {
     consoleMsgs.push(`[${m.type()}] ${t.slice(0, 300)}`);
   }
 });
-page.on("pageerror", (e) => consoleMsgs.push(`[pageerror] ${e.message.slice(0, 300)}`));
+page.on("pageerror", (e) =>
+  consoleMsgs.push(`[pageerror] ${e.message.slice(0, 300)}`),
+);
 
 await page.goto(`${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
   waitUntil: "networkidle",
@@ -43,11 +47,19 @@ const result = await page.evaluate(async () => {
   scene.skyBox.show = false;
   scene.skyAtmosphere.show = false;
 
-  const positions = C.Cartesian3.fromDegreesArray([-100, 40, -95, 40, -95, 43, -100, 43]);
+  const positions = C.Cartesian3.fromDegreesArray([
+    -100, 40, -95, 40, -95, 43, -100, 43,
+  ]);
   const ground = new C.GroundPrimitive({
     geometryInstances: new C.GeometryInstance({
-      geometry: new C.PolygonGeometry({ polygonHierarchy: new C.PolygonHierarchy(positions) }),
-      attributes: { color: C.ColorGeometryInstanceAttribute.fromColor(new C.Color(1, 0.05, 0.05, 1)) },
+      geometry: new C.PolygonGeometry({
+        polygonHierarchy: new C.PolygonHierarchy(positions),
+      }),
+      attributes: {
+        color: C.ColorGeometryInstanceAttribute.fromColor(
+          new C.Color(1, 0.05, 0.05, 1),
+        ),
+      },
     }),
     classificationType: C.ClassificationType.TERRAIN,
     asynchronous: false,
@@ -80,7 +92,10 @@ const result = await page.evaluate(async () => {
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));
     } catch (e) {
-      firstError = { message: String(e?.message ?? e), stack: String(e?.stack ?? "").slice(0, 1500) };
+      firstError = {
+        message: String(e?.message ?? e),
+        stack: String(e?.stack ?? "").slice(0, 1500),
+      };
       break;
     }
   }
@@ -94,14 +109,30 @@ const result = await page.evaluate(async () => {
 
 await browser.close();
 console.log("=== NEW-CLASSIFIER-GROUNDPRIM-2D-RENDERPASS diagnostic ===\n");
-console.log("scene.mode (2 = SCENE2D):", result.sceneMode, " ground.ready:", result.ready);
-console.log("leaked pass label before first failing render:", result.leakedPassLabelBeforeFirstFailingRender);
+console.log(
+  "scene.mode (2 = SCENE2D):",
+  result.sceneMode,
+  " ground.ready:",
+  result.ready,
+);
+console.log(
+  "leaked pass label before first failing render:",
+  result.leakedPassLabelBeforeFirstFailingRender,
+);
 console.log("\nFIRST thrown error:");
 if (result.firstError) {
   console.log("  message:", result.firstError.message);
-  console.log("  stack:\n" + result.firstError.stack.split("\n").map((l) => "    " + l).join("\n"));
+  console.log(
+    "  stack:\n" +
+      result.firstError.stack
+        .split("\n")
+        .map((l) => "    " + l)
+        .join("\n"),
+  );
 } else {
-  console.log("  (none caught via scene.render try/catch — engine likely swallows it)");
+  console.log(
+    "  (none caught via scene.render try/catch — engine likely swallows it)",
+  );
 }
 console.log("\nFiltered console messages:");
 consoleMsgs.slice(0, 20).forEach((m) => console.log("  " + m));

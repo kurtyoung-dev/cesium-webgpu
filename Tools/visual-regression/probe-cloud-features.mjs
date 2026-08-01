@@ -124,11 +124,13 @@ async function diff(page, a, b) {
       };
       const da = await load(ua),
         db = await load(ub);
-      let acc = 0,
-        n = da.length / 4;
+      let acc = 0;
+      const n = da.length / 4;
       for (let i = 0; i < da.length; i += 4) {
         acc += Math.abs(
-          0.299 * da[i] + 0.587 * da[i + 1] + 0.114 * da[i + 2] -
+          0.299 * da[i] +
+            0.587 * da[i + 1] +
+            0.114 * da[i + 2] -
             (0.299 * db[i] + 0.587 * db[i + 1] + 0.114 * db[i + 2]),
         );
       }
@@ -162,9 +164,13 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   const canvas = await page.$(".cesium-widget canvas");
@@ -210,24 +216,44 @@ async function run() {
   const duOff2 = await shot("features-off2");
 
   // Asperitas — chaotic wavy underside.
-  await set({ cloudFeature: "asperitas", cloudFeatureStrength: 0.9, cloudFeatureScale: 1.0 });
+  await set({
+    cloudFeature: "asperitas",
+    cloudFeatureStrength: 0.9,
+    cloudFeatureScale: 1.0,
+  });
   const duAsp = await shot("features-asperitas");
 
   // Fluctus — Kelvin-Helmholtz breaking-wave billows along the top.
-  await set({ cloudFeature: "fluctus", cloudFeatureStrength: 0.9, cloudFeatureScale: 1.0 });
+  await set({
+    cloudFeature: "fluctus",
+    cloudFeatureStrength: 0.9,
+    cloudFeatureScale: 1.0,
+  });
   const duFluc = await shot("features-fluctus");
 
   // Arcus — shelf/roll leading edge.
-  await set({ cloudFeature: "arcus", cloudFeatureStrength: 0.9, cloudFeatureScale: 1.0 });
+  await set({
+    cloudFeature: "arcus",
+    cloudFeatureStrength: 0.9,
+    cloudFeatureScale: 1.0,
+  });
   const duArc = await shot("features-arcus");
 
   // Virga — fallstreak tail below the base (wispy).
-  await set({ cloudFeature: "virga", cloudFeatureStrength: 0.9, cloudFeatureScale: 1.0 });
+  await set({
+    cloudFeature: "virga",
+    cloudFeatureStrength: 0.9,
+    cloudFeatureScale: 1.0,
+  });
   const duVir = await shot("features-virga");
   const deckVir = await deck(page, duVir);
 
   // Praecipitatio — denser/reaching fallstreaks (featureParam=1).
-  await set({ cloudFeature: "praecipitatio", cloudFeatureStrength: 0.9, cloudFeatureScale: 1.0 });
+  await set({
+    cloudFeature: "praecipitatio",
+    cloudFeatureStrength: 0.9,
+    cloudFeatureScale: 1.0,
+  });
   const duPrc = await shot("features-praecipitatio");
 
   // Restore OFF — clean toggle, no residual.
@@ -264,16 +290,40 @@ async function run() {
   );
 
   const checks = [
-    [`OFF is deterministic w/ grown UBO (off-vs-off2 ${diffOffOff} < 0.25)`, diffOffOff < 0.25],
-    [`asperitas ON substantially changes the render (${diffAsp} > 1.0)`, diffAsp > 1.0],
-    [`fluctus ON substantially changes the render (${diffFluc} > 1.0)`, diffFluc > 1.0],
-    [`arcus ON substantially changes the render (${diffArc} > 1.0)`, diffArc > 1.0],
-    [`virga ON substantially changes the render (${diffVir} > 1.0)`, diffVir > 1.0],
+    [
+      `OFF is deterministic w/ grown UBO (off-vs-off2 ${diffOffOff} < 0.25)`,
+      diffOffOff < 0.25,
+    ],
+    [
+      `asperitas ON substantially changes the render (${diffAsp} > 1.0)`,
+      diffAsp > 1.0,
+    ],
+    [
+      `fluctus ON substantially changes the render (${diffFluc} > 1.0)`,
+      diffFluc > 1.0,
+    ],
+    [
+      `arcus ON substantially changes the render (${diffArc} > 1.0)`,
+      diffArc > 1.0,
+    ],
+    [
+      `virga ON substantially changes the render (${diffVir} > 1.0)`,
+      diffVir > 1.0,
+    ],
     // The fallstreak carve removes density → measurably thinner deck vs OFF.
-    [`virga carve THINS the deck (virga ${deckVir} < off ${deckOff} - 0.3)`, deckVir < deckOff - 0.3],
+    [
+      `virga carve THINS the deck (virga ${deckVir} < off ${deckOff} - 0.3)`,
+      deckVir < deckOff - 0.3,
+    ],
     // praecipitatio's denser/reaching streaks re-shape vs plain virga.
-    [`praecipitatio differs from virga (prc-vs-virga ${diffVirPrc} > 0.3)`, diffVirPrc > 0.3],
-    [`restoring OFF returns to baseline (restore-vs-off ${diffRestore} < 0.25)`, diffRestore < 0.25],
+    [
+      `praecipitatio differs from virga (prc-vs-virga ${diffVirPrc} > 0.3)`,
+      diffVirPrc > 0.3,
+    ],
+    [
+      `restoring OFF returns to baseline (restore-vs-off ${diffRestore} < 0.25)`,
+      diffRestore < 0.25,
+    ],
     [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
   ];
   console.log("\n=== ANALYSIS ===");

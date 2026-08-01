@@ -50,11 +50,17 @@ const MODELS = [
 (async () => {
   const allResults = [];
   for (const model of MODELS) {
-    console.log(`\n[probe-model-pbr-audit] Loading ${model.name} (${model.notes})...`);
+    console.log(
+      `\n[probe-model-pbr-audit] Loading ${model.name} (${model.notes})...`,
+    );
     const browser = await chromium.launch({
       channel: "msedge",
       headless: true,
-      args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+      args: [
+        "--enable-unsafe-webgpu",
+        "--enable-features=Vulkan",
+        "--use-vulkan",
+      ],
     });
     const page = await browser.newPage({
       viewport: { width: 800, height: 600 },
@@ -99,7 +105,11 @@ const MODELS = [
 
         if (!loadErr) {
           v.camera.setView({
-            destination: C.Cartesian3.fromDegrees(lon, lat - 0.003, height + 100),
+            destination: C.Cartesian3.fromDegrees(
+              lon,
+              lat - 0.003,
+              height + 100,
+            ),
             orientation: { pitch: C.Math.toRadians(-15) },
           });
           // Render until tiles + model loaded
@@ -119,10 +129,9 @@ const MODELS = [
 
         // Pull diagnostics about the Model PBR pipeline state
         const ctx = v.scene.context;
-        const cache = ctx?._gltfModelCache ?? ctx?.gltfModelCache;
-        const samplePrim = v.scene.primitives.length > 0
-          ? v.scene.primitives.get(0)
-          : null;
+        const _cache = ctx?._gltfModelCache ?? ctx?.gltfModelCache;
+        const _samplePrim =
+          v.scene.primitives.length > 0 ? v.scene.primitives.get(0) : null;
 
         return {
           modelName,
@@ -150,10 +159,14 @@ const MODELS = [
       screenshot: out,
     });
 
-    console.log(`  modelReady=${diag.modelReady}  primCount=${diag.primCount}  errors=${errs.length}`);
+    console.log(
+      `  modelReady=${diag.modelReady}  primCount=${diag.primCount}  errors=${errs.length}`,
+    );
     if (errs.length) {
       console.log(`  sample errors:`);
-      errs.slice(0, 2).forEach((e) => console.log(`    - ${e.text?.slice(0, 200)}`));
+      errs
+        .slice(0, 2)
+        .forEach((e) => console.log(`    - ${e.text?.slice(0, 200)}`));
     }
   }
 
@@ -169,5 +182,7 @@ const MODELS = [
     totalErrors += r.deviceErrorCount;
   }
   console.log(`\nTotal device errors: ${totalErrors}`);
-  console.log(`Report: Tools/visual-regression/output/model-pbr-audit-report.json`);
+  console.log(
+    `Report: Tools/visual-regression/output/model-pbr-audit-report.json`,
+  );
 })();

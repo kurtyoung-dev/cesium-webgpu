@@ -37,17 +37,29 @@ const watchdog = setTimeout(() => {
 if (watchdog.unref) watchdog.unref();
 
 function summarize(arr) {
-  const a = arr.filter((x) => typeof x === "number" && isFinite(x)).slice().sort((x, y) => x - y);
+  const a = arr
+    .filter((x) => typeof x === "number" && isFinite(x))
+    .slice()
+    .sort((x, y) => x - y);
   if (!a.length) return null;
-  const q = (p) => a[Math.min(a.length - 1, Math.max(0, Math.floor(p * (a.length - 1))))];
-  return { n: a.length, median: q(0.5), p95: q(0.95), min: a[0], max: a[a.length - 1] };
+  const q = (p) =>
+    a[Math.min(a.length - 1, Math.max(0, Math.floor(p * (a.length - 1))))];
+  return {
+    n: a.length,
+    median: q(0.5),
+    p95: q(0.95),
+    min: a[0],
+    max: a[a.length - 1],
+  };
 }
 const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
 
 (async () => {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const browser = await chromium.launch({ channel: "msedge", headless: true });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+  });
   const page = await context.newPage();
   const consoleErrors = [];
   page.on("console", (m) => {
@@ -60,9 +72,14 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
       waitUntil: "domcontentloaded",
       timeout: 90000,
     });
-    await page.waitForFunction(() => !!(window.viewer && window.viewer.scene && window.viewer.scene.context), null, {
-      timeout: 90000,
-    });
+    await page.waitForFunction(
+      () =>
+        !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
+      null,
+      {
+        timeout: 90000,
+      },
+    );
     await page.waitForTimeout(SETTLE_MS);
 
     result = await page.evaluate(
@@ -74,11 +91,13 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
 
         scene.requestRenderMode = false;
 
-        out.profilerAvailable = typeof renderer.setCpuPassProfiling === "function";
+        out.profilerAvailable =
+          typeof renderer.setCpuPassProfiling === "function";
         if (out.profilerAvailable) renderer.setCpuPassProfiling(true);
 
         // GPU timestamp profiler, if the device exposes it.
-        out.gpuProfilerAvailable = typeof renderer.setGpuPassProfiling === "function";
+        out.gpuProfilerAvailable =
+          typeof renderer.setGpuPassProfiling === "function";
         if (out.gpuProfilerAvailable) {
           try {
             renderer.setGpuPassProfiling(true);
@@ -105,7 +124,10 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
         }
         out.renderMs = renderMs;
 
-        if (out.profilerAvailable && typeof renderer.getCpuPassProfile === "function") {
+        if (
+          out.profilerAvailable &&
+          typeof renderer.getCpuPassProfile === "function"
+        ) {
           const p = renderer.getCpuPassProfile();
           out.cpuProfile = {
             enabled: p.enabled,
@@ -118,7 +140,10 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
             })),
           };
         }
-        if (out.gpuProfilerAvailable && typeof renderer.getGpuPassProfile === "function") {
+        if (
+          out.gpuProfilerAvailable &&
+          typeof renderer.getGpuPassProfile === "function"
+        ) {
           try {
             const g = renderer.getGpuPassProfile();
             out.gpuProfile = {
@@ -141,8 +166,10 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
           out.sceneStats = {
             commandListLength: fs_?.commandList?.length ?? null,
             drawCommandsExecuted: scene._context?._drawCallCount ?? null,
-            renderPassCount: renderer._renderPassCount ?? renderer.renderPassCount ?? null,
-            tilesRendered: scene.globe?._surface?._tilesToRender?.length ?? null,
+            renderPassCount:
+              renderer._renderPassCount ?? renderer.renderPassCount ?? null,
+            tilesRendered:
+              scene.globe?._surface?._tilesToRender?.length ?? null,
           };
         } catch (e) {
           out.sceneStatsError = String(e && e.message);
@@ -161,18 +188,38 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
   }
 
   const total = summarize(result.renderMs || []);
-  const passes = (result.cpuProfile?.passes || []).slice().sort((a, b) => b.avgMs - a.avgMs);
+  const passes = (result.cpuProfile?.passes || [])
+    .slice()
+    .sort((a, b) => b.avgMs - a.avgMs);
   const passSum = passes.reduce((s, p) => s + (p.avgMs || 0), 0);
 
   const report = {
     probe: "webgpu-frame-breakdown",
     date: new Date().toISOString(),
-    totalRenderMs: total ? { median: r3(total.median), p95: r3(total.p95), min: r3(total.min), max: r3(total.max) } : null,
+    totalRenderMs: total
+      ? {
+          median: r3(total.median),
+          p95: r3(total.p95),
+          min: r3(total.min),
+          max: r3(total.max),
+        }
+      : null,
     cpuPassSumMs: r3(passSum),
     unaccountedMs: total ? r3(total.median - passSum) : null,
-    unaccountedPct: total && total.median > 0 ? Math.round(((total.median - passSum) / total.median) * 100) : null,
-    topCpuPasses: passes.slice(0, 15).map((p) => ({ name: p.name, avgMs: r3(p.avgMs), maxMs: r3(p.maxMs), samples: p.samples })),
-    gpuPasses: (result.gpuProfile?.passes || []).slice().sort((a, b) => b.avgMs - a.avgMs).slice(0, 12)
+    unaccountedPct:
+      total && total.median > 0
+        ? Math.round(((total.median - passSum) / total.median) * 100)
+        : null,
+    topCpuPasses: passes.slice(0, 15).map((p) => ({
+      name: p.name,
+      avgMs: r3(p.avgMs),
+      maxMs: r3(p.maxMs),
+      samples: p.samples,
+    })),
+    gpuPasses: (result.gpuProfile?.passes || [])
+      .slice()
+      .sort((a, b) => b.avgMs - a.avgMs)
+      .slice(0, 12)
       .map((p) => ({ name: p.name, avgMs: r3(p.avgMs) })),
     sceneStats: result.sceneStats,
     profilerAvailable: result.profilerAvailable,

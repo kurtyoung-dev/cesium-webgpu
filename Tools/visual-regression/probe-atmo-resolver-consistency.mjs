@@ -186,7 +186,9 @@ async function captureModel(dynEnum) {
         ".cesium-viewer-timelineContainer",
         ".cesium-viewer-bottom",
       ]) {
-        document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
+        document
+          .querySelectorAll(sel)
+          .forEach((e) => (e.style.display = "none"));
       }
 
       // Isolate the model to pure IBL: hide globe + the visible SkyAtmosphere
@@ -242,7 +244,12 @@ async function captureModel(dynEnum) {
       const ctx = off.getContext("2d");
       ctx.drawImage(cv, 0, 0);
       const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
-      return { w: cv.width, h: cv.height, data: Array.from(d), ready: !!model.ready };
+      return {
+        w: cv.width,
+        h: cv.height,
+        data: Array.from(d),
+        ready: !!model.ready,
+      };
     },
     { modelUrl: MODEL, dynEnum, timeIso: TIME_ISO },
   );
@@ -347,7 +354,9 @@ const rgbDelta = (a, b) =>
   console.log(
     `  SKY   sun    r=${skySunRGB.r.toFixed(1)} g=${skySunRGB.g.toFixed(1)} b=${skySunRGB.b.toFixed(1)}`,
   );
-  console.log(`  SKY   response |dR|+|dG|+|dB| = ${skyResponse.toFixed(1)} (want > 8)`);
+  console.log(
+    `  SKY   response |dR|+|dG|+|dB| = ${skyResponse.toFixed(1)} (want > 8)`,
+  );
   console.log(
     `  MODEL response mismatch = ${modelResponse.mismatchPct}% over ${modelResponse.modelPx} model px (want > 3%)`,
   );

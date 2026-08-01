@@ -34,112 +34,116 @@ async function probe(view) {
   });
   await page.waitForFunction(() => !!window.viewer);
 
-  const result = await page.evaluate(async ({ view }) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const v = window.viewer;
-    const vm = v.baseLayerPicker.viewModel;
-    const wgs84 = vm.terrainProviderViewModels.find((t) =>
-      String(t.name || "")
-        .toLowerCase()
-        .includes("wgs84"),
-    );
-    if (wgs84) vm.selectedTerrain = wgs84;
-    v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
-    });
-    for (let i = 0; i < 1500; i++) {
-      v.scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
-      if (v.scene.globe.tilesLoaded && i > 300) break;
-    }
+  const result = await page.evaluate(
+    async ({ view }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      const vm = v.baseLayerPicker.viewModel;
+      const wgs84 = vm.terrainProviderViewModels.find((t) =>
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
+      );
+      if (wgs84) vm.selectedTerrain = wgs84;
+      v.camera.setView({
+        destination: C.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
+      });
+      for (let i = 0; i < 1500; i++) {
+        v.scene.render();
+        await new Promise((r) => requestAnimationFrame(r));
+        if (v.scene.globe.tilesLoaded && i > 300) break;
+      }
 
-    const layer = v.imageryLayers.get(0);
-    const provider = layer._imageryProvider;
-    const isMercator =
-      !(provider.tilingScheme.projection instanceof C.GeographicProjection);
+      const layer = v.imageryLayers.get(0);
+      const provider = layer._imageryProvider;
+      const isMercator = !(
+        provider.tilingScheme.projection instanceof C.GeographicProjection
+      );
 
-    const tiles = v.scene._globe?._surface?._tilesToRender ?? [];
+      const tiles = v.scene._globe?._surface?._tilesToRender ?? [];
 
-    // Per-tile inspection. Tile is "OK" when the binding decision
-    // (which texture the cache will pick — Mercator vs Geographic) agrees
-    // with the `effectiveUseWebMercatorT` flag the tile-UB packer would
-    // write. Both read `tileImagery.useWebMercatorT` and
-    // `imagery._webgpuMercatorTexture` — agreement is the construction
-    // invariant Batch 65 relies on.
-    //
-    // Note: the renderer's imagery texture cache lives in a per-device
-    // WeakMap created lazily inside `addWebGPUDrawCommandsForTile` (not
-    // accessible from the probe). Batch 71 removed the dead `fr._instance`
-    // field that we previously tried to read; we validate imagery-object
-    // state directly — the source of truth that both the cache lookup
-    // and the UB packer consult.
-    let agreeOK = 0;
-    let agreeMismatch = 0;
-    let mercTileCount = 0;
-    let geoTileCount = 0;
-    let bothMissingTileCount = 0;
-    let bothPresentTileCount = 0;
-    const samples = [];
+      // Per-tile inspection. Tile is "OK" when the binding decision
+      // (which texture the cache will pick — Mercator vs Geographic) agrees
+      // with the `effectiveUseWebMercatorT` flag the tile-UB packer would
+      // write. Both read `tileImagery.useWebMercatorT` and
+      // `imagery._webgpuMercatorTexture` — agreement is the construction
+      // invariant Batch 65 relies on.
+      //
+      // Note: the renderer's imagery texture cache lives in a per-device
+      // WeakMap created lazily inside `addWebGPUDrawCommandsForTile` (not
+      // accessible from the probe). Batch 71 removed the dead `fr._instance`
+      // field that we previously tried to read; we validate imagery-object
+      // state directly — the source of truth that both the cache lookup
+      // and the UB packer consult.
+      let agreeOK = 0;
+      let agreeMismatch = 0;
+      let mercTileCount = 0;
+      let geoTileCount = 0;
+      let bothMissingTileCount = 0;
+      let bothPresentTileCount = 0;
+      const samples = [];
 
-    for (const t of tiles) {
-      for (const skel of t.data?.imagery ?? []) {
-        const imagery = skel?.readyImagery;
-        if (!imagery?.imageryLayer) continue;
-        const useWMT = !!skel.useWebMercatorT;
-        const hasMerc = !!imagery._webgpuMercatorTexture;
-        const hasReproj = !!imagery._webgpuReprojectedTexture;
-        const hasImage = !!imagery.image;
+      for (const t of tiles) {
+        for (const skel of t.data?.imagery ?? []) {
+          const imagery = skel?.readyImagery;
+          if (!imagery?.imageryLayer) continue;
+          const useWMT = !!skel.useWebMercatorT;
+          const hasMerc = !!imagery._webgpuMercatorTexture;
+          const hasReproj = !!imagery._webgpuReprojectedTexture;
+          const hasImage = !!imagery.image;
 
-        if (hasMerc && hasReproj) bothPresentTileCount++;
-        else if (!hasMerc && !hasReproj) bothMissingTileCount++;
-        if (useWMT && hasMerc) mercTileCount++;
-        else geoTileCount++;
+          if (hasMerc && hasReproj) bothPresentTileCount++;
+          else if (!hasMerc && !hasReproj) bothMissingTileCount++;
+          if (useWMT && hasMerc) mercTileCount++;
+          else geoTileCount++;
 
-        // Reproduce the cache decision
-        let cacheWillBindMercator;
-        if (useWMT && hasMerc) cacheWillBindMercator = true;
-        else if (hasReproj) cacheWillBindMercator = false;
-        else if (hasMerc) cacheWillBindMercator = true;
-        else cacheWillBindMercator = false; // image-upload fallback → geographic
+          // Reproduce the cache decision
+          let cacheWillBindMercator;
+          if (useWMT && hasMerc) cacheWillBindMercator = true;
+          else if (hasReproj) cacheWillBindMercator = false;
+          else if (hasMerc) cacheWillBindMercator = true;
+          else cacheWillBindMercator = false; // image-upload fallback → geographic
 
-        const effectiveUseWMT = useWMT && hasMerc;
-        const tileUBWritesMerc = effectiveUseWMT;
+          const effectiveUseWMT = useWMT && hasMerc;
+          const tileUBWritesMerc = effectiveUseWMT;
 
-        if (tileUBWritesMerc === cacheWillBindMercator) {
-          agreeOK++;
-        } else {
-          agreeMismatch++;
-          if (samples.length < 5) {
-            samples.push({
-              tile: `L${t.level}_X${t.x}_Y${t.y}`,
-              imgKey: imagery.key,
-              useWMT,
-              hasMerc,
-              hasReproj,
-              hasImage,
-              cacheWillBindMercator,
-              tileUBWritesMerc,
-            });
+          if (tileUBWritesMerc === cacheWillBindMercator) {
+            agreeOK++;
+          } else {
+            agreeMismatch++;
+            if (samples.length < 5) {
+              samples.push({
+                tile: `L${t.level}_X${t.x}_Y${t.y}`,
+                imgKey: imagery.key,
+                useWMT,
+                hasMerc,
+                hasReproj,
+                hasImage,
+                cacheWillBindMercator,
+                tileUBWritesMerc,
+              });
+            }
           }
         }
       }
-    }
 
-    return {
-      providerName: provider.constructor?.name,
-      isMercatorProvider: isMercator,
-      tileCount: tiles.length,
-      agreeOK,
-      agreeMismatch,
-      mismatchSamples: samples,
-      tileStats: {
-        bothPresent: bothPresentTileCount,
-        bothMissing: bothMissingTileCount,
-        willBindMercator: mercTileCount,
-        willBindGeographic: geoTileCount,
-      },
-    };
-  }, { view });
+      return {
+        providerName: provider.constructor?.name,
+        isMercatorProvider: isMercator,
+        tileCount: tiles.length,
+        agreeOK,
+        agreeMismatch,
+        mismatchSamples: samples,
+        tileStats: {
+          bothPresent: bothPresentTileCount,
+          bothMissing: bothMissingTileCount,
+          willBindMercator: mercTileCount,
+          willBindGeographic: geoTileCount,
+        },
+      };
+    },
+    { view },
+  );
 
   await browser.close();
   return result;
@@ -158,9 +162,7 @@ async function probe(view) {
     console.log(
       `   imagery state: bothPresent=${r.tileStats.bothPresent} bothMissing=${r.tileStats.bothMissing} willBindMerc=${r.tileStats.willBindMercator} willBindGeo=${r.tileStats.willBindGeographic}`,
     );
-    console.log(
-      `   binding/UB agree=${r.agreeOK} mismatch=${r.agreeMismatch}`,
-    );
+    console.log(`   binding/UB agree=${r.agreeOK} mismatch=${r.agreeMismatch}`);
     if (r.mismatchSamples.length) {
       console.log("   mismatch samples:");
       for (const s of r.mismatchSamples) {

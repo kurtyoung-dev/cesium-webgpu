@@ -176,13 +176,7 @@ const legacy = {
   ) =>
     `${mode}_${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}${isBlend ? "B" : "O"}_${strideBytes}|${defines.toString(16)}`,
   // WebGPUGlobeSurfaceWireframe.ts selectWireframePipeline
-  wireframe: (
-    isQuantized,
-    hasNormals,
-    hasWebMercatorT,
-    strideBytes,
-    defines,
-  ) =>
+  wireframe: (isQuantized, hasNormals, hasWebMercatorT, strideBytes, defines) =>
     `${isQuantized ? "Q" : "U"}${hasNormals ? "N" : "X"}${hasWebMercatorT ? "M" : "G"}_${strideBytes}|${defines.toString(16)}`,
 };
 
@@ -463,7 +457,11 @@ test("B. parser is the exact inverse of the builder", () => {
                     assert.equal(fields.strideBytes, strideBytes, key);
                     assert.equal(fields.defines, defines, key);
                     if (kind === "capture") {
-                      assert.equal(fields.captureFaceFormat, "rgba16float", key);
+                      assert.equal(
+                        fields.captureFaceFormat,
+                        "rgba16float",
+                        key,
+                      );
                     }
                     if (kind === "debugFragment") {
                       assert.equal(fields.debugFragmentMode, 2, key);
@@ -675,6 +673,9 @@ function extractGetterCriteria(name) {
     match,
     `getter ${name} no longer delegates to findGlobePipelineVariant(this._pipelineCache, {...})`,
   );
+  // Compiles a criteria object literal extracted from live renderer source;
+  // same harness-snippet pattern as the fleet's other per-site exemptions.
+  // eslint-disable-next-line no-new-func
   return new Function(`return ${match[1]};`)();
 }
 
@@ -826,7 +827,9 @@ test("F2. aliasing-adjacent entries are visible as distinct rows sharing a name"
 
 function makeCentralCache() {
   const device = {
-    createRenderPipelineAsync: async (d) => ({ __label: d.label ?? "pipeline" }),
+    createRenderPipelineAsync: async (d) => ({
+      __label: d.label ?? "pipeline",
+    }),
     createRenderPipeline: (d) => ({ __label: d.label ?? "pipeline" }),
   };
   return new WebGPURenderPipelineCache(device, "ctx-spec");
@@ -835,7 +838,10 @@ function makeCentralCache() {
 function descriptorFor(name, module) {
   return {
     name,
-    vertex: { module: module ?? { __module: "vs-a" }, entryPoint: "vertexMain" },
+    vertex: {
+      module: module ?? { __module: "vs-a" },
+      entryPoint: "vertexMain",
+    },
     fragment: {
       module: module ?? { __module: "vs-a" },
       entryPoint: "fragmentMain",
@@ -884,9 +890,12 @@ test("G2. describeCacheKey exposes the real key, and the name is its head", () =
     `descriptor name must lead the central key, got ${key}`,
   );
   // Variant markers extend the key rather than replacing it.
-  const withVariant = cache.describeCacheKey(descriptorFor("Globe terrain (A)"), {
-    cullMode: "none",
-  });
+  const withVariant = cache.describeCacheKey(
+    descriptorFor("Globe terrain (A)"),
+    {
+      cullMode: "none",
+    },
+  );
   assert.notEqual(withVariant, key);
   assert.ok(withVariant.startsWith("Globe terrain (A)"));
 });
@@ -912,7 +921,11 @@ test("G3. BLIND SPOT — aliasing raises the hit rate and no getStats() counter 
   const first = await cache.getPipeline(a);
   const second = await cache.getPipeline(b);
 
-  assert.equal(second, first, "the second descriptor was served the first pipeline");
+  assert.equal(
+    second,
+    first,
+    "the second descriptor was served the first pipeline",
+  );
 
   const stats = cache.getStats();
   assert.equal(stats.size, 1);

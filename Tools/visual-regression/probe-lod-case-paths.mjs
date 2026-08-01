@@ -18,7 +18,10 @@ const OUT_DIR = "Tools/visual-regression/output";
 
 // Altitude sweep: 0.5 Mm to 20 Mm in 1.5x steps. Roughly one terrain
 // LOD per step at high latitudes.
-const ALTITUDES = [500_000, 1_000_000, 2_000_000, 3_500_000, 6_000_000, 9_000_000, 13_000_000, 18_000_000];
+const ALTITUDES = [
+  500_000, 1_000_000, 2_000_000, 3_500_000, 6_000_000, 9_000_000, 13_000_000,
+  18_000_000,
+];
 
 async function capture(renderer, alt) {
   const browser = await chromium.launch({
@@ -31,7 +34,9 @@ async function capture(renderer, alt) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
@@ -43,7 +48,9 @@ async function capture(renderer, alt) {
       const v = window.viewer;
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
       v.camera.setView({
@@ -63,8 +70,8 @@ async function capture(renderer, alt) {
       for (const t of tiles) {
         const skel = t.data?.imagery ?? [];
         const r = t.rectangle;
-        const south = (r?.south ?? 0) * 180 / Math.PI;
-        const north = (r?.north ?? 0) * 180 / Math.PI;
+        const south = ((r?.south ?? 0) * 180) / Math.PI;
+        const north = ((r?.north ?? 0) * 180) / Math.PI;
         for (const ti of skel) {
           if (!ti?.readyImagery?.imageryLayer) continue;
           const useWMT = !!ti.useWebMercatorT;

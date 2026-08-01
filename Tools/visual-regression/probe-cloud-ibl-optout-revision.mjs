@@ -15,17 +15,12 @@
 // Env:   PROBE_BASE (default http://localhost:8080)
 
 import { createHash } from "node:crypto";
-import {
-  mkdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { chromium } from "playwright";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const OUTPUT_DIR =
-  "Tools/visual-regression/output/cloud-ibl-optout-revision";
+const OUTPUT_DIR = "Tools/visual-regression/output/cloud-ibl-optout-revision";
 const SOURCE_FILE =
   "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts";
 const BUILD_FILE = "Build/CesiumUnminified/index.js";
@@ -118,9 +113,7 @@ async function main() {
       viewer.useDefaultRenderLoop = false;
       await new Promise((resolve) => requestAnimationFrame(resolve));
       viewer.clock.shouldAnimate = false;
-      const frameTime = Cesium.JulianDate.fromIso8601(
-        "2026-07-23T18:00:00Z",
-      );
+      const frameTime = Cesium.JulianDate.fromIso8601("2026-07-23T18:00:00Z");
       viewer.clock.currentTime = frameTime;
       collection.enableVolumetric = true;
       volumetric.cloudContributesIBL = true;
@@ -235,7 +228,9 @@ async function main() {
 
       const validationError = await device.popErrorScope();
       const deviceLost = await Promise.race([
-        device.lost.then((info) => info.message || info.reason || "device lost"),
+        device.lost.then(
+          (info) => info.message || info.reason || "device lost",
+        ),
         new Promise((resolve) => setTimeout(() => resolve(null), 25)),
       ]);
 
@@ -286,15 +281,13 @@ async function main() {
         result.teardown.consumedRevision &&
       result.postTeardownOff.lastUsedCloudMarch === false,
     secondOptInConsumesLatest:
-      result.secondOptIn.consumedRevision ===
-        result.secondOptIn.liveRevision &&
+      result.secondOptIn.consumedRevision === result.secondOptIn.liveRevision &&
       result.secondOptIn.lastUsedCloudMarch === true,
     gpuValidationClean: result.validationError === null,
     deviceStable: result.deviceLost === null,
     consoleClean: errors.length === 0,
     sourceBuildExact:
-      provenanceBefore.sourceBuildExact &&
-      provenanceAfter.sourceBuildExact,
+      provenanceBefore.sourceBuildExact && provenanceAfter.sourceBuildExact,
     sourceStable: provenanceBefore.source === provenanceAfter.source,
     buildStable:
       provenanceBefore.build === provenanceAfter.build &&

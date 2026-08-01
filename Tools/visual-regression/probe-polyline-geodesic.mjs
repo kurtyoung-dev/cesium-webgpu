@@ -207,7 +207,8 @@ function measureArc(rgba, w, h) {
     }
     if (cyanY[x] !== null) cyan.push({ x, y: cyanY[x] });
   }
-  if (cyan.length < 20) return { ok: false, maxBow: 0, maxCyanVsRed: 0, cols: cyan.length };
+  if (cyan.length < 20)
+    return { ok: false, maxBow: 0, maxCyanVsRed: 0, cols: cyan.length };
 
   // Bow: perpendicular distance of cyan path from the line between its ends.
   const a = cyan[0];

@@ -49,10 +49,14 @@ async function capture(label, settings) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
@@ -145,9 +149,7 @@ async function bandDiff(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const A = await decode(ba);
@@ -160,8 +162,12 @@ async function bandDiff(a, b) {
       // pollute the measurement.
       const lowY0 = Math.floor(A.h * 0.7);
       const upY1 = Math.floor(A.h * 0.3);
-      let lowA = 0, lowB = 0, lowN = 0;
-      let upA = 0, upB = 0, upN = 0;
+      let lowA = 0,
+        lowB = 0,
+        lowN = 0;
+      let upA = 0,
+        upB = 0,
+        upN = 0;
       for (let y = 0; y < A.h; y++) {
         for (let x = 0; x < A.w; x++) {
           const i = (y * A.w + x) * 4;

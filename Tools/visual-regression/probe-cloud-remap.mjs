@@ -49,8 +49,10 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+  if ("cloudWeatherMap" in g)
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
@@ -127,7 +129,10 @@ async function run() {
   ];
   const rec = { tag: TAG };
   for (const cv of covs) {
-    const du = await page.evaluate(RENDER_COV, { coverage: cv.coverage, iso: NOON });
+    const du = await page.evaluate(RENDER_COV, {
+      coverage: cv.coverage,
+      iso: NOON,
+    });
     fs.writeFileSync(
       `${OUT}/cloud-remap-${TAG}-cov${cv.key}.png`,
       Buffer.from(du.split(",")[1], "base64"),
@@ -139,7 +144,10 @@ async function run() {
   const newErrs = (gate.errors || [])
     .concat(consoleErrors)
     .filter((e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout/i.test(e));
-  fs.writeFileSync(`${OUT}/cloud-remap-${TAG}.json`, JSON.stringify(rec, null, 2));
+  fs.writeFileSync(
+    `${OUT}/cloud-remap-${TAG}.json`,
+    JSON.stringify(rec, null, 2),
+  );
   console.log(`[${TAG}]`, JSON.stringify(rec), "errs", newErrs.length);
 
   const other = TAG === "after" ? "before" : "after";
@@ -150,20 +158,34 @@ async function run() {
     const after = TAG === "after" ? rec : o;
     const before = TAG === "before" ? rec : o;
     const cov04Ratio = after["04"].cloudPx / Math.max(1, before["04"].cloudPx);
-    const cov85PxRatio = after["85"].cloudPx / Math.max(1, before["85"].cloudPx);
-    const cov85LumaRise = +(after["85"].meanLum - before["85"].meanLum).toFixed(3);
+    const cov85PxRatio =
+      after["85"].cloudPx / Math.max(1, before["85"].cloudPx);
+    const cov85LumaRise = +(after["85"].meanLum - before["85"].meanLum).toFixed(
+      3,
+    );
     console.log("\n=== A/B (after vs before) ===");
     console.log(`  cov04 cloud-px ratio: ${cov04Ratio.toFixed(3)}`);
-    console.log(`  cov85 cloud-px ratio: ${cov85PxRatio.toFixed(3)} | mean-luma Δ: ${cov85LumaRise}`);
+    console.log(
+      `  cov85 cloud-px ratio: ${cov85PxRatio.toFixed(3)} | mean-luma Δ: ${cov85LumaRise}`,
+    );
     // V4 is a mean-preserving + tier-dial infrastructure batch (the baked deck is
     // already solid at high coverage, so there are no holes to "fill" — the remap
     // just makes the erosion robust + adds the erosionStrength dial V11 consumes).
     // Acceptance = NO REGRESSION: silhouette + deck preserved, no new holes,
     // luma stable, base>=full intact (oracle omits erosion), no errors.
     const checks = [
-      [`cov04 silhouette preserved (ratio ${cov04Ratio.toFixed(3)} in 0.90-1.10)`, cov04Ratio >= 0.9 && cov04Ratio <= 1.1],
-      [`cov85 deck preserved, no new holes (px ratio ${cov85PxRatio.toFixed(3)} ≥ 0.97)`, cov85PxRatio >= 0.97],
-      [`cov85 mean luma stable (|Δ| ${Math.abs(cov85LumaRise)} ≤ 0.03)`, Math.abs(cov85LumaRise) <= 0.03],
+      [
+        `cov04 silhouette preserved (ratio ${cov04Ratio.toFixed(3)} in 0.90-1.10)`,
+        cov04Ratio >= 0.9 && cov04Ratio <= 1.1,
+      ],
+      [
+        `cov85 deck preserved, no new holes (px ratio ${cov85PxRatio.toFixed(3)} ≥ 0.97)`,
+        cov85PxRatio >= 0.97,
+      ],
+      [
+        `cov85 mean luma stable (|Δ| ${Math.abs(cov85LumaRise)} ≤ 0.03)`,
+        Math.abs(cov85LumaRise) <= 0.03,
+      ],
       ["no NEW device errors", newErrs.length === 0],
     ];
     pass = true;

@@ -107,7 +107,7 @@ async function captureEnv(webgpuOptions, label) {
       // makes the bake converge to a single fixed cube → byte-stable readback.
       const FIXED_TIME = C.JulianDate.fromIso8601("2026-06-15T23:30:00Z");
       const pinClock = () => {
-        scene.clampToHeightSupported; // touch (no-op) to keep scene live
+        void scene.clampToHeightSupported; // touch (no-op) to keep scene live
         if (scene.frameState && scene.frameState.time) {
           C.JulianDate.clone(FIXED_TIME, scene.frameState.time);
         }
@@ -179,7 +179,8 @@ async function captureEnv(webgpuOptions, label) {
       // Read back the prefiltered RADIANCE cube directly (float, unmasked).
       const device = scene.context.device;
       const cache = envMgr && envMgr._webgpuCache;
-      const radTex = cache && cache.iblCache ? cache.iblCache.radianceTexture : null;
+      const radTex =
+        cache && cache.iblCache ? cache.iblCache.radianceTexture : null;
       let radStats = {
         flagOn,
         usedLut: cache ? cache.lastUsedMultiScatterLut : null,
@@ -274,7 +275,7 @@ async function captureEnv(webgpuOptions, label) {
     { modelUrl: MODEL, webgpuOptions },
   );
   await browser.close();
-  let radStats = null;
+  let radStats;
   try {
     radStats = JSON.parse(info.radStatsJson);
   } catch {
@@ -291,7 +292,9 @@ async function captureAerial(webgpuOptions, label) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -444,15 +447,14 @@ async function captureAerial(webgpuOptions, label) {
           let nonBlack = 0;
           for (let i = 0; i < d.length; i += 4) {
             if (d[i] + d[i + 1] + d[i + 2] > 12) nonBlack++;
-            checksum =
-              (checksum + d[i] + d[i + 1] * 3 + d[i + 2] * 7) >>> 0;
+            checksum = (checksum + d[i] + d[i + 1] * 3 + d[i + 2] * 7) >>> 0;
           }
           // RGBA dump for PNG.
           resolve({
             W,
             H,
             far: band(0, (H / 3) | 0),
-            near: band((2 * H) / 3 | 0, H),
+            near: band(((2 * H) / 3) | 0, H),
             checksum,
             nonBlack,
             data: Array.from(d),
@@ -489,7 +491,10 @@ function encodePNG({ w, W, h, H, data }) {
   const raw = Buffer.alloc((bpr + 1) * hh);
   for (let y = 0; y < hh; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -549,7 +554,10 @@ if (MODE === "parity") {
   const envOff = await captureEnv({}, "env-off");
   const envOn = await captureEnv({ envMapMultiScatter: true }, "env-on");
   const aerialOff = await captureAerial({}, "aerial-off");
-  const aerialOn = await captureAerial({ envMapMultiScatter: true }, "aerial-on");
+  const aerialOn = await captureAerial(
+    { envMapMultiScatter: true },
+    "aerial-on",
+  );
 
   if (envOff.radStats?.strip)
     fs.writeFileSync(
@@ -562,9 +570,15 @@ if (MODE === "parity") {
       encodePNG(envOn.radStats.strip),
     );
   if (aerialOff.cap)
-    fs.writeFileSync(`${OD}/env-aerial-ms-aerial-off.png`, encodePNG(aerialOff.cap));
+    fs.writeFileSync(
+      `${OD}/env-aerial-ms-aerial-off.png`,
+      encodePNG(aerialOff.cap),
+    );
   if (aerialOn.cap)
-    fs.writeFileSync(`${OD}/env-aerial-ms-aerial-on.png`, encodePNG(aerialOn.cap));
+    fs.writeFileSync(
+      `${OD}/env-aerial-ms-aerial-on.png`,
+      encodePNG(aerialOn.cap),
+    );
 
   // Env cube delta: sun-side faces (+X/+Z roughly toward a low east sun) should
   // warm (R/B up). Report per-face R/B + the checksum delta.

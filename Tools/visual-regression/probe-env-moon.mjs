@@ -163,11 +163,7 @@ async function capture(renderer, iso, tag) {
           t,
           new C.Cartesian3(),
         );
-      const moonToSun = C.Cartesian3.subtract(
-        sunI,
-        moonI,
-        new C.Cartesian3(),
-      );
+      const moonToSun = C.Cartesian3.subtract(sunI, moonI, new C.Cartesian3());
       const moonToEarth = C.Cartesian3.negate(moonI, new C.Cartesian3());
       const phaseAngle = C.Cartesian3.angleBetween(moonToSun, moonToEarth);
       illumFraction = (1 + Math.cos(phaseAngle)) / 2;

@@ -23,7 +23,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
@@ -100,7 +104,8 @@ const BASE = "http://localhost:8080";
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));
     }
-    const dispatcher = v.scene._alternateSceneRenderer?._clusteredLightingDispatcher;
+    const dispatcher =
+      v.scene._alternateSceneRenderer?._clusteredLightingDispatcher;
     const lastActiveOn = dispatcher?.lastActiveLightCount ?? -1;
 
     // Read back per-cluster light count to confirm compute actually ran.
@@ -182,12 +187,24 @@ const BASE = "http://localhost:8080";
   }
   const r = result;
   console.log(`  scene.lights.length: ${r.sceneLightsCount}`);
-  console.log(`  dispatcher constructed when off: ${r.dispatcherFoundEvenWhenOff}`);
-  console.log(`  dispatcher.lastActiveLightCount when OFF:    ${r.lastActiveOff}`);
-  console.log(`  dispatcher.lastActiveLightCount when ON:     ${r.lastActiveOn}`);
-  console.log(`  dispatcher.lastActiveLightCount after RE-OFF: ${r.lastActiveOffAgain}`);
-  console.log(`  dispatcher calls: transition=${r.dispatchCallsAfterTransition} stable-off=${r.dispatchCallsAfterStableOff}`);
-  console.log(`  perClusterLightCount: totalOverlap=${r.totalOverlap}/${16 * 9 * 24}  max=${r.max}`);
+  console.log(
+    `  dispatcher constructed when off: ${r.dispatcherFoundEvenWhenOff}`,
+  );
+  console.log(
+    `  dispatcher.lastActiveLightCount when OFF:    ${r.lastActiveOff}`,
+  );
+  console.log(
+    `  dispatcher.lastActiveLightCount when ON:     ${r.lastActiveOn}`,
+  );
+  console.log(
+    `  dispatcher.lastActiveLightCount after RE-OFF: ${r.lastActiveOffAgain}`,
+  );
+  console.log(
+    `  dispatcher calls: transition=${r.dispatchCallsAfterTransition} stable-off=${r.dispatchCallsAfterStableOff}`,
+  );
+  console.log(
+    `  perClusterLightCount: totalOverlap=${r.totalOverlap}/${16 * 9 * 24}  max=${r.max}`,
+  );
   console.log(`\nDevice errors: ${errs.length}`);
   if (errs.length) {
     const seen = new Set();
@@ -201,35 +218,51 @@ const BASE = "http://localhost:8080";
 
   let pass = true;
   if (r.sceneLightsCount !== 2) {
-    console.log(`FAIL: scene.lights.length = ${r.sceneLightsCount}, expected 2`);
+    console.log(
+      `FAIL: scene.lights.length = ${r.sceneLightsCount}, expected 2`,
+    );
     pass = false;
   }
   if (r.dispatcherFoundEvenWhenOff) {
-    console.log(`FAIL: dispatcher was constructed during the initial disabled phase`);
+    console.log(
+      `FAIL: dispatcher was constructed during the initial disabled phase`,
+    );
     pass = false;
   }
   if (r.lastActiveOff !== -1) {
-    console.log(`FAIL: disabled phase unexpectedly exposed dispatcher state ${r.lastActiveOff}`);
+    console.log(
+      `FAIL: disabled phase unexpectedly exposed dispatcher state ${r.lastActiveOff}`,
+    );
     pass = false;
   }
   if (r.lastActiveOn !== 2) {
-    console.log(`FAIL: lastActiveLightCount when ON = ${r.lastActiveOn}, expected 2`);
+    console.log(
+      `FAIL: lastActiveLightCount when ON = ${r.lastActiveOn}, expected 2`,
+    );
     pass = false;
   }
   if (r.lastActiveOffAgain !== 0) {
-    console.log(`FAIL: lastActiveLightCount after RE-OFF = ${r.lastActiveOffAgain}, expected 0`);
+    console.log(
+      `FAIL: lastActiveLightCount after RE-OFF = ${r.lastActiveOffAgain}, expected 0`,
+    );
     pass = false;
   }
   if (r.dispatchCallsAfterTransition !== 1) {
-    console.log(`FAIL: enabled->disabled transition dispatched ${r.dispatchCallsAfterTransition} times, expected 1`);
+    console.log(
+      `FAIL: enabled->disabled transition dispatched ${r.dispatchCallsAfterTransition} times, expected 1`,
+    );
     pass = false;
   }
   if (r.dispatchCallsAfterStableOff !== 1) {
-    console.log(`FAIL: stable disabled frames added dispatcher calls (${r.dispatchCallsAfterStableOff}, expected 1 total)`);
+    console.log(
+      `FAIL: stable disabled frames added dispatcher calls (${r.dispatchCallsAfterStableOff}, expected 1 total)`,
+    );
     pass = false;
   }
   if (r.totalOverlap < 16 * 9 * 24) {
-    console.log(`FAIL: totalOverlap = ${r.totalOverlap}, expected ≥${16 * 9 * 24} (directional should reach every cluster)`);
+    console.log(
+      `FAIL: totalOverlap = ${r.totalOverlap}, expected ≥${16 * 9 * 24} (directional should reach every cluster)`,
+    );
     pass = false;
   }
   if (errs.length > 0) {
@@ -237,7 +270,9 @@ const BASE = "http://localhost:8080";
     pass = false;
   }
   if (pass) {
-    console.log("\nPASS: clustered lighting is lazy while off, runs when enabled, and publishes exactly one toggle-off sync + 0 device errors");
+    console.log(
+      "\nPASS: clustered lighting is lazy while off, runs when enabled, and publishes exactly one toggle-off sync + 0 device errors",
+    );
   }
   process.exit(pass ? 0 : 1);
 })();

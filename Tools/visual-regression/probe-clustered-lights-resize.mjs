@@ -41,7 +41,11 @@ mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   page.on("pageerror", () => {});
@@ -64,7 +68,9 @@ mkdirSync(OUT, { recursive: true });
     const device = window.viewer.scene.context._device;
     const DispatcherCtor = mod.WebGPUClusteredLightingDispatcher;
     if (typeof DispatcherCtor !== "function") {
-      return { earlyExitErr: `dispatcher missing (typeof=${typeof DispatcherCtor})` };
+      return {
+        earlyExitErr: `dispatcher missing (typeof=${typeof DispatcherCtor})`,
+      };
     }
     const C = mod;
     const TOTAL = 16 * 9 * 24;
@@ -183,28 +189,47 @@ mkdirSync(OUT, { recursive: true });
     process.exit(1);
   }
   const r = result;
-  console.log(`  cfgA: active=${r.aActive} totalAssign=${r.aTotal} occupiedClusters=${r.aOccupied}`);
-  console.log(`  cfgB: active=${r.bActive} totalAssign=${r.bTotal} occupiedClusters=${r.bOccupied}`);
-  console.log(`  A-vs-B differing clusters: ${r.diffCells}/${r.TOTAL}  (must be > 0 → bins recomputed on bounds change)`);
-  console.log(`  B-vs-B-again differing clusters: ${r.b2DiffCells}  (must be 0 → light/view dirty-cache intact)`);
+  console.log(
+    `  cfgA: active=${r.aActive} totalAssign=${r.aTotal} occupiedClusters=${r.aOccupied}`,
+  );
+  console.log(
+    `  cfgB: active=${r.bActive} totalAssign=${r.bTotal} occupiedClusters=${r.bOccupied}`,
+  );
+  console.log(
+    `  A-vs-B differing clusters: ${r.diffCells}/${r.TOTAL}  (must be > 0 → bins recomputed on bounds change)`,
+  );
+  console.log(
+    `  B-vs-B-again differing clusters: ${r.b2DiffCells}  (must be 0 → light/view dirty-cache intact)`,
+  );
   console.log(`  device errors: ${errs.length}`);
-  if (errs.length) errs.slice(0, 3).forEach((e) => console.log(`   - ${String(e).slice(0, 160)}`));
+  if (errs.length)
+    errs
+      .slice(0, 3)
+      .forEach((e) => console.log(`   - ${String(e).slice(0, 160)}`));
 
   let pass = true;
   if (r.aActive !== 1 || r.bActive !== 1) {
-    console.log(`FAIL: expected 1 active light per dispatch, got A=${r.aActive} B=${r.bActive}`);
+    console.log(
+      `FAIL: expected 1 active light per dispatch, got A=${r.aActive} B=${r.bActive}`,
+    );
     pass = false;
   }
   if (r.aOccupied === 0 || r.bOccupied === 0) {
-    console.log(`FAIL: point light occupied 0 clusters in a config (A=${r.aOccupied} B=${r.bOccupied})`);
+    console.log(
+      `FAIL: point light occupied 0 clusters in a config (A=${r.aOccupied} B=${r.bOccupied})`,
+    );
     pass = false;
   }
   if (r.diffCells === 0) {
-    console.log(`FAIL (A7.2 STALE BINS): cfgA and cfgB per-cluster counts are IDENTICAL despite different bounds — assign did NOT recompute on bounds change.`);
+    console.log(
+      `FAIL (A7.2 STALE BINS): cfgA and cfgB per-cluster counts are IDENTICAL despite different bounds — assign did NOT recompute on bounds change.`,
+    );
     pass = false;
   }
   if (r.b2DiffCells !== 0) {
-    console.log(`FAIL: B-vs-B-again differs by ${r.b2DiffCells} cells — legitimate dirty-cache broken (assign re-ran with no change).`);
+    console.log(
+      `FAIL: B-vs-B-again differs by ${r.b2DiffCells} cells — legitimate dirty-cache broken (assign re-ran with no change).`,
+    );
     pass = false;
   }
   if (errs.length > 0) {
@@ -212,7 +237,9 @@ mkdirSync(OUT, { recursive: true });
     pass = false;
   }
   if (pass) {
-    console.log("\nPASS: cluster bins recompute when bounds change (no camera motion); dirty-cache preserved; 0 device errors.");
+    console.log(
+      "\nPASS: cluster bins recompute when bounds change (no camera motion); dirty-cache preserved; 0 device errors.",
+    );
   }
   process.exit(pass ? 0 : 1);
 })();

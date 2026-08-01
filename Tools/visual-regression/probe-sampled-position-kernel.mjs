@@ -90,7 +90,9 @@ const TRACKS = [
 const QUERY_TIMES = [125.0, 200.0, -30.0, 999.0];
 
 async function runLeg(renderer) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -241,10 +243,21 @@ async function runLeg(renderer) {
 
         for (let idx = 0; idx < TRACKS.length; idx++) {
           // Reference (i): family pure-JS interpolation.
-          const refKernel = family.sample(lanesPerInstance[idx], qt, new C.Cartesian3());
+          const refKernel = family.sample(
+            lanesPerInstance[idx],
+            qt,
+            new C.Cartesian3(),
+          );
           // Reference (ii): CPU SampledPositionProperty (linear).
-          const refTime = C.JulianDate.addSeconds(epoch, qt, new C.JulianDate());
-          const refProp = sampledProps[idx].getValue(refTime, new C.Cartesian3());
+          const refTime = C.JulianDate.addSeconds(
+            epoch,
+            qt,
+            new C.JulianDate(),
+          );
+          const refProp = sampledProps[idx].getValue(
+            refTime,
+            new C.Cartesian3(),
+          );
 
           // GPU-resident readback — converge (require the same value twice on
           // WebGPU to reject a stale carry-over from the prior query time).
@@ -252,7 +265,10 @@ async function runLeg(renderer) {
           let kind = "undefined";
           let prev = null;
           for (let i = 0; i < MAX_CONVERGE; i++) {
-            const r = collection.getInstanceWorldPosition(idx, new C.Cartesian3());
+            const r = collection.getInstanceWorldPosition(
+              idx,
+              new C.Cartesian3(),
+            );
             if (r && typeof r.then === "function") {
               kind = "Promise";
               break;
@@ -364,7 +380,9 @@ function printLeg(name, leg) {
     `(C) move: early=${leg.maskEarly} late=${leg.maskLate} changed=${leg.moveChanged} (${(leg.moveChangedPct * 100).toFixed(1)}%)`,
   );
   console.log(`(D) console errors: ${leg.errors.length}`);
-  leg.errors.slice(0, 8).forEach((e) => console.log("   ERR:", e.slice(0, 250)));
+  leg.errors
+    .slice(0, 8)
+    .forEach((e) => console.log("   ERR:", e.slice(0, 250)));
 }
 printLeg("WebGL", webgl);
 printLeg("WebGPU", webgpu);

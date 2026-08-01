@@ -74,17 +74,27 @@ function aggregate(profile) {
 }
 
 async function profileBackend(browser, renderer) {
-  const context = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+  });
   const page = await context.newPage();
   const out = { renderer, ok: false };
   try {
-    await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000,
-    });
-    await page.waitForFunction(() => !!(window.viewer && window.viewer.scene && window.viewer.scene.context), null, {
-      timeout: 90000,
-    });
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      },
+    );
+    await page.waitForFunction(
+      () =>
+        !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
+      null,
+      {
+        timeout: 90000,
+      },
+    );
     await page.waitForTimeout(SETTLE_MS);
 
     // Force real work every call so we profile rendering, not the idle early-out.
@@ -129,7 +139,9 @@ async function profileBackend(browser, renderer) {
     const agg = aggregate(profile);
     out.timing = timing;
     out.sampledTotalMs = r3(agg.totalMs);
-    out.top = agg.rows.slice(0, 30).map((r) => ({ fn: r.fn, ms: r3(r.ms), pct: r3(r.pct) }));
+    out.top = agg.rows
+      .slice(0, 30)
+      .map((r) => ({ fn: r.fn, ms: r3(r.ms), pct: r3(r.pct) }));
     out.ok = true;
   } catch (e) {
     out.error = String((e && e.message) || e).slice(0, 400);
@@ -153,7 +165,11 @@ async function profileBackend(browser, renderer) {
   // WebGPU-only view: functions absent (or far cheaper) in the WebGL profile.
   const glMap = new Map((gl?.top || []).map((r) => [r.fn, r.ms]));
   const webgpuSpecific = (gpu?.top || [])
-    .map((r) => ({ ...r, webglMs: glMap.get(r.fn) ?? 0, deltaMs: r3(r.ms - (glMap.get(r.fn) ?? 0)) }))
+    .map((r) => ({
+      ...r,
+      webglMs: glMap.get(r.fn) ?? 0,
+      deltaMs: r3(r.ms - (glMap.get(r.fn) ?? 0)),
+    }))
     .filter((r) => r.deltaMs > 0)
     .sort((a, b) => b.deltaMs - a.deltaMs)
     .slice(0, 20);
@@ -162,8 +178,16 @@ async function profileBackend(browser, renderer) {
     probe: "cpu-sampling-profile",
     date: new Date().toISOString(),
     frames: MEASURE,
-    webgpu: { medianRenderMs: r3(gpu?.timing?.median), sampledTotalMs: gpu?.sampledTotalMs, error: gpu?.error },
-    webgl: { medianRenderMs: r3(gl?.timing?.median), sampledTotalMs: gl?.sampledTotalMs, error: gl?.error },
+    webgpu: {
+      medianRenderMs: r3(gpu?.timing?.median),
+      sampledTotalMs: gpu?.sampledTotalMs,
+      error: gpu?.error,
+    },
+    webgl: {
+      medianRenderMs: r3(gl?.timing?.median),
+      sampledTotalMs: gl?.sampledTotalMs,
+      error: gl?.error,
+    },
     webgpuTopSelfTime: gpu?.top?.slice(0, 20),
     webglTopSelfTime: gl?.top?.slice(0, 12),
     webgpuSpecificHotspots: webgpuSpecific,
@@ -172,13 +196,22 @@ async function profileBackend(browser, renderer) {
   const outPath = path.join(OUT_DIR, "cpu-sampling-profile.json");
   fs.writeFileSync(outPath, JSON.stringify(report, null, 2));
 
-  console.log(`WebGPU median render: ${report.webgpu.medianRenderMs} ms   |   WebGL median render: ${report.webgl.medianRenderMs} ms`);
+  console.log(
+    `WebGPU median render: ${report.webgpu.medianRenderMs} ms   |   WebGL median render: ${report.webgl.medianRenderMs} ms`,
+  );
   console.log(`\n=== WebGPU top self-time (${MEASURE} frames) ===`);
-  for (const r of (gpu?.top || []).slice(0, 18)) console.log(`  ${String(r.ms).padStart(9)} ms  ${String(r.pct).padStart(6)}%  ${r.fn}`);
+  for (const r of (gpu?.top || []).slice(0, 18))
+    console.log(
+      `  ${String(r.ms).padStart(9)} ms  ${String(r.pct).padStart(6)}%  ${r.fn}`,
+    );
   console.log(`\n=== WebGL top self-time (control) ===`);
-  for (const r of (gl?.top || []).slice(0, 10)) console.log(`  ${String(r.ms).padStart(9)} ms  ${String(r.pct).padStart(6)}%  ${r.fn}`);
+  for (const r of (gl?.top || []).slice(0, 10))
+    console.log(
+      `  ${String(r.ms).padStart(9)} ms  ${String(r.pct).padStart(6)}%  ${r.fn}`,
+    );
   console.log(`\n=== WebGPU-SPECIFIC hotspots (delta vs WebGL) ===`);
-  for (const r of webgpuSpecific.slice(0, 15)) console.log(`  +${String(r.deltaMs).padStart(9)} ms  ${r.fn}`);
+  for (const r of webgpuSpecific.slice(0, 15))
+    console.log(`  +${String(r.deltaMs).padStart(9)} ms  ${r.fn}`);
   if (gpu?.error) console.log("webgpu error:", gpu.error);
   if (gl?.error) console.log("webgl error:", gl.error);
   console.log(`\n[full report: ${outPath}]`);

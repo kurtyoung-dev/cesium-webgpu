@@ -25,7 +25,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
@@ -214,7 +218,10 @@ const BASE = "http://localhost:8080";
       initialToggle,
       afterSetToggle,
       afterUnsetToggle,
-      c1, c2, c3, c4,
+      c1,
+      c2,
+      c3,
+      c4,
       totalOverlap,
       max,
       TOTAL,
@@ -237,18 +244,30 @@ const BASE = "http://localhost:8080";
   }
   const r = result;
   console.log(`  scene.clusteredLightingEnabled:`);
-  console.log(`    initial=${r.initialToggle} after-set-true=${r.afterSetToggle} after-set-false=${r.afterUnsetToggle}`);
-  console.log(`  dispatch return values: disabled=${r.c1} enabled=${r.c2} cacheHit=${r.c3} reDisabled=${r.c4}`);
-  console.log(`  per-cluster: totalOverlap=${r.totalOverlap}/${r.TOTAL}  max=${r.max}`);
-  console.log(`  params.activeLightCount: enabled=${r.paramsEnabledActiveLightCount}  disabled=${r.paramsDisabledActiveLightCount}`);
+  console.log(
+    `    initial=${r.initialToggle} after-set-true=${r.afterSetToggle} after-set-false=${r.afterUnsetToggle}`,
+  );
+  console.log(
+    `  dispatch return values: disabled=${r.c1} enabled=${r.c2} cacheHit=${r.c3} reDisabled=${r.c4}`,
+  );
+  console.log(
+    `  per-cluster: totalOverlap=${r.totalOverlap}/${r.TOTAL}  max=${r.max}`,
+  );
+  console.log(
+    `  params.activeLightCount: enabled=${r.paramsEnabledActiveLightCount}  disabled=${r.paramsDisabledActiveLightCount}`,
+  );
   console.log(`\nDevice errors: ${errs.length}`);
   if (errs.length) {
-    errs.slice(0, 3).forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
+    errs
+      .slice(0, 3)
+      .forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
   }
 
   let pass = true;
   if (r.initialToggle !== false) {
-    console.log(`FAIL: initial clusteredLightingEnabled = ${r.initialToggle}, expected false`);
+    console.log(
+      `FAIL: initial clusteredLightingEnabled = ${r.initialToggle}, expected false`,
+    );
     pass = false;
   }
   if (r.afterSetToggle !== true) {
@@ -264,7 +283,9 @@ const BASE = "http://localhost:8080";
     pass = false;
   }
   if (r.c3 !== 2) {
-    console.log(`FAIL: cache-hit dispatch returned ${r.c3}, expected 2 (still active)`);
+    console.log(
+      `FAIL: cache-hit dispatch returned ${r.c3}, expected 2 (still active)`,
+    );
     pass = false;
   }
   if (r.c4 !== 0) {
@@ -273,16 +294,22 @@ const BASE = "http://localhost:8080";
   }
   // Directional light reaches every cluster → totalOverlap >= TOTAL.
   if (r.totalOverlap < r.TOTAL) {
-    console.log(`FAIL: totalOverlap ${r.totalOverlap} < ${r.TOTAL} — directional should hit every cluster`);
+    console.log(
+      `FAIL: totalOverlap ${r.totalOverlap} < ${r.TOTAL} — directional should hit every cluster`,
+    );
     pass = false;
   }
   // params uniform should reflect the active count.
   if (r.paramsEnabledActiveLightCount !== 2) {
-    console.log(`FAIL: enabled-frame activeLightCount = ${r.paramsEnabledActiveLightCount}, expected 2`);
+    console.log(
+      `FAIL: enabled-frame activeLightCount = ${r.paramsEnabledActiveLightCount}, expected 2`,
+    );
     pass = false;
   }
   if (r.paramsDisabledActiveLightCount !== 0) {
-    console.log(`FAIL: disabled-frame activeLightCount = ${r.paramsDisabledActiveLightCount}, expected 0`);
+    console.log(
+      `FAIL: disabled-frame activeLightCount = ${r.paramsDisabledActiveLightCount}, expected 0`,
+    );
     pass = false;
   }
   if (errs.length > 0) {
@@ -290,7 +317,9 @@ const BASE = "http://localhost:8080";
     pass = false;
   }
   if (pass) {
-    console.log("\nPASS: dispatcher orchestrates compute passes correctly + scene toggle works + 0 device errors");
+    console.log(
+      "\nPASS: dispatcher orchestrates compute passes correctly + scene toggle works + 0 device errors",
+    );
   }
   process.exit(pass ? 0 : 1);
 })();

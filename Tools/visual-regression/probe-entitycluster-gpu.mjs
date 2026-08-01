@@ -57,9 +57,12 @@ async function run(rendererArg) {
     if (m.type() === "error") errors.push(m.text());
   });
   page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   const out = await page.evaluate(
@@ -126,7 +129,7 @@ async function run(rendererArg) {
         destination: C.Cartesian3.fromDegrees(lon, lat, 120000.0),
       });
       await pump(3);
-      const near = await declutter();
+      const _near = await declutter();
       const near2 = await declutter(); // second pass (grid now warm)
 
       // ---- View 2: zoomed out (markers pack tighter → more merging) ----

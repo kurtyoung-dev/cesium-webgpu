@@ -139,7 +139,11 @@ export function validateProvenanceMarker(entry, sourceText) {
   // name — `x: …` or `.x` — which esbuild does not touch. A local binding
   // would appear as neither, which is exactly how a `const data` came to be
   // emitted as `data2`.
-  if (shapeOk && sourceText !== undefined && !SHADER_FILE.test(entry?.file ?? "")) {
+  if (
+    shapeOk &&
+    sourceText !== undefined &&
+    !SHADER_FILE.test(entry?.file ?? "")
+  ) {
     const asKey = new RegExp(`(^|[^\\w.])${marker}\\s*:`, "m");
     const asAccess = new RegExp(`\\.${marker}\\b`);
     if (!(asKey.test(source) || asAccess.test(source))) {

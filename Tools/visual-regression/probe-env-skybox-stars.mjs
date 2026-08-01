@@ -56,9 +56,15 @@ async function capture(rendererArg, starFieldOn, cameraMode) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
 
@@ -184,7 +190,9 @@ async function capture(rendererArg, starFieldOn, cameraMode) {
           s.skyBox.starField.show
         ),
         sawSkyBoxCmd,
-        skyBrightness: s.frameState ? s.frameState.skyBrightness ?? null : null,
+        skyBrightness: s.frameState
+          ? (s.frameState.skyBrightness ?? null)
+          : null,
         sunElevationDeg,
       };
     },
@@ -258,82 +266,85 @@ async function correlate(pngA, pngB) {
   await page.setContent("<!doctype html><html><body></body></html>");
   const ba = fs.readFileSync(pngA).toString("base64");
   const bb = fs.readFileSync(pngB).toString("base64");
-  const r = await page.evaluate(async ({ ba, bb }) => {
-    const decode = async (b64) => {
-      const img = new Image();
-      img.src = "data:image/png;base64," + b64;
-      await img.decode();
-      const c = document.createElement("canvas");
-      c.width = img.naturalWidth;
-      c.height = img.naturalHeight;
-      const x = c.getContext("2d");
-      x.drawImage(img, 0, 0);
-      return x.getImageData(0, 0, c.width, c.height);
-    };
-    const A = await decode(ba);
-    const B = await decode(bb);
-    // Sky-only crop: skip top toolbar, right help panel, bottom timeline +
-    // WebGL ion attribution.
-    const x0 = 40,
-      x1 = 980,
-      y0 = 300,
-      y1 = 640;
-    const BLOCK = 20;
-    const gw = Math.floor((x1 - x0) / BLOCK);
-    const gh = Math.floor((y1 - y0) / BLOCK);
-    const grid = (im, flipV) => {
-      const g = new Float64Array(gw * gh);
-      for (let gy = 0; gy < gh; gy++) {
-        for (let gx = 0; gx < gw; gx++) {
-          let sum = 0;
-          for (let dy = 0; dy < BLOCK; dy++) {
-            for (let dx = 0; dx < BLOCK; dx++) {
-              const px = x0 + gx * BLOCK + dx;
-              let py = y0 + gy * BLOCK + dy;
-              if (flipV) py = y1 - 1 - (gy * BLOCK + dy);
-              const i = (py * im.width + px) * 4;
-              sum +=
-                0.2126 * im.data[i] +
-                0.7152 * im.data[i + 1] +
-                0.0722 * im.data[i + 2];
+  const r = await page.evaluate(
+    async ({ ba, bb }) => {
+      const decode = async (b64) => {
+        const img = new Image();
+        img.src = "data:image/png;base64," + b64;
+        await img.decode();
+        const c = document.createElement("canvas");
+        c.width = img.naturalWidth;
+        c.height = img.naturalHeight;
+        const x = c.getContext("2d");
+        x.drawImage(img, 0, 0);
+        return x.getImageData(0, 0, c.width, c.height);
+      };
+      const A = await decode(ba);
+      const B = await decode(bb);
+      // Sky-only crop: skip top toolbar, right help panel, bottom timeline +
+      // WebGL ion attribution.
+      const x0 = 40,
+        x1 = 980,
+        y0 = 300,
+        y1 = 640;
+      const BLOCK = 20;
+      const gw = Math.floor((x1 - x0) / BLOCK);
+      const gh = Math.floor((y1 - y0) / BLOCK);
+      const grid = (im, flipV) => {
+        const g = new Float64Array(gw * gh);
+        for (let gy = 0; gy < gh; gy++) {
+          for (let gx = 0; gx < gw; gx++) {
+            let sum = 0;
+            for (let dy = 0; dy < BLOCK; dy++) {
+              for (let dx = 0; dx < BLOCK; dx++) {
+                const px = x0 + gx * BLOCK + dx;
+                let py = y0 + gy * BLOCK + dy;
+                if (flipV) py = y1 - 1 - (gy * BLOCK + dy);
+                const i = (py * im.width + px) * 4;
+                sum +=
+                  0.2126 * im.data[i] +
+                  0.7152 * im.data[i + 1] +
+                  0.0722 * im.data[i + 2];
+              }
             }
+            g[gy * gw + gx] = sum / (BLOCK * BLOCK);
           }
-          g[gy * gw + gx] = sum / (BLOCK * BLOCK);
         }
-      }
-      return g;
-    };
-    const pearson = (a, b) => {
-      const n = a.length;
-      let ma = 0,
-        mb = 0;
-      for (let i = 0; i < n; i++) {
-        ma += a[i];
-        mb += b[i];
-      }
-      ma /= n;
-      mb /= n;
-      let num = 0,
-        da = 0,
-        db = 0;
-      for (let i = 0; i < n; i++) {
-        const xa = a[i] - ma;
-        const xb = b[i] - mb;
-        num += xa * xb;
-        da += xa * xa;
-        db += xb * xb;
-      }
-      const den = Math.sqrt(da * db);
-      return den > 0 ? num / den : 0;
-    };
-    const gA = grid(A, false);
-    const gB = grid(B, false);
-    const gBflip = grid(B, true);
-    return {
-      aligned: pearson(gA, gB),
-      mirrored: pearson(gA, gBflip),
-    };
-  }, { ba, bb });
+        return g;
+      };
+      const pearson = (a, b) => {
+        const n = a.length;
+        let ma = 0,
+          mb = 0;
+        for (let i = 0; i < n; i++) {
+          ma += a[i];
+          mb += b[i];
+        }
+        ma /= n;
+        mb /= n;
+        let num = 0,
+          da = 0,
+          db = 0;
+        for (let i = 0; i < n; i++) {
+          const xa = a[i] - ma;
+          const xb = b[i] - mb;
+          num += xa * xb;
+          da += xa * xa;
+          db += xb * xb;
+        }
+        const den = Math.sqrt(da * db);
+        return den > 0 ? num / den : 0;
+      };
+      const gA = grid(A, false);
+      const gB = grid(B, false);
+      const gBflip = grid(B, true);
+      return {
+        aligned: pearson(gA, gB),
+        mirrored: pearson(gA, gBflip),
+      };
+    },
+    { ba, bb },
+  );
   await browser.close();
   return r;
 }
@@ -396,8 +407,7 @@ async function correlate(pngA, pngB) {
   const sunElevGl = results["webgl-sunlit-default"].meta.sunElevationDeg;
   const skyBrightGpu = results["webgpu-sunlit-default"].meta.skyBrightness;
   // The sunlit lane must actually reach the failing state, else it is not a gate.
-  const framingReached =
-    (sunElevGpu ?? 0) >= 25 && (sunElevGl ?? 0) >= 25;
+  const framingReached = (sunElevGpu ?? 0) >= 25 && (sunElevGl ?? 0) >= 25;
 
   const cubemapParity =
     band(densityRatio) &&

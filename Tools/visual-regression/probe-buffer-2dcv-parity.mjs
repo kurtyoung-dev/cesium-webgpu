@@ -221,7 +221,11 @@ const webgl = await run("webgl");
 const webgpu = await run("webgpu");
 
 console.log("=== WebGL ===  errs:", webgl.errs.length, webgl.errs.slice(0, 4));
-console.log("=== WebGPU === errs:", webgpu.errs.length, webgpu.errs.slice(0, 4));
+console.log(
+  "=== WebGPU === errs:",
+  webgpu.errs.length,
+  webgpu.errs.slice(0, 4),
+);
 
 console.log("=== DIFF (WebGL vs WebGPU, per scene mode) ===");
 // Tolerance: primitives are thin/sparse, so even a perfect overlay leaves a few
@@ -233,7 +237,7 @@ console.log("=== DIFF (WebGL vs WebGPU, per scene mode) ===");
 // against. The real acceptance below measures whether WebGPU renders each
 // primitive at its reprojected location per mode by counting its signature
 // color in the WebGPU screenshot.
-const TOL = 3.0;
+const _TOL = 3.0;
 for (const mode of MODES) {
   const a = `${OUT}/_buf2dcv-webgl-${mode}.png`;
   const b = `${OUT}/_buf2dcv-webgpu-${mode}.png`;
@@ -249,34 +253,37 @@ for (const mode of MODES) {
 async function countColors(pngPath) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   const page = await browser.newPage();
-  const out = await page.evaluate(async (dataUrl) => {
-    const img = new Image();
-    await new Promise((res, rej) => {
-      img.onload = res;
-      img.onerror = rej;
-      img.src = dataUrl;
-    });
-    const cv = document.createElement("canvas");
-    cv.width = img.width;
-    cv.height = img.height;
-    const ctx = cv.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
-    let cyan = 0;
-    let magenta = 0;
-    let yellow = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      const r = d[i];
-      const g = d[i + 1];
-      const b = d[i + 2];
-      // Exclude the top-right help panel region is not trivial here; the
-      // signature colors don't appear in the panel, so plain thresholds work.
-      if (r < 120 && g > 150 && b > 150) cyan++;
-      else if (r > 150 && g < 120 && b > 150) magenta++;
-      else if (r > 150 && g > 140 && b < 110) yellow++;
-    }
-    return { cyan, magenta, yellow };
-  }, "data:image/png;base64," + fs.readFileSync(pngPath).toString("base64"));
+  const out = await page.evaluate(
+    async (dataUrl) => {
+      const img = new Image();
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = rej;
+        img.src = dataUrl;
+      });
+      const cv = document.createElement("canvas");
+      cv.width = img.width;
+      cv.height = img.height;
+      const ctx = cv.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+      let cyan = 0;
+      let magenta = 0;
+      let yellow = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i];
+        const g = d[i + 1];
+        const b = d[i + 2];
+        // Exclude the top-right help panel region is not trivial here; the
+        // signature colors don't appear in the panel, so plain thresholds work.
+        if (r < 120 && g > 150 && b > 150) cyan++;
+        else if (r > 150 && g < 120 && b > 150) magenta++;
+        else if (r > 150 && g > 140 && b < 110) yellow++;
+      }
+      return { cyan, magenta, yellow };
+    },
+    "data:image/png;base64," + fs.readFileSync(pngPath).toString("base64"),
+  );
   await browser.close();
   return out;
 }
@@ -309,42 +316,47 @@ const expect = {
 async function magentaThickness(pngPath) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
   const page = await browser.newPage();
-  const out = await page.evaluate(async (dataUrl) => {
-    const img = new Image();
-    await new Promise((res, rej) => {
-      img.onload = res;
-      img.onerror = rej;
-      img.src = dataUrl;
-    });
-    const cv = document.createElement("canvas");
-    cv.width = img.width;
-    cv.height = img.height;
-    const ctx = cv.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
-    const isMag = (x, y) => {
-      const i = (y * cv.width + x) * 4;
-      return d[i] > 150 && d[i + 1] < 120 && d[i + 2] > 150;
-    };
-    const runs = [];
-    for (let x = 0; x < cv.width; x++) {
-      let best = 0;
-      let run = 0;
-      for (let y = 0; y < cv.height; y++) {
-        run = isMag(x, y) ? run + 1 : 0;
-        if (run > best) best = run;
+  const out = await page.evaluate(
+    async (dataUrl) => {
+      const img = new Image();
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = rej;
+        img.src = dataUrl;
+      });
+      const cv = document.createElement("canvas");
+      cv.width = img.width;
+      cv.height = img.height;
+      const ctx = cv.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+      const isMag = (x, y) => {
+        const i = (y * cv.width + x) * 4;
+        return d[i] > 150 && d[i + 1] < 120 && d[i + 2] > 150;
+      };
+      const runs = [];
+      for (let x = 0; x < cv.width; x++) {
+        let best = 0;
+        let run = 0;
+        for (let y = 0; y < cv.height; y++) {
+          run = isMag(x, y) ? run + 1 : 0;
+          if (run > best) best = run;
+        }
+        if (best > 0) runs.push(best);
       }
-      if (best > 0) runs.push(best);
-    }
-    runs.sort((a, b) => a - b);
-    return runs.length > 0 ? runs[runs.length >> 1] : 0;
-  }, "data:image/png;base64," + fs.readFileSync(pngPath).toString("base64"));
+      runs.sort((a, b) => a - b);
+      return runs.length > 0 ? runs[runs.length >> 1] : 0;
+    },
+    "data:image/png;base64," + fs.readFileSync(pngPath).toString("base64"),
+  );
   await browser.close();
   return out;
 }
 
 let pass = true;
-console.log("\n=== WebGPU per-mode primitive render (signature color pixels) ===");
+console.log(
+  "\n=== WebGPU per-mode primitive render (signature color pixels) ===",
+);
 for (const mode of MODES) {
   const png = `${OUT}/_buf2dcv-webgpu-${mode}.png`;
   if (!fs.existsSync(png)) {

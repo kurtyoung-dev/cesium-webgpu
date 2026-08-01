@@ -164,10 +164,10 @@ async function capture({ renderer, aerialOn, isoTime, pngName }) {
           //   GLOBE  — mid-frame terrain pixels (lit ground), excluding sky.
           // We use simple heuristics robust to framing: model = the brightest
           // ~lit pixels in the central crop; terrain = lit pixels in a band.
-          const cx0 = Math.floor(w * 0.30);
-          const cx1 = Math.floor(w * 0.70);
-          const cyM0 = Math.floor(h * 0.40);
-          const cyM1 = Math.floor(h * 0.80);
+          const cx0 = Math.floor(w * 0.3);
+          const cx1 = Math.floor(w * 0.7);
+          const cyM0 = Math.floor(h * 0.4);
+          const cyM1 = Math.floor(h * 0.8);
 
           // MODEL: the LIT (bright) pixels in the central crop. The truck body
           // is the brightest object near centre; threshold on luminance to
@@ -376,7 +376,9 @@ console.log(
 );
 console.log(`(F) console errors: ${allErrors.length} ${fOK ? "OK" : "FAIL"}`);
 allErrors.slice(0, 8).forEach((e) => console.log("  ERR:", e.slice(0, 220)));
-console.log(`PNGs: ${OUT_DIR}/atmo-lighting-{high-on,low-on,low-off,low-webgl}.png`);
+console.log(
+  `PNGs: ${OUT_DIR}/atmo-lighting-{high-on,low-on,low-off,low-webgl}.png`,
+);
 
 const pass = aOK && bOK && cOK && dOK && eOK && fOK;
 console.log(pass ? "PASS" : "FAIL");

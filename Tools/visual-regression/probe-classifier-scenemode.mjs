@@ -58,16 +58,23 @@ async function run(renderer) {
     args: ["--enable-unsafe-webgpu"],
   });
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
-  page.on("pageerror", (e) => console.log(`>> [${renderer}] pageerror: ${e.message}`));
-  await page.goto(`${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-  });
+  page.on("pageerror", (e) =>
+    console.log(`>> [${renderer}] pageerror: ${e.message}`),
+  );
+  await page.goto(
+    `${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   await page.evaluate(() => {
     window.__probeErrors = [];
     const dev = window.viewer?.scene?.context?._device;
-    if (dev) dev.onuncapturederror = (ev) => window.__probeErrors.push(ev?.error?.message ?? "");
+    if (dev)
+      dev.onuncapturederror = (ev) =>
+        window.__probeErrors.push(ev?.error?.message ?? "");
   });
 
   // Add the ground-clamped polygon (per-instance color — the recipe the
@@ -166,27 +173,31 @@ async function run(renderer) {
     const png = await page.screenshot({ type: "png" });
     fs.writeFileSync(`${OUT_DIR}/classifier-${mode}-${renderer}.png`, png);
 
-    const red = await page.evaluate(async (durl) => {
-      return new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => {
-          const c = document.createElement("canvas");
-          c.width = img.width;
-          c.height = img.height;
-          const cx = c.getContext("2d");
-          cx.drawImage(img, 0, 0);
-          const d = cx.getImageData(0, 0, c.width, c.height).data;
-          let n = 0;
-          for (let i = 0; i < d.length; i += 4) {
-            // "Classified red": dominant red channel, distinct from the
-            // blue/green globe + dark background + grey UI.
-            if (d[i] > 120 && d[i] > d[i + 1] * 1.7 && d[i] > d[i + 2] * 1.7) n++;
-          }
-          resolve(n);
-        };
-        img.src = durl;
-      });
-    }, `data:image/png;base64,${png.toString("base64")}`);
+    const red = await page.evaluate(
+      async (durl) => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const c = document.createElement("canvas");
+            c.width = img.width;
+            c.height = img.height;
+            const cx = c.getContext("2d");
+            cx.drawImage(img, 0, 0);
+            const d = cx.getImageData(0, 0, c.width, c.height).data;
+            let n = 0;
+            for (let i = 0; i < d.length; i += 4) {
+              // "Classified red": dominant red channel, distinct from the
+              // blue/green globe + dark background + grey UI.
+              if (d[i] > 120 && d[i] > d[i + 1] * 1.7 && d[i] > d[i + 2] * 1.7)
+                n++;
+            }
+            resolve(n);
+          };
+          img.src = durl;
+        });
+      },
+      `data:image/png;base64,${png.toString("base64")}`,
+    );
 
     const errsAfter = await page.evaluate(() => window.__probeErrors.length);
     perMode[mode] = { red, newErrs: errsAfter - errsBefore };
@@ -202,7 +213,9 @@ async function run(renderer) {
   const wgl = await run("webgl");
   const wgpu = await run("webgpu");
 
-  console.log("=== Classifier scene-mode probe (flat-color GroundPrimitive) ===\n");
+  console.log(
+    "=== Classifier scene-mode probe (flat-color GroundPrimitive) ===\n",
+  );
   console.log("  mode            WebGL red px    WebGPU red px   WebGPU errs");
   let pass = true;
   for (const m of MODES) {
@@ -221,8 +234,12 @@ async function run(renderer) {
     if (!ok && enforced) pass = false;
   }
   console.log(`\n  total WebGPU device errors: ${wgpu.errs.length}`);
-  wgpu.errs.slice(0, 5).forEach((x) => console.log(`    - ${(x ?? "").slice(0, 160)}`));
-  console.log(`\n  PNGs: ${OUT_DIR}/classifier-{SCENE3D,SCENE2D,COLUMBUS_VIEW}-{webgl,webgpu}.png`);
+  wgpu.errs
+    .slice(0, 5)
+    .forEach((x) => console.log(`    - ${(x ?? "").slice(0, 160)}`));
+  console.log(
+    `\n  PNGs: ${OUT_DIR}/classifier-{SCENE3D,SCENE2D,COLUMBUS_VIEW}-{webgl,webgpu}.png`,
+  );
   console.log(pass ? "\nPASS" : "\nFAIL");
   process.exit(pass ? 0 : 1);
 })();

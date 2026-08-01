@@ -126,7 +126,8 @@ async function runBackend(renderer) {
       density: vol.cloudDensity,
       windSpeed: vol.cloudWindSpeed,
       quality: vol.cloudQuality,
-      showProcDefaultFalse: scene.globe.defaultCloudCollection.enableVolumetric === false,
+      showProcDefaultFalse:
+        scene.globe.defaultCloudCollection.enableVolumetric === false,
     };
 
     // ── F/E/D re-home writes land on the collection (before enabling) ──
@@ -304,8 +305,15 @@ for (const r of ["webgl", "webgpu"]) {
 
 let ok = true;
 for (const res of results) {
-  const { def, defaults, rehome, gateAfterEnable, gateAfterDisable, deck, fidelity } =
-    res;
+  const {
+    def,
+    defaults,
+    rehome,
+    gateAfterEnable,
+    gateAfterDisable,
+    deck,
+    fidelity,
+  } = res;
   const isGPU = res.renderer === "webgpu";
   const errFiltered = res.errors.filter(
     (e) => !/AtmosphereLUT|default layout/.test(e),
@@ -361,7 +369,8 @@ for (const res of results) {
   );
   console.log(`  defaults: ${JSON.stringify(defaults)}`);
   console.log(`  checks: ${JSON.stringify(checks)}`);
-  if (failed.length) console.log(`  FAILED: ${failed.map(([k]) => k).join(", ")}`);
+  if (failed.length)
+    console.log(`  FAILED: ${failed.map(([k]) => k).join(", ")}`);
   if (errFiltered.length)
     console.log(`  console errors: ${JSON.stringify(errFiltered.slice(0, 4))}`);
   // Byte-identity anchor for the DEFAULT scene (compare across before/after builds).

@@ -193,7 +193,12 @@ async function capture(renderer) {
       scene.canvas.setAttribute("data-ibl", "1");
       return { ready: !!model.ready, usedUrl, iblReady };
     },
-    { modelCandidates: MODEL_CANDIDATES, heading: HEADING, pitch: PITCH, iso: DETERMINISTIC_CLOCK_ISO },
+    {
+      modelCandidates: MODEL_CANDIDATES,
+      heading: HEADING,
+      pitch: PITCH,
+      iso: DETERMINISTIC_CLOCK_ISO,
+    },
   );
 
   const gateArm = await armWebGPUDevices(page);
@@ -203,7 +208,9 @@ async function capture(renderer) {
   let decoded = null;
   let png = null;
   if (info.ready) {
-    png = await page.locator('canvas[data-ibl="1"]').screenshot({ type: "png" });
+    png = await page
+      .locator('canvas[data-ibl="1"]')
+      .screenshot({ type: "png" });
     decoded = await page.evaluate(async (b64) => {
       const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
       const bmp = await createImageBitmap(blob);
@@ -301,7 +308,10 @@ function encodePNG({ w, h, data }) {
   const raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {

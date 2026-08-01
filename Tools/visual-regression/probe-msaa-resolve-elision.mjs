@@ -26,12 +26,20 @@ import fs from "fs";
 const PROBE_BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output/msaa-resolve-elision";
 
-const results = { ok: true, checks: [], notes: [], counts: {}, byteIdentity: {} };
+const results = {
+  ok: true,
+  checks: [],
+  notes: [],
+  counts: {},
+  byteIdentity: {},
+};
 function check(name, cond, detail = "") {
   const pass = !!cond;
   results.checks.push({ name, pass, detail });
   if (!pass) results.ok = false;
-  console.log(`  ${pass ? "PASS" : "FAIL"}  ${name}${detail ? " — " + detail : ""}`);
+  console.log(
+    `  ${pass ? "PASS" : "FAIL"}  ${name}${detail ? " — " + detail : ""}`,
+  );
 }
 function note(s) {
   results.notes.push(s);
@@ -53,7 +61,8 @@ const INIT = () => {
   const orig = proto.beginRenderPass;
   proto.beginRenderPass = function (desc) {
     try {
-      const atts = desc && desc.colorAttachments ? [...desc.colorAttachments] : [];
+      const atts =
+        desc && desc.colorAttachments ? [...desc.colorAttachments] : [];
       for (let i = 0; i < atts.length; i++) {
         const a = atts[i];
         if (a && a.resolveTarget) {
@@ -74,7 +83,9 @@ const INIT = () => {
 async function newPage(browser) {
   const page = await browser.newPage({ viewport: { width: 960, height: 640 } });
   const errors = [];
-  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message.slice(0, 240)}`));
+  page.on("pageerror", (e) =>
+    errors.push(`pageerror: ${e.message.slice(0, 240)}`),
+  );
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(`console: ${m.text().slice(0, 240)}`);
   });
@@ -207,7 +218,11 @@ async function diff(page, a, b) {
       if (A.w !== B.w || A.h !== B.h) return { error: "size mismatch" };
       let mismatch = 0;
       for (let i = 0; i < A.d.length; i += 4)
-        if (A.d[i] !== B.d[i] || A.d[i + 1] !== B.d[i + 1] || A.d[i + 2] !== B.d[i + 2])
+        if (
+          A.d[i] !== B.d[i] ||
+          A.d[i + 1] !== B.d[i + 1] ||
+          A.d[i + 2] !== B.d[i + 2]
+        )
           mismatch++;
       return { totalPx: A.w * A.h, mismatchPx: mismatch };
     },
@@ -221,7 +236,9 @@ async function diff(page, a, b) {
   const { page, errors } = await newPage(browser);
   await freezeAndSettle(page);
 
-  const rendererType = await page.evaluate(() => window.viewer.scene.context.rendererType);
+  const rendererType = await page.evaluate(
+    () => window.viewer.scene.context.rendererType,
+  );
   check("renderer is webgpu", rendererType === "webgpu", rendererType);
 
   // ── A. Structural oracle — PRE (eager) vs POST (elided), MSAA4 ──
@@ -234,10 +251,18 @@ async function diff(page, a, b) {
   const post = await countOneFrame(page);
   results.counts.msaa4 = { pre: pre.rc, post: post.rc };
 
-  note(`MSAA4 effective samples pre=${pre.msaaEffective} post=${post.msaaEffective}`);
-  note(`PRE  bucket: sceneColor(slot0)=${pre.rc.slot0} slot1=${pre.rc.slot1} demand=${pre.rc.demand} total=${pre.rc.total}`);
-  note(`POST bucket: sceneColor(slot0)=${post.rc.slot0} slot1=${post.rc.slot1} demand=${post.rc.demand} total=${post.rc.total}`);
-  note(`center-third nonBlack frac: shipped=${onShot.frac} eager=${eagerShot.frac}`);
+  note(
+    `MSAA4 effective samples pre=${pre.msaaEffective} post=${post.msaaEffective}`,
+  );
+  note(
+    `PRE  bucket: sceneColor(slot0)=${pre.rc.slot0} slot1=${pre.rc.slot1} demand=${pre.rc.demand} total=${pre.rc.total}`,
+  );
+  note(
+    `POST bucket: sceneColor(slot0)=${post.rc.slot0} slot1=${post.rc.slot1} demand=${post.rc.demand} total=${post.rc.total}`,
+  );
+  note(
+    `center-third nonBlack frac: shipped=${onShot.frac} eager=${eagerShot.frac}`,
+  );
 
   check(
     "MSAA4 PRE eager scene-COLOR resolves > 1 (multiple per-segment)",
@@ -278,7 +303,10 @@ async function diff(page, a, b) {
   // black-globe artifact (NEW-WEBGPU-PICKPOSITION-CONVERGENCE-REGRESSION) that
   // afflicts the shipped default AND eager equally and is unrelated to this
   // slice, so it is not a valid in-probe pixel substrate. Record what we saw.
-  results.byteIdentity.msaa4 = { shippedFrac: onShot.frac, eagerFrac: eagerShot.frac };
+  results.byteIdentity.msaa4 = {
+    shippedFrac: onShot.frac,
+    eagerFrac: eagerShot.frac,
+  };
   note(
     `MSAA4 center-third nonBlack frac shipped=${onShot.frac} eager=${eagerShot.frac} ` +
       `(intermittent offline black-globe artifact — correctness gated by capture-and-diff)`,
@@ -295,10 +323,14 @@ async function diff(page, a, b) {
   const d1 = await diff(page, off1.f, on1.f);
   results.counts.msaa1 = { pre: pre1.rc, post: post1.rc };
   results.byteIdentity.msaa1 = d1;
-  note(`MSAA1 sceneColor pre=${pre1.rc.slot0} post=${post1.rc.slot0} (both must be 0)`);
+  note(
+    `MSAA1 sceneColor pre=${pre1.rc.slot0} post=${post1.rc.slot0} (both must be 0)`,
+  );
   check(
     "MSAA1 scene-COLOR resolves === 0 on both paths (no resolve targets)",
-    pre1.rc.slot0 === 0 && post1.rc.slot0 === 0 && post1.sceneColorResolveOpens === 0,
+    pre1.rc.slot0 === 0 &&
+      post1.rc.slot0 === 0 &&
+      post1.sceneColorResolveOpens === 0,
     `pre=${pre1.rc.slot0} post=${post1.rc.slot0} opens=${post1.sceneColorResolveOpens}`,
   );
   check(
@@ -380,7 +412,9 @@ async function diff(page, a, b) {
     s.invertClassification = false;
   });
   const invertShot = await shot(page, "invert-classification");
-  note(`invertClassification composite ran; center nonBlack frac=${invertShot.frac}`);
+  note(
+    `invertClassification composite ran; center nonBlack frac=${invertShot.frac}`,
+  );
   const consumerErrs = errors.slice(errBefore);
   check(
     "consumer scenarios (HDR toggle, resize, invertClassification) 0 device errors",
@@ -413,7 +447,9 @@ async function diff(page, a, b) {
   );
 
   console.log("\n=== C10-03 MSAA resolve-elision ===");
-  console.log(`counts.msaa4: PRE slot0=${pre.rc.slot0} slot1=${pre.rc.slot1} | POST slot0=${post.rc.slot0} slot1=${post.rc.slot1}`);
+  console.log(
+    `counts.msaa4: PRE slot0=${pre.rc.slot0} slot1=${pre.rc.slot1} | POST slot0=${post.rc.slot0} slot1=${post.rc.slot1}`,
+  );
   const fails = results.checks.filter((c) => !c.pass);
   if (fails.length) {
     console.log(`\nFAIL (${fails.length}):`);

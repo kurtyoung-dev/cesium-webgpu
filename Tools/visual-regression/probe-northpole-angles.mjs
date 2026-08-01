@@ -18,14 +18,14 @@ const FIXED_CLOCK_UTC = "2026-05-19T18:00:00Z";
 // varies to change pitch toward / away from the pole, height covers
 // close (~3 Mm) through low-orbit (~8 Mm) through orbit (~12 Mm).
 const VIEWS = [
-  { name: "np-zenith-3Mm",    lon:    0, lat: 89, height:  3_000_000 },
-  { name: "np-zenith-1Mm",    lon:    0, lat: 89, height:  1_000_000 },
-  { name: "np-tilt-85-2Mm",   lon:    0, lat: 85, height:  2_000_000 },
-  { name: "np-loworbit-70",   lon:    0, lat: 70, height:  6_000_000 },
-  { name: "np-orbit-80",      lon:    0, lat: 80, height: 12_000_000 },
-  { name: "np-orbit-60",      lon:    0, lat: 60, height: 12_000_000 },
-  { name: "np-from-greenland",lon:  -40, lat: 75, height:  5_000_000 },
-  { name: "np-from-asia",     lon:  100, lat: 75, height:  5_000_000 },
+  { name: "np-zenith-3Mm", lon: 0, lat: 89, height: 3_000_000 },
+  { name: "np-zenith-1Mm", lon: 0, lat: 89, height: 1_000_000 },
+  { name: "np-tilt-85-2Mm", lon: 0, lat: 85, height: 2_000_000 },
+  { name: "np-loworbit-70", lon: 0, lat: 70, height: 6_000_000 },
+  { name: "np-orbit-80", lon: 0, lat: 80, height: 12_000_000 },
+  { name: "np-orbit-60", lon: 0, lat: 60, height: 12_000_000 },
+  { name: "np-from-greenland", lon: -40, lat: 75, height: 5_000_000 },
+  { name: "np-from-asia", lon: 100, lat: 75, height: 5_000_000 },
 ];
 
 async function capture(renderer, view) {
@@ -39,7 +39,9 @@ async function capture(renderer, view) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
@@ -51,7 +53,9 @@ async function capture(renderer, view) {
       const v = window.viewer;
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
       // Pin the clock — matches probe-polar-multi-plain.mjs.

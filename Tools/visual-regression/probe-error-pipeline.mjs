@@ -25,7 +25,9 @@ async function run(forceError, fs) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -60,14 +62,17 @@ async function run(forceError, fs) {
       },
     });
     // Frame the truck (it's a few meters; look from ~12 m).
-    v.camera.lookAt(pos, new C.HeadingPitchRange(0.6, C.Math.toRadians(-15.0), 12.0));
+    v.camera.lookAt(
+      pos,
+      new C.HeadingPitchRange(0.6, C.Math.toRadians(-15.0), 12.0),
+    );
     v.camera.lookAtTransform(C.Matrix4.IDENTITY);
 
     // Render generously so the model loads + the async popErrorScope swap lands.
     let ready = false;
     for (let i = 0; i < 220; i++) {
       s.render();
-      const prim = v.scene.primitives;
+      const _prim = v.scene.primitives;
       // entity model readiness — best-effort via the entity's model primitive
       try {
         if (entity.model && v.dataSourceDisplay) ready = true;
@@ -108,7 +113,10 @@ async function run(forceError, fs) {
     buf,
   );
   await browser.close();
-  return { res, errs: errs.filter((e) => !/AtmosphereLUT|default layout/.test(e)) };
+  return {
+    res,
+    errs: errs.filter((e) => !/AtmosphereLUT|default layout/.test(e)),
+  };
 }
 
 const fs = await import("fs");
@@ -123,7 +131,10 @@ console.log("FORCED (error)   :", JSON.stringify(forced.res));
 const checks = [
   ["NORMAL: model renders (nonBlack > 500)", normal.res.nonBlack > 500],
   ["NORMAL: NOT magenta (magenta < 100)", normal.res.magenta < 100],
-  ["FORCED: magenta fallback engaged (magenta > 500)", forced.res.magenta > 500],
+  [
+    "FORCED: magenta fallback engaged (magenta > 500)",
+    forced.res.magenta > 500,
+  ],
   [
     "FORCED: magenta dominates the model (magenta > truckColor)",
     forced.res.magenta > forced.res.truckColor,

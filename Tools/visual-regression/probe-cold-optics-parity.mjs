@@ -24,13 +24,23 @@ async function run() {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await page.waitForTimeout(2000);
 
   // FIXED clock (sun ~28 up at 40N/10E on 2026-06-21) + FIXED camera.
@@ -59,7 +69,7 @@ async function run() {
       new C.Cartesian3(),
     );
     const sunUpDot = C.Cartesian3.dot(sunDir, up);
-    let horiz = C.Cartesian3.subtract(
+    const horiz = C.Cartesian3.subtract(
       sunDir,
       C.Cartesian3.multiplyByScalar(up, sunUpDot, new C.Cartesian3()),
       new C.Cartesian3(),
@@ -69,12 +79,23 @@ async function run() {
       Math.max(2.0, C.Math.toDegrees(Math.asin(Math.min(1, sunUpDot)))) + 18.0,
     );
     const dir = C.Cartesian3.add(
-      C.Cartesian3.multiplyByScalar(horiz, Math.cos(aimElevRad), new C.Cartesian3()),
-      C.Cartesian3.multiplyByScalar(up, Math.sin(aimElevRad), new C.Cartesian3()),
+      C.Cartesian3.multiplyByScalar(
+        horiz,
+        Math.cos(aimElevRad),
+        new C.Cartesian3(),
+      ),
+      C.Cartesian3.multiplyByScalar(
+        up,
+        Math.sin(aimElevRad),
+        new C.Cartesian3(),
+      ),
       new C.Cartesian3(),
     );
     C.Cartesian3.normalize(dir, dir);
-    v.camera.setView({ destination: camPos, orientation: { direction: dir, up } });
+    v.camera.setView({
+      destination: camPos,
+      orientation: { direction: dir, up },
+    });
     s.camera.frustum.fov = C.Math.toRadians(100.0);
     // Cold optics ENABLED, advanced OFF — the legacy frame.
     s.coldOpticsEnabled = true;
@@ -83,9 +104,13 @@ async function run() {
   });
 
   await page
-    .waitForFunction(() => window.viewer.scene.globe.tilesLoaded === true, null, {
-      timeout: 20000,
-    })
+    .waitForFunction(
+      () => window.viewer.scene.globe.tilesLoaded === true,
+      null,
+      {
+        timeout: 20000,
+      },
+    )
     .catch(() => {});
   await page.waitForTimeout(1500);
 

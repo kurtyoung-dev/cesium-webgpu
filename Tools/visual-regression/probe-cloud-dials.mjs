@@ -117,11 +117,13 @@ async function diff(page, a, b) {
       };
       const da = await load(ua),
         db = await load(ub);
-      let acc = 0,
-        n = da.length / 4;
+      let acc = 0;
+      const n = da.length / 4;
       for (let i = 0; i < da.length; i += 4) {
         acc += Math.abs(
-          0.299 * da[i] + 0.587 * da[i + 1] + 0.114 * da[i + 2] -
+          0.299 * da[i] +
+            0.587 * da[i + 1] +
+            0.114 * da[i + 2] -
             (0.299 * db[i] + 0.587 * db[i + 1] + 0.114 * db[i + 2]),
         );
       }
@@ -155,9 +157,13 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   const canvas = await page.$(".cesium-widget canvas");
@@ -227,10 +233,22 @@ async function run() {
   );
 
   const checks = [
-    [`explicit-defaults byte-identical to default (diff ${diffDefaults} < 0.4)`, diffDefaults < 0.4],
-    [`exposure 0.22->0.10 changes the render (diff ${diffExp} > 0.5)`, diffExp > 0.5],
-    [`puff-size 0.45->0.25 changes the deck (diff ${diffPuff} > 1.0)`, diffPuff > 1.0],
-    [`reset to undefined returns to default (diff ${diffReset} < 0.6)`, diffReset < 0.6],
+    [
+      `explicit-defaults byte-identical to default (diff ${diffDefaults} < 0.4)`,
+      diffDefaults < 0.4,
+    ],
+    [
+      `exposure 0.22->0.10 changes the render (diff ${diffExp} > 0.5)`,
+      diffExp > 0.5,
+    ],
+    [
+      `puff-size 0.45->0.25 changes the deck (diff ${diffPuff} > 1.0)`,
+      diffPuff > 1.0,
+    ],
+    [
+      `reset to undefined returns to default (diff ${diffReset} < 0.6)`,
+      diffReset < 0.6,
+    ],
     [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
   ];
   console.log("\n=== ANALYSIS ===");

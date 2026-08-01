@@ -176,10 +176,7 @@ test("one encoder preserves level zero then emits explicit per-mip passes", () =
     helper,
     /baseMipLevel:\s*mipLevel\s*-\s*1[\s\S]*mipLevelCount:\s*1/,
   );
-  assert.match(
-    helper,
-    /baseMipLevel:\s*mipLevel,[\s\S]*mipLevelCount:\s*1/,
-  );
+  assert.match(helper, /baseMipLevel:\s*mipLevel,[\s\S]*mipLevelCount:\s*1/);
   assert.match(
     helper,
     /encoder\.beginComputePass\([\s\S]*pass\.dispatchWorkgroups\([\s\S]*pass\.end\(\)/,

@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/* global Buffer, console, process, requestAnimationFrame */
 /**
  * Campaign 13 C13-37 baked-density periodicity oracle. WebGPU-only.
  *
@@ -270,9 +269,7 @@ function sourceProvenance() {
     ...shaderPairs.map((pair) => pair.source),
     ...sourceMapPairs.map((pair) => pair.source),
     fileFingerprint("Tools/visual-regression/probe-cloud-density-domain.mjs"),
-    fileFingerprint(
-      "Tools/visual-regression/lib/cloud-image-analysis.mjs",
-    ),
+    fileFingerprint("Tools/visual-regression/lib/cloud-image-analysis.mjs"),
     fileFingerprint("Tools/visual-regression/lib/cloud-probe-harness.mjs"),
     fileFingerprint("Tools/lib/webgpu-error-gate.mjs"),
   ];
@@ -292,9 +289,7 @@ function sourceProvenance() {
       densityDomainSourcePresent && densityDomainBuiltPresent,
     sourceBuildShadersExact: shaderPairs.every((pair) => pair.exactMatch),
     sourceMapPairs,
-    sourceMapTypescriptExact: sourceMapPairs.every(
-      (pair) => pair.exactMatch,
-    ),
+    sourceMapTypescriptExact: sourceMapPairs.every((pair) => pair.exactMatch),
     sourceFingerprint: fingerprintSet(sourceFiles),
     buildFingerprint: fingerprintSet(buildFiles),
     sourceFiles,
@@ -492,8 +487,7 @@ const CAPTURE_FACTORIAL = async ({ fixedTime, scenes, volumetric, lanes }) => {
         await device.queue.onSubmittedWorkDone();
       }
       dataUrl = scene.canvas.toDataURL("image/png");
-      consecutiveMatches =
-        dataUrl === previous ? consecutiveMatches + 1 : 0;
+      consecutiveMatches = dataUrl === previous ? consecutiveMatches + 1 : 0;
       if (
         consecutiveMatches >= requiredConsecutiveMatches &&
         scene.globe.tilesLoaded === true
@@ -851,14 +845,10 @@ async function main() {
         artifactBuffers.get(`${sceneDefinition.name}-${lane.name}.png`),
       );
       const laneOff = await decodeCloudPng(
-        artifactBuffers.get(
-          `${sceneDefinition.name}-${lane.name}-off.png`,
-        ),
+        artifactBuffers.get(`${sceneDefinition.name}-${lane.name}-off.png`),
       );
       const decodedRepeat = await decodeCloudPng(
-        artifactBuffers.get(
-          `${sceneDefinition.name}-${lane.name}-repeat.png`,
-        ),
+        artifactBuffers.get(`${sceneDefinition.name}-${lane.name}-repeat.png`),
       );
       decodedLanes[lane.name] = decoded;
       decodedRepeatLanes[lane.name] = decodedRepeat;
@@ -881,8 +871,7 @@ async function main() {
     const newBakedIgn = decodedLanes[laneName("new", "baked", "ign")];
     const legacyLiveMidpoint =
       decodedLanes[laneName("legacy", "live", "midpoint")];
-    const newLiveMidpoint =
-      decodedLanes[laneName("new", "live", "midpoint")];
+    const newLiveMidpoint = decodedLanes[laneName("new", "live", "midpoint")];
     const legacyLiveIgn = decodedLanes[laneName("legacy", "live", "ign")];
     const newLiveIgn = decodedLanes[laneName("new", "live", "ign")];
     const legacyBakedMorphology =
@@ -912,10 +901,7 @@ async function main() {
           legacyBakedMorphology,
         ),
         morphologyRatiosByPhase: {
-          midpoint: morphologyRatios(
-            newBakedMorphology,
-            legacyBakedMorphology,
-          ),
+          midpoint: morphologyRatios(newBakedMorphology, legacyBakedMorphology),
           ign: morphologyRatios(
             newBakedIgnMorphology,
             legacyBakedIgnMorphology,
@@ -1039,22 +1025,19 @@ async function main() {
       scene.branchDifferences.legacyVsNewBakedIgn.differentPixels > 1000 &&
       scene.branchDifferences.legacyVsNewLiveMidpoint.differentPixels === 0 &&
       scene.branchDifferences.legacyVsNewLiveIgn.differentPixels === 0 &&
-      scene.branchDifferences.legacyBakedMidpointVsIgn.differentPixels >
-        1000 &&
+      scene.branchDifferences.legacyBakedMidpointVsIgn.differentPixels > 1000 &&
       scene.branchDifferences.newBakedMidpointVsIgn.differentPixels > 1000,
     ...scene.branchDifferences,
   }));
   const offBaselineChecks = sceneAnalysis.flatMap((scene) =>
-    Object.entries(scene.offBaselineDifferences).map(
-      ([lane, comparison]) => ({
-        scene: scene.name,
-        lane,
-        description:
-          "every lane starts from the pixel-exact stabilized cloud-OFF background",
-        passed: comparison.differentPixels === 0,
-        ...comparison,
-      }),
-    ),
+    Object.entries(scene.offBaselineDifferences).map(([lane, comparison]) => ({
+      scene: scene.name,
+      lane,
+      description:
+        "every lane starts from the pixel-exact stabilized cloud-OFF background",
+      passed: comparison.differentPixels === 0,
+      ...comparison,
+    })),
   );
   const repeatDeterminismChecks = sceneAnalysis.flatMap((scene) =>
     Object.entries(scene.repeatDifferences).map(([lane, comparison]) => ({
@@ -1084,12 +1067,12 @@ async function main() {
     scoreReduction: scene.sameBuildDomainComparison.scoreReduction,
   }));
   const morphologyPreservationChecks = sceneAnalysis.flatMap((scene) =>
-    Object.entries(
-      scene.sameBuildDomainComparison.morphologyRatiosByPhase,
-    ).map(([phase, ratios]) => ({
-      phase,
-      ...morphologyPreservationCheck(scene.name, ratios),
-    })),
+    Object.entries(scene.sameBuildDomainComparison.morphologyRatiosByPhase).map(
+      ([phase, ratios]) => ({
+        phase,
+        ...morphologyPreservationCheck(scene.name, ratios),
+      }),
+    ),
   );
   const artifactValid =
     source.densityDomainShaderPresent &&

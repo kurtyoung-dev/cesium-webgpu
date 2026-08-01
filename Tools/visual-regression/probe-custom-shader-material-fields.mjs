@@ -92,7 +92,9 @@ async function capture(renderer, wgslFrag) {
         ".cesium-navigation-help",
         ".cesium-viewer-fullscreenContainer",
       ]) {
-        document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
+        document
+          .querySelectorAll(sel)
+          .forEach((e) => (e.style.display = "none"));
       }
 
       scene.globe.show = false;
@@ -125,7 +127,11 @@ async function capture(renderer, wgslFrag) {
 
       v.camera.viewBoundingSphere(
         model.boundingSphere,
-        new C.HeadingPitchRange(heading, pitch, model.boundingSphere.radius * 3.0),
+        new C.HeadingPitchRange(
+          heading,
+          pitch,
+          model.boundingSphere.radius * 3.0,
+        ),
       );
       v.camera.lookAtTransform(C.Matrix4.IDENTITY);
       for (let i = 0; i < 40; i++) {
@@ -142,7 +148,9 @@ async function capture(renderer, wgslFrag) {
   await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
   const gate = await collectGateErrors(page);
 
-  const png = await page.locator('canvas[data-cs="1"]').screenshot({ type: "png" });
+  const png = await page
+    .locator('canvas[data-cs="1"]')
+    .screenshot({ type: "png" });
   const decoded = await page.evaluate(async (b64) => {
     const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
     const bmp = await createImageBitmap(blob);
@@ -193,13 +201,24 @@ function diffModelPixels(a, b) {
 }
 
 function meanColor(img) {
-  let r = 0, g = 0, b = 0, n = 0;
+  let r = 0,
+    g = 0,
+    b = 0,
+    n = 0;
   for (let i = 0; i < img.data.length; i += 4) {
     if (img.data[i] + img.data[i + 1] + img.data[i + 2] <= 12) continue;
-    r += img.data[i]; g += img.data[i + 1]; b += img.data[i + 2]; n++;
+    r += img.data[i];
+    g += img.data[i + 1];
+    b += img.data[i + 2];
+    n++;
   }
   return n
-    ? { r: +(r / n).toFixed(1), g: +(g / n).toFixed(1), b: +(b / n).toFixed(1), n }
+    ? {
+        r: +(r / n).toFixed(1),
+        g: +(g / n).toFixed(1),
+        b: +(b / n).toFixed(1),
+        n,
+      }
     : { r: 0, g: 0, b: 0, n: 0 };
 }
 
@@ -215,7 +234,8 @@ const CRC_TABLE = (() => {
 })();
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 function encodePNG({ w, h, data }) {
@@ -223,7 +243,10 @@ function encodePNG({ w, h, data }) {
   const raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -254,28 +277,45 @@ const gpuUntouched = await capture("webgpu", WGSL_UNTOUCHED);
 
 const fs = await import("fs");
 fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-fs.writeFileSync("Tools/visual-regression/output/cs-fields-new.png", encodePNG(gpuNew.decoded));
-fs.writeFileSync("Tools/visual-regression/output/cs-fields-base.png", encodePNG(gpuBase.decoded));
-fs.writeFileSync("Tools/visual-regression/output/cs-fields-untouched.png", encodePNG(gpuUntouched.decoded));
+fs.writeFileSync(
+  "Tools/visual-regression/output/cs-fields-new.png",
+  encodePNG(gpuNew.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/cs-fields-base.png",
+  encodePNG(gpuBase.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/cs-fields-untouched.png",
+  encodePNG(gpuUntouched.decoded),
+);
 
 const effect = diffModelPixels(gpuNew.decoded, gpuBase.decoded);
 const offgate = diffModelPixels(gpuUntouched.decoded, gpuBase.decoded);
 
 const gateErrors = [
-  ...gpuNew.gateErrors, ...gpuBase.gateErrors, ...gpuUntouched.gateErrors,
+  ...gpuNew.gateErrors,
+  ...gpuBase.gateErrors,
+  ...gpuUntouched.gateErrors,
 ];
-const deviceLost = gpuNew.deviceLost || gpuBase.deviceLost || gpuUntouched.deviceLost;
+const deviceLost =
+  gpuNew.deviceLost || gpuBase.deviceLost || gpuUntouched.deviceLost;
 
 const report = {
   gpuNew: { ready: gpuNew.ready, mean: meanColor(gpuNew.decoded) },
   gpuBase: { ready: gpuBase.ready, mean: meanColor(gpuBase.decoded) },
-  gpuUntouched: { ready: gpuUntouched.ready, mean: meanColor(gpuUntouched.decoded) },
+  gpuUntouched: {
+    ready: gpuUntouched.ready,
+    mean: meanColor(gpuUntouched.decoded),
+  },
   effect_new_vs_base_diffPct: effect.mismatchPct,
   offgate_untouched_vs_base_diffPct: offgate.mismatchPct,
   gateErrors,
   deviceLost,
   consoleFaults: [
-    ...gpuNew.consoleFaults, ...gpuBase.consoleFaults, ...gpuUntouched.consoleFaults,
+    ...gpuNew.consoleFaults,
+    ...gpuBase.consoleFaults,
+    ...gpuUntouched.consoleFaults,
   ].slice(0, 6),
 };
 console.log(JSON.stringify(report, null, 2));
@@ -283,11 +323,22 @@ console.log(JSON.stringify(report, null, 2));
 const hasEffect = effect.mismatchPct !== null && effect.mismatchPct > 10;
 const offGateHolds = offgate.mismatchPct !== null && offgate.mismatchPct < 2;
 const pass =
-  gpuNew.ready && gpuBase.ready && gpuUntouched.ready &&
-  gateErrors.length === 0 && !deviceLost &&
-  hasEffect && offGateHolds;
+  gpuNew.ready &&
+  gpuBase.ready &&
+  gpuUntouched.ready &&
+  gateErrors.length === 0 &&
+  !deviceLost &&
+  hasEffect &&
+  offGateHolds;
 
-console.log(JSON.stringify({ hasEffect, offGateHolds, effect: effect.mismatchPct, offgate: offgate.mismatchPct }));
+console.log(
+  JSON.stringify({
+    hasEffect,
+    offGateHolds,
+    effect: effect.mismatchPct,
+    offgate: offgate.mismatchPct,
+  }),
+);
 console.log(
   pass
     ? "GATE PASS — metalness/occlusion/normalEC drive the WebGPU model render (new-vs-base > 10%) AND an untouched customShader is a no-op (untouched-vs-base < 2%), device-error-free"

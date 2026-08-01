@@ -69,16 +69,21 @@ const notes = [];
 try {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   const errors = [];
-  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message.slice(0, 200)}`));
+  page.on("pageerror", (e) =>
+    errors.push(`pageerror: ${e.message.slice(0, 200)}`),
+  );
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(`console: ${m.text().slice(0, 200)}`);
   });
   await page.addInitScript(initScript);
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${RENDERER}&offline=true`, {
-    waitUntil: "networkidle",
-    timeout: 60000,
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${RENDERER}&offline=true`,
+    {
+      waitUntil: "networkidle",
+      timeout: 60000,
+    },
+  );
   await page.waitForFunction(() => !!window.viewer?.scene, { timeout: 30000 });
 
   const result = await page.evaluate(
@@ -94,7 +99,11 @@ try {
       const modelMatrix = C.Transforms.eastNorthUpToFixedFrame(
         C.Cartesian3.fromDegrees(-75, 40, 0),
       );
-      const model = await C.Model.fromGltfAsync({ url: modelUrl, modelMatrix, scale: 4.0 });
+      const model = await C.Model.fromGltfAsync({
+        url: modelUrl,
+        modelMatrix,
+        scale: 4.0,
+      });
       scene.primitives.add(model);
 
       // Snapshot the pipeline stats at the exact moment the model is `ready`
@@ -200,26 +209,58 @@ try {
   );
 
   const modelSync = result.pipe.sync.filter((e) => /Model PBR/i.test(e.label));
-  const modelAsync = result.pipe.async.filter((e) => /Model PBR/i.test(e.label));
-  const modelColorSync = modelSync.filter((e) => /alpha=/.test(e.label) && !/ERROR/.test(e.label));
+  const modelAsync = result.pipe.async.filter((e) =>
+    /Model PBR/i.test(e.label),
+  );
+  const modelColorSync = modelSync.filter(
+    (e) => /alpha=/.test(e.label) && !/ERROR/.test(e.label),
+  );
   const maxSyncMs = result.pipe.sync.reduce((m, e) => Math.max(m, e.ms), 0);
   const modelSyncMs = modelSync.reduce((s, e) => s + e.ms, 0);
 
-  notes.push(`framesToReady=${result.framesToReady}, nonBlackFrac=${result.nonBlackFrac.toFixed(4)}, firstDrawFrame=${result.firstDrawFrame} firstDrawMs=${result.firstDrawMs?.toFixed?.(1)}`);
-  notes.push(`max main-thread frame gap during compile: ${result.maxFrameGapMs?.toFixed?.(1)}ms (async keeps main thread responsive if small)`);
-  notes.push(`warmup nonBlack per early frame: [${result.warmupSamples.join(", ")}]`);
-  notes.push(`total sync createRenderPipeline=${result.pipe.sync.length}, total async=${result.pipe.async.length}`);
-  notes.push(`Model PBR async compile wall-times(ms): [${modelAsync.map((e)=>e.ms.toFixed(1)).join(", ")}]`);
-  notes.push(`Model PBR sync=${modelSync.length} (color=${modelColorSync.length}), Model PBR async=${modelAsync.length}`);
-  notes.push(`Model PBR sync total wall-time=${modelSyncMs.toFixed(2)}ms; max single sync compile=${maxSyncMs.toFixed(2)}ms`);
+  notes.push(
+    `framesToReady=${result.framesToReady}, nonBlackFrac=${result.nonBlackFrac.toFixed(4)}, firstDrawFrame=${result.firstDrawFrame} firstDrawMs=${result.firstDrawMs?.toFixed?.(1)}`,
+  );
+  notes.push(
+    `max main-thread frame gap during compile: ${result.maxFrameGapMs?.toFixed?.(1)}ms (async keeps main thread responsive if small)`,
+  );
+  notes.push(
+    `warmup nonBlack per early frame: [${result.warmupSamples.join(", ")}]`,
+  );
+  notes.push(
+    `total sync createRenderPipeline=${result.pipe.sync.length}, total async=${result.pipe.async.length}`,
+  );
+  notes.push(
+    `Model PBR async compile wall-times(ms): [${modelAsync.map((e) => e.ms.toFixed(1)).join(", ")}]`,
+  );
+  notes.push(
+    `Model PBR sync=${modelSync.length} (color=${modelColorSync.length}), Model PBR async=${modelAsync.length}`,
+  );
+  notes.push(
+    `Model PBR sync total wall-time=${modelSyncMs.toFixed(2)}ms; max single sync compile=${maxSyncMs.toFixed(2)}ms`,
+  );
   notes.push(`central cache stats: ${JSON.stringify(result.cacheStats)}`);
-  notes.push(`deterministic prewarm counter: ${result.deterministicPrewarmCount}`);
-  notes.push(`sync labels: ${result.pipe.sync.map((e) => e.label).slice(0, 40).join(" | ")}`);
-  notes.push(`async labels: ${result.pipe.async.map((e) => e.label).slice(0, 40).join(" | ")}`);
+  notes.push(
+    `deterministic prewarm counter: ${result.deterministicPrewarmCount}`,
+  );
+  notes.push(
+    `sync labels: ${result.pipe.sync
+      .map((e) => e.label)
+      .slice(0, 40)
+      .join(" | ")}`,
+  );
+  notes.push(
+    `async labels: ${result.pipe.async
+      .map((e) => e.label)
+      .slice(0, 40)
+      .join(" | ")}`,
+  );
 
   // Correctness: model must render once warm.
   if (result.nonBlackFrac < 0.01) {
-    failures.push(`model did not render (nonBlackFrac=${result.nonBlackFrac.toFixed(4)})`);
+    failures.push(
+      `model did not render (nonBlackFrac=${result.nonBlackFrac.toFixed(4)})`,
+    );
   }
   // Part 2: the deterministic-boot prewarm hook must have fired at the
   // resources-ready step (null = field never set → hook did not run).

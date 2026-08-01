@@ -206,7 +206,14 @@ const out = await page.evaluate(async () => {
   const lbl0Pos = labels.get(0).position;
   const lwin = scene.cartesianToCanvasCoordinates(lbl0Pos);
   const yellowBefore = lwin
-    ? countIn(before, isYellow, lwin.x - 20, lwin.y - 40, lwin.x + 160, lwin.y + 40)
+    ? countIn(
+        before,
+        isYellow,
+        lwin.x - 20,
+        lwin.y - 40,
+        lwin.x + 160,
+        lwin.y + 40,
+      )
     : -1;
 
   // (B) move ONE point -> exactly 1 partial write of exactly 1 stride.
@@ -228,7 +235,14 @@ const out = await page.evaluate(async () => {
   const afterMove = grab();
   const win2 = scene.cartesianToCanvasCoordinates(newPos) ?? win;
   const cyanAtNewAfter = win2
-    ? countIn(afterMove, isCyan, win2.x - 25, win2.y - 25, win2.x + 25, win2.y + 25)
+    ? countIn(
+        afterMove,
+        isCyan,
+        win2.x - 25,
+        win2.y - 25,
+        win2.x + 25,
+        win2.y + 25,
+      )
     : -1;
 
   // (C) change ONE label's text -> full rebuild + the new text renders.
@@ -265,9 +279,23 @@ const out = await page.evaluate(async () => {
   const afterText = grab();
   const lwin2 = scene.cartesianToCanvasCoordinates(lbl0Pos) ?? lwin;
   const yellowAfter = lwin2
-    ? countIn(afterText, isYellow, lwin2.x - 20, lwin2.y - 40, lwin2.x + 160, lwin2.y + 40)
+    ? countIn(
+        afterText,
+        isYellow,
+        lwin2.x - 20,
+        lwin2.y - 40,
+        lwin2.x + 160,
+        lwin2.y + 40,
+      )
     : -1;
-  const magentaAfter = countIn(afterText, isMagenta, 0, 0, afterText.w, afterText.h);
+  const magentaAfter = countIn(
+    afterText,
+    isMagenta,
+    0,
+    0,
+    afterText.w,
+    afterText.h,
+  );
 
   return {
     warmupFrames,

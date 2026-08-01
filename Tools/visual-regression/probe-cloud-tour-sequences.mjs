@@ -195,7 +195,9 @@ const selectedFixtures = ONLY_FIXTURES.length
   ? CLOUD_TOUR_FIXTURES.filter((fixture) => ONLY_FIXTURES.includes(fixture.id))
   : CLOUD_TOUR_FIXTURES;
 const selectedSequences = ONLY_SEQUENCES.length
-  ? CLOUD_TOUR_SEQUENCES.filter((sequence) => ONLY_SEQUENCES.includes(sequence.id))
+  ? CLOUD_TOUR_SEQUENCES.filter((sequence) =>
+      ONLY_SEQUENCES.includes(sequence.id),
+    )
   : CLOUD_TOUR_SEQUENCES;
 {
   const unknownFixtures = ONLY_FIXTURES.filter(
@@ -221,11 +223,15 @@ const FRAME_BUDGET =
     (total, fixture) =>
       total +
       fixture.stations.length *
-        (TRANSITION_FRAMES + STATION_SETTLE_FRAMES + 2 * TOGGLE_SETTLE_FRAMES + 2),
+        (TRANSITION_FRAMES +
+          STATION_SETTLE_FRAMES +
+          2 * TOGGLE_SETTLE_FRAMES +
+          2),
     0,
   ) +
   selectedSequences.reduce(
-    (total, sequence) => total + sequenceFrameBudget(sequence) + OCCUPANCY_MAX_FRAMES,
+    (total, sequence) =>
+      total + sequenceFrameBudget(sequence) + OCCUPANCY_MAX_FRAMES,
     0,
   );
 const HARD_LIMIT_MS = Math.min(
@@ -303,7 +309,9 @@ async function openPage(browser) {
       pageErrors.push(message.text());
     }
   });
-  page.on("pageerror", (error) => pageErrors.push(`pageerror: ${error.message}`));
+  page.on("pageerror", (error) =>
+    pageErrors.push(`pageerror: ${error.message}`),
+  );
   await page.addInitScript(errorGateInit);
   await installCloudProbeHarnessOnPage(page);
   await page.goto(
@@ -328,7 +336,10 @@ async function closeGate(page, context) {
         ? ["WebGPU error gate did not find a device"]
         : []),
     ]),
-  ].filter((error) => !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(error));
+  ].filter(
+    (error) =>
+      !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(error),
+  );
 }
 
 // ── Browser-side: install the shared tour context ─────────────────────────
@@ -365,8 +376,9 @@ const INSTALL_TOUR = async (input) => {
     const decodeSnapshot = async (snapshot) => {
       const image = new Image();
       const loaded = new Promise((resolve, reject) => {
+        const decodeFailed = "same-task PNG decode failed";
         image.onload = resolve;
-        image.onerror = () => reject(new Error("same-task PNG decode failed"));
+        image.onerror = () => reject(new Error(decodeFailed));
       });
       image.src = snapshot;
       await loaded;
@@ -397,7 +409,8 @@ const INSTALL_TOUR = async (input) => {
       if (!settled && typeof done === "function") {
         settled = done() === true;
       }
-      const result = typeof capture === "function" ? await capture() : undefined;
+      const hasCapture = typeof capture === "function";
+      const result = hasCapture ? await capture() : undefined;
       return { settled, result };
     };
     return { renderNow, captureNow, grabNow, settleThen };
@@ -476,7 +489,8 @@ const INSTALL_TOUR = async (input) => {
         width: cache?.temporalWidth ?? 0,
         height: cache?.temporalHeight ?? 0,
         pipelineReady:
-          cache?.temporalPipeline !== null && cache?.temporalPipeline !== undefined,
+          cache?.temporalPipeline !== null &&
+          cache?.temporalPipeline !== undefined,
       },
       temporal: {
         resetReasons: cache?.temporalHistoryResetReasons ?? null,
@@ -554,7 +568,9 @@ const PREPARE = async (input) => {
     input.occupancyMaxFrames,
     () => {
       const realization = state.cacheSnapshot();
-      return realization.initialized === true && realization.pipelineReady === true;
+      return (
+        realization.initialized === true && realization.pipelineReady === true
+      );
     },
     async () => {
       const image = await state.captureNow();
@@ -588,7 +604,8 @@ const PREPARE = async (input) => {
 const STATION = async (input) => {
   const state = globalThis.__cloudTour;
   const { C, viewer, scene } = state;
-  const shortestDegrees = (from, to) => ((((to - from) % 360) + 540) % 360) - 180;
+  const shortestDegrees = (from, to) =>
+    ((((to - from) % 360) + 540) % 360) - 180;
   const interpolateHeight = (from, to, amount) =>
     Math.exp(
       Math.log(Math.max(1, from + 1)) * (1 - amount) +
@@ -600,16 +617,24 @@ const STATION = async (input) => {
   // the intermediate frames exist.
   if (input.from) {
     const lonDelta = shortestDegrees(input.from.lon, input.station.lon);
-    const headingDelta = shortestDegrees(input.from.heading, input.station.heading);
+    const headingDelta = shortestDegrees(
+      input.from.heading,
+      input.station.heading,
+    );
     for (let frame = 1; frame <= input.transitionFrames; frame++) {
       const linear = frame / input.transitionFrames;
       const amount = linear * linear * (3 - 2 * linear);
       state.setView({
         lon: input.from.lon + lonDelta * amount,
         lat: input.from.lat + (input.station.lat - input.from.lat) * amount,
-        height: interpolateHeight(input.from.height, input.station.height, amount),
+        height: interpolateHeight(
+          input.from.height,
+          input.station.height,
+          amount,
+        ),
         heading: input.from.heading + headingDelta * amount,
-        pitch: input.from.pitch + (input.station.pitch - input.from.pitch) * amount,
+        pitch:
+          input.from.pitch + (input.station.pitch - input.from.pitch) * amount,
       });
       state.renderNow();
       await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -828,8 +853,10 @@ async function runFixtureLane(browser) {
         const contribution = imageDeltaMetrics(off.data, on.data);
         const gate = fixture.gate ?? {};
         const pass = Number.isFinite(gate.minChangedFraction)
-          ? contribution.ok && contribution.changedFraction >= gate.minChangedFraction
-          : contribution.ok && contribution.changedFraction <= gate.maxChangedFraction;
+          ? contribution.ok &&
+            contribution.changedFraction >= gate.minChangedFraction
+          : contribution.ok &&
+            contribution.changedFraction <= gate.maxChangedFraction;
         stations.push({
           id: station.id,
           regime: station.regime,
@@ -837,15 +864,23 @@ async function runFixtureLane(browser) {
           realized: visited.realized,
           contribution,
           gate: {
-            kind: Number.isFinite(gate.minChangedFraction) ? "floor" : "ceiling",
+            kind: Number.isFinite(gate.minChangedFraction)
+              ? "floor"
+              : "ceiling",
             threshold:
               gate.minChangedFraction ?? gate.maxChangedFraction ?? null,
             why: gate.why ?? null,
             pass,
           },
           screenshots: [
-            writePng(`${OUT}/fixture-${fixture.id}-${station.id}-on.png`, visited.onDataUrl),
-            writePng(`${OUT}/fixture-${fixture.id}-${station.id}-off.png`, visited.offDataUrl),
+            writePng(
+              `${OUT}/fixture-${fixture.id}-${station.id}-on.png`,
+              visited.onDataUrl,
+            ),
+            writePng(
+              `${OUT}/fixture-${fixture.id}-${station.id}-off.png`,
+              visited.offDataUrl,
+            ),
           ].map((shot, index) => ({
             phase: index === 0 ? `${station.id}-on` : `${station.id}-off`,
             ...shot,
@@ -896,7 +931,7 @@ async function runFixtureLane(browser) {
     // evidence for the fixtures that did complete.
     laneError = `fixture lane threw: ${error instanceof Error ? error.message : String(error)}`;
   }
-  let errors = [];
+  let errors;
   try {
     errors = await closeGate(page, context);
   } catch (error) {
@@ -929,15 +964,19 @@ async function runSequence(browser, sequence, provenance) {
   const volumetric = { ...fixture.volumetric, ...(sequence.volumetric ?? {}) };
   const context = await openPage(browser);
   const { page } = context;
-  let record = null;
+  let record;
   try {
     const installed = await page.evaluate(INSTALL_TOUR, {
       baseIso,
       stepSeconds: sequence.clock.stepSeconds,
     });
     const firstStation =
-      stationForPhase(sequence, fixture, sequence.phases[0], fixture.stations[0]) ??
-      fixture.stations[0];
+      stationForPhase(
+        sequence,
+        fixture,
+        sequence.phases[0],
+        fixture.stations[0],
+      ) ?? fixture.stations[0];
     const prepared = await page.evaluate(PREPARE, {
       volumetric,
       station: firstStation,
@@ -998,7 +1037,10 @@ async function runSequence(browser, sequence, provenance) {
 
       const decoded = [];
       for (const capture of result.captures) {
-        decoded.push({ frame: capture.frame, ...(await decodeRgba(capture.dataUrl)) });
+        decoded.push({
+          frame: capture.frame,
+          ...(await decodeRgba(capture.dataUrl)),
+        });
       }
       const screenshots = [];
       if (result.captures.length > 0) {
@@ -1050,7 +1092,9 @@ async function runSequence(browser, sequence, provenance) {
       const reference = phaseRecords.find(
         (phase) => phase.id === "converged-reference",
       );
-      const reconverged = phaseRecords.find((phase) => phase.id === "reconverged");
+      const reconverged = phaseRecords.find(
+        (phase) => phase.id === "reconverged",
+      );
       const motion = phaseRecords.find((phase) => phase.id === "pan-away");
       const lastOf = (phase) =>
         phase?.__decoded?.[phase.__decoded.length - 1]?.data ?? null;
@@ -1075,7 +1119,10 @@ async function runSequence(browser, sequence, provenance) {
     const resetOk = phaseRecords.every(
       (phase) => phase.reset.expected === null || phase.reset.ok,
     );
-    const totalFrames = phaseRecords.reduce((total, phase) => total + phase.frames, 0);
+    const totalFrames = phaseRecords.reduce(
+      (total, phase) => total + phase.frames,
+      0,
+    );
     record = {
       id: sequence.id,
       kind: sequence.kind,
@@ -1196,7 +1243,11 @@ async function runSequence(browser, sequence, provenance) {
         historyTarget: { width: null, height: null },
       },
       cpuFrames: { ...frameDistribution([]), excludedCaptureFrames: 0 },
-      gpu: { supported: null, armed: false, ...summarizeGpuPasses(null, sequence.gpuPasses) },
+      gpu: {
+        supported: null,
+        armed: false,
+        ...summarizeGpuPasses(null, sequence.gpuPasses),
+      },
       temporal: { phases: [], framewise: [], ghost: null },
       screenshots: [],
       errors: [error instanceof Error ? error.message : String(error)],
@@ -1238,9 +1289,7 @@ async function run() {
   try {
     let fixtureLane = { records: [], environment: null, errors: [] };
     if (LANES.includes("fixtures")) {
-      console.log(
-        `\n--- FIXTURES (${selectedFixtures.length}) ---`,
-      );
+      console.log(`\n--- FIXTURES (${selectedFixtures.length}) ---`);
       fixtureLane = await runFixtureLane(browser);
     }
 
@@ -1329,7 +1378,10 @@ async function run() {
         .map((name) => JSON.parse(fs.readFileSync(`${OUT}/${name}`, "utf8")));
       abAssessment = assessInterleavedAb({
         manifests,
-        controlPasses: parseControlPasses(process.env.TOUR_CONTROL_PASSES, selectedSequences),
+        controlPasses: parseControlPasses(
+          process.env.TOUR_CONTROL_PASSES,
+          selectedSequences,
+        ),
       });
       fs.writeFileSync(
         `${OUT}/cloud-tour-ab-${PAIR_ID}.json`,
@@ -1380,7 +1432,9 @@ async function run() {
       }
     }
     if (fixtureLane.errors.length > 0) {
-      console.log(`\n  fixture-lane errors: ${fixtureLane.errors.slice(0, 4).join(" | ")}`);
+      console.log(
+        `\n  fixture-lane errors: ${fixtureLane.errors.slice(0, 4).join(" | ")}`,
+      );
     }
     console.log(`\nmanifest: ${manifestPath}`);
     console.log(`PNGs: ${OUT}/`);

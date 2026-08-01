@@ -228,11 +228,9 @@ function getDeviceParameter(
       // either name without widening the surrounding types.
       const slots =
         (Reflect.get(limits, "maxInterStageShaderVariables") as
-          | number
-          | undefined) ??
+          number | undefined) ??
         (Reflect.get(limits, "maxInterStageShaderComponents") as
-          | number
-          | undefined) ??
+          number | undefined) ??
         60;
       return Math.floor(slots / 4);
     }

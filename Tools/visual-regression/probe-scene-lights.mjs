@@ -16,7 +16,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
@@ -121,13 +125,17 @@ const BASE = "http://localhost:8080";
   await browser.close();
 
   console.log("Console:");
-  consoleMessages.filter((m) => m.includes("Light")).forEach((m) => console.log("  " + m));
+  consoleMessages
+    .filter((m) => m.includes("Light"))
+    .forEach((m) => console.log("  " + m));
 
   console.log("[probe-scene-lights] result:");
   console.log(JSON.stringify(result, null, 2));
   console.log(`\nDevice errors: ${errs.length}`);
   if (errs.length) {
-    errs.slice(0, 3).forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
+    errs
+      .slice(0, 3)
+      .forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
   }
 
   let pass = true;
@@ -137,7 +145,9 @@ const BASE = "http://localhost:8080";
     pass = false;
   }
   if (!r.initial.isLightCollection) {
-    console.log(`FAIL: scene.lights is not a LightCollection (got ${r.initial.isLightCollection})`);
+    console.log(
+      `FAIL: scene.lights is not a LightCollection (got ${r.initial.isLightCollection})`,
+    );
     pass = false;
   }
   if (r.postAdd.countAfterAdd !== 3) {
@@ -145,11 +155,15 @@ const BASE = "http://localhost:8080";
     pass = false;
   }
   if (r.postAdd.packBufferLength !== 164) {
-    console.log(`FAIL: expected 164-float packed buffer, got ${r.postAdd.packBufferLength}`);
+    console.log(
+      `FAIL: expected 164-float packed buffer, got ${r.postAdd.packBufferLength}`,
+    );
     pass = false;
   }
   if (r.postAdd.lightCountInPackedBuffer !== 3) {
-    console.log(`FAIL: packed buffer light count = ${r.postAdd.lightCountInPackedBuffer}, expected 3`);
+    console.log(
+      `FAIL: packed buffer light count = ${r.postAdd.lightCountInPackedBuffer}, expected 3`,
+    );
     pass = false;
   }
   if (!r.renderState.frameStateLightsSameAsSceneLights) {

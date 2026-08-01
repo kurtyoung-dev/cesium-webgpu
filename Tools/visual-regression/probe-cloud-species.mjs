@@ -122,11 +122,13 @@ async function diff(page, a, b) {
       };
       const da = await load(ua),
         db = await load(ub);
-      let acc = 0,
-        n = da.length / 4;
+      let acc = 0;
+      const n = da.length / 4;
       for (let i = 0; i < da.length; i += 4) {
         acc += Math.abs(
-          0.299 * da[i] + 0.587 * da[i + 1] + 0.114 * da[i + 2] -
+          0.299 * da[i] +
+            0.587 * da[i + 1] +
+            0.114 * da[i + 2] -
             (0.299 * db[i] + 0.587 * db[i + 1] + 0.114 * db[i + 2]),
         );
       }
@@ -160,9 +162,13 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   const canvas = await page.$(".cesium-widget canvas");
@@ -208,17 +214,29 @@ async function run() {
   const duOff2 = await shot("species-off2");
 
   // Lenticularis — smooth stacked lens plates.
-  await set({ cloudSpecies: "lenticularis", cloudSpeciesStrength: 0.9, cloudSpeciesScale: 1.0 });
+  await set({
+    cloudSpecies: "lenticularis",
+    cloudSpeciesStrength: 0.9,
+    cloudSpeciesScale: 1.0,
+  });
   const duLent = await shot("species-lenticularis");
   const deckLent = await deck(page, duLent);
 
   // Fibratus — wind-aligned wispy filaments (straight).
-  await set({ cloudSpecies: "fibratus", cloudSpeciesStrength: 0.9, cloudSpeciesScale: 1.0 });
+  await set({
+    cloudSpecies: "fibratus",
+    cloudSpeciesStrength: 0.9,
+    cloudSpeciesScale: 1.0,
+  });
   const duFib = await shot("species-fibratus");
   const deckFib = await deck(page, duFib);
 
   // Uncinus — filaments + fallstreak hook (height shear).
-  await set({ cloudSpecies: "uncinus", cloudSpeciesStrength: 0.9, cloudSpeciesScale: 1.0 });
+  await set({
+    cloudSpecies: "uncinus",
+    cloudSpeciesStrength: 0.9,
+    cloudSpeciesScale: 1.0,
+  });
   const duUnc = await shot("species-uncinus");
 
   // Restore OFF — clean toggle, no residual.
@@ -253,14 +271,32 @@ async function run() {
   );
 
   const checks = [
-    [`OFF is deterministic w/ grown UBO (off-vs-off2 ${diffOffOff} < 0.25)`, diffOffOff < 0.25],
-    [`lenticularis ON substantially changes the render (lent-vs-off ${diffLent} > 1.0)`, diffLent > 1.0],
-    [`fibratus ON substantially changes the render (fib-vs-off ${diffFib} > 1.0)`, diffFib > 1.0],
+    [
+      `OFF is deterministic w/ grown UBO (off-vs-off2 ${diffOffOff} < 0.25)`,
+      diffOffOff < 0.25,
+    ],
+    [
+      `lenticularis ON substantially changes the render (lent-vs-off ${diffLent} > 1.0)`,
+      diffLent > 1.0,
+    ],
+    [
+      `fibratus ON substantially changes the render (fib-vs-off ${diffFib} > 1.0)`,
+      diffFib > 1.0,
+    ],
     // The filament carve removes density → measurably thinner deck vs OFF.
-    [`fibratus carve THINS the deck (fib ${deckFib} < off ${deckOff} - 0.3)`, deckFib < deckOff - 0.3],
+    [
+      `fibratus carve THINS the deck (fib ${deckFib} < off ${deckOff} - 0.3)`,
+      deckFib < deckOff - 0.3,
+    ],
     // The uncinus hook re-shapes the filaments → distinct from straight fibratus.
-    [`uncinus differs from fibratus (unc-vs-fib ${diffFibUnc} > 0.3)`, diffFibUnc > 0.3],
-    [`restoring OFF returns to baseline (restore-vs-off ${diffRestore} < 0.25)`, diffRestore < 0.25],
+    [
+      `uncinus differs from fibratus (unc-vs-fib ${diffFibUnc} > 0.3)`,
+      diffFibUnc > 0.3,
+    ],
+    [
+      `restoring OFF returns to baseline (restore-vs-off ${diffRestore} < 0.25)`,
+      diffRestore < 0.25,
+    ],
     [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
   ];
   console.log("\n=== ANALYSIS ===");

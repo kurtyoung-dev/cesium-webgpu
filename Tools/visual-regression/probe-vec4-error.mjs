@@ -1,5 +1,5 @@
 // Probe affected demos for the UniformArrayFloatVec4.set "Invalid vec4 value" error.
-import { chromium } from 'playwright';
+import { chromium } from "playwright";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -14,41 +14,66 @@ const RENDERER_OVERRIDE_SHIM = `
 
 const demos = process.argv.slice(2);
 if (demos.length === 0) {
-  demos.push('3D Tiles 1.1 CDB Yemen.html', '3D Tiles Compare.html', 'I3S Building Scene Layer.html');
+  demos.push(
+    "3D Tiles 1.1 CDB Yemen.html",
+    "3D Tiles Compare.html",
+    "I3S Building Scene Layer.html",
+  );
 }
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
+const browser = await chromium.launch({ channel: "msedge", headless: true });
 for (const demo of demos) {
-  const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+  const ctx = await browser.newContext({
+    viewport: { width: 800, height: 600 },
+  });
   const page = await ctx.newPage();
   const msgs = [];
-  page.on('console', m => msgs.push(`[${m.type()}] ${m.text()}`));
-  page.on('pageerror', e => msgs.push(`[PAGEERROR] ${e.message}\n${e.stack || ''}`));
+  page.on("console", (m) => msgs.push(`[${m.type()}] ${m.text()}`));
+  page.on("pageerror", (e) =>
+    msgs.push(`[PAGEERROR] ${e.message}\n${e.stack || ""}`),
+  );
 
-  await page.addInitScript(() => { window.__FORCED_RENDERER__ = 'webgpu'; });
+  await page.addInitScript(() => {
+    window.__FORCED_RENDERER__ = "webgpu";
+  });
   await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-  await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
+  await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
     const response = await route.fetch();
-    const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-    await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
+    const txt = (await response.text()).replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    );
+    await route.fulfill({
+      status: response.status(),
+      headers: response.headers(),
+      body: txt,
+    });
   });
 
   const url = `http://localhost:8080/Apps/Sandcastle/gallery/${encodeURIComponent(demo)}`;
   try {
-    await page.goto(url, { waitUntil: 'load', timeout: 60000 });
+    await page.goto(url, { waitUntil: "load", timeout: 60000 });
     await page.waitForTimeout(8000);
   } catch (e) {
     msgs.push(`[NAV ERROR] ${e.message}`);
   }
 
-  const vec4 = msgs.filter(m => /Invalid vec4 value|UniformArrayFloatVec4/i.test(m));
-  const allErrs = msgs.filter(m => m.includes('[error]') || m.includes('PAGEERROR'));
+  const vec4 = msgs.filter((m) =>
+    /Invalid vec4 value|UniformArrayFloatVec4/i.test(m),
+  );
+  const allErrs = msgs.filter(
+    (m) => m.includes("[error]") || m.includes("PAGEERROR"),
+  );
 
   console.log(`\n=== ${demo} ===`);
-  console.log(`msgs=${msgs.length} vec4=${vec4.length} all-errs=${allErrs.length}`);
-  vec4.slice(0, 3).forEach(e => console.log('  VEC4:', e.substring(0, 600)));
+  console.log(
+    `msgs=${msgs.length} vec4=${vec4.length} all-errs=${allErrs.length}`,
+  );
+  vec4.slice(0, 3).forEach((e) => console.log("  VEC4:", e.substring(0, 600)));
   if (vec4.length === 0 && allErrs.length > 0) {
-    allErrs.slice(0, 3).forEach(e => console.log('  ERR:', e.substring(0, 400)));
+    allErrs
+      .slice(0, 3)
+      .forEach((e) => console.log("  ERR:", e.substring(0, 400)));
   }
   await ctx.close();
 }

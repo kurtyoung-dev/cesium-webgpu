@@ -184,9 +184,7 @@ const out = await page.evaluate(async () => {
       collectionIsComputeInstance:
         picked.collection instanceof C.ComputeInstanceCollection,
       instanceIndex:
-        typeof picked.instanceIndex === "number"
-          ? picked.instanceIndex
-          : null,
+        typeof picked.instanceIndex === "number" ? picked.instanceIndex : null,
       // Domain-agnostic check (D): the engine record must NOT carry a
       // satellite / orbital object — only the raw index + collection (+ the
       // `primitive` alias the scene pick path requires).
@@ -235,9 +233,7 @@ await browser.close();
 
 // ── Report ──
 console.log(`instances: ${out.instanceCount}`);
-console.log(
-  `pick-side cache: ${JSON.stringify(out.pickState)}`,
-);
+console.log(`pick-side cache: ${JSON.stringify(out.pickState)}`);
 for (const h of out.hits) {
   console.log(
     `  index ${h.index} @ (${h.screen?.x},${h.screen?.y}): kind=${h.kind} ` +
@@ -261,14 +257,20 @@ if (out.instanceCount !== 3) {
 // (A) each instance picks back its own index.
 for (const h of out.hits) {
   if (h.kind !== "object") {
-    failures.push(`index ${h.index}: pick returned ${h.kind} (expected object)`);
+    failures.push(
+      `index ${h.index}: pick returned ${h.kind} (expected object)`,
+    );
     continue;
   }
   if (!h.hasCollection) {
-    failures.push(`index ${h.index}: picked record.collection !== the collection`);
+    failures.push(
+      `index ${h.index}: picked record.collection !== the collection`,
+    );
   }
   if (!h.collectionIsComputeInstance) {
-    failures.push(`index ${h.index}: picked collection not a ComputeInstanceCollection`);
+    failures.push(
+      `index ${h.index}: picked collection not a ComputeInstanceCollection`,
+    );
   }
   if (h.instanceIndex !== h.index) {
     failures.push(
@@ -277,7 +279,9 @@ for (const h of out.hits) {
   }
   // (D) domain-agnostic — record carries index + collection + primitive only.
   if (!h.hasPrimitive) {
-    failures.push(`index ${h.index}: picked record missing the .primitive alias`);
+    failures.push(
+      `index ${h.index}: picked record missing the .primitive alias`,
+    );
   }
 }
 // (B) empty space → no hit.

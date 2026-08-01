@@ -77,8 +77,7 @@ test("the f32 IGN field is spatially balanced and temporally decorrelated", () =
       }
     }
 
-    const mean =
-      values.reduce((sum, value) => sum + value, 0) / values.length;
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
     const bins = histogram(values, 8);
     assert.ok(
       mean >= 0.49 && mean <= 0.51,
@@ -99,7 +98,10 @@ test("the f32 IGN field is spatially balanced and temporally decorrelated", () =
   assert.ok(Math.min(...temporalValues) < 0.05);
   assert.ok(Math.max(...temporalValues) > 0.95);
   for (const count of histogram(temporalValues, 8)) {
-    assert.ok(count >= 4, `a temporal IGN octile contained only ${count} samples`);
+    assert.ok(
+      count >= 4,
+      `a temporal IGN octile contained only ${count} samples`,
+    );
   }
 });
 
@@ -119,7 +121,7 @@ test("tier intent and renderer wiring carry QF_JITTER without changing the escap
   const high = sourceSection(tiers, "// T3 Cinematic", "];");
   const escape = sourceSection(
     tiers,
-    "if (typeof raw === \"number\" && raw !== 64)",
+    'if (typeof raw === "number" && raw !== 64)',
     "return CLOUD_TIER_PRESETS",
   );
 
@@ -128,7 +130,11 @@ test("tier intent and renderer wiring carry QF_JITTER without changing the escap
     ["medium", medium],
     ["high", high],
   ]) {
-    assert.match(preset, /jitterEnabled:\s*true/, `${name} must request jitter`);
+    assert.match(
+      preset,
+      /jitterEnabled:\s*true/,
+      `${name} must request jitter`,
+    );
   }
   assert.match(
     escape,
@@ -241,10 +247,7 @@ test("jitter changes only the sample phase, preserving adaptive control interval
     /let sampleDistance\s*=\s*t\s*\+\s*marchSamplePhase\s*\*\s*curStep;[\s\S]*let sampleOffset\s*=\s*rayDir\s*\*\s*sampleDistance;/,
   );
   assert.match(march, /macroSample\s*=\s*cloudMacroSampleAt\(/);
-  assert.match(
-    march,
-    /base\s*=\s*cloudBaseFromMacro\(macroSample\);/,
-  );
+  assert.match(march, /base\s*=\s*cloudBaseFromMacro\(macroSample\);/);
   assert.match(
     march,
     /density\s*=\s*cloudDensityFromMacro\(macroSample,\s*heightFraction\);/,
@@ -296,10 +299,7 @@ test("jitter changes only the sample phase, preserving adaptive control interval
     );
     for (const phase of phases) {
       const phaseF32 = f32(phase);
-      const sampleF32 = addF32(
-        startF32,
-        multiplyF32(phaseF32, stepF32),
-      );
+      const sampleF32 = addF32(startF32, multiplyF32(phaseF32, stepF32));
       assert.ok(
         sampleF32 >= startF32,
         `${sampleF32} preceded f32 interval start ${startF32}`,

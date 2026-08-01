@@ -53,9 +53,7 @@ async function captureRender(page, materialName) {
     }
 
     // A mostly-horizontal line so dash gaps fall along screen rows.
-    const positions = C.Cartesian3.fromDegreesArray([
-      -76.0, 35.0, -72.0, 35.0,
-    ]);
+    const positions = C.Cartesian3.fromDegreesArray([-76.0, 35.0, -72.0, 35.0]);
 
     let material;
     if (materialName === "PolylineDash") {
@@ -199,7 +197,9 @@ async function captureRenderer(renderer, materialName, fs) {
   for (const materialName of ["PolylineDash", "PolylineGlow"]) {
     results[materialName] = {};
     for (const renderer of ["webgl", "webgpu"]) {
-      console.log(`\n=== Capturing ${renderer.toUpperCase()} / ${materialName} ===`);
+      console.log(
+        `\n=== Capturing ${renderer.toUpperCase()} / ${materialName} ===`,
+      );
       results[materialName][renderer] = await captureRenderer(
         renderer,
         materialName,

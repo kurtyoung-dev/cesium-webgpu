@@ -49,7 +49,9 @@ const browser = await chromium.launch({
 });
 const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
 const errors = [];
-page.on("pageerror", (e) => errors.push(`pageerror: ${e.message.slice(0, 240)}`));
+page.on("pageerror", (e) =>
+  errors.push(`pageerror: ${e.message.slice(0, 240)}`),
+);
 page.on("console", (m) => {
   const t = m.text();
   if (m.type() === "error" && !t.includes("favicon")) {

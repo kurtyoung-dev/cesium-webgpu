@@ -125,7 +125,7 @@ async function runBackend(renderer) {
         await new Promise((r) => requestAnimationFrame(r));
       }
       const canvas = scene.canvas;
-      const gl = canvas.getContext("webgl2") || canvas.getContext("webgpu");
+      const _gl = canvas.getContext("webgl2") || canvas.getContext("webgpu");
       // Read pixels via a 2D snapshot of the canvas (works for both backends).
       const tmp = document.createElement("canvas");
       tmp.width = canvas.width;
@@ -255,7 +255,8 @@ for (const res of results) {
       `bright(base=${res.baselineBright}, api=${res.withApiBright})`,
   );
   console.log(`  checks: ${JSON.stringify(checks)}`);
-  if (failed.length) console.log(`  FAILED: ${failed.map(([k]) => k).join(", ")}`);
+  if (failed.length)
+    console.log(`  FAILED: ${failed.map(([k]) => k).join(", ")}`);
   if (res.errors.length)
     console.log(`  console errors: ${JSON.stringify(res.errors.slice(0, 5))}`);
 }

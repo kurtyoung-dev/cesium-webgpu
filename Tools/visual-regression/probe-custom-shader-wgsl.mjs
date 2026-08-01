@@ -83,7 +83,9 @@ async function capture(renderer, useCustomShader, tint) {
         ".cesium-navigation-help",
         ".cesium-viewer-fullscreenContainer",
       ]) {
-        document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
+        document
+          .querySelectorAll(sel)
+          .forEach((e) => (e.style.display = "none"));
       }
 
       // Isolate the model on a black background.
@@ -123,7 +125,11 @@ async function capture(renderer, useCustomShader, tint) {
 
       v.camera.viewBoundingSphere(
         model.boundingSphere,
-        new C.HeadingPitchRange(heading, pitch, model.boundingSphere.radius * 3.0),
+        new C.HeadingPitchRange(
+          heading,
+          pitch,
+          model.boundingSphere.radius * 3.0,
+        ),
       );
       v.camera.lookAtTransform(C.Matrix4.IDENTITY);
       for (let i = 0; i < 40; i++) {
@@ -147,7 +153,9 @@ async function capture(renderer, useCustomShader, tint) {
   await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
   const gate = await collectGateErrors(page);
 
-  const png = await page.locator('canvas[data-cs="1"]').screenshot({ type: "png" });
+  const png = await page
+    .locator('canvas[data-cs="1"]')
+    .screenshot({ type: "png" });
   const decoded = await page.evaluate(async (b64) => {
     const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
     const bmp = await createImageBitmap(blob);
@@ -201,7 +209,10 @@ function diffModelPixels(a, b) {
 // Mean RGB over non-black model pixels — used to confirm the custom tint color
 // actually dominates the output (e.g. red tint → mean R >> mean B).
 function meanColor(img) {
-  let r = 0, g = 0, b = 0, n = 0;
+  let r = 0,
+    g = 0,
+    b = 0,
+    n = 0;
   for (let i = 0; i < img.data.length; i += 4) {
     const lum = img.data[i] + img.data[i + 1] + img.data[i + 2];
     if (lum <= 12) continue;
@@ -211,7 +222,12 @@ function meanColor(img) {
     n++;
   }
   return n
-    ? { r: +(r / n).toFixed(1), g: +(g / n).toFixed(1), b: +(b / n).toFixed(1), n }
+    ? {
+        r: +(r / n).toFixed(1),
+        g: +(g / n).toFixed(1),
+        b: +(b / n).toFixed(1),
+        n,
+      }
     : { r: 0, g: 0, b: 0, n: 0 };
 }
 
@@ -227,7 +243,8 @@ const CRC_TABLE = (() => {
 })();
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 function encodePNG({ w, h, data }) {
@@ -235,7 +252,10 @@ function encodePNG({ w, h, data }) {
   const raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -269,9 +289,18 @@ const csBlue = await capture("webgpu", true, [0.0, 0.2, 1.0]);
 
 const fs = await import("fs");
 fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-fs.writeFileSync("Tools/visual-regression/output/cs-wgsl-baseline.png", encodePNG(baseline.decoded));
-fs.writeFileSync("Tools/visual-regression/output/cs-wgsl-red.png", encodePNG(csRed.decoded));
-fs.writeFileSync("Tools/visual-regression/output/cs-wgsl-blue.png", encodePNG(csBlue.decoded));
+fs.writeFileSync(
+  "Tools/visual-regression/output/cs-wgsl-baseline.png",
+  encodePNG(baseline.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/cs-wgsl-red.png",
+  encodePNG(csRed.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/cs-wgsl-blue.png",
+  encodePNG(csBlue.decoded),
+);
 
 const customVsBaseline = diffModelPixels(baseline.decoded, csRed.decoded);
 const redVsBlue = diffModelPixels(csRed.decoded, csBlue.decoded);
@@ -287,7 +316,11 @@ const gateErrors = [
 const deviceLost = baseline.deviceLost || csRed.deviceLost || csBlue.deviceLost;
 
 const report = {
-  baseline: { ready: baseline.ready, mean: meanBaseline, gateArmed: baseline.gateArmed },
+  baseline: {
+    ready: baseline.ready,
+    mean: meanBaseline,
+    gateArmed: baseline.gateArmed,
+  },
   customRed: { ready: csRed.ready, mean: meanRed },
   customBlue: { ready: csBlue.ready, mean: meanBlue },
   customVsBaseline_diffPct: customVsBaseline.mismatchPct,
@@ -310,8 +343,10 @@ console.log(JSON.stringify(report, null, 2));
 //    WGSL's diffuse override reached the output.
 //  - UNIFORM UPDATE: red vs blue differ by > 20% AND blue's mean B dominates —
 //    changing u_tint changed the image (UBO re-uploaded from live values).
-const customDominatesRed = meanRed.r > meanRed.g + 15 && meanRed.r > meanRed.b + 15;
-const customDominatesBlue = meanBlue.b > meanBlue.r + 15 && meanBlue.b > meanBlue.g + 5;
+const customDominatesRed =
+  meanRed.r > meanRed.g + 15 && meanRed.r > meanRed.b + 15;
+const customDominatesBlue =
+  meanBlue.b > meanBlue.r + 15 && meanBlue.b > meanBlue.g + 5;
 
 const pass =
   baseline.ready &&

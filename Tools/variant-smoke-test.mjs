@@ -494,7 +494,9 @@ async function runVariant(browserType, args, variant) {
     // Log failed network requests — helps diagnose 404s where the message
     // only says "Request has failed. Status Code: 404" without a URL.
     page.on("requestfailed", (req) => {
-      failedRequests.push(`${req.failure()?.errorText ?? "failed"}: ${req.url()}`);
+      failedRequests.push(
+        `${req.failure()?.errorText ?? "failed"}: ${req.url()}`,
+      );
     });
     page.on("response", (resp) => {
       if (resp.status() >= 400) {
@@ -553,7 +555,10 @@ async function runVariant(browserType, args, variant) {
       () => window.__smokePixelCount ?? null,
     );
     const debugInfo = await page.evaluate(() => ({
-      cesiumBaseUrl: typeof window.CESIUM_BASE_URL !== "undefined" ? String(window.CESIUM_BASE_URL) : "<unset>",
+      cesiumBaseUrl:
+        typeof window.CESIUM_BASE_URL !== "undefined"
+          ? String(window.CESIUM_BASE_URL)
+          : "<unset>",
       setBaseUrlCalled: window.__smokeSetBaseUrlCalled ?? "<never>",
       buildModuleUrlAfterSet: window.__smokeBuildModuleUrlAfterSet ?? "<never>",
       buildModuleUrlNow: (() => {
@@ -561,35 +566,60 @@ async function runVariant(browserType, args, variant) {
           return window.Cesium?.buildModuleUrl
             ? window.Cesium.buildModuleUrl("")
             : "<no buildModuleUrl>";
-        } catch (e) { return "<throw: " + String(e) + ">"; }
+        } catch (e) {
+          return "<throw: " + String(e) + ">";
+        }
       })(),
       buildModuleUrlAssets: (() => {
-        try { return window.Cesium?.buildModuleUrl?.("Assets/approximateTerrainHeights.json"); }
-        catch (e) { return "<throw: " + String(e) + ">"; }
+        try {
+          return window.Cesium?.buildModuleUrl?.(
+            "Assets/approximateTerrainHeights.json",
+          );
+        } catch (e) {
+          return "<throw: " + String(e) + ">";
+        }
       })(),
       baseResourceUrl: (() => {
-        try { return window.Cesium?.buildModuleUrl?.getCesiumBaseUrl?.()?.url; }
-        catch (e) { return "<throw: " + String(e) + ">"; }
+        try {
+          return window.Cesium?.buildModuleUrl?.getCesiumBaseUrl?.()?.url;
+        } catch (e) {
+          return "<throw: " + String(e) + ">";
+        }
       })(),
       contextType: (() => {
         try {
           const ctx = window.__viewer?.scene?.context;
           return ctx?.rendererType ?? (ctx?.isWebGPU ? "webgpu?" : "webgl?");
-        } catch (e) { return "<throw: " + String(e) + ">"; }
+        } catch (e) {
+          return "<throw: " + String(e) + ">";
+        }
       })(),
       webgpuAvailable: typeof navigator !== "undefined" && !!navigator.gpu,
     }));
     console.log(`  [debug] CESIUM_BASE_URL="${debugInfo.cesiumBaseUrl}"`);
-    console.log(`  [debug] setBaseUrl called with="${debugInfo.setBaseUrlCalled}"`);
-    console.log(`  [debug] buildModuleUrl("") right after setBaseUrl="${debugInfo.buildModuleUrlAfterSet}"`);
-    console.log(`  [debug] buildModuleUrl("") now="${debugInfo.buildModuleUrlNow}"`);
-    console.log(`  [debug] buildModuleUrl(Assets/approximateTerrainHeights.json)="${debugInfo.buildModuleUrlAssets}"`);
-    console.log(`  [debug] getCesiumBaseUrl().url="${debugInfo.baseResourceUrl}"`);
-    console.log(`  [debug] context.rendererType="${debugInfo.contextType}" navigator.gpu=${debugInfo.webgpuAvailable}`);
-    console.log(`  [debug] pixel-verify distinct samples=${pixelCount ?? "<not run>"}`);
+    console.log(
+      `  [debug] setBaseUrl called with="${debugInfo.setBaseUrlCalled}"`,
+    );
+    console.log(
+      `  [debug] buildModuleUrl("") right after setBaseUrl="${debugInfo.buildModuleUrlAfterSet}"`,
+    );
+    console.log(
+      `  [debug] buildModuleUrl("") now="${debugInfo.buildModuleUrlNow}"`,
+    );
+    console.log(
+      `  [debug] buildModuleUrl(Assets/approximateTerrainHeights.json)="${debugInfo.buildModuleUrlAssets}"`,
+    );
+    console.log(
+      `  [debug] getCesiumBaseUrl().url="${debugInfo.baseResourceUrl}"`,
+    );
+    console.log(
+      `  [debug] context.rendererType="${debugInfo.contextType}" navigator.gpu=${debugInfo.webgpuAvailable}`,
+    );
+    console.log(
+      `  [debug] pixel-verify distinct samples=${pixelCount ?? "<not run>"}`,
+    );
 
-    const status =
-      ready === true && errors.length === 0 ? "PASS" : "FAIL";
+    const status = ready === true && errors.length === 0 ? "PASS" : "FAIL";
     console.log(
       `[variant=${variant.name}] ${status} — ${errors.length} error(s)`,
     );
@@ -638,7 +668,7 @@ async function main() {
     );
   }
 
-  let anyFail = true;
+  let anyFail;
   try {
     const results = [];
     for (const variant of targets) {

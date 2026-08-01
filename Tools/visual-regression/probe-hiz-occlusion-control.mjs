@@ -28,9 +28,15 @@ const GRID = Number(process.env.PROBE_GRID || 60);
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
 
@@ -47,7 +53,9 @@ const GRID = Number(process.env.PROBE_GRID || 60);
     // *** The control knob: force all high-density GPU gates OFF. ***
     scene.gpuCullingHint = "never";
     const prims = scene.primitives;
-    const lon0 = -105.0, lat0 = 39.0, span = 0.6;
+    const lon0 = -105.0,
+      lat0 = 39.0,
+      span = 0.6;
     const boxDim = new Cesium.Cartesian3(6000.0, 6000.0, 90000.0);
     const geom = Cesium.BoxGeometry.fromDimensions({
       vertexFormat: Cesium.PerInstanceColorAppearance.VERTEX_FORMAT,
@@ -82,7 +90,11 @@ const GRID = Number(process.env.PROBE_GRID || 60);
         created++;
       }
     }
-    const center = Cesium.Cartesian3.fromDegrees(lon0 + span / 2, lat0 + span / 2, 50000);
+    const center = Cesium.Cartesian3.fromDegrees(
+      lon0 + span / 2,
+      lat0 + span / 2,
+      50000,
+    );
     scene.camera.lookAt(
       center,
       new Cesium.HeadingPitchRange(
@@ -92,7 +104,11 @@ const GRID = Number(process.env.PROBE_GRID || 60);
       ),
     );
     scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
-    return { created, primCount: prims.length, gpuCullingHint: scene.gpuCullingHint };
+    return {
+      created,
+      primCount: prims.length,
+      gpuCullingHint: scene.gpuCullingHint,
+    };
   }, GRID);
 
   const stats = await page.evaluate(async () => {
@@ -102,10 +118,13 @@ const GRID = Number(process.env.PROBE_GRID || 60);
       await new Promise((r) => requestAnimationFrame(r));
     }
     const renderer = scene._alternateSceneRenderer;
-    const s = renderer && renderer.getHighDensityCullStats
-      ? renderer.getHighDensityCullStats()
+    const s =
+      renderer && renderer.getHighDensityCullStats
+        ? renderer.getHighDensityCullStats()
+        : null;
+    return s
+      ? { hiZActive: s.hiZ.activeAnyFrustum, hiZDispatches: s.hiZ.dispatches }
       : null;
-    return s ? { hiZActive: s.hiZ.activeAnyFrustum, hiZDispatches: s.hiZ.dispatches } : null;
   });
 
   await page.waitForTimeout(500);

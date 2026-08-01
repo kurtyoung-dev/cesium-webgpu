@@ -232,8 +232,6 @@ async function analyze(a, b) {
   console.log(
     `  hole webgpu=${holeGpu} webgl=${holeGl} boundaryAligned=${aligned}`,
   );
-  console.log(
-    `  PARITY: ${holeGpu && holeGl && aligned ? "PASS" : "FAIL"}`,
-  );
+  console.log(`  PARITY: ${holeGpu && holeGl && aligned ? "PASS" : "FAIL"}`);
   console.log("[probe-clippoly] done");
 })();

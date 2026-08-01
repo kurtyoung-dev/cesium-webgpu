@@ -180,7 +180,11 @@ async function runRenderer(renderer) {
       // waypoint isn't measured against a cold pipeline with no GLOBE commands.
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(lon, lat, 600000.0),
-        orientation: { heading: 0.0, pitch: C.Math.toRadians(-30.0), roll: 0.0 },
+        orientation: {
+          heading: 0.0,
+          pitch: C.Math.toRadians(-30.0),
+          roll: 0.0,
+        },
       });
       await waitForGlobe(360);
       await renderFrames(30);
@@ -306,7 +310,9 @@ let hardFail = false;
 console.log(`\n[probe-frustum-count-3d] base=${BASE} out=${OUT}\n`);
 for (const r of RENDERERS) {
   const { result, errors, pageErrors } = all[r];
-  console.log(`===== ${r} (backend=${result.backend}, logDepth=${result.useLogDepth}) =====`);
+  console.log(
+    `===== ${r} (backend=${result.backend}, logDepth=${result.useLogDepth}) =====`,
+  );
   for (const wp of result.waypoints) {
     console.log(
       `  ${wp.name.padEnd(8)} numFrustums=${wp.numberOfFrustums}  ` +

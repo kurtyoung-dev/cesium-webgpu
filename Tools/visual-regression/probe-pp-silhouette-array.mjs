@@ -44,7 +44,9 @@ const browser = await chromium.launch({
 });
 
 async function runBackend(renderer) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = [];
   page.on("console", (m) => {
     if (m.type() === "error") consoleErrors.push(m.text());
@@ -139,7 +141,12 @@ async function runBackend(renderer) {
             for (let i = 0; i < u8.length; i += chunk) {
               bin += String.fromCharCode.apply(null, u8.subarray(i, i + chunk));
             }
-            resolve({ b64: btoa(bin), png: off.toDataURL("image/png"), w: c.width, h: c.height });
+            resolve({
+              b64: btoa(bin),
+              png: off.toDataURL("image/png"),
+              w: c.width,
+              h: c.height,
+            });
           });
         });
       const bytesEqual = (a, b) => a.b64 === b.b64;
@@ -197,7 +204,10 @@ async function runBackend(renderer) {
 }
 
 function savePng(name, img) {
-  writeFileSync(join(OUT_DIR, name), Buffer.from(img.png.split(",")[1], "base64"));
+  writeFileSync(
+    join(OUT_DIR, name),
+    Buffer.from(img.png.split(",")[1], "base64"),
+  );
 }
 // Count + locate the silhouette edge pixels by DIRECT COLOR SIGNATURE rather
 // than diff-vs-base. The pre-fix bug rendered gray/dark default edges; the
@@ -210,11 +220,21 @@ function savePng(name, img) {
 function edgePixels(cap, predicate) {
   const A = Buffer.from(cap.b64, "base64");
   const w = cap.w;
-  let n = 0, r = 0, g = 0, b = 0, sx = 0;
+  let n = 0,
+    r = 0,
+    g = 0,
+    b = 0,
+    sx = 0;
   for (let i = 0; i < A.length; i += 4) {
-    const R = A[i], G = A[i + 1], B = A[i + 2];
+    const R = A[i],
+      G = A[i + 1],
+      B = A[i + 2];
     if (predicate(R, G, B)) {
-      n++; r += R; g += G; b += B; sx += (i / 4) % w;
+      n++;
+      r += R;
+      g += G;
+      b += B;
+      sx += (i / 4) % w;
     }
   }
   if (n === 0) return { n: 0, r: 0, g: 0, b: 0, x: 0 };
@@ -246,15 +266,18 @@ let pass = true;
 // same-color silhouette pixels at a comparable horizontal centroid. The
 // pre-fix bug produced NO red pixels on WebGPU (gray defaults) → gpuN≈0.
 const MIN_EDGE = 1200; // silhouette line pixel floor per backend
-const countRatioOK = (a, b) => a > 0 && b > 0 && Math.min(a, b) / Math.max(a, b) > 0.4;
+const countRatioOK = (a, b) =>
+  a > 0 && b > 0 && Math.min(a, b) / Math.max(a, b) > 0.4;
 const xCentroidOK = (a, b) => Math.abs(a - b) < 60; // px, out of 1024 wide
 
 // (1) ARRAY form → custom RED edge.
 const gpuArr = edgePixels(gpu.out.captures.array, isRed);
 const glArr = edgePixels(gl.out.captures.array, isRed);
 const arrayOK =
-  gpuArr.n > MIN_EDGE && glArr.n > MIN_EDGE &&
-  countRatioOK(gpuArr.n, glArr.n) && xCentroidOK(gpuArr.x, glArr.x);
+  gpuArr.n > MIN_EDGE &&
+  glArr.n > MIN_EDGE &&
+  countRatioOK(gpuArr.n, glArr.n) &&
+  xCentroidOK(gpuArr.x, glArr.x);
 pass = pass && arrayOK;
 console.log(
   `ARRAY  RED gpuN=${gpuArr.n}@x${gpuArr.x.toFixed(0)} ` +
@@ -267,8 +290,10 @@ console.log(
 const gpuSin = edgePixels(gpu.out.captures.single, isCyan);
 const glSin = edgePixels(gl.out.captures.single, isCyan);
 const singleOK =
-  gpuSin.n > MIN_EDGE && glSin.n > MIN_EDGE &&
-  countRatioOK(gpuSin.n, glSin.n) && xCentroidOK(gpuSin.x, glSin.x);
+  gpuSin.n > MIN_EDGE &&
+  glSin.n > MIN_EDGE &&
+  countRatioOK(gpuSin.n, glSin.n) &&
+  xCentroidOK(gpuSin.x, glSin.x);
 pass = pass && singleOK;
 console.log(
   `SINGLE CYAN gpuN=${gpuSin.n}@x${gpuSin.x.toFixed(0)} ` +
@@ -278,11 +303,17 @@ console.log(
 );
 
 // (3) errors.
-const allErrors = [...gpu.consoleErrors, ...gl.consoleErrors, ...gpu.out.gpuErrors];
+const allErrors = [
+  ...gpu.consoleErrors,
+  ...gl.consoleErrors,
+  ...gpu.out.gpuErrors,
+];
 console.log(
   `errors: webgpu-console=${gpu.consoleErrors.length} webgl-console=${gl.consoleErrors.length} gpu=${gpu.out.gpuErrors.length} ${allErrors.length === 0 ? "OK" : "FAIL"}`,
 );
-allErrors.slice(0, 8).forEach((e) => console.log("  ERR:", String(e).slice(0, 220)));
+allErrors
+  .slice(0, 8)
+  .forEach((e) => console.log("  ERR:", String(e).slice(0, 220)));
 pass = pass && allErrors.length === 0;
 
 console.log(`PNGs: ${OUT_DIR}`);

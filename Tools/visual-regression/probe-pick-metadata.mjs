@@ -64,9 +64,13 @@ async function runBackend(renderer) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errors = [];
-  page.on("pageerror", (e) => errors.push(`pageerror: ${e.message.slice(0, 200)}`));
+  page.on("pageerror", (e) =>
+    errors.push(`pageerror: ${e.message.slice(0, 200)}`),
+  );
   page.on("console", (m) => {
     const t = m.text();
     if (m.type() === "error" && !t.includes("favicon")) {
@@ -150,7 +154,8 @@ async function runBackend(renderer) {
     }
 
     const pfb = scene.defaultView?.pickFramebuffer;
-    const isWebGPUFbo = !!pfb && pfb.constructor?.name === "WebGPUPickFramebuffer";
+    const isWebGPUFbo =
+      !!pfb && pfb.constructor?.name === "WebGPUPickFramebuffer";
 
     // (A) Drive readCenterPixel over the freshly-rendered pick FBO and let it
     // converge. The rectangle is bottom-left-origin (the convention
@@ -230,7 +235,9 @@ if (!webgl.boxPicked) {
   fails.push("WebGL: box not picked (baseline broken)");
 }
 if (!webgl.centerNonZero) {
-  fails.push(`WebGL: readCenterPixel never returned a rendered pixel (got ${JSON.stringify(webgl.centerPixel)})`);
+  fails.push(
+    `WebGL: readCenterPixel never returned a rendered pixel (got ${JSON.stringify(webgl.centerPixel)})`,
+  );
 }
 
 // WebGPU: the readback-sync fix.
@@ -238,7 +245,9 @@ if (!webgpu.boxPicked) {
   fails.push("WebGPU: box not picked (pick FBO / readback regression)");
 }
 if (!webgpu.isWebGPUFbo) {
-  fails.push("WebGPU: defaultView.pickFramebuffer is not WebGPUPickFramebuffer");
+  fails.push(
+    "WebGPU: defaultView.pickFramebuffer is not WebGPUPickFramebuffer",
+  );
 }
 if (!webgpu.centerNonZero) {
   fails.push(
@@ -249,10 +258,14 @@ if (!webgpu.hasGuardField) {
   fails.push("WebGPU: _centerReadbackInFlight guard missing");
 }
 if (!webgpu.guardCleared) {
-  fails.push(`WebGPU: _centerReadbackInFlight wedged true (observed ${JSON.stringify(webgpu.guardObserved)})`);
+  fails.push(
+    `WebGPU: _centerReadbackInFlight wedged true (observed ${JSON.stringify(webgpu.guardObserved)})`,
+  );
 }
 if (webgpu.valDuringRapid > 0) {
-  fails.push(`WebGPU: ${webgpu.valDuringRapid} validation errors during rapid re-read`);
+  fails.push(
+    `WebGPU: ${webgpu.valDuringRapid} validation errors during rapid re-read`,
+  );
 }
 for (const e of [...webgpu.consoleErrors, ...webgpu.validationErrors]) {
   fails.push(`WebGPU error: ${e}`);

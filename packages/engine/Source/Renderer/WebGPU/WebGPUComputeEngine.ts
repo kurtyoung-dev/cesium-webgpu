@@ -32,15 +32,13 @@ class WebGPUComputeEngine {
   // cache so split-screen / multi-context scenes share a single
   // GPUComputePipeline per shader-source + layout key.
   private _centralCache:
-    | import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache
-    | null;
+    import("./WebGPUComputePipelineCache.js").WebGPUComputePipelineCache | null;
   // NEW-WEBGPU-PIPELINE-READY-SIGNAL — async resource monitor for the
   // freeform `createPipelineAsync` factory path that bypasses the
   // central cache. Set via the `asyncResourceMonitor` setter after
   // construction (production sites do this in WebGPUContext).
   private _monitor:
-    | import("./AsyncResourceMonitor.js").AsyncResourceMonitor
-    | null = null;
+    import("./AsyncResourceMonitor.js").AsyncResourceMonitor | null = null;
   private _isDestroyed: boolean;
 
   /**

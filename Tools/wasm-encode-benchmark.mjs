@@ -85,7 +85,8 @@ function assert(name, cond, detail) {
 function installWasmFetchShim(wasmBytes) {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
-    const url = typeof input === "string" ? input : (input?.href ?? String(input));
+    const url =
+      typeof input === "string" ? input : (input?.href ?? String(input));
     if (url.includes("cesium_wasm_bg.wasm")) {
       return new Response(wasmBytes, {
         headers: { "Content-Type": "application/wasm" },
@@ -256,9 +257,7 @@ async function main() {
     console.log(
       `WASM batch RTE encode CPU micro-benchmark (real kernel, ${node})`,
     );
-    console.log(
-      "  count      reps   scalar(ms)   wasm(ms)   speedup   winner",
-    );
+    console.log("  count      reps   scalar(ms)   wasm(ms)   speedup   winner");
     for (const r of rows) {
       const winner =
         r.speedup > 1.05 ? "WASM" : r.speedup < 0.95 ? "scalar" : "tie";

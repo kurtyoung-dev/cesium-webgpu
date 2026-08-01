@@ -140,10 +140,7 @@ export type ViewportQuadUniformValue =
  * here as a pass-through so downstream inspection still sees something.
  */
 export type ViewportQuadShaderProgramSlot =
-  | null
-  | string
-  | CesiumOpaqueShaderSource
-  | { readonly _wgslCode?: string };
+  null | string | CesiumOpaqueShaderSource | { readonly _wgslCode?: string };
 
 /**
  * The command object returned from {@link WebGPUViewportQuad.createCommand}.

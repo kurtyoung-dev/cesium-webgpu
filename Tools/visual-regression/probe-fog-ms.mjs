@@ -45,10 +45,14 @@ async function run() {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
@@ -150,7 +154,9 @@ async function run() {
   // pattern). Returns a 32-bit FNV-1a hash of the RGBA bytes + mean luminance so
   // the coordinator can confirm exact-pixel parity across builds.
   async function canvasHash(label) {
-    const canvasEl = await page.$("canvas.cesium-widget-scene-canvas, .cesium-widget canvas, canvas");
+    const canvasEl = await page.$(
+      "canvas.cesium-widget-scene-canvas, .cesium-widget canvas, canvas",
+    );
     const pngBuf = await canvasEl.screenshot();
     // Save the canvas-element PNG (UI-chrome-free) so a separate diff can do an
     // exact pixel comparison across builds.

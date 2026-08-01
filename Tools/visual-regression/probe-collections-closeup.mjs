@@ -32,7 +32,9 @@ async function capture(rendererArg) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 700 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -143,11 +145,20 @@ async function capture(rendererArg) {
   console.log("[probe-collections-closeup] webgpu");
   const gp = await capture("webgpu");
 
-  const ratio = (a, b) => (a === 0 ? (b === 0 ? "1.0" : "INF") : (b / a).toFixed(2));
-  console.log("\n[probe-collections-closeup] SUMMARY (saturated marker px @ close camera, 3D)");
-  console.log(`  billboard: GL=${gl.result.magenta} GPU=${gp.result.magenta} ratio=${ratio(gl.result.magenta, gp.result.magenta)}`);
-  console.log(`  point:     GL=${gl.result.yellow} GPU=${gp.result.yellow} ratio=${ratio(gl.result.yellow, gp.result.yellow)}`);
-  console.log(`  label:     GL=${gl.result.lime} GPU=${gp.result.lime} ratio=${ratio(gl.result.lime, gp.result.lime)}`);
+  const ratio = (a, b) =>
+    a === 0 ? (b === 0 ? "1.0" : "INF") : (b / a).toFixed(2);
+  console.log(
+    "\n[probe-collections-closeup] SUMMARY (saturated marker px @ close camera, 3D)",
+  );
+  console.log(
+    `  billboard: GL=${gl.result.magenta} GPU=${gp.result.magenta} ratio=${ratio(gl.result.magenta, gp.result.magenta)}`,
+  );
+  console.log(
+    `  point:     GL=${gl.result.yellow} GPU=${gp.result.yellow} ratio=${ratio(gl.result.yellow, gp.result.yellow)}`,
+  );
+  console.log(
+    `  label:     GL=${gl.result.lime} GPU=${gp.result.lime} ratio=${ratio(gl.result.lime, gp.result.lime)}`,
+  );
   console.log(`  out: ${gl.out} , ${gp.out}`);
   console.log("[probe-collections-closeup] done");
 })();

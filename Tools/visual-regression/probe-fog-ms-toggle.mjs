@@ -16,14 +16,25 @@ async function run() {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
+    waitUntil: "networkidle",
+  });
   await page.waitForFunction(() => !!window.viewer);
 
   await page.evaluate(async () => {
@@ -35,7 +46,11 @@ async function run() {
     v.clock.currentTime = C.JulianDate.fromIso8601("2026-06-21T16:40:00Z");
     v.camera.setView({
       destination: C.Cartesian3.fromDegrees(7.6, 45.9, 2400),
-      orientation: { heading: C.Math.toRadians(20), pitch: C.Math.toRadians(-14), roll: 0 },
+      orientation: {
+        heading: C.Math.toRadians(20),
+        pitch: C.Math.toRadians(-14),
+        roll: 0,
+      },
     });
     ac.volumetricFog.enabled = true;
     ac.volumetricFog.quality = "medium";
@@ -48,13 +63,21 @@ async function run() {
     ac.volumetricFog.multiScatter = false;
     ac.volumetricFog.msOctaves = 1;
     window.__ac = ac;
-    for (let i = 0; i < 420; i++) { scene.render(); await new Promise((r) => requestAnimationFrame(r)); }
+    for (let i = 0; i < 420; i++) {
+      scene.render();
+      await new Promise((r) => requestAnimationFrame(r));
+    }
   });
 
   async function grab(label) {
-    const el = await page.$("canvas.cesium-widget-scene-canvas, .cesium-widget canvas, canvas");
+    const el = await page.$(
+      "canvas.cesium-widget-scene-canvas, .cesium-widget canvas, canvas",
+    );
     const buf = await el.screenshot();
-    fs.writeFileSync(path.join(OUT_DIR, `fog-ms-toggle-${label}-canvas.png`), buf);
+    fs.writeFileSync(
+      path.join(OUT_DIR, `fog-ms-toggle-${label}-canvas.png`),
+      buf,
+    );
     return buf;
   }
 
@@ -66,15 +89,23 @@ async function run() {
     const ac = window.__ac;
     ac.volumetricFog.multiScatter = true;
     ac.volumetricFog.msOctaves = oct;
-    for (let i = 0; i < 120; i++) { v.scene.render(); await new Promise((r) => requestAnimationFrame(r)); }
-    return { multiScatter: ac.volumetricFog.multiScatter, msOctaves: ac.volumetricFog.msOctaves };
+    for (let i = 0; i < 120; i++) {
+      v.scene.render();
+      await new Promise((r) => requestAnimationFrame(r));
+    }
+    return {
+      multiScatter: ac.volumetricFog.multiScatter,
+      msOctaves: ac.volumetricFog.msOctaves,
+    };
   }, octaves);
 
   await grab("on");
   await browser.close();
 
   const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
-  console.log(`[probe-fog-ms-toggle] octaves=${octaves} echo=${JSON.stringify(echo)} errors=${errs.length}`);
+  console.log(
+    `[probe-fog-ms-toggle] octaves=${octaves} echo=${JSON.stringify(echo)} errors=${errs.length}`,
+  );
   errs.slice(0, 6).forEach((e) => console.log(`  ${e.t}: ${e.text}`));
 }
 

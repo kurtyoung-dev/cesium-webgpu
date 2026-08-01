@@ -15,17 +15,26 @@
 //   (c) selected on both but rendered with different result
 
 import { chromium } from "playwright";
-import fs from "fs";
 
 const BASE = "http://localhost:8080";
 
 async function inspect(renderer) {
   const browser = await chromium.launch({
-    channel: "msedge", headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    channel: "msedge",
+    headless: true,
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, { waitUntil: "networkidle" });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
+    waitUntil: "networkidle",
+  });
   await page.waitForFunction(() => !!window.viewer);
 
   return await page.evaluate(async () => {
@@ -33,7 +42,10 @@ async function inspect(renderer) {
     const v = window.viewer;
     const vm = v.baseLayerPicker.viewModel;
     const wgs84 = vm.terrainProviderViewModels.find((t) =>
-      String(t.name || "").toLowerCase().includes("wgs84"));
+      String(t.name || "")
+        .toLowerCase()
+        .includes("wgs84"),
+    );
     if (wgs84) vm.selectedTerrain = wgs84;
     v.camera.setView({
       destination: C.Cartesian3.fromDegrees(0, -89, 3_000_000),
@@ -53,7 +65,7 @@ async function inspect(renderer) {
         X: t.x,
         Y: t.y,
         rect: rect
-          ? `S${(rect.south * 180 / Math.PI).toFixed(2)}°,W${(rect.west * 180 / Math.PI).toFixed(2)}°,N${(rect.north * 180 / Math.PI).toFixed(2)}°,E${(rect.east * 180 / Math.PI).toFixed(2)}°`
+          ? `S${((rect.south * 180) / Math.PI).toFixed(2)}°,W${((rect.west * 180) / Math.PI).toFixed(2)}°,N${((rect.north * 180) / Math.PI).toFixed(2)}°,E${((rect.east * 180) / Math.PI).toFixed(2)}°`
           : null,
         renderable: t.renderable,
         hasMesh: !!m,
@@ -69,9 +81,11 @@ async function inspect(renderer) {
     });
 
     // Find tiles whose rectangle touches latitude < -88° (the polar cap)
-    const polarTiles = summary.filter((t) =>
-      t.rect && t.rect.startsWith("S") &&
-      parseFloat(t.rect.match(/S(-?[\d.]+)/)?.[1]) < -85,
+    const polarTiles = summary.filter(
+      (t) =>
+        t.rect &&
+        t.rect.startsWith("S") &&
+        parseFloat(t.rect.match(/S(-?[\d.]+)/)?.[1]) < -85,
     );
 
     return {
@@ -87,8 +101,13 @@ async function inspect(renderer) {
   console.log("[south-pole-diag] WGS84 at lat=-89 alt=3Mm");
   for (const renderer of ["webgl", "webgpu"]) {
     const info = await inspect(renderer);
-    console.log(`\n[${renderer}] ${info.totalTiles} tiles, ${info.polarTileCount} polar (south < -85°)`);
+    console.log(
+      `\n[${renderer}] ${info.totalTiles} tiles, ${info.polarTileCount} polar (south < -85°)`,
+    );
     console.log(`  polarTiles:`, JSON.stringify(info.polarTiles, null, 2));
-    console.log(`  firstFewTiles:`, JSON.stringify(info.firstFewTiles, null, 2));
+    console.log(
+      `  firstFewTiles:`,
+      JSON.stringify(info.firstFewTiles, null, 2),
+    );
   }
 })();

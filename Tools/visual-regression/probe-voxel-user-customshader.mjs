@@ -217,11 +217,19 @@ console.log("WebGL  info:", JSON.stringify(webgl.info));
 console.log("WebGPU info:", JSON.stringify(webgpu.info));
 console.log(
   "WebGL  px:",
-  JSON.stringify({ ...webgl.px, mask: undefined, coveragePct: webgl.px.coveragePct.toFixed(2) }),
+  JSON.stringify({
+    ...webgl.px,
+    mask: undefined,
+    coveragePct: webgl.px.coveragePct.toFixed(2),
+  }),
 );
 console.log(
   "WebGPU px:",
-  JSON.stringify({ ...webgpu.px, mask: undefined, coveragePct: webgpu.px.coveragePct.toFixed(2) }),
+  JSON.stringify({
+    ...webgpu.px,
+    mask: undefined,
+    coveragePct: webgpu.px.coveragePct.toFixed(2),
+  }),
 );
 console.log("WebGL  console errors:", webgl.consoleErrors.length);
 console.log("WebGPU console errors:", webgpu.consoleErrors.length);
@@ -277,8 +285,14 @@ console.log("bothRender:", bothRender);
 console.log("bounded:", bounded);
 console.log("footprintMatch (IoU>=0.85):", footprintMatch);
 console.log(`colorMatch (L1 ${colorL1} <= 90):`, colorMatch);
-console.log(`rampApplied (spread ${webgpuSpread} > 40, differs from gray):`, rampApplied);
-console.log("userPipeline (WebGPU on userCustomShader# pipeline):", userPipeline);
+console.log(
+  `rampApplied (spread ${webgpuSpread} > 40, differs from gray):`,
+  rampApplied,
+);
+console.log(
+  "userPipeline (WebGPU on userCustomShader# pipeline):",
+  userPipeline,
+);
 console.log("noErrors:", noErrors);
 
 const pass =

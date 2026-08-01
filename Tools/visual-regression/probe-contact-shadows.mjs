@@ -85,10 +85,14 @@ async function capture(label, { cs, strength }) {
 
       // Extruded wall — provides the occluder for contact shadow.
       const wallCoords = C.Cartesian3.fromDegreesArray([
-        view.lon - 0.002, view.lat,
-        view.lon + 0.002, view.lat,
-        view.lon + 0.002, view.lat + 0.0003,
-        view.lon - 0.002, view.lat + 0.0003,
+        view.lon - 0.002,
+        view.lat,
+        view.lon + 0.002,
+        view.lat,
+        view.lon + 0.002,
+        view.lat + 0.0003,
+        view.lon - 0.002,
+        view.lat + 0.0003,
       ]);
       const wall = new C.Primitive({
         geometryInstances: new C.GeometryInstance({
@@ -134,7 +138,7 @@ async function capture(label, { cs, strength }) {
       }
 
       const canvas = v.canvas;
-      let centerPixel = null;
+      let centerPixel;
       try {
         const tmp = document.createElement("canvas");
         tmp.width = canvas.width;

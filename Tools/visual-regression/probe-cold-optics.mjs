@@ -76,9 +76,13 @@ function analyze(page, offDU, onDU, sunXY) {
         for (let x = 0; x < W; x++) {
           const i = (y * W + x) * 4;
           const lumA =
-            0.2126 * A.data[i] + 0.7152 * A.data[i + 1] + 0.0722 * A.data[i + 2];
+            0.2126 * A.data[i] +
+            0.7152 * A.data[i + 1] +
+            0.0722 * A.data[i + 2];
           const lumB =
-            0.2126 * B.data[i] + 0.7152 * B.data[i + 1] + 0.0722 * B.data[i + 2];
+            0.2126 * B.data[i] +
+            0.7152 * B.data[i + 1] +
+            0.0722 * B.data[i + 2];
           const d = lumB - lumA; // positive = ON brighter (added glow)
           const dx = x - cx;
           const dy = y - cy;
@@ -90,8 +94,11 @@ function analyze(page, offDU, onDU, sunXY) {
           if (Math.abs(lumB - lumA) > 8) totalDiff++;
           if (d > 8) {
             added[bin] += d;
-            let ang = Math.atan2(dy, dx) + Math.PI; // 0..2pi
-            const sec = Math.min(NS - 1, Math.floor((ang / (2 * Math.PI)) * NS));
+            const ang = Math.atan2(dy, dx) + Math.PI; // 0..2pi
+            const sec = Math.min(
+              NS - 1,
+              Math.floor((ang / (2 * Math.PI)) * NS),
+            );
             sectorAdded[bin][sec] += d;
           }
         }
@@ -123,7 +130,11 @@ function analyze(page, offDU, onDU, sunXY) {
         let lit = 0;
         for (let s = 0; s < NS; s++) {
           let bandSum = 0;
-          for (let bb = Math.max(0, b - 1); bb <= Math.min(NB - 1, b + 1); bb++) {
+          for (
+            let bb = Math.max(0, b - 1);
+            bb <= Math.min(NB - 1, b + 1);
+            bb++
+          ) {
             bandSum += sectorAdded[bb][s];
           }
           if (bandSum > 0) lit++;
@@ -175,15 +186,25 @@ async function run() {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
   await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   // Place the camera near the surface and aim at the sky so the SUN sits ~35
@@ -279,7 +300,11 @@ async function run() {
         Math.cos(aimElevRad),
         new C.Cartesian3(),
       ),
-      C.Cartesian3.multiplyByScalar(up, Math.sin(aimElevRad), new C.Cartesian3()),
+      C.Cartesian3.multiplyByScalar(
+        up,
+        Math.sin(aimElevRad),
+        new C.Cartesian3(),
+      ),
       new C.Cartesian3(),
     );
     C.Cartesian3.normalize(dir, dir);
@@ -320,9 +345,13 @@ async function run() {
 
   // Settle tiles/sky.
   await page
-    .waitForFunction(() => window.viewer.scene.globe.tilesLoaded === true, null, {
-      timeout: 20000,
-    })
+    .waitForFunction(
+      () => window.viewer.scene.globe.tilesLoaded === true,
+      null,
+      {
+        timeout: 20000,
+      },
+    )
     .catch(() => {});
   await page.waitForTimeout(1500);
 
@@ -359,22 +388,28 @@ async function run() {
       hasActiveStages: pp?.hasActiveStages ?? null,
       hasEffect: !!fx,
       effectEnabled: fx?.enabled ?? null,
-      usCameraPosition: cp ? [cp.x.toFixed(0), cp.y.toFixed(0), cp.z.toFixed(0)] : null,
+      usCameraPosition: cp
+        ? [cp.x.toFixed(0), cp.y.toFixed(0), cp.z.toFixed(0)]
+        : null,
       usSunDir: sd ? [sd.x.toFixed(3), sd.y.toFixed(3), sd.z.toFixed(3)] : null,
       usInvProjLen: ip ? ip.length : null,
       usInvViewLen: iv ? iv.length : null,
       // Read back what the effect packed (private field, but JS lets us peek).
       packedIntensity: fx?._uniformData ? fx._uniformData[7] : null,
       packedSunDir: fx?._uniformData
-        ? [fx._uniformData[4].toFixed(3), fx._uniformData[5].toFixed(3), fx._uniformData[6].toFixed(3)]
+        ? [
+            fx._uniformData[4].toFixed(3),
+            fx._uniformData[5].toFixed(3),
+            fx._uniformData[6].toFixed(3),
+          ]
         : null,
       packedHaloRad: fx?._uniformData ? fx._uniformData[8].toFixed(4) : null,
       packedInvProj0: fx?._uniformData ? fx._uniformData[16].toFixed(4) : null,
       fovDeg: s.camera?.frustum?.fov
-        ? (s.camera.frustum.fov * 180 / Math.PI).toFixed(1)
+        ? ((s.camera.frustum.fov * 180) / Math.PI).toFixed(1)
         : null,
       fovyDeg: s.camera?.frustum?.fovy
-        ? (s.camera.frustum.fovy * 180 / Math.PI).toFixed(1)
+        ? ((s.camera.frustum.fovy * 180) / Math.PI).toFixed(1)
         : null,
       aspect: s.camera?.frustum?.aspectRatio?.toFixed(3) ?? null,
       invProj: ip ? Array.from(ip).map((x) => +x.toFixed(4)) : null,
@@ -418,10 +453,22 @@ async function run() {
   const noErrors = gate.errors.length === 0 && !gate.deviceLost;
 
   const checks = [
-    [`ON adds a bright ring (peakAddedBrightness ${onOff.peakAddedBrightness} > 2)`, ringPresent],
-    [`ring is away from the sun centre (peakRadiusPx ${onOff.peakRadiusPx})`, ringAwayFromCentre],
-    [`ring covers most sectors (sectorsLitAtPeak ${onOff.sectorsLitAtPeak} >= 5)`, ringIsRing],
-    [`ring brighter than inner region (${onOff.peakAddedBrightness} > ${onOff.innerAddedBrightness}*2)`, ringBeatsInner],
+    [
+      `ON adds a bright ring (peakAddedBrightness ${onOff.peakAddedBrightness} > 2)`,
+      ringPresent,
+    ],
+    [
+      `ring is away from the sun centre (peakRadiusPx ${onOff.peakRadiusPx})`,
+      ringAwayFromCentre,
+    ],
+    [
+      `ring covers most sectors (sectorsLitAtPeak ${onOff.sectorsLitAtPeak} >= 5)`,
+      ringIsRing,
+    ],
+    [
+      `ring brighter than inner region (${onOff.peakAddedBrightness} > ${onOff.innerAddedBrightness}*2)`,
+      ringBeatsInner,
+    ],
     [`OFF is stable (offStable ${offStable.totalChangedPct} < 1)`, offStableOk],
     [`0 device errors`, noErrors],
   ];

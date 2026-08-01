@@ -39,12 +39,7 @@
 // Env:   PROBE_BASE (default http://localhost:8134)
 
 import { chromium } from "playwright";
-import {
-  sgp4init,
-  sgp4,
-  gstime,
-  temeToEcef,
-} from "./sgp4-reference.mjs";
+import { sgp4init, gstime, temeToEcef } from "./sgp4-reference.mjs";
 import {
   SGP4_FLOATS_PER_INSTANCE,
   SGP4_KERNEL_WGSL,
@@ -201,9 +196,21 @@ const gpu = await page.evaluate(
 
     const bgl = device.createBindGroupLayout({
       entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: "read-only-storage" } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: "storage" } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, buffer: { type: "uniform" } },
+        {
+          binding: 0,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "read-only-storage" },
+        },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "storage" },
+        },
+        {
+          binding: 2,
+          visibility: GPUShaderStage.COMPUTE,
+          buffer: { type: "uniform" },
+        },
       ],
     });
     const pipeline = device.createComputePipeline({
@@ -240,7 +247,13 @@ const gpu = await page.evaluate(
       pass.setBindGroup(0, bindGroup);
       pass.dispatchWorkgroups(Math.ceil(instanceCount / 64));
       pass.end();
-      enc.copyBufferToBuffer(recordsBuf, 0, readbackBuf, 0, instanceCount * INSTANCE_RECORD_BYTES);
+      enc.copyBufferToBuffer(
+        recordsBuf,
+        0,
+        readbackBuf,
+        0,
+        instanceCount * INSTANCE_RECORD_BYTES,
+      );
       device.queue.submit([enc.finish()]);
       await readbackBuf.mapAsync(GPUMapMode.READ);
       const view = new Float32Array(readbackBuf.getMappedRange().slice(0));
@@ -292,7 +305,9 @@ if (gpu.compileMsgs && gpu.compileMsgs.length) {
 if (gpu.scopeErr) console.log(`validation scope error: ${gpu.scopeErr}`);
 
 // ── (A) per-sample error vs the validated JS FP64 ECEF reference ──
-console.log(`\nNear-earth SGP4 GPU vs python-sgp4 (ECEF, budget ${BUDGET_M} m):`);
+console.log(
+  `\nNear-earth SGP4 GPU vs python-sgp4 (ECEF, budget ${BUDGET_M} m):`,
+);
 let worst = 0;
 let worstName = "";
 const perSat = {};
@@ -313,7 +328,8 @@ for (let i = 0; i < satrecs.length; i++) {
     }
   }
   const line = SAMPLE_TIMES.map(
-    (t, k) => `${String(t).padStart(5)}m=${perSat[sr.name][k].toFixed(1).padStart(8)}`,
+    (t, k) =>
+      `${String(t).padStart(5)}m=${perSat[sr.name][k].toFixed(1).padStart(8)}`,
   ).join("  ");
   console.log(`  ${sr.name.padEnd(9)} ${line}  (m)`);
 }
@@ -322,7 +338,9 @@ for (let i = 0; i < satrecs.length; i++) {
 console.log(`\nDeep-space handling:`);
 const gpsSkipped = skipped.find((x) => x.name === "GPS");
 for (const x of skipped) {
-  console.log(`  ${x.name}: flagged deep-space (period ${x.periodMin.toFixed(1)} min >= 225) -> SKIPPED`);
+  console.log(
+    `  ${x.name}: flagged deep-space (period ${x.periodMin.toFixed(1)} min >= 225) -> SKIPPED`,
+  );
 }
 const allDeepSkipped = REF.filter((r) => r.deep).every((r) =>
   skipped.some((x) => x.name === r.name),
@@ -386,7 +404,11 @@ const render = await page.evaluate(
         });
       });
     const renderAt = async (simSeconds) => {
-      v.clock.currentTime = C.JulianDate.addSeconds(epoch, simSeconds, new C.JulianDate());
+      v.clock.currentTime = C.JulianDate.addSeconds(
+        epoch,
+        simSeconds,
+        new C.JulianDate(),
+      );
       await oncePostRender();
       await oncePostRender();
     };
@@ -400,7 +422,11 @@ const render = await page.evaluate(
           off.height = c.height;
           const cx = off.getContext("2d");
           cx.drawImage(c, 0, 0);
-          res({ data: cx.getImageData(0, 0, c.width, c.height).data, w: c.width, h: c.height });
+          res({
+            data: cx.getImageData(0, 0, c.width, c.height).data,
+            w: c.width,
+            h: c.height,
+          });
         });
       });
     const isCyan = (d, i) => d[i] < 90 && d[i + 1] > 150 && d[i + 2] > 150;
@@ -425,7 +451,8 @@ const render = await page.evaluate(
     const B = cyanMask(await grab());
 
     let changed = 0;
-    for (let p = 0; p < A.mask.length; p++) if (A.mask[p] !== B.mask[p]) changed++;
+    for (let p = 0; p < A.mask.length; p++)
+      if (A.mask[p] !== B.mask[p]) changed++;
     return {
       objectCount: catalog.length,
       cyanA: A.count,
@@ -433,7 +460,12 @@ const render = await page.evaluate(
       changedPct: changed / Math.max(A.count, B.count, 1),
     };
   },
-  { params: renderParams, fpi: SGP4_FLOATS_PER_INSTANCE, kernel: SGP4_KERNEL_WGSL, count: satrecs.length },
+  {
+    params: renderParams,
+    fpi: SGP4_FLOATS_PER_INSTANCE,
+    kernel: SGP4_KERNEL_WGSL,
+    count: satrecs.length,
+  },
 );
 console.log(
   `\n(D) render+move via real ComputeInstanceCollection: ${render.objectCount} objects -> cyan px frame15=${render.cyanA} frame60=${render.cyanB}, mask change ${(render.changedPct * 100).toFixed(1)}%`,
@@ -461,7 +493,9 @@ console.log(
   `(D) demo path renders + moves (cyan ${render.cyanA}/${render.cyanB}, ${(render.changedPct * 100).toFixed(1)}% change, thresh 20%) ${dOK ? "OK" : "FAIL"}`,
 );
 errors.slice(0, 6).forEach((e) => console.log("  ERR:", e.slice(0, 200)));
-gpu.validationErrors?.slice(0, 6).forEach((e) => console.log("  VAL:", e.slice(0, 200)));
+gpu.validationErrors
+  ?.slice(0, 6)
+  .forEach((e) => console.log("  VAL:", e.slice(0, 200)));
 
 const pass = aOK && bOK && cOK && dOK;
 console.log(pass ? "\nPASS" : "\nFAIL");

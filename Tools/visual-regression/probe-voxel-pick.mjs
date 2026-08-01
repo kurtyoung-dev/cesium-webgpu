@@ -68,16 +68,13 @@ function expectedSampleIndex(cell, dims) {
 
 // The stored color for a Z-up cell (matches the asset fill below).
 function expectedColor(cell) {
-  return [
-    0.35 + 0.65 * cell.x,
-    0.15 + 0.28 * cell.y,
-    0.2 + 0.4 * cell.z,
-    1.0,
-  ];
+  return [0.35 + 0.65 * cell.x, 0.15 + 0.28 * cell.y, 0.2 + 0.4 * cell.z, 1.0];
 }
 
 async function capture(renderer) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = [];
   page.on("console", (m) => {
     if (m.type() === "error") consoleErrors.push(m.text());
@@ -201,9 +198,7 @@ async function capture(renderer) {
             cell = undefined;
           }
           const isCell = cell instanceof C.VoxelCell;
-          const key = isCell
-            ? `${cell.tileIndex}/${cell.sampleIndex}`
-            : "none";
+          const key = isCell ? `${cell.tileIndex}/${cell.sampleIndex}` : "none";
           if (isCell) {
             lastCell = {
               tileIndex: cell.tileIndex,
@@ -309,7 +304,10 @@ for (let i = 0; i < TARGETS.length; i++) {
       gpc.sampleIndex === expSample &&
       colorsEq(gpc.color, expColor);
     const crossOk =
-      glc && gpc && glc.sampleIndex === gpc.sampleIndex && colorsEq(glc.color, gpc.color);
+      glc &&
+      gpc &&
+      glc.sampleIndex === gpc.sampleIndex &&
+      colorsEq(glc.color, gpc.color);
     const ok = glOk && gpOk && crossOk;
     if (!ok) pass = false;
     console.log(

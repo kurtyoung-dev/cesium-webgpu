@@ -52,10 +52,7 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`;
 const OUT_DIR = "Tools/visual-regression/output/cloud-empty-frustum";
 const JSON_PATH = path.join(OUT_DIR, "cloud-empty-frustum-truth.json");
-const ACTIVE_PNG_PATH = path.join(
-  OUT_DIR,
-  "cloud-empty-frustum-active.png",
-);
+const ACTIVE_PNG_PATH = path.join(OUT_DIR, "cloud-empty-frustum-active.png");
 const USER_OWNED_PNG_PATH = path.join(
   OUT_DIR,
   "cloud-empty-frustum-user-owned.png",
@@ -111,10 +108,7 @@ async function imageStats(png) {
 
 async function imageDelta(activePng, disabledPng) {
   const [active, disabled] = await Promise.all([
-    sharp(activePng)
-      .removeAlpha()
-      .raw()
-      .toBuffer({ resolveWithObject: true }),
+    sharp(activePng).removeAlpha().raw().toBuffer({ resolveWithObject: true }),
     sharp(disabledPng)
       .removeAlpha()
       .raw()
@@ -215,7 +209,9 @@ async function setupScene(page) {
       C.FeatureRendererKey.PROCEDURAL_CLOUDS,
     );
     if (!sceneRenderer || !proceduralRenderer?.execute) {
-      throw new Error("required WebGPU scene/procedural renderer is unavailable");
+      throw new Error(
+        "required WebGPU scene/procedural renderer is unavailable",
+      );
     }
 
     const requiredHooks = [
@@ -267,11 +263,7 @@ async function setupScene(page) {
     });
     wrap(sceneRenderer, "_ensureResources", "ensureResources");
     wrap(sceneRenderer, "_runPostProcessing", "postProcess");
-    wrap(
-      sceneRenderer,
-      "_executeEnvironmentalEffects",
-      "environmentalEffects",
-    );
+    wrap(sceneRenderer, "_executeEnvironmentalEffects", "environmentalEffects");
     wrap(proceduralRenderer, "execute", "proceduralClouds", (args) => {
       const cloudConfig = args[5];
       state.lastCloudConfig = cloudConfig
@@ -358,13 +350,7 @@ async function measurePhase(page, mode) {
   return page.evaluate(
     async ({ mode, frameCount }) => {
       const state = globalThis.__cloudEmptyFrustum;
-      const {
-        C,
-        scene,
-        context,
-        frameTime,
-        requestedVolumetric,
-      } = state;
+      const { C, scene, context, frameTime, requestedVolumetric } = state;
       const managedCollection = scene.globe.defaultCloudCollection;
 
       if (state.userCollection) {
@@ -387,8 +373,7 @@ async function measurePhase(page, mode) {
       state.lastVolumetricRequest = null;
 
       const frameNumberBefore = scene._frameState.frameNumber;
-      const realizationBefore =
-        globalThis.__cloudProbe.proceduralRealization();
+      const realizationBefore = globalThis.__cloudProbe.proceduralRealization();
       const numFrustums = [];
       for (let frame = 0; frame < frameCount; frame++) {
         scene.requestRender();
@@ -547,27 +532,20 @@ async function main() {
     await browser.close();
   }
 
-  const [
-    activeImage,
-    userOwnedImage,
-    disabledImage,
-    delta,
-    userOwnedDelta,
-  ] = await Promise.all([
-    imageStats(activePng),
-    imageStats(userOwnedPng),
-    imageStats(disabledPng),
-    imageDelta(activePng, disabledPng),
-    imageDelta(userOwnedPng, disabledPng),
-  ]);
+  const [activeImage, userOwnedImage, disabledImage, delta, userOwnedDelta] =
+    await Promise.all([
+      imageStats(activePng),
+      imageStats(userOwnedPng),
+      imageStats(disabledPng),
+      imageDelta(activePng, disabledPng),
+      imageDelta(userOwnedPng, disabledPng),
+    ]);
   const errors = [
     ...pageErrors,
     ...gpuConsoleErrors,
     ...(gpuGate?.errors ?? []),
     ...(gpuGate?.deviceLost ? [gpuGate.deviceLost] : []),
-    ...(armState?.found < 1
-      ? ["WebGPU error gate did not find a device"]
-      : []),
+    ...(armState?.found < 1 ? ["WebGPU error gate did not find a device"] : []),
   ].filter(
     (error) =>
       !/Atmosphere ?LUT|SkyAtmosphere|default layout|favicon/i.test(error),
@@ -580,8 +558,7 @@ async function main() {
       setup.configTruth.rendererType === "webgpu",
     proceduralRendererReady:
       setup.readiness.ok === true && setup.readiness.executeCalls > 0,
-    cloudCollectionRendererReady:
-      setup.cloudCollectionRendererReady === true,
+    cloudCollectionRendererReady: setup.cloudCollectionRendererReady === true,
     stableEmptyFrustumsReached: emptyFrustumReadiness.reached === true,
     activeFrustumsStayEmpty: active.allFrustumsEmpty === true,
     activeSceneRendererReached:
@@ -622,8 +599,7 @@ async function main() {
       userOwned.lastVolumetricRequest?.enabled === true &&
       userOwned.lastVolumetricRequest?.cloudQuality === 128,
     userOwnedRequestDrivesEmptyFrame:
-      userOwned.counts.volumetricDemandAtExecute ===
-      userOwned.measuredFrames,
+      userOwned.counts.volumetricDemandAtExecute === userOwned.measuredFrames,
     userOwnedSceneRendererReached:
       userOwned.counts.executeCommands === userOwned.measuredFrames,
     userOwnedResourcesReached:
@@ -650,8 +626,7 @@ async function main() {
         15) ===
         (userOwned.measuredFrames & 15),
     userOwnedCloudPixelsVisible:
-      userOwnedImage.cloudCells > 3000 &&
-      userOwnedImage.nonBlackPixels > 10000,
+      userOwnedImage.cloudCells > 3000 && userOwnedImage.nonBlackPixels > 10000,
     disabledFrustumsStayEmpty: disabled.allFrustumsEmpty === true,
     disabledSceneRendererReached:
       disabled.counts.executeCommands === disabled.measuredFrames,
@@ -663,8 +638,7 @@ async function main() {
     disabledRequestsSkipped:
       disabled.counts.volumetricRequests === 0 &&
       disabled.counts.volumetricDemandAtExecute === 0,
-    disabledUserCollectionRemoved:
-      disabled.userCollection.present === false,
+    disabledUserCollectionRemoved: disabled.userCollection.present === false,
     disabledCacheUnchanged: disabled.cacheFrameDelta === 0,
     disabledManagedDeckOff:
       disabled.managedCollection.renderMode === 0 &&

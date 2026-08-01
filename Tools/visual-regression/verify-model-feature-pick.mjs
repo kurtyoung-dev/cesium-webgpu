@@ -13,10 +13,13 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const RENDERER = process.env.PROBE_RENDERER || "webgpu";
 (async () => {
   const browser = await chromium.launch({
-    channel: "msedge", headless: true,
+    channel: "msedge",
+    headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   page.on("console", (m) => {
     const t = m.type();
     const txt = m.text();
@@ -30,7 +33,8 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
     }
   });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${RENDERER}`, {
-    waitUntil: "networkidle", timeout: 90_000,
+    waitUntil: "networkidle",
+    timeout: 90_000,
   });
   await page.waitForFunction(() => !!window.viewer, { timeout: 90_000 });
 
@@ -40,7 +44,6 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
     const dev = v.scene.context?._device;
     if (dev) {
       dev.onuncapturederror = (ev) => {
-        // eslint-disable-next-line no-console
         console.log(`[PICKDIAG-ERR] ${ev?.error?.message?.slice(0, 280)}`);
       };
     }
@@ -100,7 +103,10 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
     // walk the root manually.
     function walk(tile) {
       if (model) return;
-      if (tile?.content?._model) { model = tile.content._model; return; }
+      if (tile?.content?._model) {
+        model = tile.content._model;
+        return;
+      }
       if (tile?.children) for (const c of tile.children) walk(c);
     }
     walk(tileset.root);
@@ -111,7 +117,8 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
     // if the exact center misses the tileset footprint.
     const cw = v.canvas.clientWidth || 1280;
     const ch = v.canvas.clientHeight || 720;
-    const cx = Math.floor(cw / 2), cy = Math.floor(ch / 2);
+    const cx = Math.floor(cw / 2),
+      cy = Math.floor(ch / 2);
     // WebGPU pick is ASYNC (GPU->CPU readback). Synchronous scene.pick returns
     // the prior frame's result on WebGPU, so use scene.pickAsync — ONE awaited
     // call at a time (overlapping pickAsync double-maps the readback buffer).
@@ -157,7 +164,8 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
     const wgpuCache = model?._webgpuCache;
     const featurePickIdCount = wgpuCache?._featurePickIds?.size ?? 0;
     const featurePickTexExists = !!wgpuCache?._featurePickGPUTexture;
-    const featurePickFeaturesLength = wgpuCache?._featurePickFeaturesLength ?? null;
+    const featurePickFeaturesLength =
+      wgpuCache?._featurePickFeaturesLength ?? null;
     // Diagnostic probes — what does the model carry?
     const featureTableId = model?.featureTableId;
     const featureTables = model?.featureTables;
@@ -174,20 +182,26 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
     // may use a different load flow that doesn't populate that slot.
     const firstRP = runtimeNodes?.[0]?.runtimePrimitives?.[0];
     const firstAttr = firstRP?.primitive?.attributes?.[0];
-    const rpInfo = firstRP ? {
-      ctor: firstRP.constructor?.name,
-      hasRenderResources: firstRP.renderResources !== undefined,
-      gltfPrimAttrCount: firstRP.primitive?.attributes?.length,
-      gltfPrimSemantics: firstRP.primitive?.attributes?.map((a) => a.semantic ?? a.name).slice(0, 10),
-      firstAttrShape: firstAttr ? {
-        keys: Object.keys(firstAttr).slice(0, 15),
-        hasTypedArray: !!firstAttr.typedArray,
-        typedArrayLen: firstAttr.typedArray?.length,
-        hasBuffer: !!firstAttr.buffer,
-        semantic: firstAttr.semantic ?? firstAttr.name,
-        componentDatatype: firstAttr.componentDatatype,
-      } : null,
-    } : { rpMissing: true };
+    const rpInfo = firstRP
+      ? {
+          ctor: firstRP.constructor?.name,
+          hasRenderResources: firstRP.renderResources !== undefined,
+          gltfPrimAttrCount: firstRP.primitive?.attributes?.length,
+          gltfPrimSemantics: firstRP.primitive?.attributes
+            ?.map((a) => a.semantic ?? a.name)
+            .slice(0, 10),
+          firstAttrShape: firstAttr
+            ? {
+                keys: Object.keys(firstAttr).slice(0, 15),
+                hasTypedArray: !!firstAttr.typedArray,
+                typedArrayLen: firstAttr.typedArray?.length,
+                hasBuffer: !!firstAttr.buffer,
+                semantic: firstAttr.semantic ?? firstAttr.name,
+                componentDatatype: firstAttr.componentDatatype,
+              }
+            : null,
+        }
+      : { rpMissing: true };
 
     // Probe featureIds on the glTF primitive — required by
     // findSelectedFeatureId in WebGPUModelFeatureId.js
@@ -195,21 +209,25 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
     const featureIdsInfo = {
       defined: featureIds !== undefined && featureIds !== null,
       length: featureIds?.length,
-      first: featureIds?.[0] ? {
-        ctor: featureIds[0].constructor?.name,
-        keys: Object.keys(featureIds[0]).slice(0, 12),
-        propertyTableId: featureIds[0].propertyTableId,
-        positionalLabel: featureIds[0].positionalLabel,
-        label: featureIds[0].label,
-        featureCount: featureIds[0].featureCount,
-        setIndex: featureIds[0].setIndex,
-      } : null,
+      first: featureIds?.[0]
+        ? {
+            ctor: featureIds[0].constructor?.name,
+            keys: Object.keys(featureIds[0]).slice(0, 12),
+            propertyTableId: featureIds[0].propertyTableId,
+            positionalLabel: featureIds[0].positionalLabel,
+            label: featureIds[0].label,
+            featureCount: featureIds[0].featureCount,
+            setIndex: featureIds[0].setIndex,
+          }
+        : null,
       // What does the model itself want to label?
       modelFeatureIdLabel: model?.featureIdLabel,
       modelInstanceFeatureIdLabel: model?.instanceFeatureIdLabel,
       // Probe createBatchGPUTexture path — what does batchTexture have?
       batchTextureKeys: batchTexture
-        ? Object.keys(batchTexture).filter((k) => !k.startsWith("__")).slice(0, 25)
+        ? Object.keys(batchTexture)
+            .filter((k) => !k.startsWith("__"))
+            .slice(0, 25)
         : null,
       batchValuesPresent: !!batchTexture?._batchValues,
       batchValuesLength: batchTexture?._batchValues?.length,
@@ -231,15 +249,18 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
         };
       })(),
     };
-    const sceneGraphInfo = sg ? {
-      sceneGraphCtor: sg.constructor?.name,
-      hasRuntimeNodes: !!runtimeNodes,
-      runtimeNodesLength: runtimeNodes?.length,
-      runtimeNodesNonNull: runtimeNodes?.filter?.((n) => !!n).length,
-      firstNodeRuntimePrimitives: runtimeNodes?.[0]?.runtimePrimitives?.length,
-      firstRPInfo: rpInfo,
-      featureIdsInfo,
-    } : { sceneGraphMissing: true };
+    const sceneGraphInfo = sg
+      ? {
+          sceneGraphCtor: sg.constructor?.name,
+          hasRuntimeNodes: !!runtimeNodes,
+          runtimeNodesLength: runtimeNodes?.length,
+          runtimeNodesNonNull: runtimeNodes?.filter?.((n) => !!n).length,
+          firstNodeRuntimePrimitives:
+            runtimeNodes?.[0]?.runtimePrimitives?.length,
+          firstRPInfo: rpInfo,
+          featureIdsInfo,
+        }
+      : { sceneGraphMissing: true };
 
     const diagnostic = {
       hasFeatureTableId: featureTableId !== undefined,
@@ -252,15 +273,22 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
         : null,
       // Look at one of the prim caches to see if ensureFeatureIdResources hit
       primCacheKeys: Object.keys(wgpuCache?.primitives ?? {}).slice(0, 3),
-      primCacheFeatureIdBGExists: !!Object.values(wgpuCache?.primitives ?? {})[0]
-        ?._featureIdBG,
-      primCacheFeaturePickGPUTextureExists: !!Object.values(wgpuCache?.primitives ?? {})[0]
-        ?._featurePickGPUTexture,
-      primCacheBatchGPUTextureExists: !!Object.values(wgpuCache?.primitives ?? {})[0]
-        ?._batchGPUTexture,
+      primCacheFeatureIdBGExists: !!Object.values(
+        wgpuCache?.primitives ?? {},
+      )[0]?._featureIdBG,
+      primCacheFeaturePickGPUTextureExists: !!Object.values(
+        wgpuCache?.primitives ?? {},
+      )[0]?._featurePickGPUTexture,
+      primCacheBatchGPUTextureExists: !!Object.values(
+        wgpuCache?.primitives ?? {},
+      )[0]?._batchGPUTexture,
       // Scene graph probe — the gating return at WebGPUModelRenderer.js:1344
       sceneGraph: sceneGraphInfo,
-      modelKeys: model ? Object.keys(model).filter((k) => k.startsWith("_") || ["show", "ready"].includes(k)).slice(0, 30) : null,
+      modelKeys: model
+        ? Object.keys(model)
+            .filter((k) => k.startsWith("_") || ["show", "ready"].includes(k))
+            .slice(0, 30)
+        : null,
     };
 
     const out = {
@@ -286,7 +314,10 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
       hasPrimitive: !!picked?.primitive,
       hasId: picked?.id !== undefined,
       idType: typeof picked?.id,
-      idValue: typeof picked?.id === "number" ? picked.id : String(picked?.id).slice(0, 80),
+      idValue:
+        typeof picked?.id === "number"
+          ? picked.id
+          : String(picked?.id).slice(0, 80),
       primitiveCtor: picked?.primitive?.constructor?.name,
       // C-R9-MODEL-FEATURE-PICK parity check — the picked object must be a
       // real Cesium3DTileFeature with readable batch-table properties, not
@@ -303,7 +334,8 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
           ? (() => {
               const ids = picked.getPropertyIds().slice(0, 4);
               const o = {};
-              for (const id of ids) o[id] = String(picked.getProperty(id)).slice(0, 40);
+              for (const id of ids)
+                o[id] = String(picked.getProperty(id)).slice(0, 40);
               return o;
             })()
           : null,
@@ -316,7 +348,10 @@ const RENDERER = process.env.PROBE_RENDERER || "webgpu";
   console.log(JSON.stringify(result, null, 2));
   const buf = await page.screenshot({ omitBackground: false });
   const fs = await import("fs");
-  fs.writeFileSync("Tools/visual-regression/output/verify-model-feature-pick.png", buf);
+  fs.writeFileSync(
+    "Tools/visual-regression/output/verify-model-feature-pick.png",
+    buf,
+  );
   console.log(`PNG bytes: ${buf.length}`);
   await browser.close();
 })();

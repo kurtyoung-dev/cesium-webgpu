@@ -28,7 +28,7 @@ const OUT_DIR = "Tools/visual-regression/output";
 
 const MODE = (process.argv[2] || "off").toLowerCase(); // off | on
 const TAG = process.argv[3] || ""; // optional label (pre/post)
-const MS_ON = MODE === "on";
+const _MS_ON = MODE === "on";
 // Optional ISO time override (env SKY_MS_TIME) — lets the flag-ON visibility
 // run pick a twilight sun (sun near/below horizon) where MS lifts the dark
 // single-scatter sky most. Default keeps the daytime sun used by the parity run.
@@ -45,7 +45,9 @@ async function capture(mode, tag) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const consoleErrors = [];
   page.on("console", (m) => {
     if (m.type() === "error") consoleErrors.push(m.text());
@@ -144,7 +146,9 @@ async function capture(mode, tag) {
 // band for one PNG, plus a full-frame mismatch vs a reference PNG if provided.
 async function analyze(pngPath, refPath) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.setContent("<!doctype html><html><body></body></html>");
   const b64 = fs.readFileSync(pngPath).toString("base64");
   const refB64 = refPath ? fs.readFileSync(refPath).toString("base64") : null;

@@ -125,16 +125,22 @@ async function run() {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 720 },
+  });
   await page.addInitScript(errorGateInit);
   const consoleErrors = [];
   page.on("console", (m) => {
     if (m.type() === "error") consoleErrors.push(m.text());
   });
   await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   // Static oblique view over Grand Canyon terrain (high-frequency detail that
@@ -160,9 +166,13 @@ async function run() {
     });
   });
   await page
-    .waitForFunction(() => window.viewer.scene.globe.tilesLoaded === true, null, {
-      timeout: 25000,
-    })
+    .waitForFunction(
+      () => window.viewer.scene.globe.tilesLoaded === true,
+      null,
+      {
+        timeout: 25000,
+      },
+    )
     .catch(() => {});
   await page.waitForTimeout(1500);
 
@@ -203,11 +213,26 @@ async function run() {
   );
 
   const checks = [
-    [`OFF is deterministic / byte-identical (offStable ${offStable} < 0.5)`, offStable < 0.5],
-    [`motion blur visibly smears (blurLarge ${blurLarge} > 3)`, blurLarge > 3.0],
-    [`blur is velocity-driven (blurLarge ${blurLarge} > blurSmall ${blurSmall})`, blurLarge > blurSmall],
-    [`small velocity still produces some blur (blurSmall ${blurSmall} > 0.5)`, blurSmall > 0.5],
-    [`no device/validation errors`, gate.errors.length === 0 && !gate.deviceLost],
+    [
+      `OFF is deterministic / byte-identical (offStable ${offStable} < 0.5)`,
+      offStable < 0.5,
+    ],
+    [
+      `motion blur visibly smears (blurLarge ${blurLarge} > 3)`,
+      blurLarge > 3.0,
+    ],
+    [
+      `blur is velocity-driven (blurLarge ${blurLarge} > blurSmall ${blurSmall})`,
+      blurLarge > blurSmall,
+    ],
+    [
+      `small velocity still produces some blur (blurSmall ${blurSmall} > 0.5)`,
+      blurSmall > 0.5,
+    ],
+    [
+      `no device/validation errors`,
+      gate.errors.length === 0 && !gate.deviceLost,
+    ],
   ];
   console.log("\n=== ANALYSIS ===");
   let pass = true;

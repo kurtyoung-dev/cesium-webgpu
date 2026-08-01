@@ -9,7 +9,7 @@
  * AND rendered at least one settled frame on it.
  */
 
-const Cesium = window.Cesium;
+const _Cesium = window.Cesium;
 
 function swap(viewer) {
   if (!viewer) return;

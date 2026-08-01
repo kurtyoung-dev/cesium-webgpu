@@ -52,7 +52,11 @@ async function cloudFracAt(page, lon, lat) {
         s = v.scene;
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(lon, lat, 250000.0),
-        orientation: { heading: 0.0, pitch: C.Math.toRadians(-90.0), roll: 0.0 },
+        orientation: {
+          heading: 0.0,
+          pitch: C.Math.toRadians(-90.0),
+          roll: 0.0,
+        },
       });
       for (let i = 0; i < 90; i++) {
         s.render();
@@ -125,7 +129,9 @@ const SET_SRC = async (kind) => {
       ? new C.SyntheticWeatherSource("rich")
       : new C.SyntheticWeatherSource("uniform", 0.85);
   if (!g.defaultCloudCollection.volumetric.weatherProvider) {
-    g.defaultCloudCollection.volumetric.weatherProvider = new C.WeatherProvider(src);
+    g.defaultCloudCollection.volumetric.weatherProvider = new C.WeatherProvider(
+      src,
+    );
   } else {
     g.defaultCloudCollection.volumetric.weatherProvider.setSource(src);
   }
@@ -134,13 +140,15 @@ const SET_SRC = async (kind) => {
 };
 
 const SET_STRENGTH = async (value) => {
-  window.viewer.scene.globe.defaultCloudCollection.volumetric.cloudWeatherChannelStrength = value;
+  window.viewer.scene.globe.defaultCloudCollection.volumetric.cloudWeatherChannelStrength =
+    value;
   window.viewer.scene.requestRender();
   return { ok: true };
 };
 
 const PROVIDER_STATE = async () => {
-  const p = window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
+  const p =
+    window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
   return p
     ? { hasData: p.hasData, version: p.version, lastError: p.lastError }
     : null;
@@ -162,7 +170,9 @@ async function run() {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
   await page.goto(URL, { waitUntil: "domcontentloaded" });

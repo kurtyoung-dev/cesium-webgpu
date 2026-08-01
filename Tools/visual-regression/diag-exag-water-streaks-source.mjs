@@ -24,7 +24,9 @@ const browser = await chromium.launch({
 });
 
 async function capture(label, killAtmosphere) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
   });
@@ -45,13 +47,19 @@ async function capture(label, killAtmosphere) {
       latitude: (27.0 * Math.PI) / 180,
       height: 250000,
     });
-    c.setView({ destination: dest, orientation: { heading: 0, pitch: -0.45, roll: 0 } });
+    c.setView({
+      destination: dest,
+      orientation: { heading: 0, pitch: -0.45, roll: 0 },
+    });
     for (let i = 0; i < 300; i++) {
       s.initializeFrame();
       s.render();
       await new Promise((r) => requestAnimationFrame(r));
     }
-    c.setView({ destination: dest, orientation: { heading: 0, pitch: -0.45, roll: 0 } });
+    c.setView({
+      destination: dest,
+      orientation: { heading: 0, pitch: -0.45, roll: 0 },
+    });
     for (let i = 0; i < 60; i++) {
       s.initializeFrame();
       s.render();
@@ -59,7 +67,10 @@ async function capture(label, killAtmosphere) {
     }
     return s.canvas.toDataURL("image/png");
   }, killAtmosphere);
-  writeFileSync(join(OUT, `exag-streaks-${label}.png`), Buffer.from(url.split(",")[1], "base64"));
+  writeFileSync(
+    join(OUT, `exag-streaks-${label}.png`),
+    Buffer.from(url.split(",")[1], "base64"),
+  );
   await page.close();
   console.log(`saved exag-streaks-${label}.png`);
 }

@@ -24,9 +24,7 @@ const GENERATED_WGSL_DIR = join(
   "WebGPU",
   "Generated",
 );
-const SCRIPT_URL = pathToFileURL(
-  join(ROOT, "scripts", "compileSlang.js"),
-).href;
+const SCRIPT_URL = pathToFileURL(join(ROOT, "scripts", "compileSlang.js")).href;
 
 async function main() {
   // Importing compileSlang.js runs main() — which exits early if slangc
@@ -71,7 +69,9 @@ async function main() {
     }
   }
 
-  console.log(`\n${ok}/${files.length} WGSL outputs valid (${fail} failed, ${skipped} skipped)`);
+  console.log(
+    `\n${ok}/${files.length} WGSL outputs valid (${fail} failed, ${skipped} skipped)`,
+  );
   process.exit(fail > 0 ? 1 : 0);
 }
 

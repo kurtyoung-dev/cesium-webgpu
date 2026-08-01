@@ -52,7 +52,10 @@
     compute kernel, so the catalog renders on both backends. (A worker/WASM
     kernel host for the WebGL2 leg is a tracked perf-only follow-up.)
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
     </style>
@@ -98,7 +101,8 @@
         // from the demo — on WebGL2 the engine runs the JS kernel each frame
         // instead of the WGSL compute kernel.
         const requestedRenderer =
-          new URLSearchParams(window.location.search).get("renderer") || "webgpu";
+          new URLSearchParams(window.location.search).get("renderer") ||
+          "webgpu";
         const viewer = await Cesium.Viewer.createAsync("cesiumContainer", {
           contextOptions: { renderer: requestedRenderer },
           shouldAnimate: true,
@@ -341,7 +345,8 @@
           // IAU-82 GMST: a low-order polynomial in centuries since J2000,
           // reduced to [0, 2pi). Ample for visualization.
           const jd =
-            Cesium.JulianDate.toDate(julianDate).getTime() / 86400000.0 + 2440587.5;
+            Cesium.JulianDate.toDate(julianDate).getTime() / 86400000.0 +
+            2440587.5;
           const T = (jd - 2451545.0) / 36525.0;
           const gmstSec =
             67310.54841 +
@@ -372,7 +377,10 @@
               // USER contract: every orbit fits inside GEO radius + margin
               // (largest apoapsis ≈ 4.22e7 m at GEO + eccentricity slack).
               // Enables per-frustum culling/binning of the catalog draw.
-              boundingSphere: new Cesium.BoundingSphere(Cesium.Cartesian3.ZERO, 4.6e7),
+              boundingSphere: new Cesium.BoundingSphere(
+                Cesium.Cartesian3.ZERO,
+                4.6e7,
+              ),
             }),
           );
           const gmst0 = gmstAtEpoch(viewer.clock.currentTime);
@@ -408,7 +416,8 @@
               pick -= r[1];
             }
             const [altRange, , eccMax, color] = regime;
-            const altitude = altRange[0] + Math.random() * (altRange[1] - altRange[0]);
+            const altitude =
+              altRange[0] + Math.random() * (altRange[1] - altRange[0]);
             const isGEO = regime === REGIMES[2];
             const a = EARTH_RADIUS + altitude;
             const e = Math.random() * eccMax;

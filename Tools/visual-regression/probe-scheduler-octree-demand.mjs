@@ -52,7 +52,14 @@ const MAX_FRAMES = 1200;
 const REL_EPS = 0.0015;
 
 const ROUTE = [
-  { lon: -122.4, lat: 37.75, height: 12000000, heading: 0, pitch: -90, roll: 0 },
+  {
+    lon: -122.4,
+    lat: 37.75,
+    height: 12000000,
+    heading: 0,
+    pitch: -90,
+    roll: 0,
+  },
   { lon: -122.4, lat: 37.75, height: 3000000, heading: 0, pitch: -90, roll: 0 },
   { lon: 2.35, lat: 48.85, height: 5000000, heading: 20, pitch: -70, roll: 0 },
   { lon: 139.7, lat: 35.68, height: 1500000, heading: 0, pitch: -60, roll: 0 },
@@ -281,7 +288,7 @@ async function pickCenter(page) {
     const v = window.viewer;
     const sched = v.scene._renderScheduler;
     const before = sched.materialIdMaintenanceRuns;
-    let picked = null;
+    let picked;
     try {
       const w = v.scene.drawingBufferWidth;
       const h = v.scene.drawingBufferHeight;
@@ -350,11 +357,17 @@ async function runBackend(browser, renderer, results) {
     const mim = s.containment.renderScheduler.materialIdMaintenance;
     const oct = s.containment.renderScheduler.octree;
     routeRunsSaw += mim.framesRun; // must stay 0 across the route at defaults
-    if (prevSkips >= 0 && mim.framesSkipped <= prevSkips) routeSkipsClimb = false;
+    if (prevSkips >= 0 && mim.framesSkipped <= prevSkips)
+      routeSkipsClimb = false;
     prevSkips = mim.framesSkipped;
     if (mim.ranThisFrame) r.checks.defaultRanThisFrameLeak = true;
     if (mim.consumers !== 0) r.checks.defaultConsumersLeak = mim.consumers;
-    if (oct.enabled || oct.builtThisFrame || oct.buildTimeMs !== 0 || oct.commandsInserted !== 0)
+    if (
+      oct.enabled ||
+      oct.builtThisFrame ||
+      oct.buildTimeMs !== 0 ||
+      oct.commandsInserted !== 0
+    )
       r.checks.defaultOctreeLeak = oct;
   }
   r.checks.A_defaultMaterialFramesRunTotal = routeRunsSaw; // expect 0
@@ -444,13 +457,17 @@ async function main() {
   const fails = [];
   for (const r of results) {
     const c = r.checks;
+    // eslint-disable-next-line no-loop-func -- the closure is consumed inside this iteration (or reads a shared kill switch), not a stale per-iteration binding
     const assert = (name, cond) => {
       if (!cond) {
         pass = false;
         fails.push(`${r.renderer}: ${name}`);
       }
     };
-    assert("A_defaultMaterialFramesRun==0", c.A_defaultMaterialFramesRunTotal === 0);
+    assert(
+      "A_defaultMaterialFramesRun==0",
+      c.A_defaultMaterialFramesRunTotal === 0,
+    );
     assert("A_defaultSkipsClimb", c.A_defaultSkipsClimb === true);
     assert("A_noDefaultRanLeak", !c.defaultRanThisFrameLeak);
     assert("A_noDefaultConsumersLeak", !c.defaultConsumersLeak);
@@ -476,7 +493,10 @@ async function main() {
     assert("C_runsFrozen", c.C_runsFrozen === true);
     assert("C_skipsResumed", c.C_skipsResumed === true);
     assert("D_pickBumpedRuns", c.D_pickBumpedRuns === true);
-    assert("E_noTerrainTileVoxelInserted", c.E_noTerrainTileVoxelInserted === true);
+    assert(
+      "E_noTerrainTileVoxelInserted",
+      c.E_noTerrainTileVoxelInserted === true,
+    );
   }
 
   console.log(JSON.stringify({ pass, fails, results }, null, 2));

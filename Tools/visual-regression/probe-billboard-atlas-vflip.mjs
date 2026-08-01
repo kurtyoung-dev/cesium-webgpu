@@ -165,15 +165,21 @@ async function runOne(renderer, mode) {
       topBlue = 0,
       botRed = 0,
       botBlue = 0;
-    let midY = -1;
+    let midY;
     if (maxY >= 0) {
       midY = (minY + maxY) / 2;
       for (let y = minY; y <= maxY; y++) {
         for (let x = minX; x <= maxX; x++) {
           const i = 4 * (y * w + x);
           const top = y < midY;
-          if (isRed(i)) top ? topRed++ : botRed++;
-          if (isBlue(i)) top ? topBlue++ : botBlue++;
+          if (isRed(i)) {
+            if (top) topRed++;
+            else botRed++;
+          }
+          if (isBlue(i)) {
+            if (top) topBlue++;
+            else botBlue++;
+          }
         }
       }
     }
@@ -230,7 +236,10 @@ async function runOne(renderer, mode) {
   }, mode);
 
   const png = result.dataURL.split(",")[1];
-  writeFileSync(`${OUT_DIR}/vflip-${renderer}-${mode}.png`, Buffer.from(png, "base64"));
+  writeFileSync(
+    `${OUT_DIR}/vflip-${renderer}-${mode}.png`,
+    Buffer.from(png, "base64"),
+  );
   delete result.dataURL;
   await page.close();
   return { ...result, errors };
@@ -258,7 +267,8 @@ for (const mode of modes) {
   const gp = report[mode].webgpu;
   const glTop = topColor(gl);
   const gpTop = topColor(gp);
-  const rendered = gl.redCount + gl.blueCount > 50 && gp.redCount + gp.blueCount > 50;
+  const rendered =
+    gl.redCount + gl.blueCount > 50 && gp.redCount + gp.blueCount > 50;
   const match = glTop === gpTop && glTop !== "none";
   // Pick is asserted only in 3D: WebGPU billboard picking is supported/covered
   // there (probe-billboard-pick.mjs). In 2D/CV the WebGPU pick pass is a
@@ -272,8 +282,10 @@ for (const mode of modes) {
       `WebGPU top=${gpTop} (R${gp.topRed}/B${gp.topBlue}, px=${gp.redCount + gp.blueCount}) | ` +
       `pick gl=${gl.pickHit} gp=${gp.pickHit} | ${ok ? "MATCH" : "MISMATCH"}`,
   );
-  if (gl.errors.length) console.log(`   gl errors: ${gl.errors.slice(0, 2).join(" | ")}`);
-  if (gp.errors.length) console.log(`   gp errors: ${gp.errors.slice(0, 2).join(" | ")}`);
+  if (gl.errors.length)
+    console.log(`   gl errors: ${gl.errors.slice(0, 2).join(" | ")}`);
+  if (gp.errors.length)
+    console.log(`   gp errors: ${gp.errors.slice(0, 2).join(" | ")}`);
 }
 
 console.log(allPass ? "PASS" : "FAIL");

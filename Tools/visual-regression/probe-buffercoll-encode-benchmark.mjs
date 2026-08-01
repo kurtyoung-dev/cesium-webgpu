@@ -50,7 +50,9 @@ const browser = await chromium.launch({
 
 // Run all counts for one backend in a single page (one viewer warmup).
 async function runBackend(renderer) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -280,7 +282,10 @@ for (const renderer of ["webgpu", "webgl"]) {
   const first = r.results.find((x) => x.pngBatch);
   if (first) {
     fs.writeFileSync(
-      path.join(OUT_DIR, `buffercoll-encode-bench-${renderer}-${first.count}.png`),
+      path.join(
+        OUT_DIR,
+        `buffercoll-encode-bench-${renderer}-${first.count}.png`,
+      ),
       Buffer.from(first.pngBatch.split(",")[1], "base64"),
     );
   }
@@ -291,8 +296,7 @@ for (const renderer of ["webgpu", "webgl"]) {
   for (const x of r.results) {
     const ratio =
       x.scalarMsPerFrame > 0 ? x.batchMsPerFrame / x.scalarMsPerFrame : NaN;
-    const pathTag =
-      x.batchWasmRepacks > 0 ? "batch" : "scalar(<thr or no-f64)";
+    const pathTag = x.batchWasmRepacks > 0 ? "batch" : "scalar(<thr or no-f64)";
     console.log(
       `  ${String(x.count).padStart(7)}   ${x.batchMsPerFrame
         .toFixed(3)

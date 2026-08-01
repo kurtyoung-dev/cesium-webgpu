@@ -251,9 +251,7 @@ async function runPass(hdrOn) {
         continue;
       }
       const src = await (
-        await fetch(
-          `/packages/engine/Source/Shaders/WebGPU/PostProcess/${f}`,
-        )
+        await fetch(`/packages/engine/Source/Shaders/WebGPU/PostProcess/${f}`)
       ).text();
       const mod = dev.createShaderModule({ label: `probe-${f}`, code: src });
       const info = await mod.getCompilationInfo();
@@ -451,7 +449,9 @@ let fOK = true;
 for (const k of ["default", "graded"]) {
   const binPath = join(OUT_DIR, `baseline-sdr-${k}.bin`);
   if (!existsSync(binPath)) {
-    console.log(`(F) sdr-${k}: NO BASELINE (${binPath}) — run --baseline on the pre-change build`);
+    console.log(
+      `(F) sdr-${k}: NO BASELINE (${binPath}) — run --baseline on the pre-change build`,
+    );
     fOK = false;
     continue;
   }
@@ -472,5 +472,7 @@ if (!engaged) {
       "treat as DEVICE-BLOCKED and rely on (E) WGSL validation + off-gate (F).",
   );
 }
-console.log(pass ? (engaged ? "PASS" : "PASS (DEVICE-BLOCKED for on-path)") : "FAIL");
+console.log(
+  pass ? (engaged ? "PASS" : "PASS (DEVICE-BLOCKED for on-path)") : "FAIL",
+);
 process.exit(pass ? 0 : 1);

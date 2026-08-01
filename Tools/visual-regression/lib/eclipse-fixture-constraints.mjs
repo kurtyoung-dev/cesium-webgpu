@@ -151,7 +151,7 @@ export const FIXTURE_INSTANT_CONSTRAINTS = [
 export function evaluateVantage(candidate, constraints = FIXTURE_CONSTRAINTS) {
   const failed = [];
   for (const c of constraints) {
-    let ok = false;
+    let ok;
     try {
       ok = c.test(candidate) === true;
     } catch {
@@ -215,7 +215,11 @@ export function selectEclipseFixture(refined, cheapRejections = []) {
       ok,
       failed,
     });
-    if (ok && (chosen === null || (c.maxObscuration ?? 0) > (chosen.maxObscuration ?? 0))) {
+    if (
+      ok &&
+      (chosen === null ||
+        (c.maxObscuration ?? 0) > (chosen.maxObscuration ?? 0))
+    ) {
       chosen = c;
     }
     if (!ok) {
@@ -234,8 +238,7 @@ export function selectEclipseFixture(refined, cheapRejections = []) {
     }
     const ranked = [...tally.entries()].sort((a, b) => b[1] - a[1]);
     const worst = ranked.length > 0 ? ranked[0] : null;
-    const describe = (id) =>
-      all.find((c) => c.id === id)?.describe ?? id;
+    const describe = (id) => all.find((c) => c.id === id)?.describe ?? id;
     structuralError =
       rejections.length === 0
         ? "no vantage candidates were produced at all"

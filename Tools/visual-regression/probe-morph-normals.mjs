@@ -86,15 +86,21 @@ async function capture(rendererArg) {
   // Force a fresh fetch of the freshly-built bundle on every run (Playwright's
   // HTTP cache otherwise serves the pre-rebuild Cesium.js and masks the fix).
   await context.route("**/*", (route) => {
-    const headers = { ...route.request().headers(), "cache-control": "no-cache" };
+    const headers = {
+      ...route.request().headers(),
+      "cache-control": "no-cache",
+    };
     route.continue({ headers });
   });
   const page = await context.newPage();
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
   await armWebGPUDevices(page);
 
@@ -198,7 +204,11 @@ async function capture(rendererArg) {
         let set = 0;
         for (let i = 0; i < nodes.length; i++) {
           const rn = nodes[i];
-          if (rn && rn.morphWeights && rn.morphWeights.length >= weights.length) {
+          if (
+            rn &&
+            rn.morphWeights &&
+            rn.morphWeights.length >= weights.length
+          ) {
             rn.morphWeights = weights.slice();
             set++;
           }

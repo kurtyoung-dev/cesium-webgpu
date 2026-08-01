@@ -334,7 +334,11 @@ console.log("\n[6] Ground-primitive batch showsUpdated cleanup (#13366)");
       /this\.subscriptions\.remove\(id\);\s*\n\s*this\.showsUpdated\.remove\(id\);/.test(
         src,
       );
-    check(`${file.split("/").pop()} clears showsUpdated on remove`, hasCleanup, true);
+    check(
+      `${file.split("/").pop()} clears showsUpdated on remove`,
+      hasCleanup,
+      true,
+    );
   }
 }
 
@@ -348,19 +352,28 @@ console.log("\n[6] Ground-primitive batch showsUpdated cleanup (#13366)");
 console.log("\n[7] EdgeVisibility degenerate-triangle guard (#13421)");
 {
   const src = readFileSync(
-    join(root, "packages/engine/Source/Scene/Model/EdgeVisibilityPipelineStage.js"),
+    join(
+      root,
+      "packages/engine/Source/Scene/Model/EdgeVisibilityPipelineStage.js",
+    ),
     "utf8",
   );
-  const hasMagCheck = /crossMagnitudeSquared\s*===\s*0\.0\s*\|\|\s*!Number\.isFinite\(\s*crossMagnitudeSquared\s*\)/.test(
-    src,
-  );
+  const hasMagCheck =
+    /crossMagnitudeSquared\s*===\s*0\.0\s*\|\|\s*!Number\.isFinite\(\s*crossMagnitudeSquared\s*\)/.test(
+      src,
+    );
   // The unguarded Cartesian3.normalize(scratchCross,...) must be gone from the
   // face-normal loop (replaced by multiplyByScalar(1/sqrt(magSq))).
-  const usesScaledNormalize = /Cartesian3\.multiplyByScalar\(\s*scratchCross,\s*\n?\s*1\.0\s*\/\s*Math\.sqrt\(crossMagnitudeSquared\)/.test(
-    src,
-  );
+  const usesScaledNormalize =
+    /Cartesian3\.multiplyByScalar\(\s*scratchCross,\s*\n?\s*1\.0\s*\/\s*Math\.sqrt\(crossMagnitudeSquared\)/.test(
+      src,
+    );
   check("face-normal loop guards on cross magnitude", hasMagCheck, true);
-  check("face-normal loop normalizes via 1/sqrt(magSq)", usesScaledNormalize, true);
+  check(
+    "face-normal loop normalizes via 1/sqrt(magSq)",
+    usesScaledNormalize,
+    true,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -374,9 +387,8 @@ console.log("\n[8] EquirectangularPanorama flat shading (#13369)");
     join(root, "packages/engine/Source/Scene/EquirectangularPanorama.js"),
     "utf8",
   );
-  const hasFlat = /new MaterialAppearance\(\{[\s\S]*?flat:\s*true[\s\S]*?\}\)/.test(
-    src,
-  );
+  const hasFlat =
+    /new MaterialAppearance\(\{[\s\S]*?flat:\s*true[\s\S]*?\}\)/.test(src);
   check("panorama MaterialAppearance uses flat:true", hasFlat, true);
 }
 

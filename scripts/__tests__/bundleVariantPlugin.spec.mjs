@@ -27,8 +27,18 @@ const REPO_ROOT = path.resolve(__dirname, "..", "..");
 
 // Path to the stub files — mirrors the plugin's STUB_SHADER / STUB_MODULE
 // constants. Used to verify the redirect target is what we expect.
-const STUB_SHADER = path.resolve(REPO_ROOT, "scripts", "stubs", "emptyShader.js");
-const STUB_MODULE = path.resolve(REPO_ROOT, "scripts", "stubs", "emptyModule.js");
+const STUB_SHADER = path.resolve(
+  REPO_ROOT,
+  "scripts",
+  "stubs",
+  "emptyShader.js",
+);
+const STUB_MODULE = path.resolve(
+  REPO_ROOT,
+  "scripts",
+  "stubs",
+  "emptyModule.js",
+);
 const WEBGL_BUILD_CAPABILITIES = path.resolve(
   REPO_ROOT,
   "scripts",
@@ -67,7 +77,9 @@ function makeFakeBuild() {
 
 function setupPlugin(variant) {
   const plugin = bundleVariantPlugin(variant);
-  if (!plugin) {return null;}
+  if (!plugin) {
+    return null;
+  }
   const fake = makeFakeBuild();
   plugin.setup(fake);
   return fake.handler;

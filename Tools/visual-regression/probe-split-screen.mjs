@@ -1,8 +1,11 @@
 import { chromium } from "playwright";
 
-const URL = "http://localhost:8080/Apps/WebGPUTest/split-screen-comparison.html";
+const URL =
+  "http://localhost:8080/Apps/WebGPUTest/split-screen-comparison.html";
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
-const ctx = await browser.newContext({ viewport: { width: 1600, height: 800 } });
+const ctx = await browser.newContext({
+  viewport: { width: 1600, height: 800 },
+});
 const page = await ctx.newPage();
 const messages = [];
 page.on("console", (m) => {
@@ -21,7 +24,13 @@ console.log("both viewers ready");
 // Run for 6 seconds
 await page.evaluate(async () => {
   for (let batch = 0; batch < 12; batch++) {
-    await new Promise((r) => { let n = 0; (function tick(){ if (n++ > 20) r(); else requestAnimationFrame(tick); })(); });
+    await new Promise((r) => {
+      let n = 0;
+      (function tick() {
+        if (n++ > 20) r();
+        else requestAnimationFrame(tick);
+      })();
+    });
     await new Promise((r) => setTimeout(r, 100));
   }
 });
@@ -38,9 +47,11 @@ const stats = await page.evaluate(async () => {
   let fbStats = null;
   if (tex && wgpu.scene._context._device) {
     const dev = wgpu.scene._context._device;
-    const w = tex.width, h = tex.height;
+    const w = tex.width,
+      h = tex.height;
     const ss = 64;
-    const x0 = Math.floor((w - ss) / 2), y0 = Math.floor((h - ss) / 2);
+    const x0 = Math.floor((w - ss) / 2),
+      y0 = Math.floor((h - ss) / 2);
     const bpr = Math.ceil((ss * 4) / 256) * 256;
     const buf = dev.createBuffer({
       size: bpr * ss,
@@ -62,14 +73,20 @@ const stats = await page.evaluate(async () => {
         if (range[off] | range[off + 1] | range[off + 2]) nz++;
       }
     }
-    fbStats = { width: w, height: h, format: tex.format, nonZeroPixels: nz, totalSampled: ss * ss };
+    fbStats = {
+      width: w,
+      height: h,
+      format: tex.format,
+      nonZeroPixels: nz,
+      totalSampled: ss * ss,
+    };
     buf.unmap();
     buf.destroy();
   }
   // Sample CANVAS via toDataURL → check if it's actually grey
   const canvas = wgpu.scene.canvas;
   const dataUrl = canvas.toDataURL();
-  const isJustHeader = dataUrl.length < 100;
+  const _isJustHeader = dataUrl.length < 100;
   return {
     requestRenderMode: wgpu.scene.requestRenderMode,
     cmdListLength: fs.commandList.length,

@@ -85,11 +85,13 @@ async function diff(page, a, b) {
       };
       const da = await load(ua),
         db = await load(ub);
-      let acc = 0,
-        n = da.length / 4;
+      let acc = 0;
+      const n = da.length / 4;
       for (let i = 0; i < da.length; i += 4) {
         acc += Math.abs(
-          0.299 * da[i] + 0.587 * da[i + 1] + 0.114 * da[i + 2] -
+          0.299 * da[i] +
+            0.587 * da[i + 1] +
+            0.114 * da[i + 2] -
             (0.299 * db[i] + 0.587 * db[i + 1] + 0.114 * db[i + 2]),
         );
       }
@@ -123,9 +125,13 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   const canvas = await page.$(".cesium-widget canvas");
@@ -145,9 +151,13 @@ async function run() {
   // in-flight tile load confounds the byte-identity diffs (nothing to do with
   // the weather flag). tilesLoaded flips true once the tile queue drains.
   await page
-    .waitForFunction(() => window.viewer.scene.globe.tilesLoaded === true, null, {
-      timeout: 30000,
-    })
+    .waitForFunction(
+      () => window.viewer.scene.globe.tilesLoaded === true,
+      null,
+      {
+        timeout: 30000,
+      },
+    )
     .catch(() => {});
   await page.waitForTimeout(3000);
 

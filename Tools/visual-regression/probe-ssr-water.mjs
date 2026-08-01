@@ -79,10 +79,14 @@ async function capture(label, { ssr, deferred }) {
 
       // Lake polygon — flat horizontal, glassy lit material at ground.
       const lakeCoords = C.Cartesian3.fromDegreesArray([
-        view.lon - 0.003, view.lat - 0.0015,
-        view.lon + 0.003, view.lat - 0.0015,
-        view.lon + 0.003, view.lat + 0.0015,
-        view.lon - 0.003, view.lat + 0.0015,
+        view.lon - 0.003,
+        view.lat - 0.0015,
+        view.lon + 0.003,
+        view.lat - 0.0015,
+        view.lon + 0.003,
+        view.lat + 0.0015,
+        view.lon - 0.003,
+        view.lat + 0.0015,
       ]);
       const lake = new C.Primitive({
         geometryInstances: new C.GeometryInstance({
@@ -112,10 +116,14 @@ async function capture(label, { ssr, deferred }) {
       // Wall polygon — extruded tall block north of the lake, bright
       // color so its reflection is easy to spot.
       const wallCoords = C.Cartesian3.fromDegreesArray([
-        view.lon - 0.001, view.lat + 0.002,
-        view.lon + 0.001, view.lat + 0.002,
-        view.lon + 0.001, view.lat + 0.0025,
-        view.lon - 0.001, view.lat + 0.0025,
+        view.lon - 0.001,
+        view.lat + 0.002,
+        view.lon + 0.001,
+        view.lat + 0.002,
+        view.lon + 0.001,
+        view.lat + 0.0025,
+        view.lon - 0.001,
+        view.lat + 0.0025,
       ]);
       const wall = new C.Primitive({
         geometryInstances: new C.GeometryInstance({
@@ -168,7 +176,7 @@ async function capture(label, { ssr, deferred }) {
       }
 
       const canvas = v.canvas;
-      let centerPixel = null;
+      let centerPixel;
       try {
         const tmp = document.createElement("canvas");
         tmp.width = canvas.width;
@@ -253,7 +261,9 @@ async function diffPngs(a, b) {
   console.log("[probe-ssr-water] capturing 4-cell matrix with lake + wall");
 
   const cells = [];
-  cells.push(await capture("a-ssr-off-def-off", { ssr: false, deferred: false }));
+  cells.push(
+    await capture("a-ssr-off-def-off", { ssr: false, deferred: false }),
+  );
   cells.push(await capture("b-ssr-on-def-off", { ssr: true, deferred: false }));
   cells.push(await capture("c-ssr-on-def-on", { ssr: true, deferred: true }));
   cells.push(await capture("d-ssr-off-def-on", { ssr: false, deferred: true }));

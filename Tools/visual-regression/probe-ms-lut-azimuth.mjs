@@ -17,7 +17,9 @@ const VIEW = { lon: -80.0, lat: 40.0, height: 200.0 };
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -135,7 +137,9 @@ const VIEW = { lon: -80.0, lat: 40.0, height: 200.0 };
   } else {
     const fmt = (a) => a.map((x) => x.toExponential(2)).join("  ");
     console.log(`  V row index = ${result.vRow} (near-horizon-above)`);
-    console.log(`  U sweep cols = [0, 0.25, 0.5, 0.75, 0.99] (azimuth fraction)`);
+    console.log(
+      `  U sweep cols = [0, 0.25, 0.5, 0.75, 0.99] (azimuth fraction)`,
+    );
     console.log(`  MS   LUT lum: ${fmt(result.msSweep)}`);
     console.log(
       `    spread min=${result.msSpread.min.toExponential(2)} max=${result.msSpread.max.toExponential(2)} max/min=${result.msSpread.ratio.toFixed(2)}`,

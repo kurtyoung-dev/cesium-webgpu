@@ -41,7 +41,13 @@ if (!A || !B) {
       const a = await decode(a64);
       const b = await decode(b64);
       if (a.width !== b.width || a.height !== b.height) {
-        return { sizeMismatch: true, aw: a.width, ah: a.height, bw: b.width, bh: b.height };
+        return {
+          sizeMismatch: true,
+          aw: a.width,
+          ah: a.height,
+          bw: b.width,
+          bh: b.height,
+        };
       }
       const da = a.data,
         db = b.data;

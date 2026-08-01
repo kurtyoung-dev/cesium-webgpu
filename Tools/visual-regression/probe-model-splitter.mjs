@@ -72,7 +72,9 @@ async function capture(renderer, splitMode) {
         ".cesium-navigation-help",
         ".cesium-viewer-fullscreenContainer",
       ]) {
-        document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
+        document
+          .querySelectorAll(sel)
+          .forEach((e) => (e.style.display = "none"));
       }
 
       // Isolate the model on a black background.
@@ -106,7 +108,11 @@ async function capture(renderer, splitMode) {
 
       v.camera.viewBoundingSphere(
         model.boundingSphere,
-        new C.HeadingPitchRange(heading, pitch, model.boundingSphere.radius * 3.0),
+        new C.HeadingPitchRange(
+          heading,
+          pitch,
+          model.boundingSphere.radius * 3.0,
+        ),
       );
       v.camera.lookAtTransform(C.Matrix4.IDENTITY);
       for (let i = 0; i < 40; i++) {
@@ -123,7 +129,9 @@ async function capture(renderer, splitMode) {
   await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
   const gate = await collectGateErrors(page);
 
-  const png = await page.locator('canvas[data-cs="1"]').screenshot({ type: "png" });
+  const png = await page
+    .locator('canvas[data-cs="1"]')
+    .screenshot({ type: "png" });
   const decoded = await page.evaluate(async (b64) => {
     const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
     const bmp = await createImageBitmap(blob);
@@ -188,7 +196,11 @@ function maskDiff(a, b) {
       }
     }
   }
-  return { union, mismatch, pct: union ? +((100 * mismatch) / union).toFixed(2) : null };
+  return {
+    union,
+    mismatch,
+    pct: union ? +((100 * mismatch) / union).toFixed(2) : null,
+  };
 }
 
 // ── PNG encoder (zlib deflate) — zero external dep ──
@@ -203,7 +215,8 @@ const CRC_TABLE = (() => {
 })();
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 function encodePNG({ w, h, data }) {
@@ -211,7 +224,10 @@ function encodePNG({ w, h, data }) {
   const raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -243,10 +259,22 @@ const webgpuUntouched = await capture("webgpu", "untouched");
 
 const fs = await import("fs");
 fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-fs.writeFileSync("Tools/visual-regression/output/model-splitter-webgl-left.png", encodePNG(webglLeft.decoded));
-fs.writeFileSync("Tools/visual-regression/output/model-splitter-webgpu-left.png", encodePNG(webgpuLeft.decoded));
-fs.writeFileSync("Tools/visual-regression/output/model-splitter-webgpu-none.png", encodePNG(webgpuNone.decoded));
-fs.writeFileSync("Tools/visual-regression/output/model-splitter-webgpu-untouched.png", encodePNG(webgpuUntouched.decoded));
+fs.writeFileSync(
+  "Tools/visual-regression/output/model-splitter-webgl-left.png",
+  encodePNG(webglLeft.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/model-splitter-webgpu-left.png",
+  encodePNG(webgpuLeft.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/model-splitter-webgpu-none.png",
+  encodePNG(webgpuNone.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/model-splitter-webgpu-untouched.png",
+  encodePNG(webgpuUntouched.decoded),
+);
 
 const glLeftCov = halfCoverage(webglLeft.decoded);
 const gpuLeftCov = halfCoverage(webgpuLeft.decoded);
@@ -266,7 +294,11 @@ const deviceLost =
 
 const report = {
   webglLeft: { ready: webglLeft.ready, coverage: glLeftCov },
-  webgpuLeft: { ready: webgpuLeft.ready, coverage: gpuLeftCov, gateArmed: webgpuLeft.gateArmed },
+  webgpuLeft: {
+    ready: webgpuLeft.ready,
+    coverage: gpuLeftCov,
+    gateArmed: webgpuLeft.gateArmed,
+  },
   webgpuNone: { ready: webgpuNone.ready, coverage: gpuNoneCov },
   webgpuUntouched: { ready: webgpuUntouched.ready, coverage: gpuUntouchedCov },
   leftParity_maskDiffPct: leftParity.pct,
@@ -290,8 +322,10 @@ console.log(JSON.stringify(report, null, 2));
 //  - OFF-GATE: splitDirection=NONE shows the model on BOTH sides and its
 //    mask matches the untouched capture within 2%.
 //  - No WebGPU device errors / device loss.
-const glSplitOK = glLeftCov.left > 2000 && glLeftCov.right < glLeftCov.left * 0.005;
-const gpuSplitOK = gpuLeftCov.left > 2000 && gpuLeftCov.right < gpuLeftCov.left * 0.005;
+const glSplitOK =
+  glLeftCov.left > 2000 && glLeftCov.right < glLeftCov.left * 0.005;
+const gpuSplitOK =
+  gpuLeftCov.left > 2000 && gpuLeftCov.right < gpuLeftCov.left * 0.005;
 const parityOK = leftParity.pct !== null && leftParity.pct < 12;
 const noneBothSides = gpuNoneCov.left > 2000 && gpuNoneCov.right > 2000;
 const offGateOK = offGate.pct !== null && offGate.pct < 2;
@@ -309,7 +343,9 @@ const pass =
   noneBothSides &&
   offGateOK;
 
-console.log(JSON.stringify({ glSplitOK, gpuSplitOK, parityOK, noneBothSides, offGateOK }));
+console.log(
+  JSON.stringify({ glSplitOK, gpuSplitOK, parityOK, noneBothSides, offGateOK }),
+);
 console.log(
   pass
     ? "GATE PASS — WebGPU model.splitDirection=LEFT hides the right half exactly like WebGL, and splitDirection=NONE is unchanged from the untouched default"

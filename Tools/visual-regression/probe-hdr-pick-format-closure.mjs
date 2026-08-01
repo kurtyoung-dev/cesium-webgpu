@@ -346,11 +346,7 @@ const setup = await page.evaluate(async () => {
 
   // Camera over the grid center, high enough to frame all cells.
   v.camera.setView({
-    destination: C.Cartesian3.fromDegrees(
-      LON0 + 1.5 * 1.6,
-      LAT0 + 1.3,
-      900000,
-    ),
+    destination: C.Cartesian3.fromDegrees(LON0 + 1.5 * 1.6, LAT0 + 1.3, 900000),
   });
 
   // Warm up: let ground/model/voxel async resources arrive.
@@ -607,7 +603,9 @@ function validateFamily(p, name, r) {
         `${p}: ${name} pick undefined (pre-existing WebGPU buffer pick dispatch gap; WebGL picks the pickObject)`,
       );
     } else if (!r.collectionMatches || r.index !== 0) {
-      failures.push(`${p}: ${name} picked the wrong owner (${JSON.stringify(r)})`);
+      failures.push(
+        `${p}: ${name} picked the wrong owner (${JSON.stringify(r)})`,
+      );
     }
     return;
   }

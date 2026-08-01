@@ -108,7 +108,10 @@ const OUT_ON = "Tools/visual-regression/output/clustered-visible-on.png";
     return { modelReady: true, bsRadius: bs.radius };
   });
   if (setupResult?.earlyExitErr) {
-    console.log("[probe-clustered-visible] EARLY-EXIT:", setupResult.earlyExitErr);
+    console.log(
+      "[probe-clustered-visible] EARLY-EXIT:",
+      setupResult.earlyExitErr,
+    );
     await browser.close();
     process.exit(1);
   }
@@ -137,7 +140,11 @@ const OUT_ON = "Tools/visual-regression/output/clustered-visible-on.png";
     C.Cartesian3.normalize(camDir, camDir);
     const lightPos = C.Cartesian3.add(
       bs.center,
-      C.Cartesian3.multiplyByScalar(camDir, bs.radius * 1.5, new C.Cartesian3()),
+      C.Cartesian3.multiplyByScalar(
+        camDir,
+        bs.radius * 1.5,
+        new C.Cartesian3(),
+      ),
       new C.Cartesian3(),
     );
     scene.lights.add(
@@ -263,10 +270,10 @@ const OUT_ON = "Tools/visual-regression/output/clustered-visible-on.png";
   await decoderBrowser.close();
 
   console.log("[probe-clustered-visible] result:");
-  console.log(`  dispatcher.lastActiveLightCount when ON: ${phase2.lastActive}`);
   console.log(
-    `  context._clusteredLightingBuffers keys: ${phase2.stashKeys}`,
+    `  dispatcher.lastActiveLightCount when ON: ${phase2.lastActive}`,
   );
+  console.log(`  context._clusteredLightingBuffers keys: ${phase2.stashKeys}`);
   console.log(
     `  params buffer activeLightCount (GPU readback): ${phase2.paramsActiveCount}`,
   );

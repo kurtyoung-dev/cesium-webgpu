@@ -1,8 +1,11 @@
 import { chromium } from "playwright";
 
-const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+const ctx = await browser.newContext({
+  viewport: { width: 1280, height: 720 },
+});
 const page = await ctx.newPage();
 
 const messages = [];
@@ -18,7 +21,13 @@ await page.waitForFunction(() => !!window.viewer, { timeout: 30000 });
 
 await page.evaluate(async () => {
   for (let batch = 0; batch < 12; batch++) {
-    await new Promise((r) => { let n=0; (function tick(){ if(n++>20) r(); else requestAnimationFrame(tick);})(); });
+    await new Promise((r) => {
+      let n = 0;
+      (function tick() {
+        if (n++ > 20) r();
+        else requestAnimationFrame(tick);
+      })();
+    });
     await new Promise((r) => setTimeout(r, 100));
   }
 });

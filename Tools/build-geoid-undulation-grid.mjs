@@ -149,7 +149,9 @@ function parseArgs(argv) {
   // decimation is an exact node subset (no resampling error introduced here).
   const dec = args.stepDeg * 24;
   if (Math.abs(dec - Math.round(dec)) > 1e-9) {
-    throw new Error(`--step ${args.stepDeg} is not an integer multiple of 2.5'`);
+    throw new Error(
+      `--step ${args.stepDeg} is not an integer multiple of 2.5'`,
+    );
   }
   if (args.out === null) {
     args.out =

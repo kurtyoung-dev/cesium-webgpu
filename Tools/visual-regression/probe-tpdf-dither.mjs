@@ -89,10 +89,14 @@ async function run() {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(
     `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
@@ -162,8 +166,18 @@ async function run() {
   const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   console.log("[probe-tpdf-dither] results (sky strip, HDR tonemap path)");
   console.log("  strip rows:", off1.total);
-  console.log("  OFF : distinctColors =", off1.distinct, " maxRun =", off1.maxRun);
-  console.log("  ON  : distinctColors =", on1.distinct, " maxRun =", on1.maxRun);
+  console.log(
+    "  OFF : distinctColors =",
+    off1.distinct,
+    " maxRun =",
+    off1.maxRun,
+  );
+  console.log(
+    "  ON  : distinctColors =",
+    on1.distinct,
+    " maxRun =",
+    on1.maxRun,
+  );
   console.log(
     "  off-gate residue: offHash =",
     off1.hash,
@@ -172,9 +186,11 @@ async function run() {
     off1.hash === off2.hash ? "IDENTICAL ✓" : "DIFFER ✗",
   );
   console.log("  console errors:", errs.length);
-  if (errs.length) errs.slice(0, 8).forEach((e) => console.log("   ", e.t, e.text));
+  if (errs.length)
+    errs.slice(0, 8).forEach((e) => console.log("   ", e.t, e.text));
 
-  const bandingReduced = on1.distinct > off1.distinct && on1.maxRun <= off1.maxRun;
+  const bandingReduced =
+    on1.distinct > off1.distinct && on1.maxRun <= off1.maxRun;
   const offByteIdentical = off1.hash === off2.hash;
   console.log(
     "\n  VERDICT:",

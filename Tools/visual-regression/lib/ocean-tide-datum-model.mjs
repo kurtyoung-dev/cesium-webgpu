@@ -78,13 +78,55 @@ export const M2_PERIOD_HOURS =
  */
 export const GEOID_REFERENCE_SITES = Object.freeze(
   [
-    { id: "IND-LOW", lonDeg: 78.0, latDeg: 4.0, cwtMeasuredM: -104.2456, gridExpectedM: -104.17 },
-    { id: "ICE-HIGH", lonDeg: -20.0, latDeg: 62.0, cwtMeasuredM: 63.0059, gridExpectedM: 63.06 },
-    { id: "NGUI-HIGH", lonDeg: 146.0, latDeg: 1.0, cwtMeasuredM: 66.9911, gridExpectedM: 66.94 },
-    { id: "HUDSON-LOW", lonDeg: -85.0, latDeg: 59.5, cwtMeasuredM: -46.0647, gridExpectedM: -45.98 },
-    { id: "PAC-MID", lonDeg: -150.0, latDeg: 10.0, cwtMeasuredM: 1.0858, gridExpectedM: 1.4 },
-    { id: "ATL-MID", lonDeg: -30.0, latDeg: 30.0, cwtMeasuredM: 30.1945, gridExpectedM: 30.22 },
-    { id: "LKA-COAST", lonDeg: 79.75, latDeg: 6.0, cwtMeasuredM: -101.6424, gridExpectedM: -101.165 },
+    {
+      id: "IND-LOW",
+      lonDeg: 78.0,
+      latDeg: 4.0,
+      cwtMeasuredM: -104.2456,
+      gridExpectedM: -104.17,
+    },
+    {
+      id: "ICE-HIGH",
+      lonDeg: -20.0,
+      latDeg: 62.0,
+      cwtMeasuredM: 63.0059,
+      gridExpectedM: 63.06,
+    },
+    {
+      id: "NGUI-HIGH",
+      lonDeg: 146.0,
+      latDeg: 1.0,
+      cwtMeasuredM: 66.9911,
+      gridExpectedM: 66.94,
+    },
+    {
+      id: "HUDSON-LOW",
+      lonDeg: -85.0,
+      latDeg: 59.5,
+      cwtMeasuredM: -46.0647,
+      gridExpectedM: -45.98,
+    },
+    {
+      id: "PAC-MID",
+      lonDeg: -150.0,
+      latDeg: 10.0,
+      cwtMeasuredM: 1.0858,
+      gridExpectedM: 1.4,
+    },
+    {
+      id: "ATL-MID",
+      lonDeg: -30.0,
+      latDeg: 30.0,
+      cwtMeasuredM: 30.1945,
+      gridExpectedM: 30.22,
+    },
+    {
+      id: "LKA-COAST",
+      lonDeg: 79.75,
+      latDeg: 6.0,
+      cwtMeasuredM: -101.6424,
+      gridExpectedM: -101.165,
+    },
   ].map(Object.freeze),
 );
 
@@ -425,7 +467,9 @@ export function datumFixVerdict(obs) {
     beforeOffsetM: before,
     afterOffsetM: after,
     residualFraction,
-    geoidUndulationM: isNum(obs?.geoidUndulationM) ? obs.geoidUndulationM : null,
+    geoidUndulationM: isNum(obs?.geoidUndulationM)
+      ? obs.geoidUndulationM
+      : null,
     resolvedDatum: obs?.resolvedDatum ?? null,
     reasons,
   };
@@ -494,7 +538,10 @@ export function tidePhaseVerdict(obs) {
       `25 h range ${rangeM.toFixed(4)} m exceeds ${T.TIDE_RANGE_MAX_M} m — larger than any equilibrium tide (a missing Love factor reads ~1.44x)`,
     );
   }
-  if (extrema.length < T.TIDE_EXTREMA_MIN || extrema.length > T.TIDE_EXTREMA_MAX) {
+  if (
+    extrema.length < T.TIDE_EXTREMA_MIN ||
+    extrema.length > T.TIDE_EXTREMA_MAX
+  ) {
     reasons.push(
       `${extrema.length} extrema over the window; a semidiurnal signal gives ${T.TIDE_EXTREMA_MIN}-${T.TIDE_EXTREMA_MAX}`,
     );
@@ -519,7 +566,10 @@ export function tidePhaseVerdict(obs) {
     );
   }
   const m2 = obs?.meanM2IntervalHours;
-  if (isNum(m2) && Math.abs(m2 - M2_PERIOD_HOURS) > T.M2_MEAN_INTERVAL_TOL_HOURS) {
+  if (
+    isNum(m2) &&
+    Math.abs(m2 - M2_PERIOD_HOURS) > T.M2_MEAN_INTERVAL_TOL_HOURS
+  ) {
     reasons.push(
       `mean lunar-maximum interval ${m2.toFixed(4)} h differs from the published M2 half-period ${M2_PERIOD_HOURS.toFixed(4)} h by more than ${T.M2_MEAN_INTERVAL_TOL_HOURS} h`,
     );
@@ -608,7 +658,8 @@ export function exaggerationCompositionVerdict(obs) {
   invariant("tideHeightMeters", obs?.tide1M, obs?.tideNM);
 
   return {
-    verdict: reasons.length === 0 ? "COMPOSES_AS_MODELED" : "COMPOSITION_MISMATCH",
+    verdict:
+      reasons.length === 0 ? "COMPOSES_AS_MODELED" : "COMPOSITION_MISMATCH",
     predictedM: predicted,
     residualM: residual,
     toleranceM: T.EXAG_COMPOSITION_TOL_M,
@@ -644,7 +695,10 @@ export function offContractVerdict(obs) {
     }
   };
   exact("tideHeightMeters with tideEnabled=false", obs?.tideOffMeters ?? null);
-  exact("tideHeightMeters with a zero callback", obs?.zeroCallbackMeters ?? null);
+  exact(
+    "tideHeightMeters with a zero callback",
+    obs?.zeroCallbackMeters ?? null,
+  );
   exact(
     "geoidUndulationMeters with datum=ELLIPSOID",
     obs?.ellipsoidUndulationMeters ?? null,

@@ -67,10 +67,13 @@ const VIEWPORT = { width: 800, height: 600 };
 
 // 5-minute hard watchdog (machine-safety: kill a hung Edge/device rather than
 // wedge the box). Cleared on normal completion.
-const watchdog = setTimeout(() => {
-  console.error("[probe-oit] WATCHDOG 5min — forcing exit(3)");
-  process.exit(3);
-}, 5 * 60 * 1000);
+const watchdog = setTimeout(
+  () => {
+    console.error("[probe-oit] WATCHDOG 5min — forcing exit(3)");
+    process.exit(3);
+  },
+  5 * 60 * 1000,
+);
 
 // ── Scene builder (runs in page context). Destroys the app viewer, creates a
 // fresh Viewer with the requested backend + OIT constructor option, builds the
@@ -240,11 +243,7 @@ async function grabCanvas(page) {
 function nonBlackFrac(img) {
   let n = 0;
   for (let i = 0; i < img.data.length; i += 4) {
-    if (
-      img.data[i] > 14 ||
-      img.data[i + 1] > 14 ||
-      img.data[i + 2] > 14
-    ) {
+    if (img.data[i] > 14 || img.data[i + 1] > 14 || img.data[i + 2] > 14) {
       n++;
     }
   }
@@ -295,7 +294,11 @@ function centralMean(img) {
       n++;
     }
   }
-  return { r: +(r / n).toFixed(1), g: +(g / n).toFixed(1), b: +(b / n).toFixed(1) };
+  return {
+    r: +(r / n).toFixed(1),
+    g: +(g / n).toFixed(1),
+    b: +(b / n).toFixed(1),
+  };
 }
 
 // ── zero-dep PNG encoder ──
@@ -310,7 +313,8 @@ const CRC_TABLE = (() => {
 })();
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 function encodePNG({ w, h, data }) {
@@ -318,7 +322,10 @@ function encodePNG({ w, h, data }) {
   const raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -346,7 +353,8 @@ function encodePNG({ w, h, data }) {
 // destroys the app-created device. That emits benign "Device lost: destroyed"
 // console lines the Node fault-regex over-matches — they are NOT real faults
 // (the real GPU gate ignores reason=destroyed). Drop them from the error count.
-const BENIGN_TEARDOWN_RE = /reason:\s*destroyed|Device was destroyed|Device lost: destroyed/i;
+const BENIGN_TEARDOWN_RE =
+  /reason:\s*destroyed|Device was destroyed|Device lost: destroyed/i;
 function realFaults(consoleErrors) {
   return consoleErrors.filter((e) => !BENIGN_TEARDOWN_RE.test(e));
 }
@@ -384,11 +392,17 @@ let overallPass = true;
 
     const setupOn = await setupViewer(page, { renderer: "webgl", oit: true });
     const capOn = await grabCanvas(page);
-    fs.writeFileSync(path.join(OUT_DIR, "oit-webgl-on.png"), encodePNG(capOn.decoded));
+    fs.writeFileSync(
+      path.join(OUT_DIR, "oit-webgl-on.png"),
+      encodePNG(capOn.decoded),
+    );
 
     const setupOff = await setupViewer(page, { renderer: "webgl", oit: false });
     const capOff = await grabCanvas(page);
-    fs.writeFileSync(path.join(OUT_DIR, "oit-webgl-off.png"), encodePNG(capOff.decoded));
+    fs.writeFileSync(
+      path.join(OUT_DIR, "oit-webgl-off.png"),
+      encodePNG(capOff.decoded),
+    );
 
     const gate = await collectGateErrors(page);
     const onNB = nonBlackFrac(capOn.decoded);
@@ -403,10 +417,17 @@ let overallPass = true;
       benignTeardownLines: consoleErrors.length - faults.length,
       gate,
     };
-    report.captures.webglOn = { nonBlack: onNB, mean: centralMean(capOn.decoded) };
-    report.captures.webglOff = { nonBlack: offNB, mean: centralMean(capOff.decoded) };
+    report.captures.webglOn = {
+      nonBlack: onNB,
+      mean: centralMean(capOn.decoded),
+    };
+    report.captures.webglOff = {
+      nonBlack: offNB,
+      mean: centralMean(capOff.decoded),
+    };
 
-    const errors = gate.errors.length + faults.length + (gate.deviceLost ? 1 : 0);
+    const errors =
+      gate.errors.length + faults.length + (gate.deviceLost ? 1 : 0);
     const aPass =
       onNB > 8 &&
       offNB > 8 &&
@@ -420,8 +441,7 @@ let overallPass = true;
       onVsOff_diffPct: onVsOff.pct,
       onVsOff_maxDelta: onVsOff.maxDelta,
       errors,
-      note:
-        "WebGL default OIT (on) vs orderIndependentTranslucency:false (sorted alpha); must differ at intersections",
+      note: "WebGL default OIT (on) vs orderIndependentTranslucency:false (sorted alpha); must differ at intersections",
     };
     if (!aPass) overallPass = false;
 
@@ -452,7 +472,10 @@ let overallPass = true;
       return cd && typeof cd.webgpuOIT === "function" ? cd.webgpuOIT() : null;
     });
     const p0 = await grabCanvas(page);
-    fs.writeFileSync(path.join(OUT_DIR, "oit-webgpu-default.png"), encodePNG(p0.decoded));
+    fs.writeFileSync(
+      path.join(OUT_DIR, "oit-webgpu-default.png"),
+      encodePNG(p0.decoded),
+    );
 
     // Control: a second default capture (no toggle, a few frames later) to
     // measure the renderer's intrinsic frame-to-frame noise floor (TPDF dither
@@ -491,7 +514,10 @@ let overallPass = true;
       };
     });
     const pOn = await grabCanvas(page);
-    fs.writeFileSync(path.join(OUT_DIR, "oit-webgpu-on.png"), encodePNG(pOn.decoded));
+    fs.writeFileSync(
+      path.join(OUT_DIR, "oit-webgpu-on.png"),
+      encodePNG(pOn.decoded),
+    );
 
     // Toggle OIT OFF, settle, capture (containment restore).
     await page.evaluate(async () => {
@@ -504,11 +530,15 @@ let overallPass = true;
       }
     });
     const pOff = await grabCanvas(page);
-    fs.writeFileSync(path.join(OUT_DIR, "oit-webgpu-restored.png"), encodePNG(pOff.decoded));
+    fs.writeFileSync(
+      path.join(OUT_DIR, "oit-webgpu-restored.png"),
+      encodePNG(pOff.decoded),
+    );
 
     const gate = await collectGateErrors(page);
     const faults = realFaults(consoleErrors);
-    const errors = gate.errors.length + faults.length + (gate.deviceLost ? 1 : 0);
+    const errors =
+      gate.errors.length + faults.length + (gate.deviceLost ? 1 : 0);
 
     // Oracle (b): WebGPU default vs WebGL OIT-off (both sorted alpha). The
     // WebGL-off capture is re-decoded from disk below (via the page's decode
@@ -517,9 +547,18 @@ let overallPass = true;
     const pOnNB = nonBlackFrac(pOn.decoded);
     const pOffNB = nonBlackFrac(pOff.decoded);
 
-    report.captures.webgpuDefault = { nonBlack: p0NB, mean: centralMean(p0.decoded) };
-    report.captures.webgpuOn = { nonBlack: pOnNB, mean: centralMean(pOn.decoded) };
-    report.captures.webgpuRestored = { nonBlack: pOffNB, mean: centralMean(pOff.decoded) };
+    report.captures.webgpuDefault = {
+      nonBlack: p0NB,
+      mean: centralMean(p0.decoded),
+    };
+    report.captures.webgpuOn = {
+      nonBlack: pOnNB,
+      mean: centralMean(pOn.decoded),
+    };
+    report.captures.webgpuRestored = {
+      nonBlack: pOffNB,
+      mean: centralMean(pOff.decoded),
+    };
     report.webgpuSession = {
       setup,
       gateBefore,
@@ -532,15 +571,20 @@ let overallPass = true;
     // (b) cross-backend sorted-vs-sorted band.
     // The WebGL OIT-off decoded array was written to disk; decode it back for
     // the comparison via the page (reuse the same decode path).
-    const webglOffDecoded = await page.evaluate(async (b64) => {
-      const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
-      const bmp = await createImageBitmap(blob);
-      const off = new OffscreenCanvas(bmp.width, bmp.height);
-      const ctx = off.getContext("2d");
-      ctx.drawImage(bmp, 0, 0);
-      const d = ctx.getImageData(0, 0, bmp.width, bmp.height).data;
-      return { w: bmp.width, h: bmp.height, data: Array.from(d) };
-    }, fs.readFileSync(path.join(OUT_DIR, "oit-webgl-off.png")).toString("base64"));
+    const webglOffDecoded = await page.evaluate(
+      async (b64) => {
+        const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
+        const bmp = await createImageBitmap(blob);
+        const off = new OffscreenCanvas(bmp.width, bmp.height);
+        const ctx = off.getContext("2d");
+        ctx.drawImage(bmp, 0, 0);
+        const d = ctx.getImageData(0, 0, bmp.width, bmp.height).data;
+        return { w: bmp.width, h: bmp.height, data: Array.from(d) };
+      },
+      fs
+        .readFileSync(path.join(OUT_DIR, "oit-webgl-off.png"))
+        .toString("base64"),
+    );
     const bDiff = diffPixels(p0.decoded, webglOffDecoded);
     report.oracles.b_wgpuDefault_vs_webglOff = {
       pass: p0NB > 8, // observational; just require the WebGPU sorted path renders
@@ -579,8 +623,7 @@ let overallPass = true;
       parityVsWebglOn_diffPct: cParity.pct,
       parityVsWebglOn_maxDelta: cParity.maxDelta,
       errors,
-      note:
-        "C11-157 Slice A: translucent PRIMITIVES now reach the MRT-OIT accumulation. Gate flips (requested/capable/safetyGateEnabled) + 0 errors + non-black + active=TRUE + _webgpuOITActiveThisFrame=TRUE (both were ALWAYS FALSE at Batch-700). Weighted-blended (McGuire-Bavoil) desaturation at the intersections is the expected, known WBOIT look.",
+      note: "C11-157 Slice A: translucent PRIMITIVES now reach the MRT-OIT accumulation. Gate flips (requested/capable/safetyGateEnabled) + 0 errors + non-black + active=TRUE + _webgpuOITActiveThisFrame=TRUE (both were ALWAYS FALSE at Batch-700). Weighted-blended (McGuire-Bavoil) desaturation at the intersections is the expected, known WBOIT look.",
     };
     if (!cPass) overallPass = false;
     if (statusOn.activeThisFrame !== true || live.active !== true) {
@@ -599,7 +642,8 @@ let overallPass = true;
     const floorMismatch = Math.max(noiseFloor.mismatch, 1);
     const floorMax = Math.max(noiseFloor.maxDelta, 1);
     const dWithinFloor =
-      dRestore.mismatch <= floorMismatch * 3 && dRestore.maxDelta <= floorMax + 2;
+      dRestore.mismatch <= floorMismatch * 3 &&
+      dRestore.maxDelta <= floorMax + 2;
     const dPass = dWithinFloor && errors === 0;
     report.oracles.d_containmentRestore = {
       pass: dPass,
@@ -609,8 +653,7 @@ let overallPass = true;
       noiseFloor_maxDelta: noiseFloor.maxDelta,
       withinNoiseFloor: dWithinFloor,
       errors,
-      note:
-        "webgpuOIT(false) returns to the pre-toggle WebGPU default within the intrinsic dither noise floor (measured by a no-toggle control). Restore delta ≈ floor ⇒ containment restored. C11-157 Slice A: this is now a MEANINGFUL restore proof — OIT genuinely engaged at gate-ON (oracle c), and gate-OFF returns to the byte-identical sorted-alpha default.",
+      note: "webgpuOIT(false) returns to the pre-toggle WebGPU default within the intrinsic dither noise floor (measured by a no-toggle control). Restore delta ≈ floor ⇒ containment restored. C11-157 Slice A: this is now a MEANINGFUL restore proof — OIT genuinely engaged at gate-ON (oracle c), and gate-OFF returns to the byte-identical sorted-alpha default.",
     };
     if (!dPass) overallPass = false;
 
@@ -619,8 +662,7 @@ let overallPass = true;
     report.oracles.c_onVsDefault = {
       mismatchPx: onVsDefault.mismatch,
       maxDelta: onVsDefault.maxDelta,
-      note:
-        "OIT-on vs WebGPU-default: now NON-zero — the gate flip visibly changes the render because weighted-blended OIT engages for translucent primitives (C11-157 Slice A).",
+      note: "OIT-on vs WebGPU-default: now NON-zero — the gate flip visibly changes the render because weighted-blended OIT engages for translucent primitives (C11-157 Slice A).",
     };
 
     // ── (c-splat) reachability confirmation via the synthetic splat FR ──
@@ -728,8 +770,7 @@ let overallPass = true;
       pass: splatErrors === 0, // observational — only device errors fail it
       ...splatObs,
       errors: splatErrors,
-      note:
-        "Synthetic splat + armed _webgpuOITEnabled + _splatOITDeferral. Observational only (gates on 0 device errors). C11-157 Slice A note: the accumulation pass is now REACHABLE whenever a translucent PRIMITIVE is present, so sawOITActiveAnyFrame may be true here from residual translucent primitives left by the shared viewer's prior scene — it does NOT by itself prove the splat-DEFERRAL path reaches OIT. The Gaussian-splat deferral (splats are Pass.GAUSSIAN_SPLATS, folded only after hasOITPipelines is derived) remains a SEPARATE slice: NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME.",
+      note: "Synthetic splat + armed _webgpuOITEnabled + _splatOITDeferral. Observational only (gates on 0 device errors). C11-157 Slice A note: the accumulation pass is now REACHABLE whenever a translucent PRIMITIVE is present, so sawOITActiveAnyFrame may be true here from residual translucent primitives left by the shared viewer's prior scene — it does NOT by itself prove the splat-DEFERRAL path reaches OIT. The Gaussian-splat deferral (splats are Pass.GAUSSIAN_SPLATS, folded only after hasOITPipelines is derived) remains a SEPARATE slice: NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME.",
     };
     if (splatErrors !== 0) overallPass = false;
 
@@ -749,7 +790,9 @@ console.log(`\nReport: ${outPath}`);
 console.log(
   "\nOracle (e) STANDARD-TRANSPARENCY REGRESSION NET — run separately (each launches its own Edge):\n" +
     "  node Tools/visual-regression/probe-globe-translucency.mjs\n" +
-    "  PROBE_BASE=" + BASE + " node Tools/visual-regression/probe-ellipsoidprim-translucent.mjs\n" +
+    "  PROBE_BASE=" +
+    BASE +
+    " node Tools/visual-regression/probe-ellipsoidprim-translucent.mjs\n" +
     "  node Tools/visual-regression/probe-custom-shader-translucency.mjs\n" +
     "  node Tools/visual-regression/translucent-classification-debug.mjs",
 );

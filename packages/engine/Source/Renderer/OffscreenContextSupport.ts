@@ -116,12 +116,7 @@ export interface OffscreenContextOptions {
  * State of the offscreen context.
  */
 export type OffscreenState =
-  | "idle"
-  | "initializing"
-  | "ready"
-  | "rendering"
-  | "error"
-  | "destroyed";
+  "idle" | "initializing" | "ready" | "rendering" | "error" | "destroyed";
 
 /**
  * Payload for the "init" message — transfers the OffscreenCanvas and

@@ -44,9 +44,12 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+  if ("cloudCoverage" in g)
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  if ("cloudWeatherMap" in g)
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
@@ -73,9 +76,13 @@ const RENDER = async (cfg) => {
     await new Promise((r) => requestAnimationFrame(r));
   }
   // Read the bake flag off the cloud cache (proves the bake actually ran).
-  let noiseBaked = false;
+  let noiseBaked;
   try {
-    noiseBaked = !!(s.context && s.context._cloudCache && s.context._cloudCache.noiseBaked);
+    noiseBaked = !!(
+      s.context &&
+      s.context._cloudCache &&
+      s.context._cloudCache.noiseBaked
+    );
   } catch (e) {
     noiseBaked = false;
   }
@@ -147,7 +154,9 @@ async function run() {
     .concat(consoleErrors)
     .filter((e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout/i.test(e));
 
-  console.log(`[${TAG}] noiseBaked=${r.noiseBaked} device errors=${newErrs.length}`);
+  console.log(
+    `[${TAG}] noiseBaked=${r.noiseBaked} device errors=${newErrs.length}`,
+  );
   if (newErrs.length) console.log("  errs:", newErrs.slice(0, 3));
 
   const other = TAG === "after" ? "before" : "after";

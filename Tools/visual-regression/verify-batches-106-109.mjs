@@ -39,10 +39,7 @@ function log(msg) {
 async function captureSnapshot(page, label) {
   const buf = await page.screenshot({ omitBackground: false });
   if (label) {
-    fs.writeFileSync(
-      `Tools/visual-regression/output/verify-${label}.png`,
-      buf,
-    );
+    fs.writeFileSync(`Tools/visual-regression/output/verify-${label}.png`, buf);
   }
   return {
     bytes: buf.length,
@@ -61,7 +58,9 @@ async function captureSnapshot(page, label) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   page.on("console", (m) => {
     const t = m.type();
@@ -118,7 +117,9 @@ async function captureSnapshot(page, label) {
   log(`Default scene pixels: ${JSON.stringify(snapshot)}`);
 
   if (!snapshot.hasContent) {
-    failures.push(`Default WebGPU scene: PNG only ${snapshot.bytes} bytes (expected > 20KB)`);
+    failures.push(
+      `Default WebGPU scene: PNG only ${snapshot.bytes} bytes (expected > 20KB)`,
+    );
   }
 
   // === 2. Toggle TAA on (exercises Batch 106 velocity pass) ===

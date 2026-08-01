@@ -85,7 +85,9 @@ GeoidUndulationGrid.setEgm2008ForTesting(grid);
 
 const ellipsoid = Ellipsoid.WGS84;
 const surfaceAt = (lonDeg, latDeg) =>
-  ellipsoid.cartographicToCartesian(Cartographic.fromDegrees(lonDeg, latDeg, 0));
+  ellipsoid.cartographicToCartesian(
+    Cartographic.fromDegrees(lonDeg, latDeg, 0),
+  );
 const EPOCH = JulianDate.fromIso8601("2026-07-03T00:00:00Z");
 const at = (seconds) => JulianDate.addSeconds(EPOCH, seconds, new JulianDate());
 
@@ -93,7 +95,11 @@ const at = (seconds) => JulianDate.addSeconds(EPOCH, seconds, new JulianDate());
 
 test("geoid asset: header, size and georeferencing are the baked contract", () => {
   const view = new DataView(assetBuffer);
-  assert.equal(view.getUint32(0, true), GeoidUndulationGrid.MAGIC, 'magic "EGM1"');
+  assert.equal(
+    view.getUint32(0, true),
+    GeoidUndulationGrid.MAGIC,
+    'magic "EGM1"',
+  );
   assert.equal(view.getUint16(4, true), 1, "version");
   assert.equal(view.getUint16(6, true), 100, "int16 centimetres");
   assert.equal(grid.longitudeCount, 721, "0.5 deg lon nodes, both seams");
@@ -156,7 +162,10 @@ test("geoid grid reproduces the MEASURED Cesium World Terrain ocean lid", () => 
     }
   }
   const rms = Math.sqrt(sum2 / GEOID_REFERENCE_SITES.length);
-  assert.ok(worst <= 1.0, `worst site ${worstId} differs by ${worst.toFixed(3)} m`);
+  assert.ok(
+    worst <= 1.0,
+    `worst site ${worstId} differs by ${worst.toFixed(3)} m`,
+  );
   assert.ok(rms <= 0.5, `RMS vs the measured CWT lid is ${rms.toFixed(3)} m`);
 });
 
@@ -334,7 +343,7 @@ test("TideModel: the permanent (zero-frequency) tide is the classic -0.198 m P2"
     `<P2(sin delta)> for the Sun = ${TideModel.MEAN_SOLAR_DECLINATION_LEGENDRE}`,
   );
   assert.ok(
-    Math.abs(TideModel.MEAN_LUNAR_DECLINATION_LEGENDRE - -0.376730) < 1e-4,
+    Math.abs(TideModel.MEAN_LUNAR_DECLINATION_LEGENDRE - -0.37673) < 1e-4,
     `<P2(sin delta)> for the Moon = ${TideModel.MEAN_LUNAR_DECLINATION_LEGENDRE}`,
   );
 
@@ -386,7 +395,8 @@ test("TideModel: 25 h range at true scale is the equilibrium band", () => {
   }
   const range = Math.max(...values) - Math.min(...values);
   assert.ok(
-    range >= THRESHOLDS.TIDE_RANGE_MIN_M && range <= THRESHOLDS.TIDE_RANGE_MAX_M,
+    range >= THRESHOLDS.TIDE_RANGE_MIN_M &&
+      range <= THRESHOLDS.TIDE_RANGE_MAX_M,
     `range ${range.toFixed(4)} m outside [${THRESHOLDS.TIDE_RANGE_MIN_M}, ${THRESHOLDS.TIDE_RANGE_MAX_M}]`,
   );
   // A semidiurnal signal, not a ramp.
@@ -418,9 +428,7 @@ test("TideModel: the lunar term peaks AT lunar culmination", () => {
     const t = at(i * dt);
     lunar.push(TideModel.evaluate(t, site, result).lunarM);
     TideModel.computeMoonPositionFixed(t, moon);
-    altitude.push(
-      Cartesian3.dot(Cartesian3.normalize(moon, moon), siteDir),
-    );
+    altitude.push(Cartesian3.dot(Cartesian3.normalize(moon, moon), siteDir));
   }
   const lunarMax = findExtrema(lunar, dt).filter((e) => e.kind === "MAX");
   const culminations = findExtrema(altitude, dt);
@@ -463,7 +471,10 @@ test("TideModel: the mean lunar period IS the published NOAA M2 constituent", ()
     m2 = m1;
     m1 = v;
   }
-  assert.ok(maxima.length > 70, `${maxima.length} lunar maxima over the baseline`);
+  assert.ok(
+    maxima.length > 70,
+    `${maxima.length} lunar maxima over the baseline`,
+  );
   const mean = meanIntervalHours(maxima);
   assert.ok(
     Math.abs(mean - M2_PERIOD_HOURS) <= THRESHOLDS.M2_MEAN_INTERVAL_TOL_HOURS,
@@ -501,9 +512,7 @@ test("TideModel: springs fall at syzygy and neaps at quadrature", () => {
     const c =
       Cartesian3.dot(moon, sun) /
       (Cartesian3.magnitude(moon) * Cartesian3.magnitude(sun));
-    elongations.push(
-      (Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI,
-    );
+    elongations.push((Math.acos(Math.max(-1, Math.min(1, c))) * 180) / Math.PI);
   }
   const peaks = [];
   const troughs = [];
@@ -626,7 +635,12 @@ test("off-contract: ellipsoid datum + tide off is EXACTLY zero", () => {
     _verticalDatum: VerticalDatum.ELLIPSOID,
     _tideEnabled: false,
   });
-  const offset = computeSeaLevelOffset(p, anchor, frame(EPOCH, 1.0, 0.0), ellipsoid);
+  const offset = computeSeaLevelOffset(
+    p,
+    anchor,
+    frame(EPOCH, 1.0, 0.0),
+    ellipsoid,
+  );
   assert.equal(offset, 0, "offset must be exactly 0, not merely small");
   assert.equal(p._geoidUndulationM, 0);
   assert.equal(p._tideHeightM, 0);
@@ -693,7 +707,12 @@ test("composition: geoid, then tide x tideExaggeration, then the exaggeration ma
 
   // (2) geoid + tide.
   const both = makePrimitive({ _verticalDatum: VerticalDatum.GEOID });
-  const h1 = computeSeaLevelOffset(both, anchor, frame(EPOCH, 1.0, 0.0), ellipsoid);
+  const h1 = computeSeaLevelOffset(
+    both,
+    anchor,
+    frame(EPOCH, 1.0, 0.0),
+    ellipsoid,
+  );
   assert.ok(Math.abs(h1 - (undulation + tide)) < 1e-12);
   assert.equal(both._geoidUndulationM, undulation);
   assert.ok(Math.abs(both._tideHeightM - tide) < 1e-15);
@@ -811,8 +830,13 @@ test("the offset is applied after the lattice snap and before the curvature radi
   const src = readEngine("Scene/OceanSurfacePrimitive.js");
   const snap = src.indexOf("this._uvOffsetY = snapN / L;");
   const offset = src.indexOf("const seaLevelOffset = computeSeaLevelOffset(");
-  const radius = src.indexOf("const anchorMag = Cartesian3.magnitude(this._anchor);");
-  assert.ok(snap > 0 && offset > 0 && radius > 0, "all three landmarks present");
+  const radius = src.indexOf(
+    "const anchorMag = Cartesian3.magnitude(this._anchor);",
+  );
+  assert.ok(
+    snap > 0 && offset > 0 && radius > 0,
+    "all three landmarks present",
+  );
   assert.ok(
     snap < offset,
     "the offset must not disturb the world-anchored UV lattice",
@@ -877,8 +901,11 @@ test("datumFixVerdict: passes only on a re-measured, improved, visible patch", (
     "a partial improvement is not a fix",
   );
   assert.equal(
-    datumFixVerdict({ beforeOffsetM: -3.0, afterOffsetM: -0.1, patchVisible: true })
-      .verdict,
+    datumFixVerdict({
+      beforeOffsetM: -3.0,
+      afterOffsetM: -0.1,
+      patchVisible: true,
+    }).verdict,
     "DATUM_NOT_FIXED",
     "a baseline that does not reproduce Batch 759 is not anchored",
   );
@@ -903,7 +930,8 @@ test("tidePhaseVerdict: catches a flat, oversized, drifting or wall-clock tide",
   const good = [];
   const model = [];
   for (let i = 0; i < n; i++) {
-    const v = 0.18 * Math.cos((2 * Math.PI * i * dt) / (M2_PERIOD_HOURS * 3600));
+    const v =
+      0.18 * Math.cos((2 * Math.PI * i * dt) / (M2_PERIOD_HOURS * 3600));
     good.push(v);
     model.push(v);
   }
@@ -947,7 +975,11 @@ test("tidePhaseVerdict: catches a flat, oversized, drifting or wall-clock tide",
     lunarPhaseLockMaxMinutes: 0,
     meanM2IntervalHours: 12.0,
   });
-  assert.equal(solarPeriod.verdict, "TIDE_PHASE_FAILED", "12.00 h is S2, not M2");
+  assert.equal(
+    solarPeriod.verdict,
+    "TIDE_PHASE_FAILED",
+    "12.00 h is S2, not M2",
+  );
   const wallClock = tidePhaseVerdict({
     renderedSeries: good,
     modelSeries: good.map((v) => v + 0.01),
@@ -1037,8 +1069,10 @@ test("exaggerationCompositionVerdict + offContractVerdict + decision", () => {
   };
   assert.equal(decisionFromLanes(good).exitCode, 0);
   assert.equal(
-    decisionFromLanes({ ...good, offContract: { verdict: "OFF_LEAKS", reasons: [] } })
-      .exitCode,
+    decisionFromLanes({
+      ...good,
+      offContract: { verdict: "OFF_LEAKS", reasons: [] },
+    }).exitCode,
     1,
   );
   assert.equal(decisionFromLanes({}).exitCode, 1);

@@ -169,13 +169,23 @@ test("M4 separates a Moffat PSF (ratio >= 8) from a truncated Gaussian (< 2)", (
   const moffat = radialFloatImage(96, (r) =>
     Math.pow(1 + (r / alpha) * (r / alpha), -beta),
   );
-  const mM = m4RadialFalloff(moffat.image, { x: moffat.centre, y: moffat.centre }, {
-    alreadyLinear: true,
-  });
+  const mM = m4RadialFalloff(
+    moffat.image,
+    { x: moffat.centre, y: moffat.centre },
+    {
+      alreadyLinear: true,
+    },
+  );
   assert.ok(mM.ratio1e3 >= 8, `Moffat ratio ${mM.ratio1e3} >= 8`);
   // Two agreeing power-law slopes, both in [-5, -2] (the G2 wing criterion).
-  assert.ok(mM.slopeInner <= -2 && mM.slopeInner >= -5, `inner slope ${mM.slopeInner}`);
-  assert.ok(mM.slopeOuter <= -2 && mM.slopeOuter >= -5, `outer slope ${mM.slopeOuter}`);
+  assert.ok(
+    mM.slopeInner <= -2 && mM.slopeInner >= -5,
+    `inner slope ${mM.slopeInner}`,
+  );
+  assert.ok(
+    mM.slopeOuter <= -2 && mM.slopeOuter >= -5,
+    `outer slope ${mM.slopeOuter}`,
+  );
   assert.ok(
     Math.abs(mM.slopeInner - mM.slopeOuter) < 0.9,
     `slopes agree: ${mM.slopeInner} vs ${mM.slopeOuter}`,
@@ -188,9 +198,13 @@ test("M4 separates a Moffat PSF (ratio >= 8) from a truncated Gaussian (< 2)", (
   const gauss = radialFloatImage(96, (r) =>
     r > rTrunc ? 0 : Math.exp(-(r * r) / (2 * sigma * sigma)),
   );
-  const mG = m4RadialFalloff(gauss.image, { x: gauss.centre, y: gauss.centre }, {
-    alreadyLinear: true,
-  });
+  const mG = m4RadialFalloff(
+    gauss.image,
+    { x: gauss.centre, y: gauss.centre },
+    {
+      alreadyLinear: true,
+    },
+  );
   assert.ok(mG.ratio1e3 < 2, `truncated-Gaussian ratio ${mG.ratio1e3} < 2`);
   assert.ok(
     mM.ratio1e3 / mG.ratio1e3 > 4,
@@ -226,8 +240,15 @@ test("M2 distinguishes a flat field from a contrasty, clipped one", () => {
   assert.equal(mFlat.clipCount, 0, "flat field has no clipped pixels");
   assert.ok(Math.abs(mFlat.p999MinusP50) < 1e-9, "flat field has no tail");
 
-  assert.ok(mContrast.rmsContrast > 1.0, "contrasty field has high RMS contrast");
-  assert.equal(mContrast.clipCount, 200, "clip census counts every white pixel");
+  assert.ok(
+    mContrast.rmsContrast > 1.0,
+    "contrasty field has high RMS contrast",
+  );
+  assert.equal(
+    mContrast.clipCount,
+    200,
+    "clip census counts every white pixel",
+  );
   assert.ok(
     mContrast.p999MinusP50 > mFlat.p999MinusP50,
     "contrasty field has a real bright tail",

@@ -69,7 +69,7 @@ const validationWarnings = [];
   // commands without crashing.
   console.log("[phase] Vector3DTilePrimitive (synthetic) ...");
   const phase1 = await page.evaluate(async () => {
-    const C = await import("/Build/CesiumUnminified/index.js");
+    const _C = await import("/Build/CesiumUnminified/index.js");
     const v = window.viewer;
     const ctx = v.scene.context;
     const fr = ctx.getFeatureRenderer?.(42); // VECTOR_3DTILE_PRIMITIVE = 42
@@ -180,6 +180,8 @@ const validationWarnings = [];
     console.log("\n⚠ Issues found");
     process.exit(1);
   }
-  console.log("\n✓ Vector3DTile FRs registered cleanly, no errors / no validation");
+  console.log(
+    "\n✓ Vector3DTile FRs registered cleanly, no errors / no validation",
+  );
   process.exit(0);
 })();

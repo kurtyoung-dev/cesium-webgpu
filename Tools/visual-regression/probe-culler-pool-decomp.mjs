@@ -21,7 +21,9 @@ const OUT =
   "F:/Dev/GH/cesium-webgpu/Tools/visual-regression/output/probe-culler-pool-decomp.png";
 
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+const ctx = await browser.newContext({
+  viewport: { width: 1280, height: 720 },
+});
 const page = await ctx.newPage();
 const errors = [];
 page.on("console", (m) => {

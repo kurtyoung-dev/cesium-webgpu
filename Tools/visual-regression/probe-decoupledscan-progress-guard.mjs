@@ -203,7 +203,11 @@ const out = await page.evaluate(async (code) => {
 
   const scopeErr = await device.popErrorScope();
 
-  return { cases, scopeErr: scopeErr ? scopeErr.message : null, validationErrors };
+  return {
+    cases,
+    scopeErr: scopeErr ? scopeErr.message : null,
+    validationErrors,
+  };
 }, wgsl);
 
 await browser.close();
@@ -214,7 +218,9 @@ if (out.fatal) {
 }
 
 let pass = true;
-console.log(`WGSL watchdog constant present (MAX_LOOKBACK_SPINS): ${hasWatchdog}`);
+console.log(
+  `WGSL watchdog constant present (MAX_LOOKBACK_SPINS): ${hasWatchdog}`,
+);
 if (!hasWatchdog) pass = false;
 
 for (const c of out.cases) {
@@ -233,7 +239,9 @@ if (out.scopeErr) {
   pass = false;
 }
 if (out.validationErrors?.length) {
-  console.error(`device validation errors: ${out.validationErrors.join(" | ")}`);
+  console.error(
+    `device validation errors: ${out.validationErrors.join(" | ")}`,
+  );
   pass = false;
 }
 if (errors.length) {

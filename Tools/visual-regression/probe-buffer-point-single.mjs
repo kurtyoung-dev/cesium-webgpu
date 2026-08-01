@@ -44,7 +44,9 @@ const browser = await chromium.launch({
 });
 
 async function runWebGL() {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 700 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 700 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -131,11 +133,7 @@ async function runWebGL() {
     });
 
     v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(
-        (LON0 + LON1) / 2,
-        LAT,
-        120000.0,
-      ),
+      destination: C.Cartesian3.fromDegrees((LON0 + LON1) / 2, LAT, 120000.0),
       orientation: { heading: 0, pitch: -Math.PI / 2, roll: 0 },
     });
 

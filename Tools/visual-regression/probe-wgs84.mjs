@@ -28,14 +28,21 @@ async function capture(rendererArg, scenarioLabel) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   // Swap to WGS84 EllipsoidTerrainProvider — index 0 in default picker.
@@ -45,7 +52,9 @@ async function capture(rendererArg, scenarioLabel) {
     const blp = v.baseLayerPicker;
     const vm = blp.viewModel;
     const wgs84Tvm = vm.terrainProviderViewModels.find((t) =>
-      String(t.name || "").toLowerCase().includes("wgs84"),
+      String(t.name || "")
+        .toLowerCase()
+        .includes("wgs84"),
     );
     if (wgs84Tvm) {
       vm.selectedTerrain = wgs84Tvm;
@@ -93,9 +102,13 @@ async function capture(rendererArg, scenarioLabel) {
       mode: v.scene.mode,
       terrainProvider: v.terrainProvider?.constructor?.name,
       imageryLayerCount: v.scene.imageryLayers.length,
-      imageryProvider: v.scene.imageryLayers.get(0)?.imageryProvider?.constructor?.name,
-      imageryProjection: v.scene.imageryLayers.get(0)?.imageryProvider?.tilingScheme?.projection?.constructor?.name,
-      terrainProjection: v.terrainProvider?.tilingScheme?.projection?.constructor?.name,
+      imageryProvider:
+        v.scene.imageryLayers.get(0)?.imageryProvider?.constructor?.name,
+      imageryProjection:
+        v.scene.imageryLayers.get(0)?.imageryProvider?.tilingScheme?.projection
+          ?.constructor?.name,
+      terrainProjection:
+        v.terrainProvider?.tilingScheme?.projection?.constructor?.name,
       tilesToRender: v.scene._globe?._surface?._tilesToRender?.length,
       sampleTileMesh: (() => {
         if (!t?.data?.mesh) return null;
@@ -109,19 +122,29 @@ async function capture(rendererArg, scenarioLabel) {
           hasWebMercatorT: !!e?.hasWebMercatorT,
           hasGeodeticSurfaceNormals: !!e?.hasGeodeticSurfaceNormals,
           stride: e?.stride,
-          centerMagnitude: m.center ? Math.hypot(m.center.x, m.center.y, m.center.z) : null,
+          centerMagnitude: m.center
+            ? Math.hypot(m.center.x, m.center.y, m.center.z)
+            : null,
         };
       })(),
-      sampleTileImagery: tileImagery ? {
-        useWebMercatorT: tileImagery.useWebMercatorT,
-        hasTextureTranslationAndScale: !!tileImagery.textureTranslationAndScale,
-        hasTextureCoordinateRectangle: !!tileImagery.textureCoordinateRectangle,
-        readyImageryReady: ri ? ri.state === 8 /* ImageryState.READY */ : null,
-        hasReprojected: !!ri?._webgpuReprojectedTexture,
-        hasMercTexture: !!ri?.textureWebMercator,
-        hasNormalTexture: !!ri?.texture,
-        imageryRectIsGeographic: ri?.rectangle ? (typeof ri.rectangle.west === "number") : null,
-      } : null,
+      sampleTileImagery: tileImagery
+        ? {
+            useWebMercatorT: tileImagery.useWebMercatorT,
+            hasTextureTranslationAndScale:
+              !!tileImagery.textureTranslationAndScale,
+            hasTextureCoordinateRectangle:
+              !!tileImagery.textureCoordinateRectangle,
+            readyImageryReady: ri
+              ? ri.state === 8 /* ImageryState.READY */
+              : null,
+            hasReprojected: !!ri?._webgpuReprojectedTexture,
+            hasMercTexture: !!ri?.textureWebMercator,
+            hasNormalTexture: !!ri?.texture,
+            imageryRectIsGeographic: ri?.rectangle
+              ? typeof ri.rectangle.west === "number"
+              : null,
+          }
+        : null,
       // ALL tiles summary: count tiles by (useWebMercatorT, hasReprojected) combos
       allTilesSummary: (() => {
         const tiles = v.scene._globe?._surface?._tilesToRender || [];
@@ -134,7 +157,10 @@ async function capture(rendererArg, scenarioLabel) {
         let selfImageryCount = 0;
         for (const tile of tiles) {
           const ti = tile?.data?.imagery?.[0];
-          if (!ti) { withoutImagery++; continue; }
+          if (!ti) {
+            withoutImagery++;
+            continue;
+          }
           withImagery++;
           const ri2 = ti.readyImagery;
           const li2 = ti.loadingImagery;
@@ -143,7 +169,14 @@ async function capture(rendererArg, scenarioLabel) {
           const key = `useMercT=${ti.useWebMercatorT}|reproj=${!!ri2?._webgpuReprojectedTexture}|riReady=${ri2?.state === 8}|isParent=${ri2 && li2 && ri2 !== li2}`;
           buckets[key] = (buckets[key] || 0) + 1;
         }
-        return { total: tiles.length, withImagery, withoutImagery, parentImageryCount, selfImageryCount, buckets };
+        return {
+          total: tiles.length,
+          withImagery,
+          withoutImagery,
+          parentImageryCount,
+          selfImageryCount,
+          buckets,
+        };
       })(),
       // First tile's parent vs self imagery levels
       sampleParentInfo: (() => {
@@ -154,32 +187,56 @@ async function capture(rendererArg, scenarioLabel) {
           tileLevel: t?.level,
           tileXY: t ? `${t.x},${t.y}` : null,
           readyLevel: ti.readyImagery?.level,
-          readyXY: ti.readyImagery ? `${ti.readyImagery.x},${ti.readyImagery.y}` : null,
+          readyXY: ti.readyImagery
+            ? `${ti.readyImagery.x},${ti.readyImagery.y}`
+            : null,
           loadingLevel: ti.loadingImagery?.level,
-          loadingXY: ti.loadingImagery ? `${ti.loadingImagery.x},${ti.loadingImagery.y}` : null,
+          loadingXY: ti.loadingImagery
+            ? `${ti.loadingImagery.x},${ti.loadingImagery.y}`
+            : null,
           loadingState: ti.loadingImagery?.state,
           readyState: ti.readyImagery?.state,
           // ImageryState.READY = 4 (NOT 8 - earlier check was wrong)
           readyIsActuallyReady: ti.readyImagery?.state === 4,
-          isReadyTheParent: !!(ti.readyImagery && ti.loadingImagery && ti.readyImagery !== ti.loadingImagery),
+          isReadyTheParent: !!(
+            ti.readyImagery &&
+            ti.loadingImagery &&
+            ti.readyImagery !== ti.loadingImagery
+          ),
           // Probe reprojected texture dimensions
           reprojWidth: ti.readyImagery?._webgpuReprojectedTexture?.width,
           reprojHeight: ti.readyImagery?._webgpuReprojectedTexture?.height,
           reprojFormat: ti.readyImagery?._webgpuReprojectedTexture?.format,
-          sourceWidth: ti.readyImagery?.image?.width || ti.readyImagery?.image?.naturalWidth,
-          sourceHeight: ti.readyImagery?.image?.height || ti.readyImagery?.image?.naturalHeight,
+          sourceWidth:
+            ti.readyImagery?.image?.width ||
+            ti.readyImagery?.image?.naturalWidth,
+          sourceHeight:
+            ti.readyImagery?.image?.height ||
+            ti.readyImagery?.image?.naturalHeight,
           // ACTUAL rectangle values to verify units
-          tileRect: t?.rectangle ? `[${t.rectangle.west.toFixed(4)},${t.rectangle.south.toFixed(4)},${t.rectangle.east.toFixed(4)},${t.rectangle.north.toFixed(4)}]` : null,
-          imageryRect: ti.readyImagery?.rectangle ? `[${ti.readyImagery.rectangle.west.toFixed(4)},${ti.readyImagery.rectangle.south.toFixed(4)},${ti.readyImagery.rectangle.east.toFixed(4)},${ti.readyImagery.rectangle.north.toFixed(4)}]` : null,
+          tileRect: t?.rectangle
+            ? `[${t.rectangle.west.toFixed(4)},${t.rectangle.south.toFixed(4)},${t.rectangle.east.toFixed(4)},${t.rectangle.north.toFixed(4)}]`
+            : null,
+          imageryRect: ti.readyImagery?.rectangle
+            ? `[${ti.readyImagery.rectangle.west.toFixed(4)},${ti.readyImagery.rectangle.south.toFixed(4)},${ti.readyImagery.rectangle.east.toFixed(4)},${ti.readyImagery.rectangle.north.toFixed(4)}]`
+            : null,
           // CACHED textureCoordinateRectangle (what WebGL uses)
-          cachedTexCoordsRect: ti.textureCoordinateRectangle ? `[${ti.textureCoordinateRectangle.x.toFixed(4)},${ti.textureCoordinateRectangle.y.toFixed(4)},${ti.textureCoordinateRectangle.z.toFixed(4)},${ti.textureCoordinateRectangle.w.toFixed(4)}]` : null,
-          cachedTranslationAndScale: ti.textureTranslationAndScale ? `[${ti.textureTranslationAndScale.x.toFixed(4)},${ti.textureTranslationAndScale.y.toFixed(4)},${ti.textureTranslationAndScale.z.toFixed(4)},${ti.textureTranslationAndScale.w.toFixed(4)}]` : null,
+          cachedTexCoordsRect: ti.textureCoordinateRectangle
+            ? `[${ti.textureCoordinateRectangle.x.toFixed(4)},${ti.textureCoordinateRectangle.y.toFixed(4)},${ti.textureCoordinateRectangle.z.toFixed(4)},${ti.textureCoordinateRectangle.w.toFixed(4)}]`
+            : null,
+          cachedTranslationAndScale: ti.textureTranslationAndScale
+            ? `[${ti.textureTranslationAndScale.x.toFixed(4)},${ti.textureTranslationAndScale.y.toFixed(4)},${ti.textureTranslationAndScale.z.toFixed(4)},${ti.textureTranslationAndScale.w.toFixed(4)}]`
+            : null,
           imageryCountOnTile: t?.data?.imagery?.length,
           allImageryRects: t?.data?.imagery?.map((ti2) => {
             const ri3 = ti2.readyImagery;
             return {
-              rect: ri3?.rectangle ? `[${ri3.rectangle.south.toFixed(3)},${ri3.rectangle.north.toFixed(3)}]` : null,
-              texCoordsRect: ti2.textureCoordinateRectangle ? `[${ti2.textureCoordinateRectangle.y.toFixed(3)},${ti2.textureCoordinateRectangle.w.toFixed(3)}]` : null,
+              rect: ri3?.rectangle
+                ? `[${ri3.rectangle.south.toFixed(3)},${ri3.rectangle.north.toFixed(3)}]`
+                : null,
+              texCoordsRect: ti2.textureCoordinateRectangle
+                ? `[${ti2.textureCoordinateRectangle.y.toFixed(3)},${ti2.textureCoordinateRectangle.w.toFixed(3)}]`
+                : null,
               useMercT: ti2.useWebMercatorT,
               hasReproj: !!ri3?._webgpuReprojectedTexture,
               level: ri3?.level,
@@ -191,7 +248,10 @@ async function capture(rendererArg, scenarioLabel) {
   });
   console.log(`  ${scenarioLabel} stats:`, JSON.stringify(stats));
 
-  const out = path.join(OUT_DIR, `probe-wgs84-${scenarioLabel}-${rendererArg}.png`);
+  const out = path.join(
+    OUT_DIR,
+    `probe-wgs84-${scenarioLabel}-${rendererArg}.png`,
+  );
   await page.screenshot({ path: out, fullPage: false });
   await browser.close();
 

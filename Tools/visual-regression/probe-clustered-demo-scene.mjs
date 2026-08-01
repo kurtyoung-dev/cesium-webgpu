@@ -20,7 +20,9 @@ const OUT_ON = "Tools/visual-regression/output/clustered-demo-on.png";
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 700 },
+  });
   page.on("pageerror", (e) => console.log(`>> pageerror: ${e.message}`));
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
@@ -34,7 +36,7 @@ const OUT_ON = "Tools/visual-regression/output/clustered-demo-on.png";
         window.__probeErrors.push(ev?.error?.message ?? "");
   });
 
-  const setup = await page.evaluate(async () => {
+  const _setup = await page.evaluate(async () => {
     const C = await import("/Build/CesiumUnminified/index.js");
     window.__C = C;
     const v = window.viewer;
@@ -49,7 +51,11 @@ const OUT_ON = "Tools/visual-regression/output/clustered-demo-on.png";
     window.__center = center;
     window.__enu = enu;
     const localToWC = (x, y, z) =>
-      C.Matrix4.multiplyByPoint(enu, new C.Cartesian3(x, y, z), new C.Cartesian3());
+      C.Matrix4.multiplyByPoint(
+        enu,
+        new C.Cartesian3(x, y, z),
+        new C.Cartesian3(),
+      );
     window.__localToWC = localToWC;
 
     scene.primitives.add(
@@ -97,7 +103,14 @@ const OUT_ON = "Tools/visual-regression/output/clustered-demo-on.png";
       );
     }
 
-    const cols = ["#ff3b30", "#34c759", "#0a84ff", "#ffd60a", "#ff2d92", "#64d2ff"];
+    const cols = [
+      "#ff3b30",
+      "#34c759",
+      "#0a84ff",
+      "#ffd60a",
+      "#ff2d92",
+      "#64d2ff",
+    ];
     for (let i = 0; i < cols.length; i++) {
       const a = (i / cols.length) * C.Math.TWO_PI;
       scene.lights.add(
@@ -142,7 +155,8 @@ const OUT_ON = "Tools/visual-regression/output/clustered-demo-on.png";
       scene.render();
       await new Promise((r) => requestAnimationFrame(r));
     }
-    const d = scene._alternateSceneRenderer?._clusteredLightingDispatcher ?? null;
+    const d =
+      scene._alternateSceneRenderer?._clusteredLightingDispatcher ?? null;
     return {
       lastActive: d?.lastActiveLightCount ?? -1,
       clusteredActive: scene.context._clusteredLightingActive === true,
@@ -175,23 +189,36 @@ const OUT_ON = "Tools/visual-regression/output/clustered-demo-on.png";
       };
       const off = await dec(offB64);
       const on = await dec(onB64);
-      let so = 0, sn = 0, n = 0, ch = 0, md = 0;
+      let so = 0,
+        sn = 0,
+        n = 0,
+        ch = 0,
+        md = 0;
       for (let i = 0; i < off.data.length; i += 4) {
         const a = off.data[i] + off.data[i + 1] + off.data[i + 2];
         const b = on.data[i] + on.data[i + 1] + on.data[i + 2];
-        so += a; sn += b; n++;
+        so += a;
+        sn += b;
+        n++;
         const dd = Math.abs(b - a);
         if (dd > 5) ch++;
         if (dd > md) md = dd;
       }
-      return { meanOff: so / n, meanOn: sn / n, delta: (sn - so) / n, changedPx: ch, maxDelta: md, n };
+      return {
+        meanOff: so / n,
+        meanOn: sn / n,
+        delta: (sn - so) / n,
+        changedPx: ch,
+        maxDelta: md,
+        n,
+      };
     },
     { offB64, onB64 },
   );
   await db.close();
 
   console.log("[probe-clustered-demo-scene] result:");
-  console.log(`  scene.lights.length: ${stats ? "" : ""}${ /* */ ""}`);
+  console.log(`  scene.lights.length: ${stats ? "" : ""}${/* */ ""}`);
   console.log(`  lastActiveLightCount: ${phase2.lastActive}`);
   console.log(`  clusteredLightingActive: ${phase2.clusteredActive}`);
   console.log(`  mean RGB-sum OFF: ${stats.meanOff.toFixed(2)}`);
@@ -200,15 +227,21 @@ const OUT_ON = "Tools/visual-regression/output/clustered-demo-on.png";
   console.log(`  changed pixels (Δ>5): ${stats.changedPx} / ${stats.n}`);
   console.log(`  max single-pixel delta: ${stats.maxDelta}`);
   console.log(`\nDevice errors: ${errs.length}`);
-  errs.slice(0, 6).forEach((e) => console.log(`  - ${(e ?? "").slice(0, 200)}`));
+  errs
+    .slice(0, 6)
+    .forEach((e) => console.log(`  - ${(e ?? "").slice(0, 200)}`));
 
   let pass = true;
   if (phase2.lastActive < 6) {
-    console.log(`FAIL: lastActiveLightCount = ${phase2.lastActive}, expected 6`);
+    console.log(
+      `FAIL: lastActiveLightCount = ${phase2.lastActive}, expected 6`,
+    );
     pass = false;
   }
   if (stats.changedPx < 200) {
-    console.log(`FAIL: only ${stats.changedPx} px changed (max ${stats.maxDelta})`);
+    console.log(
+      `FAIL: only ${stats.changedPx} px changed (max ${stats.maxDelta})`,
+    );
     pass = false;
   }
   if (errs.length > 0) {
@@ -216,7 +249,9 @@ const OUT_ON = "Tools/visual-regression/output/clustered-demo-on.png";
     pass = false;
   }
   if (pass) {
-    console.log("\nPASS: demo scene renders with 6-light clustered lighting + 0 device errors");
+    console.log(
+      "\nPASS: demo scene renders with 6-light clustered lighting + 0 device errors",
+    );
   }
   process.exit(pass ? 0 : 1);
 })();

@@ -49,9 +49,12 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.6;
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.85;
+  if ("cloudCoverage" in g)
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.6;
+  if ("cloudWeatherMap" in g)
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.85;
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
@@ -77,9 +80,13 @@ const RENDER = async (cfg) => {
     s.render(jd);
     await new Promise((r) => requestAnimationFrame(r));
   }
-  let noiseBaked = false;
+  let noiseBaked;
   try {
-    noiseBaked = !!(s.context && s.context._cloudCache && s.context._cloudCache.noiseBaked);
+    noiseBaked = !!(
+      s.context &&
+      s.context._cloudCache &&
+      s.context._cloudCache.noiseBaked
+    );
   } catch (e) {
     noiseBaked = false;
   }
@@ -106,7 +113,8 @@ function lumStats(page, dataUrl) {
     if (!lums.length) return { cloudPx: 0 };
     lums.sort((a, b) => a - b);
     const mean = lums.reduce((a, b) => a + b, 0) / lums.length;
-    const p = (q) => lums[Math.min(lums.length - 1, Math.floor(q * lums.length))];
+    const p = (q) =>
+      lums[Math.min(lums.length - 1, Math.floor(q * lums.length))];
     return {
       cloudPx: lums.length,
       mean: +mean.toFixed(4),
@@ -147,7 +155,10 @@ async function run() {
     .filter((e) => !/Atmosphere ?LUT|SkyAtmosphere|default layout/i.test(e));
 
   const rec = { tag: TAG, noiseBaked: r.noiseBaked, ...stats };
-  fs.writeFileSync(`${OUT}/cloud-lighting-${TAG}.json`, JSON.stringify(rec, null, 2));
+  fs.writeFileSync(
+    `${OUT}/cloud-lighting-${TAG}.json`,
+    JSON.stringify(rec, null, 2),
+  );
   console.log(`[${TAG}]`, JSON.stringify(rec), "errs", newErrs.length);
 
   const other = TAG === "after" ? "before" : "after";
@@ -161,12 +172,17 @@ async function run() {
     const meanDelta = +Math.abs(after.mean - before.mean).toFixed(4);
     const interiorDelta = +(after.p50 - before.p50).toFixed(4);
     console.log("\n=== A/B (after vs before) ===");
-    console.log(`  after range ${range} | mean Δ ${meanDelta} | interior(p50) Δ ${interiorDelta}`);
+    console.log(
+      `  after range ${range} | mean Δ ${meanDelta} | interior(p50) Δ ${interiorDelta}`,
+    );
     const checks = [
       ["baked core active", after.noiseBaked === true],
       [`W1 tonal range preserved (${range} ≥ 0.10)`, range >= 0.1],
       [`W2 shadow floor lifted (p10 ${after.p10} ≥ 0.02)`, after.p10 >= 0.02],
-      [`MS change is a softening, not a blow-up (|mean Δ| ${meanDelta} ≤ 0.10)`, meanDelta <= 0.1],
+      [
+        `MS change is a softening, not a blow-up (|mean Δ| ${meanDelta} ≤ 0.10)`,
+        meanDelta <= 0.1,
+      ],
       ["no NEW device errors", newErrs.length === 0],
     ];
     pass = true;

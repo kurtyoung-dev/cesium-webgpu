@@ -111,8 +111,12 @@ writeFileSync(
 // the established probe-camera-track.mjs (orbit->ground WebGL-vs-WebGPU sweep),
 // which exercises the atmosphere-LUT dispatch path across waypoints.
 console.log(`renderer: ${out.rendererType}`);
-console.log(`(A) context.computeEngine wired: ${out.engineWired ? "OK" : "FAIL"}`);
-console.log(`(B) console errors (dispatch runs clean): ${errors.length} ${errors.length === 0 ? "OK" : "FAIL"}`);
+console.log(
+  `(A) context.computeEngine wired: ${out.engineWired ? "OK" : "FAIL"}`,
+);
+console.log(
+  `(B) console errors (dispatch runs clean): ${errors.length} ${errors.length === 0 ? "OK" : "FAIL"}`,
+);
 errors.slice(0, 5).forEach((e) => console.log("  ERR:", e.slice(0, 160)));
 
 const pass = out.engineWired && errors.length === 0;

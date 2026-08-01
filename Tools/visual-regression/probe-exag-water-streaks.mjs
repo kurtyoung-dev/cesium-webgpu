@@ -30,7 +30,10 @@ import { chromium } from "playwright";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { DET_BROWSER_SETUP, DETERMINISTIC_CLOCK_ISO } from "./lib/determinism-kit.mjs";
+import {
+  DET_BROWSER_SETUP,
+  DETERMINISTIC_CLOCK_ISO,
+} from "./lib/determinism-kit.mjs";
 
 const __dir = dirname(fileURLToPath(import.meta.url));
 const OUT = join(__dir, "output");
@@ -44,7 +47,9 @@ const browser = await chromium.launch({
 });
 
 async function capture(renderer, killAtmosphere) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
@@ -73,7 +78,10 @@ async function capture(renderer, killAtmosphere) {
         height: 250000,
       });
       const setIt = () =>
-        c.setView({ destination: dest, orientation: { heading: 0, pitch: -0.45, roll: 0 } });
+        c.setView({
+          destination: dest,
+          orientation: { heading: 0, pitch: -0.45, roll: 0 },
+        });
       setIt();
       await window.__det.settleTiles(s, { stableFrames: 30, maxFrames: 1500 });
       setIt();
@@ -84,7 +92,11 @@ async function capture(renderer, killAtmosphere) {
       }
       return { dataUrl: s.canvas.toDataURL("image/png") };
     },
-    { killAtmo: killAtmosphere, det: DET_BROWSER_SETUP, iso: DETERMINISTIC_CLOCK_ISO },
+    {
+      killAtmo: killAtmosphere,
+      det: DET_BROWSER_SETUP,
+      iso: DETERMINISTIC_CLOCK_ISO,
+    },
   );
   writeFileSync(
     join(OUT, `exag-water-${renderer}-${killAtmosphere ? "off" : "on"}.png`),

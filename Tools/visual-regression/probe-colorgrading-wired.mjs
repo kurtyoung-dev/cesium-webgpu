@@ -302,10 +302,14 @@ console.log(`disabled labels: ${pp(out.disabledLabels).join(" | ")}`);
 
 // (A) default: no ColorGrading pass.
 const aOK = !out.defaultLabels.some((l) => l.includes("ColorGrading"));
-console.log(`(A) default frame has NO ColorGrading pass: ${aOK ? "OK" : "FAIL"}`);
+console.log(
+  `(A) default frame has NO ColorGrading pass: ${aOK ? "OK" : "FAIL"}`,
+);
 
 // (B) enabled: pass present + visibly graded.
-const hasCG = out.warmLabels.some((l) => l.includes("PostProcess-ColorGrading"));
+const hasCG = out.warmLabels.some((l) =>
+  l.includes("PostProcess-ColorGrading"),
+);
 const dWarm = diffImgs(out.captures.warm, out.captures.default);
 const bOK = hasCG && dWarm.fracDiff > 0.05;
 console.log(
@@ -337,7 +341,7 @@ console.log(
   .forEach((e) => console.log("  ERR:", e.slice(0, 300)));
 
 // (F) off-gate vs pre-change baseline.
-let fOK = true;
+let fOK;
 const binPath = join(OUT_DIR, "baseline-default.bin");
 if (!existsSync(binPath)) {
   console.log(

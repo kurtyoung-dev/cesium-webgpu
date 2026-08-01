@@ -11,7 +11,10 @@
       name="description"
       content="Volumetric god-ray (light-shaft) post-process. Tunable density, decay, weight, exposure, sample count."
     />
-    <meta name="cesium-sandcastle-labels" content="WebGPU, Showcases, Post Processing" />
+    <meta
+      name="cesium-sandcastle-labels"
+      content="WebGPU, Showcases, Post Processing"
+    />
     <title>Cesium Demo</title>
     <script type="text/javascript" src="../Sandcastle-header.js"></script>
     <script
@@ -33,7 +36,10 @@
 
     No WebGL implementation exists for this effect.
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
     </style>
@@ -150,7 +156,9 @@
         Cesium.knockout.applyBindings(viewModel, toolbar);
         for (const name in viewModel) {
           if (Object.prototype.hasOwnProperty.call(viewModel, name)) {
-            Cesium.knockout.getObservable(viewModel, name).subscribe(applyConfig);
+            Cesium.knockout
+              .getObservable(viewModel, name)
+              .subscribe(applyConfig);
           }
         }
         applyConfig();

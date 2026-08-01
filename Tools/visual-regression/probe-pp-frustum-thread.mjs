@@ -46,7 +46,11 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
   v.camera.setView({
-    destination: window.Cesium.Cartesian3.fromDegrees(cfg.LON, cfg.LAT, cfg.ALT),
+    destination: window.Cesium.Cartesian3.fromDegrees(
+      cfg.LON,
+      cfg.LAT,
+      cfg.ALT,
+    ),
     orientation: {
       heading: window.Cesium.Math.toRadians(90.0),
       pitch: window.Cesium.Math.toRadians(-20.0),
@@ -56,7 +60,7 @@ const SETUP = async (cfg) => {
   return { ok: true };
 };
 
-const renderN = async (s, n) => {
+const _renderN = async (s, n) => {
   for (let i = 0; i < n; i++) {
     s.render();
     await new Promise((r) => requestAnimationFrame(r));
@@ -177,7 +181,9 @@ async function run() {
     return {
       camNear: f?.near ?? null,
       camFar: f?.far ?? null,
-      ao: ao ? { near: ao._near, far: ao._far, logActive: ao._logActive } : null,
+      ao: ao
+        ? { near: ao._near, far: ao._far, logActive: ao._logActive }
+        : null,
       dof: dof
         ? { near: dof._near, far: dof._far, logActive: dof._logActive }
         : null,
@@ -227,7 +233,8 @@ async function run() {
   // ---- Assertions ----
   const camFar = state.camFar ?? 0;
   const camNear = state.camNear ?? 0;
-  const approx = (a, b) => Math.abs(a - b) <= Math.max(1e-3, Math.abs(b) * 1e-4);
+  const approx = (a, b) =>
+    Math.abs(a - b) <= Math.max(1e-3, Math.abs(b) * 1e-4);
   const notPlaceholder = (v) => Math.abs(v - 10000.0) > 1.0;
 
   const checks = [];
@@ -293,9 +300,7 @@ async function run() {
     console.log(`  [${ok ? "PASS" : "FAIL"}] ${name} — ${detail}`);
     if (!ok) pass = false;
   }
-  console.log(
-    `\nPNGs: ${OUT}/pp-frustum-{baseline,effects-on,restored}.png`,
-  );
+  console.log(`\nPNGs: ${OUT}/pp-frustum-{baseline,effects-on,restored}.png`);
   console.log(pass ? "\nRESULT: PASS\n" : "\nRESULT: FAIL\n");
   process.exit(pass ? 0 : 1);
 }

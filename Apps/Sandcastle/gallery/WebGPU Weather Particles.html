@@ -30,7 +30,10 @@
     system that uses compute shaders to simulate rain, snow, fog, or
     hail as a camera-relative volumetric overlay. WebGPU-only.
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
     </style>
@@ -113,7 +116,9 @@
         Cesium.knockout.applyBindings(viewModel, toolbar);
         for (const name in viewModel) {
           if (Object.prototype.hasOwnProperty.call(viewModel, name)) {
-            Cesium.knockout.getObservable(viewModel, name).subscribe(applyWeather);
+            Cesium.knockout
+              .getObservable(viewModel, name)
+              .subscribe(applyWeather);
           }
         }
         applyWeather();

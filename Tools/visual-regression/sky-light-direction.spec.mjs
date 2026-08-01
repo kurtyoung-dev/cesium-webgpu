@@ -60,19 +60,27 @@ const skyLightDirGlsl = read(
 const legacyLightDirGlsl = read(
   "packages/engine/Source/Shaders/Builtin/Functions/getDynamicAtmosphereLightDirection.glsl",
 );
-const skyAtmosphereVs = read("packages/engine/Source/Shaders/SkyAtmosphereVS.glsl");
-const skyAtmosphereFs = read("packages/engine/Source/Shaders/SkyAtmosphereFS.glsl");
+const skyAtmosphereVs = read(
+  "packages/engine/Source/Shaders/SkyAtmosphereVS.glsl",
+);
+const skyAtmosphereFs = read(
+  "packages/engine/Source/Shaders/SkyAtmosphereFS.glsl",
+);
 const skyAtmosphereCommon = read(
   "packages/engine/Source/Shaders/SkyAtmosphereCommon.glsl",
 );
 const skyAtmosphereWgsl = read(
   "packages/engine/Source/Shaders/WebGPU/Environment/SkyAtmosphere.wgsl",
 );
-const atmosphereCommon = read("packages/engine/Source/Shaders/AtmosphereCommon.glsl");
+const atmosphereCommon = read(
+  "packages/engine/Source/Shaders/AtmosphereCommon.glsl",
+);
 const atmosphereStageFs = read(
   "packages/engine/Source/Shaders/Model/AtmosphereStageFS.glsl",
 );
-const radianceMapFs = read("packages/engine/Source/Shaders/ComputeRadianceMapFS.glsl");
+const radianceMapFs = read(
+  "packages/engine/Source/Shaders/ComputeRadianceMapFS.glsl",
+);
 const proceduralSkyWgsl = read(
   "packages/engine/Source/Shaders/WebGPU/Compute/ProceduralSkyCubemap.wgsl",
 );
@@ -134,7 +142,12 @@ function selectSkyLightDirection(positionWC, lightEnum, sunWC, sceneLightWC) {
 }
 
 /** The pre-C12-31 selector, kept so the negative controls are real. */
-function selectLegacyLightDirection(positionWC, lightEnum, sunWC, sceneLightWC) {
+function selectLegacyLightDirection(
+  positionWC,
+  lightEnum,
+  sunWC,
+  sceneLightWC,
+) {
   if (lightEnum === 1) {
     return norm(sceneLightWC);
   }
@@ -211,7 +224,8 @@ const angleBetweenDeg = (a, b) =>
 
 test("the Mie forward peak at the default anisotropy is 4869.9x the 90-degree value", () => {
   const ratio =
-    miePhase(1.0, DEFAULT_MIE_ANISOTROPY) / miePhase(0.0, DEFAULT_MIE_ANISOTROPY);
+    miePhase(1.0, DEFAULT_MIE_ANISOTROPY) /
+    miePhase(0.0, DEFAULT_MIE_ANISOTROPY);
   assert.ok(
     Math.abs(ratio - 4869.9) < 0.5,
     `forward/side Mie ratio ${ratio}, expected 4869.9`,
@@ -222,7 +236,10 @@ test("the Mie forward peak at the default anisotropy is 4869.9x the 90-degree va
     ["SkyAtmosphereFS.glsl", skyAtmosphereFs],
     ["SkyAtmosphere.wgsl", skyAtmosphereWgsl],
   ]) {
-    assert.ok(src.includes("4869.9"), `${name}: the derived ratio is not quoted`);
+    assert.ok(
+      src.includes("4869.9"),
+      `${name}: the derived ratio is not quoted`,
+    );
   }
 });
 
@@ -359,11 +376,21 @@ test("only SCENE_LIGHT and LEGACY_OVERHEAD deviate from the astronomical sun", (
   const positionWC = [1000.0, 0.0, EARTH_RADIUS];
 
   assert.deepEqual(
-    selectSkyLightDirection(positionWC, DynamicAtmosphereLightingType.NONE, sunWC, sceneLightWC),
+    selectSkyLightDirection(
+      positionWC,
+      DynamicAtmosphereLightingType.NONE,
+      sunWC,
+      sceneLightWC,
+    ),
     norm(sunWC),
   );
   assert.deepEqual(
-    selectSkyLightDirection(positionWC, DynamicAtmosphereLightingType.SUNLIGHT, sunWC, sceneLightWC),
+    selectSkyLightDirection(
+      positionWC,
+      DynamicAtmosphereLightingType.SUNLIGHT,
+      sunWC,
+      sceneLightWC,
+    ),
     norm(sunWC),
   );
   assert.deepEqual(
@@ -437,7 +464,11 @@ test("both sky shaders select through the natural-sky selector", () => {
     /let\s+isLegacyOverhead\s*=\s*dynamicLighting\s*>\s*2\.5;/,
     "WGSL legacy predicate",
   );
-  pin(skyAtmosphereWgsl, /lightDirWC\s*=\s*normalize\(skyPoint\);/, "WGSL legacy arm");
+  pin(
+    skyAtmosphereWgsl,
+    /lightDirWC\s*=\s*normalize\(skyPoint\);/,
+    "WGSL legacy arm",
+  );
   pin(skyAtmosphereWgsl, /lightDirWC\s*=\s*u\.sunDirectionWC;/, "WGSL sun arm");
   // The old predicate must be gone from the CODE. It is still named in one
   // comment (so a reader can see what the gate used to be), which is why these
@@ -456,7 +487,9 @@ test("the GLSL and WGSL selectors agree on all four enum values", () => {
   // A textual twin check is not enough — assert the two source texts encode the
   // same mapping by reading the arms out of each and comparing the answers.
   const glslArms = {
-    sceneLight: /czm_lightDirectionWC\s*\*\s*sceneLightWeight/.test(skyLightDirGlsl),
+    sceneLight: /czm_lightDirectionWC\s*\*\s*sceneLightWeight/.test(
+      skyLightDirGlsl,
+    ),
     sun: /czm_sunDirectionWC\s*\*\s*sunWeight/.test(skyLightDirGlsl),
     legacy: /positionWC\s*\*\s*legacyOverheadWeight/.test(skyLightDirGlsl),
     sunIsTheComplement:
@@ -473,7 +506,11 @@ test("the GLSL and WGSL selectors agree on all four enum values", () => {
   // The WGSL's SCENE_LIGHT arm lives on the CPU: the renderer packs the scene
   // light INTO `sunDirectionWC` for enum 1, which is why the shader has two
   // arms where the GLSL has three. Pin that seam or the twin claim is false.
-  pin(skyRendererJs, /const\s+useSceneLight\s*=\s*dynamicLighting\s*===\s*1;/, "scene-light pack");
+  pin(
+    skyRendererJs,
+    /const\s+useSceneLight\s*=\s*dynamicLighting\s*===\s*1;/,
+    "scene-light pack",
+  );
   assert.ok(
     /useSceneLight\s*&&\s*defined\(sceneLightWC\)/.test(skyRendererJs),
     "the renderer no longer routes the scene light into sunDirectionWC",
@@ -481,7 +518,10 @@ test("the GLSL and WGSL selectors agree on all four enum values", () => {
 });
 
 test("the sky WGSL still passes naga validation", async () => {
-  const nagaDirectory = path.join(root, "Tools/shader-pipeline/naga-wasm-tools");
+  const nagaDirectory = path.join(
+    root,
+    "Tools/shader-pipeline/naga-wasm-tools",
+  );
   const naga = await import(
     pathToFileURL(path.join(nagaDirectory, "naga_wasm_tools.js")).href
   );
@@ -519,7 +559,11 @@ test("the day/night alpha gates are untouched on both backends", () => {
     /let\s+isDynamic\s*=\s*u\.radiiAndDynamicAtmosphere\.z\s*!=\s*0\.0;/,
     "WGSL night alpha gate",
   );
-  pin(skyAtmosphereWgsl, /let\s+alpha\s*=\s*mix\(finalColor\.b,\s*1\.0,\s*opacity\);/, "WGSL alpha");
+  pin(
+    skyAtmosphereWgsl,
+    /let\s+alpha\s*=\s*mix\(finalColor\.b,\s*1\.0,\s*opacity\);/,
+    "WGSL alpha",
+  );
 });
 
 test("in LEGACY_OVERHEAD the night-alpha term is still exactly 1.0", () => {
@@ -529,7 +573,12 @@ test("in LEGACY_OVERHEAD the night-alpha term is still exactly 1.0", () => {
   // reproduces the historical alpha without touching the pinned gate text.
   for (const sample of upperHemisphere(15)) {
     const positionWC = shellExit(sample.dir);
-    const lightDir = selectSkyLightDirection(positionWC, 3, [1, 0, 0], [0, 1, 0]);
+    const lightDir = selectSkyLightDirection(
+      positionWC,
+      3,
+      [1, 0, 0],
+      [0, 1, 0],
+    );
     const nightAlpha = dot(norm(positionWC), lightDir);
     assert.ok(
       Math.abs(nightAlpha - 1.0) < 1e-12,
@@ -547,7 +596,11 @@ test("LUT eligibility is byte-identical for enums 0, 1 and 2", () => {
   const lutEligible = (e) => e > 0.5 && e < 2.5;
   const wasNotNone = (e) => !(e < 0.5);
   for (const e of [0, 1, 2]) {
-    assert.equal(lutEligible(e), wasNotNone(e), `enum ${e} changed LUT eligibility`);
+    assert.equal(
+      lutEligible(e),
+      wasNotNone(e),
+      `enum ${e} changed LUT eligibility`,
+    );
   }
   // The new mode is excluded, which it must be — its direction is per-fragment.
   assert.equal(lutEligible(3), false);

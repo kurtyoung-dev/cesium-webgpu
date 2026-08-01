@@ -103,8 +103,7 @@ const out = await page.evaluate(async () => {
     if (hit === undefined || hit === null) return { found: false };
     return {
       found: true,
-      isBillboard:
-        hit === bb || hit.primitive === bb || hit?.target === bb,
+      isBillboard: hit === bb || hit.primitive === bb || hit?.target === bb,
       id: hit?.id,
       kind: hit?.kind,
       primitiveCtor: hit?.primitive?.constructor?.name,

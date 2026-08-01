@@ -1,5 +1,5 @@
-import { chromium } from 'playwright';
-import fs from 'fs';
+import { chromium } from "playwright";
+import fs from "fs";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -19,44 +19,65 @@ const RENDERER_OVERRIDE_SHIM = `
 })();
 `;
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
-const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+const browser = await chromium.launch({ channel: "msedge", headless: true });
+const ctx = await browser.newContext({ viewport: { width: 800, height: 600 } });
 const page = await ctx.newPage();
 await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
+await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
   const response = await route.fetch();
-  const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-  await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
-});
-await page.goto('http://localhost:8080/Apps/Sandcastle/gallery/Particle%20System.html', { waitUntil: 'load', timeout: 60000 });
-await page.waitForTimeout(12000);
-const png = await page.screenshot({ type: 'png' });
-fs.writeFileSync('Tools/visual-regression/output/particle-no-fog-webgpu.png', png);
-const samples = await page.evaluate(async (durl) => {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = img.width; c.height = img.height;
-      const cx = c.getContext('2d');
-      cx.drawImage(img, 0, 0);
-      const points = [
-        { name: 'mid-canvas', x: 400, y: 300 },
-        { name: 'lower-mid', x: 400, y: 450 },
-        { name: 'left-mid', x: 200, y: 300 },
-        { name: 'right-mid', x: 600, y: 300 },
-        { name: 'lower-left', x: 200, y: 500 },
-      ];
-      resolve(points.map(p => {
-        const d = cx.getImageData(p.x, p.y, 1, 1).data;
-        return { ...p, r: d[0], g: d[1], b: d[2] };
-      }));
-    };
-    img.src = durl;
+  const txt = (await response.text()).replace(
+    /new\s+Cesium\.Viewer\s*\(/g,
+    "await Cesium.Viewer.createAsync(",
+  );
+  await route.fulfill({
+    status: response.status(),
+    headers: response.headers(),
+    body: txt,
   });
-}, `data:image/png;base64,${png.toString('base64')}`);
-console.log('Particle System WebGPU (fog disabled):');
+});
+await page.goto(
+  "http://localhost:8080/Apps/Sandcastle/gallery/Particle%20System.html",
+  { waitUntil: "load", timeout: 60000 },
+);
+await page.waitForTimeout(12000);
+const png = await page.screenshot({ type: "png" });
+fs.writeFileSync(
+  "Tools/visual-regression/output/particle-no-fog-webgpu.png",
+  png,
+);
+const samples = await page.evaluate(
+  async (durl) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = img.width;
+        c.height = img.height;
+        const cx = c.getContext("2d");
+        cx.drawImage(img, 0, 0);
+        const points = [
+          { name: "mid-canvas", x: 400, y: 300 },
+          { name: "lower-mid", x: 400, y: 450 },
+          { name: "left-mid", x: 200, y: 300 },
+          { name: "right-mid", x: 600, y: 300 },
+          { name: "lower-left", x: 200, y: 500 },
+        ];
+        resolve(
+          points.map((p) => {
+            const d = cx.getImageData(p.x, p.y, 1, 1).data;
+            return { ...p, r: d[0], g: d[1], b: d[2] };
+          }),
+        );
+      };
+      img.src = durl;
+    });
+  },
+  `data:image/png;base64,${png.toString("base64")}`,
+);
+console.log("Particle System WebGPU (fog disabled):");
 for (const s of samples) {
-  console.log(`  ${s.name.padEnd(12)} @ (${s.x},${s.y}) = (${s.r},${s.g},${s.b})`);
+  console.log(
+    `  ${s.name.padEnd(12)} @ (${s.x},${s.y}) = (${s.r},${s.g},${s.b})`,
+  );
 }
 await browser.close();

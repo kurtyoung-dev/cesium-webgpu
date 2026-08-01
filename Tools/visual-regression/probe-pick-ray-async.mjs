@@ -239,7 +239,9 @@ const glHeight = webgl.heightSamples.find((s) => s.kind === "number");
 if (!glHeight) {
   failures.push("WebGL leg never returned a finite height from sampleHeight");
 }
-const glClamp = webgl.clampSamples.find((s) => s.kind === "Cartesian3" && s.carto);
+const glClamp = webgl.clampSamples.find(
+  (s) => s.kind === "Cartesian3" && s.carto,
+);
 if (!glClamp) {
   failures.push("WebGL leg never returned a Cartesian3 from clampToHeight");
 }
@@ -271,11 +273,14 @@ if (glHeight && gpuFirstHeightIdx !== -1) {
   console.log(
     `\ncross-backend sampleHeight delta: dH=${dH.toFixed(1)} m (WebGL=${glHeight.h.toFixed(1)} WebGPU=${gpuHeights[gpuFirstHeightIdx].h.toFixed(1)})`,
   );
-  if (dH > 1500) failures.push(`sampleHeight dHeight ${dH.toFixed(1)} m > 1500 m`);
+  if (dH > 1500)
+    failures.push(`sampleHeight dHeight ${dH.toFixed(1)} m > 1500 m`);
 }
 
 // 4. WebGPU clampToHeight converged lon/lat near the query.
-const gpuClamp = webgpu.clampSamples.find((s) => s.kind === "Cartesian3" && s.carto);
+const gpuClamp = webgpu.clampSamples.find(
+  (s) => s.kind === "Cartesian3" && s.carto,
+);
 if (!gpuClamp) {
   failures.push("WebGPU leg never returned a Cartesian3 from clampToHeight");
 } else {
@@ -284,8 +289,10 @@ if (!gpuClamp) {
   console.log(
     `WebGPU clampToHeight converged: lon=${gpuClamp.carto.lon.toFixed(4)} lat=${gpuClamp.carto.lat.toFixed(4)} (dLon=${dLon.toFixed(4)} dLat=${dLat.toFixed(4)})`,
   );
-  if (dLon > 0.1) failures.push(`WebGPU clampToHeight dLon ${dLon.toFixed(4)} > 0.1 deg`);
-  if (dLat > 0.1) failures.push(`WebGPU clampToHeight dLat ${dLat.toFixed(4)} > 0.1 deg`);
+  if (dLon > 0.1)
+    failures.push(`WebGPU clampToHeight dLon ${dLon.toFixed(4)} > 0.1 deg`);
+  if (dLat > 0.1)
+    failures.push(`WebGPU clampToHeight dLat ${dLat.toFixed(4)} > 0.1 deg`);
 }
 
 // 5. WebGPU pickFromRay must not throw and must surface the scope warning.
@@ -294,7 +301,9 @@ if (webgpu.pickFromRayThrew) {
 }
 const gpuRayWarn = webgpu.warnings.find((w) => w.includes("pickFromRay"));
 if (!gpuRayWarn) {
-  failures.push("WebGPU pickFromRay did not emit the NEW-PICK-RAY-ASYNC scope warning");
+  failures.push(
+    "WebGPU pickFromRay did not emit the NEW-PICK-RAY-ASYNC scope warning",
+  );
 }
 
 // 6. Zero console errors both legs.
@@ -306,7 +315,9 @@ if (webgpu.errors.length > 0)
 // ---- verdict ----
 console.log("\n========================================");
 if (failures.length === 0) {
-  console.log("PASS — sampleHeight/clampToHeight parity + pickFromRay scope OK");
+  console.log(
+    "PASS — sampleHeight/clampToHeight parity + pickFromRay scope OK",
+  );
   process.exit(0);
 } else {
   console.log("FAIL:");

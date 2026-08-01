@@ -51,7 +51,11 @@ async function cloudFracAt(page, lon, lat) {
         s = v.scene;
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(lon, lat, 250000.0),
-        orientation: { heading: 0.0, pitch: C.Math.toRadians(-90.0), roll: 0.0 },
+        orientation: {
+          heading: 0.0,
+          pitch: C.Math.toRadians(-90.0),
+          roll: 0.0,
+        },
       });
       for (let i = 0; i < 90; i++) {
         s.render();
@@ -113,20 +117,24 @@ const SETUP = async (mockUrl) => {
     sourceLabel: "mock",
   });
   const caps = src.getCapabilities();
-  g.defaultCloudCollection.volumetric.weatherProvider = new C.WeatherProvider(src);
+  g.defaultCloudCollection.volumetric.weatherProvider = new C.WeatherProvider(
+    src,
+  );
   s.requestRender();
   return { capId: caps.id, supportsTime: caps.supportsTime };
 };
 
 const PROVIDER_STATE = async () => {
-  const p = window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
+  const p =
+    window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
   return p
     ? { hasData: p.hasData, version: p.version, lastError: p.lastError }
     : null;
 };
 
 const SET_CHANNEL_STRENGTH = async (val) => {
-  window.viewer.scene.globe.defaultCloudCollection.volumetric.cloudWeatherChannelStrength = val;
+  window.viewer.scene.globe.defaultCloudCollection.volumetric.cloudWeatherChannelStrength =
+    val;
   // Channel strength is a uniform (no re-fetch); a few frames refresh the deck.
   for (let i = 0; i < 30; i++) {
     window.viewer.scene.render();
@@ -164,7 +172,9 @@ async function run() {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
   await page.goto(URL, { waitUntil: "domcontentloaded" });
@@ -194,7 +204,10 @@ async function run() {
   const ch1Fr = await sweep(page, BAND_LONS, LAT);
   // Visual read: the OVC (densest, lowest-base) region with channels ON.
   await cloudFracAt(page, CLOUDY_LON, LAT);
-  fs.writeFileSync(`${OUT}/weather-metar-channels-on.png`, await page.screenshot());
+  fs.writeFileSync(
+    `${OUT}/weather-metar-channels-on.png`,
+    await page.screenshot(),
+  );
   await page.evaluate(SET_CHANNEL_STRENGTH, 0.0);
   const ch0Fr = await sweep(page, BAND_LONS, LAT);
   await cloudFracAt(page, CLOUDY_LON, LAT);
@@ -237,8 +250,18 @@ async function run() {
     `clear(frac=${clear.frac.toFixed(3)},lum=${clear.lum.toFixed(1)}) ` +
       `cloudy(frac=${cloudy.frac.toFixed(3)},lum=${cloudy.lum.toFixed(1)})`,
   );
-  console.log("ch1 fr:", ch1Fr.map((f) => f.toFixed(3)).join(", "), "->", JSON.stringify(ch1));
-  console.log("ch0 fr:", ch0Fr.map((f) => f.toFixed(3)).join(", "), "->", JSON.stringify(ch0));
+  console.log(
+    "ch1 fr:",
+    ch1Fr.map((f) => f.toFixed(3)).join(", "),
+    "->",
+    JSON.stringify(ch1),
+  );
+  console.log(
+    "ch0 fr:",
+    ch0Fr.map((f) => f.toFixed(3)).join(", "),
+    "->",
+    JSON.stringify(ch0),
+  );
   console.log("perLocΔ:", perLocDeltas.map((d) => d.toFixed(3)).join(", "));
   console.log(`meanShift=${meanShift} absDeltaSum=${absDeltaSum}`);
   console.log("errs", newErrs.length);

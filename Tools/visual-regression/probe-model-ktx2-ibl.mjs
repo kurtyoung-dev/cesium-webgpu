@@ -72,7 +72,9 @@ async function capture(renderer, envUrl) {
         ".cesium-navigation-help",
         ".cesium-viewer-fullscreenContainer",
       ]) {
-        document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
+        document
+          .querySelectorAll(sel)
+          .forEach((e) => (e.style.display = "none"));
       }
       scene.globe.show = false;
       scene.skyBox.show = false;
@@ -86,7 +88,11 @@ async function capture(renderer, envUrl) {
       const modelMatrix = C.Transforms.eastNorthUpToFixedFrame(
         C.Cartesian3.fromDegrees(-75, 40, 0),
       );
-      const model = await C.Model.fromGltfAsync({ url: modelUrl, modelMatrix, scale: 1.0 });
+      const model = await C.Model.fromGltfAsync({
+        url: modelUrl,
+        modelMatrix,
+        scale: 1.0,
+      });
       const ibl = model.imageBasedLighting;
       ibl.imageBasedLightingFactor = new C.Cartesian2(1.0, 1.0);
       // The KTX2 path: set the authored specular env map URL.
@@ -116,7 +122,11 @@ async function capture(renderer, envUrl) {
 
       v.camera.viewBoundingSphere(
         model.boundingSphere,
-        new C.HeadingPitchRange(heading, pitch, model.boundingSphere.radius * 3.0),
+        new C.HeadingPitchRange(
+          heading,
+          pitch,
+          model.boundingSphere.radius * 3.0,
+        ),
       );
       v.camera.lookAtTransform(C.Matrix4.IDENTITY);
       for (let i = 0; i < 40; i++) {
@@ -133,7 +143,9 @@ async function capture(renderer, envUrl) {
   await page.evaluate(() => new Promise((r) => setTimeout(r, 150)));
   const gate = await collectGateErrors(page);
 
-  const png = await page.locator('canvas[data-ibl="1"]').screenshot({ type: "png" });
+  const png = await page
+    .locator('canvas[data-ibl="1"]')
+    .screenshot({ type: "png" });
   const decoded = await page.evaluate(async (b64) => {
     const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
     const bmp = await createImageBitmap(blob);
@@ -159,7 +171,8 @@ async function capture(renderer, envUrl) {
 function diffModelPixels(a, b) {
   let modelPx = 0,
     mismatch = 0;
-  if (a.w !== b.w || a.h !== b.h) return { modelPx: 0, mismatch: 0, mismatchPct: null };
+  if (a.w !== b.w || a.h !== b.h)
+    return { modelPx: 0, mismatch: 0, mismatchPct: null };
   for (let i = 0; i < a.data.length; i += 4) {
     const aLum = a.data[i] + a.data[i + 1] + a.data[i + 2];
     const bLum = b.data[i] + b.data[i + 1] + b.data[i + 2];
@@ -192,7 +205,8 @@ const CRC_TABLE = (() => {
 })();
 function crc32(buf) {
   let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++)
+    c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 function encodePNG({ w, h, data }) {
@@ -200,7 +214,10 @@ function encodePNG({ w, h, data }) {
   const raw = Buffer.alloc((bpr + 1) * h);
   for (let y = 0; y < h; y++) {
     raw[y * (bpr + 1)] = 0;
-    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(raw, y * (bpr + 1) + 1);
+    Buffer.from(data.slice(y * bpr, (y + 1) * bpr)).copy(
+      raw,
+      y * (bpr + 1) + 1,
+    );
   }
   const idat = zlib.deflateSync(raw);
   const chunk = (type, body) => {
@@ -231,32 +248,64 @@ const wglKtx2 = await capture("webgl", KTX2);
 
 const fs = await import("fs");
 fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-fs.writeFileSync("Tools/visual-regression/output/ktx2-ibl-webgpu.png", encodePNG(wgpuKtx2.decoded));
-fs.writeFileSync("Tools/visual-regression/output/ktx2-ibl-webgpu-noenv.png", encodePNG(wgpuProc.decoded));
-fs.writeFileSync("Tools/visual-regression/output/ktx2-ibl-webgl.png", encodePNG(wglKtx2.decoded));
+fs.writeFileSync(
+  "Tools/visual-regression/output/ktx2-ibl-webgpu.png",
+  encodePNG(wgpuKtx2.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/ktx2-ibl-webgpu-noenv.png",
+  encodePNG(wgpuProc.decoded),
+);
+fs.writeFileSync(
+  "Tools/visual-regression/output/ktx2-ibl-webgl.png",
+  encodePNG(wglKtx2.decoded),
+);
 
 const parity = diffModelPixels(wglKtx2.decoded, wgpuKtx2.decoded);
 const consumeProof = diffModelPixels(wgpuKtx2.decoded, wgpuProc.decoded);
 const gateErrors = [...wgpuKtx2.gateErrors, ...wgpuProc.gateErrors];
 const deviceLost = wgpuKtx2.deviceLost || wgpuProc.deviceLost;
 
-console.log(JSON.stringify({
-  webgpuKtx2: { ready: wgpuKtx2.ready, ktx2Loaded: wgpuKtx2.ktx2Loaded, gateArmed: wgpuKtx2.gateArmed, gateErrors: gateErrors.slice(0, 4), deviceLost },
-  webglKtx2: { ready: wglKtx2.ready },
-  parity_webgpuKtx2_vs_webglKtx2: parity,
-  consumeProof_webgpuKtx2_vs_procedural: consumeProof,
-}, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      webgpuKtx2: {
+        ready: wgpuKtx2.ready,
+        ktx2Loaded: wgpuKtx2.ktx2Loaded,
+        gateArmed: wgpuKtx2.gateArmed,
+        gateErrors: gateErrors.slice(0, 4),
+        deviceLost,
+      },
+      webglKtx2: { ready: wglKtx2.ready },
+      parity_webgpuKtx2_vs_webglKtx2: parity,
+      consumeProof_webgpuKtx2_vs_procedural: consumeProof,
+    },
+    null,
+    2,
+  ),
+);
 
 const PARITY_MAX = 12.0;
 const CONSUME_MIN = 3.0;
 const a = wgpuKtx2.ktx2Loaded;
 const b = parity.mismatchPct !== null && parity.mismatchPct < PARITY_MAX;
-const c = consumeProof.mismatchPct !== null && consumeProof.mismatchPct > CONSUME_MIN;
+const c =
+  consumeProof.mismatchPct !== null && consumeProof.mismatchPct > CONSUME_MIN;
 const d = gateErrors.length === 0 && !deviceLost;
-console.log(`(A) KTX2 cube loaded on WebGPU (ready + maxMip>0): ${a ? "PASS" : "FAIL"}`);
-console.log(`(B) parity webgpu-KTX2 vs webgl-KTX2 < ${PARITY_MAX}% (${parity.mismatchPct}): ${b ? "PASS" : "FAIL"}`);
-console.log(`(C) consume proof webgpu-KTX2 vs procedural > ${CONSUME_MIN}% (${consumeProof.mismatchPct}): ${c ? "PASS" : "FAIL"}`);
+console.log(
+  `(A) KTX2 cube loaded on WebGPU (ready + maxMip>0): ${a ? "PASS" : "FAIL"}`,
+);
+console.log(
+  `(B) parity webgpu-KTX2 vs webgl-KTX2 < ${PARITY_MAX}% (${parity.mismatchPct}): ${b ? "PASS" : "FAIL"}`,
+);
+console.log(
+  `(C) consume proof webgpu-KTX2 vs procedural > ${CONSUME_MIN}% (${consumeProof.mismatchPct}): ${c ? "PASS" : "FAIL"}`,
+);
 console.log(`(D) no WebGPU device errors: ${d ? "PASS" : "FAIL"}`);
 const pass = wgpuKtx2.ready && wglKtx2.ready && a && b && c && d;
-console.log(pass ? "GATE PASS — authored KTX2 specular env map loads + drives WebGPU model IBL, matching WebGL" : "GATE FAIL");
+console.log(
+  pass
+    ? "GATE PASS — authored KTX2 specular env map loads + drives WebGPU model IBL, matching WebGL"
+    : "GATE FAIL",
+);
 process.exit(pass ? 0 : 1);

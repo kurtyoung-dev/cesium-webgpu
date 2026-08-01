@@ -44,7 +44,8 @@ async function stats(page, pngPath) {
       sumSq = 0,
       nonBlack = 0;
     for (let i = 0; i < data.length; i += 4) {
-      const lum = 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+      const lum =
+        0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
       sum += lum;
       sumSq += lum * lum;
       if (lum > 12) nonBlack++;
@@ -93,11 +94,14 @@ async function run() {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => {
     messages.push({ t: m.type(), text: m.text() });
-    if (m.type() === "error") console.log(`  [console.error] ${m.text().slice(0, 220)}`);
+    if (m.type() === "error")
+      console.log(`  [console.error] ${m.text().slice(0, 220)}`);
   });
   page.on("pageerror", (e) => {
     messages.push({ t: "pageerror", text: e.message });
@@ -139,7 +143,10 @@ async function run() {
   await setCam();
   await renderBurst(page, 120);
   await page.waitForTimeout(800);
-  const first = await stats(page, path.join(OUT_DIR, "probe-reinit-1-webgpu-first.png"));
+  const first = await stats(
+    page,
+    path.join(OUT_DIR, "probe-reinit-1-webgpu-first.png"),
+  );
 
   // WebGPU -> WebGL (round-trip).
   await switchTo(page, "webgl");
@@ -151,18 +158,29 @@ async function run() {
   await setCam();
   await renderBurst(page, 120);
   await page.waitForTimeout(800);
-  const second = await stats(page, path.join(OUT_DIR, "probe-reinit-2-webgpu-second.png"));
+  const second = await stats(
+    page,
+    path.join(OUT_DIR, "probe-reinit-2-webgpu-second.png"),
+  );
 
   await browser.close();
 
-  const errs = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
+  const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
+  console.log(
+    "[probe-webgpu-reinit-switch] first  WebGPU frame:",
+    JSON.stringify(first),
   );
-  console.log("[probe-webgpu-reinit-switch] first  WebGPU frame:", JSON.stringify(first));
-  console.log("[probe-webgpu-reinit-switch] second WebGPU frame:", JSON.stringify(second));
+  console.log(
+    "[probe-webgpu-reinit-switch] second WebGPU frame:",
+    JSON.stringify(second),
+  );
   if (errs.length) {
-    console.log(`\n[probe-webgpu-reinit-switch] ${errs.length} console errors (first 8):`);
-    errs.slice(0, 8).forEach((e) => console.log(`    ${e.t}: ${e.text.slice(0, 200)}`));
+    console.log(
+      `\n[probe-webgpu-reinit-switch] ${errs.length} console errors (first 8):`,
+    );
+    errs
+      .slice(0, 8)
+      .forEach((e) => console.log(`    ${e.t}: ${e.text.slice(0, 200)}`));
   }
 
   // PASS criteria: second frame has non-trivial variance AND a healthy

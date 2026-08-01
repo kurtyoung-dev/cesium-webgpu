@@ -68,7 +68,8 @@ struct FragOutput {
 
 `;
 
-const SIG_RE = /(@fragment\s*\n\s*fn fragmentMain\([\s\S]*?\)) -> @location\(0\) vec4<f32> \{/;
+const SIG_RE =
+  /(@fragment\s*\n\s*fn fragmentMain\([\s\S]*?\)) -> @location\(0\) vec4<f32> \{/;
 
 function transformFile(filePath) {
   const src = fs.readFileSync(filePath, "utf8");
@@ -81,7 +82,10 @@ function transformFile(filePath) {
   // 2. Locate the @fragment block + rewrite signature.
   const sigMatch = SIG_RE.exec(src);
   if (!sigMatch) {
-    return { error: "no @fragment fn fragmentMain ... -> @location(0) vec4<f32>", file: filePath };
+    return {
+      error: "no @fragment fn fragmentMain ... -> @location(0) vec4<f32>",
+      file: filePath,
+    };
   }
   const newSig = `${sigMatch[1]} -> FragOutput {`;
 
@@ -181,7 +185,9 @@ for (const name of FILES) {
   converted++;
 }
 
-console.log(`\nconverted: ${converted}, skipped: ${skipped}, errors: ${errors.length}`);
+console.log(
+  `\nconverted: ${converted}, skipped: ${skipped}, errors: ${errors.length}`,
+);
 if (errors.length) {
   errors.forEach((e) => console.error("  ERROR " + e));
   process.exit(1);

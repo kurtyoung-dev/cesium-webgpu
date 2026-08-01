@@ -40,12 +40,14 @@ function encodeString(f, v) {
 }
 function encodePackedVarints(f, values) {
   const payload = [];
-  for (let i = 0; i < values.length; i++) payload.push(...encodeVarint(values[i]));
+  for (let i = 0; i < values.length; i++)
+    payload.push(...encodeVarint(values[i]));
   return encodeBytes(f, payload);
 }
 function encodeFeature(o) {
   const bytes = [];
-  if (o.tags && o.tags.length > 0) bytes.push(...encodePackedVarints(2, o.tags));
+  if (o.tags && o.tags.length > 0)
+    bytes.push(...encodePackedVarints(2, o.tags));
   bytes.push(...encodeUInt(3, o.type));
   bytes.push(...encodePackedVarints(4, o.geometryCommands));
   return bytes;
@@ -128,7 +130,9 @@ async function run(renderer) {
         return { loadError: String(e).slice(0, 240) };
       }
 
-      v.camera.setView({ destination: C.Cartesian3.fromDegrees(0, 0, 9000000) });
+      v.camera.setView({
+        destination: C.Cartesian3.fromDegrees(0, 0, 9000000),
+      });
 
       for (let i = 0; i < 400; i++) {
         s.render();
@@ -150,30 +154,35 @@ async function run(renderer) {
   const buf = await canvas.screenshot();
   fs.writeFileSync(`${OUT}/_mvt-worker-${renderer}.png`, buf);
 
-  const nonBlack = await page.evaluate(async (dataUrl) => {
-    const img = new Image();
-    await new Promise((res, rej) => {
-      img.onload = res;
-      img.onerror = rej;
-      img.src = dataUrl;
-    });
-    const cv = document.createElement("canvas");
-    cv.width = img.width;
-    cv.height = img.height;
-    const ctx = cv.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
-    let lit = 0,
-      total = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      total++;
-      if (d[i] + d[i + 1] + d[i + 2] > 90) lit++;
-    }
-    return ((lit / total) * 100).toFixed(2);
-  }, "data:image/png;base64," + buf.toString("base64"));
+  const nonBlack = await page.evaluate(
+    async (dataUrl) => {
+      const img = new Image();
+      await new Promise((res, rej) => {
+        img.onload = res;
+        img.onerror = rej;
+        img.src = dataUrl;
+      });
+      const cv = document.createElement("canvas");
+      cv.width = img.width;
+      cv.height = img.height;
+      const ctx = cv.getContext("2d");
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, cv.width, cv.height).data;
+      let lit = 0,
+        total = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        total++;
+        if (d[i] + d[i + 1] + d[i + 2] > 90) lit++;
+      }
+      return ((lit / total) * 100).toFixed(2);
+    },
+    "data:image/png;base64," + buf.toString("base64"),
+  );
 
   await browser.close();
-  const decodeWorkerSpawned = workerUrls.some((u) => u.includes("decodeMVTTile"));
+  const decodeWorkerSpawned = workerUrls.some((u) =>
+    u.includes("decodeMVTTile"),
+  );
   return { info, errs, litPct: nonBlack, decodeWorkerSpawned, workerUrls };
 }
 
@@ -183,16 +192,24 @@ const webgpu = await run("webgpu");
 console.log("=== WebGL (decodeInWorker) ===");
 console.log(JSON.stringify(webgl.info));
 console.log(
-  "litPct:", webgl.litPct,
-  "decodeWorkerSpawned:", webgl.decodeWorkerSpawned,
-  "errs:", webgl.errs.length, webgl.errs.slice(0, 3),
+  "litPct:",
+  webgl.litPct,
+  "decodeWorkerSpawned:",
+  webgl.decodeWorkerSpawned,
+  "errs:",
+  webgl.errs.length,
+  webgl.errs.slice(0, 3),
 );
 console.log("=== WebGPU (decodeInWorker) ===");
 console.log(JSON.stringify(webgpu.info));
 console.log(
-  "litPct:", webgpu.litPct,
-  "decodeWorkerSpawned:", webgpu.decodeWorkerSpawned,
-  "errs:", webgpu.errs.length, webgpu.errs.slice(0, 3),
+  "litPct:",
+  webgpu.litPct,
+  "decodeWorkerSpawned:",
+  webgpu.decodeWorkerSpawned,
+  "errs:",
+  webgpu.errs.length,
+  webgpu.errs.slice(0, 3),
 );
 
 // Pixel-diff the two canvases (same crop as the parity probe).
@@ -212,12 +229,19 @@ const diff = await page.evaluate(
       cv.height = img.height;
       const ctx = cv.getContext("2d");
       ctx.drawImage(img, 0, 0);
-      return { d: ctx.getImageData(0, 0, cv.width, cv.height).data, w: cv.width };
+      return {
+        d: ctx.getImageData(0, 0, cv.width, cv.height).data,
+        w: cv.width,
+      };
     }
     const A = await decode(a);
     const B = await decode(b);
-    const cx0 = 210, cx1 = 530, cy0 = 80, cy1 = 500;
-    let mism = 0, total = 0;
+    const cx0 = 210,
+      cx1 = 530,
+      cy0 = 80,
+      cy1 = 500;
+    let mism = 0,
+      total = 0;
     for (let y = cy0; y < cy1; y++) {
       for (let x = cx0; x < cx1; x++) {
         const i = (y * A.w + x) * 4;
@@ -231,8 +255,10 @@ const diff = await page.evaluate(
     return { mismatchPctCropped: ((mism / total) * 100).toFixed(2) };
   },
   [
-    "data:image/png;base64," + fs.readFileSync(`${OUT}/_mvt-worker-webgl.png`).toString("base64"),
-    "data:image/png;base64," + fs.readFileSync(`${OUT}/_mvt-worker-webgpu.png`).toString("base64"),
+    "data:image/png;base64," +
+      fs.readFileSync(`${OUT}/_mvt-worker-webgl.png`).toString("base64"),
+    "data:image/png;base64," +
+      fs.readFileSync(`${OUT}/_mvt-worker-webgpu.png`).toString("base64"),
   ],
 );
 await browser.close();

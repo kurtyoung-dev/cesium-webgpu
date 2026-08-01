@@ -80,7 +80,9 @@ try {
       "no [WebGPU:TileDraw] PROCEEDING log observed (diag counter may be exhausted or tiles drew silently) — ordering check skipped",
     );
   } else {
-    notes.push(`first tile-draw log at console seq=${consoleLog[firstTileDrawIdx].seq}`);
+    notes.push(
+      `first tile-draw log at console seq=${consoleLog[firstTileDrawIdx].seq}`,
+    );
     if (prewarmIdx >= 0 && prewarmIdx > firstTileDrawIdx) {
       failures.push(
         "prewarm log appeared AFTER first tile draw — prewarm did not beat frame 1",

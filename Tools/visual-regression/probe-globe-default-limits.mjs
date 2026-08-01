@@ -134,8 +134,7 @@ const out = await page.evaluate(async (textureLimit) => {
     let streak = 0;
     for (let i = 0; i < maxFrames; i++) {
       await frame(1);
-      const rendering =
-        (scene.globe._surface?._tilesToRender?.length ?? 0) > 0;
+      const rendering = (scene.globe._surface?._tilesToRender?.length ?? 0) > 0;
       if (scene.globe.tilesLoaded && rendering) {
         streak++;
         if (streak >= streakNeeded) return true;

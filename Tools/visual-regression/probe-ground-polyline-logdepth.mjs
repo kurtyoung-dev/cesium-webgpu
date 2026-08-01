@@ -34,7 +34,8 @@
 import { chromium } from "playwright";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
-const ATMO_LUT_RE = /AtmosphereLUT|default layout|atmosphereLUT|SkyAtmosphere LUT/;
+const ATMO_LUT_RE =
+  /AtmosphereLUT|default layout|atmosphereLUT|SkyAtmosphere LUT/;
 
 async function captureRenderer(renderer, fs) {
   const browser = await chromium.launch({
@@ -42,7 +43,9 @@ async function captureRenderer(renderer, fs) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());

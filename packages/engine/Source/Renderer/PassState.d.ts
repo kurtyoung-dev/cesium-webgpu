@@ -16,8 +16,7 @@ declare class PassState {
   framebuffer: CesiumOpaqueFramebuffer | undefined;
   blendingEnabled: boolean | undefined;
   scissorTest:
-    | { enabled: boolean; rectangle: CesiumBoundingRectangle }
-    | undefined;
+    { enabled: boolean; rectangle: CesiumBoundingRectangle } | undefined;
   viewport: CesiumBoundingRectangle | undefined;
 }
 

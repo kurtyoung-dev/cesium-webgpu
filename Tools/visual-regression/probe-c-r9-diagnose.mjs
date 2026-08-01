@@ -72,46 +72,49 @@ const info = await page.evaluate(async () => {
 async function grayCount(tag) {
   const png = await page.screenshot();
   fs.writeFileSync(`${OUT}/c-r9-${tag}.png`, png);
-  return await page.evaluate(async (durl) => {
-    return await new Promise((resolve) => {
-      const img = new Image();
-      img.onload = () => {
-        const c = document.createElement("canvas");
-        c.width = img.width;
-        c.height = img.height;
-        const cx = c.getContext("2d");
-        cx.drawImage(img, 0, 0);
-        const W = img.width,
-          H = img.height;
-        const x0 = (W * 0.35) | 0,
-          x1 = (W * 0.65) | 0,
-          y0 = (H * 0.3) | 0,
-          y1 = (H * 0.7) | 0;
-        const d = cx.getImageData(0, 0, W, H).data;
-        let gray = 0,
-          total = 0;
-        for (let y = y0; y < y1; y += 2) {
-          for (let x = x0; x < x1; x += 2) {
-            const i = (y * W + x) * 4;
-            const r = d[i],
-              g = d[i + 1],
-              b = d[i + 2];
-            total++;
-            // Building = grayish (low chroma) mid-tone; terrain = brown/green.
-            if (
-              Math.abs(r - g) < 18 &&
-              Math.abs(g - b) < 18 &&
-              r > 70 &&
-              r < 210
-            )
-              gray++;
+  return await page.evaluate(
+    async (durl) => {
+      return await new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const cx = c.getContext("2d");
+          cx.drawImage(img, 0, 0);
+          const W = img.width,
+            H = img.height;
+          const x0 = (W * 0.35) | 0,
+            x1 = (W * 0.65) | 0,
+            y0 = (H * 0.3) | 0,
+            y1 = (H * 0.7) | 0;
+          const d = cx.getImageData(0, 0, W, H).data;
+          let gray = 0,
+            total = 0;
+          for (let y = y0; y < y1; y += 2) {
+            for (let x = x0; x < x1; x += 2) {
+              const i = (y * W + x) * 4;
+              const r = d[i],
+                g = d[i + 1],
+                b = d[i + 2];
+              total++;
+              // Building = grayish (low chroma) mid-tone; terrain = brown/green.
+              if (
+                Math.abs(r - g) < 18 &&
+                Math.abs(g - b) < 18 &&
+                r > 70 &&
+                r < 210
+              )
+                gray++;
+            }
           }
-        }
-        resolve({ gray, total });
-      };
-      img.src = durl;
-    });
-  }, `data:image/png;base64,${png.toString("base64")}`);
+          resolve({ gray, total });
+        };
+        img.src = durl;
+      });
+    },
+    `data:image/png;base64,${png.toString("base64")}`,
+  );
 }
 
 const baseline = await grayCount("baseline");
@@ -125,7 +128,10 @@ const skipEnv = await page.evaluate(async () => {
     await new Promise((r) => requestAnimationFrame(r));
   }
   const env = v.scene._environmentState ?? {};
-  return { useDepthPlaneAfterSkip: env.useDepthPlane, clearGlobeDepth: env.clearGlobeDepth };
+  return {
+    useDepthPlaneAfterSkip: env.useDepthPlane,
+    clearGlobeDepth: env.clearGlobeDepth,
+  };
 });
 const skipplane = await grayCount("skipplane");
 
@@ -142,7 +148,7 @@ await page.evaluate(async () => {
     await new Promise((r) => requestAnimationFrame(r));
   }
 });
-const depthwin = await grayCount("depthwin");
+const _depthwin = await grayCount("depthwin");
 
 console.log(
   JSON.stringify(

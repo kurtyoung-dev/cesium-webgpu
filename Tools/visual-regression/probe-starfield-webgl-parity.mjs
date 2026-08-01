@@ -176,7 +176,7 @@ async function runBackend(renderer) {
     await renderFrames(12);
     const imgOn = await grab();
 
-    let stats = null;
+    let stats;
     try {
       stats = scene.skyBox.starField.getDebugStatistics(scene.frameState);
     } catch (e) {
@@ -283,16 +283,18 @@ console.log(
 console.log(
   `bright pixels (lum>${THRESH}): WebGL off=${glOff} on=${glOn} | WebGPU off=${gpuOff} on=${gpuOn}`,
 );
-console.log(
-  `center-box bright pixels: WebGL=${glCenter} WebGPU=${gpuCenter}`,
-);
+console.log(`center-box bright pixels: WebGL=${glCenter} WebGPU=${gpuCenter}`);
 console.log(
   `bright-block IoU (block=${BLOCK}px): ${iou.toFixed(3)} ` +
     `(WebGL blocks=${glMask.mask.size}, WebGPU blocks=${gpuMask.mask.size})`,
 );
-console.log(`console errors: WebGL=${gl.errors.length} WebGPU=${gpu.errors.length}`);
+console.log(
+  `console errors: WebGL=${gl.errors.length} WebGPU=${gpu.errors.length}`,
+);
 gl.errors.slice(0, 5).forEach((e) => console.log("  GL ERR:", e.slice(0, 200)));
-gpu.errors.slice(0, 5).forEach((e) => console.log("  GPU ERR:", e.slice(0, 200)));
+gpu.errors
+  .slice(0, 5)
+  .forEach((e) => console.log("  GPU ERR:", e.slice(0, 200)));
 
 // (A) WebGL now renders stars: ON adds many bright pixels vs ~0 OFF.
 const aOK = glOn > 200 && glOn > glOff * 5 + 100;
@@ -302,8 +304,12 @@ const b1OK = glCenter > 20 && gpuCenter > 20;
 const b2OK = iou > 0.3;
 
 console.log(`(A) WebGL renders stars (was ~0): ${aOK ? "OK" : "FAIL"}`);
-console.log(`(B1) both put a bright cluster near center: ${b1OK ? "OK" : "FAIL"}`);
-console.log(`(B2) WebGL pattern matches WebGPU (IoU>0.30): ${b2OK ? "OK" : "FAIL"}`);
+console.log(
+  `(B1) both put a bright cluster near center: ${b1OK ? "OK" : "FAIL"}`,
+);
+console.log(
+  `(B2) WebGL pattern matches WebGPU (IoU>0.30): ${b2OK ? "OK" : "FAIL"}`,
+);
 console.log(`PNGs: ${OUT_DIR}`);
 
 const pass = aOK && b1OK && b2OK;

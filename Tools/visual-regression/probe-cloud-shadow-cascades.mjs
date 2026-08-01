@@ -30,7 +30,13 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 
 // Low, near-overhead camera looking down at lit terrain: near shadows land in the
 // lower part of the frame, far coverage recedes toward the top.
-const CAMERA = { lon: -109.5, lat: 38.5, height: 8000, heading: 20, pitch: -32 };
+const CAMERA = {
+  lon: -109.5,
+  lat: 38.5,
+  height: 8000,
+  heading: 20,
+  pitch: -32,
+};
 const TIME_ISO = "2026-06-21T16:30:00Z";
 const PROC = { coverage: 0.6, density: 0.9, bottom: 1500, top: 4200 };
 
@@ -43,7 +49,9 @@ const PROC = { coverage: 0.6, density: 0.9, bottom: 1500, top: 4200 };
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -200,7 +208,11 @@ const PROC = { coverage: 0.6, density: 0.9, bottom: 1500, top: 4200 };
       const yHi = region === "far" ? Math.floor(h / 3) : h;
       const y0 = region === "far" ? 0 : yLo;
       const y1 = region === "far" ? yHi : h;
-      for (let y = region === "all" ? 0 : y0; y < (region === "all" ? h : y1); y++) {
+      for (
+        let y = region === "all" ? 0 : y0;
+        y < (region === "all" ? h : y1);
+        y++
+      ) {
         for (let x = 0; x < w; x++) {
           const i = (y * w + x) * 4;
           total++;
@@ -227,7 +239,9 @@ const PROC = { coverage: 0.6, density: 0.9, bottom: 1500, top: 4200 };
     };
   }, urls);
 
-  console.log("\n=== cloud-shadow-cascades diff stats (% pixels differing) ===");
+  console.log(
+    "\n=== cloud-shadow-cascades diff stats (% pixels differing) ===",
+  );
   for (const [k, val] of Object.entries(stats)) {
     console.log(`  ${k.padEnd(30)} ${val.toFixed(3)}%`);
   }

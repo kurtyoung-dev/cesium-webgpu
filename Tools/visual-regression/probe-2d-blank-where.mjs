@@ -25,13 +25,18 @@ async function run(rendererArg) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
   await armWebGPUDevices(page);
 
@@ -99,7 +104,9 @@ async function run(rendererArg) {
   await browser.close();
 
   console.log(`\n===== ${rendererArg.toUpperCase()} SCENE2D =====`);
-  console.log(`tiles=${result.tiles} mode=${result.mode} camHeight=${result.camHeight}`);
+  console.log(
+    `tiles=${result.tiles} mode=${result.mode} camHeight=${result.camHeight}`,
+  );
   console.log(`center px=${result.center} topLeft=${result.topLeft}`);
   console.log("occupancy (16x9), '#'=>50% '+'>10% '.'>1% ' '=blank:");
   result.grid.forEach((r) => console.log("  |" + r + "|"));

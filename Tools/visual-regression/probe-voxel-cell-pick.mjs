@@ -214,7 +214,19 @@ async function capture(renderer, part) {
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const result = await page.evaluate(
-    async ({ part, dims, filledSrc, targetsA, targetsC, targetsB, targetsD, tile, fine, l3Fine, l4Src }) => {
+    async ({
+      part,
+      dims,
+      filledSrc,
+      targetsA,
+      targetsC,
+      targetsB,
+      targetsD,
+      tile,
+      fine,
+      l3Fine,
+      l4Src,
+    }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const scene = v.scene;
@@ -263,9 +275,7 @@ async function capture(renderer, part) {
         }
         const rootData = makeTile((x, y, z) => y === z);
         function makeChild(cx, cy, cz) {
-          return makeTile(
-            (lx, ly, lz) => cy * tile + ly === cz * tile + lz,
-          );
+          return makeTile((lx, ly, lz) => cy * tile + ly === cz * tile + lz);
         }
         const provider = {
           shape: C.VoxelShapeType.BOX,
@@ -474,6 +484,7 @@ async function capture(renderer, part) {
             i >= 2 &&
             prev.length === 4 &&
             last.length === 4 &&
+            // eslint-disable-next-line no-loop-func -- the closure is consumed inside this iteration (or reads a shared kill switch), not a stale per-iteration binding
             prev.every((bv, k) => bv === last[k])
           ) {
             break;
@@ -573,10 +584,7 @@ async function capture(renderer, part) {
   );
 
   const buf = await page.screenshot();
-  fs.writeFileSync(
-    `${OUT}/probe-voxel-cell-pick-${part}-${renderer}.png`,
-    buf,
-  );
+  fs.writeFileSync(`${OUT}/probe-voxel-cell-pick-${part}-${renderer}.png`, buf);
 
   await page.close();
   return { ...result, consoleErrors };
@@ -634,8 +642,12 @@ function tallyErrors(label, res) {
       const expSample = expectedSampleIndex(t.cell, DIMS);
       const ok =
         bytesEq(gl, gp) &&
-        glDec && glDec.tile === 0 && glDec.sample === expSample &&
-        gpDec && gpDec.tile === 0 && gpDec.sample === expSample;
+        glDec &&
+        glDec.tile === 0 &&
+        glDec.sample === expSample &&
+        gpDec &&
+        gpDec.tile === 0 &&
+        gpDec.sample === expSample;
       verdict = ok ? "ok" : "MISMATCH";
       console.log(
         `  [${t.label}] expect cell(${t.cell.x},${t.cell.y},${t.cell.z}) sample=${expSample} | ` +
@@ -659,7 +671,8 @@ function tallyErrors(label, res) {
   if (!objectPickOk) pass = false;
   // Part A off-gate: the DEFAULT path must keep the base pipeline name (no
   // user-shader patch, no pipeline churn).
-  const baseNameOk = webgpu.pickVoxelPipelineName === "Voxel pickVoxel pipeline";
+  const baseNameOk =
+    webgpu.pickVoxelPipelineName === "Voxel pickVoxel pipeline";
   console.log(`  default pipeline name unchanged: ${baseNameOk}`);
   if (!baseNameOk) pass = false;
   tallyErrors("A webgl", webgl);
@@ -686,7 +699,9 @@ function tallyErrors(label, res) {
     Array.isArray(webgpu.childSlots) &&
     webgpu.childSlots.every((s) => s >= 0) &&
     webgpu.lastTargetLevel === 1;
-  console.log(`  atlas refined (slotCount=9, all children, level=1): ${atlasOk}`);
+  console.log(
+    `  atlas refined (slotCount=9, all children, level=1): ${atlasOk}`,
+  );
   if (!atlasOk) pass = false;
   const tileDims = { x: TILE, y: TILE, z: TILE };
   for (let i = 0; i < TARGETS_B.length; i++) {
@@ -700,10 +715,16 @@ function tallyErrors(label, res) {
       const expSample = expectedSampleIndex(t.localCell, tileDims);
       // SAMPLE bytes must be byte-equal AND analytic.
       const sampleOk =
-        gl && gp && gl.length === 4 && gp.length === 4 &&
-        gl[2] === gp[2] && gl[3] === gp[3] &&
-        glDec && glDec.sample === expSample &&
-        gpDec && gpDec.sample === expSample;
+        gl &&
+        gp &&
+        gl.length === 4 &&
+        gp.length === 4 &&
+        gl[2] === gp[2] &&
+        gl[3] === gp[3] &&
+        glDec &&
+        glDec.sample === expSample &&
+        gpDec &&
+        gpDec.sample === expSample;
       // WebGL tile: resolved through the primitive's own traversal (the
       // Scene.pickVoxel decode) — must be the expected LEVEL-1 octant.
       const glTile = webgl.tileResolves ? webgl.tileResolves[i] : null;
@@ -717,7 +738,8 @@ function tallyErrors(label, res) {
       // must be the SAME level-1 octant (a root pick would read tile 0).
       const slot = gpDec ? gpDec.tile : -1;
       const gpTileOk =
-        slot >= 1 && slot <= 8 &&
+        slot >= 1 &&
+        slot <= 8 &&
         ((slot - 1) & 1) === t.expOctant.x &&
         (((slot - 1) >> 1) & 1) === t.expOctant.y &&
         (((slot - 1) >> 2) & 1) === t.expOctant.z;
@@ -770,8 +792,12 @@ function tallyErrors(label, res) {
     const expSample = expectedSampleIndex(t.cell, DIMS);
     const ok =
       bytesEq(gl, gp) &&
-      glDec && glDec.tile === 0 && glDec.sample === expSample &&
-      gpDec && gpDec.tile === 0 && gpDec.sample === expSample;
+      glDec &&
+      glDec.tile === 0 &&
+      glDec.sample === expSample &&
+      gpDec &&
+      gpDec.tile === 0 &&
+      gpDec.sample === expSample;
     const verdict = ok ? "ok" : "MISMATCH";
     console.log(
       `  [${t.label}] expect INVERTED cell(${t.cell.x},${t.cell.y},${t.cell.z}) sample=${expSample} | ` +
@@ -788,7 +814,9 @@ function tallyErrors(label, res) {
 {
   const webgl = await capture("webgl", "D");
   const webgpu = await capture("webgpu", "D");
-  console.log("=== Part D — refined LEVEL-3 octree pick (C4-VOXEL-PICK-OCTREE-L3) ===");
+  console.log(
+    "=== Part D — refined LEVEL-3 octree pick (C4-VOXEL-PICK-OCTREE-L3) ===",
+  );
   console.log(
     "WebGPU setup:",
     JSON.stringify({
@@ -803,7 +831,9 @@ function tallyErrors(label, res) {
     webgpu.usingRealData === true &&
     webgpu.slotCount === 585 &&
     webgpu.lastTargetLevel === 3;
-  console.log(`  atlas refined to depth 3 (slotCount=585, level=3): ${atlasOk}`);
+  console.log(
+    `  atlas refined to depth 3 (slotCount=585, level=3): ${atlasOk}`,
+  );
   if (!atlasOk) pass = false;
   // Invert a WebGPU L3 atlas slot (>= 73) back to its level-3 tile coordinate
   // through the uploaded l3Slots map (idx = x + 8y + 64z, base slot 73 region).
@@ -815,7 +845,12 @@ function tallyErrors(label, res) {
     if (idx < 0) {
       return null;
     }
-    return { level: 3, x: idx % 8, y: Math.floor(idx / 8) % 8, z: Math.floor(idx / 64) };
+    return {
+      level: 3,
+      x: idx % 8,
+      y: Math.floor(idx / 8) % 8,
+      z: Math.floor(idx / 64),
+    };
   }
   for (let i = 0; i < TARGETS_D.length; i++) {
     const t = TARGETS_D[i];
@@ -826,8 +861,12 @@ function tallyErrors(label, res) {
       // SAMPLE bytes (child-local cell within the 2×2×2 L3 tile) must be
       // byte-equal cross-backend AND non-cleared (a real hit).
       const sampleOk =
-        gl && gp && gl.length === 4 && gp.length === 4 &&
-        gl[2] === gp[2] && gl[3] === gp[3] &&
+        gl &&
+        gp &&
+        gl.length === 4 &&
+        gp.length === 4 &&
+        gl[2] === gp[2] &&
+        gl[3] === gp[3] &&
         !(gl[0] === 0 && gl[1] === 0 && gl[2] === 0 && gl[3] === 0);
       // WebGL tile resolved through the primitive's own traversal → must be
       // the expected LEVEL-3 spatial tile.

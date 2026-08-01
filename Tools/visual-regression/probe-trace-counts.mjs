@@ -4,7 +4,8 @@
 
 import { chromium } from "playwright";
 
-const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
 
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
 const ctx = await browser.newContext({
@@ -164,16 +165,17 @@ const result = await page.evaluate(() => {
         e.p.label === "Scene Framebuffer Render Pass" && e.p.drawsInPass > 0,
     );
   const firstWithDrawsIdx = sceneFBWithDraws[0]?.i ?? -1;
-  const aroundFirst = firstWithDrawsIdx >= 0
-    ? passes
-        .slice(Math.max(0, firstWithDrawsIdx - 5), firstWithDrawsIdx + 15)
-        .map((p, idx) => ({
-          ord: idx + Math.max(0, firstWithDrawsIdx - 5),
-          label: p.label,
-          loadOp: p.firstColorAttachment?.loadOp,
-          draws: p.drawsInPass,
-        }))
-    : [];
+  const aroundFirst =
+    firstWithDrawsIdx >= 0
+      ? passes
+          .slice(Math.max(0, firstWithDrawsIdx - 5), firstWithDrawsIdx + 15)
+          .map((p, idx) => ({
+            ord: idx + Math.max(0, firstWithDrawsIdx - 5),
+            label: p.label,
+            loadOp: p.firstColorAttachment?.loadOp,
+            draws: p.drawsInPass,
+          }))
+      : [];
   return {
     counts: globalThis.__dbgDrawCounts,
     frameNumber: window.viewer?.scene?._frameState?.frameNumber ?? null,

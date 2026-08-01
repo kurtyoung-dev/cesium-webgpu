@@ -37,7 +37,9 @@ async function capture(rendererArg, mode) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   const consoleErrors = attachConsoleErrorGate(page);
   const probeLogs = [];
@@ -75,7 +77,7 @@ async function capture(rendererArg, mode) {
     off.width = c.width;
     off.height = c.height;
     const cx = off.getContext("2d");
-    let pix = null;
+    let pix;
     try {
       cx.drawImage(c, 0, 0);
       const data = cx.getImageData(0, 0, c.width, c.height).data;

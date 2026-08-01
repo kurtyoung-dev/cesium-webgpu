@@ -78,6 +78,14 @@ export const CAPTURE_END = "// ==END same-task-capture==";
  *
  * `scene`, `canvas` and `timeFn` are supplied by the probe; `timeFn` returns
  * the pinned instant so the clock discipline stays the probe's own.
+ *
+ * FORMATTING CONTRACT: every line below must stay short enough that Prettier
+ * leaves it on one line at the deepest indentation any probe embeds it at
+ * (`page.evaluate` callbacks add 2-6 columns). A line that Prettier wraps in
+ * the probe but not here reads as drift to
+ * `checkEmbeddedCaptureIsCanonical` even though the code is identical — that
+ * is why `hasCapture` and `decodeFailed` exist as named intermediates rather
+ * than inline expressions. Keep new lines under ~66 columns.
  */
 export const SAME_TASK_CAPTURE_SOURCE = `const makeSameTaskCapture = (scene, canvas, timeFn) => {
   const renderNow = () => scene.render(timeFn());
@@ -86,8 +94,9 @@ export const SAME_TASK_CAPTURE_SOURCE = `const makeSameTaskCapture = (scene, can
   const decodeSnapshot = async (snapshot) => {
     const image = new Image();
     const loaded = new Promise((resolve, reject) => {
+      const decodeFailed = "same-task PNG decode failed";
       image.onload = resolve;
-      image.onerror = () => reject(new Error("same-task PNG decode failed"));
+      image.onerror = () => reject(new Error(decodeFailed));
     });
     image.src = snapshot;
     await loaded;
@@ -118,7 +127,8 @@ export const SAME_TASK_CAPTURE_SOURCE = `const makeSameTaskCapture = (scene, can
     if (!settled && typeof done === "function") {
       settled = done() === true;
     }
-    const result = typeof capture === "function" ? await capture() : undefined;
+    const hasCapture = typeof capture === "function";
+    const result = hasCapture ? await capture() : undefined;
     return { settled, result };
   };
   return { renderNow, captureNow, grabNow, settleThen };
@@ -250,8 +260,7 @@ function memberPropertyName(member) {
 }
 
 function callIdentifierName(call) {
-  return call?.type === "CallExpression" &&
-    call.callee.type === "Identifier"
+  return call?.type === "CallExpression" && call.callee.type === "Identifier"
     ? call.callee.name
     : undefined;
 }
@@ -354,13 +363,11 @@ function collectCaptureFunctionNames(ast) {
   let changed = true;
   while (changed) {
     changed = false;
+    // eslint-disable-next-line no-loop-func -- the closure is consumed inside this iteration (or reads a shared kill switch), not a stale per-iteration binding
     visitAst(ast, undefined, (node) => {
       let name;
       let value;
-      if (
-        node.type === "VariableDeclarator" &&
-        node.id.type === "Identifier"
-      ) {
+      if (node.type === "VariableDeclarator" && node.id.type === "Identifier") {
         name = node.id.name;
         value = node.init;
       } else if (

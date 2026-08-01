@@ -76,7 +76,11 @@ async function cloudFracAt(lon, lat, weatherOn) {
       // Nadir over this location at 250 km — captures the local cloud field.
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(lon, lat, 250000.0),
-        orientation: { heading: 0.0, pitch: C.Math.toRadians(-90.0), roll: 0.0 },
+        orientation: {
+          heading: 0.0,
+          pitch: C.Math.toRadians(-90.0),
+          roll: 0.0,
+        },
       });
       for (let i = 0; i < 90; i++) {
         s.render();
@@ -112,13 +116,19 @@ function stats(arr) {
   const mean = arr.reduce((a, b) => a + b, 0) / arr.length;
   const variance =
     arr.reduce((a, b) => a + (b - mean) * (b - mean), 0) / arr.length;
-  return { mean, stddev: Math.sqrt(variance), range: Math.max(...arr) - Math.min(...arr) };
+  return {
+    mean,
+    stddev: Math.sqrt(variance),
+    range: Math.max(...arr) - Math.min(...arr),
+  };
 }
 
 const offFracs = [];
-for (const [lon, lat] of LOCATIONS) offFracs.push(await cloudFracAt(lon, lat, false));
+for (const [lon, lat] of LOCATIONS)
+  offFracs.push(await cloudFracAt(lon, lat, false));
 const onFracs = [];
-for (const [lon, lat] of LOCATIONS) onFracs.push(await cloudFracAt(lon, lat, true));
+for (const [lon, lat] of LOCATIONS)
+  onFracs.push(await cloudFracAt(lon, lat, true));
 
 // Wide-orbit captures for the visual read (regional structure spans many texels).
 async function wideCapture(weatherOn) {
@@ -150,9 +160,15 @@ await browser.close();
 
 const off = stats(offFracs);
 const on = stats(onFracs);
-console.log("OFF per-location cloudFrac:", offFracs.map((f) => f.toFixed(3)).join(", "));
+console.log(
+  "OFF per-location cloudFrac:",
+  offFracs.map((f) => f.toFixed(3)).join(", "),
+);
 console.log("  OFF", JSON.stringify(off));
-console.log("ON  per-location cloudFrac:", onFracs.map((f) => f.toFixed(3)).join(", "));
+console.log(
+  "ON  per-location cloudFrac:",
+  onFracs.map((f) => f.toFixed(3)).join(", "),
+);
 console.log("  ON ", JSON.stringify(on));
 const newErrs = errs.filter((e) => !/AtmosphereLUT|default layout/.test(e));
 if (newErrs.length) console.log("NEW errs:", newErrs.slice(0, 4));
@@ -161,7 +177,10 @@ const offMin = Math.min(...offFracs),
   onMin = Math.min(...onFracs),
   onMax = Math.max(...onFracs);
 const checks = [
-  ["OFF renders clouds everywhere (min > 0.1 — uniform coverage)", offMin > 0.1],
+  [
+    "OFF renders clouds everywhere (min > 0.1 — uniform coverage)",
+    offMin > 0.1,
+  ],
   ["ON renders dense clouds somewhere (max > 0.3)", onMax > 0.3],
   [
     `ON carves clearer regions than uniform coverage (onMin ${onMin.toFixed(3)} < 0.5 * offMin ${offMin.toFixed(3)})`,

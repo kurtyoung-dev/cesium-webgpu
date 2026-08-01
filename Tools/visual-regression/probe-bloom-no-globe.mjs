@@ -1,6 +1,6 @@
 // Probe Bloom.html with globe.show = false to see what fills the lower half.
-import { chromium } from 'playwright';
-import fs from 'fs';
+import { chromium } from "playwright";
+import fs from "fs";
 
 const RENDERER_OVERRIDE_SHIM = `
 (() => {
@@ -20,48 +20,67 @@ const RENDERER_OVERRIDE_SHIM = `
 })();
 `;
 
-const browser = await chromium.launch({ channel: 'msedge', headless: true });
-const ctx = await browser.newContext({ viewport: { width: 800, height: 600 }});
+const browser = await chromium.launch({ channel: "msedge", headless: true });
+const ctx = await browser.newContext({ viewport: { width: 800, height: 600 } });
 const page = await ctx.newPage();
 const msgs = [];
-page.on('console', m => msgs.push(`[${m.type()}] ${m.text()}`));
+page.on("console", (m) => msgs.push(`[${m.type()}] ${m.text()}`));
 await page.addInitScript({ content: RENDERER_OVERRIDE_SHIM });
-await page.route('**/Apps/Sandcastle/gallery/**.html', async (route) => {
+await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
   const response = await route.fetch();
-  const txt = (await response.text()).replace(/new\s+Cesium\.Viewer\s*\(/g, 'await Cesium.Viewer.createAsync(');
-  await route.fulfill({ status: response.status(), headers: response.headers(), body: txt });
-});
-await page.goto('http://localhost:8080/Apps/Sandcastle/gallery/Bloom.html', { waitUntil: 'load', timeout: 60000 });
-await page.waitForTimeout(10000);
-const png = await page.screenshot({ type: 'png' });
-fs.writeFileSync('Tools/visual-regression/output/bloom-no-globe-webgpu.png', png);
-const samples = await page.evaluate(async (durl) => {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const c = document.createElement('canvas');
-      c.width = img.width; c.height = img.height;
-      const cx = c.getContext('2d');
-      cx.drawImage(img, 0, 0);
-      const points = [
-        { name: 'sky', x: 400, y: 100 },
-        { name: 'mid-300', x: 400, y: 300 },
-        { name: 'mid-400', x: 400, y: 400 },
-        { name: 'low-500', x: 400, y: 500 },
-        { name: 'lower-left', x: 100, y: 450 },
-        { name: 'lower-right', x: 700, y: 450 },
-      ];
-      const result = points.map(p => {
-        const d = cx.getImageData(p.x, p.y, 1, 1).data;
-        return { ...p, r: d[0], g: d[1], b: d[2] };
-      });
-      resolve(result);
-    };
-    img.src = durl;
+  const txt = (await response.text()).replace(
+    /new\s+Cesium\.Viewer\s*\(/g,
+    "await Cesium.Viewer.createAsync(",
+  );
+  await route.fulfill({
+    status: response.status(),
+    headers: response.headers(),
+    body: txt,
   });
-}, `data:image/png;base64,${png.toString('base64')}`);
-console.log('Bloom.html WebGPU (globe.show = false):');
+});
+await page.goto("http://localhost:8080/Apps/Sandcastle/gallery/Bloom.html", {
+  waitUntil: "load",
+  timeout: 60000,
+});
+await page.waitForTimeout(10000);
+const png = await page.screenshot({ type: "png" });
+fs.writeFileSync(
+  "Tools/visual-regression/output/bloom-no-globe-webgpu.png",
+  png,
+);
+const samples = await page.evaluate(
+  async (durl) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const c = document.createElement("canvas");
+        c.width = img.width;
+        c.height = img.height;
+        const cx = c.getContext("2d");
+        cx.drawImage(img, 0, 0);
+        const points = [
+          { name: "sky", x: 400, y: 100 },
+          { name: "mid-300", x: 400, y: 300 },
+          { name: "mid-400", x: 400, y: 400 },
+          { name: "low-500", x: 400, y: 500 },
+          { name: "lower-left", x: 100, y: 450 },
+          { name: "lower-right", x: 700, y: 450 },
+        ];
+        const result = points.map((p) => {
+          const d = cx.getImageData(p.x, p.y, 1, 1).data;
+          return { ...p, r: d[0], g: d[1], b: d[2] };
+        });
+        resolve(result);
+      };
+      img.src = durl;
+    });
+  },
+  `data:image/png;base64,${png.toString("base64")}`,
+);
+console.log("Bloom.html WebGPU (globe.show = false):");
 for (const s of samples) {
-  console.log(`  ${s.name.padEnd(15)} @ (${s.x},${s.y}) = (${s.r}, ${s.g}, ${s.b})`);
+  console.log(
+    `  ${s.name.padEnd(15)} @ (${s.x},${s.y}) = (${s.r}, ${s.g}, ${s.b})`,
+  );
 }
 await browser.close();

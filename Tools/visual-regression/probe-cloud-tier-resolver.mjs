@@ -43,9 +43,12 @@ const SETUP = async (cfg) => {
   v.useDefaultRenderLoop = false;
   s.requestRenderMode = false;
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
+  if ("cloudCoverage" in g)
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  if ("cloudWeatherMap" in g)
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.8;
   s.skyBox.show = false;
   s.skyAtmosphere.show = false;
   if (s.sun) s.sun.show = false;
@@ -151,7 +154,10 @@ async function run() {
     const m = await imageMismatchCloud(page, dataUrl, otherDu);
     console.log("A/B (after vs before):", JSON.stringify(m));
     const checks = [
-      [`byte-identical: mean-abs luma ${m.meanAbs} ≤ 0.5/255`, m.meanAbs <= 0.5],
+      [
+        `byte-identical: mean-abs luma ${m.meanAbs} ≤ 0.5/255`,
+        m.meanAbs <= 0.5,
+      ],
       [`max-abs luma ${m.maxAbs} ≤ 2/255`, m.maxAbs <= 2],
       [`cloud pixels present (${m.cloudPx})`, m.cloudPx > 5000],
       ["no NEW device errors", newErrs.length === 0],

@@ -292,6 +292,8 @@ const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
       cacheHasMorphPickPipeline: !!cache?.morphPickPipeline,
       cacheHasDepthSampleBindGroup: !!cache?.depthSampleBindGroup,
       cacheBatchInstanceCount: cache?.batchInstanceCount ?? 0,
+      sceneModesPass,
+      sceneModesFail,
     };
   });
 
@@ -318,7 +320,9 @@ const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
   console.log(`\n=== Console warnings (${warns.length}) ===`);
   for (const w of warns.slice(0, 20)) console.log(`[${w.type}] ${w.text}`);
 
-  console.log(`\n=== Polyline/WGSL/validation logs (${polylineLogs.length}) ===`);
+  console.log(
+    `\n=== Polyline/WGSL/validation logs (${polylineLogs.length}) ===`,
+  );
   for (const l of polylineLogs.slice(0, 30))
     console.log(`[${l.type}] ${l.text}`);
 

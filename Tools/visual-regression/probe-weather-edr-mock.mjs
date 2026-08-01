@@ -52,7 +52,11 @@ async function cloudFracAt(page, lon, lat) {
         s = v.scene;
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(lon, lat, 250000.0),
-        orientation: { heading: 0.0, pitch: C.Math.toRadians(-90.0), roll: 0.0 },
+        orientation: {
+          heading: 0.0,
+          pitch: C.Math.toRadians(-90.0),
+          roll: 0.0,
+        },
       });
       for (let i = 0; i < 90; i++) {
         s.render();
@@ -108,13 +112,16 @@ const SETUP = async (mockBase) => {
     coverageUnits: "percent",
   });
   const edrUrl = src.buildUrl({ time: "latest" });
-  g.defaultCloudCollection.volumetric.weatherProvider = new C.WeatherProvider(src);
+  g.defaultCloudCollection.volumetric.weatherProvider = new C.WeatherProvider(
+    src,
+  );
   s.requestRender();
   return { edrUrl };
 };
 
 const PROVIDER_STATE = async () => {
-  const p = window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
+  const p =
+    window.viewer.scene.globe.defaultCloudCollection.volumetric.weatherProvider;
   return p
     ? { hasData: p.hasData, version: p.version, lastError: p.lastError }
     : null;
@@ -136,7 +143,9 @@ async function run() {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = attachConsoleErrorGate(page);
   await page.addInitScript(errorGateInit);
   await page.goto(URL, { waitUntil: "domcontentloaded" });
@@ -201,7 +210,12 @@ async function run() {
 
   console.log("edrUrl", setup.edrUrl);
   console.log("state", JSON.stringify(state));
-  console.log("fr:", fr.map((f) => f.toFixed(3)).join(", "), "->", JSON.stringify(st));
+  console.log(
+    "fr:",
+    fr.map((f) => f.toFixed(3)).join(", "),
+    "->",
+    JSON.stringify(st),
+  );
   console.log(`west=${west.toFixed(3)} east=${east.toFixed(3)}`);
   console.log("errs", newErrs.length);
 

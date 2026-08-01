@@ -22,195 +22,214 @@ async function dumpReprojectedPixels(renderer) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
   await page.waitForFunction(() => !!window.viewer);
 
-  const result = await page.evaluate(async ({ view }) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const v = window.viewer;
-    const vm = v.baseLayerPicker.viewModel;
-    const wgs84 = vm.terrainProviderViewModels.find((t) =>
-      String(t.name || "").toLowerCase().includes("wgs84"),
-    );
-    if (wgs84) vm.selectedTerrain = wgs84;
-    v.camera.setView({
-      destination: C.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
-    });
-    for (let i = 0; i < 1500; i++) {
-      v.scene.render();
-      await new Promise((r) => requestAnimationFrame(r));
-      if (v.scene.globe.tilesLoaded && i > 300) break;
-    }
-
-    // Find a tile with useWebMercatorT=false AND a non-trivial reprojected
-    // texture (polar tile with Mercator-source imagery).
-    let targetTile = null;
-    let targetImagery = null;
-    let targetSkel = null;
-    for (const t of v.scene._globe._surface._tilesToRender) {
-      for (const skel of t.data?.imagery ?? []) {
-        const im = skel?.readyImagery;
-        if (!im?.imageryLayer) continue;
-        if (skel.useWebMercatorT) continue; // only polar tiles
-        const isMercatorProvider = !(
-          im.imageryLayer._imageryProvider.tilingScheme.projection
-          instanceof C.GeographicProjection
-        );
-        if (!isMercatorProvider) continue;
-        targetTile = t;
-        targetImagery = im;
-        targetSkel = skel;
-        break;
+  const result = await page.evaluate(
+    async ({ view }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      const vm = v.baseLayerPicker.viewModel;
+      const wgs84 = vm.terrainProviderViewModels.find((t) =>
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
+      );
+      if (wgs84) vm.selectedTerrain = wgs84;
+      v.camera.setView({
+        destination: C.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
+      });
+      for (let i = 0; i < 1500; i++) {
+        v.scene.render();
+        await new Promise((r) => requestAnimationFrame(r));
+        if (v.scene.globe.tilesLoaded && i > 300) break;
       }
-      if (targetTile) break;
-    }
-    if (!targetTile) return { error: "no polar tile with reprojected texture" };
 
-    // Dump pixels from the reprojected texture.
-    const result = {
-      tile: { l: targetTile.level, x: targetTile.x, y: targetTile.y },
-      imagery: {
-        key: targetImagery.key,
-        level: targetImagery.level,
-        x: targetImagery.x,
-        y: targetImagery.y,
-        rectangle: targetImagery.rectangle && {
-          west: targetImagery.rectangle.west,
-          south: targetImagery.rectangle.south,
-          east: targetImagery.rectangle.east,
-          north: targetImagery.rectangle.north,
+      // Find a tile with useWebMercatorT=false AND a non-trivial reprojected
+      // texture (polar tile with Mercator-source imagery).
+      let targetTile = null;
+      let targetImagery = null;
+      let targetSkel = null;
+      for (const t of v.scene._globe._surface._tilesToRender) {
+        for (const skel of t.data?.imagery ?? []) {
+          const im = skel?.readyImagery;
+          if (!im?.imageryLayer) continue;
+          if (skel.useWebMercatorT) continue; // only polar tiles
+          const isMercatorProvider = !(
+            im.imageryLayer._imageryProvider.tilingScheme.projection instanceof
+            C.GeographicProjection
+          );
+          if (!isMercatorProvider) continue;
+          targetTile = t;
+          targetImagery = im;
+          targetSkel = skel;
+          break;
+        }
+        if (targetTile) break;
+      }
+      if (!targetTile)
+        return { error: "no polar tile with reprojected texture" };
+
+      // Dump pixels from the reprojected texture.
+      const result = {
+        tile: { l: targetTile.level, x: targetTile.x, y: targetTile.y },
+        imagery: {
+          key: targetImagery.key,
+          level: targetImagery.level,
+          x: targetImagery.x,
+          y: targetImagery.y,
+          rectangle: targetImagery.rectangle && {
+            west: targetImagery.rectangle.west,
+            south: targetImagery.rectangle.south,
+            east: targetImagery.rectangle.east,
+            north: targetImagery.rectangle.north,
+          },
         },
-      },
-      useWebMercatorT: targetSkel.useWebMercatorT,
-    };
+        useWebMercatorT: targetSkel.useWebMercatorT,
+      };
 
-    // WebGL path: imagery.texture is a Cesium Texture. Read pixel data.
-    if (typeof v.scene.context._gl !== "undefined" && targetImagery.texture) {
-      const gl = v.scene.context._gl;
-      const tex = targetImagery.texture;
-      if (tex._texture) {
-        const w = tex.width;
-        const h = tex.height;
-        // Create a framebuffer + draw the texture into it + read pixels.
-        const fb = gl.createFramebuffer();
-        gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-        gl.framebufferTexture2D(
-          gl.FRAMEBUFFER,
-          gl.COLOR_ATTACHMENT0,
-          gl.TEXTURE_2D,
-          tex._texture,
-          0,
-        );
-        const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
-        if (status === gl.FRAMEBUFFER_COMPLETE) {
-          const buf = new Uint8Array(w * h * 4);
-          gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-          result.webglDump = {
-            width: w,
-            height: h,
-            pixelMean: [0, 0, 0],
-            samples: [],
-          };
-          let rS = 0, gS = 0, bS = 0;
-          for (let i = 0; i < buf.length; i += 4) {
-            rS += buf[i];
-            gS += buf[i + 1];
-            bS += buf[i + 2];
+      // WebGL path: imagery.texture is a Cesium Texture. Read pixel data.
+      if (typeof v.scene.context._gl !== "undefined" && targetImagery.texture) {
+        const gl = v.scene.context._gl;
+        const tex = targetImagery.texture;
+        if (tex._texture) {
+          const w = tex.width;
+          const h = tex.height;
+          // Create a framebuffer + draw the texture into it + read pixels.
+          const fb = gl.createFramebuffer();
+          gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+          gl.framebufferTexture2D(
+            gl.FRAMEBUFFER,
+            gl.COLOR_ATTACHMENT0,
+            gl.TEXTURE_2D,
+            tex._texture,
+            0,
+          );
+          const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+          if (status === gl.FRAMEBUFFER_COMPLETE) {
+            const buf = new Uint8Array(w * h * 4);
+            gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+            result.webglDump = {
+              width: w,
+              height: h,
+              pixelMean: [0, 0, 0],
+              samples: [],
+            };
+            let rS = 0,
+              gS = 0,
+              bS = 0;
+            for (let i = 0; i < buf.length; i += 4) {
+              rS += buf[i];
+              gS += buf[i + 1];
+              bS += buf[i + 2];
+            }
+            const n = buf.length / 4;
+            result.webglDump.pixelMean = [rS / n, gS / n, bS / n];
+            // Sample 9 pixels across the texture
+            const xs = [0, w >> 2, w >> 1, (w * 3) >> 2, w - 1];
+            const ys = [0, h >> 2, h >> 1, (h * 3) >> 2, h - 1];
+            for (const y of ys)
+              for (const x of xs) {
+                const idx = (y * w + x) * 4;
+                result.webglDump.samples.push({
+                  xy: [x, y],
+                  rgba: [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]],
+                });
+              }
+            // Compute hash from first 64 pixels for cross-backend fingerprint
+            let hash = 0;
+            for (let i = 0; i < Math.min(256, buf.length); i++) {
+              hash = (hash * 131 + buf[i]) | 0;
+            }
+            result.webglDump.hash = hash;
           }
-          const n = buf.length / 4;
-          result.webglDump.pixelMean = [rS / n, gS / n, bS / n];
-          // Sample 9 pixels across the texture
-          const xs = [0, w >> 2, w >> 1, (w * 3) >> 2, w - 1];
-          const ys = [0, h >> 2, h >> 1, (h * 3) >> 2, h - 1];
-          for (const y of ys) for (const x of xs) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.deleteFramebuffer(fb);
+        }
+      }
+
+      // WebGPU path: imagery._webgpuReprojectedTexture is a GPUTexture.
+      if (targetImagery._webgpuReprojectedTexture) {
+        const device = v.scene.context._device;
+        const gpuTex = targetImagery._webgpuReprojectedTexture;
+        const w = gpuTex.width;
+        const h = gpuTex.height;
+        const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+        const stagingBuffer = device.createBuffer({
+          size: bytesPerRow * h,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+        const encoder = device.createCommandEncoder();
+        encoder.copyTextureToBuffer(
+          { texture: gpuTex, mipLevel: 0 },
+          { buffer: stagingBuffer, bytesPerRow },
+          { width: w, height: h },
+        );
+        device.queue.submit([encoder.finish()]);
+        await stagingBuffer.mapAsync(GPUMapMode.READ);
+        const arr = new Uint8Array(stagingBuffer.getMappedRange());
+        // Unpad rows
+        const buf = new Uint8Array(w * h * 4);
+        for (let y = 0; y < h; y++) {
+          buf.set(
+            arr.subarray(y * bytesPerRow, y * bytesPerRow + w * 4),
+            y * w * 4,
+          );
+        }
+        stagingBuffer.unmap();
+        stagingBuffer.destroy();
+
+        result.webgpuDump = {
+          width: w,
+          height: h,
+          pixelMean: [0, 0, 0],
+          samples: [],
+        };
+        let rS = 0,
+          gS = 0,
+          bS = 0;
+        for (let i = 0; i < buf.length; i += 4) {
+          rS += buf[i];
+          gS += buf[i + 1];
+          bS += buf[i + 2];
+        }
+        const n = buf.length / 4;
+        result.webgpuDump.pixelMean = [rS / n, gS / n, bS / n];
+        const xs = [0, w >> 2, w >> 1, (w * 3) >> 2, w - 1];
+        const ys = [0, h >> 2, h >> 1, (h * 3) >> 2, h - 1];
+        for (const y of ys)
+          for (const x of xs) {
             const idx = (y * w + x) * 4;
-            result.webglDump.samples.push({
+            result.webgpuDump.samples.push({
               xy: [x, y],
               rgba: [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]],
             });
           }
-          // Compute hash from first 64 pixels for cross-backend fingerprint
-          let hash = 0;
-          for (let i = 0; i < Math.min(256, buf.length); i++) {
-            hash = (hash * 131 + buf[i]) | 0;
-          }
-          result.webglDump.hash = hash;
+        let hash = 0;
+        for (let i = 0; i < Math.min(256, buf.length); i++) {
+          hash = (hash * 131 + buf[i]) | 0;
         }
-        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-        gl.deleteFramebuffer(fb);
+        result.webgpuDump.hash = hash;
       }
-    }
 
-    // WebGPU path: imagery._webgpuReprojectedTexture is a GPUTexture.
-    if (targetImagery._webgpuReprojectedTexture) {
-      const device = v.scene.context._device;
-      const gpuTex = targetImagery._webgpuReprojectedTexture;
-      const w = gpuTex.width;
-      const h = gpuTex.height;
-      const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
-      const stagingBuffer = device.createBuffer({
-        size: bytesPerRow * h,
-        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
-      });
-      const encoder = device.createCommandEncoder();
-      encoder.copyTextureToBuffer(
-        { texture: gpuTex, mipLevel: 0 },
-        { buffer: stagingBuffer, bytesPerRow },
-        { width: w, height: h },
-      );
-      device.queue.submit([encoder.finish()]);
-      await stagingBuffer.mapAsync(GPUMapMode.READ);
-      const arr = new Uint8Array(stagingBuffer.getMappedRange());
-      // Unpad rows
-      const buf = new Uint8Array(w * h * 4);
-      for (let y = 0; y < h; y++) {
-        buf.set(arr.subarray(y * bytesPerRow, y * bytesPerRow + w * 4), y * w * 4);
-      }
-      stagingBuffer.unmap();
-      stagingBuffer.destroy();
-
-      result.webgpuDump = {
-        width: w,
-        height: h,
-        pixelMean: [0, 0, 0],
-        samples: [],
-      };
-      let rS = 0, gS = 0, bS = 0;
-      for (let i = 0; i < buf.length; i += 4) {
-        rS += buf[i];
-        gS += buf[i + 1];
-        bS += buf[i + 2];
-      }
-      const n = buf.length / 4;
-      result.webgpuDump.pixelMean = [rS / n, gS / n, bS / n];
-      const xs = [0, w >> 2, w >> 1, (w * 3) >> 2, w - 1];
-      const ys = [0, h >> 2, h >> 1, (h * 3) >> 2, h - 1];
-      for (const y of ys) for (const x of xs) {
-        const idx = (y * w + x) * 4;
-        result.webgpuDump.samples.push({
-          xy: [x, y],
-          rgba: [buf[idx], buf[idx + 1], buf[idx + 2], buf[idx + 3]],
-        });
-      }
-      let hash = 0;
-      for (let i = 0; i < Math.min(256, buf.length); i++) {
-        hash = (hash * 131 + buf[i]) | 0;
-      }
-      result.webgpuDump.hash = hash;
-    }
-
-    return result;
-  }, { view: VIEW });
+      return result;
+    },
+    { view: VIEW },
+  );
 
   await browser.close();
   return result;
 }
 
 (async () => {
-  console.log("[reprojected-texture-compare] dumping polar-tile reprojected pixels");
+  console.log(
+    "[reprojected-texture-compare] dumping polar-tile reprojected pixels",
+  );
   console.log();
   const wgl = await dumpReprojectedPixels("webgl");
   const wgpu = await dumpReprojectedPixels("webgpu");
@@ -222,16 +241,18 @@ async function dumpReprojectedPixels(renderer) {
   if (wgl.webglDump) {
     console.log("=== WebGL imagery.texture reprojected pixels ===");
     console.log(
-      `  size=${wgl.webglDump.width}x${wgl.webglDump.height} mean RGB=[${wgl.webglDump.pixelMean.map(x => x.toFixed(1)).join(", ")}]`,
+      `  size=${wgl.webglDump.width}x${wgl.webglDump.height} mean RGB=[${wgl.webglDump.pixelMean.map((x) => x.toFixed(1)).join(", ")}]`,
     );
     console.log(`  fingerprint hash: ${wgl.webglDump.hash}`);
   } else {
-    console.log("WebGL: no readable imagery.texture (likely WebGPU build, no GL context)");
+    console.log(
+      "WebGL: no readable imagery.texture (likely WebGPU build, no GL context)",
+    );
   }
   if (wgpu.webgpuDump) {
     console.log("=== WebGPU _webgpuReprojectedTexture pixels ===");
     console.log(
-      `  size=${wgpu.webgpuDump.width}x${wgpu.webgpuDump.height} mean RGB=[${wgpu.webgpuDump.pixelMean.map(x => x.toFixed(1)).join(", ")}]`,
+      `  size=${wgpu.webgpuDump.width}x${wgpu.webgpuDump.height} mean RGB=[${wgpu.webgpuDump.pixelMean.map((x) => x.toFixed(1)).join(", ")}]`,
     );
     console.log(`  fingerprint hash: ${wgpu.webgpuDump.hash}`);
   }

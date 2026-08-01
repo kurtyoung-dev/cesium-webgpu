@@ -17,7 +17,7 @@
 //
 // Usage: node Tools/visual-regression/probe-cpu-pass-profile.mjs
 import { chromium } from "playwright";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -266,7 +266,10 @@ for (const sceneName of scenes) {
   if (out.passes) {
     const rows = Object.entries(out.passes)
       .sort((a, b) => b[1].avgMs - a[1].avgMs)
-      .map(([name, p]) => `    ${name.padEnd(16)} avg=${p.avgMs.toFixed(3)}ms  max=${p.maxMs.toFixed(3)}ms  n=${p.samples}`);
+      .map(
+        ([name, p]) =>
+          `    ${name.padEnd(16)} avg=${p.avgMs.toFixed(3)}ms  max=${p.maxMs.toFixed(3)}ms  n=${p.samples}`,
+      );
     console.log(rows.join("\n"));
   }
 }
@@ -279,7 +282,9 @@ const CANDIDATE_PASSES = {
   opaque: "R-7f (buffer / geometry primitives)",
   translucent: "R-7b (translucent / OIT collect)",
 };
-console.log("\n\n================ SHORTLIST (candidate passes) ================");
+console.log(
+  "\n\n================ SHORTLIST (candidate passes) ================",
+);
 const peak = {};
 for (const [sceneName, out] of Object.entries(results)) {
   if (!out.passes) continue;
@@ -297,7 +302,13 @@ for (const [name, label] of Object.entries(CANDIDATE_PASSES)) {
     continue;
   }
   const verdict =
-    pk.avgMs > 5 ? "STRONG CANDIDATE" : pk.avgMs >= 3 ? "worth bundling" : pk.avgMs >= 1 ? "marginal" : "SKIP (<1ms)";
+    pk.avgMs > 5
+      ? "STRONG CANDIDATE"
+      : pk.avgMs >= 3
+        ? "worth bundling"
+        : pk.avgMs >= 1
+          ? "marginal"
+          : "SKIP (<1ms)";
   console.log(
     `  ${name.padEnd(12)} peak avg=${pk.avgMs.toFixed(3)}ms @${pk.scene} -> ${verdict}  [${label}]`,
   );
@@ -305,6 +316,5 @@ for (const [name, label] of Object.entries(CANDIDATE_PASSES)) {
 console.log("\nconsole errors:", errors.length);
 errors.slice(0, 8).forEach((e) => console.log("  ERR:", e));
 console.log("\nPNGs + JSON in:", OUT);
-import { writeFileSync } from "node:fs";
 writeFileSync(join(OUT, "profile.json"), JSON.stringify(results, null, 2));
 process.exit(0);

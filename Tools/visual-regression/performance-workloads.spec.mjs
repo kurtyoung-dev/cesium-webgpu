@@ -78,10 +78,7 @@ const representativeManifest = JSON.parse(
 );
 const representativeWarmManifest = JSON.parse(
   await readFile(
-    resolve(
-      directory,
-      "performance-workloads-representative-warm.json",
-    ),
+    resolve(directory, "performance-workloads-representative-warm.json"),
     "utf8",
   ),
 );
@@ -115,14 +112,8 @@ test("performance workload manifest has stable unique identities", () => {
 });
 
 test("WebGL program events retain nonblocking parallel-compile polls", () => {
-  assert.match(
-    runnerSource,
-    /const webglCompletionStatusKhr = 0x91b1;/,
-  );
-  assert.match(
-    runnerSource,
-    /parameter === webglCompletionStatusKhr/,
-  );
+  assert.match(runnerSource, /const webglCompletionStatusKhr = 0x91b1;/);
+  assert.match(runnerSource, /parameter === webglCompletionStatusKhr/);
   assert.match(runnerSource, /parameter,\s+result,/);
   assert.match(runnerSource, /sourceHash:/);
   assert.match(runnerSource, /sourceDefines:/);
@@ -142,10 +133,7 @@ test("every passing renderer run records comparable physical GPU provenance", ()
   assert.match(runnerSource, /backend: actualRenderer,/);
   assert.match(runnerSource, /rendererString,/);
   assert.match(runnerSource, /adapterInfo,/);
-  assert.match(
-    runnerSource,
-    /physical GPU provenance was incomplete/,
-  );
+  assert.match(runnerSource, /physical GPU provenance was incomplete/);
 });
 
 test("performance protocol is bounded and not an FPS-only smoke", () => {
@@ -226,10 +214,7 @@ test("camera-track workloads declare exactly one measurement control", () => {
 
   const both = JSON.parse(JSON.stringify(representativeManifest));
   both.workloads[0].measuredFrames = 600;
-  assert.equal(
-    validatePerformanceWorkloadManifest(both, schema).valid,
-    false,
-  );
+  assert.equal(validatePerformanceWorkloadManifest(both, schema).valid, false);
 });
 
 test("representative manifest binds both renderers to the same real-content route", async () => {
@@ -243,17 +228,19 @@ test("representative manifest binds both renderers to the same real-content rout
   assert.ok(
     GLOBE_CAMERA_TRACK.some(
       (waypoint) =>
-        waypoint.name ===
-        workload.representativeConfig.validationWaypoint,
+        waypoint.name === workload.representativeConfig.validationWaypoint,
     ),
   );
   assert.equal(workload.featureProfile, "default-globe");
   assert.equal(workload.renderers, undefined);
+  assert.deepEqual(renderersForWorkload(workload, ["webgl", "webgpu"]), [
+    "webgl",
+    "webgpu",
+  ]);
   assert.deepEqual(
-    renderersForWorkload(workload, ["webgl", "webgpu"]),
-    ["webgl", "webgpu"],
+    validateRepresentativeConfig(workload.representativeConfig),
+    [],
   );
-  assert.deepEqual(validateRepresentativeConfig(workload.representativeConfig), []);
   assert.ok(workload.representativeConfig.terrain.maximumLevel <= 16);
   assert.ok(
     workload.representativeConfig.models.rows *
@@ -345,10 +332,7 @@ test("representative terrain is non-flat and emits uniform plus mixed water-mask
   const water = maskForDegrees(-123.0, 37.6, -122.8, 37.9);
   const land = maskForDegrees(-122.3, 37.6, -122.1, 37.9);
   const mixed = maskForDegrees(-122.6, 37.6, -122.3, 37.9);
-  assert.deepEqual(
-    [water.kind, water.data.length],
-    ["water", 1],
-  );
+  assert.deepEqual([water.kind, water.data.length], ["water", 1]);
   assert.deepEqual([land.kind, land.data.length], ["land", 1]);
   assert.deepEqual([mixed.kind, mixed.data.length], ["mixed", 256]);
   assert.equal(representativeGeometricError(8, 9, 1024), 4);
@@ -363,18 +347,14 @@ test("representative SF terrain preserves clearance for the low route and draped
     for (let latitude = 37.68; latitude <= 37.88; latitude += 0.005) {
       maximumHeight = Math.max(
         maximumHeight,
-        sampleRepresentativeHeight(
-          radians(longitude),
-          radians(latitude),
-        ),
+        sampleRepresentativeHeight(radians(longitude), radians(latitude)),
       );
     }
   }
   assert.ok(maximumHeight < 150);
   assert.ok(300 - maximumHeight > 150);
 
-  const config =
-    representativeManifest.workloads[0].representativeConfig;
+  const config = representativeManifest.workloads[0].representativeConfig;
   assert.ok(config.models.heightAboveTerrain > 0);
   assert.ok(config.tilesets.targetHeightOffset > 0);
 });
@@ -592,8 +572,10 @@ test("representative measured-window evidence rejects vacuous streaming coverage
           identicalFixedFrameProgress: true,
           streamingFrameLimit: null,
           renderedProgress: { measured, replay: replayed },
-          fixedFrameProgressComparison:
-            compareFixedFrameProgressSequences(measured, replayed),
+          fixedFrameProgressComparison: compareFixedFrameProgressSequences(
+            measured,
+            replayed,
+          ),
           ...replayOverrides,
         },
       },
@@ -787,9 +769,7 @@ test("resident fixed-frame handoff covers every route progress exactly once", ()
   const renderedProgress = [0];
   let cameraTrackFrameIndex = 1;
   while (renderedProgress.length < measuredFrames) {
-    renderedProgress.push(
-      cameraTrackFrameIndex / (measuredFrames - 1),
-    );
+    renderedProgress.push(cameraTrackFrameIndex / (measuredFrames - 1));
     cameraTrackFrameIndex++;
   }
   assert.equal(renderedProgress.length, measuredFrames);
@@ -797,10 +777,7 @@ test("resident fixed-frame handoff covers every route progress exactly once", ()
   assert.equal(renderedProgress[1], 1 / 599);
   assert.equal(renderedProgress.at(-1), 1);
   assert.equal(new Set(renderedProgress).size, measuredFrames);
-  assert.equal(
-    runnerSource.match(/cameraTrackFrameIndex = 1;/g)?.length,
-    2,
-  );
+  assert.equal(runnerSource.match(/cameraTrackFrameIndex = 1;/g)?.length, 2);
   assert.match(
     runnerSource,
     /currentTrackState = applyCameraTrackProgress\(0\);\s+\/\/ Progress 0 is already the first rendered frame\.[\s\S]*?cameraTrackFrameIndex = 1;/,
@@ -834,8 +811,7 @@ test("WebGPU model-preparation evidence aggregates bounded conserved totals", ()
         (index + 1) * multiplier,
       ]),
     );
-  const accumulator =
-    createWebGPUModelPreparationEvidenceAccumulator();
+  const accumulator = createWebGPUModelPreparationEvidenceAccumulator();
   assert.equal(
     observeWebGPUModelPreparationStatistics(accumulator, {
       frameNumber: 10,
@@ -899,7 +875,11 @@ test("WebGPU model-preparation evidence aggregates bounded conserved totals", ()
     shadow_cast: 1,
     view_intersecting: 5,
   });
-  for (let index = 0; index < WEBGPU_MODEL_PREPARATION_WORK_FIELDS.length; index++) {
+  for (
+    let index = 0;
+    index < WEBGPU_MODEL_PREPARATION_WORK_FIELDS.length;
+    index++
+  ) {
     const field = WEBGPU_MODEL_PREPARATION_WORK_FIELDS[index];
     assert.equal(summary.sums.work[field], (index + 1) * 3);
     assert.equal(summary.maxima.work[field], (index + 1) * 2);
@@ -930,18 +910,14 @@ test("WebGPU model-preparation evidence rejects vacuous or malformed observation
   assert.equal(empty.observedFrameCount, 0);
 
   const partial = createWebGPUModelPreparationEvidenceAccumulator();
-  assert.equal(
-    observeWebGPUModelPreparationStatistics(partial, base),
-    true,
-  );
+  assert.equal(observeWebGPUModelPreparationStatistics(partial, base), true);
   const partialSummary = summarizeWebGPUModelPreparationEvidence(partial, {
     expectedFrameCount: 10,
   });
   assert.equal(partialSummary.valid, false);
   assert.equal(partialSummary.coverage.valid, false);
 
-  const demandMismatch =
-    createWebGPUModelPreparationEvidenceAccumulator();
+  const demandMismatch = createWebGPUModelPreparationEvidenceAccumulator();
   assert.equal(
     observeWebGPUModelPreparationStatistics(demandMismatch, {
       ...base,
@@ -963,8 +939,7 @@ test("WebGPU model-preparation evidence rejects vacuous or malformed observation
       work: { ...validWork, preparationRuns: Number.POSITIVE_INFINITY },
     },
   ]) {
-    const accumulator =
-      createWebGPUModelPreparationEvidenceAccumulator();
+    const accumulator = createWebGPUModelPreparationEvidenceAccumulator();
     assert.equal(
       observeWebGPUModelPreparationStatistics(accumulator, malformed),
       false,
@@ -1012,27 +987,19 @@ test("runner publishes opt-in current-frame model-preparation attribution", () =
     runnerSource,
     /statistics\?\.frameNumber === frameState\?\.frameNumber/,
   );
-  assert.match(
-    runnerSource,
-    /summarizeWebGPUModelPreparationEvidence/,
-  );
+  assert.match(runnerSource, /summarizeWebGPUModelPreparationEvidence/);
   assert.match(runnerSource, /webgpuModelPreparationEvidence,/);
   assert.match(runnerSource, /reason: "api-instrumentation-disabled"/);
   assert.match(runnerSource, /reason: "no-model-attribution-content"/);
-  assert.match(runnerSource, /expectedFrameCount: measurementPostRenderFrameCount/);
   assert.match(
     runnerSource,
-    /actualRenderer === "webgl"\s+\? null/,
+    /expectedFrameCount: measurementPostRenderFrameCount/,
   );
+  assert.match(runnerSource, /actualRenderer === "webgl"\s+\? null/);
 });
 
 test("representative streaming pair reports unequal work and throughput as outcomes", () => {
-  const makeRun = ({
-    requests,
-    generations,
-    keys,
-    frames = 1120,
-  }) => ({
+  const makeRun = ({ requests, generations, keys, frames = 1120 }) => ({
     measuredFrames: frames,
     representativeContentEvidence: {
       measurementTerrainActivity: {
@@ -1147,8 +1114,7 @@ test("resident workload fingerprints preserve identities and reject one-frame pa
     ...overrides,
   });
   const makeFingerprint = (samples) => {
-    const accumulator =
-      createRepresentativeWorkloadFingerprintAccumulator();
+    const accumulator = createRepresentativeWorkloadFingerprintAccumulator();
     for (const sample of samples) {
       assert.equal(accumulator.observe(sample), true);
     }
@@ -1170,7 +1136,9 @@ test("resident workload fingerprints preserve identities and reject one-frame pa
     makeSample({ segmentIndex: 1, directModelIdentityB: 414 }),
   ];
   const webglFingerprint = makeFingerprint(samples);
-  const matchingFingerprint = makeFingerprint(samples.map((row) => ({ ...row })));
+  const matchingFingerprint = makeFingerprint(
+    samples.map((row) => ({ ...row })),
+  );
   const commandDifferentFingerprint = makeFingerprint(
     samples.map((row, index) => ({
       ...row,
@@ -1220,7 +1188,10 @@ test("resident workload fingerprints preserve identities and reject one-frame pa
     fingerprintSamplerStart,
     fingerprintSamplerEnd,
   );
-  assert.match(fingerprintSamplerSource, /for \(const model of assets\.models\)/);
+  assert.match(
+    fingerprintSamplerSource,
+    /for \(const model of assets\.models\)/,
+  );
   assert.doesNotMatch(
     fingerprintSamplerSource,
     /frameState\?\.commandList|directModelOwnersWithCommands/,
@@ -1389,7 +1360,10 @@ test("the resident sampler reads ready tiles from the engine's own resident set"
     // order tracks selection recency — which legitimately differs between
     // legs. Both facts are reproduced here so the sampler is proven to tolerate
     // them rather than merely never having met them.
-    const nodes = [{ item: undefined }, ...tiles.map((tile) => ({ item: tile }))];
+    const nodes = [
+      { item: undefined },
+      ...tiles.map((tile) => ({ item: tile })),
+    ];
     for (let index = 0; index < nodes.length - 1; index++) {
       nodes[index].next = nodes[index + 1];
     }
@@ -1433,15 +1407,12 @@ test("the resident sampler reads ready tiles from the engine's own resident set"
         minimumTilesetTerrainClearance: 1,
       },
     };
-    const tracker = createRepresentativeEvidenceTracker(
-      scene,
-      terrain,
-      assets,
-    );
+    const tracker = createRepresentativeEvidenceTracker(scene, terrain, assets);
     mutate?.();
     assert.equal(tracker.sampleWorkloadFingerprint(0), true);
-    const fingerprint = tracker.snapshot({ phase: "measurement" })
-      .workloadFingerprint;
+    const fingerprint = tracker.snapshot({
+      phase: "measurement",
+    }).workloadFingerprint;
     assert.ok(fingerprint);
     return Object.fromEntries(
       Object.entries(fingerprint.metrics).map(([name, metric]) => [
@@ -1496,8 +1467,14 @@ test("the resident sampler reads ready tiles from the engine's own resident set"
     makeTileset(rootSwap, [rootSwap, secondChild]),
   ]);
   assert.equal(swapped.tilesetContentReady, baseline.tilesetContentReady);
-  assert.notEqual(swapped.tilesetReadyIdentityA, baseline.tilesetReadyIdentityA);
-  assert.notEqual(swapped.tilesetReadyIdentityB, baseline.tilesetReadyIdentityB);
+  assert.notEqual(
+    swapped.tilesetReadyIdentityA,
+    baseline.tilesetReadyIdentityA,
+  );
+  assert.notEqual(
+    swapped.tilesetReadyIdentityB,
+    baseline.tilesetReadyIdentityB,
+  );
 
   // Engine membership: empty, external-tileset, and implicit placeholder tiles
   // never increment numberOfTilesWithContentReady, so they must not enter the
@@ -1667,10 +1644,7 @@ test("resident comparability rejects unequal 3D Tiles ready sets by name", () =>
   );
   assert.equal(identical.valid, true);
   assert.equal(identical.certificationEligible, true);
-  assert.equal(
-    identical.metrics.workloadFingerprint.readyIdentityMatch,
-    true,
-  );
+  assert.equal(identical.metrics.workloadFingerprint.readyIdentityMatch, true);
 
   // One resident tile of difference on the second route segment.
   const oneTimeDifferentSamples = [
@@ -1785,8 +1759,9 @@ test("resident comparability rejects unequal 3D Tiles ready sets by name", () =>
   assert.ok(
     unidentified.reasons.some(
       (reason) =>
-        reason.includes("WebGL resident 3D Tiles ready identity is incomplete") &&
-        reason.includes("tilesetUnidentifiedReady"),
+        reason.includes(
+          "WebGL resident 3D Tiles ready identity is incomplete",
+        ) && reason.includes("tilesetUnidentifiedReady"),
     ),
   );
 
@@ -1804,7 +1779,9 @@ test("resident comparability rejects unequal 3D Tiles ready sets by name", () =>
   assert.ok(
     countDisagreement.reasons.some(
       (reason) =>
-        reason.includes("WebGPU resident 3D Tiles ready identity is incomplete") &&
+        reason.includes(
+          "WebGPU resident 3D Tiles ready identity is incomplete",
+        ) &&
         reason.includes("tilesetReadyCountMismatch") &&
         reason.includes("numberOfTilesWithContentReady"),
     ),
@@ -2025,11 +2002,9 @@ test("tileset lifecycle comparison identifies readiness before selection drift w
       ),
     ),
     makeRun(
-      makeDiagnostics(
-        ["tileset-0/root/0"],
-        ["tileset-0/root/0"],
-        { requestsCancelled: 1 },
-      ),
+      makeDiagnostics(["tileset-0/root/0"], ["tileset-0/root/0"], {
+        requestsCancelled: 1,
+      }),
     ),
   );
   assert.equal(comparison.available, true);
@@ -2077,10 +2052,7 @@ test("representative content has schema and runner coverage gates", () => {
     /actionRunning = false;\s+await waitFrames\(1, "convergence-pass-quiesce"\);\s+const stagingTerrainStart/,
   );
   assert.match(runnerSource, /routeStartStaging/);
-  assert.match(
-    runnerSource,
-    /untimed-deterministic-route-replay/,
-  );
+  assert.match(runnerSource, /untimed-deterministic-route-replay/);
   assert.match(
     runnerSource,
     /\(representativeValidationWaypointIndex - 1\) \/\s+\(cameraTrack\.length - 1\)/,
@@ -2133,10 +2105,7 @@ test("representative content has schema and runner coverage gates", () => {
     runnerSource,
     /phase: "post-measurement-untimed-replay"[\s\S]*?traceEndedBeforeReplay: true[\s\S]*?measurementSnapshotsFrozenBeforeReplay: true/,
   );
-  assert.match(
-    runnerSource,
-    /failed to converge to zero terrain work/,
-  );
+  assert.match(runnerSource, /failed to converge to zero terrain work/);
   assert.match(runnerSource, /assessRepresentativePairComparability/);
   assert.match(runnerSource, /deviceErrorPhases/);
   assert.match(runnerSource, /validationQueueDrain/);
@@ -2159,19 +2128,13 @@ test("representative content has schema and runner coverage gates", () => {
   assert.match(runnerSource, /options\.resolutionScale/);
   assert.match(runnerSource, /representativeContentHelper/);
   assert.match(runnerSource, /cameraTrack/);
-  assert.match(
-    runnerSource,
-    /quality\.validForCpuAggregation = false/,
-  );
+  assert.match(runnerSource, /quality\.validForCpuAggregation = false/);
 });
 
 test("representative moving evidence uses an untimed bounded deterministic replay", () => {
   const workload = representativeManifest.workloads[0];
   assert.equal(workload.trackId, GLOBE_CAMERA_TRACK_ID);
-  assert.equal(
-    workload.measuredSeconds,
-    GLOBE_CAMERA_TRACK_DURATION_SECONDS,
-  );
+  assert.equal(workload.measuredSeconds, GLOBE_CAMERA_TRACK_DURATION_SECONDS);
   assert.equal(GLOBE_CAMERA_TRACK.length, 9);
   assert.equal(GLOBE_CAMERA_TRACK.at(-2).name, "ground-sf");
   assert.equal(GLOBE_CAMERA_TRACK.at(-1).name, "orbit-himalaya");
@@ -2463,21 +2426,18 @@ test("implicit renderer-specific workloads skip while explicit requests fail", (
   ];
 
   assert.deepEqual(renderersForWorkload(workloads[0], ["webgl"]), ["webgl"]);
-  assert.deepEqual(
-    selectWorkloadsForRenderers(workloads, ["webgl"]),
-    {
-      selected: [workloads[0]],
-      skipped: [
-        {
-          id: "webgpu-only",
-          reason: "unsupported-renderer",
-          selectedRenderers: ["webgl"],
-          supportedRenderers: ["webgpu"],
-        },
-      ],
-      skippedRenderers: [],
-    },
-  );
+  assert.deepEqual(selectWorkloadsForRenderers(workloads, ["webgl"]), {
+    selected: [workloads[0]],
+    skipped: [
+      {
+        id: "webgpu-only",
+        reason: "unsupported-renderer",
+        selectedRenderers: ["webgl"],
+        supportedRenderers: ["webgpu"],
+      },
+    ],
+    skippedRenderers: [],
+  });
   assert.throws(
     () =>
       selectWorkloadsForRenderers([workloads[1]], ["webgl"], {
@@ -2923,7 +2883,7 @@ test("replay provenance is measured from rendered phase, never restated from con
   // One comparator, shared by the page and the gate.
   assert.match(
     runnerSource,
-    /await import\(\s+"\/Tools\/visual-regression\/lib\/performance-campaign-utils\.mjs"\s+\)/,
+    /await import\(\s*"\/Tools\/visual-regression\/lib\/performance-campaign-utils\.mjs",?\s*\)/,
   );
 
   const fingerprintMetricNames = [
@@ -2951,7 +2911,10 @@ test("replay provenance is measured from rendered phase, never restated from con
   ];
   const zeroMetrics = () =>
     Object.fromEntries(
-      fingerprintMetricNames.map((name) => [name, { total: 0, min: 0, max: 0 }]),
+      fingerprintMetricNames.map((name) => [
+        name,
+        { total: 0, min: 0, max: 0 },
+      ]),
     );
   const provenance = {
     timed: false,
@@ -3053,7 +3016,10 @@ test("every frame wait is bounded and reports a timeout as structural", () => {
   assert.match(waitSource, /budgetTimeoutId = setTimeout\(/);
   assert.match(waitSource, /armStall\(\);/);
   // A timeout must remove the listener and REJECT — never resolve.
-  assert.match(waitSource, /const fail = \(bound\) =>\s+settle\(\s+new Error\(/);
+  assert.match(
+    waitSource,
+    /const fail = \(bound\) =>\s+settle\(\s+new Error\(/,
+  );
   assert.match(waitSource, /\[structural\] frame wait/);
   assert.match(waitSource, /structurally invalid/);
   assert.match(waitSource, /remove\?\.\(\);/);

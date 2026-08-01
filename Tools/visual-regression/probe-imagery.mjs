@@ -7,13 +7,22 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
-  page.on("console", m => messages.push({ t: m.type(), text: m.text() }));
+  page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, { waitUntil: "networkidle" });
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
+    waitUntil: "networkidle",
+  });
   await page.waitForFunction(() => !!window.viewer);
 
   const result = await page.evaluate(async () => {
@@ -24,7 +33,7 @@ const BASE = "http://localhost:8080";
     });
     for (let i = 0; i < 240; i++) {
       v.scene.render();
-      await new Promise(r => requestAnimationFrame(r));
+      await new Promise((r) => requestAnimationFrame(r));
     }
 
     const scene = v.scene;
@@ -44,7 +53,11 @@ const BASE = "http://localhost:8080";
       });
     }
     return {
-      cameraPos: { x: cam.positionWC.x, y: cam.positionWC.y, z: cam.positionWC.z },
+      cameraPos: {
+        x: cam.positionWC.x,
+        y: cam.positionWC.y,
+        z: cam.positionWC.z,
+      },
       cameraHeight: cam.positionCartographic.height,
       cameraLat: C.Math.toDegrees(cam.positionCartographic.latitude),
       cameraLon: C.Math.toDegrees(cam.positionCartographic.longitude),
@@ -63,7 +76,12 @@ const BASE = "http://localhost:8080";
   console.log(JSON.stringify(result, null, 2));
   console.log("\nFirst 30 console messages:");
   for (const m of messages.slice(0, 30)) {
-    if (m.text.includes("WebGPU") || m.text.includes("imagery") || m.text.includes("Layer") || m.text.includes("texture"))
+    if (
+      m.text.includes("WebGPU") ||
+      m.text.includes("imagery") ||
+      m.text.includes("Layer") ||
+      m.text.includes("texture")
+    )
       console.log(`  [${m.t}] ${m.text.slice(0, 250)}`);
   }
 })();

@@ -155,8 +155,7 @@ function sourceProvenance() {
     source: fileFingerprint(shaderSourcePath),
     built: fileFingerprint(shaderBuildPath),
   };
-  shaderPair.exactMatch =
-    shaderPair.source.sha256 === shaderPair.built.sha256;
+  shaderPair.exactMatch = shaderPair.source.sha256 === shaderPair.built.sha256;
 
   const workerDirectory = "Build/CesiumUnminified/Workers";
   const workerPaths = fs
@@ -189,8 +188,7 @@ function sourceProvenance() {
     sourceMapPairs,
     workerCount: workerPaths.length,
     sourceBuildExact:
-      shaderPair.exactMatch &&
-      sourceMapPairs.every((pair) => pair.exactMatch),
+      shaderPair.exactMatch && sourceMapPairs.every((pair) => pair.exactMatch),
     sourceFingerprint: fingerprintSet(sourceFiles),
     buildFingerprint: fingerprintSet(buildFiles),
     sourceFiles,
@@ -217,7 +215,9 @@ function installTemporalWriteBufferProbe() {
 
   const queuePrototype = root.GPUQueue?.prototype;
   if (!queuePrototype || typeof queuePrototype.writeBuffer !== "function") {
-    state.installationFailures.push("GPUQueue.prototype.writeBuffer unavailable");
+    state.installationFailures.push(
+      "GPUQueue.prototype.writeBuffer unavailable",
+    );
     return;
   }
 
@@ -300,7 +300,9 @@ function installTemporalWriteBufferProbe() {
     };
     state.installed = queuePrototype.writeBuffer !== original;
     if (!state.installed) {
-      state.installationFailures.push("GPUQueue.writeBuffer patch did not stick");
+      state.installationFailures.push(
+        "GPUQueue.writeBuffer patch did not stick",
+      );
     }
   } catch (error) {
     state.installationFailures.push(
@@ -345,11 +347,7 @@ const INITIAL_SEQUENCE = async ({ fixedTime }) => {
 
   const setCamera = (view) => {
     viewer.camera.setView({
-      destination: C.Cartesian3.fromDegrees(
-        view.lon,
-        view.lat,
-        view.height,
-      ),
+      destination: C.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
       orientation: {
         heading: C.Math.toRadians(view.heading),
         pitch: C.Math.toRadians(view.pitch),
@@ -697,9 +695,7 @@ function analyzeEvidence(evidence, gpuGate, armState, errors) {
   }
   addCheck(
     "exactly one temporal uniform upload per active frame",
-    oneUploadLabels.every(
-      (label) => byLabel.get(label)?.uploads.length === 1,
-    ),
+    oneUploadLabels.every((label) => byLabel.get(label)?.uploads.length === 1),
     Object.fromEntries(
       oneUploadLabels.map((label) => [
         label,
@@ -709,9 +705,7 @@ function analyzeEvidence(evidence, gpuGate, armState, errors) {
   );
   addCheck(
     "temporal-off and observed-cull frames skip the temporal upload",
-    zeroUploadLabels.every(
-      (label) => byLabel.get(label)?.uploads.length === 0,
-    ),
+    zeroUploadLabels.every((label) => byLabel.get(label)?.uploads.length === 0),
     Object.fromEntries(
       zeroUploadLabels.map((label) => [
         label,
@@ -751,8 +745,7 @@ function analyzeEvidence(evidence, gpuGate, armState, errors) {
       .flatMap((step) => step.uploads)
       .every(
         (upload) =>
-          upload.firstCurrentOnly === 0 ||
-          baseSeedLabels.includes(upload.step),
+          upload.firstCurrentOnly === 0 || baseSeedLabels.includes(upload.step),
       ),
     steps.flatMap((step) =>
       step.uploads.map((upload) => ({
@@ -775,10 +768,7 @@ function analyzeEvidence(evidence, gpuGate, armState, errors) {
     ["resize-seed", "resize-continuous"],
   ];
   if (evidence.lookAwayCullObserved) {
-    seedNextPairs.push([
-      "look-away-reentry-seed",
-      "look-away-continuous",
-    ]);
+    seedNextPairs.push(["look-away-reentry-seed", "look-away-continuous"]);
   }
   addCheck(
     "every seed is followed by an accepted frame",
@@ -802,10 +792,7 @@ function analyzeEvidence(evidence, gpuGate, armState, errors) {
     ["north-pole-seed", RESET.TELEPORT],
     ["south-pole-seed", RESET.TELEPORT],
     ["orbit-seed", RESET.TELEPORT],
-    [
-      "tier-medium-reentry-seed",
-      RESET.FRAME_GAP | RESET.REACTIVATED,
-    ],
+    ["tier-medium-reentry-seed", RESET.FRAME_GAP | RESET.REACTIVATED],
     ["deck-bounds-seed", RESET.DECK_BOUNDS],
     ["multi-deck-seed", RESET.MULTI_DECK],
     ["resize-seed", RESET.RESOURCE],
@@ -895,9 +882,7 @@ function analyzeEvidence(evidence, gpuGate, armState, errors) {
       continue;
     }
     const isLogicalSeed = logicalGenerationSeeds.has(step.label);
-    const expected = isLogicalSeed
-      ? priorGeneration + 1
-      : priorGeneration;
+    const expected = isLogicalSeed ? priorGeneration + 1 : priorGeneration;
     if (upload.generation !== expected) {
       generationCorrect = false;
     }
@@ -945,7 +930,11 @@ function analyzeEvidence(evidence, gpuGate, armState, errors) {
       pingPongCorrect &&= passed;
     }
   }
-  addCheck("temporal history ping-pong advances exactly", pingPongCorrect, pingPong);
+  addCheck(
+    "temporal history ping-pong advances exactly",
+    pingPongCorrect,
+    pingPong,
+  );
 
   const allUploads = steps.flatMap((step) => step.uploads);
   addCheck(
@@ -996,6 +985,7 @@ function analyzeEvidence(evidence, gpuGate, armState, errors) {
       step.after.camera.z,
     ];
     if (upload.firstCurrentOnly === 0 && lastHistoryCamera) {
+      // eslint-disable-next-line no-loop-func -- the closure is consumed inside this iteration (or reads a shared kill switch), not a stale per-iteration binding
       const expected = currentCamera.map((value, index) =>
         Math.fround(value - lastHistoryCamera[index]),
       );
@@ -1120,12 +1110,11 @@ function analyzeEvidence(evidence, gpuGate, armState, errors) {
     "medium-high-medium transition marks history inactive then reseeds",
     byLabel.get("tier-high-off")?.after.history?.temporalActive === false &&
       uploadFor("tier-medium-reentry-seed")?.firstCurrentOnly === 1 &&
-      byLabel.get("tier-medium-reentry-seed")?.after.history
-        ?.temporalActive === true,
+      byLabel.get("tier-medium-reentry-seed")?.after.history?.temporalActive ===
+        true,
     {
       high: byLabel.get("tier-high-off")?.after.history,
-      reentry:
-        byLabel.get("tier-medium-reentry-seed")?.after.history,
+      reentry: byLabel.get("tier-medium-reentry-seed")?.after.history,
     },
   );
 
@@ -1144,10 +1133,9 @@ function analyzeEvidence(evidence, gpuGate, armState, errors) {
     "look-away cull re-entry reseeds when the cull is observable",
     evidence.lookAwayCullObserved
       ? byLabel.get("look-away-cull")?.after.history?.temporalActive ===
-          false &&
-        uploadFor("look-away-reentry-seed")?.firstCurrentOnly === 1
+          false && uploadFor("look-away-reentry-seed")?.firstCurrentOnly === 1
       : uploadFor("look-away-cull")?.firstCurrentOnly === 0 &&
-        uploadFor("look-away-reentry-seed")?.firstCurrentOnly === 0,
+          uploadFor("look-away-reentry-seed")?.firstCurrentOnly === 0,
     {
       cullObserved: evidence.lookAwayCullObserved,
       awayUploads: byLabel.get("look-away-cull")?.uploads.length,

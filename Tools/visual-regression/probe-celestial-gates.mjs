@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/* global console, process, window, document, requestAnimationFrame, setTimeout, clearTimeout */
 // probe-celestial-gates.mjs — Campaign 12 celestial gate harness (C12-01 + C12-02).
 //
 // WHAT THIS IS
@@ -195,7 +194,9 @@ async function setupScene(page, { aim }) {
       let stableRun = 0;
       for (let i = 0; i < 180 && stableRun < 10; i++) {
         scene.render(pinnedTime());
-        const cur = C.Cartesian3.clone(scene.context.uniformState.sunDirectionWC);
+        const cur = C.Cartesian3.clone(
+          scene.context.uniformState.sunDirectionWC,
+        );
         if (prev && C.Cartesian3.distance(cur, prev) < 1e-9) {
           stableRun++;
         } else {
@@ -224,9 +225,17 @@ async function setupScene(page, { aim }) {
           pinnedTime(),
           new C.Matrix3(),
         );
-        const dir = C.Matrix3.multiplyByVector(temeToFixed, teme, new C.Cartesian3());
+        const dir = C.Matrix3.multiplyByVector(
+          temeToFixed,
+          teme,
+          new C.Cartesian3(),
+        );
         C.Cartesian3.normalize(dir, dir);
-        const eye = C.Cartesian3.multiplyByScalar(dir, -dist, new C.Cartesian3());
+        const eye = C.Cartesian3.multiplyByScalar(
+          dir,
+          -dist,
+          new C.Cartesian3(),
+        );
         let up = C.Cartesian3.UNIT_Z;
         if (Math.abs(C.Cartesian3.dot(dir, up)) > 0.95) {
           up = C.Cartesian3.UNIT_X;
@@ -239,16 +248,25 @@ async function setupScene(page, { aim }) {
           C.Cartesian3.cross(right, dir, new C.Cartesian3()),
           new C.Cartesian3(),
         );
-        scene.camera.setView({ destination: eye, orientation: { direction: dir, up: realUp } });
+        scene.camera.setView({
+          destination: eye,
+          orientation: { direction: dir, up: realUp },
+        });
         cameraUp = C.Cartesian3.normalize(eye, new C.Cartesian3());
       } else {
         // SUNLIT G1: camera ALONG the sun direction => local up == sunDir =>
         // the Sun sits at the local zenith (elevation ~90deg, >> 25deg). Aim
         // perpendicular to the sun so neither the sun disc nor Earth is in view.
         const axis = sunDir;
-        const position = C.Cartesian3.multiplyByScalar(axis, dist, new C.Cartesian3());
+        const position = C.Cartesian3.multiplyByScalar(
+          axis,
+          dist,
+          new C.Cartesian3(),
+        );
         const seed =
-          Math.abs(axis.z) < 0.9 ? new C.Cartesian3(0, 0, 1) : new C.Cartesian3(1, 0, 0);
+          Math.abs(axis.z) < 0.9
+            ? new C.Cartesian3(0, 0, 1)
+            : new C.Cartesian3(1, 0, 0);
         const perp = C.Cartesian3.normalize(
           C.Cartesian3.cross(axis, seed, new C.Cartesian3()),
           new C.Cartesian3(),
@@ -257,7 +275,10 @@ async function setupScene(page, { aim }) {
           C.Cartesian3.cross(perp, axis, new C.Cartesian3()),
           new C.Cartesian3(),
         );
-        scene.camera.setView({ destination: position, orientation: { direction: perp, up } });
+        scene.camera.setView({
+          destination: position,
+          orientation: { direction: perp, up },
+        });
         cameraUp = C.Cartesian3.normalize(position, new C.Cartesian3());
       }
 
@@ -271,7 +292,12 @@ async function setupScene(page, { aim }) {
 
       // Adapter provenance (C12-03 substrate): WebGPU adapter.info, else the
       // WebGL UNMASKED_RENDERER string.
-      let adapter = { vendor: null, architecture: null, device: null, description: null };
+      let adapter = {
+        vendor: null,
+        architecture: null,
+        device: null,
+        description: null,
+      };
       const ctx = scene.context;
       const gpuAdapter = ctx.adapter ?? ctx._adapter;
       if (gpuAdapter && gpuAdapter.info) {
@@ -288,7 +314,9 @@ async function setupScene(page, { aim }) {
           if (gl) {
             const ext = gl.getExtension("WEBGL_debug_renderer_info");
             if (ext) {
-              adapter.description = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+              adapter.description = gl.getParameter(
+                ext.UNMASKED_RENDERER_WEBGL,
+              );
               adapter.vendor = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL);
             }
           }
@@ -323,22 +351,37 @@ async function setupScene(page, { aim }) {
           Math.cos(dec) * Math.sin(ra),
           Math.sin(dec),
         );
-        const dir = C.Matrix3.multiplyByVector(temeToFixed, teme, new C.Cartesian3());
+        const dir = C.Matrix3.multiplyByVector(
+          temeToFixed,
+          teme,
+          new C.Cartesian3(),
+        );
         C.Cartesian3.normalize(dir, dir);
-        const far = C.Cartesian3.multiplyByScalar(dir, 1.0e12, new C.Cartesian3());
+        const far = C.Cartesian3.multiplyByScalar(
+          dir,
+          1.0e12,
+          new C.Cartesian3(),
+        );
         const win = scene.cartesianToCanvasCoordinates(far, new C.Cartesian2());
         if (win && Number.isFinite(win.x) && Number.isFinite(win.y)) {
           const sx = win.x - ox;
           const sy = win.y - oy;
           if (sx >= 0 && sy >= 0 && sx < cw && sy < ch) {
-            expectations.push({ name: s.name, vmag: s.vmag, screenX: sx, screenY: sy });
+            expectations.push({
+              name: s.name,
+              vmag: s.vmag,
+              screenX: sx,
+              screenY: sy,
+            });
           }
         }
       }
 
       return {
         rendererType: scene.context.rendererType,
-        skyBrightness: scene.frameState ? scene.frameState.skyBrightness ?? null : null,
+        skyBrightness: scene.frameState
+          ? (scene.frameState.skyBrightness ?? null)
+          : null,
         sunElevationDeg,
         adapter,
         canvasWidth: canvas.width,
@@ -347,7 +390,13 @@ async function setupScene(page, { aim }) {
         expectations,
       };
     },
-    { pinnedIso: PINNED_ISO, aimMode: aim, crop: CROP, settleFrames: SETTLE_FRAMES, catalog: CATALOG_EXPECTATIONS },
+    {
+      pinnedIso: PINNED_ISO,
+      aimMode: aim,
+      crop: CROP,
+      settleFrames: SETTLE_FRAMES,
+      catalog: CATALOG_EXPECTATIONS,
+    },
   );
 }
 
@@ -375,7 +424,10 @@ async function captureMode(page, { mode, crop, exposure, hdr }) {
           if (skyBox.starField) {
             skyBox.starField.show = false;
           }
-        } else if (captureMode === "sprites-only" || captureMode === "bracket") {
+        } else if (
+          captureMode === "sprites-only" ||
+          captureMode === "bracket"
+        ) {
           // sprites-only AND bracket are catalogue-only: cubemap off, sprites on.
           skyBox.show = false;
           if (skyBox.starField) {
@@ -406,13 +458,20 @@ async function captureMode(page, { mode, crop, exposure, hdr }) {
       tmp.height = canvas.height;
       const ctx = tmp.getContext("2d");
       ctx.drawImage(canvas, 0, 0);
-      const full = ctx.getImageData(cropRect.x, cropRect.y, cropRect.width, cropRect.height);
+      const full = ctx.getImageData(
+        cropRect.x,
+        cropRect.y,
+        cropRect.width,
+        cropRect.height,
+      );
 
       return {
         width: cropRect.width,
         height: cropRect.height,
         data: Array.from(full.data),
-        skyBrightness: scene.frameState ? scene.frameState.skyBrightness ?? null : null,
+        skyBrightness: scene.frameState
+          ? (scene.frameState.skyBrightness ?? null)
+          : null,
         hdrEngaged,
         exposureFactor: useHdr ? exposureFactor : null,
         cubemapOn: !!(skyBox && skyBox.show),
@@ -538,7 +597,16 @@ function encodePNG(rgba, width, height) {
 }
 
 // Build the 14-field provenance manifest entry (visual-gate-policy.mjs:9-24).
-function buildManifestEntry({ scene, image, pngBytes, renderer, env, git, sceneIdentity, extra }) {
+function buildManifestEntry({
+  scene,
+  image,
+  pngBytes,
+  renderer,
+  env,
+  git,
+  sceneIdentity,
+  extra,
+}) {
   return {
     scene,
     image,
@@ -564,7 +632,9 @@ function stitchBracket(captures) {
   const n = width * height * 4;
   const out = new Float64Array(n);
   // Highest factor first so the first unclipped sample wins.
-  const ordered = captures.slice().sort((a, b) => b.exposureFactor - a.exposureFactor);
+  const ordered = captures
+    .slice()
+    .sort((a, b) => b.exposureFactor - a.exposureFactor);
   for (let i = 0; i < n; i += 4) {
     for (let c = 0; c < 3; c++) {
       let linear = 0;
@@ -598,12 +668,16 @@ async function runBackend(browser, renderer, { aim, hdr }) {
     }
   });
   try {
-    await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 90000,
-    });
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      },
+    );
     await page.waitForFunction(
-      () => !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
+      () =>
+        !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
       null,
       { timeout: 90000 },
     );
@@ -626,10 +700,20 @@ async function runBackend(browser, renderer, { aim, hdr }) {
       }
     } else {
       for (const mode of ["default", "cubemap-only", "sprites-only"]) {
-        captures[mode] = await captureMode(page, { mode, crop: setup.crop, hdr: false });
+        captures[mode] = await captureMode(page, {
+          mode,
+          crop: setup.crop,
+          hdr: false,
+        });
       }
     }
-    return { ok: true, renderer, setup, captures, consoleErrors: consoleErrors.slice(0, 6) };
+    return {
+      ok: true,
+      renderer,
+      setup,
+      captures,
+      consoleErrors: consoleErrors.slice(0, 6),
+    };
   } catch (e) {
     return {
       ok: false,
@@ -659,7 +743,10 @@ function writeCapturePng(image, name) {
 
 async function runG1(browser, git) {
   const gl = await runBackend(browser, "webgl", { aim: "sunlit", hdr: false });
-  const gpu = await runBackend(browser, "webgpu", { aim: "sunlit", hdr: false });
+  const gpu = await runBackend(browser, "webgpu", {
+    aim: "sunlit",
+    hdr: false,
+  });
   if (!gl.ok || !gpu.ok) {
     return { fatal: true, gl, gpu };
   }
@@ -704,7 +791,12 @@ async function runG1(browser, git) {
         name: sceneName,
         camera: { aim: "sunlit", distance: 5.0e7, pinnedIso: PINNED_ISO },
         setup: "celestial-gate-g1",
-        setupParams: { mode, globeOff: true, sunOff: true, skyAtmosphereOff: true },
+        setupParams: {
+          mode,
+          globeOff: true,
+          sunOff: true,
+          skyAtmosphereOff: true,
+        },
       };
       const sceneIdentity = createSceneIdentity(sceneDescriptor, {
         baseUrl: BASE,
@@ -738,8 +830,10 @@ async function runG1(browser, git) {
     default_m2a_in_band: inBand(def.m2aRatio, 0.85, 1.15),
     default_m2b_in_band: inBand(def.m2bRatio, 0.85, 1.15),
     default_m3Chroma_ge_0_85: def.m3ChromaRatio >= 0.85,
-    cubemapOnly_m1CountRatio_ge_0_90: perMode["cubemap-only"].m1CountRatio >= 0.9,
-    spritesOnly_m1CountRatio_ge_0_90: perMode["sprites-only"].m1CountRatio >= 0.9,
+    cubemapOnly_m1CountRatio_ge_0_90:
+      perMode["cubemap-only"].m1CountRatio >= 0.9,
+    spritesOnly_m1CountRatio_ge_0_90:
+      perMode["sprites-only"].m1CountRatio >= 0.9,
   };
   // Sunlit framing must actually be reached, else the gate is meaningless.
   const framingReached =
@@ -751,7 +845,10 @@ async function runG1(browser, git) {
     gate: "G1",
     pass,
     framingReached,
-    sunElevationDeg: { webgl: r3(gl.setup.sunElevationDeg), webgpu: r3(gpu.setup.sunElevationDeg) },
+    sunElevationDeg: {
+      webgl: r3(gl.setup.sunElevationDeg),
+      webgpu: r3(gpu.setup.sunElevationDeg),
+    },
     skyBrightness: {
       webgl: r3(gl.setup.skyBrightness),
       webgpu: r3(gpu.setup.skyBrightness),
@@ -792,10 +889,16 @@ function bracketDiagnostics(setup, composite) {
       brightest = s;
     }
   }
-  const m4 = m4RadialFalloff(composite, { x: brightest.x, y: brightest.y }, {
-    alreadyLinear: true,
+  const m4 = m4RadialFalloff(
+    composite,
+    { x: brightest.x, y: brightest.y },
+    {
+      alreadyLinear: true,
+    },
+  );
+  const m5 = m5MagnitudeFidelity(setup.expectations, m1.sources, {
+    maxDistance: 3,
   });
-  const m5 = m5MagnitudeFidelity(setup.expectations, m1.sources, { maxDistance: 3 });
   return {
     m1Count: m1.count,
     brightest: { x: brightest.x, y: brightest.y, peak: brightest.peak },
@@ -832,7 +935,11 @@ async function runBracket(browser, git) {
     ["webgl", gl],
     ["webgpu", gpu],
   ]) {
-    const caps = [lane.captures["1x"], lane.captures["8x"], lane.captures["64x"]];
+    const caps = [
+      lane.captures["1x"],
+      lane.captures["8x"],
+      lane.captures["64x"],
+    ];
     const hdrEngaged = caps.every((c) => c.hdrEngaged === true);
     const composite = stitchBracket(caps);
 
@@ -852,7 +959,8 @@ async function runBracket(browser, git) {
         if (px >= 0 && py >= 0 && px < oneX.width && py < oneX.height) {
           const i = (py * oneX.width + px) * 4;
           const lum8 = oneX.data[i] + oneX.data[i + 1] + oneX.data[i + 2];
-          const cl = composite.data[i] + composite.data[i + 1] + composite.data[i + 2];
+          const cl =
+            composite.data[i] + composite.data[i + 1] + composite.data[i + 2];
           if (lum8 === 0) {
             oneXFloorZero = true;
           }
@@ -880,7 +988,11 @@ async function runBracket(browser, git) {
         name: sceneName,
         camera: { aim: "sirius", distance: 5.0e7, pinnedIso: PINNED_ISO },
         setup: "celestial-gate-bracket",
-        setupParams: { exposure: cap.exposureFactor, hdr: true, spritesOnly: true },
+        setupParams: {
+          exposure: cap.exposureFactor,
+          hdr: true,
+          spritesOnly: true,
+        },
       };
       const sceneIdentity = createSceneIdentity(sceneDescriptor, {
         baseUrl: BASE,
@@ -904,14 +1016,26 @@ async function runBracket(browser, git) {
         },
         git,
         sceneIdentity,
-        extra: { hdr: true, exposureFactor: cap.exposureFactor, hdrEngaged: cap.hdrEngaged },
+        extra: {
+          hdr: true,
+          exposureFactor: cap.exposureFactor,
+          hdrEngaged: cap.hdrEngaged,
+        },
       });
     }
 
     lanes[renderer] = { hdrEngaged, rangeExtended, ...diag };
   }
 
-  return { fatal: false, gate: "bracket", structuralPass, lanes, manifest, gl, gpu };
+  return {
+    fatal: false,
+    gate: "bracket",
+    structuralPass,
+    lanes,
+    manifest,
+    gl,
+    gpu,
+  };
 }
 
 (async () => {
@@ -921,13 +1045,17 @@ async function runBracket(browser, git) {
   let result;
   let exitCode;
   try {
-    result = BRACKET ? await runBracket(browser, git) : await runG1(browser, git);
+    result = BRACKET
+      ? await runBracket(browser, git)
+      : await runG1(browser, git);
   } finally {
     await browser.close().catch(() => {});
   }
 
   if (result.fatal) {
-    console.error("[probe-celestial-gates] STRUCTURAL FAILURE — a backend lane did not run");
+    console.error(
+      "[probe-celestial-gates] STRUCTURAL FAILURE — a backend lane did not run",
+    );
     for (const lane of [result.gl, result.gpu]) {
       if (lane && !lane.ok) {
         console.error(`  ${lane.renderer}: ${lane.error}`);
@@ -971,19 +1099,21 @@ async function runBracket(browser, git) {
         : "bracket FAIL — HDR not engaged and/or no source detected on a backend",
     );
   } else {
-    console.log(JSON.stringify(
-      {
-        gate: result.gate,
-        pass: result.pass,
-        framingReached: result.framingReached,
-        sunElevationDeg: result.sunElevationDeg,
-        skyBrightness: result.skyBrightness,
-        criteria: result.criteria,
-        perMode: result.perMode,
-      },
-      null,
-      2,
-    ));
+    console.log(
+      JSON.stringify(
+        {
+          gate: result.gate,
+          pass: result.pass,
+          framingReached: result.framingReached,
+          sunElevationDeg: result.sunElevationDeg,
+          skyBrightness: result.skyBrightness,
+          criteria: result.criteria,
+          perMode: result.perMode,
+        },
+        null,
+        2,
+      ),
+    );
     console.log(`\n[full report: ${outPath}]`);
     exitCode = result.pass ? 0 : 1;
     console.log(

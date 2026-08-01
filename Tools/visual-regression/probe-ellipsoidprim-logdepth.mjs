@@ -272,7 +272,8 @@ check(
   errors.length === 0,
   `console / WebGPU validation errors: ${errors.length}`,
 );
-if (errors.length) for (const e of errors.slice(0, 8)) console.log(`  ERR: ${e}`);
+if (errors.length)
+  for (const e of errors.slice(0, 8)) console.log(`  ERR: ${e}`);
 
 console.log(ok ? "PASS" : "FAIL");
 await browser.close();

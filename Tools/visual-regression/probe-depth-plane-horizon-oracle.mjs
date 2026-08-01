@@ -63,16 +63,22 @@ async function runtimeBundleIdentity() {
 function validateAltitude(result, failures) {
   const prefix = result.label;
   if (!result.geometry.frontBeforeHorizon) {
-    failures.push(`${prefix}: front control is not before the geometric horizon`);
+    failures.push(
+      `${prefix}: front control is not before the geometric horizon`,
+    );
   }
   if (!result.geometry.backBeyondHorizon) {
     failures.push(`${prefix}: back marker is not beyond the geometric horizon`);
   }
   if (result.geometry.frontLineOfSightOccluded) {
-    failures.push(`${prefix}: front control ray intersects the ellipsoid first`);
+    failures.push(
+      `${prefix}: front control ray intersects the ellipsoid first`,
+    );
   }
   if (!result.geometry.backLineOfSightOccluded) {
-    failures.push(`${prefix}: back marker ray does not intersect the ellipsoid first`);
+    failures.push(
+      `${prefix}: back marker ray does not intersect the ellipsoid first`,
+    );
   }
   if (!result.geometry.frontOnCanvas || !result.geometry.backOnCanvas) {
     failures.push(`${prefix}: one or more oracle points projected off-canvas`);
@@ -87,19 +93,29 @@ function validateAltitude(result, failures) {
     failures.push(`${prefix}: depth plane did not use its log-depth variant`);
   }
   if (result.pipelinePrewarm.frontPickId !== "depth-plane-front") {
-    failures.push(`${prefix}: point pick pipeline did not prewarm on front control`);
+    failures.push(
+      `${prefix}: point pick pipeline did not prewarm on front control`,
+    );
   }
   if (!result.pipelinePrewarm.colorReady || !result.pipelinePrewarm.pickReady) {
-    failures.push(`${prefix}: point color/pick pipelines were not ready before measurement`);
+    failures.push(
+      `${prefix}: point color/pick pipelines were not ready before measurement`,
+    );
   }
   if (result.pipelinePrewarm.useDepthPlane) {
-    failures.push(`${prefix}: point prewarm unexpectedly encoded the depth plane`);
+    failures.push(
+      `${prefix}: point prewarm unexpectedly encoded the depth plane`,
+    );
   }
 
   const normal = result.phases.normal;
   const skipped = result.phases.diagnosticSkip;
   const restored = result.phases.restored;
-  if (!normal.useDepthPlane || skipped.useDepthPlane || !restored.useDepthPlane) {
+  if (
+    !normal.useDepthPlane ||
+    skipped.useDepthPlane ||
+    !restored.useDepthPlane
+  ) {
     failures.push(
       `${prefix}: useDepthPlane did not follow true -> false -> true diagnostic sequence`,
     );
@@ -115,7 +131,9 @@ function validateAltitude(result, failures) {
     skipped.depthPlaneDraws.scene !== 0 ||
     skipped.depthPlaneDraws.pick !== 0
   ) {
-    failures.push(`${prefix}/diagnostic-skip: depth-plane draw was still encoded`);
+    failures.push(
+      `${prefix}/diagnostic-skip: depth-plane draw was still encoded`,
+    );
   }
 
   for (const phase of [normal, skipped, restored]) {
@@ -123,22 +141,30 @@ function validateAltitude(result, failures) {
       failures.push(`${prefix}/${phase.label}: front-side pick control failed`);
     }
     if (phase.scenePixels.front.limeLike < 24) {
-      failures.push(`${prefix}/${phase.label}: front-side scene control was not visible`);
+      failures.push(
+        `${prefix}/${phase.label}: front-side scene control was not visible`,
+      );
     }
   }
   if (normal.backPickIds.includes("depth-plane-back")) {
     failures.push(`${prefix}/normal: beyond-horizon marker was pickable`);
   }
   if (!skipped.backPickIds.every((id) => id === "depth-plane-back")) {
-    failures.push(`${prefix}/diagnostic-skip: beyond-horizon marker did not become pickable`);
+    failures.push(
+      `${prefix}/diagnostic-skip: beyond-horizon marker did not become pickable`,
+    );
   }
   if (restored.backPickIds.includes("depth-plane-back")) {
-    failures.push(`${prefix}/restored: beyond-horizon marker remained pickable`);
+    failures.push(
+      `${prefix}/restored: beyond-horizon marker remained pickable`,
+    );
   }
 
   const skipMagenta = skipped.scenePixels.back.magentaLike;
   if (skipMagenta < 24) {
-    failures.push(`${prefix}/diagnostic-skip: back marker did not appear in GPU readback`);
+    failures.push(
+      `${prefix}/diagnostic-skip: back marker did not appear in GPU readback`,
+    );
   }
   // C10-12 tightening: the occlusion assertion counts ONLY below-limb magenta
   // (pixels whose view ray hits the ellipsoid — where the depth plane / globe
@@ -167,7 +193,9 @@ function validateAltitude(result, failures) {
   }
   for (const phase of [normal, skipped, restored]) {
     if (phase.gateErrors.length) {
-      failures.push(`${prefix}/${phase.label}: ${phase.gateErrors.length} GPU errors`);
+      failures.push(
+        `${prefix}/${phase.label}: ${phase.gateErrors.length} GPU errors`,
+      );
     }
   }
 }
@@ -200,7 +228,7 @@ url.searchParams.set("renderer", "webgpu");
 url.searchParams.set("offline", "true");
 
 let setup = null;
-let results = [];
+const results = [];
 let armed = { armed: 0, found: 0, total: 0 };
 let fatalError = null;
 try {
@@ -278,12 +306,7 @@ try {
     // `depth-plane-back`.
     const originalIsVisible = scene.isVisible;
     scene.isVisible = function (cullingVolume, command, occluder) {
-      return originalIsVisible.call(
-        this,
-        cullingVolume,
-        command,
-        undefined,
-      );
+      return originalIsVisible.call(this, cullingVolume, command, undefined);
     };
 
     // Scene.updateEnvironment honors debugSkipDepthPlane, but the current
@@ -335,8 +358,7 @@ try {
 
   for (const altitude of altitudes) {
     const result = await page.evaluate(async (configuration) => {
-      const { C, viewer, scene, collections } =
-        globalThis.__depthPlaneHorizon;
+      const { C, viewer, scene, collections } = globalThis.__depthPlaneHorizon;
       const points = collections[configuration.label];
       for (const collection of Object.values(collections)) {
         collection.show = collection === points;
@@ -356,11 +378,7 @@ try {
       const backPosition = points.get(1).position;
 
       scene.camera.setView({
-        destination: C.Cartesian3.fromRadians(
-          0,
-          0,
-          configuration.heightMeters,
-        ),
+        destination: C.Cartesian3.fromRadians(0, 0, configuration.heightMeters),
         orientation: {
           heading: C.Math.PI_OVER_TWO,
           pitch: -horizonAngle,
@@ -562,10 +580,10 @@ try {
             passKind === "pick" ? this._pickPipeline : this._pipeline;
           const willDraw = Boolean(
             this._enabled &&
-              pipeline &&
-              this._vertexBuffer &&
-              this._bindGroup &&
-              this._vertexCount > 0,
+            pipeline &&
+            this._vertexBuffer &&
+            this._bindGroup &&
+            this._vertexCount > 0,
           );
           const uniformOffset = this._currentUniformOffset;
           const result = originalExecute.call(this, renderPass, passKind);
@@ -602,14 +620,11 @@ try {
           label,
           diagnosticSkip,
           useDepthPlane: scene._environmentState?.useDepthPlane === true,
-          clearGlobeDepth:
-            scene._environmentState?.clearGlobeDepth === true,
+          clearGlobeDepth: scene._environmentState?.clearGlobeDepth === true,
           frontWindow: frontWindow
             ? { x: frontWindow.x, y: frontWindow.y }
             : null,
-          backWindow: backWindow
-            ? { x: backWindow.x, y: backWindow.y }
-            : null,
+          backWindow: backWindow ? { x: backWindow.x, y: backWindow.y } : null,
           scenePixels,
           frontPickIds,
           backPickIds,
@@ -652,19 +667,15 @@ try {
       const isOnCanvas = (position) =>
         Boolean(
           position &&
-            position.x >= 24 &&
-            position.y >= 24 &&
-            position.x < canvasWidth - 24 &&
-            position.y < canvasHeight - 24,
+          position.x >= 24 &&
+          position.y >= 24 &&
+          position.x < canvasWidth - 24 &&
+          position.y < canvasHeight - 24,
         );
       const cameraPosition = scene.camera.positionWC;
       function lineOfSight(position) {
         const direction = C.Cartesian3.normalize(
-          C.Cartesian3.subtract(
-            position,
-            cameraPosition,
-            new C.Cartesian3(),
-          ),
+          C.Cartesian3.subtract(position, cameraPosition, new C.Cartesian3()),
           new C.Cartesian3(),
         );
         const pointDistance = C.Cartesian3.distance(cameraPosition, position);
@@ -736,8 +747,7 @@ try {
                   y: points._webgpuCache.colorCommand.boundingVolume.center.y,
                   z: points._webgpuCache.colorCommand.boundingVolume.center.z,
                 },
-                radius:
-                  points._webgpuCache.colorCommand.boundingVolume.radius,
+                radius: points._webgpuCache.colorCommand.boundingVolume.radius,
               }
             : null,
           frameCommandOwnerCount: scene._frameState.commandList.filter(
@@ -784,7 +794,8 @@ try {
     await renderSettled(false);
   }
 } catch (error) {
-  fatalError = error instanceof Error ? error.stack || error.message : String(error);
+  fatalError =
+    error instanceof Error ? error.stack || error.message : String(error);
 }
 
 const gate = await collectGateErrors(page).catch(() => ({
@@ -798,13 +809,17 @@ if (setup?.actualRenderer !== "webgpu") {
   failures.push(`expected webgpu renderer, got ${setup?.actualRenderer}`);
 }
 if (setup?.terrainProvider !== "EllipsoidTerrainProvider") {
-  failures.push(`expected deterministic ellipsoid terrain, got ${setup?.terrainProvider}`);
+  failures.push(
+    `expected deterministic ellipsoid terrain, got ${setup?.terrainProvider}`,
+  );
 }
 if (armed.found < 1 || gate.armedDevices < 1) {
   failures.push("WebGPU error gate did not arm a live device");
 }
 if (results.length !== altitudes.length) {
-  failures.push(`expected ${altitudes.length} altitude results, got ${results.length}`);
+  failures.push(
+    `expected ${altitudes.length} altitude results, got ${results.length}`,
+  );
 }
 if (pageErrors.length) failures.push(`${pageErrors.length} page errors`);
 if (gpuConsoleErrors.length) {
@@ -843,16 +858,14 @@ const report = {
       heightMeters: altitude.heightMeters,
       frontRayOccluded: altitude.geometry.frontLineOfSightOccluded,
       backRayOccluded: altitude.geometry.backLineOfSightOccluded,
-      normalSceneFrontLime:
-        altitude.phases.normal.scenePixels.front.limeLike,
+      normalSceneFrontLime: altitude.phases.normal.scenePixels.front.limeLike,
       normalSceneBackMagenta:
         altitude.phases.normal.scenePixels.back.magentaLike,
       diagnosticSkipSceneBackMagenta:
         altitude.phases.diagnosticSkip.scenePixels.back.magentaLike,
       normalFrontPickIds: altitude.phases.normal.frontPickIds,
       normalBackPickIds: altitude.phases.normal.backPickIds,
-      diagnosticSkipFrontPickIds:
-        altitude.phases.diagnosticSkip.frontPickIds,
+      diagnosticSkipFrontPickIds: altitude.phases.diagnosticSkip.frontPickIds,
       diagnosticSkipBackPickIds: altitude.phases.diagnosticSkip.backPickIds,
       restoredFrontPickIds: altitude.phases.restored.frontPickIds,
       restoredBackPickIds: altitude.phases.restored.backPickIds,

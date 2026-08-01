@@ -127,15 +127,22 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   const canvas = await page.$(".cesium-widget canvas");
   const shot = async (name) => {
     await canvas.screenshot({ path: `${OUT}/${name}.png` });
-    return "data:image/png;base64," + fs.readFileSync(`${OUT}/${name}.png`).toString("base64");
+    return (
+      "data:image/png;base64," +
+      fs.readFileSync(`${OUT}/${name}.png`).toString("base64")
+    );
   };
 
   const panelInfo = await page.evaluate(() => ({
@@ -171,15 +178,31 @@ async function run() {
     );
 
   console.log("panel", JSON.stringify(panelInfo));
-  console.log("fs-day", JSON.stringify(day1), "shell-day", JSON.stringify(day2), "fs-night", JSON.stringify(night));
+  console.log(
+    "fs-day",
+    JSON.stringify(day1),
+    "shell-day",
+    JSON.stringify(day2),
+    "fs-night",
+    JSON.stringify(night),
+  );
 
   const isBlue = (c) => c.b > 120 && c.b > c.r + 20;
   const checks = [
-    ["demo booted on WebGPU + panel built", panelInfo.rows >= 3 && panelInfo.fs === true],
+    [
+      "demo booted on WebGPU + panel built",
+      panelInfo.rows >= 3 && panelInfo.fs === true,
+    ],
     [`fullscreen sky day is blue ${JSON.stringify(day1)}`, isBlue(day1)],
     [`shell sky day is blue (parity) ${JSON.stringify(day2)}`, isBlue(day2)],
-    [`fullscreen vs shell day match (|Δb| ${Math.abs(day1.b - day2.b)} ≤ 25)`, Math.abs(day1.b - day2.b) <= 25],
-    [`night sky darkens ${JSON.stringify(night)} (much darker than day)`, night.b < day1.b - 40],
+    [
+      `fullscreen vs shell day match (|Δb| ${Math.abs(day1.b - day2.b)} ≤ 25)`,
+      Math.abs(day1.b - day2.b) <= 25,
+    ],
+    [
+      `night sky darkens ${JSON.stringify(night)} (much darker than day)`,
+      night.b < day1.b - 40,
+    ],
     [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
   ];
   console.log("\n=== ANALYSIS ===");

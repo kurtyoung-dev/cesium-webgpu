@@ -31,7 +31,10 @@
     history-blend / motion-vector pipeline (Batches 27, 175, 195)
     handles the rest. WebGL has no TAA equivalent at this fidelity.
   -->
-  <body class="sandcastle-loading" data-sandcastle-bucket="bucket-requirejs.html">
+  <body
+    class="sandcastle-loading"
+    data-sandcastle-bucket="bucket-requirejs.html"
+  >
     <style>
       @import url(../templates/bucket.css);
     </style>
@@ -77,10 +80,12 @@
         const toolbar = document.getElementById("toolbar");
         Cesium.knockout.applyBindings(viewModel, toolbar);
 
-        Cesium.knockout.getObservable(viewModel, "taaEnabled").subscribe((value) => {
-          viewer.scene.taaEnabled = Boolean(value);
-          viewer.scene.requestRender();
-        });
+        Cesium.knockout
+          .getObservable(viewModel, "taaEnabled")
+          .subscribe((value) => {
+            viewer.scene.taaEnabled = Boolean(value);
+            viewer.scene.requestRender();
+          });
 
         // A view that highlights aliasing on building edges + terrain
         // contours where TAA's effect is most visible.

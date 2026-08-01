@@ -103,7 +103,10 @@ void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {
   },
 };
 
-async function capture(label, { renderer, asset, metadataDebug, customShader }) {
+async function capture(
+  label,
+  { renderer, asset, metadataDebug, customShader },
+) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
@@ -124,10 +127,9 @@ async function capture(label, { renderer, asset, metadataDebug, customShader }) 
     messages.push({ t: "pageerror", text: e.message }),
   );
 
-  await page.goto(
-    `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
-    { waitUntil: "networkidle" },
-  );
+  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
+    waitUntil: "networkidle",
+  });
   await page.waitForFunction(() => !!window.viewer);
 
   await page.evaluate(() => {
@@ -140,7 +142,14 @@ async function capture(label, { renderer, asset, metadataDebug, customShader }) 
   });
 
   const diagnostics = await page.evaluate(
-    async ({ view, clockUTC, assetDef, metadataDebug, customShader, expected }) => {
+    async ({
+      view,
+      clockUTC,
+      assetDef,
+      metadataDebug,
+      customShader,
+      expected,
+    }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
 
@@ -216,7 +225,8 @@ async function capture(label, { renderer, asset, metadataDebug, customShader }) 
             const pc = cache.primitives[pk];
             if (pc && typeof pc.materialDefines === "number") {
               inspect.cacheFound = true;
-              inspect.metadataBitSet = ((pc.materialDefines >>> 0) & META_BIT) !== 0;
+              inspect.metadataBitSet =
+                ((pc.materialDefines >>> 0) & META_BIT) !== 0;
               inspect.matTransportFlag = pc._metadataMatTransport === true;
               if (typeof pc._metadataWGSL === "string") {
                 const w = pc._metadataWGSL;
@@ -392,7 +402,9 @@ function errCounts(cell) {
       .forEach((e) => console.log(`      device: ${e.text?.slice(0, 200)}`));
     pageErrors
       .slice(0, 2)
-      .forEach((e) => console.log(`      pageerror: ${(e.text ?? "").slice(0, 200)}`));
+      .forEach((e) =>
+        console.log(`      pageerror: ${(e.text ?? "").slice(0, 200)}`),
+      );
     consoleErrs
       .slice(0, 3)
       .forEach((e) =>
@@ -456,7 +468,10 @@ function errCounts(cell) {
     for (const [face, meanGpu] of Object.entries(gGpu.faceMeans)) {
       const meanGl = gGl.faceMeans[face];
       if (!meanGl) continue;
-      if ((gGpu.matchedFaces[face] ?? 0) < 4 || (gGl.matchedFaces[face] ?? 0) < 4)
+      if (
+        (gGpu.matchedFaces[face] ?? 0) < 4 ||
+        (gGl.matchedFaces[face] ?? 0) < 4
+      )
         continue;
       compared++;
       for (let c = 0; c < 3; c++) {
@@ -480,14 +495,18 @@ function errCounts(cell) {
     fails.push("E: authored palette visible with debug OFF (gate broken)");
 
   if (cells.A.diagnostics.inspect.generatedWGSL) {
-    console.log("\n    ===== GENERATED METADATA WGSL CHUNK (scene A, MAT3) =====");
+    console.log(
+      "\n    ===== GENERATED METADATA WGSL CHUNK (scene A, MAT3) =====",
+    );
     console.log(
       cells.A.diagnostics.inspect.generatedWGSL
         .split("\n")
         .map((l) => "    | " + l)
         .join("\n"),
     );
-    console.log("    =========================================================\n");
+    console.log(
+      "    =========================================================\n",
+    );
   }
 
   report.pass = fails.length === 0;

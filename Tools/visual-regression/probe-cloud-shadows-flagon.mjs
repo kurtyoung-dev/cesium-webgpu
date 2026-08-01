@@ -21,7 +21,13 @@ const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 
 // High overcast-ish deck + a near-overhead camera looking down at terrain so a
 // cloud directly overhead darkens the ground beneath it.
-const CAMERA = { lon: -109.5, lat: 38.5, height: 9000, heading: 20, pitch: -38 };
+const CAMERA = {
+  lon: -109.5,
+  lat: 38.5,
+  height: 9000,
+  heading: 20,
+  pitch: -38,
+};
 const TIME_ISO = "2026-06-21T16:30:00Z";
 const PROC = { coverage: 0.55, density: 0.85, bottom: 1500, top: 4200 };
 
@@ -35,7 +41,9 @@ const PROC = { coverage: 0.55, density: 0.85, bottom: 1500, top: 4200 };
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errs = [];
   page.on("console", (m) => {
     if (m.type() === "error") errs.push(m.text());
@@ -65,7 +73,8 @@ const PROC = { coverage: 0.55, density: 0.85, bottom: 1500, top: 4200 };
         g.defaultCloudCollection.volumetric.cloudLayerBottom = proc.bottom;
         g.defaultCloudCollection.volumetric.cloudLayerTop = proc.top;
         g.defaultCloudCollection.volumetric.cloudVolumetricQuality = "high";
-        g.defaultCloudCollection.volumetric.cloudCastShadows = mode !== "noshadow";
+        g.defaultCloudCollection.volumetric.cloudCastShadows =
+          mode !== "noshadow";
         if (ac) {
           ac.volumetricFog = ac.volumetricFog || {};
           ac.volumetricFog.enabled = mode === "fog";

@@ -53,9 +53,12 @@ const SETUP = async (cfg) => {
   s.requestRenderMode = false;
   // Clouds — moderate broken coverage so the shaft has gaps to stream through.
   g.defaultCloudCollection.enableVolumetric = true;
-  if ("cloudCoverage" in g) g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
-  if ("cloudWeatherMap" in g) g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
-  if ("cloudDensity" in g) g.defaultCloudCollection.volumetric.cloudDensity = 0.9;
+  if ("cloudCoverage" in g)
+    g.defaultCloudCollection.volumetric.cloudCoverage = 0.55;
+  if ("cloudWeatherMap" in g)
+    g.defaultCloudCollection.volumetric.cloudWeatherMap = false;
+  if ("cloudDensity" in g)
+    g.defaultCloudCollection.volumetric.cloudDensity = 0.9;
   s.skyBox.show = false;
   s.skyAtmosphere.show = true;
   if (s.sun) s.sun.show = true;
@@ -87,7 +90,7 @@ const RENDER_WITH = async (cfg) => {
     s.render(jd);
     await new Promise((r) => requestAnimationFrame(r));
   }
-  let maskRendered = false;
+  let maskRendered;
   try {
     maskRendered = !!s.context._cloudCache?.maskRenderedThisFrame;
   } catch (e) {
@@ -133,11 +136,13 @@ async function diff(page, a, b) {
       };
       const da = await load(ua),
         db = await load(ub);
-      let acc = 0,
-        n = da.length / 4;
+      let acc = 0;
+      const n = da.length / 4;
       for (let i = 0; i < da.length; i += 4) {
         acc += Math.abs(
-          (0.299 * da[i] + 0.587 * da[i + 1] + 0.114 * da[i + 2]) -
+          0.299 * da[i] +
+            0.587 * da[i + 1] +
+            0.114 * da[i + 2] -
             (0.299 * db[i] + 0.587 * db[i + 1] + 0.114 * db[i + 2]),
         );
       }

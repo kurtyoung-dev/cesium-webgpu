@@ -118,11 +118,13 @@ async function diff(page, a, b) {
       };
       const da = await load(ua),
         db = await load(ub);
-      let acc = 0,
-        n = da.length / 4;
+      let acc = 0;
+      const n = da.length / 4;
       for (let i = 0; i < da.length; i += 4) {
         acc += Math.abs(
-          0.299 * da[i] + 0.587 * da[i + 1] + 0.114 * da[i + 2] -
+          0.299 * da[i] +
+            0.587 * da[i + 1] +
+            0.114 * da[i + 2] -
             (0.299 * db[i] + 0.587 * db[i + 1] + 0.114 * db[i + 2]),
         );
       }
@@ -156,9 +158,13 @@ async function run() {
     process.exitCode = 1;
     return;
   }
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
 
   const canvas = await page.$(".cesium-widget canvas");
@@ -240,12 +246,24 @@ async function run() {
   );
 
   const checks = [
-    [`OFF is deterministic w/ grown UBO (off-vs-off2 ${diffOffOff} < 0.25)`, diffOffOff < 0.25],
-    [`mammatus ON substantially changes the render (on-vs-off ${diffOn} > 1.5)`, diffOn > 1.5],
+    [
+      `OFF is deterministic w/ grown UBO (off-vs-off2 ${diffOffOff} < 0.25)`,
+      diffOffOff < 0.25,
+    ],
+    [
+      `mammatus ON substantially changes the render (on-vs-off ${diffOn} > 1.5)`,
+      diffOn > 1.5,
+    ],
     // Carving between pouches removes underside density → measurably thinner deck
     // (directional; the drop is ~14x the off-vs-off2 noise floor of ~0.05).
-    [`underside carve THINS the deck (on ${deckOn} < off ${deckOff} - 0.3)`, deckOn < deckOff - 0.3],
-    [`restoring strength=0 returns to OFF baseline (restore-vs-off ${diffRestore} < 0.25)`, diffRestore < 0.25],
+    [
+      `underside carve THINS the deck (on ${deckOn} < off ${deckOff} - 0.3)`,
+      deckOn < deckOff - 0.3,
+    ],
+    [
+      `restoring strength=0 returns to OFF baseline (restore-vs-off ${diffRestore} < 0.25)`,
+      diffRestore < 0.25,
+    ],
     [`no NEW device errors (${newErrs.length})`, newErrs.length === 0],
   ];
   console.log("\n=== ANALYSIS ===");

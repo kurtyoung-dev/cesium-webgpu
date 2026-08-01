@@ -23,45 +23,85 @@ async function capture(renderer) {
   });
   const page = await browser.newPage({ viewport: { width: 600, height: 600 } });
   const errs = [];
-  page.on("console", (m) => { if (m.type() === "error") errs.push(m.text()); });
+  page.on("console", (m) => {
+    if (m.type() === "error") errs.push(m.text());
+  });
   page.on("pageerror", (e) => errs.push("PAGEERR:" + e.message));
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle", timeout: 90000,
+    waitUntil: "networkidle",
+    timeout: 90000,
   });
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
-  const info = await page.evaluate(async ({ modelUrl }) => {
-    const C = await import("/Build/CesiumUnminified/index.js");
-    const v = window.viewer; const s = v.scene;
-    s.requestRenderMode = false;
-    s.globe.show = false; s.skyBox.show = false; s.skyAtmosphere.show = false;
-    if (s.sun) s.sun.show = false;
-    s.backgroundColor = C.Color.BLACK;
-    for (const sel of [".cesium-viewer-toolbar", ".cesium-viewer-animationContainer",
-      ".cesium-viewer-timelineContainer", ".cesium-viewer-bottom", ".cesium-viewer-fullscreenContainer"]) {
-      document.querySelectorAll(sel).forEach((e) => (e.style.display = "none"));
-    }
-    const modelMatrix = C.Transforms.eastNorthUpToFixedFrame(C.Cartesian3.fromDegrees(-75, 40, 0));
-    const model = await C.Model.fromGltfAsync({ url: modelUrl, modelMatrix, scale: 6.0 });
-    s.primitives.add(model);
-    for (let i = 0; i < 500 && !model.ready; i++) { s.render(); await new Promise((r) => requestAnimationFrame(r)); }
-    v.camera.viewBoundingSphere(model.boundingSphere, new C.HeadingPitchRange(0.6, -0.5, model.boundingSphere.radius * 3.0));
-    v.camera.lookAtTransform(C.Matrix4.IDENTITY);
-    for (let i = 0; i < 60; i++) { s.render(); await new Promise((r) => requestAnimationFrame(r)); }
-    s.canvas.setAttribute("data-vc", "1");
-    return { ready: !!model.ready, rendererType: s.context.rendererType };
-  }, { modelUrl: MODEL });
+  const info = await page.evaluate(
+    async ({ modelUrl }) => {
+      const C = await import("/Build/CesiumUnminified/index.js");
+      const v = window.viewer;
+      const s = v.scene;
+      s.requestRenderMode = false;
+      s.globe.show = false;
+      s.skyBox.show = false;
+      s.skyAtmosphere.show = false;
+      if (s.sun) s.sun.show = false;
+      s.backgroundColor = C.Color.BLACK;
+      for (const sel of [
+        ".cesium-viewer-toolbar",
+        ".cesium-viewer-animationContainer",
+        ".cesium-viewer-timelineContainer",
+        ".cesium-viewer-bottom",
+        ".cesium-viewer-fullscreenContainer",
+      ]) {
+        document
+          .querySelectorAll(sel)
+          .forEach((e) => (e.style.display = "none"));
+      }
+      const modelMatrix = C.Transforms.eastNorthUpToFixedFrame(
+        C.Cartesian3.fromDegrees(-75, 40, 0),
+      );
+      const model = await C.Model.fromGltfAsync({
+        url: modelUrl,
+        modelMatrix,
+        scale: 6.0,
+      });
+      s.primitives.add(model);
+      for (let i = 0; i < 500 && !model.ready; i++) {
+        s.render();
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      v.camera.viewBoundingSphere(
+        model.boundingSphere,
+        new C.HeadingPitchRange(0.6, -0.5, model.boundingSphere.radius * 3.0),
+      );
+      v.camera.lookAtTransform(C.Matrix4.IDENTITY);
+      for (let i = 0; i < 60; i++) {
+        s.render();
+        await new Promise((r) => requestAnimationFrame(r));
+      }
+      s.canvas.setAttribute("data-vc", "1");
+      return { ready: !!model.ready, rendererType: s.context.rendererType };
+    },
+    { modelUrl: MODEL },
+  );
 
   const decoded = await page.evaluate(async () => {
     const v = window.viewer;
     const b64 = await new Promise((res) => {
-      const rm = v.scene.postRender.addEventListener(() => { rm(); try { res(v.scene.canvas.toDataURL("image/png").split(",")[1]); } catch (e) { res(null); } });
-      v.scene.requestRender(); v.scene.render();
+      const rm = v.scene.postRender.addEventListener(() => {
+        rm();
+        try {
+          res(v.scene.canvas.toDataURL("image/png").split(",")[1]);
+        } catch (e) {
+          res(null);
+        }
+      });
+      v.scene.requestRender();
+      v.scene.render();
     });
     const blob = await (await fetch(`data:image/png;base64,${b64}`)).blob();
     const bmp = await createImageBitmap(blob);
     const off = new OffscreenCanvas(bmp.width, bmp.height);
-    const cx = off.getContext("2d"); cx.drawImage(bmp, 0, 0);
+    const cx = off.getContext("2d");
+    cx.drawImage(bmp, 0, 0);
     const d = cx.getImageData(0, 0, bmp.width, bmp.height).data;
     return { w: bmp.width, h: bmp.height, data: Array.from(d), b64 };
   });
@@ -70,20 +110,41 @@ async function capture(renderer) {
 }
 
 function meanColor(img) {
-  let r = 0, g = 0, b = 0, n = 0;
+  let r = 0,
+    g = 0,
+    b = 0,
+    n = 0;
   for (let i = 0; i < img.data.length; i += 4) {
     const lum = img.data[i] + img.data[i + 1] + img.data[i + 2];
     if (lum <= 12) continue;
-    r += img.data[i]; g += img.data[i + 1]; b += img.data[i + 2]; n++;
+    r += img.data[i];
+    g += img.data[i + 1];
+    b += img.data[i + 2];
+    n++;
   }
-  return { px: n, r: n ? +(r / n).toFixed(1) : 0, g: n ? +(g / n).toFixed(1) : 0, b: n ? +(b / n).toFixed(1) : 0 };
+  return {
+    px: n,
+    r: n ? +(r / n).toFixed(1) : 0,
+    g: n ? +(g / n).toFixed(1) : 0,
+    b: n ? +(b / n).toFixed(1) : 0,
+  };
 }
 function diffPct(a, b) {
   if (a.w !== b.w || a.h !== b.h) return null;
-  let model = 0, mis = 0;
+  let model = 0,
+    mis = 0;
   for (let i = 0; i < a.data.length; i += 4) {
-    const la = a.data[i] + a.data[i + 1] + a.data[i + 2], lb = b.data[i] + b.data[i + 1] + b.data[i + 2];
-    if (la > 12 || lb > 12) { model++; if (Math.abs(a.data[i] - b.data[i]) > 28 || Math.abs(a.data[i + 1] - b.data[i + 1]) > 28 || Math.abs(a.data[i + 2] - b.data[i + 2]) > 28) mis++; }
+    const la = a.data[i] + a.data[i + 1] + a.data[i + 2],
+      lb = b.data[i] + b.data[i + 1] + b.data[i + 2];
+    if (la > 12 || lb > 12) {
+      model++;
+      if (
+        Math.abs(a.data[i] - b.data[i]) > 28 ||
+        Math.abs(a.data[i + 1] - b.data[i + 1]) > 28 ||
+        Math.abs(a.data[i + 2] - b.data[i + 2]) > 28
+      )
+        mis++;
+    }
   }
   return model ? +((100 * mis) / model).toFixed(2) : null;
 }
@@ -92,14 +153,39 @@ const wgpu = await capture("webgpu");
 const wgl = await capture("webgl");
 const fs = await import("fs");
 fs.mkdirSync("Tools/visual-regression/output", { recursive: true });
-if (wgpu.decoded?.b64) fs.writeFileSync("Tools/visual-regression/output/vertexcolor-webgpu.png", Buffer.from(wgpu.decoded.b64, "base64"));
-if (wgl.decoded?.b64) fs.writeFileSync("Tools/visual-regression/output/vertexcolor-webgl.png", Buffer.from(wgl.decoded.b64, "base64"));
+if (wgpu.decoded?.b64)
+  fs.writeFileSync(
+    "Tools/visual-regression/output/vertexcolor-webgpu.png",
+    Buffer.from(wgpu.decoded.b64, "base64"),
+  );
+if (wgl.decoded?.b64)
+  fs.writeFileSync(
+    "Tools/visual-regression/output/vertexcolor-webgl.png",
+    Buffer.from(wgl.decoded.b64, "base64"),
+  );
 
-const mGpu = meanColor(wgpu.decoded), mGl = meanColor(wgl.decoded);
+const mGpu = meanColor(wgpu.decoded),
+  mGl = meanColor(wgl.decoded);
 const dp = diffPct(wgpu.decoded, wgl.decoded);
-console.log(JSON.stringify({ webgpu: { ready: wgpu.info.ready, mean: mGpu, errs: wgpu.errs.slice(0, 3) }, webgl: { ready: wgl.info.ready, mean: mGl }, diffPct: dp }, null, 2));
+console.log(
+  JSON.stringify(
+    {
+      webgpu: {
+        ready: wgpu.info.ready,
+        mean: mGpu,
+        errs: wgpu.errs.slice(0, 3),
+      },
+      webgl: { ready: wgl.info.ready, mean: mGl },
+      diffPct: dp,
+    },
+    null,
+    2,
+  ),
+);
 const reproduces = dp !== null && dp > 12;
-console.log(reproduces
-  ? `DP-H37 REPRODUCES — WebGPU vertex colors diverge ${dp}% from WebGL (VEC3 COLOR_0 likely mis-read).`
-  : `DP-H37 does NOT reproduce — WebGPU vertex colors match WebGL within tolerance (diff ${dp}%); the loader widens VEC3 COLOR_0 to vec4.`);
+console.log(
+  reproduces
+    ? `DP-H37 REPRODUCES — WebGPU vertex colors diverge ${dp}% from WebGL (VEC3 COLOR_0 likely mis-read).`
+    : `DP-H37 does NOT reproduce — WebGPU vertex colors match WebGL within tolerance (diff ${dp}%); the loader widens VEC3 COLOR_0 to vec4.`,
+);
 process.exit(0);

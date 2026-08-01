@@ -114,12 +114,7 @@ export async function armWebGPUDevices(page) {
     if (!arm) {
       return { armed: 0, found: 0, total: 0 };
     }
-    const candidates = [
-      w.viewer,
-      w.webgpuViewer,
-      w.webglViewer,
-      w.__viewer,
-    ];
+    const candidates = [w.viewer, w.webgpuViewer, w.webglViewer, w.__viewer];
     let armed = 0;
     let found = 0;
     for (const v of candidates) {
@@ -132,7 +127,11 @@ export async function armWebGPUDevices(page) {
         }
       }
     }
-    return { armed, found, total: w.__webgpuGate ? w.__webgpuGate.armedDevices : 0 };
+    return {
+      armed,
+      found,
+      total: w.__webgpuGate ? w.__webgpuGate.armedDevices : 0,
+    };
   });
 }
 
@@ -145,7 +144,11 @@ export async function armWebGPUDevices(page) {
 export async function collectGateErrors(page) {
   return await page.evaluate(() => {
     const w = /** @type {any} */ (window);
-    const g = w.__webgpuGate || { errors: [], deviceLost: null, armedDevices: 0 };
+    const g = w.__webgpuGate || {
+      errors: [],
+      deviceLost: null,
+      armedDevices: 0,
+    };
     return {
       errors: g.errors.slice(),
       deviceLost: g.deviceLost,

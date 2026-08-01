@@ -44,10 +44,14 @@ async function capture(label, { renderer, useCsm }) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
@@ -93,10 +97,14 @@ async function capture(label, { renderer, useCsm }) {
       v.scene.cascadedShadowMapResolution = 1024;
 
       const wallCoords = C.Cartesian3.fromDegreesArray([
-        view.lon - 0.0004, view.lat - 0.003,
-        view.lon + 0.0004, view.lat - 0.003,
-        view.lon + 0.0004, view.lat + 0.003,
-        view.lon - 0.0004, view.lat + 0.003,
+        view.lon - 0.0004,
+        view.lat - 0.003,
+        view.lon + 0.0004,
+        view.lat - 0.003,
+        view.lon + 0.0004,
+        view.lat + 0.003,
+        view.lon - 0.0004,
+        view.lat + 0.003,
       ]);
       const wall = new C.Primitive({
         geometryInstances: new C.GeometryInstance({
@@ -187,8 +195,7 @@ async function capture(label, { renderer, useCsm }) {
       return {
         renderer: v.scene.context?.isWebGPU ? "webgpu" : "webgl",
         useCsm: v.scene.useCascadedShadowMaps,
-        castDispatches:
-          v.scene.context?.csmRenderer?._castDispatches ?? null,
+        castDispatches: v.scene.context?.csmRenderer?._castDispatches ?? null,
         csmEnabledOnContext: v.scene.context?.csmRenderer?.enabled === true,
         passLens,
         shadowMapCount: shadowState?.shadowMaps?.length ?? 0,
@@ -218,8 +225,12 @@ async function capture(label, { renderer, useCsm }) {
   console.log("[probe-csm-cast-dispatch] capturing 3-cell matrix\n");
 
   const cells = [];
-  cells.push(await capture("a-webgpu-csm", { renderer: "webgpu", useCsm: true }));
-  cells.push(await capture("b-webgpu-single", { renderer: "webgpu", useCsm: false }));
+  cells.push(
+    await capture("a-webgpu-csm", { renderer: "webgpu", useCsm: true }),
+  );
+  cells.push(
+    await capture("b-webgpu-single", { renderer: "webgpu", useCsm: false }),
+  );
   cells.push(await capture("c-webgl", { renderer: "webgl", useCsm: false }));
 
   for (const cell of cells) {
@@ -238,9 +249,9 @@ async function capture(label, { renderer, useCsm }) {
     uniq.forEach((t) => console.log(`    DBG ${t}`));
     if (cell.deviceErrors.length) {
       console.log(`    X ${cell.deviceErrors.length} device errors`);
-      cell.deviceErrors.slice(0, 3).forEach((e) =>
-        console.log(`      ${e.text?.slice(0, 200)}`),
-      );
+      cell.deviceErrors
+        .slice(0, 3)
+        .forEach((e) => console.log(`      ${e.text?.slice(0, 200)}`));
     } else {
       console.log(`    OK no device errors`);
     }
@@ -258,11 +269,21 @@ async function capture(label, { renderer, useCsm }) {
   const cShadow = Cc.umbraPx > 200;
 
   console.log("[probe-csm-cast-dispatch] assertions:");
-  console.log(`  A.castDispatches(${A.castDispatches}) > 0 → CSM cast pass dispatched: ${aCasts ? "PASS" : "FAIL"}`);
-  console.log(`  A.umbraPx(${A.umbraPx}) > 200 → CSM casts visible shadow: ${aShadow ? "PASS" : "FAIL"}`);
-  console.log(`  B.umbraPx(${B.umbraPx}) > 200 → single shadow map casts: ${bShadow ? "PASS" : "FAIL"}`);
-  console.log(`  C.umbraPx(${Cc.umbraPx}) > 200 → WebGL reference casts: ${cShadow ? "PASS" : "FAIL"}`);
-  console.log(`  total device errors=${errAll} → ${errAll === 0 ? "PASS" : "FAIL"}`);
+  console.log(
+    `  A.castDispatches(${A.castDispatches}) > 0 → CSM cast pass dispatched: ${aCasts ? "PASS" : "FAIL"}`,
+  );
+  console.log(
+    `  A.umbraPx(${A.umbraPx}) > 200 → CSM casts visible shadow: ${aShadow ? "PASS" : "FAIL"}`,
+  );
+  console.log(
+    `  B.umbraPx(${B.umbraPx}) > 200 → single shadow map casts: ${bShadow ? "PASS" : "FAIL"}`,
+  );
+  console.log(
+    `  C.umbraPx(${Cc.umbraPx}) > 200 → WebGL reference casts: ${cShadow ? "PASS" : "FAIL"}`,
+  );
+  console.log(
+    `  total device errors=${errAll} → ${errAll === 0 ? "PASS" : "FAIL"}`,
+  );
 
   const pass = aCasts && aShadow && bShadow && cShadow && errAll === 0;
   console.log(`\n  OVERALL: ${pass ? "PASS" : "FAIL"}`);
@@ -281,7 +302,14 @@ async function capture(label, { renderer, useCsm }) {
           diagnostics: c.diagnostics,
           deviceErrorCount: c.deviceErrors.length,
         })),
-        assertions: { aCasts, aShadow, bShadow, cShadow, totalDeviceErrors: errAll, pass },
+        assertions: {
+          aCasts,
+          aShadow,
+          bShadow,
+          cShadow,
+          totalDeviceErrors: errAll,
+          pass,
+        },
       },
       null,
       2,

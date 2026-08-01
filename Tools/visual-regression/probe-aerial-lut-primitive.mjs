@@ -44,7 +44,9 @@ async function capture(label, { atmosphereOn }) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
 
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
@@ -75,7 +77,9 @@ async function capture(label, { atmosphereOn }) {
       // surface, which is fine for testing primitive fog.
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
 
@@ -180,9 +184,7 @@ async function capture(label, { atmosphereOn }) {
   await page.screenshot({ path: out });
   await browser.close();
 
-  const errors = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
-  );
+  const errors = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   return { out, errors, diagnostics };
 }
 
@@ -206,9 +208,7 @@ async function diffPngs(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const a = await decode(ba);
@@ -284,9 +284,7 @@ async function diffPngs(a, b) {
   console.log(
     `    on primitives (polyline gets fogged at distance), and small/zero`,
   );
-  console.log(
-    `    if the wiring is broken (polyline immune to atmosphere).`,
-  );
+  console.log(`    if the wiring is broken (polyline immune to atmosphere).`);
 
   const reportPath = path.join(OUT_DIR, "aerial-lut-prim-report.json");
   fs.writeFileSync(

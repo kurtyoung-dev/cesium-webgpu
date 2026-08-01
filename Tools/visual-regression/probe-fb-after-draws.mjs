@@ -12,7 +12,8 @@
 
 import { chromium } from "playwright";
 
-const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
 
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
 const ctx = await browser.newContext({
@@ -96,11 +97,7 @@ await page.addInitScript(() => {
               const h = tex.height;
               const fmt = tex.format;
               const bpp =
-                fmt === "rgba16float"
-                  ? 8
-                  : fmt === "rgba32float"
-                    ? 16
-                    : 4;
+                fmt === "rgba16float" ? 8 : fmt === "rgba32float" ? 16 : 4;
               const sampleW = Math.min(64, w);
               const sampleH = Math.min(64, h);
               const x0 = Math.floor((w - sampleW) / 2);
@@ -225,7 +222,9 @@ const result = await page.evaluate(async () => {
   return out;
 });
 
-console.log("[probe-fb-after-draws] snapshots after Scene FB passes with draws:");
+console.log(
+  "[probe-fb-after-draws] snapshots after Scene FB passes with draws:",
+);
 console.log(JSON.stringify(result, null, 2));
 
 await browser.close();

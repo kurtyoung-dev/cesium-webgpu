@@ -51,9 +51,7 @@ if (da.w !== db.w || da.h !== db.h) {
 // the timeline along the bottom, a toolbar top-right, and the help panel
 // top-right; the large central/left band x:[0,1000] y:[300,620] is pure fog.
 const CROP =
-  process.argv[4] === "full"
-    ? null
-    : { x0: 0, y0: 300, x1: 1000, y1: 620 };
+  process.argv[4] === "full" ? null : { x0: 0, y0: 300, x1: 1000, y1: 620 };
 
 let diffPixels = 0;
 let maxDelta = 0;
@@ -73,7 +71,9 @@ for (let y = 0; y < da.h; y++) {
   }
 }
 const pct = (diffPixels / considered) * 100;
-console.log(`[diff-fog-ms] ${da.w}x${da.h} crop=${CROP ? JSON.stringify(CROP) : "full"}`);
+console.log(
+  `[diff-fog-ms] ${da.w}x${da.h} crop=${CROP ? JSON.stringify(CROP) : "full"}`,
+);
 console.log(`  diffPixels=${diffPixels}/${considered} (${pct.toFixed(4)}%)`);
 console.log(`  maxChannelDelta=${maxDelta}`);
 console.log(`  BYTE-IDENTICAL(crop)=${diffPixels === 0}`);

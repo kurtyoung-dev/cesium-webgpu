@@ -56,10 +56,14 @@ async function capture(label, { renderer, metadataDebug }) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
@@ -75,7 +79,14 @@ async function capture(label, { renderer, metadataDebug }) {
   });
 
   const diagnostics = await page.evaluate(
-    async ({ view, clockUTC, modelUrl, metadataDebug, metaBit, propTableBit }) => {
+    async ({
+      view,
+      clockUTC,
+      modelUrl,
+      metadataDebug,
+      metaBit,
+      propTableBit,
+    }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       globalThis.CesiumWebGPUMetadataDebug = metadataDebug === true;
@@ -154,7 +165,9 @@ async function capture(label, { renderer, metadataDebug }) {
               inspect.metaBitSet = (md & metaBit) !== 0;
               if (typeof pc._metadataWGSL === "string") {
                 inspect.wgslHasTableLoad =
-                  /textureLoad\(metadataPropertyTableTexture/.test(pc._metadataWGSL);
+                  /textureLoad\(metadataPropertyTableTexture/.test(
+                    pc._metadataWGSL,
+                  );
                 inspect.wgslUsesAttributeCol =
                   /let metadataTableCol = i32\(metadataFeatureId\);/.test(
                     pc._metadataWGSL,
@@ -214,9 +227,7 @@ async function capture(label, { renderer, metadataDebug }) {
   const pngPath = path.join(OUT_DIR, `metadata-table-instance-${label}.png`);
   await page.screenshot({ path: pngPath });
 
-  const errors = messages.filter(
-    (m) => m.t === "error" || m.t === "pageerror",
-  );
+  const errors = messages.filter((m) => m.t === "error" || m.t === "pageerror");
   await browser.close();
   return { diagnostics, errors, pngPath };
 }
@@ -244,13 +255,21 @@ function nearAny(r, set, tol) {
   const off = results.debugOff.diagnostics;
 
   // Expected red channels = fract(intensity)*255.
-  const expectedReds = AUTHORED.map((v) => Math.round((v - Math.trunc(v)) * 255));
+  const expectedReds = AUTHORED.map((v) =>
+    Math.round((v - Math.trunc(v)) * 255),
+  );
   const onReds = Object.values(on.pixels).map((p) => p.r);
 
   const checks = [];
   checks.push(["model ready (WebGPU)", on.modelReady === true]);
-  checks.push(["MODEL_HAS_PROPERTY_TABLES set", on.inspect.tableBitSet === true]);
-  checks.push(["WGSL has property-table textureLoad", on.inspect.wgslHasTableLoad === true]);
+  checks.push([
+    "MODEL_HAS_PROPERTY_TABLES set",
+    on.inspect.tableBitSet === true,
+  ]);
+  checks.push([
+    "WGSL has property-table textureLoad",
+    on.inspect.wgslHasTableLoad === true,
+  ]);
   checks.push([
     "WGSL keys column via i32(metadataFeatureId) (instance→featureId0)",
     on.inspect.wgslUsesAttributeCol === true,
@@ -273,8 +292,8 @@ function nearAny(r, set, tol) {
   const distinct = new Set(onReds.map((r) => Math.round(r / 20))).size;
   checks.push([`>=3 distinct debug reds (got ${distinct})`, distinct >= 3]);
   // Every debug pixel must be a table-derived color (not the plain white quad).
-  const allTableColored = Object.values(on.pixels).every((p) =>
-    nearAny(p.r, expectedReds, tol) && p.b > 40,
+  const allTableColored = Object.values(on.pixels).every(
+    (p) => nearAny(p.r, expectedReds, tol) && p.b > 40,
   );
   checks.push(["all 4 quads painted with table debug color", allTableColored]);
 
@@ -288,7 +307,10 @@ function nearAny(r, set, tol) {
       Math.abs(p.r - p.b) < 24 &&
       Math.abs(p.g - p.b) < 24,
   );
-  checks.push(["off-gate: debug-off renders achromatic (no debug paint)", offAchromatic]);
+  checks.push([
+    "off-gate: debug-off renders achromatic (no debug paint)",
+    offAchromatic,
+  ]);
   checks.push([
     "off-gate: 0 WebGPU errors (debug-off)",
     results.debugOff.errors.length === 0 &&
@@ -296,10 +318,12 @@ function nearAny(r, set, tol) {
   ]);
   checks.push([
     "0 WebGPU errors (debug-on)",
-    results.debugOn.errors.length === 0 &&
-      (on.probeErrors?.length ?? 0) === 0,
+    results.debugOn.errors.length === 0 && (on.probeErrors?.length ?? 0) === 0,
   ]);
-  checks.push(["WebGL baseline model ready", results.webgl.diagnostics.modelReady === true]);
+  checks.push([
+    "WebGL baseline model ready",
+    results.webgl.diagnostics.modelReady === true,
+  ]);
 
   console.log("\n=== PARITY-METADATA-TABLE-INSTANCE-SOURCE probe ===");
   console.log("materialDefines (on):", on.inspect.materialDefinesHex);
@@ -307,7 +331,8 @@ function nearAny(r, set, tol) {
   console.log("debug-on quad pixels:", JSON.stringify(on.pixels));
   console.log("debug-off quad pixels:", JSON.stringify(off.pixels));
   console.log("wgsl:", JSON.stringify(on.inspect, null, 0));
-  if (on.modelLoadError) console.log("MODEL LOAD ERROR (on):", on.modelLoadError);
+  if (on.modelLoadError)
+    console.log("MODEL LOAD ERROR (on):", on.modelLoadError);
   console.log("");
   let allPass = true;
   for (const [name, ok] of checks) {

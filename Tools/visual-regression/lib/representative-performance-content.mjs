@@ -1,17 +1,14 @@
-export const REPRESENTATIVE_CONTENT_PROFILE =
-  "local-procedural-terrain-assets";
+export const REPRESENTATIVE_CONTENT_PROFILE = "local-procedural-terrain-assets";
 export const REPRESENTATIVE_CONTENT = "terrain-models-tiles";
 
 const representativeSanFranciscoCenter = {
   longitude: (-122.42 * Math.PI) / 180.0,
   latitude: (37.785 * Math.PI) / 180.0,
 };
-const representativeSanFranciscoNormalizationRadius =
-  (2.0 * Math.PI) / 180.0;
+const representativeSanFranciscoNormalizationRadius = (2.0 * Math.PI) / 180.0;
 const representativeSanFranciscoHeightReduction = 340.0;
 
-const requiredPositiveInteger = (value) =>
-  Number.isInteger(value) && value > 0;
+const requiredPositiveInteger = (value) => Number.isInteger(value) && value > 0;
 const requiredFiniteNumber = (value) => Number.isFinite(value);
 const isLocalSampleDataUrl = (value) =>
   typeof value === "string" && value.startsWith("/Apps/SampleData/");
@@ -39,18 +36,14 @@ export function validateRepresentativeConfig(config) {
       terrain.heightmapWidth < 3 ||
       terrain.heightmapWidth > 129
     ) {
-      failures.push(
-        "terrain.heightmapWidth must be an integer from 3 to 129",
-      );
+      failures.push("terrain.heightmapWidth must be an integer from 3 to 129");
     }
     if (
       !requiredPositiveInteger(terrain.waterMaskWidth) ||
       terrain.waterMaskWidth < 2 ||
       terrain.waterMaskWidth > 256
     ) {
-      failures.push(
-        "terrain.waterMaskWidth must be an integer from 2 to 256",
-      );
+      failures.push("terrain.waterMaskWidth must be an integer from 2 to 256");
     }
     if (
       !Number.isInteger(terrain.maximumLevel) ||
@@ -63,9 +56,7 @@ export function validateRepresentativeConfig(config) {
       !requiredPositiveInteger(terrain.tileCacheSize) ||
       terrain.tileCacheSize > 8192
     ) {
-      failures.push(
-        "terrain.tileCacheSize must be an integer from 1 to 8192",
-      );
+      failures.push("terrain.tileCacheSize must be an integer from 1 to 8192");
     }
   }
 
@@ -81,10 +72,7 @@ export function validateRepresentativeConfig(config) {
       failures.push(`${name}.url must reference /Apps/SampleData/`);
     }
     const maximumGridSide = name === "models" ? 32 : 8;
-    if (
-      !requiredPositiveInteger(grid.rows) ||
-      grid.rows > maximumGridSide
-    ) {
+    if (!requiredPositiveInteger(grid.rows) || grid.rows > maximumGridSide) {
       failures.push(
         `${name}.rows must be an integer from 1 to ${maximumGridSide}`,
       );
@@ -159,27 +147,21 @@ export function validateRepresentativeConfig(config) {
     config.measurementTerrainMode !== "streaming" &&
     config.measurementTerrainMode !== "resident"
   ) {
-    failures.push(
-      "measurementTerrainMode must be streaming or resident",
-    );
+    failures.push("measurementTerrainMode must be streaming or resident");
   }
   if (
     !Number.isInteger(config.routePrimeSamples) ||
     config.routePrimeSamples < 0 ||
     config.routePrimeSamples > 2048
   ) {
-    failures.push(
-      "routePrimeSamples must be an integer from 0 to 2048",
-    );
+    failures.push("routePrimeSamples must be an integer from 0 to 2048");
   }
   if (
     !Number.isFinite(config.maximumPairWorkDeltaRatio) ||
     config.maximumPairWorkDeltaRatio < 0 ||
     config.maximumPairWorkDeltaRatio > 1
   ) {
-    failures.push(
-      "maximumPairWorkDeltaRatio must be between 0 and 1",
-    );
+    failures.push("maximumPairWorkDeltaRatio must be between 0 and 1");
   }
   if (
     config.measurementTerrainMode === "resident" &&
@@ -205,25 +187,21 @@ export function sampleRepresentativeHeight(longitude, latitude) {
     420.0 *
     Math.abs(Math.sin(longitude * 37.0 + latitude * 23.0)) *
     Math.cos(latitude * 11.0);
-  const localRelief =
-    160.0 * Math.sin(longitude * 113.0 - latitude * 97.0);
+  const localRelief = 160.0 * Math.sin(longitude * 113.0 - latitude * 97.0);
   const rawHeight = 180.0 + broadRelief + ridges + localRelief;
   const longitudeDistance =
     (longitude - representativeSanFranciscoCenter.longitude) *
     Math.cos(representativeSanFranciscoCenter.latitude);
-  const latitudeDistance =
-    latitude - representativeSanFranciscoCenter.latitude;
+  const latitudeDistance = latitude - representativeSanFranciscoCenter.latitude;
   const normalizedDistance = Math.min(
     1.0,
     Math.hypot(longitudeDistance, latitudeDistance) /
       representativeSanFranciscoNormalizationRadius,
   );
   const influence = 1.0 - normalizedDistance;
-  const smoothInfluence =
-    influence * influence * (3.0 - 2.0 * influence);
+  const smoothInfluence = influence * influence * (3.0 - 2.0 * influence);
   return (
-    rawHeight -
-    representativeSanFranciscoHeightReduction * smoothInfluence
+    rawHeight - representativeSanFranciscoHeightReduction * smoothInfluence
   );
 }
 
@@ -249,8 +227,7 @@ function waterValue(longitude, latitude) {
     latitudeDegrees >= 34.0 &&
     latitudeDegrees <= 42.0
   ) {
-    const coastLongitude =
-      -122.48 + (latitudeDegrees - 37.75) * 0.08;
+    const coastLongitude = -122.48 + (latitudeDegrees - 37.75) * 0.08;
     const signedDistance = coastLongitude - longitudeDegrees;
     return Math.round(
       255.0 * Math.min(1.0, Math.max(0.0, signedDistance / 0.025 + 0.5)),
@@ -392,15 +369,15 @@ export function createRepresentativeTerrain(C, config) {
       }
 
       const terrainData = new C.HeightmapTerrainData({
-          // HeightmapTerrainData releases its buffer after mesh creation. Give
-          // each request a fresh wrapper around cached deterministic payloads
-          // so quadtree eviction cannot mutate the provider cache.
-          buffer: payload.buffer.slice(),
-          width: terrainConfig.heightmapWidth,
-          height: terrainConfig.heightmapWidth,
-          childTileMask: level < terrainConfig.maximumLevel ? 15 : 0,
-          waterMask: payload.waterMask.slice(),
-        });
+        // HeightmapTerrainData releases its buffer after mesh creation. Give
+        // each request a fresh wrapper around cached deterministic payloads
+        // so quadtree eviction cannot mutate the provider cache.
+        buffer: payload.buffer.slice(),
+        width: terrainConfig.heightmapWidth,
+        height: terrainConfig.heightmapWidth,
+        childTileMask: level < terrainConfig.maximumLevel ? 15 : 0,
+        waterMask: payload.waterMask.slice(),
+      });
       issuedTerrainData.add(terrainData);
       return Promise.resolve(terrainData);
     },
@@ -456,8 +433,7 @@ export function diffRepresentativeTerrainDiagnostics(start, end) {
   return {
     requestCount: end.requestCount - start.requestCount,
     cacheHitCount: end.cacheHitCount - start.cacheHitCount,
-    tileGenerationCount:
-      end.tileGenerationCount - start.tileGenerationCount,
+    tileGenerationCount: end.tileGenerationCount - start.tileGenerationCount,
     requestsByLevel: diffLevelCounts(
       start.requestsByLevel,
       end.requestsByLevel,
@@ -476,8 +452,7 @@ export function diffRepresentativeTerrainDiagnostics(start, end) {
     waterMasksGenerated: Object.fromEntries(
       Object.keys(end.waterMasksGenerated).map((kind) => [
         kind,
-        end.waterMasksGenerated[kind] -
-          (start.waterMasksGenerated[kind] || 0),
+        end.waterMasksGenerated[kind] - (start.waterMasksGenerated[kind] || 0),
       ]),
     ),
   };
@@ -500,10 +475,7 @@ function diffLevelCounts(start = {}, end = {}) {
   return Object.fromEntries(
     [...new Set([...Object.keys(start), ...Object.keys(end)])]
       .sort((left, right) => Number(left) - Number(right))
-      .map((level) => [
-        level,
-        (end[level] || 0) - (start[level] || 0),
-      ])
+      .map((level) => [level, (end[level] || 0) - (start[level] || 0)])
       .filter(([, count]) => count !== 0),
   );
 }
@@ -517,8 +489,7 @@ function gridCoordinate(grid, row, column) {
 
 export async function createRepresentativeAssets(C, scene, config) {
   const modelPromises = [];
-  let minimumModelTerrainClearance =
-    Number.POSITIVE_INFINITY;
+  let minimumModelTerrainClearance = Number.POSITIVE_INFINITY;
   for (let row = 0; row < config.models.rows; row++) {
     for (let column = 0; column < config.models.columns; column++) {
       const coordinate = gridCoordinate(config.models, row, column);
@@ -560,8 +531,7 @@ export async function createRepresentativeAssets(C, scene, config) {
     new C.Matrix4(),
   );
   const tilesetPromises = [];
-  let minimumTilesetTerrainClearance =
-    Number.POSITIVE_INFINITY;
+  let minimumTilesetTerrainClearance = Number.POSITIVE_INFINITY;
   for (let row = 0; row < config.tilesets.rows; row++) {
     for (let column = 0; column < config.tilesets.columns; column++) {
       const coordinate = gridCoordinate(config.tilesets, row, column);
@@ -787,8 +757,7 @@ export function createRepresentativeTilesetLifecycleTracker(
     return state == null ? null : `UNKNOWN_${state}`;
   };
 
-  const frameNumber = (tile) =>
-    tile?._tileset?._updatedVisibilityFrame ?? null;
+  const frameNumber = (tile) => tile?._tileset?._updatedVisibilityFrame ?? null;
 
   const tileIdentity = (tile) => {
     identities.refresh();
@@ -896,8 +865,7 @@ export function createRepresentativeTilesetLifecycleTracker(
     settledRequests.add(request);
     const record = requestRecords.get(request);
     const cancelled =
-      request.cancelled === true ||
-      request.state === C.RequestState?.CANCELLED;
+      request.cancelled === true || request.state === C.RequestState?.CANCELLED;
     if (cancelled) {
       recordCancellation(tile, request, "request-settled-cancelled");
     }
@@ -1003,6 +971,7 @@ export function createRepresentativeTilesetLifecycleTracker(
       continue;
     }
     removeTileLoadListeners.push(
+      // eslint-disable-next-line no-loop-func -- the closure is consumed inside this iteration (or reads a shared kill switch), not a stale per-iteration binding
       tileset.tileLoad.addEventListener((tile) => {
         if (!active) {
           return;
@@ -1033,7 +1002,11 @@ export function createRepresentativeTilesetLifecycleTracker(
       const allSelected = [];
       const allReady = [];
       let identityListsTruncated = false;
-      for (let tilesetIndex = 0; tilesetIndex < tilesets.length; tilesetIndex++) {
+      for (
+        let tilesetIndex = 0;
+        tilesetIndex < tilesets.length;
+        tilesetIndex++
+      ) {
         const tileset = tilesets[tilesetIndex];
         const allTiles = [];
         collectRepresentativeTiles(tileset?._root, allTiles);
@@ -1229,7 +1202,11 @@ function observeFingerprintBucket(bucket, sample) {
     bucket.hashB,
     sample.segmentIndex ^ 0x85ebca6b,
   );
-  for (let index = 0; index < representativeFingerprintMetricNames.length; index++) {
+  for (
+    let index = 0;
+    index < representativeFingerprintMetricNames.length;
+    index++
+  ) {
     const name = representativeFingerprintMetricNames[index];
     const value = sample[name];
     bucket.hashA = mixFingerprintInteger(bucket.hashA, value);
@@ -1288,14 +1265,14 @@ export function createRepresentativeWorkloadFingerprintAccumulator() {
         sample.segmentIndex < 0
       ) {
         invalidSampleCount++;
-        firstInvalidSampleReason ??= "segmentIndex must be a non-negative integer";
+        firstInvalidSampleReason ??=
+          "segmentIndex must be a non-negative integer";
         return false;
       }
       for (const name of representativeFingerprintMetricNames) {
         if (!Number.isInteger(sample[name]) || sample[name] < 0) {
           invalidSampleCount++;
-          firstInvalidSampleReason ??=
-            `${name} must be a non-negative integer`;
+          firstInvalidSampleReason ??= `${name} must be a non-negative integer`;
           return false;
         }
       }
@@ -1313,14 +1290,14 @@ export function createRepresentativeWorkloadFingerprintAccumulator() {
     snapshot() {
       const reasons = [];
       if (overall.frameCount < 1) {
-        reasons.push("no route-replay workload-fingerprint frames were observed");
+        reasons.push(
+          "no route-replay workload-fingerprint frames were observed",
+        );
       }
       if (invalidSampleCount > 0) {
         reasons.push(
           `${invalidSampleCount} invalid workload-fingerprint samples` +
-            (firstInvalidSampleReason
-              ? ` (${firstInvalidSampleReason})`
-              : ""),
+            (firstInvalidSampleReason ? ` (${firstInvalidSampleReason})` : ""),
         );
       }
       return {
@@ -1337,11 +1314,7 @@ export function createRepresentativeWorkloadFingerprintAccumulator() {
   };
 }
 
-export function createRepresentativeEvidenceTracker(
-  scene,
-  terrain,
-  assets,
-) {
+export function createRepresentativeEvidenceTracker(scene, terrain, assets) {
   const directModels = new Set(assets.models);
   const directModelIdentities = new WeakMap(
     assets.models.map((model, index) => [
@@ -1573,8 +1546,7 @@ export function createRepresentativeEvidenceTracker(
           readyThisTileset++;
           const identity = tileIdentities.get(readyTile);
           if (identity) {
-            tilesetReadyIdentityA =
-              (tilesetReadyIdentityA + identity.a) >>> 0;
+            tilesetReadyIdentityA = (tilesetReadyIdentityA + identity.a) >>> 0;
             tilesetReadyIdentityB =
               Math.imul(tilesetReadyIdentityB, identity.b | 1) >>> 0;
           } else {
@@ -1685,10 +1657,7 @@ export function createRepresentativeEvidenceTracker(
         } else if (
           surfaceTile?.terrainData?.wasCreatedByUpsampling?.() === true
         ) {
-          maximumUpsampledLevel = Math.max(
-            maximumUpsampledLevel,
-            tileLevel,
-          );
+          maximumUpsampledLevel = Math.max(maximumUpsampledLevel, tileLevel);
         }
       }
       if (meshTiles > 0) evidence.terrainMeshFrames++;
@@ -1742,8 +1711,7 @@ export function createRepresentativeEvidenceTracker(
       let tilesetContentReady = 0;
       for (let index = 0; index < assets.tilesets.length; index++) {
         const tileset = assets.tilesets[index];
-        const commandCount =
-          tileset.statistics?.numberOfCommands || 0;
+        const commandCount = tileset.statistics?.numberOfCommands || 0;
         const selectedCount = tileset.statistics?.selected || 0;
         const readyContentCount =
           tileset.statistics?.numberOfTilesWithContentReady || 0;
@@ -1759,11 +1727,7 @@ export function createRepresentativeEvidenceTracker(
       if (tilesetCommands > 0) {
         evidence.tilesetCommandFrames++;
       }
-      if (
-        directModelCommands > 0 &&
-        tilesetCommands > 0 &&
-        meshTiles > 0
-      ) {
+      if (directModelCommands > 0 && tilesetCommands > 0 && meshTiles > 0) {
         evidence.allContentCommandFrames++;
       }
       evidence.maximumTilesetCommands = Math.max(
@@ -1820,7 +1784,9 @@ export function createRepresentativeEvidenceTracker(
         terrainDiagnostics.uniqueTileCount < 2 ||
         terrainDiagnostics.nonFlatTilesGenerated < 1
       ) {
-        failures.push("procedural terrain requests did not produce real relief");
+        failures.push(
+          "procedural terrain requests did not produce real relief",
+        );
       }
       if (
         evidence.terrainMeshFrames < 1 ||
@@ -1869,9 +1835,7 @@ export function createRepresentativeEvidenceTracker(
             : "local 3D Tiles never became ready and selected during route priming",
         );
       }
-      if (
-        assets.placement.minimumTilesetTerrainClearance <= 0
-      ) {
+      if (assets.placement.minimumTilesetTerrainClearance <= 0) {
         failures.push("local 3D Tiles were not placed above terrain");
       }
       if (commandEvidenceRequired && evidence.allContentCommandFrames < 1) {

@@ -80,8 +80,7 @@ const result = await page.evaluate(
     function content() {
       for (const tile of ts._selectedTiles || []) {
         const m = tile.content && tile.content._model;
-        if (m && m.featureTables && m.featureTables.length)
-          return tile.content;
+        if (m && m.featureTables && m.featureTables.length) return tile.content;
       }
       return null;
     }
@@ -135,7 +134,7 @@ const result = await page.evaluate(
     }
 
     // drillPick (INV-5): scan CSS-pixel grid across the frame for a building.
-    let drill = null;
+    let drill;
     {
       const dpr = window.devicePixelRatio || 1;
       const cssW = canvas.clientWidth || w / dpr;

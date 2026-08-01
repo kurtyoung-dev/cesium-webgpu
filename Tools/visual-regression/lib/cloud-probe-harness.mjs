@@ -23,11 +23,7 @@ export function installCloudProbeHarness() {
   };
 
   const snapshotValue = (value) => {
-    if (
-      value !== null &&
-      typeof value === "object" &&
-      !Array.isArray(value)
-    ) {
+    if (value !== null && typeof value === "object" && !Array.isArray(value)) {
       return Object.fromEntries(
         Object.keys(value).map((key) => [key, snapshotValue(value[key])]),
       );
@@ -132,7 +128,9 @@ export function installCloudProbeHarness() {
         config,
       };
       if (!truth.ok) {
-        throw new Error(`cloud probe configuration failed: ${errors.join("; ")}`);
+        throw new Error(
+          `cloud probe configuration failed: ${errors.join("; ")}`,
+        );
       }
       return truth;
     },
@@ -185,12 +183,8 @@ export function installCloudProbeHarness() {
       const cameraState =
         camera && typeof camera.setView === "function"
           ? {
-              destination: cloneCartesian(
-                camera.positionWC ?? camera.position,
-              ),
-              direction: cloneCartesian(
-                camera.directionWC ?? camera.direction,
-              ),
+              destination: cloneCartesian(camera.positionWC ?? camera.position),
+              direction: cloneCartesian(camera.directionWC ?? camera.direction),
               up: cloneCartesian(camera.upWC ?? camera.up),
             }
           : undefined;

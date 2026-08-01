@@ -69,7 +69,9 @@ const out = await page.evaluate(async () => {
   const get = (name) =>
     idx[name] !== undefined ? bt.getBatchedAttribute(0, idx[name]) : undefined;
   const toArr = (a) =>
-    a === undefined ? undefined : [a.x, a.y, a.z, a.w].filter((n) => n !== undefined);
+    a === undefined
+      ? undefined
+      : [a.x, a.y, a.z, a.w].filter((n) => n !== undefined);
 
   const swH = get("southWest_HIGH");
   const swL = get("southWest_LOW");
@@ -78,8 +80,7 @@ const out = await page.evaluate(async () => {
   const uvMin = get("uvMinAndExtents");
   const uMaxVmax = get("uMaxVmax");
 
-  const mag = (a) =>
-    a ? Math.hypot(a.x ?? 0, a.y ?? 0, a.z ?? 0) : undefined;
+  const mag = (a) => (a ? Math.hypot(a.x ?? 0, a.y ?? 0, a.z ?? 0) : undefined);
 
   return {
     attrNames: Object.keys(idx),

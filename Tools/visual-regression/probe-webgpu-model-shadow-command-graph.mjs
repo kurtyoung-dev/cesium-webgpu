@@ -289,8 +289,7 @@ try {
           shadowCastTopology: command?._shadowCastTopology ?? null,
           shadowModelBufferLabel: rawUB?.label ?? null,
           hasShadowModelUB: !!ub,
-          hasStableShadowCacheHost:
-            !!command?._shadowCastBindGroupCacheHost,
+          hasStableShadowCacheHost: !!command?._shadowCastBindGroupCacheHost,
           hasShadowJointMatricesSB: !!command?._shadowCastJointMatricesSB,
           hasShadowInstancingSB: !!command?._shadowCastInstancingSB,
           vertexBufferCount: command?.vertexBuffers?.length ?? 0,
@@ -346,16 +345,14 @@ try {
           frameNumber: scene.frameState.frameNumber,
           mode: scene.mode,
           shadowMapCount: scene.frameState.shadowMaps?.length ?? 0,
-          shadowsEnabled:
-            scene.frameState.shadowState?.shadowsEnabled === true,
+          shadowsEnabled: scene.frameState.shadowState?.shadowsEnabled === true,
           lightShadowsEnabled:
             scene.frameState.shadowState?.lightShadowsEnabled === true,
           shadowPassCounts:
             scene.frameState.shadowMaps?.map(
               (shadowMap) => shadowMap?.passes?.length ?? 0,
             ) ?? [],
-          csmRequested:
-            scene.frameState.useCascadedShadowMaps === true,
+          csmRequested: scene.frameState.useCascadedShadowMaps === true,
           commands: graph,
         };
       }
@@ -486,6 +483,7 @@ try {
         }
 
         await renderUntil(
+          // eslint-disable-next-line no-loop-func -- the closure is consumed inside this iteration (or reads a shared kill switch), not a stale per-iteration binding
           () =>
             latestGraph?.commands?.some(
               (command) => command.role === "primary",
@@ -499,6 +497,7 @@ try {
         setGlobalShadows(true);
         shadowAudit.reset();
         await renderUntil(
+          // eslint-disable-next-line no-loop-func -- the closure is consumed inside this iteration (or reads a shared kill switch), not a stale per-iteration binding
           () => {
             if (!latestGraph || latestGraph.shadowMapCount < 1) return false;
             const primaries = latestGraph.commands.filter(
@@ -594,8 +593,7 @@ try {
               : null,
             boundBufferLabel: boundLabel,
             uploadedLinear: boundWrite?.floats?.slice(0, 16) ?? null,
-            uploadedEncodedCameraMC:
-              boundWrite?.floats?.slice(16, 24) ?? null,
+            uploadedEncodedCameraMC: boundWrite?.floats?.slice(16, 24) ?? null,
             uploadByteLength: boundWrite?.byteLength ?? 0,
           };
         }
@@ -603,6 +601,7 @@ try {
         setGlobalShadows(false);
         shadowAudit.reset();
         await renderUntil(
+          // eslint-disable-next-line no-loop-func -- the closure is consumed inside this iteration (or reads a shared kill switch), not a stale per-iteration binding
           () => !!latestGraph && latestGraph.shadowMapCount === 0,
           120,
           `${mode.name} shadow-OFF-again command graph`,
@@ -695,15 +694,15 @@ try {
         }
 
         if (cell.offFresh.graph?.shadowMapCount !== 0) {
-          fail(`${cell.mode}/offFresh: global OFF still published shadow maps.`);
+          fail(
+            `${cell.mode}/offFresh: global OFF still published shadow maps.`,
+          );
         }
         if (cell.on.graph?.shadowMapCount < 1) {
           fail(`${cell.mode}/on: global ON published no shadow map.`);
         }
         if (
-          cell.on.graph?.shadowPassCounts?.some(
-            (passCount) => passCount !== 1,
-          )
+          cell.on.graph?.shadowPassCounts?.some((passCount) => passCount !== 1)
         ) {
           fail(
             `${cell.mode}/on: native WebGPU expected one legacy source pass per shadow map, got ${cell.on.graph.shadowPassCounts.join(
@@ -712,7 +711,9 @@ try {
           );
         }
         if (cell.offAgain.graph?.shadowMapCount !== 0) {
-          fail(`${cell.mode}/offAgain: global OFF still published shadow maps.`);
+          fail(
+            `${cell.mode}/offAgain: global OFF still published shadow maps.`,
+          );
         }
 
         if (
@@ -727,9 +728,7 @@ try {
           cell.offAgain.audit.creates.length !== 0 ||
           cell.offAgain.audit.writes.length !== 0
         ) {
-          fail(
-            `${cell.mode}/offAgain: disabling shadows did shadow UB work.`,
-          );
+          fail(`${cell.mode}/offAgain: disabling shadows did shadow UB work.`);
         }
 
         const onPrimaries = primaryCommands(cell.on);
@@ -930,9 +929,7 @@ try {
             const feature = tileInfo.content.getFeature(i);
             if (!feature) continue;
             feature.color =
-              i % 2 === 0
-                ? C.Color.fromBytes(255, 0, 0, 102)
-                : C.Color.WHITE;
+              i % 2 === 0 ? C.Color.fromBytes(255, 0, 0, 102) : C.Color.WHITE;
           }
         }
 
@@ -955,15 +952,16 @@ try {
             tileset.shadows = mode.value;
             shadowAudit.reset();
             await renderUntil(
+              // eslint-disable-next-line no-loop-func -- the closure is consumed inside this iteration (or reads a shared kill switch), not a stale per-iteration binding
               () => {
-                if (!latestGraph || latestGraph.shadowMapCount < 1) return false;
+                if (!latestGraph || latestGraph.shadowMapCount < 1)
+                  return false;
                 const commands = latestGraph.commands;
                 const primary = commands.find(
                   (command) => command.role === "primary",
                 );
                 const twin = commands.find(
-                  (command) =>
-                    command.role === "styled-translucent-twin",
+                  (command) => command.role === "styled-translucent-twin",
                 );
                 if (!primary || !twin) return false;
                 return (
@@ -984,8 +982,7 @@ try {
               phase: phaseSnapshot(),
               styleCommandsNeeded: tileInfo.model.styleCommandsNeeded,
               translucentFeaturesLength:
-                tileInfo.featureTable.batchTexture
-                  .translucentFeaturesLength,
+                tileInfo.featureTable.batchTexture.translucentFeaturesLength,
               featureCount,
             });
           }

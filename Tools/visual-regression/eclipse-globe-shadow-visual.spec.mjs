@@ -41,7 +41,10 @@ test("S5 visual probe gates nonblank, localized darkening and inactive identity"
 });
 
 test("S5 visual probe certifies selected-terrain correction transitions and one-View allocation", () => {
-  assert.match(source, /const fixedOrbitalPosition = C\.Cartesian3\.fromDegrees/);
+  assert.match(
+    source,
+    /const fixedOrbitalPosition = C\.Cartesian3\.fromDegrees/,
+  );
   assert.match(source, /const outsideCandidates = \[\];/);
   assert.match(source, /state\?\.selectedTerrain\?\.providerSelectionRevision/);
   assert.match(source, /preparedSelectionRevision:/);

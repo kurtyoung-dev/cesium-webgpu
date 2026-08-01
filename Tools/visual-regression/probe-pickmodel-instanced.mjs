@@ -54,10 +54,15 @@ import { fileURLToPath } from "url";
 import path from "path";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
 const failures = [];
 const note = (ok, name, detail) => {
-  console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
+  console.log(
+    `${ok ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`,
+  );
   if (!ok) failures.push(name);
 };
 
@@ -114,7 +119,11 @@ const note = (ok, name, detail) => {
       `maxErr=${maxErr.toExponential(3)} over ${vectors.length} unit vectors`,
     );
   } catch (e) {
-    note(false, "octDecode round-trip", `threw: ${String(e.message).split("\n")[0]}`);
+    note(
+      false,
+      "octDecode round-trip",
+      `threw: ${String(e.message).split("\n")[0]}`,
+    );
   }
 }
 
@@ -128,7 +137,9 @@ const browser = await chromium.launch({
 });
 
 async function openViewer(renderer) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -296,11 +307,23 @@ const PAGE_PRELUDE = `
   } catch (e) {
     note(false, "webgl: section crashed", String(e.message).split("\n")[0]);
     console.log("[webgl console errors]", JSON.stringify(errors.slice(0, 5)));
-    r = { litPixels: 0, interior: 0, sampled: 0, gpuHits: 0, cpuHits: 0,
-          maxDist: -1, meanDist: -1, missIsUndefined: false };
+    r = {
+      litPixels: 0,
+      interior: 0,
+      sampled: 0,
+      gpuHits: 0,
+      cpuHits: 0,
+      maxDist: -1,
+      meanDist: -1,
+      missIsUndefined: false,
+    };
   }
   console.log("[webgl/BoxInstanced]", JSON.stringify(r));
-  note(r.litPixels > 500, "webgl: BoxInstanced renders", `litPixels=${r.litPixels}`);
+  note(
+    r.litPixels > 500,
+    "webgl: BoxInstanced renders",
+    `litPixels=${r.litPixels}`,
+  );
   note(
     r.gpuHits >= 10,
     "webgl: enough GPU-anchored sample points",
@@ -318,7 +341,11 @@ const PAGE_PRELUDE = `
   );
   note(r.missIsUndefined, "webgl: ray through empty center misses");
   const realErrors = errors.filter((e) => !/favicon/i.test(e));
-  note(realErrors.length === 0, "webgl: no console errors", realErrors.slice(0, 3).join(" | "));
+  note(
+    realErrors.length === 0,
+    "webgl: no console errors",
+    realErrors.slice(0, 3).join(" | "),
+  );
   await page.close();
 }
 
@@ -417,7 +444,11 @@ const PAGE_PRELUDE = `
   );
   note(r.missIsUndefined, "webgpu: ray through empty center misses");
   const realErrors = errors.filter((e) => !/favicon/i.test(e));
-  note(realErrors.length === 0, "webgpu: no console errors", realErrors.slice(0, 3).join(" | "));
+  note(
+    realErrors.length === 0,
+    "webgpu: no console errors",
+    realErrors.slice(0, 3).join(" | "),
+  );
   await page.close();
 }
 

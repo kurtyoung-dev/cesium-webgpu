@@ -43,9 +43,13 @@ const watchdog = setTimeout(() => {
 if (watchdog.unref) watchdog.unref();
 
 function summarize(arr) {
-  const a = arr.filter((x) => typeof x === "number" && isFinite(x)).slice().sort((x, y) => x - y);
+  const a = arr
+    .filter((x) => typeof x === "number" && isFinite(x))
+    .slice()
+    .sort((x, y) => x - y);
   if (!a.length) return null;
-  const q = (p) => a[Math.min(a.length - 1, Math.max(0, Math.floor(p * (a.length - 1))))];
+  const q = (p) =>
+    a[Math.min(a.length - 1, Math.max(0, Math.floor(p * (a.length - 1))))];
   const sum = a.reduce((s, x) => s + x, 0);
   return {
     n: a.length,
@@ -65,9 +69,15 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const logs = [];
   page.on("console", (m) => logs.push(`[${m.type()}] ${m.text()}`));
   page.on("pageerror", (e) => logs.push(`[pageerror] ${e.message}`));
@@ -90,14 +100,25 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
     return {
       isWebGPU: !!ctx && !!ctx.isWebGPU,
       rendererType: ctx && ctx.rendererType,
-      hasWaterMask: !!(globe.terrainProvider && globe.terrainProvider.hasWaterMask),
-      terrainReady: !!(globe.terrainProvider && globe.terrainProvider.availability),
+      hasWaterMask: !!(
+        globe.terrainProvider && globe.terrainProvider.hasWaterMask
+      ),
+      terrainReady: !!(
+        globe.terrainProvider && globe.terrainProvider.availability
+      ),
       showWaterEffect: globe.showWaterEffect,
       enableEnhancedOcean: globe.enableEnhancedOcean,
       oceanNormalMapUrl: globe.oceanNormalMapUrl,
-      hasTimestampQuery: !!(ctx && ctx.hasFeature && ctx.hasFeature("timestamp-query")),
+      hasTimestampQuery: !!(
+        ctx &&
+        ctx.hasFeature &&
+        ctx.hasFeature("timestamp-query")
+      ),
       tilesRendered:
-        (globe._surface && globe._surface._tilesToRender && globe._surface._tilesToRender.length) || -1,
+        (globe._surface &&
+          globe._surface._tilesToRender &&
+          globe._surface._tilesToRender.length) ||
+        -1,
       cameraHeight: v.camera.positionCartographic.height,
     };
   }, SETTLE_FRAMES);
@@ -137,7 +158,7 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
           await new Promise((r) => requestAnimationFrame(r));
         }
         const res = prof && prof.getResults ? prof.getResults() : null;
-        let passDetail = {};
+        const passDetail = {};
         let globePassMs = null;
         let globePassName = null;
         if (res && res.passes) {
@@ -196,7 +217,9 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
   // ocean fragment shading lives in "Scene Framebuffer Render Pass".
   const perPassSummary = (reps) => {
     const keys = new Set();
-    reps.forEach((r) => Object.keys(r.passDetail || {}).forEach((k) => keys.add(k)));
+    reps.forEach((r) =>
+      Object.keys(r.passDetail || {}).forEach((k) => keys.add(k)),
+    );
     const out = {};
     for (const k of keys) {
       out[k] = summarize(reps.map((r) => (r.passDetail || {})[k]));
@@ -231,12 +254,14 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
       gpu_frameAvg_summary: summarize(perRepFrame(offReps)),
       gpu_perPass_summary: perPassSummary(offReps),
     },
-    errors: logs.filter((l) => l.startsWith("[error]") || l.startsWith("[pageerror]")).slice(0, 8),
+    errors: logs
+      .filter((l) => l.startsWith("[error]") || l.startsWith("[pageerror]"))
+      .slice(0, 8),
   };
 
   // Deltas
-  const onGlobe = out.ON.gpu_globePass_summary;
-  const offGlobe = out.OFF.gpu_globePass_summary;
+  const _onGlobe = out.ON.gpu_globePass_summary;
+  const _offGlobe = out.OFF.gpu_globePass_summary;
   const onFrame = out.ON.gpu_frameAvg_summary;
   const offFrame = out.OFF.gpu_frameAvg_summary;
   const onCPU = out.ON.cpu_allframes;
@@ -249,17 +274,25 @@ const r3 = (x) => (x == null ? null : Math.round(x * 1000) / 1000);
     // surface + ocean fragment shading.
     gpu_scenePass_on_median: onScene ? r3(onScene.median) : null,
     gpu_scenePass_off_median: offScene ? r3(offScene.median) : null,
-    gpu_scenePass_ms: onScene && offScene ? r3(onScene.median - offScene.median) : null,
+    gpu_scenePass_ms:
+      onScene && offScene ? r3(onScene.median - offScene.median) : null,
     gpu_scenePass_pct:
-      onScene && offScene && offScene.median ? r3(100 * (onScene.median - offScene.median) / offScene.median) : null,
+      onScene && offScene && offScene.median
+        ? r3((100 * (onScene.median - offScene.median)) / offScene.median)
+        : null,
     gpu_scenePass_noise_on: onScene ? r3(onScene.noise) : null,
     gpu_scenePass_noise_off: offScene ? r3(offScene.noise) : null,
-    gpu_frameAvg_ms: onFrame && offFrame ? r3(onFrame.median - offFrame.median) : null,
+    gpu_frameAvg_ms:
+      onFrame && offFrame ? r3(onFrame.median - offFrame.median) : null,
     gpu_frameAvg_pct:
-      onFrame && offFrame && offFrame.median ? r3(100 * (onFrame.median - offFrame.median) / offFrame.median) : null,
+      onFrame && offFrame && offFrame.median
+        ? r3((100 * (onFrame.median - offFrame.median)) / offFrame.median)
+        : null,
     // Enhanced-ocean cost as a fraction of the whole GPU frame.
     ocean_pct_of_frame:
-      onScene && offScene && onFrame ? r3(100 * (onScene.median - offScene.median) / onFrame.median) : null,
+      onScene && offScene && onFrame
+        ? r3((100 * (onScene.median - offScene.median)) / onFrame.median)
+        : null,
     cpu_median_ms: onCPU && offCPU ? r3(onCPU.median - offCPU.median) : null,
     cpu_p95_ms: onCPU && offCPU ? r3(onCPU.p95 - offCPU.p95) : null,
   };

@@ -35,14 +35,21 @@ async function captureFrame(rendererArg, label, modeId) {
       "--disable-cache",
     ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
-  await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
 
   await page.evaluate(async (modeId) => {
@@ -68,22 +75,32 @@ async function captureFrame(rendererArg, label, modeId) {
         if (Array.isArray(pass)) totalCmds += pass.length;
       }
       // Pass.GLOBE = 2 in Cesium
-      if (commands[2] && Array.isArray(commands[2])) globeCmds += commands[2].length;
+      if (commands[2] && Array.isArray(commands[2]))
+        globeCmds += commands[2].length;
     }
-    const tilesRendered = v.scene._globe?._surface?._tilesToRender?.length ?? -1;
+    const tilesRendered =
+      v.scene._globe?._surface?._tilesToRender?.length ?? -1;
     const us = fs?.context?.uniformState;
     const view = us?.view;
     const proj = us?.projection;
     const frust = v.camera.frustum;
-    console.log(`[probe] mode=${v.scene.mode} morphTime=${fs?.morphTime} cameraPos=(${v.camera.position.x?.toFixed?.(0)},${v.camera.position.y?.toFixed?.(0)},${v.camera.position.z?.toFixed?.(0)}) frustumType=${frust?.constructor?.name} tilesToRender=${tilesRendered} numFrustums=${fcs.length} totalCmds=${totalCmds} globeCmds=${globeCmds}`);
+    console.log(
+      `[probe] mode=${v.scene.mode} morphTime=${fs?.morphTime} cameraPos=(${v.camera.position.x?.toFixed?.(0)},${v.camera.position.y?.toFixed?.(0)},${v.camera.position.z?.toFixed?.(0)}) frustumType=${frust?.constructor?.name} tilesToRender=${tilesRendered} numFrustums=${fcs.length} totalCmds=${totalCmds} globeCmds=${globeCmds}`,
+    );
     if (view) {
-      console.log(`[probe]   view diag=[${view[0]?.toFixed?.(3)},${view[5]?.toFixed?.(3)},${view[10]?.toFixed?.(3)}] t=[${view[12]?.toFixed?.(0)},${view[13]?.toFixed?.(0)},${view[14]?.toFixed?.(0)}]`);
+      console.log(
+        `[probe]   view diag=[${view[0]?.toFixed?.(3)},${view[5]?.toFixed?.(3)},${view[10]?.toFixed?.(3)}] t=[${view[12]?.toFixed?.(0)},${view[13]?.toFixed?.(0)},${view[14]?.toFixed?.(0)}]`,
+      );
     }
     if (proj) {
-      console.log(`[probe]   proj diag=[${proj[0]?.toFixed?.(6)},${proj[5]?.toFixed?.(6)},${proj[10]?.toFixed?.(6)},${proj[15]?.toFixed?.(6)}] t=[${proj[12]?.toFixed?.(3)},${proj[13]?.toFixed?.(3)},${proj[14]?.toFixed?.(3)}]`);
+      console.log(
+        `[probe]   proj diag=[${proj[0]?.toFixed?.(6)},${proj[5]?.toFixed?.(6)},${proj[10]?.toFixed?.(6)},${proj[15]?.toFixed?.(6)}] t=[${proj[12]?.toFixed?.(3)},${proj[13]?.toFixed?.(3)},${proj[14]?.toFixed?.(3)}]`,
+      );
     }
     if (frust) {
-      console.log(`[probe]   frust left=${frust.left?.toFixed?.(0)} right=${frust.right?.toFixed?.(0)} top=${frust.top?.toFixed?.(0)} bottom=${frust.bottom?.toFixed?.(0)} near=${frust.near?.toFixed?.(3)} far=${frust.far?.toFixed?.(3)}`);
+      console.log(
+        `[probe]   frust left=${frust.left?.toFixed?.(0)} right=${frust.right?.toFixed?.(0)} top=${frust.top?.toFixed?.(0)} bottom=${frust.bottom?.toFixed?.(0)} near=${frust.near?.toFixed?.(3)} far=${frust.far?.toFixed?.(3)}`,
+      );
     }
     try {
       const convention = fs?.context?.clipSpaceConvention;
@@ -96,7 +113,10 @@ async function captureFrame(rendererArg, label, modeId) {
         typeof frust?.getProjectionMatrix === "function"
           ? frust.getProjectionMatrix(convention)
           : frust?.projectionMatrix;
-      if (fpm) console.log(`[probe]   frust.projectionMatrix[10,14]=[${fpm[10]?.toFixed?.(8)}, ${fpm[14]?.toFixed?.(8)}]`);
+      if (fpm)
+        console.log(
+          `[probe]   frust.projectionMatrix[10,14]=[${fpm[10]?.toFixed?.(8)}, ${fpm[14]?.toFixed?.(8)}]`,
+        );
     } catch (e) {
       console.log(`[probe]   err reading projection: ${e.message}`);
     }
@@ -110,15 +130,23 @@ async function captureFrame(rendererArg, label, modeId) {
   const stats = await page.evaluate(() => {
     const c = window.viewer?.scene?.canvas;
     if (!c) return { ok: false };
-    const w = c.width, h = c.height;
+    const w = c.width,
+      h = c.height;
     // Read via 2D canvas (works for WebGPU canvas via OffscreenCanvas blit)
     const off = document.createElement("canvas");
     off.width = w;
     off.height = h;
     const ctx = off.getContext("2d");
-    try { ctx.drawImage(c, 0, 0); } catch (e) { return { ok: false, err: e.message }; }
+    try {
+      ctx.drawImage(c, 0, 0);
+    } catch (e) {
+      return { ok: false, err: e.message };
+    }
     const data = ctx.getImageData(0, 0, w, h).data;
-    let nonBlack = 0, totalR = 0, totalG = 0, totalB = 0;
+    let nonBlack = 0,
+      totalR = 0,
+      totalG = 0,
+      totalB = 0;
     const sampleEvery = 16;
     let samples = 0;
     for (let i = 0; i < data.length; i += 4 * sampleEvery) {
@@ -128,7 +156,16 @@ async function captureFrame(rendererArg, label, modeId) {
       totalB += data[i + 2];
       if (data[i] > 5 || data[i + 1] > 5 || data[i + 2] > 5) nonBlack++;
     }
-    return { ok: true, w, h, samples, nonBlack, avgR: totalR / samples, avgG: totalG / samples, avgB: totalB / samples };
+    return {
+      ok: true,
+      w,
+      h,
+      samples,
+      nonBlack,
+      avgR: totalR / samples,
+      avgG: totalG / samples,
+      avgB: totalB / samples,
+    };
   });
   console.log(`  canvas stats:`, JSON.stringify(stats));
   await browser.close();

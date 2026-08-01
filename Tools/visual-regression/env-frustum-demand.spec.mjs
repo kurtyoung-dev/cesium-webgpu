@@ -135,7 +135,11 @@ test("an all-off environment keeps the zero-frustum fast path", () => {
 });
 
 test("culled atmosphere/sun/moon commands are not demand", () => {
-  for (const slot of ["skyAtmosphereCommand", "sunDrawCommand", "moonCommand"]) {
+  for (const slot of [
+    "skyAtmosphereCommand",
+    "sunDrawCommand",
+    "moonCommand",
+  ]) {
     const scene = makeScene();
     scene._environmentState[slot] = drawCommand();
     assert.equal(hasInjectedEnvironmentContent(scene), false, slot);

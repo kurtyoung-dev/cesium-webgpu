@@ -15,7 +15,11 @@ const BASE = "http://localhost:8080";
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+    ],
   });
   const page = await browser.newPage({
     viewport: { width: 800, height: 600 },
@@ -46,14 +50,21 @@ const BASE = "http://localhost:8080";
     ctx.fillRect(0, 0, 16, 16);
     const url = c.toDataURL();
 
-    const lon = -79.9959, lat = 40.4406;
+    const lon = -79.9959,
+      lat = 40.4406;
     const types = [
       { type: "DiffuseMap", uniforms: { image: url, repeat: { x: 1, y: 1 } } },
       { type: "AlphaMap", uniforms: { image: url, repeat: { x: 1, y: 1 } } },
       { type: "SpecularMap", uniforms: { image: url, repeat: { x: 1, y: 1 } } },
       { type: "EmissionMap", uniforms: { image: url, repeat: { x: 1, y: 1 } } },
-      { type: "BumpMap", uniforms: { image: url, strength: 0.5, repeat: { x: 1, y: 1 } } },
-      { type: "NormalMap", uniforms: { image: url, strength: 0.5, repeat: { x: 1, y: 1 } } },
+      {
+        type: "BumpMap",
+        uniforms: { image: url, strength: 0.5, repeat: { x: 1, y: 1 } },
+      },
+      {
+        type: "NormalMap",
+        uniforms: { image: url, strength: 0.5, repeat: { x: 1, y: 1 } },
+      },
     ];
     const layoutsByType = {};
     types.forEach((t, i) => {
@@ -63,16 +74,19 @@ const BASE = "http://localhost:8080";
           geometry: new C.PolygonGeometry({
             polygonHierarchy: new C.PolygonHierarchy(
               C.Cartesian3.fromDegreesArray([
-                lon - 0.001, lat + dy,
-                lon + 0.001, lat + dy,
-                lon + 0.001, lat + dy + 0.0003,
-                lon - 0.001, lat + dy + 0.0003,
+                lon - 0.001,
+                lat + dy,
+                lon + 0.001,
+                lat + dy,
+                lon + 0.001,
+                lat + dy + 0.0003,
+                lon - 0.001,
+                lat + dy + 0.0003,
               ]),
             ),
             height: 240,
             extrudedHeight: 260,
-            vertexFormat:
-              C.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
+            vertexFormat: C.MaterialAppearance.MaterialSupport.ALL.vertexFormat,
           }),
         }),
         appearance: new C.MaterialAppearance({
@@ -84,7 +98,7 @@ const BASE = "http://localhost:8080";
         asynchronous: false,
       });
       v.scene.primitives.add(prim);
-      const matRef = prim.geometryInstances?.geometry || prim;
+      const _matRef = prim.geometryInstances?.geometry || prim;
       const mat = prim.appearance.material;
       layoutsByType[t.type] = {
         byteLength: mat._uniformBuffer?.gpuData?.byteLength,
@@ -122,20 +136,28 @@ const BASE = "http://localhost:8080";
   const errs = await page.evaluate(() => window.__probeErrors ?? []);
   await browser.close();
 
-  console.log(`[probe-channel-materials] primitives loaded: ${result.primCount}`);
+  console.log(
+    `[probe-channel-materials] primitives loaded: ${result.primCount}`,
+  );
   console.log("Material UB layouts:");
-  for (const t in result.layoutsByType) {
+  for (const t of Object.keys(result.layoutsByType)) {
     const l = result.layoutsByType[t];
     console.log(`  ${t}: ${l.byteLength} bytes  keys=[${l.keys.join(", ")}]`);
     if (l.gpuFloats) {
-      console.log(`    floats: [${l.gpuFloats.map((x) => x.toFixed(2)).join(", ")}]`);
+      console.log(
+        `    floats: [${l.gpuFloats.map((x) => x.toFixed(2)).join(", ")}]`,
+      );
     }
   }
   console.log(`\nDevice errors: ${errs.length}`);
   if (errs.length) {
-    errs.slice(0, 4).forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
+    errs
+      .slice(0, 4)
+      .forEach((e) => console.log(`  - ${e.text?.slice(0, 200)}`));
     process.exit(1);
   } else {
-    console.log("  PASS: all 6 channel-using materials render cleanly via direct constructor");
+    console.log(
+      "  PASS: all 6 channel-using materials render cleanly via direct constructor",
+    );
   }
 })();

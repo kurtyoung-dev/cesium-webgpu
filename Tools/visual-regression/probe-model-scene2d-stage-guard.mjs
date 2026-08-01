@@ -231,7 +231,8 @@ const errs = (r) =>
   (r.deviceLost ? 1 : 0);
 
 // (b) WebGPU 2D: strip skipped -> all POSITION typedArrays retained, NO 2D buffer.
-const bRetained = gpu2d.posTotal > 0 && gpu2d.posWithTypedArray === gpu2d.posTotal;
+const bRetained =
+  gpu2d.posTotal > 0 && gpu2d.posWithTypedArray === gpu2d.posTotal;
 const bNoStub = gpu2d.buffers2D === 0;
 const bClean = errs(gpu2d) === 0 && gpu2d.coverage > 0;
 // (a) WebGPU 3D: stage never runs -> typedArrays intact, no 2D buffer, renders.
@@ -241,12 +242,24 @@ const cStripped = gl2d.posTotal > 0 && gl2d.posWithTypedArray === 0;
 const cStub = gl2d.buffers2D > 0;
 
 console.log("\n--- gates ---");
-console.log(`(b) WebGPU 2D typedArray retained (${gpu2d.posWithTypedArray}/${gpu2d.posTotal}): ${bRetained ? "PASS" : "FAIL"}`);
-console.log(`(b) WebGPU 2D no stub buffer (buf2D=${gpu2d.buffers2D}): ${bNoStub ? "PASS" : "FAIL"}`);
-console.log(`(b) WebGPU 2D clean+renders (cov=${gpu2d.coverage}, err=${errs(gpu2d)}): ${bClean ? "PASS" : "FAIL"}`);
-console.log(`(a) WebGPU 3D off-gate (cov=${gpu3d.coverage}, buf2D=${gpu3d.buffers2D}, err=${errs(gpu3d)}): ${aClean ? "PASS" : "FAIL"}`);
-console.log(`(c) WebGL 2D stripped (${gl2d.posWithTypedArray}/${gl2d.posTotal}): ${cStripped ? "PASS" : "FAIL"}`);
-console.log(`(c) WebGL 2D stub allocated (buf2D=${gl2d.buffers2D}): ${cStub ? "PASS" : "FAIL"}`);
+console.log(
+  `(b) WebGPU 2D typedArray retained (${gpu2d.posWithTypedArray}/${gpu2d.posTotal}): ${bRetained ? "PASS" : "FAIL"}`,
+);
+console.log(
+  `(b) WebGPU 2D no stub buffer (buf2D=${gpu2d.buffers2D}): ${bNoStub ? "PASS" : "FAIL"}`,
+);
+console.log(
+  `(b) WebGPU 2D clean+renders (cov=${gpu2d.coverage}, err=${errs(gpu2d)}): ${bClean ? "PASS" : "FAIL"}`,
+);
+console.log(
+  `(a) WebGPU 3D off-gate (cov=${gpu3d.coverage}, buf2D=${gpu3d.buffers2D}, err=${errs(gpu3d)}): ${aClean ? "PASS" : "FAIL"}`,
+);
+console.log(
+  `(c) WebGL 2D stripped (${gl2d.posWithTypedArray}/${gl2d.posTotal}): ${cStripped ? "PASS" : "FAIL"}`,
+);
+console.log(
+  `(c) WebGL 2D stub allocated (buf2D=${gl2d.buffers2D}): ${cStub ? "PASS" : "FAIL"}`,
+);
 
 const pass = bRetained && bNoStub && bClean && aClean && cStripped && cStub;
 console.log(`\nRESULT: ${pass ? "PASS" : "FAIL"}`);

@@ -7,9 +7,12 @@
 //   4. Perf manager's getAsyncResourceStats() returns a populated snapshot.
 import { chromium } from "playwright";
 
-const URL = "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
+const URL =
+  "http://localhost:8080/Apps/CesiumViewer/index.html?renderer=webgpu";
 const browser = await chromium.launch({ headless: true, channel: "msedge" });
-const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+const ctx = await browser.newContext({
+  viewport: { width: 1280, height: 720 },
+});
 const page = await ctx.newPage();
 const consoleErrors = [];
 page.on("console", (m) => {
@@ -75,11 +78,15 @@ const stats = await page.evaluate(() => {
     let myFires = 0;
     let otherFires = 0;
     const unsubMy = monitor.subscribe(
-      () => { myFires++; },
+      () => {
+        myFires++;
+      },
       { sceneId: "scene-A" },
     );
     const unsubOther = monitor.subscribe(
-      () => { otherFires++; },
+      () => {
+        otherFires++;
+      },
       { sceneId: "scene-B" },
     );
     const tokenForA = monitor.begin({
@@ -157,35 +164,50 @@ if (!stats.hasMonitorGetter)
   failures.push("context.asyncResources getter missing");
 if (!stats.hasTelemetryGetter)
   failures.push("context.asyncResourceTelemetry getter missing");
-if (!stats.hasWarmAPI)
-  failures.push("Phase 4: cache.warm() API missing");
+if (!stats.hasWarmAPI) failures.push("Phase 4: cache.warm() API missing");
 if (stats.cmdListLength < 3)
-  failures.push(`cmdListLength too low (${stats.cmdListLength}) — globe likely not rendering`);
+  failures.push(
+    `cmdListLength too low (${stats.cmdListLength}) — globe likely not rendering`,
+  );
 if (stats.monitorStats && stats.monitorStats.resolved === 0)
-  failures.push("monitor reports 0 resolved tokens — pipelines may not be wired through monitor");
+  failures.push(
+    "monitor reports 0 resolved tokens — pipelines may not be wired through monitor",
+  );
 if (stats.telemetrySnap && stats.telemetrySnap.aggregate.resolvedCount === 0)
   failures.push("telemetry reports 0 resolved — subscriber not aggregating");
 if (stats.phase4) {
   // afterFg should be before+1; afterBg should equal afterFg (background not counted).
   if (stats.phase4.afterFg !== stats.phase4.before + 1)
-    failures.push(`Phase 4: foreground token didn't increment pendingForegroundCount (before=${stats.phase4.before} afterFg=${stats.phase4.afterFg})`);
+    failures.push(
+      `Phase 4: foreground token didn't increment pendingForegroundCount (before=${stats.phase4.before} afterFg=${stats.phase4.afterFg})`,
+    );
   if (stats.phase4.afterBg !== stats.phase4.afterFg)
-    failures.push(`Phase 4: background token incorrectly counted in pendingForegroundCount (afterFg=${stats.phase4.afterFg} afterBg=${stats.phase4.afterBg})`);
+    failures.push(
+      `Phase 4: background token incorrectly counted in pendingForegroundCount (afterFg=${stats.phase4.afterFg} afterBg=${stats.phase4.afterBg})`,
+    );
 }
 if (stats.phase6) {
   // Each subscriber should see exactly: 2 events for its own scene
   // (started + resolved) + 2 for the shared token = 4. Other-scene
   // events should be filtered out.
   if (stats.phase6.myFires !== 4)
-    failures.push(`Phase 6: scene-A subscriber fired ${stats.phase6.myFires} times, expected 4 (2 own + 2 shared)`);
+    failures.push(
+      `Phase 6: scene-A subscriber fired ${stats.phase6.myFires} times, expected 4 (2 own + 2 shared)`,
+    );
   if (stats.phase6.otherFires !== 4)
-    failures.push(`Phase 6: scene-B subscriber fired ${stats.phase6.otherFires} times, expected 4 (2 own + 2 shared)`);
+    failures.push(
+      `Phase 6: scene-B subscriber fired ${stats.phase6.otherFires} times, expected 4 (2 own + 2 shared)`,
+    );
 }
 if (stats.resetCheck) {
   if (stats.resetCheck.beforeReset < 2)
-    failures.push(`Reset check: beforeReset (${stats.resetCheck.beforeReset}) should have been ≥ 2`);
+    failures.push(
+      `Reset check: beforeReset (${stats.resetCheck.beforeReset}) should have been ≥ 2`,
+    );
   if (stats.resetCheck.afterReset !== 0)
-    failures.push(`Reset check: afterReset (${stats.resetCheck.afterReset}) should be 0 — reset() didn't clear inflight`);
+    failures.push(
+      `Reset check: afterReset (${stats.resetCheck.afterReset}) should be 0 — reset() didn't clear inflight`,
+    );
 }
 
 console.log("\n=== Console errors during run ===");

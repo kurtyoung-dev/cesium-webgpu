@@ -119,7 +119,11 @@ const OUT_GATE = "Tools/visual-regression/output/ltc-area-offgate.png";
     C.Cartesian3.normalize(camDir, camDir);
     const lightPos = C.Cartesian3.add(
       bs.center,
-      C.Cartesian3.multiplyByScalar(camDir, bs.radius * 1.5, new C.Cartesian3()),
+      C.Cartesian3.multiplyByScalar(
+        camDir,
+        bs.radius * 1.5,
+        new C.Cartesian3(),
+      ),
       new C.Cartesian3(),
     );
     const dir = C.Cartesian3.negate(camDir, new C.Cartesian3()); // toward model
@@ -275,7 +279,9 @@ const OUT_GATE = "Tools/visual-regression/output/ltc-area-offgate.png";
 
   console.log("[probe-ltc-area-light] result:");
   console.log(`  dispatcher.lastAreaLightCount (ON): ${phaseB.lastArea}`);
-  console.log(`  params activeLightCount.y (ON):     ${phaseB.paramsAreaCount}`);
+  console.log(
+    `  params activeLightCount.y (ON):     ${phaseB.paramsAreaCount}`,
+  );
   console.log(`  LUT view present (ON):              ${phaseB.hasLUT}`);
   console.log(
     `  ON vs OFF  : meanOff=${stats.onVsOff.meanA.toFixed(1)} meanOn=${stats.onVsOff.meanB.toFixed(1)} delta=${stats.onVsOff.delta.toFixed(2)} changed=${stats.onVsOff.changed}/${stats.onVsOff.n} maxΔ=${stats.onVsOff.maxDelta}`,
@@ -287,7 +293,9 @@ const OUT_GATE = "Tools/visual-regression/output/ltc-area-offgate.png";
     `  GATE vs OFF (full frame): changed=${stats.gateFull.changed} maxΔ=${stats.gateFull.maxDelta}`,
   );
   console.log(`Device errors: ${errs.length}`);
-  errs.slice(0, 8).forEach((e) => console.log(`  - ${(e.text ?? "").slice(0, 200)}`));
+  errs
+    .slice(0, 8)
+    .forEach((e) => console.log(`  - ${(e.text ?? "").slice(0, 200)}`));
 
   let pass = true;
   if (phaseB.lastArea < 1) {
@@ -295,19 +303,27 @@ const OUT_GATE = "Tools/visual-regression/output/ltc-area-offgate.png";
     pass = false;
   }
   if (phaseB.paramsAreaCount < 1) {
-    console.log(`FAIL: params.activeLightCount.y=${phaseB.paramsAreaCount}, expected ≥1`);
+    console.log(
+      `FAIL: params.activeLightCount.y=${phaseB.paramsAreaCount}, expected ≥1`,
+    );
     pass = false;
   }
   if (stats.onVsOff.changed < 200) {
-    console.log(`FAIL: only ${stats.onVsOff.changed} pixels lit by area light (expected ≥200)`);
+    console.log(
+      `FAIL: only ${stats.onVsOff.changed} pixels lit by area light (expected ≥200)`,
+    );
     pass = false;
   }
   if (stats.onVsOff.delta <= 2) {
-    console.log(`FAIL: brightness delta ${stats.onVsOff.delta.toFixed(2)} ≤ 2 (area light not additive)`);
+    console.log(
+      `FAIL: brightness delta ${stats.onVsOff.delta.toFixed(2)} ≤ 2 (area light not additive)`,
+    );
     pass = false;
   }
   if (stats.gateFull.changed > 30 || stats.gateFull.maxDelta > 10) {
-    console.log(`FAIL: off-gate not byte-identical (changed=${stats.gateFull.changed}, maxΔ=${stats.gateFull.maxDelta})`);
+    console.log(
+      `FAIL: off-gate not byte-identical (changed=${stats.gateFull.changed}, maxΔ=${stats.gateFull.maxDelta})`,
+    );
     pass = false;
   }
   if (errs.length > 0) {

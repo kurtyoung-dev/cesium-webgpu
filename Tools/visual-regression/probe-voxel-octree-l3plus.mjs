@@ -59,7 +59,9 @@ const browser = await chromium.launch({
 const FINEST = 16;
 
 async function capture(renderer) {
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const consoleErrors = [];
   page.on("console", (m) => {
     if (m.type() === "error") consoleErrors.push(m.text());
@@ -210,7 +212,8 @@ async function capture(renderer) {
             inBox++;
             for (let lvl = 0; lvl < 4; lvl++) {
               const n = 2 << lvl;
-              const q = (val) => Math.min(n - 1, Math.floor(((val + 1) / 2) * n));
+              const q = (val) =>
+                Math.min(n - 1, Math.floor(((val + 1) / 2) * n));
               if (filledAt(n, q(px), q(py), q(pz))) inGrid[lvl]++;
             }
           }
@@ -257,13 +260,21 @@ async function capture(renderer) {
           });
         }
 
-        return { targets: out, half, lastTargetLevel: internals?.lastTargetLevel, internals };
+        return {
+          targets: out,
+          half,
+          lastTargetLevel: internals?.lastTargetLevel,
+          internals,
+        };
       },
       { destX, finest: FINEST, judgeTargets },
     );
 
     const buf = await page.screenshot();
-    fs.writeFileSync(`${OUT}/probe-voxel-octree-l3plus-${renderer}-${name}.png`, buf);
+    fs.writeFileSync(
+      `${OUT}/probe-voxel-octree-l3plus-${renderer}-${name}.png`,
+      buf,
+    );
     const dataUrl = `data:image/png;base64,${buf.toString("base64")}`;
     const half = proj.half;
     const samples = await page.evaluate(
@@ -282,9 +293,15 @@ async function capture(renderer) {
           if (!pt) return null;
           const x = Math.round(pt[0]);
           const y = Math.round(pt[1]);
-          const dd = ctx.getImageData(x - half, y - half, 2 * half + 1, 2 * half + 1).data;
+          const dd = ctx.getImageData(
+            x - half,
+            y - half,
+            2 * half + 1,
+            2 * half + 1,
+          ).data;
           const px = [];
-          for (let i = 0; i < dd.length; i += 4) px.push([dd[i], dd[i + 1], dd[i + 2]]);
+          for (let i = 0; i < dd.length; i += 4)
+            px.push([dd[i], dd[i + 1], dd[i + 2]]);
           px.sort((a, b) => a[0] + a[1] + a[2] - (b[0] + b[1] + b[2]));
           return px[Math.floor(px.length / 2)];
         });
@@ -309,7 +326,8 @@ async function capture(renderer) {
       const rh = Math.floor(img.height * 0.4);
       const dd = ctx.getImageData(rx, ry, rw, rh).data;
       const px = [];
-      for (let i = 0; i < dd.length; i += 4) px.push(dd[i], dd[i + 1], dd[i + 2]);
+      for (let i = 0; i < dd.length; i += 4)
+        px.push(dd[i], dd[i + 1], dd[i + 2]);
       return px;
     }, dataUrl);
 
@@ -363,7 +381,8 @@ function judgeCells(name, cells, level, discFamily) {
   console.log(
     `  [${name} vs level ${level}] cells=${cells.length} ${discFamily}-disc=${discriminatorsOk}/${discriminators} failures=${failures.length}`,
   );
-  if (failures.length) console.log(`    ${failures.slice(0, 12).join("\n    ")}`);
+  if (failures.length)
+    console.log(`    ${failures.slice(0, 12).join("\n    ")}`);
   return { pass, discriminators, discriminatorsOk };
 }
 function judgeCellsEither(name, cells, la, lb) {
@@ -375,11 +394,16 @@ function judgeCellsEither(name, cells, la, lb) {
     const vb = verdictFor(expectAt(c, lb), lum);
     if (va !== "ok" && va !== "skip" && vb !== "ok" && vb !== "skip") {
       pass = false;
-      failures.push(`${c.label} rgb=${c.rgb ? c.rgb.join(",") : "?"} vsL${la}=${va} vsL${lb}=${vb}`);
+      failures.push(
+        `${c.label} rgb=${c.rgb ? c.rgb.join(",") : "?"} vsL${la}=${va} vsL${lb}=${vb}`,
+      );
     }
   }
-  console.log(`  [${name} vs level ${la} OR ${lb} per cell] cells=${cells.length} failures=${failures.length}`);
-  if (failures.length) console.log(`    ${failures.slice(0, 12).join("\n    ")}`);
+  console.log(
+    `  [${name} vs level ${la} OR ${lb} per cell] cells=${cells.length} failures=${failures.length}`,
+  );
+  if (failures.length)
+    console.log(`    ${failures.slice(0, 12).join("\n    ")}`);
   return { pass };
 }
 
@@ -391,17 +415,23 @@ const gpi = webgpu.close.internals || {};
 console.log("WebGPU close internals:", JSON.stringify(gpi));
 console.log("WebGL  console errors:", webgl.consoleErrors.length);
 console.log("WebGPU console errors:", webgpu.consoleErrors.length);
-if (webgl.consoleErrors.length) console.log("  WebGL:", webgl.consoleErrors.slice(0, 5).join("\n  "));
-if (webgpu.consoleErrors.length) console.log("  WebGPU:", webgpu.consoleErrors.slice(0, 5).join("\n  "));
+if (webgl.consoleErrors.length)
+  console.log("  WebGL:", webgl.consoleErrors.slice(0, 5).join("\n  "));
+if (webgpu.consoleErrors.length)
+  console.log("  WebGPU:", webgpu.consoleErrors.slice(0, 5).join("\n  "));
 
 console.log("--- CLOSE view (6R, refines to level 3) ---");
 console.log("WebGPU close (must match level 3; L3 discriminators black):");
 const gpClose = judgeCells("webgpu-close", webgpu.close.cells, 3, "L3");
-console.log("WebGL close (mixed per-node refinement allowed — level 2 OR 3 per cell):");
+console.log(
+  "WebGL close (mixed per-node refinement allowed — level 2 OR 3 per cell):",
+);
 const glClose = judgeCellsEither("webgl-close", webgl.close.cells, 2, 3);
 
 console.log("--- CLOSE2 view (3.5R, depth-3 refinement on both backends) ---");
-console.log("WebGL close2 (must match level 3 — proves asset + discriminators):");
+console.log(
+  "WebGL close2 (must match level 3 — proves asset + discriminators):",
+);
 const glClose2 = judgeCells("webgl-close2", webgl.close2.cells, 3, "L3");
 console.log("WebGPU close2 vs level 3 (the deep-levels acceptance gate):");
 const gpClose2 = judgeCells("webgpu-close2", webgpu.close2.cells, 3, "L3");
@@ -418,7 +448,7 @@ const refinedClose =
   webgpu.close.lastTargetLevel === 3 && webgpu.close2.lastTargetLevel === 3;
 const rootFar = webgpu.far.lastTargetLevel === 0;
 
-let farDiff = 0;
+let farDiff;
 {
   const a = webgl.far.crop;
   const b = webgpu.far.crop;
@@ -433,23 +463,40 @@ console.log(
 );
 console.log(`Far-view center-crop mean abs diff: ${farDiff.toFixed(2)}`);
 
-const noErrors = webgl.consoleErrors.length === 0 && webgpu.consoleErrors.length === 0;
+const noErrors =
+  webgl.consoleErrors.length === 0 && webgpu.consoleErrors.length === 0;
 
 const webglL3Proven =
-  glClose2.pass && glClose2.discriminators >= 4 && glClose2.discriminatorsOk === glClose2.discriminators;
+  glClose2.pass &&
+  glClose2.discriminators >= 4 &&
+  glClose2.discriminatorsOk === glClose2.discriminators;
 const gpL3DiscBlack =
-  gpClose2.discriminators >= 4 && gpClose2.discriminatorsOk === gpClose2.discriminators;
+  gpClose2.discriminators >= 4 &&
+  gpClose2.discriminatorsOk === gpClose2.discriminators;
 const webgpuClose2Gate = gpClose2.pass && gpL3DiscBlack;
 const closeL3Meaningful =
-  gpClose.discriminators >= 4 && gpClose.discriminatorsOk === gpClose.discriminators;
+  gpClose.discriminators >= 4 &&
+  gpClose.discriminatorsOk === gpClose.discriminators;
 
 console.log("---");
-console.log("atlasActive (slotCount=585, 8 L1 + 64 L2 + 512 L3 uploaded):", atlasActive);
-console.log("refinedClose (WebGPU targetLevel=3 at close + close2):", refinedClose);
+console.log(
+  "atlasActive (slotCount=585, 8 L1 + 64 L2 + 512 L3 uploaded):",
+  atlasActive,
+);
+console.log(
+  "refinedClose (WebGPU targetLevel=3 at close + close2):",
+  refinedClose,
+);
 console.log("rootFar (WebGPU targetLevel=0 at far):", rootFar);
-console.log(`L3 disc on WebGPU close (>=4, all black): ${gpClose.discriminatorsOk}/${gpClose.discriminators}`);
-console.log(`L3 disc on WebGL close2 (>=4, all black): ${glClose2.discriminatorsOk}/${glClose2.discriminators}`);
-console.log(`L3 disc on WebGPU close2 (>=4, all black): ${gpClose2.discriminatorsOk}/${gpClose2.discriminators}`);
+console.log(
+  `L3 disc on WebGPU close (>=4, all black): ${gpClose.discriminatorsOk}/${gpClose.discriminators}`,
+);
+console.log(
+  `L3 disc on WebGL close2 (>=4, all black): ${glClose2.discriminatorsOk}/${glClose2.discriminators}`,
+);
+console.log(
+  `L3 disc on WebGPU close2 (>=4, all black): ${gpClose2.discriminatorsOk}/${gpClose2.discriminators}`,
+);
 console.log("webglClosePass (L2-or-L3 per cell):", glClose.pass);
 console.log("webglL3Proven (close2 matches level 3):", webglL3Proven);
 console.log("webgpuClosePass (level 3):", gpClose.pass);

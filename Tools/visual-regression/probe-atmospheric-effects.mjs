@@ -93,9 +93,13 @@ async function run() {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   await page.addInitScript(errorGateInit);
   await page.goto(URL, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => !!(window.viewer && window.viewer.scene), null, {
-    timeout: 60000,
-  });
+  await page.waitForFunction(
+    () => !!(window.viewer && window.viewer.scene),
+    null,
+    {
+      timeout: 60000,
+    },
+  );
   await armWebGPUDevices(page);
   const r = await page.evaluate(TEST);
   console.log(JSON.stringify(r, null, 1));
@@ -103,15 +107,42 @@ async function run() {
   const p = r.pure;
   const a = r.applied;
   const checks = [
-    ["mapper API exported (compute + apply)", r.api.hasCompute && r.api.hasApply],
-    [`neutral conditions → ~no shift (sat ${p.neutralSat} ~0)`, Math.abs(p.neutralSat) < 0.02],
-    [`warm-moist → denser fog than cold-dry (${p.humidFog} > ${p.crispFog})`, p.humidFog > p.crispFog],
-    [`warm-moist desaturates, cold-dry saturates (${p.humidSat} < 0 < ${p.crispSat})`, p.humidSat < 0 && p.crispSat > 0],
-    [`warm-moist near-saturated → STRATUS bias (${p.humidType} === ${p.stratus})`, p.humidType === p.stratus],
-    [`cold-dry → no genus bias (${p.crispType} undefined)`, p.crispType === undefined || p.crispType === null],
-    [`apply writes the scene: humid fog ${a.humidApplied.fog} > crisp fog ${a.crispApplied.fog}`, a.humidApplied.fog > a.crispApplied.fog],
-    [`apply writes saturation: humid ${a.humidApplied.sat} < crisp ${a.crispApplied.sat}`, a.humidApplied.sat < a.crispApplied.sat],
-    [`apply writes cloudType STRATUS for humid (${a.humidApplied.cloudType} === ${p.stratus})`, a.humidApplied.cloudType === p.stratus],
+    [
+      "mapper API exported (compute + apply)",
+      r.api.hasCompute && r.api.hasApply,
+    ],
+    [
+      `neutral conditions → ~no shift (sat ${p.neutralSat} ~0)`,
+      Math.abs(p.neutralSat) < 0.02,
+    ],
+    [
+      `warm-moist → denser fog than cold-dry (${p.humidFog} > ${p.crispFog})`,
+      p.humidFog > p.crispFog,
+    ],
+    [
+      `warm-moist desaturates, cold-dry saturates (${p.humidSat} < 0 < ${p.crispSat})`,
+      p.humidSat < 0 && p.crispSat > 0,
+    ],
+    [
+      `warm-moist near-saturated → STRATUS bias (${p.humidType} === ${p.stratus})`,
+      p.humidType === p.stratus,
+    ],
+    [
+      `cold-dry → no genus bias (${p.crispType} undefined)`,
+      p.crispType === undefined || p.crispType === null,
+    ],
+    [
+      `apply writes the scene: humid fog ${a.humidApplied.fog} > crisp fog ${a.crispApplied.fog}`,
+      a.humidApplied.fog > a.crispApplied.fog,
+    ],
+    [
+      `apply writes saturation: humid ${a.humidApplied.sat} < crisp ${a.crispApplied.sat}`,
+      a.humidApplied.sat < a.crispApplied.sat,
+    ],
+    [
+      `apply writes cloudType STRATUS for humid (${a.humidApplied.cloudType} === ${p.stratus})`,
+      a.humidApplied.cloudType === p.stratus,
+    ],
   ];
   console.log("\n=== ANALYSIS ===");
   let pass = true;

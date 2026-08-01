@@ -6,14 +6,21 @@
  * on-screen geometry. If still empty, the volume isn't rasterizing.
  */
 import { chromium } from "playwright";
-import fs from "fs";
 const BASE = "http://localhost:8080";
 (async () => {
   const browser = await chromium.launch({
-    channel: "msedge", headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    channel: "msedge",
+    headless: true,
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   page.on("console", (m) => {
     const t = m.type();
     if (t === "error" || (t === "warning" && m.text().includes("validation"))) {
@@ -21,7 +28,8 @@ const BASE = "http://localhost:8080";
     }
   });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-    waitUntil: "networkidle", timeout: 90_000,
+    waitUntil: "networkidle",
+    timeout: 90_000,
   });
   await page.waitForFunction(() => !!window.viewer, { timeout: 90_000 });
 
@@ -55,12 +63,15 @@ const BASE = "http://localhost:8080";
       await new Promise((r) => requestAnimationFrame(r));
     }
     const cache = polyline._webgpuPolylineCache;
-    const scene = v.scene;
+    const _scene = v.scene;
     return {
       cacheVertexCount: cache?.vertexCount,
       cacheIndexCount: cache?.indexCount,
       bs: polyline._boundingSpheres?.[0]
-        ? { center: polyline._boundingSpheres[0].center?.toString?.(), radius: polyline._boundingSpheres[0].radius }
+        ? {
+            center: polyline._boundingSpheres[0].center?.toString?.(),
+            radius: polyline._boundingSpheres[0].radius,
+          }
         : "no bs",
       cull: polyline.cull,
       show: polyline.show,

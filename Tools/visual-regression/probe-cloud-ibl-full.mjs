@@ -40,7 +40,9 @@ const OUT_DIR = "Tools/visual-regression/output";
     headless: true,
     args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan"],
   });
-  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const page = await browser.newPage({
+    viewport: { width: 1024, height: 768 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
   page.on("pageerror", (e) =>
@@ -202,7 +204,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     };
 
     // ── Sub-test 1: OFF (default — cloudsInReflections unset) ──
-    const off = await runManager({ clouds: false, temporal: false, frames: 24 });
+    const off = await runManager({
+      clouds: false,
+      temporal: false,
+      frames: 24,
+    });
     // ── Sub-test 2: ON (full march) with the DEFAULT deck/wind/density ──
     const on = await runManager({ clouds: true, temporal: false, frames: 24 });
 
@@ -217,7 +223,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     globe.defaultCloudCollection.volumetric.cloudLayerBottom = 6000.0; // default 1500
     globe.defaultCloudCollection.volumetric.cloudLayerTop = 11000.0; // default 4000
     globe.defaultCloudCollection.volumetric.cloudDensity = 0.95; // default 0.6 (already set above)
-    globe.defaultCloudCollection.volumetric.cloudWindDirection = { x: -0.6, y: 0.8 }; // default { 0.7, 0.3 }
+    globe.defaultCloudCollection.volumetric.cloudWindDirection = {
+      x: -0.6,
+      y: 0.8,
+    }; // default { 0.7, 0.3 }
     globe.defaultCloudCollection.volumetric.cloudWindSpeed = 40.0; // default 15
     // Re-render so the cloud renderer republishes the new params (it bakes off
     // the same noise; only the deck/wind/density the manager reads change).
@@ -244,7 +253,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // the default ON sub-test did.
     globe.defaultCloudCollection.volumetric.cloudLayerBottom = 1500.0;
     globe.defaultCloudCollection.volumetric.cloudLayerTop = 4000.0;
-    globe.defaultCloudCollection.volumetric.cloudWindDirection = { x: 0.7, y: 0.3 };
+    globe.defaultCloudCollection.volumetric.cloudWindDirection = {
+      x: 0.7,
+      y: 0.3,
+    };
     globe.defaultCloudCollection.volumetric.cloudWindSpeed = 15.0;
     for (let i = 0; i < 20; i++) {
       scene.render();
@@ -346,9 +358,18 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     "cloud renderer published non-zero iblCoverage",
     typeof cloudDiag.iblCoverage === "number" && cloudDiag.iblCoverage > 0,
   ]);
-  pass.push(["OFF: lastUsedCloudMarch === false", off.lastUsedCloudMarch === false]);
-  pass.push(["ON: lastUsedCloudMarch === true", on.lastUsedCloudMarch === true]);
-  pass.push(["OFF: placeholder noise present", off.hasCloudPlaceholder === true]);
+  pass.push([
+    "OFF: lastUsedCloudMarch === false",
+    off.lastUsedCloudMarch === false,
+  ]);
+  pass.push([
+    "ON: lastUsedCloudMarch === true",
+    on.lastUsedCloudMarch === true,
+  ]);
+  pass.push([
+    "OFF: placeholder noise present",
+    off.hasCloudPlaceholder === true,
+  ]);
   pass.push([
     "OFF: no temporal resources",
     off.hasHistoryCube === false && off.hasBlendPipeline === false,

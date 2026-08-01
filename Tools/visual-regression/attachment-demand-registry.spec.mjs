@@ -13,8 +13,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { transform } from "esbuild";
 
 const directory = dirname(fileURLToPath(import.meta.url));
@@ -31,7 +30,9 @@ const { code } = await transform(tsSource, {
 });
 // Import the transpiled module from a data: URL so no temp file is left behind.
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(code).toString("base64")}`;
-const { computeAttachmentDemand, GBUFFER_READER_BITS } = await import(moduleUrl);
+const { computeAttachmentDemand, GBUFFER_READER_BITS } = await import(
+  moduleUrl
+);
 
 // `pathToFileURL` retained only to prove the anchor resolves on all platforms.
 void pathToFileURL;
@@ -87,8 +88,16 @@ test("each single reader independently demands MRT (force off)", () => {
       "contactShadows",
       GBUFFER_READER_BITS.CONTACT_SHADOWS,
     ],
-    ["deferredLighting", "deferredLighting", GBUFFER_READER_BITS.DEFERRED_LIGHTING],
-    ["debugShowGBufferNormals", "debugOverlay", GBUFFER_READER_BITS.DEBUG_OVERLAY],
+    [
+      "deferredLighting",
+      "deferredLighting",
+      GBUFFER_READER_BITS.DEFERRED_LIGHTING,
+    ],
+    [
+      "debugShowGBufferNormals",
+      "debugOverlay",
+      GBUFFER_READER_BITS.DEBUG_OVERLAY,
+    ],
   ];
   for (const [flag, readerKey, bit] of cases) {
     const rec = computeAttachmentDemand(sceneWith({ [flag]: true }), {
@@ -98,7 +107,11 @@ test("each single reader independently demands MRT (force off)", () => {
     assert.equal(rec.gbufferReadersDemand, true);
     assert.equal(rec.gbufferDemanded, true);
     assert.equal(rec.topology, "mrt");
-    assert.equal((rec.gbufferReadersMask & bit) !== 0, true, `${readerKey} bit`);
+    assert.equal(
+      (rec.gbufferReadersMask & bit) !== 0,
+      true,
+      `${readerKey} bit`,
+    );
   }
 });
 
@@ -122,7 +135,10 @@ test("ssgi requires AO enabled AND deferred lighting", () => {
   );
   assert.equal(ssgi.gbufferReaders.ssgi, true);
   assert.equal(ssgi.gbufferReaders.deferredLighting, true);
-  assert.equal((ssgi.gbufferReadersMask & GBUFFER_READER_BITS.SSGI) !== 0, true);
+  assert.equal(
+    (ssgi.gbufferReadersMask & GBUFFER_READER_BITS.SSGI) !== 0,
+    true,
+  );
   assert.equal(ssgi.topology, "mrt");
 });
 
@@ -158,7 +174,12 @@ test("observe-only families are recorded, not folded into gbuffer demand", () =>
       _useOIT: true,
       _enableEdgeVisibility: true,
     }),
-    { forceSceneMRT: false, picking: false, globeDepth: true, postProcess: true },
+    {
+      forceSceneMRT: false,
+      picking: false,
+      globeDepth: true,
+      postProcess: true,
+    },
   );
   // None of these are G-buffer readers.
   assert.equal(rec.gbufferReadersDemand, false);

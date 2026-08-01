@@ -44,10 +44,8 @@
  *   node Tools/skybox-bake/bake-tycho-t5.mjs --sigma 28      # override diffuse blur sigma
  *   node Tools/skybox-bake/bake-tycho-t5.mjs --only-diffuse  # re-run just the blur variant
  */
-/* global process, Buffer, console */
-// Node ESM offline tooling. The repo's eslint config ignores Tools/** (see
-// eslint.config.js), so its Node-globals block never applies here; declare the
-// Node globals explicitly so a forced `eslint --no-ignore` lint is also clean.
+// Node ESM offline tooling. Linted by the `Tools/**` block in
+// eslint.config.js, which supplies the Node (and browser) global sets.
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
@@ -58,20 +56,22 @@ sharp.concurrency(0); // libvips picks nproc
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..", "..");
-const ASSETS = path.join(
-  REPO,
-  "packages/engine/Source/Assets/Textures/SkyBox",
-);
+const ASSETS = path.join(REPO, "packages/engine/Source/Assets/Textures/SkyBox");
 
 // ---- CLI ---------------------------------------------------------------
 function arg(name, def) {
   const i = process.argv.indexOf(`--${name}`);
-  if (i === -1) {return def;}
+  if (i === -1) {
+    return def;
+  }
   const v = process.argv[i + 1];
   return v && !v.startsWith("--") ? v : true;
 }
 const OPT = {
-  input: arg("input", path.join(__dirname, "work", "TychoSkymapII.t5_16384x08192.tif")),
+  input: arg(
+    "input",
+    path.join(__dirname, "work", "TychoSkymapII.t5_16384x08192.tif"),
+  ),
   out: arg("out", path.join(__dirname, "out")),
   faceSize: parseInt(arg("faceSize", "4096"), 10), // master reproject size
   shipSize: parseInt(arg("shipSize", "2048"), 10), // checked-in face size
@@ -112,12 +112,36 @@ function buildTransferLut() {
 // derived to match tycho2t3_80_*. sc across columns, tc down rows.
 function faceSphereDir(face, sc, tc, out) {
   switch (face) {
-    case "px": out[0] = -1;  out[1] = tc;  out[2] = -sc; break;
-    case "mx": out[0] = 1;   out[1] = tc;  out[2] = sc;  break;
-    case "py": out[0] = -sc; out[1] = 1;   out[2] = -tc; break;
-    case "my": out[0] = -sc; out[1] = -1;  out[2] = tc;  break;
-    case "pz": out[0] = -sc; out[1] = tc;  out[2] = 1;   break;
-    case "mz": out[0] = sc;  out[1] = tc;  out[2] = -1;  break;
+    case "px":
+      out[0] = -1;
+      out[1] = tc;
+      out[2] = -sc;
+      break;
+    case "mx":
+      out[0] = 1;
+      out[1] = tc;
+      out[2] = sc;
+      break;
+    case "py":
+      out[0] = -sc;
+      out[1] = 1;
+      out[2] = -tc;
+      break;
+    case "my":
+      out[0] = -sc;
+      out[1] = -1;
+      out[2] = tc;
+      break;
+    case "pz":
+      out[0] = -sc;
+      out[1] = tc;
+      out[2] = 1;
+      break;
+    case "mz":
+      out[0] = sc;
+      out[1] = tc;
+      out[2] = -1;
+      break;
   }
 }
 
@@ -134,27 +158,39 @@ function reprojectFace(eq, EW, EH, face, N) {
       const sc = (2 * (i + 0.5)) / N - 1;
       faceSphereDir(face, sc, tc, d);
       const len = Math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-      const x = d[0] / len, y = d[1] / len, z = d[2] / len;
+      const x = d[0] / len,
+        y = d[1] / len,
+        z = d[2] / len;
       let lon = Math.atan2(y, x);
-      if (lon < 0) {lon += TWO_PI;}
+      if (lon < 0) {
+        lon += TWO_PI;
+      }
       const lat = Math.asin(z > 1 ? 1 : z < -1 ? -1 : z);
       const fx = (lon / TWO_PI) * EW - 0.5;
       const fy = ((HALF_PI - lat) / Math.PI) * EH - 0.5;
-      const x0 = Math.floor(fx), y0 = Math.floor(fy);
-      const dx = fx - x0, dy = fy - y0;
+      const x0 = Math.floor(fx),
+        y0 = Math.floor(fy);
+      const dx = fx - x0,
+        dy = fy - y0;
       const x0w = ((x0 % EW) + EW) % EW;
-      const x1w = ((x0 + 1) % EW + EW) % EW;
+      const x1w = (((x0 + 1) % EW) + EW) % EW;
       const y0c = y0 < 0 ? 0 : y0 >= EH ? EH - 1 : y0;
       const y1c = y0 + 1 < 0 ? 0 : y0 + 1 >= EH ? EH - 1 : y0 + 1;
       const o = (j * N + i) * 3;
-      const w00 = (1 - dx) * (1 - dy), w10 = dx * (1 - dy);
-      const w01 = (1 - dx) * dy, w11 = dx * dy;
-      const p00 = (y0c * EW + x0w) * 3, p10 = (y0c * EW + x1w) * 3;
-      const p01 = (y1c * EW + x0w) * 3, p11 = (y1c * EW + x1w) * 3;
+      const w00 = (1 - dx) * (1 - dy),
+        w10 = dx * (1 - dy);
+      const w01 = (1 - dx) * dy,
+        w11 = dx * dy;
+      const p00 = (y0c * EW + x0w) * 3,
+        p10 = (y0c * EW + x1w) * 3;
+      const p01 = (y1c * EW + x0w) * 3,
+        p11 = (y1c * EW + x1w) * 3;
       for (let c = 0; c < 3; c++) {
         outBuf[o + c] = Math.round(
-          eq[p00 + c] * w00 + eq[p10 + c] * w10 +
-          eq[p01 + c] * w01 + eq[p11 + c] * w11,
+          eq[p00 + c] * w00 +
+            eq[p10 + c] * w10 +
+            eq[p01 + c] * w01 +
+            eq[p11 + c] * w11,
         );
       }
     }
@@ -179,12 +215,32 @@ async function blurEquirectWrapped(eqSharp, EW, EH, sigmaPx) {
     .toBuffer();
   const center = await eqSharp.clone().raw().toBuffer();
   const wide = await sharp({
-    create: { width: EW + 2 * pad, height: EH, channels: 3, background: { r: 0, g: 0, b: 0 } },
+    create: {
+      width: EW + 2 * pad,
+      height: EH,
+      channels: 3,
+      background: { r: 0, g: 0, b: 0 },
+    },
   })
     .composite([
-      { input: left, raw: { width: pad, height: EH, channels: 3 }, left: 0, top: 0 },
-      { input: center, raw: { width: EW, height: EH, channels: 3 }, left: pad, top: 0 },
-      { input: rightStrip, raw: { width: pad, height: EH, channels: 3 }, left: EW + pad, top: 0 },
+      {
+        input: left,
+        raw: { width: pad, height: EH, channels: 3 },
+        left: 0,
+        top: 0,
+      },
+      {
+        input: center,
+        raw: { width: EW, height: EH, channels: 3 },
+        left: pad,
+        top: 0,
+      },
+      {
+        input: rightStrip,
+        raw: { width: pad, height: EH, channels: 3 },
+        left: EW + pad,
+        top: 0,
+      },
     ])
     .blur(sigmaPx)
     .extract({ left: pad, top: 0, width: EW, height: EH })
@@ -199,7 +255,11 @@ async function writeFace(faceBuf, N, targetSize, filePath) {
     img = img.resize(targetSize, targetSize, { kernel: "lanczos3" });
   }
   await img
-    .jpeg({ quality: OPT.quality, chromaSubsampling: OPT.chroma, mozjpeg: true })
+    .jpeg({
+      quality: OPT.quality,
+      chromaSubsampling: OPT.chroma,
+      mozjpeg: true,
+    })
     .toFile(filePath);
   return fs.statSync(filePath).size;
 }
@@ -218,7 +278,8 @@ async function main() {
 
   console.log(`[bake] input : ${OPT.input}`);
   const meta = await sharp(OPT.input, { limitInputPixels: false }).metadata();
-  const EW = meta.width, EH = meta.height;
+  const EW = meta.width,
+    EH = meta.height;
   console.log(`[bake] equirect ${EW}x${EH} ${meta.channels}ch ${meta.depth}`);
 
   // Stage 1: load + apply gamma-1.8 -> sRGB transfer (per-channel LUT).
@@ -229,7 +290,9 @@ async function main() {
     .toColourspace("srgb")
     .raw()
     .toBuffer();
-  for (let i = 0; i < raw.length; i++) {raw[i] = lut[raw[i]];}
+  for (let i = 0; i < raw.length; i++) {
+    raw[i] = lut[raw[i]];
+  }
   const correctedSharp = () =>
     sharp(raw, { raw: { width: EW, height: EH, channels: 3 } });
 
@@ -255,8 +318,15 @@ async function main() {
 
   // Stage 3b: blurred diffuse-only faces (DR-01).
   if (!OPT.onlyUnblurred) {
-    console.log(`[bake] stage 3: blur equirect (sigma=${OPT.sigma}px) -> diffuse faces`);
-    const blurred = await blurEquirectWrapped(correctedSharp(), EW, EH, OPT.sigma);
+    console.log(
+      `[bake] stage 3: blur equirect (sigma=${OPT.sigma}px) -> diffuse faces`,
+    );
+    const blurred = await blurEquirectWrapped(
+      correctedSharp(),
+      EW,
+      EH,
+      OPT.sigma,
+    );
     for (const f of FACES) {
       const faceBuf = reprojectFace(blurred, EW, EH, f, N);
       const p4096 = path.join(OPT.out, `tycho2t5_80_diffuse_4096_${f}.jpg`);
@@ -273,7 +343,9 @@ async function main() {
 
   // Optional: install the 2048 un-blurred faces into the engine assets dir.
   if (OPT.install && !OPT.onlyDiffuse) {
-    console.log(`[bake] install: copying ${OPT.shipSize} un-blurred faces -> ${ASSETS}`);
+    console.log(
+      `[bake] install: copying ${OPT.shipSize} un-blurred faces -> ${ASSETS}`,
+    );
     fs.mkdirSync(ASSETS, { recursive: true });
     for (const f of FACES) {
       fs.copyFileSync(

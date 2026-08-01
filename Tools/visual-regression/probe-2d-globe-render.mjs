@@ -26,9 +26,12 @@ async function litPixels(renderer, view) {
   const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
   const errs = [];
   page.on("pageerror", (e) => errs.push(e.message.slice(0, 140)));
-  await page.goto(`${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
-    waitUntil: "networkidle",
-  });
+  await page.goto(
+    `${PROBE_BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+    {
+      waitUntil: "networkidle",
+    },
+  );
   await page.waitForFunction(() => !!window.viewer);
   await page.evaluate(async (view) => {
     const C = await import("/Build/CesiumUnminified/index.js");
@@ -40,7 +43,9 @@ async function litPixels(renderer, view) {
     s.morphTo2D(0);
     s.completeMorph();
     if (view === "full") {
-      v.camera.setView({ destination: C.Rectangle.fromDegrees(-170, -80, 170, 80) });
+      v.camera.setView({
+        destination: C.Rectangle.fromDegrees(-170, -80, 170, 80),
+      });
     } else {
       v.camera.setView({
         destination: C.Cartesian3.fromDegrees(-87.5, 47.7, 2_400_000),
@@ -56,28 +61,31 @@ async function litPixels(renderer, view) {
   const out = `${OUT_DIR}/2dglobe-${view}-${renderer}.png`;
   await page.screenshot({ path: out });
   // Count non-dark pixels in the globe region (exclude top-right UI panel).
-  const lit = await page.evaluate(async (durl) => {
-    return new Promise((res) => {
-      const img = new Image();
-      img.onload = () => {
-        const c = document.createElement("canvas");
-        c.width = img.width;
-        c.height = img.height;
-        const x = c.getContext("2d");
-        x.drawImage(img, 0, 0);
-        const d = x.getImageData(0, 0, c.width, c.height).data;
-        let n = 0;
-        for (let y = 60; y < c.height - 40; y++) {
-          for (let xx = 20; xx < c.width - 280; xx++) {
-            const i = (y * c.width + xx) * 4;
-            if (d[i] + d[i + 1] + d[i + 2] > 60) n++;
+  const lit = await page.evaluate(
+    async (durl) => {
+      return new Promise((res) => {
+        const img = new Image();
+        img.onload = () => {
+          const c = document.createElement("canvas");
+          c.width = img.width;
+          c.height = img.height;
+          const x = c.getContext("2d");
+          x.drawImage(img, 0, 0);
+          const d = x.getImageData(0, 0, c.width, c.height).data;
+          let n = 0;
+          for (let y = 60; y < c.height - 40; y++) {
+            for (let xx = 20; xx < c.width - 280; xx++) {
+              const i = (y * c.width + xx) * 4;
+              if (d[i] + d[i + 1] + d[i + 2] > 60) n++;
+            }
           }
-        }
-        res(n);
-      };
-      img.src = durl;
-    });
-  }, `data:image/png;base64,${(await fs.promises.readFile(out)).toString("base64")}`);
+          res(n);
+        };
+        img.src = durl;
+      });
+    },
+    `data:image/png;base64,${(await fs.promises.readFile(out)).toString("base64")}`,
+  );
   await browser.close();
   return { lit, errs: errs.length, out };
 }
@@ -93,7 +101,9 @@ async function litPixels(renderer, view) {
     console.log(`\n[${view} 2D]`);
     console.log(`  webgl  lit px: ${wgl.lit}`);
     console.log(`  webgpu lit px: ${wgpu.lit}  errs: ${wgpu.errs}`);
-    console.log(`  ratio webgpu/webgl: ${ratio.toFixed(2)}  → ${ok ? "OK" : "FAIL"}`);
+    console.log(
+      `  ratio webgpu/webgl: ${ratio.toFixed(2)}  → ${ok ? "OK" : "FAIL"}`,
+    );
     if (!ok) pass = false;
   }
   console.log(pass ? "\nPASS" : "\nFAIL");

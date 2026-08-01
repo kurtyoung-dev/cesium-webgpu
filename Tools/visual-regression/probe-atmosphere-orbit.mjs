@@ -30,7 +30,9 @@ async function capture(renderer, config) {
     headless: true,
     args: ["--enable-unsafe-webgpu", "--use-vulkan", "--disable-cache"],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`, {
     waitUntil: "networkidle",
   });
@@ -42,7 +44,9 @@ async function capture(renderer, config) {
       const v = window.viewer;
       const vm = v.baseLayerPicker.viewModel;
       const wgs84 = vm.terrainProviderViewModels.find((t) =>
-        String(t.name || "").toLowerCase().includes("wgs84"),
+        String(t.name || "")
+          .toLowerCase()
+          .includes("wgs84"),
       );
       if (wgs84) vm.selectedTerrain = wgs84;
       // Pin the clock for cross-session reproducibility (Batch 70).
@@ -80,7 +84,9 @@ async function capture(renderer, config) {
 
 async function diff(wglPath, wgpuPath) {
   const browser = await chromium.launch({ channel: "msedge", headless: true });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   await page.setContent("<!doctype html><html><body></body></html>");
   const wglB64 = fs.readFileSync(wglPath).toString("base64");
   const wgpuB64 = fs.readFileSync(wgpuPath).toString("base64");
@@ -142,7 +148,8 @@ async function diff(wglPath, wgpuPath) {
           rSumB += rb;
           gSumB += gb;
           bSumB += bb;
-          const delta = Math.abs(ra - rb) + Math.abs(ga - gb) + Math.abs(ba - bb);
+          const delta =
+            Math.abs(ra - rb) + Math.abs(ga - gb) + Math.abs(ba - bb);
           deltaSum += delta;
           if (delta > 24) mismatch++;
           total++;

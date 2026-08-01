@@ -24,12 +24,21 @@ async function capture(rendererArg, label) {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
-    args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan", "--use-vulkan", "--disable-cache"],
+    args: [
+      "--enable-unsafe-webgpu",
+      "--enable-features=Vulkan",
+      "--use-vulkan",
+      "--disable-cache",
+    ],
   });
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 720 },
+  });
   const messages = [];
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
-  page.on("pageerror", (e) => messages.push({ t: "pageerror", text: e.message }));
+  page.on("pageerror", (e) =>
+    messages.push({ t: "pageerror", text: e.message }),
+  );
 
   const url = `${BASE}/Apps/CesiumViewer/index.html?renderer=${rendererArg}&${VIEW}`;
   await page.goto(url, { waitUntil: "networkidle" });
@@ -63,7 +72,8 @@ async function capture(rendererArg, label) {
   await page.screenshot({ path: out, fullPage: false });
   await browser.close();
   const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
-  if (errs.length) errs.slice(0, 3).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
+  if (errs.length)
+    errs.slice(0, 3).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
   return out;
 }
 
@@ -83,9 +93,14 @@ async function analyze(a, b) {
         c.width = img.naturalWidth;
         c.height = img.naturalHeight;
         c.getContext("2d").drawImage(img, 0, 0);
-        return { w: img.naturalWidth, h: img.naturalHeight, data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data };
+        return {
+          w: img.naturalWidth,
+          h: img.naturalHeight,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
+        };
       };
-      const A = await decode(ba), B = await decode(bb);
+      const A = await decode(ba),
+        B = await decode(bb);
       if (A.w !== B.w || A.h !== B.h) return { error: "size mismatch" };
       const total = A.w * A.h;
       // "blue water" pixel = blue dominant over red & green, and not sky
@@ -93,14 +108,27 @@ async function analyze(a, b) {
       // WebGPU pixel that no longer reads as blue is still measured.
       const isWater = (r, g, bl, y, h) =>
         y > h * 0.25 && bl > r + 8 && bl > g + 4 && bl > 40 && bl < 250;
-      let mismatch = 0, sum = 0;
-      let nA = 0, lumA = 0, blueA = 0;
-      let nB = 0, lumB = 0, blueB = 0;
-      let nBoth = 0, lumBothA = 0, lumBothB = 0, blueBothA = 0, blueBothB = 0;
+      let mismatch = 0,
+        sum = 0;
+      let nA = 0,
+        lumA = 0,
+        blueA = 0;
+      let nB = 0,
+        lumB = 0,
+        blueB = 0;
+      let nBoth = 0,
+        lumBothA = 0,
+        lumBothB = 0,
+        blueBothA = 0,
+        blueBothB = 0;
       for (let i = 0, px = 0; i < A.data.length; i += 4, px++) {
         const y = Math.floor(px / A.w);
-        const ra = A.data[i], ga = A.data[i + 1], ba2 = A.data[i + 2];
-        const rb = B.data[i], gb = B.data[i + 1], bb2 = B.data[i + 2];
+        const ra = A.data[i],
+          ga = A.data[i + 1],
+          ba2 = A.data[i + 2];
+        const rb = B.data[i],
+          gb = B.data[i + 1],
+          bb2 = B.data[i + 2];
         const d = Math.abs(ra - rb) + Math.abs(ga - gb) + Math.abs(ba2 - bb2);
         sum += d;
         if (d > 30) mismatch++;
@@ -108,15 +136,31 @@ async function analyze(a, b) {
         const lb = 0.2126 * rb + 0.7152 * gb + 0.0722 * bb2;
         const wa = isWater(ra, ga, ba2, y, A.h);
         const wb = isWater(rb, gb, bb2, y, A.h);
-        if (wa) { nA++; lumA += la; blueA += ba2; }
-        if (wb) { nB++; lumB += lb; blueB += bb2; }
-        if (wa && wb) { nBoth++; lumBothA += la; lumBothB += lb; blueBothA += ba2; blueBothB += bb2; }
+        if (wa) {
+          nA++;
+          lumA += la;
+          blueA += ba2;
+        }
+        if (wb) {
+          nB++;
+          lumB += lb;
+          blueB += bb2;
+        }
+        if (wa && wb) {
+          nBoth++;
+          lumBothA += la;
+          lumBothB += lb;
+          blueBothA += ba2;
+          blueBothB += bb2;
+        }
       }
       return {
-        mismatchPct: (100 * mismatch / total).toFixed(2),
+        mismatchPct: ((100 * mismatch) / total).toFixed(2),
         meanDelta: (sum / total).toFixed(2),
         // A = first arg (webgl), B = second arg (webgpu)
-        waterPx_gl: nA, waterPx_gpu: nB, waterPx_both: nBoth,
+        waterPx_gl: nA,
+        waterPx_gpu: nB,
+        waterPx_both: nBoth,
         waterLum_gl: (lumA / Math.max(1, nA)).toFixed(1),
         waterLum_gpu: (lumB / Math.max(1, nB)).toFixed(1),
         waterBlue_gl: (blueA / Math.max(1, nA)).toFixed(1),

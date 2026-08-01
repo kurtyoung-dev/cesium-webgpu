@@ -138,7 +138,7 @@ async function capture(label, { ao, deferred }) {
       }
 
       const canvas = v.canvas;
-      let centerPixel = null;
+      let centerPixel;
       try {
         const tmp = document.createElement("canvas");
         tmp.width = canvas.width;
@@ -165,7 +165,13 @@ async function capture(label, { ao, deferred }) {
         modelReady: !!(entity?.model && entity.computeModelMatrix),
       };
     },
-    { view: VIEW, clockUTC: FIXED_CLOCK_UTC, ao, deferred, modelUrl: MODEL_URL },
+    {
+      view: VIEW,
+      clockUTC: FIXED_CLOCK_UTC,
+      ao,
+      deferred,
+      modelUrl: MODEL_URL,
+    },
   );
 
   const deviceErrors = await page.evaluate(() => window.__probeErrors ?? []);
@@ -197,9 +203,7 @@ async function diffPngs(a, b) {
         return {
           w: img.naturalWidth,
           h: img.naturalHeight,
-          data: c
-            .getContext("2d")
-            .getImageData(0, 0, c.width, c.height).data,
+          data: c.getContext("2d").getImageData(0, 0, c.width, c.height).data,
         };
       };
       const a = await decode(ba);
@@ -231,7 +235,9 @@ async function diffPngs(a, b) {
 
 (async () => {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
-  console.log("[probe-model-mrt] capturing 4-cell matrix with milk truck model");
+  console.log(
+    "[probe-model-mrt] capturing 4-cell matrix with milk truck model",
+  );
 
   const cells = [];
   cells.push(await capture("a-ao-off-def-off", { ao: false, deferred: false }));
@@ -258,9 +264,7 @@ async function diffPngs(a, b) {
     } else {
       console.log(`    ✓ no device errors`);
     }
-    const pageErrors = (cell.messages ?? []).filter(
-      (m) => m.t === "pageerror",
-    );
+    const pageErrors = (cell.messages ?? []).filter((m) => m.t === "pageerror");
     const consoleErrs = (cell.messages ?? []).filter((m) => m.t === "error");
     if (pageErrors.length || consoleErrs.length) {
       console.log(

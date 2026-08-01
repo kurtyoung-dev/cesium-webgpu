@@ -138,10 +138,7 @@ async function captureBackend(renderer) {
   );
 
   const shotPath = path.join(OUT_DIR, `khr-meshopt-${renderer}.png`);
-  await page
-    .locator("canvas")
-    .first()
-    .screenshot({ path: shotPath });
+  await page.locator("canvas").first().screenshot({ path: shotPath });
   await browser.close();
   return { diag, consoleErrors, shotPath };
 }

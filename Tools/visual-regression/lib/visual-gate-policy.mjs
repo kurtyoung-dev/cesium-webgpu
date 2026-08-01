@@ -61,10 +61,7 @@ function thresholdOrFallback(value, fallback) {
 export function resolveSceneThresholds(scene, fallback) {
   const thresholds = scene.thresholds ?? {};
   return {
-    historicalWebgl: thresholdOrFallback(
-      thresholds.historicalWebgl,
-      fallback,
-    ),
+    historicalWebgl: thresholdOrFallback(thresholds.historicalWebgl, fallback),
     historicalWebgpu: thresholdOrFallback(
       thresholds.historicalWebgpu,
       fallback,
@@ -126,7 +123,11 @@ export function validateManifestEntry(entry, actual) {
   }
 
   for (const field of REQUIRED_MANIFEST_FIELDS) {
-    if (entry[field] === undefined || entry[field] === null || entry[field] === "") {
+    if (
+      entry[field] === undefined ||
+      entry[field] === null ||
+      entry[field] === ""
+    ) {
       reasons.push(`MANIFEST_FIELD_MISSING:${field}`);
     }
   }
@@ -219,9 +220,7 @@ export function evaluatePixelGate({
         comparisonStatus: GateStatus.FAIL,
         certifying: false,
         historicalAvailable: historicalGate ? true : undefined,
-        historicalCertifying: historicalGate
-          ? historicalCertifying
-          : undefined,
+        historicalCertifying: historicalGate ? historicalCertifying : undefined,
         ratio: null,
         threshold,
         reasons: [
@@ -247,9 +246,7 @@ export function evaluatePixelGate({
       comparisonStatus,
       certifying: status === GateStatus.PASS,
       historicalAvailable: historicalGate ? true : undefined,
-      historicalCertifying: historicalGate
-        ? historicalCertifying
-        : undefined,
+      historicalCertifying: historicalGate ? historicalCertifying : undefined,
       ratio: comparison.ratio,
       threshold,
       reasons: historicalCertifying ? [] : manifestValidation.reasons,

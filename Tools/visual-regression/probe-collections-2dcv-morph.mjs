@@ -37,7 +37,9 @@ async function capture(rendererArg, mode) {
     headless: true,
     args: ["--enable-unsafe-webgpu"],
   });
-  const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+  const page = await browser.newPage({
+    viewport: { width: 1000, height: 700 },
+  });
   const errors = [];
   page.on("console", (m) => {
     if (m.type() === "error") errors.push(m.text());
@@ -180,16 +182,27 @@ async function capture(rendererArg, mode) {
       results[`${r}-${mode.name}`] = await capture(r, mode);
     }
   }
-  console.log("\n[probe-collections-2dcv-morph] SUMMARY (counts of colored px)");
+  console.log(
+    "\n[probe-collections-2dcv-morph] SUMMARY (counts of colored px)",
+  );
   for (const mode of MODES) {
     const gl = results[`webgl-${mode.name}`].stats;
     const gp = results[`webgpu-${mode.name}`].stats;
-    const ratio = (a, b) => (a === 0 ? (b === 0 ? "1.0" : "INF") : (b / a).toFixed(2));
+    const ratio = (a, b) =>
+      a === 0 ? (b === 0 ? "1.0" : "INF") : (b / a).toFixed(2);
     console.log(`  ${mode.name}:`);
-    console.log(`    billboard: GL=${gl.magenta} GPU=${gp.magenta} ratio=${ratio(gl.magenta, gp.magenta)}`);
-    console.log(`    point:     GL=${gl.yellow} GPU=${gp.yellow} ratio=${ratio(gl.yellow, gp.yellow)}`);
-    console.log(`    polyline:  GL=${gl.cyan} GPU=${gp.cyan} ratio=${ratio(gl.cyan, gp.cyan)}`);
-    console.log(`    label:     GL=${gl.lime} GPU=${gp.lime} ratio=${ratio(gl.lime, gp.lime)}`);
+    console.log(
+      `    billboard: GL=${gl.magenta} GPU=${gp.magenta} ratio=${ratio(gl.magenta, gp.magenta)}`,
+    );
+    console.log(
+      `    point:     GL=${gl.yellow} GPU=${gp.yellow} ratio=${ratio(gl.yellow, gp.yellow)}`,
+    );
+    console.log(
+      `    polyline:  GL=${gl.cyan} GPU=${gp.cyan} ratio=${ratio(gl.cyan, gp.cyan)}`,
+    );
+    console.log(
+      `    label:     GL=${gl.lime} GPU=${gp.lime} ratio=${ratio(gl.lime, gp.lime)}`,
+    );
   }
   console.log("[probe-collections-2dcv-morph] done");
 })();

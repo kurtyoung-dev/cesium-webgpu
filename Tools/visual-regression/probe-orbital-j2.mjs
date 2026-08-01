@@ -52,7 +52,7 @@ function elementSet() {
     // LEO — ~700 km, 51.6 deg (ISS-like)
     [EARTH_RADIUS + 700e3, 0.001, 0.9006, 0.5, 1.2, 0.3],
     // LEO — ~550 km, 53 deg
-    [EARTH_RADIUS + 550e3, 0.0008, 0.9250, 2.1, 0.4, 4.0],
+    [EARTH_RADIUS + 550e3, 0.0008, 0.925, 2.1, 0.4, 4.0],
     // LEO — ~1200 km, 87 deg (near-polar)
     [EARTH_RADIUS + 1200e3, 0.005, 1.5184, 4.7, 2.9, 1.1],
     // MEO — ~20200 km, 55 deg (GPS-like)
@@ -74,7 +74,18 @@ function elementSet() {
     const mDot = n + factor * Math.sqrt(ome2) * (1 - 1.5 * si * si);
     const mDotHi = Math.fround(mDot);
     const mDotLo = mDot - mDotHi;
-    return { a, e, inc, raan0: r[3], argp0: r[4], M0: r[5], n, mDot, mDotHi, mDotLo };
+    return {
+      a,
+      e,
+      inc,
+      raan0: r[3],
+      argp0: r[4],
+      M0: r[5],
+      n,
+      mDot,
+      mDotHi,
+      mDotLo,
+    };
   });
 }
 
@@ -329,8 +340,7 @@ const gpu = await page.evaluate(
         return out;
       }`;
 
-    const prologue =
-      `const FLOATS_PER_INSTANCE: u32 = ${fpi >>> 0}u;\n\n`;
+    const prologue = `const FLOATS_PER_INSTANCE: u32 = ${fpi >>> 0}u;\n\n`;
 
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) {
@@ -535,8 +545,12 @@ console.log(
   `(C) zero validation/console errors: gpu=${gpu.validationErrors?.length ?? 0} page=${errors.length} ${cOK ? "OK" : "FAIL"}`,
 );
 errors.slice(0, 6).forEach((e) => console.log("  ERR:", e.slice(0, 200)));
-gpu.validationErrors?.slice(0, 6).forEach((e) => console.log("  VAL:", e.slice(0, 200)));
-console.log(`(info) df64 all-instance max=${df64Max.toFixed(2)} m, f32 all-instance max=${f32Max.toFixed(2)} m`);
+gpu.validationErrors
+  ?.slice(0, 6)
+  .forEach((e) => console.log("  VAL:", e.slice(0, 200)));
+console.log(
+  `(info) df64 all-instance max=${df64Max.toFixed(2)} m, f32 all-instance max=${f32Max.toFixed(2)} m`,
+);
 
 const pass = aOK && bOK && cOK;
 console.log(pass ? "PASS" : "FAIL");

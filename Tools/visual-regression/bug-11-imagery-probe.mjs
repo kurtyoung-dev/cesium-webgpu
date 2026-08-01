@@ -79,7 +79,7 @@ const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
     // handles WebGPU correctly. drawImage of a WebGPU canvas to a 2D
     // context can fail silently and return uniform black.
     const canvas = v.scene.canvas;
-    let canvasSample = null;
+    let canvasSample;
     try {
       const dataUrl = canvas.toDataURL("image/png");
       // Decode PNG via offscreen canvas (this works even for WebGPU
@@ -108,9 +108,8 @@ const URL = `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`;
       canvasSample = {
         method: "toDataURL+Image",
         avg: avg.map((c) => Math.round(c / samples.length)),
-        nonBlackCount: samples.filter(
-          (s) => s[0] > 5 || s[1] > 5 || s[2] > 5,
-        ).length,
+        nonBlackCount: samples.filter((s) => s[0] > 5 || s[1] > 5 || s[2] > 5)
+          .length,
         firstFew: samples.slice(0, 5),
         dataUrlLen: dataUrl.length,
       };

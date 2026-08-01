@@ -26,7 +26,8 @@
 // WGS-72 constants the kernel needs (must match sgp4-reference.mjs).
 const RADIUSEARTHKM = 6378.135;
 const MU = 398600.8;
-const XKE = 60.0 / Math.sqrt((RADIUSEARTHKM * RADIUSEARTHKM * RADIUSEARTHKM) / MU);
+const XKE =
+  60.0 / Math.sqrt((RADIUSEARTHKM * RADIUSEARTHKM * RADIUSEARTHKM) / MU);
 const J2 = 0.001082616;
 const X2O3 = 2.0 / 3.0;
 

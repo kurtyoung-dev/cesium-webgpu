@@ -25,7 +25,8 @@ const SHIM = `(function() {
 })();`;
 
 const browser = await chromium.launch({
-  channel: "msedge", headless: true,
+  channel: "msedge",
+  headless: true,
   args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan"],
 });
 const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
@@ -33,16 +34,29 @@ await page.addInitScript({ content: SHIM });
 await page.route("**/Apps/Sandcastle/gallery/**.html", async (route) => {
   const r = await route.fetch();
   const t = await r.text();
-  await route.fulfill({ status: r.status(), headers: r.headers(),
-    body: t.replace(/new\s+Cesium\.Viewer\s*\(/g, "await Cesium.Viewer.createAsync(") });
+  await route.fulfill({
+    status: r.status(),
+    headers: r.headers(),
+    body: t.replace(
+      /new\s+Cesium\.Viewer\s*\(/g,
+      "await Cesium.Viewer.createAsync(",
+    ),
+  });
 });
-await page.goto("http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html", {
-  waitUntil: "domcontentloaded", timeout: 60000,
-});
-await page.waitForFunction(() => {
-  const c = document.querySelector(".cesium-widget canvas");
-  return c && c.width > 0;
-}, { timeout: 60000 });
+await page.goto(
+  "http://localhost:8080/Apps/Sandcastle/gallery/Hello%20World.html",
+  {
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  },
+);
+await page.waitForFunction(
+  () => {
+    const c = document.querySelector(".cesium-widget canvas");
+    return c && c.width > 0;
+  },
+  { timeout: 60000 },
+);
 await page.waitForTimeout(8000);
 
 const result = await page.evaluate(() => {
@@ -59,7 +73,9 @@ const result = await page.evaluate(() => {
   };
   if (cache) {
     let i = 0;
-    for (const [key, val] of (cache.entries ? cache.entries() : Object.entries(cache))) {
+    for (const [key, val] of cache.entries
+      ? cache.entries()
+      : Object.entries(cache)) {
       if (i++ > 3) break;
       out.cacheSamples.push({
         key,

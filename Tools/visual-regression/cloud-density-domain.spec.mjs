@@ -151,12 +151,7 @@ function domainScalesF32(puffSize) {
   ];
 }
 
-function coordinatesFromOriginF32(
-  phases,
-  origin,
-  worldPosition,
-  puffSize,
-) {
+function coordinatesFromOriginF32(phases, origin, worldPosition, puffSize) {
   const relativeMeters = worldPosition.map((value, index) =>
     Math.fround(value - origin[index]),
   );
@@ -172,12 +167,7 @@ function coordinatesFromOriginF32(
     const delta = matrixVectorF32(domain.rotation, scaled);
     return [0, 1, 2].map((component) =>
       Math.fround(
-        fract(
-          addF32(
-            phases[domain.phaseOffset + component],
-            delta[component],
-          ),
-        ),
+        fract(addF32(phases[domain.phaseOffset + component], delta[component])),
       ),
     );
   });
@@ -189,18 +179,14 @@ function circularDifference(left, right) {
 }
 
 function parseWgslScalar(name) {
-  const match = wgslSource.match(
-    new RegExp(`const ${name}: f32 = ([^;]+);`),
-  );
+  const match = wgslSource.match(new RegExp(`const ${name}: f32 = ([^;]+);`));
   assert.ok(match, `missing WGSL scalar ${name}`);
   return Number(match[1]);
 }
 
 function parseWgslVector(name) {
   const match = wgslSource.match(
-    new RegExp(
-      `const ${name}: vec3<f32> = vec3<f32>\\(([\\s\\S]*?)\\);`,
-    ),
+    new RegExp(`const ${name}: vec3<f32> = vec3<f32>\\(([\\s\\S]*?)\\);`),
   );
   assert.ok(match, `missing WGSL vector ${name}`);
   const values = match[1]
@@ -213,9 +199,7 @@ function parseWgslVector(name) {
 
 function parseWgslMatrixRowMajor(name) {
   const match = wgslSource.match(
-    new RegExp(
-      `const ${name}: mat3x3<f32> = mat3x3<f32>\\(([\\s\\S]*?)\\);`,
-    ),
+    new RegExp(`const ${name}: mat3x3<f32> = mat3x3<f32>\\(([\\s\\S]*?)\\);`),
   );
   assert.ok(match, `missing WGSL matrix ${name}`);
   const values = match[1]
@@ -304,9 +288,9 @@ test("TS and WGSL use the same f32 scales, transforms, and offsets", () => {
   for (const domain of domains) {
     const upperName = domain.name.toUpperCase();
     assert.deepEqual(
-      parseWgslMatrixRowMajor(
-        `CLOUD_DENSITY_${upperName}_ROTATION`,
-      ).map(Math.fround),
+      parseWgslMatrixRowMajor(`CLOUD_DENSITY_${upperName}_ROTATION`).map(
+        Math.fround,
+      ),
       [...domain.rotation].map(Math.fround),
     );
     assert.deepEqual(
@@ -398,9 +382,7 @@ test("encoded morphology origin is unwrapped, advected, and RTE-stable", () => {
   const windY = 0.3;
   const windSpeed = 31.0;
   const timeSeconds = 86400.0 * 420.0 + 45.5;
-  const packed = new Float32Array(
-    CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS,
-  );
+  const packed = new Float32Array(CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS);
   writeCloudMorphologyOriginHighLow(
     packed,
     0,
@@ -416,7 +398,11 @@ test("encoded morphology origin is unwrapped, advected, and RTE-stable", () => {
   const advection = windSpeed * timeSeconds;
   for (let component = 0; component < 3; component++) {
     const windComponent =
-      component === 0 ? windX * advection : component === 2 ? windY * advection : 0;
+      component === 0
+        ? windX * advection
+        : component === 2
+          ? windY * advection
+          : 0;
     const direct = Math.fround(
       (origin[component] + relative[component] + windComponent) *
         CLOUD_DENSITY_WORLD_TO_NOISE,
@@ -473,16 +459,15 @@ test("CPU-f64 origin phases preserve periodic coordinates across camera origins"
         0.45,
       );
       coordinates.push(
-        coordinatesFromOriginF32(
-          phases,
-          origin,
-          worldPosition,
-          0.45,
-        ),
+        coordinatesFromOriginF32(phases, origin, worldPosition, 0.45),
       );
     }
 
-    for (let representation = 1; representation < coordinates.length; representation++) {
+    for (
+      let representation = 1;
+      representation < coordinates.length;
+      representation++
+    ) {
       for (let domain = 0; domain < domains.length; domain++) {
         for (let component = 0; component < 3; component++) {
           const error = circularDifference(
@@ -519,12 +504,7 @@ test("deep-space relative rays keep density-domain drift below a quarter voxel",
       origin[2],
       0.45,
     );
-    return coordinatesFromOriginF32(
-      phases,
-      origin,
-      worldPosition,
-      0.45,
-    );
+    return coordinatesFromOriginF32(phases, origin, worldPosition, 0.45);
   });
   const resolutions = [128, 32, 32];
   for (let domain = 0; domain < domains.length; domain++) {
@@ -564,9 +544,7 @@ test("translations that aliased the old aligned domains do not alias the combine
         scaled,
       );
       for (const component of transformed) {
-        circularDeltas.push(
-          Math.min(fract(component), 1.0 - fract(component)),
-        );
+        circularDeltas.push(Math.min(fract(component), 1.0 - fract(component)));
       }
     }
 
@@ -632,11 +610,7 @@ test("primary morphology stays in the unwrapped canonical RTE wind plane", () =>
   assert.doesNotMatch(relative, /fract|wrapCloudDensityDomain|ROTATION/);
 
   const macro = functionSource(cloudShaderSource, "cloudMacroSampleAt");
-  for (const factor of [
-    "mammatusFactor",
-    "speciesFactor",
-    "featureFactor",
-  ]) {
+  for (const factor of ["mammatusFactor", "speciesFactor", "featureFactor"]) {
     assert.match(
       macro,
       new RegExp(`${factor}\\(morphologyCoordinate,\\s*heightFraction\\)`),
@@ -659,9 +633,12 @@ test("primary morphology stays in the unwrapped canonical RTE wind plane", () =>
     cloudShaderSource.indexOf(
       "let usePlanetDensity = planetDensityEnabled() && noiseBakedEnabled();",
     ),
-    cloudShaderSource.indexOf("// Silver lining:", cloudShaderSource.indexOf(
-      "let usePlanetDensity = planetDensityEnabled() && noiseBakedEnabled();",
-    )),
+    cloudShaderSource.indexOf(
+      "// Silver lining:",
+      cloudShaderSource.indexOf(
+        "let usePlanetDensity = planetDensityEnabled() && noiseBakedEnabled();",
+      ),
+    ),
   );
   assert.match(
     primaryMarch,
@@ -673,9 +650,7 @@ test("primary morphology stays in the unwrapped canonical RTE wind plane", () =>
   );
   const marchDeck = functionSource(cloudShaderSource, "marchDeck");
   const specialShade = marchDeck.slice(
-    marchDeck.indexOf(
-      "var specialShadeCoordinate = samplePos * 0.0003;",
-    ),
+    marchDeck.indexOf("var specialShadeCoordinate = samplePos * 0.0003;"),
     marchDeck.indexOf("weightedColor +="),
   );
   assert.match(
@@ -749,17 +724,11 @@ test("the primary RTE density path never adds shader-f32 wind", () => {
   for (const helper of [relativeDensity, relativeMorphology]) {
     assert.doesNotMatch(helper, /wind|cloud\.time|cloud\.windSpeed/);
   }
-  assert.match(
-    relativeDensity,
-    /cloudDensityCoordinatesFromOriginPhases\(/,
-  );
+  assert.match(relativeDensity, /cloudDensityCoordinatesFromOriginPhases\(/);
 
   const march = functionSource(cloudShaderSource, "marchDeck");
   const coordinateDispatch = march.slice(
-    march.indexOf(
-      "if (usePlanetDensity) {",
-      march.indexOf("var base: f32;"),
-    ),
+    march.indexOf("if (usePlanetDensity) {", march.indexOf("var base: f32;")),
     march.indexOf("if (!fine) {"),
   );
   const highPrecisionStart = coordinateDispatch.indexOf(
@@ -794,20 +763,11 @@ test("primary and light marches dispatch legacy lanes around the new macro path"
     march,
     /let usePlanetDensity\s*=\s*planetDensityEnabled\(\)\s*&&\s*noiseBakedEnabled\(\)/,
   );
-  assert.match(
-    march,
-    /else\s*\{\s*base\s*=\s*legacyCloudBaseDensity\(/,
-  );
-  assert.match(
-    march,
-    /else\s*\{\s*density\s*=\s*legacyCloudDensity\(/,
-  );
+  assert.match(march, /else\s*\{\s*base\s*=\s*legacyCloudBaseDensity\(/);
+  assert.match(march, /else\s*\{\s*density\s*=\s*legacyCloudDensity\(/);
 
   const cone = functionSource(cloudShaderSource, "lightMarchCone");
-  assert.match(
-    cone,
-    /else\s*\{\s*opticalDepth\s*\+=\s*legacyCloudDensity\(/,
-  );
+  assert.match(cone, /else\s*\{\s*opticalDepth\s*\+=\s*legacyCloudDensity\(/);
   assert.match(
     cone,
     /else\s*\{\s*opticalDepth\s*\+=\s*legacyCloudBaseDensity\(/,
@@ -832,15 +792,9 @@ test("the shared domain composes into the IBL cloud consumer", async () => {
     ),
     "utf8",
   );
-  assert.match(
-    iblSource,
-    /cloudDensityCoordinatesFromOriginPhases\(/,
-  );
+  assert.match(iblSource, /cloudDensityCoordinatesFromOriginPhases\(/);
   assert.doesNotMatch(iblSource, /u\._?cloudWindWorldOffset/);
-  assert.match(
-    iblSource,
-    /relativeWorld\s*=\s*cloudIblLocalDeltaToWorld\(/,
-  );
+  assert.match(iblSource, /relativeWorld\s*=\s*cloudIblLocalDeltaToWorld\(/);
   assert.match(iblSource, /coordinates\.warp/);
   assert.match(iblSource, /coordinates\.shape/);
   assert.match(iblSource, /coordinates\.detail/);
@@ -857,7 +811,5 @@ test("the shared domain composes into the IBL cloud consumer", async () => {
       path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
     ),
   });
-  assert.doesNotThrow(() =>
-    naga.validate_wgsl(`${wgslSource}\n${iblSource}`),
-  );
+  assert.doesNotThrow(() => naga.validate_wgsl(`${wgslSource}\n${iblSource}`));
 });

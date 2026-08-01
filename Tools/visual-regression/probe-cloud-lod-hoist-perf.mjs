@@ -453,7 +453,7 @@ const SETUP = async (cfg) => {
   // amount of revision/debounce tuning can produce a fill. Loaded and driven to
   // `ready` on the PINNED base epoch so this setup cannot perturb the measured
   // clock walk.
-  let envOwner = {
+  const envOwner = {
     requested: typeof cfg.envMapOwnerModel === "string",
     ready: false,
     waitedFrames: 0,
@@ -859,7 +859,9 @@ async function runLane(browser, lane) {
       `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
       { waitUntil: "networkidle", timeout: 90_000 },
     );
-    await page.waitForFunction(() => !!window.viewer, null, { timeout: 60_000 });
+    await page.waitForFunction(() => !!window.viewer, null, {
+      timeout: 60_000,
+    });
     const armState = await armWebGPUDevices(page);
     const setup = await page.evaluate(SETUP, {
       volumetric: lane.volumetric,
@@ -1020,11 +1022,9 @@ function compare(current, other) {
     other.environment?.browserVersion === current.environment.browserVersion &&
     JSON.stringify(other.environment?.canvas) ===
       JSON.stringify(current.environment.canvas) &&
-    JSON.stringify(other.measurement) ===
-      JSON.stringify(current.measurement) &&
+    JSON.stringify(other.measurement) === JSON.stringify(current.measurement) &&
     typeof other.source?.runtimeBundle?.sha256 === "string" &&
-    other.source.runtimeBundle.sha256 !==
-      current.source.runtimeBundle.sha256;
+    other.source.runtimeBundle.sha256 !== current.source.runtimeBundle.sha256;
   if (!comparable) {
     return {
       status: "noncomparable-companion",
@@ -1211,7 +1211,9 @@ async function run() {
           );
         }
       }
-      console.log(`    canvas fingerprint: cloudCells ${lane.fingerprint.cloudCells}`);
+      console.log(
+        `    canvas fingerprint: cloudCells ${lane.fingerprint.cloudCells}`,
+      );
       for (const [name, stats] of Object.entries(lane.passes)) {
         console.log(
           `    ${name}: median ${stats.medianAvgMs}ms ` +
