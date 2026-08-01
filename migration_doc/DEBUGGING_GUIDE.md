@@ -1477,6 +1477,61 @@ Remove-Item Env:TEMPORAL_TIER
 `Tools/visual-regression/output/cloud-temporal/` as the three phase PNGs and
 `<tier>-truth.json`; the truth record includes effective time, resolved configuration, and errors.
 
+Use the fixture/sequence tour for the C13-01 evidence tail — climate/region/type/same-type fixtures,
+wind/time and temporal-reset sequences, complete per-sequence metrics, and GPU timing:
+
+```powershell
+node --test Tools/visual-regression/cloud-tour-sequences.spec.mjs
+node Tools/visual-regression/probe-cloud-tour-sequences.mjs
+```
+
+The definitions are pure data in
+[`lib/cloud-tour-fixtures.mjs`](../Tools/visual-regression/lib/cloud-tour-fixtures.mjs) and the
+metrics are pure functions in
+[`lib/cloud-tour-metrics.mjs`](../Tools/visual-regression/lib/cloud-tour-metrics.mjs), so
+**run the spec first** — it validates coverage, determinism, and probe discipline in milliseconds and
+the probe refuses to launch a browser on a table that does not validate. The spec also pins the
+mirrored engine constants (temporal reset bits, cloud quality-flag bits, the tier preset table, the
+genus enum) against the engine's own exports, so a renumbered engine constant fails in Node rather
+than producing a manifest that names the wrong cause.
+
+Two lanes, selected with `TOUR_LANES` (default both):
+
+- `fixtures` — twelve climate/region fixtures spanning six WMO genera with same-type formation pairs,
+  a near-clear negative control, both antimeridian directions as a configuration-identical twin pair,
+  both poles (the Antarctic fixture is pinned to the DECEMBER solstice — a June-locked southern
+  fixture measures polar night), and ground/inside-deck/above-deck/orbital stations visited in order
+  with interpolated transitions. Each station renders OFF then ON at the same camera and instant; the
+  delta is the contribution. Each fixture declares its OWN gate and the reason for it — the cirrus
+  floor is two orders of magnitude below the nimbostratus floor because judging both by one threshold
+  rejects a correct wispy render.
+- `sequences` — three wind/time lanes one variable apart (pinned/no wind, advancing/no wind,
+  advancing/wind: cloud time comes from `frameState.time`, so a pinned clock freezes the field no
+  matter what `cloudWindSpeed` says, and advection is only separable from sun motion as the difference
+  between lanes), a camera teleport, a four-cause history-reset taxonomy, and a pan-and-return ghost
+  oracle. Each sequence gets its own page because they assert history-reset semantics. Phases declare
+  `expectResetBits`/`forbidResetBits` against the `WebGPUCloudTemporalHistory.ts` bit table, and the
+  assertion is two-sided: `expectResetBits: 0` means a settled phase must NOT reset.
+
+Env: `TOUR_LANES`, `TOUR_FIXTURES`, `TOUR_SEQUENCE_IDS`, `TOUR_CAPTURE_STRIDE`, `TOUR_WIDTH`/`TOUR_HEIGHT`,
+and the A/B bookkeeping `TOUR_PAIR_ID` / `TOUR_TAG` / `TOUR_ROUND` / `TOUR_ORDER`. Artifacts land under
+`Tools/visual-regression/output/cloud-tour-sequences/` as per-station and per-phase PNGs plus a manifest
+recording, per sequence, the source commit and runtime-bundle SHA-256, adapter, canvas resolution,
+derived tier with its evidence, current/history target dimensions, the CPU frame distribution
+(p50/p95/p99, with capture frames excluded and the exclusion counted), the available GPU timestamps per
+declared pass, the temporal delta/ghost metrics, and the screenshots with their hashes.
+`validateSequenceMetricRecord` fails the run if any of those is missing, so a thinned manifest is RED
+rather than a quiet gap.
+
+**GPU timing is characterization until it is interleaved.** A single run measures; it does not compare.
+For an A/B, build both bundles once, keep them side by side, and alternate `TOUR_TAG=pre` / `post`
+within one session with `TOUR_ROUND` incrementing and at least one round declared `TOUR_ORDER=post-first`.
+Feed every manifest for the pair to `assessInterleavedAb` — it refuses a same-SHA pair, a single round,
+a single ordering, differing replay keys, and a round whose declared control pass moved outside the
+drift band, which is the exact 2026-07-24 signature that produced impossible bidirectional deltas on
+shaders the change never touched. The per-sequence GPU figure covers the profiler's rolling window, so
+the manifest records `measuredFrames` vs `windowFrames` and never claims per-phase attribution.
+
 Use the Campaign-13 ray-phase contracts and banding characterization for `C13-36`:
 
 ```powershell
