@@ -6722,6 +6722,27 @@ under the historical passing value, so a 0.2-2.7pt legitimate shift trips
 it). Serial-build bisect across 9afe1a9eb1 -> 65a194d24e -> 31706f07c8 ->
 3900608bb9(785) -> 34965a2b21(786) will attribute it in ~4 rounds.
 
+**BISECT COMPLETE (2026-08-01, five rounds + reproducibility pair):** PASS at
+Batch 782 (8.49/8.49, orbit 0.6/0.69) and at the v1.144 merge commit
+(identical); FAIL at Batch 786 and at every later tip (12.15/14.66, orbit
+0/0) - all runs deterministic to the decimal. The window is Batches 785+786
+(neither is standalone-buildable; 785-alone renders garbage as expected for
+a half-applied pair). PRIME SUSPECT, hunk-level: Batch 786 (C12-31) edited
+ProceduralSkyCubemap.wgsl so the WebGPU IBL cubemap lights from the
+astronomical sun, while C12-31-FOLLOWUP-B deliberately kept the WebGL IBL
+bake on legacy local-up "for parity" - the two backends' environment maps
+now disagree by construction, which is exactly a cross-backend model-IBL
+parity drift, and a content-changed cubemap also explains the dead
+orbit-change lanes. NEXT SLICE: either revert the cubemap arm of C12-31 to
+the legacy direction (restoring FOLLOWUP-B's deliberate parity) or land
+FOLLOWUP-B's WebGL twin (astronomical sun in the GLSL bake + the WebGL
+rebake trigger) - the latter is the correct end state; the former is the
+safe interim. METHOD FINDING (fleet doctrine, recorded in DEBUGGING_GUIDE
+territory): the CesiumViewer app runs the CHECKED-OUT live module tree
+served raw by the dev server - NOT Build/CesiumUnminified - so
+checkout-based bisects are valid WITHOUT rebuilding, and conversely a probe
+run after a checkout measures the tree even when the build failed.
+
 **Acceptance:** the regressing batch (or the probe's stale expectation) is
 named with before/after numbers, and the gate is either green again or its
 threshold re-derived with a recorded rationale.
