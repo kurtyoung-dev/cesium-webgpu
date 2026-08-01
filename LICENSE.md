@@ -1043,6 +1043,24 @@ Binary assets shipped **inside the published `@cesium/engine` package** — not 
 
 **This is a documented risk assessment, not legal advice, and not a clearance.** The full analysis — including the points that remain unconfirmed and the specific findings that would reverse it — is recorded in [`migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md`](migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md) §6e. A future maintainer should read that section before relying on, extending, or changing this entry.
 
+### Lunar albedo map — NASA/GSFC Scientific Visualization Studio (CGI Moon Kit)
+
+**File:** `packages/engine/Source/Assets/Textures/Moon/lroc_color_poles_2k.jpg` (563,276 bytes, 2048×1024; SHA-256 `276a8d76bd20051b33bf12aa2ed55f95be2c1b476c0539aaf664de79e5ffc732`). Selected via `Moon.Variant.LROC_COLOR_2K`, the default since C12-24 — see `packages/engine/Source/Scene/Moon.js`. Bundled offline and fetched only when the moon is actually rendered. The historical upstream `packages/engine/Source/Assets/Textures/moonSmall.jpg` (256×128) remains bundled and selectable as `Moon.Variant.SMALL`.
+
+**Product:** "CGI Moon Kit", NASA SVS ID 4720, released 2019-09-06. The bundled file is the **2019 colour map** member of that product, `lroc_color_poles_2k.tif` (2048×1024, 24-bit RGB, no ICC profile; SHA-256 `13b797422e8c4b8607ff2b2623ac3a046a6da0132d567c2d272d92fad7052c4a`, 3,339,438 bytes), retrieved **2026-08-01**. SVS states the map is equirectangular and *"centered on 0° longitude"*.
+
+**Conversion applied:** encode to JPEG quality 90, 4:4:4 chroma — the same encode as the Tycho star faces above. **No** resampling (SVS publishes this product at exactly the shipped 2048×1024) and **no** transfer/tone correction (unlike SVS 3572, SVS states no non-sRGB colour standard for this product and the source carries no ICC profile; the map's nearside median luminance already matches the map it replaces to within 1%, so the swap is a resolution change only). Reproducible with `Tools/moon-albedo-bake/bake-lroc-color.mjs`, which verifies the pinned source hash before baking and refuses to install unless the lunar-landmark alignment checks pass. The 3.2 MB source TIFF is **not** bundled.
+
+- Source: <https://svs.gsfc.nasa.gov/4720/>
+- Direct file: <https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/lroc_color_poles_2k.tif>
+- NASA media guidelines: <https://www.nasa.gov/nasa-brand-center/images-and-media/>
+
+**Credit:** NASA/Goddard Space Flight Center Scientific Visualization Studio.
+
+**Underlying data:** the colour map was adapted by SVS from the LROC "Hapke Normalized" Wide Angle Camera mosaic — a composite built by the Lunar Reconnaissance Orbiter Camera team at **Arizona State University** from over 100,000 WAC images (<http://wms.lroc.asu.edu/lroc/view_rdr/WAC_HAPKE_NORMALIZED>). **Credit: NASA/GSFC/Arizona State University.**
+
+**Terms.** This is NASA content produced by a NASA centre from data returned by a NASA mission instrument, and is not subject to copyright protection in the United States. NASA's media guidelines permit reuse without a licence fee and impose no share-alike condition; the credits above are given because NASA requests attribution as a courtesy, not because a licence term compels it. The LROC instrument team's mosaic is likewise a NASA-mission data product distributed through the Planetary Data System without licence conditions. Unlike the star-map entry above, **no third-party non-commercial-licensed catalogue is incorporated**, so that entry's risk analysis does not apply here. NASA does not indemnify, and NASA's guidelines note that its endorsement of a product or service may not be implied.
+
 ### Geoid undulation grid — EGM2008 (NGA)
 
 **File:** `packages/engine/Source/Assets/Geoid/egm2008-0p5deg.i16` (520,594 bytes; consumed by `packages/engine/Source/Core/GeoidUndulationGrid.js` when the ocean vertical datum resolves to `GEOID` — see `packages/engine/Source/Core/VerticalDatum.js`). Fetched lazily at runtime, so applications that never enable a geoid datum never download it.

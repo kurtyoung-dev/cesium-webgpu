@@ -46,9 +46,36 @@ describe(
     it("default constructs the moon", function () {
       const moon = new Moon();
       expect(moon.show).toEqual(true);
-      expect(moon.textureUrl).toContain("Assets/Textures/moonSmall.jpg");
+      // C12-24 — the default albedo is now the 2K NASA CGI Moon Kit map.
+      expect(moon.textureUrl).toContain(
+        "Assets/Textures/Moon/lroc_color_poles_2k.jpg",
+      );
       expect(moon.ellipsoid).toBe(Ellipsoid.MOON);
       expect(moon.onlySunLighting).toEqual(true);
+    });
+
+    it("selects a bundled albedo variant", function () {
+      // C12-24 — the historical 256x128 map stays reachable as a fallback.
+      const small = new Moon({ variant: Moon.Variant.SMALL });
+      expect(small.textureUrl).toContain("Assets/Textures/moonSmall.jpg");
+
+      const large = new Moon({ variant: Moon.Variant.LROC_COLOR_2K });
+      expect(large.textureUrl).toContain(
+        "Assets/Textures/Moon/lroc_color_poles_2k.jpg",
+      );
+
+      // An explicit textureUrl still wins over the variant.
+      const custom = new Moon({
+        variant: Moon.Variant.SMALL,
+        textureUrl: "http://example.invalid/custom.jpg",
+      });
+      expect(custom.textureUrl).toEqual("http://example.invalid/custom.jpg");
+    });
+
+    it("throws for an unknown albedo variant", function () {
+      expect(function () {
+        return new Moon({ variant: "NOT_A_VARIANT" });
+      }).toThrowDeveloperError();
     });
 
     it("draws in 3D", function () {

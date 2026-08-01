@@ -3,6 +3,7 @@ import Cartesian3 from "../Core/Cartesian3.js";
 import Frozen from "../Core/Frozen.js";
 import defined from "../Core/defined.js";
 import destroyObject from "../Core/destroyObject.js";
+import DeveloperError from "../Core/DeveloperError.js";
 import Ellipsoid from "../Core/Ellipsoid.js";
 import IauOrientationAxes from "../Core/IauOrientationAxes.js";
 import Matrix3 from "../Core/Matrix3.js";
@@ -26,13 +27,22 @@ import Material from "./Material.js";
  *
  * @param {object} [options] Object with the following properties:
  * @param {boolean} [options.show=true] Determines whether the moon will be rendered.
- * @param {string} [options.textureUrl=buildModuleUrl('Assets/Textures/moonSmall.jpg')] The moon texture.
+ * @param {string} [options.textureUrl] The moon texture. Defaults to the albedo
+ *        map of {@link Moon.defaultVariant}; pass an explicit URL to override
+ *        the bundled maps entirely.
+ * @param {string} [options.variant] One of {@link Moon.Variant}, selecting which
+ *        bundled albedo map to use. Ignored when <code>textureUrl</code> is given.
+ *        Defaults to {@link Moon.defaultVariant}.
  * @param {Ellipsoid} [options.ellipsoid=Ellipsoid.MOON] The moon ellipsoid.
  * @param {boolean} [options.onlySunLighting=true] Use the sun as the only light source.
  *
  *
  * @example
  * scene.moon = new Cesium.Moon();
+ *
+ * @example
+ * // Restore the historical low-resolution albedo map.
+ * scene.moon = new Cesium.Moon({ variant: Cesium.Moon.Variant.SMALL });
  *
  * @see Scene#moon
  */
@@ -42,7 +52,7 @@ class Moon {
 
     let url = options.textureUrl;
     if (!defined(url)) {
-      url = buildModuleUrl("Assets/Textures/moonSmall.jpg");
+      url = Moon.getVariantTextureUrl(options.variant);
     }
 
     /**
@@ -54,9 +64,13 @@ class Moon {
     this.show = options.show ?? true;
 
     /**
-     * The moon texture.
+     * The moon texture — an equirectangular (plate carrée) albedo map, centred
+     * on 0° longitude with east to the right and north at the top of the image.
+     * That is the convention {@link czm_ellipsoidTextureCoordinates} and its
+     * WGSL twin unwrap to; see `Tools/moon-albedo-bake/lunar-landmarks.mjs`
+     * for the checked assertion of it.
      * @type {string}
-     * @default buildModuleUrl('Assets/Textures/moonSmall.jpg')
+     * @default the albedo map of {@link Moon.defaultVariant}
      */
     this.textureUrl = url;
 
@@ -409,6 +423,83 @@ class Moon {
     return destroyObject(this);
   }
 }
+
+/**
+ * Selectable bundled albedo maps for {@link Moon}.
+ *
+ * Enumerated rather than raw strings so a typo fails loudly in debug builds
+ * instead of silently 404-ing the moon into its placeholder. Mirrors
+ * {@link SkyBox.Variant}, which does the same for the bundled star maps.
+ *
+ * Both variants use the SAME projection — equirectangular, centred on 0°
+ * longitude, east right, north at the top of the image — so switching between
+ * them changes only resolution and source, never orientation.
+ *
+ * @enum {string}
+ * @readonly
+ */
+Moon.Variant = Object.freeze({
+  /**
+   * The historical 256×128 `moonSmall.jpg` inherited from upstream Cesium.
+   * At the ~190 px disc of a zoomed-in view its visible hemisphere is only
+   * 128 texels — 0.67 texels/px, i.e. under-resolved (C12-24). Retained as
+   * the low-bandwidth option (17.8 KB) and as the fallback if an application
+   * prefers the historical look.
+   */
+  SMALL: "SMALL",
+  /**
+   * NASA/GSFC SVS 4720 "CGI Moon Kit" 2019 colour map at 2048×1024 — the
+   * default as of C12-24. Derived from the LROC Wide Angle Camera "Hapke
+   * normalized" mosaic, gamma corrected and white balanced by SVS to
+   * approximate human vision. Bundled offline at 550 KB (JPEG q90 4:4:4) by
+   * the reproducible pipeline at `Tools/moon-albedo-bake/`. The asset's terms
+   * are stated in `LICENSE.md` → Bundled Engine Assets.
+   */
+  LROC_COLOR_2K: "LROC_COLOR_2K",
+});
+
+const moonVariants = {
+  [Moon.Variant.SMALL]: "Assets/Textures/moonSmall.jpg",
+  [Moon.Variant.LROC_COLOR_2K]: "Assets/Textures/Moon/lroc_color_poles_2k.jpg",
+};
+
+/**
+ * The variant {@link Moon} uses when neither `textureUrl` nor `variant` is
+ * passed.
+ *
+ * `LROC_COLOR_2K` is the default as of `C12-24` (Campaign 12): the historical
+ * 256×128 map is under-resolved at any zoomed view. `SMALL` remains bundled
+ * and selectable; both are offline.
+ *
+ * @type {string}
+ * @default Moon.Variant.LROC_COLOR_2K
+ */
+Moon.defaultVariant = Moon.Variant.LROC_COLOR_2K;
+
+/**
+ * Resolves a {@link Moon.Variant} to the URL of its bundled albedo map.
+ *
+ * @param {string} [variant] One of {@link Moon.Variant}. Defaults to
+ *        {@link Moon.defaultVariant}.
+ * @returns {string} The module-relative URL of the variant's texture.
+ */
+Moon.getVariantTextureUrl = function (variant) {
+  const v = variant ?? Moon.defaultVariant;
+  // Own-property lookup only: a bare `moonVariants[v]` resolves inherited
+  // Object.prototype keys, so `variant: "constructor"` would sail past the
+  // defined() guard and hand buildModuleUrl a function.
+  const asset = Object.prototype.hasOwnProperty.call(moonVariants, v)
+    ? moonVariants[v]
+    : undefined;
+  //>>includeStart('debug', pragmas.debug);
+  if (!defined(asset)) {
+    throw new DeveloperError(
+      `Unknown Moon variant "${v}". Valid values are: ${Object.keys(moonVariants).join(", ")}`,
+    );
+  }
+  //>>includeEnd('debug');
+  return buildModuleUrl(asset ?? moonVariants[Moon.Variant.LROC_COLOR_2K]);
+};
 
 const icrfToFixed = new Matrix3();
 const rotationScratch = new Matrix3();

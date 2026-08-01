@@ -911,11 +911,25 @@ function _loadRealMoonTexture(device, cache, textureUrl) {
           GPUTextureUsage.COPY_DST |
           GPUTextureUsage.RENDER_ATTACHMENT,
       });
-      return WebGPUImageUpload.uploadImageToTexture(
-        device,
-        image,
-        newTexture,
-      ).then(function () {
+      return WebGPUImageUpload.uploadImageToTexture(device, image, newTexture, {
+        // C12-24 — MUST match the WebGL upload convention. `Texture` (the
+        // WebGL path the Moon reaches through Material.ImageType) defaults
+        // to `flipY: true`, so image row 0 lands at t = 1. Both backends
+        // then unwrap the sphere with the SAME formula
+        // (czm_ellipsoidTextureCoordinates / ellipsoidTexCoords):
+        //     v = asin(n.z) / PI + 0.5   =>  v = 1 at the north pole
+        // so on WebGL the north pole samples the TOP row of the image file.
+        // `copyExternalImageToTexture` defaults to flipY:false, which put
+        // image row 0 at v = 0 and made the WebGPU moon sample the SOUTH of
+        // the map at its north pole — the albedo was rendering vertically
+        // MIRRORED against WebGL. The 256x128 moonSmall.jpg is soft and
+        // low-contrast enough that this was never visible; at the C12-24
+        // 2048x1024 LROC map it is (Tycho's ray system lands in the wrong
+        // hemisphere). Fixed at the upload layer, not in the shader, so it
+        // holds for ANY user-supplied `moon.textureUrl` too — and so the
+        // GLSL/WGSL twins stay character-identical (no lockstep row).
+        flipY: true,
+      }).then(function () {
         // Destroy the placeholder before replacing.
         if (defined(cache.moonTexture)) {
           cache.moonTexture.destroy();
