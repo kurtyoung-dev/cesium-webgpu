@@ -22,15 +22,18 @@ regressions, campaign reconciliation, and verified continuation order._
 
 _2026-07-28 execution update: Campaign 13 remains the current cloud execution queue. Campaign 11
 remains open and its targeted W1 performance lane has resumed (`C11-180` PARTIAL, `C11-181`
-IMPLEMENTED / VERIFIED / LANDING PENDING); its broader certification remains held. Its cloud/weather IDs transferred to Campaign 13
+IMPLEMENTED / VERIFIED / LANDED — both landed as Batch 773 on 2026-08-01, neither complete);
+its broader certification remains held. Its cloud/weather IDs transferred to Campaign 13
 without being renamed or double-scheduled. **Campaign 12 LAUNCHED 2026-07-23** and is executing. The current non-cloud performance
 evidence remains in `FABLE5_PROGRESS_AND_ACTION_AUDIT_2026-07-22.md`; cloud evidence is in
 `CLOUD_ARCHITECTURE_AUDIT_2026-07-23.md`._
 
 _2026-07-31 local/committed/staged audit: see
 [`LOCAL_CHANGE_AUDIT_2026-07-31.md`](LOCAL_CHANGE_AUDIT_2026-07-31.md).
-Local `main` equals `origin/main` at Batch 771, no changes are staged, and the
-dirty tree is an intentionally uncommitted multi-lane workspace. Canonical
+Written when local `main` equalled `origin/main` at Batch 771 with nothing staged
+and the dirty tree an intentionally uncommitted multi-lane workspace; **that
+changeset landed as Batches 772-781 on 2026-08-01** (`origin/main` =
+`3900608bb9`), see its §11 addendum. Canonical
 build/type gates and 45/45 performance-harness contracts are green. The
 corrected attribution lane proves substantial avoided model work, while an
 exact resident pair correctly rejects causal timing because backend-coupled 3D
@@ -39,7 +42,19 @@ Tiles readiness differs; `C11-205` owns that evidence seam._
 _2026-07-31 Campaign-11 high-value stopping point: see
 [`HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`](HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md)
 for the implemented/partial split across C11-60/76/193/194/195/202/205/208,
-the new model-readiness/recovery findings, validation state, and restart order._
+the new model-readiness/recovery findings, validation state, and restart order.
+Its repository-state paragraph is superseded (banner at the top of that doc): the
+tree landed as Batches 772-781 on 2026-08-01 and restart-order item 1 was executed
+at landing; items 2-7 and every open exit gate remain valid._
+
+_2026-08-01 landing + orchestrator review: the 2026-07-31 Codex changeset landed as
+**Batches 772-781** (`3900608bb9`) with eight confirmed defects fixed pre-landing —
+recorded as the `C11-REVIEW-2026-08-01` entry in
+[`WEBGPU_DEBUGGING_LOG.md`](WEBGPU_DEBUGGING_LOG.md) and §11 of
+[`LOCAL_CHANGE_AUDIT_2026-07-31.md`](LOCAL_CHANGE_AUDIT_2026-07-31.md). Gates at the
+tip: `tsc` clean, `gulp build` green, Node contracts 195/195. **LANDED is not
+COMPLETE** — no C11/C12 row was promoted, and the browser/Karma/timing gates stay
+open._
 
 > **Convention:** docs under `archive/` are historical point-in-time snapshots — do **not** read them as live to-do lists. Their still-open items were lifted into `DEFERRED_WORK.md` ("Carried-forward on archive"). The audit that produced this layout is recorded in `_DOC_AUDIT_PLAN.md`.
 

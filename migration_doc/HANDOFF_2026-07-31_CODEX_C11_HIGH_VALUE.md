@@ -1,7 +1,21 @@
 # Campaign 11 high-value work — Codex stopping-point handoff
 
+> **SUPERSEDED REPOSITORY-STATE SNAPSHOT (2026-08-01).** Preserve this document
+> as the Batch-771 stopping-point record, but do not read its repository-state
+> paragraph as current. The working tree it describes **landed as Batches
+> 772-781** (`origin/main` = `3900608bb9`) after orchestrator review, with eight
+> confirmed defects fixed pre-landing (see `LOCAL_CHANGE_AUDIT_2026-07-31.md`
+> §11 and the `C11-REVIEW-2026-08-01` entry in `WEBGPU_DEBUGGING_LOG.md`).
+> Wherever this document says “implemented, not landed,” read “landed; still not
+> complete” — every exit gate, browser gate, and PARTIAL status below stands
+> exactly as written. In the restart order at the end, **item 1 (combined build
+> and focused runtime/spec probes) was executed at landing**; items 2-7 remain
+> valid campaign work. Use the live campaign queues and current `git status` as
+> execution authority.
+
 **Date:** 2026-07-31  
-**Repository state:** large pre-existing dirty working tree; no files were staged,
+**Repository state (as written; see the banner above):** large pre-existing dirty
+working tree; no files were staged,
 committed, pushed, reset, cleaned, or stashed during this pass. In this document,
 “implemented” means present in the local working tree, not landed in Git history.
 
@@ -148,7 +162,10 @@ claiming the combined tree verified.
 ## Recommended restart order
 
 1. Run the combined repository build and focused runtime/spec probes; do not
-   reconcile docs by discarding other dirty-tree work.
+   reconcile docs by discarding other dirty-tree work. **DONE at landing
+   (2026-08-01, Batches 772-781): `npx tsc --noEmit` clean, `npx gulp build`
+   green, Node contracts 195/195 at `3900608bb9`. Focused Edge/Karma still did
+   not execute, so the browser-owned gates remain open.**
 2. Promote ready-tile identity into the ordinary `C11-205` resident fingerprint
    so invalid renderer pairs cannot produce causal performance claims.
 3. Add exact device/resource-generation ownership and disposer-driven recovery

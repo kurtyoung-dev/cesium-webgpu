@@ -6221,8 +6221,10 @@ renderer feature to improve a benchmark.
 
 ### WEBGL-ASYNC-SHADER-COMPILE-LIFECYCLE (`C11-180`)
 
-**Status (2026-07-28): PARTIAL — CORE LIFECYCLE + MEASURED BOUNDED
-FINAL-PROGRAM/FOG-COMPANION SCHEDULING LANDED; STRUCTURAL MATRIX REMAINS.**
+**Status (2026-07-28; landing reconciled 2026-08-01): PARTIAL — CORE
+LIFECYCLE AND MEASURED BOUNDED FINAL-PROGRAM/FOG-COMPANION SCHEDULING
+LANDED (Batch 773, 2026-08-01); STRUCTURAL MATRIX REMAINS.** Landing is not
+completion: the row stays PARTIAL and every gate named below stays open.
 The renderer now has explicit uninitialized/linking/ready/failed program
 states, one-at-a-time idle submission and `COMPLETION_STATUS_KHR` polling,
 synchronous correctness fallback on direct bind/getter use, cached failure,
@@ -6290,11 +6292,12 @@ broader shadow/HDR/translucent variants that survive measurement.
 
 ### WEBGL-GLOBE-SHADER-VARIANT-EVICTION-REFERENCE (`C11-181`)
 
-**Status (2026-07-31 audit correction): IMPLEMENTED / VERIFIED —
-REFERENCE/LIFETIME GATES GREEN; LANDING PENDING.** This is *not* complete: the
-implementation remains uncommitted in the working tree, matching
-`QUEUE_2026-07-18_CAMPAIGN11.md` (`C11-181` = IMPLEMENTED / VERIFIED / LANDING
-PENDING). Only `C11-208` has reached its exit gate per
+**Status (2026-07-31 audit correction; landing reconciled 2026-08-01):
+IMPLEMENTED / VERIFIED — REFERENCE/LIFETIME GATES GREEN; LANDED (Batch 773,
+2026-08-01).** This is *not* complete — landing is not completion. The
+implementation shipped in `Scene/GlobeSurfaceShaderSet.js` with the Codex C11
+pass, matching `QUEUE_2026-07-18_CAMPAIGN11.md` (`C11-181` = IMPLEMENTED /
+VERIFIED / LANDED). Only `C11-208` has reached its exit gate per
 `HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`. On material
 or clipping-state mismatch, `GlobeSurfaceShaderSet` formerly overwrote
 `_shadersByTexturesFlags[numberOfDayTextures][flags]` without releasing the

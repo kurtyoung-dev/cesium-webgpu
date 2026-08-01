@@ -16,8 +16,9 @@ after the launch/document batch is committed, `git status` contains no unrelated
 
 Publication update: the 2026-07-23 HTTP-403 attempt below is historical. As of
 the 2026-07-31 audit, local `main` and `origin/main` are equal at Batch 771
-(`fe990ab335`). No runtime gate may be bypassed merely because later work is
-present only in the dirty working tree.
+(`fe990ab335`) [that audit's changeset landed as Batches 772-781 on 2026-08-01,
+`origin/main` = `3900608bb9`]. No runtime gate may be bypassed merely because
+later work is present in the tree, landed or not.
 
 Campaign 13 supersedes **only** Campaign 11's `clouds-weather` execution cluster. It does not close
 Campaign 11's unrelated open work. Campaign 12 launched on 2026-07-23 and is

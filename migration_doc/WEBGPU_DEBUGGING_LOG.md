@@ -15530,11 +15530,11 @@ changes.
 
 ## C11-180 — WebGL first-use `LINK_STATUS` stalls: eager scheduling rejected, bounded final preparation verified (2026-07-28)
 
-**Status.** IMPLEMENTED / **PARTIAL** and **uncommitted** in the working tree.
+**Status.** IMPLEMENTED / **PARTIAL**; **LANDED as Batch 773 (2026-08-01)**.
 Per `HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md` only `C11-208` has reached its
-exit gate, so nothing below is a landing, completion, or timing-certification
-claim. The globe-ownership half is `C11-181` (IMPLEMENTED / VERIFIED / LANDING
-PENDING).
+exit gate, so nothing below is a completion or timing-certification
+claim — landing is not completion. The globe-ownership half is `C11-181`
+(IMPLEMENTED / VERIFIED / LANDED, Batch 773).
 
 **Symptom.** On the canonical moving multi-altitude WebGL route, seven long
 tasks of roughly 100–205 ms each appeared at fixed route positions, dominating
@@ -15681,9 +15681,10 @@ comparison is not silently crossing physical GPU vendors. Artifact:
 `Scene/Fog.js`; new specs `Specs/Renderer/ShaderProgramParallelCompileSpec.js`,
 `Specs/Scene/WebGLShaderProgramSchedulerSpec.js`,
 `Specs/Scene/GlobeSurfaceShaderSetSpec.js`, and `Specs/Scene/FogSpec.js`;
-harness `Tools/visual-regression/run-performance-campaign.mjs`. **All
-uncommitted.** **Trace:** `C11-180` (W1 — PARTIAL) and `C11-181`
-(IMPLEMENTED / VERIFIED / LANDING PENDING) in
+harness `Tools/visual-regression/run-performance-campaign.mjs`. **All landed
+as Batch 773 (`f4ea1b6a6d`, 2026-08-01)**; the harness file landed with the
+Batch-779 harness lane. **Trace:** `C11-180` (W1 — PARTIAL) and `C11-181`
+(IMPLEMENTED / VERIFIED / LANDED) in
 `QUEUE_2026-07-18_CAMPAIGN11.md`; `DEFERRED_WORK.md`
 `WEBGL-ASYNC-SHADER-COMPILE-LIFECYCLE` +
 `WEBGL-GLOBE-SHADER-VARIANT-EVICTION-REFERENCE`; `C12-03` / `C11-175` for the
@@ -15692,8 +15693,9 @@ adapter-provenance rider.
 ## C11-AUDIT-2026-07-31 — Campaign 11 local-change, attribution, and parallel hot-path audit (2026-07-31)
 
 **Type.** Audit / attribution record covering many items, not a single-defect
-entry and not an engine-change claim of its own. It records **uncommitted**
-Campaign 11 work; it is not a batch/landing or performance-certification claim.
+entry and not an engine-change claim of its own. The Campaign 11 work it records
+**landed as Batches 772-781 on 2026-08-01**; that is a landing fact, not a
+performance-certification claim.
 Per `HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md` only `C11-208` has reached its
 exit gate.
 
@@ -15718,23 +15720,23 @@ failed comparability in the San Francisco 3D Tiles segment: WebGL observed
 statistics and internal arrays agree. `C11-205` owns ready-content identity and
 issued/cancelled/reissued request evidence before any SSE/traversal change.
 
-### Root cause → fix, per item (every slice below is implemented but uncommitted)
+### Root cause → fix, per item (every slice below landed 2026-08-01; batch cited per item)
 
-- `C11-192`: terrain shadow-cast UBs are demand-realized; shadow-OFF terrain
+- `C11-192` (Batch 775): terrain shadow-cast UBs are demand-realized; shadow-OFF terrain
   pays no per-tile allocation/upload, and shadow-ON retains the complete path.
-- `C11-199`: model pipeline pending promises are descriptor/generation-owned;
+- `C11-199` (Batch 774): model pipeline pending promises are descriptor/generation-owned;
   stale completion cannot replace newer state.
-- `C11-200`: fixed manual exposure writes are exact-value gated; dynamic
+- `C11-200` (Batch 776): fixed manual exposure writes are exact-value gated; dynamic
   auto-exposure remains dynamic.
-- `C11-201`: globe packed-depth publishes its render target's stable cached
+- `C11-201` (Batches 776/777): globe packed-depth publishes its render target's stable cached
   texture view instead of manufacturing a new wrapper identity per frame. A
   current 1,031-frame attribution rerun remained at 389 bind groups, identical
   to the pre-change artifact; credit is limited to removed view-wrapper
   allocation/lifetime churn, not a bind-group or timing win.
-- `C11-211`: model animation is explicitly three-phase—every node transform,
+- `C11-211` (Batch 774): model animation is explicitly three-phase—every node transform,
   one joint-palette update, then every primitive—removing inherited
   runtime-nodes × skinned-nodes × joints repetition and correcting ordering.
-- `C11-193` narrow allocation slice: tile models borrow their tileset-owned
+- `C11-193` narrow allocation slice (Batch 776): tile models borrow their tileset-owned
   dynamic-environment manager at construction. Standalone models keep private
   ownership, and model replacement/destruction cannot destroy the borrowed
   tileset resource.
@@ -15783,3 +15785,64 @@ causal resident timing. **Trace:** `C11-60`, `C11-76`, `C11-185`, `C11-192`,
 `C11-208`, `C11-209`, `C11-210`, `C11-211` in `QUEUE_2026-07-18_CAMPAIGN11.md`;
 `LOCAL_CHANGE_AUDIT_2026-07-31.md`;
 `HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`.
+
+## C11-REVIEW-2026-08-01 — eight defects fixed while landing the Codex C11 changeset as Batches 772-781 (2026-08-01)
+
+**Type.** Orchestrator-review fix wave for one landing, not a single-defect entry.
+A 23-agent Opus review of the 2026-07-31 tree confirmed eight defects, each fixed
+before its lane was committed. Landing is not completion — every browser, timing,
+and Karma gate above stays open.
+
+**Root cause → fix, per defect (batch = where the fix landed):**
+
+1. **Compositor `depthStencil` versus canvas-pass depth attachment** (Batch 772,
+   `WebGPUEnvironmentalEffectsCompositor.ts`). The blit pipeline declared a
+   depth-stencil state the canvas pass does not provide, invalidating the frame
+   command buffer. Landed with that state matched to the canvas pass.
+2. **`cascadesEnabled: false` produced an unfit WebGPU sun shadow** (Batches
+   775/780; `Scene/Scene.js`, `Scene/ShadowMap.js`,
+   `Scene/ShadowMapComputations.js`). The flag was the trigger, not the cause:
+   disabling cascades skipped the fit, leaving `_shadowMapMatrix` a zero matrix
+   whose emptiness was masked downstream by a truthy logical-OR fallback. Fix:
+   `Scene` no longer passes `cascadesEnabled: false` on WebGPU, and
+   `ShadowMap.update` publishes the fitted whole-frustum light camera through pass
+   0 and computes `_shadowMapMatrix` under `managesSceneShadowCascadesNatively`.
+   WebGL reduces to its unchanged `_passes.length === 1` behavior; the full
+   fit/below-horizon-cull/darkness lifecycle is retained on both backends.
+3. **Tileset environment-map refresh freeze** (Batch 776,
+   `Scene/Cesium3DTileset.js`). The per-render-pass env-map tick had moved behind
+   a selected-consumer helper, so hiding a tileset or selecting zero tiles froze
+   the multi-frame generation state machine. The tick is restored to its
+   unconditional HEAD location; the helper is now pure telemetry.
+4. **Dead 120-versus-20-word shadow-receive prefix gate + shared-array corruption**
+   (Batch 780 `WebGPUEffectsBindGroup.js`; Batch 776 reverted
+   `WebGPUEffectsStateCache` to HEAD). The gate compared an owned 20-word sidecar
+   against the cache's 120-word array, so it could never match, while the partial
+   writer feeding it corrupted the shared array. It now owns its 20-word sidecar.
+5. **Zero-primitive `Model.ready` stall** (Batches 774/780, `Scene/Model/Model.js`,
+   `WebGPUModelRenderer.ts`). A completed warmup caching zero primitives (mesh-less
+   glTF, or every primitive structurally dropped) never reported color pipelines
+   ready, so `Model.ready` stalled forever and re-warmed every frame. A
+   warmup-completion flag now reports it.
+6. **Silent async shader-link failure** (Batch 773, `Renderer/ShaderCache.js`). An
+   asynchronously discovered link failure was reported only on a bind that may never
+   come; `cacheLinkFailure` now emits the logs at discovery behind a one-shot guard.
+7. **Unbounded `waitFrames`** (Batch 779,
+   `Tools/visual-regression/lib/performance-campaign-utils.mjs`). Frame waits could
+   hang an unattended run; every wait now runs through a doubly-bounded primitive
+   (re-arming inter-frame stall detector + absolute budget) reporting a timeout as
+   STRUCTURAL through the established error path with full teardown.
+8. **Config-restated causal provenance** (Batch 779,
+   `run-performance-campaign.mjs`, `lib/representative-performance-content.mjs`).
+   Replay provenance was a config-restated boolean, which cannot prove the replay
+   reproduced the measured route. Now MEASURED: measured-window and replay
+   camera-progress sequences are recorded through the same `postRender` hook and
+   compared, with the resident gates re-deriving from raw sequences. Contracts 50/50.
+
+**Gates at the landing tip (`3900608bb9`).** `npx tsc --noEmit` clean, `npx gulp build`
+green, Node contracts 195/195. Focused Edge/Karma still did not execute, so
+animated-model pixels, shadow-ON pixels, and counterbalanced timing remain open.
+
+**Trace:** Batches 772-781; `LOCAL_CHANGE_AUDIT_2026-07-31.md` §11;
+`QUEUE_2026-07-18_CAMPAIGN11.md` (the `C11-180`…`C11-211` rows);
+`QUEUE_2026-07-19_CAMPAIGN12.md` (`C12-29` S5); `HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`.

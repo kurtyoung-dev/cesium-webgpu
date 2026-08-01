@@ -284,8 +284,9 @@ also passes visual inspection with functionality intact. Those are reported meas
 before/after delta. This is a bounded work-avoidance result — three fewer blocking `LINK_STATUS`
 queries issued on the measured route — not a certified frame-time win and not full renderer-wide
 elimination: four first-encounter stalls remain across the quantization ×
-zero/one-texture cohorts, every excluded family remains future measured work, and the changeset is
-still uncommitted (`C11-180` = PARTIAL), so the counterbalanced timing gate stays open.
+zero/one-texture cohorts, every excluded family remains future measured work, and the changeset
+landed as Batch 773 on 2026-08-01 (`C11-180` = PARTIAL — landing is not completion), so the
+counterbalanced timing gate stays open.
 
 ---
 

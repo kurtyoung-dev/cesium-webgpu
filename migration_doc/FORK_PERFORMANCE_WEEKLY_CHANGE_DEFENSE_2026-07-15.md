@@ -731,7 +731,8 @@ the measured route, and the blocking time attributed to the surviving queries in
 that single directional artifact is 435.1 ms against the 753.9 ms baseline (a
 later principal-review rerun records 403.0 ms for the same four remaining
 waits). Counterbalanced repetitions are still required before any before/after
-frame-time delta may be claimed, and this changeset is uncommitted. It is not
+frame-time delta may be claimed; the changeset landed as Batch 773 on
+2026-08-01, which changes nothing about that gate. It is not
 a claim that every WebGL shader variant is now asynchronous. Four structural
 quantization × zero/one-texture first arrivals remain, and broader shadow,
 translucent/OIT, debug/pick/depth, HDR, and multi-texture policies require their

@@ -50,13 +50,15 @@ pending landing or Edge”:
   cloud WGSL can still raise static register pressure and therefore informs
   S3's variant/occupancy design. It is not S3's owner and is not a dependency
   blocker. This supersedes the historical C12-29 row's “after C13-39” wording.
-- `C12-29` S6 is landed. S5 is integrated in the current working tree with its
-  targeted pixel and causal moving-route instrumentation gates passing.
+- `C12-29` S6 is landed. S5 is integrated with its
+  targeted pixel and causal moving-route instrumentation gates passing, and its
+  per-fragment lunar-shadow uniforms plus GLSL/WGSL globe twins **landed as
+  Batches 777/780 on 2026-08-01**; its final-certification matrix stays open.
   The last certified 2026-07-28 validation counts were: S6 Node **51/51**; S5 RTE **18/18**; visual
   source **4/4**; recovery **7/7**; protected eclipse/recovery Node set
   **145/145**; core S1/S2/S5/S6 Node set **134/134**; manager Edge/Karma
   **11/11**; performance contract **23/23**. These are historical certification
-  counts, not a claim about the later dirty working tree.
+  counts, not a claim about the later changeset that landed as Batches 772-781.
 - The 2026-07-28 selected-terrain browser lane passes on both renderers. From
   one fixed orbital camera, the outside target has 81/81 globe rays, exactly
   36 stable skirted meshes, gate 3, and zero body inverse ranges. The S2-only
@@ -69,15 +71,16 @@ pending landing or Edge”:
   `Tools/visual-regression/output/eclipse-globe-shadow-report.json`.
 - The renderer-wide WebGL shader follow-ups exposed by S5 now have separate
   Campaign-11 owners. `C11-180` is **PARTIAL**: the async program lifecycle and
-  measured bounded final-program/fog-companion policy are implemented in the
-  uncommitted working tree (nothing has landed), taking the causal route from
+  measured bounded final-program/fog-companion policy **landed as Batch 773
+  (2026-08-01)**, taking the causal route from
   seven blocking `LINK_STATUS` waits/long tasks to four — avoided work, not a
   certified timing win — while leaving four
   structural first-use stalls and broader shadow/HDR/translucent work open.
-  `C11-181` is **IMPLEMENTED / VERIFIED / LANDING PENDING**: displaced globe
+  `C11-181` is **IMPLEMENTED / VERIFIED / LANDED (Batch 773, 2026-08-01)**:
+  displaced globe
   shader references are balanced and stale shared wrappers cannot return
-  released programs, but the implementation is still part of the uncommitted
-  working tree. Neither status closes the C12-29 final-certification matrix.
+  released programs. Landing is not completion, and neither status closes the
+  C12-29 final-certification matrix.
 - C12-29 remains open. NASA-SVS geospatial comparison, real
   terrain/exaggeration/fill/provider transitions, behavioral pick/capture,
   dense timing, custom-ellipsoid runtime, generic multi-View/stereo, and a
@@ -85,7 +88,9 @@ pending landing or Edge”:
 
 ### 2026-07-31 audit overlay
 
-- Local `main` and `origin/main` are equal at Batch 771 (`fe990ab335`). Any
+- Local `main` and `origin/main` were equal at Batch 771 (`fe990ab335`) when
+  this overlay was written; the changeset it audits **landed as Batches 772-781
+  on 2026-08-01** (`origin/main` = `3900608bb9`). Any
   older row that says Batch-755/756/761/766/770 work is “pending landing” is
   historical prose; the 2026-07-28 overlay above is authoritative.
 - `C12-31` is the canonical owner of the broad false atmospheric aureole in the
@@ -97,8 +102,9 @@ pending landing or Edge”:
   source. The fix is to remove the false atmosphere radiance source and align
   all atmosphere lighting consumers to one per-View astronomical Sun direction,
   while preserving an explicit legacy-overhead compatibility mode.
-- The current dirty tree's pure eclipse/globe/atmosphere Node set passes
-  **138/138**. Focused Edge/Karma execution is presently unavailable because
+- The pure eclipse/globe/atmosphere Node set passes
+  **138/138** (measured pre-landing; the same suites are part of the 195/195
+  Node contracts re-run at the Batch-781 tip). Focused Edge/Karma execution is presently unavailable because
   the documented `EdgeHeadlessCI` run timed out before executing a test; that
   is a blocker, not a new pass count.
 

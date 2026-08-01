@@ -357,8 +357,16 @@ confirmed defects were fixed pre-landing:
 8. false causal provenance.
 
 Doc-truth corrections landed alongside them: `C11-181` restated as IMPLEMENTED /
-LANDING PENDING rather than COMPLETE, the two WebGL shader-lifecycle inventory
+LANDING PENDING rather than COMPLETE (reconciled to IMPLEMENTED / VERIFIED /
+LANDED after Batch 773 — still not COMPLETE), the two WebGL shader-lifecycle inventory
 entries moved from §B (SHIPPED) to §C (WIP), debugging-log status narration
 normalized to the log's entry convention, and timing-win phrasing softened to
 work-avoidance/attribution language consistent with §8 above. Machine gates are
 re-run before landing; §10 still governs.
+
+This changeset landed as **Batches 772-781 on 2026-08-01** and was pushed to
+`origin/main` at `3900608bb9`; the gates at that tip are `npx tsc --noEmit`
+clean, `npx gulp build` green, and Node contracts **195/195**, while every
+browser-owned gate recorded above (focused Edge/Karma, animated-model and
+shadow-ON pixels, counterbalanced timing, `C11-205` resident comparability)
+remains open and unchanged by landing.
