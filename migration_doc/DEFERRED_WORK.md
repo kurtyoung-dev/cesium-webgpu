@@ -6496,3 +6496,49 @@ configured ESLint lane fail; all tracked Tool JavaScript/MJS files then pass
 the agreed policy or carry narrow documented exemptions; engine/source lint
 behavior remains unchanged; CI and lint-staged invoke the same effective
 coverage.
+
+## 2026-08-01 — v1.144 upstream-merge follow-ups (merge 65a194d24e)
+
+### UP144-SNAP-WEBGPU — Scene.snap WebGPU parity
+
+**Status:** OPEN / NEW PARITY GAP (introduced by upstream v1.144, PR #13531).
+Upstream's experimental `Scene.snap` snap-to-geometry picking API (Snapping.js,
+SnapFramebuffer.js, `DerivedCommand.createSnapDerivedCommand`, `passes.snap`,
+`GlobeDepth.snapping`) is WebGL-only. On WebGPU the merge preserves it as a
+safe structural no-op: `SceneRenderer.executeCommand`'s alternate-renderer
+early-return precedes the snap branch and `Scene.updateDerivedCommands`
+returns early for WebGPU commands, so `Scene.snap()` renders an empty snap
+framebuffer and resolves `undefined` rather than throwing. Full parity needs a
+WebGPU RGBA32F snap target + snap pipeline variant in the pick pass family.
+
+**Acceptance:** `Scene.snap` returns equivalent hits on both backends for the
+upstream multifrustum snapping Sandcastle scene, or a documented maintainer
+ruling records the API as WebGL-only.
+
+### UP144-VECTOR-LAYER-WGSL — clamped vector-tile polylines WGSL twin
+
+**Status:** OPEN / NEW PARITY GAP (introduced by upstream v1.144, PR #13577).
+Terrain-draped vector polylines (`VectorProvider`/`VectorPipeline`,
+`HAS_VECTOR_LAYER` in GlobeFS via `VectorCommon.glsl`, five `u_vector*` tile
+uniforms) are GLSL-only. The fork ported the uniforms into
+`GlobeSurfaceTileProviderRendering.js` and assigned the shader-set flag bit
+`0x400000000` (upstream's `0x200000000` collides with the fork's
+`enableEclipseGlobeShadow`). GlobeTerrain.wgsl has no vector sampling path,
+and `VectorTileData` GPU textures are created through the WebGL texture path
+only. SHADER_PAIRS_LOCKSTEP applies once the WGSL twin lands.
+
+**Acceptance:** a draped BufferPolylineCollection renders on both backends in
+the split-screen probe with matching line placement, or the feature is
+recorded as WebGL-only by maintainer ruling.
+
+### UP144-MODEL-READY-ZERO-PRIM-SPEC — zero-primitive readiness regression spec
+
+**Status:** OPEN / TEST COVERAGE. The Batch 774/780 fix makes a model whose
+completed warmup traversal caches zero primitives report color pipelines ready
+(`_warmupTraversalComplete` flag in WebGPUModelRenderer.ts). No spec pins the
+rule; `WebGPUModelPreparationAdmissionSpec.js` covers only the two-primitive
+case. Add a case asserting not-ready before the warmup traversal and ready
+after it for a mesh-less model.
+
+**Acceptance:** the new spec fails against the pre-fix readiness predicate and
+passes against the current one.
