@@ -374,7 +374,7 @@ class TerrainEncoding {
   /**
    * Decode a position from the vertex buffer.
    *
-   * @param {Float32Array} buffer The buffer to decode from.
+   * @param {Float32Array|Float64Array} buffer The buffer to decode from.
    * @param {number} index The index of the vertex to decode.
    * @param {Cartesian3} [result] The object to store the result in.
    * @returns {Cartesian3} The decoded position.
@@ -417,7 +417,7 @@ class TerrainEncoding {
   /**
    * Decode a position from the vertex buffer and apply vertical exaggeration.
    *
-   * @param {Float32Array} buffer
+   * @param {Float32Array|Float64Array} buffer
    * @param {number} index
    * @param {Cartesian3} [result]
    * @returns {Cartesian3} The exaggerated position.

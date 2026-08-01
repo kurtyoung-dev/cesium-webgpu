@@ -34,6 +34,7 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
   const picking = passes.pick || passes.pickVoxel;
   if (defined(view.globeDepth)) {
     view.globeDepth.picking = picking;
+    view.globeDepth.snapping = passes.snap;
   }
   const useWebVR = environmentState.useWebVR;
 
@@ -179,6 +180,15 @@ function updateAndClearFramebuffers(scene, passState, clearColor) {
   const useEdgeFramebuffer = !picking && scene._enableEdgeVisibility;
   if (useEdgeFramebuffer) {
     view.edgeFramebuffer.update(context, view.viewport, scene._hdr);
+  }
+
+  // Update planar fill ID framebuffer
+  const usePlanarFillIdFramebuffer = !picking && scene._enablePlanarFillId;
+  if (usePlanarFillIdFramebuffer) {
+    view.planarFillIdFramebuffer.update(context, view.viewport, scene._hdr);
+  } else if (!picking) {
+    // Release GPU resources while unused; recreated on demand by update().
+    view.planarFillIdFramebuffer.releaseResources();
   }
 
   if (useInvertClassification) {

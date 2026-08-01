@@ -82,6 +82,7 @@ function updateAndRenderPrimitives(scene) {
   const frameState = scene._frameState;
 
   frameState.edgeVisibilityRequested = false;
+  frameState.planarFillRequested = false;
 
   scene._groundPrimitives.update(frameState);
   scene._primitives.update(frameState);
@@ -92,6 +93,10 @@ function updateAndRenderPrimitives(scene) {
   ) {
     scene._enableEdgeVisibility = true;
   }
+
+  // True only while at least one planar fill primitive is rendering;
+  // the request flag is renewed each frame by ModelSceneGraph.
+  scene._enablePlanarFillId = frameState.planarFillRequested;
 
   updateDebugFrustumPlanes(scene);
   updateShadowMaps(scene);

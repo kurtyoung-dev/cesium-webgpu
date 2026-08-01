@@ -361,14 +361,9 @@ class Picking {
     const drawingBufferRectangle = new BoundingRectangle();
     let pickError = noPickFrameError;
     try {
-      pickBegin(
-        scene,
-        windowPosition,
-        drawingBufferRectangle,
-        width,
-        height,
-        mode,
-      );
+      pickBegin(scene, windowPosition, drawingBufferRectangle, width, height, {
+        pickMode: mode,
+      });
     } catch (error) {
       pickError = error;
     }
@@ -1474,16 +1469,36 @@ function computePickingDrawingBufferRectangle(
   return result;
 }
 
-function pickBegin(
+/**
+ * Setup needed before picking.
+ *
+ * Exported for use by Snapping, which performs the same offscreen pick render
+ * but targets the snap framebuffer and flags the pass as a snapping pass.
+ *
+ * @param {Scene} scene
+ * @param {Cartesian2} windowPosition Window coordinates to perform picking on.
+ * @param {BoundingRectangle} drawingBufferRectangle The output drawing buffer recangle.
+ * @param {number} [width=3] Width of the pick rectangle.
+ * @param {number} [height=3] Height of the pick rectangle.
+ * @param {object} [options] Object with the following properties:
+ * @param {PickFramebuffer|SnapFramebuffer} [options.framebuffer] The framebuffer to render into. Defaults to the view's pick framebuffer.
+ * @param {boolean} [options.snap=false] If <code>true</code>, mark the pass as a snapping pass (sets <code>frameState.passes.snap</code>).
+ * @param {"default"|"hover"|"precise"} [options.pickMode="default"] Selects the
+ *        C-R9-MODEL-PICK-TRANSLUCENT pick variant (sets <code>frameState.passes.pickMode</code>).
+ *
+ * @private
+ */
+export function pickBegin(
   scene,
   windowPosition,
   drawingBufferRectangle,
   width,
   height,
-  pickMode,
+  options,
 ) {
   const { context, frameState, defaultView } = scene;
   const { viewport, pickFramebuffer } = defaultView;
+  const framebuffer = options?.framebuffer ?? pickFramebuffer;
 
   scene.view = defaultView;
   viewport.x = 0;
@@ -1522,7 +1537,8 @@ function pickBegin(
   // Default to "default" (B186 first-slice behavior); callers passing
   // "hover" or "precise" opt into the second-slice variants. Cleared
   // in pickEnd so subsequent default-pick frames don't carry stale mode.
-  frameState.passes.pickMode = pickMode ?? "default";
+  frameState.passes.pickMode = options?.pickMode ?? "default";
+  frameState.passes.snap = options?.snap ?? false;
   frameState.tilesetPassState = pickTilesetPassState;
 
   // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) mitigation E — pick-rect
@@ -1541,19 +1557,29 @@ function pickBegin(
   context.uniformState.update(frameState);
   scene.updateEnvironment();
 
-  passState = pickFramebuffer.begin(drawingBufferRectangle, viewport);
+  passState = framebuffer.begin(drawingBufferRectangle, viewport);
   scene.updateAndExecuteCommands(passState, scratchColorZero);
   scene.resolveFramebuffers(passState);
 }
 
-function pickEnd(scene) {
+/**
+ * Teardown needed after picking.
+ *
+ * Exported for use by Snapping, which drives the same offscreen pick frame.
+ *
+ * @param {Scene} scene
+ *
+ * @private
+ */
+export function pickEnd(scene) {
   try {
     scene.context.endFrame();
   } finally {
-    // Reset pickMode so the next pick frame starts from a known state even if
-    // device loss or command-buffer validation makes finalization throw.
+    // Reset the pass flags so the next pick frame starts from a known state
+    // even if device loss or command-buffer validation makes finalization throw.
     if (scene.frameState?.passes) {
       scene.frameState.passes.pickMode = "default";
+      scene.frameState.passes.snap = false;
     }
   }
 }

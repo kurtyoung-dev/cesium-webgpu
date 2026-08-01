@@ -30,6 +30,7 @@ import QuadtreePrimitive from "./QuadtreePrimitive.js";
 import SceneMode from "./SceneMode.js";
 import ShadowMode from "./ShadowMode.js";
 import CesiumMath from "../Core/Math.js";
+import VectorProvider from "../Core/VectorProvider.js";
 
 /**
  * The globe rendered in the scene, including its terrain ({@link Globe#terrainProvider})
@@ -47,6 +48,9 @@ class Globe {
       ellipsoid: ellipsoid,
     });
     const imageryLayerCollection = new ImageryLayerCollection();
+    const vectorProvider = new VectorProvider({
+      tilingScheme: terrainProvider.tilingScheme,
+    });
 
     this._ellipsoid = ellipsoid;
     this._imageryLayerCollection = imageryLayerCollection;
@@ -59,11 +63,14 @@ class Globe {
         terrainProvider: terrainProvider,
         imageryLayers: imageryLayerCollection,
         surfaceShaderSet: this._surfaceShaderSet,
+        vectorProvider,
       }),
     });
 
     this._terrainProvider = terrainProvider;
     this._terrainProviderChanged = new Event();
+
+    this._vectorProvider = vectorProvider;
 
     this._undergroundColor = Color.clone(Color.BLACK);
     this._undergroundColorAlphaByDistance = new NearFarScalar(
@@ -726,6 +733,9 @@ class Globe {
   set terrainProvider(value) {
     if (value !== this._terrainProvider) {
       this._terrainProvider = value;
+      if (defined(value)) {
+        this._vectorProvider.tilingScheme = value.tilingScheme;
+      }
       this._terrainProviderChanged.raiseEvent(value);
       if (defined(this._material)) {
         makeShadersDirty(this);
@@ -741,6 +751,15 @@ class Globe {
    */
   get terrainProviderChanged() {
     return this._terrainProviderChanged;
+  }
+
+  /**
+   * @type {VectorProvider}
+   * @readonly
+   * @ignore
+   */
+  get vectorProvider() {
+    return this._vectorProvider;
   }
 
   /**

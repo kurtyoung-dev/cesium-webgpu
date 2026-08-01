@@ -82,6 +82,7 @@ import SceneTransitioner from "./SceneTransitioner.js";
 import ScreenSpaceCameraController from "./ScreenSpaceCameraController.js";
 import ShadowMap from "./ShadowMap.js";
 import SharedContext from "../Renderer/SharedContext.js";
+import Snapping from "./Snapping.js";
 import SpecularEnvironmentCubeMap from "./SpecularEnvironmentCubeMap.js";
 import StencilConstants from "./StencilConstants.js";
 import { LightCollection } from "./LightTypes.js";
@@ -120,6 +121,18 @@ const requestRenderAfterFrame = function (scene) {
     });
   };
 };
+
+/**
+ * The result of a snap operation. See {@link Scene#snap}.
+ *
+ * @typedef {object} SceneSnapResult
+ * @property {object} object The snapped primitive or feature.
+ * @property {Cartesian3} position The world-space position of the snap point, un-projected from the snap framebuffer's eye-space depth.
+ * @property {Cartesian2} screenPosition The window coordinates of the snap point.
+ * @property {boolean} isEdge <code>true</code> if the snap point lies on an edge; <code>false</code> if it lies on a surface.
+ *
+ * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+ */
 
 /**
  * The container for all 3D graphical objects and state in a Cesium virtual scene.  Generally,
@@ -1535,6 +1548,15 @@ class Scene {
      */
     this._enableEdgeVisibility = false;
 
+    /**
+     * Whether or not to enable the planar fill feature-ID pre-pass.
+     * Updated each frame from FrameState.planarFillRequested.
+     * @type {boolean}
+     * @default false
+     * @private
+     */
+    this._enablePlanarFillId = false;
+
     // Phase 0.3: wire canonical facades onto the Globe. Runs after
     // `this.atmosphere`, `this.fog`, and `this.skyAtmosphere` are all set up
     // because the facade reads from those during property access. See
@@ -2451,6 +2473,14 @@ class Scene {
   }
 
   /**
+   * @type {VectorProvider}
+   * @ignore
+   */
+  get vectorProvider() {
+    return this.globe?.vectorProvider;
+  }
+
+  /**
    * Gets the event that will be raised before the scene is updated or rendered.  Subscribers to the event
    * receive the Scene instance as the first parameter and the current time as the second parameter.
    *
@@ -3334,12 +3364,17 @@ class Scene {
     const needsUpdateForMetadataPicking =
       frameState.pickingMetadata &&
       pickedMetadataInfoChanged(command, frameState);
+    const needsUpdateForSnap =
+      frameState.passes.snap &&
+      defined(command.snapId) &&
+      !defined(derivedCommands.snapping);
     command.dirty =
       command.dirty ||
       needsLogDepthDerivedCommands ||
       needsHdrCommands ||
       needsDerivedCommands ||
-      needsUpdateForMetadataPicking;
+      needsUpdateForMetadataPicking ||
+      needsUpdateForSnap;
 
     if (!command.dirty) {
       // Camera-visible commands revisit this method after their exact derived
@@ -3421,6 +3456,7 @@ class Scene {
     passes.render = false;
     passes.pick = false;
     passes.pickVoxel = false;
+    passes.snap = false;
     passes.depth = false;
     passes.postProcess = false;
     passes.offscreen = false;
@@ -4449,6 +4485,30 @@ class Scene {
    */
   pick(windowPosition, width, height) {
     return this._picking.pick(this, windowPosition, width, height, 1)[0];
+  }
+
+  /**
+   * Returns the best snap target in a screen-space region around <code>windowPosition</code>.
+   * Edges are preferred over surfaces; among hits of the same kind the one
+   * nearest the cursor wins. Returns <code>undefined</code> if the region contains
+   * no snappable geometry.
+   * <p>
+   * Only primitives rendered through the Model pipeline (e.g. 3D Tiles and glTF
+   * models) are snappable. Snapping requires float color attachments
+   * (WebGL2 with <code>EXT_color_buffer_float</code>); if unsupported, this
+   * function returns <code>undefined</code>.
+   * </p>
+   *
+   * @param {Cartesian2} windowPosition Window coordinates at the center of the search region.
+   * @param {object} [options] Object with the following properties:
+   * @param {number} [options.width=25] Width of the search region in pixels.
+   * @param {number} [options.height=options.width] Height of the search region in pixels.
+   * @returns {SceneSnapResult | undefined} The best snap target in the region, or <code>undefined</code> if there is none.
+   *
+   * @experimental This feature is not final and is subject to change without Cesium's standard deprecation policy.
+   */
+  snap(windowPosition, options) {
+    return Snapping.snap(this, windowPosition, options);
   }
 
   /**
@@ -5672,6 +5732,16 @@ function updateDerivedCommands(scene, command, shadowsDirty) {
       command,
       context,
       derivedCommands.picking,
+    );
+  }
+  // Snap derived commands are only created on demand, during a snapping pass,
+  // so applications that never call Scene.snap pay no shader-derivation cost.
+  if (defined(command.snapId) && frameState.passes.snap) {
+    derivedCommands.snapping = DerivedCommand.createSnapDerivedCommand(
+      scene,
+      command,
+      context,
+      derivedCommands.snapping,
     );
   }
   if (frameState.pickingMetadata && command.pickMetadataAllowed) {

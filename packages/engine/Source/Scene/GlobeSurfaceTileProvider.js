@@ -261,6 +261,19 @@ function updateSceneCaptureContentRevision(tileProvider, frameState) {
     markSceneCaptureContentChanged(tileProvider);
   }
 }
+/** @import Context from "../Renderer/Context.js"; */
+/** @import EllipsoidalOccluder from "../Core/EllipsoidalOccluder.js"; */
+/** @import FrameState from "./FrameState.js"; */
+/** @import GlobeSurfaceShaderSet from "./GlobeSurfaceShaderSet.js"; */
+/** @import ImageryLayerCollection from "./ImageryLayerCollection.js"; */
+/** @import QuadtreeOccluders from "./QuadtreeOccluders.js"; */
+/** @import QuadtreePrimitive from "./QuadtreePrimitive.js"; */
+/** @import QuadtreeTile from "./QuadtreeTile.js"; */
+/** @import TerrainMesh from "../Core/TerrainMesh.js"; */
+/** @import TerrainProvider from "../Core/TerrainProvider.js"; */
+/** @import TilingScheme from "../Core/TilingScheme.js"; */
+/** @import VectorProvider, { VectorTileData } from "../Core/VectorProvider.js"; */
+/** @import { GlobeSurfaceShaderSetOptions } from "./GlobeSurfaceShaderSet.js"; */
 
 /**
  * Provides quadtree tiles representing the surface of the globe.  This type is intended to be used
@@ -276,6 +289,13 @@ function updateSceneCaptureContentRevision(tileProvider, frameState) {
  * @private
  */
 class GlobeSurfaceTileProvider {
+  /**
+   * @param {object} options
+   * @param {TerrainProvider} options.terrainProvider The terrain provider that describes the surface geometry.
+   * @param {ImageryLayerCollection} options.imageryLayers The collection of imagery layers describing the shading of the surface.
+   * @param {GlobeSurfaceShaderSet} options.surfaceShaderSet The set of shaders used to render the surface.
+   * @param {VectorProvider} options.vectorProvider
+   */
   constructor(options) {
     //>>includeStart('debug', pragmas.debug);
     if (!defined(options)) {
@@ -287,6 +307,8 @@ class GlobeSurfaceTileProvider {
       throw new DeveloperError("options.imageryLayers is required.");
     } else if (!defined(options.surfaceShaderSet)) {
       throw new DeveloperError("options.surfaceShaderSet is required.");
+    } else if (!defined(options.vectorProvider)) {
+      throw new DeveloperError("options.vectorProvider is required.");
     }
     //>>includeEnd('debug');
 
@@ -335,6 +357,7 @@ class GlobeSurfaceTileProvider {
 
     this._quadtree = undefined;
     this._terrainProvider = options.terrainProvider;
+    this._vectorProvider = options.vectorProvider;
     this._imageryLayers = options.imageryLayers;
     this._surfaceShaderSet = options.surfaceShaderSet;
 
@@ -522,6 +545,11 @@ class GlobeSurfaceTileProvider {
     }
   }
 
+  /** @type {VectorProvider} */
+  get vectorProvider() {
+    return this._vectorProvider;
+  }
+
   /**
    * The {@link ClippingPlaneCollection} used to selectively disable rendering.
    * @type {ClippingPlaneCollection}
@@ -569,6 +597,36 @@ class GlobeSurfaceTileProvider {
       });
     }
 
+    // Record regions dirtied by changed collections, re-bake overlapping
+    // tiles, and build vector data for new surface tiles.
+    const vectorProvider = this._vectorProvider;
+    vectorProvider.update();
+    this._quadtree.forEachRenderedTile(
+      /** @param {QuadtreeTile} tile */
+      (tile) => {
+        const surfaceTile = /** @type {GlobeSurfaceTile} */ (tile.data);
+
+        if (defined(surfaceTile.vectorData)) {
+          surfaceTile.vectorData = vectorProvider.updateTileData(
+            tile.x,
+            tile.y,
+            tile.level,
+            frameState.context,
+            surfaceTile.vectorData,
+          );
+        } else {
+          surfaceTile.vectorData = vectorProvider.requestTileData(
+            tile.x,
+            tile.y,
+            tile.level,
+            frameState.context,
+          );
+        }
+      },
+    );
+    vectorProvider.makeClean();
+
+    // Add credits for terrain and imagery providers.
     updateCredits(this, frameState);
 
     const vertexArraysToDestroy = this._vertexArraysToDestroy;
@@ -836,6 +894,7 @@ class GlobeSurfaceTileProvider {
       tile,
       frameState,
       this.terrainProvider,
+      this.vectorProvider,
       this._imageryLayers,
       this.quadtree,
       this._vertexArraysToDestroy,
@@ -857,6 +916,7 @@ class GlobeSurfaceTileProvider {
           tile,
           frameState,
           this.terrainProvider,
+          this.vectorProvider,
           this._imageryLayers,
           this.quadtree,
           this._vertexArraysToDestroy,

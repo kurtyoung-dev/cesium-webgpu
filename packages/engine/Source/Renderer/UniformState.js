@@ -63,6 +63,13 @@ class UniformState {
     this.edgeColorTexture = undefined;
     /** @type {Texture} */
     this.edgeDepthTexture = undefined;
+    /**
+     * Texture written by the planar fill feature-ID pre-pass.
+     * Contains per-pixel feature IDs for non-behind planar fill geometry.
+     * Sampled by behind fills to test same-object coplanarity.
+     * @type {Texture}
+     */
+    this.planarFillIdTexture = undefined;
     /** @type {number} */
     this.gamma = undefined;
 

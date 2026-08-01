@@ -1,3 +1,5 @@
+// @ts-check
+
 import AxisAlignedBoundingBox from "./AxisAlignedBoundingBox.js";
 import Cartesian3 from "./Cartesian3.js";
 import defined from "./defined.js";
@@ -12,22 +14,26 @@ import Check from "./Check.js";
 import DeveloperError from "./DeveloperError.js";
 import CesiumMath from "./Math.js";
 
-// Terrain picker can be 4 levels deep (0-3)
+/** @import TerrainEncoding from "./TerrainEncoding.js"; */
+/** @import MapProjection from "./MapProjection.js"; */
+
+/**
+ * Terrain picker can be 4 levels deep (0-3)
+ * @ignore
+ */
 const MAXIMUM_TERRAIN_PICKER_LEVEL = 3;
 
 /**
  * Creates an object that handles arbitrary ray intersections with a terrain mesh using a spatial acceleration structure.
  *
- * @alias TerrainPicker
- * @constructor
- *
- * @param {Float64Array} vertices The terrain mesh's vertex buffer.
- * @param {Uint8Array|Uint16Array|Uint32Array} indices The terrain mesh's index buffer.
- * @param {TerrainEncoding} encoding The terrain mesh's vertex encoding.
- *
  * @private
  */
 class TerrainPicker {
+  /**
+   * @param {Float64Array} vertices The terrain mesh's vertex buffer.
+   * @param {Uint8Array|Uint16Array|Uint32Array} indices The terrain mesh's index buffer.
+   * @param {TerrainEncoding} encoding The terrain mesh's vertex encoding.
+   */
   constructor(vertices, indices, encoding) {
     //>>includeStart('debug', pragmas.debug);
     Check.defined("vertices", vertices);
@@ -42,7 +48,7 @@ class TerrainPicker {
     this._vertices = vertices;
     /**
      * The terrain mesh's index buffer.
-     * @type {Uint32Array}
+     * @type {Uint8Array|Uint16Array|Uint32Array}
      */
     this._indices = indices;
     /**
@@ -68,6 +74,18 @@ class TerrainPicker {
   }
 
   /**
+   * Indicates whether the terrain picker needs to be rebuilt due to changes in the underlying terrain mesh's vertices or indices.
+   * @type {boolean}
+   */
+  get needsRebuild() {
+    return this._needsRebuild;
+  }
+
+  set needsRebuild(value) {
+    this._needsRebuild = value;
+  }
+
+  /**
    * Determines the point on the mesh where the given ray intersects.
    * @param {Ray} ray The ray to test.
    * @param {Matrix4} tileTransform The terrain mesh tile's transform from local space to world space.
@@ -75,7 +93,6 @@ class TerrainPicker {
    * @param {SceneMode} mode The scene mode (2D/3D/Columbus View).
    * @param {MapProjection} projection The map projection.
    * @returns {Cartesian3 | undefined} result The intersection point, or undefined if there is no intersection.
-   * @memberof TerrainPicker
    * @private
    */
   rayIntersect(ray, tileTransform, cullBackFaces, mode, projection) {
@@ -99,6 +116,7 @@ class TerrainPicker {
       transformedRay.direction,
     );
 
+    /** @type {IntersectingNode[]} */
     const intersections = [];
     getNodesIntersectingRay(this._rootNode, transformedRay, intersections);
 
@@ -111,18 +129,6 @@ class TerrainPicker {
       projection,
     );
   }
-
-  /**
-   * Indicates whether the terrain picker needs to be rebuilt due to changes in the underlying terrain mesh's vertices or indices.
-   * @type {boolean}
-   */
-  get needsRebuild() {
-    return this._needsRebuild;
-  }
-
-  set needsRebuild(value) {
-    this._needsRebuild = value;
-  }
 }
 
 const incrementallyBuildTerrainPickerTaskProcessor = new TaskProcessor(
@@ -131,71 +137,75 @@ const incrementallyBuildTerrainPickerTaskProcessor = new TaskProcessor(
 
 /**
  * A node in the terrain picker quadtree.
- * @constructor
  * @private
  */
-function TerrainPickerNode() {
-  /**
-   * The tree-space x-coordinate of this node.
-   * @type {Number}
-   */
-  this.x = 0;
-  /**
-   * The tree-space y-coordinate of this node.
-   * @type {Number}
-   */
-  this.y = 0;
-  /**
-   * The level of this node in the quadtree.
-   * @type {Number}
-   */
-  this.level = 0;
-  /**
-   * The axis-aligned bounding box of this node (in the tree's local space).
-   * @type {AxisAlignedBoundingBox}
-   */
-  this.aabb = createAABBForNode(this.x, this.y, this.level);
-  /**
-   * The indices of the triangles that intersect this node.
-   * @type {Uint32Array}
-   */
-  this.intersectingTriangles = new Uint32Array(0);
-  /**
-   * The child terrain picker nodes of this node.
-   * @type {TerrainPickerNode[]}
-   */
-  this.children = [];
-  /**
-   * Whether or not this node is currently building its children on a worker.
-   * @type {Boolean}
-   */
-  this.buildingChildren = false;
-}
-
-/**
- * Adds a child node to this node.
- *
- * @param {number} childIdx The index of the child to add (0-3).
- * @memberof TerrainPickerNode
- */
-TerrainPickerNode.prototype.addChild = function (childIdx) {
-  //>>includeStart('debug', pragmas.debug);
-  if (childIdx < 0 || childIdx > 3) {
-    throw new DeveloperError(
-      "TerrainPickerNode child index must be between 0 and 3, inclusive.",
-    );
+class TerrainPickerNode {
+  constructor() {
+    /**
+     * The tree-space x-coordinate of this node.
+     * @type {number}
+     */
+    this.x = 0;
+    /**
+     * The tree-space y-coordinate of this node.
+     * @type {number}
+     */
+    this.y = 0;
+    /**
+     * The level of this node in the quadtree.
+     * @type {number}
+     */
+    this.level = 0;
+    /**
+     * The axis-aligned bounding box of this node (in the tree's local space).
+     * @type {AxisAlignedBoundingBox}
+     */
+    this.aabb = createAABBForNode(this.x, this.y, this.level);
+    /**
+     * The indices of the triangles that intersect this node.
+     * @type {Uint32Array}
+     */
+    this.intersectingTriangles = new Uint32Array(0);
+    /**
+     * The child terrain picker nodes of this node.
+     * @type {TerrainPickerNode[]}
+     */
+    this.children = [];
+    /**
+     * Whether or not this node is currently building its children on a worker.
+     * @type {Boolean}
+     */
+    this.buildingChildren = false;
   }
-  //>>includeEnd('debug');
 
-  const childNode = new TerrainPickerNode();
-  // Use bitwise operations to get child x,y from child index and parent x,y
-  childNode.x = this.x * 2 + (childIdx & 1);
-  childNode.y = this.y * 2 + ((childIdx >> 1) & 1);
-  childNode.level = this.level + 1;
-  childNode.aabb = createAABBForNode(childNode.x, childNode.y, childNode.level);
+  /**
+   * Adds a child node to this node.
+   *
+   * @param {number} childIdx The index of the child to add (0-3).
+   */
+  addChild(childIdx) {
+    //>>includeStart('debug', pragmas.debug);
+    if (childIdx < 0 || childIdx > 3) {
+      throw new DeveloperError(
+        "TerrainPickerNode child index must be between 0 and 3, inclusive.",
+      );
+    }
+    //>>includeEnd('debug');
 
-  this.children[childIdx] = childNode;
-};
+    const childNode = new TerrainPickerNode();
+    // Use bitwise operations to get child x,y from child index and parent x,y
+    childNode.x = this.x * 2 + (childIdx & 1);
+    childNode.y = this.y * 2 + ((childIdx >> 1) & 1);
+    childNode.level = this.level + 1;
+    childNode.aabb = createAABBForNode(
+      childNode.x,
+      childNode.y,
+      childNode.level,
+    );
+
+    this.children[childIdx] = childNode;
+  }
+}
 
 const scratchTransformedRay = new Ray();
 const scratchTrianglePoints = [
@@ -206,7 +216,8 @@ const scratchTrianglePoints = [
 
 /**
  * Resets the terrain picker's quadtree structure to just the root node. Done whenever the underlying terrain mesh changes.
- * @param terrainPicker The terrain picker to reset.
+ * @param {TerrainPicker} terrainPicker The terrain picker to reset.
+ * @param {Matrix4} tileTransform
  * @private
  */
 function reset(terrainPicker, tileTransform) {
@@ -279,16 +290,19 @@ function packTriangleBuffers(
 ) {
   Cartesian3.pack(
     trianglePositions[0],
+    // @ts-expect-error https://github.com/CesiumGS/cesium/pull/13302
     trianglePositionsBuffer,
     9 * bufferIndex,
   );
   Cartesian3.pack(
     trianglePositions[1],
+    // @ts-expect-error https://github.com/CesiumGS/cesium/pull/13302
     trianglePositionsBuffer,
     9 * bufferIndex + 3,
   );
   Cartesian3.pack(
     trianglePositions[2],
+    // @ts-expect-error https://github.com/CesiumGS/cesium/pull/13302
     trianglePositionsBuffer,
     9 * bufferIndex + 6,
   );
@@ -550,7 +564,7 @@ function getVertexPosition(
  * Adds triangles to the child nodes of the given node by launching a worker process to do AABB-triangle testing.
  *
  * @param {Matrix4} inverseTransform
- * @param {TerrainNode} node
+ * @param {TerrainPickerNode} node
  * @param {Uint32Array} triangleIndices
  * @param {Float64Array} trianglePositions
  * @returns {Promise<void>} A promise that resolves when the triangles have been added to the child nodes.
@@ -570,7 +584,9 @@ async function addTrianglesToChildrenNodes(
 
   const aabbArray = new Float64Array(6 * 4); // 6 elements per AABB, 4 children
   for (let i = 0; i < 4; i++) {
+    // @ts-expect-error https://github.com/CesiumGS/cesium/pull/13302
     Cartesian3.pack(node.children[i].aabb.minimum, aabbArray, i * 6);
+    // @ts-expect-error https://github.com/CesiumGS/cesium/pull/13302
     Cartesian3.pack(node.children[i].aabb.maximum, aabbArray, i * 6 + 3);
   }
 
@@ -602,7 +618,9 @@ async function addTrianglesToChildrenNodes(
 
   // After worker completes, it transfers back a buffer of intersecting triangles for each child node
   // Assign these to the child nodes
-  const result = await incrementallyBuildTerrainPickerPromise;
+  const result = /** @type {{intersectingTrianglesArrays: ArrayBuffer[]}} */ (
+    await incrementallyBuildTerrainPickerPromise
+  );
   result.intersectingTrianglesArrays.forEach((buffer, index) => {
     // Guard against case where tree is reset while waiting for worker
     if (defined(node.children[index])) {

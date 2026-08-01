@@ -6,6 +6,7 @@ import TerrainQuantization from "../Core/TerrainQuantization.js";
 import DrawCommand from "../Renderer/DrawCommand.js";
 import ShaderProgram from "../Renderer/ShaderProgram.js";
 import DerivedCommand from "./DerivedCommand.js";
+import VectorCommon from "../Shaders/VectorCommon.js";
 import getClippingFunction from "./getClippingFunction.js";
 import SceneMode from "./SceneMode.js";
 
@@ -112,7 +113,7 @@ class GlobeSurfaceShader {
  * @property {boolean} [groundAtmosphereCompanionEnabled]
  * @property {boolean} [_skipFogCompanionPrewarm]
  * @property {boolean} [_skipGroundAtmosphereCompanionPrewarm]
- * @ignore
+ * @private
  */
 
 /**
@@ -238,6 +239,8 @@ class GlobeSurfaceShaderSet {
     const showUndergroundColor = options.showUndergroundColor;
     const translucent = options.translucent;
     const enableEclipseGlobeShadow = options.enableEclipseGlobeShadow;
+    const vectorData = surfaceTile.vectorData;
+    const hasVectorLayer = vectorData?.show;
 
     let quantization = 0;
     let quantizationDefine = "";
@@ -302,7 +305,10 @@ class GlobeSurfaceShaderSet {
         (+translucent << 31)) >>>
         0) +
       (applyDayNightAlpha ? 0x100000000 : 0) +
-      (enableEclipseGlobeShadow ? 0x200000000 : 0);
+      (enableEclipseGlobeShadow ? 0x200000000 : 0) +
+      // Upstream assigned hasVectorLayer 0x200000000; the fork's eclipse flag
+      // already owns that bit, so the vector layer takes the next one.
+      (hasVectorLayer ? 0x400000000 : 0);
 
     let currentClippingShaderState = 0;
     if (defined(clippingPlanes) && clippingPlanes.length > 0) {
@@ -506,6 +512,12 @@ class GlobeSurfaceShaderSet {
 
       if (enableEclipseGlobeShadow) {
         fs.defines.push("ENABLE_ECLIPSE_GLOBE_SHADOW");
+      }
+
+      if (hasVectorLayer) {
+        vs.defines.push("HAS_VECTOR_LAYER");
+        fs.defines.push("HAS_VECTOR_LAYER");
+        fs.sources.unshift(VectorCommon); // before GlobeFS.
       }
 
       let computeDayColor =

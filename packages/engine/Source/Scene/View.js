@@ -11,6 +11,7 @@ import Pass from "../Renderer/Pass.js";
 import PassState from "../Renderer/PassState.js";
 import Camera from "./Camera.js";
 import EdgeFramebuffer from "./EdgeFramebuffer.js";
+import PlanarFillIdFramebuffer from "./PlanarFillIdFramebuffer.js";
 import { createEclipseGlobeShadow } from "./EclipseGlobeShadow.js";
 import { createEclipseState } from "./EclipseState.js";
 import { needsEnvironmentOnlyFrustum } from "./EnvironmentFrustumDemand.js";
@@ -117,9 +118,11 @@ class View {
     // WebGL: returns null, falls back to PickFramebuffer.
     this.pickFramebuffer =
       context.createPickFramebuffer() ?? new PickFramebuffer(context);
+    this.snapFramebuffer = undefined;
     this.pickDepthFramebuffer = new PickDepthFramebuffer();
     this.sceneFramebuffer = new SceneFramebuffer();
     this.edgeFramebuffer = new EdgeFramebuffer();
+    this.planarFillIdFramebuffer = new PlanarFillIdFramebuffer();
     // Phase 8a Slice 1 (Batch 80) — scaffolding for the depth-prepass +
     // normal G-buffer. Allocated unconditionally so the view always has
     // the slot wired (Principle 7), but the underlying GPU textures are
@@ -501,12 +504,16 @@ class View {
   destroy() {
     this.pickFramebuffer =
       this.pickFramebuffer && this.pickFramebuffer.destroy();
+    this.snapFramebuffer =
+      this.snapFramebuffer && this.snapFramebuffer.destroy();
     this.pickDepthFramebuffer =
       this.pickDepthFramebuffer && this.pickDepthFramebuffer.destroy();
     this.sceneFramebuffer =
       this.sceneFramebuffer && this.sceneFramebuffer.destroy();
     this.edgeFramebuffer =
       this.edgeFramebuffer && this.edgeFramebuffer.destroy();
+    this.planarFillIdFramebuffer =
+      this.planarFillIdFramebuffer && this.planarFillIdFramebuffer.destroy();
     this.gBufferFramebuffer =
       this.gBufferFramebuffer && this.gBufferFramebuffer.destroy();
     this.globeDepth = this.globeDepth && this.globeDepth.destroy();

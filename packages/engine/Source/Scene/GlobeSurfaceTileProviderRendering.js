@@ -738,6 +738,34 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
     u_vertexShadowDarkness: function () {
       return this.properties.vertexShadowDarkness;
     },
+    u_vectorSegmentTexture: function () {
+      return (
+        this.properties.vectorSegmentTexture ??
+        frameState.context.defaultTexture
+      );
+    },
+    u_vectorWidthTexture: function () {
+      return (
+        this.properties.vectorWidthTexture ?? frameState.context.defaultTexture
+      );
+    },
+    u_vectorColorTexture: function () {
+      return (
+        this.properties.vectorColorTexture ?? frameState.context.defaultTexture
+      );
+    },
+    u_vectorSegmentPrimitiveIndicesTexture: function () {
+      return (
+        this.properties.vectorSegmentPrimitiveIndicesTexture ??
+        frameState.context.defaultTexture
+      );
+    },
+    u_vectorGridCellIndicesTexture: function () {
+      return (
+        this.properties.vectorGridCellIndicesTexture ??
+        frameState.context.defaultTexture
+      );
+    },
 
     properties: {
       initialColor: new Cartesian4(0.0, 0.0, 0.5, 1.0),
@@ -791,6 +819,12 @@ function createTileUniformMap(frameState, globeSurfaceTileProvider) {
       lambertDiffuseMultiplier: 0.0,
       vertexShadowDarkness: 0.0,
       eclipseGlobeShadow: defaultEclipseGlobeShadow,
+
+      vectorSegmentTexture: undefined,
+      vectorWidthTexture: undefined,
+      vectorColorTexture: undefined,
+      vectorSegmentPrimitiveIndicesTexture: undefined,
+      vectorGridCellIndicesTexture: undefined,
     },
   };
 
@@ -2042,6 +2076,18 @@ function addDrawCommandsForTile(tileProvider, tile, frameState) {
         uniformMapProperties.clippingPlanesEdgeColor,
       );
       uniformMapProperties.clippingPlanesEdgeWidth = clippingPlanes.edgeWidth;
+    }
+
+    // update vector collections clamped to terrain
+    const vectorData = surfaceTile.vectorData;
+    if (defined(vectorData)) {
+      uniformMapProperties.vectorSegmentTexture = vectorData.segmentTexture;
+      uniformMapProperties.vectorWidthTexture = vectorData.widthTexture;
+      uniformMapProperties.vectorColorTexture = vectorData.colorTexture;
+      uniformMapProperties.vectorSegmentPrimitiveIndicesTexture =
+        vectorData.segmentPrimitiveIndicesTexture;
+      uniformMapProperties.vectorGridCellIndicesTexture =
+        vectorData.gridCellIndicesTexture;
     }
 
     const clippingPolygons = tileProvider._clippingPolygons;

@@ -313,7 +313,9 @@ test("stable-provider selection and resource changes advance one content epoch",
   const contentUpdate = sourceSection(
     tileProviderSource,
     "function updateSceneCaptureContentRevision(",
-    "\n}\n\n/**\n * Provides quadtree tiles",
+    // The v1.144 merge restored upstream's @import JSDoc block between the
+    // final scene-capture helper and the class JSDoc.
+    "/** @import",
   );
   assert.match(
     contentUpdate,

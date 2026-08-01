@@ -93,6 +93,21 @@ function executeCommand(command, scene, passState, debugFramebuffer) {
 
   if (passes.pick || passes.depth) {
     if (passes.pick && !passes.depth) {
+      if (frameState.passes.snap) {
+        // Snapping pass: only commands with a snap variant write the float
+        // snap payload. Commands without one (no snapId, e.g. globe/terrain)
+        // execute depth-only so they still occlude snappable geometry behind
+        // them without polluting the RGBA32F snap framebuffer with RGBA8
+        // pick colors.
+        if (defined(command.derivedCommands.snapping)) {
+          command = command.derivedCommands.snapping.snapCommand;
+          command.execute(context, passState);
+        } else if (defined(command.derivedCommands.depth)) {
+          command = command.derivedCommands.depth.depthOnlyCommand;
+          command.execute(context, passState);
+        }
+        return;
+      }
       if (
         frameState.pickingMetadata &&
         defined(command.derivedCommands.pickingMetadata)
@@ -308,6 +323,54 @@ function performCesium3DTileEdgesPass(scene, passState, frustumCommands) {
   passState.framebuffer = originalFramebuffer;
 }
 
+/**
+ * Execute the planar fill feature-ID pre-pass.
+ *
+ * Non-behind planar fill geometry writes its per-fragment feature ID into the
+ * planar fill ID framebuffer. This allows behind fills in the main 3D tile
+ * pass to check whether the existing pixel belongs to the same logical object.
+ *
+ * @param {Scene} scene
+ * @param {PassState} passState
+ * @param {FrustumCommands} frustumCommands
+ * @private
+ */
+function performPlanarFillIdPass(scene, passState, frustumCommands) {
+  const { context } = scene;
+  const { uniformState } = context;
+
+  uniformState.updatePass(Pass.CESIUM_3D_TILE_PLANAR_FILL_ID);
+
+  // Default to a blank texture so shaders always have something to sample.
+  uniformState.planarFillIdTexture = context.defaultTexture;
+
+  const view = scene._view;
+  const fb = view && view.planarFillIdFramebuffer;
+
+  const commands = frustumCommands.commands[Pass.CESIUM_3D_TILE_PLANAR_FILL_ID];
+  const commandCount =
+    frustumCommands.indices[Pass.CESIUM_3D_TILE_PLANAR_FILL_ID];
+
+  if (commandCount === 0) {
+    return;
+  }
+
+  if (scene._enablePlanarFillId && defined(fb) && defined(fb.framebuffer)) {
+    const originalFramebuffer = passState.framebuffer;
+    passState.framebuffer = fb.framebuffer;
+
+    // Clear to (0,0,0,0) — feature ID 0 means "no planar fill here".
+    const clearCommand = fb.getClearCommand(new Color(0.0, 0.0, 0.0, 0.0));
+    clearCommand.execute(context, passState);
+
+    for (let j = 0; j < commandCount; ++j) {
+      executeCommand(commands[j], scene, passState);
+    }
+
+    passState.framebuffer = originalFramebuffer;
+  }
+}
+
 // EDGES_ONLY 3D-Tile edge rendering: ported from upstream Scene.js during the
 // v1.142 merge (Scene.js was decomposed into this module, so upstream's new
 // direct-edge pass had to be re-homed here). Unlike performCesium3DTileEdgesPass
@@ -336,6 +399,10 @@ function executeCommands(scene, passState) {
   const { uniformState } = context;
 
   uniformState.updateCamera(camera);
+
+  // Ensure planar fill ID texture is always available (even during edge pass)
+  // so that shaders referencing czm_planarFillIdTexture never see undefined.
+  uniformState.planarFillIdTexture = context.defaultTexture;
 
   const frustum = createWorkingFrustum(camera);
   frustum.near = camera.frustum.near;
@@ -629,6 +696,23 @@ function executeCommands(scene, passState) {
       scene.context.uniformState.edgeIdTexture = scene.context.defaultTexture;
       scene.context.uniformState.edgeDepthTexture =
         scene.context.defaultTexture;
+    }
+
+    // Planar fill feature-ID pre-pass: write feature IDs from non-behind
+    // planar fill geometry so that behind fills can test same-object.
+    performPlanarFillIdPass(scene, passState, frustumCommands);
+
+    if (
+      scene._enablePlanarFillId &&
+      defined(scene._view) &&
+      defined(scene._view.planarFillIdFramebuffer)
+    ) {
+      const pfIdTexture = scene._view.planarFillIdFramebuffer.idTexture;
+      uniformState.planarFillIdTexture = defined(pfIdTexture)
+        ? pfIdTexture
+        : context.defaultTexture;
+    } else {
+      uniformState.planarFillIdTexture = context.defaultTexture;
     }
 
     if (!useInvertClassification || picking || renderTranslucentDepthForPick) {

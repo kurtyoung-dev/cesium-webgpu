@@ -231,6 +231,7 @@ class FrameState {
      * @property {boolean} render <code>true</code> if the primitive should update for a render pass, <code>false</code> otherwise.
      * @property {boolean} pick <code>true</code> if the primitive should update for a picking pass, <code>false</code> otherwise.
      * @property {boolean} pickVoxel <code>true</code> if the primitive should update for a voxel picking pass, <code>false</code> otherwise.
+     * @property {boolean} snap <code>true</code> if the current picking pass is a snapping pass (see {@link Scene#snap}), <code>false</code> otherwise. Only ever <code>true</code> while <code>pick</code> is also <code>true</code>.
      * @property {boolean} depth <code>true</code> if the primitive should update for a depth only pass, <code>false</code> otherwise.
      * @property {boolean} postProcess <code>true</code> if the primitive should update for a per-feature post-process pass, <code>false</code> otherwise.
      * @property {boolean} offscreen <code>true</code> if the primitive should update for an offscreen pass, <code>false</code> otherwise.
@@ -252,6 +253,10 @@ class FrameState {
        * @default false
        */
       pickVoxel: false,
+      /**
+       * @default false
+       */
+      snap: false,
       /**
        * @default false
        */
@@ -808,6 +813,18 @@ class FrameState {
      * @private
      */
     this.edgeVisibilityRequested = false;
+
+    /**
+     * Internal toggle indicating that at least one primitive for this frame has
+     * the BENTLEY_materials_planar_fill extension present. This allows lazy
+     * allocation of the planar fill feature-ID framebuffer.
+     * Set by MaterialPipelineStage at draw command build time and renewed
+     * per frame by ModelSceneGraph while planar fill primitives render.
+     * Consumed by Scene to update its _enablePlanarFillId flag.
+     * @type {boolean}
+     * @private
+     */
+    this.planarFillRequested = false;
 
     /**
      * Phase 8a (Batch 80) — gates the depth-prepass + normal G-buffer

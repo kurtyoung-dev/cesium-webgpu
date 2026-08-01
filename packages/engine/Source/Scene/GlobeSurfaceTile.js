@@ -9,6 +9,7 @@ import RequestState from "../Core/RequestState.js";
 import RequestType from "../Core/RequestType.js";
 import TerrainEncoding from "../Core/TerrainEncoding.js";
 import TileProviderError from "../Core/TileProviderError.js";
+import VectorPipeline from "../Core/VectorPipeline.js";
 import Buffer from "../Renderer/Buffer.js";
 import BufferUsage from "../Renderer/BufferUsage.js";
 import PixelDatatype from "../Renderer/PixelDatatype.js";
@@ -21,6 +22,22 @@ import VertexArray from "../Renderer/VertexArray.js";
 import ImageryState from "./ImageryState.js";
 import QuadtreeTileLoadState from "./QuadtreeTileLoadState.js";
 import TerrainState from "./TerrainState.js";
+
+/** @import Context from "../Renderer/Context.js"; */
+/** @import Ellipsoid from "../Core/Ellipsoid.js"; */
+/** @import FrameState from "./FrameState.js"; */
+/** @import HeightmapTerrainData from "../Core/HeightmapTerrainData.js"; */
+/** @import ImageryLayerCollection from "./ImageryLayerCollection.js"; */
+/** @import MapProjection from "../Core/MapProjection.js"; */
+/** @import QuadtreePrimitive from "./QuadtreePrimitive.js"; */
+/** @import QuadtreeTile from "./QuadtreeTile.js"; */
+/** @import Ray from "../Core/Ray.js"; */
+/** @import SceneMode from "./SceneMode.js"; */
+/** @import TerrainMesh from "../Core/TerrainMesh.js"; */
+/** @import TerrainProvider from "../Core/TerrainProvider.js"; */
+/** @import TileBoundingRegion from "./TileBoundingRegion.js"; */
+/** @import TileImagery from "./TileImagery.js"; */
+/** @import VectorProvider, { VectorTileData } from "../Core/VectorProvider.js"; */
 
 /**
  * Contains additional information about a {@link QuadtreeTile} of the globe's surface, and
@@ -42,6 +59,11 @@ class GlobeSurfaceTile {
     this.waterMaskTranslationAndScale = new Cartesian4(0.0, 0.0, 1.0, 1.0);
 
     this.terrainData = undefined;
+
+    /** @type {VectorTileData} */
+    this.vectorData = undefined;
+
+    /** @type {VertexArray} */
     this.vertexArray = undefined;
 
     /**
@@ -149,6 +171,11 @@ class GlobeSurfaceTile {
       this.waterMaskTexture = undefined;
     }
 
+    if (defined(this.vectorData)) {
+      VectorPipeline.freeResources(this.vectorData);
+      this.vectorData = undefined;
+    }
+
     this.terrainData = undefined;
 
     this.terrainState = TerrainState.UNLOADED;
@@ -171,6 +198,12 @@ class GlobeSurfaceTile {
     this.wireframeVertexArray = undefined;
   }
 
+  /**
+   * @param {QuadtreeTile} tile
+   * @param {TerrainProvider} terrainProvider
+   * @param {FrameState} frameState
+   * @param {boolean} skipLoading
+   */
   processImagery(tile, terrainProvider, frameState, skipLoading) {
     const surfaceTile = tile.data;
     let isUpsampledOnly = tile.upsampledFromParent;
@@ -335,27 +368,59 @@ class GlobeSurfaceTile {
     return result;
   }
 
-  static initialize(tile, terrainProvider, imageryLayerCollection) {
+  /**
+   * @param {QuadtreeTile} tile
+   * @param {TerrainProvider} terrainProvider
+   * @param {VectorProvider} vectorProvider
+   * @param {ImageryLayerCollection} imageryLayerCollection
+   */
+  static initialize(
+    tile,
+    terrainProvider,
+    vectorProvider,
+    imageryLayerCollection,
+  ) {
     if (!defined(tile.data)) {
       tile.data = new GlobeSurfaceTile();
     }
 
     if (tile.state === QuadtreeTileLoadState.START) {
-      prepareNewTile(tile, terrainProvider, imageryLayerCollection);
+      prepareNewTile(
+        tile,
+        terrainProvider,
+        vectorProvider,
+        imageryLayerCollection,
+      );
       tile.state = QuadtreeTileLoadState.LOADING;
     }
   }
 
+  /**
+   * @param {QuadtreeTile} tile
+   * @param {FrameState} frameState
+   * @param {TerrainProvider} terrainProvider
+   * @param {VectorProvider} vectorProvider
+   * @param {ImageryLayerCollection} imageryLayerCollection
+   * @param {QuadtreePrimitive} quadtree
+   * @param {*} vertexArraysToDestroy
+   * @param {*} terrainOnly
+   */
   static processStateMachine(
     tile,
     frameState,
     terrainProvider,
+    vectorProvider,
     imageryLayerCollection,
     quadtree,
     vertexArraysToDestroy,
     terrainOnly,
   ) {
-    GlobeSurfaceTile.initialize(tile, terrainProvider, imageryLayerCollection);
+    GlobeSurfaceTile.initialize(
+      tile,
+      terrainProvider,
+      vectorProvider,
+      imageryLayerCollection,
+    );
 
     const surfaceTile = tile.data;
 
@@ -364,6 +429,7 @@ class GlobeSurfaceTile {
         tile,
         frameState,
         terrainProvider,
+        vectorProvider,
         imageryLayerCollection,
         quadtree,
         vertexArraysToDestroy,
@@ -540,7 +606,20 @@ function toggleGeodeticSurfaceNormals(
   surfaceTile.wireframeVertexArray = undefined;
 }
 
-function prepareNewTile(tile, terrainProvider, imageryLayerCollection) {
+/**
+ * @param {QuadtreeTile} tile
+ * @param {TerrainProvider} terrainProvider
+ * @param {VectorProvider} vectorProvider
+ * @param {ImageryLayerCollection} imageryLayerCollection
+ * @ignore
+ */
+function prepareNewTile(
+  tile,
+  terrainProvider,
+  vectorProvider,
+  imageryLayerCollection,
+) {
+  /** @type {boolean} */
   let available = terrainProvider.getTileDataAvailable(
     tile.x,
     tile.y,
@@ -561,9 +640,11 @@ function prepareNewTile(tile, terrainProvider, imageryLayerCollection) {
     }
   }
 
+  const surfaceTile = /** @type {GlobeSurfaceTile} */ (tile.data);
+
   if (available === false) {
     // This tile is not available, so mark it failed so we start upsampling right away.
-    tile.data.terrainState = TerrainState.FAILED;
+    surfaceTile.terrainState = TerrainState.FAILED;
   }
 
   // Map imagery tiles to this terrain tile
@@ -575,10 +656,21 @@ function prepareNewTile(tile, terrainProvider, imageryLayerCollection) {
   }
 }
 
+/**
+ * @param {QuadtreeTile} tile
+ * @param {FrameState} frameState
+ * @param {TerrainProvider} terrainProvider
+ * @param {VectorProvider} vectorProvider
+ * @param {ImageryLayerCollection} imageryLayerCollection
+ * @param {QuadtreePrimitive} quadtree
+ * @param {*} vertexArraysToDestroy
+ * @ignore
+ */
 function processTerrainStateMachine(
   tile,
   frameState,
   terrainProvider,
+  vectorProvider,
   imageryLayerCollection,
   quadtree,
   vertexArraysToDestroy,
@@ -601,6 +693,7 @@ function processTerrainStateMachine(
         parent,
         frameState,
         terrainProvider,
+        vectorProvider,
         imageryLayerCollection,
         quadtree,
         vertexArraysToDestroy,
