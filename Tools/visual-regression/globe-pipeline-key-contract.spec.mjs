@@ -900,7 +900,7 @@ test("G2. describeCacheKey exposes the real key, and the name is its head", () =
   assert.ok(withVariant.startsWith("Globe terrain (A)"));
 });
 
-test("G3. BLIND SPOT — aliasing raises the hit rate and no getStats() counter can see it", async () => {
+test("G3. aliasing raises the hit rate — and wrongModuleHits is the one counter that sees it", async () => {
   // Two logically DIFFERENT pipelines: same descriptor name, same
   // key-relevant fields, different vertex shader module. The central key is
   // built from the name plus descriptor/variant fields and does NOT read the
@@ -932,6 +932,23 @@ test("G3. BLIND SPOT — aliasing raises the hit rate and no getStats() counter 
   assert.equal(stats.hits, 1);
   assert.equal(stats.misses, 1);
   assert.equal(stats.hitRate, 0.5, "the alias scored as a hit, not a miss");
+  // The 2026-08-01 maintainer-approved counter: the aliased hit carried a
+  // DIFFERENT shader module than the cached pipeline, and that is the only
+  // signal hits/misses can never express. Behavior is unchanged (the
+  // collision is still served); the counter only makes it visible.
+  assert.equal(
+    stats.wrongModuleHits,
+    1,
+    "an aliased hit must increment wrongModuleHits",
+  );
+
+  // Control: a legitimate same-module hit must NOT increment it.
+  await cache.getPipeline(a);
+  assert.equal(
+    cache.getStats().wrongModuleHits,
+    1,
+    "a same-module hit must not count as a wrong-module hit",
+  );
 
   // The enumeration DOES expose it: one row, one stored module, for two
   // logically distinct requests. That asymmetry is the whole reason the

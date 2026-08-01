@@ -858,8 +858,20 @@ function installCesiumDebug(viewer) {
           hitRate: formatRate(pipeline.hitRate),
           size: pipeline.size,
           evicted: pipeline.evicted,
+          // wrongModuleHits: aliased hits served with a DIFFERENT shader
+          // module than requested. Aliasing RAISES hitRate, so this counter
+          // is the only self-diagnostic for key collisions; nonzero = a
+          // key-construction defect.
+          wrongModuleHits: pipeline.wrongModuleHits ?? 0,
           detail: `created=${pipeline.created} pending=${pipeline.pending} max=${pipeline.maxSize}`,
         });
+        if ((pipeline.wrongModuleHits ?? 0) > 0) {
+          console.error(
+            `[CesiumDebug] renderPipeline cache served ${pipeline.wrongModuleHits} ` +
+              "WRONG-MODULE hits — pipeline cache key collision (aliasing). " +
+              "Inspect listPipelineVariants() for same-key different-module entries.",
+          );
+        }
       }
       if (bindGroups && bindGroups.error === undefined) {
         for (const [name, bg] of Object.entries(bindGroups)) {

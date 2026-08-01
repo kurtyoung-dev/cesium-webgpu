@@ -180,6 +180,17 @@ export interface PipelineCacheStats {
   created: number;
 
   /**
+   * Cache hits whose CACHED pipeline was built from a DIFFERENT shader
+   * module than the one the caller is requesting now. Aliasing RAISES the
+   * plain hit rate (the collision is served as a hit), so hits/misses can
+   * never reveal it — this counter is the cache's only self-diagnostic for
+   * key collisions. Any nonzero value is a key-construction defect
+   * (see WebGPUGlobeSurfacePipelineKey.ts and the Batch 764-767 aliasing
+   * investigation). Observe-only: the aliased pipeline is still returned.
+   */
+  wrongModuleHits: number;
+
+  /**
    * Number of async pipelines pending
    */
   pending: number;
@@ -277,6 +288,7 @@ export class WebGPURenderPipelineCache {
     created: 0,
     pending: 0,
     evicted: 0,
+    wrongModuleHits: 0,
   };
 
   /**
@@ -372,6 +384,7 @@ export class WebGPURenderPipelineCache {
     const cached = this.cache.get(key);
     if (cached) {
       this.stats.hits++;
+      this.noteWrongModuleHit(cached, descriptor);
       this.touch(key, cached);
       return cached.pipeline;
     }
@@ -522,6 +535,7 @@ export class WebGPURenderPipelineCache {
 
     if (cached) {
       this.stats.hits++;
+      this.noteWrongModuleHit(cached, descriptor);
       this.touch(key, cached);
       return cached.pipeline;
     }
@@ -811,6 +825,7 @@ export class WebGPURenderPipelineCache {
       size: this.cache.size,
       hitRate,
       evicted: this.stats.evicted,
+      wrongModuleHits: this.stats.wrongModuleHits,
       maxSize: this.maxSize,
     };
   }
@@ -900,6 +915,25 @@ export class WebGPURenderPipelineCache {
    *
    * @returns Array of pipeline names
    */
+  /**
+   * Detect a served aliased hit: the cached entry's shader modules differ
+   * from the requested descriptor's. Counts only — the collision class this
+   * catches is a key-construction defect, and the caller still receives the
+   * cached pipeline exactly as before.
+   */
+  private noteWrongModuleHit(
+    cached: PipelineCacheEntry,
+    requested: WebGPURenderPipelineDescriptor,
+  ): void {
+    const vertexDiffers =
+      cached.descriptor.vertex?.module !== requested.vertex?.module;
+    const fragmentDiffers =
+      cached.descriptor.fragment?.module !== requested.fragment?.module;
+    if (vertexDiffers || fragmentDiffers) {
+      this.stats.wrongModuleHits++;
+    }
+  }
+
   getCachedPipelineNames(): string[] {
     return Array.from(this.cache.values()).map(
       (entry) => entry.descriptor.name,
