@@ -20,14 +20,19 @@ import {
 import {
   assessPerformanceRunQuality,
   assessPerformanceRunStability,
+  assessRepresentativeMeasurementEvidence,
+  assessRepresentativePairComparability,
+  assessWebGPUModelPreparationEvidence,
   buildCounterbalancedSchedule,
   diffCounterLabelSnapshots,
   diffFlatCounterSnapshots,
   selectLongTasksInMeasurementWindow,
+  summarizeEclipseGlobeShadowEvidence,
   summarizeFramePacing,
   summarizeMovingPickMetrics,
   summarizeTrackMetrics,
 } from "./lib/performance-campaign-utils.mjs";
+import { assertPerformanceWorkloadManifest } from "./lib/performance-workload-manifest.mjs";
 import { buildPerformanceViewerUrl } from "./lib/performance-viewer-url.mjs";
 import {
   renderersForWorkload,
@@ -59,6 +64,10 @@ Options:
   --workload ID            Run one workload; repeatable
   --repetitions N          Override manifest repetition count
   --frames N               Override measured frames
+  --viewport-width N       Override CSS viewport width
+  --viewport-height N      Override CSS viewport height
+  --device-scale-factor N  Override browser device pixel ratio
+  --resolution-scale N     Override Cesium viewer resolution scale
   --output FILE            Structured JSON output file
   --api-instrumentation    Count browser GPU API calls (adds observer overhead)
   --gpu-timestamps         Enable WebGPU pass timestamps (separate characterization lane)
@@ -80,6 +89,10 @@ function parseArguments(argv) {
     workloads: [],
     repetitions: undefined,
     frames: undefined,
+    viewportWidth: undefined,
+    viewportHeight: undefined,
+    deviceScaleFactor: undefined,
+    resolutionScale: undefined,
     output: resolve(toolDirectory, "output", "performance", "latest.json"),
     apiInstrumentation: false,
     // Cross-backend CPU comparisons must not instrument only the WebGPU leg.
@@ -100,6 +113,14 @@ function parseArguments(argv) {
       options.repetitions = Number.parseInt(argv[++index], 10);
     } else if (argument === "--frames") {
       options.frames = Number.parseInt(argv[++index], 10);
+    } else if (argument === "--viewport-width") {
+      options.viewportWidth = Number.parseInt(argv[++index], 10);
+    } else if (argument === "--viewport-height") {
+      options.viewportHeight = Number.parseInt(argv[++index], 10);
+    } else if (argument === "--device-scale-factor") {
+      options.deviceScaleFactor = Number.parseFloat(argv[++index]);
+    } else if (argument === "--resolution-scale") {
+      options.resolutionScale = Number.parseFloat(argv[++index]);
     } else if (argument === "--output") {
       options.output = resolve(argv[++index]);
     } else if (
@@ -136,6 +157,28 @@ function parseArguments(argv) {
     (!Number.isInteger(options.frames) || options.frames < 1)
   ) {
     throw new Error("--frames must be a positive integer");
+  }
+  for (const [name, value] of [
+    ["--viewport-width", options.viewportWidth],
+    ["--viewport-height", options.viewportHeight],
+  ]) {
+    if (
+      value !== undefined &&
+      (!Number.isInteger(value) || value < 1)
+    ) {
+      throw new Error(`${name} must be a positive integer`);
+    }
+  }
+  for (const [name, value] of [
+    ["--device-scale-factor", options.deviceScaleFactor],
+    ["--resolution-scale", options.resolutionScale],
+  ]) {
+    if (
+      value !== undefined &&
+      (!Number.isFinite(value) || value <= 0)
+    ) {
+      throw new Error(`${name} must be a positive number`);
+    }
   }
   return options;
 }
@@ -182,6 +225,9 @@ function percentile(values, fraction) {
 }
 
 function aggregateRuns(runs) {
+  const attributionOnlyRunCount = runs.filter(
+    (run) => run.quality?.attributionOnly === true,
+  ).length;
   const cpuRuns = runs.filter(
     (run) =>
       run.result === "pass" &&
@@ -198,6 +244,10 @@ function aggregateRuns(runs) {
   const stability = assessPerformanceRunStability(runs);
   return {
     runCount: runs.length,
+    attributionOnlyRunCount,
+    certificationEligibleRunCount: runs.filter(
+      (run) => run.quality?.certificationEligible === true,
+    ).length,
     validRunCount: cpuRuns.length,
     validCpuRunCount: cpuRuns.length,
     validGpuRunCount: gpuRuns.length,
@@ -315,6 +365,78 @@ async function runOne(
       const apiCounterOwnerCardinality = Object.create(null);
       const maxLabelsPerCounter = 512;
       const patchFailures = [];
+      // Explicit instrumentation lane only: retain a bounded chronology of
+      // WebGL program creation, compile, link, status-query, and first-use
+      // calls. Aggregate createProgram counts can correlate with long tasks
+      // only by coincidence; timestamps prove or falsify that relationship.
+      const webglProgramEvents = [];
+      let webglProgramEventsTruncated = false;
+      const webglProgramIds = new WeakMap();
+      const webglShaderIds = new WeakMap();
+      const webglFirstUsedPrograms = new WeakSet();
+      const webglCurrentPrograms = new WeakMap();
+      const webglFirstDrawnPrograms = new WeakSet();
+      const webglCompletionStatusKhr = 0x91b1;
+      let nextWebglProgramId = 1;
+      let nextWebglShaderId = 1;
+      const recordWebGLProgramEvent = (
+        method,
+        startTime,
+        duration,
+        details = {},
+      ) => {
+        if (webglProgramEvents.length >= 512) {
+          webglProgramEventsTruncated = true;
+          if (globalThis.__perfCampaignDiagnostics) {
+            globalThis.__perfCampaignDiagnostics.webglProgramEventsTruncated =
+              true;
+          }
+          return;
+        }
+        webglProgramEvents.push({
+          method,
+          startTime,
+          duration,
+          ...details,
+        });
+      };
+      const summarizeWebGLShaderSource = (source) => {
+        if (typeof source !== "string") {
+          return {
+            sourceCharacters: 0,
+            sourceHash: null,
+            sourceDefines: [],
+            sourceDefinesTruncated: false,
+          };
+        }
+
+        let hash = 0x811c9dc5;
+        for (let index = 0; index < source.length; ++index) {
+          hash = Math.imul(hash ^ source.charCodeAt(index), 0x01000193);
+        }
+
+        const sourceDefines = [];
+        let sourceDefinesTruncated = false;
+        const lines = source.split(/\r?\n/);
+        for (let index = 0; index < lines.length; ++index) {
+          const line = lines[index].trim();
+          if (!line.startsWith("#define ")) {
+            continue;
+          }
+          if (sourceDefines.length < 96) {
+            sourceDefines.push(line);
+          } else {
+            sourceDefinesTruncated = true;
+          }
+        }
+
+        return {
+          sourceCharacters: source.length,
+          sourceHash: (hash >>> 0).toString(16).padStart(8, "0"),
+          sourceDefines,
+          sourceDefinesTruncated,
+        };
+      };
       // Engine-side counters cover JS object/cache ownership that browser GPU
       // API wrappers cannot observe. Publish them only in the instrumented
       // lane so clean timing never allocates or mutates diagnostic state.
@@ -1348,8 +1470,6 @@ async function runOne(
             ["deleteBuffer", `${prefix}BuffersDeleted`],
             ["createTexture", `${prefix}TexturesCreated`],
             ["deleteTexture", `${prefix}TexturesDeleted`],
-            ["createProgram", `${prefix}ProgramsCreated`],
-            ["createShader", `${prefix}ShadersCreated`],
             ["drawArrays", `${prefix}DrawCalls`],
             ["drawElements", `${prefix}DrawCalls`],
           ]) {
@@ -1360,7 +1480,200 @@ async function runOne(
               (original) =>
                 function (...args) {
                   increment(counter);
+                  if (method === "drawArrays" || method === "drawElements") {
+                    const program = webglCurrentPrograms.get(this);
+                    if (program && !webglFirstDrawnPrograms.has(program)) {
+                      webglFirstDrawnPrograms.add(program);
+                      recordWebGLProgramEvent(
+                        "firstDrawProgram",
+                        performance.now(),
+                        0,
+                        {
+                          prefix,
+                          programId: webglProgramIds.get(program) ?? 0,
+                          drawMethod: method,
+                        },
+                      );
+                    }
+                  }
                   return original.apply(this, args);
+                },
+            );
+          }
+          if (canPatch("createProgram")) {
+            patch(
+              prototype,
+              "createProgram",
+              (original) =>
+                function (...args) {
+                  const startTime = performance.now();
+                  const program = original.apply(this, args);
+                  const duration = performance.now() - startTime;
+                  increment(`${prefix}ProgramsCreated`);
+                  const programId = nextWebglProgramId++;
+                  if (program) {
+                    webglProgramIds.set(program, programId);
+                  }
+                  recordWebGLProgramEvent(
+                    "createProgram",
+                    startTime,
+                    duration,
+                    { prefix, programId },
+                  );
+                  return program;
+                },
+            );
+          }
+          if (canPatch("createShader")) {
+            patch(
+              prototype,
+              "createShader",
+              (original) =>
+                function (type) {
+                  const startTime = performance.now();
+                  const shader = original.call(this, type);
+                  const duration = performance.now() - startTime;
+                  increment(`${prefix}ShadersCreated`);
+                  const shaderId = nextWebglShaderId++;
+                  if (shader) {
+                    webglShaderIds.set(shader, shaderId);
+                  }
+                  recordWebGLProgramEvent(
+                    "createShader",
+                    startTime,
+                    duration,
+                    { prefix, shaderId, shaderType: type },
+                  );
+                  return shader;
+                },
+            );
+          }
+          if (canPatch("shaderSource")) {
+            patch(
+              prototype,
+              "shaderSource",
+              (original) =>
+                function (shader, source) {
+                  const startTime = performance.now();
+                  const result = original.call(this, shader, source);
+                  const duration = performance.now() - startTime;
+                  recordWebGLProgramEvent(
+                    "shaderSource",
+                    startTime,
+                    duration,
+                    {
+                      prefix,
+                      shaderId: webglShaderIds.get(shader) ?? 0,
+                      ...summarizeWebGLShaderSource(source),
+                    },
+                  );
+                  return result;
+                },
+            );
+          }
+          for (const method of ["compileShader", "attachShader"]) {
+            if (!canPatch(method)) continue;
+            patch(
+              prototype,
+              method,
+              (original) =>
+                function (first, second) {
+                  const startTime = performance.now();
+                  const result = original.call(this, first, second);
+                  const duration = performance.now() - startTime;
+                  const shader = method === "compileShader" ? first : second;
+                  const program =
+                    method === "attachShader" ? first : undefined;
+                  recordWebGLProgramEvent(method, startTime, duration, {
+                    prefix,
+                    programId: webglProgramIds.get(program) ?? 0,
+                    shaderId: webglShaderIds.get(shader) ?? 0,
+                  });
+                  return result;
+                },
+            );
+          }
+          if (canPatch("linkProgram")) {
+            patch(
+              prototype,
+              "linkProgram",
+              (original) =>
+                function (program) {
+                  const startTime = performance.now();
+                  const result = original.call(this, program);
+                  const duration = performance.now() - startTime;
+                  recordWebGLProgramEvent(
+                    "linkProgram",
+                    startTime,
+                    duration,
+                    {
+                      prefix,
+                      programId: webglProgramIds.get(program) ?? 0,
+                    },
+                  );
+                  return result;
+                },
+            );
+          }
+          if (canPatch("getProgramParameter")) {
+            patch(
+              prototype,
+              "getProgramParameter",
+              (original) =>
+                function (program, parameter) {
+                  const startTime = performance.now();
+                  const result = original.call(this, program, parameter);
+                  const duration = performance.now() - startTime;
+                  if (
+                    parameter === this.LINK_STATUS ||
+                    parameter === webglCompletionStatusKhr ||
+                    duration >= 1.0
+                  ) {
+                    recordWebGLProgramEvent(
+                      "getProgramParameter",
+                      startTime,
+                      duration,
+                      {
+                        prefix,
+                        programId: webglProgramIds.get(program) ?? 0,
+                        parameter,
+                        result,
+                      },
+                    );
+                  }
+                  return result;
+                },
+            );
+          }
+          if (canPatch("useProgram")) {
+            patch(
+              prototype,
+              "useProgram",
+              (original) =>
+                function (program) {
+                  const firstUse =
+                    program && !webglFirstUsedPrograms.has(program);
+                  const startTime = performance.now();
+                  const result = original.call(this, program);
+                  const duration = performance.now() - startTime;
+                  if (program) {
+                    webglCurrentPrograms.set(this, program);
+                  } else {
+                    webglCurrentPrograms.delete(this);
+                  }
+                  if (firstUse) {
+                    webglFirstUsedPrograms.add(program);
+                    recordWebGLProgramEvent(
+                      "firstUseProgram",
+                      startTime,
+                      duration,
+                      {
+                        prefix,
+                        programId: webglProgramIds.get(program) ?? 0,
+                      },
+                    );
+                  }
+                  return result;
                 },
             );
           }
@@ -1440,6 +1753,8 @@ async function runOne(
         apiCounters,
         apiCounterLabels,
         apiCounterOwners,
+        webglProgramEvents,
+        webglProgramEventsTruncated,
         globeLogicalCounters,
         terrainOwnershipDiagnostics,
         apiCounterPatchFailures: patchFailures,
@@ -1506,6 +1821,8 @@ async function runOne(
         gpuTimestampsEnabled,
       }) => {
         const setupStart = performance.now();
+        const performanceCampaignCleanup = new Set();
+        globalThis.__perfCampaignCleanup = performanceCampaignCleanup;
         const C = await import("/Build/CesiumUnminified/index.js");
         const viewer = globalThis.viewer;
         const scene = viewer.scene;
@@ -1522,7 +1839,13 @@ async function runOne(
           "uncapturederror",
           onUncapturedDeviceError,
         );
-        if (workloadDefinition.contentProfile !== "local-grid-ellipsoid") {
+        const representativeWorkload =
+          workloadDefinition.contentProfile ===
+          "local-procedural-terrain-assets";
+        if (
+          workloadDefinition.contentProfile !== "local-grid-ellipsoid" &&
+          !representativeWorkload
+        ) {
           throw new Error(
             `unsupported content profile ${workloadDefinition.contentProfile}`,
           );
@@ -1533,6 +1856,113 @@ async function runOne(
             `resolved renderer ${actualRenderer}, expected ${expectedRenderer}`,
           );
         }
+        const webgpuModelPreparationDiagnosticsEnabled =
+          actualRenderer === "webgpu" &&
+          apiInstrumentationEnabled &&
+          representativeWorkload;
+        const previousWebGPUModelPreparationDiagnosticsEnabled =
+          context._webgpuModelPreparationDiagnosticsEnabled;
+        let restoreWebGPUModelPreparationDiagnosticsPending = false;
+        const restoreWebGPUModelPreparationDiagnostics = () => {
+          if (!restoreWebGPUModelPreparationDiagnosticsPending) {
+            return;
+          }
+          restoreWebGPUModelPreparationDiagnosticsPending = false;
+          if (
+            previousWebGPUModelPreparationDiagnosticsEnabled === undefined
+          ) {
+            delete context._webgpuModelPreparationDiagnosticsEnabled;
+          } else {
+            context._webgpuModelPreparationDiagnosticsEnabled =
+              previousWebGPUModelPreparationDiagnosticsEnabled;
+          }
+        };
+        if (webgpuModelPreparationDiagnosticsEnabled) {
+          context._webgpuModelPreparationDiagnosticsEnabled = true;
+          restoreWebGPUModelPreparationDiagnosticsPending = true;
+          performanceCampaignCleanup.add(
+            restoreWebGPUModelPreparationDiagnostics,
+          );
+        }
+        const webgpuModelPreparationEvidenceModule =
+          webgpuModelPreparationDiagnosticsEnabled
+            ? await import(
+                "/Tools/visual-regression/lib/webgpu-model-preparation-evidence.mjs"
+              )
+            : null;
+        const globeShaderRequests = [];
+        const globeShaderRequestStates = new Set();
+        if (
+          apiInstrumentationEnabled &&
+          actualRenderer === "webgl" &&
+          C.GlobeSurfaceShaderSet?.prototype
+        ) {
+          const prototype = C.GlobeSurfaceShaderSet.prototype;
+          const originalGetShaderProgram = prototype.getShaderProgram;
+          prototype.getShaderProgram = function (options) {
+            const shaderCache = options.frameState?.context?.shaderCache;
+            const preparationQueue =
+              shaderCache?._parallelShaderPreparationQueue;
+            const preparationCountBefore = preparationQueue?.length ?? null;
+            const pendingCountBefore =
+              this._pendingFogCompanions?.size ?? null;
+            const result = originalGetShaderProgram.call(this, options);
+            const preparationCountAfter = preparationQueue?.length ?? null;
+            const pendingCountAfter =
+              this._pendingFogCompanions?.size ?? null;
+            const stateKey = [
+              result?.flags,
+              options.enableFog,
+              options.fogCompanionEnabled,
+              options.baseColorCorrect,
+              options.colorCorrect,
+              options.translucent,
+              options._skipFogCompanionPrewarm,
+              options.frameState?.shadowState?.lightShadowsEnabled,
+              preparationCountBefore,
+              preparationCountAfter,
+              pendingCountBefore,
+              pendingCountAfter,
+            ].join(":");
+            if (
+              globeShaderRequests.length < 128 &&
+              !globeShaderRequestStates.has(stateKey)
+            ) {
+              globeShaderRequestStates.add(stateKey);
+              globeShaderRequests.push({
+                time: performance.now(),
+                frameNumber: options.frameState?.frameNumber,
+                cameraHeight: options.frameState?.camera?.positionCartographic
+                  ?.height,
+                fogEnabled: options.frameState?.fog?.enabled,
+                fogRenderable: options.frameState?.fog?.renderable,
+                numberOfDayTextures: options.numberOfDayTextures,
+                enableFog: options.enableFog,
+                fogCompanionEnabled: options.fogCompanionEnabled,
+                baseColorCorrect: options.baseColorCorrect,
+                colorCorrect: options.colorCorrect,
+                translucent: options.translucent,
+                skipFogCompanionPrewarm: options._skipFogCompanionPrewarm,
+                lightShadowsEnabled:
+                  options.frameState?.shadowState?.lightShadowsEnabled,
+                useLogDepth: options.frameState?.useLogDepth,
+                highDynamicRange: options.frameState?.highDynamicRange,
+                parallelShaderCompileAvailable:
+                  options.frameState?.context?._parallelShaderCompile !==
+                  undefined,
+                resultFlags: result?.flags,
+                resultFogCompanionRequests: [
+                  ...(result?.fogCompanionRequests ?? []),
+                ],
+                preparationCountBefore,
+                preparationCountAfter,
+                pendingCountBefore,
+                pendingCountAfter,
+              });
+            }
+            return result;
+          };
+        }
         const cameraTrackEnabled =
           workloadDefinition.action === "camera-track" ||
           workloadDefinition.action === "camera-track-pick";
@@ -1540,7 +1970,8 @@ async function runOne(
           workloadDefinition.action === "camera-track-pick";
 
         scene.requestRenderMode = false;
-        viewer.resolutionScale = 1;
+        viewer.resolutionScale =
+          protocolDefinition.resolutionScale ?? 1;
         viewer.clock.shouldAnimate = false;
         viewer.clock.currentTime = C.JulianDate.fromIso8601(
           protocolDefinition.fixedClock,
@@ -1555,7 +1986,46 @@ async function runOne(
             backgroundColor: C.Color.fromBytes(10, 20, 30, 255),
           }),
         );
-        scene.globe.terrainProvider = new C.EllipsoidTerrainProvider();
+        let representativeModule = null;
+        let representativeHarness = null;
+        // The replay-provenance comparator must be the SAME code the Node-side
+        // gate re-runs on the recorded sequences, so it is imported from the
+        // shared campaign utilities rather than reimplemented in-page.
+        let campaignUtilsModule = null;
+        if (representativeWorkload) {
+          representativeModule = await import(
+            "/Tools/visual-regression/lib/representative-performance-content.mjs"
+          );
+          campaignUtilsModule = await import(
+            "/Tools/visual-regression/lib/performance-campaign-utils.mjs"
+          );
+          const validationFailures =
+            representativeModule.validateRepresentativeConfig(
+              workloadDefinition.representativeConfig,
+            );
+          if (validationFailures.length > 0) {
+            throw new Error(
+              `invalid representative workload: ${validationFailures.join(
+                "; ",
+              )}`,
+            );
+          }
+          const terrain = representativeModule.createRepresentativeTerrain(
+            C,
+            workloadDefinition.representativeConfig,
+          );
+          scene.globe.tileCacheSize =
+            workloadDefinition.representativeConfig.terrain.tileCacheSize;
+          scene.globe.terrainProvider = terrain.provider;
+          representativeHarness = {
+            terrain,
+            assets: null,
+            primeEvidence: null,
+            tilesetLifecycle: null,
+          };
+        } else {
+          scene.globe.terrainProvider = new C.EllipsoidTerrainProvider();
+        }
         if (workloadDefinition.featureProfile === "deterministic-core") {
           // Explicit isolation profile for CPU/data-path micro-workloads. The
           // altitude flight uses default-globe and retains every default
@@ -1632,7 +2102,11 @@ async function runOne(
           });
         }
 
-        const content = { collection: null, phase: 0 };
+        const content = {
+          collection: null,
+          representativeAssets: null,
+          phase: 0,
+        };
         const createPoints = () => {
           const collection = scene.primitives.add(
             new C.PointPrimitiveCollection(),
@@ -1660,18 +2134,121 @@ async function runOne(
           return collection;
         };
         if (workloadDefinition.content === "points-4096") createPoints();
+        if (workloadDefinition.content === "terrain-models-tiles") {
+          if (!representativeHarness || !representativeModule) {
+            throw new Error(
+              "representative content requires the procedural terrain profile",
+            );
+          }
+          content.representativeAssets =
+            await representativeModule.createRepresentativeAssets(
+              C,
+              scene,
+              workloadDefinition.representativeConfig,
+            );
+          representativeHarness.assets = content.representativeAssets;
+          if (apiInstrumentationEnabled) {
+            representativeHarness.tilesetLifecycle =
+              representativeModule.createRepresentativeTilesetLifecycleTracker(
+                C,
+                representativeHarness.assets,
+              );
+            performanceCampaignCleanup.add(() =>
+              representativeHarness.tilesetLifecycle?.destroy(),
+            );
+          }
+        }
 
-        const waitFrames = async (count) => {
-          let rendered = 0;
-          await new Promise((resolveWait) => {
-            const remove = scene.postRender.addEventListener(() => {
-              rendered++;
-              if (rendered >= count) {
-                remove();
-                resolveWait();
+        // A frame wait must be structurally unable to hang the campaign. The
+        // enclosing page.evaluate carries no Playwright timeout of its own, so
+        // a lost device or a throwing Scene.render — either of which stops
+        // postRender from ever firing again — would otherwise wedge an
+        // unattended run forever while holding a live GPU context. The
+        // surrounding while-deadlines cannot help: they are only re-evaluated
+        // after the wait returns. Doubly bounded exactly like
+        // measureDisplayRefresh below: an inter-frame stall window that
+        // re-arms on every rendered frame, so a merely slow renderer is never
+        // failed, plus an absolute budget scaled from the requested frame
+        // count. Either bound removes the listener and THROWS — the file's
+        // in-page failure convention, which surfaces the run as
+        // result: "error" (teardown still runs) instead of letting a wait that
+        // never observed its frames read as a completed, comparable window.
+        const frameWaitStallMs = Math.max(
+          protocolDefinition.settleTimeoutMs,
+          5000,
+        );
+        // The stall window is the real device-loss detector; the absolute
+        // budget is only a backstop against a wait whose condition can never
+        // complete while frames keep arriving, so it is deliberately generous
+        // (1s/frame) — a slow renderer must fail on its numbers, not here.
+        const frameWaitPerFrameMs = 1000;
+        const frameWaitCeilingMs = 900000;
+        const frameWaitBudgetMs = (count) =>
+          Math.min(
+            frameWaitCeilingMs,
+            Math.max(frameWaitStallMs, count * frameWaitPerFrameMs),
+          );
+        const awaitRenderedFrames = (label, budgetMs, isSatisfied) =>
+          new Promise((resolveWait, rejectWait) => {
+            const startedAt = performance.now();
+            let renderedFrames = 0;
+            let remove;
+            let stallTimeoutId;
+            let budgetTimeoutId;
+            const settle = (error) => {
+              clearTimeout(stallTimeoutId);
+              clearTimeout(budgetTimeoutId);
+              remove?.();
+              if (error) {
+                rejectWait(error);
+                return;
               }
+              resolveWait();
+            };
+            const fail = (bound) =>
+              settle(
+                new Error(
+                  `[structural] frame wait "${label}" hit its ${bound} bound ` +
+                    `after ${Math.round(performance.now() - startedAt)}ms with ` +
+                    `${renderedFrames} rendered frame(s) ` +
+                    `(stall ${frameWaitStallMs}ms, budget ${Math.round(budgetMs)}ms). ` +
+                    // Report only what each bound actually observed; a
+                    // diagnosis the bound did not witness is the same class of
+                    // unearned claim this file exists to avoid.
+                    `${
+                      bound === "inter-frame stall"
+                        ? "The scene stopped presenting frames — device loss or a throwing Scene.render."
+                        : "Frames kept arriving but the wait condition was never satisfied."
+                    } This run is structurally invalid and must not be compared.`,
+                ),
+              );
+            const armStall = () => {
+              clearTimeout(stallTimeoutId);
+              stallTimeoutId = setTimeout(
+                () => fail("inter-frame stall"),
+                frameWaitStallMs,
+              );
+            };
+            budgetTimeoutId = setTimeout(
+              () => fail("absolute budget"),
+              budgetMs,
+            );
+            remove = scene.postRender.addEventListener(() => {
+              renderedFrames++;
+              if (isSatisfied(renderedFrames)) {
+                settle();
+                return;
+              }
+              armStall();
             });
+            armStall();
           });
+        const waitFrames = async (count, label) => {
+          await awaitRenderedFrames(
+            `${label ?? "unlabeled"}:${count}`,
+            frameWaitBudgetMs(count),
+            (renderedFrames) => renderedFrames >= count,
+          );
         };
         const waitForMorph = async () => {
           const deadline =
@@ -1694,6 +2271,141 @@ async function runOne(
         } else if (scene.mode !== C.SceneMode.SCENE3D) {
           scene.morphTo3D(0);
           await waitForMorph();
+        }
+
+        const trackDestination = new C.Cartesian3();
+        const trackOrientation = { heading: 0, pitch: 0, roll: 0 };
+        const trackView = {
+          destination: trackDestination,
+          orientation: trackOrientation,
+        };
+        const interpolateDegrees = (start, end, amount) => {
+          const delta = ((((end - start) % 360) + 540) % 360) - 180;
+          return start + delta * amount;
+        };
+        const applyCameraTrackProgress = (routeProgress) => {
+          const progress = Math.min(1, Math.max(0, routeProgress));
+          const segmentCount = cameraTrack.length - 1;
+          const scaled = progress * segmentCount;
+          const segmentIndex = Math.min(
+            segmentCount - 1,
+            Math.floor(scaled),
+          );
+          const amount =
+            segmentIndex === segmentCount - 1 && progress === 1
+              ? 1
+              : scaled - segmentIndex;
+          const start = cameraTrack[segmentIndex];
+          const end = cameraTrack[segmentIndex + 1];
+          const lon = interpolateDegrees(start.lon, end.lon, amount);
+          const lat = start.lat + (end.lat - start.lat) * amount;
+          const height = Math.exp(
+            Math.log(start.height) +
+              (Math.log(end.height) - Math.log(start.height)) * amount,
+          );
+          C.Cartesian3.fromDegrees(
+            lon,
+            lat,
+            height,
+            undefined,
+            trackDestination,
+          );
+          trackOrientation.heading = C.Math.toRadians(
+            interpolateDegrees(start.heading, end.heading, amount),
+          );
+          trackOrientation.pitch = C.Math.toRadians(
+            start.pitch + (end.pitch - start.pitch) * amount,
+          );
+          trackOrientation.roll = C.Math.toRadians(
+            interpolateDegrees(start.roll, end.roll, amount),
+          );
+          scene.camera.setView(trackView);
+          return {
+            segmentIndex,
+            segmentProgress: amount,
+            routeProgress: progress,
+            height,
+          };
+        };
+
+        if (representativeHarness) {
+          const primeTracker =
+            representativeModule.createRepresentativeEvidenceTracker(
+              scene,
+              representativeHarness.terrain,
+              representativeHarness.assets,
+            );
+          const configuredRoutePrimeSamples =
+            workloadDefinition.representativeConfig.routePrimeSamples;
+          const primeProgresses =
+            configuredRoutePrimeSamples > 0
+              ? Array.from(
+                  { length: configuredRoutePrimeSamples },
+                  (_, index) =>
+                    index / Math.max(1, configuredRoutePrimeSamples - 1),
+                )
+              : cameraTrack.map(
+                  (_, index) => index / (cameraTrack.length - 1),
+                );
+          for (
+            let primeIndex = 0;
+            primeIndex < primeProgresses.length;
+            primeIndex++
+          ) {
+            const waypointPrimeDeadline =
+              performance.now() + protocolDefinition.settleTimeoutMs;
+            applyCameraTrackProgress(primeProgresses[primeIndex]);
+            let waypointStableFrames = 0;
+            while (
+              waypointStableFrames <
+                workloadDefinition.representativeConfig.primeStableFrames &&
+              performance.now() < waypointPrimeDeadline
+            ) {
+              await waitFrames(1, "representative-route-prime");
+              const assetsReady =
+                representativeHarness.assets.models.every(
+                  (model) => model.ready,
+                ) &&
+                representativeHarness.assets.tilesets.every(
+                  (tileset) => tileset.tilesLoaded,
+                );
+              if (scene.globe.tilesLoaded && assetsReady) {
+                waypointStableFrames++;
+                // Sample only fully stable prime frames. Provider replacement
+                // can leave old ellipsoid selections visible for a few
+                // transitional frames; those are setup evidence, not part of
+                // the representative content's bounded-LOD proof.
+                primeTracker.sample();
+              } else {
+                waypointStableFrames = 0;
+              }
+            }
+            if (
+              waypointStableFrames <
+              workloadDefinition.representativeConfig.primeStableFrames
+            ) {
+              const primeLabel =
+                configuredRoutePrimeSamples > 0
+                  ? `route sample ${primeIndex + 1}/${primeProgresses.length}`
+                  : cameraTrack[primeIndex].name;
+              throw new Error(
+                `representative route prime timed out at ${primeLabel}`,
+              );
+            }
+          }
+          representativeHarness.primeEvidence = primeTracker.snapshot({
+            phase: "prime",
+          });
+          representativeHarness.primeEvidence.routePrime = {
+            configuredSamples: configuredRoutePrimeSamples,
+            actualPositions: primeProgresses.length,
+            mode:
+              configuredRoutePrimeSamples > 0
+                ? "continuous-interpolation"
+                : "waypoints",
+          };
+
+          applyCameraTrackProgress(0);
         }
 
         let stable = 0;
@@ -1790,7 +2502,13 @@ async function runOne(
         const trackDurationMs =
           measurementDefinition.durationMs ??
           (measurementDefinition.frames * 1000) / 60;
+        const residentFrameDrivenTrack =
+          representativeHarness !== null &&
+          workloadDefinition.representativeConfig.measurementTerrainMode ===
+            "resident" &&
+          measurementDefinition.mode === "frames";
         let trackEpochMs = performance.now();
+        let cameraTrackFrameIndex = 0;
         let currentTrackState = null;
         const currentPickState = {
           valid: false,
@@ -1915,60 +2633,22 @@ async function runOne(
             }
           };
         }
-        const trackDestination = new C.Cartesian3();
-        const trackOrientation = { heading: 0, pitch: 0, roll: 0 };
-        const trackView = {
-          destination: trackDestination,
-          orientation: trackOrientation,
-        };
         // Reuse the cursor object so the benchmark measures renderer picking,
         // not one avoidable Cartesian2 allocation per animation frame.
         const pickPosition = new C.Cartesian2();
-        const interpolateDegrees = (start, end, amount) => {
-          const delta = ((((end - start) % 360) + 540) % 360) - 180;
-          return start + delta * amount;
-        };
         const applyCameraTrack = (timestamp) => {
-          const segmentCount = cameraTrack.length - 1;
-          const elapsedMs = Math.max(0, timestamp - trackEpochMs);
-          const progress = Math.min(1, elapsedMs / trackDurationMs);
-          const scaled = progress * segmentCount;
-          const segmentIndex = Math.min(segmentCount - 1, Math.floor(scaled));
-          const amount =
-            segmentIndex === segmentCount - 1 && progress === 1
-              ? 1
-              : scaled - segmentIndex;
-          const start = cameraTrack[segmentIndex];
-          const end = cameraTrack[segmentIndex + 1];
-          const lon = interpolateDegrees(start.lon, end.lon, amount);
-          const lat = start.lat + (end.lat - start.lat) * amount;
-          const height = Math.exp(
-            Math.log(start.height) +
-              (Math.log(end.height) - Math.log(start.height)) * amount,
-          );
-          C.Cartesian3.fromDegrees(
-            lon,
-            lat,
-            height,
-            undefined,
-            trackDestination,
-          );
-          trackOrientation.heading = C.Math.toRadians(
-            interpolateDegrees(start.heading, end.heading, amount),
-          );
-          trackOrientation.pitch = C.Math.toRadians(
-            start.pitch + (end.pitch - start.pitch) * amount,
-          );
-          trackOrientation.roll = C.Math.toRadians(
-            interpolateDegrees(start.roll, end.roll, amount),
-          );
-          scene.camera.setView(trackView);
-          currentTrackState = {
-            segmentIndex,
-            segmentProgress: amount,
-            routeProgress: progress,
-            height,
-          };
+          const progress = residentFrameDrivenTrack
+            ? Math.min(
+                1,
+                cameraTrackFrameIndex /
+                  Math.max(1, measurementDefinition.frames - 1),
+              )
+            : Math.min(
+                1,
+                Math.max(0, timestamp - trackEpochMs) / trackDurationMs,
+              );
+          currentTrackState = applyCameraTrackProgress(progress);
+          cameraTrackFrameIndex++;
           actionCounters.cameraTrackUpdates++;
         };
         const applyMovingPick = () => {
@@ -2079,80 +2759,333 @@ async function runOne(
           actionCounters.picks++;
         };
         let actionRunning = true;
+        let actionLoopActive = true;
+        let actionFrameId;
         const applyAction = (timestamp) => {
-          if (!actionRunning) return;
-          const frame = actionCounters.frames++;
-          const collection = content.collection;
-          if (workloadDefinition.action === "orbit") {
-            scene.camera.rotateRight(0.0015);
-          } else if (cameraTrackEnabled) {
-            applyCameraTrack(timestamp);
-            if (movingPickEnabled) {
-              applyMovingPick();
-            }
-          } else if (
-            workloadDefinition.action === "sparse-point-mutation" ||
-            workloadDefinition.action === "full-point-mutation"
-          ) {
-            const count = collection?.length || 0;
-            const mutationCount =
+          actionFrameId = undefined;
+          if (!actionLoopActive) {
+            return;
+          }
+          if (actionRunning) {
+            const frame = actionCounters.frames++;
+            const collection = content.collection;
+            if (workloadDefinition.action === "orbit") {
+              scene.camera.rotateRight(0.0015);
+            } else if (cameraTrackEnabled) {
+              applyCameraTrack(timestamp);
+              if (movingPickEnabled) {
+                applyMovingPick();
+              }
+            } else if (
+              workloadDefinition.action === "sparse-point-mutation" ||
               workloadDefinition.action === "full-point-mutation"
-                ? count
-                : Math.max(1, Math.floor(count * 0.01));
-            for (let offset = 0; offset < mutationCount; offset++) {
-              const index =
+            ) {
+              const count = collection?.length || 0;
+              const mutationCount =
                 workloadDefinition.action === "full-point-mutation"
-                  ? offset
-                  : (frame * mutationCount + offset) % count;
-              const point = collection.get(index);
-              const x = index % 64;
-              const y = Math.floor(index / 64);
-              point.position = C.Cartesian3.fromDegrees(
-                -122.75 + x * 0.01,
-                37.45 + y * 0.01,
-                1000 + ((index * 37 + frame * 11) % 5000),
+                  ? count
+                  : Math.max(1, Math.floor(count * 0.01));
+              for (let offset = 0; offset < mutationCount; offset++) {
+                const index =
+                  workloadDefinition.action === "full-point-mutation"
+                    ? offset
+                    : (frame * mutationCount + offset) % count;
+                const point = collection.get(index);
+                const x = index % 64;
+                const y = Math.floor(index / 64);
+                point.position = C.Cartesian3.fromDegrees(
+                  -122.75 + x * 0.01,
+                  37.45 + y * 0.01,
+                  1000 + ((index * 37 + frame * 11) % 5000),
+                );
+              }
+              actionCounters.pointsMutated += mutationCount;
+            } else if (workloadDefinition.action === "pick-center") {
+              pickPosition.x = Math.floor(scene.canvas.clientWidth / 2);
+              pickPosition.y = Math.floor(scene.canvas.clientHeight / 2);
+              scene.pick(pickPosition, 1, 1);
+              actionCounters.picks++;
+            } else if (
+              workloadDefinition.action === "resize-cycle" &&
+              frame > 0 &&
+              frame % 30 === 0
+            ) {
+              const small = (frame / 30) % 2 === 1;
+              viewer.container.style.width = small ? "1120px" : "1280px";
+              viewer.container.style.height = small ? "640px" : "720px";
+              viewer.resize();
+              actionCounters.resizes++;
+            } else if (
+              workloadDefinition.action === "morph-roundtrip" &&
+              frame > 0 &&
+              frame % 120 === 0
+            ) {
+              const phase = (frame / 120) % 3;
+              if (phase === 1) scene.morphToColumbusView(0);
+              else if (phase === 2) scene.morphTo2D(0);
+              else scene.morphTo3D(0);
+              actionCounters.morphs++;
+            } else if (
+              workloadDefinition.action === "destroy-recreate-content" &&
+              frame > 0 &&
+              frame % 120 === 0
+            ) {
+              scene.primitives.remove(content.collection);
+              createPoints();
+              actionCounters.contentRecreates++;
+            }
+          }
+          if (actionLoopActive) {
+            actionFrameId = requestAnimationFrame(applyAction);
+          }
+        };
+        const stopActionLoop = () => {
+          if (!actionLoopActive && actionFrameId === undefined) {
+            return;
+          }
+          actionLoopActive = false;
+          actionRunning = false;
+          if (actionFrameId !== undefined) {
+            cancelAnimationFrame(actionFrameId);
+            actionFrameId = undefined;
+          }
+        };
+        performanceCampaignCleanup.add(stopActionLoop);
+
+        actionFrameId = requestAnimationFrame(applyAction);
+        await waitFrames(protocolDefinition.warmupFrames, "warmup");
+        if (residentFrameDrivenTrack) {
+          const residentQueueDiagnosticLimit = 8;
+          const residentQueueEntryLimit = 16;
+          const captureResidentQueueDiagnostic = () => {
+            const surface = scene.globe?._surface;
+            const queueDefinitions = [
+              ["H", surface?._tileLoadQueueHigh ?? []],
+              ["M", surface?._tileLoadQueueMedium ?? []],
+              ["L", surface?._tileLoadQueueLow ?? []],
+            ];
+            const entries = [];
+            const unresolved = { high: 0, medium: 0, low: 0 };
+            for (let queueIndex = 0; queueIndex < queueDefinitions.length; queueIndex++) {
+              const [queueName, queue] = queueDefinitions[queueIndex];
+              const unresolvedKey = ["high", "medium", "low"][queueIndex];
+              for (let tileIndex = 0; tileIndex < queue.length; tileIndex++) {
+                const tile = queue[tileIndex];
+                if (tile?.needsLoading === true) {
+                  unresolved[unresolvedKey]++;
+                }
+                if (entries.length >= residentQueueEntryLimit) {
+                  continue;
+                }
+                const tileData = tile?.data;
+                const imagery = Array.isArray(tileData?.imagery)
+                  ? tileData.imagery
+                  : [];
+                let loadingImageryCount = 0;
+                let readyImageryCount = 0;
+                for (let imageryIndex = 0; imageryIndex < imagery.length; imageryIndex++) {
+                  if (imagery[imageryIndex]?.loadingImagery) {
+                    loadingImageryCount++;
+                  }
+                  if (imagery[imageryIndex]?.readyImagery) {
+                    readyImageryCount++;
+                  }
+                }
+                const loadedCallbacks = tile?._loadedCallbacks;
+                entries.push({
+                  queue: queueName,
+                  x: tile?.x ?? null,
+                  y: tile?.y ?? null,
+                  level: tile?.level ?? null,
+                  state: tile?.state ?? null,
+                  needsLoading: tile?.needsLoading === true,
+                  renderable: tile?.renderable === true,
+                  lastSelectionResult: tile?._lastSelectionResult ?? null,
+                  lastSelectionFrame: tile?._lastSelectionResultFrame ?? null,
+                  terrainState: tileData?.terrainState ?? null,
+                  hasTerrainData: tileData?.terrainData != null,
+                  hasMesh: tileData?.mesh != null,
+                  hasVertexArray: tileData?.vertexArray != null,
+                  hasWaterMask: tileData?.waterMaskTexture != null,
+                  imageryCount: imagery.length,
+                  loadingImageryCount,
+                  readyImageryCount,
+                  boundingVolumeSelf:
+                    tileData?.boundingVolumeSourceTile === tile,
+                  loadedCallbackCount: Array.isArray(loadedCallbacks)
+                    ? loadedCallbacks.length
+                    : loadedCallbacks && typeof loadedCallbacks === "object"
+                      ? Object.keys(loadedCallbacks).length
+                      : 0,
+                });
+              }
+            }
+            const routeProgress = currentTrackState?.routeProgress ?? null;
+            return {
+              frameNumber: scene._frameState?.frameNumber ?? null,
+              routeStateIndex:
+                typeof routeProgress === "number"
+                  ? Math.round(
+                      routeProgress *
+                        Math.max(1, measurementDefinition.frames - 1),
+                    )
+                  : null,
+              routeProgress,
+              segmentIndex: currentTrackState?.segmentIndex ?? null,
+              segmentProgress: currentTrackState?.segmentProgress ?? null,
+              height: currentTrackState?.height ?? null,
+              selectionFrame: surface?._lastSelectionFrameNumber ?? null,
+              queueLengths: {
+                high: queueDefinitions[0][1].length,
+                medium: queueDefinitions[1][1].length,
+                low: queueDefinitions[2][1].length,
+              },
+              unresolved,
+              tilesToRender: surface?._tilesToRender?.length ?? null,
+              entries,
+              entriesTruncated:
+                queueDefinitions.reduce(
+                  (total, definition) => total + definition[1].length,
+                  0,
+                ) > entries.length,
+            };
+          };
+          const convergencePasses = [];
+          const maximumConvergencePasses = 4;
+          for (
+            let passIndex = 0;
+            passIndex < maximumConvergencePasses;
+            passIndex++
+          ) {
+            // A pass ends over the Himalaya and the next begins over the
+            // Pacific. Quiesce camera rAF and settle that discontinuous reset
+            // before opening the causal pass; otherwise its unavoidable first
+            // incomplete selection makes zero-unloaded-frame convergence
+            // impossible even after the exact route is fully resident.
+            actionRunning = false;
+            await waitFrames(1, "convergence-pass-quiesce");
+            const stagingTerrainStart =
+              representativeHarness.terrain.snapshotDiagnostics();
+            cameraTrackFrameIndex = 0;
+            currentTrackState = applyCameraTrackProgress(0);
+            let routeStartStableFrames = 0;
+            const routeStartDeadline =
+              performance.now() + protocolDefinition.settleTimeoutMs;
+            while (
+              routeStartStableFrames <
+                workloadDefinition.representativeConfig.primeStableFrames &&
+              performance.now() < routeStartDeadline
+            ) {
+              await waitFrames(1, "convergence-route-start-stabilize");
+              const assetsReady =
+                representativeHarness.assets.models.every(
+                  (model) => model.ready,
+                ) &&
+                representativeHarness.assets.tilesets.every(
+                  (tileset) => tileset.tilesLoaded,
+                );
+              routeStartStableFrames =
+                scene.globe.tilesLoaded && assetsReady
+                  ? routeStartStableFrames + 1
+                  : 0;
+            }
+            if (
+              routeStartStableFrames <
+              workloadDefinition.representativeConfig.primeStableFrames
+            ) {
+              throw new Error(
+                `representative resident route start did not stabilize for convergence pass ${passIndex + 1}`,
               );
             }
-            actionCounters.pointsMutated += mutationCount;
-          } else if (workloadDefinition.action === "pick-center") {
-            pickPosition.x = Math.floor(scene.canvas.clientWidth / 2);
-            pickPosition.y = Math.floor(scene.canvas.clientHeight / 2);
-            scene.pick(pickPosition, 1, 1);
-            actionCounters.picks++;
-          } else if (
-            workloadDefinition.action === "resize-cycle" &&
-            frame > 0 &&
-            frame % 30 === 0
-          ) {
-            const small = (frame / 30) % 2 === 1;
-            viewer.container.style.width = small ? "1120px" : "1280px";
-            viewer.container.style.height = small ? "640px" : "720px";
-            viewer.resize();
-            actionCounters.resizes++;
-          } else if (
-            workloadDefinition.action === "morph-roundtrip" &&
-            frame > 0 &&
-            frame % 120 === 0
-          ) {
-            const phase = (frame / 120) % 3;
-            if (phase === 1) scene.morphToColumbusView(0);
-            else if (phase === 2) scene.morphTo2D(0);
-            else scene.morphTo3D(0);
-            actionCounters.morphs++;
-          } else if (
-            workloadDefinition.action === "destroy-recreate-content" &&
-            frame > 0 &&
-            frame % 120 === 0
-          ) {
-            scene.primitives.remove(content.collection);
-            createPoints();
-            actionCounters.contentRecreates++;
+            const stagingTerrainEnd =
+              representativeHarness.terrain.snapshotDiagnostics();
+            const stagingDelta =
+              representativeModule.diffRepresentativeTerrainDiagnostics(
+                stagingTerrainStart,
+                stagingTerrainEnd,
+              );
+            const terrainStart =
+              representativeHarness.terrain.snapshotDiagnostics();
+            currentTrackState = applyCameraTrackProgress(0);
+            // Progress 0 is already the first rendered frame. The next action
+            // callback must apply 1/(N-1), otherwise the fixed-frame route
+            // duplicates zero and omits its 1.0 endpoint.
+            cameraTrackFrameIndex = 1;
+            let globeTilesNotLoadedFrames = 0;
+            const residentQueueDiagnostics = [];
+            const removeConvergenceEvidence =
+              scene.postRender.addEventListener(() => {
+                if (scene.globe.tilesLoaded !== true) {
+                  globeTilesNotLoadedFrames++;
+                  if (
+                    residentQueueDiagnostics.length <
+                    residentQueueDiagnosticLimit
+                  ) {
+                    residentQueueDiagnostics.push(
+                      captureResidentQueueDiagnostic(),
+                    );
+                  }
+                }
+              });
+            actionRunning = true;
+            try {
+              await waitFrames(
+                measurementDefinition.frames,
+                "convergence-pass",
+              );
+            } finally {
+              actionRunning = false;
+              removeConvergenceEvidence();
+            }
+            const terrainEnd =
+              representativeHarness.terrain.snapshotDiagnostics();
+            const delta =
+              representativeModule.diffRepresentativeTerrainDiagnostics(
+                terrainStart,
+                terrainEnd,
+              );
+            convergencePasses.push({
+              pass: passIndex + 1,
+              requestCount: delta.requestCount,
+              tileGenerationCount: delta.tileGenerationCount,
+              globeTilesNotLoadedFrames,
+              residentQueueDiagnostics,
+              routeStartStaging: {
+                stableFrames: routeStartStableFrames,
+                requestCount: stagingDelta.requestCount,
+                tileGenerationCount: stagingDelta.tileGenerationCount,
+              },
+            });
+            if (
+              representativeModule.isRepresentativeResidentRoutePassQuiescent(
+                convergencePasses.at(-1),
+              )
+            ) {
+              break;
+            }
           }
-          requestAnimationFrame(applyAction);
-        };
-
-        requestAnimationFrame(applyAction);
-        await waitFrames(protocolDefinition.warmupFrames);
+          representativeHarness.primeEvidence.residentConvergence = {
+            maximumPasses: maximumConvergencePasses,
+            converged:
+              representativeModule.isRepresentativeResidentRoutePassQuiescent(
+                convergencePasses.at(-1),
+              ),
+            passes: convergencePasses,
+          };
+          if (
+            !representativeHarness.primeEvidence.residentConvergence
+              .converged
+          ) {
+            throw new Error(
+              `representative resident route failed to converge to zero terrain work: ${JSON.stringify(convergencePasses)}`,
+            );
+          }
+          // Stop camera advancement while the exact route start is restored
+          // and made resident again. The rAF loop stays alive but performs no
+          // workload work until the measurement boundary below.
+          actionRunning = false;
+          await waitFrames(1, "convergence-settle");
+        }
         if (movingPickEnabled) {
           // Warmup generates real asynchronous hover requests. Stop issuing
           // before resetting the route and wait for that chain to finish so
@@ -2173,7 +3106,8 @@ async function runOne(
         }
         if (cameraTrackEnabled) {
           trackEpochMs = performance.now();
-          applyCameraTrack(trackEpochMs);
+          cameraTrackFrameIndex = 0;
+          currentTrackState = applyCameraTrackProgress(0);
           if (movingPickEnabled) {
             // Prime the correct route-start location outside the measurement
             // window; otherwise the first evidence sample can retain the last
@@ -2197,8 +3131,44 @@ async function runOne(
             // intentionally stationary. Restart the time-parametrized route
             // so both renderers still measure the complete 20-second flight.
             trackEpochMs = performance.now();
-            applyCameraTrack(trackEpochMs);
+            cameraTrackFrameIndex = 0;
+            currentTrackState = applyCameraTrackProgress(0);
           }
+        }
+        if (residentFrameDrivenTrack) {
+          let routeStartStableFrames = 0;
+          const routeStartDeadline =
+            performance.now() + protocolDefinition.settleTimeoutMs;
+          while (
+            routeStartStableFrames <
+              workloadDefinition.representativeConfig.primeStableFrames &&
+            performance.now() < routeStartDeadline
+          ) {
+            await waitFrames(1, "resident-route-restabilize");
+            const assetsReady =
+              representativeHarness.assets.models.every(
+                (model) => model.ready,
+              ) &&
+              representativeHarness.assets.tilesets.every(
+                (tileset) => tileset.tilesLoaded,
+              );
+            routeStartStableFrames =
+              scene.globe.tilesLoaded && assetsReady
+                ? routeStartStableFrames + 1
+                : 0;
+          }
+          if (
+            routeStartStableFrames <
+            workloadDefinition.representativeConfig.primeStableFrames
+          ) {
+            throw new Error(
+              "representative resident route start did not restabilize",
+            );
+          }
+          // The stationary route-start frame is pre-applied and becomes
+          // measured frame zero; prime the action loop for frame one so the
+          // final measured frame reaches exactly (N-1)/(N-1).
+          cameraTrackFrameIndex = 1;
         }
         if (movingPickEnabled) {
           publicPickCpuSinceLastRender = 0;
@@ -2246,6 +3216,19 @@ async function runOne(
           : null;
         const statisticsStart = context.getRendererStatistics?.() || {};
         const frameStatisticsStart = context.getStatistics?.() || null;
+        const canvasState = {
+          page: globalThis.location.href,
+          clientWidth: scene.canvas.clientWidth,
+          clientHeight: scene.canvas.clientHeight,
+          canvasWidth: scene.canvas.width,
+          canvasHeight: scene.canvas.height,
+          drawingBufferWidth:
+            context.drawingBufferWidth ?? scene.canvas.width,
+          drawingBufferHeight:
+            context.drawingBufferHeight ?? scene.canvas.height,
+          devicePixelRatio: globalThis.devicePixelRatio,
+          resolutionScale: viewer.resolutionScale,
+        };
         const timestampAvailable =
           actualRenderer === "webgpu" &&
           context.hasFeature?.("timestamp-query") === true;
@@ -2253,11 +3236,31 @@ async function runOne(
         if (timestampEnabled) globalThis.CesiumDebug?.gpuPassCost?.(true);
 
         const trackEvidence = [];
+        const webgpuModelPreparationAccumulator =
+          webgpuModelPreparationEvidenceModule?.createWebGPUModelPreparationEvidenceAccumulator() ||
+          null;
+        let measurementPostRenderFrameCount = 0;
         const removeActionEvidence =
-          cameraTrackEnabled
+          cameraTrackEnabled || webgpuModelPreparationAccumulator
             ? scene.postRender.addEventListener(() => {
-                if (currentTrackState) {
+                measurementPostRenderFrameCount++;
+                if (cameraTrackEnabled && currentTrackState) {
                   const evidence = { ...currentTrackState };
+                  evidence.globeTilesLoaded =
+                    scene.globe?.tilesLoaded === true;
+                  // C12-29 S5 — preserve the per-frame activation decision so
+                  // eclipse-time moving routes can distinguish shader work
+                  // from an idle/no-eclipse benchmark. This reads existing
+                  // View-owned state and allocates only in the explicit
+                  // benchmark's already-allocated evidence row.
+                  const eclipseGlobeShadow =
+                    scene.frameState?.eclipseGlobeShadow;
+                  evidence.eclipseGlobeShadowGate =
+                    eclipseGlobeShadow?.params?.x ?? null;
+                  evidence.eclipseGlobeShadowRevision =
+                    eclipseGlobeShadow?.revision ?? null;
+                  evidence.eclipseMoonObscuration =
+                    scene.frameState?.eclipseState?.moonObscuration ?? null;
                   if (movingPickEnabled && currentPickState.valid) {
                     evidence.x = currentPickState.x;
                     evidence.y = currentPickState.y;
@@ -2280,8 +3283,57 @@ async function runOne(
                   }
                   trackEvidence.push(evidence);
                 }
+                if (webgpuModelPreparationAccumulator) {
+                  const frameState = scene.frameState;
+                  const statistics =
+                    frameState?._webgpuModelPreparationStatistics;
+                  // The statistics object is retained on FrameState. Only
+                  // consume it when the renderer refreshed it for this exact
+                  // frame, otherwise a model-free frame would replay stale
+                  // preparation work into the aggregate.
+                  if (statistics?.frameNumber === frameState?.frameNumber) {
+                    webgpuModelPreparationEvidenceModule.observeWebGPUModelPreparationStatistics(
+                      webgpuModelPreparationAccumulator,
+                      statistics,
+                    );
+                  }
+                }
               })
             : null;
+        const representativeValidationWaypointIndex = representativeHarness
+          ? cameraTrack.findIndex(
+              (waypoint) =>
+                waypoint.name ===
+                workloadDefinition.representativeConfig.validationWaypoint,
+            )
+          : -1;
+        if (
+          representativeHarness &&
+          representativeValidationWaypointIndex < 0
+        ) {
+          throw new Error(
+            `representative validation waypoint not found: ${workloadDefinition.representativeConfig.validationWaypoint}`,
+          );
+        }
+        const representativeValidationRouteProgress =
+          representativeValidationWaypointIndex >= 0
+            ? representativeValidationWaypointIndex /
+              (cameraTrack.length - 1)
+            : null;
+        const representativeCommandWindowStartRouteProgress =
+          representativeValidationWaypointIndex > 0
+            ? (representativeValidationWaypointIndex - 1) /
+              (cameraTrack.length - 1)
+            : null;
+        const representativeCommandWindowEndRouteProgress =
+          representativeValidationRouteProgress;
+        const representativeCommandSampleLimit =
+          representativeHarness
+            ? workloadDefinition.representativeConfig.primeStableFrames
+            : 0;
+        const representativeCommandWindowTilesets = representativeHarness
+          ? representativeHarness.assets.tilesets
+          : null;
         const traceFrameLimit =
           measurementDefinition.mode === "frames"
             ? measurementDefinition.frames
@@ -2304,40 +3356,147 @@ async function runOne(
           };
           terrainOwnershipDiagnostics.derivedRefreshObserverAttached = true;
         }
+        if (residentFrameDrivenTrack) {
+          actionRunning = true;
+        }
         scene.beginPerformanceTrace(
           `${expectedRenderer}:${workloadDefinition.id}`,
           {
             frames: traceFrameLimit,
           },
         );
+        // Startup and route priming may compile unrelated programs. Reset the
+        // bounded event lane at the exact measurement boundary so startup
+        // entries cannot consume its capacity or be mistaken for route stalls.
+        const webglProgramEventsBeforeMeasurement =
+          diagnostics.webglProgramEvents.length;
+        diagnostics.webglProgramEvents.length = 0;
+        diagnostics.webglProgramEventsTruncated = false;
+        globeShaderRequests.length = 0;
+        globeShaderRequestStates.clear();
+        const representativeTerrainDiagnosticsStart =
+          representativeHarness?.terrain.snapshotDiagnostics({
+            includeGeneratedTileKeys: true,
+          }) || null;
+        const deviceErrorCountAtMeasurementStart = deviceErrors.length;
         const measurementStartMs = performance.now();
-        if (measurementDefinition.mode === "duration") {
-          await new Promise((resolveMeasurement) => {
-            const remove = scene.postRender.addEventListener(() => {
-              if (
+        try {
+          if (measurementDefinition.mode === "duration") {
+            // The duration condition is only ever evaluated from postRender,
+            // so it carries the same hang hazard as the fixed-frame wait and
+            // takes the same doubly-bounded primitive.
+            await awaitRenderedFrames(
+              "measurement-duration",
+              Math.min(
+                frameWaitCeilingMs,
+                Math.max(
+                  frameWaitStallMs,
+                  (measurementDefinition.durationMs || 0) * 3,
+                ),
+              ),
+              () =>
                 performance.now() - measurementStartMs >=
                   measurementDefinition.durationMs &&
                 (!cameraTrackEnabled ||
-                  currentTrackState?.routeProgress >= 0.999)
-              ) {
-                remove();
-                resolveMeasurement();
-              }
-            });
-          });
-        } else {
-          await waitFrames(measurementDefinition.frames);
+                  currentTrackState?.routeProgress >= 0.999),
+            );
+          } else {
+            await waitFrames(
+              measurementDefinition.frames,
+              "measurement-window",
+            );
+          }
+        } catch (measurementWaitError) {
+          // A structural frame-wait failure must not leave the performance
+          // trace open, the action loop running, the evidence listener
+          // attached, or Scene.updateDerivedCommands patched. Undo every
+          // run-scoped mutation the measurement boundary installed, then
+          // rethrow so the run is recorded as an error rather than yielding a
+          // truncated window that could be mistaken for a measured one.
+          stopActionLoop();
+          pickIssuanceEnabled = false;
+          removeActionEvidence?.();
+          try {
+            scene.endPerformanceTrace();
+          } catch {
+            // The trace state is already unusable; the rethrown structural
+            // error below is the reportable failure.
+          }
+          restoreWebGPUModelPreparationDiagnostics();
+          if (originalSceneUpdateDerivedCommands) {
+            scene.updateDerivedCommands = originalSceneUpdateDerivedCommands;
+          }
+          context._visibilityExecutionOwnershipDiagnostics = undefined;
+          if (timestampEnabled) globalThis.CesiumDebug?.gpuPassCost?.(false);
+          throw measurementWaitError;
         }
 
         // End all workload and counter windows at the measured-frame boundary.
         // Timestamp readback may continue below, but it must not add motion,
         // uploads, API calls, heap deltas, or long tasks to this measurement.
         const measurementEndMs = performance.now();
-        actionRunning = false;
+        stopActionLoop();
         pickIssuanceEnabled = false;
         removeActionEvidence?.();
-        const measurementElapsedMs = measurementEndMs - measurementStartMs;
         const trace = scene.endPerformanceTrace();
+        const webgpuModelPreparationEvidence =
+          actualRenderer === "webgl"
+            ? null
+            : webgpuModelPreparationEvidenceModule
+              ? webgpuModelPreparationEvidenceModule.summarizeWebGPUModelPreparationEvidence(
+                  webgpuModelPreparationAccumulator,
+                  {
+                    expectedFrameCount: measurementPostRenderFrameCount,
+                  },
+                )
+              : apiInstrumentationEnabled
+                ? {
+                    enabled: false,
+                    reason: "no-model-attribution-content",
+                  }
+                : {
+                    enabled: false,
+                    reason: "api-instrumentation-disabled",
+                  };
+        restoreWebGPUModelPreparationDiagnostics();
+        const representativeTerrainDiagnosticsEnd =
+          representativeHarness?.terrain.snapshotDiagnostics({
+            includeGeneratedTileKeys: true,
+          }) || null;
+        const representativeTerrainDiagnosticsDelta = representativeHarness
+          ? representativeModule.diffRepresentativeTerrainDiagnostics(
+              representativeTerrainDiagnosticsStart,
+              representativeTerrainDiagnosticsEnd,
+            )
+          : null;
+        const publicTerrainDiagnostics = (diagnostics) => {
+          if (!diagnostics) return null;
+          const publicDiagnostics = { ...diagnostics };
+          delete publicDiagnostics.generatedTileKeys;
+          return publicDiagnostics;
+        };
+        const representativeContentEvidence = representativeHarness
+            ? {
+              prime: representativeHarness.primeEvidence,
+              measurementContent: null,
+              measurementTerrainActivity: {
+                start: publicTerrainDiagnostics(
+                  representativeTerrainDiagnosticsStart,
+                ),
+                end: publicTerrainDiagnostics(
+                  representativeTerrainDiagnosticsEnd,
+                ),
+                delta: representativeTerrainDiagnosticsDelta,
+                globeTilesNotLoadedFrames: trackEvidence.reduce(
+                  (count, evidence) =>
+                    count + (evidence.globeTilesLoaded ? 0 : 1),
+                  0,
+                ),
+              },
+              validation: null,
+            }
+          : null;
+        const measurementElapsedMs = measurementEndMs - measurementStartMs;
         if (originalSceneUpdateDerivedCommands) {
           scene.updateDerivedCommands = originalSceneUpdateDerivedCommands;
         }
@@ -2354,6 +3513,10 @@ async function runOne(
         const statisticsEnd = context.getRendererStatistics?.() || {};
         const frameStatisticsEnd = context.getStatistics?.() || null;
         const apiCountersEnd = { ...diagnostics.apiCounters };
+        const webglProgramEvents = [...diagnostics.webglProgramEvents];
+        const webglProgramEventsTruncated =
+          diagnostics.webglProgramEventsTruncated;
+        const globeShaderRequestsEnd = [...globeShaderRequests];
         const apiCounterLabelsEnd = copyCounterLabels(
           diagnostics.apiCounterLabels,
         );
@@ -2388,6 +3551,7 @@ async function runOne(
           });
         }
         const observedLongTasks = [...diagnostics.longTasks];
+        const actionCountersTotalEnd = { ...actionCounters };
         const measuredActionCounters = Object.fromEntries(
           Object.keys(actionCounters).map((name) => [
             name,
@@ -2439,6 +3603,308 @@ async function runOne(
         );
         const statisticsAfterReadback = context.getRendererStatistics?.() || {};
         if (timestampEnabled) globalThis.CesiumDebug?.gpuPassCost?.(false);
+        const deviceErrorCountAtValidationStart = deviceErrors.length;
+        const measurementDeviceErrors = deviceErrors.slice(
+          deviceErrorCountAtMeasurementStart,
+          deviceErrorCountAtValidationStart,
+        );
+        if (representativeHarness) {
+          // Representative evidence intentionally runs after the trace and all
+          // measured API/statistics/memory/long-task snapshots are frozen.
+          // Scanning private selection structures in a timed postRender
+          // listener would otherwise become part of Scene's measured CPU
+          // sample. Resident workloads replay the exact fixed-frame route, so
+          // their renderer-neutral fingerprint remains causal; streaming
+          // workloads retain only bounded, non-causal coverage evidence.
+          const representativeReplayTracker =
+            representativeModule.createRepresentativeEvidenceTracker(
+              scene,
+              representativeHarness.terrain,
+              representativeHarness.assets,
+            );
+          const residentRepresentativeReplay =
+            workloadDefinition.representativeConfig.measurementTerrainMode ===
+            "resident";
+          const representativeStreamingReplayFrameLimit = 240;
+          const representativeReplayFrameCount = residentRepresentativeReplay
+            ? measurementDefinition.frames
+            : Math.min(
+                trace?.samples?.length || 0,
+                representativeStreamingReplayFrameLimit,
+              );
+          const representativeReplaySegments = new Set();
+          let representativeReplayTailSampled = false;
+          let representativeReplayEndSampled = false;
+          let representativeCommandWindowInspectedFrames = 0;
+          let representativeCommandSamplesTaken = 0;
+          let representativeCommandFirstSampleProgress = null;
+          let representativeCommandLastSampleProgress = null;
+          let representativeCommandMaximumObserved = 0;
+
+          // The per-frame camera phase the TIMED window actually rendered.
+          // trackEvidence rows are pushed from scene.postRender, so each row
+          // carries the route progress that was in effect when that frame was
+          // presented — true whether the viewer rAF or the action rAF ran
+          // first, which the harness deliberately does not assume.
+          const measuredRenderedProgress = cameraTrackEnabled
+            ? trackEvidence.map((evidence) => evidence.routeProgress)
+            : [];
+          // Record the replay's rendered phase through the identical hook so
+          // the two sequences are comparable observations, not one observation
+          // against a formula.
+          const replayRenderedProgress = [];
+          const removeReplayProgressEvidence =
+            scene.postRender.addEventListener(() => {
+              replayRenderedProgress.push(
+                currentTrackState?.routeProgress ?? null,
+              );
+            });
+          performanceCampaignCleanup.add(removeReplayProgressEvidence);
+
+          for (
+            let replayFrameIndex = 0;
+            replayFrameIndex < representativeReplayFrameCount;
+            replayFrameIndex++
+          ) {
+            const routeProgress =
+              representativeReplayFrameCount === 1
+                ? 0
+                : replayFrameIndex /
+                  (representativeReplayFrameCount - 1);
+            currentTrackState = applyCameraTrackProgress(routeProgress);
+            await waitFrames(1, "representative-replay");
+
+            representativeReplayTracker.sampleWorkloadFingerprint(
+              currentTrackState.segmentIndex,
+            );
+            representativeReplayTracker.sample();
+            representativeHarness.tilesetLifecycle?.sampleFrame(
+              currentTrackState.segmentIndex,
+              routeProgress,
+            );
+            representativeReplaySegments.add(
+              currentTrackState.segmentIndex,
+            );
+            representativeReplayTailSampled ||= routeProgress >= 0.95;
+            representativeReplayEndSampled ||= routeProgress >= 0.99;
+
+            if (
+              representativeCommandSamplesTaken <
+                representativeCommandSampleLimit &&
+              routeProgress >=
+                representativeCommandWindowStartRouteProgress &&
+              routeProgress < representativeCommandWindowEndRouteProgress
+            ) {
+              representativeCommandWindowInspectedFrames++;
+              let tilesetCommands = 0;
+              for (
+                let index = 0;
+                index < representativeCommandWindowTilesets.length;
+                index++
+              ) {
+                tilesetCommands +=
+                  representativeCommandWindowTilesets[index].statistics
+                    ?.numberOfCommands || 0;
+              }
+              representativeCommandMaximumObserved = Math.max(
+                representativeCommandMaximumObserved,
+                tilesetCommands,
+              );
+              if (tilesetCommands > 0) {
+                representativeCommandSamplesTaken++;
+                representativeCommandFirstSampleProgress ??= routeProgress;
+                representativeCommandLastSampleProgress = routeProgress;
+              }
+            }
+          }
+
+          removeReplayProgressEvidence();
+
+          // Provenance is a MEASUREMENT, not a config restatement. These two
+          // flags previously read straight from
+          // `measurementTerrainMode === "resident"`, so the "exact workload
+          // identity" proof certified the REPLAY rather than the timed window:
+          // a one-frame camera phase difference between the WebGL and WebGPU
+          // legs was invisible to every downstream gate. Both now derive from
+          // comparing the phase sequence the timed window rendered against the
+          // one the replay rendered, using the same comparator the Node-side
+          // gate re-runs on the recorded sequences.
+          const fixedFrameProgressComparison =
+            campaignUtilsModule.compareFixedFrameProgressSequences(
+              measuredRenderedProgress,
+              replayRenderedProgress,
+            );
+          const identicalFixedFrameProgress =
+            residentRepresentativeReplay &&
+            fixedFrameProgressComparison.identical === true;
+          const representativeMeasurementContent =
+            representativeReplayTracker.snapshot({
+              phase: "measurement",
+            });
+          const representativeReplayProvenance = {
+            timed: false,
+            phase: "post-measurement-untimed-replay",
+            traceEndedBeforeReplay: true,
+            measurementSnapshotsFrozenBeforeReplay: true,
+            replayModeFixedFrame: residentRepresentativeReplay,
+            renderedProgressIdentical:
+              fixedFrameProgressComparison.identical === true,
+            causal: identicalFixedFrameProgress,
+          };
+          representativeMeasurementContent.sampling = {
+            mode: "untimed-deterministic-route-replay",
+            provenance: representativeReplayProvenance,
+            replay: {
+              frameCount: representativeReplayFrameCount,
+              sourceMeasuredFrames: trace?.samples?.length || 0,
+              identicalFixedFrameProgress,
+              fixedFrameProgressComparison,
+              renderedProgress: {
+                measured: measuredRenderedProgress,
+                replay: replayRenderedProgress,
+              },
+              progressFormula: "index/(frameCount-1)",
+              streamingFrameLimit: residentRepresentativeReplay
+                ? null
+                : representativeStreamingReplayFrameLimit,
+            },
+            routeSegments: representativeReplaySegments.size,
+            tailSampled: representativeReplayTailSampled,
+            endSampled: representativeReplayEndSampled,
+            validationWaypoint: {
+              name:
+                workloadDefinition.representativeConfig.validationWaypoint,
+              routeProgress: representativeValidationRouteProgress,
+            },
+            commandTriggeredPreWaypoint: {
+              startRouteProgress:
+                representativeCommandWindowStartRouteProgress,
+              endRouteProgress:
+                representativeCommandWindowEndRouteProgress,
+              endExclusive: true,
+              configuredTilesets:
+                representativeCommandWindowTilesets.length,
+              inspectedFrames:
+                representativeCommandWindowInspectedFrames,
+              maximumSamples: representativeCommandSampleLimit,
+              sampledFrames: representativeCommandSamplesTaken,
+              firstSampleRouteProgress:
+                representativeCommandFirstSampleProgress,
+              lastSampleRouteProgress:
+                representativeCommandLastSampleProgress,
+              maximumObservedCommands:
+                representativeCommandMaximumObserved,
+            },
+          };
+          if (representativeMeasurementContent.workloadFingerprint) {
+            representativeMeasurementContent.workloadFingerprint.provenance =
+              representativeReplayProvenance;
+          }
+          representativeContentEvidence.measurementContent =
+            representativeMeasurementContent;
+          representativeContentEvidence.tilesetLifecycleDiagnostics =
+            representativeHarness.tilesetLifecycle?.snapshot(
+              representativeReplayProvenance,
+            ) || {
+              schemaVersion: 1,
+              enabled: false,
+              nonCertifying: true,
+              reason: "api-instrumentation-disabled",
+            };
+        }
+        let validationQueueDrain = "not-requested";
+        if (representativeHarness) {
+          const validationTracker =
+            representativeModule.createRepresentativeEvidenceTracker(
+              scene,
+              representativeHarness.terrain,
+              representativeHarness.assets,
+            );
+          const validationWaypoint = cameraTrack.find(
+            (waypoint) =>
+              waypoint.name ===
+              workloadDefinition.representativeConfig.validationWaypoint,
+          );
+          if (!validationWaypoint) {
+            throw new Error(
+              `representative validation waypoint not found: ${workloadDefinition.representativeConfig.validationWaypoint}`,
+            );
+          }
+          scene.camera.setView({
+            destination: C.Cartesian3.fromDegrees(
+              validationWaypoint.lon,
+              validationWaypoint.lat,
+              validationWaypoint.height,
+            ),
+            orientation: {
+              heading: C.Math.toRadians(validationWaypoint.heading),
+              pitch: C.Math.toRadians(validationWaypoint.pitch),
+              roll: C.Math.toRadians(validationWaypoint.roll),
+            },
+          });
+          const requiredValidationFrames =
+            workloadDefinition.representativeConfig.primeStableFrames;
+          const validationDeadline =
+            performance.now() + protocolDefinition.settleTimeoutMs;
+          let validationStableFrames = 0;
+          while (
+            validationStableFrames < requiredValidationFrames &&
+            performance.now() < validationDeadline
+          ) {
+            await waitFrames(1, "representative-validation");
+            const assetsReady =
+              representativeHarness.assets.models.every(
+                (model) => model.ready,
+              ) &&
+              representativeHarness.assets.tilesets.every(
+                (tileset) => tileset.tilesLoaded,
+              );
+            if (scene.globe.tilesLoaded && assetsReady) {
+              validationTracker.sample();
+              validationStableFrames++;
+            } else {
+              validationStableFrames = 0;
+            }
+          }
+          const validationEvidence = validationTracker.snapshot({
+            phase: "validation",
+          });
+          validationEvidence.stableFrames = validationStableFrames;
+          validationEvidence.requiredStableFrames =
+            requiredValidationFrames;
+          if (validationStableFrames < requiredValidationFrames) {
+            validationEvidence.valid = false;
+            validationEvidence.failures.unshift(
+              "post-measurement representative validation timed out",
+            );
+          }
+          representativeContentEvidence.validation =
+            validationEvidence;
+          const queueDone = context.device?.queue?.onSubmittedWorkDone?.();
+          if (queueDone) {
+            let validationDrainTimeout;
+            validationQueueDrain = await Promise.race([
+              queueDone.then(
+                () => "drained",
+                () => "rejected",
+              ),
+              new Promise((resolveTimeout) => {
+                validationDrainTimeout = setTimeout(
+                  () => resolveTimeout("timeout"),
+                  Math.min(protocolDefinition.settleTimeoutMs, 5000),
+                );
+              }),
+            ]);
+            clearTimeout(validationDrainTimeout);
+          }
+          await new Promise((resolveErrorBoundary) =>
+            setTimeout(resolveErrorBoundary, 0),
+          );
+        }
+        const validationDeviceErrors = deviceErrors.slice(
+          deviceErrorCountAtValidationStart,
+        );
+        const allDeviceErrors = [...deviceErrors];
         context.device?.removeEventListener?.(
           "uncapturederror",
           onUncapturedDeviceError,
@@ -2480,6 +3946,27 @@ async function runOne(
               subgroupMaxSize: context.adapter.info.subgroupMaxSize,
             }
           : null;
+        const rendererString =
+          typeof context.getRendererString === "function"
+            ? context.getRendererString()
+            : "";
+        const adapterIdentityFields = adapterInfo
+          ? [
+              adapterInfo.vendor,
+              adapterInfo.architecture,
+              adapterInfo.device,
+              adapterInfo.description,
+            ].filter(Boolean)
+          : [];
+        const gpuProvenance = {
+          backend: actualRenderer,
+          rendererString,
+          adapterInfo,
+          complete:
+            actualRenderer === "webgl"
+              ? rendererString.length > 0
+              : adapterIdentityFields.length > 0,
+        };
         return {
           actualRenderer,
           settleFrames,
@@ -2490,9 +3977,22 @@ async function runOne(
           timestampEnabled,
           featureState,
           cloudExecutionEvidence,
-          deviceErrors,
+          representativeContentEvidence,
+          webgpuModelPreparationEvidence,
+          deviceErrors: allDeviceErrors,
+          deviceErrorPhases: {
+            beforeMeasurement: deviceErrors.slice(
+              0,
+              deviceErrorCountAtMeasurementStart,
+            ),
+            measurement: measurementDeviceErrors,
+            validation: validationDeviceErrors,
+            validationQueueDrain,
+          },
           adapterInfo,
+          gpuProvenance,
           enabledFeatures: context.enabledFeatures || [],
+          canvasState,
           trace,
           measurement: {
             ...measurementDefinition,
@@ -2538,6 +4038,18 @@ async function runOne(
               end: apiCounterOwnersEnd,
             },
           },
+          webglProgramEvents: {
+            enabled: apiInstrumentationEnabled,
+            limit: 512,
+            discardedBeforeMeasurement: webglProgramEventsBeforeMeasurement,
+            truncated: webglProgramEventsTruncated,
+            entries: webglProgramEvents,
+          },
+          globeShaderRequests: {
+            enabled: apiInstrumentationEnabled && actualRenderer === "webgl",
+            limit: 128,
+            entries: globeShaderRequestsEnd,
+          },
           globeLogicalCounters: {
             enabled: apiInstrumentationEnabled,
             start: globeLogicalCountersStart,
@@ -2549,7 +4061,7 @@ async function runOne(
             end: globeBindGroupCacheEnd,
           },
           actionCounters: measuredActionCounters,
-          actionCountersTotal: actionCounters,
+          actionCountersTotal: actionCountersTotalEnd,
           memory: {
             available: memoryStart !== null && memoryEnd !== null,
             start: memoryStart,
@@ -2606,6 +4118,12 @@ async function runOne(
       (maximum, entry) => Math.max(maximum, entry.duration),
       0,
     );
+    browserResult.webglProgramEvents.entries =
+      browserResult.webglProgramEvents.entries.filter(
+        (entry) =>
+          entry.startTime >= browserResult.longTasks.windowStartMs &&
+          entry.startTime < browserResult.longTasks.windowEndMs,
+      );
     const terrainSelectionAudit = browserResult.terrainSelectionAudit;
     if (terrainSelectionAudit?.enabled) {
       const routeByFrame = new Map(
@@ -2685,11 +4203,42 @@ async function runOne(
           browserResult.movingPickTelemetry,
         )
       : null;
+    browserResult.eclipseGlobeShadowEvidence =
+      workload.evidenceProfile === "eclipse-globe-shadow"
+        ? summarizeEclipseGlobeShadowEvidence(
+            browserResult.trace?.samples || [],
+            browserResult.trackEvidence || [],
+          )
+        : null;
     browserResult.quality = assessPerformanceRunQuality(browserResult);
     const failures = [];
     if (browserResult.actualRenderer !== renderer) {
       failures.push(
         `resolved ${browserResult.actualRenderer}, expected ${renderer}`,
+      );
+    }
+    const modelPreparationAssessment =
+      assessWebGPUModelPreparationEvidence(
+        browserResult.webgpuModelPreparationEvidence,
+        {
+          renderer,
+          apiInstrumentation,
+          modelAttributionContent:
+            workload.contentProfile ===
+            "local-procedural-terrain-assets",
+        },
+      );
+    browserResult.webgpuModelPreparationAssessment =
+      modelPreparationAssessment;
+    if (!modelPreparationAssessment.valid) {
+      failures.push(...modelPreparationAssessment.reasons);
+      browserResult.quality.status = "invalid";
+      browserResult.quality.validForAggregation = false;
+      browserResult.quality.validForCpuAggregation = false;
+      browserResult.quality.validForGpuAggregation = false;
+      browserResult.quality.reasons ??= [];
+      browserResult.quality.reasons.push(
+        ...modelPreparationAssessment.reasons,
       );
     }
     if (pageErrors.length) failures.push(`${pageErrors.length} page errors`);
@@ -2706,6 +4255,39 @@ async function runOne(
     if (browserResult.deviceErrors?.length) {
       failures.push(
         `${browserResult.deviceErrors.length} uncaptured GPU errors`,
+      );
+    }
+    if (
+      browserResult.deviceErrorPhases?.validationQueueDrain === "timeout" ||
+      browserResult.deviceErrorPhases?.validationQueueDrain === "rejected"
+    ) {
+      failures.push(
+        `representative validation GPU queue ${browserResult.deviceErrorPhases.validationQueueDrain}`,
+      );
+    }
+    if (browserResult.gpuProvenance?.complete !== true) {
+      failures.push("physical GPU provenance was incomplete");
+    }
+    if (
+      apiInstrumentation &&
+      (browserResult.apiCounters?.patchFailures?.length || 0) > 0
+    ) {
+      failures.push(
+        `GPU API instrumentation had ${browserResult.apiCounters.patchFailures.length} patch failures`,
+      );
+    }
+    if (apiInstrumentation && browserResult.webglProgramEvents?.truncated) {
+      failures.push("WebGL program-event chronology was truncated");
+    }
+    if (
+      workload.evidenceProfile === "eclipse-globe-shadow" &&
+      browserResult.eclipseGlobeShadowEvidence?.valid !== true
+    ) {
+      failures.push(
+        `eclipse globe-shadow evidence invalid: ${
+          browserResult.eclipseGlobeShadowEvidence?.reasons?.join("; ") ||
+          "missing summary"
+        }`,
       );
     }
     if (workload.featureProfile === "volumetric-clouds") {
@@ -2725,6 +4307,74 @@ async function runOne(
         failures.push(
           "volumetric cloud workload did not realize the raymarch, temporal-history, and upscale targets",
         );
+      }
+    }
+    if (
+      workload.contentProfile === "local-procedural-terrain-assets" &&
+      browserResult.representativeContentEvidence?.validation?.valid !== true
+    ) {
+      const evidence =
+        browserResult.representativeContentEvidence?.validation;
+      const reason = `representative content coverage invalid: ${
+        evidence?.failures?.join("; ") || "missing validation evidence"
+      }`;
+      failures.push(reason);
+      browserResult.quality.status = "invalid";
+      browserResult.quality.validForAggregation = false;
+      browserResult.quality.validForCpuAggregation = false;
+      browserResult.quality.validForGpuAggregation = false;
+      browserResult.quality.reasons ??= [];
+      browserResult.quality.reasons.push(reason);
+    }
+    if (
+      workload.contentProfile === "local-procedural-terrain-assets"
+    ) {
+      const assessment = assessRepresentativeMeasurementEvidence(
+        browserResult.representativeContentEvidence,
+        {
+          measurementTerrainMode:
+            workload.representativeConfig.measurementTerrainMode,
+        },
+      );
+      browserResult.representativeMeasurementAssessment = assessment;
+      if (!assessment.valid) {
+        const reason =
+          `representative measurement/replay evidence invalid: ` +
+          assessment.reasons.join("; ");
+        failures.push(reason);
+        browserResult.quality.status = "invalid";
+        browserResult.quality.validForAggregation = false;
+        browserResult.quality.validForCpuAggregation = false;
+        browserResult.quality.validForGpuAggregation = false;
+        browserResult.quality.reasons ??= [];
+        browserResult.quality.reasons.push(reason);
+      }
+    }
+    if (
+      workload.representativeConfig?.measurementTerrainMode === "resident"
+    ) {
+      const activity =
+        browserResult.representativeContentEvidence
+          ?.measurementTerrainActivity;
+      const delta = activity?.delta;
+      if (
+        !delta ||
+        delta.requestCount !== 0 ||
+        delta.tileGenerationCount !== 0 ||
+        activity.globeTilesNotLoadedFrames !== 0
+      ) {
+        const reason =
+          `resident terrain was not fully quiescent ` +
+          `(requests=${delta?.requestCount ?? "missing"}, ` +
+          `generations=${delta?.tileGenerationCount ?? "missing"}, ` +
+          `unloadedFrames=${activity?.globeTilesNotLoadedFrames ?? "missing"})`;
+        failures.push(reason);
+        browserResult.quality.status = "invalid";
+        browserResult.quality.validForAggregation = false;
+        browserResult.quality.validForCpuAggregation = false;
+        browserResult.quality.validForGpuAggregation = false;
+        browserResult.quality.reasons ??= [];
+        browserResult.quality.reasons.push(reason);
       }
     }
     if (
@@ -2883,12 +4533,29 @@ async function runOne(
     let teardown;
     try {
       teardown = await page.evaluate(async () => {
+        const cleanupErrors = [];
+        let cleanupCount = 0;
+        const cleanupRegistry = globalThis.__perfCampaignCleanup;
+        globalThis.__perfCampaignCleanup = undefined;
+        if (cleanupRegistry) {
+          for (const cleanup of cleanupRegistry) {
+            cleanupCount++;
+            try {
+              await cleanup();
+            } catch (error) {
+              cleanupErrors.push(String(error?.stack || error));
+            }
+          }
+          cleanupRegistry.clear?.();
+        }
         const viewer = globalThis.viewer;
         if (!viewer || viewer.isDestroyed?.()) {
           return {
             status: "already-destroyed",
             queue: "not-applicable",
             deviceLost: null,
+            cleanupCount,
+            cleanupErrors,
           };
         }
         const device =
@@ -2914,7 +4581,13 @@ async function runOne(
         }
         viewer.destroy();
         if (!deviceLost) {
-          return { status: "destroyed", queue, deviceLost: null };
+          return {
+            status: "destroyed",
+            queue,
+            deviceLost: null,
+            cleanupCount,
+            cleanupErrors,
+          };
         }
         const loss = await Promise.race([
           deviceLost.then(
@@ -2932,7 +4605,13 @@ async function runOne(
             ),
           ),
         ]);
-        return { status: "destroyed", queue, deviceLost: loss };
+        return {
+          status: "destroyed",
+          queue,
+          deviceLost: loss,
+          cleanupCount,
+          cleanupErrors,
+        };
       });
     } catch (error) {
       // A crashed/closed page has already relinquished its browser resources.
@@ -2956,6 +4635,11 @@ async function runOne(
       }
       if (teardown?.queue === "timeout" || teardown?.queue === "rejected") {
         teardownReasons.push(`GPU queue drain ${teardown.queue}`);
+      }
+      if ((teardown?.cleanupErrors?.length || 0) > 0) {
+        teardownReasons.push(
+          `performance cleanup had ${teardown.cleanupErrors.length} errors`,
+        );
       }
       if (
         renderer === "webgpu" &&
@@ -2988,9 +4672,30 @@ async function runOne(
 
 const options = parseArguments(process.argv.slice(2));
 const manifest = JSON.parse(await readFile(options.manifestPath, "utf8"));
-if (manifest.schemaVersion !== 1 || !Array.isArray(manifest.workloads)) {
-  throw new Error("Unsupported or invalid performance workload manifest");
-}
+const manifestSchema = JSON.parse(
+  await readFile(
+    resolve(toolDirectory, "performance-workloads.schema.json"),
+    "utf8",
+  ),
+);
+assertPerformanceWorkloadManifest(manifest, manifestSchema);
+manifest.protocol = {
+  ...manifest.protocol,
+  viewport: {
+    ...manifest.protocol.viewport,
+    width:
+      options.viewportWidth ?? manifest.protocol.viewport.width,
+    height:
+      options.viewportHeight ?? manifest.protocol.viewport.height,
+    deviceScaleFactor:
+      options.deviceScaleFactor ??
+      manifest.protocol.viewport.deviceScaleFactor,
+  },
+  resolutionScale:
+    options.resolutionScale ??
+    manifest.protocol.resolutionScale ??
+    1,
+};
 const bundlePath = resolve(
   repositoryDirectory,
   "Build",
@@ -2998,6 +4703,26 @@ const bundlePath = resolve(
   "Cesium.js",
 );
 const bundleIdentity = await fileIdentity(bundlePath);
+const toolingIdentities = Object.fromEntries(
+  await Promise.all(
+    [
+      ["runner", fileURLToPath(import.meta.url)],
+      ["manifest", options.manifestPath],
+      [
+        "representativeContentHelper",
+        resolve(
+          toolDirectory,
+          "lib",
+          "representative-performance-content.mjs",
+        ),
+      ],
+      [
+        "cameraTrack",
+        resolve(toolDirectory, "lib", "globe-camera-track.mjs"),
+      ],
+    ].map(async ([name, path]) => [name, await fileIdentity(path)]),
+  ),
+);
 const requestedWorkloads = options.workloads.length
   ? options.workloads.map((id) => {
       const workload = manifest.workloads.find((entry) => entry.id === id);
@@ -3065,6 +4790,7 @@ const report = {
       byteLength: bundleIdentity.byteLength,
       sha256: bundleIdentity.sha256,
     },
+    tooling: toolingIdentities,
   },
   host: {
     platform: process.platform,
@@ -3095,6 +4821,7 @@ const report = {
   browserVersion: null,
   runs: [],
   aggregates: {},
+  representativePairSummaries: {},
   result: "pass",
 };
 
@@ -3153,10 +4880,149 @@ try {
         runsByRenderer.get(renderer).push(run);
         if (
           run.result !== "pass" ||
-          run.quality?.validForAggregation === false
+          run.quality?.status === "invalid"
         ) {
           report.result = "fail";
         }
+      }
+    }
+    if (
+      workload.contentProfile === "local-procedural-terrain-assets" &&
+      workloadRenderers.includes("webgl") &&
+      workloadRenderers.includes("webgpu")
+    ) {
+      const pairs = workloadSchedule.map((scheduled) => {
+        const webglRun = runsByRenderer
+          .get("webgl")
+          .find((run) => run.repetition === scheduled.repetition);
+        const webgpuRun = runsByRenderer
+          .get("webgpu")
+          .find((run) => run.repetition === scheduled.repetition);
+        const comparison = assessRepresentativePairComparability(
+          webglRun,
+          webgpuRun,
+          {
+            measurementTerrainMode:
+              workload.representativeConfig.measurementTerrainMode,
+            maximumDeltaRatio:
+              workload.representativeConfig.maximumPairWorkDeltaRatio,
+            minimumGeneratedKeyJaccard: 0.95,
+            requireGeneratedKeySimilarity:
+              workload.representativeConfig.measurementTerrainMode ===
+              "streaming",
+          },
+        );
+        if (
+          webglRun?.result !== "pass" ||
+          webgpuRun?.result !== "pass"
+        ) {
+          comparison.valid = false;
+          comparison.reasons.unshift(
+            "one or both renderer legs did not pass",
+          );
+        }
+        const order = scheduled.order.join("-");
+        const pairRecord = {
+          repetition: scheduled.repetition,
+          order,
+          ...comparison,
+        };
+        for (const run of [webglRun, webgpuRun]) {
+          if (!run) continue;
+          run.representativePairComparability = pairRecord;
+          if (!comparison.valid) {
+            run.quality ??= {
+              status: "invalid",
+              validForAggregation: false,
+              validForCpuAggregation: false,
+              validForGpuAggregation: false,
+              reasons: [],
+              warnings: [],
+            };
+            run.quality.status = "invalid";
+            run.quality.validForAggregation = false;
+            run.quality.validForCpuAggregation = false;
+            run.quality.validForGpuAggregation = false;
+            run.quality.reasons ??= [];
+            run.quality.reasons.push(
+              ...comparison.reasons.map(
+                (reason) => `representative pair excluded: ${reason}`,
+              ),
+            );
+          }
+        }
+        return pairRecord;
+      });
+      const validPairs = pairs.filter((pair) => pair.valid);
+      const certificationEligiblePairs = validPairs.filter(
+        (pair) => pair.certificationEligible,
+      );
+      const attributionOnlyCampaign = options.apiInstrumentation === true;
+      const closurePairs = attributionOnlyCampaign
+        ? validPairs
+        : certificationEligiblePairs;
+      const orderCounts = Object.fromEntries(
+        [...new Set(workloadSchedule.map((entry) => entry.order.join("-")))]
+          .sort()
+          .map((order) => [
+            order,
+            closurePairs.filter((pair) => pair.order === order).length,
+          ]),
+      );
+      const certificationRun =
+        !attributionOnlyCampaign && workloadSchedule.length >= 6;
+      const minimumValidPairs = attributionOnlyCampaign
+        ? 0
+        : certificationRun
+          ? 5
+          : workloadSchedule.length;
+      const minimumComparablePairs = attributionOnlyCampaign
+        ? workloadSchedule.length
+        : minimumValidPairs;
+      const minimumPairsPerOrder = certificationRun ? 2 : 0;
+      const closureReasons = [];
+      if (closurePairs.length < minimumComparablePairs) {
+        closureReasons.push(
+          `${closurePairs.length}/${minimumComparablePairs} required comparable pairs survived`,
+        );
+      }
+      if (
+        minimumPairsPerOrder > 0 &&
+        Object.values(orderCounts).some(
+          (count) => count < minimumPairsPerOrder,
+        )
+      ) {
+        closureReasons.push(
+          `counterbalanced order coverage fell below ${minimumPairsPerOrder} comparable pairs per order`,
+        );
+      }
+      report.representativePairSummaries[workload.id] = {
+        valid: closureReasons.length === 0,
+        status: attributionOnlyCampaign
+          ? "attribution-only"
+          : certificationRun
+            ? closureReasons.length === 0
+              ? "certified"
+              : "certification-failed"
+            : "diagnostic",
+        attributionOnly: attributionOnlyCampaign,
+        certificationEligible: !attributionOnlyCampaign,
+        reasons: closureReasons,
+        required: {
+          minimumValidPairs,
+          minimumComparablePairs,
+          minimumPairsPerOrder,
+        },
+        observed: {
+          totalPairs: pairs.length,
+          validPairs: validPairs.length,
+          certificationEligiblePairs: certificationEligiblePairs.length,
+          orderCounts,
+        },
+        pairs,
+      };
+      if (closureReasons.length > 0) {
+        report.result = "fail";
       }
     }
     for (const renderer of workloadRenderers) {

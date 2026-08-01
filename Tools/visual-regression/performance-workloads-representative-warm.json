@@ -1,0 +1,71 @@
+{
+  "$schema": "./performance-workloads.schema.json",
+  "schemaVersion": 1,
+  "id": "fork-representative-resident-attribution-v1",
+  "description": "Deterministic, network-free resident/high-cache renderer-attribution workload. The exact fixed-frame camera sequence is pre-rendered so bounded procedural terrain must be fully resident before either backend repeats the same sequence.",
+  "baseUrl": "http://localhost:8080/Apps/CesiumViewer/index.html",
+  "protocol": {
+    "browser": "msedge",
+    "viewport": { "width": 1280, "height": 720, "deviceScaleFactor": 1 },
+    "resolutionScale": 1,
+    "fixedClock": "2026-06-21T08:00:00Z",
+    "warmupFrames": 600,
+    "measuredFrames": 600,
+    "settleStableFrames": 30,
+    "settleTimeoutMs": 45000,
+    "gpuReadbackDelayMs": 300,
+    "repetitions": 6,
+    "counterbalancedPairs": 6
+  },
+  "workloads": [
+    {
+      "id": "moving-camera-representative-resident-terrain-assets-3d",
+      "description": "Resident/high-cache renderer attribution over a fixed-frame form of the production camera interpolation with non-flat terrain, water masks, terrain-draped glTF models, and relocated local 3D Tiles. Any measured terrain request, generation, or unloaded frame invalidates the run.",
+      "mode": "3d",
+      "action": "camera-track",
+      "content": "terrain-models-tiles",
+      "contentProfile": "local-procedural-terrain-assets",
+      "featureProfile": "default-globe",
+      "trackId": "orbit-to-ground-global-v1",
+      "measuredFrames": 600,
+      "representativeConfig": {
+        "terrain": {
+          "heightmapWidth": 33,
+          "waterMaskWidth": 16,
+          "maximumLevel": 9,
+          "tileCacheSize": 4096
+        },
+        "models": {
+          "url": "/Apps/SampleData/models/BoxInstanced/BoxInstanced.gltf",
+          "rows": 6,
+          "columns": 8,
+          "originLongitude": -122.405,
+          "originLatitude": 37.777,
+          "longitudeSpacing": 0.0012,
+          "latitudeSpacing": 0.001,
+          "heightAboveTerrain": 15,
+          "scale": 18
+        },
+        "tilesets": {
+          "url": "/Apps/SampleData/Cesium3DTiles/Tilesets/Tileset/tileset.json",
+          "rows": 2,
+          "columns": 2,
+          "originLongitude": -122.407,
+          "originLatitude": 37.778,
+          "longitudeSpacing": 0.004,
+          "latitudeSpacing": 0.003,
+          "sourceLongitude": -75.61209430782448,
+          "sourceLatitude": 40.042530611425896,
+          "sourceHeight": 0,
+          "targetHeightOffset": 25,
+          "maximumScreenSpaceError": 8
+        },
+        "primeStableFrames": 2,
+        "validationWaypoint": "ground-sf",
+        "measurementTerrainMode": "resident",
+        "routePrimeSamples": 600,
+        "maximumPairWorkDeltaRatio": 0.05
+      }
+    }
+  ]
+}

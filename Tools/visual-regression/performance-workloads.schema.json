@@ -5,6 +5,7 @@
   "type": "object",
   "required": ["schemaVersion", "id", "baseUrl", "protocol", "workloads"],
   "properties": {
+    "$schema": { "type": "string", "minLength": 1 },
     "schemaVersion": { "const": 1 },
     "id": { "type": "string", "minLength": 1 },
     "description": { "type": "string" },
@@ -37,6 +38,10 @@
         "measuredFrames": { "type": "integer", "minimum": 1 },
         "settleStableFrames": { "type": "integer", "minimum": 1 },
         "settleTimeoutMs": { "type": "integer", "minimum": 1 },
+        "resolutionScale": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
         "gpuReadbackDelayMs": { "type": "integer", "minimum": 0 },
         "repetitions": { "type": "integer", "minimum": 1 },
         "counterbalancedPairs": { "type": "integer", "minimum": 1 }
@@ -75,14 +80,28 @@
               "destroy-recreate-content"
             ]
           },
-          "content": { "enum": ["globe-only", "points-4096"] },
-          "contentProfile": { "const": "local-grid-ellipsoid" },
+          "content": {
+            "enum": [
+              "globe-only",
+              "points-4096",
+              "terrain-models-tiles"
+            ]
+          },
+          "contentProfile": {
+            "enum": [
+              "local-grid-ellipsoid",
+              "local-procedural-terrain-assets"
+            ]
+          },
           "featureProfile": {
             "enum": [
               "deterministic-core",
               "default-globe",
               "volumetric-clouds"
             ]
+          },
+          "evidenceProfile": {
+            "enum": ["eclipse-globe-shadow"]
           },
           "renderers": {
             "type": "array",
@@ -92,7 +111,158 @@
           },
           "measuredFrames": { "type": "integer", "minimum": 1 },
           "measuredSeconds": { "type": "number", "exclusiveMinimum": 0 },
-          "trackId": { "type": "string", "minLength": 1 }
+          "trackId": { "type": "string", "minLength": 1 },
+          "representativeConfig": {
+            "type": "object",
+            "required": [
+              "terrain",
+              "models",
+              "tilesets",
+              "primeStableFrames",
+              "validationWaypoint",
+              "measurementTerrainMode",
+              "routePrimeSamples",
+              "maximumPairWorkDeltaRatio"
+            ],
+            "properties": {
+              "terrain": {
+                "type": "object",
+                "required": [
+                  "heightmapWidth",
+                  "waterMaskWidth",
+                  "maximumLevel",
+                  "tileCacheSize"
+                ],
+                "properties": {
+                  "heightmapWidth": {
+                    "type": "integer",
+                    "minimum": 3,
+                    "maximum": 129
+                  },
+                  "waterMaskWidth": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 256
+                  },
+                  "maximumLevel": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 16
+                  },
+                  "tileCacheSize": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8192
+                  }
+                },
+                "additionalProperties": false
+              },
+              "models": {
+                "type": "object",
+                "required": [
+                  "url",
+                  "rows",
+                  "columns",
+                  "originLongitude",
+                  "originLatitude",
+                  "longitudeSpacing",
+                  "latitudeSpacing",
+                  "heightAboveTerrain",
+                  "scale"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "pattern": "^/Apps/SampleData/"
+                  },
+                  "rows": { "type": "integer", "minimum": 1, "maximum": 32 },
+                  "columns": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 32
+                  },
+                  "originLongitude": { "type": "number" },
+                  "originLatitude": { "type": "number" },
+                  "longitudeSpacing": { "type": "number" },
+                  "latitudeSpacing": { "type": "number" },
+                  "heightAboveTerrain": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "scale": { "type": "number", "exclusiveMinimum": 0 }
+                },
+                "additionalProperties": false
+              },
+              "tilesets": {
+                "type": "object",
+                "required": [
+                  "url",
+                  "rows",
+                  "columns",
+                  "originLongitude",
+                  "originLatitude",
+                  "longitudeSpacing",
+                  "latitudeSpacing",
+                  "sourceLongitude",
+                  "sourceLatitude",
+                  "sourceHeight",
+                  "targetHeightOffset",
+                  "maximumScreenSpaceError"
+                ],
+                "properties": {
+                  "url": {
+                    "type": "string",
+                    "pattern": "^/Apps/SampleData/"
+                  },
+                  "rows": { "type": "integer", "minimum": 1, "maximum": 8 },
+                  "columns": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 8
+                  },
+                  "originLongitude": { "type": "number" },
+                  "originLatitude": { "type": "number" },
+                  "longitudeSpacing": { "type": "number" },
+                  "latitudeSpacing": { "type": "number" },
+                  "sourceLongitude": { "type": "number" },
+                  "sourceLatitude": { "type": "number" },
+                  "sourceHeight": { "type": "number" },
+                  "targetHeightOffset": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "maximumScreenSpaceError": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  }
+                },
+                "additionalProperties": false
+              },
+              "primeStableFrames": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 30
+              },
+              "validationWaypoint": {
+                "type": "string",
+                "minLength": 1
+              },
+              "measurementTerrainMode": {
+                "enum": ["streaming", "resident"]
+              },
+              "routePrimeSamples": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2048
+              },
+              "maximumPairWorkDeltaRatio": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              }
+            },
+            "additionalProperties": false
+          }
         },
         "allOf": [
           {
@@ -104,7 +274,47 @@
               },
               "required": ["action"]
             },
-            "then": { "required": ["trackId", "measuredSeconds"] }
+            "then": {
+              "required": ["trackId"],
+              "oneOf": [
+                { "required": ["measuredSeconds"] },
+                { "required": ["measuredFrames"] }
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "contentProfile": {
+                  "const": "local-procedural-terrain-assets"
+                }
+              },
+              "required": ["contentProfile"]
+            },
+            "then": {
+              "required": ["representativeConfig"],
+              "properties": {
+                "content": { "const": "terrain-models-tiles" },
+                "mode": { "const": "3d" },
+                "action": { "const": "camera-track" },
+                "featureProfile": { "const": "default-globe" }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "content": { "const": "terrain-models-tiles" }
+              },
+              "required": ["content"]
+            },
+            "then": {
+              "properties": {
+                "contentProfile": {
+                  "const": "local-procedural-terrain-assets"
+                }
+              }
+            }
           }
         ],
         "additionalProperties": false

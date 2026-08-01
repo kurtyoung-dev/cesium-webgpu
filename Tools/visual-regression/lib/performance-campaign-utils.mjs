@@ -386,8 +386,111 @@ export function summarizeMovingPickMetrics(
   };
 }
 
+/**
+ * Validate the C12-29 S5 moving-route evidence. A useful eclipse performance
+ * run must prove both sides of the spatial classifier: at least one frame that
+ * executes local globe-shadow geometry (gate 1/2) and at least one frame that
+ * bypasses it or performs correction-only composition (gate 0/3/4).
+ *
+ * @param {Array<object>} samples
+ * @param {Array<object>} evidence
+ * @returns {object}
+ */
+export function summarizeEclipseGlobeShadowEvidence(samples, evidence) {
+  const reasons = [];
+  const aligned =
+    Array.isArray(samples) &&
+    Array.isArray(evidence) &&
+    samples.length > 0 &&
+    evidence.length === samples.length;
+  if (!aligned) {
+    reasons.push(
+      `eclipse evidence/sample alignment ${evidence?.length ?? 0}/${samples?.length ?? 0}`,
+    );
+  }
+
+  const gateCounts = {
+    0: 0,
+    1: 0,
+    2: 0,
+    3: 0,
+    4: 0,
+  };
+  let invalidGateCount = 0;
+  let invalidRevisionCount = 0;
+  let invalidObscurationCount = 0;
+  for (const row of evidence || []) {
+    const gate = row?.eclipseGlobeShadowGate;
+    if (
+      !Number.isFinite(gate) ||
+      !Number.isInteger(gate) ||
+      gate < 0 ||
+      gate > 4
+    ) {
+      invalidGateCount++;
+    } else {
+      gateCounts[gate]++;
+    }
+
+    if (!Number.isFinite(row?.eclipseGlobeShadowRevision)) {
+      invalidRevisionCount++;
+    }
+    const obscuration = row?.eclipseMoonObscuration;
+    if (
+      !Number.isFinite(obscuration) ||
+      obscuration < 0.0 ||
+      obscuration > 1.0
+    ) {
+      invalidObscurationCount++;
+    }
+  }
+
+  if (invalidGateCount > 0) {
+    reasons.push(`${invalidGateCount} eclipse evidence rows have invalid gates`);
+  }
+  if (invalidRevisionCount > 0) {
+    reasons.push(
+      `${invalidRevisionCount} eclipse evidence rows have invalid revisions`,
+    );
+  }
+  if (invalidObscurationCount > 0) {
+    reasons.push(
+      `${invalidObscurationCount} eclipse evidence rows have invalid obscuration`,
+    );
+  }
+
+  const localShadowFrameCount = gateCounts[1] + gateCounts[2];
+  const bypassOrCorrectionFrameCount =
+    gateCounts[0] + gateCounts[3] + gateCounts[4];
+  if (localShadowFrameCount === 0) {
+    reasons.push("eclipse route never executed local globe-shadow geometry");
+  }
+  if (bypassOrCorrectionFrameCount === 0) {
+    reasons.push(
+      "eclipse route never exercised the inactive/correction-only spatial path",
+    );
+  }
+
+  return {
+    valid: reasons.length === 0,
+    aligned,
+    sampleCount: samples?.length ?? 0,
+    evidenceCount: evidence?.length ?? 0,
+    gateCounts,
+    localShadowFrameCount,
+    bypassOrCorrectionFrameCount,
+    invalidGateCount,
+    invalidRevisionCount,
+    invalidObscurationCount,
+    reasons,
+  };
+}
+
 export function assessPerformanceRunQuality(run, options = {}) {
   const minTrackSegmentSamples = options.minTrackSegmentSamples ?? 30;
+  const attributionOnly =
+    run.apiInstrumentationEnabled === true ||
+    run.apiCounters?.enabled === true;
   const reasons = [];
   const warnings = [];
   const elapsedMs = run.measurement?.elapsedMs || 0;
@@ -443,6 +546,15 @@ export function assessPerformanceRunQuality(run, options = {}) {
     );
   }
 
+  if (
+    run.eclipseGlobeShadowEvidence &&
+    run.eclipseGlobeShadowEvidence.valid !== true
+  ) {
+    cpuValid = false;
+    gpuValid = false;
+    reasons.push(...run.eclipseGlobeShadowEvidence.reasons);
+  }
+
   if (run.timestampEnabled) {
     if ((timestamps?.failedReadbackCount || 0) > 0) {
       gpuValid = false;
@@ -473,13 +585,25 @@ export function assessPerformanceRunQuality(run, options = {}) {
     );
   }
 
-  const validForAggregation =
+  const measurementValid =
     cpuValid && (run.timestampEnabled !== true || gpuValid);
+  if (attributionOnly) {
+    warnings.push(
+      "GPU API instrumentation is attribution-only and excluded from timing aggregation and certification",
+    );
+  }
   return {
-    status: validForAggregation ? "clean" : "invalid",
-    validForAggregation,
-    validForCpuAggregation: cpuValid,
-    validForGpuAggregation: gpuValid && cpuValid,
+    status: !measurementValid
+      ? "invalid"
+      : attributionOnly
+        ? "attribution-only"
+        : "clean",
+    attributionOnly,
+    certificationEligible: measurementValid && !attributionOnly,
+    measurementValid,
+    validForAggregation: measurementValid && !attributionOnly,
+    validForCpuAggregation: cpuValid && !attributionOnly,
+    validForGpuAggregation: gpuValid && cpuValid && !attributionOnly,
     reasons,
     warnings,
     longTaskShare,
@@ -489,6 +613,18 @@ export function assessPerformanceRunQuality(run, options = {}) {
 }
 
 export function assessPerformanceRunStability(runs) {
+  const attributionOnly =
+    runs.length > 0 &&
+    runs.every((run) => run.quality?.attributionOnly === true);
+  if (attributionOnly) {
+    return {
+      stable: true,
+      reasons: [],
+      comparedRunCount: 0,
+      attributionOnly: true,
+      certificationEligible: false,
+    };
+  }
   const usable = runs.filter(
     (run) =>
       run.result === "pass" && run.quality?.validForCpuAggregation !== false,
@@ -530,5 +666,969 @@ export function assessPerformanceRunStability(runs) {
     stable: reasons.length === 0,
     reasons,
     comparedRunCount: usable.length,
+    attributionOnly: false,
+    certificationEligible: true,
+  };
+}
+
+function symmetricDeltaRatio(left, right) {
+  if (!Number.isFinite(left) || !Number.isFinite(right)) {
+    return null;
+  }
+  if (left === 0 && right === 0) {
+    return 0;
+  }
+  return Math.abs(left - right) / ((Math.abs(left) + Math.abs(right)) / 2);
+}
+
+function levelCountComparison(left = {}, right = {}) {
+  return Object.fromEntries(
+    [...new Set([...Object.keys(left), ...Object.keys(right)])]
+      .sort((a, b) => Number(a) - Number(b))
+      .map((level) => [
+        level,
+        {
+          webgl: left[level] || 0,
+          webgpu: right[level] || 0,
+          symmetricDeltaRatio: symmetricDeltaRatio(
+            left[level] || 0,
+            right[level] || 0,
+          ),
+        },
+      ]),
+  );
+}
+
+function jaccardSimilarity(left = [], right = []) {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  const union = new Set([...leftSet, ...rightSet]);
+  if (union.size === 0) {
+    return 1;
+  }
+  let intersectionSize = 0;
+  for (const key of leftSet) {
+    if (rightSet.has(key)) {
+      intersectionSize++;
+    }
+  }
+  return intersectionSize / union.size;
+}
+
+function readRepresentativeWorkloadFingerprint(run) {
+  return run?.representativeContentEvidence?.measurementContent
+    ?.workloadFingerprint;
+}
+
+function summarizeRepresentativeWorkloadFingerprint(fingerprint) {
+  return fingerprint
+    ? {
+        schemaVersion: fingerprint.schemaVersion ?? null,
+        valid: fingerprint.valid === true,
+        frameCount: fingerprint.frameCount ?? null,
+        signature: fingerprint.signature ?? null,
+        segmentCount: fingerprint.segments?.length ?? null,
+      }
+    : null;
+}
+
+const representativeWorkloadFingerprintMetricNames = Object.freeze([
+  "terrainTilesToRender",
+  "terrainMeshTiles",
+  "terrainSelectionIdentityA",
+  "terrainSelectionIdentityB",
+  "terrainUnidentifiedTiles",
+  "directModelInstancesConfigured",
+  "directModelInstancesReady",
+  "directModelIdentityA",
+  "directModelIdentityB",
+  "tilesetsWithSelection",
+  "tilesetSelected",
+  "tilesetSelectionIdentityA",
+  "tilesetSelectionIdentityB",
+  "tilesetSelectionCountMismatch",
+  "tilesetUnidentifiedSelected",
+]);
+
+function hasValidFingerprintMetrics(metrics) {
+  return representativeWorkloadFingerprintMetricNames.every((name) => {
+    const metric = metrics?.[name];
+    return (
+      Number.isInteger(metric?.total) &&
+      metric.total >= 0 &&
+      Number.isInteger(metric?.min) &&
+      metric.min >= 0 &&
+      Number.isInteger(metric?.max) &&
+      metric.max >= metric.min
+    );
+  });
+}
+
+function validateRepresentativeWorkloadFingerprint(
+  label,
+  fingerprint,
+  expectedFrames,
+  reasons,
+) {
+  const segments = fingerprint?.segments;
+  const signaturePattern = /^[0-9a-f]{8}-[0-9a-f]{8}$/;
+  const segmentFrameCount = Array.isArray(segments)
+    ? segments.reduce(
+        (sum, segment) =>
+          sum +
+          (Number.isInteger(segment?.frameCount) ? segment.frameCount : 0),
+        0,
+      )
+    : 0;
+  const identitiesComplete =
+    fingerprint?.metrics?.terrainUnidentifiedTiles?.max === 0 &&
+    fingerprint?.metrics?.tilesetSelectionCountMismatch?.max === 0 &&
+    fingerprint?.metrics?.tilesetUnidentifiedSelected?.max === 0;
+  // `causal` must be decomposed into the two facts that produce it, otherwise
+  // a single boolean restating the workload's configured terrain mode would
+  // again certify the replay rather than the timed window it stands in for.
+  const provenanceValid =
+    fingerprint?.provenance?.timed === false &&
+    fingerprint?.provenance?.phase ===
+      "post-measurement-untimed-replay" &&
+    fingerprint?.provenance?.traceEndedBeforeReplay === true &&
+    fingerprint?.provenance?.measurementSnapshotsFrozenBeforeReplay ===
+      true &&
+    fingerprint?.provenance?.replayModeFixedFrame === true &&
+    fingerprint?.provenance?.renderedProgressIdentical === true &&
+    fingerprint?.provenance?.causal === true;
+  const segmentsValid =
+    Array.isArray(segments) &&
+    segments.length > 0 &&
+    new Set(segments.map((segment) => segment?.segmentIndex)).size ===
+      segments.length &&
+    segments.every(
+      (segment) =>
+        Number.isInteger(segment?.segmentIndex) &&
+        segment.segmentIndex >= 0 &&
+        Number.isInteger(segment?.frameCount) &&
+        segment.frameCount > 0 &&
+        signaturePattern.test(segment?.signature) &&
+        hasValidFingerprintMetrics(segment?.metrics),
+    );
+  const valid =
+    fingerprint?.schemaVersion === 1 &&
+    fingerprint?.valid === true &&
+    Number.isInteger(fingerprint?.frameCount) &&
+    fingerprint.frameCount > 0 &&
+    fingerprint.frameCount === expectedFrames &&
+    signaturePattern.test(fingerprint?.signature) &&
+    fingerprint?.invalidSampleCount === 0 &&
+    hasValidFingerprintMetrics(fingerprint?.metrics) &&
+    segmentsValid &&
+    segmentFrameCount === fingerprint.frameCount &&
+    identitiesComplete &&
+    provenanceValid;
+  if (!valid) {
+    reasons.push(
+      `${label} resident workload fingerprint is missing, invalid, identity-incomplete, lacks untimed causal replay provenance (the replay must be fixed-frame AND proven to have re-rendered the measured window's per-frame camera phase), or is not aligned to ${expectedFrames ?? "unknown"} measured frames`,
+    );
+  }
+  return valid;
+}
+
+function compareRepresentativeWorkloadFingerprints(
+  webglRun,
+  webgpuRun,
+  reasons,
+) {
+  const webgl = readRepresentativeWorkloadFingerprint(webglRun);
+  const webgpu = readRepresentativeWorkloadFingerprint(webgpuRun);
+  const webglValid = validateRepresentativeWorkloadFingerprint(
+    "WebGL",
+    webgl,
+    webglRun?.measuredFrames,
+    reasons,
+  );
+  const webgpuValid = validateRepresentativeWorkloadFingerprint(
+    "WebGPU",
+    webgpu,
+    webgpuRun?.measuredFrames,
+    reasons,
+  );
+
+  const segmentComparisons = [];
+  let signatureMatch = false;
+  if (webglValid && webgpuValid) {
+    signatureMatch = webgl.signature === webgpu.signature;
+    if (!signatureMatch) {
+      reasons.push(
+        `resident per-frame workload signature differs (${webgl.signature}/${webgpu.signature})`,
+      );
+    }
+
+    const webglSegments = new Map(
+      webgl.segments.map((segment) => [segment.segmentIndex, segment]),
+    );
+    const webgpuSegments = new Map(
+      webgpu.segments.map((segment) => [segment.segmentIndex, segment]),
+    );
+    const segmentIndexes = [
+      ...new Set([...webglSegments.keys(), ...webgpuSegments.keys()]),
+    ].sort((left, right) => left - right);
+    for (const segmentIndex of segmentIndexes) {
+      const webglSegment = webglSegments.get(segmentIndex);
+      const webgpuSegment = webgpuSegments.get(segmentIndex);
+      const frameCountMatch =
+        webglSegment?.frameCount === webgpuSegment?.frameCount;
+      const segmentSignatureMatch =
+        webglSegment?.signature === webgpuSegment?.signature;
+      if (!webglSegment || !webgpuSegment) {
+        reasons.push(
+          `resident workload segment ${segmentIndex} is missing from one renderer`,
+        );
+      } else {
+        if (!frameCountMatch) {
+          reasons.push(
+            `resident workload segment ${segmentIndex} frame count differs (${webglSegment.frameCount}/${webgpuSegment.frameCount})`,
+          );
+        }
+        if (!segmentSignatureMatch) {
+          reasons.push(
+            `resident workload segment ${segmentIndex} signature differs (${webglSegment.signature}/${webgpuSegment.signature})`,
+          );
+        }
+      }
+      segmentComparisons.push({
+        segmentIndex,
+        webglFrameCount: webglSegment?.frameCount ?? null,
+        webgpuFrameCount: webgpuSegment?.frameCount ?? null,
+        frameCountMatch,
+        webglSignature: webglSegment?.signature ?? null,
+        webgpuSignature: webgpuSegment?.signature ?? null,
+        signatureMatch: segmentSignatureMatch,
+      });
+    }
+  }
+
+  return {
+    webgl: summarizeRepresentativeWorkloadFingerprint(webgl),
+    webgpu: summarizeRepresentativeWorkloadFingerprint(webgpu),
+    signatureMatch,
+    segmentComparisons,
+  };
+}
+
+function flattenTilesetLifecycleIdentities(frame, property) {
+  return (frame?.tilesets || [])
+    .flatMap((tileset) => tileset?.[property] || [])
+    .sort();
+}
+
+function identitySetDifference(left, right, limit = 128) {
+  const rightSet = new Set(right);
+  const difference = left.filter((identity) => !rightSet.has(identity));
+  return {
+    total: difference.length,
+    identities: difference.slice(0, limit),
+    truncated: difference.length > limit,
+  };
+}
+
+function summarizeTilesetLifecycleEndpoint(diagnostics) {
+  return diagnostics
+    ? {
+        schemaVersion: diagnostics.schemaVersion ?? null,
+        enabled: diagnostics.enabled === true,
+        nonCertifying: diagnostics.nonCertifying === true,
+        frameCount: diagnostics.frames?.length ?? null,
+        eventsTruncated: diagnostics.eventsTruncated === true,
+        framesTruncated: diagnostics.framesTruncated === true,
+        totals: diagnostics.totals ? { ...diagnostics.totals } : null,
+      }
+    : null;
+}
+
+/**
+ * Compare opt-in, untimed 3D Tiles lifecycle diagnostics without changing the
+ * exact workload fingerprint or pair validity. This attribution-only evidence
+ * explains which ready/selected identities first diverged and whether request
+ * cancellation/reissue preceded that selection drift.
+ */
+export function compareRepresentativeTilesetLifecycleDiagnostics(
+  webglRun,
+  webgpuRun,
+) {
+  const webgl =
+    webglRun?.representativeContentEvidence?.tilesetLifecycleDiagnostics;
+  const webgpu =
+    webgpuRun?.representativeContentEvidence?.tilesetLifecycleDiagnostics;
+  const provenanceValid = (diagnostics) =>
+    diagnostics?.provenance?.timed === false &&
+    diagnostics.provenance.phase === "post-measurement-untimed-replay" &&
+    diagnostics.provenance.traceEndedBeforeReplay === true &&
+    diagnostics.provenance.measurementSnapshotsFrozenBeforeReplay === true;
+  const endpointValid = (diagnostics) =>
+    diagnostics?.schemaVersion === 1 &&
+    diagnostics.enabled === true &&
+    diagnostics.nonCertifying === true &&
+    Array.isArray(diagnostics.frames) &&
+    diagnostics.frames.length > 0 &&
+    diagnostics.framesTruncated !== true &&
+    provenanceValid(diagnostics);
+  const webglValid = endpointValid(webgl);
+  const webgpuValid = endpointValid(webgpu);
+  if (!webglValid || !webgpuValid) {
+    return {
+      available: false,
+      valid: false,
+      reasons: [
+        "both renderer legs require complete opt-in untimed tileset lifecycle diagnostics",
+      ],
+      webgl: summarizeTilesetLifecycleEndpoint(webgl),
+      webgpu: summarizeTilesetLifecycleEndpoint(webgpu),
+    };
+  }
+
+  const reasons = [];
+  if (webgl.frames.length !== webgpu.frames.length) {
+    reasons.push(
+      `lifecycle replay frame count differs (${webgl.frames.length}/${webgpu.frames.length})`,
+    );
+  }
+  const frameCount = Math.min(webgl.frames.length, webgpu.frames.length);
+  let selectedMismatchFrames = 0;
+  let readyMismatchFrames = 0;
+  let firstSelectedMismatch = null;
+  let firstReadyMismatch = null;
+  const segments = new Map();
+  for (let index = 0; index < frameCount; index++) {
+    const webglFrame = webgl.frames[index];
+    const webgpuFrame = webgpu.frames[index];
+    const segmentIndex = webglFrame.segmentIndex;
+    const segment = segments.get(segmentIndex) || {
+      segmentIndex,
+      frameCount: 0,
+      selectedMismatchFrames: 0,
+      readyMismatchFrames: 0,
+    };
+    segment.frameCount++;
+
+    const selectedMatch =
+      webglFrame.selectedIdentitySignature ===
+      webgpuFrame.selectedIdentitySignature;
+    const readyMatch =
+      webglFrame.readyIdentitySignature === webgpuFrame.readyIdentitySignature;
+    if (!selectedMatch) {
+      selectedMismatchFrames++;
+      segment.selectedMismatchFrames++;
+      if (!firstSelectedMismatch) {
+        const webglSelected = flattenTilesetLifecycleIdentities(
+          webglFrame,
+          "selected",
+        );
+        const webgpuSelected = flattenTilesetLifecycleIdentities(
+          webgpuFrame,
+          "selected",
+        );
+        firstSelectedMismatch = {
+          frameIndex: index,
+          segmentIndex,
+          routeProgress: webglFrame.routeProgress,
+          webglCount: webglSelected.length,
+          webgpuCount: webgpuSelected.length,
+          webglOnly: identitySetDifference(webglSelected, webgpuSelected),
+          webgpuOnly: identitySetDifference(webgpuSelected, webglSelected),
+          webglTilesets: structuredClone(webglFrame.tilesets),
+          webgpuTilesets: structuredClone(webgpuFrame.tilesets),
+        };
+      }
+    }
+    if (!readyMatch) {
+      readyMismatchFrames++;
+      segment.readyMismatchFrames++;
+      if (!firstReadyMismatch) {
+        const webglReady = flattenTilesetLifecycleIdentities(
+          webglFrame,
+          "ready",
+        );
+        const webgpuReady = flattenTilesetLifecycleIdentities(
+          webgpuFrame,
+          "ready",
+        );
+        firstReadyMismatch = {
+          frameIndex: index,
+          segmentIndex,
+          routeProgress: webglFrame.routeProgress,
+          webglCount: webglReady.length,
+          webgpuCount: webgpuReady.length,
+          webglOnly: identitySetDifference(webglReady, webgpuReady),
+          webgpuOnly: identitySetDifference(webgpuReady, webglReady),
+        };
+      }
+    }
+    segments.set(segmentIndex, segment);
+  }
+
+  return {
+    available: true,
+    valid: reasons.length === 0,
+    reasons,
+    nonCertifying: true,
+    webgl: summarizeTilesetLifecycleEndpoint(webgl),
+    webgpu: summarizeTilesetLifecycleEndpoint(webgpu),
+    comparison: {
+      frameCount,
+      selectedMismatchFrames,
+      readyMismatchFrames,
+      firstSelectedMismatch,
+      firstReadyMismatch,
+      readyDivergencePrecedesOrMatchesSelection:
+        firstReadyMismatch !== null &&
+        (firstSelectedMismatch === null ||
+          firstReadyMismatch.frameIndex <= firstSelectedMismatch.frameIndex),
+      segments: [...segments.values()].sort(
+        (left, right) => left.segmentIndex - right.segmentIndex,
+      ),
+    },
+  };
+}
+
+export function assessWebGPUModelPreparationEvidence(
+  evidence,
+  options = {},
+) {
+  const renderer = options.renderer;
+  const apiInstrumentation = options.apiInstrumentation === true;
+  const modelAttributionContent =
+    options.modelAttributionContent === true;
+  const reasons = [];
+
+  if (renderer === "webgl") {
+    if (evidence !== null) {
+      reasons.push("WebGL fabricated WebGPU model-preparation evidence");
+    }
+  } else if (!apiInstrumentation) {
+    if (
+      evidence?.enabled !== false ||
+      evidence?.reason !== "api-instrumentation-disabled"
+    ) {
+      reasons.push(
+        "clean WebGPU timing run unexpectedly enabled model-preparation diagnostics",
+      );
+    }
+  } else if (!modelAttributionContent) {
+    if (
+      evidence?.enabled !== false ||
+      evidence?.reason !== "no-model-attribution-content"
+    ) {
+      reasons.push(
+        "model-free WebGPU API lane unexpectedly enabled model-preparation diagnostics",
+      );
+    }
+  } else if (
+    evidence?.enabled !== true ||
+    evidence?.valid !== true ||
+    evidence?.conservation?.valid !== true ||
+    evidence?.coverage?.valid !== true
+  ) {
+    reasons.push(
+      `WebGPU model-preparation evidence invalid: ${
+        evidence?.conservation?.violations?.join("; ") ||
+        "missing enabled/conserved/full-coverage summary"
+      }`,
+    );
+  }
+
+  return { valid: reasons.length === 0, reasons };
+}
+
+const FIXED_FRAME_PROGRESS_DIVERGENCE_SAMPLE_LIMIT = 8;
+
+/**
+ * Compare the per-frame camera route progress a timed measurement window
+ * actually rendered against the sequence an untimed replay rendered.
+ *
+ * This is the evidence behind `identicalFixedFrameProgress` / `causal`. Those
+ * flags used to be restatements of the workload's configured terrain mode,
+ * which proved nothing about the timed window: the replay applies
+ * `index/(frameCount-1)` while the measured window's action rAF applies
+ * `min(1, cameraTrackFrameIndex/(frames-1))` with an intentionally
+ * unspecified viewer/action rAF order. Only an observation of both sequences
+ * can establish that the replayed content corresponds to the measured frames,
+ * so both the in-page recorder and the Node-side gate run this same function.
+ *
+ * Both inputs must be the rendered sequences (one entry per presented frame),
+ * not the formula that generated them.
+ */
+export function compareFixedFrameProgressSequences(
+  measuredRenderedProgress,
+  replayRenderedProgress,
+  options = {},
+) {
+  const tolerance = Number.isFinite(options.tolerance)
+    ? options.tolerance
+    : 1e-9;
+  const measured = Array.isArray(measuredRenderedProgress)
+    ? measuredRenderedProgress
+    : null;
+  const replayed = Array.isArray(replayRenderedProgress)
+    ? replayRenderedProgress
+    : null;
+  if (!measured || !replayed) {
+    return {
+      schemaVersion: 1,
+      identical: false,
+      reason: "missing-rendered-progress-sequence",
+      tolerance,
+      measuredFrameCount: measured?.length ?? null,
+      replayFrameCount: replayed?.length ?? null,
+      comparedFrames: 0,
+      firstDivergenceIndex: null,
+      maximumAbsoluteDifference: null,
+      divergenceCount: 0,
+      divergences: [],
+      divergencesTruncated: false,
+    };
+  }
+  const comparedFrames = Math.min(measured.length, replayed.length);
+  const divergences = [];
+  let firstDivergenceIndex = null;
+  let maximumAbsoluteDifference = 0;
+  let divergenceCount = 0;
+  for (let index = 0; index < comparedFrames; index++) {
+    const measuredValue = measured[index];
+    const replayValue = replayed[index];
+    const comparable =
+      Number.isFinite(measuredValue) && Number.isFinite(replayValue);
+    const difference = comparable
+      ? Math.abs(measuredValue - replayValue)
+      : Number.POSITIVE_INFINITY;
+    if (comparable && difference > maximumAbsoluteDifference) {
+      maximumAbsoluteDifference = difference;
+    }
+    if (!(difference <= tolerance)) {
+      divergenceCount++;
+      if (firstDivergenceIndex === null) {
+        firstDivergenceIndex = index;
+      }
+      if (divergences.length < FIXED_FRAME_PROGRESS_DIVERGENCE_SAMPLE_LIMIT) {
+        divergences.push({
+          frameIndex: index,
+          measured: comparable ? measuredValue : null,
+          replay: comparable ? replayValue : null,
+        });
+      }
+    }
+  }
+  const frameCountsMatch = measured.length === replayed.length;
+  const identical =
+    measured.length > 0 && frameCountsMatch && firstDivergenceIndex === null;
+  return {
+    schemaVersion: 1,
+    identical,
+    reason: identical
+      ? null
+      : measured.length === 0
+        ? "no-measured-rendered-frames"
+        : !frameCountsMatch
+          ? "rendered-frame-count-mismatch"
+          : "rendered-progress-divergence",
+    tolerance,
+    measuredFrameCount: measured.length,
+    replayFrameCount: replayed.length,
+    comparedFrames,
+    firstDivergenceIndex,
+    maximumAbsoluteDifference: comparedFrames > 0 ? maximumAbsoluteDifference : null,
+    divergenceCount,
+    divergences,
+    divergencesTruncated:
+      divergenceCount > FIXED_FRAME_PROGRESS_DIVERGENCE_SAMPLE_LIMIT,
+  };
+}
+
+/**
+ * Re-derive the resident replay's fixed-frame progress provenance from the
+ * recorded sequences instead of trusting the flags the page wrote. A stored
+ * `true` that the raw sequences do not support fails here, which is what stops
+ * the flag from silently regressing back into a config restatement.
+ */
+function assessResidentFixedFrameProgressEvidence(replay) {
+  const comparison = replay?.fixedFrameProgressComparison;
+  const recomputed = compareFixedFrameProgressSequences(
+    replay?.renderedProgress?.measured,
+    replay?.renderedProgress?.replay,
+  );
+  if (recomputed.reason === "missing-rendered-progress-sequence") {
+    return {
+      valid: false,
+      reason:
+        "the measured and replayed per-frame progress sequences were not recorded",
+      recomputed,
+    };
+  }
+  if (comparison?.schemaVersion !== 1) {
+    return {
+      valid: false,
+      reason: "the replay carries no per-frame progress comparison",
+      recomputed,
+    };
+  }
+  if (comparison.identical !== recomputed.identical) {
+    return {
+      valid: false,
+      reason: `the reported comparison (identical=${comparison.identical}) disagrees with the recorded sequences (identical=${recomputed.identical})`,
+      recomputed,
+    };
+  }
+  if (recomputed.identical !== true) {
+    return {
+      valid: false,
+      reason: `${recomputed.reason} (measured ${recomputed.measuredFrameCount} frames, replay ${recomputed.replayFrameCount} frames, first divergence at index ${recomputed.firstDivergenceIndex})`,
+      recomputed,
+    };
+  }
+  if (replay?.identicalFixedFrameProgress !== true) {
+    return {
+      valid: false,
+      reason:
+        "identicalFixedFrameProgress was not asserted even though the recorded sequences match",
+      recomputed,
+    };
+  }
+  if (
+    recomputed.measuredFrameCount !== replay.frameCount ||
+    recomputed.replayFrameCount !== replay.frameCount
+  ) {
+    return {
+      valid: false,
+      reason: `the recorded sequences cover ${recomputed.measuredFrameCount}/${recomputed.replayFrameCount} frames, not the ${replay.frameCount} replayed frames`,
+      recomputed,
+    };
+  }
+  return { valid: true, reason: null, recomputed };
+}
+
+/**
+ * Validate timed terrain activity together with the post-trace deterministic
+ * content replay. Resident replay follows the exact fixed-frame route and is
+ * causal only when the timed window is proven to have rendered that same
+ * per-frame camera phase sequence; bounded streaming replay is explicitly
+ * non-causal coverage evidence.
+ */
+export function assessRepresentativeMeasurementEvidence(
+  representativeContentEvidence,
+  options = {},
+) {
+  const measurementTerrainMode =
+    options.measurementTerrainMode ?? "streaming";
+  const activity =
+    representativeContentEvidence?.measurementTerrainActivity;
+  const delta = activity?.delta;
+  const content = representativeContentEvidence?.measurementContent;
+  const reasons = [];
+  let residentFixedFrameProgress = null;
+
+  if (!delta) {
+    reasons.push("measured representative terrain activity is missing");
+  }
+  if (!content || !(content.sampledFrames > 0)) {
+    reasons.push("no representative content replay frame was sampled");
+  } else {
+    const sampling = content.sampling;
+    const provenance = sampling?.provenance;
+    const replay = sampling?.replay;
+    const validationWaypoint = sampling?.validationWaypoint;
+    const commandWindow = sampling?.commandTriggeredPreWaypoint;
+    const commandWindowBoundsValid =
+      Number.isFinite(commandWindow?.startRouteProgress) &&
+      Number.isFinite(commandWindow?.endRouteProgress) &&
+      commandWindow.startRouteProgress >= 0 &&
+      commandWindow.startRouteProgress < commandWindow.endRouteProgress &&
+      commandWindow.endRouteProgress <= 1 &&
+      commandWindow.endExclusive === true &&
+      Number.isFinite(validationWaypoint?.routeProgress) &&
+      commandWindow.endRouteProgress === validationWaypoint.routeProgress;
+    const commandWindowSamplesValid =
+      Number.isInteger(commandWindow?.configuredTilesets) &&
+      commandWindow.configuredTilesets > 0 &&
+      Number.isInteger(commandWindow?.maximumSamples) &&
+      commandWindow.maximumSamples > 0 &&
+      commandWindow.sampledFrames === commandWindow.maximumSamples &&
+      Number.isInteger(commandWindow?.inspectedFrames) &&
+      commandWindow.inspectedFrames >= commandWindow.sampledFrames &&
+      commandWindow.maximumObservedCommands > 0 &&
+      Number.isFinite(commandWindow?.firstSampleRouteProgress) &&
+      commandWindow.firstSampleRouteProgress >=
+        commandWindow.startRouteProgress &&
+      commandWindow.firstSampleRouteProgress < commandWindow.endRouteProgress &&
+      Number.isFinite(commandWindow?.lastSampleRouteProgress) &&
+      commandWindow.lastSampleRouteProgress >=
+        commandWindow.firstSampleRouteProgress &&
+      commandWindow.lastSampleRouteProgress < commandWindow.endRouteProgress;
+    const provenanceValid =
+      provenance?.timed === false &&
+      provenance?.phase === "post-measurement-untimed-replay" &&
+      provenance?.traceEndedBeforeReplay === true &&
+      provenance?.measurementSnapshotsFrozenBeforeReplay === true &&
+      provenance?.causal === (measurementTerrainMode === "resident");
+    const replayValid =
+      Number.isInteger(replay?.frameCount) &&
+      replay.frameCount > 0 &&
+      replay.frameCount === content.sampledFrames &&
+      replay.sourceMeasuredFrames > 0 &&
+      replay.progressFormula === "index/(frameCount-1)" &&
+      (measurementTerrainMode === "resident"
+        ? replay.streamingFrameLimit === null &&
+          content.workloadFingerprint?.frameCount === replay.frameCount
+        : replay.identicalFixedFrameProgress === false &&
+          Number.isInteger(replay.streamingFrameLimit) &&
+          replay.streamingFrameLimit > 0 &&
+          replay.frameCount <= replay.streamingFrameLimit);
+    // The resident "exact workload identity" claim is only as good as the
+    // proof that the timed window rendered the sequence the replay re-rendered.
+    // Re-derive it from the recorded sequences so a hard-coded flag cannot
+    // certify a window it never observed.
+    residentFixedFrameProgress =
+      measurementTerrainMode === "resident"
+        ? assessResidentFixedFrameProgressEvidence(replay)
+        : null;
+    if (residentFixedFrameProgress && !residentFixedFrameProgress.valid) {
+      reasons.push(
+        `the resident replay is not proven to re-render the measured window's per-frame camera phase: ${residentFixedFrameProgress.reason}`,
+      );
+    }
+    if (
+      sampling?.mode !== "untimed-deterministic-route-replay" ||
+      !provenanceValid ||
+      !replayValid ||
+      !commandWindowBoundsValid ||
+      !commandWindowSamplesValid
+    ) {
+      reasons.push(
+        "representative untimed route replay or its bounded pre-waypoint 3D Tiles command window evidence was invalid",
+      );
+    }
+    for (const [label, value] of [
+      ["terrain mesh", content.terrainMeshFrames],
+      ["terrain water-mask texture", content.terrainWaterMaskTextureFrames],
+      ["terrain water effect", content.waterEffectFrames],
+      ["direct model command", content.directModelCommandFrames],
+      ["3D Tiles command", content.tilesetCommandFrames],
+      ["combined terrain/model/3D Tiles command", content.allContentCommandFrames],
+    ]) {
+      if (!(value > 0)) {
+        reasons.push(`${label} work was absent from the representative replay`);
+      }
+    }
+  }
+
+  if (measurementTerrainMode === "streaming" && delta) {
+    if (!(delta.requestCount > 0)) {
+      reasons.push("streaming measurement issued no terrain requests");
+    }
+    if (!(delta.tileGenerationCount > 0)) {
+      reasons.push("streaming measurement generated no terrain tiles");
+    }
+    if (!Array.isArray(delta.generatedTileKeys) || delta.generatedTileKeys.length < 1) {
+      reasons.push("streaming measurement generated no terrain-key evidence");
+    }
+  }
+
+  return {
+    valid: reasons.length === 0,
+    measurementTerrainMode,
+    reasons,
+    // Reported for every mode so the artifact carries the measured phase
+    // agreement, not just the pass/fail it produced.
+    fixedFrameProgress: residentFixedFrameProgress
+      ? {
+          valid: residentFixedFrameProgress.valid,
+          reason: residentFixedFrameProgress.reason,
+          identical: residentFixedFrameProgress.recomputed.identical,
+          measuredFrameCount:
+            residentFixedFrameProgress.recomputed.measuredFrameCount,
+          replayFrameCount:
+            residentFixedFrameProgress.recomputed.replayFrameCount,
+          firstDivergenceIndex:
+            residentFixedFrameProgress.recomputed.firstDivergenceIndex,
+          maximumAbsoluteDifference:
+            residentFixedFrameProgress.recomputed.maximumAbsoluteDifference,
+          divergences: residentFixedFrameProgress.recomputed.divergences,
+        }
+      : null,
+    metrics: {
+      requestCount: delta?.requestCount ?? null,
+      tileGenerationCount: delta?.tileGenerationCount ?? null,
+      generatedTileKeyCount: delta?.generatedTileKeys?.length ?? null,
+      sampledContentCheckpoints: content?.sampledFrames ?? null,
+      terrainMeshCheckpoints: content?.terrainMeshFrames ?? null,
+      waterEffectCheckpoints: content?.waterEffectFrames ?? null,
+      directModelCommandCheckpoints:
+        content?.directModelCommandFrames ?? null,
+      tilesetCommandCheckpoints: content?.tilesetCommandFrames ?? null,
+      allContentCommandCheckpoints:
+        content?.allContentCommandFrames ?? null,
+      commandTriggeredPreWaypointSamples:
+        content?.sampling?.commandTriggeredPreWaypoint?.sampledFrames ?? null,
+    },
+  };
+}
+
+/**
+ * Summarize a counterbalanced representative WebGL/WebGPU pair.
+ *
+ * A fixed-frame resident pair is a causal renderer comparison, so unequal
+ * work invalidates it. A duration-driven streaming pair instead reports frame
+ * and streaming-work deltas as outcomes: a slower renderer naturally presents
+ * fewer frames and may consequently request fewer tiles. Discarding that leg
+ * would select away the performance deficit being measured.
+ */
+export function assessRepresentativePairComparability(
+  webglRun,
+  webgpuRun,
+  options = {},
+) {
+  const measurementTerrainMode =
+    options.measurementTerrainMode ?? "streaming";
+  const causalRendererComparison = measurementTerrainMode === "resident";
+  const attributionOnly =
+    webglRun?.quality?.attributionOnly === true ||
+    webgpuRun?.quality?.attributionOnly === true ||
+    webglRun?.apiCounters?.enabled === true ||
+    webgpuRun?.apiCounters?.enabled === true;
+  const ordinaryQualityEligible =
+    webglRun?.quality?.status === "clean" &&
+    webglRun?.quality?.certificationEligible === true &&
+    webgpuRun?.quality?.status === "clean" &&
+    webgpuRun?.quality?.certificationEligible === true;
+  const certificationEligible =
+    !attributionOnly && ordinaryQualityEligible;
+  const maximumDeltaRatio = options.maximumDeltaRatio ?? 0.05;
+  const minimumGeneratedKeyJaccard =
+    options.minimumGeneratedKeyJaccard ?? 0.95;
+  const requireGeneratedKeySimilarity =
+    options.requireGeneratedKeySimilarity ??
+    measurementTerrainMode === "streaming";
+  const webglDelta =
+    webglRun?.representativeContentEvidence?.measurementTerrainActivity
+      ?.delta;
+  const webgpuDelta =
+    webgpuRun?.representativeContentEvidence?.measurementTerrainActivity
+      ?.delta;
+  const reasons = [];
+  const outcomeDifferences = [];
+  const certificationExclusions = [];
+  if (attributionOnly) {
+    certificationExclusions.push(
+      "API-instrumented renderer pairs are attribution-only and cannot certify causal timing",
+    );
+  } else if (!ordinaryQualityEligible) {
+    certificationExclusions.push(
+      "both ordinary renderer legs must have clean, certification-eligible run quality",
+    );
+  }
+  if (!webglDelta || !webgpuDelta) {
+    reasons.push("representative terrain activity is missing");
+  }
+  const workloadFingerprint = causalRendererComparison
+    ? compareRepresentativeWorkloadFingerprints(
+        webglRun,
+        webgpuRun,
+        reasons,
+      )
+    : null;
+  const tilesetLifecycle =
+    compareRepresentativeTilesetLifecycleDiagnostics(webglRun, webgpuRun);
+
+  const requestDeltaRatio = symmetricDeltaRatio(
+    webglDelta?.requestCount,
+    webgpuDelta?.requestCount,
+  );
+  const generationDeltaRatio = symmetricDeltaRatio(
+    webglDelta?.tileGenerationCount,
+    webgpuDelta?.tileGenerationCount,
+  );
+  const frameDeltaRatio = symmetricDeltaRatio(
+    webglRun?.measuredFrames,
+    webgpuRun?.measuredFrames,
+  );
+  const generatedKeyJaccard = requireGeneratedKeySimilarity
+    ? jaccardSimilarity(
+        webglDelta?.generatedTileKeys,
+        webgpuDelta?.generatedTileKeys,
+      )
+    : null;
+
+  for (const [name, value] of [
+    ["terrain request", requestDeltaRatio],
+    ["terrain generation", generationDeltaRatio],
+    ["measured frame", frameDeltaRatio],
+  ]) {
+    if (!Number.isFinite(value)) {
+      reasons.push(`${name} comparison is unavailable`);
+    } else if (value > maximumDeltaRatio) {
+      const message =
+        `${name} symmetric delta ${(value * 100).toFixed(2)}% exceeds ` +
+        `${(maximumDeltaRatio * 100).toFixed(2)}%`;
+      if (causalRendererComparison) {
+        reasons.push(message);
+      } else {
+        outcomeDifferences.push(message);
+      }
+    }
+  }
+  if (
+    requireGeneratedKeySimilarity &&
+    Number.isFinite(generatedKeyJaccard) &&
+    generatedKeyJaccard < minimumGeneratedKeyJaccard
+  ) {
+    const message =
+      `generated terrain-key Jaccard ${generatedKeyJaccard.toFixed(4)} is ` +
+      `below ${minimumGeneratedKeyJaccard.toFixed(4)}`;
+    if (causalRendererComparison) {
+      reasons.push(message);
+    } else {
+      outcomeDifferences.push(message);
+    }
+  }
+
+  return {
+    valid: reasons.length === 0,
+    reasons,
+    outcomeDifferences,
+    measurementTerrainMode,
+    causalRendererComparison,
+    attributionOnly,
+    ordinaryQualityEligible,
+    certificationEligible,
+    certificationExclusions,
+    maximumDeltaRatio,
+    minimumGeneratedKeyJaccard: requireGeneratedKeySimilarity
+      ? minimumGeneratedKeyJaccard
+      : null,
+    metrics: {
+      requestCount: {
+        webgl: webglDelta?.requestCount ?? null,
+        webgpu: webgpuDelta?.requestCount ?? null,
+        symmetricDeltaRatio: requestDeltaRatio,
+        byLevel: levelCountComparison(
+          webglDelta?.requestsByLevel,
+          webgpuDelta?.requestsByLevel,
+        ),
+      },
+      tileGenerationCount: {
+        webgl: webglDelta?.tileGenerationCount ?? null,
+        webgpu: webgpuDelta?.tileGenerationCount ?? null,
+        symmetricDeltaRatio: generationDeltaRatio,
+        byLevel: levelCountComparison(
+          webglDelta?.generationsByLevel,
+          webgpuDelta?.generationsByLevel,
+        ),
+      },
+      measuredFrames: {
+        webgl: webglRun?.measuredFrames ?? null,
+        webgpu: webgpuRun?.measuredFrames ?? null,
+        symmetricDeltaRatio: frameDeltaRatio,
+      },
+      generatedTileKeyJaccard: generatedKeyJaccard,
+      workloadFingerprint,
+      tilesetLifecycle,
+    },
   };
 }

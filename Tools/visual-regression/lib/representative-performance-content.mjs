@@ -1,0 +1,1778 @@
+export const REPRESENTATIVE_CONTENT_PROFILE =
+  "local-procedural-terrain-assets";
+export const REPRESENTATIVE_CONTENT = "terrain-models-tiles";
+
+const representativeSanFranciscoCenter = {
+  longitude: (-122.42 * Math.PI) / 180.0,
+  latitude: (37.785 * Math.PI) / 180.0,
+};
+const representativeSanFranciscoNormalizationRadius =
+  (2.0 * Math.PI) / 180.0;
+const representativeSanFranciscoHeightReduction = 340.0;
+
+const requiredPositiveInteger = (value) =>
+  Number.isInteger(value) && value > 0;
+const requiredFiniteNumber = (value) => Number.isFinite(value);
+const isLocalSampleDataUrl = (value) =>
+  typeof value === "string" && value.startsWith("/Apps/SampleData/");
+
+/**
+ * Validate the serializable representative-workload configuration before it
+ * reaches Cesium. Keeping this separate from scene setup gives malformed
+ * manifests a deterministic failure instead of a partial benchmark.
+ *
+ * @param {object} config
+ * @returns {string[]}
+ */
+export function validateRepresentativeConfig(config) {
+  const failures = [];
+  if (!config || typeof config !== "object") {
+    return ["representativeConfig must be an object"];
+  }
+
+  const terrain = config.terrain;
+  if (!terrain || typeof terrain !== "object") {
+    failures.push("terrain configuration is missing");
+  } else {
+    if (
+      !requiredPositiveInteger(terrain.heightmapWidth) ||
+      terrain.heightmapWidth < 3 ||
+      terrain.heightmapWidth > 129
+    ) {
+      failures.push(
+        "terrain.heightmapWidth must be an integer from 3 to 129",
+      );
+    }
+    if (
+      !requiredPositiveInteger(terrain.waterMaskWidth) ||
+      terrain.waterMaskWidth < 2 ||
+      terrain.waterMaskWidth > 256
+    ) {
+      failures.push(
+        "terrain.waterMaskWidth must be an integer from 2 to 256",
+      );
+    }
+    if (
+      !Number.isInteger(terrain.maximumLevel) ||
+      terrain.maximumLevel < 1 ||
+      terrain.maximumLevel > 16
+    ) {
+      failures.push("terrain.maximumLevel must be an integer from 1 to 16");
+    }
+    if (
+      !requiredPositiveInteger(terrain.tileCacheSize) ||
+      terrain.tileCacheSize > 8192
+    ) {
+      failures.push(
+        "terrain.tileCacheSize must be an integer from 1 to 8192",
+      );
+    }
+  }
+
+  for (const [name, grid] of [
+    ["models", config.models],
+    ["tilesets", config.tilesets],
+  ]) {
+    if (!grid || typeof grid !== "object") {
+      failures.push(`${name} configuration is missing`);
+      continue;
+    }
+    if (!isLocalSampleDataUrl(grid.url)) {
+      failures.push(`${name}.url must reference /Apps/SampleData/`);
+    }
+    const maximumGridSide = name === "models" ? 32 : 8;
+    if (
+      !requiredPositiveInteger(grid.rows) ||
+      grid.rows > maximumGridSide
+    ) {
+      failures.push(
+        `${name}.rows must be an integer from 1 to ${maximumGridSide}`,
+      );
+    }
+    if (
+      !requiredPositiveInteger(grid.columns) ||
+      grid.columns > maximumGridSide
+    ) {
+      failures.push(
+        `${name}.columns must be an integer from 1 to ${maximumGridSide}`,
+      );
+    }
+    for (const property of [
+      "originLongitude",
+      "originLatitude",
+      "longitudeSpacing",
+      "latitudeSpacing",
+    ]) {
+      if (!requiredFiniteNumber(grid[property])) {
+        failures.push(`${name}.${property} must be finite`);
+      }
+    }
+  }
+
+  if (
+    config.models &&
+    (!requiredFiniteNumber(config.models.heightAboveTerrain) ||
+      config.models.heightAboveTerrain <= 0 ||
+      !requiredFiniteNumber(config.models.scale) ||
+      config.models.scale <= 0)
+  ) {
+    failures.push(
+      "positive models.heightAboveTerrain and models.scale are required",
+    );
+  }
+
+  if (config.tilesets) {
+    for (const property of [
+      "sourceLongitude",
+      "sourceLatitude",
+      "sourceHeight",
+      "targetHeightOffset",
+      "maximumScreenSpaceError",
+    ]) {
+      if (!requiredFiniteNumber(config.tilesets[property])) {
+        failures.push(`tilesets.${property} must be finite`);
+      }
+    }
+    if (config.tilesets.maximumScreenSpaceError <= 0) {
+      failures.push("tilesets.maximumScreenSpaceError must be positive");
+    }
+    if (config.tilesets.targetHeightOffset <= 0) {
+      failures.push("tilesets.targetHeightOffset must be positive");
+    }
+  }
+
+  if (
+    !requiredPositiveInteger(config.primeStableFrames) ||
+    config.primeStableFrames > 30
+  ) {
+    failures.push(
+      "primeStableFrames must be a positive integer no greater than 30",
+    );
+  }
+  if (
+    typeof config.validationWaypoint !== "string" ||
+    config.validationWaypoint.length < 1
+  ) {
+    failures.push("validationWaypoint must be a non-empty string");
+  }
+  if (
+    config.measurementTerrainMode !== "streaming" &&
+    config.measurementTerrainMode !== "resident"
+  ) {
+    failures.push(
+      "measurementTerrainMode must be streaming or resident",
+    );
+  }
+  if (
+    !Number.isInteger(config.routePrimeSamples) ||
+    config.routePrimeSamples < 0 ||
+    config.routePrimeSamples > 2048
+  ) {
+    failures.push(
+      "routePrimeSamples must be an integer from 0 to 2048",
+    );
+  }
+  if (
+    !Number.isFinite(config.maximumPairWorkDeltaRatio) ||
+    config.maximumPairWorkDeltaRatio < 0 ||
+    config.maximumPairWorkDeltaRatio > 1
+  ) {
+    failures.push(
+      "maximumPairWorkDeltaRatio must be between 0 and 1",
+    );
+  }
+  if (
+    config.measurementTerrainMode === "resident" &&
+    config.routePrimeSamples < 2
+  ) {
+    failures.push(
+      "resident terrain measurement requires at least two route prime samples",
+    );
+  }
+
+  return failures;
+}
+
+/**
+ * Continuous, deterministic global height field. The frequencies are high
+ * enough to retain measurable relief at the bounded maximum LOD, while using
+ * only longitude/latitude keeps shared tile edges bit-for-bit consistent.
+ */
+export function sampleRepresentativeHeight(longitude, latitude) {
+  const broadRelief =
+    680.0 * Math.sin(longitude * 5.0) * Math.cos(latitude * 7.0);
+  const ridges =
+    420.0 *
+    Math.abs(Math.sin(longitude * 37.0 + latitude * 23.0)) *
+    Math.cos(latitude * 11.0);
+  const localRelief =
+    160.0 * Math.sin(longitude * 113.0 - latitude * 97.0);
+  const rawHeight = 180.0 + broadRelief + ridges + localRelief;
+  const longitudeDistance =
+    (longitude - representativeSanFranciscoCenter.longitude) *
+    Math.cos(representativeSanFranciscoCenter.latitude);
+  const latitudeDistance =
+    latitude - representativeSanFranciscoCenter.latitude;
+  const normalizedDistance = Math.min(
+    1.0,
+    Math.hypot(longitudeDistance, latitudeDistance) /
+      representativeSanFranciscoNormalizationRadius,
+  );
+  const influence = 1.0 - normalizedDistance;
+  const smoothInfluence =
+    influence * influence * (3.0 - 2.0 * influence);
+  return (
+    rawHeight -
+    representativeSanFranciscoHeightReduction * smoothInfluence
+  );
+}
+
+export function representativeGeometricError(
+  level,
+  maximumLevel,
+  levelZeroMaximumGeometricError,
+) {
+  return level >= maximumLevel
+    ? 0
+    : levelZeroMaximumGeometricError / 2 ** level;
+}
+
+function waterValue(longitude, latitude) {
+  const longitudeDegrees = (longitude * 180.0) / Math.PI;
+  const latitudeDegrees = (latitude * 180.0) / Math.PI;
+
+  // Put a continuous synthetic coast beside the San Francisco route so the
+  // representative close-range frames exercise mixed land/water textures.
+  if (
+    longitudeDegrees >= -126.0 &&
+    longitudeDegrees <= -119.0 &&
+    latitudeDegrees >= 34.0 &&
+    latitudeDegrees <= 42.0
+  ) {
+    const coastLongitude =
+      -122.48 + (latitudeDegrees - 37.75) * 0.08;
+    const signedDistance = coastLongitude - longitudeDegrees;
+    return Math.round(
+      255.0 * Math.min(1.0, Math.max(0.0, signedDistance / 0.025 + 0.5)),
+    );
+  }
+
+  const field =
+    Math.sin(longitude * 3.0) +
+    0.65 * Math.cos(latitude * 5.0) +
+    0.35 * Math.sin((longitude + latitude) * 17.0);
+  return Math.round(255.0 * Math.min(1.0, Math.max(0.0, 0.5 - field)));
+}
+
+/**
+ * Create the actual TerrainData water-mask payload. Uniform tiles use Cesium's
+ * one-byte shared-texture forms; shoreline tiles retain the full square mask.
+ */
+export function createRepresentativeWaterMask(rectangle, width) {
+  const values = new Uint8Array(width * width);
+  let minimum = 255;
+  let maximum = 0;
+  for (let row = 0; row < width; row++) {
+    const latitude =
+      rectangle.north +
+      (rectangle.south - rectangle.north) * (row / (width - 1));
+    for (let column = 0; column < width; column++) {
+      const longitude =
+        rectangle.west +
+        (rectangle.east - rectangle.west) * (column / (width - 1));
+      const value = waterValue(longitude, latitude);
+      values[row * width + column] = value;
+      minimum = Math.min(minimum, value);
+      maximum = Math.max(maximum, value);
+    }
+  }
+
+  if (maximum === 0) {
+    return { kind: "land", data: new Uint8Array([0]) };
+  }
+  if (minimum === 255) {
+    return { kind: "water", data: new Uint8Array([255]) };
+  }
+  return { kind: "mixed", data: values };
+}
+
+export function createRepresentativeTerrain(C, config) {
+  const validationFailures = validateRepresentativeConfig(config);
+  if (validationFailures.length > 0) {
+    throw new Error(validationFailures.join("; "));
+  }
+
+  const terrainConfig = config.terrain;
+  const tilingScheme = new C.GeographicTilingScheme();
+  const uniqueTiles = new Set();
+  const generatedTileKeys = new Set();
+  const tilePayloads = new Map();
+  const issuedTerrainData = new WeakSet();
+  const diagnostics = {
+    requestCount: 0,
+    cacheHitCount: 0,
+    tileGenerationCount: 0,
+    requestsByLevel: {},
+    generationsByLevel: {},
+    maximumRequestedLevel: -1,
+    nonFlatTilesGenerated: 0,
+    waterMasksGenerated: {
+      land: 0,
+      water: 0,
+      mixed: 0,
+    },
+  };
+  const levelZeroMaximumGeometricError =
+    C.TerrainProvider.getEstimatedLevelZeroGeometricErrorForAHeightmap(
+      tilingScheme.ellipsoid,
+      terrainConfig.heightmapWidth,
+      tilingScheme.getNumberOfXTilesAtLevel(0),
+    );
+  const errorEvent = new C.Event();
+
+  const provider = {
+    tilingScheme,
+    errorEvent,
+    credit: undefined,
+    hasWaterMask: true,
+    hasVertexNormals: false,
+    availability: undefined,
+    requestTileGeometry(x, y, level) {
+      diagnostics.requestCount++;
+      diagnostics.requestsByLevel[level] =
+        (diagnostics.requestsByLevel[level] || 0) + 1;
+      diagnostics.maximumRequestedLevel = Math.max(
+        diagnostics.maximumRequestedLevel,
+        level,
+      );
+      const key = `${level}/${x}/${y}`;
+      uniqueTiles.add(key);
+
+      let payload = tilePayloads.get(key);
+      if (payload) {
+        diagnostics.cacheHitCount++;
+      } else {
+        const rectangle = tilingScheme.tileXYToRectangle(x, y, level);
+        const width = terrainConfig.heightmapWidth;
+        const buffer = new Float32Array(width * width);
+        let minimumHeight = Number.POSITIVE_INFINITY;
+        let maximumHeight = Number.NEGATIVE_INFINITY;
+        for (let row = 0; row < width; row++) {
+          const latitude =
+            rectangle.north +
+            (rectangle.south - rectangle.north) * (row / (width - 1));
+          for (let column = 0; column < width; column++) {
+            const longitude =
+              rectangle.west +
+              (rectangle.east - rectangle.west) * (column / (width - 1));
+            const height = sampleRepresentativeHeight(longitude, latitude);
+            buffer[row * width + column] = height;
+            minimumHeight = Math.min(minimumHeight, height);
+            maximumHeight = Math.max(maximumHeight, height);
+          }
+        }
+        if (maximumHeight - minimumHeight > 1.0) {
+          diagnostics.nonFlatTilesGenerated++;
+        }
+
+        const waterMask = createRepresentativeWaterMask(
+          rectangle,
+          terrainConfig.waterMaskWidth,
+        );
+        diagnostics.waterMasksGenerated[waterMask.kind]++;
+        diagnostics.tileGenerationCount++;
+        diagnostics.generationsByLevel[level] =
+          (diagnostics.generationsByLevel[level] || 0) + 1;
+        generatedTileKeys.add(key);
+        payload = {
+          buffer,
+          waterMask: waterMask.data,
+        };
+        tilePayloads.set(key, payload);
+      }
+
+      const terrainData = new C.HeightmapTerrainData({
+          // HeightmapTerrainData releases its buffer after mesh creation. Give
+          // each request a fresh wrapper around cached deterministic payloads
+          // so quadtree eviction cannot mutate the provider cache.
+          buffer: payload.buffer.slice(),
+          width: terrainConfig.heightmapWidth,
+          height: terrainConfig.heightmapWidth,
+          childTileMask: level < terrainConfig.maximumLevel ? 15 : 0,
+          waterMask: payload.waterMask.slice(),
+        });
+      issuedTerrainData.add(terrainData);
+      return Promise.resolve(terrainData);
+    },
+    getLevelMaximumGeometricError(level) {
+      // Cesium can continue creating upsampled descendants after a terrain
+      // provider's child mask reaches zero. Advertising zero residual error
+      // at the final real-data level prevents that synthetic refinement, so
+      // the representative lane has a hard and observable LOD bound.
+      return representativeGeometricError(
+        level,
+        terrainConfig.maximumLevel,
+        levelZeroMaximumGeometricError,
+      );
+    },
+    getTileDataAvailable(x, y, level) {
+      return level <= terrainConfig.maximumLevel;
+    },
+    loadTileDataAvailability() {
+      return undefined;
+    },
+  };
+
+  return {
+    provider,
+    ownsTerrainData(terrainData) {
+      return issuedTerrainData.has(terrainData);
+    },
+    snapshotDiagnostics(options = {}) {
+      return {
+        requestCount: diagnostics.requestCount,
+        cacheHitCount: diagnostics.cacheHitCount,
+        tileGenerationCount: diagnostics.tileGenerationCount,
+        requestsByLevel: { ...diagnostics.requestsByLevel },
+        generationsByLevel: { ...diagnostics.generationsByLevel },
+        ...(options.includeGeneratedTileKeys
+          ? { generatedTileKeys: [...generatedTileKeys].sort() }
+          : {}),
+        uniqueTileCount: uniqueTiles.size,
+        maximumLevel: terrainConfig.maximumLevel,
+        maximumRequestedLevel: diagnostics.maximumRequestedLevel,
+        nonFlatTilesGenerated: diagnostics.nonFlatTilesGenerated,
+        waterMasksGenerated: { ...diagnostics.waterMasksGenerated },
+      };
+    },
+  };
+}
+
+export function diffRepresentativeTerrainDiagnostics(start, end) {
+  if (!start || !end) {
+    return null;
+  }
+  const generatedAtStart = new Set(start.generatedTileKeys || []);
+  return {
+    requestCount: end.requestCount - start.requestCount,
+    cacheHitCount: end.cacheHitCount - start.cacheHitCount,
+    tileGenerationCount:
+      end.tileGenerationCount - start.tileGenerationCount,
+    requestsByLevel: diffLevelCounts(
+      start.requestsByLevel,
+      end.requestsByLevel,
+    ),
+    generationsByLevel: diffLevelCounts(
+      start.generationsByLevel,
+      end.generationsByLevel,
+    ),
+    generatedTileKeys: (end.generatedTileKeys || []).filter(
+      (key) => !generatedAtStart.has(key),
+    ),
+    uniqueTileCount: end.uniqueTileCount - start.uniqueTileCount,
+    maximumRequestedLevel: end.maximumRequestedLevel,
+    nonFlatTilesGenerated:
+      end.nonFlatTilesGenerated - start.nonFlatTilesGenerated,
+    waterMasksGenerated: Object.fromEntries(
+      Object.keys(end.waterMasksGenerated).map((kind) => [
+        kind,
+        end.waterMasksGenerated[kind] -
+          (start.waterMasksGenerated[kind] || 0),
+      ]),
+    ),
+  };
+}
+
+/**
+ * A resident route is causal only when the complete measured camera sequence
+ * needs no terrain requests or generation and never observes an incomplete
+ * globe selection. Route-start staging belongs outside this pass.
+ */
+export function isRepresentativeResidentRoutePassQuiescent(pass) {
+  return (
+    pass?.requestCount === 0 &&
+    pass?.tileGenerationCount === 0 &&
+    pass?.globeTilesNotLoadedFrames === 0
+  );
+}
+
+function diffLevelCounts(start = {}, end = {}) {
+  return Object.fromEntries(
+    [...new Set([...Object.keys(start), ...Object.keys(end)])]
+      .sort((left, right) => Number(left) - Number(right))
+      .map((level) => [
+        level,
+        (end[level] || 0) - (start[level] || 0),
+      ])
+      .filter(([, count]) => count !== 0),
+  );
+}
+
+function gridCoordinate(grid, row, column) {
+  return {
+    longitude: grid.originLongitude + column * grid.longitudeSpacing,
+    latitude: grid.originLatitude + row * grid.latitudeSpacing,
+  };
+}
+
+export async function createRepresentativeAssets(C, scene, config) {
+  const modelPromises = [];
+  let minimumModelTerrainClearance =
+    Number.POSITIVE_INFINITY;
+  for (let row = 0; row < config.models.rows; row++) {
+    for (let column = 0; column < config.models.columns; column++) {
+      const coordinate = gridCoordinate(config.models, row, column);
+      const position = C.Cartesian3.fromDegrees(
+        coordinate.longitude,
+        coordinate.latitude,
+        sampleRepresentativeHeight(
+          C.Math.toRadians(coordinate.longitude),
+          C.Math.toRadians(coordinate.latitude),
+        ) + config.models.heightAboveTerrain,
+      );
+      minimumModelTerrainClearance = Math.min(
+        minimumModelTerrainClearance,
+        config.models.heightAboveTerrain,
+      );
+      modelPromises.push(
+        C.Model.fromGltfAsync({
+          url: config.models.url,
+          modelMatrix: C.Transforms.eastNorthUpToFixedFrame(position),
+          scale: config.models.scale,
+        }),
+      );
+    }
+  }
+  const models = await Promise.all(modelPromises);
+  for (const model of models) {
+    scene.primitives.add(model);
+  }
+
+  const sourceFrame = C.Transforms.eastNorthUpToFixedFrame(
+    C.Cartesian3.fromDegrees(
+      config.tilesets.sourceLongitude,
+      config.tilesets.sourceLatitude,
+      config.tilesets.sourceHeight,
+    ),
+  );
+  const inverseSourceFrame = C.Matrix4.inverseTransformation(
+    sourceFrame,
+    new C.Matrix4(),
+  );
+  const tilesetPromises = [];
+  let minimumTilesetTerrainClearance =
+    Number.POSITIVE_INFINITY;
+  for (let row = 0; row < config.tilesets.rows; row++) {
+    for (let column = 0; column < config.tilesets.columns; column++) {
+      const coordinate = gridCoordinate(config.tilesets, row, column);
+      const terrainHeight = sampleRepresentativeHeight(
+        C.Math.toRadians(coordinate.longitude),
+        C.Math.toRadians(coordinate.latitude),
+      );
+      const targetFrame = C.Transforms.eastNorthUpToFixedFrame(
+        C.Cartesian3.fromDegrees(
+          coordinate.longitude,
+          coordinate.latitude,
+          terrainHeight + config.tilesets.targetHeightOffset,
+        ),
+      );
+      minimumTilesetTerrainClearance = Math.min(
+        minimumTilesetTerrainClearance,
+        config.tilesets.targetHeightOffset,
+      );
+      const modelMatrix = C.Matrix4.multiply(
+        targetFrame,
+        inverseSourceFrame,
+        new C.Matrix4(),
+      );
+      tilesetPromises.push(
+        C.Cesium3DTileset.fromUrl(config.tilesets.url, {
+          modelMatrix,
+          maximumScreenSpaceError: config.tilesets.maximumScreenSpaceError,
+        }),
+      );
+    }
+  }
+  const tilesets = await Promise.all(tilesetPromises);
+  for (const tileset of tilesets) {
+    scene.primitives.add(tileset);
+  }
+
+  return {
+    models,
+    tilesets,
+    placement: {
+      minimumModelTerrainClearance,
+      minimumTilesetTerrainClearance,
+    },
+  };
+}
+
+const tilesetLifecycleEventLimit = 4096;
+const tilesetLifecycleFrameLimit = 2048;
+const tilesetLifecycleIdentityListLimit = 128;
+
+function createRepresentativeTileIdentityRegistry(tilesets) {
+  const identities = new WeakMap();
+
+  const register = (tile, tilesetIndex, path) => {
+    if (!tile || identities.has(tile)) {
+      return;
+    }
+    identities.set(tile, {
+      tilesetIndex,
+      path,
+      id: `tileset-${tilesetIndex}/${path}`,
+    });
+    const children = tile.children || [];
+    for (let index = 0; index < children.length; index++) {
+      register(children[index], tilesetIndex, `${path}/${index}`);
+    }
+  };
+
+  const refresh = () => {
+    for (let index = 0; index < tilesets.length; index++) {
+      register(tilesets[index]?._root, index, "root");
+    }
+  };
+
+  const get = (tile) => {
+    if (!tile) {
+      return null;
+    }
+    let identity = identities.get(tile);
+    if (identity) {
+      return identity;
+    }
+    const parent = tile.parent;
+    const parentIdentity = get(parent);
+    if (parentIdentity) {
+      const childIndex = (parent.children || []).indexOf(tile);
+      if (childIndex >= 0) {
+        register(
+          tile,
+          parentIdentity.tilesetIndex,
+          `${parentIdentity.path}/${childIndex}`,
+        );
+        identity = identities.get(tile);
+      }
+    }
+    return identity || null;
+  };
+
+  refresh();
+  return { get, refresh };
+}
+
+function collectRepresentativeTiles(root, result) {
+  if (!root) {
+    return;
+  }
+  result.push(root);
+  const children = root.children || [];
+  for (let index = 0; index < children.length; index++) {
+    collectRepresentativeTiles(children[index], result);
+  }
+}
+
+function lifecycleIdentitySignature(identities) {
+  let hash = fingerprintHashSeedA;
+  for (const identity of identities) {
+    for (let index = 0; index < identity.length; index++) {
+      hash ^= identity.charCodeAt(index);
+      hash = Math.imul(hash, fingerprintHashPrime) >>> 0;
+    }
+    hash = Math.imul(hash ^ 0xff, fingerprintHashPrime) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+/**
+ * Install opt-in 3D Tiles request and route-replay diagnostics for the
+ * performance harness. This deliberately patches Cesium3DTile only inside an
+ * explicitly instrumented browser run; ordinary application and certification
+ * paths do not execute even a diagnostic branch.
+ *
+ * The request chronology covers the complete representative prime/convergence
+ * lifetime. Per-frame identity scans are invoked only by the post-measurement,
+ * untimed deterministic replay.
+ */
+export function createRepresentativeTilesetLifecycleTracker(
+  C,
+  assets,
+  options = {},
+) {
+  const tilesets = assets?.tilesets || [];
+  const trackedTilesets = new Set(tilesets);
+  const identities = createRepresentativeTileIdentityRegistry(tilesets);
+  const performanceApi = options.performanceApi || globalThis.performance;
+  const baseUrl =
+    options.baseUrl || globalThis.location?.href || "http://localhost/";
+  const eventLimit = options.eventLimit ?? tilesetLifecycleEventLimit;
+  const frameLimit = options.frameLimit ?? tilesetLifecycleFrameLimit;
+  const requestContentPrototype = C.Cesium3DTile?.prototype;
+  if (!requestContentPrototype) {
+    throw new Error("Cesium3DTile prototype is unavailable");
+  }
+
+  const originalRequestContent = requestContentPrototype.requestContent;
+  const originalCancelRequests = requestContentPrototype.cancelRequests;
+  const requestRecords = new WeakMap();
+  const requestTimingCursors = new Map();
+  const tileIssueCounts = new WeakMap();
+  const cancelledRequests = new WeakSet();
+  const settledRequests = new WeakSet();
+  const events = [];
+  const frames = [];
+  const removeTileLoadListeners = [];
+  let eventsTruncated = false;
+  let framesTruncated = false;
+  let active = true;
+  let nextRequestId = 1;
+  const totals = {
+    requestAttempts: 0,
+    requestsIssued: 0,
+    requestSchedulingDeferrals: 0,
+    requestsCancelled: 0,
+    requestsReissued: 0,
+    requestsReissuedAfterCancellation: 0,
+    requestsCompleted: 0,
+    requestsFailed: 0,
+    requestsResolvedWithoutContent: 0,
+    tileReadyEvents: 0,
+    resourceTimingsMatched: 0,
+    resourceTimingsMissing: 0,
+    transferBytes: 0,
+    encodedBodyBytes: 0,
+    decodedBodyBytes: 0,
+  };
+
+  const requestStateName = (state) => {
+    for (const [name, value] of Object.entries(C.RequestState || {})) {
+      if (value === state) {
+        return name;
+      }
+    }
+    return state == null ? null : `UNKNOWN_${state}`;
+  };
+
+  const contentStateName = (state) => {
+    for (const [name, value] of Object.entries(
+      C.Cesium3DTileContentState || {},
+    )) {
+      if (value === state) {
+        return name;
+      }
+    }
+    return state == null ? null : `UNKNOWN_${state}`;
+  };
+
+  const frameNumber = (tile) =>
+    tile?._tileset?._updatedVisibilityFrame ?? null;
+
+  const tileIdentity = (tile) => {
+    identities.refresh();
+    return identities.get(tile)?.id ?? "unidentified";
+  };
+
+  const pushEvent = (event) => {
+    if (!active) {
+      return;
+    }
+    if (events.length >= eventLimit) {
+      eventsTruncated = true;
+      return;
+    }
+    events.push({
+      sequence: events.length,
+      timestampMs: performanceApi?.now?.() ?? null,
+      ...event,
+    });
+  };
+
+  const canonicalResourceUrl = (tile) => {
+    const value = tile?._contentResource?.url;
+    if (typeof value !== "string" || value.length === 0) {
+      return null;
+    }
+    try {
+      return new URL(value, baseUrl).href;
+    } catch {
+      return value;
+    }
+  };
+
+  // Ignore any resource entries that predate this opt-in tracker. The
+  // representative tile payload URLs are shared by four relocated tilesets,
+  // so one cursor per URL assigns same-URL completions deterministically.
+  for (const tileset of tilesets) {
+    const allTiles = [];
+    collectRepresentativeTiles(tileset?._root, allTiles);
+    for (const tile of allTiles) {
+      const url = canonicalResourceUrl(tile);
+      if (
+        url &&
+        !requestTimingCursors.has(url) &&
+        typeof performanceApi?.getEntriesByName === "function"
+      ) {
+        requestTimingCursors.set(
+          url,
+          (performanceApi.getEntriesByName(url, "resource") || []).length,
+        );
+      }
+    }
+  }
+
+  const consumeResourceTiming = (url) => {
+    if (!url || typeof performanceApi?.getEntriesByName !== "function") {
+      return null;
+    }
+    const entries = performanceApi.getEntriesByName(url, "resource") || [];
+    const cursor = requestTimingCursors.get(url) ?? 0;
+    if (cursor >= entries.length) {
+      return null;
+    }
+    requestTimingCursors.set(url, cursor + 1);
+    const entry = entries[cursor];
+    return {
+      transferBytes: Number.isFinite(entry.transferSize)
+        ? entry.transferSize
+        : null,
+      encodedBodyBytes: Number.isFinite(entry.encodedBodySize)
+        ? entry.encodedBodySize
+        : null,
+      decodedBodyBytes: Number.isFinite(entry.decodedBodySize)
+        ? entry.decodedBodySize
+        : null,
+      durationMs: Number.isFinite(entry.duration) ? entry.duration : null,
+      responseEndMs: Number.isFinite(entry.responseEnd)
+        ? entry.responseEnd
+        : null,
+      deliveryType: entry.deliveryType || null,
+    };
+  };
+
+  const recordCancellation = (tile, request, reason) => {
+    if (!request || cancelledRequests.has(request)) {
+      return;
+    }
+    cancelledRequests.add(request);
+    totals.requestsCancelled++;
+    const record = requestRecords.get(request);
+    pushEvent({
+      type: "cancelled",
+      requestId: record?.requestId ?? null,
+      tile: tileIdentity(tile),
+      frameNumber: frameNumber(tile),
+      requestState: requestStateName(request.state),
+      reason,
+    });
+  };
+
+  const settleRequest = (tile, request, content, error) => {
+    if (!request || settledRequests.has(request)) {
+      return;
+    }
+    settledRequests.add(request);
+    const record = requestRecords.get(request);
+    const cancelled =
+      request.cancelled === true ||
+      request.state === C.RequestState?.CANCELLED;
+    if (cancelled) {
+      recordCancellation(tile, request, "request-settled-cancelled");
+    }
+    const timing = consumeResourceTiming(record?.url ?? null);
+    if (timing) {
+      totals.resourceTimingsMatched++;
+      totals.transferBytes += timing.transferBytes || 0;
+      totals.encodedBodyBytes += timing.encodedBodyBytes || 0;
+      totals.decodedBodyBytes += timing.decodedBodyBytes || 0;
+    } else {
+      totals.resourceTimingsMissing++;
+    }
+
+    let type;
+    if (error) {
+      totals.requestsFailed++;
+      type = "failed";
+    } else if (cancelled || content == null) {
+      totals.requestsResolvedWithoutContent++;
+      type = cancelled ? "cancelled-settled" : "resolved-without-content";
+    } else {
+      totals.requestsCompleted++;
+      type = "completed";
+    }
+    pushEvent({
+      type,
+      requestId: record?.requestId ?? null,
+      tile: tileIdentity(tile),
+      frameNumber: frameNumber(tile),
+      requestState: requestStateName(request.state),
+      contentState: contentStateName(tile?._contentState),
+      bytes: timing,
+      error: error ? String(error?.message || error) : null,
+    });
+  };
+
+  requestContentPrototype.requestContent = function (...args) {
+    if (!active || !trackedTilesets.has(this?._tileset)) {
+      return originalRequestContent.apply(this, args);
+    }
+    totals.requestAttempts++;
+    const previousRequest = this._request;
+    const result = originalRequestContent.apply(this, args);
+    const request = this._request;
+    if (result == null) {
+      totals.requestSchedulingDeferrals++;
+      pushEvent({
+        type: "scheduling-deferred",
+        requestId: null,
+        tile: tileIdentity(this),
+        frameNumber: frameNumber(this),
+        requestState: requestStateName(request?.state),
+        contentState: contentStateName(this._contentState),
+      });
+      return result;
+    }
+
+    const issueCount = (tileIssueCounts.get(this) || 0) + 1;
+    tileIssueCounts.set(this, issueCount);
+    totals.requestsIssued++;
+    if (issueCount > 1) {
+      totals.requestsReissued++;
+      if (previousRequest && cancelledRequests.has(previousRequest)) {
+        totals.requestsReissuedAfterCancellation++;
+      }
+    }
+    const record = {
+      requestId: nextRequestId++,
+      url: canonicalResourceUrl(this),
+    };
+    if (request) {
+      requestRecords.set(request, record);
+    }
+    pushEvent({
+      type: issueCount > 1 ? "reissued" : "issued",
+      requestId: record.requestId,
+      tile: tileIdentity(this),
+      frameNumber: frameNumber(this),
+      requestState: requestStateName(request?.state),
+      contentState: contentStateName(this._contentState),
+      url: record.url,
+      issueCount,
+    });
+    Promise.resolve(result).then(
+      (content) => settleRequest(this, request, content, null),
+      (error) => settleRequest(this, request, null, error),
+    );
+    return result;
+  };
+
+  requestContentPrototype.cancelRequests = function (...args) {
+    if (!active || !trackedTilesets.has(this?._tileset)) {
+      return originalCancelRequests.apply(this, args);
+    }
+    const request = this._request;
+    const result = originalCancelRequests.apply(this, args);
+    recordCancellation(this, request, "out-of-view");
+    return result;
+  };
+
+  for (const tileset of tilesets) {
+    if (typeof tileset?.tileLoad?.addEventListener !== "function") {
+      continue;
+    }
+    removeTileLoadListeners.push(
+      tileset.tileLoad.addEventListener((tile) => {
+        if (!active) {
+          return;
+        }
+        totals.tileReadyEvents++;
+        pushEvent({
+          type: "ready",
+          requestId: requestRecords.get(tile?._request)?.requestId ?? null,
+          tile: tileIdentity(tile),
+          frameNumber: frameNumber(tile),
+          contentState: contentStateName(tile?._contentState),
+          geometryBytes: tile?.content?.geometryByteLength ?? null,
+          textureBytes: tile?.content?.texturesByteLength ?? null,
+          batchTableBytes: tile?.content?.batchTableByteLength ?? null,
+        });
+      }),
+    );
+  }
+
+  return {
+    sampleFrame(segmentIndex, routeProgress) {
+      if (!active || frames.length >= frameLimit) {
+        framesTruncated ||= active;
+        return false;
+      }
+      identities.refresh();
+      const tilesetFrames = [];
+      const allSelected = [];
+      const allReady = [];
+      let identityListsTruncated = false;
+      for (let tilesetIndex = 0; tilesetIndex < tilesets.length; tilesetIndex++) {
+        const tileset = tilesets[tilesetIndex];
+        const allTiles = [];
+        collectRepresentativeTiles(tileset?._root, allTiles);
+        const ready = allTiles
+          .filter(
+            (tile) => tile.contentReady === true && tile.hasEmptyContent !== true,
+          )
+          .map((tile) => identities.get(tile)?.id ?? "unidentified")
+          .sort();
+        const selectedTiles = tileset?._selectedTiles || [];
+        const selectedDetails = selectedTiles
+          .map((tile) => ({
+            id: identities.get(tile)?.id ?? "unidentified",
+            ready: tile.contentReady === true,
+            contentState: contentStateName(tile._contentState),
+            requestState: requestStateName(tile._request?.state),
+            selectedFrame: tile._selectedFrame ?? null,
+            requestedFrame: tile._requestedFrame ?? null,
+            touchedFrame: tile._touchedFrame ?? null,
+            visible: tile._visible === true,
+            screenSpaceError: Number.isFinite(tile._screenSpaceError)
+              ? Number(tile._screenSpaceError.toFixed(6))
+              : null,
+          }))
+          .sort((left, right) => left.id.localeCompare(right.id));
+        const selected = selectedDetails.map((entry) => entry.id);
+        const requestedInFlight = (tileset?._requestedTilesInFlight || [])
+          .map((tile) => identities.get(tile)?.id ?? "unidentified")
+          .sort();
+        const requestedThisFrame = (tileset?._requestedTiles || [])
+          .map((tile) => identities.get(tile)?.id ?? "unidentified")
+          .sort();
+        const processing = (tileset?._processingQueue || [])
+          .map((tile) => identities.get(tile)?.id ?? "unidentified")
+          .sort();
+        allSelected.push(...selected);
+        allReady.push(...ready);
+        identityListsTruncated ||=
+          selected.length > tilesetLifecycleIdentityListLimit ||
+          ready.length > tilesetLifecycleIdentityListLimit ||
+          requestedInFlight.length > tilesetLifecycleIdentityListLimit ||
+          requestedThisFrame.length > tilesetLifecycleIdentityListLimit ||
+          processing.length > tilesetLifecycleIdentityListLimit;
+        tilesetFrames.push({
+          tilesetIndex,
+          selectedCount: selected.length,
+          selected: selected.slice(0, tilesetLifecycleIdentityListLimit),
+          selectedDetails: selectedDetails.slice(
+            0,
+            tilesetLifecycleIdentityListLimit,
+          ),
+          readyCount: ready.length,
+          ready: ready.slice(0, tilesetLifecycleIdentityListLimit),
+          requestedInFlightCount: requestedInFlight.length,
+          requestedInFlight: requestedInFlight.slice(
+            0,
+            tilesetLifecycleIdentityListLimit,
+          ),
+          requestedThisFrameCount: requestedThisFrame.length,
+          requestedThisFrame: requestedThisFrame.slice(
+            0,
+            tilesetLifecycleIdentityListLimit,
+          ),
+          processingCount: processing.length,
+          processing: processing.slice(0, tilesetLifecycleIdentityListLimit),
+          statisticsSelected: tileset?.statistics?.selected ?? null,
+          statisticsReady:
+            tileset?.statistics?.numberOfTilesWithContentReady ?? null,
+          tilesLoaded: tileset?.tilesLoaded === true,
+        });
+      }
+      allSelected.sort();
+      allReady.sort();
+      frames.push({
+        index: frames.length,
+        segmentIndex,
+        routeProgress,
+        selectedIdentitySignature: lifecycleIdentitySignature(allSelected),
+        readyIdentitySignature: lifecycleIdentitySignature(allReady),
+        selectedCount: allSelected.length,
+        readyCount: allReady.length,
+        identityListsTruncated,
+        tilesets: tilesetFrames,
+      });
+      return true;
+    },
+
+    snapshot(provenance = null) {
+      return {
+        schemaVersion: 1,
+        enabled: true,
+        nonCertifying: true,
+        provenance,
+        limits: {
+          events: eventLimit,
+          frames: frameLimit,
+          identityList: tilesetLifecycleIdentityListLimit,
+        },
+        totals: { ...totals },
+        eventsTruncated,
+        framesTruncated,
+        events: events.map((event) => ({ ...event })),
+        frames: frames.map((frame) => structuredClone(frame)),
+      };
+    },
+
+    destroy() {
+      if (!active) {
+        return;
+      }
+      active = false;
+      requestContentPrototype.requestContent = originalRequestContent;
+      requestContentPrototype.cancelRequests = originalCancelRequests;
+      for (const remove of removeTileLoadListeners) {
+        remove();
+      }
+    },
+  };
+}
+
+const representativeFingerprintMetricNames = Object.freeze([
+  "terrainTilesToRender",
+  "terrainMeshTiles",
+  "terrainSelectionIdentityA",
+  "terrainSelectionIdentityB",
+  "terrainUnidentifiedTiles",
+  "directModelInstancesConfigured",
+  "directModelInstancesReady",
+  "directModelIdentityA",
+  "directModelIdentityB",
+  "tilesetsWithSelection",
+  "tilesetSelected",
+  "tilesetSelectionIdentityA",
+  "tilesetSelectionIdentityB",
+  "tilesetSelectionCountMismatch",
+  "tilesetUnidentifiedSelected",
+]);
+
+const fingerprintHashSeedA = 0x811c9dc5;
+const fingerprintHashSeedB = 0x9e3779b9;
+const fingerprintHashPrime = 0x01000193;
+
+function mixFingerprintInteger(hash, value) {
+  let result = hash >>> 0;
+  const word = value >>> 0;
+  for (let byteIndex = 0; byteIndex < 4; byteIndex++) {
+    result ^= (word >>> (byteIndex * 8)) & 0xff;
+    result = Math.imul(result, fingerprintHashPrime) >>> 0;
+  }
+  return result;
+}
+
+function createFingerprintBucket(segmentIndex = null) {
+  return {
+    segmentIndex,
+    frameCount: 0,
+    hashA: fingerprintHashSeedA,
+    hashB: fingerprintHashSeedB,
+    metrics: Object.fromEntries(
+      representativeFingerprintMetricNames.map((name) => [
+        name,
+        {
+          total: 0,
+          min: Number.POSITIVE_INFINITY,
+          max: Number.NEGATIVE_INFINITY,
+        },
+      ]),
+    ),
+  };
+}
+
+function observeFingerprintBucket(bucket, sample) {
+  bucket.frameCount++;
+  bucket.hashA = mixFingerprintInteger(bucket.hashA, sample.segmentIndex);
+  bucket.hashB = mixFingerprintInteger(
+    bucket.hashB,
+    sample.segmentIndex ^ 0x85ebca6b,
+  );
+  for (let index = 0; index < representativeFingerprintMetricNames.length; index++) {
+    const name = representativeFingerprintMetricNames[index];
+    const value = sample[name];
+    bucket.hashA = mixFingerprintInteger(bucket.hashA, value);
+    bucket.hashB = mixFingerprintInteger(
+      bucket.hashB,
+      value ^ Math.imul(index + 1, 0x27d4eb2d),
+    );
+    const metric = bucket.metrics[name];
+    metric.total += value;
+    metric.min = Math.min(metric.min, value);
+    metric.max = Math.max(metric.max, value);
+  }
+}
+
+function snapshotFingerprintBucket(bucket) {
+  const hex = (value) => (value >>> 0).toString(16).padStart(8, "0");
+  return {
+    ...(bucket.segmentIndex === null
+      ? {}
+      : { segmentIndex: bucket.segmentIndex }),
+    frameCount: bucket.frameCount,
+    signature: `${hex(bucket.hashA)}-${hex(bucket.hashB)}`,
+    metrics: Object.fromEntries(
+      representativeFingerprintMetricNames.map((name) => {
+        const metric = bucket.metrics[name];
+        return [
+          name,
+          {
+            total: metric.total,
+            min: bucket.frameCount > 0 ? metric.min : null,
+            max: bucket.frameCount > 0 ? metric.max : null,
+          },
+        ];
+      }),
+    ),
+  };
+}
+
+/**
+ * Build a bounded fingerprint of the renderer-neutral work selected on every
+ * deterministic route-replay frame. The two rolling hashes preserve frame
+ * order without retaining a per-frame object graph; per-segment totals make a
+ * mismatch diagnosable in the JSON report.
+ */
+export function createRepresentativeWorkloadFingerprintAccumulator() {
+  const overall = createFingerprintBucket();
+  const segments = new Map();
+  let invalidSampleCount = 0;
+  let firstInvalidSampleReason = null;
+
+  return {
+    observe(sample) {
+      if (
+        !sample ||
+        !Number.isInteger(sample.segmentIndex) ||
+        sample.segmentIndex < 0
+      ) {
+        invalidSampleCount++;
+        firstInvalidSampleReason ??= "segmentIndex must be a non-negative integer";
+        return false;
+      }
+      for (const name of representativeFingerprintMetricNames) {
+        if (!Number.isInteger(sample[name]) || sample[name] < 0) {
+          invalidSampleCount++;
+          firstInvalidSampleReason ??=
+            `${name} must be a non-negative integer`;
+          return false;
+        }
+      }
+
+      let segment = segments.get(sample.segmentIndex);
+      if (!segment) {
+        segment = createFingerprintBucket(sample.segmentIndex);
+        segments.set(sample.segmentIndex, segment);
+      }
+      observeFingerprintBucket(overall, sample);
+      observeFingerprintBucket(segment, sample);
+      return true;
+    },
+
+    snapshot() {
+      const reasons = [];
+      if (overall.frameCount < 1) {
+        reasons.push("no route-replay workload-fingerprint frames were observed");
+      }
+      if (invalidSampleCount > 0) {
+        reasons.push(
+          `${invalidSampleCount} invalid workload-fingerprint samples` +
+            (firstInvalidSampleReason
+              ? ` (${firstInvalidSampleReason})`
+              : ""),
+        );
+      }
+      return {
+        schemaVersion: 1,
+        valid: reasons.length === 0,
+        reasons,
+        invalidSampleCount,
+        ...snapshotFingerprintBucket(overall),
+        segments: [...segments.values()]
+          .sort((left, right) => left.segmentIndex - right.segmentIndex)
+          .map(snapshotFingerprintBucket),
+      };
+    },
+  };
+}
+
+export function createRepresentativeEvidenceTracker(
+  scene,
+  terrain,
+  assets,
+) {
+  const directModels = new Set(assets.models);
+  const directModelIdentities = new WeakMap(
+    assets.models.map((model, index) => [
+      model,
+      {
+        a: mixFingerprintInteger(fingerprintHashSeedA, index + 1),
+        b: mixFingerprintInteger(fingerprintHashSeedB, index + 1),
+      },
+    ]),
+  );
+  const modelOwnersSeen = new Set();
+  const tilesetsWithCommands = new Set();
+  const tilesetsWithSelection = new Set();
+  const tilesetsWithReadyContent = new Set();
+  const selectedTileIdentities = new WeakMap();
+  const cacheSelectedTileIdentities = (
+    tile,
+    tilesetIndex,
+    pathHashA,
+    pathHashB,
+  ) => {
+    if (!tile || selectedTileIdentities.has(tile)) return;
+    selectedTileIdentities.set(tile, {
+      a: mixFingerprintInteger(
+        mixFingerprintInteger(fingerprintHashSeedA, tilesetIndex),
+        pathHashA,
+      ),
+      b: mixFingerprintInteger(
+        mixFingerprintInteger(fingerprintHashSeedB, tilesetIndex),
+        pathHashB,
+      ),
+    });
+    const children = tile.children || [];
+    for (let childIndex = 0; childIndex < children.length; childIndex++) {
+      cacheSelectedTileIdentities(
+        children[childIndex],
+        tilesetIndex,
+        mixFingerprintInteger(pathHashA, childIndex + 1),
+        mixFingerprintInteger(pathHashB, children.length - childIndex),
+      );
+    }
+  };
+  for (let index = 0; index < assets.tilesets.length; index++) {
+    cacheSelectedTileIdentities(
+      assets.tilesets[index]._root,
+      index,
+      index + 1,
+      index + 1,
+    );
+  }
+  const workloadFingerprint =
+    createRepresentativeWorkloadFingerprintAccumulator();
+  const workloadFingerprintSample = {
+    segmentIndex: 0,
+    terrainTilesToRender: 0,
+    terrainMeshTiles: 0,
+    terrainSelectionIdentityA: 0,
+    terrainSelectionIdentityB: 0,
+    terrainUnidentifiedTiles: 0,
+    directModelInstancesConfigured: 0,
+    directModelInstancesReady: 0,
+    directModelIdentityA: 0,
+    directModelIdentityB: 0,
+    tilesetsWithSelection: 0,
+    tilesetSelected: 0,
+    tilesetSelectionIdentityA: 0,
+    tilesetSelectionIdentityB: 0,
+    tilesetSelectionCountMismatch: 0,
+    tilesetUnidentifiedSelected: 0,
+  };
+  const terrainDiagnosticsStart = terrain.snapshotDiagnostics();
+  const evidence = {
+    sampledFrames: 0,
+    terrainMeshFrames: 0,
+    terrainWaterMaskTextureFrames: 0,
+    terrainMixedWaterMaskFrames: 0,
+    waterEffectFrames: 0,
+    directModelCommandFrames: 0,
+    tilesetCommandFrames: 0,
+    allContentCommandFrames: 0,
+    maximumTerrainTiles: 0,
+    maximumSelectedTerrainLevel: -1,
+    maximumDirectTerrainLevel: -1,
+    maximumUpsampledTerrainLevel: -1,
+    maximumTerrainHeightSpan: 0,
+    maximumDirectModelCommands: 0,
+    maximumTilesetCommands: 0,
+    maximumTilesetSelected: 0,
+    maximumTilesetContentReady: 0,
+  };
+
+  return {
+    sampleWorkloadFingerprint(segmentIndex) {
+      const terrainTiles = scene.globe?._surface?._tilesToRender || [];
+      let terrainMeshTiles = 0;
+      let terrainSelectionIdentityA = 0;
+      let terrainSelectionIdentityB = 0;
+      let terrainUnidentifiedTiles = 0;
+      for (const tile of terrainTiles) {
+        const surfaceTile = tile?.data;
+        if (
+          surfaceTile?.renderedMesh ||
+          surfaceTile?.mesh ||
+          surfaceTile?.fill?.mesh
+        ) {
+          terrainMeshTiles++;
+        }
+        if (
+          Number.isInteger(tile?.x) &&
+          Number.isInteger(tile?.y) &&
+          Number.isInteger(tile?.level)
+        ) {
+          let tileIdentityA = mixFingerprintInteger(
+            fingerprintHashSeedA,
+            tile.level,
+          );
+          tileIdentityA = mixFingerprintInteger(tileIdentityA, tile.x);
+          tileIdentityA = mixFingerprintInteger(tileIdentityA, tile.y);
+          let tileIdentityB = mixFingerprintInteger(
+            fingerprintHashSeedB,
+            tile.y,
+          );
+          tileIdentityB = mixFingerprintInteger(tileIdentityB, tile.x);
+          tileIdentityB = mixFingerprintInteger(tileIdentityB, tile.level);
+          terrainSelectionIdentityA =
+            (terrainSelectionIdentityA + tileIdentityA) >>> 0;
+          terrainSelectionIdentityB =
+            (terrainSelectionIdentityB + tileIdentityB) >>> 0;
+        } else {
+          terrainUnidentifiedTiles++;
+        }
+      }
+
+      // Fingerprint the logical model instances supplied to both renderers,
+      // not renderer-specific command emission. WebGPU deliberately rejects
+      // off-frustum Models before producing commands while WebGL currently
+      // leaves those commands for the later visibility stage; that is the
+      // optimization this benchmark is intended to measure, not unequal input.
+      let directModelInstancesReady = 0;
+      let directModelIdentityA = 0;
+      let directModelIdentityB = 0;
+      for (const model of assets.models) {
+        if (model.ready !== true) {
+          continue;
+        }
+        directModelInstancesReady++;
+        const identity = directModelIdentities.get(model);
+        directModelIdentityA = (directModelIdentityA + identity.a) >>> 0;
+        directModelIdentityB = (directModelIdentityB + identity.b) >>> 0;
+      }
+
+      let tilesetsWithSelectionThisFrame = 0;
+      let tilesetSelected = 0;
+      let tilesetSelectionIdentityA = 0;
+      let tilesetSelectionIdentityB = 0;
+      let tilesetSelectionCountMismatch = 0;
+      let tilesetUnidentifiedSelected = 0;
+      for (const tileset of assets.tilesets) {
+        const selected = tileset.statistics?.selected || 0;
+        const selectedTiles = tileset._selectedTiles || [];
+        tilesetSelected += selected;
+        tilesetSelectionCountMismatch += Math.abs(
+          selected - selectedTiles.length,
+        );
+        for (const selectedTile of selectedTiles) {
+          const identity = selectedTileIdentities.get(selectedTile);
+          if (identity) {
+            tilesetSelectionIdentityA =
+              (tilesetSelectionIdentityA + identity.a) >>> 0;
+            tilesetSelectionIdentityB =
+              (tilesetSelectionIdentityB + identity.b) >>> 0;
+          } else {
+            tilesetUnidentifiedSelected++;
+          }
+        }
+        if (selected > 0) tilesetsWithSelectionThisFrame++;
+      }
+
+      workloadFingerprintSample.segmentIndex = segmentIndex;
+      workloadFingerprintSample.terrainTilesToRender = terrainTiles.length;
+      workloadFingerprintSample.terrainMeshTiles = terrainMeshTiles;
+      workloadFingerprintSample.terrainSelectionIdentityA =
+        terrainSelectionIdentityA;
+      workloadFingerprintSample.terrainSelectionIdentityB =
+        terrainSelectionIdentityB;
+      workloadFingerprintSample.terrainUnidentifiedTiles =
+        terrainUnidentifiedTiles;
+      workloadFingerprintSample.directModelInstancesConfigured =
+        assets.models.length;
+      workloadFingerprintSample.directModelInstancesReady =
+        directModelInstancesReady;
+      workloadFingerprintSample.directModelIdentityA = directModelIdentityA;
+      workloadFingerprintSample.directModelIdentityB = directModelIdentityB;
+      workloadFingerprintSample.tilesetsWithSelection =
+        tilesetsWithSelectionThisFrame;
+      workloadFingerprintSample.tilesetSelected = tilesetSelected;
+      workloadFingerprintSample.tilesetSelectionIdentityA =
+        tilesetSelectionIdentityA;
+      workloadFingerprintSample.tilesetSelectionIdentityB =
+        tilesetSelectionIdentityB;
+      workloadFingerprintSample.tilesetSelectionCountMismatch =
+        tilesetSelectionCountMismatch;
+      workloadFingerprintSample.tilesetUnidentifiedSelected =
+        tilesetUnidentifiedSelected;
+      return workloadFingerprint.observe(workloadFingerprintSample);
+    },
+
+    sample() {
+      evidence.sampledFrames++;
+      const terrainTiles = scene.globe?._surface?._tilesToRender || [];
+      let meshTiles = 0;
+      let waterMaskTextures = 0;
+      let mixedWaterMasks = 0;
+      let maximumLevel = -1;
+      let maximumDirectLevel = -1;
+      let maximumUpsampledLevel = -1;
+      let maximumHeightSpan = 0;
+      for (const tile of terrainTiles) {
+        const surfaceTile = tile?.data;
+        const mesh =
+          surfaceTile?.renderedMesh ||
+          surfaceTile?.mesh ||
+          surfaceTile?.fill?.mesh;
+        if (mesh) {
+          meshTiles++;
+          const span = mesh.maximumHeight - mesh.minimumHeight;
+          if (Number.isFinite(span)) {
+            maximumHeightSpan = Math.max(maximumHeightSpan, span);
+          }
+        }
+        if (surfaceTile?.waterMaskTexture) {
+          waterMaskTextures++;
+        }
+        if (
+          surfaceTile?.waterMaskTexture &&
+          surfaceTile?.terrainData?.waterMask?.length > 1
+        ) {
+          mixedWaterMasks++;
+        }
+        const tileLevel = tile?.level ?? -1;
+        maximumLevel = Math.max(maximumLevel, tileLevel);
+        if (terrain.ownsTerrainData(surfaceTile?.terrainData)) {
+          maximumDirectLevel = Math.max(maximumDirectLevel, tileLevel);
+        } else if (
+          surfaceTile?.terrainData?.wasCreatedByUpsampling?.() === true
+        ) {
+          maximumUpsampledLevel = Math.max(
+            maximumUpsampledLevel,
+            tileLevel,
+          );
+        }
+      }
+      if (meshTiles > 0) evidence.terrainMeshFrames++;
+      if (waterMaskTextures > 0) {
+        evidence.terrainWaterMaskTextureFrames++;
+      }
+      if (mixedWaterMasks > 0) {
+        evidence.terrainMixedWaterMaskFrames++;
+      }
+      if (scene.globe?._surface?.tileProvider?.showWaterEffect === true) {
+        evidence.waterEffectFrames++;
+      }
+      evidence.maximumTerrainTiles = Math.max(
+        evidence.maximumTerrainTiles,
+        terrainTiles.length,
+      );
+      evidence.maximumSelectedTerrainLevel = Math.max(
+        evidence.maximumSelectedTerrainLevel,
+        maximumLevel,
+      );
+      evidence.maximumDirectTerrainLevel = Math.max(
+        evidence.maximumDirectTerrainLevel,
+        maximumDirectLevel,
+      );
+      evidence.maximumUpsampledTerrainLevel = Math.max(
+        evidence.maximumUpsampledTerrainLevel,
+        maximumUpsampledLevel,
+      );
+      evidence.maximumTerrainHeightSpan = Math.max(
+        evidence.maximumTerrainHeightSpan,
+        maximumHeightSpan,
+      );
+
+      let directModelCommands = 0;
+      for (const command of scene.frameState?.commandList || []) {
+        if (directModels.has(command?.owner)) {
+          directModelCommands++;
+          modelOwnersSeen.add(command.owner);
+        }
+      }
+      if (directModelCommands > 0) {
+        evidence.directModelCommandFrames++;
+      }
+      evidence.maximumDirectModelCommands = Math.max(
+        evidence.maximumDirectModelCommands,
+        directModelCommands,
+      );
+
+      let tilesetCommands = 0;
+      let tilesetSelected = 0;
+      let tilesetContentReady = 0;
+      for (let index = 0; index < assets.tilesets.length; index++) {
+        const tileset = assets.tilesets[index];
+        const commandCount =
+          tileset.statistics?.numberOfCommands || 0;
+        const selectedCount = tileset.statistics?.selected || 0;
+        const readyContentCount =
+          tileset.statistics?.numberOfTilesWithContentReady || 0;
+        tilesetCommands += commandCount;
+        tilesetSelected += selectedCount;
+        tilesetContentReady += readyContentCount;
+        if (commandCount > 0) tilesetsWithCommands.add(index);
+        if (selectedCount > 0) tilesetsWithSelection.add(index);
+        if (readyContentCount > 0) {
+          tilesetsWithReadyContent.add(index);
+        }
+      }
+      if (tilesetCommands > 0) {
+        evidence.tilesetCommandFrames++;
+      }
+      if (
+        directModelCommands > 0 &&
+        tilesetCommands > 0 &&
+        meshTiles > 0
+      ) {
+        evidence.allContentCommandFrames++;
+      }
+      evidence.maximumTilesetCommands = Math.max(
+        evidence.maximumTilesetCommands,
+        tilesetCommands,
+      );
+      evidence.maximumTilesetSelected = Math.max(
+        evidence.maximumTilesetSelected,
+        tilesetSelected,
+      );
+      evidence.maximumTilesetContentReady = Math.max(
+        evidence.maximumTilesetContentReady,
+        tilesetContentReady,
+      );
+    },
+    snapshot(options = {}) {
+      const phase = options.phase || "validation";
+      const commandEvidenceRequired = phase !== "prime";
+      const terrainDiagnostics = terrain.snapshotDiagnostics();
+      terrainDiagnostics.sinceTrackerStart = {
+        requestCount:
+          terrainDiagnostics.requestCount -
+          terrainDiagnosticsStart.requestCount,
+        cacheHitCount:
+          terrainDiagnostics.cacheHitCount -
+          terrainDiagnosticsStart.cacheHitCount,
+        tileGenerationCount:
+          terrainDiagnostics.tileGenerationCount -
+          terrainDiagnosticsStart.tileGenerationCount,
+        uniqueTileCount:
+          terrainDiagnostics.uniqueTileCount -
+          terrainDiagnosticsStart.uniqueTileCount,
+        nonFlatTilesGenerated:
+          terrainDiagnostics.nonFlatTilesGenerated -
+          terrainDiagnosticsStart.nonFlatTilesGenerated,
+        waterMasksGenerated: Object.fromEntries(
+          Object.keys(terrainDiagnostics.waterMasksGenerated).map((kind) => [
+            kind,
+            terrainDiagnostics.waterMasksGenerated[kind] -
+              terrainDiagnosticsStart.waterMasksGenerated[kind],
+          ]),
+        ),
+      };
+      const readyModels = assets.models.filter((model) => model.ready).length;
+      const loadedTilesets = assets.tilesets.filter(
+        (tileset) => tileset.tilesLoaded,
+      ).length;
+      const failures = [];
+      if (evidence.sampledFrames < 1) {
+        failures.push("no representative frames were sampled");
+      }
+      if (
+        terrainDiagnostics.requestCount < 1 ||
+        terrainDiagnostics.uniqueTileCount < 2 ||
+        terrainDiagnostics.nonFlatTilesGenerated < 1
+      ) {
+        failures.push("procedural terrain requests did not produce real relief");
+      }
+      if (
+        evidence.terrainMeshFrames < 1 ||
+        evidence.maximumTerrainHeightSpan <= 1.0 ||
+        terrainDiagnostics.maximumRequestedLevel !==
+          terrainDiagnostics.maximumLevel ||
+        evidence.maximumDirectTerrainLevel !==
+          terrainDiagnostics.maximumLevel ||
+        evidence.maximumSelectedTerrainLevel >
+          terrainDiagnostics.maximumLevel ||
+        evidence.maximumUpsampledTerrainLevel >= 0
+      ) {
+        failures.push(
+          "non-flat terrain meshes did not exercise the configured real-data LOD bound",
+        );
+      }
+      if (
+        terrainDiagnostics.waterMasksGenerated.mixed < 1 ||
+        evidence.terrainWaterMaskTextureFrames < 1 ||
+        evidence.terrainMixedWaterMaskFrames < 1 ||
+        evidence.waterEffectFrames < 1
+      ) {
+        failures.push(
+          "mixed terrain water-mask textures never reached the water render path",
+        );
+      }
+      if (
+        assets.placement.minimumModelTerrainClearance <= 0 ||
+        assets.placement.minimumTilesetTerrainClearance <= 0 ||
+        readyModels !== assets.models.length ||
+        modelOwnersSeen.size !== assets.models.length
+      ) {
+        failures.push(
+          "terrain-draped local models never became ready and command-producing",
+        );
+      }
+      if (
+        tilesetsWithReadyContent.size !== assets.tilesets.length ||
+        tilesetsWithSelection.size !== assets.tilesets.length ||
+        (commandEvidenceRequired &&
+          tilesetsWithCommands.size !== assets.tilesets.length)
+      ) {
+        failures.push(
+          commandEvidenceRequired
+            ? "local 3D Tiles never became ready, selected, and command-producing"
+            : "local 3D Tiles never became ready and selected during route priming",
+        );
+      }
+      if (
+        assets.placement.minimumTilesetTerrainClearance <= 0
+      ) {
+        failures.push("local 3D Tiles were not placed above terrain");
+      }
+      if (commandEvidenceRequired && evidence.allContentCommandFrames < 1) {
+        failures.push(
+          "terrain, models, and 3D Tiles were never executable in the same frame",
+        );
+      }
+
+      const workloadFingerprintSnapshot = workloadFingerprint.snapshot();
+      return {
+        phase,
+        valid: failures.length === 0,
+        failures,
+        configured: {
+          models: assets.models.length,
+          tilesets: assets.tilesets.length,
+        },
+        ready: {
+          models: readyModels,
+          tilesetsLoadedAtSnapshot: loadedTilesets,
+        },
+        coverage: {
+          modelOwnersWithCommands: modelOwnersSeen.size,
+          tilesetsWithCommands: tilesetsWithCommands.size,
+          tilesetsWithSelection: tilesetsWithSelection.size,
+          tilesetsWithReadyContent: tilesetsWithReadyContent.size,
+        },
+        placement: { ...assets.placement },
+        terrainDiagnostics,
+        workloadFingerprint:
+          workloadFingerprintSnapshot.frameCount > 0
+            ? workloadFingerprintSnapshot
+            : null,
+        ...evidence,
+      };
+    },
+  };
+}
