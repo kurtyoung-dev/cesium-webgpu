@@ -1075,6 +1075,28 @@ EGM2008 is a work of the U.S. Government and is not subject to copyright protect
 
 **Citation:** Pavlis, N. K., Holmes, S. A., Kenyon, S. C., & Factor, J. K. (2012). *The development and evaluation of the Earth Gravitational Model 2008 (EGM2008).* Journal of Geophysical Research, 117, B04406.
 
+### Bright-star catalogue — Yale BSC5, as served by NASA HEASARC
+
+**File:** `packages/engine/Source/Scene/BrightStarCatalog.js`. Not a binary asset but bundled measurement data, and listed here for the same reason as the entries above: it ships inside `@cesium/engine`, and the terms below must travel with any redistribution. The module holds **2,868 stars** to visual magnitude **5.5**, as a flat table of four numbers per star — J2000 right ascension, J2000 declination, V magnitude, B−V colour index. It is consumed by `packages/engine/Source/Scene/StarFieldMath.ts` on both rendering backends.
+
+**Product:** *Bright Star Catalogue, 5th Revised Edition (Preliminary Version)*, Hoffleit, D. & Warren, W. H. Jr., 1991. The rows were taken from the **NASA HEASARC** Browse table `heasarc_bsc5p` (9,110 rows), retrieved **2026-08-01** from `https://heasarc.gsfc.nasa.gov/FTP/heasarc/dbase/tdat_files/heasarc_bsc5p.tdat.gz` (913,895 bytes; SHA-256 `122628cde2d8bedf7e16ddf5f888167ac58c04b5592d6155408ce297f3073931`; the file's own header declares `table_security = public`). HEASARC states of that table that it *"was created by the HEASARC in 1995 based upon a file obtained from either the ADC or the CDS"* and that it has since revised it — most recently in January 2014 — so the served table is itself a NASA/GSFC work product. The 914 KB source archive is **not** bundled; the ingest is reproducible with `Tools/star-catalog-bake/bake-star-catalog.mjs`, which verifies the pinned hash before doing anything.
+
+**What is redistributed.** Only the four factual columns, rounded to the precision the renderer uses, re-sorted under this project's own schema rather than in the source's row order. Identifiers, cross-references, spectral types, proper motions, parallaxes, notes and remarks are **not** taken.
+
+- HEASARC data policy: <https://heasarc.gsfc.nasa.gov/docs/heasarc/data_policy.html>
+- Catalogue page: <https://heasarc.gsfc.nasa.gov/W3Browse/star-catalog/bsc5p.html>
+- NASA media guidelines: <https://www.nasa.gov/nasa-brand-center/images-and-media/>
+
+**Credit:** Hoffleit & Warren (Yale University Observatory); table served by NASA's High Energy Astrophysics Science Archive Research Center (HEASARC), a service of the Astrophysics Science Division at NASA/GSFC.
+
+**Terms.** HEASARC's data policy states verbatim:
+
+> HEASARC materials are all available freely for your use.
+
+The only obligation it attaches is an acknowledgement in research publications. Its page enumerates the missions whose partner agencies impose extra conditions — the sole such carve-out is **XMM-Newton** (ESA, non-commercial); `bsc5p` is not partner-agency mission data and is not within it. Neither the catalogue page nor the served file carries a copyright notice, a licence, or a restriction. NASA's own guidance is that NASA content *"generally are not subject to copyright in the United States"* and may be used *"in a factual manner that does not imply endorsement … without needing explicit permission"*, with a carve-out only for third-party material NASA **marks** as copyright-protected; this table carries no such marking. Independently, the four vendored fields are measurements of physical reality — uncopyrightable *facts* in the United States under *Feist v. Rural*.
+
+**What this is not.** It is **not** a public-domain dedication and **not** a written grant. 17 U.S.C. §105 does **not** reach the underlying 1991 compilation, whose authors were a private university and a contractor; federal hosting confers no such status. Sourcing from HEASARC rather than VizieR/CDS is deliberate: it removes the EU *sui generis* database right, which protects substantial extraction independently of copyright and whose maker would be the European provider. On that basis the residual exposure is assessed as low and accepted, on stated grounds — **not** recorded as "it is clear". A one-line written confirmation from CDS (`cds-question@unistra.fr`) and/or Yale that no restriction is asserted on redistribution of the factual fields would convert this from defensible to cleared, and remains the cheapest route. The full analysis, including the points that stay unconfirmed, is in [`migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md`](migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md) §6d (decision record DR-02) and in `Tools/star-catalog-bake/README.md` §2.
+
 # Example Applications
 
 The CesiumJS example applications include the following third-party libraries and data.

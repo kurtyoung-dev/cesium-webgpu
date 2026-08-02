@@ -79,7 +79,11 @@ const REF = {
   BETA: 2.0, // Moffat exponent — wing log-log slope = -2*BETA = -4
   K_HALO: 0.08, // halo amplitude share
   WINDOW_INNER: 0.92, // AA window start (moved from the inert 0.45)
-  MAG_CUTOFF: 5.0,
+  // C12-09 deepened the vendored catalogue from 5.0 to 5.5. This constant is
+  // a deliberate tripwire in BOTH directions: it is asserted against
+  // StarFieldMath.ts below AND against the faintest star actually vendored, so
+  // neither a code edit nor a re-bake can move one without the other.
+  MAG_CUTOFF: 5.5,
   FAINT_ANCHOR_MAG: 3.6,
   FAINT_ANCHOR_PEAK: 0.06,
   GLARE_MAX_DIAMETER_RAD: 0.017453292519943295, // 1 degree
@@ -170,6 +174,7 @@ for (let i = 0; i < count; i++) {
 }
 vmags.sort((a, b) => a - b);
 const vmagBrightest = vmags[0];
+const vmagFaintest = vmags[vmags.length - 1];
 const rendered = vmags.filter((m) => m <= REF.MAG_CUTOFF);
 const vmagFaintestRendered = rendered[rendered.length - 1];
 const I_MAX = intensity(vmagBrightest);
@@ -260,6 +265,15 @@ test("(e) TS math layer constants match the shaders and this spec", () => {
     );
     assert.equal(v, refValue, `${name} differs from the spec reference`);
   }
+
+  // C12-09: MAG_CUTOFF is definitionally the faintest vendored star. If a
+  // re-bake deepens the table without moving the constant, every row past the
+  // old bound would silently render at zero flux.
+  assert.equal(
+    vmagFaintest,
+    REF.MAG_CUTOFF,
+    `faintest vendored star ${vmagFaintest} != MAG_CUTOFF ${REF.MAG_CUTOFF} — re-derive both together`,
+  );
 
   // Cross-file coupling: MAX_QUAD_SCALE's derivation bakes in 2x
   // StarField.js's _pointAngularSize.

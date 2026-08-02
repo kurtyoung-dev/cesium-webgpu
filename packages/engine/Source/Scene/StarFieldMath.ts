@@ -144,18 +144,40 @@ export function buildStarInstanceData(): Float32Array {
   //     Raising brightness caps under an LDR clamp only widens the white
   //     disc — do not reintroduce HI.
   //   MAG_CUTOFF — SURVIVES, re-derived: now the vendored-catalogue
-  //     inclusion bound (5.0 = the faintest vendored star), not a bright-
+  //     inclusion bound (the faintest vendored star), not a bright-
   //     stars-only gate. The whole catalogue renders; stars between the
-  //     3.6 anchor and 5.0 fall below the guaranteed M1 census floor but
-  //     remain visible (a mag-5.0 star peaks ≈ 4/255). When C12-09 deepens
-  //     the catalogue, re-derive MAG_CUTOFF and FAINT_ANCHOR_* together —
-  //     Tools/visual-regression/starfield-psf.spec.mjs asserts the anchor
-  //     invariants against the live catalogue data.
+  //     3.6 anchor and the bound fall below the guaranteed M1 census floor
+  //     but remain visible.
   //
-  // The cubemap double-draw seam (t3 bake vs sprite overlap band) is owned
-  // and reconciled by C12-11; the sprite side deliberately renders the full
+  // C12-09 RE-DERIVATION (the deepening C12-08 anticipated). The catalogue
+  // now runs to vmag 5.5 (2,870 stars, up from 263 at 5.0), so:
+  //
+  //   MAG_CUTOFF 5.0 -> 5.5. This is NOT a tuning choice: it is definitionally
+  //     the faintest vendored star. Left at 5.0 the expression below would
+  //     emit ZERO flux for the 1,240 rows between 5.0 and 5.5 — the deepening
+  //     would be inert. `Tools/visual-regression/star-catalog-depth.spec.mjs`
+  //     re-derives it from the shipped table and fails if the two drift.
+  //
+  //   FAINT_ANCHOR_MAG / FAINT_ANCHOR_PEAK — DELIBERATELY UNCHANGED at
+  //     3.6 / 0.060. The anchor is an EXPOSURE decision derived from the M1
+  //     census detection floor (P-B >= 12/255), not from where the catalogue
+  //     happens to end; C12-08 tied it to the census, and the census did not
+  //     move. Re-anchoring at 5.5 would multiply EXPOSURE by 10^(0.4*1.9) =
+  //     5.75, taking Sirius from I = 5.87 to 33.8 — its quad growth sqrt(I) =
+  //     5.81 would then be clipped hard by the 1-degree MAX_QUAD_SCALE (2.909)
+  //     and the "glare area proportional to flux" law C12-06 derives would
+  //     stop holding for every star brighter than ~1.5 mag. The faint end
+  //     stays visible without it: a mag-5.5 star peaks at
+  //     0.060 * 10^(-0.4*1.9) = 0.0104 ~ 2.7/255, and the exposure only falls
+  //     below 1/255 past vmag 6.56 — so the sprite path still has ~1 magnitude
+  //     of headroom beyond the current bound before rows would render into
+  //     nothing. Re-derive BOTH again if a future deepening passes 6.5.
+  //
+  // The cubemap double-draw seam is owned and reconciled by C12-11; under
+  // DR-01 the blurred bake carries diffuse light only, so the sprite side is
+  // the sole source of resolved stars and deliberately renders the full
   // catalogue per the C12-08 mandate.
-  const MAG_CUTOFF = 5.0;
+  const MAG_CUTOFF = 5.5;
   const FAINT_ANCHOR_MAG = 3.6;
   const FAINT_ANCHOR_PEAK = 0.06; // ≈15.3/255: ≥ M1 floor 12/255, ≤ 1/15
   // Fragment-profile peak is (1 + K_HALO)·I — K_HALO here MUST equal the
@@ -199,8 +221,9 @@ export function buildStarInstanceData(): Float32Array {
     // Linear Pogson flux scaled by the explicit exposure. Apparent
     // magnitude already encodes luminosity / distance² (inverse-square),
     // so this IS the distance-scaled brightness — no clamp, no gamma.
-    // Stars fainter than the vendored-catalogue bound emit zero (none
-    // exist today; the guard is the C12-09 deepening valve).
+    // Stars fainter than the vendored-catalogue bound emit zero (none exist
+    // today — the bake refuses to emit them; the guard is the belt-and-braces
+    // half of the C12-09 deepening valve).
     const flux =
       vmag > MAG_CUTOFF ? 0.0 : EXPOSURE * Math.pow(10.0, -0.4 * vmag);
 
@@ -288,7 +311,10 @@ export function computeStarDayFade(
 //  1. THE NIGHT END IS THE "COUNTRYSIDE" CLAIM. At `skyBrightness = 0` —
 //     astronomical night, no moon — the factor is exactly 1.0 for any
 //     non-negative inflection, i.e. the full vendored catalogue (MAG_CUTOFF
-//     5.0 above) and the full star cubemap render undimmed. That is a rural
+//     5.5 above, since C12-09) and the full star cubemap render undimmed.
+//     Note the catalogue is still one magnitude short of the 6.5 reference
+//     limit this rural claim cites; deepening it further is a bake-parameter
+//     change (Tools/star-catalog-bake), not a code change. That is a rural
 //     sky: Bortle class 4 / naked-eye limiting magnitude ~6.5, against ~4.5
 //     for a suburban sky and ~3 for an inner city (Bortle, Sky & Telescope
 //     2001, "The Bortle Dark-Sky Scale"; Crumey 2014, MNRAS 442:2600, for the
