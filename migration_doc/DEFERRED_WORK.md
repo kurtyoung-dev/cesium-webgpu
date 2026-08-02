@@ -6704,6 +6704,28 @@ tracks the Sun, the spec's directionality expectation is re-derived rather than
 relaxed, and a probe shows WebGL/WebGPU SH coefficients agreeing after a
 simulated-time sweep.
 
+**STILL OPEN, AND STILL CORRECTLY SCOPED (re-examined 2026-08-01).** This entry
+was proposed as the fix for the red `probe-model-ibl` gate on the theory that
+C12-31 had already migrated the WebGPU half. It had not — see
+`IBL-PARITY-GATE-ATTRIBUTION` for the four-check refutation. Two consequences
+worth writing down before someone reaches for this entry again:
+
+- **Landing it would not have fixed that gate.** The gate moved because the
+  probe was measuring a full-screen sky shell, not the IBL. Migrating both
+  bakes is a real improvement with its own evidence burden; it is not a
+  remedy for an instrument defect, and pairing the two would have buried a
+  genuine visual change inside a "restore the gate" commit.
+- **Both bakes move together or neither does.** Because the two are a lockstep
+  pair (`ComputeRadianceMapFS.glsl` ↔ `ProceduralSkyCubemap.wgsl`, a fact
+  `SHADER_PAIRS_LOCKSTEP.md` used to deny), a one-backend migration IS the
+  cross-backend defect that was hypothesised here. That is now mechanically
+  enforced: `sky-light-direction.spec.mjs` §6 resolves the per-mode policy from
+  both sources and compares it, and its blocker pins fail if the WebGL rebake
+  trigger, the WebGPU `sunMoved` refill, or the Jasmine directionality
+  expectation is edited without updating this contract. When this entry is
+  taken, the §6 tables (`webglBakePolicy` / `webgpuCubePolicy` at NONE) are the
+  deliberate diff the change has to make.
+
 ### C12-31-FOLLOWUP-C — widen sky LUT eligibility to NONE
 
 **Status:** OPEN / DELIBERATELY NOT TAKEN. `SkyAtmosphere.wgsl`'s `lutEligible`
@@ -6722,7 +6744,12 @@ widened.
 
 ### IBL-PARITY-GATE-ATTRIBUTION — 12.15/14.66 vs the 12.0 gate
 
-**Status:** OPEN / MACHINE-LANE TRIAGE. `probe-model-ibl.mjs` fails its
+**Status:** ATTRIBUTED (2026-08-01) — cause is an INSTRUMENT defect in
+`probe-model-ibl.mjs`, not an engine regression; the fix landed with no engine
+change. OPEN only for the owed re-baseline (one isolated browser run to
+re-derive `PARITY_MAX`). Original triage note follows.
+
+`probe-model-ibl.mjs` fails its
 cross-backend parity gate on main (`parityAngleA` 12.15, `parityAngleB`
 14.66, `PARITY_MAX` 12.0; orbit-change deltas are clean). Proven
 PRE-EXISTING relative to the C11-193 drain/pool slice by labeled-stash
@@ -6756,9 +6783,75 @@ served raw by the dev server - NOT Build/CesiumUnminified - so
 checkout-based bisects are valid WITHOUT rebuilding, and conversely a probe
 run after a checkout measures the tree even when the build failed.
 
-**Acceptance:** the regressing batch (or the probe's stale expectation) is
-named with before/after numbers, and the gate is either green again or its
-threshold re-derived with a recorded rationale.
+**HUNK-LEVEL SUSPECT REFUTED + RE-ATTRIBUTED (2026-08-01, worker):** the
+suspect above is FALSE, and the instrument is the finding. Four checks, any
+one of which settles it:
+
+1. `git log -- packages/engine/Source/Shaders/WebGPU/Compute/ProceduralSkyCubemap.wgsl`
+   does not contain Batch 786 at all. (Batch 786's commit `34965a2b21` is 4
+   files: the new builtin, two Tools files, one doc. **Every C12-31 ENGINE
+   edit — `SkyAtmosphereVS/FS.glsl`, `SkyAtmosphere.wgsl`,
+   `DynamicAtmosphereLightingType.js`, `getDynamicAtmosphereLightDirection.glsl`,
+   `ProceduralSkyCubemap.wgsl`, `AtmosphereStageFS.glsl` — is inside Batch
+   785's commit `e748181065` alongside C13-06/C13-07.** That mis-split is why
+   785 alone rendered garbage and why the bisect window could not separate
+   them; the window is really one squashed changeset.)
+2. `git log -L` on the cubemap's light-direction block shows C12-31's only
+   hunk there is `enumVal < 0.5` → `enumVal < 0.5 || enumVal > 2.5`: add-only
+   for `LEGACY_OVERHEAD` (3), **bit-for-bit identical for enums 0/1/2**. NONE
+   still takes `normalize(skyLocalPos)` — local up.
+3. `ComputeRadianceMapFS.glsl:50` still calls
+   `czm_getDynamicAtmosphereLightDirection`, whose NONE arm is still
+   `positionWC` — local up. Both bakes match; there is no
+   "disagree by construction".
+4. `sky-light-direction.spec.mjs` test 15 — *"the non-sky atmosphere consumers
+   deliberately keep the legacy selector"*, shipped WITH C12-31 — is **green on
+   the convicted tree**. It asserts exactly the thing the suspect claims broke.
+
+**THE ACTUAL MECHANISM — `probe-model-ibl` never isolated the model.** It hid
+`globe` and `skyBox` and called that isolation, but `Scene.updateEnvironment`
+force-enables the sky shell **because** the globe is hidden
+(`Scene.js`: `isReadyForAtmosphere || !globe.show || tilesToRender.length > 0`),
+so a full-screen sky-atmosphere shell (plus sun and moon) sat behind the model
+in every capture. `diffModelPixels` counts **any** pixel whose channels sum
+above 12 as a "model" pixel, so the whole shell was counted and the reported
+number was mostly SKY parity — across a documented structural divergence
+(WebGL's 16-step adaptive march vs the WGSL's 64-step uniform march). C12-31
+legitimately re-anchored that shell to the astronomical sun **on both backends**,
+which is exactly the kind of content change that moves a sky-dominated metric.
+So the bisect convicted the right changeset for the right numbers via the wrong
+subsystem: **no IBL code changed at all.**
+
+**LANDED (2026-08-01):** no engine change — option A is a no-op (there is
+nothing to revert) and option B (`C12-31-FOLLOWUP-B`) is a deliberate feature
+migration that would NOT restore this gate, so shipping it here would have been
+an unverifiable change sold as a fix. Instead: (a) `probe-model-ibl.mjs` now
+routes through the canonical `window.__det.dampSky(scene)` and **proves its own
+isolation** each run (model-pixel coverage must land in [0.5%, 60%]; outside
+that the gate fails STRUCTURAL and says the numbers measure the wrong content).
+The env cube is unaffected — both managers read `frameState.atmosphere` +
+`frameState.sunDirectionWC`, never `scene.skyAtmosphere`. (b)
+`sky-light-direction.spec.mjs` §6 (tests 18-24) resolves the per-mode
+light-direction policy out of BOTH backends' source text and compares it mode by
+mode, with a negative control for the one-backend migration that was
+hypothesised; three mutations (WGSL arm, GLSL arm, probe's `dampSky`) each fail
+it. (c) `SHADER_PAIRS_LOCKSTEP.md` corrected — it claimed
+`ProceduralSkyCubemap.wgsl` had **no WebGL counterpart**, which is stale since
+Batch 346 and is part of why "the WGSL moved alone" read as plausible.
+
+**NUMBERS ARE NOW INCOMPARABLE — RE-BASELINE OWED.** 8.49 (pass) and
+12.15/14.66 (fail) were measured on sky-contaminated captures. The isolated
+probe measures a different image, so `PARITY_MAX = 12.0` is a placeholder
+ceiling until the first isolated run re-derives it. **Do not read the first
+isolated run as a regression or a fix** — read it as the new baseline, and
+record the rationale here.
+
+**Acceptance (restated):** the "name the regressing batch" half is MET (Batch
+785's squashed C12-31 changeset, via the sky shell, not the IBL bake).
+Remaining: one isolated `probe-model-ibl` run on both
+backends whose `isolation.ok` is true, its numbers recorded here as the new
+baseline, and `PARITY_MAX` re-derived from them with the rationale written
+down.
 
 ## 2026-08-01 — volumetric cloud low-coverage cutoff (tour calibration finding)
 

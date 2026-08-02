@@ -25,6 +25,36 @@
  *  the split-sum BRDF LUT lives in the specular term, so turning it off has
  *  to change the image (proves the LUT term actually contributes pixels).
  *
+ *  ISOLATION DEFECT FIXED 2026-08-01 (IBL-PARITY-GATE-ATTRIBUTION). This probe
+ *  claimed below to "isolate the model", but it hid only the globe and the
+ *  skyBox. `Scene.updateEnvironment` forces `isReadyForAtmosphere` true when
+ *  `!globe.show` (Scene.js: `environmentState.isReadyForAtmosphere || !globe.show
+ *  || ...`), so hiding the globe does not hide the sky-atmosphere shell — it
+ *  GUARANTEES it renders, full-screen, behind the model. `diffModelPixels`
+ *  counts every pixel whose channels sum above 12 as a "model" pixel, so every
+ *  non-black sky texel was counted, and the reported "IBL parity" was mostly a
+ *  SKY parity number (WebGL's 16-step adaptive march vs the WGSL's 64-step
+ *  uniform march is a documented structural divergence — see the ledger in
+ *  `Shaders/WebGPU/Environment/SkyAtmosphere.wgsl`). The sun and moon were in
+ *  frame for the same reason. C12-31 (Batch 786) legitimately re-anchored that
+ *  shell to the astronomical sun on BOTH backends, which moved this metric
+ *  (8.49 -> 12.15/14.66) with no IBL change whatsoever — the bisect convicted
+ *  the batch correctly and its hunk-level suspect (the IBL bake) wrongly.
+ *
+ *  The captures now route through the canonical `window.__det.dampSky(scene)`
+ *  so the frame really is model-on-black, and the run asserts its own isolation
+ *  (see MODEL_COVERAGE_MIN/MAX) instead of trusting a comment. The env cubemap
+ *  is unaffected: both backends' managers read `frameState.atmosphere` +
+ *  `frameState.sunDirectionWC`, never `scene.skyAtmosphere`
+ *  (`DynamicEnvironmentMapManager.js` `frameState.atmosphere.dynamicLighting`;
+ *  `WebGPUDynamicEnvironmentMapManager.ts` same), so the rich world-fixed sky
+ *  environment this probe depends on is still generated.
+ *
+ *  CONSEQUENCE FOR THRESHOLDS: numbers recorded before 2026-08-01 (the 8.49
+ *  baseline and the 12.15/14.66 failure) are sky-contaminated and are NOT
+ *  comparable to what this probe now reports. PARITY_MAX must be re-derived
+ *  from the first isolated run.
+ *
  * Each capture uses a FRESH page load + a single Playwright element
  * screenshot. WebGPU's swapchain present detaches the canvas texture, so
  * two successive in-page readbacks on one page return a stale frame for
@@ -105,15 +135,25 @@ async function capture(renderer, heading, specularFactor) {
           .forEach((e) => (e.style.display = "none"));
       }
 
-      // Isolate the model: hide globe + black background so captured pixels
-      // are just the model. Keep the sky atmosphere + sun ON so the per-model
-      // procedural DynamicEnvironmentMapManager generates a RICH, non-uniform,
-      // world-fixed sky environment (both backends use the same procedural
-      // path when no explicit specularEnvironmentMaps is set — explicit KTX2
-      // cubemaps don't load on the WebGPU context yet, so the procedural env
-      // is the only apples-to-apples IBL source across backends).
+      // Isolate the model: hide the globe + every celestial/atmospheric layer
+      // and clear to black, so the captured pixels really are just the model.
+      // `dampSky` is the canonical fleet helper (skyBox + skyAtmosphere + sun +
+      // moon + ground atmosphere + fog); before 2026-08-01 this probe hid only
+      // the globe and the skyBox, and the sky-atmosphere shell — which
+      // `Scene.updateEnvironment` force-enables precisely BECAUSE the globe is
+      // hidden — filled the frame and dominated the diff. See the ISOLATION
+      // DEFECT note at the top of this file.
+      //
+      // This does NOT weaken the IBL source. The per-model procedural
+      // DynamicEnvironmentMapManager reads `frameState.atmosphere` and
+      // `frameState.sunDirectionWC`, not `scene.skyAtmosphere`, so it still
+      // bakes the same RICH, non-uniform, world-fixed sky environment on both
+      // backends (both use the procedural path when no explicit
+      // specularEnvironmentMaps is set — explicit KTX2 cubemaps don't load on
+      // the WebGPU context yet, so the procedural env is the only
+      // apples-to-apples IBL source across backends).
       scene.globe.show = false;
-      scene.skyBox.show = false;
+      window.__det.dampSky(scene);
       scene.backgroundColor = C.Color.BLACK;
       // Kill the punctual sun's DIRECT contribution so captured pixels are
       // pure IBL ambient (diffuse irradiance + specular radiance) — the exact
@@ -360,6 +400,28 @@ const upAnchorB = topBottomBrightness(wgpuB.decoded);
 const wgpuOrbitChange = diffModelPixels(wgpuA.decoded, wgpuB.decoded);
 const wglOrbitChange = diffModelPixels(wglA.decoded, wglB.decoded);
 
+// ── Isolation self-check (2026-08-01, IBL-PARITY-GATE-ATTRIBUTION) ──
+// Every percentage above is computed over the pixels `diffModelPixels` decided
+// were "model" (channels summing above 12). That decision is only trustworthy
+// if the frame really is model-on-black, which is what `dampSky` above buys —
+// so the run PROVES its own isolation instead of asserting it in a comment.
+// This is the check whose absence let a full-screen sky-atmosphere shell be
+// reported as IBL parity for the life of this probe.
+//   too HIGH → a full-frame layer (sky shell / sun / moon / background) is
+//              still in frame and the metric is measuring it, not the model;
+//   too LOW  → the model never rendered and the percentages are computed over
+//              a handful of pixels, where a few texels read as tens of percent.
+const MODEL_COVERAGE_MIN = 0.005;
+const MODEL_COVERAGE_MAX = 0.6;
+const framePx = wglA.decoded.w * wglA.decoded.h;
+const coverageA = framePx ? parityA.modelPx / framePx : 0;
+const coverageB = framePx ? parityB.modelPx / framePx : 0;
+const isolationOk =
+  coverageA >= MODEL_COVERAGE_MIN &&
+  coverageA <= MODEL_COVERAGE_MAX &&
+  coverageB >= MODEL_COVERAGE_MIN &&
+  coverageB <= MODEL_COVERAGE_MAX;
+
 const gateErrors = [
   ...wgpuA.gateErrors,
   ...wgpuB.gateErrors,
@@ -389,6 +451,14 @@ const report = {
   parityAngleB: parityB,
   webgpuOrbitChange: wgpuOrbitChange,
   webglOrbitChange: wglOrbitChange,
+  isolation: {
+    framePx,
+    coverageA: +coverageA.toFixed(4),
+    coverageB: +coverageB.toFixed(4),
+    min: MODEL_COVERAGE_MIN,
+    max: MODEL_COVERAGE_MAX,
+    ok: isolationOk,
+  },
   specularLiveness_informational: specLiveness,
   worldUpAnchor_informational: {
     angleA: { ...upAnchorA, topBrighter: upAnchorA.top > upAnchorA.bottom },
@@ -418,6 +488,16 @@ console.log(JSON.stringify(report, null, 2));
 // top/bottom world-up brightness heuristic. The diffuse IBL term also
 // routes through iblReferenceFrameMatrix, so the parity + orbit-tracking
 // gates already exercise the reference-frame fix end to end.
+//  - ISOLATION: the counted pixels must actually be the model (see the
+//    self-check above). A red isolation lane is STRUCTURAL — the parity and
+//    orbit numbers in the same report are measuring the wrong content and must
+//    not be read as evidence either way.
+//
+// THRESHOLD PROVENANCE (2026-08-01): 12.0 was derived against SKY-CONTAMINATED
+// captures (the shell filled the frame — see the ISOLATION DEFECT note at the
+// top of this file), so it is a placeholder ceiling until the first isolated
+// run re-derives it. Historical values under this name (8.49 passing; 12.15 /
+// 14.66 failing) measured a different image and are NOT comparable.
 const PARITY_MAX = 12.0;
 const orbitAbsDelta = Math.abs(
   (wgpuOrbitChange.mismatchPct ?? 0) - (wglOrbitChange.mismatchPct ?? 0),
@@ -434,6 +514,7 @@ const pass =
   wglB.ready &&
   gateErrors.length === 0 &&
   !deviceLost &&
+  isolationOk &&
   parityA.mismatchPct !== null &&
   parityA.mismatchPct < PARITY_MAX &&
   parityB.mismatchPct !== null &&
@@ -452,6 +533,11 @@ console.log(
 console.log(
   pass
     ? "GATE PASS — WebGPU IBL matches world-anchored WebGL at both camera angles; WebGPU reflection shifts on orbit by the same amount as WebGL (BRDF LUT consumed; reference frame correct)"
-    : "GATE FAIL",
+    : isolationOk
+      ? "GATE FAIL"
+      : "GATE FAIL (STRUCTURAL — model-pixel coverage outside the isolation band; the parity/orbit numbers in this report measure the wrong content, do not read them as evidence)",
 );
+if (!pass) {
+  process.exit(1);
+}
 process.exit(pass ? 0 : 1);

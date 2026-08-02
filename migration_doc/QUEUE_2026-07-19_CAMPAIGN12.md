@@ -105,6 +105,23 @@ pending landing or Edge”:
   `C12-29` suites stay 138/138. The model ground-atmosphere/fog and IBL
   radiance-bake consumers are explicitly still on the legacy direction —
   `C12-31-FOLLOWUP-A/B/C` in `DEFERRED_WORK.md`. First browser probes green 2026-08-01 (aureole anchor PASS; G1 m2b into band); the full acceptance sweep remains open.
+  **2026-08-01 (later) — `probe-model-ibl` fallout, resolved as an INSTRUMENT
+  defect, no engine change.** A five-round bisect convicted this changeset for
+  that gate's red and proposed, hunk-level, that C12-31 had moved the WebGPU IBL
+  cubemap onto the astronomical sun while WebGL's bake kept local up. **Refuted:**
+  the cubemap's only C12-31 hunk is add-only for `LEGACY_OVERHEAD` and NONE is
+  bit-for-bit unchanged on BOTH backends; the shipped contract test that asserts
+  exactly this is green on the convicted tree. What actually happened is that
+  `probe-model-ibl` never isolated its model — hiding the globe force-enables the
+  sky shell (`Scene.updateEnvironment`), so a full-screen shell was counted as
+  model pixels and this row's legitimate, twinned shell change moved a
+  sky-dominated metric. The probe now damps the sky and proves its own isolation
+  every run; its historical numbers are not comparable and `PARITY_MAX` is owed a
+  re-derivation. **Book-keeping note for this row:** every C12-31 ENGINE edit is
+  physically inside Batch 785's commit (`e748181065`), not Batch 786's
+  (`34965a2b21`, which carries only the new builtin + Tools + docs) — that
+  mis-split is why the bisect window could not separate 785 from 786. See
+  `IBL-PARITY-GATE-ATTRIBUTION` in `DEFERRED_WORK.md`.
 - Generic bloom remains radiance-driven and may spread any legitimate bright
   source. The fix is to remove the false atmosphere radiance source and align
   all atmosphere lighting consumers to one per-View astronomical Sun direction,

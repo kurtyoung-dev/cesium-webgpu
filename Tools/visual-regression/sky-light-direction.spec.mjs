@@ -93,6 +93,15 @@ const atmosphereUniformsTs = read(
 const skyRendererJs = read(
   "packages/engine/Source/Renderer/WebGPU/WebGPUSkyAtmosphereRenderer.js",
 );
+const envMapManagerJs = read(
+  "packages/engine/Source/Scene/DynamicEnvironmentMapManager.js",
+);
+const envMapManagerTs = read(
+  "packages/engine/Source/Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager.ts",
+);
+const envMapManagerSpec = read(
+  "packages/engine/Specs/Scene/DynamicEnvironmentMapManagerSpec.js",
+);
 
 /** Author a pin and prove it survives a prettier re-wrap before using it. */
 function pin(sourceText, pattern, label) {
@@ -697,4 +706,274 @@ test("the aureole probe carries the canonical same-task capture", () => {
     /centroidX/.test(probe) && /toward\/anti/.test(probe),
     "the probe lost its anchoring metric",
   );
+});
+
+// ── 6. the IBL radiance bake: one policy, two backends (2026-08-01) ─────────
+//
+// WHY THIS SECTION EXISTS. The `probe-model-ibl` parity gate went red on main
+// and a five-round bisect convicted the C12-31 changeset. Its hunk-level
+// suspect was "C12-31 moved the WebGPU IBL cubemap onto the astronomical sun
+// while the WebGL bake kept local up, so the two environment maps disagree by
+// construction". That is FALSE — section 4 above already pins both bakes on the
+// legacy selector and is green — but the claim was cheap to believe because
+// nothing in the repo stated the two-backend IBL policy as one checkable
+// object; there were two independent regexes in one test, and reading either
+// alone tells you nothing about the other.
+//
+// So the policy becomes a MATRIX, resolved out of the shipped source text on
+// both backends and compared mode by mode. A unilateral edit on either side —
+// exactly the defect that was hypothesised — now fails here with the mode named,
+// and `C12-31-FOLLOWUP-B` (which migrates BOTH bakes onto the sun) has to edit
+// this table deliberately, in one change, on both backends.
+
+const POLICY_LOCAL_UP = "local-up";
+const POLICY_SUN = "astronomical-sun";
+const POLICY_SCENE = "scene-light";
+const ALL_MODES = [0, 1, 2, 3];
+
+/** `const float NAME = value;` declarations, read out of a GLSL source. */
+function glslEnumValues(source) {
+  const values = new Map();
+  const re = /const\s+float\s+([A-Z_]+)\s*=\s*([\d.]+)\s*;/g;
+  let m;
+  while ((m = re.exec(source)) !== null) {
+    values.set(m[1], Number(m[2]));
+  }
+  return values;
+}
+
+/** Which policy each light-direction SOURCE VECTOR represents. */
+const VECTOR_POLICY = new Map([
+  ["positionWC", POLICY_LOCAL_UP],
+  ["czm_sunDirectionWC", POLICY_SUN],
+  ["czm_lightDirectionWC", POLICY_SCENE],
+]);
+
+/**
+ * The WebGL IBL bake's per-mode policy, READ OUT of the branch-free arms of
+ * `czm_getDynamicAtmosphereLightDirection` — the selector
+ * `ComputeRadianceMapFS.glsl` calls. Not a hand-copied table: edit an arm and
+ * this map changes with it.
+ */
+const webglBakePolicy = (() => {
+  const values = glslEnumValues(legacyLightDirGlsl);
+  const table = new Map();
+  const re = /(\w+)\s*\*\s*float\(lightEnum\s*==\s*([A-Z_]+)\)/g;
+  let m;
+  while ((m = re.exec(legacyLightDirGlsl)) !== null) {
+    const value = values.get(m[2]);
+    const policy = VECTOR_POLICY.get(m[1]);
+    if (value !== undefined && policy !== undefined) {
+      table.set(value, policy);
+    }
+  }
+  return table;
+})();
+
+/**
+ * The WebGPU IBL cubemap's per-mode policy. Two halves, both source-derived:
+ * the local-up predicate lives in `ProceduralSkyCubemap.wgsl`, and WHICH world
+ * vector the non-local-up arm receives is decided on the JS side by
+ * `WebGPUDynamicEnvironmentMapManager`'s `lightVec` (scene light for
+ * SCENE_LIGHT, sun otherwise) — the same split the GLSL selector makes with
+ * separate arms.
+ */
+const cubemapLocalUpArm = proceduralSkyWgsl.match(
+  /if\s*\(enumVal\s*<\s*([\d.]+)\s*\|\|\s*enumVal\s*>\s*([\d.]+)\)/,
+);
+const cubemapSceneLightArm = envMapManagerTs.match(
+  /dynamicLighting\s*===\s*([\d.]+)\s*&&\s*sceneLight\s*\?\s*sceneLight\s*:\s*sunDir/,
+);
+function webgpuCubePolicy(mode) {
+  if (
+    mode < Number(cubemapLocalUpArm[1]) ||
+    mode > Number(cubemapLocalUpArm[2])
+  ) {
+    return POLICY_LOCAL_UP;
+  }
+  return mode === Number(cubemapSceneLightArm[1]) ? POLICY_SCENE : POLICY_SUN;
+}
+
+/** The sky SHELL's policy on WebGL, via the section-2 second implementation. */
+function skyShellGlslPolicy(mode) {
+  const dir = selectSkyLightDirection([0, 0, 1], mode, [1, 0, 0], [0, 1, 0]);
+  if (dir[0] === 1) {
+    return POLICY_SUN;
+  }
+  return dir[1] === 1 ? POLICY_SCENE : POLICY_LOCAL_UP;
+}
+
+/**
+ * The sky SHELL's policy on WebGPU. Same two halves: the WGSL owns the
+ * local-up predicate, `WebGPUSkyAtmosphereRenderer`'s `useSceneLight` decides
+ * which world vector is packed into the single `sunDirectionWC` slot.
+ */
+const shellLocalUpArm = skyAtmosphereWgsl.match(
+  /let\s+isLegacyOverhead\s*=\s*dynamicLighting\s*>\s*([\d.]+)\s*;/,
+);
+const shellSceneLightArm = skyRendererJs.match(
+  /const\s+useSceneLight\s*=\s*dynamicLighting\s*===\s*([\d.]+)\s*;/,
+);
+function skyShellWgslPolicy(mode) {
+  if (mode > Number(shellLocalUpArm[1])) {
+    return POLICY_LOCAL_UP;
+  }
+  return mode === Number(shellSceneLightArm[1]) ? POLICY_SCENE : POLICY_SUN;
+}
+
+test("every policy resolver actually parsed the shader it models", () => {
+  // Non-vacuity first: a resolver that silently matched nothing would report a
+  // perfectly matched matrix below while pinning absolutely nothing.
+  assert.equal(
+    webglBakePolicy.size,
+    4,
+    "the legacy selector no longer has one arm per mode",
+  );
+  for (const arm of [
+    cubemapLocalUpArm,
+    cubemapSceneLightArm,
+    shellLocalUpArm,
+    shellSceneLightArm,
+  ]) {
+    assert.ok(
+      arm,
+      "a light-direction arm is no longer where the resolver reads it",
+    );
+  }
+  // And the bake's consumer really is the selector this resolver parsed.
+  assert.ok(
+    /czm_getDynamicAtmosphereLightDirection\(skyPositionWC,\s*lightEnum\)/.test(
+      radianceMapFs,
+    ),
+    "the WebGL IBL bake stopped calling the selector this matrix models",
+  );
+});
+
+test("the IBL bake's light-direction policy is identical on both backends", () => {
+  for (const mode of ALL_MODES) {
+    assert.equal(
+      webgpuCubePolicy(mode),
+      webglBakePolicy.get(mode),
+      `IBL bake policy diverged across backends at dynamicLighting ${mode}`,
+    );
+  }
+  // The shipped table, spelled out, so a deliberate migration reads as a diff.
+  assert.deepEqual(ALL_MODES.map(webgpuCubePolicy), [
+    POLICY_LOCAL_UP, // NONE — C12-31-FOLLOWUP-B still owns moving this
+    POLICY_SCENE, // SCENE_LIGHT
+    POLICY_SUN, // SUNLIGHT
+    POLICY_LOCAL_UP, // LEGACY_OVERHEAD
+  ]);
+});
+
+test("a one-backend IBL migration is what this matrix is built to catch", () => {
+  // NEGATIVE CONTROL — reproduce the hypothesised defect (the WGSL cubemap's
+  // NONE arm moved onto the sun, the GLSL bake left alone) and prove the
+  // comparison above rejects it. Without this the matrix could be vacuously
+  // true for a reason unrelated to the two backends agreeing.
+  const migratedCube = (mode) =>
+    mode === 0 ? POLICY_SUN : webgpuCubePolicy(mode);
+  assert.notEqual(migratedCube(0), webglBakePolicy.get(0));
+  assert.equal(
+    ALL_MODES.every((m) => migratedCube(m) === webglBakePolicy.get(m)),
+    false,
+    "a NONE-only cubemap migration would slip past the cross-backend check",
+  );
+});
+
+test("the sky shell's light-direction policy is identical on both backends", () => {
+  for (const mode of ALL_MODES) {
+    assert.equal(
+      skyShellWgslPolicy(mode),
+      skyShellGlslPolicy(mode),
+      `sky shell policy diverged across backends at dynamicLighting ${mode}`,
+    );
+  }
+  assert.deepEqual(ALL_MODES.map(skyShellWgslPolicy), [
+    POLICY_SUN, // NONE — moved by C12-31
+    POLICY_SCENE, // SCENE_LIGHT
+    POLICY_SUN, // SUNLIGHT
+    POLICY_LOCAL_UP, // LEGACY_OVERHEAD
+  ]);
+});
+
+test("the shell/bake split at NONE is the C12-31 scope line, not a backend split", () => {
+  // The ONE mode where the sky shell and the IBL bake disagree is NONE, and the
+  // disagreement is between two SUBSYSTEMS on both backends alike — never
+  // between two backends of one subsystem. That distinction is the whole
+  // finding behind IBL-PARITY-GATE-ATTRIBUTION: a subsystem split is a scoped,
+  // documented deferral (C12-31-FOLLOWUP-B); a backend split would be a defect.
+  assert.equal(skyShellGlslPolicy(0), POLICY_SUN);
+  assert.equal(skyShellWgslPolicy(0), POLICY_SUN);
+  assert.equal(webglBakePolicy.get(0), POLICY_LOCAL_UP);
+  assert.equal(webgpuCubePolicy(0), POLICY_LOCAL_UP);
+  for (const mode of [1, 2, 3]) {
+    assert.equal(
+      skyShellGlslPolicy(mode),
+      webglBakePolicy.get(mode),
+      `shell and bake disagree outside NONE at mode ${mode}`,
+    );
+  }
+});
+
+test("C12-31-FOLLOWUP-B's recorded blockers are still live preconditions", () => {
+  // Prose in DEFERRED_WORK goes stale silently; these three are the actual
+  // reasons the bake migration is not a shader one-liner, so they are pinned.
+  //
+  // (b) WebGL re-bakes only for SUNLIGHT + advancing time, so a sun-lit NONE
+  //     bake would go stale as the sun moves...
+  pin(
+    envMapManagerJs,
+    /dynamicLighting\s*===\s*DynamicAtmosphereLightingType\.SUNLIGHT\s*&&/,
+    "WebGL rebake trigger",
+  );
+  // ...while the WebGPU twin already re-fills on its own sun-movement epsilon.
+  // Migrating the bakes without extending the WebGL trigger would therefore
+  // CREATE the backend divergence the migration is supposed to prevent.
+  pin(envMapManagerTs, /const\s+sunMoved\s*=\s*!\(/, "WebGPU sun-moved refill");
+  // (a) The upstream Jasmine contract asserts the NONE bake is NON-directional.
+  //     A sun-lit bake is directional by construction, so this expectation has
+  //     to be re-derived (with the semantic change explained) in the same
+  //     change that moves the bakes — it must not simply be relaxed.
+  assert.ok(
+    /expect\(directionality\)\.toBeLessThan\(1\.0\);/.test(envMapManagerSpec),
+    "the NONE-bake directionality expectation moved without this contract",
+  );
+});
+
+test("probe-model-ibl isolates the model whose parity it reports", () => {
+  // The instrument defect behind IBL-PARITY-GATE-ATTRIBUTION: the probe hid the
+  // globe and the skyBox and called that "model isolation", but
+  // `Scene.updateEnvironment` force-enables the sky-atmosphere shell precisely
+  // BECAUSE the globe is hidden, so a full-screen shell sat behind the model and
+  // its every non-black texel was counted as a model pixel. C12-31 legitimately
+  // re-anchored that shell on both backends and the gate moved with it.
+  const probe = read("Tools/visual-regression/probe-model-ibl.mjs");
+  // Line-anchored: the file's own docstring NAMES `dampSky` while explaining
+  // the defect, so an unanchored pin matches the prose and passes against a
+  // probe that no longer calls it (measured — the first draft of this test did
+  // exactly that). The pin has to see the STATEMENT.
+  assert.ok(
+    /^\s*window\.__det\.dampSky\(scene\);$/m.test(probe),
+    "the probe stopped hiding the celestial layers it measures around",
+  );
+  // The engine half of the finding — the force-enable is still there, so the
+  // isolation is still load-bearing rather than incidentally unnecessary.
+  pin(
+    read("packages/engine/Source/Scene/Scene.js"),
+    /isReadyForAtmosphere\s*\|\|\s*\n?\s*!globe\.show\s*\|\|/,
+    "sky force-enable when the globe is hidden",
+  );
+  // A comment claiming isolation is what failed last time; the run must prove
+  // it, so these pins target declarations and the gate expression, never prose.
+  assert.ok(
+    /^const\s+MODEL_COVERAGE_MIN\s*=/m.test(probe) &&
+      /^const\s+MODEL_COVERAGE_MAX\s*=/m.test(probe),
+    "the probe no longer bounds its own model-pixel coverage",
+  );
+  assert.ok(
+    /^\s*isolationOk\s*&&$/m.test(probe),
+    "the isolation self-check is reported but does not gate",
+  );
+  assert.ok(/process\.exit\(1\)/.test(probe), "the probe cannot fail the run");
 });
