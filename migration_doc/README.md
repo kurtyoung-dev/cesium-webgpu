@@ -73,7 +73,8 @@ open._
 | [`QUEUE_2026-07-19_CAMPAIGN12.md`](QUEUE_2026-07-19_CAMPAIGN12.md) | **Launched 2026-07-23 / executing** — celestial appearance. Runs interleaved with C11 and C13 under the orchestrator pattern. |
 | [`QUEUE_2026-07-23_CAMPAIGN13.md`](QUEUE_2026-07-23_CAMPAIGN13.md) | **Current live campaign** for planetary volumetric-cloud RTE, temporal reconstruction, weather realism, quality, and performance. |
 | [`LOCAL_CHANGE_AUDIT_2026-07-31.md`](LOCAL_CHANGE_AUDIT_2026-07-31.md) | Current primary-worktree, staged/index, recent-commit, worktree, renderer-architecture, and moving-performance audit. |
-| [`HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`](HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md) | Current stopping-point handoff for the high-value C11 performance/architecture lane; distinguishes implemented slices from open exit gates. |
+| [`HANDOFF_2026-08-02_CODEX_NEXT_WAVE.md`](HANDOFF_2026-08-02_CODEX_NEXT_WAVE.md) | **Current Codex handoff** (supersedes the 07-31 handoff): Batches 807-817 progress, the open Bug 814.1 second-mechanism investigation, C11/C12/C13 remainders, and the Campaign 14 (aurora + space weather) definition + suggested execution order. |
+| [`HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md`](HANDOFF_2026-07-31_CODEX_C11_HIGH_VALUE.md) | Batch-771 stopping-point record (landed as 772-781); superseded as the entry map by the 2026-08-02 handoff, but its per-ID exit-gate analysis still stands. |
 | [`WEBGPU_MIGRATION_STATUS.md`](WEBGPU_MIGRATION_STATUS.md) | Single-source migration status + append-only progress log. **Note: batch numbers are non-monotonic — trust dates/hashes.** |
 | [`DEFERRED_WORK.md`](DEFERRED_WORK.md) | Canonical add-only follow-up inventory (NEW-*/C-R*/DP-* IDs). Where open work lives. |
 | [`FEATURE_INVENTORY.md`](FEATURE_INVENTORY.md) | Feature catalog (EXISTING/NEW/WIP/FUTURE) across 10 subsystems — impact-analysis index (CLAUDE.md Principle 6). |
