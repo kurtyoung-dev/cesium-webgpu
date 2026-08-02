@@ -7337,9 +7337,11 @@ C12 celestial-appearance research doc's sky-layering section before choosing.
 
 ### NEW-WEBGPU-MAT-LOGDEPTH-MULTI-PRIMITIVE-DEPTH-LOSS
 
-**Status:** OPEN — found by the first honest run of `probe-logdepth-zfight.mjs`
-(post-Batch-803 aliasing fix + the 2026-08-02 instrument round: distinct-color
-below boxes, wall-clock readiness gate, OFF-leg globe precondition).
+**Status:** ROOT-CAUSED + FIXED (Bug 814.1, 2026-08-02) — awaiting the
+orchestrator's probe re-run for hardware confirmation. Found by the first
+honest run of `probe-logdepth-zfight.mjs` (post-Batch-803 aliasing fix + the
+2026-08-02 instrument round: distinct-color below boxes, wall-clock readiness
+gate, OFF-leg globe precondition).
 
 **Measured bisect (Batch 814 diagnostic, WebGPU, 220 km nadir, solid globe):**
 
@@ -7353,16 +7355,34 @@ below boxes, wall-clock readiness gate, OFF-leg globe precondition).
 + Same TWO primitives + log OFF -> slab COMPLETE (44,983). The defect is
   log-ON-only and requires the second primitive's presence.
 
-**Reading:** the second Mat primitive's per-frame state write corrupts the
-first's log-depth output over part of its extent — suspect the shared Mat/PBR
-camera-UB log-depth tail or a per-primitive uniform slot being overwritten
-before the first primitive's draw retires (the arrow shape is stable, so it is
-a deterministic spatial partition, e.g. a frustum-slice or instance-batch
-boundary, not flicker). Billboards are NOT involved (hiding them recovers only
-their own ~989-px footprint).
+**Root cause (Bug 814.1 — full entry in WEBGPU_DEBUGGING_LOG.md):**
+`WebGPUPrimitiveCommands.writeLogDepthTail` — the one helper packing the
+log-depth tail for the whole geometry-Primitive family (Mat*/PBR/Basic/Phong
+floats 40/80, polyline 92, pick UBs) — encoded from the LIVE
+`uniformState.currentFrustum` + `oneOverLog2FarDepthFromNearPlusOne` pair at
+each primitive's own pack moment. That pair is re-sliced repeatedly per frame
+(`_updateFrustumUniforms` per slice, the translucent near refresh, the pick
+loops), so the Mat curve depended on pack timing relative to the frame's
+frustum-state writers — i.e., on scene composition. Every other log-depth
+producer (globe, depth plane, all collections, classifiers, voxel, splats,
+SSR) already encodes against the frame-stable full-camera stash
+`uniformState._logDepthEncodeNearFar` (the NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-
+CONTRACT in `WebGPUDepthPlane.ts`); the Mat path was the LAST producer off the
+contract. A tail packed from re-sliced state puts the slab on a different log
+curve than the globe's; where the curves cross, the surface 5 m BEHIND wins —
+the stable partial loss.
+
+**Fix:** `writeLogDepthTail` is now stash-first with the factor recomputed
+from the stash pair (identical semantics to `WebGPUDepthPlane.update` /
+`WebGPUBillboardRenderer.packUniforms`); live `currentFrustum` remains only
+as the pre-stash early-frame fallback. OFF path byte-identical in output (the
+tail lanes are read only under the LOG_DEPTH define). Guard:
+`Tools/visual-regression/mat-logdepth-encode-stash.spec.mjs` (executed packer
++ depth-compare oracle + mutation that re-introduces the severed stash read +
+publisher/packer contract pairing).
 
 **Acceptance:** `probe-logdepth-zfight.mjs` check (2) >= 0.9 with the full
-scene (currently 0.868 — the probe gate is correctly RED on this defect).
+scene (was 0.868 — the probe gate was correctly RED on this defect).
 Fix must not regress check (3) (below-ground boxes stay occluded) or the
 single-primitive case.
 

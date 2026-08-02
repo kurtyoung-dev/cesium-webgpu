@@ -607,6 +607,18 @@ interface CesiumUniformState {
    * EllipsoidPrimitive / Vector3DTile classifiers).
    */
   readonly oneOverLog2FarDepthFromNearPlusOne: number;
+  /**
+   * Frame-stable log-depth ENCODE frustum stash `[near, far]` — the FULL
+   * camera frustum every renderer-wide log-depth producer must encode
+   * against. Published by the globe camera-UB pack
+   * (`WebGPUGlobeSurfaceCameraUB`) and by both frustum loops BEFORE any
+   * per-slice `updateFrustum` remap
+   * (`WebGPUSceneRendererFrustumState.publishLogDepthEncodeNearFar`); see
+   * the NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT note in
+   * `WebGPUDepthPlane.ts`. Absent/`null` only before the first publication
+   * (very early frames) — producers fall back to `currentFrustum` then.
+   */
+  readonly _logDepthEncodeNearFar?: Float32Array | null;
   readonly pixelRatio: number;
   readonly pass: number | undefined;
   readonly backgroundColor: CesiumColor;

@@ -16094,3 +16094,87 @@ regression): the WebGPU stripes render DIAGONAL vs WebGL's horizontal — right
 footprint, smooth reconstruction, textured-UV axis math still running the 3D
 convention in CV.
 
+## NEW-WEBGPU-MAT-LOGDEPTH-MULTI-PRIMITIVE-DEPTH-LOSS — the geometry-Primitive log-depth tail encoded the live per-slice frustum instead of the published frame encode (2026-08-02)
+
+**Bug 814.1** — found by the first honest run of `probe-logdepth-zfight.mjs`
+(post-Batch-803): with renderer-wide log depth ON, ONE Mat-pipeline `Primitive`
+(36-instance green slab 5 m above a solid-color globe, 220 km nadir) rendered
+complete (44,983 px, exactly the hyperbolic OFF reference), but adding a SECOND
+Mat-pipeline `Primitive` (9 instances at −3000 m) made the FIRST lose ~4,955 px
+to the GLOBE in a stable, spatially-coherent region — deterministic across
+re-renders and across an OFF→ON master-switch flip (39,039 both legs), log-ON
+only. Probe check (2) read 0.868 against the 0.9 gate.
+
+**Files affected.**
+`packages/engine/Source/Renderer/WebGPU/WebGPUPrimitiveCommands.ts`
+(`writeLogDepthTail`), `packages/engine/Source/Renderer/WebGPU/cesium-js-types.d.ts`
+(ambient `CesiumUniformState._logDepthEncodeNearFar` declaration).
+
+**Root cause.** `writeLogDepthTail` — the single helper that packs the
+log-depth tail (near, far, factor, reserved) for the entire geometry-Primitive
+family (Mat*/PBR/Basic/Phong camera UBs at floats 40/80, the polyline-appearance
+UB at float 92, and the pick camera UBs) — read the LIVE
+`uniformState.currentFrustum` + `oneOverLog2FarDepthFromNearPlusOne` pair at
+whatever moment each primitive's pack ran. That pair is a moving target:
+`WebGPUSceneRenderer._updateFrustumUniforms` re-slices it once per frustum
+slice at execute time, the translucent near refresh re-slices it again, and the
+pick loops re-slice it for the pick mini-frame. Every OTHER renderer-wide
+log-depth producer — globe, depth plane, Billboard, Label, PointPrimitive,
+Polyline, GroundPolyline, GroundPrimitive, Vector3DTile×3, Voxel, GaussianSplat,
+EllipsoidPrimitive, SSR, ContactShadows — already encodes against the
+frame-stable FULL-camera stash `uniformState._logDepthEncodeNearFar`, published
+by the globe camera-UB pack (`WebGPUGlobeSurfaceCameraUB.ts:1115-1124`) and by
+BOTH frustum loops before any slice remap
+(`WebGPUSceneRendererFrustumState.publishLogDepthEncodeNearFar`; contract
+documented as NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT in
+`WebGPUDepthPlane.ts:817-853`). The Mat path was the LAST producer off that
+contract, so its frag_depth curve depended on pack timing relative to the
+frame's frustum-state writers — i.e., on scene composition. A tail packed from
+re-sliced content-fit state puts the slab on a different log curve than the
+globe (which packs at scene-update and publishes the stash); where the curves
+cross, the surface 5 m BEHIND wins the depth test, producing exactly the
+measured stable partial loss. The same class was previously found and fixed
+producer-by-producer in the collections (2D/CV per-slice repacks,
+NEW-COLLECTIONS-2DCV-PROJECTED-FRAME-RTE) and in the depth plane (Sol horizon
+oracle) — the mechanism note in `WebGPUPointPrimitiveRenderer.js:903-913` is
+this defect's exact description with "collection" substituted.
+
+**Fix.** `writeLogDepthTail` is now stash-first with the identical semantics
+of `WebGPUDepthPlane.update` / `WebGPUBillboardRenderer.packUniforms`: when
+`_logDepthEncodeNearFar` is present and valid it supplies near/far AND the
+factor is recomputed from that same pair (encode + factor self-consistent);
+the live `currentFrustum` path remains only as the pre-stash early-frame
+fallback. One helper fixes the whole family at once (flat/lit/polyline/pick
+tails all route through it — pinned by spec). The OFF path is byte-identical
+in output: the tail lanes are read only under the `LOG_DEPTH` define, so with
+the master switch off no shader consumes the changed floats. The pick fleet is
+unaffected today (its tail lanes are read only under the separate pick-fleet
+switch, C10-11) and inherits the same full-camera encode both pick loops
+publish when that flips.
+
+**Honest residual.** Static analysis could not name the precise same-frame
+writer that left re-sliced values in `currentFrustum` at the two-primitive
+scene's pack moment (in a pure steady-state render pass, traversal-time
+`currentFrustum` should equal the stash). The fix does not depend on that
+identification: it removes the packer's sensitivity to pack timing entirely, so
+EVERY variant of the interleaving — including whichever one the bisect hit —
+now encodes the published frame encode the globe actually competes with. If the
+orchestrator's probe re-run still fails check (2), the next diagnostic is to
+dump the slab tail lanes (floats 40-43) and the globe tail at capture time —
+the spec's oracle then cleanly implicates a non-uniform mechanism.
+
+**Verification.** `Tools/visual-regression/mat-logdepth-encode-stash.spec.mjs`
+(11/11): the REAL `writeLogDepthTail` extracted from source and EXECUTED —
+stash-first under re-sliced live state, self-consistent factor, legacy fallback
+before the stash exists, invalid-stash rejection, all three pinned offsets; a
+depth-compare ORACLE replaying the two-primitive scene's numbers (slab 5 m
+above the globe must win by more than one 24-bit quantum); a MUTATION test that
+severs the stash read (the exact pre-fix semantics) and requires the stash-first
+check to fail AND the oracle to reproduce the slab-behind-globe defect; source
+pins that all three camera writers route through the helper at offsets
+40/`LIT_LOG_DEPTH_OFFSET`(=80)/92 with no second `oneOverLog2…` read in the
+file; and the REAL `publishLogDepthEncodeNearFar` executed end-to-end into the
+REAL packer so a one-sided rename of the contract field fails the pairing.
+Machine lane (orchestrator): re-run `probe-logdepth-zfight.mjs` expecting
+check (2) ratio ≥ 0.9 with checks (1)/(3)/(4)/(5) green.
+

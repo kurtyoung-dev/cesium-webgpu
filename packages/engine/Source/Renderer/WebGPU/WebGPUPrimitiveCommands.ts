@@ -1162,6 +1162,28 @@ function writeRTEUniformsFlat(
  * Safe to call unconditionally — it only fills previously-unread floats, so it
  * is inert until the LOG_DEPTH pipeline define is set (Slice 4 flip) and the
  * shader's `logDepth` field reads it. See WebGPULogDepth.ts.
+ *
+ * NEW-WEBGPU-MAT-LOGDEPTH-MULTI-PRIMITIVE-DEPTH-LOSS — the encode frustum
+ * MUST be the frame-stable FULL-camera stash `_logDepthEncodeNearFar`
+ * (published by the globe camera-UB pack and by both frustum loops BEFORE any
+ * per-slice remap), NOT the live `currentFrustum`/factor pair. The live pair
+ * is a moving target — `_updateFrustumUniforms` re-slices it per frustum
+ * slice, the translucent near refresh re-slices it again, and the pick loops
+ * re-slice it for the pick mini-frame — so a tail packed from it encodes
+ * whatever slice state happens to be current at THIS primitive's pack moment.
+ * That made the Mat/PBR/Basic/polyline geometry-Primitive family the LAST
+ * log-depth producer whose curve depended on pack timing: with more than one
+ * Mat primitive in the scene, a slab 5 m above the globe landed on a
+ * different log curve than the globe's and lost the depth test over a stable
+ * region (probe-logdepth-zfight check 2, 0.868). Every sibling producer is
+ * already stash-first — see the identical pattern + rationale in
+ * WebGPUBillboardRenderer.packUniforms, WebGPUPointPrimitiveRenderer, and
+ * WebGPUDepthPlane.update (NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT). When
+ * the stash drives, the factor is recomputed from the same pair so encode +
+ * factor stay self-consistent; `currentFrustum` remains only as the
+ * pre-stash early-frame fallback. The pick fleet is unaffected today (its
+ * tail lanes are read only under the separate pick-fleet switch, C10-11) and
+ * inherits the same full-camera encode both pick loops publish when it flips.
  * @private
  */
 function writeLogDepthTail(
@@ -1174,14 +1196,20 @@ function writeLogDepthTail(
     defined(usLog) && defined(usLog.currentFrustum)
       ? usLog.currentFrustum
       : undefined;
-  const near = defined(frustum) ? frustum.x : 0.0;
-  const far = defined(frustum) ? frustum.y : 0.0;
+  let near = defined(frustum) ? frustum.x : 0.0;
+  let far = defined(frustum) ? frustum.y : 0.0;
   let factor =
     defined(usLog) &&
     typeof usLog.oneOverLog2FarDepthFromNearPlusOne === "number"
       ? usLog.oneOverLog2FarDepthFromNearPlusOne
       : 0.0;
-  if (!(factor > 0.0) && far > near) {
+  const ldEncode = defined(usLog) ? usLog._logDepthEncodeNearFar : undefined;
+  if (defined(ldEncode) && ldEncode[1] > ldEncode[0]) {
+    near = ldEncode[0];
+    far = ldEncode[1];
+    const log2Far = Math.log2(far - near + 1.0);
+    factor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
+  } else if (!(factor > 0.0) && far > near) {
     const log2Far = Math.log2(far - near + 1.0);
     factor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
   }
