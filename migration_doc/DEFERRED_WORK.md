@@ -7308,6 +7308,31 @@ so any change here must update them in the same change.
 
 **First datapoint (2026-08-02 run, Batch 810): the on-screen cost of the skip is ~1.9 s of globe-less frames on a cold variant** (WebGPU 2674 ms / 44 frames to first GLOBE command vs WebGL 771 ms / 13 frames, same scene).
 
+## 2026-08-02 — the 2,868-sprite star catalog is visually near-redundant with the baked cubemap stars
+
+### C12-STARFIELD-SPRITE-VS-CUBEMAP-REDUNDANCY
+
+**Status:** OPEN / MEASURED — needs a design disposition, not a quick fix.
+
+First post-Batch-804 census run of `probe-stars-catalog.mjs` (2026-08-02, after
+re-aiming its check (A) at a same-aim center-box differential): at the default
+intensity and exposure, turning the 2,868-sprite BrightStarCatalog field ON
+adds only ~3 bright px (lum>40, 8-bit grab) in the Sirius-aimed center box
+(91 catalog-off -> 94 on) and ~9 globally (1300 -> 1309) — because the
+procedural sky cubemap ALREADY bakes the same stars at the same positions.
+Sprite pipeline is healthy (pipelineReady, intensity 3x moves the count
+1309 -> 1326, positions correct), it is just nearly invisible over the bake.
+Probe checks (B)/(C) pass off the CUBEMAP's stars, and (A) is deliberately
+left RED as the flag for this question.
+
+**Disposition needed (fresh-context lane):** either (a) the sprite field is
+the HDR/bloom bright-star layer and the probe must measure in HDR terms
+(pre-tonemap attachment or bloom-response differential), or (b) the sprite
+layer should carry a magnitude band the cubemap bake EXCLUDES (bake faint
+stars only, sprites own the bright end), or (c) the sprite field is redundant
+and the catalog's value lives in the bake pipeline. Cross-reference the
+C12 celestial-appearance research doc's sky-layering section before choosing.
+
 ## 2026-08-02 — Mat-pipeline log depth corrupts with a SECOND Mat primitive in scene
 
 ### NEW-WEBGPU-MAT-LOGDEPTH-MULTI-PRIMITIVE-DEPTH-LOSS

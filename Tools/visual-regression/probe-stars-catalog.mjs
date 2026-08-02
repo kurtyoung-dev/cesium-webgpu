@@ -307,6 +307,12 @@ const brightBright = brightCount(gpu.imgBright, THRESH);
 
 const siriusCenter = brightCountCenter(gpu.imgSirius, THRESH, 0.12);
 const blankCenter = brightCountCenter(gpu.imgBlank, THRESH, 0.12);
+// (A) re-baseline 2026-08-02: the OFF frame is Sirius-aimed too, so the
+// catalog's contribution is measured in the SAME center box rather than
+// globally — the global count is dominated by the procedural sky-cubemap
+// stars (~1300 bright px with the catalog OFF), which drowned the sprite
+// delta and made the old `onBright > offBright + 50` gate a coin flip.
+const offCenter = brightCountCenter(gpu.imgOff, THRESH, 0.12);
 
 console.log(
   `starField present on skyBox: ${gpu.hasStarField}, stats: ${JSON.stringify(gpu.stats)}`,
@@ -320,13 +326,15 @@ console.log(
     `bright=${gpu.brightDiag.mx.toFixed(0)}/${gpu.brightDiag.nonBlack}`,
 );
 console.log(
-  `center-box bright pixels: sirius-aimed=${siriusCenter} blank-aimed=${blankCenter}`,
+  `center-box bright pixels: sirius-aimed=${siriusCenter} blank-aimed=${blankCenter} catalog-off=${offCenter}`,
 );
 console.log(`console errors: ${gpu.errors.length}`);
 gpu.errors.slice(0, 8).forEach((e) => console.log("  ERR:", e.slice(0, 250)));
 
-// (A) ON adds bright pixels vs OFF.
-const aOK = onBright > offBright + 50;
+// (A) ON adds bright pixels vs OFF — same Sirius aim, center box only (the
+// global frame is dominated by procedural cubemap stars; see re-baseline
+// note above).
+const aOK = siriusCenter > offCenter + 20;
 // (B/C) Aiming at Sirius puts a bright cluster near center; far more than
 // aiming at a blank patch.
 const bcOK = siriusCenter > 20 && siriusCenter > blankCenter * 2 + 10;
