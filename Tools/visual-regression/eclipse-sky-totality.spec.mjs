@@ -43,6 +43,7 @@ import {
   updateEclipseState,
 } from "../../packages/engine/Source/Scene/EclipseState.js";
 import { computeSolarObscuration } from "../../packages/engine/Source/Scene/computeSolarObscuration.js";
+import { computeSkyBrightness } from "../../packages/engine/Source/Scene/SkyBrightness.js";
 import {
   CAPTURE_BEGIN,
   CAPTURE_END,
@@ -322,24 +323,73 @@ test("E3: the curve endpoints and monotonicity", () => {
 });
 
 test("E3: the documented off-anchor consequences are the measured ones", () => {
-  // Recorded rather than tuned away — the comment block in StarFieldMath.ts
-  // states these, and a retune that changes them must change the doc too.
-  const fullMoon = modulation(0.04, SHIPPED_INFLECTION, SHIPPED_STEEPNESS);
-  assert.ok(Math.abs(fullMoon - 0.01818) < 5e-5, `full moon ${fullMoon}`);
-  assert.ok(Math.abs(2.5 * Math.log10(fullMoon) + 4.35) < 0.02);
+  // ★ C12-34 (2026-08-02): this test used to feed the curve two HARD-CODED
+  // inputs (0.04 for a full moon) and an INLINE COPY of the estimator's sun
+  // term. Both were transcriptions of a `computeSkyBrightness` that no longer
+  // exists — the log-luminance rewrite replaced it — so the test would have
+  // kept passing while asserting values the engine could not produce. That is
+  // the CPU-twin drift failure in its purest form: a second implementation
+  // that outlives the first. It now runs the REAL estimator.
+  const groundCamera = new Cartesian3(6378137.0, 0.0, 0.0);
+  const directionAt = (degrees) =>
+    new Cartesian3(
+      Math.sin((degrees * Math.PI) / 180),
+      0.0,
+      Math.cos((degrees * Math.PI) / 180),
+    );
+  const zenith = new Cartesian3(1.0, 0.0, 0.0);
+
+  // Full moon overhead at astronomical night, straight from the estimator.
+  const fullMoonBrightness = computeSkyBrightness(
+    directionAt(-30),
+    zenith,
+    1.0,
+    groundCamera,
+    0.0,
+  );
+  const fullMoon = modulation(
+    fullMoonBrightness,
+    SHIPPED_INFLECTION,
+    SHIPPED_STEEPNESS,
+  );
+  assert.ok(
+    Math.abs(fullMoonBrightness - 0.0322377) < 5e-7,
+    `full-moon sky brightness ${fullMoonBrightness}`,
+  );
+  assert.ok(Math.abs(fullMoon - 0.165959) < 5e-6, `full moon ${fullMoon}`);
+  assert.ok(
+    Math.abs(2.5 * Math.log10(fullMoon) + 1.95) < 0.02,
+    "the published full-moon naked-eye limit is ~4.5, i.e. -1.95 mag",
+  );
 
   // A LOW-sun totality reveals more, because the sky it started from was
-  // already dimmer. `computeSkyBrightness`'s sun term at 10 deg elevation.
-  const sunTerm = smoothstep01(
-    Math.min(1, Math.max(0, (Math.sin((10 * Math.PI) / 180) + 0.1) / 0.5)),
+  // already dimmer. Same estimator, sun 10 deg up.
+  const sunTerm = computeSkyBrightness(
+    directionAt(10),
+    undefined,
+    0.0,
+    groundCamera,
+    0.0,
   );
+  assert.ok(Math.abs(sunTerm - 0.4581406) < 5e-7, `sun term ${sunTerm}`);
   const lowSun = modulation(
     sunTerm * ECLIPSE_TWILIGHT_FLOOR,
     SHIPPED_INFLECTION,
     SHIPPED_STEEPNESS,
   );
-  assert.ok(Math.abs(lowSun - 0.5246) < 5e-4, `low-sun totality ${lowSun}`);
+  assert.ok(Math.abs(lowSun - 0.664912) < 5e-6, `low-sun totality ${lowSun}`);
   assert.ok(lowSun > modulation(ECLIPSE_TWILIGHT_FLOOR, 0, SHIPPED_STEEPNESS));
+
+  // The HIGH-sun anchor — the one the steepness was solved against — must be
+  // unmoved by C12-34, and it is, because a saturated day is still exactly 1.
+  assert.equal(
+    computeSkyBrightness(directionAt(82), undefined, 0.0, groundCamera, 0.0) *
+      ECLIPSE_TWILIGHT_FLOOR,
+    ECLIPSE_TWILIGHT_FLOOR,
+  );
+
+  // The full band ladder lives in `sky-brightness-twilight.spec.mjs`, which
+  // owns the C12-34 model; this file keeps only the eclipse-facing anchors.
 });
 
 test("E3: one expression, four implementations", () => {

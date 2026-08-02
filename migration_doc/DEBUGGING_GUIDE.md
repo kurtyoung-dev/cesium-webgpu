@@ -527,6 +527,31 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 > executable count supersedes the historical 24-test count in the long-form
 > campaign narrative below.
 
+> **`sky-brightness-twilight.spec.mjs` — C12-34, the sky-brightness estimator's
+> twilight range (2026-08-02, 27/27).** `node --test
+> Tools/visual-regression/sky-brightness-twilight.spec.mjs`. Pure Node, no
+> browser: it EXECUTES `Scene/SkyBrightness.js` and (through
+> `lib/engine-ts-resolver.mjs`) `Scene/StarFieldMath.ts`, rather than
+> re-implementing either. Owns the C12-34 log-luminance model — the published
+> zenith twilight-photometry ladder (μ 8 at sunset, 14 at −6°, 19.7 at −12°,
+> 21.9 at −18°), the NELM perceptual transfer, the moon's `p^3.64` phase-flux
+> law, and the shared `computeCelestialElevationSine` single home that C15's
+> aurora night-gate will reuse. **Every metric is banded or pointwise, never a
+> sweep average** — the defect it guards is invisible to an aggregate, because
+> the pre-C12-34 estimator was bit-identical to the shipped one at BOTH ends of
+> the range (deep night and full day) and differed only in the middle. Five
+> MUTATION tests feed the checks a deliberately broken estimator (the exact
+> legacy double-smoothstep, a binary day/night gate, a 1e-6 epsilon floor, a
+> linear moon phase, and a re-inlined second elevation derivation) and require
+> each check to REJECT it, so a green run is evidence rather than silence. Also
+> pins the byte-neutral identities as `assert.equal`: deep night is exactly 0,
+> a saturated day exactly 1, above the 111 km shell exactly 0, a new moon
+> exactly nothing, and the S2 high-sun totality product exactly
+> `ECLIPSE_TWILIGHT_FLOOR`. Run it after touching `SkyBrightness.js`,
+> `StarFieldMath.ts`'s modulation block, or the `STAR_MODULATION_*` pair.
+> Companion Edge acceptance is owed and NOT yet run — see the C12-34 row in
+> `QUEUE_2026-07-19_CAMPAIGN12.md` for the pinned-clock elevation lanes.
+
 > **C12-29 S5 current gate and remaining executor work (2026-07-28):**
 > `node --test Tools/visual-regression/eclipse-globe-umbra-rte.spec.mjs`
 > passes **18/18**. The visual-source contract is **4/4**, the protected

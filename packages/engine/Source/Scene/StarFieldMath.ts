@@ -28,14 +28,15 @@ import Cartesian3 from "../Core/Cartesian3.js";
 import CesiumMath from "../Core/Math.js";
 import defined from "../Core/defined.js";
 import BrightStarCatalog from "./BrightStarCatalog.js";
-import { computeAtmosphericColumnFactor } from "./SkyBrightness.js";
+import {
+  computeAtmosphericColumnFactor,
+  computeCelestialElevationSine,
+} from "./SkyBrightness.js";
 
 // Per-instance vertex layout (floats):
 //   directionFixed (3) + intensity (1) + color (3) + sizeBoost (1) = 8
 /** Number of floats per packed per-instance star record. @private */
 export const FLOATS_PER_STAR = 8;
-
-const scratchCamUp = new Cartesian3();
 
 /**
  * Convert a B−V color index to an approximate RGB color via a blackbody
@@ -275,8 +276,15 @@ export function computeStarDayFade(
   }
   const camLen = Cartesian3.magnitude(cameraPositionWC);
   if (camLen > 1.0) {
-    Cartesian3.normalize(cameraPositionWC, scratchCamUp);
-    const solarAltSin = Cartesian3.dot(sunDirectionWC, scratchCamUp);
+    // The C12-34 single home of the solar-elevation derivation — shared
+    // with the SkyBrightness estimator (and the C15 aurora edge).
+    const solarAltSin = computeCelestialElevationSine(
+      sunDirectionWC,
+      cameraPositionWC,
+    );
+    if (solarAltSin === undefined) {
+      return dayFade;
+    }
     // Full brightness when sun is > ~6° below horizon (astronomical
     // twilight-ish), fully faded when sun is > ~3° above horizon.
     // smoothstep over sin(altitude): [-0.10, +0.05].
@@ -346,9 +354,10 @@ export function computeStarDayFade(
 //     At the shipped 23.0 the factor at totality is 0.062810, i.e. -3.00 mag
 //     to five figures. `eclipse-sky-totality.spec.mjs` re-derives both numbers
 //     from the published constants and fails if they drift. A LOW-sun totality
-//     (2026-08-12 Iceland, sun ~10 deg) lands at `B = 0.021026` -> factor
-//     0.5246 -> -0.70 mag: more stars, which is right, because the sky it
-//     started from was already dimmer.
+//     (2026-08-12 Iceland, sun ~10 deg) lands at `B = 0.458141 * 0.0368403 =
+//     0.016878` -> factor 0.664912 -> -0.44 mag under the C12-34 twilight
+//     estimator: more stars, which is right, because the sky it started from
+//     was already dimmer.
 //
 //  3. THE DAY END FALLS OUT. At `skyBrightness = 1` (sun >= ~23.6 deg up for
 //     an in-atmosphere camera) `t` saturates and the factor is exactly 0 — no
@@ -360,19 +369,71 @@ export function computeStarDayFade(
 //     `skyBrightness` to 0 above the engine's own 111 km scattering shell, so
 //     an orbital camera gets factor 1.0 and is byte-identical.
 //
-// MEASURED CONSEQUENCES elsewhere on the curve, recorded rather than tuned
-// away (the curve has two parameters and three would be needed to hit all of
-// these):
-//   full moon overhead (`skyBrightness` 0.0400) -> factor 0.01818, i.e.
-//     -4.35 mag, NELM ~2.2 against a published full-moon NELM of ~4.5. The
-//     Milky Way correctly vanishes; the cut is ~2.3 mag deeper than reality.
-//   mid civil twilight (sun -2 deg, `skyBrightness` 0.0464) -> factor 0.
-//     Real observers still have Venus and one or two first-magnitude stars.
-// Both follow from `computeSkyBrightness` collapsing to exactly 0 once the
-// sun is below -5.74 deg: it has no dynamic range across the twilight decade
-// at all, so no choice of these two parameters can separate "late civil
-// twilight" from "astronomical night". A log-luminance estimator is the
-// honest upgrade and is filed as such — see the C12 queue.
+// OFF-ANCHOR VALUES, now DERIVED rather than recorded-as-defects (C12-34).
+// The two "measured consequences" this block used to carry — full moon
+// overhead at factor 0.01818 (NELM ~2.2 against a published ~4.5) and mid
+// civil twilight at exactly 0 — both followed from the pre-C12-34
+// `computeSkyBrightness` collapsing to exactly 0 once the sun was below
+// -5.74 deg: it had no dynamic range across the twilight decade, so no
+// choice of these two curve parameters could separate "late civil twilight"
+// from "astronomical night". The C12-34 log-luminance estimator (see
+// `SkyBrightness.js`) restores that range at the SOURCE and calibrates its
+// perceptual transfer against this curve, so the composition
+// `modulation(computeSkyBrightness(...))` now reproduces the published
+// naked-eye limits the old pair missed:
+//   full moon overhead -> `skyBrightness` 0.0322377 -> factor 0.165959,
+//     i.e. -1.95 mag, NELM 4.55 against the published full-moon ~4.5.
+//   mid civil twilight (sun -2 deg) -> `skyBrightness` 0.0418355 ->
+//     factor 0.004175, NELM 0.55: Venus and one or two first-magnitude
+//     stars, which is what real observers report.
+//   end of civil twilight (sun -6 deg) -> factor 0.026303 (NELM 2.55);
+//   end of nautical (-12 deg) -> factor 0.363078 (NELM 5.40); the bands are
+//   monotone and separated instead of all mapping to 0.
+//
+// MEASURED CONSEQUENCES OF THE SWAP — what actually moves on screen, at which
+// solar elevations, and by how much. Every row is the shipped composition
+// `modulation(computeSkyBrightness(sun at h, moonless, ground camera))`, run
+// against the pre-C12-34 double-smoothstep and against the shipped estimator:
+//
+//   sun elev |  old factor (NELM) |  new factor (NELM) |  change
+//   ---------|--------------------|--------------------|-------------------
+//    <= -18  |  1.000000 (6.50)   |  1.000000 (6.50)   |  BYTE-IDENTICAL
+//      -15   |  1.000000 (6.50)   |  0.604705 (5.95)   |  -0.55 mag
+//      -12   |  1.000000 (6.50)   |  0.363078 (5.40)   |  -1.10 mag
+//       -9   |  1.000000 (6.50)   |  0.098257 (3.98)   |  -2.52 mag
+//       -6   |  1.000000 (6.50)   |  0.026303 (2.55)   |  -3.95 mag
+//       -3   |  0.370549 (5.42)   |  0.006619 (1.05)   |  -4.37 mag
+//       -2   |  0.000000 (none)   |  0.004175 (0.55)   |  stars RETURN
+//        0   |  0.000000 (none)   |  0.001660 (-0.45)  |  ~none either way
+//   >= +23.6 |  0.000000 (none)   |  0.000000 (none)   |  BYTE-IDENTICAL
+//
+// The single number that names the defect: across -18 deg to -6 deg — the
+// astronomical and nautical bands, half the twilight decade — the OLD
+// factor's total span was EXACTLY 0.000000. The new span is 0.973697. The
+// old curve did all of its work inside one 3.7-degree window (-5.74 deg,
+// factor 1, to -2 deg, factor 0) and none anywhere else; the new one is
+// monotone across the whole range and hands each band a distinct sky.
+//
+// Moonlight moves too, and mostly at full phase, because the flat 4%
+// perceptual constant is replaced by the published full-moon sky brightness
+// plus the `p^3.64` phase-flux law (moon overhead, astronomical night):
+//   p = 0.25 -> 0.865634 -> 0.902705   (+0.05 mag; a quarter moon was being
+//               over-weighted ~6x by the old LINEAR phase scaling)
+//   p = 0.50 -> 0.559872 -> 0.510830   (-0.10 mag)
+//   p = 0.75 -> 0.228718 -> 0.273275   (+0.19 mag)
+//   p = 1.00 -> 0.018176 -> 0.165959   (+2.40 mag; 9.13x. This is the queue
+//               row's headline defect: NELM 2.15 -> 4.55 against a published
+//               full-moon limit of ~4.5.)
+//
+// And the eclipse anchors, which had to survive unmoved and did: HIGH-sun
+// totality is still `1.0 * ECLIPSE_TWILIGHT_FLOOR` -> factor 0.062810
+// (-3.00 mag), bit-for-bit, because a saturated day is still exactly 1.0.
+// Only the LOW-sun totality moves, 0.5246 -> 0.664912 (-0.70 -> -0.44 mag),
+// and it moves in the correct direction for the same reason it always did.
+//
+// `sky-brightness-twilight.spec.mjs` re-derives every one of these from the
+// published photometry chain — and re-runs the old estimator to prove the
+// checks REJECT it — and fails if they drift.
 
 /** Default modulation-curve inflection (see the derivation above). */
 export const STAR_MODULATION_INFLECTION = 0.0;

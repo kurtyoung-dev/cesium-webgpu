@@ -68,14 +68,27 @@ export const FIXTURE_MIN_SUN_ELEV_DEG = 8.0;
  * Maximum solar elevation for the NIGHT instant, degrees — the constraint that
  * was missing from the selector.
  *
- * DERIVED, not picked: lanes D and B4 need the star field at FULL strength, and
- * `StarFieldMath.computeStarDayFade` reaches exactly 1 once `sin(elevation) <=
- * -0.1`, i.e. at elevation <= -5.7392 deg. `computeSkyBrightness`'s sun term
- * saturates to 0 at the same edge, so the modulation factor is 1 there too.
- * -8 deg is that edge plus margin (`sin(-8 deg) = -0.139`), and it is the
- * HONEST requirement: the earlier -18 deg (astronomical night) was far stricter
- * than anything the lanes actually need, and it is what made the Iceland
- * showcase vantages unsatisfiable in mid-August.
+ * DERIVED, not picked: lanes D and B4 need the star field's GEOMETRIC day fade
+ * off, and `StarFieldMath.computeStarDayFade` reaches exactly 1 once
+ * `sin(elevation) <= -0.1`, i.e. at elevation <= -5.7392 deg. -8 deg is that
+ * edge plus margin (`sin(-8 deg) = -0.139`), and it is the HONEST requirement:
+ * the earlier -18 deg (astronomical night) was far stricter than anything the
+ * lanes actually need, and it is what made the Iceland showcase vantages
+ * unsatisfiable in mid-August.
+ *
+ * ⚠ C12-34 (2026-08-02) INVALIDATED THE SECOND HALF OF THIS DERIVATION. This
+ * comment used to add "`computeSkyBrightness`'s sun term saturates to 0 at the
+ * same edge, so the modulation factor is 1 there too." That was true only of
+ * the pre-C12-34 double-smoothstep, which had NO dynamic range below -5.74
+ * deg. Under the shipped log-luminance estimator the -8 deg night instant sits
+ * in mid-nautical twilight and the star-brightness modulation factor there is
+ * 0.063390 (NELM 3.51), not 1.0 — a ~16x dim. `dayFade` is still exactly 1, so
+ * the CONSTRAINT and its threshold stand unchanged; what no longer holds is the
+ * claim that the fixture yields an UNDIMMED star field. Lanes D and B4 tolerate
+ * this (B4 counts draw-command ownership, and lane D's sprite/cubemap deltas
+ * are reported diagnostics, not gated verdicts), but any future lane that needs
+ * factor === 1 must ask for <= -18 deg explicitly rather than inheriting this
+ * threshold. Filed for the C12-34 Edge acceptance run.
  */
 export const FIXTURE_NIGHT_MAX_SUN_ELEV_DEG = -8.0;
 
