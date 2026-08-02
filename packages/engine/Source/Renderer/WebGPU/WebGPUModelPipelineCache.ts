@@ -96,7 +96,6 @@ import {
   releaseWebGPUModelDeviceResources,
   type WebGPUModelDeviceResources,
 } from "./WebGPUModelDeviceResources.js";
-import type { WebGPUModelCameraArena } from "./WebGPUModelCameraArena.js";
 // DP-H46c/d — property-texture + property-table binding numbers, shared with
 // the codegen + renderer so the BGL, shader, and bind-group entries all agree.
 import {
@@ -1287,17 +1286,18 @@ function createPickPipeline(
  * pipeline (same layout, vertex stage, cull mode, depth state, no blend) with
  * two differences:
  *
- *   - the fragment entry is `fragmentSnapMain`, which writes the RGBA32F snap
- *     payload (pick key / isEdge / linear eye depth) instead of the RGBA8 pick
- *     color, and
- *   - the single color target is {@link MODEL_SNAP_PAYLOAD_FORMAT}, the format
+ *   - the fragment entry is `fragmentSnapMain`, which writes the compact
+ *     RG32Uint snap payload (exact pick key / edge-tagged f32 eye-depth bits)
+ *     instead of the RGBA8 pick color, and
+ *   - the single color target is {@link SNAP_PAYLOAD_FORMAT}, the format
  *     of `WebGPUSnapFramebuffer`'s payload attachment. WebGPU validates a
  *     pipeline's attachment state against the render pass at draw time, so a
  *     pick-format pipeline dispatched into the snap payload pass would
  *     invalidate the whole command buffer (the FORK-34 failure mode).
  *
- * `rgba32float` is not blendable in core WebGPU; the snap payload must reach
- * the attachment byte-exact anyway, so no blend state is requested.
+ * `rg32uint` is a core renderable integer format and is not blendable; the snap
+ * payload must reach the attachment byte-exact anyway, so no blend state is
+ * requested.
  *
  * Depth follows the pick pipeline exactly (`depthWriteEnabled: !isBlend`,
  * `less-equal`). The snap payload pass shares the pick mini-frame's depth
@@ -1893,6 +1893,9 @@ class WebGPUModelPipelineCache {
   // assignments remain the sole runtime writes, keeping the compiled output
   // byte-identical to the pre-conversion JS.
   declare _device: GPUDevice;
+  // C11-194 recovery ownership. `_device` alone is insufficient when a
+  // context rebuilds native resources on the same physical device object.
+  declare _resourceGeneration: number;
   declare _presentationFormat: GPUTextureFormat;
   // NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE — the pick-family pipelines' color
   // target format, mirrored from `context.pickPipelineFormat` on every
@@ -1902,6 +1905,11 @@ class WebGPUModelPipelineCache {
   declare _depthFormat: GPUTextureFormat;
   declare _sampleCount: number;
   declare _sceneFormatGeneration: number;
+  // Invalidates every asynchronous publication owned by this cache. Native
+  // validation scopes can settle after a mode clear or destroy; callbacks
+  // captured under an older epoch must not repopulate maps or allocate an
+  // error pipeline against a stale device generation.
+  declare _lifecycleEpoch: number;
   declare _pipelines: Map<string | number, GPURenderPipeline>;
   // C10-07 — central async render-pipeline cache (shared across renderer
   // instances on the same device) + per-key in-flight set for the model
@@ -1932,7 +1940,6 @@ class WebGPUModelPipelineCache {
   declare _capturePipelines: Map<string | number, GPURenderPipeline>;
   declare _pickMetadataPipelines: Map<string | number, GPURenderPipeline>;
   declare _cameraBGL: GPUBindGroupLayout;
-  declare _cameraArena: WebGPUModelCameraArena;
   declare _instanceBGL: GPUBindGroupLayout;
   declare _effectsBGL: GPUBindGroupLayout;
   declare _modelDeviceResources: WebGPUModelDeviceResources | null;
@@ -2009,6 +2016,7 @@ class WebGPUModelPipelineCache {
    * @param {GPUDevice} device
    * @param {string} presentationFormat - e.g., "bgra8unorm"
    * @param {string} depthFormat - e.g., "depth24plus-stencil8"
+   * @param {number} resourceGeneration - exact context resource generation
    */
   constructor(
     device: GPUDevice,
@@ -2020,8 +2028,10 @@ class WebGPUModelPipelineCache {
     // unaffected; when present the on-screen COLOR pipeline resolves through
     // it via `createRenderPipelineAsync`.
     centralPipelineCache: WebGPURenderPipelineCache | null = null,
+    resourceGeneration = 0,
   ) {
     this._device = device;
+    this._resourceGeneration = resourceGeneration;
     this._centralPipelineCache = centralPipelineCache;
     this._pendingColorPipelines = new Map();
     this._presentationFormat = presentationFormat;
@@ -2048,6 +2058,7 @@ class WebGPUModelPipelineCache {
     // -1 sentinel so the first call to `maybeUpdateForSceneFormat`
     // unconditionally writes the current generation without a clear.
     this._sceneFormatGeneration = -1;
+    this._lifecycleEpoch = 0;
     this._pipelines = new Map();
     // C-22 — flat-magenta error pipelines (per pipeline-layout variant `md`),
     // substituted into `_pipelines` when a color pipeline fails validation. The
@@ -2141,23 +2152,32 @@ class WebGPUModelPipelineCache {
 
     // C11-194 — immutable placeholders and their camera/instance layouts are
     // device-generation resources, not model resources. The exact GPUDevice
-    // identity is the generation key; the pool retains them until the last
-    // model cache releases its reference.
-    const modelDeviceResources = acquireWebGPUModelDeviceResources(device);
+    // identity AND context resource generation form the ownership key; the
+    // pool retains them until the last model cache releases that exact lease.
+    const modelDeviceResources = acquireWebGPUModelDeviceResources(
+      device,
+      resourceGeneration,
+    );
     this._modelDeviceResources = modelDeviceResources;
     this._cameraBGL = modelDeviceResources.cameraBGL;
-    // C11-195 — the arena travels with the camera layout it builds groups
-    // against, so a model that holds one holds the other from the same
-    // device-generation lease.
-    this._cameraArena = modelDeviceResources.cameraArena;
     this._instanceBGL = modelDeviceResources.instanceBGL;
     // Effects BGL (group 3) — shared with globe + primitive via
     // `getEffectsBindGroupLayout` factory.
     try {
       this._effectsBGL = getEffectsBindGroupLayout(device);
     } catch (error) {
-      releaseWebGPUModelDeviceResources(device, modelDeviceResources);
-      this._modelDeviceResources = null;
+      try {
+        releaseWebGPUModelDeviceResources(
+          device,
+          resourceGeneration,
+          modelDeviceResources,
+        );
+      } catch {
+        // Preserve the constructor failure. The shared lease detaches before
+        // draining native owners, so a lost-device cleanup error is secondary.
+      } finally {
+        this._modelDeviceResources = null;
+      }
       throw error;
     }
 
@@ -2283,8 +2303,18 @@ class WebGPUModelPipelineCache {
         ShaderDefine.MODEL_HAS_KHR_TEXTURES,
       );
     } catch (error) {
-      releaseWebGPUModelDeviceResources(device, modelDeviceResources);
-      this._modelDeviceResources = null;
+      try {
+        releaseWebGPUModelDeviceResources(
+          device,
+          resourceGeneration,
+          modelDeviceResources,
+        );
+      } catch {
+        // Preserve the shader/layout construction failure; old-native cleanup
+        // has already detached the generation-partitioned shared lease.
+      } finally {
+        this._modelDeviceResources = null;
+      }
       throw error;
     }
 
@@ -2961,6 +2991,7 @@ class WebGPUModelPipelineCache {
       return false;
     }
     this._logDepthEnabled = enabled;
+    this._lifecycleEpoch++;
     this._pipelines.clear();
     // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
     // baked the now-stale format / mode; the `.then` also carries a
@@ -3045,6 +3076,7 @@ class WebGPUModelPipelineCache {
       return false;
     }
     this._splitEnabled = enabled;
+    this._lifecycleEpoch++;
     this._pipelines.clear();
     // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
     // baked the now-stale format / mode; the `.then` also carries a
@@ -3090,6 +3122,7 @@ class WebGPUModelPipelineCache {
       return false;
     }
     this._modelColorEnabled = enabled;
+    this._lifecycleEpoch++;
     this._pipelines.clear();
     // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
     // baked the now-stale format / mode; the `.then` also carries a
@@ -3137,6 +3170,7 @@ class WebGPUModelPipelineCache {
       return false;
     }
     this._silhouetteEnabled = enabled;
+    this._lifecycleEpoch++;
     this._pipelines.clear();
     // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
     // baked the now-stale format / mode; the `.then` also carries a
@@ -3182,6 +3216,7 @@ class WebGPUModelPipelineCache {
     // The wipe below covers the previous-generation pipelines that
     // had the old sample count baked in.
     this._sampleCount = context._msaaSamples ?? 1;
+    this._lifecycleEpoch++;
     // Wipe all cached pipelines so the next lookup creates fresh
     // entries against the current `_presentationFormat`. The cached
     // pipelines themselves aren't `destroy()`-ed (WebGPU has no
@@ -3324,6 +3359,7 @@ class WebGPUModelPipelineCache {
         // `_pipelines` + bumped the generation) is dropped instead of
         // writing a stale-format pipeline back into the cache.
         const kickGeneration = this._sceneFormatGeneration;
+        const kickLifecycleEpoch = this._lifecycleEpoch;
         const pendingPipeline = central.getPipeline(centralDesc);
         this._pendingColorPipelines.set(key, pendingPipeline);
         pendingPipeline
@@ -3335,7 +3371,10 @@ class WebGPUModelPipelineCache {
               return;
             }
             this._pendingColorPipelines.delete(key);
-            if (this._sceneFormatGeneration === kickGeneration) {
+            if (
+              this._sceneFormatGeneration === kickGeneration &&
+              this._lifecycleEpoch === kickLifecycleEpoch
+            ) {
               this._pipelines.set(key, p);
             }
           })
@@ -3352,7 +3391,10 @@ class WebGPUModelPipelineCache {
               return;
             }
             this._pendingColorPipelines.delete(key);
-            if (this._sceneFormatGeneration === kickGeneration) {
+            if (
+              this._sceneFormatGeneration === kickGeneration &&
+              this._lifecycleEpoch === kickLifecycleEpoch
+            ) {
               console.error(
                 `[CesiumJS:webgpu] Model PBR pipeline creation failed (async); substituting flat-magenta error pipeline`,
               );
@@ -3371,10 +3413,11 @@ class WebGPUModelPipelineCache {
 
     // Fallback — no central cache: synchronous build, byte-identical to the
     // pre-C10-07 path including the C2-22 error-scope magenta swap.
+    const validationEpoch = this._lifecycleEpoch;
     this._device.pushErrorScope("validation");
     const built = this._device.createRenderPipeline(raw);
     this._device.popErrorScope().then((error) => {
-      if (error) {
+      if (error && this._lifecycleEpoch === validationEpoch) {
         console.error(
           `[CesiumJS:webgpu] Model PBR pipeline creation failed (${error.message}); substituting flat-magenta error pipeline`,
         );
@@ -3495,6 +3538,7 @@ class WebGPUModelPipelineCache {
     // only flips `depthWriteEnabled`), so the flat-magenta error pipeline is a
     // valid drop-in here too. Wrap the create in the validation error scope and
     // swap to magenta on failure, mirroring `getPipeline`.
+    const validationEpoch = this._lifecycleEpoch;
     this._device.pushErrorScope("validation");
     pipeline = createPipeline(
       this._device,
@@ -3512,7 +3556,7 @@ class WebGPUModelPipelineCache {
       topology,
     );
     this._device.popErrorScope().then((error) => {
-      if (error) {
+      if (error && this._lifecycleEpoch === validationEpoch) {
         console.error(
           `[CesiumJS:webgpu] Model PBR depth-write pipeline creation failed (${error.message}); substituting flat-magenta error pipeline`,
         );
@@ -3566,6 +3610,7 @@ class WebGPUModelPipelineCache {
     const metadataSlotMode = this._metadataSlotMode(md);
     // Same MRT targets / layout as `getPipeline`, so the flat-magenta
     // error pipeline is a valid drop-in here too (C2-22 pattern).
+    const validationEpoch = this._lifecycleEpoch;
     this._device.pushErrorScope("validation");
     pipeline = createSilhouetteModelPipeline(
       this._device,
@@ -3583,7 +3628,7 @@ class WebGPUModelPipelineCache {
       topology,
     );
     this._device.popErrorScope().then((error) => {
-      if (error) {
+      if (error && this._lifecycleEpoch === validationEpoch) {
         console.error(
           `[CesiumJS:webgpu] Model silhouette-model pipeline creation failed (${error.message}); substituting flat-magenta error pipeline`,
         );
@@ -3636,6 +3681,7 @@ class WebGPUModelPipelineCache {
     const hasTexCoord1 = (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0;
     const hasFeatureId0 = (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0;
     const metadataSlotMode = this._metadataSlotMode(md);
+    const validationEpoch = this._lifecycleEpoch;
     this._device.pushErrorScope("validation");
     pipeline = createSilhouetteColorPipeline(
       this._device,
@@ -3652,7 +3698,7 @@ class WebGPUModelPipelineCache {
       topology,
     );
     this._device.popErrorScope().then((error) => {
-      if (error) {
+      if (error && this._lifecycleEpoch === validationEpoch) {
         console.error(
           `[CesiumJS:webgpu] Model silhouette-color pipeline creation failed (${error.message}); substituting flat-magenta error pipeline`,
         );
@@ -4194,15 +4240,6 @@ class WebGPUModelPipelineCache {
     return this._cameraBGL;
   }
 
-  /**
-   * C11-195 — device-shared per-frame group-0 camera arena. Every group-0
-   * bind group for this layout must come from here so the dynamic-offset
-   * contract of `cameraBGL` is satisfied exactly once, in one place.
-   */
-  get cameraArena(): WebGPUModelCameraArena {
-    return this._cameraArena;
-  }
-
   /** @returns {GPUBindGroupLayout} */
   get materialBGL() {
     return this._materialBGL;
@@ -4518,6 +4555,7 @@ class WebGPUModelPipelineCache {
    * Destroys all cached pipelines and default resources.
    */
   destroy() {
+    this._lifecycleEpoch++;
     this._pipelines.clear();
     // C10-07 — drop in-flight COLOR async compiles too. Their descriptors
     // baked the now-stale format / mode; the `.then` also carries a
@@ -4528,9 +4566,24 @@ class WebGPUModelPipelineCache {
     // releases the cache's reference. Same lifecycle as `_pipelines`.
     this._pickPipelines.clear();
     this._snapPipelines.clear();
+    this._errorPipelines.clear();
+    this._depthWritePipelines.clear();
+    this._velocityPipelines.clear();
+    this._classificationPipelines.clear();
+    this._silhouetteModelPipelines.clear();
+    this._silhouetteColorPipelines.clear();
+    this._pickHoverPipelines.clear();
+    this._pickPrecisePass1Pipelines.clear();
+    this._pickPrecisePass2Pipelines.clear();
+    this._capturePipelines.clear();
+    this._pickMetadataPipelines.clear();
+    this._shaderModuleCache.clear();
+    this._metadataShaderModuleCache.clear();
+    this._errorShaderModule = null;
     if (this._modelDeviceResources) {
       releaseWebGPUModelDeviceResources(
         this._device,
+        this._resourceGeneration,
         this._modelDeviceResources,
       );
       this._modelDeviceResources = null;

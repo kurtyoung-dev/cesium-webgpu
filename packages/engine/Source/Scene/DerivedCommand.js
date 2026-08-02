@@ -410,6 +410,84 @@ const snapHelperSource = `uint rgba8UnormToUint32(vec4 c)
 }
 `;
 
+function getSnapOccluderShaderProgram(context, shaderProgram) {
+  // Start from the existing depth-only program so alpha-discard, explicit
+  // fragment-depth, and log-depth behavior remain exactly the same as the
+  // snapless fallback this replaces. The only new behavior is a zero payload
+  // write for fragments that survive those depth semantics.
+  const depthOnlyShaderProgram = getDepthOnlyShaderProgram(
+    context,
+    shaderProgram,
+  );
+  const cachedShader = context.shaderCache.getDerivedShaderProgram(
+    depthOnlyShaderProgram,
+    "snapOccluder",
+  );
+  if (defined(cachedShader)) {
+    return cachedShader;
+  }
+
+  const attributeLocations = depthOnlyShaderProgram._attributeLocations;
+  const { sources, defines } = depthOnlyShaderProgram.fragmentShaderSource;
+  const hasFragData = sources.some((source) => source.includes("out_FragData"));
+  const outputColorVariable = hasFragData ? "out_FragData_0" : "out_FragColor";
+  const newMain = `void main ()
+{
+    czm_snap_occluder_main();
+    ${outputColorVariable} = vec4(0.0);
+} `;
+
+  const length = sources.length;
+  const newSources = new Array(length + 1);
+  for (let i = 0; i < length; ++i) {
+    newSources[i] = ShaderSource.replaceMain(
+      sources[i],
+      "czm_snap_occluder_main",
+    );
+  }
+  newSources[length] = newMain;
+
+  return context.shaderCache.createDerivedShaderProgram(
+    depthOnlyShaderProgram,
+    "snapOccluder",
+    {
+      vertexShaderSource: depthOnlyShaderProgram.vertexShaderSource,
+      fragmentShaderSource: new ShaderSource({
+        sources: newSources,
+        defines: defines,
+      }),
+      attributeLocations: attributeLocations,
+    },
+  );
+}
+
+function getSnapOccluderRenderState(scene, renderState) {
+  let cache = scene.picking.snapOccluderRenderStateCache;
+  if (!defined(cache)) {
+    // Applications that never call Scene.snap allocate no additional cache.
+    cache = scene.picking.snapOccluderRenderStateCache = {};
+  }
+
+  const cachedState = cache[renderState.id];
+  if (defined(cachedState)) {
+    return cachedState;
+  }
+
+  const rs = RenderState.getState(renderState);
+  rs.blending.enabled = false;
+  rs.depthMask = true;
+  rs.colorMask = {
+    red: true,
+    green: true,
+    blue: true,
+    alpha: true,
+  };
+
+  const snapOccluderState = RenderState.fromCache(rs);
+  cache[renderState.id] = snapOccluderState;
+  return snapOccluderState;
+}
+
 function getSnapShaderProgram(context, shaderProgram, snapId) {
   const cachedShader = context.shaderCache.getDerivedShaderProgram(
     shaderProgram,
@@ -488,6 +566,63 @@ DerivedCommand.createSnapDerivedCommand = function (
   } else {
     result.snapCommand.shaderProgram = shader;
     result.snapCommand.renderState = renderState;
+  }
+
+  return result;
+};
+
+/**
+ * Derives the command used by a snapless WebGL occluder. Multi-frustum depth
+ * is cleared between far-to-near slices while the snap payload is preserved;
+ * writing zero wherever the current slice wins depth prevents a farther snap
+ * target from surviving through nearer terrain or other unsnappable geometry.
+ *
+ * @private
+ */
+DerivedCommand.createSnapOccluderDerivedCommand = function (
+  scene,
+  command,
+  context,
+  result,
+) {
+  if (!defined(result)) {
+    result = {};
+  }
+
+  // A zero payload is valid only when the same fragment can establish the
+  // current slice's depth winner. Commands with depth testing disabled do not
+  // update the depth attachment in WebGL, even when depthMask is true. Giving
+  // them a color-writing occluder would make command order erase unrelated
+  // snap payloads. Keep the legacy color-masked depth-only fallback instead.
+  if (command.renderState?.depthTest?.enabled !== true) {
+    return result;
+  }
+
+  const cmdShader = command.shaderProgram;
+  if (!defined(cmdShader?.id)) {
+    return result;
+  }
+
+  const shader = result.occluderCommand?.shaderProgram;
+  const renderState = result.occluderCommand?.renderState;
+  result.occluderCommand = DrawCommand.shallowClone(
+    command,
+    result.occluderCommand,
+  );
+
+  if (!defined(shader) || result.shaderProgramId !== cmdShader.id) {
+    result.occluderCommand.shaderProgram = getSnapOccluderShaderProgram(
+      context,
+      cmdShader,
+    );
+    result.occluderCommand.renderState = getSnapOccluderRenderState(
+      scene,
+      command.renderState,
+    );
+    result.shaderProgramId = cmdShader.id;
+  } else {
+    result.occluderCommand.shaderProgram = shader;
+    result.occluderCommand.renderState = renderState;
   }
 
   return result;

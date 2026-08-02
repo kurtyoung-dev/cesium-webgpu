@@ -201,7 +201,7 @@ class ModelSceneGraph {
    * @private
    */
   buildBackendNeutralPrimitiveDescriptors(frameState) {
-    const modelRenderResources = this.buildRenderResources(frameState);
+    const modelRenderResources = this.buildRenderResources(frameState, true);
     this.computeBoundingVolumes(modelRenderResources);
     this.createBackendNeutralPrimitiveDescriptors(
       modelRenderResources,
@@ -223,11 +223,13 @@ class ModelSceneGraph {
    *
    * @param {FrameState} frameState The current frame state. This is needed to
    * allocate GPU resources as needed.
+   * @param {boolean} [nativeRendererOnly=false] Whether to retain only shared
+   *        and native-renderer inputs instead of realizing legacy-only stages.
    * @returns {ModelRenderResources} The model render resources
    *
    * @private
    */
-  buildRenderResources(frameState) {
+  buildRenderResources(frameState, nativeRendererOnly = false) {
     const model = this._model;
     const modelRenderResources = new ModelRenderResources(model);
 
@@ -273,7 +275,7 @@ class ModelSceneGraph {
       for (let j = 0; j < runtimeNode.runtimePrimitives.length; j++) {
         const runtimePrimitive = runtimeNode.runtimePrimitives[j];
 
-        runtimePrimitive.configurePipeline(frameState);
+        runtimePrimitive.configurePipeline(frameState, nativeRendererOnly);
         const primitivePipelineStages = runtimePrimitive.pipelineStages;
 
         const primitiveRenderResources = new PrimitiveRenderResources(

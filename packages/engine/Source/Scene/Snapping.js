@@ -4,8 +4,13 @@ import Cartesian3 from "../Core/Cartesian3.js";
 import Check from "../Core/Check.js";
 import defined from "../Core/defined.js";
 import oneTimeWarning from "../Core/oneTimeWarning.js";
+import PerspectiveFrustum from "../Core/PerspectiveFrustum.js";
+import PerspectiveOffCenterFrustum from "../Core/PerspectiveOffCenterFrustum.js";
 import Ray from "../Core/Ray.js";
+import MapMode2D from "./MapMode2D.js";
+import { drawingBufferToFrustumCoordinates } from "./PickFrustumMath.js";
 import { pickBegin, pickEnd } from "./Picking.js";
+import SceneMode from "./SceneMode.js";
 import SnapFramebuffer from "./SnapFramebuffer.js";
 
 /**
@@ -34,9 +39,10 @@ import SnapFramebuffer from "./SnapFramebuffer.js";
 const Snapping = {};
 
 const scratchRectangle = new BoundingRectangle(0.0, 0.0, 3.0, 3.0);
-const scratchSnapCoord = new Cartesian2();
 const scratchSnapRay = new Ray();
 const scratchSnapOffset = new Cartesian3();
+const scratchSnapFrustumCoordinates = new Cartesian2();
+const scratchSnapWindowPosition = new Cartesian2();
 
 // Radius around the crosshair, in pixels, used to sample the nearest surface
 // (the occluder the cursor is on).
@@ -76,22 +82,232 @@ function selectBestHit(hits) {
   );
 }
 
+/**
+ * Capture the camera state that produced one snap payload. The synchronous
+ * WebGPU API consumes a completed readback from an earlier mini-frame, so it
+ * must reconstruct against that rendered view rather than the live camera.
+ *
+ * Keep this flat and scalar-only: one frozen allocation per snap query, no
+ * retained Camera/Frustum/Viewport objects, and no mutable nested state.
+ *
+ * @param {Scene} scene
+ * @param {Cartesian2} windowPosition
+ * @returns {object}
+ * @private
+ */
+function captureSnapView(scene, windowPosition, drawingBufferRectangle) {
+  const camera = scene.camera;
+  const frustum = camera.frustum;
+  const offCenterFrustum = frustum.offCenterFrustum;
+  const effectiveFrustum = defined(offCenterFrustum)
+    ? offCenterFrustum
+    : frustum;
+  const viewport = scene.defaultView.viewport;
+  const canvas = scene.canvas;
+  let sampleWindowX = windowPosition.x;
+  let sampleWindowY = windowPosition.y;
+  if (
+    defined(drawingBufferRectangle) &&
+    scene.drawingBufferWidth > 0 &&
+    scene.drawingBufferHeight > 0 &&
+    canvas.clientWidth > 0 &&
+    canvas.clientHeight > 0
+  ) {
+    const sampleWidth = Math.max(
+      1,
+      Math.floor(drawingBufferRectangle.width ?? 1),
+    );
+    const sampleHeight = Math.max(
+      1,
+      Math.floor(drawingBufferRectangle.height ?? 1),
+    );
+    const sampleCenterX =
+      Math.floor(drawingBufferRectangle.x ?? 0) + Math.floor(sampleWidth * 0.5);
+    const sampleOriginTopY =
+      scene.drawingBufferHeight -
+      Math.floor(drawingBufferRectangle.y ?? 0) -
+      sampleHeight;
+    const sampleCenterTopY = sampleOriginTopY + Math.floor(sampleHeight * 0.5);
+    sampleWindowX =
+      sampleCenterX * (canvas.clientWidth / scene.drawingBufferWidth);
+    sampleWindowY =
+      sampleCenterTopY * (canvas.clientHeight / scene.drawingBufferHeight);
+  }
+
+  return Object.freeze({
+    sceneFrameNumber: scene.frameState?.frameNumber ?? 0,
+    windowX: windowPosition.x,
+    windowY: windowPosition.y,
+    sampleWindowX,
+    sampleWindowY,
+    canvasWidth: canvas.clientWidth,
+    canvasHeight: canvas.clientHeight,
+    drawingBufferWidth: scene.drawingBufferWidth,
+    drawingBufferHeight: scene.drawingBufferHeight,
+    viewportX: viewport.x,
+    viewportY: viewport.y,
+    viewportWidth: viewport.width,
+    viewportHeight: viewport.height,
+    positionX: camera.positionWC.x,
+    positionY: camera.positionWC.y,
+    positionZ: camera.positionWC.z,
+    directionX: camera.directionWC.x,
+    directionY: camera.directionWC.y,
+    directionZ: camera.directionWC.z,
+    rightX: camera.rightWC.x,
+    rightY: camera.rightWC.y,
+    rightZ: camera.rightWC.z,
+    upX: camera.upWC.x,
+    upY: camera.upWC.y,
+    upZ: camera.upWC.z,
+    perspective:
+      frustum instanceof PerspectiveFrustum ||
+      frustum instanceof PerspectiveOffCenterFrustum ||
+      (defined(frustum.aspectRatio) &&
+        defined(frustum.fov) &&
+        defined(frustum.near)),
+    fovy: frustum.fovy ?? 0.0,
+    aspectRatio: frustum.aspectRatio ?? 0.0,
+    near: frustum.near ?? 0.0,
+    far: effectiveFrustum.far ?? frustum.far ?? 0.0,
+    left: effectiveFrustum.left ?? 0.0,
+    right: effectiveFrustum.right ?? 0.0,
+    top: effectiveFrustum.top ?? 0.0,
+    bottom: effectiveFrustum.bottom ?? 0.0,
+    sceneMode: scene.mode,
+    mapMode2D: scene.mapMode2D,
+    wrapLongitude:
+      scene.mode === SceneMode.SCENE2D &&
+      scene.mapMode2D === MapMode2D.INFINITE_SCROLL,
+    maxCoordinateX: camera._maxCoord?.x ?? 0.0,
+  });
+}
+
+/**
+ * Convert a snap-payload offset from drawing-buffer pixels to the CSS/window
+ * coordinate system used by Camera.getPickRay and SceneSnapResult.
+ *
+ * @param {object} view
+ * @param {object} hit
+ * @param {Cartesian2} result
+ * @returns {Cartesian2 | undefined}
+ * @private
+ */
+function snapHitToScreenPosition(view, hit, result) {
+  if (
+    !(view.canvasWidth > 0.0) ||
+    !(view.canvasHeight > 0.0) ||
+    !(view.drawingBufferWidth > 0.0) ||
+    !(view.drawingBufferHeight > 0.0)
+  ) {
+    return undefined;
+  }
+
+  const sampleWindowX = view.sampleWindowX ?? view.windowX;
+  const sampleWindowY = view.sampleWindowY ?? view.windowY;
+  result.x =
+    sampleWindowX + hit.x * (view.canvasWidth / view.drawingBufferWidth);
+  result.y =
+    sampleWindowY + hit.y * (view.canvasHeight / view.drawingBufferHeight);
+  return result;
+}
+
+function getSnapPickRay(view, hit, result) {
+  const windowPosition = snapHitToScreenPosition(
+    view,
+    hit,
+    scratchSnapWindowPosition,
+  );
+  if (!defined(windowPosition)) {
+    return undefined;
+  }
+
+  const viewportWidth = view.viewportWidth;
+  const viewportHeight = view.viewportHeight;
+  if (!(viewportWidth > 0.0) || !(viewportHeight > 0.0)) {
+    return undefined;
+  }
+
+  // Viewports are expressed in drawing-buffer pixels with a bottom-left
+  // origin, while Scene.snap receives CSS/window pixels with a top-left
+  // origin. Convert through the frozen drawing-buffer scale before deriving
+  // NDC so non-1x DPR and non-default viewports reconstruct the same ray that
+  // produced the payload.
+  const drawingBufferX =
+    windowPosition.x * (view.drawingBufferWidth / view.canvasWidth);
+  const drawingBufferYFromTop =
+    windowPosition.y * (view.drawingBufferHeight / view.canvasHeight);
+  const drawingBufferY = view.drawingBufferHeight - drawingBufferYFromTop;
+  const frustumCoordinates = drawingBufferToFrustumCoordinates(
+    drawingBufferX,
+    drawingBufferY,
+    view.viewportX,
+    view.viewportY,
+    viewportWidth,
+    viewportHeight,
+    view.left,
+    view.right,
+    view.bottom,
+    view.top,
+    scratchSnapFrustumCoordinates,
+  );
+  const frustumX = frustumCoordinates.x;
+  const frustumY = frustumCoordinates.y;
+  const origin = result.origin;
+  const direction = result.direction;
+
+  if (view.perspective) {
+    origin.x = view.positionX;
+    origin.y = view.positionY;
+    origin.z = view.positionZ;
+
+    direction.x =
+      view.directionX * view.near +
+      view.rightX * frustumX +
+      view.upX * frustumY;
+    direction.y =
+      view.directionY * view.near +
+      view.rightY * frustumX +
+      view.upY * frustumY;
+    direction.z =
+      view.directionZ * view.near +
+      view.rightZ * frustumX +
+      view.upZ * frustumY;
+    Cartesian3.normalize(direction, direction);
+    return result;
+  }
+
+  origin.x = view.positionX + view.rightX * frustumX + view.upX * frustumY;
+  origin.y = view.positionY + view.rightY * frustumX + view.upY * frustumY;
+  origin.z = view.positionZ + view.rightZ * frustumX + view.upZ * frustumY;
+  direction.x = view.directionX;
+  direction.y = view.directionY;
+  direction.z = view.directionZ;
+
+  if (view.wrapLongitude && view.maxCoordinateX > 0.0) {
+    const period = 2.0 * view.maxCoordinateX;
+    origin.y =
+      ((((origin.y + view.maxCoordinateX) % period) + period) % period) -
+      view.maxCoordinateX;
+  }
+  return result;
+}
+
 // Unproject a snap hit's eye-space depth (channel B of the snap framebuffer,
 // written by the snap shader at the edge fragment itself) into a world
 // position.
-function snapHitToWorld(scene, windowPosition, hit) {
-  const coords = scratchSnapCoord;
-  coords.x = windowPosition.x + hit.x;
-  coords.y = windowPosition.y + hit.y;
-
-  const ray = scene.camera.getPickRay(coords, scratchSnapRay);
+function snapHitToWorld(view, hit) {
+  const ray = getSnapPickRay(view, hit, scratchSnapRay);
   if (!defined(ray)) {
     return undefined;
   }
 
   // hit.depth is perpendicular distance from the camera plane along the view
   // direction; convert to distance along the (non-axis-aligned) pick ray.
-  const cos = Cartesian3.dot(ray.direction, scene.camera.directionWC);
+  const cos =
+    ray.direction.x * view.directionX +
+    ray.direction.y * view.directionY +
+    ray.direction.z * view.directionZ;
   if (cos <= 0.0) {
     return undefined;
   }
@@ -154,12 +370,44 @@ Snapping.snap = function (scene, windowPosition, options) {
   const snapFramebuffer = defaultView.snapFramebuffer;
 
   const drawingBufferRectangle = scratchRectangle;
-  pickBegin(scene, windowPosition, drawingBufferRectangle, width, height, {
-    framebuffer: snapFramebuffer,
-    snap: true,
-  });
-  const hits = snapFramebuffer.end(drawingBufferRectangle);
-  pickEnd(scene);
+  let readback;
+  let snapError;
+  let hasSnapError = false;
+  try {
+    pickBegin(scene, windowPosition, drawingBufferRectangle, width, height, {
+      framebuffer: snapFramebuffer,
+      snap: true,
+    });
+    const currentView = captureSnapView(
+      scene,
+      windowPosition,
+      drawingBufferRectangle,
+    );
+    readback = snapFramebuffer.end(drawingBufferRectangle, currentView);
+  } catch (error) {
+    snapError = error;
+    hasSnapError = true;
+  }
+
+  // A snap mini-frame owns frame resources and pass flags even when rendering
+  // or readback setup throws. Preserve the primary failure if teardown also
+  // fails, matching Picking's exception-safe completion contract.
+  let cleanupError;
+  let hasCleanupError = false;
+  try {
+    pickEnd(scene);
+  } catch (error) {
+    cleanupError = error;
+    hasCleanupError = true;
+  }
+  if (hasSnapError) {
+    throw snapError;
+  }
+  if (hasCleanupError) {
+    throw cleanupError;
+  }
+
+  const { hits, view } = readback;
 
   if (hits.length === 0) {
     return undefined;
@@ -170,8 +418,13 @@ Snapping.snap = function (scene, windowPosition, options) {
     return undefined;
   }
 
-  const position = snapHitToWorld(scene, windowPosition, best);
+  const position = snapHitToWorld(view, best);
   if (!defined(position)) {
+    return undefined;
+  }
+
+  const screenPosition = snapHitToScreenPosition(view, best, new Cartesian2());
+  if (!defined(screenPosition)) {
     return undefined;
   }
 
@@ -179,15 +432,14 @@ Snapping.snap = function (scene, windowPosition, options) {
     object: best.object,
     isEdge: best.isEdge,
     position: position,
-    screenPosition: new Cartesian2(
-      windowPosition.x + best.x,
-      windowPosition.y + best.y,
-    ),
+    screenPosition: screenPosition,
   };
 };
 
 // Exposed for testing.
 Snapping._selectBestHit = selectBestHit;
 Snapping._snapHitToWorld = snapHitToWorld;
+Snapping._captureSnapView = captureSnapView;
+Snapping._snapHitToScreenPosition = snapHitToScreenPosition;
 
 export default Snapping;

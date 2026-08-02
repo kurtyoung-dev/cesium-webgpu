@@ -8,7 +8,7 @@ import Ellipsoid from "../Core/Ellipsoid.js";
 import IauOrientationAxes from "../Core/IauOrientationAxes.js";
 import Matrix3 from "../Core/Matrix3.js";
 import Matrix4 from "../Core/Matrix4.js";
-import Resource from "../Core/Resource.js";
+import { getSharedMoonDecodedSourceCache } from "../Core/MoonDecodedSourceCache.js";
 import Simon1994PlanetaryPositions from "../Core/Simon1994PlanetaryPositions.js";
 import Transforms from "../Core/Transforms.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
@@ -22,6 +22,105 @@ import {
 import computeLunarOppositionSurge from "./computeLunarOppositionSurge.js";
 import EllipsoidPrimitive from "./EllipsoidPrimitive.js";
 import Material from "./Material.js";
+import resolveMoonNormalMapStrength from "./resolveMoonNormalMapStrength.js";
+import {
+  canGenerateWebGLMoonMipmaps,
+  configureWebGLMoonTextureMipmaps,
+  getWebGLMoonTextureMipLevelCount,
+  webGLMoonLinearSampler,
+} from "./WebGLMoonTextureMipPolicy.js";
+import createWebGLMoonImageMaterial from "./WebGLMoonImageMaterial.js";
+import {
+  WebGLMoonTextureChannel,
+  commitWebGLMoonTextureChannel,
+  createWebGLMoonTextureLifecycle,
+  createWebGLMoonTexturePairKey,
+  getWebGLMoonTextureLifecycleDiagnostics,
+  prepareWebGLMoonUploadSource,
+  reconcileWebGLMoonTextureChannel,
+  releaseWebGLMoonUploadSource,
+  retireWebGLMoonPublishedTexture,
+  retireWebGLMoonTextureLifecycle,
+} from "./WebGLMoonTextureLifecycle.js";
+
+const moonDecodedSourceOptions = Object.freeze({
+  imageOrientation: "from-image",
+  colorSpaceConversion: "default",
+  premultiplyAlpha: "default",
+});
+
+const webGLMoonTextureRequestHooks = Object.freeze({
+  acquireSource: function (url) {
+    return getSharedMoonDecodedSourceCache().acquire(
+      url,
+      moonDecodedSourceOptions,
+    );
+  },
+  prepareSource: prepareWebGLMoonUploadSource,
+  releaseSource: releaseWebGLMoonUploadSource,
+  onError: function (error, phase, identity) {
+    //>>includeStart('debug', pragmas.debug);
+    console.warn(
+      `[Moon] ${identity.channel} texture ${phase} failed; using the current fallback:`,
+      error && error.message ? error.message : error,
+    );
+    //>>includeEnd('debug');
+  },
+});
+
+function configureWebGLMoonTextureCandidate(texture, context) {
+  try {
+    configureWebGLMoonTextureMipmaps(texture, context);
+    return texture;
+  } catch (error) {
+    // Candidate publication is transactional. Mip generation and sampler
+    // installation happen after Texture.create, so either can fail while the
+    // candidate is still unowned by the lifecycle. Retire it here without
+    // allowing a synthetic/lost-context destroy failure to mask the cause.
+    try {
+      destroyWebGLMoonTexture(texture);
+    } catch {
+      // Preserve the configuration failure.
+    }
+    throw error;
+  }
+}
+
+function createWebGLMoonTexture(source, identity) {
+  // The async preparation clone bakes in the vertical flip because WebGL
+  // ignores UNPACK_FLIP_Y_WEBGL for ImageBitmap. The no-createImageBitmap
+  // compatibility path leaves the source unflipped and requests Texture's
+  // pixel-store flip instead.
+  const texture = Texture.create({
+    context: identity.context,
+    source: source.uploadSource,
+    flipY: source.flipY,
+    preMultiplyAlpha: false,
+    skipColorSpaceConversion: false,
+    sampler: webGLMoonLinearSampler,
+  });
+  return configureWebGLMoonTextureCandidate(texture, identity.context);
+}
+
+function destroyWebGLMoonTexture(texture) {
+  if (
+    defined(texture) &&
+    typeof texture.destroy === "function" &&
+    (typeof texture.isDestroyed !== "function" || !texture.isDestroyed())
+  ) {
+    texture.destroy();
+  }
+}
+
+function destroyUnadoptedWebGLMoonAlbedo(material, texture) {
+  if (defined(texture) && material?._textures?.image !== texture) {
+    destroyWebGLMoonTexture(texture);
+  }
+}
+
+function requestRenderForWebGLMoonTextureLifecycle() {
+  return true;
+}
 
 /**
  * Draws the Moon in 3D.
@@ -118,6 +217,25 @@ class Moon {
      */
     this.normalMapStrength = options.normalMapStrength ?? 1.0;
 
+    this._webglMoonTextureLifecycle = undefined;
+    this._webglMoonTexturePairAlbedoUrl = undefined;
+    this._webglMoonTexturePairNormalUrl = undefined;
+    this._webglMoonTexturePairKey = undefined;
+    this._webglMoonAlbedoReconcileOptions = {
+      context: undefined,
+      url: undefined,
+      pairKey: undefined,
+      demanded: false,
+      hooks: webGLMoonTextureRequestHooks,
+    };
+    this._webglMoonNormalReconcileOptions = {
+      context: undefined,
+      url: undefined,
+      pairKey: undefined,
+      demanded: false,
+      hooks: webGLMoonTextureRequestHooks,
+    };
+    this._albedoMapTexture = undefined;
     this._normalMapTexture = undefined;
     this._normalMapTextureUrl = undefined;
     this._normalMapLoading = false;
@@ -133,7 +251,7 @@ class Moon {
 
     this._ellipsoidPrimitive = new EllipsoidPrimitive({
       radii: this.ellipsoid.radii,
-      material: Material.fromType(Material.ImageType),
+      material: createWebGLMoonImageMaterial(),
       depthTestEnabled: false,
       _owner: this,
     });
@@ -175,7 +293,6 @@ class Moon {
     }
 
     const ellipsoidPrimitive = this._ellipsoidPrimitive;
-    ellipsoidPrimitive.material.uniforms.image = this.textureUrl;
     ellipsoidPrimitive.onlySunLighting = this.onlySunLighting;
 
     const date = frameState.time;
@@ -386,12 +503,13 @@ class Moon {
     // whether relief is on — the failure mode where one backend is subtly
     // rougher than the other is exactly what a per-backend gate produces.
     const normalMapEnabled =
-      defined(this.normalMapUrl) &&
-      defined(lighting) &&
-      lighting.enableLunarNormalMap === true;
-    const normalMapStrength = normalMapEnabled
-      ? (this.normalMapStrength ?? 1.0)
-      : 0.0;
+      defined(lighting) && lighting.enableLunarNormalMap === true;
+    const normalMapStrength = resolveMoonNormalMapStrength(
+      this.normalMapUrl,
+      normalMapEnabled,
+      this.normalMapStrength,
+    );
+    const normalMapDemand = normalMapStrength > 0.0;
     frameState.moonNormalMapStrength = normalMapStrength;
 
     // Backend-specific path — delegate to feature renderer if available
@@ -409,14 +527,52 @@ class Moon {
         : undefined;
     }
 
-    // C12-25 — the WebGL normal-map texture. Created HERE, past the feature-
-    // renderer early-return, because this is the WebGL fallback path by
-    // construction: `new Texture` needs a WebGL context, and the WebGPU
-    // renderer does its own `copyExternalImageToTexture` upload. Keeping the
-    // load on this side of the branch is what lets Moon.js stay free of any
-    // `isWebGPU` test (CLAUDE.md backend-agnosticism rule).
-    this._updateNormalMapTexture(context, normalMapEnabled);
-    ellipsoidPrimitive.lunarNormalMap = this._normalMapTexture;
+    // C12-35 — only the WebGL fallback consumes the shared decoded-source
+    // cache here. Promise callbacks stage sources; this update synchronously
+    // realizes and publishes the WebGL textures. The Material uniform is
+    // always either a Texture or its default sentinel, never a URL, so the
+    // legacy Material loader cannot issue a duplicate request.
+    const webGLTexturesPending = this._updateWebGLMoonTextures(
+      context,
+      normalMapDemand,
+    );
+    if (
+      webGLTexturesPending &&
+      defined(frameState.afterRender) &&
+      !frameState.afterRender.includes(
+        requestRenderForWebGLMoonTextureLifecycle,
+      )
+    ) {
+      // RequestScheduler wakes WebGL after network fetch, but the shared
+      // cache may still be decoding/preparing an ImageBitmap. Keep explicit-
+      // render scenes awake only while one of the two Moon channels is
+      // pending, then stop immediately after frame-owned realization.
+      frameState.afterRender.push(requestRenderForWebGLMoonTextureLifecycle);
+    }
+
+    // C12-33 — the exact predicate that admitted each texture's mip chain
+    // also selects its explicit-gradient shader branch. Keep the channels
+    // independent so a custom NPOT normal map cannot make a legal albedo mip
+    // chain lose its seam-safe gradient sampling (or vice versa).
+    const albedoTexture = this._albedoMapTexture;
+    ellipsoidPrimitive.lunarAlbedoExplicitGradients =
+      defined(albedoTexture) &&
+      canGenerateWebGLMoonMipmaps(
+        context,
+        albedoTexture.width,
+        albedoTexture.height,
+      );
+    const normalTexture = normalMapDemand ? this._normalMapTexture : undefined;
+    ellipsoidPrimitive.lunarNormalExplicitGradients =
+      defined(normalTexture) &&
+      canGenerateWebGLMoonMipmaps(
+        context,
+        normalTexture.width,
+        normalTexture.height,
+      );
+    ellipsoidPrimitive.lunarNormalMap = normalMapDemand
+      ? this._normalMapTexture
+      : undefined;
     ellipsoidPrimitive.lunarNormalStrength = normalMapStrength;
 
     const savedCommandList = frameState.commandList;
@@ -428,76 +584,131 @@ class Moon {
   }
 
   /**
-   * Keeps `_normalMapTexture` in sync with `normalMapUrl` on the WebGL path.
-   * Idempotent per frame: a load in flight is not restarted, and a URL that
-   * already resolved is not refetched.
-   *
-   * On failure the texture stays `undefined`, which compiles the shader's
-   * `LUNAR_NORMAL_MAP` block out entirely — a missing relief map degrades to
-   * the pre-C12-25 flat moon rather than to a broken one.
+   * Reconcile both WebGL Moon texture channels against their exact
+   * owner/context/URL/pair identity, then synchronously realize any staged
+   * decoded source. Matching normal GPU state remains resident while relief
+   * is off, but the caller passes `undefined` to `lunarNormalMap` so the
+   * define and sampler disappear.
    *
    * @private
    */
-  _updateNormalMapTexture(context, enabled) {
-    const url = enabled ? this.normalMapUrl : undefined;
-
-    if (!defined(url)) {
-      // Toggled off, or switched to a variant with no relief. Release the
-      // texture so the define drops and the FS returns to byte-identical.
-      if (defined(this._normalMapTexture)) {
-        this._normalMapTexture.destroy();
-        this._normalMapTexture = undefined;
-      }
+  _updateWebGLMoonTextures(context, normalDemand) {
+    let lifecycle = this._webglMoonTextureLifecycle;
+    if (!defined(lifecycle) || lifecycle.context !== context) {
+      const retired = retireWebGLMoonTextureLifecycle(
+        lifecycle,
+        "context changed",
+      );
+      // Material owns an adopted albedo Texture. Publishing the default
+      // sentinel lets its next update destroy that old-context realization
+      // exactly once. The normal map is Moon-owned and can retire now.
+      const material = this._ellipsoidPrimitive.material;
+      const retiredAlbedo = retired.albedo ?? this._albedoMapTexture;
+      destroyUnadoptedWebGLMoonAlbedo(material, retiredAlbedo);
+      this._albedoMapTexture = undefined;
+      material.uniforms.image = Material.DefaultImageId;
+      const retiredNormal = retired.normal ?? this._normalMapTexture;
+      destroyWebGLMoonTexture(retiredNormal);
+      this._normalMapTexture = undefined;
       this._normalMapTextureUrl = undefined;
-      return;
+      lifecycle = createWebGLMoonTextureLifecycle(this, context);
     }
 
-    if (this._normalMapTextureUrl === url) {
-      return; // resolved, or a load is in flight for this exact URL
+    let pairKey = this._webglMoonTexturePairKey;
+    if (
+      this._webglMoonTexturePairAlbedoUrl !== this.textureUrl ||
+      this._webglMoonTexturePairNormalUrl !== this.normalMapUrl
+    ) {
+      this._webglMoonTexturePairAlbedoUrl = this.textureUrl;
+      this._webglMoonTexturePairNormalUrl = this.normalMapUrl;
+      pairKey = this._webglMoonTexturePairKey = createWebGLMoonTexturePairKey(
+        this.textureUrl,
+        this.normalMapUrl,
+      );
     }
-    if (this._normalMapLoading) {
-      return;
+    const albedoOptions = this._webglMoonAlbedoReconcileOptions;
+    albedoOptions.context = context;
+    albedoOptions.url = this.textureUrl;
+    albedoOptions.pairKey = pairKey;
+    albedoOptions.demanded = defined(this.textureUrl);
+    const albedoResult = reconcileWebGLMoonTextureChannel(
+      lifecycle,
+      WebGLMoonTextureChannel.ALBEDO,
+      albedoOptions,
+    );
+    if (albedoResult.retireCurrent) {
+      const retirement = retireWebGLMoonPublishedTexture(
+        lifecycle,
+        WebGLMoonTextureChannel.ALBEDO,
+      );
+      destroyUnadoptedWebGLMoonAlbedo(
+        this._ellipsoidPrimitive.material,
+        retirement.previous,
+      );
+      this._albedoMapTexture = undefined;
     }
 
-    this._normalMapLoading = true;
-    const that = this;
-    const requestedUrl = url;
-    Resource.createIfNeeded(url)
-      .fetchImage()
-      .then(function (image) {
-        that._normalMapLoading = false;
-        // The moon may have been destroyed, or the URL changed, while the
-        // image was in flight.
-        if (that.isDestroyed() || that.normalMapUrl !== requestedUrl) {
-          return;
-        }
-        if (defined(that._normalMapTexture)) {
-          that._normalMapTexture.destroy();
-        }
-        // Default sampler: LINEAR, CLAMP_TO_EDGE, and `flipY: true` — the
-        // same convention C12-24 pinned for the albedo on BOTH backends, and
-        // the same one the WebGPU normal upload passes explicitly. It has to
-        // match: the two maps share the v = asin(n.z)/PI + 0.5 unwrap, and
-        // because the green channel encodes NORTH, a v-flip would light every
-        // crater from the wrong side rather than merely misplacing it.
-        that._normalMapTexture = new Texture({
-          context: context,
-          source: image,
-        });
-        that._normalMapTextureUrl = requestedUrl;
-      })
-      .catch(function (error) {
-        that._normalMapLoading = false;
-        // Remember the failed URL so a broken path isn't refetched every
-        // frame; changing `normalMapUrl` still triggers a fresh attempt.
-        that._normalMapTextureUrl = requestedUrl;
-        //>>includeStart('debug', pragmas.debug);
-        console.warn(
-          "[Moon] normal map load failed; rendering a flat moon:",
-          error && error.message ? error.message : error,
-        );
-        //>>includeEnd('debug');
-      });
+    const normalOptions = this._webglMoonNormalReconcileOptions;
+    normalOptions.context = context;
+    normalOptions.url = this.normalMapUrl;
+    normalOptions.pairKey = pairKey;
+    normalOptions.demanded = normalDemand;
+    const normalResult = reconcileWebGLMoonTextureChannel(
+      lifecycle,
+      WebGLMoonTextureChannel.NORMAL,
+      normalOptions,
+    );
+    if (normalResult.retireCurrent) {
+      const retirement = retireWebGLMoonPublishedTexture(
+        lifecycle,
+        WebGLMoonTextureChannel.NORMAL,
+      );
+      destroyWebGLMoonTexture(retirement.previous);
+      this._normalMapTexture = undefined;
+      this._normalMapTextureUrl = undefined;
+    }
+
+    const albedoCommit = commitWebGLMoonTextureChannel(
+      lifecycle,
+      WebGLMoonTextureChannel.ALBEDO,
+      context,
+      createWebGLMoonTexture,
+      destroyWebGLMoonTexture,
+    );
+    if (albedoCommit.committed) {
+      this._albedoMapTexture = albedoCommit.value;
+      // The Material update below adopts the new Texture and destroys its
+      // previous adopted realization. Do not destroy albedoCommit.previous
+      // here: that would double-retire Material-owned state.
+      destroyUnadoptedWebGLMoonAlbedo(
+        this._ellipsoidPrimitive.material,
+        albedoCommit.previous,
+      );
+    }
+
+    const normalCommit = commitWebGLMoonTextureChannel(
+      lifecycle,
+      WebGLMoonTextureChannel.NORMAL,
+      context,
+      createWebGLMoonTexture,
+      destroyWebGLMoonTexture,
+    );
+    if (normalCommit.committed) {
+      this._normalMapTexture = normalCommit.value;
+      this._normalMapTextureUrl = normalCommit.identity.exactUrl;
+      destroyWebGLMoonTexture(normalCommit.previous);
+    }
+
+    const material = this._ellipsoidPrimitive.material;
+    material.uniforms.image = this._albedoMapTexture ?? Material.DefaultImageId;
+    this._normalMapLoading =
+      defined(lifecycle.channels.normal.request) ||
+      defined(lifecycle.channels.normal.staged);
+    return (
+      defined(lifecycle.channels.albedo.request) ||
+      defined(lifecycle.channels.albedo.staged) ||
+      this._normalMapLoading
+    );
   }
 
   /**
@@ -519,7 +730,40 @@ class Moon {
     }
     const fr = scene.context.getFeatureRenderer(FeatureRendererKey.MOON);
     if (!defined(fr) || typeof fr.getStatistics !== "function") {
-      return null;
+      const lifecycle = getWebGLMoonTextureLifecycleDiagnostics(
+        this._webglMoonTextureLifecycle,
+      );
+      if (!defined(lifecycle)) {
+        return null;
+      }
+      const albedoMipLevelCount = getWebGLMoonTextureMipLevelCount(
+        this._albedoMapTexture,
+      );
+      const normalMipLevelCount = getWebGLMoonTextureMipLevelCount(
+        this._normalMapTexture,
+      );
+      return Object.freeze({
+        backend: "webgl",
+        lifecycle,
+        sourceCache: getSharedMoonDecodedSourceCache().getDiagnostics(),
+        albedoTextureLoaded: lifecycle.albedo.realTexture,
+        moonTextureLoaded: lifecycle.albedo.realTexture,
+        moonTextureUrl: lifecycle.albedo.currentUrl,
+        moonTextureMipLevelCount: albedoMipLevelCount,
+        moonTextureMaxLod:
+          albedoMipLevelCount === null ? null : albedoMipLevelCount - 1,
+        normalTextureLoaded: lifecycle.normal.realTexture,
+        normalMapLoaded: lifecycle.normal.realTexture,
+        normalMapUrl: lifecycle.normal.currentUrl,
+        normalTextureMipLevelCount: normalMipLevelCount,
+        normalTextureMaxLod:
+          normalMipLevelCount === null ? null : normalMipLevelCount - 1,
+        normalTextureBound: defined(this._ellipsoidPrimitive?.lunarNormalMap),
+        albedoExplicitGradients:
+          this._ellipsoidPrimitive?.lunarAlbedoExplicitGradients === true,
+        normalExplicitGradients:
+          this._ellipsoidPrimitive?.lunarNormalExplicitGradients === true,
+      });
     }
     try {
       return fr.getStatistics(this);
@@ -559,12 +803,25 @@ class Moon {
    * @see Moon#isDestroyed
    */
   destroy() {
-    this._ellipsoidPrimitive =
-      this._ellipsoidPrimitive && this._ellipsoidPrimitive.destroy();
-    // C12-25 — the WebGL normal map is owned here, not by the primitive's
-    // Material, so it is released here too.
+    retireWebGLMoonTextureLifecycle(
+      this._webglMoonTextureLifecycle,
+      "owner destroyed",
+    );
+    this._webglMoonTextureLifecycle = undefined;
     this._normalMapTexture =
       this._normalMapTexture && this._normalMapTexture.destroy();
+    this._normalMapTextureUrl = undefined;
+    this._normalMapLoading = false;
+    // EllipsoidPrimitive intentionally does not own/destroy its Material.
+    // Moon does, and Material owns the adopted WebGL albedo Texture.
+    const material = this._ellipsoidPrimitive?.material;
+    destroyUnadoptedWebGLMoonAlbedo(material, this._albedoMapTexture);
+    this._albedoMapTexture = undefined;
+    if (defined(material) && !material.isDestroyed()) {
+      material.destroy();
+    }
+    this._ellipsoidPrimitive =
+      this._ellipsoidPrimitive && this._ellipsoidPrimitive.destroy();
     if (
       defined(this._featureRenderer) &&
       defined(this._featureRenderer.destroy)
@@ -624,16 +881,15 @@ const moonVariants = {
  * relief onto a 17.8 KB albedo would defeat its only reason to exist — so
  * selecting it preserves the legacy flat look exactly.
  *
- * The 2K variant's map is 1024x512 rather than 2048x1024. That is a
- * deliberate pairing, not an oversight: NEITHER backend mipmaps the moon
- * today (tracked as C12-33), so at the default camera the disc is ~16 px and
- * a 2048-wide map is sampled at ~64:1 minification off mip 0. Aliasing in a
- * NORMAL map is worse than in an albedo — it flickers the lighting rather
- * than the colour, and it does so most where the relief is meant to be read.
- * Halving the resolution halves that while still leaving ~2.7 texels/px at
- * the ~190 px zoomed disc the feature is for. `--width 2048` in
- * `Tools/moon-albedo-bake/bake-lola-normals.mjs` re-bakes the larger map in
- * one flag once C12-33 lands.
+ * The 2K variant's map remains 1024x512 until C12-33's moving-camera gate is
+ * certified. Before C12-33 neither backend generated Moon mip chains, so at
+ * the default ~16 px disc a 2048-wide normal map would have paid ~64:1
+ * minification from mip 0 and visibly shimmered the lighting. The runtime now
+ * generates complete chains and supplies seam-correct explicit gradients on
+ * both backends; the smaller map is retained as the accepted baseline until
+ * the close/seam/limb/minified motion probe proves that behavior in real Edge.
+ * `--width 2048` in `Tools/moon-albedo-bake/bake-lola-normals.mjs` performs
+ * the optional higher-resolution re-bake only after that gate passes.
  */
 const moonNormalMapVariants = {
   [Moon.Variant.SMALL]: undefined,
@@ -713,3 +969,4 @@ const scratchMoonToCamera = new Cartesian3();
 const scratchCommandList = [];
 
 export default Moon;
+export { configureWebGLMoonTextureCandidate };

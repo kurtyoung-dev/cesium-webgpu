@@ -256,6 +256,19 @@ class EllipsoidPrimitive {
     this.lunarNormalStrength = 1.0;
 
     /**
+     * Moon-only C12-33 sampling gates. Each channel is enabled only when the
+     * same capability predicate that generated its mip chain succeeds.
+     * Defaults remain false so generic EllipsoidPrimitive materials preserve
+     * their historical shader and translucent front/back behavior.
+     * @type {boolean}
+     * @private
+     */
+    this.lunarAlbedoExplicitGradients = false;
+    this._lunarAlbedoExplicitGradients = false;
+    this.lunarNormalExplicitGradients = false;
+    this._lunarNormalExplicitGradients = false;
+
+    /**
      * @private
      */
     this._depthTestEnabled = options.depthTestEnabled ?? true;
@@ -268,6 +281,15 @@ class EllipsoidPrimitive {
 
     this._pickSP = undefined;
     this._pickId = undefined;
+    // Pick programs are prepared only on pick passes. Keep their compile-time
+    // state independent from the color program's per-update dirty flags so a
+    // texture/capability transition during an ordinary render cannot be
+    // consumed before the next pick has rebuilt its own shader.
+    this._pickMaterial = undefined;
+    this._pickOnlySunLighting = undefined;
+    this._pickTranslucent = undefined;
+    this._pickUseLogDepth = undefined;
+    this._pickLunarAlbedoExplicitGradients = undefined;
 
     this._colorCommand = new DrawCommand({
       owner: options._owner ?? this,
@@ -465,6 +487,23 @@ class EllipsoidPrimitive {
       lunarNormalMapEnabled !== this._lunarNormalMapEnabled;
     this._lunarNormalMapEnabled = lunarNormalMapEnabled;
 
+    const lunarAlbedoExplicitGradientsEnabled =
+      this.lunarAlbedoExplicitGradients === true;
+    const lunarAlbedoExplicitGradientsChanged =
+      lunarAlbedoExplicitGradientsEnabled !==
+      this._lunarAlbedoExplicitGradients;
+    this._lunarAlbedoExplicitGradients = lunarAlbedoExplicitGradientsEnabled;
+
+    const lunarNormalExplicitGradientsEnabled =
+      this.lunarNormalExplicitGradients === true;
+    const lunarNormalExplicitGradientsChanged =
+      lunarNormalExplicitGradientsEnabled !==
+      this._lunarNormalExplicitGradients;
+    this._lunarNormalExplicitGradients = lunarNormalExplicitGradientsEnabled;
+    const lunarExplicitGradientsEnabled =
+      lunarAlbedoExplicitGradientsEnabled ||
+      lunarNormalExplicitGradientsEnabled;
+
     const useLogDepth = frameState.useLogDepth;
     const useLogDepthChanged = this._useLogDepth !== useLogDepth;
     this._useLogDepth = useLogDepth;
@@ -482,7 +521,9 @@ class EllipsoidPrimitive {
       atmosphereInscatterChanged ||
       lunarBRDFChanged ||
       oppositionSurgeChanged ||
-      lunarNormalMapChanged
+      lunarNormalMapChanged ||
+      lunarAlbedoExplicitGradientsChanged ||
+      lunarNormalExplicitGradientsChanged
     ) {
       vs = new ShaderSource({
         sources: [EllipsoidVS],
@@ -507,6 +548,15 @@ class EllipsoidPrimitive {
       }
       if (lunarNormalMapEnabled) {
         fs.defines.push("LUNAR_NORMAL_MAP");
+      }
+      if (lunarExplicitGradientsEnabled) {
+        fs.defines.push("LUNAR_EXPLICIT_GRADIENTS");
+      }
+      if (lunarAlbedoExplicitGradientsEnabled) {
+        fs.defines.push("LUNAR_ALBEDO_EXPLICIT_GRADIENTS");
+      }
+      if (lunarNormalExplicitGradientsEnabled) {
+        fs.defines.push("LUNAR_NORMAL_EXPLICIT_GRADIENTS");
       }
       if (!translucent && context.fragmentDepth) {
         fs.defines.push("WRITE_DEPTH");
@@ -561,12 +611,14 @@ class EllipsoidPrimitive {
         );
       }
 
-      if (
-        materialChanged ||
-        lightingChanged ||
-        !defined(this._pickSP) ||
-        useLogDepthChanged
-      ) {
+      const pickShaderChanged =
+        this._pickMaterial !== this.material ||
+        this._pickOnlySunLighting !== this.onlySunLighting ||
+        this._pickTranslucent !== translucent ||
+        this._pickUseLogDepth !== useLogDepth ||
+        this._pickLunarAlbedoExplicitGradients !==
+          lunarAlbedoExplicitGradientsEnabled;
+      if (!defined(this._pickSP) || pickShaderChanged) {
         vs = new ShaderSource({
           sources: [EllipsoidVS],
         });
@@ -576,6 +628,10 @@ class EllipsoidPrimitive {
         });
         if (this.onlySunLighting) {
           fs.defines.push("ONLY_SUN_LIGHTING");
+        }
+        if (lunarAlbedoExplicitGradientsEnabled) {
+          fs.defines.push("LUNAR_EXPLICIT_GRADIENTS");
+          fs.defines.push("LUNAR_ALBEDO_EXPLICIT_GRADIENTS");
         }
         if (!translucent && context.fragmentDepth) {
           fs.defines.push("WRITE_DEPTH");
@@ -592,6 +648,16 @@ class EllipsoidPrimitive {
           fragmentShaderSource: fs,
           attributeLocations: attributeLocations,
         });
+
+        // Publish the pick-program key only after replacement succeeds. A
+        // compile failure must leave the transition dirty so a later pick can
+        // retry instead of treating the stale program as current.
+        this._pickMaterial = this.material;
+        this._pickOnlySunLighting = this.onlySunLighting;
+        this._pickTranslucent = translucent;
+        this._pickUseLogDepth = useLogDepth;
+        this._pickLunarAlbedoExplicitGradients =
+          lunarAlbedoExplicitGradientsEnabled;
 
         pickCommand.vertexArray = this._va;
         pickCommand.renderState = this._rs;

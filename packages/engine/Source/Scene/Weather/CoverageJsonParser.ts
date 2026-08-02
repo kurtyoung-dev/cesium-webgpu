@@ -71,6 +71,90 @@ const clamp01 = (v: number): number => (v < 0 ? 0 : v > 1 ? 1 : v);
 /** Degrees -> radians. Written so `+-180` and `+-90` land on exact `+-PI`/`+-PI/2`. */
 const toRadians = (deg: number): number => (deg * Math.PI) / 180.0;
 
+const FULL_LONGITUDE_DEGREES = 360.0;
+const HALF_LONGITUDE_DEGREES = 180.0;
+const LONGITUDE_EPSILON_DEGREES = 1e-6;
+
+interface UnwrappedLongitudeAxis {
+  /** Axis coordinates on one continuous longitude branch, in source order. */
+  values: number[];
+  /** True when at least one adjacent pair crossed the +-180-degree seam. */
+  crossedSeam: boolean;
+}
+
+/**
+ * Put a cyclic CRS84 longitude axis on one continuous branch.
+ *
+ * CoverageJSON keeps each coordinate in the conventional wrapped domain, so an
+ * eastward axis can read `170, 175, 180, -175, -170`. Comparing those raw values
+ * says the axis is descending and taking raw min/max says it spans 355 degrees.
+ * Both conclusions are wrong. Resolve each seam jump to its adjacent equivalent
+ * before either orientation or bounds are derived.
+ *
+ * Exact full-circle jumps (`-180 -> 180`, `0 -> 360`) are deliberately retained.
+ * They are valid global two-node axes, not zero-width regional axes.
+ */
+function unwrapLongitudeAxis(xs: number[]): UnwrappedLongitudeAxis | null {
+  if (xs.length === 0 || !Number.isFinite(xs[0])) {
+    return null;
+  }
+
+  let rawWest = xs[0];
+  let rawEast = xs[0];
+  for (let i = 1; i < xs.length; i++) {
+    const value = xs[i];
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    rawWest = Math.min(rawWest, value);
+    rawEast = Math.max(rawEast, value);
+  }
+  if (rawEast - rawWest >= FULL_LONGITUDE_DEGREES - LONGITUDE_EPSILON_DEGREES) {
+    // The raw coordinates already prove this is a complete (or invalidly wider)
+    // longitude domain. Preserve it exactly; taking the shortest adjacent arc
+    // could collapse a coarse `0, 270, 360` global axis into a regional wedge.
+    return { values: xs.slice(), crossedSeam: false };
+  }
+
+  const values = new Array<number>(xs.length);
+  values[0] = xs[0];
+  let crossedSeam = false;
+  for (let i = 1; i < xs.length; i++) {
+    const current = xs[i];
+    const previous = xs[i - 1];
+    if (!Number.isFinite(current) || !Number.isFinite(previous)) {
+      return null;
+    }
+
+    let delta = current - previous;
+    if (
+      delta > HALF_LONGITUDE_DEGREES &&
+      delta < FULL_LONGITUDE_DEGREES - LONGITUDE_EPSILON_DEGREES
+    ) {
+      delta -= FULL_LONGITUDE_DEGREES;
+      crossedSeam = true;
+    } else if (
+      delta < -HALF_LONGITUDE_DEGREES &&
+      delta > -FULL_LONGITUDE_DEGREES + LONGITUDE_EPSILON_DEGREES
+    ) {
+      delta += FULL_LONGITUDE_DEGREES;
+      crossedSeam = true;
+    }
+    values[i] = values[i - 1] + delta;
+  }
+  return { values, crossedSeam };
+}
+
+/** Canonical branch for a regional interval that crossed the longitude seam. */
+function canonicalWrappedWest(west: number): number {
+  const wrapped =
+    ((((west + HALF_LONGITUDE_DEGREES) % FULL_LONGITUDE_DEGREES) +
+      FULL_LONGITUDE_DEGREES) %
+      FULL_LONGITUDE_DEGREES) -
+    HALF_LONGITUDE_DEGREES;
+  return Object.is(wrapped, -0) ? 0 : wrapped;
+}
+
 /**
  * Derive the field's true bounds from the coverage's own axis values (C13-08).
  *
@@ -84,7 +168,11 @@ const toRadians = (deg: number): number => (deg * Math.PI) / 180.0;
  * +-180 (e.g. `170 .. 190`); that is preserved, and `weatherFieldLonSpan` reads
  * it correctly as a 20-degree window.
  */
-function boundsFromAxes(xs: number[], ys: number[]): WeatherBounds | null {
+function boundsFromAxes(
+  longitudeAxis: UnwrappedLongitudeAxis,
+  ys: number[],
+): WeatherBounds | null {
+  const xs = longitudeAxis.values;
   if (xs.length < 2 || ys.length < 2) {
     return null;
   }
@@ -111,6 +199,18 @@ function boundsFromAxes(xs: number[], ys: number[]): WeatherBounds | null {
   }
   if (east - west > 360 + 1e-6 || south < -90 - 1e-6 || north > 90 + 1e-6) {
     return null;
+  }
+  // A descending seam-crossing axis unwraps onto the neighbouring negative
+  // branch (for example -170 .. -190). Rebase only seam-crossing REGIONAL axes
+  // so forward and reverse encodings derive the same 170 .. 190 rectangle.
+  // Ordinary and global axes retain their historical numeric bounds exactly.
+  if (
+    longitudeAxis.crossedSeam &&
+    east - west < FULL_LONGITUDE_DEGREES - LONGITUDE_EPSILON_DEGREES
+  ) {
+    const span = east - west;
+    west = canonicalWrappedWest(west);
+    east = west + span;
   }
   return {
     west: toRadians(west),
@@ -161,6 +261,7 @@ export function parseCoverageJson(
   if (!xs || !ys || xs.length === 0 || ys.length === 0) {
     throw new Error("CoverageJSON: missing x/y axis values");
   }
+  const longitudeAxis = unwrapLongitudeAxis(xs);
   const ranges = cov.ranges;
   const range =
     (opt.parameterName ? ranges?.[opt.parameterName] : undefined) ??
@@ -176,7 +277,11 @@ export function parseCoverageJson(
   }
   // Orient so row 0 = north (lat descending), col 0 = west (lon ascending).
   const yDescending = ys[0] > ys[ys.length - 1];
-  const xAscending = xs[0] < xs[xs.length - 1];
+  const xAscending =
+    longitudeAxis !== null
+      ? longitudeAxis.values[0] <
+        longitudeAxis.values[longitudeAxis.values.length - 1]
+      : xs[0] < xs[xs.length - 1];
   const norm = opt.units === "fraction" ? 1 : 1 / 100;
   const coverage = new Float32Array(gw * gh);
   for (let oy = 0; oy < gh; oy++) {
@@ -195,7 +300,9 @@ export function parseCoverageJson(
     gridWidth: gw,
     gridHeight: gh,
     coverage,
-    bounds: boundsFromAxes(xs, ys) ?? opt.bounds,
+    bounds:
+      (longitudeAxis !== null ? boundsFromAxes(longitudeAxis, ys) : null) ??
+      opt.bounds,
     registration: "node",
     source: opt.source,
     attribution: opt.attribution,

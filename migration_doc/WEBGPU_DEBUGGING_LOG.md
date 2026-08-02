@@ -69,6 +69,29 @@ The committed `/mock-edr` and `/mock-wcs` fixtures are asserted to still derive 
 rectangle, which is what keeps those probes unchanged. GPU-side acceptance (regional placement
 pixel gate) is the orchestrator checklist in the Campaign 13 queue and is NOT claimed here.
 
+**2026-08-02 promotion-audit correction.** The later Batch-806 regional-placement
+lane and the retained `probe-weather-regional-tails.mjs` Edge run are green; the
+latter rendered a real cyclic CoverageJSON field continuously across both sides
+of the antimeridian, retained procedural fill at the far view, preserved
+non-vacuous WebGL billboards byte-for-byte, and reported zero WebGL volumetric
+publications or browser/device errors. Its ten PNGs were reviewed and remain
+valid evidence for that node-registered fixture.
+
+The independent promotion audit found a separate defect in the declared
+cell-registration alternative: `WeatherTexPacker.resolveTaps` clamped integer
+indices but retained negative continuous `tx`/`ty` at west/north outer
+half-cells. That extrapolated a regional ramp (first west texel byte 6 instead
+of clamp-to-edge byte 64) and could give a diagonally-opposite observation a
+positive weight through a north-west no-data corner. The fix clamps continuous
+`fx`/`fy` before deriving non-wrapped indices/fractions while leaving wrapped X
+unchanged. The bounds twin is now 31/31 with W/E/N/S and diagonal no-data edge
+guards; cyclic parser + bounds is 38/38.
+
+This does **not** promote `C13-08` or Gate B. Five global
+ingest/source/channel/time probes, the seam/poles probe, and the intended METAR
+behaviour probe have no post-Batch-797 evidence. They must rerun after the
+packer correction, along with the regional-tail lane, before COMPLETE review.
+
 **Files modified.** `Scene/Weather/WeatherFieldGrid.ts` (new), `WeatherTexPacker.ts`,
 `WeatherTypes.ts`, `WeatherProvider.ts`, `CoverageJsonParser.ts`, `MetarWeatherSource.ts`,
 `SyntheticWeatherSource.ts`, `WeatherMapSeam.ts`, `scripts/build.js`,
@@ -16177,4 +16200,29 @@ file; and the REAL `publishLogDepthEncodeNearFar` executed end-to-end into the
 REAL packer so a one-sided rename of the contract field fails the pairing.
 Machine lane (orchestrator): re-run `probe-logdepth-zfight.mjs` expecting
 check (2) ratio ≥ 0.9 with checks (1)/(3)/(4)/(5) green.
+
+**Post-Batch-818 authoritative correction (2026-08-02 Codex):** the claimed
+multi-primitive residual above was an instrument false positive, not causal
+proof of the live-frustum packer defect and not a second renderer mechanism.
+The probe inherited online world terrain, so a slab only +5 m above the
+ellipsoid could legitimately lie below the real surface (or no globe rendered
+when Ion was blocked). It also expected a -3000 m primitive to be
+terrain-occluded while leaving `globe.depthTestAgainstTerrain` at its default
+`false`; that policy deliberately clears globe depth before opaque primitives
+and substitutes the depth plane, whose contract is backface/horizon rejection,
+not front-side terrain occlusion.
+
+The corrected probe uses `offline=true`, an explicit
+`EllipsoidTerrainProvider`, `depthTestAgainstTerrain=true`, and asserts
+`clearGlobeDepth=false`. It passes after a full build: foreground ON/OFF =
+44,813/44,983 = 0.996, below-ground pixels = 0, zero errors. The green-only
+ratio is 0.974 because 1,017 colocated magenta reference pixels overwrite green,
+so the gate now counts their union. Diagnostic D1/D2 also prove the two
+`matColorFlat` tails at floats 40-43 and all 19 globe tails at floats 140-143
+are bit-identical in the accepted frame, with distinct primitive resources and
+ordinary same-frustum/pass membership. Independent shader audit found
+byte-equivalent log math, clip-z clamp, depth format, write enable, and
+`less-equal` state. **Disposition:** keep the Batch 816 stash-first contract fix
+and its mutation guard, close the alleged second mechanism, and make no WGSL or
+depth-policy change.
 

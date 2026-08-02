@@ -119,13 +119,22 @@ function resolveTaps(
     x0 = wrapGridIndex(ix, gw);
     x1 = wrapGridIndex(ix + 1, gw);
   } else {
-    x0 = Math.max(0, Math.min(gw - 1, Math.floor(fx)));
+    // A cell-registered field maps its outer half-cells to coordinates in
+    // [-0.5, 0) and (count-1, count-0.5]. Clamp the CONTINUOUS coordinate,
+    // not only the integer index: retaining a negative fraction extrapolates
+    // past the west edge and can give a diagonally-opposite observation a
+    // positive bilinear weight at the north-west no-data corner.
+    const clampedFx = Math.max(0, Math.min(gw - 1, fx));
+    x0 = Math.floor(clampedFx);
     x1 = Math.min(gw - 1, x0 + 1);
-    tx = fx - x0;
+    tx = clampedFx - x0;
   }
-  const y0 = Math.max(0, Math.min(gh - 1, Math.floor(fy)));
+  // Latitude never wraps, so its outer half-cells always clamp. As above, the
+  // fractional coordinate must clamp with the indices to avoid extrapolation.
+  const clampedFy = Math.max(0, Math.min(gh - 1, fy));
+  const y0 = Math.floor(clampedFy);
   const y1 = Math.min(gh - 1, y0 + 1);
-  const ty = fy - y0;
+  const ty = clampedFy - y0;
 
   taps.i00 = y0 * gw + x0;
   taps.i10 = y0 * gw + x1;

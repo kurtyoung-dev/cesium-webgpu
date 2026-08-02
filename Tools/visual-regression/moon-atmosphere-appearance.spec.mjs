@@ -183,7 +183,7 @@ test("WGSL: additive inscatter in the final composite", () => {
   assert.match(wgslCode, /inscatter\s*:\s*vec3<f32>/);
   assert.match(
     wgslCode,
-    /mixed\.rgb \* u\.extinction \+ u\.inscatter/,
+    /hitColor\.rgb \* u\.extinction \+ u\.inscatter/,
     "disc = disc × extinction + inscatter",
   );
 });

@@ -308,6 +308,7 @@ interface PooledDevice {
    */
   originalOptions: DeviceAcquisitionOptions;
   isLost: boolean;
+  isIntentionallyDestroyed: boolean;
   lostReason?: string;
 }
 
@@ -607,6 +608,7 @@ export class WebGPUDevicePool {
         // browser destroyed it before the lost event fired and a
         // double-destroy throws on some implementations.
         if (!this._primaryDevice.isLost) {
+          this._primaryDevice.isIntentionallyDestroyed = true;
           this._primaryDevice.device.destroy();
         }
         this._primaryDevice = null;
@@ -620,6 +622,7 @@ export class WebGPUDevicePool {
       this._additionalDevices[idx].refCount--;
       if (this._additionalDevices[idx].refCount <= 0) {
         if (!this._additionalDevices[idx].isLost) {
+          this._additionalDevices[idx].isIntentionallyDestroyed = true;
           this._additionalDevices[idx].device.destroy();
         }
         this._additionalDevices.splice(idx, 1);
@@ -839,6 +842,7 @@ export class WebGPUDevicePool {
       // the already-consumed prefetch promise (T-06-f).
       originalOptions: { ...opts, prefetchedAdapter: undefined },
       isLost: false,
+      isIntentionallyDestroyed: false,
     };
 
     // Listen for device loss. Audit fix #3 (Batch 135) — clear the
@@ -852,9 +856,11 @@ export class WebGPUDevicePool {
     device.lost.then((info) => {
       pooled.isLost = true;
       pooled.lostReason = info.message;
-      console.error(
-        `[CesiumJS:WebGPUDevicePool] Device lost: ${info.reason} — ${info.message}`,
-      );
+      if (!pooled.isIntentionallyDestroyed) {
+        console.error(
+          `[CesiumJS:WebGPUDevicePool] Device lost: ${info.reason} — ${info.message}`,
+        );
+      }
       if (this._primaryDevice === pooled) {
         this._primaryDevice = null;
       } else {
@@ -885,12 +891,14 @@ export class WebGPUDevicePool {
   destroyAll(): void {
     if (this._primaryDevice) {
       if (!this._primaryDevice.isLost) {
+        this._primaryDevice.isIntentionallyDestroyed = true;
         this._primaryDevice.device.destroy();
       }
       this._primaryDevice = null;
     }
     for (const d of this._additionalDevices) {
       if (!d.isLost) {
+        d.isIntentionallyDestroyed = true;
         d.device.destroy();
       }
     }

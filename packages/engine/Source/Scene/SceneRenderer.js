@@ -94,13 +94,23 @@ function executeCommand(command, scene, passState, debugFramebuffer) {
   if (passes.pick || passes.depth) {
     if (passes.pick && !passes.depth) {
       if (frameState.passes.snap) {
-        // Snapping pass: only commands with a snap variant write the float
-        // snap payload. Commands without one (no snapId, e.g. globe/terrain)
-        // execute depth-only so they still occlude snappable geometry behind
-        // them without polluting the RGBA32F snap framebuffer with RGBA8
-        // pick colors.
-        if (defined(command.derivedCommands.snapping)) {
+        // Depth is cleared between far-to-near frustum slices while payload
+        // color is preserved. A snapless winner must therefore write a zero
+        // payload as well as depth, or a farther snap target survives through
+        // nearer terrain. The occluder variant preserves the existing
+        // depth-only shader's discard/log-depth semantics and changes only its
+        // color write. Ordinary pick/depth passes never select this variant.
+        if (
+          defined(command.snapId) &&
+          defined(command.derivedCommands.snapping)
+        ) {
           command = command.derivedCommands.snapping.snapCommand;
+          command.execute(context, passState);
+        } else if (
+          !defined(command.snapId) &&
+          defined(command.derivedCommands.snappingOccluder?.occluderCommand)
+        ) {
+          command = command.derivedCommands.snappingOccluder.occluderCommand;
           command.execute(context, passState);
         } else if (defined(command.derivedCommands.depth)) {
           command = command.derivedCommands.depth.depthOnlyCommand;

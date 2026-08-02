@@ -40,6 +40,59 @@ describe("Renderer/WebGPU/WebGPUTexture", function () {
     expect(typeof WebGPUTexture.premultiplyAlpha).toBe("function");
   });
 
+  it("stays logically destroyed when native destruction throws", function () {
+    const nativeError = new Error("synthetic native texture destroy failure");
+    const native = {
+      destroy: jasmine.createSpy("destroy").and.throwError(nativeError),
+    };
+    const texture = Object.create(WebGPUTexture.prototype);
+    texture._texture = native;
+    texture._view = {};
+    texture._sampler = {};
+    texture._beforeDestroy = null;
+    texture._isDestroyed = false;
+
+    expect(function () {
+      texture.destroy();
+    }).toThrow(nativeError);
+    expect(texture.isDestroyed).toBe(true);
+    expect(texture._view).toBeNull();
+    expect(texture._sampler).toBeNull();
+
+    texture.destroy();
+    expect(native.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes binding-view intent only when the caller or factory knows it", function () {
+    const descriptors = [];
+    const native = { destroy: function () {} };
+    const fakeDevice = {
+      createTexture: function (descriptor) {
+        descriptors.push(descriptor);
+        return native;
+      },
+    };
+    const genericArray = WebGPUTexture.create({
+      device: fakeDevice,
+      width: 4,
+      height: 4,
+      depth: 4,
+      dimension: "2d",
+      format: "rgba8unorm",
+    });
+    const cube = WebGPUTexture.createCubeMap(fakeDevice, 4);
+
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        descriptors[0],
+        "textureBindingViewDimension",
+      ),
+    ).toBe(false);
+    expect(descriptors[1].textureBindingViewDimension).toBe("cube");
+    genericArray.destroy();
+    cube.destroy();
+  });
+
   describe("static utilities", function () {
     it("reports bytes per pixel for common formats", function () {
       expect(WebGPUTexture.getBytesPerPixel("rgba8unorm")).toEqual(4);

@@ -22,8 +22,8 @@
 // pass at DRAW time, not at pipeline creation: a format drift between (2) and
 // (3) does not throw when the pipeline is built — it invalidates the entire snap
 // command buffer at the first draw, which is the FORK-34 failure shape (every
-// query silently returns nothing). And a channel-order drift between (1) and (3)
-// produces plausible-looking numbers: a pick key read out of the depth channel
+// query silently returns nothing). And a word-layout drift between (1) and (3)
+// produces plausible-looking numbers: a pick key read out of the depth word
 // still resolves to *some* registry slot often enough to look like a flaky bug
 // rather than a wiring error.
 //
@@ -34,23 +34,23 @@
 //
 // WHAT IT PINS
 // ------------
-//   A. ENCODING — the WGSL writer and the GLSL original agree channel for
-//      channel, including the uint32 repack helper's exact byte math. Asserted
-//      against upstream's own `PickingPipelineStage.snapIdFromPickId` and
-//      `DerivedCommand.snapHelperSource` rather than against a restatement, so
-//      the two cannot drift apart. A5 additionally NAGA-VALIDATES the composed
+//   A. ENCODING — the WGSL writer preserves the GLSL original's decoded
+//      key/edge/depth semantics while packing them into two exact uint32 words.
+//      The uint32 repack helper is asserted against upstream's own
+//      `PickingPipelineStage.snapIdFromPickId` and `DerivedCommand` source. A5
+//      additionally NAGA-VALIDATES the composed
 //      module (clustered-lighting chunk + shader, preprocessed) in both
 //      pick-fleet log states — the only device-free proof that the new fragment
 //      entry actually compiles.
 //   B. DECODE — `decodeSnapHits` walks upstream's outward spiral, in upstream's
-//      order, and lifts isEdge/depth out of the channels the writer wrote them
+//      order, and lifts isEdge/depth out of the words the writer wrote them
 //      into. Driven live with synthetic payloads and a stub registry.
 //   C. READBACK GEOMETRY — `unpackSnapPixels` strips the 256-byte row padding
 //      and zero-fills the part of a query that lies outside the attachment, so
 //      an edge-of-canvas snap keeps the cursor at the spiral's center instead of
 //      shifting the whole query inward.
 //   D. FORMAT AGREEMENT — the pipeline target and the framebuffer attachment
-//      both read the SAME constant, and that constant is a 32-bit float format.
+//      both read the SAME constant, and that constant is exact `rg32uint`.
 //      Includes a MUTATION check: break the agreement in a source copy and the
 //      assertion must fail, or the clean result is unfalsifiable.
 //   E. TARGET LIFECYCLE — three attachments (occluder / payload / depth), only
@@ -66,9 +66,10 @@
 //   G. PASS ROUTING — the payload phase dispatches ONLY resolved snap variants;
 //      a command without one is skipped rather than falling through to its pick
 //      or base command (whose pipeline targets an incompatible attachment). The
-//      occluder phase keeps selecting ordinary pick variants, which is what
-//      writes the depth the payload phase tests against — WebGPU's realization
-//      of upstream's depth-only fallback for snapless commands.
+//      occluder phase keeps selecting ordinary pick variants, which write the
+//      depth the payload phase tests against. Before a nearer payload phase,
+//      one query-scissored zero draw uses that depth to erase any stale farther
+//      payload where the nearer winner is snapless.
 //   H. SCENE DISPATCH — `Scene.snap` reaches the WebGPU path through the
 //      backend-agnostic context factory (CLAUDE.md §2), not an `isWebGPU`
 //      branch, and `passes.snap` is plumbed to both the model renderer and the
@@ -107,9 +108,14 @@ const {
   SNAP_PAYLOAD_FORMAT,
   SNAP_CHANNELS,
   SNAP_BYTES_PER_PIXEL,
+  SNAP_DEPTH_BITS,
+  SNAP_EDGE_BIT,
   COPY_BYTES_PER_ROW_ALIGNMENT,
   alignedSnapBytesPerRow,
   decodeSnapHits,
+  packSnapDepthAndEdge,
+  unpackSnapDepth,
+  unpackSnapIsEdge,
   unpackSnapPixels,
 } = await import(
   pathToFileURL(resolve(engineWebGPU, "WebGPUSnapPayload.ts")).href
@@ -139,6 +145,7 @@ const pickHelpersSrc = read(
 );
 const webgpuContextSrc = read(resolve(engineWebGPU, "WebGPUContext.ts"));
 const graphicsContextSrc = read(resolve(engineRenderer, "GraphicsContext.ts"));
+const pickingSrc = read(resolve(engineScene, "Picking.js"));
 const snappingSrc = read(resolve(engineScene, "Snapping.js"));
 const snapFramebufferJsSrc = read(resolve(engineScene, "SnapFramebuffer.js"));
 const derivedCommandSrc = read(resolve(engineScene, "DerivedCommand.js"));
@@ -205,7 +212,7 @@ function wgslBlock(source, header) {
 
 // ─── A. ENCODING ─────────────────────────────────────────────────────────────
 
-test("A1: the WGSL snap payload matches upstream's GLSL snapId channel for channel", () => {
+test("A1: the WGSL snap payload preserves upstream semantics in two exact words", () => {
   // Upstream's authority, read out of its own source rather than restated.
   const glslMatch = pickingStageSrc.match(
     /function snapIdFromPickId\(pickId\) \{\s*return `([^`]+)`;/,
@@ -219,18 +226,19 @@ test("A1: the WGSL snap payload matches upstream's GLSL snapId channel for chann
   );
 
   const wgsl = squash(wgslBlock(modelWgsl, "fn makeModelSnapOut("));
-  // R: the repacked pick key, widened to f32 exactly as the GLSL vec4
-  // constructor implicitly widens its uint.
+  // R: the repacked pick key stays uint32 rather than losing high bits through
+  // upstream WebGL's implicit uint-to-f32 conversion.
   assert.match(
     wgsl,
-    /out\.payload = vec4<f32>\( f32\(rgba8UnormToUint32\(pickColor\)\),/,
+    /out\.payload = vec2<u32>\( rgba8UnormToUint32\(pickColor\),/,
   );
-  // G: the isEdge flag, 0.0 / 1.0.
-  assert.match(wgsl, /select\(0\.0, 1\.0, isEdge\),/);
-  // B: linear eye-space depth in meters, negated exactly like -v_positionEC.z.
-  assert.match(wgsl, /-positionEC\.z,/);
-  // A: unused.
-  assert.match(wgsl, /-positionEC\.z, 0\.0, \);/);
+  // G: the exact positive f32 eye-depth bits, with only the otherwise-clear
+  // sign bit used for isEdge.
+  assert.match(
+    wgsl,
+    /let depthBits = bitcast<u32>\(-positionEC\.z\) & 0x7fffffffu;/,
+  );
+  assert.match(wgsl, /depthBits \| select\(0u, 0x80000000u, isEdge\),/);
 });
 
 test("A2: the WGSL uint32 repack helper reproduces the GLSL helper's byte math", () => {
@@ -290,7 +298,7 @@ test("A4: the snap fragment output carries log frag_depth on the same axis as th
   // The payload pass shares the pick mini-frame's depth attachment, so the snap
   // entry must write the SAME encoding fragmentPickMain writes or the
   // less-equal test against the occluder phase's depth is incoherent.
-  assert.match(snapStruct, /@location\(0\) payload: vec4<f32>,/);
+  assert.match(snapStruct, /@location\(0\) payload: vec2<u32>,/);
   assert.match(
     snapStruct,
     /\/\/>>ifdef LOG_DEPTH\s*@builtin\(frag_depth\) depth: f32,\s*\/\/>>endif/,
@@ -364,17 +372,15 @@ test("A5: the composed model shader still validates under naga in both log state
 
 // ─── B. DECODE ───────────────────────────────────────────────────────────────
 
-/** Build a w×h RGBA32F payload; `write(x, y)` returns [key, isEdge, depth]. */
+/** Build a w×h RG32Uint payload; `write(x, y)` returns [key, isEdge, depth]. */
 function buildPayload(width, height, write) {
-  const pixels = new Float32Array(width * height * SNAP_CHANNELS);
+  const pixels = new Uint32Array(width * height * SNAP_CHANNELS);
   for (let row = 0; row < height; row++) {
     for (let col = 0; col < width; col++) {
       const [key, isEdge, depth] = write(col, row) ?? [0, 0, 0];
       const i = SNAP_CHANNELS * (row * width + col);
-      pixels[i] = key;
-      pixels[i + 1] = isEdge;
-      pixels[i + 2] = depth;
-      pixels[i + 3] = 0;
+      pixels[i] = key >>> 0;
+      pixels[i + 1] = packSnapDepthAndEdge(depth, isEdge !== 0);
     }
   }
   return pixels;
@@ -396,7 +402,7 @@ function registryStub() {
   };
 }
 
-test("B1: decodeSnapHits lifts key, isEdge, and depth out of the written channels", () => {
+test("B1: decodeSnapHits lifts key, isEdge, and depth out of the written words", () => {
   // 3x3; the center pixel (row 1, col 1) is an edge at 42 m carrying key 7.
   const pixels = buildPayload(3, 3, (x, y) =>
     x === 1 && y === 1 ? [7, 1, 42] : [0, 0, 0],
@@ -410,7 +416,7 @@ test("B1: decodeSnapHits lifts key, isEdge, and depth out of the written channel
   assert.equal(hits[0].y, 0);
 });
 
-test("B2: isEdge is false for a zero G channel and true for any positive value", () => {
+test("B2: the packed sign bit carries edge without changing depth", () => {
   const surface = buildPayload(1, 1, () => [3, 0, 10]);
   const edge = buildPayload(1, 1, () => [3, 1, 10]);
   assert.equal(decodeSnapHits(registryStub(), surface, 1, 1)[0].isEdge, false);
@@ -463,44 +469,64 @@ test("B3: decodeSnapHits walks upstream's outward spiral in upstream's order", (
   assert.deepEqual(expected[0], [0, 0], "the spiral must start at the cursor");
 });
 
-test("B4: a cleared payload decodes to no hits", () => {
+test("B4: top-down WebGPU rows decode to CSS/window +y-down offsets", () => {
+  const pixels = buildPayload(3, 3, (x, y) =>
+    x === 1 && y === 0 ? [9, 0, 10] : [0, 0, 0],
+  );
+  const hits = decodeSnapHits(registryStub(), pixels, 3, 3);
+  assert.equal(hits.length, 1);
+  assert.deepEqual(
+    [hits[0].x, hits[0].y],
+    [0, -1],
+    "the attachment's top row is one CSS/window pixel above the cursor",
+  );
+});
+
+test("B5: a cleared payload decodes to no hits", () => {
   // Pick ids start at 1, so the cleared attachment's key 0 is 'no object'.
   const pixels = buildPayload(5, 5, () => [0, 0, 0]);
   assert.deepEqual(decodeSnapHits(registryStub(), pixels, 5, 5), []);
 });
 
-test("B5: the R channel is read as the pick key, not as a color", () => {
-  // A uint32 pick key round-trips through f32 exactly below 2^24 — the range
-  // every real pick id occupies. Assert the decoder passes the raw float
-  // through to the registry rather than re-normalizing it.
-  const key = 0x00abcdef;
-  assert.equal(Math.fround(key), key, "precondition: key below 2^24 is exact");
-  const pixels = buildPayload(1, 1, () => [key, 0, 5]);
-  const seen = [];
-  decodeSnapHits(
-    {
-      getObjectByPickColor(k) {
-        seen.push(k);
-        return { k };
-      },
-    },
-    pixels,
-    1,
-    1,
-  );
-  assert.deepEqual(seen, [key]);
+test("B6: adversarial uint32 keys and f32 depths round-trip exactly", () => {
+  for (const key of [0x01000001, 0xffffffff]) {
+    for (const [depth, isEdge] of [
+      [0.0009765625, false],
+      [6378137.0, true],
+    ]) {
+      const pixels = buildPayload(1, 1, () => [key, isEdge ? 1 : 0, depth]);
+      const hits = decodeSnapHits(registryStub(), pixels, 1, 1);
+      assert.equal(hits[0].object.key, key);
+      assert.equal(hits[0].depth, Math.fround(depth));
+      assert.equal(hits[0].isEdge, isEdge);
+    }
+  }
+});
+
+test("B7: CPU bit packing mirrors the WGSL masks", () => {
+  assert.equal(SNAP_EDGE_BIT, 0x80000000);
+  assert.equal(SNAP_DEPTH_BITS, 0x7fffffff);
+  for (const depth of [0.0009765625, 1, 6378137.0]) {
+    const surface = packSnapDepthAndEdge(depth, false);
+    const edge = packSnapDepthAndEdge(depth, true);
+    assert.equal(unpackSnapDepth(surface), Math.fround(depth));
+    assert.equal(unpackSnapDepth(edge), Math.fround(depth));
+    assert.equal(unpackSnapIsEdge(surface), false);
+    assert.equal(unpackSnapIsEdge(edge), true);
+    assert.equal((surface ^ edge) >>> 0, SNAP_EDGE_BIT);
+  }
 });
 
 // ─── C. READBACK GEOMETRY ────────────────────────────────────────────────────
 
 test("C1: alignedSnapBytesPerRow rounds up to WebGPU's copy alignment", () => {
-  assert.equal(SNAP_CHANNELS, 4);
-  assert.equal(SNAP_BYTES_PER_PIXEL, 16);
+  assert.equal(SNAP_CHANNELS, 2);
+  assert.equal(SNAP_BYTES_PER_PIXEL, 8);
   assert.equal(COPY_BYTES_PER_ROW_ALIGNMENT, 256);
   assert.equal(alignedSnapBytesPerRow(1), 256);
-  assert.equal(alignedSnapBytesPerRow(16), 256); // exactly 256 bytes
-  assert.equal(alignedSnapBytesPerRow(17), 512);
-  assert.equal(alignedSnapBytesPerRow(25), 512); // the default 25x25 query
+  assert.equal(alignedSnapBytesPerRow(32), 256); // exactly 256 bytes
+  assert.equal(alignedSnapBytesPerRow(33), 512);
+  assert.equal(alignedSnapBytesPerRow(25), 256); // the default 25x25 query
 });
 
 test("C2: unpackSnapPixels strips the row padding a GPU copy adds", () => {
@@ -517,22 +543,19 @@ test("C2: unpackSnapPixels strips the row padding a GPU copy adds", () => {
     copyOffsetY: 0,
     attachmentGeneration: 0,
   };
-  const bytesPerRow = alignedSnapBytesPerRow(2); // 256, padded from 32
-  const floatsPerRow = bytesPerRow / 4;
-  const mapped = new Float32Array(floatsPerRow * 2);
-  // Row 0: pixels 1..8; row 1: pixels 9..16 — everything after each row's
-  // 8 real floats is padding that must NOT survive.
-  for (let i = 0; i < 8; i++) {
+  const bytesPerRow = alignedSnapBytesPerRow(2); // 256, padded from 16
+  const wordsPerRow = bytesPerRow / 4;
+  const mapped = new Uint32Array(wordsPerRow * 2);
+  // Row 0: words 1..4; row 1: words 5..8 — everything after each row's
+  // four real words is padding that must NOT survive.
+  for (let i = 0; i < 4; i++) {
     mapped[i] = i + 1;
-    mapped[floatsPerRow + i] = i + 9;
+    mapped[wordsPerRow + i] = i + 5;
   }
-  mapped[8] = 999; // padding sentinel
+  mapped[4] = 999; // padding sentinel
   const pixels = unpackSnapPixels(mapped, bytesPerRow, region);
-  assert.equal(pixels.length, 16);
-  assert.deepEqual(
-    Array.from(pixels),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
-  );
+  assert.equal(pixels.length, 8);
+  assert.deepEqual(Array.from(pixels), [1, 2, 3, 4, 5, 6, 7, 8]);
 });
 
 test("C3: a query clipped by a canvas edge keeps the cursor centered and zero-fills the rest", () => {
@@ -552,12 +575,11 @@ test("C3: a query clipped by a canvas edge keeps the cursor centered and zero-fi
     attachmentGeneration: 0,
   };
   const bytesPerRow = alignedSnapBytesPerRow(2);
-  const floatsPerRow = bytesPerRow / 4;
-  const mapped = new Float32Array(floatsPerRow * 2);
+  const wordsPerRow = bytesPerRow / 4;
+  const mapped = new Uint32Array(wordsPerRow * 2);
   // One hit, key 5, at the copy's top-left — logical (1,1), the query center.
   mapped[0] = 5;
-  mapped[1] = 0;
-  mapped[2] = 12;
+  mapped[1] = packSnapDepthAndEdge(12, false);
 
   const pixels = unpackSnapPixels(mapped, bytesPerRow, region);
   assert.equal(pixels.length, 3 * 3 * SNAP_CHANNELS);
@@ -568,7 +590,7 @@ test("C3: a query clipped by a canvas edge keeps the cursor centered and zero-fi
   // Logical (1,1) is the query CENTER and carries the copied hit.
   const center = SNAP_CHANNELS * (1 * 3 + 1);
   assert.equal(pixels[center], 5);
-  assert.equal(pixels[center + 2], 12);
+  assert.equal(unpackSnapDepth(pixels[center + 1]), 12);
 
   const hits = decodeSnapHits(registryStub(), pixels, 3, 3);
   assert.equal(hits.length, 1);
@@ -577,8 +599,8 @@ test("C3: a query clipped by a canvas edge keeps the cursor centered and zero-fi
 
 // ─── D. FORMAT AGREEMENT ─────────────────────────────────────────────────────
 
-test("D1: the payload format is a 32-bit float format and cannot alias a pick format", () => {
-  assert.equal(SNAP_PAYLOAD_FORMAT, "rgba32float");
+test("D1: the payload is a core exact integer format and cannot alias a pick format", () => {
+  assert.equal(SNAP_PAYLOAD_FORMAT, "rg32uint");
   // The pick attachment authority clamps to 8-bit unorm; a snap payload in any
   // of those would destroy both the uint32 key and the metric depth.
   const pickFormats = ["rgba8unorm", "bgra8unorm"];
@@ -593,7 +615,7 @@ test("D2: the pipeline target and the framebuffer attachment read the same const
   // One home.
   assert.match(
     snapPayloadSrc,
-    /export const SNAP_PAYLOAD_FORMAT: GPUTextureFormat = "rgba32float";/,
+    /export const SNAP_PAYLOAD_FORMAT: GPUTextureFormat = "rg32uint";/,
   );
   // Consumer 1 — the pipeline color target.
   assert.match(
@@ -621,11 +643,11 @@ test("D2: the pipeline target and the framebuffer attachment read the same const
   );
   // Neither consumer may spell the literal itself.
   assert.ok(
-    !modelPipelineCacheSrc.includes('"rgba32float"'),
+    !modelPipelineCacheSrc.includes('"rg32uint"'),
     "the pipeline cache must not hard-code the payload format",
   );
   assert.ok(
-    !snapFramebufferSrc.includes('"rgba32float"'),
+    !snapFramebufferSrc.includes('"rg32uint"'),
     "the framebuffer must not hard-code the payload format",
   );
 });
@@ -689,13 +711,43 @@ test("E2: attachments follow the device-generation lifecycle", () => {
     squash(snapFramebufferSrc),
     /this\._attachmentGeneration !== region\.attachmentGeneration \|\|/,
   );
-  // Destroying the textures must drop the decoded cache with them.
+  // Destroying the textures must atomically drop pixels and their view
+  // provenance with the decoded cache.
   const destroyTextures = snapFramebufferSrc.slice(
     snapFramebufferSrc.indexOf("private _destroyTextures()"),
   );
-  assert.match(destroyTextures, /this\._lastReadPixels = null;/);
-  assert.match(destroyTextures, /this\._lastReadRegion = null;/);
+  assert.match(destroyTextures, /this\._lastReadback = null;/);
   assert.match(destroyTextures, /this\._attachmentDevice = null;/);
+});
+
+test("E2b: the coverage reset is lazy, exact-device, and records no pass", () => {
+  const squashed = squash(snapFramebufferSrc);
+  assert.match(
+    squashed,
+    /if \( this\._coverageResetPipeline === null \|\| this\._coverageResetDevice !== device \) \{/,
+    "a replacement device must never reuse the old reset pipeline",
+  );
+  assert.match(
+    squashed,
+    /label: "Snap payload coverage reset pipeline", layout: "auto",/,
+  );
+  assert.match(squashed, /targets: \[\{ format: SNAP_PAYLOAD_FORMAT \}\],/);
+  assert.match(
+    squashed,
+    /depthWriteEnabled: false, depthCompare: "not-equal",/,
+  );
+  assert.match(
+    snapFramebufferSrc,
+    /output\.position = vec4<f32>\(positions\[vertexIndex\], 1\.0, 1\.0\);/,
+  );
+  assert.match(snapFramebufferSrc, /return vec2<u32>\(0u\);/);
+  const resetBody = snapFramebufferSrc.slice(
+    snapFramebufferSrc.indexOf("private _resetAccumulatedPayloadCoverage("),
+    snapFramebufferSrc.indexOf("private _captureReadbackRegion()"),
+  );
+  assert.match(squash(resetBody), /renderPass\.setPipeline\(/);
+  assert.match(squash(resetBody), /renderPass\.draw\(3\);/);
+  assert.doesNotMatch(resetBody, /beginRenderPass|createCommandEncoder|submit/);
 });
 
 test("E3: the snap framebuffer is allocated lazily, exactly once, by Scene.snap", () => {
@@ -714,21 +766,54 @@ test("E3: the snap framebuffer is allocated lazily, exactly once, by Scene.snap"
   );
 });
 
-test("E4: the synchronous readback contract mirrors the pick framebuffer's", () => {
-  // WebGPU cannot read back synchronously; both framebuffers therefore return
-  // the previous COMPLETED readback for the same region + generation, guard a
-  // mapping-pending staging buffer, and warn exactly once on a cold query.
-  for (const [name, src] of [
-    ["snap", snapFramebufferSrc],
-    ["pick", pickFramebufferSrc],
-  ]) {
-    assert.match(src, /_readbackInFlight/, `${name}: missing in-flight guard`);
-    assert.match(
-      src,
-      /_lastPublishedReadbackSequence/,
-      `${name}: missing out-of-order publish guard`,
-    );
-  }
+test("E4: synchronous snap readback is ordered on the pick-frame encoder", () => {
+  // The copy must be recorded after the snap render on the SAME mini-frame
+  // encoder. Mapping starts only after endFrame has submitted that encoder.
+  // A private submit here necessarily runs before pickEnd and reads stale data.
+  const start = snapFramebufferSrc.indexOf("private _startReadback(");
+  const finish = snapFramebufferSrc.indexOf(
+    "private _destroyTextures()",
+    start,
+  );
+  const body = snapFramebufferSrc.slice(start, finish);
+  assert.match(body, /frameContext\.currentCommandEncoder/);
+  assert.match(body, /encoder\.copyTextureToBuffer\(/);
+  assert.match(body, /frameContext\.enqueueAfterFrameSubmit\(/);
+  assert.ok(
+    body.indexOf("encoder.copyTextureToBuffer(") <
+      body.indexOf("frameContext.enqueueAfterFrameSubmit("),
+    "copy must be encoded before the post-submit mapping callback is armed",
+  );
+  assert.match(body, /if \(!submitted\)/);
+  assert.match(body, /stagingBuffer\s*\.mapAsync\(GPUMapMode\.READ\)/);
+  assert.doesNotMatch(body, /createCommandEncoder\(/);
+  assert.doesNotMatch(body, /queue\.submit\(/);
+  assert.doesNotMatch(body, /encoder\.finish\(/);
+
+  // endAsync records on that same active encoder as well. Its promise maps
+  // only after the owning frame reports submission; it never privately submits.
+  const asyncStart = snapFramebufferSrc.indexOf("async endAsync(");
+  const normalizedAsyncStart =
+    asyncStart === -1 ? snapFramebufferSrc.indexOf("endAsync(") : asyncStart;
+  const asyncFinish = snapFramebufferSrc.indexOf(
+    "private _ensureSyncStagingBuffer",
+    normalizedAsyncStart,
+  );
+  const asyncBody = snapFramebufferSrc.slice(normalizedAsyncStart, asyncFinish);
+  assert.match(asyncBody, /frameContext\.currentCommandEncoder/);
+  assert.match(asyncBody, /encoder\.copyTextureToBuffer\(/);
+  assert.match(asyncBody, /frameContext\.enqueueAfterFrameSubmit/);
+  assert.match(asyncBody, /if \(!submitted\)/);
+  assert.doesNotMatch(asyncBody, /device\.createCommandEncoder\(/);
+  assert.doesNotMatch(asyncBody, /queue\.submit\(/);
+  assert.doesNotMatch(asyncBody, /encoder\.finish\(/);
+
+  assert.match(snapFramebufferSrc, /_readbackInFlight/);
+  assert.match(
+    snapFramebufferSrc,
+    /requestSequence < \(this\._lastReadback\?\.requestSequence \?\? -1\)/,
+    "the atomic cache record must be the out-of-order publish authority",
+  );
   assert.match(
     snapFramebufferSrc,
     /if \(this\._readbackInFlight\) \{\s*return;/,
@@ -740,6 +825,92 @@ test("E4: the synchronous readback contract mirrors the pick framebuffer's", () 
   const warnIndex = snapFramebufferSrc.indexOf("_coldSnapWarned = true");
   const around = snapFramebufferSrc.slice(warnIndex - 400, warnIndex + 200);
   assert.doesNotMatch(around, /includeStart\('debug'/);
+});
+
+test("E5: pixels publish atomically with generation, sequence, and immutable view provenance", () => {
+  assert.match(
+    squash(snapFramebufferSrc),
+    /this\._lastReadback = Object\.freeze\(\{ pixels, region, attachmentGeneration: region\.attachmentGeneration, requestSequence, querySequence, view, \}\);/,
+  );
+  assert.match(
+    squash(snapFramebufferSrc),
+    /const readback = this\._lastReadback;[\s\S]*?hits: this\._decodeForCurrentQuery\(readback, region\), view,/,
+  );
+  assert.match(snapFramebufferSrc, /readonly view: SnapViewProvenance;/);
+});
+
+test("E6: moving-cursor reuse is recent, overlapping, and view-coherent", () => {
+  assert.match(snapFramebufferSrc, /const MAX_PRIOR_QUERY_AGE = 8;/);
+  assert.match(snapFramebufferSrc, /const MAX_PRIOR_SCENE_FRAME_AGE = 8;/);
+  assert.match(snapFramebufferSrc, /const MAX_PRIOR_CURSOR_DELTA_PIXELS = 2;/);
+  assert.match(
+    squash(snapFramebufferSrc),
+    /currentQuerySequence - readback\.querySequence > MAX_PRIOR_QUERY_AGE/,
+  );
+  assert.match(
+    squash(snapFramebufferSrc),
+    /!this\._readbackViewsEquivalent\(readback\.view, currentView\)/,
+    "camera/frustum motion must make every prior payload cold",
+  );
+  assert.match(
+    squash(snapFramebufferSrc),
+    /currentView\.sceneFrameNumber - readback\.view\.sceneFrameNumber > MAX_PRIOR_SCENE_FRAME_AGE/,
+    "snap-call age alone must not preserve a payload across unbounded rendered frames",
+  );
+  assert.match(
+    squash(snapFramebufferSrc),
+    /Math\.abs\(priorCenterX - currentCenterX\) <= MAX_PRIOR_CURSOR_DELTA_PIXELS/,
+    "a one-column overlap after a large cursor jump must not be treated as complete",
+  );
+  assert.match(
+    squash(snapFramebufferSrc),
+    /if \(this\._readbackRegionsEqual\(prior, currentRegion\)\) \{ return hits; \}/,
+    "stationary hover must not remap and sort an already ordered exact-region payload",
+  );
+  const viewGateStart = snapFramebufferSrc.indexOf(
+    "private _readbackViewsEquivalent(",
+  );
+  const viewGateEnd = snapFramebufferSrc.indexOf(
+    "private _readbackIsRelevant(",
+    viewGateStart,
+  );
+  const viewGate = snapFramebufferSrc.slice(viewGateStart, viewGateEnd);
+  for (const field of [
+    "drawingBufferWidth",
+    "positionX",
+    "directionX",
+    "rightX",
+    "upX",
+    "perspective",
+    "fovy",
+    "aspectRatio",
+    "near",
+    "far",
+    "sceneMode",
+    "mapMode2D",
+    "wrapLongitude",
+  ]) {
+    assert.match(viewGate, new RegExp(`left\\.${field} === right\\.${field}`));
+  }
+  assert.match(
+    squash(snapFramebufferSrc),
+    /prior\.logicalOriginX < currentRegion\.logicalOriginX \+ currentRegion\.logicalWidth/,
+  );
+  assert.match(
+    squash(snapFramebufferSrc),
+    /const deltaX = priorCenterX - currentCenterX; const deltaY = priorCenterY - currentCenterY;/,
+    "prior offsets must be remapped around the current query center",
+  );
+  assert.match(
+    squash(snapFramebufferSrc),
+    /if \(hit\.x < minX \|\| hit\.x > maxX \|\| hit\.y < minY \|\| hit\.y > maxY\) \{ continue; \}/,
+    "prior hits outside the current aperture must be rejected",
+  );
+  assert.match(
+    squash(snapFramebufferSrc),
+    /hits\.sort\(compareSnapSpiralRank\);/,
+    "survivors must regain current-center spiral order",
+  );
 });
 
 // ─── F. VARIANT DISTINCTNESS ─────────────────────────────────────────────────
@@ -867,7 +1038,7 @@ test("F5: the snap pipeline depth state matches the pick pipeline's", () => {
     /depthWriteEnabled: !isBlend, depthCompare: "less-equal",/,
   );
   assert.match(snapBody, /const isBlend = alphaMode === 2;/);
-  // rgba32float is not blendable in core WebGPU, and a snap payload must reach
+  // rg32uint is not blendable in core WebGPU, and a snap payload must reach
   // the attachment byte-exact: no blend state may be requested.
   assert.doesNotMatch(snapBody, /blend:/);
 });
@@ -906,7 +1077,7 @@ test("G2: the snap branch short-circuits ahead of the metadata and pick slots", 
   assert.ok(
     snapIdx < metaIdx && snapIdx < pickIdx,
     "the snap branch must precede the metadata/pick slots so a snapping pass " +
-      "can never dispatch an RGBA8 pick pipeline into the RGBA32F payload pass",
+      "can never dispatch an RGBA8 pick pipeline into the RG32Uint payload pass",
   );
   assert.match(
     squash(fnBody.slice(snapIdx, metaIdx)),
@@ -984,13 +1155,98 @@ test("G6: the occluder phase stores depth for the payload phase to load", () => 
   );
 });
 
-test("G7: payload color accumulates across frustum slices", () => {
-  // Slices are rendered far-to-near with non-comparable depth, so depth is
-  // cleared per slice while the payload must persist — same rule the pick pass
-  // applies to its ID color.
+test("G7: accumulated payload is coverage-reset before a nearer slice draws", () => {
+  // Slices are rendered far-to-near with non-comparable depth, so color loads
+  // while depth clears. Loading alone is insufficient: a nearer snapless
+  // occluder would leave a farther hit untouched. The query-scissored reset
+  // therefore runs after the payload pass installs dynamic state and before
+  // any current-slice snap draw. A second 2D viewport segment still loads the
+  // first segment rather than clearing the whole attachment.
   assert.match(
     squash(pickPassSrc),
-    /`Snap payload pass frustum \$\{i\}`, i === 0 \? "clear" : "load",/,
+    /`Snap payload pass frustum \$\{i\}`, i === 0 && !config\.sceneFbLoad \? "clear" : "load",/,
+  );
+  const snapPhase = pickPassSrc.slice(
+    pickPassSrc.indexOf("if (snapMode) {"),
+    pickPassSrc.indexOf("completed = true;"),
+  );
+  assert.match(
+    squash(snapPhase),
+    /if \(i > 0 \|\| config\.sceneFbLoad\) \{ resetSnapPayloadCoverage!\(snapRenderPass\); \}/,
+  );
+  assert.ok(
+    snapPhase.indexOf("resetSnapPayloadCoverage") <
+      snapPhase.indexOf("executeSnapPayloadBatch"),
+    "coverage reset must precede every current-slice payload draw",
+  );
+});
+
+test("G6b: snap discards only unused occluder color; ordinary pick color stores", () => {
+  const beginPick = pickPassSrc.slice(
+    pickPassSrc.indexOf("function beginPickRenderPass("),
+    pickPassSrc.indexOf("function beginSnapPayloadRenderPass("),
+  );
+  assert.match(
+    squash(beginPick),
+    /storeOp: pickFBO\._isWebGPUSnapFBO === true && !!pickFBO\.snapColorView \? "discard" : "store",/,
+  );
+  assert.match(
+    squash(beginPick),
+    /depthStoreOp: storeForContinuation \? "store" : "discard",/,
+    "snap color discard must not weaken depth/stencil continuation",
+  );
+  const payloadPass = pickPassSrc.slice(
+    pickPassSrc.indexOf("function beginSnapPayloadRenderPass("),
+    pickPassSrc.indexOf("function endPickRenderPass("),
+  );
+  assert.match(
+    squash(payloadPass),
+    /view: snapFBO\.snapColorView as GPUTextureView,[\s\S]*?storeOp: "store",/,
+    "the payload itself must remain stored for accumulation and readback",
+  );
+});
+
+test("G7a: stale-payload oracle kills removal and depth-compare mutations", () => {
+  const runCoveredPixel = (coverageResetPredicate) => {
+    let payload = "far-hit";
+    const resetTriangleDepth = 1.0;
+    const nearerOccluderDepth = 0.25;
+    if (coverageResetPredicate(resetTriangleDepth, nearerOccluderDepth)) {
+      payload = undefined;
+    }
+    return payload;
+  };
+  const requireNoStalePayload = (coverageResetPredicate) => {
+    assert.equal(runCoveredPixel(coverageResetPredicate), undefined);
+  };
+
+  requireNoStalePayload((sourceDepth, destinationDepth) => {
+    return sourceDepth !== destinationDepth;
+  });
+  for (const mutant of [
+    // Reset draw removed.
+    () => false,
+    // `depthCompare: "not-equal"` changed to `"equal"`.
+    (sourceDepth, destinationDepth) => sourceDepth === destinationDepth,
+  ]) {
+    assert.throws(
+      () => requireNoStalePayload(mutant),
+      /Expected values to be strictly equal/,
+      "removing or changing the coverage reset must fail the stale-payload oracle",
+    );
+    assert.equal(runCoveredPixel(mutant), "far-hit");
+  }
+});
+
+test("G7b: loaded snap payloads require the reset callback", () => {
+  const squashed = squash(pickPassSrc);
+  assert.match(
+    squashed,
+    /snapMode && \(numFrustums > 1 \|\| config\.sceneFbLoad\) && typeof resetSnapPayloadCoverage !== "function"/,
+  );
+  assert.match(
+    squashed,
+    /throw new DeveloperError\( "A loaded WebGPU snap payload requires resetSnapPayloadCoverage\.", \);/,
   );
 });
 
@@ -1037,10 +1293,10 @@ test("G9: the snap command rides its own derived slot, apart from the pick famil
   );
 });
 
-test("G10: the model renderer materializes the snap command only when snapping is enabled", () => {
+test("G10: the model renderer materializes a snap command only in a snap mini-frame", () => {
   assert.match(
     squash(modelRendererSrc),
-    /const snapContext = context as unknown as \{ _snapEnabled\?: boolean \}; if \(snapContext\._snapEnabled === true\) \{/,
+    /if \(frameState\?\.passes\?\.snap === true\) \{/,
   );
   assert.match(
     squash(modelRendererSrc),
@@ -1052,9 +1308,13 @@ test("G10: the model renderer materializes the snap command only when snapping i
     squash(modelRendererSrc),
     /const snapCmd = new WebGPUDrawCommand\(\{ \.\.\.sharedPickDrawArgs, pipeline: primCache\.snapPipeline, \}\); attachSnapToColorCommand\(webgpuCmd, snapCmd\);/,
   );
-  // The latch is set by the framebuffer's constructor, which Scene.snap builds
-  // BEFORE pickBegin runs the model update — so the FIRST snap frame is armed.
+  // The diagnostic latch is still set by the framebuffer's constructor, while
+  // pickBegin sets the current pass before model command production.
   assert.match(snapFramebufferSrc, /snapContext\._snapEnabled = true;/);
+  assert.match(
+    squash(pickingSrc),
+    /frameState\.passes\.snap = options\?\.snap \?\? false;[\s\S]*scene\.updateAndExecuteCommands/,
+  );
 });
 
 // ─── H. SCENE DISPATCH ───────────────────────────────────────────────────────
@@ -1117,11 +1377,61 @@ test("H3: the snap FBO is discoverable by the pass executor and the ambient type
   );
 });
 
+test("H4: both backends return one view-paired envelope to renderer-neutral Snapping", () => {
+  assert.match(
+    squash(snapFramebufferJsSrc),
+    /SnapFramebuffer\.prototype\.end = function \(screenSpaceRectangle, view\) \{[\s\S]*?return \{ hits: getSnapObjectsFromPixels\(context, pixels, width, height\), view: view, \};/,
+  );
+  assert.match(
+    squash(snappingSrc),
+    /const currentView = captureSnapView\( scene, windowPosition, drawingBufferRectangle, \); readback = snapFramebuffer\.end\(drawingBufferRectangle, currentView\);/,
+  );
+  assert.match(
+    squash(snappingSrc),
+    /try \{ pickEnd\(scene\); \} catch \(error\) \{ cleanupError = error; hasCleanupError = true; \}/,
+  );
+  assert.match(snappingSrc, /const position = snapHitToWorld\(view, best\);/);
+  assert.match(snappingSrc, /return Object\.freeze\(\{/);
+  assert.doesNotMatch(
+    snappingSrc.slice(
+      snappingSrc.indexOf("return Object.freeze({"),
+      snappingSrc.indexOf("function getSnapPickRay"),
+    ),
+    /camera\s*:|frustum\s*:|viewport\s*:/,
+    "provenance must not retain mutable Camera, Frustum, or Viewport objects",
+  );
+});
+
+test("H5: CSS/drawing-buffer scaling is frozen and shared by ray + screen output", () => {
+  assert.match(snappingSrc, /drawingBufferWidth: scene\.drawingBufferWidth,/);
+  assert.match(snappingSrc, /drawingBufferHeight: scene\.drawingBufferHeight,/);
+  const helperStart = snappingSrc.indexOf("function snapHitToScreenPosition");
+  const helperEnd = snappingSrc.indexOf("function getSnapPickRay", helperStart);
+  const helper = snappingSrc.slice(helperStart, helperEnd);
+  assert.match(
+    squash(helper),
+    /result\.x = sampleWindowX \+ hit\.x \* \(view\.canvasWidth \/ view\.drawingBufferWidth\);/,
+  );
+  assert.match(
+    squash(helper),
+    /result\.y = sampleWindowY \+ hit\.y \* \(view\.canvasHeight \/ view\.drawingBufferHeight\);/,
+  );
+  assert.match(
+    squash(snappingSrc),
+    /const windowPosition = snapHitToScreenPosition\( view, hit, scratchSnapWindowPosition, \);/,
+  );
+  assert.match(
+    squash(snappingSrc),
+    /const screenPosition = snapHitToScreenPosition\(\s*view,\s*best,\s*new Cartesian2\(\),?\s*\);/,
+  );
+});
+
 // ─── I. FEATURE PRESERVATION ─────────────────────────────────────────────────
 
-test("I1: upstream's WebGL snap path is unmodified", () => {
+test("I1: the WebGL snap render/read path stays backend-neutral", () => {
   // The WebGL framebuffer, the derived command, and the hit arbitration must
-  // carry no fork-specific branch: WebGL snap has to stay byte-identical.
+  // carry no backend branch. Its only contract change is the shared result
+  // envelope that pairs hits with their rendered view.
   for (const [name, src] of [
     ["SnapFramebuffer.js", snapFramebufferJsSrc],
     ["Snapping.js", snappingSrc],
@@ -1191,13 +1501,15 @@ test("I3: snapping allocates nothing until an app calls Scene.snap", () => {
   assert.match(webgpuContextSrc, /_snapEnabled: boolean = false;/);
   // ...the pipeline map starts empty...
   assert.match(modelPipelineCacheSrc, /this\._snapPipelines = new Map\(\);/);
-  // ...and the model renderer's snap block is gated on the latch, so a viewer
-  // that never snaps builds no snap pipeline and no snap command.
+  // ...and derived-command materialization is gated on CURRENT pass demand,
+  // so both never-used scenes and ordinary frames after a snap pay no command
+  // allocation tax.
   const gate = modelRendererSrc.indexOf(
-    "if (snapContext._snapEnabled === true)",
+    "if (frameState?.passes?.snap === true)",
   );
   assert.ok(gate > 0);
   const gated = modelRendererSrc.slice(gate, gate + 900);
   assert.match(gated, /getSnapPipeline\(/);
   assert.match(gated, /attachSnapToColorCommand\(/);
+  assert.doesNotMatch(gated, /_snapEnabled/);
 });

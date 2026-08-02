@@ -1,3 +1,5 @@
+import { compareRepresentativeTilesetRequestLedgers } from "./representative-tileset-request-ledger.mjs";
+
 function percentile(values, fraction) {
   const sorted = values
     .filter(Number.isFinite)
@@ -1228,25 +1230,34 @@ export function compareRepresentativeTilesetLifecycleDiagnostics(
     diagnostics.provenance.phase === "post-measurement-untimed-replay" &&
     diagnostics.provenance.traceEndedBeforeReplay === true &&
     diagnostics.provenance.measurementSnapshotsFrozenBeforeReplay === true;
-  const endpointValid = (diagnostics) =>
+  const requestLedger = compareRepresentativeTilesetRequestLedgers(
+    webgl,
+    webgpu,
+  );
+  const endpointValid = (diagnostics, ledgerEndpoint) =>
     diagnostics?.schemaVersion === 1 &&
     diagnostics.enabled === true &&
     diagnostics.nonCertifying === true &&
     Array.isArray(diagnostics.frames) &&
     diagnostics.frames.length > 0 &&
+    Array.isArray(diagnostics.events) &&
+    diagnostics.eventsTruncated !== true &&
     diagnostics.framesTruncated !== true &&
+    ledgerEndpoint?.valid === true &&
     provenanceValid(diagnostics);
-  const webglValid = endpointValid(webgl);
-  const webgpuValid = endpointValid(webgpu);
+  const webglValid = endpointValid(webgl, requestLedger.webgl);
+  const webgpuValid = endpointValid(webgpu, requestLedger.webgpu);
   if (!webglValid || !webgpuValid) {
     return {
       available: false,
       valid: false,
       reasons: [
-        "both renderer legs require complete opt-in untimed tileset lifecycle diagnostics",
+        "both renderer legs require complete opt-in untimed tileset lifecycle diagnostics and structurally valid request ledgers",
+        ...requestLedger.reasons,
       ],
       webgl: summarizeTilesetLifecycleEndpoint(webgl),
       webgpu: summarizeTilesetLifecycleEndpoint(webgpu),
+      requestLedger,
     };
   }
 
@@ -1337,6 +1348,7 @@ export function compareRepresentativeTilesetLifecycleDiagnostics(
     nonCertifying: true,
     webgl: summarizeTilesetLifecycleEndpoint(webgl),
     webgpu: summarizeTilesetLifecycleEndpoint(webgpu),
+    requestLedger,
     comparison: {
       frameCount,
       selectedMismatchFrames,
@@ -1792,6 +1804,22 @@ export function assessRepresentativePairComparability(
     webglRun,
     webgpuRun,
   );
+  if (attributionOnly && tilesetLifecycle.valid !== true) {
+    reasons.push(
+      ...tilesetLifecycle.reasons.map(
+        (reason) => `tileset lifecycle attribution is incomplete: ${reason}`,
+      ),
+    );
+  } else if (
+    attributionOnly &&
+    causalRendererComparison &&
+    ((tilesetLifecycle.requestLedger?.webgl?.openRequestCount ?? 0) > 0 ||
+      (tilesetLifecycle.requestLedger?.webgpu?.openRequestCount ?? 0) > 0)
+  ) {
+    reasons.push(
+      "resident tileset lifecycle attribution ended with open content requests",
+    );
+  }
   const workloadFingerprint = causalRendererComparison
     ? compareRepresentativeWorkloadFingerprints(
         webglRun,

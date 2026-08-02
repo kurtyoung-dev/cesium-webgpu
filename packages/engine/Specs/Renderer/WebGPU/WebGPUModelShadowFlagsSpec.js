@@ -201,7 +201,9 @@ describe("Renderer/WebGPU/WebGPUModel shadow flags", function () {
 
     expect(buffers.length).toBe(1);
     expect(buffers[0].descriptor.label).toBe("root shadow");
-    expect(buffers[0].descriptor.size).toBe(96);
+    // WebGPUBuffer aligns uniform allocations to the backend's 256-byte
+    // dynamic-offset granularity; only the first 96 bytes carry this block.
+    expect(buffers[0].descriptor.size).toBe(256);
     expect(writes.length).toBe(1);
     expect(writes[0].buffer).toBe(uniform.buffer);
     expect(Array.from(writes[0].data.slice(0, 16))).toEqual(

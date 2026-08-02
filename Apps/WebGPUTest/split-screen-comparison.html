@@ -457,6 +457,13 @@
 
           var webglOk = false;
           var webgpuOk = false;
+          // Automated lifecycle probes need a self-contained scene that does
+          // not start the default network imagery provider before immediately
+          // removing it. The opt-in query keeps the interactive comparison's
+          // existing default unchanged.
+          var disableBaseLayer =
+            new URLSearchParams(window.location.search).get("baseLayer") ===
+            "false";
 
           // ── Create WebGL viewer (synchronous) ──
           //
@@ -474,6 +481,7 @@
           var t0 = performance.now();
           try {
             webglViewer = new Cesium.Viewer(leftContainer, {
+              baseLayer: disableBaseLayer ? false : undefined,
               animation: false,
               timeline: false,
               baseLayerPicker: false,
@@ -508,6 +516,7 @@
               throw new Error("WebGPU not supported in this browser");
             }
             webgpuViewer = await Cesium.Viewer.createAsync(rightContainer, {
+              baseLayer: disableBaseLayer ? false : undefined,
               contextOptions: { renderer: "webgpu" },
               animation: false,
               timeline: false,

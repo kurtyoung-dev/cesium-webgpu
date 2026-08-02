@@ -98,19 +98,36 @@ page.on("console", (m) => {
   if (m.type() === "error") errors.push(m.text());
 });
 page.on("pageerror", (e) => errors.push(`pageerror: ${e.message}`));
-await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
-  waitUntil: "networkidle",
-});
+await page.goto(
+  `${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu&offline=true`,
+  {
+    waitUntil: "networkidle",
+  },
+);
 await page.waitForFunction(() => !!window.viewer);
 
 const out = await page.evaluate(async () => {
   const C = await import("/Build/CesiumUnminified/index.js");
   const v = window.viewer;
   const scene = v.scene;
+  const ctx = scene.context;
   v.clock.shouldAnimate = false;
+
+  // Do not inherit CesiumViewer's online world-terrain startup. A missing Ion
+  // response produces a black frame that this depth-composition probe cannot
+  // distinguish from a globe pipeline that failed to draw. Offline startup
+  // already selects the ellipsoid; assign it explicitly as part of the probe's
+  // deterministic scene contract.
+  v.terrainProvider = new C.EllipsoidTerrainProvider();
 
   // Solid-color globe — no imagery/Ion dependency, deterministic pixels.
   scene.globe.show = true;
+  // The negative control and the feature under test both require primitives
+  // to depth-test against terrain. Cesium's default is false, which
+  // intentionally clears globe depth before opaque primitives and substitutes
+  // the ellipsoid depth plane; under that policy an underground primitive is
+  // allowed to render and this is not a globe-depth composition test.
+  scene.globe.depthTestAgainstTerrain = true;
   scene.imageryLayers.removeAll();
   scene.globe.baseColor = new C.Color(0.12, 0.15, 0.2, 1.0);
   scene.globe.showGroundAtmosphere = false;
@@ -142,6 +159,7 @@ const out = await page.evaluate(async () => {
           w: c.width,
           h: c.height,
           png: withPng ? off.toDataURL("image/png") : null,
+          clearGlobeDepth: scene._environmentState?.clearGlobeDepth ?? null,
         });
       });
       scene.render();
@@ -233,8 +251,9 @@ const out = await page.evaluate(async () => {
       geometryInstances: instances,
       appearance: new C.MaterialAppearance({
         material: greenMat,
-        // flat:false → Mat*Lit pipeline; flat:true → Mat*Flat pipeline. Use lit
-        // (default) — it's the more common, fuller code path.
+        // This intentionally requests lighting, but BASIC geometry has no ST
+        // attribute and the current WebGPU material selector therefore chooses
+        // matColorFlat. This is the layout the original regression exercised.
         flat: false,
         translucent: false,
       }),
@@ -307,13 +326,15 @@ const out = await page.evaluate(async () => {
   }
   await frame(12);
 
-  const ctx = scene.context;
-
   // ---- (1) ON leg ----
   const imgOn = await snapWithGlobe(true);
   const onGlobe = globeDrawn(imgOn);
   const onGreen = countAll(imgOn, isGreen);
   const onMag = countAll(imgOn, isMagenta);
+  const onForeground = countAll(
+    imgOn,
+    (data, index) => isGreen(data, index) || isMagenta(data, index),
+  );
 
   // Locate the below-ground green by sampling the upper-right control region:
   // count green pixels in x>[640..900], y<[120..320] (where the below boxes
@@ -330,6 +351,10 @@ const out = await page.evaluate(async () => {
   const offGlobe = imgOff.ready === true;
   const offGreen = countAll(imgOff, isGreen);
   const offMag = countAll(imgOff, isMagenta);
+  const offForeground = countAll(
+    imgOff,
+    (data, index) => isGreen(data, index) || isMagenta(data, index),
+  );
   // OFF-leg control count: with hyperbolic depth the below-ground boxes are
   // EXPECTED to bleed through (the z-fight the feature fixes) — recorded as
   // evidence, not gated.
@@ -344,13 +369,16 @@ const out = await page.evaluate(async () => {
   return {
     onGreen,
     onMag,
+    onForeground,
     offGreen,
     offMag,
+    offForeground,
     on2Green,
     ctrlGreen,
     offCtrlGreen,
     offGlobe,
     onGlobe,
+    onClearGlobeDepth: imgOn.clearGlobeDepth,
     boxReady: boxPrim.ready,
     pngOn: imgOn.png,
     pngOff: imgOff.png,
@@ -389,7 +417,10 @@ const check = (label, pass, detail) => {
   if (!pass) ok = false;
 };
 
-const ratio = out.offGreen > 0 ? out.onGreen / out.offGreen : 0;
+// The magenta reference billboards intentionally share the slab positions and
+// overwrite some green pixels in the ON image. Count the union for the
+// composition gate so reference coverage cannot masquerade as terrain loss.
+const ratio = out.offForeground > 0 ? out.onForeground / out.offForeground : 0;
 check(
   "1",
   out.onGreen >= GREEN_MIN,
@@ -408,7 +439,7 @@ check(
 check(
   "2",
   ratio >= RECOVER_RATIO,
-  `log depth composes with the log globe: ON/OFF green ratio=${ratio.toFixed(3)} (>= ${RECOVER_RATIO}; pre-fix mixed-depth bug was ~0.72 — a 28% slab-pixel loss; below-ground boxes are BLUE since 2026-08-02 so they cannot pollute this count). ON=${out.onGreen} OFF=${out.offGreen} delta=${out.onGreen - out.offGreen} offBelowBleed=${out.offCtrlGreen}`,
+  `log depth composes with the log globe: ON/OFF foreground ratio=${ratio.toFixed(3)} (>= ${RECOVER_RATIO}; green-or-magenta union prevents the colocated reference from reading as slab loss). ONfg=${out.onForeground} OFFfg=${out.offForeground} greenON=${out.onGreen} greenOFF=${out.offGreen} offBelowBleed=${out.offCtrlGreen}`,
 );
 // The negative control is only meaningful when the globe is present to occlude
 // (the globe writes the depth that occludes the below-ground boxes). snapWithGlobe
@@ -428,6 +459,12 @@ check(
   "4",
   out.on2Green >= GREEN_MIN,
   `flip back ON re-verifies (Mat flip-rebuild guard): green=${out.on2Green}`,
+);
+
+check(
+  "D0",
+  out.onClearGlobeDepth === false,
+  `retained globe depth for primitive composition: clearGlobeDepth=${out.onClearGlobeDepth}`,
 );
 console.log(
   `    reference magenta billboards: ON=${out.onMag} OFF=${out.offMag} (OFF=0 is EXPECTED physics — surface-hugging billboards tie with the globe in one hyperbolic quantum at 220 km and lose; log depth is what resolves them)`,

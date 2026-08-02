@@ -25,6 +25,7 @@ import {
   type WebGLStubState,
 } from "./WebGLCompatibilityStub.js";
 import { WebGLStubBufferRegistry } from "./Stubs/WebGLStubBuffer.js";
+import { WebGLStubTextureRegistry } from "./Stubs/WebGLStubTexture.js";
 import type {
   StubAttachment,
   StubBufferHandle,
@@ -33,6 +34,7 @@ import type {
   StubRenderbuffer,
   StubTextureWrapper,
 } from "./Stubs/WebGLStubTypes.js";
+import type { WebGPUTextureMipGenerationOptions } from "./WebGPUMipmapGenerator.js";
 import {
   webglToWebGPUBlendFactor,
   webglToWebGPUBlendOp,
@@ -50,6 +52,7 @@ import {
 export interface WebGLStubInitHost {
   // ── Top-level GPU resources (read-only) ──
   readonly _device: GPUDevice | null;
+  readonly resourceGeneration: number;
   readonly _context: GPUCanvasContext | null;
   readonly _currentCommandEncoder: GPUCommandEncoder | null;
   readonly _currentRenderPassEncoder: GPURenderPassEncoder | null;
@@ -104,7 +107,20 @@ export interface WebGLStubInitHost {
     dy: number,
     w: number,
     h: number,
-  ): void;
+  ): boolean;
+  enqueueTextureMipGeneration(
+    texture: GPUTexture,
+    format: GPUTextureFormat,
+    mipLevelCount: number,
+    options?: WebGPUTextureMipGenerationOptions,
+  ): boolean;
+  encodeTextureMipGenerationInCurrentEncoder(
+    texture: GPUTexture,
+    format: GPUTextureFormat,
+    mipLevelCount: number,
+    options?: WebGPUTextureMipGenerationOptions,
+  ): boolean;
+  cancelTextureMipGeneration(texture: GPUTexture): void;
 }
 
 /**
@@ -130,6 +146,9 @@ export function buildWebGLCompatibilityStubFor(
     get device() {
       return host._device;
     },
+    get resourceGeneration() {
+      return host.resourceGeneration;
+    },
     get context() {
       return host._context;
     },
@@ -150,6 +169,7 @@ export function buildWebGLCompatibilityStubFor(
     get textureBindings() {
       return host._textureBindings;
     },
+    textureRegistry: new WebGLStubTextureRegistry(),
     get boundVertexBuffer() {
       return host._boundVertexBuffer;
     },
@@ -349,6 +369,21 @@ export function buildWebGLCompatibilityStubFor(
       w: number,
       h: number,
     ) => host.copyTextureRegion(src, dst, sx, sy, dx, dy, w, h),
+    enqueueMipGeneration: (texture, format, mipLevelCount, options) =>
+      host.enqueueTextureMipGeneration(texture, format, mipLevelCount, options),
+    encodeMipGenerationInCurrentEncoder: (
+      texture,
+      format,
+      mipLevelCount,
+      options,
+    ) =>
+      host.encodeTextureMipGenerationInCurrentEncoder(
+        texture,
+        format,
+        mipLevelCount,
+        options,
+      ),
+    cancelMipGeneration: (texture) => host.cancelTextureMipGeneration(texture),
     // The previous wrappers `_webglToWebGPUBlendFactor` etc. on the
     // Context only existed to feed this state literal — point straight
     // at the module-level functions instead.

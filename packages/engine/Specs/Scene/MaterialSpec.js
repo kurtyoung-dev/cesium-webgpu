@@ -808,6 +808,27 @@ describe(
       });
     });
 
+    it("does not revisit the URL loader for an already-adopted Texture", function () {
+      const material = Material.fromType(Material.ImageType);
+      const texture = scene.context.defaultTexture;
+      material.uniforms.image = texture;
+      material.update(scene.context);
+      expect(material._textures.image).toBe(texture);
+
+      const createIfNeeded = spyOn(
+        Resource,
+        "createIfNeeded",
+      ).and.callThrough();
+      material.update(scene.context);
+      material.update(scene.context);
+
+      // A Texture uniform is terminal even when it is already adopted. The
+      // old fallthrough called the non-Resource loader and allocated a
+      // Promise.resolve() on every update (C12-35).
+      expect(createIfNeeded).not.toHaveBeenCalled();
+      material.destroy();
+    });
+
     it("handles when material image is changed from undefined to some image", function () {
       const material = Material.fromType(Material.ImageType, {
         image: undefined,

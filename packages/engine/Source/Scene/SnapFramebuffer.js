@@ -92,7 +92,7 @@ SnapFramebuffer.prototype.begin = function (screenSpaceRectangle, viewport) {
   return this._passState;
 };
 
-SnapFramebuffer.prototype.end = function (screenSpaceRectangle) {
+SnapFramebuffer.prototype.end = function (screenSpaceRectangle, view) {
   const width = screenSpaceRectangle.width ?? 1.0;
   const height = screenSpaceRectangle.height ?? 1.0;
 
@@ -106,7 +106,10 @@ SnapFramebuffer.prototype.end = function (screenSpaceRectangle) {
     framebuffer: this._fb.framebuffer,
   });
 
-  return getSnapObjectsFromPixels(context, pixels, width, height);
+  return {
+    hits: getSnapObjectsFromPixels(context, pixels, width, height),
+    view: view,
+  };
 };
 
 SnapFramebuffer.prototype.isDestroyed = function () {

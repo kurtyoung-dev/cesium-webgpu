@@ -16,6 +16,8 @@ describe("Renderer/WebGPU/WebGPUFeatureFlags", function () {
     it("contains the full priority-ordered feature list", function () {
       expect(DESIRED_FEATURES).toEqual([
         "float32-filterable",
+        "core-features-and-limits",
+        "texture-formats-tier1",
         "clip-distances",
         "dual-source-blending",
         "rg11b10ufloat-renderable",
@@ -30,9 +32,9 @@ describe("Renderer/WebGPU/WebGPUFeatureFlags", function () {
       ]);
     });
 
-    it("has exactly 12 entries with no duplicates", function () {
-      expect(DESIRED_FEATURES.length).toBe(12);
-      expect(new Set(DESIRED_FEATURES).size).toBe(12);
+    it("has exactly 14 entries with no duplicates", function () {
+      expect(DESIRED_FEATURES.length).toBe(14);
+      expect(new Set(DESIRED_FEATURES).size).toBe(14);
     });
 
     it("lists float32-filterable first (terrain heightmap filtering)", function () {
@@ -51,6 +53,16 @@ describe("Renderer/WebGPU/WebGPUFeatureFlags", function () {
       const flags = new WebGPUFeatureFlags();
       const list = flags.buildRequestList(stubAdapter([]));
       expect(list).toEqual([]);
+    });
+
+    it("requests core limits only when the adapter exposes them", function () {
+      const flags = new WebGPUFeatureFlags();
+      expect(
+        flags.buildRequestList(stubAdapter(["core-features-and-limits"])),
+      ).toEqual(["core-features-and-limits"]);
+      expect(flags.buildRequestList(stubAdapter([]))).not.toContain(
+        "core-features-and-limits",
+      );
     });
 
     it("includes only adapter-supported DESIRED_FEATURES entries", function () {

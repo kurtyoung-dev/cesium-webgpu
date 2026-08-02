@@ -335,8 +335,8 @@ describe("Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager", function () {
     const flushPendingUniformUploads = jasmine.createSpy(
       "flushPendingUniformUploads",
     );
-    const flushPendingImageryMipJobs = jasmine.createSpy(
-      "flushPendingImageryMipJobs",
+    const flushPendingTextureMipJobs = jasmine.createSpy(
+      "flushPendingTextureMipJobs",
     );
     const createCommandEncoder = jasmine
       .createSpy("createCommandEncoder")
@@ -362,7 +362,7 @@ describe("Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager", function () {
         sceneCaptureReflections: true,
         uniformState,
         flushPendingUniformUploads,
-        flushPendingImageryMipJobs,
+        flushPendingTextureMipJobs,
         _webgpuSceneCaptureModels: {
           frameNumber: 11,
           models: [{}],
@@ -403,7 +403,7 @@ describe("Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager", function () {
     expect(submit).toHaveBeenCalledTimes(1);
     expect(createCommandEncoder).toHaveBeenCalledTimes(1);
     expect(flushPendingUniformUploads).toHaveBeenCalledTimes(1);
-    expect(flushPendingImageryMipJobs).toHaveBeenCalledTimes(1);
+    expect(flushPendingTextureMipJobs).toHaveBeenCalledTimes(1);
 
     // A manager-owned refresh encoder records the same capture without a
     // private encoder or queue submission, while preserving prerequisite
@@ -422,7 +422,7 @@ describe("Renderer/WebGPU/WebGPUDynamicEnvironmentMapManager", function () {
     expect(submit).toHaveBeenCalledTimes(1);
     expect(callerFinish).not.toHaveBeenCalled();
     expect(flushPendingUniformUploads).toHaveBeenCalledTimes(2);
-    expect(flushPendingImageryMipJobs).toHaveBeenCalledTimes(2);
+    expect(flushPendingTextureMipJobs).toHaveBeenCalledTimes(2);
   });
 
   it("reports a first/recovered-frame capture miss before globe publication", function () {

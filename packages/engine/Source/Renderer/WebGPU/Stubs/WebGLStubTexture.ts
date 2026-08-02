@@ -28,7 +28,14 @@
 
 /// <reference types="@webgpu/types" />
 
-import type { WebGLStubState, LogUsageFn } from "./WebGLStubTypes.js";
+import type {
+  StubGPUTexture,
+  StubTextureDiagnostics,
+  StubTextureRegistry,
+  StubTextureWrapper,
+  WebGLStubState,
+  LogUsageFn,
+} from "./WebGLStubTypes.js";
 import {
   webglToWebGPUTextureFormat,
   webglFilterToWebGPU,
@@ -36,7 +43,6 @@ import {
   webglWrapToWebGPU,
   bytesPerTexel,
 } from "../WebGLStateConverters.js";
-import { WebGPUMipmapGenerator } from "../WebGPUMipmapGenerator.js";
 
 /**
  * Union of pixel source types that can be passed to `texImage2D` /
@@ -86,12 +92,85 @@ const GL_UNPACK_ALIGNMENT = 0x0cf5;
 const GL_LINEAR_MIPMAP_LINEAR = 0x2703;
 const GL_LINEAR = 0x2601;
 
+function getCompressedTextureFormat(
+  internalformat: number,
+): GPUTextureFormat | null {
+  switch (internalformat) {
+    case 0x83f0: // COMPRESSED_RGB_S3TC_DXT1_EXT
+    case 0x83f1: // COMPRESSED_RGBA_S3TC_DXT1_EXT
+      return "bc1-rgba-unorm";
+    case 0x83f2: // COMPRESSED_RGBA_S3TC_DXT3_EXT
+      return "bc2-rgba-unorm";
+    case 0x83f3: // COMPRESSED_RGBA_S3TC_DXT5_EXT
+      return "bc3-rgba-unorm";
+    case 0x8e8c: // COMPRESSED_RGBA_BPTC_UNORM
+      return "bc7-rgba-unorm";
+    case 0x8e8d: // COMPRESSED_SRGB_ALPHA_BPTC_UNORM
+      return "bc7-rgba-unorm-srgb";
+    case 0x93b0: // COMPRESSED_RGBA_ASTC_4x4_WEBGL
+      return "astc-4x4-unorm";
+    case 0x9274: // COMPRESSED_RGB8_ETC2
+      return "etc2-rgb8unorm";
+    case 0x9278: // COMPRESSED_RGBA8_ETC2_EAC
+      return "etc2-rgba8unorm";
+    default:
+      return null;
+  }
+}
+
+function compressedBlockBytes(format: GPUTextureFormat): number {
+  return format === "bc1-rgba-unorm" || format === "etc2-rgb8unorm" ? 8 : 16;
+}
+
+function compressedCopyLayout(
+  width: number,
+  height: number,
+  format: GPUTextureFormat,
+) {
+  const blockColumns = Math.ceil(width / 4);
+  const blockRows = Math.ceil(height / 4);
+  return {
+    bytesPerRow: blockColumns * compressedBlockBytes(format),
+    // WebGPU expresses rowsPerImage for compressed copies in block rows.
+    rowsPerImage: blockRows,
+    // Tail mips still occupy one physical compression block. The copy extent
+    // addresses that padded storage, not only the 1x1/2x2 logical texels.
+    copyWidth: blockColumns * 4,
+    copyHeight: blockRows * 4,
+  };
+}
+
+function isCompressedTextureFormat(format: GPUTextureFormat): boolean {
+  return (
+    format.startsWith("bc") ||
+    format.startsWith("astc-") ||
+    format.startsWith("etc2-")
+  );
+}
+
+function compressedTextureFeature(
+  format: GPUTextureFormat,
+): GPUFeatureName | null {
+  if (format.startsWith("bc")) return "texture-compression-bc";
+  if (format.startsWith("astc-")) return "texture-compression-astc";
+  if (format.startsWith("etc2-")) return "texture-compression-etc2";
+  return null;
+}
+
 /**
  * Internal wrapper for a stub-managed texture. Holds both the pending
  * sampler/filter state set via `texParameteri` and (once allocated) the
  * real GPU resources.
  */
-interface StubTexture {
+interface TextureAllocation {
+  width: number;
+  height: number;
+  format: GPUTextureFormat;
+  mipLevelCount: number;
+  depthOrArrayLayers: number;
+}
+
+interface StubTexture extends StubTextureWrapper {
   _isPlaceholder: boolean;
   // Pending sampler descriptor — fields are populated as texParameteri
   // calls come in. Used to build the GPUSampler when the texture is first
@@ -120,20 +199,24 @@ interface StubTexture {
   // on WebGPU.
   _isCubeMap?: boolean;
   // Allocated GPU resources — null until first texImage2D.
-  _webgpuTexture: {
-    texture: GPUTexture;
-    view: GPUTextureView;
-    sampler: GPUSampler;
-    width: number;
-    height: number;
-    format: GPUTextureFormat;
-    mipLevelCount: number;
-    // Optional — only present on cubemap allocations (set to 6) or
-    // future array-texture allocations. Defaults to 1 (2D) when absent
-    // so the existing 2D-texture call sites stay source-compatible.
-    depthOrArrayLayers?: number;
-    destroy(): void;
-  } | null;
+  readonly _webgpuTexture: StubGPUTexture | null;
+  _getWebGPUTextureForDevice(
+    device: GPUDevice,
+    resourceGeneration: number,
+  ): StubGPUTexture | null;
+  _commitWebGPUTexture(
+    device: GPUDevice,
+    resourceGeneration: number,
+    realization: StubGPUTexture,
+  ): void;
+  _setAllocation(allocation: TextureAllocation): void;
+  _getAllocation(): TextureAllocation | null;
+  _invalidateNative(): void;
+  _destroyLogical(): void;
+  _destroyed: boolean;
+  _getDiagnostics(): {
+    liveTexture: boolean;
+  };
   destroy?(): void;
 }
 
@@ -256,73 +339,341 @@ function isExternalImageSource(
   return false;
 }
 
-/**
- * Allocate a `GPUTexture` (+ view + sampler) and stash it on the wrapper.
- * Called the first time `texImage2D` sees a wrapper with `_webgpuTexture
- * === null`. Subsequent uploads with the same dimensions reuse the
- * existing texture; uploads with different dimensions destroy and
- * recreate it (mirroring WebGL's destructive `texImage2D` semantics).
- */
-function ensureTextureAllocated(
+function createNativeTexture(
   device: GPUDevice,
   wrapper: StubTexture,
-  width: number,
-  height: number,
-  format: GPUTextureFormat,
-): void {
-  const layers = wrapper._isCubeMap ? 6 : 1;
-  if (
-    wrapper._webgpuTexture &&
-    wrapper._webgpuTexture.width === width &&
-    wrapper._webgpuTexture.height === height &&
-    wrapper._webgpuTexture.format === format &&
-    (wrapper._webgpuTexture.depthOrArrayLayers ?? 1) === layers
-  ) {
-    return; // Reuse
-  }
-  if (wrapper._webgpuTexture) {
-    wrapper._webgpuTexture.destroy();
-  }
-
-  // Allocate a full mip chain so generateMipmap can write into it later.
-  // The blit-down generator needs RENDER_ATTACHMENT usage on every level.
-  const mipLevelCount = wrapper._samplerDesc.wantsMipmaps
-    ? mipLevelsFor(width, height)
-    : 1;
-
+  allocation: TextureAllocation,
+): StubGPUTexture {
+  const { width, height, format, mipLevelCount, depthOrArrayLayers } =
+    allocation;
   const texture = device.createTexture({
     label: wrapper._isCubeMap ? "GLStub_CubeMap" : "GLStub_Texture",
-    size: { width, height, depthOrArrayLayers: layers },
+    size: { width, height, depthOrArrayLayers },
     format,
     mipLevelCount,
     usage:
       GPUTextureUsage.TEXTURE_BINDING |
+      GPUTextureUsage.COPY_SRC |
       GPUTextureUsage.COPY_DST |
-      GPUTextureUsage.RENDER_ATTACHMENT,
-  });
+      (isCompressedTextureFormat(format)
+        ? 0
+        : GPUTextureUsage.RENDER_ATTACHMENT),
+    textureBindingViewDimension: wrapper._isCubeMap ? "cube" : "2d",
+  } as GPUTextureDescriptor);
 
-  // Cube-view binding requires `dimension: "cube"` so the shader's
-  // `texture_cube<f32>` declarations work. The downstream IBL pipeline
-  // also reads this view for irradiance/radiance prefilter sourcing.
-  const view = texture.createView({
-    label: wrapper._isCubeMap ? "GLStub_CubeMapView" : "GLStub_TextureView",
-    dimension: wrapper._isCubeMap ? "cube" : "2d",
-  });
-  const sampler = buildSampler(device, wrapper._samplerDesc);
+  try {
+    const view = texture.createView({
+      label: wrapper._isCubeMap ? "GLStub_CubeMapView" : "GLStub_TextureView",
+      dimension: wrapper._isCubeMap ? "cube" : "2d",
+    });
+    const sampler = buildSampler(device, wrapper._samplerDesc);
+    return {
+      texture,
+      view,
+      sampler,
+      width,
+      height,
+      format,
+      mipLevelCount,
+      depthOrArrayLayers,
+      destroy() {
+        texture.destroy();
+      },
+    };
+  } catch (error) {
+    // Texture creation is transactional: a failed view/sampler must not leak
+    // the candidate or evict the previous generation's still-owned resource.
+    try {
+      texture.destroy();
+    } catch {
+      // Preserve the construction failure; the candidate was never published.
+    }
+    throw error;
+  }
+}
 
-  wrapper._webgpuTexture = {
-    texture,
-    view,
-    sampler,
+function runMipmapGeneration(
+  state: WebGLStubState,
+  realization: StubGPUTexture,
+): boolean {
+  if (realization.mipLevelCount <= 1) {
+    return true;
+  }
+  // Texture uploads can finish while model commands are being prepared. Route
+  // work through the context's frame-owned preparation queue so mip passes are
+  // encoded once and submitted before the scene command buffer; never issue a
+  // private queue.submit from the compatibility layer.
+  return state.enqueueMipGeneration(
+    realization.texture,
+    realization.format,
+    realization.mipLevelCount,
+    mipGenerationOptionsFor(realization),
+  );
+}
+
+function mipGenerationOptionsFor(realization: StubGPUTexture) {
+  return {
+    dimension: ((realization.depthOrArrayLayers ?? 1) === 6 ? "cube" : "2d") as
+      "cube" | "2d",
+    baseArrayLayer: 0,
+    arrayLayerCount: realization.depthOrArrayLayers ?? 1,
+  };
+}
+
+/**
+ * A stable WebGL-shaped handle whose native realization is valid for exactly
+ * one `(GPUDevice, resourceGeneration)` tuple. The compatibility layer never
+ * retains decoded upload sources; recovery drops the stale native and leaves
+ * re-creation to the higher-level resource owner.
+ */
+
+class GenerationSafeStubTexture implements StubTexture {
+  _isPlaceholder = true;
+  _samplerDesc = createPendingSamplerDesc();
+  _isCubeMap = false;
+  _destroyed = false;
+
+  private _native: StubGPUTexture | null = null;
+  private _nativeDevice: GPUDevice | null = null;
+  private _nativeGeneration = -1;
+  private _allocation: TextureAllocation | null = null;
+
+  constructor(private readonly _state: WebGLStubState) {}
+
+  get _webgpuTexture(): StubGPUTexture | null {
+    const device = this._state.device;
+    return device
+      ? this._getWebGPUTextureForDevice(device, this._state.resourceGeneration)
+      : null;
+  }
+
+  get _texture(): GPUTexture | null {
+    return this._webgpuTexture?.texture ?? null;
+  }
+
+  _getWebGPUTextureForDevice(
+    device: GPUDevice,
+    resourceGeneration: number,
+  ): StubGPUTexture | null {
+    if (
+      this._destroyed ||
+      device !== this._state.device ||
+      resourceGeneration !== this._state.resourceGeneration
+    ) {
+      return null;
+    }
+    if (
+      this._native &&
+      this._nativeDevice === device &&
+      this._nativeGeneration === resourceGeneration
+    ) {
+      return this._native;
+    }
+    return null;
+  }
+
+  _commitWebGPUTexture(
+    device: GPUDevice,
+    resourceGeneration: number,
+    realization: StubGPUTexture,
+  ): void {
+    const previous = this._native;
+    this._native = realization;
+    this._nativeDevice = device;
+    this._nativeGeneration = resourceGeneration;
+    if (previous && previous !== realization) {
+      try {
+        this._state.cancelMipGeneration(previous.texture);
+      } catch {
+        // Cancellation is bookkeeping-only. Still retire the old native below.
+      }
+      try {
+        previous.destroy();
+      } catch {
+        // The replacement tuple is already authoritative. A synthetic/lost
+        // old-native destroy failure must not prevent the caller from uploading
+        // the new contents into that replacement.
+      }
+    }
+  }
+
+  _setAllocation(allocation: TextureAllocation): void {
+    this._allocation = allocation;
+  }
+
+  _getAllocation(): TextureAllocation | null {
+    return this._allocation;
+  }
+
+  _invalidateNative(): void {
+    const native = this._native;
+    this._native = null;
+    this._nativeDevice = null;
+    this._nativeGeneration = -1;
+    if (native) {
+      let cancellationError: unknown;
+      try {
+        this._state.cancelMipGeneration(native.texture);
+      } catch (error) {
+        cancellationError = error;
+      }
+      try {
+        native.destroy();
+      } catch (error) {
+        throw cancellationError ?? error;
+      }
+      if (cancellationError !== undefined) {
+        throw cancellationError;
+      }
+    }
+  }
+
+  _destroyLogical(): void {
+    if (this._destroyed) return;
+    this._destroyed = true;
+    this._allocation = null;
+    this._invalidateNative();
+  }
+
+  _getDiagnostics() {
+    return {
+      liveTexture: this._native !== null,
+    };
+  }
+}
+
+type GenerationSafeTextureHandle = StubTextureWrapper & {
+  _invalidateNative(): void;
+  _destroyLogical(): void;
+  _getDiagnostics(): {
+    liveTexture: boolean;
+  };
+};
+
+/** Context-local registry used by recovery and final context teardown. */
+export class WebGLStubTextureRegistry implements StubTextureRegistry {
+  private readonly _handles = new Set<StubTextureWrapper>();
+
+  register(handle: StubTextureWrapper): void {
+    this._handles.add(handle);
+  }
+
+  unregister(handle: StubTextureWrapper): void {
+    this._handles.delete(handle);
+  }
+
+  invalidateDeviceGeneration(): void {
+    let firstDestroyError: unknown;
+    let hasDestroyError = false;
+    for (const handle of this._handles) {
+      try {
+        (handle as GenerationSafeTextureHandle)._invalidateNative();
+      } catch (error) {
+        if (!hasDestroyError) {
+          firstDestroyError = error;
+          hasDestroyError = true;
+        }
+      }
+    }
+    if (hasDestroyError) {
+      throw firstDestroyError;
+    }
+  }
+
+  destroy(): void {
+    const handles = Array.from(this._handles);
+    this._handles.clear();
+    let firstDestroyError: unknown;
+    let hasDestroyError = false;
+    for (const handle of handles) {
+      try {
+        (handle as GenerationSafeTextureHandle)._destroyLogical();
+      } catch (error) {
+        if (!hasDestroyError) {
+          firstDestroyError = error;
+          hasDestroyError = true;
+        }
+      }
+    }
+    if (hasDestroyError) {
+      throw firstDestroyError;
+    }
+  }
+
+  getDiagnostics(): StubTextureDiagnostics {
+    let liveTextureCount = 0;
+    for (const value of this._handles) {
+      const diagnostics = (
+        value as GenerationSafeTextureHandle
+      )._getDiagnostics();
+      if (diagnostics.liveTexture) liveTextureCount++;
+    }
+    return Object.freeze({
+      registeredHandleCount: this._handles.size,
+      liveTextureCount,
+    });
+  }
+}
+
+/**
+ * Resolve a compatibility-stub texture for one exact ownership tuple.
+ * Wrappers without generation-aware ownership metadata are rejected. Falling
+ * back to a direct property could reuse a native from another device/epoch.
+ */
+export function getWebGPUTextureForDevice(
+  wrapper: StubTextureWrapper | null | undefined,
+  device: GPUDevice,
+  resourceGeneration: number,
+): StubGPUTexture | null {
+  if (typeof wrapper?._getWebGPUTextureForDevice !== "function") return null;
+  return wrapper._getWebGPUTextureForDevice(device, resourceGeneration);
+}
+
+/** Allocate or reuse the current tuple's native storage for texImage2D. */
+function ensureTextureAllocated(
+  state: WebGLStubState,
+  wrapper: GenerationSafeStubTexture,
+  width: number,
+  height: number,
+  format: GPUTextureFormat,
+): StubGPUTexture {
+  const device = state.device!;
+  const layers = wrapper._isCubeMap ? 6 : 1;
+  const allocation: TextureAllocation = {
     width,
     height,
     format,
-    mipLevelCount,
+    // Compatibility uploads may provide an authored chain one level at a
+    // time (especially KTX2/block-compressed textures). Reserve that immutable
+    // storage whenever the sampler requests mips even when the automatic
+    // filtering blit cannot generate this format.
+    mipLevelCount: wrapper._samplerDesc.wantsMipmaps
+      ? mipLevelsFor(width, height)
+      : 1,
     depthOrArrayLayers: layers,
-    destroy() {
-      texture.destroy();
-    },
   };
+  const logical = wrapper._getAllocation();
+  if (
+    logical &&
+    logical.width === width &&
+    logical.height === height &&
+    logical.format === format &&
+    logical.depthOrArrayLayers === layers &&
+    logical.mipLevelCount === allocation.mipLevelCount
+  ) {
+    const current = wrapper._getWebGPUTextureForDevice(
+      device,
+      state.resourceGeneration,
+    );
+    if (current) return current;
+  }
+
+  // Candidate construction completes before publication; the old native
+  // owner remains intact if createTexture/createView/createSampler throws.
+  const candidate = createNativeTexture(device, wrapper, allocation);
+  wrapper._setAllocation(allocation);
+  wrapper._commitWebGPUTexture(device, state.resourceGeneration, candidate);
+  return candidate;
 }
 
 /**
@@ -333,6 +684,19 @@ export function createTextureStubs(
   state: WebGLStubState,
   logUsage: LogUsageFn,
 ) {
+  // A framebuffer copy is a command-encoder operation, unlike queue.writeTexture
+  // and copyExternalImageToTexture. Remember the exact encoder that recorded a
+  // level-0 copy so a following generateMipmap can append its passes after the
+  // copy in that encoder instead of incorrectly placing them in the earlier
+  // frame-preparation submit. A later queue.writeTexture/external upload does
+  // NOT clear this marker: queue operations execute before the eventual frame
+  // command buffer regardless of JS call order, so the coherent realizable
+  // order is queue upload -> recorded copy -> same-encoder mips. Exact WebGL
+  // copy-then-upload ordering requires a future encoder-recorded upload path
+  // or frame segmentation; moving mips back to prep would make base/tails
+  // disagree in the current architecture.
+  const commandEncodedBaseCopies = new WeakMap<GPUTexture, GPUCommandEncoder>();
+
   return {
     activeTexture: (unit: number) => {
       state.activeTextureUnit = unit - 0x84c0;
@@ -354,21 +718,60 @@ export function createTextureStubs(
     },
 
     createTexture: (): StubTexture => {
-      return {
-        _isPlaceholder: true,
-        _samplerDesc: createPendingSamplerDesc(),
-        _webgpuTexture: null,
-      };
+      const texture = new GenerationSafeStubTexture(state);
+      state.textureRegistry.register(texture);
+      return texture;
     },
 
     deleteTexture: (texture: StubTexture | null) => {
-      if (texture?._webgpuTexture?.destroy) {
-        texture._webgpuTexture.destroy();
-        texture._webgpuTexture = null;
-      } else if (texture?.destroy) {
-        texture.destroy();
+      if (!texture) return;
+      state.textureRegistry.unregister(texture);
+      texture._destroyLogical();
+    },
+
+    /** Release every native handle from the invalid device generation. */
+    invalidateCompatibilityTextureHandles: () => {
+      const mipmapGenerator = state.mipmapGenerator;
+      state.mipmapGenerator = null;
+      let firstDestroyError: unknown;
+      try {
+        state.textureRegistry.invalidateDeviceGeneration();
+      } catch (error) {
+        firstDestroyError = error;
+      }
+      try {
+        mipmapGenerator?.destroy?.();
+      } catch (error) {
+        firstDestroyError ??= error;
+      }
+      if (firstDestroyError !== undefined) {
+        throw firstDestroyError;
       }
     },
+
+    /** Final context teardown: release native handles and registry entries. */
+    destroyCompatibilityTextureHandles: () => {
+      state.textureBindings.clear();
+      const mipmapGenerator = state.mipmapGenerator;
+      state.mipmapGenerator = null;
+      let firstDestroyError: unknown;
+      try {
+        state.textureRegistry.destroy();
+      } catch (error) {
+        firstDestroyError = error;
+      }
+      try {
+        mipmapGenerator?.destroy?.();
+      } catch (error) {
+        firstDestroyError ??= error;
+      }
+      if (firstDestroyError !== undefined) {
+        throw firstDestroyError;
+      }
+    },
+
+    getCompatibilityTextureDiagnostics: (): StubTextureDiagnostics =>
+      state.textureRegistry.getDiagnostics(),
 
     /**
      * `pixelStorei(pname, value)` — records the pixel-store flags so
@@ -399,7 +802,7 @@ export function createTextureStubs(
      */
     texParameteri: (_target: number, pname: number, param: number) => {
       const binding = state.textureBindings.get(state.activeTextureUnit);
-      const wrapper: StubTexture | undefined = binding?.texture;
+      const wrapper = binding?.texture as StubTexture | undefined;
       if (!wrapper?._samplerDesc) return;
       const desc = wrapper._samplerDesc;
       switch (pname) {
@@ -452,7 +855,7 @@ export function createTextureStubs(
       pixelsArg?: TexImagePixelSource | null,
     ) => {
       const binding = state.textureBindings.get(state.activeTextureUnit);
-      const wrapper: StubTexture | undefined = binding?.texture;
+      const wrapper = binding?.texture as StubTexture | undefined;
       if (!wrapper || !state.device) return;
 
       // Disambiguate the two overloads based on argc.
@@ -516,7 +919,13 @@ export function createTextureStubs(
       // texture, then level-8 fails with "MipLevel (8) > number of mip
       // levels (1)".
       if (level === 0 || !wrapper._webgpuTexture) {
-        ensureTextureAllocated(state.device, wrapper, width, height, gpuFormat);
+        ensureTextureAllocated(
+          state,
+          wrapper as GenerationSafeStubTexture,
+          width,
+          height,
+          gpuFormat,
+        );
       }
       const tex = wrapper._webgpuTexture!;
       // Skip uploads that target a level beyond what we allocated. WebGL
@@ -629,9 +1038,10 @@ export function createTextureStubs(
       pixelsArg?: ArrayBufferView | null,
     ) => {
       const binding = state.textureBindings.get(state.activeTextureUnit);
-      const wrapper: StubTexture | undefined = binding?.texture;
-      if (!wrapper?._webgpuTexture || !state.device) return;
+      const wrapper = binding?.texture as StubTexture | undefined;
+      if (!wrapper || !state.device) return;
       const tex = wrapper._webgpuTexture;
+      if (!tex) return;
 
       // Cube face index for the upload's `origin.z`. Matches the
       // mapping in `texImage2D` above — POSITIVE_X (0x8515) is layer 0,
@@ -748,27 +1158,98 @@ export function createTextureStubs(
     compressedTexImage2D: (
       _target: number,
       level: number,
-      _internalformat: number,
+      internalformat: number,
       width: number,
       height: number,
       _border: number,
       data: ArrayBufferView,
     ) => {
       const binding = state.textureBindings.get(state.activeTextureUnit);
-      if (!binding?.texture?._webgpuTexture || !state.device) return;
+      const wrapper = binding?.texture as StubTexture | undefined;
+      if (!wrapper || !state.device) return;
+      const gpuFormat = getCompressedTextureFormat(internalformat);
+      if (!gpuFormat) {
+        logUsage(
+          "compressedTexImage2D",
+          `unsupported compressed internal format 0x${internalformat.toString(16)}`,
+        );
+        return;
+      }
+      const requiredFeature = compressedTextureFeature(gpuFormat);
+      if (!requiredFeature || !state.device.features.has(requiredFeature)) {
+        logUsage(
+          "compressedTexImage2D",
+          `compressed format ${gpuFormat} requires ${requiredFeature ?? "an unsupported feature"}`,
+        );
+        return;
+      }
+      if (
+        width <= 0 ||
+        height <= 0 ||
+        (level === 0 && (width % 4 !== 0 || height % 4 !== 0))
+      ) {
+        logUsage(
+          "compressedTexImage2D",
+          level === 0
+            ? `compressed base dimensions ${width}x${height} must be positive 4x4-block multiples`
+            : `compressed mip dimensions ${width}x${height} must be positive`,
+        );
+        return;
+      }
+      const requestedLayout = compressedCopyLayout(width, height, gpuFormat);
+      if (
+        data.byteLength <
+        requestedLayout.bytesPerRow * requestedLayout.rowsPerImage
+      ) {
+        logUsage(
+          "compressedTexImage2D",
+          `compressed source is ${data.byteLength} bytes; ${requestedLayout.bytesPerRow * requestedLayout.rowsPerImage} required`,
+        );
+        return;
+      }
+      const cubeFace = cubeFaceLayerForTarget(_target);
+      if (cubeFace !== null) wrapper._isCubeMap = true;
+      if (level === 0) {
+        ensureTextureAllocated(
+          state,
+          wrapper as GenerationSafeStubTexture,
+          width,
+          height,
+          gpuFormat,
+        );
+      }
+      const tex = wrapper._webgpuTexture;
+      if (!tex || level < 0 || level >= tex.mipLevelCount) return;
+      if (tex.format !== gpuFormat) {
+        logUsage(
+          "compressedTexImage2D",
+          `compressed format ${gpuFormat} does not match allocated ${tex.format}`,
+        );
+        return;
+      }
       // Cube-face layer for KTX2-compressed cubemaps (kiara HDR
       // environment map in `glTF PBR Extensions.html` and other IBL-
       // sourced demos).
-      const cubeFace = cubeFaceLayerForTarget(_target);
+      const mipWidth = Math.max(1, tex.width >> level);
+      const mipHeight = Math.max(1, tex.height >> level);
+      if (width !== mipWidth || height !== mipHeight) {
+        logUsage(
+          "compressedTexImage2D",
+          `compressed mip ${level} must be ${mipWidth}x${mipHeight}, received ${width}x${height}`,
+        );
+        return;
+      }
+      const { bytesPerRow, rowsPerImage, copyWidth, copyHeight } =
+        compressedCopyLayout(width, height, gpuFormat);
       state.device.queue.writeTexture(
         {
-          texture: binding.texture._webgpuTexture.texture,
+          texture: tex.texture,
           mipLevel: level,
           origin: { x: 0, y: 0, z: cubeFace ?? 0 },
         },
         data as BufferSource,
-        { bytesPerRow: width * 4, rowsPerImage: height },
-        { width, height, depthOrArrayLayers: 1 },
+        { bytesPerRow, rowsPerImage },
+        { width: copyWidth, height: copyHeight, depthOrArrayLayers: 1 },
       );
     },
 
@@ -783,17 +1264,65 @@ export function createTextureStubs(
       data: ArrayBufferView,
     ) => {
       const binding = state.textureBindings.get(state.activeTextureUnit);
-      if (!binding?.texture?._webgpuTexture || !state.device) return;
+      const wrapper = binding?.texture as StubTexture | undefined;
+      if (!wrapper || !state.device) return;
+      const tex = wrapper._webgpuTexture;
+      if (!tex || level < 0 || level >= tex.mipLevelCount) return;
+      const gpuFormat = getCompressedTextureFormat(_format);
+      if (!gpuFormat || gpuFormat !== tex.format) {
+        logUsage(
+          "compressedTexSubImage2D",
+          `compressed subimage format does not match allocated ${tex.format}`,
+        );
+        return;
+      }
+      const mipWidth = Math.max(1, tex.width >> level);
+      const mipHeight = Math.max(1, tex.height >> level);
+      if (
+        xoffset < 0 ||
+        yoffset < 0 ||
+        xoffset % 4 !== 0 ||
+        yoffset % 4 !== 0
+      ) {
+        logUsage(
+          "compressedTexSubImage2D",
+          `compressed origin (${xoffset}, ${yoffset}) must be non-negative and 4x4-block aligned`,
+        );
+        return;
+      }
+      if (
+        width <= 0 ||
+        height <= 0 ||
+        xoffset + width > mipWidth ||
+        yoffset + height > mipHeight ||
+        (width % 4 !== 0 && xoffset + width !== mipWidth) ||
+        (height % 4 !== 0 && yoffset + height !== mipHeight)
+      ) {
+        logUsage(
+          "compressedTexSubImage2D",
+          `compressed region ${width}x${height} at (${xoffset}, ${yoffset}) is outside or not block-complete for mip ${mipWidth}x${mipHeight}`,
+        );
+        return;
+      }
       const cubeFace = cubeFaceLayerForTarget(_target);
+      const { bytesPerRow, rowsPerImage, copyWidth, copyHeight } =
+        compressedCopyLayout(width, height, tex.format);
+      if (data.byteLength < bytesPerRow * rowsPerImage) {
+        logUsage(
+          "compressedTexSubImage2D",
+          `compressed source is ${data.byteLength} bytes; ${bytesPerRow * rowsPerImage} required`,
+        );
+        return;
+      }
       state.device.queue.writeTexture(
         {
-          texture: binding.texture._webgpuTexture.texture,
+          texture: tex.texture,
           mipLevel: level,
           origin: { x: xoffset, y: yoffset, z: cubeFace ?? 0 },
         },
         data as BufferSource,
-        { bytesPerRow: width * 4, rowsPerImage: height },
-        { width, height, depthOrArrayLayers: 1 },
+        { bytesPerRow, rowsPerImage },
+        { width: copyWidth, height: copyHeight, depthOrArrayLayers: 1 },
       );
     },
 
@@ -810,13 +1339,15 @@ export function createTextureStubs(
       const binding = state.textureBindings.get(state.activeTextureUnit);
       if (!binding?.texture?._webgpuTexture || !state.currentCommandEncoder)
         return;
+      const destinationTexture = binding.texture._webgpuTexture.texture;
+      const encoder = state.currentCommandEncoder;
       const sourceTexture =
         state.boundFramebuffer?.colorAttachment?._texture ||
         state.context?.getCurrentTexture();
       if (sourceTexture) {
-        state.copyTextureRegion(
+        const copied = state.copyTextureRegion(
           sourceTexture,
-          binding.texture._webgpuTexture.texture,
+          destinationTexture,
           x,
           y,
           0,
@@ -824,6 +1355,14 @@ export function createTextureStubs(
           width,
           height,
         );
+        if (copied && _level === 0) {
+          commandEncodedBaseCopies.set(destinationTexture, encoder);
+        } else if (!copied) {
+          logUsage(
+            "copyTexImage2D",
+            "source/destination usages or formats are not copy-compatible",
+          );
+        }
       }
     },
 
@@ -840,13 +1379,15 @@ export function createTextureStubs(
       const binding = state.textureBindings.get(state.activeTextureUnit);
       if (!binding?.texture?._webgpuTexture || !state.currentCommandEncoder)
         return;
+      const destinationTexture = binding.texture._webgpuTexture.texture;
+      const encoder = state.currentCommandEncoder;
       const sourceTexture =
         state.boundFramebuffer?.colorAttachment?._texture ||
         state.context?.getCurrentTexture();
       if (sourceTexture) {
-        state.copyTextureRegion(
+        const copied = state.copyTextureRegion(
           sourceTexture,
-          binding.texture._webgpuTexture.texture,
+          destinationTexture,
           x,
           y,
           xoffset,
@@ -854,24 +1395,22 @@ export function createTextureStubs(
           width,
           height,
         );
+        if (copied && _level === 0) {
+          commandEncodedBaseCopies.set(destinationTexture, encoder);
+        } else if (!copied) {
+          logUsage(
+            "copyTexSubImage2D",
+            "source/destination usages or formats are not copy-compatible",
+          );
+        }
       }
     },
 
-    /**
-     * Real `gl.generateMipmap()` — dispatches `WebGPUMipmapGenerator`
-     * against the bound texture using the active command encoder. The
-     * generator is lazily instantiated and cached on `state` so the cost
-     * (shader module + sampler + bind group layout creation) is paid
-     * once per device.
-     *
-     * Requires the texture to have been allocated with mipLevelCount > 1
-     * and RENDER_ATTACHMENT usage — `ensureTextureAllocated` does both
-     * automatically when the wrapper's `wantsMipmaps` flag is true.
-     */
+    /** Frame-owned `gl.generateMipmap()` preparation. */
     generateMipmap: (_target: number) => {
       const binding = state.textureBindings.get(state.activeTextureUnit);
-      const wrapper: StubTexture | undefined = binding?.texture;
-      if (!wrapper?._webgpuTexture || !state.device) {
+      const wrapper = binding?.texture as StubTexture | undefined;
+      if (!wrapper || !state.device) {
         logUsage(
           "generateMipmap",
           "no bound texture with allocated GPU resource",
@@ -879,46 +1418,53 @@ export function createTextureStubs(
         return;
       }
       const tex = wrapper._webgpuTexture;
-      if (tex.mipLevelCount <= 1) {
-        // Caller didn't request mipmaps via texParameteri — nothing to do.
+      if (!tex) {
+        logUsage(
+          "generateMipmap",
+          "no bound texture with allocated GPU resource",
+        );
         return;
       }
-
-      // Lazy-create the generator on the first call. Stored on `state` so
-      // it's reused for the lifetime of the WebGPU device.
-      // WebGPUMipmapGenerator structurally satisfies StubMipmapGenerator
-      // (same `generateMipmaps` signature) so no cast is required.
-      if (!state.mipmapGenerator) {
-        state.mipmapGenerator = new WebGPUMipmapGenerator(state.device);
+      if (isCompressedTextureFormat(tex.format)) {
+        logUsage(
+          "generateMipmap",
+          "compressed textures require an authored mip chain",
+        );
+        return;
       }
-      const gen = state.mipmapGenerator;
-
-      // Batch 144 — ALWAYS use a standalone encoder. The pre-Batch-144
-      // path tried to reuse `state.currentCommandEncoder` "to batch the
-      // mipmap blits into the current frame", but generateMipmaps calls
-      // `encoder.beginRenderPass(...)` per mip level. When the
-      // SceneRenderer's canvas render pass is already open on the same
-      // encoder (which is true for the entire body of `scene.render()`),
-      // beginning a new render pass on that encoder is invalid and
-      // triggers:
-      //   "Recording in [CommandEncoder ...] which is locked while
-      //    [RenderPassEncoder "Scene Main Render Pass"] is open."
-      //
-      // Surfaced as the CesiumMan startup race in Batch 141 — texture
-      // loads happening mid-frame via JobScheduler trigger
-      // `gltfTextureLoader.process → Texture.generateMipmap → this
-      // stub`. The race was masked in steady state because most frames
-      // have no pending texture loads to process.
-      //
-      // The "batching" optimization saved one queue.submit per
-      // generateMipmap call, but mipmap generation is dozens of
-      // draws — the submit cost is negligible by comparison.
-      const encoder = gen.generateMipmaps(
-        tex.texture,
-        tex.format,
-        tex.mipLevelCount,
-      );
-      state.device.queue.submit([encoder.finish()]);
+      if (tex.mipLevelCount <= 1) {
+        return;
+      }
+      const dependencyEncoder = commandEncodedBaseCopies.get(tex.texture);
+      if (dependencyEncoder === state.currentCommandEncoder) {
+        const accepted = state.encodeMipGenerationInCurrentEncoder(
+          tex.texture,
+          tex.format,
+          tex.mipLevelCount,
+          mipGenerationOptionsFor(tex),
+        );
+        if (accepted) {
+          commandEncodedBaseCopies.delete(tex.texture);
+        } else {
+          logUsage(
+            "generateMipmap",
+            "could not encode mips after the current-encoder base-level copy",
+          );
+        }
+        return;
+      }
+      if (dependencyEncoder) {
+        // The encoder that carried the copy has already rotated/submitted (or
+        // was abandoned). A later frame can safely use the normal preparation
+        // queue; do not let the old encoder identity pin this texture there.
+        commandEncodedBaseCopies.delete(tex.texture);
+      }
+      if (!runMipmapGeneration(state, tex)) {
+        logUsage(
+          "generateMipmap",
+          `frame-owned mip generation rejected format ${tex.format}`,
+        );
+      }
     },
 
     hint: () => logUsage("hint", "Not applicable in WebGPU"),

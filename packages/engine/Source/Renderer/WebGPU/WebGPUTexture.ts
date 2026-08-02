@@ -75,6 +75,9 @@ export interface WebGPUTextureOptions {
    */
   usage?: GPUTextureUsageFlags;
 
+  /** Binding view dimension required by compatibility-profile devices. */
+  textureBindingViewDimension?: GPUTextureViewDimension;
+
   /**
    * Label for debugging
    */
@@ -97,6 +100,7 @@ export class WebGPUTexture {
   private _mipLevelCount: number;
   private _isDestroyed: boolean = false;
   private _label: string;
+  private _beforeDestroy: ((texture: GPUTexture) => void) | null = null;
 
   /**
    * Private constructor. Use static factory methods instead.
@@ -153,7 +157,7 @@ export class WebGPUTexture {
         GPUTextureUsage.COPY_DST |
         GPUTextureUsage.RENDER_ATTACHMENT;
 
-    const textureDescriptor: GPUTextureDescriptor = {
+    const textureDescriptor = {
       size: {
         width: options.width,
         height: options.height ?? 1,
@@ -165,7 +169,14 @@ export class WebGPUTexture {
       sampleCount: options.sampleCount ?? 1,
       usage,
       label: options.label,
-    };
+    } as GPUTextureDescriptor;
+    if (defined(options.textureBindingViewDimension)) {
+      (
+        textureDescriptor as GPUTextureDescriptor & {
+          textureBindingViewDimension: GPUTextureViewDimension;
+        }
+      ).textureBindingViewDimension = options.textureBindingViewDimension;
+    }
 
     const texture = options.device.createTexture(textureDescriptor);
 
@@ -193,6 +204,7 @@ export class WebGPUTexture {
     format: GPUTextureFormat = "rgba8unorm",
     mipLevelCount: number = 1,
     label?: string,
+    usage?: GPUTextureUsageFlags,
   ): WebGPUTexture {
     return WebGPUTexture.create({
       device,
@@ -202,6 +214,8 @@ export class WebGPUTexture {
       dimension: "2d",
       mipLevelCount,
       label: label ?? "Texture2D",
+      usage,
+      textureBindingViewDimension: "2d",
     });
   }
 
@@ -235,6 +249,7 @@ export class WebGPUTexture {
       format,
       dimension: "3d",
       label: label ?? "Texture3D",
+      textureBindingViewDimension: "3d",
     });
   }
 
@@ -257,6 +272,7 @@ export class WebGPUTexture {
     format: GPUTextureFormat = "rgba8unorm",
     mipLevelCount: number = 1,
     label?: string,
+    usage?: GPUTextureUsageFlags,
   ): WebGPUTexture {
     return WebGPUTexture.create({
       device,
@@ -267,6 +283,8 @@ export class WebGPUTexture {
       dimension: "2d",
       mipLevelCount,
       label: label ?? "CubeMap",
+      usage,
+      textureBindingViewDimension: "cube",
     });
   }
 
@@ -559,6 +577,17 @@ export class WebGPUTexture {
       this._texture,
       this._format,
       this._mipLevelCount,
+      this.isCubeMap
+        ? {
+            dimension: "cube",
+            baseArrayLayer: 0,
+            arrayLayerCount: 6,
+          }
+        : {
+            dimension: "2d",
+            baseArrayLayer: 0,
+            arrayLayerCount: 1,
+          },
     );
 
     // Clean up if we created a temporary generator
@@ -594,6 +623,17 @@ export class WebGPUTexture {
   }
 
   /**
+   * Install owner bookkeeping that must run before the native texture dies.
+   * Context image helpers use this to cancel frame-owned mip work when a
+   * returned wrapper is destroyed before `endFrame` drains the queue.
+   */
+  setBeforeDestroyCallback(
+    callback: ((texture: GPUTexture) => void) | null,
+  ): void {
+    this._beforeDestroy = callback;
+  }
+
+  /**
    * Destroys the texture and frees GPU resources.
    */
   destroy(): void {
@@ -601,10 +641,32 @@ export class WebGPUTexture {
       return;
     }
 
-    this._texture.destroy();
+    let callbackError: unknown;
+    try {
+      this._beforeDestroy?.(this._texture);
+    } catch (error) {
+      callbackError = error;
+    }
+    // Detach the wrapper before invoking native destruction. Lost-device and
+    // synthetic GPUTexture implementations may throw, but the logical owner
+    // is terminal and must never expose its cached view/sampler or retry the
+    // same native destruction on a later destroy() call.
+    this._beforeDestroy = null;
     this._view = null;
     this._sampler = null;
     this._isDestroyed = true;
+    let nativeDestroyError: unknown;
+    try {
+      this._texture.destroy();
+    } catch (error) {
+      nativeDestroyError = error;
+    }
+    if (callbackError !== undefined) {
+      throw callbackError;
+    }
+    if (nativeDestroyError !== undefined) {
+      throw nativeDestroyError;
+    }
   }
 
   // ====================================================================================

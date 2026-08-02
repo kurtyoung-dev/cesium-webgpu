@@ -1,5 +1,8 @@
 import GlobeSurfaceTile from "../../../Source/Scene/GlobeSurfaceTile.js";
-import { getOrCreateWaterMaskTexture } from "../../../Source/Renderer/WebGPU/WebGPUGlobeSurfaceTextures.js";
+import {
+  getOrCreateWaterMaskTexture,
+  uploadImageSource,
+} from "../../../Source/Renderer/WebGPU/WebGPUGlobeSurfaceTextures.js";
 import GlobeTerrainSource from "../../../Source/Shaders/WebGPU/Globe/GlobeTerrain.js";
 
 describe("Renderer/WebGPU/WebGPUGlobeSurfaceTextures", function () {
@@ -155,6 +158,53 @@ describe("Renderer/WebGPU/WebGPUGlobeSurfaceTextures", function () {
       fake.device.queue.copyExternalImageToTexture.calls.mostRecent().args[0];
     expect(sourceDescriptor.source).toBe(canvas);
     expect(sourceDescriptor.flipY).toBe(false);
+  });
+
+  it("cancels and destroys an enqueued candidate when view publication fails", function () {
+    const events = [];
+    const texture = {
+      createView: function () {
+        events.push("view");
+        throw new Error("synthetic view failure");
+      },
+      destroy: function () {
+        events.push("destroy");
+      },
+    };
+    const device = {
+      createTexture: jasmine
+        .createSpy("createTexture")
+        .and.returnValue(texture),
+      queue: {
+        copyExternalImageToTexture: jasmine.createSpy(
+          "copyExternalImageToTexture",
+        ),
+      },
+    };
+    const context = {
+      enqueueTextureMipGeneration: function (candidate) {
+        expect(candidate).toBe(texture);
+        events.push("enqueue");
+      },
+      cancelTextureMipGeneration: function (candidate) {
+        expect(candidate).toBe(texture);
+        events.push("cancel");
+      },
+      scheduleTextureDestroy: function () {},
+    };
+    const host = createHost(device);
+    host._webgpuContext = context;
+    const source = document.createElement("canvas");
+    source.width = 4;
+    source.height = 4;
+    const cache = new Map();
+    spyOn(console, "error");
+
+    expect(uploadImageSource(host, source, "rollback", cache)).toBeNull();
+
+    expect(events).toEqual(["enqueue", "view", "cancel", "destroy"]);
+    expect(cache.size).toBe(0);
+    expect(console.error).toHaveBeenCalled();
   });
 
   it("applies WebGL's post-translation water-mask Y flip at both WGSL sample sites", function () {

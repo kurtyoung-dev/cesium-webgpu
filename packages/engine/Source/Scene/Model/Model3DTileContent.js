@@ -7,6 +7,10 @@ import Ellipsoid from "../../Core/Ellipsoid.js";
 import Pass from "../../Renderer/Pass.js";
 import ModelAnimationLoop from "../ModelAnimationLoop.js";
 import Model from "./Model.js";
+import {
+  applyModel3DTileStatePacket,
+  refreshModel3DTileStatePacket,
+} from "./Model3DTileStatePacket.js";
 
 /** @import Cesium3DContentGroup from "../Cesium3DContentGroup.js"; */
 /** @import Cesium3DTile from "../Cesium3DTile.js"; */
@@ -46,6 +50,7 @@ class Model3DTileContent {
     /** @type {Cesium3DContentGroup|undefined} */
     this._group = undefined;
     this._ready = false;
+    this._modelStatePacket = undefined;
   }
 
   get featuresLength() {
@@ -244,23 +249,19 @@ class Model3DTileContent {
     const model = this._model;
     const tile = this._tile;
 
-    model.colorBlendAmount = tileset.colorBlendAmount;
-    model.colorBlendMode = tileset.colorBlendMode;
+    // C11-205 — Cesium3DTileset refreshes this shared immutable packet once
+    // per pass (and after a mutating tileVisible callback). A newly loaded or
+    // newly selected content applies the complete current packet once; steady
+    // frames avoid sixteen setters and the unconditional lightColor clone per
+    // selected tile. The fallback keeps direct/private content updates safe.
+    const modelStatePacket =
+      tileset._model3DTileStatePacket ?? refreshModel3DTileStatePacket(tileset);
+    if (this._modelStatePacket !== modelStatePacket) {
+      applyModel3DTileStatePacket(model, modelStatePacket);
+      this._modelStatePacket = modelStatePacket;
+    }
+
     model.modelMatrix = tile.computedTransform;
-    model.customShader = tileset.customShader;
-    model.featureIdLabel = tileset.featureIdLabel;
-    model.instanceFeatureIdLabel = tileset.instanceFeatureIdLabel;
-    model.lightColor = tileset.lightColor;
-    model.imageBasedLighting = tileset.imageBasedLighting;
-    model.backFaceCulling = tileset.backFaceCulling;
-    model.shadows = tileset.shadows;
-    model.showCreditsOnScreen = tileset.showCreditsOnScreen;
-    model.splitDirection = tileset.splitDirection;
-    model.debugWireframe = tileset.debugWireframe;
-    model.edgeDisplayMode = tileset.edgeDisplayMode;
-    model.showOutline = tileset.showOutline;
-    model.outlineColor = tileset.outlineColor;
-    model.pointCloudShading = tileset.pointCloudShading;
 
     // Updating clipping planes requires more effort because of ownership checks
     const tilesetClippingPlanes = tileset.clippingPlanes;

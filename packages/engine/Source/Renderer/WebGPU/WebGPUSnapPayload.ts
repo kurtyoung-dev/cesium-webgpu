@@ -20,24 +20,24 @@
  * enforceable home and lets `Tools/visual-regression/webgpu-snap-payload.spec.mjs`
  * pin the encoding in plain Node, without a device.
  *
- * ## Channel layout
+ * ## Word layout
  *
- * Byte-for-byte the layout upstream's `Scene/SnapFramebuffer.js`
- * `getSnapObjectsFromPixels` reads out of its WebGL2 RGBA32F framebuffer, built
- * from the GLSL expression `PickingPipelineStage.snapIdFromPickId` compiles:
+ * The decoded hit is shape-identical to the layout upstream's
+ * `Scene/SnapFramebuffer.js` reads out of its WebGL2 RGBA32F framebuffer. The
+ * WebGPU transport is deliberately denser and exact:
  *
  *     vec4(rgba8UnormToUint32(pickColor), isEdge ? 1.0 : 0.0, -v_positionEC.z, 0.0)
  *
- * | Channel | Contents                                                        |
- * | ------- | --------------------------------------------------------------- |
- * | R       | pick key — uint32 repacked from the RGBA8-normalized pick color, then widened to f32. Keys above 2^24 lose precision, exactly as in the GLSL original (same uint→float cast). |
- * | G       | isEdge flag: 0.0 surface, 1.0 edge.                             |
- * | B       | linear EYE-SPACE depth in meters (`-positionEC.z`). Eye space is global across the multifrustum and independent of the log-depth encoding, so `Snapping.snapHitToWorld` unprojects it directly. |
- * | A       | unused (0.0).                                                   |
+ * | Word | Contents                                                           |
+ * | ---- | ------------------------------------------------------------------ |
+ * | R    | Exact uint32 pick key repacked from the RGBA8-normalized pick color. |
+ * | G    | Bits 0..30: positive linear eye-space depth as IEEE-754 f32 bits. Bit 31: isEdge. |
  *
- * The B channel is a CAMERA-RELATIVE distance, never an absolute position, so
+ * The decoded depth is a CAMERA-RELATIVE distance, never an absolute position, so
  * it satisfies the RTE law without a high/low pair: the WGSL writer derives it
- * from `camera.modelViewRelativeToEye * vec4(rte, 1.0)`.
+ * from `camera.modelViewRelativeToEye * vec4(rte, 1.0)`. Visible fragments are
+ * in front of the camera, so their positive depth has a clear IEEE sign bit;
+ * that otherwise-unused bit carries the edge flag without changing depth.
  *
  * @private
  */
@@ -45,26 +45,56 @@
 import defined from "../../Core/defined.js";
 
 /**
- * The snap payload attachment format — the WebGPU twin of upstream
- * `SnapFramebuffer`'s `PixelFormat.RGBA` + `PixelDatatype.FLOAT` (WebGL2
- * RGBA32F).
+ * The snap payload attachment format. WebGL retains upstream RGBA32F; WebGPU
+ * uses two exact 32-bit unsigned words and converts them back to the same
+ * renderer-neutral hit object during readback.
  *
- * Fixed, NOT derived from the scene or pick format: every channel is a full f32
- * (a pick key that must survive uint32 repacking, and a depth in meters), and
- * an 8-bit or half-float target would destroy both. `rgba32float` is renderable
- * as a color attachment in core WebGPU with no optional feature, and is
- * deliberately non-blendable and non-filterable — exactly right for a
- * byte-exact ID + depth payload.
+ * `rg32uint` is a core renderable, non-blendable integer format and requires no
+ * optional feature. It preserves all 32 pick-key bits (unlike uint-to-f32,
+ * which loses keys above 2^24) and the full positive f32 eye-depth bit pattern
+ * while halving payload attachment and readback bytes.
  *
  * @private
  */
-export const SNAP_PAYLOAD_FORMAT: GPUTextureFormat = "rgba32float";
+export const SNAP_PAYLOAD_FORMAT: GPUTextureFormat = "rg32uint";
 
-/** Channels per snap pixel. */
-export const SNAP_CHANNELS = 4;
+/** Uint32 words per snap pixel. */
+export const SNAP_CHANNELS = 2;
 
-/** Bytes per snap pixel (RGBA32F). */
+/** Bytes per snap pixel (RG32Uint). */
 export const SNAP_BYTES_PER_PIXEL = SNAP_CHANNELS * 4;
+
+/** Bit reserved for the edge flag in the packed depth word. */
+export const SNAP_EDGE_BIT = 0x80000000;
+
+/** Bits carrying the positive f32 eye-depth payload. */
+export const SNAP_DEPTH_BITS = 0x7fffffff;
+
+// Reused scalar bit-cast storage. Decode is synchronous; the resolved scalar
+// is copied out before the pick registry is consulted, so even a re-entrant
+// registry callback cannot corrupt an in-progress result.
+const snapScalarBits = new ArrayBuffer(4);
+const snapScalarFloat = new Float32Array(snapScalarBits);
+const snapScalarUint = new Uint32Array(snapScalarBits);
+
+/** Pack a positive eye-space f32 depth and edge flag into the second word. */
+export function packSnapDepthAndEdge(depth: number, isEdge: boolean): number {
+  snapScalarFloat[0] = depth;
+  return (
+    ((snapScalarUint[0] & SNAP_DEPTH_BITS) | (isEdge ? SNAP_EDGE_BIT : 0)) >>> 0
+  );
+}
+
+/** Decode the full f32 eye-space depth from the second payload word. */
+export function unpackSnapDepth(word: number): number {
+  snapScalarUint[0] = word & SNAP_DEPTH_BITS;
+  return snapScalarFloat[0];
+}
+
+/** Decode the edge flag from the second payload word. */
+export function unpackSnapIsEdge(word: number): boolean {
+  return (word & SNAP_EDGE_BIT) !== 0;
+}
 
 /** WebGPU's minimum `bytesPerRow` alignment for a texture-to-buffer copy. */
 export const COPY_BYTES_PER_ROW_ALIGNMENT = 256;
@@ -85,7 +115,7 @@ export interface WebGPUSnapHit {
   depth: number;
   /** Pixel offset from the query center, +x right. */
   x: number;
-  /** Pixel offset from the query center, +y up. */
+  /** Pixel offset from the query center, +y down (CSS/window convention). */
   y: number;
 }
 
@@ -132,30 +162,30 @@ export function alignedSnapBytesPerRow(copyWidth: number): number {
  * rectangle, stripping the 256-byte row padding. Pixels outside the attachment
  * stay zero.
  *
- * @param mappedData - The mapped staging buffer viewed as f32.
+ * @param mappedData - The mapped staging buffer viewed as uint32 words.
  * @param bytesPerRow - The aligned row pitch the copy used.
  * @param region - The region {@link SnapReadbackRegion} the copy was issued for.
- * @returns Tightly packed `logicalWidth * logicalHeight * 4` floats.
+ * @returns Tightly packed `logicalWidth * logicalHeight * 2` uint32 words.
  *
  * @private
  */
 export function unpackSnapPixels(
-  mappedData: Float32Array,
+  mappedData: Uint32Array,
   bytesPerRow: number,
   region: SnapReadbackRegion,
-): Float32Array {
-  const pixels = new Float32Array(
+): Uint32Array {
+  const pixels = new Uint32Array(
     region.logicalWidth * region.logicalHeight * SNAP_CHANNELS,
   );
-  const floatsPerSourceRow = bytesPerRow / 4;
-  const copyRowFloats = region.copyWidth * SNAP_CHANNELS;
+  const wordsPerSourceRow = bytesPerRow / 4;
+  const copyRowWords = region.copyWidth * SNAP_CHANNELS;
   for (let row = 0; row < region.copyHeight; row++) {
-    const srcOffset = row * floatsPerSourceRow;
+    const srcOffset = row * wordsPerSourceRow;
     const dstOffset =
       ((region.copyOffsetY + row) * region.logicalWidth + region.copyOffsetX) *
       SNAP_CHANNELS;
     pixels.set(
-      mappedData.subarray(srcOffset, srcOffset + copyRowFloats),
+      mappedData.subarray(srcOffset, srcOffset + copyRowWords),
       dstOffset,
     );
   }
@@ -174,11 +204,11 @@ export interface SnapPickRegistry {
 }
 
 /**
- * Decode an RGBA32F snap rectangle into hits, walking the SAME outward spiral
+ * Decode an RG32Uint snap rectangle into hits, walking the SAME outward spiral
  * upstream's `getSnapObjectsFromPixels` walks so both backends visit candidates
  * in the same order.
  *
- * Every pixel whose R channel resolves to a registered pick object becomes a
+ * Every pixel whose R word resolves to a registered pick object becomes a
  * candidate. Edge-over-surface preference and the occlusion tolerance are NOT
  * applied here — `Snapping.selectBestHit` does that arbitration, identically
  * for both backends, from this list.
@@ -187,7 +217,7 @@ export interface SnapPickRegistry {
  */
 export function decodeSnapHits(
   registry: SnapPickRegistry,
-  pixels: Float32Array,
+  pixels: Uint32Array,
   width: number,
   height: number,
 ): WebGPUSnapHit[] {
@@ -209,15 +239,22 @@ export function decodeSnapHits(
       -halfHeight <= y &&
       y <= halfHeight
     ) {
-      const index = SNAP_CHANNELS * ((halfHeight - y) * width + x + halfWidth);
+      // A WebGPU texture-to-buffer copy is top-to-bottom. Preserve upstream's
+      // public/window-space hit convention (+y down) by mapping negative
+      // spiral y to the top rows. WebGL's readPixels array is bottom-to-top and
+      // therefore uses `halfHeight - y` for the same logical convention.
+      const index = SNAP_CHANNELS * ((halfHeight + y) * width + x + halfWidth);
 
       const pickColor = pixels[index];
+      const depthAndEdge = pixels[index + 1];
+      const depth = unpackSnapDepth(depthAndEdge);
+      const isEdge = unpackSnapIsEdge(depthAndEdge);
       const object = registry.getObjectByPickColor(pickColor);
       if (defined(object)) {
         results.push({
           object: object,
-          isEdge: pixels[index + 1] > 0.0,
-          depth: pixels[index + 2],
+          isEdge: isEdge,
+          depth: depth,
           x: x,
           y: y,
         });

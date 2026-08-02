@@ -369,21 +369,25 @@ function createTexture2DUpdateFunction(uniformId) {
       return;
     }
 
-    if (uniformValue instanceof Texture && uniformValue !== texture) {
-      material._texturePaths[uniformId] = undefined;
-      const tmp = material._textures[uniformId];
-      if (defined(tmp) && tmp !== material._defaultTexture) {
-        tmp.destroy();
-      }
-      material._textures[uniformId] = uniformValue;
+    if (uniformValue instanceof Texture) {
+      if (uniformValue !== texture) {
+        material._texturePaths[uniformId] = undefined;
+        const tmp = material._textures[uniformId];
+        if (defined(tmp) && tmp !== material._defaultTexture) {
+          tmp.destroy();
+        }
+        material._textures[uniformId] = uniformValue;
 
-      uniformDimensionsName = `${uniformId}Dimensions`;
-      if (uniforms.hasOwnProperty(uniformDimensionsName)) {
-        uniformDimensions = uniforms[uniformDimensionsName];
-        uniformDimensions.x = uniformValue._width;
-        uniformDimensions.y = uniformValue._height;
+        uniformDimensionsName = `${uniformId}Dimensions`;
+        if (uniforms.hasOwnProperty(uniformDimensionsName)) {
+          uniformDimensions = uniforms[uniformDimensionsName];
+          uniformDimensions.x = uniformValue._width;
+          uniformDimensions.y = uniformValue._height;
+        }
       }
-
+      // An already-adopted Texture is terminal too. Falling through would
+      // call loadTexture2DImageForUniform, whose non-Resource path allocates a
+      // resolved Promise every frame (C12-35 WebGL Moon hot-path audit).
       return;
     }
 

@@ -113,7 +113,7 @@ describe("Renderer/WebGPU/WebGPUEnvironmentRenderer moon snapshot contract", fun
     it("reports cache readiness flags and unpacks the uniform tail", function () {
       // Simulate a post-update cache with the moon tail uniforms set
       // to the same offsets `_packMoonUniforms` uses (64..75).
-      const uniformData = new Float32Array(80);
+      const uniformData = new Float32Array(85);
       uniformData[64] = 0.5;
       uniformData[65] = 0.0;
       uniformData[66] = 0.866;
@@ -122,6 +122,12 @@ describe("Renderer/WebGPU/WebGPUEnvironmentRenderer moon snapshot contract", fun
       uniformData[69] = 1.0; // useLogDepth
       uniformData[70] = 5.0; // shininess
       uniformData[71] = 0.3; // specularStrength
+      uniformData[76] = 0.9;
+      uniformData[77] = 0.8;
+      uniformData[78] = 0.7;
+      uniformData[80] = 0.1;
+      uniformData[81] = 0.2;
+      uniformData[82] = 0.3;
       const moon = {
         _webgpuCache: {
           pipeline: {},
@@ -157,6 +163,97 @@ describe("Renderer/WebGPU/WebGPUEnvironmentRenderer moon snapshot contract", fun
       expect(stats.useLogDepth).toBe(true);
       expect(stats.shininess).toBe(5.0);
       expect(stats.specularStrength).toBeCloseTo(0.3, 5);
+      expect(Object.isFrozen(stats)).toBe(true);
+      expect(Object.isFrozen(stats.moonDirectionWC)).toBe(true);
+      expect(Object.isFrozen(stats.atmosphereExtinction)).toBe(true);
+      expect(Object.isFrozen(stats.atmosphereInscatter)).toBe(true);
+      expect(Object.isFrozen(stats.sourceCache)).toBe(true);
+    });
+
+    it("reports flat staged/current lifecycle identities and scalar counters", function () {
+      const pairA = '["moon-a.jpg","normal-a.png"]';
+      const pairB = '["moon-b.jpg","normal-b.png"]';
+      const gpuCandidate = { label: "must not escape" };
+      const lifecycle = {
+        cacheSerial: 7,
+        resourceGeneration: 4,
+        retired: false,
+        channels: {
+          albedo: {
+            requestSerial: 3,
+            state: "candidate-ready",
+            desiredUrl: "moon-b.jpg",
+            desiredPairKey: pairB,
+            demanded: true,
+            request: undefined,
+            staged: {
+              identity: { exactUrl: "moon-b.jpg", effectivePair: pairB },
+              candidate: { value: gpuCandidate },
+            },
+            currentIdentity: {
+              exactUrl: "moon-a.jpg",
+              effectivePair: pairA,
+            },
+            gpuRealizations: 2,
+            successfulUploads: 2,
+            publications: 1,
+            staleCandidateDestroys: 1,
+            failedCandidateDestroys: 0,
+            cancellations: 1,
+            lastCancellationReason: "superseded",
+          },
+          normal: {
+            requestSerial: 2,
+            state: "source-pending",
+            desiredUrl: "normal-b.png",
+            desiredPairKey: pairB,
+            demanded: true,
+            request: {
+              identity: { exactUrl: "normal-b.png", effectivePair: pairB },
+            },
+            staged: undefined,
+            currentIdentity: undefined,
+            gpuRealizations: 1,
+            successfulUploads: 0,
+            publications: 0,
+            staleCandidateDestroys: 0,
+            failedCandidateDestroys: 1,
+            cancellations: 0,
+            lastCancellationReason: undefined,
+          },
+        },
+      };
+      const moon = {
+        _webgpuCache: {
+          _moonTextureLifecycle: lifecycle,
+          moonTexture: {},
+          normalTexture: {},
+          normalPlaceholderTexture: {},
+        },
+      };
+
+      const stats = getWebGPUMoonStatistics(moon);
+      expect(Object.isFrozen(stats)).toBe(true);
+      expect(stats.moonTextureLoaded).toBe(true);
+      expect(stats.moonTextureUrl).toBe("moon-a.jpg");
+      expect(stats.albedoDesiredUrl).toBe("moon-b.jpg");
+      expect(stats.albedoEffectivePair).toBe(pairB);
+      expect(stats.albedoCurrentUrl).toBe("moon-a.jpg");
+      expect(stats.albedoCurrentPair).toBe(pairA);
+      expect(stats.albedoPendingUrl).toBe("moon-b.jpg");
+      expect(stats.albedoPendingPair).toBe(pairB);
+      expect(stats.albedoCandidateReady).toBe(true);
+      expect(stats.albedoGpuRealizations).toBe(2);
+      expect(stats.albedoSuccessfulUploads).toBe(2);
+      expect(stats.albedoPublications).toBe(1);
+      expect(stats.albedoStaleCandidateDestroys).toBe(1);
+      expect(stats.normalPendingUrl).toBe("normal-b.png");
+      expect(stats.normalPendingPair).toBe(pairB);
+      expect(stats.normalFailedCandidateDestroys).toBe(1);
+      expect(Object.values(stats)).not.toContain(gpuCandidate);
+      expect(stats.sourceCache.entries.every((entry) => !entry.source)).toBe(
+        true,
+      );
     });
   });
 });

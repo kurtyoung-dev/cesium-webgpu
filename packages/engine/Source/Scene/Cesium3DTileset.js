@@ -49,6 +49,7 @@ import hasExtension from "./hasExtension.js";
 import ImplicitTileset from "./ImplicitTileset.js";
 import ImplicitTileCoordinates from "./ImplicitTileCoordinates.js";
 import LabelCollection from "./LabelCollection.js";
+import { refreshModel3DTileStatePacket } from "./Model/Model3DTileStatePacket.js";
 import oneTimeWarning from "../Core/oneTimeWarning.js";
 import PointCloudEyeDomeLighting from "./PointCloudEyeDomeLighting.js";
 import PointCloudShading from "./PointCloudShading.js";
@@ -3291,6 +3292,13 @@ function processUpdateHeight(tileset, tile, frameState) {
 function processTiles(tileset, frameState) {
   filterProcessingQueue(tileset);
   const tiles = tileset._processingQueue;
+  // Processing content calls Model3DTileContent.update while creating renderer
+  // resources. Refresh only when work exists so hidden/idle tilesets do not pay
+  // the comparison cost, while in-flight processing still sees current state.
+  if (tiles.length > 0) {
+    refreshModel3DTileStatePacket(tileset);
+  }
+  const tileLoadCanMutateState = tileset.tileLoad.numberOfListeners > 0;
 
   const { cacheBytes, maximumCacheOverflowBytes, statistics } = tileset;
   const cacheByteLimit = cacheBytes + maximumCacheOverflowBytes;
@@ -3309,6 +3317,11 @@ function processTiles(tileset, frameState) {
       if (tile.contentReady) {
         --statistics.numberOfTilesProcessing;
         tileset.tileLoad.raiseEvent(tile);
+        // Preserve the old per-content read semantics for listener changes:
+        // later processing tiles in this same pre-pass must observe them.
+        if (tileLoadCanMutateState) {
+          refreshModel3DTileStatePacket(tileset);
+        }
       }
     } catch (error) {
       --statistics.numberOfTilesProcessing;
@@ -3513,6 +3526,12 @@ function updateTiles(tileset, frameState, passOptions) {
   tileset._styleEngine.applyStyle(tileset);
   tileset._styleApplied = true;
 
+  // C11-205 — collapse broad tileset-to-model state propagation to one
+  // comparison packet per pass. tileVisible is allowed to mutate renderer
+  // state for the tile about to update, so listener-bearing tiles refresh the
+  // packet again immediately after their callback.
+  refreshModel3DTileStatePacket(tileset);
+
   const { commandList, context } = frameState;
   const numberOfInitialCommands = commandList.length;
   const selectedTiles = tileset._selectedTiles;
@@ -3540,6 +3559,8 @@ function updateTiles(tileset, frameState, passOptions) {
 
   const { statistics, tileVisible } = tileset;
   const isRender = passOptions.isRender;
+  const tileVisibleCanMutateState =
+    isRender && tileVisible.numberOfListeners > 0;
   const lengthBeforeUpdate = commandList.length;
 
   for (let i = 0; i < selectedTiles.length; ++i) {
@@ -3548,6 +3569,9 @@ function updateTiles(tileset, frameState, passOptions) {
     // handler makes changes that update needs to apply to WebGL resources
     if (isRender) {
       tileVisible.raiseEvent(tile);
+      if (tileVisibleCanMutateState) {
+        refreshModel3DTileStatePacket(tileset);
+      }
     }
     processUpdateHeight(tileset, tile, frameState);
     tile.update(tileset, frameState, passOptions);

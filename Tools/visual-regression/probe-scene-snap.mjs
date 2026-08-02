@@ -4,15 +4,16 @@
 // Runs the orchestrator checklist from the C11-212 landing, per backend:
 //
 //   Gate A — FUNCTIONAL: `scene.snap()` at a model's screen center returns a
-//     hit whose world position is within 50 m of the model's placement. The
-//     WebGPU snap inherits the pick mini-frame's one-frame-stale readback, so
-//     the probe calls snap repeatedly with renders between (a cold standalone
-//     snap returning undefined once is the documented contract, not a bug).
+//     hit whose world position is within 50 m of the model's placement. WebGPU
+//     readback is asynchronous and is published only with its immutable
+//     camera/frustum/viewport provenance, so the probe polls a cold query with
+//     renders between calls until a relevant completed payload is available.
 //   Gate B — MISS: snapping at a screen corner showing only sky/globe returns
 //     no model hit (upstream snap is Model-pipeline-only on both backends).
-//   Gate C — OFF-IDENTITY (WebGPU): before the first `snap()` call the
-//     context must not have latched snap mode (`_snapEnabled !== true`); after
-//     it, it must be latched. WebGL has no latch — the gate is skipped there.
+//   Gate C — LAZY-IDENTITY (WebGPU): before the first `snap()` call the
+//     context must not report prior snap use (`_snapEnabled !== true`); after
+//     it, the ever-used diagnostic must be latched. Current command demand is
+//     independently gated by `frameState.passes.snap`. WebGL has no latch.
 //   Gate D — CLEAN: zero console errors and zero WebGPU validation errors
 //     across the whole run (an attachment-format drift silently empties every
 //     query, so the error channel is load-bearing).
@@ -88,8 +89,8 @@ async function run(renderer) {
       const latchedBefore = s.context?._snapEnabled === true;
 
       const screenCenter = new C.Cartesian2(view.width / 2, view.height / 2);
-      // One-frame-stale contract: call snap with renders between until a hit
-      // lands (or the attempt budget runs out). Record how many calls it took.
+      // Cold asynchronous-readback contract: call snap with renders between
+      // until a matching completed payload lands (or the budget runs out).
       let hit;
       let calls = 0;
       for (let i = 0; i < 10; i++) {
@@ -108,7 +109,7 @@ async function run(renderer) {
       }
 
       // Gate B — a corner point showing only sky/globe must return no model
-      // hit. Same retry shape so a one-frame-stale miss can't fake a pass.
+      // hit. Same retry shape so a cold WebGPU readback cannot fake a pass.
       let missHit;
       for (let i = 0; i < 4; i++) {
         missHit = s.snap(new C.Cartesian2(8, 8));

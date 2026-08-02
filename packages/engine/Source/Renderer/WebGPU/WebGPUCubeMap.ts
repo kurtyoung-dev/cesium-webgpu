@@ -15,6 +15,11 @@
 import WebGPUTexture from "./WebGPUTexture.js";
 import WebGPUCubeMapFace from "./WebGPUCubeMapFace.js";
 import { cesiumFormatToWebGPU, bytesPerPixel } from "./WebGPUTexture3D.js";
+import {
+  supportsWebGPULayeredMipmapGeneration,
+  supportsWebGPUMipmapGeneration,
+  supportsWebGPURenderAttachment,
+} from "./WebGPUMipmapGenerator.js";
 
 /**
  * Face name constants matching CubeMap.FaceName in WebGL.
@@ -131,13 +136,28 @@ class WebGPUCubeMap {
     const webgpuFormat = cesiumFormatToWebGPU(pixelFormat, pixelDatatype);
     const bpp = bytesPerPixel(webgpuFormat);
 
-    // Create the cubemap texture (2D with 6 layers)
+    // WebGPU texture storage is immutable: generateMipmap cannot add levels
+    // later. Reserve the exact full chain only when the filtering color-blit
+    // generator supports this format. Integer/depth/non-renderable formats
+    // retain a valid single-level cube instead of publishing an invalid mip
+    // pass or exposing zero-filled tail levels.
+    const canGenerateMipmaps =
+      supportsWebGPUMipmapGeneration(device, webgpuFormat) &&
+      supportsWebGPULayeredMipmapGeneration(device);
+    const mipLevelCount = canGenerateMipmaps
+      ? Math.floor(Math.log2(size)) + 1
+      : 1;
     const gpuTexture = WebGPUTexture.createCubeMap(
       device,
       size,
       webgpuFormat,
-      1, // mipLevelCount — updated if generateMipmap is called
+      mipLevelCount,
       `CubeMap-${size}`,
+      GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        (supportsWebGPURenderAttachment(device, webgpuFormat)
+          ? GPUTextureUsage.RENDER_ATTACHMENT
+          : 0),
     );
 
     this._context = context;
@@ -147,7 +167,14 @@ class WebGPUCubeMap {
     this._pixelDatatype = pixelDatatype;
     this._webgpuFormat = webgpuFormat;
     this._hasMipmap = false;
-    this._sizeInBytes = size * size * 6 * bpp;
+    // Residency accounting: WebGPU reserves every immutable mip level at
+    // texture creation even before generateMipmap populates it.
+    let residentBytes = 0;
+    for (let level = 0; level < mipLevelCount; ++level) {
+      const levelSize = Math.max(1, size >> level);
+      residentBytes += levelSize * levelSize * 6 * bpp;
+    }
+    this._sizeInBytes = residentBytes;
     this._preMultiplyAlpha = preMultiplyAlpha;
     this._flipY = flipY;
     this._sampler = options.sampler ?? null;
@@ -352,9 +379,6 @@ class WebGPUCubeMap {
     return this._size;
   }
   get sizeInBytes(): number {
-    if (this._hasMipmap) {
-      return Math.floor((this._sizeInBytes * 4) / 3);
-    }
     return this._sizeInBytes;
   }
   get preMultiplyAlpha(): boolean {
@@ -376,10 +400,48 @@ class WebGPUCubeMap {
    * Delegates to WebGPUMipmapGenerator.
    */
   generateMipmap(hint?: number): void {
-    if (this._gpuTexture) {
-      this._gpuTexture.generateMipmaps();
+    const texture = this._gpuTexture;
+    if (texture) {
+      const context = this._context as unknown as {
+        enqueueTextureMipGeneration?: (
+          texture: GPUTexture,
+          format: GPUTextureFormat,
+          mipLevelCount: number,
+          options: {
+            dimension: "cube";
+            baseArrayLayer: number;
+            arrayLayerCount: number;
+          },
+        ) => boolean | void;
+      } | null;
+      if (texture.mipLevelCount <= 1) {
+        this._hasMipmap = true;
+        return;
+      }
+      if (typeof context?.enqueueTextureMipGeneration === "function") {
+        const accepted = context.enqueueTextureMipGeneration(
+          texture.texture,
+          texture.format,
+          texture.mipLevelCount,
+          {
+            dimension: "cube",
+            baseArrayLayer: 0,
+            arrayLayerCount: 6,
+          },
+        );
+        // The canonical queue returns false when the device is unavailable.
+        // Undefined preserves compatibility with older void-returning hosts.
+        if (accepted !== false) {
+          this._hasMipmap = true;
+        }
+      } else {
+        // Standalone/legacy contexts retain the wrapper's immediate-submit
+        // fallback. Live WebGPU scene contexts always take the frame-owned
+        // queue above.
+        texture.generateMipmaps();
+        this._hasMipmap = true;
+      }
     }
-    this._hasMipmap = true;
   }
 
   isDestroyed(): boolean {
@@ -387,12 +449,26 @@ class WebGPUCubeMap {
   }
 
   destroy(): void {
-    if (this._gpuTexture) {
-      this._gpuTexture.destroy();
-    }
+    const texture = this._gpuTexture;
+    const context = this._context as unknown as {
+      cancelTextureMipGeneration?: (texture: GPUTexture) => void;
+    } | null;
+    // Detach first so a throwing native destroy cannot leave a logically live
+    // cube that retries cancellation/destruction or exposes dead views.
     this._gpuTexture = null;
     this._context = null;
     this._destroyed = true;
+    if (texture) {
+      const cancellationContext = context as {
+        cancelTextureMipGeneration?: (texture: GPUTexture) => void;
+      } | null;
+      try {
+        cancellationContext?.cancelTextureMipGeneration?.(texture.texture);
+      } catch {
+        // Queue bookkeeping must never strand native retirement.
+      }
+      texture.destroy();
+    }
   }
 }
 

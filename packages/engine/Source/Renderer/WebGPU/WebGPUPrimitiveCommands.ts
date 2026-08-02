@@ -1172,15 +1172,17 @@ function writeRTEUniformsFlat(
  * re-slice it for the pick mini-frame — so a tail packed from it encodes
  * whatever slice state happens to be current at THIS primitive's pack moment.
  * That made the Mat/PBR/Basic/polyline geometry-Primitive family the LAST
- * log-depth producer whose curve depended on pack timing: with more than one
- * Mat primitive in the scene, a slab 5 m above the globe landed on a
- * different log curve than the globe's and lost the depth test over a stable
- * region (probe-logdepth-zfight check 2, 0.868). Every sibling producer is
+ * log-depth producer whose curve depended on pack timing. A first online-
+ * terrain probe attributed a 0.868 slab/globe ratio to this mismatch, but the
+ * corrected deterministic ellipsoid-terrain probe measures 0.996; that old
+ * number was an instrument false positive, not causal proof. The contract
+ * mismatch itself was real and is closed here. Every sibling producer is
  * already stash-first — see the identical pattern + rationale in
  * WebGPUBillboardRenderer.packUniforms, WebGPUPointPrimitiveRenderer, and
  * WebGPUDepthPlane.update (NEW-WEBGPU-DEPTH-PLANE-LOG-DEPTH-CONTRACT). When
- * the stash drives, the factor is recomputed from the same pair so encode +
- * factor stay self-consistent; `currentFrustum` remains only as the
+ * the stash drives, its frame-stable factor was derived alongside the same
+ * pair so encode + factor stay self-consistent without per-command logarithm
+ * work; `currentFrustum` remains only as the
  * pre-stash early-frame fallback. The pick fleet is unaffected today (its
  * tail lanes are read only under the separate pick-fleet switch, C10-11) and
  * inherits the same full-camera encode both pick loops publish when it flips.
@@ -1207,8 +1209,19 @@ function writeLogDepthTail(
   if (defined(ldEncode) && ldEncode[1] > ldEncode[0]) {
     near = ldEncode[0];
     far = ldEncode[1];
-    const log2Far = Math.log2(far - near + 1.0);
-    factor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
+    const encodeFactor = usLog._logDepthEncodeFactor;
+    if (
+      typeof encodeFactor === "number" &&
+      Number.isFinite(encodeFactor) &&
+      encodeFactor > 0.0
+    ) {
+      factor = encodeFactor;
+    } else {
+      // Compatibility fallback for early frames and minimal test doubles that
+      // publish only the legacy near/far pair.
+      const log2Far = Math.log2(far - near + 1.0);
+      factor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
+    }
   } else if (!(factor > 0.0) && far > near) {
     const log2Far = Math.log2(far - near + 1.0);
     factor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;

@@ -19,6 +19,10 @@ import Cesium3DTileFeature from "./Cesium3DTileFeature.js";
 import Cesium3DTilePass from "./Cesium3DTilePass.js";
 import Cesium3DTilePassState from "./Cesium3DTilePassState.js";
 import MetadataPicking from "./MetadataPicking.js";
+import {
+  drawingBufferToFrustumCoordinates,
+  pickFrustumHalfExtents,
+} from "./PickFrustumMath.js";
 import PickDepth from "./PickDepth.js";
 import SceneMode from "./SceneMode.js";
 import SceneTransforms from "./SceneTransforms.js";
@@ -1305,8 +1309,9 @@ class Picking {
 const scratchOrthoPickingFrustum = new OrthographicOffCenterFrustum();
 const scratchOrthoOrigin = new Cartesian3();
 const scratchOrthoDirection = new Cartesian3();
-const scratchOrthoPixelSize = new Cartesian2();
 const scratchOrthoPickVolumeMatrix4 = new Matrix4();
+const scratchPickFrustumCoordinates = new Cartesian2();
+const scratchPickFrustumHalfExtents = new Cartesian2();
 
 function getPickOrthographicCullingVolume(
   scene,
@@ -1322,13 +1327,30 @@ function getPickOrthographicCullingVolume(
     frustum = offCenterFrustum;
   }
 
-  let x = (2.0 * (drawingBufferPosition.x - viewport.x)) / viewport.width - 1.0;
-  x *= (frustum.right - frustum.left) * 0.5;
-  let y =
-    (2.0 * (viewport.height - drawingBufferPosition.y - viewport.y)) /
-      viewport.height -
-    1.0;
-  y *= (frustum.top - frustum.bottom) * 0.5;
+  const frustumCoordinates = drawingBufferToFrustumCoordinates(
+    drawingBufferPosition.x,
+    scene.context.drawingBufferHeight - drawingBufferPosition.y,
+    viewport.x,
+    viewport.y,
+    viewport.width,
+    viewport.height,
+    frustum.left,
+    frustum.right,
+    frustum.bottom,
+    frustum.top,
+    scratchPickFrustumCoordinates,
+  );
+  const halfExtents = pickFrustumHalfExtents(
+    frustum.left,
+    frustum.right,
+    frustum.bottom,
+    frustum.top,
+    viewport.width,
+    viewport.height,
+    width,
+    height,
+    scratchPickFrustumHalfExtents,
+  );
 
   const transform = Matrix4.clone(
     camera.transform,
@@ -1337,9 +1359,17 @@ function getPickOrthographicCullingVolume(
   camera._setTransform(Matrix4.IDENTITY);
 
   const origin = Cartesian3.clone(camera.position, scratchOrthoOrigin);
-  Cartesian3.multiplyByScalar(camera.right, x, scratchOrthoDirection);
+  Cartesian3.multiplyByScalar(
+    camera.right,
+    frustumCoordinates.x,
+    scratchOrthoDirection,
+  );
   Cartesian3.add(scratchOrthoDirection, origin, origin);
-  Cartesian3.multiplyByScalar(camera.up, y, scratchOrthoDirection);
+  Cartesian3.multiplyByScalar(
+    camera.up,
+    frustumCoordinates.y,
+    scratchOrthoDirection,
+  );
   Cartesian3.add(scratchOrthoDirection, origin, origin);
 
   camera._setTransform(transform);
@@ -1348,18 +1378,10 @@ function getPickOrthographicCullingVolume(
     Cartesian3.fromElements(origin.z, origin.x, origin.y, origin);
   }
 
-  const pixelSize = frustum.getPixelDimensions(
-    viewport.width,
-    viewport.height,
-    1.0,
-    1.0,
-    scratchOrthoPixelSize,
-  );
-
   const ortho = scratchOrthoPickingFrustum;
-  ortho.right = pixelSize.x * 0.5;
+  ortho.right = halfExtents.x;
   ortho.left = -ortho.right;
-  ortho.top = pixelSize.y * 0.5;
+  ortho.top = halfExtents.y;
   ortho.bottom = -ortho.top;
   ortho.near = frustum.near;
   ortho.far = frustum.far;
@@ -1368,7 +1390,6 @@ function getPickOrthographicCullingVolume(
 }
 
 const scratchPerspPickingFrustum = new PerspectiveOffCenterFrustum();
-const scratchPerspPixelSize = new Cartesian2();
 
 function getPickPerspectiveCullingVolume(
   scene,
@@ -1378,37 +1399,40 @@ function getPickPerspectiveCullingVolume(
   viewport,
 ) {
   const camera = scene.camera;
-  const frustum = camera.frustum;
+  const cameraFrustum = camera.frustum;
+  const offCenterFrustum = cameraFrustum.offCenterFrustum;
+  const frustum = defined(offCenterFrustum) ? offCenterFrustum : cameraFrustum;
   const near = frustum.near;
-
-  const tanPhi = Math.tan(frustum.fovy * 0.5);
-  const tanTheta = frustum.aspectRatio * tanPhi;
-
-  const x =
-    (2.0 * (drawingBufferPosition.x - viewport.x)) / viewport.width - 1.0;
-  const y =
-    (2.0 * (viewport.height - drawingBufferPosition.y - viewport.y)) /
-      viewport.height -
-    1.0;
-
-  const xDir = x * near * tanTheta;
-  const yDir = y * near * tanPhi;
-
-  const pixelSize = frustum.getPixelDimensions(
+  const frustumCoordinates = drawingBufferToFrustumCoordinates(
+    drawingBufferPosition.x,
+    scene.context.drawingBufferHeight - drawingBufferPosition.y,
+    viewport.x,
+    viewport.y,
     viewport.width,
     viewport.height,
-    1.0,
-    1.0,
-    scratchPerspPixelSize,
+    frustum.left,
+    frustum.right,
+    frustum.bottom,
+    frustum.top,
+    scratchPickFrustumCoordinates,
   );
-  const pickWidth = pixelSize.x * width * 0.5;
-  const pickHeight = pixelSize.y * height * 0.5;
+  const halfExtents = pickFrustumHalfExtents(
+    frustum.left,
+    frustum.right,
+    frustum.bottom,
+    frustum.top,
+    viewport.width,
+    viewport.height,
+    width,
+    height,
+    scratchPickFrustumHalfExtents,
+  );
 
   const offCenter = scratchPerspPickingFrustum;
-  offCenter.top = yDir + pickHeight;
-  offCenter.bottom = yDir - pickHeight;
-  offCenter.right = xDir + pickWidth;
-  offCenter.left = xDir - pickWidth;
+  offCenter.top = frustumCoordinates.y + halfExtents.y;
+  offCenter.bottom = frustumCoordinates.y - halfExtents.y;
+  offCenter.right = frustumCoordinates.x + halfExtents.x;
+  offCenter.left = frustumCoordinates.x - halfExtents.x;
   offCenter.near = near;
   offCenter.far = frustum.far;
 

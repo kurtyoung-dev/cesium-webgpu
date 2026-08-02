@@ -123,6 +123,14 @@ function makeAllocator({ pageCount = 3, pageSize = 1 << 20 } = {}) {
       offset = 0;
       epoch++;
     },
+    // Mid-frame overflow, with the real allocator's semantics: a fresh page
+    // starts taking allocations inside the SAME frame, and the allocation
+    // epoch does NOT advance (WebGPURingBufferAllocator bumps it only in
+    // beginFrame), so slices handed out earlier in the frame stay valid.
+    overflowToNextPage() {
+      pageIndex = (pageIndex + 1) % pages.length;
+      offset = 0;
+    },
     allocateAndWrite(data, allocationSize) {
       const size = allocationSize ?? data.byteLength;
       const aligned =
@@ -345,17 +353,59 @@ test("a camera and a light on different pages key separate bind groups", () => {
   acquireCamera(arena, device, allocator, 1, light);
   assert.equal(device.created.bindGroups.length, 1);
 
-  // Mid-frame overflow: the ring hands out a page the light does not live on.
-  // Binding a group built over the OLD page would read another model's bytes,
-  // so page identity must be part of the key for BOTH entries.
-  allocator.beginFrame();
+  // Mid-frame overflow: the ring hands out a page the light does not live on,
+  // in the SAME frame and allocation epoch — the slice is still valid, so the
+  // stale-slice guard must not fire. Binding a group built over the OLD page
+  // would read another model's bytes, so page identity must be part of the
+  // key for BOTH entries.
+  allocator.overflowToNextPage();
   acquireCamera(arena, device, allocator, 2, light);
   assert.equal(device.created.bindGroups.length, 2);
+  assert.equal(arena.getStats().staleLightSliceRejections, 0);
   const descriptor = device.created.bindGroups[1].descriptor;
   assert.equal(descriptor.entries[1].resource.buffer, light.buffer);
   assert.notEqual(
     descriptor.entries[0].resource.buffer,
     descriptor.entries[1].resource.buffer,
+  );
+});
+
+test("a light slice from a previous allocation epoch is rejected, not bound", () => {
+  const arena = new WebGPUModelCameraArena();
+  const device = makeDevice();
+  const allocator = makeAllocator();
+  allocator.beginFrame();
+  arena.beginFrame(1, allocator);
+
+  const light = acquireLight(arena, device, allocator, 1);
+
+  // A new frame recycles the ring: the slice's page can retain the same
+  // GPUBuffer identity and offset while already holding another model/view's
+  // bytes. The arena must reject the stale slice and degrade to the zero
+  // placeholder instead of leaking those bytes into a draw.
+  allocator.beginFrame();
+  arena.beginFrame(2, allocator);
+
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args.join(" "));
+  let binding;
+  try {
+    binding = acquireCamera(arena, device, allocator, 2, light);
+  } finally {
+    console.error = originalError;
+  }
+
+  assert.equal(arena.getStats().staleLightSliceRejections, 1);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /stale light slice/);
+  assert.equal(binding.dynamicOffsets[1], 0);
+  const descriptor =
+    device.created.bindGroups[device.created.bindGroups.length - 1].descriptor;
+  assert.notEqual(descriptor.entries[1].resource.buffer, light.buffer);
+  assert.equal(
+    descriptor.entries[1].resource.buffer.descriptor.label,
+    "Model light arena zero placeholder",
   );
 });
 

@@ -86,7 +86,7 @@ const rtc2D = { x: 0, y: 0, z: 0 } as { x: number; y: number; z: number };
  * The renderer surface the camera-UB packer reaches into.
  *
  *   - `_cameraUniformData`: the reusable Float32Array scratch buffer
- *     sized to `CAMERA_UNIFORM_FLOATS` (116 floats). Filled in by the
+ *     sized to `CAMERA_UNIFORM_FLOATS` (232 floats). Filled in by the
  *     packer and uploaded via `writeUniformSlice`.
  *   - `_cameraMvpScratch`: Float64Array of length 16 used to compute
  *     `projection × modifiedModelView` for the 2D/CV/Morphing path.
@@ -1115,12 +1115,17 @@ export function createCameraUniformBuffer(
   if (ldFar > ldNear) {
     const usStash = uniformState as unknown as {
       _logDepthEncodeNearFar: Float32Array | null;
+      _logDepthEncodeFactor: number;
     };
     if (!usStash._logDepthEncodeNearFar) {
       usStash._logDepthEncodeNearFar = new Float32Array(2);
     }
     usStash._logDepthEncodeNearFar[0] = ldNear;
     usStash._logDepthEncodeNearFar[1] = ldFar;
+    // Publish the already-derived factor with its frame-stable pair. General
+    // primitive camera packs reuse it instead of recalculating Math.log2 once
+    // per command on the render hot path.
+    usStash._logDepthEncodeFactor = ldFactor;
   }
 
   const bufferSize = Math.max(CAMERA_UNIFORM_BYTES, 256);

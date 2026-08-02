@@ -27,10 +27,19 @@ export function publishLogDepthEncodeNearFar(
   }
   const state = uniformState as unknown as {
     _logDepthEncodeNearFar: Float32Array | null;
+    _logDepthEncodeFactor: number;
   };
   state._logDepthEncodeNearFar ??= new Float32Array(2);
   state._logDepthEncodeNearFar[0] = cameraFrustum.near;
   state._logDepthEncodeNearFar[1] = cameraFrustum.far;
+  // This factor is consumed by every primitive camera pack in the frame, so
+  // derive it once from the same float32 pair that those packs read. Keeping
+  // it beside the pair also prevents a per-command Math.log2 hot-path tax.
+  const encodeNear = state._logDepthEncodeNearFar[0];
+  const encodeFar = state._logDepthEncodeNearFar[1];
+  const log2Far =
+    encodeFar > encodeNear ? Math.log2(encodeFar - encodeNear + 1.0) : 0.0;
+  state._logDepthEncodeFactor = log2Far > 0.0 ? 1.0 / log2Far : 0.0;
 }
 
 /**

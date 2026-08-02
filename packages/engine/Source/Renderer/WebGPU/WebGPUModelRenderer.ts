@@ -28,6 +28,8 @@ import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import oneTimeWarning from "../../Core/oneTimeWarning.js";
+import { getWebGPUTextureForDevice } from "./Stubs/WebGLStubTexture.js";
+import type { StubTextureWrapper } from "./Stubs/WebGLStubTypes.js";
 // C11-90 — the glTF-mode → WebGPU-topology decision lives in ONE module. This
 // renderer no longer knows which modes map where; it stores what it is handed.
 import { realizeModelPrimitiveTopology } from "./WebGPUModelTopology.js";
@@ -63,6 +65,7 @@ import {
 import {
   ensureFeatureIdResources,
   destroyFeatureIdResources,
+  destroyPerFeaturePickResources,
   getSelectedImplicitFeatureId,
   synthesizeImplicitFeatureIdData,
 } from "./WebGPUModelFeatureId.js";
@@ -211,9 +214,7 @@ interface SamplerLike {
 }
 interface TextureReaderLike {
   texture?: {
-    _texture?: {
-      _webgpuTexture?: { texture?: GPUTexture | null } | null;
-    } | null;
+    _texture?: StubTextureWrapper | null;
     _source?: ImageSourceLike | null;
     source?: ImageSourceLike | null;
     _image?: ImageSourceLike | null;
@@ -608,8 +609,6 @@ interface NodeCache extends Idl2DHost, ModelShadowCastUniformHost {
 
 interface PipelineCacheLike {
   cameraBGL: GPUBindGroupLayout;
-  // C11-195 — device-shared per-frame group-0 camera arena.
-  cameraArena: WebGPUModelCameraArena;
   instanceBGL: GPUBindGroupLayout;
   defaultInstanceBindGroup: GPUBindGroup;
   defaultSampler: GPUSampler;
@@ -682,6 +681,21 @@ interface PipelineCacheLike {
 }
 
 interface ModelWebGPUCache extends Idl2DHost, ModelShadowCastUniformHost {
+  // C11-194 — exact native-resource ownership. A GPUDevice may be reused
+  // across a context recovery, so both values participate in validity.
+  device: GPUDevice;
+  resourceGeneration: number;
+  _deviceInvalidationUnsub?: (() => void) | null;
+  _disposeInProgress?: boolean;
+  _enqueueTextureMipGeneration?: EnqueueMipFn;
+  // Cancels frame-owned mip work before a model-owned fallback texture is
+  // destroyed during replacement, invalidation, or final teardown.
+  _cancelTextureMipGeneration?: CancelMipFn;
+  // Model-wide tile-feature picking resources. They are distinct from the
+  // per-primitive `pickIds` record owned by WebGPUPickCommandHelpers.
+  _featurePickIds?: Map<number, { destroy(): void }>;
+  _featurePickGPUTexture?: GPUTexture | null;
+  _featurePickFeaturesLength?: number;
   primitives: { [key: string]: PrimitiveRenderData };
   geometryViews?: { [key: string]: PrimitiveGeometryViewRecord };
   nodes: { [key: string]: NodeCache };
@@ -728,7 +742,7 @@ interface CustomShaderLike {
   wgslFragmentShaderText?: string;
   _textureManager?: {
     getTexture(name: string): {
-      _webgpuTexture?: { view?: GPUTextureView | null } | null;
+      _texture?: StubTextureWrapper | null;
     } | null;
   } | null;
 }
@@ -1020,20 +1034,25 @@ interface SceneCaptureModelsLike {
 
 /**
  * C10-05 — frame-owned mip-generation sink (C9-12A `WebGPUContext`
- * `enqueueImageryMipGeneration`). A texture upgraded to a real mip chain in the
+ * `enqueueTextureMipGeneration`). A texture upgraded to a real mip chain in the
  * `createGPUTextureFromReader` fallback registers its blit here so the mips are
- * generated in the shared pre-frame `"ImageryMipPreparation"` submit — never a
+ * generated in the shared pre-frame `"TextureMipPreparation"` submit — never a
  * private `queue.submit` from draw emission.
  */
 type EnqueueMipFn = (
   texture: GPUTexture,
   format: GPUTextureFormat,
   mipLevelCount: number,
-) => void;
+) => boolean | void;
+
+type CancelMipFn = (texture: GPUTexture) => void;
 
 interface ModelRenderContext {
   device: GPUDevice;
-  enqueueImageryMipGeneration?: EnqueueMipFn;
+  resourceGeneration?: number;
+  onDeviceInvalidated?: (callback: () => void) => () => void;
+  enqueueTextureMipGeneration?: EnqueueMipFn;
+  cancelTextureMipGeneration?: CancelMipFn;
   enqueueShadowReceiveUniformRefresh?: (
     uniformBuffer: GPUBuffer,
     shadowMap: object,
@@ -1044,6 +1063,11 @@ interface ModelRenderContext {
    * device is unavailable; the camera arena degrades to private buffers then.
    */
   uniformAllocator?: ModelCameraArenaAllocator | null;
+  /**
+   * Mutable model camera/light arena paired with this context's allocator.
+   * Immutable cameraBGL identity remains device-generation shared.
+   */
+  modelCameraArena?: WebGPUModelCameraArena | null;
   drawingBufferWidth: number;
   drawingBufferHeight: number;
   depthFormat?: GPUTextureFormat;
@@ -1391,17 +1415,21 @@ function isIdentityMatrix4(m: ArrayLike<number>) {
 // ─── Camera Uniform Packing ─────────────────────────────────────────────────
 
 /**
- * C11-195 — read the frame's uniform ring off the context. Kept as one helper
- * so every camera acquisition observes the same allocator identity within a
- * frame; a mid-frame swap would leave the arena's bind groups pointing at
- * destroyed pages.
+ * C11-195 — resolve the exact context that owns BOTH the mutable model arena
+ * and its uniform ring. A pooled GPUDevice can back multiple contexts, so
+ * neither mutable owner may come from the device-shared pipeline cache.
  */
-function resolveModelCameraAllocator(
+function resolveModelCameraArenaOwner(
   frameState: CesiumFrameState,
-): ModelCameraArenaAllocator | null {
+): ModelRenderContext {
   const context = frameState?.context as unknown as
     ModelRenderContext | undefined;
-  return context?.uniformAllocator ?? null;
+  if (!context?.modelCameraArena) {
+    throw new Error(
+      "[CesiumJS:webgpu] Model camera arena is unavailable for an active model draw.",
+    );
+  }
+  return context;
 }
 
 /**
@@ -1424,8 +1452,9 @@ function acquireModelCameraBinding(
   label: string,
   lightSlice: ModelViewLightSlice,
 ): ModelCameraBinding {
-  const allocator = resolveModelCameraAllocator(frameState);
-  const arena = pipelineCache.cameraArena;
+  const context = resolveModelCameraArenaOwner(frameState);
+  const allocator = context.uniformAllocator ?? null;
+  const arena = context.modelCameraArena!;
   arena.beginFrame(frameState?.frameNumber ?? 0, allocator);
   return arena.acquire(
     device,
@@ -1457,12 +1486,12 @@ function acquireModelCameraBinding(
 function acquireModelLightSlice(
   device: GPUDevice,
   frameState: CesiumFrameState,
-  pipelineCache: PipelineCacheLike,
   data: Float32Array,
   label: string,
 ): ModelViewLightSlice {
-  const allocator = resolveModelCameraAllocator(frameState);
-  const arena = pipelineCache.cameraArena;
+  const context = resolveModelCameraArenaOwner(frameState);
+  const allocator = context.uniformAllocator ?? null;
+  const arena = context.modelCameraArena!;
   arena.beginFrame(frameState?.frameNumber ?? 0, allocator);
   return arena.acquireLightSlice(
     device,
@@ -1494,7 +1523,6 @@ interface ModelLightWorkCounters {
 function prepareModelViewLightSlice(
   device: GPUDevice,
   frameState: CesiumFrameState,
-  pipelineCache: PipelineCacheLike,
   cache: ModelWebGPUCache,
   model: ModelLike,
   preparationWork: ModelLightWorkCounters | undefined,
@@ -1509,7 +1537,6 @@ function prepareModelViewLightSlice(
   const slice = acquireModelLightSlice(
     device,
     frameState,
-    pipelineCache,
     cache.lightData,
     "Model light",
   );
@@ -1817,7 +1844,6 @@ function getOrCreateModelCaptureCommands(
       captureLightSlice = acquireModelLightSlice(
         device,
         frameState,
-        pipelineCache,
         captureLightData,
         "Model capture light",
       );
@@ -2806,9 +2832,11 @@ function readerRequestsMipmap(textureReader: ReaderOrNull): boolean {
 
 function createGPUTextureFromReader(
   device: GPUDevice,
+  resourceGeneration: number,
   textureReader: ReaderOrNull,
   colorSpace: string,
   enqueueMip?: EnqueueMipFn,
+  cancelMip?: CancelMipFn,
 ): GPUTexture | null {
   if (!defined(textureReader)) {
     return null;
@@ -2830,7 +2858,11 @@ function createGPUTextureFromReader(
   // to the white placeholder, which is exactly the symptom reported.
   // Reuse the already-uploaded GPU texture directly when available.
   const stubWrapper = cesiumTexture._texture;
-  const stubGPU = stubWrapper && stubWrapper._webgpuTexture;
+  const stubGPU = getWebGPUTextureForDevice(
+    stubWrapper,
+    device,
+    resourceGeneration,
+  );
   if (stubGPU && stubGPU.texture) {
     return stubGPU.texture;
   }
@@ -2866,7 +2898,7 @@ function createGPUTextureFromReader(
   // uncompressed ImageBitmap (compressed KTX2 arrives with `internalFormat` and
   // takes `Texture.create` with its own transcoded chain, never this branch),
   // so `rgba8unorm[-srgb]` is RENDER_ATTACHMENT-capable for the blit. Mip
-  // generation is routed through the frame-owned `enqueueImageryMipGeneration`
+  // generation is routed through the frame-owned `enqueueTextureMipGeneration`
   // (C9-12A) — never a private submit from draw emission. Falls back to a
   // single level when no sink is provided or mipmaps are not requested.
   const wantsMips = defined(enqueueMip) && readerRequestsMipmap(textureReader);
@@ -2874,8 +2906,9 @@ function createGPUTextureFromReader(
     ? WebGPUMipmapGenerator.calculateMipLevelCount(width, height)
     : 1;
 
+  let gpuTexture: GPUTexture | undefined;
   try {
-    const gpuTexture = device.createTexture({
+    gpuTexture = device.createTexture({
       label: `Model glTF texture ${width}x${height} (${format})${
         mipLevelCount > 1 ? ` mip${mipLevelCount}` : ""
       }`,
@@ -2898,14 +2931,50 @@ function createGPUTextureFromReader(
     // The `copyExternalImageToTexture` of level 0 above is queued first, so it
     // completes before the blit reads it (queue submission order).
     if (mipLevelCount > 1 && defined(enqueueMip)) {
-      enqueueMip(gpuTexture, format, mipLevelCount);
+      const accepted = enqueueMip(gpuTexture, format, mipLevelCount);
+      if (accepted === false) {
+        try {
+          gpuTexture.destroy();
+        } catch {
+          // Rejected work is unpublished; retirement is cleanup-only.
+        }
+        return null;
+      }
     }
 
     return gpuTexture;
   } catch (_e) {
+    if (defined(gpuTexture) && defined(cancelMip)) {
+      try {
+        cancelMip(gpuTexture);
+      } catch {
+        // Cancellation is bookkeeping; candidate destruction remains owned.
+      }
+    }
+    try {
+      gpuTexture?.destroy();
+    } catch {
+      // Preserve the upload failure contract. The candidate has never been
+      // published, so a lost-device destroy error is cleanup-only.
+    }
     // Image source may not be usable (e.g., already transferred)
     return null;
   }
+}
+
+function isTextureOwnedByCompatibilityStub(
+  device: GPUDevice,
+  resourceGeneration: number,
+  textureReader: ReaderOrNull,
+  texture: GPUTexture,
+): boolean {
+  return (
+    getWebGPUTextureForDevice(
+      textureReader?.texture?._texture,
+      device,
+      resourceGeneration,
+    )?.texture === texture
+  );
 }
 
 // ─── Vertex Buffer Creation ──────────────────────────────────────────────────
@@ -2920,8 +2989,17 @@ function createVertexBuffer(
     size: Math.max(data.byteLength, 4),
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
-  device.queue.writeBuffer(buffer, 0, data);
-  return buffer;
+  try {
+    device.queue.writeBuffer(buffer, 0, data);
+    return buffer;
+  } catch (error) {
+    try {
+      buffer.destroy();
+    } catch {
+      // Preserve the upload failure; the buffer was never published.
+    }
+    throw error;
+  }
 }
 
 /**
@@ -3318,7 +3396,12 @@ function getCustomShaderEntries(
       const tex = cs.customShader._textureManager?.getTexture(
         textureFields[k].uniformName,
       );
-      const wgpuView = tex?._webgpuTexture?.view;
+      const stubTexture = getWebGPUTextureForDevice(
+        tex?._texture ?? (tex as unknown as StubTextureWrapper),
+        cache.device,
+        cache.resourceGeneration,
+      );
+      const wgpuView = stubTexture?.view;
       if (defined(wgpuView)) {
         view = wgpuView;
       }
@@ -3377,6 +3460,7 @@ function ensurePrimitiveCache(
   geometry: PrimitiveGeometry,
   matInfo: MaterialInfo,
   enqueueMip?: EnqueueMipFn,
+  cancelMip?: CancelMipFn,
 ): PrimitiveRenderData {
   if (defined(cache.primitives[primKey])) {
     return cache.primitives[primKey];
@@ -3442,466 +3526,512 @@ function ensurePrimitiveCache(
     hasSkinningAttributes: false,
   };
 
-  // Position buffer (model-space, 3 floats per vertex — NOT high/low split)
-  primCache.positionBuffer = createVertexBuffer(
-    device,
-    geometry.positionData,
-    `Prim position`,
-  );
+  try {
+    // Position buffer (model-space, 3 floats per vertex — NOT high/low split)
+    primCache.positionBuffer = createVertexBuffer(
+      device,
+      geometry.positionData,
+      `Prim position`,
+    );
 
-  // Normal buffer
-  if (geometry.hasNormals) {
-    primCache.normalBuffer = createVertexBuffer(
-      device,
-      geometry.normalData,
-      `Prim normal`,
-    );
-  }
-
-  // Tangent buffer
-  if (geometry.hasTangents) {
-    primCache.tangentBuffer = createVertexBuffer(
-      device,
-      geometry.tangentData,
-      `Prim tangent`,
-    );
-  }
-
-  // TexCoord0 buffer
-  if (geometry.hasTexCoord0) {
-    primCache.uvBuffer = createVertexBuffer(
-      device,
-      geometry.texCoord0Data,
-      `Prim uv0`,
-    );
-  }
-
-  // TexCoord1 buffer — glTF textureInfos carry a `texCoord: 0|1` flag,
-  // so occlusion + clearcoat-normal frequently want TEXCOORD_1 while the
-  // base color stays on TEXCOORD_0. Upload the slot whenever the primitive
-  // provided it; the pipeline layout + shader consumer wire it to the
-  // binding used by textures whose texCoord == 1 (see
-  // WebGPUModelPipelineCache.js vertex-layout slot 7 / TEXCOORD_1).
-  if (geometry.hasTexCoord1 && defined(geometry.texCoord1Data)) {
-    primCache.uv1Buffer = createVertexBuffer(
-      device,
-      geometry.texCoord1Data,
-      `Prim uv1`,
-    );
-  }
-
-  // Color0 buffer (normalize to float32)
-  if (geometry.hasColor0) {
-    const colorFloat = normalizeColorData(
-      geometry.color0Data,
-      geometry.color0ComponentType,
-      geometry.color0Normalized,
-    );
-    // DP-H37 — the slot-4 vertex layout is float32x4 (16-byte stride), but a
-    // glTF COLOR_0 accessor may be VEC3 (12-byte stride). `normalizeColorData`
-    // converts the component TYPE but preserves the component COUNT, so a VEC3
-    // source produces a 12-byte-stride buffer that the GPU reads at a 16-byte
-    // stride → progressively shifted, corrupted vertex colors. Widen RGB→RGBA
-    // (alpha = 1.0) so the stride matches the layout, mirroring the edge
-    // emitter's path; `expandColorsToRGBA` is a no-op for VEC4 sources.
-    // Component count is detected from the buffer length (the geometry's
-    // `color0ComponentCount` is not plumbed through the WebGPU path).
-    const color0Components =
-      defined(colorFloat) && geometry.vertexCount > 0
-        ? Math.round(colorFloat.length / geometry.vertexCount)
-        : 4;
-    const rgba = expandColorsToRGBA(
-      colorFloat,
-      color0Components,
-      geometry.vertexCount,
-    );
-    primCache.colorBuffer = createVertexBuffer(
-      device,
-      rgba ?? colorFloat,
-      `Prim color`,
-    );
-  }
-
-  // Joints0 buffer (for skinning)
-  if (geometry.hasJoints && defined(geometry.joints0Data)) {
-    // JOINTS_0 must be uint32x4 for the shader
-    let jointsData = geometry.joints0Data;
-    if (!(jointsData instanceof Uint32Array)) {
-      // Convert from Uint8Array or Uint16Array to Uint32Array
-      jointsData = new Uint32Array(jointsData);
-    }
-    primCache.jointsBuffer = createVertexBuffer(
-      device,
-      jointsData,
-      `Prim joints`,
-    );
-    primCache.hasSkinningAttributes = true;
-  }
-
-  // Weights0 buffer (for skinning)
-  if (defined(geometry.weights0Data)) {
-    primCache.weightsBuffer = createVertexBuffer(
-      device,
-      geometry.weights0Data,
-      `Prim weights`,
-    );
-  }
-
-  // Audit B.2 (Batch 130) — `_FEATURE_ID_0` (b3dm `_BATCHID`) vertex
-  // buffer. Required for per-feature pick / per-feature styling on
-  // tilesets that encode feature IDs as a vertex attribute (the
-  // dominant b3dm case). Without this slot bound, the FS pick path
-  // can only resolve features when the source uses the
-  // EXT_mesh_features texture variant — almost no production tileset
-  // does.
-  if (geometry.hasFeatureId0 && defined(geometry.featureId0Data)) {
-    primCache.featureIdBuffer = createVertexBuffer(
-      device,
-      geometry.featureId0Data,
-      `Prim featureId`,
-    );
-  }
-
-  // DP-H46a — EXT_structural_metadata property-ATTRIBUTE vertex buffer
-  // (slot 9). `geometry.metadataData` is the per-vertex scalar resolved
-  // at the extractPrimitiveGeometry call site; the GPU upload is owned by
-  // `WebGPUModelMetadata.ensureMetadataResources` (parallel to how the
-  // featureId path splits buffer ownership). Only present when the model
-  // has structural metadata mapping to this primitive — otherwise
-  // `geometry.metadataData` is undefined and slot 9 is omitted from the
-  // layout, keeping non-metadata models byte-identical.
-  if (geometry.hasMetadata && defined(geometry.metadataData)) {
-    ensureMetadataResources(
-      device,
-      primCache,
-      geometry.metadataData as Float32Array,
-    );
-  }
-  // DP-H46c — property-TEXTURE GPU resources. Upload each unique physical
-  // property texture (sourced from the glTF texture reader, like PBR
-  // textures) + the shared property sampler, producing the bind-group entries
-  // spliced into group 1 below. Only when the primitive maps ≥1 property
-  // texture; non-property-texture models leave `propertyTextureEntries` null
-  // and stay byte-identical.
-  if (geometry.hasPropertyTextures && defined(geometry.propertyTextureLayout)) {
-    const ptResources = ensurePropertyTextureResources(
-      device,
-      primCache,
-      geometry.propertyTextureLayout,
-      (reader) => createGPUTextureFromReader(device, reader, "linear"),
-      pipelineCache.defaultPropertyTexture,
-      pipelineCache.propertyTextureSampler,
-    );
-    if (defined(ptResources)) {
-      // Pad to the full MAX_PROPERTY_TEXTURES BGL slot count with placeholders.
-      primCache.propertyTextureEntries = pipelineCache.propertyTextureEntries(
-        ptResources.entries,
+    // Normal buffer
+    if (geometry.hasNormals) {
+      primCache.normalBuffer = createVertexBuffer(
+        device,
+        geometry.normalData,
+        `Prim normal`,
       );
     }
-  }
-  // DP-H46d — property-TABLE GPU resources. Re-upload the loader's retained
-  // packed RGBA8 bytes into ONE rgba8unorm GPUTexture (rows = properties,
-  // columns = features), producing the (texture, sampler) bind-group entries
-  // spliced into group 1 below. Only when the primitive maps a GPU-compatible
-  // property table via an attribute feature-ID set; non-property-table models
-  // leave `propertyTableEntries` null and stay byte-identical.
-  if (geometry.hasPropertyTables && defined(geometry.propertyTableLayout)) {
-    const tblResources = ensurePropertyTableResources(
-      device,
-      primCache,
-      geometry.propertyTableLayout,
-      pipelineCache.propertyTextureSampler,
-    );
-    if (defined(tblResources)) {
-      primCache.propertyTableEntries = pipelineCache.propertyTableEntries(
-        tblResources.entries,
+
+    // Tangent buffer
+    if (geometry.hasTangents) {
+      primCache.tangentBuffer = createVertexBuffer(
+        device,
+        geometry.tangentData,
+        `Prim tangent`,
       );
     }
-  }
-  // DP-H46b/c — persist the generated WGSL chunk + class hash on the primitive
-  // cache so every pipeline (re)build for this primitive (color / pick /
-  // depth-write / velocity / classification) prepends the same chunk and keys
-  // its module by the same class. The renderer feeds them to the pipeline
-  // cache via `setMetadataWGSL` immediately before each `getPipeline*` call
-  // below. Persisted when the primitive has EITHER attributes or textures.
-  if (
-    (geometry.hasMetadata ||
-      geometry.hasPropertyTextures ||
-      geometry.hasPropertyTables) &&
-    defined(geometry.metadataWGSL)
-  ) {
-    primCache._metadataWGSL = geometry.metadataWGSL;
-    primCache._metadataClassHash = geometry.metadataClassHash | 0;
-    // NEW-MODEL-METADATA-MAT3-MAT4 — persist the widened-transport flag so
-    // every pipeline (re)build for this primitive feeds the pipeline cache's
-    // sticky `metadataMatTransport` state alongside the chunk.
-    primCache._metadataMatTransport = geometry.metadataMatTransport === true;
-  }
 
-  // GLTF-POINTS-MODE / C11-90 — the realized index list. `realizedIndexData`
-  // is the source array BY REFERENCE whenever nothing had to change, so the
-  // TRIANGLES and already-native paths allocate nothing here.
-  //
-  // The non-indexed synthesis this replaces was introduced for POINTS and now
-  // covers every mode except TRIANGLES. Rationale (unchanged): WebGPU
-  // validates a non-indexed `draw(vertexCount)` CPU-side against EVERY
-  // vertex-step buffer's bound size, and the missing-attribute slots
-  // (normal/tangent/uv/joints/weights on a typical point cloud) bind the
-  // pipeline cache's 1-element default buffers — fine for `drawIndexed`,
-  // whose out-of-range vertex fetches clamp to zero via robust access
-  // (the Batch 245 BoxInstancedNoNormals precedent), but a hard
-  // validation error for `draw()` ("Vertex range requires a larger
-  // buffer"). Sequential indices are GPU-equivalent for every topology.
-  // Non-indexed TRIANGLES primitives keep the historical draw() path
-  // untouched; they share the same validation gap when attributes are
-  // missing — tracked as follow-up, not papered over here.
-  //
-  // The realized list is written to the geometry VIEW (never the cached base
-  // descriptor — `resetPrimitiveGeometryView` restores these three fields from
-  // the base on every reuse) so downstream readers see the list that was
-  // actually uploaded.
-  const realizedIndexData = topologyRealization.indexData;
-  if (defined(realizedIndexData)) {
-    geometry.indexData = realizedIndexData;
-    geometry.indexCount = topologyRealization.indexCount;
-    geometry.indexType =
-      topologyRealization.indexFormat === "uint32"
-        ? "UNSIGNED_INT"
-        : "UNSIGNED_SHORT";
-
-    primCache.indexFormat = topologyRealization.indexFormat;
-    primCache.indexCount = topologyRealization.indexCount;
-    // WebGPU requires `writeBuffer` source byteLength to be a multiple
-    // of 4. Uint16 index buffers with an odd index count produce
-    // `byteLength % 4 === 2`, which the original code passed straight
-    // to `writeBuffer` and crashed under glTF models that have one —
-    // CZML Model Articulations is one such asset. Pad the buffer +
-    // source to the nearest 4 bytes; the extra slot is never read
-    // because `indexCount` stays at the geometry's authoritative
-    // value (Session 65 Batch 5, 2026-05-11).
-    const indexByteLength = realizedIndexData.byteLength;
-    const alignedIndexByteLength = (indexByteLength + 3) & ~3;
-    primCache.indexBuffer = device.createBuffer({
-      label: `Prim index`,
-      size: Math.max(alignedIndexByteLength, 4),
-      usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
-    });
-    if (alignedIndexByteLength === indexByteLength) {
-      device.queue.writeBuffer(primCache.indexBuffer, 0, realizedIndexData);
-    } else {
-      const padded = new Uint8Array(alignedIndexByteLength);
-      padded.set(
-        new Uint8Array(
-          realizedIndexData.buffer,
-          realizedIndexData.byteOffset,
-          indexByteLength,
-        ),
+    // TexCoord0 buffer
+    if (geometry.hasTexCoord0) {
+      primCache.uvBuffer = createVertexBuffer(
+        device,
+        geometry.texCoord0Data,
+        `Prim uv0`,
       );
-      device.queue.writeBuffer(primCache.indexBuffer, 0, padded);
     }
-  }
 
-  // Pipeline (varies by alpha mode and double-sided)
-  // Batch 174 — B.4 select the materialDefines bitmask based on the
-  // primitive's material flags. Track the value on primCache so
-  // subsequent pipeline lookups (pick, velocity, classification,
-  // depth-write) stay consistent across passes for this primitive.
-  // This same value is also used to filter the texture-entries array
-  // and select the matching per-variant materialBGL when building
-  // the merged group 1 bind group below.
-  // Session 62 NEW-VR-VERTEX-BUFFER-VARIANT — primitive's TEXCOORD_1
-  // attribute presence drives MODEL_HAS_TEXCOORD_1. When unset, the
-  // pipeline omits vertex buffer slot 7 (8-slot layout, fitting Edge's
-  // adapter cap of `maxVertexBuffers = 8`); when set, the layout
-  // includes slot 7 (9 slots, requires adapter ≥ 9).
-  //
-  // Session 65 follow-up — same treatment for slot 8 (featureId0). With
-  // both flags off (the common case for standard glTF models without
-  // multi-UV or batched feature IDs) the pipeline lands at 7 slots,
-  // leaving headroom on Edge's adapter. The implicit-range synthesis
-  // above sets `geometry.hasFeatureId0 = true` when a batched 3D Tile
-  // expects feature IDs but the glTF accessor is missing, so this read
-  // sees the final, post-synthesis value.
-  let materialDefines = computeMaterialDefines(matInfo.materialFlags);
-  if (geometry.hasTexCoord1) {
-    materialDefines |= ShaderDefine.MODEL_HAS_TEXCOORD_1;
-  }
-  if (geometry.hasFeatureId0) {
-    materialDefines |= ShaderDefine.MODEL_HAS_FEATURE_ID_0;
-  }
-  // DP-H46a — presence gate. Flip MODEL_HAS_METADATA only when the
-  // primitive actually carries a property-ATTRIBUTE scalar (resolved into
-  // `geometry.metadataData` upstream + uploaded above). This adds vertex
-  // slot 9 to the layout + activates the WGSL metadata ifdef blocks. When
-  // unset (the common case), the bit is absent, the layout omits slot 9,
-  // the WGSL preprocessor strips every metadata block, and the model is
-  // byte-identical to the pre-DP-H46a path.
-  if (geometry.hasMetadata && defined(primCache._metadataBuffer)) {
-    materialDefines |= ShaderDefine.MODEL_HAS_METADATA;
-  }
-  // DP-H46c — presence gate. Flip MODEL_HAS_PROPERTY_TEXTURES only when the
-  // primitive actually maps ≥1 GPU-compatible property texture AND its
-  // bind-group entries resolved. This selects the property-texture materialBGL
-  // variant (extra sampled-texture bindings 39..) + activates the generated
-  // chunk's binding/sampling code. Independent of MODEL_HAS_METADATA (a model
-  // can have property textures without property attributes, and vice versa).
-  // When unset (the common case), the bit is absent, the minimal materialBGL
-  // is used, and the model is byte-identical to the pre-DP-H46c path.
-  if (
-    geometry.hasPropertyTextures &&
-    defined(primCache.propertyTextureEntries)
-  ) {
-    materialDefines |= ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES;
-  }
-  // DP-H46d — presence gate. Flip MODEL_HAS_PROPERTY_TABLES only when the
-  // primitive maps a GPU-compatible property table AND its bind-group entries
-  // resolved. This selects the property-table materialBGL variant (extra
-  // sampled-texture binding 44 + sampler 45) + activates the generated chunk's
-  // textureLoad code. Independent of the attribute/texture metadata bits. When
-  // unset (the common case), the bit is absent, the minimal materialBGL is
-  // used, and the model is byte-identical to the pre-DP-H46d path.
-  if (geometry.hasPropertyTables && defined(primCache.propertyTableEntries)) {
-    materialDefines |= ShaderDefine.MODEL_HAS_PROPERTY_TABLES;
-  }
-  // PARITY-CUSTOM-SHADER-WGSL — OR in the model-level customShader defines
-  // (MODEL_HAS_WGSL_CUSTOM_SHADER + optional _VERTEX) + stash the generated
-  // chunk/hash on the primitive so every pipeline (re)build for this primitive
-  // prepends it and keys its module by the customShader class. When the model
-  // has no native-WGSL customShader, `cache._customShader` is null → no bits,
-  // no chunk, byte-identical.
-  if (defined(cache._customShader)) {
-    materialDefines |= cache._customShader.defines;
-    primCache._customShaderWGSL = cache._customShader.chunk;
-    primCache._customShaderClassHash = cache._customShader.classHash | 0;
-  }
-  primCache.materialDefines = materialDefines;
-  // DP-H46b — feed the generated metadata chunk + class hash to the pipeline
-  // cache before the build (no-op clear for non-metadata primitives).
-  applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache);
-  primCache.pipeline = pipelineCache.getPipeline(
-    matInfo.alphaMode,
-    matInfo.isDoubleSided,
-    materialDefines,
-  );
+    // TexCoord1 buffer — glTF textureInfos carry a `texCoord: 0|1` flag,
+    // so occlusion + clearcoat-normal frequently want TEXCOORD_1 while the
+    // base color stays on TEXCOORD_0. Upload the slot whenever the primitive
+    // provided it; the pipeline layout + shader consumer wire it to the
+    // binding used by textures whose texCoord == 1 (see
+    // WebGPUModelPipelineCache.js vertex-layout slot 7 / TEXCOORD_1).
+    if (geometry.hasTexCoord1 && defined(geometry.texCoord1Data)) {
+      primCache.uv1Buffer = createVertexBuffer(
+        device,
+        geometry.texCoord1Data,
+        `Prim uv1`,
+      );
+    }
 
-  // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — for translucent BLEND
-  // primitives we eagerly cache the depth-write variant too. A 3D-tile
-  // model whose content carries this primitive may set
-  // `depthForTranslucentClassification = true` on its WebGPUDrawCommand
-  // (per `Cesium3DTile.update`); when that flag is set the command will
-  // bind this variant in `WebGPUDrawCommand.execute()` so the tile
-  // surface populates the scene-FB depth attachment, letting the
-  // stencil-based GroundPrimitive classifier clip against the tile.
-  // OPAQUE/MASK primitives already write depth, so the variant only
-  // matters for BLEND.
-  if (matInfo.alphaMode === AlphaModes.BLEND) {
-    primCache.depthWritePipeline = pipelineCache.getDepthWritePipeline(
+    // Color0 buffer (normalize to float32)
+    if (geometry.hasColor0) {
+      const colorFloat = normalizeColorData(
+        geometry.color0Data,
+        geometry.color0ComponentType,
+        geometry.color0Normalized,
+      );
+      // DP-H37 — the slot-4 vertex layout is float32x4 (16-byte stride), but a
+      // glTF COLOR_0 accessor may be VEC3 (12-byte stride). `normalizeColorData`
+      // converts the component TYPE but preserves the component COUNT, so a VEC3
+      // source produces a 12-byte-stride buffer that the GPU reads at a 16-byte
+      // stride → progressively shifted, corrupted vertex colors. Widen RGB→RGBA
+      // (alpha = 1.0) so the stride matches the layout, mirroring the edge
+      // emitter's path; `expandColorsToRGBA` is a no-op for VEC4 sources.
+      // Component count is detected from the buffer length (the geometry's
+      // `color0ComponentCount` is not plumbed through the WebGPU path).
+      const color0Components =
+        defined(colorFloat) && geometry.vertexCount > 0
+          ? Math.round(colorFloat.length / geometry.vertexCount)
+          : 4;
+      const rgba = expandColorsToRGBA(
+        colorFloat,
+        color0Components,
+        geometry.vertexCount,
+      );
+      primCache.colorBuffer = createVertexBuffer(
+        device,
+        rgba ?? colorFloat,
+        `Prim color`,
+      );
+    }
+
+    // Joints0 buffer (for skinning)
+    if (geometry.hasJoints && defined(geometry.joints0Data)) {
+      // JOINTS_0 must be uint32x4 for the shader
+      let jointsData = geometry.joints0Data;
+      if (!(jointsData instanceof Uint32Array)) {
+        // Convert from Uint8Array or Uint16Array to Uint32Array
+        jointsData = new Uint32Array(jointsData);
+      }
+      primCache.jointsBuffer = createVertexBuffer(
+        device,
+        jointsData,
+        `Prim joints`,
+      );
+      primCache.hasSkinningAttributes = true;
+    }
+
+    // Weights0 buffer (for skinning)
+    if (defined(geometry.weights0Data)) {
+      primCache.weightsBuffer = createVertexBuffer(
+        device,
+        geometry.weights0Data,
+        `Prim weights`,
+      );
+    }
+
+    // Audit B.2 (Batch 130) — `_FEATURE_ID_0` (b3dm `_BATCHID`) vertex
+    // buffer. Required for per-feature pick / per-feature styling on
+    // tilesets that encode feature IDs as a vertex attribute (the
+    // dominant b3dm case). Without this slot bound, the FS pick path
+    // can only resolve features when the source uses the
+    // EXT_mesh_features texture variant — almost no production tileset
+    // does.
+    if (geometry.hasFeatureId0 && defined(geometry.featureId0Data)) {
+      primCache.featureIdBuffer = createVertexBuffer(
+        device,
+        geometry.featureId0Data,
+        `Prim featureId`,
+      );
+    }
+
+    // DP-H46a — EXT_structural_metadata property-ATTRIBUTE vertex buffer
+    // (slot 9). `geometry.metadataData` is the per-vertex scalar resolved
+    // at the extractPrimitiveGeometry call site; the GPU upload is owned by
+    // `WebGPUModelMetadata.ensureMetadataResources` (parallel to how the
+    // featureId path splits buffer ownership). Only present when the model
+    // has structural metadata mapping to this primitive — otherwise
+    // `geometry.metadataData` is undefined and slot 9 is omitted from the
+    // layout, keeping non-metadata models byte-identical.
+    if (geometry.hasMetadata && defined(geometry.metadataData)) {
+      ensureMetadataResources(
+        device,
+        primCache,
+        geometry.metadataData as Float32Array,
+      );
+    }
+    // DP-H46c — property-TEXTURE GPU resources. Upload each unique physical
+    // property texture (sourced from the glTF texture reader, like PBR
+    // textures) + the shared property sampler, producing the bind-group entries
+    // spliced into group 1 below. Only when the primitive maps ≥1 property
+    // texture; non-property-texture models leave `propertyTextureEntries` null
+    // and stay byte-identical.
+    if (
+      geometry.hasPropertyTextures &&
+      defined(geometry.propertyTextureLayout)
+    ) {
+      const ptResources = ensurePropertyTextureResources(
+        device,
+        primCache,
+        geometry.propertyTextureLayout,
+        (reader) => {
+          const texture = createGPUTextureFromReader(
+            device,
+            cache.resourceGeneration,
+            reader,
+            "linear",
+            enqueueMip,
+            cancelMip,
+          );
+          const owned =
+            defined(texture) &&
+            !isTextureOwnedByCompatibilityStub(
+              device,
+              cache.resourceGeneration,
+              reader,
+              texture,
+            );
+          return {
+            texture,
+            owned,
+            release:
+              owned && defined(texture)
+                ? () => destroyOwnedModelTextureBestEffort(texture, cancelMip)
+                : undefined,
+          };
+        },
+        pipelineCache.defaultPropertyTexture,
+        pipelineCache.propertyTextureSampler,
+      );
+      if (defined(ptResources)) {
+        // Pad to the full MAX_PROPERTY_TEXTURES BGL slot count with placeholders.
+        primCache.propertyTextureEntries = pipelineCache.propertyTextureEntries(
+          ptResources.entries,
+        );
+      }
+    }
+    // DP-H46d — property-TABLE GPU resources. Re-upload the loader's retained
+    // packed RGBA8 bytes into ONE rgba8unorm GPUTexture (rows = properties,
+    // columns = features), producing the (texture, sampler) bind-group entries
+    // spliced into group 1 below. Only when the primitive maps a GPU-compatible
+    // property table via an attribute feature-ID set; non-property-table models
+    // leave `propertyTableEntries` null and stay byte-identical.
+    if (geometry.hasPropertyTables && defined(geometry.propertyTableLayout)) {
+      const tblResources = ensurePropertyTableResources(
+        device,
+        primCache,
+        geometry.propertyTableLayout,
+        pipelineCache.propertyTextureSampler,
+      );
+      if (defined(tblResources)) {
+        primCache.propertyTableEntries = pipelineCache.propertyTableEntries(
+          tblResources.entries,
+        );
+      }
+    }
+    // DP-H46b/c — persist the generated WGSL chunk + class hash on the primitive
+    // cache so every pipeline (re)build for this primitive (color / pick /
+    // depth-write / velocity / classification) prepends the same chunk and keys
+    // its module by the same class. The renderer feeds them to the pipeline
+    // cache via `setMetadataWGSL` immediately before each `getPipeline*` call
+    // below. Persisted when the primitive has EITHER attributes or textures.
+    if (
+      (geometry.hasMetadata ||
+        geometry.hasPropertyTextures ||
+        geometry.hasPropertyTables) &&
+      defined(geometry.metadataWGSL)
+    ) {
+      primCache._metadataWGSL = geometry.metadataWGSL;
+      primCache._metadataClassHash = geometry.metadataClassHash | 0;
+      // NEW-MODEL-METADATA-MAT3-MAT4 — persist the widened-transport flag so
+      // every pipeline (re)build for this primitive feeds the pipeline cache's
+      // sticky `metadataMatTransport` state alongside the chunk.
+      primCache._metadataMatTransport = geometry.metadataMatTransport === true;
+    }
+
+    // GLTF-POINTS-MODE / C11-90 — the realized index list. `realizedIndexData`
+    // is the source array BY REFERENCE whenever nothing had to change, so the
+    // TRIANGLES and already-native paths allocate nothing here.
+    //
+    // The non-indexed synthesis this replaces was introduced for POINTS and now
+    // covers every mode except TRIANGLES. Rationale (unchanged): WebGPU
+    // validates a non-indexed `draw(vertexCount)` CPU-side against EVERY
+    // vertex-step buffer's bound size, and the missing-attribute slots
+    // (normal/tangent/uv/joints/weights on a typical point cloud) bind the
+    // pipeline cache's 1-element default buffers — fine for `drawIndexed`,
+    // whose out-of-range vertex fetches clamp to zero via robust access
+    // (the Batch 245 BoxInstancedNoNormals precedent), but a hard
+    // validation error for `draw()` ("Vertex range requires a larger
+    // buffer"). Sequential indices are GPU-equivalent for every topology.
+    // Non-indexed TRIANGLES primitives keep the historical draw() path
+    // untouched; they share the same validation gap when attributes are
+    // missing — tracked as follow-up, not papered over here.
+    //
+    // The realized list is written to the geometry VIEW (never the cached base
+    // descriptor — `resetPrimitiveGeometryView` restores these three fields from
+    // the base on every reuse) so downstream readers see the list that was
+    // actually uploaded.
+    const realizedIndexData = topologyRealization.indexData;
+    if (defined(realizedIndexData)) {
+      geometry.indexData = realizedIndexData;
+      geometry.indexCount = topologyRealization.indexCount;
+      geometry.indexType =
+        topologyRealization.indexFormat === "uint32"
+          ? "UNSIGNED_INT"
+          : "UNSIGNED_SHORT";
+
+      primCache.indexFormat = topologyRealization.indexFormat;
+      primCache.indexCount = topologyRealization.indexCount;
+      // WebGPU requires `writeBuffer` source byteLength to be a multiple
+      // of 4. Uint16 index buffers with an odd index count produce
+      // `byteLength % 4 === 2`, which the original code passed straight
+      // to `writeBuffer` and crashed under glTF models that have one —
+      // CZML Model Articulations is one such asset. Pad the buffer +
+      // source to the nearest 4 bytes; the extra slot is never read
+      // because `indexCount` stays at the geometry's authoritative
+      // value (Session 65 Batch 5, 2026-05-11).
+      const indexByteLength = realizedIndexData.byteLength;
+      const alignedIndexByteLength = (indexByteLength + 3) & ~3;
+      primCache.indexBuffer = device.createBuffer({
+        label: `Prim index`,
+        size: Math.max(alignedIndexByteLength, 4),
+        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+      });
+      if (alignedIndexByteLength === indexByteLength) {
+        device.queue.writeBuffer(primCache.indexBuffer, 0, realizedIndexData);
+      } else {
+        const padded = new Uint8Array(alignedIndexByteLength);
+        padded.set(
+          new Uint8Array(
+            realizedIndexData.buffer,
+            realizedIndexData.byteOffset,
+            indexByteLength,
+          ),
+        );
+        device.queue.writeBuffer(primCache.indexBuffer, 0, padded);
+      }
+    }
+
+    // Pipeline (varies by alpha mode and double-sided)
+    // Batch 174 — B.4 select the materialDefines bitmask based on the
+    // primitive's material flags. Track the value on primCache so
+    // subsequent pipeline lookups (pick, velocity, classification,
+    // depth-write) stay consistent across passes for this primitive.
+    // This same value is also used to filter the texture-entries array
+    // and select the matching per-variant materialBGL when building
+    // the merged group 1 bind group below.
+    // Session 62 NEW-VR-VERTEX-BUFFER-VARIANT — primitive's TEXCOORD_1
+    // attribute presence drives MODEL_HAS_TEXCOORD_1. When unset, the
+    // pipeline omits vertex buffer slot 7 (8-slot layout, fitting Edge's
+    // adapter cap of `maxVertexBuffers = 8`); when set, the layout
+    // includes slot 7 (9 slots, requires adapter ≥ 9).
+    //
+    // Session 65 follow-up — same treatment for slot 8 (featureId0). With
+    // both flags off (the common case for standard glTF models without
+    // multi-UV or batched feature IDs) the pipeline lands at 7 slots,
+    // leaving headroom on Edge's adapter. The implicit-range synthesis
+    // above sets `geometry.hasFeatureId0 = true` when a batched 3D Tile
+    // expects feature IDs but the glTF accessor is missing, so this read
+    // sees the final, post-synthesis value.
+    let materialDefines = computeMaterialDefines(matInfo.materialFlags);
+    if (geometry.hasTexCoord1) {
+      materialDefines |= ShaderDefine.MODEL_HAS_TEXCOORD_1;
+    }
+    if (geometry.hasFeatureId0) {
+      materialDefines |= ShaderDefine.MODEL_HAS_FEATURE_ID_0;
+    }
+    // DP-H46a — presence gate. Flip MODEL_HAS_METADATA only when the
+    // primitive actually carries a property-ATTRIBUTE scalar (resolved into
+    // `geometry.metadataData` upstream + uploaded above). This adds vertex
+    // slot 9 to the layout + activates the WGSL metadata ifdef blocks. When
+    // unset (the common case), the bit is absent, the layout omits slot 9,
+    // the WGSL preprocessor strips every metadata block, and the model is
+    // byte-identical to the pre-DP-H46a path.
+    if (geometry.hasMetadata && defined(primCache._metadataBuffer)) {
+      materialDefines |= ShaderDefine.MODEL_HAS_METADATA;
+    }
+    // DP-H46c — presence gate. Flip MODEL_HAS_PROPERTY_TEXTURES only when the
+    // primitive actually maps ≥1 GPU-compatible property texture AND its
+    // bind-group entries resolved. This selects the property-texture materialBGL
+    // variant (extra sampled-texture bindings 39..) + activates the generated
+    // chunk's binding/sampling code. Independent of MODEL_HAS_METADATA (a model
+    // can have property textures without property attributes, and vice versa).
+    // When unset (the common case), the bit is absent, the minimal materialBGL
+    // is used, and the model is byte-identical to the pre-DP-H46c path.
+    if (
+      geometry.hasPropertyTextures &&
+      defined(primCache.propertyTextureEntries)
+    ) {
+      materialDefines |= ShaderDefine.MODEL_HAS_PROPERTY_TEXTURES;
+    }
+    // DP-H46d — presence gate. Flip MODEL_HAS_PROPERTY_TABLES only when the
+    // primitive maps a GPU-compatible property table AND its bind-group entries
+    // resolved. This selects the property-table materialBGL variant (extra
+    // sampled-texture binding 44 + sampler 45) + activates the generated chunk's
+    // textureLoad code. Independent of the attribute/texture metadata bits. When
+    // unset (the common case), the bit is absent, the minimal materialBGL is
+    // used, and the model is byte-identical to the pre-DP-H46d path.
+    if (geometry.hasPropertyTables && defined(primCache.propertyTableEntries)) {
+      materialDefines |= ShaderDefine.MODEL_HAS_PROPERTY_TABLES;
+    }
+    // PARITY-CUSTOM-SHADER-WGSL — OR in the model-level customShader defines
+    // (MODEL_HAS_WGSL_CUSTOM_SHADER + optional _VERTEX) + stash the generated
+    // chunk/hash on the primitive so every pipeline (re)build for this primitive
+    // prepends it and keys its module by the customShader class. When the model
+    // has no native-WGSL customShader, `cache._customShader` is null → no bits,
+    // no chunk, byte-identical.
+    if (defined(cache._customShader)) {
+      materialDefines |= cache._customShader.defines;
+      primCache._customShaderWGSL = cache._customShader.chunk;
+      primCache._customShaderClassHash = cache._customShader.classHash | 0;
+    }
+    primCache.materialDefines = materialDefines;
+    // DP-H46b — feed the generated metadata chunk + class hash to the pipeline
+    // cache before the build (no-op clear for non-metadata primitives).
+    applyPrimitiveMetadataToPipelineCache(pipelineCache, primCache);
+    primCache.pipeline = pipelineCache.getPipeline(
       matInfo.alphaMode,
       matInfo.isDoubleSided,
       materialDefines,
     );
+
+    // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — for translucent BLEND
+    // primitives we eagerly cache the depth-write variant too. A 3D-tile
+    // model whose content carries this primitive may set
+    // `depthForTranslucentClassification = true` on its WebGPUDrawCommand
+    // (per `Cesium3DTile.update`); when that flag is set the command will
+    // bind this variant in `WebGPUDrawCommand.execute()` so the tile
+    // surface populates the scene-FB depth attachment, letting the
+    // stencil-based GroundPrimitive classifier clip against the tile.
+    // OPAQUE/MASK primitives already write depth, so the variant only
+    // matters for BLEND.
+    if (matInfo.alphaMode === AlphaModes.BLEND) {
+      primCache.depthWritePipeline = pipelineCache.getDepthWritePipeline(
+        matInfo.alphaMode,
+        matInfo.isDoubleSided,
+        materialDefines,
+      );
+    }
+
+    // Create GPU textures from glTF image sources
+    const textures = createMaterialTextures(
+      device,
+      cache.resourceGeneration,
+      pipelineCache,
+      matInfo,
+      enqueueMip,
+      cancelMip,
+    );
+    primCache.gpuTextures = textures.created;
+    // Stash matInfo + placeholderSlots so the per-frame
+    // refreshDeferredModelTextures helper can poll the readers and
+    // upgrade fallback-textured slots when the real images finish
+    // loading. See refreshDeferredModelTextures() comment.
+    primCache.matInfo = matInfo;
+    primCache.placeholderSlots = textures.placeholderSlots;
+
+    // Texture bind group — one sampler per slot, resolved from the glTF
+    // textureInfo's sampler block so per-texture magFilter / wrapS / wrapT
+    // actually propagate. Missing samplers fall back to defaultSampler
+    // (linear / linear / repeat) which matches the glTF spec default.
+    const defSampler = pipelineCache.defaultSampler;
+    const baseSampler = pipelineCache.getSamplerForReader(
+      matInfo.baseColorTextureReader || matInfo.diffuseTextureReader,
+    );
+    const normalSampler = pipelineCache.getSamplerForReader(
+      matInfo.normalTextureReader,
+    );
+    const mrSampler = pipelineCache.getSamplerForReader(
+      matInfo.metallicRoughnessTextureReader || matInfo.specGlossTextureReader,
+    );
+    const emissiveSampler = pipelineCache.getSamplerForReader(
+      matInfo.emissiveTextureReader,
+    );
+    const occlusionSampler = pipelineCache.getSamplerForReader(
+      matInfo.occlusionTextureReader,
+    );
+    // Cache per-binding views + samplers on the prim cache so the
+    // texture bind group can be rebuilt cheaply when the SceneRenderer's
+    // refraction capture (Batch 107) publishes a new
+    // `_refractionSceneView`. Without this cache the rebuild would have
+    // to re-create the views every frame from `textures.*`.
+    primCache.textureViews = {
+      baseColor: pipelineCache.getDefaultTextureView(textures.baseColor),
+      normal: pipelineCache.getDefaultTextureView(textures.normal),
+      metallicRoughness: pipelineCache.getDefaultTextureView(
+        textures.metallicRoughness,
+      ),
+      emissive: pipelineCache.getDefaultTextureView(textures.emissive),
+      occlusion: pipelineCache.getDefaultTextureView(textures.occlusion),
+      clearcoat: pipelineCache.getDefaultTextureView(textures.clearcoat),
+      specularColor: pipelineCache.getDefaultTextureView(
+        textures.specularColor,
+      ),
+      anisotropy: pipelineCache.getDefaultTextureView(textures.anisotropy),
+      iridescence: pipelineCache.getDefaultTextureView(textures.iridescence),
+      sheenColor: pipelineCache.getDefaultTextureView(textures.sheenColor),
+      thickness: pipelineCache.getDefaultTextureView(textures.thickness),
+      clearcoatRoughness: pipelineCache.getDefaultTextureView(
+        textures.clearcoatRoughness,
+      ),
+      clearcoatNormal: pipelineCache.getDefaultTextureView(
+        textures.clearcoatNormal,
+      ),
+      sheenRoughness: pipelineCache.getDefaultTextureView(
+        textures.sheenRoughness,
+      ),
+      specularFactor: pipelineCache.getDefaultTextureView(
+        textures.specularFactor,
+      ),
+      iridescenceThickness: pipelineCache.getDefaultTextureView(
+        textures.iridescenceThickness,
+      ),
+      transmission: pipelineCache.getDefaultTextureView(textures.transmission),
+      refractionPlaceholder: pipelineCache.getDefaultTextureView(
+        textures.refractionScene,
+      ),
+    };
+    primCache.textureSamplers = {
+      base: baseSampler || defSampler,
+      normal: normalSampler || defSampler,
+      mr: mrSampler || defSampler,
+      emissive: emissiveSampler || defSampler,
+      occlusion: occlusionSampler || defSampler,
+      def: defSampler,
+    };
+    // NEW-BG-CONSOLIDATION (Batch 122) — track texture entries on the
+    // primCache. The full merged group 1 bind group is built per-frame
+    // at the draw command emission site; this is just the cached
+    // texture portion.
+    // Batch 174 — entries are now filtered by `primCache.materialDefines`:
+    // basic variant emits bindings 2-11 only; full variant emits 2-25.
+    // The matching per-variant `materialBGL` is selected at bind-group
+    // construction time via `pipelineCache.getOrCreateMaterialBGL(materialDefines)`.
+    primCache.textureEntries = getModelTextureEntries(
+      primCache,
+      null,
+      materialDefines,
+      getCustomShaderEntries(cache, pipelineCache),
+    );
+    primCache.refractionViewBound = null;
+
+    cache.primitives[primKey] = primCache;
+    return primCache;
+  } catch (error) {
+    // Primitive realization is one ownership transaction. Nothing is visible
+    // through cache.primitives until every buffer, texture view and bind-group
+    // entry has been built. If any later allocation/publication step fails,
+    // drain everything already attached to the unpublished cache while
+    // preserving the construction error that triggered rollback.
+    try {
+      destroyPrimitiveCacheResources(primCache, cancelMip);
+    } catch {
+      // Best-effort rollback: the primary realization failure is authoritative.
+    }
+    throw error;
   }
-
-  // Create GPU textures from glTF image sources
-  const textures = createMaterialTextures(
-    device,
-    pipelineCache,
-    matInfo,
-    enqueueMip,
-  );
-  primCache.gpuTextures = textures.created;
-  // Stash matInfo + placeholderSlots so the per-frame
-  // refreshDeferredModelTextures helper can poll the readers and
-  // upgrade fallback-textured slots when the real images finish
-  // loading. See refreshDeferredModelTextures() comment.
-  primCache.matInfo = matInfo;
-  primCache.placeholderSlots = textures.placeholderSlots;
-
-  // Texture bind group — one sampler per slot, resolved from the glTF
-  // textureInfo's sampler block so per-texture magFilter / wrapS / wrapT
-  // actually propagate. Missing samplers fall back to defaultSampler
-  // (linear / linear / repeat) which matches the glTF spec default.
-  const defSampler = pipelineCache.defaultSampler;
-  const baseSampler = pipelineCache.getSamplerForReader(
-    matInfo.baseColorTextureReader || matInfo.diffuseTextureReader,
-  );
-  const normalSampler = pipelineCache.getSamplerForReader(
-    matInfo.normalTextureReader,
-  );
-  const mrSampler = pipelineCache.getSamplerForReader(
-    matInfo.metallicRoughnessTextureReader || matInfo.specGlossTextureReader,
-  );
-  const emissiveSampler = pipelineCache.getSamplerForReader(
-    matInfo.emissiveTextureReader,
-  );
-  const occlusionSampler = pipelineCache.getSamplerForReader(
-    matInfo.occlusionTextureReader,
-  );
-  // Cache per-binding views + samplers on the prim cache so the
-  // texture bind group can be rebuilt cheaply when the SceneRenderer's
-  // refraction capture (Batch 107) publishes a new
-  // `_refractionSceneView`. Without this cache the rebuild would have
-  // to re-create the views every frame from `textures.*`.
-  primCache.textureViews = {
-    baseColor: pipelineCache.getDefaultTextureView(textures.baseColor),
-    normal: pipelineCache.getDefaultTextureView(textures.normal),
-    metallicRoughness: pipelineCache.getDefaultTextureView(
-      textures.metallicRoughness,
-    ),
-    emissive: pipelineCache.getDefaultTextureView(textures.emissive),
-    occlusion: pipelineCache.getDefaultTextureView(textures.occlusion),
-    clearcoat: pipelineCache.getDefaultTextureView(textures.clearcoat),
-    specularColor: pipelineCache.getDefaultTextureView(textures.specularColor),
-    anisotropy: pipelineCache.getDefaultTextureView(textures.anisotropy),
-    iridescence: pipelineCache.getDefaultTextureView(textures.iridescence),
-    sheenColor: pipelineCache.getDefaultTextureView(textures.sheenColor),
-    thickness: pipelineCache.getDefaultTextureView(textures.thickness),
-    clearcoatRoughness: pipelineCache.getDefaultTextureView(
-      textures.clearcoatRoughness,
-    ),
-    clearcoatNormal: pipelineCache.getDefaultTextureView(
-      textures.clearcoatNormal,
-    ),
-    sheenRoughness: pipelineCache.getDefaultTextureView(
-      textures.sheenRoughness,
-    ),
-    specularFactor: pipelineCache.getDefaultTextureView(
-      textures.specularFactor,
-    ),
-    iridescenceThickness: pipelineCache.getDefaultTextureView(
-      textures.iridescenceThickness,
-    ),
-    transmission: pipelineCache.getDefaultTextureView(textures.transmission),
-    refractionPlaceholder: pipelineCache.getDefaultTextureView(
-      textures.refractionScene,
-    ),
-  };
-  primCache.textureSamplers = {
-    base: baseSampler || defSampler,
-    normal: normalSampler || defSampler,
-    mr: mrSampler || defSampler,
-    emissive: emissiveSampler || defSampler,
-    occlusion: occlusionSampler || defSampler,
-    def: defSampler,
-  };
-  // NEW-BG-CONSOLIDATION (Batch 122) — track texture entries on the
-  // primCache. The full merged group 1 bind group is built per-frame
-  // at the draw command emission site; this is just the cached
-  // texture portion.
-  // Batch 174 — entries are now filtered by `primCache.materialDefines`:
-  // basic variant emits bindings 2-11 only; full variant emits 2-25.
-  // The matching per-variant `materialBGL` is selected at bind-group
-  // construction time via `pipelineCache.getOrCreateMaterialBGL(materialDefines)`.
-  primCache.textureEntries = getModelTextureEntries(
-    primCache,
-    null,
-    materialDefines,
-    getCustomShaderEntries(cache, pipelineCache),
-  );
-  primCache.refractionViewBound = null;
-
-  cache.primitives[primKey] = primCache;
-  return primCache;
 }
 
 /**
@@ -4564,11 +4694,29 @@ function getOrCreateMergedMaterialBindGroup(
  * Creates GPU textures for a material, falling back to defaults.
  * @private
  */
+function destroyOwnedModelTextureBestEffort(
+  texture: GPUTexture,
+  cancelMip?: CancelMipFn,
+): void {
+  try {
+    cancelMip?.(texture);
+  } catch {
+    // Cancellation is advisory bookkeeping; native ownership still drains.
+  }
+  try {
+    texture.destroy();
+  } catch {
+    // Rollback callers preserve the allocation/publication error.
+  }
+}
+
 function createMaterialTextures(
   device: GPUDevice,
+  resourceGeneration: number,
   pipelineCache: PipelineCacheLike,
   matInfo: MaterialInfo,
   enqueueMip?: EnqueueMipFn,
+  cancelMip?: CancelMipFn,
 ) {
   const created: GPUTexture[] = [];
   const defWhite = pipelineCache.defaultWhiteTexture;
@@ -4596,9 +4744,11 @@ function createMaterialTextures(
     }
     const tex = createGPUTextureFromReader(
       device,
+      resourceGeneration,
       reader,
       colorSpace,
       enqueueMip,
+      cancelMip,
     );
     if (defined(tex)) {
       // Only push to `created` (which the primCache destroys later) if
@@ -4607,11 +4757,12 @@ function createMaterialTextures(
       // texture is owned by that stub and reused by reference; pushing it to
       // `created` would cause a double-destroy. The stub-owned check uses
       // the same path createGPUTextureFromReader took for ownership detection.
-      const stubWrapper = reader.texture && reader.texture._texture;
-      const reusedFromStub =
-        stubWrapper &&
-        stubWrapper._webgpuTexture &&
-        stubWrapper._webgpuTexture.texture === tex;
+      const reusedFromStub = isTextureOwnedByCompatibilityStub(
+        device,
+        resourceGeneration,
+        reader,
+        tex,
+      );
       if (!reusedFromStub) {
         created.push(tex);
       }
@@ -4634,124 +4785,137 @@ function createMaterialTextures(
   //   linear: clearcoat (intensity scalar), anisotropy (RG = direction
   //           encoded as f32 trig), iridescence (R = factor scalar),
   //           thickness (G = volume thickness scalar).
-  return {
-    baseColor: tryCreate(
-      "baseColor",
-      matInfo.baseColorTextureReader || matInfo.diffuseTextureReader,
-      defWhite,
-      "srgb",
-    ),
-    normal: tryCreate(
-      "normal",
-      matInfo.normalTextureReader,
-      defNormal,
-      "linear",
-    ),
-    metallicRoughness: tryCreate(
-      "metallicRoughness",
-      matInfo.metallicRoughnessTextureReader || matInfo.specGlossTextureReader,
-      defWhite,
-      "linear",
-    ),
-    emissive: tryCreate(
-      "emissive",
-      matInfo.emissiveTextureReader,
-      defBlack,
-      "srgb",
-    ),
-    occlusion: tryCreate(
-      "occlusion",
-      matInfo.occlusionTextureReader,
-      defWhite,
-      "linear",
-    ),
-    clearcoat: tryCreate(
-      "clearcoat",
-      matInfo.clearcoatTextureReader,
-      defWhite,
-      "linear",
-    ),
-    specularColor: tryCreate(
-      "specularColor",
-      matInfo.specularExtColorTextureReader,
-      defWhite,
-      "srgb",
-    ),
-    anisotropy: tryCreate(
-      "anisotropy",
-      matInfo.anisotropyTextureReader,
-      defWhite,
-      "linear",
-    ),
-    iridescence: tryCreate(
-      "iridescence",
-      matInfo.iridescenceTextureReader,
-      defWhite,
-      "linear",
-    ),
-    sheenColor: tryCreate(
-      "sheenColor",
-      matInfo.sheenColorTextureReader,
-      defWhite,
-      "srgb",
-    ),
-    thickness: tryCreate(
-      "thickness",
-      matInfo.thicknessTextureReader,
-      defWhite,
-      "linear",
-    ),
-    // C-R4-GLTF-KHR-TEXTURES (Batch 103) — KHR secondary maps. Each
-    // is linear-encoded scalar/normal data per the relevant Khronos
-    // extension specs (clearcoat normal uses the standard normal-map
-    // default placeholder so the FS perturbNormal call passes through
-    // identity when the asset omits the texture).
-    clearcoatRoughness: tryCreate(
-      "clearcoatRoughness",
-      matInfo.clearcoatRoughnessTextureReader,
-      defWhite,
-      "linear",
-    ),
-    clearcoatNormal: tryCreate(
-      "clearcoatNormal",
-      matInfo.clearcoatNormalTextureReader,
-      defNormal,
-      "linear",
-    ),
-    sheenRoughness: tryCreate(
-      "sheenRoughness",
-      matInfo.sheenRoughnessTextureReader,
-      defWhite,
-      "linear",
-    ),
-    specularFactor: tryCreate(
-      "specularFactor",
-      matInfo.specularExtTextureReader,
-      defWhite,
-      "linear",
-    ),
-    iridescenceThickness: tryCreate(
-      "iridescenceThickness",
-      matInfo.iridescenceThicknessTextureReader,
-      defWhite,
-      "linear",
-    ),
-    // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmission texture
-    // (R = factor scalar) + refraction scene-color sample source. The
-    // refractionScene fallback is the white placeholder; the actual
-    // refraction MRT populated by the SceneRenderer is bound through
-    // a separate per-frame rebuild in update(). Here we just stamp the
-    // placeholder so the bind group is always valid.
-    transmission: tryCreate(
-      "transmission",
-      matInfo.transmissionTextureReader,
-      defWhite,
-      "linear",
-    ),
-    refractionScene: defWhite,
-    created,
-    placeholderSlots,
-  };
+  try {
+    return {
+      baseColor: tryCreate(
+        "baseColor",
+        matInfo.baseColorTextureReader || matInfo.diffuseTextureReader,
+        defWhite,
+        "srgb",
+      ),
+      normal: tryCreate(
+        "normal",
+        matInfo.normalTextureReader,
+        defNormal,
+        "linear",
+      ),
+      metallicRoughness: tryCreate(
+        "metallicRoughness",
+        matInfo.metallicRoughnessTextureReader ||
+          matInfo.specGlossTextureReader,
+        defWhite,
+        "linear",
+      ),
+      emissive: tryCreate(
+        "emissive",
+        matInfo.emissiveTextureReader,
+        defBlack,
+        "srgb",
+      ),
+      occlusion: tryCreate(
+        "occlusion",
+        matInfo.occlusionTextureReader,
+        defWhite,
+        "linear",
+      ),
+      clearcoat: tryCreate(
+        "clearcoat",
+        matInfo.clearcoatTextureReader,
+        defWhite,
+        "linear",
+      ),
+      specularColor: tryCreate(
+        "specularColor",
+        matInfo.specularExtColorTextureReader,
+        defWhite,
+        "srgb",
+      ),
+      anisotropy: tryCreate(
+        "anisotropy",
+        matInfo.anisotropyTextureReader,
+        defWhite,
+        "linear",
+      ),
+      iridescence: tryCreate(
+        "iridescence",
+        matInfo.iridescenceTextureReader,
+        defWhite,
+        "linear",
+      ),
+      sheenColor: tryCreate(
+        "sheenColor",
+        matInfo.sheenColorTextureReader,
+        defWhite,
+        "srgb",
+      ),
+      thickness: tryCreate(
+        "thickness",
+        matInfo.thicknessTextureReader,
+        defWhite,
+        "linear",
+      ),
+      // C-R4-GLTF-KHR-TEXTURES (Batch 103) — KHR secondary maps. Each
+      // is linear-encoded scalar/normal data per the relevant Khronos
+      // extension specs (clearcoat normal uses the standard normal-map
+      // default placeholder so the FS perturbNormal call passes through
+      // identity when the asset omits the texture).
+      clearcoatRoughness: tryCreate(
+        "clearcoatRoughness",
+        matInfo.clearcoatRoughnessTextureReader,
+        defWhite,
+        "linear",
+      ),
+      clearcoatNormal: tryCreate(
+        "clearcoatNormal",
+        matInfo.clearcoatNormalTextureReader,
+        defNormal,
+        "linear",
+      ),
+      sheenRoughness: tryCreate(
+        "sheenRoughness",
+        matInfo.sheenRoughnessTextureReader,
+        defWhite,
+        "linear",
+      ),
+      specularFactor: tryCreate(
+        "specularFactor",
+        matInfo.specularExtTextureReader,
+        defWhite,
+        "linear",
+      ),
+      iridescenceThickness: tryCreate(
+        "iridescenceThickness",
+        matInfo.iridescenceThicknessTextureReader,
+        defWhite,
+        "linear",
+      ),
+      // C-R4-GLTF-KHR-TRANSMISSION (Batch 105) — transmission texture
+      // (R = factor scalar) + refraction scene-color sample source. The
+      // refractionScene fallback is the white placeholder; the actual
+      // refraction MRT populated by the SceneRenderer is bound through
+      // a separate per-frame rebuild in update(). Here we just stamp the
+      // placeholder so the bind group is always valid.
+      transmission: tryCreate(
+        "transmission",
+        matInfo.transmissionTextureReader,
+        defWhite,
+        "linear",
+      ),
+      refractionScene: defWhite,
+      created,
+      placeholderSlots,
+    };
+  } catch (error) {
+    // A later material slot can fail after earlier slots already allocated
+    // textures and queued their mip jobs. Roll back the unpublished set as a
+    // unit; do not replace the originating upload/allocation failure with a
+    // cleanup error from a lost device.
+    for (let i = 0; i < created.length; ++i) {
+      destroyOwnedModelTextureBestEffort(created[i], cancelMip);
+    }
+    created.length = 0;
+    throw error;
+  }
 }
 
 // Mapping of slot name → which matInfo reader field + colorSpace.
@@ -4857,9 +5021,11 @@ const TEXTURE_SLOT_SCHEMA = [
  */
 function refreshDeferredModelTextures(
   device: GPUDevice,
+  resourceGeneration: number,
   primCache: PrimitiveRenderData,
   matInfo: MaterialInfo,
   enqueueMip?: EnqueueMipFn,
+  cancelMip?: CancelMipFn,
 ) {
   const placeholders = primCache.placeholderSlots;
   if (!placeholders || placeholders.size === 0) {
@@ -4882,9 +5048,11 @@ function refreshDeferredModelTextures(
     }
     const tex = createGPUTextureFromReader(
       device,
+      resourceGeneration,
       reader,
       schema.colorSpace,
       enqueueMip,
+      cancelMip,
     );
     if (!defined(tex)) {
       continue;
@@ -4892,15 +5060,28 @@ function refreshDeferredModelTextures(
     // Only track in gpuTextures if we own the lifetime — see tryCreate
     // for the same stub-ownership check. Stub-owned GPUTextures are
     // shared with the CesiumJS Texture wrapper and would double-destroy.
-    const stubWrapper = reader.texture && reader.texture._texture;
-    const reusedFromStub =
-      stubWrapper &&
-      stubWrapper._webgpuTexture &&
-      stubWrapper._webgpuTexture.texture === tex;
+    const reusedFromStub = isTextureOwnedByCompatibilityStub(
+      device,
+      resourceGeneration,
+      reader,
+      tex,
+    );
+    let view: GPUTextureView;
+    try {
+      // The view is part of publication. Do not append an owned texture or
+      // retire its placeholder until this succeeds: createView can throw on a
+      // lost device or invalid descriptor after the upload/mip job exists.
+      view = tex.createView();
+    } catch (error) {
+      if (!reusedFromStub) {
+        destroyOwnedModelTextureBestEffort(tex, cancelMip);
+      }
+      throw error;
+    }
     if (!reusedFromStub) {
       primCache.gpuTextures.push(tex);
     }
-    primCache.textureViews[schema.slot] = tex.createView();
+    primCache.textureViews[schema.slot] = view;
     placeholders.delete(schema.slot);
     changed = true;
   }
@@ -4908,6 +5089,58 @@ function refreshDeferredModelTextures(
 }
 
 // ─── Main Entry Points ───────────────────────────────────────────────────────
+
+/**
+ * Drop a cache whose native ownership tuple no longer matches the context.
+ * This is the polling fallback for contexts that predate the invalidation bus
+ * and also closes the interval before/after a recovery notification.
+ *
+ * Callers must run their admission gate before invoking this helper: reading
+ * `context.device` is deliberately not part of rejected-model preparation.
+ */
+function disposeStaleWebGPUModelCache(
+  model: ModelLike,
+  device: GPUDevice,
+  resourceGeneration: number,
+): void {
+  const cache = model._webgpuCache;
+  if (
+    !defined(cache) ||
+    (cache.device === device && cache.resourceGeneration === resourceGeneration)
+  ) {
+    return;
+  }
+  disposeWebGPUModelCache(model, cache);
+}
+
+/** Install the exact-cache invalidation subscription after construction. */
+function subscribeWebGPUModelCacheInvalidation(
+  model: ModelLike,
+  cache: ModelWebGPUCache,
+  context: ModelRenderContext,
+): void {
+  if (typeof context.onDeviceInvalidated !== "function") {
+    return;
+  }
+
+  const ownedDevice = cache.device;
+  const ownedGeneration = cache.resourceGeneration;
+  cache._deviceInvalidationUnsub = context.onDeviceInvalidated(() => {
+    // The scene-level recovery walk can clear the public slot before this
+    // subscriber runs. Undefined therefore still means this captured cache
+    // must be drained; a DIFFERENT live cache is the identity that must never
+    // be destroyed by a delayed old-generation callback.
+    const activeCache = model._webgpuCache;
+    if (
+      (defined(activeCache) && activeCache !== cache) ||
+      cache.device !== ownedDevice ||
+      cache.resourceGeneration !== ownedGeneration
+    ) {
+      return;
+    }
+    disposeWebGPUModelCache(model, cache);
+  });
+}
 
 /**
  * Updates or creates WebGPU draw commands for a Model.
@@ -5014,6 +5247,8 @@ function updateWebGPUModel(
 
   const commandList = frameState.commandList;
   const device = context.device;
+  const resourceGeneration = context.resourceGeneration ?? 0;
+  disposeStaleWebGPUModelCache(model, device, resourceGeneration);
   const isClassifier = defined(model.classificationType);
   const colorShadowFlags = getModelCommandShadowFlags(
     model.shadows,
@@ -5044,33 +5279,11 @@ function updateWebGPUModel(
   // stub path already generates its own chain at upload; this only covers the
   // secondary branch. Undefined if the context predates C9-12A, in which case
   // the fallback keeps its historical single-level behavior.
-  const enqueueMip: EnqueueMipFn | undefined =
-    typeof context.enqueueImageryMipGeneration === "function"
-      ? context.enqueueImageryMipGeneration.bind(context)
-      : undefined;
-
   // Initialize model cache
   if (!defined(model._webgpuCache)) {
-    model._webgpuCache = {
-      pipelineCache: null,
-      // C11-195 — CPU staging only; the camera and light GPU bytes live in
-      // the device-shared per-frame arena. `lightData` is model-level because
-      // the block it stages is model-level: every primitive used to own a
-      // byte-identical copy of it.
-      cameraData: null,
-      lightData: null,
-      primitives: {}, // keyed by "nodeIdx_primIdx"
-      geometryViews: {}, // mutable annotation views, keyed like primitives
-      nodes: {}, // per-node skinning data, keyed by nodeIdx
-    };
-  }
-  const cache = model._webgpuCache;
-
-  // Create pipeline cache (shared across all primitives of this model)
-  if (!defined(cache.pipelineCache)) {
     const fmt = context.scenePipelineFormat || "bgra8unorm";
     const depthFmt = context.depthFormat || "depth24plus-stencil8";
-    cache.pipelineCache = new WebGPUModelPipelineCache(
+    const pipelineCache = new WebGPUModelPipelineCache(
       device,
       fmt,
       depthFmt,
@@ -5079,8 +5292,45 @@ function updateWebGPUModel(
       // `device.createRenderPipeline`. Null (WebGL stub / older context) keeps
       // the synchronous fallback.
       context.webgpuPipelineCache ?? null,
+      resourceGeneration,
     ) as unknown as PipelineCacheLike;
+    const newCache: ModelWebGPUCache = {
+      device,
+      resourceGeneration,
+      pipelineCache,
+      // Bind the context sinks once per exact model-cache generation. Binding
+      // them in every update allocated two fresh functions on the render hot
+      // path even after every texture had reached steady state.
+      _enqueueTextureMipGeneration:
+        typeof context.enqueueTextureMipGeneration === "function"
+          ? context.enqueueTextureMipGeneration.bind(context)
+          : undefined,
+      _cancelTextureMipGeneration:
+        typeof context.cancelTextureMipGeneration === "function"
+          ? context.cancelTextureMipGeneration.bind(context)
+          : undefined,
+      // C11-195 — CPU staging only; the camera and light GPU bytes live in
+      // the context-owned per-frame arena. `lightData` is model-level because
+      // the block it stages is model-level: every primitive used to own a
+      // byte-identical copy of it.
+      cameraData: null,
+      lightData: null,
+      primitives: {}, // keyed by "nodeIdx_primIdx"
+      geometryViews: {}, // mutable annotation views, keyed like primitives
+      nodes: {}, // per-node skinning data, keyed by nodeIdx
+    };
+    model._webgpuCache = newCache;
+    try {
+      subscribeWebGPUModelCacheInvalidation(model, newCache, context);
+    } catch (error) {
+      // Subscription is part of cache construction: never publish a half-cache
+      // or retain its shared generation lease when registration fails.
+      disposeWebGPUModelCache(model, newCache);
+      throw error;
+    }
   }
+  const cache = model._webgpuCache;
+  const enqueueMip = cache._enqueueTextureMipGeneration;
   const pipelineCache = cache.pipelineCache;
 
   // PARITY-CUSTOM-SHADER-WGSL — (re)build the model-level native-WGSL
@@ -5872,7 +6122,6 @@ function updateWebGPUModel(
         modelLightSlice = prepareModelViewLightSlice(
           device,
           frameState,
-          pipelineCache,
           cache,
           model,
           preparationWork,
@@ -5961,7 +6210,10 @@ function updateWebGPUModel(
       if (!defined(baseGeometry)) {
         const stalePrimitive = cache.primitives[primKey];
         if (defined(stalePrimitive)) {
-          destroyPrimitiveCacheResources(stalePrimitive);
+          destroyPrimitiveCacheResources(
+            stalePrimitive,
+            cache._cancelTextureMipGeneration,
+          );
           delete cache.primitives[primKey];
         }
         if (defined(cache.geometryViews)) {
@@ -6097,7 +6349,10 @@ function updateWebGPUModel(
           ((cachedPrim._metadataClassHash ?? 0) | 0) !==
             ((geometry.metadataClassHash ?? 0) | 0))
       ) {
-        destroyPrimitiveCacheResources(cachedPrim);
+        destroyPrimitiveCacheResources(
+          cachedPrim,
+          cache._cancelTextureMipGeneration,
+        );
         delete cache.primitives[primKey];
       }
 
@@ -6132,6 +6387,7 @@ function updateWebGPUModel(
         geometry,
         matInfo,
         enqueueMip,
+        cache._cancelTextureMipGeneration,
       );
       primCache._geometryBase = baseGeometry;
       primCache._materialBase = baseMaterialInfo;
@@ -6240,9 +6496,11 @@ function updateWebGPUModel(
       // upload cost only fires once per slot per primitive.
       const texturesUpgraded = refreshDeferredModelTextures(
         device,
+        cache.resourceGeneration,
         primCache,
         matInfo,
         enqueueMip,
+        cache._cancelTextureMipGeneration,
       );
 
       // C-R4-GLTF-KHR-TRANSMISSION (Batch 107) — when the primitive
@@ -6770,7 +7028,6 @@ function updateWebGPUModel(
           modelLightSlice = prepareModelViewLightSlice(
             device,
             frameState,
-            pipelineCache,
             cache,
             model,
             preparationWork,
@@ -7140,14 +7397,12 @@ function updateWebGPUModel(
         // swaps the fragment entry to `fragmentSnapMain` and the color target
         // to the RGBA32F snap-payload format.
         //
-        // Gated on the context-level latch that `WebGPUSnapFramebuffer`'s
-        // constructor sets, mirroring the hover/precise pattern: the snap
-        // framebuffer is built lazily on the first `Scene.snap()` call, before
-        // `pickBegin` runs the scene update that reaches this code, so the
-        // FIRST snapping frame already carries the command. Scenes that never
-        // snap allocate neither the pipeline nor the command.
-        const snapContext = context as unknown as { _snapEnabled?: boolean };
-        if (snapContext._snapEnabled === true) {
+        // Materialize the derived draw only for the CURRENT snap mini-frame.
+        // `pickBegin` sets `passes.snap` before updating model commands, so the
+        // first snap remains synchronous on the command-production side. The
+        // context's ever-used diagnostic latch must not make every later color
+        // frame allocate a snap command after one historical Scene.snap call.
+        if (frameState?.passes?.snap === true) {
           if (!defined(primCache.snapPipeline)) {
             primCache.snapPipeline = pipelineCache.getSnapPipeline(
               matInfo.alphaMode,
@@ -8205,14 +8460,25 @@ function prepareWebGPUModel(
     return true;
   }
 
+  const context = frameState.context as unknown as ModelRenderContext;
   const decision = classifyWebGPUModelPreparationDemand(
     model,
     frameState,
-    frameState.context as unknown as ModelRenderContext,
+    context,
   );
   if (decision.demand === WebGPUModelPreparationDemand.REJECTED) {
     return true;
   }
+
+  // Standalone readiness polling can otherwise return `true` from an old
+  // cache without ever entering updateWebGPUModel. Keep this after both the
+  // hidden/tile fast return and the admission decision so rejected work still
+  // performs no device read or cache teardown.
+  disposeStaleWebGPUModelCache(
+    model,
+    context.device,
+    context.resourceGeneration ?? 0,
+  );
 
   if (areWebGPUModelColorPipelinesReady(model)) {
     return true;
@@ -8247,10 +8513,26 @@ const scratchEdgeMVArray = new Float32Array(16);
  * @param {object|undefined} pc per-primitive cache slot
  * @private
  */
-function destroyPrimitiveCacheResources(pc: PrimitiveRenderData | undefined) {
+function destroyPrimitiveCacheResources(
+  pc: PrimitiveRenderData | undefined,
+  cancelMip?: CancelMipFn,
+) {
   if (!defined(pc)) {
     return;
   }
+
+  let firstDestroyError: unknown;
+  let hasDestroyError = false;
+  const destroyBestEffort = (destroy: () => void): void => {
+    try {
+      destroy();
+    } catch (error) {
+      if (!hasDestroyError) {
+        firstDestroyError = error;
+        hasDestroyError = true;
+      }
+    }
+  };
 
   // Bind groups do not have an explicit destroy operation. Release the cache
   // record before destroying any of the buffers it references.
@@ -8261,117 +8543,253 @@ function destroyPrimitiveCacheResources(pc: PrimitiveRenderData | undefined) {
   pc._mergedMaterialBindGroupCache = undefined;
   pc._mergedMaterialBindGroupCacheSilhouette = undefined;
   pc._mergedMaterialBindGroupCacheTranslucent = undefined;
+  pc.materialBindGroup = null;
+  pc.textureBindGroup = null;
+  pc.textureViews = null;
+  pc.textureSamplers = null;
+  pc.textureEntries = null;
 
-  pc.positionBuffer?.destroy();
-  pc.positionBuffer2D?.destroy();
-  pc.normalBuffer?.destroy();
-  pc.tangentBuffer?.destroy();
-  pc.uvBuffer?.destroy();
-  pc.uv1Buffer?.destroy();
-  pc.colorBuffer?.destroy();
-  pc.jointsBuffer?.destroy();
-  pc.weightsBuffer?.destroy();
-  pc.featureIdBuffer?.destroy();
-  pc.indexBuffer?.destroy();
-  pc.materialBuffer?.destroy();
-  // C-R1-TILE-BATCH — translucent-class alternate material UB.
-  pc.materialBufferTranslucent?.destroy();
-  // WIRE-MODEL-SILHOUETTE — silhouette-pass alternate material UB.
-  pc.materialBufferSilhouette?.destroy();
+  const buffers = [
+    pc.positionBuffer,
+    pc.positionBuffer2D,
+    pc.normalBuffer,
+    pc.tangentBuffer,
+    pc.uvBuffer,
+    pc.uv1Buffer,
+    pc.colorBuffer,
+    pc.jointsBuffer,
+    pc.weightsBuffer,
+    pc.featureIdBuffer,
+    pc.indexBuffer,
+    pc.materialBuffer,
+    // C-R1-TILE-BATCH — translucent-class alternate material UB.
+    pc.materialBufferTranslucent,
+    // WIRE-MODEL-SILHOUETTE — silhouette-pass alternate material UB.
+    pc.materialBufferSilhouette,
+  ];
+  pc.positionBuffer = null;
+  pc.positionBuffer2D = null;
+  pc.normalBuffer = null;
+  pc.tangentBuffer = null;
+  pc.uvBuffer = null;
+  pc.uv1Buffer = null;
+  pc.colorBuffer = null;
+  pc.jointsBuffer = null;
+  pc.weightsBuffer = null;
+  pc.featureIdBuffer = null;
+  pc.indexBuffer = null;
+  pc.materialBuffer = null;
+  pc.materialBufferTranslucent = null;
+  pc.materialBufferSilhouette = null;
+  for (let i = 0; i < buffers.length; i++) {
+    const buffer = buffers[i];
+    if (defined(buffer)) {
+      destroyBestEffort(() => buffer.destroy());
+    }
+  }
   // C11-195 — no per-primitive light UB to destroy: the light block rides the
   // context-owned per-frame ring, which no model owns or frees.
 
   // Destroy created GPU textures (not default ones)
-  for (const tex of pc.gpuTextures) {
-    tex?.destroy();
+  const gpuTextures = pc.gpuTextures;
+  pc.gpuTextures = [];
+  for (const tex of gpuTextures) {
+    if (defined(tex)) {
+      if (defined(cancelMip)) {
+        destroyBestEffort(() => cancelMip(tex));
+      }
+      destroyBestEffort(() => tex.destroy());
+    }
   }
 
   // Destroy morph target resources
-  destroyMorphTargetResources(pc);
+  destroyBestEffort(() => destroyMorphTargetResources(pc));
 
   // Destroy feature ID resources
-  destroyFeatureIdResources(pc);
+  destroyBestEffort(() => destroyFeatureIdResources(pc));
 
   // DP-H46a — destroy metadata GPU resources (slot-9 vertex buffer).
-  destroyMetadataResources(pc);
+  destroyBestEffort(() => destroyMetadataResources(pc));
 
   // C-R8-EDGE-EMITTER (Batch 45) — destroy per-primitive edge
   // buffers. `edgeResources === false` is the sentinel for
   // "primitive had no edges"; skip in that case.
-  if (pc.edgeResources && (pc.edgeResources as unknown) !== false) {
-    destroyEdgePrimitiveResources(pc.edgeResources);
+  const edgeResources = pc.edgeResources;
+  pc.edgeResources = null;
+  if (edgeResources && (edgeResources as unknown) !== false) {
+    destroyBestEffort(() => destroyEdgePrimitiveResources(edgeResources));
+  }
+
+  if (hasDestroyError) {
+    throw firstDestroyError;
   }
 }
 
-function destroyWebGPUModelResources(model: ModelLike) {
-  const cache = model._webgpuCache;
-  if (!defined(cache)) {
+/**
+ * Reentrancy-safe common disposer for explicit Model teardown, ownership-tuple
+ * mismatch, and device-invalidation callbacks.
+ *
+ * `model._webgpuCache` may already be undefined when the scene-level recovery
+ * walk ran first. The captured cache is still safe to drain; only a different
+ * live cache blocks disposal so an old callback cannot tear down a replacement.
+ */
+function disposeWebGPUModelCache(
+  model: ModelLike,
+  cache: ModelWebGPUCache,
+): void {
+  const activeCache = model._webgpuCache;
+  if (
+    cache._disposeInProgress === true ||
+    (defined(activeCache) && activeCache !== cache)
+  ) {
     return;
   }
+  cache._disposeInProgress = true;
+  if (activeCache === cache) {
+    // Detach first. Any nested destroy path now sees no active cache instead
+    // of releasing the shared lease or native buffers a second time.
+    model._webgpuCache = undefined;
+  }
+
+  const unsubscribe = cache._deviceInvalidationUnsub;
+  cache._deviceInvalidationUnsub = null;
+  try {
+    unsubscribe?.();
+  } catch {
+    // The context may already have cleared its subscriber bus during full
+    // teardown. Native resource disposal remains mandatory in that case.
+  }
+
+  let firstDestroyError: unknown;
+  let hasDestroyError = false;
+  const destroyBestEffort = (destroy: () => void): void => {
+    try {
+      destroy();
+    } catch (error) {
+      if (!hasDestroyError) {
+        firstDestroyError = error;
+        hasDestroyError = true;
+      }
+    }
+  };
 
   // C11-195 — the model-level and 2D/IDL camera GPU buffers no longer exist:
-  // their bytes come from the device-shared per-frame arena, which is owned
-  // and torn down by `WebGPUModelDeviceResources`. Only the CPU staging
+  // their bytes come from the context-owned per-frame arena, which is torn
+  // down before that context's ring allocator. Only the CPU staging
   // arrays live on this cache, and those are plain GC.
-  if (defined(cache.shadowCastUB)) {
-    cache.shadowCastUB.destroy();
-    cache.shadowCastUB = undefined;
+  const modelShadowCastUB = cache.shadowCastUB;
+  cache.shadowCastUB = undefined;
+  if (defined(modelShadowCastUB)) {
+    destroyBestEffort(() => modelShadowCastUB.destroy());
   }
 
   // C-R9-MODEL-PICK (Batch 54 / refactored Batch 59) — release every
   // per-primitive pick ID back to the registry so its slot can be reused.
   // No-op if the model never entered a render or pick pass.
-  destroyPickIds(cache as unknown as Parameters<typeof destroyPickIds>[0]);
+  destroyBestEffort(() =>
+    destroyPickIds(cache as unknown as Parameters<typeof destroyPickIds>[0]),
+  );
 
-  // Destroy per-primitive resources
+  // Every primitive is an independent owner. A lost-device implementation is
+  // allowed to throw from destroy(), but that must not strand later owners.
   const primKeys = Object.keys(cache.primitives);
   for (let i = 0; i < primKeys.length; i++) {
-    destroyPrimitiveCacheResources(cache.primitives[primKeys[i]]);
+    const primitive = cache.primitives[primKeys[i]];
+    destroyBestEffort(() =>
+      destroyPrimitiveCacheResources(
+        primitive,
+        cache._cancelTextureMipGeneration,
+      ),
+    );
   }
 
-  // C-R8-EDGE-EMITTER (Batch 45) — destroy the shared edge pipeline
-  // cache when the model itself is torn down.
-  if (defined(cache.edgeEmitterCache)) {
-    destroyEdgeEmitterCache(cache.edgeEmitterCache);
+  // Per-feature pick IDs and their lookup texture are model-wide owners, not
+  // part of the generic per-primitive pick-ID record. Primitive teardown above
+  // first drops every alias to the shared texture; now release it exactly once
+  // and drain every registry ID even if an earlier one throws.
+  destroyBestEffort(() => destroyPerFeaturePickResources(cache));
+
+  // C-R8-EDGE-EMITTER (Batch 45) — destroy the shared edge pipeline cache.
+  const edgeEmitterCache = cache.edgeEmitterCache;
+  cache.edgeEmitterCache = null;
+  if (defined(edgeEmitterCache)) {
+    destroyBestEffort(() => destroyEdgeEmitterCache(edgeEmitterCache));
   }
 
-  // Destroy per-node skinning + instancing resources
+  // Destroy per-node skinning + instancing resources. Clear each identity
+  // before invoking foreign/native destruction so reentrancy cannot see it.
   const nodeKeys = Object.keys(cache.nodes);
   for (let i = 0; i < nodeKeys.length; i++) {
     const nc = cache.nodes[nodeKeys[i]];
     if (!defined(nc)) {
       continue;
     }
-    if (defined(nc.jointBuffer)) {
-      nc.jointBuffer.destroy();
+    const jointBuffer = nc.jointBuffer;
+    nc.jointBuffer = undefined;
+    if (defined(jointBuffer)) {
+      destroyBestEffort(() => jointBuffer.destroy());
     }
-    if (defined(nc.prevJointBuffer)) {
-      nc.prevJointBuffer.destroy();
+    const prevJointBuffer = nc.prevJointBuffer;
+    nc.prevJointBuffer = undefined;
+    if (defined(prevJointBuffer)) {
+      destroyBestEffort(() => prevJointBuffer.destroy());
     }
-    if (defined(nc.shadowCastUB)) {
-      nc.shadowCastUB.destroy();
-      nc.shadowCastUB = undefined;
+    const nodeShadowCastUB = nc.shadowCastUB;
+    nc.shadowCastUB = undefined;
+    if (defined(nodeShadowCastUB)) {
+      destroyBestEffort(() => nodeShadowCastUB.destroy());
     }
     // C11-195 — per-node camera buffers are gone; see the model-level note
     // above. Nothing per-node to release for the camera block.
-    destroyInstancingResources(nc);
+    destroyBestEffort(() => destroyInstancingResources(nc));
   }
 
-  if (defined(cache._customShader?.uboBuffer)) {
-    cache._customShader.uboBuffer.destroy();
+  const customShaderUB = cache._customShader?.uboBuffer;
+  if (defined(cache._customShader)) {
+    cache._customShader.uboBuffer = null;
+  }
+  if (defined(customShaderUB)) {
+    destroyBestEffort(() => customShaderUB.destroy());
   }
 
-  if (defined(cache.pipelineCache)) {
-    cache.pipelineCache.destroy();
-  }
+  // Pipeline teardown returns the generation-partitioned shared-resource
+  // lease. It must run even when any model-owned destroy above failed.
+  destroyBestEffort(() => cache.pipelineCache.destroy());
 
-  model._webgpuCache = undefined;
+  // Release every model-local identity map/reference even if a lost-device
+  // destroy implementation threw.
+  cache.primitives = {};
+  cache.geometryViews = {};
+  cache.nodes = {};
+  cache.effectsBG = null;
+  cache.edgeEmitterCache = null;
+  cache._iblEntriesMemo = undefined;
+  cache._customShader = null;
+  cache.cameraData = null;
+  cache.lightData = null;
+  cache.prevModelMatrix = null;
+  cache._enqueueTextureMipGeneration = undefined;
+  cache._cancelTextureMipGeneration = undefined;
+
+  if (hasDestroyError) {
+    throw firstDestroyError;
+  }
+}
+
+function destroyWebGPUModelResources(model: ModelLike): void {
+  const cache = model._webgpuCache;
+  if (defined(cache)) {
+    disposeWebGPUModelCache(model, cache);
+  }
 }
 
 export {
   applyCustomShaderTranslucency,
   areWebGPUModelColorPipelinesReady,
   createPackedMaterialUploadState,
+  createGPUTextureFromReader,
+  createMaterialTextures,
+  ensurePrimitiveCache,
   getCurrentModelLightShadowMap,
   getModelCommandShadowFlags,
   getModelShadowCastLayout,
@@ -8388,6 +8806,7 @@ export {
   preparePackedJointHistoryForFrame,
   resolvePreviousMatrixForFrame,
   resolveCustomShaderAlphaMode,
+  refreshDeferredModelTextures,
   shouldPrepareModelCustomShaderResources,
   uploadPackedMaterialUniformsIfChanged,
   updateModelShadowCastUniform,

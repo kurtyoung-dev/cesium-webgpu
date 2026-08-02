@@ -612,9 +612,14 @@ test("WebGPU moon normal upload matches the WebGL flipY convention", () => {
   const src = readText(
     "packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js",
   );
-  const idx = src.indexOf("_loadMoonNormalTexture");
-  assert.ok(idx > 0, "moon normal texture loader not found");
-  const body = src.slice(idx, idx + 3000);
+  const idx = src.indexOf("function createMoonTextureRequestHooks");
+  assert.ok(idx > 0, "moon texture realization hooks not found");
+  const body = src.slice(idx, idx + 5000);
+  assert.match(
+    body,
+    /channelName === MoonTextureChannel\.NORMAL/,
+    "the shared realization hook must distinguish the normal channel",
+  );
   assert.match(
     body,
     /uploadImageToTexture\([\s\S]*?flipY:\s*true/,
@@ -658,7 +663,7 @@ test("GLSL and WGSL tangent-frame constructions remain twins", () => {
   );
   assert.match(
     wgsl,
-    /textureSampleLevel\(normalTex,\s*samp,\s*uv,\s*0\.0\)\.xyz\s*\*\s*2\.0\s*-\s*1\.0/,
+    /textureSampleGrad\(normalTex,\s*samp,\s*uv,\s*uvDx,\s*uvDy\)\.xyz\s*\*\s*2\.0\s*-\s*1\.0/,
   );
 
   // Both must scale only the TANGENTIAL components by the strength — scaling

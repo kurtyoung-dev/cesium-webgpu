@@ -198,10 +198,13 @@ class ModelRuntimePrimitive {
    * used.
    *
    * @param {FrameState} frameState The frame state.
+   * @param {boolean} [nativeRendererOnly=false] Whether the caller is building
+   *        backend-neutral resources for a native feature renderer rather than
+   *        realizing the legacy WebGL pipeline.
    *
    * @private
    */
-  configurePipeline(frameState) {
+  configurePipeline(frameState, nativeRendererOnly = false) {
     const pipelineStages = this.pipelineStages;
     pipelineStages.length = 0;
 
@@ -265,6 +268,12 @@ class ModelRuntimePrimitive {
 
     const hasEdgeVisibility = defined(primitive.edgeVisibility);
 
+    // C11-202 — the native MODEL feature renderer realizes picking and
+    // extension-edge resources directly from the shared runtime primitive.
+    // Running the legacy stages as well creates WebGL pick IDs/buffers and a
+    // second copy of derived edge geometry that the native renderer never
+    // consumes. Keep every backend-neutral stage below, and keep the Scene MRT
+    // demand signal, while leaving WebGL's pipeline completely unchanged.
     const featureIdFlags = inspectFeatureIds(model, node, primitive);
 
     const hasClassification = defined(model.classificationType);
@@ -337,7 +346,7 @@ class ModelRuntimePrimitive {
 
     pipelineStages.push(LightingPipelineStage);
 
-    if (model.allowPicking) {
+    if (model.allowPicking && !nativeRendererOnly) {
       pipelineStages.push(PickingPipelineStage);
     }
 
@@ -348,8 +357,10 @@ class ModelRuntimePrimitive {
     if (hasEdgeVisibility) {
       // Indicate to Scene (after primitive updates) that the edge MRT should be enabled.
       frameState.edgeVisibilityRequested = true;
-      pipelineStages.push(EdgeVisibilityPipelineStage);
-      pipelineStages.push(EdgeDetectionPipelineStage);
+      if (!nativeRendererOnly) {
+        pipelineStages.push(EdgeVisibilityPipelineStage);
+        pipelineStages.push(EdgeDetectionPipelineStage);
+      }
     }
 
     pipelineStages.push(AlphaPipelineStage);

@@ -16,6 +16,50 @@ uniform float u_lunarNormalStrength;
 
 in vec3 v_positionEC;
 
+#ifdef LUNAR_EXPLICIT_GRADIENTS
+// C12-33 — Moon mip LOD must not depend on implicit derivatives after a
+// fragment-varying discard or on the raw 0/1 longitude discontinuity. These
+// values are populated for both front and back hits in main before either
+// exact-miss discard, then consumed by the private Moon image material and
+// optional normal map. Generic ellipsoids never define this block.
+vec2 webGLMoonTextureCoordinates;
+vec2 webGLMoonTextureCoordinateDx;
+vec2 webGLMoonTextureCoordinateDy;
+
+vec2 computeWebGLMoonTextureCoordinates(czm_ray ray, float intersection)
+{
+    vec3 positionEC = czm_pointAlongRay(ray, intersection);
+    vec3 positionMC = (czm_inverseModelView * vec4(positionEC, 1.0)).xyz;
+    return czm_ellipsoidTextureCoordinates(normalize(positionMC / u_radii));
+}
+
+vec2 unwrapWebGLMoonLongitudeGradient(vec2 gradient)
+{
+    // Longitude is periodic; latitude is not. floor(x + 0.5) is the GLSL ES
+    // 1.00-compatible equivalent of round(x) for the seam delta range.
+    gradient.x -= floor(gradient.x + 0.5);
+    return gradient;
+}
+
+vec4 sampleWebGLMoonTexture(
+    sampler2D textureSampler,
+    vec2 textureCoordinates,
+    vec2 textureCoordinateScale)
+{
+    vec2 dx = webGLMoonTextureCoordinateDx * textureCoordinateScale;
+    vec2 dy = webGLMoonTextureCoordinateDy * textureCoordinateScale;
+#if (__VERSION__ == 300)
+    return textureGrad(textureSampler, textureCoordinates, dx, dy);
+#elif defined(GL_EXT_shader_texture_lod)
+    return texture2DGradEXT(textureSampler, textureCoordinates, dx, dy);
+#else
+    // The shared CPU capability predicate prevents a Moon gradient define
+    // from reaching this fallback. Keep it compile-safe for defensive use.
+    return texture(textureSampler, textureCoordinates);
+#endif
+}
+#endif
+
 vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
 {
     vec3 positionEC = czm_pointAlongRay(ray, intersection);
@@ -25,7 +69,11 @@ vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
     vec3 normalMC = geodeticNormal * side;              // normalized surface normal (always facing the viewer) in model coordinates
     vec3 normalEC = normalize(czm_normal * normalMC);   // normalized surface normal in eye coordinates
 
+#ifdef LUNAR_EXPLICIT_GRADIENTS
+    vec2 st = webGLMoonTextureCoordinates;
+#else
     vec2 st = czm_ellipsoidTextureCoordinates(sphericalNormal);
+#endif
     vec3 positionToEyeEC = -positionEC;
 
     czm_materialInput materialInput;
@@ -62,7 +110,11 @@ vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
     // `u_lunarNormalStrength` is exactly 0 when the feature is off or the
     // variant ships no map, which drives nTS to (0, 0, z) and the whole
     // block to the exact identity. Keep the WGSL twin character-consistent.
+#ifdef LUNAR_NORMAL_EXPLICIT_GRADIENTS
+    vec3 nTS = sampleWebGLMoonTexture(u_lunarNormalMap, st, vec2(1.0)).xyz * 2.0 - 1.0;
+#else
     vec3 nTS = texture(u_lunarNormalMap, st).xyz * 2.0 - 1.0;
+#endif
     nTS.xy *= u_lunarNormalStrength;
     vec3 upMC = normalMC;
     vec3 eastMC = vec3(-positionMC.y, positionMC.x, 0.0);
@@ -137,9 +189,13 @@ void main()
         t2 = (-b + sqrt(discriminant)) * 0.5;
     }
 
+#ifdef LUNAR_EXPLICIT_GRADIENTS
+    bool missesBoundingSphere = t1 < 0.0 && t2 < 0.0;
+#else
     if (t1 < 0.0 && t2 < 0.0) {
         discard;
     }
+#endif
 
     float t = min(t1, t2);
     if (t < 0.0) {
@@ -153,15 +209,71 @@ void main()
 
     czm_raySegment intersection = czm_rayEllipsoidIntersectionInterval(ray, ellipsoidCenter, ellipsoid_inverseRadii);
 
+#ifdef LUNAR_EXPLICIT_GRADIENTS
+    bool missesEllipsoid = czm_isEmpty(intersection);
+
+    // Miss lanes adjacent to the limb need continuous helper coordinates so
+    // their values participate meaningfully in the 2x2 derivative quad. The
+    // closest point on the scaled-space ray converges to the tangent hit as
+    // the discriminant approaches zero; a fixed sentinel would not.
+    vec3 scaledOrigin = ellipsoid_inverseRadii *
+        (czm_inverseModelView * vec4(ray.origin, 1.0)).xyz;
+    scaledOrigin -= ellipsoid_inverseRadii *
+        (czm_inverseModelView * vec4(ellipsoidCenter, 1.0)).xyz;
+    vec3 scaledDirection = ellipsoid_inverseRadii *
+        (czm_inverseModelView * vec4(ray.direction, 0.0)).xyz;
+    float scaledDirectionSquared = dot(scaledDirection, scaledDirection);
+    float closestIntersection = max(
+        -dot(scaledOrigin, scaledDirection) / max(scaledDirectionSquared, 1.0e-12),
+        0.0);
+    float outsideTextureIntersection =
+        (missesEllipsoid || intersection.start == 0.0)
+        ? closestIntersection
+        : intersection.start;
+    float insideTextureIntersection = missesEllipsoid
+        ? closestIntersection
+        : intersection.stop;
+
+    vec2 outsideTextureCoordinates = computeWebGLMoonTextureCoordinates(
+        ray,
+        outsideTextureIntersection);
+    vec2 insideTextureCoordinates = computeWebGLMoonTextureCoordinates(
+        ray,
+        insideTextureIntersection);
+    vec2 outsideTextureCoordinateDx = unwrapWebGLMoonLongitudeGradient(
+        dFdx(outsideTextureCoordinates));
+    vec2 outsideTextureCoordinateDy = unwrapWebGLMoonLongitudeGradient(
+        dFdy(outsideTextureCoordinates));
+    vec2 insideTextureCoordinateDx = unwrapWebGLMoonLongitudeGradient(
+        dFdx(insideTextureCoordinates));
+    vec2 insideTextureCoordinateDy = unwrapWebGLMoonLongitudeGradient(
+        dFdy(insideTextureCoordinates));
+
+    if (missesBoundingSphere || missesEllipsoid)
+    {
+        discard;
+    }
+#else
     if (czm_isEmpty(intersection))
     {
         discard;
     }
+#endif
 
     // If the viewer is outside, compute outsideFaceColor, with normals facing outward.
+#ifdef LUNAR_EXPLICIT_GRADIENTS
+    webGLMoonTextureCoordinates = outsideTextureCoordinates;
+    webGLMoonTextureCoordinateDx = outsideTextureCoordinateDx;
+    webGLMoonTextureCoordinateDy = outsideTextureCoordinateDy;
+#endif
     vec4 outsideFaceColor = (intersection.start != 0.0) ? computeEllipsoidColor(ray, intersection.start, 1.0) : vec4(0.0);
 
     // If the viewer either is inside or can see inside, compute insideFaceColor, with normals facing inward.
+#ifdef LUNAR_EXPLICIT_GRADIENTS
+    webGLMoonTextureCoordinates = insideTextureCoordinates;
+    webGLMoonTextureCoordinateDx = insideTextureCoordinateDx;
+    webGLMoonTextureCoordinateDy = insideTextureCoordinateDy;
+#endif
     vec4 insideFaceColor = (outsideFaceColor.a < 1.0) ? computeEllipsoidColor(ray, intersection.stop, -1.0) : vec4(0.0);
 
     out_FragColor = mix(insideFaceColor, outsideFaceColor, outsideFaceColor.a);

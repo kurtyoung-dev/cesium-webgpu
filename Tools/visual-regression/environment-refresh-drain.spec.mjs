@@ -127,6 +127,27 @@ test("single requesting manager runs every frame (default-viewer parity)", () =>
   assert.equal(drain.hasPendingWork(), false);
 });
 
+test("a grant that never submits does not become the fairness anchor", () => {
+  const drain = new WebGPUEnvironmentRefreshScheduler();
+  const failed = {};
+  const waiting = {};
+
+  drain.beginFrame(0);
+  assert.equal(drain.requestRefresh(failed, Urgency.HIGH), Decision.RUN);
+  // Simulate an encode failure: noteRefreshSubmitted is deliberately omitted.
+  assert.equal(drain.requestRefresh(waiting, Urgency.HIGH), Decision.DEFER);
+  assert.equal(drain.getRecord(failed).lastGrantFrameId, -1);
+  assert.equal(drain.getRecord(failed).lastSubmitFrameId, -1);
+
+  drain.beginFrame(0);
+  assert.equal(
+    drain.requestRefresh(failed, Urgency.HIGH),
+    Decision.RUN,
+    "work that never submitted must not yield as though it ran",
+  );
+  assert.equal(drain.getTelemetry().submissions, 0);
+});
+
 test("budget bounds how many deferrable refreshes start on one frame", () => {
   const drain = new WebGPUEnvironmentRefreshScheduler();
   const managers = [{}, {}, {}, {}];
@@ -609,6 +630,43 @@ test("adopting a new device generation destroys the whole cache", () => {
   assert.equal(liveCount(recovered, "buffer"), 1);
 });
 
+test("adopt publishes the recovered tuple and drains siblings when old destroy throws", () => {
+  const lost = createFakeDevice("lost-throwing");
+  const p = new WebGPUEnvironmentTargetPool(lost, 4);
+  const buffer = p.acquireParameterBuffer(1024, "arena");
+  const depth = p.acquireDepthTarget(256, "depth24plus", "d");
+  p.releaseParameterBuffer(buffer);
+  p.releaseDepthTarget(depth);
+  const destroyBuffer = buffer.buffer.destroy;
+  const firstError = new Error("lost buffer destroy failed");
+  buffer.buffer.destroy = function () {
+    destroyBuffer.call(buffer.buffer);
+    throw firstError;
+  };
+  const recovered = createFakeDevice("recovered-after-throw");
+  const warnings = [];
+  const originalWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    assert.doesNotThrow(() => p.adopt(recovered, 5));
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  assert.equal(p.device, recovered);
+  assert.equal(p.resourceGeneration, 5);
+  assert.equal(buffer.buffer.destroyed, true);
+  assert.equal(depth.texture.destroyed, true);
+  assert.equal(p.getTelemetry().bufferIdle, 0);
+  assert.equal(p.getTelemetry().depthIdle, 0);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0][1], firstError);
+
+  const fresh = p.acquireParameterBuffer(1024, "fresh arena");
+  assert.equal(fresh.generation, 5);
+  assert.ok(fresh.buffer.id.startsWith("recovered-after-throw-"));
+});
+
 test("a stale-generation handle is destroyed on release, never pooled", () => {
   const device = createFakeDevice("lost");
   const p = new WebGPUEnvironmentTargetPool(device, 0);
@@ -630,6 +688,34 @@ test("a stale-generation handle is destroyed on release, never pooled", () => {
     "a lost-device buffer must never enter the free list",
   );
   assert.equal(p.getTelemetry().depthIdle, 0);
+});
+
+test("same-generation handles from an old device are destroyed on release", () => {
+  const lost = createFakeDevice("lost-same-generation");
+  const recovered = createFakeDevice("recovered-same-generation");
+  const p = new WebGPUEnvironmentTargetPool(lost, 9);
+  const staleBuffer = p.acquireParameterBuffer(1024, "arena");
+  const staleDepth = p.acquireDepthTarget(256, "depth24plus", "d");
+
+  // Device identity is an independent half of the ownership tuple. Embedders
+  // and synthetic recovery hosts may swap the physical device while retaining
+  // their numeric generation, so a late release must check both.
+  p.adopt(recovered, 9);
+  p.releaseParameterBuffer(staleBuffer);
+  p.releaseDepthTarget(staleDepth);
+
+  assert.equal(staleBuffer.buffer.destroyed, true);
+  assert.equal(staleDepth.texture.destroyed, true);
+  assert.equal(p.getTelemetry().staleReleases, 2);
+  assert.equal(p.getTelemetry().bufferIdle, 0);
+  assert.equal(p.getTelemetry().depthIdle, 0);
+
+  const freshBuffer = p.acquireParameterBuffer(1024, "fresh arena");
+  const freshDepth = p.acquireDepthTarget(256, "depth24plus", "fresh depth");
+  assert.equal(freshBuffer.device, recovered);
+  assert.equal(freshDepth.device, recovered);
+  assert.notEqual(freshBuffer.buffer, staleBuffer.buffer);
+  assert.notEqual(freshDepth.texture, staleDepth.texture);
 });
 
 test("adopting the same identity is a no-op", () => {
@@ -832,12 +918,14 @@ test("the context resets the drain and the pool on recovery and teardown", () =>
 
   const teardown = sourceSection(
     contextSource,
-    "this._pendingImageryMipJobs.length = 0;",
-    "this._shaderCache.destroy();",
+    "this._pendingTextureMipJobs.length = 0;",
+    "continueFinalCleanupAfter(() => this._shaderCache.destroy());",
   );
   assert.match(teardown, /_environmentRefreshScheduler\.reset\(/);
-  assert.match(teardown, /_environmentTargetPool\?\.destroy\(\);/);
-  assert.match(teardown, /_environmentTargetPool = null;/);
+  assert.match(
+    teardown,
+    /const environmentTargetPool = this\._environmentTargetPool;[\s\S]*this\._environmentTargetPool = null;[\s\S]*continueFinalCleanupAfter\(\(\) => environmentTargetPool\?\.destroy\(\)\);/,
+  );
 });
 
 test("the drain advances once per frame from beginFrame", () => {

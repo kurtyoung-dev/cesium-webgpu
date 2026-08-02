@@ -9,6 +9,8 @@ import {
   FeatureIdPipelineStage,
   CPUStylingPipelineStage,
   DequantizationPipelineStage,
+  EdgeDetectionPipelineStage,
+  EdgeVisibilityPipelineStage,
   GeometryPipelineStage,
   ImageryPipelineStage,
   LightingPipelineStage,
@@ -70,7 +72,7 @@ describe("Scene/Model/ModelRuntimePrimitive", function () {
     "void fragmentMain(FragmentInput fsInput, inout czm_modelMaterial material) {}";
 
   function verifyExpectedStages(stages, expectedStages) {
-    expect(stages.length, expectedStages.stages);
+    expect(stages.length).toEqual(expectedStages.length);
     for (let i = 0; i < stages.length; i++) {
       expect(stages[i].name).toEqual(expectedStages[i].name);
     }
@@ -137,6 +139,7 @@ describe("Scene/Model/ModelRuntimePrimitive", function () {
       PrimitiveStatisticsPipelineStage,
     ];
 
+    primitive.configurePipeline(mockFrameState);
     verifyExpectedStages(primitive.pipelineStages, expectedStages);
 
     primitive = new ModelRuntimePrimitive({
@@ -162,6 +165,48 @@ describe("Scene/Model/ModelRuntimePrimitive", function () {
 
     primitive.configurePipeline(mockFrameState);
     verifyExpectedStages(primitive.pipelineStages, expectedStages);
+  });
+
+  it("does not build legacy pick or edge resources for a native model renderer", function () {
+    const frameState = createFrameState(mockWebgl2Context);
+    frameState.edgeVisibilityRequested = false;
+    const primitive = new ModelRuntimePrimitive({
+      primitive: {
+        featureIds: [],
+        attributes: [],
+        edgeVisibility: {},
+      },
+      node: mockNode,
+      model: mockModel,
+    });
+
+    primitive.configurePipeline(frameState, true);
+
+    expect(primitive.pipelineStages).not.toContain(PickingPipelineStage);
+    expect(primitive.pipelineStages).not.toContain(EdgeVisibilityPipelineStage);
+    expect(primitive.pipelineStages).not.toContain(EdgeDetectionPipelineStage);
+    expect(frameState.edgeVisibilityRequested).toBe(true);
+  });
+
+  it("keeps legacy pick and edge stages for WebGL", function () {
+    const frameState = createFrameState(mockWebgl2Context);
+    frameState.edgeVisibilityRequested = false;
+    const primitive = new ModelRuntimePrimitive({
+      primitive: {
+        featureIds: [],
+        attributes: [],
+        edgeVisibility: {},
+      },
+      node: mockNode,
+      model: mockModel,
+    });
+
+    primitive.configurePipeline(frameState);
+
+    expect(primitive.pipelineStages).toContain(PickingPipelineStage);
+    expect(primitive.pipelineStages).toContain(EdgeVisibilityPipelineStage);
+    expect(primitive.pipelineStages).toContain(EdgeDetectionPipelineStage);
+    expect(frameState.edgeVisibilityRequested).toBe(true);
   });
 
   it("does not add ImageryPipelineStage for an empty imagery layers array", function () {

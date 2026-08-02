@@ -74,6 +74,7 @@ const sceneRendererSource = await readSource(
 const translucentPassSource = await readSource(
   "Renderer/WebGPU/WebGPUSceneRendererTranslucentPass.ts",
 );
+const contextSource = await readSource("Renderer/WebGPU/WebGPUContext.ts");
 
 // ── Test doubles ────────────────────────────────────────────────────────────
 
@@ -494,13 +495,35 @@ test("the model camera layout declares a dynamic offset and a min binding size",
     deviceResourcesSource,
     /makeBindGroupLayout\(device, "Model Camera BGL", \[\s*uniformBuffer\(0, Stage\.VERTEX_FRAGMENT, \{\s*hasDynamicOffset: true,\s*minBindingSize: MODEL_CAMERA_UNIFORM_BYTES,/,
   );
-  // The arena is owned per device alongside the layout it builds groups for,
-  // and released with it.
+  // The MUTABLE arena is context-owned: its cached bind groups reference pages
+  // from one context's uniform ring, and a pooled GPUDevice may back several
+  // contexts at once. Only the immutable layout stays on the device-shared
+  // resources; constructing the arena there would share page-identity state
+  // across contexts.
   assert.match(
-    deviceResourcesSource,
-    /cameraArena: new WebGPUModelCameraArena\(\)/,
+    contextSource,
+    /this\._modelCameraArena = new WebGPUModelCameraArena\(\)/,
   );
-  assert.match(deviceResourcesSource, /resources\.cameraArena\.invalidate\(\)/);
+  assert.equal(
+    /new WebGPUModelCameraArena\(/.test(deviceResourcesSource),
+    false,
+    "the device-shared resources must not construct the mutable arena",
+  );
+  // The renderer resolves the owner through frameState.context — never the
+  // device-shared pipeline cache.
+  const resolver = rendererSource.slice(
+    rendererSource.indexOf("function resolveModelCameraArenaOwner("),
+    rendererSource.indexOf("function acquireModelCameraBinding("),
+  );
+  assert.match(resolver, /frameState\?\.context/);
+  assert.match(resolver, /context\?\.modelCameraArena/);
+  // Released with the ring it references: both the device-loss cache registry
+  // and final context cleanup detach the arena, then invalidate it.
+  assert.match(contextSource, /\.register\("modelCameraArena", \(\) => \{/);
+  const invalidations = contextSource.match(
+    /modelCameraArena\?\.invalidate\(\)/g,
+  );
+  assert.equal(invalidations.length, 2, "device-loss registry + final cleanup");
 });
 
 test("no model camera bind group is built outside the arena", () => {

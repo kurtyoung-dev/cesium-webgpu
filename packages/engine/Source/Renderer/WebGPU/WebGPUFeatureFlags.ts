@@ -41,6 +41,13 @@ export const DESIRED_FEATURES: GPUFeatureName[] = [
   // C1: Terrain heightmaps use float32 textures — enables HW
   // bilinear filtering.
   "float32-filterable" as GPUFeatureName,
+  // Core limits/view semantics. Requested only when the adapter exposes it;
+  // compatibility-only adapters keep their reduced profile. Layered cube and
+  // array mip generation uses per-layer 2D views and therefore requires it.
+  "core-features-and-limits" as GPUFeatureName,
+  // Extends renderable/filterable texture formats used by the generalized
+  // mip generator (snorm and 16-bit unorm/snorm families).
+  "texture-formats-tier1" as GPUFeatureName,
   // C3: Native GPU clip planes for ClippingPlaneCollection
   // (Chrome 128+).
   "clip-distances" as GPUFeatureName,

@@ -454,11 +454,10 @@ function findInstanceFeatureIdAttribute(instances, setIndex) {
  * @param {object} nodeCache - Per-node cache
  */
 function destroyInstancingResources(nodeCache) {
-  if (defined(nodeCache.instancingBuffer)) {
-    nodeCache.instancingBuffer.destroy();
-    nodeCache.instancingBuffer = undefined;
-  }
+  const instancingBuffer = nodeCache.instancingBuffer;
+  nodeCache.instancingBuffer = undefined;
   nodeCache.instanceCount = undefined;
+  instancingBuffer?.destroy();
 }
 
 export { ensureInstancingResources, destroyInstancingResources };

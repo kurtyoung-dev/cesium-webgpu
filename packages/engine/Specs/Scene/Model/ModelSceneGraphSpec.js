@@ -64,6 +64,7 @@ describe(
 
       expect(sceneGraph.buildRenderResources).toHaveBeenCalledOnceWith(
         frameState,
+        true,
       );
       expect(sceneGraph.computeBoundingVolumes).toHaveBeenCalledOnceWith(
         resources,

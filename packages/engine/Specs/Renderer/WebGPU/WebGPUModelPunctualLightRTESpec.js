@@ -148,11 +148,9 @@ describe("Renderer/WebGPU model punctual-light RTE", function () {
         return { descriptor };
       },
     };
+    const modelCameraArena = new WebGPUModelCameraArena();
     const pipelineCache = {
       cameraBGL: {},
-      // C11-195 — the real arena: the capture path's camera AND light blocks
-      // both come out of it, so a double would prove nothing about either.
-      cameraArena: new WebGPUModelCameraArena(),
       defaultIBLCubemapView: {},
       defaultIBLSampler: {},
       defaultSHBuffer: {},
@@ -216,7 +214,13 @@ describe("Renderer/WebGPU model punctual-light RTE", function () {
     const frameState = {
       mode: 3,
       camera: { positionWC: new Cartesian3(1.0, 2.0, 3.0) },
-      context: { uniformState, uniformAllocator: allocator },
+      context: {
+        uniformState,
+        uniformAllocator: allocator,
+        // C11-195 — the real context-owned arena: the capture path's camera
+        // and light blocks both come out of it.
+        modelCameraArena,
+      },
       lights,
     };
     // C11-195 — the light rides group 0 binding 1 with a dynamic offset, so

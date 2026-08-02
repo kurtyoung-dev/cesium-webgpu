@@ -958,7 +958,7 @@ describe(
         }
       });
 
-      it("destroy drains mandatory owners after a resource throws", function () {
+      it("destroy drains mandatory owners after a replacement moon throws", function () {
         const requestListenerCount =
           RequestScheduler.requestCompletedEvent.numberOfListeners;
         const taskListenerCount =
@@ -979,10 +979,18 @@ describe(
           doomedScene._invertClassification,
           "destroy",
         ).and.callThrough();
+        const moonDestroy = jasmine
+          .createSpy("moon.destroy")
+          .and.callFake(function () {
+            throw new RuntimeError("injected moon destroy failure");
+          });
+        doomedScene.moon = {
+          destroy: moonDestroy,
+          isDestroyed: () => false,
+        };
+        const skyBoxDestroy = jasmine.createSpy("skyBox.destroy");
         doomedScene.skyBox = {
-          destroy: function () {
-            throw new RuntimeError("injected sky box destroy failure");
-          },
+          destroy: skyBoxDestroy,
         };
 
         expect(function () {
@@ -992,6 +1000,9 @@ describe(
         expect(doomedScene.isDestroyed()).toBe(true);
         expect(shadowMapDestroy).toHaveBeenCalledTimes(1);
         expect(invertClassificationDestroy).toHaveBeenCalledTimes(1);
+        expect(moonDestroy).toHaveBeenCalledTimes(1);
+        expect(doomedScene.moon).not.toBeDefined();
+        expect(skyBoxDestroy).toHaveBeenCalledTimes(1);
         expect(contextDestroy).toHaveBeenCalledTimes(1);
         expect(doomedContext.isDestroyed()).toBe(true);
         expect(RequestScheduler.requestCompletedEvent.numberOfListeners).toBe(

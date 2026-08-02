@@ -1071,7 +1071,7 @@ export class WebGPUGlobeSurfaceRenderer {
       ImageryRealizationContext | undefined;
     if (
       realizationContext &&
-      typeof realizationContext.enqueueImageryMipGeneration === "function"
+      typeof realizationContext.enqueueTextureMipGeneration === "function"
     ) {
       this._webgpuContext = realizationContext;
       const device = this._device;

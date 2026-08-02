@@ -4069,17 +4069,16 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
 //
 //     vec4(rgba8UnormToUint32(pickColor), isEdge ? 1.0 : 0.0, -v_positionEC.z, 0.0)
 //
-// The target is an RGBA32F attachment (`WebGPUSnapFramebuffer`), NOT the RGBA8
-// pick FBO, so each channel carries a full f32:
+// WebGL retains that RGBA32F layout. WebGPU targets an RG32Uint attachment and
+// transports the same decoded information in two exact 32-bit words:
 //
-//   R — pick key (uint32 repacked from the RGBA8-normalized pick color, then
-//       implicitly widened to f32; keys above 2^24 lose precision exactly as
-//       they do in the GLSL original, which performs the same uint->float cast).
-//   G — isEdge flag (0.0 surface / 1.0 edge).
-//   B — linear EYE-SPACE depth in meters (`-positionEC.z`). Eye space is global
-//       across the multifrustum and independent of the log-depth encoding, so
-//       `Snapping.snapHitToWorld` can unproject it directly.
-//   A — unused (0.0), matching upstream.
+//   R — the uint32 pick key, with no uint-to-f32 precision loss above 2^24.
+//   G — linear EYE-SPACE depth (`-positionEC.z`) as positive IEEE-754 f32 bits;
+//       the otherwise-clear sign bit carries isEdge.
+//
+// Eye space is global across the multifrustum and independent of log-depth, so
+// `Snapping.snapHitToWorld` can unproject the decoded f32 directly. The public
+// hit object remains identical between WebGL and WebGPU.
 //
 // `positionEC` is produced by the VS as
 // `camera.modelViewRelativeToEye * vec4(rte, 1.0)` — already relative-to-eye, so
@@ -4093,7 +4092,7 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
 // UP144-SNAP-WEBGPU-EDGES. Surface snapping is unaffected: `selectBestHit` falls
 // back to the closest surface when the region contains no edge hits.
 struct SnapFragOutput {
-  @location(0) payload: vec4<f32>,
+  @location(0) payload: vec2<u32>,
   //>>ifdef LOG_DEPTH
   @builtin(frag_depth) depth: f32,
   //>>endif
@@ -4101,7 +4100,7 @@ struct SnapFragOutput {
 
 // WGSL twin of the `snapHelperSource` GLSL helper injected by
 // `DerivedCommand.getSnapShaderProgram`. Repacks an RGBA8-normalized pick color
-// into its uint32 pick key so the key survives losslessly in a float channel.
+// into its uint32 pick key so the key survives losslessly in the integer word.
 // The `* 255.0 + 0.5` round-trip matches the GLSL byte decode exactly.
 fn rgba8UnormToUint32(c: vec4<f32>) -> u32 {
   let b = vec4<u32>(c * 255.0 + 0.5);
@@ -4115,11 +4114,10 @@ fn makeModelSnapOut(
   logDepth: f32,
 ) -> SnapFragOutput {
   var out: SnapFragOutput;
-  out.payload = vec4<f32>(
-    f32(rgba8UnormToUint32(pickColor)),
-    select(0.0, 1.0, isEdge),
-    -positionEC.z,
-    0.0,
+  let depthBits = bitcast<u32>(-positionEC.z) & 0x7fffffffu;
+  out.payload = vec2<u32>(
+    rgba8UnormToUint32(pickColor),
+    depthBits | select(0u, 0x80000000u, isEdge),
   );
   //>>ifdef LOG_DEPTH
   // The snapping pass shares the pick mini-frame's depth attachment, which the

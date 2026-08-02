@@ -393,6 +393,32 @@ describe("Renderer/WebGPU/Stubs/WebGLStubBuffer", function () {
       expect(gpuB.writes[0].buffer.deviceTag).toBe("B");
     });
 
+    it("keeps a committed replacement when releasing the old native throws", function () {
+      const gpuA = makeDevice("A");
+      const gpuB = makeDevice("B");
+      const { state, stubs } = createHarness(gpuA.device);
+      const handle = stubs.createBuffer();
+      stubs.bindBuffer(GL_ARRAY_BUFFER, handle);
+      stubs.bufferData(GL_ARRAY_BUFFER, new Uint8Array(16), 0);
+      const oldResource = handle._webgpuBuffer;
+      const destroyOld = oldResource.destroy;
+      oldResource.destroy = function () {
+        destroyOld.call(oldResource);
+        throw new Error("lost old buffer destroy failed");
+      };
+
+      state.device = gpuB.device;
+      expect(function () {
+        stubs.bufferData(GL_ARRAY_BUFFER, new Uint8Array(32).fill(7), 0);
+      }).not.toThrow();
+
+      expect(oldResource.destroyed).toBe(true);
+      expect(handle._webgpuBuffer).toBe(gpuB.resources[0]);
+      expect(handle._device).toBe(gpuB.device);
+      expect(handle._size).toBe(32);
+      expect(gpuB.writes[0].buffer).toBe(handle._webgpuBuffer);
+    });
+
     it("releases the current store for a zero-sized bufferData", function () {
       const gpu = makeDevice("A");
       const { stubs } = createHarness(gpu.device);
@@ -617,6 +643,76 @@ describe("Renderer/WebGPU/Stubs/WebGLStubBuffer", function () {
       expect(handle._webgpuBuffer.deviceTag).toBe("B");
       expect(handle._size).toBe(32);
       expect(gpuB.liveBytes).toBe(32);
+    });
+
+    it("invalidates every handle and detaches ownership when one destroy throws", function () {
+      const gpu = makeDevice("A");
+      const { stubs } = createHarness(gpu.device);
+      const first = stubs.createBuffer();
+      const second = stubs.createBuffer();
+      stubs.bindBuffer(GL_ARRAY_BUFFER, first);
+      stubs.bufferData(GL_ARRAY_BUFFER, 16, 0);
+      stubs.bindBuffer(GL_ARRAY_BUFFER, second);
+      stubs.bufferData(GL_ARRAY_BUFFER, 32, 0);
+      const firstNative = first._webgpuBuffer;
+      const secondNative = second._webgpuBuffer;
+      const destroyFirst = firstNative.destroy;
+      const firstError = new Error("first invalidation destroy failed");
+      firstNative.destroy = function () {
+        destroyFirst.call(firstNative);
+        throw firstError;
+      };
+
+      expect(function () {
+        stubs.invalidateCompatibilityBufferHandles();
+      }).toThrow(firstError);
+
+      expect(firstNative.destroyed).toBe(true);
+      expect(secondNative.destroyed).toBe(true);
+      expect(first._webgpuBuffer).toBeNull();
+      expect(second._webgpuBuffer).toBeNull();
+      expect(first._device).toBeNull();
+      expect(second._device).toBeNull();
+      expect(first._size).toBe(16);
+      expect(second._size).toBe(32);
+      expect(stubs.getCompatibilityBufferDiagnostics().liveBufferCount).toBe(0);
+    });
+
+    it("final teardown drains every handle after one destroy throws", function () {
+      const gpu = makeDevice("A");
+      const { stubs } = createHarness(gpu.device);
+      const first = stubs.createBuffer();
+      const second = stubs.createBuffer();
+      stubs.bindBuffer(GL_ARRAY_BUFFER, first);
+      stubs.bufferData(GL_ARRAY_BUFFER, 16, 0);
+      stubs.bindBuffer(GL_ARRAY_BUFFER, second);
+      stubs.bufferData(GL_ARRAY_BUFFER, 32, 0);
+      const firstNative = first._webgpuBuffer;
+      const secondNative = second._webgpuBuffer;
+      const destroyFirst = firstNative.destroy;
+      const firstError = new Error("first final destroy failed");
+      firstNative.destroy = function () {
+        destroyFirst.call(firstNative);
+        throw firstError;
+      };
+
+      expect(function () {
+        stubs.destroyCompatibilityBufferHandles();
+      }).toThrow(firstError);
+
+      expect(firstNative.destroyed).toBe(true);
+      expect(secondNative.destroyed).toBe(true);
+      expect(first._webgpuBuffer).toBeNull();
+      expect(second._webgpuBuffer).toBeNull();
+      expect(first._destroyed).toBe(true);
+      expect(second._destroyed).toBe(true);
+      expect(stubs.getCompatibilityBufferDiagnostics()).toEqual({
+        registeredHandleCount: 0,
+        logicalStoreCount: 0,
+        logicalStoreBytes: 0,
+        liveBufferCount: 0,
+        liveBufferBytes: 0,
+      });
     });
 
     it("drains one context's unbound buffers while a pooled-device peer remains live", function () {

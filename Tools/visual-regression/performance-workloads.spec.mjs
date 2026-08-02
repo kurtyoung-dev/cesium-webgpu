@@ -1222,6 +1222,83 @@ test("resident workload fingerprints preserve identities and reject one-frame pa
         },
       },
       measurementContent: { workloadFingerprint: fingerprint },
+      ...(attributionOnly
+        ? {
+            tilesetLifecycleDiagnostics: {
+              schemaVersion: 1,
+              enabled: true,
+              nonCertifying: true,
+              provenance: {
+                timed: false,
+                phase: "post-measurement-untimed-replay",
+                traceEndedBeforeReplay: true,
+                measurementSnapshotsFrozenBeforeReplay: true,
+              },
+              totals: {
+                requestAttempts: 1,
+                requestsIssued: 1,
+                requestSchedulingDeferrals: 0,
+                requestsCancelled: 0,
+                requestsReissued: 0,
+                requestsReissuedAfterCancellation: 0,
+                requestsCompleted: 1,
+                requestsFailed: 0,
+                requestsResolvedWithoutContent: 0,
+                tileReadyEvents: 1,
+                transferBytes: 0,
+                encodedBodyBytes: 0,
+                decodedBodyBytes: 0,
+              },
+              eventsTruncated: false,
+              framesTruncated: false,
+              events: [
+                {
+                  sequence: 0,
+                  type: "issued",
+                  requestId: 1,
+                  tile: "tileset-0/root/0",
+                  contentKind: "single",
+                  contentSlot: "single",
+                  requestSerial: 1,
+                  attemptSerial: 1,
+                  frameNumber: 1,
+                  url: "http://localhost/tile.b3dm",
+                  requestObjectObserved: true,
+                },
+                {
+                  sequence: 1,
+                  type: "completed",
+                  requestId: 1,
+                  tile: "tileset-0/root/0",
+                  contentKind: "single",
+                  contentSlot: "single",
+                  requestSerial: 1,
+                  attemptSerial: 1,
+                  frameNumber: 2,
+                },
+                {
+                  sequence: 2,
+                  type: "ready",
+                  requestId: 1,
+                  tile: "tileset-0/root/0",
+                  contentKind: "single",
+                  contentSlot: "single",
+                  requestSerial: 1,
+                  attemptSerial: 1,
+                  frameNumber: 3,
+                },
+              ],
+              frames: samples.map((sample, index) => ({
+                index,
+                segmentIndex: sample.segmentIndex,
+                routeProgress: index / (samples.length - 1),
+                selectedIdentitySignature: "aaaaaaaa",
+                readyIdentitySignature: "bbbbbbbb",
+                tilesets: [],
+              })),
+            },
+          }
+        : {}),
     },
   });
   const options = {
@@ -1287,6 +1364,81 @@ test("resident workload fingerprints preserve identities and reject one-frame pa
   assert.equal(attributionOnly.attributionOnly, true);
   assert.equal(attributionOnly.certificationEligible, false);
   assert.ok(attributionOnly.certificationExclusions.length > 0);
+  const vacuousAttributionRun = makeResidentRun(matchingFingerprint, true);
+  const vacuousLifecycle =
+    vacuousAttributionRun.representativeContentEvidence
+      .tilesetLifecycleDiagnostics;
+  vacuousLifecycle.events = [];
+  Object.assign(vacuousLifecycle.totals, {
+    requestAttempts: 0,
+    requestsIssued: 0,
+    requestsCompleted: 0,
+    tileReadyEvents: 0,
+  });
+  const vacuousAttribution = assessRepresentativePairComparability(
+    makeResidentRun(webglFingerprint, true),
+    vacuousAttributionRun,
+    options,
+  );
+  assert.equal(vacuousAttribution.valid, false);
+  assert.ok(
+    vacuousAttribution.reasons.some(
+      (reason) =>
+        reason.includes("tileset lifecycle attribution is incomplete") &&
+        reason.includes("no issued requests"),
+    ),
+  );
+  const truncatedAttributionRun = makeResidentRun(matchingFingerprint, true);
+  truncatedAttributionRun.representativeContentEvidence.tilesetLifecycleDiagnostics.eventsTruncated = true;
+  const incompleteAttribution = assessRepresentativePairComparability(
+    makeResidentRun(webglFingerprint, true),
+    truncatedAttributionRun,
+    options,
+  );
+  assert.equal(incompleteAttribution.valid, false);
+  assert.ok(
+    incompleteAttribution.reasons.some(
+      (reason) =>
+        reason.includes("tileset lifecycle attribution is incomplete") &&
+        reason.includes("truncated"),
+    ),
+  );
+  const openAttributionRun = makeResidentRun(matchingFingerprint, true);
+  const openLifecycle =
+    openAttributionRun.representativeContentEvidence
+      .tilesetLifecycleDiagnostics;
+  openLifecycle.events = [
+    {
+      sequence: 0,
+      type: "issued",
+      requestId: 1,
+      tile: "tileset-0/root/0",
+      contentKind: "single",
+      contentSlot: "single",
+      requestSerial: 1,
+      attemptSerial: 1,
+      frameNumber: 1,
+      url: "http://localhost/tile.b3dm",
+      requestObjectObserved: true,
+    },
+  ];
+  Object.assign(openLifecycle.totals, {
+    requestAttempts: 1,
+    requestsIssued: 1,
+    requestsCompleted: 0,
+    tileReadyEvents: 0,
+  });
+  const openAttribution = assessRepresentativePairComparability(
+    makeResidentRun(webglFingerprint, true),
+    openAttributionRun,
+    options,
+  );
+  assert.equal(openAttribution.valid, false);
+  assert.ok(
+    openAttribution.reasons.some((reason) =>
+      reason.includes("ended with open content requests"),
+    ),
+  );
   assert.match(
     runnerSource,
     /validPairs\.filter\(\s*\(pair\) => pair\.certificationEligible/,
@@ -1601,10 +1753,60 @@ test("resident comparability rejects unequal 3D Tiles ready sets by name", () =>
       traceEndedBeforeReplay: true,
       measurementSnapshotsFrozenBeforeReplay: true,
     },
-    totals: {},
+    totals: {
+      requestAttempts: 1,
+      requestsIssued: 1,
+      requestSchedulingDeferrals: 0,
+      requestsCancelled: 0,
+      requestsReissued: 0,
+      requestsReissuedAfterCancellation: 0,
+      requestsCompleted: 1,
+      requestsFailed: 0,
+      requestsResolvedWithoutContent: 0,
+      tileReadyEvents: 1,
+      transferBytes: 0,
+      encodedBodyBytes: 0,
+      decodedBodyBytes: 0,
+    },
     eventsTruncated: false,
     framesTruncated: false,
-    events: [],
+    events: [
+      {
+        sequence: 0,
+        type: "issued",
+        requestId: 1,
+        tile: "tileset-0/root/0",
+        contentKind: "single",
+        contentSlot: "single",
+        requestSerial: 1,
+        attemptSerial: 1,
+        frameNumber: 1,
+        url: "http://localhost/tile.b3dm",
+        requestObjectObserved: true,
+      },
+      {
+        sequence: 1,
+        type: "completed",
+        requestId: 1,
+        tile: "tileset-0/root/0",
+        contentKind: "single",
+        contentSlot: "single",
+        requestSerial: 1,
+        attemptSerial: 1,
+        frameNumber: 2,
+      },
+      {
+        sequence: 2,
+        type: "ready",
+        requestId: 1,
+        tile: "tileset-0/root/0",
+        contentKind: "single",
+        contentSlot: "single",
+        requestSerial: 1,
+        attemptSerial: 1,
+        frameNumber: 3,
+      },
+    ],
     frames,
   });
   const makeRun = (fingerprint, lifecycleFrames = null) => ({
@@ -1871,6 +2073,7 @@ test("opt-in tileset lifecycle tracing records stable identities, retries, and r
 
   let resolveFirst;
   pending.push(new Promise((resolve) => (resolveFirst = resolve)));
+  pending.push(undefined);
   pending.push(Promise.resolve({ ready: true }));
   const resourceEntries = [
     {
@@ -1887,6 +2090,22 @@ test("opt-in tileset lifecycle tracing records stable identities, retries, and r
       decodedBodySize: 80,
       duration: 1,
       responseEnd: 6,
+      deliveryType: "cache",
+    },
+    {
+      transferSize: 30,
+      encodedBodySize: 70,
+      decodedBodySize: 70,
+      duration: 1.5,
+      responseEnd: 8,
+      deliveryType: "cache",
+    },
+    {
+      transferSize: 15,
+      encodedBodySize: 60,
+      decodedBodySize: 60,
+      duration: 1,
+      responseEnd: 10,
       deliveryType: "cache",
     },
   ];
@@ -1928,11 +2147,29 @@ test("opt-in tileset lifecycle tracing records stable identities, retries, and r
   resolveFirst(undefined);
   await first;
   await Promise.resolve();
+  assert.equal(child.requestContent(), undefined);
   await child.requestContent();
   await Promise.resolve();
   child.contentReady = true;
   child._contentState = 3;
   tileLoad.raise(child);
+  let resolveLateCancellation;
+  pending.push(
+    new Promise((resolve) => {
+      resolveLateCancellation = resolve;
+    }),
+  );
+  const lateCancellation = root.requestContent();
+  root.cancelRequests();
+  resolveLateCancellation({ ready: true });
+  await lateCancellation;
+  await Promise.resolve();
+  root.contentReady = true;
+  root._contentState = 3;
+  tileLoad.raise(root);
+  pending.push(Promise.resolve({ refreshed: true }));
+  await root.requestContent();
+  await Promise.resolve();
   assert.equal(tracker.sampleFrame(6, 0.75), true);
   const diagnostics = tracker.snapshot({
     timed: false,
@@ -1943,23 +2180,164 @@ test("opt-in tileset lifecycle tracing records stable identities, retries, and r
   tracker.destroy();
 
   assert.equal(diagnostics.nonCertifying, true);
-  assert.equal(diagnostics.totals.requestsIssued, 2);
-  assert.equal(diagnostics.totals.requestsCancelled, 1);
-  assert.equal(diagnostics.totals.requestsReissued, 1);
+  assert.equal(diagnostics.totals.requestsIssued, 4);
+  assert.equal(diagnostics.totals.requestAttempts, 5);
+  assert.equal(diagnostics.totals.requestSchedulingDeferrals, 1);
+  assert.equal(diagnostics.totals.requestsCancelled, 2);
+  assert.equal(diagnostics.totals.requestsReissued, 2);
   assert.equal(diagnostics.totals.requestsReissuedAfterCancellation, 1);
-  assert.equal(diagnostics.totals.requestsCompleted, 1);
+  assert.equal(diagnostics.totals.requestsCompleted, 3);
   assert.equal(diagnostics.totals.requestsResolvedWithoutContent, 1);
-  assert.equal(diagnostics.totals.resourceTimingsMatched, 2);
-  assert.equal(diagnostics.totals.decodedBodyBytes, 180);
+  assert.equal(diagnostics.totals.resourceTimingsMatched, 4);
+  assert.equal(diagnostics.totals.decodedBodyBytes, 310);
+  assert.equal(diagnostics.requestLedger.valid, true);
+  assert.equal(diagnostics.requestLedger.complete, true);
+  assert.equal(diagnostics.requestLedger.requestCount, 4);
+  assert.equal(diagnostics.requestLedger.deferralCount, 1);
+  const reissuedRequest = diagnostics.requestLedger.requests.find(
+    (request) =>
+      request.tile === "tileset-0/root/0" && request.requestSerial === 2,
+  );
+  assert.equal(reissuedRequest.attemptSerial, 3);
+  const childChronology = diagnostics.requestLedger.tileChronologies.find(
+    (entry) => entry.tile === "tileset-0/root/0",
+  );
+  assert.deepEqual(childChronology.chronology, [
+    "request:1:issued",
+    "request:1:cancelled",
+    "request:1:cancelled-settled",
+    "attempt:2:scheduling-deferred",
+    "request:2:reissued",
+    "request:2:completed",
+    "request:2:ready",
+  ]);
+  const rootChronology = diagnostics.requestLedger.tileChronologies.find(
+    (entry) => entry.tile === "tileset-0/root",
+  );
+  assert.deepEqual(rootChronology.chronology, [
+    "request:1:issued",
+    "request:1:cancelled",
+    "request:1:completed",
+    "request:1:ready",
+    "request:2:reissued",
+    "request:2:completed",
+  ]);
   assert.deepEqual(diagnostics.frames[0].tilesets[0].selected, [
     "tileset-0/root/0",
   ]);
   assert.deepEqual(diagnostics.frames[0].tilesets[0].ready, [
+    "tileset-0/root",
     "tileset-0/root/0",
   ]);
   assert.ok(diagnostics.events.some((event) => event.type === "cancelled"));
   assert.ok(diagnostics.events.some((event) => event.type === "reissued"));
   assert.ok(diagnostics.events.some((event) => event.type === "completed"));
+});
+
+test("tileset lifecycle tracing preserves unknown Resource Timing byte totals", async (t) => {
+  class FakeEvent {
+    addEventListener() {
+      return () => {};
+    }
+  }
+
+  class FakeTile {
+    constructor(tileset) {
+      this._tileset = tileset;
+      this.parent = null;
+      this.children = [];
+      this._contentResource = { url: "/tile.b3dm" };
+      this._contentState = 1;
+      this._request = undefined;
+      this.hasEmptyContent = false;
+      this.hasMultipleContents = false;
+    }
+
+    requestContent() {
+      this._request = { state: 2, cancelled: false };
+      return Promise.resolve({ ready: true });
+    }
+
+    cancelRequests() {
+      this._request.cancelled = true;
+    }
+  }
+
+  const capture = async (resourceEntry) => {
+    const tileset = {
+      _root: null,
+      _updatedVisibilityFrame: 12,
+      tileLoad: new FakeEvent(),
+    };
+    const tile = new FakeTile(tileset);
+    tileset._root = tile;
+    let resourceEntriesAvailable = false;
+    const tracker = createRepresentativeTilesetLifecycleTracker(
+      {
+        Cesium3DTile: FakeTile,
+        RequestState: { ACTIVE: 2, CANCELLED: 4 },
+        Cesium3DTileContentState: { LOADING: 1 },
+      },
+      { tilesets: [tileset] },
+      {
+        baseUrl: "http://localhost/",
+        performanceApi: {
+          now: () => 42,
+          getEntriesByName: () =>
+            resourceEntriesAvailable && resourceEntry ? [resourceEntry] : [],
+        },
+      },
+    );
+    try {
+      resourceEntriesAvailable = true;
+      await tile.requestContent();
+      await Promise.resolve();
+      return tracker.snapshot();
+    } finally {
+      tracker.destroy();
+    }
+  };
+
+  await t.test(
+    "missing timing invalidates every aggregate instead of zeroing it",
+    async () => {
+      const diagnostics = await capture(null);
+      assert.equal(diagnostics.totals.resourceTimingsMatched, 0);
+      assert.equal(diagnostics.totals.resourceTimingsMissing, 1);
+      for (const name of [
+        "transferBytes",
+        "encodedBodyBytes",
+        "decodedBodyBytes",
+      ]) {
+        assert.equal(diagnostics.totals[name], null);
+        assert.equal(diagnostics.requestLedger.byteTotals[name], null);
+      }
+      assert.equal(diagnostics.requestLedger.valid, false);
+    },
+  );
+
+  await t.test(
+    "non-finite timing fields invalidate only their aggregates",
+    async () => {
+      const diagnostics = await capture({
+        transferSize: Number.NaN,
+        encodedBodySize: 7,
+        decodedBodySize: Number.POSITIVE_INFINITY,
+        duration: 1,
+        responseEnd: 2,
+        deliveryType: "cache",
+      });
+      assert.equal(diagnostics.totals.resourceTimingsMatched, 1);
+      assert.equal(diagnostics.totals.resourceTimingsMissing, 0);
+      assert.equal(diagnostics.totals.transferBytes, null);
+      assert.equal(diagnostics.totals.encodedBodyBytes, 7);
+      assert.equal(diagnostics.totals.decodedBodyBytes, null);
+      assert.equal(diagnostics.requestLedger.byteTotals.transferBytes, null);
+      assert.equal(diagnostics.requestLedger.byteTotals.encodedBodyBytes, 7);
+      assert.equal(diagnostics.requestLedger.byteTotals.decodedBodyBytes, null);
+      assert.equal(diagnostics.requestLedger.valid, false);
+    },
+  );
 });
 
 test("tileset lifecycle comparison identifies readiness before selection drift without gating", () => {
@@ -1969,25 +2347,131 @@ test("tileset lifecycle comparison identifies readiness before selection drift w
     traceEndedBeforeReplay: true,
     measurementSnapshotsFrozenBeforeReplay: true,
   };
-  const makeDiagnostics = (selected, ready, totals = {}) => ({
-    schemaVersion: 1,
-    enabled: true,
-    nonCertifying: true,
-    provenance,
-    framesTruncated: false,
-    eventsTruncated: false,
-    totals,
-    frames: [
-      {
-        index: 0,
-        segmentIndex: 6,
-        routeProgress: 0.75,
-        selectedIdentitySignature: selected.join("|"),
-        readyIdentitySignature: ready.join("|"),
-        tilesets: [{ selected, ready }],
+  const makeDiagnostics = (selected, ready, totals = {}) => {
+    const cancellationObserved = (totals.requestsCancelled ?? 0) > 0;
+    const requestFields = {
+      tile: "tileset-0/root/0",
+      contentKind: "single",
+      contentSlot: "single",
+    };
+    const events = cancellationObserved
+      ? [
+          {
+            type: "issued",
+            requestId: 1,
+            ...requestFields,
+            requestSerial: 1,
+            attemptSerial: 1,
+            frameNumber: 1,
+            url: "http://localhost/tile.b3dm",
+            requestObjectObserved: true,
+          },
+          {
+            type: "cancelled",
+            requestId: 1,
+            ...requestFields,
+            requestSerial: 1,
+            attemptSerial: 1,
+            frameNumber: 2,
+          },
+          {
+            type: "cancelled-settled",
+            requestId: 1,
+            ...requestFields,
+            requestSerial: 1,
+            attemptSerial: 1,
+            frameNumber: 3,
+          },
+          {
+            type: "reissued",
+            requestId: 2,
+            ...requestFields,
+            requestSerial: 2,
+            attemptSerial: 2,
+            frameNumber: 4,
+            url: "http://localhost/tile.b3dm",
+            requestObjectObserved: true,
+          },
+          {
+            type: "completed",
+            requestId: 2,
+            ...requestFields,
+            requestSerial: 2,
+            attemptSerial: 2,
+            frameNumber: 5,
+          },
+          {
+            type: "ready",
+            requestId: 2,
+            ...requestFields,
+            requestSerial: 2,
+            attemptSerial: 2,
+            frameNumber: 6,
+          },
+        ]
+      : [
+          {
+            type: "issued",
+            requestId: 1,
+            ...requestFields,
+            requestSerial: 1,
+            attemptSerial: 1,
+            frameNumber: 1,
+            url: "http://localhost/tile.b3dm",
+            requestObjectObserved: true,
+          },
+          {
+            type: "completed",
+            requestId: 1,
+            ...requestFields,
+            requestSerial: 1,
+            attemptSerial: 1,
+            frameNumber: 2,
+          },
+          {
+            type: "ready",
+            requestId: 1,
+            ...requestFields,
+            requestSerial: 1,
+            attemptSerial: 1,
+            frameNumber: 3,
+          },
+        ];
+    return {
+      schemaVersion: 1,
+      enabled: true,
+      nonCertifying: true,
+      provenance,
+      framesTruncated: false,
+      eventsTruncated: false,
+      totals: {
+        requestAttempts: cancellationObserved ? 2 : 1,
+        requestsIssued: cancellationObserved ? 2 : 1,
+        requestSchedulingDeferrals: 0,
+        requestsCancelled: cancellationObserved ? 1 : 0,
+        requestsReissued: cancellationObserved ? 1 : 0,
+        requestsReissuedAfterCancellation: cancellationObserved ? 1 : 0,
+        requestsCompleted: 1,
+        requestsFailed: 0,
+        requestsResolvedWithoutContent: cancellationObserved ? 1 : 0,
+        tileReadyEvents: 1,
+        transferBytes: 0,
+        encodedBodyBytes: 0,
+        decodedBodyBytes: 0,
       },
-    ],
-  });
+      events: events.map((event, sequence) => ({ sequence, ...event })),
+      frames: [
+        {
+          index: 0,
+          segmentIndex: 6,
+          routeProgress: 0.75,
+          selectedIdentitySignature: selected.join("|"),
+          readyIdentitySignature: ready.join("|"),
+          tilesets: [{ selected, ready }],
+        },
+      ],
+    };
+  };
   const makeRun = (diagnostics) => ({
     representativeContentEvidence: {
       tilesetLifecycleDiagnostics: diagnostics,
@@ -2010,6 +2494,9 @@ test("tileset lifecycle comparison identifies readiness before selection drift w
   assert.equal(comparison.available, true);
   assert.equal(comparison.valid, true);
   assert.equal(comparison.nonCertifying, true);
+  assert.equal(comparison.requestLedger.valid, true);
+  assert.equal(comparison.requestLedger.match, false);
+  assert.equal(comparison.requestLedger.requestIdentityMatch, false);
   assert.equal(comparison.comparison.selectedMismatchFrames, 1);
   assert.equal(comparison.comparison.readyMismatchFrames, 1);
   assert.equal(
@@ -2044,6 +2531,10 @@ test("representative content has schema and runner coverage gates", () => {
   assert.match(runnerSource, /measurementTerrainActivity/);
   assert.match(runnerSource, /measurementContent/);
   assert.match(runnerSource, /representativeMeasurementAssessment/);
+  assert.match(
+    runnerSource,
+    /representative tileset request ledger is incomplete/,
+  );
   assert.match(runnerSource, /assertPerformanceWorkloadManifest/);
   assert.match(runnerSource, /globeTilesNotLoadedFrames/);
   assert.match(runnerSource, /residentConvergence/);

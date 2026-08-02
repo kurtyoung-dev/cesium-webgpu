@@ -16,6 +16,7 @@
 import defined from "../../Core/defined.js";
 import ModelComponents from "../../Scene/ModelComponents.js";
 import ModelUtility from "../../Scene/Model/ModelUtility.js";
+import { getWebGPUTextureForDevice } from "./Stubs/WebGLStubTexture.js";
 
 // Feature uniform buffer.
 // Layout (12 floats / 48 bytes — matches WGSL `FeatureIdUniforms`):
@@ -198,7 +199,7 @@ function getChannelCount(channels) {
  * @param {object} textureReader - glTF textureReader with .texture property
  * @returns {GPUTexture|null}
  */
-function createFeatureIdGPUTexture(device, textureReader) {
+function createFeatureIdGPUTexture(device, resourceGeneration, textureReader) {
   if (!defined(textureReader)) {
     return null;
   }
@@ -215,7 +216,11 @@ function createFeatureIdGPUTexture(device, textureReader) {
   // returned texture is OWNED by the stub — callers must not destroy it
   // (see destroyFeatureIdResources' ownership guard).
   const stubWrapper = cesiumTexture._texture;
-  const stubGPU = stubWrapper && stubWrapper._webgpuTexture;
+  const stubGPU = getWebGPUTextureForDevice(
+    stubWrapper,
+    device,
+    resourceGeneration,
+  );
   if (stubGPU && stubGPU.texture) {
     return stubGPU.texture;
   }
@@ -230,8 +235,9 @@ function createFeatureIdGPUTexture(device, textureReader) {
     return null;
   }
 
+  let gpuTexture;
   try {
-    const gpuTexture = device.createTexture({
+    gpuTexture = device.createTexture({
       label: `FeatureId texture ${width}x${height}`,
       size: [width, height, 1],
       format: "rgba8unorm",
@@ -247,6 +253,11 @@ function createFeatureIdGPUTexture(device, textureReader) {
     );
     return gpuTexture;
   } catch (_e) {
+    try {
+      gpuTexture?.destroy();
+    } catch {
+      // Candidate was never published; preserve the upload failure contract.
+    }
     return null;
   }
 }
@@ -298,8 +309,9 @@ function createBatchGPUTexture(device, batchTexture) {
   if (defined(batchValues) && defined(dimensions) && dimensions.x > 0) {
     const width = dimensions.x;
     const height = dimensions.y;
+    let gpuTexture;
     try {
-      const gpuTexture = device.createTexture({
+      gpuTexture = device.createTexture({
         label: `Batch texture ${width}x${height}`,
         size: [width, height, 1],
         format: "rgba8unorm",
@@ -313,6 +325,11 @@ function createBatchGPUTexture(device, batchTexture) {
       );
       return { texture: gpuTexture, width, height };
     } catch (_e) {
+      try {
+        gpuTexture?.destroy();
+      } catch {
+        // Candidate was never published; preserve the upload failure contract.
+      }
       return null;
     }
   }
@@ -325,8 +342,9 @@ function createBatchGPUTexture(device, batchTexture) {
   if (defined(source) && (source.width > 0 || source.naturalWidth > 0)) {
     const width = source.width || source.naturalWidth;
     const height = source.height || source.naturalHeight;
+    let gpuTexture;
     try {
-      const gpuTexture = device.createTexture({
+      gpuTexture = device.createTexture({
         label: `Batch texture ${width}x${height}`,
         size: [width, height, 1],
         format: "rgba8unorm",
@@ -342,6 +360,11 @@ function createBatchGPUTexture(device, batchTexture) {
       );
       return { texture: gpuTexture, width, height };
     } catch (_e) {
+      try {
+        gpuTexture?.destroy();
+      } catch {
+        // Candidate was never published; preserve the upload failure contract.
+      }
       return null;
     }
   }
@@ -466,7 +489,12 @@ function ensureFeatureIdResources(
   let featureIdTexOwned = false;
   if (selected.isTexture) {
     const textureReader = selected.featureIds.textureReader;
-    featureIdTex = createFeatureIdGPUTexture(device, textureReader);
+    const resourceGeneration = context?.resourceGeneration ?? 0;
+    featureIdTex = createFeatureIdGPUTexture(
+      device,
+      resourceGeneration,
+      textureReader,
+    );
     if (defined(featureIdTex)) {
       flags |= 0x10000; // FLAG_HAS_FEATURE_ID_TEXTURE (bit 16)
       channelCount = getChannelCount(textureReader.channels);
@@ -476,8 +504,11 @@ function ensureFeatureIdResources(
       // NOT destroy it; only textures allocated by
       // createFeatureIdGPUTexture itself are ours to free.
       featureIdTexOwned =
-        textureReader?.texture?._texture?._webgpuTexture?.texture !==
-        featureIdTex;
+        getWebGPUTextureForDevice(
+          textureReader?.texture?._texture,
+          device,
+          resourceGeneration,
+        )?.texture !== featureIdTex;
     }
   }
 
@@ -713,13 +744,14 @@ function ensurePerFeaturePickIds(
     return cache._featurePickGPUTexture;
   }
 
-  // Allocate one pickId per feature. Cesium pickIds are byte-exact RGBA
-  // colors that round-trip through the pick FBO; allocating in a
-  // contiguous block keeps the texture upload tight.
-  if (!defined(cache._featurePickIds)) {
-    cache._featurePickIds = new Map();
-  }
-  const pickIds = cache._featurePickIds;
+  // Build a complete replacement off-cache. Cesium pickIds are byte-exact
+  // RGBA colors that round-trip through the pick FBO. Existing IDs remain
+  // authoritative and reusable while any newly-created IDs and the candidate
+  // texture are provisional until the upload succeeds.
+  const previousPickIds = cache._featurePickIds;
+  const previousTexture = cache._featurePickGPUTexture;
+  const pickIds = new Map();
+  const createdPickIds = [];
   // C-R9-MODEL-FEATURE-PICK — register the SAME object WebGL registers
   // (BatchTexture.js:528 `context.createPickId(owner.getFeature(i),
   // "tile-feature")`) so `scene.pick` returns a real Cesium3DTileFeature
@@ -732,38 +764,90 @@ function ensurePerFeaturePickIds(
   const ownerHasGetFeature =
     defined(owner) && typeof owner.getFeature === "function";
   const data = new Uint8Array(dimensions.x * dimensions.y * 4);
-  for (let fid = 0; fid < featuresLength; fid++) {
-    let pid = pickIds.get(fid);
-    if (!defined(pid)) {
-      const target = ownerHasGetFeature
-        ? owner.getFeature(fid)
-        : { primitive: model, id: fid };
-      pid = context.createPickId(target, "tile-feature");
+  let tex;
+  try {
+    for (let fid = 0; fid < featuresLength; fid++) {
+      let pid = previousPickIds?.get(fid);
+      if (!defined(pid)) {
+        const target = ownerHasGetFeature
+          ? owner.getFeature(fid)
+          : { primitive: model, id: fid };
+        pid = context.createPickId(target, "tile-feature");
+        createdPickIds.push(pid);
+      }
       pickIds.set(fid, pid);
+      const off = fid * 4;
+      const c = pid.color;
+      data[off] = Math.round((c.red ?? 0) * 255);
+      data[off + 1] = Math.round((c.green ?? 0) * 255);
+      data[off + 2] = Math.round((c.blue ?? 0) * 255);
+      data[off + 3] = Math.round((c.alpha ?? 1) * 255);
     }
-    const off = fid * 4;
-    const c = pid.color;
-    data[off] = Math.round((c.red ?? 0) * 255);
-    data[off + 1] = Math.round((c.green ?? 0) * 255);
-    data[off + 2] = Math.round((c.blue ?? 0) * 255);
-    data[off + 3] = Math.round((c.alpha ?? 1) * 255);
+
+    tex = device.createTexture({
+      label: `Feature pick texture ${dimensions.x}x${dimensions.y}`,
+      size: [dimensions.x, dimensions.y, 1],
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+    });
+    device.queue.writeTexture(
+      { texture: tex },
+      data,
+      { bytesPerRow: dimensions.x * 4, rowsPerImage: dimensions.y },
+      { width: dimensions.x, height: dimensions.y, depthOrArrayLayers: 1 },
+    );
+  } catch (error) {
+    // Roll back only provisional owners. Cleanup errors from a lost device or
+    // pick registry must not mask the allocation/upload failure.
+    try {
+      tex?.destroy();
+    } catch {
+      // Candidate was never published.
+    }
+    for (let i = 0; i < createdPickIds.length; i++) {
+      try {
+        createdPickIds[i].destroy();
+      } catch {
+        // Continue draining every provisional registry entry.
+      }
+    }
+    throw error;
   }
 
-  const tex = device.createTexture({
-    label: `Feature pick texture ${dimensions.x}x${dimensions.y}`,
-    size: [dimensions.x, dimensions.y, 1],
-    format: "rgba8unorm",
-    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
-  });
-  device.queue.writeTexture(
-    { texture: tex },
-    data,
-    { bytesPerRow: dimensions.x * 4, rowsPerImage: dimensions.y },
-    { width: dimensions.x, height: dimensions.y, depthOrArrayLayers: 1 },
-  );
+  // Commit the complete replacement before cleaning up superseded owners.
+  // From this point onward the cache always describes one coherent texture,
+  // feature count, and pick-ID map.
+  cache._featurePickIds = pickIds;
   cache._featurePickGPUTexture = tex;
   cache._featurePickFeaturesLength = featuresLength;
   primCache._featurePickGPUTexture = tex;
+
+  const retiredPickIds = [];
+  if (defined(previousPickIds)) {
+    for (const [fid, pickId] of previousPickIds) {
+      if (pickIds.get(fid) !== pickId) {
+        retiredPickIds.push(pickId);
+      }
+    }
+    previousPickIds.clear();
+  }
+  // Publication is the commit point. Best-effort old-owner cleanup cannot
+  // invalidate the replacement, and one throwing destroy must not strand its
+  // siblings.
+  for (let i = 0; i < retiredPickIds.length; i++) {
+    try {
+      retiredPickIds[i].destroy();
+    } catch {
+      // The replacement map no longer references this retired registry entry.
+    }
+  }
+  if (defined(previousTexture) && previousTexture !== tex) {
+    try {
+      previousTexture.destroy();
+    } catch {
+      // The uploaded replacement texture is already authoritative.
+    }
+  }
   return tex;
 }
 
@@ -772,42 +856,122 @@ function ensurePerFeaturePickIds(
  * @param {object} primCache
  */
 function destroyFeatureIdResources(primCache) {
-  if (defined(primCache._featureIdGPUTexture)) {
-    // METADATA-TABLE-SOURCES — only destroy textures allocated by
-    // createFeatureIdGPUTexture; stub-owned reused textures are freed with
-    // the glTF texture itself.
-    if (primCache._featureIdGPUTextureOwned !== false) {
-      primCache._featureIdGPUTexture.destroy();
+  let firstDestroyError;
+  let hasDestroyError = false;
+  const destroyBestEffort = (resource) => {
+    if (!defined(resource)) {
+      return;
     }
-    primCache._featureIdGPUTexture = undefined;
-    primCache._featureIdGPUTextureOwned = undefined;
-  }
-  if (defined(primCache._batchGPUTexture)) {
-    primCache._batchGPUTexture.destroy();
-    primCache._batchGPUTexture = undefined;
-  }
-  if (defined(primCache._featureUniformBuffer)) {
-    primCache._featureUniformBuffer.destroy();
-    primCache._featureUniformBuffer = undefined;
-  }
+    try {
+      resource.destroy();
+    } catch (error) {
+      if (!hasDestroyError) {
+        firstDestroyError = error;
+        hasDestroyError = true;
+      }
+    }
+  };
+
+  const featureIdTexture = primCache._featureIdGPUTexture;
+  const featureIdTextureOwned = primCache._featureIdGPUTextureOwned;
+  const batchTexture = primCache._batchGPUTexture;
+  const featureUniformBuffer = primCache._featureUniformBuffer;
+  primCache._featureIdGPUTexture = undefined;
+  primCache._featureIdGPUTextureOwned = undefined;
+  primCache._batchGPUTexture = undefined;
+  primCache._featureUniformBuffer = undefined;
   // NEW-BG-CONSOLIDATION (Batch 122) — _featureIdBG was the standalone
   // bind group from the old layout; replaced by _featureIdEntries
   // (resource entry array spliced into the merged group 1 BG).
   primCache._featureIdEntries = undefined;
   primCache._featureIdFlags = undefined;
+  // The per-feature pick texture is shared by every primitive in the model
+  // and owned by the model cache. Drop only this primitive's alias here; the
+  // model-level disposer releases the texture exactly once.
+  primCache._featurePickGPUTexture = undefined;
+
+  // METADATA-TABLE-SOURCES — only destroy textures allocated by
+  // createFeatureIdGPUTexture; stub-owned reused textures are freed with the
+  // glTF texture itself.
+  if (featureIdTextureOwned !== false) {
+    destroyBestEffort(featureIdTexture);
+  }
+  destroyBestEffort(batchTexture);
+  destroyBestEffort(featureUniformBuffer);
+
+  if (hasDestroyError) {
+    throw firstDestroyError;
+  }
+}
+
+/**
+ * Destroys the model-wide per-feature pick registry entries and lookup
+ * texture. These resources are separate from the primitive-level pick IDs
+ * handled by WebGPUPickCommandHelpers and are shared by every primitive in a
+ * batched model.
+ *
+ * @param {object} cache per-model WebGPU cache
+ * @private
+ */
+function destroyPerFeaturePickResources(cache) {
+  if (!defined(cache)) {
+    return;
+  }
+
+  // Detach every public identity before invoking foreign/native destruction.
+  // A throwing pick-id registry or GPUTexture.destroy implementation must not
+  // leave a half-live cache that can be observed or destroyed a second time.
+  const pickIdMap = cache._featurePickIds;
+  const pickIds = defined(pickIdMap) ? Array.from(pickIdMap.values()) : [];
+  const pickTexture = cache._featurePickGPUTexture;
+  cache._featurePickIds = undefined;
+  cache._featurePickGPUTexture = undefined;
+  cache._featurePickFeaturesLength = undefined;
+  pickIdMap?.clear();
+
+  let firstDestroyError;
+  let hasDestroyError = false;
+  const destroyBestEffort = (resource) => {
+    if (!defined(resource)) {
+      return;
+    }
+    try {
+      resource.destroy();
+    } catch (error) {
+      if (!hasDestroyError) {
+        firstDestroyError = error;
+        hasDestroyError = true;
+      }
+    }
+  };
+
+  for (let i = 0; i < pickIds.length; i++) {
+    destroyBestEffort(pickIds[i]);
+  }
+  destroyBestEffort(pickTexture);
+
+  if (hasDestroyError) {
+    throw firstDestroyError;
+  }
 }
 
 export {
+  createBatchGPUTexture,
+  createFeatureIdGPUTexture,
   findSelectedFeatureId,
   getSelectedImplicitFeatureId,
   synthesizeImplicitFeatureIdData,
+  ensurePerFeaturePickIds,
   ensureFeatureIdResources,
   destroyFeatureIdResources,
+  destroyPerFeaturePickResources,
 };
 export default {
   findSelectedFeatureId,
   getSelectedImplicitFeatureId,
   synthesizeImplicitFeatureIdData,
+  ensurePerFeaturePickIds,
   ensureFeatureIdResources,
   destroyFeatureIdResources,
+  destroyPerFeaturePickResources,
 };

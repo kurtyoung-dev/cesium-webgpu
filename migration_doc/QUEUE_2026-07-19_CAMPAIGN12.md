@@ -24,7 +24,7 @@ Two hard bounds:
 | Item | Status |
 |---|---|
 | **`C11-176` skybox star-map fade** | ✅ **FIXED, Batch 722.** WebGPU-only `enableStarBrightnessModulation` shipped ON, halving the star map whenever the Sun was ≥ ~23.6° above the camera's local horizon. WebGL's `SkyBoxFS.glsl` (9 lines) has no such term. Measured `0.493 → 1.001` mean, star pixels `4.01% → 21.20%`. Default flipped; **capability preserved** (forcing it true still dims — the gate asserts this). Also fixed the `{0.3,4.0}` fallback curve that would have caused a **total blackout**, and annotated `enableNightSkyDimming` (zero consumers). |
-| **`SkyBox.Variant` selection** | ✅ **SHIPPED, Batch 728.** `TYCHO_T3`/`TYCHO_T5` enum + `defaultVariant` + descriptor table in `SkyBox.js:219-267`. t5 is registered but **NOT BUNDLED** (jpg-hardcoded descriptor; selecting it 404s). `C12-10` fills in the asset, updates the descriptor for KTX2, and flips `defaultVariant` (a one-line change per the code's own note). |
+| **`SkyBox.Variant` selection** | ✅ **SHIPPED, Batch 728; T5 ASSET/DEFAULT COMPLETE in Batches 742/744.** `TYCHO_T3`/`TYCHO_T5` plus the descriptor table landed first; the reproducible C12-10 bake then installed six bundled 2048 JPEG faces and made T5 the default. The installed faces are deliberately the unblurred DR-01 reversal artifact pending C12-11's diffuse-face switch—not a 404 and not the final source seam. |
 | **`LICENSE.md` Bundled Engine Assets** | ✅ **SHIPPED, Batch 730.** Carves the skybox faces out of the blanket MIT grant (`LICENSE.md:1024-1044`) with full provenance, both credits, and the terms-position analysis; its Files line (`LICENSE.md:1030`) already covers future variants of the same SVS product. **Re-scopes `C12-13` to an extension of this section.** Note: this queue's live-section `LICENSE.md:1042` citations describe the PRE-Batch-730 stub — treat them as historical line references, not current content. |
 
 **Consequence for C12:** the fade is closed. C12 inherits the *asset* problem (the map is genuinely sparse) and the *blob* problem (shared code), which are different defects.
@@ -131,6 +131,140 @@ pending landing or Edge”:
   Node contracts re-run at the Batch-781 tip). Focused Edge/Karma execution is presently unavailable because
   the documented `EdgeHeadlessCI` run timed out before executing a test; that
   is a blocker, not a new pass count.
+
+### 2026-08-02 Codex audit overlay
+
+- `C12-24` is **IMPLEMENTED / LANDED / PROBE-VERIFIED (Batch 801)**. Its older
+  "pending orchestrator landing + Edge run" wording is historical.
+- `C12-25` is **IMPLEMENTED / LANDED (Batch 811) / EDGE-VERIFIED (Batch 813)**.
+  Its older pending wording is historical.
+- `C12-09` is **COMPLETE / LANDED (Batch 804)**: 2,868 independently ordered
+  records through vmag 5.5, with only RA/Dec/Vmag/B−V factual fields sourced
+  from NASA HEASARC. Older 263-record/provenance-decision wording is historical.
+- `C12-35` below is **COMPLETE / GATE PASS** in the unstaged 2026-08-02
+  worktree. It remains the regression prerequisite of `C12-33`, which is now
+  **IN PROGRESS** in three bounded lanes: Moon-local WebGL mips, frame-owned
+  WebGPU texture-mip generation, and the lockstep Moon shader/LOD correction.
+- The post-Batch-804 star-census red is an incomplete `C12-11` seam, not a new
+  design decision. DR-01 already ratified diffuse cubemap light plus
+  sprite-owned resolved stars. The unblurred `C12-10` faces are the deliberate
+  reversal artifact; install regenerated diffuse faces only from the
+  hash-pinned 16K source, then run M6/G3 and moving-camera cost/alias evidence.
+  Keep catalog check (A) red until that switch lands. See
+  [`C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md`](C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md).
+
+#### C12-33 — Moon mip/LOD and moving-seam acceptance
+
+**Status:** IMPLEMENTED / INDEPENDENT CODE GO / ACCEPTANCE IN PROGRESS / P0
+QUALITY + RESOURCE LIFETIME. Do not promote this row until the focused browser
+tests and the calibrated moving Edge lane execute. The 2026-08-02 product usage
+cap prevented the fresh EdgeHeadless/Jasmine launch; this is an unexecuted gate,
+not a waiver.
+
+The implementation corrects the earlier design note in three ways:
+
+1. WebGL mip realization is Moon-local. C12-35 bypasses the shared Material URL
+   loader, so the fork does not change generic/translucent Image materials.
+   WebGL2 receives a full trilinear chain. WebGL1 does so only for POT textures
+   when derivatives plus the texture-LOD extension are present; NPOT and
+   lower-capability contexts retain their legal single-level LINEAR fallback.
+2. Both shaders compute longitude-unwrapped `dFdx`/`dFdy`/`dpdx`/`dpdy` before
+   the fragment-varying miss discard and sample with `textureGrad` /
+   `textureSampleGrad`. Reusing the same normalized UV gradients does not couple
+   albedo and normal-map LOD: hardware scales them by each texture's dimensions.
+   The CPU-computed single LOD and implicit-post-discard prescriptions are
+   superseded. WebGPU's opaque ray/ellipsoid path shades one selected hit.
+3. WebGPU uses the context's coalesced, exact `(GPUDevice,
+   resourceGeneration)` frame-preparation mip queue. It never adds a Moon-owned
+   submit. Encode/finish/synchronous-submit failures requeue valid jobs;
+   candidate destruction cancels before native destruction; compatibility
+   devices retain authored chains and cube/depth behavior even when layered
+   auto-generation is unavailable.
+
+The generalized queue audit also closed external-image usage, compatibility
+binding-view, copy-order, teardown, and model-allocation transaction defects.
+It removed a proposed per-texture WeakMap cache that would have retained
+`O(layers × mips)` one-shot views/bind groups for every resident streamed
+texture. Reusable shader, sampler, layout, and per-format pipelines remain
+cached.
+
+Current evidence: package TypeScript, engine build, focused formatting and diff
+checks pass; focused Moon + queue Node contracts pass 171/171. The Node/Edge
+probe covers close, seam-centred, seam-at-limb, and ~16 px moving routes in both
+backends plus a real `force-lod0` sensitivity control. Its threshold schema is
+lane/backend keyed and fail-closed; `{}` cannot certify. Numeric thresholds
+remain deliberately null until at least five paired normal/control repetitions
+separate, and seam PNG inspection is mandatory. Therefore the probe remains
+`CALIBRATION_PENDING`, honestly exit 2, until real runs and image review occur.
+
+#### C12-35 — Moon texture request/device-generation lifecycle
+
+**Status:** COMPLETE / INDEPENDENT GO / P0 CORRECTNESS + RESOURCE LIFETIME /
+effort M. All L0-L5 phases pass in the unstaged 2026-08-02 worktree. The
+schema-v2 real Edge gate, exact nonzero Jasmine lanes, focused and full Node
+fleets, type/build, and teardown gates are green. `C12-33` is unblocked.
+
+The complete evidence, corrected duplicate-work model, architecture, and test
+matrix are in
+[`C12_MOON_TEXTURE_LIFECYCLE_AUDIT_2026-08-02.md`](C12_MOON_TEXTURE_LIFECYCLE_AUDIT_2026-08-02.md).
+A single WebGPU Moon does **not** also fetch/allocate WebGL Moon textures: its
+feature-renderer return precedes the Material/WebGL upload path. Duplicate
+fetch/decode occurs across the independent split-scene Moon owners, with a
+possible extra WebGPU `ImageBitmap` conversion; the legacy
+`EllipsoidPrimitive`/`Material` CPU frontend remains a separate, smaller tax.
+
+**Execution phases:**
+
+1. **L0 — COMPLETE FOR THE CURRENT BOUNDED SLICE:** finite nonnegative relief
+   strength/common demand policy plus immutable request and realization tuple
+   contracts are implemented. Request identity is
+   `{owner, pair/variant, exactUrl, channel, requestSerial}`; GPU identity adds
+   `{backend, context, device, resourceGeneration, cacheSerial}`.
+2. **L1 — COMPLETE / REVIEWED GO:** the
+   renderer-neutral cache returns immediate ref-counted leases, coalesces exact
+   canonical URL + decode axes, bounds retained decoded memory, pins active and
+   pending ownership, permits last-waiter cancellation, rejects Resource
+   objects whose headers/request authority cannot fit the key, and makes every
+   late cancelled settlement cleanup-only. Focused cache contracts pass 16/16.
+   WebGPU now acquires the lease synchronously, holds it through active source
+   preparation/upload, never closes the shared source directly, and releases
+   exactly once on success, failure, supersession, or teardown. A stale pending
+   decode still aborts immediately; retirement during asynchronous preparation
+   defers lease release only until that reader settles. The two-consumer
+   retirement case is mutation-covered. WebGL now consumes the same leases,
+   realizes only during the current `Moon.update`, and bypasses Material's URL
+   loader. Real Edge proves one shared fetch/decode per exact source and real
+   Resource cancellation/teardown across both backends.
+3. **L2 — BOUNDED WEBGPU SLICE COMPLETE / REVIEWED GO:** tuple-keyed cache retirement, independent
+   albedo/normal request serials, pre/post-upload identity checks, exact stale
+   or failed candidate destruction, and transactional bind-group/bundle swap.
+   Publication revalidates the full tuple before and after candidate
+   finalization; raw/prepared/candidate ownership is exact-once; placeholder
+   transactions roll back; late closeable sources are released; teardown is
+   detach-first; and async settlement requests a render wakeup.
+4. **L3 — COMPLETE / REVIEWED GO:** current-context WebGL realization,
+   drain-time serial checks, retained-but-unbound normal resources while off,
+   and no new normal work before relief can contribute.
+5. **L4 — COMPLETE:** frozen resource-free exact-pair diagnostics; allocation-
+   free WebGPU steady reconciliation; focused Moon Node 75/75; full Node
+   1,227/1,227; WebGL/WebGPU lifecycle Jasmine 8/8 + 9/9; type/build green.
+6. **L5 — COMPLETE / INDEPENDENT GO:** schema-v2 real Edge 151 split
+   certification passes with exact source sharing, request-render wake,
+   distinct-B visible pixels, canceled-C final-pixel stability, queue drain,
+   pending-D owner destruction, zero remaining leases, and zero console/page/
+   GPU faults. **Gate amendment:** moving-camera seam/shimmer is reassigned to
+   C12-33 because mips/samplers/derivatives are changed there; C12-35 owns
+   static final-pixel and lifecycle integrity. This is not a waiver.
+
+**Hard gates:** destroy during load; destroy after candidate creation; upload
+rejection; every A→B→A settlement order; URL→undefined; replacement device;
+same-device generation bump; off-before-first-use; off/on retention; invalid,
+negative, NaN, and infinite strengths; old render-bundle key invalidated before
+texture retirement; bounded-source-cache eviction/lease safety; request-render
+wakeup; and no duplicate split-scene fetch/decode. A destroyed or superseded
+cache must never be mutated by a late callback. All six phases now pass;
+`C12-33` must retain these gates and use frame-owned submission, never a private
+`queue.submit`.
 
 ---
 
@@ -379,7 +513,7 @@ unchanged).
 | `C12-06` | **Quad enlargement** driven through the existing `sizeBoost` plumbing as **halo extent, not core size**; clamp total glare diameter to 1°. Today the sprite is only ~7.5 px, of which ~4 px is plateau — the Polaris reference look is **geometrically unreachable** without this. | S | `C12-05` ✅ LANDED Batch 748 — sizeBoost=√I−1 capped at 0.833° glare; core px-invariant via coreScale varying (σ inversely scaled, α quad-relative — the only reading under which the item does anything; deviation recorded). |
 | `C12-07` | **Amplitude restructure** — stop the core saturating across half the sprite; chroma-preserving split so the core may clip white while the halo stays below 1.0 and keeps blackbody hue. **This is the increment that actually kills the blob, and it needs no HDR.** ⚠ Adding a wing to a still-clipping core makes a *bigger* blob; **do not raise `HI`** (that widens the white disc). | S | `C12-05` ✅ LANDED Batch 748 — chroma-preserving split, haloIntensity 0.470<1 by construction; clip radius 1.21 px ≈4.6 clipped px (Sirius only). |
 | `C12-08` | **Dynamic-range restoration** — remove the baked `FLUX_GAMMA=0.5`, keep flux linear (Pogson), move compression into an explicit exposure term. Today the true 38.4:1 flux range across rendered stars is pre-crushed to **2.70:1**, then clipped — Sirius and a 2nd-magnitude star arrive nearly identical. | M | `C12-07` ✅ LANDED Batch 748 — linear Pogson, EXPOSURE anchored at mag 3.6→15.3/255; math-layer range 383.7:1 (was 4:1); FLUX_GAMMA/LO/HI retired w/ ledger comment. |
-| `C12-09` | **Catalogue depth** toward mag ~5.5–6 (~5,000 stars). **DR-01 (§6c) promotes this from optional to LOAD-BEARING** — with the texture no longer supplying point sources, the catalogue is the only source of star density. BSC5 provenance UNCONFIRMED (DR-02, recorded in §6d and NOT retracted with §6d's t5 reasoning); gated on ALL THREE DR-02 conditions: source from NASA HEASARC (not VizieR), vendor only RA/Dec/Vmag/B−V, re-sort under our own schema rather than shipping V/50's row order. ⚠ OPEN DECISION for the maintainer (LD-3): does the §6f scope ruling relax the DR-02 conditions? Until answered they bind. **Last in the wave** — before the above it just adds more blobs. Note the full 9,110-entry BSC5 is **not vendored**; this is a data ingest, not raising a constant. | M | `C12-08`, `C12-11` |
+| `C12-09` | **✅ COMPLETE / LANDED Batch 804 — catalogue depth to vmag 5.5.** The shared catalog now contains 2,868 independently ordered records. The ingest satisfied DR-02 without a licence shortcut: source NASA HEASARC, vendor only factual RA/Dec/Vmag/B−V fields, and emit under the fork's own schema/order rather than V/50 row order. Both renderers consume the same table and cutoff. Magnitude-6.0/5,058 remains a separate one-flag deepen, parked until C12-11 moving-camera alias and frame-cost evidence. | M | `C12-08`; C12-11 acceptance follows |
 | `C12-27` | **Angular solar glare star-washout** — full definition §6 (Q2b). Reuses the `C12-05` Stiles–Holladay math applied to the sky; BOTH backends; both cubemap and sprite pass. | M | `C12-05` |
 | **Gate** | **G2** — must pass identically on **both** backends (shared code), **including the `C12-27` criterion: stars at small angular separation from the Sun dim measurably while stars at >90° separation are byte-identical to the no-Sun frame.** | | |
 
@@ -389,8 +523,8 @@ unchanged).
 
 | ID | Item | Effort | Deps |
 |---|---|---|---|
-| `C12-10` | **Offline bake pipeline, checked in:** `TychoSkymapII.t5_16384x08192` → **gamma-1.8 → sRGB correction** (SVS states the product is gamma 1.8 and the shipped JPEGs carry no ICC profile — decoding it as sRGB darkens and flattens it; shared by both backends, so not the parity fade but a real contributor to the absolute faint look) → **DR-01 low-pass stage destroying point sources (option (a) via (c), §6c)** → six cube faces at 4096 → KTX2/BC6H. **MUST emit and check in BOTH the blurred AND un-blurred faces (or a documented one-command blur re-run) — DR-01 reversal item 1; if only the blurred artifact survives, reversal costs a full re-bake.** Update the Batch-728 `SkyBox.Variant.TYCHO_T5` descriptor (currently jpg-hardcoded to `tycho2t5_80_*.jpg`, `SkyBox.js:246`) for the KTX2 output, refresh the stale `SkyBox.js:222-232` docblock (still calls acquisition licence-gated and cites the retracted §6d; superseded by §6f), and flip `SkyBox.defaultVariant` (`SkyBox.js:267`, a documented one-line change). Reproducible — the current faces are a hand-edited Paint.NET downsample. | L | — (Q1 ANSWERED: t5, §6; licence RESOLVED, §6f) |
-| `C12-11` | **Seam implementation per DR-01 (§6c — DECIDED; no open decision here).** The cubemap carries diffuse light only (bright stars removed by the `C12-10` blur); every resolved star comes from the sprite catalogue. Implement: verify the blurred bake has no resolved point sources (M6 split), extend sprite coverage to what the t5 threshold-mag-5.0 render previously painted, and capture DR-01 reversal evidence (G3 on blurred vs un-blurred bakes; ~5,000-sprite frame-cost delta on both backends). Historical context: the t3 seam double-drew stars ≤2.5 — over-brightening exactly the stars called blobs — and t5 as-shipped would have widened it; DR-01 removes the overlap by construction. Blocking for `C12-09`. | M | `C12-10` |
+| `C12-10` | **✅ COMPLETE / LANDED Batches 742/744 — reproducible T5 bake and installed reversal artifact.** The hash-pinned 16K SVS source pipeline performs gamma-1.8→sRGB correction, 4096 reprojection, 2048 downsample, and wrapped-equirect Gaussian diffuse generation. Six 2048 unblurred JPEG faces (4.355 MB total) are bundled and T5 is the default; 4096 and diffuse outputs remain reproducible from `Tools/skybox-bake/bake-tycho-t5.mjs`. Installing unblurred faces before the deeper catalog was deliberate reversal sequencing, not C12-11 completion. | L | — |
+| `C12-11` | **IN PROGRESS — seam implementation per already-ratified DR-01; no design decision and no C12-09 blocker remain.** The cubemap must carry diffuse Milky Way light only and the 2,868-record catalog must own every resolved star on both backends. Regenerate/install the 2048 diffuse faces from the hash-pinned 16K source (never independently blur six cube JPEGs), keep the unblurred reversal artifact, then prove M6 source ownership, G3 diffuse/reversal quality, and moving-camera alias/frame cost. `probe-stars-catalog` check A intentionally stays red until the switch. See `C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md`. | M | `C12-09` ✅, `C12-10` ✅ |
 | `C12-12` | **VRAM/streaming policy** — 2048/face default, 4096 opt-in, KTX2 compressed (4096/face RGBA8 uncompressed ≈ 402 MB). | S | `C12-10` |
 | `C12-13` | **`LICENSE.md` refresh** — ✅ largely delivered for t3 by Batch 730 (`# Bundled Engine Assets`, `LICENSE.md:1024-1044`: live SVS + NASA-guidelines URLs, exact product name + variant, both credit lines, terms position). Residual: extend the entry's **Files** line with the baked t5 faces + a t5 variant description sentence and record the KTX2 bake derivation chain when `C12-10` lands (coverage of additional `SkyBox.Variant`s from the same product is already pre-stated at `LICENSE.md:1030`). | XS | `C12-10` |
 | `C12-14` | *(opportunistic)* Expose the baked cubemap as a **samplable star texture**, discharging the `C11-163` celestial-water-reflection blocker for free. | S | `C12-10` |
@@ -417,7 +551,7 @@ unchanged).
 | `C12-22` | **Soft terminator** from the Sun's finite ~0.5° disc (±0.0044 in N·L). One `smoothstep`. **Dep: `C11-176b`.** | XS |
 | `C12-23` | **Opposition surge** — lunar brightness rises >40% between phase angles 4° and 0°, beyond anything Lambert or Lommel-Seeliger predicts. Cheap here: for a distant decorative moon α is effectively constant across the disc, so compute once CPU-side and pass one uniform. **Zero per-pixel cost.** ✅ **IMPLEMENTATION DONE (moon-wave worker, 2026-07-24) — pending orchestrator landing + Edge run.** New `Scene/computeLunarOppositionSurge.js`: Hapke (1986) SHOE `B(α)=1+B0/(1+tan(α/2)/h)`, B0=0.6, h=tan(0.5°) ⇒ B(0)/B(4°)≈1.43 (spec-pinned ≥ 1.4, Buratti 1996), <1% by α=90°; true Sun–Moon–observer angle CPU-side, one uniform on BOTH backends (`OPPOSITION_SURGE` define / `oppositionSurge` UB member, 1.0 identity); toggle `lighting.enableOppositionSurge` default ON. | S |
 | `C12-24` | **NASA CGI Moon Kit albedo swap** (1k/2k). `moonSmall.jpg` is **256×128**, so the visible hemisphere is 128 texels over a ~190 px disc = **0.67 texels/px, under-resolved**. Re-opens `C4-CELESTIAL-HIRES-MOON` on corrected premises — **drop its altitude-blend half** (that would open a parity gap). ✅ **IMPLEMENTATION DONE (worker, 2026-08-01) — pending orchestrator landing + Edge run.** Ships SVS 4720 `lroc_color_poles_2k.tif` (2048×1024, sha256 `13b7974…52c4a`) as `Assets/Textures/Moon/lroc_color_poles_2k.jpg` (JPEG q90 4:4:4, 563,276 B) behind a new `Moon.Variant` / `Moon.defaultVariant` switch mirroring `SkyBox.Variant`; `moonSmall.jpg` retained as `Moon.Variant.SMALL`. Reproducible bake + hash pin at `Tools/moon-albedo-bake/`; `LICENSE.md` → Bundled Engine Assets entry added. **Alignment was verified computationally, not by an Edge run** (the row's premise that only Edge could confirm it was wrong): five named lunar-landmark checks (`Tools/moon-albedo-bake/lunar-landmarks.mjs`) pin the 0°-centred / east-right / north-top convention the shared `atan2/asin` unwrap requires, and are **adversarially validated** — all five of `shift180`/`mirrorLon`/`mirrorLat`/`mirrorBoth`/`rot180` are REJECTED. Swap is **texture-only, no shader change**, so no lockstep row. ⚠ **Found + fixed en route: the WebGPU moon albedo was rendering vertically MIRRORED against WebGL** — WebGL's `Texture` defaults `flipY:true`, `copyExternalImageToTexture` defaults `false`, and both backends share `v = asin(n.z)/π + 0.5`; invisible on the soft 256×128 map, obvious at 2K. Fixed at the upload layer (holds for user-supplied `textureUrl` too). ⚠ **Open risk for the Edge run: mip aliasing.** Neither backend mipmaps the moon (WebGL `Material.js` never calls `generateMipmap`; WebGPU is `mipLevelCount` 1 + `textureSampleLevel(…, 0.0)`). At the ~16 px default-camera disc this is ~64:1 minification at mip 0 vs the old map's ~8:1 — a pre-existing shimmer made worse. See `C12-26`. | S |
-| `C12-33` | **Moon mipmap + explicit-LOD path (NEW, surfaced by `C12-24`, Principle 9; renumbered from a C12-26 collision at landing — C12-26 is the airglow row).** Neither backend mipmaps the moon texture, so the 2K albedo minifies ~64:1 at the default camera. WebGL needs mipmap support in `Material.js` (shared by every image material — cross-cutting, not moon-local); WebGPU needs mip generation + `mipmapFilter` + an explicit LOD in `Moon.wgsl`, which currently uses `textureSampleLevel(…, 0.0)` because it is called from non-uniform control flow. **Design that sidesteps the control-flow restriction:** one CPU-computed uniform `lod = clamp(log2((texWidth/2) / discDiameterPx), 0, maxLod)` — constant across the distant disc, so no derivatives are needed. Shader change ⇒ **lockstep pair + `SHADER_PAIRS_LOCKSTEP.md` row**. Gates any move above 2K. | M |
+| `C12-33` | **IN PROGRESS / C12-35 PREREQUISITE PASSED / design corrected 2026-08-02.** Execution began 2026-08-02 in three independently reviewable lanes: Moon-local WebGL mips, the canonical frame-owned WebGPU texture-mip queue and Moon realization, and the lockstep shader/implicit-LOD correction. Neither backend mipmaps Moon textures at the starting point, so the 2K albedo minifies ~64:1 at the default camera. C12-35 moved WebGL Moon realization out of generic Material loading: generate mips Moon-locally after direct `Texture` creation, use trilinear sampling, and retain the WebGL1 NPOT single-level fallback. WebGPU allocates the exact mip count on each lifecycle candidate, queues generation through the context's frame-owned shared texture-mip lane (generalize the existing imagery-named enqueue; no private submit), cancels any same-frame destroyed texture job, and uses a trilinear sampler. Flatten the opaque Moon fragment's front/back selection to one `computeEllipsoidColor` call, then compute longitude-unwrapped `dFdx`/`dFdy`/`dpdx`/`dpdy` BEFORE the fragment-varying miss discard and sample albedo and normal with explicit `textureGrad` / `textureSampleGrad` — the shipped design; see point 2 of the 2026-08-02 corrective overlay above (§"The implementation corrects the earlier design note"), which supersedes this row's earlier implicit-`textureSample` and CPU-single-LOD prescriptions. Sharing the same normalized UV gradients does not couple the two maps' LOD (hardware scales them by each texture's dimensions), while one CPU LOD scalar would oversmooth one map. Pin opacity and test the equirectangular seam/limb/close views. Land mips before the optional 2K normal rebake. Shader change ⇒ lockstep row plus Naga and moving Edge shimmer/parity/seam evidence. | M |
 | `C12-25` | **LOLA-derived normal map** for terminator relief (NASA ships displacement, not normals — offline derivation step). ✅ **IMPLEMENTATION DONE (worker, 2026-08-02) — pending orchestrator landing + Edge run.** Ships `Assets/Textures/Moon/ldem_normal_1k.png` (1024×512, 8-bit RGB PNG, 679,782 B, sha256 `5e215ee…a87e9`) derived from SVS 4720 `ldem_16.tif` (5760×2880 float32 km, sha256 `1ea42bf…d796`); reproducible bake + hash pin at `Tools/moon-albedo-bake/bake-lola-normals.mjs`, `LICENSE.md` → Bundled Engine Assets entry added. Paired with `Moon.Variant.LROC_COLOR_2K` (default ON via `lighting.enableLunarNormalMap`); `Moon.Variant.SMALL` ships **no** map, preserving the legacy flat look. ⚠ **PREMISE CORRECTED: SVS publishes no 2K displacement map** — verified by HEAD request, `ldem_2k/1k/512.tif` all 404 while the six real members (4/16/64 px per degree, float32 + uint16) all 200. `ldem_4` (1440×720) was rejected as the source because it is COARSER than the output grid. ⚠ **Output is 1024×512, not 2048×1024, deliberately:** neither backend mipmaps the moon (`C12-33`), so at the default ~16 px disc a 2048-wide map is ~64:1 minification off mip 0 — and normal aliasing flickers the *lighting*, not the colour. 1K still leaves ~2.7 texels/px at the ~190 px zoomed disc, and costs 664 KB against 2.92 MB. `--width 2048` re-bakes in one flag once `C12-33` lands. **Encoding measured, not assumed:** JPEG q90 4:4:4 costs **1.26° mean / 9.47° max** normal-tilt error against a signal whose own mean tilt is 2.73° — rejected; 8-bit lossless PNG costs 0.173°/0.347°; 16-bit PNG is 1.9× the size to remove an error already 14× below the median signal. **Derivation:** area-average the height field to the shipped grid *then* central-difference (an area filter cannot ring, and the next step differentiates); longitude stencil widened to `round(1/cos(lat))` texels so the east baseline stays a constant GROUND distance (10,660.6 m, equal to the north baseline at W=2H); rows past a pole wrap ACROSS to the antipodal longitude rather than clamping. Measured p99 tilt 10.53° — which is the whole point, since near the terminator N·L≈0 and a 10° facet flips lit/unlit, while at full phase the same facet changes brightness ~1.6%. **Both backends wired, and this one IS a lockstep pair** (unlike C12-24's texture-only swap): `EllipsoidFS.glsl` `LUNAR_NORMAL_MAP` ↔ `Moon.wgsl` `@binding(3)` + `u.normalStrength`, both rebuilding the east/north/up basis in MODEL space from the same expression; UB 336→352 add-only. Strength resolved ONCE in `Moon.update` and published as `frameState.moonNormalMapStrength`, so the backends cannot disagree. Verified computationally by `Tools/visual-regression/moon-normal-map-asset.spec.mjs` (19 tests): crater-bowl polarity at Tycho + Copernicus, independently signed in red and green, adversarially validated against `flipGreen`/`flipRed`/`swapChannels`/`mirrorLat`/`mirrorLon`/`flatten` (**all six REJECTED**, and a flipped-Y map fails `craterNorthSouthPolarity` + the end-to-end illumination check while leaving the east/west check untouched); plus direct pins on the derivation math (a constant east GROUND slope reproduces exactly at lat 0/30/60/80) and a no-polar-ring assertion (pole bands measure 0.86× / 1.42× the global mean tangential tilt). ⚠ **Found en route: the `Moon.wgsl` row in `SHADER_PAIRS_LOCKSTEP.md` was WRONG** — it claimed WebGL has no moon shader and renders the moon "through a CZML/Entity path". WebGL renders it through `EllipsoidPrimitive` → `EllipsoidFS.glsl`, which has been `Moon.wgsl`'s lockstep twin since C12-20/C12-23. Corrected, and `Moon` removed from the doc's fork-only list. **Historical readiness notes (superseded):** Readiness notes now recorded in `Tools/moon-albedo-bake/README.md` §7: `ldem_*.tif` sits on the **same SVS 4720 page with the same 0°-centred projection**, so `lunar-landmarks.mjs` and its coordinate helpers apply unchanged and a derived normal map should be alignment-checked with the same geometry (plus a slope-sign check — a mirrored green channel is exactly the silent error class those checks exist for). Units: float32 km on a 1737.4 km sphere (or uint16 half-metres on 1727400 m); the longitude step must be divided by cos(lat) or relief shears toward the poles. **The binding is still the gate:** WebGL needs a material extension (`Material.ImageType` has one image slot; `EllipsoidFS.glsl` already computes `tangentToEyeMatrix` and discards it), WebGPU needs `@binding(3)` in `Moon.wgsl` (3 is free — 0/1/2 are UB/albedo/sampler) reusing the binding-2 sampler, plus matching BGL + bind-group entries; the 336-byte UB has no spare 16-byte slot, so any new scalar extends it add-only at the tail. Both must use the same `flipY:true` upload `C12-24` established, or relief lights from the wrong side on one backend only. Ship as a second variant-gated asset. **EDGE RUN 2026-08-02 (Batch 813, `probe-moon-lola-relief.mjs`): GATE PASS, 8 lanes, 0 errors.** Terminator (half-phase) relief ON-vs-OFF moves 1.30% of the center crop on BOTH backends — PNGs show a crater-serrated terminator ON vs a smooth arc OFF, exactly where N·L grazes; cross-backend parity 0.00% ON and OFF (twin shaders sub-threshold identical). Full-phase ON-vs-OFF reads 1.46% — larger than half-phase on the pixel-COUNT metric because the predicted ~1.6% whole-disc brightness movement hovers at the diff threshold across the whole lit disc, while half-phase change concentrates at the terminator; magnitude-wise it is the flat-cosine regime the design predicts, not a visible texture. | M |
 | **Gate** | **G4** moon half — gate the **phase curve**, not a single frame: a single image cannot distinguish Lambertian from Hapke, the full:quarter brightness ratio can. | |
 

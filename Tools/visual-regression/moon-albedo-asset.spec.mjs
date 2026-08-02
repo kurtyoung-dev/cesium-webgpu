@@ -421,10 +421,11 @@ test("WebGPU moon upload matches the WebGL flipY convention", () => {
   const src = readText(
     "packages/engine/Source/Renderer/WebGPU/WebGPUEnvironmentRenderer.js",
   );
-  const idx = src.indexOf("_loadRealMoonTexture");
-  assert.ok(idx > 0, "moon texture loader not found");
-  // Look at the loader body, not the whole file.
-  const body = src.slice(idx, idx + 4000);
+  const idx = src.indexOf("function createMoonTextureRequestHooks");
+  assert.ok(idx > 0, "moon texture realization hooks not found");
+  // Look at the realization hooks, not the whole file. Both exact channels
+  // deliberately share this orientation-safe upload path.
+  const body = src.slice(idx, idx + 5000);
   assert.match(
     body,
     /uploadImageToTexture\([\s\S]*?flipY:\s*true/,

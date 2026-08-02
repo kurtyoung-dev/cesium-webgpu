@@ -2,6 +2,21 @@ import GraphicsContext from "../../../Source/Renderer/GraphicsContext.js";
 import { WebGPUContext } from "../../../Source/Renderer/WebGPU/WebGPUContext.js";
 import { WebGPUDevicePool } from "../../../Source/Renderer/WebGPU/WebGPUDevicePool.js";
 
+function createBareContext(device, deviceFromPool) {
+  const canvas = {
+    id: "transactional-destroy-test-canvas",
+    width: 16,
+    height: 16,
+    getContext: function () {
+      return null;
+    },
+  };
+  const context = new WebGPUContext(canvas, {});
+  context._device = device;
+  context._deviceFromPool = deviceFromPool;
+  return context;
+}
+
 describe("Renderer/WebGPU/WebGPUContext transactional initialization", function () {
   it("FAR-103 rolls back registry, pool, listeners, canvas, and textures on late init failure", async function () {
     const registry = GraphicsContext.registry;
@@ -104,5 +119,126 @@ describe("Renderer/WebGPU/WebGPUContext transactional initialization", function 
     } finally {
       removeRegistryListener();
     }
+  });
+
+  it("continues pooled teardown after allocator cleanup throws", function () {
+    const firstCleanupError = new Error("uniform allocator cleanup failed");
+    const laterCleanupError = new Error("shader validation cleanup failed");
+    const device = {
+      destroy: jasmine.createSpy("device.destroy"),
+    };
+    const pool = WebGPUDevicePool.instance;
+    const releaseDevice = spyOn(pool, "releaseDevice");
+    const context = createBareContext(device, true);
+    const allocatorDestroy = jasmine
+      .createSpy("uniformAllocator.destroy")
+      .and.callFake(function () {
+        throw firstCleanupError;
+      });
+    context._uniformAllocator = {
+      destroy: allocatorDestroy,
+    };
+    const environmentTargetDestroy = jasmine
+      .createSpy("environmentTargetPool.destroy")
+      .and.callFake(function () {
+        throw laterCleanupError;
+      });
+    context._environmentTargetPool = {
+      destroy: environmentTargetDestroy,
+    };
+
+    expect(function () {
+      context.destroy();
+    }).toThrow(firstCleanupError);
+
+    expect(allocatorDestroy).toHaveBeenCalledTimes(1);
+    expect(environmentTargetDestroy).toHaveBeenCalledTimes(1);
+    expect(releaseDevice).toHaveBeenCalledOnceWith(device);
+    expect(device.destroy).not.toHaveBeenCalled();
+    expect(context._uniformAllocator).toBeNull();
+    expect(context._environmentTargetPool).toBeNull();
+    expect(context._device).toBeNull();
+    expect(context._deviceFromPool).toBeFalse();
+    expect(context.isDestroyed()).toBeTrue();
+
+    // Ownership was detached before external cleanup. A repeated destroy is
+    // inert even though the first call reported its earliest cleanup error.
+    expect(function () {
+      context.destroy();
+    }).not.toThrow();
+    expect(releaseDevice).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes terminal state and drains mip ownership before early cleanup throws", function () {
+    const earlyError = new Error("viewport cleanup failed");
+    const device = {
+      destroy: jasmine.createSpy("device.destroy"),
+    };
+    const pool = WebGPUDevicePool.instance;
+    const releaseDevice = spyOn(pool, "releaseDevice");
+    const context = createBareContext(device, true);
+    context._pendingTextureMipJobs = [
+      {
+        texture: {},
+        format: "rgba8unorm",
+        mipLevelCount: 2,
+        options: {
+          dimension: "2d",
+          baseArrayLayer: 0,
+          arrayLayerCount: 1,
+        },
+        device,
+        resourceGeneration: 0,
+      },
+    ];
+    context._pendingTextureMipJobKeys = new WeakMap();
+    context._viewportQuad = {
+      destroy: jasmine.createSpy("viewport.destroy").and.throwError(earlyError),
+    };
+
+    expect(function () {
+      context.destroy();
+    }).toThrow(earlyError);
+
+    expect(context.isDestroyed()).toBe(true);
+    expect(context._pendingTextureMipJobs.length).toBe(0);
+    expect(context._viewportQuad).toBeNull();
+    expect(context.device).toBeNull();
+    expect(releaseDevice).toHaveBeenCalledOnceWith(device);
+  });
+
+  it("continues isolated teardown after guarded cleanup throws", function () {
+    const firstCleanupError = new Error("environment target cleanup failed");
+    const device = {
+      destroy: jasmine.createSpy("device.destroy"),
+    };
+    const pool = WebGPUDevicePool.instance;
+    const releaseDevice = spyOn(pool, "releaseDevice");
+    const context = createBareContext(device, false);
+    const environmentTargetDestroy = jasmine
+      .createSpy("environmentTargetPool.destroy")
+      .and.callFake(function () {
+        throw firstCleanupError;
+      });
+    context._environmentTargetPool = {
+      destroy: environmentTargetDestroy,
+    };
+
+    expect(function () {
+      context.destroy();
+    }).toThrow(firstCleanupError);
+
+    expect(environmentTargetDestroy).toHaveBeenCalledTimes(1);
+    expect(releaseDevice).not.toHaveBeenCalled();
+    expect(device.destroy).toHaveBeenCalledTimes(1);
+    expect(context._environmentTargetPool).toBeNull();
+    expect(context._device).toBeNull();
+    expect(context._deviceFromPool).toBeFalse();
+    expect(context.isDestroyed()).toBeTrue();
+
+    expect(function () {
+      context.destroy();
+    }).not.toThrow();
+    expect(device.destroy).toHaveBeenCalledTimes(1);
   });
 });

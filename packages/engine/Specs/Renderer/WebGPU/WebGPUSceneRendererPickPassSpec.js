@@ -34,6 +34,12 @@ function makeEncoder() {
         setScissorRect: function (...args) {
           this.scissor = args;
         },
+        setPipeline: function (pipeline) {
+          this.pipeline = pipeline;
+        },
+        draw: function (...args) {
+          this.drawArgs = args;
+        },
         end: function () {
           this.ended = true;
         },
@@ -203,6 +209,314 @@ describe("Renderer/WebGPU/WebGPUSceneRendererPickPass", function () {
     expect(Array.from(context.uniformState._logDepthEncodeNearFar)).toEqual([
       1.0, 100.0,
     ]);
+  });
+
+  it("erases a stale far snap payload when a nearer slice is snapless", function () {
+    const events = [];
+    let accumulatedPayload;
+    let currentSliceCovered = false;
+    const makeNativeCommand = (execute) => ({
+      pickOnly: true,
+      isWebGPUDrawCommand: true,
+      execute: execute,
+    });
+    const farCommand = {
+      isWebGPUDrawCommand: true,
+      derivedCommands: {
+        picking: {
+          pickCommand: makeNativeCommand(function () {
+            events.push("far-occluder");
+            currentSliceCovered = true;
+          }),
+        },
+        snapping: {
+          snapCommand: makeNativeCommand(function () {
+            events.push("far-payload");
+            accumulatedPayload = "far-hit";
+          }),
+        },
+      },
+    };
+    const nearCommand = {
+      isWebGPUDrawCommand: true,
+      derivedCommands: {
+        picking: {
+          pickCommand: makeNativeCommand(function () {
+            events.push("near-occluder");
+            currentSliceCovered = true;
+          }),
+        },
+        // Deliberately no snapping slot: this nearer visible primitive is an
+        // occluder, not a snap target.
+      },
+    };
+    const frustumCommandsList = [
+      makeFrustum(1.0, 10.0, nearCommand),
+      makeFrustum(10.0, 100.0, farCommand),
+    ];
+    const encoder = makeEncoder();
+    const frameState = {
+      camera: { frustum: { near: 1.0, far: 100.0 } },
+      passes: {
+        pick: true,
+        pickVoxel: false,
+        snap: true,
+        depth: false,
+        pickMode: "default",
+      },
+      pickingMetadata: false,
+      useLogDepth: false,
+    };
+    const context = {
+      _device: {},
+      _currentCommandEncoder: encoder,
+      _currentRenderPassEncoder: null,
+      uniformState: {
+        updatePass: jasmine.createSpy("updatePass"),
+        inverseProjection: new Float32Array(16),
+      },
+      beginPickFrame: jasmine.createSpy("beginPickFrame"),
+      endCurrentRenderPass: jasmine.createSpy("endCurrentRenderPass"),
+      withRenderPassTimestamps: function (descriptor) {
+        return descriptor;
+      },
+    };
+    const resetCalls = [];
+    const scene = {
+      mode: 3,
+      camera: frameState.camera,
+      _frameState: frameState,
+      frameState: frameState,
+      opaqueFrustumNearOffset: 1.0,
+      _view: { frustumCommandsList: frustumCommandsList },
+      highDynamicRange: false,
+    };
+    const passState = {
+      framebuffer: {
+        _isWebGPUPickFBO: true,
+        _isWebGPUSnapFBO: true,
+        colorView: {},
+        snapColorView: {},
+        depthView: {},
+        width: 100,
+        height: 80,
+        pickScissor: { x: 10, y: 20, width: 25, height: 25 },
+        resetSnapPayloadCoverage: function (renderPass) {
+          resetCalls.push(renderPass);
+          events.push("coverage-reset");
+          if (currentSliceCovered) {
+            accumulatedPayload = undefined;
+          }
+        },
+      },
+      viewport: { x: 0, y: 0, width: 100, height: 80 },
+    };
+
+    executePickPass(
+      {
+        _currentFrustumIndex: -1,
+        _updateFrustumUniforms: function () {
+          // A depth clear begins a new slice in the real render pass.
+          currentSliceCovered = false;
+        },
+      },
+      {
+        scene: scene,
+        context: context,
+        passState: passState,
+        sceneFbLoad: false,
+      },
+    );
+
+    expect(events).toEqual([
+      "far-occluder",
+      "far-payload",
+      "near-occluder",
+      "coverage-reset",
+    ]);
+    expect(accumulatedPayload).toBeUndefined();
+    expect(resetCalls).toEqual([encoder.passes[3]]);
+    expect(encoder.passes.length).toBe(4);
+    // Occluder color is throwaway in snap mode; its depth is stored and loaded
+    // by the payload passes. The payload color itself remains stored.
+    expect(encoder.passes[0].descriptor.colorAttachments[0].storeOp).toBe(
+      "discard",
+    );
+    expect(encoder.passes[1].descriptor.colorAttachments[0].storeOp).toBe(
+      "store",
+    );
+    expect(encoder.passes[2].descriptor.colorAttachments[0].storeOp).toBe(
+      "discard",
+    );
+    expect(encoder.passes[3].descriptor.colorAttachments[0].storeOp).toBe(
+      "store",
+    );
+    expect(encoder.passes[3].scissor).toEqual([10, 20, 25, 25]);
+  });
+
+  it("requires the coverage reset callback for a loaded snap payload", function () {
+    const beginPickFrame = jasmine.createSpy("beginPickFrame");
+    const context = {
+      _device: {},
+      uniformState: {},
+      beginPickFrame: beginPickFrame,
+    };
+    const scene = {
+      _view: { frustumCommandsList: [makeFrustum(1.0, 100.0)] },
+    };
+    const passState = {
+      framebuffer: {
+        _isWebGPUPickFBO: true,
+        _isWebGPUSnapFBO: true,
+        snapColorView: {},
+      },
+    };
+
+    expect(function () {
+      executePickPass(
+        { _currentFrustumIndex: -1 },
+        {
+          scene: scene,
+          context: context,
+          passState: passState,
+          sceneFbLoad: true,
+        },
+      );
+    }).toThrowError(
+      "A loaded WebGPU snap payload requires resetSnapPayloadCoverage.",
+    );
+    expect(beginPickFrame).not.toHaveBeenCalled();
+  });
+
+  it("resets only covered pixels in a loaded split segment", function () {
+    const payloadByX = new Map();
+    let payloadExecution = 0;
+    let coveredX;
+    const makeNativeCommand = (execute) => ({
+      pickOnly: true,
+      isWebGPUDrawCommand: true,
+      execute: execute,
+    });
+    const command = {
+      isWebGPUDrawCommand: true,
+      derivedCommands: {
+        picking: {
+          pickCommand: makeNativeCommand(function (renderPass) {
+            coveredX = renderPass.scissor[0] < 50 ? 48 : 51;
+          }),
+        },
+        snapping: {
+          snapCommand: makeNativeCommand(function () {
+            payloadExecution++;
+            if (payloadExecution === 1) {
+              payloadByX.set(48, "first-segment-hit");
+            }
+          }),
+        },
+      },
+    };
+    const encoder = makeEncoder();
+    const frameState = {
+      camera: { frustum: { near: 1.0, far: 100.0 } },
+      passes: {
+        pick: true,
+        pickVoxel: false,
+        snap: true,
+        depth: false,
+        pickMode: "default",
+      },
+      pickingMetadata: false,
+      useLogDepth: false,
+    };
+    const context = {
+      _device: {},
+      _currentCommandEncoder: encoder,
+      _currentRenderPassEncoder: null,
+      uniformState: {
+        updatePass: jasmine.createSpy("updatePass"),
+        inverseProjection: new Float32Array(16),
+      },
+      beginPickFrame: jasmine.createSpy("beginPickFrame"),
+      endCurrentRenderPass: jasmine.createSpy("endCurrentRenderPass"),
+      withRenderPassTimestamps: function (descriptor) {
+        return descriptor;
+      },
+    };
+    const scene = {
+      mode: 2,
+      camera: {
+        position: { z: 500.0 },
+        frustum: frameState.camera.frustum,
+      },
+      _frameState: frameState,
+      frameState: frameState,
+      opaqueFrustumNearOffset: 1.0,
+      _view: {
+        frustumCommandsList: [makeFrustum(1.0, 100.0, command)],
+      },
+      highDynamicRange: false,
+    };
+    const resetCalls = [];
+    const passState = {
+      framebuffer: {
+        _isWebGPUPickFBO: true,
+        _isWebGPUSnapFBO: true,
+        colorView: {},
+        snapColorView: {},
+        depthView: {},
+        width: 100,
+        height: 80,
+        pickScissor: { x: 48, y: 10, width: 5, height: 5 },
+        resetSnapPayloadCoverage: function (renderPass) {
+          resetCalls.push(renderPass);
+          const [x, , width] = renderPass.scissor;
+          if (coveredX >= x && coveredX < x + width) {
+            payloadByX.delete(coveredX);
+          }
+        },
+      },
+      viewport: { x: 0, y: 0, width: 50, height: 80 },
+    };
+    const host = {
+      _currentFrustumIndex: -1,
+      _updateFrustumUniforms: function () {},
+    };
+    const config = {
+      scene: scene,
+      context: context,
+      passState: passState,
+      sceneFbLoad: false,
+    };
+
+    executePickPass(host, config);
+    // Model stale loaded payload in the continuing segment independently of
+    // the first segment's valid result. The reset must touch x=51 while its
+    // dynamic scissor preserves the previously-rendered x=48 result.
+    payloadByX.set(51, "stale-covered-hit");
+    passState.viewport = { x: 50, y: 0, width: 50, height: 80 };
+    config.sceneFbLoad = true;
+    executePickPass(host, config);
+
+    expect(payloadByX.get(48)).toBe("first-segment-hit");
+    expect(payloadByX.has(51)).toBe(false);
+    expect(resetCalls).toEqual([encoder.passes[3]]);
+    expect(encoder.passes[0].descriptor.colorAttachments[0].storeOp).toBe(
+      "discard",
+    );
+    expect(encoder.passes[1].descriptor.colorAttachments[0].storeOp).toBe(
+      "store",
+    );
+    expect(encoder.passes[2].descriptor.colorAttachments[0].storeOp).toBe(
+      "discard",
+    );
+    expect(encoder.passes[3].descriptor.colorAttachments[0].storeOp).toBe(
+      "store",
+    );
+    expect(encoder.passes[1].scissor).toEqual([48, 10, 2, 5]);
+    expect(encoder.passes[3].scissor).toEqual([50, 10, 3, 5]);
+    expect(encoder.passes[3].descriptor.colorAttachments[0].loadOp).toBe(
+      "load",
+    );
   });
 
   it("packs private depth only at terrain and tile classification checkpoints", function () {

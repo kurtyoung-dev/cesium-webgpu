@@ -49,11 +49,13 @@ import { getShareableImagerySourceIdentity } from "../ImagerySourceIdentity.js";
  * hard import cycle with `WebGPUContext`.
  */
 export interface ImageryRealizationContext {
-  enqueueImageryMipGeneration(
+  enqueueTextureMipGeneration(
     texture: GPUTexture,
     format: GPUTextureFormat,
     mipLevelCount: number,
-  ): void;
+  ): boolean | void;
+  /** Cancel frame-owned mip work before destroying an unpublished candidate. */
+  cancelTextureMipGeneration?(texture: GPUTexture): void;
   scheduleTextureDestroy(texture: GPUTexture | null | undefined): void;
   /** F7 (Batch 686) — stamp a texture destroyed INLINE (dies immediately, not
    * deferred) so a same-frame pending mip job for it is dropped rather than
@@ -703,7 +705,7 @@ export function getOrCreateWaterMaskTexture(
 /**
  * C9-12A — prepare the mip chain for a freshly-uploaded imagery texture.
  * Frame-owned by default (enqueued on the context, encoded + submitted in one
- * `"ImageryMipPreparation"` encoder in `endFrame` before scene passes → zero
+ * `"TextureMipPreparation"` encoder in `endFrame` before scene passes → zero
  * private submits from draw emission). Falls back to the historical private
  * submit only when no context is plumbed (cannot happen on the live upload
  * path, but guarded so the fallback is counted as a regression tripwire).
@@ -717,7 +719,14 @@ function prepareImageryMips(
   if (mipLevelCount <= 1) return;
   const ctx = host._webgpuContext;
   if (ctx) {
-    ctx.enqueueImageryMipGeneration(texture, "rgba8unorm", mipLevelCount);
+    const accepted = ctx.enqueueTextureMipGeneration(
+      texture,
+      "rgba8unorm",
+      mipLevelCount,
+    );
+    if (accepted === false) {
+      throw new Error("WebGPU texture mip queue rejected imagery preparation");
+    }
     return;
   }
   ensureMipmapGenerator(device).generateMipmapsAndSubmit(
@@ -726,6 +735,28 @@ function prepareImageryMips(
     mipLevelCount,
   );
   incrementLogicalCounter(host._logicalCounters, "imageryMipFallbackSubmits");
+}
+
+/** Cancel pending frame work and retire an unpublished texture independently. */
+function destroyUnpublishedTexture(
+  host: TextureCacheHost,
+  texture: GPUTexture,
+): void {
+  const context = host._webgpuContext;
+  try {
+    if (typeof context?.cancelTextureMipGeneration === "function") {
+      context.cancelTextureMipGeneration(texture);
+    } else {
+      context?.noteInlineTextureDestroy?.(texture);
+    }
+  } catch {
+    // Cancellation is bookkeeping; native destruction remains mandatory.
+  }
+  try {
+    texture.destroy();
+  } catch {
+    // The publication error remains the authoritative failure.
+  }
 }
 
 // Create the destination `GPUTexture` and copy the source image into mip 0.
@@ -750,12 +781,23 @@ function createUploadedImageryTexture(
       GPUTextureUsage.COPY_DST |
       GPUTextureUsage.RENDER_ATTACHMENT,
   });
-  device.queue.copyExternalImageToTexture(
-    { source: gpuSource, flipY: needsFlipY },
-    { texture, colorSpace: "srgb" },
-    [width, height],
-  );
-  return texture;
+  try {
+    device.queue.copyExternalImageToTexture(
+      { source: gpuSource, flipY: needsFlipY },
+      { texture, colorSpace: "srgb" },
+      [width, height],
+    );
+    return texture;
+  } catch (error) {
+    // Candidate construction is transactional. No mip job exists yet, but an
+    // upload failure after createTexture must not leak the unpublished native.
+    try {
+      texture.destroy();
+    } catch {
+      // Preserve the upload error; destruction is cleanup-only.
+    }
+    throw error;
+  }
 }
 
 // Per-cacheKey upload tally backing the re-upload storm sentinel below.
@@ -849,6 +891,7 @@ export function uploadImageSource(
   // chain below narrows to the actual GPU-copyable variants.
   const device = host._device!;
   noteUploadForStormDetection(cacheKey);
+  let unpublishedTexture: GPUTexture | null = null;
 
   try {
     let width: number, height: number;
@@ -974,19 +1017,31 @@ export function uploadImageSource(
         needsFlipY,
         mipLevelCount,
       );
+      unpublishedTexture = texture;
       prepareImageryMips(host, device, texture, mipLevelCount);
       const view = texture.createView();
       const byteSize = rgba8MipChainBytes(width, height, mipLevelCount);
       const entry = table.register(fingerprint, texture, view, byteSize);
-      cache.set(cacheKey, {
-        texture,
-        view,
-        sourceWidth: width,
-        sourceHeight: height,
-        byteSize,
-        logicalOwner,
-        shared: entry,
-      });
+      try {
+        cache.set(cacheKey, {
+          texture,
+          view,
+          sourceWidth: width,
+          sourceHeight: height,
+          byteSize,
+          logicalOwner,
+          shared: entry,
+        });
+      } catch (error) {
+        // Registration transferred ownership to the table. Roll that transfer
+        // back before the outer transaction observes the publication failure.
+        table.release(entry, (candidate) =>
+          destroyUnpublishedTexture(host, candidate),
+        );
+        unpublishedTexture = null;
+        throw error;
+      }
+      unpublishedTexture = null;
       incrementLogicalCounter(
         host._logicalCounters,
         "imageryRealizationsCreated",
@@ -1007,6 +1062,7 @@ export function uploadImageSource(
       needsFlipY,
       mipLevelCount,
     );
+    unpublishedTexture = texture;
     prepareImageryMips(host, device, texture, mipLevelCount);
 
     const view = texture.createView();
@@ -1022,6 +1078,7 @@ export function uploadImageSource(
         byteSize,
         logicalOwner,
       });
+      unpublishedTexture = null;
       recordOwnedImageryAdded(host, byteSize);
     } else {
       // Preserve the original clean-path object shape for non-imagery callers.
@@ -1031,10 +1088,18 @@ export function uploadImageSource(
         sourceWidth: width,
         sourceHeight: height,
       });
+      unpublishedTexture = null;
     }
 
     return view;
   } catch (e) {
+    // A mip job may already have been queued before view/cache publication.
+    // Retire that exact job before destroying the unpublished candidate so
+    // endFrame cannot encode against a dead texture. Published/shared entries
+    // clear `unpublishedTexture` above and retain their deferred lifetime.
+    if (unpublishedTexture) {
+      destroyUnpublishedTexture(host, unpublishedTexture);
+    }
     // NEW-UPLOADIMAGESOURCE-OBSERVABILITY (Batch 304) — reaching here is
     // unexpected: the transient undecoded-`<img>` case is already handled
     // by the early `!source.complete` return above, and unsupported source

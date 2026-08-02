@@ -12,11 +12,24 @@
 /// <reference types="@webgpu/types" />
 
 import type Color from "../../../Core/Color.js";
+import type { WebGPUTextureMipGenerationOptions } from "../WebGPUMipmapGenerator.js";
 
 /**
  * A stub-managed texture wrapper produced by `gl.createTexture()`. Holds
  * pending sampler state and (once allocated) the real GPU resources.
  */
+export interface StubGPUTexture {
+  texture: GPUTexture;
+  view: GPUTextureView;
+  sampler: GPUSampler;
+  width: number;
+  height: number;
+  format: GPUTextureFormat;
+  mipLevelCount: number;
+  depthOrArrayLayers?: number;
+  destroy(): void;
+}
+
 export interface StubTextureWrapper {
   _isPlaceholder: boolean;
   _samplerDesc?: {
@@ -28,18 +41,32 @@ export interface StubTextureWrapper {
     addressModeW: GPUAddressMode;
     wantsMipmaps: boolean;
   };
-  _webgpuTexture: {
-    texture: GPUTexture;
-    view: GPUTextureView;
-    sampler: GPUSampler;
-    width: number;
-    height: number;
-    format: GPUTextureFormat;
-    mipLevelCount: number;
-    destroy(): void;
-  } | null;
+  readonly _webgpuTexture: StubGPUTexture | null;
+  /**
+   * Resolve the wrapper's logical upload for one exact native ownership
+   * tuple. Compatibility consumers should prefer this over reading
+   * `_webgpuTexture` when they already know their target device/generation.
+   */
+  _getWebGPUTextureForDevice?(
+    device: GPUDevice,
+    resourceGeneration: number,
+  ): StubGPUTexture | null;
   /** The underlying GPUTexture, if allocated. Mirrors StubRenderbuffer._texture for uniform access via StubAttachment. */
   _texture?: GPUTexture | null;
+}
+
+export interface StubTextureDiagnostics {
+  readonly registeredHandleCount: number;
+  readonly liveTextureCount: number;
+}
+
+/** Context-local ownership registry for compatibility texture handles. */
+export interface StubTextureRegistry {
+  register(handle: StubTextureWrapper): void;
+  unregister(handle: StubTextureWrapper): void;
+  invalidateDeviceGeneration(): void;
+  destroy(): void;
+  getDiagnostics(): StubTextureDiagnostics;
 }
 
 /** A stub-managed framebuffer object. */
@@ -107,7 +134,9 @@ export interface StubMipmapGenerator {
     format: GPUTextureFormat,
     mipLevelCount: number,
     commandEncoder?: GPUCommandEncoder,
+    options?: WebGPUTextureMipGenerationOptions,
   ): GPUCommandEncoder;
+  destroy?(): void;
 }
 
 /**
@@ -117,6 +146,7 @@ export interface StubMipmapGenerator {
 export interface WebGLStubState {
   // Device & context references
   device: GPUDevice | null;
+  resourceGeneration: number;
   context: GPUCanvasContext | null;
   currentCommandEncoder: GPUCommandEncoder | null;
   currentRenderPassEncoder: GPURenderPassEncoder | null;
@@ -127,6 +157,7 @@ export interface WebGLStubState {
     number,
     { target: number; texture: StubTextureWrapper | null }
   >;
+  textureRegistry: StubTextureRegistry;
   boundVertexBuffer: StubBufferHandle | null;
   boundIndexBuffer: StubBufferHandle | null;
   bufferRegistry: StubBufferRegistry;
@@ -210,7 +241,25 @@ export interface WebGLStubState {
     dy: number,
     w: number,
     h: number,
-  ): void;
+  ): boolean;
+  enqueueMipGeneration(
+    texture: GPUTexture,
+    format: GPUTextureFormat,
+    mipLevelCount: number,
+    options?: WebGPUTextureMipGenerationOptions,
+  ): boolean;
+  /**
+   * Ordered compatibility-only path for a base-level texture copy already
+   * recorded in currentCommandEncoder. Returns false rather than submitting or
+   * moving the work to the earlier frame-preparation encoder.
+   */
+  encodeMipGenerationInCurrentEncoder(
+    texture: GPUTexture,
+    format: GPUTextureFormat,
+    mipLevelCount: number,
+    options?: WebGPUTextureMipGenerationOptions,
+  ): boolean;
+  cancelMipGeneration(texture: GPUTexture): void;
   webglToWebGPUBlendFactor(f: number): GPUBlendFactor;
   webglToWebGPUBlendOp(o: number): GPUBlendOperation;
   webglToWebGPUCompareFunction(f: number): GPUCompareFunction;

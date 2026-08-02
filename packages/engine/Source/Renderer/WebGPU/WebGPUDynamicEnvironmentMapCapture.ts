@@ -434,7 +434,7 @@ export function runSceneCapture(
       updateCamera(camera: unknown): void;
     };
     flushPendingUniformUploads?: () => void;
-    flushPendingImageryMipJobs?: () => void;
+    flushPendingTextureMipJobs?: () => void;
   };
   if (
     ctx.sceneCaptureReflections !== true ||
@@ -750,7 +750,7 @@ export function runSceneCapture(
   // Multiple managers may flush incrementally; the ring uploader tracks the
   // already-flushed prefix.
   ctx.flushPendingUniformUploads?.();
-  ctx.flushPendingImageryMipJobs?.();
+  ctx.flushPendingTextureMipJobs?.();
   if (ownsEncoder) {
     device.queue.submit([encoder.finish()]);
   }

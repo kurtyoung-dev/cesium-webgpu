@@ -2,6 +2,7 @@ import {
   DeviceLossState,
   WebGPUDeviceLossRecovery,
 } from "../../../Source/Renderer/WebGPU/WebGPUDeviceLossRecovery.js";
+import { WebGPUContext } from "../../../Source/Renderer/WebGPU/WebGPUContext.js";
 
 function deferred() {
   let resolve;
@@ -88,6 +89,69 @@ describe("Renderer/WebGPU/WebGPUDeviceLossRecovery", function () {
     spyOn(console, "error");
     spyOn(console, "warn");
     spyOn(console, "log");
+  });
+
+  it("ignores the lost promise produced by context teardown", async function () {
+    const source = makeSourceDevice();
+    const { host } = makeHost(source.device);
+    const operations = {
+      delay: jasmine.createSpy("delay"),
+      recoverPooledDevice: jasmine.createSpy("recoverPooledDevice"),
+      requestAdapter: jasmine.createSpy("requestAdapter"),
+      releasePooledDevice: jasmine.createSpy("releasePooledDevice"),
+    };
+    const recovery = new WebGPUDeviceLossRecovery(host, 1, operations);
+    const listener = jasmine.createSpy("listener");
+    recovery.onDeviceLost(listener);
+    recovery.setupHandler(source.device);
+
+    await recovery.dispose();
+    source.loss.resolve({
+      reason: "destroyed",
+      message: "Device was destroyed",
+    });
+    await flushMicrotasks();
+
+    expect(console.error).not.toHaveBeenCalled();
+    expect(listener).not.toHaveBeenCalled();
+    expect(operations.delay).not.toHaveBeenCalled();
+    expect(operations.recoverPooledDevice).not.toHaveBeenCalled();
+    expect(operations.requestAdapter).not.toHaveBeenCalled();
+    expect(host._isTerminallyLost).toBeFalse();
+    expect(recovery.state).toBe(DeviceLossState.FATAL);
+  });
+
+  it("reports an externally destroyed device without attempting recovery", async function () {
+    const source = makeSourceDevice();
+    const { host } = makeHost(source.device);
+    const operations = {
+      delay: jasmine.createSpy("delay"),
+      recoverPooledDevice: jasmine.createSpy("recoverPooledDevice"),
+      requestAdapter: jasmine.createSpy("requestAdapter"),
+      releasePooledDevice: jasmine.createSpy("releasePooledDevice"),
+    };
+    const recovery = new WebGPUDeviceLossRecovery(host, 1, operations);
+    const listener = jasmine.createSpy("listener");
+    recovery.onDeviceLost(listener);
+    recovery.setupHandler(source.device);
+
+    source.loss.resolve({ reason: "destroyed", message: "external destroy" });
+    await flushMicrotasks();
+
+    expect(console.error).toHaveBeenCalledOnceWith(
+      "[WebGPU] Device lost (reason: destroyed): external destroy",
+    );
+    expect(listener).toHaveBeenCalledOnceWith({
+      reason: "destroyed",
+      message: "external destroy",
+      state: DeviceLossState.FATAL,
+      willRecover: false,
+    });
+    expect(operations.delay).not.toHaveBeenCalled();
+    expect(operations.recoverPooledDevice).not.toHaveBeenCalled();
+    expect(operations.requestAdapter).not.toHaveBeenCalled();
+    expect(host._isTerminallyLost).toBeTrue();
+    expect(recovery.state).toBe(DeviceLossState.FATAL);
   });
 
   it("does not acquire or mutate the host when disposed during backoff", async function () {
@@ -189,6 +253,79 @@ describe("Renderer/WebGPU/WebGPUDeviceLossRecovery", function () {
     expect(host._isDestroyed).toBeFalse();
     expect(host._isTerminallyLost).toBeTrue();
     expect(recovery.state).toBe(DeviceLossState.FATAL);
+  });
+
+  it("commits recovery when lost compatibility natives throw during cleanup", async function () {
+    const source = makeSourceDevice();
+    const { host } = makeHost(source.device);
+    const candidate = makeCandidateDevice("cleanupTolerantCandidate");
+    const candidateAdapter = { label: "candidate-adapter" };
+    const cleanupError = new Error("lost texture destroy failed");
+    const cleanupContext = Object.create(WebGPUContext.prototype);
+    cleanupContext._drainAfterFrameSubmitCallbacks = jasmine.createSpy(
+      "cleanupContext._drainAfterFrameSubmitCallbacks",
+    );
+    cleanupContext._currentRenderPassEncoder = {};
+    cleanupContext._activePassTarget = {};
+    cleanupContext._currentCommandEncoder = {};
+    cleanupContext._currentTextureView = {};
+    cleanupContext._pendingTextureMipJobs = [
+      { texture: {}, device: source.device, resourceGeneration: 12 },
+    ];
+    cleanupContext._cacheRegistry = {
+      clearAll: jasmine.createSpy("cleanupContext.clearAll"),
+    };
+    cleanupContext._gl = {
+      invalidateCompatibilityTextureHandles: jasmine
+        .createSpy("cleanupContext.invalidateTextures")
+        .and.throwError(cleanupError),
+      invalidateCompatibilityBufferHandles: jasmine.createSpy(
+        "cleanupContext.invalidateBuffers",
+      ),
+    };
+    cleanupContext._device = null;
+    cleanupContext._deviceResourceGeneration = 12;
+    cleanupContext._environmentDemandRegistry = {
+      reset: jasmine.createSpy("cleanupContext.resetDemand"),
+    };
+    cleanupContext._environmentRefreshScheduler = {
+      reset: jasmine.createSpy("cleanupContext.resetScheduler"),
+    };
+    cleanupContext._environmentTargetPool = null;
+    cleanupContext._fireDeviceInvalidated = jasmine.createSpy(
+      "cleanupContext.fireInvalidated",
+    );
+    host._clearAllCaches.and.callFake(function () {
+      WebGPUContext.prototype._clearAllCaches.call(cleanupContext, null);
+    });
+    const operations = {
+      delay: jasmine.createSpy("delay").and.resolveTo(),
+      recoverPooledDevice: jasmine
+        .createSpy("recoverPooledDevice")
+        .and.resolveTo({ adapter: candidateAdapter, device: candidate }),
+      requestAdapter: jasmine.createSpy("requestAdapter"),
+      releasePooledDevice: jasmine.createSpy("releasePooledDevice"),
+    };
+    const recovery = new WebGPUDeviceLossRecovery(host, 1, operations);
+
+    await beginRecovery(recovery, source, operations);
+    await flushMicrotasks();
+
+    expect(host._device).toBe(candidate);
+    expect(host._rollbackRecoveredDevice).not.toHaveBeenCalled();
+    expect(operations.releasePooledDevice).not.toHaveBeenCalled();
+    expect(candidate.destroy).not.toHaveBeenCalled();
+    expect(cleanupContext._deviceResourceGeneration).toBe(13);
+    expect(cleanupContext._pendingTextureMipJobs.length).toBe(0);
+    expect(
+      cleanupContext._gl.invalidateCompatibilityBufferHandles,
+    ).toHaveBeenCalled();
+    expect(cleanupContext._fireDeviceInvalidated).toHaveBeenCalled();
+    expect(console.warn).toHaveBeenCalledWith(
+      "[WebGPU] Recovered with an old-device cleanup error:",
+      cleanupError,
+    );
+    expect(recovery.state).toBe(DeviceLossState.HEALTHY);
   });
 
   it("destroys a failed isolated candidate without touching the pool", async function () {

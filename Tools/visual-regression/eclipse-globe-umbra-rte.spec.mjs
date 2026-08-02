@@ -1681,7 +1681,7 @@ test("private capture flushes staged UBO bytes before its mid-frame submit", () 
   );
   const uniformFlush = capture.indexOf("ctx.flushPendingUniformUploads?.()");
   const mipFlush = capture.indexOf(
-    "ctx.flushPendingImageryMipJobs?.()",
+    "ctx.flushPendingTextureMipJobs?.()",
     uniformFlush,
   );
   const captureSubmit = capture.indexOf(
@@ -1699,6 +1699,18 @@ test("private capture flushes staged UBO bytes before its mid-frame submit", () 
 test("uniform ring and retained capture snapshots cannot survive device teardown", () => {
   const context = readSource("Renderer/WebGPU/WebGPUContext.ts");
 
+  const createStart = context.indexOf("  static async create(");
+  const initializeStart = context.indexOf(
+    "  private async _initialize(): Promise<void>",
+    createStart,
+  );
+  const create = context.slice(createStart, initializeStart);
+  assert.match(
+    create,
+    /catch \(error\) \{[\s\S]*try \{\s*context\?\.destroy\(\);\s*\} catch \{[\s\S]*\}\s*throw error;/,
+    "failed initialization must preserve its primary error after best-effort teardown",
+  );
+
   const destroyStart = context.indexOf(
     "  destroy(): void {",
     context.indexOf("override createPickFramebuffer"),
@@ -1711,12 +1723,39 @@ test("uniform ring and retained capture snapshots cannot survive device teardown
   assert.ok(destroyStart >= 0 && destroyEnd > destroyStart);
   assert.match(
     destroy,
-    /if \(this\._uniformAllocator\) \{\s*this\._uniformAllocator\.destroy\(\);\s*this\._uniformAllocator = null;\s*\}/,
+    /const uniformAllocator = this\._uniformAllocator;\s*this\._uniformAllocator = null;\s*continueFinalCleanupAfter\(\(\) => uniformAllocator\?\.destroy\(\)\);/,
+  );
+  const uniformAllocatorDestroy = destroy.indexOf(
+    "uniformAllocator?.destroy()",
+  );
+  const pooledDeviceRelease = destroy.indexOf(
+    "WebGPUDevicePool.instance.releaseDevice(device)",
+    uniformAllocatorDestroy,
+  );
+  const isolatedDeviceDestroy = destroy.indexOf(
+    "device.destroy()",
+    uniformAllocatorDestroy,
   );
   assert.ok(
-    destroy.indexOf("this._uniformAllocator.destroy()") <
-      destroy.indexOf("this._device.destroy()"),
-    "ring pages must be destroyed while the owning device is still alive",
+    uniformAllocatorDestroy >= 0 &&
+      pooledDeviceRelease > uniformAllocatorDestroy &&
+      isolatedDeviceDestroy > uniformAllocatorDestroy,
+    "ring pages must be destroyed before either pooled-device release or isolated-device destruction",
+  );
+  assert.match(
+    destroy,
+    /const device = this\._device;\s*const deviceFromPool = this\._deviceFromPool;\s*const terminallyLost = this\._isTerminallyLost;\s*this\._device = null;\s*this\._deviceFromPool = false;\s*continueFinalCleanupAfter\(\(\) => \{\s*if \(deviceFromPool\) \{\s*WebGPUDevicePool\.instance\.releaseDevice\(device\);\s*\} else if \(!terminallyLost\) \{\s*device\.destroy\(\);\s*\}\s*\}\);/,
+    "pooled release and isolated destruction must remain exclusive, guarded, and detach-first",
+  );
+  assert.match(
+    destroy,
+    /this\._pendingTextureMipJobs\.length = 0;\s*this\._pendingTextureMipJobKeys = new WeakMap\(\);\s*this\._isDestroyed = true;/,
+    "terminal state and pending mip ownership must detach before cleanup can throw",
+  );
+  assert.match(
+    destroy,
+    /this\._isTerminallyLost = false;[\s\S]*if \(hasFinalCleanupError\) \{\s*throw firstFinalCleanupError;\s*\}/,
+    "guarded teardown must drain the final cleanup tail before reporting its first error",
   );
 
   const registryStart = context.indexOf(

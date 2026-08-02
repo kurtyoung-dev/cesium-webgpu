@@ -37,7 +37,7 @@
  *     already gives 256-byte alignment, CPU staging, page rotation, overflow
  *     pages, and one `queue.writeBuffer` per dirty page at `flush()`.
  *   - The bind group is built ONCE per (layout, camera page, light page) tuple
- *     and reused via an identity-keyed cache. The per-allocation byte offsets
+ *     and reused via a context-local identity-keyed cache. The per-allocation byte offsets
  *     never enter the key; they are supplied per-draw as WebGPU dynamic
  *     offsets. Under sustained camera motion the page identities cycle through
  *     the ring's `pageCount` and recur every `pageCount` frames, so the cache
@@ -67,7 +67,7 @@
  *
  * So the light joins the block it is already semantically bound to. Group 0 is
  * the only group whose contents are per (model, view) rather than per
- * primitive, its bind group is shared device-wide, and its dynamic-offset
+ * primitive, its bind group is shared across the owning context, and its dynamic-offset
  * plumbing is already threaded and audited through all seven command variants.
  * The per-primitive group-1 cache keeps its single 100%-hit record and loses a
  * binding; the resident bind-group count does not grow anywhere.
@@ -108,12 +108,12 @@
  *
  * ## Device / allocator generation
  *
- * The arena is owned per `GPUDevice` by `WebGPUModelDeviceResources`, whose
- * pool is a `WeakMap` keyed by the device — a lost device produces a new
- * `GPUDevice`, hence a new pool entry and a new arena. The context can also
- * destroy and rebuild the ring allocator on the SAME device during recovery,
- * which destroys the pages the cached bind groups reference; `beginFrame`
- * detects that by allocator identity and clears the cache.
+ * The arena is owned by the exact `WebGPUContext` whose ring pages it binds.
+ * Multiple contexts may share one pooled `GPUDevice` and immutable camera
+ * layout, but they have independent allocators, frame epochs, and arenas. The
+ * context invalidates and detaches the arena before destroying or rebuilding
+ * its allocator; `beginFrame` also retains an allocator-identity guard so an
+ * unexpected same-context allocator swap clears every cached bind group.
  *
  * @private
  */
@@ -182,6 +182,8 @@ export interface ModelViewLightSlice {
   readonly offset: number;
   /** Allocation epoch this slice belongs to. See {@link ModelCameraBinding}. */
   readonly allocationEpoch: number;
+  /** Exact allocator whose bytes this slice addresses, or null for fallback. */
+  readonly allocator: ModelCameraArenaAllocator | null;
 }
 
 /**
@@ -231,6 +233,8 @@ export interface ModelCameraArenaStats {
   fallbackAllocations: number;
   /** Lifetime acquisitions rejected for a misaligned ring offset. */
   misalignedRejections: number;
+  /** Lifetime stale light slices rejected before bind-group creation. */
+  staleLightSliceRejections: number;
   /** Most recent `beginFrame` frame number. */
   frameNumber: number;
   /** Most recent allocator epoch observed. */
@@ -238,7 +242,7 @@ export interface ModelCameraArenaStats {
 }
 
 /**
- * Per-device owner of the model group-0 camera arena.
+ * Per-context owner of the model group-0 camera arena.
  */
 export class WebGPUModelCameraArena {
   private _bindGroups = new WebGPUGlobeBindGroupCache();
@@ -253,6 +257,7 @@ export class WebGPUModelCameraArena {
   private _fallbackBuffers: GPUBuffer[] = [];
   private _hasWarnedFallback = false;
   private _hasWarnedMisaligned = false;
+  private _hasWarnedStaleLightSlice = false;
 
   private _acquisitions = 0;
   private _acquisitionsThisFrame = 0;
@@ -260,6 +265,7 @@ export class WebGPUModelCameraArena {
   private _lightAcquisitionsThisFrame = 0;
   private _fallbackAllocations = 0;
   private _misalignedRejections = 0;
+  private _staleLightSliceRejections = 0;
   /**
    * Last-resort zero-filled light block. Only reachable when a caller supplies
    * no light slice at all, which our own call sites never do; retained so the
@@ -286,6 +292,7 @@ export class WebGPUModelCameraArena {
       // cached bind group references a dead GPUBuffer.
       this._bindGroups.clear();
       this._allocator = allocator;
+      this._allocationEpoch = allocator?.allocationEpoch ?? -1;
     }
     if (frameNumber === this._frameNumber) {
       return;
@@ -335,6 +342,7 @@ export class WebGPUModelCameraArena {
           buffer: allocation.buffer,
           offset: allocation.offset,
           allocationEpoch: this._allocationEpoch,
+          allocator,
         };
       }
       // Same hard-error reasoning as the camera path: a misaligned dynamic
@@ -347,6 +355,7 @@ export class WebGPUModelCameraArena {
       buffer: this._createFallbackBuffer(device, data, byteSize, label),
       offset: 0,
       allocationEpoch: this._allocationEpoch,
+      allocator,
     };
   }
 
@@ -376,7 +385,25 @@ export class WebGPUModelCameraArena {
     this._acquisitions++;
     this._acquisitionsThisFrame++;
 
-    const light = lightSlice ?? this._zeroLightSlice(device, lightByteSize);
+    let light = lightSlice;
+    if (
+      light !== null &&
+      allocator !== null &&
+      (light.allocator !== allocator ||
+        light.allocationEpoch !== allocator.allocationEpoch)
+    ) {
+      // A recycled ring page can retain the same GPUBuffer identity and offset
+      // while holding unrelated bytes. Reject the stale slice before it enters
+      // a bind group; a zero block is visually degraded but validation-safe
+      // and, unlike the stale slice, cannot leak another model/view's lights.
+      this._staleLightSliceRejections++;
+      this._reportStaleLightSlice(
+        light.allocationEpoch,
+        allocator.allocationEpoch,
+      );
+      light = this._zeroLightSlice(device, lightByteSize, allocator, false);
+    }
+    light ??= this._zeroLightSlice(device, lightByteSize, allocator, true);
 
     if (allocator !== null) {
       const writeBytes = Math.min(data.byteLength, byteSize);
@@ -565,8 +592,10 @@ export class WebGPUModelCameraArena {
   private _zeroLightSlice(
     device: GPUDevice,
     lightByteSize: number,
+    allocator: ModelCameraArenaAllocator | null,
+    reportMissing: boolean,
   ): ModelViewLightSlice {
-    if (!this._hasWarnedMissingLight) {
+    if (reportMissing && !this._hasWarnedMissingLight) {
       this._hasWarnedMissingLight = true;
       console.error(
         `[CesiumJS:webgpu] Model camera arena acquired a group-0 binding with ` +
@@ -586,8 +615,26 @@ export class WebGPUModelCameraArena {
     return {
       buffer: this._zeroLightBuffer,
       offset: 0,
-      allocationEpoch: this._allocationEpoch,
+      allocationEpoch: allocator?.allocationEpoch ?? this._allocationEpoch,
+      allocator,
     };
+  }
+
+  /** Report and count a rejected prior-epoch light slice once per context. */
+  private _reportStaleLightSlice(
+    sliceEpoch: number,
+    allocatorEpoch: number,
+  ): void {
+    if (this._hasWarnedStaleLightSlice) {
+      return;
+    }
+    this._hasWarnedStaleLightSlice = true;
+    console.error(
+      `[CesiumJS:webgpu] Model camera arena rejected a stale light slice ` +
+        `(slice epoch ${sliceEpoch}, allocator epoch ${allocatorEpoch}). ` +
+        `The ring page may already contain another model/view's bytes; ` +
+        `binding a zero-light placeholder for this draw.`,
+    );
   }
 
   /**
@@ -616,15 +663,33 @@ export class WebGPUModelCameraArena {
    * recovery paths that must guarantee no stale page reference survives.
    */
   invalidate(): void {
-    this._bindGroups.clear();
-    for (let i = 0; i < this._fallbackBuffers.length; i++) {
-      this._fallbackBuffers[i].destroy();
+    let firstDestroyError: unknown;
+    let hasDestroyError = false;
+    const destroyBestEffort = (destroy: () => void): void => {
+      try {
+        destroy();
+      } catch (error) {
+        if (!hasDestroyError) {
+          firstDestroyError = error;
+          hasDestroyError = true;
+        }
+      }
+    };
+
+    destroyBestEffort(() => this._bindGroups.clear());
+    const fallbackBuffers = this._fallbackBuffers;
+    this._fallbackBuffers = [];
+    for (let i = 0; i < fallbackBuffers.length; i++) {
+      destroyBestEffort(() => fallbackBuffers[i].destroy());
     }
-    this._fallbackBuffers.length = 0;
     this._zeroLightBuffer = null;
     this._allocator = null;
     this._frameNumber = -1;
     this._allocationEpoch = -1;
+
+    if (hasDestroyError) {
+      throw firstDestroyError;
+    }
   }
 
   /** Frame number of the most recent {@link beginFrame} tick. */
@@ -649,6 +714,7 @@ export class WebGPUModelCameraArena {
       bindGroupHits: bindGroupStats.hits,
       fallbackAllocations: this._fallbackAllocations,
       misalignedRejections: this._misalignedRejections,
+      staleLightSliceRejections: this._staleLightSliceRejections,
       frameNumber: this._frameNumber,
       allocationEpoch: this._allocationEpoch,
     };

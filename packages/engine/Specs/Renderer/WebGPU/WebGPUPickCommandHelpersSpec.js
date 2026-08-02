@@ -274,6 +274,43 @@ describe("Renderer/WebGPU/WebGPUPickCommandHelpers", function () {
       expect(cache.pickIds).toBeUndefined();
     });
 
+    it("detaches both slots and drains every id before rethrowing the first error", function () {
+      const destroyed = [];
+      const firstError = new Error("single pick destroy failed");
+      const cache = { _pickIdLastId: "primA" };
+      cache._pickId = {
+        destroy: function () {
+          expect(cache._pickId).toBeUndefined();
+          expect(cache._pickIdLastId).toBeUndefined();
+          expect(cache.pickIds).toBeUndefined();
+          destroyed.push("single");
+          throw firstError;
+        },
+      };
+      cache.pickIds = {
+        first: {
+          destroy: function () {
+            destroyed.push("multi-first");
+            throw new Error("later pick destroy failed");
+          },
+        },
+        second: {
+          destroy: function () {
+            destroyed.push("multi-second");
+          },
+        },
+      };
+
+      expect(function () {
+        destroyPickIds(cache);
+      }).toThrow(firstError);
+
+      expect(destroyed).toEqual(["single", "multi-first", "multi-second"]);
+      expect(cache._pickId).toBeUndefined();
+      expect(cache._pickIdLastId).toBeUndefined();
+      expect(cache.pickIds).toBeUndefined();
+    });
+
     it("is a no-op on an empty cache", function () {
       const cache = {};
       expect(function () {

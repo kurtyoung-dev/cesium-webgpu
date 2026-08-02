@@ -29,8 +29,9 @@
 // ---------------------------------------------------
 //   A. The EXECUTED packer semantics: the REAL `writeLogDepthTail` source is
 //      extracted from `WebGPUPrimitiveCommands.ts` and executed. Stash-first
-//      when the stash is valid (with the factor recomputed from the SAME pair
-//      so encode + factor stay self-consistent), live-pair fallback before
+//      when the stash is valid (with the factor published from the SAME pair
+//      so encode + factor stay self-consistent and the packer avoids repeated
+//      logarithms), live-pair fallback before
 //      the stash exists. A depth-compare oracle replays the two-primitive
 //      defect numerically: under re-sliced live state, the OLD semantics put
 //      the slab BEHIND the globe; the stash-first tail restores the true 5-m
@@ -152,6 +153,10 @@ const stashedState = () => ({
   currentFrustum: { x: SLICE_NEAR, y: SLICE_FAR },
   oneOverLog2FarDepthFromNearPlusOne: factorOf(SLICE_NEAR, SLICE_FAR),
   _logDepthEncodeNearFar: new Float32Array([STASH_NEAR, STASH_FAR]),
+  _logDepthEncodeFactor: factorOf(
+    Math.fround(STASH_NEAR),
+    Math.fround(STASH_FAR),
+  ),
 });
 
 function packTail(fn, uniformState, offset = 40) {
@@ -184,7 +189,7 @@ test("PACKER — a tail packed while currentFrustum holds re-sliced state still 
   assert.equal(tail.reserved, 0.0);
 });
 
-test("PACKER — when the stash drives, the factor is recomputed from the SAME pair (never the live per-slice factor)", () => {
+test("PACKER — when the stash drives, its factor matches the SAME pair (never the live per-slice factor)", () => {
   const tail = packTail(writeLogDepthTail, stashedState());
   const stashFactor = factorOf(STASH_NEAR, STASH_FAR);
   assert.equal(
@@ -199,6 +204,20 @@ test("PACKER — when the stash drives, the factor is recomputed from the SAME p
     Math.fround(factorOf(SLICE_NEAR, SLICE_FAR)),
     Math.fround(stashFactor),
   );
+});
+
+test("PACKER — a published encode factor avoids per-command Math.log2 work", () => {
+  const state = stashedState();
+  const originalLog2 = Math.log2;
+  Math.log2 = () => {
+    throw new Error("writeLogDepthTail recalculated the frame-stable factor");
+  };
+  try {
+    const tail = packTail(writeLogDepthTail, state);
+    assert.equal(tail.factor, Math.fround(state._logDepthEncodeFactor));
+  } finally {
+    Math.log2 = originalLog2;
+  }
 });
 
 test("PACKER — before the stash exists, the legacy live-pair fallback is unchanged", () => {
@@ -384,6 +403,11 @@ test("CONTRACT — publishLogDepthEncodeNearFar writes the exact field the packe
   );
   assert.equal(stash[0], Math.fround(STASH_NEAR));
   assert.equal(stash[1], Math.fround(STASH_FAR));
+  assert.equal(
+    uniformState._logDepthEncodeFactor,
+    factorOf(stash[0], stash[1]),
+    "the publisher must derive one reusable factor from the exact stored pair",
+  );
 
   // Feed the REAL published stash straight into the REAL packer — the two
   // halves of the contract must meet on the same field, end to end.
@@ -391,6 +415,7 @@ test("CONTRACT — publishLogDepthEncodeNearFar writes the exact field the packe
     currentFrustum: { x: SLICE_NEAR, y: SLICE_FAR },
     oneOverLog2FarDepthFromNearPlusOne: factorOf(SLICE_NEAR, SLICE_FAR),
     _logDepthEncodeNearFar: stash,
+    _logDepthEncodeFactor: uniformState._logDepthEncodeFactor,
   });
   assert.equal(tail.near, Math.fround(STASH_NEAR));
   assert.equal(tail.far, Math.fround(STASH_FAR));
@@ -404,5 +429,10 @@ test("CONTRACT — a camera without a numeric frustum publishes nothing (no pois
     undefined,
     "an invalid camera frustum must not seed the stash — producers would " +
       "encode against garbage instead of falling back to currentFrustum",
+  );
+  assert.equal(
+    uniformState._logDepthEncodeFactor,
+    undefined,
+    "an invalid camera must not publish a factor without its paired range",
   );
 });

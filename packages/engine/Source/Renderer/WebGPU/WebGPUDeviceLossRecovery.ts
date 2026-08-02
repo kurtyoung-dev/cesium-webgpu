@@ -281,8 +281,6 @@ export class WebGPUDeviceLossRecovery {
       const reason = (info.reason as string) ?? "unknown";
       const message = info.message ?? "Device lost";
 
-      console.error(`[WebGPU] Device lost (reason: ${reason}): ${message}`);
-
       // Context.destroy() flips `_aborted` before destroying the device and
       // performs the actual teardown synchronously. Its eventual lost Promise
       // must not relabel that already-drained context as merely terminal-lost.
@@ -290,6 +288,8 @@ export class WebGPUDeviceLossRecovery {
         this._state = DeviceLossState.FATAL;
         return;
       }
+
+      console.error(`[WebGPU] Device lost (reason: ${reason}): ${message}`);
 
       // A device can also be destroyed externally through context.device.
       // That makes rendering terminally unavailable, but it is not equivalent

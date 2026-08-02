@@ -100,9 +100,13 @@ describe(
         ScreenSpaceEventHandler,
       );
       expect(widget.useBrowserRecommendedResolution).toBe(true);
+      const moon = widget.scene.moon;
+      const moonDestroy = spyOn(moon, "destroy").and.callThrough();
       widget.render();
       widget.destroy();
       expect(widget.isDestroyed()).toEqual(true);
+      expect(moonDestroy).toHaveBeenCalledTimes(1);
+      expect(moon.isDestroyed()).toBe(true);
     });
 
     it("can pass id string for container", function () {

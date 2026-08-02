@@ -863,6 +863,68 @@ test("cell vs node registration differ by exactly half a source cell", () => {
   assert.ok(channelAt(asCell, tx, ty, 0) >= channelAt(asNode, tx, ty, 0));
 });
 
+test("a regional CELL field clamps its continuous W/E/N/S edge coordinates", () => {
+  const texW = 360;
+  const texH = 180;
+  const field = {
+    gridWidth: 2,
+    gridHeight: 2,
+    // Independent horizontal and vertical slopes expose each boundary's
+    // interpolation. Source-cell centres are at +/-5 degrees; the regional
+    // bounds are their outer edges at +/-10 degrees.
+    coverage: new Float32Array([0.2, 0.4, 0.6, 0.8]),
+    bounds: {
+      west: -10 * DEG,
+      south: -10 * DEG,
+      east: 10 * DEG,
+      north: 10 * DEG,
+    },
+    registration: "cell",
+    noDataFill: { kind: "constant", coverage: 0 },
+  };
+  const result = packWeatherFieldDetailed(field, texW, texH);
+
+  // These are the first/last in-bounds texel centres: +/-9.5 degrees. Along
+  // the other axis, +/-0.5 degrees gives source fraction 0.45. A clamp-to-edge
+  // sample therefore keeps the boundary cell while interpolating only along
+  // the orthogonal axis. The historical index-only clamp returned 74 at west
+  // and 28 at north by retaining a -0.45 interpolation fraction.
+  assert.equal(channelAt(result.bytes, 170, 89, 0, texW), 97, "west");
+  assert.equal(channelAt(result.bytes, 189, 89, 0, texW), 148, "east");
+  assert.equal(channelAt(result.bytes, 179, 80, 0, texW), 74, "north");
+  assert.equal(channelAt(result.bytes, 179, 99, 0, texW), 176, "south");
+});
+
+test("a regional CELL no-data corner cannot read a diagonal observation", () => {
+  const texW = 360;
+  const texH = 180;
+  const fillCoverage = 0.125;
+  const field = {
+    gridWidth: 2,
+    gridHeight: 2,
+    // The north-west boundary cell is no-data. With unclamped negative tx/ty,
+    // the diagonally-opposite south-east observation acquired a positive
+    // (-tx * -ty) weight and leaked all the way into that outer corner.
+    coverage: new Float32Array([NaN, NaN, NaN, 1]),
+    bounds: {
+      west: -10 * DEG,
+      south: -10 * DEG,
+      east: 10 * DEG,
+      north: 10 * DEG,
+    },
+    registration: "cell",
+    noDataFill: { kind: "constant", coverage: fillCoverage },
+  };
+  const result = packWeatherFieldDetailed(field, texW, texH);
+
+  assert.equal(
+    channelAt(result.bytes, 170, 80, 0, texW),
+    Math.round(fillCoverage * 255),
+  );
+  assert.ok(result.observedTexels > 0, "the diagonal observation must remain");
+  assert.ok(result.filledTexels > 0, "the no-data corner must remain fill");
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 6. The provider contract: sources declare bounds/registration/no-data
 // ─────────────────────────────────────────────────────────────────────────────

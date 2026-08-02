@@ -1,4 +1,7 @@
 import {
+  createBatchGPUTexture,
+  createFeatureIdGPUTexture,
+  ensurePerFeaturePickIds,
   getSelectedImplicitFeatureId,
   synthesizeImplicitFeatureIdData,
 } from "../../../Source/Renderer/WebGPU/WebGPUModelFeatureId.js";
@@ -11,6 +14,107 @@ import { ModelComponents } from "../../../index.js";
 
 const { FeatureIdImplicitRange, FeatureIdAttribute, FeatureIdTexture } =
   ModelComponents;
+
+function makeFailingTextureDevice(uploadMethod) {
+  const candidates = [];
+  const device = {
+    createTexture() {
+      const candidate = {
+        destroy: jasmine.createSpy("candidate.destroy"),
+      };
+      candidates.push(candidate);
+      return candidate;
+    },
+    queue: {
+      copyExternalImageToTexture() {
+        if (uploadMethod === "copy") {
+          throw new Error("copy upload failed");
+        }
+      },
+      writeTexture() {
+        if (uploadMethod === "write") {
+          throw new Error("byte upload failed");
+        }
+      },
+    },
+  };
+  return { device, candidates };
+}
+
+describe("Renderer/WebGPU/WebGPUModel feature texture construction", function () {
+  it("destroys an unpublished feature-ID texture after copy failure", function () {
+    const { device, candidates } = makeFailingTextureDevice("copy");
+    const reader = { texture: { _source: { width: 2, height: 2 } } };
+
+    expect(createFeatureIdGPUTexture(device, 4, reader)).toBeNull();
+    expect(candidates.length).toBe(1);
+    expect(candidates[0].destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("destroys an unpublished byte-backed batch texture after write failure", function () {
+    const { device, candidates } = makeFailingTextureDevice("write");
+    const batchTexture = {
+      _batchValues: new Uint8Array(16),
+      _textureDimensions: { x: 2, y: 2 },
+    };
+
+    expect(createBatchGPUTexture(device, batchTexture)).toBeNull();
+    expect(candidates.length).toBe(1);
+    expect(candidates[0].destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("destroys an unpublished image-backed batch texture after copy failure", function () {
+    const { device, candidates } = makeFailingTextureDevice("copy");
+    const batchTexture = {
+      batchTexture: { _source: { width: 2, height: 2 } },
+    };
+
+    expect(createBatchGPUTexture(device, batchTexture)).toBeNull();
+    expect(candidates.length).toBe(1);
+    expect(candidates[0].destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("rolls back unpublished per-feature pick IDs and texture after upload failure", function () {
+    const { device, candidates } = makeFailingTextureDevice("write");
+    const pickIds = [];
+    const context = {
+      createPickId: function () {
+        const pickId = {
+          color: { red: 0, green: 0, blue: 0, alpha: 1 },
+          destroy: jasmine.createSpy("pickId.destroy"),
+        };
+        pickIds.push(pickId);
+        return pickId;
+      },
+    };
+    const primCache = {};
+    const cache = {};
+
+    expect(function () {
+      ensurePerFeaturePickIds(
+        device,
+        primCache,
+        cache,
+        context,
+        {},
+        {
+          _featuresLength: 2,
+          _textureDimensions: { x: 2, y: 1 },
+        },
+      );
+    }).toThrowError("byte upload failed");
+
+    expect(candidates.length).toBe(1);
+    expect(candidates[0].destroy).toHaveBeenCalledTimes(1);
+    expect(pickIds.length).toBe(2);
+    expect(pickIds[0].destroy).toHaveBeenCalledTimes(1);
+    expect(pickIds[1].destroy).toHaveBeenCalledTimes(1);
+    expect(cache._featurePickIds).toBeUndefined();
+    expect(cache._featurePickGPUTexture).toBeUndefined();
+    expect(cache._featurePickFeaturesLength).toBeUndefined();
+    expect(primCache._featurePickGPUTexture).toBeUndefined();
+  });
+});
 
 function makeImplicit(offset, repeat) {
   const featureId = new FeatureIdImplicitRange();

@@ -46,6 +46,7 @@ function createPipelineCacheHost(promise) {
     _depthFormat: "depth24plus-stencil8",
     _sampleCount: 1,
     _sceneFormatGeneration: 7,
+    _lifecycleEpoch: 0,
     _errorSwapGeneration: 0,
   };
   return { host, central };
@@ -69,11 +70,112 @@ describe("Renderer/WebGPU/WebGPUModelPipelineCache pending color pipeline", func
     cache._pipelines = new Map();
     cache._pendingColorPipelines = new Map();
     cache._pickPipelines = new Map();
+    cache._snapPipelines = new Map();
+    cache._errorPipelines = new Map();
+    cache._depthWritePipelines = new Map();
+    cache._velocityPipelines = new Map();
+    cache._classificationPipelines = new Map();
+    cache._silhouetteModelPipelines = new Map();
+    cache._silhouetteColorPipelines = new Map();
+    cache._pickHoverPipelines = new Map();
+    cache._pickPrecisePass1Pipelines = new Map();
+    cache._pickPrecisePass2Pipelines = new Map();
+    cache._capturePipelines = new Map();
+    cache._pickMetadataPipelines = new Map();
+    cache._shaderModuleCache = new Map();
+    cache._metadataShaderModuleCache = new Map();
+    cache._errorShaderModule = null;
+    cache._lifecycleEpoch = 0;
+    cache._modelDeviceResources = null;
     cache._defaultPropertyTexture = propertyTexture;
 
     cache.destroy();
 
     expect(propertyTexture.destroy).not.toHaveBeenCalled();
+  });
+
+  it("drops a validation-scope settlement that arrives after destroy", async function () {
+    const errorScope = createDeferred();
+    const device = {
+      pushErrorScope: jasmine.createSpy("pushErrorScope"),
+      popErrorScope: jasmine
+        .createSpy("popErrorScope")
+        .and.returnValue(errorScope.promise),
+      createRenderPipeline: jasmine
+        .createSpy("createRenderPipeline")
+        .and.callFake(function (descriptor) {
+          return { descriptor };
+        }),
+    };
+    const cache = Object.create(WebGPUModelPipelineCache.prototype);
+    cache._device = device;
+    cache._resourceGeneration = 3;
+    cache._lifecycleEpoch = 4;
+    cache._primitiveTopology = "triangle-list";
+    cache._presentationFormat = "bgra8unorm";
+    cache._depthFormat = "depth24plus-stencil8";
+    cache._sampleCount = 1;
+    cache._normalizeMaterialDefines = function (value) {
+      return value;
+    };
+    cache._metadataVariantKey = function (value) {
+      return value;
+    };
+    cache._metadataSlotMode = function () {
+      return 0;
+    };
+    cache._getOrCreateShaderModule = jasmine
+      .createSpy("getOrCreateShaderModule")
+      .and.returnValue({ label: "shader" });
+    cache._getOrCreatePipelineLayout = jasmine
+      .createSpy("getOrCreatePipelineLayout")
+      .and.returnValue({ label: "layout" });
+    cache._getOrCreateErrorPipeline = jasmine
+      .createSpy("getOrCreateErrorPipeline")
+      .and.returnValue({ label: "error" });
+    cache._errorSwapGeneration = 0;
+    for (const name of [
+      "_pipelines",
+      "_pendingColorPipelines",
+      "_pickPipelines",
+      "_snapPipelines",
+      "_errorPipelines",
+      "_depthWritePipelines",
+      "_velocityPipelines",
+      "_classificationPipelines",
+      "_silhouetteModelPipelines",
+      "_silhouetteColorPipelines",
+      "_pickHoverPipelines",
+      "_pickPrecisePass1Pipelines",
+      "_pickPrecisePass2Pipelines",
+      "_capturePipelines",
+      "_pickMetadataPipelines",
+      "_shaderModuleCache",
+      "_metadataShaderModuleCache",
+    ]) {
+      cache[name] = new Map();
+    }
+    cache._errorShaderModule = null;
+    cache._modelDeviceResources = null;
+
+    const built = cache.getDepthWritePipeline(
+      WebGPUModelPipelineCache.ALPHA_BLEND,
+      false,
+      0,
+    );
+    expect(cache._depthWritePipelines.size).toBe(1);
+    cache.destroy();
+    expect(cache._lifecycleEpoch).toBe(5);
+    expect(cache._depthWritePipelines.size).toBe(0);
+
+    errorScope.resolve({ message: "late validation failure" });
+    await errorScope.promise;
+    await Promise.resolve();
+
+    expect(built).toBeDefined();
+    expect(cache._getOrCreateErrorPipeline).not.toHaveBeenCalled();
+    expect(cache._depthWritePipelines.size).toBe(0);
+    expect(cache._errorSwapGeneration).toBe(0);
   });
 
   it("does not rebuild or re-poll a variant owned by the local promise", async function () {

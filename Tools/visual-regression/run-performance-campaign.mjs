@@ -4287,6 +4287,41 @@ async function runOne(
         browserResult.quality.reasons.push(reason);
       }
     }
+    if (
+      apiInstrumentation &&
+      workload.contentProfile === "local-procedural-terrain-assets"
+    ) {
+      const requestLedger =
+        browserResult.representativeContentEvidence?.tilesetLifecycleDiagnostics
+          ?.requestLedger;
+      if (
+        requestLedger?.valid !== true ||
+        requestLedger.complete !== true ||
+        (workload.representativeConfig?.measurementTerrainMode === "resident" &&
+          (requestLedger?.openRequestCount ?? 0) > 0)
+      ) {
+        const ledgerReasons = [...(requestLedger?.reasons ?? [])];
+        if (
+          workload.representativeConfig?.measurementTerrainMode ===
+            "resident" &&
+          (requestLedger?.openRequestCount ?? 0) > 0
+        ) {
+          ledgerReasons.push(
+            `${requestLedger.openRequestCount} content requests remain open`,
+          );
+        }
+        const reason =
+          `representative tileset request ledger is incomplete: ` +
+          (ledgerReasons.join("; ") || "missing ledger");
+        failures.push(reason);
+        browserResult.quality.status = "invalid";
+        browserResult.quality.validForAggregation = false;
+        browserResult.quality.validForCpuAggregation = false;
+        browserResult.quality.validForGpuAggregation = false;
+        browserResult.quality.reasons ??= [];
+        browserResult.quality.reasons.push(reason);
+      }
+    }
     if (workload.representativeConfig?.measurementTerrainMode === "resident") {
       const activity =
         browserResult.representativeContentEvidence?.measurementTerrainActivity;

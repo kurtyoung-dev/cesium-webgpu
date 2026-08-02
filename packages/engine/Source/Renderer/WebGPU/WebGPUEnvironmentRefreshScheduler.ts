@@ -397,7 +397,6 @@ export class WebGPUEnvironmentRefreshScheduler {
       entry.maxDeferredFrames = entry.deferredFrames;
     }
     entry.deferredFrames = 0;
-    entry.lastGrantFrameId = this._frameId;
     this._removePending(entry);
     this._grantedThisFrame += 1;
     this._telemetry.granted += 1;

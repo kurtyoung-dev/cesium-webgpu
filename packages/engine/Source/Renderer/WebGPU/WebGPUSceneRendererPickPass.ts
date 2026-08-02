@@ -25,7 +25,7 @@
  *     `WebGPUSnapFramebuffer` (`_isWebGPUSnapFBO`), run each frustum slice
  *     TWICE: the ordinary pick sequence above into the snap FBO's occluder
  *     attachment (this is what populates depth, i.e. WebGL's depth-only
- *     fallback for snapless commands), then a payload pass into the RGBA32F
+ *     fallback for snapless commands), then a payload pass into the RG32Uint
  *     snap attachment over that same depth, drawing only commands that carry
  *     `derivedCommands.snapping.snapCommand`.
  *
@@ -41,6 +41,7 @@
  * @module WebGPUSceneRendererPickPass
  */
 
+import DeveloperError from "../../Core/DeveloperError.js";
 import Pass from "../../Renderer/Pass.js";
 import type { WebGPUContext } from "./WebGPUContext.js";
 import type { WebGPUDynamicStateOverride } from "./WebGPUDrawCommand.js";
@@ -142,12 +143,13 @@ type WebGPUPickFBOShape = CesiumOpaqueFramebuffer & {
     view: GPUTextureView;
   } | null;
   // UP144-SNAP-WEBGPU (C11-212) — present only on a `WebGPUSnapFramebuffer`.
-  // `snapColorView` is the RGBA32F payload attachment the second phase of each
+  // `snapColorView` is the RG32Uint payload attachment the second phase of each
   // frustum slice renders into; `colorView`/`depthView` above are that object's
   // occluder attachments, which the FIRST phase drives exactly as an ordinary
   // pick pass would.
   _isWebGPUSnapFBO?: boolean;
   snapColorView?: GPUTextureView;
+  resetSnapPayloadCoverage?: (renderPass: GPURenderPassEncoder) => void;
 };
 
 /**
@@ -274,7 +276,16 @@ function beginPickRenderPass(
         view: pickFBO.colorView as GPUTextureView,
         clearValue: { r: 0, g: 0, b: 0, a: 0 },
         loadOp: colorLoadOp,
-        storeOp: "store",
+        // A snap occluder pass binds the RGBA8 pick target solely to keep the
+        // existing pick fleet's pipelines attachment-compatible. No snap
+        // consumer reads that color; only the shared depth/stencil attachment
+        // crosses into the payload phase. Discarding avoids preserving a
+        // full-viewport throwaway target. Ordinary pick ID color still stores
+        // and accumulates across frustum slices exactly as before.
+        storeOp:
+          pickFBO._isWebGPUSnapFBO === true && !!pickFBO.snapColorView
+            ? "discard"
+            : "store",
       },
     ],
     depthStencilAttachment: {
@@ -299,17 +310,20 @@ function beginPickRenderPass(
  * UP144-SNAP-WEBGPU (C11-212) — open the SNAP PAYLOAD render pass for one
  * frustum slice.
  *
- * Color is the RGBA32F payload attachment; depth/stencil is the SAME attachment
- * the occluder phase just wrote, loaded rather than cleared. That load is the
- * whole mechanism by which snapless commands (globe, primitives, collections)
- * still occlude snappable geometry — WebGL gets the same effect by running each
- * snapless command's depth-only derived command inside its single snap pass,
- * which WebGPU cannot do because pipeline color-target formats are validated
- * against the pass's attachments at draw time.
+ * Color is the compact RG32Uint payload attachment; depth/stencil is the SAME attachment
+ * the occluder phase just wrote, loaded rather than cleared. That depth rejects
+ * payload fragments behind current-slice snapless commands; the coverage-reset
+ * draw below also erases any farther-slice payload at those pixels. WebGL runs
+ * each snapless command's depth-only derived command inside its single snap
+ * pass, which WebGPU cannot do because pipeline color-target formats are
+ * validated against the pass's attachments at draw time.
  *
  * Payload color accumulates across slices (cleared once on the far slice,
- * loaded afterwards) exactly like the pick pass's ID color; depth is not stored
- * past the payload phase because the next slice clears it anyway.
+ * loaded afterwards) exactly like the pick pass's ID color. Before drawing a
+ * nearer slice, the framebuffer's coverage-reset draw zeros the accumulated
+ * payload wherever this slice established depth; a nearer snapless winner can
+ * therefore erase a farther snap hit. Depth is not stored past the payload
+ * phase because the next slice clears it anyway.
  */
 function beginSnapPayloadRenderPass(
   context: WebGPUContext,
@@ -405,6 +419,16 @@ export function executePickPass(
   // there is nothing to upgrade to, so fall back to the plain pick schedule
   // rather than opening a pass with a null color view.
   const snapMode = pickFBO._isWebGPUSnapFBO === true && !!pickFBO.snapColorView;
+  const resetSnapPayloadCoverage = pickFBO.resetSnapPayloadCoverage;
+  if (
+    snapMode &&
+    (numFrustums > 1 || config.sceneFbLoad) &&
+    typeof resetSnapPayloadCoverage !== "function"
+  ) {
+    throw new DeveloperError(
+      "A loaded WebGPU snap payload requires resetSnapPayloadCoverage.",
+    );
+  }
 
   const device: GPUDevice | undefined = context._device;
   if (!device) {
@@ -667,7 +691,7 @@ export function executePickPass(
       }
 
       // UP144-SNAP-WEBGPU (C11-212) — payload phase for this slice. The
-      // occluder phase above has ended and stored its depth; open the RGBA32F
+      // occluder phase above has ended and stored its depth; open the RG32Uint
       // payload pass over that same depth and draw only the snap variants.
       if (snapMode) {
         const snapRenderPass: GPURenderPassEncoder = beginSnapPayloadRenderPass(
@@ -676,9 +700,20 @@ export function executePickPass(
           pickFBO,
           pickDynamicState,
           `Snap payload pass frustum ${i}`,
-          i === 0 ? "clear" : "load",
+          i === 0 && !config.sceneFbLoad ? "clear" : "load",
         );
         try {
+          // A loaded payload may contain a farther slice's hit. Depth was
+          // cleared and rebuilt for this slice, so erase that prior payload
+          // wherever the current slice has an occluder before drawing current
+          // snap variants. The callback records one fullscreen triangle into
+          // THIS pass; beginSnapPayloadRenderPass already restricted it to the
+          // query viewport/scissor. No reset is needed for the first fresh
+          // slice because its payload attachment was just cleared.
+          if (i > 0 || config.sceneFbLoad) {
+            resetSnapPayloadCoverage!(snapRenderPass);
+          }
+
           // Same pass order as the occluder phase minus the classification
           // checkpoints: classification draws carry no snap payload, and their
           // packed-depth reopen would clear the depth the payload phase is

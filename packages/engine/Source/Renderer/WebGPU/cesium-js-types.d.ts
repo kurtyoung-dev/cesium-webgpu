@@ -619,6 +619,12 @@ interface CesiumUniformState {
    * (very early frames) — producers fall back to `currentFrustum` then.
    */
   readonly _logDepthEncodeNearFar?: Float32Array | null;
+  /**
+   * Frame-stable factor derived alongside `_logDepthEncodeNearFar`. General
+   * primitive camera packs reuse it to avoid recalculating `Math.log2` for
+   * every command. Absent only for early frames and legacy test doubles.
+   */
+  readonly _logDepthEncodeFactor?: number;
   readonly pixelRatio: number;
   readonly pass: number | undefined;
   readonly backgroundColor: CesiumColor;
@@ -703,6 +709,9 @@ interface CesiumGraphicsContext {
    *  WebGL Context. Touched eagerly by GlobeSurfaceRenderer to force
    *  construction (BUG-9 guard). */
   readonly uniformAllocator?: object | null;
+  /** WebGPU-only: context-owned model camera/light bind-group arena paired
+   *  with `uniformAllocator`. Mutable arena state is never device-shared. */
+  readonly modelCameraArena?: object | null;
   /** WebGPU-only: lazy-initialized GPU compute LOD processor for point
    *  clouds. `null` until first point cloud dispatches; absent on
    *  WebGL Context. Typed as `object | null` here (not

@@ -278,18 +278,38 @@ export function destroyPickIds(
   if (!cache) {
     return;
   }
-  // Single-id slot.
-  if (cache._pickId) {
-    cache._pickId.destroy();
-    cache._pickId = undefined;
-    cache._pickIdLastId = undefined;
-  }
-  // Multi-id slot.
-  if (cache.pickIds) {
-    for (const key of Object.keys(cache.pickIds)) {
-      cache.pickIds[key]?.destroy();
+
+  const singlePickId = cache._pickId;
+  const pickIds = cache.pickIds;
+  cache._pickId = undefined;
+  cache._pickIdLastId = undefined;
+  cache.pickIds = undefined;
+
+  let firstDestroyError: unknown;
+  let hasDestroyError = false;
+  const destroyBestEffort = (pickId: CesiumPickId | undefined): void => {
+    if (!pickId) {
+      return;
     }
-    cache.pickIds = undefined;
+    try {
+      pickId.destroy();
+    } catch (error) {
+      if (!hasDestroyError) {
+        firstDestroyError = error;
+        hasDestroyError = true;
+      }
+    }
+  };
+
+  destroyBestEffort(singlePickId);
+  if (pickIds) {
+    for (const key of Object.keys(pickIds)) {
+      destroyBestEffort(pickIds[key]);
+    }
+  }
+
+  if (hasDestroyError) {
+    throw firstDestroyError;
   }
 }
 

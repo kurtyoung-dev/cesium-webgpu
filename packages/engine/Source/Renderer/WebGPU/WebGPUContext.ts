@@ -43,7 +43,12 @@ import { AsyncResourceTelemetry } from "./AsyncResourceTelemetry.js";
 import { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
 import { WebGPUBuffer } from "./WebGPUBuffer.js";
 import { WebGPUTexture } from "./WebGPUTexture.js";
-import { WebGPUMipmapGenerator } from "./WebGPUMipmapGenerator.js";
+import {
+  WebGPUMipmapGenerator,
+  supportsWebGPULayeredMipmapGeneration,
+  supportsWebGPUMipmapGeneration,
+  type WebGPUTextureMipGenerationOptions,
+} from "./WebGPUMipmapGenerator.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 // C10-06 Step A: statically imported so the WGF-6 primitive-index utils cache
 // is populated synchronously during `_initialize` instead of paying an inline
@@ -127,6 +132,7 @@ import { WebGPUIndirectDrawManager } from "./WebGPUIndirectDrawManager.js";
 import { WebGPUCSMRenderer } from "./WebGPUCSMRenderer.js";
 import { WebGPUBufferMapper } from "./WebGPUBufferMapper.js";
 import { WebGPURingBufferAllocator } from "./WebGPURingBufferAllocator.js";
+import WebGPUModelCameraArena from "./WebGPUModelCameraArena.js";
 import { destroyEnvironmentalEffectsCompositor } from "./WebGPUEnvironmentalEffectsCompositor.js";
 import {
   refreshShadowReceiveUniformPrefix,
@@ -209,6 +215,52 @@ interface PixelReadbackPBO {
   mapAsync: () => Promise<Uint8Array>;
   getBufferData: (dst: Uint8Array | Uint16Array | Float32Array) => void;
   destroy: () => void;
+}
+
+interface PendingTextureMipJob {
+  texture: GPUTexture;
+  format: GPUTextureFormat;
+  mipLevelCount: number;
+  options: Required<WebGPUTextureMipGenerationOptions>;
+  device: GPUDevice;
+  resourceGeneration: number;
+}
+
+interface EncodedTextureMipBatch {
+  commandBuffer: GPUCommandBuffer;
+  jobs: PendingTextureMipJob[];
+  device: GPUDevice;
+  resourceGeneration: number;
+}
+
+const EXTERNAL_IMAGE_COPY_DESTINATION_FORMATS = new Set<GPUTextureFormat>([
+  "r8unorm",
+  "r16float",
+  "r32float",
+  "rg8unorm",
+  "rg16float",
+  "rg32float",
+  "rgba8unorm",
+  "rgba8unorm-srgb",
+  "bgra8unorm",
+  "bgra8unorm-srgb",
+  "rgb10a2unorm",
+  "rgba16float",
+  "rgba32float",
+]);
+const TIER1_EXTERNAL_IMAGE_COPY_DESTINATION_FORMATS = new Set<GPUTextureFormat>(
+  ["r16unorm", "rg16unorm", "rgba16unorm"],
+);
+
+function supportsExternalImageCopyDestination(
+  device: GPUDevice,
+  format: GPUTextureFormat,
+): boolean {
+  return (
+    EXTERNAL_IMAGE_COPY_DESTINATION_FORMATS.has(format) ||
+    (TIER1_EXTERNAL_IMAGE_COPY_DESTINATION_FORMATS.has(format) &&
+      device.features.has("texture-formats-tier1"))
+  );
 }
 
 // `WebGPUFrameStatistics` interface moved to `WebGPUFrameStatistics.ts`
@@ -487,22 +539,21 @@ export class WebGPUContext extends GraphicsContext {
   private _shadowReceiveUniformRefreshes: unknown[] = [];
   private _shadowReceiveUniformRefreshSet: Set<GPUBuffer> = new Set();
 
-  // C9-12A (hardened Batch 686) — imagery mip-generation jobs deferred out of
-  // draw emission. A tile that realizes a new imagery GPUTexture during
-  // command building enqueues a job here instead of opening a private encoder
-  // + private submit. `endFrame` encodes every pending job into ONE
-  // `"ImageryMipPreparation"` encoder submitted immediately BEFORE the frame
+  // C9-12A (hardened Batch 686, generalized by C12-33) — texture mip-generation
+  // jobs deferred out of draw emission. A renderer that realizes a new
+  // GPUTexture during command building enqueues a job here instead of opening
+  // a private encoder + private submit. `endFrame` encodes every pending job
+  // into ONE `"TextureMipPreparation"` encoder submitted immediately BEFORE the frame
   // encoder's own submit (F8: two submits — same-queue ordering guaranteed, an
   // invalid prep buffer cannot invalidate the frame), so the queue orders
   // `copyExternalImageToTexture` → mip passes → scene passes and the realizing
   // frame samples complete mips. Renderers that privately submit mid-frame
-  // work sampling imagery textures MUST call `flushPendingImageryMipJobs`
+  // work sampling newly realized textures MUST call `flushPendingTextureMipJobs`
   // first (F3). Zero private submits from the draw path.
-  private _pendingImageryMipJobs: Array<{
-    texture: GPUTexture;
-    format: GPUTextureFormat;
-    mipLevelCount: number;
-  }> = [];
+  private _pendingTextureMipJobs: PendingTextureMipJob[] = [];
+  // Exact duplicate coalescing for the current pending batch. Kept weak by
+  // texture identity and replaced wholesale whenever the batch drains.
+  private _pendingTextureMipJobKeys = new WeakMap<GPUTexture, Set<string>>();
 
   // F7 (Batch 686) — textures destroyed INLINE (dead immediately). Consulted
   // by the pending-mip encode step: only these are skipped. Scheduled destroys
@@ -1203,7 +1254,14 @@ export class WebGPUContext extends GraphicsContext {
     } catch (error) {
       // Roll back every resource/refcount acquired before the failure. The
       // context was never registered, so destroy's unregister is a no-op.
-      context?.destroy();
+      // Cleanup is best-effort here: a late unconfigure/native-destroy error
+      // must not replace the initialization failure that caused the rollback.
+      try {
+        context?.destroy();
+      } catch {
+        // destroy() still completes its guarded final-cleanup tail before
+        // throwing. Preserve the primary create() rejection for callers.
+      }
       throw error;
     }
   }
@@ -2235,10 +2293,7 @@ export class WebGPUContext extends GraphicsContext {
       // Imagery realized during the first viewport must have complete mip
       // chains before that viewport samples it. Keep the established isolated
       // prep submit so a validation failure cannot invalidate the scene work.
-      const prepBuffer = this._encodePendingImageryMipJobs();
-      if (prepBuffer) {
-        this._device.queue.submit([prepBuffer]);
-      }
+      this._submitPendingTextureMipJobs();
 
       const firstViewportBuffer = this._currentCommandEncoder.finish();
       this._device.queue.submit([firstViewportBuffer]);
@@ -2702,99 +2757,310 @@ export class WebGPUContext extends GraphicsContext {
   }
 
   /**
-   * Enqueue mip-chain generation for a freshly-uploaded texture (C9-12A). The
-   * job is encoded into the shared `"ImageryMipPreparation"` encoder in
+   * Enqueue mip-chain generation for a freshly uploaded texture. The job is
+   * encoded into the context's shared frame-owned preparation encoder in
    * {@link WebGPUContext#endFrame} and submitted before the frame encoder, so
    * the mips are complete before any scene pass samples the texture this frame.
+   *
+   * This is the canonical renderer-neutral API. The older imagery-named alias
+   * remains below because globe/model compatibility callers shipped against it.
+   * Neither API opens an encoder or submits privately from a renderer hot path.
    *
    * If the device is gone the job is dropped: nothing will sample the texture
    * (its owning realization is discarded on device change), so generating mips
    * would be wasted work and would fail on the dead device anyway.
    */
+  enqueueTextureMipGeneration(
+    texture: GPUTexture,
+    format: GPUTextureFormat,
+    mipLevelCount: number,
+    options?: WebGPUTextureMipGenerationOptions,
+  ): boolean {
+    if (!texture || mipLevelCount <= 1) {
+      return false;
+    }
+    const device = this._device;
+    if (!device || this._isDeviceUnavailable) {
+      return false;
+    }
+    if (!supportsWebGPUMipmapGeneration(device, format)) {
+      return false;
+    }
+    const dimension = options?.dimension ?? "2d";
+    if (dimension !== "2d" && !supportsWebGPULayeredMipmapGeneration(device)) {
+      return false;
+    }
+    const normalizedOptions: Required<WebGPUTextureMipGenerationOptions> = {
+      dimension,
+      baseArrayLayer: Math.max(0, options?.baseArrayLayer ?? 0),
+      arrayLayerCount: Math.max(
+        1,
+        options?.arrayLayerCount ?? (dimension === "cube" ? 6 : 1),
+      ),
+    };
+    let textureJobKeys = this._pendingTextureMipJobKeys.get(texture);
+    if (!textureJobKeys) {
+      textureJobKeys = new Set<string>();
+      this._pendingTextureMipJobKeys.set(texture, textureJobKeys);
+    }
+    const jobKey = `${format}|${mipLevelCount}|${normalizedOptions.dimension}|${normalizedOptions.baseArrayLayer}|${normalizedOptions.arrayLayerCount}`;
+    if (textureJobKeys.has(jobKey)) {
+      return true;
+    }
+    textureJobKeys.add(jobKey);
+    this._pendingTextureMipJobs.push({
+      texture,
+      format,
+      mipLevelCount,
+      options: normalizedOptions,
+      device,
+      resourceGeneration: this._deviceResourceGeneration,
+    });
+    return true;
+  }
+
+  /**
+   * Encode a mip chain directly after a compatibility copy recorded in the
+   * current scene encoder. `copyTexImage2D`/`copyTexSubImage2D` can source
+   * pixels rendered earlier in this same command buffer, so their mips cannot
+   * use the normal pre-frame preparation submit (which necessarily runs before
+   * that copy). Encoding copy -> mip passes in one encoder preserves WebGL
+   * ordering without adding a private submission. Ordinary queue writes and
+   * external-image uploads continue to use enqueueTextureMipGeneration().
+   */
+  encodeTextureMipGenerationInCurrentEncoder(
+    texture: GPUTexture,
+    format: GPUTextureFormat,
+    mipLevelCount: number,
+    options?: WebGPUTextureMipGenerationOptions,
+  ): boolean {
+    const device = this._device;
+    const encoder = this._currentCommandEncoder;
+    if (
+      !texture ||
+      mipLevelCount <= 1 ||
+      !device ||
+      this._isDeviceUnavailable ||
+      !encoder ||
+      this._currentRenderPassEncoder ||
+      !supportsWebGPUMipmapGeneration(device, format) ||
+      ((options?.dimension === "cube" || options?.dimension === "2d-array") &&
+        !supportsWebGPULayeredMipmapGeneration(device))
+    ) {
+      return false;
+    }
+    this.mipmapGenerator.generateMipmaps(
+      texture,
+      format,
+      mipLevelCount,
+      encoder,
+      options,
+    );
+    return true;
+  }
+
+  /**
+   * Compatibility alias for the original C9-12A imagery-specific surface.
+   * New renderer-neutral consumers must use
+   * {@link WebGPUContext#enqueueTextureMipGeneration}.
+   */
   enqueueImageryMipGeneration(
     texture: GPUTexture,
     format: GPUTextureFormat,
     mipLevelCount: number,
-  ): void {
-    if (!texture || mipLevelCount <= 1) {
-      return;
-    }
-    if (!this._device || this._isDeviceUnavailable) {
-      return;
-    }
-    this._pendingImageryMipJobs.push({ texture, format, mipLevelCount });
+    options?: WebGPUTextureMipGenerationOptions,
+  ): boolean {
+    return this.enqueueTextureMipGeneration(
+      texture,
+      format,
+      mipLevelCount,
+      options,
+    );
   }
 
   /**
-   * F7 (Batch 686) — record that a texture was destroyed INLINE (it is dead
-   * immediately, unlike {@link WebGPUContext#scheduleTextureDestroy}'d
-   * textures, which stay live until after this frame's submit completes).
-   * The pending-mip encode step drops jobs ONLY for inline-destroyed textures;
-   * scheduled-but-live textures still get their mips (worst case trivially
-   * wasted work, correct output always).
+   * Retire pending mip work before destroying a texture inline. Owners call
+   * this immediately before `GPUTexture.destroy()` when replacement, failed
+   * publication, or teardown makes the texture dead before the frame-owned mip
+   * preparation encoder runs.
+   *
+   * Do not call this for {@link WebGPUContext#scheduleTextureDestroy}'d
+   * textures. Deferred textures stay live through the upcoming frame submit
+   * and may still be sampled by already-recorded commands.
    */
-  noteInlineTextureDestroy(texture: GPUTexture): void {
+  cancelTextureMipGeneration(texture: GPUTexture): void {
+    if (!texture) {
+      return;
+    }
     this._inlineDestroyedTextures.add(texture);
   }
 
-  /**
-   * Capture-and-clear the pending imagery mip jobs and encode them into one
-   * `"ImageryMipPreparation"` command buffer (C9-12A). Returns null when there
-   * is nothing to encode. Shared by {@link WebGPUContext#endFrame} and
-   * {@link WebGPUContext#flushPendingImageryMipJobs}.
-   */
-  private _encodePendingImageryMipJobs(): GPUCommandBuffer | null {
-    if (this._pendingImageryMipJobs.length === 0 || !this._device) {
-      return null;
-    }
-    const jobs = this._pendingImageryMipJobs;
-    this._pendingImageryMipJobs = [];
-    const prepEncoder = this._device.createCommandEncoder({
-      label: "ImageryMipPreparation",
-    });
-    const gen = this.mipmapGenerator;
-    let encoded = 0;
-    for (let i = 0; i < jobs.length; ++i) {
-      const job = jobs[i];
-      // F7 — skip ONLY textures actually destroyed inline (dead now).
-      // Scheduled destroys (`_pendingTextureDestroys`) stay LIVE until after
-      // the upcoming submit — this frame's already-encoded draws may still
-      // sample them, so their mip chains MUST be generated.
-      if (this._inlineDestroyedTextures.has(job.texture)) {
+  /** Compatibility alias for the original F7 inline-destroy notification. */
+  noteInlineTextureDestroy(texture: GPUTexture): void {
+    this.cancelTextureMipGeneration(texture);
+  }
+
+  private _textureMipJobKey(job: PendingTextureMipJob): string {
+    return `${job.format}|${job.mipLevelCount}|${job.options.dimension}|${job.options.baseArrayLayer}|${job.options.arrayLayerCount}`;
+  }
+
+  /** Restore an unsubmitted preparation batch after synchronous encoding fails. */
+  private _requeueTextureMipJobsAfterEncodeFailure(
+    jobs: PendingTextureMipJob[],
+    device: GPUDevice,
+    resourceGeneration: number,
+  ): void {
+    // A generator/pipeline/view/finish failure invalidates the entire prep
+    // command buffer, including jobs encoded successfully before the throw.
+    // Rebuild the pending batch from exact still-live ownership tuples. Merge
+    // any re-entrant enqueues after the original jobs so accepted work keeps
+    // FIFO order while exact duplicates remain coalesced.
+    const candidates = jobs.concat(this._pendingTextureMipJobs);
+    const restored: PendingTextureMipJob[] = [];
+    const keys = new WeakMap<GPUTexture, Set<string>>();
+    for (let i = 0; i < candidates.length; ++i) {
+      const job = candidates[i];
+      if (
+        job.device !== device ||
+        job.resourceGeneration !== resourceGeneration ||
+        this._inlineDestroyedTextures.has(job.texture)
+      ) {
         continue;
       }
-      gen.generateMipmaps(
-        job.texture,
-        job.format,
-        job.mipLevelCount,
-        prepEncoder,
-      );
-      ++encoded;
+      let textureKeys = keys.get(job.texture);
+      if (!textureKeys) {
+        textureKeys = new Set<string>();
+        keys.set(job.texture, textureKeys);
+      }
+      const key = this._textureMipJobKey(job);
+      if (textureKeys.has(key)) {
+        continue;
+      }
+      textureKeys.add(key);
+      restored.push(job);
     }
-    return encoded > 0 ? prepEncoder.finish() : null;
+    this._pendingTextureMipJobs = restored;
+    this._pendingTextureMipJobKeys = keys;
   }
 
   /**
-   * F3 (Batch 686) — immediately encode + submit any pending imagery mip jobs.
+   * Capture-and-clear the pending texture mip jobs and encode them into one
+   * `"TextureMipPreparation"` command buffer. Returns null when there
+   * is nothing to encode. Shared by {@link WebGPUContext#endFrame} and
+   * {@link WebGPUContext#flushPendingTextureMipJobs}.
+   */
+  private _encodePendingTextureMipJobs(): EncodedTextureMipBatch | null {
+    if (this._pendingTextureMipJobs.length === 0) {
+      return null;
+    }
+    const device = this._device;
+    const jobs = this._pendingTextureMipJobs;
+    this._pendingTextureMipJobs = [];
+    this._pendingTextureMipJobKeys = new WeakMap();
+    if (!device) {
+      return null;
+    }
+    const resourceGeneration = this._deviceResourceGeneration;
+    try {
+      let prepEncoder: GPUCommandEncoder | null = null;
+      let gen: WebGPUMipmapGenerator | null = null;
+      let encoded = 0;
+      for (let i = 0; i < jobs.length; ++i) {
+        const job = jobs[i];
+        // A queued texture belongs to one exact physical ownership tuple.
+        if (
+          job.device !== device ||
+          job.resourceGeneration !== resourceGeneration
+        ) {
+          continue;
+        }
+        // F7 — skip ONLY textures actually destroyed inline (dead now).
+        if (this._inlineDestroyedTextures.has(job.texture)) {
+          continue;
+        }
+        if (!prepEncoder) {
+          prepEncoder = device.createCommandEncoder({
+            label: "TextureMipPreparation",
+          });
+          gen = this.mipmapGenerator;
+        }
+        gen!.generateMipmaps(
+          job.texture,
+          job.format,
+          job.mipLevelCount,
+          prepEncoder,
+          job.options,
+        );
+        ++encoded;
+      }
+      return encoded > 0
+        ? {
+            commandBuffer: prepEncoder!.finish(),
+            jobs,
+            device,
+            resourceGeneration,
+          }
+        : null;
+    } catch (error) {
+      this._requeueTextureMipJobsAfterEncodeFailure(
+        jobs,
+        device,
+        resourceGeneration,
+      );
+      throw error;
+    }
+  }
+
+  /** Encode and synchronously submit one pending mip batch transactionally. */
+  private _submitPendingTextureMipJobs(): void {
+    const batch = this._encodePendingTextureMipJobs();
+    if (!batch) {
+      return;
+    }
+    try {
+      batch.device.queue.submit([batch.commandBuffer]);
+    } catch (error) {
+      // A synchronous submit rejection means none of this drained prep batch
+      // is owned by the queue. Restore every still-live exact tuple so a later
+      // frame/flush can retry; owners have already recorded queue acceptance.
+      this._requeueTextureMipJobsAfterEncodeFailure(
+        batch.jobs,
+        batch.device,
+        batch.resourceGeneration,
+      );
+      throw error;
+    }
+  }
+
+  /**
+   * Immediately encode + submit any pending texture mip jobs. This escape
+   * hatch exists only for a renderer that already owns a private mid-frame
+   * submit and must establish ordering before it samples newly realized
+   * textures. Ordinary renderers enqueue work and let `endFrame()` own submit.
+   *
+   * F3 (Batch 686) originally exposed this as an imagery-specific API.
    * MUST be called by every renderer that privately `queue.submit`s work which
    * samples globe imagery textures mid-frame (e.g. the dynamic environment-map
    * capture): without the flush, a texture realized earlier in the same frame
    * would be sampled with mips 1..N still zero-initialized, because the
-   * frame-owned `"ImageryMipPreparation"` submit only happens in `endFrame`.
+   * frame-owned `"TextureMipPreparation"` submit only happens in `endFrame`.
    * No-op when nothing is pending.
    */
-  flushPendingImageryMipJobs(): void {
-    if (this._pendingImageryMipJobs.length === 0) {
+  flushPendingTextureMipJobs(): void {
+    if (this._pendingTextureMipJobs.length === 0) {
       return;
     }
     if (!this._device || this._isDeviceUnavailable) {
-      this._pendingImageryMipJobs.length = 0;
+      this._pendingTextureMipJobs.length = 0;
+      this._pendingTextureMipJobKeys = new WeakMap();
       return;
     }
-    const prepBuffer = this._encodePendingImageryMipJobs();
-    if (prepBuffer) {
-      this._device.queue.submit([prepBuffer]);
-    }
+    this._submitPendingTextureMipJobs();
+  }
+
+  /** Compatibility alias for existing imagery capture callers. */
+  flushPendingImageryMipJobs(): void {
+    this.flushPendingTextureMipJobs();
   }
 
   /**
@@ -2902,7 +3168,7 @@ export class WebGPUContext extends GraphicsContext {
       // idempotent, so pick/empty frames that never began profiling are no-ops.
       this._performanceManager?.endFrame(this._currentCommandEncoder);
 
-      // C9-12A (hardened Batch 686) — encode all imagery mip jobs deferred out
+      // C9-12A/C12-33 — encode all texture mip jobs deferred out
       // of draw emission into one prep encoder and submit it BEFORE the frame
       // encoder as its OWN submit (F8 — same-queue ordering is guaranteed, and
       // an invalid prep buffer can no longer invalidate the whole frame submit).
@@ -2911,10 +3177,7 @@ export class WebGPUContext extends GraphicsContext {
       // samples complete mips. Only textures destroyed INLINE this frame are
       // skipped (F7); scheduled-destroy textures are live through this submit
       // and still get their mips.
-      const prepBuffer = this._encodePendingImageryMipJobs();
-      if (prepBuffer) {
-        this._device.queue.submit([prepBuffer]);
-      }
+      this._submitPendingTextureMipJobs();
 
       // Submit command buffer
       const commandBuffer = this._currentCommandEncoder.finish();
@@ -3711,7 +3974,7 @@ export class WebGPUContext extends GraphicsContext {
       // into the frame encoder, which may sample an imagery texture realized
       // THIS frame whose mip chain is still pending for endFrame. Flush the
       // pending mip jobs first (own submit) so the queue orders mips → draws.
-      this.flushPendingImageryMipJobs();
+      this.flushPendingTextureMipJobs();
       const commandBuffer = this._currentCommandEncoder.finish();
       this._device!.queue.submit([commandBuffer]);
       // Create a fresh encoder for any subsequent operations this frame
@@ -4711,10 +4974,10 @@ export class WebGPUContext extends GraphicsContext {
    * of importing the WebGPU class directly (CLAUDE.md §2: Scene code stays
    * backend-agnostic).
    *
-   * Constructing this object latches `_snapEnabled` on the context, which is
-   * what makes the model feature renderer start emitting snap draw commands.
-   * The call site is lazy (first `Scene.snap()`), so a viewer that never snaps
-   * never pays the pipeline or attachment cost.
+   * Constructing this object latches the `_snapEnabled` ever-used diagnostic.
+   * The model renderer emits derived draws only while the current mini-frame's
+   * `passes.snap` flag is true, so ordinary frames remain allocation-free even
+   * after snapping has been used.
    */
   override createSnapFramebuffer(): WebGPUSnapFramebuffer {
     return new WebGPUSnapFramebuffer(this);
@@ -4722,9 +4985,9 @@ export class WebGPUContext extends GraphicsContext {
 
   /**
    * UP144-SNAP-WEBGPU (C11-212) — true once a `WebGPUSnapFramebuffer` has been
-   * constructed against this context. Read by `WebGPUModelRenderer` to decide
-   * whether to materialize snap draw commands. Latched (never cleared) so a
-   * second snap after a framebuffer resize doesn't have to warm up again.
+   * constructed against this context. This is an ever-used diagnostic latch,
+   * not an ordinary-frame command-demand signal; current demand comes from
+   * `frameState.passes.snap`.
    */
   _snapEnabled: boolean = false;
 
@@ -4743,19 +5006,42 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
+    let firstFinalCleanupError: unknown;
+    let hasFinalCleanupError = false;
+    const continueFinalCleanupAfter = (cleanup: () => void): void => {
+      try {
+        cleanup();
+      } catch (error) {
+        if (!hasFinalCleanupError) {
+          firstFinalCleanupError = error;
+          hasFinalCleanupError = true;
+        }
+      }
+    };
+
+    // Destruction is an irreversible terminal transition. Detach accepted but
+    // unsubmitted mip work and publish the logical destroyed state before any
+    // foreign/native cleanup can throw. This also makes a re-entrant destroy()
+    // a no-op while the first call continues its best-effort drain.
+    this._pendingTextureMipJobs.length = 0;
+    this._pendingTextureMipJobKeys = new WeakMap();
+    this._isDestroyed = true;
+
     // C11-76 — reject readbacks that recorded a copy into the current frame
     // but were waiting for endFrame() to submit it. Context teardown can occur
     // before endFrame (and a pooled GPUDevice may remain alive), so leaving the
     // callbacks queued would strand their promises and retain feature buffers.
     // Abandon the unfinished encoder before destroying those feature owners.
-    this._drainAfterFrameSubmitCallbacks(false);
+    continueFinalCleanupAfter(() =>
+      this._drainAfterFrameSubmitCallbacks(false),
+    );
     this._currentRenderPassEncoder = null;
     this._activePassTarget = null;
     this._currentCommandEncoder = null;
 
     // Unregister from the global ContextRegistry before destroying resources
-    this._unregisterFromRegistry();
-    this._destroyFeatureRenderers();
+    continueFinalCleanupAfter(() => this._unregisterFromRegistry());
+    continueFinalCleanupAfter(() => this._destroyFeatureRenderers());
 
     // Signal in-flight device-loss recovery to abort. We don't await here
     // (destroy() is sync), but flipping the flag prevents the recovered
@@ -4777,163 +5063,174 @@ export class WebGPUContext extends GraphicsContext {
     // leaked transient buffer contents on long-lived multi-viewer apps.
 
     // Destroy viewport quad utility
-    if (this._viewportQuad) {
-      this._viewportQuad.destroy();
-      this._viewportQuad = null;
-    }
+    const viewportQuad = this._viewportQuad;
+    this._viewportQuad = null;
+    continueFinalCleanupAfter(() => viewportQuad?.destroy());
 
     // Destroy mipmap generator
-    if (this._mipmapGenerator) {
-      this._mipmapGenerator.destroy();
-      this._mipmapGenerator = null;
-    }
+    const mipmapGenerator = this._mipmapGenerator;
+    this._mipmapGenerator = null;
+    continueFinalCleanupAfter(() => mipmapGenerator?.destroy());
 
     // Destroy advanced infrastructure singletons
-    if (this._renderBundleManager) {
-      this._renderBundleManager.destroy();
-      this._renderBundleManager = null;
-    }
-    if (this._timestampProfiler) {
-      this._timestampProfiler.destroy();
-      this._timestampProfiler = null;
-    }
-    if (this._storageBufferPool) {
-      this._storageBufferPool.destroy();
-      this._storageBufferPool = null;
-    }
-    if (this._indirectDrawManager) {
-      this._indirectDrawManager.destroy();
-      this._indirectDrawManager = null;
-    }
-    if (this._gpuCuller) {
-      this._gpuCuller.destroy();
-      this._gpuCuller = null;
-    }
+    const renderBundleManager = this._renderBundleManager;
+    this._renderBundleManager = null;
+    continueFinalCleanupAfter(() => renderBundleManager?.destroy());
+    const timestampProfiler = this._timestampProfiler;
+    this._timestampProfiler = null;
+    continueFinalCleanupAfter(() => timestampProfiler?.destroy());
+    const storageBufferPool = this._storageBufferPool;
+    this._storageBufferPool = null;
+    continueFinalCleanupAfter(() => storageBufferPool?.destroy());
+    const indirectDrawManager = this._indirectDrawManager;
+    this._indirectDrawManager = null;
+    continueFinalCleanupAfter(() => indirectDrawManager?.destroy());
+    const gpuCuller = this._gpuCuller;
+    this._gpuCuller = null;
+    continueFinalCleanupAfter(() => gpuCuller?.destroy());
     // Batch 222 — destroy the auxiliary culler instances added in
     // Batches 218 (translucent), 220 (per-opaque-frustum), and 221
     // (per-cascade). Without this they leak on context destruction
     // — at peak (1 translucent + 3 per-frustum + 4 per-cascade)
     // that's ~4 MB of orphaned VRAM per leaked context.
-    if (this._gpuCullerTranslucent) {
-      this._gpuCullerTranslucent.destroy();
-      this._gpuCullerTranslucent = null;
-    }
-    for (const culler of this._gpuCullerByFrustum.values()) {
-      culler.destroy();
-    }
+    const translucentCuller = this._gpuCullerTranslucent;
+    this._gpuCullerTranslucent = null;
+    continueFinalCleanupAfter(() => translucentCuller?.destroy());
+    const frustumCullers = Array.from(this._gpuCullerByFrustum.values());
     this._gpuCullerByFrustum.clear();
     this._gpuCullerByFrustumInitializing.clear();
-    for (const culler of this._gpuCullerByCascade.values()) {
-      culler.destroy();
+    for (const culler of frustumCullers) {
+      continueFinalCleanupAfter(() => culler.destroy());
     }
+    const cascadeCullers = Array.from(this._gpuCullerByCascade.values());
     this._gpuCullerByCascade.clear();
     this._gpuCullerByCascadeInitializing.clear();
-    if (this._pointCloudLOD) {
-      this._pointCloudLOD.destroy();
-      this._pointCloudLOD = null;
+    for (const culler of cascadeCullers) {
+      continueFinalCleanupAfter(() => culler.destroy());
     }
-    if (this._csmRenderer) {
-      this._csmRenderer.destroy();
-      this._csmRenderer = null;
-    }
-    if (this._bufferMapper) {
-      this._bufferMapper.destroy();
-      this._bufferMapper = null;
-    }
-    if (this._uniformAllocator) {
-      this._uniformAllocator.destroy();
-      this._uniformAllocator = null;
-    }
+    const pointCloudLOD = this._pointCloudLOD;
+    this._pointCloudLOD = null;
+    continueFinalCleanupAfter(() => pointCloudLOD?.destroy());
+    const csmRenderer = this._csmRenderer;
+    this._csmRenderer = null;
+    continueFinalCleanupAfter(() => csmRenderer?.destroy());
+    const bufferMapper = this._bufferMapper;
+    this._bufferMapper = null;
+    continueFinalCleanupAfter(() => bufferMapper?.destroy());
+    // The model arena's bind groups reference this context's ring pages. Drop
+    // those references before destroying the allocator, and detach both
+    // logical owners before invoking native cleanup so a throw cannot strand
+    // a pooled lease or isolated GPUDevice.
+    const modelCameraArena = this._modelCameraArena;
+    this._modelCameraArena = null;
+    continueFinalCleanupAfter(() => modelCameraArena?.invalidate());
+    const uniformAllocator = this._uniformAllocator;
+    this._uniformAllocator = null;
+    continueFinalCleanupAfter(() => uniformAllocator?.destroy());
 
     // Context-owned textures/caches must be released explicitly because a
     // pooled GPUDevice may outlive this context (including failed creates).
-    destroyEnvironmentalEffectsCompositor(this);
-    this._depthTexture?.destroy();
+    continueFinalCleanupAfter(() =>
+      destroyEnvironmentalEffectsCompositor(this),
+    );
+    const depthTexture = this._depthTexture;
     this._depthTexture = null;
     this._depthTextureView = null;
     this._depthOnlyTextureView = null;
-    this._defaultTexture?.destroy();
+    continueFinalCleanupAfter(() => depthTexture?.destroy());
+    const defaultTexture = this._defaultTexture;
     this._defaultTexture = undefined;
-    this._defaultEmissiveTexture?.destroy();
+    continueFinalCleanupAfter(() => defaultTexture?.destroy());
+    const defaultEmissiveTexture = this._defaultEmissiveTexture;
     this._defaultEmissiveTexture = undefined;
-    this._defaultNormalTexture?.destroy();
+    continueFinalCleanupAfter(() => defaultEmissiveTexture?.destroy());
+    const defaultNormalTexture = this._defaultNormalTexture;
     this._defaultNormalTexture = undefined;
-    this._defaultCubeMap?.destroy();
+    continueFinalCleanupAfter(() => defaultNormalTexture?.destroy());
+    const defaultCubeMap = this._defaultCubeMap;
     this._defaultCubeMap = undefined;
-    for (const texture of this._pendingTextureDestroys) {
-      texture.destroy();
+    continueFinalCleanupAfter(() => defaultCubeMap?.destroy());
+    const pendingTextureDestroys = this._pendingTextureDestroys;
+    this._pendingTextureDestroys = [];
+    for (const texture of pendingTextureDestroys) {
+      continueFinalCleanupAfter(() => texture.destroy());
     }
-    this._pendingTextureDestroys.length = 0;
-    // C9-12A — drop any undelivered imagery mip jobs on teardown.
-    this._pendingImageryMipJobs.length = 0;
-    this._environmentDemandRegistry.reset(this._deviceResourceGeneration);
-    this._environmentRefreshScheduler.reset(this._deviceResourceGeneration);
-    this._environmentTargetPool?.destroy();
+    continueFinalCleanupAfter(() =>
+      this._environmentDemandRegistry.reset(this._deviceResourceGeneration),
+    );
+    continueFinalCleanupAfter(() =>
+      this._environmentRefreshScheduler.reset(this._deviceResourceGeneration),
+    );
+    const environmentTargetPool = this._environmentTargetPool;
     this._environmentTargetPool = null;
+    continueFinalCleanupAfter(() => environmentTargetPool?.destroy());
 
-    this._shaderCache.destroy();
+    continueFinalCleanupAfter(() => this._shaderCache.destroy());
     const textureCache = this._textureCache as { destroy?: () => void };
-    textureCache.destroy?.();
+    continueFinalCleanupAfter(() => textureCache.destroy?.());
 
-    this._asyncResourceTelemetry?.destroy();
+    const asyncResourceTelemetry = this._asyncResourceTelemetry;
     this._asyncResourceTelemetry = null;
-    this._asyncResources?.reset("context-destroyed");
+    continueFinalCleanupAfter(() => asyncResourceTelemetry?.destroy());
+    const asyncResources = this._asyncResources;
     this._asyncResources = null;
-    this.clearAllHDRFallbackListeners();
+    continueFinalCleanupAfter(() => asyncResources?.reset("context-destroyed"));
+    continueFinalCleanupAfter(() => this.clearAllHDRFallbackListeners());
 
     // Clear buffer pools (drops device-owned buffers back for GC).
-    this._bufferPool.clear();
+    continueFinalCleanupAfter(() => this._bufferPool.clear());
     this._uniformBufferPool = [];
 
     // Clear caches that reference device-owned handles.
-    this._samplerCache.clear();
-    this._bindGroupLayoutCache.clear();
-    this._bindGroupCache.clear();
+    continueFinalCleanupAfter(() => this._samplerCache.clear());
+    continueFinalCleanupAfter(() => this._bindGroupLayoutCache.clear());
+    continueFinalCleanupAfter(() => this._bindGroupCache.clear());
 
     // Drop device-invalidation subscribers so their closures release
     // immediately even if a long-lived holder keeps this Context
     // reference alive. Batch 130 — explicit lifecycle cleanup that the
     // pre-extraction `Set<() => void>` field relied on GC for.
-    this._deviceInvalidationBus.clear();
+    continueFinalCleanupAfter(() => this._deviceInvalidationBus.clear());
 
     // Drop the resource-cache registry's registered closures so they
     // don't keep this Context's own fields alive past destroy.
     // (Batch 131.)
-    this._cacheRegistry.clear();
+    continueFinalCleanupAfter(() => this._cacheRegistry.clear());
 
     // Drop the feature-flags enabled set. (Batch 132.) The Set is
     // small and would die with the Context anyway; explicit clear
     // matches the lifecycle pattern used by the bus + cache registry.
-    this._featureFlags.clear();
+    continueFinalCleanupAfter(() => this._featureFlags.clear());
 
     // Remove this context's lease from the device-level shader validation
     // wrapper. The last lease restores the device's original method, so a
     // failed create cannot leave a closure rooted in a shared pooled device.
-    this._releaseShaderValidation?.();
+    continueFinalCleanupAfter(() => this._releaseShaderValidation?.());
 
-    // Compatibility buffers are context-owned even when the physical device
-    // is pooled. Drain every registered handle before releasing this
-    // context's device lease; another context retaining the same GPUDevice
-    // must not keep these otherwise-unbound allocations alive.
-    this._gl.destroyCompatibilityBufferHandles();
+    // Compatibility resources are context-owned even when the physical device
+    // is pooled. Drain every registered handle before releasing this context's
+    // device lease; another context retaining the same GPUDevice remains
+    // independent.
+    continueFinalCleanupAfter(() =>
+      this._gl.destroyCompatibilityTextureHandles(),
+    );
+    continueFinalCleanupAfter(() =>
+      this._gl.destroyCompatibilityBufferHandles(),
+    );
 
     // Release this context's lease on device-level effects resources before
     // returning a pooled device. The final context owner drains buffers and
     // placeholder textures; earlier owners leave the shared cache intact.
     if (this._device) {
-      releaseEffectsPlaceholderCacheForContext(this._device, this);
+      continueFinalCleanupAfter(() =>
+        releaseEffectsPlaceholderCacheForContext(this._device!, this),
+      );
     }
 
     // Stop presenting from this canvas before releasing the device lease. The
     // final pooled owner destroys the GPUDevice synchronously, so unconfiguring
     // afterwards would leave presentation teardown racing a dead device.
-    try {
-      this._context?.unconfigure();
-    } catch {
-      // A lost canvas can already be unconfigured by the browser. Device and
-      // pool ownership still has to be released even if presentation teardown
-      // reports a late error.
-    }
+    continueFinalCleanupAfter(() => this._context?.unconfigure());
 
     // NOW destroy the device — everything that needed it has already run.
     // AUDIT_2026_05_02 C.1 (Batch 135) — when the device came from the
@@ -4943,23 +5240,33 @@ export class WebGPUContext extends GraphicsContext {
     // injection or the recovery path before it switches to the pool),
     // call `destroy()` directly because no pool refcount exists for it.
     if (this._device) {
-      if (this._deviceFromPool) {
-        WebGPUDevicePool.instance.releaseDevice(this._device);
-      } else if (!this._isTerminallyLost) {
-        this._device.destroy();
-      }
+      const device = this._device;
+      const deviceFromPool = this._deviceFromPool;
+      const terminallyLost = this._isTerminallyLost;
+      this._device = null;
+      this._deviceFromPool = false;
+      continueFinalCleanupAfter(() => {
+        if (deviceFromPool) {
+          WebGPUDevicePool.instance.releaseDevice(device);
+        } else if (!terminallyLost) {
+          device.destroy();
+        }
+      });
       // A terminally-lost isolated device was already destroyed by the
       // browser (or explicitly by the caller). Do not issue a second destroy;
       // some implementations reject it during loss teardown.
-      this._device = null;
-      this._deviceFromPool = false;
     }
 
     // Clear references
     this._adapter = null;
     this._context = null;
     this._isTerminallyLost = false;
-    this._isDestroyed = true;
+    // `_isDestroyed` was published before cleanup began so any early native
+    // failure could not leave a logically live context.
+
+    if (hasFinalCleanupError) {
+      throw firstFinalCleanupError;
+    }
   }
 
   // ====================================================================================
@@ -5267,7 +5574,7 @@ export class WebGPUContext extends GraphicsContext {
     sourceOrigin?: GPUOrigin3D,
     destinationOrigin?: GPUOrigin3D,
     copySize?: GPUExtent3D,
-  ): void {
+  ): boolean {
     if (this._isDeviceUnavailable) {
       //>>includeStart('debug', pragmas.debug);
       throw new DeveloperError(
@@ -5276,7 +5583,7 @@ export class WebGPUContext extends GraphicsContext {
           : "Context's WebGPU device is terminally lost.",
       );
       //>>includeEnd('debug');
-      return;
+      return false;
     }
     //>>includeStart('debug', pragmas.debug);
     if (!this._currentCommandEncoder) {
@@ -5285,15 +5592,155 @@ export class WebGPUContext extends GraphicsContext {
       );
     }
     //>>includeEnd('debug');
+    if (!this._currentCommandEncoder) {
+      return false;
+    }
 
-    // Default values
-    const srcOrigin = sourceOrigin ?? { x: 0, y: 0, z: 0 };
-    const dstOrigin = destinationOrigin ?? { x: 0, y: 0, z: 0 };
-    const size = copySize ?? {
-      width: source.width,
-      height: source.height,
-      depthOrArrayLayers: 1,
+    // Texture copies are encoder commands and cannot be recorded while a
+    // render pass is open. This bounded compatibility path must not silently
+    // split a scene pass: callers that need that broader conversion must route
+    // through the resource-command scheduler. Fail closed until then.
+    if (this._currentRenderPassEncoder) {
+      return false;
+    }
+    const sourceUsage = source.usage;
+    const destinationUsage = destination.usage;
+    if (
+      (sourceUsage & GPUTextureUsage.COPY_SRC) === 0 ||
+      (destinationUsage & GPUTextureUsage.COPY_DST) === 0
+    ) {
+      return false;
+    }
+    const sourceFormat = source.format;
+    const destinationFormat = destination.format;
+    const srgbPair =
+      (sourceFormat === "rgba8unorm" &&
+        destinationFormat === "rgba8unorm-srgb") ||
+      (sourceFormat === "rgba8unorm-srgb" &&
+        destinationFormat === "rgba8unorm") ||
+      (sourceFormat === "bgra8unorm" &&
+        destinationFormat === "bgra8unorm-srgb") ||
+      (sourceFormat === "bgra8unorm-srgb" &&
+        destinationFormat === "bgra8unorm");
+    if (sourceFormat !== destinationFormat && !srgbPair) {
+      return false;
+    }
+    // Block-compressed edge alignment needs richer descriptors than this API
+    // carries (and compatibility devices prohibit those copies entirely).
+    // Reject it instead of recording a command that can invalidate the entire
+    // eventual scene submission. Same-format depth/stencil copies using the
+    // default `aspect: "all"` remain valid and are intentionally preserved.
+    const requiresExtendedCopyValidation = (
+      format: GPUTextureFormat,
+    ): boolean =>
+      format.startsWith("bc") ||
+      format.startsWith("etc2") ||
+      format.startsWith("eac") ||
+      format.startsWith("astc");
+    if (
+      requiresExtendedCopyValidation(sourceFormat) ||
+      requiresExtendedCopyValidation(destinationFormat)
+    ) {
+      return false;
+    }
+    if (source.sampleCount !== 1 || destination.sampleCount !== 1) {
+      return false;
+    }
+
+    const readOrigin = (
+      origin: GPUOrigin3D | undefined,
+    ): { x: number; y: number; z: number } | undefined => {
+      if (!origin) {
+        return { x: 0, y: 0, z: 0 };
+      }
+      const sequence = Array.isArray(origin) ? origin : undefined;
+      const record = origin as GPUOrigin3DDict;
+      const normalized = {
+        x: sequence?.[0] ?? record.x ?? 0,
+        y: sequence?.[1] ?? record.y ?? 0,
+        z: sequence?.[2] ?? record.z ?? 0,
+      };
+      return Number.isInteger(normalized.x) &&
+        Number.isInteger(normalized.y) &&
+        Number.isInteger(normalized.z) &&
+        normalized.x >= 0 &&
+        normalized.y >= 0 &&
+        normalized.z >= 0
+        ? normalized
+        : undefined;
     };
+    const readExtent = (
+      extent: GPUExtent3D | undefined,
+    ):
+      | { width: number; height: number; depthOrArrayLayers: number }
+      | undefined => {
+      if (!extent) {
+        return {
+          width: source.width,
+          height: source.height,
+          depthOrArrayLayers: 1,
+        };
+      }
+      const sequence = Array.isArray(extent) ? extent : undefined;
+      const record = extent as GPUExtent3DDict;
+      const normalized = {
+        width: sequence?.[0] ?? record.width,
+        height: sequence?.[1] ?? record.height ?? 1,
+        depthOrArrayLayers: sequence?.[2] ?? record.depthOrArrayLayers ?? 1,
+      };
+      return Number.isInteger(normalized.width) &&
+        Number.isInteger(normalized.height) &&
+        Number.isInteger(normalized.depthOrArrayLayers) &&
+        normalized.width > 0 &&
+        normalized.height > 0 &&
+        normalized.depthOrArrayLayers > 0
+        ? normalized
+        : undefined;
+    };
+
+    const srcOrigin = readOrigin(sourceOrigin);
+    const dstOrigin = readOrigin(destinationOrigin);
+    const size = readExtent(copySize);
+    if (!srcOrigin || !dstOrigin || !size) {
+      return false;
+    }
+    const dimensions = [
+      source.width,
+      source.height,
+      source.depthOrArrayLayers,
+      destination.width,
+      destination.height,
+      destination.depthOrArrayLayers,
+    ];
+    if (
+      !dimensions.every(
+        (dimension) => Number.isInteger(dimension) && dimension > 0,
+      )
+    ) {
+      return false;
+    }
+    if (
+      srcOrigin.x + size.width > source.width ||
+      srcOrigin.y + size.height > source.height ||
+      srcOrigin.z + size.depthOrArrayLayers > source.depthOrArrayLayers ||
+      dstOrigin.x + size.width > destination.width ||
+      dstOrigin.y + size.height > destination.height ||
+      dstOrigin.z + size.depthOrArrayLayers > destination.depthOrArrayLayers
+    ) {
+      return false;
+    }
+    if (source === destination) {
+      // Copy validation is defined over subresource sets, not intersecting
+      // pixel rectangles. At mip 0/all-aspect, distinct 2D array layers are
+      // the only same-texture case this API can prove disjoint. A 1D/3D copy
+      // remains within one mip subresource even when its coordinates differ.
+      const layerRangesOverlap =
+        srcOrigin.z < dstOrigin.z + size.depthOrArrayLayers &&
+        dstOrigin.z < srcOrigin.z + size.depthOrArrayLayers;
+      if (source.dimension !== "2d" || layerRangesOverlap) {
+        return false;
+      }
+    }
 
     // Perform copy
     this._currentCommandEncoder.copyTextureToTexture(
@@ -5307,6 +5754,7 @@ export class WebGPUContext extends GraphicsContext {
       },
       size,
     );
+    return true;
   }
 
   /**
@@ -5333,8 +5781,8 @@ export class WebGPUContext extends GraphicsContext {
     dstY: number,
     width: number,
     height: number,
-  ): void {
-    this.copyTexture(
+  ): boolean {
+    return this.copyTexture(
       source,
       destination,
       { x: srcX, y: srcY, z: 0 },
@@ -5368,39 +5816,74 @@ export class WebGPUContext extends GraphicsContext {
     if (this._isDeviceUnavailable || !this._device) {
       return null;
     }
+    if (!supportsExternalImageCopyDestination(this._device, format)) {
+      return null;
+    }
 
     const width =
       "width" in source ? source.width : (source as HTMLCanvasElement).width;
     const height =
       "height" in source ? source.height : (source as HTMLCanvasElement).height;
-    const mipLevelCount = generateMipmaps
+    const canGenerateMipmaps =
+      generateMipmaps && supportsWebGPUMipmapGeneration(this._device, format);
+    const mipLevelCount = canGenerateMipmaps
       ? Math.floor(Math.log2(Math.max(width, height))) + 1
       : 1;
 
+    const device = this._device;
+    const resourceGeneration = this._deviceResourceGeneration;
     const texture = WebGPUTexture.create2D(
-      this._device,
+      device,
       width,
       height,
       format,
       mipLevelCount,
       "Texture from Image",
+      GPUTextureUsage.TEXTURE_BINDING |
+        GPUTextureUsage.COPY_DST |
+        GPUTextureUsage.RENDER_ATTACHMENT,
+    );
+    texture.setBeforeDestroyCallback((candidate) =>
+      this.cancelTextureMipGeneration(candidate),
     );
 
-    // Copy image to texture using queue.copyExternalImageToTexture
-    if (this._device.queue) {
-      this._device.queue.copyExternalImageToTexture(
+    try {
+      device.queue.copyExternalImageToTexture(
         { source: source as ImageBitmap },
         { texture: texture.texture },
         { width, height },
       );
-    }
 
-    // Generate mipmaps if requested and texture has multiple mip levels
-    if (generateMipmaps && mipLevelCount > 1) {
-      texture.generateMipmaps(this.mipmapGenerator);
+      // The upload and mip job must stay on the same physical ownership tuple.
+      if (
+        this._device !== device ||
+        this._deviceResourceGeneration !== resourceGeneration ||
+        this._isDeviceUnavailable
+      ) {
+        texture.destroy();
+        return null;
+      }
+      if (
+        canGenerateMipmaps &&
+        mipLevelCount > 1 &&
+        !this.enqueueTextureMipGeneration(
+          texture.texture,
+          format,
+          mipLevelCount,
+        )
+      ) {
+        texture.destroy();
+        return null;
+      }
+      return texture;
+    } catch (error) {
+      try {
+        texture.destroy();
+      } catch {
+        // Preserve the upload/publication error; retirement is cleanup-only.
+      }
+      throw error;
     }
-
-    return texture;
   }
 
   /**
@@ -5433,6 +5916,9 @@ export class WebGPUContext extends GraphicsContext {
     if (this._isDeviceUnavailable || !this._device) {
       return null;
     }
+    if (!supportsExternalImageCopyDestination(this._device, format)) {
+      return null;
+    }
 
     const { WebGPUImageUpload } = await import("./WebGPUImageUpload.js");
     // NEW-WEBGPU-PIPELINE-READY-SIGNAL (Phase 5) — pass the monitor so
@@ -5444,49 +5930,95 @@ export class WebGPUContext extends GraphicsContext {
       this.asyncResources,
       "Texture from Image (async)",
     );
+    const ownedDecodedSurface =
+      decoded !== source && "close" in decoded
+        ? (decoded as ImageBitmap)
+        : null;
 
-    // Decoding can outlive a terminal loss. Do not allocate or upload through
-    // the retained dead device during the short interval before teardown.
-    if (this._isDeviceUnavailable || !this._device) {
-      if (decoded !== source && "close" in decoded) {
-        decoded.close();
+    try {
+      // Decoding can outlive a terminal loss. Do not allocate or upload through
+      // the retained dead device during the short interval before teardown.
+      if (this._isDeviceUnavailable || !this._device) {
+        return null;
       }
-      return null;
+
+      // After EXIF rotation the bitmap dimensions can be swapped (90°/270°), so
+      // pull width/height from the decoded surface, not the original source.
+      const width = (decoded as { width: number }).width;
+      const height = (decoded as { height: number }).height;
+      const canGenerateMipmaps =
+        generateMipmaps && supportsWebGPUMipmapGeneration(this._device, format);
+      const mipLevelCount = canGenerateMipmaps
+        ? Math.floor(Math.log2(Math.max(width, height))) + 1
+        : 1;
+
+      const device = this._device;
+      const resourceGeneration = this._deviceResourceGeneration;
+      const texture = WebGPUTexture.create2D(
+        device,
+        width,
+        height,
+        format,
+        mipLevelCount,
+        "Texture from Image (async)",
+        GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+      );
+      texture.setBeforeDestroyCallback((candidate) =>
+        this.cancelTextureMipGeneration(candidate),
+      );
+
+      try {
+        await WebGPUImageUpload.uploadImageToTexture(
+          device,
+          decoded,
+          texture.texture,
+          {
+            respectEXIF: false, // already decoded above
+            flipY: options.flipY,
+            premultipliedAlpha: options.premultipliedAlpha,
+          },
+        );
+
+        if (
+          this._device !== device ||
+          this._deviceResourceGeneration !== resourceGeneration ||
+          this._isDeviceUnavailable
+        ) {
+          texture.destroy();
+          return null;
+        }
+        if (
+          canGenerateMipmaps &&
+          mipLevelCount > 1 &&
+          !this.enqueueTextureMipGeneration(
+            texture.texture,
+            format,
+            mipLevelCount,
+          )
+        ) {
+          texture.destroy();
+          return null;
+        }
+        return texture;
+      } catch (error) {
+        try {
+          texture.destroy();
+        } catch {
+          // Preserve the upload/publication error; retirement is cleanup-only.
+        }
+        throw error;
+      }
+    } finally {
+      if (ownedDecodedSurface) {
+        try {
+          ownedDecodedSurface.close();
+        } catch {
+          // Decode surfaces are temporary cleanup; preserve upload outcomes.
+        }
+      }
     }
-
-    // After EXIF rotation the bitmap dimensions can be swapped (90°/270°), so
-    // pull width/height from the decoded surface, not the original source.
-    const width = (decoded as { width: number }).width;
-    const height = (decoded as { height: number }).height;
-    const mipLevelCount = generateMipmaps
-      ? Math.floor(Math.log2(Math.max(width, height))) + 1
-      : 1;
-
-    const texture = WebGPUTexture.create2D(
-      this._device,
-      width,
-      height,
-      format,
-      mipLevelCount,
-      "Texture from Image (async)",
-    );
-
-    await WebGPUImageUpload.uploadImageToTexture(
-      this._device,
-      decoded,
-      texture.texture,
-      {
-        respectEXIF: false, // already decoded above
-        flipY: options.flipY,
-        premultipliedAlpha: options.premultipliedAlpha,
-      },
-    );
-
-    if (generateMipmaps && mipLevelCount > 1) {
-      texture.generateMipmaps(this.mipmapGenerator);
-    }
-
-    return texture;
   }
 
   /**
@@ -5518,17 +6050,6 @@ export class WebGPUContext extends GraphicsContext {
   get mipmapGenerator(): WebGPUMipmapGenerator {
     if (!this._mipmapGenerator && this._device && !this._isDeviceUnavailable) {
       this._mipmapGenerator = new WebGPUMipmapGenerator(this._device);
-      // C-R12 (Batch 33) — on device-loss, drop the reference so the
-      // next access rebuilds against the recovered device. Calling
-      // `destroy()` on the stale instance is pointless — its internal
-      // GPUBuffer.destroy() calls fail against the dead device anyway.
-      this.onDeviceInvalidated(() => {
-        this._mipmapGenerator = null;
-        // C9-12A — drop any imagery mip jobs queued for the lost device;
-        // encoding them with the recovered device's generator would be a
-        // cross-device validation error. Their textures die with the device.
-        this._pendingImageryMipJobs.length = 0;
-      });
     }
     return this._mipmapGenerator!;
   }
@@ -5549,6 +6070,10 @@ export class WebGPUContext extends GraphicsContext {
   private _indirectDrawManager: WebGPUIndirectDrawManager | null = null;
   private _bufferMapper: WebGPUBufferMapper | null = null;
   private _performanceManager: WebGPUPerformanceManager | null = null;
+  // C11-195 — mutable bind-group state is context-owned because every cached
+  // group references pages from this context's uniform allocator. Immutable
+  // cameraBGL remains shared through WebGPUModelDeviceResources.
+  private _modelCameraArena: WebGPUModelCameraArena | null = null;
   private _uniformAllocator: WebGPURingBufferAllocator | null = null;
   // B220-O1 (Batch 225) — defensive cap on auxiliary culler allocation.
   // Moved to `WebGPUContextCullerPool.ts` as `MAX_AUX_CULLER_INDEX` (Q35
@@ -5648,6 +6173,22 @@ export class WebGPUContext extends GraphicsContext {
       });
     }
     return this._uniformAllocator;
+  }
+
+  /**
+   * Context-local model camera/light bind-group arena. Kept beside the uniform
+   * allocator because its cached groups reference that allocator's pages.
+   * Multiple contexts may share a GPUDevice and immutable model layouts, but
+   * they must never share this mutable page-identity cache.
+   */
+  get modelCameraArena(): WebGPUModelCameraArena | null {
+    if (this._isDeviceUnavailable) {
+      return null;
+    }
+    if (!this._modelCameraArena && this._device) {
+      this._modelCameraArena = new WebGPUModelCameraArena();
+    }
+    return this._modelCameraArena;
   }
 
   /**
@@ -6583,6 +7124,14 @@ export class WebGPUContext extends GraphicsContext {
       .register("uniformBufferPool", () => {
         this._uniformBufferPool = [];
       })
+      .register("modelCameraArena", () => {
+        // Detach before invalidation: even if a fallback buffer throws during
+        // destroy, the next frame cannot reacquire this old-page arena. The
+        // registry continues to uniformAllocator below independently.
+        const modelCameraArena = this._modelCameraArena;
+        this._modelCameraArena = null;
+        modelCameraArena?.invalidate();
+      })
       .register("uniformAllocator", () => {
         // Every page belongs to the current physical GPUDevice generation.
         // A recovered device must never receive a bind group backed by an
@@ -6645,6 +7194,13 @@ export class WebGPUContext extends GraphicsContext {
    */
   // Public underscore: shared with the device-loss host-adapter (Batch 143).
   public _clearAllCaches(previousDevice?: GPUDevice | null): void {
+    // Jobs are exact `(GPUDevice, resourceGeneration)` work. Recovery swaps
+    // `_device` before entering this hook, so discard the old tuple before any
+    // cache/subscriber can lazily create resources on the replacement device.
+    // This must not depend on `mipmapGenerator` ever having been touched.
+    this._pendingTextureMipJobs.length = 0;
+    this._pendingTextureMipJobKeys = new WeakMap();
+
     // A device-loss edge abandons the current encoder permanently. Reject
     // frame-owned readbacks immediately; request-render scenes may never start
     // another frame, and terminal loss has no future frame by definition.
@@ -6690,15 +7246,34 @@ export class WebGPUContext extends GraphicsContext {
     )._webgpuSceneCaptureModels = null;
 
     // Stable WebGL-shaped handles survive recovery, but their native buffers
-    // belong to the old device generation. Release every registered native
-    // allocation, including unbound buffers that the two binding slots cannot
-    // reach. Later bufferData/bufferSubData calls realize the same handles on
-    // the recovered device.
-    this._gl.invalidateCompatibilityBufferHandles();
+    // and textures belong to the old device generation. Release every
+    // registered native allocation, including unbound resources. Texture
+    // sources are deliberately not retained by the compatibility layer;
+    // higher-level owners must recreate them after recovery.
+    let firstLostNativeCleanupError: unknown;
+    let hasLostNativeCleanupError = false;
+    const continueLostNativeCleanupAfter = (cleanup: () => void): void => {
+      try {
+        cleanup();
+      } catch (error) {
+        if (!hasLostNativeCleanupError) {
+          firstLostNativeCleanupError = error;
+          hasLostNativeCleanupError = true;
+        }
+      }
+    };
+    continueLostNativeCleanupAfter(() =>
+      this._gl.invalidateCompatibilityTextureHandles(),
+    );
+    continueLostNativeCleanupAfter(() =>
+      this._gl.invalidateCompatibilityBufferHandles(),
+    );
 
     // Recovery has already swapped `_device` before reaching this hook.
     // Move the validation lease off the lost device and onto the recovered
     // generation; `_installShaderValidation` releases the old lease first.
+    // Candidate setup remains fatal: unlike old-native destruction, failure
+    // here means the replacement device is not fully initialized.
     if (this._device) {
       this._installShaderValidation(this._device);
     }
@@ -6709,7 +7284,9 @@ export class WebGPUContext extends GraphicsContext {
     // destroyed only after every context has released it; the new entry must
     // never be force-cleared here.
     if (previousDevice && previousDevice !== this._device) {
-      releaseEffectsPlaceholderCacheForContext(previousDevice, this);
+      continueLostNativeCleanupAfter(() =>
+        releaseEffectsPlaceholderCacheForContext(previousDevice, this),
+      );
     }
     if (this._device) {
       retainEffectsPlaceholderCacheForContext(this._device, this);
@@ -6717,9 +7294,10 @@ export class WebGPUContext extends GraphicsContext {
 
     // The replacement device may expose byte-identical formats and limits, but
     // none of its native objects are compatible with the previous device.
-    // Advance only after all throwing cache/lease work has completed, and
-    // independently from the scene-format generation, so command owners cannot
-    // mistake "same format" for "same resource lifetime".
+    // Advance even if a lost native's destroy() threw. Every compatibility
+    // handle detached its old tuple before destruction, so leaving the epoch
+    // unchanged would make recovery consumers mistake failure reporting for a
+    // still-valid resource lifetime.
     this._deviceResourceGeneration += 1;
     this._environmentDemandRegistry.reset(this._deviceResourceGeneration);
     // C11-193 — every queued refresh described work against the lost device.
@@ -6744,6 +7322,17 @@ export class WebGPUContext extends GraphicsContext {
     // (effect bind-group caches, module-level WeakMaps) state that
     // the context can't reach directly.
     this._fireDeviceInvalidated();
+
+    if (hasLostNativeCleanupError) {
+      // Cleanup of objects owned by an already-lost device is diagnostic only.
+      // Propagating it would make DeviceLossRecovery roll back an otherwise
+      // healthy candidate after the new generation was already published.
+      // lint-debug-pragmas-allow: recovery cleanup diagnostic must survive production builds
+      console.warn(
+        "[WebGPU] Recovered with an old-device cleanup error:",
+        firstLostNativeCleanupError,
+      );
+    }
   }
 
   /**

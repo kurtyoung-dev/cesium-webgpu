@@ -39,12 +39,14 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ## 2026-08-01 — MOON-ALBEDO-MIP-LOD (surfaced during C12-24, the 2K NASA albedo ingest)
 
-- **MOON-ALBEDO-MIP-LOD — OPEN, correctness/quality (blocks any moon albedo above 2K, and makes an existing shimmer worse at the current default).** Neither backend mipmaps the moon texture. WebGL: `Scene/Material.js` never calls `generateMipmap()` and the sampler is plain `LINEAR` — the gap is in the shared Material image path, not in `Moon`/`EllipsoidPrimitive`, so every image material shares it. WebGPU: `WebGPUEnvironmentRenderer._loadRealMoonTexture` creates the texture with the default `mipLevelCount` 1, the sampler (same file, moon cache init) sets no `mipmapFilter`, and `Shaders/WebGPU/Environment/Moon.wgsl` deliberately samples with `textureSampleLevel(tex, samp, uv, 0.0)` because `computeEllipsoidColor` is called from **non-uniform control flow** (the inside-face branch depends on the outside-face result), which forbids implicit-derivative `textureSample`.
+- **MOON-ALBEDO-MIP-LOD — IMPLEMENTED / ACCEPTANCE OPEN as C12-33 (2026-08-02).** The premise above was corrected after C12-35: WebGL Moon realization is private and no generic Material change is required. Both backends now allocate legal full chains where supported, use trilinear samplers, compute longitude-unwrapped screen derivatives before discard, and sample explicitly with `textureGrad` / `textureSampleGrad`. Differently sized albedo and normal textures still select independent hardware LOD because normalized gradients are scaled by each texture's dimensions. WebGL1 NPOT/extension fallbacks remain single-level. WebGPU generation is coalesced into the context's frame-owned preparation submission with exact device/generation ownership; no Moon-private submit exists. Code review, package TypeScript, build, and focused Node are green. The row remains open for focused Jasmine plus five paired real-Edge `normal`/`force-lod0` moving runs, calibrated per-lane thresholds, and mandatory seam PNG inspection.
   - **Why it now matters:** C12-24 raised the default albedo from 256×128 to 2048×1024. At the *default* camera the moon disc is only ~16 px across (0.52° in a ~36° vertical FOV at 1080 p) while the visible hemisphere of a 2048-wide equirect is 1024 texels — roughly **64:1 minification sampled at mip 0**, versus ~8:1 for the old map. That is a pre-existing aliasing/shimmer condition made measurably worse under camera motion, even though the swap is a large win at the zoomed views C12-24 was raised for (~5.4:1 at a 190 px disc vs the old map's 0.67 texels/px). Mitigation available today with zero code: `Moon.Variant.SMALL`.
-  - **Proposed fix (both backends, lockstep):** generate mips on both sides, add `mipmapFilter: "linear"` to the WebGPU moon sampler and a mipmap minification filter on the WebGL Material texture, and feed the WGSL **one CPU-computed LOD uniform** — `lod = clamp(log2((texWidth / 2) / discDiameterPx), 0, maxLod)`, where `discDiameterPx` follows from the moon's angular radius and the pixel angular size. The moon is a distant sphere, so that LOD is effectively constant across the disc: no screen-space derivatives are needed and the non-uniform-control-flow restriction is sidestepped entirely. This IS a shader change ⇒ **lockstep pair + a `SHADER_PAIRS_LOCKSTEP.md` row**, and the WebGL half needs the Material-level mipmap support first (cross-cutting — scope it deliberately).
+  - **Superseded design note:** the proposed single CPU LOD would couple differently sized albedo/normal maps and lose limb-local derivative information. Implicit sampling after discard is not legal. C12-33 instead computes explicit finite pre-discard gradients in both shaders and keeps Moon-specific WebGL ownership.
   - **Effort:** M. **Tracked as `C12-33`** in `QUEUE_2026-07-19_CAMPAIGN12.md`. **Trace:** `Tools/moon-albedo-bake/README.md` §6.2.
 
 - **MOON-ALBEDO-KTX2 — OPEN, tooling-blocked (size/VRAM optimization).** The C12-24 albedo ships as JPEG q90 4:4:4 (563,276 B) because **no KTX2/Basis encoder exists in this repo or on the build machine**: `toktx`, `ktx` and `basisu` are all absent from `PATH`, and the installed `ktx-parse` is a container parser, not a BasisU/UASTC encoder. A UASTC or ETC1S KTX2 would cut both the download and the VRAM footprint (the JPEG decompresses to 8 MB of `rgba8unorm`; a transcoded BC7/ASTC would be ~2 MB). `Tools/moon-albedo-bake/bake-lroc-color.mjs` is already structured so only the encode stage changes. Note the consumer side is not free either: `Moon.textureUrl` flows through `Resource.fetchImage()` on WebGPU and `Material`'s image path on WebGL, neither of which transcodes KTX2 today. **Effort:** S (encode) + M (consumer paths). **Trace:** `Tools/moon-albedo-bake/README.md` §6.1.
+
+- **WEBGPU-COMPAT-TEXTURE-RESOURCE-COMMANDS — OPEN architecture follow-up from C12-33.** The bounded fix fails closed when WebGL-shaped `copyTex*` is requested during an active render pass, preserves same-encoder base-copy→mip ordering when legal, and refuses compressed copies until block/subresource validation exists. Full compatibility requires a backend-neutral resource-command list or explicit pass segmentation so copies can be scheduled outside an unknown active pass; encoder-recorded uploads are also needed to reproduce exact WebGL copy→later queue-upload JavaScript ordering. A compatibility-profile layered mip generator and the legacy standalone immediate-submit fallback remain separate gaps. Do not cache per-texture destination/source views or bind groups without a measured repeated-generation workload and bounded eviction/release ownership: the rejected WeakMap retained `O(layers × mips)` one-shot objects for every live streamed texture. **Effort:** L. **No feature may be default-disabled to close this.**
 
 ## 2026-07-19 — OCEAN-WAVE-OCTAVE-LOD (surfaced during OCEAN-WAVES PERF AUDIT for C11-158)
 
@@ -55,23 +57,21 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
   - **WebGL parity note:** the WebGL classic path (`GlobeFS.glsl::computeWaterColor`, same `showWaterEffect` gate, both default true) uses **2 octaves** (high-alt + low-alt blend) vs WGSL's 3 — so an octave-LOD that lands at 2 octaves mid-range also *reduces* the fork's WGSL-only 3-octave divergence (documented in the GlobeTerrain.wgsl convention ledger ~L3824). If applied to both backends, keep them in lockstep.
   - **C11-158 cross-ref (CRITICAL premise correction):** the C11-158 field `globe.enableEnhancedOcean` (default true) does **NOT** gate this GPU cost — it appears nowhere in `Renderer/WebGPU/**` or the WGSL; it only sets CPU-side color params (`oceanDeepColor`/`oceanFresnelPower`/`oceanReflectivity`/`oceanFoamThreshold`/`oceanDarkening`) to `undefined`/0 when false, after which the shader falls back to hardcoded defaults and **still runs the full 3-octave march**. Defaulting `enableEnhancedOcean=false` therefore changes ocean *coloring* at **~0 GPU saving**. The actual GPU lever is `showWaterEffect` / the flags.z wave gate. Audit report: `Tools/visual-regression/output/ocean-waves-perf-audit-2026-07-19.md`.
 
-## 2026-07-26 — AURORA + SPACE WEATHER (Atmospheric-Effects Phase F) — SEEDED by maintainer ask
+## 2026-07-26 — AURORA + SPACE WEATHER (Atmospheric-Effects Phase F) — RESEARCH-VERIFIED / CAMPAIGN 15 PLANNED
 
-- **EPIC-AURORA-SPACE-WEATHER — SEEDED (2026-07-26).** Maintainer ask: *"add effects for Northern Lights and being able to trigger solar & magnetic storms. If there is open source data on space weather similar to atmospheric weather we should look into that as well."* Planning home: [`ATMOSPHERIC_EFFECTS_ROADMAP.md`](ATMOSPHERIC_EFFECTS_ROADMAP.md) **Phase F** — the only unbuilt phase in that roadmap (A–E all shipped, Batches 415–423 + 442). **NOT RESEARCHED YET** — no feasibility pass has been run; everything below is scoping to be verified, not findings.
+- **EPIC-AURORA-SPACE-WEATHER — RESEARCH-VERIFIED (2026-08-02); `C15-00` COMPLETE; IMPLEMENTATION NOT STARTED.** Maintainer ask: *"add effects for Northern Lights and being able to trigger solar & magnetic storms. If there is open source data on space weather similar to atmospheric weather we should look into that as well."* Planning context: [`ATMOSPHERIC_EFFECTS_ROADMAP.md`](ATMOSPHERIC_EFFECTS_ROADMAP.md) Phase F. Execution authority: [`QUEUE_2026-08-02_CAMPAIGN15.md`](QUEUE_2026-08-02_CAMPAIGN15.md), `C15-01..08` pending. **Campaign 15 has not been launched.** Campaign-number correction: Dynamic Ocean & Wind already owns ratified Campaign 14 and remains blocked by O5 until C11+C12+C13 complete; this epic does not rename or accelerate it.
 
-  **This SUPERSEDES the scattered aurora backlog entries** — `FEATURE_INVENTORY.md:1133` and `:1135`, `WEBGPU_MIGRATION_BACKLOG.md:708` and `:722`, `CELESTIAL_ATMOSPHERE_DESIGN.md:65`, plus the archived 2026-03-31 audit rows. All of them scope it as *"procedural shader on the sky dome, 2–3 days, P2"*. **That architecture is wrong for this fork and the estimate is downstream of the error:** on an orbitable globe the aurora is a **volumetric emission shell at 100–400 km** that must stand *above the limb* from space and *overhead* from the ground; a sky-dome texture cannot do both. Do not re-scope from those entries.
+  **This SUPERSEDES the scattered aurora backlog entries** — `FEATURE_INVENTORY.md:1191` and `:1193`, `WEBGPU_MIGRATION_BACKLOG.md:708` and `:722`, `CELESTIAL_ATMOSPHERE_DESIGN.md:65`, plus the archived 2026-03-31 audit rows. Their *"procedural sky-dome shader, 2–3 days"* architecture cannot work both overhead and above the limb. Verified shape: an ellipsoid-relative, RTE **layered emission volume over 80–600 km** with separate 427.8 nm lower-edge, 557.7 nm green middle, and 630.0 nm red upper profiles; both backends consume one neutral kernel. NOAA/NASA anchors: [NOAA Aurora](https://www.spaceweather.gov/phenomena/aurora), [NASA Auroras](https://science.nasa.gov/sun/auroras/).
 
-  **Rendering shape (to verify).** Line emission with fixed colours — 557.7 nm green (atomic O, ~100–150 km, dominant), 630.0 nm red (atomic O, >200 km, the storm-time crown), 427.8 nm blue/violet (N₂⁺, lower edge). Curtains follow **geomagnetic field lines** (hence the vertical rays); the oval is centred on the **geomagnetic** pole ~11° off the geographic one, so a geographic-latitude oval sits visibly wrong. A **tilted-dipole** approximation is expected to be sufficient for oval placement and curtain direction — full IGRF almost certainly unnecessary for a visual. Sibling of the existing volumetric raymarchers (emissive, additive, unlit, depth-tested against the globe), NOT of the screen-space post-process effects. **Night gate:** reuse the solar-elevation edge the star field already derives (`computeStarDayFade` / the `SkyBrightness` sun term) rather than inventing a second definition of "dark".
+  **Geomagnetic and lighting contract.** WMM2025's centered dipole is **9.21°** from the rotation axis; the north geomagnetic pole is **80.79°N geocentric (80.85°N geodetic), 72.76°W** at epoch 2025.0 ([NCEI WMM](https://www.ncei.noaa.gov/products/world-magnetic-model), [pole reference](https://www.ncei.noaa.gov/products/wandering-geomagnetic-poles)). The oval is non-circular, noon/midnight asymmetric, and activity-dependent. Darkness is evaluated at each shell sample or footprint; a camera-local star-fade scalar is invalid for an orbital/globe-spanning volume. Manual/synthetic state ships first and remains deterministic/offline.
 
-  **Storms (the trigger half).** The dominant visual consequence of geomagnetic activity is **equatorward expansion of the oval** — roughly ~67° magnetic latitude when quiet toward ~50° in a severe storm, which is what makes aurora visible from mid-latitudes. So "trigger a storm" is principally **one scalar (Kp or Dst) driving oval latitude + intensity + red-crown fraction**, with optional substorm onset brightening/poleward surge. Design as a storm-state scalar with a manual override plus an optional data source, mirroring the established `effects.auto` master. **A synthetic/manual driver ships FIRST** — the effect must be demonstrable and testable with no network call.
+  **Feed authority and lifecycle.** Valid live [OVATION](https://services.swpc.noaa.gov/json/ovation_aurora_latest.json) owns spatial extent/intensity. It already consumes L1 solar wind/IMF and can use Kp fallback, so Kp/Bz never multiply a live field a second time. Kp uses the 2026 object schema at [`noaa-planetary-k-index.json`](https://services.swpc.noaa.gov/products/noaa-planetary-k-index.json). The removed legacy solar-wind product family must not be used: current inputs are [`rtsw_mag_1m.json`](https://services.swpc.noaa.gov/json/rtsw/rtsw_mag_1m.json) and [`rtsw_wind_1m.json`](https://services.swpc.noaa.gov/json/rtsw/rtsw_wind_1m.json), preserving source/active/quality metadata and maintaining any multi-day history client-side. Schema/lifecycle authority: [NWS SCN 26-21](https://www.weather.gov/media/notification/pdf_2026/scn26-21_Data_Format_Changes_Impacting_SWPC_Products.pdf). GOES X-ray input is a separate solar-flare state with [instrument-source discovery](https://services.swpc.noaa.gov/json/goes/instrument-sources.json), not an immediate auroral-oval multiplier.
 
-  **Open data — the licensing looks unusually clean, to be confirmed.** The atmospheric-weather ingest already established the pattern (NOAA NWS EDR → normalized scalars, `WEATHER_DATA_INGEST_ROADMAP.md`); the space-weather analogue is **NOAA SWPC**, and as a **US federal product it should be public domain** — the same basis that made the weather ingest and the EGM2008 geoid bundle-safe. Candidates: **Kp planetary index** (the storm scalar, near-real-time JSON); **OVATION Prime auroral probability grid** (SWPC publishes a lat/lon forecast grid — potentially close to a drop-in for the oval, sampled like `weatherTex`); **solar wind** from DSCOVR/ACE (speed, density, and **Bz** — southward Bz is the real storm-onset signal); **GOES X-ray flux** for flare class (the *solar* half of the ask). ⚠ **`Dst` (Kyoto WDC) is NOT a US federal product and does not inherit public-domain status — its licence must be checked before any use.** Kp from SWPC is the safe default. House rule stands: nothing bundled whose terms are not stated in `LICENSE.md`'s Bundled Engine Assets section, and the renderer consumes normalized scalars so live / baked-historical / synthetic drivers are interchangeable.
+  **Rights boundary.** A public SWPC endpoint is not blanket permission to bundle every upstream-derived snapshot; exact source, transformation, attribution, and product-specific terms must precede any `LICENSE.md` asset entry. [WDC Kyoto's usage rules](https://wdc.kugi.kyoto-u.ac.jp/wdc/Sec3.html) explicitly disallow commercial applications of its geomagnetic indices. Therefore no built-in Kyoto Dst provider or bundled Dst snapshot is allowed; only a caller-owned numeric override is in scope.
 
-  **Known trap, inherited from the C12 eclipse work.** A faint additive signal spread over a large band is **invisible to a band-mean statistic** — the star-reveal lane burned three cycles on exactly this (10 stars × ~4 px over 138k band px ≈ 5.7e-5 against a 1e-4 floor: *the floor was right, the statistic was wrong*). Any aurora acceptance gate must use point/structure metrics or an isolated-component difference, never a mean over the band.
+  **Performance and evidence.** Default OFF means zero passes, allocations, jobs, animation, requests, uploads, and bind-group churn. Quality work improves the full feature rather than removing layers, hemispheres, RTE, or existing effects. A faint structured additive signal is invisible to a band mean, so acceptance uses point/structure or isolated-component differences and Node/Edge moving-camera altitude routes. Full gates and task order are in Campaign 15.
 
-  **Sequencing.** Independent of the T/Td/RH weather ingest (different physics, different data spine), so it does **not** queue behind weather Phases 1–2. Its real prerequisite is a trustworthy night-side gate, which the C12 celestial work has now established. **Effort:** unestimated pending a feasibility pass — the volumetric-shell + geomagnetic-oval shape suggests M–L for a first visible slice, materially more than the superseded "2–3 days" entries claim. **Campaign placement:** undecided; NOT C13 (clouds-only). Candidate as an Atmospheric-Effects Phase-F slice or a rider on a celestial campaign, since it shares the night gate and the additive-emission measurement problem with C12.
-
-## 2026-07-24 — DYNAMIC OCEAN & WIND EPIC (candidate Campaign 14) — planning COMPLETE
+## 2026-07-24 — DYNAMIC OCEAN & WIND EPIC (ratified Campaign 14; O5-blocked) — planning COMPLETE
 
 - **EPIC-DYNAMIC-OCEAN-WIND — SEEDED (2026-07-24); §6 DECISIONS ANSWERED (maintainer 2026-07-24 → plan §6a, Batch 758: O2 OVERRULED — jet streams also feed a rough low-LOD physical coupling into clouds; O5 stricter — Campaign 14 waits for C11+C12+C13 COMPLETION; others as recommended); planning artifact `migration_doc/OCEAN_DYNAMICS_PLAN_2026-07-24.md` (17-agent research, 0 refuted findings).** Maintainer ask: waves with cloud-like randomness responding to weather/wind + wind effects, jet streams, currents — all togglable, performant. **The epic is mostly BROWNFIELD:** the FFT ocean's Phillips spectrum already consumes windX/windZ/windSpeed with live re-parameterization machinery (`OceanInitialSpectrum.wgsl:35-55`, `WebGPUOceanRenderer.ts:720-739` — only live setters are missing); wind visualization ALREADY SHIPPED (C6-FLOWFIELD-WIND, Batch 645, with four pre-named deferred follow-ups incl. `NEW-FLOWFIELD-OCEAN-CURRENTS`/`-TRAILS` that this epic absorbs, IDs retained); the weather-ingest pipeline carries optional named arrays so `windU?/windV?` ride the existing pattern (needs a `VelocityFieldSource` sibling — weatherTex's 4 channels are all claimed by clouds); the ONE-WIND-AUTHORITY architecture is pre-ratified at `WATER_RENDERING_DESIGN.md:672-674`. **Defect found by the research:** the engine has THREE disagreeing wind stores today (weather 10 m/s, clouds 15, FFT ocean 12, in three different representations) — the Level-0 authority fan-out fixes a real inconsistency, not just enables the epic. **Phases:** W0 contracts+baselines (S-M; shares the ocean-lid datum probe with the tides seed) → W1 wind-authority Level 0 (M) → W2 water-mask wind modulation, both backends (M; layers over `C11-172`) → W3 coverage + sea state (XL; `C6-FFT-OCEAN-CLIPMAP` is the waves-everywhere gate; JONSWAP/two-layer spectrum; sea-state randomness masks; ocean tier axis) → W4 currents + jet streams + field tooling (L; procedural curl-noise/gyres DEFAULT, GFS/RTOFS public-domain offline preprocessor, no bundled OSCAR/Copernicus) → W5 vector wind field Level 1 (L; gated on C13-14's weather-tile schema). **Hard prereqs:** C11-172, C6-FFT-OCEAN-CLIPMAP, C13-14 (W5 only); C11-149 NOT a prereq (zero new define bits — runtime uniforms). **Launch timing (rec):** after C13-GATE-D so the weather-tile wind schema is settled; W0-W2 are C13-independent if priority rises. **Six maintainer decisions** in the plan §6 (recs: ENU contract as a C13-18 rider; jet streams visualization-only; procedural-gyres default; ≤2.0 ms all-on GPU budget pending W0 baseline). **Every row carries the off-gate contract: default-off, byte-identical off, zero passes/allocations when off.**
 
@@ -87,7 +87,7 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 - **C13-39B-CLOUD-SHADER-VARIANT-SPLIT - FILED (2026-07-24, Batch 762); premise MEASURED twice.** The C13-39 A/B campaign proved the cloud view march is OCCUPANCY-BOUND: any code added to the shared `ProceduralClouds` module - even runtime-branch-gated helper structs - inflates static register allocation for EVERY pipeline and regressed the straight-route pass +36-54% across two independent drafts (interleaved-A/B verified, mechanism in the debugging log). The supported vector is COMPILE-TIME variant splitting: cone vs straight light march (and possibly shadow/IBL legs) as separate shader variants via the C11-149 hi-word `ShaderDefineHi` registry + the `//>>ifdef` preprocessor, so per-route code stops taxing other routes' register budgets - then re-attempt the per-route micro-optimizations INSIDE each slimmer variant, gated by `probe-cloud-lod-hoist-perf.mjs` under its mandatory interleave protocol. **Prereqs:** none hard (hi-word registry landed Batch 739; module-cache keying supports it). **Cost caution:** variant count multiplies pipeline-cache entries - bound the axis to the 2-3 routes with measured wins. **Effort:** M-L. **Trace:** C13-39 closure (Batch 762), `QUEUE_2026-07-23_CAMPAIGN13.md` C13-39 row.
 
-## 2026-07-24 — MESHLETS / VIRTUALIZED GEOMETRY (candidate Campaign 15+ / Phase-8b program) — research COMPLETE
+## 2026-07-24 — MESHLETS / VIRTUALIZED GEOMETRY (candidate Campaign 16+ / Phase-8b program) — research COMPLETE
 
 - **EPIC-MESHLET-VIRTUAL-GEOMETRY — SEEDED (2026-07-24); §6 DECISIONS ANSWERED (maintainer 2026-07-24 → report §6a, Batch 758: Tier 1 in Phase-8b, WebGPU-only, load-time clusterization + NEW research sub-item: pre-baking meshlet data into 3D Tiles; attribution comments REQUIRED at any code site taken from or directly inspired by nanite-webgpu; C11-168 launch gate confirmed); planning artifact `migration_doc/MESHLETS_RESEARCH_2026-07-24.md` (17-agent research, 0 refuted findings).** Maintainer ask: meshlet support for WebGPU + 3D Tiles, anchored on https://github.com/Scthe/nanite-webgpu (**MIT licence verbatim-confirmed** from the LICENSE file; house norm stands — implement from the techniques, not the code). **Headline findings:** Nanite-style virtualized geometry runs on stock browser WebGPU with NO mesh shaders (compute cull → indirect draw; the reference renders 1.7B-tri scenes with only `float32-filterable`), but **no 64-bit atomics is the one hard blocker** — it kills the visibility-buffer/SW-raster tier in browsers (nanite-webgpu's 32-bit pack costs materials entirely; Bevy's 64-bit route is native-only). **Tiered verdicts:** **Tier 1 (RECOMMENDED v1, M-L, ~4-8 batches)** — per-meshlet frustum + normal-cone cull + draw-call collapse via the existing `WebGPUDrawCommand.drawIndirectBuffer` path, meshletized at tile load by the **in-tree MeshoptClusterizer**, hardware raster only, grouped by `WebGPUModelPipelineCache` key; runs strictly on the output of the existing tile SSE traversal (refine semantics untouched); direct triangle-mesh analog of the shipped point-cloud LOD processor, and the exact Wihlidal-2016/Aaltonen-2015 tier the reference's author recommends first. Becomes the first real consumer forcing the Hi-Z Scene-wiring + GPU_SORT_KEYS scaffolds to completion (Principle 7/9). **Tier 2 (follow-on, L-XL, do NOT bundle into v1)** — intra-tile cluster-LOD mini-DAG (MeshoptSimplifier + `buildMeshletsSpatial`, monotonic-error schema, one-line runtime cut test on the Tier-1 pass); costs: double-LOD reconciliation with CPU/f64 tile SSE ("complementary, NOT a replacement" — point-cloud precedent), border seams, eviction-on-tile-unload. **Tier 3 (Nanite-complete: visbuffer + compute SW raster + streaming DAG) — NOT worth it on browser WebGPU today**; marginal win over Tier 1+2 is only sub-pixel raster efficiency the tile SSE already bounds; revisit if WebGPU standardizes 64-bit atomics or `drawIndirectCount`. **Shader-path note:** new standalone WGSL sources with new `ShaderSourceId`s (cull compute + vertex-pull render) is the recommended route; C11-149's hi-word registry (landed Batch 739) also makes define-gated variants available if ever needed. **Named prereqs (all small/pre-existing):** (a) `ADAPTIVE_LIMIT_CAPS` entry for `maxStorageBufferBindingSize` (S — meshlet mega-buffer otherwise capped at the ~128MiB default); (b) FAR-003 culling re-arm story + FORK-41 Hi-Z consumer fix; (c) **C11-168's dense-tileset measurement lane is a hard LAUNCH gate** (no baseline = no provable win; moving-altitude methodology mandated, idle-soak invalid); (d) device-loss/multi-context hygiene (`onDeviceInvalidated` + shared pipeline caches). **Cautionary precedent internalized:** the Gaussian-splat renderer shipped with no production data producer (`NEW-WEBGPU-SPLAT-DATA-PRODUCER` stop-and-block) — the tile-content→meshlet-buffers **data-producer half is first-class scoped work**, not an afterthought. **Placement ruling: NOT Campaign 13** (clouds-only); Phase-8b-adjacent (PHASE_8_GPU_RESIDENT_TILES_DESIGN.md already names the Nanite/Resident-Drawer paradigm as the 3D Tiles destination; third independent escalation of this item — 2026-04-14 Phase-8 synthesis, 2026-07-05 tech-mine #25 strategic-watch, 2026-07-24 maintainer ask). Cross-link, don't duplicate: R-2c GPU-driven cross-source LOD selector, per-tile impostor baking, CDLOD geomorph (#26, separate concern). **Six maintainer decisions** enumerated in the report §6 (recs: Tier 1 alone; inside the Phase-8b program; WebGPU-only-additive ratification per FLOW_FIELD/FFT_OCEAN precedent; load-time worker clusterization; implement-from-reference ruling; default-off byte-identical-off gate contract + FAR-003/FORK-41 re-arm + C11-168 launch gate). **Effort:** Tier 1 M-L; Tier 2 L-XL; Tier 3 XL research-grade (recommend against).
 
@@ -175,6 +175,11 @@ Filed after the WebGPU-vs-WebGL ~50%-FPS investigation (Batch 717 root-cause + f
 > available, but no public-domain dedication or redistribution licence has
 > been located; `C12-09` / DR-02 tracks written clearance and the source
 > docblock carries the full rationale.
+>
+> **2026-08-02 supersession:** `C12-09` completed in Batch 804. The live table
+> now contains 2,868 records through vmag 5.5, sourced as factual
+> RA/Dec/Vmag/B−V fields from NASA HEASARC and independently reordered under
+> the fork's schema. The Batch-313/263-record paragraph remains historical.
 
 - **NEW-STARS-BRIGHT-CATALOG** — ✅ SHIPPED (Batch 313). A real Yale Bright Star Catalog (BSC5, public-domain) starfield that AUGMENTS the static `SkyBox` star cubemap on WebGPU with physically-placed, time-correct HDR stars fed through the existing bloom. **Data** `Scene/BrightStarCatalog.js` — a compact embedded subset of the ~230 brightest naked-eye stars (vmag ≲ 3.6), each `[raJ2000°, decJ2000°, vmag, B−V]`. **Renderer** `Renderer/WebGPU/WebGPUStarFieldRenderer.js` (FeatureRendererKey.STAR_FIELD=51) — uploads the catalog ONCE to a per-instance GPU buffer (direction + Pogson intensity + blackbody RGB + size boost) and draws it as instanced point sprites (6 verts × N stars) into the scene framebuffer with PREMULTIPLIED-ADDITIVE blend so bright stars overflow 1.0 and feed the bloom bright-pass. **Technique** (implemented fresh; credited in `StarField.wgsl` to Pogson + Ballesteros + Takram research notes): magnitude→brightness via the Pogson scale (flux gamma-compressed into a `[LO,HI]` band so the faintest stars stay visible while the brightest overflow → bloom + a magnitude-driven `sizeBoost`); B−V color index → blackbody temperature (Ballesteros 2012) → Planckian-locus RGB (Tanner-Helland fit), renormalized so brightness lives in the Pogson term, not the hue. **TEME/J2000 → fixed:** catalog directions are inertial; the renderer rotates them into the Earth-fixed frame each frame via `Transforms.computeTemeToPseudoFixedMatrix` (the SAME matrix SkyBox uses) baked into a translation-free view-projection, so constellations land at the correct RA/Dec for the scene clock. A camera-altitude-gated daytime fade (smoothstep over solar-altitude-sine) dims the field at ground level when the sun is up but keeps it visible above ~100 km. **Wiring / augment-not-replace:** `SkyBox` owns a backend-agnostic `StarField` (`Scene/StarField.js`, FR-seam, never imports `Renderer/WebGPU/`); `Scene.updateEnvironment` drives `skyBox.starField.update(frameState)` and stores the returned command on `environmentState.starFieldCommand`, which `SceneRenderer.js` injects AFTER `skyBoxCommand`. **Why after:** the cubemap is an alpha-over draw injected after the binned ENVIRONMENT commands; an opaque cubemap would overwrite a binned-only starfield. The renderer pushes a binned copy too (frustum guarantee on sky-only views) AND returns a distinct inject instance; Scene only routes the inject when a `skyBoxCommand` exists (so the catalog draws exactly once — binned-then-wiped + injected when a cubemap is present, binned-only otherwise). **Verified:** `Tools/visual-regression/probe-stars-catalog.mjs` (NEW) — camera aimed at Sirius's computed Earth-fixed direction for a pinned clock; with the cubemap ON (augment path), starField ON adds 4527 bright pixels vs 0 OFF, maxLum=255 (bright stars saturate → bloom), Sirius lands a 923-px center cluster vs 104 when aimed at a blank patch (RA/Dec correctness), raising `intensity` grows the bright count (Pogson liveness), the SkyBox cubemap hook stays intact, 0 console errors. Read the PNG — Sirius is the big central disc with the winter constellations at correct relative positions and warm/cool stars by B−V. Standing gates green (collections-regression, bloom-parity, logdepth-zfight, collections-far-camera, sandcastle-smoke, upstream-regression-check 26/26).
 - **NEW-STARS-BRIGHT-CATALOG-WEBGL-FALLBACK** — ✅ SHIPPED (Batch 324). WebGL now draws the SAME physical bright-star catalog as WebGPU via a dedicated GLSL point-sprite `STAR_FIELD` feature renderer, closing the night-sky divergence between the backends. **Shared math extracted (REUSED, not duplicated):** the B−V→blackbody-RGB conversion (`bvToRgb`), the Pogson-magnitude→HDR-brightness per-instance packing (`buildStarInstanceData`), and the camera-altitude-gated daytime fade (`computeStarDayFade`) moved out of `WebGPUStarFieldRenderer.ts` into a new backend-neutral `Scene/StarFieldMath.ts`; BOTH renderers import them, so the two backends place/color/brighten the IDENTICAL stars from the IDENTICAL `BrightStarCatalog.js` records — only the draw path differs (GLSL vs WGSL). The WebGPU renderer's runtime is byte-for-byte unchanged (the extraction is a pure refactor; its probe still passes A–F). **WebGL renderer** `Renderer/WebGLStarFieldRenderer.js` — builds an instanced `VertexArray` (per-vertex quad corner at attribute 0 + the 4 per-instance star attributes at locations 1–4 with `instanceDivisor=1`, sharing one 32-byte-stride vertex buffer) + `ShaderProgram` (`Shaders/StarFieldVS/FS.glsl`) + a premultiplied-additive (`ONE/ONE` add), depth-test-DISABLED, no-cull `RenderState`; returns one instanced `DrawCommand`. **Shaders** `StarFieldVS.glsl` rotates the inertial catalog direction into the Earth-fixed frame with the `czm_temeToPseudoFixed` automatic uniform (same rotation SkyBox uses), places the star at the far-frustum distance in eye space (`czm_viewRotation` + `czm_entireFrustum.y`) and projects normally so the dead-ahead star isn't far-plane-clipped (WebGL's `[-1,1]` NDC z is prone to that when pinning `clip.z=clip.w`), then offsets the sprite corner in clip space; `StarFieldFS.glsl` is a 1:1 GLSL port of the WGSL radial-falloff fragment (premultiplied output). **Wiring:** registered as the WebGL `STAR_FIELD` FR via a lazy loader in `Renderer/Context.js` (avoids a static Renderer→Scene import cycle; warms up over the first frames like the WebGPU async pipeline); executed by `Scene/EnvironmentRenderer.js` right AFTER the SkyBox cubemap and BEFORE sky-atmosphere/sun/moon, mirroring the WebGPU injection order. **Backend-agnostic gate fix:** `StarField.update` now records `wasBinned` (true only when the FR pushed a binned commandList copy — WebGPU); `Scene.updateEnvironment` drops the returned command only when `wasBinned && !skyBoxCommand` (WebGPU double-draw avoidance), so the WebGL command — which is never binned — always executes, even with the cubemap off. (Previously the cubemap-existence gate silently suppressed WebGL stars.) **Verified:** `Tools/visual-regression/probe-starfield-webgl-parity.mjs` (NEW) — camera aimed at Sirius for a pinned clock, cubemap OFF so the catalog renders alone: WebGL goes 0→4342 bright star pixels (was an inert no-op), and the WebGL pattern matches WebGPU EXACTLY — bright-block IoU = 1.000, center-box 903=903, 0 console errors on both. Read the PNGs — the WebGL frame is indistinguishable from WebGPU's (same Sirius disc, same constellation positions, same warm/cool stars by B−V). `tsc --noEmit` clean; `gulp build` exit 0; SkyBox (20) + Sun (10) specs green on Edge.
@@ -212,7 +217,7 @@ Filed after the WebGPU-vs-WebGL ~50%-FPS investigation (Batch 717 root-cause + f
     unawaited direct/alias captures and floating promise chains, and
     `settleThen` rechecks its completion predicate after the final animation
     frame before taking the snapshot.
-- **NEW-STARS-BRIGHT-CATALOG-FULL-DEPTH** (S, optional) — the embedded subset is 263 records through magnitude 5.0; the renderer reads `data.length / STRIDE`, so deepening to mag ~6 (full naked-eye, ~5000 stars) or the whole BSC5 (~9110) needs only appending rows (or loading a rights-reviewed catalog asset). Bloom carries essentially all the perceived quality from the bright few hundred, so this is cosmetic density, not correctness.
+- **NEW-STARS-BRIGHT-CATALOG-FULL-DEPTH** (S, optional) — **PARTIAL DEPTH LANDED Batch 804:** the embedded subset is now 2,868 records through magnitude 5.5 from the HEASARC factual-field ingest. The renderer reads `data.length / STRIDE`, so the prepared magnitude-6.0 deepen (5,058 stars) remains mechanically small, but is parked until C12-11 proves the diffuse/resolved source seam and measures moving-camera aliasing plus both-backend frame cost. It is density, never authority to remove/default-disable the catalog.
 
 ## 2026-06-16 — Track V-A1: full-Bruneton atmosphere LUTs (Batch 306)
 
@@ -6632,7 +6637,9 @@ anchor rather than relaxing what it proves:
 
 ### UP144-SNAP-WEBGPU — Scene.snap WebGPU parity
 
-**Status:** IMPLEMENTED (C11-212), MACHINE-VERIFICATION PENDING. Upstream's
+**Status:** PARTIAL (C11-212). Surface snapping now has fixed-camera and real
+multi-frustum occlusion/recovery evidence on both backends; the broader moving-
+view/projection matrix and edge candidates remain open. Upstream's
 experimental `Scene.snap` snap-to-geometry picking API (Snapping.js,
 SnapFramebuffer.js, `DerivedCommand.createSnapDerivedCommand`, `passes.snap`,
 `GlobeDepth.snapping`) shipped WebGL-only in v1.144; on WebGPU the merge left it
@@ -6643,12 +6650,12 @@ early for WebGPU commands, so `Scene.snap()` resolved `undefined`).
 **What landed.** The WebGPU twin lives in the existing pick-pass family:
 
 - `Renderer/WebGPU/WebGPUSnapPayload.ts` — the ONE home for the payload
-  encoding: `SNAP_PAYLOAD_FORMAT` (`rgba32float`) plus the two pure decode
+  encoding: `SNAP_PAYLOAD_FORMAT` (`rg32uint`) plus the two pure decode
   functions (`unpackSnapPixels`, `decodeSnapHits`). Dependency-free so a
   pure-Node spec can pin the encoding with no device.
 - `Renderer/WebGPU/WebGPUSnapFramebuffer.ts` — the target, with the pick
   framebuffer's device-generation lifecycle. Owns THREE attachments: an
-  occluder color (`pickPipelineFormat`), the RGBA32F payload, and a shared
+  occluder color (`pickPipelineFormat`), the RG32Uint payload, and a shared
   depth. Lazily constructed by `Scene.snap` through the new
   `GraphicsContext.createSnapFramebuffer()` factory (WebGL returns null and
   keeps upstream's `SnapFramebuffer`).
@@ -6665,7 +6672,8 @@ early for WebGPU commands, so `Scene.snap()` resolved `undefined`).
   pipeline's color-target formats against the render pass at DRAW time, so
   upstream's single snap pass (snap variants + depth-only derived commands for
   snapless commands) is not expressible: an RGBA8 pick pipeline dispatched into
-  an RGBA32F pass invalidates the whole command buffer (FORK-34). Instead each
+  the integer payload pass invalidates the whole command buffer (FORK-34).
+  Instead each
   frustum slice runs the UNMODIFIED pick sequence into the occluder attachment
   (which is what writes depth for every snapless command — the depth-only
   fallback, realized with pipelines that already exist), then a payload pass
@@ -6683,16 +6691,58 @@ pick-pass participation is `executeCopyDepthToView` for classification, which
 the payload phase deliberately skips (its packed-depth reopen would clear the
 depth the payload phase reads).
 
-**Contract:** `Tools/visual-regression/webgpu-snap-payload.spec.mjs` (40/40) —
-encoding vs. upstream's own GLSL source, live decode/spiral/readback-geometry,
-format agreement (+ mutation control), target lifecycle, variant-key
-distinctness, pass routing, scene dispatch, feature preservation.
+**Contract:** the combined renderer-neutral/WebGL/WebGPU snap lane is 69/69:
+`webgpu-snap-payload`, `webgpu-snap-framebuffer-lifecycle`,
+`webgl-snap-multifrustum`, and `pick-frustum-math`. It covers exact payload
+encoding/decoding, lifecycle/provenance, mutation controls, pass routing,
+WebGL/WebGPU stale-payload repair, asymmetric frusta, viewport/DPR coordinate
+mapping, and preservation of existing features.
 
-**Remaining for acceptance:** the machine verification. `Scene.snap` must return
-equivalent hits on both backends for the upstream multifrustum snapping
-Sandcastle scene. Note the WebGPU readback contract: like `Scene.pick`, snap is
-one frame stale on WebGPU, so a probe must call `snap()` twice at the same
-window position (or drive `WebGPUSnapFramebuffer.endAsync`).
+**Fixed-camera acceptance result (Batch 813):** all four focused gates passed on
+both backends with the same 24.8 m hit distance, a clean corner miss, the correct
+`_snapEnabled` latch, and zero validation/console errors. That probe deliberately
+froze the camera and retried the same point.
+
+**Post-Batch-818 root finding:** `Snapping.snap()` calls
+`WebGPUSnapFramebuffer.end()` before `pickEnd()`. `end()` immediately submits a
+private `copyTextureToBuffer`, while `pickEnd()` later reaches
+`WebGPUContext.endFrame()` and submits the snap render. The copy is therefore
+ordered before the render and can only observe an older texture. That old eye
+depth is then reconstructed with the CURRENT camera, compounding the error under
+motion. Schedule the copy on the active pick-frame encoder after the snap passes
+and map it through `context.enqueueAfterFrameSubmit()`; pair the completed
+payload with immutable rendered camera/frustum/viewport provenance. A moving
+cursor also needs conservative cached-region overlap/reprojection or remains
+cold until stationary. Acceptance requires moving-camera, moving-cursor,
+region-change, miss/hit, and stale-result rejection lanes. The separate edge
+tier below remains open.
+
+**2026-08-02 unstaged continuation + Edge acceptance:** the copy/provenance
+defect above is corrected. WebGPU's multi-frustum stale-payload case uses one
+query-scissored fullscreen triangle inside the existing loaded payload pass;
+WebGL uses a snapless occluder derived command that writes zero. Neither adds a
+pass or submission. Renderer-neutral pick-frustum math now supports asymmetric
+perspective/orthographic planes, drawing-buffer viewport offsets, independent
+aperture dimensions, and frozen unprojection. The WebGPU stale-readback key
+includes the effective far plane. Independent review is GO and the combined
+Node lane is 69/69.
+
+The full-target audit rejected query-sized rendering because it would change
+the normal projection/culling/screen-space contract. The safe WebGPU payload
+conversion `RGBA32F -> RG32Uint` preserves an exact u32 key and full f32 eye
+depth, storing the edge flag in the otherwise-clear depth sign bit. It saves
+63.28 MiB at 4K (total three-target peak 189.84 -> 126.56 MiB), halves payload
+bandwidth/readback bytes, reduces a 25x25 staging row from 512 to 256 aligned
+bytes, and discards only snap's unused occluder color store. Ordinary pick and
+WebGL payload formats are unchanged.
+
+Rebuilt Edge `probe-snap-multifrustum.mjs` is green with TAA on for both
+backends: the far model is found, a nearer object in a distinct slice suppresses
+it, the far model returns after removal, and device/console/page errors are
+empty. Still open: SCENE2D slice-depth provenance; moving camera/cursor across
+DPR, asymmetric projection, split viewport, edge clipping, and RTE culling
+boundaries; even-aperture/WebGL logical-padding fixes; shared transient-target
+design; edge candidates; classification checkpoints; and broader producers.
 
 ### UP144-SNAP-WEBGPU-EDGES — edge snap candidates on WebGPU
 
@@ -6711,7 +6761,7 @@ a building corner gets the nearest surface sample instead of the corner.
 
 Closing it needs the edge emitter to learn the primitive's pick color (available
 in the model's material UB) and to grow a snap-payload fragment entry + an
-RGBA32F pipeline variant, dispatched from the payload phase. Related deferred
+RG32Uint pipeline variant, dispatched from the payload phase. Related deferred
 work: `C-R8-EDGE-FEATURE-ID` / `C-R8-EDGE-INLINE`.
 
 **Acceptance:** a snap over a model silhouette returns `isEdge: true` with a
@@ -6727,7 +6777,7 @@ exactly: `getSnapPipeline` exists only on the model pipeline cache.
 
 If upstream later widens `snapId` to geometry primitives, collections, voxels,
 or splats, each WebGPU renderer needs its own `fragmentSnapMain`-equivalent and
-an RGBA32F pipeline variant attached via `attachSnapToColorCommand`. The pass
+an RG32Uint pipeline variant attached via `attachSnapToColorCommand`. The pass
 executor already visits GLOBE / CESIUM_3D_TILE / VOXELS / OPAQUE /
 GAUSSIAN_SPLATS / TRANSLUCENT in the payload phase, so no routing change would
 be needed — only the per-renderer variant.
@@ -7312,7 +7362,8 @@ so any change here must update them in the same change.
 
 ### C12-STARFIELD-SPRITE-VS-CUBEMAP-REDUNDANCY
 
-**Status:** OPEN / MEASURED — needs a design disposition, not a quick fix.
+**Status:** RESOLVED AS EXISTING DR-01 / EXECUTE `C12-11` — the measurement is
+real, but no new design ruling is needed.
 
 First post-Batch-804 census run of `probe-stars-catalog.mjs` (2026-08-02, after
 re-aiming its check (A) at a same-aim center-box differential): at the default
@@ -7323,25 +7374,30 @@ procedural sky cubemap ALREADY bakes the same stars at the same positions.
 Sprite pipeline is healthy (pipelineReady, intensity 3x moves the count
 1309 -> 1326, positions correct), it is just nearly invisible over the bake.
 Probe checks (B)/(C) pass off the CUBEMAP's stars, and (A) is deliberately
-left RED as the flag for this question.
+left RED as the incomplete C12-11 seam signal.
 
-**Disposition needed (fresh-context lane):** either (a) the sprite field is
-the HDR/bloom bright-star layer and the probe must measure in HDR terms
-(pre-tonemap attachment or bloom-response differential), or (b) the sprite
-layer should carry a magnitude band the cubemap bake EXCLUDES (bake faint
-stars only, sprites own the bright end), or (c) the sprite field is redundant
-and the catalog's value lives in the bake pipeline. Cross-reference the
-C12 celestial-appearance research doc's sky-layering section before choosing.
+**Disposition audit (2026-08-02):** Campaign 12 DR-01 already ratified the
+answer: the cubemap owns diffuse Milky Way light, while the catalog is the sole
+resolved-star source on both backends. `C12-10` intentionally installed the
+unblurred reversal artifact before `C12-09` expanded the catalog; `C12-11` has
+not yet made the final diffuse-face switch. The current near-redundancy is
+therefore an expected transitional seam, not a reason to remove/default-disable
+the catalog or invent a compensating intensity. Execute `C12-11`, preserve the
+deliberately red check (A) until the seam lands, and certify the M6/G3 source
+split plus moving-camera alias/cost evidence. The hash-pinned source TIFF and
+diffuse outputs are not present locally, so do not fabricate the result by
+blurring six cube faces independently. Full disposition and guardrails:
+[`C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md`](C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md).
 
-## 2026-08-02 — Mat-pipeline log depth corrupts with a SECOND Mat primitive in scene
+## 2026-08-02 — Mat-pipeline log-depth probe incident
 
 ### NEW-WEBGPU-MAT-LOGDEPTH-MULTI-PRIMITIVE-DEPTH-LOSS
 
-**Status:** ROOT-CAUSED + FIXED (Bug 814.1, 2026-08-02) — awaiting the
-orchestrator's probe re-run for hardware confirmation. Found by the first
+**Status:** CLOSED AS AN INSTRUMENT FALSE POSITIVE AFTER ONE REAL CONTRACT FIX
+(Bug 814.1, 2026-08-02). Found by the first
 honest run of `probe-logdepth-zfight.mjs` (post-Batch-803 aliasing fix + the
 2026-08-02 instrument round: distinct-color below boxes, wall-clock readiness
-gate, OFF-leg globe precondition).
+gate, OFF-leg globe precondition). **DISCRIMINATOR RUN (2026-08-02 landing, orchestrator): the default-depth-policy leg (offline terrain, depthTestAgainstTerrain=false, union metric, current build) passes at 0.997 — proving Batch 816 cured the real mechanism (live-frustum-vs-stash curve against the DEPTH PLANE, the only depth adversary under the old cleared-globe-depth config; terrain was never the slab's occluder) and attributing the Batch 817 anomaly to stale build state. The closure now has discriminating power under BOTH depth policies.**
 
 **Measured bisect (Batch 814 diagnostic, WebGPU, 220 km nadir, solid globe):**
 
@@ -7385,9 +7441,34 @@ publisher/packer contract pairing).
 scene (was 0.868 — the probe gate was correctly RED on this defect).
 Fix must not regress check (3) (below-ground boxes stay occluded) or the
 single-primitive case.
-
 
-**ACCEPTANCE RESULT (2026-08-02, Batch 817): the Batch 816 stash-first fix is measured INSUFFICIENT.** probe-logdepth-zfight re-run after a full `gulp build`: byte-identical numbers to pre-fix (ON=39039, ratio 0.868) — so the defect is NOT (only) pack-timing-sensitive uniform tail values, exactly the honest-residual scenario the fix report flagged. The 816 contract fix stands on its own merits (last producer off the stash contract, mutation-pinned), but the arrow-region loss has another mechanism. **NEXT DIAGNOSTIC (per the fix report §6.3): dump the slab's camera-UB floats 40-43 AND the globe tail values at capture time in the two-primitive scene** — if they agree, the mechanism is non-uniform (suspects: per-instance depth path, vertex-side clip-z clamp interaction, or the second primitive altering the shared depth-attachment state); the spec's depth-compare oracle then bounds where the curves diverge.
+
+**ACCEPTANCE RESULT (2026-08-02, Batch 817): the Batch 816 stash-first fix is measured INSUFFICIENT.** `probe-logdepth-zfight.mjs` re-run after a full `gulp build`: byte-identical numbers to pre-fix (ON=39039, ratio 0.868) — so the defect is NOT (only) pack-timing-sensitive uniform tail values, exactly the honest-residual scenario the fix report flagged. The 816 contract fix stands on its own merits (last producer off the stash contract, mutation-pinned), but the arrow-region loss has another mechanism.
+
+**RUNTIME-CONFIRMED NEXT DIAGNOSTIC (2026-08-02 Codex audit):** although the
+repro requests `flat:false`, its BASIC geometry has no ST attribute and the live
+selector emits `matColorFlat`; capture the primitive's **FLAT floats 40-43**.
+Capture slab + below raw f32 bits and resource identities, every globe tail at
+floats 140-143, and actual frustum membership in the SAME accepted post-render
+frame. If they agree, the mechanism is non-uniform (suspects: shader-side depth
+interpolation/clip-z clamp, then frustum membership/pass lifetime); the spec's
+depth-compare oracle bounds where the curves diverge.
+
+**POST-BATCH-818 AUTHORITATIVE CORRECTION:** the residual 0.868 result above was
+not a deterministic ellipsoid-depth comparison. The viewer started online
+world terrain, placing a nominal +5 m ellipsoid slab under real terrain, while
+the negative control expected terrain occlusion with
+`globe.depthTestAgainstTerrain === false`; that default intentionally clears
+globe depth before opaque primitives. The corrected probe uses `offline=true`,
+an explicit `EllipsoidTerrainProvider`, `depthTestAgainstTerrain=true`, and
+asserts `clearGlobeDepth=false`. It passes after the full build: ON
+foreground=44,813, OFF=44,983, ratio=0.996 (green-only ratio=0.974 because the
+colocated magenta reference overwrites green), below-ground pixels=0, and zero console errors. Both
+flat-Mat tails and all 19 globe tails are bit-identical in the accepted frame,
+with distinct resources and ordinary same-frustum/pass membership. There is no
+second renderer mechanism to fix in this reproducer. Keep Batch 816's
+stash-first contract correction and mutation guard; the older root-cause and
+insufficient-fix prose above is retained only as incident history.
 
 ## 2026-08-02 — scene sun-shadow verification needs a real probe (and found an anomaly)
 

@@ -20,7 +20,8 @@
  * than pooled. Both identities are tracked for the same reason the dynamic
  * environment cache tracks both — `device` catches replacement-device swaps
  * directly, while `resourceGeneration` follows the context's recovery epoch
- * even if a recovery implementation preserves a wrapper identity.
+ * even if a recovery implementation preserves a wrapper identity. Borrowed
+ * handles stamp and validate both halves of that tuple on release.
  *
  * ## In-flight safety
  *
@@ -50,6 +51,8 @@ export interface PooledParameterBuffer {
   byteLength: number;
   /** Bucket key; also the buffer's real allocated size. */
   capacityBytes: number;
+  /** Exact physical device that allocated {@link buffer}. */
+  device: GPUDevice;
   generation: number;
 }
 
@@ -59,6 +62,8 @@ export interface PooledDepthTarget {
   view: GPUTextureView;
   size: number;
   format: GPUTextureFormat;
+  /** Exact physical device that allocated {@link texture}. */
+  device: GPUDevice;
   generation: number;
 }
 
@@ -74,6 +79,16 @@ interface PooledDepthEntry {
   size: number;
   format: GPUTextureFormat;
   lastUsedFrameId: number;
+}
+
+interface DetachedPoolEntries {
+  buffers: Map<number, PooledBufferEntry[]>;
+  depth: Map<string, PooledDepthEntry[]>;
+}
+
+interface PoolCleanupResult {
+  failed: boolean;
+  firstError: unknown;
 }
 
 /** Plain, JSON-safe counters exposed through renderer statistics. */
@@ -172,7 +187,10 @@ export class WebGPUEnvironmentTargetPool {
     ) {
       return;
     }
-    this._destroyAllEntries();
+    // Detach and publish first. A native destroy() owned by the lost tuple may
+    // throw (or re-enter in a synthetic implementation), but neither case may
+    // leave the old maps/device identity addressable or roll back recovery.
+    const detached = this._detachAllEntries();
     this._device = device;
     this._resourceGeneration = resourceGeneration;
     // Objects handed out under the old generation are still owned by their
@@ -183,6 +201,14 @@ export class WebGPUEnvironmentTargetPool {
     this._liveDepth = 0;
     this._telemetry.generationResets += 1;
     this._telemetry.resourceGeneration = resourceGeneration;
+    const cleanup = this._destroyDetachedEntries(detached);
+    if (cleanup.failed) {
+      // lint-debug-pragmas-allow: old-device cleanup is diagnostic, never candidate-fatal
+      console.warn(
+        "[WebGPU] Environment target pool adopted with an old-device cleanup error:",
+        cleanup.firstError,
+      );
+    }
   }
 
   /**
@@ -210,6 +236,7 @@ export class WebGPUEnvironmentTargetPool {
         buffer: entry.buffer,
         byteLength,
         capacityBytes,
+        device: this._device,
         generation: this._resourceGeneration,
       };
     }
@@ -226,6 +253,7 @@ export class WebGPUEnvironmentTargetPool {
       buffer,
       byteLength,
       capacityBytes,
+      device: this._device,
       generation: this._resourceGeneration,
     };
   }
@@ -236,7 +264,11 @@ export class WebGPUEnvironmentTargetPool {
       return;
     }
     const telemetry = this._telemetry;
-    if (this._destroyed || handle.generation !== this._resourceGeneration) {
+    if (
+      this._destroyed ||
+      handle.device !== this._device ||
+      handle.generation !== this._resourceGeneration
+    ) {
       telemetry.staleReleases += 1;
       telemetry.bufferDestroys += 1;
       handle.buffer.destroy();
@@ -290,6 +322,7 @@ export class WebGPUEnvironmentTargetPool {
         view: entry.view,
         size,
         format,
+        device: this._device,
         generation: this._resourceGeneration,
       };
     }
@@ -300,14 +333,27 @@ export class WebGPUEnvironmentTargetPool {
       format,
       usage: GPUTextureUsage.RENDER_ATTACHMENT,
     });
+    let view: GPUTextureView;
+    try {
+      view = texture.createView();
+    } catch (error) {
+      try {
+        texture.destroy();
+      } catch {
+        // Preserve the candidate setup failure that makes this acquisition
+        // unusable; the unpublished native is best-effort cleanup only.
+      }
+      throw error;
+    }
     this._liveDepth += 1;
     telemetry.depthCreates += 1;
     telemetry.depthLive = this._liveDepth;
     return {
       texture,
-      view: texture.createView(),
+      view,
       size,
       format,
+      device: this._device,
       generation: this._resourceGeneration,
     };
   }
@@ -318,7 +364,11 @@ export class WebGPUEnvironmentTargetPool {
       return;
     }
     const telemetry = this._telemetry;
-    if (this._destroyed || handle.generation !== this._resourceGeneration) {
+    if (
+      this._destroyed ||
+      handle.device !== this._device ||
+      handle.generation !== this._resourceGeneration
+    ) {
       telemetry.staleReleases += 1;
       telemetry.depthDestroys += 1;
       handle.texture.destroy();
@@ -423,10 +473,14 @@ export class WebGPUEnvironmentTargetPool {
     if (this._destroyed) {
       return;
     }
-    this._destroyAllEntries();
+    const detached = this._detachAllEntries();
     this._destroyed = true;
     this._liveBuffers = 0;
     this._liveDepth = 0;
+    const cleanup = this._destroyDetachedEntries(detached);
+    if (cleanup.failed) {
+      throw cleanup.firstError;
+    }
   }
 
   private _createTelemetry(): WebGPUEnvironmentTargetPoolTelemetry {
@@ -451,23 +505,50 @@ export class WebGPUEnvironmentTargetPool {
     };
   }
 
-  private _destroyAllEntries(): void {
-    const telemetry = this._telemetry;
-    for (const free of this._idleBuffers.values()) {
-      for (let i = 0; i < free.length; i++) {
-        free[i].buffer.destroy();
-        telemetry.bufferDestroys += 1;
-      }
-    }
-    this._idleBuffers.clear();
+  private _detachAllEntries(): DetachedPoolEntries {
+    const detached = {
+      buffers: this._idleBuffers,
+      depth: this._idleDepth,
+    };
+    this._idleBuffers = new Map();
+    this._idleDepth = new Map();
+    this._telemetry.bufferIdle = 0;
+    this._telemetry.depthIdle = 0;
+    return detached;
+  }
 
-    for (const free of this._idleDepth.values()) {
+  private _destroyDetachedEntries(
+    entries: DetachedPoolEntries,
+  ): PoolCleanupResult {
+    const telemetry = this._telemetry;
+    let firstError: unknown;
+    let failed = false;
+    const destroyBestEffort = (destroy: () => void): void => {
+      try {
+        destroy();
+      } catch (error) {
+        if (!failed) {
+          firstError = error;
+          failed = true;
+        }
+      }
+    };
+    for (const free of entries.buffers.values()) {
       for (let i = 0; i < free.length; i++) {
-        free[i].texture.destroy();
-        telemetry.depthDestroys += 1;
+        telemetry.bufferDestroys += 1;
+        destroyBestEffort(() => free[i].buffer.destroy());
       }
     }
-    this._idleDepth.clear();
+
+    for (const free of entries.depth.values()) {
+      for (let i = 0; i < free.length; i++) {
+        telemetry.depthDestroys += 1;
+        destroyBestEffort(() => free[i].texture.destroy());
+      }
+    }
+    entries.buffers.clear();
+    entries.depth.clear();
+    return { failed, firstError };
   }
 
   private _countIdleBuffers(): number {

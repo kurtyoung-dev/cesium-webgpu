@@ -3,6 +3,7 @@ import createWebGLCompatibilityStub, {
   getCompiledShaderForProgram,
 } from "../../../Source/Renderer/WebGPU/WebGLCompatibilityStub.js";
 import { WebGLStubBufferRegistry } from "../../../Source/Renderer/WebGPU/Stubs/WebGLStubBuffer.js";
+import { WebGLStubTextureRegistry } from "../../../Source/Renderer/WebGPU/Stubs/WebGLStubTexture.js";
 
 // These specs are pure-logic tests — no real GPUDevice / GPUQueue is
 // created. `createWebGLCompatibilityStub(state)` composes a WebGL-shaped
@@ -34,6 +35,7 @@ function createFakeState() {
     // Device & encoders intentionally null — keeps every method on the
     // CPU-only branch.
     device: null,
+    resourceGeneration: 0,
     context: null,
     currentCommandEncoder: null,
     currentRenderPassEncoder: null,
@@ -41,6 +43,7 @@ function createFakeState() {
     // GL compatibility state
     activeTextureUnit: 0,
     textureBindings: new Map(),
+    textureRegistry: new WebGLStubTextureRegistry(),
     boundVertexBuffer: null,
     boundIndexBuffer: null,
     bufferRegistry: new WebGLStubBufferRegistry(),
@@ -104,6 +107,7 @@ function createFakeState() {
       this._scissorDisabled = true;
     },
     copyTextureRegion() {},
+    enqueueMipGeneration() {},
     // Identity-ish converters — return a recognizable mapping of the input
     // so the blend/depth state methods can be asserted without depending on
     // the real WebGLStateConverters tables.

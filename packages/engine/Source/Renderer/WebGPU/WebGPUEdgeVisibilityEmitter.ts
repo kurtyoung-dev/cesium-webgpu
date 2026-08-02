@@ -1302,10 +1302,27 @@ export function destroyEdgePrimitiveResources(
   resources: EdgePrimitiveResources | null | undefined,
 ): void {
   if (!resources) return;
-  resources.vertexBuffer.destroy();
-  resources.indexBuffer.destroy();
-  resources.cameraBuffer.destroy();
-  resources.edgeBuffer.destroy();
+  let firstDestroyError: unknown;
+  let hasDestroyError = false;
+  const buffers = [
+    resources.vertexBuffer,
+    resources.indexBuffer,
+    resources.cameraBuffer,
+    resources.edgeBuffer,
+  ];
+  for (let i = 0; i < buffers.length; i++) {
+    try {
+      buffers[i].destroy();
+    } catch (error) {
+      if (!hasDestroyError) {
+        firstDestroyError = error;
+        hasDestroyError = true;
+      }
+    }
+  }
+  if (hasDestroyError) {
+    throw firstDestroyError;
+  }
 }
 
 const _scratchCameraData = new Float32Array(32); // 2 mat4 = 32 floats

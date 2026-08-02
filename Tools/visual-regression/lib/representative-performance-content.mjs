@@ -1,3 +1,5 @@
+import { createRepresentativeTilesetRequestLedger } from "./representative-tileset-request-ledger.mjs";
+
 export const REPRESENTATIVE_CONTENT_PROFILE = "local-procedural-terrain-assets";
 export const REPRESENTATIVE_CONTENT = "terrain-models-tiles";
 
@@ -581,6 +583,11 @@ export async function createRepresentativeAssets(C, scene, config) {
 const tilesetLifecycleEventLimit = 4096;
 const tilesetLifecycleFrameLimit = 2048;
 const tilesetLifecycleIdentityListLimit = 128;
+const tilesetLifecycleByteTotalNames = Object.freeze([
+  "transferBytes",
+  "encodedBodyBytes",
+  "decodedBodyBytes",
+]);
 
 /**
  * Membership test for the resident 3D Tiles content set.
@@ -700,6 +707,10 @@ export function createRepresentativeTilesetLifecycleTracker(
     options.baseUrl || globalThis.location?.href || "http://localhost/";
   const eventLimit = options.eventLimit ?? tilesetLifecycleEventLimit;
   const frameLimit = options.frameLimit ?? tilesetLifecycleFrameLimit;
+  const schemaVersion = options.schemaVersion ?? 1;
+  if (schemaVersion !== 1 && schemaVersion !== 2) {
+    throw new Error(`Unsupported tileset lifecycle schema ${schemaVersion}`);
+  }
   const requestContentPrototype = C.Cesium3DTile?.prototype;
   if (!requestContentPrototype) {
     throw new Error("Cesium3DTile prototype is unavailable");
@@ -707,11 +718,40 @@ export function createRepresentativeTilesetLifecycleTracker(
 
   const originalRequestContent = requestContentPrototype.requestContent;
   const originalCancelRequests = requestContentPrototype.cancelRequests;
+  const multipleContentPrototype =
+    schemaVersion === 2 ? C.Multiple3DTileContent?.prototype : null;
+  const modelContentPrototype =
+    schemaVersion === 2 ? C.Model3DTileContent?.prototype : null;
+  if (
+    schemaVersion === 2 &&
+    (!multipleContentPrototype || !modelContentPrototype)
+  ) {
+    throw new Error(
+      "Lifecycle schema 2 requires Multiple3DTileContent and Model3DTileContent",
+    );
+  }
+  const originalRequestInnerContents =
+    multipleContentPrototype?.requestInnerContents;
+  const originalMultipleCancelRequests =
+    multipleContentPrototype?.cancelRequests;
+  const originalModelUpdate = modelContentPrototype?.update;
+  const originalModelDestroy = modelContentPrototype?.destroy;
   const requestRecords = new WeakMap();
   const requestTimingCursors = new Map();
+  const tileAttemptCounts = new WeakMap();
   const tileIssueCounts = new WeakMap();
+  const lastIssuedRecords = new WeakMap();
   const cancelledRequests = new WeakSet();
   const settledRequests = new WeakSet();
+  const slotAttemptCounts = new WeakMap();
+  const slotIssueCounts = new WeakMap();
+  const lastSlotRecords = new WeakMap();
+  const multipleGroupCounts = new WeakMap();
+  const contentIdentities = new WeakMap();
+  const observedContentReady = new WeakSet();
+  const observedModelReady = new WeakSet();
+  const observedModelDestroyed = new WeakSet();
+  const ambiguityObjects = new WeakSet();
   const events = [];
   const frames = [];
   const removeTileLoadListeners = [];
@@ -729,6 +769,7 @@ export function createRepresentativeTilesetLifecycleTracker(
     requestsCompleted: 0,
     requestsFailed: 0,
     requestsResolvedWithoutContent: 0,
+    multipleContentRequestAttempts: 0,
     tileReadyEvents: 0,
     resourceTimingsMatched: 0,
     resourceTimingsMissing: 0,
@@ -736,6 +777,16 @@ export function createRepresentativeTilesetLifecycleTracker(
     encodedBodyBytes: 0,
     decodedBodyBytes: 0,
   };
+  if (schemaVersion === 2) {
+    Object.assign(totals, {
+      contentCreatedEvents: 0,
+      contentFactoryFailures: 0,
+      requestCancellationNoops: 0,
+      modelReadyEvents: 0,
+      contentReadyEvents: 0,
+      modelDestroyedBeforeReadyEvents: 0,
+    });
+  }
 
   const requestStateName = (state) => {
     for (const [name, value] of Object.entries(C.RequestState || {})) {
@@ -779,8 +830,7 @@ export function createRepresentativeTilesetLifecycleTracker(
     });
   };
 
-  const canonicalResourceUrl = (tile) => {
-    const value = tile?._contentResource?.url;
+  const canonicalUrl = (value) => {
     if (typeof value !== "string" || value.length === 0) {
       return null;
     }
@@ -788,6 +838,72 @@ export function createRepresentativeTilesetLifecycleTracker(
       return new URL(value, baseUrl).href;
     } catch {
       return value;
+    }
+  };
+
+  const canonicalResourceUrl = (tile) =>
+    canonicalUrl(tile?._contentResource?.url);
+
+  const canonicalInnerResourceUrl = (multipleContents, index) =>
+    canonicalUrl(
+      multipleContents?._innerContentResources?.[index]?.url ??
+        multipleContents?._innerContentResources?.[index]?.getUrlComponent?.(
+          true,
+        ),
+    );
+
+  const contentKind = (tile) =>
+    tile?.hasMultipleContents === true ? "multiple" : "single";
+
+  const requestEventIdentity = (record, tile) => ({
+    requestId: record?.requestId ?? null,
+    tile: record?.tile ?? tileIdentity(tile),
+    contentKind: record?.contentKind ?? contentKind(tile),
+    contentSlot: record?.contentSlot ?? "single",
+    requestSerial: record?.requestSerial ?? null,
+    attemptSerial: record?.attemptSerial ?? null,
+    ...(schemaVersion === 2
+      ? {
+          groupSerial: record?.groupSerial ?? null,
+          groupSize: record?.groupSize ?? null,
+        }
+      : {}),
+  });
+
+  const getSlotCount = (registry, tile, contentSlot) =>
+    registry.get(tile)?.get(contentSlot) ?? 0;
+
+  const setSlotCount = (registry, tile, contentSlot, value) => {
+    let counts = registry.get(tile);
+    if (!counts) {
+      counts = new Map();
+      registry.set(tile, counts);
+    }
+    counts.set(contentSlot, value);
+  };
+
+  const getLastSlotRecord = (tile, contentSlot) =>
+    lastSlotRecords.get(tile)?.get(contentSlot) ?? null;
+
+  const setLastSlotRecord = (tile, contentSlot, record) => {
+    let records = lastSlotRecords.get(tile);
+    if (!records) {
+      records = new Map();
+      lastSlotRecords.set(tile, records);
+    }
+    records.set(contentSlot, record);
+  };
+
+  const primeResourceTimingCursor = (url) => {
+    if (
+      url &&
+      !requestTimingCursors.has(url) &&
+      typeof performanceApi?.getEntriesByName === "function"
+    ) {
+      requestTimingCursors.set(
+        url,
+        (performanceApi.getEntriesByName(url, "resource") || []).length,
+      );
     }
   };
 
@@ -799,16 +915,7 @@ export function createRepresentativeTilesetLifecycleTracker(
     collectRepresentativeTiles(tileset?._root, allTiles);
     for (const tile of allTiles) {
       const url = canonicalResourceUrl(tile);
-      if (
-        url &&
-        !requestTimingCursors.has(url) &&
-        typeof performanceApi?.getEntriesByName === "function"
-      ) {
-        requestTimingCursors.set(
-          url,
-          (performanceApi.getEntriesByName(url, "resource") || []).length,
-        );
-      }
+      primeResourceTimingCursor(url);
     }
   }
 
@@ -841,73 +948,492 @@ export function createRepresentativeTilesetLifecycleTracker(
     };
   };
 
+  const emitAmbiguity = (object, tile, reason) => {
+    if (object && ambiguityObjects.has(object)) {
+      return;
+    }
+    if (object) {
+      ambiguityObjects.add(object);
+    }
+    pushEvent({
+      type: "instrumentation-ambiguity",
+      tile: tileIdentity(tile),
+      contentKind: contentKind(tile),
+      contentSlot: "unknown",
+      frameNumber: frameNumber(tile),
+      reason,
+    });
+  };
+
+  const stableModelIdentity = (identity) =>
+    `${identity.record.tile}::${identity.record.contentSlot}::${identity.record.requestSerial}::${identity.modelPath}`;
+
+  const registerContentTree = (content, record, path = "") => {
+    if (!content || !record) {
+      return [];
+    }
+    if (content instanceof C.Model3DTileContent) {
+      const modelPath = path ? `${path}/model` : "model";
+      contentIdentities.set(content, { record, modelPath });
+      return [modelPath];
+    }
+    const innerContents = content.innerContents;
+    if (!Array.isArray(innerContents)) {
+      return [];
+    }
+    const modelPaths = [];
+    for (let index = 0; index < innerContents.length; index++) {
+      const childPath = path
+        ? `${path}/composite/${index}`
+        : `composite/${index}`;
+      modelPaths.push(
+        ...registerContentTree(innerContents[index], record, childPath),
+      );
+    }
+    return modelPaths;
+  };
+
+  const recordContentOutcome = (tile, record, type, content = null) => {
+    if (!active || !record || record.contentOutcomeObserved) {
+      return;
+    }
+    record.contentOutcomeObserved = true;
+    const modelPaths =
+      type === "content-created"
+        ? registerContentTree(content, record).sort()
+        : [];
+    if (type === "content-created") {
+      totals.contentCreatedEvents++;
+    } else if (type === "content-factory-failed") {
+      totals.contentFactoryFailures++;
+    }
+    pushEvent({
+      type,
+      ...requestEventIdentity(record, tile),
+      frameNumber: frameNumber(tile),
+      contentType: content?.constructor?.name ?? null,
+      modelPaths,
+    });
+  };
+
+  const emitModelEvent = (type, content) => {
+    const identity = contentIdentities.get(content);
+    const tile = content?.tile ?? content?._tile;
+    if (!identity) {
+      emitAmbiguity(
+        content,
+        tile,
+        `model ${type} could not be joined to an exact request generation`,
+      );
+      return;
+    }
+    const { record, modelPath } = identity;
+    pushEvent({
+      type,
+      ...requestEventIdentity(record, tile),
+      frameNumber: frameNumber(tile),
+      modelPath,
+      modelId: stableModelIdentity(identity),
+    });
+  };
+
   const recordCancellation = (tile, request, reason) => {
-    if (!request || cancelledRequests.has(request)) {
+    if (!request) {
+      return;
+    }
+    const record = requestRecords.get(request);
+    // Request.cancel() marks even an already RECEIVED request as cancelled.
+    // That is a transport no-op, not an effective cancellation transition.
+    if (record?.terminalType != null || cancelledRequests.has(request)) {
       return;
     }
     cancelledRequests.add(request);
     totals.requestsCancelled++;
-    const record = requestRecords.get(request);
+    if (record) {
+      record.cancelled = true;
+    }
     pushEvent({
       type: "cancelled",
-      requestId: record?.requestId ?? null,
-      tile: tileIdentity(tile),
+      ...requestEventIdentity(record, tile),
       frameNumber: frameNumber(tile),
       requestState: requestStateName(request.state),
       reason,
     });
   };
 
-  const settleRequest = (tile, request, content, error) => {
-    if (!request || settledRequests.has(request)) {
+  const recordCancellationNoop = (tile, request, reason) => {
+    if (!active) {
+      return;
+    }
+    const record = requestRecords.get(request);
+    if (!record || record.terminalType == null || record.cancelNoopObserved) {
+      return;
+    }
+    record.cancelNoopObserved = true;
+    totals.requestCancellationNoops++;
+    pushEvent({
+      type: "cancel-requested-noop",
+      ...requestEventIdentity(record, tile),
+      frameNumber: frameNumber(tile),
+      requestState: requestStateName(request.state),
+      terminalType: record.terminalType,
+      reason,
+    });
+  };
+
+  const settleRequest = (tile, request, content, error, settleOptions = {}) => {
+    if (!active || !request || settledRequests.has(request)) {
       return;
     }
     settledRequests.add(request);
     const record = requestRecords.get(request);
     const cancelled =
       request.cancelled === true || request.state === C.RequestState?.CANCELLED;
-    if (cancelled) {
+    const cancellationNoop =
+      schemaVersion === 2 && cancelled && settleOptions.type === "completed";
+    if (cancelled && !cancellationNoop) {
       recordCancellation(tile, request, "request-settled-cancelled");
     }
     const timing = consumeResourceTiming(record?.url ?? null);
     if (timing) {
       totals.resourceTimingsMatched++;
-      totals.transferBytes += timing.transferBytes || 0;
-      totals.encodedBodyBytes += timing.encodedBodyBytes || 0;
-      totals.decodedBodyBytes += timing.decodedBodyBytes || 0;
+      for (const name of tilesetLifecycleByteTotalNames) {
+        if (totals[name] === null) {
+          continue;
+        }
+        const value = timing[name];
+        totals[name] =
+          Number.isFinite(value) && value >= 0 ? totals[name] + value : null;
+      }
     } else {
       totals.resourceTimingsMissing++;
+      for (const name of tilesetLifecycleByteTotalNames) {
+        totals[name] = null;
+      }
     }
 
-    let type;
-    if (error) {
+    let type = settleOptions.type;
+    if (type) {
+      if (type === "failed") {
+        totals.requestsFailed++;
+      } else if (
+        type === "cancelled-settled" ||
+        type === "resolved-without-content"
+      ) {
+        totals.requestsResolvedWithoutContent++;
+      } else if (type === "completed") {
+        totals.requestsCompleted++;
+      }
+    } else if (error) {
       totals.requestsFailed++;
       type = "failed";
-    } else if (cancelled || content == null) {
+    } else if (content == null) {
       totals.requestsResolvedWithoutContent++;
       type = cancelled ? "cancelled-settled" : "resolved-without-content";
     } else {
       totals.requestsCompleted++;
       type = "completed";
     }
+    if (record) {
+      record.terminalType = type;
+      if (
+        type === "cancelled-settled" &&
+        record.successor &&
+        record.successor.reissueAfterCancellationCounted !== true
+      ) {
+        totals.requestsReissuedAfterCancellation++;
+        record.successor.reissueAfterCancellationCounted = true;
+      }
+    }
     pushEvent({
       type,
-      requestId: record?.requestId ?? null,
-      tile: tileIdentity(tile),
+      ...requestEventIdentity(record, tile),
       frameNumber: frameNumber(tile),
       requestState: requestStateName(request.state),
       contentState: contentStateName(tile?._contentState),
       bytes: timing,
       error: error ? String(error?.message || error) : null,
     });
+    if (cancellationNoop) {
+      recordCancellationNoop(tile, request, "request-settled-after-cancel");
+    }
+    if (
+      schemaVersion === 2 &&
+      type === "completed" &&
+      settleOptions.contentCreated === true
+    ) {
+      recordContentOutcome(tile, record, "content-created", content);
+    }
   };
+
+  if (schemaVersion === 2) {
+    multipleContentPrototype.requestInnerContents = function (...args) {
+      if (!active || !trackedTilesets.has(this?._tileset)) {
+        return originalRequestInnerContents.apply(this, args);
+      }
+
+      const tile = this._tile;
+      const groupSerial = (multipleGroupCounts.get(tile) || 0) + 1;
+      multipleGroupCounts.set(tile, groupSerial);
+      const contentCount = this._innerContentHeaders?.length ?? 0;
+      const attempts = [];
+      for (let index = 0; index < contentCount; index++) {
+        const contentSlot = `content-${index}`;
+        const attemptSerial =
+          getSlotCount(slotAttemptCounts, tile, contentSlot) + 1;
+        setSlotCount(slotAttemptCounts, tile, contentSlot, attemptSerial);
+        attempts.push({ contentSlot, attemptSerial });
+        primeResourceTimingCursor(canonicalInnerResourceUrl(this, index));
+      }
+
+      const result = originalRequestInnerContents.apply(this, args);
+      if (result == null) {
+        for (const attempt of attempts) {
+          totals.requestAttempts++;
+          totals.requestSchedulingDeferrals++;
+          totals.multipleContentRequestAttempts++;
+          pushEvent({
+            type: "scheduling-deferred",
+            requestId: null,
+            tile: tileIdentity(tile),
+            contentKind: "multiple",
+            contentSlot: attempt.contentSlot,
+            requestSerial: null,
+            attemptSerial: attempt.attemptSerial,
+            groupSerial,
+            groupSize: contentCount,
+            frameNumber: frameNumber(tile),
+            contentState: contentStateName(tile?._contentState),
+          });
+        }
+        return result;
+      }
+
+      const groupRecords = new Array(contentCount);
+      for (let index = 0; index < contentCount; index++) {
+        const { contentSlot, attemptSerial } = attempts[index];
+        const request = this._requests?.[index];
+        const fetchPromise = this._arrayFetchPromises?.[index];
+        totals.requestAttempts++;
+        totals.multipleContentRequestAttempts++;
+        if (fetchPromise == null) {
+          totals.requestSchedulingDeferrals++;
+          pushEvent({
+            type: "scheduling-deferred",
+            requestId: null,
+            tile: tileIdentity(tile),
+            contentKind: "multiple",
+            contentSlot,
+            requestSerial: null,
+            attemptSerial,
+            groupSerial,
+            groupSize: contentCount,
+            frameNumber: frameNumber(tile),
+            requestState: requestStateName(request?.state),
+            contentState: contentStateName(tile?._contentState),
+          });
+          continue;
+        }
+
+        const requestSerial =
+          getSlotCount(slotIssueCounts, tile, contentSlot) + 1;
+        setSlotCount(slotIssueCounts, tile, contentSlot, requestSerial);
+        totals.requestsIssued++;
+        const previousRecord = getLastSlotRecord(tile, contentSlot);
+        if (requestSerial > 1) {
+          totals.requestsReissued++;
+          if (previousRecord?.terminalType === "cancelled-settled") {
+            totals.requestsReissuedAfterCancellation++;
+          }
+        }
+        const record = {
+          requestId: nextRequestId++,
+          tile: tileIdentity(tile),
+          contentKind: "multiple",
+          contentSlot,
+          requestSerial,
+          attemptSerial,
+          groupSerial,
+          groupSize: contentCount,
+          url: canonicalInnerResourceUrl(this, index),
+          cancelled: false,
+          tileObject: tile,
+          reissueAfterCancellationCounted:
+            previousRecord?.terminalType === "cancelled-settled",
+          requestObject: request,
+        };
+        if (previousRecord) {
+          previousRecord.successor = record;
+        }
+        groupRecords[index] = record;
+        if (request) {
+          if (requestRecords.has(request)) {
+            emitAmbiguity(
+              request,
+              tile,
+              `multiple-content request object was reused for ${contentSlot}`,
+            );
+          } else {
+            requestRecords.set(request, record);
+          }
+        }
+        setLastSlotRecord(tile, contentSlot, record);
+        pushEvent({
+          type: requestSerial > 1 ? "reissued" : "issued",
+          ...requestEventIdentity(record, tile),
+          frameNumber: frameNumber(tile),
+          requestState: requestStateName(request?.state),
+          contentState: contentStateName(tile?._contentState),
+          url: record.url,
+          issueCount: requestSerial,
+          requestObjectObserved: Boolean(request),
+        });
+
+        Promise.resolve(fetchPromise).then(
+          (arrayBuffer) => {
+            const cancelled =
+              request?.cancelled === true ||
+              request?.state === C.RequestState?.CANCELLED;
+            const failed = request?.state === C.RequestState?.FAILED;
+            settleRequest(tile, request, arrayBuffer, null, {
+              type:
+                arrayBuffer != null
+                  ? "completed"
+                  : failed
+                    ? "failed"
+                    : cancelled
+                      ? "cancelled-settled"
+                      : "resolved-without-content",
+            });
+          },
+          (error) => settleRequest(tile, request, null, error),
+        );
+      }
+
+      Promise.resolve(result).then(
+        (contents) => {
+          const indexedContents = Array.isArray(contents) ? contents : [];
+          // Multiple3DTileContent returns an indexed array after content
+          // factory completion. A fulfilled non-array result is its exact
+          // generation-wide cancellation/discard signal, including scheduler-
+          // initiated cancellation that bypasses cancelRequests().
+          const groupDiscarded = !Array.isArray(contents);
+          for (let index = 0; index < groupRecords.length; index++) {
+            const record = groupRecords[index];
+            if (!record) {
+              continue;
+            }
+            const content = indexedContents[index];
+            if (groupDiscarded) {
+              const request = record.requestObject;
+              if (
+                record.terminalType === "completed" &&
+                request &&
+                (request.cancelled === true ||
+                  request.state === C.RequestState?.CANCELLED)
+              ) {
+                recordCancellationNoop(
+                  tile,
+                  request,
+                  "generation-discarded-after-completion",
+                );
+              }
+              recordContentOutcome(tile, record, "content-discarded");
+            } else if (content != null) {
+              recordContentOutcome(tile, record, "content-created", content);
+            } else if (record.terminalType === "completed") {
+              recordContentOutcome(tile, record, "content-factory-failed");
+            } else if (record.terminalType === "cancelled-settled") {
+              recordContentOutcome(tile, record, "content-discarded");
+            } else {
+              recordContentOutcome(tile, record, "content-unavailable");
+            }
+          }
+        },
+        () => {
+          for (const record of groupRecords) {
+            if (record) {
+              recordContentOutcome(tile, record, "content-unavailable");
+            }
+          }
+        },
+      );
+      return result;
+    };
+
+    multipleContentPrototype.cancelRequests = function (...args) {
+      if (!active || !trackedTilesets.has(this?._tileset)) {
+        return originalMultipleCancelRequests.apply(this, args);
+      }
+      const tile = this._tile;
+      const requests = [...(this._requests || [])];
+      const result = originalMultipleCancelRequests.apply(this, args);
+      for (const request of requests) {
+        if (
+          request &&
+          (request.cancelled === true ||
+            request.state === C.RequestState?.CANCELLED)
+        ) {
+          if (requestRecords.get(request)?.terminalType != null) {
+            recordCancellationNoop(tile, request, "out-of-view-group");
+          } else {
+            recordCancellation(tile, request, "out-of-view-group");
+          }
+        }
+      }
+      return result;
+    };
+
+    modelContentPrototype.update = function (...args) {
+      if (!active || !trackedTilesets.has(this?._tileset)) {
+        return originalModelUpdate.apply(this, args);
+      }
+      const result = originalModelUpdate.apply(this, args);
+      if (this?._model?.ready === true && !observedModelReady.has(this)) {
+        observedModelReady.add(this);
+        totals.modelReadyEvents++;
+        emitModelEvent("model-ready", this);
+      }
+      if (this.ready === true && !observedContentReady.has(this)) {
+        observedContentReady.add(this);
+        totals.contentReadyEvents++;
+        emitModelEvent("content-ready", this);
+      }
+      return result;
+    };
+
+    modelContentPrototype.destroy = function (...args) {
+      if (
+        active &&
+        trackedTilesets.has(this?._tileset) &&
+        this.ready !== true &&
+        !observedModelDestroyed.has(this)
+      ) {
+        observedModelDestroyed.add(this);
+        totals.modelDestroyedBeforeReadyEvents++;
+        emitModelEvent("model-destroyed-before-ready", this);
+      }
+      return originalModelDestroy.apply(this, args);
+    };
+  }
 
   requestContentPrototype.requestContent = function (...args) {
     if (!active || !trackedTilesets.has(this?._tileset)) {
       return originalRequestContent.apply(this, args);
     }
+    if (schemaVersion === 2 && this?.hasMultipleContents === true) {
+      // Schema 2 observes the actual per-slot Request objects inside
+      // Multiple3DTileContent. Recording this outer group as one request would
+      // recreate the v1 blind spot and double-count every network operation.
+      return originalRequestContent.apply(this, args);
+    }
     totals.requestAttempts++;
-    const previousRequest = this._request;
+    const currentContentKind = contentKind(this);
+    if (currentContentKind === "multiple") {
+      totals.multipleContentRequestAttempts++;
+    }
+    const attemptSerial = (tileAttemptCounts.get(this) || 0) + 1;
+    tileAttemptCounts.set(this, attemptSerial);
     const result = originalRequestContent.apply(this, args);
     const request = this._request;
     if (result == null) {
@@ -916,6 +1442,10 @@ export function createRepresentativeTilesetLifecycleTracker(
         type: "scheduling-deferred",
         requestId: null,
         tile: tileIdentity(this),
+        contentKind: currentContentKind,
+        contentSlot: "single",
+        requestSerial: null,
+        attemptSerial,
         frameNumber: frameNumber(this),
         requestState: requestStateName(request?.state),
         contentState: contentStateName(this._contentState),
@@ -926,31 +1456,60 @@ export function createRepresentativeTilesetLifecycleTracker(
     const issueCount = (tileIssueCounts.get(this) || 0) + 1;
     tileIssueCounts.set(this, issueCount);
     totals.requestsIssued++;
+    const previousRecord = lastIssuedRecords.get(this);
     if (issueCount > 1) {
       totals.requestsReissued++;
-      if (previousRequest && cancelledRequests.has(previousRequest)) {
+      if (previousRecord?.terminalType === "cancelled-settled") {
         totals.requestsReissuedAfterCancellation++;
       }
     }
     const record = {
       requestId: nextRequestId++,
+      tile: tileIdentity(this),
+      contentKind: currentContentKind,
+      contentSlot: "single",
+      requestSerial: issueCount,
+      attemptSerial,
+      ...(schemaVersion === 2
+        ? {
+            groupSerial: null,
+            groupSize: null,
+            tileObject: this,
+            reissueAfterCancellationCounted:
+              previousRecord?.terminalType === "cancelled-settled",
+          }
+        : {
+            reissueAfterCancellationCounted:
+              previousRecord?.terminalType === "cancelled-settled",
+          }),
       url: canonicalResourceUrl(this),
+      cancelled: false,
     };
+    if (previousRecord) {
+      previousRecord.successor = record;
+    }
     if (request) {
       requestRecords.set(request, record);
     }
+    lastIssuedRecords.set(this, record);
+    if (schemaVersion === 2) {
+      setLastSlotRecord(this, "single", record);
+    }
     pushEvent({
       type: issueCount > 1 ? "reissued" : "issued",
-      requestId: record.requestId,
-      tile: tileIdentity(this),
+      ...requestEventIdentity(record, this),
       frameNumber: frameNumber(this),
       requestState: requestStateName(request?.state),
       contentState: contentStateName(this._contentState),
       url: record.url,
       issueCount,
+      requestObjectObserved: Boolean(request),
     });
     Promise.resolve(result).then(
-      (content) => settleRequest(this, request, content, null),
+      (content) =>
+        settleRequest(this, request, content, null, {
+          contentCreated: schemaVersion === 2 && content != null,
+        }),
       (error) => settleRequest(this, request, null, error),
     );
     return result;
@@ -977,16 +1536,46 @@ export function createRepresentativeTilesetLifecycleTracker(
           return;
         }
         totals.tileReadyEvents++;
-        pushEvent({
-          type: "ready",
-          requestId: requestRecords.get(tile?._request)?.requestId ?? null,
-          tile: tileIdentity(tile),
-          frameNumber: frameNumber(tile),
-          contentState: contentStateName(tile?._contentState),
-          geometryBytes: tile?.content?.geometryByteLength ?? null,
-          textureBytes: tile?.content?.texturesByteLength ?? null,
-          batchTableBytes: tile?.content?.batchTableByteLength ?? null,
-        });
+        if (schemaVersion === 2) {
+          const records = [...(lastSlotRecords.get(tile)?.values() || [])]
+            .filter(Boolean)
+            .sort((left, right) =>
+              left.contentSlot.localeCompare(right.contentSlot),
+            );
+          if (records.length === 0) {
+            emitAmbiguity(
+              tile,
+              tile,
+              "tile-ready could not be joined to a request generation",
+            );
+          }
+          pushEvent({
+            type: "tile-ready",
+            tile: tileIdentity(tile),
+            contentKind: contentKind(tile),
+            contentSlot: contentKind(tile) === "multiple" ? "group" : "single",
+            frameNumber: frameNumber(tile),
+            requests: records.map((record) => ({
+              contentSlot: record.contentSlot,
+              requestSerial: record.requestSerial,
+              groupSerial: record.groupSerial,
+            })),
+            contentState: contentStateName(tile?._contentState),
+            geometryBytes: tile?.content?.geometryByteLength ?? null,
+            textureBytes: tile?.content?.texturesByteLength ?? null,
+            batchTableBytes: tile?.content?.batchTableByteLength ?? null,
+          });
+        } else {
+          pushEvent({
+            type: "ready",
+            ...requestEventIdentity(requestRecords.get(tile?._request), tile),
+            frameNumber: frameNumber(tile),
+            contentState: contentStateName(tile?._contentState),
+            geometryBytes: tile?.content?.geometryByteLength ?? null,
+            textureBytes: tile?.content?.texturesByteLength ?? null,
+            batchTableBytes: tile?.content?.batchTableByteLength ?? null,
+          });
+        }
       }),
     );
   }
@@ -1093,8 +1682,8 @@ export function createRepresentativeTilesetLifecycleTracker(
     },
 
     snapshot(provenance = null) {
-      return {
-        schemaVersion: 1,
+      const snapshot = {
+        schemaVersion,
         enabled: true,
         nonCertifying: true,
         provenance,
@@ -1109,6 +1698,9 @@ export function createRepresentativeTilesetLifecycleTracker(
         events: events.map((event) => ({ ...event })),
         frames: frames.map((frame) => structuredClone(frame)),
       };
+      snapshot.requestLedger =
+        createRepresentativeTilesetRequestLedger(snapshot);
+      return snapshot;
     },
 
     destroy() {
@@ -1118,6 +1710,14 @@ export function createRepresentativeTilesetLifecycleTracker(
       active = false;
       requestContentPrototype.requestContent = originalRequestContent;
       requestContentPrototype.cancelRequests = originalCancelRequests;
+      if (schemaVersion === 2) {
+        multipleContentPrototype.requestInnerContents =
+          originalRequestInnerContents;
+        multipleContentPrototype.cancelRequests =
+          originalMultipleCancelRequests;
+        modelContentPrototype.update = originalModelUpdate;
+        modelContentPrototype.destroy = originalModelDestroy;
+      }
       for (const remove of removeTileLoadListeners) {
         remove();
       }

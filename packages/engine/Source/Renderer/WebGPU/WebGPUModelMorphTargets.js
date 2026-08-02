@@ -236,19 +236,35 @@ function packMorphTargetDeltas(morphTargets, targetCount, vertexCount) {
  * @param {object} primCache
  */
 function destroyMorphTargetResources(primCache) {
-  if (defined(primCache._morphStorageBuffer)) {
-    primCache._morphStorageBuffer.destroy();
-    primCache._morphStorageBuffer = undefined;
-  }
-  if (defined(primCache._morphWeightBufferPrev)) {
-    primCache._morphWeightBufferPrev.destroy();
-    primCache._morphWeightBufferPrev = undefined;
-  }
-  if (defined(primCache._morphWeightBuffer)) {
-    primCache._morphWeightBuffer.destroy();
-    primCache._morphWeightBuffer = undefined;
-  }
+  let firstDestroyError;
+  let hasDestroyError = false;
+  const resources = [
+    primCache._morphStorageBuffer,
+    primCache._morphWeightBufferPrev,
+    primCache._morphWeightBuffer,
+  ];
+  primCache._morphStorageBuffer = undefined;
+  primCache._morphWeightBufferPrev = undefined;
+  primCache._morphWeightBuffer = undefined;
   primCache._morphWeightData = undefined;
+
+  for (let i = 0; i < resources.length; i++) {
+    const resource = resources[i];
+    if (!defined(resource)) {
+      continue;
+    }
+    try {
+      resource.destroy();
+    } catch (error) {
+      if (!hasDestroyError) {
+        firstDestroyError = error;
+        hasDestroyError = true;
+      }
+    }
+  }
+  if (hasDestroyError) {
+    throw firstDestroyError;
+  }
 }
 
 export {

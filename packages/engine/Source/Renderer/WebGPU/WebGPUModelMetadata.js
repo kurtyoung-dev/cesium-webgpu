@@ -326,7 +326,16 @@ function ensureMetadataResources(device, primCache, metadataData) {
     size: Math.max(metadataData.byteLength, 4),
     usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
   });
-  device.queue.writeBuffer(metadataBuffer, 0, metadataData);
+  try {
+    device.queue.writeBuffer(metadataBuffer, 0, metadataData);
+  } catch (error) {
+    try {
+      metadataBuffer.destroy();
+    } catch {
+      // Preserve the upload failure; the buffer was never published.
+    }
+    throw error;
+  }
 
   primCache._metadataBuffer = metadataBuffer;
 
@@ -506,8 +515,9 @@ function primitiveHasPropertyTexture(model, primitive) {
  * @param {GPUDevice} device
  * @param {object} primCache per-primitive cache slot
  * @param {object} layout the layout from {@link resolvePropertyTextureLayout}
- * @param {(reader: object) => (GPUTexture|null)} createGpuTexture builds a GPU
- *   texture from a glTF texture reader (linear color space)
+ * @param {(reader: object) => ({texture: GPUTexture|null, owned: boolean,
+ *   release?: function}|GPUTexture|null)} createGpuTexture builds a GPU
+ *   texture from a glTF texture reader and explicitly reports ownership
  * @param {GPUTexture} fallbackTexture 1×1 placeholder used while a reader's
  *   image hasn't resolved yet
  * @param {GPUSampler} sampler a non-filtering / linear sampler shared by all
@@ -533,32 +543,50 @@ function ensurePropertyTextureResources(
 
   const created = [];
   const entries = [];
-  for (let i = 0; i < layout.textures.length; i++) {
-    const t = layout.textures[i];
-    const gpuTexture = createGpuTexture(t.reader);
-    let view;
-    if (defined(gpuTexture) && gpuTexture !== null) {
-      // Track only textures allocated HERE (createGpuTexture returns a
-      // stub-owned texture by reference for WebGLStub-backed readers; the
-      // renderer's createGPUTextureFromReader already handles that, but it
-      // does not signal ownership, so we conservatively do NOT destroy
-      // property textures — they are owned by the glTF texture / stub and
-      // freed with the model. `created` stays empty by design.).
-      view = gpuTexture.createView();
-    } else {
-      view = fallbackTexture.createView();
+  try {
+    for (let i = 0; i < layout.textures.length; i++) {
+      const t = layout.textures[i];
+      const result = createGpuTexture(t.reader);
+      const hasOwnershipRecord =
+        defined(result) &&
+        result !== null &&
+        typeof result === "object" &&
+        Object.prototype.hasOwnProperty.call(result, "texture");
+      const gpuTexture = hasOwnershipRecord ? result.texture : result;
+      if (hasOwnershipRecord && result.owned && defined(gpuTexture)) {
+        created.push({
+          texture: gpuTexture,
+          release:
+            result.release ??
+            function () {
+              gpuTexture.destroy();
+            },
+        });
+      }
+      const view = defined(gpuTexture)
+        ? gpuTexture.createView()
+        : fallbackTexture.createView();
+      entries.push({ binding: t.textureBinding, resource: view });
     }
-    entries.push({ binding: t.textureBinding, resource: view });
-  }
-  // Single SHARED sampler binding for every property texture.
-  entries.push({
-    binding: PROPERTY_TEXTURE_SAMPLER_BINDING,
-    resource: sampler,
-  });
+    // Single SHARED sampler binding for every property texture.
+    entries.push({
+      binding: PROPERTY_TEXTURE_SAMPLER_BINDING,
+      resource: sampler,
+    });
 
-  const resources = { entries, created };
-  primCache._propertyTextureResources = resources;
-  return resources;
+    const resources = { entries, created };
+    primCache._propertyTextureResources = resources;
+    return resources;
+  } catch (error) {
+    for (let i = created.length - 1; i >= 0; --i) {
+      try {
+        created[i].release();
+      } catch {
+        // Preserve the construction failure; candidates are unpublished.
+      }
+    }
+    throw error;
+  }
 }
 
 // DP-H46d — always 4 channels (RGBA8) for property-table textures, matching
@@ -1012,21 +1040,30 @@ function ensurePropertyTableResources(device, primCache, layout, sampler) {
     format: "rgba8unorm",
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
-  device.queue.writeTexture(
-    { texture: gpuTexture },
-    data,
-    { bytesPerRow: width * 4, rowsPerImage: height },
-    { width, height, depthOrArrayLayers: 1 },
-  );
+  try {
+    device.queue.writeTexture(
+      { texture: gpuTexture },
+      data,
+      { bytesPerRow: width * 4, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: 1 },
+    );
 
-  const entries = [
-    { binding: layout.textureBinding, resource: gpuTexture.createView() },
-    { binding: layout.samplerBinding, resource: sampler },
-  ];
+    const entries = [
+      { binding: layout.textureBinding, resource: gpuTexture.createView() },
+      { binding: layout.samplerBinding, resource: sampler },
+    ];
 
-  const resources = { entries, gpuTexture };
-  primCache._propertyTableResources = resources;
-  return resources;
+    const resources = { entries, gpuTexture };
+    primCache._propertyTableResources = resources;
+    return resources;
+  } catch (error) {
+    try {
+      gpuTexture.destroy();
+    } catch {
+      // Preserve the upload/view failure; the texture was never published.
+    }
+    throw error;
+  }
 }
 
 /**
@@ -1035,10 +1072,26 @@ function ensurePropertyTableResources(device, primCache, layout, sampler) {
  * @private
  */
 function destroyMetadataResources(primCache) {
-  if (defined(primCache._metadataBuffer)) {
-    primCache._metadataBuffer.destroy();
-    primCache._metadataBuffer = undefined;
-  }
+  let firstDestroyError;
+  let hasDestroyError = false;
+  const destroyBestEffort = (resource) => {
+    if (!defined(resource)) {
+      return;
+    }
+    try {
+      resource.destroy();
+    } catch (error) {
+      if (!hasDestroyError) {
+        firstDestroyError = error;
+        hasDestroyError = true;
+      }
+    }
+  };
+
+  const metadataBuffer = primCache._metadataBuffer;
+  const propertyTextures = primCache._propertyTextureResources?.created;
+  const propertyTableTexture = primCache._propertyTableResources?.gpuTexture;
+  primCache._metadataBuffer = undefined;
   // DP-H46b — drop the cached generated WGSL chunk + class hash (plain
   // references, no GPU resource to destroy).
   primCache._metadataWGSL = undefined;
@@ -1046,20 +1099,33 @@ function destroyMetadataResources(primCache) {
   // NEW-MODEL-METADATA-MAT3-MAT4 — reset the widened-transport flag so a
   // rebuild re-derives it from the fresh codegen result.
   primCache._metadataMatTransport = false;
-  // DP-H46c — property-texture views/samplers are owned by the glTF
-  // textures / stub (not allocated here), so there's nothing to destroy;
-  // just drop the cached entries so a rebuild re-resolves them.
-  if (defined(primCache._propertyTextureResources)) {
-    primCache._propertyTextureResources = undefined;
-  }
+  // DP-H46c — views and the shared sampler have no explicit destroy operation.
+  // Stub-backed textures remain externally owned, while fallback textures
+  // created for this primitive carry an explicit release record and are
+  // drained below. Drop the cached entries first so a throwing native release
+  // cannot leave dangling resources reachable through the primitive cache.
+  primCache._propertyTextureResources = undefined;
   // DP-H46d — the property-table GPUTexture IS allocated here (re-uploaded from
   // the loader's retained bytes), so destroy it.
-  if (defined(primCache._propertyTableResources)) {
-    const gpuTexture = primCache._propertyTableResources.gpuTexture;
-    if (defined(gpuTexture)) {
-      gpuTexture.destroy();
+  primCache._propertyTableResources = undefined;
+
+  destroyBestEffort(metadataBuffer);
+  if (defined(propertyTextures)) {
+    for (let i = 0; i < propertyTextures.length; ++i) {
+      try {
+        propertyTextures[i].release();
+      } catch (error) {
+        if (!hasDestroyError) {
+          firstDestroyError = error;
+          hasDestroyError = true;
+        }
+      }
     }
-    primCache._propertyTableResources = undefined;
+  }
+  destroyBestEffort(propertyTableTexture);
+
+  if (hasDestroyError) {
+    throw firstDestroyError;
   }
 }
 

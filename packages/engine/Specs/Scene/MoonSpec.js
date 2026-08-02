@@ -3,6 +3,7 @@ import {
   Color,
   defined,
   Ellipsoid,
+  Material,
   Matrix3,
   Simon1994PlanetaryPositions,
   Transforms,
@@ -70,6 +71,21 @@ describe(
         textureUrl: "http://example.invalid/custom.jpg",
       });
       expect(custom.textureUrl).toEqual("http://example.invalid/custom.jpg");
+    });
+
+    it("keeps WebGL lifecycle methods on the prototype and URLs out of Material", function () {
+      const moon = new Moon({ textureUrl: "moon-a.jpg" });
+      expect(
+        Object.prototype.hasOwnProperty.call(moon, "_updateWebGLMoonTextures"),
+      ).toBe(false);
+      expect(typeof Moon.prototype._updateWebGLMoonTextures).toBe("function");
+      expect(moon._ellipsoidPrimitive.material.uniforms.image).toBe(
+        Material.DefaultImageId,
+      );
+      expect(moon._ellipsoidPrimitive.material.uniforms.image).not.toBe(
+        moon.textureUrl,
+      );
+      moon.destroy();
     });
 
     it("throws for an unknown albedo variant", function () {

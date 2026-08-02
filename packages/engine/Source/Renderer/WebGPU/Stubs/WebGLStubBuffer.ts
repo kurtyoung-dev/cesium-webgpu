@@ -78,7 +78,15 @@ function commitReplacementBuffer(
   handle._webgpuBuffer = candidate;
   handle._device = device;
   handle._size = logicalSize;
-  oldBuffer?.destroy();
+  if (oldBuffer && oldBuffer !== candidate) {
+    try {
+      oldBuffer.destroy();
+    } catch {
+      // Publication is the commit point. A lost/native implementation may
+      // report an error while releasing the superseded allocation, but the
+      // uploaded replacement already owns the handle's authoritative tuple.
+    }
+  }
 }
 
 /**
@@ -100,19 +108,43 @@ export class WebGLStubBufferRegistry implements StubBufferRegistry {
   }
 
   invalidateDeviceGeneration(): void {
+    let firstDestroyError: unknown;
+    let hasDestroyError = false;
     for (const handle of this._handles) {
       // Keep the logical store size and stable handle identity. A subsequent
       // bufferData/bufferSubData call can realize it on the recovered device.
-      releaseCurrentBuffer(handle, false);
+      try {
+        releaseCurrentBuffer(handle, false);
+      } catch (error) {
+        if (!hasDestroyError) {
+          firstDestroyError = error;
+          hasDestroyError = true;
+        }
+      }
+    }
+    if (hasDestroyError) {
+      throw firstDestroyError;
     }
   }
 
   destroy(): void {
     const handles = Array.from(this._handles);
     this._handles.clear();
+    let firstDestroyError: unknown;
+    let hasDestroyError = false;
     for (const handle of handles) {
       handle._destroyed = true;
-      releaseCurrentBuffer(handle, true);
+      try {
+        releaseCurrentBuffer(handle, true);
+      } catch (error) {
+        if (!hasDestroyError) {
+          firstDestroyError = error;
+          hasDestroyError = true;
+        }
+      }
+    }
+    if (hasDestroyError) {
+      throw firstDestroyError;
     }
   }
 
@@ -272,7 +304,11 @@ export function createBufferStubs(state: WebGLStubState, logUsage: LogUsageFn) {
             );
           }
         } catch (error) {
-          candidate.destroy();
+          try {
+            candidate.destroy();
+          } catch {
+            // Preserve the upload failure. The candidate was never published.
+          }
           throw error;
         }
         commitReplacementBuffer(handle, state.device, candidate, byteLength);
@@ -345,7 +381,11 @@ export function createBufferStubs(state: WebGLStubState, logUsage: LogUsageFn) {
             byteLength,
           );
         } catch (error) {
-          candidate.destroy();
+          try {
+            candidate.destroy();
+          } catch {
+            // Preserve the upload failure. The candidate was never published.
+          }
           throw error;
         }
         commitReplacementBuffer(handle, state.device, candidate, handle._size);

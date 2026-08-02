@@ -28,9 +28,11 @@
 //   - Ray-ellipsoid analytic intersection in model space
 //   - Geodetic normal via the `position * oneOverRadiiSq` gradient
 //     (czm_geodeticSurfaceNormal) — accounts for ellipsoid oblateness
-//   - Back-face / inside pass: t0 AND t1 computed; outside-then-inside
-//     compositing matching EllipsoidFS.glsl `outsideFaceColor` +
-//     `insideFaceColor` mix
+//   - Back-face / inside pass: t0 AND t1 computed; the one visible hit is
+//     selected before shading. The Moon material is unconditionally opaque,
+//     so this is pixel-equivalent to EllipsoidFS.glsl's general-purpose
+//     outside/inside alpha composite. UV gradients are evaluated before the
+//     miss discard and supplied explicitly to both Moon textures.
 //   - Canonical spherical UV unwrap (atan2/asin —
 //     czm_ellipsoidTextureCoordinates), not mesh-baked UVs
 //   - CsmMaterial-style filling (chunks/functions/csm_getDefaultMaterial):
@@ -204,16 +206,21 @@ fn geodeticNormal(positionMC: vec3<f32>) -> vec3<f32> {
   return normalize(positionMC * u.oneOverRadiiSq);
 }
 
-// Ray-ellipsoid analytic intersection. Returns (t0, t1) for front and back
-// hits, or (-1, -1) on miss. Transforms the ray to unit-sphere space via
-// `sqrt(oneOverRadiiSq)` so we can do a simple sphere intersection — the
-// same trick as Generated/EllipsoidPrimitive.wgsl, kept inline here so
-// Moon.wgsl is self-contained until a future EllipsoidPrimitive feature
-// renderer consolidates the math.
+struct EllipsoidIntersection {
+  roots: vec2<f32>,
+  discriminant: f32,
+};
+
+// Ray-ellipsoid analytic intersection. Returns the front/back roots plus the
+// UNCLAMPED discriminant. The roots use sqrt(max(discriminant, 0)): on a miss
+// they collapse to the continuous closest-approach/tangent parameter instead
+// of a -1 sentinel. That continuation is not rendered, but it gives adjacent
+// miss lanes a finite, limb-continuous helper UV for pre-discard derivatives.
+// The raw discriminant remains the authoritative hit/miss test.
 fn intersectEllipsoid(
   rayOriginMC: vec3<f32>,
   rayDirMC: vec3<f32>,
-) -> vec2<f32> {
+) -> EllipsoidIntersection {
   let sqrtOORS = sqrt(u.oneOverRadiiSq);
   let oScaled = rayOriginMC * sqrtOORS;
   let dScaled = rayDirMC * sqrtOORS;
@@ -223,13 +230,10 @@ fn intersectEllipsoid(
   let c = dot(oScaled, oScaled) - 1.0;
 
   let disc = b * b - 4.0 * a * c;
-  if (disc < 0.0) {
-    return vec2<f32>(-1.0, -1.0);
-  }
-  let sqrtDisc = sqrt(disc);
+  let sqrtDisc = sqrt(max(disc, 0.0));
   let t0 = (-b - sqrtDisc) / (2.0 * a);
   let t1 = (-b + sqrtDisc) / (2.0 * a);
-  return vec2<f32>(t0, t1);
+  return EllipsoidIntersection(vec2<f32>(t0, t1), disc);
 }
 
 // Phong lighting through a CsmMaterial. Matches czm_private_phong from
@@ -346,31 +350,24 @@ struct FragOut {
   @builtin(frag_depth) depth: f32,
 };
 
-// Compute color for one hit. `t` is the ray parameter, `side` is +1 for
-// outside (front) faces and -1 for inside (back) faces — matches
-// EllipsoidFS.glsl `side` flip.
+// Compute color for one selected hit. `side` is +1 for outside (front) faces
+// and -1 for inside (back) faces — matches EllipsoidFS.glsl's `side` flip.
 fn computeEllipsoidColor(
-  rayOriginMC: vec3<f32>,
-  rayDirMC: vec3<f32>,
-  t: f32,
+  hitMC: vec3<f32>,
   side: f32,
+  uv: vec2<f32>,
+  uvDx: vec2<f32>,
+  uvDy: vec2<f32>,
 ) -> vec4<f32> {
-  let hitMC = rayOriginMC + rayDirMC * t;
-
   // Geodetic normal. `side` flips orientation when rendering the back face.
   var N = geodeticNormal(hitMC) * side;
 
-  // Canonical spherical UV unwrap from the *spherical* normal
-  // (normalize(positionMC / radii)). EllipsoidFS.glsl uses the spherical
-  // normal for UVs, not the geodetic normal — they differ on oblate
-  // ellipsoids. We match WebGL exactly here.
-  let sphericalN = normalize(hitMC / u.radii);
-  let uv = ellipsoidTexCoords(sphericalN);
-  // textureSampleLevel (explicit mip 0) instead of textureSample because
-  // this function is called from non-uniform control flow (the inside-face
-  // branch depends on the outside-face result). textureSample requires
-  // uniform control flow for implicit derivatives.
-  let texColor = textureSampleLevel(tex, samp, uv, 0.0);
+  // C12-33 — explicit, seam-corrected normalized-UV gradients are computed
+  // before the fragment-varying miss discard. Supplying the SAME normalized
+  // gradients to two textureSampleGrad calls does NOT force one LOD: WebGPU's
+  // lambda calculation scales them by each texture's own dimensions, so the
+  // 2K albedo and 1K normal map still select independent mip levels.
+  let texColor = textureSampleGrad(tex, samp, uv, uvDx, uvDy);
 
   // Fill a CsmMaterial. Matches Material.fromType(Material.ImageType):
   // diffuse from texture, specular and emission zero, alpha opaque,
@@ -396,7 +393,7 @@ fn computeEllipsoidColor(
   // EllipsoidFS is shared by every EllipsoidPrimitive and must not grow an
   // unconditional sampler, while Moon.wgsl is moon-only).
   if (u.normalStrength > 0.0) {
-    let nRaw = textureSampleLevel(normalTex, samp, uv, 0.0).xyz * 2.0 - 1.0;
+    let nRaw = textureSampleGrad(normalTex, samp, uv, uvDx, uvDy).xyz * 2.0 - 1.0;
     let nTS = vec3<f32>(nRaw.xy * u.normalStrength, nRaw.z);
     let upMC = N;
     let eastRaw = vec3<f32>(-hitMC.y, hitMC.x, 0.0);
@@ -481,30 +478,39 @@ fn fs(i: VO) -> FragOut {
   let originMC = u.cameraPositionMC;
   let dirMC = normalize(i.hitEC - u.cameraPositionMC);
 
-  // Analytic ellipsoid intersection.
-  let ts = intersectEllipsoid(originMC, dirMC);
-  if (ts.x < 0.0 && ts.y < 0.0) {
+  // Analytic ellipsoid intersection. Select the nearer/front root when the
+  // camera is outside, otherwise the farther/back hit when it is inside.
+  // The Moon material is pinned opaque in computeEllipsoidColor, so this is
+  // algebraically identical to the old outside/inside alpha composite while
+  // removing fragment-varying call control flow.
+  let intersection = intersectEllipsoid(originMC, dirMC);
+  let ts = intersection.roots;
+  let outsideHit = ts.x >= 0.0;
+  let tHit = select(ts.y, ts.x, outsideHit);
+  let side = select(-1.0, 1.0, outsideHit);
+  let hitMC = originMC + dirMC * tHit;
+
+  // Canonical spherical UV unwrap from the spherical (not geodetic) normal,
+  // matching EllipsoidFS.glsl. These derivatives MUST execute before discard.
+  // Miss lanes receive the clamped-discriminant closest-approach continuation
+  // from intersectEllipsoid, which converges on the real tangent hit at the
+  // limb; a fixed sentinel t would inject an artificial derivative spike.
+  let sphericalN = normalize(hitMC / u.radii);
+  let uv = ellipsoidTexCoords(sphericalN);
+  var uvDx = dpdx(uv);
+  var uvDy = dpdy(uv);
+  // Longitude is periodic. Across atan2's 1->0 wrap, choose the shortest
+  // periodic derivative; latitude is clamped at the poles and must not wrap.
+  uvDx.x = uvDx.x - round(uvDx.x);
+  uvDy.x = uvDy.x - round(uvDy.x);
+
+  let hasForwardHit = ts.x >= 0.0 || ts.y >= 0.0;
+  if (intersection.discriminant < 0.0 || !hasForwardHit) {
     discard;
   }
 
-  // Outside (front) face: render whenever t0 (the nearer hit) is in
-  // front of the camera. Inside (back) face: only used when the camera
-  // is inside the ellipsoid (t0 < 0 < t1) — matches EllipsoidFS.glsl
-  // outsideFaceColor / insideFaceColor blending.
-  var outsideColor = vec4<f32>(0.0);
-  var insideColor = vec4<f32>(0.0);
+  let hitColor = computeEllipsoidColor(hitMC, side, uv, uvDx, uvDy);
 
-  if (ts.x >= 0.0) {
-    outsideColor = computeEllipsoidColor(originMC, dirMC, ts.x, 1.0);
-  }
-  if (outsideColor.a < 1.0 && ts.y >= 0.0) {
-    insideColor = computeEllipsoidColor(originMC, dirMC, ts.y, -1.0);
-  }
-
-  // Composite. Moon material is opaque; outside face dominates whenever
-  // present. Inside face only matters from inside the ellipsoid.
-  let mixed = mix(insideColor, outsideColor, outsideColor.a);
-  let alpha = 1.0 - (1.0 - insideColor.a) * (1.0 - outsideColor.a);
   // NS-MOON-ATMOSPHERE-EXTINCTION — attenuate + redden by the atmospheric
   // transmittance along the view ray (exactly vec3(1.0) from orbit → no-op).
   // C12-30 — then ADD the in-scattered sky radiance (sky-wash):
@@ -513,7 +519,7 @@ fn fs(i: VO) -> FragOut {
   // the legacy output is byte-identical there. The wash is what makes a
   // daytime disc pale and sky-blended instead of a dark cutout against
   // the bright sky the opaque disc overdraws.
-  out.color = vec4<f32>(mixed.rgb * u.extinction + u.inscatter, alpha);
+  out.color = vec4<f32>(hitColor.rgb * u.extinction + u.inscatter, 1.0);
 
   // Log depth — this INTENTIONALLY DIVERGES from the shared csm_writeLogDepth
   // contract, and the divergence is safe (see below).

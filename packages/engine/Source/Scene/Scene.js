@@ -3364,10 +3364,24 @@ class Scene {
     const needsUpdateForMetadataPicking =
       frameState.pickingMetadata &&
       pickedMetadataInfoChanged(command, frameState);
-    const needsUpdateForSnap =
-      frameState.passes.snap &&
-      defined(command.snapId) &&
-      !defined(derivedCommands.snapping);
+    let needsUpdateForSnap = false;
+    if (frameState.passes.snap) {
+      // Snap dispatch selects the log-depth clone before selecting its snap
+      // variant. Inspect that exact tree: the base command may already have a
+      // snap derivative while a log-depth clone created during an ordinary
+      // render does not (for example after toggling logarithmicDepthBuffer).
+      // Keep this selection inside the rare snap branch so ordinary camera
+      // binning pays no optional-chain or derived-tree traversal cost.
+      const snapDerivedCommands =
+        useLogDepth && defined(derivedCommands.logDepth?.command)
+          ? derivedCommands.logDepth.command.derivedCommands
+          : derivedCommands;
+      needsUpdateForSnap =
+        (defined(command.snapId) && !defined(snapDerivedCommands.snapping)) ||
+        (!defined(command.snapId) &&
+          !command.pickOnly &&
+          !defined(snapDerivedCommands.snappingOccluder));
+    }
     command.dirty =
       command.dirty ||
       needsLogDepthDerivedCommands ||
@@ -4500,11 +4514,15 @@ class Scene {
    * </p>
    * <p>
    * <b>WebGPU note:</b> like {@link Scene#pick}, <code>snap</code> reads its
-   * framebuffer ASYNCHRONOUSLY on WebGPU and returns the PREVIOUS snap's result
-   * (one frame stale). A continuous-hover snap converges after the first frame;
-   * a <i>standalone</i> snap at a fresh location returns <code>undefined</code>
-   * on its first call and resolves on a subsequent call at the same position.
-   * On WebGL <code>snap</code> is fully synchronous and unaffected.
+   * framebuffer ASYNCHRONOUSLY and returns the most recent completed relevant
+   * snap. With an unchanged rendered view, an exact query may reuse its recent
+   * completed payload and a moving cursor may briefly reuse one whose search
+   * region still overlaps the new one. Pixels are paired with the immutable
+   * camera, frustum, viewport, and CSS/drawing-buffer dimensions that rendered
+   * them. Camera/projection motion, a cold or non-overlapping query, or an old
+   * payload can therefore return <code>undefined</code> until a relevant
+   * readback completes rather than reconstructing against mismatched state. On
+   * WebGL <code>snap</code> is fully synchronous and unaffected.
    * </p>
    *
    * @param {Cartesian2} windowPosition Window coordinates at the center of the search region.
@@ -5446,6 +5464,7 @@ function destroySceneResources(scene) {
     "_depthPlane",
     "_sunPostProcess",
     "sun",
+    "moon",
     "_debugSphere",
     "skyAtmosphere",
     "skyBox",
@@ -5784,6 +5803,15 @@ function updateDerivedCommands(scene, command, shadowsDirty) {
       context,
       derivedCommands.depth,
     );
+    if (frameState.passes.snap && !defined(command.snapId)) {
+      derivedCommands.snappingOccluder =
+        DerivedCommand.createSnapOccluderDerivedCommand(
+          scene,
+          command,
+          context,
+          derivedCommands.snappingOccluder,
+        );
+    }
   }
 
   derivedCommands.originalCommand = command;

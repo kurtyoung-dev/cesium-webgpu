@@ -13,11 +13,23 @@ import createGuid from "../../Core/createGuid.js";
 import defined from "../../Core/defined.js";
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
 import Matrix4 from "../../Core/Matrix4.js";
-import Resource from "../../Core/Resource.js";
+import { getSharedMoonDecodedSourceCache } from "../../Core/MoonDecodedSourceCache.js";
 import MoonShaderCode from "../../Shaders/WebGPU/Environment/Moon.js";
 import { WebGPUImageUpload } from "./WebGPUImageUpload.js";
 import WebGPUBuffer from "./WebGPUBuffer.js";
 import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
+import {
+  MoonTextureChannel,
+  commitWebGPUMoonTextureCandidate,
+  createWebGPUMoonUploadSource,
+  createWebGPUMoonTextureLifecycle,
+  createWebGPUMoonTexturePairKey,
+  getWebGPUMoonTextureLifecycleDiagnostics,
+  reconcileWebGPUMoonTextureChannel,
+  releaseWebGPUMoonUploadSource,
+  retireWebGPUMoonPublishedTexture,
+  retireWebGPUMoonTextureLifecycle,
+} from "./WebGPUMoonTextureLifecycle.js";
 // Slice 5c-B Phase 1 (Batch 106) — scene-FB target helper.
 import {
   makeSceneFBTargets,
@@ -877,162 +889,260 @@ function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
 }
 
 /**
- * Asynchronously loads the real moon texture and replaces the placeholder.
- * Idempotent — re-running with the same URL is a no-op while a load is in
- * flight; the cache tracks `_textureLoading` and `_cachedTextureUrl` to
- * prevent duplicate fetches and to detect URL changes at runtime.
+ * C12-35 L2 — renderer hooks for one exact Moon texture request. The generic
+ * lifecycle controller owns the deferred state and stale-candidate rules;
+ * these hooks are the only layer that knows how to fetch and realize a
+ * `GPUTexture`.
  *
- * On success, the new GPU texture replaces `cache.moonTexture` /
- * `moonTextureView`. The bind group is recreated each frame in
- * `updateWebGPUMoon`, so the new texture picks up automatically on the
- * next frame.
- *
- * On failure, logs once and keeps the placeholder. No retries.
+ * The orientation convention remains the C12-24/C12-25 WebGL parity rule:
+ * both albedo and relief upload with `flipY: true`.
  *
  * @private
  */
-function _loadRealMoonTexture(device, cache, textureUrl) {
-  if (cache._textureLoading) {
-    return;
-  }
-  if (cache._cachedTextureUrl === textureUrl) {
-    return;
-  }
-  cache._textureLoading = true;
-  cache._cachedTextureUrl = textureUrl;
-
-  Resource.createIfNeeded(textureUrl)
-    .fetchImage()
-    .then(function (image) {
-      const width = image.width;
-      const height = image.height;
-      const newTexture = device.createTexture({
-        label: "Moon texture",
+function createMoonTextureRequestHooks(context, device, channelName) {
+  const normal = channelName === MoonTextureChannel.NORMAL;
+  const label = normal ? "Moon normal map" : "Moon texture";
+  const format = "rgba8unorm";
+  const monitor = context.asyncResources;
+  const decodedSourceCache = getSharedMoonDecodedSourceCache();
+  return {
+    beginAsync: function (identity) {
+      return monitor?.begin({
+        kind: "texture-upload",
+        key: `moon-${channelName}|${identity.cacheSerial}|${identity.requestSerial}`,
+        label,
+        // The placeholder is a complete renderable fallback. Let explicit-
+        // render scenes hibernate during fetch/decode, then rely on the
+        // monitor's terminal event to request the one frame that commits.
+        priority: "background",
+      });
+    },
+    resolveAsync: function (token) {
+      if (defined(token)) {
+        monitor?.resolve(token);
+      }
+    },
+    rejectAsync: function (token, error) {
+      if (defined(token)) {
+        monitor?.reject(token, error);
+      }
+    },
+    acquireSource: function (url) {
+      // Cache identity includes the exact URL and every pixel-affecting decode
+      // axis. The lease is returned immediately so the lifecycle can release
+      // pending ownership synchronously on URL, owner, context, device, or
+      // resource-generation supersession.
+      return decodedSourceCache.acquire(url, {
+        imageOrientation: "from-image",
+        colorSpaceConversion: "default",
+        premultiplyAlpha: "default",
+      });
+    },
+    prepareSource: function (image) {
+      return WebGPUImageUpload.decodeWithOrientation(image).then(
+        function (uploadSource) {
+          // `image` belongs to the shared decoded-source cache. The helper
+          // grants request ownership only for a distinct orientation fallback.
+          return createWebGPUMoonUploadSource(image, uploadSource);
+        },
+      );
+    },
+    releaseSource: releaseWebGPUMoonUploadSource,
+    createCandidate: function (source) {
+      const image = source.uploadSource;
+      const width = image.width ?? image.videoWidth ?? image.codedWidth;
+      const height = image.height ?? image.videoHeight ?? image.codedHeight;
+      const mipLevelCount = Math.floor(Math.log2(Math.max(width, height))) + 1;
+      const texture = device.createTexture({
+        label,
         size: [width, height, 1],
-        format: "rgba8unorm",
+        format,
+        mipLevelCount,
         usage:
           GPUTextureUsage.TEXTURE_BINDING |
           GPUTextureUsage.COPY_DST |
           GPUTextureUsage.RENDER_ATTACHMENT,
       });
-      return WebGPUImageUpload.uploadImageToTexture(device, image, newTexture, {
-        // C12-24 — MUST match the WebGL upload convention. `Texture` (the
-        // WebGL path the Moon reaches through Material.ImageType) defaults
-        // to `flipY: true`, so image row 0 lands at t = 1. Both backends
-        // then unwrap the sphere with the SAME formula
-        // (czm_ellipsoidTextureCoordinates / ellipsoidTexCoords):
-        //     v = asin(n.z) / PI + 0.5   =>  v = 1 at the north pole
-        // so on WebGL the north pole samples the TOP row of the image file.
-        // `copyExternalImageToTexture` defaults to flipY:false, which put
-        // image row 0 at v = 0 and made the WebGPU moon sample the SOUTH of
-        // the map at its north pole — the albedo was rendering vertically
-        // MIRRORED against WebGL. The 256x128 moonSmall.jpg is soft and
-        // low-contrast enough that this was never visible; at the C12-24
-        // 2048x1024 LROC map it is (Tycho's ray system lands in the wrong
-        // hemisphere). Fixed at the upload layer, not in the shader, so it
-        // holds for ANY user-supplied `moon.textureUrl` too — and so the
-        // GLSL/WGSL twins stay character-identical (no lockstep row).
-        flipY: true,
-      }).then(function () {
-        // Destroy the placeholder before replacing.
-        if (defined(cache.moonTexture)) {
-          cache.moonTexture.destroy();
-        }
-        cache.moonTexture = newTexture;
-        cache.moonTextureView = newTexture.createView();
-        cache._textureLoading = false;
-        // Invalidate the bind group + render bundle so the next frame
-        // rebuilds them with the new texture view. The bundle manager's
-        // invalidate() is called from updateWebGPUMoon when it sees the
-        // _bundleStale flag.
-        cache.bindGroup = undefined;
-        cache._bundleStale = true;
+      return {
+        texture,
+        width,
+        height,
+        format,
+        mipLevelCount,
+        maxLod: mipLevelCount - 1,
+        mipGenerationQueued: false,
+        view: undefined,
+      };
+    },
+    uploadCandidate: function (source, candidate) {
+      return WebGPUImageUpload.uploadImageToTexture(
+        device,
+        source.uploadSource,
+        candidate.texture,
+        { flipY: true, respectEXIF: false },
+      );
+    },
+    finalizeCandidate: function (candidate, uploadResult) {
+      candidate.width = uploadResult.width;
+      candidate.height = uploadResult.height;
+      candidate.view = candidate.texture.createView({
+        baseMipLevel: 0,
+        mipLevelCount: candidate.mipLevelCount,
       });
-    })
-    .catch(function (err) {
+      return candidate;
+    },
+    destroyCandidate: function (candidate) {
+      const texture = candidate.texture;
+      candidate.texture = undefined;
+      if (defined(texture)) {
+        try {
+          if (typeof context.cancelTextureMipGeneration === "function") {
+            context.cancelTextureMipGeneration(texture);
+          } else {
+            context.noteInlineTextureDestroy?.(texture);
+          }
+        } catch {
+          // Queue bookkeeping must never strand candidate destruction.
+        }
+      }
+      texture?.destroy();
+    },
+    onError: function (error, phase) {
       //>>includeStart('debug', pragmas.debug);
       console.warn(
-        "[WebGPUEnvironmentRenderer] Moon texture load failed:",
-        err && err.message ? err.message : err,
+        `[WebGPUEnvironmentRenderer] ${label} ${phase} failed:`,
+        error && error.message ? error.message : error,
       );
       //>>includeEnd('debug');
-      cache._textureLoading = false;
-      // Leave _cachedTextureUrl set so we don't retry the same broken URL
-      // on every frame. A subsequent change to moon.textureUrl will trigger
-      // a fresh load.
-    });
+    },
+  };
 }
 
-/**
- * C12-25 — asynchronously loads the moon's tangent-space normal map.
- *
- * Deliberately a sibling of `_loadRealMoonTexture` rather than a
- * generalization of it: the two differ in the failure posture that matters.
- * A missing albedo leaves a grey ball (obviously broken); a missing normal
- * map leaves a flat moon (silently just the pre-C12-25 look), so this loader
- * falls back to a FLAT placeholder that is the exact identity perturbation
- * rather than to anything that would tint or darken the disc.
- *
- * Uses the SAME `flipY: true` upload convention C12-24 established for the
- * albedo. That is load-bearing, not cosmetic: both maps are sampled with the
- * identical `v = asin(n.z)/PI + 0.5` unwrap, so an upload mismatch would put
- * the relief in the opposite hemisphere from the albedo it belongs to — and
- * because the green channel encodes NORTH, a v-flip also lights every crater
- * from the wrong side. The bake's `craterNorthSouthPolarity` check exists
- * for exactly that failure.
- *
- * @private
- */
-function _loadMoonNormalTexture(device, cache, normalMapUrl) {
-  if (cache._normalTextureLoading) {
-    return;
+function invalidateMoonTextureBindings(cache) {
+  const bundleManager = cache.context?.renderBundleManager;
+  if (defined(bundleManager) && defined(cache._bundleKey)) {
+    bundleManager.invalidate(cache._bundleKey);
+    cache._bundleInvalidationCount++;
   }
-  if (cache._cachedNormalUrl === normalMapUrl) {
-    return;
-  }
-  cache._normalTextureLoading = true;
-  cache._cachedNormalUrl = normalMapUrl;
+  cache.bindGroup = undefined;
+  cache.bundle = undefined;
+  cache._bundleStale = true;
+}
 
-  Resource.createIfNeeded(normalMapUrl)
-    .fetchImage()
-    .then(function (image) {
-      const newTexture = device.createTexture({
-        label: "Moon normal map",
-        size: [image.width, image.height, 1],
-        format: "rgba8unorm",
-        usage:
-          GPUTextureUsage.TEXTURE_BINDING |
-          GPUTextureUsage.COPY_DST |
-          GPUTextureUsage.RENDER_ATTACHMENT,
-      });
-      return WebGPUImageUpload.uploadImageToTexture(device, image, newTexture, {
-        flipY: true,
-      }).then(function () {
-        if (
-          defined(cache.normalTexture) &&
-          cache.normalTexture !== cache.normalPlaceholderTexture
-        ) {
-          cache.normalTexture.destroy();
-        }
-        cache.normalTexture = newTexture;
-        cache.normalTextureView = newTexture.createView();
-        cache._normalTextureLoading = false;
-        cache.bindGroup = undefined;
-        cache._bundleStale = true;
-      });
-    })
-    .catch(function (err) {
-      //>>includeStart('debug', pragmas.debug);
-      console.warn(
-        "[WebGPUEnvironmentRenderer] Moon normal map load failed:",
-        err && err.message ? err.message : err,
+function createMoonTexturePublicationCallbacks(cache, device, channelName) {
+  const normal = channelName === MoonTextureChannel.NORMAL;
+  return {
+    prepareCandidate: function (candidate) {
+      if (candidate.mipGenerationQueued) {
+        return;
+      }
+      const enqueueMipGeneration = cache.context?.enqueueTextureMipGeneration;
+      if (typeof enqueueMipGeneration !== "function") {
+        throw new Error("WebGPU context has no frame-owned texture mip queue");
+      }
+      const accepted = enqueueMipGeneration.call(
+        cache.context,
+        candidate.texture,
+        candidate.format,
+        candidate.mipLevelCount,
       );
+      if (accepted === false) {
+        throw new Error("WebGPU texture mip queue rejected the Moon candidate");
+      }
+      candidate.mipGenerationQueued = true;
+    },
+    invalidate: function () {
+      invalidateMoonTextureBindings(cache);
+    },
+    publish: function (candidate, identity) {
+      const previous = normal ? cache.normalTexture : cache.moonTexture;
+      if (normal) {
+        cache.normalTexture = candidate.texture;
+        cache.normalTextureView = candidate.view;
+        cache.normalTextureUrl = identity.exactUrl;
+        cache.normalTextureWidth = candidate.width;
+        cache.normalTextureHeight = candidate.height;
+        cache.normalTextureMipLevelCount = candidate.mipLevelCount;
+        cache.normalTextureMaxLod = candidate.maxLod;
+      } else {
+        cache.moonTexture = candidate.texture;
+        cache.moonTextureView = candidate.view;
+        cache.moonTextureUrl = identity.exactUrl;
+        cache.moonTextureWidth = candidate.width;
+        cache.moonTextureHeight = candidate.height;
+        cache.moonTextureMipLevelCount = candidate.mipLevelCount;
+        cache.moonTextureMaxLod = candidate.maxLod;
+      }
+      return previous;
+    },
+    destroyPrevious: function (previous) {
+      if (
+        defined(previous) &&
+        (!normal || previous !== cache.normalPlaceholderTexture)
+      ) {
+        try {
+          if (typeof cache.context?.cancelTextureMipGeneration === "function") {
+            cache.context.cancelTextureMipGeneration(previous);
+          } else {
+            cache.context?.noteInlineTextureDestroy?.(previous);
+          }
+        } catch {
+          // Queue bookkeeping must never strand previous texture retirement.
+        }
+        previous.destroy();
+      }
+    },
+    preparePlaceholder: function () {
+      if (normal) {
+        return {
+          texture: cache.normalPlaceholderTexture,
+          view: cache.normalPlaceholderView,
+        };
+      }
+      const texture = createMoonPlaceholderTexture(device);
+      return { texture, view: createTextureViewOrDestroy(texture) };
+    },
+    destroyPreparedPlaceholder: function (placeholder) {
+      if (!normal && defined(placeholder?.texture)) {
+        try {
+          if (typeof cache.context?.cancelTextureMipGeneration === "function") {
+            cache.context.cancelTextureMipGeneration(placeholder.texture);
+          } else {
+            cache.context?.noteInlineTextureDestroy?.(placeholder.texture);
+          }
+        } catch {
+          // Continue through best-effort placeholder retirement.
+        }
+        destroyTextureSuppressingError(placeholder.texture);
+      }
+    },
+    publishPlaceholder: function (placeholder) {
+      const previous = normal ? cache.normalTexture : cache.moonTexture;
+      if (normal) {
+        cache.normalTexture = placeholder.texture;
+        cache.normalTextureView = placeholder.view;
+        cache.normalTextureUrl = undefined;
+        cache.normalTextureWidth = 1;
+        cache.normalTextureHeight = 1;
+        cache.normalTextureMipLevelCount = 1;
+        cache.normalTextureMaxLod = 0;
+      } else {
+        cache.moonTexture = placeholder.texture;
+        cache.moonTextureView = placeholder.view;
+        cache.moonTextureUrl = undefined;
+        cache.moonTextureWidth = 4;
+        cache.moonTextureHeight = 4;
+        cache.moonTextureMipLevelCount = 1;
+        cache.moonTextureMaxLod = 0;
+      }
+      return previous;
+    },
+    onError: function (error, phase) {
+      //>>includeStart('debug', pragmas.debug);
+      console.warn(`[WebGPUEnvironmentRenderer] Moon ${phase} failed:`, error);
       //>>includeEnd('debug');
-      cache._normalTextureLoading = false;
-      // Leave _cachedNormalUrl set so a broken URL isn't refetched every
-      // frame; the flat placeholder stays bound and the disc renders exactly
-      // as it did before C12-25.
-    });
+    },
+  };
 }
 
 /**
@@ -1054,12 +1164,17 @@ function createFlatNormalPlaceholderTexture(device) {
     format: "rgba8unorm",
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
-  device.queue.writeTexture(
-    { texture },
-    new Uint8Array([128, 128, 255, 255]),
-    { bytesPerRow: 4 },
-    [1, 1, 1],
-  );
+  try {
+    device.queue.writeTexture(
+      { texture },
+      new Uint8Array([128, 128, 255, 255]),
+      { bytesPerRow: 4 },
+      [1, 1, 1],
+    );
+  } catch (error) {
+    destroyTextureSuppressingError(texture);
+    throw error;
+  }
   return texture;
 }
 
@@ -1082,12 +1197,114 @@ function createMoonPlaceholderTexture(device) {
     format: "rgba8unorm",
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
-  device.queue.writeTexture({ texture }, pixels, { bytesPerRow: size * 4 }, [
-    size,
-    size,
-    1,
-  ]);
+  try {
+    device.queue.writeTexture({ texture }, pixels, { bytesPerRow: size * 4 }, [
+      size,
+      size,
+      1,
+    ]);
+  } catch (error) {
+    destroyTextureSuppressingError(texture);
+    throw error;
+  }
   return texture;
+}
+
+function destroyTextureSuppressingError(texture) {
+  try {
+    texture.destroy();
+  } catch (_ignored) {
+    // Preserve the allocation/write/view error that triggered rollback.
+  }
+}
+
+function createTextureViewOrDestroy(texture) {
+  try {
+    return texture.createView();
+  } catch (error) {
+    destroyTextureSuppressingError(texture);
+    throw error;
+  }
+}
+
+function createWebGPUMoonCache(moon, context, device) {
+  const resourceGeneration = context.resourceGeneration ?? 0;
+  const cache = {
+    owner: moon,
+    context,
+    device,
+    resourceGeneration,
+    _bundleInvalidationCount: 0,
+  };
+  moon._webgpuCache = cache;
+  const lifecycle = createWebGPUMoonTextureLifecycle(
+    moon,
+    cache,
+    context,
+    device,
+    resourceGeneration,
+  );
+  cache.cacheSerial = lifecycle.cacheSerial;
+  return cache;
+}
+
+function ensureWebGPUMoonCache(moon, context, device) {
+  const resourceGeneration = context.resourceGeneration ?? 0;
+  let cache = moon._webgpuCache;
+  if (
+    defined(cache) &&
+    (cache.owner !== moon ||
+      cache.context !== context ||
+      cache.device !== device ||
+      cache.resourceGeneration !== resourceGeneration)
+  ) {
+    destroyWebGPUMoonResources(moon);
+    cache = undefined;
+  }
+  if (!defined(cache)) {
+    cache = createWebGPUMoonCache(moon, context, device);
+  }
+  return cache;
+}
+
+function ensureMoonTextureLifecycleHooks(cache) {
+  if (!defined(cache._albedoTextureRequestHooks)) {
+    cache._albedoTextureRequestHooks = createMoonTextureRequestHooks(
+      cache.context,
+      cache.device,
+      MoonTextureChannel.ALBEDO,
+    );
+    cache._normalTextureRequestHooks = createMoonTextureRequestHooks(
+      cache.context,
+      cache.device,
+      MoonTextureChannel.NORMAL,
+    );
+    cache._albedoPublicationCallbacks = createMoonTexturePublicationCallbacks(
+      cache,
+      cache.device,
+      MoonTextureChannel.ALBEDO,
+    );
+    cache._normalPublicationCallbacks = createMoonTexturePublicationCallbacks(
+      cache,
+      cache.device,
+      MoonTextureChannel.NORMAL,
+    );
+  }
+}
+
+function getMoonTexturePairKey(cache, moon) {
+  if (
+    cache._pairAlbedoUrl !== moon.textureUrl ||
+    cache._pairNormalUrl !== moon.normalMapUrl
+  ) {
+    cache._pairAlbedoUrl = moon.textureUrl;
+    cache._pairNormalUrl = moon.normalMapUrl;
+    cache._texturePairKey = createWebGPUMoonTexturePairKey(
+      moon.textureUrl,
+      moon.normalMapUrl,
+    );
+  }
+  return cache._texturePairKey;
 }
 
 /**
@@ -1126,10 +1343,10 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     return;
   }
 
-  if (!defined(moon._webgpuCache)) {
-    moon._webgpuCache = {};
-  }
-  const cache = moon._webgpuCache;
+  // C12-35 L2 — every handle below is owned by this exact tuple. A device
+  // replacement or same-device resource-generation bump retires the entire
+  // old cache before any of its GPU objects can be inspected or submitted.
+  const cache = ensureWebGPUMoonCache(moon, context, device);
 
   // ── Behind-camera early-out ─────────────────────────────────────────
   // If the moon is fully behind the camera, don't submit anything. The
@@ -1215,40 +1432,104 @@ function updateWebGPUMoon(moon, frameState, commandList) {
 
   // Moon texture (placeholder until async load completes)
   if (!defined(cache.moonTexture)) {
-    cache.moonTexture = createMoonPlaceholderTexture(device);
-    cache.moonTextureView = cache.moonTexture.createView();
-    cache.sampler = device.createSampler({
-      minFilter: "linear",
-      magFilter: "linear",
-    });
-  }
-  if (defined(moon.textureUrl)) {
-    _loadRealMoonTexture(device, cache, moon.textureUrl);
+    const placeholderTexture = createMoonPlaceholderTexture(device);
+    let placeholderView;
+    let sampler;
+    try {
+      placeholderView = placeholderTexture.createView();
+      sampler = device.createSampler({
+        minFilter: "linear",
+        magFilter: "linear",
+        mipmapFilter: "linear",
+        // Moon imagery is equirectangular: longitude wraps at the model-space
+        // -X seam, while latitude terminates at the poles.
+        addressModeU: "repeat",
+        addressModeV: "clamp-to-edge",
+      });
+    } catch (error) {
+      destroyTextureSuppressingError(placeholderTexture);
+      throw error;
+    }
+    cache.moonTexture = placeholderTexture;
+    cache.moonTextureView = placeholderView;
+    cache.moonTextureWidth = 4;
+    cache.moonTextureHeight = 4;
+    cache.moonTextureMipLevelCount = 1;
+    cache.moonTextureMaxLod = 0;
+    cache.sampler = sampler;
   }
 
   // C12-25 — normal map at binding 3. Always bound: the flat placeholder is
   // the identity, so there is one pipeline and no shader variant.
   if (!defined(cache.normalPlaceholderTexture)) {
-    cache.normalPlaceholderTexture = createFlatNormalPlaceholderTexture(device);
-    cache.normalPlaceholderView = cache.normalPlaceholderTexture.createView();
-    cache.normalTexture = cache.normalPlaceholderTexture;
-    cache.normalTextureView = cache.normalPlaceholderView;
+    const normalPlaceholderTexture = createFlatNormalPlaceholderTexture(device);
+    const normalPlaceholderView = createTextureViewOrDestroy(
+      normalPlaceholderTexture,
+    );
+    cache.normalPlaceholderTexture = normalPlaceholderTexture;
+    cache.normalPlaceholderView = normalPlaceholderView;
+    cache.normalTexture = normalPlaceholderTexture;
+    cache.normalTextureView = normalPlaceholderView;
+    cache.normalTextureWidth = 1;
+    cache.normalTextureHeight = 1;
+    cache.normalTextureMipLevelCount = 1;
+    cache.normalTextureMaxLod = 0;
   }
-  if (defined(moon.normalMapUrl)) {
-    _loadMoonNormalTexture(device, cache, moon.normalMapUrl);
-  } else if (defined(cache._cachedNormalUrl)) {
-    // The variant switched to a moon that ships no relief (e.g. back to
-    // Moon.Variant.SMALL). Drop the loaded map and rebind the flat identity
-    // — without this the previous variant's relief would keep riding along.
-    if (cache.normalTexture !== cache.normalPlaceholderTexture) {
-      cache.normalTexture.destroy();
-    }
-    cache.normalTexture = cache.normalPlaceholderTexture;
-    cache.normalTextureView = cache.normalPlaceholderView;
-    cache._cachedNormalUrl = undefined;
-    cache.bindGroup = undefined;
-    cache._bundleStale = true;
+
+  // C12-35 L0/L2 — reconcile independent request serials against one exact
+  // owner/context/device/generation/cache/pair identity. A normal strength of
+  // zero starts no work, but matching current or in-flight work is retained.
+  // Candidates only publish here, on the frame-owned update path; promise
+  // callbacks can stage or destroy candidates but never mutate live bindings.
+  ensureMoonTextureLifecycleHooks(cache);
+  const pairKey = getMoonTexturePairKey(cache, moon);
+  const lifecycle = cache._moonTextureLifecycle;
+  const albedoOptions = lifecycle.channels.albedo.reconcileOptions;
+  albedoOptions.url = moon.textureUrl;
+  albedoOptions.pairKey = pairKey;
+  albedoOptions.demanded = defined(moon.textureUrl);
+  albedoOptions.hooks = cache._albedoTextureRequestHooks;
+  const albedoResult = reconcileWebGPUMoonTextureChannel(
+    lifecycle,
+    MoonTextureChannel.ALBEDO,
+    albedoOptions,
+  );
+  if (albedoResult.retireCurrent) {
+    retireWebGPUMoonPublishedTexture(
+      lifecycle,
+      MoonTextureChannel.ALBEDO,
+      cache._albedoPublicationCallbacks,
+    );
   }
+  commitWebGPUMoonTextureCandidate(
+    lifecycle,
+    MoonTextureChannel.ALBEDO,
+    cache._albedoPublicationCallbacks,
+  );
+
+  const normalOptions = lifecycle.channels.normal.reconcileOptions;
+  normalOptions.url = moon.normalMapUrl;
+  normalOptions.pairKey = pairKey;
+  normalOptions.demanded =
+    defined(moon.normalMapUrl) && frameState.moonNormalMapStrength > 0.0;
+  normalOptions.hooks = cache._normalTextureRequestHooks;
+  const normalResult = reconcileWebGPUMoonTextureChannel(
+    lifecycle,
+    MoonTextureChannel.NORMAL,
+    normalOptions,
+  );
+  if (normalResult.retireCurrent) {
+    retireWebGPUMoonPublishedTexture(
+      lifecycle,
+      MoonTextureChannel.NORMAL,
+      cache._normalPublicationCallbacks,
+    );
+  }
+  commitWebGPUMoonTextureCandidate(
+    lifecycle,
+    MoonTextureChannel.NORMAL,
+    cache._normalPublicationCallbacks,
+  );
 
   // Uniform buffer (Phase 1.2c v2 + C12 moon-wave tail = 336 bytes / 84 floats)
   if (!defined(cache.uniformBuffer)) {
@@ -1261,8 +1542,8 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     cache.uniformData = new Float32Array(MOON_UNIFORM_BUFFER_SIZE / 4);
   }
 
-  // Bind group (recreated whenever the texture changes; see invalidation
-  // path in _loadRealMoonTexture which clears cache.bindGroup).
+  // Bind group (recreated whenever a lifecycle candidate commits; the
+  // transactional publication path clears cache.bindGroup first).
   if (!defined(cache.bindGroup)) {
     cache.bindGroup = device.createBindGroup({
       label: "Moon bind group",
@@ -1344,8 +1625,10 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     // evicts the prior bundle instead of replaying a stale one.
     const sampleCount = context._msaaSamples ?? 1;
     const bundleKey = `moon:${moon._cacheId ?? (moon._cacheId = createGuid())}:${context.scenePipelineFormat}:${context.depthFormat}:${sampleCount}`;
+    cache._bundleKey = bundleKey;
     if (cache._bundleStale) {
       bundleMgr.invalidate(bundleKey);
+      cache._bundleInvalidationCount++;
       cache._bundleStale = false;
     }
     // Slice 5c-B Batch 121 — bundle colorFormats must match the Moon
@@ -1596,7 +1879,9 @@ function getWebGPUMoonStatistics(moon) {
   // here mirror `_packMoonUniforms()` (offsets 64..83 are the moon tail).
   const ud = cache.uniformData;
   const moonDirWC =
-    defined(ud) && ud.length > 67 ? { x: ud[64], y: ud[65], z: ud[66] } : null;
+    defined(ud) && ud.length > 67
+      ? Object.freeze({ x: ud[64], y: ud[65], z: ud[66] })
+      : null;
   const phaseFraction = defined(ud) && ud.length > 67 ? ud[67] : null;
   const earthshineOn = defined(ud) && ud.length > 68 ? ud[68] === 1.0 : null;
   const useLogDepth = defined(ud) && ud.length > 69 ? ud[69] === 1.0 : null;
@@ -1605,25 +1890,57 @@ function getWebGPUMoonStatistics(moon) {
   // C12 moon-wave tail (offsets 76..83) — extinction, lunar BRDF flag,
   // sky-wash, opposition surge, as last pushed to the GPU.
   const extinction =
-    defined(ud) && ud.length > 78 ? { x: ud[76], y: ud[77], z: ud[78] } : null;
+    defined(ud) && ud.length > 78
+      ? Object.freeze({ x: ud[76], y: ud[77], z: ud[78] })
+      : null;
   const lunarBRDFOn = defined(ud) && ud.length > 79 ? ud[79] === 1.0 : null;
   const inscatter =
-    defined(ud) && ud.length > 82 ? { x: ud[80], y: ud[81], z: ud[82] } : null;
+    defined(ud) && ud.length > 82
+      ? Object.freeze({ x: ud[80], y: ud[81], z: ud[82] })
+      : null;
   const oppositionSurge = defined(ud) && ud.length > 83 ? ud[83] : null;
   // C12-25 — relief strength as last pushed, plus whether the bound normal
   // texture is the real map or the flat identity placeholder.
   const normalMapStrength = defined(ud) && ud.length > 84 ? ud[84] : null;
-  return {
+  const lifecycle = cache._moonTextureLifecycle;
+  const albedoLifecycle = lifecycle?.channels?.albedo;
+  const normalLifecycle = lifecycle?.channels?.normal;
+  const lifecycleStatistics =
+    getWebGPUMoonTextureLifecycleDiagnostics(lifecycle);
+  return Object.freeze({
     backend: "webgpu",
     pipelineReady: defined(cache.pipeline),
     bindGroupReady: defined(cache.bindGroup),
-    moonTextureLoaded: defined(cache.moonTexture),
-    moonTextureUrl: cache.moonTextureUrl ?? null,
+    moonTextureLoaded: defined(albedoLifecycle)
+      ? defined(albedoLifecycle.currentIdentity)
+      : defined(cache.moonTexture),
+    moonTextureUrl:
+      albedoLifecycle?.currentIdentity?.exactUrl ??
+      cache.moonTextureUrl ??
+      null,
+    moonTextureMipLevelCount: cache.moonTextureMipLevelCount ?? null,
+    moonTextureMaxLod: cache.moonTextureMaxLod ?? null,
     normalMapStrength,
-    normalMapUrl: cache._cachedNormalUrl ?? null,
+    normalMapUrl:
+      normalLifecycle?.currentIdentity?.exactUrl ??
+      cache.normalTextureUrl ??
+      null,
     normalMapLoaded:
       defined(cache.normalTexture) &&
       cache.normalTexture !== cache.normalPlaceholderTexture,
+    normalTextureMipLevelCount: cache.normalTextureMipLevelCount ?? null,
+    normalTextureMaxLod: cache.normalTextureMaxLod ?? null,
+    ...lifecycleStatistics,
+    // Preserve the pre-lifecycle synthetic-cache compatibility used by the
+    // focused snapshot spec while real caches report their exact tuple.
+    cacheSerial: lifecycleStatistics.cacheSerial ?? cache.cacheSerial ?? null,
+    resourceGeneration:
+      lifecycleStatistics.resourceGeneration ??
+      cache.resourceGeneration ??
+      null,
+    sourceCache: getSharedMoonDecodedSourceCache().getDiagnostics(),
+    bundleKey: cache._bundleKey ?? null,
+    bundleInvalidationCount: cache._bundleInvalidationCount ?? 0,
     bundleStale: cache._bundleStale === true,
     snapshotRegistered: cache._snapshotRegistered === true,
     frozen: cache._frozen === true,
@@ -1637,7 +1954,7 @@ function getWebGPUMoonStatistics(moon) {
     lunarBRDFOn,
     atmosphereInscatter: inscatter,
     oppositionSurge,
-  };
+  });
 }
 
 // ============================================================
@@ -1666,6 +1983,33 @@ function destroyWebGPUMoonResources(moon) {
   if (!defined(cache)) {
     return;
   }
+  // Detach first. Every deferred callback checks this exact owner/cache link,
+  // so no settlement can mutate the orphan while teardown drains candidates.
+  moon._webgpuCache = undefined;
+  retireWebGPUMoonTextureLifecycle(
+    cache._moonTextureLifecycle,
+    "cache-destroyed",
+  );
+
+  // Invalidate the recorded bundle before retiring any texture view captured
+  // by that bundle. A bundle manager may already be gone during context loss;
+  // teardown remains best-effort in that case.
+  try {
+    if (
+      defined(cache.context?.renderBundleManager) &&
+      defined(cache._bundleKey)
+    ) {
+      cache.context.renderBundleManager.invalidate(cache._bundleKey);
+      cache._bundleInvalidationCount++;
+    }
+  } catch (e) {
+    //>>includeStart('debug', pragmas.debug);
+    console.warn("[WebGPU:Moon] bundle invalidation failed:", e);
+    //>>includeEnd('debug');
+  }
+  cache.bindGroup = undefined;
+  cache.bundle = undefined;
+
   // Phase 6 audit fix — the moon registers a "moon-renderer" freezable
   // with `scene.snapshotMode` during update(). The closure captures the
   // `cache` object; without explicit unregistration, the registration
@@ -1682,32 +2026,58 @@ function destroyWebGPUMoonResources(moon) {
     cache._snapshotRegistered = false;
     cache._snapshotService = undefined;
   }
-  if (defined(cache.geometry)) {
-    if (defined(cache.geometry.vertexBuffer)) {
-      cache.geometry.vertexBuffer.destroy();
+
+  // Drain every independently owned handle even if one destroy() reports an
+  // error. The Set also protects the placeholder/current alias from a second
+  // destroy call.
+  const destroyed = new Set();
+  let firstDestroyError;
+  function destroyOnce(resource) {
+    if (!defined(resource) || destroyed.has(resource)) {
+      return;
     }
-    if (defined(cache.geometry.indexBuffer)) {
-      cache.geometry.indexBuffer.destroy();
+    destroyed.add(resource);
+    try {
+      resource.destroy();
+    } catch (error) {
+      firstDestroyError ??= error;
     }
   }
-  if (defined(cache.uniformBuffer)) {
-    cache.uniformBuffer.destroy();
+  function destroyTextureOnce(texture) {
+    if (defined(texture) && !destroyed.has(texture)) {
+      try {
+        if (typeof cache.context?.cancelTextureMipGeneration === "function") {
+          cache.context.cancelTextureMipGeneration(texture);
+        } else {
+          cache.context?.noteInlineTextureDestroy?.(texture);
+        }
+      } catch (error) {
+        firstDestroyError ??= error;
+      }
+    }
+    destroyOnce(texture);
   }
-  if (defined(cache.moonTexture)) {
-    cache.moonTexture.destroy();
+  destroyOnce(cache.geometry?.vertexBuffer);
+  destroyOnce(cache.geometry?.indexBuffer);
+  destroyOnce(cache.uniformBuffer);
+  destroyTextureOnce(cache.moonTexture);
+  destroyTextureOnce(cache.normalTexture);
+  destroyTextureOnce(cache.normalPlaceholderTexture);
+
+  cache.geometry = undefined;
+  cache.uniformBuffer = undefined;
+  cache.moonTexture = undefined;
+  cache.moonTextureView = undefined;
+  cache.normalTexture = undefined;
+  cache.normalTextureView = undefined;
+  cache.normalPlaceholderTexture = undefined;
+  cache.normalPlaceholderView = undefined;
+
+  if (defined(firstDestroyError)) {
+    //>>includeStart('debug', pragmas.debug);
+    console.warn("[WebGPU:Moon] resource teardown failed:", firstDestroyError);
+    //>>includeEnd('debug');
   }
-  // C12-25 — the normal texture may BE the placeholder (map-less variant),
-  // so destroy the placeholder only when it isn't also the bound texture.
-  if (
-    defined(cache.normalTexture) &&
-    cache.normalTexture !== cache.normalPlaceholderTexture
-  ) {
-    cache.normalTexture.destroy();
-  }
-  if (defined(cache.normalPlaceholderTexture)) {
-    cache.normalPlaceholderTexture.destroy();
-  }
-  moon._webgpuCache = undefined;
 }
 
 export {
