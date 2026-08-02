@@ -23,7 +23,7 @@ const STRIPE = `new C.Material({ fabric: { type: "Stripe", uniforms: {
   evenColor: new C.Color(1.0, 0.05, 0.05, 1.0), oddColor: new C.Color(0.05, 0.05, 1.0, 1.0),
   repeat: 10, horizontal: true } } })`;
 
-async function capture(renderer, logDepthOn) {
+async function capture(renderer, logDepthOn, sceneMode = "3D") {
   const browser = await chromium.launch({
     channel: "msedge",
     headless: true,
@@ -41,7 +41,7 @@ async function capture(renderer, logDepthOn) {
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const stats = await page.evaluate(
-    async ({ build, logDepthOn }) => {
+    async ({ build, logDepthOn, sceneMode }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       v.useDefaultRenderLoop = false; // stop the auto loop FIRST
@@ -50,6 +50,21 @@ async function capture(renderer, logDepthOn) {
       // the classifier pipeline) is created, so it builds with LOG_DEPTH from the
       // start (no mid-session rebuild transient). WebGL ignores the field.
       if (logDepthOn && s.context) s.context._logDepthWriteEnabled = true;
+      // NEW-WEBGPU-GLOBE-USE-LOG-DEPTH discriminator lane: in Columbus View
+      // Scene.js clears frameState.useLogDepth (orthographic-adjacent frustum
+      // math), while the master switch keeps its default. Pre-Batch-807 the
+      // globe mirrored the master alone and kept writing log-encoded
+      // frag_depth, so the classifier's hyperbolic reconstruction read garbage;
+      // post-fix both encodings drop to hyperbolic together. WebGL has
+      // useLogDepth false here too, making it the exact oracle — no flag
+      // override, the DEFAULT state is the configuration under test.
+      if (sceneMode === "CV") {
+        s.morphToColumbusView(0);
+        for (let i = 0; i < 10; i++) {
+          s.render();
+          await new Promise((r) => requestAnimationFrame(r));
+        }
+      }
       s.skyBox.show = false;
       s.skyAtmosphere.show = false;
       s.globe.showGroundAtmosphere = false;
@@ -101,12 +116,13 @@ async function capture(renderer, logDepthOn) {
         ready: ground.ready,
       };
     },
-    { build: STRIPE, logDepthOn },
+    { build: STRIPE, logDepthOn, sceneMode },
   );
 
   const png = await page.screenshot({ type: "png" });
-  const tag =
+  const base =
     renderer === "webgl" ? "webgl" : logDepthOn ? "webgpu-ON" : "webgpu-OFF";
+  const tag = sceneMode === "CV" ? `cv-${base}` : base;
   fs.writeFileSync(`${OUT}/ld-stripe-${tag}.png`, png);
   const variance = await page.evaluate(
     async ({ durl, roi, lit }) => {
@@ -172,6 +188,13 @@ async function capture(renderer, logDepthOn) {
 const wgl = await capture("webgl", false);
 const off = await capture("webgpu", false);
 const on = await capture("webgpu", true);
+// NEW-WEBGPU-GLOBE-USE-LOG-DEPTH discriminator (Batch 807): Columbus View,
+// DEFAULT flags on both backends. useLogDepth is false in CV, so post-fix both
+// globes write hyperbolic depth and the classifier stripes should track WebGL;
+// pre-fix the WebGPU globe wrote log (master-switch-only mirror) and the
+// reconstruction was garbage.
+const cvWgl = await capture("webgl", false, "CV");
+const cvGpu = await capture("webgpu", false, "CV");
 
 console.log(
   "=== Slice 3a payoff — Stripe GroundPrimitive @ 350km nadir, polygon-interior variance ===",
@@ -197,4 +220,20 @@ const payoff =
   rOn >= 0.3 && on.variance > off.variance * 3 && on.deviceErrs === 0;
 console.log(
   `\nPAYOFF ${payoff ? "CONFIRMED" : "NOT confirmed"} (need ON>=0.3 ratio, ON>>OFF, 0 device errors). READ THE PNGs: ld-stripe-{webgl,webgpu-OFF,webgpu-ON}.png`,
+);
+
+console.log(
+  "\n=== NEW-WEBGPU-GLOBE-USE-LOG-DEPTH discriminator — Columbus View, default flags ===",
+);
+console.log("CV WebGL  reference :", JSON.stringify(cvWgl));
+console.log("CV WebGPU (default) :", JSON.stringify(cvGpu));
+const rCv = cvWgl.variance > 0 ? cvGpu.variance / cvWgl.variance : 0;
+const litCv = cvWgl.lit > 0 ? cvGpu.lit / cvWgl.lit : 0;
+console.log(
+  `CV varRatio(WebGPU/WebGL)=${rCv.toFixed(2)}  litRatio=${litCv.toFixed(2)}  deviceErrs=${cvGpu.deviceErrs}`,
+);
+const cvParity =
+  rCv >= 0.3 && litCv >= 0.5 && litCv <= 2.0 && cvGpu.deviceErrs === 0;
+console.log(
+  `CV PARITY ${cvParity ? "PASS" : "FAIL"} (need varRatio>=0.3, litRatio in [0.5,2.0], 0 device errors). READ THE PNGs: ld-stripe-cv-{webgl,webgpu-OFF}.png`,
 );

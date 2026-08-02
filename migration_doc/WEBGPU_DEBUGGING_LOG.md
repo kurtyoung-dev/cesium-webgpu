@@ -16072,3 +16072,25 @@ first (single subject, measured directly against globe depth), then
 `probe-ellipsoidprim-logdepth.mjs` (strongest but most confounded — pre-803 both
 the globe and its own subject aliased).
 
+**VERIFIED ON HARDWARE (2026-08-02, Batch 809 — orchestrator run of the owed
+discriminator).** `probe-classifier-logdepth-flip.mjs` gained the two CV lanes
+(default flags — `useLogDepth` false in CV while the master stays TRUE, i.e. the
+exact defect configuration), run via the live-source checkout bisect (no rebuild;
+the viewer executes the checked-out module tree):
+
++ **Fail-before** (WebGPUGlobeSurfaceRenderer.ts at `ac4a06b65e`): CV WebGPU
+  renders **lit=0 / variance=0** against WebGL's 13973 — the encoding mismatch
+  didn't merely degrade the reconstruction, it annihilated ALL classification in
+  Columbus View (depth-sample check fails everywhere). CV PARITY FAIL.
++ **Pass-after** (Batch 807 landed): CV WebGPU lit **13973 == WebGL 13973**
+  (litRatio 1.00), variance ratio 1.19, 0 device errors both legs. CV PARITY
+  PASS.
+
+The pre-existing 3D lanes read lit=0 on BOTH backends including the WebGL
+reference (the probe's documented degenerate Stripe state — the scene, not the
+classifier). One artifact visible in the passing CV PNGs, filed against the
+KNOWN item (f) "2D/CV textured variant" in DEFERRED_WORK (NOT a Batch 807
+regression): the WebGPU stripes render DIAGONAL vs WebGL's horizontal — right
+footprint, smooth reconstruction, textured-UV axis math still running the 3D
+convention in CV.
+
