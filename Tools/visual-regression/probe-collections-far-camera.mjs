@@ -35,6 +35,34 @@
 // Env:   PROBE_BASE (default http://localhost:8134)
 // Out:   Tools/visual-regression/output/collections-far-camera-{on,off}.png
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RECORDING VALIDITY NOTE (NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH, fixed 2026-08-01)
+//
+// Any result recorded from this probe BEFORE the pipeline-key log-depth markers
+// landed is INVALID for its gate-OFF leg and must not be cited as a baseline.
+//
+// This probe flips `context._logDepthWriteEnabled` mid-session (lines 231 / 246)
+// with a globe already on screen. Until the fix, the central pipeline cache
+// (`WebGPURenderPipelineCache.generateCacheKey`) hashed `descriptor.name` plus
+// structural fields ONLY — never `vertex.module` / `fragment.module` /
+// `entryPoint` / the define bitmask — and the globe's descriptor name carried no
+// log-depth marker. On the flip the globe rebuilt its descriptor around the
+// correctly-recompiled module, looked it up under an UNCHANGED name, and was
+// handed back the pipeline it had already cached. The globe therefore kept its
+// STARTUP pipeline through BOTH legs, so the gate-off leg never exercised the
+// globe's off state at all.
+//
+// SUBJECT IMPACT: the collection renderers (Billboard / Label / PointPrimitive /
+// Polyline) stamp the full `defines=0x…` bitmask into their pipeline names, so
+// THEY flipped correctly. The globe they are depth-tested against did not — so
+// the OFF leg compared correctly-hyperbolic collections against a still-LOG
+// globe, which is not the configuration the leg claims to measure.
+//
+// The assertions here are unchanged and remain correct; only the pre-fix
+// recorded numbers are void. Guards: `pipeline-key-aliasing.spec.mjs` (static)
+// and `probe-pipeline-key-aliasing.mjs` (runtime).
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";

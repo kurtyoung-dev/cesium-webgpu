@@ -1310,8 +1310,23 @@ struct VelocityCO {
     ShaderSourceId.GROUND_PRIMITIVE,
     code,
     logDepthActive ? ShaderDefine.LOG_DEPTH : 0,
-    "GroundPrimitive",
+    // Label carries the log state so the two module variants are
+    // distinguishable in devtools, matching the Vector3DTile* siblings.
+    `GroundPrimitive${logDepthActive ? " [log]" : ""}`,
   );
+
+  // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthActive` picks a DIFFERENT
+  // `mod` above, and every descriptor below uses it for both stages. The central
+  // pipeline cache's `generateCacheKey` hashes only the descriptor NAME plus
+  // structural fields — never `vertex.module`, `fragment.module`, `entryPoint`,
+  // or the define mask. `_pipelineLogDepth` below rebuilds these descriptors on
+  // a flip, so without this marker the rebuilt log descriptor hits the
+  // hyperbolic pipeline already cached under the identical name. That is the
+  // terrain-classification failure mode: after `scene.morphTo2D()` /
+  // `camera.switchToOrthographicFrustum()` clears `frameState.useLogDepth`, the
+  // classifier would keep running the log-depth shader against a hyperbolic
+  // scene depth buffer and mis-reconstruct eye distance.
+  const ldFlag = logDepthActive ? 1 : 0;
   // Group 0: per-primitive uniforms (binding 0) + the material image
   // texture (binding 1) and its sampler (binding 2). The texture/sampler
   // are ALWAYS bound — non-image materials (color/stripe/checkerboard/grid)
@@ -1418,7 +1433,7 @@ struct VelocityCO {
     },
   };
   const depthSampleColorDescriptor = {
-    name: `GroundPrimitive depthSampleColor [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
+    name: `GroundPrimitive depthSampleColor [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
     layout: depthSampleLayout,
     vertex: { module: mod, entryPoint: "colorVS", buffers: vertexBuffers },
     fragment: {
@@ -1438,7 +1453,7 @@ struct VelocityCO {
   };
 
   const depthSamplePickDescriptor = {
-    name: `GroundPrimitive depthSamplePick [${pickFormat}/${depthFormat}]`,
+    name: `GroundPrimitive depthSamplePick [${pickFormat}/${depthFormat}/ld=${ldFlag}]`,
     layout: depthSampleLayout,
     vertex: { module: mod, entryPoint: "colorVS", buffers: vertexBuffers },
     fragment: {
@@ -1464,7 +1479,7 @@ struct VelocityCO {
   // stencilReference value is set per-draw via
   // `applyPerEncoderState({ stencilTest: { reference: 0xff } })`.
   const depthSampleStencilDescriptor = {
-    name: `GroundPrimitive depthSampleStencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
+    name: `GroundPrimitive depthSampleStencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
     layout: depthSampleLayout,
     vertex: { module: mod, entryPoint: "colorVS", buffers: vertexBuffers },
     fragment: {
@@ -1504,7 +1519,7 @@ struct VelocityCO {
   // mirror `depthSampleColorDescriptor` so the cache key only differs
   // by `vertex.entryPoint` + `vertex.buffers`.
   const morphColorDescriptor = {
-    name: `GroundPrimitive morphColor [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
+    name: `GroundPrimitive morphColor [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
     layout: depthSampleLayout,
     vertex: {
       module: mod,
@@ -1529,7 +1544,7 @@ struct VelocityCO {
   };
 
   const morphPickDescriptor = {
-    name: `GroundPrimitive morphPick [${pickFormat}/${depthFormat}]`,
+    name: `GroundPrimitive morphPick [${pickFormat}/${depthFormat}/ld=${ldFlag}]`,
     layout: depthSampleLayout,
     vertex: {
       module: mod,
@@ -1558,7 +1573,7 @@ struct VelocityCO {
   // velocity emission is suppressed during MORPHING by the JS-side
   // gating (TAA during scene-mode morph is rare).
   const velocityDescriptor = {
-    name: `GroundPrimitive velocity [${depthFormat}]`,
+    name: `GroundPrimitive velocity [${depthFormat}/ld=${ldFlag}]`,
     layout: depthSampleLayout,
     vertex: { module: mod, entryPoint: "vsVelocity", buffers: vertexBuffers },
     fragment: {

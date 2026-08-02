@@ -29,6 +29,36 @@
 // Env:   PROBE_BASE (default http://localhost:8134)
 // Out:   Tools/visual-regression/output/logdepth-zfight-{on,off}.png
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RECORDING VALIDITY NOTE (NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH, fixed 2026-08-01)
+//
+// Any result recorded from this probe BEFORE the pipeline-key log-depth markers
+// landed is INVALID for its gate-OFF leg and must not be cited as a baseline.
+//
+// This probe flips `context._logDepthWriteEnabled` mid-session (lines 265 / 272)
+// with a globe already on screen. Until the fix, the central pipeline cache
+// (`WebGPURenderPipelineCache.generateCacheKey`) hashed `descriptor.name` plus
+// structural fields ONLY — never `vertex.module` / `fragment.module` /
+// `entryPoint` / the define bitmask — and the globe's descriptor name carried no
+// log-depth marker. On the flip the globe rebuilt its descriptor around the
+// correctly-recompiled module, looked it up under an UNCHANGED name, and was
+// handed back the pipeline it had already cached. The globe therefore kept its
+// STARTUP pipeline through BOTH legs, so the gate-off leg never exercised the
+// globe's off state at all.
+//
+// SUBJECT IMPACT: the green box's own Mat/PBR pipeline did flip correctly; what
+// did not flip was the globe whose depth this probe z-fights against. Since the
+// entire measurement is "box pixels lost to terrain bleed-through", the OFF
+// reference was measured against a globe still writing LOG depth — i.e. it was
+// not a hyperbolic reference at all.
+//
+// The assertions here are unchanged and remain correct; only the pre-fix
+// recorded numbers are void. From the fix onward this probe's OFF leg is
+// meaningful for the first time. Guards:
+// `pipeline-key-aliasing.spec.mjs` (static) and
+// `probe-pipeline-key-aliasing.mjs` (runtime).
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";

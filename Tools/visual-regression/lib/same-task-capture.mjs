@@ -135,6 +135,107 @@ export const SAME_TASK_CAPTURE_SOURCE = `const makeSameTaskCapture = (scene, can
 };`;
 
 /**
+ * A two-read-path fault DISCRIMINATOR, as text.
+ *
+ * ── DELIBERATELY OUTSIDE THE CANONICAL BLOCK ──────────────────────────────
+ * This is NOT part of `SAME_TASK_CAPTURE_SOURCE` and must never be embedded
+ * between `CAPTURE_BEGIN` / `CAPTURE_END`. `checkEmbeddedCaptureIsCanonical`
+ * compares that block byte-for-byte, so anything added inside it becomes drift
+ * in every probe that has not also added it. This is opt-in, embedded
+ * separately by the probes that want it, and carries no canonicity guarantee.
+ * The FORMATTING CONTRACT above does not bind it either, for the same reason —
+ * nothing compares this text against an embedded copy.
+ *
+ * ── WHAT IT ANSWERS, AND THE FAILURE THAT PAID FOR IT ─────────────────────
+ * When a capture comes back black, there are two candidate faults and they
+ * demand opposite responses:
+ *
+ *   render-fault           — the renderer genuinely drew nothing. Fix the scene.
+ *   capture-fault-drawImage— the renderer drew correctly and the READER lost it.
+ *                            Fix the instrument; the scene is innocent.
+ *
+ * ★ A DISCRIMINATOR MUST NOT BE BUILT FROM THE PRIMITIVE IT DISCRIMINATES.
+ * The first version of this check ran through `captureNow()` — i.e. `drawImage`
+ * + `getImageData` — reported 0% non-black over 24,909 samples, and concluded
+ * "THE RENDERER DREW NOTHING". That was FALSE on WebGPU: `toDataURL` on the
+ * SAME canvas in the SAME task returned a 1,394,273-byte PNG of a fully correct
+ * render. A check that shares the suspect path can only ever confirm the
+ * suspect path's own answer.
+ *
+ * So this reads BOTH ways and treats DISAGREEMENT as the signal. PNG byte
+ * length is the independent measure and needs no decode: an all-black PNG of a
+ * viewer-sized canvas is ~21 KB and a real render ~1.4 MB — two orders apart,
+ * far outside any plausible compression variation.
+ *
+ * ── WHAT IT DOES NOT COVER ────────────────────────────────────────────────
+ * The per-read ALLOCATION question (`readUnfused` allocating a fresh canvas per
+ * read) is NOT answered here. Answering it would need a probe-local
+ * `drawImage` + `getImageData` reader, which `checkFusedCaptureUsage` correctly
+ * rejects — a second reader beside the shared primitives is exactly the shape
+ * that rule exists to stop, and it does not stop being that because the second
+ * reader is a diagnostic. That question is about the canonical primitive
+ * itself, so it belongs to this module, not to a probe.
+ *
+ * ── USAGE ─────────────────────────────────────────────────────────────────
+ * Embed inside `page.evaluate`, AFTER the canonical block (it needs
+ * `captureNow` in scope), then call `canvasHasContent()`:
+ *
+ *   const { verdict, pathsDisagree } = canvasHasContent();
+ *   if (verdict === "capture-fault-drawImage") { ... instrument is at fault ... }
+ *
+ * `luminanceStats` samples every 37th pixel — coprime with 4 and with common
+ * widths, so it does not alias onto a column.
+ *
+ * ORIGIN: `probe-eclipse-umbra-globe.mjs` (C12-29 S5, worktree
+ * `agent-a6de88899b2982d6c`), extracted here so the next probe inherits the
+ * lesson instead of rediscovering it against a live WebGPU device.
+ */
+export const TWO_READ_PATH_DISCRIMINATOR_SOURCE = `const makeReadPathDiscriminator = (captureNow, grabNow) => {
+  const luminanceStats = (image) => {
+    const data = image.data;
+    let nonBlack = 0;
+    let max = 0;
+    let n = 0;
+    for (let i = 0; i < data.length; i += 4 * 37) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      if (lum > max) {
+        max = lum;
+      }
+      if (lum > 8) {
+        nonBlack++;
+      }
+      n++;
+    }
+    const fraction = n > 0 ? nonBlack / n : 0;
+    return { nonBlackFraction: fraction, maxLuminance: max, samples: n };
+  };
+  const canvasHasContent = async () => {
+    const viaFreshDrawImage = luminanceStats(await captureNow());
+    const url = grabNow();
+    const pngBytes = typeof url === "string" ? url.length : 0;
+    const AN_ALL_BLACK_PNG_IS_SMALLER_THAN = 100000;
+    const dataUrlHasContent = pngBytes > AN_ALL_BLACK_PNG_IS_SMALLER_THAN;
+    const drawImageSeesContent = viaFreshDrawImage.nonBlackFraction > 0.05;
+    const disagree = drawImageSeesContent !== dataUrlHasContent;
+    const verdict = drawImageSeesContent
+      ? "sampler-ok"
+      : dataUrlHasContent
+        ? "capture-fault-drawImage"
+        : "render-fault";
+    return {
+      viaFreshDrawImage,
+      viaDataUrl: { pngBytes, hasContent: dataUrlHasContent },
+      pathsDisagree: disagree,
+      verdict,
+    };
+  };
+  return { canvasHasContent, luminanceStats };
+};`;
+
+/**
  * Extract a probe's embedded canonical block.
  *
  * @param {string} probeSource
@@ -514,6 +615,7 @@ export default {
   CAPTURE_BEGIN,
   CAPTURE_END,
   SAME_TASK_CAPTURE_SOURCE,
+  TWO_READ_PATH_DISCRIMINATOR_SOURCE,
   extractEmbeddedCapture,
   checkEmbeddedCaptureIsCanonical,
   checkFusedCaptureUsage,

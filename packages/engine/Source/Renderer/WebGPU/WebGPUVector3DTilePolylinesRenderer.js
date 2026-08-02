@@ -385,6 +385,17 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     `Vector3DTilePolylines${logDepthActive ? " [log]" : ""}`,
   );
 
+  // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthActive` picks a DIFFERENT
+  // `mod` above, and all three descriptors below use it for both stages. The
+  // central pipeline cache's `generateCacheKey` hashes only the descriptor NAME
+  // plus structural fields — never `vertex.module`, `fragment.module`,
+  // `entryPoint`, or the define mask. `_pipelineLogDepth` below rebuilds these
+  // descriptors on a flip, so without this marker the rebuilt log descriptor
+  // hits the hyperbolic pipeline already cached under the identical name.
+  // Reachable via `scene.morphTo2D()` / `camera.switchToOrthographicFrustum()`,
+  // which clear `frameState.useLogDepth`.
+  const ldFlag = logDepthActive ? 1 : 0;
+
   const sharedBgl = makeBindGroupLayout(device, "Vector3DTilePolylines BGL", [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
     storageBuffer(1, Stage.VERTEX, { readOnly: true }),
@@ -423,7 +434,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   // Pick + velocity render into single-sample targets, so both stay count-1.
   const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
   const colorDescriptor = {
-    name: `Vector3DTilePolylines color [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
+    name: `Vector3DTilePolylines color [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -450,7 +461,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   // [0, 1]; the target is stamped with the context's pick-format
   // authority (NEW-WEBGPU-HDR-PICK-FORMAT-CLOSURE).
   const pickDescriptor = {
-    name: `Vector3DTilePolylines pick [${pickFormat}/${depthFormat}]`,
+    name: `Vector3DTilePolylines pick [${pickFormat}/${depthFormat}/ld=${ldFlag}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -476,7 +487,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   // per-vertex prev clip is computed from `centerWC + curr` projected
   // through `prevViewProjection`.
   const velocityDescriptor = {
-    name: `Vector3DTilePolylines velocity [${depthFormat}]`,
+    name: `Vector3DTilePolylines velocity [${depthFormat}/ld=${ldFlag}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsVelocity", buffers: vertexBuffers },
     fragment: {

@@ -5575,13 +5575,31 @@ slice — each needs its own oracle before any code change (Principle 9):
   through to `passState` and the immediate-mode RenderCommand WebGPU path never receives the active
   pass encoder. Latent and independent of the demand-open slice (pre-existing). Fix needs a consumer
   probe first — no current caller exercises the broken branch on the default route.
-- **`NEW-WEBGPU-CANVAS-BACKGROUND-COLOR-PARITY`** — the WebGPU context `_clearColor` is
-  `(0,0,0,0)` from the constructor and is never fed `scene.backgroundColor`; the background
-  `_clearColorCommand` targeting the default framebuffer is (and historically was) swallowed, so an
-  EMPTY WebGPU scene presents transparent black while WebGL clears to the scene background color.
-  The C9-07 slice deliberately preserved these bytes (empty-scene byte-identity gate); adopting
-  `cmd.color` into the deferred first-open clear is the parity fix, but it is a visible behavior
-  change needing its own WebGL-vs-WebGPU background probe.
+- **`NEW-WEBGPU-CANVAS-BACKGROUND-COLOR-PARITY`** — **RESOLVED 2026-08-01 (Batch 802).** The WebGPU
+  context `_clearColor` was `(0,0,0,0)` from the constructor and was never fed
+  `scene.backgroundColor`; the background `_clearColorCommand` targeting the default framebuffer was
+  swallowed by the C9-07 / FAR-405-C0 deferred-canvas-clear return, so an EMPTY WebGPU scene
+  presented transparent black while WebGL cleared to the scene background color. Root cause: WebGL's
+  `Context.clear` records every requested value into GL clear-state (`gl.clearColor` /
+  `clearDepth` / `clearStencil`) BEFORE issuing `gl.clear`, and the WebGPU port kept only the
+  `gl.clear` half — so the deferral's premise that the pending first open "delivers the same
+  `_clearColor`/`_clearDepth`/`_clearStencil` values" was false for colour.
+  **Fix**: new `Renderer/WebGPU/WebGPUCanvasClearState.ts` owns the request interpretation
+  (`isClearChannelRequested`) and the canvas-only, per-channel state capture
+  (`canvasClearStateUpdate`) as pure functions; `WebGPUContext.clear` calls the capture BEFORE the
+  deferral return and copies each non-`null` channel into `_clearColor`/`_clearDepth`/`_clearStencil`.
+  Capture is restricted to clears resolving to the canvas swap view, so an offscreen clear (OIT,
+  globe depth, pick, a post-process intermediate) can never repaint the page background.
+  The module states an explicit absence contract — input is the inherited `ClearCommand` tri-state
+  (`T | false | undefined`) collapsed in exactly one place, output uses `null` as its sole absence
+  sentinel and never `undefined` — because three unstated spellings of "nothing here" is how a
+  caller writes `if (update.color)` and drops the transparent-black capture this fix exists to keep.
+  **Evidence**: `Tools/visual-regression/env-background-clear.spec.mjs` (21 tests: Part A proves the
+  environment-demand predicate was NOT the defect, B/B' the module + its absence contract, C the
+  frame timeline with a negative control reproducing the pre-fix transparent black, D the call-site
+  ordering). Cross-backend pixel behaviour is gated by
+  `Tools/visual-regression/probe-env-background-clear.mjs`, which has **not been run** — this
+  landed as an extraction from a parked worktree and the probe needs a browser lane.
 - **`NEW-WEBGPU-OIT-DEFERRED-SPLAT-CANVAS-RESUME`** — `WebGPUSceneRendererTranslucentPass.ts`
   (~L348) resumes the DEFAULT (canvas) pass after the OIT composite, mid-frustum-loop, and draws
   deferred Gaussian splats inline there; the comment says "resumed scene pass" but the target is the
@@ -6874,3 +6892,191 @@ the cutoff to 0.2 repeats the class).
 with visually scattered (not overcast) puffs at 0.35 on both the sweep anchor
 and the plains fixture, the plains ceiling gate fails, and its floor gate
 (0.02) is restored and passes.
+
+---
+
+## Parked-worktree closure record — 2026-08-01 (Batch 802)
+
+Seven agent worktrees accumulated between 2026-07-23 and 2026-07-25 and were
+never landed. The maintainer approved closing them **on condition that a
+re-audit reconfirm each disposition first**; that re-audit ran on 2026-08-01 and
+**amended two of them**. This section records what was extracted, what was
+deliberately dropped, and what survived re-verification against main at
+`3fa329ef14` (Batch 801) — so that deleting the branches destroys no decision.
+
+**Orphaned commit recorded before branch deletion:** `ac3931b85e`
+("Checkpoint C12-29 S6 totality sky"), the head of
+`worktree-agent-a480e24d73c9b7c96`. It is reachable from no other ref. Its
+durable content — the sky-brightness estimator finding — was harvested into
+`QUEUE_2026-07-19_CAMPAIGN12.md` as **`C12-34`** (renumbered from the worktree's
+`C12-S6F1`; `C12-33` was taken). Nothing else in that commit was retained.
+
+| # | Worktree | Disposition | Outcome |
+|---|---|---|---|
+| 1 | `agent-a68f438fcb2e102c1` | **AMENDED UPWARD by the re-audit — LIVE DEFECT, not a nice-to-have** | EXTRACTED |
+| 2 | `agent-a578d39752cd7819c` | Extract harness, adapt to Batch 788's key module | EXTRACTED |
+| 3 | `agent-aa59196f79bb47e99` | Extract fix, harden the recorded null-contract caveat, rebase by hand | EXTRACTED |
+| 4 | `agent-a6de88899b2982d6c` | Extract the SVS oracle only, re-aimed at main's landed S5 | EXTRACTED |
+| 5 | `agent-a480e24d73c9b7c96` | Doc harvest only | HARVESTED (`C12-34`) |
+| 6 | `agent-a06f93c6892cba472` | No durable content identified | DROPPED |
+| 7 | `agent-a2acfdee2b158d9f2` | No durable content identified | DROPPED |
+
+### 1. `NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH` — RESOLVED (the amended row)
+
+The 2026-06-11 ULTRA_REVIEW filed this, then downgraded it to LOW on the
+reasoning that shader defines were covered "by convention". That reasoning was
+sound for the globe (whose `_logDepthWriteEnabled` master switch is rarely
+written) and **false for the sibling renderers**, which gate on
+`isWebGPULogDepthActive = master && frameState.useLogDepth` — and `Scene.js`
+clears `frameState.useLogDepth` on **any** orthographic transition. Those
+renderers carry `_pipelineLogDepth` flip guards that REBUILD the descriptor on
+that flip, which is the complete aliasing precondition, reachable from
+documented public API (`scene.morphTo2D()`,
+`camera.switchToOrthographicFrustum()`, `scene.logarithmicDepthBuffer`).
+
+`WebGPURenderPipelineCache.generateCacheKey` hashes `descriptor.name` plus
+structural fields and **never** reads `vertex.module`, `fragment.module`,
+`entryPoint`, or the define bitmask. The module cache correctly builds a
+different `GPUShaderModule` on a LOG_DEPTH flip — which the pipeline key then
+discards, serving the pipeline compiled against the previous module.
+
+**Verified on main before porting:** only 2 of the 8 marker sites existed
+(GaussianSplat color + depth-write). The other 6 were unmarked, i.e. the defect
+was live at Batch 801. Fixed at 8 sites; the highest-traffic is
+`WebGPUModelPipelineCache`'s central glTF COLOR descriptor
+(`${raw.label}|${key}`, neither half of which carries the LOG_DEPTH bit).
+
+Guards: `Tools/visual-regression/pipeline-key-aliasing.spec.mjs` (47 tests,
+source-text, includes a MUTATION group that strips each marker and requires the
+distinctness check to FAIL, so the clean result is falsifiable) and
+`Tools/visual-regression/probe-pipeline-key-aliasing.mjs` (runtime, cross-checks
+its own detector against `stats.wrongModuleHits`).
+
+**`CesiumDebug.cacheStats()`'s hit rate cannot detect this class — aliasing
+RAISES it.** `stats.wrongModuleHits` (Batch 795) is the only counter that can.
+
+**Not extracted from this worktree:** its `WebGPUGlobeSurfaceRenderer.ts` change,
+which routes the globe's log-depth mirror through `isWebGPULogDepthActive` so the
+globe honours `frameState.useLogDepth` like every sibling producer. That is a
+**separate, behaviour-changing defect** (`NEW-WEBGPU-GLOBE-USE-LOG-DEPTH`, filed
+below) and was out of the approved extraction scope. Main still reads
+`context._logDepthWriteEnabled` alone at `WebGPUGlobeSurfaceRenderer.ts:1205`
+and `:2598`.
+
+### 2. Globe-pipeline readiness harness — EXTRACTED WITH A CORRECTION
+
+`probe-globe-pipeline-readiness.mjs` + `globe-pipeline-readiness.spec.mjs` +
+`lib/globe-pipeline-readiness.mjs`. All **7 MECHANISM_PINS re-verified** against
+main; Batches 797-801 drifted none of them.
+
+The lib carried a private re-implementation of the globe key grammar
+(`VARIANT_KEY_RE`) that was **already wrong**: it matches only the plain `color`
+kind, so every `_PICK` / `_TBF` / `_DOB` / `_DOF` / `_CAP_<format>` /
+debug-fragment / wireframe key — all real, all stored in the maps the probe reads
+— would have been reported as "the key format changed". Replaced with imports of
+`parseGlobePipelineCacheKey` from Batch 788's single home. Three spec tests were
+deleted rather than ported because Batch 788 fixed what they pinned (the four
+legacy three-letter getters), and one was **inverted** because extraction 1 fixed
+what it pinned (the globe descriptor name now carries `, ld=1`).
+
+### 3. `NEW-WEBGPU-CANVAS-BACKGROUND-COLOR-PARITY` — RESOLVED
+
+See the entry earlier in this document for the full record. Extracted with the
+recorded null-vs-undefined caveat hardened into an explicit, typed, spec'd
+absence contract, and the `WebGPUContext.clear()` hunk re-applied by hand onto a
+tree ~28 batches newer than the one it was written against.
+
+### 4. C12-29 S5 acceptance oracle — EXTRACTED AND RE-AIMED
+
+`Tools/visual-regression/eclipse-globe-svs-oracle.spec.mjs` — the NASA SVS 5073 /
+GSFC-Espenak fixture for the 2024-04-08 total eclipse, its itemised tolerance
+budget, and ORACLE lanes (a)-(d). The parked worktree's S5 differs from the one
+that landed (notably `u_eclipseGlobeShadow` packing), but **the oracle consumes
+model outputs, not uniforms**, so it re-aimed cleanly.
+
+It **passes against main's landed S5**, and the measured residuals are
+*identical* to those recorded in the worktree — greatest eclipse 178 km, Dallas
+143 km, Mazatlan 165 km; meridian widths 199.3 / 207.8 / 196.6 km against a
+published 197.5 km (ratio 1.009 at greatest eclipse). The position residual is
+systematically **westward** (-1.74, -1.41, -1.52 degrees of longitude), the
+signature of the TEME-pseudo-fixed substitution `node --test` falls back to
+rather than of the model. A lane asserts that sign, so the diagnosis is
+falsifiable: if the residual ever becomes mixed-sign, the stated cause is wrong
+and the budget must be re-derived, **not** re-tuned.
+
+The worktree's two-read-path fault discriminator was extracted separately into
+`Tools/visual-regression/lib/same-task-capture.mjs` as
+`TWO_READ_PATH_DISCRIMINATOR_SOURCE`, deliberately **outside** the canonical
+block (which is compared byte-for-byte). It encodes the rule that paid for it: a
+discriminator must not be built from the primitive it discriminates — the first
+version ran through `drawImage`, reported 0% non-black over 24,909 samples, and
+concluded "the renderer drew nothing" while `toDataURL` on the same canvas in the
+same task returned a 1.4 MB PNG of a correct render.
+
+### 5. Probe recording-validity notes — APPLIED
+
+Five probes flip `context._logDepthWriteEnabled` mid-session with a globe on
+screen, so their **gate-OFF legs are void** for every recording taken before
+2026-08-01: the globe silently kept its startup pipeline through both legs.
+Notes applied to `probe-logdepth-zfight`, `probe-buffer-logdepth-zfight`,
+`probe-collections-far-camera`, `probe-ellipsoidprim-logdepth`,
+`probe-splat-sort`. `probe-ellipsoidprim-logdepth` is the worst affected — both
+the globe AND its own subject aliased. `probe-logdepth-globe` flips at page load
+before any pipeline exists and is unaffected.
+
+A **larger, deliberately unstamped surface** is recorded as a CLASS in
+`pipeline-key-aliasing.spec.mjs`'s header: 27 probes perform a morph or
+orthographic transition, and any of them with a glTF model, ground primitive or
+Vector3DTile classifier on screen has suspect pre-fix results across that
+transition. Those files were NOT stamped, because a per-file claim could not be
+stood behind without a per-file content check.
+
+### New entries filed by this closure
+
+- **`NEW-WEBGPU-GLOBE-USE-LOG-DEPTH`** — the globe is the only WebGPU depth
+  producer that ignores `frameState.useLogDepth`. `WebGPUGlobeSurfaceRenderer`
+  mirrors `context._logDepthWriteEnabled` alone (`:1205`, and again at `:2598`
+  for the env-capture path), while every sibling gates on
+  `isWebGPULogDepthActive` (= master AND `useLogDepth`). `Scene.js` clears
+  `useLogDepth` on any orthographic frustum (2D / Columbus View / an explicit
+  `camera.switchToOrthographicFrustum()`) and whenever
+  `scene.logarithmicDepthBuffer` is false — so in those modes the globe writes
+  LOG-encoded `frag_depth` into a buffer the classifiers, enhanced-ocean depth
+  test and depth-plane read as hyperbolic: **mixed encodings in one attachment**.
+  In a pure orthographic frustum the log encode also degenerates (it collapses to
+  a per-vertex constant, and is NaN if near > 2.0). A worked fix exists in the
+  parked worktree `agent-a68f438fcb2e102c1` (route both writers through the
+  shared gate; no cache wipe is needed because every globe cache is already keyed
+  on the resolved define mask). It was NOT extracted — it is a visible behaviour
+  change needing its own 2D/CV/orthographic probe, and the approved extraction
+  covered the naming defect only. **Both writers must resolve identically** or
+  whichever runs first decides the frame's globe encoding.
+- **`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`** — the fix above closes the
+  LOG_DEPTH axis only. The general rule it exposes: a shader define that changes
+  neither `descriptor.name` nor the vertex layout aliases silently in the central
+  cache, because `generateCacheKey` reads neither the module nor the define mask.
+  Of the globe's three defines, `GEODETIC_NORMAL` is safe via the vertex
+  signature and `GLOBE_IMAGERY_REDUCED` via `, imagery4`. **Every new define must
+  be checked against this rule at the point it is added.** The durable options
+  are the whole-bitmask stamp (`defines=0x...`, as the four collection renderers
+  already do — strictly stronger than a per-axis marker) or folding the define
+  mask into `generateCacheKey` itself, which would make the whole class
+  structurally impossible. The latter is the real fix and is not scoped here.
+
+## 2026-08-02 — WebGPU globe renders zero frustums in the offline env-clear scenario
+
+### NEW-WEBGPU-OFFLINE-GLOBE-ZERO-FRUSTUMS
+
+**Status:** OPEN / TRIAGE. Found by probe-env-background-clear's globe-in-view
+lane on its first execution: with the globe in view (offline, no imagery),
+WebGL renders 1 frustum while WebGPU renders 0 — stash-controlled attribution
+proves this pre-exists the canvas-clear fix (without the fix gpu response 0,
+frustums 0; with it, response 1 because the frame is all background, frustums
+still 0). The clear fix itself is verified working by the same pair. Suspects:
+the synthetic offline scene interacting with the env-frustum-demand path, or
+an offline globe-readiness divergence. The probe lane should also be split so
+"background responds" and "globe renders" are separate verdicts.
+
+**Acceptance:** the lane shows frustums >= 1 on both backends with the globe
+in view, or the divergence is root-caused and its fix row filed; the lane's
+verdict separates the two concerns.

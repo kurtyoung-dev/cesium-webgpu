@@ -383,6 +383,20 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     `Vector3DTilePrimitive${logDepthActive ? " [log]" : ""}`,
   );
 
+  // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthActive` picks a DIFFERENT
+  // `mod` above (the //>>ifdef LOG_DEPTH branch), and every descriptor below
+  // uses `mod` for both stages. The central pipeline cache's `generateCacheKey`
+  // hashes only the descriptor NAME plus structural fields (ms / depth format /
+  // target signature / vertex layout) — never `vertex.module`,
+  // `fragment.module`, `entryPoint`, or the define mask. `_pipelineLogDepth`
+  // below rebuilds these descriptors on a flip, which is exactly the precondition
+  // for aliasing: without this marker the rebuilt log descriptor hits the
+  // hyperbolic pipeline already cached under the identical name. Reachable via
+  // `scene.morphTo2D()` / `camera.switchToOrthographicFrustum()`, which clear
+  // `frameState.useLogDepth`. `ld=` matches the Ocean / Cloud / FlowField
+  // spelling.
+  const ldFlag = logDepthActive ? 1 : 0;
+
   const sharedBgl = makeBindGroupLayout(
     device,
     "Vector3DTilePrimitive Shared BGL",
@@ -451,7 +465,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   // "equal" for 3D-Tile classification (mask3DTiles=true). The stencil
   // reference (0x80) is supplied per-command via renderState.
   const makeMarkDescriptor = (label, stencilCompare) => ({
-    name: `Vector3DTilePrimitive ${label} [${depthFormat}/ms=${sampleCount ?? 1}]`,
+    name: `Vector3DTilePrimitive ${label} [${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
     layout: classifyLayout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -499,7 +513,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   // depth write OFF, premultiplied-alpha-equivalent src-over blend. Only
   // fragments the mark pass counted (surface∩volume) survive.
   const colorDescriptor = {
-    name: `Vector3DTilePrimitive stencil-color [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
+    name: `Vector3DTilePrimitive stencil-color [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
     layout: classifyLayout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -532,7 +546,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
 
   // Pick pipeline: same VS / depth-sample BGL / different FS entry.
   const pickDescriptor = {
-    name: `Vector3DTilePrimitive pick [${pickFormat}/${depthFormat}]`,
+    name: `Vector3DTilePrimitive pick [${pickFormat}/${depthFormat}/ld=${ldFlag}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -552,7 +566,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   // Color writes disabled (writeMask=0); stencil-write replaces with 0xff
   // on every classified-surface pixel the volume covers.
   const stencilDescriptor = {
-    name: `Vector3DTilePrimitive stencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
+    name: `Vector3DTilePrimitive stencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -595,7 +609,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   //     loads depth from the prior color pass for visibility, so
   //     fragments behind opaque content don't emit velocity.
   const velocityDescriptor = {
-    name: `Vector3DTilePrimitive velocity [${depthFormat}]`,
+    name: `Vector3DTilePrimitive velocity [${depthFormat}/ld=${ldFlag}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsVelocity", buffers: vertexBuffers },
     fragment: {

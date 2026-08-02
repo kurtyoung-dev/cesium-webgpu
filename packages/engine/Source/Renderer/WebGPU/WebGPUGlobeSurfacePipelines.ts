@@ -479,8 +479,25 @@ export function buildPipelineDescriptor(
   // renderer-local pipeline caches (keyed without the hi word) are wiped on the
   // flag flip instead — see `WebGPUGlobeSurfaceRenderer._applyEnhancedOceanState`.
   const oceanLabel = host._enhancedOceanEnabled ? ", enhOcean" : "";
+  // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthOn` selects a DIFFERENT
+  // GlobeTerrain module (the `//>>ifdef LOG_DEPTH` frag_depth branch) through
+  // the `defines` bitmask above, but the central cache's `generateCacheKey`
+  // hashes only this NAME plus structural fields (multisample / depth format /
+  // target signature / vertex layout) — it never reads `vertex.module`,
+  // `fragment.module`, `entryPoint`, or the define mask. Without this marker the
+  // log-depth and hyperbolic globe pipelines collapse onto one key and whichever
+  // materialized first silently serves both. Same bug class as the `noCull`,
+  // `imagery4` and `enhOcean` markers above. `ld=` matches the spelling already
+  // used by Ocean / Cloud / FlowField / ComputeInstance / GaussianSplat.
+  // Also covers the PICK descriptor (its name derives from this one) and the
+  // env-map CAPTURE descriptor, both of which route through this function.
+  //
+  // The RENDERER-LOCAL caches are already safe on this axis — Batch 788 moved
+  // their key format into `buildGlobePipelineCacheKey`, which ends every key
+  // with `|${defines.toString(16)}`. This marker closes the CENTRAL cache only.
+  const ldLabel = logDepthOn ? ", ld=1" : "";
   return {
-    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${dofLabel}${tbfLabel}${ncLabel}${imgLabel}${capLabel}${oceanLabel})`,
+    name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${dofLabel}${tbfLabel}${ncLabel}${imgLabel}${capLabel}${oceanLabel}${ldLabel})`,
     layout: host._pipelineLayout!,
     vertex: {
       module: vertexModule,

@@ -456,6 +456,17 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
     `Vector3DTileClampedPolylines${logDepthActive ? " [log]" : ""}`,
   );
 
+  // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthActive` picks a DIFFERENT
+  // `mod` above, and every descriptor below uses it for both stages. The central
+  // pipeline cache's `generateCacheKey` hashes only the descriptor NAME plus
+  // structural fields — never `vertex.module`, `fragment.module`, `entryPoint`,
+  // or the define mask. `_pipelineLogDepth` below rebuilds these descriptors on
+  // a flip, so without this marker the rebuilt log descriptor hits the
+  // hyperbolic pipeline already cached under the identical name. Reachable via
+  // `scene.morphTo2D()` / `camera.switchToOrthographicFrustum()`, which clear
+  // `frameState.useLogDepth`.
+  const ldFlag = logDepthActive ? 1 : 0;
+
   const sharedBgl = makeBindGroupLayout(
     device,
     "Vector3DTileClampedPolylines Shared BGL",
@@ -506,7 +517,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   // single-sample targets, so both stay count-1.
   const msState = sampleCount > 1 ? { count: sampleCount } : undefined;
   const colorDescriptor = {
-    name: `Vector3DTileClampedPolylines color [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
+    name: `Vector3DTileClampedPolylines color [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -536,7 +547,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
 
   // Pick pipeline: same VS / depth-sample BGL / different FS entry.
   const pickDescriptor = {
-    name: `Vector3DTileClampedPolylines pick [${pickFormat}/${depthFormat}]`,
+    name: `Vector3DTileClampedPolylines pick [${pickFormat}/${depthFormat}/ld=${ldFlag}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -554,7 +565,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
 
   // AUDIT_2026_05_02 A.2 (Batch 141) — IGNORE_SHOW stencil-write variant.
   const stencilDescriptor = {
-    name: `Vector3DTileClampedPolylines stencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}]`,
+    name: `Vector3DTileClampedPolylines stencil [${format}/${depthFormat}/ms=${sampleCount ?? 1}/ld=${ldFlag}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsMain", buffers: vertexBuffers },
     fragment: {
@@ -605,7 +616,7 @@ fn fsVelocity(i: VelocityVOut) -> @location(0) vec2<f32> {
   // refinement could replicate the plane-test in velocity FS for
   // exact visibility parity.
   const velocityDescriptor = {
-    name: `Vector3DTileClampedPolylines velocity [${depthFormat}]`,
+    name: `Vector3DTileClampedPolylines velocity [${depthFormat}/ld=${ldFlag}]`,
     layout,
     vertex: { module: mod, entryPoint: "vsVelocity", buffers: vertexBuffers },
     fragment: {

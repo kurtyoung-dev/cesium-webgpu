@@ -54,6 +54,10 @@ import { WebGPUPrimitiveIndexUtils } from "./WebGPUPrimitiveIndexUtils.js";
 import { WebGPUPickFramebuffer } from "./WebGPUPickFramebuffer.js";
 import { isSceneFBMrtMode } from "./WebGPUSceneFBTargetHelpers.js";
 import {
+  canvasClearStateUpdate,
+  isClearChannelRequested,
+} from "./WebGPUCanvasClearState.js";
+import {
   computeAttachmentDemand,
   type AttachmentDemandRecord,
   type AttachmentDemandSceneLike,
@@ -3990,10 +3994,13 @@ export class WebGPUContext extends GraphicsContext {
     }
 
     // Nothing to clear
-    // Guard against boolean `false` — callers pass { color: false } to mean "don't clear color"
-    const wantColor = cmd.color !== undefined && cmd.color !== false;
-    const wantDepth = cmd.depth !== undefined && cmd.depth !== false;
-    const wantStencil = cmd.stencil !== undefined && cmd.stencil !== false;
+    // Guard against boolean `false` — callers pass { color: false } to mean "don't clear color".
+    // The predicate lives in `WebGPUCanvasClearState` so the request
+    // interpretation here and the canvas clear-state capture below cannot drift
+    // apart.
+    const wantColor = isClearChannelRequested(cmd.color);
+    const wantDepth = isClearChannelRequested(cmd.depth);
+    const wantStencil = isClearChannelRequested(cmd.stencil);
     if (!wantColor && !wantDepth && !wantStencil) {
       return;
     }
@@ -4056,6 +4063,42 @@ export class WebGPUContext extends GraphicsContext {
       return;
     }
 
+    // ── Canvas clear-state capture (NEW-WEBGPU-ENV-PASS-DROP / C12-G1F1) ──
+    // WebGL's `Context.clear` records EVERY requested clear value into GL
+    // clear-state (`gl.clearColor` / `clearDepth` / `clearStencil`) before
+    // issuing `gl.clear`, so the state outlives the call that set it. The WebGPU
+    // port kept only the `gl.clear` half: nothing ever wrote `_clearColor` from
+    // a clear command, so it stayed at its constructor value — transparent
+    // black — for the life of the context. Every frame whose canvas is FIRST
+    // opened by `_beginDefaultRenderPass` (the `endFrame` present fallback, the
+    // lazy `executeDrawCommand` open, `resumeDefaultRenderPass`) therefore
+    // presented transparent black no matter what `scene.backgroundColor` was.
+    //
+    // Content-free frames are exactly that case:
+    // `WebGPUSceneRenderer.executeCommands` early-returns when
+    // `shouldExecuteWebGPUSceneFrame` is false, so the scene-framebuffer pass —
+    // the only other consumer of `frameState.backgroundColor` — never opens and
+    // the present fallback is the sole writer of the canvas.
+    //
+    // Rationale for the per-channel/canvas-only shape lives in
+    // `WebGPUCanvasClearState`; keep the decision there so it stays testable
+    // without a device. `null` is that module's ONLY "no change" sentinel, so
+    // these are `!== null` tests and never truthiness tests — a transparent
+    // black capture and a `depth: 0` capture are both real values.
+    const clearStateUpdate = canvasClearStateUpdate(
+      cmd,
+      colorView === this._currentTextureView,
+    );
+    if (clearStateUpdate.color !== null) {
+      Color.clone(clearStateUpdate.color as CesiumColor, this._clearColor);
+    }
+    if (clearStateUpdate.depth !== null) {
+      this._clearDepth = clearStateUpdate.depth;
+    }
+    if (clearStateUpdate.stencil !== null) {
+      this._clearStencil = clearStateUpdate.stencil;
+    }
+
     // ── Deferred canvas clear (C9-07 / FAR-405-C0) ──
     // A default-framebuffer clear arriving while no pass is active and the
     // canvas is still untouched this frame (the background
@@ -4064,11 +4107,10 @@ export class WebGPUContext extends GraphicsContext {
     // fallback), which delivers the same `_clearColor`/`_clearDepth`/
     // `_clearStencil` values. This reproduces the historical behavior
     // where that command arrived while the beginFrame canvas pass was
-    // active and was swallowed by the guard above. NOTE: `cmd.color` is
-    // deliberately NOT copied into `_clearColor` here — that would change
-    // empty-scene bytes from transparent black to the scene background
-    // color (ledgered as a WebGL-parity follow-on candidate, not this
-    // slice).
+    // active and was swallowed by the guard above. The capture block above
+    // is what makes "the same values" true for color — before it, the
+    // deferral silently substituted transparent black for the scene
+    // background on every content-free frame.
     if (
       !hadActivePass &&
       colorView === this._currentTextureView &&

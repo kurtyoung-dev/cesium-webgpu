@@ -1786,7 +1786,17 @@ function attachSplatVelocityCommand(
     cache.pipelineLayout
   ) {
     cache.velocityPipelineDescriptor = {
-      name: "GaussianSplat velocity pipeline",
+      // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `cache.shaderModule` below is the
+      // LOG_DEPTH-gated module (chosen by `logDepthActive` in
+      // `buildSplatPipelineResources`), and the `logDepthFlipped` branch nulls
+      // this descriptor so it REBUILDS on a flip. The central pipeline cache
+      // keys on the descriptor name and never reads the module, so a constant
+      // name here would serve the previously-cached module's pipeline for the
+      // newly-compiled one. Matches the `ld=` marker the color and depth-write
+      // pipelines in this file already carry.
+      name: `GaussianSplat velocity pipeline [ld=${
+        cache.logDepthEnabled ? 1 : 0
+      }]`,
       layout: cache.pipelineLayout,
       vertex: {
         module: cache.shaderModule,

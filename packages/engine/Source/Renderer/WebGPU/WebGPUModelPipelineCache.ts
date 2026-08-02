@@ -3194,7 +3194,20 @@ class WebGPUModelPipelineCache {
       // format/sampleCount/vertex-layout fields feed the central key too, so a
       // scene-format change materializes a distinct entry (no collision).
       const centralDesc: WebGPURenderPipelineDescriptor = {
-        name: `${raw.label}|${key}`,
+        // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `ld=` is load-bearing, not
+        // cosmetic. `raw.label` encodes only (alphaMode, doubleSided,
+        // forceDepthWrite) and `key` only
+        // (alphaMode, doubleSided, materialDefines, topology, :m34) — NEITHER
+        // carries the LOG_DEPTH bit, because that bit is folded into the MODULE
+        // via `effectiveDefines` from `this._logDepthEnabled`, not into `md`.
+        // The central cache keys on this name and never reads
+        // `vertex.module`/`fragment.module`, and `maybeUpdateForLogDepth` wipes
+        // `_pipelines` on a flip — so the rebuilt descriptor (correct new
+        // module) would look up the identical name and be handed the pipeline
+        // compiled against the OLD module. This is the only descriptor in this
+        // file that routes through the central cache; every other model
+        // pipeline uses the direct `createRenderPipeline` hatch and is unaffected.
+        name: `${raw.label}|${key}|ld=${this._logDepthEnabled === true ? 1 : 0}`,
         layout: raw.layout as GPUPipelineLayout,
         vertex: raw.vertex as WebGPURenderPipelineDescriptor["vertex"],
         fragment: raw.fragment as WebGPURenderPipelineDescriptor["fragment"],

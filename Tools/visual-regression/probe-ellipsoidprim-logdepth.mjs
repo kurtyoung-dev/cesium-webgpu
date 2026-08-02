@@ -37,6 +37,33 @@
 // Usage: node Tools/visual-regression/probe-ellipsoidprim-logdepth.mjs
 // Env:   PROBE_BASE (default http://localhost:8134)
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RECORDING VALIDITY NOTE (NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH, fixed 2026-08-01)
+//
+// Any result recorded from this probe BEFORE the pipeline-key log-depth markers
+// landed is INVALID for its gate-OFF leg and must not be cited as a baseline.
+// This probe is the WORST affected of the five, because BOTH sides were stale.
+//
+// This probe flips `context._logDepthWriteEnabled` mid-session (lines 178 / 186)
+// with a globe already on screen. Until the fix, the central pipeline cache
+// (`WebGPURenderPipelineCache.generateCacheKey`) hashed `descriptor.name` plus
+// structural fields ONLY — never `vertex.module` / `fragment.module` /
+// `entryPoint` / the define bitmask.
+//
+// SUBJECT IMPACT: the globe's descriptor name carried no log-depth marker, so it
+// kept its STARTUP pipeline through both legs. AND this probe's own subject —
+// `WebGPUEllipsoidPrimitiveRenderer`'s COLOR pipeline — was named by the
+// constant `"EllipsoidPrimitive color pipeline"`, so it aliased too: the
+// renderer's `_pipelineLogDepth` guard rebuilt the descriptor with the correct
+// module and the cache handed back the other one. (The PICK descriptor already
+// carried an `[ld]` marker and was the only correct half.) The gate-off leg
+// therefore exercised neither the globe's nor the EllipsoidPrimitive's off state.
+//
+// The assertions here are unchanged and remain correct; only the pre-fix
+// recorded numbers are void. Guards: `pipeline-key-aliasing.spec.mjs` (static)
+// and `probe-pipeline-key-aliasing.mjs` (runtime).
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { chromium } from "playwright";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";

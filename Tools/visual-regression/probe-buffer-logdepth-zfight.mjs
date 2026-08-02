@@ -38,6 +38,34 @@
 // Env:   PROBE_BASE (default http://localhost:8134)
 // Out:   Tools/visual-regression/output/buffer-logdepth-zfight.png
 
+// ─────────────────────────────────────────────────────────────────────────────
+// RECORDING VALIDITY NOTE (NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH, fixed 2026-08-01)
+//
+// Any result recorded from this probe BEFORE the pipeline-key log-depth markers
+// landed is INVALID for its gate-OFF leg and must not be cited as a baseline.
+//
+// This probe flips `context._logDepthWriteEnabled` mid-session (lines 245 / 247)
+// with a globe already on screen. Until the fix, the central pipeline cache
+// (`WebGPURenderPipelineCache.generateCacheKey`) hashed `descriptor.name` plus
+// structural fields ONLY — never `vertex.module` / `fragment.module` /
+// `entryPoint` / the define bitmask — and the globe's descriptor name carried no
+// log-depth marker. On the flip the globe rebuilt its descriptor around the
+// correctly-recompiled module, looked it up under an UNCHANGED name, and was
+// handed back the pipeline it had already cached. The globe therefore kept its
+// STARTUP pipeline through BOTH legs, so the gate-off leg never exercised the
+// globe's off state at all.
+//
+// SUBJECT IMPACT: the Buffer* renderers under test carry their own
+// `_logDepthEnabled` flip guards AND never touch the central pipeline cache
+// (they call `device.createRenderPipeline` directly), so they did rebuild
+// correctly. The invalid half is the globe they are z-fighting against, which is
+// the reference this probe's whole measurement rests on.
+//
+// The assertions here are unchanged and remain correct; only the pre-fix
+// recorded numbers are void. Guards: `pipeline-key-aliasing.spec.mjs` (static)
+// and `probe-pipeline-key-aliasing.mjs` (runtime).
+// ─────────────────────────────────────────────────────────────────────────────
+
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";

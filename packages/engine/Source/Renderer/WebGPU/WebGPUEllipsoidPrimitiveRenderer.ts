@@ -527,7 +527,15 @@ function buildEllipsoidPipelineResources(
   });
 
   const colorDescriptor: WebGPURenderPipelineDescriptor = {
-    name: "EllipsoidPrimitive color pipeline",
+    // NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH — `logDepthActive` selects a different
+    // `shaderModule` above, but the central cache keys on this NAME plus
+    // structural fields only (never the module), so without the marker the log
+    // and hyperbolic color pipelines alias. The pick descriptor below already
+    // carries the equivalent `[ld]` marker for the same reason; the color half
+    // was missed. `[ld]` matches that sibling's spelling.
+    name: logDepthActive
+      ? "EllipsoidPrimitive color pipeline [ld]"
+      : "EllipsoidPrimitive color pipeline",
     layout: pipelineLayout,
     vertex: {
       module: shaderModule,
