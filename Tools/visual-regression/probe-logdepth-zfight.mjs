@@ -150,6 +150,12 @@ const out = await page.evaluate(async () => {
   // Green = box (Mat pipeline). Magenta = reference billboards (already log).
   const isGreen = (d, i) => d[i + 1] > 150 && d[i] < 110 && d[i + 2] < 110;
   const isMagenta = (d, i) => d[i] > 180 && d[i + 2] > 180 && d[i + 1] < 90;
+  // INSTRUMENT FIX (2026-08-02, round 2): the below-ground negative-control
+  // boxes are now BLUE, so the green subject count needs no spatial
+  // exclusion — a color can never straddle a region boundary. isBelowBlue
+  // is deliberately narrow (blue-dominant, low green) so the dark-blue
+  // globe baseColor (31,38,51) stays far below its thresholds.
+  const isBelowBlue = (d, i) => d[i + 2] > 180 && d[i] < 120 && d[i + 1] < 120;
   const countAll = (img, pred) => {
     let n = 0;
     for (let p = 0; p < img.w * img.h; p++) if (pred(img.data, 4 * p)) n++;
@@ -172,12 +178,22 @@ const out = await page.evaluate(async () => {
     }
     return nonBlack / total > 0.25; // globe fills well over a quarter of the frame
   };
-  const snapWithGlobe = async (withPng, maxTries = 40) => {
+  // Readiness-gated capture (Batch 808 recipe): the cold pipeline variant a
+  // master-switch flip requests takes ~1-2 s of WALL CLOCK to compile
+  // (measured 2674 ms), and headless rAF frames under-run that budget — the
+  // old 40x2-frame retry loop expired just short and SILENTLY returned a
+  // globe-less frame, which read as +8k unoccluded pixels (2026-08-02)
+  // first-honest-run incident). setTimeout yields guarantee wall clock
+  // passes; the caller gates on `ready`.
+  const snapWithGlobe = async (withPng, budgetMs = 45000) => {
+    const t0 = performance.now();
     let img = await snap(withPng);
-    for (let t = 0; t < maxTries && !globeDrawn(img); t++) {
-      await frame(2);
+    while (!globeDrawn(img) && performance.now() - t0 < budgetMs) {
+      await new Promise((r) => setTimeout(r, 150));
+      await frame(1);
       img = await snap(withPng);
     }
+    img.ready = globeDrawn(img);
     return img;
   };
 
@@ -263,7 +279,7 @@ const out = await page.evaluate(async () => {
     );
   }
   const belowMat = C.Material.fromType("Color");
-  belowMat.uniforms.color = new C.Color(0.1, 1.0, 0.1, 1.0);
+  belowMat.uniforms.color = new C.Color(0.15, 0.25, 1.0, 1.0); // BLUE — distinct from the subject slab so occlusion bleed can NEVER pollute the green subject count (2026-08-02 instrument fix)
   scene.primitives.add(
     new C.Primitive({
       geometryInstances: belowInstances,
@@ -302,22 +318,22 @@ const out = await page.evaluate(async () => {
   // Locate the below-ground green by sampling the upper-right control region:
   // count green pixels in x>[640..900], y<[120..320] (where the below boxes
   // project). If depth testing works, ~0.
-  const ctrlGreen = (() => {
-    let n = 0;
-    for (let y = 120; y < 320; y++)
-      for (let x = 640; x < 900; x++) {
-        const i = 4 * (y * imgOn.w + x);
-        if (isGreen(imgOn.data, i)) n++;
-      }
-    return n;
-  })();
+  // Below-ground bleed = BLUE pixels anywhere in frame (distinct color,
+  // no projection-rectangle guesswork).
+  const ctrlCount = (img) => countAll(img, isBelowBlue);
+  const ctrlGreen = ctrlCount(imgOn);
 
   // ---- (2) OFF leg — runtime kill switch to hyperbolic ----
   ctx._logDepthWriteEnabled = false;
   await frame(20); // Mat pipeline rebuilds via its flip guard
   const imgOff = await snapWithGlobe(true);
+  const offGlobe = imgOff.ready === true;
   const offGreen = countAll(imgOff, isGreen);
   const offMag = countAll(imgOff, isMagenta);
+  // OFF-leg control count: with hyperbolic depth the below-ground boxes are
+  // EXPECTED to bleed through (the z-fight the feature fixes) — recorded as
+  // evidence, not gated.
+  const offCtrlGreen = ctrlCount(imgOff);
 
   // ---- flip back ON and re-verify ----
   ctx._logDepthWriteEnabled = true;
@@ -332,6 +348,8 @@ const out = await page.evaluate(async () => {
     offMag,
     on2Green,
     ctrlGreen,
+    offCtrlGreen,
+    offGlobe,
     onGlobe,
     boxReady: boxPrim.ready,
     pngOn: imgOn.png,
@@ -377,10 +395,20 @@ check(
   out.onGreen >= GREEN_MIN,
   `Mat-pipeline green slab renders @220km (log depth ON): green=${out.onGreen}/${GREEN_MIN} (boxReady=${out.boxReady}, useLogDepth=${out.useLogDepth})`,
 );
+// STRUCTURAL precondition for check (2): the OFF leg must have its globe. The
+// master-switch flip requests a cold hyperbolic globe pipeline (~1-2 s async
+// compile); a capture inside that window has no occluder and inflates the OFF
+// count — the 2026-08-02 first-honest-run incident read exactly that as a fake
+// 23% ON "loss".
+check(
+  "2g",
+  out.offGlobe === true,
+  `globe present in OFF capture (precondition for the OFF reference): offGlobe=${out.offGlobe}`,
+);
 check(
   "2",
   ratio >= RECOVER_RATIO,
-  `log depth composes with the log globe: ON/OFF green ratio=${ratio.toFixed(3)} (>= ${RECOVER_RATIO}; pre-fix mixed-depth bug was ~0.72 — a 28% slab-pixel loss). ON=${out.onGreen} OFF=${out.offGreen} delta=${out.onGreen - out.offGreen}`,
+  `log depth composes with the log globe: ON/OFF green ratio=${ratio.toFixed(3)} (>= ${RECOVER_RATIO}; pre-fix mixed-depth bug was ~0.72 — a 28% slab-pixel loss; below-ground boxes are BLUE since 2026-08-02 so they cannot pollute this count). ON=${out.onGreen} OFF=${out.offGreen} delta=${out.onGreen - out.offGreen} offBelowBleed=${out.offCtrlGreen}`,
 );
 // The negative control is only meaningful when the globe is present to occlude
 // (the globe writes the depth that occludes the below-ground boxes). snapWithGlobe
@@ -394,7 +422,7 @@ check(
 check(
   "3",
   out.ctrlGreen <= 40,
-  `below-ground negative control: green in control region=${out.ctrlGreen} (max 40 — depth test must still occlude)`,
+  `below-ground negative control: BLUE below-box pixels in ON frame=${out.ctrlGreen} (max 40 — depth test must still occlude)`,
 );
 check(
   "4",
@@ -402,7 +430,7 @@ check(
   `flip back ON re-verifies (Mat flip-rebuild guard): green=${out.on2Green}`,
 );
 console.log(
-  `    reference magenta billboards (already log-depth): ON=${out.onMag} OFF=${out.offMag} (stable across flip)`,
+  `    reference magenta billboards: ON=${out.onMag} OFF=${out.offMag} (OFF=0 is EXPECTED physics — surface-hugging billboards tie with the globe in one hyperbolic quantum at 220 km and lose; log depth is what resolves them)`,
 );
 check("5", errors.length === 0, `console errors: ${errors.length}`);
 if (errors.length)

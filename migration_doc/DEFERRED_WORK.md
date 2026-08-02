@@ -7308,6 +7308,39 @@ so any change here must update them in the same change.
 
 **First datapoint (2026-08-02 run, Batch 810): the on-screen cost of the skip is ~1.9 s of globe-less frames on a cold variant** (WebGPU 2674 ms / 44 frames to first GLOBE command vs WebGL 771 ms / 13 frames, same scene).
 
+## 2026-08-02 — Mat-pipeline log depth corrupts with a SECOND Mat primitive in scene
+
+### NEW-WEBGPU-MAT-LOGDEPTH-MULTI-PRIMITIVE-DEPTH-LOSS
+
+**Status:** OPEN — found by the first honest run of `probe-logdepth-zfight.mjs`
+(post-Batch-803 aliasing fix + the 2026-08-02 instrument round: distinct-color
+below boxes, wall-clock readiness gate, OFF-leg globe precondition).
+
+**Measured bisect (Batch 814 diagnostic, WebGPU, 220 km nadir, solid globe):**
+
++ ONE Mat primitive (36-instance green slab @5 m) + log ON -> slab COMPLETE
+  (44,983 green px, matches the hyperbolic OFF reference exactly).
++ TWO Mat primitives (add the 9-instance below-ground grid @-3000 m, its own
+  `Primitive` + `MaterialAppearance`) + log ON -> the slab LOSES ~4,955 px to
+  the GLOBE (void samples read the globe baseColor 31/38/51, not background)
+  in a stable, spatially-coherent arrow-shaped region; identical count across
+  re-renders and across an OFF->ON flip (39,039 both legs).
++ Same TWO primitives + log OFF -> slab COMPLETE (44,983). The defect is
+  log-ON-only and requires the second primitive's presence.
+
+**Reading:** the second Mat primitive's per-frame state write corrupts the
+first's log-depth output over part of its extent — suspect the shared Mat/PBR
+camera-UB log-depth tail or a per-primitive uniform slot being overwritten
+before the first primitive's draw retires (the arrow shape is stable, so it is
+a deterministic spatial partition, e.g. a frustum-slice or instance-batch
+boundary, not flicker). Billboards are NOT involved (hiding them recovers only
+their own ~989-px footprint).
+
+**Acceptance:** `probe-logdepth-zfight.mjs` check (2) >= 0.9 with the full
+scene (currently 0.868 — the probe gate is correctly RED on this defect).
+Fix must not regress check (3) (below-ground boxes stay occluded) or the
+single-primitive case.
+
 ## 2026-08-02 — scene sun-shadow verification needs a real probe (and found an anomaly)
 
 ### SUN-SHADOW-GATE-PROBE-NEEDED — cascadesEnabled fix still unverified at pixels
