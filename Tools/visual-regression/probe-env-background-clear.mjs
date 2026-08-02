@@ -43,17 +43,78 @@
 //     goes to 0, and PRE-FIX the WebGPU response collapses to ~0 while WebGL
 //     stays ~1 — `responseDelta` ~1.0, far past the 0.1 gate, so those three
 //     steps FAIL (exit 1). POST-FIX all six steps read ~1 on both backends.
-//   the `globe-in-view` control step reads LOW on both backends in both states
-//     — it exists to prove the metric is not stuck at 1.
+//   the `globe-in-view` step reads LOW on both backends in both states — it
+//     proves the metric is not stuck at 1. It is ALSO the globe verdict's
+//     subject, and reads low for the right reason only once the globe has
+//     actually rendered; see the readiness discussion below.
+//
+// TWO INDEPENDENT VERDICTS (NEW-WEBGPU-OFFLINE-GLOBE-ZERO-FRUSTUMS)
+// -----------------------------------------------------------------
+// The six background-only steps and the globe step answer DIFFERENT questions
+// and are scored separately, so neither can mask or be blamed for the other:
+//
+//   BACKGROUND gate — steps 1-6. "Does `scene.backgroundColor` reach the
+//     WebGPU framebuffer everywhere WebGL shows it?" This is the
+//     NEW-WEBGPU-ENV-PASS-DROP acceptance.
+//   GLOBE gate — the `globe-in-view` step. "With the globe filling the frame,
+//     does the WebGPU globe actually render?" Scored on globe READINESS
+//     (>= 1 binned Pass.GLOBE command) plus the same cross-backend response
+//     agreement.
+//
+// The globe step keeps its original second job as the background gate's
+// non-vacuity control (it must read LOW on the reference, proving the metric is
+// background-specific), but a globe-lane problem now reports as a globe-lane
+// problem instead of appearing as a background-clear FAIL.
+//
+// WHY THE GLOBE LANE NEEDS ITS OWN READINESS GATE (root cause, traced in source)
+// ----------------------------------------------------------------------------
+// The first execution of this probe reported WebGL frustums 1 / WebGPU
+// frustums 0 with the globe in view, filed as
+// NEW-WEBGPU-OFFLINE-GLOBE-ZERO-FRUSTUMS. That is the already-traced
+// cold-pipeline-variant skip, not a frustum-accumulation defect:
+//
+//   1. `WebGPUGlobeSurfacePipelines.selectPipeline` →
+//      `resolveGlobePipelineEntry` → `pipelineCache.getPipelineSync(...)`,
+//      a pure `cache.get` that never creates. On a miss it marks the entry
+//      pending, kicks off `createRenderPipelineAsync`, and returns NULL.
+//   2. `WebGPUGlobeSurfaceRenderer` hits `if (!pipeline) { continue; }` — the
+//      tile contributes NO command descriptor.
+//   3. `addWebGPUDrawCommandsForTile` returns on `cmdDescs.length === 0`
+//      BEFORE `frameState.commandList.push(command)`.
+//   4. With no GLOBE command carrying a bounding volume, `near`/`far` in
+//      `View.createPotentiallyVisibleSet` never leave their +/-MAX sentinels,
+//      `updateFrustums` clamps them to near === far, and
+//      `numFrustums = ceil(log(1)/log(ratio)) = 0` — `frustumCommandsList`
+//      is emptied. Zero frustums is the SYMPTOM of the skipped tile.
+//
+// WebGL has no analogue: `addDrawCommandsForTile` pushes the command with a
+// `ShaderProgram` that compiles synchronously at execute time, so its frustum
+// count reflects tile VISIBILITY only, never GPU resource readiness.
+//
+// The previous step (`ellipsoidTerrain`) swaps the terrain provider, which
+// changes the vertex encoding class (quantized BITS12 → uncompressed) and
+// therefore the globe pipeline cache key — so the globe step is measured
+// against a guaranteed-cold variant. Eight settle frames (~130 ms) is nowhere
+// near `createRenderPipelineAsync`'s ~1-2 s. This is the same harness race that
+// produced the C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO false positive
+// (DEFERRED_WORK, 2026-07-10), whose closure established the fleet gate this
+// step now uses: poll until `globe.tilesLoaded` AND >= 1 binned Pass.GLOBE
+// command, yielding on the LOADING side only.
 //
 // GATE
-//   FAIL (exit 1): any step where |webgpuResponse - webglResponse| > 0.10.
+//   FAIL (exit 1): BACKGROUND — any of steps 1-6 where
+//     |webgpuResponse - webglResponse| > 0.10. GLOBE — the globe step's
+//     response delta exceeds the same bar after both backends reached globe
+//     readiness.
 //   STRUCTURAL (exit 2): a step never measured; a renderer mismatch or a WebGPU
 //     lane that is not genuinely WebGPU; a WebGL reference response below 0.80
 //     on a background-only step (a broken reference is never an engine gate);
-//     the control step failing to darken on the REFERENCE; or the WebGPU lane
-//     never once reaching `frustumCount === 0` — in that case the probe never
-//     entered the condition it claims to test and must not report PASS.
+//     the globe step failing to darken on the REFERENCE; the WebGPU lane
+//     never once reaching `frustumCount === 0` (the background defect's own
+//     precondition — without it the probe never entered the condition it
+//     claims to test); or either backend failing to reach globe readiness
+//     inside the budget (an unrendered globe cannot be compared, and a
+//     never-ready globe is a finding in its own right, not a quiet FAIL).
 //   PASS (exit 0): otherwise.
 //
 // PROBE RULES (fleet convention): pinned clock on every `scene.render(t)`;
@@ -95,10 +156,22 @@ const REFERENCE_RESPONSE_FLOOR = 0.8;
 // REFERENCE, otherwise the metric is not measuring the background at all.
 const CONTROL_RESPONSE_CEILING = 0.5;
 
-const HARD_LIMIT_MS = 420000;
+// Globe-readiness budget for the `globe-in-view` step, per backend. Sized
+// against `createRenderPipelineAsync`'s measured ~1-2 s for the ~239 KB
+// GlobeTerrain module plus terrain re-load after the provider swap, with a wide
+// margin so a slow machine reports a real result rather than a timeout. The
+// poll yields with `setTimeout`, not `requestAnimationFrame`: headless wall
+// clock must actually elapse while the pipeline cooks (the gate the
+// C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO closure landed).
+const GLOBE_READY_TIMEOUT_MS = 45000;
+const GLOBE_READY_POLL_MS = 50;
+
+// Two backend lanes x up to one 45 s globe-readiness wait each, on top of the
+// six background steps' bounded settles and page loads.
+const HARD_LIMIT_MS = 540000;
 const watchdog = setTimeout(() => {
   console.error(
-    "[probe-env-background-clear] WATCHDOG FIRED (420s) — forcing exit",
+    `[probe-env-background-clear] WATCHDOG FIRED (${HARD_LIMIT_MS / 1000}s) — forcing exit`,
   );
   process.exit(2);
 }, HARD_LIMIT_MS);
@@ -110,16 +183,20 @@ const r3 = (x) =>
     : Math.round(x * 1000) / 1000;
 
 // ── The bisection, in the executor's order. Each step is CUMULATIVE. ─────────
+// `lane` picks which of the two independent verdicts a step is scored under.
 // `control` marks the trailing step that is NOT a background-only frame; it is
-// the same-run control that proves the metric can read low.
+// the same-run control that proves the metric can read low, AND the subject of
+// the globe verdict.
+const LANE_BACKGROUND = "background";
+const LANE_GLOBE = "globe";
 const STEPS = [
-  { id: "enableLighting", control: false },
-  { id: "baseColor", control: false },
-  { id: "showGroundAtmosphere", control: false },
-  { id: "sunOff", control: false },
-  { id: "imageryOff", control: false },
-  { id: "ellipsoidTerrain", control: false },
-  { id: "globe-in-view", control: true },
+  { id: "enableLighting", control: false, lane: LANE_BACKGROUND },
+  { id: "baseColor", control: false, lane: LANE_BACKGROUND },
+  { id: "showGroundAtmosphere", control: false, lane: LANE_BACKGROUND },
+  { id: "sunOff", control: false, lane: LANE_BACKGROUND },
+  { id: "imageryOff", control: false, lane: LANE_BACKGROUND },
+  { id: "ellipsoidTerrain", control: false, lane: LANE_BACKGROUND },
+  { id: "globe-in-view", control: true, lane: LANE_GLOBE },
 ];
 
 const SCREENSHOT_STEPS = new Set(["enableLighting", "sunOff", "globe-in-view"]);
@@ -300,7 +377,13 @@ const SETUP = async ({ iso }) => {
 };
 
 // ── In-page: apply one cumulative step, then measure the response ────────────
-const MEASURE_STEP = async ({ stepId, settleFrames }) => {
+const MEASURE_STEP = async ({
+  stepId,
+  settleFrames,
+  awaitGlobe,
+  globeTimeoutMs,
+  globePollMs,
+}) => {
   const shared = window.__envBgClear;
   if (!shared) {
     return { structuralError: "setup did not run" };
@@ -334,6 +417,62 @@ const MEASURE_STEP = async ({ stepId, settleFrames }) => {
       scene.render(T());
       await new Promise((r) => requestAnimationFrame(r));
     }
+  };
+
+  // The readiness signal indexes the frustum bins by `Pass.GLOBE`. If that
+  // export ever moves, `indices[undefined]` is NaN, `| 0` makes it 0, and the
+  // gate would time out on EVERY lane while looking like a real finding —
+  // exactly the class of silent instrument failure the fleet keeps paying for.
+  // Fail loudly instead.
+  if (!C.Pass || !Number.isInteger(C.Pass.GLOBE)) {
+    return {
+      structuralError:
+        "Pass.GLOBE is not an integer on the engine barrel — the globe " +
+        "readiness signal cannot be computed",
+    };
+  }
+
+  // The globe's own structural read-out: how many commands binned into the
+  // Pass.GLOBE slot (index 2) across the frustum list. It is ZERO both when no
+  // tile is visible and when every visible tile was skipped for an unresolved
+  // pipeline — which is exactly why it, and not `tilesLoaded`, is the readiness
+  // signal. Backend-neutral: WebGL and WebGPU bin into the same list.
+  const globeCommandCount = () => {
+    const view = scene._view;
+    const list = view && view.frustumCommandsList;
+    if (!list) {
+      return null;
+    }
+    let total = 0;
+    for (let i = 0; i < list.length; i++) {
+      const indices = list[i] && list[i].indices;
+      total += indices ? indices[C.Pass.GLOBE] | 0 : 0;
+    }
+    return total;
+  };
+
+  // Bounded, wall-clock readiness gate for the globe step. LOADING side only —
+  // nothing is read here, so yielding is safe (and mandatory: the WebGPU globe
+  // pipeline promise cannot settle without a yield). `setTimeout` rather than
+  // `requestAnimationFrame` so headless wall time actually elapses.
+  const awaitGlobeReady = async (timeoutMs, pollMs) => {
+    const t0 = performance.now();
+    let frames = 0;
+    let ready = false;
+    while (performance.now() - t0 < timeoutMs) {
+      scene.render(T());
+      frames++;
+      if (scene.globe && scene.globe.tilesLoaded && globeCommandCount() > 0) {
+        ready = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+    return {
+      ready,
+      frames,
+      waitedMs: Math.round(performance.now() - t0),
+    };
   };
 
   // SAME-TASK capture: set the background, render, and read WITHOUT a single
@@ -412,6 +551,16 @@ const MEASURE_STEP = async ({ stepId, settleFrames }) => {
     return { structuralError: `unknown step ${stepId}` };
   }
 
+  // Globe readiness FIRST, then the ordinary settle. On WebGPU a cold globe
+  // pipeline variant makes every visible tile emit nothing, which collapses the
+  // frustum list to zero and reads back as "the globe did not render" — see the
+  // header. Waiting here is the difference between measuring the globe and
+  // measuring an async pipeline compile.
+  let globeGate = null;
+  if (awaitGlobe === true) {
+    globeGate = await awaitGlobeReady(globeTimeoutMs, globePollMs);
+  }
+
   // Settle on the LOADING side only.
   await spin(settleFrames);
 
@@ -427,6 +576,14 @@ const MEASURE_STEP = async ({ stepId, settleFrames }) => {
     // The mechanism read-out: the zero-frustum condition the defect needs.
     frustumCount:
       view && view.frustumCommandsList ? view.frustumCommandsList.length : null,
+    // The globe's structural read-out, recorded on EVERY step so a frustum
+    // count can always be attributed to globe commands vs environment-only
+    // demand rather than guessed at.
+    globeCommands: globeCommandCount(),
+    tilesLoaded: scene.globe ? scene.globe.tilesLoaded === true : null,
+    globeReady: globeGate ? globeGate.ready : null,
+    globeWaitMs: globeGate ? globeGate.waitedMs : null,
+    globeWaitFrames: globeGate ? globeGate.frames : null,
     meanBlack,
     meanWhite,
     response: meanWhite - meanBlack,
@@ -476,6 +633,12 @@ async function runBackend(browser, renderer) {
       const m = await page.evaluate(MEASURE_STEP, {
         stepId: step.id,
         settleFrames: 8,
+        // Only the globe lane waits on globe readiness. The background steps
+        // face the sky deliberately — waiting for globe commands there would
+        // never resolve and would say nothing about the background clear.
+        awaitGlobe: step.lane === LANE_GLOBE,
+        globeTimeoutMs: GLOBE_READY_TIMEOUT_MS,
+        globePollMs: GLOBE_READY_POLL_MS,
       });
       out.steps[step.id] = m;
       if (m && m.rendererType && m.rendererType !== renderer) {
@@ -569,13 +732,17 @@ async function runBackend(browser, renderer) {
     note("a build finished during the run — the pixels read may predate it");
   }
 
-  let anyFail = false;
+  // Per-lane verdict accumulators — a background failure and a globe failure
+  // are never summed into one number.
+  let backgroundFail = false;
+  let globeFail = false;
+  const globeNotes = [];
   let sawZeroFrustumOnWebGPU = false;
   const stepReports = {};
   for (const step of STEPS) {
     const a = gl.steps[step.id];
     const b = gpu.steps[step.id];
-    const entry = { control: step.control };
+    const entry = { control: step.control, lane: step.lane };
     stepReports[step.id] = entry;
     if (!a || a.structuralError || !b || b.structuralError) {
       entry.structural = {
@@ -590,31 +757,57 @@ async function runBackend(browser, renderer) {
     }
 
     const delta = Math.abs(b.response - a.response);
-    entry.webgl = {
-      response: r3(a.response),
-      meanBlack: r3(a.meanBlack),
-      meanWhite: r3(a.meanWhite),
-      frustumCount: a.frustumCount,
-    };
-    entry.webgpu = {
-      response: r3(b.response),
-      meanBlack: r3(b.meanBlack),
-      meanWhite: r3(b.meanWhite),
-      frustumCount: b.frustumCount,
-    };
+    const side = (m) => ({
+      response: r3(m.response),
+      meanBlack: r3(m.meanBlack),
+      meanWhite: r3(m.meanWhite),
+      frustumCount: m.frustumCount,
+      globeCommands: m.globeCommands,
+      tilesLoaded: m.tilesLoaded,
+      globeReady: m.globeReady,
+      globeWaitMs: m.globeWaitMs,
+      globeWaitFrames: m.globeWaitFrames,
+    });
+    entry.webgl = side(a);
+    entry.webgpu = side(b);
     entry.responseDelta = r3(delta);
 
-    if (step.control) {
-      // The control's job is to prove the instrument can read LOW. That claim
-      // is made against the REFERENCE — if WebGL does not darken here, the
-      // metric is not measuring the background and no step's ~1 means anything.
+    if (step.lane === LANE_GLOBE) {
+      // ── GLOBE VERDICT ──────────────────────────────────────────────────
+      // (1) The reference must darken — this is also the background gate's
+      //     non-vacuity control, so a failure here is STRUCTURAL for the whole
+      //     run, not merely a globe FAIL.
       entry.referenceOk = a.response <= CONTROL_RESPONSE_CEILING;
       if (!entry.referenceOk) {
         note(
-          `control step did not darken on WebGL (response ${r3(a.response)} > ${CONTROL_RESPONSE_CEILING}) — the metric is not background-specific`,
+          `globe step did not darken on WebGL (response ${r3(a.response)} > ${CONTROL_RESPONSE_CEILING}) — the metric is not background-specific`,
         );
       }
+      // (2) Readiness, per backend. An unrendered globe cannot be compared to
+      //     a rendered one, so a readiness miss is reported as its own
+      //     structural finding rather than being scored as a pixel FAIL.
+      for (const [name, m] of [
+        ["webgl", a],
+        ["webgpu", b],
+      ]) {
+        if (m.globeReady !== true) {
+          const detail = `globeCommands=${m.globeCommands} tilesLoaded=${m.tilesLoaded} waited=${m.globeWaitMs}ms/${m.globeWaitFrames} frames`;
+          globeNotes.push(
+            `${name}: globe never reached readiness inside ${GLOBE_READY_TIMEOUT_MS}ms (${detail})`,
+          );
+          note(
+            `globe step: ${name} never reached globe readiness (${detail}) — ` +
+              `no Pass.GLOBE command ever binned, so the globe was not measured`,
+          );
+        }
+      }
+      entry.globeReadyBoth = a.globeReady === true && b.globeReady === true;
+      entry.PASS = entry.globeReadyBoth && delta <= RESPONSE_DELTA_MAX;
+      if (!entry.PASS) {
+        globeFail = true;
+      }
     } else {
+      // ── BACKGROUND VERDICT ─────────────────────────────────────────────
       // Reference floor is derived from this same run, not inherited: a WebGL
       // lane that cannot itself show the background is a broken instrument,
       // never an engine gate.
@@ -624,13 +817,13 @@ async function runBackend(browser, renderer) {
           `step ${step.id}: WebGL reference response ${r3(a.response)} < ${REFERENCE_RESPONSE_FLOOR} — the reference itself did not show the background`,
         );
       }
-    }
-
-    entry.PASS = delta <= RESPONSE_DELTA_MAX;
-    if (!entry.PASS) {
-      anyFail = true;
+      entry.PASS = delta <= RESPONSE_DELTA_MAX;
+      if (!entry.PASS) {
+        backgroundFail = true;
+      }
     }
   }
+  const anyFail = backgroundFail || globeFail;
 
   // Non-vacuity: the defect lives in the zero-frustum frame. If no step ever
   // reached `frustumCount === 0` on WebGPU, this run never entered the
@@ -641,15 +834,28 @@ async function runBackend(browser, renderer) {
     );
   }
 
+  // Two named verdicts. The overall GATE is their conjunction, but each is
+  // reported on its own so a reader never has to guess which concern moved it.
+  const BACKGROUND_GATE = structural
+    ? "STRUCTURAL — not scored"
+    : backgroundFail
+      ? "FAIL — scene.backgroundColor does not reach the WebGPU framebuffer at every background-only step WebGL does"
+      : "PASS — the background control response tracks WebGL at every background-only bisection step";
+  const GLOBE_GATE = structural
+    ? "STRUCTURAL — not scored"
+    : globeFail
+      ? "FAIL — with the globe in view the two backends disagree after both reached globe readiness"
+      : "PASS — both backends render the globe (>= 1 binned Pass.GLOBE command) and agree on the response";
+
   const GATE = structural
-    ? "STRUCTURAL — a step never measured, a lane was not the requested renderer, the WebGL reference failed its own floor, or the zero-frustum condition was never entered"
+    ? "STRUCTURAL — a step never measured, a lane was not the requested renderer, the WebGL reference failed its own floor, the zero-frustum condition was never entered, or a backend never reached globe readiness"
     : anyFail
-      ? "FAIL — scene.backgroundColor does not reach the WebGPU framebuffer at every step WebGL does"
-      : "PASS — the background control response tracks WebGL at every bisection step";
+      ? `FAIL — background: ${backgroundFail ? "FAIL" : "PASS"}, globe: ${globeFail ? "FAIL" : "PASS"}`
+      : "PASS — background clear and globe rendering both track WebGL";
 
   const manifest = {
     probe: "probe-env-background-clear",
-    task: "NEW-WEBGPU-ENV-PASS-DROP (background-clear member)",
+    task: "NEW-WEBGPU-ENV-PASS-DROP (background-clear member) + NEW-WEBGPU-OFFLINE-GLOBE-ZERO-FRUSTUMS (globe lane)",
     date: new Date().toISOString(),
     provenance: prov,
     viewport: VIEWPORT,
@@ -658,10 +864,15 @@ async function runBackend(browser, renderer) {
       RESPONSE_DELTA_MAX,
       REFERENCE_RESPONSE_FLOOR,
       CONTROL_RESPONSE_CEILING,
+      GLOBE_READY_TIMEOUT_MS,
+      GLOBE_READY_POLL_MS,
     },
     steps: stepReports,
     sawZeroFrustumOnWebGPU,
+    globeNotes,
     structuralNotes,
+    BACKGROUND_GATE,
+    GLOBE_GATE,
     GATE,
     raw: { gl, gpu },
   };
@@ -677,10 +888,13 @@ async function runBackend(browser, renderer) {
             id,
             e.structural
               ? { structural: e.structural }
-              : `${e.PASS ? "PASS" : "FAIL"} | gl=${e.webgl.response} (frustums ${e.webgl.frustumCount}) gpu=${e.webgpu.response} (frustums ${e.webgpu.frustumCount}) delta=${e.responseDelta}`,
+              : `[${e.lane}] ${e.PASS ? "PASS" : "FAIL"} | gl=${e.webgl.response} (frustums ${e.webgl.frustumCount}, globeCmds ${e.webgl.globeCommands}) gpu=${e.webgpu.response} (frustums ${e.webgpu.frustumCount}, globeCmds ${e.webgpu.globeCommands}) delta=${e.responseDelta}`,
           ]),
         ),
+        globeNotes,
         structuralNotes,
+        BACKGROUND_GATE,
+        GLOBE_GATE,
         GATE,
       },
       null,

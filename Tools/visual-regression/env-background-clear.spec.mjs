@@ -562,3 +562,187 @@ test("D4: the present fallback still sources its clearValue from _clearColor", (
     "the endFrame present fallback must still exist",
   );
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// PART E — NEW-WEBGPU-OFFLINE-GLOBE-ZERO-FRUSTUMS.
+//
+// The globe lane of `probe-env-background-clear.mjs` reported WebGL frustums 1
+// / WebGPU frustums 0 with the globe in view. That is NOT a frustum-accumulation
+// defect: it is the already-traced cold-pipeline-variant skip
+// (`lib/globe-pipeline-readiness.mjs`, MECHANISM_PINS) arriving at the frustum
+// list. Those pins already cover the first half of the chain — `getPipelineSync`
+// is a pure lookup, creation is async-only, an unresolved pipeline `continue`s
+// past the tile. They stop there.
+//
+// E pins the THREE LINKS that turn "one tile was skipped" into "the frame has
+// zero frustums", plus the WebGL asymmetry that makes the two backends disagree.
+// Without them the diagnosis is a story; with them it is a contract, and any
+// change that breaks the chain fails here instead of being re-discovered as a
+// mystery zero-frustum frame months later.
+//
+// E is source-shape, whitespace-tolerant, and routed through the fleet's
+// wrap-safety checker — a prettier re-wrap must never read as a mechanism change.
+// ───────────────────────────────────────────────────────────────────────────
+
+const { assertSourcePinIsWidthSafe } =
+  await import("./lib/provenance-markers.mjs");
+
+const globeRenderingSource = await readFile(
+  enginePath("Scene/GlobeSurfaceTileProviderRendering.js"),
+  "utf8",
+);
+const viewSource = await readFile(enginePath("Scene/View.js"), "utf8");
+
+/**
+ * The three links, as call SHAPES rather than line numbers (which rot — see the
+ * note at the head of this file about the 28-batch drift).
+ */
+const ZERO_FRUSTUM_CHAIN = Object.freeze([
+  {
+    name: "an empty descriptor list returns BEFORE the command is published",
+    source: () => globeRenderingSource,
+    file: "Scene/GlobeSurfaceTileProviderRendering.js",
+    pattern:
+      /if\s*\(\s*!\s*cmdDescs\s*\|\|\s*cmdDescs\s*\.\s*length\s*===\s*0\s*\)/,
+    why:
+      "link 1 — a tile whose pipeline is still cooking yields no descriptor, " +
+      "so `frameState.commandList.push` is never reached for that tile",
+  },
+  {
+    name: "the WebGPU globe command is published to frameState.commandList",
+    source: () => globeRenderingSource,
+    file: "Scene/GlobeSurfaceTileProviderRendering.js",
+    // Anchored on the WebGPU emitter's own function head. The bare push shape
+    // also occurs in WebGL's `pushCommand` helper EARLIER in the file, so an
+    // unanchored pin would be satisfied by the WebGL site and could not detect
+    // the WebGPU one going missing — E3 caught exactly that.
+    pattern:
+      /function\s+addWebGPUDrawCommandsForTile[\s\S]{0,20000}?frameState\s*\.\s*commandList\s*\.\s*push\s*\(\s*command\s*\)/,
+    why:
+      "link 2 — the publish site the early return above skips; this is what " +
+      "carries the tile's bounding volume into the near/far accumulators",
+  },
+  {
+    name: "the frustum count is derived from the accumulated near/far span",
+    source: () => viewSource,
+    file: "Scene/View.js",
+    pattern:
+      /numFrustums\s*=\s*Math\s*\.\s*ceil\s*\(\s*Math\s*\.\s*log\s*\(\s*far\s*\/\s*near\s*\)/,
+    why:
+      "link 3 — with no bounding-volume command the accumulators stay at their " +
+      "sentinels, the clamps collapse them to near === far, and this yields 0",
+  },
+  {
+    name: "frustumCommandsList length IS the frustum count",
+    source: () => viewSource,
+    file: "Scene/View.js",
+    pattern: /frustumCommandsList\s*\.\s*length\s*=\s*numFrustums/,
+    why: "link 3b — the observable the probe reads collapses with numFrustums",
+  },
+  {
+    name: "WebGL publishes its globe command unconditionally",
+    source: () => globeRenderingSource,
+    file: "Scene/GlobeSurfaceTileProviderRendering.js",
+    pattern: /function\s+pushCommand\s*\(\s*command\s*,\s*frameState\s*\)/,
+    why:
+      "the asymmetry — WebGL's globe command carries a ShaderProgram that " +
+      "compiles at execute time, so its frustum count tracks tile VISIBILITY " +
+      "only and never GPU resource readiness",
+  },
+]);
+
+test("E1: every zero-frustum chain pin still matches its engine source", () => {
+  for (const pin of ZERO_FRUSTUM_CHAIN) {
+    assert.ok(
+      pin.pattern.test(pin.source()),
+      `${pin.file}: pin "${pin.name}" no longer matches — ${pin.why}`,
+    );
+  }
+});
+
+test("E2: the chain pins survive a re-wrap (no literal spaces)", () => {
+  for (const pin of ZERO_FRUSTUM_CHAIN) {
+    assertSourcePinIsWidthSafe({
+      pattern: pin.pattern,
+      sourceText: pin.source(),
+      label: `${pin.file} :: ${pin.name}`,
+    });
+  }
+});
+
+test("E3: TEETH — a broken chain is detectable", () => {
+  // If the pins matched anything, they would be decoration. Mutate the source
+  // the way a real regression would (delete the WebGPU publish site — NOT the
+  // WebGL one, which lives earlier in the same file) and require the
+  // corresponding pin to fail.
+  const head = globeRenderingSource.indexOf(
+    "function addWebGPUDrawCommandsForTile",
+  );
+  assert.ok(head > 0, "the WebGPU emitter is gone — the chain has changed");
+  const mutated =
+    globeRenderingSource.slice(0, head) +
+    globeRenderingSource
+      .slice(head)
+      .replace(/frameState\.commandList\.push\(command\);/, "/* removed */");
+  assert.notEqual(
+    mutated,
+    globeRenderingSource,
+    "the mutation did not apply — E3 would pass vacuously",
+  );
+  const publishPin = ZERO_FRUSTUM_CHAIN.find((p) =>
+    p.name.startsWith("the WebGPU globe command is published"),
+  );
+  assert.ok(
+    !publishPin.pattern.test(mutated),
+    "removing the WebGPU publish site must break its pin",
+  );
+});
+
+// ── The probe's own lane split. The filed acceptance requires that "background
+// responds" and "globe renders" be SEPARATE verdicts; a future edit that
+// re-merges them would silently restore the condition that made the globe
+// finding look like a background-clear failure. ────────────────────────────
+const probeSource = await readFile(
+  resolve(directory, "probe-env-background-clear.mjs"),
+  "utf8",
+);
+
+test("E4: the probe scores the globe step under its own lane", () => {
+  assert.match(
+    probeSource,
+    /const\s+LANE_GLOBE\s*=/,
+    "the globe lane constant is gone — the verdicts have been re-merged",
+  );
+  assert.match(
+    probeSource,
+    /id:\s*"globe-in-view",\s*control:\s*true,\s*lane:\s*LANE_GLOBE/,
+    "the globe step must be tagged with the globe lane",
+  );
+  for (const name of ["BACKGROUND_GATE", "GLOBE_GATE"]) {
+    assert.ok(
+      probeSource.includes(name),
+      `the probe must report ${name} as its own verdict`,
+    );
+  }
+});
+
+test("E5: the globe lane gates on binned Pass.GLOBE commands, not tilesLoaded alone", () => {
+  // `tilesLoaded` is TRUE while the WebGPU globe pipeline is still cooking —
+  // that is precisely the race that produced the original finding, and the
+  // C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO false positive before it.
+  assert.match(
+    probeSource,
+    /indices\[C\.Pass\.GLOBE\]/,
+    "the readiness signal must read the Pass.GLOBE bin, not a proxy",
+  );
+  assert.match(
+    probeSource,
+    /tilesLoaded\s*&&\s*globeCommandCount\(\)\s*>\s*0/,
+    "readiness must require BOTH tilesLoaded and >= 1 binned globe command",
+  );
+  assert.ok(
+    !/awaitGlobeReady[\s\S]{0,400}?requestAnimationFrame/.test(probeSource),
+    "the readiness poll must yield with setTimeout so headless wall clock " +
+      "actually elapses while createRenderPipelineAsync cooks",
+  );
+});

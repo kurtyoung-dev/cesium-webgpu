@@ -7109,19 +7109,115 @@ stood behind without a per-file content check.
 
 ### NEW-WEBGPU-OFFLINE-GLOBE-ZERO-FRUSTUMS
 
-**Status:** OPEN / TRIAGE. Found by probe-env-background-clear's globe-in-view
-lane on its first execution: with the globe in view (offline, no imagery),
-WebGL renders 1 frustum while WebGPU renders 0 — stash-controlled attribution
-proves this pre-exists the canvas-clear fix (without the fix gpu response 0,
-frustums 0; with it, response 1 because the frame is all background, frustums
-still 0). The clear fix itself is verified working by the same pair. Suspects:
-the synthetic offline scene interacting with the env-frustum-demand path, or
-an offline globe-readiness divergence. The probe lane should also be split so
-"background responds" and "globe renders" are separate verdicts.
+**Status:** ROOT-CAUSED (2026-08-02, source triage) — **NOT a frustum defect and
+not an env-frustum-demand defect.** It is the already-traced WebGPU
+cold-pipeline-variant skip reaching the frustum list, observed through a probe
+lane that settled 8 frames where the mechanism needs ~1-2 s.
 
-**Acceptance:** the lane shows frustums >= 1 on both backends with the globe
-in view, or the divergence is root-caused and its fix row filed; the lane's
-verdict separates the two concerns.
+Found by probe-env-background-clear's globe-in-view lane on its first execution:
+with the globe in view (no imagery, ellipsoid terrain), WebGL renders 1 frustum
+while WebGPU renders 0 — stash-controlled attribution proves this pre-exists the
+canvas-clear fix (without the fix gpu response 0, frustums 0; with it, response
+1 because the frame is all background, frustums still 0). The clear fix itself is
+verified working by the same pair.
+
+**The chain, in source (both backends).** WebGPU:
+
+1. `WebGPUGlobeSurfacePipelines.selectPipeline` →
+   `resolveGlobePipelineEntry` → `pipelineCache.getPipelineSync(...)`, a pure
+   `cache.get` that never creates. On a miss it marks the entry pending, starts
+   `createRenderPipelineAsync`, and returns **null**
+   (`WebGPUGlobeSurfacePipelines.ts`, `resolveGlobePipelineEntry`).
+2. `WebGPUGlobeSurfaceRenderer.createTileCommands` hits `if (!pipeline)
+   { continue; }` — the ONLY `continue` in the per-pass loop, so the tile
+   contributes no descriptor and `commands` comes back empty
+   (`WebGPUGlobeSurfaceRenderer.ts:1510-1511`).
+3. `addWebGPUDrawCommandsForTile` returns on `cmdDescs.length === 0` **before**
+   `frameState.commandList.push(command)`
+   (`GlobeSurfaceTileProviderRendering.js:1164-1175` / `:1405`).
+4. With no GLOBE command carrying a bounding volume, `near`/`far` in
+   `View.createPotentiallyVisibleSet` never leave their ±MAX sentinels;
+   `updateFrustums` clamps them to `near === far`, so
+   `numFrustums = ceil(log(1)/log(ratio)) = 0` and
+   `frustumCommandsList.length = 0` (`View.js:591-610`). **Zero frustums is the
+   symptom of a skipped tile, not an accumulation bug.**
+
+WebGL has no analogue: `addDrawCommandsForTile` assigns
+`command.shaderProgram = tileProvider._surfaceShaderSet.getShaderProgram(...)`
+and then calls `pushCommand(command, frameState)` **unconditionally**
+(`GlobeSurfaceTileProviderRendering.js:2131`, `:2195`, `:298-310`). Its GLSL
+program compiles at execute time, so the WebGL frustum count tracks tile
+VISIBILITY only and never GPU resource readiness.
+
+**Why this lane in particular.** The preceding step swaps the terrain provider
+(`new EllipsoidTerrainProvider()`), which changes the vertex encoding class from
+quantized BITS12 to uncompressed — a different `strideBytes`/`isQuantized`, hence
+a different globe pipeline cache key. The globe step is therefore measured
+against a **guaranteed-cold variant**, ~10 rAF frames (~160 ms) after the camera
+jump, against `createRenderPipelineAsync`'s measured ~1-2 s.
+
+**Precedent — this is a known class, not a new one.** Identical shape to the
+2026-07-10 `C7-GROUNDPRIM-TEXTURED-CLASSIFY-ZERO` closure recorded in this
+document ("a PROBE-HARNESS RACE, not a classifier regression ... the settle
+exited on `tilesLoaded`, which does NOT cover pipeline readiness, so every WebGPU
+capture ran against a globe-less scene"). `probe-frustum-count-3d.mjs` carries the
+same warning in its own `waitForGlobe` (360-frame budget), and
+`lib/globe-pipeline-readiness.mjs` MECHANISM_PINS already pin steps 1-2 of the
+chain above. **Classification: probe-harness readiness race over a known, and
+deliberate, engine asymmetry. No engine change was made.**
+
+**Fixed (2026-08-02):** `probe-env-background-clear.mjs` now splits its verdict —
+`BACKGROUND_GATE` (steps 1-6) and `GLOBE_GATE` (globe-in-view) are scored
+independently, and the globe step runs the fleet readiness gate before capture:
+poll up to 45 s (yielding with `setTimeout`, so headless wall clock elapses)
+until `globe.tilesLoaded` **and** ≥ 1 binned `Pass.GLOBE` command. `globeCommands`
+/ `tilesLoaded` / `globeReady` / `globeWaitMs` are recorded per step. A backend
+that never reaches readiness reports STRUCTURAL against the globe lane rather
+than as a background-clear FAIL — an unrendered globe cannot be compared to a
+rendered one. Contracts: `env-background-clear.spec.mjs` PART E (E1-E5) pins the
+three chain links above plus the WebGL asymmetry (source-shape, wrap-safe via
+`assertSourcePinIsWidthSafe`, with a mutation test), and pins the probe's lane
+split and readiness signal so a future edit cannot silently re-merge the
+verdicts or fall back to `tilesLoaded` alone.
+
+**Acceptance:** the lane shows frustums ≥ 1 on both backends with the globe in
+view once the readiness gate is honoured; the lane's verdict separates the two
+concerns. **Orchestrator verification run:**
+`node Tools/visual-regression/probe-env-background-clear.mjs` against a current
+`npx gulp build` — expect `GLOBE_GATE: PASS` with `globeReady: true` and
+`globeCommands > 0` on BOTH lanes, and a non-zero `globeWaitMs` on the WebGPU
+lane (that number IS the measured cold-variant cost; record it). If the WebGPU
+lane still reports `globeReady: false` after 45 s, the readiness explanation is
+refuted and the finding is a real engine defect — re-open under the follow-up
+below.
+
+### NEW-WEBGPU-GLOBE-COLD-VARIANT-FRUSTUM-COUPLING (engine follow-up, filed 2026-08-02)
+
+**Status:** OPEN / NOT SCOPED. Surfaced by the triage above.
+
+On WebGPU, `frustumCommandsList.length` — a scene-STRUCTURAL quantity that the
+near/far split, the depth encoding and every downstream depth consumer read — is
+coupled to GPU **resource readiness**, because the globe publishes its command
+only if a pipeline object already exists. On WebGL the same quantity depends on
+tile visibility alone. Consequences beyond the probe: `scene.numberOfFrustums`
+disagrees across backends during any transition that requests an uncached globe
+variant; the frustum split is computed without the globe for those frames and
+re-splits when it lands; and any consumer that reasons about "the scene has
+content" from the frustum list sees a globe-less frame.
+
+The designed behaviour is deliberate — "draw the hole now, re-render when the
+pipeline lands", with `Scene`'s `pendingAsyncResources` term forcing another
+frame. `resolveCapturePipelineEntrySync` shows the alternative already exists for
+a path that cannot tolerate a pending frame (the env-capture pass builds
+synchronously on first miss, accepting a one-time compile stall). Whether the
+on-screen globe should do the same on the FIRST miss for a variant — or publish
+the command with a last-good pipeline, or hold the previous frame's tile — is a
+visible behaviour/performance decision, not a bug fix, and needs its own
+measurement. `probe-globe-pipeline-readiness.mjs` is the instrument for it, and
+its MECHANISM_PINS are deliberately written to FAIL if the skip is ever fixed —
+so any change here must update them in the same change.
+
+**Do not "fix" the skip as a side effect of a probe repair.**
 
 ## 2026-08-02 — scene sun-shadow verification needs a real probe (and found an anomaly)
 
