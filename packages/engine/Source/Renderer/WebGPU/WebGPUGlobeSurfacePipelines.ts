@@ -104,19 +104,23 @@ export interface PipelineHost extends ShaderFactoryHost {
    */
   readonly _sampleCount?: number;
   /**
-   * Renderer-wide log-depth master switch, mirrored from
-   * `context._logDepthWriteEnabled` by the renderer each frame. When true, the
-   * pipeline builds OR `ShaderDefine.LOG_DEPTH` into their defines (+ cache
-   * key) so the globe writes `@builtin(frag_depth)` log depth. Default
-   * false/undefined → the bit is 0 and pipelines are byte-identical.
+   * Renderer-wide log-depth state, resolved by the renderer each frame from
+   * `isWebGPULogDepthActive(context, frameState)` — the
+   * `_logDepthWriteEnabled` master switch AND `frameState.useLogDepth`
+   * (NEW-WEBGPU-GLOBE-USE-LOG-DEPTH). When true, the pipeline builds OR
+   * `ShaderDefine.LOG_DEPTH` into their defines (+ cache key) so the globe
+   * writes `@builtin(frag_depth)` log depth. False/undefined → the bit is 0 and
+   * the globe writes the rasterizer's hyperbolic NDC z, matching every sibling
+   * producer that shares the depth attachment.
    */
   readonly _logDepthEnabled?: boolean;
   /**
-   * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet master
-   * switch mirror. `selectPickPipeline` ORs `LOG_DEPTH` from THIS flag (via the
+   * NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet state,
+   * resolved from `isWebGPUPickLogDepthActive(context, frameState)`.
+   * `selectPickPipeline` ORs `LOG_DEPTH` from THIS flag (via the
    * `logDepthOverride` arg to `buildPipelineDescriptor`) so the globe pick
-   * module gates on the pick switch, not the scene switch. Default
-   * false/undefined → the globe pick stays byte-identical hyperbolic.
+   * module gates on the pick switch, not the scene switch. False/undefined →
+   * the globe pick writes hyperbolic depth into the shared pick FBO.
    */
   readonly _pickLogDepthEnabled?: boolean;
 }

@@ -7033,24 +7033,66 @@ stood behind without a per-file content check.
 
 ### New entries filed by this closure
 
-- **`NEW-WEBGPU-GLOBE-USE-LOG-DEPTH`** — the globe is the only WebGPU depth
-  producer that ignores `frameState.useLogDepth`. `WebGPUGlobeSurfaceRenderer`
-  mirrors `context._logDepthWriteEnabled` alone (`:1205`, and again at `:2598`
-  for the env-capture path), while every sibling gates on
-  `isWebGPULogDepthActive` (= master AND `useLogDepth`). `Scene.js` clears
-  `useLogDepth` on any orthographic frustum (2D / Columbus View / an explicit
-  `camera.switchToOrthographicFrustum()`) and whenever
-  `scene.logarithmicDepthBuffer` is false — so in those modes the globe writes
+- **`NEW-WEBGPU-GLOBE-USE-LOG-DEPTH`** — **RESOLVED 2026-08-02.** The globe was
+  the only WebGPU depth producer that ignored `frameState.useLogDepth`.
+  `WebGPUGlobeSurfaceRenderer` mirrored `context._logDepthWriteEnabled` alone
+  (`:1205`, and again at `:2598` for the env-capture path), while every sibling
+  gates on `isWebGPULogDepthActive` (= master AND `useLogDepth`). `Scene.js`
+  clears `useLogDepth` on any orthographic frustum (2D / Columbus View / an
+  explicit `camera.switchToOrthographicFrustum()`) and whenever
+  `scene.logarithmicDepthBuffer` is false — so in those modes the globe wrote
   LOG-encoded `frag_depth` into a buffer the classifiers, enhanced-ocean depth
   test and depth-plane read as hyperbolic: **mixed encodings in one attachment**.
   In a pure orthographic frustum the log encode also degenerates (it collapses to
-  a per-vertex constant, and is NaN if near > 2.0). A worked fix exists in the
-  parked worktree `agent-a68f438fcb2e102c1` (route both writers through the
-  shared gate; no cache wipe is needed because every globe cache is already keyed
-  on the resolved define mask). It was NOT extracted — it is a visible behaviour
-  change needing its own 2D/CV/orthographic probe, and the approved extraction
-  covered the naming defect only. **Both writers must resolve identically** or
-  whichever runs first decides the frame's globe encoding.
+  a per-vertex constant, and is NaN if near > 2.0).
+
+  **Fix (rooted at the gate, not at the call sites).** Both writers now resolve
+  `isWebGPULogDepthActive(frameState.context, frameState)` — the identical
+  expression, so whichever of `createTileCommands` / the env-capture path runs
+  first decides the same encoding. The globe PICK mirror was the same defect on
+  a second axis and was fixed with it: `_pickLogDepthWriteEnabled` has defaulted
+  TRUE since C10-11, so in 2D/CV the globe pick kept writing log frag_depth into
+  the shared single-attachment pick FBO that every sibling pick producer had
+  correctly dropped to hyperbolic — a direct INV-2 violation. It now resolves
+  `isWebGPUPickLogDepthActive(frameState.context, frameState)`.
+
+  Nothing downstream needed new plumbing, and **no cache wipe is needed**: the
+  renderer-local key already ends in `|${defines.toString(16)}` (Batch 788's
+  `buildGlobePipelineCacheKey`, which carries the LOG_DEPTH bit) and the central
+  key already carries the `, ld=1` descriptor-name marker (Batch 803), so a flip
+  is an ordinary keyed miss on both caches. The WGSL OFF path is genuinely
+  hyperbolic rather than relabelled — with `LOG_DEPTH` unset, `FragOutput` has no
+  `@builtin(frag_depth)` member at all, the VS emits no `v_logDepth` and no
+  `csm_updatePositionDepth` clip-z clamp, and the shader falls back to the
+  rasterizer's interpolated NDC z.
+
+  SCENE3D with a perspective frustum has `useLogDepth === true`, so
+  `master && useLogDepth === master` and behaviour there is unchanged.
+
+  Files: `WebGPUGlobeSurfaceRenderer.ts` (import + `:1219-1237` + `:2623-2631`,
+  plus the two field docstrings at `:348-375`), `WebGPUGlobeSurfacePipelines.ts`
+  (`PipelineHost` docstrings), `WebGPUGlobeSurfaceCameraUB.ts` and
+  `Shaders/WebGPU/Globe/GlobeTerrain.wgsl` (comments that described the
+  master-switch-only mechanism).
+
+  Guard: `Tools/visual-regression/globe-use-log-depth.spec.mjs` (16 tests —
+  executed gate truth table incl. the master=ON/useLogDepth=OFF row the defect
+  lived in; both writers extracted and required to be textually identical; a
+  FLEET scan proving no `Renderer/WebGPU/` file reads a master switch as a value
+  outside `WebGPULogDepth.ts` / `WebGPUContext.ts`; distinct renderer-local keys
+  built through the real builder and required to differ by exactly the LOG_DEPTH
+  bit; and the real `WebGPUShaderPreprocessor` run over the real
+  `GlobeTerrain.wgsl` to prove the OFF expansion contains no log-depth token.
+  Three MUTATION tests re-introduce the defect and require the corresponding
+  check to fail). `pipeline-key-aliasing.spec.mjs` gained the
+  GLOBE-USELOGDEPTH-REACH case, because its class-(B) surface is defined by
+  `frameState.useLogDepth` and the globe did not move on that trigger until now.
+
+  **Not yet re-baselined on hardware** — this is a visible behaviour change in
+  2D/CV/orthographic and needs the probe checklist in the batch report
+  (`probe-classifier-logdepth-flip` extended to COLUMBUS_VIEW against its WebGL
+  oracle is the fail-before/pass-after discriminator; `probe-logdepth-zfight` is
+  the first formerly-void probe to re-baseline).
 - **`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`** — the fix above closes the
   LOG_DEPTH axis only. The general rule it exposes: a shader define that changes
   neither `descriptor.name` nor the vertex layout aliases silently in the central

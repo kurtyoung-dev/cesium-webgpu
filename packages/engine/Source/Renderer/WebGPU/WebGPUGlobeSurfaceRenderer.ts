@@ -38,6 +38,10 @@ import {
 } from "./WebGPUGlobeSurfacePipelines.js";
 import { ShaderDefine } from "./WebGPUShaderDefines.js";
 import {
+  isWebGPULogDepthActive,
+  isWebGPUPickLogDepthActive,
+} from "./WebGPULogDepth.js";
+import {
   buildGlobePipelineCacheKey,
   findGlobePipelineVariant,
   listGlobePipelineVariants,
@@ -341,18 +345,33 @@ export class WebGPUGlobeSurfaceRenderer {
   // MSAA change (see `WebGPUSceneRenderer.prepareFrame` Batch 25),
   // triggering this renderer's pipeline cache wipe at the same point.
   public _sampleCount: number = 1;
-  // Renderer-wide log-depth master switch, mirrored from
-  // `context._logDepthWriteEnabled` each frame so `buildPipelineDescriptor`
-  // (via `host._logDepthEnabled`) can OR the `LOG_DEPTH` shader define into
-  // the globe pipeline's defines + cache key. Default false → the bit is 0 and
-  // the globe pipeline is byte-identical until the epic's final flip.
+  // Renderer-wide log-depth state, resolved each frame from the SHARED gate
+  // `isWebGPULogDepthActive(context, frameState)` = the `_logDepthWriteEnabled`
+  // master switch AND `frameState.useLogDepth`, so `buildPipelineDescriptor`
+  // (via `host._logDepthEnabled`) ORs the `LOG_DEPTH` shader define into the
+  // globe pipeline's defines + cache key on exactly the frames every sibling
+  // producer does.
+  //
+  // NEW-WEBGPU-GLOBE-USE-LOG-DEPTH — this used to mirror
+  // `context._logDepthWriteEnabled` ALONE, making the globe the only WebGPU
+  // depth producer that ignored `frameState.useLogDepth`. `Scene.js` clears
+  // that flag on any orthographic frustum (2D / Columbus View /
+  // `camera.switchToOrthographicFrustum()`) and whenever
+  // `scene.logarithmicDepthBuffer` is false, so in those modes the globe wrote
+  // LOG-encoded `frag_depth` into the same attachment the classifiers, the
+  // enhanced-ocean depth test and the depth plane read as hyperbolic — mixed
+  // encodings in one buffer. Under a pure orthographic frustum the log encode
+  // also degenerates (clip `.w` is constant, so `csm_vertexLogDepth` collapses
+  // to a per-draw constant, and it is NaN when near > 2.0).
   public _logDepthEnabled: boolean = false;
-  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet master
-  // switch, mirrored from `context._pickLogDepthWriteEnabled` each frame. The
-  // globe PICK pipeline (selectPickPipeline) ORs LOG_DEPTH from THIS flag (not
-  // `_logDepthEnabled`) into its pick-pipeline cache key, so the pick FBO stays
-  // uniformly hyperbolic OR log across the whole fleet. Default false → the
-  // globe pick is byte-identical hyperbolic until C10-11's coordinated flip.
+  // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — SEPARATE pick-fleet state,
+  // resolved from `isWebGPUPickLogDepthActive(context, frameState)` (the
+  // `_pickLogDepthWriteEnabled` master switch AND `frameState.useLogDepth`).
+  // The globe PICK pipeline (selectPickPipeline) ORs LOG_DEPTH from THIS flag
+  // (not `_logDepthEnabled`) into its pick-pipeline cache key. The pick
+  // mini-frame owns ONE shared depth attachment (INV-2), so the whole fleet
+  // must be uniformly hyperbolic OR log — and every sibling pick producer drops
+  // to hyperbolic when `useLogDepth` is false, so the globe must too.
   public _pickLogDepthEnabled: boolean = false;
   // C11-158 (NEW-WEBGPU-ENHANCED-OCEAN-DEFAULT-PARITY-TOGGLE) — renderer mirror
   // of `Globe.enableEnhancedOcean` (default FALSE). When true, the globe shader
@@ -1197,19 +1216,25 @@ export class WebGPUGlobeSurfaceRenderer {
       this._debugFragmentPipelineCache.clear();
     }
 
-    // Mirror the log-depth master switch every frame (independent of the
-    // ctxGen guard above). The flag flips once via _logDepthWriteEnabled; the
-    // pipeline cache keys include the LOG_DEPTH define so the flip rebuilds the
-    // globe pipeline through the normal keyed-miss path.
-    this._logDepthEnabled =
-      (frameState.context as unknown as { _logDepthWriteEnabled?: boolean })
-        ._logDepthWriteEnabled ?? false;
-    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — mirror the SEPARATE pick-fleet
-    // master switch so selectPickPipeline compiles its LOG_DEPTH module from it
-    // (its pick cache key includes the define → the flip rebuilds via keyed miss).
-    this._pickLogDepthEnabled =
-      (frameState.context as unknown as { _pickLogDepthWriteEnabled?: boolean })
-        ._pickLogDepthWriteEnabled ?? false;
+    // NEW-WEBGPU-GLOBE-USE-LOG-DEPTH — resolve the log-depth state from the
+    // SHARED gate every frame (independent of the ctxGen guard above), so the
+    // globe's encoding tracks `frameState.useLogDepth` exactly like the model /
+    // primitive / collection producers that share the depth attachment. No
+    // cache wipe is needed on a flip: the renderer-local key ends in
+    // `|${defines.toString(16)}` (which carries the LOG_DEPTH bit) and the
+    // central key carries the `, ld=1` descriptor-name marker, so both caches
+    // rebuild through a normal keyed miss.
+    this._logDepthEnabled = isWebGPULogDepthActive(
+      frameState.context,
+      frameState,
+    );
+    // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH (C10-11) — the SEPARATE pick-fleet gate,
+    // so selectPickPipeline compiles its LOG_DEPTH module from it (its pick
+    // cache key includes the define → the flip rebuilds via keyed miss).
+    this._pickLogDepthEnabled = isWebGPUPickLogDepthActive(
+      frameState.context,
+      frameState,
+    );
 
     // C11-158 — mirror `Globe.enableEnhancedOcean` (copied onto the tile
     // provider each frame by `Globe.render`) so the globe shader factory picks
@@ -2592,11 +2617,18 @@ export class WebGPUGlobeSurfaceRenderer {
     // Mirror the on-screen log-depth + imagery-reduced state so the capture
     // pipeline's shader-define set lines up with the bind-group layout. (The
     // on-screen `createTileCommands` sets `_logDepthEnabled` each frame; capture
-    // runs in `primitives.update`, BEFORE `globe.render`, so read the master
-    // switch directly here to stay in sync on the first capture of the frame.)
-    this._logDepthEnabled =
-      (frameState.context as unknown as { _logDepthWriteEnabled?: boolean })
-        ._logDepthWriteEnabled ?? false;
+    // runs in `primitives.update`, BEFORE `globe.render`, so resolve the gate
+    // directly here to stay in sync on the first capture of the frame.)
+    //
+    // NEW-WEBGPU-GLOBE-USE-LOG-DEPTH — this MUST be the same expression the
+    // on-screen writer uses. Both read the same `frameState`, so whichever runs
+    // first this frame decides the same globe encoding; if the two ever diverge,
+    // the capture cube and the on-screen frame disagree and the shared
+    // `_pipelineCache` / module set thrashes between them every frame.
+    this._logDepthEnabled = isWebGPULogDepthActive(
+      frameState.context,
+      frameState,
+    );
 
     // C11-158 — mirror the ocean-styling toggle here too. Capture runs in
     // `primitives.update` (BEFORE `globe.render` / `createTileCommands`), so

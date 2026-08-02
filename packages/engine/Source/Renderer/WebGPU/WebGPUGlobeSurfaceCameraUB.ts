@@ -754,10 +754,12 @@ export function createCameraUniformBuffer(
 
   // ─── Renderer-wide log depth tail (vec4: near, far, factor, reserved) ───
   // Read by GlobeTerrain.wgsl's `//>>ifdef LOG_DEPTH` blocks (camera.logDepth).
-  // Carries zero / the live frustum scalars regardless of the flag — inert
-  // until `_logDepthWriteEnabled` flips and the LOG_DEPTH pipeline define is
-  // set. The bespoke globe UB carries these at the tail rather than the shared
-  // CameraUniforms .w lanes (see WebGPULogDepth.ts).
+  // Carries the live frustum scalars regardless of the flag — inert on any
+  // frame where the LOG_DEPTH pipeline define is not set, i.e. whenever
+  // `isWebGPULogDepthActive(context, frameState)` is false (master switch off,
+  // or `frameState.useLogDepth` cleared by 2D / Columbus View / an orthographic
+  // frustum). The bespoke globe UB carries these at the tail rather than the
+  // shared CameraUniforms .w lanes (see WebGPULogDepth.ts).
   const usLog = uniformState as unknown as {
     currentFrustum?: { x: number; y: number };
     oneOverLog2FarDepthFromNearPlusOne?: number;

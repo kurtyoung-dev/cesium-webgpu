@@ -64,6 +64,22 @@
 // The assertions here are unchanged and remain correct; only the pre-fix
 // recorded numbers are void. Guards: `pipeline-key-aliasing.spec.mjs` (static)
 // and `probe-pipeline-key-aliasing.mjs` (runtime).
+//
+// STATUS 2026-08-02 — THE FLIP IS NOW REAL END TO END, and this probe is
+// RUNNABLE. Two separate defects had to close:
+//   * Batch 803 (NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH) made the globe's pipeline
+//     genuinely REBUILD on the master-switch flip, via the `, ld=1`
+//     descriptor-name marker.
+//   * NEW-WEBGPU-GLOBE-USE-LOG-DEPTH routed the globe's log-depth state through
+//     the shared gate `isWebGPULogDepthActive(context, frameState)`, so it also
+//     honours `frameState.useLogDepth`.
+// This probe never leaves SCENE3D with a perspective frustum, where
+// `useLogDepth === true` (it is already reported in this probe's output), so
+// `master && useLogDepth === master` and the second change does NOT alter what
+// is measured here. It re-voids nothing; a re-baseline is required only because
+// no post-803 recording exists. Run it AFTER `probe-logdepth-zfight`, which
+// re-establishes the globe's OFF reference with a single subject.
+// Guard for the second change: `globe-use-log-depth.spec.mjs`.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { chromium } from "playwright";

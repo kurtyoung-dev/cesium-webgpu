@@ -150,9 +150,14 @@ struct CameraUniforms {
   //   x = frustum near, y = frustum far,
   //   z = oneOverLog2FarDepthFromNearPlusOne (the log-depth factor),
   //   w = reserved.
-  // Carries zero until `_logDepthWriteEnabled` flips on; the `//>>ifdef
-  // LOG_DEPTH` blocks below are the only readers. Packed by
-  // WebGPUGlobeSurfaceCameraUB. See WebGPULogDepth.ts.
+  // Packed unconditionally by WebGPUGlobeSurfaceCameraUB from the live
+  // frustum; the `//>>ifdef LOG_DEPTH` blocks below are the only readers, and
+  // that define is set only when `isWebGPULogDepthActive(context, frameState)`
+  // holds (master switch AND `frameState.useLogDepth`). When it does not — 2D,
+  // Columbus View, any orthographic frustum, or `logarithmicDepthBuffer` off —
+  // no `@builtin(frag_depth)` member exists in FragOutput and the globe writes
+  // the rasterizer's hyperbolic NDC z, matching every sibling producer sharing
+  // the attachment. See WebGPULogDepth.ts.
   logDepth: vec4<f32>,
   // ─── DP-H44 (Batch 360): globe terrain pick color ───
   // The globe's registered pick-ID color, read ONLY by `fragmentPickMain`

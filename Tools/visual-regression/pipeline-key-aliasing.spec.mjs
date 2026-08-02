@@ -85,6 +85,16 @@
 //     executing the log-depth module — so its pre-fix results across that
 //     transition are suspect.
 //
+//     SECOND POPULATION on the SAME trigger: the globe did not participate in
+//     this transition at all until 2026-08-02, because it resolved the master
+//     switch alone (`NEW-WEBGPU-GLOBE-USE-LOG-DEPTH`). So across a (B)
+//     transition recorded before that date the globe kept writing LOG depth
+//     while the siblings correctly dropped to hyperbolic — the depth attachment
+//     carried BOTH encodings. Any (B) probe whose verdict depends on globe depth
+//     (classification coverage, depth-plane occlusion, pickPosition over
+//     terrain, enhanced-ocean depth test) is suspect on that count as well, and
+//     for a different reason than the aliasing above.
+//
 //     27 probes use switchToOrthographicFrustum / morphTo2D / morphToColumbusView.
 //     Highest-confidence candidates — UNVERIFIED, each requiring a per-file
 //     content check before any claim is made about it, NOT a findings list:
@@ -128,6 +138,18 @@
 //      it at RUNTIME, and `probe-pipeline-key-aliasing.mjs` cross-checks its own
 //      detector against it. If the counter is deleted or unwired, that
 //      cross-check silently becomes vacuous — so it is asserted here.
+//   6. GLOBE-USELOGDEPTH-REACH — the globe now flips on the SAME trigger the
+//      class-(B) surface below is defined by. Until 2026-08-02 the globe
+//      resolved `context._logDepthWriteEnabled` ALONE, so a morph or
+//      orthographic transition moved every SIBLING onto its other module while
+//      the globe stayed put: the transition reached the class but not the globe.
+//      That was a second, separate defect (`NEW-WEBGPU-GLOBE-USE-LOG-DEPTH`),
+//      and fixing it is what makes the globe's `, ld=1` marker load-bearing on
+//      the (B) trigger rather than only on the rarely-written master switch.
+//      Pinned here because the (B) rule below is stated in terms of
+//      `frameState.useLogDepth`; if the globe stopped reading it, this file's
+//      own description of the surface would be wrong. The full contract for
+//      that fix lives in `globe-use-log-depth.spec.mjs`.
 
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
@@ -710,6 +732,39 @@ for (const file of AT_RISK) {
     );
   });
 }
+
+// ─── group 6: the globe reaches the class-(B) trigger ────────────────────────
+
+test("GLOBE-USELOGDEPTH-REACH — the globe flips on `frameState.useLogDepth`, the trigger class (B) is defined by", async () => {
+  const src = await readFile(
+    join(WEBGPU_DIR, "WebGPUGlobeSurfaceRenderer.ts"),
+    "utf8",
+  );
+  // Comments are stripped so the header prose above cannot satisfy the check.
+  const code = src
+    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+
+  assert.ok(
+    !/\.\s*_logDepthWriteEnabled\b/.test(code),
+    "WebGPUGlobeSurfaceRenderer.ts resolves the log-depth master switch " +
+      "directly again. The class-(B) surface described in this file's header is " +
+      "defined by `frameState.useLogDepth`; with a raw master-switch read the " +
+      "globe does not move on that trigger, so a morph/orthographic transition " +
+      "leaves the globe on LOG depth while every sibling drops to hyperbolic — " +
+      "mixed encodings in one attachment. See globe-use-log-depth.spec.mjs.",
+  );
+  assert.ok(
+    /this\._logDepthEnabled\s*=\s*isWebGPULogDepthActive\s*\(/.test(code),
+    "the globe no longer resolves the shared `isWebGPULogDepthActive` gate",
+  );
+  assert.ok(
+    /this\._pickLogDepthEnabled\s*=\s*isWebGPUPickLogDepthActive\s*\(/.test(
+      code,
+    ),
+    "the globe pick no longer resolves the shared `isWebGPUPickLogDepthActive` gate",
+  );
+});
 
 // ─── group 5: the runtime companion instrument ───────────────────────────────
 
