@@ -7385,6 +7385,9 @@ publisher/packer contract pairing).
 scene (was 0.868 — the probe gate was correctly RED on this defect).
 Fix must not regress check (3) (below-ground boxes stay occluded) or the
 single-primitive case.
+
+
+**ACCEPTANCE RESULT (2026-08-02, Batch 817): the Batch 816 stash-first fix is measured INSUFFICIENT.** probe-logdepth-zfight re-run after a full `gulp build`: byte-identical numbers to pre-fix (ON=39039, ratio 0.868) — so the defect is NOT (only) pack-timing-sensitive uniform tail values, exactly the honest-residual scenario the fix report flagged. The 816 contract fix stands on its own merits (last producer off the stash contract, mutation-pinned), but the arrow-region loss has another mechanism. **NEXT DIAGNOSTIC (per the fix report §6.3): dump the slab's camera-UB floats 40-43 AND the globe tail values at capture time in the two-primitive scene** — if they agree, the mechanism is non-uniform (suspects: per-instance depth path, vertex-side clip-z clamp interaction, or the second primitive altering the shared depth-attachment state); the spec's depth-compare oracle then bounds where the curves diverge.
 
 ## 2026-08-02 — scene sun-shadow verification needs a real probe (and found an anomaly)
 
