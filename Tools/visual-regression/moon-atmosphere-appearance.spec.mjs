@@ -225,7 +225,22 @@ test("Moon.js publishes wash + surge; renderer packs the add-only UB tail", () =
     envRenderer,
     /ud\[83\] = frameState\.moonOppositionSurge \?\? 1\.0;/,
   );
-  assert.match(envRenderer, /const MOON_UNIFORM_BUFFER_SIZE = 336;/);
+  // The UB is allowed to GROW at the tail — C12-25 took it 336 -> 352 for
+  // `normalStrength` — but never to shrink, and never to move an offset. So
+  // pin the floor plus the 16-byte alignment rather than an exact number,
+  // and let the frozen-offset assertions below carry the real contract.
+  const ubSize = Number(
+    /const MOON_UNIFORM_BUFFER_SIZE = (\d+);/.exec(envRenderer)?.[1],
+  );
+  assert.ok(
+    Number.isFinite(ubSize),
+    "MOON_UNIFORM_BUFFER_SIZE declaration not found",
+  );
+  assert.ok(
+    ubSize >= 336,
+    `moon UB shrank to ${ubSize} — the C12-30 tail (inscatter 320..331 + oppositionSurge 332..335) needs at least 336`,
+  );
+  assert.equal(ubSize % 16, 0, "a WGSL uniform struct must be 16-byte aligned");
   // ADD-ONLY: the frozen offsets must not have moved.
   assert.match(
     envRenderer,

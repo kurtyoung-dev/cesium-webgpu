@@ -1061,6 +1061,24 @@ Binary assets shipped **inside the published `@cesium/engine` package** — not 
 
 **Terms.** This is NASA content produced by a NASA centre from data returned by a NASA mission instrument, and is not subject to copyright protection in the United States. NASA's media guidelines permit reuse without a licence fee and impose no share-alike condition; the credits above are given because NASA requests attribution as a courtesy, not because a licence term compels it. The LROC instrument team's mosaic is likewise a NASA-mission data product distributed through the Planetary Data System without licence conditions. Unlike the star-map entry above, **no third-party non-commercial-licensed catalogue is incorporated**, so that entry's risk analysis does not apply here. NASA does not indemnify, and NASA's guidelines note that its endorsement of a product or service may not be implied.
 
+### Lunar normal map — NASA/GSFC Scientific Visualization Studio (CGI Moon Kit LOLA displacement)
+
+**File:** `packages/engine/Source/Assets/Textures/Moon/ldem_normal_1k.png` (679,782 bytes, 1024×512; SHA-256 `5e215ee08a03f0d0afd24851cf7d1973994bcb895ba4fc9dfdd1af31d8aa87e9`). Paired with `Moon.Variant.LROC_COLOR_2K`, the default since C12-24 — see `packages/engine/Source/Scene/Moon.js`. Bundled offline and fetched only when the moon is actually rendered. `Moon.Variant.SMALL` ships no normal map.
+
+**Product:** "CGI Moon Kit", NASA SVS ID 4720, released 2019-09-06 — the same product as the albedo entry above. The bundled file is **derived** from that product's LOLA **displacement** map `ldem_16.tif` (5760×2880, 16 pixels per degree, float32 kilometres relative to a 1737.4 km sphere, no ICC profile; SHA-256 `1ea42bf44f7e9d694f79c3afa7145f97fbf06cc67372067d9fe73dce43bad796`, 66,378,634 bytes), retrieved **2026-08-02**. SVS publishes the displacement maps in the same equirectangular projection, centred on 0° longitude, as the colour map. SVS publishes **no** normal map and **no** 2K displacement map (the `ldem_*` family is 4/16/64 pixels per degree only), so both the derivation and the output resolution are this project's.
+
+**Conversion applied:** area-weighted downsample of the height field to 1024×512, then central differences at the lunar radius — with the longitude stencil widened to `round(1/cos(lat))` texels so the derivative baseline stays a constant ground distance, and rows past a pole wrapped across it — yielding tangent-space (east, north, up) normals encoded as `n * 0.5 + 0.5` in 8-bit RGB PNG. PNG rather than JPEG: measured, chroma subsampling and DCT ringing cost 1.26°–1.68° of mean normal-tilt error against the 0.17° of an 8-bit lossless round trip, on a signal whose own mean tilt is only 2.7°. Reproducible with `Tools/moon-albedo-bake/bake-lola-normals.mjs`, which verifies the pinned source hash and the published LOLA relief range before deriving, and refuses to install unless the crater-relief polarity checks pass. The 66 MB source TIFF is **not** bundled.
+
+- Source: <https://svs.gsfc.nasa.gov/4720/>
+- Direct file: <https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/ldem_16.tif>
+- NASA media guidelines: <https://www.nasa.gov/nasa-brand-center/images-and-media/>
+
+**Credit:** NASA/Goddard Space Flight Center Scientific Visualization Studio.
+
+**Underlying data:** the displacement map is SVS's rendering of the digital elevation model from the **Lunar Orbiter Laser Altimeter (LOLA)** aboard the Lunar Reconnaissance Orbiter. **Credit: NASA/GSFC/MIT** (LOLA's principal investigation is led from MIT; the instrument and mission are NASA/GSFC).
+
+**Terms.** As with the albedo above, this is NASA content produced by a NASA centre from data returned by a NASA mission instrument, and is not subject to copyright protection in the United States. NASA's media guidelines permit reuse without a licence fee and impose no share-alike condition; the credits are given because NASA requests attribution as a courtesy. LOLA's elevation products are distributed through the Planetary Data System without licence conditions. No third-party non-commercial-licensed data is incorporated, so the star-map entry's risk analysis does not apply here. NASA does not indemnify, and NASA's endorsement may not be implied.
+
 ### Geoid undulation grid — EGM2008 (NGA)
 
 **File:** `packages/engine/Source/Assets/Geoid/egm2008-0p5deg.i16` (520,594 bytes; consumed by `packages/engine/Source/Core/GeoidUndulationGrid.js` when the ocean vertical datum resolves to `GEOID` — see `packages/engine/Source/Core/VerticalDatum.js`). Fetched lazily at runtime, so applications that never enable a geoid datum never download it.

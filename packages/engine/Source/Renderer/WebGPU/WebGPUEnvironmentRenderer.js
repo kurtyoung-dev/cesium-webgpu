@@ -206,7 +206,10 @@ const UNIFORM_BUFFER_SIZE = 256;
 // byte 316; inscatter vec3 + oppositionSurge appended at 320..335) —
 // ADD-ONLY at the tail, existing offsets frozen (phaseFraction stays at
 // float offset 67 / byte 268).
-const MOON_UNIFORM_BUFFER_SIZE = 336;
+// 336 → 352 for C12-25's `normalStrength` (byte 336 / float offset 84): the
+// 320..335 slot was already full (inscatter vec3 + oppositionSurge), so the
+// new scalar opens a fresh 16-byte slot. Still add-only at the tail.
+const MOON_UNIFORM_BUFFER_SIZE = 352;
 const scratchModelView = new Matrix4();
 const scratchMVRTE = new Matrix4();
 const scratchMVPRTE = new Matrix4();
@@ -809,7 +812,8 @@ function buildMoonPipelineResources(device, format, depthFormat, sampleCount) {
 
   // Phase 1.x consolidation — use the shared bind group layout from
   // WebGPUEllipsoidRenderer so future ellipsoid bodies match exactly.
-  const bgl = createEllipsoidBindGroupLayout(device);
+  // C12-25 — the moon opts into binding 3 (tangent-space normal map).
+  const bgl = createEllipsoidBindGroupLayout(device, { normalTexture: true });
 
   const descriptor = {
     name: `Moon pipeline [${format}/${depthFormat}]`,
@@ -957,6 +961,106 @@ function _loadRealMoonTexture(device, cache, textureUrl) {
       // on every frame. A subsequent change to moon.textureUrl will trigger
       // a fresh load.
     });
+}
+
+/**
+ * C12-25 — asynchronously loads the moon's tangent-space normal map.
+ *
+ * Deliberately a sibling of `_loadRealMoonTexture` rather than a
+ * generalization of it: the two differ in the failure posture that matters.
+ * A missing albedo leaves a grey ball (obviously broken); a missing normal
+ * map leaves a flat moon (silently just the pre-C12-25 look), so this loader
+ * falls back to a FLAT placeholder that is the exact identity perturbation
+ * rather than to anything that would tint or darken the disc.
+ *
+ * Uses the SAME `flipY: true` upload convention C12-24 established for the
+ * albedo. That is load-bearing, not cosmetic: both maps are sampled with the
+ * identical `v = asin(n.z)/PI + 0.5` unwrap, so an upload mismatch would put
+ * the relief in the opposite hemisphere from the albedo it belongs to — and
+ * because the green channel encodes NORTH, a v-flip also lights every crater
+ * from the wrong side. The bake's `craterNorthSouthPolarity` check exists
+ * for exactly that failure.
+ *
+ * @private
+ */
+function _loadMoonNormalTexture(device, cache, normalMapUrl) {
+  if (cache._normalTextureLoading) {
+    return;
+  }
+  if (cache._cachedNormalUrl === normalMapUrl) {
+    return;
+  }
+  cache._normalTextureLoading = true;
+  cache._cachedNormalUrl = normalMapUrl;
+
+  Resource.createIfNeeded(normalMapUrl)
+    .fetchImage()
+    .then(function (image) {
+      const newTexture = device.createTexture({
+        label: "Moon normal map",
+        size: [image.width, image.height, 1],
+        format: "rgba8unorm",
+        usage:
+          GPUTextureUsage.TEXTURE_BINDING |
+          GPUTextureUsage.COPY_DST |
+          GPUTextureUsage.RENDER_ATTACHMENT,
+      });
+      return WebGPUImageUpload.uploadImageToTexture(device, image, newTexture, {
+        flipY: true,
+      }).then(function () {
+        if (
+          defined(cache.normalTexture) &&
+          cache.normalTexture !== cache.normalPlaceholderTexture
+        ) {
+          cache.normalTexture.destroy();
+        }
+        cache.normalTexture = newTexture;
+        cache.normalTextureView = newTexture.createView();
+        cache._normalTextureLoading = false;
+        cache.bindGroup = undefined;
+        cache._bundleStale = true;
+      });
+    })
+    .catch(function (err) {
+      //>>includeStart('debug', pragmas.debug);
+      console.warn(
+        "[WebGPUEnvironmentRenderer] Moon normal map load failed:",
+        err && err.message ? err.message : err,
+      );
+      //>>includeEnd('debug');
+      cache._normalTextureLoading = false;
+      // Leave _cachedNormalUrl set so a broken URL isn't refetched every
+      // frame; the flat placeholder stays bound and the disc renders exactly
+      // as it did before C12-25.
+    });
+}
+
+/**
+ * C12-25 — 1x1 FLAT tangent-space normal (128, 128, 255), i.e. (0, 0, 1).
+ *
+ * Bound whenever the moon has no normal map (the `Moon.Variant.SMALL` case)
+ * or while the real map is still loading. Paired with `normalStrength = 0`
+ * the shader skips the fetch entirely, so this exists to satisfy the bind
+ * group layout — a layout binding must always have an entry — and to be
+ * harmless in the one frame ordering where strength is non-zero before the
+ * real texture lands.
+ *
+ * @private
+ */
+function createFlatNormalPlaceholderTexture(device) {
+  const texture = device.createTexture({
+    label: "Moon normal placeholder (flat)",
+    size: [1, 1, 1],
+    format: "rgba8unorm",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  device.queue.writeTexture(
+    { texture },
+    new Uint8Array([128, 128, 255, 255]),
+    { bytesPerRow: 4 },
+    [1, 1, 1],
+  );
+  return texture;
 }
 
 /**
@@ -1122,6 +1226,30 @@ function updateWebGPUMoon(moon, frameState, commandList) {
     _loadRealMoonTexture(device, cache, moon.textureUrl);
   }
 
+  // C12-25 — normal map at binding 3. Always bound: the flat placeholder is
+  // the identity, so there is one pipeline and no shader variant.
+  if (!defined(cache.normalPlaceholderTexture)) {
+    cache.normalPlaceholderTexture = createFlatNormalPlaceholderTexture(device);
+    cache.normalPlaceholderView = cache.normalPlaceholderTexture.createView();
+    cache.normalTexture = cache.normalPlaceholderTexture;
+    cache.normalTextureView = cache.normalPlaceholderView;
+  }
+  if (defined(moon.normalMapUrl)) {
+    _loadMoonNormalTexture(device, cache, moon.normalMapUrl);
+  } else if (defined(cache._cachedNormalUrl)) {
+    // The variant switched to a moon that ships no relief (e.g. back to
+    // Moon.Variant.SMALL). Drop the loaded map and rebind the flat identity
+    // — without this the previous variant's relief would keep riding along.
+    if (cache.normalTexture !== cache.normalPlaceholderTexture) {
+      cache.normalTexture.destroy();
+    }
+    cache.normalTexture = cache.normalPlaceholderTexture;
+    cache.normalTextureView = cache.normalPlaceholderView;
+    cache._cachedNormalUrl = undefined;
+    cache.bindGroup = undefined;
+    cache._bundleStale = true;
+  }
+
   // Uniform buffer (Phase 1.2c v2 + C12 moon-wave tail = 336 bytes / 84 floats)
   if (!defined(cache.uniformBuffer)) {
     cache.uniformBuffer = WebGPUBuffer.createUniformBuffer(
@@ -1143,6 +1271,8 @@ function updateWebGPUMoon(moon, frameState, commandList) {
         { binding: 0, resource: { buffer: cache.uniformBuffer.buffer } },
         { binding: 1, resource: cache.moonTextureView },
         { binding: 2, resource: cache.sampler },
+        // C12-25 — normal map; reuses the binding-2 sampler.
+        { binding: 3, resource: cache.normalTextureView },
       ],
     });
     // Bind group changed → render bundle (if any) is stale.
@@ -1302,6 +1432,7 @@ function updateWebGPUMoon(moon, frameState, commandList) {
  *   lunarBRDF flag     79      (C12-20; was spare)
  *   inscatter          80..82  (C12-30 sky-wash, additive)
  *   oppositionSurge    83      (C12-23)
+ *   normalStrength     84      (C12-25 LOLA relief; 0 = exact identity)
  *
  * @private
  */
@@ -1411,6 +1542,14 @@ function _packMoonUniforms(moon, frameState, cache) {
   // C12-23 — opposition-surge multiplier at offset 83 (byte 332). 1.0 =
   // identity (disabled / away from opposition). Published by Moon.update.
   ud[83] = frameState.moonOppositionSurge ?? 1.0;
+
+  // C12-25 — LOLA relief strength at offset 84 (byte 336). Resolved ONCE,
+  // backend-agnostically, by Moon.update — it already folds in the
+  // atmosphericConditions.lighting.enableLunarNormalMap toggle AND the
+  // variant gate (SMALL ships no map), so both backends read the same
+  // number and cannot disagree about whether relief is on. Exactly 0.0
+  // disables the perturbation as an exact identity.
+  ud[84] = frameState.moonNormalMapStrength ?? 0.0;
 }
 
 /**
@@ -1471,12 +1610,20 @@ function getWebGPUMoonStatistics(moon) {
   const inscatter =
     defined(ud) && ud.length > 82 ? { x: ud[80], y: ud[81], z: ud[82] } : null;
   const oppositionSurge = defined(ud) && ud.length > 83 ? ud[83] : null;
+  // C12-25 — relief strength as last pushed, plus whether the bound normal
+  // texture is the real map or the flat identity placeholder.
+  const normalMapStrength = defined(ud) && ud.length > 84 ? ud[84] : null;
   return {
     backend: "webgpu",
     pipelineReady: defined(cache.pipeline),
     bindGroupReady: defined(cache.bindGroup),
     moonTextureLoaded: defined(cache.moonTexture),
     moonTextureUrl: cache.moonTextureUrl ?? null,
+    normalMapStrength,
+    normalMapUrl: cache._cachedNormalUrl ?? null,
+    normalMapLoaded:
+      defined(cache.normalTexture) &&
+      cache.normalTexture !== cache.normalPlaceholderTexture,
     bundleStale: cache._bundleStale === true,
     snapshotRegistered: cache._snapshotRegistered === true,
     frozen: cache._frozen === true,
@@ -1548,6 +1695,17 @@ function destroyWebGPUMoonResources(moon) {
   }
   if (defined(cache.moonTexture)) {
     cache.moonTexture.destroy();
+  }
+  // C12-25 — the normal texture may BE the placeholder (map-less variant),
+  // so destroy the placeholder only when it isn't also the bound texture.
+  if (
+    defined(cache.normalTexture) &&
+    cache.normalTexture !== cache.normalPlaceholderTexture
+  ) {
+    cache.normalTexture.destroy();
+  }
+  if (defined(cache.normalPlaceholderTexture)) {
+    cache.normalPlaceholderTexture.destroy();
   }
   moon._webgpuCache = undefined;
 }

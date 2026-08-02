@@ -230,6 +230,32 @@ class EllipsoidPrimitive {
     this._oppositionSurgeEnabled = false;
 
     /**
+     * Optional tangent-space normal map (C12-25) perturbing the LIGHTING
+     * normal in an east/north/up frame — the LOLA-derived lunar relief that
+     * makes craters read near the terminator. A raw `Texture` rather than a
+     * `Material` slot: `Material.ImageType` carries exactly one image and
+     * has no normal channel, and growing the shared material system for one
+     * body would touch every image material in the engine. This follows the
+     * same private-uniform route the four C12 terms above already use.
+     * `undefined` (the default) compiles the sampler out entirely — the FS
+     * is byte-identical for every other EllipsoidPrimitive consumer.
+     * @type {Texture|undefined}
+     * @private
+     */
+    this.lunarNormalMap = undefined;
+    this._lunarNormalMapEnabled = false;
+
+    /**
+     * Scales the tangential (east/north) components of {@link
+     * EllipsoidPrimitive#lunarNormalMap} before the perturbation. 1.0 is the
+     * true derived geometry; 0.0 is the exact identity. A per-frame uniform,
+     * so moving it costs no recompile.
+     * @type {number}
+     * @private
+     */
+    this.lunarNormalStrength = 1.0;
+
+    /**
      * @private
      */
     this._depthTestEnabled = options.depthTestEnabled ?? true;
@@ -267,6 +293,16 @@ class EllipsoidPrimitive {
       },
       u_oppositionSurge: function () {
         return that.oppositionSurge ?? 1.0;
+      },
+      // C12-25. Only ever sampled when LUNAR_NORMAL_MAP is defined, which is
+      // itself driven by `defined(this.lunarNormalMap)` in the same update()
+      // that recompiles — so the texture is guaranteed present whenever the
+      // program declares the sampler.
+      u_lunarNormalMap: function () {
+        return that.lunarNormalMap;
+      },
+      u_lunarNormalStrength: function () {
+        return that.lunarNormalStrength ?? 1.0;
       },
     };
 
@@ -421,6 +457,14 @@ class EllipsoidPrimitive {
       oppositionSurgeEnabled !== this._oppositionSurgeEnabled;
     this._oppositionSurgeEnabled = oppositionSurgeEnabled;
 
+    // C12-25 — same define-toggle pattern. Only the presence/absence of the
+    // normal map recompiles; `lunarNormalStrength` is a plain per-frame
+    // uniform, so a user animating it never triggers a shader rebuild.
+    const lunarNormalMapEnabled = defined(this.lunarNormalMap);
+    const lunarNormalMapChanged =
+      lunarNormalMapEnabled !== this._lunarNormalMapEnabled;
+    this._lunarNormalMapEnabled = lunarNormalMapEnabled;
+
     const useLogDepth = frameState.useLogDepth;
     const useLogDepthChanged = this._useLogDepth !== useLogDepth;
     this._useLogDepth = useLogDepth;
@@ -437,7 +481,8 @@ class EllipsoidPrimitive {
       atmosphereExtinctionChanged ||
       atmosphereInscatterChanged ||
       lunarBRDFChanged ||
-      oppositionSurgeChanged
+      oppositionSurgeChanged ||
+      lunarNormalMapChanged
     ) {
       vs = new ShaderSource({
         sources: [EllipsoidVS],
@@ -459,6 +504,9 @@ class EllipsoidPrimitive {
       }
       if (oppositionSurgeEnabled) {
         fs.defines.push("OPPOSITION_SURGE");
+      }
+      if (lunarNormalMapEnabled) {
+        fs.defines.push("LUNAR_NORMAL_MAP");
       }
       if (!translucent && context.fragmentDepth) {
         fs.defines.push("WRITE_DEPTH");

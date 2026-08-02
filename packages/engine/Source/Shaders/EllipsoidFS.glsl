@@ -9,6 +9,10 @@ uniform vec3 u_atmosphereInscatter;
 #ifdef OPPOSITION_SURGE
 uniform float u_oppositionSurge;
 #endif
+#ifdef LUNAR_NORMAL_MAP
+uniform sampler2D u_lunarNormalMap;
+uniform float u_lunarNormalStrength;
+#endif
 
 in vec3 v_positionEC;
 
@@ -32,6 +36,42 @@ vec4 computeEllipsoidColor(czm_ray ray, float intersection, float side)
     materialInput.tangentToEyeMatrix = czm_eastNorthUpToEyeCoordinates(positionMC, normalEC);
     materialInput.positionToEyeEC = positionToEyeEC;
     czm_material material = czm_getMaterial(materialInput);
+
+#ifdef LUNAR_NORMAL_MAP
+    // C12-25 — LOLA-derived terminator relief (Moon path).
+    //
+    // The stored map is tangent-space in a GEOGRAPHIC east-north-up frame:
+    // x = east, y = north, z = up (the geodetic surface normal). That frame
+    // is rebuilt HERE, in MODEL space, rather than read from
+    // `materialInput.tangentToEyeMatrix`, so that this block and its WGSL
+    // twin in Moon.wgsl are the same expression on the same vectors — the
+    // WGSL side has no `czm_normal` to lean on and does all of its lighting
+    // in model space. (`czm_eastNorthUpToEyeCoordinates` builds the identical
+    // basis: column 0 = normalize(-y, x, 0) = east, column 1 = up × east =
+    // north, column 2 = up. The only difference here is the explicit
+    // degenerate-axis guard at the poles, where (-y, x, 0) vanishes and the
+    // builtin would normalize a zero vector.)
+    //
+    // Perturbing `material.normal` — not the UV normal — is what makes this
+    // modulate the Lommel-Seeliger term below and the Phong fallback alike:
+    // both light against `material.normal`, so the relief rides whichever
+    // disc law is selected. It shows up near the TERMINATOR, where N·L is
+    // near zero and a few degrees of tilt flips a facet between lit and
+    // unlit, and is nearly invisible at full phase where the cosine is flat.
+    //
+    // `u_lunarNormalStrength` is exactly 0 when the feature is off or the
+    // variant ships no map, which drives nTS to (0, 0, z) and the whole
+    // block to the exact identity. Keep the WGSL twin character-consistent.
+    vec3 nTS = texture(u_lunarNormalMap, st).xyz * 2.0 - 1.0;
+    nTS.xy *= u_lunarNormalStrength;
+    vec3 upMC = normalMC;
+    vec3 eastMC = vec3(-positionMC.y, positionMC.x, 0.0);
+    float eastLenMC = length(eastMC);
+    eastMC = (eastLenMC > 1.0e-6) ? (eastMC / eastLenMC) : vec3(1.0, 0.0, 0.0);
+    vec3 northMC = cross(upMC, eastMC);
+    vec3 perturbedMC = normalize(eastMC * nTS.x + northMC * nTS.y + upMC * nTS.z);
+    material.normal = normalize(czm_normal * perturbedMC);
+#endif
 
 #ifdef LUNAR_BRDF
     // C12-20 — Lommel-Seeliger lunar-regolith reflectance (Moon path).

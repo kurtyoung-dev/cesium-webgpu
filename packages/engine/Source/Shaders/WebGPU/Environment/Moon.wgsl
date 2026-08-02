@@ -65,6 +65,12 @@
 //     CPU integral in Scene/computeAtmosphereExtinction.js which mirrors
 //     the sky-atmosphere shader's own scattering model. Exactly (0,0,0)
 //     from orbit / disabled — the additive identity.
+//   - C12-25 LOLA-derived terminator relief (2026-08-02): a tangent-space
+//     normal map at @binding(3) perturbs the LIGHTING normal in an
+//     east/north/up frame rebuilt in model space. Gated by the uniform
+//     `normalStrength`, which is exactly 0.0 (the identity) when the
+//     feature is off or the selected Moon.Variant ships no map. Twin:
+//     the LUNAR_NORMAL_MAP block in EllipsoidFS.glsl.
 //
 // Coordinate frame strategy:
 //   The ray march happens in MOON MODEL space. The VS rasterizes the
@@ -81,9 +87,9 @@
 //   (sunDirMC, sceneLightDirMC) so the FS does no per-pixel matrix work
 //   for lighting.
 //
-// Uniform layout: 336-byte budget (256 → 320 in Phase 1.2c v2; 320 → 336
-// for the C12 moon wave — ADD-ONLY at the tail, existing offsets frozen;
-// phaseFraction stays at byte 268).
+// Uniform layout: 352-byte budget (256 → 320 in Phase 1.2c v2; 320 → 336
+// for the C12 moon wave; 336 → 352 for C12-25's `normalStrength` — ADD-ONLY
+// at the tail, existing offsets frozen; phaseFraction stays at byte 268).
 //
 // This file is the build source for Shaders/WebGPU/Environment/Moon.js
 // (hand-written wrapper until the next `gulp build` regenerates it via
@@ -147,11 +153,26 @@ struct U {
   // C12-23 — opposition-surge brightness multiplier (Hapke SHOE), computed
   // CPU-side from the true phase angle. 1.0 = identity/disabled.
   oppositionSurge: f32,                             // 332
+
+  // C12-25 — LOLA relief strength. EXACTLY 0.0 when the normal map is
+  // disabled or the selected Moon.Variant ships no map (SMALL), which makes
+  // the perturbation the exact identity and leaves the legacy disc
+  // byte-identical. 336..351 is a NEW 16-byte slot: the 320..335 slot was
+  // full (inscatter vec3 + oppositionSurge), so the UB grows 336 -> 352.
+  // ADD-ONLY at the tail; every existing offset is frozen.
+  normalStrength: f32,                              // 336
 };
 
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var tex: texture_2d<f32>;
 @group(0) @binding(2) var samp: sampler;
+// C12-25 — LOLA-derived tangent-space normal map. Binding 3 is ALWAYS
+// present (there is no shader variant): when the moon has no normal map the
+// renderer binds a 1x1 flat (128,128,255) texture and sets normalStrength to
+// 0, so the sample is skipped and the math is the exact identity. Reuses the
+// binding-2 sampler — the two maps share the same UV unwrap and the same
+// filtering, so a second sampler would be pure duplication.
+@group(0) @binding(3) var normalTex: texture_2d<f32>;
 
 const PI: f32 = 3.14159265359;
 
@@ -354,6 +375,37 @@ fn computeEllipsoidColor(
   // Fill a CsmMaterial. Matches Material.fromType(Material.ImageType):
   // diffuse from texture, specular and emission zero, alpha opaque,
   // normal is the geodetic surface normal.
+  // C12-25 — LOLA-derived terminator relief. The stored map is tangent-space
+  // in a GEOGRAPHIC east-north-up frame (x = east, y = north, z = up), so the
+  // basis is rebuilt here in MODEL space — the same expression on the same
+  // vectors as the LUNAR_NORMAL_MAP block in EllipsoidFS.glsl, which builds
+  // it in model space too rather than reading `tangentToEyeMatrix`, precisely
+  // so these twins stay character-identical (Principle 5 lockstep). The
+  // degenerate-axis guard matters at the poles, where (-y, x, 0) vanishes.
+  //
+  // Perturbing the LIGHTING normal (not the UV normal) is what makes the
+  // relief ride whichever disc law is selected below — Lommel-Seeliger or
+  // the Phong fallback both light against this vector. Visible near the
+  // TERMINATOR, where N·L is near zero and a few degrees of tilt flips a
+  // facet between lit and unlit; nearly invisible at full phase.
+  //
+  // `u.normalStrength` is exactly 0.0 when the feature is off or the variant
+  // ships no map, and the branch then skips the fetch entirely — the WebGL
+  // twin compiles the whole block out via its LUNAR_NORMAL_MAP define. Both
+  // reach the identical identity; the asymmetry is wiring, not math (WebGL's
+  // EllipsoidFS is shared by every EllipsoidPrimitive and must not grow an
+  // unconditional sampler, while Moon.wgsl is moon-only).
+  if (u.normalStrength > 0.0) {
+    let nRaw = textureSampleLevel(normalTex, samp, uv, 0.0).xyz * 2.0 - 1.0;
+    let nTS = vec3<f32>(nRaw.xy * u.normalStrength, nRaw.z);
+    let upMC = N;
+    let eastRaw = vec3<f32>(-hitMC.y, hitMC.x, 0.0);
+    let eastLenMC = length(eastRaw);
+    let eastMC = select(vec3<f32>(1.0, 0.0, 0.0), eastRaw / eastLenMC, eastLenMC > 1.0e-6);
+    let northMC = cross(upMC, eastMC);
+    N = normalize(eastMC * nTS.x + northMC * nTS.y + upMC * nTS.z);
+  }
+
   var m: CsmMaterial;
   m.diffuse = texColor.rgb;
   m.specular = u.specularStrength;

@@ -107,8 +107,9 @@ class AtmosphericConditions {
    * delegate to `Globe`. `enableSunLight`, `enableMoonLight`,
    * `enableMoonPhase`, and `enableEarthshine` are new Phase 1 state stored
    * on the facade. The C12 moon-wave toggles `enableLunarBRDF`,
-   * `enableOppositionSurge`, and `enableMoonSkyWash` (all default ON, both
-   * backends) also live here, as do the C12-29 toggles `enableEclipse`
+   * `enableOppositionSurge`, `enableMoonSkyWash`, and `enableLunarNormalMap`
+   * (all default ON, both backends) also live here, as do the C12-29 toggles
+   * `enableEclipse`
    * (default ON, both backends — gates application of
    * `frameState.eclipseState`) and `eclipseAutoExposure` (default OFF —
    * ruling E2's camera-metering alternative to the human-eye impression).
@@ -330,6 +331,16 @@ function buildLighting(globe) {
   //    moon reads pale/sky-washed instead of a dark cutout. Only active
   //    while the sky atmosphere is visible; exactly zero from orbit.
   //
+  // C12-25 (2026-08-02) — `enableLunarNormalMap`, DEFAULT ON. Routes the
+  // LOLA-derived tangent-space relief onto the disc's lighting normal. It is
+  // additionally gated by the moon VARIANT: `Moon.Variant.SMALL` ships no
+  // normal map, so this toggle has no effect there and the legacy flat look
+  // is preserved. Visible primarily near the terminator, where N·L is small
+  // and a few degrees of surface tilt is the difference between lit and
+  // unlit; nearly invisible at full phase, where N·L ≈ 1 and the cosine is
+  // flat. Turning it off drives the shader's strength uniform to exactly 0,
+  // which is the exact identity perturbation on both backends.
+  //
   // C12-29 S5 (2026-07-25) — `enableEclipseGlobeShadow`, DEFAULT ON. Gates
   // only the per-fragment lunar umbra on the globe surface, leaving S1's sun
   // fade and S2's observer-anchored scene dimming untouched. S5 deliberately
@@ -419,6 +430,7 @@ function buildLighting(globe) {
     enableLunarBRDF: true,
     enableOppositionSurge: true,
     enableMoonSkyWash: true,
+    enableLunarNormalMap: true,
     enableEclipse: true,
     eclipseAutoExposure: false,
     enableEclipseGlobeShadow: true,

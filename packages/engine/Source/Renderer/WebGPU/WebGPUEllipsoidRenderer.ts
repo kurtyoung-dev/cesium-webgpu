@@ -173,17 +173,37 @@ export function createEllipsoidBoundingCube(
  * that uses this module.
  *
  *   binding 0: uniform UBO  (vertex + fragment)
- *   binding 1: texture_2d   (fragment)
- *   binding 2: sampler      (fragment)
+ *   binding 1: texture_2d   (fragment)  — albedo
+ *   binding 2: sampler      (fragment)  — shared by every texture below
+ *   binding 3: texture_2d   (fragment)  — OPTIONAL tangent-space normal map
+ *
+ * Binding 3 is opt-in via `options.normalTexture` (C12-25). It is opt-in
+ * rather than unconditional because a bind group must supply an entry for
+ * every layout binding: a body with no normal map would otherwise be forced
+ * to allocate a placeholder texture purely to satisfy the layout. Bodies
+ * that DO ask for it get a single shader with no variants — the "off" state
+ * is a flat placeholder plus a zero strength uniform, not a second pipeline.
  */
 export function createEllipsoidBindGroupLayout(
   device: GPUDevice,
+  options?: { normalTexture?: boolean },
 ): GPUBindGroupLayout {
-  return makeBindGroupLayout(device, "Ellipsoid_BindGroupLayout", [
+  const withNormal = options?.normalTexture === true;
+  const entries = [
     uniformBuffer(0, Stage.VERTEX_FRAGMENT),
     texture(1, Stage.FRAGMENT),
     sampler(2, Stage.FRAGMENT),
-  ]);
+  ];
+  if (withNormal) {
+    entries.push(texture(3, Stage.FRAGMENT));
+  }
+  return makeBindGroupLayout(
+    device,
+    withNormal
+      ? "Ellipsoid_BindGroupLayout_Normal"
+      : "Ellipsoid_BindGroupLayout",
+    entries,
+  );
 }
 
 // ─── Base uniform pack ───────────────────────────────────────────────

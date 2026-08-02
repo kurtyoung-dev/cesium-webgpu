@@ -8,9 +8,11 @@ import Ellipsoid from "../Core/Ellipsoid.js";
 import IauOrientationAxes from "../Core/IauOrientationAxes.js";
 import Matrix3 from "../Core/Matrix3.js";
 import Matrix4 from "../Core/Matrix4.js";
+import Resource from "../Core/Resource.js";
 import Simon1994PlanetaryPositions from "../Core/Simon1994PlanetaryPositions.js";
 import Transforms from "../Core/Transforms.js";
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
+import Texture from "../Renderer/Texture.js";
 import {
   computeAtmosphereExtinctionCached,
   createAtmosphereExtinctionCache,
@@ -33,6 +35,12 @@ import Material from "./Material.js";
  * @param {string} [options.variant] One of {@link Moon.Variant}, selecting which
  *        bundled albedo map to use. Ignored when <code>textureUrl</code> is given.
  *        Defaults to {@link Moon.defaultVariant}.
+ * @param {string} [options.normalMapUrl] A tangent-space (east/north/up) normal
+ *        map supplying surface relief. Defaults to the normal map paired with
+ *        {@link Moon.defaultVariant} — {@link Moon.Variant.SMALL} has none.
+ *        Pass <code>null</code> to force a flat moon.
+ * @param {number} [options.normalMapStrength=1.0] Scales the relief. 1.0 is the
+ *        true derived geometry; 0.0 is exactly flat.
  * @param {Ellipsoid} [options.ellipsoid=Ellipsoid.MOON] The moon ellipsoid.
  * @param {boolean} [options.onlySunLighting=true] Use the sun as the only light source.
  *
@@ -55,6 +63,17 @@ class Moon {
       url = Moon.getVariantTextureUrl(options.variant);
     }
 
+    // C12-25. `null` is meaningful here and `undefined` is not: an explicit
+    // null is "I want a flat moon", while an omitted option means "give me
+    // whatever the variant pairs with". `??` collapses both, so the presence
+    // of the key is what is tested.
+    const normalMapUrl = Object.prototype.hasOwnProperty.call(
+      options,
+      "normalMapUrl",
+    )
+      ? (options.normalMapUrl ?? undefined)
+      : Moon.getVariantNormalMapUrl(options.variant);
+
     /**
      * Determines if the moon will be shown.
      *
@@ -73,6 +92,35 @@ class Moon {
      * @default the albedo map of {@link Moon.defaultVariant}
      */
     this.textureUrl = url;
+
+    /**
+     * A tangent-space normal map supplying the moon's surface relief (C12-25),
+     * in the same equirectangular projection and orientation as
+     * {@link Moon#textureUrl}, with x = east, y = north, z = up (the geodetic
+     * surface normal) encoded as <code>n * 0.5 + 0.5</code>.
+     *
+     * Its visible effect is concentrated at the TERMINATOR, where N·L is near
+     * zero and a few degrees of surface tilt is the difference between a lit
+     * and an unlit facet; at full phase the cosine is flat and the relief is
+     * nearly invisible. `undefined` renders a geometrically smooth sphere —
+     * the pre-C12-25 look, and what {@link Moon.Variant.SMALL} selects.
+     * @type {string|undefined}
+     * @default the normal map of {@link Moon.defaultVariant}
+     */
+    this.normalMapUrl = normalMapUrl;
+
+    /**
+     * Scales {@link Moon#normalMapUrl}'s relief. 1.0 is the true derived
+     * geometry — the honest slope of the LOLA surface at the shipped
+     * resolution — and 0.0 is exactly flat. Values above 1.0 exaggerate.
+     * @type {number}
+     * @default 1.0
+     */
+    this.normalMapStrength = options.normalMapStrength ?? 1.0;
+
+    this._normalMapTexture = undefined;
+    this._normalMapTextureUrl = undefined;
+    this._normalMapLoading = false;
 
     this._ellipsoid = options.ellipsoid ?? Ellipsoid.MOON;
 
@@ -330,6 +378,22 @@ class Moon {
       ? oppositionSurge
       : undefined;
 
+    // C12-25 — resolve the LOLA relief strength ONCE here, before the
+    // backend branch (Scene Logic Extractor pattern), folding together the
+    // three things that can switch it off: the lighting toggle, the variant
+    // gate (Moon.Variant.SMALL ships no map), and the user's own dial. Both
+    // backends then read this single number, so they cannot disagree about
+    // whether relief is on — the failure mode where one backend is subtly
+    // rougher than the other is exactly what a per-backend gate produces.
+    const normalMapEnabled =
+      defined(this.normalMapUrl) &&
+      defined(lighting) &&
+      lighting.enableLunarNormalMap === true;
+    const normalMapStrength = normalMapEnabled
+      ? (this.normalMapStrength ?? 1.0)
+      : 0.0;
+    frameState.moonNormalMapStrength = normalMapStrength;
+
     // Backend-specific path — delegate to feature renderer if available
     const context = frameState.context;
     const fr = context.getFeatureRenderer(FeatureRendererKey.MOON);
@@ -345,12 +409,95 @@ class Moon {
         : undefined;
     }
 
+    // C12-25 — the WebGL normal-map texture. Created HERE, past the feature-
+    // renderer early-return, because this is the WebGL fallback path by
+    // construction: `new Texture` needs a WebGL context, and the WebGPU
+    // renderer does its own `copyExternalImageToTexture` upload. Keeping the
+    // load on this side of the branch is what lets Moon.js stay free of any
+    // `isWebGPU` test (CLAUDE.md backend-agnosticism rule).
+    this._updateNormalMapTexture(context, normalMapEnabled);
+    ellipsoidPrimitive.lunarNormalMap = this._normalMapTexture;
+    ellipsoidPrimitive.lunarNormalStrength = normalMapStrength;
+
     const savedCommandList = frameState.commandList;
     frameState.commandList = scratchCommandList;
     scratchCommandList.length = 0;
     ellipsoidPrimitive.update(frameState);
     frameState.commandList = savedCommandList;
     return scratchCommandList.length === 1 ? scratchCommandList[0] : undefined;
+  }
+
+  /**
+   * Keeps `_normalMapTexture` in sync with `normalMapUrl` on the WebGL path.
+   * Idempotent per frame: a load in flight is not restarted, and a URL that
+   * already resolved is not refetched.
+   *
+   * On failure the texture stays `undefined`, which compiles the shader's
+   * `LUNAR_NORMAL_MAP` block out entirely — a missing relief map degrades to
+   * the pre-C12-25 flat moon rather than to a broken one.
+   *
+   * @private
+   */
+  _updateNormalMapTexture(context, enabled) {
+    const url = enabled ? this.normalMapUrl : undefined;
+
+    if (!defined(url)) {
+      // Toggled off, or switched to a variant with no relief. Release the
+      // texture so the define drops and the FS returns to byte-identical.
+      if (defined(this._normalMapTexture)) {
+        this._normalMapTexture.destroy();
+        this._normalMapTexture = undefined;
+      }
+      this._normalMapTextureUrl = undefined;
+      return;
+    }
+
+    if (this._normalMapTextureUrl === url) {
+      return; // resolved, or a load is in flight for this exact URL
+    }
+    if (this._normalMapLoading) {
+      return;
+    }
+
+    this._normalMapLoading = true;
+    const that = this;
+    const requestedUrl = url;
+    Resource.createIfNeeded(url)
+      .fetchImage()
+      .then(function (image) {
+        that._normalMapLoading = false;
+        // The moon may have been destroyed, or the URL changed, while the
+        // image was in flight.
+        if (that.isDestroyed() || that.normalMapUrl !== requestedUrl) {
+          return;
+        }
+        if (defined(that._normalMapTexture)) {
+          that._normalMapTexture.destroy();
+        }
+        // Default sampler: LINEAR, CLAMP_TO_EDGE, and `flipY: true` — the
+        // same convention C12-24 pinned for the albedo on BOTH backends, and
+        // the same one the WebGPU normal upload passes explicitly. It has to
+        // match: the two maps share the v = asin(n.z)/PI + 0.5 unwrap, and
+        // because the green channel encodes NORTH, a v-flip would light every
+        // crater from the wrong side rather than merely misplacing it.
+        that._normalMapTexture = new Texture({
+          context: context,
+          source: image,
+        });
+        that._normalMapTextureUrl = requestedUrl;
+      })
+      .catch(function (error) {
+        that._normalMapLoading = false;
+        // Remember the failed URL so a broken path isn't refetched every
+        // frame; changing `normalMapUrl` still triggers a fresh attempt.
+        that._normalMapTextureUrl = requestedUrl;
+        //>>includeStart('debug', pragmas.debug);
+        console.warn(
+          "[Moon] normal map load failed; rendering a flat moon:",
+          error && error.message ? error.message : error,
+        );
+        //>>includeEnd('debug');
+      });
   }
 
   /**
@@ -414,6 +561,10 @@ class Moon {
   destroy() {
     this._ellipsoidPrimitive =
       this._ellipsoidPrimitive && this._ellipsoidPrimitive.destroy();
+    // C12-25 — the WebGL normal map is owned here, not by the primitive's
+    // Material, so it is released here too.
+    this._normalMapTexture =
+      this._normalMapTexture && this._normalMapTexture.destroy();
     if (
       defined(this._featureRenderer) &&
       defined(this._featureRenderer.destroy)
@@ -434,6 +585,10 @@ class Moon {
  * Both variants use the SAME projection — equirectangular, centred on 0°
  * longitude, east right, north at the top of the image — so switching between
  * them changes only resolution and source, never orientation.
+ *
+ * A variant selects a PAIRING, not just an albedo: since C12-25 it also
+ * decides whether the moon carries LOLA-derived surface relief. See
+ * {@link Moon.getVariantNormalMapUrl}.
  *
  * @enum {string}
  * @readonly
@@ -461,6 +616,28 @@ Moon.Variant = Object.freeze({
 const moonVariants = {
   [Moon.Variant.SMALL]: "Assets/Textures/moonSmall.jpg",
   [Moon.Variant.LROC_COLOR_2K]: "Assets/Textures/Moon/lroc_color_poles_2k.jpg",
+};
+
+/**
+ * Normal map paired with each variant (C12-25). `SMALL` deliberately has
+ * none: it is the historical low-bandwidth option, and bolting 664 KB of
+ * relief onto a 17.8 KB albedo would defeat its only reason to exist — so
+ * selecting it preserves the legacy flat look exactly.
+ *
+ * The 2K variant's map is 1024x512 rather than 2048x1024. That is a
+ * deliberate pairing, not an oversight: NEITHER backend mipmaps the moon
+ * today (tracked as C12-33), so at the default camera the disc is ~16 px and
+ * a 2048-wide map is sampled at ~64:1 minification off mip 0. Aliasing in a
+ * NORMAL map is worse than in an albedo — it flickers the lighting rather
+ * than the colour, and it does so most where the relief is meant to be read.
+ * Halving the resolution halves that while still leaving ~2.7 texels/px at
+ * the ~190 px zoomed disc the feature is for. `--width 2048` in
+ * `Tools/moon-albedo-bake/bake-lola-normals.mjs` re-bakes the larger map in
+ * one flag once C12-33 lands.
+ */
+const moonNormalMapVariants = {
+  [Moon.Variant.SMALL]: undefined,
+  [Moon.Variant.LROC_COLOR_2K]: "Assets/Textures/Moon/ldem_normal_1k.png",
 };
 
 /**
@@ -499,6 +676,30 @@ Moon.getVariantTextureUrl = function (variant) {
   }
   //>>includeEnd('debug');
   return buildModuleUrl(asset ?? moonVariants[Moon.Variant.LROC_COLOR_2K]);
+};
+
+/**
+ * Resolves a {@link Moon.Variant} to the URL of its bundled tangent-space
+ * normal map, or <code>undefined</code> when the variant ships none.
+ *
+ * @param {string} [variant] One of {@link Moon.Variant}. Defaults to
+ *        {@link Moon.defaultVariant}.
+ * @returns {string|undefined} The module-relative URL, or undefined.
+ */
+Moon.getVariantNormalMapUrl = function (variant) {
+  const v = variant ?? Moon.defaultVariant;
+  // Own-property lookup only, for the same reason getVariantTextureUrl does
+  // it: a bare index would resolve inherited Object.prototype keys.
+  const known = Object.prototype.hasOwnProperty.call(moonNormalMapVariants, v);
+  //>>includeStart('debug', pragmas.debug);
+  if (!known) {
+    throw new DeveloperError(
+      `Unknown Moon variant "${v}". Valid values are: ${Object.keys(moonVariants).join(", ")}`,
+    );
+  }
+  //>>includeEnd('debug');
+  const asset = known ? moonNormalMapVariants[v] : undefined;
+  return defined(asset) ? buildModuleUrl(asset) : undefined;
 };
 
 const icrfToFixed = new Matrix3();

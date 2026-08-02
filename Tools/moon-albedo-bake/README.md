@@ -1,15 +1,27 @@
-# Lunar albedo bake pipeline (NASA SVS 4720 "CGI Moon Kit") — Campaign 12, C12-24
+# Lunar surface bake pipelines (NASA SVS 4720 "CGI Moon Kit") — Campaign 12, C12-24 + C12-25
 
-Reproducible offline pipeline that turns the NASA/GSFC SVS **CGI Moon Kit** 2019
-colour map into the 2048×1024 albedo the engine ships as
-`Moon.Variant.LROC_COLOR_2K` — the default moon texture since C12-24. It
-replaces the 256×128 `moonSmall.jpg` inherited from upstream Cesium, whose
-visible hemisphere was only 128 texels across (0.67 texels/px at a ~190 px
-disc — under-resolved).
+Two reproducible offline pipelines, both fed from the same NASA/GSFC SVS **CGI
+Moon Kit** product and sharing one verify → derive → encode →
+verify-the-encoded-bytes → manifest → install structure:
 
-> **Licence:** the map is **not** MIT. It is bundled under its own terms in the
-> repo-root `LICENSE.md` → _Bundled Engine Assets_ → _Lunar albedo map_. Keep
-> the `NASA/GSFC SVS` and `NASA/GSFC/Arizona State University` credits.
+| bake                    | source                      | ships                                            | sections |
+| ----------------------- | --------------------------- | ------------------------------------------------ | -------- |
+| `bake-lroc-color.mjs`   | 2019 colour map             | `lroc_color_poles_2k.jpg` — 2048×1024 **albedo** | §1–§6    |
+| `bake-lola-normals.mjs` | `ldem_16` LOLA displacement | `ldem_normal_1k.png` — 1024×512 **normal map**   | §7       |
+
+The albedo replaces the 256×128 `moonSmall.jpg` inherited from upstream Cesium,
+whose visible hemisphere was only 128 texels across (0.67 texels/px at a ~190 px
+disc — under-resolved). The normal map adds terminator relief, which the disc
+never had at all: before C12-25 the moon was a geometrically perfect sphere.
+
+Both are selected together by `Moon.Variant.LROC_COLOR_2K`, the default;
+`Moon.Variant.SMALL` keeps the historical albedo and no normal map.
+
+> **Licence:** neither map is MIT. Both are bundled under their own terms in the
+> repo-root `LICENSE.md` → _Bundled Engine Assets_ → _Lunar albedo map_ and
+> _Lunar normal map_. Keep the `NASA/GSFC SVS`,
+> `NASA/GSFC/Arizona State University` (albedo) and `NASA/GSFC/MIT` (LOLA)
+> credits.
 
 ---
 
@@ -314,11 +326,342 @@ The historical map is preserved behind the config switch as
    defended downsample filter (smallest published member is 4096×2048) and a
    re-pin of the hash. Same alignment convention, so §4 carries over unchanged.
 
-4. **C12-25 (LOLA normal map) readiness.** See §7.
+4. **C12-25 (LOLA normal map).** ✅ **DONE** — see §7.
 
 ---
 
-## 7. C12-25 readiness notes — LOLA-derived normal map
+## 7. Normal-map bake — `bake-lola-normals.mjs` (C12-25)
+
+### 7.1 Source, and a corrected premise
+
+NASA ships **displacement**, not normals, so this is a derivation rather than a
+repackage. It is also **not** a 2K source: the C12-25 brief assumed a "2K
+displacement map" exists on the 4720 page, and it does not. Verified by direct
+HEAD request against the SVS host:
+
+| file                        | status  |
+| --------------------------- | ------- |
+| `ldem_4.tif` (1440×720)     | 200     |
+| `ldem_16.tif` (5760×2880)   | 200     |
+| `ldem_64.tif` (23040×11520) | 200     |
+| `ldem_*_uint.tif` (×3)      | 200     |
+| `ldem_2k.tif`               | **404** |
+| `ldem_1k.tif`               | **404** |
+| `ldem_512.tif`              | **404** |
+
+The family is 4 / 16 / 64 pixels per degree only. So:
+
+|              |                                                                                          |
+| ------------ | ---------------------------------------------------------------------------------------- |
+| Product      | "CGI Moon Kit", NASA SVS ID **4720** — LOLA displacement member                          |
+| Variant      | **`ldem_16.tif`** — the smallest member FINER than the output grid                       |
+| Format taken | **TIFF**, float32, 1 channel, no ICC profile                                             |
+| **URL**      | `https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/ldem_16.tif`                      |
+| **SHA-256**  | `1ea42bf44f7e9d694f79c3afa7145f97fbf06cc67372067d9fe73dce43bad796`                       |
+| Bytes        | 66,378,634                                                                               |
+| Pixels       | 5760 × 2880 (16 px/deg)                                                                  |
+| Units        | **kilometres** relative to a **1737.4 km** sphere; measured range −8.982 km … +10.686 km |
+| Projection   | equirectangular / plate carrée, centred on 0° longitude, north at the top                |
+| Retrieved    | 2026-08-02                                                                               |
+
+`ldem_4` was **rejected as the source**: at 1440×720 it is _coarser_ than the
+output grid, so using it would have upsampled invented detail. The `_uint`
+variants (uint16 half-metres) would also have worked — 0.5 m over a 10.7 km
+texel is a slope quantization of 2×10⁻⁵, four orders below the median slope —
+but the float32 member is the primary product and costs only download size,
+which is not bundled anyway.
+
+The bake verifies the pinned hash **and** asserts the decoded relief falls
+inside the published LOLA extremes before deriving anything. A dimension check
+alone would not catch a decode that silently normalised the field to 0…1, and
+that failure produces a plausible-looking but wrongly-scaled normal map.
+
+### 7.2 The derivation
+
+Heights `h(lon, lat)` on a sphere of radius `R = 1 737 400 m`:
+
+```text
+dNorth = R * (PI / H)                  = 10 660.6 m/texel  (constant)
+dEast  = R * cos(lat) * (2*PI / W)     = 10 660.6 m/texel at the equator
+n      = normalize( -dh/dEast, -dh/dNorth, 1 )
+```
+
+Three details carry the whole correctness argument:
+
+1. **Downsample the heights first, then differentiate.** The height field is
+   area-averaged from 5760×2880 to the shipped grid — each output texel is the
+   mean elevation of the ground it covers — and the central differences are
+   taken _there_. So the shipped normals are exactly the normals of the
+   shipped-resolution surface, and there is no filter-order argument to have.
+   The filter is an **area average specifically because the next step
+   differentiates**: a Lanczos downsample would ring at every crater rim, and
+   differentiating an overshoot turns it into a false slope reversal.
+
+2. **The `1/cos(lat)` problem is solved by widening the stencil, not by
+   clamping the divisor.** At the top row of a 512-row map `cos(lat)` is
+   0.0031, so a one-texel east difference would be divided by ~33 m of ground
+   and any noise becomes a cliff. Instead the east stencil widens to
+   `k = round(1/cos(lat))` texels, which holds the east baseline at
+   ~`R·2π/W` metres of GROUND at every latitude — with `W = 2H` that is
+   exactly the north baseline, so the derivative stencil is isotropic on the
+   sphere everywhere. `k` is capped at `W/4` so it can never wrap onto itself.
+
+3. **Poles wrap ACROSS, they do not clamp.** The neighbour north of `(x, 0)` is
+   `(x + W/2, 0)` — genuinely one latitude step away over the top of the
+   sphere. Clamping instead would halve the baseline and paint a ring of false
+   slope around both poles, which is precisely the artifact that would be
+   invisible in a nadir screenshot and obvious at a grazing terminator.
+
+Measured on the shipped 1024×512 map:
+
+| quantity     | value                                             |
+| ------------ | ------------------------------------------------- |
+| ground scale | 10 660.6 m/texel (north, and east at the equator) |
+| slope \|∇h\| | median 0.0343, p90 0.112, p99 0.186, max 0.382    |
+| surface tilt | mean 2.73°, p99 10.53°, max 20.90°                |
+
+A p99 tilt of 10.5° is the number that matters: near the terminator `N·L ≈ 0`,
+so a 10° facet is the difference between lit and unlit. At full phase
+`N·L ≈ 1`, the cosine is flat, and the same 10° changes brightness by ~1.6%.
+That asymmetry is the feature.
+
+### 7.3 Tangent frame and encoding
+
+Stored tangent-space in a **geographic** east-north-up frame — x = east,
+y = north, z = up (the geodetic normal) — as `stored = n * 0.5 + 0.5`, so flat
+is `(128, 128, 255)` and blue is always ≥ 0.5.
+
+Because the frame is geographic and not image-space, there is **no "OpenGL vs
+DirectX green channel" ambiguity** to inherit: +G means the surface tilts
+toward the lunar north pole, full stop. Both backends rebuild that basis in
+MODEL space from the same expression (see §9), and the image's own row order is
+reconciled at the upload layer by the same `flipY: true` convention C12-24
+established — so the albedo and the relief register texel for texel.
+
+### 7.4 Output resolution — why 1024×512 and not 2048×1024
+
+The albedo is 2048×1024, so the obvious choice is to match it. Measured, that
+costs **2.92 MB** (PNG) against **664 KB**, and buys resolution the renderer
+cannot currently use:
+
+- **Neither backend mipmaps the moon** — tracked as `C12-33`. WebGL's
+  `Material.js` never calls `generateMipmap()`; WebGPU creates the texture with
+  `mipLevelCount` 1 and samples `textureSampleLevel(…, 0.0)`.
+- At the **default** camera the disc is ~16 px across, so a 2048-wide map is
+  ~64:1 minification off mip 0. Aliasing in a _normal_ map is worse than in an
+  albedo: it flickers the **lighting** under camera motion rather than the
+  colour, and it does so worst at the terminator — exactly where this asset is
+  supposed to be read.
+- At the ~190 px **zoomed** disc the feature is actually for, 1024×512 still
+  leaves ~2.7 texels/px. It is not the binding constraint.
+
+So the 1K map is the right pairing _today_, and `--width 2048` re-bakes the
+larger one in one flag once `C12-33` lands. Both are gated on the same source.
+
+### 7.5 Encoding — PNG, measured not assumed
+
+Normal maps are not photographs. After the RGB→YCbCr rotation the two
+_informative_ channels land in the chroma planes, so JPEG's usual advantage
+inverts. Fidelity is quoted as **mean/max angular error of the decoded normal**,
+which is the unit that matters, with both sides renormalised (as the shaders do):
+
+| encoding (1024×512)          | size    | tilt error mean | max     |
+| ---------------------------- | ------- | --------------- | ------- |
+| **PNG 8-bit RGB (lvl 9)** ✅ | 664 KB  | **0.173°**      | 0.347°  |
+| PNG 16-bit RGB (lvl 9)       | 1244 KB | ~0°             | ~0°     |
+| JPEG q90 4:4:4               | 116 KB  | 1.262°          | 9.468°  |
+| JPEG q90 4:2:0               | 75 KB   | 1.677°          | 14.666° |
+| WebP lossless                | 458 KB  | 0.173°          | 0.347°  |
+
+JPEG is **rejected on the measurement, not the principle**: 1.26° of mean error
+against a signal whose own mean tilt is 2.73° corrupts 46% of the payload, and
+the 9.5° worst case lands on the crater rims that are the entire point.
+16-bit PNG is rejected as 1.9× the size to remove an error (0.17°) already
+14× below the median signal. WebP ties PNG on fidelity and is 31% smaller, but
+the engine's bundled-asset path has no WebP precedent — the same reasoning
+C12-24 applied.
+
+The 2048×1024 table, for the C12-33 follow-up: PNG-8 2918 KB / 0.173°, PNG-16
+5137 KB, JPEG 4:4:4 538 KB / 1.320°, JPEG 4:2:0 348 KB / 1.854°, WebP lossless
+1969 KB.
+
+### 7.6 Relief verification — what is actually pinned
+
+A derived normal map can be silently wrong in ways that still render a plausible
+moon: a mirrored green channel lights every crater from the wrong side, a
+mirrored red channel does the same east/west, an x/y transpose rotates all
+relief 90°, and a broken height decode yields a uniformly flat map that passes
+every polarity test vacuously. None of those crash or look broken at full
+phase — they only show at the terminator.
+
+`lunar-relief.mjs` pins them against a physical fact: **craters are bowls, so on
+the inner wall the surface normal tilts INWARD.** That is independently signed
+in east/west and in north/south, so each mirror gets its own named check.
+
+| check                      | what it measures                                                | fails on                   |
+| -------------------------- | --------------------------------------------------------------- | -------------------------- |
+| `normalsAreUnitAndOutward` | unit length + z > 0 everywhere                                  | corrupt encode             |
+| `reliefIsPresent`          | RMS tangential component                                        | flat / dead height map     |
+| `craterEastWestPolarity`   | west wall `nx` > 0 > east wall `nx`                             | **mirrored red**           |
+| `craterNorthSouthPolarity` | south wall `ny` > 0 > north wall `ny`                           | **mirrored green**         |
+| `craterLitFromTestAzimuth` | Lambert shade, grazing light, 4 azimuths — lit wall is brighter | either mirror (end-to-end) |
+| `channelsAreNotSwapped`    | the E/W signal lives in `nx`, not `ny`                          | **x/y transpose**          |
+
+`craterLitFromTestAzimuth` is the one that speaks the language of the bug: it
+composes the stored normals exactly as the shaders do, at 10° elevation
+(terminator geometry), and requires the wall facing the light to be the
+brighter one. A user would only ever report this defect as "the craters are lit
+from the wrong side".
+
+Craters used: **Tycho** (11.4°W, 43.3°S, 85 km, 4.8 km deep) and **Copernicus**
+(20.1°W, 9.6°N, 93 km, 3.8 km deep) — the same two the albedo checks use, so a
+single landmark-table error cannot pass one asset and fail the other silently.
+
+#### Measured results on the shipped asset
+
+```text
+PASS  normalsAreUnitAndOutward     0.001003 (minZ 0.937255, max |len-1| 0.004741)
+PASS  reliefIsPresent              0.064285 (RMS tangential; mean tilt 3.69 deg)
+PASS  craterEastWestPolarity       0.170308 (need >= 0.08)
+      tycho:      W-wall nx  0.114706 vs E-wall nx -0.146078   (sep 0.260784)
+      copernicus: W-wall nx  0.085154 vs E-wall nx -0.085154   (sep 0.170308)
+PASS  craterNorthSouthPolarity     0.160483 (need >= 0.08)
+      tycho:      S-wall ny  0.104314 vs N-wall ny -0.116340   (sep 0.220654)
+      copernicus: S-wall ny  0.083560 vs N-wall ny -0.076923   (sep 0.160483)
+PASS  craterLitFromTestAzimuth     2.631915 (need >= 1.3)
+      worst lit:unlit wall ratio over {tycho, copernicus} x {E, W, N, S}
+PASS  channelsAreNotSwapped        0.160224 (need >= 0.04)
+      tycho:      E/W separation in nx 0.260784 vs in ny 0.006863
+      copernicus: E/W separation in nx 0.170308 vs in ny 0.010084
+```
+
+The cross-channel leakage (0.007 / 0.010 against an in-channel 0.26 / 0.17) is
+the strongest single statement here: the east/west relief is 25–38× more
+present in red than in green, which is what a correctly-oriented tangent frame
+looks like.
+
+#### The checks are adversarially validated
+
+A discriminator that never fires is not a discriminator. The spec re-runs the
+whole battery against deliberately corrupted maps and requires every one to be
+**rejected** — including the flipped-Y case the C12-25 brief calls out by name:
+
+| case           | corruption                     | verdict    |
+| -------------- | ------------------------------ | ---------- |
+| _identity_     | —                              | **ACCEPT** |
+| `flipGreen`    | `ny -> -ny` (flipped-Y map)    | REJECT     |
+| `flipRed`      | `nx -> -nx`                    | REJECT     |
+| `swapChannels` | `nx <-> ny`                    | REJECT     |
+| `mirrorLat`    | image flipped north/south      | REJECT     |
+| `mirrorLon`    | image flipped east/west        | REJECT     |
+| `flatten`      | every texel -> (128, 128, 255) | REJECT     |
+
+---
+
+## 8. Both-backends wiring (C12-25)
+
+Unlike C12-24 (texture-only), this **is** a shader change, so it carries a
+`migration_doc/SHADER_PAIRS_LOCKSTEP.md` row. The twins are
+`EllipsoidFS.glsl`'s `LUNAR_NORMAL_MAP` block and the `u.normalStrength > 0.0`
+block in `Shaders/WebGPU/Environment/Moon.wgsl`.
+
+Both rebuild the east-north-up basis **in model space**, from the same
+expression on the same vectors:
+
+```text
+up    = normalMC                                   (geodetic normal, side-flipped)
+east  = normalize(-positionMC.y, positionMC.x, 0)  (guarded at the poles)
+north = cross(up, east)
+N'    = normalize(east*n.x + north*n.y + up*n.z)
+```
+
+This is identical to what `czm_eastNorthUpToEyeCoordinates` builds (column 0 =
+east, column 1 = up × east = north, column 2 = up). The GLSL side does **not**
+call that builtin, and that is deliberate: the WGSL side has no `czm_normal` to
+lean on and does all its lighting in model space, so doing it inline on both
+keeps the twins the same expression instead of "equivalent if you work it out".
+The inline form also guards the pole degeneracy, where `(-y, x, 0)` vanishes and
+the builtin would normalise a zero vector.
+
+Perturbing `material.normal` / `m.normal` — the **lighting** normal, not the UV
+normal — is what makes the relief ride whichever disc law is selected: the
+Lommel-Seeliger term (C12-20) and the Phong fallback both light against it.
+
+Two deliberate **wiring** asymmetries, neither of which is a math asymmetry:
+
+|           | WebGL                                                                                                        | WebGPU                                                                                                          |
+| --------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
+| off state | `LUNAR_NORMAL_MAP` define absent — sampler compiled out entirely                                             | binding 3 always present, bound to a 1×1 flat `(128,128,255)` placeholder; `normalStrength = 0` skips the fetch |
+| why       | `EllipsoidFS.glsl` is shared by **every** `EllipsoidPrimitive`, so it must not grow an unconditional sampler | `Moon.wgsl` is moon-only, so one pipeline with no variants is strictly better                                   |
+
+Both reach the **exact** identity when off: strength 0 drives `nTS` to
+`(0, 0, z)`, and `normalize(east*0 + north*0 + up*z) = up`, bit-for-bit the
+unperturbed normal.
+
+The strength itself is resolved **once, backend-agnostically**, in
+`Moon.update()` — it folds together the `enableLunarNormalMap` toggle, the
+variant gate, and the user's dial, then publishes
+`frameState.moonNormalMapStrength`. Both backends read that one number, so they
+cannot disagree about whether relief is on.
+
+The WebGL texture is owned by `Moon.js` rather than by `Material`:
+`Material.ImageType` carries exactly one image and has no normal channel, and
+growing the shared material system for one body would touch every image
+material in the engine. It follows the same private-uniform route the four
+existing C12 moon terms already use on `EllipsoidPrimitive`.
+
+The uniform buffer grows **336 → 352 bytes**, add-only at the tail (the
+320..335 slot was already full: `inscatter` vec3 + `oppositionSurge`). Every
+existing offset is frozen.
+
+---
+
+## 9. Running them
+
+```bash
+# one-time: fetch the sources (see §1 and §7.1)
+mkdir -p Tools/moon-albedo-bake/work
+curl -L -o Tools/moon-albedo-bake/work/lroc_color_poles_2k.tif \
+  https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/lroc_color_poles_2k.tif
+curl -L -o Tools/moon-albedo-bake/work/ldem_16.tif \
+  https://svs.gsfc.nasa.gov/vis/a000000/a004700/a004720/ldem_16.tif
+
+node Tools/moon-albedo-bake/bake-lroc-color.mjs --install
+node Tools/moon-albedo-bake/bake-lola-normals.mjs --install
+
+node --test Tools/visual-regression/moon-albedo-asset.spec.mjs
+node --test Tools/visual-regression/moon-normal-map-asset.spec.mjs
+```
+
+Shared flags: `--input <tif>` `--out <dir>` `--install` `--verify`
+`--skip-hash-check` (the last only for a deliberate re-pin — update `SOURCE`
+and `LICENSE.md` in the same change). `bake-lola-normals.mjs` adds
+`--width <px>` (output width; height is half) and `--encodings` (print the
+size/fidelity table and stop).
+
+### Dependency
+
+Uses [`sharp`](https://sharp.pixelplumbing.com/), declared in the root
+`package.json` devDependencies.
+
+---
+
+## 10. Files
+
+- `bake-lroc-color.mjs` — the albedo pipeline (checked in).
+- `bake-lola-normals.mjs` — the normal-map pipeline (checked in).
+- `lunar-landmarks.mjs` — dependency-free landmark table + **albedo**
+  alignment checks, shared by the albedo bake and its spec (checked in).
+- `lunar-relief.mjs` — dependency-free normal derivation + **relief** checks,
+  shared by the normal bake and its spec (checked in).
+- `moon-albedo-manifest.json` — albedo provenance + alignment evidence.
+- `moon-normal-manifest.json` — normal-map provenance, derivation constants,
+  slope statistics + relief evidence.
+- `README.md` — this file.
+- `.gitignore` — excludes `work/` (source TIFFs) and `out/` (bake artifacts).
+  The **only** version-controlled outputs are
+  `packages/engine/Source/Assets/Textures/Moon/lroc_color_poles_2k.jpg` and
+  `packages/engine/Source/Assets/Textures/Moon/ldem_normal_1k.png`.
 
 `C12-25` wants terminator relief from the LOLA displacement map. What this bake
 establishes for it:
