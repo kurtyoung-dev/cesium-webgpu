@@ -44,6 +44,11 @@
  *     converges to ~`pageCount` entries at ~100% hit rate while the offsets
  *     shift each frame. This is exactly the shape proven for the globe by
  *     NEW-GLOBE-DYNAMIC-OFFSET-UBO (Batch 292).
+ *   - Acquisition itself allocates almost nothing (C11-195 tail): the
+ *     `[cameraOffset, lightOffset]` pair is interned per value into a frozen
+ *     shared tuple, and the bind-group cache key string is memoized per
+ *     resource-identity tuple, so the per-acquire cost in steady state is one
+ *     small binding record.
  *
  * ## Why the light rides group 0 and not the merged group 1
  *
@@ -199,6 +204,14 @@ export interface ModelCameraBinding {
    * is the order WebGPU requires for a group with more than one
    * `hasDynamicOffset` binding. Never mutated after `acquire` returns, so the
    * same array instance is safely shared by every command variant of one draw.
+   *
+   * C11-195 allocation trim: the array is identity-cached by its VALUE pair
+   * and frozen, so two acquisitions whose offsets coincide (the same slice
+   * positions recurring as the ring rotates) receive the SAME instance and the
+   * steady state allocates nothing. Consumers already compare offsets by value
+   * (`sameDynamicOffsetArray`) and clone before deriving, so sharing is
+   * observationally identical — and freezing turns a rogue write into a loud
+   * TypeError instead of a silent cross-draw corruption.
    */
   readonly dynamicOffsets: number[];
   /**
@@ -266,6 +279,35 @@ export class WebGPUModelCameraArena {
   private _fallbackAllocations = 0;
   private _misalignedRejections = 0;
   private _staleLightSliceRejections = 0;
+
+  // C11-195 allocation trim — the hot path used to allocate one template
+  // string (the bind-group cache key) and one two-element offset array PER
+  // ACQUIRE, i.e. per node per model per view per frame. Both are retained
+  // instead:
+  //
+  //   - `_offsetTuples` interns the `[cameraOffset, lightOffset]` pair by
+  //     value. Ring offsets recur every rotation, so the map converges to the
+  //     distinct pairs a scene actually uses and steady-state acquisition
+  //     allocates no arrays. Entries are frozen — see
+  //     {@link ModelCameraBinding#dynamicOffsets}.
+  //   - `_bindGroupKey*` memoizes the last (layout, camera page, light page,
+  //     sizes) identity tuple with its computed key string. Within a frame
+  //     every acquire normally lands on one ring page, so the string is built
+  //     ~once per page transition instead of once per acquire. `idOf`
+  //     identities are stable for the life of `_bindGroups` (its WeakMap is
+  //     never reset, only the entry map is cleared), so a memoized string can
+  //     never alias a different resource tuple.
+  //
+  // Both retain references to GPU objects / plain arrays only; they are
+  // dropped on allocator swap and `invalidate()` so dead ring pages are not
+  // kept reachable.
+  private _offsetTuples: Map<number, Map<number, number[]>> = new Map();
+  private _bindGroupKeyLayout: GPUBindGroupLayout | null = null;
+  private _bindGroupKeyBuffer: GPUBuffer | null = null;
+  private _bindGroupKeyLightBuffer: GPUBuffer | null = null;
+  private _bindGroupKeyByteSize = -1;
+  private _bindGroupKeyLightByteSize = -1;
+  private _bindGroupKey = "";
   /**
    * Last-resort zero-filled light block. Only reachable when a caller supplies
    * no light slice at all, which our own call sites never do; retained so the
@@ -291,6 +333,7 @@ export class WebGPUModelCameraArena {
       // Allocator identity change == ring pages destroyed and rebuilt. Every
       // cached bind group references a dead GPUBuffer.
       this._bindGroups.clear();
+      this._resetRetainedAcquisitionState();
       this._allocator = allocator;
       this._allocationEpoch = allocator?.allocationEpoch ?? -1;
     }
@@ -443,7 +486,7 @@ export class WebGPUModelCameraArena {
       );
       return {
         bindGroup,
-        dynamicOffsets: [allocation.offset, light.offset],
+        dynamicOffsets: this._offsetTupleFor(allocation.offset, light.offset),
         allocationEpoch: this._allocationEpoch,
       };
     }
@@ -476,9 +519,28 @@ export class WebGPUModelCameraArena {
     lightByteSize: number,
   ): GPUBindGroup {
     const cache = this._bindGroups;
-    const key =
-      `mc|${cache.idOf(layout)}|${cache.idOf(buffer)}|${byteSize}` +
-      `|${cache.idOf(lightBuffer)}|${lightByteSize}`;
+    // C11-195 allocation trim — reuse the last computed key while the
+    // resource-identity tuple is unchanged (the within-frame common case).
+    let key: string;
+    if (
+      layout === this._bindGroupKeyLayout &&
+      buffer === this._bindGroupKeyBuffer &&
+      lightBuffer === this._bindGroupKeyLightBuffer &&
+      byteSize === this._bindGroupKeyByteSize &&
+      lightByteSize === this._bindGroupKeyLightByteSize
+    ) {
+      key = this._bindGroupKey;
+    } else {
+      key =
+        `mc|${cache.idOf(layout)}|${cache.idOf(buffer)}|${byteSize}` +
+        `|${cache.idOf(lightBuffer)}|${lightByteSize}`;
+      this._bindGroupKeyLayout = layout;
+      this._bindGroupKeyBuffer = buffer;
+      this._bindGroupKeyLightBuffer = lightBuffer;
+      this._bindGroupKeyByteSize = byteSize;
+      this._bindGroupKeyLightByteSize = lightByteSize;
+      this._bindGroupKey = key;
+    }
     return cache.getOrCreate(key, () =>
       device.createBindGroup({
         label: "Model camera arena BG",
@@ -550,9 +612,42 @@ export class WebGPUModelCameraArena {
       // The camera rides its own private buffer at 0; the light keeps whatever
       // offset its own acquisition produced (it may still be a valid ring
       // slice — only the camera allocation degraded).
-      dynamicOffsets: [0, light.offset],
+      dynamicOffsets: this._offsetTupleFor(0, light.offset),
       allocationEpoch: this._allocationEpoch,
     };
+  }
+
+  /**
+   * Intern the `[cameraOffset, lightOffset]` dynamic-offset pair. Equal pairs
+   * share one frozen array instance; see
+   * {@link ModelCameraBinding#dynamicOffsets} for why sharing is sound.
+   */
+  private _offsetTupleFor(cameraOffset: number, lightOffset: number): number[] {
+    let inner = this._offsetTuples.get(cameraOffset);
+    if (inner === undefined) {
+      inner = new Map<number, number[]>();
+      this._offsetTuples.set(cameraOffset, inner);
+    }
+    let tuple = inner.get(lightOffset);
+    if (tuple === undefined) {
+      tuple = Object.freeze([cameraOffset, lightOffset]) as number[];
+      inner.set(lightOffset, tuple);
+    }
+    return tuple;
+  }
+
+  /**
+   * Drop the interned offset tuples and the memoized bind-group key so no
+   * dead ring page (or its key string) stays reachable through the arena.
+   */
+  private _resetRetainedAcquisitionState(): void {
+    this._offsetTuples.clear();
+    this._bindGroupKeyLayout = null;
+    this._bindGroupKeyBuffer = null;
+    this._bindGroupKeyLightBuffer = null;
+    this._bindGroupKeyByteSize = -1;
+    this._bindGroupKeyLightByteSize = -1;
+    this._bindGroupKey = "";
   }
 
   /**
@@ -677,6 +772,7 @@ export class WebGPUModelCameraArena {
     };
 
     destroyBestEffort(() => this._bindGroups.clear());
+    this._resetRetainedAcquisitionState();
     const fallbackBuffers = this._fallbackBuffers;
     this._fallbackBuffers = [];
     for (let i = 0; i < fallbackBuffers.length; i++) {

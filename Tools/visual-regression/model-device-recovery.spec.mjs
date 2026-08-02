@@ -351,6 +351,34 @@ test("pipeline teardown clears every private pipeline and module map", () => {
   }
 });
 
+test("pipeline teardown detaches its lease even when the drain throws", () => {
+  // `releaseWebGPUModelDeviceResources` removes the pool lease BEFORE draining
+  // native owners and then rethrows the first destroy failure (proved
+  // behaviorally by "the shared pool and pipeline lease..." above / the
+  // lost-device release test). A `destroy()` that nulled `_modelDeviceResources`
+  // only on the success path would therefore leave the cache holding a
+  // reference to a lease it has already given back — the exact hazard the two
+  // CONSTRUCTOR error paths already guard with try/finally.
+  const destroy = pipelineSource.slice(
+    pipelineSource.lastIndexOf("  destroy() {"),
+  );
+  assert.match(
+    destroy,
+    /try \{\s*releaseWebGPUModelDeviceResources\([\s\S]*?\);\s*\} finally \{\s*this\._modelDeviceResources = null;\s*\}/,
+    "destroy() must null the lease field in a finally",
+  );
+  // Both constructor error paths keep the same shape; this is the pattern
+  // destroy() now mirrors rather than a new invention.
+  const constructorFinallys = pipelineSource.match(
+    /\} finally \{\s*this\._modelDeviceResources = null;\s*\}/g,
+  );
+  assert.equal(
+    constructorFinallys.length,
+    3,
+    "two constructor error paths + destroy",
+  );
+});
+
 test("ordinary update validates ownership only after admission", () => {
   const update = functionSlice(rendererSource, "updateWebGPUModel");
   const rejection = update.indexOf(

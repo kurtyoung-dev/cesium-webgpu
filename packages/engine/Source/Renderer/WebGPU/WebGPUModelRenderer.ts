@@ -1069,8 +1069,21 @@ interface ModelRenderContext {
   /**
    * Mutable model camera/light arena paired with this context's allocator.
    * Immutable cameraBGL identity remains device-generation shared.
+   *
+   * Null carries the SAME meaning as a null `uniformAllocator`: the getter on
+   * `WebGPUContext` returns null exactly while the device is unavailable
+   * (destroyed / terminally lost / torn down). Model draws must degrade by
+   * SKIPPING, not throw — see {@link resolveModelCameraArenaOwner}.
    */
   modelCameraArena?: WebGPUModelCameraArena | null;
+  /**
+   * Dead-device markers mirrored from `WebGPUContext` (public-underscore
+   * fields there). `resolveModelCameraArenaOwner` reads them to distinguish
+   * the documented null-arena degradation above from a structural wiring
+   * failure on a healthy device, which must stay loud.
+   */
+  _isDestroyed?: boolean;
+  _isTerminallyLost?: boolean;
   drawingBufferWidth: number;
   drawingBufferHeight: number;
   depthFormat?: GPUTextureFormat;
@@ -1421,18 +1434,33 @@ function isIdentityMatrix4(m: ArrayLike<number>) {
  * C11-195 — resolve the exact context that owns BOTH the mutable model arena
  * and its uniform ring. A pooled GPUDevice can back multiple contexts, so
  * neither mutable owner may come from the device-shared pipeline cache.
+ *
+ * Returns null — the documented DEGRADATION, callers skip the draw — when the
+ * arena getter reports a dead device (`WebGPUContext.modelCameraArena` is null
+ * exactly while the context is destroyed or terminally lost; nothing can
+ * render there anyway, matching the pre-arena graceful posture). A null arena
+ * on a context whose device still claims to be HEALTHY, or a context that has
+ * no arena property at all, remains a loud structural error: that is a wiring
+ * failure feeding an active model draw, not a device lifecycle state.
  */
 function resolveModelCameraArenaOwner(
   frameState: CesiumFrameState,
-): ModelRenderContext {
+): ModelRenderContext | null {
   const context = frameState?.context as unknown as
     ModelRenderContext | undefined;
-  if (!context?.modelCameraArena) {
-    throw new Error(
-      "[CesiumJS:webgpu] Model camera arena is unavailable for an active model draw.",
-    );
+  if (context?.modelCameraArena) {
+    return context;
   }
-  return context;
+  if (
+    context !== undefined &&
+    context.modelCameraArena === null &&
+    (context._isDestroyed === true || context._isTerminallyLost === true)
+  ) {
+    return null;
+  }
+  throw new Error(
+    "[CesiumJS:webgpu] Model camera arena is unavailable for an active model draw.",
+  );
 }
 
 /**
@@ -1446,6 +1474,9 @@ function resolveModelCameraArenaOwner(
  * blocks (root, each transformed node, the IDL duplicate) address the same
  * light bytes, which is the entire point of hoisting the pack out of the
  * per-primitive loop.
+ *
+ * Returns null on the dead-device degradation (see
+ * {@link resolveModelCameraArenaOwner}); the caller skips the draw.
  */
 function acquireModelCameraBinding(
   device: GPUDevice,
@@ -1454,8 +1485,11 @@ function acquireModelCameraBinding(
   data: Float32Array,
   label: string,
   lightSlice: ModelViewLightSlice,
-): ModelCameraBinding {
+): ModelCameraBinding | null {
   const context = resolveModelCameraArenaOwner(frameState);
+  if (context === null) {
+    return null;
+  }
   const allocator = context.uniformAllocator ?? null;
   const arena = context.modelCameraArena!;
   arena.beginFrame(frameState?.frameNumber ?? 0, allocator);
@@ -1491,8 +1525,11 @@ function acquireModelLightSlice(
   frameState: CesiumFrameState,
   data: Float32Array,
   label: string,
-): ModelViewLightSlice {
+): ModelViewLightSlice | null {
   const context = resolveModelCameraArenaOwner(frameState);
+  if (context === null) {
+    return null;
+  }
   const allocator = context.uniformAllocator ?? null;
   const arena = context.modelCameraArena!;
   arena.beginFrame(frameState?.frameNumber ?? 0, allocator);
@@ -1521,6 +1558,10 @@ interface ModelLightWorkCounters {
  * context flushes once before submit) rather than individual `writeBuffer`
  * calls, which this path no longer makes.
  *
+ * Returns null on the dead-device degradation (see
+ * {@link resolveModelCameraArenaOwner}): nothing was staged, `lightWrites`
+ * does not advance, and the caller skips the draw that wanted the slice.
+ *
  * @private
  */
 function prepareModelViewLightSlice(
@@ -1529,7 +1570,7 @@ function prepareModelViewLightSlice(
   cache: ModelWebGPUCache,
   model: ModelLike,
   preparationWork: ModelLightWorkCounters | undefined,
-): ModelViewLightSlice {
+): ModelViewLightSlice | null {
   if (!defined(cache.lightData)) {
     cache.lightData = new Float32Array(LIGHT_UNIFORM_SIZE / 4);
   }
@@ -1543,6 +1584,9 @@ function prepareModelViewLightSlice(
     cache.lightData,
     "Model light",
   );
+  if (slice === null) {
+    return null;
+  }
   if (defined(preparationWork)) {
     preparationWork.lightWrites++;
   }
@@ -1850,6 +1894,11 @@ function getOrCreateModelCaptureCommands(
         captureLightData,
         "Model capture light",
       );
+      if (captureLightSlice === null) {
+        // Dead-device degradation (resolveModelCameraArenaOwner): the face
+        // replay is skipped; capture on a dead device draws nothing anyway.
+        return commands;
+      }
     }
     packCameraUniforms(captureCameraData, frameState, rec.nodeModelMatrix);
     const cameraBinding = acquireModelCameraBinding(
@@ -1860,6 +1909,9 @@ function getOrCreateModelCaptureCommands(
       "Model capture camera",
       captureLightSlice,
     );
+    if (cameraBinding === null) {
+      return commands;
+    }
     const materialBG = buildMergedMaterialBindGroup(
       device,
       pipelineCache,
@@ -6122,41 +6174,54 @@ function updateWebGPUModel(
       // camera-relative light block is byte-identical for both halves of the
       // IDL — exactly as it was when both read one per-primitive light UB.
       if (!defined(modelLightSlice)) {
-        modelLightSlice = prepareModelViewLightSlice(
-          device,
-          frameState,
-          cache,
-          model,
-          preparationWork,
+        modelLightSlice =
+          prepareModelViewLightSlice(
+            device,
+            frameState,
+            cache,
+            model,
+            preparationWork,
+          ) ?? undefined;
+      }
+      // A still-undefined slice here is the dead-device degradation
+      // (resolveModelCameraArenaOwner): leave `nodeIdlCameraBG` null so the
+      // duplicate is never emitted — the primary draw skips below for the
+      // same reason.
+      const idlBinding = !defined(modelLightSlice)
+        ? null
+        : acquireModelCameraBinding(
+            device,
+            frameState,
+            pipelineCache,
+            idlHost.cameraData2DIdl,
+            "Model camera 2D-IDL",
+            modelLightSlice,
+          );
+      if (idlBinding !== null) {
+        nodeIdlCameraBG = idlBinding.bindGroup;
+        nodeIdlCameraOffsets = idlBinding.dynamicOffsets;
+        // Persist the shifted matrix + bounding volume so the per-primitive
+        // duplicate command (emitted below) holds stable references — the
+        // `scratchIdl2DModelMatrix` is reused across nodes. The bounding
+        // volume is the same model-level `_boundingSphere2D` the primary
+        // command uses, translated by the identical y offset so Scene culling
+        // keeps the wrapped copy (WebGL transforms the per-primitive sphere
+        // by `_modelMatrix2D`; the model-level sphere is the conservative
+        // match).
+        if (!defined(idlHost.idlModelMatrix2D)) {
+          idlHost.idlModelMatrix2D = new Matrix4();
+          idlHost.idlBoundingSphere2D = new BoundingSphere();
+        }
+        Matrix4.clone(idlMat, idlHost.idlModelMatrix2D);
+        BoundingSphere.clone(
+          commandBoundingVolume,
+          idlHost.idlBoundingSphere2D,
         );
+        idlHost.idlBoundingSphere2D.center.y -=
+          Math.sign(nodeModelMatrix[13]) * idlShiftAmount2D;
+        nodeIdlModelMatrix2D = idlHost.idlModelMatrix2D;
+        nodeIdlBoundingSphere2D = idlHost.idlBoundingSphere2D;
       }
-      const idlBinding = acquireModelCameraBinding(
-        device,
-        frameState,
-        pipelineCache,
-        idlHost.cameraData2DIdl,
-        "Model camera 2D-IDL",
-        modelLightSlice,
-      );
-      nodeIdlCameraBG = idlBinding.bindGroup;
-      nodeIdlCameraOffsets = idlBinding.dynamicOffsets;
-      // Persist the shifted matrix + bounding volume so the per-primitive
-      // duplicate command (emitted below) holds stable references — the
-      // `scratchIdl2DModelMatrix` is reused across nodes. The bounding volume
-      // is the same model-level `_boundingSphere2D` the primary command uses,
-      // translated by the identical y offset so Scene culling keeps the
-      // wrapped copy (WebGL transforms the per-primitive sphere by
-      // `_modelMatrix2D`; the model-level sphere is the conservative match).
-      if (!defined(idlHost.idlModelMatrix2D)) {
-        idlHost.idlModelMatrix2D = new Matrix4();
-        idlHost.idlBoundingSphere2D = new BoundingSphere();
-      }
-      Matrix4.clone(idlMat, idlHost.idlModelMatrix2D);
-      BoundingSphere.clone(commandBoundingVolume, idlHost.idlBoundingSphere2D);
-      idlHost.idlBoundingSphere2D.center.y -=
-        Math.sign(nodeModelMatrix[13]) * idlShiftAmount2D;
-      nodeIdlModelMatrix2D = idlHost.idlModelMatrix2D;
-      nodeIdlBoundingSphere2D = idlHost.idlBoundingSphere2D;
     }
 
     // NEW-MODEL-NODE-TRANSFORMS-PREV (Batch 175) — resolve the per-node
@@ -7028,13 +7093,20 @@ function updateWebGPUModel(
         // that will bind it, mirroring the camera's lazy realization. Both
         // branches below pair their camera slice with this exact slice.
         if (!defined(modelLightSlice)) {
-          modelLightSlice = prepareModelViewLightSlice(
-            device,
-            frameState,
-            cache,
-            model,
-            preparationWork,
-          );
+          modelLightSlice =
+            prepareModelViewLightSlice(
+              device,
+              frameState,
+              cache,
+              model,
+              preparationWork,
+            ) ?? undefined;
+        }
+        if (!defined(modelLightSlice)) {
+          // Dead-device degradation (resolveModelCameraArenaOwner): skip this
+          // primitive's draw. Nothing can render on a dead device, and the
+          // arena helpers stay loud for every non-lifecycle null.
+          continue;
         }
         if (transformIsIdentity) {
           if (!rootCameraPreparedThisFrame) {
@@ -7061,14 +7133,20 @@ function updateWebGPUModel(
             // persistent buffer plus one `queue.writeBuffer` per frame. The
             // staged bytes reach the queue in the ring's single per-page
             // flush, which the context runs before the frame is submitted.
-            rootCameraBinding = acquireModelCameraBinding(
-              device,
-              frameState,
-              pipelineCache,
-              cache.cameraData,
-              "Model camera",
-              modelLightSlice,
-            );
+            rootCameraBinding =
+              acquireModelCameraBinding(
+                device,
+                frameState,
+                pipelineCache,
+                cache.cameraData,
+                "Model camera",
+                modelLightSlice,
+              ) ?? undefined;
+            if (!defined(rootCameraBinding)) {
+              // Dead-device skip — deliberately NOT marked prepared, so a
+              // later primitive re-attempts instead of binding undefined.
+              continue;
+            }
             rootCameraPreparedThisFrame = true;
           }
           nodeCameraBG = rootCameraBinding!.bindGroup;
@@ -7093,6 +7171,10 @@ function updateWebGPUModel(
             `Model camera node[${nodeIdx}]`,
             modelLightSlice,
           );
+          if (nodeBinding === null) {
+            // Dead-device skip, same posture as the identity branch above.
+            continue;
+          }
           nodeCameraBG = nodeBinding.bindGroup;
           nodeCameraOffsets = nodeBinding.dynamicOffsets;
         }

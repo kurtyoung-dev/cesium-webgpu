@@ -4581,12 +4581,19 @@ class WebGPUModelPipelineCache {
     this._metadataShaderModuleCache.clear();
     this._errorShaderModule = null;
     if (this._modelDeviceResources) {
-      releaseWebGPUModelDeviceResources(
-        this._device,
-        this._resourceGeneration,
-        this._modelDeviceResources,
-      );
-      this._modelDeviceResources = null;
+      // C11-194 — the release detaches the shared lease before draining native
+      // owners, then rethrows the first drain error. Null the field in a
+      // finally so a throwing release cannot leave this cache holding a lease
+      // it already gave back (mirrors the constructor error paths above).
+      try {
+        releaseWebGPUModelDeviceResources(
+          this._device,
+          this._resourceGeneration,
+          this._modelDeviceResources,
+        );
+      } finally {
+        this._modelDeviceResources = null;
+      }
     }
   }
 }
