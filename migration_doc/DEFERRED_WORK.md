@@ -7191,6 +7191,8 @@ lane still reports `globeReady: false` after 45 s, the readiness explanation is
 refuted and the finding is a real engine defect — re-open under the follow-up
 below.
 
+**RUN (2026-08-02, Batch 810): PASS on all three gates.** `BACKGROUND_GATE` PASS at every bisection step; `GLOBE_GATE` PASS — both backends reach globeReady with 21 binned GLOBE commands and byte-agreeing responses (globe-in-view gl=0.21 gpu=0.21, delta 0). Measured readiness cost: WebGL 771 ms / 13 frames, **WebGPU 2674 ms / 44 frames — a ~1.9 s cold-variant delta, inside the predicted 1-2 s `createRenderPipelineAsync` band.** The readiness explanation is empirically confirmed; entry CLOSED as a probe-harness finding.
+
 ### NEW-WEBGPU-GLOBE-COLD-VARIANT-FRUSTUM-COUPLING (engine follow-up, filed 2026-08-02)
 
 **Status:** OPEN / NOT SCOPED. Surfaced by the triage above.
@@ -7218,6 +7220,8 @@ its MECHANISM_PINS are deliberately written to FAIL if the skip is ever fixed �
 so any change here must update them in the same change.
 
 **Do not "fix" the skip as a side effect of a probe repair.**
+
+**First datapoint (2026-08-02 run, Batch 810): the on-screen cost of the skip is ~1.9 s of globe-less frames on a cold variant** (WebGPU 2674 ms / 44 frames to first GLOBE command vs WebGL 771 ms / 13 frames, same scene).
 
 ## 2026-08-02 — scene sun-shadow verification needs a real probe (and found an anomaly)
 
