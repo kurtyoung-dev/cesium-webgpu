@@ -7080,3 +7080,28 @@ an offline globe-readiness divergence. The probe lane should also be split so
 **Acceptance:** the lane shows frustums >= 1 on both backends with the globe
 in view, or the divergence is root-caused and its fix row filed; the lane's
 verdict separates the two concerns.
+
+## 2026-08-02 — scene sun-shadow verification needs a real probe (and found an anomaly)
+
+### SUN-SHADOW-GATE-PROBE-NEEDED — cascadesEnabled fix still unverified at pixels
+
+**Status:** OPEN / MACHINE LANE. The Batch 775/780 cascadesEnabled fix remains
+static-analysis-verified only. A quick orchestrator gate (box entity casting
+onto a receive-only globe, day/night, both backends) produced instrument
+ambiguity, not a verdict: the WebGL leg's shadowMap toggle changed nothing
+(the scene lacked whatever globe-receive prerequisites WebGL needs —
+enableLighting interplay suspected), so no reference existed. A proper probe
+must first establish a WebGL scene where sun shadows visibly darken the
+ground, then A/B WebGPU against it, then check the below-horizon cull.
+
+**ANOMALY RECORDED (needs its own look):** on the WebGPU leg, enabling the
+scene shadow map BRIGHTENED the ground band by ~112/255 at local noon
+(dayOff ~68 -> dayOn ~180). A receive-shadow shader variant that changes the
+base lighting term wholesale would look exactly like this. Whatever the
+proper probe finds, this brightening delta is evidence to explain, not
+noise.
+
+**Acceptance:** a fleet-convention probe (offline pins, warmup discard,
+canonical capture) shows day-side shadow darkening on both backends with
+bounded ratio, night-side zero delta (below-horizon cull), and explains or
+eliminates the +112 brightening.
