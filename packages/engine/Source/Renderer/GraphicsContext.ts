@@ -1473,6 +1473,22 @@ export abstract class GraphicsContext {
     return null;
   }
 
+  /**
+   * UP144-SNAP-WEBGPU (C11-212) — creates a backend-appropriate snap
+   * framebuffer for {@link Scene#snap}.
+   *
+   * WebGL: returns null (`Snapping.js` falls back to `SnapFramebuffer`).
+   * WebGPU: returns a `WebGPUSnapFramebuffer` instance.
+   *
+   * Called lazily on the first `Scene.snap()` call, so applications that never
+   * snap allocate no snap attachments on either backend.
+   *
+   * @returns A snap framebuffer, or null if the default (WebGL) should be used.
+   */
+  createSnapFramebuffer(): unknown {
+    return null;
+  }
+
   resolveFramebuffers(scene: unknown, passState: unknown): boolean {
     // Default: not handled by context, Scene.js runs WebGL path
     return false;

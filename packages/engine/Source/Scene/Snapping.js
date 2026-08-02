@@ -139,8 +139,17 @@ Snapping.snap = function (scene, windowPosition, options) {
   }
 
   // Created lazily so applications that never snap pay no framebuffer cost.
+  //
+  // UP144-SNAP-WEBGPU (C11-212) — backend-appropriate target via the context
+  // factory (same pattern View.js uses for the pick framebuffer): WebGL returns
+  // null and falls through to `SnapFramebuffer`; WebGPU returns a
+  // `WebGPUSnapFramebuffer`, whose construction also latches the context so the
+  // model renderer starts emitting snap draw commands. Both implement the same
+  // `begin(rectangle, viewport)` / `end(rectangle)` / `destroy()` surface, so
+  // everything below this line is backend-agnostic.
   if (!defined(defaultView.snapFramebuffer)) {
-    defaultView.snapFramebuffer = new SnapFramebuffer(context);
+    defaultView.snapFramebuffer =
+      context.createSnapFramebuffer() ?? new SnapFramebuffer(context);
   }
   const snapFramebuffer = defaultView.snapFramebuffer;
 

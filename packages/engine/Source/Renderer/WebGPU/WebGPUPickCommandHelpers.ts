@@ -468,6 +468,13 @@ export interface DrawCommandWithDerivedSlot {
     pickingMetadata?: {
       pickMetadataCommand?: unknown;
     };
+    // UP144-SNAP-WEBGPU (C11-212) — snapping-pass slot. Same key WebGL's
+    // `DerivedCommand.createSnapDerivedCommand` writes, so both backends'
+    // dispatchers read `derivedCommands.snapping.snapCommand`. Materialized
+    // only once an application has called `Scene.snap` at least once.
+    snapping?: {
+      snapCommand?: unknown;
+    };
   } & Record<string, unknown>;
 }
 
@@ -547,6 +554,43 @@ export function attachPickVariantsToColorCommand<TPick>(
   if (variants.precisePass2 !== undefined) {
     picking.pickPrecisePass2Command = variants.precisePass2;
   }
+}
+
+/**
+ * UP144-SNAP-WEBGPU (C11-212) — wire a snapping-pass command onto the color
+ * command's `derivedCommands.snapping.snapCommand` slot so
+ * `selectCommandVariant(..., snapVariant = true)` returns it during the payload
+ * phase of a `Scene.snap` mini-frame.
+ *
+ * Deliberately a SEPARATE slot from `derivedCommands.picking`: the snap variant
+ * targets the RGBA32F payload attachment, not the RGBA8 pick attachment, so a
+ * pass that accidentally selected it would fail WebGPU's draw-time attachment
+ * validation. Keeping the two families apart makes that mistake unrepresentable
+ * rather than merely unlikely.
+ *
+ * Idempotent — replaces the slot on each call.
+ *
+ * @param colorCommand - The base color command emitted into the command list.
+ * @param snapCommand - The snap variant (tagged `pickOnly: true` by the caller
+ *   so ordinary passes skip it).
+ *
+ * @private
+ */
+export function attachSnapToColorCommand<TSnap>(
+  colorCommand: DrawCommandWithDerivedSlot,
+  snapCommand: TSnap,
+): void {
+  let derived = colorCommand.derivedCommands;
+  if (!derived) {
+    derived = {};
+    colorCommand.derivedCommands = derived;
+  }
+  const snapping = derived.snapping;
+  if (snapping) {
+    snapping.snapCommand = snapCommand;
+    return;
+  }
+  derived.snapping = { snapCommand };
 }
 
 /**

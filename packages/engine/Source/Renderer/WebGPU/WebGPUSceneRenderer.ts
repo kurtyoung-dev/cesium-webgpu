@@ -199,6 +199,16 @@ export function selectCommandVariant(
   command: CesiumAnyDrawCommand,
   scene: CesiumScene,
   isPickPass: boolean,
+  /**
+   * UP144-SNAP-WEBGPU (C11-212) — select the SNAPPING variant instead of the
+   * pick variant. Deliberately a caller-supplied axis rather than a read of
+   * `frameState.passes.snap`: a snapping mini-frame runs TWO phases over the
+   * same frame state, and the occluder phase must keep selecting the ordinary
+   * pick variants (that is what writes the depth the payload phase tests
+   * against). Only the payload phase passes `true`, so every non-snap caller —
+   * and the occluder phase — is byte-identical to before.
+   */
+  snapVariant: boolean = false,
 ): CesiumAnyDrawCommand {
   const derived = command.derivedCommands;
   if (!derived) {
@@ -240,6 +250,18 @@ export function selectCommandVariant(
   if (isPicking || isDepth) {
     const d = cmd.derivedCommands;
     if (isPicking && !isDepth) {
+      // UP144-SNAP-WEBGPU (C11-212) — snapping payload phase. A command with a
+      // snap variant renders it (writing the RGBA32F snap payload); a command
+      // WITHOUT one returns unchanged, which the pass executor reads as "skip"
+      // — its occlusion contribution was already made in the occluder phase,
+      // and its pick pipeline targets an incompatible attachment format. This
+      // short-circuits ahead of the metadata/pick slots so a snapping pass can
+      // never accidentally dispatch an RGBA8 pick pipeline into the RGBA32F
+      // payload pass.
+      if (snapVariant) {
+        const snapCommand = d?.snapping?.snapCommand;
+        return snapCommand ?? cmd;
+      }
       if (
         frameState.pickingMetadata &&
         d?.pickingMetadata?.pickMetadataCommand

@@ -4062,6 +4062,159 @@ fn makeModelPickOut(color: vec4<f32>, logDepth: f32) -> PickFragOutput {
   return makeModelPickOut(material.pickColor, pickLogDepth);
 }
 
+// UP144-SNAP-WEBGPU (C11-212) — snapping-pass fragment output. WGSL twin of the
+// GLSL snap payload that `DerivedCommand.createSnapDerivedCommand` compiles into
+// a snap-derived shader from the `DrawCommand.snapId` expression built by
+// `PickingPipelineStage.snapIdFromPickId`:
+//
+//     vec4(rgba8UnormToUint32(pickColor), isEdge ? 1.0 : 0.0, -v_positionEC.z, 0.0)
+//
+// The target is an RGBA32F attachment (`WebGPUSnapFramebuffer`), NOT the RGBA8
+// pick FBO, so each channel carries a full f32:
+//
+//   R — pick key (uint32 repacked from the RGBA8-normalized pick color, then
+//       implicitly widened to f32; keys above 2^24 lose precision exactly as
+//       they do in the GLSL original, which performs the same uint->float cast).
+//   G — isEdge flag (0.0 surface / 1.0 edge).
+//   B — linear EYE-SPACE depth in meters (`-positionEC.z`). Eye space is global
+//       across the multifrustum and independent of the log-depth encoding, so
+//       `Snapping.snapHitToWorld` can unproject it directly.
+//   A — unused (0.0), matching upstream.
+//
+// `positionEC` is produced by the VS as
+// `camera.modelViewRelativeToEye * vec4(rte, 1.0)` — already relative-to-eye, so
+// the depth channel obeys the RTE law without a separate high/low pair (the
+// quantity written is a CAMERA-RELATIVE distance, never an absolute position).
+//
+// isEdge is always false here: on WebGPU a model's edges are rasterized by the
+// separate `WebGPUEdgeVisibilityEmitter` line pipeline (which carries no pick
+// ID), not by a second model draw with WebGL's `u_isEdgePass` uniform. Edge snap
+// candidates therefore need the emitter to grow a snap payload — tracked as
+// UP144-SNAP-WEBGPU-EDGES. Surface snapping is unaffected: `selectBestHit` falls
+// back to the closest surface when the region contains no edge hits.
+struct SnapFragOutput {
+  @location(0) payload: vec4<f32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
+// WGSL twin of the `snapHelperSource` GLSL helper injected by
+// `DerivedCommand.getSnapShaderProgram`. Repacks an RGBA8-normalized pick color
+// into its uint32 pick key so the key survives losslessly in a float channel.
+// The `* 255.0 + 0.5` round-trip matches the GLSL byte decode exactly.
+fn rgba8UnormToUint32(c: vec4<f32>) -> u32 {
+  let b = vec4<u32>(c * 255.0 + 0.5);
+  return b.r | (b.g << 8u) | (b.b << 16u) | (b.a << 24u);
+}
+
+fn makeModelSnapOut(
+  pickColor: vec4<f32>,
+  isEdge: bool,
+  positionEC: vec3<f32>,
+  logDepth: f32,
+) -> SnapFragOutput {
+  var out: SnapFragOutput;
+  out.payload = vec4<f32>(
+    f32(rgba8UnormToUint32(pickColor)),
+    select(0.0, 1.0, isEdge),
+    -positionEC.z,
+    0.0,
+  );
+  //>>ifdef LOG_DEPTH
+  // The snapping pass shares the pick mini-frame's depth attachment, which the
+  // ordinary pick fleet populated in the occluder phase. Write the SAME log
+  // encoding `fragmentPickMain` writes so the payload phase's `less-equal` test
+  // compares coherently against it.
+  out.depth = csm_writeLogDepth(logDepth, camera.logDepthFactor);
+  //>>endif
+  return out;
+}
+
+// UP144-SNAP-WEBGPU (C11-212) — snapping-pass fragment entry. Structurally the
+// snap twin of `fragmentPickMain`: the identical discard chain (split / clip /
+// alpha-mask / blend-epsilon / batch-table hide) and the identical per-feature
+// pick-color resolution, but the surviving fragment writes the float snap
+// payload above instead of the RGBA8 pick color. The discard chain is duplicated
+// rather than factored out for the same reason `fragmentPickHoverMain`
+// duplicates it — the entries diverge in their outputs and WGSL cannot return a
+// different struct from a shared helper.
+@fragment fn fragmentSnapMain(input: FragmentInput) -> SnapFragOutput {
+  let flags = material.materialFlags;
+  //>>ifdef LOG_DEPTH
+  let snapLogDepth = input.v_logDepth;
+  //>>else
+  let snapLogDepth = 0.0;
+  //>>endif
+  // C10-05 — hoist baseColor UV derivatives before any discard (see
+  // fragmentPickMain) so the alpha-test mip selection matches the color pass.
+  let baseColorUV_dx = dpdx(baseColorUV(input));
+  let baseColorUV_dy = dpdy(baseColorUV(input));
+  //>>ifdef MODEL_SPLIT_ENABLED
+  if (material._pad_end2 < 0.0 && input.fragCoord.x > material._pad_end3) { discard; }
+  if (material._pad_end2 > 0.0 && input.fragCoord.x < material._pad_end3) { discard; }
+  //>>endif
+
+  if (effects.clippingPlaneCount > 0u) {
+    if (modelClipByPlanes(input.positionEC) < 0.0) { discard; }
+  }
+  if (effects.clippingPolygonCount > 0u) {
+    let worldPos = camera.cameraPositionWC
+      + (material.modelMatrix * vec4<f32>(input.rteMC, 0.0)).xyz;
+    if (modelClipByPolygon(worldPos)) { discard; }
+  }
+
+  var baseColor = material.baseColorFactor;
+
+  if (hasFlag(flags, FLAG_USE_SPECULAR_GLOSSINESS)) {
+    baseColor = vec4<f32>(material.diffuseFactor_r, material.diffuseFactor_g,
+                          material.diffuseFactor_b, material.diffuseFactor_a);
+    if (hasFlag(flags, FLAG_HAS_DIFFUSE_TEXTURE)) {
+      let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
+      baseColor = baseColor * tc;
+    }
+  } else if (hasFlag(flags, FLAG_HAS_BASE_COLOR_TEXTURE)) {
+    let tc = textureSampleGrad(baseColorTexture, baseColorSampler, baseColorUV(input), baseColorUV_dx, baseColorUV_dy);
+    baseColor = baseColor * tc;
+  }
+
+  if (hasFlag(flags, FLAG_HAS_VERTEX_COLORS)) {
+    baseColor = baseColor * input.color0;
+  }
+
+  if (hasFlag(flags, FLAG_ALPHA_MODE_MASK)) {
+    if (baseColor.a < material.alphaCutoff) { discard; }
+  }
+
+  if (hasFlag(flags, FLAG_ALPHA_MODE_BLEND)) {
+    if (baseColor.a < 0.004) { discard; }
+  }
+
+  let snapHasFidTex = hasFlag(flags, FLAG_HAS_FEATURE_ID_TEXTURE);
+  let snapHasFidAttr = hasFlag(flags, FLAG_HAS_FEATURE_ID_ATTRIBUTE);
+  if ((snapHasFidTex || snapHasFidAttr) && hasFlag(flags, FLAG_HAS_BATCH_TABLE)) {
+    var fidInt: i32;
+    if (snapHasFidTex) {
+      let fidSample = textureSampleLevel(featureIdTexture, featureIdSampler, input.texCoord0, 0.0);
+      fidInt = unpackFeatureId(fidSample, featureId.channelCount);
+    } else {
+      fidInt = i32(input.featureId0);
+    }
+    let batchColor = lookupBatchColor(fidInt);
+    if (batchColor.a < 0.004) { discard; }
+    if (featureId.featurePickEnabled > 0.5) {
+      let featurePickColor = lookupFeaturePickColor(fidInt);
+      // Same RGB!=0 validity gate as fragmentPickMain — pick keys below 2^24
+      // have alpha 0, so an alpha test would reject every real feature.
+      if (featurePickColor.r > 0.0 || featurePickColor.g > 0.0 || featurePickColor.b > 0.0) {
+        return makeModelSnapOut(featurePickColor, false, input.positionEC, snapLogDepth);
+      }
+    }
+  }
+
+  return makeModelSnapOut(material.pickColor, false, input.positionEC, snapLogDepth);
+}
+
 // DP-H46e — metadata-pick fragment entry (scene.pickMetadata producer). The
 // WGSL sibling of the GLSL `metadataPickingStage` path in `ModelFS.glsl` (the
 // `#ifdef METADATA_PICKING_ENABLED` branch that sets `color = metadataValues`).

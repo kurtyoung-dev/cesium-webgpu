@@ -6632,20 +6632,105 @@ anchor rather than relaxing what it proves:
 
 ### UP144-SNAP-WEBGPU — Scene.snap WebGPU parity
 
-**Status:** OPEN / NEW PARITY GAP (introduced by upstream v1.144, PR #13531).
-Upstream's experimental `Scene.snap` snap-to-geometry picking API (Snapping.js,
+**Status:** IMPLEMENTED (C11-212), MACHINE-VERIFICATION PENDING. Upstream's
+experimental `Scene.snap` snap-to-geometry picking API (Snapping.js,
 SnapFramebuffer.js, `DerivedCommand.createSnapDerivedCommand`, `passes.snap`,
-`GlobeDepth.snapping`) is WebGL-only. On WebGPU the merge preserves it as a
-safe structural no-op: `SceneRenderer.executeCommand`'s alternate-renderer
-early-return precedes the snap branch and `Scene.updateDerivedCommands`
-returns early for WebGPU commands, so `Scene.snap()` renders an empty snap
-framebuffer and resolves `undefined` rather than throwing. Full parity needs a
-WebGPU RGBA32F snap target + snap pipeline variant in the pick pass family.
+`GlobeDepth.snapping`) shipped WebGL-only in v1.144; on WebGPU the merge left it
+a safe structural no-op (`SceneRenderer.executeCommand`'s alternate-renderer
+early-return precedes the snap branch, `Scene.updateDerivedCommands` returns
+early for WebGPU commands, so `Scene.snap()` resolved `undefined`).
 
-**Acceptance:** `Scene.snap` returns equivalent hits on both backends for the
-upstream multifrustum snapping Sandcastle scene. Maintainer ruling 2026-08-01:
-WebGPU implementation REQUIRED (the WebGL-only option was rejected); scheduled
-as Campaign 11 row `C11-212` (W7 parity wave).
+**What landed.** The WebGPU twin lives in the existing pick-pass family:
+
+- `Renderer/WebGPU/WebGPUSnapPayload.ts` — the ONE home for the payload
+  encoding: `SNAP_PAYLOAD_FORMAT` (`rgba32float`) plus the two pure decode
+  functions (`unpackSnapPixels`, `decodeSnapHits`). Dependency-free so a
+  pure-Node spec can pin the encoding with no device.
+- `Renderer/WebGPU/WebGPUSnapFramebuffer.ts` — the target, with the pick
+  framebuffer's device-generation lifecycle. Owns THREE attachments: an
+  occluder color (`pickPipelineFormat`), the RGBA32F payload, and a shared
+  depth. Lazily constructed by `Scene.snap` through the new
+  `GraphicsContext.createSnapFramebuffer()` factory (WebGL returns null and
+  keeps upstream's `SnapFramebuffer`).
+- `Shaders/WebGPU/Model/ModelPBRComplete.wgsl` — `fragmentSnapMain` +
+  `rgba8UnormToUint32` + `SnapFragOutput`, reproducing the GLSL payload
+  `vec4(rgba8UnormToUint32(pickColor), isEdge?1:0, -v_positionEC.z, 0)` channel
+  for channel, with `fragmentPickMain`'s full discard chain and the same
+  pick-fleet log-depth `frag_depth`.
+- `WebGPUModelPipelineCache.getSnapPipeline` — the snap pipeline variant. Direct
+  `createRenderPipeline` hatch (never the central cache); its descriptor name
+  carries BOTH the payload-format axis (`[sf=…]`) and the log axis (`[ld]`), and
+  its cache map is cleared at every site the pick map is.
+- `WebGPUSceneRendererPickPass` — the two-phase schedule. WebGPU validates a
+  pipeline's color-target formats against the render pass at DRAW time, so
+  upstream's single snap pass (snap variants + depth-only derived commands for
+  snapless commands) is not expressible: an RGBA8 pick pipeline dispatched into
+  an RGBA32F pass invalidates the whole command buffer (FORK-34). Instead each
+  frustum slice runs the UNMODIFIED pick sequence into the occluder attachment
+  (which is what writes depth for every snapless command — the depth-only
+  fallback, realized with pipelines that already exist), then a payload pass
+  over that same loaded depth that draws only resolved snap variants.
+- `selectCommandVariant` gained a caller-supplied `snapVariant` axis (default
+  false, so every existing caller is unchanged); only the payload phase passes
+  true. A snapless command is returned unchanged, which the executor reads as
+  "skip".
+
+`GlobeDepth.snapping` needs no WebGPU counterpart: its WebGL role is swapping
+GlobeDepth's COLOR framebuffer to its RGBA32F twin, and the WebGPU globe never
+renders through GlobeDepth's color FBO during a pick/snap mini-frame — it
+renders straight into the pick/snap attachment. The WebGPU globe depth's only
+pick-pass participation is `executeCopyDepthToView` for classification, which
+the payload phase deliberately skips (its packed-depth reopen would clear the
+depth the payload phase reads).
+
+**Contract:** `Tools/visual-regression/webgpu-snap-payload.spec.mjs` (40/40) —
+encoding vs. upstream's own GLSL source, live decode/spiral/readback-geometry,
+format agreement (+ mutation control), target lifecycle, variant-key
+distinctness, pass routing, scene dispatch, feature preservation.
+
+**Remaining for acceptance:** the machine verification. `Scene.snap` must return
+equivalent hits on both backends for the upstream multifrustum snapping
+Sandcastle scene. Note the WebGPU readback contract: like `Scene.pick`, snap is
+one frame stale on WebGPU, so a probe must call `snap()` twice at the same
+window position (or drive `WebGPUSnapFramebuffer.endAsync`).
+
+### UP144-SNAP-WEBGPU-EDGES — edge snap candidates on WebGPU
+
+**Status:** OPEN / NEXT SLICE of C11-212. On WebGL an edge snap candidate comes
+from a SECOND model draw of the same shader program with `u_isEdgePass = true`,
+so its snap-derived command writes `isEdge = 1.0` into channel G. On WebGPU a
+model's edges are rasterized by `WebGPUEdgeVisibilityEmitter`'s own line
+pipeline, which carries no pick ID at all (its `id` attachment packs
+`{edgeType, featureId}`, not the pick color) — so `fragmentSnapMain` always
+writes `isEdge = 0.0` and every WebGPU snap hit is a SURFACE hit.
+
+Consequence: `Snapping.selectBestHit`'s edge-over-surface preference is inert on
+WebGPU. Surface snapping is unaffected — the arbitration already falls back to
+the closest surface when a region contains no edge hits — but a user snapping to
+a building corner gets the nearest surface sample instead of the corner.
+
+Closing it needs the edge emitter to learn the primitive's pick color (available
+in the model's material UB) and to grow a snap-payload fragment entry + an
+RGBA32F pipeline variant, dispatched from the payload phase. Related deferred
+work: `C-R8-EDGE-FEATURE-ID` / `C-R8-EDGE-INLINE`.
+
+**Acceptance:** a snap over a model silhouette returns `isEdge: true` with a
+position on the edge, matching WebGL within the probe's pixel tolerance.
+
+### UP144-SNAP-WEBGPU-NON-MODEL — snappable families beyond the Model pipeline
+
+**Status:** OPEN / TRACKING (matches upstream's own scope today). Upstream only
+sets `DrawCommand.snapId` from `PickingPipelineStage`, so only Model-pipeline
+primitives (glTF + 3D Tiles) are snappable on EITHER backend, and
+`Scene.snap`'s JSDoc says so. The WebGPU implementation matches that scope
+exactly: `getSnapPipeline` exists only on the model pipeline cache.
+
+If upstream later widens `snapId` to geometry primitives, collections, voxels,
+or splats, each WebGPU renderer needs its own `fragmentSnapMain`-equivalent and
+an RGBA32F pipeline variant attached via `attachSnapToColorCommand`. The pass
+executor already visits GLOBE / CESIUM_3D_TILE / VOXELS / OPAQUE /
+GAUSSIAN_SPLATS / TRANSLUCENT in the payload phase, so no routing change would
+be needed — only the per-renderer variant.
 
 ### UP144-VECTOR-LAYER-WGSL — clamped vector-tile polylines WGSL twin
 

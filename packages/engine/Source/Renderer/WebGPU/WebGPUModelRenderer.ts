@@ -146,6 +146,7 @@ import {
 import {
   attachPickToColorCommand,
   attachPickVariantsToColorCommand,
+  attachSnapToColorCommand,
   attachPickMetadataToColorCommand,
   destroyPickIds,
   ensurePickId,
@@ -388,6 +389,9 @@ interface PrimitiveRenderData {
   pipeline: GPUPipelineOrNull;
   depthWritePipeline?: GPUPipelineOrNull;
   pickPipeline?: GPUPipelineOrNull;
+  // UP144-SNAP-WEBGPU (C11-212) — RGBA32F snap-payload pipeline, allocated only
+  // for scenes whose app has called `Scene.snap`.
+  snapPipeline?: GPUPipelineOrNull;
   pickHoverPipeline?: GPUPipelineOrNull;
   pickPrecisePass1Pipeline?: GPUPipelineOrNull;
   pickPrecisePass2Pipeline?: GPUPipelineOrNull;
@@ -653,6 +657,8 @@ interface PipelineCacheLike {
   getClassificationPipeline(...args: unknown[]): GPURenderPipeline;
   getCapturePipeline(...args: unknown[]): GPURenderPipeline;
   getPickPipeline(...args: unknown[]): GPURenderPipeline;
+  // UP144-SNAP-WEBGPU (C11-212) — RGBA32F snap-payload pipeline.
+  getSnapPipeline(...args: unknown[]): GPURenderPipeline;
   getPickHoverPipeline(...args: unknown[]): GPURenderPipeline;
   getPickMetadataPipeline(...args: unknown[]): GPURenderPipeline;
   getPickPrecisePass1Pipeline(...args: unknown[]): GPURenderPipeline;
@@ -7127,6 +7133,34 @@ function updateWebGPUModel(
           pipeline: primCache.pickPipeline,
         });
         attachPickToColorCommand(webgpuCmd, pickCmd);
+
+        // UP144-SNAP-WEBGPU (C11-212) — snapping-pass variant. Same draw args
+        // as every pick variant (only the pipeline differs), so the snap draw
+        // rasterizes exactly the geometry the pick draw does; the pipeline
+        // swaps the fragment entry to `fragmentSnapMain` and the color target
+        // to the RGBA32F snap-payload format.
+        //
+        // Gated on the context-level latch that `WebGPUSnapFramebuffer`'s
+        // constructor sets, mirroring the hover/precise pattern: the snap
+        // framebuffer is built lazily on the first `Scene.snap()` call, before
+        // `pickBegin` runs the scene update that reaches this code, so the
+        // FIRST snapping frame already carries the command. Scenes that never
+        // snap allocate neither the pipeline nor the command.
+        const snapContext = context as unknown as { _snapEnabled?: boolean };
+        if (snapContext._snapEnabled === true) {
+          if (!defined(primCache.snapPipeline)) {
+            primCache.snapPipeline = pipelineCache.getSnapPipeline(
+              matInfo.alphaMode,
+              matInfo.isDoubleSided,
+              primCache.materialDefines | 0,
+            );
+          }
+          const snapCmd = new WebGPUDrawCommand({
+            ...sharedPickDrawArgs,
+            pipeline: primCache.snapPipeline,
+          });
+          attachSnapToColorCommand(webgpuCmd, snapCmd);
+        }
 
         // C-R9-MODEL-PICK-TRANSLUCENT (Batch 192) — Option D / hover
         // pick variant. Lazily build pipeline on first frame the scene

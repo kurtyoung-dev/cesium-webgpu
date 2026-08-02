@@ -52,6 +52,7 @@ import WebGPUDrawCommand from "./WebGPUDrawCommand.js";
 // effects, so folding it into the (already-lazy) WebGPU chunk is a net win.
 import { WebGPUPrimitiveIndexUtils } from "./WebGPUPrimitiveIndexUtils.js";
 import { WebGPUPickFramebuffer } from "./WebGPUPickFramebuffer.js";
+import { WebGPUSnapFramebuffer } from "./WebGPUSnapFramebuffer.js";
 import { isSceneFBMrtMode } from "./WebGPUSceneFBTargetHelpers.js";
 import {
   canvasClearStateUpdate,
@@ -4703,6 +4704,29 @@ export class WebGPUContext extends GraphicsContext {
   override createPickFramebuffer(): WebGPUPickFramebuffer {
     return new WebGPUPickFramebuffer(this);
   }
+
+  /**
+   * UP144-SNAP-WEBGPU (C11-212) — WebGPU override: create the RGBA32F snap
+   * framebuffer behind `Scene.snap`. `Snapping.js` calls this factory instead
+   * of importing the WebGPU class directly (CLAUDE.md §2: Scene code stays
+   * backend-agnostic).
+   *
+   * Constructing this object latches `_snapEnabled` on the context, which is
+   * what makes the model feature renderer start emitting snap draw commands.
+   * The call site is lazy (first `Scene.snap()`), so a viewer that never snaps
+   * never pays the pipeline or attachment cost.
+   */
+  override createSnapFramebuffer(): WebGPUSnapFramebuffer {
+    return new WebGPUSnapFramebuffer(this);
+  }
+
+  /**
+   * UP144-SNAP-WEBGPU (C11-212) — true once a `WebGPUSnapFramebuffer` has been
+   * constructed against this context. Read by `WebGPUModelRenderer` to decide
+   * whether to materialize snap draw commands. Latched (never cleared) so a
+   * second snap after a framebuffer resize doesn't have to warm up again.
+   */
+  _snapEnabled: boolean = false;
 
   override resolveFramebuffers(
     _scene: CesiumScene,

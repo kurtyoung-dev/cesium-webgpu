@@ -73,6 +73,10 @@ import { substituteClusteredLightingGroup } from "./WebGPUClusteredLightingBGL.j
 // the color + classification pipelines; pick / hover / precise-pick /
 // velocity pipelines stay single-target.
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
+// UP144-SNAP-WEBGPU (C11-212) — the snap payload attachment format lives in the
+// shared encoding module so the pipeline target and the framebuffer attachment
+// cannot drift (WebGPU validates that pairing at DRAW time, not creation time).
+import { SNAP_PAYLOAD_FORMAT } from "./WebGPUSnapPayload.js";
 import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 // C10-07-ASYNC-MODEL-PIPELINES (Batch 704) — central render-pipeline cache.
@@ -1279,6 +1283,85 @@ function createPickPipeline(
 }
 
 /**
+ * UP144-SNAP-WEBGPU (C11-212) — snapping-pass pipeline. Structurally the pick
+ * pipeline (same layout, vertex stage, cull mode, depth state, no blend) with
+ * two differences:
+ *
+ *   - the fragment entry is `fragmentSnapMain`, which writes the RGBA32F snap
+ *     payload (pick key / isEdge / linear eye depth) instead of the RGBA8 pick
+ *     color, and
+ *   - the single color target is {@link MODEL_SNAP_PAYLOAD_FORMAT}, the format
+ *     of `WebGPUSnapFramebuffer`'s payload attachment. WebGPU validates a
+ *     pipeline's attachment state against the render pass at draw time, so a
+ *     pick-format pipeline dispatched into the snap payload pass would
+ *     invalidate the whole command buffer (the FORK-34 failure mode).
+ *
+ * `rgba32float` is not blendable in core WebGPU; the snap payload must reach
+ * the attachment byte-exact anyway, so no blend state is requested.
+ *
+ * Depth follows the pick pipeline exactly (`depthWriteEnabled: !isBlend`,
+ * `less-equal`). The snap payload pass shares the pick mini-frame's depth
+ * attachment, already populated by the ordinary pick fleet during the occluder
+ * phase — that is how snapless commands (globe, primitives, collections) still
+ * occlude snappable geometry behind them, which is upstream's depth-only
+ * fallback expressed with WebGPU's attachment-compatibility rules.
+ *
+ * The label carries BOTH distinguishing axes — the snap payload format and the
+ * pick-fleet log-depth state — per the descriptor-name convention guarded by
+ * `Tools/visual-regression/pipeline-key-aliasing.spec.mjs`. Like every other
+ * model pipeline except the color one, this uses the direct
+ * `device.createRenderPipeline` hatch and never consults the central pipeline
+ * cache, so name aliasing is structurally impossible here; the markers are kept
+ * so a future migration onto the central cache inherits a correct name.
+ *
+ * @private
+ */
+function createSnapPipeline(
+  device: GPUDevice,
+  shaderModule: GPUShaderModule,
+  pipelineLayout: GPUPipelineLayout,
+  snapFormat: GPUTextureFormat,
+  depthFormat: GPUTextureFormat,
+  alphaMode: number,
+  doubleSided: boolean,
+  hasTexCoord1: boolean,
+  hasFeatureId0: boolean,
+  hasMetadata: number | boolean = false,
+  topology: ModelTopologyRealization = MODEL_TOPOLOGY_TRIANGLE_LIST,
+  pickLogActive: boolean = false,
+) {
+  const cullMode = doubleSided ? "none" : "back";
+  const isBlend = alphaMode === 2;
+  const label = `Model PBR snap [alpha=${alphaMode},ds=${doubleSided}] [sf=${snapFormat}]${
+    pickLogActive ? " [ld]" : ""
+  }`;
+  return device.createRenderPipeline({
+    label,
+    layout: pipelineLayout,
+    vertex: {
+      module: shaderModule,
+      entryPoint: "vertexMain",
+      buffers: createVertexBufferLayout(
+        hasTexCoord1,
+        hasFeatureId0,
+        hasMetadata,
+      ),
+    },
+    fragment: {
+      module: shaderModule,
+      entryPoint: "fragmentSnapMain",
+      targets: [{ format: snapFormat }],
+    },
+    primitive: modelPrimitiveState(topology, cullMode),
+    depthStencil: {
+      format: depthFormat,
+      depthWriteEnabled: !isBlend,
+      depthCompare: "less-equal",
+    },
+  });
+}
+
+/**
  * DP-H46e — model metadata-PICK pipeline (`scene.pickMetadata` producer). Same
  * vertex stage / layout / single-target pick FBO color attachment / depth state
  * as {@link createPickPipeline}; the ONLY difference is the fragment entry
@@ -1833,6 +1916,11 @@ class WebGPUModelPipelineCache {
   declare _errorPipelines: Map<string | number, GPURenderPipeline>;
   declare _errorSwapGeneration: number;
   declare _pickPipelines: Map<string | number, GPURenderPipeline>;
+  // UP144-SNAP-WEBGPU (C11-212) — snapping-pass pipeline cache. Same key shape
+  // as `_pickPipelines`; populated only for models in a scene whose app has
+  // called `Scene.snap` at least once. Cleared wherever `_pickPipelines` is,
+  // because it shares the pick-fleet log-depth state and the pipeline layout.
+  declare _snapPipelines: Map<string | number, GPURenderPipeline>;
   declare _depthWritePipelines: Map<string | number, GPURenderPipeline>;
   declare _velocityPipelines: Map<string | number, GPURenderPipeline>;
   declare _classificationPipelines: Map<string | number, GPURenderPipeline>;
@@ -1975,6 +2063,9 @@ class WebGPUModelPipelineCache {
     // shares the layout + vertex stage of its color sibling and only
     // differs in the fragment entry + no-blend target state.
     this._pickPipelines = new Map();
+    // UP144-SNAP-WEBGPU (C11-212) — snapping-pass pipelines, keyed like the
+    // pick cache. Stays empty until an app calls `Scene.snap`.
+    this._snapPipelines = new Map();
     // C-R8-TRANSLUCENT-DEPTH-ONLY (Batch 79) — depth-write variant cache,
     // populated lazily for translucent commands tagged with
     // `depthForTranslucentClassification`. Same key shape as `_pipelines`
@@ -2876,6 +2967,7 @@ class WebGPUModelPipelineCache {
     // scene-format-generation guard so a stale resolve never writes back.
     this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
+    this._snapPipelines.clear();
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
@@ -2927,6 +3019,7 @@ class WebGPUModelPipelineCache {
     }
     this._pickLogDepthEnabled = enabled;
     this._pickPipelines.clear();
+    this._snapPipelines.clear();
     this._pickHoverPipelines.clear();
     this._pickMetadataPipelines.clear();
     this._pickPrecisePass1Pipelines.clear();
@@ -2958,6 +3051,7 @@ class WebGPUModelPipelineCache {
     // scene-format-generation guard so a stale resolve never writes back.
     this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
+    this._snapPipelines.clear();
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
@@ -3002,6 +3096,7 @@ class WebGPUModelPipelineCache {
     // scene-format-generation guard so a stale resolve never writes back.
     this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
+    this._snapPipelines.clear();
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
@@ -3048,6 +3143,7 @@ class WebGPUModelPipelineCache {
     // scene-format-generation guard so a stale resolve never writes back.
     this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
+    this._snapPipelines.clear();
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
@@ -3098,6 +3194,7 @@ class WebGPUModelPipelineCache {
     // scene-format-generation guard so a stale resolve never writes back.
     this._pendingColorPipelines.clear();
     this._pickPipelines.clear();
+    this._snapPipelines.clear();
     this._depthWritePipelines.clear();
     this._velocityPipelines.clear();
     this._classificationPipelines.clear();
@@ -3626,6 +3723,58 @@ class WebGPUModelPipelineCache {
       this._pickLogDepthEnabled,
     );
     this._pickPipelines.set(key, pipeline);
+    return pipeline;
+  }
+
+  /**
+   * UP144-SNAP-WEBGPU (C11-212) — gets or creates the snapping-pass pipeline
+   * for the given material configuration. Keyed identically to
+   * {@link WebGPUModelPipelineCache#getPickPipeline} so a primitive's color,
+   * pick, and snap pipelines share one `(alphaMode, doubleSided,
+   * materialDefines, topology)` identity.
+   *
+   * The module is the SAME pick-gated module the pick pipeline uses — LOG_DEPTH
+   * follows `_pickLogDepthEnabled`, not the scene switch — so `fragmentSnapMain`
+   * writes the same `@builtin(frag_depth)` encoding `fragmentPickMain` does and
+   * the payload phase's depth test stays coherent with the depth the occluder
+   * phase wrote.
+   *
+   * @param {number} alphaMode - 0=OPAQUE, 1=MASK, 2=BLEND
+   * @param {boolean} doubleSided
+   * @param {number} materialDefines - see {@link WebGPUModelPipelineCache#getPipeline}
+   * @returns {GPURenderPipeline}
+   */
+  getSnapPipeline(
+    alphaMode: number,
+    doubleSided: boolean,
+    materialDefines: number,
+  ) {
+    const md = this._normalizeMaterialDefines(materialDefines);
+    const topology = this._primitiveTopology;
+    const key = this._metadataVariantKey(
+      topologyVariantKey(computeKey(alphaMode, doubleSided, md), topology),
+      md,
+    );
+    let pipeline = this._snapPipelines.get(key);
+    if (pipeline) {
+      return pipeline;
+    }
+
+    pipeline = createSnapPipeline(
+      this._device,
+      this._getOrCreateShaderModule(md, this._pickLogDepthEnabled),
+      this._getOrCreatePipelineLayout(md),
+      SNAP_PAYLOAD_FORMAT,
+      this._depthFormat,
+      alphaMode,
+      doubleSided,
+      (md & ShaderDefine.MODEL_HAS_TEXCOORD_1) !== 0,
+      (md & ShaderDefine.MODEL_HAS_FEATURE_ID_0) !== 0,
+      this._metadataSlotMode(md),
+      topology,
+      this._pickLogDepthEnabled,
+    );
+    this._snapPipelines.set(key, pipeline);
     return pipeline;
   }
 
@@ -4378,6 +4527,7 @@ class WebGPUModelPipelineCache {
     // are released via GC once all references go away; clearing the map
     // releases the cache's reference. Same lifecycle as `_pipelines`.
     this._pickPipelines.clear();
+    this._snapPipelines.clear();
     if (this._modelDeviceResources) {
       releaseWebGPUModelDeviceResources(
         this._device,

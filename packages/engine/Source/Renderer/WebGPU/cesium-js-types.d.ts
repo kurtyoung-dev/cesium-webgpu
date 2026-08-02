@@ -46,6 +46,13 @@ type CesiumOpaqueFramebuffer = Partial<WebGPURenderTargetLike> & {
   depthView?: GPUTextureView;
   width?: number;
   height?: number;
+  // UP144-SNAP-WEBGPU (C11-212) — snap FBO marker + payload attachment (see
+  // WebGPUSnapFramebuffer.ts). A snap FBO also sets `_isWebGPUPickFBO`: its
+  // occluder phase IS the ordinary pick pass, and the snap marker is what
+  // upgrades `executePickPass` to the two-phase (occluder, payload) schedule.
+  _isWebGPUSnapFBO?: boolean;
+  snapColorView?: GPUTextureView;
+  snapColorFormat?: GPUTextureFormat;
 };
 type CesiumOpaqueVertexArray = CesiumOpaqueObject;
 type CesiumOpaqueShaderProgram = CesiumOpaqueObject;
@@ -300,6 +307,12 @@ interface CesiumFrameStatePasses {
   // pick command derivations. Undefined or "default" routes to the
   // existing pickCommand (B186 first slice).
   pickMode?: "default" | "hover" | "precise";
+  // UP144-SNAP-WEBGPU (C11-212) — true while the current pick mini-frame is a
+  // SNAPPING pass (Scene.snap). Only ever true while `pick` is also true. Set
+  // by `Picking.pickBegin` from `Snapping.snap`'s `{ snap: true }` option and
+  // cleared in `pickEnd`. Read by the model feature renderer (to materialize
+  // the snap draw command) and by `WebGPUSceneRendererPickPass`.
+  snap?: boolean;
 }
 
 interface CesiumFrameStateFog {
@@ -1504,6 +1517,12 @@ interface CesiumAnyDrawCommand {
       pickVoxelCommand?: CesiumAnyDrawCommand;
     };
     pickingMetadata?: { pickMetadataCommand?: CesiumAnyDrawCommand };
+    // UP144-SNAP-WEBGPU (C11-212) — snapping-pass variant. Same slot name and
+    // shape as WebGL's `DerivedCommand.createSnapDerivedCommand` result, so
+    // `SceneRenderer.executeCommand` (WebGL) and `selectCommandVariant`
+    // (WebGPU) read the same key. Populated only for commands that carry a
+    // snap payload, and only once an app has called `Scene.snap`.
+    snapping?: { snapCommand?: CesiumAnyDrawCommand };
     shadows?: { receiveCommand?: CesiumAnyDrawCommand };
     depth?: { depthOnlyCommand?: CesiumAnyDrawCommand };
   };

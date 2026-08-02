@@ -4498,6 +4498,14 @@ class Scene {
    * (WebGL2 with <code>EXT_color_buffer_float</code>); if unsupported, this
    * function returns <code>undefined</code>.
    * </p>
+   * <p>
+   * <b>WebGPU note:</b> like {@link Scene#pick}, <code>snap</code> reads its
+   * framebuffer ASYNCHRONOUSLY on WebGPU and returns the PREVIOUS snap's result
+   * (one frame stale). A continuous-hover snap converges after the first frame;
+   * a <i>standalone</i> snap at a fresh location returns <code>undefined</code>
+   * on its first call and resolves on a subsequent call at the same position.
+   * On WebGL <code>snap</code> is fully synchronous and unaffected.
+   * </p>
    *
    * @param {Cartesian2} windowPosition Window coordinates at the center of the search region.
    * @param {object} [options] Object with the following properties:
