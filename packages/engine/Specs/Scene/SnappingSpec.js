@@ -361,8 +361,14 @@ describe("Scene/Snapping", function () {
       expect(view.near).toBe(0.25);
       expect(view.viewportWidth).toBe(600.0);
       expect(view.windowX).toBe(10.25);
-      expect(view.sampleWindowX).toBe(10.0);
-      expect(view.sampleWindowY).toBe(20.0);
+      // UP144-SNAP-WEBGPU-EDGES — sampleCenterX/TopY are integer
+      // drawing-buffer pixel INDICES (20 and 40 here); the point the payload
+      // sampled is that pixel's CENTER, so the CSS conversion is
+      // (index + 0.5) * (client / drawingBuffer) = 20.5 * 0.5 and 40.5 * 0.5.
+      // Before the fix these read 10.0 / 20.0 — half a drawing-buffer pixel
+      // up-left of the pixel actually sampled.
+      expect(view.sampleWindowX).toBe(10.25);
+      expect(view.sampleWindowY).toBe(20.25);
       expect(view.drawingBufferWidth).toBe(600.0);
     });
 

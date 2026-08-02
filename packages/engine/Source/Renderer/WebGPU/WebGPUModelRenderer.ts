@@ -142,6 +142,8 @@ import {
   recordWebGPUModelPreparationDecision,
 } from "./WebGPUModelPreparationAdmission.js";
 import {
+  CAMERA_LOG_FACTOR_FLOAT,
+  CAMERA_LOG_NEAR_FLOAT,
   isWebGPULogDepthActive,
   isWebGPUPickLogDepthActive,
   packCameraLogDepthLanes,
@@ -159,6 +161,7 @@ import {
   createEdgeEmitterCache,
   destroyEdgeEmitterCache,
   ensureEdgeEmitterPipeline,
+  ensureEdgeEmitterSnapPipeline,
   createEdgePrimitiveResources,
   destroyEdgePrimitiveResources,
   writeEdgeEmitterUniforms,
@@ -8274,6 +8277,18 @@ function updateWebGPUModel(
           // ready for `_edgeLinePattern` to land later.
           const linePattern = (model._edgeLinePattern ?? 0xffff) & 0xffff;
 
+          // UP144-SNAP-WEBGPU-EDGES — snap lanes. The pick color is the SAME
+          // per-glTF-primitive ID the surface's pick/snap draws emit
+          // (ensurePickId keyed nodeIdx_primIdx, resolved above as
+          // `pickColor`); the log-depth encode pair is derived by the one
+          // enforceable home (packCameraLogDepthLanes) from the same
+          // uniformState the model's camera UB lanes read at this exact
+          // update moment, so the edge snap frag_depth compares coherently
+          // against the occluder-phase depth the pick fleet wrote.
+          packCameraLogDepthLanes(scratchEdgeLogLanes, 0, us);
+          const snapLogFactor = scratchEdgeLogLanes[CAMERA_LOG_FACTOR_FLOAT];
+          const snapLogNear = scratchEdgeLogLanes[CAMERA_LOG_NEAR_FLOAT];
+
           writeEdgeEmitterUniforms(
             device,
             primCache.edgeResources as EdgePrimitiveResources,
@@ -8284,6 +8299,9 @@ function updateWebGPUModel(
             vpH,
             lineWidth,
             linePattern,
+            pickColor ?? null,
+            snapLogFactor,
+            snapLogNear,
           );
 
           // Session 65 Batch 13 (NEW-VR-DEPTHPLANE-EDGEEMITTER-
@@ -8331,7 +8349,7 @@ function updateWebGPUModel(
             edgeVisibilityOn && !edgesOnly
               ? cache.edgeEmitterCache.pipeline
               : cache.edgeEmitterCache.pipelineSingleTarget;
-          const edgeCmd = new WebGPUDrawCommand({
+          const edgeCmd: ModelDrawCommand = new WebGPUDrawCommand({
             pipeline: edgePipeline,
             bindGroups: [
               primCache.edgeResources.cameraBG,
@@ -8350,6 +8368,51 @@ function updateWebGPUModel(
             ...nonColorShadowFlags,
           });
           commandList.push(edgeCmd);
+
+          // UP144-SNAP-WEBGPU-EDGES — snapping-pass edge variant. Same draw
+          // args as the edge color command (same quads, same bind groups);
+          // only the pipeline differs: `fragmentSnapMain` targets the
+          // RG32Uint payload attachment and writes the pick key with the
+          // edge flag SET. Riding `derivedCommands.snapping.snapCommand`
+          // means `executeSnapPayloadBatch`'s strict resolved-snap-variant
+          // admission (the FORK-34 guard) accepts it without loosening, and
+          // `Snapping.selectBestHit`'s edge-over-surface preference becomes
+          // live on WebGPU. Materialized only for the CURRENT snap
+          // mini-frame, exactly like the surface snap command above.
+          if (frameState?.passes?.snap === true && pickColor) {
+            const edgeSnapPipeline = ensureEdgeEmitterSnapPipeline(
+              cache.edgeEmitterCache,
+              device,
+              isWebGPUPickLogDepthActive(
+                context as unknown as Parameters<
+                  typeof isWebGPUPickLogDepthActive
+                >[0],
+                frameState,
+              ),
+            );
+            if (edgeSnapPipeline) {
+              const edgeSnapCmd = new WebGPUDrawCommand({
+                pipeline: edgeSnapPipeline,
+                bindGroups: [
+                  primCache.edgeResources.cameraBG,
+                  primCache.edgeResources.edgeBG,
+                ],
+                vertexBuffers: [primCache.edgeResources.vertexBuffer],
+                indexBuffer: primCache.edgeResources.indexBuffer,
+                indexCount: primCache.edgeResources.indexCount,
+                indexFormat: "uint32",
+                instanceCount: 1,
+                pass: edgePass,
+                owner: model,
+                boundingVolume: commandBoundingVolume,
+                modelMatrix: modelMatrix,
+                cull: model._cull ?? true,
+                pickOnly: true,
+                ...nonColorShadowFlags,
+              });
+              attachSnapToColorCommand(edgeCmd, edgeSnapCmd);
+            }
+          }
         }
       }
     }
@@ -8498,6 +8561,11 @@ const scratchEdgeMVP = new Matrix4();
 const scratchEdgeMVPArray = new Float32Array(16);
 const scratchEdgeMV = new Matrix4();
 const scratchEdgeMVArray = new Float32Array(16);
+// UP144-SNAP-WEBGPU-EDGES — scratch CameraUniforms-shaped lane carrier so the
+// edge UB's snap log-depth pair is derived by the ONE home
+// (packCameraLogDepthLanes) rather than a re-implementation. Sized to reach
+// the highest lane the packer writes (CAMERA_LOG_FAR_FLOAT = 59).
+const scratchEdgeLogLanes = new Float32Array(60);
 
 /**
  * Destroys cached WebGPU resources for a Model.

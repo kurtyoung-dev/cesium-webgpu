@@ -128,10 +128,15 @@ function captureSnapView(scene, windowPosition, drawingBufferRectangle) {
       Math.floor(drawingBufferRectangle.y ?? 0) -
       sampleHeight;
     const sampleCenterTopY = sampleOriginTopY + Math.floor(sampleHeight * 0.5);
+    // sampleCenterX/TopY are integer drawing-buffer pixel INDICES; the point
+    // the payload sampled is that pixel's CENTER, so convert index + 0.5.
+    // Without the half-pixel offset every reconstructed ray and reported
+    // screenPosition is biased half a drawing-buffer pixel up-left.
     sampleWindowX =
-      sampleCenterX * (canvas.clientWidth / scene.drawingBufferWidth);
+      (sampleCenterX + 0.5) * (canvas.clientWidth / scene.drawingBufferWidth);
     sampleWindowY =
-      sampleCenterTopY * (canvas.clientHeight / scene.drawingBufferHeight);
+      (sampleCenterTopY + 0.5) *
+      (canvas.clientHeight / scene.drawingBufferHeight);
   }
 
   return Object.freeze({

@@ -1139,6 +1139,13 @@ export const ShaderSourceId = Object.freeze({
   // time-evolve, IFFT, merge) have no ifdef blocks and are created directly by
   // the renderer, so they need no source id. Add-only.
   OCEAN_SURFACE: 41,
+  // UP144-SNAP-WEBGPU-EDGES (C11-212 edge tier). The inline edge-visibility
+  // emitter WGSL (`WebGPUEdgeVisibilityEmitter.ts` EDGE_EMITTER_WGSL) now
+  // resolves through the module cache so its `//>>ifdef LOG_DEPTH` block (the
+  // snap-payload fragment entry's pick-fleet log `frag_depth` write)
+  // preprocesses and the log/non-log variants dedupe per (sourceId, defines).
+  // Add-only.
+  EDGE_EMITTER: 42,
 } as const);
 
 /**

@@ -221,6 +221,14 @@ const NO_CENTRAL_CACHE = [
   "WebGPUBufferPolygonRenderer.ts",
   "WebGPUBufferPolylineRenderer.ts",
   "WebGPUPrimitiveCommands.ts",
+  // UP144-SNAP-WEBGPU-EDGES (C11-212 edge tier) — the edge emitter began
+  // gating a module on LOG_DEPTH when it grew `fragmentSnapMain`. Traced by
+  // hand 2026-08-02: zero central-cache references; the base/single-target
+  // pipelines and the new `ensureEdgeEmitterSnapPipeline` all call
+  // `device.createRenderPipeline` and hold the result on `EdgeEmitterCache`.
+  // The snap descriptor's name still carries BOTH axes (`[sf=…]` + `[ld]`) so
+  // a future migration onto the central cache inherits a correct name.
+  "WebGPUEdgeVisibilityEmitter.ts",
 ];
 
 /**

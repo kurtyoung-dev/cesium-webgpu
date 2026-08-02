@@ -9,8 +9,15 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
+// Normalize CRLF -> LF at the reader. The repo checks out with
+// core.autocrlf=true, so every source file on a Windows clone is CRLF while
+// these anchors are written with bare "\n" — an anchor like `"}\n"` cannot
+// match `"}\r\n"`. Before this, the spec only passed when a freshly applied
+// patch happened to leave LF bytes in the working copy and went RED after any
+// clean checkout: a false-green that hid whichever contract the anchor guards.
+// Line endings are never what these source-shape pins are testing.
 const read = (relativePath) =>
-  fs.readFileSync(path.join(root, relativePath), "utf8");
+  fs.readFileSync(path.join(root, relativePath), "utf8").replace(/\r\n/g, "\n");
 
 const context = read("packages/engine/Source/Renderer/WebGPU/WebGPUContext.ts");
 const generator = read(

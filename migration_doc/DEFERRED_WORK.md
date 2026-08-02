@@ -6746,7 +6746,87 @@ design; edge candidates; classification checkpoints; and broader producers.
 
 ### UP144-SNAP-WEBGPU-EDGES — edge snap candidates on WebGPU
 
-**Status:** OPEN / NEXT SLICE of C11-212. On WebGL an edge snap candidate comes
+**Status:** IMPLEMENTED — **browser acceptance gate OWED** (do NOT self-promote
+to COMPLETE). Landed as the C11-212 edge tier; the Node contract is green but
+no Edge/Playwright run has yet compared a real silhouette snap across backends.
+The original analysis is preserved below the mechanism because it is still the
+authority on WHY the tier was needed.
+
+**Mechanism (five parts, all under UP144-SNAP-WEBGPU-EDGES markers):**
+
+1. `WebGPUEdgeVisibilityEmitter.ts` — `EdgeUniforms` grew two vec4 lanes
+   (`pickColor`, `snapLogDepth`; the UB is 32 → 64 bytes), `VertexOutput` grew
+   `eyeDepth` (positive camera-relative `-curEye.z`, hoisted out of the
+   silhouette branch so it is unconditional — RTE-legal because it is a
+   distance, not a position), and a new `fragmentSnapMain` writes the two-word
+   RG32Uint payload: R = the pick key repacked by a byte-parallel copy of
+   `ModelPBRComplete.wgsl`'s `rgba8UnormToUint32`, G = the eye-depth f32 bits
+   with the sign bit **always** set (every fragment this pipeline rasterizes
+   IS an edge — the WebGPU twin of WebGL's `u_isEdgePass = true` second draw).
+   It keeps `fragmentMain`'s dash-gap discard. A `//>>ifdef LOG_DEPTH` block
+   adds the pick-fleet `frag_depth` encode, reconstructed from
+   `1.0 / input.position.w` so it is bit-equivalent to the fleet's
+   `csm_vertexLogDepth` varying and still correct under orthographic
+   projection. The inline WGSL now resolves through `WebGPUShaderModuleCache`
+   under the new **add-only** `ShaderSourceId.EDGE_EMITTER = 42` so the two
+   define variants dedupe per device; `defines = 0` is byte-identical to the
+   historical raw-string module.
+2. `ensureEdgeEmitterSnapPipeline(cache, device, pickLogActive)` — a direct
+   `createRenderPipeline` hatch (never the central cache, like the model snap
+   family) targeting `SNAP_PAYLOAD_FORMAT` imported from the ONE home, with
+   `depth24plus-stencil8` / depth-write / `less-equal` matching
+   `createSnapPipeline`, and a descriptor name carrying BOTH axes
+   (`[sf=rg32uint]` + `[ld]`) per the `pipeline-key-aliasing.spec.mjs`
+   convention. A base-pipeline rebuild and `destroyEdgeEmitterCache` both null
+   it; the cached `pipelineSnapLogActive` forces a rebuild on a switch flip.
+3. `WebGPUModelRenderer.ts` — feeds the edge UB the **same** per-glTF-primitive
+   pick color the surface pick/snap draws use (`ensurePickId` keyed
+   `nodeIdx_primIdx`, i.e. no parallel ID path) plus the log pair derived by
+   the single enforceable home `packCameraLogDepthLanes`, and materializes the
+   edge snap variant **only** when `frameState.passes.snap === true` and a real
+   pick ID exists, attaching it via `attachSnapToColorCommand` so it rides
+   `derivedCommands.snapping.snapCommand`. A null pick color writes zeros,
+   which decode as pick key 0 = "no object", so an ID-less edge can never claim
+   a hit.
+4. `WebGPUSceneRendererPickPass.ts` — the payload phase now also visits
+   `Pass.CESIUM_3D_TILE_EDGES` and `Pass.CESIUM_3D_TILE_EDGES_DIRECT`, at the
+   **tail**, reusing `executeSnapPayloadBatch` unchanged. The strict
+   resolved-snap-variant admission (the FORK-34 attachment guard) is NOT
+   loosened — edges join through the snapping slot only. The occluder phase
+   still never visits the edge passes.
+5. `Snapping.js` — `captureSnapView`'s sub-pixel bias fix (see below).
+
+**Sub-pixel fix (shared code, both backends).** `sampleCenterX` /
+`sampleCenterTopY` are integer drawing-buffer pixel *indices*, but the point
+the payload sampled is that pixel's *center*, so the CSS conversion is
+`(index + 0.5) * (client / drawingBuffer)`. Before the fix every reconstructed
+ray and reported `screenPosition` was biased half a drawing-buffer pixel
+up-left. `snapHitToScreenPosition` offsets from the same `sampleWindowX/Y`
+origin, so the ray and the screen position stay consistent by construction.
+`Snapping.js` is backend-agnostic, so **both** backends shift identically —
+this is a shared correctness fix (Principle 5), not a WebGPU-only change, and
+`packages/engine/Specs/Scene/SnappingSpec.js` was updated from 10.0/20.0 to
+10.25/20.25 to match.
+
+**Contract:** `Tools/visual-regression/webgpu-snap-edge-payload.spec.mjs`
+(25/25 green, pure Node). It drives `writeEdgeEmitterUniforms` and
+`ensureEdgeEmitterSnapPipeline` LIVE against a stub device, round-trips the
+edge flag through the real `WebGPUSnapPayload` encode/decode, NAGA-validates
+the emitter WGSL in both log states, and lifts `selectBestHit` /
+`captureSnapView` / `snapHitToScreenPosition` verbatim out of `Snapping.js` to
+execute them (the module cannot be imported in plain Node — its transitive
+`View.js` → `GlobeDepth.js` chain reaches build-generated shader leaves). Six
+mutation tests re-introduce the defects: a cleared edge OR, a severed
+pick-color plumb, a minted second pick ID, both ways of loosening the FORK-34
+guard, a dead isEdge preference, and the dropped half-pixel term.
+
+**Owed before this row can close:** the browser gate below — an Edge/Playwright
+snap at a model silhouette returning `isEdge: true` on BOTH backends with the
+positions agreeing within the probe's pixel tolerance. Also still open from the
+original analysis: non-Model edge producers (see `UP144-SNAP-WEBGPU-NON-MODEL`)
+and the classification checkpoints tracked on the C11-212 overlay.
+
+**Original analysis (retained):** On WebGL an edge snap candidate comes
 from a SECOND model draw of the same shader program with `u_isEdgePass = true`,
 so its snap-derived command writes `isEdge = 1.0` into channel G. On WebGPU a
 model's edges are rasterized by `WebGPUEdgeVisibilityEmitter`'s own line

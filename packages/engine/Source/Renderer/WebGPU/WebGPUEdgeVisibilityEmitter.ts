@@ -52,12 +52,27 @@
  *     adjacency-derived face normals remain the fallback when the
  *     accessor is absent.
  *
+ * UP144-SNAP-WEBGPU-EDGES (C11-212 edge tier) — the emitter now also owns
+ * the `Scene.snap` edge candidate producer: `fragmentSnapMain` writes the
+ * RG32Uint snap payload (uint32 pick key + edge-flagged f32 eye depth, the
+ * encoding home being `WebGPUSnapPayload.ts`) through the per-primitive
+ * pick color carried in the edge UB, and
+ * `ensureEdgeEmitterSnapPipeline` builds the payload-format pipeline
+ * variant on the pick-fleet log-depth axis. This is the WebGPU twin of
+ * WebGL's second model draw with `u_isEdgePass = true` — it makes
+ * `Snapping.selectBestHit`'s edge-over-surface preference live on WebGPU.
+ *
  * @module WebGPUEdgeVisibilityEmitter
  * @private
  */
 
 import Cartesian3 from "../../Core/Cartesian3.js";
 import { makeSceneFBTargets } from "./WebGPUSceneFBTargetHelpers.js";
+import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
+import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
+// UP144-SNAP-WEBGPU-EDGES — the ONE home of the snap payload format
+// (WebGPUSnapPayload.ts, dependency-free). Never spell the literal here.
+import { SNAP_PAYLOAD_FORMAT } from "./WebGPUSnapPayload.js";
 
 const EDGE_EMITTER_WGSL = /* wgsl */ `
 struct CameraUniforms {
@@ -77,6 +92,19 @@ struct EdgeUniforms {
   // == 0xffff i.e., solid; pattern values up to 16 bits round-trip
   // through f32 exactly).
   params: vec4<f32>,
+  // UP144-SNAP-WEBGPU-EDGES -- the owning glTF primitive's RGBA8-normalized
+  // pick color (the SAME per-primitive pick ID the model's pick/snap draws
+  // emit, from WebGPUPickCommandHelpers.ensurePickId keyed nodeIdx_primIdx).
+  // Consumed ONLY by fragmentSnapMain, which repacks it into the uint32 snap
+  // pick key. All zeros when the primitive has no pick ID (offscreen-only
+  // frames), which decodes as pick key 0 = "no object".
+  pickColor: vec4<f32>,
+  // UP144-SNAP-WEBGPU-EDGES -- pick-fleet log-depth encode for the snap
+  // variant's frag_depth: .x = oneOverLog2FarDepthFromNearPlusOne, .y =
+  // frustum near. Same (factor, near) pair the model fleet packs via
+  // packCameraLogDepthLanes, so the edge snap depth compares coherently
+  // against the depth the occluder phase wrote. .zw unused.
+  snapLogDepth: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> camera: CameraUniforms;
@@ -114,6 +142,13 @@ struct VertexOutput {
   @location(1) lineCoord: f32,
   @location(2) @interpolate(flat) featureId: f32,
   @location(3) @interpolate(flat) edgeColor: vec4<f32>,
+  // UP144-SNAP-WEBGPU-EDGES -- positive linear eye-space depth (-eye.z),
+  // perspective-correct interpolated. The snap fragment entry writes it into
+  // the payload's depth word (the WGSL twin of the model snap's
+  // -v_positionEC.z); the color entries ignore it. Camera-relative distance,
+  // never an absolute position, so it satisfies the RTE law without a
+  // high/low pair.
+  @location(4) eyeDepth: f32,
 };
 
 const PERP_TOL: f32 = 2.5e-4;
@@ -130,11 +165,14 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   // and the dot-product sign is what matters (not magnitude).
   let edgeTypeInt = input.edgeType * 255.0;
   var shouldDiscard = false;
+  // Hoisted out of the silhouette branch: the snap payload needs this
+  // endpoint's eye-space position for its linear depth word
+  // (UP144-SNAP-WEBGPU-EDGES), and the silhouette test reuses it.
+  let curEye = (camera.modelView * vec4<f32>(input.position, 1.0)).xyz;
   if (edgeTypeInt > 0.5 && edgeTypeInt < 1.5) {
     let normalAEye = normalize((camera.modelView * vec4<f32>(input.normalA, 0.0)).xyz);
     let normalBEye = normalize((camera.modelView * vec4<f32>(input.normalB, 0.0)).xyz);
 
-    let curEye = (camera.modelView * vec4<f32>(input.position, 1.0)).xyz;
     let toEye1 = normalize(-curEye);
     let dotA1 = dot(normalAEye, toEye1);
     let dotB1 = dot(normalBEye, toEye1);
@@ -152,6 +190,9 @@ fn vertexMain(input: VertexInput) -> VertexOutput {
   out.edgeType = input.edgeType;
   out.featureId = input.featureId;
   out.edgeColor = input.edgeColor;
+  // Positive for fragments in front of the camera, so the sign bit of its f32
+  // bit pattern is clear and free to carry the snap edge flag.
+  out.eyeDepth = -curEye.z;
 
   // Base clip-space position.
   let posClip = camera.modelViewProjection * vec4<f32>(input.position, 1.0);
@@ -312,6 +353,69 @@ fn fragmentSceneFB(input: VertexOutput) -> FragmentSceneFBOutput {
   }
   out.color = finalColor;
   out.gbuffer = vec4<f32>(0.0);
+  return out;
+}
+
+// UP144-SNAP-WEBGPU-EDGES -- snap-payload fragment output. Same two-word
+// RG32Uint layout as ModelPBRComplete.wgsl's SnapFragOutput (the ONE encoding
+// home is WebGPUSnapPayload.ts):
+//   R -- uint32 pick key repacked from the RGBA8-normalized pick color.
+//   G -- bits 0..30: positive linear eye-space depth as IEEE-754 f32 bits;
+//        bit 31: isEdge, ALWAYS SET here (every fragment this pipeline
+//        rasterizes IS an edge -- the WebGPU twin of WebGL's second model
+//        draw with u_isEdgePass = true).
+struct SnapFragOutput {
+  @location(0) payload: vec2<u32>,
+  //>>ifdef LOG_DEPTH
+  @builtin(frag_depth) depth: f32,
+  //>>endif
+};
+
+// WGSL twin of DerivedCommand.getSnapShaderProgram's snapHelperSource,
+// byte-parallel to the copy in ModelPBRComplete.wgsl. Repacks an
+// RGBA8-normalized pick color into its uint32 pick key losslessly.
+fn rgba8UnormToUint32(c: vec4<f32>) -> u32 {
+  let b = vec4<u32>(c * 255.0 + 0.5);
+  return b.r | (b.g << 8u) | (b.b << 16u) | (b.a << 24u);
+}
+
+// UP144-SNAP-WEBGPU-EDGES -- snapping-pass fragment entry, dispatched only by
+// the RG32Uint payload phase of a Scene.snap mini-frame
+// (WebGPUSceneRendererPickPass). Same discard semantics as fragmentMain: the
+// dash-pattern gap test (a gap pixel is not an edge candidate), with the
+// silhouette discard already applied by the shared vertexMain (w = 0
+// clip-reject). The surviving fragment writes the primitive's pick key and its
+// edge-flagged eye depth.
+@fragment
+fn fragmentSnapMain(input: VertexOutput) -> SnapFragOutput {
+  let pattern = u32(edge.params.w);
+  if (pattern != 0xffffu) {
+    let maskLength = 16.0;
+    let dashPosition = fract(input.lineCoord / maskLength);
+    let maskIndex = u32(floor(dashPosition * maskLength));
+    if ((pattern & (1u << maskIndex)) == 0u) {
+      discard;
+    }
+  }
+  var out: SnapFragOutput;
+  let depthBits = bitcast<u32>(input.eyeDepth) & 0x7fffffffu;
+  out.payload = vec2<u32>(
+    rgba8UnormToUint32(edge.pickColor),
+    depthBits | 0x80000000u,
+  );
+  //>>ifdef LOG_DEPTH
+  // The payload pass loads the depth the pick fleet wrote in the occluder
+  // phase; under the pick-fleet switch (C10-11) that depth is LOG-encoded, so
+  // this entry must write the SAME encode to compare coherently. Byte-parallel
+  // to the csm_vertexLogDepth / csm_writeLogDepth contract: the fleet
+  // interpolates (clip.w - near) + 1.0 linearly and takes log2 per fragment;
+  // perspective-correct interpolation of clip.w is exactly 1.0 / fragCoord.w,
+  // so this per-fragment reconstruction is bit-equivalent to carrying the
+  // varying (and matches the fleet's clip.w = 1.0 behavior under orthographic
+  // projection, where eyeDepth would not).
+  out.depth = log2((1.0 / input.position.w - edge.snapLogDepth.y) + 1.0)
+    * edge.snapLogDepth.x;
+  //>>endif
   return out;
 }
 `;
@@ -1063,8 +1167,17 @@ export interface EdgeEmitterCache {
   // executing edge commands in the regular scene FB pass when
   // `_enableEdgeVisibility` is off. Session 65 Batch 13.
   pipelineSingleTarget: GPURenderPipeline | null;
+  // UP144-SNAP-WEBGPU-EDGES — RG32Uint snap-payload pipeline
+  // (`fragmentSnapMain`), built lazily by the first Scene.snap mini-frame
+  // via {@link ensureEdgeEmitterSnapPipeline}. `pipelineSnapLogActive`
+  // records the pick-fleet log-depth axis the pipeline was built for so a
+  // switch flip rebuilds it (mirrors the model pipeline cache's
+  // maybeUpdateForPickLogDepth discipline).
+  pipelineSnap: GPURenderPipeline | null;
+  pipelineSnapLogActive: boolean;
   cameraBGL: GPUBindGroupLayout | null;
   edgeBGL: GPUBindGroupLayout | null;
+  pipelineLayout: GPUPipelineLayout | null;
   shaderModule: GPUShaderModule | null;
   colorFormat: GPUTextureFormat;
   sampleCount: number;
@@ -1075,8 +1188,11 @@ export function createEdgeEmitterCache(): EdgeEmitterCache {
     device: null,
     pipeline: null,
     pipelineSingleTarget: null,
+    pipelineSnap: null,
+    pipelineSnapLogActive: false,
     cameraBGL: null,
     edgeBGL: null,
+    pipelineLayout: null,
     shaderModule: null,
     colorFormat: "bgra8unorm",
     sampleCount: 1,
@@ -1087,9 +1203,53 @@ export function destroyEdgeEmitterCache(cache: EdgeEmitterCache): void {
   cache.device = null;
   cache.pipeline = null;
   cache.pipelineSingleTarget = null;
+  cache.pipelineSnap = null;
+  cache.pipelineSnapLogActive = false;
   cache.cameraBGL = null;
   cache.edgeBGL = null;
+  cache.pipelineLayout = null;
   cache.shaderModule = null;
+}
+
+// Per-device shader-module cache so the base and LOG_DEPTH snap variants
+// compile once per device and dedupe across split-screen contexts
+// (C-R7-SHADER-MODULE-DEDUP; same pattern as the Gaussian-splat renderer).
+// The cache runs the `//>>ifdef` preprocessor on miss, so the base
+// (defines = 0) module is byte-identical to the historical raw-string module:
+// the only ifdef block lives in the snap entry and resolves to its empty
+// else branch.
+const _edgeModuleCaches = new WeakMap<GPUDevice, WebGPUShaderModuleCache>();
+function getEdgeModuleCache(device: GPUDevice): WebGPUShaderModuleCache {
+  let moduleCache = _edgeModuleCaches.get(device);
+  if (!moduleCache) {
+    moduleCache = new WebGPUShaderModuleCache(device);
+    _edgeModuleCaches.set(device, moduleCache);
+  }
+  return moduleCache;
+}
+
+// Vertex state shared by every emitter pipeline (MRT, single-target, snap) —
+// same module entry, same 19-float interleaved layout.
+function makeEdgeVertexState(module: GPUShaderModule): GPUVertexState {
+  return {
+    module,
+    entryPoint: "vertexMain",
+    buffers: [
+      {
+        arrayStride: VERTEX_STRIDE_BYTES,
+        attributes: [
+          { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
+          { shaderLocation: 1, offset: 12, format: "float32" }, // edgeType
+          { shaderLocation: 2, offset: 16, format: "float32x3" }, // normalA
+          { shaderLocation: 3, offset: 28, format: "float32x3" }, // normalB
+          { shaderLocation: 4, offset: 40, format: "float32x3" }, // otherPos
+          { shaderLocation: 5, offset: 52, format: "float32" }, // edgeOffset
+          { shaderLocation: 6, offset: 56, format: "float32" }, // featureId (C-R8-EDGE-FEATURE-ID)
+          { shaderLocation: 7, offset: 60, format: "float32x4" }, // edgeColor (NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU)
+        ],
+      },
+    ],
+  };
 }
 
 export function ensureEdgeEmitterPipeline(
@@ -1111,13 +1271,21 @@ export function ensureEdgeEmitterPipeline(
   cache.sampleCount = sampleCount;
   cache.pipeline = null;
   cache.pipelineSingleTarget = null;
+  // UP144-SNAP-WEBGPU-EDGES — a rebuild (device/format/sampleCount change)
+  // also invalidates the snap variant; ensureEdgeEmitterSnapPipeline lazily
+  // rebuilds it against the fresh layout/module on the next snap mini-frame.
+  cache.pipelineSnap = null;
 
-  if (!cache.shaderModule) {
-    cache.shaderModule = device.createShaderModule({
-      label: "EdgeEmitter-Shader",
-      code: EDGE_EMITTER_WGSL,
-    });
-  }
+  // Resolved through the per-device module cache so the `//>>ifdef LOG_DEPTH`
+  // block in the snap entry preprocesses (defines = 0 emits the else branch —
+  // byte-identical for the color entries, which have no ifdef blocks).
+  const shaderModule = getEdgeModuleCache(device).getOrCreate(
+    ShaderSourceId.EDGE_EMITTER,
+    EDGE_EMITTER_WGSL,
+    0,
+    "EdgeEmitter-Shader",
+  );
+  cache.shaderModule = shaderModule;
 
   cache.cameraBGL = device.createBindGroupLayout({
     label: "EdgeEmitter-CameraBGL",
@@ -1143,31 +1311,14 @@ export function ensureEdgeEmitterPipeline(
     label: "EdgeEmitter-PipelineLayout",
     bindGroupLayouts: [cache.cameraBGL, cache.edgeBGL],
   });
+  cache.pipelineLayout = pipelineLayout;
 
   // Shared vertex + primitive + depth state. Only `fragment.targets`
   // and `label` differ between the MRT and single-target variants —
   // the fragment shader writes to @location 0/1/2 unconditionally, but
   // WebGPU silently drops writes to attachments that aren't present in
   // the pipeline's color-target array.
-  const vertex: GPUVertexState = {
-    module: cache.shaderModule,
-    entryPoint: "vertexMain",
-    buffers: [
-      {
-        arrayStride: VERTEX_STRIDE_BYTES,
-        attributes: [
-          { shaderLocation: 0, offset: 0, format: "float32x3" }, // position
-          { shaderLocation: 1, offset: 12, format: "float32" }, // edgeType
-          { shaderLocation: 2, offset: 16, format: "float32x3" }, // normalA
-          { shaderLocation: 3, offset: 28, format: "float32x3" }, // normalB
-          { shaderLocation: 4, offset: 40, format: "float32x3" }, // otherPos
-          { shaderLocation: 5, offset: 52, format: "float32" }, // edgeOffset
-          { shaderLocation: 6, offset: 56, format: "float32" }, // featureId (C-R8-EDGE-FEATURE-ID)
-          { shaderLocation: 7, offset: 60, format: "float32x4" }, // edgeColor (NEW-EDGE-MATERIALCOLOR-OVERRIDE-WEBGPU)
-        ],
-      },
-    ],
-  };
+  const vertex = makeEdgeVertexState(shaderModule);
   const primitive: GPUPrimitiveState = {
     // C-R8-EDGE-WIDE-LINES — quad expansion lands as triangles, not
     // native lines. WebGPU has no native wide-line support.
@@ -1195,7 +1346,7 @@ export function ensureEdgeEmitterPipeline(
     layout: pipelineLayout,
     vertex,
     fragment: {
-      module: cache.shaderModule,
+      module: shaderModule,
       entryPoint: "fragmentMain",
       targets: mrtTargets,
     },
@@ -1216,7 +1367,7 @@ export function ensureEdgeEmitterPipeline(
     layout: pipelineLayout,
     vertex,
     fragment: {
-      module: cache.shaderModule,
+      module: shaderModule,
       entryPoint: "fragmentSceneFB",
       targets: makeSceneFBTargets(colorFormat), // scene-FB MRT attachment count
     },
@@ -1224,6 +1375,88 @@ export function ensureEdgeEmitterPipeline(
     depthStencil,
     multisample,
   });
+}
+
+/**
+ * UP144-SNAP-WEBGPU-EDGES — get or (re)build the RG32Uint snap-payload
+ * pipeline variant. Called only from a `Scene.snap` mini-frame
+ * (`frameState.passes.snap`), after {@link ensureEdgeEmitterPipeline} has
+ * established the layout + module for this device, so scenes that never snap
+ * pay nothing.
+ *
+ *   - The fragment entry is `fragmentSnapMain`, whose single color target is
+ *     {@link SNAP_PAYLOAD_FORMAT} — the format of `WebGPUSnapFramebuffer`'s
+ *     payload attachment. WebGPU validates attachment state at DRAW time, so
+ *     a mismatched pipeline dispatched into the payload pass would invalidate
+ *     the whole snap command buffer (the FORK-34 failure mode).
+ *   - `pickLogActive` selects the LOG_DEPTH-preprocessed module so the entry
+ *     writes the pick fleet's log `frag_depth` encode (C10-11); the label
+ *     carries BOTH the payload-format axis (`[sf=…]`) and the log axis
+ *     (`[ld]`) per the descriptor-name convention guarded by
+ *     `pipeline-key-aliasing.spec.mjs`. Like the model snap family this is a
+ *     direct `createRenderPipeline` hatch — never the central cache — so name
+ *     aliasing is structurally impossible; the markers keep a future
+ *     migration honest.
+ *   - Depth follows the model snap pipeline (`less-equal`, depth write ON):
+ *     the payload pass LOADS the depth the occluder phase wrote, and an edge
+ *     fragment lying exactly on its surface's silhouette must pass the tie.
+ *     The payload pass is single-sample, so no multisample state regardless
+ *     of the scene pipelines' sampleCount.
+ *
+ * Returns null until the base ensure has run (no layout yet) or when the
+ * cached device diverges from the caller's.
+ */
+export function ensureEdgeEmitterSnapPipeline(
+  cache: EdgeEmitterCache,
+  device: GPUDevice,
+  pickLogActive: boolean,
+): GPURenderPipeline | null {
+  if (cache.device !== device || !cache.pipelineLayout) {
+    return null;
+  }
+  if (cache.pipelineSnap && cache.pipelineSnapLogActive === pickLogActive) {
+    return cache.pipelineSnap;
+  }
+
+  const moduleCache = getEdgeModuleCache(device);
+  const module = pickLogActive
+    ? moduleCache.getOrCreate(
+        ShaderSourceId.EDGE_EMITTER,
+        EDGE_EMITTER_WGSL,
+        ShaderDefine.LOG_DEPTH,
+        "EdgeEmitter-Shader [log]",
+      )
+    : moduleCache.getOrCreate(
+        ShaderSourceId.EDGE_EMITTER,
+        EDGE_EMITTER_WGSL,
+        0,
+        "EdgeEmitter-Shader",
+      );
+
+  cache.pipelineSnap = device.createRenderPipeline({
+    label: `EdgeEmitter-Pipeline-Snap [sf=${SNAP_PAYLOAD_FORMAT}]${
+      pickLogActive ? " [ld]" : ""
+    }`,
+    layout: cache.pipelineLayout,
+    vertex: makeEdgeVertexState(module),
+    fragment: {
+      module,
+      entryPoint: "fragmentSnapMain",
+      targets: [{ format: SNAP_PAYLOAD_FORMAT }],
+    },
+    primitive: {
+      topology: "triangle-list",
+      cullMode: "none",
+    },
+    depthStencil: {
+      // WebGPUSnapFramebuffer's shared depth attachment format.
+      format: "depth24plus-stencil8",
+      depthWriteEnabled: true,
+      depthCompare: "less-equal",
+    },
+  });
+  cache.pipelineSnapLogActive = pickLogActive;
+  return cache.pipelineSnap;
 }
 
 export interface EdgePrimitiveResources {
@@ -1269,10 +1502,12 @@ export function createEdgePrimitiveResources(
     size: 128,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
-  // Edge UB: vec4 color + vec4 params = 32 bytes.
+  // Edge UB: vec4 color + vec4 params + vec4 pickColor + vec4 snapLogDepth
+  // = 64 bytes (UP144-SNAP-WEBGPU-EDGES grew it from 32; the two snap lanes
+  // are written every frame but read only by fragmentSnapMain).
   const edgeBuffer = device.createBuffer({
     label: "EdgeEmitter-EdgeUniforms",
-    size: 32,
+    size: 64,
     usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
   });
 
@@ -1326,6 +1561,7 @@ export function destroyEdgePrimitiveResources(
 }
 
 const _scratchCameraData = new Float32Array(32); // 2 mat4 = 32 floats
+const _scratchEdgeData = new Float32Array(16); // 4 vec4 = 16 floats
 
 /**
  * Write per-frame camera + edge uniforms.
@@ -1336,6 +1572,14 @@ const _scratchCameraData = new Float32Array(32); // 2 mat4 = 32 floats
  * @param viewportWidth / viewportHeight  pixel dimensions for NDC→pixel offset math
  * @param lineWidth  pixel width for the quad expansion
  * @param linePattern  16-bit dash mask (0xffff = solid)
+ * @param pickColor  UP144-SNAP-WEBGPU-EDGES — the owning glTF primitive's
+ *   RGBA8-normalized pick color (a Cesium Color), or null when the primitive
+ *   has no pick ID; null writes zeros, which decode as pick key 0 ("no
+ *   object") so an ID-less edge can never claim a snap hit
+ * @param snapLogFactor / snapLogNear  the pick-fleet log-depth encode pair
+ *   (oneOverLog2FarDepthFromNearPlusOne, frustum near) — the SAME lanes the
+ *   model fleet packs via packCameraLogDepthLanes, read only by the snap
+ *   entry's LOG_DEPTH variant
  */
 export function writeEdgeEmitterUniforms(
   device: GPUDevice,
@@ -1347,13 +1591,21 @@ export function writeEdgeEmitterUniforms(
   viewportHeight: number,
   lineWidth: number,
   linePattern: number,
+  pickColor: {
+    red: number;
+    green: number;
+    blue: number;
+    alpha: number;
+  } | null,
+  snapLogFactor: number,
+  snapLogNear: number,
 ): void {
   // Camera UB: mvp[0..15], mv[16..31]
   _scratchCameraData.set(mvp, 0);
   _scratchCameraData.set(mv, 16);
   device.queue.writeBuffer(resources.cameraBuffer, 0, _scratchCameraData);
 
-  const edgeData = new Float32Array(8);
+  const edgeData = _scratchEdgeData;
   edgeData[0] = color.r;
   edgeData[1] = color.g;
   edgeData[2] = color.b;
@@ -1364,5 +1616,15 @@ export function writeEdgeEmitterUniforms(
   // Pattern packed as float — 0xffff fits in mantissa exactly, as do
   // any 16-bit pattern values used in practice.
   edgeData[7] = linePattern & 0xffff;
+  // UP144-SNAP-WEBGPU-EDGES — snap lanes (EdgeUniforms.pickColor +
+  // .snapLogDepth). Read only by fragmentSnapMain.
+  edgeData[8] = pickColor?.red ?? 0.0;
+  edgeData[9] = pickColor?.green ?? 0.0;
+  edgeData[10] = pickColor?.blue ?? 0.0;
+  edgeData[11] = pickColor?.alpha ?? 0.0;
+  edgeData[12] = snapLogFactor;
+  edgeData[13] = snapLogNear;
+  edgeData[14] = 0.0;
+  edgeData[15] = 0.0;
   device.queue.writeBuffer(resources.edgeBuffer, 0, edgeData);
 }

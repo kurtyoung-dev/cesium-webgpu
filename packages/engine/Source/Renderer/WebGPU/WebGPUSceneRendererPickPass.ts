@@ -718,7 +718,9 @@ export function executePickPass(
           // checkpoints: classification draws carry no snap payload, and their
           // packed-depth reopen would clear the depth the payload phase is
           // reading. Sorting already happened in the occluder phase, so the
-          // command arrays are in the order this phase wants.
+          // command arrays are in the order this phase wants. The two edge
+          // passes join at the tail (UP144-SNAP-WEBGPU-EDGES, rationale
+          // below).
           executeSnapPayloadBatch(
             frustumCommands,
             Pass.GLOBE,
@@ -762,6 +764,33 @@ export function executePickPass(
           executeSnapPayloadBatch(
             frustumCommands,
             Pass.TRANSLUCENT,
+            scene,
+            context,
+            snapRenderPass,
+            pickDynamicState,
+          );
+
+          // UP144-SNAP-WEBGPU-EDGES — edge snap candidates. The edge
+          // emitter's commands live in the two edge passes (which the
+          // occluder phase never visits — edges carry no pick variant), and
+          // only commands whose `derivedCommands.snapping.snapCommand`
+          // resolved are drawn, so the strict admission above is unchanged.
+          // Deliberately LAST: an edge lies exactly on its surface's
+          // silhouette, so with the snap family's `less-equal` depth test the
+          // later edge draw wins the tie and stamps the edge-flagged payload
+          // over the surface hit — the WebGPU realization of WebGL's
+          // `u_isEdgePass = true` second model draw.
+          executeSnapPayloadBatch(
+            frustumCommands,
+            Pass.CESIUM_3D_TILE_EDGES,
+            scene,
+            context,
+            snapRenderPass,
+            pickDynamicState,
+          );
+          executeSnapPayloadBatch(
+            frustumCommands,
+            Pass.CESIUM_3D_TILE_EDGES_DIRECT,
             scene,
             context,
             snapRenderPass,
