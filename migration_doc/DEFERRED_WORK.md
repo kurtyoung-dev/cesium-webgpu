@@ -7375,6 +7375,8 @@ stood behind without a per-file content check.
   the first formerly-void probe to re-baseline).
 - **`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`** — **RESOLVED 2026-08-06.**
 
+**EDGE ACCEPTANCE 2026-08-06 (orchestrator, post-rebuild, BOTH modes): PASS.** `detect` mode: 3,729 pipeline calls (2,472 during triggers), 13 covered producers, probe detector and the engine's `wrongModuleHits` counter BOTH 0 with 0 collisions. `--expect-collisions` negative control: FIRED correctly (so the detector still works after the rewrite the identity fold forced) while `wrongModuleHits` stayed 0 - proving the collisions are synthesised, not live. The emitted key shows every new fold segment on hardware: `pl:11 | pr:triangle-list/back/ccw//0 | dz:1/less-equal/0/0/0//// | mx:/0 | sh:13.vertexMainWebMercNormals/13.fragmentMain`. The owed browser gate recorded at landing is CLOSED.
+
   The fix above closed the LOG_DEPTH axis only. The general rule it exposed: a
   shader define that changes neither `descriptor.name` nor the vertex layout
   aliased silently in the central cache, because `generateCacheKey` read neither
