@@ -2,16 +2,23 @@
 // Probe (NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH) — runtime detector for central
 // pipeline-cache key ALIASING across the LOG_DEPTH axis.
 //
-// THE DEFECT
-// ----------
-// `WebGPURenderPipelineCache.generateCacheKey` hashes `descriptor.name`, fifteen
+// THE DEFECT (historical — closed structurally 2026-08-06)
+// ---------------------------------------------------------
+// `WebGPURenderPipelineCache.generateCacheKey` hashed `descriptor.name`, fifteen
 // optional `variant.*` fields, `ms:`, `df:`, a per-target `tg:` signature and a
-// `vx:` vertex signature. It NEVER reads `descriptor.vertex.module`,
+// `vx:` vertex signature. It NEVER read `descriptor.vertex.module`,
 // `descriptor.fragment.module`, `entryPoint`, or any define bitmask. The shader
-// module cache DOES key on `(sourceId, defines)`, so flipping LOG_DEPTH builds a
-// genuinely different `GPUShaderModule` — which the pipeline key then discards.
-// Correctness is fully delegated to callers encoding the axis into the free-form
-// `descriptor.name`.
+// module cache DOES key on `(sourceId, defines)`, so flipping LOG_DEPTH built a
+// genuinely different `GPUShaderModule` — which the pipeline key then discarded.
+// Correctness was fully delegated to callers encoding the axis into the
+// free-form `descriptor.name`.
+//
+// `NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL` folded shader-module IDENTITY
+// into the key (the trailing `sh:` segment), so the class is now structurally
+// impossible rather than convention-dependent. This probe is retained as the
+// RUNTIME confirmation of that on real hardware — a live cache serving real
+// descriptors is a different kind of evidence than a source spec — and its
+// negative control was rewritten accordingly (see below).
 //
 // HOW THIS PROBE WORKS
 // --------------------
@@ -51,11 +58,20 @@
 //
 // NEGATIVE CONTROL (required — a clean result is meaningless without it)
 // ---------------------------------------------------------------------
-// `--expect-collisions` re-creates the PRE-FIX key behaviour by wrapping
-// `generateCacheKey` to strip the log markers (`, ld=1`, `/ld=<n>`, ` [ld]`) out
-// of `descriptor.name` before hashing. That is exactly what the key looked like
-// before the markers landed, so the detector MUST fire. If it does not, the
-// detector is broken and any clean run in normal mode proves nothing.
+// `--expect-collisions` re-creates the PRE-FIX key behaviour before hashing:
+//   1. it strips the log markers (`, ld=1`, `/ld=<n>`, ` [ld]`, `|ld=<n>`) from
+//      `descriptor.name` — the Batch-803 mitigation; and
+//   2. it replaces the vertex/fragment modules with ONE shared stand-in object,
+//      which neutralises the 2026-08-06 `sh:` module-identity fold.
+// Step 2 became necessary when the fold landed: stripping the name markers alone
+// no longer collapses the key, because module identity separates the variants on
+// its own. Without it this control would silently stop firing and the clean
+// `detect` run would prove nothing — the exact failure mode the fold was built
+// to end, reproduced in the instrument.
+//
+// The substituted module is passed ONLY to the key computation; the collision
+// predicate still compares the REAL incoming descriptor against the stored
+// entry, so a fired control still reports the true module labels.
 //
 // POLARITY NOTE — HISTORICAL. When this probe was authored (2026-07-25, worktree
 // agent-a68f438fcb2e102c1) the engine was UNFIXED, so the intended order was
@@ -166,6 +182,9 @@ const out = await page.evaluate(async (stripMarkers) => {
   // NEGATIVE CONTROL — reproduce the pre-fix key by stripping the log markers
   // from the name before hashing.
   const realKey = cache.generateCacheKey.bind(cache);
+  // One shared stand-in for EVERY module, so the `sh:` fold degenerates to a
+  // constant and the key reverts to its pre-2026-08-06 discriminating power.
+  const foldNeutralizer = { __preFixModuleStandIn: true };
   const keyOf = stripMarkers
     ? (desc, variant) => {
         const stripped = {
@@ -175,10 +194,29 @@ const out = await page.evaluate(async (stripMarkers) => {
             .replace(/\/ld=\d+/g, "")
             .replace(/ \[ld\]/g, "")
             .replace(/\|ld=\d+/g, ""),
+          vertex: desc.vertex
+            ? { ...desc.vertex, module: foldNeutralizer }
+            : desc.vertex,
+          fragment: desc.fragment
+            ? { ...desc.fragment, module: foldNeutralizer }
+            : desc.fragment,
         };
+        // `defines`, when a producer declares it, is the other post-fix
+        // discriminator on this axis — drop it too so the control reproduces
+        // the pre-fix key rather than a half-folded hybrid.
+        delete stripped.defines;
+        delete stripped.definesHi;
         return realKey(stripped, variant);
       }
     : realKey;
+
+  // In `--expect-collisions` mode the synthesised keys no longer exist in the
+  // ENGINE's map (the engine stores real, module-folded keys), so the control
+  // keeps its own shadow index of pre-fix key -> first descriptor seen under it.
+  // Before the fold the stripped ON-state name collapsed onto the OFF-state's
+  // REAL key and the engine map alone sufficed; that shortcut died with the
+  // fold. In `detect` mode nothing changes — the engine's own map is read.
+  const shadow = stripMarkers ? new Map() : null;
 
   const wrap = (methodName) => {
     const orig = cache[methodName];
@@ -188,8 +226,9 @@ const out = await page.evaluate(async (stripMarkers) => {
         observedCalls++;
         if (desc && desc.name) seenNames.add(String(desc.name));
         const k = keyOf(desc, variant);
-        const prior = this.cache.get(k);
+        const prior = shadow ? shadow.get(k) : this.cache.get(k);
         if (prior) cacheHits++;
+        else if (shadow && desc) shadow.set(k, { descriptor: desc });
         if (
           prior &&
           desc &&

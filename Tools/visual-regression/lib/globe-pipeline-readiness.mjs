@@ -479,26 +479,32 @@ export const MECHANISM_PINS = Object.freeze([
  * report can state the real list rather than a remembered one, and so the spec
  * can pin the two absences below.
  *
- * ★ THE SHADER MODULE IS NOT IN THIS KEY. Neither is any shader define. Two
- * globe pipelines that differ ONLY by a define therefore collide unless the
- * define also changes `descriptor.name` or the vertex layout. Of the three
- * defines `selectPipeline` can set:
- *   - `GEODETIC_NORMAL`         — changes the vertex layout, so `vx:` separates it
- *   - `GLOBE_IMAGERY_REDUCED`   — adds `, imagery4` to the name
- *   - `LOG_DEPTH`               — adds `, ld=1` to the name
+ * ★ THE SHADER MODULE **IS** IN THIS KEY, since 2026-08-06
+ * (`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`). The trailing
+ * `sh:<vsId>.<vsEntry>/<fsId>.<fsEntry>` segment carries the identity of the
+ * `GPUShaderModule` objects themselves. `WebGPUShaderModuleCache` returns a
+ * distinct module per `(sourceId, defines, definesHi, keySalt)`, so folding
+ * module identity is strictly stronger than folding a define mask: a define
+ * that rides NEITHER the descriptor name NOR the vertex layout can no longer
+ * alias. The same change added `pl:` (pipeline-layout identity), `pr:`
+ * (primitive state), `dz:` (depth/stencil state beyond the format) and `mx:`
+ * (multisample mask + alpha-to-coverage), closing every descriptor-side field
+ * that `buildPipelineDescriptor` reads.
  *
- * ★ HISTORY, because the note here previously said the opposite. Until
- * 2026-08-01 `LOG_DEPTH` rode NEITHER the name nor the vertex layout, so the
+ * ★ HISTORY, twice over, because this note has now said three different things.
+ * (1) Before 2026-08-01 it claimed defines were covered "by convention"; they
+ * were not. `LOG_DEPTH` rode neither the name nor the vertex layout, so the
  * renderer-LOCAL key (which does include the defines hex) created a fresh local
  * entry on a log-depth flip that then resolved against an UNCHANGED central key
- * and was handed back the pipeline built for the OTHER log-depth state. That is
- * `NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH`, confirmed live and fixed by adding the
- * `${ldLabel}` marker to the globe descriptor name (plus seven sibling sites).
+ * and was handed back the pipeline built for the OTHER log-depth state — that is
+ * `NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH`, confirmed live and mitigated by adding
+ * `${ldLabel}` to the globe descriptor name plus seven sibling sites.
+ * (2) Batch 803's markers were per-axis mitigations, so the rule "every new
+ * define must be hand-checked" survived them. (3) The module fold retires that
+ * rule: the markers remain as defense-in-depth and as readable provenance, but
+ * correctness no longer depends on an author remembering one.
  * `pipeline-key-aliasing.spec.mjs` is the durable guard; `stats.wrongModuleHits`
- * is the runtime one. The observation is retained rather than deleted because
- * the SHAPE it describes — a define that rides neither axis aliases silently —
- * is the general rule, and the next define to be added must be checked against
- * it.
+ * is the runtime canary and is now expected to be permanently 0.
  *
  * @type {readonly string[]}
  */
@@ -513,4 +519,10 @@ export const CENTRAL_CACHE_KEY_COMPONENTS = Object.freeze([
   "descriptor.depthStencil.format",
   "descriptor.fragment.targets[] format+writeMask+hasBlend",
   "descriptor.vertex.buffers[] arrayStride+stepMode+attributes",
+  "descriptor.layout identity",
+  "descriptor.primitive topology/cullMode/frontFace/stripIndexFormat/unclippedDepth",
+  "descriptor.depthStencil depthWriteEnabled/depthCompare/bias/stencil ops+masks",
+  "descriptor.multisample mask+alphaToCoverageEnabled",
+  "descriptor.vertex.module + fragment.module identity + entryPoints",
+  "descriptor.defines/definesHi (optional, when the producer declares them)",
 ]);

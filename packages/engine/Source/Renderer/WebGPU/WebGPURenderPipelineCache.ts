@@ -13,6 +13,66 @@
 import type { AsyncResourceMonitor } from "./AsyncResourceMonitor.js";
 
 /**
+ * NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL — stable integer identity for
+ * GPU objects that participate in pipeline identity but expose no structural
+ * introspection API.
+ *
+ * `GPUShaderModule` has no readable source, no define mask and no comparable
+ * primitive form: the ONLY thing a key generator can observe about it is
+ * object identity. A `WeakMap` turns that identity into a small integer the
+ * key can carry, without retaining the module (entries vanish when the module
+ * is collected, which matters because `WebGPUShaderModuleCache` is dropped on
+ * device loss).
+ *
+ * Deliberately module-scoped rather than per-cache instance: multi-context
+ * scenes run several caches over several devices, and one shared counter keeps
+ * ids globally unique so a key can never mean two different modules. It also
+ * means the render and compute caches agree on what "module 7" is.
+ *
+ * Ids start at 1 so `0` can mean "absent" (no fragment stage, or a JS caller
+ * that omitted the module) without colliding with a real module.
+ */
+const gpuObjectIdentity = new WeakMap<object, number>();
+let nextGpuObjectId = 1;
+
+/**
+ * Resolve (and memoize) the identity integer for a GPU object.
+ *
+ * Hot path: one `WeakMap.get` — an identity-hash lookup with no allocation.
+ * The `set` runs once per object, ever.
+ *
+ * @param obj the object to identify, or null/undefined for "absent"
+ * @returns a stable positive integer, or 0 when the object is absent
+ */
+export function webgpuObjectIdentity(obj: object | undefined | null): number {
+  if (obj === undefined || obj === null) {
+    return 0;
+  }
+  let id = gpuObjectIdentity.get(obj);
+  if (id === undefined) {
+    id = nextGpuObjectId++;
+    gpuObjectIdentity.set(obj, id);
+  }
+  return id;
+}
+
+/**
+ * Compact signature for one stencil face state. Hand-serialized instead of
+ * `JSON.stringify` because `generateCacheKey` runs on every cache lookup and
+ * a four-field template beats a serializer walk; the four fields are the
+ * complete `GPUStencilFaceState` surface.
+ *
+ * @param face the stencil face state, or undefined
+ * @returns the signature, or the empty string when absent
+ */
+function stencilFaceSignature(face: GPUStencilFaceState | undefined): string {
+  if (face === undefined) {
+    return "";
+  }
+  return `${face.compare ?? ""}.${face.failOp ?? ""}.${face.depthFailOp ?? ""}.${face.passOp ?? ""}`;
+}
+
+/**
  * Pipeline descriptor for creating render pipelines
  */
 export interface WebGPURenderPipelineDescriptor {
@@ -58,6 +118,31 @@ export interface WebGPURenderPipelineDescriptor {
    * Multisample state
    */
   multisample?: GPUMultisampleState;
+
+  /**
+   * NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL — OPTIONAL explicit
+   * `ShaderDefine` bitmask (lo word) the shader modules were compiled with.
+   *
+   * Folding it into the cache key is belt-and-braces, not the primary
+   * mechanism: `generateCacheKey` already folds SHADER MODULE IDENTITY, and
+   * `WebGPUShaderModuleCache` hands out a distinct `GPUShaderModule` per
+   * `(sourceId, defines, definesHi, keySalt)` — so a define flip already
+   * moves the key with or without this field.
+   *
+   * Set it when the producer has the mask to hand and wants the key to say so
+   * (the globe does): it makes the axis legible in `describeCacheKey()` output
+   * and in `listPipelineVariants()` rows, and it keeps the key honest for a
+   * producer that composes a module from define-dependent SOURCE TEXT outside
+   * the module cache (where two logically different variants could in
+   * principle be handed to one `createShaderModule` call).
+   */
+  defines?: number;
+
+  /**
+   * Companion hi word for {@link WebGPURenderPipelineDescriptor.defines}
+   * (`ShaderDefineHi`, C11-149). Same optional/belt-and-braces status.
+   */
+  definesHi?: number;
 }
 
 /**
@@ -187,6 +272,15 @@ export interface PipelineCacheStats {
    * key collisions. Any nonzero value is a key-construction defect
    * (see WebGPUGlobeSurfacePipelineKey.ts and the Batch 764-767 aliasing
    * investigation). Observe-only: the aliased pipeline is still returned.
+   *
+   * NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL (2026-08-06) — since
+   * `generateCacheKey` folds shader-module IDENTITY, a served hit implies
+   * identical modules, so this counter is expected to be **permanently 0**.
+   * It is retained deliberately and must NOT be removed: it is now the
+   * runtime canary that the fold is still present and still reached. A
+   * nonzero reading means the `sh:` segment has been dropped, bypassed, or
+   * broken — read it as "the structural guarantee is gone", not merely as
+   * "one producer forgot a marker".
    */
   wrongModuleHits: number;
 
@@ -228,10 +322,12 @@ export interface PipelineCacheVariantInfo {
   key: string;
   /**
    * `descriptor.name` — the leading segment of `key`. Two rows sharing a
-   * `name` are distinguished only by the descriptor/variant markers that
-   * follow it; a producer that fails to vary the name for a
-   * pipeline-identity-affecting change is how two logical variants alias
-   * onto one `GPURenderPipeline`.
+   * `name` are distinguished by the descriptor/variant markers that follow
+   * it, and — since NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL — by the
+   * trailing `sh:<vsId>.<vsEntry>/<fsId>.<fsEntry>` shader-identity segment.
+   * Two rows with the SAME name and DIFFERENT `sh:` ids are the normal,
+   * correct shape for a shader-variant pair whose producer did not spell the
+   * axis into its name; before the fold those two rows were one aliased row.
    */
   name: string;
   pipeline: GPURenderPipeline;
@@ -692,6 +788,42 @@ export class WebGPURenderPipelineCache {
   /**
    * Generate cache key from descriptor and variant
    *
+   * # Shader identity is folded STRUCTURALLY (NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL)
+   *
+   * Until 2026-08-06 this hashed `descriptor.name` plus structural fields ONLY.
+   * It read neither `vertex.module` / `fragment.module` / `entryPoint` nor any
+   * define bitmask, so a shader define that changed neither the descriptor
+   * NAME nor the vertex layout aliased silently: the producer rebuilt its
+   * descriptor around a correctly-recompiled module, looked it up under an
+   * unchanged name, and was handed the pipeline compiled from the OLD module.
+   * That cost two rounds of point mitigations (Batch 795's `wrongModuleHits`
+   * counter, Batch 803's eight `, ld=1` name markers) and voided the OFF leg
+   * of five probes for months.
+   *
+   * The `sh:` segment closes the class at its root. `WebGPUShaderModuleCache`
+   * returns a DISTINCT `GPUShaderModule` object per
+   * `(sourceId, defines, definesHi, keySalt)`, so folding module identity is
+   * strictly stronger than folding the define mask: it also separates two
+   * producers that compiled different SOURCE TEXT under the same mask, and it
+   * works for producers that call `device.createShaderModule` directly and
+   * never touch the define registry at all. A future define bit therefore
+   * cannot alias whether or not its author remembers a name marker.
+   *
+   * The existing per-axis name markers (`, ld=1`, `, imagery4`, `, noCull`,
+   * `defines=0x…`, `[sf=…]`) are retained as defense-in-depth and as
+   * human-readable provenance in `describeCacheKey()` / `listPipelineVariants()`
+   * output — they are now redundant for correctness, not load-bearing.
+   *
+   * # Hit-rate and allocation
+   *
+   * Producers hold their descriptors (and therefore their modules) on
+   * long-lived `resources`/`entry`/`host` objects and rebuild them only on a
+   * real state flip, so identity is stable across frames and genuinely
+   * identical pipelines still share one key. Cost is two `WeakMap.get`s plus
+   * one extra `parts.push` per call — no new allocation beyond the single
+   * segment string, and far below the `JSON.stringify(variant.blend)` this
+   * function already pays on every blended lookup.
+   *
    * @param descriptor - Pipeline descriptor
    * @param variant - Variant configuration
    * @returns Cache key string
@@ -785,6 +917,77 @@ export class WebGPURenderPipelineCache {
         })
         .join(",");
       parts.push(`vx:${vtxSig}`);
+    }
+
+    // NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL — the remaining
+    // descriptor-side fields `buildPipelineDescriptor` feeds to
+    // `createRenderPipeline`. Before this change the ONLY descriptor-side
+    // fields hashed were `multisample.count`, `depthStencil.format`,
+    // `fragment.targets` and `vertex.buffers`; everything below was reachable
+    // only through the `variant` argument, and NO in-tree caller passes one.
+    // So `primitive.cullMode`, `depthStencil.depthWriteEnabled`, the shader
+    // modules and the pipeline layout were all invisible to the key — the
+    // `noCull` marker (GLOBE-UNDERGROUND-COLOR) and the `ld=` markers
+    // (NEW-WEBGPU-PIPELINE-KEY-LOG-DEPTH) were both hand-written stand-ins for
+    // exactly this omission. Hashing a field on BOTH sides can only ever SPLIT
+    // two keys that a variant override would have merged — the safe direction,
+    // and unreachable today because no caller passes a variant.
+
+    // Pipeline layout identity. `"auto"` and `undefined` are the same request
+    // ("derive it"), so both are omitted and keep their historical key shape.
+    const layout = descriptor.layout;
+    if (layout !== undefined && layout !== "auto") {
+      parts.push(`pl:${webgpuObjectIdentity(layout)}`);
+    }
+    // Primitive state. Hand-serialized rather than `JSON.stringify`d: five
+    // field reads and one template, no serializer machinery.
+    const primitive = descriptor.primitive;
+    if (primitive) {
+      parts.push(
+        `pr:${primitive.topology ?? ""}/${primitive.cullMode ?? ""}/` +
+          `${primitive.frontFace ?? ""}/${primitive.stripIndexFormat ?? ""}/` +
+          `${primitive.unclippedDepth ? 1 : 0}`,
+      );
+    }
+    // Depth/stencil state beyond the `df:` format already pushed above.
+    const ds = descriptor.depthStencil;
+    if (ds) {
+      parts.push(
+        `dz:${ds.depthWriteEnabled ? 1 : 0}/${ds.depthCompare ?? ""}/` +
+          `${ds.depthBias ?? 0}/${ds.depthBiasSlopeScale ?? 0}/${ds.depthBiasClamp ?? 0}/` +
+          `${ds.stencilReadMask ?? ""}/${ds.stencilWriteMask ?? ""}/` +
+          `${stencilFaceSignature(ds.stencilFront)}/${stencilFaceSignature(ds.stencilBack)}`,
+      );
+    }
+    // Multisample mask + alpha-to-coverage (the `count` is already pushed).
+    const multisample = descriptor.multisample;
+    if (multisample) {
+      parts.push(
+        `mx:${multisample.mask ?? ""}/${multisample.alphaToCoverageEnabled ? 1 : 0}`,
+      );
+    }
+
+    // SHADER IDENTITY. Unconditional and last, so every key ends in the
+    // segment that makes define aliasing structurally impossible (see this
+    // method's docstring). One segment rather than four: the module ids and
+    // entry points are concatenated so the path pays a single allocation.
+    const vertex = descriptor.vertex;
+    const fragment = descriptor.fragment;
+    parts.push(
+      `sh:${webgpuObjectIdentity(vertex?.module)}.${vertex?.entryPoint ?? ""}` +
+        `/${webgpuObjectIdentity(fragment?.module)}.${fragment?.entryPoint ?? ""}`,
+    );
+    // Optional producer-declared define mask. Redundant with `sh:` whenever
+    // the modules came from `WebGPUShaderModuleCache`, and emitted only when
+    // supplied, so keys for the (majority) producers that omit it are
+    // byte-identical to what they would be without this field.
+    if (
+      descriptor.defines !== undefined ||
+      descriptor.definesHi !== undefined
+    ) {
+      parts.push(
+        `dfn:${(descriptor.defines ?? 0) >>> 0}.${(descriptor.definesHi ?? 0) >>> 0}`,
+      );
     }
 
     return parts.join("|");
@@ -920,6 +1123,12 @@ export class WebGPURenderPipelineCache {
    * from the requested descriptor's. Counts only — the collision class this
    * catches is a key-construction defect, and the caller still receives the
    * cached pipeline exactly as before.
+   *
+   * Post-`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL` this can only fire if
+   * the `sh:` module-identity segment stopped reaching the key, because a key
+   * match now implies a module match by construction. Keep it: an instrument
+   * that is expected to read 0 is exactly what proves the invariant holds at
+   * runtime, and `probe-pipeline-key-aliasing.mjs` cross-checks against it.
    */
   private noteWrongModuleHit(
     cached: PipelineCacheEntry,

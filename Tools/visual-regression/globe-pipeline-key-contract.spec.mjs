@@ -835,15 +835,22 @@ function makeCentralCache() {
   return new WebGPURenderPipelineCache(device, "ctx-spec");
 }
 
+// A single shared stand-in module object. Identity — not shape — is what the
+// central key folds since NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL, so the
+// default must be ONE object rather than a fresh literal per call; two
+// descriptors that model "the same pipeline requested twice" have to carry the
+// same module the way a real producer's memoized descriptor does.
+const DEFAULT_STUB_MODULE = { __module: "vs-a" };
+
 function descriptorFor(name, module) {
   return {
     name,
     vertex: {
-      module: module ?? { __module: "vs-a" },
+      module: module ?? DEFAULT_STUB_MODULE,
       entryPoint: "vertexMain",
     },
     fragment: {
-      module: module ?? { __module: "vs-a" },
+      module: module ?? DEFAULT_STUB_MODULE,
       entryPoint: "fragmentMain",
       targets: [{ format: "bgra8unorm" }],
     },
@@ -900,68 +907,116 @@ test("G2. describeCacheKey exposes the real key, and the name is its head", () =
   assert.ok(withVariant.startsWith("Globe terrain (A)"));
 });
 
-test("G3. aliasing raises the hit rate — and wrongModuleHits is the one counter that sees it", async () => {
-  // Two logically DIFFERENT pipelines: same descriptor name, same
-  // key-relevant fields, different vertex shader module. The central key is
-  // built from the name plus descriptor/variant fields and does NOT read the
-  // shader module, so these collapse onto one entry — and the second request
-  // scores as a HIT. This is why `cacheStats()` looked healthy through the
-  // whole 15-month aliasing window: aliasing IMPROVES every number it prints.
+test("G3. an unmarked name can no longer alias two shader modules", async () => {
+  // REWRITTEN 2026-08-06 (`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`). The
+  // original version ASSERTED the aliasing: two logically different pipelines
+  // sharing a descriptor name collapsed onto one entry, the second request
+  // scored as a HIT, and `wrongModuleHits` was the only counter that could see
+  // it. That premise is now false by construction — `generateCacheKey` folds
+  // shader-module identity — so the test asserts the inverse. The point it made
+  // about `cacheStats()` still stands and is why the counter is retained: for
+  // the whole 15-month window aliasing IMPROVED every number that surface
+  // printed.
   const cache = makeCentralCache();
 
-  const a = descriptorFor("Globe terrain (shared)", { __module: "classic" });
-  const b = descriptorFor("Globe terrain (shared)", { __module: "enhOcean" });
+  // ONE object per logical module, reused — a real producer memoizes its
+  // module and hands the same object back on every rebuild.
+  const classicModule = { __module: "classic" };
+  const enhancedModule = { __module: "enhOcean" };
+  const a = descriptorFor("Globe terrain (shared)", classicModule);
+  const b = descriptorFor("Globe terrain (shared)", enhancedModule);
 
-  assert.equal(
+  assert.notEqual(
     cache.describeCacheKey(a),
     cache.describeCacheKey(b),
-    "premise: an unmarked name aliases two different shader modules",
+    "an unmarked name must NOT alias two different shader modules — the `sh:` " +
+      "module-identity segment is what separates them",
   );
 
   const first = await cache.getPipeline(a);
   const second = await cache.getPipeline(b);
 
-  assert.equal(
+  assert.notEqual(
     second,
     first,
-    "the second descriptor was served the first pipeline",
+    "each module must materialize its own pipeline, marker or no marker",
   );
 
   const stats = cache.getStats();
-  assert.equal(stats.size, 1);
-  assert.equal(stats.hits, 1);
-  assert.equal(stats.misses, 1);
-  assert.equal(stats.hitRate, 0.5, "the alias scored as a hit, not a miss");
-  // The 2026-08-01 maintainer-approved counter: the aliased hit carried a
-  // DIFFERENT shader module than the cached pipeline, and that is the only
-  // signal hits/misses can never express. Behavior is unchanged (the
-  // collision is still served); the counter only makes it visible.
+  assert.equal(stats.size, 2);
+  assert.equal(stats.hits, 0);
+  assert.equal(stats.misses, 2);
   assert.equal(
     stats.wrongModuleHits,
+    0,
+    "nothing aliased, so the runtime canary must stay at 0",
+  );
+
+  // Hit-rate preservation: the SAME descriptor requested again is still a hit.
+  // The fold must separate genuinely-different pipelines without turning every
+  // lookup into a miss.
+  const third = await cache.getPipeline(
+    descriptorFor("Globe terrain (shared)", classicModule),
+  );
+  assert.equal(third, first, "an identical re-request must still hit");
+  assert.equal(cache.getStats().hits, 1);
+  assert.equal(cache.getStats().size, 2);
+  assert.equal(cache.getStats().wrongModuleHits, 0);
+
+  const rows = cache.listPipelineVariants();
+  assert.equal(rows.length, 2);
+  assert.deepEqual(
+    rows.map((r) => r.name),
+    ["Globe terrain (shared)", "Globe terrain (shared)"],
+    "two rows under ONE name is the correct post-fold shape for a variant pair " +
+      "whose producer did not spell the axis into its name",
+  );
+});
+
+test("G3b. wrongModuleHits still fires when a key is made to collide", async () => {
+  // The counter is expected to read 0 forever now, which makes it easy for it
+  // to rot unnoticed. Poison the cache directly — store an entry under the key
+  // the cache computes for `a`, but with `b`'s descriptor — so a served hit
+  // genuinely carries the wrong module. This is the only remaining way to reach
+  // that branch, and reaching it is what proves the instrument is still live.
+  const cache = makeCentralCache();
+
+  const a = descriptorFor("Globe terrain (poisoned)", { __module: "classic" });
+  const b = descriptorFor("Globe terrain (poisoned)", { __module: "enhOcean" });
+
+  await cache.getPipeline(b);
+  const poisonedKey = cache.describeCacheKey(a);
+  const bEntry = cache.cache.get(cache.describeCacheKey(b));
+  cache.cache.set(poisonedKey, bEntry);
+
+  assert.equal(cache.getStats().wrongModuleHits, 0, "precondition");
+  const served = cache.getPipelineSync(a);
+  assert.ok(served, "the poisoned entry must be served as a hit");
+  assert.equal(
+    cache.getStats().wrongModuleHits,
     1,
-    "an aliased hit must increment wrongModuleHits",
+    "a hit whose cached module differs from the requested one must still " +
+      "increment wrongModuleHits — the runtime canary for the `sh:` fold",
   );
 
   // Control: a legitimate same-module hit must NOT increment it.
-  await cache.getPipeline(a);
+  cache.getPipelineSync(b);
   assert.equal(
     cache.getStats().wrongModuleHits,
     1,
     "a same-module hit must not count as a wrong-module hit",
   );
-
-  // The enumeration DOES expose it: one row, one stored module, for two
-  // logically distinct requests. That asymmetry is the whole reason the
-  // listing API exists alongside the counters.
-  const rows = cache.listPipelineVariants();
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].name, "Globe terrain (shared)");
 });
 
 test("G4. a name marker separates what would otherwise alias", async () => {
-  // The landed fix at the eight producer sites: vary `descriptor.name` for any
-  // change that affects pipeline identity but is invisible to the key
+  // The Batch-803 fix at the eight producer sites: vary `descriptor.name` for
+  // any change that affects pipeline identity but is invisible to the key
   // generator (here, the enhanced-ocean shader module).
+  //
+  // Retained as DEFENSE-IN-DEPTH, not as the correctness mechanism. Since
+  // 2026-08-06 the `sh:` fold separates these two regardless of the name (G3);
+  // the markers survive because a bare `sh:41.…` says the variants are
+  // separate but not WHICH variant a `listPipelineVariants()` row is.
   const cache = makeCentralCache();
 
   const classic = descriptorFor("Globe terrain (shared)", {

@@ -499,9 +499,25 @@ export function buildPipelineDescriptor(
   // The RENDERER-LOCAL caches are already safe on this axis — Batch 788 moved
   // their key format into `buildGlobePipelineCacheKey`, which ends every key
   // with `|${defines.toString(16)}`. This marker closes the CENTRAL cache only.
+  //
+  // NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL (2026-08-06) — the paragraph
+  // above describes the PRE-FIX central cache. `generateCacheKey` now folds
+  // shader-module IDENTITY (`sh:` segment) unconditionally, so this marker —
+  // and `noCull` / `imagery4` / `enhOcean` / `capture` — are no longer what
+  // stands between the two globe modules and a collision. They are retained as
+  // defense-in-depth and, more usefully, as human-readable provenance in
+  // `describeCacheKey()` / `listPipelineVariants()` / devtools labels: a bare
+  // `sh:41.…` tells you the variants are separate but not WHICH variant a row
+  // is. Do not remove them; do not treat a new one as mandatory.
   const ldLabel = logDepthOn ? ", ld=1" : "";
   return {
     name: `Globe terrain (${quantLabel}, ${normLabel}, ${blendLabel}${debugLabel}${cdLabel}${dobLabel}${dofLabel}${tbfLabel}${ncLabel}${imgLabel}${capLabel}${oceanLabel}${ldLabel})`,
+    // Declare the lo-word define mask the modules above were compiled with.
+    // Optional as far as the cache is concerned (module identity already
+    // separates every variant); supplied here because the globe has the mask
+    // to hand and it makes the central key self-describing on the axis that
+    // caused this whole defect class.
+    defines,
     layout: host._pipelineLayout!,
     vertex: {
       module: vertexModule,

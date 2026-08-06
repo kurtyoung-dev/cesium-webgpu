@@ -220,11 +220,13 @@ test("the renderer-local key is built by the ONE canonical builder, never inline
   );
 });
 
-test("the central cache key contains no shader module and no define bits", () => {
-  // This is the observation `CENTRAL_CACHE_KEY_COMPONENTS` documents. It is
-  // pinned because two of the probe's design decisions depend on it: the
-  // translucency positive control works only because `cullMode` and `blend` ARE
-  // in the key, and the aliasing note is only meaningful because defines are NOT.
+test("the central cache key DOES contain the shader module — the define axis is folded", () => {
+  // INVERTED 2026-08-06 by `NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`. The
+  // original asserted the ABSENCE of the module and of any define bits, because
+  // `CENTRAL_CACHE_KEY_COMPONENTS` documented that absence and the probe's
+  // aliasing note depended on it. The absence WAS the defect; the note now
+  // documents the fold, so this pin flips with it. The translucency positive
+  // control still works — `cullMode` and `blend` are still in the key.
   const src = readEngine(
     "packages/engine/Source/Renderer/WebGPU/WebGPURenderPipelineCache.ts",
   );
@@ -235,13 +237,20 @@ test("the central cache key contains no shader module and no define bits", () =>
     src.indexOf("\n  }", src.indexOf("parts.join", start)),
   );
   assert.ok(
-    !/\.\s*module\b/.test(body),
-    "generateCacheKey now keys on the shader module — the aliasing note in " +
-      "CENTRAL_CACHE_KEY_COMPONENTS is stale",
+    /webgpuObjectIdentity\(\s*vertex\?\.module\s*\)/.test(body) &&
+      /webgpuObjectIdentity\(\s*fragment\?\.module\s*\)/.test(body),
+    "generateCacheKey no longer folds shader-MODULE identity. That fold is the " +
+      "only thing making define aliasing structurally impossible; without it " +
+      "every new define bit is back to needing a hand-written name marker. " +
+      "See pipeline-key-aliasing.spec.mjs.",
   );
   assert.ok(
-    !/\bdefines\b/.test(body),
-    "generateCacheKey now keys on shader defines — the aliasing note is stale",
+    /parts\.push\(\s*`sh:/.test(body),
+    "the `sh:` shader-identity segment is gone from generateCacheKey",
+  );
+  assert.ok(
+    /descriptor\.defines\b/.test(body),
+    "generateCacheKey no longer reads the optional producer-declared define mask",
   );
   // The components the probe's report claims are present.
   for (const marker of [
@@ -258,6 +267,11 @@ test("the central cache key contains no shader module and no define bits", () =>
     );
   }
   assert.equal(CENTRAL_CACHE_KEY_COMPONENTS[0], "descriptor.name");
+  assert.ok(
+    CENTRAL_CACHE_KEY_COMPONENTS.some((c) => c.includes("module identity")),
+    "CENTRAL_CACHE_KEY_COMPONENTS must list the module-identity component the " +
+      "key now carries — the probe reports this list verbatim",
+  );
 });
 
 test("every selectPipeline define now rides the name or the vertex layout — LOG_DEPTH included", () => {

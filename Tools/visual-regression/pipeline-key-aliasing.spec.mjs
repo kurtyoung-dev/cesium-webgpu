@@ -1,20 +1,44 @@
-// pipeline-key-aliasing.spec.mjs — browser-free durable guard for the
-// LOG_DEPTH axis of the central pipeline cache key.
+// pipeline-key-aliasing.spec.mjs — browser-free durable guard for the central
+// pipeline cache key's shader-identity fold, plus the per-axis name markers it
+// superseded.
 //
-// WHY THIS EXISTS
+// ★ STATUS 2026-08-06 — THE CLASS IS NOW STRUCTURALLY CLOSED
+// -----------------------------------------------------------
+// `NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL` folded shader-MODULE IDENTITY
+// into `generateCacheKey` (the trailing `sh:<vsId>.<vsEntry>/<fsId>.<fsEntry>`
+// segment, plus `pl:` layout identity, `pr:` primitive state, `dz:`
+// depth/stencil state and `mx:` multisample extras — every descriptor-side
+// field `buildPipelineDescriptor` reads). `WebGPUShaderModuleCache` returns a
+// DISTINCT `GPUShaderModule` per `(sourceId, defines, definesHi, keySalt)`, so
+// folding module identity is strictly STRONGER than folding a define mask: a
+// brand-new define bit, added by an author who never heard of a name marker,
+// cannot alias. The STRUCTURAL group below proves that by execution, over every
+// bit in the real `ShaderDefine` registry, and the MUTATION-FOLD group removes
+// the fold and requires detection.
+//
+// Everything after the structural group is DEFENSE IN DEPTH: the Batch-803 name
+// markers still exist and are still checked, because a bare `sh:41.…` tells a
+// reader that two rows are separate but not WHICH variant each row is. They are
+// no longer what stands between a define flip and a collision. Do not delete a
+// marker; do not treat adding one as mandatory.
+//
+// WHY THIS EXISTS (the pre-fix world, retained because every recording below
+// was made in it)
 // ---------------
-// `WebGPURenderPipelineCache.generateCacheKey` hashes exactly: `descriptor.name`,
+// `WebGPURenderPipelineCache.generateCacheKey` hashed exactly: `descriptor.name`,
 // fifteen optional `variant.*` fields, `ms:<multisample.count>`,
 // `df:<depthStencil.format>`, a per-target `tg:` signature and a `vx:` vertex
-// buffer signature. It NEVER reads `descriptor.vertex.module`,
-// `descriptor.fragment.module`, `entryPoint`, or any shader-define bitmask.
+// buffer signature. It NEVER read `descriptor.vertex.module`,
+// `descriptor.fragment.module`, `entryPoint`, or any shader-define bitmask —
+// and NO in-tree caller passes a `variant`, so `descriptor.primitive` and most
+// of `descriptor.depthStencil` were unhashed too.
 //
 // `WebGPUShaderModuleCache` keys correctly on `(sourceId, defines)`, so flipping
-// LOG_DEPTH genuinely produces a DIFFERENT `GPUShaderModule` — which is then
-// discarded by a pipeline key that cannot see it. Correctness is therefore fully
-// delegated to callers encoding every shader-affecting axis into the free-form
-// `descriptor.name`. `DEFERRED_WORK.md` states the convention: "distinct
-// pipeline structure MUST produce a distinct name".
+// LOG_DEPTH genuinely produced a DIFFERENT `GPUShaderModule` — which was then
+// discarded by a pipeline key that could not see it. Correctness was therefore
+// fully delegated to callers encoding every shader-affecting axis into the
+// free-form `descriptor.name`. `DEFERRED_WORK.md` stated the convention:
+// "distinct pipeline structure MUST produce a distinct name".
 //
 // This was filed once before —
 // `migration_doc/audits/2026-06-11_ULTRA_REVIEW_findings.json:2630-2636` —
@@ -107,11 +131,23 @@
 //
 // WHAT THIS SPEC GUARDS
 // ---------------------
-// A SOURCE-TEXT spec, so it needs no GPU and runs in CI. Seven groups:
+// Mostly a SOURCE-TEXT spec, so it needs no GPU and runs in CI. The STRUCTURAL
+// and MUTATION-FOLD groups additionally EXECUTE the real engine modules through
+// `engine-ts-resolver` against stub devices. Groups:
 //
-//   1. ENUMERATION — every file under `Renderer/WebGPU/` that compiles a
-//      LOG_DEPTH-gated shader module is classified into exactly one bucket. A
-//      newly-added renderer cannot quietly skip the convention.
+//   0. STRUCTURAL — the real guarantee, proved by execution rather than by
+//      enumerating markers. Every bit in the real `ShaderDefine` registry is
+//      flipped through the real `WebGPUShaderModuleCache` into descriptors whose
+//      names are IDENTICAL and carry no marker of any kind; the real
+//      `generateCacheKey` must separate them. Also pins hit-rate preservation
+//      (identical inputs ⇒ identical key) and the compute cache's `m:` fold.
+//   0b. MUTATION-FOLD — the fold is programmatically removed from a copy of the
+//      engine source, the copy is imported, and group 0 is re-run against it; it
+//      MUST alias. Without this, group 0's clean result is unfalsifiable.
+//   1. ENUMERATION-LEDGER — every file under `Renderer/WebGPU/` that compiles a
+//      LOG_DEPTH-gated shader module is classified into exactly one bucket.
+//      DEFENSE IN DEPTH since the fold landed: an unclassified new file is a
+//      documentation gap, not a correctness hole.
 //   1b. NO-CENTRAL-CACHE — the files classified "safe because they never touch
 //      the central cache" are re-checked to still be true. "My analyser could
 //      not reach it" is not evidence of safety; "it provably never calls the
@@ -152,15 +188,36 @@
 //      that fix lives in `globe-use-log-depth.spec.mjs`.
 
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const WEBGPU_DIR = resolve(
   HERE,
   "../../packages/engine/Source/Renderer/WebGPU",
+);
+
+enableEngineTsResolution();
+
+const RENDER_CACHE_FILE = join(WEBGPU_DIR, "WebGPURenderPipelineCache.ts");
+const COMPUTE_CACHE_FILE = join(WEBGPU_DIR, "WebGPUComputePipelineCache.ts");
+
+const { WebGPURenderPipelineCache, webgpuObjectIdentity } = await import(
+  pathToFileURL(RENDER_CACHE_FILE).href
+);
+const { WebGPUComputePipelineCache } = await import(
+  pathToFileURL(COMPUTE_CACHE_FILE).href
+);
+const { WebGPUShaderModuleCache } = await import(
+  pathToFileURL(join(WEBGPU_DIR, "WebGPUShaderModuleCache.ts")).href
+);
+const { ShaderDefine, ShaderSourceId } = await import(
+  pathToFileURL(join(WEBGPU_DIR, "WebGPUShaderDefines.ts")).href
 );
 
 /**
@@ -533,9 +590,410 @@ function findAliasingNames(src) {
   return extractTaintedNameVariants(src).filter((v) => v.off === v.on);
 }
 
+// ─── group 0: the STRUCTURAL guarantee, proved by execution ──────────────────
+
+/** Minimal GPUDevice stand-in — every object it hands back has its own identity. */
+function makeStubDevice() {
+  return {
+    createShaderModule: ({ code, label }) => ({ __code: code, __label: label }),
+    createRenderPipeline: (d) => ({ __label: d.label ?? "pipeline" }),
+    createRenderPipelineAsync: async (d) => ({
+      __label: d.label ?? "pipeline",
+    }),
+    createComputePipeline: (d) => ({ __label: d.label ?? "compute" }),
+    createComputePipelineAsync: async (d) => ({
+      __label: d.label ?? "compute",
+    }),
+  };
+}
+
+/**
+ * A descriptor with a DELIBERATELY MARKERLESS name and every other key-visible
+ * field held constant. This is the shape a new renderer written by an author who
+ * never read the marker convention produces.
+ */
+function markerlessDescriptor(vsModule, fsModule) {
+  return {
+    name: "Unmarked pipeline",
+    layout: SHARED_STUB_LAYOUT,
+    vertex: { module: vsModule, entryPoint: "vertexMain" },
+    fragment: {
+      module: fsModule ?? vsModule,
+      entryPoint: "fragmentMain",
+      targets: [{ format: "bgra8unorm" }],
+    },
+    primitive: { topology: "triangle-list", cullMode: "back" },
+    depthStencil: { format: "depth24plus", depthWriteEnabled: true },
+    multisample: { count: 1 },
+  };
+}
+
+const SHARED_STUB_LAYOUT = { __layout: "shared" };
+
+/** WGSL with no directives — the module cache still keys per define mask. */
+const STRUCTURAL_WGSL =
+  "@vertex fn vertexMain() {}\n@fragment fn fragmentMain() {}\n";
+
+test("STRUCTURAL — a NEW define bit with NO name marker cannot alias (every ShaderDefine bit)", () => {
+  const device = makeStubDevice();
+  const moduleCache = new WebGPUShaderModuleCache(device);
+  const cache = new WebGPURenderPipelineCache(device, "ctx-structural");
+
+  const baseModule = moduleCache.getOrCreate(
+    ShaderSourceId.GLOBE_TERRAIN ?? 1,
+    STRUCTURAL_WGSL,
+    0,
+    "structural base",
+  );
+  const baseKey = cache.describeCacheKey(markerlessDescriptor(baseModule));
+
+  const bits = Object.entries(ShaderDefine).filter(
+    ([, v]) => typeof v === "number" && v !== 0,
+  );
+  assert.ok(
+    bits.length > 10,
+    `non-vacuous: expected the real ShaderDefine registry, got ${bits.length} entries`,
+  );
+
+  const collisions = [];
+  for (const [name, bit] of bits) {
+    const variantModule = moduleCache.getOrCreate(
+      ShaderSourceId.GLOBE_TERRAIN ?? 1,
+      STRUCTURAL_WGSL,
+      bit,
+      `structural ${name}`,
+    );
+    // Non-vacuity: the module cache must genuinely hand back a different
+    // object, otherwise this test would be proving nothing about the key.
+    assert.notEqual(
+      variantModule,
+      baseModule,
+      `WebGPUShaderModuleCache returned the SAME module for defines=0 and ` +
+        `${name}; the premise of the whole fold is that it does not`,
+    );
+    const variantKey = cache.describeCacheKey(
+      markerlessDescriptor(variantModule),
+    );
+    if (variantKey === baseKey) {
+      collisions.push(name);
+    }
+  }
+
+  assert.deepEqual(
+    collisions,
+    [],
+    "these ShaderDefine bits alias onto the base pipeline key even though they " +
+      "select a different shader module. The `sh:` module-identity fold in " +
+      "WebGPURenderPipelineCache.generateCacheKey is what prevents that; if this " +
+      "fails the fold has been removed or bypassed:\n  " +
+      collisions.join("\n  "),
+  );
+});
+
+test("STRUCTURAL — the fold separates by MODULE, and a fragment-only flip is caught too", async () => {
+  const device = makeStubDevice();
+  const cache = new WebGPURenderPipelineCache(device, "ctx-frag");
+
+  const vs = { __module: "vs" };
+  const fsA = { __module: "fs-a" };
+  const fsB = { __module: "fs-b" };
+
+  assert.notEqual(
+    cache.describeCacheKey(markerlessDescriptor(vs, fsA)),
+    cache.describeCacheKey(markerlessDescriptor(vs, fsB)),
+    "a define that only affects the FRAGMENT module must still move the key",
+  );
+
+  // Entry point is part of pipeline identity too (the globe's debug-fragment
+  // variants differ only there).
+  const a = markerlessDescriptor(vs, fsA);
+  const b = markerlessDescriptor(vs, fsA);
+  b.fragment.entryPoint = "fragmentDebugTri";
+  assert.notEqual(
+    cache.describeCacheKey(a),
+    cache.describeCacheKey(b),
+    "a fragment entryPoint change must move the key",
+  );
+
+  const first = await cache.getPipeline(markerlessDescriptor(vs, fsA));
+  const second = await cache.getPipeline(markerlessDescriptor(vs, fsB));
+  assert.notEqual(first, second, "each module must get its own pipeline");
+  assert.equal(cache.getStats().wrongModuleHits, 0);
+});
+
+test("STRUCTURAL — hit rate is preserved: identical inputs still produce one entry", async () => {
+  const device = makeStubDevice();
+  const cache = new WebGPURenderPipelineCache(device, "ctx-hitrate");
+
+  // A memoized producer hands the SAME module objects back on every rebuild.
+  const vs = { __module: "vs" };
+  const fs = { __module: "fs" };
+
+  const first = await cache.getPipeline(markerlessDescriptor(vs, fs));
+  for (let i = 0; i < 5; i++) {
+    const again = await cache.getPipeline(markerlessDescriptor(vs, fs));
+    assert.equal(again, first, "a genuinely identical request must HIT");
+  }
+  const stats = cache.getStats();
+  assert.equal(stats.size, 1, "the fold must not multiply entries");
+  assert.equal(stats.misses, 1);
+  assert.equal(stats.hits, 5);
+  assert.equal(stats.wrongModuleHits, 0);
+});
+
+test("STRUCTURAL — every descriptor field buildPipelineDescriptor reads moves the key", () => {
+  const device = makeStubDevice();
+  const cache = new WebGPURenderPipelineCache(device, "ctx-fields");
+  const vs = { __module: "vs" };
+  const fs = { __module: "fs" };
+  const base = markerlessDescriptor(vs, fs);
+  const baseKey = cache.describeCacheKey(base);
+
+  // Each mutator returns a descriptor differing from `base` in exactly one
+  // field that `buildPipelineDescriptor` forwards to `createRenderPipeline`.
+  // No caller in-tree passes a `variant`, so BEFORE the fold most of these
+  // were invisible to the key — `, noCull` (GLOBE-UNDERGROUND-COLOR) was a
+  // hand-written stand-in for the `primitive.cullMode` row below.
+  const mutations = {
+    "vertex.module": (d) => (d.vertex.module = { __module: "other" }),
+    "fragment.module": (d) => (d.fragment.module = { __module: "other" }),
+    "vertex.entryPoint": (d) => (d.vertex.entryPoint = "vertexOther"),
+    "fragment.entryPoint": (d) => (d.fragment.entryPoint = "fragmentOther"),
+    layout: (d) => (d.layout = { __layout: "other" }),
+    "primitive.topology": (d) => (d.primitive.topology = "line-list"),
+    "primitive.cullMode": (d) => (d.primitive.cullMode = "none"),
+    "primitive.frontFace": (d) => (d.primitive.frontFace = "cw"),
+    "primitive.unclippedDepth": (d) => (d.primitive.unclippedDepth = true),
+    "depthStencil.format": (d) => (d.depthStencil.format = "depth32float"),
+    "depthStencil.depthWriteEnabled": (d) =>
+      (d.depthStencil.depthWriteEnabled = false),
+    "depthStencil.depthCompare": (d) =>
+      (d.depthStencil.depthCompare = "always"),
+    "depthStencil.depthBias": (d) => (d.depthStencil.depthBias = 4),
+    "depthStencil.stencilFront": (d) =>
+      (d.depthStencil.stencilFront = { compare: "equal", passOp: "keep" }),
+    "depthStencil.stencilWriteMask": (d) =>
+      (d.depthStencil.stencilWriteMask = 0x0f),
+    "multisample.count": (d) => (d.multisample.count = 4),
+    "multisample.alphaToCoverageEnabled": (d) =>
+      (d.multisample.alphaToCoverageEnabled = true),
+    "fragment.targets[0].format": (d) =>
+      (d.fragment.targets[0].format = "rgba16float"),
+    "vertex.buffers": (d) =>
+      (d.vertex.buffers = [
+        {
+          arrayStride: 12,
+          attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }],
+        },
+      ]),
+  };
+
+  const unhashed = [];
+  for (const [field, mutate] of Object.entries(mutations)) {
+    const d = markerlessDescriptor(vs, fs);
+    mutate(d);
+    if (cache.describeCacheKey(d) === baseKey) {
+      unhashed.push(field);
+    }
+  }
+  assert.deepEqual(
+    unhashed,
+    [],
+    "these descriptor fields change the resulting GPURenderPipeline but do NOT " +
+      "change the cache key, so two pipelines differing only in them alias:\n  " +
+      unhashed.join("\n  "),
+  );
+});
+
+test("STRUCTURAL — the optional producer-declared define mask also moves the key", () => {
+  const device = makeStubDevice();
+  const cache = new WebGPURenderPipelineCache(device, "ctx-dfn");
+  const vs = { __module: "vs" };
+
+  const plain = markerlessDescriptor(vs);
+  const declared = markerlessDescriptor(vs);
+  declared.defines = ShaderDefine.LOG_DEPTH;
+
+  // Omitting the field must leave the key exactly as it was — the belt is
+  // optional, so producers that never adopt it are unaffected.
+  assert.equal(
+    cache.describeCacheKey(plain),
+    cache.describeCacheKey(markerlessDescriptor(vs)),
+    "an omitted `defines` must not perturb the key",
+  );
+  assert.notEqual(
+    cache.describeCacheKey(plain),
+    cache.describeCacheKey(declared),
+    "a declared `defines` mask must participate in the key",
+  );
+
+  const hi = markerlessDescriptor(vs);
+  hi.definesHi = 1;
+  assert.notEqual(
+    cache.describeCacheKey(declared),
+    cache.describeCacheKey(hi),
+    "the hi word must participate too",
+  );
+});
+
+test("STRUCTURAL — webgpuObjectIdentity is stable, distinct, and 0 for absent", () => {
+  const a = {};
+  const b = {};
+  assert.equal(webgpuObjectIdentity(a), webgpuObjectIdentity(a), "stable");
+  assert.notEqual(webgpuObjectIdentity(a), webgpuObjectIdentity(b), "distinct");
+  assert.equal(webgpuObjectIdentity(undefined), 0);
+  assert.equal(webgpuObjectIdentity(null), 0);
+  assert.ok(
+    webgpuObjectIdentity(a) > 0,
+    "real objects must never collide with the absent sentinel",
+  );
+});
+
+test("STRUCTURAL — the COMPUTE cache folds its module too", async () => {
+  const device = makeStubDevice();
+  const moduleCache = new WebGPUShaderModuleCache(device);
+  const cache = new WebGPUComputePipelineCache(device, "ctx-compute");
+  const layout = { __layout: "compute" };
+
+  const modA = moduleCache.getOrCreate(1, STRUCTURAL_WGSL, 0, "compute A");
+  const modB = moduleCache.getOrCreate(
+    1,
+    STRUCTURAL_WGSL,
+    ShaderDefine.LOG_DEPTH,
+    "compute B",
+  );
+  assert.notEqual(modA, modB, "premise: distinct defines ⇒ distinct module");
+
+  const descFor = (module) => ({
+    name: "Unmarked compute",
+    layout,
+    compute: { module, entryPoint: "main" },
+  });
+
+  const first = await cache.getPipeline(descFor(modA));
+  const second = await cache.getPipeline(descFor(modB));
+  assert.notEqual(
+    first,
+    second,
+    "the compute cache served one pipeline for two different modules under an " +
+      "unmarked name — its `m:` module-identity segment is missing",
+  );
+  const again = await cache.getPipeline(descFor(modA));
+  assert.equal(again, first, "an identical compute request must still HIT");
+});
+
+// ─── group 0b: MUTATION-FOLD — remove the fold, require detection ────────────
+
+/**
+ * Load a MUTATED copy of an engine module. The copy goes to a temp directory,
+ * so nothing under `packages/` is touched; relative specifiers are rewritten to
+ * absolute file URLs because the copy no longer sits next to its siblings.
+ */
+async function importMutated(sourceFile, mutate, label) {
+  const original = await readFile(sourceFile, "utf8");
+  const mutated = mutate(original);
+  assert.notEqual(
+    mutated,
+    original,
+    `the ${label} mutation did not change ${sourceFile} — its target text has ` +
+      `moved, so this MUTATION test would pass vacuously and the STRUCTURAL ` +
+      `result above would be unfalsifiable`,
+  );
+  const rewritten = mutated.replace(
+    /from\s+"\.\/([\w.]+)\.js"/g,
+    (_m, name) =>
+      `from "${pathToFileURL(join(WEBGPU_DIR, `${name}.ts`)).href}"`,
+  );
+  const dir = await mkdtemp(join(tmpdir(), "cesium-pipeline-key-"));
+  const file = join(dir, "Mutant.ts");
+  await writeFile(file, rewritten, "utf8");
+  try {
+    return await import(pathToFileURL(file).href);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+test("MUTATION-FOLD — dropping the module ids from `sh:` makes the define axis alias again", async () => {
+  const mutant = await importMutated(
+    RENDER_CACHE_FILE,
+    (src) =>
+      src
+        .replace("webgpuObjectIdentity(vertex?.module)", "0")
+        .replace("webgpuObjectIdentity(fragment?.module)", "0"),
+    "sh: module-id removal",
+  );
+
+  const device = makeStubDevice();
+  const cache = new mutant.WebGPURenderPipelineCache(device, "ctx-mutant");
+  const a = markerlessDescriptor({ __module: "classic" });
+  const b = markerlessDescriptor({ __module: "enhOcean" });
+
+  assert.equal(
+    cache.describeCacheKey(a),
+    cache.describeCacheKey(b),
+    "with the module ids removed the two keys MUST collide — if they do not, " +
+      "the STRUCTURAL group is not actually testing the fold",
+  );
+});
+
+test("MUTATION-FOLD — neutering webgpuObjectIdentity collapses module AND layout identity", async () => {
+  const mutant = await importMutated(
+    RENDER_CACHE_FILE,
+    (src) =>
+      src.replace(
+        "  let id = gpuObjectIdentity.get(obj);",
+        "  return 1;\n  let id = gpuObjectIdentity.get(obj);",
+      ),
+    "identity neutering",
+  );
+
+  const device = makeStubDevice();
+  const cache = new mutant.WebGPURenderPipelineCache(device, "ctx-mutant2");
+  assert.equal(
+    cache.describeCacheKey(markerlessDescriptor({ __module: "a" })),
+    cache.describeCacheKey(markerlessDescriptor({ __module: "b" })),
+    "a constant identity function must reintroduce module aliasing",
+  );
+  const layoutA = markerlessDescriptor({ __module: "a" });
+  const layoutB = markerlessDescriptor({ __module: "a" });
+  layoutB.layout = { __layout: "other" };
+  assert.equal(
+    cache.describeCacheKey(layoutA),
+    cache.describeCacheKey(layoutB),
+    "…and layout aliasing, which the `pl:` segment otherwise closes",
+  );
+});
+
+test("MUTATION-FOLD — dropping the compute cache's `m:` segment makes it alias again", async () => {
+  const mutant = await importMutated(
+    COMPUTE_CACHE_FILE,
+    (src) => src.replace("|m:${moduleId}", ""),
+    "compute m: removal",
+  );
+
+  const device = makeStubDevice();
+  const cache = new mutant.WebGPUComputePipelineCache(device, "ctx-mutant3");
+  const layout = { __layout: "compute" };
+  const descFor = (module) => ({
+    name: "Unmarked compute",
+    layout,
+    compute: { module, entryPoint: "main" },
+  });
+
+  const first = await cache.getPipeline(descFor({ __module: "a" }));
+  const second = await cache.getPipeline(descFor({ __module: "b" }));
+  assert.equal(
+    first,
+    second,
+    "without `m:` the compute cache MUST serve one pipeline for two modules — " +
+      "if it does not, the compute STRUCTURAL test proves nothing",
+  );
+});
+
 // ─── group 1: enumeration ────────────────────────────────────────────────────
 
-test("ENUMERATION — every LOG_DEPTH-gated WebGPU file is declared at-risk or explicitly exempt", async () => {
+test("ENUMERATION-LEDGER — every LOG_DEPTH-gated WebGPU file is declared at-risk or explicitly exempt", async () => {
   const entries = await readdir(WEBGPU_DIR);
   const candidates = [];
   for (const f of entries) {
@@ -561,8 +1019,11 @@ test("ENUMERATION — every LOG_DEPTH-gated WebGPU file is declared at-risk or e
     undeclared,
     [],
     `These files compile a LOG_DEPTH-gated shader module but are not declared anywhere.\n` +
-      `Give every log-gated pipeline name a marker and add the file to AT_RISK, or place it in\n` +
-      `DEFINES_STAMP / NO_CENTRAL_CACHE / EXEMPT with a reason:\n  ` +
+      `NOTE — since NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL this is a LEDGER gap, not a\n` +
+      `correctness hole: the central key folds shader-module identity, so an unmarked file\n` +
+      `cannot alias (see the STRUCTURAL group). Classify it anyway so the marker surface\n` +
+      `stays legible — add it to AT_RISK with a marker, or to\n` +
+      `DEFINES_STAMP / NO_CENTRAL_CACHE / EXEMPT with a one-line reason:\n  ` +
       undeclared.join("\n  "),
   );
 
@@ -778,6 +1239,19 @@ test("GLOBE-USELOGDEPTH-REACH — the globe flips on `frameState.useLogDepth`, t
 
 test(`WRONG-MODULE-HITS — ${PIPELINE_CACHE} still carries the runtime aliasing counter`, async () => {
   const src = await readFile(join(WEBGPU_DIR, PIPELINE_CACHE), "utf8");
+
+  // Post-fold the counter is expected to read 0 FOREVER, which is exactly when
+  // an unused instrument gets deleted as dead code. It is not dead: it is the
+  // runtime canary that the `sh:` fold is still reaching the key. Assert the
+  // fold and the counter together so neither can be removed on the other's
+  // authority.
+  assert.ok(
+    /parts\.push\(\s*`sh:/.test(src) &&
+      /webgpuObjectIdentity\(vertex\?\.module\)/.test(src),
+    `${PIPELINE_CACHE}: the \`sh:\` shader-identity fold is gone. That fold — not the ` +
+      `per-axis name markers — is what makes define aliasing structurally impossible. ` +
+      `See the STRUCTURAL group at the top of this file.`,
+  );
 
   assert.ok(
     /wrongModuleHits\s*:\s*number/.test(src),

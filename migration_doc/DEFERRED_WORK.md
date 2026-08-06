@@ -7314,17 +7314,113 @@ stood behind without a per-file content check.
   (`probe-classifier-logdepth-flip` extended to COLUMBUS_VIEW against its WebGL
   oracle is the fail-before/pass-after discriminator; `probe-logdepth-zfight` is
   the first formerly-void probe to re-baseline).
-- **`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`** — the fix above closes the
-  LOG_DEPTH axis only. The general rule it exposes: a shader define that changes
-  neither `descriptor.name` nor the vertex layout aliases silently in the central
-  cache, because `generateCacheKey` reads neither the module nor the define mask.
-  Of the globe's three defines, `GEODETIC_NORMAL` is safe via the vertex
-  signature and `GLOBE_IMAGERY_REDUCED` via `, imagery4`. **Every new define must
-  be checked against this rule at the point it is added.** The durable options
-  are the whole-bitmask stamp (`defines=0x...`, as the four collection renderers
-  already do — strictly stronger than a per-axis marker) or folding the define
-  mask into `generateCacheKey` itself, which would make the whole class
-  structurally impossible. The latter is the real fix and is not scoped here.
+- **`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`** — **RESOLVED 2026-08-06.**
+
+  The fix above closed the LOG_DEPTH axis only. The general rule it exposed: a
+  shader define that changes neither `descriptor.name` nor the vertex layout
+  aliased silently in the central cache, because `generateCacheKey` read neither
+  the module nor the define mask. Of the globe's three defines,
+  `GEODETIC_NORMAL` was safe via the vertex signature and
+  `GLOBE_IMAGERY_REDUCED` via `, imagery4`; `LOG_DEPTH` was not, and needed
+  eight hand-written name markers (Batch 803) plus a runtime counter (Batch 795)
+  to contain. Two rounds of per-axis mitigation for one structural omission.
+
+  **Mechanism: fold shader-MODULE IDENTITY into the key, not the define mask.**
+  `generateCacheKey` now ends every key with
+  `sh:<vsId>.<vsEntry>/<fsId>.<fsEntry>`, where the ids come from
+  `webgpuObjectIdentity` — a module-scoped `WeakMap<object, number>` that turns
+  a `GPUShaderModule`'s object identity into a small integer. `GPUShaderModule`
+  exposes no source, no define mask and no comparable primitive form, so
+  identity is the only thing a key generator can observe about it; the `WeakMap`
+  retains nothing, which matters because the module cache is dropped on device
+  loss.
+
+  Module identity is **strictly stronger** than a define mask.
+  `WebGPUShaderModuleCache.getOrCreate` returns a distinct object per
+  `(sourceId, defines, definesHi, keySalt)`, so every define flip already moves
+  the id — and the fold additionally separates two producers that compiled
+  different SOURCE TEXT under the same mask, and works for producers that call
+  `device.createShaderModule` directly and never touch the define registry.
+  **A new define bit therefore cannot alias whether or not its author remembers
+  a marker.**
+
+  The same change closed the sibling descriptor-side gaps in that function, all
+  of which were the identical omission on a different field: `pl:` (pipeline
+  layout identity), `pr:` (primitive topology / cullMode / frontFace /
+  stripIndexFormat / unclippedDepth), `dz:` (depthWriteEnabled / depthCompare /
+  depth bias / stencil ops + masks) and `mx:` (multisample mask +
+  alphaToCoverage). Before this, those fields were reachable **only** through
+  the optional `variant` argument — and **no in-tree caller passes one** — so
+  `, noCull` (GLOBE-UNDERGROUND-COLOR) was a hand-written stand-in for the
+  `primitive.cullMode` row. The key now covers every field
+  `buildPipelineDescriptor` forwards to `createRenderPipeline`.
+
+  `WebGPUComputePipelineCache` carried the same defect on `compute.module`
+  (its key was `name | layout | entryPoint | constants`) and gained an `m:`
+  segment from the shared identity table.
+
+  An OPTIONAL `descriptor.defines` / `descriptor.definesHi` pair was added for
+  producers that want the mask spelled into the key for legibility; the globe
+  sets it. It is belt-and-braces — omitted by every other producer, and their
+  keys are byte-identical to what they would be without the field.
+
+  **Markers are demoted, not deleted.** `, ld=1`, `, imagery4`, `, noCull`,
+  `, enhOcean`, `defines=0x…`, `[sf=…]` all remain: a bare `sh:41.…` proves two
+  rows are separate but not WHICH variant each row is, so the markers survive as
+  human-readable provenance in `describeCacheKey()` / `listPipelineVariants()` /
+  devtools labels. Adding one for a new define is now defense-in-depth rather
+  than mandatory.
+
+  **Hot-path cost.** `generateCacheKey` is not per-draw: every producer follows
+  the `if (entry.pipeline) return entry.pipeline;` shape
+  (`resolveGlobePipelineEntry`, `tryResolve*Pipeline`), so the central cache is
+  consulted only until a variant's pipeline resolves onto its memoized entry.
+  Within the function the fold costs two `WeakMap.get`s (identity-hash lookups,
+  no allocation) plus one extra `parts.push`; the descriptor-side segments are
+  hand-serialized rather than `JSON.stringify`d. A per-descriptor memo was
+  considered and REJECTED — `WebGPUVoxelRenderer` and `WebGPUVolumetricFog`
+  mutate their descriptors in place, so a memo would go stale into exactly the
+  aliasing bug being fixed.
+
+  **Hit rate is preserved.** A fleet survey of all 31 central-cache caller files
+  (~138 call sites) found no path that creates a `GPUShaderModule` per call: the
+  handful of raw `device.createShaderModule` sites
+  (`WebGPUDepthPlane.ts:464`, `WebGPUGaussianSplatRenderer.ts:726`,
+  `WebGPUGlobeSurfaceShaders.ts:276/378`) all assign into a field or `Map`
+  before the descriptor is built, and every descriptor lives on a long-lived
+  `resources`/`entry`/`cache` sidecar rebuilt only on a real state flip. No
+  caller passes `layout: "auto"`, and none creates a `GPUPipelineLayout` per
+  call. `WebGPUVoxelRenderer` is the one file that mutates a cached descriptor's
+  module in place (`:3029/:3031/:3093-3096`); it also renames and nulls its
+  local pipeline, so post-mutation lookups correctly miss under the new key.
+
+  `stats.wrongModuleHits` (Batch 795) is retained and is now expected to be
+  **permanently 0** — a served hit implies identical modules by construction.
+  Do not remove it: it is the runtime canary that the fold is still reached.
+
+  Files: `WebGPURenderPipelineCache.ts` (`webgpuObjectIdentity` +
+  `stencilFaceSignature` helpers, the `defines`/`definesHi` descriptor fields,
+  the `pl:`/`pr:`/`dz:`/`mx:`/`sh:`/`dfn:` segments in `generateCacheKey`),
+  `WebGPUComputePipelineCache.ts` (`m:` segment),
+  `WebGPUGlobeSurfacePipelines.ts` (declares `defines` on its descriptor;
+  marker comment demoted).
+
+  Guards: `pipeline-key-aliasing.spec.mjs` gained a STRUCTURAL group that
+  EXECUTES the real `WebGPUShaderModuleCache` + `WebGPURenderPipelineCache` and
+  flips **every bit in the real `ShaderDefine` registry** into descriptors with
+  an identical, markerless name, requiring distinct keys; plus hit-rate
+  preservation, an all-descriptor-fields sweep, the identity function's
+  stability/distinctness, and the compute cache. Three MUTATION-FOLD tests
+  import a mutated copy of the engine source (module ids removed, identity
+  neutered, compute `m:` removed) and require the aliasing to come back.
+  `globe-pipeline-readiness.spec.mjs`'s pin that the key contains no module was
+  INVERTED, and `CENTRAL_CACHE_KEY_COMPONENTS` updated.
+  `globe-pipeline-key-contract.spec.mjs` G3 was rewritten from "aliasing raises
+  the hit rate" to "an unmarked name can no longer alias", and a new G3b poisons
+  the cache directly to keep `wrongModuleHits` provably live now that no public
+  path can reach it. `probe-pipeline-key-aliasing.mjs`'s negative control was
+  rewritten: stripping name markers alone no longer collapses the key, so it now
+  also substitutes one shared stand-in module and keeps its own shadow index.
 
 ## 2026-08-02 — WebGPU globe renders zero frustums in the offline env-clear scenario
 

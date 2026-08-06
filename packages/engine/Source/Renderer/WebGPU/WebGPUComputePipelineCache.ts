@@ -27,6 +27,17 @@
  *     a structural hash because `GPUPipelineLayout` has no structural
  *     introspection API; the caller is responsible for not creating
  *     redundant layout objects.
+ *   - `descriptor.compute.module` identity
+ *     (`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`, 2026-08-06). Compute
+ *     pipelines carry the SAME define-aliasing class the render cache did:
+ *     a `ShaderDefine` flip recompiles the module but changes neither the
+ *     caller-supplied `name`, nor the layout, nor the entry point, so the
+ *     pre-fix key handed back the pipeline built from the previous module.
+ *     Folding module identity (via the render cache's shared
+ *     `webgpuObjectIdentity` table, so ids mean the same thing in both
+ *     caches) makes that structurally impossible here too.
+ *   - `descriptor.compute.constants` — pipeline-overridable constants are
+ *     baked into the pipeline.
  *
  * # Adoption
  *
@@ -51,6 +62,7 @@
  */
 
 import type { AsyncResourceMonitor } from "./AsyncResourceMonitor.js";
+import { webgpuObjectIdentity } from "./WebGPURenderPipelineCache.js";
 
 /**
  * Compute pipeline descriptor (cache-friendly form). Mirrors WebGPU's
@@ -350,17 +362,25 @@ export class WebGPUComputePipelineCache {
 
   /**
    * Generate a stable cache key for the descriptor. Includes the name
-   * (callers must keep names stable for dedup), layout identity, and
-   * entry point.
+   * (callers must keep names stable for dedup), layout identity, shader
+   * MODULE identity, and entry point.
+   *
+   * NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL — the `m:` segment is what
+   * makes a define flip a keyed miss rather than a silent alias. It costs one
+   * `WeakMap.get` (no allocation) on a path that already builds a template
+   * string, and it cannot cost hit rate: `WebGPUShaderModuleCache` returns the
+   * same object for the same `(sourceId, defines, definesHi, keySalt)`, so a
+   * genuinely identical dispatch still lands on the same id.
    */
   private generateCacheKey(
     descriptor: WebGPUComputePipelineDescriptor,
   ): string {
     const layoutId = this.layoutIdentityFor(descriptor.layout);
+    const moduleId = webgpuObjectIdentity(descriptor.compute?.module);
     const constantsKey = descriptor.compute.constants
       ? `|c:${JSON.stringify(descriptor.compute.constants)}`
       : "";
-    return `${descriptor.name}|l:${layoutId}|e:${descriptor.compute.entryPoint}${constantsKey}`;
+    return `${descriptor.name}|l:${layoutId}|m:${moduleId}|e:${descriptor.compute.entryPoint}${constantsKey}`;
   }
 
   /**
