@@ -38,6 +38,52 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 ---
 
 <<<<<<< ours
+## 2026-08-06 - WebGPU globe does not receive sun shadows AT ALL
+
+### NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD
+
+**Status:** OPEN / HIGH - found by the FIRST run of `probe-sun-shadow-gate.mjs`
+(authored Batch 840, run Batch 845), now that the probe's WebGL reference works.
+
+**Measured.** Sun at +30 deg, nadir camera 2600 m, `maximumDistance` 10000, a
+CAST_ONLY slab over a RECEIVE_ONLY globe, A/B/A-controlled capture:
+
+| backend | band-mean drop | darkened px |
+|---|---|---|
+| WebGL | **20.17 / 255** | **58,728** |
+| WebGPU | **0.00** | **0** |
+
+Identical in both lighting modes (DAY_UNLIT and DAY_LIT), zero console and device
+errors. The WebGL reference leg PASSES its own gate (predicted ~9.0 drop against a
+3.0 floor, measured 20.17), so this is a like-for-like comparison against a working
+reference - which is exactly what the Batch-805 attempt lacked.
+
+**This makes the Batch 775/780 `cascadesEnabled` fix unverified at pixels in the
+direction that matters.** That fix was static-analysis-verified only; the first
+pixel measurement of the path says the globe receives nothing on WebGPU.
+
+**Two already-filed divergences are prime suspects and should be checked first**
+(both found by source tracing while authoring the probe, both still unmeasured):
+`NEW-WEBGPU-SHADOW-DARKNESS-FADE-NOT-APPLIED` (both WebGPU receive paths read the
+PUBLIC unfaded `shadowMap.darkness` where WebGL reads the faded `_darkness`) and
+`NEW-WEBGPU-GLOBE-RECEIVE-IGNORES-OUTOFVIEW`
+(`WebGPUGlobeSurfaceRenderer.ts:862-867` gates only on
+`lightShadowsEnabled && lightShadowMaps[0]`). Neither obviously produces ZERO
+darkening on its own, so the more likely cause is further upstream: the globe's
+receive variant never being selected, the shadow-map depth texture never being
+bound to the globe's bind group, or the visibility term being computed and then
+discarded.
+
+**Corroborating evidence from the same run.** The night leg reports WebGL
+`darkness(public/effective) = 0.3/1` - i.e. WebGL's fade to 1.0 (no darkening)
+below the horizon is working exactly as traced, which independently confirms the
+fade mechanism the WebGPU paths bypass.
+
+**Acceptance:** `probe-sun-shadow-gate.mjs` gate C passes - WebGPU darkens in both
+lighting modes with a WebGPU:WebGL drop ratio in [0.4, 2.5] - and gate E stops
+being STRUCTURAL, since it can only be scored for a backend whose own day leg
+darkened.
+
 ## 2026-08-06 - C13-16 cirrus morphology attenuates from 9:1 to ~1.2:1 on screen
 
 ### C13-16-SCREEN-ANISOTROPY-ATTENUATION
