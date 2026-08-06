@@ -1,6 +1,5 @@
 <!-- Landed Batch 749. Gate artifact for C12-29. 19-agent research (4 lanes + adversarial verification), 2026-07-24. -->
 
-All anchors verified. Composing the report now.
 
 ---
 
