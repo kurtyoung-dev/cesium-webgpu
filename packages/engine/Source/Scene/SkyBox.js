@@ -223,8 +223,11 @@ SkyBox.Variant = Object.freeze({
    * (superseded as default by `TYCHO_T5` in C12-10); still bundled offline. */
   TYCHO_T3: "TYCHO_T3",
   /**
-   * Tycho catalogue skymap, bright Milky Way render — the default (see
-   * {@link SkyBox.defaultVariant}).
+   * Tycho catalogue skymap, bright Milky Way render. Was the default from
+   * C12-10 until C12-11 (Batch 833) made `TYCHO_T5_DIFFUSE` the default so the
+   * cubemap carries diffuse light only and the sprite catalogue owns every
+   * resolved star (ruling DR-01). Still bundled offline; select it explicitly
+   * to get baked stars back in the cubemap.
    *
    * Bundled at 2048/face (`tycho2t5_80_*.jpg`) alongside the historical `t3`
    * faces; both are offline, no network fetch. Baked from the SVS 3572

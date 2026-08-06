@@ -24,7 +24,10 @@
  *                against a baseline recorded on a PRE-change build — not a
  *                small diff. The design rests on three explicit early returns;
  *                a nonzero diff is a more important finding than the feature.
- *                Record with `--update-baseline` on the pre-change build.
+ *                Record with `--update-baseline` on the pre-change build, using
+ *                the SAME `--phase` selection you will score with — the
+ *                baseline records its phases and cloudQuality and the score
+ *                step declines to compare across a different invocation.
  *   C DIRECTION  Item 2. Cirrus-vs-cumulus by DIRECTION, never brightness: the
  *                ratio of luminance autocorrelation half-length ALONG the
  *                projected wind azimuth to the half-length ACROSS it, measured
@@ -71,14 +74,106 @@
  * projection. Anywhere else, one of them would point partly into the sky and
  * the 90-degree rotation test would compare two differently-conditioned axes.
  *
+ * PHASES — WHY THIS PROBE IS SPLIT, AND WHAT EACH PHASE COSTS
+ * -----------------------------------------------------------
+ * The single-process form of this probe exceeded its watchdog. The cause was
+ * not the gate count. `cloudQuality: 96` takes the POWER-USER ESCAPE HATCH in
+ * `resolveCloudPreset` / `resolveCloudQuality` (ANY value !== 64 does), which
+ * forces LIVE procedural noise, `renderResScale` 1.0, no temporal reuse and no
+ * jitter — i.e. 96 primary samples x 7 light samples of live noise at full
+ * 1024x768 on every frame, the most expensive configuration the cloud stack can
+ * be put in. Every settle, every capture, and all 240 readiness frames paid it.
+ *
+ * The probe now runs one or more PHASES, selected with `--phase=`. The watchdog
+ * is DERIVED — a one-off session budget (browser launch, page load, globe and
+ * procedural readiness) plus the budget of each selected phase — so a phase that
+ * grows has to move its own number rather than quietly eating a sibling's
+ * headroom. Nominal cost is the settle/capture arithmetic in each phase body;
+ * the budget is the ceiling, not the expectation:
+ *
+ *              gates          nominal   phase budget   watchdog when run alone
+ *   uniforms   A (+F)          ~5 s        150 s              330 s
+ *   neutrality B (+F)         ~40 s        240 s              420 s
+ *   direction  C, D, E (+F)   ~60 s        300 s              480 s
+ *   all        all of them   ~105 s        690 s              870 s
+ *
+ * FULL ACCEPTANCE IS ALL THREE PHASES. A single-phase run scores only the gates
+ * that phase owns, prints a PHASE COVERAGE line naming the ones it did not
+ * reach, and is not an acceptance verdict on its own. Each run writes
+ * `manifest-<phase>.json`, so three sequential runs do not clobber one another.
+ *
+ * MARCH QUALITY PER PHASE, AND WHY IT CANNOT MOVE A VERDICT
+ * ---------------------------------------------------------
+ * Every phase stays on the escape hatch (cloudQuality !== 64). That is a
+ * CORRECTNESS constraint, not a cost one: the tier path (cloudQuality === 64)
+ * resolves T1/T2 at this camera height, and those tiers set `temporalEnabled`
+ * and `jitterEnabled` — which would make gate B's determinism control
+ * ("re-capturing the SAME view changed 0 px") impossible to satisfy, collapsing
+ * gate B to STRUCTURAL forever. Within the escape hatch, 32 and 96 differ in
+ * exactly two packed floats — `maxSteps`@44 and `lightSteps`@45 — and nothing
+ * else: `noiseSource`, `renderResScale`, `temporalEnabled`,
+ * `temporalUpdateFraction`, `jitterEnabled`, `lightSampleScale`,
+ * `lightConeSampling` and every `qualityFlags`@74 bit are identical between them
+ * (`WebGPUCloudTierPresets.ts`, `resolveCloudPreset`).
+ *
+ *   READINESS (every phase, cloudQuality 32). The readiness contract is
+ *     `initialized && pipelineReady && executeCalls > 0` — properties of
+ *     resource and pipeline realization. Since no pipeline, bind group, render
+ *     target or quality flag differs between 32 and 96 on the escape hatch,
+ *     readiness reached at 32 IS the realization gate B later renders with, and
+ *     the phase's evidence quality is applied immediately afterwards, before any
+ *     warm-up settle or capture. This is what bounds the readiness loop, which
+ *     was 240 frames of the most expensive frame the stack can produce.
+ *
+ *   GATE A (cloudQuality 32). Slots 168-171 are packed from
+ *     `CloudTypeProfile.getFibreMorphology()` and `profile.phaseG`
+ *     (`WebGPUProceduralCloudRenderer.ts` 2470-2473). `resolveCloudQuality`
+ *     writes slots 44 and 45 and nothing else. The step count cannot reach the
+ *     row gate A reads, and gate A stays exact with its CIRRUS control.
+ *
+ *   GATE B (cloudQuality 96 — UNCHANGED). Byte-neutrality is an identity test,
+ *     and a coarser quadrature has strictly fewer samples in which a NOT-taken
+ *     early return could surface as a changed byte. It keeps the authored
+ *     quality, and its determinism control keeps `exactly 0` with no tolerance.
+ *
+ *   GATES C/D/E (cloudQuality 32). These measure RATIOS of autocorrelation
+ *     half-length and the ARGMAX of an azimuth scan on the contribution field.
+ *     Two independent reasons the step count cannot move them:
+ *       (i) The march is a Riemann sum — `fineStep = (tEnd - tStart) / steps`
+ *           with the accumulator adding `density * stepSize`
+ *           (`ProceduralClouds.wgsl` 2241 and 1958-1963). Integrated optical
+ *           depth, hence deck brightness, hence the contribution-pixel count the
+ *           instrument floors read, is step-count invariant in expectation.
+ *      (ii) MEASURED, not asserted. Feeding the CPU twin's `genusFibreFactor`
+ *           (`lib/cloud-genus-morphology-model.mjs`) through an N-sample nadir
+ *           integration and running THIS PROBE'S estimator on the result gives,
+ *           for N = 96 / 48 / 32:
+ *             CIRRUS        5.743 / 5.742 / 5.742    argmax 0 deg at every N
+ *             CIRROSTRATUS  4.543 / 4.543 / 4.543    argmax 0 deg at every N
+ *             CIRROCUMULUS  1.964 / 1.964 / 1.964    argmax 0 deg at every N
+ *             CUMULUS       1.000 / 1.000 / 1.000    (the identity return)
+ *           and with the wind rotated 90 degrees the argmax moves 0 -> 90 deg at
+ *           N = 96 and at N = 32 alike. The largest elongation drift across a 3x
+ *           reduction in step count is 0.001 (0.02%), against gate C's 1.6
+ *           floor, gate D's +/-30 deg tolerance and gate E's x1.1 margin. The
+ *           reason is structural: the N samples sit at N different shell heights
+ *           of the SAME anisotropic domain, so averaging them changes the
+ *           field's VARIANCE, never its correlation geometry.
+ *     No threshold in PREDICT was lowered, no gate was dropped, and no gate was
+ *     converted to STRUCTURAL.
+ *
  * Usage:
- *   node Tools/visual-regression/probe-cloud-genus-morphology.mjs
- *   node Tools/visual-regression/probe-cloud-genus-morphology.mjs --update-baseline
- * Exit: 0 every gate decided and passed | 1 a real product FAIL |
- *       2 watchdog or exception | 3 no FAIL but a gate had no subject to
- *         measure (acceptance INCOMPLETE, not green)
+ *   node Tools/visual-regression/probe-cloud-genus-morphology.mjs --phase=uniforms
+ *   node Tools/visual-regression/probe-cloud-genus-morphology.mjs --phase=neutrality
+ *   node Tools/visual-regression/probe-cloud-genus-morphology.mjs --phase=direction
+ *   node Tools/visual-regression/probe-cloud-genus-morphology.mjs   # --phase=all
+ *   node Tools/visual-regression/probe-cloud-genus-morphology.mjs --phase=neutrality --update-baseline
+ * Exit: 0 every gate the selected phases own was decided and passed | 1 a real
+ *       product FAIL | 2 watchdog or exception | 3 no FAIL but a gate had no
+ *       subject to measure (acceptance INCOMPLETE, not green)
  * Env:  PROBE_BASE (default http://localhost:8080)
- * Out:  Tools/visual-regression/output/cloud-genus-morphology/*.png + manifest.json
+ * Out:  Tools/visual-regression/output/cloud-genus-morphology/*.png +
+ *       manifest-<phase>.json
  */
 
 import { chromium } from "playwright";
@@ -100,9 +195,48 @@ const UPDATE_BASELINE =
   process.argv.includes("--update-baseline") ||
   process.env.PROBE_UPDATE_BASELINE === "1";
 
-const WATCHDOG_MS = 420_000;
+const ALL_PHASES = ["uniforms", "neutrality", "direction"];
+/**
+ * Per-phase wall-clock budgets. These are the numbers the watchdog is built
+ * from, so a phase that grows has to move its budget deliberately rather than
+ * quietly consuming a sibling's headroom.
+ */
+const PHASE_BUDGET_MS = {
+  uniforms: 150_000,
+  neutrality: 240_000,
+  direction: 300_000,
+};
+/**
+ * Browser launch, page load, globe readiness and procedural readiness — charged
+ * ONCE per process no matter how many phases run. Sized so that a pathological
+ * stall in `awaitGlobeReady` still spends its own documented 90 s budget and
+ * reports through its own diagnostic instead of tripping a generic watchdog.
+ */
+const SESSION_BUDGET_MS = 180_000;
+
+const phaseArgument = (
+  process.argv.find((argument) => argument.startsWith("--phase=")) ??
+  `--phase=${process.env.PROBE_PHASE ?? "all"}`
+).slice("--phase=".length);
+const PHASES =
+  phaseArgument === "all" ? [...ALL_PHASES] : phaseArgument.split(",");
+const unknownPhases = PHASES.filter((phase) => !ALL_PHASES.includes(phase));
+if (unknownPhases.length > 0 || PHASES.length === 0) {
+  console.error(
+    `STRUCTURAL: unknown --phase value(s) ${JSON.stringify(unknownPhases)}; expected one of ${ALL_PHASES.join(", ")}, a comma-separated subset, or "all"`,
+  );
+  process.exit(3);
+}
+const PHASE_TAG =
+  PHASES.length === ALL_PHASES.length ? "all" : PHASES.join("-");
+
+const WATCHDOG_MS =
+  SESSION_BUDGET_MS +
+  PHASES.reduce((total, phase) => total + PHASE_BUDGET_MS[phase], 0);
 const watchdog = setTimeout(() => {
-  console.error(`STRUCTURAL: probe exceeded ${WATCHDOG_MS} ms`);
+  console.error(
+    `STRUCTURAL: probe exceeded ${WATCHDOG_MS} ms for phases [${PHASES.join(", ")}] (session ${SESSION_BUDGET_MS} ms + ${PHASES.map((phase) => `${phase} ${PHASE_BUDGET_MS[phase]}`).join(" + ")} ms)`,
+  );
   process.exit(2);
 }, WATCHDOG_MS);
 watchdog.unref?.();
@@ -133,9 +267,20 @@ const PREDICT = {
   // Slots the renderer writes for this slice.
   uniformSlots: [168, 169, 170, 171],
   uniformIdentity: [0, 1, 0, 0],
+  // March quality per phase. All four values are !== 64 so every lane stays on
+  // the escape hatch (LIVE noise, full res, no temporal, no jitter) — see the
+  // header for why 32 cannot move A/C/D/E and why B keeps 96.
+  readyQuality: 32,
+  uniformsQuality: 32,
+  neutralityQuality: 96,
+  directionQuality: 32,
+  // Readiness exits the moment the contract is met (a handful of frames once
+  // configure() precedes it). This is the ceiling, not the expectation, and it
+  // is now paid at quality 32 rather than 96.
+  readyMaxFrames: 90,
 };
 
-const RUN_LANE = async ({ predict, view }) => {
+const RUN_LANE = async ({ predict, view, phases }) => {
   const C = (window.Cesium =
     window.Cesium || (await import("/Build/CesiumUnminified/index.js")));
   const viewer = window.viewer;
@@ -524,10 +669,17 @@ const RUN_LANE = async ({ predict, view }) => {
   // while wind DIRECTION stays non-zero: the fibre frame reads the direction
   // regardless of speed, and a zero speed removes per-frame advection drift so
   // repeated captures of the same view are byte-comparable.
+  //
+  // `cloudQuality` is the knob that drives march cost: `resolveCloudQuality`
+  // lands it on `maxSteps`@44 (and derives `lightSteps`@45 from it).
+  // `cloudVolumetricQuality` — the other, string-valued dial, default "auto" —
+  // is deliberately NOT set here: any `cloudQuality !== 64` takes the escape
+  // hatch, which ignores the preset string entirely, so setting both would
+  // imply a relationship that does not exist. `cloudQuality` is supplied
+  // per-phase by `configure` rather than pinned here.
   const baseVolumetric = {
     cloudCoverage: 0.8,
     cloudDensity: 0.5,
-    cloudQuality: 96,
     cloudWindSpeed: 0,
     cloudWeatherMap: false,
     cloudCastShadows: false,
@@ -536,11 +688,25 @@ const RUN_LANE = async ({ predict, view }) => {
   };
 
   const collection = scene.globe.defaultCloudCollection;
+  let activeQuality = predict.readyQuality;
   const configure = (overrides) =>
     globalThis.__cloudProbe.configure({
       requireWebGPU: true,
-      volumetric: { ...baseVolumetric, ...overrides },
+      volumetric: {
+        ...baseVolumetric,
+        cloudQuality: activeQuality,
+        ...overrides,
+      },
     });
+
+  const hashPixels = (data) => {
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < data.length; i++) {
+      hash ^= data[i];
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash.toString(16).padStart(8, "0");
+  };
 
   const readGenusUniformRow = () => {
     const data = scene.context?._cloudCache?.uniformData;
@@ -560,11 +726,13 @@ const RUN_LANE = async ({ predict, view }) => {
   const proceduralReady = await globalThis.__cloudProbe.awaitProceduralReady({
     featureRendererKey: C.FeatureRendererKey.PROCEDURAL_CLOUDS,
     frameTime,
-    maxFrames: 240,
+    maxFrames: predict.readyMaxFrames,
   });
   nadirView();
 
-  // ── Leg A: the shipped table + the shipped uniform row at the DEFAULT genus.
+  // ── The shipped table. Pure JS off the shipped module, no render cost, so it
+  // is read regardless of which phases are selected and lands in every
+  // manifest; only gate A scores it.
   const CloudTypeProfile = (
     await import("/packages/engine/Source/Scene/CloudTypeProfile.js")
   ).default;
@@ -581,132 +749,196 @@ const RUN_LANE = async ({ predict, view }) => {
     CloudTypeProfile.get(CloudType.CIRRUS).phaseG -
     CloudTypeProfile.get(CloudType.CUMULUS).phaseG;
 
-  configure({ cloudType: undefined });
-  // DISCARDED warm-up: the async prewarm cold start renders the first fixture
-  // stable-black, so this capture is thrown away on purpose.
-  await settleMs(3000);
-  captureNow();
+  const phaseTimings = {};
+  const runPhase = async (name, body) => {
+    if (!phases.includes(name)) return null;
+    const start = performance.now();
+    const value = await body();
+    phaseTimings[name] = Math.round(performance.now() - start);
+    return value;
+  };
 
-  await settleMs(1500);
-  const defaultUniformRow = readGenusUniformRow();
-  const defaultA = captureNow();
-  await settleMs(1200);
-  const defaultB = captureNow();
-  const defaultRepeatChanged = (() => {
-    const a = defaultA.image.data;
-    const b = defaultB.image.data;
-    let changed = 0;
-    for (let i = 0; i < a.length; i += 4) {
-      if (
-        a[i] !== b[i] ||
-        a[i + 1] !== b[i + 1] ||
-        a[i + 2] !== b[i + 2] ||
-        a[i + 3] !== b[i + 3]
-      ) {
-        changed++;
+  // ── Phase `uniforms` — leg A's in-build half: the shipped uniform row at the
+  // DEFAULT genus. Slots 168-171 are packed from the profile table; the march
+  // step count writes slots 44/45 only and cannot reach them.
+  const uniformsPhase = await runPhase("uniforms", async () => {
+    activeQuality = predict.uniformsQuality;
+    configure({ cloudType: undefined });
+    await settleMs(1200);
+    return { defaultUniformRow: readGenusUniformRow() };
+  });
+
+  // ── Phase `neutrality` — leg B. The DEFAULT lane only, at the authored
+  // cloudQuality 96: a byte-identity test keeps the quality it is asserted at.
+  const neutralityPhase = await runPhase("neutrality", async () => {
+    activeQuality = predict.neutralityQuality;
+    configure({ cloudType: undefined });
+    // DISCARDED warm-up: the async prewarm cold start renders the first fixture
+    // stable-black, so this capture is thrown away on purpose.
+    await settleMs(3000);
+    captureNow();
+
+    await settleMs(1500);
+    const defaultUniformRow = readGenusUniformRow();
+    const defaultA = captureNow();
+    await settleMs(1200);
+    const defaultB = captureNow();
+    const defaultRepeatChanged = (() => {
+      const a = defaultA.image.data;
+      const b = defaultB.image.data;
+      let changed = 0;
+      for (let i = 0; i < a.length; i += 4) {
+        if (
+          a[i] !== b[i] ||
+          a[i + 1] !== b[i + 1] ||
+          a[i + 2] !== b[i + 2] ||
+          a[i + 3] !== b[i + 3]
+        ) {
+          changed++;
+        }
       }
-    }
-    return changed;
-  })();
-  const hashPixels = (data) => {
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < data.length; i++) {
-      hash ^= data[i];
-      hash = Math.imul(hash, 0x01000193) >>> 0;
-    }
-    return hash.toString(16).padStart(8, "0");
-  };
-
-  // ── Clouds-OFF reference at the identical camera/clock, the subtrahend of
-  // every contribution field below.
-  collection.enableVolumetric = false;
-  await settleMs(2000);
-  const cloudsOff = captureNow();
-  collection.enableVolumetric = true;
-
-  const WIND_A = { x: 1.0, y: 0.0 };
-  const WIND_B = { x: 0.0, y: 1.0 };
-  const windA = projectedWindAzimuthDeg(WIND_A.x, WIND_A.y);
-  const windB = projectedWindAzimuthDeg(WIND_B.x, WIND_B.y);
-
-  const genusLane = async (label, cloudType, wind, azimuth) => {
-    configure({ cloudType, cloudWindDirection: { ...wind } });
-    await settleMs(2500);
-    const shot = captureNow();
-    const contribution = contributionField(shot.image, cloudsOff.image);
-    const uniformRow = readGenusUniformRow();
-    const measured = azimuth.resolved
-      ? anisotropy(contribution, azimuth.deg)
-      : { resolved: false, why: azimuth.why };
+      return changed;
+    })();
     return {
-      label,
-      cloudType,
-      wind,
-      windAzimuthDeg: azimuth.resolved ? azimuth.deg : null,
-      windScreenLength: azimuth.screenLength ?? null,
-      uniformRow,
-      contributionPixels: contribution.count,
-      contributionBbox: contribution.bbox,
-      anisotropy: measured,
-      png: shot.png,
+      defaultUniformRow,
+      defaultRepeatChanged,
+      defaultHash: hashPixels(defaultA.image.data),
+      png: defaultA.png,
     };
-  };
-
-  const lanes = {};
-  lanes.cumulus = await genusLane("CUMULUS", CloudType.CUMULUS, WIND_A, windA);
-  lanes.cirrus = await genusLane("CIRRUS", CloudType.CIRRUS, WIND_A, windA);
-  lanes.cirrusRotated = await genusLane(
-    "CIRRUS+wind90",
-    CloudType.CIRRUS,
-    WIND_B,
-    windB,
-  );
-  lanes.cirrostratus = await genusLane(
-    "CIRROSTRATUS",
-    CloudType.CIRROSTRATUS,
-    WIND_A,
-    windA,
-  );
-  lanes.cirrocumulus = await genusLane(
-    "CIRROCUMULUS",
-    CloudType.CIRROCUMULUS,
-    WIND_A,
-    windA,
-  );
-
-  // ── Human-verdict captures. Items 4 and 8 are explicitly "read the PNGs";
-  // no scalar is invented for them.
-  configure({ cloudType: CloudType.CIRRUS, cloudWindDirection: { ...WIND_A } });
-  scene.camera.setView({
-    destination: C.Cartesian3.fromDegrees(SITE_LON, SITE_LAT - 2.2, 9_000.0),
-    orientation: { heading: 0, pitch: C.Math.toRadians(-2), roll: 0 },
   });
-  await settleMs(2500);
-  const fallstreakPng = captureNow().png;
 
-  // Near-sun view for the phase check: local noon puts the sun near the zenith,
-  // so a steeply-up-tilted camera looks through the forward lobe.
-  scene.camera.setView({
-    destination: C.Cartesian3.fromDegrees(SITE_LON, SITE_LAT - 0.5, 6_000.0),
-    orientation: { heading: 0, pitch: C.Math.toRadians(55), roll: 0 },
+  // ── Phase `direction` — legs C, D and E, plus the two human-verdict PNGs.
+  // The clouds-OFF reference is captured ONCE inside this phase and reused as
+  // the subtrahend of all five contribution fields; it must share this phase's
+  // quality, camera and clock with the lanes it is subtracted from.
+  const directionPhase = await runPhase("direction", async () => {
+    activeQuality = predict.directionQuality;
+    configure({ cloudType: undefined });
+    // DISCARDED warm-up at THIS phase's quality, same reason as above.
+    await settleMs(2500);
+    captureNow();
+
+    collection.enableVolumetric = false;
+    await settleMs(2000);
+    const cloudsOff = captureNow();
+    collection.enableVolumetric = true;
+
+    const WIND_A = { x: 1.0, y: 0.0 };
+    const WIND_B = { x: 0.0, y: 1.0 };
+    const windA = projectedWindAzimuthDeg(WIND_A.x, WIND_A.y);
+    const windB = projectedWindAzimuthDeg(WIND_B.x, WIND_B.y);
+
+    const genusLane = async (label, cloudType, wind, azimuth) => {
+      configure({ cloudType, cloudWindDirection: { ...wind } });
+      await settleMs(2500);
+      const shot = captureNow();
+      const contribution = contributionField(shot.image, cloudsOff.image);
+      const uniformRow = readGenusUniformRow();
+      const measured = azimuth.resolved
+        ? anisotropy(contribution, azimuth.deg)
+        : { resolved: false, why: azimuth.why };
+      return {
+        label,
+        cloudType,
+        wind,
+        windAzimuthDeg: azimuth.resolved ? azimuth.deg : null,
+        windScreenLength: azimuth.screenLength ?? null,
+        uniformRow,
+        contributionPixels: contribution.count,
+        contributionBbox: contribution.bbox,
+        anisotropy: measured,
+        png: shot.png,
+      };
+    };
+
+    const lanes = {};
+    lanes.cumulus = await genusLane(
+      "CUMULUS",
+      CloudType.CUMULUS,
+      WIND_A,
+      windA,
+    );
+    lanes.cirrus = await genusLane("CIRRUS", CloudType.CIRRUS, WIND_A, windA);
+    lanes.cirrusRotated = await genusLane(
+      "CIRRUS+wind90",
+      CloudType.CIRRUS,
+      WIND_B,
+      windB,
+    );
+    lanes.cirrostratus = await genusLane(
+      "CIRROSTRATUS",
+      CloudType.CIRROSTRATUS,
+      WIND_A,
+      windA,
+    );
+    lanes.cirrocumulus = await genusLane(
+      "CIRROCUMULUS",
+      CloudType.CIRROCUMULUS,
+      WIND_A,
+      windA,
+    );
+
+    // ── Human-verdict captures. Items 4 and 8 are explicitly "read the PNGs";
+    // no scalar is invented for them.
+    configure({
+      cloudType: CloudType.CIRRUS,
+      cloudWindDirection: { ...WIND_A },
+    });
+    scene.camera.setView({
+      destination: C.Cartesian3.fromDegrees(SITE_LON, SITE_LAT - 2.2, 9_000.0),
+      orientation: { heading: 0, pitch: C.Math.toRadians(-2), roll: 0 },
+    });
+    await settleMs(2500);
+    const fallstreakPng = captureNow().png;
+
+    // Near-sun view for the phase check: local noon puts the sun near the
+    // zenith, so a steeply-up-tilted camera looks through the forward lobe.
+    scene.camera.setView({
+      destination: C.Cartesian3.fromDegrees(SITE_LON, SITE_LAT - 0.5, 6_000.0),
+      orientation: { heading: 0, pitch: C.Math.toRadians(55), roll: 0 },
+    });
+    await settleMs(2500);
+    const nearSunPng = captureNow().png;
+    nadirView();
+
+    return {
+      wind: { a: windA, b: windB },
+      lanes,
+      cloudsOffPng: cloudsOff.png,
+      fallstreakPng,
+      nearSunPng,
+    };
   });
-  await settleMs(2500);
-  const nearSunPng = captureNow().png;
 
-  const pngs = {
-    "default-cumulus": defaultA.png,
-    "clouds-off": cloudsOff.png,
-    "item4-fallstreak-tilt": fallstreakPng,
-    "item8-near-sun-phase": nearSunPng,
-  };
-  for (const lane of Object.values(lanes)) {
-    pngs[`genus-${lane.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`] =
-      lane.png;
-    delete lane.png;
+  const pngs = {};
+  if (neutralityPhase) {
+    pngs["default-cumulus"] = neutralityPhase.png;
+    delete neutralityPhase.png;
+  }
+  if (directionPhase) {
+    pngs["clouds-off"] = directionPhase.cloudsOffPng;
+    pngs["item4-fallstreak-tilt"] = directionPhase.fallstreakPng;
+    pngs["item8-near-sun-phase"] = directionPhase.nearSunPng;
+    delete directionPhase.cloudsOffPng;
+    delete directionPhase.fallstreakPng;
+    delete directionPhase.nearSunPng;
+    for (const lane of Object.values(directionPhase.lanes)) {
+      pngs[`genus-${lane.label.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`] =
+        lane.png;
+      delete lane.png;
+    }
   }
 
   return {
     rendererType,
+    phases,
+    phaseTimings,
+    quality: {
+      readiness: predict.readyQuality,
+      uniforms: predict.uniformsQuality,
+      neutrality: predict.neutralityQuality,
+      direction: predict.directionQuality,
+    },
     readiness,
     proceduralReady,
     viewport: view,
@@ -715,12 +947,17 @@ const RUN_LANE = async ({ predict, view }) => {
       cirrus: { ...cirrusRow },
       cirrusPhaseDelta,
     },
-    defaultUniformRow,
-    defaultRepeatChanged,
-    defaultHash: hashPixels(defaultA.image.data),
+    // Whichever phase ran read the same packed row; prefer the uniforms phase,
+    // which is the one gate A is scored from.
+    defaultUniformRow:
+      uniformsPhase?.defaultUniformRow ??
+      neutralityPhase?.defaultUniformRow ??
+      null,
+    defaultRepeatChanged: neutralityPhase?.defaultRepeatChanged ?? null,
+    defaultHash: neutralityPhase?.defaultHash ?? null,
     canvasSize: { width: canvas.width, height: canvas.height },
-    wind: { a: windA, b: windB },
-    lanes,
+    wind: directionPhase?.wind ?? null,
+    lanes: directionPhase?.lanes ?? null,
     pngs,
   };
 };
@@ -779,7 +1016,11 @@ async function main() {
       timeout: 90_000,
     });
     await armWebGPUDevices(page);
-    result = await page.evaluate(RUN_LANE, { predict: PREDICT, view: VIEW });
+    result = await page.evaluate(RUN_LANE, {
+      predict: PREDICT,
+      view: VIEW,
+      phases: PHASES,
+    });
     const gate = await collectGateErrors(page);
     pageErrors.push(
       ...consoleGate,
@@ -795,13 +1036,22 @@ async function main() {
 
   console.log("=== C13-16 per-genus cloud morphology acceptance ===");
   console.log(
+    `phases=[${PHASES.join(", ")}] watchdog=${WATCHDOG_MS} ms timings{${Object.entries(
+      result.phaseTimings,
+    )
+      .map(([name, ms]) => `${name}=${ms}/${PHASE_BUDGET_MS[name]}ms`)
+      .join(
+        " ",
+      )}} cloudQuality{readiness=${result.quality.readiness} uniforms=${result.quality.uniforms} neutrality=${result.quality.neutrality} direction=${result.quality.direction}}`,
+  );
+  console.log(
     `rendererType=${result.rendererType} readiness{binnedGlobe=${result.readiness.binnedGlobeCommands} firstBinnedMs=${
       result.readiness.firstBinnedMs === null
         ? "never"
         : Math.round(result.readiness.firstBinnedMs)
     } elapsedMs=${Math.round(result.readiness.elapsedMs)}} proceduralReady{frames=${result.proceduralReady.waitedFrames} executeCalls=${result.proceduralReady.executeCalls} pipeline=${result.proceduralReady.pipelineReady}}`,
   );
-  for (const lane of Object.values(result.lanes)) {
+  for (const lane of Object.values(result.lanes ?? {})) {
     const a = lane.anisotropy;
     console.log(
       `  ${lane.label.padEnd(14)} uniforms=[${(lane.uniformRow ?? []).join(", ")}] ` +
@@ -812,33 +1062,53 @@ async function main() {
     );
   }
 
+  // A gate this run's phases did not own is SKIPPED — `undefined`, distinct
+  // from `null` (STRUCTURAL). Skipped gates must not exit 3, or every
+  // single-phase run would report a false incomplete; they are reported as
+  // still-owed instead.
+  const ranUniforms = PHASES.includes("uniforms");
+  const ranNeutrality = PHASES.includes("neutrality");
+  const ranDirection = PHASES.includes("direction");
+  const skipped = (name) =>
+    `[${name}]`.padEnd(15) + `not in this run's phases — SKIPPED`;
+
   // ── Gate A — uniforms.
   const table = result.table;
   const row = result.defaultUniformRow;
-  const tableIdentity =
-    table.cumulus.strength === 0 &&
-    table.cumulus.anisotropy === 1 &&
-    table.cumulus.shear === 0;
-  const rowIdentity =
-    Array.isArray(row) &&
-    row.length === PREDICT.uniformIdentity.length &&
-    row.every((value, i) => value === PREDICT.uniformIdentity[i]);
-  // The non-identity control: if CIRRUS were also identity, slot 171 reading 0
-  // at the default would be vacuous rather than evidence of an early return.
-  const cirrusNonIdentity =
-    table.cirrus.strength > 0 &&
-    table.cirrus.anisotropy > 1 &&
-    table.cirrusPhaseDelta !== 0;
-  const gateA = tableIdentity && rowIdentity && cirrusNonIdentity;
-  console.log(
-    `\n[A UNIFORMS]   predicted CUMULUS table exactly (0,1,0) and packed slots ${PREDICT.uniformSlots.join("/")} === [${PREDICT.uniformIdentity.join(", ")}] exactly (no tolerance); ` +
-      `measured table (${table.cumulus.strength},${table.cumulus.anisotropy},${table.cumulus.shear}) row=[${row === null ? "unreadable" : row.join(", ")}]; ` +
-      `non-identity control CIRRUS (${table.cirrus.strength},${table.cirrus.anisotropy},${table.cirrus.shear}) phaseDelta=${table.cirrusPhaseDelta}  ${verdict(gateA)}`,
-  );
+  let gateA;
+  if (!ranUniforms) {
+    console.log(`\n${skipped("A UNIFORMS")}`);
+  } else {
+    const tableIdentity =
+      table.cumulus.strength === 0 &&
+      table.cumulus.anisotropy === 1 &&
+      table.cumulus.shear === 0;
+    const rowIdentity =
+      Array.isArray(row) &&
+      row.length === PREDICT.uniformIdentity.length &&
+      row.every((value, i) => value === PREDICT.uniformIdentity[i]);
+    // The non-identity control: if CIRRUS were also identity, slot 171 reading
+    // 0 at the default would be vacuous rather than evidence of an early
+    // return.
+    const cirrusNonIdentity =
+      table.cirrus.strength > 0 &&
+      table.cirrus.anisotropy > 1 &&
+      table.cirrusPhaseDelta !== 0;
+    gateA = tableIdentity && rowIdentity && cirrusNonIdentity;
+    console.log(
+      `\n[A UNIFORMS]   predicted CUMULUS table exactly (0,1,0) and packed slots ${PREDICT.uniformSlots.join("/")} === [${PREDICT.uniformIdentity.join(", ")}] exactly (no tolerance); ` +
+        `measured table (${table.cumulus.strength},${table.cumulus.anisotropy},${table.cumulus.shear}) row=[${row === null ? "unreadable" : row.join(", ")}]; ` +
+        `non-identity control CIRRUS (${table.cirrus.strength},${table.cirrus.anisotropy},${table.cirrus.shear}) phaseDelta=${table.cirrusPhaseDelta}  ${verdict(gateA)}`,
+    );
+  }
 
   // ── Gate B — default byte-neutrality against a PRE-change baseline.
   const baselineFile = path.join(OUT, "baseline-default-cumulus.json");
-  if (UPDATE_BASELINE) {
+  if (UPDATE_BASELINE && !ranNeutrality) {
+    console.log(
+      `[B NEUTRAL]    --update-baseline was passed but the "neutrality" phase did not run, so there is no default-lane hash to record. Re-run with --phase=neutrality --update-baseline`,
+    );
+  } else if (UPDATE_BASELINE) {
     fs.writeFileSync(
       baselineFile,
       JSON.stringify(
@@ -846,112 +1116,149 @@ async function main() {
           recordedAt: new Date().toISOString(),
           canvasSize: result.canvasSize,
           hash: result.defaultHash,
+          // Provenance the score step REQUIRES to match. A hash captured under
+          // a different phase selection or a different march quality is not the
+          // same experiment, and comparing across them would produce a phantom
+          // FAIL on the gate that matters most.
+          phases: PHASES,
+          cloudQuality: result.quality.neutrality,
         },
         null,
         2,
       ),
     );
     console.log(
-      `[B NEUTRAL]    baseline WRITTEN to ${baselineFile} — re-run WITHOUT --update-baseline on the post-change build to score this gate`,
+      `[B NEUTRAL]    baseline WRITTEN to ${baselineFile} (phases [${PHASES.join(", ")}], cloudQuality ${result.quality.neutrality}) — re-run WITHOUT --update-baseline, WITH THE SAME --phase selection, on the post-change build to score this gate`,
     );
   }
-  let gateB = null;
-  let bDetail;
-  if (result.defaultRepeatChanged !== 0) {
-    bDetail = `determinism control FAILED to resolve: re-capturing the SAME default view changed ${result.defaultRepeatChanged} px, so "exactly 0" is not a measurable quantity in this scene and a byte-neutrality verdict would be meaningless either way. Most likely cause is temporal accumulation in the cloud pass (cache.frameCounter advances per frame); settle longer or disable the temporal tier before re-running, do NOT relax the gate to a tolerance`;
-  } else if (!fs.existsSync(baselineFile)) {
-    bDetail = `determinism control PASSED (repeat capture 0 px), but no PRE-change baseline exists at ${baselineFile}; record one with --update-baseline on a build without the change. The cross-build claim has no subject to compare against`;
+  let gateB;
+  if (!ranNeutrality) {
+    console.log(skipped("B NEUTRAL"));
   } else {
-    const recorded = JSON.parse(fs.readFileSync(baselineFile, "utf8"));
-    gateB = recorded.hash === result.defaultHash;
-    bDetail = `predicted EXACTLY 0 changed px vs the pre-change build; baseline hash ${recorded.hash} vs measured ${result.defaultHash} → ${gateB ? "identical" : "DIFFERS (a nonzero diff means one of the three early returns is not being taken — that finding outranks the feature)"}`;
+    gateB = null;
+    let bDetail;
+    if (result.defaultRepeatChanged !== 0) {
+      bDetail = `determinism control FAILED to resolve: re-capturing the SAME default view changed ${result.defaultRepeatChanged} px, so "exactly 0" is not a measurable quantity in this scene and a byte-neutrality verdict would be meaningless either way. Most likely cause is temporal accumulation in the cloud pass (cache.frameCounter advances per frame); settle longer or disable the temporal tier before re-running, do NOT relax the gate to a tolerance`;
+    } else if (!fs.existsSync(baselineFile)) {
+      bDetail = `determinism control PASSED (repeat capture 0 px), but no PRE-change baseline exists at ${baselineFile}; record one with --phase=neutrality --update-baseline on a build without the change. The cross-build claim has no subject to compare against`;
+    } else {
+      const recorded = JSON.parse(fs.readFileSync(baselineFile, "utf8"));
+      const samePhases =
+        Array.isArray(recorded.phases) &&
+        recorded.phases.length === PHASES.length &&
+        recorded.phases.every((phase, i) => phase === PHASES[i]);
+      const sameQuality = recorded.cloudQuality === result.quality.neutrality;
+      if (!samePhases || !sameQuality) {
+        // Refusing to decide on a mismatched comparison is the same doctrine as
+        // a blind leg: it is not a relaxed gate, it is a gate declining to
+        // score an experiment that was not run the same way twice.
+        bDetail = `determinism control PASSED (repeat capture 0 px), but the baseline was recorded under phases [${(recorded.phases ?? ["unrecorded"]).join(", ")}] at cloudQuality ${recorded.cloudQuality ?? "unrecorded"} while this run is [${PHASES.join(", ")}] at ${result.quality.neutrality}. A byte-identity claim across two differently-run experiments would be a phantom verdict either way; re-record the baseline with the SAME invocation`;
+      } else {
+        gateB = recorded.hash === result.defaultHash;
+        bDetail = `predicted EXACTLY 0 changed px vs the pre-change build at cloudQuality ${result.quality.neutrality}; baseline hash ${recorded.hash} vs measured ${result.defaultHash} → ${gateB ? "identical" : "DIFFERS (a nonzero diff means one of the three early returns is not being taken — that finding outranks the feature)"}`;
+      }
+    }
+    console.log(`[B NEUTRAL]    ${bDetail}  ${verdict(gateB)}`);
   }
-  console.log(`[B NEUTRAL]    ${bDetail}  ${verdict(gateB)}`);
 
-  // ── Gate C — direction, not brightness.
-  const cirrus = result.lanes.cirrus;
-  const cumulus = result.lanes.cumulus;
-  const laneBlind = (lane) =>
-    !lane.anisotropy.resolved ||
-    lane.contributionPixels < PREDICT.minContributionPixels ||
-    lane.anisotropy.acceptedLines < PREDICT.minAcceptedLines ||
-    lane.anisotropy.saturatedFraction > PREDICT.maxSaturatedFraction;
-  let gateC = null;
-  let cDetail;
-  if (laneBlind(cirrus) || laneBlind(cumulus)) {
-    cDetail =
-      `blind — contribution pixels cirrus=${cirrus.contributionPixels} cumulus=${cumulus.contributionPixels} (floor ${PREDICT.minContributionPixels}), ` +
-      `accepted lines ${cirrus.anisotropy.acceptedLines ?? 0}/${cumulus.anisotropy.acceptedLines ?? 0} (floor ${PREDICT.minAcceptedLines}); ` +
-      `this leg could not see its subject (instrument gap, NOT a product verdict). ${cirrus.anisotropy.why ?? ""} ${cumulus.anisotropy.why ?? ""}`;
+  // ── Gates C, D and E all read the `direction` phase's lanes. The thresholds,
+  // the instrument floors and the blind-leg handling below are unchanged; only
+  // the enclosing phase guard is new.
+  let gateC;
+  let gateD;
+  let gateE;
+  if (!ranDirection) {
+    console.log(skipped("C DIRECTION"));
+    console.log(skipped("D WIND"));
+    console.log(skipped("E GRAIN"));
   } else {
-    const ratio =
-      cirrus.anisotropy.elongation /
-      Math.max(cumulus.anisotropy.elongation, 1e-6);
-    gateC =
-      cirrus.anisotropy.elongation >= PREDICT.cirrusElongationMin &&
-      cumulus.anisotropy.elongation <= PREDICT.cumulusElongationMax &&
-      ratio >= PREDICT.cirrusOverCumulusMin;
-    cDetail =
-      `along/across autocorrelation half-length on the CONTRIBUTION field (never a band mean): ` +
-      `cirrus predicted >=${PREDICT.cirrusElongationMin} measured ${cirrus.anisotropy.elongation.toFixed(2)}; ` +
-      `cumulus predicted <=${PREDICT.cumulusElongationMax} measured ${cumulus.anisotropy.elongation.toFixed(2)}; ` +
-      `ratio predicted >=${PREDICT.cirrusOverCumulusMin} measured ${ratio.toFixed(2)}`;
-  }
-  console.log(`[C DIRECTION]  ${cDetail}  ${verdict(gateC)}`);
+    const cirrus = result.lanes.cirrus;
+    const cumulus = result.lanes.cumulus;
+    const laneBlind = (lane) =>
+      !lane.anisotropy.resolved ||
+      lane.contributionPixels < PREDICT.minContributionPixels ||
+      lane.anisotropy.acceptedLines < PREDICT.minAcceptedLines ||
+      lane.anisotropy.saturatedFraction > PREDICT.maxSaturatedFraction;
 
-  // ── Gate D — the wind actually steers the streaks.
-  const rotated = result.lanes.cirrusRotated;
-  let gateD = null;
-  let dDetail;
-  if (laneBlind(cirrus) || laneBlind(rotated)) {
-    dDetail = `blind — one of the two cirrus lanes did not resolve (contribPx ${cirrus.contributionPixels}/${rotated.contributionPixels}); the rotation claim has no subject`;
-  } else if (
-    cirrus.anisotropy.argmaxDeg === null ||
-    rotated.anisotropy.argmaxDeg === null
-  ) {
-    dDetail = "blind — the azimuth scan produced no usable argmax on one lane";
-  } else {
-    const windDelta = Math.abs(
-      ((rotated.windAzimuthDeg - cirrus.windAzimuthDeg + 90) % 180) - 90,
-    );
-    let measuredDelta = Math.abs(
-      rotated.anisotropy.argmaxDeg - cirrus.anisotropy.argmaxDeg,
-    );
-    if (measuredDelta > 90) measuredDelta = 180 - measuredDelta;
-    gateD =
-      Math.abs(measuredDelta - PREDICT.windRotationDeg) <=
-        PREDICT.windRotationToleranceDeg &&
-      rotated.anisotropy.elongation >= PREDICT.cirrusElongationMin;
-    dDetail =
-      `wind azimuth moved ${windDelta.toFixed(1)} deg on screen; measured elongation argmax moved ` +
-      `${measuredDelta.toFixed(1)} deg (predicted ${PREDICT.windRotationDeg} +/- ${PREDICT.windRotationToleranceDeg}) ` +
-      `[${cirrus.anisotropy.argmaxDeg} -> ${rotated.anisotropy.argmaxDeg}]; rotated-lane elongation ${rotated.anisotropy.elongation.toFixed(2)} ` +
-      `(a fixed diagonal artifact would keep the SAME argmax)`;
-  }
-  console.log(`[D WIND]       ${dDetail}  ${verdict(gateD)}`);
+    // ── Gate C — direction, not brightness.
+    gateC = null;
+    let cDetail;
+    if (laneBlind(cirrus) || laneBlind(cumulus)) {
+      cDetail =
+        `blind — contribution pixels cirrus=${cirrus.contributionPixels} cumulus=${cumulus.contributionPixels} (floor ${PREDICT.minContributionPixels}), ` +
+        `accepted lines ${cirrus.anisotropy.acceptedLines ?? 0}/${cumulus.anisotropy.acceptedLines ?? 0} (floor ${PREDICT.minAcceptedLines}); ` +
+        `this leg could not see its subject (instrument gap, NOT a product verdict). ${cirrus.anisotropy.why ?? ""} ${cumulus.anisotropy.why ?? ""}`;
+    } else {
+      const ratio =
+        cirrus.anisotropy.elongation /
+        Math.max(cumulus.anisotropy.elongation, 1e-6);
+      gateC =
+        cirrus.anisotropy.elongation >= PREDICT.cirrusElongationMin &&
+        cumulus.anisotropy.elongation <= PREDICT.cumulusElongationMax &&
+        ratio >= PREDICT.cirrusOverCumulusMin;
+      cDetail =
+        `along/across autocorrelation half-length on the CONTRIBUTION field (never a band mean): ` +
+        `cirrus predicted >=${PREDICT.cirrusElongationMin} measured ${cirrus.anisotropy.elongation.toFixed(2)}; ` +
+        `cumulus predicted <=${PREDICT.cumulusElongationMax} measured ${cumulus.anisotropy.elongation.toFixed(2)}; ` +
+        `ratio predicted >=${PREDICT.cirrusOverCumulusMin} measured ${ratio.toFixed(2)}`;
+    }
+    console.log(`[C DIRECTION]  ${cDetail}  ${verdict(gateC)}`);
 
-  // ── Gate E — grain ordering across the three ice genera.
-  const grainLanes = [
-    result.lanes.cirrus,
-    result.lanes.cirrostratus,
-    result.lanes.cirrocumulus,
-  ];
-  let gateE = null;
-  let eDetail;
-  if (grainLanes.some(laneBlind)) {
-    eDetail = `blind — ${grainLanes
-      .map((lane) => `${lane.label}:${lane.contributionPixels}px`)
-      .join(" ")} did not all clear the instrument floors`;
-  } else {
-    const values = grainLanes.map((lane) => lane.anisotropy.elongation);
-    gateE =
-      values[0] >= values[1] * PREDICT.grainStrictMargin &&
-      values[1] >= values[2] * PREDICT.grainStrictMargin;
-    eDetail =
-      `predicted ordering ${PREDICT.grainOrder.join(" > ")} (spec noise-space aspects 8.10 / 4.65 / 1.95, each step >= x${PREDICT.grainStrictMargin}); ` +
-      `measured screen elongation ${values.map((v) => v.toFixed(2)).join(" / ")}`;
+    // ── Gate D — the wind actually steers the streaks.
+    const rotated = result.lanes.cirrusRotated;
+    gateD = null;
+    let dDetail;
+    if (laneBlind(cirrus) || laneBlind(rotated)) {
+      dDetail = `blind — one of the two cirrus lanes did not resolve (contribPx ${cirrus.contributionPixels}/${rotated.contributionPixels}); the rotation claim has no subject`;
+    } else if (
+      cirrus.anisotropy.argmaxDeg === null ||
+      rotated.anisotropy.argmaxDeg === null
+    ) {
+      dDetail =
+        "blind — the azimuth scan produced no usable argmax on one lane";
+    } else {
+      const windDelta = Math.abs(
+        ((rotated.windAzimuthDeg - cirrus.windAzimuthDeg + 90) % 180) - 90,
+      );
+      let measuredDelta = Math.abs(
+        rotated.anisotropy.argmaxDeg - cirrus.anisotropy.argmaxDeg,
+      );
+      if (measuredDelta > 90) measuredDelta = 180 - measuredDelta;
+      gateD =
+        Math.abs(measuredDelta - PREDICT.windRotationDeg) <=
+          PREDICT.windRotationToleranceDeg &&
+        rotated.anisotropy.elongation >= PREDICT.cirrusElongationMin;
+      dDetail =
+        `wind azimuth moved ${windDelta.toFixed(1)} deg on screen; measured elongation argmax moved ` +
+        `${measuredDelta.toFixed(1)} deg (predicted ${PREDICT.windRotationDeg} +/- ${PREDICT.windRotationToleranceDeg}) ` +
+        `[${cirrus.anisotropy.argmaxDeg} -> ${rotated.anisotropy.argmaxDeg}]; rotated-lane elongation ${rotated.anisotropy.elongation.toFixed(2)} ` +
+        `(a fixed diagonal artifact would keep the SAME argmax)`;
+    }
+    console.log(`[D WIND]       ${dDetail}  ${verdict(gateD)}`);
+
+    // ── Gate E — grain ordering across the three ice genera.
+    const grainLanes = [
+      result.lanes.cirrus,
+      result.lanes.cirrostratus,
+      result.lanes.cirrocumulus,
+    ];
+    gateE = null;
+    let eDetail;
+    if (grainLanes.some(laneBlind)) {
+      eDetail = `blind — ${grainLanes
+        .map((lane) => `${lane.label}:${lane.contributionPixels}px`)
+        .join(" ")} did not all clear the instrument floors`;
+    } else {
+      const values = grainLanes.map((lane) => lane.anisotropy.elongation);
+      gateE =
+        values[0] >= values[1] * PREDICT.grainStrictMargin &&
+        values[1] >= values[2] * PREDICT.grainStrictMargin;
+      eDetail =
+        `predicted ordering ${PREDICT.grainOrder.join(" > ")} (spec noise-space aspects 8.10 / 4.65 / 1.95, each step >= x${PREDICT.grainStrictMargin}); ` +
+        `measured screen elongation ${values.map((v) => v.toFixed(2)).join(" / ")}`;
+    }
+    console.log(`[E GRAIN]      ${eDetail}  ${verdict(gateE)}`);
   }
-  console.log(`[E GRAIN]      ${eDetail}  ${verdict(gateE)}`);
 
   // ── Gate F — clean, WebGPU, item 9.
   const gateF = result.rendererType === "webgpu" && errors.length === 0;
@@ -960,24 +1267,29 @@ async function main() {
   );
   if (errors.length) console.log(`  ${errors.slice(0, 8).join("\n  ")}`);
 
-  console.log(
-    `\nHUMAN VERDICT OWED (checklist items 4 and 8 — "read the PNGs; a scalar cannot settle this one"):\n` +
-      `  ${OUT}/item4-fallstreak-tilt.png  — the filament's lower edge must sit DOWNWIND of its upper edge\n` +
-      `  ${OUT}/item8-near-sun-phase.png   — the forward glow must read as a bright gradient, not a clipped white disc.\n` +
-      `                                     If it blows out, the lever is GENUS_PHASE_G_LIMIT and the number should be reported, not quietly retuned.\n` +
-      `NOT RUN HERE: item 6 (probe-cloud-tour.mjs northatlantic-cirrus-fibratus floor, minChangedFraction 0.002) and\n` +
-      `              item 7 (probe-cloud-shadows-flagon.mjs streaked cast shadow) are other probes' vehicles.\n` +
-      `NO TIMING LANE (item 10): C13-39 closed NEGATIVE on static WGSL register allocation; a timing claim would need the interleaved-A/B protocol.`,
-  );
+  if (ranDirection) {
+    console.log(
+      `\nHUMAN VERDICT OWED (checklist items 4 and 8 — "read the PNGs; a scalar cannot settle this one"):\n` +
+        `  ${OUT}/item4-fallstreak-tilt.png  — the filament's lower edge must sit DOWNWIND of its upper edge\n` +
+        `  ${OUT}/item8-near-sun-phase.png   — the forward glow must read as a bright gradient, not a clipped white disc.\n` +
+        `                                     If it blows out, the lever is GENUS_PHASE_G_LIMIT and the number should be reported, not quietly retuned.\n` +
+        `NOT RUN HERE: item 6 (probe-cloud-tour.mjs northatlantic-cirrus-fibratus floor, minChangedFraction 0.002) and\n` +
+        `              item 7 (probe-cloud-shadows-flagon.mjs streaked cast shadow) are other probes' vehicles.\n` +
+        `NO TIMING LANE (item 10): C13-39 closed NEGATIVE on static WGSL register allocation; a timing claim would need the interleaved-A/B protocol.`,
+    );
+  }
 
   const { pngs: _pngs, ...manifestBody } = result;
-  const manifestPath = path.join(OUT, "manifest.json");
+  const manifestPath = path.join(OUT, `manifest-${PHASE_TAG}.json`);
   fs.writeFileSync(
     manifestPath,
     JSON.stringify(
       {
         generatedAt: new Date().toISOString(),
         base: BASE,
+        phases: PHASES,
+        phaseBudgetMs: PHASE_BUDGET_MS,
+        watchdogMs: WATCHDOG_MS,
         predictions: PREDICT,
         errors,
         ...manifestBody,
@@ -989,18 +1301,30 @@ async function main() {
   console.log(`\nmanifest: ${manifestPath}`);
   console.log(`PNGs: ${OUT}/*.png`);
 
+  // `undefined` = this run's phases did not own the gate; `null` = STRUCTURAL.
   const gates = [gateA, gateB, gateC, gateD, gateE, gateF];
   const failed = gates.some((gate) => gate === false);
   const structural = gates.some((gate) => gate === null);
+  const missingPhases = ALL_PHASES.filter((phase) => !PHASES.includes(phase));
   console.log(
     `\nGATE ${failed ? "FAIL" : structural ? "INCOMPLETE (structural)" : "PASS"}` +
       (structural
         ? " — one or more legs could not see their subject. Those are instrument gaps owed as follow-up, NOT product verdicts, and NOT a pass: exit 3 so a structural run can never be mistaken for a green one."
         : ""),
   );
-  // Exit codes: 0 = every gate decided and passed. 1 = a real product FAIL.
-  // 2 = watchdog or an exception. 3 = no FAIL, but at least one gate had no
-  // subject to measure — acceptance is INCOMPLETE, not green.
+  if (missingPhases.length > 0) {
+    console.log(
+      `PHASE COVERAGE: this run scored only the [${PHASES.join(", ")}] gate(s). C13-16 acceptance is NOT complete until ` +
+        missingPhases.map((phase) => `--phase=${phase}`).join(" and ") +
+        ` have also been run green. A per-phase exit 0 is a per-phase result, not the acceptance verdict.`,
+    );
+  }
+  // Exit codes: 0 = every gate this run's phases own was decided and passed.
+  // 1 = a real product FAIL. 2 = watchdog or an exception. 3 = no FAIL, but at
+  // least one gate had no subject to measure — acceptance is INCOMPLETE, not
+  // green. A gate a phase did not own is SKIPPED, not structural: it is
+  // reported under PHASE COVERAGE and does not move the exit code, otherwise
+  // every single-phase run would exit 3 and the code would carry no signal.
   process.exitCode = failed ? 1 : structural ? 3 : 0;
 }
 

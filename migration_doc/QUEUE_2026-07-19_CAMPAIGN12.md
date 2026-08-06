@@ -150,12 +150,20 @@ pending landing or Edge”:
   mips, frame-owned WebGPU texture-mip generation, and the lockstep Moon
   shader/LOD correction. Landed ≠ accepted — see the `C12-33` section below for
   the gates that have still not executed.
-- The post-Batch-804 star-census red is an incomplete `C12-11` seam, not a new
+- The post-Batch-804 star-census red was an incomplete `C12-11` seam, not a new
   design decision. DR-01 already ratified diffuse cubemap light plus
   sprite-owned resolved stars. The unblurred `C12-10` faces are the deliberate
-  reversal artifact; install regenerated diffuse faces only from the
-  hash-pinned 16K source, then run M6/G3 and moving-camera cost/alias evidence.
-  Keep catalog check (A) red until that switch lands. See
+  reversal artifact; regenerated diffuse faces were to be installed only from
+  the hash-pinned 16K source. **That switch LANDED at Batch 833 → see the
+  `C12-11` row: the diffuse faces are bundled and default, regenerated from the
+  re-downloaded SHA-256-verified source, and `probe-stars-catalog`'s check (A)
+  was re-expressed as a resolved-POINT CENSUS (a brightness count would still be
+  dominated by the cubemap, because Sirius sits only ~9° off the galactic plane)
+  with a new check (G) asserting the cubemap alone yields no resolved stars.**
+  The instruction "keep catalog check (A) red until that switch lands" is
+  therefore discharged; what is still owed is the Edge RUN of that probe plus
+  G3 diffuse/reversal visual review and the moving-camera alias/frame-cost lane.
+  See
   [`C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md`](C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md).
 
 #### C12-33 — Moon mip/LOD and moving-seam acceptance

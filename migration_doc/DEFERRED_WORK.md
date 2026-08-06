@@ -168,9 +168,11 @@ BOTH directions, gates A/C/D/E green. Do NOT loosen the predicate.
 
 ### NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS
 
-**Status:** ROOT-CAUSED + FIXED (2026-08-06); browser ACCEPTANCE OWED. Found by the
-FIRST run of `probe-vector-draping.mjs` (Batch 830), the acceptance probe for
-C11-213 (landed Batch 827).
+**Status:** ROOT-CAUSED + FIXED (Batch 834) + **VERIFIED AT PIXELS (Batch 835)**, both
+2026-08-06. Found by the FIRST run of `probe-vector-draping.mjs` (Batch 830), the
+acceptance probe for C11-213 (landed Batch 827). **This entry's own defect is closed;
+what remains open on the probe is a different, WebGL-side one — see
+`NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT` above.**
 
 **ROOT CAUSE - confirmed from source AND from the probe's own pixels, not inferred.**
 `GlobeTerrain.wgsl::vectorInverse2x2` answered a SINGULAR 2x2 UV Jacobian with the
@@ -262,9 +264,25 @@ CPU arithmetic, so if that arithmetic is right the defect is in the SHADER read 
 binding); or the shared all-zero placeholder being sampled as live data on a tile whose
 header was never written.
 
-**Acceptance:** `probe-vector-draping.mjs` gate B PASSES (bbox delta <= 16 px) with
-gates A/C/D/E still green, and the WebGPU PNG shows no streaks. Do NOT loosen the bbox
-predicate - it is the only leg that sees this class.
+**Acceptance as filed:** `probe-vector-draping.mjs` gate B PASSES (bbox delta <= 16 px)
+with gates A/C/D/E still green, and the WebGPU PNG shows no streaks. Do NOT loosen the
+bbox predicate - it is the only leg that sees this class.
+
+**Acceptance result (Batch 835, post-fix run).** The streak half is DISCHARGED and the
+gate-B half is REASSIGNED:
+
+- The WebGPU nadir PNG is visually clean - no streaks.
+- Gates A (backend), C (material), D (Jacobian) and E (clean/churn) PASS.
+- Changed-pixel counts now agree with WebGL almost exactly: 22398 vs 22401 total, RED
+  **exactly** 5625 vs 5625, BLUE 16773 vs 16776; centroid delta 0.0/0.0; the oblique
+  bounding boxes are IDENTICAL (`[440,371,595,394]` on both).
+- **Gate B still FAILS, but in the opposite direction** and on the WebGL side: at nadir
+  WebGL is `[451,19,710,747]` and WebGPU `[451,19,607,747]`. WebGL's numbers are
+  byte-identical to the pre-fix run, so nothing in Batches 827-834 moved them. That
+  residual is tracked as `NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT` (OPEN / LOW), not
+  here.
+- Gate F remains STRUCTURAL: its in-build half measures 0 changed px, but its
+  cross-build half needs a pre-change baseline that does not exist.
 
 ## 2026-08-02 — C11-195 hardening bundle (posture decision + trim)
 
@@ -6868,7 +6886,13 @@ anchor rather than relaxing what it proves:
   maintainer:** the spec pins two aliases the probe never uses — either the
   probe should use them or the contract should drop them.
 
-**2026-08-02/06 additions to this class (Batches 821-822).**
+**2026-08-02/06 additions to this class (Batches 821-822, 833).**
+
+**Both CRLF instances are recorded below, and the DIFFERENCE between them is the
+useful lesson: the same root cause (an LF-anchored reader against a CRLF checkout)
+produced a SILENT FALSE GREEN in one spec and a LOUD FAILURE in the other, and what
+separated them was whether the spec had a `notEqual` guard asserting its own
+precondition.**
 
 - `texture-mip-queue-safety.spec.mjs` carried the same defect in its FALSE-GREEN
   form and was caught at Batch 821: its source reader anchored on a bare LF
@@ -6885,6 +6909,20 @@ anchor rather than relaxing what it proves:
   merely required the resolver to MENTION `frameState?.context`, which every wrong
   posture satisfied. Prefer this shape (execute the subject, keep the pin) over
   widening another regex whenever a source anchor breaks.
+- **`skybox-diffuse-seam.spec.mjs` (Batch 833) — the SELF-DETECTED form of the same
+  class.** Its MUTATION group reads `Tools/skybox-bake/bake-tycho-t5.mjs` and rewrites
+  multi-line targets to prove the detector has teeth. Those targets were authored with
+  bare `\n`, so on this CRLF checkout they matched nothing and the "mutated" copy would
+  have been the ORIGINAL source — a mutation test that silently verifies nothing, i.e.
+  exactly the `texture-mip-queue-safety.spec.mjs` failure mode. It did **not** go
+  false-green: the spec asserts `assert.notEqual(mutated, original)` before running the
+  mutant, so it FAILED LOUDLY at the precondition and named the reason. Fixed by
+  normalizing CRLF → LF at **both** readers (see the comments at
+  `skybox-diffuse-seam.spec.mjs:82` and `:527`, with the guards at `:208` and `:535`),
+  not by weakening a target. **Rule this yields:** any spec that mutates source text
+  MUST assert that its mutation actually changed the text. That one line is the
+  difference between the two entries above — the guard converts an invisible
+  false green into a diagnosable red.
 
 ## 2026-08-01 — v1.144 upstream-merge follow-ups (merge 65a194d24e)
 
@@ -7186,11 +7224,31 @@ precisely to avoid that) — it would be a compat-mode negotiation in
 refusal of compat mode for draped vector layers. Surfaced here rather than
 worked around at the call site (Principle 9).
 
-**Acceptance (STILL OWED):** a draped `BufferPolylineCollection` renders on
-both backends in the split-screen Edge probe with matching line placement.
+**Acceptance (PARTIALLY DISCHARGED — still not COMPLETE):** a draped
+`BufferPolylineCollection` renders on both backends with matching line placement.
 Maintainer ruling 2026-08-01: WGSL twin REQUIRED (the WebGL-only option was
 rejected); scheduled as Campaign 11 row `C11-213` (W7 parity wave).
 SHADER_PAIRS_LOCKSTEP row landed with the implementation.
+
+`Tools/visual-regression/probe-vector-draping.mjs` (Batch 830) is that gate, and it
+has now RUN TWICE on Edge:
+
+- **Batch 831, first run.** The core claim is VERIFIED — draping renders on WebGPU
+  (22,714 changed px vs WebGL's 22,401), centroid agrees to 0.4 px, both colour
+  classes present with the blue:red ratio in band on both backends, the grazing-view
+  Jacobian holds (near/far width ratio 1.25 webgl / 1.30 webgpu), and three
+  pan-out/pan-in churn cycles produce 0 console errors, 0 destroyed-buffer errors and
+  0 re-bake pixel drift. The pre-fix symptom was a blank WebGPU pane; it is decisively
+  not that. The same run FAILED gate B on a real WebGPU-only artifact →
+  `NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS`.
+- **Batch 835, post-fix run.** Batch 834's singular-Jacobian fix is verified at
+  pixels; gates A/C/D/E pass and the counts match WebGL to within 3 px (RED exactly
+  equal).
+
+**What keeps this entry OPEN:** gate B still fails, now on a pre-existing WebGL-side
+extent (`NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT`), and gate F is STRUCTURAL — its
+cross-build half needs a baseline recorded on a pre-change build, which does not
+exist. Neither is a defect in the WGSL twin, but neither is a green gate either.
 
 ### UP144-MODEL-READY-ZERO-PRIM-SPEC — zero-primitive readiness regression spec
 

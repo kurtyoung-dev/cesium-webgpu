@@ -1,6 +1,6 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** August 6, 2026 (Batches 819-828, HEAD `bedb113bbc`) — see the 2026-08-06 Recent Progress section directly below. ⚠ **This log has a coverage gap.** Between the 2026-05-30 entry and this one the fork ran hundreds of batches (Batch labels 186 through 818, though the labels are non-monotonic) whose records live in the dated campaign queues (`QUEUE_2026-07-18_CAMPAIGN11.md`, `QUEUE_2026-07-19_CAMPAIGN12.md`, `QUEUE_2026-07-23_CAMPAIGN13.md`), `WEBGPU_DEBUGGING_LOG.md`, `DEFERRED_WORK.md` and `FEATURE_INVENTORY.md`, not here. Do not read the sections below as the current frontier; read them as history, and trust the queues for status.
+**Last Updated:** August 6, 2026 (Batches 819-836, HEAD `5fe356ad52`) — see the 2026-08-06 Recent Progress section directly below. ⚠ **This log has a coverage gap.** Between the 2026-05-30 entry and this one the fork ran hundreds of batches (Batch labels 186 through 818, though the labels are non-monotonic) whose records live in the dated campaign queues (`QUEUE_2026-07-18_CAMPAIGN11.md`, `QUEUE_2026-07-19_CAMPAIGN12.md`, `QUEUE_2026-07-23_CAMPAIGN13.md`), `WEBGPU_DEBUGGING_LOG.md`, `DEFERRED_WORK.md` and `FEATURE_INVENTORY.md`, not here. Do not read the sections below as the current frontier; read them as history, and trust the queues for status.
 
 **Prior Update:** May 30, 2026 (Batches 179-185, HEAD `88b111e49c` — both 2026-05-28 architectural roadblocks closed. The BufferPolygon WGSL `#import` compile bug is RESOLVED (Batch 180, `3667945dae` — preprocessor resolves bare `#import` from `BUFFER_WGSL_CHUNKS`); flat textured-material GroundPrimitive classification (Color/Stripe/Checkerboard/Grid) now SHIPPED in ALL modes (Batch 185, `88b111e49c` — the real root cause was a 1-hop-too-deep inner-`_primitive` lookup writing `materialMeta.x=0`, **not** globe depth precision); the renderer-wide log-depth epic is IN PROGRESS (Slices 0/1/2a shipped, Batches 181/182/183, master switch defaults OFF). One genuine residual survives Batch 185: `NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION` (far-corner reconstruction precision, log-depth-gated). See the 2026-05-30 Recent Progress section below + WEBGPU_EXECUTION_ROADMAP.md. NOTE: batch numbers are non-monotonic — these 167-185 commits are the NEWEST work despite lower labels than the 205-230 sections below; trust dates/hashes.)
 
@@ -11,6 +11,79 @@
 **Typing state (Session 30 end):** Renderer/WebGPU is at the principled typing floor — every remaining `any`/`unknown`/`object`/`Record<string, unknown>` is a documented intentional boundary. Full shared-type surface: `DebugStatsValue`, `PickTarget`/`PickKind`/`PickResult`, `Renderable`, `ViewportQuadCommandOptionsBase`, `SceneGlobalCache`, and 15 co-located `.d.ts` files for JS interop. BGL helper adoption: 86 of 88 call sites (46 files). Non-breaking discriminated picking API (`getPickResult(color) → { target, kind }`) lets consumers replace `instanceof` chains with exhaustive `switch (kind)`.
 
 ---
+
+## Recent Progress (2026-08-06 — Batches 829-836: acceptance probes authored and RUN — draping verified at pixels after a real defect, fog coverage gate re-derived, the sky bake's blur found to be a no-op, cirrus acceptance still owed)
+
+Eight batches landed on `main` (`95ab21c460` → `5fe356ad52`). This run is mostly
+**acceptance**: the two rows that landed at 826/827 with checklists and no probe got
+their probes, the probes were RUN, and two of the three findings were defects in the
+measuring apparatus or in code the campaign already owned. Nothing here promotes a row
+to COMPLETE.
+
+- **Batch 829 — documentation sync for 819-828.** Every claim re-checked against
+  shipped code rather than batch messages. Largest correction: seven "unstaged
+  2026-08-02" references across the C11 queue actually describing work that had been on
+  `main` for days. No row promoted with an open browser gate.
+- **Batch 830 — acceptance probes for `C11-213` and `C13-16`.** Both rows had landed
+  with detailed Edge checklists and nothing to execute them.
+  `probe-vector-draping.mjs` (6 gates) and `probe-cloud-genus-morphology.mjs`
+  (6 gates). **Both use the exit-3 convention: 0 = every gate decided and passed,
+  1 = a real product FAIL, 2 = watchdog/exception, 3 = no FAIL but a gate had no
+  subject to measure** — acceptance INCOMPLETE, deliberately not 0, so a structural run
+  can never be read as green.
+- **Batch 831 — first `C11-213` acceptance run: draping WORKS, and the probe caught a
+  real WebGPU-only artifact.** The core claim is VERIFIED (renders on WebGPU, centroid
+  0.4 px, count ratio 1.014, colour and width correct, grazing-view Jacobian holds,
+  0 console/destroyed-buffer errors across three pan-churn cycles). Gate B FAILED on
+  faint horizontal streaks that moved the count 1.4% and the centroid not at all —
+  **a count- or centroid-based parity check would have passed the frame**; only the
+  bbox leg saw it. Filed `NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS`.
+- **Batch 832 — fog cheap-path coverage gate RE-DERIVED (`CLOUD-LOW-COVERAGE-CUTOFF`
+  fog arm; Edge acceptance owed).** `VolumetricFog.wgsl` really was the last raw
+  `1.0 - coverage` gate in the cloud-density family. **But the obvious one-line fix
+  measures WORSE than doing nothing** — dropping in `cloudEffectiveCoverage` gives
+  28.2 pp error against the historical gate's 23.9 pp — because the fog's cheap shadow
+  never samples the baked cloud textures; it builds its own 3-octave `fbm3d` with a
+  different distribution (mean 0.5000/σ 0.1206 vs the baked channel's 0.4307/0.0896).
+  Fixed by standardising the fog SAMPLE onto the baked field's moments and then
+  applying the shared response unmodified: 23.9 pp → 1.5 pp. The historical gate is
+  pinned as its own mutant so nobody simplifies back to it. **No numbered C13 row
+  exists for this work**; the authority is the Batch-818 handoff plus the
+  `CLOUD-LOW-COVERAGE-CUTOFF` entry in `DEFERRED_WORK.md`, and it is ledgered under
+  that arm rather than given an invented row number.
+- **Batch 833 — `C12-11` DR-01 star-map seam (Edge acceptance owed).** **The bake had
+  never blurred anything:** `.blur()` was chained onto a `sharp.composite()` pipeline
+  and sharp applies `composite` LAST, so the blur hit an empty base — and the result
+  was additionally mis-strided (RGBA read at a 3-byte stride, ~29× too bright). The
+  trap that hid it is worth carrying: **a mean is invariant under blur**, so mean
+  conservation cannot distinguish blurred from un-blurred; only a peak/point metric
+  can. Diffuse faces are now the default; redundancy is resolved by construction —
+  every face censuses to 0 resolved point sources while retaining 83.5–94.6% of its
+  band structure — and the bundle SHRINKS 4.355 MB → 0.362 MB. `probe-stars-catalog`
+  check (A) is a real gate again as a POINT CENSUS, with a new check (G).
+- **Batch 834 — the draping streaks, root-caused.** `vectorInverse2x2` answered a
+  **singular** UV Jacobian with the **ZERO matrix**, which collapses
+  `length(screenFromUv * offsetUv) < lineWidth` to always-true for the cell's first
+  segment however distant. It fires on every terrain SKIRT, because
+  `HeightmapTessellator` derives a skirt vertex's UV from the UNMOVED edge lat/lon and
+  only then nudges the position — so a skirt strip carries a bit-identical UV component
+  at every quad corner and the determinant is exactly 0. **WebGL only looked clean
+  because GLSL's `inverse()` divides by that zero and every comparison against the
+  resulting Inf/NaN is false — behaviour the GLSL spec leaves UNDEFINED.** Both
+  backends now guard explicitly and agree by construction rather than by driver choice.
+- **Batch 835 — the fix VERIFIED at pixels.** WebGPU nadir frame clean; RED changed-pixel
+  count **exactly** 5625 on both backends; centroid delta 0.0/0.0; oblique bboxes
+  identical. Gates A/C/D/E pass. Gate B still fails **in the opposite direction** — on a
+  pre-existing WebGL-side extent the WebGPU streaks had been masking — filed as
+  `NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT` (LOW). The symmetric bbox predicate was
+  NOT loosened. Gate F remains structural (its cross-build baseline does not exist).
+- **Batch 836 — cirrus probe repaired; `C13-16` acceptance STILL ENTIRELY OWED.**
+  `probe-cloud-genus-morphology.mjs` defined a `configure()` helper and never called it,
+  and an UNCONFIGURED volumetric renderer reports `executeCalls=0 / initialized=false /
+  pipelineReady=false` — a convincing impersonation of a broken renderer. With that
+  fixed the probe exceeds its 420 s watchdog at `cloudQuality: 96`; that is a tuning
+  problem, not a product finding. **Nothing in this run is evidence for or against the
+  cirrus morphology.**
 
 ## Recent Progress (2026-08-06 — Batches 819-828: audited Codex Sol landing, snap edge tier, model-arena posture, twilight range, structural pipeline-key fold, cloud genus morphology, vector draping)
 
