@@ -37,6 +37,47 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-08-06 - the star point-census finds no resolved sources in a LIVE frame
+
+### C12-STAR-POINT-CENSUS-LIVE-CALIBRATION
+
+**Status:** OPEN - found by the first post-C12-11 run of `probe-stars-catalog.mjs`.
+Product-vs-instrument NOT yet separated; do not treat this as either until it is.
+
+**The good half is decisive: the DR-01 seam landed.** Check (G) PASSES - with the
+sprites off, the diffuse cubemap yields ZERO resolved point sources, and the off-frame
+bright-pixel count is 0 with max luminance 28. Before Batch 833 the un-blurred cubemap
+put ~1300 bright pixels in this same view. The cubemap now carries diffuse light only,
+exactly as DR-01 requires.
+
+**The open half.** Check (A) - sprites must ADD resolved point sources - FAILS, because
+the point census returns 0 for the sprite-ON frame as well (sirius-aimed 0,
+catalog-off 0). Yet the sprites are plainly rendering in the same run: max luminance
+goes 28 -> 180 with sprites on and 255 at raised intensity, global bright pixels go
+0 -> 10 -> 30, the centre box goes 0 -> 4, and check (D) (intensity scales the count)
+PASSES. So something is drawn and it is bright; the census just does not classify any
+of it as a resolved source.
+
+**Two candidate readings, and the discriminator.** Either (a) the census is calibrated
+for BAKED cube faces (where it was developed and where its `minPeak: 40` + strict
+local-maximum + isolation tests were tuned) and is too strict for a live rendered
+frame - sprite splats may be broader than a baked star and fail the local-maximum or
+isolation test - or (b) the sprite field genuinely no longer produces isolated point
+maxima at this exposure now that the bright cubemap floor is gone, which would be a
+real product finding about sprite sizing/exposure. DISCRIMINATOR: run the SAME census
+over a synthetic frame containing splats of the sprite renderer's actual on-screen
+footprint; if the census rejects those too, it is (a).
+
+**Do not 'fix' this by loosening the census.** It was deliberately made a point census
+rather than a brightness count in Batch 833, because Sirius sits ~9 deg off the
+galactic plane where a brightness count is dominated by the diffuse band. Loosening it
+back toward a brightness threshold would re-create the measurement it was built to
+replace.
+
+**Acceptance:** check (A) passes with a census whose calibration is justified against a
+live frame, or the sprite-side product finding is filed separately and (A) is
+re-scoped. Check (G) must keep passing either way.
+
 ## 2026-08-06 - WebGL vector draping has its own faint extent beyond the drawn lines
 
 ### NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT
