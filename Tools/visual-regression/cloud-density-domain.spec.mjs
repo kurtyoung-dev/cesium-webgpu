@@ -678,13 +678,22 @@ test("LIVE and bit-13-off preserve the literal legacy density route", () => {
   // `cloudEffectiveCoverage` response in CloudDensityDomain.wgsl. That is the
   // one edit; `legacyBakedBase` is untouched and keeps its original hash, which
   // is what proves the re-freeze was scoped to the gate.
+  //
+  // Re-frozen again (C13-16, per-genus morphology): the same three evaluations
+  // gained the genus fibre factor in their morphology chain and routed their
+  // erosion height weight through `genusErosionHeightWeight`. Both edits are
+  // identity at the default genus by explicit early return, so this is a
+  // deliberate field EXTENSION moved through the legacy and macro routes
+  // together — the condition the freeze's own docstring sets for a re-freeze.
+  // `legacyBakedBase` is again untouched and keeps its original hash, which is
+  // what proves the re-freeze was scoped to the morphology chain.
   const frozenLegacyHashes = {
     legacyBakedBase:
       "63cc67e6e7790a33c3ac39a3958d74335debe667d67d24a0e0e2c35609af4cde",
     legacyCloudDensity:
-      "f536b65d2e8095349a94c2b61c7a3bdceade6b262d10f5696e0bf5e3af335ac1",
+      "aedcb3c971a89d15c4966b5b0bc2a0d5d85fc469009378b242b8b111afe6cc39",
     legacyCloudBaseDensity:
-      "77512de8fa5aa13fa901c355b39dbc1b4260a54b6fd0a007cb84d9ff5b06800d",
+      "10d19f4bf91f9e66803e038d8d44a31d0a72b31fe25d880b396bbf2feb408d61",
   };
   for (const [name, hash] of Object.entries(frozenLegacyHashes)) {
     assert.equal(

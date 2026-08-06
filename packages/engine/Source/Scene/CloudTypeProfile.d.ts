@@ -33,10 +33,22 @@ interface CloudErosionStyleEnum {
   PUFFY: number;
 }
 
+export interface CloudFibreMorphology {
+  /** Fibrous carve depth in [0,1]; 0 is the identity (PUFFY water genera). */
+  strength: number;
+  /** Filament length:width aspect ratio along the wind; 1 is isotropic. */
+  anisotropy: number;
+  /** Fallstreak along-wind lag per unit shell height, in noise units. */
+  shear: number;
+}
+
 interface CloudTypeProfileStatic {
   PROFILES: ReadonlyArray<CloudProfile>;
   /** Returns the profile for a genus, falling back to CUMULUS if out of range. */
   get(cloudType: number): CloudProfile;
+  FIBRE_MORPHOLOGY: ReadonlyArray<CloudFibreMorphology>;
+  /** Returns the fibrous-morphology row for a genus, or the identity row. */
+  getFibreMorphology(cloudType: number): CloudFibreMorphology;
   CloudDeck: CloudDeckEnum;
   CloudHeightGradientShape: CloudHeightGradientShapeEnum;
   CloudErosionStyle: CloudErosionStyleEnum;

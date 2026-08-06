@@ -233,6 +233,25 @@ struct CloudUniforms {
   _padO: f32,                              // 163
   densityMorphologyOriginLow: vec3<f32>,  // 164-166
   _padP: f32,                              // 167
+  // ── C13-16 (per-genus cloud morphology — the cirrus/fibrous slice). Slots
+  // 168-171, one new 16-byte row appended ADD-ONLY (every earlier offset is
+  // UNCHANGED). These activate the two axes of Scene/CloudTypeProfile.js that had
+  // no renderer consumer — the FIBROUS/PUFFY `erosion` style and the per-genus
+  // Henyey-Greenstein `phaseG` — so an ice genus reads as sheared filaments with
+  // a forward-peaked phase rather than as a faint scaled-down cumulus.
+  //
+  // Default byte-identity: the default genus is CUMULUS, which is PUFFY with
+  // phaseG equal to its own, so genusFibreStrength is exactly 0 (genusFibreFactor
+  // early-returns 1.0 and genusErosionHeightWeight early-returns the literal
+  // historical `1.0 - h`) and genusPhaseDelta is exactly 0 (genusForwardG
+  // early-returns cloud.phaseG1). Neither anisotropy nor shear is read past those
+  // guards. The fibre factor is a per-position multiplier in [0,1] applied
+  // IDENTICALLY in the full density and the cloudBaseDensity oracle, so the W5
+  // `base >= full` empty-space-skip invariant holds.
+  genusFibreStrength: f32,       // 168 — 0 PUFFY/off (default) .. 1 fully fibrous carve
+  genusFibreAnisotropy: f32,     // 169 — filament length:width aspect along the wind (>= 1)
+  genusFibreShear: f32,          // 170 — fallstreak along-wind lag per unit shell height
+  genusPhaseDelta: f32,          // 171 — per-genus HG forward-lobe g offset vs CUMULUS (0 neutral)
 };
 
 @group(0) @binding(0) var colorTex: texture_2d<f32>;
@@ -784,6 +803,106 @@ fn heightGradientFor(h: f32, shape: f32, anvil: f32) -> f32 {
   return base * anvilTop;
 }
 
+// ─── C13-16 — per-genus FIBROUS (ice-crystal) morphology ───
+//
+// Scene/CloudTypeProfile.js has always carried an `erosion` axis (FIBROUS for the
+// cirrus family, PUFFY for the water-droplet genera) and a per-genus `phaseG`, and
+// NEITHER reached the shader: a genus changed only its density scale, deck, height
+// gradient, and extinction, so cirrus rendered as faint scaled-down cumulus lobes.
+// These three functions are the genus-level SHAPE and PHASE half.
+//
+// Relationship to the neighbouring morphology functions: mammatusFactor /
+// speciesFactor / featureFactor are OPT-IN user selections of a supplementary
+// feature, species, or variety on top of whatever genus is active. This one is the
+// genus's own baseline character, derived from the profile table rather than from a
+// user dial, and it composes multiplicatively into the SAME [0,1] factor chain
+// those three already form — a fourth link, not a second chain. A user who also
+// selects `cloudSpecies: "fibratus"` gets a finer filament structure layered on the
+// genus grain, which is what the WMO hierarchy (genus -> species) actually means.
+//
+// Physical model. Cirriform cloud is ice precipitating out of small generating
+// cells near the tropopause. The crystals fall at ~0.3-1 m/s through a layer whose
+// horizontal wind changes strongly with height (jet-stream shear of order 5-20 m/s
+// per km), so each crystal is advected downstream as it descends and the cloud is
+// drawn into a long streak trailing beneath and downwind of its generating head.
+// Two consequences are modelled here: the streak's ANISOTROPY (length:width of
+// order 5:1 to 20:1 along the wind) and its TILT (the lower end lags the head).
+//
+// `sp` is the wind-advected noise-space sample position and `h` the shell height
+// fraction (0 base .. 1 top), matching every other factor in the chain.
+fn genusFibreFactor(sp: vec3<f32>, h: f32) -> f32 {
+  let strength = clamp(cloud.genusFibreStrength, 0.0, 1.0);
+  if (strength <= 0.0) {
+    return 1.0;
+  }
+  // Horizontal wind frame in noise space (same convention as speciesFactor: the
+  // wind vector maps to world as vec3(windDirection.x, 0, windDirection.y), so the
+  // horizontal plane is sp.xz). Fall back to +X at zero wind so the frame — and
+  // therefore the streak DIRECTION — stays defined rather than degenerate.
+  let windH = vec2<f32>(cloud.windDirection.x, cloud.windDirection.y);
+  let wlen = length(windH);
+  let windDir = select(vec2<f32>(1.0, 0.0), windH / max(wlen, 1e-5), wlen > 1e-5);
+  let crossDir = vec2<f32>(-windDir.y, windDir.x);
+  let horiz = vec2<f32>(sp.x, sp.z);
+  // Fallstreak tilt: the generating head is at the deck TOP, and the falling ice
+  // lags downwind of it, so the along-wind displacement grows toward the base
+  // (h -> 0) and vanishes at the head (h = 1).
+  let along = dot(horiz, windDir) - (1.0 - h) * cloud.genusFibreShear;
+  let acr = dot(horiz, crossDir);
+  // Anisotropic sampling domain. Dividing ONLY the along-wind axis by the aspect
+  // ratio makes an isotropic cell field read as filaments `aspect` times longer
+  // along the wind than across it — this single division IS the streak signature.
+  // At aspect 1 the domain is isotropic again and the genus falls back to generic
+  // rounded cells, which is exactly the failure this row exists to remove.
+  let aspect = max(cloud.genusFibreAnisotropy, 1.0);
+  // The vertical axis is compressed so cells stay columnar through a thin high
+  // deck: a filament is a curtain hanging through the layer, not a floating blob.
+  let fibP = vec3<f32>(along / aspect, sp.y * 0.35, acr) * 3.0;
+  let streak = worleyF1(fibP); // ~0 in a filament core, ~1 between filaments
+  // Keep density in the cores and carve the gaps between them.
+  let carve = smoothstep(0.12, 0.72, streak) * strength;
+  return clamp(1.0 - carve, 0.0, 1.0);
+}
+
+// C13-16 — the height weighting of the subtractive detail erosion.
+//
+// Cumuliform erosion is deliberately base-weighted (`1 - h`): a convective water
+// cloud has a soft ragged bottom and a crisp cauliflower top, so the detail octave
+// eats the base and leaves the crown. Ice cloud has no such buoyant asymmetry —
+// the deck is shredded uniformly through its depth — so a fibrous genus blends
+// that weight toward a constant. At genusFibreStrength 0 this returns the literal
+// historical `1.0 - h` through an explicit early return, so a default render is
+// byte-identical rather than merely arithmetically equal.
+fn genusErosionHeightWeight(h: f32) -> f32 {
+  let fibre = clamp(cloud.genusFibreStrength, 0.0, 1.0);
+  if (fibre <= 0.0) {
+    return 1.0 - h;
+  }
+  return mix(1.0 - h, 1.0, fibre);
+}
+
+// C13-16 — per-genus Henyey-Greenstein forward-lobe eccentricity.
+//
+// Ice crystals (hexagonal plates and columns) scatter far more forward-peaked
+// than liquid droplets: CloudTypeProfile gives the cirrus family g ~ 0.88-0.9
+// against ~0.76-0.78 for the water genera. The delta is applied to the tunable
+// `phaseG1` rather than replacing it so the existing W1/W3 lighting calibration
+// is preserved, and the sum is clamped short of 1 because the HG denominator
+// `(1 + g^2 - 2g)^1.5` collapses there and the forward peak would diverge.
+// genusPhaseDelta is exactly 0 for CUMULUS, and the early return makes that case
+// byte-identical.
+const GENUS_PHASE_G_LIMIT: f32 = 0.95;
+fn genusForwardG() -> f32 {
+  if (cloud.genusPhaseDelta == 0.0) {
+    return cloud.phaseG1;
+  }
+  return clamp(
+    cloud.phaseG1 + cloud.genusPhaseDelta,
+    -GENUS_PHASE_G_LIMIT,
+    GENUS_PHASE_G_LIMIT,
+  );
+}
+
 // Batch 555 (E2 CLOUD-MAMMATUS) — pendulous "mamma" pouches on the cloud UNDERSIDE.
 // Returns a density multiplier in [0,1] that CARVES the underside BETWEEN rounded
 // lobe cells while keeping density at the cell centres, so the otherwise-flat cloud
@@ -1142,7 +1261,8 @@ fn legacyCloudDensity(
     );
     let worleyDetail = 1.0 - detail.r;
     let erosionLo =
-      worleyDetail * cloud.erosionStrength * (1.0 - heightFraction);
+      worleyDetail * cloud.erosionStrength *
+      genusErosionHeightWeight(heightFraction);
     density = clamp(
       remap(density, erosionLo, 1.0, 0.0, 1.0), 0.0, 1.0
     );
@@ -1150,7 +1270,7 @@ fn legacyCloudDensity(
     let worleyDetail = worleyF1(
       samplePos * 5.0 + windOffset * 0.001
     );
-    density -= worleyDetail * 0.18 * (1.0 - heightFraction);
+    density -= worleyDetail * 0.18 * genusErosionHeightWeight(heightFraction);
     density = max(density, 0.0);
   }
 
@@ -1158,6 +1278,7 @@ fn legacyCloudDensity(
     cloud.densityMultiplier *
     cloud.profileDensityScale *
     wch.densityScale *
+    genusFibreFactor(samplePos, heightFraction) *
     mammatusFactor(samplePos, heightFraction) *
     speciesFactor(samplePos, heightFraction) *
     featureFactor(samplePos, heightFraction);
@@ -1211,6 +1332,7 @@ fn legacyCloudBaseDensity(
     cloud.densityMultiplier *
     cloud.profileDensityScale *
     wch.densityScale *
+    genusFibreFactor(samplePos, heightFraction) *
     mammatusFactor(samplePos, heightFraction) *
     speciesFactor(samplePos, heightFraction) *
     featureFactor(samplePos, heightFraction);
@@ -1279,6 +1401,7 @@ fn cloudMacroSampleAt(
     cloud.densityMultiplier *
     cloud.profileDensityScale *
     wch.densityScale *
+    genusFibreFactor(morphologyCoordinate, heightFraction) *
     mammatusFactor(morphologyCoordinate, heightFraction) *
     speciesFactor(morphologyCoordinate, heightFraction) *
     featureFactor(morphologyCoordinate, heightFraction);
@@ -1315,7 +1438,8 @@ fn cloudDensityFromMacro(
   );
   let worleyDetail = 1.0 - detail.r;
   let erosionLo =
-    worleyDetail * cloud.erosionStrength * (1.0 - heightFraction);
+    worleyDetail * cloud.erosionStrength *
+    genusErosionHeightWeight(heightFraction);
   density = clamp(remap(density, erosionLo, 1.0, 0.0, 1.0), 0.0, 1.0);
   return density * sample.densityFactor;
 }
@@ -1596,7 +1720,8 @@ fn hgPhase(cosTheta: f32, g: f32) -> f32 {
 // time-of-day). The forward lobe (phaseG1) is the silver lining toward the sun;
 // the back lobe (phaseG2) fills the anti-sun side; phaseBlend mixes them.
 fn cloudPhase(cosTheta: f32) -> f32 {
-  let forward = hgPhase(cosTheta, cloud.phaseG1);
+  // C13-16 — the forward lobe carries the per-genus ice/water eccentricity.
+  let forward = hgPhase(cosTheta, genusForwardG());
   let back = hgPhase(cosTheta, cloud.phaseG2);
   return mix(back, forward, cloud.phaseBlend);
 }

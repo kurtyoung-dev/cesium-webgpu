@@ -18,7 +18,20 @@ rendering core) and [WEATHER_RECREATION_ROADMAP.md](WEATHER_RECREATION_ROADMAP.m
   cirrostratus, cirrocumulus, altostratus, altocumulus, nimbostratus, stratus,
   stratocumulus, cumulus congestus, cumulonimbus.
 - **`Scene/CloudTypeProfile.js`** — per-genus profile slots (shape / base density
-  / extinction / erosion).
+  / extinction / erosion / phase). **All five axes now reach the renderer as of
+  `C13-16` (IMPLEMENTED, Edge acceptance owed)**: `erosion` and `phaseG` were
+  dead until then, so a genus differed only in deck, height gradient, density
+  scale, and extinction — cirrus rendered as a faint scaled-down cumulus. The
+  companion `CloudTypeProfile.FIBRE_MORPHOLOGY` table drives `genusFibreFactor`
+  in `ProceduralClouds.wgsl` (a wind-aligned, fallstreak-sheared, anisotropic
+  carve; the ice-crystal analogue of the cumuliform Worley erosion) and
+  `genusForwardG` offsets the Henyey-Greenstein forward lobe because ice
+  scatters far more forward-peaked than water. Default CUMULUS is byte-identical
+  by explicit early return. Note the layering: this is the GENUS grain, always
+  on for an ice genus; `speciesFactor`'s fibratus/uncinus mode remains the
+  user's optional finer SPECIES form on top of it — genus then species, as the
+  WMO hierarchy has it. Guarded by
+  `Tools/visual-regression/cloud-genus-morphology.spec.mjs`.
 - **Campaign 3 v2 wiring:** **V4** (shipped) added the morphology *pipeline*
   (mean-preserving erosion + `erosionStrength` dial). **V11** drives per-genus
   vertical density profiles through it (stratus flat sheet, cumulus billowy,
@@ -133,6 +146,17 @@ foundation.
   (line sources into the weather map) and **pyrocumulus** (event/data-driven) — stay
   OPEN; those two need genuinely new source infrastructure, not a shading/shaping mode
   on the existing shell. Acceptance probes:
+  **GENUS grain landed under `C13-16` (2026-08-06, Edge acceptance owed)** — the
+  cirrus family no longer needs an explicit species selection to stop reading as
+  cumulus: `CloudTypeProfile.FIBRE_MORPHOLOGY` + `genusFibreFactor` give every
+  FIBROUS genus a wind-aligned, fallstreak-sheared filament grain automatically,
+  and `genusForwardG` gives it an ice-appropriate forward-scattering lobe. The
+  E1 `speciesFactor` modes are unchanged and still layer on top; what changed is
+  that the BASELINE for an ice genus is now ice-shaped. Spec:
+  `Tools/visual-regression/cloud-genus-morphology.spec.mjs`. Still open on this
+  axis: a per-genus species DEFAULT, and the per-REGION genus/deck MIXTURES that
+  are the rest of the `C13-16` row (blocked on `C13-14`/`C13-15`). Acceptance
+  probes:
   `Tools/visual-regression/probe-cloud-species.mjs` (E1),
   `Tools/visual-regression/probe-cloud-features.mjs` (E2 remaining),
   `Tools/visual-regression/probe-cloud-special.mjs` (E3 noctilucent/nacreous).

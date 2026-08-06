@@ -111,7 +111,11 @@ import { buildProceduralWeatherMap } from "../../Scene/Weather/ProceduralWeather
 // → 148 (Batch 634 C6-CLOUD-STBN-TAAU LOD half: marchStepGrowth/maxRayDistance+2 pads 144-147).
 // → 160 (C13-37: CPU-f64 texture-domain phases, 148-159).
 // → 168 (C13-37: encoded canonical morphology origin, 160-167).
-const CLOUD_UNIFORM_FLOATS = 148 + CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS;
+// → 172 (C13-16 per-genus morphology: genusFibreStrength/Anisotropy/Shear +
+//        genusPhaseDelta, 168-171).
+const CLOUD_GENUS_MORPHOLOGY_FLOATS = 4;
+const CLOUD_UNIFORM_FLOATS =
+  148 + CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS + CLOUD_GENUS_MORPHOLOGY_FLOATS;
 const CLOUD_UNIFORM_BYTES = CLOUD_UNIFORM_FLOATS * 4;
 const PROCEDURAL_CLOUDS_SOURCE = `${CloudDensityDomainWGSL}\n${ProceduralCloudsWGSL}`;
 // C13-06 — the shell axes the WGSL march reads and the axes the sun-view frame
@@ -2446,6 +2450,27 @@ export function executeProceduralClouds(
     cloudTimeSeconds,
   );
   offset += CLOUD_DENSITY_MORPHOLOGY_ORIGIN_FLOATS;
+
+  // ── C13-16 — per-genus morphology, slots 168-171. This is the renderer half of
+  // the two CloudTypeProfile axes that previously had no consumer: the
+  // FIBROUS/PUFFY `erosion` style (which becomes an anisotropic, wind-sheared
+  // filament carve so the cirrus family reads as ice streaks instead of faint
+  // cumulus lobes) and the per-genus Henyey-Greenstein `phaseG` (which becomes a
+  // forward-lobe offset, since ice scatters far more forward-peaked than water).
+  //
+  // Both are derived from the JS-authoritative table, NOT from new public dials —
+  // `cloudType` is already the user's selector and the profile is what it selects.
+  // Default byte-identity: the default genus is CUMULUS, which is PUFFY (fibre
+  // strength exactly 0 → both WGSL guards early-return the historical
+  // expressions) and whose phaseG is its own reference (delta exactly 0 →
+  // genusForwardG early-returns cloud.phaseG1).
+  const fibreMorphology = CloudTypeProfile.getFibreMorphology(
+    config.cloudType ?? CloudType.CUMULUS,
+  );
+  data[offset++] = fibreMorphology.strength; // 168 genusFibreStrength (0 = PUFFY/off)
+  data[offset++] = fibreMorphology.anisotropy; // 169 genusFibreAnisotropy (1 = isotropic)
+  data[offset++] = fibreMorphology.shear; // 170 genusFibreShear (0 = no fallstreak tilt)
+  data[offset++] = profile.phaseG - cumulusProfile.phaseG; // 171 genusPhaseDelta (CUMULUS = 0)
 
   // Fold the two LUT-coupling bits into qualityFlags (slot 74, already packed
   // above). Add-only bits 8/9; set ONLY when the mode is on so the default render

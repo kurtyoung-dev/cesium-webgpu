@@ -151,8 +151,9 @@ test("cloud probe rejects misspelled or removed volumetric fields", () => {
 
 test("cloud probe awaits the exported procedural renderer key and cache realization", async () => {
   // Matches the in-flight CloudUniforms layout: CLOUD_UNIFORM_FLOATS = 148 + 20
-  // (CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS) = 168 floats.
-  const uniformData = new Float32Array(168);
+  // (CLOUD_DENSITY_PRIMARY_ORIGIN_FLOATS) + 4 (C13-16 CLOUD_GENUS_MORPHOLOGY_FLOATS)
+  // = 172 floats.
+  const uniformData = new Float32Array(172);
   uniformData[44] = 128;
   uniformData[45] = 8;
   uniformData[74] = 0;

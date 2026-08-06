@@ -656,7 +656,7 @@ landing defect.
 | `C13-13` | NOT STARTED | Lighting/spatial-tier separation still follows reconstruction topology. The old 128-step blank was command-empty scheduling/readiness, not a raymarch-tier failure; fresh visible evidence is clean but has no comparable adaptive/fixed companion and therefore proves no speedup. |
 | `C13-14` | NOT STARTED | Promoted C11 planet-scale tiling seed; core W3 architecture. |
 | `C13-15` | NOT STARTED | Climate prior; distinguish climatology from current observations. |
-| `C13-16` | NOT STARTED | Regional type/deck mixtures. |
+| `C13-16` | **PARTIAL — per-genus MORPHOLOGY slice IMPLEMENTED, Edge acceptance owed. Regional MIXTURES remain NOT STARTED (blocked on `C13-14`/`C13-15`).** | **Premise (confirmed):** `Scene/CloudTypeProfile.js` has carried five axes per WMO genus since Weather Phase 0, and TWO of them reached no renderer at all — the FIBROUS/PUFFY `erosion` style and the Henyey-Greenstein `phaseG`. A genus therefore differed only in deck, height-gradient shape (`profileShape`@101), density scale (`profileDensityScale`@102), and extinction (`profileExtinction`@103), so CIRRUS rendered as a faint SCALED-DOWN CUMULUS. That is exactly what the C13-01 tour recorded: after `CLOUD-LOW-COVERAGE-CUTOFF` restored cirrus VISIBILITY on 2026-08-01, `northatlantic-cirrus-fibratus`'s gate note still read "Genus MORPHOLOGY (fibrous streaks vs generic puffs) remains C13-16". **Morphology model:** cirriform cloud is ice precipitating from small generating cells near the tropopause; crystals fall at ~0.3-1 m/s through a layer whose horizontal wind changes strongly with height (jet-stream shear of order 5-20 m/s per km), so each crystal is advected downstream as it descends and the deck is drawn into long streaks trailing beneath and downwind of the head. Three consequences are now modelled: (1) ANISOTROPY — `genusFibreFactor` divides ONLY the along-wind axis of its Worley domain by the genus aspect ratio, so isotropic cells read as filaments that many times longer along the wind than across (observed cirrus runs 5:1 to 20:1); (2) FALLSTREAK TILT — the along-wind coordinate is displaced by `(1 - h) * shear`, so the streak's lower end lags its generating head at the deck top; (3) PHASE — `genusForwardG` offsets the HG forward lobe by `profile.phaseG - CUMULUS.phaseG`, because hexagonal ice plates/columns scatter far more forward-peaked (g ~ 0.88-0.9) than liquid droplets (~0.76-0.78), clamped at 0.95 so the HG denominator never approaches its singularity. A fourth lever, `genusErosionHeightWeight`, blends the subtractive detail erosion's `1 - h` base weighting toward uniform: cumuliform base-weighting models a convective water cloud's ragged bottom and crisp top, and ice has no such buoyant asymmetry. **Architecture:** the fibre factor is a FOURTH link in the existing `mammatus × species × feature` `[0,1]` chain, not a second chain — those three are OPT-IN user selections of a supplementary feature/species on top of a genus, this one is the genus's own baseline character read from the profile table, and the WMO hierarchy (genus → species) is exactly that composition. It is applied IDENTICALLY in `legacyCloudDensity`, `legacyCloudBaseDensity`, and `cloudMacroSampleAt`'s shared `factor`, so the W5 `base >= full` empty-space-skip invariant holds structurally and the beer-shadow producer (which reads `cloudDensityRelativeWithFootprint` → `cloudMacroSampleAt`) tracks the visible march. A domain WARP was rejected as the lever: the C13-37 shape/warp/detail coordinates are seeded-SO(3)-rotated and `fract`-wrapped, so an anisotropic map on them would break both the wrap and the frozen domain contract — which is precisely why every existing morphology feature is a mask. **Files:** `Scene/CloudTypeProfile.js` (+`FIBRE_MORPHOLOGY` table + `getFibreMorphology`; `.d.ts` updated), `Shaders/WebGPU/Environment/ProceduralClouds.wgsl` (`genusFibreFactor` / `genusErosionHeightWeight` / `genusForwardG` + 4 uniform slots + 6 call sites), `Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts` (`CLOUD_GENUS_MORPHOLOGY_FLOATS = 4`, `CloudUniforms` 168→**172** ADD-ONLY with every earlier offset frozen). **No new public dial:** `cloudType` remains the single selector and the values live in the JS-authoritative table. **Evidence:** new `Tools/visual-regression/cloud-genus-morphology.spec.mjs` 21/21 with a CPU twin (`lib/cloud-genus-morphology-model.mjs`) that imports the shipped table rather than restating it. Metrics are STRUCTURAL, never band means (the campaign's recorded trap): correlation length along wind ÷ across wind recovers the authored aspect (cirrus 8.10 vs authored 9, cirrostratus 4.65 vs 5, cirrocumulus 1.95 vs 2) and a top-vs-base cross-correlation recovers the authored shear (0.900/0.360/0.140 vs 0.9/0.35/0.15). Falsifiability confirmed by running the suite against deliberately broken trees: flattening the shipped cirrus row's anisotropy/shear to `(0.6, 1.0, 0.0)` turns 5 tests RED, and deleting `/ aspect` from the WGSL turns the wiring test RED. Byte-neutrality is asserted with `assert.equal` and no tolerances at every level (identity row exactly `0/1/0`, phase delta exactly `0`, factor exactly `1`, erosion weight exactly `fround(1 - h)`, `genusForwardG(g, 0) === g`) and each WGSL guard is an explicit early return, mutation-checked. Full pure-Node lane **1357 pass / 4 fail**, where all four failures are the pre-existing bare-worktree `ERR_MODULE_NOT_FOUND` on generated `Shaders/**/*.js` (`model-native-pipeline-stage-tax`, `moon-normal-strength-policy`, `moon-webgl-mip-policy`, `webgpu-snap-framebuffer-lifecycle`) and are unrelated. Naga validates the combined `CloudDensityDomain + ProceduralClouds` source. `tsc --project packages/engine` adds no error (134 pre-existing `TS2307`, non-`TS2307` = 0); root `npx tsc --noEmit` clean; Prettier and ESLint clean per file. `cloud-density-domain.spec.mjs`'s frozen legacy hashes were re-frozen with the reason recorded, and `legacyBakedBase` deliberately keeps its original hash, which is what proves the re-freeze was scoped to the morphology chain. **Functionality preservation:** no feature removed or default-disabled; WebGL is untouched (`ProceduralClouds.wgsl` is fork-only per `SHADER_PAIRS_LOCKSTEP.md`, and the billboard `CloudCollection` renders genus-agnostic puffs by documented design, so no lockstep row is owed). **NOT closed here:** the row's canonical scope — converting region and synoptic signals into per-REGION mixtures of types and vertical decks — needs the `C13-14` weather quadtree and the `C13-15` climate prior, both NOT STARTED; today the genus is still one collection-level value for the whole planet, which is the failure the wave prose names. Also open: a per-genus SPECIES default (cirrus still needs an explicit `cloudSpecies: "fibratus"` for the finer filament tier), and `C13-21`'s multi-layer morphology. **Do NOT self-promote:** Edge acceptance owed, checklist below. **Rollback boundary:** the `FIBRE_MORPHOLOGY` table, the three WGSL functions and their six call sites, the 168-171 uniform row, and `cloud-genus-morphology.spec.mjs`. |
 | `C13-17` | NOT STARTED | Stable formation seeds and parameter distributions. |
 | `C13-18` | NOT STARTED | Local ENU spatial advection. |
 | `C13-19` | NOT STARTED | Weather time-slice interpolation. |
@@ -895,6 +895,64 @@ This is an oracle/tooling slice only; it changes no engine renderer or cloud app
   parameter, and their two focused tools form one removable slice. Baked density resources,
   weather, shell geometry, reconstruction attachments, WebGL shaders, and public APIs are
   unchanged.
+
+### C13-16 orchestrator Edge-acceptance checklist (per-genus morphology slice)
+
+`cloud-genus-morphology.spec.mjs` (20/20) proves the coordinate transform and the identity guards on
+the CPU. It cannot prove the GPU samples the new uniform row, that the pipeline compiles the added
+functions, or that a viewer READS cirrus as ice. These browser checks are the slice's acceptance and
+the row must not be promoted without them.
+
+1. **Default byte-neutrality — the first gate, and a hard equality.** Capture the DEFAULT scene
+   (no `cloudType`, i.e. CUMULUS) before and after this change at a pinned `JulianDate` and camera
+   and require **exactly 0 changed pixels**, not a small diff. The whole design rests on three
+   explicit early returns; a nonzero diff means one of them is not being taken and the finding is
+   more important than the feature. Use the existing off-identity vehicle
+   (`probe-cloud-u8-offident.mjs`) plus one cloud-bearing view.
+2. **Cirrus-vs-cumulus DISCRIMINATION, structurally — not by brightness.** The recorded trap is that
+   a faint wide-band cloud change is invisible to a band mean, and the inverse trap is that a mean
+   difference proves nothing about SHAPE. Capture the same camera/clock/coverage twice, once with
+   `cloudType: CloudType.CUMULUS` and once with `CloudType.CIRRUS`, and compute a DIRECTIONAL
+   statistic on the cloud pixels: the ratio of luminance autocorrelation length along the projected
+   wind azimuth to the length across it. Cirrus must be markedly anisotropic and cumulus must be
+   near-isotropic. A whole-frame or band mean is NOT acceptable evidence here.
+3. **The wind vector actually steers the streaks.** Re-run the cirrus lane with the wind rotated 90°
+   and require the measured elongation axis to rotate with it. This is the check that separates a
+   real wind-aligned domain from a fixed diagonal texture artifact, and it is cheap.
+4. **Fallstreak tilt is visible.** From a near-horizontal view of a cirrus deck, the filament's lower
+   edge must sit downwind of its upper edge. Read the PNGs; a scalar cannot settle this one.
+5. **Cirrostratus stays a SHEET and cirrocumulus stays GRANULAR.** The table deliberately gives the
+   veil a shallower carve (it is the halo genus) and the mackerel field a near-round aspect. Capture
+   all three ice genera at one camera and confirm the grain ordering
+   cirrus > cirrostratus > cirrocumulus, matching the spec's measured 8.10 / 4.65 / 1.95.
+6. **The tour fixture that filed this row — and the one place this can regress.** Re-run
+   `northatlantic-cirrus-fibratus` in `probe-cloud-tour.mjs`. Its floor gate
+   (`minChangedFraction` 0.002) is the risk: the recorded post-CLOUD-LOW-COVERAGE-CUTOFF values are
+   ground **0.0028** and above-deck **0.0148**, and the fibre carve retains roughly **0.59** of the
+   deck's mean mass, so the ground station lands near **0.0017** in the worst (purely multiplicative)
+   case. That is the whole reason the carve depths were kept conservative — elongation is provably
+   independent of carve depth (asserted in the spec), so depth buys morphology nothing. If ground
+   comes in under the floor, the correct response is to lower `FIBRE_MORPHOLOGY[CIRRUS].strength`,
+   NOT to lower the fixture floor, and NOT to raise the anisotropy. Report the measured number.
+   Its `gate.why` note — "Genus MORPHOLOGY (fibrous streaks vs generic puffs) remains C13-16" —
+   should be rewritten in the same landing once the pixels support it. Do NOT rewrite it before the
+   capture.
+7. **Shadow/visible agreement.** The fibre factor rides in `cloudMacroSampleAt`'s shared factor, so
+   the beer-shadow map sees the same filaments. With `cloudCastShadows` on, the cast ground shadow
+   under a cirrus deck must be streaked, not blobby — `probe-cloud-shadows-flagon.mjs` is the vehicle.
+8. **Phase sanity — the most likely tuning casualty.** `genusForwardG` clamps the cirrus forward lobe
+   to 0.95 against the default 0.85, roughly a 10x forward peak. Capture a near-sun cirrus view and
+   confirm the forward glow reads as a bright gradient rather than a clipped white disc. If it blows
+   out, the fix is `GENUS_PHASE_G_LIMIT`, and the number should be reported rather than quietly
+   retuned.
+9. **Gate.** `scene.context.rendererType === "webgpu"` on every lane, zero new device/console errors,
+   canvas-element PNGs captured same-task, per-view local-noon clock, and a discarded warm-up render
+   before the fixture loop (the async-prewarm cold start renders fixture 1 stable-black).
+10. **Occupancy note.** `C13-39` closed NEGATIVE on the finding that WGSL register allocation is
+    STATIC — code compiled into the module taxes every pipeline regardless of runtime branches, and
+    this pass is occupancy-bound. This slice adds three small functions to that module. If a timing
+    lane is run at all it must use the mandatory interleaved-A/B protocol in
+    `probe-cloud-lod-hoist-perf.mjs`'s header; a single-ordering comparison is not evidence.
 
 ### C13-08 orchestrator probe checklist
 
