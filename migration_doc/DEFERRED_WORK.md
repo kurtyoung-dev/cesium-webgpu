@@ -37,6 +37,62 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-08-06 - C13-16 cirrus morphology attenuates from 9:1 to ~1.2:1 on screen
+
+### C13-16-SCREEN-ANISOTROPY-ATTENUATION
+
+**Status:** OPEN - needs a DECISION, not a threshold edit. Found by the first
+successful run of `probe-cloud-genus-morphology.mjs --phase=direction`
+(Batch 842). This is real product data, not instrument noise: the uniforms phase
+PASSED exactly the same session (packed slots 168-171 read `[0,1,0,0]` at the
+default genus, CIRRUS control `(0.6, 9, 0.9)` phaseDelta 0.12).
+
+**Measured, screen-space elongation (autocorrelation half-length along the
+projected wind / across it, on the contribution field - never a band mean):**
+
+| genus | authored noise-space aspect | CPU-twin elongation | MEASURED on screen |
+|---|---|---|---|
+| CIRRUS | 9 | 5.743 | **1.18** |
+| CIRROSTRATUS | 5 | 4.543 | **0.98** |
+| CIRROCUMULUS | 2 | 1.964 | **0.90** |
+| CUMULUS (control) | 1 | 1.000 | **0.97** |
+
+**What works.** The morphology is directionally REAL: cirrus (1.18) exceeds
+cumulus (0.97), the genus ORDERING is correct (1.18 > 0.98 > 0.90), and rotating
+the wind 90 deg DID move the measured elongation argmax (30 -> 90 deg), which is
+the check that separates a wind-aligned domain from a fixed diagonal artifact.
+So the uniform row reaches the GPU, the shader samples it, and the anisotropy is
+oriented by the wind.
+
+**What fails, and why it is one cause not three.** Gate C wanted cirrus >= 1.6
+and an along/across ratio >= 1.4 (measured 1.18 and 1.21); gate D wanted the
+argmax to move 90 +/- 30 (measured 60); gate E wanted each genus step >= x1.1
+(cirrus->cirrostratus is 1.20, but cirrostratus->cirrocumulus is 1.09). All three
+are the same phenomenon: a 9:1 anisotropy in the noise domain arrives as roughly
+1.2:1 on screen. The volumetric march integrates many shell samples per pixel and
+each sample sits at a different height of the anisotropic domain, so the along-wind
+correlation is averaged down toward the across-wind one. The gate predictions were
+derived from the CPU twin, which measures the FIELD, not the integrated image.
+
+**The decision owed (maintainer).** Either (a) the authored aspects are too weak
+for the integration and should be raised so the rendered result matches the
+intent - which is a visual-design change and needs the near-sun phase check
+(GENUS_PHASE_G_LIMIT) re-read alongside it; or (b) ~1.2:1 on screen is accepted as
+what 9:1 in-domain looks like through this march, in which case gates C/D/E must
+be re-derived from an integrated-image model rather than the field model, and the
+row documents the attenuation so nobody re-files it later.
+
+**Do NOT simply lower the gates to the measured numbers.** That would convert a
+real question about whether cirrus reads as fibrous into a tautology. If option
+(b) is chosen the new predictions must come from a model that predicts the
+integrated image, and that model must be able to FAIL.
+
+**Also owed from the same run (human verdict, deliberately not scalarised):**
+`item4-fallstreak-tilt.png` (the filament's lower edge must sit downwind of its
+upper edge) and `item8-near-sun-phase.png` (the forward glow must read as a bright
+gradient, not a clipped white disc - if it blows out, the lever is
+GENUS_PHASE_G_LIMIT and the number should be reported, not quietly retuned).
+
 ## 2026-08-06 - ground fog renders NOTHING (Phase C regression, pre-existing)
 
 ### NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING
@@ -129,6 +185,18 @@ re-scoped. Check (G) must keep passing either way.
 ## 2026-08-06 - WebGL vector draping has its own faint extent beyond the drawn lines
 
 ### NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT
+
+**ACCEPTANCE PASSED 2026-08-06 (Batch 842), post-Batch-841 rebuild.**
+`probe-vector-draping.mjs`: gate B bbox delta is now **0** - the two backends
+produce IDENTICAL bounding boxes ([451,19,607,747] both) - with centroid delta
+0.0/0.0 and counts 22396 vs 22397. Gates A/C/D/E all PASS. The delta went
+199 (original streaks) -> 103 (post-834, strays only) -> 0. The condition-number
+guard is confirmed by outcome, and the entry's own caution held: the predicate was
+never loosened and it is what measured each step.
+
+Gate F remains STRUCTURAL - its in-build half measures 0 changed px on both
+backends, but the cross-build half still has no pre-change baseline. That is the
+only thing between C11-213 and a clean acceptance.
 
 **Status:** ROOT-CAUSED + FIXED (2026-08-06); browser ACCEPTANCE OWED. Found by the
 post-fix run of `probe-vector-draping.mjs` after Batch 834 cleaned the WebGPU side.
