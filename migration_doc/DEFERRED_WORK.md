@@ -37,6 +37,43 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-08-06 - WebGPU vector draping emits faint horizontal streaks across the frame
+
+### NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS
+
+**Status:** OPEN - found by the FIRST run of `probe-vector-draping.mjs` (Batch 830),
+the acceptance probe for C11-213 (landed Batch 827).
+
+**Symptom.** With two meridional polylines draped on an offline ellipsoid globe at
+nadir, the WebGPU frame renders both lines correctly AND adds faint horizontal streaks
+spanning most of the frame width at roughly y=260 and y=650. WebGL at the identical
+camera and clock is clean. Read
+`Tools/visual-regression/output/vector-draping/webgpu-nadir-vector.png` against
+`webgl-nadir-vector.png` - the streaks are visible directly.
+
+**Why the robust metrics missed it and the bbox caught it.** The streaks are dim, so
+they barely move the changed-pixel count (WebGPU 22714 vs WebGL 22401, ratio 1.014)
+and do not move the centroid at all (0.4 px / 0.2 px apart). But they extend the
+changed-pixel BOUNDING BOX from x 451..710 (WebGL) to x 252..863 (WebGPU) at nadir,
+and from x 440..595 to x 200..742 in the oblique view - roughly 3.5x wider. **A count-
+or centroid-based parity check would have PASSED this frame.** That is the reason the
+probe gates on bbox as a third statistic alongside centroid and count.
+
+**Suspected mechanism (NOT confirmed - do not implement against this without
+verifying).** The streaks are horizontal, at discrete screen rows, on a globe whose
+tiles are horizontal bands at this view - consistent with a per-tile cell lookup
+returning data from outside its intended cell run at a tile boundary. Candidates, in
+order: the shader's `indexStart`/`indexEnd` clamp against the header's `segmentCount`
+admitting a spurious segment at a boundary row; the packer's cell-end offset being off
+by one at the last cell of a row (the spec's cell-start off-by-one mutation covers the
+CPU arithmetic, so if that arithmetic is right the defect is in the SHADER read or the
+binding); or the shared all-zero placeholder being sampled as live data on a tile whose
+header was never written.
+
+**Acceptance:** `probe-vector-draping.mjs` gate B PASSES (bbox delta <= 16 px) with
+gates A/C/D/E still green, and the WebGPU PNG shows no streaks. Do NOT loosen the bbox
+predicate - it is the only leg that sees this class.
+
 ## 2026-08-02 — C11-195 hardening bundle (posture decision + trim)
 
 - **NEW-MODEL-ARENA-DEAD-DEVICE-POSTURE — ✅ DECIDED + LANDED (2026-08-02, Batch 822). Posture: SKIP-ON-DEAD-DEVICE, LOUD-EVERYWHERE-ELSE.** `resolveModelCameraArenaOwner` (`WebGPUModelRenderer.ts`) previously threw for EVERY null `context.modelCameraArena`. **The degradation contract it broke:** `WebGPUContext.modelCameraArena` (`WebGPUContext.ts`, the getter) opens with `if (this._isDeviceUnavailable) { return null; }`, and `_isDeviceUnavailable` is exactly `this._isDestroyed || this._isTerminallyLost`. Null from that getter is therefore a *documented lifecycle state*, not a wiring failure — the same shape as the sibling `uniformAllocator` getter, whose null the arena already degrades on (private-buffer fallback, `ModelRenderContext.uniformAllocator` JSDoc). Throwing on it converted "the device is gone, nothing can render" into a hard failure on a context that was already unable to produce pixels. **Decision:** the resolver returns `null` when the arena is null AND the context reports `_isDestroyed === true || _isTerminallyLost === true`; callers skip the draw. Every other null — a healthy context with no arena, an `undefined` arena, a missing `frameState.context` — keeps the original `throw` verbatim, because on a live device that is a wiring failure feeding an active model draw and must stay loud. The nullability is threaded through `acquireModelCameraBinding` / `acquireModelLightSlice` / `prepareModelViewLightSlice` (all now `| null`) and guarded at all four camera call sites (capture replay, 2D/IDL duplicate, identity-transform root, per-node) plus the two light realizations; the root binding is deliberately NOT marked prepared on a skip so a later primitive re-attempts rather than binding `undefined`. **Classified as hardening, not a live bug — no `WEBGPU_DEBUGGING_LOG.md` entry filed.** Terminal loss is only entered from `WebGPUDeviceLossRecovery` (two sites) off the async `device.lost` promise, and no in-tree probe or report shows a model update re-entering after that transition, so the throw is a *latent* posture defect surfaced by review rather than an observed crash. **If a device-loss soak ever does catch a throw from this resolver, escalate it to the debugging log and reference this entry** — the fix is already in place, only the classification would change. **Pinned by:** `Tools/visual-regression/model-camera-arena.spec.mjs`, the three `posture:` behavioral tests (the resolver is bundled with an esbuild export-injection so the real body is executed, not regex-matched) plus the `posture: the skip predicate matches the arena getter's null condition` cross-file pin, which fails if `_isDeviceUnavailable` ever grows a third term without the renderer's predicate growing with it.
