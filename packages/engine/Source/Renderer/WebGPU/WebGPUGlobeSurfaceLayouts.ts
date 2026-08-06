@@ -43,6 +43,7 @@ import {
 import {
   makeBindGroupLayout,
   sampler,
+  storageBuffer,
   texture,
   uniformBuffer,
   Stage,
@@ -167,6 +168,28 @@ export function createBindGroupLayouts(host: LayoutsHost): void {
       // samples it only inside the `cloudShadowControl.x > 0.5` gate.
       texture(9, Stage.FRAGMENT),
       sampler(10, Stage.FRAGMENT),
+      // C11-213 (UP144-VECTOR-LAYER-WGSL) — draped vector-tile polyline lookup
+      // (binding 11). A read-only STORAGE BUFFER, not the five sampled
+      // textures WebGL's `VectorCommon.glsl` uses: group 2 already charges 5 of
+      // the 12 non-imagery fragment sampled textures
+      // (`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES`), and the reduced 4-slot imagery
+      // layout lands on exactly the 16-texture spec floor, so five more would
+      // break default-limit adapters outright. Storage buffers draw from a
+      // separate budget (`maxStorageBuffersPerShaderStage`, spec floor 8; this
+      // is the globe layout's only one), so the texture accounting above is
+      // unchanged. Bound UNCONDITIONALLY — tiles with no clamped vector data
+      // get a 32-byte all-zero placeholder whose gridWidth header word is 0.
+      //
+      // ASSUMPTION worth knowing about: this is the first fragment-stage
+      // storage buffer the globe layout has ever declared. Core WebGPU
+      // guarantees 8, and `WebGPUDevicePool` defaults `featureLevel` to
+      // "core", so the default path is safe. WebGPU COMPATIBILITY mode is
+      // opt-in here and may report `maxStorageBuffersInFragmentStage` as low
+      // as 0 on GLES-class adapters — this layout would then fail to create.
+      // Tracked as a follow-up on `UP144-VECTOR-LAYER-WGSL`; do not "fix" it
+      // by forking the layout, which is the thing the unconditional binding
+      // exists to avoid.
+      storageBuffer(11, Stage.FRAGMENT, { readOnly: true }),
     ],
   );
 

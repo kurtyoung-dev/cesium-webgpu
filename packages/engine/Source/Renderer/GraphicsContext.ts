@@ -341,6 +341,20 @@ export interface FeatureRenderer {
    */
   getPickKeyframeNode?(primitive: unknown, tileIndex: number): unknown;
 
+  /**
+   * C11-213 (`UP144-VECTOR-LAYER-WGSL`) — realize a terrain tile's baked
+   * clamped vector-polyline lookup (`VectorTileData`) into backend-native GPU
+   * resources, hung off the data object.
+   *
+   * Implemented on the `GLOBE_SURFACE` descriptor by the WebGPU backend, which
+   * packs the five CPU lookup tables into ONE read-only storage buffer. Return
+   * `true` when the backend has taken ownership — `VectorPipeline` then skips
+   * its WebGL five-`Texture` path entirely, including for the "nothing to
+   * drape" case. WebGL registers no `GLOBE_SURFACE` renderer, so the lookup
+   * returns undefined there and the GLSL path runs unchanged.
+   */
+  prepareVectorTileData?(context: unknown, data: unknown): boolean;
+
   /** Lazy-construction pattern: some feature renderers register a
    *  `RendererClass` constructor that gets instantiated on first touch
    *  (or via `_warmUpPipelines`) and cached on `_instance`. */

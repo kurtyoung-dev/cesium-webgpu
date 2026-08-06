@@ -16448,3 +16448,104 @@ index instead of reading the engine map.
 executed Node specs, but `probe-pipeline-key-aliasing.mjs` should be re-run in
 BOTH modes on Edge to confirm the rewritten negative control still fires and
 `detect` stays clean with `engineWrongTotal === 0`.
+
+---
+
+## C11-213 / UP144-VECTOR-LAYER-WGSL — terrain-draped vector polylines on WebGPU (2026-08-06)
+
+**Files.** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`
+(binding + 3 functions + fragment-entry Jacobian + composite call),
+`packages/engine/Source/Renderer/WebGPU/WebGPUVectorTileResources.ts` (NEW),
+`WebGPUGlobeSurfaceLayouts.ts` (group-2 binding 11),
+`WebGPUGlobeSurfaceRenderer.ts` (placeholder buffer + bind-group entry + cache
+key + destroy), `WebGPUFeatureRenderers.ts` (`prepareVectorTileData` on the
+`GLOBE_SURFACE` descriptor), `Renderer/GraphicsContext.ts` (hook declared on
+`FeatureRenderer`), `Renderer/WebGPU/cesium-js-types.d.ts`
+(`CesiumGlobeSurfaceTile.vectorData`), `Core/VectorPipeline.js` (bake routing +
+`rendererResources` release).
+
+**Not a bug — a missing feature, with a spec'd shape that could not be built.**
+Upstream v1.144 (PR #13577) drapes clamped `BufferPolylineCollection` geometry
+onto terrain. `VectorPipeline` bakes a per-tile grid-indexed segment lookup;
+`VectorCommon.glsl::vectorPolylineRender` reads it back from the globe FS via
+five `sampler2D`s under `#ifdef HAS_VECTOR_LAYER`. `GlobeTerrain.wgsl` had no
+such path, so a draped polyline was simply invisible on WebGPU — and the bake
+still allocated five WebGL `Texture`s per vector tile that the WebGPU globe
+never read.
+
+The C11-213 row instructed "bind the five `u_vector*` tile textures through the
+globe surface layouts (mind the reduced low-limit layout from C11-208)". Minding
+that layout is what makes the instruction unbuildable. Group 2 already charges 5
+of the 12 fragment sampled textures the globe budgets outside the imagery slots
+(`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES`); the C11-208 reduced shape (4 imagery
+slots) is sized to land on exactly 16, the WebGPU spec floor for
+`maxSampledTexturesPerShaderStage`. Five more would be 21, and
+`createPipelineLayout` would reject the globe pipeline outright on every
+default-limit adapter (SwiftShader CI, compat mode) — not a degraded vector
+layer, a dead globe.
+
+**Mechanism shipped.** `texelFetch` on those five textures is not sampling; it
+is WebGL2's only fragment-stage random-access buffer read (nearest, integer
+coords, power-of-two padding, no filtering). WebGPU has the real thing, so all
+five tables collapse into ONE read-only storage buffer at
+`@group(2) @binding(11)`: an 8-word header (grid dims, segment/primitive counts,
+four run base offsets) followed by cell end offsets, `vec4` segments, the
+segment→primitive indirection, and `(f32 lineWidth, u32 packed RGBA8)` primitive
+records. Storage buffers draw from `maxStorageBuffersPerShaderStage` (spec floor
+8; this is the globe layout's only one), so the sampled-texture accounting is
+unchanged and `GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES` stays 12.
+
+Three consequences worth recording:
+
+1. **Runtime gate, not a define.** WebGL forks the shader per tile. On WebGPU
+   that would fork every globe pipeline variant (color / pick / depth-only ×2 /
+   translucent back-face / wireframe / capture / debug-fragment), so the gate is
+   `vectorTileData[0] == 0u`. Tiles with no draped geometry share one 32-byte
+   all-zero placeholder buffer. Default-path cost is one u32 load. Same shape as
+   the existing cloud-shadow-map binding, which is bound unconditionally for the
+   same "never fork the layout" reason.
+2. **The Jacobian had to be hoisted.** The GLSL takes
+   `inverse(mat2(dFdx(uv), dFdy(uv)))` inside the function. WGSL rejects a
+   derivative builtin reached through non-uniform control flow, and a
+   `var<storage>` read is non-uniform by definition, so an inline `dpdx` under
+   the `gridWidth` gate is a shader-creation error. `dpdx`/`dpdy` of the raw
+   (unclamped) `v_textureCoordinates.xy` are taken at fragment entry next to the
+   existing `geoUV_dx`/`geoUV_dy` and passed in. WGSL also has no `inverse()`,
+   so `vectorInverse2x2` is written out with a singular-determinant guard. naga
+   validation is what proves this is legal rather than plausible.
+3. **Bake routing avoided an `isWebGPU` branch.** `packPolylineTextures` now
+   offers the bake to the `GLOBE_SURFACE` feature renderer's new
+   `prepareVectorTileData` hook before touching `Texture`. WebGL registers no
+   `GLOBE_SURFACE` renderer, so it falls through unchanged. `Core/VectorPipeline
+   .js` has no backend test and no `Renderer/WebGPU/` import (Principle 2).
+   The realized buffer hangs off `VectorTileData.rendererResources` and is
+   released by `freeResources`; `resolveVectorTileBuffer` refuses a buffer
+   realized on a different device, so split-screen cannot bind across contexts.
+
+**Permanent sentinels.** The per-fragment loop clamps `indexEnd` to the header's
+own `segmentCount` and `indexStart` to `indexEnd`, so a corrupt or stale cell
+offset cannot make the loop unbounded; the packer clamps every cell end to the
+segment run and every segment→primitive index into `[0, primitiveCount)`.
+
+**Verification.** `Tools/visual-regression/vector-layer-draping.spec.mjs`
+(21/21, pure Node, no device). Its core is an equivalence proof: an ORACLE
+transcribed from `VectorCommon.glsl` evaluates the GLSL algorithm against the
+raw `VectorTileData` tables (including the power-of-two texel addressing
+`vectorIndexToUv` + `texelFetch` imply), a SUBJECT transcribed from
+`GlobeTerrain.wgsl` — with every header word index read out of the shader source
+— evaluates the same fragment against the REAL `packVectorTileWords` output, and
+both run over a 24×24 UV raster on a real `VectorPipeline.packPolylineGrid`
+bake. Five MUTATION tests must each be detected: the original defect (no WebGPU
+vector path at all), a bake that ignores the backend and builds WebGL textures,
+BGRA colour packing against `unpack4x8unorm`, cell start read as `cellEnd[i]`
+instead of `cellEnd[i-1]`, and a dropped segment→primitive indirection. The
+mutation apparatus was itself verified by live-mutating the shipped packer's
+colour word: `B1` and `M3` both went red, and both went green on restore.
+`D7` naga-validates `GlobeTerrain.wgsl` at defines=0 and with
+`GLOBE_IMAGERY_REDUCED`.
+
+**Owed.** The BROWSER gate is NOT run; this must not be self-promoted. An Edge
+split-screen capture must show a draped `BufferPolylineCollection` rendering
+with matching line placement on both backends. Until then `DEFERRED_WORK.md`
+records the row as IMPLEMENTED / browser acceptance owed, and `C11-213` stays
+open in the Campaign 11 ledger.

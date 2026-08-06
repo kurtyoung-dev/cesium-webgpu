@@ -6870,20 +6870,79 @@ be needed — only the per-renderer variant.
 
 ### UP144-VECTOR-LAYER-WGSL — clamped vector-tile polylines WGSL twin
 
-**Status:** OPEN / NEW PARITY GAP (introduced by upstream v1.144, PR #13577).
-Terrain-draped vector polylines (`VectorProvider`/`VectorPipeline`,
-`HAS_VECTOR_LAYER` in GlobeFS via `VectorCommon.glsl`, five `u_vector*` tile
-uniforms) are GLSL-only. The fork ported the uniforms into
-`GlobeSurfaceTileProviderRendering.js` and assigned the shader-set flag bit
-`0x400000000` (upstream's `0x200000000` collides with the fork's
-`enableEclipseGlobeShadow`). GlobeTerrain.wgsl has no vector sampling path,
-and `VectorTileData` GPU textures are created through the WebGL texture path
-only. SHADER_PAIRS_LOCKSTEP applies once the WGSL twin lands.
+**Status:** IMPLEMENTED 2026-08-06 (C11-213) — **browser acceptance OWED.**
 
-**Acceptance:** a draped BufferPolylineCollection renders on both backends in
-the split-screen probe with matching line placement. Maintainer ruling
-2026-08-01: WGSL twin REQUIRED (the WebGL-only option was rejected); scheduled
-as Campaign 11 row `C11-213` (W7 parity wave).
+**What the gap was.** Terrain-draped vector polylines
+(`VectorProvider`/`VectorPipeline`, `HAS_VECTOR_LAYER` in GlobeFS via
+`VectorCommon.glsl`, five `u_vector*` tile uniforms) were GLSL-only. The fork
+had ported the uniforms into `GlobeSurfaceTileProviderRendering.js` and
+assigned the shader-set flag bit `0x400000000` (upstream's `0x200000000`
+collides with the fork's `enableEclipseGlobeShadow`), but `GlobeTerrain.wgsl`
+had no vector sampling path and `VectorTileData` GPU resources were created
+through the WebGL `Texture` path only — on WebGPU that path allocated five
+textures nothing ever read.
+
+**What shipped, and why it is not a five-texture transliteration.** The
+row (and this entry) asked for the five `u_vector*` textures to be bound
+through the globe surface layouts. That is not implementable: group 2 already
+charges 5 of the 12 fragment sampled textures the globe layout budgets outside
+the imagery slots (`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES`), and the C11-208
+reduced low-limit shape (4 imagery slots) lands on exactly 16 — the WebGPU
+spec floor for `maxSampledTexturesPerShaderStage`. Five more sampled textures
+would be 21 and the globe pipeline would fail to create on every default-limit
+adapter (SwiftShader CI, compat mode). `texelFetch` in the GLSL is not texture
+sampling in the first place — it is WebGL2's only fragment-stage random-access
+buffer read. So the WGSL twin reads ONE read-only storage buffer at
+`@group(2) @binding(11)`, packed by the new
+`packages/engine/Source/Renderer/WebGPU/WebGPUVectorTileResources.ts`. Storage
+buffers draw from a different limit, so the sampled-texture accounting above is
+unchanged.
+
+Other shape notes:
+
+- **No new shader define / no pipeline fork.** WebGL forks the shader per tile
+  (`#ifdef HAS_VECTOR_LAYER` + the `0x400000000` shader-set bit, both still
+  WebGL-only and untouched). On WebGPU a per-tile define would fork every globe
+  pipeline variant, so the gate is a runtime header word: `gridWidth == 0`
+  early-outs, and tiles with no draped geometry share one 32-byte all-zero
+  placeholder buffer. Default-path cost is one u32 load per globe fragment.
+- **Derivatives are hoisted to fragment entry.** WGSL rejects a derivative
+  builtin reached through non-uniform control flow, and every `var<storage>`
+  read is non-uniform, so `dpdx`/`dpdy` of the raw tile UV are taken alongside
+  `geoUV_dx`/`geoUV_dy` and passed in. naga validates this (spec `D7`).
+- **Bake routing goes through the feature-renderer registry.**
+  `VectorPipeline.packPolylineTextures` now offers the bake to
+  `GLOBE_SURFACE`'s new `prepareVectorTileData` hook before creating textures;
+  WebGL registers no `GLOBE_SURFACE` renderer, so its path is byte-unchanged.
+  `Core/VectorPipeline.js` still contains no `isWebGPU` test and no
+  `Renderer/WebGPU/` import (Principle 2). `freeResources` releases the
+  backend buffer via the new `rendererResources` slot.
+
+**Node coverage:** `Tools/visual-regression/vector-layer-draping.spec.mjs`
+(21/21). Its core is a GLSL-oracle ↔ WGSL-reader equivalence proof over real
+`VectorPipeline.packPolylineGrid` output, plus five mutation tests (no WebGPU
+vector path at all; a bake that ignores the backend; BGRA colour packing;
+cell-start off-by-one; dropped segment→primitive indirection) that each must be
+detected, and naga validation of `GlobeTerrain.wgsl` at two define sets.
+
+**Known follow-up — compatibility-mode fragment storage buffers.** Binding 11 is
+the FIRST fragment-stage storage buffer the globe pipeline layout has ever
+declared. Core WebGPU guarantees 8 and `WebGPUDevicePool` defaults `featureLevel`
+to `"core"`, so the shipped default path is safe. WebGPU **compatibility mode**
+is opt-in in this fork and may report `maxStorageBuffersInFragmentStage` as low
+as 0 on GLES-class adapters, where `createBindGroupLayout` for group 2 would
+then fail and take the whole globe with it. No compat-mode adapter has been
+exercised. The fix is NOT to fork the layout (the unconditional binding exists
+precisely to avoid that) — it would be a compat-mode negotiation in
+`WebGPUDevicePool` / `computeGlobeImagerySlotCount`'s sibling, or a documented
+refusal of compat mode for draped vector layers. Surfaced here rather than
+worked around at the call site (Principle 9).
+
+**Acceptance (STILL OWED):** a draped `BufferPolylineCollection` renders on
+both backends in the split-screen Edge probe with matching line placement.
+Maintainer ruling 2026-08-01: WGSL twin REQUIRED (the WebGL-only option was
+rejected); scheduled as Campaign 11 row `C11-213` (W7 parity wave).
+SHADER_PAIRS_LOCKSTEP row landed with the implementation.
 
 ### UP144-MODEL-READY-ZERO-PRIM-SPEC — zero-primitive readiness regression spec
 

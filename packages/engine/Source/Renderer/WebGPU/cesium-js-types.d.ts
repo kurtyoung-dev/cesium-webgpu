@@ -927,6 +927,14 @@ interface CesiumGlobeSurfaceTile {
   isClipped: boolean;
   clippedByBoundaries: boolean;
   data: CesiumOpaqueObject;
+  /**
+   * C11-213 — the tile's baked clamped vector-polyline data
+   * (`VectorPipeline`'s `VectorTileData`), or undefined when nothing is
+   * draped here. Opaque at this boundary: the globe renderer only forwards it
+   * to `resolveVectorTileBuffer`, which reads the backend-owned
+   * `rendererResources` slot.
+   */
+  vectorData: CesiumOpaqueObject | undefined;
 }
 
 interface CesiumTileImagery {

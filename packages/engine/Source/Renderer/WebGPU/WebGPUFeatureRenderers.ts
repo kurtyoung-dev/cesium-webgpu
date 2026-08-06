@@ -150,6 +150,7 @@ import {
 
 // ── Globe / Terrain ──
 import { WebGPUGlobeSurfaceRenderer } from "./WebGPUGlobeSurfaceRenderer.js";
+import { prepareWebGPUVectorTileData } from "./WebGPUVectorTileResources.js";
 import { updateWebGPUGlobeTranslucencyDerivedCommands } from "./WebGPUGlobeTranslucencyState.js";
 // Globe terrain shader code — imported here so Scene files don't need WebGPU imports
 import GlobeTerrainShaderCode from "../../Shaders/WebGPU/Globe/GlobeTerrain.js";
@@ -625,6 +626,15 @@ export function registerWebGPUFeatureRenderers(context: WebGPUContext): void {
   context.registerFeatureRenderer(FeatureRendererKey.GLOBE_SURFACE, {
     RendererClass: WebGPUGlobeSurfaceRenderer,
     getShaderCode: () => GlobeTerrainShaderCode,
+    // C11-213 (UP144-VECTOR-LAYER-WGSL) — how `VectorPipeline` hands a baked
+    // terrain-draped vector tile to this backend. The WebGL fallback in
+    // `VectorPipeline.packPolylineTextures` creates five `Texture`s for
+    // `VectorCommon.glsl`; WebGPU realizes ONE read-only storage buffer
+    // instead (see `WebGPUVectorTileResources.ts` for why five sampled
+    // textures cannot fit the globe layout). Routed through the feature-
+    // renderer registry so `Core/VectorPipeline.js` neither imports
+    // `Renderer/WebGPU/` nor tests `isWebGPU` (CLAUDE.md Principle 2).
+    prepareVectorTileData: prepareWebGPUVectorTileData,
   });
 
   context.registerFeatureRenderer(FeatureRendererKey.GLOBE_TRANSLUCENCY, {

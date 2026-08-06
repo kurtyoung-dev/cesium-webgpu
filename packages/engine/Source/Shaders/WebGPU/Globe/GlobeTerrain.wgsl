@@ -489,6 +489,40 @@ struct TileUniforms {
 @group(2) @binding(9) var cloudShadowMap: texture_2d<f32>;
 @group(2) @binding(10) var cloudShadowSampler: sampler;
 
+// ─── C11-213 (UP144-VECTOR-LAYER-WGSL): draped vector-tile polylines ───
+// WGSL twin of `VectorCommon.glsl`'s five `u_vector*` sampler2D lookup tables.
+// The GLSL side uses `texelFetch` purely as WebGL2's stand-in for a buffer read
+// (nearest sampling, integer coordinates, power-of-two padding, no filtering) —
+// WebGPU has real read-only storage buffers, so the whole per-tile lookup set
+// collapses into ONE binding instead of five sampled textures. That is not a
+// stylistic choice: group 2 already charges 5 of the 12 non-imagery fragment
+// sampled textures the globe layout is allowed
+// (`GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES`), and on a default-limit adapter
+// (`maxSampledTexturesPerShaderStage` = 16, the WebGPU spec floor — SwiftShader
+// CI / compat mode) the reduced 4-slot imagery layout already lands on exactly
+// 16. Five more sampled textures would take it to 21 and break the globe
+// pipeline outright on those devices. A storage buffer costs zero
+// sampled-texture budget.
+//
+// Bound UNCONDITIONALLY (same discipline as the cloud shadow map above) so the
+// pipeline layout never forks per tile: tiles with no clamped vector data bind
+// a 32-byte all-zero placeholder whose `gridWidth` header word is 0, and
+// `vectorPolylineRender` returns the untouched base color after a single u32
+// load. WebGL forks the SHADER instead (`#ifdef HAS_VECTOR_LAYER`, shader-set
+// flag bit `0x400000000`); a per-tile define on WebGPU would fork every globe
+// pipeline variant, so the gate is a runtime header read here.
+//
+// Word layout (see `WebGPUVectorTileResources.ts` — the packer and this reader
+// are a matched pair; neither may change alone):
+//   [0] gridWidth   [1] gridHeight   [2] segmentCount   [3] primitiveCount
+//   [4] cellEndOffsetsBase           [5] segmentsBase
+//   [6] segmentPrimitiveIndicesBase  [7] primitivesBase
+//   cell end offsets : gridWidth*gridHeight u32
+//   segments         : segmentCount * 4 f32 (ax, ay, bx, by) in tile UV space
+//   segment→primitive: segmentCount u32
+//   primitives       : primitiveCount * (f32 lineWidth, u32 packed RGBA8)
+@group(2) @binding(11) var<storage, read> vectorTileData: array<u32>;
+
 // ─── Effects bind group: shadow receive + clipping planes (Group 3) ───
 // Phase 5 WGF-1: trailing two vec4 slots hold the precomputed
 // `dPrime[i] = d + dot(n, camera)` values for the hardware clip-distances
@@ -3574,6 +3608,154 @@ fn fragmentPickMain(input: VertexOutput) -> PickFragOutput {
   return out;
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// C11-213 — draped vector-tile polylines (WGSL twin of VectorCommon.glsl)
+// ═══════════════════════════════════════════════════════════════════════
+
+// Header word indices into `vectorTileData`. Mirrored by
+// `VECTOR_TILE_HEADER_*` in `WebGPUVectorTileResources.ts`.
+const VECTOR_TILE_GRID_WIDTH: u32 = 0u;
+const VECTOR_TILE_GRID_HEIGHT: u32 = 1u;
+const VECTOR_TILE_SEGMENT_COUNT: u32 = 2u;
+const VECTOR_TILE_PRIMITIVE_COUNT: u32 = 3u;
+const VECTOR_TILE_CELL_END_BASE: u32 = 4u;
+const VECTOR_TILE_SEGMENTS_BASE: u32 = 5u;
+const VECTOR_TILE_SEGMENT_PRIMITIVE_BASE: u32 = 6u;
+const VECTOR_TILE_PRIMITIVES_BASE: u32 = 7u;
+
+// UV-space offset from the closest point on the segment to p.
+// Line-for-line port of `VectorCommon.glsl::vectorOffsetToLine`.
+fn vectorOffsetToLine(p: vec2<f32>, lineSegment: vec4<f32>) -> vec2<f32> {
+  let a = lineSegment.xy;
+  let b = lineSegment.zw;
+  let ab = b - a;
+  let abLengthSquared = dot(ab, ab);
+  if (abLengthSquared < 1.0e-8) {
+    return p - a;
+  }
+  let t = clamp(dot(p - a, ab) / abLengthSquared, 0.0, 1.0);
+  return p - (a + t * ab);
+}
+
+// WGSL has no `inverse()` builtin (GLSL does — `VectorCommon.glsl` line 37).
+// mat2x2 is column-major in both languages: m[0] is the first COLUMN, so the
+// matrix is [[m[0].x, m[1].x], [m[0].y, m[1].y]] and
+// det = m[0].x*m[1].y - m[1].x*m[0].y. A singular Jacobian (a degenerate
+// fragment quad) yields zero, which makes every distance test 0 < lineWidth —
+// so guard it and return zero, matching GLSL's undefined-but-finite behavior
+// without painting the whole quad.
+fn vectorInverse2x2(m: mat2x2<f32>) -> mat2x2<f32> {
+  let det = m[0].x * m[1].y - m[1].x * m[0].y;
+  if (abs(det) < 1.0e-20) {
+    return mat2x2<f32>(vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 0.0));
+  }
+  let invDet = 1.0 / det;
+  return mat2x2<f32>(
+    vec2<f32>(m[1].y * invDet, -m[0].y * invDet),
+    vec2<f32>(-m[1].x * invDet, m[0].x * invDet),
+  );
+}
+
+// Drape clamped vector polylines onto the terrain surface. The fragment's
+// tile UV picks a grid cell, then only that cell's line segments (packed in
+// tile-local UV space) are tested for proximity. Within the line width, the
+// vector color is alpha-composited over the terrain (no discard).
+//
+// Port of `VectorCommon.glsl::vectorPolylineRender`, with two deliberate
+// deviations, both forced by WGSL rules rather than by choice:
+//
+//   1. The screen-space Jacobian is passed IN (`uvDx`/`uvDy`) instead of taken
+//      with `dFdx`/`dFdy` inside the function. WGSL's uniformity analysis
+//      rejects a derivative builtin reached through non-uniform control flow,
+//      and every read from a `var<storage>` is non-uniform by definition — so
+//      the header gate below would make an inline `dpdx` a shader-creation
+//      error. The caller takes them at fragment entry while control flow is
+//      still uniform (the same discipline `geoUV_dx`/`geoUV_dy` already use
+//      for `textureSampleGrad`).
+//   2. The five texelFetch tables are one storage buffer (see the binding
+//      comment at the top of this file).
+//
+// The loop bound is clamped against the header's own `segmentCount`: a
+// corrupt or stale offset must not turn a per-fragment loop unbounded.
+fn vectorPolylineRender(
+  vectorUv: vec2<f32>,
+  uvDx: vec2<f32>,
+  uvDy: vec2<f32>,
+  baseColor: vec4<f32>,
+) -> vec4<f32> {
+  let gridWidth = vectorTileData[VECTOR_TILE_GRID_WIDTH];
+  let gridHeight = vectorTileData[VECTOR_TILE_GRID_HEIGHT];
+  // Placeholder buffer (or a tile with no clamped vector geometry): one load,
+  // one compare, done. This is the default path on every globe fragment.
+  if (gridWidth == 0u || gridHeight == 0u) {
+    return baseColor;
+  }
+
+  let segmentCount = vectorTileData[VECTOR_TILE_SEGMENT_COUNT];
+  let primitiveCount = vectorTileData[VECTOR_TILE_PRIMITIVE_COUNT];
+  if (segmentCount == 0u || primitiveCount == 0u) {
+    return baseColor;
+  }
+
+  let cellEndBase = vectorTileData[VECTOR_TILE_CELL_END_BASE];
+  let segmentsBase = vectorTileData[VECTOR_TILE_SEGMENTS_BASE];
+  let segmentPrimitiveBase = vectorTileData[VECTOR_TILE_SEGMENT_PRIMITIVE_BASE];
+  let primitivesBase = vectorTileData[VECTOR_TILE_PRIMITIVES_BASE];
+
+  // Inverse UV-per-pixel Jacobian: measures line distance in screen pixels so
+  // width stays constant under anisotropic (oblique) foreshortening.
+  let screenFromUv = vectorInverse2x2(mat2x2<f32>(uvDx, uvDy));
+
+  // `i32(f32)` truncates toward zero, matching GLSL's `int(float)`.
+  let cellX = u32(clamp(i32(vectorUv.x * f32(gridWidth)), 0, i32(gridWidth) - 1));
+  let cellY = u32(clamp(i32(vectorUv.y * f32(gridHeight)), 0, i32(gridHeight) - 1));
+  let cellIndex = cellX + cellY * gridWidth;
+
+  // GLSL reads the packed header (gridW, gridH, end0, end1, …) with a +2 / +1
+  // bias; here the end-offset array is its own run, so cell i's end is
+  // `cellEnd[i]` and its start is `cellEnd[i - 1]` (0 for cell 0).
+  var indexEnd = vectorTileData[cellEndBase + cellIndex];
+  var indexStart = 0u;
+  if (cellIndex != 0u) {
+    indexStart = vectorTileData[cellEndBase + cellIndex - 1u];
+  }
+  indexEnd = min(indexEnd, segmentCount);
+  indexStart = min(indexStart, indexEnd);
+
+  var result = baseColor;
+  for (var i = indexStart; i < indexEnd; i = i + 1u) {
+    let s = segmentsBase + i * 4u;
+    let segment = vec4<f32>(
+      bitcast<f32>(vectorTileData[s]),
+      bitcast<f32>(vectorTileData[s + 1u]),
+      bitcast<f32>(vectorTileData[s + 2u]),
+      bitcast<f32>(vectorTileData[s + 3u]),
+    );
+
+    let primitiveIndex = min(
+      vectorTileData[segmentPrimitiveBase + i],
+      primitiveCount - 1u,
+    );
+    let p = primitivesBase + primitiveIndex * 2u;
+    // GLSL stores width in an r8unorm texel and multiplies the normalized
+    // read by 255; the packer writes the same byte value directly as f32.
+    let lineWidth = bitcast<f32>(vectorTileData[p]);
+
+    let offsetUv = vectorOffsetToLine(vectorUv, segment);
+    if (length(screenFromUv * offsetUv) < lineWidth) {
+      // Alpha-composite vector over terrain.
+      // `unpack4x8unorm` yields (r, g, b, a) from the low byte upward, which
+      // is the order the packer writes.
+      let vectorColor = unpack4x8unorm(vectorTileData[p + 1u]);
+      result = vectorColor * vec4<f32>(vectorColor.aaa, 1.0)
+        + result * (1.0 - vectorColor.a);
+      break;
+    }
+  }
+
+  return result;
+}
+
 // GLOBE-UNDERGROUND-COLOR — port of GlobeFS.glsl `interpolateByDistance`
 // (lines 159-167). nearFarScalar packs (near, nearValue, far, farValue);
 // returns the value interpolated by the clamped distance ramp. Prefixed
@@ -3661,6 +3843,18 @@ fn fragmentMain(
   // varying instead of geoUV.y, so its derivative is also needed.
   let webMercUV_dx = vec2<f32>(geoUV_dx.x, dpdx(webMercT));
   let webMercUV_dy = vec2<f32>(geoUV_dy.x, dpdy(webMercT));
+  // C11-213 — screen-space Jacobian of the RAW (unclamped) tile UV, for the
+  // draped vector-polyline width test near the end of this function.
+  // GlobeFS.glsl passes `v_textureCoordinates.xy` unclamped to
+  // `vectorPolylineRender`, so the derivative is taken on the raw varying too
+  // (the seam clamp moves UVs by ~1e-6 but would zero the derivative on a
+  // fragment whose whole quad clamps to the same edge value).
+  // Taken HERE, at fragment entry, because WGSL forbids a derivative builtin
+  // under non-uniform control flow and the vector path is gated on a
+  // storage-buffer read, which is non-uniform by definition. Same reason
+  // `geoUV_dx`/`geoUV_dy` are hoisted.
+  let vectorUV_dx = dpdx(input.v_textureCoordinates.xy);
+  let vectorUV_dy = dpdy(input.v_textureCoordinates.xy);
 
   // Helper: select geographic V or webMercatorT per layer.
   // Matches WebGL's u_dayTextureUseWebMercatorT. Batch 58 — packed 4 layers
@@ -4966,6 +5160,24 @@ fn fragmentMain(
     color = blended.rgb;
     alpha = blended.a;
   }
+
+  // ─── C11-213 — draped clamped vector polylines ───
+  // Mirrors GlobeFS.glsl lines 1018-1020 (`#ifdef HAS_VECTOR_LAYER`):
+  // alpha-composite the tile's clamped vector polylines over the shaded
+  // terrain, AFTER the underground tint and BEFORE the translucency alpha
+  // ramp — the ordering matters, because a draped line over a translucent
+  // globe must fade with the globe rather than punch through it.
+  // Unconditional call: `vectorPolylineRender` early-outs on the placeholder
+  // buffer's zero `gridWidth` header word, so the no-vector-data path costs
+  // one u32 load.
+  let vectorComposited = vectorPolylineRender(
+    input.v_textureCoordinates.xy,
+    vectorUV_dx,
+    vectorUV_dy,
+    vec4<f32>(color, alpha),
+  );
+  color = vectorComposited.rgb;
+  alpha = vectorComposited.a;
 
   // ─── GLOBE-TRANSLUCENCY-ALPHA — per-fragment translucent-globe alpha ───
   // Mirrors GlobeFS.glsl lines 746-751 (`#ifdef TRANSLUCENT`): inside the

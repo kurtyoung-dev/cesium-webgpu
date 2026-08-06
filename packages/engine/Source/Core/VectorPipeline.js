@@ -1,5 +1,6 @@
 // @ts-check
 
+import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import PixelDatatype from "../Renderer/PixelDatatype.js";
 import Sampler from "../Renderer/Sampler.js";
 import Texture from "../Renderer/Texture.js";
@@ -54,7 +55,16 @@ const scratchSegmentEnd = new Cartesian2();
  * @property {Float32Array} [segmentPrimitiveIndicesTexels] Index per segment, mapping to material for the segment.
  * @property {Uint32Array} [gridCellIndices] Grid header [gridWidth, gridHeight, ...per-cell end offsets].
  *
- * Stage 3: Build GPU texture resources, uploaded lazily at draw time.
+ * Stage 3: Build GPU resources, uploaded lazily at draw time.
+ *
+ * The five `*Texture` slots are the WebGL realization, read by
+ * `VectorCommon.glsl` via `texelFetch`. C11-213: when a backend feature
+ * renderer claims the bake (`prepareVectorTileData`), it populates
+ * `rendererResources` INSTEAD and every texture slot stays undefined — the
+ * WebGPU globe reads one read-only storage buffer, because five sampled
+ * textures do not fit the globe pipeline layout on default-limit adapters.
+ * @property {{destroy: function(): void}} [rendererResources] Backend-owned
+ *   GPU resources, released by {@link VectorPipeline.freeResources}.
  * @property {Texture} [segmentTexture] GPU texture of segmentTexels.
  * @property {Texture} [segmentPrimitiveIndicesTexture] GPU texture of primitive indices per segment.
  * @property {Texture} [widthTexture] GPU texture of segment widths, by primitive index.
@@ -316,10 +326,28 @@ class VectorPipeline {
   }
 
   /**
+   * Realize the stage-2 CPU tables as GPU resources.
+   *
+   * C11-213 (`UP144-VECTOR-LAYER-WGSL`) — the active backend gets first
+   * refusal through the `GLOBE_SURFACE` feature renderer. WebGPU claims the
+   * bake and packs all five tables into one read-only storage buffer
+   * (`WebGPUVectorTileResources.ts`); five sampled textures do not fit the
+   * globe pipeline layout on default-limit adapters. WebGL registers no
+   * `GLOBE_SURFACE` renderer, so the lookup returns undefined and the
+   * five-`Texture` path below — the one `VectorCommon.glsl` reads — runs
+   * exactly as before.
+   *
    * @param {Context} context
    * @param {VectorTileData} result
    */
   static packPolylineTextures(context, result) {
+    const featureRenderer = context.getFeatureRenderer?.(
+      FeatureRendererKey.GLOBE_SURFACE,
+    );
+    if (featureRenderer?.prepareVectorTileData?.(context, result)) {
+      return;
+    }
+
     result.segmentTexture = new Texture({
       context,
       pixelFormat: PixelFormat.RGBA,
@@ -402,6 +430,10 @@ class VectorPipeline {
    * @param {VectorTileData} data
    */
   static freeResources(data) {
+    // C11-213 — backend-realized resources (the WebGPU storage buffer) are
+    // released first; the texture handles below are undefined on that path.
+    data.rendererResources?.destroy();
+    data.rendererResources = undefined;
     data.segmentTexture?.destroy();
     data.widthTexture?.destroy();
     data.colorTexture?.destroy();

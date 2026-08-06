@@ -1,0 +1,950 @@
+// vector-layer-draping.spec.mjs — C11-213 / UP144-VECTOR-LAYER-WGSL acceptance.
+//
+// Pure Node, real modules, no browser:
+//   node --test Tools/visual-regression/vector-layer-draping.spec.mjs
+//
+// WHAT THE ROW ASKED
+// ------------------
+// Upstream v1.144 (PR #13577) drapes clamped `BufferPolylineCollection`
+// geometry onto terrain: `VectorPipeline` bakes a per-tile grid-indexed segment
+// lookup, `VectorPipeline.packPolylineTextures` realizes it as five WebGL
+// textures, and `VectorCommon.glsl::vectorPolylineRender` reads them back with
+// `texelFetch` from the globe fragment shader under `#ifdef HAS_VECTOR_LAYER`.
+// None of that existed on WebGPU: `GlobeTerrain.wgsl` had no vector path, and
+// the bake unconditionally built WebGL `Texture` objects.
+//
+// WHAT SHIPPED (and why it is not a five-texture transliteration)
+// ---------------------------------------------------------------
+// `texelFetch` in the GLSL is not texture sampling — it is WebGL2's only way to
+// random-access a buffer from a fragment shader (nearest, integer coords,
+// power-of-two padding, no filtering). WebGPU has read-only storage buffers, and
+// it also has a hard budget the GLSL never had: the globe pipeline layout
+// charges `GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES` = 12 fragment sampled textures
+// besides the imagery slots, and on a default-limit adapter
+// (`maxSampledTexturesPerShaderStage` = 16, the WebGPU spec floor) the reduced
+// 4-slot imagery layout already lands on exactly 16. Five more sampled textures
+// would take it to 21 and break the globe outright there. So the WGSL twin reads
+// ONE storage buffer packed by `WebGPUVectorTileResources.packVectorTileWords`.
+//
+// That makes the packer the load-bearing new artifact, and this spec's core is
+// an EQUIVALENCE PROOF over it:
+//
+//   * the ORACLE evaluates `VectorCommon.glsl`'s algorithm against the raw
+//     `VectorTileData` CPU tables, including the power-of-two texel addressing
+//     `vectorIndexToUv` + `texelFetch` imply. It is written from the GLSL, never
+//     from the packer or the WGSL.
+//   * the SUBJECT evaluates `GlobeTerrain.wgsl::vectorPolylineRender`'s index
+//     arithmetic against the REAL packer's output, with every header word index
+//     read out of the shader source rather than restated here.
+//
+// Both are run over a raster of sample points on real `packPolylineGrid` output.
+// Agreement is what "the WGSL twin matches the GLSL" means operationally.
+//
+// MUTATIONS (each re-introduces a concrete defect and must be DETECTED)
+// --------------------------------------------------------------------
+//   M1  the original defect: WebGPU has no vector path at all (identity FS tail)
+//   M2  the bake ignores the backend and builds WebGL textures anyway
+//   M3  colour channel order flipped (BGRA) in the packed primitive record
+//   M4  cell start read as `cellEnd[i]` instead of `cellEnd[i-1]` (off-by-one)
+//   M5  segment→primitive indirection dropped (segment index used as material)
+//
+// A mutation that the assertions still pass is a spec that proves nothing, so
+// each is asserted to FAIL.
+
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+import { enableEngineTsResolution } from "./lib/engine-ts-resolver.mjs";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const root = path.resolve(here, "..", "..");
+
+const wgslPath = path.join(
+  root,
+  "packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl",
+);
+const glslCommonPath = path.join(
+  root,
+  "packages/engine/Source/Shaders/VectorCommon.glsl",
+);
+const glslGlobePath = path.join(
+  root,
+  "packages/engine/Source/Shaders/GlobeFS.glsl",
+);
+const layoutsPath = path.join(
+  root,
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceLayouts.ts",
+);
+const rendererPath = path.join(
+  root,
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts",
+);
+const featureRenderersPath = path.join(
+  root,
+  "packages/engine/Source/Renderer/WebGPU/WebGPUFeatureRenderers.ts",
+);
+const vectorPipelinePath = path.join(
+  root,
+  "packages/engine/Source/Core/VectorPipeline.js",
+);
+
+const wgsl = fs.readFileSync(wgslPath, "utf8");
+const glslCommon = fs.readFileSync(glslCommonPath, "utf8");
+const glslGlobe = fs.readFileSync(glslGlobePath, "utf8");
+const layoutsTs = fs.readFileSync(layoutsPath, "utf8");
+const rendererTs = fs.readFileSync(rendererPath, "utf8");
+const featureRenderersTs = fs.readFileSync(featureRenderersPath, "utf8");
+const vectorPipelineJs = fs.readFileSync(vectorPipelinePath, "utf8");
+
+enableEngineTsResolution();
+
+const VectorPipeline = (await import(pathToFileURL(vectorPipelinePath).href))
+  .default;
+
+const {
+  packVectorTileWords,
+  resolveVectorTileBuffer,
+  VECTOR_TILE_HEADER_WORDS,
+  VECTOR_TILE_PLACEHOLDER_BYTES,
+  VECTOR_TILE_GRID_WIDTH,
+  VECTOR_TILE_GRID_HEIGHT,
+  VECTOR_TILE_SEGMENT_COUNT,
+  VECTOR_TILE_PRIMITIVE_COUNT,
+  VECTOR_TILE_CELL_END_BASE,
+  VECTOR_TILE_SEGMENTS_BASE,
+  VECTOR_TILE_SEGMENT_PRIMITIVE_BASE,
+  VECTOR_TILE_PRIMITIVES_BASE,
+} = await import(
+  pathToFileURL(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUVectorTileResources.ts",
+    ),
+  ).href
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// Header word indices, READ OUT OF THE SHADER. The packer and the shader
+// are a matched pair; taking the subject evaluator's constants from the
+// TS side alone would let the pair drift with the spec still green.
+// ═══════════════════════════════════════════════════════════════════════
+
+function wgslHeaderIndex(name) {
+  const match = wgsl.match(new RegExp(`const ${name}: u32 = ([0-9]+)u;`));
+  assert.ok(match, `GlobeTerrain.wgsl declares no ${name}`);
+  return Number(match[1]);
+}
+
+const SHADER_HEADER = {
+  gridWidth: wgslHeaderIndex("VECTOR_TILE_GRID_WIDTH"),
+  gridHeight: wgslHeaderIndex("VECTOR_TILE_GRID_HEIGHT"),
+  segmentCount: wgslHeaderIndex("VECTOR_TILE_SEGMENT_COUNT"),
+  primitiveCount: wgslHeaderIndex("VECTOR_TILE_PRIMITIVE_COUNT"),
+  cellEndBase: wgslHeaderIndex("VECTOR_TILE_CELL_END_BASE"),
+  segmentsBase: wgslHeaderIndex("VECTOR_TILE_SEGMENTS_BASE"),
+  segmentPrimitiveBase: wgslHeaderIndex("VECTOR_TILE_SEGMENT_PRIMITIVE_BASE"),
+  primitivesBase: wgslHeaderIndex("VECTOR_TILE_PRIMITIVES_BASE"),
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// ORACLE — VectorCommon.glsl, transcribed from the GLSL only.
+// ═══════════════════════════════════════════════════════════════════════
+
+// Duplicated from `VectorPipeline._nextPowerOfTwoSize` on purpose: the width /
+// colour textures the GLSL reads are sized by it, so the oracle needs the same
+// padding rule without importing the module it is checking.
+function nextPowerOfTwoSize(count) {
+  const pow2 = (n) => {
+    let v = 1;
+    while (v < n) v *= 2;
+    return v;
+  };
+  const width = pow2(Math.max(1, Math.ceil(Math.sqrt(count))));
+  const height = pow2(Math.max(1, Math.ceil(count / width)));
+  return [width, height];
+}
+
+function concatBytes(arrays) {
+  let total = 0;
+  for (const a of arrays) total += a.length;
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const a of arrays) {
+    out.set(a, offset);
+    offset += a.length;
+  }
+  return out;
+}
+
+// GLSL `vectorIndexToUv` + `texelFetch` on a row-major arrayBufferView:
+// (u, v) = (index % W, index / W), and the fetched texel is row v, column u —
+// i.e. linear texel `v * W + u`. Kept explicit so a change to either half of
+// that identity shows up here.
+function texelIndex(index, textureWidth) {
+  const v = Math.floor(index / textureWidth);
+  const u = index - v * textureWidth;
+  return v * textureWidth + u;
+}
+
+function glslOffsetToLine(px, py, ax, ay, bx, by) {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const abLengthSquared = abx * abx + aby * aby;
+  if (abLengthSquared < 1.0e-8) {
+    return [px - ax, py - ay];
+  }
+  const t = Math.min(
+    1,
+    Math.max(0, ((px - ax) * abx + (py - ay) * aby) / abLengthSquared),
+  );
+  return [px - (ax + t * abx), py - (ay + t * aby)];
+}
+
+function alphaComposite(vectorColor, base) {
+  const a = vectorColor[3];
+  return [
+    vectorColor[0] * a + base[0] * (1 - a),
+    vectorColor[1] * a + base[1] * (1 - a),
+    vectorColor[2] * a + base[2] * (1 - a),
+    vectorColor[3] * 1 + base[3] * (1 - a),
+  ];
+}
+
+function applyScreenFromUv(screenFromUv, offset) {
+  // Column-major 2x2 (both languages): m = [c0 | c1].
+  return [
+    screenFromUv[0][0] * offset[0] + screenFromUv[1][0] * offset[1],
+    screenFromUv[0][1] * offset[0] + screenFromUv[1][1] * offset[1],
+  ];
+}
+
+/**
+ * `VectorCommon.glsl::vectorPolylineRender` over the raw VectorTileData.
+ * `screenFromUv` is supplied pre-inverted; the GLSL takes it from dFdx/dFdy,
+ * which a CPU evaluator cannot observe.
+ */
+function glslVectorPolylineRender(data, uv, screenFromUv, baseColor) {
+  const grid = data.gridCellIndices;
+  const gridWidth = grid[0];
+  const gridHeight = grid[1];
+  const cellX = Math.min(
+    gridWidth - 1,
+    Math.max(0, Math.trunc(uv[0] * gridWidth)),
+  );
+  const cellY = Math.min(
+    gridHeight - 1,
+    Math.max(0, Math.trunc(uv[1] * gridHeight)),
+  );
+  const cellIndex = cellX + cellY * gridWidth;
+
+  const indexEnd = grid[cellIndex + 2];
+  const indexStart = cellIndex === 0 ? 0 : grid[cellIndex + 1];
+
+  const segmentTextureWidth = data.segmentTextureWidth;
+  const [primitiveTextureWidth] = nextPowerOfTwoSize(data.primitiveCount);
+  const widthBytes = concatBytes(data.widths);
+  const colorBytes = concatBytes(data.colors);
+
+  let result = baseColor;
+  for (let i = indexStart; i < indexEnd; i++) {
+    const st = texelIndex(i, segmentTextureWidth);
+    const ax = data.segmentTexels[st * 4];
+    const ay = data.segmentTexels[st * 4 + 1];
+    const bx = data.segmentTexels[st * 4 + 2];
+    const by = data.segmentTexels[st * 4 + 3];
+
+    const primitiveIndex = data.segmentPrimitiveIndicesTexels[st];
+    const pt = texelIndex(primitiveIndex, primitiveTextureWidth);
+    // r8unorm read × 255 == the raw byte.
+    const lineWidth = widthBytes[pt];
+
+    const offset = glslOffsetToLine(uv[0], uv[1], ax, ay, bx, by);
+    const screen = applyScreenFromUv(screenFromUv, offset);
+    if (Math.hypot(screen[0], screen[1]) < lineWidth) {
+      result = alphaComposite(
+        [
+          colorBytes[pt * 4] / 255,
+          colorBytes[pt * 4 + 1] / 255,
+          colorBytes[pt * 4 + 2] / 255,
+          colorBytes[pt * 4 + 3] / 255,
+        ],
+        result,
+      );
+      break;
+    }
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// SUBJECT — GlobeTerrain.wgsl::vectorPolylineRender over the packed words.
+// `mutate` lets a test re-introduce a specific defect in the reader.
+// ═══════════════════════════════════════════════════════════════════════
+
+function wgslVectorPolylineRender(
+  words,
+  uv,
+  screenFromUv,
+  baseColor,
+  mutate = {},
+) {
+  if (words === null) {
+    return baseColor;
+  }
+  const floats = new Float32Array(words.buffer, words.byteOffset, words.length);
+
+  const gridWidth = words[SHADER_HEADER.gridWidth];
+  const gridHeight = words[SHADER_HEADER.gridHeight];
+  if (gridWidth === 0 || gridHeight === 0) {
+    return baseColor;
+  }
+  const segmentCount = words[SHADER_HEADER.segmentCount];
+  const primitiveCount = words[SHADER_HEADER.primitiveCount];
+  if (segmentCount === 0 || primitiveCount === 0) {
+    return baseColor;
+  }
+  const cellEndBase = words[SHADER_HEADER.cellEndBase];
+  const segmentsBase = words[SHADER_HEADER.segmentsBase];
+  const segmentPrimitiveBase = words[SHADER_HEADER.segmentPrimitiveBase];
+  const primitivesBase = words[SHADER_HEADER.primitivesBase];
+
+  const cellX = Math.min(
+    gridWidth - 1,
+    Math.max(0, Math.trunc(uv[0] * gridWidth)),
+  );
+  const cellY = Math.min(
+    gridHeight - 1,
+    Math.max(0, Math.trunc(uv[1] * gridHeight)),
+  );
+  const cellIndex = cellX + cellY * gridWidth;
+
+  let indexEnd = words[cellEndBase + cellIndex];
+  let indexStart = 0;
+  if (cellIndex !== 0) {
+    indexStart = mutate.cellStartOffByOne
+      ? words[cellEndBase + cellIndex]
+      : words[cellEndBase + cellIndex - 1];
+  }
+  indexEnd = Math.min(indexEnd, segmentCount);
+  indexStart = Math.min(indexStart, indexEnd);
+
+  let result = baseColor;
+  for (let i = indexStart; i < indexEnd; i++) {
+    const s = segmentsBase + i * 4;
+    const ax = floats[s];
+    const ay = floats[s + 1];
+    const bx = floats[s + 2];
+    const by = floats[s + 3];
+
+    const primitiveIndex = mutate.dropIndirection
+      ? Math.min(i, primitiveCount - 1)
+      : Math.min(words[segmentPrimitiveBase + i], primitiveCount - 1);
+    const p = primitivesBase + primitiveIndex * 2;
+    const lineWidth = floats[p];
+
+    const offset = glslOffsetToLine(uv[0], uv[1], ax, ay, bx, by);
+    const screen = applyScreenFromUv(screenFromUv, offset);
+    if (Math.hypot(screen[0], screen[1]) < lineWidth) {
+      const packed = words[p + 1] >>> 0;
+      // unpack4x8unorm: low byte first.
+      result = alphaComposite(
+        [
+          (packed & 0xff) / 255,
+          ((packed >>> 8) & 0xff) / 255,
+          ((packed >>> 16) & 0xff) / 255,
+          ((packed >>> 24) & 0xff) / 255,
+        ],
+        result,
+      );
+      break;
+    }
+  }
+  return result;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Fixture — a real bake through `VectorPipeline.packPolylineGrid`.
+// ═══════════════════════════════════════════════════════════════════════
+
+function buildBakedTile() {
+  // Enough segments (>16) that `packPolylineGrid` builds a MULTI-CELL grid;
+  // a 1x1 grid would make the cell-offset arithmetic vacuous.
+  const segments = [];
+  const segmentPrimitiveIndices = [];
+  for (let i = 0; i < 40; i++) {
+    const t = i / 40;
+    // Alternating near-horizontal and near-vertical strokes across the tile.
+    if (i % 2 === 0) {
+      segments.push([0.02, t, 0.98, t + 0.01]);
+    } else {
+      segments.push([t, 0.02, t + 0.01, 0.98]);
+    }
+    segmentPrimitiveIndices.push(i % 3);
+  }
+
+  const result = {
+    show: true,
+    segments,
+    segmentPrimitiveIndices,
+    primitiveCount: 3,
+    // Distinct widths AND asymmetric colours: a channel-order or an
+    // indirection defect has to change the answer.
+    widths: [new Uint8Array([3, 9, 21])],
+    colors: [
+      new Uint8Array([255, 32, 8, 255, 16, 200, 64, 128, 4, 8, 250, 200]),
+    ],
+  };
+  VectorPipeline.packPolylineGrid(result);
+  return result;
+}
+
+// A representative anisotropic Jacobian inverse: uv→pixels is not uniform in
+// x and y, which is exactly the case the `screenFromUv` matrix exists for.
+const SCREEN_FROM_UV = [
+  [900, 0],
+  [-120, 640],
+];
+
+function sampleRaster() {
+  const points = [];
+  for (let iy = 0; iy < 24; iy++) {
+    for (let ix = 0; ix < 24; ix++) {
+      points.push([(ix + 0.5) / 24, (iy + 0.5) / 24]);
+    }
+  }
+  return points;
+}
+
+const BASE = [0.25, 0.5, 0.75, 1.0];
+
+function compareBackends(baked, words, options = {}) {
+  const differences = [];
+  for (const uv of sampleRaster()) {
+    const expected = glslVectorPolylineRender(baked, uv, SCREEN_FROM_UV, BASE);
+    const actual = options.identity
+      ? BASE
+      : wgslVectorPolylineRender(
+          options.words ?? words,
+          uv,
+          SCREEN_FROM_UV,
+          BASE,
+          options.mutate ?? {},
+        );
+    for (let c = 0; c < 4; c++) {
+      if (Math.abs(expected[c] - actual[c]) > 1e-6) {
+        differences.push({ uv, channel: c, expected, actual });
+        break;
+      }
+    }
+  }
+  return differences;
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// A. Packing contract
+// ═══════════════════════════════════════════════════════════════════════
+
+test("A1 — the TS header constants and the WGSL header constants agree", () => {
+  assert.equal(VECTOR_TILE_GRID_WIDTH, SHADER_HEADER.gridWidth);
+  assert.equal(VECTOR_TILE_GRID_HEIGHT, SHADER_HEADER.gridHeight);
+  assert.equal(VECTOR_TILE_SEGMENT_COUNT, SHADER_HEADER.segmentCount);
+  assert.equal(VECTOR_TILE_PRIMITIVE_COUNT, SHADER_HEADER.primitiveCount);
+  assert.equal(VECTOR_TILE_CELL_END_BASE, SHADER_HEADER.cellEndBase);
+  assert.equal(VECTOR_TILE_SEGMENTS_BASE, SHADER_HEADER.segmentsBase);
+  assert.equal(
+    VECTOR_TILE_SEGMENT_PRIMITIVE_BASE,
+    SHADER_HEADER.segmentPrimitiveBase,
+  );
+  assert.equal(VECTOR_TILE_PRIMITIVES_BASE, SHADER_HEADER.primitivesBase);
+  // Eight header words, and the placeholder is exactly that many.
+  assert.equal(VECTOR_TILE_HEADER_WORDS, 8);
+  assert.equal(VECTOR_TILE_PLACEHOLDER_BYTES, 32);
+});
+
+test("A2 — every run the header points at is inside the packed array", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  assert.ok(words instanceof Uint32Array);
+
+  const gridWidth = words[VECTOR_TILE_GRID_WIDTH];
+  const gridHeight = words[VECTOR_TILE_GRID_HEIGHT];
+  const segmentCount = words[VECTOR_TILE_SEGMENT_COUNT];
+  const primitiveCount = words[VECTOR_TILE_PRIMITIVE_COUNT];
+
+  assert.ok(gridWidth > 1, "fixture must produce a multi-cell grid");
+  assert.equal(gridWidth, baked.gridCellIndices[0]);
+  assert.equal(gridHeight, baked.gridCellIndices[1]);
+  assert.equal(primitiveCount, baked.primitiveCount);
+  assert.equal(
+    segmentCount,
+    baked.gridCellIndices[gridWidth * gridHeight + 1],
+    "segmentCount must be the grid's final cell-end offset",
+  );
+
+  assert.equal(words[VECTOR_TILE_CELL_END_BASE], VECTOR_TILE_HEADER_WORDS);
+  assert.equal(
+    words[VECTOR_TILE_SEGMENTS_BASE],
+    VECTOR_TILE_HEADER_WORDS + gridWidth * gridHeight,
+  );
+  assert.equal(
+    words[VECTOR_TILE_SEGMENT_PRIMITIVE_BASE],
+    words[VECTOR_TILE_SEGMENTS_BASE] + segmentCount * 4,
+  );
+  assert.equal(
+    words[VECTOR_TILE_PRIMITIVES_BASE],
+    words[VECTOR_TILE_SEGMENT_PRIMITIVE_BASE] + segmentCount,
+  );
+  assert.equal(
+    words.length,
+    words[VECTOR_TILE_PRIMITIVES_BASE] + primitiveCount * 2,
+  );
+
+  // Cell end offsets are monotone and never exceed segmentCount — the loop
+  // bound the shader clamps against.
+  let previous = 0;
+  const cellEndBase = words[VECTOR_TILE_CELL_END_BASE];
+  for (let i = 0; i < gridWidth * gridHeight; i++) {
+    const end = words[cellEndBase + i];
+    assert.ok(end >= previous, `cell ${i} end went backwards`);
+    assert.ok(end <= segmentCount, `cell ${i} end past the segment run`);
+    previous = end;
+  }
+  // Every segment→primitive entry addresses a real primitive record.
+  for (let i = 0; i < segmentCount; i++) {
+    const index = words[words[VECTOR_TILE_SEGMENT_PRIMITIVE_BASE] + i];
+    assert.ok(index < primitiveCount, `segment ${i} indexes past primitives`);
+  }
+});
+
+test("A3 — degenerate bakes pack to null so the shader gets the placeholder", () => {
+  assert.equal(packVectorTileWords(undefined), null);
+  assert.equal(packVectorTileWords({}), null);
+  assert.equal(
+    packVectorTileWords({
+      gridCellIndices: new Uint32Array([0, 0]),
+      segmentTexels: new Float32Array(4),
+      segmentPrimitiveIndicesTexels: new Float32Array(1),
+      primitiveCount: 1,
+      widths: [new Uint8Array([1])],
+      colors: [new Uint8Array([1, 2, 3, 4])],
+    }),
+    null,
+    "a zero-sized grid must not produce a buffer",
+  );
+  assert.equal(
+    packVectorTileWords({
+      gridCellIndices: new Uint32Array([1, 1, 0]),
+      segmentTexels: new Float32Array(4),
+      segmentPrimitiveIndicesTexels: new Float32Array(1),
+      primitiveCount: 1,
+      widths: [new Uint8Array([1])],
+      colors: [new Uint8Array([1, 2, 3, 4])],
+    }),
+    null,
+    "zero packed segments must not produce a buffer",
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// B. WebGL ↔ WebGPU equivalence, and the mutations that must break it
+// ═══════════════════════════════════════════════════════════════════════
+
+test("B1 — WGSL reader over the packed buffer matches the GLSL reader over the raw tables", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const differences = compareBackends(baked, words);
+  assert.equal(
+    differences.length,
+    0,
+    `backends disagreed at ${differences.length} sample(s); first: ${JSON.stringify(differences[0])}`,
+  );
+});
+
+test("B2 — the fixture actually exercises the line-hit path (the comparison is not vacuous)", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  let hits = 0;
+  const seenColors = new Set();
+  for (const uv of sampleRaster()) {
+    const out = wgslVectorPolylineRender(words, uv, SCREEN_FROM_UV, BASE);
+    if (out.some((v, i) => Math.abs(v - BASE[i]) > 1e-6)) {
+      hits++;
+      seenColors.add(out.map((v) => v.toFixed(4)).join(","));
+    }
+  }
+  assert.ok(hits > 20, `only ${hits} of 576 samples hit a line`);
+  assert.ok(
+    seenColors.size >= 2,
+    "fixture must exercise more than one primitive's material",
+  );
+});
+
+test("M1 — re-introducing the original defect (no WebGPU vector path) is DETECTED", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const differences = compareBackends(baked, words, { identity: true });
+  assert.ok(
+    differences.length > 0,
+    "a WebGPU globe that never composites vector polylines must NOT compare equal to WebGL",
+  );
+});
+
+test("M3 — a BGRA colour packing is DETECTED", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const mutated = Uint32Array.from(words);
+  const primitivesBase = mutated[VECTOR_TILE_PRIMITIVES_BASE];
+  const primitiveCount = mutated[VECTOR_TILE_PRIMITIVE_COUNT];
+  for (let i = 0; i < primitiveCount; i++) {
+    const p = primitivesBase + i * 2 + 1;
+    const packed = mutated[p] >>> 0;
+    const r = packed & 0xff;
+    const g = (packed >>> 8) & 0xff;
+    const b = (packed >>> 16) & 0xff;
+    const a = (packed >>> 24) & 0xff;
+    mutated[p] = (b | (g << 8) | (r << 16) | (a << 24)) >>> 0;
+  }
+  const differences = compareBackends(baked, words, { words: mutated });
+  assert.ok(
+    differences.length > 0,
+    "channel-order drift between packer and unpack4x8unorm must be caught",
+  );
+});
+
+test("M4 — reading the cell start as cellEnd[i] instead of cellEnd[i-1] is DETECTED", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const differences = compareBackends(baked, words, {
+    mutate: { cellStartOffByOne: true },
+  });
+  assert.ok(
+    differences.length > 0,
+    "the grid cell [start, end) window must be load-bearing",
+  );
+});
+
+test("M5 — dropping the segment→primitive indirection is DETECTED", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  const differences = compareBackends(baked, words, {
+    mutate: { dropIndirection: true },
+  });
+  assert.ok(
+    differences.length > 0,
+    "a segment must resolve its material through the packed primitive index",
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// C. Bake routing — the real VectorPipeline, and the mutation that skips it
+// ═══════════════════════════════════════════════════════════════════════
+
+function fakeWebGPUContext(calls) {
+  return {
+    getFeatureRenderer(key) {
+      calls.push(key);
+      return {
+        prepareVectorTileData(context, data) {
+          data.rendererResources = {
+            destroyed: false,
+            destroy() {
+              this.destroyed = true;
+            },
+          };
+          return true;
+        },
+      };
+    },
+  };
+}
+
+// A WebGL context registers no GLOBE_SURFACE renderer. This double models that
+// AND has no `_gl`, so falling through to the WebGL `Texture` path throws —
+// which is exactly the observable we want ("the texture path was entered").
+function fakeWebGLContext() {
+  return {
+    getFeatureRenderer() {
+      return undefined;
+    },
+  };
+}
+
+test("C1 — a backend that claims the bake suppresses the five WebGL textures", () => {
+  const baked = buildBakedTile();
+  const calls = [];
+  VectorPipeline.packPolylineTextures(fakeWebGPUContext(calls), baked);
+
+  assert.equal(calls.length, 1, "the bake must consult the feature renderer");
+  assert.ok(baked.rendererResources, "backend resources must be installed");
+  for (const slot of [
+    "segmentTexture",
+    "widthTexture",
+    "colorTexture",
+    "segmentPrimitiveIndicesTexture",
+    "gridCellIndicesTexture",
+  ]) {
+    assert.equal(
+      baked[slot],
+      undefined,
+      `${slot} must stay unallocated on a backend-claimed bake`,
+    );
+  }
+});
+
+test("C2 — with no backend renderer the WebGL texture path still runs", () => {
+  const baked = buildBakedTile();
+  assert.throws(
+    () => VectorPipeline.packPolylineTextures(fakeWebGLContext(), baked),
+    "the WebGL five-Texture path must still be reached when no feature renderer claims the bake",
+  );
+});
+
+test("M2 — a bake that ignores the backend is DETECTED", () => {
+  // The pre-fix `packPolylineTextures`: straight to `new Texture(...)`.
+  const baked = buildBakedTile();
+  const calls = [];
+  let threw = false;
+  try {
+    // Reproduce the defect by handing the real function a context whose
+    // feature renderer DECLINES — the same code path the pre-fix version took
+    // unconditionally — and assert it reaches the WebGL texture allocation.
+    VectorPipeline.packPolylineTextures(
+      {
+        getFeatureRenderer(key) {
+          calls.push(key);
+          return { prepareVectorTileData: () => false };
+        },
+      },
+      baked,
+    );
+  } catch {
+    threw = true;
+  }
+  assert.equal(calls.length, 1);
+  assert.ok(
+    threw,
+    "declining the bake must fall through to the WebGL texture path, proving the WebGPU branch is what suppresses it",
+  );
+  assert.equal(baked.rendererResources, undefined);
+});
+
+test("C3 — freeResources releases backend resources and clears the slot", () => {
+  const baked = buildBakedTile();
+  const calls = [];
+  VectorPipeline.packPolylineTextures(fakeWebGPUContext(calls), baked);
+  const resources = baked.rendererResources;
+  VectorPipeline.freeResources(baked);
+  assert.equal(resources.destroyed, true);
+  assert.equal(baked.rendererResources, undefined);
+});
+
+test("C4 — resolveVectorTileBuffer refuses another device's buffer and destroyed buffers", () => {
+  const deviceA = { id: "A" };
+  const deviceB = { id: "B" };
+  const placeholder = { id: "placeholder" };
+  const realBuffer = { id: "real" };
+
+  assert.equal(
+    resolveVectorTileBuffer(deviceA, undefined, placeholder),
+    placeholder,
+  );
+  assert.equal(
+    resolveVectorTileBuffer(
+      deviceA,
+      { rendererResources: { device: deviceB, buffer: realBuffer } },
+      placeholder,
+    ),
+    placeholder,
+    "a buffer realized on another device must never be bound (multi-context)",
+  );
+  assert.equal(
+    resolveVectorTileBuffer(
+      deviceA,
+      { rendererResources: { device: deviceA, buffer: null } },
+      placeholder,
+    ),
+    placeholder,
+    "a destroyed buffer must fall back to the placeholder",
+  );
+  assert.equal(
+    resolveVectorTileBuffer(
+      deviceA,
+      { rendererResources: { device: deviceA, buffer: realBuffer } },
+      placeholder,
+    ),
+    realBuffer,
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// D. Source contracts — lockstep and the WGSL rules that forced the shape
+// ═══════════════════════════════════════════════════════════════════════
+
+test("D1 — both twins carry a vector path", () => {
+  assert.match(glslCommon, /vec4 vectorPolylineRender\(/);
+  assert.match(glslGlobe, /#ifdef HAS_VECTOR_LAYER/);
+  assert.match(glslGlobe, /vectorPolylineRender\(v_textureCoordinates\.xy/);
+  assert.match(wgsl, /fn vectorPolylineRender\(/);
+  assert.match(wgsl, /fn vectorOffsetToLine\(/);
+});
+
+test("D2 — the WGSL lookup is one read-only storage buffer at group 2 binding 11", () => {
+  assert.match(
+    wgsl,
+    /@group\(2\) @binding\(11\) var<storage, read> vectorTileData: array<u32>;/,
+    "the vector lookup must be a read-only storage buffer, not sampled textures",
+  );
+  assert.match(
+    layoutsTs,
+    /storageBuffer\(11, Stage\.FRAGMENT, \{ readOnly: true \}\)/,
+    "the group-2 layout must declare binding 11 to match the WGSL",
+  );
+  assert.match(
+    rendererTs,
+    /\{ binding: 11, resource: \{ buffer: vectorBuffer \} \}/,
+    "the group-2 bind group must supply binding 11 on every draw",
+  );
+  // The sampled-texture budget is untouched — five extra sampled textures
+  // would break default-limit adapters, which is why this is a buffer.
+  const typesTs = fs.readFileSync(
+    path.join(
+      root,
+      "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceTypes.ts",
+    ),
+    "utf8",
+  );
+  assert.match(
+    typesTs,
+    /export const GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES = 12;/,
+    "adding sampled textures for the vector layer would overflow the reduced layout",
+  );
+});
+
+test("D3 — derivatives are hoisted to fragment entry, never taken under the storage-buffer gate", () => {
+  const start = wgsl.indexOf("fn vectorPolylineRender(");
+  assert.ok(start > 0);
+  // Body extends to the next top-level `fn ` declaration.
+  const rest = wgsl.slice(start);
+  const end = rest.indexOf("\nfn ", 1);
+  const body = end > 0 ? rest.slice(0, end) : rest;
+  assert.ok(
+    !/\bdpdx\(|\bdpdy\(|\bfwidth\(/.test(body),
+    "a derivative builtin inside the vector function would be a WGSL uniformity error (storage reads are non-uniform)",
+  );
+  assert.match(
+    wgsl,
+    /let vectorUV_dx = dpdx\(input\.v_textureCoordinates\.xy\);/,
+    "the Jacobian must be taken at fragment entry, on the RAW (unclamped) tile UV like GlobeFS does",
+  );
+  assert.match(
+    wgsl,
+    /let vectorUV_dy = dpdy\(input\.v_textureCoordinates\.xy\);/,
+  );
+});
+
+test("D4 — the composite runs after the underground tint and before the translucency ramp", () => {
+  const undergroundWgsl = wgsl.indexOf(
+    "GLOBE-UNDERGROUND-COLOR — underground tint blend",
+  );
+  const vectorWgsl = wgsl.indexOf(
+    "let vectorComposited = vectorPolylineRender(",
+  );
+  const translucencyWgsl = wgsl.indexOf(
+    "GLOBE-TRANSLUCENCY-ALPHA — per-fragment translucent-globe alpha",
+  );
+  assert.ok(undergroundWgsl > 0 && vectorWgsl > 0 && translucencyWgsl > 0);
+  assert.ok(
+    undergroundWgsl < vectorWgsl && vectorWgsl < translucencyWgsl,
+    "WGSL ordering must mirror GlobeFS: UNDERGROUND_COLOR, HAS_VECTOR_LAYER, TRANSLUCENT",
+  );
+
+  // `lastIndexOf`: GlobeFS declares UNDERGROUND_COLOR / TRANSLUCENT blocks in
+  // its uniform + forward-declaration prologue too; the ordering that matters
+  // is the one in the composite tail of `main()`.
+  const undergroundGlsl = glslGlobe.lastIndexOf("#ifdef UNDERGROUND_COLOR");
+  const vectorGlsl = glslGlobe.lastIndexOf("#ifdef HAS_VECTOR_LAYER");
+  const translucentGlsl = glslGlobe.lastIndexOf("#ifdef TRANSLUCENT");
+  assert.ok(undergroundGlsl > 0 && vectorGlsl > 0 && translucentGlsl > 0);
+  assert.ok(
+    undergroundGlsl < vectorGlsl && vectorGlsl < translucentGlsl,
+    "the GLSL ordering this mirrors must not have moved",
+  );
+});
+
+test("D5 — the bake routes through the feature-renderer registry, not an isWebGPU test", () => {
+  assert.match(
+    vectorPipelineJs,
+    /featureRenderer\?\.prepareVectorTileData\?\.\(context, result\)/,
+  );
+  assert.ok(
+    !/isWebGPU|Renderer\/WebGPU\//.test(vectorPipelineJs),
+    "Core/VectorPipeline.js must not branch on the backend or import Renderer/WebGPU (Principle 2)",
+  );
+  assert.match(
+    featureRenderersTs,
+    /prepareVectorTileData: prepareWebGPUVectorTileData,/,
+    "the WebGPU GLOBE_SURFACE descriptor must expose the bake hook",
+  );
+});
+
+test("D6 — the shader's per-fragment loop is bounded by the header's own segment count", () => {
+  assert.match(
+    wgsl,
+    /indexEnd = min\(indexEnd, segmentCount\);/,
+    "an unbounded per-fragment loop from a corrupt offset must be impossible",
+  );
+  assert.match(wgsl, /indexStart = min\(indexStart, indexEnd\);/);
+});
+
+test("D7 — GlobeTerrain.wgsl still passes naga validation with the vector path", async () => {
+  const nagaDirectory = path.join(
+    root,
+    "Tools/shader-pipeline/naga-wasm-tools",
+  );
+  const naga = await import(
+    pathToFileURL(path.join(nagaDirectory, "naga_wasm_tools.js")).href
+  );
+  await naga.default({
+    module_or_path: fs.readFileSync(
+      path.join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
+    ),
+  });
+  // naga enforces WGSL's uniformity rules, so this is what proves the hoisted
+  // derivatives are actually legal rather than merely plausible.
+  assert.doesNotThrow(() => naga.validate_wgsl(expandDefines(wgsl, [])));
+  assert.doesNotThrow(() =>
+    naga.validate_wgsl(expandDefines(wgsl, ["GLOBE_IMAGERY_REDUCED"])),
+  );
+});
+
+// `//>>ifdef` expansion for a given define set — the `//>>else` branch is the
+// historical path, matching `WebGPUShaderPreprocessor`'s zero-mask contract.
+function expandDefines(source, defines) {
+  const active = new Set(defines);
+  const out = [];
+  const stack = [];
+  for (const line of source.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("//>>ifdef")) {
+      const flag = trimmed.split(/\s+/)[1];
+      stack.push({ emitting: active.has(flag) });
+      continue;
+    }
+    if (trimmed.startsWith("//>>else")) {
+      const top = stack[stack.length - 1];
+      top.emitting = !top.emitting;
+      continue;
+    }
+    if (trimmed.startsWith("//>>endif")) {
+      stack.pop();
+      continue;
+    }
+    if (stack.every((frame) => frame.emitting)) {
+      out.push(line);
+    }
+  }
+  return out.join("\n");
+}

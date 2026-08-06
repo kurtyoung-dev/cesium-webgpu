@@ -552,6 +552,36 @@ CesiumDebug.logImageryProbe();     // dumps next 4 tile updates to console
 > Companion Edge acceptance is owed and NOT yet run — see the C12-34 row in
 > `QUEUE_2026-07-19_CAMPAIGN12.md` for the pinned-clock elevation lanes.
 
+> **`vector-layer-draping.spec.mjs` — C11-213 / UP144-VECTOR-LAYER-WGSL,
+> terrain-draped vector polylines on WebGPU (2026-08-06, 21/21).** `node --test
+> Tools/visual-regression/vector-layer-draping.spec.mjs`. Pure Node, no device.
+> Bakes a real tile through `VectorPipeline.packPolylineGrid`, packs it with the
+> real `WebGPUVectorTileResources.packVectorTileWords`, then runs TWO evaluators
+> over a 24×24 UV raster: an ORACLE transcribed from `VectorCommon.glsl` reading
+> the raw `VectorTileData` tables (with the power-of-two texel addressing
+> `vectorIndexToUv` + `texelFetch` imply), and a SUBJECT transcribed from
+> `GlobeTerrain.wgsl` reading the packed buffer, with every header word index
+> extracted FROM the shader source so the pair cannot drift with the spec green.
+> Agreement is the operational meaning of "the WGSL twin matches the GLSL".
+> Five MUTATION tests must each be DETECTED: no WebGPU vector path at all (the
+> original defect), a bake that ignores the backend, BGRA colour packing against
+> `unpack4x8unorm`, cell start read as `cellEnd[i]` instead of `cellEnd[i-1]`,
+> and a dropped segment→primitive indirection. Also pins the group-2 binding-11
+> storage buffer across WGSL + `WebGPUGlobeSurfaceLayouts.ts` +
+> `WebGPUGlobeSurfaceRenderer.ts`, that `GLOBE_NON_IMAGERY_FRAGMENT_TEXTURES`
+> is still 12 (five sampled textures would break default-limit adapters), that
+> the derivatives are hoisted to fragment entry (WGSL forbids them under the
+> non-uniform storage-buffer gate — naga is what proves it), that the composite
+> sits between UNDERGROUND_COLOR and TRANSLUCENT on BOTH backends, and that
+> `Core/VectorPipeline.js` routes through the feature-renderer registry rather
+> than an `isWebGPU` test. Run it after touching `VectorCommon.glsl`,
+> `GlobeTerrain.wgsl`'s vector block, `VectorPipeline.js`, or
+> `WebGPUVectorTileResources.ts` — those four are a single matched set (see
+> `SHADER_PAIRS_LOCKSTEP.md`). **Companion Edge acceptance is OWED and NOT run:
+> a draped `BufferPolylineCollection` must render at matching line placement on
+> both backends in the split-screen probe. No `probe-vector-layer-draping.mjs`
+> exists yet; the row stays IMPLEMENTED, not COMPLETE, until it does.**
+
 > **C12-29 S5 current gate and remaining executor work (2026-07-28):**
 > `node --test Tools/visual-regression/eclipse-globe-umbra-rte.spec.mjs`
 > passes **18/18**. The visual-source contract is **4/4**, the protected

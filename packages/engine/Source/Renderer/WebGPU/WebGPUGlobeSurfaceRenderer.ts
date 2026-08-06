@@ -20,6 +20,10 @@ import {
   uploadImageSource as uploadImageSourceHelper,
 } from "./WebGPUGlobeSurfaceTextures.js";
 import type { ImageryRealizationContext } from "./WebGPUGlobeSurfaceTextures.js";
+import {
+  VECTOR_TILE_PLACEHOLDER_BYTES,
+  resolveVectorTileBuffer,
+} from "./WebGPUVectorTileResources.js";
 import { WebGPUSharedImageryRealizations } from "./WebGPUSharedImageryRealizations.js";
 import {
   selectWireframePipeline as selectWireframePipelineHelper,
@@ -304,6 +308,11 @@ export class WebGPUGlobeSurfaceRenderer {
   // active, so the bind group still validates against the expanded
   // Group 2 layout. Lazy-initialized on first non-material draw.
   private _placeholderMaterialUBO: GPUBuffer | null = null;
+  // C11-213 — the shared all-zero storage buffer bound at
+  // @group(2) @binding(11) for every tile without draped vector geometry.
+  // Its zeroed `gridWidth` header word is the shader's early-out sentinel.
+  // Lazy-initialized on the first group-2 build.
+  private _placeholderVectorBuffer: GPUBuffer | null = null;
   // Per-material cache. Keyed by `material.type` since (a) the WGSL
   // source is determined by the fabric (which is associated with the
   // type) and (b) Cesium's `MaterialCache` already deduplicates per-type.
@@ -2377,11 +2386,31 @@ export class WebGPUGlobeSurfaceRenderer {
     const cloudShadowView = this._cloudShadowView ?? this._placeholderView!;
     const cloudShadowSampler = this._cloudShadowSampler ?? this._sampler!;
 
+    // C11-213 (UP144-VECTOR-LAYER-WGSL) — binding 11: the tile's draped
+    // vector-polyline lookup buffer, realized at bake time by
+    // `prepareWebGPUVectorTileData`. Tiles with no clamped vector geometry (the
+    // overwhelming majority) share one 32-byte all-zero placeholder whose
+    // `gridWidth` header word is 0, which is the shader's early-out sentinel —
+    // so the layout never forks and the cache key stays stable across a whole
+    // globe of vector-free tiles.
+    if (!this._placeholderVectorBuffer) {
+      this._placeholderVectorBuffer = device.createBuffer({
+        label: "Globe vector tile placeholder",
+        size: VECTOR_TILE_PLACEHOLDER_BYTES,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+    }
+    const vectorBuffer = resolveVectorTileBuffer(
+      device,
+      surfaceTile?.vectorData,
+      this._placeholderVectorBuffer,
+    );
+
     const cache = this._bindGroupCache;
     const key =
       `2|${cache.idOf(waterMaskView)}|${cache.idOf(normalMapView)}|` +
       `${cache.idOf(matUBO)}|${cache.idOf(matImage)}|${cache.idOf(matHeights)}|` +
-      `${cache.idOf(cloudShadowView)}`;
+      `${cache.idOf(cloudShadowView)}|${cache.idOf(vectorBuffer)}`;
     return cache.getOrCreate(key, () =>
       device.createBindGroup({
         layout: this._bindGroupLayout2!,
@@ -2397,6 +2426,7 @@ export class WebGPUGlobeSurfaceRenderer {
           { binding: 8, resource: this._sampler! },
           { binding: 9, resource: cloudShadowView },
           { binding: 10, resource: cloudShadowSampler },
+          { binding: 11, resource: { buffer: vectorBuffer } },
         ],
       }),
     );
@@ -2980,6 +3010,14 @@ export class WebGPUGlobeSurfaceRenderer {
       this._noWaterMaskTexture.destroy();
       this._noWaterMaskTexture = null;
       this._noWaterMaskView = null;
+    }
+
+    // C11-213 — the shared vector placeholder is renderer-owned. Per-tile
+    // vector buffers are owned by their `VectorTileData` and released through
+    // `VectorPipeline.freeResources`, not here.
+    if (this._placeholderVectorBuffer) {
+      this._placeholderVectorBuffer.destroy();
+      this._placeholderVectorBuffer = null;
     }
 
     this._pipelineCache.clear();
