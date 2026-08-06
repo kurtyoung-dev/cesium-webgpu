@@ -37,6 +37,54 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-08-06 - ground fog renders NOTHING (Phase C regression, pre-existing)
+
+### NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING
+
+**Status:** OPEN - found by running `probe-ground-fog.mjs` as the smoke lane for
+Batch 832. Batch 832 is EXONERATED by direct measurement (below); this is a
+pre-existing regression of Atmospheric-Effects **Phase C**.
+
+**Symptom.** The probe enables ground fog correctly and the engine echoes it back -
+`{groundFogEnabled: true, groundFogIntensity: 1, volumetricFogEnabled: false}` - with
+ZERO console and device errors. Yet the ON frame is BYTE-IDENTICAL to the OFF frame:
+lower band mean 101.31 in both, upper band mean 167.36 in both, brighten 0.00 in both
+bands. The OFF-vs-OFF sanity pair is also 0.00, so the capture path is stable and the
+measurement is sound - there is simply no mist.
+
+**This is a regression, not an unbuilt feature.** Phase C shipped in Batches 420/421
+and was probe-verified AT THE TIME with, quoting the roadmap, "graded valley mist
+(terrain visible through the haze, not a whiteout), ground-concentrated, intensity
+0.3/0.6/1.0 monotonic, 0 device errors, default off byte-neutral". Landing it also
+ran the froxel renderer's compute+composite for the first time and fixed a chain of
+latent bugs. So it demonstrably rendered once. Something between Batch 421 and now
+silently stopped it.
+
+**Batch 832 ruled out by measurement, not by argument.** Checked out the pre-832
+`VolumetricFog.wgsl` + `WebGPUVolumetricFogResources.ts`, rebuilt, re-ran: identical
+101.31 / 167.36 / 0.00. Restored and rebuilt. This also independently confirms Batch
+832's own claim that its change is byte-neutral with clouds off (it sits below the
+`cloudShadowHiFi`, `cloudShadowEnable < 0.5` and `coverage <= 1e-3` early returns).
+
+**Note on the probe.** `probe-ground-fog.mjs` prints its band numbers but exits 0
+regardless - its verdict section is 'Manual checks (read the PNGs)'. That is why this
+sat unnoticed: a manual-verdict probe in a fleet whose other probes gate. Converting
+it to a real gate (lowerBandBrighten >> upperBandBrighten, with a STRUCTURAL verdict
+when the fog compute never runs) should ride with the fix, so the regression cannot
+recur silently.
+
+**Next diagnostic.** Establish whether the froxel compute pass runs at all in this
+configuration: check that the volumetric-fog compute command is being emitted and
+submitted (the renderer's own statistics / `CesiumDebug` surfaces), then whether the
+ground-fog density band is reaching the composite. Phase C's own-activation path -
+ground fog is documented to run EVEN IF the `volumetricFog.enabled` master is off, and
+the probe deliberately leaves that master false - is the first thing to verify, since a
+later refactor may have folded ground fog back under the master gate.
+
+**Acceptance:** `probe-ground-fog.mjs` shows lowerBandBrighten materially above
+upperBandBrighten with ground fog on, OFF-vs-OFF stays 0.00, and the PNGs show mist
+hugging the ground - with the probe converted to a gating verdict.
+
 ## 2026-08-06 - the star point-census finds no resolved sources in a LIVE frame
 
 ### C12-STAR-POINT-CENSUS-LIVE-CALIBRATION
