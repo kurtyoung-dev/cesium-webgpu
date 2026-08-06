@@ -24,6 +24,77 @@
 
 ---
 
+## NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — the 120 m mist band was measured from a datum 10-21 km below the ground, so `exp()` underflowed and the composite copied the scene bit-for-bit (2026-08-06)
+
+**Files.** `packages/engine/Source/Shaders/WebGPU/Compute/VolumetricFog.wgsl`
+(`densityInjection`, `VolumetricFogParams.altitudeCurvature`),
+`packages/engine/Source/Renderer/WebGPU/WebGPUVolumetricFogRenderer.ts` (params slots 69 / 86 /
+87), new leaf `packages/engine/Source/Renderer/WebGPU/WebGPUGroundFogBand.ts`, plus
+`Tools/visual-regression/probe-ground-fog.mjs` (manual verdict → gate),
+`Tools/visual-regression/ground-fog-band.spec.mjs` +
+`Tools/visual-regression/lib/ground-fog-band-model.mjs` (new).
+
+**Symptom.** `probe-ground-fog.mjs` enabled ground fog through its own-activation path, the
+engine echoed the config back (`{groundFogEnabled: true, groundFogIntensity: 1,
+volumetricFogEnabled: false}`), zero console and zero device errors were raised — and the ON
+frame was byte-identical to OFF. Lower band mean 101.31 both, upper 167.36 both, brighten 0.00
+both. The OFF-vs-OFF pair was also 0.00, so the capture path was sound.
+
+**Root cause.** `densityInjection` reconstructs a froxel's `altitude` as a height above the
+ellipsoid's INSCRIBED SPHERE (radius = `min(radii)` = the WGS84 polar radius), a frame chosen so
+a polar camera can never produce a negative altitude. That is fine for the base height fog — its
+scale height is ~10 km, so the sphere-vs-ellipsoid offset is a global density scale, exactly as
+the in-file comment argues. The ground-fog band's falloff scale is **120 m**, and it was handed
+that same raw altitude: `exp(-altitude / bandHeight)`. The offset is 21,385 m at the equator and
+10,215 m along the probe camera's radial at 46.4 N, so the exponent is `e^-85` or worse. The
+boost is a denormal (2.1e-40) at best and an exact f32 zero at low latitudes; the optical depth a
+ray accumulates over the entire march is ~1e-44, which makes the f32 transmittance **exactly
+1.0** and the in-scatter **exactly 0**. `scene.rgb * transmittance + scatteredLight` then returns
+`scene.rgb` bit-for-bit. Not "too faint" — arithmetically absent, which is why the frames were
+byte-identical rather than nearly so. The offset only falls inside three band heights poleward of
+~83 deg, so the effect could never have worked outside the Arctic.
+
+The band was ALWAYS anchored this way, since the Phase C wiring in Batch 420. What changed at
+Batch 421 was the symptom, not the defect: Batch 420's integrate pass read
+`select(scattered * sliceThickness, scattered * (1 - T) / max(extinction, 1e-6), extinction >
+1e-6)`, and WGSL `select` returns the FIRST argument when the condition is false — so a ZERO
+density took an unbounded `scattered * sliceThickness` branch and rendered a whiteout. Batch 421
+replaced it with the energy-conserving form, which correctly returns nothing for nothing. The
+"probe-verified graded valley mist, intensity 0.3/0.6/1.0 monotonic" recorded at Batch 421 was
+read off PNGs by eye from a probe that printed numbers and exited 0 regardless; on this
+arithmetic those three frames were the unmodified scene.
+
+**Discarded first, as filed:** the own-activation hypothesis (a later refactor folding ground fog
+back under the `volumetricFog.enabled` master). The gate is intact at `update()`, at
+`composite()`, in `WebGPUSceneRendererEnvironmentalEffects` and in the demand path used by the
+empty-frustum scheduler and the post-process snapshot. The compute and composite DO run here.
+
+**Fix.** (1) A ground datum in the SAME inscribed-sphere frame — the ellipsoid's geocentric
+radius along the camera radial plus `globe.getHeight(camera.positionCartographic)` (sea level
+when no terrain answers) — packed into the existing `altitudeCurvature` pad at slot 69 (no buffer
+growth, no bind-group change), with the shader using `max(0.0, altitude - u.altitudeCurvature.y)`.
+Both terms carry the same offset, so it cancels exactly. Written as 0 unless ground fog is active,
+so the OFF path's uniform bytes are unchanged. (2) `peakDensity` re-derived from Koschmieder
+(`3.912 / 2000`, the WMO mist/fog boundary) instead of Batch 421's 1.2e-4, which was tuned against
+a whiteout that was density-independent and corresponds to 32 km of visibility — under a frame's
+8-bit floor even with the anchor fixed. (3) Batch 421's comments claiming a ground-fog-only march
+cap were corrected: no cap was ever written on either side, and the two sides must agree or the
+composite samples a different slicing than the integrate wrote.
+
+**Verification.** `ground-fog-band.spec.mjs` 19/19 executes the shipped functions against the
+probe's own camera: the historical anchor's transmittance is exactly 1.0 in f32 (the byte-identity,
+derived); the shipped anchor moves the ground band ~40 8-bit counts at intensity 1 with
+transmittance 0.60 (see-through, not a whiteout) while the sky band moves 0.00; intensity
+0.3/0.6/1.0 = 14.2/26.4/40.1 counts. Three real source mutations were applied to the tree and each
+turned the spec red: reverting the WGSL falloff (2 failures), packing slot 69 as a constant 0
+(1 failure), reverting `peakDensity` (2 failures). Browser acceptance via the now-gating
+`probe-ground-fog.mjs` is owed.
+
+**Lesson.** An altitude frame is only as good as the smallest length scale that consumes it. The
+inscribed-sphere frame's own comment budgeted a 21 km error against a 100 km atmosphere; nothing
+re-checked that budget when a 120 m consumer was added four hundred batches later. And a probe
+whose verdict is "read the PNGs" will certify an unmodified frame — that probe now gates.
+
 ## NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT — the skirt guard tested for an EXACTLY zero determinant, but the shader only ever sees an interpolated one (2026-08-06, C11-213 acceptance follow-up)
 
 **Files.** `packages/engine/Source/Shaders/VectorCommon.glsl` and

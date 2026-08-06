@@ -37,6 +37,7 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+<<<<<<< ours
 ## 2026-08-06 - C13-16 cirrus morphology attenuates from 9:1 to ~1.2:1 on screen
 
 ### C13-16-SCREEN-ANISOTROPY-ATTENUATION
@@ -94,12 +95,143 @@ gradient, not a clipped white disc - if it blows out, the lever is
 GENUS_PHASE_G_LIMIT and the number should be reported, not quietly retuned).
 
 ## 2026-08-06 - ground fog renders NOTHING (Phase C regression, pre-existing)
+=======
+## 2026-08-06 - ground fog renders NOTHING (Phase C, defect present since Batch 420)
+>>>>>>> theirs
 
 ### NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING
 
-**Status:** OPEN - found by running `probe-ground-fog.mjs` as the smoke lane for
-Batch 832. Batch 832 is EXONERATED by direct measurement (below); this is a
-pre-existing regression of Atmospheric-Effects **Phase C**.
+**Status:** ROOT-CAUSED + FIXED IN TREE; browser acceptance OWED. Found by running
+`probe-ground-fog.mjs` as the smoke lane for Batch 832. Batch 832 is EXONERATED by
+direct measurement (below).
+
+**NOT a regression - the premise is corrected by the root cause.** The effect never
+rendered mist at any non-polar latitude; what changed at Batch 421 was the SYMPTOM,
+not the defect. See "Root cause" and "The Batch 421 verification was false" below.
+
+---
+
+**ROOT CAUSE (2026-08-06): the band is anchored to the wrong altitude datum, and
+`exp()` underflows.**
+
+`VolumetricFog.wgsl::densityInjection` reconstructs each froxel's `altitude` as a
+height above the ellipsoid's **inscribed sphere** (radius = `min(radii)` = the WGS84
+polar radius 6,356,752 m; `WebGPUVolumetricFogRenderer.ts` packs
+`cameraAltitude = |camPos| - innerRadius` at slot 67). That frame is deliberate and
+harmless for the BASE height fog, whose scale height is ~10 km - the
+sphere-vs-ellipsoid offset is just a global density scale, and the in-file comment
+says as much ("the ~21 km equator undershoot is well inside the atmosphere's ~100 km
+thickness").
+
+The ground-fog band's falloff scale is **120 m**, and it was fed that same raw
+`altitude`:
+
+```wgsl
+let groundBoost = groundFogIntensity * peakDensity * exp(-altitude / bandHeight);
+```
+
+The offset is **21,385 m at the equator, 10,215 m along the probe camera's radial
+(46.4 N), and 0 only at a pole**. `exp(-10215 / 120)` is `e^-85`; the resulting boost
+is a denormal at best (2.1e-40) and the optical depth a view ray accumulates over the
+whole march is ~1e-44. In f32 the transmittance comes back **exactly 1.0** and the
+in-scatter **exactly 0**, so the composite's `scene.rgb * transmittance +
+scatteredLight` is a **bit-exact copy of the scene colour**. That is precisely the
+measured symptom: not "too faint to see" - arithmetically absent. At the equator the
+boost is not even a denormal, it is the f32 zero.
+
+Sweeping latitude: the offset only falls inside three band heights (360 m) poleward of
+~83 deg. The effect could never have worked outside the Arctic/Antarctic.
+
+**The Batch 421 verification was false, and Batch 420's integrate pass is why it
+looked true.** Batch 420's integrate pass computed
+
+```wgsl
+let scatterIntegral = select(
+  scattered * sliceThickness,                                   // extinction <= 1e-6
+  scattered * (1.0 - sliceTransmittance) / max(extinction, 1e-6),
+  extinction > 1e-6);
+```
+
+WGSL `select(a, b, cond)` returns `a` when the condition is FALSE, so a **zero**
+density took the `scattered * sliceThickness` branch - an unbounded in-scatter over
+km-scale slices. The zero-density ground fog therefore rendered a WHITEOUT. Batch 421
+correctly replaced that branch with the energy-conserving form, which returns nothing
+for nothing; the "graded valley mist, intensity 0.3/0.6/1.0 monotonic" recorded at
+Batch 421 was read off PNGs by eye from a probe with no verdict, and on this
+arithmetic those three frames were the unmodified scene. Density path text is
+otherwise identical between Batch 421 and HEAD (verified with `git show`), which is
+why no batch between them can be blamed.
+
+**Own-activation was NOT the cause** (the first hypothesis, checked first and
+discarded): the gate is intact at `update()` (`if (!fogMasterOn && !groundFogActive)
+return;`), at `composite()`, in `WebGPUSceneRendererEnvironmentalEffects`
+(`fogActive = vf?.enabled === true || groundFogActive`) and in the
+empty-frustum/snapshot demand path (`WebGPUSceneRendererEnvironmentDemand`). The fog
+compute and composite run in this configuration; they compute zero.
+
+**FIX (in tree, browser acceptance owed).**
+
+1. **Ground datum.** New leaf module
+   `packages/engine/Source/Renderer/WebGPU/WebGPUGroundFogBand.ts` derives the
+   camera-local ground elevation - the ellipsoid's geocentric radius along the
+   camera's radial direction plus `globe.getHeight(camera.positionCartographic)`
+   (0 = sea level when no terrain surface answers) - expressed in the SAME
+   inscribed-sphere frame. The renderer packs it into the existing
+   `altitudeCurvature` pad (**slot 69**, no buffer growth, no bind-group change) and
+   the shader measures the band from it:
+   `max(0.0, altitude - u.altitudeCurvature.y)`. Both terms carry the same
+   sphere-vs-ellipsoid offset, so it cancels exactly.
+2. **Peak extinction re-derived, not tuned.** `GROUND_FOG_PEAK_EXTINCTION` is now
+   `3.912 / 2000` (Koschmieder at 2 km meteorological visibility, the WMO mist/fog
+   boundary). The historical 1.2e-4 was tuned in Batch 421 against a whiteout that was
+   density-INDEPENDENT, so it never measured this coefficient; it corresponds to 32 km
+   of visibility - clear air, and below a frame's 8-bit floor. With the anchor fixed
+   but 1.2e-4 restored, the probe's own 0.3 intensity step lands under one 8-bit
+   count.
+3. **Comment correction.** Batch 421's claim that the ground-fog-only path "caps the
+   march to a few km" was never implemented on either side (`update()` and
+   `composite()` both read `vf?.maxDistance ?? 50000`). The comments now say what the
+   code does; a real cap, if wanted, must change BOTH sides together or the composite
+   samples a different slicing than the integrate wrote.
+
+**Predicted at the probe camera** (`ground-fog-band.spec.mjs`, 19/19): ground band
+optical depth 0.503 at intensity 1 = ~40 8-bit counts of attenuation before the mist's
+own in-scatter, transmittance 0.60 (see-through, not a whiteout); sky band exactly 0
+because the camera sits 2 km above the layer and those rays never enter it. Intensity
+0.3/0.6/1.0 = 14.2 / 26.4 / 40.1 counts, monotonic.
+
+**Probe converted to a gate** (was the reason this sat unnoticed): six gates - CONFIG,
+DISPATCH (froxel compute + composite counters from `getRendererStatistics()`; reported
+STRUCTURAL, never FAIL, when the compute never ran), MIST (lower minus upper band
+brighten), SEE-THROUGH (no whiteout), STABILITY (OFF-vs-OFF; STRUCTURAL when the
+capture path is not repeatable), CLEAN - with a 420 s watchdog and exit codes
+0 pass / 1 FAIL / 2 watchdog-or-exception / 3 structural, matching
+`probe-vector-draping.mjs`.
+
+**Follow-up owed (Principle 9), not folded in:** the datum is ONE SCALAR per frame -
+the terrain height under the camera. A camera parked on a peak far above the valley it
+is looking at will float the layer at the peak's elevation. The physically better
+version reconstructs a PER-COLUMN datum in the density pass from the scene depth
+texture (the pass already has the screen-space (x, y) of its froxel column), which
+makes the mist terrain-following instead of level. That needs a new binding in the
+density BGL plus the log-depth decode, and must be measured, so it is filed rather
+than guessed at here. Note also that the BASE height fog still measures altitude from
+the inscribed sphere, which scales its density by up to `exp(-21385 * falloff)` (~8x
+at the equator vs a pole) - a real latitude-dependent error, but a parity-visible
+change to the master-on path, so likewise separate.
+
+**Batch 832 ruled out by measurement, not by argument.** Checked out the pre-832
+`VolumetricFog.wgsl` + `WebGPUVolumetricFogResources.ts`, rebuilt, re-ran: identical
+101.31 / 167.36 / 0.00. Restored and rebuilt. This also independently confirms Batch
+832's own claim that its change is byte-neutral with clouds off (it sits below the
+`cloudShadowHiFi`, `cloudShadowEnable < 0.5` and `coverage <= 1e-3` early returns).
+Consistent with the root cause: no shader change could have mattered while the density
+was zero.
+
+**Original filing follows, kept for trace.**
+
+**Status (original):** OPEN - found by running `probe-ground-fog.mjs` as the smoke
+lane for Batch 832.
 
 **Symptom.** The probe enables ground fog correctly and the engine echoes it back -
 `{groundFogEnabled: true, groundFogIntensity: 1, volumetricFogEnabled: false}` - with
@@ -108,34 +240,23 @@ lower band mean 101.31 in both, upper band mean 167.36 in both, brighten 0.00 in
 bands. The OFF-vs-OFF sanity pair is also 0.00, so the capture path is stable and the
 measurement is sound - there is simply no mist.
 
-**This is a regression, not an unbuilt feature.** Phase C shipped in Batches 420/421
-and was probe-verified AT THE TIME with, quoting the roadmap, "graded valley mist
-(terrain visible through the haze, not a whiteout), ground-concentrated, intensity
-0.3/0.6/1.0 monotonic, 0 device errors, default off byte-neutral". Landing it also
-ran the froxel renderer's compute+composite for the first time and fixed a chain of
-latent bugs. So it demonstrably rendered once. Something between Batch 421 and now
-silently stopped it.
+**~~This is a regression, not an unbuilt feature.~~ SUPERSEDED by the root cause
+above.** Phase C shipped in Batches 420/421 and was probe-verified AT THE TIME with,
+quoting the roadmap, "graded valley mist (terrain visible through the haze, not a
+whiteout), ground-concentrated, intensity 0.3/0.6/1.0 monotonic, 0 device errors,
+default off byte-neutral". That verification was FALSE - the probe had no verdict and
+the three intensity frames were the unmodified scene. It never rendered mist at this
+latitude; Batch 420 rendered a whiteout from the same zero density via the degenerate
+`select` branch, and Batch 421 removed the whiteout without removing the zero.
 
-**Batch 832 ruled out by measurement, not by argument.** Checked out the pre-832
-`VolumetricFog.wgsl` + `WebGPUVolumetricFogResources.ts`, rebuilt, re-ran: identical
-101.31 / 167.36 / 0.00. Restored and rebuilt. This also independently confirms Batch
-832's own claim that its change is byte-neutral with clouds off (it sits below the
-`cloudShadowHiFi`, `cloudShadowEnable < 0.5` and `coverage <= 1e-3` early returns).
+**~~Note on the probe.~~ DONE, rode with the fix.** `probe-ground-fog.mjs` printed
+its band numbers but exited 0 regardless - its verdict section was a read-the-PNGs
+heading. That is why this sat unnoticed: a manual-verdict probe in a fleet whose other
+probes gate. It now gates, with a STRUCTURAL verdict when the fog compute never runs.
 
-**Note on the probe.** `probe-ground-fog.mjs` prints its band numbers but exits 0
-regardless - its verdict section is 'Manual checks (read the PNGs)'. That is why this
-sat unnoticed: a manual-verdict probe in a fleet whose other probes gate. Converting
-it to a real gate (lowerBandBrighten >> upperBandBrighten, with a STRUCTURAL verdict
-when the fog compute never runs) should ride with the fix, so the regression cannot
-recur silently.
-
-**Next diagnostic.** Establish whether the froxel compute pass runs at all in this
-configuration: check that the volumetric-fog compute command is being emitted and
-submitted (the renderer's own statistics / `CesiumDebug` surfaces), then whether the
-ground-fog density band is reaching the composite. Phase C's own-activation path -
-ground fog is documented to run EVEN IF the `volumetricFog.enabled` master is off, and
-the probe deliberately leaves that master false - is the first thing to verify, since a
-later refactor may have folded ground fog back under the master gate.
+**~~Next diagnostic.~~ DONE.** The froxel compute and composite DO run in this
+configuration; Phase C's own-activation path is intact at every link (checked first,
+per the filed hypothesis, and discarded). The density they compute is zero.
 
 **Acceptance:** `probe-ground-fog.mjs` shows lowerBandBrighten materially above
 upperBandBrighten with ground fog on, OFF-vs-OFF stays 0.00, and the PNGs show mist

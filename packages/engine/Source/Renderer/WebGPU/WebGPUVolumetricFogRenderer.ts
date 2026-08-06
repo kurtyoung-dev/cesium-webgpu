@@ -70,6 +70,14 @@ import {
   uniformBuffer,
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
+// NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — the ground-fog band's datum + its
+// derived extinction live in a leaf module so `ground-fog-band.spec.mjs` runs
+// the shipped arithmetic instead of a re-implementation of it.
+import {
+  GROUND_FOG_BAND_HEIGHT,
+  GROUND_FOG_PEAK_EXTINCTION,
+  groundFogReferenceAltitude,
+} from "./WebGPUGroundFogBand.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
 import { WebGPUShaderModuleCache } from "./WebGPUShaderModuleCache.js";
 import type {
@@ -175,6 +183,13 @@ export type QualityKey = keyof typeof QUALITY_RESOLUTIONS;
 // scattering kernel takes the existing single HG-phase term byte-for-byte
 // (octave 1 == single-scatter), so the OFF default consumes NONE of these
 // floats → byte-identical to pre-Batch-440.
+//
+// NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — no growth: the ground-fog band's
+// GROUND DATUM claims the first pad of the existing `altitudeCurvature` vec4
+// (offset 69). It belongs with the other altitude-frame terms and the slot was
+// already reserved, so the buffer size, every bind group, and the WGSL struct
+// size are unchanged. Written as 0 whenever ground fog is off, so the OFF
+// path's uniform bytes are identical to pre-fix.
 export const VOLUMETRIC_FOG_PARAMS_FLOATS = 124;
 export const VOLUMETRIC_FOG_PARAMS_BYTES = VOLUMETRIC_FOG_PARAMS_FLOATS * 4;
 
@@ -868,17 +883,19 @@ class WebGPUVolumetricFogRenderer {
     r.paramsU32[3] = 0;
     // Scattering params.
     r.paramsData[4] = frameState.camera?.frustum?.near ?? 1.0;
-    // Batch 421 — froxel march distance. The energy-conserving single-scatter
-    // integration is BOUNDED (no whiteout overflow) but its dynamic range
-    // over a 50 km march is compressed: a low grazing/horizon ray stays in
-    // the ground band for tens of km, so even a thin band accumulates enough
-    // optical depth to drive transmittance → 0 (opaque) on those rays — the
-    // foreground terrain we want to see *through* the mist gets buried in
-    // horizon haze. Capping the march to a few km for the ground-fog mist
-    // keeps the near terrain see-through (short path = modest optical depth)
-    // while still hazing the mid-distance, giving the graded look. The base
-    // height-fog (master-on) path keeps the full configured distance so
-    // distance haze still reaches the horizon.
+    // Froxel march distance — the configured `volumetricFog.maxDistance` (50 km
+    // default) on EVERY path, ground-fog-only included.
+    //
+    // NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — the Batch 421 comment here (and
+    // its mirror in `composite()`) claimed the ground-fog-only path "caps the
+    // march to a few km to keep near terrain see-through". No such cap was
+    // ever written, on either side, and the two sides MUST agree anyway or the
+    // composite samples a different depth slicing than the integrate wrote.
+    // Comment corrected rather than a cap invented: a grazing ray genuinely
+    // saturating over tens of km inside the band is what real fog does, and
+    // the near field stays legible because a descending ray crosses the band
+    // in a few hundred metres. If the horizon proves too opaque in practice,
+    // the fix is a shorter ground-fog march applied to BOTH sides together.
     const froxelMaxDistance = vf?.maxDistance ?? 50000;
     r.paramsData[5] = froxelMaxDistance;
     // Batch 420 — base height-fog density. When the volumetricFog master is
@@ -1012,12 +1029,51 @@ class WebGPUVolumetricFogRenderer {
     r.paramsData[65] = upY;
     r.paramsData[66] = upZ;
     r.paramsData[67] = cameraAltitude;
-    // Slots 68–71: altitudeCurvature (oneOverDenom + pad).
+    // Slots 68–71: altitudeCurvature (oneOverDenom, groundFogReference, pad).
     // The denominator (2 * (innerRadius + cameraAltitude)) = 2 * cMag.
     // Guard against cMag=0 (not physical, but keeps the shader's
     // multiply well-behaved during teardown).
     r.paramsData[68] = cMag > 0 ? 1.0 / (2.0 * cMag) : 0.0;
+    // NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — slot 69 is the GROUND DATUM the
+    // ground-fog band is measured from, in the same inscribed-sphere frame as
+    // `cameraAltitude` above. Without it the band's ~120 m falloff was fed a
+    // 10.2 km (46.4 deg N) to 21.4 km (equator) sphere-vs-ellipsoid offset and
+    // `exp(-offset / 120)` collapsed to a denormal (or an exact f32 zero), making
+    // the whole effect a bit-exact no-op outside ~83 deg of latitude. Both terms carry
+    // the same offset, so the shader's subtraction cancels it.
+    //
+    // Written ONLY when ground fog is active: the OFF path keeps the historical
+    // 0.0 so its uniform bytes — and therefore its frames — are unchanged.
+    // `globe.getHeight` walks the terrain quadtree to the camera's leaf tile,
+    // which is why it is gated rather than computed unconditionally.
     r.paramsData[69] = 0.0;
+    if (groundFogActive && cMag > 0) {
+      const globeWithHeight = _scene?.globe as
+        | {
+            getHeight?: (cartographic: {
+              longitude: number;
+              latitude: number;
+              height: number;
+            }) => number | undefined;
+          }
+        | undefined;
+      const cartographic = camera?.positionCartographic;
+      const terrainHeight =
+        cartographic && globeWithHeight?.getHeight
+          ? (globeWithHeight.getHeight(cartographic) ?? 0.0)
+          : 0.0;
+      const radii = globeEllipsoid?.radii;
+      r.paramsData[69] = groundFogReferenceAltitude(
+        upX,
+        upY,
+        upZ,
+        radii?.x ?? 6378137,
+        radii?.y ?? 6378137,
+        radii?.z ?? 6356752,
+        innerRadius,
+        terrainHeight,
+      );
+    }
     r.paramsData[70] = 0.0;
     r.paramsData[71] = 0.0;
 
@@ -1176,33 +1232,33 @@ class WebGPUVolumetricFogRenderer {
     //   85 = intensity (0..1)
     //   86 = bandHeight (m) — exponential mist falloff scale. 120 m gives
     //        the classic morning-mist band hugging the lowest couple hundred
-    //        metres; above ~3× this the boost is negligible.
+    //        metres; above ~3× this the boost is negligible. Measured from the
+    //        GROUND DATUM in slot 69, not from the inscribed sphere.
     //   87 = peakDensity — the per-metre extinction a fully-saturated
-    //        (intensity=1) ground froxel reaches at altitude 0.
+    //        (intensity=1) ground froxel reaches at the datum.
     //
-    //        Batch 421 — ENERGY-CONSERVING re-tune (graded mist, no whiteout).
-    //        The froxel scatter integration is now energy-conserving
+    //        The froxel scatter integration is energy-conserving
     //        single-scatter (per slice `inscatter = sourceRadiance ×
     //        (1 - exp(-σ·Δz))`, accumulated transmittance-weighted), so
     //        density maps to OPACITY via a smooth Beer-Lambert rolloff
-    //        (`transmittance = exp(-Σσ·Δz)`). The actual whiteout ROOT CAUSE
-    //        was the Henyey-Greenstein forward-scatter peak overflowing f16
-    //        (the per-froxel `sourceRadiance` hit 65504), now fixed by a
-    //        clamped HG in VolumetricFog.wgsl. With sourceRadiance bounded
-    //        (~0.2 phase + 0.7 ambient floor for the milky fill) peakDensity
-    //        is a real per-metre extinction: over the slant path through the
-    //        ground band a fully-saturated froxel accumulates optical depth
-    //        ~1 → transmittance ~0.1–0.5, a near-opaque-but-still-see-through
-    //        mist at the surface that fades with altitude. The old ~1e-6
-    //        binary cliff is gone; intensity now sweeps a usable 0..1
-    //        mist-thickness range (probe-verified 0.3 / 0.6 / 1.0). See
-    //        NEW-WEBGPU-FROXEL-FOG-SCATTER-DYNAMIC-RANGE.
+    //        (`transmittance = exp(-Σσ·Δz)`) and this coefficient is a real
+    //        per-metre extinction.
+    //
+    //        NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — the value is now DERIVED
+    //        from meteorological visibility (Koschmieder, see
+    //        `GROUND_FOG_PEAK_EXTINCTION`) rather than tuned. Batch 421's
+    //        1.2e-4 was tuned against a whiteout that was DENSITY-INDEPENDENT
+    //        (the pre-421 integrate took a degenerate `select(scattered ×
+    //        sliceThickness, …)` branch for optical depth < 1e-6, which is
+    //        exactly what the then-always-zero ground-fog density produced),
+    //        so it never measured this coefficient. 1.2e-4 is 32 km of
+    //        visibility — clear air, and under the 8-bit floor of a frame.
     const groundFogIntensity =
       typeof groundFog?.intensity === "number" ? groundFog.intensity : 0.0;
     r.paramsData[84] = groundFogActive ? 1.0 : 0.0;
     r.paramsData[85] = groundFogIntensity;
-    r.paramsData[86] = 120.0;
-    r.paramsData[87] = 1.2e-4;
+    r.paramsData[86] = GROUND_FOG_BAND_HEIGHT;
+    r.paramsData[87] = GROUND_FOG_PEAK_EXTINCTION;
 
     // Batch 431 (FOG-IBL-AMBIENT) — sky-LUT / IBL fog-ambient uniforms
     // (offsets 88..91). When `iblAmbient` is on, the scattering kernel
@@ -1738,9 +1794,9 @@ class WebGPUVolumetricFogRenderer {
     r.compositeUniformData[17] = camera?.frustum?.far ?? 1.0e9;
     // Batch 421 — MUST match the compute pass's `froxelMaxDistance` so the
     // composite samples the integrated volume at the same depth slicing the
-    // integrate pass wrote. The ground-fog-only path shortens the march to
-    // keep near terrain see-through (see the `froxelMaxDistance` comment in
-    // `update()`); mirror that here.
+    // integrate pass wrote. Both sides read the same expression; see the
+    // `froxelMaxDistance` comment in `update()` for why no ground-fog-only
+    // shortening exists on either side.
     r.compositeUniformData[18] = vf?.maxDistance ?? 50000;
     r.compositeUniformData[19] = 0;
     r.compositeUniformData[20] = context.drawingBufferWidth ?? 1;

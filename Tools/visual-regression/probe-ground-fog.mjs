@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Probe: Atmospheric Effects Phase C — GROUND FOG (Batch 420).
+// Probe: Atmospheric Effects Phase C — GROUND FOG (Batch 420 / 421).
 //
 // Verifies the WebGPU froxel volumetric-fog renderer's near-surface mist
 // boost, driven by `atmosphericConditions.effects.groundFog`. Ground fog
@@ -8,33 +8,92 @@
 //
 // Scene: a LOW oblique camera over terrain looking toward the horizon, so
 // the near-ground mist band is visible at the bottom of the frame and the
-// sky fills the top. We capture two WebGPU frames:
+// sky fills the top. We capture three WebGPU frames:
 //
-//   OFF — effects.groundFog.enabled = false (default). The baseline.
-//   ON  — effects.groundFog.enabled = true; intensity = 1.0. The mist
-//         should whiten / haze the LOWER (ground) band materially MORE
-//         than the UPPER (sky) band.
+//   OFF  — effects.groundFog.enabled = false (default). The baseline.
+//   ON   — effects.groundFog.enabled = true; intensity = 1.0. The mist
+//          should whiten / haze the LOWER (ground) band materially MORE
+//          than the UPPER (sky) band.
+//   OFF2 — a second OFF capture, so the ON measurement is read against a
+//          known capture noise floor rather than against an assumption.
 //
-// Pass criteria (HUMAN reads the PNGs + the printed band stats):
-//   - ON vs OFF: lowerBandBrighten  >>  upperBandBrighten  (the mist
-//     hugs the ground; the sky high above is largely untouched).
-//   - OFF vs OFF (sanity, same settings twice): both bands ~0 delta.
+// THIS PROBE GATES. It used to print its band numbers under a read-the-PNGs
+// heading and exit 0 whatever they said, which is why
+// NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING sat unnoticed for 400+ batches while
+// the effect contributed literally nothing: the ON frame was byte-identical to
+// OFF (lower band 101.31 both, upper 167.36 both, brighten 0.00 both) and no
+// exit code ever said so. A manual-verdict probe in a gating fleet is a probe
+// nobody fails.
+//
+// Gates:
+//   A CONFIG     the engine echoes the requested ground-fog config back, with
+//                the volumetricFog MASTER still off (the own-activation path
+//                is the thing under test; enabling the master would hide a
+//                regression in it).
+//   B DISPATCH   the froxel compute AND the composite actually ran on the ON
+//                lane, and did NOT run on the OFF lane. Reported STRUCTURAL,
+//                never FAIL, when the ON lane never dispatched: a pixel leg
+//                whose subject never executed is measuring an unrelated frame,
+//                and scoring that either way is a lie.
+//   C MIST       lowerBandBrighten materially above upperBandBrighten — the
+//                mist hugs the ground and leaves the high sky alone. This is a
+//                RELATIVE claim on purpose: "something changed" would also be
+//                satisfied by a global tint.
+//   D SEE-THROUGH the ground band must not saturate. The acceptance for this
+//                effect is explicitly "terrain visible THROUGH the haze, not a
+//                whiteout", so a whiteout is a FAIL, not a stronger pass.
+//   E STABILITY  OFF vs OFF must stay at ~0 in both bands. If the capture path
+//                is not repeatable the ON delta is uninterpretable — reported
+//                STRUCTURAL (an instrument gap), not FAIL.
+//   F CLEAN      zero console / pageerror / uncaptured-device errors.
 //
 // WebGPU-only. Uses the CesiumViewer page with ?renderer=webgpu and the
 // `window.viewer` handle, importing Cesium from the built bundle for the
 // Cartesian3 helper (same pattern as probe-atmosphere-toggle.mjs).
 //
 // Usage:  node Tools/visual-regression/probe-ground-fog.mjs
+// Env:    PROBE_BASE (default http://localhost:8080)
 // Outputs: output/ground-fog-{off,on,off2}-webgpu.png
-//
-// Do NOT run automatically — the human runs it and reads the band stats.
+// Exit:
+//   0 every gate decided and passed | 1 a real product FAIL |
+//   2 watchdog or exception | 3 no FAIL but a gate had no subject to
+//     measure (acceptance INCOMPLETE, not green)
 
 import { chromium } from "playwright";
 import fs from "fs";
 import path from "path";
 
-const BASE = "http://localhost:8080";
+import {
+  armWebGPUDevices,
+  attachConsoleErrorGate,
+  collectGateErrors,
+  errorGateInit,
+} from "../lib/webgpu-error-gate.mjs";
+
+const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
+
+const WATCHDOG_MS = 420_000;
+const watchdog = setTimeout(() => {
+  console.error(`STRUCTURAL: probe exceeded ${WATCHDOG_MS} ms`);
+  process.exit(2);
+}, WATCHDOG_MS);
+watchdog.unref?.();
+
+// ── Thresholds. Predicted, not fitted.
+//
+// The band model (`ground-fog-band.spec.mjs`) marches the shipped extinction
+// through this exact camera and predicts the ground band loses ~0.50 optical
+// depth at intensity 1 — about 40 8-bit counts of attenuation before the mist's
+// own in-scatter is added — while the sky band, 2 km above the fog layer,
+// accumulates none. The gate asks for a small fraction of that so it survives
+// terrain/LOD variation, and the SEPARATION is what carries the claim.
+const MIN_LOWER_MINUS_UPPER = 3.0;
+// The OFF/OFF pair measured 0.00 in both bands, so anything above a rounding
+// wobble means the capture path itself moved between runs.
+const MAX_STABILITY_DELTA = 0.25;
+// A fully saturated ground band is a whiteout, not a mist.
+const MAX_LOWER_MEAN = 250.0;
 
 // Capture one WebGPU frame with the given ground-fog settings applied.
 // `settings` = { enabled: boolean, intensity: number, fogMaster: boolean }.
@@ -53,15 +112,18 @@ async function capture(label, settings) {
     viewport: { width: 1280, height: 720 },
   });
   const messages = [];
+  const consoleGate = attachConsoleErrorGate(page);
   page.on("console", (m) => messages.push({ t: m.type(), text: m.text() }));
   page.on("pageerror", (e) =>
     messages.push({ t: "pageerror", text: e.message }),
   );
+  await page.addInitScript(errorGateInit);
 
   await page.goto(`${BASE}/Apps/CesiumViewer/index.html?renderer=webgpu`, {
     waitUntil: "networkidle",
   });
   await page.waitForFunction(() => !!window.viewer);
+  await armWebGPUDevices(page);
 
   const echo = await page.evaluate(
     async ({ settings }) => {
@@ -108,10 +170,31 @@ async function capture(label, settings) {
         if (scene.globe.tilesLoaded && i > 120) break;
       }
 
+      // The froxel renderer's own counters. `updatesDispatched` counts frames
+      // whose three compute passes were recorded; `composites` counts frames
+      // whose full-screen composite was recorded. Both are what separates "the
+      // mist is invisible" from "the mist never ran" — the difference between a
+      // product FAIL and an instrument STRUCTURAL.
+      const context = scene._context;
+      const stats =
+        context && context.getRendererStatistics
+          ? context.getRendererStatistics()
+          : null;
+      const fog = stats ? stats.volumetricFog : null;
+
       return {
         groundFogEnabled: ac.effects.groundFog.enabled,
         groundFogIntensity: ac.effects.groundFog.intensity,
         volumetricFogEnabled: ac.volumetricFog.enabled,
+        terrainHeightUnderCamera:
+          typeof scene.globe.getHeight === "function"
+            ? (scene.globe.getHeight(v.camera.positionCartographic) ?? null)
+            : null,
+        cameraHeight: v.camera.positionCartographic.height,
+        fogLastEnabled: fog ? fog.enabled : null,
+        fogUpdatesDispatched: fog ? fog.updatesDispatched : null,
+        fogComposites: fog ? fog.composites : null,
+        fogResolutionKey: fog ? fog.resolutionKey : null,
       };
     },
     { settings },
@@ -120,9 +203,17 @@ async function capture(label, settings) {
 
   const out = path.join(OUT_DIR, `ground-fog-${label}-webgpu.png`);
   await page.screenshot({ path: out, fullPage: false });
+  const gate = await collectGateErrors(page);
   await browser.close();
 
-  const errs = messages.filter((m) => m.t === "error" || m.t === "pageerror");
+  const errs = [
+    ...messages
+      .filter((m) => m.t === "error" || m.t === "pageerror")
+      .map((m) => `${m.t}: ${m.text}`),
+    ...consoleGate,
+    ...(gate.errors ?? []),
+    ...(gate.deviceLost ? [gate.deviceLost] : []),
+  ];
   return { out, echo, errors: errs };
 }
 
@@ -187,12 +278,12 @@ async function bandDiff(a, b) {
       const upperMeanA = upA / Math.max(1, upN);
       const upperMeanB = upB / Math.max(1, upN);
       return {
-        lowerMeanA: lowerMeanA.toFixed(2),
-        lowerMeanB: lowerMeanB.toFixed(2),
-        lowerBandBrighten: (lowerMeanB - lowerMeanA).toFixed(2),
-        upperMeanA: upperMeanA.toFixed(2),
-        upperMeanB: upperMeanB.toFixed(2),
-        upperBandBrighten: (upperMeanB - upperMeanA).toFixed(2),
+        lowerMeanA: Number(lowerMeanA.toFixed(2)),
+        lowerMeanB: Number(lowerMeanB.toFixed(2)),
+        lowerBandBrighten: Number((lowerMeanB - lowerMeanA).toFixed(2)),
+        upperMeanA: Number(upperMeanA.toFixed(2)),
+        upperMeanB: Number(upperMeanB.toFixed(2)),
+        upperBandBrighten: Number((upperMeanB - upperMeanA).toFixed(2)),
       };
     },
     { ba, bb },
@@ -201,7 +292,12 @@ async function bandDiff(a, b) {
   return result;
 }
 
-(async () => {
+function verdict(value) {
+  if (value === null) return "STRUCTURAL";
+  return value ? "PASS" : "FAIL";
+}
+
+async function main() {
   if (!fs.existsSync(OUT_DIR)) fs.mkdirSync(OUT_DIR, { recursive: true });
   console.log("[probe-ground-fog] Atmospheric Effects Phase C — GROUND FOG");
 
@@ -231,27 +327,125 @@ async function bandDiff(a, b) {
   });
   console.log(`  off2: ${off2.out} (${off2.errors.length} errors)`);
 
+  const allErrors = [...off.errors, ...on.errors, ...off2.errors];
   for (const r of [off, on, off2]) {
     if (r.errors.length) {
       console.log(`  ${path.basename(r.out)} errors:`);
-      r.errors.slice(0, 3).forEach((e) => console.log(`    ${e.t}: ${e.text}`));
+      r.errors.slice(0, 3).forEach((e) => console.log(`    ${e}`));
     }
   }
 
+  const mist = await bandDiff(off.out, on.out);
+  const stability = await bandDiff(off.out, off2.out);
   console.log("\n  ON vs OFF band brighten (mist should hug the ground):");
-  console.log("   ", JSON.stringify(await bandDiff(off.out, on.out)));
+  console.log("   ", JSON.stringify(mist));
   console.log("\n  OFF vs OFF sanity (both bands ~0):");
-  console.log("   ", JSON.stringify(await bandDiff(off.out, off2.out)));
+  console.log("   ", JSON.stringify(stability));
 
-  console.log("\nManual checks (read the PNGs):");
+  // ── A CONFIG ────────────────────────────────────────────────────────────
+  const gateA =
+    on.echo.groundFogEnabled === true &&
+    on.echo.groundFogIntensity === 1.0 &&
+    on.echo.volumetricFogEnabled === false &&
+    off.echo.groundFogEnabled === false;
+
+  // ── B DISPATCH ──────────────────────────────────────────────────────────
+  // The ON lane must have run the froxel compute AND the composite. If it did
+  // not, the pixel gates below measured a frame the effect never touched, so
+  // they cannot be scored — STRUCTURAL, not FAIL and not PASS.
+  const onRan =
+    (on.echo.fogUpdatesDispatched ?? 0) > 0 && (on.echo.fogComposites ?? 0) > 0;
+  const offRan =
+    (off.echo.fogUpdatesDispatched ?? 0) > 0 ||
+    (off.echo.fogComposites ?? 0) > 0;
+  // Ground fog off with the master off must leave the froxel renderer idle;
+  // if it runs anyway the OFF baseline is not a baseline.
+  const gateB = offRan ? false : onRan ? true : null;
+
+  // ── C MIST / D SEE-THROUGH / E STABILITY ────────────────────────────────
+  const separation =
+    mist.error === undefined
+      ? mist.lowerBandBrighten - mist.upperBandBrighten
+      : null;
+  const stable =
+    stability.error === undefined &&
+    Math.abs(stability.lowerBandBrighten) <= MAX_STABILITY_DELTA &&
+    Math.abs(stability.upperBandBrighten) <= MAX_STABILITY_DELTA;
+  // An unrepeatable capture path makes the ON delta uninterpretable. That is an
+  // instrument condition, not a product verdict.
+  const gateE = stability.error !== undefined ? null : stable ? true : null;
+
+  // A decode failure (size mismatch) is an instrument condition too — the ON
+  // measurement does not exist, so C and D have nothing to score.
+  const pixelsMeasurable =
+    gateB === true && gateE === true && mist.error === undefined;
+  const gateC = !pixelsMeasurable
+    ? null
+    : separation >= MIN_LOWER_MINUS_UPPER &&
+      mist.lowerBandBrighten >= MIN_LOWER_MINUS_UPPER;
+  const gateD = !pixelsMeasurable ? null : mist.lowerMeanB <= MAX_LOWER_MEAN;
+
+  // ── F CLEAN ─────────────────────────────────────────────────────────────
+  const gateF = allErrors.length === 0;
+
   console.log(
-    "  ON:  a milky near-surface mist hugs the bottom of the frame; the",
+    `\nA CONFIG      (engine echoes the own-activation request, master off): ${verdict(gateA)}`,
   );
   console.log(
-    "       sky high above stays clear. lowerBandBrighten >> upperBandBrighten.",
+    `B DISPATCH    (froxel compute + composite ran ON, idle OFF): ${verdict(gateB)}` +
+      ` on{updates=${on.echo.fogUpdatesDispatched} composites=${on.echo.fogComposites}}` +
+      ` off{updates=${off.echo.fogUpdatesDispatched} composites=${off.echo.fogComposites}}` +
+      (gateB === null
+        ? " — the fog compute never ran, so the pixel gates below have no subject" +
+          " (instrument gap, NOT a product verdict)"
+        : ""),
   );
   console.log(
-    "  OFF: clean terrain + sky, no mist. OFF-vs-OFF bands ~0 (byte-stable).",
+    `C MIST        (lowerBandBrighten >> upperBandBrighten): ${verdict(gateC)}` +
+      ` lower=${mist.lowerBandBrighten} upper=${mist.upperBandBrighten}` +
+      ` separation=${separation === null ? "n/a" : separation.toFixed(2)}` +
+      ` (need >= ${MIN_LOWER_MINUS_UPPER})`,
   );
+  console.log(
+    `D SEE-THROUGH (ground band not a whiteout): ${verdict(gateD)}` +
+      ` lowerMean=${mist.lowerMeanB} (max ${MAX_LOWER_MEAN})`,
+  );
+  console.log(
+    `E STABILITY   (OFF vs OFF ~0 in both bands): ${verdict(gateE)}` +
+      ` lower=${stability.lowerBandBrighten} upper=${stability.upperBandBrighten}` +
+      ` (max |delta| ${MAX_STABILITY_DELTA})`,
+  );
+  console.log(
+    `F CLEAN       (zero console / device errors): ${verdict(gateF)} errors=${allErrors.length}`,
+  );
+
+  console.log("\nAlso read the PNGs:");
+  console.log(
+    "  ON:  a milky near-surface mist hugs the bottom of the frame; the sky high above stays clear.",
+  );
+  console.log("  OFF: clean terrain + sky, no mist.");
+
+  const gates = [gateA, gateB, gateC, gateD, gateE, gateF];
+  const failed = gates.some((gate) => gate === false);
+  const structural = gates.some((gate) => gate === null);
+  console.log(
+    `\nGATE ${failed ? "FAIL" : structural ? "INCOMPLETE (structural)" : "PASS"}` +
+      (structural
+        ? " — a leg could not see its subject. That is an instrument gap owed as" +
+          " follow-up, NOT a product verdict, and NOT a pass: exit 3 so a" +
+          " structural run can never be mistaken for a green one."
+        : ""),
+  );
+  // Exit codes: 0 = every gate decided and passed. 1 = a real product FAIL.
+  // 2 = watchdog or an exception. 3 = no FAIL, but at least one gate had no
+  // subject to measure — acceptance is INCOMPLETE, not green.
+  process.exitCode = failed ? 1 : structural ? 3 : 0;
   console.log("[probe-ground-fog] done");
-})();
+}
+
+main()
+  .catch((error) => {
+    console.error(error?.stack ?? String(error));
+    process.exitCode = 2;
+  })
+  .finally(() => clearTimeout(watchdog));

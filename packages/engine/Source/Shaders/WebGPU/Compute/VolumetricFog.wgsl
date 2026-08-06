@@ -107,7 +107,24 @@ struct VolumetricFogParams {
   //   x = oneOverDenom = 1 / (2 * (innerRadius + cameraAltitude))
   //                    = 1 / (2 * cameraCenterDistance)
   // Precomputed on CPU in f64 so the quadratic term stays stable.
-  //   y, z, w = pad
+  //   y = groundFogReferenceAltitude — NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING.
+  //       The ground datum the GROUND-FOG band is anchored to, expressed in
+  //       the SAME frame as `cameraAltitudeRTE.w` (metres above the inscribed
+  //       sphere of radius `innerRadius`), so the shader can subtract the two
+  //       directly. Zero when ground fog is off, which keeps the OFF path's
+  //       uniform bytes identical to pre-fix.
+  //
+  //       Why this exists: `altitude` below is measured from the INSCRIBED
+  //       (polar-radius) sphere, not from the ellipsoid surface. At the
+  //       equator the ellipsoid surface sits 21,385 m above that sphere and
+  //       at 46.4 deg N about 10,215 m above it. The base height fog does not
+  //       care (its scale height is ~10 km, so the offset is a modest global
+  //       density scale), but the ground-fog band's falloff scale is ~120 m:
+  //       `exp(-10215 / 120)` is `e^-85`, so the boost is a denormal at best
+  //       and an exact f32 zero at low latitudes. Anchoring the band to this
+  //       reference removes the offset entirely — the subtraction cancels the
+  //       sphere-vs-ellipsoid error because both terms are in the same frame.
+  //   z, w = pad
   altitudeCurvature: vec4<f32>,
 
   // Phase 6c — Cloud shadows in volumetric fog (Session 65 Batch 44).
@@ -157,7 +174,10 @@ struct VolumetricFogParams {
   //   y = intensity       (0..1, scales the peak boost; from
   //                        `effects.groundFog.intensity`)
   //   z = bandHeight      (m, exponential falloff scale — boost ≈
-  //                        intensity × exp(-altitude / bandHeight))
+  //                        intensity × exp(-heightAboveGround / bandHeight),
+  //                        where `heightAboveGround` is measured from
+  //                        `altitudeCurvature.y`, NOT from the inscribed
+  //                        sphere; see that field for why)
   //   w = peakDensity     (the density value a fully-saturated ground
   //                        froxel reaches at altitude 0 when intensity=1;
   //                        a unit-scale knob so the mist reads as opaque
@@ -856,24 +876,37 @@ fn densityInjection(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 
   // Phase C / Batch 420 — GROUND FOG boost. When enabled, add a near-
-  // surface density spike that decays exponentially with altitude so the
-  // mist hugs the ground and fades into the normal fog (or clear) above
-  // the band. `altitude` is the same RTE-reconstructed altitude the base
-  // height fog uses, so the boost tracks terrain elevation correctly.
+  // surface density spike that decays exponentially with height above the
+  // GROUND DATUM so the mist hugs the ground and fades into the normal fog
+  // (or clear) above the band.
   // Gated behind `enabled` AND `intensity > 0` so the OFF default path is
   // byte-identical to pre-Batch-420 (the `densityInjection` output is
   // unchanged when `u.groundFog.x < 0.5`).
+  //
+  // NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING — the falloff argument used to be
+  // the raw `altitude`, i.e. the height above the INSCRIBED SPHERE the base
+  // height fog uses. That is 10.2 km at 46.4 deg N and 21.4 km at the equator
+  // even at sea level, so `exp(-altitude / 120)` collapsed to a denormal (or
+  // an exact f32 zero) and the accumulated optical depth left transmittance at
+  // EXACTLY 1.0 — the whole effect was an arithmetic no-op outside ~83 deg of
+  // latitude. The band is now measured from `u.altitudeCurvature.y`, the
+  // camera-local ground datum the CPU packs in this same frame, so the
+  // sphere-vs-ellipsoid offset cancels.
   let groundFogEnabled = u.groundFog.x;
   let groundFogIntensity = u.groundFog.y;
   if (groundFogEnabled > 0.5 && groundFogIntensity > 0.0) {
     let bandHeight = max(u.groundFog.z, 1.0);
     let peakDensity = u.groundFog.w;
-    // Exponential height falloff: full strength at the surface, ~37% at
+    // Height above the ground datum. Clamped at 0 so froxels BELOW the datum
+    // (terrain that dips under the reference elevation, or a below-ground
+    // froxel) get the full band density instead of an exponential explosion.
+    let heightAboveGround = max(0.0, altitude - u.altitudeCurvature.y);
+    // Exponential height falloff: full strength at the datum, ~37% at
     // one band-height, negligible beyond ~3 band-heights. `intensity`
     // scales the peak so a partially-saturated atmosphere produces a
     // thinner mist.
     let groundBoost =
-      groundFogIntensity * peakDensity * exp(-altitude / bandHeight);
+      groundFogIntensity * peakDensity * exp(-heightAboveGround / bandHeight);
     // Add the boost on top of the base height fog so the mist layers over
     // any existing fog rather than replacing it.
     density = density + groundBoost;
