@@ -101,6 +101,28 @@ GENUS_PHASE_G_LIMIT and the number should be reported, not quietly retuned).
 
 ### NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING
 
+**ACCEPTANCE PASSED 2026-08-06 (Batch 844), post-843 rebuild — all six gates.**
+`probe-ground-fog.mjs` (now a real gate, not manual-verdict): A CONFIG pass;
+B DISPATCH pass with the froxel compute genuinely running (`updates=244`,
+`composites=244` ON versus null OFF, so the own-activation path is exercised);
+C MIST pass with lower band +3.6 against upper band 0 (separation 3.60, needed
+3) — the mist hugs the ground as designed; D SEE-THROUGH pass (lower mean 104.92,
+not a whiteout); E STABILITY pass (OFF vs OFF 0 in both bands); F CLEAN pass.
+A feature that had never rendered in this project's history now renders.
+
+**OPEN CALIBRATION QUESTION, recorded rather than glossed.** The fix's own
+derivation predicted ground-band optical depth 0.503 at intensity 1, i.e. roughly
+**40** 8-bit counts of brightening. The measured separation is **3.6** — the gate
+passes on its >= 3 floor, but the magnitude is about 10x below prediction. Either
+the Koschmieder-derived `peakDensity` is not reaching the march at the value the
+derivation assumes, or the band/camera geometry at the probe's altitude admits far
+less of the layer than the closed-form estimate. Discriminator: instrument the
+shipped optical depth for the probe's exact camera (the spec's CPU twin already
+models it) and compare against the rendered separation; if the twin also predicts
+~3.6 the derivation comment is wrong, and if it predicts 40 the shader is not
+receiving the density the twin thinks it is. Do NOT raise `peakDensity` to close
+the gap before that is settled — it would tune against an unexplained factor.
+
 **Status:** ROOT-CAUSED + FIXED IN TREE; browser acceptance OWED. Found by running
 `probe-ground-fog.mjs` as the smoke lane for Batch 832. Batch 832 is EXONERATED by
 direct measurement (below).
