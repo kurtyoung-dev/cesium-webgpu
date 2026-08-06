@@ -26,6 +26,13 @@ ivec2 vectorIndexToUv(int index, ivec2 size)
     return ivec2(u, v);
 }
 
+// Largest UV-Jacobian condition number (ratio of singular values) this shader
+// will still invert. Above it the matrix carries no usable pixel metric and the
+// fragment is abandoned. See `vectorPolylineRender` for why an exactly-zero
+// determinant is not a sufficient test. Must match
+// `GlobeTerrain.wgsl::VECTOR_UV_JACOBIAN_MAX_CONDITION`.
+const float VECTOR_UV_JACOBIAN_MAX_CONDITION = 1.0e3;
+
 // Drape clamped vector polylines onto the terrain surface. The fragment's
 // tile UV picks a grid cell, then only that cell's line segments (packed in
 // tile-local UV space) are tested for proximity. Within the line width, the
@@ -47,9 +54,34 @@ vec4 vectorPolylineRender(vec2 vectorUv, vec4 baseColor)
     // has no `inverse()` builtin, and its hand-rolled substitute returning a
     // zero matrix for this case painted the whole skirt ring
     // (NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS).
+    //
+    // An exactly-zero determinant is NOT a sufficient test, which is what
+    // NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT turned out to be. The shader
+    // never sees the skirt's exact algebra; it sees `dFdx`/`dFdy` of a
+    // PERSPECTIVE-INTERPOLATED varying. Interpolating a bit-identical attribute
+    // still divides by the interpolated 1/w, so the recovered `v` lands within
+    // an ulp or so of the edge value rather than on it, and on a skirt seen
+    // edge-on (nadir) the quad's screen footprint collapses, which amplifies
+    // that residue AND inflates the `u` derivatives. The determinant is then
+    // small-but-nonzero, the guard above lets it through, and the inverted
+    // matrix reports a pixel distance far shorter than the true one — the
+    // fragment gets painted with a segment tens or hundreds of pixels away.
+    //
+    // So reject on the CONDITION NUMBER instead, which is what "this matrix
+    // carries no usable pixel metric" actually means. For a 2x2,
+    // ‖M‖_F² = σmax² + σmin² and |det| = σmax·σmin, so ‖M‖_F² / |det| is
+    // exactly κ + 1/κ — a scale-invariant, sqrt-free read of the conditioning
+    // that no tile size, zoom level or line width can shift. A skirt lands in
+    // the 1e4..1e6 band because its small singular value is pure interpolation
+    // residue; legitimate grazing foreshortening on a drawn tile stays under
+    // ~100 (past ~1e3 the tile is thinner than a pixel and has nothing to
+    // drape). The first term still catches the exactly-singular case, including
+    // the all-zero matrix that the ratio test cannot see.
     mat2 uvJacobian = mat2(dFdx(vectorUv), dFdy(vectorUv));
     float uvJacobianDet = uvJacobian[0].x * uvJacobian[1].y - uvJacobian[1].x * uvJacobian[0].y;
-    if (abs(uvJacobianDet) < 1.0e-20)
+    float uvJacobianNormSquared = dot(uvJacobian[0], uvJacobian[0]) + dot(uvJacobian[1], uvJacobian[1]);
+    if (abs(uvJacobianDet) < 1.0e-20 ||
+        uvJacobianNormSquared > VECTOR_UV_JACOBIAN_MAX_CONDITION * abs(uvJacobianDet))
     {
         return baseColor;
     }

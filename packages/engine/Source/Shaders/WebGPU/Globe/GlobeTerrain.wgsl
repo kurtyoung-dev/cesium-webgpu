@@ -3644,6 +3644,21 @@ fn vectorDeterminant2x2(m: mat2x2<f32>) -> f32 {
   return m[0].x * m[1].y - m[1].x * m[0].y;
 }
 
+// Largest UV-Jacobian condition number (ratio of singular values) this shader
+// will still invert. Above it the matrix carries no usable pixel metric and the
+// fragment is abandoned. See `vectorPolylineRender` for why an exactly-zero
+// determinant is not a sufficient test. Must match
+// `VectorCommon.glsl::VECTOR_UV_JACOBIAN_MAX_CONDITION`.
+const VECTOR_UV_JACOBIAN_MAX_CONDITION: f32 = 1.0e3;
+
+// ‖m‖_F² — the squared Frobenius norm, i.e. σmax² + σmin². Paired with
+// `vectorDeterminant2x2` (= σmax·σmin) it gives the condition number as
+// ‖m‖_F² / |det| = κ + 1/κ, with no square root and no dependence on the
+// matrix's overall scale.
+fn vectorNormSquared2x2(m: mat2x2<f32>) -> f32 {
+  return dot(m[0], m[0]) + dot(m[1], m[1]);
+}
+
 // WGSL has no `inverse()` builtin (GLSL does — `VectorCommon.glsl` line 37).
 //
 // PRECONDITION: `det` is the caller's `vectorDeterminant2x2(m)` and is already
@@ -3732,9 +3747,32 @@ fn vectorPolylineRender(
   // segment in the cell regardless of where that segment is — so the entire
   // skirt ring of every vector-carrying tile was painted with that tile's first
   // segment colour, drawn as faint lines along the tile-row boundaries.
+  //
+  // NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT: an exactly-zero determinant is
+  // not a sufficient test on EITHER backend. The shader never sees the skirt's
+  // exact algebra — it sees `dpdx`/`dpdy` of a PERSPECTIVE-INTERPOLATED
+  // varying, and interpolating a bit-identical attribute still divides by the
+  // interpolated 1/w, so the recovered `v` lands within an ulp or so of the
+  // edge value rather than on it. On a skirt seen edge-on (nadir) the quad's
+  // screen footprint collapses, which amplifies that residue AND inflates the
+  // `u` derivatives, so the determinant is small-but-nonzero, the exact test
+  // lets it through, and the inverted matrix reports a pixel distance far
+  // shorter than the true one — the fragment is painted with a segment tens or
+  // hundreds of pixels away.
+  //
+  // So reject on the CONDITION NUMBER, which is what "this matrix carries no
+  // usable pixel metric" actually means. ‖M‖_F² / |det| is exactly κ + 1/κ for
+  // a 2x2: scale-invariant, sqrt-free, and unmovable by tile size, zoom or line
+  // width. A skirt lands in the 1e4..1e6 band because its small singular value
+  // is pure interpolation residue; legitimate grazing foreshortening on a drawn
+  // tile stays under ~100 (past ~1e3 the tile is thinner than a pixel and has
+  // nothing to drape). The determinant term still catches the exactly-singular
+  // case, including the all-zero matrix that the ratio test cannot see.
   let uvJacobian = mat2x2<f32>(uvDx, uvDy);
   let uvJacobianDet = vectorDeterminant2x2(uvJacobian);
-  if (abs(uvJacobianDet) < 1.0e-20) {
+  let uvJacobianNormSquared = vectorNormSquared2x2(uvJacobian);
+  if (abs(uvJacobianDet) < 1.0e-20 ||
+      uvJacobianNormSquared > VECTOR_UV_JACOBIAN_MAX_CONDITION * abs(uvJacobianDet)) {
     return baseColor;
   }
   let screenFromUv = vectorInverse2x2(uvJacobian, uvJacobianDet);

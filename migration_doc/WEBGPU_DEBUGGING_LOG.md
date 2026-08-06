@@ -24,6 +24,78 @@
 
 ---
 
+## NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT — the skirt guard tested for an EXACTLY zero determinant, but the shader only ever sees an interpolated one (2026-08-06, C11-213 acceptance follow-up)
+
+**Files.** `packages/engine/Source/Shaders/VectorCommon.glsl` and
+`packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl` (`vectorPolylineRender` in
+both). Follow-up to the HORIZONTAL-STREAKS entry below; filed by the post-Batch-834 run of
+`probe-vector-draping.mjs`.
+
+**Symptom as filed.** Gate B still failed after Batch 834, now in the opposite direction:
+WebGL's nadir changed-pixel bbox `[451,19,710,747]` against WebGPU's `[451,19,607,747]`, a 103 px
+delta, with WebGL's numbers byte-identical to the pre-834 run. It read as a pre-existing
+WebGL-only artifact that the WebGPU streaks had been masking.
+
+**Symptom as MEASURED.** The probe's vector-free frames are byte-identical across backends
+(0 px) and `determinismChanged` is 0 on both, so the changed-pixel mask reproduces exactly from
+the saved PNGs offline. Decoding them turns the 103 px band into **five** stray pixels on WebGL
+— (710,259), (608,260), (609,260), (636,260), (637,260) — against **one** on WebGPU, (607,260).
+All six decode to RGB (48,48,112): the blue line's colour at exactly 25% coverage, i.e. one of
+four MSAA samples. All six sit on y = 259/260, which at this frame's 141 px/deg of latitude is
+latitude 39.375° — a level-6 tile-ROW boundary, i.e. terrain skirt geometry. Sweeping every
+pixel where the two vector-on frames differ at all returns rows
+76/112/230/259/260/390/423/654/665/727, and outside those six coordinates every one is a single
+pixel on the line's own anti-aliased edge (x 558-561 / 570-575) differing by one coverage step.
+**So the defect is NOT WebGL-only** — the same class fires on both backends, WebGL just carries
+four more of them and one lands 103 px further right. The brief's third hypothesis (something
+other than the drape painting there) is ruled out by the byte-identical vector-free frames.
+
+**Root cause.** Batch 834's guard rejects `abs(uvJacobianDet) < 1.0e-20`. That is the skirt's
+exact algebra — `HeightmapTessellator` gives a skirt vertex the UNMOVED edge `u`/`v`
+(`HeightmapTessellator.js:305-306, 384-385, 389-417`), so a north/south strip carries a
+bit-identical `v` at every quad corner. But the shader never sees the algebra; it sees
+`dFdx`/`dpdx` of a **perspective-interpolated** varying. Interpolating a bit-identical attribute
+still divides by the interpolated `1/w`, so the recovered `v` lands within an ulp or so of the
+edge value rather than on it. At nadir the skirt is edge-on, its screen footprint collapses to a
+fraction of a row, and that collapse both amplifies the residue and inflates the varying axis'
+derivatives. The determinant comes out order 1e-9 — twelve orders above the floor — so the guard
+passes the fragment and the matrix is inverted anyway, and the inverted matrix reports a pixel
+distance far shorter than the true one.
+
+The arithmetic pins the shape: `|M⁻¹x| ≥ |x| / σmax`, so a fragment whose true distance is `D`
+px can only test as inside a `w` px line if `σmax > D·a_true/w`. The measured strays need 2.3×
+inflation at x=607 (D = 36.5 px) rising to 8.7× at x=710 (D = 139 px) — increasing WITH
+distance, which is a per-fragment corrupted derivative and not a constant scale error. It also
+explains the view dependence: the oblique bboxes are IDENTICAL on both backends
+(`[440,371,595,394]`) because there the skirts are not edge-on. And it explains why WebGL's
+numbers did not move across Batch 834 at all — that guard never fired on these fragments.
+WebGL's four extra strays are rasterizer/compiler precision in sub-pixel slivers, not a
+difference in shader logic.
+
+**Fix.** Reject on the **condition number** rather than on an exactly-zero determinant, in both
+shaders. For a 2×2, `‖M‖_F² = σmax² + σmin²` and `|det| = σmax·σmin`, so `‖M‖_F² / |det|` is
+exactly `κ + 1/κ` — scale-invariant, sqrt-free, and immovable by tile size, zoom or line width.
+`VECTOR_UV_JACOBIAN_MAX_CONDITION = 1.0e3` in both files, with the 1e-20 determinant term kept
+because it is the only one that catches the all-zero matrix (the ratio test cannot see it). A
+skirt lands in the 1e4..1e6 band since its small singular value is pure interpolation residue;
+the worst legitimate rotation-plus-anisotropy case at 100:1 foreshortening measures 100.0, so
+the ceiling keeps 10× headroom. Documented cost: drape is suppressed where a tile is
+foreshortened past ~1000:1 — thinner than a pixel, at the limb.
+
+**Verification.** `vector-layer-draping.spec.mjs` 28/28 green (naga included). E4 runs the
+NUMERICALLY near-singular sliver Jacobian scaled to this frame (true `du/dx` = 1/320.6, inflated
+~9×), asserts its determinant is 1e6× above the singular floor, asserts the corrupted matrix
+under-reports distance by >4×, and requires both backends to drape nothing. E5 sweeps
+foreshortening 1..100:1 at 0..90° and requires the ceiling to keep ≥5× headroom, so an
+over-tightening cannot land quietly. M7 drops the condition term from BOTH models and requires
+the false positives to come back. The models read the ceiling **and the guard expression's
+presence** out of each shader source, so removing the term from either file turns E3 and E4 red
+— verified by stripping it from both and re-running (26 pass / 2 fail), then restoring. Browser
+acceptance is `probe-vector-draping.mjs` gate B (bbox delta ≤ 16 px in BOTH directions) — owed
+to the orchestrator.
+
+---
+
 ## NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS — a singular UV Jacobian inverted to the ZERO matrix, so every terrain SKIRT fragment of a vector-carrying tile got painted (2026-08-06, C11-213 acceptance)
 
 **Files.** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`

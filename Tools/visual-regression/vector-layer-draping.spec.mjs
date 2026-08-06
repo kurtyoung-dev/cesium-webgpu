@@ -285,6 +285,39 @@ const GLSL_SINGULAR_EPSILON = shaderSingularEpsilon(
   "VectorCommon.glsl",
 );
 
+/**
+ * The CONDITION-NUMBER ceiling (`NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT`).
+ * Read out of each shader for the same reason the epsilon is: the two backends
+ * only agree by construction if they abandon the fragment at the same number.
+ */
+function shaderConditionCeiling(source, label) {
+  const match = source.match(
+    /VECTOR_UV_JACOBIAN_MAX_CONDITION[^=]*=\s*([0-9.]+e-?[0-9]+)/,
+  );
+  assert.ok(match, `${label} declares no VECTOR_UV_JACOBIAN_MAX_CONDITION`);
+  return Number(match[1]);
+}
+
+const WGSL_CONDITION_CEILING = shaderConditionCeiling(
+  wgsl,
+  "GlobeTerrain.wgsl",
+);
+const GLSL_CONDITION_CEILING = shaderConditionCeiling(
+  glslCommon,
+  "VectorCommon.glsl",
+);
+
+/**
+ * Whether the shader's abandon test ACTUALLY applies the ceiling. Declaring the
+ * constant is not the same as using it, and a model that assumed the guard
+ * exists would keep this file green while the shipped shader painted skirts
+ * again. Behaviour follows the source rather than the other way round.
+ */
+const CONDITION_GUARD_EXPRESSION =
+  /uvJacobianNormSquared\s*>\s*VECTOR_UV_JACOBIAN_MAX_CONDITION\s*\*\s*abs\(uvJacobianDet\)/;
+const WGSL_HAS_CONDITION_GUARD = CONDITION_GUARD_EXPRESSION.test(wgsl);
+const GLSL_HAS_CONDITION_GUARD = CONDITION_GUARD_EXPRESSION.test(glslCommon);
+
 function determinant2x2(c0, c1) {
   return c0[0] * c1[1] - c1[0] * c0[1];
 }
@@ -297,18 +330,56 @@ function inverse2x2(c0, c1, det) {
   ];
 }
 
+function normSquared2x2(c0, c1) {
+  return c0[0] * c0[0] + c0[1] * c0[1] + c1[0] * c1[0] + c1[1] * c1[1];
+}
+
+/**
+ * `‖M‖_F² / |det|` is exactly `κ + 1/κ` for a 2x2, so this IS the condition
+ * number, read without a square root and without any dependence on the
+ * matrix's overall scale. Both shaders compute it verbatim.
+ */
+function conditionRatio(c0, c1) {
+  const det = Math.abs(determinant2x2(c0, c1));
+  return det === 0 ? Number.POSITIVE_INFINITY : normSquared2x2(c0, c1) / det;
+}
+
+/**
+ * The two-term abandon test both shaders now run before inverting.
+ * `mutate.absoluteSingularEpsilonOnly` drops the condition term, restoring the
+ * Batch-834 guard that only ever caught an EXACTLY zero determinant — the
+ * defect `NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT` was filed against.
+ */
+function jacobianIsUnusable(uvDx, uvDy, epsilon, ceiling, hasGuard, mutate) {
+  if (Math.abs(determinant2x2(uvDx, uvDy)) < epsilon) {
+    return true;
+  }
+  if (mutate.absoluteSingularEpsilonOnly || !hasGuard) {
+    return false;
+  }
+  return conditionRatio(uvDx, uvDy) > ceiling;
+}
+
 /**
  * `VectorCommon.glsl`'s inverse UV Jacobian. `null` means "this fragment can
  * have no pixel-space distance, so nothing is ever in range" — which is what
  * the GLSL produces both before the explicit guard (Inf/NaN from `inverse()`,
  * every comparison false) and after it (an early return).
  */
-function glslScreenFromUv(uvDx, uvDy) {
-  const det = determinant2x2(uvDx, uvDy);
-  if (Math.abs(det) < GLSL_SINGULAR_EPSILON) {
+function glslScreenFromUv(uvDx, uvDy, mutate = {}) {
+  if (
+    jacobianIsUnusable(
+      uvDx,
+      uvDy,
+      GLSL_SINGULAR_EPSILON,
+      GLSL_CONDITION_CEILING,
+      GLSL_HAS_CONDITION_GUARD,
+      mutate,
+    )
+  ) {
     return null;
   }
-  return inverse2x2(uvDx, uvDy, det);
+  return inverse2x2(uvDx, uvDy, determinant2x2(uvDx, uvDy));
 }
 
 /**
@@ -317,8 +388,16 @@ function glslScreenFromUv(uvDx, uvDy) {
  * returned the ZERO matrix instead of abandoning the fragment.
  */
 function wgslScreenFromUv(uvDx, uvDy, mutate = {}) {
-  const det = determinant2x2(uvDx, uvDy);
-  if (Math.abs(det) < WGSL_SINGULAR_EPSILON) {
+  if (
+    jacobianIsUnusable(
+      uvDx,
+      uvDy,
+      WGSL_SINGULAR_EPSILON,
+      WGSL_CONDITION_CEILING,
+      WGSL_HAS_CONDITION_GUARD,
+      mutate,
+    )
+  ) {
     return mutate.singularJacobianZeroMatrix
       ? [
           [0, 0],
@@ -326,7 +405,7 @@ function wgslScreenFromUv(uvDx, uvDy, mutate = {}) {
         ]
       : null;
   }
-  return inverse2x2(uvDx, uvDy, det);
+  return inverse2x2(uvDx, uvDy, determinant2x2(uvDx, uvDy));
 }
 
 /**
@@ -537,6 +616,33 @@ const SKIRT_JACOBIAN_WE = {
   uvDy: [0, 1 / 310],
 };
 
+// ── The SAME skirts as the shader actually receives them
+// (`NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT`).
+//
+// The two above are the skirt's exact algebra. The shader never sees that: it
+// sees `dFdx`/`dpdy` of a PERSPECTIVE-INTERPOLATED varying, and interpolating a
+// bit-identical attribute still divides by the interpolated 1/w, so the
+// recovered constant axis carries an ulp-scale residue instead of landing on
+// the edge value. At nadir the skirt is edge-on, its screen footprint collapses
+// to a fraction of a row, and that collapse both amplifies the residue and
+// inflates the varying axis' derivatives.
+//
+// Scaled to the C11-213 acceptance frame: a level-6 tile 320.6 px wide gives a
+// true `du/dx` of 1/320.6 = 3.12e-3, and the numbers below inflate it ~9x —
+// which is what it takes to report the 139-px-distant fragment measured at
+// (710, 259) as inside a 16 px line.
+const SKIRT_JACOBIAN_NS_SLIVER = {
+  uvDx: [0.028, 3.0e-7],
+  uvDy: [0.011, -1.1e-7],
+};
+const SKIRT_JACOBIAN_WE_SLIVER = {
+  uvDx: [3.0e-7, 0.028],
+  uvDy: [-1.1e-7, 0.011],
+};
+// The true uv-per-pixel of that frame's level-6 tile, for the tests that need
+// to state how far off the corrupted metric is.
+const ACCEPTANCE_FRAME_TRUE_UV_PER_PIXEL = 1 / 320.6;
+
 function sampleRaster() {
   const points = [];
   for (let iy = 0; iy < 24; iy++) {
@@ -580,7 +686,10 @@ function compareBackends(baked, words, options = {}) {
  */
 function compareBackendsFromJacobian(baked, words, jacobian, mutate = {}) {
   const { uvDx, uvDy } = jacobian;
-  const glslMatrix = glslScreenFromUv(uvDx, uvDy);
+  // The GLSL model sees the mutation too: `absoluteSingularEpsilonOnly` is a
+  // defect in BOTH shaders, so a leg that only mutated WebGPU would score it as
+  // a cross-backend disagreement and miss the point.
+  const glslMatrix = glslScreenFromUv(uvDx, uvDy, mutate);
   const wgslMatrix = wgslScreenFromUv(uvDx, uvDy, mutate);
   const differences = [];
   let painted = 0;
@@ -954,11 +1063,140 @@ test("M6 — inverting a singular Jacobian to the ZERO matrix is DETECTED", () =
   }
 });
 
+test("E4 — an edge-on skirt is rejected even though its determinant is NOT zero", () => {
+  // NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT. This is the case the Batch-834
+  // guard could not see, and the reason it moved WebGL's numbers by exactly
+  // zero pixels: the determinant is ~1e-9, twelve orders of magnitude above the
+  // 1e-20 floor, so the fragment sailed through and got inverted.
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+
+  for (const [name, jacobian] of [
+    ["north/south", SKIRT_JACOBIAN_NS_SLIVER],
+    ["east/west", SKIRT_JACOBIAN_WE_SLIVER],
+  ]) {
+    const det = Math.abs(determinant2x2(jacobian.uvDx, jacobian.uvDy));
+    assert.ok(
+      det > GLSL_SINGULAR_EPSILON * 1e6,
+      `${name} sliver must be far above the exactly-singular floor to be the case under test; |det| = ${det}`,
+    );
+    assert.ok(
+      conditionRatio(jacobian.uvDx, jacobian.uvDy) > GLSL_CONDITION_CEILING,
+      `${name} sliver must be over the condition ceiling`,
+    );
+
+    // WHY it paints without the guard: the inverted matrix under-reports the
+    // pixel distance of a purely-u offset by a large factor, so a segment far
+    // outside the line's width still tests as inside it.
+    const corrupted = inverse2x2(
+      jacobian.uvDx,
+      jacobian.uvDy,
+      determinant2x2(jacobian.uvDx, jacobian.uvDy),
+    );
+    const offset = name === "north/south" ? [0.05, 0] : [0, 0.05];
+    const reported = Math.hypot(...applyScreenFromUv(corrupted, offset));
+    const truePixels = 0.05 / ACCEPTANCE_FRAME_TRUE_UV_PER_PIXEL;
+    assert.ok(
+      reported < truePixels / 4,
+      `${name} sliver must badly UNDER-report distance for the defect to exist; reported ${reported.toFixed(1)} px vs true ${truePixels.toFixed(1)} px`,
+    );
+
+    assert.equal(
+      glslScreenFromUv(jacobian.uvDx, jacobian.uvDy),
+      null,
+      `${name} sliver must have no GLSL screen-space metric`,
+    );
+    assert.equal(
+      wgslScreenFromUv(jacobian.uvDx, jacobian.uvDy),
+      null,
+      `${name} sliver must have no WGSL screen-space metric`,
+    );
+
+    const skirt = compareBackendsFromJacobian(baked, words, jacobian);
+    assert.equal(skirt.differences.length, 0, `${name} sliver legs disagreed`);
+    assert.equal(
+      skirt.painted,
+      0,
+      `${name} sliver painted ${skirt.painted} of ${skirt.samples} fragments; a skirt must drape NOTHING`,
+    );
+  }
+});
+
+test("M7 — restoring the exactly-zero-determinant-only guard is DETECTED", () => {
+  // The mutation is the Batch-834 shader verbatim: keep the 1e-20 floor, drop
+  // the condition term. It must bring the false positives back on BOTH
+  // backends — this is not a WebGPU-only defect, which is why the mutation is
+  // applied to the GLSL model too.
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  for (const [name, jacobian] of [
+    ["north/south", SKIRT_JACOBIAN_NS_SLIVER],
+    ["east/west", SKIRT_JACOBIAN_WE_SLIVER],
+  ]) {
+    const mutated = compareBackendsFromJacobian(baked, words, jacobian, {
+      absoluteSingularEpsilonOnly: true,
+    });
+    assert.ok(
+      mutated.painted > 0,
+      `the ${name} sliver must drape again once the condition term is dropped, or this spec would pass with the defect present`,
+    );
+    // The exactly-singular skirts must STILL be caught by the surviving
+    // 1e-20 floor, or the mutation would be proving the wrong thing.
+    for (const exact of [SKIRT_JACOBIAN_NS, SKIRT_JACOBIAN_WE]) {
+      assert.equal(
+        glslScreenFromUv(exact.uvDx, exact.uvDy, {
+          absoluteSingularEpsilonOnly: true,
+        }),
+        null,
+        "the exactly-zero determinant must stay caught by the epsilon floor",
+      );
+    }
+  }
+});
+
+test("E5 — the condition ceiling leaves real foreshortening alone", () => {
+  // The guard must not be one-sided. A pixels→uv map that is a rotation times
+  // an anisotropic scale is exactly what a grazing camera produces, and the
+  // whole reason `screenFromUv` exists; rejecting it would silently delete the
+  // drape at the far end of gate D's oblique view instead of fixing anything.
+  // Worst case is a 45° rotation, where κ + 1/κ peaks for a given anisotropy.
+  const worst = { ratio: 0, angleDeg: 0, condition: 0 };
+  for (let ratio = 1; ratio <= 100; ratio++) {
+    for (let angleDeg = 0; angleDeg <= 90; angleDeg += 5) {
+      const a = (angleDeg * Math.PI) / 180;
+      const k = 1 / ratio;
+      // columns of diag(1, k) * R(a), scaled to a plausible uv-per-pixel.
+      const s = 1 / 320.6;
+      const c0 = [s * Math.cos(a), s * k * Math.sin(a)];
+      const c1 = [-s * Math.sin(a), s * k * Math.cos(a)];
+      const condition = conditionRatio(c0, c1);
+      if (condition > worst.condition) {
+        Object.assign(worst, { ratio, angleDeg, condition });
+      }
+      assert.ok(
+        condition <= GLSL_CONDITION_CEILING,
+        `${ratio}:1 foreshortening at ${angleDeg}° must still drape; condition ${condition.toFixed(1)} exceeded the ceiling ${GLSL_CONDITION_CEILING}`,
+      );
+    }
+  }
+  // Pin the headroom so a future tightening of the ceiling has to argue with a
+  // number rather than silently eat the grazing case.
+  assert.ok(
+    worst.condition * 5 < GLSL_CONDITION_CEILING,
+    `worst legitimate condition ${worst.condition.toFixed(1)} (${worst.ratio}:1 at ${worst.angleDeg}°) leaves under 5x headroom below the ceiling ${GLSL_CONDITION_CEILING}`,
+  );
+});
+
 test("E3 — neither shader inverts a singular Jacobian, and both use the same threshold", () => {
   assert.equal(
     WGSL_SINGULAR_EPSILON,
     GLSL_SINGULAR_EPSILON,
     "the two backends must abandon the fragment at the same determinant",
+  );
+  assert.equal(
+    WGSL_CONDITION_CEILING,
+    GLSL_CONDITION_CEILING,
+    "the two backends must abandon the fragment at the same condition number",
   );
 
   const wgslStart = wgsl.indexOf("fn vectorInverse2x2(");
@@ -998,6 +1236,20 @@ test("E3 — neither shader inverts a singular Jacobian, and both use the same t
     glslCommon.slice(glslGuard, glslInverse),
     /return baseColor;/,
     "VectorCommon.glsl must abandon the fragment rather than call inverse() on a singular matrix",
+  );
+
+  // The condition term has to sit in the SAME abandon, ahead of the inversion —
+  // NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT is the case where the determinant
+  // term alone passes and the matrix is inverted anyway.
+  assert.match(
+    renderBody.slice(guard, distanceTest),
+    /uvJacobianNormSquared\s*>\s*VECTOR_UV_JACOBIAN_MAX_CONDITION\s*\*\s*abs\(uvJacobianDet\)/,
+    "GlobeTerrain.wgsl must also abandon a badly conditioned Jacobian, not only an exactly singular one",
+  );
+  assert.match(
+    glslCommon.slice(glslGuard, glslInverse),
+    /uvJacobianNormSquared\s*>\s*VECTOR_UV_JACOBIAN_MAX_CONDITION\s*\*\s*abs\(uvJacobianDet\)/,
+    "VectorCommon.glsl must also abandon a badly conditioned Jacobian, not only an exactly singular one",
   );
 });
 
