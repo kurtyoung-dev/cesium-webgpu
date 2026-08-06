@@ -7229,6 +7229,64 @@ with visually scattered (not overcast) puffs at 0.35 on both the sweep anchor
 and the plains fixture, the plains ceiling gate fails, and its floor gate
 (0.02) is restored and passes.
 
+### CLOUD-LOW-COVERAGE-CUTOFF — fog cheap-path arm
+
+**Status:** IMPLEMENTED 2026-08-06, Edge acceptance owed. This is the arm the
+2026-08-02 Codex handoff (§5 item 3) left open as "fog cheap-path coverage
+gate". The C13 queue never carried a numbered row for it; the authority is this
+entry plus that handoff item.
+
+**Premise correction — the framing was only half right.** The fog's cheap
+(non-hi-fi) cloud shadow in `Compute/VolumetricFog.wgsl::sampleCloudShadow` did
+still carry the raw `1.0 - coverage` threshold, and it was the LAST such gate in
+the cloud-density family (`ProceduralClouds.wgsl` x3 and
+`ProceduralSkyCubemap.wgsl` x1 were converted 2026-08-01). But it was NOT
+structurally dead below coverage 0.40 the way the visible march was, and simply
+routing it through `cloudEffectiveCoverage` would have made it WORSE at the
+sparse end. Measured, with the shipped arithmetic in f32:
+
+| field | mean | sigma | max |
+| --- | --- | --- | --- |
+| baked shape channel (`CloudNoiseBake` `valueFBM`, 4 periodic octaves) | 0.4307 | 0.0896 | 0.716 |
+| fog cheap field (`VolumetricFog.wgsl` `fbm3d(p) * 0.5 + 0.5`) | 0.5000 | 0.1206 | 0.936 |
+
+A coverage threshold is only transferable between two density fields when the
+fields share a distribution. These do not: the fog field is symmetric about 0.5
+by construction and about 35% wider. The real defect is therefore a
+DISTRIBUTIONAL MISMATCH, not a cutoff, and it mistracked in both directions —
+against the post-fix visible deck, the fog gate admitted 0.1% of the deck at
+coverage 0.15 where the deck covers 2.2%, and 65.0% at coverage 0.55 where the
+deck covers 41.2%. Worst error 23.9 percentage points. Fair-weather skies cast
+almost no fog shadow; scattered skies cast a near-overcast one.
+
+**Fix (a re-derivation, not a rescale).** Standardise the fog SAMPLE onto the
+baked field's first two moments (`normalizeFogCheapCloudField`), then apply the
+shared `cloudEffectiveCoverage` unmodified. Normalising the sample rather than
+shifting the threshold also matches the `smoothstep` RAMP, so the gate's
+amplitude tracks as well as its support. Worst tracking error falls 23.9 pp ->
+1.5 pp across coverage 0.05..1.0. `CloudDensityDomain.wgsl` is now prepended to
+the fog compute module by `WebGPUVolumetricFogResources`, so there is still
+exactly one definition of the coverage response in the engine.
+
+**Reachability / preservation:** the change lives entirely inside
+`sampleCloudShadow` below its `cloudShadowHiFi`, `cloudShadowEnable < 0.5` and
+`coverage <= 1e-3` early returns. A scene without volumetric clouds — the
+default — is byte-identical, and the hi-fi beer-shadow-map path is untouched.
+No feature was removed or default-disabled.
+
+**Files:** `Shaders/WebGPU/Compute/VolumetricFog.wgsl`,
+`Renderer/WebGPU/WebGPUCloudDensityDomain.ts` (CPU twin + the three measured
+constants), `Renderer/WebGPU/WebGPUVolumetricFogResources.ts` (composition),
+`Tools/visual-regression/fog-cheap-coverage-gate.spec.mjs` +
+`lib/fog-cheap-coverage-model.mjs`, and the naga case in
+`cloud-shadow-rte.spec.mjs` (the fog shader's compiled unit is now the
+composition, so validating it bare is no longer the right assertion).
+
+**Acceptance owed (Edge):** a `probe-ground-fog` / cloud-shadow run at
+coverage 0.15 / 0.35 / 0.55 with volumetric clouds ON, confirming the shadowed
+ground fraction now tracks the visible deck instead of vanishing at 0.15 and
+saturating at 0.55, plus a clouds-OFF byte-identical control.
+
 ---
 
 ## Parked-worktree closure record — 2026-08-01 (Batch 802)

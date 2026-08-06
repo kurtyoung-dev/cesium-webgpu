@@ -453,6 +453,42 @@ fn fbm3d(p: vec3<f32>) -> f32 {
   return (sum / norm) * 2.0 - 1.0;  // Remap [0, 1] → [-1, 1]
 }
 
+// CLOUD-LOW-COVERAGE-CUTOFF (fog cheap-path arm) — the distribution constants
+// that let the cheap cloud-shadow field share the visible march's coverage
+// response. See the long block at the gate in `sampleCloudShadow`.
+//
+// MEASURED, not tuned. Both numbers come from sampling the two real fields
+// with the shipped arithmetic in f32:
+//
+//   baked shape channel (CloudNoiseBake.wgsl `valueFBM`, 4 octaves, periodic)
+//     over a 60^3 grid of its full period: mean 0.43067, sigma 0.08963
+//   this module's `fbm3d(p) * 0.5 + 0.5` over 96,800 samples at the real ECEF
+//     magnitudes the shadow ray reaches (|samplePos| * 0.0003 ~ 1913, so the
+//     f32 hash quantisation the GPU sees is included): mean 0.49976,
+//     sigma 0.12063
+//
+// `FOG_CHEAP_FIELD_MEAN` is 0.5 EXACTLY rather than the measured 0.49976: a
+// value fBM of uniform hashes is symmetric about 0.5 by construction, so 0.5
+// is the structural value and the residual is sampling noise.
+// `FOG_CHEAP_FIELD_SIGMA_RATIO` is 0.12063 / 0.08963.
+//
+// The ratio is EMPIRICAL and cannot be predicted from octave weights alone
+// (those give only 1.065): the bake's periodic `pmod` lattice at base
+// frequency 2 and its different hash carry the rest.
+const CLOUD_SHAPE_FIELD_MEAN: f32 = 0.4307;
+const FOG_CHEAP_FIELD_MEAN: f32 = 0.5;
+const FOG_CHEAP_FIELD_SIGMA_RATIO: f32 = 1.3459;
+
+// Map one sample of this module's cheap cloud field onto the baked shape
+// field's first two moments, so `cloudEffectiveCoverage`'s threshold means the
+// same fraction of deck in both. Deliberately unclamped: `smoothstep` clamps
+// its own interpolant, and clamping here would fold the tails the match exists
+// to preserve.
+fn normalizeFogCheapCloudField(value: f32) -> f32 {
+  return CLOUD_SHAPE_FIELD_MEAN +
+    (value - FOG_CHEAP_FIELD_MEAN) / FOG_CHEAP_FIELD_SIGMA_RATIO;
+}
+
 // Batch 435 (FOG-TEMPORAL) — interleaved-gradient noise (Jimenez 2014),
 // the de-facto blue-noise dither used for TAA/temporal jitter. Returns a
 // value in [0, 1) that is spatially low-discrepancy (blue-noise-like) across
@@ -604,8 +640,53 @@ fn sampleCloudShadow(worldPos: vec3<f32>, offsetFromCamera: vec3<f32>) -> f32 {
   // Base shape via 3-octave fbm in [-1, 1] → remap to [0, 1] for the
   // coverage threshold semantics.
   let n = fbm3d(p) * 0.5 + 0.5;
-  // Coverage threshold same shape as ProceduralClouds.
-  var density = smoothstep(1.0 - coverage, 1.0, n);
+  // CLOUD-LOW-COVERAGE-CUTOFF — FOG CHEAP-PATH ARM.
+  //
+  // This gate used to threshold at `1.0 - <the raw requested coverage>`, on
+  // the claim (three comment blocks above) that it "mirrors
+  // ProceduralClouds.wgsl::cloudDensity shape ... so the shadows roughly track
+  // the visible cloud layer". Both halves of that were wrong:
+  //
+  //   1. the visible march and the IBL cube now route their gate through the
+  //      SHARED `cloudEffectiveCoverage` response, and this was the last raw
+  //      `1.0 - coverage` threshold left in the cloud-density family; and
+  //   2. a coverage threshold is only transferable between two density fields
+  //      when they have the SAME distribution, and these two do not. The
+  //      baked shape channel the march samples is a 4-octave periodic value
+  //      fBM measuring mean 0.4307 / sigma 0.0896 / max 0.7164, while the
+  //      local field here is `fbm3d`'s 3-octave value fBM, which is symmetric
+  //      about 0.5 by construction and measures sigma 0.1206 / max 0.9331 —
+  //      a field 35% wider and centred 0.07 higher.
+  //
+  // Feeding the same threshold to both therefore mistracks in BOTH directions:
+  // with the shared response applied to the march, the raw gate here shadowed
+  // 0.07% of ground at coverage 0.15 where the visible deck covers 2.21%, and
+  // 65.0% at coverage 0.55 where the visible deck covers 41.3% — worst error
+  // 23.9 percentage points. Fair-weather skies cast almost no fog shadow while
+  // mid-coverage skies cast a near-overcast one. (Every figure in this block is
+  // reproduced by the spec named at the end of it; run that, don't trust this.)
+  //
+  // The fix is a re-derivation, not a rescale: STANDARDISE this field onto the
+  // baked shape field's first two moments and then apply the shared response
+  // unmodified. That makes the gate's exceedance — the fraction of the deck
+  // that is cloud — agree with the visible march's to within 1.5 percentage
+  // points across the whole coverage range, and it keeps ONE definition of the
+  // coverage response in the engine (`CloudDensityDomain.wgsl`, prepended to
+  // this module by `WebGPUVolumetricFogResources`). Normalising the SAMPLE
+  // rather than moving the threshold also matches the smoothstep RAMP, so the
+  // gate's amplitude distribution tracks as well as its support.
+  //
+  // Reachability: everything from `cloudShadowEnable < 0.5` upward is
+  // unchanged, so a scene without volumetric clouds is byte-identical.
+  //
+  // CPU twin: `normalizeFogCheapCloudField` in WebGPUCloudDensityDomain.ts.
+  // Pinned by Tools/visual-regression/fog-cheap-coverage-gate.spec.mjs — do
+  // not edit one alone.
+  var density = smoothstep(
+    1.0 - cloudEffectiveCoverage(coverage),
+    1.0,
+    normalizeFogCheapCloudField(n)
+  );
   density = density * u.cloudDensityShape.x;
 
   // Height shaping: weaker shadow when sample lands above the layer

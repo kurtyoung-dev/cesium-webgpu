@@ -151,6 +151,67 @@ export function cloudEffectiveCoverage(coverage: number): number {
   return Math.max(c, lifted);
 }
 
+/**
+ * Mean of the baked shape channel (`CloudNoiseBake.wgsl::valueFBM`, 4 periodic
+ * octaves) measured over a 60^3 grid of its full period: 0.43067.
+ *
+ * This is the number that makes `cloudEffectiveCoverage`'s threshold mean
+ * something: the response was derived against THIS field, so any other density
+ * field that wants to use the same response has to be expressed in the same
+ * units first. See {@link normalizeFogCheapCloudField}.
+ */
+export const CLOUD_SHAPE_FIELD_MEAN = 0.4307;
+
+/**
+ * Mean of `VolumetricFog.wgsl`'s cheap cloud-shadow field
+ * (`fbm3d(p) * 0.5 + 0.5`). Exactly 0.5 by construction — a value fBM of
+ * uniform hashes is symmetric about 0.5 — and the 96,800-sample f32
+ * measurement at the real ECEF magnitudes agrees to 0.49976.
+ */
+export const FOG_CHEAP_FIELD_MEAN = 0.5;
+
+/**
+ * Standard deviation of the fog cheap field divided by that of the baked shape
+ * channel: 0.12063 / 0.08963. EMPIRICAL — octave weights alone predict only
+ * 1.065; the bake's periodic `pmod` lattice at base frequency 2 and its
+ * different hash supply the rest.
+ */
+export const FOG_CHEAP_FIELD_SIGMA_RATIO = 1.3459;
+
+/**
+ * CPU twin of `normalizeFogCheapCloudField` in VolumetricFog.wgsl.
+ *
+ * CLOUD-LOW-COVERAGE-CUTOFF, fog cheap-path arm. The volumetric fog's cheap
+ * (non-hi-fi) cloud shadow approximates the visible cloud deck with its own
+ * local 3-octave value fBM, then gates it on cloud coverage. That gate used
+ * the raw `1 - coverage` threshold, which is only transferable between two
+ * density fields when the fields share a distribution — and these do not: the
+ * fog field is 35% wider and centred 0.07 higher than the baked shape channel
+ * the shared response was derived against. The result mistracked in both
+ * directions (0.1% of ground shadowed at coverage 0.15 against the visible
+ * deck's 2.2%; 65.0% at coverage 0.55 against 41.2%).
+ *
+ * Standardising the SAMPLE onto the baked field's first two moments — rather
+ * than shifting the threshold — lets the shared response apply unmodified and
+ * matches the smoothstep ramp as well as its support.
+ *
+ * f32-faithful: every intermediate is rounded the way WGSL evaluates it.
+ * Deliberately unclamped, exactly like the shader — `smoothstep` clamps its
+ * own interpolant, and clamping here would fold the tails the match preserves.
+ *
+ * @param {number} value One sample of the fog cheap field, nominally in [0, 1].
+ * @returns {number} The same sample expressed in baked-shape-field units.
+ */
+export function normalizeFogCheapCloudField(value: number): number {
+  const centered = Math.fround(
+    Math.fround(value) - Math.fround(FOG_CHEAP_FIELD_MEAN),
+  );
+  const scaled = Math.fround(
+    centered / Math.fround(FOG_CHEAP_FIELD_SIGMA_RATIO),
+  );
+  return Math.fround(Math.fround(CLOUD_SHAPE_FIELD_MEAN) + scaled);
+}
+
 function fract(value: number): number {
   return value - Math.floor(value);
 }

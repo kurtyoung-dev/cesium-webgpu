@@ -891,7 +891,13 @@ test("every shader C13-06 touched passes naga validation", async () => {
     naga.validate_wgsl(`${densityDomainSource}\n${cloudShaderSource}`),
   );
   assert.doesNotThrow(() => naga.validate_wgsl(aerialShaderSource));
-  assert.doesNotThrow(() => naga.validate_wgsl(fogShaderSource));
+  // CLOUD-LOW-COVERAGE-CUTOFF (fog arm) — VolumetricFog now consumes the
+  // shared `cloudEffectiveCoverage` from the density-domain chunk, so its
+  // compiled unit is the composition, exactly as the visible march's is.
+  // `WebGPUVolumetricFogResources` prepends the same chunk at module scope.
+  assert.doesNotThrow(() =>
+    naga.validate_wgsl(`${densityDomainSource}\n${fogShaderSource}`),
+  );
   // GlobeTerrain carries //>>ifdef blocks; validate the defines = 0 expansion
   // (the historical //>>else branch of every block), matching the shipped
   // preprocessor's zero-mask contract.

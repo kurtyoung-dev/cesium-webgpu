@@ -25,6 +25,7 @@ import {
   Stage,
 } from "./WebGPUBindGroupLayoutHelpers.js";
 import { ShaderSourceId } from "./WebGPUShaderDefines.js";
+import CloudDensityDomainWGSL from "../../Shaders/WebGPU/Environment/CloudDensityDomain.js";
 import VolumetricFogComputeSource from "../../Shaders/WebGPU/Compute/VolumetricFog.js";
 import VolumetricFogCompositeSource from "../../Shaders/WebGPU/PostProcess/VolumetricFogComposite.js";
 import {
@@ -43,6 +44,22 @@ import type {
 } from "./WebGPUVolumetricFogRenderer.js";
 import type { WebGPURenderPipelineDescriptor } from "./WebGPURenderPipelineCache.js";
 import type { WebGPUComputePipelineCache } from "./WebGPUComputePipelineCache.js";
+
+/**
+ * CLOUD-LOW-COVERAGE-CUTOFF (fog cheap-path arm) — the fog's cheap cloud
+ * shadow gates on cloud coverage, so it must use the SAME
+ * `cloudEffectiveCoverage` response as the visible march and the IBL cube
+ * rather than a second copy of it. That response lives in the shared
+ * `CloudDensityDomain` chunk, which `WebGPUProceduralCloudRenderer` and
+ * `WebGPUDynamicEnvironmentMapManager` prepend the same way.
+ *
+ * The chunk declares no bindings and shares no symbol names with
+ * `VolumetricFog.wgsl`; its unreferenced helpers are dead-code-eliminated.
+ * Composed once at module scope because `WebGPUShaderModuleCache` keys on
+ * `(sourceId, defines)` and never on the source text — one source ID must
+ * always mean one string.
+ */
+const VOLUMETRIC_FOG_COMPUTE_SOURCE = `${CloudDensityDomainWGSL}\n${VolumetricFogComputeSource}`;
 
 /**
  * Allocate a fresh `VolumetricFogResources` for the given quality band.
@@ -129,7 +146,7 @@ export function buildVolumetricFogResources(
   const moduleCache = getVolumetricFogShaderModuleCache(device);
   const computeShaderModule = moduleCache.getOrCreate(
     ShaderSourceId.VOLUMETRIC_FOG_COMPUTE,
-    VolumetricFogComputeSource,
+    VOLUMETRIC_FOG_COMPUTE_SOURCE,
     0,
     "VolumetricFog_Compute",
   );
