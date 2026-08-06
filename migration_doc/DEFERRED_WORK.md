@@ -37,7 +37,6 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
-<<<<<<< ours
 ## 2026-08-06 - WebGPU globe does not receive sun shadows AT ALL
 
 ### NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD
@@ -140,11 +139,7 @@ upper edge) and `item8-near-sun-phase.png` (the forward glow must read as a brig
 gradient, not a clipped white disc - if it blows out, the lever is
 GENUS_PHASE_G_LIMIT and the number should be reported, not quietly retuned).
 
-## 2026-08-06 - ground fog renders NOTHING (Phase C regression, pre-existing)
-=======
 ## 2026-08-06 - ground fog renders NOTHING (Phase C, defect present since Batch 420)
->>>>>>> theirs
-
 ### NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING
 
 **ACCEPTANCE PASSED 2026-08-06 (Batch 844), post-843 rebuild — all six gates.**
