@@ -8138,6 +8138,63 @@ insufficient-fix prose above is retained only as incident history.
 
 ### SUN-SHADOW-GATE-PROBE-NEEDED — cascadesEnabled fix still unverified at pixels
 
+**UPDATE 2026-08-06 (Batch 840): probe AUTHORED, Edge acceptance still owed.**
+`Tools/visual-regression/probe-sun-shadow-gate.mjs` now exists and is
+fleet-convention (clock-solved elevations verified against the sun the engine
+actually rendered with, wall-clock readiness on binned Pass.GLOBE, STRUCTURAL
+verdicts, exit 0/1/2/3). It has NOT been run.
+
+**The Batch-805 WebGL blocker is ROOT-CAUSED by source tracing, and it was not
+`enableLighting`.** Globe receive is already on by default
+(`Globe.shadows = ShadowMode.RECEIVE_ONLY`, Globe.js:470) and
+`ShadowMapShader.js:434` applies `out_FragColor.rgb *= visibility` OUTSIDE every
+lighting `#ifdef`. The real limit is DEPTH: the cascaded receive shader returns
+early past `shadowMap_cascadeSplits[1].w` (ShadowMapShader.js:388-391) and
+`ShadowMap.maximumDistance` defaults to 5000 m (ShadowMap.js:425), so a camera
+at regional altitude puts every globe fragment beyond the last cascade and the
+toggle is a pixel-exact no-op. That is exactly the shape of the Batch-805
+report. The probe therefore sits at 2600 m with maximumDistance 10000.
+
+The +112 brightening has no mechanism in the WGSL: GlobeTerrain.wgsl:4761
+applies `color = color * shadowFactor` once and every producer returns
+`mix(shadowDarkness, 1.0, visibility) <= 1.0`. Working hypothesis is a
+settle/ordering artifact (off captured cold, on captured warm), which is why the
+probe's per-cell A/B/A control (off -> on -> off, cell goes STRUCTURAL if the two
+off frames disagree) is a hard precondition rather than a nicety - it is the
+discriminator the Batch-805 measurement lacked.
+
+### NEW-WEBGPU-SHADOW-DARKNESS-FADE-NOT-APPLIED
+
+**Status:** OPEN - found by source tracing while authoring the probe above; not
+yet measured.
+
+WebGL's receive uniform reads the FADED `shadowMap._darkness`
+(`Scene/ShadowMap.js:215`), which `ShadowMapComputations.js:707-717` lerps to
+**1.0** as the sun nears and passes the horizon - and 1.0 means
+`visibility = max(visibility, 1.0)`, i.e. no darkening at all. BOTH WebGPU
+receive paths instead read the PUBLIC, UNFADED `shadowMap.darkness`:
+`Renderer/WebGPU/WebGPUShadowMapRenderer.js:1310` and
+`Renderer/WebGPU/WebGPUEffectsBindGroup.js:1289`.
+
+### NEW-WEBGPU-GLOBE-RECEIVE-IGNORES-OUTOFVIEW
+
+**Status:** OPEN - found by the same tracing; not yet measured.
+
+The globe's WebGPU receive gate consults only
+`lightShadowsEnabled && lightShadowMaps[0]`
+(`Renderer/WebGPU/WebGPUGlobeSurfaceRenderer.ts:862-867`), never `outOfView` -
+although the WebGPU CAST dispatch does skip on it
+(`Renderer/WebGPU/WebGPUContext.ts:4656`), as does WebGL's receive path
+(`Scene/SceneRenderer.js:978, 1001`).
+
+**Combined prediction, which is what makes these worth measuring together:**
+below the horizon WebGL fades to zero delta BY CONSTRUCTION, while WebGPU may
+keep sampling a stale day-lit depth target at darkness 0.3. The probe runs DAY
+BEFORE NIGHT deliberately - that is the only ordering in which a stale-depth
+night shadow can appear - and records `darkness(public/effective)` and
+`outOfView` per cell so the manifest shows the divergence rather than requiring
+it to be inferred.
+
 **Status:** OPEN / MACHINE LANE. The Batch 775/780 cascadesEnabled fix remains
 static-analysis-verified only. A quick orchestrator gate (box entity casting
 onto a receive-only globe, day/night, both backends) produced instrument
