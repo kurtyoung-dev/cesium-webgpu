@@ -550,6 +550,13 @@ const RUN_LANE = async ({ predict, view }) => {
 
   nadirView();
   const readiness = await awaitGlobeReady(3000, 90_000);
+  // configure() is what actually ENABLES the volumetric renderer. Awaiting
+  // readiness without it times out at executeCalls=0 / initialized=false,
+  // which reads exactly like a broken renderer rather than an unconfigured
+  // one. Every working cloud probe (probe-cloud-banding, probe-cloud-tour)
+  // calls configure BEFORE awaitProceduralReady; this one defined the helper
+  // and never called it.
+  configure();
   const proceduralReady = await globalThis.__cloudProbe.awaitProceduralReady({
     featureRendererKey: C.FeatureRendererKey.PROCEDURAL_CLOUDS,
     frameTime,
