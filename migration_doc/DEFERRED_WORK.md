@@ -39,13 +39,13 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ## 2026-08-02 — C11-195 hardening bundle (posture decision + trim)
 
-- **NEW-MODEL-ARENA-DEAD-DEVICE-POSTURE — ✅ DECIDED + LANDED (2026-08-02). Posture: SKIP-ON-DEAD-DEVICE, LOUD-EVERYWHERE-ELSE.** `resolveModelCameraArenaOwner` (`WebGPUModelRenderer.ts`) previously threw for EVERY null `context.modelCameraArena`. **The degradation contract it broke:** `WebGPUContext.modelCameraArena` (`WebGPUContext.ts`, the getter) opens with `if (this._isDeviceUnavailable) { return null; }`, and `_isDeviceUnavailable` is exactly `this._isDestroyed || this._isTerminallyLost`. Null from that getter is therefore a *documented lifecycle state*, not a wiring failure — the same shape as the sibling `uniformAllocator` getter, whose null the arena already degrades on (private-buffer fallback, `ModelRenderContext.uniformAllocator` JSDoc). Throwing on it converted "the device is gone, nothing can render" into a hard failure on a context that was already unable to produce pixels. **Decision:** the resolver returns `null` when the arena is null AND the context reports `_isDestroyed === true || _isTerminallyLost === true`; callers skip the draw. Every other null — a healthy context with no arena, an `undefined` arena, a missing `frameState.context` — keeps the original `throw` verbatim, because on a live device that is a wiring failure feeding an active model draw and must stay loud. The nullability is threaded through `acquireModelCameraBinding` / `acquireModelLightSlice` / `prepareModelViewLightSlice` (all now `| null`) and guarded at all four camera call sites (capture replay, 2D/IDL duplicate, identity-transform root, per-node) plus the two light realizations; the root binding is deliberately NOT marked prepared on a skip so a later primitive re-attempts rather than binding `undefined`. **Classified as hardening, not a live bug — no `WEBGPU_DEBUGGING_LOG.md` entry filed.** Terminal loss is only entered from `WebGPUDeviceLossRecovery` (two sites) off the async `device.lost` promise, and no in-tree probe or report shows a model update re-entering after that transition, so the throw is a *latent* posture defect surfaced by review rather than an observed crash. **If a device-loss soak ever does catch a throw from this resolver, escalate it to the debugging log and reference this entry** — the fix is already in place, only the classification would change. **Pinned by:** `Tools/visual-regression/model-camera-arena.spec.mjs`, the three `posture:` behavioral tests (the resolver is bundled with an esbuild export-injection so the real body is executed, not regex-matched) plus the `posture: the skip predicate matches the arena getter's null condition` cross-file pin, which fails if `_isDeviceUnavailable` ever grows a third term without the renderer's predicate growing with it.
+- **NEW-MODEL-ARENA-DEAD-DEVICE-POSTURE — ✅ DECIDED + LANDED (2026-08-02, Batch 822). Posture: SKIP-ON-DEAD-DEVICE, LOUD-EVERYWHERE-ELSE.** `resolveModelCameraArenaOwner` (`WebGPUModelRenderer.ts`) previously threw for EVERY null `context.modelCameraArena`. **The degradation contract it broke:** `WebGPUContext.modelCameraArena` (`WebGPUContext.ts`, the getter) opens with `if (this._isDeviceUnavailable) { return null; }`, and `_isDeviceUnavailable` is exactly `this._isDestroyed || this._isTerminallyLost`. Null from that getter is therefore a *documented lifecycle state*, not a wiring failure — the same shape as the sibling `uniformAllocator` getter, whose null the arena already degrades on (private-buffer fallback, `ModelRenderContext.uniformAllocator` JSDoc). Throwing on it converted "the device is gone, nothing can render" into a hard failure on a context that was already unable to produce pixels. **Decision:** the resolver returns `null` when the arena is null AND the context reports `_isDestroyed === true || _isTerminallyLost === true`; callers skip the draw. Every other null — a healthy context with no arena, an `undefined` arena, a missing `frameState.context` — keeps the original `throw` verbatim, because on a live device that is a wiring failure feeding an active model draw and must stay loud. The nullability is threaded through `acquireModelCameraBinding` / `acquireModelLightSlice` / `prepareModelViewLightSlice` (all now `| null`) and guarded at all four camera call sites (capture replay, 2D/IDL duplicate, identity-transform root, per-node) plus the two light realizations; the root binding is deliberately NOT marked prepared on a skip so a later primitive re-attempts rather than binding `undefined`. **Classified as hardening, not a live bug — no `WEBGPU_DEBUGGING_LOG.md` entry filed.** Terminal loss is only entered from `WebGPUDeviceLossRecovery` (two sites) off the async `device.lost` promise, and no in-tree probe or report shows a model update re-entering after that transition, so the throw is a *latent* posture defect surfaced by review rather than an observed crash. **If a device-loss soak ever does catch a throw from this resolver, escalate it to the debugging log and reference this entry** — the fix is already in place, only the classification would change. **Pinned by:** `Tools/visual-regression/model-camera-arena.spec.mjs`, the three `posture:` behavioral tests (the resolver is bundled with an esbuild export-injection so the real body is executed, not regex-matched) plus the `posture: the skip predicate matches the arena getter's null condition` cross-file pin, which fails if `_isDeviceUnavailable` ever grows a third term without the renderer's predicate growing with it.
 
-- **NEW-MODEL-ARENA-ALLOCATION-TRIM — ✅ LANDED (2026-08-02, C11-195 tail).** `WebGPUModelCameraArena.acquire` built one template-string bind-group cache key and one two-element dynamic-offset array per acquire — per node, per model, per view, per frame. Both are retained now: `_offsetTupleFor` interns the `[cameraOffset, lightOffset]` pair by value into a frozen shared array (ring offsets recur every rotation, so steady state allocates nothing), and `_getOrCreateBindGroup` memoizes the last `(layout, camera page, light page, sizes)` identity tuple with its key string. Both are dropped by `_resetRetainedAcquisitionState()` on allocator swap and `invalidate()` so no destroyed ring page stays reachable. Constraints held: the immutable group-0 layout is still device-shared and unduplicated, dynamic offsets are unchanged, the arena stays context-owned, and the stale-light-slice epoch guard is untouched. **Pinned by:** the six `trim:` behavioral tests in `model-camera-arena.spec.mjs`, each carrying an explicit mutation guard (literal-array revert, missing `Object.freeze`, memo ignoring layout identity, missing reset on swap).
+- **NEW-MODEL-ARENA-ALLOCATION-TRIM — ✅ LANDED (2026-08-02, Batch 822, C11-195 tail).** `WebGPUModelCameraArena.acquire` built one template-string bind-group cache key and one two-element dynamic-offset array per acquire — per node, per model, per view, per frame. Both are retained now: `_offsetTupleFor` interns the `[cameraOffset, lightOffset]` pair by value into a frozen shared array (ring offsets recur every rotation, so steady state allocates nothing), and `_getOrCreateBindGroup` memoizes the last `(layout, camera page, light page, sizes)` identity tuple with its key string. Both are dropped by `_resetRetainedAcquisitionState()` on allocator swap and `invalidate()` so no destroyed ring page stays reachable. Constraints held: the immutable group-0 layout is still device-shared and unduplicated, dynamic offsets are unchanged, the arena stays context-owned, and the stale-light-slice epoch guard is untouched. **Pinned by:** the six `trim:` behavioral tests in `model-camera-arena.spec.mjs`, each carrying an explicit mutation guard (literal-array revert, missing `Object.freeze`, memo ignoring layout identity, missing reset on swap).
 
 ## 2026-08-01 — MOON-ALBEDO-MIP-LOD (surfaced during C12-24, the 2K NASA albedo ingest)
 
-- **MOON-ALBEDO-MIP-LOD — IMPLEMENTED / ACCEPTANCE OPEN as C12-33 (2026-08-02).** The premise above was corrected after C12-35: WebGL Moon realization is private and no generic Material change is required. Both backends now allocate legal full chains where supported, use trilinear samplers, compute longitude-unwrapped screen derivatives before discard, and sample explicitly with `textureGrad` / `textureSampleGrad`. Differently sized albedo and normal textures still select independent hardware LOD because normalized gradients are scaled by each texture's dimensions. WebGL1 NPOT/extension fallbacks remain single-level. WebGPU generation is coalesced into the context's frame-owned preparation submission with exact device/generation ownership; no Moon-private submit exists. Code review, package TypeScript, build, and focused Node are green. The row remains open for focused Jasmine plus five paired real-Edge `normal`/`force-lod0` moving runs, calibrated per-lane thresholds, and mandatory seam PNG inspection.
+- **MOON-ALBEDO-MIP-LOD — IMPLEMENTED / ACCEPTANCE OPEN as C12-33 (2026-08-02, landed Batch 819).** The premise above was corrected after C12-35: WebGL Moon realization is private and no generic Material change is required. Both backends now allocate legal full chains where supported, use trilinear samplers, compute longitude-unwrapped screen derivatives before discard, and sample explicitly with `textureGrad` / `textureSampleGrad`. Differently sized albedo and normal textures still select independent hardware LOD because normalized gradients are scaled by each texture's dimensions. WebGL1 NPOT/extension fallbacks remain single-level. WebGPU generation is coalesced into the context's frame-owned preparation submission with exact device/generation ownership; no Moon-private submit exists. Code review, package TypeScript, build, and focused Node are green. The row remains open for focused Jasmine plus five paired real-Edge `normal`/`force-lod0` moving runs, calibrated per-lane thresholds, and mandatory seam PNG inspection.
   - **Why it now matters:** C12-24 raised the default albedo from 256×128 to 2048×1024. At the *default* camera the moon disc is only ~16 px across (0.52° in a ~36° vertical FOV at 1080 p) while the visible hemisphere of a 2048-wide equirect is 1024 texels — roughly **64:1 minification sampled at mip 0**, versus ~8:1 for the old map. That is a pre-existing aliasing/shimmer condition made measurably worse under camera motion, even though the swap is a large win at the zoomed views C12-24 was raised for (~5.4:1 at a 190 px disc vs the old map's 0.67 texels/px). Mitigation available today with zero code: `Moon.Variant.SMALL`.
   - **Superseded design note:** the proposed single CPU LOD would couple differently sized albedo/normal maps and lose limb-local derivative information. Implicit sampling after discard is not legal. C12-33 instead computes explicit finite pre-discard gradients in both shaders and keeps Moon-specific WebGL ownership.
   - **Effort:** M. **Tracked as `C12-33`** in `QUEUE_2026-07-19_CAMPAIGN12.md`. **Trace:** `Tools/moon-albedo-bake/README.md` §6.2.
@@ -6639,6 +6639,24 @@ anchor rather than relaxing what it proves:
   maintainer:** the spec pins two aliases the probe never uses — either the
   probe should use them or the contract should drop them.
 
+**2026-08-02/06 additions to this class (Batches 821-822).**
+
+- `texture-mip-queue-safety.spec.mjs` carried the same defect in its FALSE-GREEN
+  form and was caught at Batch 821: its source reader anchored on a bare LF
+  newline while the repo checks out CRLF, so it passed only while a freshly
+  applied patch had
+  left LF bytes in the tree and went RED after any clean checkout. A source-anchor
+  spec that depends on how the file arrived is not evidence in either direction —
+  the green run proved nothing and the red run indicted nothing.
+- Batch 822 then applied the structural remedy this class has been waiting for,
+  on that same spec: 9 source-regex tests became 23 (15 BEHAVIORAL + 8 retained
+  pins) that drive the REAL queue against a fake device — `(device, generation)`
+  stamping, dedupe, transactional requeue. **The old pins were retained, not
+  replaced**, and the new ones are strictly stronger: the previous model-arena pin
+  merely required the resolver to MENTION `frameState?.context`, which every wrong
+  posture satisfied. Prefer this shape (execute the subject, keep the pin) over
+  widening another regex whenever a source anchor breaks.
+
 ## 2026-08-01 — v1.144 upstream-merge follow-ups (merge 65a194d24e)
 
 ### UP144-SNAP-WEBGPU — Scene.snap WebGPU parity
@@ -6752,8 +6770,8 @@ design; edge candidates; classification checkpoints; and broader producers.
 
 ### UP144-SNAP-WEBGPU-EDGES — edge snap candidates on WebGPU
 
-**Status:** IMPLEMENTED — **browser acceptance gate OWED** (do NOT self-promote
-to COMPLETE). Landed as the C11-212 edge tier; the Node contract is green but
+**Status:** IMPLEMENTED (Batch 821) — **browser acceptance gate OWED** (do NOT
+self-promote to COMPLETE). Landed as the C11-212 edge tier; the Node contract is green but
 no Edge/Playwright run has yet compared a real silhouette snap across backends.
 The original analysis is preserved below the mechanism because it is still the
 authority on WHY the tier was needed.
@@ -6870,7 +6888,8 @@ be needed — only the per-renderer variant.
 
 ### UP144-VECTOR-LAYER-WGSL — clamped vector-tile polylines WGSL twin
 
-**Status:** IMPLEMENTED 2026-08-06 (C11-213) — **browser acceptance OWED.**
+**Status:** IMPLEMENTED 2026-08-06 (C11-213, Batch 827) — **browser
+acceptance OWED.**
 
 **What the gap was.** Terrain-draped vector polylines
 (`VectorProvider`/`VectorPipeline`, `HAS_VECTOR_LAYER` in GlobeFS via
@@ -7373,9 +7392,19 @@ stood behind without a per-file content check.
   (`probe-classifier-logdepth-flip` extended to COLUMBUS_VIEW against its WebGL
   oracle is the fail-before/pass-after discriminator; `probe-logdepth-zfight` is
   the first formerly-void probe to re-baseline).
-- **`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`** — **RESOLVED 2026-08-06.**
+- **`NEW-WEBGPU-PIPELINE-KEY-DEFINE-AXIS-GENERAL`** — **RESOLVED 2026-08-06**
+  (structural fold landed Batch 825; Edge-verified Batch 828).
 
-**EDGE ACCEPTANCE 2026-08-06 (orchestrator, post-rebuild, BOTH modes): PASS.** `detect` mode: 3,729 pipeline calls (2,472 during triggers), 13 covered producers, probe detector and the engine's `wrongModuleHits` counter BOTH 0 with 0 collisions. `--expect-collisions` negative control: FIRED correctly (so the detector still works after the rewrite the identity fold forced) while `wrongModuleHits` stayed 0 - proving the collisions are synthesised, not live. The emitted key shows every new fold segment on hardware: `pl:11 | pr:triangle-list/back/ccw//0 | dz:1/less-equal/0/0/0//// | mx:/0 | sh:13.vertexMainWebMercNormals/13.fragmentMain`. The owed browser gate recorded at landing is CLOSED.
+  **EDGE ACCEPTANCE 2026-08-06 (orchestrator, post-rebuild, BOTH modes):
+  PASS.** `detect` mode: 3,729 pipeline calls (2,472 during triggers), 13
+  covered producers, probe detector and the engine's `wrongModuleHits` counter
+  BOTH 0 with 0 collisions. `--expect-collisions` negative control: FIRED
+  correctly (so the detector still works after the rewrite the identity fold
+  forced) while `wrongModuleHits` stayed 0 — proving the collisions are
+  synthesised, not live. The emitted key shows every new fold segment on
+  hardware: `pl:11 | pr:triangle-list/back/ccw//0 | dz:1/less-equal/0/0/0//// |
+  mx:/0 | sh:13.vertexMainWebMercNormals/13.fragmentMain`. The owed browser gate
+  recorded at landing is CLOSED.
 
   The fix above closed the LOG_DEPTH axis only. The general rule it exposed: a
   shader define that changes neither `descriptor.name` nor the vertex layout

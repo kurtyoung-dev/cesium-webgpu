@@ -1,6 +1,8 @@
 # CesiumJS WebGPU Migration -- Consolidated Status
 
-**Last Updated:** May 30, 2026 (Batches 179-185, HEAD `88b111e49c` — both 2026-05-28 architectural roadblocks closed. The BufferPolygon WGSL `#import` compile bug is RESOLVED (Batch 180, `3667945dae` — preprocessor resolves bare `#import` from `BUFFER_WGSL_CHUNKS`); flat textured-material GroundPrimitive classification (Color/Stripe/Checkerboard/Grid) now SHIPPED in ALL modes (Batch 185, `88b111e49c` — the real root cause was a 1-hop-too-deep inner-`_primitive` lookup writing `materialMeta.x=0`, **not** globe depth precision); the renderer-wide log-depth epic is IN PROGRESS (Slices 0/1/2a shipped, Batches 181/182/183, master switch defaults OFF). One genuine residual survives Batch 185: `NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION` (far-corner reconstruction precision, log-depth-gated). See the 2026-05-30 Recent Progress section below + WEBGPU_EXECUTION_ROADMAP.md. NOTE: batch numbers are non-monotonic — these 167-185 commits are the NEWEST work despite lower labels than the 205-230 sections below; trust dates/hashes.)
+**Last Updated:** August 6, 2026 (Batches 819-828, HEAD `bedb113bbc`) — see the 2026-08-06 Recent Progress section directly below. ⚠ **This log has a coverage gap.** Between the 2026-05-30 entry and this one the fork ran hundreds of batches (Batch labels 186 through 818, though the labels are non-monotonic) whose records live in the dated campaign queues (`QUEUE_2026-07-18_CAMPAIGN11.md`, `QUEUE_2026-07-19_CAMPAIGN12.md`, `QUEUE_2026-07-23_CAMPAIGN13.md`), `WEBGPU_DEBUGGING_LOG.md`, `DEFERRED_WORK.md` and `FEATURE_INVENTORY.md`, not here. Do not read the sections below as the current frontier; read them as history, and trust the queues for status.
+
+**Prior Update:** May 30, 2026 (Batches 179-185, HEAD `88b111e49c` — both 2026-05-28 architectural roadblocks closed. The BufferPolygon WGSL `#import` compile bug is RESOLVED (Batch 180, `3667945dae` — preprocessor resolves bare `#import` from `BUFFER_WGSL_CHUNKS`); flat textured-material GroundPrimitive classification (Color/Stripe/Checkerboard/Grid) now SHIPPED in ALL modes (Batch 185, `88b111e49c` — the real root cause was a 1-hop-too-deep inner-`_primitive` lookup writing `materialMeta.x=0`, **not** globe depth precision); the renderer-wide log-depth epic is IN PROGRESS (Slices 0/1/2a shipped, Batches 181/182/183, master switch defaults OFF). One genuine residual survives Batch 185: `NEW-GROUNDPRIM-CLASSIFIER-RECON-PRECISION` (far-corner reconstruction precision, log-depth-gated). See the 2026-05-30 Recent Progress section below + WEBGPU_EXECUTION_ROADMAP.md. NOTE: batch numbers are non-monotonic — these 167-185 commits are the NEWEST work despite lower labels than the 205-230 sections below; trust dates/hashes.)
 
 **Prior Update:** May 13, 2026 (Session 65 Batches 37-43 — Camera/rasterization root causes fixed: VR2-3c disk-extent drift (Viewer.createAsync `display: none` → wrong frustum.aspectRatio), VR2-1 low-alt terrain load (`surfaceTile.center` → `mesh.center` parameter bug + fog night-dim WebGL parity), ground-atmosphere proper integration (FS viewDir bug, retired Batches 30-31 cap×scale workaround), Moon bundle MSAA bridge, Phase 4 atmospheric conditions closure with wind UBO scaffolding, Phase 6 `enableVolumetric` toggle wiring. Bloom / Particle System / 3D Tiles Photogrammetry / Bathymetry now within 1-5 % of WebGL pixel parity. 0 GPU validation errors across regression sweep.)
 **Repository:** Fork of [CesiumGS/cesium](https://github.com/CesiumGS/cesium) -> [kurtyoung-dev/cesium-webgpu](https://github.com/kurtyoung-dev/cesium-webgpu)
@@ -9,6 +11,79 @@
 **Typing state (Session 30 end):** Renderer/WebGPU is at the principled typing floor — every remaining `any`/`unknown`/`object`/`Record<string, unknown>` is a documented intentional boundary. Full shared-type surface: `DebugStatsValue`, `PickTarget`/`PickKind`/`PickResult`, `Renderable`, `ViewportQuadCommandOptionsBase`, `SceneGlobalCache`, and 15 co-located `.d.ts` files for JS interop. BGL helper adoption: 86 of 88 call sites (46 files). Non-breaking discriminated picking API (`getPickResult(color) → { target, kind }`) lets consumers replace `instanceof` chains with exhaustive `switch (kind)`.
 
 ---
+
+## Recent Progress (2026-08-06 — Batches 819-828: audited Codex Sol landing, snap edge tier, model-arena posture, twilight range, structural pipeline-key fold, cloud genus morphology, vector draping)
+
+Ten batches landed on `main` (`ad43f8c527` → `bedb113bbc`). Status wording below
+distinguishes **landed** from **browser-verified**; the campaign queues remain the
+authority for every row's promotion state.
+
+- **Batch 819 — audited Codex Sol next-wave pass (152 files).** Five independent
+  Opus review lanes; the orchestrator re-ran all four claimed-green Edge gates plus
+  the decisive Bug 814.1 default-policy discriminator (0.997 — Batch 816 had cured
+  the real mechanism; 817's anomaly was stale build state). Landed `C11-194`
+  exact-tuple device recovery, `C11-202` pick/edge legacy-tax skip, `C11-205` request
+  ledger + versioned state packet + schema-v2, `C11-212` snap corrections (RG32Uint
+  payload, −63.28 MiB at 4K; multi-frustum reset on both backends), `C12-35` moon
+  texture lifecycle (two real GPU leaks closed), `C12-33` moon mips **IMPLEMENTED with
+  acceptance still open**, `C13-08` parser unwrap (queue row honestly NO-GO pending
+  seven browser reruns), the Campaign 15 aurora queue, and the starfield
+  reclassification under the already-ratified DR-01. Maintainer-visible rider:
+  fleet-wide cubemap mip pre-allocation costs ~+33% memory on generator-supported
+  formats.
+- **Batch 820 — `migration_doc/README.md` index drift sweep.** 46 docs indexed with
+  LIVE/HISTORICAL/SUPERSEDED classifications verified against each doc's own status;
+  four stale authority claims corrected; all 122 link targets resolve. Index-only —
+  no doc moved, per the maintainer's 2026-06-30 archival HOLD.
+- **Batch 821 — `UP144-SNAP-WEBGPU-EDGES`, the WebGPU snap EDGE tier (browser gate
+  owed).** The edge emitter's line pipeline carried no primitive pick ID, so
+  `selectBestHit`'s `wantEdge` was permanently false on WebGPU and every snap returned
+  the nearest SURFACE. The emitter now takes the surface's own `ensurePickId` colour
+  (no parallel ID path), gains an RG32Uint payload variant under the add-only
+  `ShaderSourceId.EDGE_EMITTER`, and is admitted at the tail of the payload phase
+  without loosening the FORK-34 guard. Node 25/25. **Shipped in the same slice and NOT
+  WebGL-byte-identical:** `Snapping.js`'s sample centres now convert as
+  `(index + 0.5)`, which is SHARED scene code — both backends moved by half a
+  drawing-buffer pixel. Correct under Principle 5; `SnappingSpec` moved with it.
+- **Batch 822 — model-arena + device-recovery hardening (4 reviewer-accepted items).**
+  Includes the ruled posture `NEW-MODEL-ARENA-DEAD-DEVICE-POSTURE` =
+  **SKIP-ON-DEAD-DEVICE / LOUD-EVERYWHERE-ELSE**: a null arena on a destroyed or
+  terminally-lost context is a documented lifecycle state and skips the draw, while a
+  null arena on a HEALTHY device still throws. Classified hardening, not an observed
+  crash, so no debugging-log entry was filed.
+- **Batches 823/824 — `C12-34` sky-brightness twilight range (ENGINE leg verified).**
+  The old sun term hit exactly 0 below −5.74° and carried a span of exactly 0.000000
+  across the twilight decade; a log-luminance model keyed continuously on solar
+  elevation makes that span 0.973697, returns stars at mid civil twilight, and moves
+  full-moon NELM 2.15 → 4.55 against a published ≈4.5 — while keeping both ends
+  byte-identical and high-sun totality bit-exact, so the shipped eclipse constants are
+  CONFIRMED rather than moved. Batch 824's `probe-sky-twilight-range.mjs` reproduces
+  the derivation EXACTLY to six decimals on both backends. **The star-PIXEL leg reports
+  STRUCTURAL, not PASS:** the star field drew nothing at the darkest lane, so that leg
+  measured an empty sky and is recorded as an owed instrument gap.
+- **Batch 825 — pipeline-key aliasing made STRUCTURALLY impossible; Batch 828 verified
+  it on Edge.** `generateCacheKey` folds shader-MODULE identity, which subsumes the
+  define mask and needs nothing from the producer. The survey widened the defect twice
+  beyond the brief: no in-tree caller passes `variant`, so `primitive`, nearly all of
+  `depthStencil`, and `layout` were entirely unhashed, and `WebGPUComputePipelineCache`
+  carried the identical defect on `compute.module`. Markers are retained as
+  defense-in-depth, and `stats.wrongModuleHits` stays as the runtime canary that the
+  fold is still reached. Batch 828 ran the Edge gate in BOTH modes — including the
+  negative control, which had to be rewritten because the fold broke its old mechanism
+  — and closed the owed gate.
+- **Batch 826 — `C13-16` per-genus cloud morphology, cirrus slice (PARTIAL, Edge
+  acceptance owed).** `CloudTypeProfile.js` had carried five axes per WMO genus since
+  Weather Phase 0 and TWO reached no renderer at all, so cirrus rendered as a
+  scaled-down cumulus. `CloudUniforms` grows 168 → 172, add-only. **The row's canonical
+  per-region genus MIXTURES half is hard-blocked on `C13-14` and `C13-15`, both NOT
+  STARTED.**
+- **Batch 827 — `C11-213` vector-polyline draping on WebGPU (Edge acceptance owed).**
+  The row's own instruction was UNBUILDABLE as written: binding five more sampled
+  textures takes the C11-208 reduced low-limit layout from exactly 16 to 21, over the
+  WebGPU spec floor, which would fail globe pipeline creation on every default-limit
+  adapter — a dead globe, not a degraded vector layer. GLSL's `texelFetch` there is
+  not sampling but WebGL2's only fragment-stage buffer read, so all five tables collapse
+  into ONE read-only storage buffer at zero sampled-texture cost.
 
 ## Recent Progress (2026-05-30 — Batches 179-185: both 2026-05-28 roadblocks closed — BufferPolygon render, flat textured-material classification; log-depth epic underway)
 
