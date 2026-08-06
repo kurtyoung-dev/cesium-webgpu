@@ -47,9 +47,35 @@
 //   M3  colour channel order flipped (BGRA) in the packed primitive record
 //   M4  cell start read as `cellEnd[i]` instead of `cellEnd[i-1]` (off-by-one)
 //   M5  segment→primitive indirection dropped (segment index used as material)
+//   M6  a SINGULAR UV Jacobian inverted to the ZERO matrix instead of
+//       abandoning the fragment (NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS)
 //
 // A mutation that the assertions still pass is a spec that proves nothing, so
 // each is asserted to FAIL.
+//
+// WHY M6 NEEDED A NEW AXIS (and why the first five could not have caught it)
+// -------------------------------------------------------------------------
+// The evaluators below take `screenFromUv` PRE-INVERTED, because the GLSL takes
+// it from `dFdx`/`dFdy` and a CPU evaluator cannot observe those. That put the
+// INVERSION itself outside the equivalence proof — and the inversion is where
+// the backends actually diverged. GLSL has an `inverse()` builtin; WGSL does
+// not, so the WGSL twin hand-rolled one, and its singular-matrix fallback
+// returned the ZERO matrix. Zero is not "no answer": it collapses
+// `length(screenFromUv * offsetUv)` to 0, which is `< lineWidth` for the FIRST
+// segment in the cell however far away that segment is.
+//
+// Terrain SKIRT quads make that fire on every tile. `HeightmapTessellator`
+// derives a skirt vertex's u/v from the UNMOVED edge longitude/latitude, so a
+// north/south skirt strip carries a bit-identical `v` (and an east/west strip a
+// bit-identical `u`) — the Jacobian is EXACTLY singular, not nearly so. WebGL
+// divides by that zero, compares against Inf/NaN, and drapes nothing; WebGPU
+// painted the whole skirt ring of every vector-carrying tile with that tile's
+// first segment colour. In the C11-213 acceptance frame that showed up as faint
+// lines lying exactly on the level-6 tile-row boundaries.
+//
+// So this file now models the inversion on both sides (`glslScreenFromUv` /
+// `wgslScreenFromUv`), pins the skirt precondition against the REAL tessellator
+// (E1), and requires the zero-matrix fallback to be detected (M6).
 
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -103,6 +129,19 @@ enableEngineTsResolution();
 
 const VectorPipeline = (await import(pathToFileURL(vectorPipelinePath).href))
   .default;
+
+const engineModule = async (relative) =>
+  (
+    await import(
+      pathToFileURL(path.join(root, "packages/engine/Source", relative)).href
+    )
+  ).default;
+
+// Real modules — E1 measures the skirt UVs the singular Jacobian comes from
+// rather than restating them.
+const HeightmapTessellator = await engineModule("Core/HeightmapTessellator.js");
+const Rectangle = await engineModule("Core/Rectangle.js");
+const Cartesian2 = await engineModule("Core/Cartesian2.js");
 
 const {
   packVectorTileWords,
@@ -219,6 +258,75 @@ function applyScreenFromUv(screenFromUv, offset) {
     screenFromUv[0][0] * offset[0] + screenFromUv[1][0] * offset[1],
     screenFromUv[0][1] * offset[0] + screenFromUv[1][1] * offset[1],
   ];
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// The Jacobian INVERSION — the step the equivalence proof used to skip.
+// Both thresholds are read out of the shaders, not restated, because the
+// two must stay the same number for the backends to agree by construction.
+// ═══════════════════════════════════════════════════════════════════════
+
+function shaderSingularEpsilon(source, expression, label) {
+  const match = source.match(
+    new RegExp(`abs\\(${expression}\\)\\s*<\\s*([0-9.]+e-?[0-9]+)`),
+  );
+  assert.ok(match, `${label} declares no singular-Jacobian threshold`);
+  return Number(match[1]);
+}
+
+const WGSL_SINGULAR_EPSILON = shaderSingularEpsilon(
+  wgsl,
+  "uvJacobianDet",
+  "GlobeTerrain.wgsl",
+);
+const GLSL_SINGULAR_EPSILON = shaderSingularEpsilon(
+  glslCommon,
+  "uvJacobianDet",
+  "VectorCommon.glsl",
+);
+
+function determinant2x2(c0, c1) {
+  return c0[0] * c1[1] - c1[0] * c0[1];
+}
+
+function inverse2x2(c0, c1, det) {
+  const invDet = 1 / det;
+  return [
+    [c1[1] * invDet, -c0[1] * invDet],
+    [-c1[0] * invDet, c0[0] * invDet],
+  ];
+}
+
+/**
+ * `VectorCommon.glsl`'s inverse UV Jacobian. `null` means "this fragment can
+ * have no pixel-space distance, so nothing is ever in range" — which is what
+ * the GLSL produces both before the explicit guard (Inf/NaN from `inverse()`,
+ * every comparison false) and after it (an early return).
+ */
+function glslScreenFromUv(uvDx, uvDy) {
+  const det = determinant2x2(uvDx, uvDy);
+  if (Math.abs(det) < GLSL_SINGULAR_EPSILON) {
+    return null;
+  }
+  return inverse2x2(uvDx, uvDy, det);
+}
+
+/**
+ * `GlobeTerrain.wgsl::vectorPolylineRender`'s inverse UV Jacobian.
+ * `mutate.singularJacobianZeroMatrix` restores the Batch-827 fallback that
+ * returned the ZERO matrix instead of abandoning the fragment.
+ */
+function wgslScreenFromUv(uvDx, uvDy, mutate = {}) {
+  const det = determinant2x2(uvDx, uvDy);
+  if (Math.abs(det) < WGSL_SINGULAR_EPSILON) {
+    return mutate.singularJacobianZeroMatrix
+      ? [
+          [0, 0],
+          [0, 0],
+        ]
+      : null;
+  }
+  return inverse2x2(uvDx, uvDy, det);
 }
 
 /**
@@ -408,6 +516,27 @@ const SCREEN_FROM_UV = [
   [-120, 640],
 ];
 
+// The FORWARD Jacobians the shaders actually receive (`dpdx`/`dpdy` of the tile
+// UV), for the tests that exercise the inversion instead of assuming it.
+//
+// A tile interior: uv→pixels is anisotropic but invertible.
+const INTERIOR_JACOBIAN = {
+  uvDx: [1 / 900, 0],
+  uvDy: [1 / 640 / 7.5, 1 / 640],
+};
+// A NORTH/SOUTH terrain skirt quad: `v` is bit-identical at all four corners
+// (E1 proves this against the real tessellator), so both of its derivatives are
+// exactly 0 and the determinant is exactly 0 — not merely small.
+const SKIRT_JACOBIAN_NS = {
+  uvDx: [1 / 310, 0],
+  uvDy: [1 / 9000, 0],
+};
+// An EAST/WEST skirt quad: the constant axis is `u` instead.
+const SKIRT_JACOBIAN_WE = {
+  uvDx: [0, 1 / 9000],
+  uvDy: [0, 1 / 310],
+};
+
 function sampleRaster() {
   const points = [];
   for (let iy = 0; iy < 24; iy++) {
@@ -441,6 +570,40 @@ function compareBackends(baked, words, options = {}) {
     }
   }
   return differences;
+}
+
+/**
+ * Same comparison, but the `screenFromUv` matrix is INVERTED by each backend's
+ * own model from a shared forward Jacobian — so a divergence in the inversion
+ * (M6) is inside the proof instead of outside it. A `null` matrix means the
+ * fragment is left untouched, which is the whole point on a skirt quad.
+ */
+function compareBackendsFromJacobian(baked, words, jacobian, mutate = {}) {
+  const { uvDx, uvDy } = jacobian;
+  const glslMatrix = glslScreenFromUv(uvDx, uvDy);
+  const wgslMatrix = wgslScreenFromUv(uvDx, uvDy, mutate);
+  const differences = [];
+  let painted = 0;
+  for (const uv of sampleRaster()) {
+    const expected =
+      glslMatrix === null
+        ? BASE
+        : glslVectorPolylineRender(baked, uv, glslMatrix, BASE);
+    const actual =
+      wgslMatrix === null
+        ? BASE
+        : wgslVectorPolylineRender(words, uv, wgslMatrix, BASE);
+    if (actual.some((v, i) => Math.abs(v - BASE[i]) > 1e-6)) {
+      painted++;
+    }
+    for (let c = 0; c < 4; c++) {
+      if (Math.abs(expected[c] - actual[c]) > 1e-6) {
+        differences.push({ uv, channel: c, expected, actual });
+        break;
+      }
+    }
+  }
+  return { differences, painted, samples: sampleRaster().length };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -635,6 +798,206 @@ test("M5 — dropping the segment→primitive indirection is DETECTED", () => {
   assert.ok(
     differences.length > 0,
     "a segment must resolve its material through the packed primitive index",
+  );
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// E. The UV Jacobian INVERSION — NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS
+// ═══════════════════════════════════════════════════════════════════════
+
+test("E1 — terrain skirt strips carry a bit-identical UV axis, so their Jacobian is EXACTLY singular", () => {
+  // Real tessellator, real skirts. This is the physical precondition the whole
+  // defect rests on: if a skirt vertex ever got its own u/v, the determinant
+  // would be merely small rather than zero and no threshold would fire.
+  const width = 5;
+  const height = 5;
+  const baked = HeightmapTessellator.computeVertices({
+    heightmap: new Float32Array(width * height),
+    width,
+    height,
+    skirtHeight: 1000.0,
+    // A real level-6 geographic tile from the C11-213 acceptance frame.
+    nativeRectangle: new Rectangle(-106.875, 36.5625, -104.0625, 39.375),
+    isGeographic: true,
+  });
+  const encoding = baked.encoding;
+  const vertexCount = baked.vertices.length / encoding.stride;
+  const uvAt = (index) =>
+    encoding.decodeTextureCoordinates(baked.vertices, index, new Cartesian2());
+
+  const gridVertexCount = width * height;
+  assert.equal(
+    vertexCount,
+    gridVertexCount + width * 2 + height * 2,
+    "fixture must actually have skirts",
+  );
+
+  // Skirt run order, per HeightmapTessellator: west, south, east, north.
+  const runs = [
+    { name: "west", start: gridVertexCount, count: height, axis: "x" },
+    { name: "south", start: gridVertexCount + height, count: width, axis: "y" },
+    {
+      name: "east",
+      start: gridVertexCount + height + width,
+      count: height,
+      axis: "x",
+    },
+    {
+      name: "north",
+      start: gridVertexCount + height + width + height,
+      count: width,
+      axis: "y",
+    },
+  ];
+  // The grid edge each skirt run hangs from, in grid-vertex indices.
+  const edges = {
+    west: Array.from({ length: height }, (_, r) => r * width),
+    south: Array.from({ length: width }, (_, c) => (height - 1) * width + c),
+    east: Array.from({ length: height }, (_, r) => r * width + width - 1),
+    north: Array.from({ length: width }, (_, c) => c),
+  };
+
+  for (const run of runs) {
+    const values = [];
+    for (let i = 0; i < run.count; i++) {
+      values.push(uvAt(run.start + i)[run.axis]);
+    }
+    for (const index of edges[run.name]) {
+      values.push(uvAt(index)[run.axis]);
+    }
+    // One distinct value across the skirt run AND the grid edge it hangs from,
+    // compared with `===` so a rounding difference would fail. Every vertex of
+    // every quad in the strip therefore shares this component, so all UV
+    // differences within the strip are parallel and ANY screen-space Jacobian
+    // built from them — whichever two triangles the index buffer makes, at
+    // whatever camera — is rank 1 with an exactly zero determinant.
+    const distinct = new Set(values);
+    assert.equal(
+      distinct.size,
+      1,
+      `${run.name} skirt + edge must share ONE ${run.axis} value bit-for-bit, saw ${[...distinct].join(", ")}`,
+    );
+    // The other component must actually vary, or the strip would be a point and
+    // the singularity would be trivial rather than the real geometry.
+    const otherAxis = run.axis === "x" ? "y" : "x";
+    const spread = new Set(
+      Array.from(
+        { length: run.count },
+        (_, i) => uvAt(run.start + i)[otherAxis],
+      ),
+    );
+    assert.ok(
+      spread.size > 1,
+      `${run.name} skirt must span a range of ${otherAxis}`,
+    );
+  }
+});
+
+test("E2 — on a skirt Jacobian BOTH backends leave every fragment untouched", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+
+  // Control: the same fixture, same samples, an INVERTIBLE Jacobian. If this
+  // did not paint, E2 would be proving nothing.
+  const interior = compareBackendsFromJacobian(baked, words, INTERIOR_JACOBIAN);
+  assert.equal(interior.differences.length, 0, "interior legs must agree");
+  assert.ok(
+    interior.painted > 20,
+    `control must drape something; painted ${interior.painted}`,
+  );
+
+  for (const [name, jacobian] of [
+    ["north/south", SKIRT_JACOBIAN_NS],
+    ["east/west", SKIRT_JACOBIAN_WE],
+  ]) {
+    assert.equal(
+      glslScreenFromUv(jacobian.uvDx, jacobian.uvDy),
+      null,
+      `${name} skirt must have no GLSL screen-space metric`,
+    );
+    assert.equal(
+      wgslScreenFromUv(jacobian.uvDx, jacobian.uvDy),
+      null,
+      `${name} skirt must have no WGSL screen-space metric`,
+    );
+    const skirt = compareBackendsFromJacobian(baked, words, jacobian);
+    assert.equal(skirt.differences.length, 0, `${name} skirt legs disagreed`);
+    assert.equal(
+      skirt.painted,
+      0,
+      `${name} skirt painted ${skirt.painted} of ${skirt.samples} fragments; a skirt must drape NOTHING`,
+    );
+  }
+});
+
+test("M6 — inverting a singular Jacobian to the ZERO matrix is DETECTED", () => {
+  const baked = buildBakedTile();
+  const words = packVectorTileWords(baked);
+  for (const [name, jacobian] of [
+    ["north/south", SKIRT_JACOBIAN_NS],
+    ["east/west", SKIRT_JACOBIAN_WE],
+  ]) {
+    const mutated = compareBackendsFromJacobian(baked, words, jacobian, {
+      singularJacobianZeroMatrix: true,
+    });
+    assert.ok(
+      mutated.differences.length > 0,
+      `a zero-matrix inverse on a ${name} skirt must NOT compare equal to WebGL`,
+    );
+    // Not a few stray pixels: a zero screen metric makes the distance test 0 <
+    // lineWidth for the first segment in EVERY cell that holds one, which is
+    // what turned the skirt ring into a full-width streak in the probe frame.
+    assert.ok(
+      mutated.painted > mutated.samples * 0.5,
+      `the defect must paint most of the skirt; painted ${mutated.painted} of ${mutated.samples}`,
+    );
+  }
+});
+
+test("E3 — neither shader inverts a singular Jacobian, and both use the same threshold", () => {
+  assert.equal(
+    WGSL_SINGULAR_EPSILON,
+    GLSL_SINGULAR_EPSILON,
+    "the two backends must abandon the fragment at the same determinant",
+  );
+
+  const wgslStart = wgsl.indexOf("fn vectorInverse2x2(");
+  assert.ok(wgslStart > 0);
+  const wgslRest = wgsl.slice(wgslStart);
+  const wgslBody = wgslRest.slice(0, wgslRest.indexOf("\nfn ", 1));
+  assert.ok(
+    !/return\s+mat2x2<f32>\(\s*vec2<f32>\(0\.0,\s*0\.0\),\s*vec2<f32>\(0\.0,\s*0\.0\),?\s*\)/.test(
+      wgslBody,
+    ),
+    "vectorInverse2x2 must not answer a singular matrix with the zero matrix — that is a distance of 0, i.e. an unconditional hit",
+  );
+
+  // The abandon has to be in the RENDER function, before any distance test.
+  const renderStart = wgsl.indexOf("fn vectorPolylineRender(");
+  const renderRest = wgsl.slice(renderStart);
+  const renderBody = renderRest.slice(0, renderRest.indexOf("\nfn ", 1));
+  const guard = renderBody.indexOf("abs(uvJacobianDet) < ");
+  const distanceTest = renderBody.indexOf("length(screenFromUv * offsetUv)");
+  assert.ok(guard > 0, "the WGSL render function must test the determinant");
+  assert.ok(distanceTest > guard, "the guard must precede the distance test");
+  assert.match(
+    renderBody.slice(guard, distanceTest),
+    /return baseColor;/,
+    "a singular Jacobian must return the untouched base colour",
+  );
+
+  // GLSL relied on `inverse()` being undefined for a singular matrix. It is
+  // explicit now, so the two backends agree by construction rather than by
+  // driver behaviour.
+  const glslGuard = glslCommon.indexOf("abs(uvJacobianDet) < ");
+  const glslInverse = glslCommon.indexOf("inverse(uvJacobian)");
+  const glslDistance = glslCommon.indexOf("length(screenFromUv * offsetUv)");
+  assert.ok(glslGuard > 0 && glslInverse > glslGuard);
+  assert.ok(glslDistance > glslInverse);
+  assert.match(
+    glslCommon.slice(glslGuard, glslInverse),
+    /return baseColor;/,
+    "VectorCommon.glsl must abandon the fragment rather than call inverse() on a singular matrix",
   );
 });
 

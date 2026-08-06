@@ -41,8 +41,73 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ### NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS
 
-**Status:** OPEN - found by the FIRST run of `probe-vector-draping.mjs` (Batch 830),
-the acceptance probe for C11-213 (landed Batch 827).
+**Status:** ROOT-CAUSED + FIXED (2026-08-06); browser ACCEPTANCE OWED. Found by the
+FIRST run of `probe-vector-draping.mjs` (Batch 830), the acceptance probe for
+C11-213 (landed Batch 827).
+
+**ROOT CAUSE - confirmed from source AND from the probe's own pixels, not inferred.**
+`GlobeTerrain.wgsl::vectorInverse2x2` answered a SINGULAR 2x2 UV Jacobian with the
+ZERO matrix. Zero is not "no answer": `screenFromUv * offsetUv` becomes the zero
+vector, so `length(...) < lineWidth` is TRUE for the FIRST segment in the fragment's
+grid cell however far away that segment is, and the fragment gets composited with
+that segment's colour. The function's own comment claimed it avoided exactly that.
+
+The singular case is not exotic - terrain SKIRT quads hit it on every tile.
+`HeightmapTessellator.computeVertices` derives a vertex's `u`/`v` from the UNMOVED
+edge longitude/latitude and only afterwards nudges the position outward and drops it
+by `skirtHeight`, so a north/south skirt strip carries a bit-identical `v` (an
+east/west strip a bit-identical `u`) at every corner of every quad. Both screen
+derivatives of that component are exactly 0, so the determinant is exactly 0.
+**WebGL is unaffected because GLSL HAS an `inverse()` builtin**: it divides by that
+zero and every comparison against the resulting Inf/NaN is false, so WebGL silently
+drapes nothing. WGSL has no `inverse()`, so the hand-rolled substitute had to decide,
+and it decided wrong.
+
+**Why HORIZONTAL.** A north/south skirt is a thin strip along a constant-latitude
+tile edge; at a nadir camera it projects to a nearly horizontal arc spanning the
+tile's full width. The frame shows level-6 geographic tiles, whose row boundaries lie
+at 39.375 deg and 36.5625 deg latitude; projecting those two parallels into the
+probe's 1024x768 nadir view predicts screen y = 261.1 and 655.0, and y = 647.4 at
+x = 847.7 - the measured streak pixels sit on those curves to under a pixel. They are
+the only level-6 row boundaries in view (42.1875 deg -> y = -125, 33.75 deg ->
+y = 1031). Three further measurements close it: the streak colour switches from RED
+to BLUE exactly at x = 560 = lon -104.0625, the level-6 tile COLUMN boundary between
+the tile holding the red meridian and the tile holding the blue one (each tile paints
+its own first segment's material); the composite alphas decode as an OPAQUE line
+resolved at 1/4 and 2/4 MSAA coverage of the thin sliver, not as a partial hit; and a
+determinant that is small but >= 1e-20 makes `invDet` enormous and paints NOTHING, so
+the streaks existing at all proves `abs(det) < 1.0e-20` on those fragments.
+
+Of the three hypotheses recorded below, all three are REFUTED. The
+`indexStart`/`indexEnd` clamp, the packer's cell-end arithmetic and the shared
+placeholder are all correct; the defect was in the Jacobian INVERSION, which sat
+outside the spec's equivalence proof because both evaluators took `screenFromUv`
+pre-inverted.
+
+**FIX.** `vectorPolylineRender` now computes the determinant once
+(`vectorDeterminant2x2`) and tests it BEFORE any distance test, returning the
+untouched `baseColor` on a singular Jacobian - exactly WebGL's observable behaviour.
+`vectorInverse2x2` takes the caller-validated determinant and carries no fallback at
+all, because no matrix it could return is correct for a singular input.
+`VectorCommon.glsl` got the same explicit guard (Principle 5): its behaviour today is
+only correct because `inverse()` happens to divide by zero, which the GLSL spec
+leaves UNDEFINED, so the backends now agree by construction rather than by driver
+choice. WebGL pixels are unchanged.
+
+**Files:** `packages/engine/Source/Shaders/WebGPU/Globe/GlobeTerrain.wgsl`,
+`packages/engine/Source/Shaders/VectorCommon.glsl`,
+`Tools/visual-regression/vector-layer-draping.spec.mjs`.
+
+**Spec coverage added** (25/25 green, incl. naga validation of the modified WGSL):
+`E1` runs the REAL `HeightmapTessellator` over a real level-6 tile rectangle and
+proves each skirt strip's constant UV axis is bit-identical to the grid edge it hangs
+from; `E2` requires both backends to leave every fragment untouched on a skirt
+Jacobian, with an invertible-Jacobian control so it is not vacuous; **`M6` restores
+the zero-matrix inverse and requires the disagreement to be DETECTED** (and to paint
+>50% of the samples, matching the whole-skirt shape); `E3` pins the guard in both
+shader sources and requires the two thresholds to be the same number. Reverting the
+WGSL guard fails the file loudly ("GlobeTerrain.wgsl declares no singular-Jacobian
+threshold").
 
 **Symptom.** With two meridional polylines draped on an offline ellipsoid globe at
 nadir, the WebGPU frame renders both lines correctly AND adds faint horizontal streaks
@@ -59,8 +124,8 @@ and from x 440..595 to x 200..742 in the oblique view - roughly 3.5x wider. **A 
 or centroid-based parity check would have PASSED this frame.** That is the reason the
 probe gates on bbox as a third statistic alongside centroid and count.
 
-**Suspected mechanism (NOT confirmed - do not implement against this without
-verifying).** The streaks are horizontal, at discrete screen rows, on a globe whose
+**Suspected mechanism as originally filed - ALL THREE CANDIDATES REFUTED 2026-08-06,
+kept for trace.** The streaks are horizontal, at discrete screen rows, on a globe whose
 tiles are horizontal bands at this view - consistent with a per-tile cell lookup
 returning data from outside its intended cell run at a tile boundary. Candidates, in
 order: the shader's `indexStart`/`indexEnd` clamp against the header's `segmentCount`

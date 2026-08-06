@@ -3637,18 +3637,29 @@ fn vectorOffsetToLine(p: vec2<f32>, lineSegment: vec4<f32>) -> vec2<f32> {
   return p - (a + t * ab);
 }
 
+// mat2x2 is column-major in both WGSL and GLSL: m[0] is the first COLUMN, so
+// the matrix is [[m[0].x, m[1].x], [m[0].y, m[1].y]] and
+// det = m[0].x*m[1].y - m[1].x*m[0].y.
+fn vectorDeterminant2x2(m: mat2x2<f32>) -> f32 {
+  return m[0].x * m[1].y - m[1].x * m[0].y;
+}
+
 // WGSL has no `inverse()` builtin (GLSL does — `VectorCommon.glsl` line 37).
-// mat2x2 is column-major in both languages: m[0] is the first COLUMN, so the
-// matrix is [[m[0].x, m[1].x], [m[0].y, m[1].y]] and
-// det = m[0].x*m[1].y - m[1].x*m[0].y. A singular Jacobian (a degenerate
-// fragment quad) yields zero, which makes every distance test 0 < lineWidth —
-// so guard it and return zero, matching GLSL's undefined-but-finite behavior
-// without painting the whole quad.
-fn vectorInverse2x2(m: mat2x2<f32>) -> mat2x2<f32> {
-  let det = m[0].x * m[1].y - m[1].x * m[0].y;
-  if (abs(det) < 1.0e-20) {
-    return mat2x2<f32>(vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 0.0));
-  }
+//
+// PRECONDITION: `det` is the caller's `vectorDeterminant2x2(m)` and is already
+// known non-singular. `vectorPolylineRender` tests it and abandons the whole
+// vector path when it is zero — the test CANNOT live in here.
+//
+// Why not: this function has no way to say "no line is ever within range". Any
+// matrix it could return for a singular input is wrong, and the ZERO matrix —
+// the obvious "safe" choice, and what this function used to return — is the
+// worst of them: `screenFromUv * offsetUv` becomes the zero vector, so
+// `length(...) < lineWidth` is TRUE for the first segment in the cell no matter
+// how far away that segment is, and the fragment gets painted. That was
+// NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS: terrain SKIRT quads have an
+// exactly singular UV Jacobian, so every skirt fragment of a vector-carrying
+// tile was painted with that tile's first segment colour.
+fn vectorInverse2x2(m: mat2x2<f32>, det: f32) -> mat2x2<f32> {
   let invDet = 1.0 / det;
   return mat2x2<f32>(
     vec2<f32>(m[1].y * invDet, -m[0].y * invDet),
@@ -3704,7 +3715,29 @@ fn vectorPolylineRender(
 
   // Inverse UV-per-pixel Jacobian: measures line distance in screen pixels so
   // width stays constant under anisotropic (oblique) foreshortening.
-  let screenFromUv = vectorInverse2x2(mat2x2<f32>(uvDx, uvDy));
+  //
+  // A SINGULAR Jacobian has no inverse and therefore no pixel-space distance at
+  // all, so the only correct answer for the fragment is "no line is in range".
+  // This is not a theoretical case: terrain SKIRT quads hit it on every tile.
+  // `HeightmapTessellator` computes a skirt vertex's `u`/`v` from the UNMOVED
+  // edge latitude/longitude (the skirt offset is applied to the position
+  // afterwards), so a north/south skirt quad carries a bit-identical `v` at all
+  // four corners — both screen derivatives of `v` are exactly 0 and so is the
+  // determinant. GLSL's `inverse()` divides by that zero, every comparison
+  // against the resulting Inf/NaN is false, and WebGL silently drapes nothing;
+  // the WGSL twin has to say so explicitly.
+  //
+  // NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS: the previous zero-matrix
+  // fallback collapsed the distance to 0, which is `< lineWidth` for the FIRST
+  // segment in the cell regardless of where that segment is — so the entire
+  // skirt ring of every vector-carrying tile was painted with that tile's first
+  // segment colour, drawn as faint lines along the tile-row boundaries.
+  let uvJacobian = mat2x2<f32>(uvDx, uvDy);
+  let uvJacobianDet = vectorDeterminant2x2(uvJacobian);
+  if (abs(uvJacobianDet) < 1.0e-20) {
+    return baseColor;
+  }
+  let screenFromUv = vectorInverse2x2(uvJacobian, uvJacobianDet);
 
   // `i32(f32)` truncates toward zero, matching GLSL's `int(float)`.
   let cellX = u32(clamp(i32(vectorUv.x * f32(gridWidth)), 0, i32(gridWidth) - 1));

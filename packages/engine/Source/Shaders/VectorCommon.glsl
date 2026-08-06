@@ -34,7 +34,26 @@ vec4 vectorPolylineRender(vec2 vectorUv, vec4 baseColor)
 {
     // Inverse UV-per-pixel Jacobian: measures line distance in screen pixels so
     // width stays constant under anisotropic (oblique) foreshortening.
-    mat2 screenFromUv = inverse(mat2(dFdx(vectorUv), dFdy(vectorUv)));
+    //
+    // A SINGULAR Jacobian has no inverse, so there is no pixel-space distance
+    // and no line can be in range. Terrain SKIRT quads are exactly that case on
+    // every tile: `HeightmapTessellator` derives a skirt vertex's u/v from the
+    // UNMOVED edge longitude/latitude, so a north/south skirt carries a
+    // bit-identical `v` at all four corners of every quad and the determinant
+    // is exactly zero. `inverse()` is UNDEFINED there — it happens to divide by
+    // zero and produce Inf/NaN, which makes the comparison below false and
+    // drapes nothing, but that is the driver's choice, not this shader's. Say
+    // it explicitly so the two backends agree by construction: the WGSL twin
+    // has no `inverse()` builtin, and its hand-rolled substitute returning a
+    // zero matrix for this case painted the whole skirt ring
+    // (NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS).
+    mat2 uvJacobian = mat2(dFdx(vectorUv), dFdy(vectorUv));
+    float uvJacobianDet = uvJacobian[0].x * uvJacobian[1].y - uvJacobian[1].x * uvJacobian[0].y;
+    if (abs(uvJacobianDet) < 1.0e-20)
+    {
+        return baseColor;
+    }
+    mat2 screenFromUv = inverse(uvJacobian);
     int gridWidth = int(texelFetch(u_vectorGridCellIndicesTexture, ivec2(0, 0), 0).r);
     int gridHeight = int(texelFetch(u_vectorGridCellIndicesTexture, ivec2(1, 0), 0).r);
     int cellX = clamp(int(vectorUv.x * float(gridWidth)), 0, gridWidth - 1);
