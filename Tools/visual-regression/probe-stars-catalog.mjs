@@ -3,8 +3,10 @@
 // Catalog starfield renders on WebGPU.
 //
 // What it verifies:
-//   (A) Turning scene.skyBox.starField.show ON adds RESOLVED POINT SOURCES to
-//       the frame vs OFF, in the same Sirius-aimed center box.
+//   (A) Turning scene.skyBox.starField.show ON adds a RESOLVED POINT SOURCE to
+//       the frame vs OFF, in the same Sirius-aimed center box, AND that source
+//       lands on the aim point (within AIM_TOLERANCE_PX). Scoped to the bright
+//       end of the catalogue on purpose — see the SCOPE note at the gate.
 //   (G) DR-01 seam: with the sprites OFF, the cube map contributes essentially
 //       NO resolved point sources of its own — it carries diffuse Milky Way
 //       light only. (A) and (G) together are the seam: exactly one owner per
@@ -21,6 +23,15 @@
 // off the galactic plane, so the diffuse band IS bright in this exact view — a
 // brightness count there would still be dominated by the cube map even after
 // the seam landed.
+//
+// (A) then read RED on its first post-C12-11 run for an INSTRUMENT reason, not
+// a product one (C12-STAR-POINT-CENSUS-LIVE-CALIBRATION, settled 2026-08-06):
+// aiming the camera at a star puts it at NDC (0,0) = a pixel CORNER, so its four
+// surrounding pixels are equal by construction, and the census's then-STRICT
+// local-maximum test let each member of that plateau disqualify the others.
+// `Tools/visual-regression/star-point-census-live.spec.mjs` reproduces the exact
+// live numbers offline (4 candidate pixels at luminance 152.6, census 0) from
+// the sprite renderer's derived footprint; the census now counts a plateau once.
 //   (B) Bright stars read brighter/larger than faint stars: with the
 //       camera aimed at Sirius (mag −1.46) for the pinned scene time, a
 //       bright cluster lands near frame center, and the brightest star
@@ -306,8 +317,11 @@ function brightCountCenter(img, thresh, f) {
 
 // Resolved-point-source census inside a centered box of half-width fraction
 // `f`. Converts the RGBA grab to the luminance plane the shared detector
-// expects, then counts strict local maxima that rise above their LOCAL ring
+// expects, then counts unique local maxima that rise above their LOCAL ring
 // background — so diffuse band brightness cannot masquerade as a star.
+//
+// Returns the accepted sources in FRAME pixel coordinates so (A) can assert
+// WHERE the resolved source is, not merely that one exists.
 function pointCensusCenter(img, f) {
   const x0 = Math.floor(img.w * (0.5 - f));
   const x1 = Math.floor(img.w * (0.5 + f));
@@ -321,7 +335,33 @@ function pointCensusCenter(img, f) {
       plane[y * bw + x] = lum(img.data, 4 * ((y0 + y) * img.w + (x0 + x)));
     }
   }
-  return pointSourceCensus(plane, bw, bh).count;
+  const res = pointSourceCensus(plane, bw, bh, { collectSources: true });
+  return {
+    count: res.count,
+    strongest: res.strongest,
+    sources: (res.sources ?? []).map((s) => ({
+      x: s.x + x0,
+      y: s.y + y0,
+      peak: s.peak,
+      contrast: s.contrast,
+    })),
+  };
+}
+
+// Distance from the frame centre to the nearest resolved source, in pixels.
+// The camera is aimed EXACTLY at the star, so the star projects to NDC (0,0)
+// = continuous pixel coordinate (w/2, h/2) — a pixel CORNER for an even-sized
+// viewport. Its plateau's scan-order-first member therefore sits at
+// (w/2 - 1, h/2 - 1); AIM_TOLERANCE_PX covers that offset plus catalogue-vs-
+// probe RA/Dec differences (0.39 deg of sky at this focal length) with margin.
+const AIM_TOLERANCE_PX = 6;
+function nearestSourceToCenter(img, census) {
+  let best = Infinity;
+  for (const s of census.sources) {
+    const d = Math.hypot(s.x + 0.5 - img.w / 2, s.y + 0.5 - img.h / 2);
+    if (d < best) best = d;
+  }
+  return best;
 }
 
 function savePng(name, img) {
@@ -357,9 +397,13 @@ const offCenter = brightCountCenter(gpu.imgOff, THRESH, 0.12);
 // C12-11: the point census is what (A)/(G) actually gate on. The brightness
 // counts above stay as diagnostics because they are still the right instrument
 // for (B)/(C)'s cluster-vs-blank comparison.
-const siriusPoints = pointCensusCenter(gpu.imgSirius, 0.12);
-const offPoints = pointCensusCenter(gpu.imgOff, 0.12);
-const blankPoints = pointCensusCenter(gpu.imgBlank, 0.12);
+const siriusCensus = pointCensusCenter(gpu.imgSirius, 0.12);
+const offCensus = pointCensusCenter(gpu.imgOff, 0.12);
+const blankCensus = pointCensusCenter(gpu.imgBlank, 0.12);
+const siriusPoints = siriusCensus.count;
+const offPoints = offCensus.count;
+const blankPoints = blankCensus.count;
+const siriusAimPx = nearestSourceToCenter(gpu.imgSirius, siriusCensus);
 
 console.log(
   `starField present on skyBox: ${gpu.hasStarField}, stats: ${JSON.stringify(gpu.stats)}`,
@@ -379,16 +423,40 @@ console.log(`console errors: ${gpu.errors.length}`);
 gpu.errors.slice(0, 8).forEach((e) => console.log("  ERR:", e.slice(0, 250)));
 
 // (A) The sprite layer adds RESOLVED point sources vs OFF — same Sirius aim,
-// same center box. A real gate again as of C12-11: the diffuse cube map no
-// longer paints the stars the sprites are supposed to own.
-const aOK = siriusPoints > offPoints && siriusPoints >= 1;
+// same center box — AND the source it adds is AT THE AIMED STAR. A real gate
+// again as of C12-11: the diffuse cube map no longer paints the stars the
+// sprites are supposed to own.
+//
+// SCOPE (C12-STAR-POINT-CENSUS-LIVE-CALIBRATION, 2026-08-06). The census floor
+// is minPeak 40/255, which the sprite exposure clears only for stars brighter
+// than vmag 2.56 (the exposure is anchored so a vmag-3.6 star peaks at
+// 15.3/255). 98 of the 2,868 catalogue rows are that bright, so the ~200 sq deg
+// centre box contains an expected ~0.5 of them: counting field stars here would
+// be a coin flip. That is why the subject is the AIMED star — Sirius is in the
+// box by construction, and the position test below is what makes (A) fail if the
+// sprites stop drawing, stop being point-like, or land in the wrong place.
+// Lowering the floor to reach the faint end is forbidden: it would put
+// candidates back inside the diffuse band's own 8-bit range (the off-frame peak
+// luminance is 28) and re-create the brightness count this census replaced.
+const aOK =
+  siriusPoints > offPoints &&
+  siriusPoints >= 1 &&
+  siriusAimPx <= AIM_TOLERANCE_PX;
 // (G) DR-01 seam: the cube map alone yields essentially no resolved sources.
 // A small tolerance absorbs JPEG ringing and 8-bit dither in the band; the
 // baked faces census to exactly 0 offline (skybox-manifest.json).
 const gOK = offPoints <= 2;
-// (B/C) Aiming at Sirius puts a bright cluster near center; far more than
-// aiming at a blank patch.
-const bcOK = siriusCenter > 20 && siriusCenter > blankCenter * 2 + 10;
+// (B/C) Aiming at Sirius puts a resolved star near centre where a blank patch
+// has none. RE-SCOPED for the DR-01 world (Batch 848), the same stale-threshold
+// class check (A) escaped: the old predicate wanted >20 bright pixels in the
+// centre box, a number calibrated when the UN-blurred cubemap painted ~91 there.
+// Since Batch 833 the cubemap is diffuse-only, so the sprites are the whole
+// signal and Sirius legitimately lights ~4 pixels. Counting pixels against a
+// pre-DR-01 floor measures the removed cubemap, not the catalogue. The claim
+// that survives the seam is POSITIONAL and shared with (A): a resolved source
+// at the aimed star, none at a blank patch, and the aimed box strictly brighter.
+const bcOK =
+  siriusPoints >= 1 && blankPoints === 0 && siriusCenter > blankCenter;
 // (D) Higher intensity grows the bright-pixel count.
 const dOK = brightBright > onBright;
 // (E) starField hook exists on the default SkyBox (cubemap path intact).
@@ -399,7 +467,15 @@ const fOK = gpu.errors.length === 0;
 console.log(
   `center-box POINT census: sirius-aimed=${siriusPoints} catalog-off=${offPoints} blank-aimed=${blankPoints}`,
 );
-console.log(`(A) sprites add resolved point sources: ${aOK ? "OK" : "FAIL"}`);
+console.log(
+  `  strongest contrast: sirius=${siriusCensus.strongest.toFixed(1)} off=${offCensus.strongest.toFixed(1)} blank=${blankCensus.strongest.toFixed(1)}`,
+);
+console.log(
+  `  nearest resolved source to the aim point: ${Number.isFinite(siriusAimPx) ? `${siriusAimPx.toFixed(2)} px` : "none"} (tolerance ${AIM_TOLERANCE_PX} px)`,
+);
+console.log(
+  `(A) sprites add a resolved point source AT the aimed star: ${aOK ? "OK" : "FAIL"}`,
+);
 console.log(
   `(G) DR-01 seam — cubemap alone has no resolved stars: ${gOK ? "OK" : "FAIL"}`,
 );

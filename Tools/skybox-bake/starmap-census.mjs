@@ -74,6 +74,28 @@ export function toLuminance(rgb, w, h) {
  * almost flat — which is exactly why the census collapses on a diffuse face
  * while an unresolved star (< 0.1 deg, i.e. a couple of px) still towers over
  * its ring.
+ *
+ * THESE SAME DEFAULTS ARE VALID ON A LIVE FRAME, and the geometry was checked
+ * against the sprite renderer rather than assumed (C12-STAR-POINT-CENSUS-LIVE-
+ * CALIBRATION). At `probe-stars-catalog.mjs`'s 1024x768 viewport the catalogue
+ * sprite's base quad half-extent is 2.660 px and its Gaussian core is
+ * sigma = 0.319 px, so `coreRadius` 2 lies inside the quad and `ringRadius` 5
+ * lies outside it; even the brightest star's Moffat wing contributes at most
+ * 0.16/255 to that ring (0.45/255 for a hypothetical star at the 1-degree
+ * glare cap), i.e. below one 8-bit code. What DID have to change for live
+ * frames is the tie handling in condition 2 — see `pointSourceCensus`.
+ *
+ * `minPeak` 40 is deliberately NOT re-derived downward for live frames. It is
+ * what makes the metric refuse the diffuse band, and the shipped diffuse faces
+ * peak at 8-28 against it. The consequence is a stated SCOPE, not a defect: the
+ * sprite exposure anchors a vmag-3.6 star at 15.3/255 (StarFieldMath.ts, tied to
+ * the M1 census floor of 12/255), so a 40/255 floor resolves only stars brighter
+ * than vmag 2.56 even at the most favourable sub-pixel phase — 98 of the 2,868
+ * catalogue rows. A live-frame check built on this census is therefore a gate on
+ * the BRIGHT end of the catalogue, and must aim at a known bright star rather
+ * than count field stars. Lowering the floor to reach the faint end would put
+ * candidates back inside the diffuse band's own 8-bit range and re-create the
+ * brightness count this detector replaced.
  */
 export const CENSUS_DEFAULTS = Object.freeze({
   coreRadius: 2,
@@ -87,14 +109,43 @@ export const CENSUS_DEFAULTS = Object.freeze({
  *
  * A pixel counts when all three hold:
  *   1. `lum >= minPeak`                       — it is actually bright;
- *   2. it is a STRICT maximum of its (2*coreRadius+1)^2 neighbourhood — it is
- *      isolated, not a plateau or a bright band interior;
+ *   2. it is the UNIQUE local maximum of its (2*coreRadius+1)^2 neighbourhood —
+ *      it is isolated, not a bright band interior. "Unique" rather than
+ *      "strict": see the plateau rule below;
  *   3. `lum - ringMean >= minContrast`        — it rises steeply above the LOCAL
  *      background sampled on the square ring at `ringRadius`.
  *
  * Condition 3 is what makes the metric orthogonal to diffuse brightness: a star
  * sitting on the bright Milky Way band still passes, and a smooth band interior
  * never does no matter how bright it gets.
+ *
+ * ── The plateau rule (C12-STAR-POINT-CENSUS-LIVE-CALIBRATION, 2026-08-06) ──
+ *
+ * Condition 2 used to be a STRICT maximum: any neighbour with `lum >= v`
+ * disqualified the candidate. That is only sound when exact ties are
+ * impossible, which holds for a 2048-px baked cube face (where this detector
+ * was developed — stars land at arbitrary sub-pixel phases) and FAILS on a live
+ * rendered frame, where a source symmetric about a pixel boundary produces a
+ * plateau of bit-identical pixels and every member of that plateau then
+ * disqualifies every other. The census returned ZERO for the plateau instead of
+ * one, and it did so for the one star a probe is most likely to measure: aiming
+ * a camera AT a star puts it at NDC (0,0), which for an even-sized viewport is
+ * exactly a pixel CORNER, so its four surrounding pixels are equal by
+ * construction. Measured: a Sirius sprite at that phase (1024x768, the probe's
+ * viewport) yields four candidate pixels at luminance 152.6, all four dropped by
+ * the tie, `strongest` 0 — reproducing `probe-stars-catalog.mjs`'s live
+ * "0 resolved sources, 4 bright pixels" exactly.
+ *
+ * So a tie no longer disqualifies: a plateau of equal-valued pixels is counted
+ * ONCE, at its scan-order-first member (`dy < 0`, or `dy === 0 && dx < 0`). This
+ * is NOT a loosening of the metric — every threshold is unchanged, and a
+ * candidate must still clear `minPeak` and out-rise its ring by `minContrast`.
+ * It can only ever turn a plateau's 0 into a 1, never admit a smooth region: a
+ * smooth band has no `minContrast` rise, and a face whose peak luminance is
+ * below `minPeak` (all six shipped diffuse faces peak at 8-28 against the 40
+ * floor) produces no candidate at all, so `DR01_LIMITS.diffuseMaxPointSources`
+ * is untouched by construction. The un-blurred reversal faces can only census
+ * slightly HIGHER, and their bound is a minimum.
  *
  * Border pixels within `ringRadius` of an edge are skipped rather than clamped.
  * Clamping would fabricate a background from duplicated edge texels and could
@@ -103,20 +154,27 @@ export const CENSUS_DEFAULTS = Object.freeze({
  * @param {Float32Array} lum
  * @param {number} w
  * @param {number} h
- * @param {object} [opts] Overrides for {@link CENSUS_DEFAULTS}.
- * @returns {{count:number, peakMax:number, strongest:number}} `count` of
- *   sources, the brightest luminance seen anywhere, and the largest
- *   peak-minus-ring contrast found.
+ * @param {object} [opts] Overrides for {@link CENSUS_DEFAULTS}, plus
+ *   `collectSources` (default false) which additionally returns each accepted
+ *   source's pixel coordinate. Off by default so the bake's per-face pass over
+ *   ~10k sources stays allocation-free.
+ * @returns {{count:number, peakMax:number, strongest:number,
+ *   sources:Array<{x:number,y:number,peak:number,contrast:number}>|undefined}}
+ *   `count` of sources, the brightest luminance seen anywhere, the largest
+ *   peak-minus-ring contrast found, and — only when `collectSources` is set —
+ *   the accepted sources.
  */
 export function pointSourceCensus(lum, w, h, opts) {
-  const { coreRadius, ringRadius, minPeak, minContrast } = {
+  const { coreRadius, ringRadius, minPeak, minContrast, collectSources } = {
     ...CENSUS_DEFAULTS,
+    collectSources: false,
     ...(opts ?? {}),
   };
 
   let count = 0;
   let peakMax = 0;
   let strongest = 0;
+  const sources = collectSources ? [] : undefined;
 
   for (let p = 0; p < lum.length; p++) {
     if (lum[p] > peakMax) {
@@ -131,14 +189,21 @@ export function pointSourceCensus(lum, w, h, opts) {
         continue;
       }
 
-      // 2. strict local maximum over the core neighbourhood
+      // 2. unique local maximum over the core neighbourhood (plateau rule above)
       let isMax = true;
       for (let dy = -coreRadius; dy <= coreRadius && isMax; dy++) {
         for (let dx = -coreRadius; dx <= coreRadius; dx++) {
           if (dx === 0 && dy === 0) {
             continue;
           }
-          if (lum[(y + dy) * w + (x + dx)] >= v) {
+          const neighbor = lum[(y + dy) * w + (x + dx)];
+          // A strictly brighter neighbour means this is not a maximum at all.
+          const dominated = neighbor > v;
+          // An EQUAL neighbour earlier in scan order means this pixel is a
+          // later member of a plateau that has already been counted.
+          const earlierInPlateau =
+            neighbor === v && (dy < 0 || (dy === 0 && dx < 0));
+          if (dominated || earlierInPlateau) {
             isMax = false;
             break;
           }
@@ -167,11 +232,14 @@ export function pointSourceCensus(lum, w, h, opts) {
       }
       if (contrast >= minContrast) {
         count++;
+        if (sources !== undefined) {
+          sources.push({ x, y, peak: v, contrast });
+        }
       }
     }
   }
 
-  return { count, peakMax, strongest };
+  return { count, peakMax, strongest, sources };
 }
 
 /**
