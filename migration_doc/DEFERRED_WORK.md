@@ -7729,8 +7729,53 @@ so any change here must update them in the same change.
 
 ### C12-STARFIELD-SPRITE-VS-CUBEMAP-REDUNDANCY
 
-**Status:** RESOLVED AS EXISTING DR-01 / EXECUTE `C12-11` — the measurement is
-real, but no new design ruling is needed.
+**Status:** ✅ **RESOLVED BY `C12-11` (2026-08-06) — the duplicate source is
+gone; Edge acceptance owed.** The cube map's default is now the DIFFUSE bake
+(`SkyBox.Variant.TYCHO_T5_DIFFUSE`), so the 2,868-sprite catalog is the sole
+source of resolved stars on both backends. Offline evidence, SHA-bound to the
+shipped bytes in `Tools/skybox-bake/skybox-manifest.json`: every diffuse face
+censuses to **0 resolved point sources** (peak luminance 8-28, against 251-255
+for the un-blurred faces) while retaining **83-95%** of its own band structure —
+i.e. the Milky Way was low-passed, not deleted. The redundancy the Batch-815
+census measured therefore cannot recur by construction: the cubemap no longer
+contains the stars the sprites draw.
+
+**What the fix actually required — the C12-10 bake never blurred anything.**
+The diffuse artifacts had been emitted but never consumed, and both halves of
+the helper were wrong: (1) `.blur()` was chained onto a `sharp.composite()`
+pipeline, but sharp applies `composite` LAST regardless of chain order, so the
+blur hit the empty `create` base and the un-blurred strips were pasted on top —
+the "diffuse" output was bit-for-bit as sharp as its input; (2) `composite()`
+returns RGBA even from a `channels: 3` base, and the caller read it back with a
+3-byte stride, rotating channels and making the map ~29x too bright. Fixed with
+explicit `Buffer.copy` wrap-padding plus channel/length sentinels.
+
+**Instrument lesson (the recurring one).** A whole-image **mean is invariant
+under blur**, so it cannot distinguish "low-passed" from "not low-passed" — the
+first fix attempt verified mean conservation and read as correct while the blur
+was still a no-op. Only a **peak or point-source** metric discriminates: a
+genuine sigma=20 low-pass drops a synthetic star field's max from 250 to 65,
+where the broken path left it at 250. This is the same trap as the Batch-815
+census in mirror image, and it is why the gate is now a point census
+(`Tools/skybox-bake/starmap-census.mjs`) rather than any band statistic.
+
+**Guard:** `Tools/visual-regression/skybox-diffuse-seam.spec.mjs` (24 tests,
+pure Node) — shipped-asset geometry/chroma, manifest-vs-file SHA-256 binding,
+the two-sided DR-01 contract, SYNTHETIC ground-truth images, and 3 MUTATION
+tests that break the detector and require the synthetic results to fail.
+`probe-stars-catalog.mjs` check (A) is a REAL gate again — re-expressed as a
+point census so a bright diffuse band cannot drown the sprites (Sirius sits only
+~9 deg off the galactic plane, so it would have) — joined by a new check (G)
+asserting the cubemap alone yields no resolved stars.
+
+**Still owed (do not self-promote):** the Edge run of `probe-stars-catalog.mjs`,
+the G3 diffuse/reversal visual review, and the moving-camera alias/frame-cost
+lane for the 2,868 sprites. Historical record follows.
+
+---
+
+**Original status (superseded):** RESOLVED AS EXISTING DR-01 / EXECUTE `C12-11`
+— the measurement is real, but no new design ruling is needed.
 
 First post-Batch-804 census run of `probe-stars-catalog.mjs` (2026-08-02, after
 re-aiming its check (A) at a same-aim center-box differential): at the default
@@ -7753,7 +7798,9 @@ the catalog or invent a compensating intensity. Execute `C12-11`, preserve the
 deliberately red check (A) until the seam lands, and certify the M6/G3 source
 split plus moving-camera alias/cost evidence. The hash-pinned source TIFF and
 diffuse outputs are not present locally, so do not fabricate the result by
-blurring six cube faces independently. Full disposition and guardrails:
+blurring six cube faces independently. *(2026-08-06: the source was
+re-downloaded and hash-verified, and the faces were regenerated properly — see
+the resolution above.)* Full disposition and guardrails:
 [`C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md`](C12_STARFIELD_SEAM_DISPOSITION_2026-08-02.md).
 
 ## 2026-08-02 — Mat-pipeline log-depth probe incident

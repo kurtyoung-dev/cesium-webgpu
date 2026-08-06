@@ -3,8 +3,24 @@
 // Catalog starfield renders on WebGPU.
 //
 // What it verifies:
-//   (A) Turning scene.skyBox.starField.show ON adds bright HDR points to
-//       the frame vs OFF (delta in bright-pixel count > threshold).
+//   (A) Turning scene.skyBox.starField.show ON adds RESOLVED POINT SOURCES to
+//       the frame vs OFF, in the same Sirius-aimed center box.
+//   (G) DR-01 seam: with the sprites OFF, the cube map contributes essentially
+//       NO resolved point sources of its own — it carries diffuse Milky Way
+//       light only. (A) and (G) together are the seam: exactly one owner per
+//       signal.
+//
+// (A) was a brightness count until C12-11, and it was RED by design while the
+// unblurred t5 faces shipped: the cube map painted the same stars the sprites
+// did, so the whole 2,868-star field moved the count by ~3 px (91 -> 94). Two
+// things changed. The default cube map is now the DIFFUSE bake, so the sprites
+// are the only source of resolved stars; and the metric is now a POINT census
+// (`Tools/skybox-bake/starmap-census.mjs`) rather than a threshold count, so a
+// bright diffuse band cannot register as stars and cannot drown the sprites.
+// The band-vs-point distinction matters directly here: Sirius sits only ~9 deg
+// off the galactic plane, so the diffuse band IS bright in this exact view — a
+// brightness count there would still be dominated by the cube map even after
+// the seam landed.
 //   (B) Bright stars read brighter/larger than faint stars: with the
 //       camera aimed at Sirius (mag −1.46) for the pinned scene time, a
 //       bright cluster lands near frame center, and the brightest star
@@ -30,6 +46,10 @@ import { chromium } from "playwright";
 import { mkdirSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+
+// Node-side analysis only — these run over the pixel arrays the page returns,
+// never inside page.evaluate (which would drop the closure).
+import { pointSourceCensus } from "../skybox-bake/starmap-census.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8134";
 const OUT_DIR = join(
@@ -284,6 +304,26 @@ function brightCountCenter(img, thresh, f) {
   return count;
 }
 
+// Resolved-point-source census inside a centered box of half-width fraction
+// `f`. Converts the RGBA grab to the luminance plane the shared detector
+// expects, then counts strict local maxima that rise above their LOCAL ring
+// background — so diffuse band brightness cannot masquerade as a star.
+function pointCensusCenter(img, f) {
+  const x0 = Math.floor(img.w * (0.5 - f));
+  const x1 = Math.floor(img.w * (0.5 + f));
+  const y0 = Math.floor(img.h * (0.5 - f));
+  const y1 = Math.floor(img.h * (0.5 + f));
+  const bw = x1 - x0;
+  const bh = y1 - y0;
+  const plane = new Float32Array(bw * bh);
+  for (let y = 0; y < bh; y++) {
+    for (let x = 0; x < bw; x++) {
+      plane[y * bw + x] = lum(img.data, 4 * ((y0 + y) * img.w + (x0 + x)));
+    }
+  }
+  return pointSourceCensus(plane, bw, bh).count;
+}
+
 function savePng(name, img) {
   writeFileSync(
     join(OUT_DIR, name),
@@ -314,6 +354,13 @@ const blankCenter = brightCountCenter(gpu.imgBlank, THRESH, 0.12);
 // delta and made the old `onBright > offBright + 50` gate a coin flip.
 const offCenter = brightCountCenter(gpu.imgOff, THRESH, 0.12);
 
+// C12-11: the point census is what (A)/(G) actually gate on. The brightness
+// counts above stay as diagnostics because they are still the right instrument
+// for (B)/(C)'s cluster-vs-blank comparison.
+const siriusPoints = pointCensusCenter(gpu.imgSirius, 0.12);
+const offPoints = pointCensusCenter(gpu.imgOff, 0.12);
+const blankPoints = pointCensusCenter(gpu.imgBlank, 0.12);
+
 console.log(
   `starField present on skyBox: ${gpu.hasStarField}, stats: ${JSON.stringify(gpu.stats)}`,
 );
@@ -331,10 +378,14 @@ console.log(
 console.log(`console errors: ${gpu.errors.length}`);
 gpu.errors.slice(0, 8).forEach((e) => console.log("  ERR:", e.slice(0, 250)));
 
-// (A) ON adds bright pixels vs OFF — same Sirius aim, center box only (the
-// global frame is dominated by procedural cubemap stars; see re-baseline
-// note above).
-const aOK = siriusCenter > offCenter + 20;
+// (A) The sprite layer adds RESOLVED point sources vs OFF — same Sirius aim,
+// same center box. A real gate again as of C12-11: the diffuse cube map no
+// longer paints the stars the sprites are supposed to own.
+const aOK = siriusPoints > offPoints && siriusPoints >= 1;
+// (G) DR-01 seam: the cube map alone yields essentially no resolved sources.
+// A small tolerance absorbs JPEG ringing and 8-bit dither in the band; the
+// baked faces census to exactly 0 offline (skybox-manifest.json).
+const gOK = offPoints <= 2;
 // (B/C) Aiming at Sirius puts a bright cluster near center; far more than
 // aiming at a blank patch.
 const bcOK = siriusCenter > 20 && siriusCenter > blankCenter * 2 + 10;
@@ -345,7 +396,13 @@ const eOK = gpu.hasStarField === true;
 // (F) zero console errors.
 const fOK = gpu.errors.length === 0;
 
-console.log(`(A) ON adds bright pixels: ${aOK ? "OK" : "FAIL"}`);
+console.log(
+  `center-box POINT census: sirius-aimed=${siriusPoints} catalog-off=${offPoints} blank-aimed=${blankPoints}`,
+);
+console.log(`(A) sprites add resolved point sources: ${aOK ? "OK" : "FAIL"}`);
+console.log(
+  `(G) DR-01 seam — cubemap alone has no resolved stars: ${gOK ? "OK" : "FAIL"}`,
+);
 console.log(
   `(B/C) Sirius-aimed center cluster >> blank-aimed: ${bcOK ? "OK" : "FAIL"}`,
 );
@@ -356,7 +413,7 @@ console.log(
 console.log(`(F) zero console errors: ${fOK ? "OK" : "FAIL"}`);
 console.log(`PNGs: ${OUT_DIR}`);
 
-const pass = aOK && bcOK && dOK && eOK && fOK;
+const pass = aOK && gOK && bcOK && dOK && eOK && fOK;
 console.log(pass ? "PASS" : "FAIL");
 await browser.close();
 process.exit(pass ? 0 : 1);

@@ -234,6 +234,29 @@ SkyBox.Variant = Object.freeze({
    * project's scope per `migration_doc/QUEUE_2026-07-19_CAMPAIGN12.md` §6f).
    */
   TYCHO_T5: "TYCHO_T5",
+  /**
+   * Tycho catalogue skymap, **diffuse Milky Way light only** — the default
+   * (see {@link SkyBox.defaultVariant}).
+   *
+   * This is the Campaign-12 DR-01 seam: the cube map supplies the degrees-scale
+   * galactic band and nothing else, while every *resolved* star comes from the
+   * {@link StarField} sprite catalogue at its actual RA/Dec. One physical owner
+   * per signal — so stars stay resolution-independent, share a single PSF and
+   * B−V colour, and can respond to extinction, daytime fade and glare, none of
+   * which a texel baked into a cube face can do.
+   *
+   * Baked from the same hash-pinned SVS 3572 `t5` source as
+   * {@link SkyBox.Variant.TYCHO_T5} by `Tools/skybox-bake/`, low-passed with a
+   * wrapped Gaussian of σ ≈ 0.44° (FWHM ≈ 1.03°) on the equirectangular before
+   * reprojection — wide enough to annihilate point sources (Tycho stars render
+   * under 0.1°) and far narrower than the band structure it preserves. The blur
+   * runs on the *equirect*, not on six faces independently, so the cube stays
+   * seam-continuous.
+   *
+   * `TYCHO_T5` remains bundled and selectable as the un-blurred reversal
+   * artifact, so DR-01 can be reversed without a re-bake.
+   */
+  TYCHO_T5_DIFFUSE: "TYCHO_T5_DIFFUSE",
 });
 
 const skyBoxVariants = {
@@ -253,19 +276,32 @@ const skyBoxVariants = {
       );
     },
   },
+  [SkyBox.Variant.TYCHO_T5_DIFFUSE]: {
+    prefix: "tycho2t5_80_diffuse",
+    url(suffix) {
+      return buildModuleUrl(
+        `Assets/Textures/SkyBox/${this.prefix}_${suffix}.jpg`,
+      );
+    },
+  },
 };
 
 /**
  * The variant {@link SkyBox.createEarthSkyBox} uses when none is passed.
  *
- * `TYCHO_T5` — the bright Milky Way render — is the default as of `C12-10`
- * (Campaign 12): its faces are now bundled in the repository (see
- * {@link SkyBox.Variant.TYCHO_T5}). `TYCHO_T3` remains bundled and selectable
- * for applications that prefer the historical faint render; both are offline.
+ * `TYCHO_T5_DIFFUSE` is the default as of `C12-11` (Campaign 12), completing
+ * the DR-01 seam: the cube map contributes diffuse galactic light and the
+ * {@link StarField} sprite catalogue owns every resolved star. `C12-10` had
+ * shipped the un-blurred `TYCHO_T5` faces as a deliberate transitional step,
+ * before the catalogue was deep enough to take over — with both sources
+ * painting the same stars, the sprites were very nearly invisible.
+ *
+ * All three variants stay bundled and offline: `TYCHO_T5` as DR-01's un-blurred
+ * reversal artifact, and `TYCHO_T3` as the historical faint render.
  *
  * @type {string}
- * @default SkyBox.Variant.TYCHO_T5
+ * @default SkyBox.Variant.TYCHO_T5_DIFFUSE
  */
-SkyBox.defaultVariant = SkyBox.Variant.TYCHO_T5;
+SkyBox.defaultVariant = SkyBox.Variant.TYCHO_T5_DIFFUSE;
 
 export default SkyBox;

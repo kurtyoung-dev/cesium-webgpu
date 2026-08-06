@@ -26,30 +26,44 @@
  *                  re-bake.
  *
  * Outputs (all under --out, gitignored):
- *   tycho2t5_80_{face}.jpg              2048 un-blurred  (the SHIPPED default faces)
+ *   tycho2t5_80_diffuse_{face}.jpg      2048 blurred     (the SHIPPED DEFAULT faces, DR-01)
+ *   tycho2t5_80_diffuse_4096_{face}.jpg 4096 blurred     (opt-in / VRAM policy)
+ *   tycho2t5_80_{face}.jpg              2048 un-blurred  (DR-01 reversal artifact, also shipped)
  *   tycho2t5_80_4096_{face}.jpg         4096 un-blurred  (opt-in / VRAM policy)
- *   tycho2t5_80_diffuse_{face}.jpg      2048 blurred     (DR-01 diffuse-only)
- *   tycho2t5_80_diffuse_4096_{face}.jpg 4096 blurred     (DR-01 diffuse-only)
  *
- * With --install, the 2048 un-blurred faces are copied into the engine assets
- * dir as the checked-in tycho2t5_80_{face}.jpg set.
+ * BOTH 2048 sets are checked into the engine assets dir: --install-diffuse
+ * copies the diffuse set (SkyBox.Variant.TYCHO_T5_DIFFUSE, the default since
+ * C12-11) and --install copies the un-blurred set (TYCHO_T5), which DR-01
+ * requires stay bundled so the seam is reversible without a re-bake.
  *
- * Dependency: `sharp` (image ops). It resolves transitively in this repo today,
- * but MUST be added as an explicit devDependency — a separate in-flight batch is
- * landing that. If `sharp` fails to resolve, run `npm i -D sharp` at the repo root.
+ * --manifest-only re-derives skybox-manifest.json — the per-face point-source
+ * census, band structure, and SHA-256 of every shipped face — from an existing
+ * out/, and REFUSES to write it unless the DR-01 contract holds.
+ *
+ * Dependency: `sharp` (image ops), an explicit devDependency at the repo root.
  *
  * Usage:
- *   node Tools/skybox-bake/bake-tycho-t5.mjs                 # bake all variants to out/
- *   node Tools/skybox-bake/bake-tycho-t5.mjs --install       # + copy 2048 faces into Assets
- *   node Tools/skybox-bake/bake-tycho-t5.mjs --sigma 28      # override diffuse blur sigma
- *   node Tools/skybox-bake/bake-tycho-t5.mjs --only-diffuse  # re-run just the blur variant
+ *   node Tools/skybox-bake/bake-tycho-t5.mjs                      # bake all variants to out/
+ *   node Tools/skybox-bake/bake-tycho-t5.mjs --install-diffuse    # + install the DEFAULT faces
+ *   node Tools/skybox-bake/bake-tycho-t5.mjs --install            # + install the reversal faces
+ *   node Tools/skybox-bake/bake-tycho-t5.mjs --manifest-only      # re-derive the manifest
+ *   node Tools/skybox-bake/bake-tycho-t5.mjs --sigma 28           # override diffuse blur sigma
+ *   node Tools/skybox-bake/bake-tycho-t5.mjs --only-diffuse       # re-run just the blur variant
  */
 // Node ESM offline tooling. Linted by the `Tools/**` block in
 // eslint.config.js, which supplies the Node (and browser) global sets.
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
+import crypto from "node:crypto";
 import sharp from "sharp";
+
+import {
+  bandStructure,
+  checkDr01,
+  pointSourceCensus,
+  toLuminance,
+} from "./starmap-census.mjs";
 
 sharp.cache(false);
 sharp.concurrency(0); // libvips picks nproc
@@ -83,8 +97,15 @@ const OPT = {
   // Milky Way band. See README "Blurred (diffuse-only) variant".
   sigma: parseFloat(arg("sigma", "20")),
   install: !!arg("install", false),
+  // C12-11 / DR-01: install the 2048 *diffuse* faces as the shipped default
+  // set. Kept as its own flag rather than folded into --install so the
+  // un-blurred reversal artifact can never be replaced by accident.
+  installDiffuse: !!arg("install-diffuse", false),
   onlyDiffuse: !!arg("only-diffuse", false),
   onlyUnblurred: !!arg("only-unblurred", false),
+  // Recompute the census + provenance manifest from an existing out/ without
+  // re-running the ~10 min reprojection.
+  manifestOnly: !!arg("manifest-only", false),
 };
 
 const FACES = ["px", "mx", "py", "my", "pz", "mz"];
@@ -199,54 +220,56 @@ function reprojectFace(eq, EW, EH, face, N) {
 }
 
 // Horizontal-wrap Gaussian blur of an equirect (so RA=0/360 has no seam).
-async function blurEquirectWrapped(eqSharp, EW, EH, sigmaPx) {
+//
+// The wrap padding is built with explicit Buffer copies rather than sharp's
+// `composite()`. That is not a style preference — `composite()` is applied at
+// the END of sharp's pipeline, AFTER `blur()`, regardless of the order the
+// calls are chained in. The previous implementation therefore blurred the empty
+// black `create` base and then pasted the un-blurred strips on top of it, so
+// the "diffuse" output was bit-for-bit as sharp as the input: a total no-op
+// that left every resolved star in place. It also returned RGBA (libvips adds
+// an alpha band for the `over` blend), which the caller read back with a
+// 3-byte stride, rotating the channels against the pixel grid.
+//
+// Both defects were silent: the file sizes stayed plausible and the mean was
+// roughly conserved, and a mean is invariant under blur anyway, so only a PEAK
+// or point-source metric can tell a real low-pass from a skipped one. See
+// `starmap-census.mjs` for the metrics that now assert this.
+async function blurEquirectWrapped(eq, EW, EH, sigmaPx) {
   const pad = Math.ceil(sigmaPx * 3);
-  const left = await sharp(await eqSharp.clone().raw().toBuffer(), {
-    raw: { width: EW, height: EH, channels: 3 },
+  const wideW = EW + 2 * pad;
+  const wide = Buffer.alloc(wideW * EH * 3);
+  for (let y = 0; y < EH; y++) {
+    const s = y * EW * 3;
+    const d = y * wideW * 3;
+    eq.copy(wide, d, s + (EW - pad) * 3, s + EW * 3); // left pad  <- right edge
+    eq.copy(wide, d + pad * 3, s, s + EW * 3); // centre
+    eq.copy(wide, d + (pad + EW) * 3, s, s + pad * 3); // right pad <- left edge
+  }
+
+  const out = await sharp(wide, {
+    raw: { width: wideW, height: EH, channels: 3 },
   })
-    .extract({ left: EW - pad, top: 0, width: pad, height: EH })
-    .raw()
-    .toBuffer();
-  const rightStrip = await sharp(await eqSharp.clone().raw().toBuffer(), {
-    raw: { width: EW, height: EH, channels: 3 },
-  })
-    .extract({ left: 0, top: 0, width: pad, height: EH })
-    .raw()
-    .toBuffer();
-  const center = await eqSharp.clone().raw().toBuffer();
-  const wide = await sharp({
-    create: {
-      width: EW + 2 * pad,
-      height: EH,
-      channels: 3,
-      background: { r: 0, g: 0, b: 0 },
-    },
-  })
-    .composite([
-      {
-        input: left,
-        raw: { width: pad, height: EH, channels: 3 },
-        left: 0,
-        top: 0,
-      },
-      {
-        input: center,
-        raw: { width: EW, height: EH, channels: 3 },
-        left: pad,
-        top: 0,
-      },
-      {
-        input: rightStrip,
-        raw: { width: pad, height: EH, channels: 3 },
-        left: EW + pad,
-        top: 0,
-      },
-    ])
     .blur(sigmaPx)
     .extract({ left: pad, top: 0, width: EW, height: EH })
+    .removeAlpha()
     .raw()
-    .toBuffer();
-  return wide;
+    .toBuffer({ resolveWithObject: true });
+
+  // Permanent sentinels: both failure modes above were invisible in the output
+  // size, so assert the stride contract explicitly instead of trusting it.
+  if (out.info.channels !== 3) {
+    throw new Error(
+      `[bake] blurEquirectWrapped produced ${out.info.channels} channels, expected 3 — ` +
+        `reprojectFace() indexes with a 3-byte stride and would silently misread it.`,
+    );
+  }
+  if (out.data.length !== EW * EH * 3) {
+    throw new Error(
+      `[bake] blurEquirectWrapped produced ${out.data.length} bytes, expected ${EW * EH * 3}.`,
+    );
+  }
+  return out.data;
 }
 
 async function writeFace(faceBuf, N, targetSize, filePath) {
@@ -264,9 +287,147 @@ async function writeFace(faceBuf, N, targetSize, filePath) {
   return fs.statSync(filePath).size;
 }
 
+// ---- Census + provenance manifest (C12-11) -----------------------------
+const MANIFEST = path.join(__dirname, "skybox-manifest.json");
+
+const sha256File = (p) =>
+  crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+
+/**
+ * Decode one baked face and measure it with the shared, dependency-free
+ * metrics in `starmap-census.mjs`. `sharp` lives on this side of the fence so
+ * the spec that re-checks these numbers can stay pure Node.
+ */
+async function measureFace(file) {
+  const { data, info } = await sharp(file)
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  const lum = toLuminance(data, info.width, info.height);
+  const points = pointSourceCensus(lum, info.width, info.height);
+  const band = bandStructure(lum, info.width, info.height, 128);
+  return {
+    bytes: fs.statSync(file).size,
+    sha256: sha256File(file),
+    width: info.width,
+    height: info.height,
+    points: points.count,
+    peakLuminance: +points.peakMax.toFixed(2),
+    strongestContrast: +points.strongest.toFixed(2),
+    bandStdDev: +band.stdDev.toFixed(4),
+    bandMean: +band.mean.toFixed(4),
+  };
+}
+
+/**
+ * Write the checked-in provenance + DR-01 evidence manifest, and REFUSE to
+ * write it if the measured faces do not satisfy the seam contract. The bake is
+ * the only place with decoded pixels, so this is where the contract is
+ * enforced; `skybox-diffuse-seam.spec.mjs` then re-derives every SHA-256 here
+ * against the installed assets so the evidence can never drift from the bytes
+ * it describes.
+ */
+async function writeManifest() {
+  console.log(`[bake] census: measuring faces for the DR-01 manifest`);
+  const diffuse = {};
+  const unblurred = {};
+  const installed = {};
+
+  for (const f of FACES) {
+    unblurred[f] = await measureFace(
+      path.join(OPT.out, `tycho2t5_80_${f}.jpg`),
+    );
+    diffuse[f] = await measureFace(
+      path.join(OPT.out, `tycho2t5_80_diffuse_${f}.jpg`),
+    );
+    console.log(
+      `[bake]   ${f}: unblurred points=${unblurred[f].points} bandStd=${unblurred[f].bandStdDev}  ` +
+        `diffuse points=${diffuse[f].points} bandStd=${diffuse[f].bandStdDev} bandMean=${diffuse[f].bandMean}`,
+    );
+  }
+
+  // Enforce DR-01 per face before anything is recorded as evidence.
+  const failures = [];
+  for (const f of FACES) {
+    const r = checkDr01(
+      { points: diffuse[f].points, bandStdDev: diffuse[f].bandStdDev },
+      { points: unblurred[f].points, bandStdDev: unblurred[f].bandStdDev },
+    );
+    r.failures.forEach((m) => failures.push(`${f}: ${m}`));
+    diffuse[f].bandRatio = +r.bandRatio.toFixed(4);
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      `[bake] DR-01 seam contract FAILED — manifest not written:\n  ` +
+        failures.join("\n  "),
+    );
+  }
+
+  for (const f of FACES) {
+    const p = path.join(ASSETS, `tycho2t5_80_diffuse_${f}.jpg`);
+    if (fs.existsSync(p)) {
+      installed[f] = { bytes: fs.statSync(p).size, sha256: sha256File(p) };
+    }
+  }
+
+  const manifest = {
+    $comment:
+      "Generated by Tools/skybox-bake/bake-tycho-t5.mjs. Checked in as the DR-01 provenance + seam evidence for the bundled star-map cube faces. Tools/visual-regression/skybox-diffuse-seam.spec.mjs re-derives each shipped file's sha256 and rejects this manifest if they disagree.",
+    decision:
+      "Campaign 12 DR-01 (QUEUE_2026-07-19_CAMPAIGN12.md §6c): the cubemap carries DIFFUSE Milky Way light only; every RESOLVED star comes from the sprite catalogue (Scene/StarField + BrightStarCatalog).",
+    source: {
+      product:
+        'NASA/GSFC SVS 3572 — "The Tycho Catalog Skymap, Version 2.0", t5 variant',
+      file: path.basename(OPT.input),
+      url: "https://svs.gsfc.nasa.gov/vis/a000000/a003500/a003572/TychoSkymapII.t5_16384x08192.tif",
+      page: "https://svs.gsfc.nasa.gov/3572/",
+      sha256:
+        "2eb9baf5796c62bb04d8c87625b93356cd5ff4172bc56d6b731df554393de04f",
+      bytes: 402653312,
+      width: 16384,
+      height: 8192,
+      retrieved: "2026-08-06",
+    },
+    transfer:
+      "SMPTE gamma 1.8 -> linear -> sRGB OETF, per-channel 256->256 LUT",
+    reproject: "equirect -> 6 GL cube faces at 4096, bilinear, lon-wrapped",
+    encode: {
+      faceSize: OPT.shipSize,
+      masterSize: OPT.faceSize,
+      resample: "lanczos3",
+      quality: OPT.quality,
+      chromaSubsampling: OPT.chroma,
+      mozjpeg: true,
+    },
+    diffuse: {
+      lowPass: `wrapped Gaussian on the corrected equirect, sigma=${OPT.sigma} source px`,
+      sigmaDegrees: +((OPT.sigma / (16384 / 360)) * 1).toFixed(4),
+      fwhmDegrees: +((2.355 * OPT.sigma) / (16384 / 360)).toFixed(4),
+      prefix: "tycho2t5_80_diffuse",
+      variant: "SkyBox.Variant.TYCHO_T5_DIFFUSE (default since C12-11)",
+      faces: diffuse,
+      installed,
+    },
+    unblurredReversalArtifact: {
+      note: "Retained + bundled so DR-01's reversal plan needs no re-bake; selectable as SkyBox.Variant.TYCHO_T5.",
+      prefix: "tycho2t5_80",
+      faces: unblurred,
+    },
+  };
+
+  fs.writeFileSync(MANIFEST, `${JSON.stringify(manifest, null, 2)}\n`);
+  console.log(`[bake] manifest -> ${MANIFEST}`);
+}
+
 // ---- Main --------------------------------------------------------------
 async function main() {
   fs.mkdirSync(OPT.out, { recursive: true });
+
+  // --manifest-only re-measures an existing out/ without re-baking.
+  if (OPT.manifestOnly) {
+    await writeManifest();
+    return;
+  }
   if (!fs.existsSync(OPT.input)) {
     console.error(
       `[bake] input not found: ${OPT.input}\n` +
@@ -293,9 +454,6 @@ async function main() {
   for (let i = 0; i < raw.length; i++) {
     raw[i] = lut[raw[i]];
   }
-  const correctedSharp = () =>
-    sharp(raw, { raw: { width: EW, height: EH, channels: 3 } });
-
   const N = OPT.faceSize;
   const report = { unblurred: {}, diffuse: {} };
 
@@ -321,12 +479,7 @@ async function main() {
     console.log(
       `[bake] stage 3: blur equirect (sigma=${OPT.sigma}px) -> diffuse faces`,
     );
-    const blurred = await blurEquirectWrapped(
-      correctedSharp(),
-      EW,
-      EH,
-      OPT.sigma,
-    );
+    const blurred = await blurEquirectWrapped(raw, EW, EH, OPT.sigma);
     for (const f of FACES) {
       const faceBuf = reprojectFace(blurred, EW, EH, f, N);
       const p4096 = path.join(OPT.out, `tycho2t5_80_diffuse_4096_${f}.jpg`);
@@ -351,6 +504,21 @@ async function main() {
       fs.copyFileSync(
         path.join(OPT.out, `tycho2t5_80_${f}.jpg`),
         path.join(ASSETS, `tycho2t5_80_${f}.jpg`),
+      );
+    }
+  }
+
+  // C12-11 / DR-01: install the 2048 diffuse faces alongside (never over) the
+  // un-blurred set, which stays bundled as the ratified reversal artifact.
+  if (OPT.installDiffuse && !OPT.onlyUnblurred) {
+    console.log(
+      `[bake] install-diffuse: copying ${OPT.shipSize} diffuse faces -> ${ASSETS}`,
+    );
+    fs.mkdirSync(ASSETS, { recursive: true });
+    for (const f of FACES) {
+      fs.copyFileSync(
+        path.join(OPT.out, `tycho2t5_80_diffuse_${f}.jpg`),
+        path.join(ASSETS, `tycho2t5_80_diffuse_${f}.jpg`),
       );
     }
   }

@@ -160,18 +160,60 @@ seam decision be reversible without a re-bake:
 
 ### What actually ships (checked into git)
 
-Only the **2048 un-blurred** faces, copied by `--install` into
-`packages/engine/Source/Assets/Textures/SkyBox/tycho2t5_80_{px,mx,py,my,pz,mz}.jpg`
-(JPEG **quality 90, 4:4:4** chroma — the C12 G3 gate fails under 4:2:0).
+**Both** 2048 sets, at JPEG **quality 90, 4:4:4** chroma (the C12 G3 gate fails
+under 4:2:0), under
+`packages/engine/Source/Assets/Textures/SkyBox/`:
 
-> **Why un-blurred, not the DR-01 diffuse variant?** The DR-01 seam design
-> (cubemap carries diffuse light only; sprites supply every resolved star) also
-> needs the sprite-catalogue extension (`C12-09`) and the seam implementation
-> (`C12-11`), **neither of which is in this task**. Shipping the blurred faces as
-> the default _now_ would strip all resolved stars from the sky and regress it
-> below t3. So the default is the un-blurred full star field (the direct bright
-> upgrade); the blurred faces are emitted and kept as artifacts so `C12-11` can
-> switch to the diffuse-only seam later without a re-bake.
+| set                              | installed by        | `SkyBox.Variant`   | total   | role                              |
+| -------------------------------- | ------------------- | ------------------ | ------- | --------------------------------- |
+| `tycho2t5_80_diffuse_{face}.jpg` | `--install-diffuse` | `TYCHO_T5_DIFFUSE` | 0.36 MB | **the default** — DR-01 seam      |
+| `tycho2t5_80_{face}.jpg`         | `--install`         | `TYCHO_T5`         | 4.16 MB | DR-01 reversal artifact, retained |
+
+`C12-11` (2026-08-06) completed the DR-01 seam: the cube map carries diffuse
+Milky Way light only, and the 2,868-record sprite catalogue owns every resolved
+star. `C12-10` had shipped the un-blurred faces first because the catalogue was
+not yet deep enough to take over — with both sources painting the same stars, a
+census measured the entire sprite field as worth ~3 px.
+
+The diffuse set is **~12× smaller** than the un-blurred one (0.36 MB vs
+4.16 MB): once the point sources are gone, what remains is a smooth band that
+JPEG codes very cheaply. Note this is not a general rule — see §6.1 for the
+measurement that contradicts the intuition in the other direction.
+
+> **Note on face size.** At 2048/face a texel spans ~0.044°, while the diffuse
+> content is band-limited to a ~1.03° FWHM — roughly 20× oversampled. A smaller
+> diffuse face would be visually indistinguishable after bilinear magnification.
+> 2048 is kept here because it is what `C12-11` ratified and it matches the
+> reversal artifact texel-for-texel; revisiting it belongs with the `C12-12`
+> VRAM/face-size policy, not here.
+
+### Two defects found in this pipeline by `C12-11` (2026-08-06)
+
+The diffuse faces had never been _consumed_ before `C12-11`, and when they were,
+both of the following turned out to be true of `blurEquirectWrapped`. Recorded
+because each was silent and each survived a plausible-looking sanity check:
+
+1. **The blur never ran.** The helper chained `.blur(σ)` onto a
+   `sharp({create}).composite([...])` pipeline. sharp applies `composite`
+   **last**, regardless of chain order — so the blur hit the empty black base
+   and the un-blurred strips were pasted on top of the result. The "diffuse"
+   output was as sharp as its input.
+2. **The result was mis-strided.** `composite()` returns RGB**A** even when the
+   base is `channels: 3` and no input carries alpha; the caller read it back
+   with a 3-byte stride, rotating channels against the pixel grid. That alone
+   made the map ~29× too bright and added synthetic high-frequency edges.
+
+Both are now fixed: the wrap padding is built with explicit `Buffer.copy` calls
+and the blur runs in its own pipeline, with sentinels asserting the channel
+count and byte length.
+
+**The measurement lesson.** A whole-image **mean is invariant under blur**, so
+it cannot distinguish "blurred" from "not blurred" — the first fix attempt
+verified mean conservation and looked correct while the blur was still a no-op.
+Only a **peak or point-source metric** discriminates: a genuine σ=20 low-pass
+drops a synthetic star field's max from 250 to 65, while the broken path left it
+at 250. That is why `starmap-census.mjs` exists and why the DR-01 gate is a
+point census rather than any band statistic.
 
 ### Blurred (diffuse-only) variant parameters
 
@@ -248,6 +290,37 @@ sky, not the band.
 > look is preferred over the old hazy floor.
 
 ---
+
+## 6.1 DR-01 seam census (`C12-11`, 2026-08-06)
+
+Measured by `starmap-census.mjs` over the shipped 2048 faces and recorded, with
+each file's SHA-256, in `skybox-manifest.json`. `points` counts **resolved point
+sources** — strict local maxima rising above a _local_ ring background, so
+diffuse brightness cannot register as a star.
+
+| face | diffuse `points` | diffuse peak | un-blurred `points` | un-blurred peak | band kept |
+| ---- | ---------------- | ------------ | ------------------- | --------------- | --------- |
+| px   | **0**            | 8.1          | 4,482               | 252.3           | 88.5%     |
+| mx   | **0**            | 11.1         | 4,099               | 250.9           | 83.5%     |
+| py   | **0**            | 28.1         | 7,352               | 253.2           | 94.4%     |
+| my   | **0**            | 15.1         | 8,050               | 254.3           | 93.3%     |
+| pz   | **0**            | 26.0         | 8,318               | 255.0           | 91.2%     |
+| mz   | **0**            | 27.1         | 10,960              | 254.9           | 94.6%     |
+
+Every diffuse face carries **zero** resolved sources while retaining 83–95% of
+its un-blurred band structure — the two-sided DR-01 claim (stars gone, Milky Way
+kept). "Band kept" is measured against the _same_ face's un-blurred twin because
+band strength depends on where a face points: `px`/`mx` look away from the
+galactic centre and legitimately carry ~2.5× less structure than `mz`, so an
+absolute floor would either reject a correct `px` or accept a half-wiped `mz`.
+
+> ⚠ **A file-size intuition that is wrong here.** Blur usually shrinks a JPEG,
+> but the _corrupt_ pre-fix artifacts were 1.64 MB/face — **larger** than the
+> 0.62–0.89 MB un-blurred ones. The un-blurred t5 is ~90% pure black, which
+> codes to almost nothing; anything that lifts light into every block costs
+> bytes. Only after the blur genuinely ran did the faces fall to 0.05–0.08 MB.
+> Size moved in both directions here, so it is a poor correctness signal — use
+> the point census.
 
 ## 7. Files
 
