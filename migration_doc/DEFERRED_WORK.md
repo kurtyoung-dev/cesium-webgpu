@@ -83,6 +83,43 @@ lighting modes with a WebGPU:WebGL drop ratio in [0.4, 2.5] - and gate E stops
 being STRUCTURAL, since it can only be scored for a backend whose own day leg
 darkened.
 
+## 2026-08-06 - the C11-205 request ledger can never participate in a CERTIFYING resident pair
+
+### C11-205-LEDGER-EXCLUDED-FROM-CERTIFICATION
+
+**Status:** OPEN - a design tension surfaced while closing C11-205's tooling,
+recorded rather than papered over. No code change is authorized for it yet.
+
+`run-performance-campaign.mjs` only constructs
+`createRepresentativeTilesetLifecycleTracker` when `--api-instrumentation` is
+enabled, so the stable cross-leg request ledger, the schema-v2 slot/group
+membership, and the model/content/tile-ready ordering evidence exist **only** in
+the instrumented lane. But `assessRepresentativePairComparability` classifies any
+API-instrumented pair as `attributionOnly`, which by contract
+`certificationEligible === false`. The consequence: the richest identity
+evidence C11-205 built is structurally unable to appear in the pair that
+actually certifies a causal timing claim, and the certifying lane rests on the
+replay workload fingerprint alone.
+
+That is not wrong - the observer's own overhead is exactly why an instrumented
+pair cannot certify timing - but it means "the ledgers matched" and "the timing
+is certified" are two different runs that can never be the same run. Closing
+C11-205 therefore requires **two** campaign invocations, and the queue row now
+names both.
+
+**Options if this is ever revisited (maintainer decision, not a worker call):**
+(a) accept the two-lane split permanently and state it in the certification
+language; (b) build a zero-overhead ledger variant (event counts + hashes only,
+no per-event retention) whose cost is measured and proven under the campaign's
+own interleaved A/B protocol before it is allowed into a certifying lane;
+(c) certify on the fingerprint and require the attribution lane as a same-commit
+companion run whose ledger signatures must match across legs. Option (b) is the
+only one that changes the measurement, and it must not be attempted without its
+own overhead evidence - a ledger that perturbs the thing it certifies is the
+"discriminator built from the primitive it discriminates" trap.
+
+**Related:** `migration_doc/QUEUE_2026-07-18_CAMPAIGN11.md` `C11-205` / `C11-168`.
+
 ## 2026-08-06 - C13-16 cirrus morphology attenuates from 9:1 to ~1.2:1 on screen
 
 ### C13-16-SCREEN-ANISOTROPY-ATTENUATION
@@ -329,7 +366,95 @@ hugging the ground - with the probe converted to a gating verdict.
 
 ### C12-STAR-POINT-CENSUS-LIVE-CALIBRATION
 
-**Status:** OPEN - found by the first post-C12-11 run of `probe-stars-catalog.mjs`.
+**SETTLED 2026-08-06: INSTRUMENT, reading (a). Fixed; Edge acceptance OWED.**
+The discriminator the entry specified was run offline (pure Node, no browser) and
+reproduced the live numbers EXACTLY, so no browser round-trip was needed to
+separate the two readings.
+
+**The mechanism is the probe's own aim geometry, not sprite sizing.** The
+sprite's on-screen footprint was DERIVED from source, not guessed: at the probe's
+1024x768 viewport with the default 60 deg horizontal frustum, `proj[0]` = 1.7320508
+and `proj[5]` = 2.3094011, so `StarField._pointAngularSize` (0.003 rad) becomes an
+NDC half-extent of 5.196e-3 / 6.928e-3 - i.e. a base quad half-extent of
+**2.66043 px on BOTH axes** (the aspect correction makes it round), with the
+`_minPointSize` 0.0022 floor NOT binding. `STAR_PSF_SIGMA` 0.12 is quad-relative,
+so the Gaussian core is **sigma = 0.31925 px** - a sub-pixel dot. Sirius
+(vmag -1.46, I = 5.8712, quadScale 2.4231) therefore paints essentially one pixel.
+
+The probe aims the camera EXACTLY at Sirius, so Sirius projects to NDC (0,0),
+which on an even-sized viewport is continuous pixel coordinate (512.0, 384.0) -
+**a pixel CORNER**, because pixel centres sit at i + 0.5. Its four surrounding
+pixels are equidistant (d = 0.7071 px) and therefore **bit-identical**. Under the
+census's then-STRICT local-maximum test (`lum[neighbour] >= v` disqualifies), each
+member of that 2x2 plateau disqualified the other three and the census returned 0.
+
+**Discriminator numbers (`star-point-census-live.spec.mjs`).** Synthetic splats of
+the derived footprint, censused in the probe's exact 245x185 centre box:
+
+| case | census | bright px (lum > 40) | note |
+| --- | --- | --- | --- |
+| Sirius at the probe's aim point (pixel corner) | **0** | **4** (all at luminance 152.6) | matches the LIVE run's `sirius-aimed 0` / `centre box 4` exactly |
+| candidate breakdown at that phase | - | - | 4 over `minPeak`, **4 killed by the tie**, 0 killed by a brighter neighbour, 0 killed by contrast, `strongest` 0 |
+| same star, generic sub-pixel phase | 1 | 1-3 | contrast 255 |
+| 65x65 phase sweep, STRICT predicate | 3337/4225 accepted (79.0%) | - | **888/888 of the rejections are exact ties** |
+| 65x65 phase sweep, plateau predicate | **4225/4225 (100%)** | - | |
+
+**The detector GEOMETRY needed no change** - that half of hypothesis (a) is
+refuted. `coreRadius` 2 px sits inside the base quad (2.660 px) and `ringRadius`
+5 px sits outside it; the Moffat wing a bright sprite leaves on that ring is
+**0.156/255** for Sirius and **0.452/255** for a hypothetical star at the 1-degree
+glare cap - below one 8-bit code, so the local-background estimate is never
+self-contaminated. Only the tie handling was wrong.
+
+**The fix, and why it is not a loosening.** `pointSourceCensus` now counts a
+plateau ONCE, at its scan-order-first member (`neighbor > v` still disqualifies;
+`neighbor === v` disqualifies only when the equal neighbour precedes the candidate
+in scan order). Every threshold is byte-identical: `minPeak` 40 and `minContrast`
+24 are untouched, and the local-background subtraction is untouched. The change can
+only turn a plateau's 0 into a 1. It is provably (G)-neutral: all six shipped
+diffuse faces peak at luminance 8-28 and the probe's sprites-OFF frame peaks at 28,
+all below the 40 floor, so no candidate exists at all on a diffuse face -
+`DR01_LIMITS.diffuseMaxPointSources` cannot move. The un-blurred reversal faces can
+only census slightly HIGHER, and their bound is a minimum (`>= 200`, measured
+4,099-10,960), so a future re-bake stays inside the contract.
+
+**Second, non-blocking finding: the census FLOOR and the sprite EXPOSURE are two
+different instruments, and (A) is re-scoped accordingly.** `minPeak` 40/255 is
+cleared only by stars brighter than **vmag 2.5566** even at the most favourable
+sub-pixel phase (98 of the 2,868 catalogue rows); at a typical phase the reach is
+~vmag 1.9. That is not a product defect - the sprite exposure is deliberately
+anchored so a vmag-3.6 star peaks at 15.3/255 against the M1 census floor of
+12/255 (`StarFieldMath.ts`), i.e. 2.6x BELOW this census's floor by design. The
+consequence is a scope statement: the ~200 sq deg centre box contains an expected
+~0.5 stars that bright, so counting field stars here would be a coin flip. Check
+(A) therefore gates the **aimed** star, and now asserts WHERE the resolved source
+lands (`pointSourceCensus(..., {collectSources: true})`, nearest source within 6 px
+of the aim point) - a strictly stronger claim than "at least one somewhere in the
+box", failing if the sprites stop drawing, stop being point-like, or land wrong.
+**The floor was NOT lowered**: the off-frame peak luminance is 28, so a lower floor
+would put candidates back inside the diffuse band's own 8-bit range and re-create
+the brightness count Batch 833 replaced. This is recorded here rather than filed as
+a product row because no sprite parameter is wrong.
+
+**Files.** `Tools/skybox-bake/starmap-census.mjs` (plateau rule + `collectSources`
++ the live-frame calibration derivation in the JSDoc),
+`Tools/visual-regression/probe-stars-catalog.mjs` ((A) re-scoped to the aim point),
+`Tools/visual-regression/star-point-census-live.spec.mjs` (NEW - 12 tests: derived
+footprint, geometry, the discriminator, the scope, and 4 MUTATION tests including
+one that restores the strict predicate and requires the 0-source defect to come
+back). Gates: 12/12 new spec, 24/24 `skybox-diffuse-seam.spec.mjs` (its own
+mutation targets still match), 1466/1470 across the whole
+`Tools/visual-regression/*.spec.mjs` fleet with the 4 failures being the known
+bare-worktree `ERR_MODULE_NOT_FOUND` specs; package tsc non-TS2307 = 0, root tsc 0,
+prettier clean, eslint clean per file.
+
+**OWED:** the Edge run of `probe-stars-catalog.mjs` - (A) and (G) must both be
+green in the browser before this is promoted. The offline discriminator predicts
+`sirius-aimed = 1` with the source at (511, 383) and `catalog-off = 0`.
+
+**Original filing follows, kept for trace.**
+
+**Status (original):** OPEN - found by the first post-C12-11 run of `probe-stars-catalog.mjs`.
 Product-vs-instrument NOT yet separated; do not treat this as either until it is.
 
 **The good half is decisive: the DR-01 seam landed.** Check (G) PASSES - with the

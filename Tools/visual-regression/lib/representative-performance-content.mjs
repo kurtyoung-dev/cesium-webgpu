@@ -461,15 +461,177 @@ export function diffRepresentativeTerrainDiagnostics(start, end) {
 }
 
 /**
+ * C11-205 — per-frame residency evidence for the tracked 3D Tilesets.
+ *
+ * The resident route contract already proved that terrain needed no work. It
+ * said nothing about 3D Tiles content, which is why a resident pair could end
+ * with the legs holding different ready sets: the tilesets were still
+ * streaming during the measured window and each backend reached readiness on
+ * its own frames. `tilesLoaded` alone is not enough — a tileset can report
+ * loaded on a frame it also unloaded content on — so the sample carries the
+ * cumulative load counter and resident byte totals as well.
+ *
+ * @param {object[]} tilesets
+ * @returns {object}
+ */
+export function sampleRepresentativeTilesetResidency(tilesets) {
+  const list = Array.isArray(tilesets) ? tilesets : [];
+  const sample = {
+    tilesetCount: list.length,
+    allTilesLoaded: list.length > 0,
+    pendingRequests: 0,
+    tilesProcessing: 0,
+    attemptedRequests: 0,
+    loadedTilesTotal: 0,
+    contentByteLength: 0,
+  };
+  for (const tileset of list) {
+    const statistics = tileset?.statistics;
+    if (tileset?.tilesLoaded !== true) {
+      sample.allTilesLoaded = false;
+    }
+    // A tileset without readable statistics cannot state residency. Report the
+    // sample as not-loaded rather than silently scoring it as quiescent.
+    if (!statistics) {
+      sample.allTilesLoaded = false;
+      continue;
+    }
+    sample.pendingRequests += statistics.numberOfPendingRequests || 0;
+    sample.tilesProcessing += statistics.numberOfTilesProcessing || 0;
+    sample.attemptedRequests += statistics.numberOfAttemptedRequests || 0;
+    sample.loadedTilesTotal += statistics.numberOfLoadedTilesTotal || 0;
+    sample.contentByteLength +=
+      (statistics.geometryByteLength || 0) +
+      (statistics.texturesByteLength || 0) +
+      (statistics.batchTableByteLength || 0);
+  }
+  return sample;
+}
+
+/**
+ * Accumulate {@link sampleRepresentativeTilesetResidency} over a route pass or
+ * a measured window. `observe` is called once per rendered frame; the first
+ * observation fixes the baseline the cumulative deltas are read against.
+ *
+ * @param {object[]} tilesets
+ * @returns {{observe: Function, summarize: Function}}
+ */
+export function createRepresentativeTilesetResidencyAccumulator(tilesets) {
+  let frames = 0;
+  let notLoadedFrames = 0;
+  let pendingRequestFrames = 0;
+  let processingFrames = 0;
+  let attemptedRequestFrames = 0;
+  let start = null;
+  let end = null;
+  return {
+    observe(sample = sampleRepresentativeTilesetResidency(tilesets)) {
+      frames++;
+      start ??= sample;
+      end = sample;
+      if (sample.allTilesLoaded !== true) {
+        notLoadedFrames++;
+      }
+      if (sample.pendingRequests > 0) {
+        pendingRequestFrames++;
+      }
+      if (sample.tilesProcessing > 0) {
+        processingFrames++;
+      }
+      if (sample.attemptedRequests > 0) {
+        attemptedRequestFrames++;
+      }
+    },
+    summarize() {
+      return {
+        schemaVersion: 1,
+        tilesetCount: end?.tilesetCount ?? 0,
+        frames,
+        notLoadedFrames,
+        pendingRequestFrames,
+        processingFrames,
+        attemptedRequestFrames,
+        loadedTilesTotalDelta:
+          start === null ? null : end.loadedTilesTotal - start.loadedTilesTotal,
+        contentByteLengthDelta:
+          start === null
+            ? null
+            : end.contentByteLength - start.contentByteLength,
+        start,
+        end,
+      };
+    },
+  };
+}
+
+/**
+ * Decide whether a residency summary describes a window in which the tracked
+ * 3D Tiles content was already fully resident and stayed that way.
+ *
+ * Fail-closed: missing, empty, or subject-free evidence is NOT quiescent. A
+ * resident comparison that cannot see its 3D Tiles content is not a resident
+ * comparison.
+ *
+ * @param {object} residency
+ * @returns {{quiescent: boolean, reasons: string[]}}
+ */
+export function summarizeRepresentativeTilesetResidency(residency) {
+  const reasons = [];
+  if (!residency || typeof residency !== "object") {
+    return {
+      quiescent: false,
+      reasons: ["3D Tiles residency evidence is missing"],
+    };
+  }
+  if (!Number.isInteger(residency.frames) || residency.frames <= 0) {
+    reasons.push("3D Tiles residency evidence observed no frames");
+  }
+  if (
+    !Number.isInteger(residency.tilesetCount) ||
+    residency.tilesetCount <= 0
+  ) {
+    reasons.push("3D Tiles residency evidence tracked no tilesets");
+  }
+  for (const [name, description] of [
+    ["notLoadedFrames", "frames with an unloaded tileset"],
+    ["pendingRequestFrames", "frames with a pending content request"],
+    ["processingFrames", "frames with content still processing"],
+    ["attemptedRequestFrames", "frames that attempted a content request"],
+  ]) {
+    const value = residency[name];
+    if (!Number.isInteger(value)) {
+      reasons.push(`3D Tiles residency ${name} is missing`);
+    } else if (value !== 0) {
+      reasons.push(`${value} ${description}`);
+    }
+  }
+  for (const [name, description] of [
+    ["loadedTilesTotalDelta", "tiles were loaded during the window"],
+    ["contentByteLengthDelta", "resident content bytes changed"],
+  ]) {
+    const value = residency[name];
+    if (!Number.isInteger(value)) {
+      reasons.push(`3D Tiles residency ${name} is missing`);
+    } else if (value !== 0) {
+      reasons.push(`${description} (${name}=${value})`);
+    }
+  }
+  return { quiescent: reasons.length === 0, reasons };
+}
+
+/**
  * A resident route is causal only when the complete measured camera sequence
- * needs no terrain requests or generation and never observes an incomplete
- * globe selection. Route-start staging belongs outside this pass.
+ * needs no terrain requests or generation, never observes an incomplete globe
+ * selection, and holds its 3D Tiles content fully resident throughout.
+ * Route-start staging belongs outside this pass.
  */
 export function isRepresentativeResidentRoutePassQuiescent(pass) {
   return (
     pass?.requestCount === 0 &&
     pass?.tileGenerationCount === 0 &&
-    pass?.globeTilesNotLoadedFrames === 0
+    pass?.globeTilesNotLoadedFrames === 0 &&
+    summarizeRepresentativeTilesetResidency(pass?.tilesetResidency)
+      .quiescent === true
   );
 }
 

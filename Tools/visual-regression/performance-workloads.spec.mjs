@@ -718,11 +718,23 @@ test("representative measured-window evidence rejects vacuous streaming coverage
 });
 
 test("resident route convergence keeps every causal zero-work gate", () => {
+  const quiescentTilesetResidency = {
+    schemaVersion: 1,
+    tilesetCount: 4,
+    frames: 600,
+    notLoadedFrames: 0,
+    pendingRequestFrames: 0,
+    processingFrames: 0,
+    attemptedRequestFrames: 0,
+    loadedTilesTotalDelta: 0,
+    contentByteLengthDelta: 0,
+  };
   assert.equal(
     isRepresentativeResidentRoutePassQuiescent({
       requestCount: 0,
       tileGenerationCount: 0,
       globeTilesNotLoadedFrames: 0,
+      tilesetResidency: quiescentTilesetResidency,
     }),
     true,
   );
@@ -731,16 +743,41 @@ test("resident route convergence keeps every causal zero-work gate", () => {
       requestCount: 1,
       tileGenerationCount: 0,
       globeTilesNotLoadedFrames: 0,
+      tilesetResidency: quiescentTilesetResidency,
     },
     {
       requestCount: 0,
       tileGenerationCount: 1,
       globeTilesNotLoadedFrames: 0,
+      tilesetResidency: quiescentTilesetResidency,
     },
     {
       requestCount: 0,
       tileGenerationCount: 0,
       globeTilesNotLoadedFrames: 1,
+      tilesetResidency: quiescentTilesetResidency,
+    },
+    // C11-205: terrain quiescence alone used to pass this gate, which is how a
+    // pair whose 3D Tiles were still streaming reached the timing comparison.
+    {
+      requestCount: 0,
+      tileGenerationCount: 0,
+      globeTilesNotLoadedFrames: 0,
+    },
+    {
+      requestCount: 0,
+      tileGenerationCount: 0,
+      globeTilesNotLoadedFrames: 0,
+      tilesetResidency: { ...quiescentTilesetResidency, notLoadedFrames: 1 },
+    },
+    {
+      requestCount: 0,
+      tileGenerationCount: 0,
+      globeTilesNotLoadedFrames: 0,
+      tilesetResidency: {
+        ...quiescentTilesetResidency,
+        loadedTilesTotalDelta: 1,
+      },
     },
   ]) {
     assert.equal(
@@ -2596,7 +2633,10 @@ test("representative content has schema and runner coverage gates", () => {
     runnerSource,
     /phase: "post-measurement-untimed-replay"[\s\S]*?traceEndedBeforeReplay: true[\s\S]*?measurementSnapshotsFrozenBeforeReplay: true/,
   );
-  assert.match(runnerSource, /failed to converge to zero terrain work/);
+  assert.match(
+    runnerSource,
+    /failed to converge to a zero-work resident route/,
+  );
   assert.match(runnerSource, /assessRepresentativePairComparability/);
   assert.match(runnerSource, /deviceErrorPhases/);
   assert.match(runnerSource, /validationQueueDrain/);

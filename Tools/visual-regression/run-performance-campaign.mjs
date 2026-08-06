@@ -33,6 +33,8 @@ import {
   summarizeTrackMetrics,
 } from "./lib/performance-campaign-utils.mjs";
 import { assertPerformanceWorkloadManifest } from "./lib/performance-workload-manifest.mjs";
+import { summarizeRepresentativeTilesetResidency } from "./lib/representative-performance-content.mjs";
+import { classifyPerformanceCampaignExit } from "./lib/c11-205-evidence.mjs";
 import { buildPerformanceViewerUrl } from "./lib/performance-viewer-url.mjs";
 import {
   renderersForWorkload,
@@ -2977,8 +2979,18 @@ async function runOne(
             cameraTrackFrameIndex = 1;
             let globeTilesNotLoadedFrames = 0;
             const residentQueueDiagnostics = [];
+            // C11-205: terrain quiescence is only half the resident
+            // precondition. Track the 3D Tiles content over the same pass so a
+            // route that still streams tileset payloads is rejected here,
+            // where the cause is nameable, instead of surviving into a timed
+            // pair whose legs then hold different ready sets.
+            const convergenceTilesetResidency =
+              representativeModule.createRepresentativeTilesetResidencyAccumulator(
+                representativeHarness.assets.tilesets,
+              );
             const removeConvergenceEvidence = scene.postRender.addEventListener(
               () => {
+                convergenceTilesetResidency.observe();
                 if (scene.globe.tilesLoaded !== true) {
                   globeTilesNotLoadedFrames++;
                   if (
@@ -3014,6 +3026,7 @@ async function runOne(
               requestCount: delta.requestCount,
               tileGenerationCount: delta.tileGenerationCount,
               globeTilesNotLoadedFrames,
+              tilesetResidency: convergenceTilesetResidency.summarize(),
               residentQueueDiagnostics,
               routeStartStaging: {
                 stableFrames: routeStartStableFrames,
@@ -3029,19 +3042,35 @@ async function runOne(
               break;
             }
           }
+          const finalConvergencePass = convergencePasses.at(-1);
+          const finalTilesetResidency =
+            representativeModule.summarizeRepresentativeTilesetResidency(
+              finalConvergencePass?.tilesetResidency,
+            );
           representativeHarness.primeEvidence.residentConvergence = {
             maximumPasses: maximumConvergencePasses,
             converged:
               representativeModule.isRepresentativeResidentRoutePassQuiescent(
-                convergencePasses.at(-1),
+                finalConvergencePass,
               ),
+            tilesetResidencyQuiescent: finalTilesetResidency.quiescent,
+            tilesetResidencyReasons: finalTilesetResidency.reasons,
             passes: convergencePasses,
           };
           if (
             !representativeHarness.primeEvidence.residentConvergence.converged
           ) {
+            // `[structural]` marks a precondition the harness could not
+            // establish. The route never became the resident subject a causal
+            // comparison stands in for, so the run must not be read as a
+            // renderer verdict.
             throw new Error(
-              `representative resident route failed to converge to zero terrain work: ${JSON.stringify(convergencePasses)}`,
+              `[structural] representative resident route failed to converge to a zero-work resident route ` +
+                `(terrain requests=${finalConvergencePass?.requestCount ?? "missing"}, ` +
+                `generations=${finalConvergencePass?.tileGenerationCount ?? "missing"}, ` +
+                `globeUnloadedFrames=${finalConvergencePass?.globeTilesNotLoadedFrames ?? "missing"}, ` +
+                `3D Tiles: ${finalTilesetResidency.reasons.join("; ") || "quiescent"}): ` +
+                `${JSON.stringify(convergencePasses)}`,
             );
           }
           // Stop camera advancement while the exact route start is restored
@@ -3199,14 +3228,25 @@ async function runOne(
         if (timestampEnabled) globalThis.CesiumDebug?.gpuPassCost?.(true);
 
         const trackEvidence = [];
+        // C11-205: the measured window carries the same 3D Tiles residency
+        // contract as the convergence passes. Without it a run can satisfy
+        // every terrain gate while its tileset content is still arriving.
+        const measurementTilesetResidencyAccumulator = representativeHarness
+          ? representativeModule.createRepresentativeTilesetResidencyAccumulator(
+              representativeHarness.assets.tilesets,
+            )
+          : null;
         const webgpuModelPreparationAccumulator =
           webgpuModelPreparationEvidenceModule?.createWebGPUModelPreparationEvidenceAccumulator() ||
           null;
         let measurementPostRenderFrameCount = 0;
         const removeActionEvidence =
-          cameraTrackEnabled || webgpuModelPreparationAccumulator
+          cameraTrackEnabled ||
+          webgpuModelPreparationAccumulator ||
+          measurementTilesetResidencyAccumulator
             ? scene.postRender.addEventListener(() => {
                 measurementPostRenderFrameCount++;
+                measurementTilesetResidencyAccumulator?.observe();
                 if (cameraTrackEnabled && currentTrackState) {
                   const evidence = { ...currentTrackState };
                   evidence.globeTilesLoaded = scene.globe?.tilesLoaded === true;
@@ -3454,6 +3494,8 @@ async function runOne(
                   0,
                 ),
               },
+              measurementTilesetResidency:
+                measurementTilesetResidencyAccumulator?.summarize() ?? null,
               validation: null,
             }
           : null;
@@ -4345,6 +4387,30 @@ async function runOne(
         browserResult.quality.reasons ??= [];
         browserResult.quality.reasons.push(reason);
       }
+      // C11-205: a resident window whose 3D Tiles content was still arriving
+      // cannot carry a causal renderer claim, and the divergent ready sets it
+      // produces are a symptom of the unmet precondition rather than of the
+      // renderer. This is an instrument condition, so it is recorded as
+      // structural: the leg never held the subject it was measuring.
+      const tilesetResidency = summarizeRepresentativeTilesetResidency(
+        browserResult.representativeContentEvidence
+          ?.measurementTilesetResidency,
+      );
+      if (!tilesetResidency.quiescent) {
+        const reason =
+          `resident 3D Tiles content was not fully resident across the measured window: ` +
+          `${tilesetResidency.reasons.join("; ")}`;
+        failures.push(reason);
+        browserResult.quality.status = "invalid";
+        browserResult.quality.structural = true;
+        browserResult.quality.validForAggregation = false;
+        browserResult.quality.validForCpuAggregation = false;
+        browserResult.quality.validForGpuAggregation = false;
+        browserResult.quality.reasons ??= [];
+        browserResult.quality.reasons.push(reason);
+        browserResult.quality.structuralReasons ??= [];
+        browserResult.quality.structuralReasons.push(reason);
+      }
     }
     if (
       apiInstrumentation &&
@@ -4451,6 +4517,11 @@ async function runOne(
     runRecord = {
       result: failures.length ? "fail" : "pass",
       failures,
+      // A run whose only defect is an unmet measurement precondition is an
+      // instrument gap, not a renderer verdict. The exit classifier reads this
+      // to separate INCOMPLETE from FAIL.
+      structural: browserResult.quality?.structural === true,
+      structuralReasons: browserResult.quality?.structuralReasons ?? [],
       renderer,
       workloadId: workload.id,
       repetition,
@@ -4485,9 +4556,15 @@ async function runOne(
     };
     return runRecord;
   } catch (error) {
+    const errorText = String(error?.stack || error);
+    // The harness marks preconditions it could not establish with a
+    // `[structural]` prefix at the throw site. Those are instrument gaps.
+    const structural = errorText.includes("[structural]");
     runRecord = {
       result: "error",
-      failures: [String(error?.stack || error)],
+      failures: [errorText],
+      structural,
+      structuralReasons: structural ? [errorText] : [],
       renderer,
       workloadId: workload.id,
       repetition,
@@ -5004,6 +5081,13 @@ try {
       }
     }
   }
+} catch (error) {
+  // An exception is neither a product verdict nor an instrument gap that any
+  // gate scored: it is exit 2. Record it and still write the report so the
+  // partial evidence survives the crash.
+  report.result = "error";
+  report.errors = [String(error?.stack || error)];
+  console.error(String(error?.stack || error));
 } finally {
   await sharedBrowser?.close();
 }
@@ -5012,4 +5096,23 @@ await mkdir(dirname(options.output), { recursive: true });
 await writeFile(options.output, `${JSON.stringify(report, null, 2)}\n`, "utf8");
 console.log(JSON.stringify(report, null, 2));
 console.error(`Wrote ${options.output}`);
-if (report.result !== "pass") process.exitCode = 1;
+
+// Exit codes: 0 = every gate decided and passed. 1 = a real product FAIL.
+// 2 = an exception. 3 = no FAIL, but a leg had no subject to measure —
+// acceptance is INCOMPLETE, not green.
+const exitClassification = classifyPerformanceCampaignExit(report);
+console.error(`\nCAMPAIGN ${exitClassification.verdict}`);
+for (const cause of exitClassification.productCauses) {
+  console.error(`  FAIL       ${cause}`);
+}
+for (const cause of exitClassification.structuralCauses) {
+  console.error(`  STRUCTURAL ${cause}`);
+}
+if (exitClassification.exitCode === 3) {
+  console.error(
+    "  A structural campaign never held the subject a causal renderer comparison\n" +
+      "  stands in for. It is an instrument gap owed as follow-up, NOT a renderer\n" +
+      "  verdict and NOT a pass.",
+  );
+}
+process.exitCode = exitClassification.exitCode;
