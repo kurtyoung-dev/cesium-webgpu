@@ -37,6 +37,44 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-08-06 - WebGL vector draping has its own faint extent beyond the drawn lines
+
+### NEW-WEBGL-VECTOR-DRAPING-RESIDUAL-EXTENT
+
+**Status:** OPEN / LOW - found by the post-fix run of `probe-vector-draping.mjs`
+after Batch 834 cleaned the WebGPU side.
+
+**What the acceptance run showed.** Batch 834's singular-Jacobian fix is VERIFIED at
+pixels: the WebGPU nadir frame is visually clean (read
+`output/vector-draping/webgpu-nadir-vector.png`), changed-pixel counts now match WebGL
+almost exactly (22398 vs 22401; RED exactly 5625 vs 5625; BLUE 16773 vs 16776), the
+centroid delta is 0.0/0.0, and the oblique bounding boxes are now IDENTICAL
+([440,371,595,394] on both).
+
+**But gate B still fails, in the OPPOSITE direction from the original defect.** At
+nadir WebGL's changed-pixel bbox is [451,19,710,747] while WebGPU's is
+[451,19,607,747] - WebGPU is now NARROWER by 103 px. WebGL's numbers are byte-identical
+to the pre-fix run, so nothing in Batches 827-834 moved them: this is a PRE-EXISTING
+WebGL-side artifact that the parity gate is only now able to see, because the much
+larger WebGPU streaks were previously masking it.
+
+**Why the gate is right to flag it.** The bbox predicate is symmetric - it does not
+care which backend is wider. That is correct for a parity gate and should NOT be
+changed to a one-sided test just because the reference implementation is the one
+carrying the extra pixels now.
+
+**Next diagnostic.** Identify what WebGL draws between x=607 and x=710 at nadir (a faint
+mark near y=260 to the right of the blue line is visible in
+`output/vector-draping/webgl-nadir-vector.png`). Candidates: the GLSL `inverse()`
+divide-by-zero path on skirt quads producing an occasional finite-but-wrong matrix
+rather than the Inf/NaN that normally discards (Batch 834 added an explicit guard to
+`VectorCommon.glsl` for exactly this undefined behaviour, so check whether that guard
+reaches every call site), or a genuinely different WebGL cell-walk admitting one extra
+segment.
+
+**Acceptance:** `probe-vector-draping.mjs` gate B passes with bbox delta <= 16 px in
+BOTH directions, gates A/C/D/E green. Do NOT loosen the predicate.
+
 ## 2026-08-06 - WebGPU vector draping emits faint horizontal streaks across the frame
 
 ### NEW-WEBGPU-VECTOR-DRAPING-HORIZONTAL-STREAKS
