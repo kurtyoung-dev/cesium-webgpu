@@ -97,6 +97,13 @@ import CloudType from "../../Scene/CloudType.js";
 // with the real-data packer so both producers write ONE dateline/pole-safe
 // equirectangular convention (Scene/Weather/WeatherMapSeam.ts).
 import { buildProceduralWeatherMap } from "../../Scene/Weather/ProceduralWeatherMap.js";
+// C13-41 — the eclipse response for this subsystem. Backend-neutral Scene math
+// over C12-29's published state; nothing about the eclipse is recomputed here.
+import {
+  applyEclipseCloudDimming,
+  eclipseCloudDirectionalFraction,
+  resolveEclipseCloudFactor,
+} from "../../Scene/EclipseCloudResponse.js";
 
 // CloudUniforms float count — grown ADD-ONLY: 64→80 (weather seam) → 96 (W1-W8
 // lighting) → 104 (Batch 407 dials 96-103) → 108 (Batch 408 V11 profile 104-107;
@@ -313,6 +320,14 @@ export interface CloudCache {
   shadowCascadeFrames: CloudShadowFrame[];
   shadowActive: boolean; // true when the real map was rendered this frame
   shadowAbsorption: number; // absorptionCoeff used so consumers' exp() matches
+  // C13-41 — the cast-shadow `strength` all four consumers mix with, published
+  // through this ONE seam exactly as `shadowAbsorption` already is, so the
+  // globe terrain, the cascaded atlas branch, aerial perspective and the
+  // volumetric-fog hi-fi path cannot drift apart. 1.0 outside a solar eclipse
+  // (byte-identical to the literal the consumers used to write); it falls to 0
+  // at totality because the umbral sky is nonlocal multiple scattering that no
+  // local cloud can shadow. See `Scene/EclipseCloudResponse.js`.
+  shadowStrength: number;
   // ── CLOUD-LOD-R5-CASCADED-CLOUD-SHADOW-MAP — opt-in 3-cascade atlas ──
   // Allocated ONLY when `config.cloudShadowCascades` is on (and cast shadows).
   // The atlas is 512×1536 r16float: three 512² tiles stacked (tile 0 = top =
@@ -462,6 +477,7 @@ function ensureCloudCache(context: CesiumGraphicsContext): CloudCache {
       ],
       shadowActive: false,
       shadowAbsorption: 0.04,
+      shadowStrength: 1.0,
       shadowCascadeTexture: null,
       shadowCascadeView: null,
       shadowCascadeUniformBuffer: null,
@@ -1817,6 +1833,10 @@ export function executeProceduralClouds(
   // Pack uniforms
   const data = cache.uniformData;
   const us = frameState.context?.uniformState ?? context.uniformState;
+  // C13-41 — resolved ONCE per pack so the direct term (float 27) and the
+  // ambient term (float 73) provably carry the same scalar. Exactly 1.0 outside
+  // an enabled solar eclipse.
+  const eclipseCloudFactor = resolveEclipseCloudFactor(frameState);
   let offset = 0;
 
   // inverseProjection (mat4, 16 floats)
@@ -1857,7 +1877,17 @@ export function executeProceduralClouds(
   data[offset++] = sunDir?.x ?? 0;
   data[offset++] = sunDir?.y ?? 1;
   data[offset++] = sunDir?.z ?? 0;
-  data[offset++] = config.atmosphereLightIntensity ?? 10.0; // sunIntensity
+  // C13-41 — the deck's DIRECT term is `(msLight + silverLining) * sunIntensity`,
+  // and this is its only scale, so S2's eclipse factor belongs exactly here. The
+  // source is `config.atmosphereLightIntensity` — the globe's UNDIMMED user
+  // field, not the per-frame `tileProvider.atmosphereLightIntensity` mirror
+  // `Globe.js` dims for the ground atmosphere — so without this multiply the
+  // deck stayed at full midday brightness over a world at the twilight floor.
+  // `* 1.0` is bit-exact, so every non-eclipse frame is byte-identical.
+  data[offset++] = applyEclipseCloudDimming(
+    config.atmosphereLightIntensity ?? 10.0,
+    eclipseCloudFactor,
+  ); // sunIntensity
 
   // Cloud layer params
   data[offset++] = config.cloudLayerBottom ?? 1500.0;
@@ -2043,7 +2073,18 @@ export function executeProceduralClouds(
   // silver lining toward the sun (HG forward peak at g=0.85 is ~1.8x g=0.8).
   data[offset++] = config.cloudPhaseForwardG ?? 0.85; // 72 phaseG1 (config: .phaseForwardG)
   // 73 — W2 ambient intensity (sky/ground fill on the shadow side; config: .ambientIntensity).
-  data[offset++] = config.cloudAmbientIntensity ?? 1.5; // 73 ambientIntensity
+  // C13-41 — the ambient term dims too, and it MUST. `skyAmbientColor` (80-82)
+  // and `groundAmbientColor` (84-86) are hard-coded constants that track no
+  // scene light on any path (the `ambientLutMode` route replaces only their
+  // hue/chroma and deliberately keeps the constants' nominal BRIGHTNESS), so
+  // this scalar is the only lever the deck's ambient has. Dimming the direct
+  // term alone would leave a fully-lit ambient deck glowing over a darkened
+  // world at totality — the same default-ON single-subsystem divergence the
+  // C12 exit gate names.
+  data[offset++] = applyEclipseCloudDimming(
+    config.cloudAmbientIntensity ?? 1.5,
+    eclipseCloudFactor,
+  ); // 73 ambientIntensity
   // 74 — qualityFlags bitfield. V3 sets bit 0 (noiseSource) when the tier wants
   // the baked 3D-texture core AND the bake actually succeeded — SELF-HEALING:
   // if the bake is unavailable (cache.noise null), the bit stays 0 and the WGSL
@@ -2560,6 +2601,17 @@ export function executeProceduralClouds(
   // for the consumers (config terrain reads last frame's; aerial/fog this frame's).
   cache.shadowActive = false;
   cache.shadowCascadeActive = false;
+  // C13-41 — publish the cast-shadow strength through the SAME `_cloudCache`
+  // seam `shadowAbsorption` already travels through, unconditionally (so a
+  // frame that skips the shadow block can never leave a stale value behind for
+  // the consumers). It tracks the DIRECTIONAL share of the surviving
+  // illumination, NOT S2's scene-light factor: scaling the strength by the
+  // scene factor makes shadowed ground `F * (1 - 0.65F)`, which peaks at
+  // F = 0.769 ABOVE its un-eclipsed value — a shadowed patch would brighten as
+  // the eclipse deepened. See `Scene/EclipseCloudResponse.js` for the
+  // derivation. Exactly 1.0 outside an eclipse, so the consumers' former
+  // literal `1.0` is reproduced bit-for-bit.
+  cache.shadowStrength = eclipseCloudDirectionalFraction(frameState);
   if (config.cloudCastShadows === true) {
     const shadowOk = ensureShadowResources(device, cache);
     if (!shadowOk) {

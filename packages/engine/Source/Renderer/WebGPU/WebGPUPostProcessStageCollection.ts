@@ -1416,6 +1416,8 @@ function updateAerialPerspectiveFrameData(
           shadowActive?: boolean;
           shadowView?: GPUTextureView | null;
           shadowAbsorption?: number;
+          // C13-41 — eclipse-aware strength from the one `_cloudCache` seam.
+          shadowStrength?: number;
           shadowFrame?: CloudShadowFrame;
         };
       };
@@ -1460,6 +1462,8 @@ function updateAerialPerspectiveFrameData(
     // would project a camera-relative offset through an absolute matrix.
     cloudShadowActive: csActive && cloudShadowVpRelativeToEye !== undefined,
     cloudShadowAbsorption: cloudCache?.shadowAbsorption ?? 0.04,
+    // C13-41 — same `_cloudCache` seam as the absorption above.
+    cloudShadowStrength: cloudCache?.shadowStrength ?? 1.0,
   });
 }
 

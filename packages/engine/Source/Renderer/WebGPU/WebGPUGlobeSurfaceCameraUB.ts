@@ -822,6 +822,10 @@ export function createCameraUniformBuffer(
         shadowActive?: boolean;
         shadowSunViewVP?: Float32Array;
         shadowAbsorption?: number;
+        // C13-41 — the eclipse-aware cast-shadow strength, published by the
+        // cloud renderer through this same seam. `?? 1.0` reproduces the
+        // former literal exactly for any frame that has not published one.
+        shadowStrength?: number;
         shadowCascadeActive?: boolean;
         shadowCascadeVP?: Float32Array;
         shadowFrame?: CloudShadowFrame;
@@ -878,7 +882,7 @@ export function createCameraUniformBuffer(
     }
     data[offset++] = 1.0; // x = enabled
     data[offset++] = cloudCache?.shadowAbsorption ?? 0.04; // y = absorption
-    data[offset++] = 1.0; // z = strength (full)
+    data[offset++] = cloudCache?.shadowStrength ?? 1.0; // z = strength (C13-41)
     data[offset++] = 3.0; // w = cascade count (cascaded atlas branch)
   } else if (shadowActive && shadowVP && shadowVP.length >= 16) {
     if (cloudShadowRelativeToEye) {
@@ -896,7 +900,7 @@ export function createCameraUniformBuffer(
     }
     data[offset++] = 1.0; // x = enabled
     data[offset++] = cloudCache?.shadowAbsorption ?? 0.04; // y = absorption
-    data[offset++] = 1.0; // z = strength (full)
+    data[offset++] = cloudCache?.shadowStrength ?? 1.0; // z = strength (C13-41)
     data[offset++] = 0.0; // w = cascade count 0 (single-map branch)
   } else {
     // Identity matrix + disabled control (byte-identical default).

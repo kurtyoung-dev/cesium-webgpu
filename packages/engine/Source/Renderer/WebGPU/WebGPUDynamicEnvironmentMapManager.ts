@@ -56,6 +56,14 @@ import {
   CLOUD_DENSITY_ORIGIN_PHASE_FLOATS,
   writeCloudDensityAdvectedOriginPhases,
 } from "./WebGPUCloudDensityDomain.js";
+// C13-41 — the eclipse response for the cloud/environment subsystem. The WebGL
+// `Scene/DynamicEnvironmentMapManager.js` imports the SAME module, so the two
+// backends provably share one factor, one composition and one refresh grid.
+import {
+  applyEclipseCloudDimming,
+  quantizeEclipseEnvironmentRefreshInput,
+  resolveEclipseCloudFactor,
+} from "../../Scene/EclipseCloudResponse.js";
 
 /** Minimal interface for the upstream DynamicEnvironmentMapManager. */
 interface DynEnvMapManagerLike {
@@ -188,6 +196,15 @@ interface DynEnvMapCache {
   // morphology changes also alter the reflected formation. Tracking one
   // publisher-owned revision keeps that gate O(1) and edge-triggered.
   lastCloudRevision: number;
+  // C13-41 — the quantized eclipse factor the LAST sky fill was packed with.
+  // Compared as an exact integer LEVEL (`!==`), never a one-way "got darker"
+  // test, which is what makes eclipse RECOVERY automatic: the factor returning
+  // to 1.0 walks the bucket back to the identity bucket, which differs from the
+  // committed dark one, which fires exactly one final re-fill. Deliberately NOT
+  // gated on the cloud march (unlike `lastCloudRevision`) — the eclipse dims the
+  // whole sky bake, and `cloudsInReflections` is off by default. NaN sentinel
+  // forces the first-frame run, matching `lastCloudRevision`.
+  lastEclipseEnvBucket: number;
   // Item 3-C (CLOUD-IBL-FULL, Batch 450) — full per-face cloud march. A 1×1×1
   // white 3D placeholder + sampler back bindings 5/6/7 whenever the march is off
   // (or the cloud noise hasn't baked), mirroring the LUT placeholder. The bound
@@ -501,6 +518,7 @@ function updateWebGPUDynamicEnvironmentMap(
       lastUsedMultiScatterLut: false,
       lastCloudCoverage: NaN,
       lastCloudRevision: NaN,
+      lastEclipseEnvBucket: NaN,
       // Item 3-C (CLOUD-IBL-FULL, Batch 450) — cloud-march placeholder + bound
       // views (all null until the first fill builds the placeholder).
       cloudPlaceholderTex: null,
@@ -753,6 +771,23 @@ function updateWebGPUDynamicEnvironmentMap(
     (wantMarch || cache.lastUsedCloudMarch) &&
     liveCloudRevision !== cache.lastCloudRevision;
   const cloudMarchPathChanged = wantMarch !== cache.lastUsedCloudMarch;
+  // C13-41 — the eclipse-keyed refresh input. `runProceduralSkyFill` now dims
+  // its whole bake by S2's scene-light factor, and the rest of this gate cannot
+  // see that: `sunMoved` needs ~0.3 degrees of arc, which a total eclipse's
+  // few minutes of totality does not supply under a stepped or paused clock,
+  // and the cloud terms are gated on a march that is off by default. Without
+  // this term a dimmed bake would latch dark and stay dark after third contact.
+  //
+  // Quantized on the SAME 1/256 unit grid every other unit-interval IBL input
+  // uses (C13-37's publish-side snap, `CLOUD_COVERAGE_REFRESH_EPSILON`) — a snap
+  // and compare, not a per-frame delta, so a slow fade still accumulates across
+  // a grid edge instead of never firing. The comparison is a LEVEL against
+  // committed bookkeeping like every other term here, which is what keeps the
+  // C11-193 deferral lossless AND makes recovery symmetric with dimming.
+  const eclipseEnvBucket = quantizeEclipseEnvironmentRefreshInput(
+    resolveEclipseCloudFactor(frameState),
+  );
+  const eclipseEnvChanged = eclipseEnvBucket !== cache.lastEclipseEnvBucket;
   // C2-25 ENV-SCENE-CAPTURE (Batch 446) — capture refresh gate. Stable OFF has
   // no capture work. An ON→OFF transition deliberately contributes one mode
   // edge so a fresh procedural sky erases captured terrain. While ON, a moving
@@ -799,6 +834,9 @@ function updateWebGPUDynamicEnvironmentMap(
     cache.needsUpdate ||
     sunMoved ||
     lutPathChanged ||
+    // C13-41 — grouped with the other SKY-BAKE terms above rather than with the
+    // cloud terms below, because it is deliberately not march-gated.
+    eclipseEnvChanged ||
     cloudCoverageMoved ||
     cloudRevisionChanged ||
     cloudMarchPathChanged ||
@@ -907,6 +945,9 @@ function updateWebGPUDynamicEnvironmentMap(
     // Item 4.2 (CLOUD-IBL, Batch 441) — record the coverage this fill used.
     cache.lastCloudCoverage = liveCloudCoverage;
     cache.lastCloudRevision = liveCloudRevision;
+    // C13-41 — committed ONLY here, alongside every other consumed level, so a
+    // budget-deferred refresh re-evaluates true next frame (C11-193).
+    cache.lastEclipseEnvBucket = eclipseEnvBucket;
   }
 
   // Expose cubemap + prefiltered IBL views for shader consumption.
@@ -1718,7 +1759,24 @@ function runProceduralSkyFill(
   const ellipsoidHeight = Math.max(positionHeight - innerRadius, 0.0);
   const enu = Transforms.eastNorthUpToFixedFrame(scratchPosition);
 
-  const skyColorScattering = manager.atmosphereScatteringIntensity ?? 2.0;
+  // C13-41 — the eclipse dims this bake. `scatteringIntensity` is the
+  // manager-level multiplier applied to the FINAL sky, ground and reflected-
+  // cloud radiance (WGSL lines `skyColor * scatteringIntensity`,
+  // `lit * u.scatteringIntensity`), and its exact WebGL twin is
+  // `adjustments.w` / `u_brightnessSaturationGammaIntensity.w` in
+  // `Scene/DynamicEnvironmentMapManager.js` — so both backends dim the same
+  // documented lockstep scalar and neither one needs a shader edit. The SH
+  // projection's step-3 multiply is deliberately NOT dimmed on either backend:
+  // it projects THIS cube, so it inherits the dimming exactly once.
+  //
+  // This is only safe because `eclipseEnvBucket` below gives the refresh gate an
+  // eclipse-keyed input. Dimming a debounced bake without one is the stale-dark
+  // latch — the same trap that (correctly) keeps the eclipse factor OUT of the
+  // sun-direction-debounced sky-atmosphere LUT bake at C12-29 S2.
+  const skyColorScattering = applyEclipseCloudDimming(
+    manager.atmosphereScatteringIntensity ?? 2.0,
+    resolveEclipseCloudFactor(frameState),
+  );
   const gamma = manager.gamma ?? 1.0;
   const groundColor = manager.groundColor ?? {
     red: 0.45,

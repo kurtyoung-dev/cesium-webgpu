@@ -23,6 +23,13 @@ import TextureMinificationFilter from "../Renderer/TextureMinificationFilter.js"
 import FeatureRendererKey from "../Renderer/FeatureRendererKey.js";
 import Atmosphere from "./Atmosphere.js";
 import DynamicAtmosphereLightingType from "./DynamicAtmosphereLightingType.js";
+// C13-41 — the same eclipse response module the WebGPU environment manager
+// imports, so both backends dim the same lockstep scalar on the same grid.
+import {
+  applyEclipseCloudDimming,
+  quantizeEclipseEnvironmentRefreshInput,
+  resolveEclipseCloudFactor,
+} from "./EclipseCloudResponse.js";
 import AtmosphereCommon from "../Shaders/AtmosphereCommon.js";
 import ComputeIrradianceFS from "../Shaders/ComputeIrradianceFS.js";
 import ComputeRadianceMapFS from "../Shaders/ComputeRadianceMapFS.js";
@@ -119,6 +126,11 @@ class DynamicEnvironmentMapManager {
       DynamicEnvironmentMapManager.DEFAULT_SPHERICAL_HARMONIC_COEFFICIENTS.slice();
 
     this._lastTime = new JulianDate();
+    // C13-41 — the quantized eclipse factor the last radiance bake used. NaN
+    // forces the first regeneration test to fire, matching the WebGPU cache's
+    // `lastEclipseEnvBucket` convention. Compared as an exact integer LEVEL, so
+    // an eclipse ENDING re-bakes just as reliably as one beginning.
+    this._lastEclipseEnvBucket = NaN;
     const width = Math.max(Math.pow(2, mipmapLevels - 1), 1);
     this._textureDimensions = new Cartesian2(width, width);
 
@@ -329,8 +341,22 @@ class DynamicEnvironmentMapManager {
     DynamicEnvironmentMapManager._updateCommandQueue(frameState);
 
     const dynamicLighting = frameState.atmosphere.dynamicLighting;
+    // C13-41 — the eclipse-keyed regeneration input, the WebGL twin of the
+    // WebGPU cache's `eclipseEnvChanged`. `updateRadianceMap` now dims its bake
+    // by S2's scene-light factor, and nothing else in this gate can see that:
+    // `atmosphereNeedsUpdate` only watches radii / dynamic-lighting mode /
+    // scene environment map / background colour, and the scene-clock term needs
+    // `maximumSecondsDifference` (3600 s by default) AND the SUNLIGHT mode. A
+    // dimmed bake would therefore stay dark for up to an hour after third
+    // contact. Snap-and-compare on the shared 1/256 grid, as an exact integer
+    // LEVEL — so an eclipse ending regenerates exactly as reliably as one
+    // starting, with no second "recovery" code path.
+    const eclipseEnvBucket = quantizeEclipseEnvironmentRefreshInput(
+      resolveEclipseCloudFactor(frameState),
+    );
     const regenerateEnvironmentMap =
       atmosphereNeedsUpdate(this, frameState) ||
+      eclipseEnvBucket !== this._lastEclipseEnvBucket ||
       (dynamicLighting === DynamicAtmosphereLightingType.SUNLIGHT &&
         !JulianDate.equalsEpsilon(
           frameState.time,
@@ -342,6 +368,7 @@ class DynamicEnvironmentMapManager {
       this.reset();
       this._shouldReset = false;
       this._lastTime = JulianDate.clone(frameState.time, this._lastTime);
+      this._lastEclipseEnvBucket = eclipseEnvBucket;
       return;
     }
 
@@ -800,7 +827,19 @@ function updateRadianceMap(manager, frameState) {
     adjustments.x = manager.brightness;
     adjustments.y = manager.saturation;
     adjustments.z = manager.gamma;
-    adjustments.w = manager.atmosphereScatteringIntensity;
+    // C13-41 — the eclipse dims this bake. `.w` reaches the shader as
+    // `u_brightnessSaturationGammaIntensity.w`, the multiplier on the FINAL sky
+    // and ground radiance in `ComputeRadianceMapFS.glsl`, and is the exact
+    // lockstep twin of WebGPU's `SkyUniforms.scatteringIntensity` (slot 34) —
+    // so neither backend needs a shader edit and neither can drift. The
+    // step-3 `updateSphericalHarmonicCoefficients` multiply is deliberately NOT
+    // dimmed on either backend: it projects THIS bake and inherits the dimming
+    // exactly once. Safe only because the regeneration gate in `update()` now
+    // carries the quantized eclipse bucket; without it this would latch dark.
+    adjustments.w = applyEclipseCloudDimming(
+      manager.atmosphereScatteringIntensity,
+      resolveEclipseCloudFactor(frameState),
+    );
 
     if (
       manager.brightness !== 1.0 ||

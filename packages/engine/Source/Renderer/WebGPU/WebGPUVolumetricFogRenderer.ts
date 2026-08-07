@@ -1464,6 +1464,8 @@ class WebGPUVolumetricFogRenderer {
           shadowActive?: boolean;
           shadowView?: GPUTextureView | null;
           shadowAbsorption?: number;
+          // C13-41 — eclipse-aware strength from the one `_cloudCache` seam.
+          shadowStrength?: number;
           shadowFrame?: CloudShadowFrame;
         };
       }
@@ -1479,7 +1481,7 @@ class WebGPUVolumetricFogRenderer {
       cloudCacheForFog.shadowFrame?.valid === true;
     r.paramsData[96] = cloudShadowHiFiOn ? 1.0 : 0.0;
     r.paramsData[97] = cloudCacheForFog?.shadowAbsorption ?? 0.04;
-    r.paramsData[98] = 1.0; // strength
+    r.paramsData[98] = cloudCacheForFog?.shadowStrength ?? 1.0; // strength (C13-41)
     r.paramsData[99] = 0.0;
     if (cloudShadowHiFiOn && cloudCacheForFog?.shadowFrame) {
       // C13-06 — emitted against THIS pass's camera (`camPos`, packed at slots

@@ -103,6 +103,8 @@ export interface AerialPerspectiveFrameData {
   cloudShadowActive?: boolean;
   /** Cloud absorptionCoeff so the inscatter shadow exp() matches the cloud render. */
   cloudShadowAbsorption?: number;
+  /** C13-41 — eclipse-aware cast-shadow strength from the one `_cloudCache` seam. */
+  cloudShadowStrength?: number;
   /**
    * Batch 438 (4.5 SKY-OZONE) — ozone Chappuis-band absorption coefficient
    * (per-metre RGB). Added to the analytic march's extinction so distance haze
@@ -394,7 +396,7 @@ export class AerialPerspectiveEffect implements PostProcessEffect {
       }
       f[o++] = 1.0; // x = enabled
       f[o++] = d.cloudShadowAbsorption ?? 0.04; // y = absorption
-      f[o++] = 1.0; // z = strength
+      f[o++] = d.cloudShadowStrength ?? 1.0; // z = strength (C13-41)
       f[o++] = 0.0; // w = reserved
     } else {
       // Identity matrix + disabled.

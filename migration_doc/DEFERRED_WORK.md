@@ -56,6 +56,74 @@ recorded because it was found, not routed around (Principle 9).
   `GlobeFS.glsl` needs `ShaderSource`'s builtin injection and define expansion
   before it is a compilable unit — the same composition the WGSL specs already do
   by hand for chunks. **Effort: M, and it retires a whole class of regex specs.**
+## New findings — C13-41 eclipse cloud/IBL worker, 2026-08-07
+
+Filed by the C13-41 worker. All surfaced rather than routed around (Principle
+9); none blocks the row.
+
+- **`C13-41-CLOUD-AMBIENT-IS-A-CONSTANT`** — the volumetric deck's ambient is
+  `mix(groundAmbientColor, skyAmbientColor, h) * ambientIntensity`, and those
+  two colours are HARD-CODED in the packer (`0.5/0.65/0.95` sky,
+  `0.35/0.34/0.3` ground). They track no scene light on any path: the opt-in
+  `ambientLutMode` route replaces only their hue/chroma and explicitly keeps the
+  constants' nominal BRIGHTNESS. So the deck's ambient is identical at noon and
+  at midnight, and nothing before C13-41 could dim it. C13-41 scales
+  `ambientIntensity` by the eclipse factor, which is correct for an eclipse but
+  does NOT fix the general case — a night-side or terminator deck still carries
+  a full-strength blue sky ambient. The real fix is to source the ambient
+  MAGNITUDE (not just its tint) from the sky/MS LUT the `ambientLutMode` path
+  already samples, which is a cloud-lighting correctness item in its own right.
+  **Effort: M.** Owner: unassigned; natural home is the C13 cloud-lighting wave.
+
+- **`C13-41-ENV-GROUND-INSCATTER-ADDEND-UNDIMMED`** — both environment bakes
+  scale their sky hemisphere by the manager-level intensity C13-41 now dims, but
+  the GROUND-facing texels are `groundColor * albedo * (vec3(intensity *
+  occlusion) + atmosphereColor)` on WebGPU (`ProceduralSkyCubemap.wgsl`) and the
+  identical shape in `ComputeRadianceMapFS.glsl` on WebGL — the
+  `atmosphereColor` term is an ADDEND, not a factor, so it survives the dim. It
+  carries `czm_atmosphereLightIntensity` / `SkyUniforms.intensity`, which is a
+  scene-global automatic uniform on WebGL and cannot be dimmed for the bake
+  alone. The residual is SYMMETRIC across backends and small (the sky hemisphere
+  dominates a diffuse IBL), but it means a totality environment map is not
+  uniformly dimmed. Recorded, not hidden. **Effort: S** if a bake-local
+  intensity override is acceptable; **M** if it needs a per-bake uniform on both
+  backends.
+
+- **`C13-41-SHADOW-TERMINAL-TRANSIENT`** — measured, bounded, and deliberately
+  NOT smoothed away. Shadowed ground under the shipped design is monotone
+  decreasing for every obscuration up to `0.99987`, reaches a minimum of
+  `0.029952` at obscuration `0.999865`, then rises to the unshadowed twilight
+  floor `0.036840` at totality (+23%). That rise is the cloud shadow physically
+  DISAPPEARING at second contact — the umbral sky is nonlocal multiple
+  scattering from the still-sunlit penumbra and no local cloud can block it — so
+  reshaping the curve to hide it would be inventing a tuned easing to suppress a
+  correct effect. It is confined to the last `0.013%` of the obscuration range,
+  i.e. the diamond-ring instant. Pinned by `eclipse-cloud-ibl-response.spec.mjs`
+  group B2. **No action expected**; recorded so a future reader does not "fix"
+  it.
+
+- **`C13-41-WEBGL-BILLBOARD-CLOUDS-UNLIT`** — the WebGL cloud path
+  (`CloudCollection` + `CloudCollectionFS.glsl`) has NO lighting input at all:
+  no sun direction, no scene light, no N-dot-L, and its only brightness term is
+  `v_brightness`, a per-`CumulusCloud` AUTHORED appearance property. It is
+  therefore identical at noon and at midnight and was already exempt from every
+  C12-29 S2 dimming site. C13-41 deliberately gives it nothing, because an
+  eclipse-only multiply would be the ONLY light response the primitive has — an
+  inconsistency rather than parity, and it would silently reinterpret a user
+  data field as a light. If billboard clouds ever acquire real scene lighting
+  this decision must be revisited; the gate re-verifies the premise rather than
+  assuming it. **Effort: S** once billboard lighting exists; blocked until then.
+
+- **`C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`** — the quantized gate's cadence is
+  derived and pinned arithmetically (exactly 275 fills across a `0 -> 0.9 -> 0`
+  obscuration sweep: one first-frame baseline plus `2 x 137` bucket edges), but
+  the WALL-CLOCK cost of those fills has not been measured on Edge. Each is a
+  `256^2 x 6` cube fill + IBL prefilter + SH projection, and the per-frame
+  ceiling is owned by the C11-193 bounded refresh scheduler rather than by the
+  grid. If an Edge run shows the scheduler deferring heavily through a fast
+  clock scrub, the grid is the dial to coarsen — but it must not be coarsened on
+  speculation. **Effort: S** (one probe leg).
+
 
 ## New findings — C12-27 / C12-14 / C12-13 worker, 2026-08-06
 
