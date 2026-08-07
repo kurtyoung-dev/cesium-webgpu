@@ -238,10 +238,22 @@ describe("Renderer/WebGPU/WebGPUShaderDefines", function () {
       expect(ShaderDefineHi.ENHANCED_OCEAN).toBe(1 << 1);
     });
 
+    it("pins the splat attribute-record layout axis to hi-word bit 2", function () {
+      // C15-G3. This pin (and the count bump below) was missed when the bit
+      // landed at Batch 881, leaving this suite red at HEAD; restored with
+      // C15-G5.
+      expect(ShaderDefineHi.SPLAT_PACKED_WASM).toBe(1 << 2);
+    });
+
+    it("pins the splat spherical-harmonics axis to hi-word bit 3", function () {
+      // C15-G5.
+      expect(ShaderDefineHi.SPLAT_SPHERICAL_HARMONICS).toBe(1 << 3);
+    });
+
     it("pins every declared hi define (no unpinned additions)", function () {
       // Same discipline as the lo table: a newly-claimed hi bit must come
       // with its own explicit pin above; bump this count with it.
-      expect(Object.keys(ShaderDefineHi).length).toBe(2);
+      expect(Object.keys(ShaderDefineHi).length).toBe(4);
     });
 
     it("uses each hi bit exactly once, as a power of two, below bit 31", function () {

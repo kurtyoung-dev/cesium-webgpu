@@ -2145,6 +2145,17 @@ function resolveDirectives(source, flags) {
   return out.join("\n");
 }
 
+/**
+ * The `//>>ifdef` axes `SPLAT_WGSL` can be compiled with. Order is irrelevant;
+ * completeness is not — the Naga matrix enumerates the power set of this list
+ * and cross-checks it against the flags the shader text actually gates on.
+ */
+const SHADER_AXES = [
+  "LOG_DEPTH",
+  "SPLAT_PACKED_WASM",
+  "SPLAT_SPHERICAL_HARMONICS",
+];
+
 function assertDirectiveVocabulary(wgsl) {
   for (const line of wgsl.split("\n")) {
     const trimmed = line.trim();
@@ -2552,12 +2563,33 @@ test("HEAD: every SPLAT_WGSL variant passes Naga WGSL validation", async () => {
       join(nagaDirectory, "naga_wasm_tools_bg.wasm"),
     ),
   });
-  for (const flags of [
-    [],
-    ["LOG_DEPTH"],
-    ["SPLAT_PACKED_WASM"],
-    ["LOG_DEPTH", "SPLAT_PACKED_WASM"],
-  ]) {
+  // C15-G5 — the matrix is now the FULL power set of the three axes the
+  // renderer can combine (LOG_DEPTH x SPLAT_PACKED_WASM x
+  // SPLAT_SPHERICAL_HARMONICS), enumerated rather than listed, so adding a
+  // fourth axis to SHADER_AXES cannot leave half the combinations unvalidated.
+  const combinations = [];
+  for (let mask = 0; mask < 1 << SHADER_AXES.length; mask++) {
+    combinations.push(SHADER_AXES.filter((_, bit) => mask & (1 << bit)));
+  }
+  assert.equal(
+    combinations.length,
+    8,
+    "the splat shader has three independent //>>ifdef axes; every one of the 8 combinations is reachable at runtime",
+  );
+  // Every axis the SHADER actually gates on must be in the enumerated list, or
+  // the matrix silently stops covering it.
+  const gatedFlags = new Set(
+    [...wgsl.matchAll(/^\s*\/\/>>ifdef ([A-Z_][A-Z0-9_]*)$/gm)].map(
+      (m) => m[1],
+    ),
+  );
+  for (const flag of gatedFlags) {
+    assert.ok(
+      SHADER_AXES.includes(flag),
+      `SPLAT_WGSL gates on ${flag}, which is not in the enumerated Naga variant matrix`,
+    );
+  }
+  for (const flags of combinations) {
     const code = resolveDirectives(wgsl, new Set(flags));
     assert.doesNotThrow(
       () => naga.validate_wgsl(code),
@@ -2585,11 +2617,12 @@ test("HEAD: the layout axis is a registered hi-word define, consumed by the shad
   );
   // The module cache must receive it as `definesHi`, not folded into the lo
   // mask — the lo word is full and a lo/hi mix-up resolves against the wrong
-  // registry.
+  // registry. `C15-G5` widened this to an OR of two hi-word axes; both arms
+  // are pinned so neither can be dropped or swapped for a lo-word bit.
   assert.match(
     renderer,
-    /const layoutDefinesHi = packedWasmLayout\s*\n?\s*\?\s*ShaderDefineHi\.SPLAT_PACKED_WASM\s*\n?\s*:\s*0;/,
-    `${RENDERER_PATH}: the layout axis no longer resolves to a ShaderDefineHi bit`,
+    /const layoutDefinesHi =\s*\n?\s*\(packedWasmLayout \? ShaderDefineHi\.SPLAT_PACKED_WASM : 0\) \|\s*\n?\s*\(sphericalHarmonics \? ShaderDefineHi\.SPLAT_SPHERICAL_HARMONICS : 0\);/,
+    `${RENDERER_PATH}: the layout / SH axes no longer resolve to ShaderDefineHi bits`,
   );
   // Every `getOrCreate` call site, sliced by argument-list balance rather than
   // by a regex that would have to guess at prettier's line breaking (the three
@@ -2626,10 +2659,10 @@ test("HEAD: the layout axis is a registered hi-word define, consumed by the shad
   // ...and the pipeline descriptor names carry it, so `describeCacheKey()` and
   // devtools can tell the two variants apart (CLAUDE.md: keep every marker).
   for (const marker of [
-    /GaussianSplat color pipeline \[ld=\$\{[^}]*\}\/ms=\$\{sampleCount\}\/packed=\$\{layoutMarker\}\]/,
-    /GaussianSplat depth-write pipeline \[ld=\$\{[^}]*\}\/ms=\$\{sampleCount\}\/packed=\$\{layoutMarker\}\]/,
-    /GaussianSplat pick pipeline \[packed=\$\{layoutMarker\}\]/,
-    /GaussianSplat velocity pipeline \[ld=\$\{[\s\S]{0,80}?\}\/packed=\$\{cache\.layoutPacked \? 1 : 0\}\]/,
+    /GaussianSplat color pipeline \[ld=\$\{[^}]*\}\/ms=\$\{sampleCount\}\/packed=\$\{layoutMarker\}\/sh=\$\{shMarker\}\]/,
+    /GaussianSplat depth-write pipeline \[ld=\$\{[^}]*\}\/ms=\$\{sampleCount\}\/packed=\$\{layoutMarker\}\/sh=\$\{shMarker\}\]/,
+    /GaussianSplat pick pipeline \[packed=\$\{layoutMarker\}\/sh=\$\{shMarker\}\]/,
+    /GaussianSplat velocity pipeline \[ld=\$\{[\s\S]{0,80}?\}\/packed=\$\{cache\.layoutPacked \? 1 : 0\}\/sh=\$\{cache\.shEnabled \? 1 : 0\}\]/,
   ]) {
     assert.match(
       renderer,
@@ -5893,5 +5926,1422 @@ for (const mutant of G4B_MUTANTS) {
       `${mutant.name}: accepted, or rejected for the wrong reason`,
     );
     await mutant.check(real);
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// C15-G5 — spherical harmonics degree 1-3 in WGSL.
+//
+// The row closes the recorded 2.574% cross-backend colour residual: WebGL
+// evaluates SH bands 1-3 per splat and the WGSL evaluated none. Everything
+// below is EXTRACTED FROM SOURCE and EXECUTED — the two shaders' basis
+// functions are parsed out of their own text, compiled as JS and required to
+// agree numerically, so a sign, a constant, a band offset or a polynomial that
+// drifts in one language shows up as a number, not as a comment that stopped
+// being true.
+//
+// The one thing this section pins hardest is the DC term. In 3DGS the degree-0
+// band is folded into the base RGB before it ever reaches a shader
+// (GltfSpzLoader.js:23-24), and both the writer's per-degree offsets and both
+// shaders' evaluations start at band 1. Re-applying DC in the WGSL would
+// roughly DOUBLE every splat and still look "plausible" in a screenshot, so it
+// gets a dedicated mutant that must fail.
+// ────────────────────────────────────────────────────────────────────────────
+
+const CONTENT_PATH =
+  "packages/engine/Source/Scene/GaussianSplat3DTileContent.js";
+
+/** Strip `//` line comments without touching string content (there is none). */
+function stripShaderComments(source) {
+  return source
+    .split("\n")
+    .map((line) => {
+      const at = line.indexOf("//");
+      return at === -1 ? line : line.slice(0, at);
+    })
+    .join("\n");
+}
+
+/** Slice the balanced `{ ... }` body that follows `signature`. */
+function sliceBalancedBody(source, signature, label) {
+  const at = source.indexOf(signature);
+  assert.notEqual(at, -1, `${label}: "${signature}" is gone`);
+  const open = source.indexOf("{", at);
+  assert.ok(open > at, `${label}: no body brace after "${signature}"`);
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}") {
+      depth--;
+      if (depth === 0) return source.slice(open + 1, i);
+    }
+  }
+  throw new Error(`${label}: unbalanced body for "${signature}"`);
+}
+
+/** Slice `(` ... `)` starting at the first paren after `from`. */
+function sliceBalancedParens(source, from, label) {
+  const open = source.indexOf("(", from);
+  assert.notEqual(open, -1, `${label}: no opening paren`);
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "(") depth++;
+    else if (source[i] === ")") {
+      depth--;
+      if (depth === 0) return source.slice(open + 1, i);
+    }
+  }
+  throw new Error(`${label}: unbalanced parens`);
+}
+
+/**
+ * Normalize a shader dialect down to the ONE grammar the term parser reads.
+ * Deliberately minimal: the SH bodies are written so the only differences are
+ * the constant PREFIX, the float literal suffix and the degree-uniform name.
+ * Anything else that appears has to be translated explicitly rather than
+ * silently mis-parsed — `assertShTermsParsed` below refuses a term it cannot
+ * resolve to a known scalar symbol.
+ */
+function normalizeShDialect(source) {
+  return stripShaderComments(source)
+    .replaceAll("SPLAT_SH_C", "SH_C")
+    .replaceAll("u_sphericalHarmonicsDegree", "degree")
+    .replace(/(\d)f\b/g, "$1");
+}
+
+/** Split a product-of-factors sum at top level, carrying each term's sign. */
+function splitTopLevelTerms(expression) {
+  const terms = [];
+  let depth = 0;
+  let current = "";
+  let sign = 1;
+  let pendingSign = 1;
+  const flush = () => {
+    const trimmed = current.trim();
+    if (trimmed.length > 0) terms.push({ sign, text: trimmed });
+    current = "";
+    sign = pendingSign;
+  };
+  for (const ch of expression) {
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    if (depth === 0 && (ch === "+" || ch === "-")) {
+      pendingSign = ch === "-" ? -1 : 1;
+      flush();
+      continue;
+    }
+    current += ch;
+  }
+  flush();
+  return terms;
+}
+
+const SH_SCALAR_SYMBOLS = [
+  "x",
+  "y",
+  "z",
+  "xx",
+  "yy",
+  "zz",
+  "xy",
+  "yz",
+  "xz",
+  "SH_C1",
+  "SH_C2",
+  "SH_C3",
+];
+
+function compileShScalar(text, label) {
+  // Every identifier in a scalar factor must be one this harness supplies.
+  // An unknown one means the shader grew a term the parser is silently
+  // dropping, which is exactly how a "lockstep" check stops checking.
+  for (const token of text.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
+    assert.ok(
+      SH_SCALAR_SYMBOLS.includes(token),
+      `${label}: SH scalar factor "${text}" uses unknown symbol "${token}"`,
+    );
+  }
+  // eslint-disable-next-line no-new-func
+  return new Function(...SH_SCALAR_SYMBOLS, `return (${text});`);
+}
+
+/**
+ * Parse one shader's SH evaluator into (constants, band table, coefficient
+ * index map, guard thresholds, per-band terms) and compile the terms as JS.
+ */
+function parseShEvaluator(source, dialect) {
+  const label = dialect === "wgsl" ? RENDERER_PATH : GLSL_VS_PATH;
+  const norm = normalizeShDialect(source);
+
+  // ── constants ────────────────────────────────────────────────────────────
+  const c1Match = norm.match(/SH_C1(?::\s*f32)?\s*=\s*(-?[0-9.]+)\s*;/);
+  assert.ok(c1Match, `${label}: SH_C1 is gone`);
+  const readConstArray = (name, count) => {
+    const at = norm.indexOf(`${name}`);
+    assert.notEqual(at, -1, `${label}: ${name} is gone`);
+    const eq = norm.indexOf("=", at);
+    assert.notEqual(eq, -1, `${label}: ${name} has no initializer`);
+    const body = sliceBalancedParens(norm, eq, `${label}:${name}`);
+    const values = body
+      .split(",")
+      .map((token) => token.trim())
+      .filter(Boolean)
+      .map(Number);
+    assert.equal(
+      values.length,
+      count,
+      `${label}: ${name} must carry exactly ${count} coefficients`,
+    );
+    for (const value of values) {
+      assert.ok(
+        Number.isFinite(value),
+        `${label}: ${name} has a non-numeric entry`,
+      );
+    }
+    return values;
+  };
+  const constants = {
+    SH_C1: Number(c1Match[1]),
+    SH_C2: readConstArray("SH_C2", 5),
+    SH_C3: readConstArray("SH_C3", 7),
+  };
+
+  // ── band-count table (GLSL's coefficientCount[3], WGSL's helper fn) ──────
+  let bandCounts;
+  if (dialect === "glsl") {
+    const at = norm.indexOf("coefficientCount");
+    assert.notEqual(at, -1, `${label}: the coefficientCount table is gone`);
+    const body = sliceBalancedParens(
+      norm,
+      norm.indexOf("=", at),
+      `${label}:counts`,
+    );
+    bandCounts = body
+      .split(",")
+      .map((token) => Number(token.trim().replace(/u$/, "")));
+  } else {
+    const body = sliceBalancedBody(norm, "fn splatShCoefficientCount(", label);
+    const guarded = [
+      ...body.matchAll(/if \(degree >= ([0-9.]+)\)\s*\{\s*return (\d+)u;/g),
+    ];
+    const fallthrough = body.match(/return (\d+)u;\s*$/m);
+    assert.ok(fallthrough, `${label}: splatShCoefficientCount has no default`);
+    bandCounts = [1, 2, 3].map((degree) => {
+      const hit = guarded.find((m) => degree >= Number(m[1]));
+      return hit ? Number(hit[2]) : Number(fallthrough[1]);
+    });
+  }
+  assert.equal(
+    bandCounts.length,
+    3,
+    `${label}: the band table must cover degrees 1-3`,
+  );
+
+  // ── evaluator body ───────────────────────────────────────────────────────
+  const body = sliceBalancedBody(
+    norm,
+    dialect === "wgsl" ? "fn evaluateSplatSH(" : "vec3 evaluateSH(",
+    label,
+  );
+
+  // Coefficient index map. GLSL walks a `coeffIndex++` counter; the WGSL names
+  // the index literally. Both must land on the same shN -> global index map.
+  const coefficientIndex = {};
+  if (dialect === "glsl") {
+    let running = 0;
+    for (const m of body.matchAll(
+      /vec3 (sh\d+) = loadAndExpandSHCoeff\(splatID, coeffIndex\+\+\);/g,
+    )) {
+      coefficientIndex[m[1]] = running++;
+    }
+  } else {
+    for (const m of body.matchAll(
+      /let (sh\d+) = loadSplatShCoefficient\(splatID, dims, (\d+)u\);/g,
+    )) {
+      coefficientIndex[m[1]] = Number(m[2]);
+    }
+  }
+  assert.equal(
+    Object.keys(coefficientIndex).length,
+    15,
+    `${label}: expected 15 SH coefficient loads (bands 1-3), found ${Object.keys(coefficientIndex).length}`,
+  );
+
+  // Degree guards, in source order.
+  const guards = [...body.matchAll(/if \(degree >= ([0-9.]+)\)/g)].map((m) =>
+    Number(m[1]),
+  );
+
+  // Accumulates, in source order — one per band.
+  const accumulates = [...body.matchAll(/result \+= ([^;]+);/g)].map((m) =>
+    m[1].replace(/\s+/g, " ").trim(),
+  );
+
+  const bands = accumulates.map((expression, band) => ({
+    minDegree: guards[band],
+    terms: splitTopLevelTerms(expression).map((term) => {
+      const shMatch = term.text.match(/\bsh(\d+)\b/);
+      assert.ok(
+        shMatch,
+        `${label}: SH term "${term.text}" does not multiply a coefficient`,
+      );
+      const name = `sh${shMatch[1]}`;
+      assert.ok(
+        coefficientIndex[name] !== undefined,
+        `${label}: SH term references unloaded coefficient ${name}`,
+      );
+      const scalarText = term.text
+        .replace(/\*\s*\b(sh\d+)\b/, "")
+        .replace(/\b(sh\d+)\b\s*\*/, "")
+        .trim()
+        .replace(/\*\s*$/, "")
+        .trim();
+      return {
+        sign: term.sign,
+        coefficient: coefficientIndex[name],
+        scalar: compileShScalar(scalarText, label),
+        scalarText,
+      };
+    }),
+  }));
+
+  return { constants, bandCounts, coefficientIndex, guards, bands, label };
+}
+
+/** Build the JS evaluator for a parsed shader. */
+function makeShEvaluator(parsed) {
+  return (degree, direction, coefficients) => {
+    const [x, y, z] = direction;
+    const scalarArgs = [
+      x,
+      y,
+      z,
+      x * x,
+      y * y,
+      z * z,
+      x * y,
+      y * z,
+      x * z,
+      parsed.constants.SH_C1,
+      parsed.constants.SH_C2,
+      parsed.constants.SH_C3,
+    ];
+    const result = [0, 0, 0];
+    for (const band of parsed.bands) {
+      if (degree < band.minDegree) break;
+      for (const term of band.terms) {
+        const weight = term.sign * term.scalar(...scalarArgs);
+        const coefficient = coefficients[term.coefficient];
+        result[0] += weight * coefficient[0];
+        result[1] += weight * coefficient[1];
+        result[2] += weight * coefficient[2];
+      }
+    }
+    return result;
+  };
+}
+
+/** Deterministic direction + coefficient fixtures (no Math.random). */
+function shFixtures() {
+  let seed = 0x5f3759df;
+  const next = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 0x100000000;
+  };
+  const directions = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1],
+    [-1, 0, 0],
+    [0, -1, 0],
+    [0, 0, -1],
+  ];
+  for (let i = 0; i < 40; i++) {
+    const v = [next() * 2 - 1, next() * 2 - 1, next() * 2 - 1];
+    const length = Math.hypot(v[0], v[1], v[2]);
+    if (length < 1e-3) continue;
+    directions.push([v[0] / length, v[1] / length, v[2] / length]);
+  }
+  const coefficients = [];
+  for (let i = 0; i < 15; i++) {
+    coefficients.push([next() * 2 - 1, next() * 2 - 1, next() * 2 - 1]);
+  }
+  return { directions, coefficients };
+}
+
+// ── The reader/writer layout, executed at the offset level ─────────────────
+
+/** Extract a whole `function name(...) { ... }` from a JS source. */
+function extractJsFunction(source, name, label) {
+  const marker = `function ${name}(`;
+  const at = source.indexOf(marker);
+  assert.notEqual(at, -1, `${label}: function ${name} is gone`);
+  const open = source.indexOf("{", at);
+  let depth = 0;
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === "{") depth++;
+    else if (source[i] === "}") {
+      depth--;
+      if (depth === 0) return source.slice(at, i + 1);
+    }
+  }
+  throw new Error(`${label}: unbalanced body for ${name}`);
+}
+
+/**
+ * Compile the REAL SH writer out of `GaussianSplat3DTileContent.js`. This is
+ * the producer half of the layout contract: whatever it emits is what both
+ * backends read, so pinning the WGSL against a transcription would prove
+ * nothing.
+ */
+function loadShWriter() {
+  const source = readNormalized(CONTENT_PATH);
+  const halfConsts = source.match(
+    /const buffer = new ArrayBuffer\(4\);\nconst floatView = new Float32Array\(buffer\);\nconst intView = new Uint32Array\(buffer\);/,
+  );
+  assert.ok(
+    halfConsts,
+    `${CONTENT_PATH}: the f16 conversion scratch views moved — the extracted writer would not compile`,
+  );
+  const body = [
+    halfConsts[0],
+    extractJsFunction(source, "float32ToFloat16", CONTENT_PATH),
+    extractJsFunction(source, "getShAttributePrefix", CONTENT_PATH),
+    extractJsFunction(source, "extractSHDegreeAndCoef", CONTENT_PATH),
+    extractJsFunction(source, "packSphericalHarmonicsData", CONTENT_PATH),
+    "return { packSphericalHarmonicsData, float32ToFloat16 };",
+  ].join("\n\n");
+  // eslint-disable-next-line no-new-func
+  return new Function(body)();
+}
+
+const SH_BANDS_PER_DEGREE = [3, 5, 7];
+const SH_TOTAL_BANDS = [3, 8, 15];
+const SH_FLOATS_PER_SPLAT = [9, 24, 45];
+
+/** A synthetic tile content shaped exactly like the real loader's output. */
+function makeShTileContent(pointsLength, degree, valueAt) {
+  const attributes = [];
+  for (let l = 1; l <= degree; l++) {
+    for (let n = 0; n < SH_BANDS_PER_DEGREE[l - 1]; n++) {
+      const typedArray = new Float32Array(pointsLength * 3);
+      for (let j = 0; j < pointsLength; j++) {
+        typedArray[j * 3] = valueAt(j, l, n, 0);
+        typedArray[j * 3 + 1] = valueAt(j, l, n, 1);
+        typedArray[j * 3 + 2] = valueAt(j, l, n, 2);
+      }
+      attributes.push({
+        name: `KHR_gaussian_splatting:SH_DEGREE_${l}_COEF_${n}`,
+        typedArray,
+      });
+    }
+  }
+  return {
+    pointsLength,
+    sphericalHarmonicsDegree: degree,
+    sphericalHarmonicsCoefficientCount: SH_FLOATS_PER_SPLAT[degree - 1],
+    gltfPrimitive: { attributes },
+  };
+}
+
+/** The WGSL reader's address arithmetic + channel decode, read from source. */
+function parseShReader(wgsl) {
+  const body = sliceBalancedBody(
+    stripShaderComments(wgsl),
+    "fn loadSplatShCoefficient(",
+    RENDERER_PATH,
+  );
+  const baseMatch = body.match(
+    /let base = splatID \* dims \* (\d+)u \+ index \* (\d+)u;/,
+  );
+  assert.ok(
+    baseMatch,
+    `${RENDERER_PATH}: loadSplatShCoefficient's address arithmetic is gone`,
+  );
+  const lowMatch = body.match(
+    /let rg = unpack2x16float\(shCoefficients\[base\]\);/,
+  );
+  assert.ok(lowMatch, `${RENDERER_PATH}: the (r, g) word read moved`);
+  const highMatch = body.match(
+    /let b = unpack2x16float\(shCoefficients\[base \+ (\d+)u\]\);/,
+  );
+  assert.ok(highMatch, `${RENDERER_PATH}: the b word read moved`);
+  const returnMatch = body.match(
+    /return vec3<f32>\(rg\.([xy]), rg\.([xy]), b\.([xy])\);/,
+  );
+  assert.ok(returnMatch, `${RENDERER_PATH}: the SH channel assembly moved`);
+  return {
+    strideFactor: Number(baseMatch[1]),
+    indexFactor: Number(baseMatch[2]),
+    highWordOffset: Number(highMatch[1]),
+    channels: [returnMatch[1], returnMatch[2], returnMatch[3]],
+  };
+}
+
+/** Decode one coefficient the way the WGSL does, from the flat writer output. */
+function readShCoefficient(packed, reader, splatID, dims, index) {
+  const base =
+    splatID * dims * reader.strideFactor + index * reader.indexFactor;
+  const low = packed[base];
+  const high = packed[base + reader.highWordOffset];
+  const halves = {
+    lowWord: [fromHalfBits(low & 0xffff), fromHalfBits((low >>> 16) & 0xffff)],
+    highWord: [
+      fromHalfBits(high & 0xffff),
+      fromHalfBits((high >>> 16) & 0xffff),
+    ],
+  };
+  const pick = (source, component) => halves[source][component === "x" ? 0 : 1];
+  return [
+    pick("lowWord", reader.channels[0]),
+    pick("lowWord", reader.channels[1]),
+    pick("highWord", reader.channels[2]),
+  ];
+}
+
+// ── The reusable contract battery (so the mutants can re-run it verbatim) ───
+
+function assertShContract(wgsl, glsl) {
+  const w = parseShEvaluator(wgsl, "wgsl");
+  const g = parseShEvaluator(glsl, "glsl");
+
+  // 1. Constants, term for term.
+  assert.equal(w.constants.SH_C1, g.constants.SH_C1, "SH_C1 diverged");
+  assert.deepEqual(w.constants.SH_C2, g.constants.SH_C2, "SH_C2 diverged");
+  assert.deepEqual(w.constants.SH_C3, g.constants.SH_C3, "SH_C3 diverged");
+
+  // 2. Band-count table. 3 / 8 / 15 is the DC-EXCLUSIVE count; 4 / 9 / 16
+  //    would be the DC-inclusive one, i.e. a layout that expects a degree-0
+  //    coefficient the writer never emits.
+  assert.deepEqual(w.bandCounts, g.bandCounts, "the band-count table diverged");
+  assert.deepEqual(
+    w.bandCounts,
+    SH_TOTAL_BANDS,
+    "SH bands per degree must be 3 / 8 / 15 (bands 1-3, NO degree-0 term)",
+  );
+
+  // 3. Coefficient index map.
+  assert.deepEqual(
+    w.coefficientIndex,
+    g.coefficientIndex,
+    "the shN -> coefficient index map diverged",
+  );
+  const indices = Object.values(w.coefficientIndex).sort((a, b) => a - b);
+  assert.deepEqual(
+    indices,
+    Array.from({ length: 15 }, (_, i) => i),
+    "the 15 SH coefficients must be indices 0..14 — index 0 is band 1, not a DC term",
+  );
+
+  // 4. Degree guards.
+  assert.deepEqual(
+    w.guards,
+    [1, 2, 3],
+    "the WGSL degree guards must be >= 1 / 2 / 3",
+  );
+  assert.deepEqual(
+    g.guards,
+    [1, 2, 3],
+    "the GLSL degree guards must be >= 1 / 2 / 3",
+  );
+
+  // 5. THE HEADLINE — numeric agreement over a direction sweep, per degree.
+  const evalW = makeShEvaluator(w);
+  const evalG = makeShEvaluator(g);
+  const { directions, coefficients } = shFixtures();
+  for (const degree of [1, 2, 3]) {
+    for (const direction of directions) {
+      const a = evalW(degree, direction, coefficients);
+      const b = evalG(degree, direction, coefficients);
+      for (let c = 0; c < 3; c++) {
+        assert.ok(
+          Math.abs(a[c] - b[c]) <= 1e-6,
+          `SH degree ${degree} channel ${c} disagrees at dir ${direction.map((v) => v.toFixed(4))}: WGSL ${a[c]} vs GLSL ${b[c]}`,
+        );
+      }
+    }
+    // ...and a degree must actually CHANGE the answer, or "agreement" could be
+    // two evaluators that both return zero.
+    const nonZero = directions.some((direction) =>
+      evalW(degree, direction, coefficients).some((v) => Math.abs(v) > 1e-3),
+    );
+    assert.ok(
+      nonZero,
+      `SH degree ${degree} evaluates to zero everywhere — vacuous agreement`,
+    );
+  }
+  // Higher degrees must add something, or a dropped band would agree trivially.
+  for (const [lower, higher] of [
+    [1, 2],
+    [2, 3],
+  ]) {
+    const changed = directions.some((direction) => {
+      const a = evalW(lower, direction, coefficients);
+      const b = evalW(higher, direction, coefficients);
+      return a.some((v, i) => Math.abs(v - b[i]) > 1e-3);
+    });
+    assert.ok(changed, `degree ${higher} does not differ from degree ${lower}`);
+  }
+
+  // 6. NO DC TERM anywhere in either evaluation path.
+  const wgslSh = stripShaderComments(wgsl);
+  for (const forbidden of [/SH_C0/, /0\.28209/, /\bsh0\b/]) {
+    assert.doesNotMatch(
+      wgslSh,
+      forbidden,
+      `${RENDERER_PATH}: a degree-0 (DC) SH term appeared. The DC band is ALREADY in the base RGBA8 (GltfSpzLoader.js:23-24); adding it here roughly doubles every splat`,
+    );
+  }
+
+  // 7. Colour composition: SH is ADDED to rgb, alpha is untouched, and nothing
+  //    else joins the sum. This is where a DC double-count actually gets
+  //    written, so it is anchored exactly rather than loosely.
+  const compact = (text) => text.replace(/\s+/g, "");
+  // Anchored on the SH CALL and walked back to its constructor: `vertexMain`
+  // also writes `output.color = vec4<f32>(0.0)` on the early-out path, and
+  // scoring that one would make every composition rule vacuous.
+  const shCall = wgslSh.indexOf("evaluateSplatSH(splatIdx");
+  assert.notEqual(
+    shCall,
+    -1,
+    `${RENDERER_PATH}: vertexMain no longer evaluates SH at all`,
+  );
+  const compositionAt = wgslSh.lastIndexOf("output.color = vec4<f32>(", shCall);
+  assert.notEqual(
+    compositionAt,
+    -1,
+    `${RENDERER_PATH}: the SH result is not composed into output.color`,
+  );
+  const compositionArgs = sliceBalancedParens(
+    wgslSh,
+    compositionAt,
+    RENDERER_PATH,
+  );
+  const args = splitTopLevelArgs(compositionArgs);
+  assert.equal(
+    args.length,
+    2,
+    `${RENDERER_PATH}: the SH colour composition must be vec4(rgb, a)`,
+  );
+  assert.equal(
+    compact(args[0]),
+    "s.color.rgb+evaluateSplatSH(splatIdx,u.shDegree,shViewDir)",
+    `${RENDERER_PATH}: the splat colour is no longer exactly "base + SH". Any extra term here is a double-count`,
+  );
+  assert.equal(
+    compact(args[1]),
+    "s.color.a",
+    `${RENDERER_PATH}: SH must not touch alpha`,
+  );
+  assert.match(
+    stripShaderComments(glsl).replace(/\s+/g, ""),
+    /v_splatColor\.rgb\+=evaluateSH\(texIdx,viewDirModel\)\.rgb;/,
+    `${GLSL_VS_PATH}: the reference composition moved — re-derive the WGSL anchor`,
+  );
+
+  // 8. View direction: the ROTATED residual, not the raw one.
+  assert.match(
+    wgslSh,
+    /let shViewDir = normalize\(u\.shViewRotation \* posRTE\);/,
+    `${RENDERER_PATH}: the SH view direction is no longer the model-frame residual rotated into the SH training frame — WebGL evaluates against normalize(u_inverseModelRotation * (splatWC - cameraWC)) and this is the only thing that reproduces it`,
+  );
+
+  // 9. Writer -> reader, at the offset level, EXECUTED.
+  const reader = parseShReader(wgsl);
+  const { packSphericalHarmonicsData } = loadShWriter();
+  const value = (splat, l, n, channel) =>
+    // Distinct per (splat, band, channel) and f16-exact, so a swapped word, a
+    // swapped half or an off-by-one band is a wrong NUMBER, not a near miss.
+    splat * 4 + l + n * 0.25 + channel * 0.0625;
+  for (const degree of [1, 2, 3]) {
+    const points = 5;
+    const packed = packSphericalHarmonicsData(
+      makeShTileContent(points, degree, value),
+    );
+    const dims = SH_TOTAL_BANDS[degree - 1];
+    assert.equal(
+      packed.length,
+      points * dims * 2,
+      `the writer's per-splat stride must be dims * 2 u32 (degree ${degree})`,
+    );
+    for (let splat = 0; splat < points; splat++) {
+      let global = 0;
+      for (let l = 1; l <= degree; l++) {
+        for (let n = 0; n < SH_BANDS_PER_DEGREE[l - 1]; n++) {
+          const got = readShCoefficient(packed, reader, splat, dims, global);
+          for (let channel = 0; channel < 3; channel++) {
+            assert.equal(
+              got[channel],
+              value(splat, l, n, channel),
+              `degree ${degree} splat ${splat} coefficient ${global} (l=${l}, n=${n}) channel ${channel}: the WGSL reader does not land on the word the writer wrote`,
+            );
+          }
+          global++;
+        }
+      }
+      assert.equal(global, dims, "band walk did not cover the declared dims");
+    }
+  }
+}
+
+/** Split a comma-separated argument list at top level. */
+function splitTopLevelArgs(text) {
+  const args = [];
+  let depth = 0;
+  let current = "";
+  for (const ch of text) {
+    if (ch === "(" || ch === "<") depth++;
+    else if (ch === ")" || ch === ">") depth--;
+    if (ch === "," && depth === 0) {
+      args.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim().length > 0) args.push(current);
+  return args.map((arg) => arg.trim()).filter((arg) => arg.length > 0);
+}
+
+test("C15-G5: the WGSL and GLSL spherical-harmonics evaluators agree", () => {
+  assertShContract(
+    extractSplatWgsl(readNormalized(RENDERER_PATH)),
+    readNormalized(GLSL_VS_PATH),
+  );
+});
+
+test("C15-G5: the base colour ALREADY carries the DC band (the no-double-count premise)", () => {
+  // Three independent in-tree statements of the same fact. If any one of them
+  // stops being true the WGSL's "add bands 1-3 to the base" is wrong and this
+  // spec must be re-derived rather than quietly kept green.
+  const loader = readNormalized(
+    "packages/engine/Source/Scene/GltfSpzLoader.js",
+  );
+  assert.match(
+    loader,
+    /Degree 0 has no extra SH data \(base color is stored separately in\n\/\/ the "colors" attribute\)/,
+    "GltfSpzLoader no longer states that degree 0 lives in the colour attribute",
+  );
+  const content = readNormalized(CONTENT_PATH);
+  assert.match(
+    content,
+    /const base = \[0, 9, 24\];/,
+    `${CONTENT_PATH}: the per-degree float offsets must start at band 1 (l=1 -> 0). A DC-carrying layout would start at 3`,
+  );
+  assert.match(
+    content,
+    /case 15:\s*\n\s*return \{ l: 3, n: 45 \};/,
+    `${CONTENT_PATH}: degree 3 must be 15 SH ATTRIBUTES and 45 floats = 15 bands x 3 channels (DC-exclusive; DC-inclusive would be 16 / 48)`,
+  );
+  // And the WebGL reference ADDS rather than replaces.
+  assert.match(
+    readNormalized(GLSL_VS_PATH),
+    /v_splatColor\.rgb \+= evaluateSH\(texIdx, viewDirModel\)\.rgb;/,
+    `${GLSL_VS_PATH}: the reference no longer ADDS SH to the base colour`,
+  );
+});
+
+test("C15-G5: the WebGL SH texture is a pure regrouping of the same flat array", () => {
+  // This is what makes "consume _shData verbatim" bit-exact rather than merely
+  // equivalent: the row copy the WebGL path performs, and the texel address
+  // the GLSL fetches, compose back to the FLAT index the WGSL computes.
+  const primitive = readNormalized(PRIMITIVE_PATH);
+  assert.match(
+    primitive,
+    /const splatsPerRow = Math\.floor\(width \/ dims\);/,
+    `${PRIMITIVE_PATH}: the SH row width formula changed — re-derive the regrouping proof`,
+  );
+  assert.match(
+    primitive,
+    /const floatsPerRow = splatsPerRow \* \(dims \* 2\);/,
+    `${PRIMITIVE_PATH}: the SH row length formula changed`,
+  );
+  assert.match(
+    primitive,
+    /for \(let i = 0; dataIndex < snapshot\.shData\.length; i \+= width \* 2\) \{/,
+    `${PRIMITIVE_PATH}: the SH row copy stride changed`,
+  );
+  const glsl = readNormalized(GLSL_VS_PATH);
+  assert.match(
+    glsl,
+    /uint splatsPerRow = uint\(shTexSize\.x\) \/ dims;/,
+    `${GLSL_VS_PATH}: the SH row width the shader assumes changed`,
+  );
+  assert.match(
+    glsl,
+    /uint shIndex = \(splatID%splatsPerRow\) \* dims \+ uint\(index\);/,
+    `${GLSL_VS_PATH}: the SH texel index changed`,
+  );
+  assert.match(
+    glsl,
+    /ivec2 shPosCoord = ivec2\(shIndex, splatID \/ splatsPerRow\);/,
+    `${GLSL_VS_PATH}: the SH texel row changed`,
+  );
+
+  const reader = parseShReader(extractSplatWgsl(readNormalized(RENDERER_PATH)));
+  for (const width of [2048, 4096, 8192, 16384]) {
+    for (const dims of SH_TOTAL_BANDS) {
+      const splatsPerRow = Math.floor(width / dims);
+      const floatsPerRow = splatsPerRow * (dims * 2);
+      for (const splatID of [
+        0,
+        1,
+        splatsPerRow - 1,
+        splatsPerRow,
+        splatsPerRow * 3 + 7,
+      ]) {
+        for (const index of [0, 1, dims - 1]) {
+          const row = Math.floor(splatID / splatsPerRow);
+          const column = splatID % splatsPerRow;
+          // Word offset in the TEXTURE, expanded from the row copy:
+          //   texBuf row r starts at r*width*2 and holds shData[r*floatsPerRow ...]
+          const textureWord =
+            row * width * 2 +
+            (column * dims + index) * 2 -
+            row * width * 2 +
+            row * floatsPerRow;
+          const flatWord =
+            splatID * dims * reader.strideFactor + index * reader.indexFactor;
+          assert.equal(
+            textureWord,
+            flatWord,
+            `width=${width} dims=${dims} splat=${splatID} index=${index}: the GLSL texel does not resolve to the WGSL flat word, so consuming _shData verbatim is NOT bit-exact`,
+          );
+        }
+      }
+    }
+  }
+});
+
+/**
+ * The SH budget must be decided ABOVE the backend branch, INSIDE
+ * `processGeneratedSplatTextureData`. Both halves matter: the file has other
+ * `_featureRenderer` checks, so a whole-file `indexOf` would compare against
+ * an unrelated one and could never fail.
+ */
+function assertShBudgetAboveBranch(source) {
+  const body = extractJsFunction(
+    source,
+    "processGeneratedSplatTextureData",
+    PRIMITIVE_PATH,
+  );
+  const budgetCall = body.indexOf("applySphericalHarmonicsBudget(");
+  const branch = body.indexOf("if (defined(primitive._featureRenderer))");
+  assert.notEqual(
+    budgetCall,
+    -1,
+    `${PRIMITIVE_PATH}: the SH budget call is gone from processGeneratedSplatTextureData`,
+  );
+  assert.notEqual(branch, -1, `${PRIMITIVE_PATH}: the backend branch is gone`);
+  assert.ok(
+    budgetCall < branch,
+    `${PRIMITIVE_PATH}: the SH budget is decided BELOW the backend branch again — the native path would keep a degree WebGL just dropped`,
+  );
+}
+
+test("C15-G5: the SH degree fallback is decided ONCE, for both backends", () => {
+  // NEW-SPLAT-SH-DEGREE-BACKEND-DEPENDENT. Before this row the degrade-to-0
+  // decision lived below the backend branch, so WebGL would drop to base colour
+  // for a very large cloud while WebGPU (storage buffer, no height bound) kept
+  // degree 3 — a silent divergence no gate would ever be run large enough to
+  // observe.
+  const source = readNormalized(PRIMITIVE_PATH);
+  assertShBudgetAboveBranch(source);
+  // The WebGL-only half must no longer carry a second copy of the decision.
+  const body = extractJsFunction(
+    source,
+    "processGeneratedSplatTextureData",
+    PRIMITIVE_PATH,
+  );
+  const webglHalf = body.slice(
+    body.indexOf("if (defined(primitive._featureRenderer))"),
+  );
+  assert.doesNotMatch(
+    webglHalf,
+    /if \(shHeight > width\)/,
+    `${PRIMITIVE_PATH}: the height decision was re-inlined into the WebGL half`,
+  );
+
+  const budget = loadShBudget();
+  const observed = [];
+  for (const maxTex of [2048, 4096, 8192, 16384]) {
+    for (const degree of [1, 2, 3]) {
+      const dims = SH_TOTAL_BANDS[degree - 1];
+      const coefficients = SH_FLOATS_PER_SPLAT[degree - 1];
+      const splatsPerRow = Math.floor(maxTex / dims);
+      const limit = maxTex * splatsPerRow;
+      const at = {
+        shData: new Uint32Array(1),
+        sphericalHarmonicsDegree: degree,
+        shCoefficientCount: coefficients,
+        numSplats: limit,
+      };
+      const layout = budget(at, maxTex);
+      assert.ok(
+        layout,
+        `maxTex=${maxTex} degree=${degree}: SH must survive at exactly the limit`,
+      );
+      assert.equal(layout.height, maxTex);
+      assert.equal(
+        at.sphericalHarmonicsDegree,
+        degree,
+        "the degree must be untouched at the limit",
+      );
+
+      const over = {
+        shData: new Uint32Array(1),
+        sphericalHarmonicsDegree: degree,
+        shCoefficientCount: coefficients,
+        numSplats: limit + splatsPerRow,
+      };
+      assert.equal(
+        budget(over, maxTex),
+        undefined,
+        `maxTex=${maxTex} degree=${degree}: SH must degrade past the limit`,
+      );
+      assert.equal(
+        over.sphericalHarmonicsDegree,
+        0,
+        "the degrade must be published as degree 0 — the ONE signal both backends read",
+      );
+      if (degree === 3) observed.push(`maxTex=${maxTex}: ${limit}`);
+    }
+  }
+  // Recorded, not asserted as a product requirement: the divergence condition
+  // for the gate assets. `tower` is 286,868 splats — three orders of magnitude
+  // under the smallest of these.
+  assert.ok(
+    observed.length === 4,
+    `degree-3 divergence thresholds: ${observed.join(", ")}`,
+  );
+  // No SH -> no layout, and no spurious degrade.
+  const none = { sphericalHarmonicsDegree: 0, numSplats: 10 };
+  assert.equal(budget(none, 16384), undefined);
+});
+
+function loadShBudget() {
+  const source = readNormalized(PRIMITIVE_PATH);
+  const fn = extractJsFunction(
+    source,
+    "applySphericalHarmonicsBudget",
+    PRIMITIVE_PATH,
+  );
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    "defined",
+    "console",
+    `${fn}\nreturn applySphericalHarmonicsBudget;`,
+  )((value) => value !== undefined && value !== null, { warn() {} });
+}
+
+test("C15-G5: the SH axis is a registered hi-word define on bit 3", () => {
+  const defines = readNormalized(DEFINES_PATH);
+  assert.match(
+    defines,
+    /SPLAT_SPHERICAL_HARMONICS: hiDefineBit\(3\),/,
+    `${DEFINES_PATH}: SPLAT_SPHERICAL_HARMONICS must stay on hi bit 3 — the registry is ADD-ONLY`,
+  );
+  // The three bits claimed before it must not have moved.
+  assert.match(defines, /HI_WORD_PROBE: hiDefineBit\(0\),/);
+  assert.match(defines, /ENHANCED_OCEAN: hiDefineBit\(1\),/);
+  assert.match(defines, /SPLAT_PACKED_WASM: hiDefineBit\(2\),/);
+
+  const renderer = readNormalized(RENDERER_PATH);
+  assert.match(
+    extractSplatWgsl(renderer),
+    /\/\/>>ifdef SPLAT_SPHERICAL_HARMONICS/,
+    `${RENDERER_PATH}: nothing in SPLAT_WGSL gates on the SH define`,
+  );
+  // Single flip point, and it feeds the SAME definesHi every module fetch uses.
+  assert.match(
+    renderer,
+    /activeShEnabled,\s*\n\s*\);/,
+    `${RENDERER_PATH}: the SH axis no longer reaches buildSplatPipelineResources`,
+  );
+  assert.match(
+    renderer,
+    /const shFlipped =\s*\n?\s*cache\.initialized && cache\.resourcesShEnabled !== activeShEnabled;/,
+    `${RENDERER_PATH}: an SH flip no longer invalidates the compiled pipelines — the shader would keep evaluating a retired palette`,
+  );
+  assert.match(
+    renderer,
+    /layoutFlipped \|\|\s*\n\s*shFlipped\)/,
+    `${RENDERER_PATH}: shFlipped is computed but not consumed by the invalidation sweep`,
+  );
+});
+
+test("C15-G5: the SH binding does NOT change the bind-group topology", () => {
+  const renderer = readNormalized(RENDERER_PATH);
+  const wgsl = extractSplatWgsl(renderer);
+  // The declaration must sit OUTSIDE every //>>ifdef, so both variants resolve
+  // to the same layout. Checked by resolving the shader with the SH flag CLEAR
+  // and requiring the binding to still be there.
+  const withoutSh = resolveDirectives(wgsl, new Set(["SPLAT_PACKED_WASM"]));
+  assert.match(
+    withoutSh,
+    /@group\(0\) @binding\(4\) var<storage, read> shCoefficients: array<u32>;/,
+    `${RENDERER_PATH}: the SH binding is inside an //>>ifdef — the two variants would need two different bind-group layouts, which is exactly what the C15-G3 discipline forbids`,
+  );
+  // BGL and every bind-group build site must carry it.
+  assert.match(
+    renderer,
+    /storageBuffer\(4, Stage\.VERTEX, \{ readOnly: true \}\),/,
+    `${RENDERER_PATH}: the BGL has no binding-4 entry`,
+  );
+  const bindSites = [
+    ...renderer.matchAll(
+      /binding: 4, resource: \{ buffer: cache\.shBuffer!? \}/g,
+    ),
+  ];
+  assert.equal(
+    bindSites.length,
+    3,
+    `${RENDERER_PATH}: expected all three bind-group build sites to bind the SH buffer; found ${bindSites.length}`,
+  );
+  // A placeholder must exist for non-SH content, or the bind group is invalid.
+  assert.match(
+    renderer,
+    /label: "GaussianSplat SH coefficients \(placeholder\)",/,
+    `${RENDERER_PATH}: non-SH content has no buffer to bind at slot 4`,
+  );
+  assert.match(
+    renderer,
+    /cache\.shBuffer\?\.destroy\(\);/,
+    `${RENDERER_PATH}: the SH buffer leaks on destroy`,
+  );
+});
+
+test("C15-G5: the SH uniform tail lands where the CPU writes it", () => {
+  const renderer = readNormalized(RENDERER_PATH);
+  const wgsl = stripShaderComments(extractSplatWgsl(renderer));
+  const struct = sliceBalancedBody(wgsl, "struct Uniforms", RENDERER_PATH);
+  const fields = [
+    ...struct.matchAll(/(\w+):\s*([A-Za-z0-9_<>,\s]+?),\s*(?:\n|$)/g),
+  ].map((m) => [m[1], m[2].replace(/\s+/g, "")]);
+  const SIZES = {
+    "mat4x4<f32>": [16, 64],
+    "mat3x3<f32>": [16, 48],
+    "vec4<f32>": [16, 16],
+    "vec3<f32>": [16, 12],
+    "vec2<f32>": [8, 8],
+    f32: [4, 4],
+    u32: [4, 4],
+  };
+  let offset = 0;
+  let structAlign = 1;
+  const offsets = {};
+  for (const [name, type] of fields) {
+    const spec = SIZES[type];
+    assert.ok(
+      spec,
+      `${RENDERER_PATH}: unmodelled uniform field type "${type}"`,
+    );
+    const [align, size] = spec;
+    structAlign = Math.max(structAlign, align);
+    offset = Math.ceil(offset / align) * align;
+    offsets[name] = offset;
+    offset += size;
+  }
+  const structSize = Math.ceil(offset / structAlign) * structAlign;
+  // Every pre-existing CPU write offset must fall out of the same calculator,
+  // or the calculator is wrong and its verdict on the new tail is worthless.
+  assert.equal(
+    offsets.viewportSize,
+    160,
+    "the calculator disagrees with the known vpData offset",
+  );
+  assert.equal(
+    offsets.pickColor,
+    176,
+    "the calculator disagrees with the known pickColor offset",
+  );
+  assert.equal(offsets.prevViewProjection, 192);
+  assert.equal(offsets.modelMatrix, 256);
+  // ...and then the new tail.
+  assert.equal(
+    offsets.shViewRotation,
+    320,
+    "shViewRotation must sit at byte 320",
+  );
+  assert.equal(offsets.shDegree, 368, "shDegree must sit at byte 368");
+  assert.equal(structSize, 384, "the splat UBO must be 384 bytes");
+
+  assert.match(
+    renderer,
+    /cache\.uniformBuffer = device\.createBuffer\(\{\s*\n\s*size: 384,/,
+    `${RENDERER_PATH}: the splat UBO allocation does not match the WGSL struct size`,
+  );
+  assert.match(
+    renderer,
+    /device\.queue\.writeBuffer\(cache\.uniformBuffer!, 320, shRotationData\);/,
+    `${RENDERER_PATH}: the SH tail is not written at byte 320`,
+  );
+  // float 12 of the 16-float tail block = byte 320 + 48 = 368.
+  assert.match(
+    renderer,
+    /shRotationData\[12\] = cache\.shEnabled \? cache\.shDegree : 0\.0;/,
+    `${RENDERER_PATH}: shDegree is not written at float 12 of the tail block (byte 368), or a stale degree can survive a flip`,
+  );
+  // mat3x3 columns are 16-byte strided; the pack must skip the pad lane.
+  assert.match(
+    renderer,
+    /shRotationData\[column \* 4 \+ 3\] = 0\.0;/,
+    `${RENDERER_PATH}: the mat3x3 column pad lane is not written — columns would mis-stride`,
+  );
+});
+
+/** The CPU-side view-direction fold, as a re-runnable predicate. */
+function assertShViewDirectionFold(renderer) {
+  assert.match(
+    renderer,
+    /Matrix4\.getMatrix3\(mm, scratchModelRotation\);\s*\n\s*Matrix3\.multiply\(\s*\n?\s*shInverseRotation,\s*\n?\s*scratchModelRotation,\s*\n?\s*scratchShRotation,?\s*\n?\s*\);/,
+    `${RENDERER_PATH}: the SH rotation is not inverse(SH frame) * mat3(modelMatrix), in that order. Reversing the operands rotates the view direction into the wrong space and the SH lobes point somewhere else entirely`,
+  );
+  assert.match(
+    renderer,
+    /\)\._shInverseRotation;/,
+    `${RENDERER_PATH}: the SH frame no longer comes from the primitive's _shInverseRotation — the same matrix the WebGL uniform reads`,
+  );
+}
+
+test("C15-G5: the view direction is built in WebGL's space", () => {
+  const renderer = readNormalized(RENDERER_PATH);
+  assertShViewDirectionFold(renderer);
+  // The primitive must still be the producer of that matrix, and must still
+  // build it from the SAME chain the WebGL uniform documents.
+  assert.match(
+    readNormalized(PRIMITIVE_PATH),
+    /Matrix4\.getRotation\(\s*\n?\s*Matrix4\.inverse\(shFwd, shFwd\),\s*\n?\s*this\._shInverseRotation,\s*\n?\s*\);/,
+    `${PRIMITIVE_PATH}: _shInverseRotation is no longer the inverse of computedTransform x axisCorrection x worldTransform`,
+  );
+
+  // EXECUTED: the algebraic identity the WGSL port rests on —
+  //   mat3(M) * (p - M^-1 c)  ==  M*p - c
+  // for ANY invertible M, which is why the RTE residual can stand in for a
+  // world-space camera->splat vector without ever materializing one.
+  const multiply4 = (m, v) => [
+    m[0] * v[0] + m[4] * v[1] + m[8] * v[2] + m[12],
+    m[1] * v[0] + m[5] * v[1] + m[9] * v[2] + m[13],
+    m[2] * v[0] + m[6] * v[1] + m[10] * v[2] + m[14],
+  ];
+  const linear = (m, v) => [
+    m[0] * v[0] + m[4] * v[1] + m[8] * v[2],
+    m[1] * v[0] + m[5] * v[1] + m[9] * v[2],
+    m[2] * v[0] + m[6] * v[1] + m[10] * v[2],
+  ];
+  const solve = (m, target) => {
+    // Solve mat3(m) * u = target - translation, by Cramer's rule.
+    const b = [target[0] - m[12], target[1] - m[13], target[2] - m[14]];
+    const a = [
+      [m[0], m[4], m[8]],
+      [m[1], m[5], m[9]],
+      [m[2], m[6], m[10]],
+    ];
+    const det = (n) =>
+      n[0][0] * (n[1][1] * n[2][2] - n[1][2] * n[2][1]) -
+      n[0][1] * (n[1][0] * n[2][2] - n[1][2] * n[2][0]) +
+      n[0][2] * (n[1][0] * n[2][1] - n[1][1] * n[2][0]);
+    const base = det(a);
+    return [0, 1, 2].map((column) => {
+      const copy = a.map((row) => row.slice());
+      for (let r = 0; r < 3; r++) copy[r][column] = b[r];
+      return det(copy) / base;
+    });
+  };
+  // A rigid ENU-like frame at planetary scale, and a deliberately non-rigid
+  // one (scale + shear) so the identity is proven generally, not for the easy
+  // case the gate assets happen to use.
+  const matrices = [
+    [0, 1, 0, 0, -0.5, 0, 0.866, 0, 0.866, 0, 0.5, 0, 4.2e6, 1.1e6, 4.6e6, 1],
+    [
+      1.5, 0.2, 0, 0, -0.3, 2.1, 0.4, 0, 0.05, 0.1, 0.7, 0, -3.1e6, 5.2e6,
+      2.4e6, 1,
+    ],
+  ];
+  for (const m of matrices) {
+    const cameraWorld = [4.20001e6, 1.10002e6, 4.60003e6];
+    const cameraModel = solve(m, cameraWorld);
+    for (const p of [
+      [0, 0, 0],
+      [12.5, -3.25, 7],
+      [-400, 250, 900],
+    ]) {
+      const posRTE = [
+        p[0] - cameraModel[0],
+        p[1] - cameraModel[1],
+        p[2] - cameraModel[2],
+      ];
+      const viaResidual = linear(m, posRTE);
+      const world = multiply4(m, p);
+      const viaWorld = [
+        world[0] - cameraWorld[0],
+        world[1] - cameraWorld[1],
+        world[2] - cameraWorld[2],
+      ];
+      for (let c = 0; c < 3; c++) {
+        assert.ok(
+          Math.abs(viaResidual[c] - viaWorld[c]) <=
+            1e-6 * Math.max(1, Math.abs(viaWorld[c])),
+          `mat3(M) * posRTE must equal splatWC - cameraWC (component ${c}): ${viaResidual[c]} vs ${viaWorld[c]}`,
+        );
+      }
+    }
+  }
+});
+
+test("C15-G5: the SH commit cannot serve stale coefficients", () => {
+  const renderer = readNormalized(RENDERER_PATH);
+  // Producer identity is the dirty signal, not the count: `_shData` is a fresh
+  // subarray over a REUSED scratch buffer on every snapshot rebuild, so a
+  // rebuild landing on the same count and degree still changes the bytes.
+  assert.match(
+    renderer,
+    /cache\.shSourceToken !== shSource\.token \|\|/,
+    `${RENDERER_PATH}: the SH commit no longer keys on producer identity — a same-count rebuild would keep the old palette resident forever`,
+  );
+  assert.match(
+    renderer,
+    /cache\.shBuffer\.size !== \(shSource\.view\.byteLength \|\| 16\)/,
+    `${RENDERER_PATH}: the SH commit no longer checks the resident buffer size`,
+  );
+  // A short payload must disable SH loudly rather than read out of bounds.
+  assert.match(
+    renderer,
+    /GaussianSplat SH payload is short:/,
+    `${RENDERER_PATH}: the short-SH-payload sentinel is gone`,
+  );
+  assert.match(
+    renderer,
+    /if \(shData\.length < words\) \{/,
+    `${RENDERER_PATH}: the SH payload length is no longer validated against count x bands x 2`,
+  );
+  // Withdrawal must retire the term, not leave it evaluating a dead palette.
+  assert.match(
+    renderer,
+    /cache\.shSourceToken = null;\s*\n\s*cache\.shDegree = 0;\s*\n\s*cache\.shEnabled = false;/,
+    `${RENDERER_PATH}: SH state is not retired when the cloud is withdrawn`,
+  );
+  // The commit must sit above the pipeline gate, for the Batch-881 reason.
+  const shCommit = renderer.indexOf(
+    "// ── C15-G5 — commit the SH coefficients.",
+  );
+  const gate = renderer.indexOf("    !tryResolveSplatPipelines(");
+  assert.notEqual(
+    shCommit,
+    -1,
+    `${RENDERER_PATH}: the SH commit block is gone`,
+  );
+  assert.ok(
+    shCommit < gate,
+    `${RENDERER_PATH}: the SH upload sits BELOW the pipeline gate — it would not start until a cold variant finished compiling`,
+  );
+});
+
+test("C15-G5: the probe can distinguish an unimplemented port from an unexecuted one", () => {
+  // The row's silent failure mode: if the SH variant never compiles, the
+  // colour residual stays exactly where it was and the run reads as "the port
+  // did not help" rather than "the port did not run". These observables are
+  // what separate the two, so they are sampled with the rest of the
+  // renderer-owned stats (i.e. at the SCORED frame) and printed.
+  for (const field of [
+    "record.cacheShEnabled = p?._webgpuCache?.shEnabled",
+    "record.cacheShDegree = p?._webgpuCache?.shDegree",
+    "record.primitiveShDegree = p?._sphericalHarmonicsDegree",
+    "record.primitiveShWords = p?._shData?.length",
+  ]) {
+    assert.ok(
+      PROBE.includes(field),
+      `${PROBE_PATH}: the SH observable "${field}" is not sampled`,
+    );
+  }
+  const samplerStart = PROBE.indexOf("const sampleRendererStats = () => {");
+  assert.notEqual(samplerStart, -1, `${PROBE_PATH}: the sampler is gone`);
+  const samplerBody = PROBE.slice(
+    samplerStart,
+    PROBE.indexOf("\n  };", samplerStart),
+  );
+  for (const field of ["record.cacheShEnabled", "record.cacheShDegree"]) {
+    assert.ok(
+      samplerBody.includes(field),
+      `${PROBE_PATH}: "${field}" must live INSIDE sampleRendererStats, or it describes a different frame than the pixels`,
+    );
+  }
+  assert.match(
+    PROBE,
+    /sh: enabled=\$\{webgpu\?\.cacheShEnabled/,
+    `${PROBE_PATH}: the SH observables are collected but never printed`,
+  );
+});
+
+// ── Mutants ────────────────────────────────────────────────────────────────
+// Each is applied to an in-memory COPY of the real shader; `assertShContract`
+// must reject it, and must still ACCEPT the real source (so a rule that has
+// started throwing unconditionally cannot masquerade as a working gate).
+
+const SH_WGSL_MUTANTS = [
+  {
+    name: "SH_C1 sign flipped on the y band",
+    mutate: (wgsl) =>
+      wgsl.replace(
+        "result += -SPLAT_SH_C1 * y * sh1 +",
+        "result += SPLAT_SH_C1 * y * sh1 +",
+      ),
+  },
+  {
+    name: "degree-2 basis pair swapped (yz <-> xz)",
+    mutate: (wgsl) =>
+      wgsl
+        .replace("SPLAT_SH_C2[1] * yz * sh5", "SPLAT_SH_C2[1] * xz * sh5")
+        .replace("SPLAT_SH_C2[3] * xz * sh7", "SPLAT_SH_C2[3] * yz * sh7"),
+  },
+  {
+    // SH_C3[0] and SH_C3[6] are the SAME value (-0.59004358), as are [2] and
+    // [4]; swapping those is numerically a no-op and would make a vacuous
+    // mutant. This pair is genuinely distinct (2.890611442 vs 1.445305721).
+    name: "degree-3 constant index swapped",
+    mutate: (wgsl) =>
+      wgsl.replace(
+        "SPLAT_SH_C3[1] * xy * z * sh10",
+        "SPLAT_SH_C3[5] * xy * z * sh10",
+      ),
+  },
+  {
+    name: "degree-3 polynomial 4*zz weakened to 3*zz",
+    mutate: (wgsl) =>
+      wgsl.replace(
+        "SPLAT_SH_C3[2] * y * (4.0 * zz - xx - yy) * sh11",
+        "SPLAT_SH_C3[2] * y * (3.0 * zz - xx - yy) * sh11",
+      ),
+  },
+  {
+    name: "degree-2 coefficient index off by one",
+    mutate: (wgsl) =>
+      wgsl.replace(
+        "let sh4 = loadSplatShCoefficient(splatID, dims, 3u);",
+        "let sh4 = loadSplatShCoefficient(splatID, dims, 4u);",
+      ),
+  },
+  {
+    name: "coefficient stride widened to 3 words",
+    mutate: (wgsl) =>
+      wgsl.replace(
+        "let base = splatID * dims * 2u + index * 2u;",
+        "let base = splatID * dims * 3u + index * 2u;",
+      ),
+  },
+  {
+    name: "b channel read from the high half of its word",
+    mutate: (wgsl) =>
+      wgsl.replace(
+        "return vec3<f32>(rg.x, rg.y, b.x);",
+        "return vec3<f32>(rg.x, rg.y, b.y);",
+      ),
+  },
+  {
+    name: "band table made DC-inclusive (16 / 9 / 4)",
+    mutate: (wgsl) =>
+      wgsl
+        .replace(
+          "if (degree >= 3.0) { return 15u; }",
+          "if (degree >= 3.0) { return 16u; }",
+        )
+        .replace(
+          "if (degree >= 2.0) { return 8u; }",
+          "if (degree >= 2.0) { return 9u; }",
+        )
+        .replace("  return 3u;\n}", "  return 4u;\n}"),
+  },
+  {
+    name: "degree guard shifted (band 2 evaluated at degree 1)",
+    mutate: (wgsl) =>
+      wgsl.replace("    if (degree >= 2.0) {", "    if (degree >= 1.0) {"),
+  },
+  {
+    name: "view direction left in the model frame (rotation dropped)",
+    mutate: (wgsl) =>
+      wgsl.replace(
+        "let shViewDir = normalize(u.shViewRotation * posRTE);",
+        "let shViewDir = normalize(posRTE);",
+      ),
+  },
+  {
+    name: "DC band double-counted at the colour composition",
+    mutate: (wgsl) =>
+      wgsl.replace(
+        "    s.color.rgb + evaluateSplatSH(splatIdx, u.shDegree, shViewDir),",
+        "    s.color.rgb + 0.2820947917738781 * s.color.rgb + evaluateSplatSH(splatIdx, u.shDegree, shViewDir),",
+      ),
+  },
+  {
+    name: "SH added to alpha as well as rgb",
+    mutate: (wgsl) =>
+      wgsl.replace(
+        "    s.color.a,\n  );",
+        "    s.color.a + evaluateSplatSH(splatIdx, u.shDegree, shViewDir).r,\n  );",
+      ),
+  },
+];
+
+for (const mutant of SH_WGSL_MUTANTS) {
+  test(`C15-G5 mutant rejected: ${mutant.name}`, () => {
+    const real = extractSplatWgsl(readNormalized(RENDERER_PATH));
+    const glsl = readNormalized(GLSL_VS_PATH);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(
+      mutated,
+      real,
+      "the mutation did not apply — the anchor text moved and this mutant now proves nothing",
+    );
+    assert.throws(
+      () => assertShContract(mutated, glsl),
+      undefined,
+      `${mutant.name}: the SH contract battery accepted the mutated shader`,
+    );
+    // ...and the battery must still pass on the real source.
+    assertShContract(real, glsl);
+  });
+}
+
+const SH_SOURCE_MUTANTS = [
+  {
+    name: "the SH rotation fold is applied in the wrong order",
+    file: RENDERER_PATH,
+    mutate: (source) =>
+      source.replace(
+        "    Matrix3.multiply(\n      shInverseRotation,\n      scratchModelRotation,\n      scratchShRotation,\n    );",
+        "    Matrix3.multiply(\n      scratchModelRotation,\n      shInverseRotation,\n      scratchShRotation,\n    );",
+      ),
+    check: (source) => assertShViewDirectionFold(source),
+    because: /inverse\(SH frame\) \* mat3\(modelMatrix\)/,
+  },
+  {
+    name: "the SH budget is moved back below the backend branch",
+    file: PRIMITIVE_PATH,
+    mutate: (source) => {
+      const call =
+        "    const shLayout = applySphericalHarmonicsBudget(\n      snapshot,\n      maximumTextureSize,\n    );\n";
+      assert.ok(source.includes(call), "the budget call anchor moved");
+      const moved = source.replace(call, "");
+      return moved.replace(
+        "    if (defined(snapshot.shData) && snapshot.sphericalHarmonicsDegree > 0) {",
+        `${call}    if (defined(snapshot.shData) && snapshot.sphericalHarmonicsDegree > 0) {`,
+      );
+    },
+    check: (source) => assertShBudgetAboveBranch(source),
+    because: /BELOW the backend branch/,
+  },
+];
+
+for (const mutant of SH_SOURCE_MUTANTS) {
+  test(`C15-G5 source mutant rejected: ${mutant.name}`, () => {
+    const real = readNormalized(mutant.file);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(mutated, real, "the mutation did not apply");
+    assert.throws(
+      () => mutant.check(mutated),
+      mutant.because,
+      `${mutant.name}: accepted, or rejected for the wrong reason`,
+    );
+    mutant.check(real);
   });
 }

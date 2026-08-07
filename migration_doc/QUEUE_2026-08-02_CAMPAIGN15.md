@@ -520,7 +520,7 @@ scoping row must re-verify all of it at HEAD):**
 | `C15-G2` | Scene-logic extraction: move the FR dispatch below the data commit; split the backend-neutral snapshot pack from the WebGL `Texture` upload | M | **CONFIRMED-COMPLETE — 2026-08-07 (Batch 880 fix, Edge-verified).** Batch 878 landed the extraction and came back exit 3 on its own STAGE contract (`_numSplats` stuck at 0 — the TEXTURE_READY guard read `pending.gaussianSplatTexture`, a WebGL object the native branch deliberately never creates); `hasSnapshotRenderPayload` fixed it and the re-run measured `numSplats=27`, blockers exactly `[no-splat-data-fields, cache-splat-count-zero]`, **exit 0** — an exact match to the re-registered predictions. Mechanism + corrected boundary in the §6c `C15-G2` block below | `C15-G1` |
 | `C15-G3` | Splat record format + WebGPU buffer commit — consume the WASM texture-generator output verbatim; first real WebGPU splat pixels | L | **COMPLETE — Batch 882 (`C15-G3b`) Edge-verified, every pre-registered number hit.** WebGPU splats RENDER: `cache.splatCount=27`, added **18.995%** vs WebGL **19.141%** (inside the predicted 17.8-21.0% band, within 0.8% of parity), parity mismatch **31.946% -> 2.574%** (below the predicted 8-15%), blockers `[]`, `WEBGPU-SPLATS-PRESENT`, exit 0. `probe-splat-sort` + `probe-oit-transparency` green. `probe-splat-globe-occlusion` check 3 red (`greenPx=1436`) -> **`C15-G3c`: attributed to the MISSING GLOBE, not the splat** (the sharper falloff makes leak pixels exactly 4x LESS countable, so it cannot manufacture a leak; 1436 px is precisely the fully-unoccluded footprint at the probe's geometry; the PNG shows the globe confined to a right-hand strip). Instrument fixed (globe-only reference frame, per-pixel green split, structural exit 3); no engine change. 117 harness checks green. Blocks nothing: `C15-G4`/`G5` are unblocked | `C15-G2` |
 | `C15-G4` | Consume the WASM radix sort (`primitive._indexes`) instead of the in-renderer synchronous JS comparator sort | M | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run on BOTH assets. **The row's headline was already shipped by its own dependencies, and the record has to say so:** `C15-G2` moved the whole backend-neutral pipeline — including the `GaussianSplatSorter.radixSortIndexes` schedule — ABOVE the FR dispatch, and `C15-G3` consumed its `_indexes` product, so the asynchronous worker sort has owned the WebGPU order since Batch 878 and the synchronous comparator has been unreachable on packed content since Batch 881. What `C15-G4` actually adds: (1) **provenance** — `_indexes` carried no answer to "which camera, against which data?", so `GaussianSplatPrimitive` now stamps `_indexesSortSequence` (the already-monotonic `_sortRequestId`) + `_indexesDataGeneration` at both assignment sites, `commitSnapshot` directly (it IS the atomic data swap; refusing there would desynchronize `_indexes` from `_positions`) and `resolveSteadySort` through a new `publishSortedIndexes`; (2) **a sequence guard at the buffer-upload boundary** in `uploadProvidedSortOrder` — the upload IS the swap (`writeBuffer` snapshots at call time, so a frame draws the whole old permutation or the whole new one), and a resolution for an older sequence or older generation is refused while still returning `true`, so the refusal keeps the resident order instead of falling through to a synchronous sort; (3) **the exit gate's observable** — `cache.comparatorSorts` (gate: 0), `providedSortUploads` (liveness: > 0, else 0/0 is a vacuous green) and `supersededSortUploads`, sampled and printed by `probe-gsplat-parity.mjs`. `maybeSortSplats` is **RETIRED, not deleted** (Principle 7): its `layoutPacked` early-out is the retirement, and it is the ONLY sorter for the three synthetic legacy-layout probes — `probe-splat-sort.mjs` (the Batch-288 sort-consume evidence), `probe-splat-globe-occlusion.mjs`, `probe-oit-transparency.mjs`. Harness 156 → 179: the guard is EXTRACTED FROM SOURCE AND EXECUTED over ordered resolutions, with 8 mutants, each also required to pass on the real source. Discharges `C10-04-SPLAT-ASYNC-SORT` (DEFERRED_WORK 2026-08-07). Predictions in the `C15-G4` block below. **LANDED Batch 890 (`4f6bc93d93`); both Edge runs in. `sh_unit_cube` GATE PASS exit 0 (18.996%, unchanged as predicted). `tower`: every G4 observable EXACTLY on prediction — 286,868/286,868 both legs, `comparatorSorts=0`, `providedUploads=1`, `superseded=0`, added ratio 1.002 (4.085% vs 4.076%, the predicted [0.90, 1.10] band centred), edge 0.141/0.140, lumSd 87.5/88.2, data commit 233 ms WebGPU vs 451 ms WebGL (0.52x, well inside the predicted 1.5x), 0 errors. The absolute added% (4.08%) landed just under the weakly-stated 5-45% band — the ratio was the falsifiable claim and it hit.** `tower` exited **3** on `reference:capture-determinism` (WebGL 0.052% vs a 0.050% bar, 410 px; WebGPU 0.042%) — the instrument refusing to certify parity against a reference that cannot reproduce itself. Owned by **`C15-G4b`** below: the proposed steady-sort mechanism is REFUTED at a frozen camera, and the fix is structural (same-task capture pair + a `sort-quiesced` precondition), with the bar untouched | `C15-G3` |
-| `C15-G5` | Spherical harmonics (degree 1-3) in WGSL — the view-dependent colour term the WGSL has **zero** implementation of | L | PENDING | `C15-G3` |
+| `C15-G5` | Spherical harmonics (degree 1-3) in WGSL — the view-dependent colour term the WGSL has **zero** implementation of | L | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run. Bands 1-3 evaluated in `SPLAT_WGSL` behind `ShaderDefineHi.SPLAT_SPHERICAL_HARMONICS` (hi bit 3), term-for-term with `PrimitiveGaussianSplatVS.glsl:10-101`. **`_shData` is consumed VERBATIM** as a group-0 binding-4 storage buffer — the WebGL `RG32UI` SH texture is a pure row-regrouping of that same flat array, so the GLSL texel address reduces algebraically to the WGSL's `splat*dims*2 + i*2` and the coefficients are bit-identical (proved by execution, not by comment). The binding is declared OUTSIDE every `//>>ifdef`, so both variants share one BGL / bind group / pipeline layout (`C15-G3` topology discipline). **DC-term determination: the base RGBA8 ALREADY carries the DC band** (`GltfSpzLoader.js:23-24`; writer offsets `base=[0,9,24]`; degree 3 = 15 bands / 45 floats, not 16 / 48; the GLSL `+=` onto the unpacked colour) — so the WGSL adds bands 1-3 only, and the double-count that would brighten every splat ~2x is a dedicated mutant. View direction matched by FOLDING rather than round-tripping: `mat3(M) * posRTE == splatWC - cameraWC` exactly for any invertible `M`, so the CPU packs one `_shInverseRotation * mat3(modelMatrix)` matrix (UBO 320 -> 384; `shViewRotation` at byte 320, `shDegree` at 368) and the shader never materializes a world-space position. **`NEW-SPLAT-SH-DEGREE-BACKEND-DEPENDENT` discharged by option (a)** — `applySphericalHarmonicsBudget` extracted backend-neutral and hoisted above the `_featureRenderer` branch so both legs degrade together; divergence condition computed and recorded (fires at 17,891,328 splats at degree 3 / maxTex 16384, vs `tower`'s 286,868). Naga validates **all 8** `LOG_DEPTH x SPLAT_PACKED_WASM x SPLAT_SPHERICAL_HARMONICS` combinations, enumerated as a power set and cross-checked against the flags the shader actually gates on. Harness **194 -> 217**: both evaluators EXTRACTED from source (constants, band table, index map, degree guards, per-term sign/polynomial/coefficient), compiled as JS and required to agree to **1e-6** over 46 directions x 3 degrees with two anti-vacuity guards, plus the REAL `packSphericalHarmonicsData` executed and read back through the WGSL's own extracted addressing — 14 mutants. Repaired on the way: `WebGPUShaderDefinesSpec.js` was **already red at HEAD** (`ShaderDefineHi` count pinned at 2 since `C15-G3` added bit 2 without bumping it). Predictions in the `C15-G5` block below | `C15-G3` |
 | `C15-G6` | `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` — re-verify against production data (the B647 fix is currently **vacuous** under every probe) | M | **PENDING — and it now has OBSERVED evidence (`C15-G3d`, 2026-08-07).** A splat 3 km BELOW the surface renders through a fully-covering globe while a splat 2 km ABOVE it composes correctly: every splat fragment beats the globe's depth, near and far alike. That is an ENCODE-SPACE mismatch (uniformly smaller splat depth), refuting both a flipped compare (which would hide the NEAR splat) and reversed-Z (no such migration exists at HEAD — 51 `less-equal` across the WebGPU fleet). `probe-splat-globe-occlusion` now prints the log-depth inputs BOTH producers encode from, so one run names the mismatch. **UPDATE Batch 885 (`C15-G6e`): the encode hypothesis is REFUTED by its own pinned constants** (near=0.1, far=1e8, factor=1/log2(far-near+1); reconstructed above 0.472277 < globe 0.487892 < below 0.505179 — correctly interleaved), and the three inline log-depth helper copies are now formula-identity-locked by an extracting spec. **UPDATE Batch 886 (`C15-G6f`): the successor 'depth CLEAR between OPAQUE and GAUSSIAN_SPLATS' hypothesis is REFUTED AT SOURCE** — `_resumeScenePass` re-opens with `depthLoadOp:load`, `_clearDepthStencil` is the only clearing re-open and both of its call sites are upstream of `_executeOpaquePass`, the only pass boundary between the two producers is the DP-H45 repack (which resumes with load, onto a depth-less copy target), and the draw-time pipeline/variant selection is unconditional. Also eliminated: the encode-PHASE question (both producers pack from `currentFrustum` at primitive-update time). **AND the discriminator itself had no positive control** — `bluePaintedOverGlobe = 0` was equally 'occluded' and 'never drew'; new STRUCTURAL precondition **P3** (point alone, depth test disabled, must paint > 500 px) makes the next run decidable in one shot. 140-check harness, 3 new mutants. Filed on the way: `NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT`. **UPDATE Batch 887 (`C15-G6g`): P3 GREEN (3026 px painted / 0 occluded) — the control is sound and the asymmetry is real.** Exhaustive field-by-field diff of the splat vs the point command+pipeline: declared depth state IDENTICAL, cache forwards it verbatim, multisample/format bakes agree, `WebGPUSceneRendererPassRedirect.ts` has no splat branch — candidates 1-3 all refuted at source. **Prime suspect filed as `NEW-SPLAT-LOG-DEPTH-ENCODE-SOURCE-SPLIT`**: the splat is the ONLY log-depth producer reading the live `currentFrustum`; PointPrimitive/Billboard/Label/Polyline/EllipsoidPrimitive/DepthPlane all prefer the stashed full-camera-frustum encode, and the point renderer's comment names the splat's exact symptom as its reason. NOT flipped — the globe is on the live side too, so the pairs may coincide; `recordLogDepthEncoder` now publishes each producer's BAKED pair and the probe reconstructs predicted-vs-measured visibility. One run convicts the encode or closes it with numbers. Harness 140 -> 148, and it forbids the splat's source moving in either direction without that run. **UPDATE Batch 888 — the decider answered branch 2: ALL THREE BAKED TRIPLES EQUAL** (`[0.1, 1e10, 0.030102999566280455]`), reconstructed `redSplat@6km=0.37782 < globe@8km=0.39031 < greenSplat@11km=0.40414` — the arithmetic predicts green HIDDEN against a measured LEAK, so **the encode is exonerated with numbers and the PASS is convicted**, and `NEW-SPLAT-LOG-DEPTH-ENCODE-SOURCE-SPLIT` is downgraded to a latent hazard. **✅ FIXED Batch 889 (`C15-G6h`).** Cause: the splat command had NO `boundingVolume`, so `View.createPotentiallyVisibleSet` gave it the camera worst-case span (`View.js:382-392`) — `[0.1, 1e10]` under log depth, a 1e11 ratio that splits into TWO slices — and it binned into BOTH, while the globe's tiles bin into the near one only; depth is cleared between slices and colour is not, so the far-slice execution composited against a depth buffer with no globe in it. **B647's fields now EXECUTE for real:** `_tileset.boundingSphere` first (WebGL parity, and already live for the real-tileset parity probe), else a sphere DERIVED from the resident splat centres and transformed to world space by the command's own model matrix — so the synthetic and custom producers that are this path's only exercisers stop inheriting the worst-case span. Derived once per attribute commit (the block that already walks the same bytes), one `BoundingSphere.transform` per frame. `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` resolves with this mechanism trace and its recorded per-frustum-UBO-repack fix is marked wrong. Harness 148 -> 156: the derivation is EXTRACTED FROM SOURCE AND EXECUTED over both record layouts, with 4 mutants. `NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT` stays separate and open. | `C15-G3` |
 | `C15-G7` | `NEW-GS-CLASSIFICATION-DEPTH` — re-verify the depth-write variant against production data | S | PENDING | `C15-G3` |
 | `C15-G8` | Terminal parity gate + tracker reconciliation | M | PENDING | `C15-G4`, `C15-G5`, `C15-G6`, `C15-G7` |
@@ -2208,6 +2208,133 @@ by more than that threshold at at least two of the three azimuths — otherwise 
 gate is not measuring SH and the row does not certify. Degree-0 content path
 proven byte-identical by a shader-source hash comparison against the pre-row
 module.
+
+#### `C15-G5` implementation record + pre-registered predictions (2026-08-07, worker)
+
+**IMPLEMENTATION DONE — pending orchestrator landing + Edge run.** Files:
+`WebGPUShaderDefines.ts` (new hi bit), `WebGPUGaussianSplatRenderer.ts` (WGSL +
+CPU), `GaussianSplatPrimitive.js` (the shared budget), `gsplat-harness.spec.mjs`
+(194 → 217), `WebGPUShaderDefinesSpec.js` (a red-at-HEAD pin repaired, below).
+
+**The SH dataflow at HEAD, end to end.** `GaussianSplat3DTileContent.update`
+infers the degree from the `SH_DEGREE_n_COEF_m` attribute COUNT
+(`degreeAndCoefFromAttributes`: 3 / 8 / 15 attributes → `l` = 1 / 2 / 3,
+`n` = 9 / 24 / 45 floats) and `packSphericalHarmonicsData` interleaves them into
+a `Uint32Array` at **`dims * 2` u32 per splat**, coefficient `i` at word
+`splat * dims * 2 + i * 2` (low word = f16 pair (r, g); high word = f16 b in its
+LOW half). `GaussianSplatPrimitive` aggregates the per-tile arrays into
+`snapshot.shData`, `commitSnapshot` publishes it to `primitive._shData` +
+`_sphericalHarmonicsDegree` **for both backends**, and WebGL then regroups it —
+row `r` holding splats `[r·splatsPerRow, …)` at `floatsPerRow = splatsPerRow ·
+dims · 2` words — into an `RG32UI` texture that `PrimitiveGaussianSplatVS.glsl`
+fetches at `((splatID % splatsPerRow)·dims + index, splatID / splatsPerRow)`.
+That texel address **algebraically reduces to the same flat word**, which is why
+the WGSL consumes `_shData` VERBATIM (the `C15-G3` Option-B precedent) instead of
+inventing a packing; the identity is executed over
+maxTex × dims × splat × index sweeps in the spec. Degree selection stays a
+RUNTIME uniform in both languages (`u_sphericalHarmonicsDegree` ↔ `u.shDegree`),
+with a define gating only whether the block exists.
+
+**DC-term determination — the base RGBA8 ALREADY CONTAINS the DC band, so the
+WGSL adds bands 1–3 ONLY.** Four independent in-tree confirmations, three of
+them now pinned: `GltfSpzLoader.js:23-24` states it outright ("Degree 0 has no
+extra SH data (base color is stored separately in the 'colors' attribute)"); the
+writer's per-degree float offsets are `base = [0, 9, 24]`, i.e. band 1 starts at
+0 with nothing reserved ahead of it; degree 3 is 15 attributes / 45 floats, not
+16 / 48; and the GLSL composes `v_splatColor.rgb += evaluateSH(...)` — an ADD
+onto the unpacked RGBA8, never a replacement. The WGSL therefore writes
+`vec4(s.color.rgb + evaluateSplatSH(...), s.color.a)` and carries no `SH_C0`,
+no `0.28209…` and no `sh0` anywhere. **A double-count would brighten every splat
+by ~2×** and is the row's dedicated mutant.
+
+**Layout/consumption decision.** `_shData` bound as a `read` storage buffer at
+**group 0, binding 4**, declared UNCONDITIONALLY (outside every `//>>ifdef`), so
+the BGL, the bind group and the pipeline layout are literally the same objects
+for both states of the new define — the `C15-G3` topology discipline. Non-SH
+content binds a 16-byte placeholder. The UBO grows **320 → 384 bytes**:
+`shViewRotation: mat3x3<f32>` at byte 320 and `shDegree: f32` at byte 368 (the
+spec computes those offsets with a WGSL layout calculator that first has to
+reproduce all four pre-existing write offsets — 160 / 176 / 192 / 256 — before
+its verdict on the new tail counts).
+
+**View direction — matched by folding, not by round-tripping.** WebGL evaluates
+against `normalize(u_inverseModelRotation · (splatWC − cameraWC))`. The WGSL has
+no world-space splat position, only the RTE residual `posRTE`; for a model
+matrix `M = [A | t]` with the camera encoded in model space,
+`A · posRTE = A·p − A·M⁻¹c = (A·p + t) − c = splatWC − cameraWC` **exactly, for
+any invertible A** (the translation cancels in the difference). So the CPU packs
+one matrix, `_shInverseRotation · mat3(modelMatrix)`, and the shader does
+`normalize(u.shViewRotation * posRTE)`. The identity is executed in the spec
+against both a rigid ENU frame at planetary scale and a deliberately non-rigid
+(scale + shear) matrix.
+
+**Degree fallback (`NEW-SPLAT-SH-DEGREE-BACKEND-DEPENDENT`) — option (a),
+degrade together.** New backend-neutral `applySphericalHarmonicsBudget` runs
+ABOVE the `_featureRenderer` branch; the WebGL half consumes the row addressing
+it returns and no longer owns the rule. Divergence condition, computed and
+recorded: the fallback fires at `numSplats > maxTex · floor(maxTex / bands)` —
+**17,891,328 splats at degree 3 / maxTex 16384**, 4,472,832 at maxTex 8192 —
+versus `tower`'s 286,868, so it is unreachable for both gate assets and the
+choice costs nothing measurable. Full rationale in `DEFERRED_WORK.md`.
+
+**Naga variant matrix — 8/8 validate.** The spec no longer lists combinations;
+it enumerates the power set of `SHADER_AXES` and cross-checks that against every
+`//>>ifdef` flag the shader text actually gates on, so a fourth axis cannot
+leave half the matrix unvalidated:
+`{}`, `{LOG_DEPTH}`, `{SPLAT_PACKED_WASM}`, `{SPLAT_SPHERICAL_HARMONICS}`,
+`{LOG_DEPTH, SPLAT_PACKED_WASM}`, `{LOG_DEPTH, SPLAT_SPHERICAL_HARMONICS}`,
+`{SPLAT_PACKED_WASM, SPLAT_SPHERICAL_HARMONICS}`, and all three.
+
+**Harness 194 → 217.** The headline check EXTRACTS both evaluators from their own
+source text — constants, the band-count table, the `shN → coefficient index`
+map, the degree guards, and every accumulate term split into (sign, scalar
+polynomial, coefficient) — compiles the scalar factors as JS, and requires
+agreement to **1e-6** over 46 directions × 3 degrees, with two anti-vacuity
+guards (each degree must be non-zero somewhere; each degree must differ from the
+one below). The producer half is not transcribed either: the REAL
+`packSphericalHarmonicsData` + `float32ToFloat16` are extracted from
+`GaussianSplat3DTileContent.js`, executed over a synthetic tile, and read back
+through the WGSL's own extracted address arithmetic and channel assembly, so
+writer and reader are pinned at the offset level at both ends. **14 mutants**,
+each applied to an in-memory copy and each also required to leave the real
+source passing: SH_C1 sign flip; degree-2 basis pair swap (yz↔xz); degree-3
+constant index swap; degree-3 polynomial 4·zz→3·zz; degree-2 coefficient index
+off-by-one; stride widened to 3 words; b channel read from the wrong half;
+band table made DC-inclusive (16/9/4); degree guard shifted; view direction left
+unrotated; **DC band double-counted at the composition**; SH leaked into alpha;
+and two source mutants — the rotation fold applied in the wrong operand order,
+and the budget moved back below the backend branch.
+
+**Found on the way, repaired here:** `WebGPUShaderDefinesSpec.js` asserted
+`Object.keys(ShaderDefineHi).length === 2` and was therefore **already red at
+HEAD** — `C15-G3` added `SPLAT_PACKED_WASM` (hi bit 2) at Batch 881 without
+bumping it. Explicit pins for bits 2 and 3 added and the count corrected to 4.
+
+**Pre-registered Edge predictions** (`sh_unit_cube`, `--expect-webgpu`, same
+1024×768 pinned-clock configuration as Batch 890):
+
+| Observable | Batch-890 reading | Predicted | Failure band |
+| --- | ---: | ---: | --- |
+| cross-backend mismatch | **2.574%** | **0.35%**, and the row certifies at **< 1.000%** (the re-armed cube gate) | > 1.000% = the SH port is wrong or incomplete; **< 0.05%** is equally a red flag (a diff that small against an f16-quantized 27-splat cloud suggests the two legs are no longer independent) |
+| added% (WebGPU) | 18.996% | **18.996% ± 0.10** | any move > 0.5% means SH changed GEOMETRY, which it cannot — it writes only `output.color.rgb`. That is the `C15-G3b` lesson: colour and footprint are separate failures and must not be allowed to explain each other |
+| added% (WebGL) | 19.141% | unchanged, 19.141% | any move at all = the WebGL leg was disturbed; the budget extraction is intended to be behaviour-preserving |
+| `cache.splatCount` | 27 | 27 | ≠ 27 = a data-path regression, not an SH result |
+| `comparatorSorts` / `providedUploads` | 0 / 1 | 0 / 1 | unchanged — `C15-G4`'s gate must not move |
+| console/device errors | 0 | 0 | the short-SH-payload sentinel firing means the degree and the buffer disagree |
+
+On **`tower`**: the ADDED RATIO (WebGPU/WebGL) stays in the pre-registered
+**[0.90, 1.10]** band centred at the measured 1.002, and `_numSplats` stays
+286,868/286,868 on both legs. **The tower claim is the RATIO, not a certified
+parity number** — `C15-GSPLAT-TOWER-FRAME-VARIANCE` (Batch 892) has tower parity
+certification blocked on a WebGL-side intra-frame reference variance
+(`reference:capture-determinism`, 0.052% against a 0.050% bar), and `C15-G5`
+does not touch that class and must not be read as clearing it.
+
+**Vacuity control for the Edge run (mandatory, per the row's exit gate):** the
+define is a shader axis, so the OFF leg is reachable by forcing
+`activeShEnabled = false`; SH-on vs SH-off on `sh_unit_cube` must differ by more
+than the gate threshold, or the run is not measuring SH. The 2.574% baseline is
+itself the strongest available prior that it will: that residual is the SH term.
 
 ### `C15-G6` — multifrustum compose, re-verified against production data (M) — deps: `C15-G3`
 

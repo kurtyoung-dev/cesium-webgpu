@@ -1018,6 +1018,49 @@ export const ShaderDefineHi = Object.freeze({
    * (`loadSplat` / `loadPrevSplatModelPosition`).
    */
   SPLAT_PACKED_WASM: hiDefineBit(2),
+
+  /**
+   * Gaussian-splat VIEW-DEPENDENT COLOUR axis (`C15-G5`). The WGSL twin of
+   * the GLSL `HAS_SPHERICAL_HARMONICS` define
+   * (`PrimitiveGaussianSplatVS.glsl:10-101, 189-194`).
+   *
+   *   * SET — `vertexMain` evaluates spherical-harmonics bands 1-3 against the
+   *     model-space view direction and ADDS the result to the base colour,
+   *     exactly as the GLSL does. The per-band coefficients come from the
+   *     group-0 binding-4 storage buffer, which holds
+   *     `GaussianSplatPrimitive._shData` VERBATIM (the same f16-packed
+   *     `Uint32Array` the WebGL path copies into its `RG32UI` SH texture), and
+   *     the active degree comes from the `u.shDegree` uniform — the twin of
+   *     GLSL's `u_sphericalHarmonicsDegree`, so a snapshot that degrades to
+   *     degree 0 degrades identically on both backends.
+   *   * CLEAR (the `//>>else`, and the DEFAULT) — no SH term at all; the splat
+   *     colour is the base RGBA8 alone. Byte-identical to the pre-`C15-G5`
+   *     shader, and the only variant the three synthetic splat probes (which
+   *     carry no SH data) ever compile.
+   *
+   * There is deliberately NO degree-0 / DC term in either branch. The DC band
+   * is already folded into the base RGBA8 colour by the SPZ decode
+   * (`GltfSpzLoader.js:23-24`: "Degree 0 has no extra SH data (base colour is
+   * stored separately in the 'colors' attribute)"), the writer's per-degree
+   * offsets start at band 1 (`GaussianSplat3DTileContent.js` `base = [0, 9,
+   * 24]`), and the GLSL likewise only ever ADDS bands 1-3. Re-applying a DC
+   * term here would roughly double every splat's brightness.
+   *
+   * The group-0 binding-4 declaration is UNCONDITIONAL — it sits outside every
+   * `//>>ifdef` — so the bind-group layout, the bind group and the pipeline
+   * layout are the same objects for either state of this bit. Only the
+   * arithmetic inside `vertexMain` changes (the `C15-G3` discipline).
+   *
+   * Gating (single flip point): OR'd in by `buildSplatPipelineResources` when
+   * the primitive commits a non-empty `_shData` at a degree >= 1. The bit
+   * participates in the shader-module cache's hi-word level and is stamped
+   * into every splat pipeline descriptor name (`sh=`), so an SH and a non-SH
+   * variant can never share a module or a pipeline.
+   *
+   * Consumer: the inline `SPLAT_WGSL` in `WebGPUGaussianSplatRenderer.ts`
+   * (`loadSplatShCoefficient` / `evaluateSplatSH` / `vertexMain`).
+   */
+  SPLAT_SPHERICAL_HARMONICS: hiDefineBit(3),
 } as const);
 
 // Namespace-collision boot assertion: a name living in BOTH tables would

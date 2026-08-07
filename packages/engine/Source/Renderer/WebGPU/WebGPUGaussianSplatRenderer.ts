@@ -9,6 +9,7 @@
  */
 
 import EncodedCartesian3 from "../../Core/EncodedCartesian3.js";
+import Matrix3 from "../../Core/Matrix3.js";
 import Matrix4 from "../../Core/Matrix4.js";
 import Cartesian3 from "../../Core/Cartesian3.js";
 import BoundingSphere from "../../Core/BoundingSphere.js";
@@ -81,6 +82,26 @@ interface GaussianSplatCache {
   splatBuffer: GPUBuffer | null;
   sortedIndexBuffer: GPUBuffer | null;
   sortedIndexCount: number;
+  // C15-G5 — packed SH coefficients (group 0 binding 4), the primitive's
+  // `_shData` uploaded verbatim. Always allocated (a 16-byte placeholder when
+  // the content carries no SH) so the bind group matches the ONE shared layout
+  // regardless of the SPLAT_SPHERICAL_HARMONICS variant.
+  shBuffer: GPUBuffer | null;
+  // Identity of the `_shData` view last uploaded — the same producer-identity
+  // dirty signal `splatSourceToken` is, and for the same reason: a snapshot
+  // rebuild that lands on the same count and degree still publishes a fresh
+  // subarray over a REUSED scratch buffer, so neither count nor degree is a
+  // sufficient signal on its own.
+  shSourceToken: ArrayBufferView | null;
+  // Degree resident in `shBuffer` (0 = none), packed into the UBO each frame
+  // as `u.shDegree`.
+  shDegree: number;
+  // Whether the SH term is active for the resident data. Separate from
+  // `resourcesShEnabled` (which describes the compiled PIPELINES) for exactly
+  // the reason `layoutPacked` / `resourcesLayoutPacked` are separate: the two
+  // are legitimately out of step while a cold variant compiles.
+  shEnabled: boolean;
+  resourcesShEnabled: boolean;
   // C15-G3 — which attribute-record layout `splatBuffer` currently holds, and
   // therefore which `SPLAT_PACKED_WASM` shader variant the pipelines must be
   // built from. `true` = the 32-byte WASM `generate_splat_texture` record
@@ -288,6 +309,24 @@ struct Uniforms {
   // velocity VS can lift prev model-space positions to world space
   // before applying prevViewProjection. UBO grows 256 → 320.
   modelMatrix: mat4x4<f32>,
+  // C15-G5 — spherical-harmonics view direction. The GLSL evaluates SH against
+  //   normalize(u_inverseModelRotation * (splatWC - u_cameraPositionWC))
+  // (PrimitiveGaussianSplatVS.glsl:190-193): a WORLD-space camera->splat vector
+  // rotated into the SH training frame. This renderer never materializes a
+  // world-space splat position — it works in the RTE residual posRTE, which
+  // is that same camera->splat vector expressed in the primitive's MODEL frame
+  // — so the CPU folds the two rotations into one matrix,
+  //   shViewRotation = _shInverseRotation * mat3(modelMatrix),
+  // and mat3(modelMatrix) * posRTE == splatWC - cameraWC EXACTLY for any
+  // invertible model matrix (the translation cancels in the difference and the
+  // camera is encoded in model space). UBO grows 320 → 384.
+  shViewRotation: mat3x3<f32>,
+  // C15-G5 — active SH degree, 0..3. The twin of GLSL's
+  // u_sphericalHarmonicsDegree, kept a RUNTIME f32 (not folded into the
+  // define) for the same reason the GLSL keeps it a uniform: a snapshot that
+  // degrades to degree 0 must not force a pipeline recompile, and the >= 1./2./3.
+  // comparison chain is then term-for-term with the reference.
+  shDegree: f32,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var<storage, read> splats: array<u32>;
@@ -298,6 +337,123 @@ struct Uniforms {
 // Batch 171 — prev-frame mirror of splats, SAME layout, read by the velocity
 // VS at the same splat index.
 @group(0) @binding(3) var<storage, read> prevSplats: array<u32>;
+// C15-G5 — packed spherical-harmonics coefficients, bands 1-3, consumed
+// VERBATIM from GaussianSplatPrimitive._shData (the same Uint32Array the WebGL
+// path regroups into its RG32UI SH texture). Per splat: dims * 2 u32, where
+// dims is the band count for the active degree (3 / 8 / 15); coefficient i
+// occupies words splatID * dims * 2 + i * 2 (low u32 = f16 pair (r, g),
+// high u32 = f16 (b) in its LOW half).
+//
+// DECLARED UNCONDITIONALLY, outside every //>>ifdef, so that the bind-group
+// layout, the bind group and the pipeline layout are the SAME objects whether
+// or not SPLAT_SPHERICAL_HARMONICS is set — the C15-G3 discipline. A non-SH
+// primitive binds a 16-byte placeholder here.
+@group(0) @binding(4) var<storage, read> shCoefficients: array<u32>;
+
+//>>ifdef SPLAT_SPHERICAL_HARMONICS
+// C15-G5 — the WGSL twin of PrimitiveGaussianSplatVS.glsl:10-101. Constants,
+// band ordering and basis polynomials are term-for-term with the GLSL; the
+// spec extracts BOTH and requires numeric agreement over a direction sweep.
+//
+// There is NO degree-0 (DC) term here, deliberately and by contract: the DC
+// band is already folded into the base RGBA8 colour by the SPZ decode
+// (GltfSpzLoader.js:23-24), the writer's per-degree base offsets start at band
+// 1 (GaussianSplat3DTileContent.js base = [0, 9, 24]), and the GLSL only ever
+// ADDS bands 1-3 on top of v_splatColor. Adding a DC term would roughly double
+// every splat's brightness — the classic SH integration bug.
+const SPLAT_SH_C1: f32 = 0.48860251;
+const SPLAT_SH_C2 = array<f32, 5>(
+  1.092548430,
+  -1.09254843,
+  0.315391565,
+  -1.09254843,
+  0.546274215,
+);
+const SPLAT_SH_C3 = array<f32, 7>(
+  -0.59004358,
+  2.890611442,
+  -0.45704579,
+  0.373176332,
+  -0.45704579,
+  1.445305721,
+  -0.59004358,
+);
+
+// GLSL: const uint coefficientCount[3] = uint[3](3u,8u,15u), indexed by
+// degree-1. Written as a comparison chain rather than a const-array lookup
+// because the index is a RUNTIME value here (u.shDegree).
+fn splatShCoefficientCount(degree: f32) -> u32 {
+  if (degree >= 3.0) { return 15u; }
+  if (degree >= 2.0) { return 8u; }
+  return 3u;
+}
+
+// GLSL loadSHCoeff + halfToVec3, with the texture row addressing collapsed
+// away: the WebGL texture is a pure regrouping of this same flat array
+// (row r holds splats [r*splatsPerRow, (r+1)*splatsPerRow) at
+// floatsPerRow = splatsPerRow * dims * 2 words), so the GLSL texel fetch
+// texelFetch(tex, ivec2((splatID % splatsPerRow) * dims + index,
+// splatID / splatsPerRow)) reads exactly the two words below.
+fn loadSplatShCoefficient(splatID: u32, dims: u32, index: u32) -> vec3<f32> {
+  let base = splatID * dims * 2u + index * 2u;
+  let rg = unpack2x16float(shCoefficients[base]);
+  let b = unpack2x16float(shCoefficients[base + 1u]);
+  return vec3<f32>(rg.x, rg.y, b.x);
+}
+
+fn evaluateSplatSH(splatID: u32, degree: f32, viewDir: vec3<f32>) -> vec3<f32> {
+  var result = vec3<f32>(0.0, 0.0, 0.0);
+  let x = viewDir.x;
+  let y = viewDir.y;
+  let z = viewDir.z;
+
+  if (degree >= 1.0) {
+    let dims = splatShCoefficientCount(degree);
+    let sh1 = loadSplatShCoefficient(splatID, dims, 0u);
+    let sh2 = loadSplatShCoefficient(splatID, dims, 1u);
+    let sh3 = loadSplatShCoefficient(splatID, dims, 2u);
+    result += -SPLAT_SH_C1 * y * sh1 + SPLAT_SH_C1 * z * sh2 - SPLAT_SH_C1 * x * sh3;
+
+    if (degree >= 2.0) {
+      let xx = x * x;
+      let yy = y * y;
+      let zz = z * z;
+      let xy = x * y;
+      let yz = y * z;
+      let xz = x * z;
+
+      let sh4 = loadSplatShCoefficient(splatID, dims, 3u);
+      let sh5 = loadSplatShCoefficient(splatID, dims, 4u);
+      let sh6 = loadSplatShCoefficient(splatID, dims, 5u);
+      let sh7 = loadSplatShCoefficient(splatID, dims, 6u);
+      let sh8 = loadSplatShCoefficient(splatID, dims, 7u);
+      result += SPLAT_SH_C2[0] * xy * sh4 +
+              SPLAT_SH_C2[1] * yz * sh5 +
+              SPLAT_SH_C2[2] * (2.0 * zz - xx - yy) * sh6 +
+              SPLAT_SH_C2[3] * xz * sh7 +
+              SPLAT_SH_C2[4] * (xx - yy) * sh8;
+
+      if (degree >= 3.0) {
+        let sh9 = loadSplatShCoefficient(splatID, dims, 8u);
+        let sh10 = loadSplatShCoefficient(splatID, dims, 9u);
+        let sh11 = loadSplatShCoefficient(splatID, dims, 10u);
+        let sh12 = loadSplatShCoefficient(splatID, dims, 11u);
+        let sh13 = loadSplatShCoefficient(splatID, dims, 12u);
+        let sh14 = loadSplatShCoefficient(splatID, dims, 13u);
+        let sh15 = loadSplatShCoefficient(splatID, dims, 14u);
+        result += SPLAT_SH_C3[0] * y * (3.0 * xx - yy) * sh9 +
+                SPLAT_SH_C3[1] * xy * z * sh10 +
+                SPLAT_SH_C3[2] * y * (4.0 * zz - xx - yy) * sh11 +
+                SPLAT_SH_C3[3] * z * (2.0 * zz - 3.0 * xx - 3.0 * yy) * sh12 +
+                SPLAT_SH_C3[4] * x * (4.0 * zz - xx - yy) * sh13 +
+                SPLAT_SH_C3[5] * z * (xx - yy) * sh14 +
+                SPLAT_SH_C3[6] * x * (xx - 3.0 * yy) * sh15;
+      }
+    }
+  }
+  return result;
+}
+//>>endif
 
 // C15-G3 — decode one splat out of the group-0 binding-1 storage buffer.
 //
@@ -591,7 +747,24 @@ fn vertexMain(
   fp = csm_updatePositionDepth(fp);
   //>>endif
   output.position = fp;
+  //>>ifdef SPLAT_SPHERICAL_HARMONICS
+  // PrimitiveGaussianSplatVS.glsl:189-194, term for term:
+  //   vec4 splatWC = czm_inverseView * splatViewPos;
+  //   vec3 viewDirModel = normalize(u_inverseModelRotation *
+  //                                 (splatWC.xyz - u_cameraPositionWC.xyz));
+  //   v_splatColor.rgb += evaluateSH(texIdx, viewDirModel).rgb;
+  // u.shViewRotation * posRTE IS that argument (see the Uniforms comment):
+  // posRTE is the camera->splat vector in model space, and shViewRotation is
+  // inverse(SH frame) * mat3(modelMatrix). The SH result is ADDED to the base
+  // colour — which already carries the DC band — and alpha is untouched.
+  let shViewDir = normalize(u.shViewRotation * posRTE);
+  output.color = vec4<f32>(
+    s.color.rgb + evaluateSplatSH(splatIdx, u.shDegree, shViewDir),
+    s.color.a,
+  );
+  //>>else
   output.color = s.color;
+  //>>endif
   output.vertPos = corner;
   // FEAT-GAP-09 (Batch 103) — splat-center RTE position for fog block.
   output.worldPos = posRTE;
@@ -826,6 +999,10 @@ fn fragmentVelocityMain(input: VelocityVertexOutput) -> @location(0) vec2<f32> {
 const scratchEncoded = { high: new Cartesian3(), low: new Cartesian3() };
 const scratchMVP = new Matrix4();
 const scratchMV = new Matrix4();
+// C15-G5 — the SH view-direction fold: mat3(modelMatrix), then
+// _shInverseRotation * that.
+const scratchModelRotation = new Matrix3();
+const scratchShRotation = new Matrix3();
 
 // Per-device shader-module cache so the LOG_DEPTH and non-log variants compile
 // once per device and dedupe across split-screen contexts (C-R7-SHADER-MODULE-
@@ -900,6 +1077,7 @@ function buildSplatPipelineResources(
   pickFormat: GPUTextureFormat = "rgba8unorm",
   pickLogActive: boolean = false,
   packedWasmLayout: boolean = false,
+  sphericalHarmonics: boolean = false,
 ): SplatPipelineResources {
   // C15-G3 — the record-layout axis lives in the HI define word
   // (`ShaderDefineHi.SPLAT_PACKED_WASM`; the lo word is full at bit 30). It is
@@ -907,10 +1085,17 @@ function buildSplatPipelineResources(
   // depth-write, pick, OIT and velocity all read the same storage buffer, so a
   // variant compiled against the other stride would decode garbage rather than
   // simply look different.
-  const layoutDefinesHi = packedWasmLayout
-    ? ShaderDefineHi.SPLAT_PACKED_WASM
-    : 0;
+  //
+  // C15-G5 — the view-dependent-colour axis rides the SAME hi word. It applies
+  // to every variant for the same reason: pick and velocity share `vertexMain`
+  // (whose colour output the OIT fragment path also consumes), so compiling one
+  // of them without the SH term would make the pick footprint and the OIT
+  // colour disagree with the colour pass.
+  const layoutDefinesHi =
+    (packedWasmLayout ? ShaderDefineHi.SPLAT_PACKED_WASM : 0) |
+    (sphericalHarmonics ? ShaderDefineHi.SPLAT_SPHERICAL_HARMONICS : 0);
   const layoutMarker = packedWasmLayout ? 1 : 0;
+  const shMarker = sphericalHarmonics ? 1 : 0;
   // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) — the color
   // + depth-write variants use the LOG_DEPTH-preprocessed module when active so
   // the splat FS writes log @builtin(frag_depth). The PICK + OIT variants
@@ -923,7 +1108,7 @@ function buildSplatPipelineResources(
     ShaderSourceId.GAUSSIAN_SPLAT,
     SPLAT_WGSL,
     0,
-    `GaussianSplat [packed=${layoutMarker}]`,
+    `GaussianSplat [packed=${layoutMarker}/sh=${shMarker}]`,
     0,
     layoutDefinesHi,
   );
@@ -932,7 +1117,7 @@ function buildSplatPipelineResources(
         ShaderSourceId.GAUSSIAN_SPLAT,
         SPLAT_WGSL,
         ShaderDefine.LOG_DEPTH,
-        `GaussianSplat [log/packed=${layoutMarker}]`,
+        `GaussianSplat [log/packed=${layoutMarker}/sh=${shMarker}]`,
         0,
         layoutDefinesHi,
       )
@@ -949,7 +1134,7 @@ function buildSplatPipelineResources(
         ShaderSourceId.GAUSSIAN_SPLAT,
         SPLAT_WGSL,
         ShaderDefine.LOG_DEPTH,
-        `GaussianSplat [log/packed=${layoutMarker}]`,
+        `GaussianSplat [log/packed=${layoutMarker}/sh=${shMarker}]`,
         0,
         layoutDefinesHi,
       )
@@ -965,6 +1150,11 @@ function buildSplatPipelineResources(
     storageBuffer(1, Stage.VERTEX, { readOnly: true }),
     storageBuffer(2, Stage.VERTEX, { readOnly: true }),
     storageBuffer(3, Stage.VERTEX, { readOnly: true }),
+    // C15-G5 — packed SH coefficients. Declared here UNCONDITIONALLY, exactly
+    // like the WGSL binding, so both states of SPLAT_SPHERICAL_HARMONICS share
+    // one BGL / bind group / pipeline layout. A layout may legally carry an
+    // entry the shader does not reference, which is what the non-SH variant is.
+    storageBuffer(4, Stage.VERTEX, { readOnly: true }),
   ]);
   // FEAT-GAP-09 (Batch 101) — append shared effects BGL at slot 1 so
   // the WGSL fog block at @group(1) resolves. Shared layout cascades
@@ -976,7 +1166,7 @@ function buildSplatPipelineResources(
   });
 
   const colorDescriptor: WebGPURenderPipelineDescriptor = {
-    name: `GaussianSplat color pipeline [ld=${logDepthActive ? 1 : 0}/ms=${sampleCount}/packed=${layoutMarker}]`,
+    name: `GaussianSplat color pipeline [ld=${logDepthActive ? 1 : 0}/ms=${sampleCount}/packed=${layoutMarker}/sh=${shMarker}]`,
     layout,
     vertex: {
       module: sm,
@@ -1020,16 +1210,19 @@ function buildSplatPipelineResources(
   try {
     // C15-G3 — the layout axis must reach the OIT source too: an OIT module
     // compiled from the other stride would decode garbage, not merely blend
-    // differently. LOG_DEPTH stays cleared here (the injector expects the bare
-    // `@location(0)` fragmentMain and the OIT pass has depthWriteEnabled:false).
+    // differently. C15-G5 — and so must the SH axis, or the OIT pass would
+    // composite the base colour while the color pass composites the
+    // view-dependent one. Both ride `layoutDefinesHi`. LOG_DEPTH stays cleared
+    // here (the injector expects the bare `@location(0)` fragmentMain and the
+    // OIT pass has depthWriteEnabled:false).
     const baseCode = preprocess(SPLAT_WGSL, 0, layoutDefinesHi);
     const oitCode = WebGPUOIT.injectOITOutput(baseCode, "fragmentMain");
     oitShaderModule = device.createShaderModule({
-      label: `GaussianSplat-OIT-GS-WSR [packed=${layoutMarker}]`,
+      label: `GaussianSplat-OIT-GS-WSR [packed=${layoutMarker}/sh=${shMarker}]`,
       code: oitCode,
     });
     oitDescriptor = {
-      name: `GaussianSplat-OIT-Pipeline [packed=${layoutMarker}]`,
+      name: `GaussianSplat-OIT-Pipeline [packed=${layoutMarker}/sh=${shMarker}]`,
       layout,
       vertex: {
         module: oitShaderModule,
@@ -1074,8 +1267,8 @@ function buildSplatPipelineResources(
         // NEW-WEBGPU-PICK-FLEET-LOG-DEPTH — distinct [ld] name so the central
         // cache never serves the hyperbolic pick pipeline for the log module.
         name: pickLogActive
-          ? `GaussianSplat pick pipeline [ld/packed=${layoutMarker}]`
-          : `GaussianSplat pick pipeline [packed=${layoutMarker}]`,
+          ? `GaussianSplat pick pipeline [ld/packed=${layoutMarker}/sh=${shMarker}]`
+          : `GaussianSplat pick pipeline [packed=${layoutMarker}/sh=${shMarker}]`,
         // Write log frag_depth into the shared pick FBO depth ONLY when the
         // fleet is log (gate on); otherwise stay depth-test-only (byte-
         // identical to the historical hyperbolic pick).
@@ -1098,7 +1291,7 @@ function buildSplatPipelineResources(
   // Batch 79's translucent-classification mechanism for Models).
   const depthWriteDescriptor: WebGPURenderPipelineDescriptor = {
     ...colorDescriptor,
-    name: `GaussianSplat depth-write pipeline [ld=${logDepthActive ? 1 : 0}/ms=${sampleCount}/packed=${layoutMarker}]`,
+    name: `GaussianSplat depth-write pipeline [ld=${logDepthActive ? 1 : 0}/ms=${sampleCount}/packed=${layoutMarker}/sh=${shMarker}]`,
     depthStencil: {
       format: "depth24plus-stencil8",
       depthWriteEnabled: true,
@@ -1538,6 +1731,102 @@ function resolveSplatSource(primitive: CesiumObjectWithWebGPUCache): {
 }
 
 /**
+ * C15-G5 — bands per splat for an SH degree.
+ *
+ * The JS twin of the WGSL `splatShCoefficientCount` and the GLSL
+ * `coefficientCount[3] = uint[3](3u, 8u, 15u)` table. Kept here (rather than
+ * read off the snapshot's `shCoefficientCount`) so the consumer derives the
+ * stride from the SAME quantity the shader does: a degree/count disagreement
+ * on the producer side then shows up as a SHORT BUFFER below instead of as a
+ * silently mis-strided read.
+ *
+ * @private
+ */
+function splatShBandCount(degree: number): number {
+  if (degree >= 3) {
+    return 15;
+  }
+  if (degree >= 2) {
+    return 8;
+  }
+  return 3;
+}
+
+/** u32 words per SH coefficient — an f16 (r, g) pair plus an f16 b. @private */
+const SH_COEFFICIENT_WORDS = 2;
+
+/**
+ * Payloads whose short-SH-buffer error has already been reported. Same
+ * once-per-payload latching as `_reportedShortPayloads`.
+ *
+ * @private
+ */
+const _reportedShortShPayloads = new WeakSet<object>();
+
+/**
+ * C15-G5 — resolve the spherical-harmonics coefficients this primitive is
+ * offering, and at what degree.
+ *
+ * `GaussianSplatPrimitive.commitSnapshot` publishes `_shData` (the aggregated,
+ * f16-packed `Uint32Array`) and `_sphericalHarmonicsDegree` for BOTH backends —
+ * the WebGL path additionally regroups the same array into an `RG32UI` texture,
+ * which is a pure row-padding rearrangement of these bytes. Consuming the flat
+ * array VERBATIM is therefore bit-exact against WebGL and needs no new producer
+ * (the `C15-G3` Option-B precedent).
+ *
+ * Returns `enabled: false` — i.e. degree 0, base colour only — for content with
+ * no SH, and for a payload too short to describe `count` splats at its declared
+ * degree. The degrade-to-0 decision for an over-tall SH texture is NOT made
+ * here: it is made once, backend-neutrally, in
+ * `GaussianSplatPrimitive.applySphericalHarmonicsBudget`, and reaches this
+ * function as a degree of 0 on both backends alike
+ * (`NEW-SPLAT-SH-DEGREE-BACKEND-DEPENDENT`).
+ *
+ * @private
+ */
+function resolveSplatShSource(
+  primitive: CesiumObjectWithWebGPUCache,
+  count: number,
+): {
+  view: ArrayBufferView | null;
+  degree: number;
+  enabled: boolean;
+  token: ArrayBufferView | null;
+} {
+  const fields = primitive as unknown as {
+    _shData?: Uint32Array;
+    _sphericalHarmonicsDegree?: number;
+  };
+  const shData = fields._shData;
+  const degree = fields._sphericalHarmonicsDegree ?? 0;
+  if (!shData || !(degree >= 1) || count <= 0) {
+    return { view: null, degree: 0, enabled: false, token: null };
+  }
+  const words = count * splatShBandCount(degree) * SH_COEFFICIENT_WORDS;
+  if (shData.length < words) {
+    // A short SH payload would make the VS read out of bounds (clamped to zero
+    // by WebGPU) — i.e. splats silently losing their view-dependent colour
+    // partway through the cloud. Loud and unpragma'd, once per payload: this is
+    // the producer/consumer stride disagreement class the row exists to avoid.
+    if (!_reportedShortShPayloads.has(shData)) {
+      _reportedShortShPayloads.add(shData);
+      console.error(
+        `[CesiumJS:webgpu] GaussianSplat SH payload is short: ${shData.length} u32 for ${count} splats at degree ${degree} (need ${words}). Spherical harmonics disabled for this cloud.`,
+      );
+    }
+    return { view: null, degree: 0, enabled: false, token: null };
+  }
+  return {
+    view: shData.length === words ? shData : shData.subarray(0, words),
+    degree,
+    enabled: true,
+    // The SOURCE array, not the trimmed subarray: `subarray` allocates a fresh
+    // view on every call, so its identity would report "changed" every frame.
+    token: shData,
+  };
+}
+
+/**
  * C15-G6h (NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE) — MODEL-space bounding sphere
  * over the resident splat centres.
  *
@@ -1776,6 +2065,13 @@ function updateWebGPUGaussianSplats(
       splatBuffer: null,
       sortedIndexBuffer: null,
       sortedIndexCount: 0,
+      // C15-G5 — SH slots. Default to "no view-dependent colour", so a cache
+      // that never sees SH data compiles the //>>else variant.
+      shBuffer: null,
+      shSourceToken: null,
+      shDegree: 0,
+      shEnabled: false,
+      resourcesShEnabled: false,
       // C15-G3 — layout state. Defaults to the legacy record so a cache that
       // never sees data keeps the historical shape.
       layoutPacked: false,
@@ -1867,12 +2163,23 @@ function updateWebGPUGaussianSplats(
     source.view !== null ? source.packed : cache.layoutPacked;
   const layoutFlipped =
     cache.initialized && cache.resourcesLayoutPacked !== activeLayoutPacked;
+  // C15-G5 — the SH axis is resolved on the SAME "is this primitive offering
+  // data" question as the layout axis, so the two can never describe different
+  // snapshots. When nothing is offered this frame the resident state stays
+  // authoritative (rebuilding to the non-SH variant while SH bytes are still
+  // bound would drop the view-dependent term for a frame and then restore it).
+  const shSource = resolveSplatShSource(primitive, source.count);
+  const activeShEnabled =
+    source.view !== null ? shSource.enabled : cache.shEnabled;
+  const shFlipped =
+    cache.initialized && cache.resourcesShEnabled !== activeShEnabled;
   if (
     cache.initialized &&
     ((cache as unknown as { _pipelineFormatGeneration?: number })
       ._pipelineFormatGeneration !== sceneGen ||
       logDepthFlipped ||
-      layoutFlipped)
+      layoutFlipped ||
+      shFlipped)
   ) {
     (
       cache as GaussianSplatCache & {
@@ -1932,8 +2239,13 @@ function updateWebGPUGaussianSplats(
     // prevViewProjection. Necessary for correct velocity when
     // `primitive.modelMatrix` is non-identity (typical 3D-Tiles
     // GaussianSplat content has identity, but custom primitives don't).
+    // C15-G5 — UBO grows 320 → 384 bytes for the spherical-harmonics tail:
+    // `shViewRotation: mat3x3<f32>` at byte 320 (three 16-byte-strided
+    // columns, floats 80-91) and `shDegree: f32` at byte 368 (float 92).
+    // mat3x3 has 16-byte alignment, so 320 is a legal offset and no padding is
+    // needed before it; floats 93-95 are the struct's trailing pad.
     cache.uniformBuffer = device.createBuffer({
-      size: 320,
+      size: 384,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
     cache.quadVertexBuffer = createQuadVB(device);
@@ -1961,6 +2273,13 @@ function updateWebGPUGaussianSplats(
       size: 64,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    // C15-G5 — the SH binding is unconditional, so a primitive with no SH data
+    // still needs a real buffer here for the shared bind group to be valid.
+    cache.shBuffer = device.createBuffer({
+      label: "GaussianSplat SH coefficients (placeholder)",
+      size: 16,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
     cache.splatCount = 0;
     cache.sortedIndexCount = 0;
     cache.initialized = true;
@@ -1982,6 +2301,8 @@ function updateWebGPUGaussianSplats(
       pickLogActive,
       // C15-G3 — the attribute-record layout axis.
       activeLayoutPacked,
+      // C15-G5 — the view-dependent-colour axis.
+      activeShEnabled,
     );
     (
       cache as GaussianSplatCache & {
@@ -1993,8 +2314,9 @@ function updateWebGPUGaussianSplats(
     cache.logDepthEnabled = logDepthActive;
     cache.pickLogDepthEnabled = pickLogActive;
     // C15-G3 — record which record layout these pipelines decode, so the flip
-    // check above compares like with like.
+    // check above compares like with like. C15-G5 — same for the SH axis.
     cache.resourcesLayoutPacked = activeLayoutPacked;
+    cache.resourcesShEnabled = activeShEnabled;
     // Bind group references the freshly-built BGL + current buffers.
     cache.bindGroup = null;
   }
@@ -2122,6 +2444,56 @@ function updateWebGPUGaussianSplats(
     cache.prevSplatData = null;
     cache.command = null;
     cache.pickCommand = null;
+    // C15-G5 — the SH coefficients described the withdrawn cloud; retire them
+    // with it so a later commit cannot be drawn against a stale palette.
+    cache.shSourceToken = null;
+    cache.shDegree = 0;
+    cache.shEnabled = false;
+  }
+
+  // ── C15-G5 — commit the SH coefficients.
+  //
+  // Same dirty signal as the attribute commit (producer identity + degree +
+  // count), same reason: a snapshot rebuild that lands on the same count and
+  // degree still publishes a fresh `_shData` view over a REUSED scratch buffer.
+  // Sits beside the attribute commit and ABOVE the pipeline gate for the
+  // Batch-881 reason — the upload needs the device, not a pipeline.
+  if (
+    shSource.view &&
+    (cache.shSourceToken !== shSource.token ||
+      cache.shDegree !== shSource.degree ||
+      !cache.shEnabled ||
+      // Size is read back off the GPU object rather than tracked in a parallel
+      // count field, so the guard cannot drift from what is actually resident.
+      cache.shBuffer === null ||
+      cache.shBuffer.size !== (shSource.view.byteLength || 16))
+  ) {
+    if (cache.shBuffer) {
+      cache.shBuffer.destroy();
+    }
+    cache.shBuffer = device.createBuffer({
+      label: `GaussianSplat SH coefficients [degree=${shSource.degree}]`,
+      size: shSource.view.byteLength || 16,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
+    device.queue.writeBuffer(cache.shBuffer, 0, shSource.view);
+    cache.shSourceToken = shSource.token;
+    cache.shDegree = shSource.degree;
+    cache.shEnabled = true;
+    // The binding changed identity, so the shared bind group must rebuild.
+    cache.bindGroup = null;
+    cache.command = null;
+    cache.pickCommand = null;
+  } else if (!shSource.view && cache.shEnabled && source.view !== null) {
+    // The primitive still offers attribute bytes but no longer offers SH (a
+    // degree-0 fallback, or a re-commit at degree 0). Drop the term rather than
+    // keep evaluating a retired palette; the placeholder-sized buffer stays
+    // bound so the shared layout remains valid.
+    cache.shSourceToken = null;
+    cache.shDegree = 0;
+    cache.shEnabled = false;
+    cache.command = null;
+    cache.pickCommand = null;
   }
 
   if (!cache.bindGroup) {
@@ -2132,6 +2504,8 @@ function updateWebGPUGaussianSplats(
         { binding: 1, resource: { buffer: cache.splatBuffer! } },
         { binding: 2, resource: { buffer: cache.sortedIndexBuffer! } },
         { binding: 3, resource: { buffer: cache.prevSplatBuffer! } },
+        // C15-G5 — always bound (placeholder when the content has no SH).
+        { binding: 4, resource: { buffer: cache.shBuffer! } },
       ],
     });
     // Bind group identity changed — drop cached commands so they rebuild
@@ -2170,6 +2544,8 @@ function updateWebGPUGaussianSplats(
         { binding: 1, resource: { buffer: cache.splatBuffer! } },
         { binding: 2, resource: { buffer: cache.sortedIndexBuffer! } },
         { binding: 3, resource: { buffer: cache.prevSplatBuffer! } },
+        // C15-G5 — always bound (placeholder when the content has no SH).
+        { binding: 4, resource: { buffer: cache.shBuffer! } },
       ],
     });
     cache.command = null;
@@ -2348,6 +2724,53 @@ function updateWebGPUGaussianSplats(
   const modelMatrixData = new Float32Array(16);
   Matrix4.pack(mm, modelMatrixData, 0);
   device.queue.writeBuffer(cache.uniformBuffer!, 256, modelMatrixData);
+
+  // C15-G5 — spherical-harmonics tail at byte offset 320 (float 80).
+  //
+  // The GLSL evaluates SH against
+  //   normalize(u_inverseModelRotation * (splatWC - cameraWC))
+  // where `u_inverseModelRotation` is the rotation of
+  //   inverse(tile.computedTransform × axisCorrection × content.worldTransform)
+  // — the SH training frame — cached by the primitive as `_shInverseRotation`
+  // on every snapshot rebuild (GaussianSplatPrimitive.js:1536-1552).
+  //
+  // The WGSL has no world-space splat position; it has `posRTE`, the
+  // camera->splat vector in the primitive's MODEL frame. For a model matrix
+  // M = [A | t] and a camera encoded in model space (c_model = M^-1 c_world),
+  //   A * posRTE = A*p - A*M^-1*c_world = (A*p + t) - c_world = splatWC - c_world
+  // EXACTLY, for any invertible A — the translation cancels in the difference.
+  // So folding the two rotations CPU-side into one mat3 reproduces the GLSL's
+  // argument with no extra shader work and no world-space round trip.
+  const shRotationData = new Float32Array(16);
+  const shInverseRotation = (
+    primitive as unknown as { _shInverseRotation?: Matrix3 }
+  )._shInverseRotation;
+  if (cache.shEnabled && shInverseRotation) {
+    Matrix4.getMatrix3(mm, scratchModelRotation);
+    Matrix3.multiply(
+      shInverseRotation,
+      scratchModelRotation,
+      scratchShRotation,
+    );
+  } else {
+    Matrix3.clone(Matrix3.IDENTITY, scratchShRotation);
+  }
+  // mat3x3<f32> columns are 16-byte strided; Matrix3 is column-major, so
+  // column j is elements [3j, 3j+1, 3j+2] and lands at floats 4j..4j+2.
+  // Matrix3 is index-addressable at runtime; the ambient class type does not
+  // declare an index signature, so view it as ArrayLike for the strided copy.
+  const shRotationElements = scratchShRotation as unknown as ArrayLike<number>;
+  for (let column = 0; column < 3; column++) {
+    shRotationData[column * 4] = shRotationElements[column * 3];
+    shRotationData[column * 4 + 1] = shRotationElements[column * 3 + 1];
+    shRotationData[column * 4 + 2] = shRotationElements[column * 3 + 2];
+    shRotationData[column * 4 + 3] = 0.0;
+  }
+  // float 92 (byte 368) — the twin of GLSL's `u_sphericalHarmonicsDegree`.
+  // Zero whenever the SH variant is not compiled, so a stale non-zero degree
+  // can never survive a flip back to the base-colour shader.
+  shRotationData[12] = cache.shEnabled ? cache.shDegree : 0.0;
+  device.queue.writeBuffer(cache.uniformBuffer!, 320, shRotationData);
 
   // FEAT-GAP-09 (Batch 101) — per-frame effects BG. Shared helper
   // returns placeholder when none of (shadow, csm, atmosphereLut) is
@@ -2591,6 +3014,8 @@ function attachSplatVelocityCommand(
           { binding: 1, resource: { buffer: cache.splatBuffer } },
           { binding: 2, resource: { buffer: cache.sortedIndexBuffer } },
           { binding: 3, resource: { buffer: cache.prevSplatBuffer } },
+          // C15-G5 — always bound (placeholder when the content has no SH).
+          { binding: 4, resource: { buffer: cache.shBuffer! } },
         ],
       });
       // Color/pick commands captured the old bind group; refresh slot 0 while
@@ -2683,7 +3108,7 @@ function attachSplatVelocityCommand(
       // pipelines in this file already carry.
       name: `GaussianSplat velocity pipeline [ld=${
         cache.logDepthEnabled ? 1 : 0
-      }/packed=${cache.layoutPacked ? 1 : 0}]`,
+      }/packed=${cache.layoutPacked ? 1 : 0}/sh=${cache.shEnabled ? 1 : 0}]`,
       layout: cache.pipelineLayout,
       vertex: {
         module: cache.shaderModule,
@@ -2815,6 +3240,8 @@ function destroyWebGPUGaussianSplatResources(
   cache.sortedIndexBuffer?.destroy();
   // Batch 171 - release the velocity-path GPU buffer.
   cache.prevSplatBuffer?.destroy();
+  // C15-G5 — release the SH coefficient storage buffer.
+  cache.shBuffer?.destroy();
 
   // C-R9 (Batch 31 / refactored Batch 59) — release pick ID.
   destroyPickIds(primitive as unknown as SinglePickIdCache);

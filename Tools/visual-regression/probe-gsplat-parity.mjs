@@ -290,6 +290,14 @@ const RUN_LANE = async ({
     cacheComparatorSorts: null,
     cacheProvidedSortUploads: null,
     cacheSupersededSortUploads: null,
+    // C15-G5 - the SH observables. The row's failure mode is silent: if
+    // the SH variant never compiles, the colour residual stays exactly
+    // where it was and the run looks like an unimproved port rather than
+    // an unexecuted one. These name the difference.
+    cacheShEnabled: null,
+    cacheShDegree: null,
+    primitiveShDegree: null,
+    primitiveShWords: null,
     packedPayloadWords: null,
     featureRendererKind: null,
     absenceBlockers: [],
@@ -609,6 +617,16 @@ const RUN_LANE = async ({
       p?._webgpuCache?.supersededSortUploads ?? null;
     record.packedPayloadWords =
       p?._packedSplatTextureData?.data?.length ?? null;
+    // C15-G5 — the SH observables. Without these, "the SH variant silently
+    // never compiled" and "SH is implemented and the colours still differ" are
+    // the same reading: an unchanged mismatch. `shDegree` is the RENDERER's
+    // resident degree, `primitiveShDegree` is what the shared pipeline
+    // committed — they disagree only if the consumer refused the payload (a
+    // short buffer), which is exactly the case worth naming.
+    record.cacheShEnabled = p?._webgpuCache?.shEnabled ?? null;
+    record.cacheShDegree = p?._webgpuCache?.shDegree ?? null;
+    record.primitiveShDegree = p?._sphericalHarmonicsDegree ?? null;
+    record.primitiveShWords = p?._shData?.length ?? null;
   };
   if (rendererType === "webgpu") {
     const commitStart = performance.now();
@@ -1255,6 +1273,17 @@ async function main() {
       } (liveness: > 0, else nothing sorted at all) superseded=${
         webgpu?.cacheSupersededSortUploads ?? "n/a"
       } (out-of-order resolutions refused at the upload boundary)`,
+    );
+    console.log(
+      `                 sh: enabled=${webgpu?.cacheShEnabled ?? "n/a"} degree=${
+        webgpu?.cacheShDegree ?? "n/a"
+      } (C15-G5: both in-tree assets are degree 3) primitiveDegree=${
+        webgpu?.primitiveShDegree ?? "n/a"
+      } shWords=${webgpu?.primitiveShWords ?? "n/a"} (predicted ${
+        asset.expectedSplats * 30
+      } for ${asset.expectedSplats} splats at degree 3 = dims 15 x 2 u32). ` +
+        `enabled=false with a positive primitiveDegree means the consumer ` +
+        `REFUSED the payload - read the console for the short-payload error`,
     );
     console.log(
       `               rendererCommit=${webgpu?.rendererCommitted}@${

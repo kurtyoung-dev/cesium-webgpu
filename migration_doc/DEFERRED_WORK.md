@@ -163,6 +163,26 @@ ends on.
   degree it reads may not be the degree WebGL rendered. **Effort: S**, folded
   into `C15-G5`.
 
+  **RESOLVED — `C15-G5` (2026-08-07), by option (a): both backends degrade
+  together.** The decision was extracted verbatim into a backend-neutral
+  `applySphericalHarmonicsBudget(snapshot, maximumTextureSize)` and moved
+  ABOVE the `defined(primitive._featureRenderer)` branch in
+  `processGeneratedSplatTextureData`, so `snapshot.sphericalHarmonicsDegree`
+  is decided once and `commitSnapshot` publishes the same degree to both
+  legs; the WebGL-only half now consumes the row addressing the helper
+  returns and no longer contains a second copy of the rule. The alternative
+  (let WebGPU keep degree 3, since a storage buffer has no height ceiling)
+  was rejected: the row's entire purpose is cross-backend colour parity, and
+  the divergence is unobservable by any gate small enough to run — so it
+  would have been a permanent, untested split. The cost is nil in practice —
+  the trigger is `numSplats > maxTex * floor(maxTex / bands)`, i.e.
+  **17,891,328 splats at degree 3 / maxTex 16384** (4,472,832 at maxTex 8192),
+  against `tower`'s 286,868. Executed pins live in `gsplat-harness.spec.mjs`
+  (`C15-G5: the SH degree fallback is decided ONCE, for both backends`):
+  the extracted helper is run at exactly the limit and one row past it, over
+  maxTex ∈ {2048, 4096, 8192, 16384} × degree ∈ {1, 2, 3}, and a source
+  mutant that moves the call back below the branch must be rejected.
+
 ## New findings — eclipse-gate legibility worker, 2026-08-07 (Batch 874)
 
 One finding, and it is about how a verdict is READ rather than what it

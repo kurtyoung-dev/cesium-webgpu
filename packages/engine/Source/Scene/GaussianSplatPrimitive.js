@@ -633,6 +633,60 @@ function computeSplatTextureLayout(
 }
 
 /**
+ * Backend-neutral SH budget (`C15-G5` / `NEW-SPLAT-SH-DEGREE-BACKEND-DEPENDENT`).
+ *
+ * The WebGL SH texture is `maximumTextureSize` wide and cannot be widened
+ * further, so above a splat count of <code>maxTex * floor(maxTex / dims)</code>
+ * its required HEIGHT exceeds the same limit and the snapshot degrades to
+ * degree 0 (base colour only) rather than crashing.
+ *
+ * A WebGPU storage buffer has no such bound, so before `C15-G5` this decision
+ * lived entirely inside the WebGL-only half of
+ * {@link processGeneratedSplatTextureData} and the two backends would have
+ * disagreed about the SH degree — silently, and only for clouds far larger than
+ * either in-tree gate asset. Both backends now take the degree from THIS one
+ * function, so they degrade together by construction. (WebGPU giving up
+ * capability it technically has is the correct trade: the row's whole purpose
+ * is cross-backend colour parity, and the alternative is a divergence that no
+ * parity gate would ever be run large enough to catch.)
+ *
+ * Returns the row addressing the WebGL texture pack needs, or
+ * <code>undefined</code> when this snapshot carries no SH at all.
+ *
+ * @param {GaussianSplatPrimitive.Snapshot} snapshot Snapshot being populated. Mutated to degree 0 when the budget is exceeded.
+ * @param {number} maximumTextureSize The active backend's maximum 2D texture dimension.
+ * @returns {{splatsPerRow: number, floatsPerRow: number, height: number}|undefined} Row addressing for the SH texture, or undefined when SH is absent or was just disabled.
+ * @private
+ */
+function applySphericalHarmonicsBudget(snapshot, maximumTextureSize) {
+  if (!defined(snapshot.shData) || !(snapshot.sphericalHarmonicsDegree > 0)) {
+    return undefined;
+  }
+  const width = maximumTextureSize;
+  const dims = snapshot.shCoefficientCount / 3;
+  const splatsPerRow = Math.floor(width / dims);
+  const floatsPerRow = splatsPerRow * (dims * 2);
+  const shHeight = Math.ceil(snapshot.numSplats / splatsPerRow);
+
+  // SH texture width is already maxTex and cannot be widened further.
+  // When height would exceed the GPU limit, gracefully disable SH for this
+  // snapshot and fall back to base color rendering rather than crashing.
+  if (shHeight > width) {
+    console.warn(
+      `[GaussianSplat][SHTexture] ${snapshot.numSplats} splats require SH height ${shHeight} > maxTex ${width}. ` +
+        `Disabling spherical harmonics for this snapshot (color-only fallback).`,
+    );
+    snapshot.sphericalHarmonicsDegree = 0;
+    return undefined;
+  }
+  return {
+    splatsPerRow: splatsPerRow,
+    floatsPerRow: floatsPerRow,
+    height: shHeight,
+  };
+}
+
+/**
  * Finalizes async splat texture generation for a snapshot. The resolved data
  * updates or recreates GPU textures, and the snapshot transitions to
  * {@link SnapshotState.TEXTURE_READY} when complete.
@@ -676,6 +730,16 @@ async function processGeneratedSplatTextureData(
       return;
     }
 
+    // Backend-neutral (`C15-G5`): the SH DEGREE — including the degrade-to-0
+    // fallback for clouds too tall for an SH texture — is decided once, above
+    // the branch, so both backends read the same `sphericalHarmonicsDegree`
+    // off the committed snapshot. The returned row addressing is only used by
+    // the WebGL texture pack below.
+    const shLayout = applySphericalHarmonicsBudget(
+      snapshot,
+      maximumTextureSize,
+    );
+
     // ── Backend branch. Everything above ran for both backends; everything
     // below constructs WebGL `Texture` objects. A native feature renderer owns
     // its own GPU resources, so it gets the packed WASM buffer verbatim and no
@@ -686,9 +750,15 @@ async function processGeneratedSplatTextureData(
       snapshot.packedSplatTextureData = effectiveTextureData;
       snapshot.lastTextureWidth = effectiveTextureData.width;
       snapshot.lastTextureHeight = effectiveTextureData.height;
-      // The SH texture pack below is a WebGL texture layout. The neutral SH
-      // payload is already on the snapshot as `shData`; `C15-G5` owns the WGSL
-      // consumer and its layout, so nothing is packed for it here.
+      // The SH texture pack below is a WebGL texture LAYOUT — row padding out
+      // to `maximumTextureSize` texels — and a native renderer needs none of
+      // it: `C15-G5` binds `snapshot.shData` itself as a storage buffer, whose
+      // per-splat stride is `dims * 2` u32 with coefficient `i` at word
+      // `splatID * dims * 2 + i * 2`. That is the SAME addressing the GLSL
+      // texel fetch reduces to (the row copy below is a pure regrouping of
+      // this array), so both backends read bit-identical coefficients. The
+      // DEGREE — including the degrade-to-0 fallback — was already decided
+      // above the branch by `applySphericalHarmonicsBudget`.
       snapshot.state = SnapshotState.TEXTURE_READY;
       return;
     }
@@ -723,48 +793,35 @@ async function processGeneratedSplatTextureData(
     if (defined(snapshot.shData) && snapshot.sphericalHarmonicsDegree > 0) {
       const oldTex = snapshot.sphericalHarmonicsTexture;
       const width = maximumTextureSize;
-      const dims = snapshot.shCoefficientCount / 3;
-      const splatsPerRow = Math.floor(width / dims);
-      const floatsPerRow = splatsPerRow * (dims * 2);
+      // `applySphericalHarmonicsBudget` already ran above the backend branch;
+      // reaching here with a positive degree means it returned a layout.
+      const { floatsPerRow, height: shHeight } = shLayout;
+      const texBuf = new Uint32Array(width * shHeight * 2);
 
-      const shHeight = Math.ceil(snapshot.numSplats / splatsPerRow);
-
-      // SH texture width is already maxTex and cannot be widened further.
-      // When height would exceed the GPU limit, gracefully disable SH for this
-      // snapshot and fall back to base color rendering rather than crashing.
-      if (shHeight > width) {
-        console.warn(
-          `[GaussianSplat][SHTexture] ${snapshot.numSplats} splats require SH height ${shHeight} > maxTex ${width}. ` +
-            `Disabling spherical harmonics for this snapshot (color-only fallback).`,
+      let dataIndex = 0;
+      for (let i = 0; dataIndex < snapshot.shData.length; i += width * 2) {
+        texBuf.set(
+          snapshot.shData.subarray(dataIndex, dataIndex + floatsPerRow),
+          i,
         );
-        snapshot.sphericalHarmonicsDegree = 0;
-        if (defined(oldTex)) {
-          oldTex.destroy();
-        }
-        snapshot.sphericalHarmonicsTexture = undefined;
-      } else {
-        const texBuf = new Uint32Array(width * shHeight * 2);
-
-        let dataIndex = 0;
-        for (let i = 0; dataIndex < snapshot.shData.length; i += width * 2) {
-          texBuf.set(
-            snapshot.shData.subarray(dataIndex, dataIndex + floatsPerRow),
-            i,
-          );
-          dataIndex += floatsPerRow;
-        }
-        snapshot.sphericalHarmonicsTexture = createSphericalHarmonicsTexture(
-          frameState.context,
-          {
-            data: texBuf,
-            width: width,
-            height: shHeight,
-          },
-        );
-        if (defined(oldTex)) {
-          oldTex.destroy();
-        }
+        dataIndex += floatsPerRow;
       }
+      snapshot.sphericalHarmonicsTexture = createSphericalHarmonicsTexture(
+        frameState.context,
+        {
+          data: texBuf,
+          width: width,
+          height: shHeight,
+        },
+      );
+      if (defined(oldTex)) {
+        oldTex.destroy();
+      }
+    } else if (defined(snapshot.sphericalHarmonicsTexture)) {
+      // The budget just degraded this snapshot to degree 0; retire the texture
+      // the previous (SH-carrying) build left behind.
+      snapshot.sphericalHarmonicsTexture.destroy();
+      snapshot.sphericalHarmonicsTexture = undefined;
     }
 
     snapshot.state = SnapshotState.TEXTURE_READY;
