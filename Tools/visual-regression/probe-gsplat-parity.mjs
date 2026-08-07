@@ -260,6 +260,10 @@ const RUN_LANE = async ({
     dataReady: false,
     dataReadyMs: null,
     dataBudgetMs,
+    // C15-G3b — the renderer-side commit, tracked apart from the shared data
+    // commit. `null` on the WebGL leg, which has no WebGPU cache to wait for.
+    rendererCommitted: false,
+    rendererCommitMs: null,
     numSplats: 0,
     isStable: null,
     indexesLength: null,
@@ -495,6 +499,45 @@ const RUN_LANE = async ({
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
 
+  // ── C15-G3b — the renderer-side commit is a THIRD budget.
+  //
+  // Batch 881 measured `cache.splatCount = 0` on a run whose scored frame drew
+  // 61% of the canvas. The two are not contradictory: the loop above waits on
+  // the SHARED pipeline (`_numSplats`), which lands in the same frame the
+  // snapshot commits, while the renderer-owned cache is populated by the
+  // feature renderer — and at that instant the splat pipeline was still
+  // compiling, so `updateWebGPUGaussianSplats` returned early. Sampling a
+  // renderer-owned signal the frame the SHARED signal goes true reads the
+  // renderer before it has run. `C15-G3b` hoisted the buffer commit above the
+  // pipeline gate on the engine side; this budget is the instrument half, and
+  // it stays because "the renderer has committed" will never be the same event
+  // as "the data exists" and a probe must not assume it is.
+  const sampleRendererStats = () => {
+    const p = tileset.gaussianSplatPrimitive;
+    record.cacheSplatCount = p?._webgpuCache?.splatCount ?? null;
+    record.cacheLayoutPacked = p?._webgpuCache?.layoutPacked ?? null;
+    record.cacheSplatRecordBytes = p?._webgpuCache?.splatRecordBytes ?? null;
+    record.cacheSortedIndexCount = p?._webgpuCache?.sortedIndexCount ?? null;
+    record.packedPayloadWords =
+      p?._packedSplatTextureData?.data?.length ?? null;
+  };
+  if (rendererType === "webgpu") {
+    const commitStart = performance.now();
+    while (performance.now() - commitStart < dataBudgetMs) {
+      renderNow();
+      if ((tileset.gaussianSplatPrimitive?._webgpuCache?.splatCount ?? 0) > 0) {
+        record.rendererCommitted = true;
+        record.rendererCommitMs = performance.now() - commitStart;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  } else {
+    // Backend-neutral bookkeeping: the WebGL leg has no `_webgpuCache` and
+    // never will, so waiting on one would burn the whole budget every run.
+    record.rendererCommitted = null;
+  }
+
   const primitive = tileset.gaussianSplatPrimitive;
   record.numSplats = primitive?._numSplats ?? 0;
   record.isStable = primitive?.isStable ?? null;
@@ -506,14 +549,7 @@ const RUN_LANE = async ({
     snapshotNumSplats: primitive?._snapshot?.numSplats ?? null,
     sphericalHarmonicsDegree: primitive?._sphericalHarmonicsDegree ?? null,
   };
-  record.cacheSplatCount = primitive?._webgpuCache?.splatCount ?? null;
-  record.cacheLayoutPacked = primitive?._webgpuCache?.layoutPacked ?? null;
-  record.cacheSplatRecordBytes =
-    primitive?._webgpuCache?.splatRecordBytes ?? null;
-  record.cacheSortedIndexCount =
-    primitive?._webgpuCache?.sortedIndexCount ?? null;
-  record.packedPayloadWords =
-    primitive?._packedSplatTextureData?.data?.length ?? null;
+  sampleRendererStats();
   try {
     // FeatureRendererKey.GAUSSIAN_SPLAT === 16. The primitive's own update
     // kicks this lazy loader every frame, so reading it is idempotent here.
@@ -673,6 +709,14 @@ const RUN_LANE = async ({
   record.commandListSplatCommands = (
     scene.frameState?.commandList ?? []
   ).filter((command) => command?.pass === C.Pass.GAUSSIAN_SPLATS).length;
+  // C15-G3b — RE-SAMPLE the renderer-owned stats here, same task as the scored
+  // capture and the command counts. This is the sample the verdict uses: a
+  // number read minutes of wall clock earlier describes a different frame than
+  // the one that was measured, and `classifyWebgpuPresence` folds this exact
+  // field in as its `dataCommitted` signal. Batch 881 exited 1 on precisely
+  // that mismatch — 61% of the canvas painted by a renderer the verdict
+  // believed had committed nothing.
+  sampleRendererStats();
 
   await settleMs(predict.settleMs);
   const onB = captureNow();
@@ -1066,6 +1110,15 @@ async function main() {
       } packedWords=${webgpu?.packedPayloadWords ?? "n/a"} (predicted ${
         asset.expectedSplats * 8
       } minimum for ${asset.expectedSplats} splats)`,
+    );
+    console.log(
+      `               rendererCommit=${webgpu?.rendererCommitted}@${
+        webgpu?.rendererCommitMs === null ||
+        webgpu?.rendererCommitMs === undefined
+          ? `never/${Math.round(run.derivedBudget ?? 0)}ms budget`
+          : `${Math.round(webgpu.rendererCommitMs)}ms`
+      } (renderer-owned; separate from the shared data commit above — the ` +
+        `feature renderer can lag it by a cold pipeline compile)`,
     );
     console.log(
       `               stage=${STAGE.id} requires=[${

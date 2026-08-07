@@ -17819,3 +17819,96 @@ stride. Now `preprocess(SPLAT_WGSL, 0, layoutDefinesHi)`. Unreachable today
 (the renderer populates `_oitPipeline` itself and OIT is contained off), and
 the REST of that fallback is still broken for splats — see
 `NEW-WEBGPU-SPLAT-OIT-FALLBACK-UNUSABLE` in `DEFERRED_WORK.md`.
+
+---
+
+## C15-G3b — the first real splat run: a readiness/sampling mismatch, and a footprint convention Batch 288 never matched (2026-08-07)
+
+**Bugs:** `C15-G3b.1`, `C15-G3b.2`. **Files:**
+`packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts`,
+`Tools/visual-regression/probe-gsplat-parity.mjs`.
+
+**Context:** Batch 881's Edge run drew the first WebGPU Gaussian-splat pixels in
+the project's history — `splatCmds=1/1`, 480,480 added px, zero errors — and
+still exited 1.
+
+### `C15-G3b.1` — a renderer-owned stat sampled before the renderer had run
+
+**Symptom:** `cache.splatCount = 0` on a run whose scored frame painted 61% of
+the canvas with a splat command that necessarily carried
+`instanceCount = cache.splatCount`.
+
+**Root cause.** The manifest is unambiguous: the run recorded
+`cacheSplatCount=0`, `cacheLayoutPacked=false`, `cacheSplatRecordBytes=64`,
+`cacheSortedIndexCount=0` — every renderer-owned field at the value
+`updateWebGPUGaussianSplats` writes when it ALLOCATES the cache. Not a second
+cache object, and not a reset: the commit block had never executed at sample
+time. `tryResolveSplatPipelines` returns early while a cold pipeline variant
+compiles (~2.7 s on this fork) and `C15-G3` placed the buffer commit below that
+gate; the probe's readiness loop waits on `_numSplats`, the SHARED pipeline's
+signal, which went true at 73 ms. Three settle loops later the pipeline
+resolved, the commit ran, and the scored frame drew 27 splats.
+
+**The transferable shape:** *a readiness loop that waits on signal A and then
+samples signal B has measured nothing about B.* `C15-G2`/Batch 880 was the same
+family one level down — a shared readiness predicate reading a WebGL object.
+Here the probe read the right object at the wrong time.
+
+**Fix, both halves.** ENGINE: the commit is hoisted above the pipeline gate —
+uploading attribute bytes needs the device, not a pipeline, so `splatCount` now
+means "the data is resident" rather than "…and a pipeline happened to finish
+compiling", and the upload starts one compile earlier. The `splatCount === 0`
+guard deliberately stays BELOW the gate so pipelines keep warming with an empty
+cache. INSTRUMENT: a separate renderer-commit wall-clock budget (WebGPU leg
+only), and every renderer-owned stat re-sampled immediately after the scored ON
+capture in the same task as the command counts — the frame the verdict actually
+describes.
+
+### `C15-G3b.2` — the splat footprint was ~3.5x WebGL's area, and it was never SH
+
+**Symptom:** WebGPU added 61.096% of the canvas where WebGL added 19.141%.
+
+**Ruled out first.** Spherical harmonics are a COLOUR term applied after
+`calcCovVectors` has produced the quad (`v_splatColor.rgb += evaluateSH(...)`),
+so no SH input reaches the footprint in either shader; and a covariance decode
+at the wrong scale would not land within 10% of a convention-only prediction.
+
+**Root cause — four linked conventions, all inherited from Batch 288:** the
+uniform pack carried a HALF-viewport focal where the GLSL uses
+`czm_projection[i][i] * czm_viewport.zw`; the quad was an axis-aligned square of
+half-side `ceil(3*sqrt(eigenMax))` where the GLSL uses an oriented rectangle of
+half-extents `min(sqrt(2*lambda_i), 1024)`; the expansion carried a `* 2.0` the
+GLSL does not have; and the FS evaluated the TRUE gaussian where the GLSL
+evaluates `exp(-4*dot(corner, corner))` (effective sigma/2). Carrying both focal
+conventions through: `ndcOff_old = 3*P*g*w` vs `ndcOff_glsl = sqrt(2)*P*g*w` —
+2.121x in linear extent, and a 3.53x ratio on the supported AREA.
+
+The half focal was not just a scale factor: `+0.3` and `1024` are absolute
+constants ported from the GLSL, so a 4x-small covariance made the dilation 4x
+stronger relative to the splat and inflated small splats specifically.
+
+**Corroboration, three independent directions.** Area 61.096/19.141 = **3.19x**
+(just below 3.53 — overlap saturation, since 27 footprints union sublinearly).
+Edge fraction 0.0347/0.0146 = **2.38x** — edge fraction scales as 1/radius, so
+this measures the LINEAR ratio separately, against a 2.12 prediction, high by
+the amount the merged blobs explain. And the PNGs: identical six-armed radial
+structure with identical splat CENTRES (position/RTE/`_rootTransform` correct),
+visibly larger softer haloes, and a separate warm-vs-grey colour split that is
+the SH signature (mean 48/27/28 vs 42/33/33).
+
+**Fix.** WebGL's footprint ported verbatim into shared
+`projectSplatCovariance` / `splatQuadAxes` helpers used by the colour AND
+velocity vertex shaders (previously two copies of one footprint), plus WebGL's
+`1.2*w` off-screen and 2-pixel sub-pixel rejections and its `exp(A*4.0)` falloff
+with the non-WebGL `min(0.99, …)` cap removed. The pick FS mirrors the colour
+footprint.
+
+**One deliberate deviation from the reference, bounded by test.** The GLSL's
+`normalize(vec2(offDiagonal, lambda1 - diagonal1))` takes EXACTLY `(0, 0)` for
+an axis-aligned splat and returns NaN. Real clouds never land there; a synthetic
+isotropic covariance at the screen centre does, which is exactly what
+`probe-splat-sort.mjs` feeds this shader. The port guards the normalize and
+falls back to the x axis (correct for a circular footprint). `gsplat-harness.spec.mjs`
+EXECUTES both implementations over a battery of projected covariances: they must
+agree exactly wherever the GLSL is well-defined, and the port must stay finite
+with the right extents on the two cases where it is not.

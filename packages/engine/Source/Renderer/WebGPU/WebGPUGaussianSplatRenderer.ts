@@ -207,12 +207,19 @@ struct VertexInput {
 struct VertexOutput {
   @builtin(position) position: vec4<f32>,
   @location(0) color: vec4<f32>,
-  @location(1) conic: vec3<f32>,
-  @location(2) centerOffset: vec2<f32>,
+  // C15-G3b — WebGL-parity footprint. The interpolated QUAD-CORNER coordinate
+  // (GLSL v_vertPos): +/-1 at the quad edge along each principal axis of the
+  // projected 2D covariance. The FS evaluates the same exp(-4*dot(v,v))
+  // falloff PrimitiveGaussianSplatFS.glsl does, so the WebGPU splat has the
+  // same SUPPORT and the same alpha profile as WebGL's, not merely the same
+  // covariance. Replaces the pre-C15-G3b conic + pixel-offset pair, whose
+  // 3-sigma square support rendered ~3.5x the area WebGL's sqrt(2)-sigma
+  // oriented quad does.
+  @location(1) vertPos: vec2<f32>,
   // FEAT-GAP-09 (Batch 103 audit fix) — splat-center RTE position
   // (position relative to camera) for the aerial-perspective fog
   // block. Per-quad-vertex spread is tiny relative to fog scale.
-  @location(3) worldPos: vec3<f32>,
+  @location(2) worldPos: vec3<f32>,
   //>>ifdef LOG_DEPTH
   // NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT (Batch 288) —
   // interpolated linear depthFromNearPlusOne (splat-center eye distance + 1).
@@ -220,7 +227,7 @@ struct VertexOutput {
   // altitude depth-tests against the log-depth globe at FAR range instead of
   // z-fighting it. Per-quad-vertex depth spread is negligible vs the splat
   // center, so using the center value across the quad is correct.
-  @location(4) v_logDepth: f32,
+  @location(3) v_logDepth: f32,
   //>>endif
 };
 struct Uniforms {
@@ -408,6 +415,78 @@ struct EffectsUniforms {
 @group(1) @binding(8) var atmosphereInscatterLut: texture_2d<f32>;
 @group(1) @binding(9) var atmosphereLutSampler: sampler;
 
+// C15-G3b — the projected 2D covariance, in WebGL's units.
+//
+// Term for term with PrimitiveGaussianSplatVS.glsl's calcCovVectors head:
+// J is the perspective Jacobian built from focal/t.z, Vrk_view = R*Sigma*R^T,
+// cov = J^T * Vrk_view * J, and BOTH diagonals carry the same +0.3 dilation.
+// u.focalX/Y are the FULL-viewport focal lengths (czm_projection[i][i] *
+// czm_viewport.zw), NOT the half-viewport pixel focal the pre-C15-G3b code
+// packed — which matters beyond a scale factor, because the +0.3 dilation and
+// the 1024 clamp are ABSOLUTE constants: at half focal the dilation was
+// effectively 4x stronger relative to the splat, inflating small splats.
+//
+// Returns (diagonal1, offDiagonal, diagonal2).
+fn projectSplatCovariance(
+  sigma: mat3x3<f32>,
+  R: mat3x3<f32>,
+  viewPos: vec3<f32>,
+) -> vec3<f32> {
+  let focal = vec2<f32>(u.focalX, u.focalY);
+  let J1 = focal / viewPos.z;
+  let J2 = -focal * vec2<f32>(viewPos.x, viewPos.y)
+         / (viewPos.z * viewPos.z);
+  let SV = R * sigma * transpose(R);
+  let a = SV[0][0]; let b = SV[1][0]; let c = SV[2][0];
+  let d = SV[1][1]; let e = SV[2][1]; let f = SV[2][2];
+  let diagonal1 = J1.x*J1.x*a + 2.0*J1.x*J2.x*c + J2.x*J2.x*f + 0.3;
+  let offDiagonal = J1.x*J1.y*b + J2.x*J1.y*e + J1.x*J2.y*c + J2.x*J2.y*f;
+  let diagonal2 = J1.y*J1.y*d + 2.0*J1.y*J2.y*e + J2.y*J2.y*f + 0.3;
+  return vec3<f32>(diagonal1, offDiagonal, diagonal2);
+}
+
+struct SplatQuadAxes {
+  major: vec2<f32>,
+  minor: vec2<f32>,
+};
+
+// C15-G3b — the oriented quad half-axes, in pixels.
+//
+// PrimitiveGaussianSplatVS.glsl's calcCovVectors tail, with ONE deliberate
+// deviation, called out because it is a divergence from the reference:
+//
+//   GLSL: diagonalVector = normalize(vec2(offDiagonal, lambda1 - diagonal1))
+//
+// For an axis-aligned splat that argument is EXACTLY (0, 0) — offDiagonal is
+// zero and lambda1 collapses to max(diagonal1, diagonal2) — so normalize
+// returns NaN and the whole quad degenerates. Real splat clouds never land
+// exactly there, but a synthetic isotropic covariance at the screen centre
+// does, which is precisely what probe-splat-sort.mjs feeds this shader. The
+// guarded form below picks the x axis in that case, which is correct for a
+// circular footprint (every axis is a principal axis) and byte-identical to
+// the GLSL whenever the GLSL is well-defined at all.
+fn splatQuadAxes(cov: vec3<f32>) -> SplatQuadAxes {
+  let diagonal1 = cov.x;
+  let offDiagonal = cov.y;
+  let diagonal2 = cov.z;
+  let mid = 0.5 * (diagonal1 + diagonal2);
+  let radius = length(vec2<f32>((diagonal1 - diagonal2) * 0.5, offDiagonal));
+  let lambda1 = mid + radius;
+  let lambda2 = max(mid - radius, 0.1);
+  let rawDirection = vec2<f32>(offDiagonal, lambda1 - diagonal1);
+  let directionLength = length(rawDirection);
+  let diagonalVector = select(
+    vec2<f32>(1.0, 0.0),
+    rawDirection / max(directionLength, 1e-20),
+    directionLength > 1e-12,
+  );
+  var axes: SplatQuadAxes;
+  axes.major = min(sqrt(2.0 * lambda1), 1024.0) * diagonalVector;
+  axes.minor = min(sqrt(2.0 * lambda2), 1024.0)
+             * vec2<f32>(diagonalVector.y, -diagonalVector.x);
+  return axes;
+}
+
 @vertex
 fn vertexMain(
   @builtin(instance_index) instanceIndex: u32,
@@ -424,10 +503,6 @@ fn vertexMain(
              + (positionLow - u.encodedCameraLow);
   let clipPos = u.mvpRelativeToEye * vec4<f32>(posRTE, 1.0);
   let t = u.modelViewRelativeToEye * vec4<f32>(posRTE, 1.0);
-  let J00 = u.focalX / t.z;
-  let J02 = -(u.focalX * t.x / t.z) / t.z;
-  let J11 = u.focalY / t.z;
-  let J12 = -(u.focalY * t.y / t.z) / t.z;
   // C-P15: rotate 3D covariance by the modelView 3x3 so splats follow
   // modelMatrix rotation/scale. Matches GLSL: R = mat3(czm_modelView).
   // The translation column of modelViewRelativeToEye is zeroed CPU-side,
@@ -442,29 +517,40 @@ fn vertexMain(
     vec3<f32>(s.covA.y, s.covB.x, s.covB.y),
     vec3<f32>(s.covA.z, s.covB.y, s.covB.z),
   );
-  let SV = R * Sigma * transpose(R);
-  let a = SV[0][0]; let b = SV[1][0]; let c = SV[2][0];
-  let d = SV[1][1]; let e = SV[2][1]; let f = SV[2][2];
-  let c00 = J00*J00*a + 2.0*J00*J02*c + J02*J02*f + 0.3;
-  let c01 = J00*J11*b + J02*J11*e + J00*J12*c + J02*J12*f;
-  let c11 = J11*J11*d + 2.0*J11*J12*e + J12*J12*f + 0.3;
-  let det = c00*c11 - c01*c01;
-  if (det <= 0.0) {
+  let cov = projectSplatCovariance(Sigma, R, t.xyz);
+  let axes = splatQuadAxes(cov);
+  // WebGL's whole-splat rejections, ported verbatim
+  // (PrimitiveGaussianSplatVS.glsl:159-165 and :180-183): a centre well
+  // outside the frustum, and a footprint under 2 px on BOTH principal axes.
+  let clipLimit = 1.2 * clipPos.w;
+  let offscreen = clipPos.z < -clipLimit
+               || clipPos.x < -clipLimit || clipPos.x > clipLimit
+               || clipPos.y < -clipLimit || clipPos.y > clipLimit;
+  let subPixel = dot(axes.major, axes.major) < 4.0
+              && dot(axes.minor, axes.minor) < 4.0;
+  // Both diagonals carry the +0.3 dilation, so in every well-defined case they
+  // are >= 0.3; this fires only on a NaN/Inf covariance (a splat at t.z == 0).
+  // The GLSL has the same exposure and no guard — a strict robustness win with
+  // zero parity cost, and it replaces the pre-C15-G3b det <= 0 test that the
+  // conic formulation needed and this one does not.
+  let degenerate = !(cov.x > 0.0) || !(cov.z > 0.0);
+  if (offscreen || subPixel || degenerate) {
     output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0);
-    output.color = vec4<f32>(0.0); output.conic = vec3<f32>(0.0);
-    output.centerOffset = vec2<f32>(0.0);
+    output.color = vec4<f32>(0.0);
+    output.vertPos = vec2<f32>(0.0);
     output.worldPos = vec3<f32>(0.0);
     //>>ifdef LOG_DEPTH
     output.v_logDepth = 1.0;
     //>>endif
     return output;
   }
-  let invDet = 1.0 / det;
-  let conic = vec3<f32>(c11*invDet, -c01*invDet, c00*invDet);
-  let eigenMax = 0.5*(c00+c11+sqrt((c00-c11)*(c00-c11)+4.0*c01*c01));
-  let radius = ceil(3.0 * sqrt(eigenMax));
-  let pixOff = input.quadVertex * radius;
-  let ndcOff = pixOff / u.viewportSize * 2.0 * clipPos.w;
+  // Oriented quad, WebGL's expansion term for term:
+  //   gl_Position += vec4((corner.x*major + corner.y*minor) / viewport * w, 0, 0)
+  // Note there is NO factor of 2 and the focal lengths are FULL-viewport, so
+  // the two cancel into the same screen-space extent the GLSL produces.
+  let corner = input.quadVertex;
+  let ndcOff = (corner.x * axes.major + corner.y * axes.minor)
+             / u.viewportSize * clipPos.w;
   var fp = clipPos;
   fp.x = fp.x + ndcOff.x; fp.y = fp.y + ndcOff.y;
   //>>ifdef LOG_DEPTH
@@ -476,8 +562,7 @@ fn vertexMain(
   //>>endif
   output.position = fp;
   output.color = s.color;
-  output.conic = conic;
-  output.centerOffset = pixOff;
+  output.vertPos = corner;
   // FEAT-GAP-09 (Batch 103) — splat-center RTE position for fog block.
   output.worldPos = posRTE;
   return output;
@@ -500,12 +585,21 @@ fn fragmentMain(input: VertexOutput) -> FragOutput {
 @fragment
 fn fragmentMain(input: VertexOutput) -> @location(0) vec4<f32> {
 //>>endif
-  let off = input.centerOffset;
-  let power = -0.5*(input.conic.x*off.x*off.x + input.conic.z*off.y*off.y)
-              - input.conic.y*off.x*off.y;
-  if (power > 0.0) { discard; }
-  let alpha = min(0.99, input.color.a * exp(power));
-  if (alpha < 1.0/255.0) { discard; }
+  // C15-G3b — PrimitiveGaussianSplatFS.glsl's falloff, verbatim:
+  //   A = -dot(v_vertPos, v_vertPos);  if (A < -4.) discard;
+  //   B = exp(A * 4.) * v_splatColor.a;
+  //   out = vec4(rgb * B, B);
+  // The A * 4. is upstream's deliberate sharpening — it renders a gaussian
+  // of effective sigma/2 — and the quad edge (|v| = 1) sits at exp(-4) = 1.8%
+  // of peak alpha. The pre-C15-G3b conic form evaluated the TRUE gaussian out
+  // to a 3-sigma square instead, i.e. a ~3.5x larger footprint at a much
+  // flatter profile; matching WebGL means matching BOTH the support and the
+  // profile, not just the covariance. The min(0.99, ...) alpha cap and the
+  // 1/255 discard the conic form carried are gone: WebGL has neither, and the
+  // cap visibly diverged for opaque splats.
+  let A = -dot(input.vertPos, input.vertPos);
+  if (A < -4.0) { discard; }
+  let alpha = exp(A * 4.0) * input.color.a;
   var finalColor = vec4<f32>(input.color.rgb * alpha, alpha);
 
   // FEAT-GAP-09 (Batch 103) — Aerial-perspective fog blend.
@@ -577,11 +671,13 @@ fn fragmentPickMain(input: VertexOutput) -> PickFragOutput {
 @fragment
 fn fragmentPickMain(input: VertexOutput) -> @location(0) vec4<f32> {
 //>>endif
-  let off = input.centerOffset;
-  let power = -0.5*(input.conic.x*off.x*off.x + input.conic.z*off.y*off.y)
-              - input.conic.y*off.x*off.y;
-  if (power > 0.0) { discard; }
-  let alpha = min(0.99, input.color.a * exp(power));
+  // C15-G3b — mirror the colour FS's footprint exactly so pick hits only the
+  // pixels the colour pass painted. Pick keeps its OWN visibility floor (the
+  // colour pass has none, matching WebGL): a pick hit on a fragment at 1/255
+  // alpha is not something a user can see or aim at.
+  let A = -dot(input.vertPos, input.vertPos);
+  if (A < -4.0) { discard; }
+  let alpha = exp(A * 4.0) * input.color.a;
   if (alpha < 1.0/255.0) { discard; }
   //>>ifdef LOG_DEPTH
   var out: PickFragOutput;
@@ -641,11 +737,13 @@ fn vertexVelocityMain(
   // coarse 2-pixel square footprint left edge pixels of large splats
   // outside the velocity texture, falling back to camera-only TAA
   // reprojection at the splat edges of animated splats.
+  //
+  // C15-G3b — through the SAME two helpers vertexMain uses, so the velocity
+  // texture keeps covering exactly the pixels the colour pass touched. Before
+  // this the two were separate copies of the same math; a footprint change in
+  // one silently desynchronized the other, which is how the coverage they are
+  // supposed to share would have drifted.
   let t = u.modelViewRelativeToEye * vec4<f32>(posRTE, 1.0);
-  let J00 = u.focalX / t.z;
-  let J02 = -(u.focalX * t.x / t.z) / t.z;
-  let J11 = u.focalY / t.z;
-  let J12 = -(u.focalY * t.y / t.z) / t.z;
   let R = mat3x3<f32>(
     u.modelViewRelativeToEye[0].xyz,
     u.modelViewRelativeToEye[1].xyz,
@@ -656,14 +754,12 @@ fn vertexVelocityMain(
     vec3<f32>(s.covA.y, s.covB.x, s.covB.y),
     vec3<f32>(s.covA.z, s.covB.y, s.covB.z),
   );
-  let SV = R * Sigma * transpose(R);
-  let a = SV[0][0]; let b = SV[1][0]; let c = SV[2][0];
-  let d = SV[1][1]; let e = SV[2][1]; let f = SV[2][2];
-  let c00 = J00*J00*a + 2.0*J00*J02*c + J02*J02*f + 0.3;
-  let c01 = J00*J11*b + J02*J11*e + J00*J12*c + J02*J12*f;
-  let c11 = J11*J11*d + 2.0*J11*J12*e + J12*J12*f + 0.3;
-  let det = c00*c11 - c01*c01;
-  if (det <= 0.0) {
+  let cov = projectSplatCovariance(Sigma, R, t.xyz);
+  let axes = splatQuadAxes(cov);
+  let subPixel = dot(axes.major, axes.major) < 4.0
+              && dot(axes.minor, axes.minor) < 4.0;
+  let degenerate = !(cov.x > 0.0) || !(cov.z > 0.0);
+  if (subPixel || degenerate) {
     // Degenerate splat — emit a behind-camera zero-coverage triangle so
     // the velocity FS never executes for this instance. Mirrors
     // vertexMain's degenerate handling.
@@ -672,10 +768,9 @@ fn vertexVelocityMain(
     output.prevCenterClip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     return output;
   }
-  let eigenMax = 0.5*(c00+c11+sqrt((c00-c11)*(c00-c11)+4.0*c01*c01));
-  let radius = ceil(3.0 * sqrt(eigenMax));
-  let pixOff = input.quadVertex * radius;
-  let ndcOff = pixOff / u.viewportSize * 2.0 * currCenterClip.w;
+  let corner = input.quadVertex;
+  let ndcOff = (corner.x * axes.major + corner.y * axes.minor)
+             / u.viewportSize * currCenterClip.w;
   var fp = currCenterClip;
   fp.x = fp.x + ndcOff.x;
   fp.y = fp.y + ndcOff.y;
@@ -1651,44 +1746,24 @@ function updateWebGPUGaussianSplats(
 
   // (Re)build the group-0 bind group whenever it's missing (init, format/
   // log-depth flip, or a storage-buffer reallocation cleared it).
-  if (!cache.bindGroup) {
-    cache.bindGroup = device.createBindGroup({
-      layout: resources.bgl,
-      entries: [
-        { binding: 0, resource: { buffer: cache.uniformBuffer! } },
-        { binding: 1, resource: { buffer: cache.splatBuffer! } },
-        { binding: 2, resource: { buffer: cache.sortedIndexBuffer! } },
-        { binding: 3, resource: { buffer: cache.prevSplatBuffer! } },
-      ],
-    });
-    // Bind group identity changed — drop cached commands so they rebuild
-    // with the new bind group.
-    cache.command = null;
-    cache.pickCommand = null;
-  }
-
-  // Resolve the color + OIT + pick pipelines via the central cache.
-  // Skip drawing this frame if pipelines aren't ready yet.
-  const ctxAny = context as unknown as {
-    webgpuPipelineCache?: WebGPURenderPipelineCache | null;
-  };
-  if (
-    !tryResolveSplatPipelines(
-      device,
-      ctxAny.webgpuPipelineCache ?? null,
-      resources!,
-      cache,
-    )
-  ) {
-    return;
-  }
-
   // ── C15-G3 — commit the attribute bytes.
   //
   // The dirty signal is (count, layout, producer identity), not the count
   // alone: a snapshot rebuild that lands on the SAME splat count produces a
   // fresh payload object and nothing else changes, and re-uploading only on a
   // count change would leave the previous cloud resident forever.
+  //
+  // C15-G3b — this block sits ABOVE the pipeline gate deliberately. Uploading
+  // the attribute bytes needs the DEVICE, not a pipeline, and
+  // `tryResolveSplatPipelines` legitimately returns early for however long a
+  // cold variant takes to compile (~2.7 s measured on this fork). With the
+  // commit below that gate, `cache.splatCount` stayed 0 for the whole compile
+  // even though the data had been ready since the shared pipeline committed it
+  // — which is exactly what the Batch-881 Edge run measured (`splatCount=0`
+  // sampled during readiness, 27 by the time the scored frame drew). Hoisting
+  // it makes the count mean "the data is resident", not "the data is resident
+  // AND a pipeline happened to finish compiling", and it starts the upload one
+  // compile earlier. The command build still waits on the pipeline below.
   const splatData = source.view;
   const revision = source.count;
   if (
@@ -1777,6 +1852,38 @@ function updateWebGPUGaussianSplats(
     cache.prevSplatData = null;
     cache.command = null;
     cache.pickCommand = null;
+  }
+
+  if (!cache.bindGroup) {
+    cache.bindGroup = device.createBindGroup({
+      layout: resources.bgl,
+      entries: [
+        { binding: 0, resource: { buffer: cache.uniformBuffer! } },
+        { binding: 1, resource: { buffer: cache.splatBuffer! } },
+        { binding: 2, resource: { buffer: cache.sortedIndexBuffer! } },
+        { binding: 3, resource: { buffer: cache.prevSplatBuffer! } },
+      ],
+    });
+    // Bind group identity changed — drop cached commands so they rebuild
+    // with the new bind group.
+    cache.command = null;
+    cache.pickCommand = null;
+  }
+
+  // Resolve the color + OIT + pick pipelines via the central cache.
+  // Skip drawing this frame if pipelines aren't ready yet.
+  const ctxAny = context as unknown as {
+    webgpuPipelineCache?: WebGPURenderPipelineCache | null;
+  };
+  if (
+    !tryResolveSplatPipelines(
+      device,
+      ctxAny.webgpuPipelineCache ?? null,
+      resources!,
+      cache,
+    )
+  ) {
+    return;
   }
 
   if (cache.splatCount === 0) {
@@ -1885,7 +1992,20 @@ function updateWebGPUGaussianSplats(
 
   // Viewport + focal length derived from the perspective projection matrix.
   // For a standard perspective: P[0][0] = 1/(aspect*tan(fov/2)),
-  // P[1][1] = 1/tan(fov/2). Pixel-space focal = P[i][i] * (viewportDim/2).
+  // P[1][1] = 1/tan(fov/2).
+  //
+  // C15-G3b — this is WebGL's focal convention, NOT the half-viewport pixel
+  // focal packed before it:
+  //   GLSL: vec2 focal = vec2(czm_projection[0][0] * czm_viewport.z,
+  //                           czm_projection[1][1] * czm_viewport.w);
+  // i.e. the FULL viewport dimension. The factor of 2 is not cosmetic. The
+  // projected covariance scales as focal^2, so at half focal it came out 4x
+  // small — while the `+ 0.3` dilation and the 1024-pixel axis clamp in
+  // `projectSplatCovariance`/`splatQuadAxes` are ABSOLUTE constants ported
+  // from the GLSL. A 4x-small covariance against an unchanged dilation
+  // inflates every small splat. The compensating halving lives in the quad
+  // expansion, which now divides by the viewport WITHOUT the historical
+  // `* 2.0` — exactly as the GLSL does.
   const vpData = new Float32Array(4);
   const viewportW =
     context.drawingBufferWidth || context._canvas?.width || 1920;
@@ -1894,8 +2014,8 @@ function updateWebGPUGaussianSplats(
   const proj = m4Values(us.projection);
   vpData[0] = viewportW;
   vpData[1] = viewportH;
-  vpData[2] = proj[0] * (viewportW * 0.5); // focal X (pixels)
-  vpData[3] = proj[5] * (viewportH * 0.5); // focal Y (pixels)
+  vpData[2] = proj[0] * viewportW; // focal X (czm_projection[0][0] * czm_viewport.z)
+  vpData[3] = proj[5] * viewportH; // focal Y (czm_projection[1][1] * czm_viewport.w)
   device.queue.writeBuffer(cache.uniformBuffer!, 0, data);
   device.queue.writeBuffer(cache.uniformBuffer!, 160, vpData);
 

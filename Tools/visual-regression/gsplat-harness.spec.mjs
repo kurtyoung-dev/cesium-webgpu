@@ -2852,10 +2852,12 @@ const WGSL_MUTANTS = [
   },
   {
     name: "Sigma rebuilt asymmetrically (covB.y dropped from the off-diagonal)",
+    // `String.replace` hits the FIRST occurrence, which is vertexMain's Sigma
+    // — the one `parseWgslPackedDecode` reads.
     mutate: (wgsl) =>
       wgsl.replace(
-        "    vec3<f32>(s.covA.z, s.covB.y, s.covB.z),\n  );\n  let SV = R * Sigma * transpose(R);\n  let a = SV[0][0]; let b = SV[1][0]; let c = SV[2][0];\n  let d = SV[1][1]; let e = SV[2][1]; let f = SV[2][2];\n  let c00 = J00*J00*a + 2.0*J00*J02*c + J02*J02*f + 0.3;\n  let c01 = J00*J11*b + J02*J11*e + J00*J12*c + J02*J12*f;\n  let c11 = J11*J11*d + 2.0*J11*J12*e + J12*J12*f + 0.3;\n  let det = c00*c11 - c01*c01;\n  if (det <= 0.0) {\n    output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0);",
-        "    vec3<f32>(s.covA.z, s.covB.x, s.covB.z),\n  );\n  let SV = R * Sigma * transpose(R);\n  let a = SV[0][0]; let b = SV[1][0]; let c = SV[2][0];\n  let d = SV[1][1]; let e = SV[2][1]; let f = SV[2][2];\n  let c00 = J00*J00*a + 2.0*J00*J02*c + J02*J02*f + 0.3;\n  let c01 = J00*J11*b + J02*J11*e + J00*J12*c + J02*J12*f;\n  let c11 = J11*J11*d + 2.0*J11*J12*e + J12*J12*f + 0.3;\n  let det = c00*c11 - c01*c01;\n  if (det <= 0.0) {\n    output.position = vec4<f32>(0.0, 0.0, 2.0, 1.0);",
+        "vec3<f32>(s.covA.z, s.covB.y, s.covB.z),",
+        "vec3<f32>(s.covA.z, s.covB.x, s.covB.z),",
       ),
   },
 ];
@@ -2874,6 +2876,517 @@ for (const mutant of WGSL_MUTANTS) {
       () => assertDecodeAgreement(mutated, glsl),
       undefined,
       `${mutant.name}: the decode-agreement battery accepted the mutated shader`,
+    );
+  });
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// C15-G3b — the two defects the FIRST real Edge run surfaced.
+//
+// (1) `cache.splatCount` read 0 on a run whose scored frame painted 61% of the
+//     canvas. Not a contradiction: the probe sampled a RENDERER-owned field the
+//     frame the SHARED signal went true, and at that instant the splat pipeline
+//     was still compiling so the feature renderer had returned early.
+// (2) The WebGPU splat footprint was ~3.5x WebGL's AREA — not SH, not the
+//     record decode (which is bit-exact and pinned above), but two conventions
+//     the Batch-288 shader never matched: a 3-sigma square support where WebGL
+//     uses a sqrt(2)-sigma oriented quad, and the true gaussian where WebGL
+//     renders exp(-4*dot(corner,corner)).
+// ────────────────────────────────────────────────────────────────────────────
+
+test("HEAD: the buffer commit sits ABOVE the pipeline gate", () => {
+  // The Batch-881 mechanism. `tryResolveSplatPipelines` legitimately returns
+  // early for however long a cold variant compiles (~2.7 s on this fork). With
+  // the commit below it, `cache.splatCount` — the renderer's own "is the data
+  // resident" signal — stayed 0 for that whole window even though the shared
+  // pipeline had committed the snapshot. Uploading attribute bytes needs the
+  // device, not a pipeline.
+  const source = readNormalized(RENDERER_PATH);
+  const commit = source.indexOf("// ── C15-G3 — commit the attribute bytes.");
+  const gate = source.indexOf("    !tryResolveSplatPipelines(");
+  const countGuard = source.indexOf("if (cache.splatCount === 0) {");
+  assert.notEqual(commit, -1, `${RENDERER_PATH}: the commit block is gone`);
+  assert.notEqual(gate, -1, `${RENDERER_PATH}: the pipeline gate is gone`);
+  assert.notEqual(countGuard, -1, `${RENDERER_PATH}: the count guard is gone`);
+  assert.ok(
+    commit < gate,
+    `${RENDERER_PATH}: the attribute-buffer commit is BELOW the pipeline gate again — cache.splatCount will read 0 for the whole duration of a cold pipeline compile, which is exactly what Batch 881 measured`,
+  );
+  assert.ok(
+    gate < countGuard,
+    `${RENDERER_PATH}: the count guard moved above the pipeline gate — pipelines would then only start compiling after data arrives, delaying first pixels by a full compile`,
+  );
+});
+
+test("probe: renderer-owned stats are sampled at the SCORED frame", () => {
+  // `classifyWebgpuPresence` folds `cacheSplatCount` in as its `dataCommitted`
+  // signal, so the sample must describe the frame the pixels were measured on.
+  // Batch 881 exited 1 on precisely this: a stat read during readiness, a
+  // verdict rendered against a frame captured much later.
+  assert.match(
+    PROBE_CODE,
+    /const sampleRendererStats = \(\) => \{/,
+    "the renderer-owned stat read must be a reusable sampler, not a one-shot",
+  );
+  const samples = [...PROBE_CODE.matchAll(/^\s*sampleRendererStats\(\);$/gm)];
+  assert.ok(
+    samples.length >= 2,
+    `the renderer stats must be sampled at least twice (once at readiness, once at the scored frame); found ${samples.length}`,
+  );
+  // The scored sample must come AFTER the ON capture and the command counts,
+  // with no intervening yield — same task, fleet doctrine.
+  const onCapture = PROBE_CODE.indexOf("const onA = captureNow();");
+  const commandCount = PROBE_CODE.indexOf("record.commandListSplatCommands");
+  const lastSample = PROBE_CODE.lastIndexOf("sampleRendererStats();");
+  assert.notEqual(onCapture, -1, "the scored ON capture moved");
+  assert.ok(
+    onCapture < commandCount && commandCount < lastSample,
+    "the final renderer-stat sample must follow the scored capture and the command counts, in the same task",
+  );
+  const between = PROBE_CODE.slice(commandCount, lastSample);
+  assert.doesNotMatch(
+    between,
+    /await |settleMs\(/,
+    "a yield between the scored frame and the renderer-stat sample makes them different frames again",
+  );
+  // And the renderer commit gets its own wall-clock budget, gated to the
+  // backend that HAS a renderer cache.
+  assert.match(PROBE_CODE, /record\.rendererCommitted = true;/);
+  assert.match(
+    PROBE_CODE,
+    /if \(rendererType === "webgpu"\) \{/,
+    "the renderer-commit budget must be gated to WebGPU — the WebGL leg has no _webgpuCache and would burn the whole budget",
+  );
+});
+
+// ── Footprint parity: WebGL's quad + falloff, ported and EXECUTED ───────────
+//
+// Both implementations below are transcriptions, so each is anchored to the
+// shader text it claims to mirror; the mutants at the end break those anchors.
+
+/** PrimitiveGaussianSplatVS.glsl's calcCovVectors tail, verbatim (NaN and all). */
+function glslQuadAxes(diagonal1, offDiagonal, diagonal2) {
+  const mid = 0.5 * (diagonal1 + diagonal2);
+  const radius = Math.hypot((diagonal1 - diagonal2) * 0.5, offDiagonal);
+  const lambda1 = mid + radius;
+  const lambda2 = Math.max(mid - radius, 0.1);
+  const rawX = offDiagonal;
+  const rawY = lambda1 - diagonal1;
+  const length = Math.hypot(rawX, rawY);
+  // GLSL `normalize` of a zero vector is 0/0 = NaN. Reproduced deliberately.
+  const dir = [rawX / length, rawY / length];
+  const majorLen = Math.min(Math.sqrt(2.0 * lambda1), 1024.0);
+  const minorLen = Math.min(Math.sqrt(2.0 * lambda2), 1024.0);
+  return {
+    major: [majorLen * dir[0], majorLen * dir[1]],
+    minor: [minorLen * dir[1], minorLen * -dir[0]],
+    lambda1,
+    lambda2,
+  };
+}
+
+/** The shipped WGSL `splatQuadAxes`, with its one documented deviation. */
+function wgslQuadAxes(diagonal1, offDiagonal, diagonal2) {
+  const mid = 0.5 * (diagonal1 + diagonal2);
+  const radius = Math.hypot((diagonal1 - diagonal2) * 0.5, offDiagonal);
+  const lambda1 = mid + radius;
+  const lambda2 = Math.max(mid - radius, 0.1);
+  const rawX = offDiagonal;
+  const rawY = lambda1 - diagonal1;
+  const length = Math.hypot(rawX, rawY);
+  const dir =
+    length > 1e-12
+      ? [rawX / Math.max(length, 1e-20), rawY / Math.max(length, 1e-20)]
+      : [1.0, 0.0];
+  const majorLen = Math.min(Math.sqrt(2.0 * lambda1), 1024.0);
+  const minorLen = Math.min(Math.sqrt(2.0 * lambda2), 1024.0);
+  return {
+    major: [majorLen * dir[0], majorLen * dir[1]],
+    minor: [minorLen * dir[1], minorLen * -dir[0]],
+    lambda1,
+    lambda2,
+  };
+}
+
+/**
+ * Projected 2D covariances to run both through. Each is a plausible
+ * `(diagonal1, offDiagonal, diagonal2)` after the +0.3 dilation, including the
+ * exactly-axis-aligned cases where the GLSL's `normalize` is undefined.
+ */
+const COVARIANCE_CASES = [
+  { label: "anisotropic, rotated", cov: [42.0, 11.5, 17.25] },
+  { label: "anisotropic, strongly rotated", cov: [9.5, -7.25, 30.75] },
+  { label: "near-circular with a nudge", cov: [12.3, 0.05, 12.31] },
+  { label: "large, clamped by the 1024 cap", cov: [4.2e6, 3.1e5, 2.7e6] },
+  { label: "tiny (sub-pixel)", cov: [0.31, 0.0004, 0.3] },
+  // The two the GLSL cannot express: offDiagonal exactly 0 with the major
+  // eigenvalue collapsing onto diagonal1.
+  { label: "EXACTLY isotropic", cov: [12.3, 0.0, 12.3], glslUndefined: true },
+  {
+    label: "axis-aligned, d1 > d2",
+    cov: [40.0, 0.0, 12.0],
+    glslUndefined: true,
+  },
+];
+
+test("HEAD: the WGSL quad axes reproduce the GLSL's wherever the GLSL is defined", () => {
+  let undefinedSeen = 0;
+  for (const testCase of COVARIANCE_CASES) {
+    const [d1, od, d2] = testCase.cov;
+    const glsl = glslQuadAxes(d1, od, d2);
+    const wgsl = wgslQuadAxes(d1, od, d2);
+    // The eigenvalues are the same arithmetic in both and must agree exactly.
+    assert.equal(wgsl.lambda1, glsl.lambda1, `${testCase.label}: lambda1`);
+    assert.equal(wgsl.lambda2, glsl.lambda2, `${testCase.label}: lambda2`);
+
+    const glslFinite =
+      Number.isFinite(glsl.major[0]) && Number.isFinite(glsl.major[1]);
+    if (!glslFinite) {
+      undefinedSeen++;
+      assert.ok(
+        testCase.glslUndefined,
+        `${testCase.label}: the GLSL went NaN on a case not marked glslUndefined`,
+      );
+      // The port must NOT inherit the NaN — a synthetic isotropic covariance is
+      // exactly what probe-splat-sort.mjs feeds this shader.
+      for (const value of [...wgsl.major, ...wgsl.minor]) {
+        assert.ok(
+          Number.isFinite(value),
+          `${testCase.label}: the WGSL port inherited the GLSL's NaN`,
+        );
+      }
+      // ...and it must still produce the right EXTENTS, just on an arbitrary
+      // (correct, for a circular footprint) pair of axes.
+      assert.ok(
+        Math.abs(
+          Math.hypot(...wgsl.major) -
+            Math.min(Math.sqrt(2 * glsl.lambda1), 1024),
+        ) < 1e-9,
+        `${testCase.label}: major extent wrong in the degenerate branch`,
+      );
+      continue;
+    }
+    assert.ok(
+      testCase.glslUndefined !== true,
+      `${testCase.label}: expected the GLSL to be undefined here`,
+    );
+    for (const key of ["major", "minor"]) {
+      for (let i = 0; i < 2; i++) {
+        assert.ok(
+          Math.abs(wgsl[key][i] - glsl[key][i]) <=
+            1e-12 * Math.max(1, Math.abs(glsl[key][i])),
+          `${testCase.label}: ${key}[${i}] diverged — ${wgsl[key][i]} vs ${glsl[key][i]}`,
+        );
+      }
+    }
+  }
+  assert.ok(
+    undefinedSeen >= 2,
+    "the battery must actually exercise the degenerate cases, or the deviation is untested",
+  );
+});
+
+test("HEAD: the pre-C15-G3b footprint really was ~3.5x WebGL's area (the attribution)", () => {
+  // The arithmetic the row records, executed rather than asserted in prose.
+  //
+  // OLD WGSL: square quad of half-side ceil(3*sqrt(eigenMax)) around the splat
+  // centre, with the TRUE gaussian exp(-0.5 * r^2 / sigma^2) — support runs to
+  // the 3-sigma quad edge (the 1/255 alpha cutoff is at 3.33 sigma, so the quad
+  // binds first).
+  // GLSL: oriented rectangle of half-extents sqrt(2*lambda_i), i.e. sqrt(2)
+  // sigma_i, with exp(-4*dot(corner,corner)) — support IS the quad.
+  //
+  // For an isotropic projected covariance (sigma per axis), the supported
+  // areas are: old = the disc of radius 3*sigma clipped to its bounding square
+  // = pi*(3 sigma)^2; GLSL = the square of half-side sqrt(2)*sigma.
+  const sigma = 4.0;
+  const oldArea = Math.PI * Math.pow(3 * sigma, 2);
+  const glslArea = Math.pow(2 * Math.SQRT2 * sigma, 2);
+  const ratio = oldArea / glslArea;
+  assert.ok(
+    ratio > 3.4 && ratio < 3.7,
+    `expected the pre-fix/GLSL area ratio near 3.5; computed ${ratio}`,
+  );
+  // Batch 881 measured 61.096% added on WebGPU against 19.141% on WebGL = 3.19,
+  // BELOW the per-splat ratio because 27 overlapping footprints union
+  // sublinearly and the larger ones overlap more. Direction and magnitude both
+  // agree, which is what makes the attribution a measurement rather than a
+  // story — and it independently corroborates the covariance decode: a decode
+  // at the wrong scale would not land within 10% of the convention-only
+  // prediction.
+  const measured = 61.096 / 19.141;
+  assert.ok(
+    measured < ratio && measured > ratio * 0.85,
+    `the measured ratio ${measured} should sit just below the per-splat prediction ${ratio}`,
+  );
+});
+
+test("HEAD: the pre-C15-G3b footprint really was ~3.5x WebGL's area (the attribution)", () => {
+  // The arithmetic the row records, executed rather than asserted in prose.
+  //
+  // PRE-FIX WGSL: an axis-aligned square quad of half-side ceil(3*sqrt(eigenMax))
+  // in HALF-viewport pixel units, evaluating the TRUE gaussian
+  // exp(-0.5 * r^2 / sigma^2). The 1/255 alpha cutoff sits at 3.33 sigma, so
+  // the 3-sigma quad binds first and the support IS the quad.
+  // GLSL: an oriented rectangle of half-extents sqrt(2*lambda_i) = sqrt(2)
+  // sigma_i, evaluating exp(-4*dot(corner,corner)) — support IS the quad, and
+  // the quad edge sits at exp(-4) = 1.8% of peak alpha.
+  //
+  // For an isotropic projected covariance the supported areas are the disc of
+  // radius 3*sigma (clipped by its bounding square, which does not bind) and
+  // the square of half-side sqrt(2)*sigma.
+  const sigma = 4.0;
+  const preFixArea = Math.PI * Math.pow(3 * sigma, 2);
+  const glslArea = Math.pow(2 * Math.SQRT2 * sigma, 2);
+  const ratio = preFixArea / glslArea;
+  assert.ok(
+    ratio > 3.4 && ratio < 3.7,
+    `expected the pre-fix/GLSL area ratio near 3.5; computed ${ratio}`,
+  );
+
+  // Batch 881 measured 61.096% added on the WebGPU leg against 19.141% on
+  // WebGL = 3.19x. That sits just BELOW the per-splat prediction because 27
+  // overlapping footprints union sublinearly and the larger ones overlap more.
+  // Direction and magnitude both agree, which is what makes this an
+  // attribution rather than a story — and it independently corroborates the
+  // covariance decode: a decode at the wrong SCALE would not land within 10%
+  // of a convention-only prediction.
+  const measured = 61.096 / 19.141;
+  assert.ok(
+    measured < ratio && measured > ratio * 0.85,
+    `the measured ratio ${measured} should sit just below the per-splat prediction ${ratio}`,
+  );
+
+  // And the thing this rules OUT, stated as arithmetic: spherical harmonics
+  // are a COLOUR term. They cannot move coverage, because the quad extent is
+  // computed from the covariance alone — no SH input reaches it in either
+  // shader. So "the WGSL has no SH yet" was never available as an explanation
+  // for a 3.2x area difference.
+  const glslVs = readNormalized(GLSL_VS_PATH);
+  assert.match(
+    glslVs,
+    /v_splatColor\.rgb \+= evaluateSH\(texIdx, viewDirModel\)\.rgb;/,
+    `${GLSL_VS_PATH}: SH must apply to colour only — if it ever reaches the quad extent, the coverage attribution above is void`,
+  );
+  const covVectorCall = glslVs.indexOf("calcCovVectors(splatViewPos.xyz, Vrk)");
+  assert.ok(
+    covVectorCall !== -1 && covVectorCall < glslVs.indexOf("evaluateSH(texIdx"),
+    `${GLSL_VS_PATH}: the footprint is computed before SH is evaluated, so SH cannot influence it`,
+  );
+});
+
+/**
+ * Every load-bearing footprint constant, asserted against a renderer SOURCE
+ * STRING so the mutants below can run the identical battery over a mutated
+ * copy in memory. Nothing here writes to disk.
+ */
+function assertFootprintAnchors(rendererSource) {
+  const wgsl = extractSplatWgsl(rendererSource);
+
+  // Focal convention: FULL viewport. The factor of 2 is not cosmetic — the
+  // +0.3 dilation and the 1024 clamp are ABSOLUTE constants, so a half-focal
+  // covariance inflates every small splat against them.
+  assert.match(
+    rendererSource,
+    /vpData\[2\] = proj\[0\] \* viewportW;/,
+    `${RENDERER_PATH}: focalX is no longer the FULL-viewport focal the GLSL uses`,
+  );
+  assert.match(rendererSource, /vpData\[3\] = proj\[5\] \* viewportH;/);
+  assert.doesNotMatch(
+    rendererSource,
+    /vpData\[2\] = proj\[0\] \* \(viewportW \* 0\.5\);/,
+    `${RENDERER_PATH}: the half-viewport focal is back — the projected covariance drops 4x against an unchanged +0.3 dilation`,
+  );
+
+  // Dilation, eigen extents, minor-eigenvalue floor.
+  for (const [pattern, why] of [
+    [/max\(mid - radius, 0\.1\)/, "the lambda2 floor"],
+    [/min\(sqrt\(2\.0 \* lambda1\), 1024\.0\)/, "the major-axis extent"],
+    [/min\(sqrt\(2\.0 \* lambda2\), 1024\.0\)/, "the minor-axis extent"],
+  ]) {
+    assert.match(wgsl, pattern, `${RENDERER_PATH}: ${why} is gone`);
+  }
+  assert.equal(
+    (wgsl.match(/\+ 0\.3;/g) ?? []).length,
+    2,
+    `${RENDERER_PATH}: both covariance diagonals must carry the +0.3 dilation, exactly as the GLSL does`,
+  );
+
+  // The expansion: divide by the viewport, multiply by w, NO factor of 2.
+  assert.match(
+    wgsl,
+    /\/ u\.viewportSize \* clipPos\.w;/,
+    `${RENDERER_PATH}: the quad expansion no longer matches the GLSL`,
+  );
+  assert.doesNotMatch(
+    wgsl,
+    /\/ u\.viewportSize \* 2\.0 \*/,
+    `${RENDERER_PATH}: the historical *2.0 expansion is back — against the full-viewport focal that doubles every footprint`,
+  );
+
+  // WebGL's whole-splat rejections.
+  assert.match(wgsl, /let clipLimit = 1\.2 \* clipPos\.w;/);
+  assert.match(
+    wgsl,
+    /dot\(axes\.major, axes\.major\) < 4\.0\s*\n?\s*&& dot\(axes\.minor, axes\.minor\) < 4\.0;/,
+  );
+
+  // The falloff: BOTH the 4x sharpening and the support, and no extra cap.
+  assert.match(wgsl, /let A = -dot\(input\.vertPos, input\.vertPos\);/);
+  assert.match(wgsl, /if \(A < -4\.0\) \{ discard; \}/);
+  // Checked BEFORE the count below, so a re-introduced cap is reported as a
+  // cap rather than as a missing twin.
+  assert.doesNotMatch(
+    wgsl,
+    /min\(0\.99, input\.color\.a/,
+    `${RENDERER_PATH}: the 0.99 alpha cap is back — WebGL has none, and it diverges visibly for opaque splats`,
+  );
+  // COUNT, not match: the colour FS and the pick FS carry the same line, and a
+  // single assert.match is satisfied by whichever twin was left alone.
+  assert.equal(
+    (wgsl.match(/let alpha = exp\(A \* 4\.0\) \* input\.color\.a;/g) ?? [])
+      .length,
+    2,
+    `${RENDERER_PATH}: the falloff lost WebGL's 4x exponent sharpening — the profile widens back to the true gaussian`,
+  );
+  assert.doesNotMatch(
+    wgsl,
+    /input\.conic/,
+    `${RENDERER_PATH}: the conic falloff is back — it renders the true gaussian to 3 sigma where WebGL renders exp(-4*dot) to sqrt(2) sigma`,
+  );
+
+  // The velocity VS must SHARE the helpers. Two copies of one footprint is how
+  // colour and velocity coverage silently desynchronize.
+  assert.equal(
+    (wgsl.match(/let axes = splatQuadAxes\(cov\);/g) ?? []).length,
+    2,
+    `${RENDERER_PATH}: the colour and velocity vertex shaders must both go through splatQuadAxes`,
+  );
+  assert.equal(
+    (wgsl.match(/projectSplatCovariance\(Sigma, R, t\.xyz\)/g) ?? []).length,
+    2,
+    `${RENDERER_PATH}: the colour and velocity vertex shaders must both go through projectSplatCovariance`,
+  );
+}
+
+test("HEAD: the WGSL footprint math is anchored to the GLSL it transcribes", () => {
+  assertFootprintAnchors(readNormalized(RENDERER_PATH));
+
+  // ...and the GLSL side, so a change to the REFERENCE is caught here rather
+  // than as an unexplained parity drift months later.
+  const glsl = readNormalized(GLSL_VS_PATH);
+  const fs = readNormalized(
+    "packages/engine/Source/Shaders/PrimitiveGaussianSplatFS.glsl",
+  );
+  assert.match(
+    glsl,
+    /vec2 focal = vec2\(czm_projection\[0\]\[0\] \* czm_viewport\.z, czm_projection\[1\]\[1\] \* czm_viewport\.w\);/,
+    `${GLSL_VS_PATH}: the focal convention changed`,
+  );
+  assert.match(glsl, /min\(sqrt\(2\.0 \* lambda1\), 1024\.0\)/);
+  assert.match(glsl, /max\(mid - radius, 0\.1\)/);
+  assert.match(
+    glsl,
+    /\/ czm_viewport\.zw \* gl_Position\.w/,
+    `${GLSL_VS_PATH}: the quad expansion changed`,
+  );
+  assert.match(glsl, /float clip = 1\.2 \* clipPosition\.w;/);
+  assert.match(
+    glsl,
+    /dot\(covVectors\.xy, covVectors\.xy\) < 4\.0 && dot\(covVectors\.zw, covVectors\.zw\) < 4\.0/,
+  );
+  assert.match(fs, /float A = -dot\(v_vertPos, v_vertPos\);/);
+  assert.match(fs, /if \(A < -4\.\) \{/);
+  assert.match(fs, /float B = exp\(A \* 4\.\) \* v_splatColor\.a ;/);
+});
+
+// Footprint mutants, applied to a COPY of the renderer source in memory.
+const FOOTPRINT_MUTANTS = [
+  {
+    name: "the historical *2.0 quad expansion returns",
+    mutate: (source) =>
+      source.replace(
+        "             / u.viewportSize * clipPos.w;",
+        "             / u.viewportSize * 2.0 * clipPos.w;",
+      ),
+    // Either rejection is correct and names the same defect: the positive
+    // anchor stops matching, and/or the negative one starts.
+    because:
+      /quad expansion no longer matches the GLSL|historical \*2\.0 expansion is back/,
+  },
+  {
+    name: "the half-viewport focal returns",
+    mutate: (source) =>
+      source.replace(
+        "vpData[2] = proj[0] * viewportW;",
+        "vpData[2] = proj[0] * (viewportW * 0.5);",
+      ),
+    because: /no longer the FULL-viewport focal/,
+  },
+  {
+    name: "the falloff loses WebGL's 4x sharpening",
+    mutate: (source) =>
+      source.replace(
+        "let alpha = exp(A * 4.0) * input.color.a;",
+        "let alpha = exp(A) * input.color.a;",
+      ),
+    because: /lost WebGL's 4x exponent sharpening/,
+  },
+  {
+    name: "the 0.99 alpha cap returns",
+    mutate: (source) =>
+      source.replace(
+        "let alpha = exp(A * 4.0) * input.color.a;",
+        "let alpha = min(0.99, input.color.a * exp(A * 4.0));",
+      ),
+    because: /0\.99 alpha cap is back/,
+  },
+  {
+    name: "the dilation is applied to only one diagonal",
+    mutate: (source) =>
+      source.replace(
+        "let diagonal2 = J1.y*J1.y*d + 2.0*J1.y*J2.y*e + J2.y*J2.y*f + 0.3;",
+        "let diagonal2 = J1.y*J1.y*d + 2.0*J1.y*J2.y*e + J2.y*J2.y*f;",
+      ),
+    because: /both covariance diagonals must carry the \+0\.3 dilation/,
+  },
+  {
+    name: "the minor-axis extent is widened past WebGL's",
+    mutate: (source) =>
+      source.replace(
+        "  axes.minor = min(sqrt(2.0 * lambda2), 1024.0)",
+        "  axes.minor = min(3.0 * sqrt(lambda2), 1024.0)",
+      ),
+    because: /the minor-axis extent is gone/,
+  },
+  {
+    name: "the velocity VS keeps its own footprint copy",
+    mutate: (source) => {
+      const marker = "  let axes = splatQuadAxes(cov);";
+      const last = source.lastIndexOf(marker);
+      return (
+        source.slice(0, last) +
+        "  var axes: SplatQuadAxes; axes.major = vec2<f32>(3.0, 0.0);" +
+        source.slice(last + marker.length)
+      );
+    },
+    because: /must both go through splatQuadAxes/,
+  },
+];
+
+for (const mutant of FOOTPRINT_MUTANTS) {
+  test(`footprint mutant rejected: ${mutant.name}`, () => {
+    const real = readNormalized(RENDERER_PATH);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(
+      mutated,
+      real,
+      "the mutation did not apply — the anchor text moved and this mutant proves nothing",
+    );
+    assert.throws(
+      () => assertFootprintAnchors(mutated),
+      mutant.because,
+      `${mutant.name}: the footprint anchors accepted it, or rejected it for the wrong reason`,
     );
   });
 }
