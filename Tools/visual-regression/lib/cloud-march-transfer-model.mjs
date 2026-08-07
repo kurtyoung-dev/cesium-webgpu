@@ -60,6 +60,41 @@
  * The morphology functions are IMPORTED from `cloud-genus-morphology-model.mjs`
  * rather than restated, so this module cannot drift from the shipped table or
  * from the twin the spec fleet already pins.
+ *
+ * ── R7 (2026-08-07): THE MODEL IS ALSO THE DESIGN INSTRUMENT ────────────────
+ *
+ * Maintainer ruling R7 chose OPTION 3 — fix the dilution with a
+ * genus-conditioned base-field variance budget — and required candidate budgets
+ * to be evaluated HERE, with predicted elongation AND opacity numbers, before
+ * any shader edit. The candidate levers are `baseVarianceBudget`,
+ * `budgetDownWeight`, `budgetPivotQuantile`, plus the `erosionScale`
+ * ATTRIBUTION lever, and the scoring entry point is
+ * {@link scoreBudgetCandidate}.
+ *
+ * NONE OF IT IS A SHIPPED PATH, and the sweep is the reason: no candidate
+ * satisfies R7's four conditions while leaving the tour fixture's coverage floor
+ * intact. Two nonlinearities stand downstream of the budget and neither is
+ * visible from the base field:
+ *
+ *   1. the COVERAGE GATE `smoothstep(1 - cEff, 1, base)`, which makes a
+ *      mean-preserving mix of the raw fBm NOT mean-preserving in what the march
+ *      integrates. Curable — pivot on {@link gateMeanQuantile} instead of on the
+ *      field mean — but only with a pivot that TRACKS `cEff`; a single authored
+ *      constant is refuted by measurement (the required quantile runs 0.605 at
+ *      cEff 0.43 to 0.485 at cEff 1.0).
+ *   2. the SUBTRACTIVE EROSION's zero clamp `max(base * gradient - erosion, 0)`,
+ *      which is convex, so reducing the base's variance reduces the mass that
+ *      survives it. At the `northatlantic-cirrus-fibratus` fixture's coverage
+ *      0.45 the mean erosion EXCEEDS the mean gated density, so that deck exists
+ *      only as the base field's upper tail — exactly what a variance budget
+ *      removes. NOT curable inside this mechanism: `erosionScale` 0 turns the
+ *      same budget from -47.5% into +5.7% at that fixture, which is the
+ *      attribution, executed rather than argued.
+ *
+ * `TOUR_CIRRUS_FIXTURE` is imported from the shipped fixture table so the second
+ * configuration cannot drift, and the two opacity statistics
+ * ({@link meanColumnOpacity}, {@link columnOpacityExceedance}) are separate
+ * because the fixture's gate is a TAIL count, not a mean.
  */
 
 import CloudType from "../../../packages/engine/Source/Scene/CloudType.js";
@@ -75,6 +110,7 @@ import {
   genusFibreFactor,
   worleyF1,
 } from "./cloud-genus-morphology-model.mjs";
+import { fixtureById } from "./cloud-tour-fixtures.mjs";
 
 const f32 = Math.fround;
 
@@ -175,6 +211,91 @@ export const MEASURED_SCREEN_ELONGATION = Object.freeze({
     elongation: 0.9045608441825914,
   }),
 });
+
+/**
+ * The `northatlantic-cirrus-fibratus` tour fixture's march inputs, read from the
+ * SHIPPED fixture table rather than restated. This is the configuration
+ * checklist item 6's `minChangedFraction` floor is scored at, and it is NOT the
+ * configuration gates C/D/E are scored at — coverage 0.45 against the direction
+ * probe's 0.8, and an 8-11 km deck against the renderer's default 1.5-4 km. R7's
+ * opacity constraint has to hold at BOTH, which is the whole reason this is
+ * imported here.
+ */
+export const TOUR_CIRRUS_FIXTURE = Object.freeze({
+  id: "northatlantic-cirrus-fibratus",
+  coverage: fixtureById("northatlantic-cirrus-fibratus").volumetric
+    .cloudCoverage,
+  densityMultiplier: fixtureById("northatlantic-cirrus-fibratus").volumetric
+    .cloudDensity,
+  geometry: Object.freeze({
+    shellBottomMeters: fixtureById("northatlantic-cirrus-fibratus").volumetric
+      .cloudLayerBottom,
+    shellTopMeters: fixtureById("northatlantic-cirrus-fibratus").volumetric
+      .cloudLayerTop,
+  }),
+  /** The authored floor the row records as the collision risk. */
+  minChangedFraction: fixtureById("northatlantic-cirrus-fibratus").gate
+    .minChangedFraction,
+});
+
+/**
+ * The exact mean of `fbmNoise`: five octaves of amplitude 0.5 * 0.5^i over a
+ * `valueNoise` whose own mean is exactly 0.5 (a trilinear-smoothstep blend of
+ * uniform hashes with weights summing to 1). Derived, not measured:
+ * `(0.5 + 0.25 + 0.125 + 0.0625 + 0.03125) * 0.5 = 0.484375`.
+ */
+export const BASE_FIELD_MEAN = 0.484375;
+
+/**
+ * R7 CANDIDATE — how much of the budget is spent pulling a sample DOWN.
+ *
+ * 1 is the symmetric budget: the coverage-gated base is pulled toward the pivot
+ * from both sides, which is the only setting that is mean-NEUTRAL in the gate.
+ * 0 is the one-sided budget: holes are filled and peaks are left alone, which
+ * ADDS mass and therefore cannot threaten a coverage floor.
+ *
+ * It is one continuous lever rather than two modes because the measured
+ * trade-off between the two failure surfaces (gate-configuration opacity and
+ * the tour fixture's floor) is a CURVE along this axis, and a frontier stated as
+ * two isolated points invites the reply "you did not look in between".
+ *
+ * NOT A SHIPPED PATH. Nothing in `ProceduralClouds.wgsl` implements any of this;
+ * `cloud-march-transfer.spec.mjs` asserts that negatively so the candidate
+ * cannot quietly become a twin of code that does not exist.
+ */
+export const BUDGET_DOWN_WEIGHT_SYMMETRIC = 1;
+export const BUDGET_DOWN_WEIGHT_UP_ONLY = 0;
+
+/**
+ * R7 CANDIDATE — the genus conditioner.
+ *
+ * The budget is spent in proportion to how much ANISOTROPIC structure a genus
+ * actually has to reveal: `strength` says how deeply the fibre carve bites, and
+ * `1 - 1/aspect` says how directional the carved domain is. Both factors are
+ * exactly 0 on the identity row (`strength` 0, `anisotropy` 1), so a default
+ * CUMULUS render takes the same early return the shipped morphology chain
+ * already takes and stays byte-identical.
+ *
+ * The alternative conditioner — `strength` alone, reachable here with
+ * `useAspect: false` so the comparison is pinnable rather than asserted in prose
+ * — was measured and REJECTED: it hands CIRROCUMULUS (strength 0.45) a larger
+ * budget than CIRROSTRATUS (0.40) while CIRROCUMULUS's aspect 2 gives it almost
+ * no streak signal to reveal, so gate E's cirrostratus->cirrocumulus step lands
+ * closer to its 1.1 bar at the same effective weight.
+ *
+ * @param {object} row `{strength, anisotropy, shear}` from CloudTypeProfile.
+ * @param {number} budget The candidate's single scalar.
+ * @param {object} [options] `{useAspect}`; false selects the rejected
+ *   strength-only conditioner.
+ * @returns {number} The per-sample mix weight, in [0, 1].
+ */
+export function baseVarianceBudgetWeight(row, budget, options = {}) {
+  const { useAspect = true } = options;
+  const strength = clamp(row.strength, 0, 1);
+  const aspect = Math.max(row.anisotropy, 1);
+  const directionality = useAspect ? 1 - 1 / aspect : 1;
+  return clamp(budget * strength * directionality, 0, 1);
+}
 
 function fract(value) {
   return f32(value - Math.floor(value));
@@ -312,13 +433,23 @@ export function marchedDensity(sp, h, p) {
   if (p.includeBaseField === false) {
     // MUTATION lane: replace the isotropic base with its own mean so the fibre
     // carve is the only structure left. Not a product path.
-    density = 0.484375;
+    density = BASE_FIELD_MEAN;
   }
-  density = smoothstep(
-    f32(1 - cloudEffectiveCoverage(p.coverage)),
-    1.0,
-    density,
-  );
+  const threshold = f32(1 - p.effectiveCoverage);
+  density = smoothstep(threshold, 1.0, density);
+  if (p.budgetWeight > 0) {
+    // R7 CANDIDATE — the genus-conditioned base-field variance budget, applied
+    // to the COVERAGE-GATED base rather than to the raw fBm. Applying it to the
+    // raw field was measured and is strictly worse: the gate is where the
+    // nonlinearity is, so a mix that is mean-preserving in the fBm is not
+    // mean-preserving in what the march integrates.
+    const pivot = smoothstep(threshold, 1.0, p.budgetPivotQuantile);
+    const weight =
+      pivot < density
+        ? f32(p.budgetWeight * p.budgetDownWeight)
+        : p.budgetWeight;
+    density = f32(density + (pivot - density) * weight);
+  }
   const heightGradient = heightGradientFor(h, p.profileShape, p.anvilBias);
   density = f32(density * heightGradient);
   if (p.includeErosion !== false) {
@@ -330,7 +461,7 @@ export function marchedDensity(sp, h, p) {
     density = f32(
       density -
         f32(
-          f32(worleyDetail * 0.18) *
+          f32(f32(worleyDetail * 0.18) * p.erosionScale) *
             genusErosionHeightWeight(h, p.row.strength),
         ),
     );
@@ -469,6 +600,13 @@ export function buildModelParameters(overrides = {}) {
     includeErosion: overrides.includeErosion ?? true,
     includeFibre: overrides.includeFibre ?? true,
     fibreFrequencyScale: overrides.fibreFrequencyScale ?? 1,
+    // R7 CANDIDATE levers + the attribution lever. All three are inert at their
+    // defaults: `erosionScale` 1 multiplies by exactly 1 and `baseVarianceBudget`
+    // 0 takes the same early-out the shipped chain has no branch for at all.
+    baseVarianceBudget: overrides.baseVarianceBudget ?? 0,
+    budgetDownWeight:
+      overrides.budgetDownWeight ?? BUDGET_DOWN_WEIGHT_SYMMETRIC,
+    erosionScale: overrides.erosionScale ?? 1,
     saturate: overrides.saturate ?? true,
     radianceScale: overrides.radianceScale ?? 255,
     clipLevel: overrides.clipLevel ?? Infinity,
@@ -480,7 +618,99 @@ export function buildModelParameters(overrides = {}) {
     ABSORPTION_COEFF *
     (p.profileExtinction > 0 ? p.profileExtinction : 1) *
     (overrides.absorptionScale ?? 1);
+  p.effectiveCoverage = cloudEffectiveCoverage(p.coverage);
+  p.budgetUseAspect = overrides.budgetUseAspect ?? true;
+  p.budgetWeight = baseVarianceBudgetWeight(p.row, p.baseVarianceBudget, {
+    useAspect: p.budgetUseAspect,
+  });
+  // The pivot that makes the budget mean-NEUTRAL in the gate: the base-field
+  // quantile whose gate value equals the gate's own mean at THIS effective
+  // coverage. Measured from the shipped `fbmNoise`, never authored. An override
+  // is how the "what if a single constant were shipped instead" study is run,
+  // and that study is the one that refutes the constant.
+  p.budgetPivotQuantile =
+    overrides.budgetPivotQuantile ??
+    (p.budgetWeight > 0 ? gateMeanQuantile(p.effectiveCoverage) : 0);
   return p;
+}
+
+/**
+ * Monte-Carlo mean of the COVERAGE GATE over the shipped `fbmNoise`, i.e.
+ * `E[smoothstep(1 - cEff, 1, fbmNoise)]`.
+ *
+ * This is the quantity a mean-preserving variance budget has to pivot on, and
+ * it is a property of the base field's DISTRIBUTION, not of any authored
+ * constant. It is measured here on a fixed lattice (deterministic, no RNG) so a
+ * change to `fbmNoise` moves it and the spec notices.
+ *
+ * @param {number} effectiveCoverage The gate's `cEff`.
+ * @param {object} [options] `{columns, layers}` sampling geometry.
+ * @returns {number} The gate's mean.
+ */
+const GATE_MEAN_CACHE = new Map();
+const GATE_QUANTILE_CACHE = new Map();
+
+export function gateMean(effectiveCoverage, options = {}) {
+  const { columns = 60, layers = 12 } = options;
+  const key = `${effectiveCoverage}|${columns}|${layers}`;
+  const cached = GATE_MEAN_CACHE.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const threshold = f32(1 - effectiveCoverage);
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < columns; i++) {
+    for (let j = 0; j < columns; j++) {
+      for (let k = 0; k < layers; k++) {
+        // Irrational-ish strides so the lattice never lands on the noise's own
+        // integer cell boundaries, and a y span inside the shell's own range.
+        const x = f32((i / columns) * 37.0 + 0.137);
+        const y = f32((k / layers) * 3.0 + 1.7);
+        const z = f32((j / columns) * 37.0 + 0.911);
+        sum += smoothstep(threshold, 1.0, fbmNoise(x, y, z));
+        count++;
+      }
+    }
+  }
+  const mean = sum / count;
+  GATE_MEAN_CACHE.set(key, mean);
+  return mean;
+}
+
+/**
+ * Invert {@link gateMean}: the base-field value `q` for which
+ * `smoothstep(1 - cEff, 1, q)` equals the gate's own mean.
+ *
+ * Blending the gate toward `smoothstep(1 - cEff, 1, q)` is then mean-neutral in
+ * the gate at ANY weight — which is exactly the property a "variance budget, not
+ * a density reduction" needs, and exactly the property a single authored
+ * constant cannot have: the required `q` moves from 0.605 at cEff 0.43 to 0.485
+ * at cEff 1.0.
+ *
+ * @param {number} effectiveCoverage The gate's `cEff`.
+ * @returns {number} The mean-neutral pivot quantile.
+ */
+export function gateMeanQuantile(effectiveCoverage) {
+  const cached = GATE_QUANTILE_CACHE.get(effectiveCoverage);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const target = gateMean(effectiveCoverage);
+  const threshold = f32(1 - effectiveCoverage);
+  let low = 0;
+  let high = 1;
+  for (let i = 0; i < 60; i++) {
+    const mid = (low + high) * 0.5;
+    if (smoothstep(threshold, 1.0, mid) < target) {
+      low = mid;
+    } else {
+      high = mid;
+    }
+  }
+  const quantile = (low + high) * 0.5;
+  GATE_QUANTILE_CACHE.set(effectiveCoverage, quantile);
+  return quantile;
 }
 
 /**
@@ -692,6 +922,170 @@ export function invertTransfer(curve, targetElongation) {
       `the curve tops out at elongation ${best.elongation.toFixed(3)} ` +
       `at aspect ${best.aspect}, below the ${targetElongation} target`,
     ceiling: best,
+  };
+}
+
+/**
+ * The grid the two opacity statistics are evaluated on. Coarse and wide rather
+ * than dense and central: a dense central patch lands wherever the base fBm
+ * happens to be, which is the trap the `medianTau` helper in the spec already
+ * avoids.
+ */
+export const OPACITY_GRID = Object.freeze({ half: 10, pitchPixels: 24 });
+
+/**
+ * MEAN column opacity, `E[1 - exp(-tau)]` over {@link OPACITY_GRID}.
+ *
+ * This is the statistic R7's "within a few percent of shipped" constraint is
+ * written against, and the same one the strength lever was priced in
+ * (0.199 -> 0.166, -17%).
+ *
+ * @param {object} [overrides] Passed to {@link buildModelParameters}.
+ * @param {object} [grid] `{half, pitchPixels}`.
+ * @returns {number} Mean alpha.
+ */
+export function meanColumnOpacity(overrides = {}, grid = {}) {
+  const p = buildModelParameters(overrides);
+  const { half = OPACITY_GRID.half, pitchPixels = OPACITY_GRID.pitchPixels } =
+    grid;
+  let sum = 0;
+  let count = 0;
+  for (let y = -half; y <= half; y++) {
+    for (let x = -half; x <= half; x++) {
+      sum +=
+        1 - Math.exp(-columnOpticalDepth(x * pitchPixels, y * pitchPixels, p));
+      count++;
+    }
+  }
+  return sum / count;
+}
+
+/**
+ * TAIL statistic: the fraction of columns whose alpha exceeds `threshold`.
+ *
+ * The mean is the wrong proxy for checklist item 6. `probe-cloud-tour.mjs`
+ * scores `changedFraction` — the fraction of PIXELS whose OFF/ON channel-sum
+ * delta exceeds `CHANGED_PIXEL_THRESHOLD` (18, i.e. ~6 counts per channel), so
+ * over a bright background it counts columns above alpha ~0.04. At the tour
+ * fixture's coverage the cirrus deck's recorded ground value is 0.0028, i.e.
+ * almost every column is BELOW the detection threshold and the gate is scored on
+ * the field's upper tail — which is precisely the part of the distribution a
+ * variance budget removes. Only the RELATIVE change is transferable: this model
+ * marches a nadir column at the direction probe's camera and omits colour, so
+ * the absolute fraction here is not comparable with 0.0028.
+ *
+ * @param {object} [overrides] Passed to {@link buildModelParameters}.
+ * @param {number} [threshold] Alpha above which a column counts as "changed".
+ * @param {object} [grid] `{half, pitchPixels}`.
+ * @returns {number} Exceedance fraction.
+ */
+export function columnOpacityExceedance(
+  overrides = {},
+  threshold = 0.04,
+  grid = {},
+) {
+  const p = buildModelParameters(overrides);
+  const { half = 20, pitchPixels = OPACITY_GRID.pitchPixels } = grid;
+  let hits = 0;
+  let count = 0;
+  for (let y = -half; y <= half; y++) {
+    for (let x = -half; x <= half; x++) {
+      const alpha =
+        1 - Math.exp(-columnOpticalDepth(x * pitchPixels, y * pitchPixels, p));
+      if (alpha > threshold) {
+        hits++;
+      }
+      count++;
+    }
+  }
+  return hits / count;
+}
+
+/**
+ * The tour fixture's march inputs in the shape {@link buildModelParameters}
+ * consumes. Derived from `TOUR_CIRRUS_FIXTURE`, which is itself read from the
+ * shipped fixture table.
+ */
+export const FIXTURE_MARCH_INPUTS = Object.freeze({
+  cloudType: CloudType.CIRRUS,
+  coverage: TOUR_CIRRUS_FIXTURE.coverage,
+  densityMultiplier: TOUR_CIRRUS_FIXTURE.densityMultiplier,
+  geometry: TOUR_CIRRUS_FIXTURE.geometry,
+});
+
+let BUDGET_BASELINES;
+function budgetBaselines() {
+  if (BUDGET_BASELINES === undefined) {
+    BUDGET_BASELINES = {
+      probeBase: meanColumnOpacity({ cloudType: CloudType.CIRRUS }),
+      fixtureBase: meanColumnOpacity(FIXTURE_MARCH_INPUTS),
+      tailBase: columnOpacityExceedance(FIXTURE_MARCH_INPUTS),
+    };
+  }
+  return BUDGET_BASELINES;
+}
+
+/**
+ * Score ONE candidate budget against every bar R7 names, in one call.
+ *
+ * Returns the row of the frontier table: gate C's two numbers, gate E's two
+ * ordering steps, gate D's argmax and its margin over the best out-of-window
+ * lobe, and the opacity delta at BOTH configurations — the direction probe's
+ * (where the gates are scored) and the tour fixture's (where the floor is).
+ *
+ * @param {object} [overrides] Candidate levers, e.g. `{baseVarianceBudget}`.
+ * @param {object} [options] `{scanStepDeg, scan}`; `scan: false` skips gate D's
+ *   azimuth scan, which is six times the cost of one lane.
+ * @returns {object} The frontier row.
+ */
+export function scoreBudgetCandidate(overrides = {}, options = {}) {
+  const { scanStepDeg = 15, scan = true } = options;
+  const elongation = {};
+  for (const name of ["CUMULUS", "CIRRUS", "CIRROSTRATUS", "CIRROCUMULUS"]) {
+    elongation[name] = screenAnisotropy({
+      cloudType: CloudType[name],
+      ...overrides,
+    }).elongation;
+  }
+  let argmaxDeg = null;
+  let argmaxMargin = null;
+  if (scan) {
+    const rotated = screenAnisotropy(
+      { cloudType: CloudType.CIRRUS, windDirection: [0, 1], ...overrides },
+      { alongDeg: 90, scan: true, scanStepDeg },
+    );
+    const inWindow = (deg) => deg >= 60 && deg <= 120;
+    const peak = rotated.scan.find((entry) => entry.deg === 90).length;
+    const rival = Math.max(
+      ...rotated.scan
+        .filter((entry) => !inWindow(entry.deg))
+        .map((entry) => entry.length),
+    );
+    argmaxDeg = rotated.argmaxDeg;
+    argmaxMargin = peak / rival;
+  }
+  const probe = meanColumnOpacity({
+    cloudType: CloudType.CIRRUS,
+    ...overrides,
+  });
+  const fixture = meanColumnOpacity({ ...FIXTURE_MARCH_INPUTS, ...overrides });
+  const tail = columnOpacityExceedance({
+    ...FIXTURE_MARCH_INPUTS,
+    ...overrides,
+  });
+  const { probeBase, fixtureBase, tailBase } = budgetBaselines();
+  return {
+    elongation,
+    cirrus: elongation.CIRRUS,
+    cirrusOverCumulus: elongation.CIRRUS / elongation.CUMULUS,
+    stepCirrusCirrostratus: elongation.CIRRUS / elongation.CIRROSTRATUS,
+    stepCirrostratusCirrocumulus:
+      elongation.CIRROSTRATUS / elongation.CIRROCUMULUS,
+    argmaxDeg,
+    argmaxMargin,
+    probeOpacityDelta: (probe - probeBase) / probeBase,
+    fixtureOpacityDelta: (fixture - fixtureBase) / fixtureBase,
+    fixtureTailDelta: (tail - tailBase) / tailBase,
   };
 }
 

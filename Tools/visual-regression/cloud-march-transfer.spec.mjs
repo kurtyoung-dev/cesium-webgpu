@@ -44,6 +44,9 @@
  */
 
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 
 import {
@@ -53,23 +56,34 @@ import {
   cloudEffectiveCoverage as shippedCloudEffectiveCoverage,
 } from "../../packages/engine/Source/Renderer/WebGPU/WebGPUCloudDensityDomain.ts";
 import { fibreElongation } from "./lib/cloud-genus-morphology-model.mjs";
+import { fixtureById } from "./lib/cloud-tour-fixtures.mjs";
 import {
   ABSORPTION_COEFF,
+  BASE_FIELD_MEAN,
+  BUDGET_DOWN_WEIGHT_SYMMETRIC,
+  BUDGET_DOWN_WEIGHT_UP_ONLY,
   COVERAGE_ANCHOR,
   COVERAGE_EXPONENT,
   CloudType,
   CloudTypeProfile,
+  FIXTURE_MARCH_INPUTS,
   MEASURED_SCREEN_ELONGATION,
   PROBE_ESTIMATOR,
   PROBE_GEOMETRY,
   PROBE_MARCH,
+  TOUR_CIRRUS_FIXTURE,
   WORLD_TO_NOISE,
+  baseVarianceBudgetWeight,
   buildModelParameters,
   cloudEffectiveCoverage,
   columnOpticalDepth,
+  gateMean,
+  gateMeanQuantile,
   genusMarchParameters,
   invertTransfer,
+  meanColumnOpacity,
   metersPerPixel,
+  scoreBudgetCandidate,
   screenAnisotropy,
   transferCurve,
 } from "./lib/cloud-march-transfer-model.mjs";
@@ -130,14 +144,18 @@ function modelled(name, overrides = {}) {
  * exactly 0, by construction.
  *
  * @param {object} overrides The mutation.
+ * @param {object} [reference] What the mutation is scored AGAINST. Defaults to
+ *   the un-mutated model; an R7 lever that only modifies an already-active
+ *   candidate has to be scored against that candidate instead, or the lever it
+ *   rides on would carry the displacement and the subtest would prove nothing.
  * @returns {{elongation:number,halfLength:number}} Worst move over ALL_GENERA.
  */
-function displacementFromBaseline(overrides) {
+function displacementFromBaseline(overrides, reference = {}) {
   let elongation = 0;
   let halfLength = 0;
   for (const name of ALL_GENERA) {
     const mutant = modelled(name, overrides);
-    const base = modelled(name);
+    const base = modelled(name, reference);
     elongation = Math.max(
       elongation,
       Math.abs(mutant.elongation - base.elongation),
@@ -636,6 +654,621 @@ describe("C13-16 march transfer — the answer R3 asked for", () => {
     assert.ok(
       loss > 0.1 && loss < 0.3,
       `strength 0.6 -> 0.75 should cost 10-30% of mean opacity, cost ${(loss * 100).toFixed(1)}%`,
+    );
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// R7 (maintainer, 2026-08-07) — OPTION 3, the genus-conditioned base-field
+// variance budget, DESIGNED IN THE MODEL.
+//
+// R7 required candidate budgets to be evaluated here, with predicted elongation
+// AND opacity numbers, BEFORE any shader edit. They were, and the answer is that
+// no candidate satisfies R7's four conditions while leaving the tour fixture's
+// coverage floor intact — so nothing shipped, and this is where the frontier
+// lives. Every number below is reproducible by `node --test` with no browser.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Tolerance on a pinned elongation. The model has no RNG; this only absorbs
+ *  f64 re-association from an unrelated refactor. */
+const R7_ELONGATION_PIN = 0.01;
+/** Tolerance on a pinned RELATIVE opacity delta, in relative points. */
+const R7_OPACITY_PIN = 0.015;
+
+/** R7's own bars, verbatim: gate C's floor and ratio, gate E's ordering step,
+ *  gate D's window, and the opacity budget. NOT re-derived here — re-derivation
+ *  is exactly what R7 forbade. */
+const GATE_C_FLOOR = 1.6;
+const GATE_C_RATIO = 1.4;
+const GATE_E_STEP = 1.1;
+const GATE_D_WINDOW = Object.freeze([60, 120]);
+const R7_OPACITY_BUDGET = 0.03;
+/** How much of the tour fixture's opacity a candidate may spend before the
+ *  `minChangedFraction` floor is in play. The recorded ground value is 0.0028
+ *  against a 0.002 floor — 29% of headroom on a TAIL statistic — so 5% is the
+ *  generous reading, not the strict one. */
+const FIXTURE_OPACITY_ALLOWANCE = -0.05;
+
+const CANDIDATE_CACHE = new Map();
+function candidate(overrides, options = {}) {
+  const key = `${JSON.stringify(overrides)}|${JSON.stringify(options)}`;
+  let hit = CANDIDATE_CACHE.get(key);
+  if (hit === undefined) {
+    hit = scoreBudgetCandidate(overrides, options);
+    CANDIDATE_CACHE.set(key, hit);
+  }
+  return hit;
+}
+
+function fixtureOpacityDelta(overrides) {
+  const base = meanColumnOpacity(FIXTURE_MARCH_INPUTS);
+  return (
+    (meanColumnOpacity({ ...FIXTURE_MARCH_INPUTS, ...overrides }) - base) / base
+  );
+}
+
+/**
+ * The measured frontier. `budget` is chosen per row so every row sits near the
+ * SAME on-screen elongation (~1.8-2.0), which is what makes the two opacity
+ * columns a like-for-like trade rather than four unrelated operating points.
+ */
+const R7_FRONTIER = [
+  {
+    downWeight: 1.0,
+    budget: 0.85,
+    cirrus: 1.959,
+    stepCirrusCirrostratus: 1.878,
+    stepCirrostratusCirrocumulus: 1.109,
+    probeOpacityDelta: 0.012,
+    fixtureOpacityDelta: -0.475,
+    fixtureTailDelta: -0.431,
+    scan: true,
+    argmaxMargin: 1.591,
+  },
+  {
+    downWeight: 0.5,
+    budget: 1.0,
+    cirrus: 1.841,
+    stepCirrusCirrostratus: 1.749,
+    stepCirrostratusCirrocumulus: 1.109,
+    probeOpacityDelta: 0.105,
+    fixtureOpacityDelta: -0.27,
+    fixtureTailDelta: -0.219,
+    scan: false,
+  },
+  {
+    downWeight: 0.25,
+    budget: 1.1,
+    cirrus: 1.831,
+    stepCirrusCirrostratus: 1.729,
+    stepCirrostratusCirrocumulus: 1.11,
+    probeOpacityDelta: 0.164,
+    fixtureOpacityDelta: -0.139,
+    fixtureTailDelta: -0.114,
+    scan: false,
+  },
+  {
+    downWeight: 0.0,
+    budget: 1.35,
+    cirrus: 1.984,
+    stepCirrusCirrostratus: 1.84,
+    stepCirrostratusCirrocumulus: 1.118,
+    probeOpacityDelta: 0.261,
+    fixtureOpacityDelta: 0.029,
+    fixtureTailDelta: 0.01,
+    scan: true,
+    argmaxMargin: 1.565,
+  },
+];
+
+describe("C13-16 R7 budget — the candidate reads its inputs from shipped artifacts", () => {
+  it("takes the tour fixture's march inputs from the shipped fixture table", () => {
+    // The second configuration is not a restatement: it is the fixture whose
+    // `minChangedFraction` floor checklist item 6 names, and a copy of it here
+    // would let the floor move without the frontier noticing.
+    const shipped = fixtureById("northatlantic-cirrus-fibratus");
+    assert.equal(
+      TOUR_CIRRUS_FIXTURE.coverage,
+      shipped.volumetric.cloudCoverage,
+    );
+    assert.equal(
+      TOUR_CIRRUS_FIXTURE.densityMultiplier,
+      shipped.volumetric.cloudDensity,
+    );
+    assert.equal(
+      TOUR_CIRRUS_FIXTURE.geometry.shellBottomMeters,
+      shipped.volumetric.cloudLayerBottom,
+    );
+    assert.equal(
+      TOUR_CIRRUS_FIXTURE.geometry.shellTopMeters,
+      shipped.volumetric.cloudLayerTop,
+    );
+    assert.equal(
+      TOUR_CIRRUS_FIXTURE.minChangedFraction,
+      shipped.gate.minChangedFraction,
+    );
+    // And it is a DIFFERENT operating point from the one the gates are scored
+    // at. If these ever coincide the whole frontier collapses to one column and
+    // the reader must be told, loudly.
+    assert.notEqual(TOUR_CIRRUS_FIXTURE.coverage, PROBE_MARCH.coverage);
+    assert.ok(TOUR_CIRRUS_FIXTURE.coverage < COVERAGE_ANCHOR);
+    assert.ok(PROBE_MARCH.coverage >= COVERAGE_ANCHOR);
+  });
+
+  it("derives the base field's mean rather than measuring it", () => {
+    // (0.5 + 0.25 + 0.125 + 0.0625 + 0.03125) * 0.5 — the octave amplitudes of
+    // `fbmNoise` times `valueNoise`'s exact mean. Exact, so `assert.equal`.
+    const amplitudes = [0.5, 0.25, 0.125, 0.0625, 0.03125];
+    assert.equal(
+      BASE_FIELD_MEAN,
+      amplitudes.reduce((sum, a) => sum + a, 0) * 0.5,
+    );
+  });
+
+  it("gives the identity genus a weight of exactly zero, by both factors", () => {
+    // This is what would keep a default CUMULUS render byte-identical: the
+    // shipped identity row is `(0, 1, 0)`, so `strength` is 0 AND `1 - 1/aspect`
+    // is 0.
+    const cumulus = CloudTypeProfile.getFibreMorphology(CloudType.CUMULUS);
+    assert.equal(cumulus.strength, 0);
+    assert.equal(cumulus.anisotropy, 1);
+    assert.equal(baseVarianceBudgetWeight(cumulus, 1), 0);
+    assert.equal(baseVarianceBudgetWeight(cumulus, 1e6), 0);
+    // Either factor alone would do it; both is deliberate, so a future row that
+    // gives a puffy genus a nonzero aspect still cannot wake the budget.
+    assert.equal(
+      baseVarianceBudgetWeight({ strength: 0, anisotropy: 9 }, 1),
+      0,
+    );
+    assert.equal(
+      baseVarianceBudgetWeight({ strength: 0.6, anisotropy: 1 }, 1),
+      0,
+    );
+  });
+
+  it("orders the fibrous genera by how much directional signal they have", () => {
+    const weightFor = (name, options) =>
+      baseVarianceBudgetWeight(
+        CloudTypeProfile.getFibreMorphology(CloudType[name]),
+        1,
+        options,
+      );
+    // The shipped conditioner: CIRRUS > CIRROSTRATUS > CIRROCUMULUS.
+    assert.ok(weightFor("CIRRUS") > weightFor("CIRROSTRATUS"));
+    assert.ok(weightFor("CIRROSTRATUS") > weightFor("CIRROCUMULUS"));
+    // The REJECTED strength-only conditioner inverts the last pair, which is
+    // the direction gate E's second ordering step cannot afford. Pinned rather
+    // than argued in prose.
+    const noAspect = { useAspect: false };
+    assert.ok(
+      weightFor("CIRROCUMULUS", noAspect) > weightFor("CIRROSTRATUS", noAspect),
+      "the strength-only conditioner should be the one that inverts the pair",
+    );
+  });
+
+  it("is NOT a twin of shipped code — the shader implements none of it", () => {
+    // THE NEGATIVE IDENTITY PIN. Everywhere else in this fleet a model function
+    // is pinned to the shader expression it mirrors. Here the claim is the
+    // opposite one and it is just as load-bearing: the budget is a CANDIDATE,
+    // R7's evaluation of it is the deliverable, and nothing was shipped. If
+    // someone later lands the mechanism, this test fails and forces the model to
+    // be repointed at the real expression instead of quietly becoming a fiction.
+    const shaderPath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../packages/engine/Source/Shaders/WebGPU/Environment/ProceduralClouds.wgsl",
+    );
+    const source = fs.readFileSync(shaderPath, "utf8");
+    for (const symbol of [
+      "baseVarianceBudget",
+      "genusBaseVarianceBudget",
+      "budgetPivot",
+      "gateMeanQuantile",
+    ]) {
+      assert.equal(
+        source.includes(symbol),
+        false,
+        `${symbol} appeared in ProceduralClouds.wgsl — the budget has been ` +
+          `SHIPPED. Repoint this model at the shipped expression and replace ` +
+          `this negative pin with a real identity pin.`,
+      );
+    }
+    // And the three morphology functions the row DID ship are still there, so a
+    // path typo cannot make the assertion above pass vacuously.
+    for (const symbol of [
+      "fn genusFibreFactor",
+      "fn genusErosionHeightWeight",
+      "fn genusForwardG",
+    ]) {
+      assert.ok(source.includes(symbol), `${symbol} missing — wrong file?`);
+    }
+  });
+});
+
+describe("C13-16 R7 budget — the candidate is inert at its default", () => {
+  it("leaves every pinned lane byte-identical with the budget off", () => {
+    // The whole validation group above still has to mean what it meant before
+    // the levers existed. `baseVarianceBudget` 0 and `erosionScale` 1 must be
+    // the SAME arithmetic, not merely close: `x * 1` is exact in f32.
+    for (const name of ALL_GENERA) {
+      const off = modelled(name);
+      const explicit = modelled(name, {
+        baseVarianceBudget: 0,
+        erosionScale: 1,
+      });
+      assert.equal(explicit.elongation, off.elongation, name);
+      assert.equal(explicit.alongLength, off.alongLength, name);
+      assert.equal(explicit.acrossLength, off.acrossLength, name);
+    }
+  });
+
+  it("never moves CUMULUS, at any point on the frontier", () => {
+    // The default genus must be untouched by every candidate, or the budget is
+    // not genus-conditioned and the whole design is a global appearance change.
+    const reference = modelled("CUMULUS").elongation;
+    for (const row of R7_FRONTIER) {
+      const scored = candidate(
+        { baseVarianceBudget: row.budget, budgetDownWeight: row.downWeight },
+        { scan: false },
+      );
+      assert.equal(
+        scored.elongation.CUMULUS,
+        reference,
+        `CUMULUS moved at budget ${row.budget} / downWeight ${row.downWeight}`,
+      );
+    }
+  });
+});
+
+describe("C13-16 R7 budget — the PIVOT a mean-neutral budget needs cannot be a constant", () => {
+  it("measures the gate's own mean, and it moves with coverage", () => {
+    const probe = gateMean(cloudEffectiveCoverage(PROBE_MARCH.coverage));
+    const fixture = gateMean(
+      cloudEffectiveCoverage(TOUR_CIRRUS_FIXTURE.coverage),
+    );
+    // ~0.304 against ~0.056: the tour fixture's deck carries a fifth of the
+    // gated density the gate probe's does, before extinction and deck depth.
+    assert.ok(Math.abs(probe - 0.3044) < 0.01, `probe gate mean ${probe}`);
+    assert.ok(
+      Math.abs(fixture - 0.0556) < 0.005,
+      `fixture gate mean ${fixture}`,
+    );
+    assert.ok(probe > fixture * 4);
+  });
+
+  it("the mean-neutral pivot quantile runs 0.605 -> 0.485 across the coverage range", () => {
+    const at = (cEff) => gateMeanQuantile(cEff);
+    // Monotone DECREASING in coverage: at low coverage the gate's mean is
+    // carried by the field's upper tail, so the mean-equivalent quantile sits
+    // high; at full coverage the ramp is symmetric about the field and the
+    // quantile collapses onto the field's own mean.
+    const samples = [0.4271, 0.5231, 0.6, 0.8, 1.0].map(at);
+    for (let i = 1; i < samples.length; i++) {
+      assert.ok(
+        samples[i] < samples[i - 1],
+        `pivot quantile not monotone: ${samples}`,
+      );
+    }
+    assert.ok(Math.abs(samples[0] - 0.6049) < 0.01);
+    assert.ok(Math.abs(samples[3] - 0.4931) < 0.005);
+    assert.ok(Math.abs(samples[4] - BASE_FIELD_MEAN) < 0.005);
+    // The spread is what refutes the constant: 0.12 of base-field value across
+    // a field whose own sigma is ~0.115.
+    assert.ok(samples[0] - samples[4] > 0.1);
+  });
+
+  it("shipping the probe's pivot as a constant costs the fixture another 14 points", () => {
+    const exactDelta = fixtureOpacityDelta({ baseVarianceBudget: 0.85 });
+    const constantDelta = fixtureOpacityDelta({
+      baseVarianceBudget: 0.85,
+      budgetPivotQuantile: gateMeanQuantile(
+        cloudEffectiveCoverage(PROBE_MARCH.coverage),
+      ),
+    });
+    // -47.5% with the exact per-coverage pivot, -61.9% with the constant one.
+    assert.ok(Math.abs(exactDelta + 0.475) < R7_OPACITY_PIN, `${exactDelta}`);
+    assert.ok(
+      Math.abs(constantDelta + 0.619) < R7_OPACITY_PIN,
+      `${constantDelta}`,
+    );
+    assert.ok(
+      constantDelta < exactDelta - 0.1,
+      "the constant pivot must be materially worse, or the refutation is empty",
+    );
+  });
+});
+
+describe("C13-16 R7 budget — ATTRIBUTION: the blocker is the EROSION ZERO CLAMP", () => {
+  it("the same budget is mean-positive at the fixture once the clamp is removed", () => {
+    // The decisive experiment, and the reason `erosionScale` exists. `max(base *
+    // gradient - erosion, 0)` is convex in the base, so shrinking the base's
+    // variance shrinks the mass that survives it. At the fixture's coverage the
+    // mean erosion EXCEEDS the mean gated density, so that deck IS the base
+    // field's upper tail. Take the erosion away and the identical budget stops
+    // costing anything.
+    const withErosion = fixtureOpacityDelta({ baseVarianceBudget: 0.85 });
+    const strippedBase = meanColumnOpacity({
+      ...FIXTURE_MARCH_INPUTS,
+      erosionScale: 0,
+    });
+    const without =
+      (meanColumnOpacity({
+        ...FIXTURE_MARCH_INPUTS,
+        baseVarianceBudget: 0.85,
+        erosionScale: 0,
+      }) -
+        strippedBase) /
+      strippedBase;
+    assert.ok(Math.abs(withErosion + 0.475) < R7_OPACITY_PIN, `${withErosion}`);
+    assert.ok(Math.abs(without - 0.057) < R7_OPACITY_PIN, `${without}`);
+    assert.ok(
+      without > 0 && withErosion < -0.3,
+      "the clamp attribution must flip the SIGN, not merely soften the number",
+    );
+  });
+
+  it("the erosion depth is a strong MASS lever and a weak ELONGATION lever", () => {
+    // Which is why it cannot be the compensator: to give the fixture its 47
+    // points back it has to be moved far enough to add 10-12 points at the gate
+    // configuration, and it buys almost no elongation on the way.
+    const stripped = modelled("CIRRUS", { erosionScale: 0 }).elongation;
+    const base = modelled("CIRRUS").elongation;
+    assert.ok(
+      stripped - base < 0.2,
+      `removing the erosion entirely moved elongation ${stripped - base}`,
+    );
+    assert.ok(stripped < GATE_C_FLOOR);
+    const probeBase = meanColumnOpacity({ cloudType: CloudType.CIRRUS });
+    const probeMass =
+      (meanColumnOpacity({ cloudType: CloudType.CIRRUS, erosionScale: 0 }) -
+        probeBase) /
+      probeBase;
+    const fixtureMass = fixtureOpacityDelta({ erosionScale: 0 });
+    assert.ok(
+      probeMass > 0.2 && fixtureMass > 0.6,
+      `${probeMass} ${fixtureMass}`,
+    );
+    // ~2.2x stronger where the floor is than where the opacity budget is.
+    assert.ok(
+      fixtureMass / probeMass > 2,
+      "the compensator must overshoot the gate configuration",
+    );
+  });
+});
+
+describe("C13-16 R7 budget — THE FRONTIER, and why nothing shipped", () => {
+  for (const row of R7_FRONTIER) {
+    it(`downWeight ${row.downWeight} / budget ${row.budget} lands where the table says`, () => {
+      const scored = candidate(
+        { baseVarianceBudget: row.budget, budgetDownWeight: row.downWeight },
+        { scan: row.scan },
+      );
+      const near = (actual, expected, tolerance, label) =>
+        assert.ok(
+          Math.abs(actual - expected) <= tolerance,
+          `${label}: ${actual} vs pinned ${expected}`,
+        );
+      near(scored.cirrus, row.cirrus, R7_ELONGATION_PIN, "gate C elongation");
+      near(
+        scored.stepCirrusCirrostratus,
+        row.stepCirrusCirrostratus,
+        R7_ELONGATION_PIN,
+        "gate E step 1",
+      );
+      near(
+        scored.stepCirrostratusCirrocumulus,
+        row.stepCirrostratusCirrocumulus,
+        R7_ELONGATION_PIN,
+        "gate E step 2",
+      );
+      near(
+        scored.probeOpacityDelta,
+        row.probeOpacityDelta,
+        R7_OPACITY_PIN,
+        "gate-configuration opacity delta",
+      );
+      near(
+        scored.fixtureOpacityDelta,
+        row.fixtureOpacityDelta,
+        R7_OPACITY_PIN,
+        "fixture opacity delta",
+      );
+      near(
+        scored.fixtureTailDelta,
+        row.fixtureTailDelta,
+        R7_OPACITY_PIN,
+        "fixture TAIL delta",
+      );
+      if (row.scan) {
+        assert.ok(
+          scored.argmaxDeg >= GATE_D_WINDOW[0] &&
+            scored.argmaxDeg <= GATE_D_WINDOW[1],
+          `gate D argmax ${scored.argmaxDeg} outside ${GATE_D_WINDOW}`,
+        );
+        near(
+          scored.argmaxMargin,
+          row.argmaxMargin,
+          0.05,
+          "gate D argmax margin",
+        );
+      }
+    });
+  }
+
+  it("every row on the frontier clears gate C, so the mechanism WORKS", () => {
+    // The positive half, and it is worth stating plainly: R7's option 3 does
+    // reach a gate that the aspect could never reach and that strength could
+    // only reach at -17% opacity. The 1.6 floor is met here at +1.2%.
+    for (const row of R7_FRONTIER) {
+      const scored = candidate(
+        { baseVarianceBudget: row.budget, budgetDownWeight: row.downWeight },
+        { scan: false },
+      );
+      assert.ok(
+        scored.cirrus >= GATE_C_FLOOR,
+        `${row.budget}: ${scored.cirrus}`,
+      );
+      assert.ok(scored.cirrusOverCumulus >= GATE_C_RATIO);
+      assert.ok(scored.stepCirrusCirrostratus >= GATE_E_STEP);
+      assert.ok(scored.stepCirrostratusCirrocumulus >= GATE_E_STEP);
+    }
+  });
+
+  it("and NO row holds both opacity surfaces — this is the STOP", () => {
+    // The whole finding in one assertion. R7's opacity constraint is written
+    // against the gate configuration; checklist item 6's floor lives at the tour
+    // fixture. Every candidate that clears gate C pays on one or the other.
+    for (const row of R7_FRONTIER) {
+      const scored = candidate(
+        { baseVarianceBudget: row.budget, budgetDownWeight: row.downWeight },
+        { scan: false },
+      );
+      const holdsProbe =
+        Math.abs(scored.probeOpacityDelta) <= R7_OPACITY_BUDGET;
+      const holdsFixture =
+        scored.fixtureOpacityDelta >= FIXTURE_OPACITY_ALLOWANCE &&
+        scored.fixtureTailDelta >= FIXTURE_OPACITY_ALLOWANCE;
+      assert.equal(
+        holdsProbe && holdsFixture,
+        false,
+        `budget ${row.budget} / downWeight ${row.downWeight} satisfies BOTH ` +
+          `surfaces (probe ${scored.probeOpacityDelta}, fixture ` +
+          `${scored.fixtureOpacityDelta}). The R7 STOP is no longer justified — ` +
+          `re-read DEFERRED_WORK's C13-16 R7 section before shipping anything.`,
+      );
+    }
+  });
+
+  it("is a monotone trade, not two isolated points", () => {
+    // Stated because a frontier given as two endpoints invites "you did not look
+    // in between". Spending downWeight moves BOTH surfaces, in opposite
+    // directions, at every intermediate value.
+    const rows = R7_FRONTIER.map((row) =>
+      candidate(
+        { baseVarianceBudget: row.budget, budgetDownWeight: row.downWeight },
+        { scan: false },
+      ),
+    );
+    for (let i = 1; i < rows.length; i++) {
+      assert.ok(
+        rows[i].probeOpacityDelta > rows[i - 1].probeOpacityDelta,
+        `gate-configuration opacity not monotone at row ${i}`,
+      );
+      assert.ok(
+        rows[i].fixtureOpacityDelta > rows[i - 1].fixtureOpacityDelta,
+        `fixture opacity not monotone at row ${i}`,
+      );
+    }
+    // And the exchange rate is ~1:-2, which is why no interior point works:
+    // buying back 47 points of fixture costs ~25 points at the gate camera.
+    const first = rows[0];
+    const last = rows[rows.length - 1];
+    const rate =
+      (last.fixtureOpacityDelta - first.fixtureOpacityDelta) /
+      (last.probeOpacityDelta - first.probeOpacityDelta);
+    assert.ok(rate > 1.5 && rate < 3, `exchange rate ${rate}`);
+  });
+});
+
+describe("C13-16 R7 budget — MUTATION: every new lever must be READ", () => {
+  /**
+   * The Batch-869 discipline, applied to the levers R7 added. That rebuild found
+   * five mutation subtests passing on a baseline residual rather than on any
+   * mutation, and found the mechanism: `buildModelParameters` reads every field
+   * as `overrides.X ?? default` with NO unknown-key validation, so a renamed key
+   * is a silent no-op. Four new keys have just been added to that same reader.
+   */
+  const levers = [
+    {
+      label: "baseVarianceBudget",
+      overrides: { baseVarianceBudget: 0.85 },
+      reference: {},
+    },
+    {
+      label: "budgetDownWeight",
+      overrides: {
+        baseVarianceBudget: 0.85,
+        budgetDownWeight: BUDGET_DOWN_WEIGHT_UP_ONLY,
+      },
+      // Scored against the SYMMETRIC budget at the same strength, not against
+      // the un-mutated model — otherwise `baseVarianceBudget` alone would carry
+      // the displacement and this subtest would prove nothing about the weight.
+      reference: {
+        baseVarianceBudget: 0.85,
+        budgetDownWeight: BUDGET_DOWN_WEIGHT_SYMMETRIC,
+      },
+    },
+    {
+      label: "budgetPivotQuantile",
+      overrides: { baseVarianceBudget: 0.85, budgetPivotQuantile: 0.2 },
+      reference: { baseVarianceBudget: 0.85 },
+    },
+    {
+      label: "budgetUseAspect",
+      overrides: { baseVarianceBudget: 0.85, budgetUseAspect: false },
+      reference: { baseVarianceBudget: 0.85 },
+    },
+  ];
+
+  for (const lever of levers) {
+    it(`${lever.label} moves the model away from its reference`, () => {
+      const moved = displacementFromBaseline(lever.overrides, lever.reference);
+      assert.ok(
+        discriminates(moved),
+        `${lever.label} did not move the model (elongation ${moved.elongation}, ` +
+          `half-length ${moved.halfLength}) — the override key is not being read`,
+      );
+    });
+  }
+
+  it("erosionScale moves the OPACITY, which is the statistic it exists for", () => {
+    // Scored on mass rather than on shape: the attribution lever's whole job is
+    // to move the fixture's column opacity, and it barely moves elongation (that
+    // IS the finding). Scoring it on elongation would be scoring the wrong axis.
+    const moved = fixtureOpacityDelta({ erosionScale: 0 });
+    assert.ok(
+      Math.abs(moved) > 0.2,
+      `erosionScale did not move the fixture's opacity (${moved})`,
+    );
+  });
+
+  it("the predicates go RED on mutations the model cannot read (the meta-mutant)", () => {
+    // THE GUARD ON THE GUARD, extended to the four new keys. Renaming each of
+    // them must leave BOTH predicates rejecting, or the subtests above are
+    // measuring the baseline again.
+    const noops = [
+      { label: "the empty mutation", overrides: {} },
+      {
+        label: "all four new keys renamed (a future rename, verbatim)",
+        overrides: {
+          baseVarianceBudgt: 0.85,
+          budgetDownWeigth: 0,
+          budgetPivotQuantil: 0.2,
+          budgetUsesAspect: false,
+        },
+      },
+    ];
+    for (const noop of noops) {
+      const moved = displacementFromBaseline(noop.overrides);
+      assert.equal(
+        discriminates(moved),
+        false,
+        `${noop.label}: the displacement predicate accepted a mutation that ` +
+          `changes nothing (elongation ${moved.elongation}) — every lever ` +
+          `subtest above is therefore vacuous`,
+      );
+      assert.equal(
+        losesGroundTruth(noop.overrides),
+        false,
+        `${noop.label}: the ground-truth predicate reported a loss with no ` +
+          `mutation applied`,
+      );
+    }
+    // And the same for the erosion lever's own predicate.
+    assert.equal(
+      fixtureOpacityDelta({ erosionScal: 0 }),
+      0,
+      "a renamed erosionScale still moved the model — the key is being read " +
+        "under two spellings",
     );
   });
 });

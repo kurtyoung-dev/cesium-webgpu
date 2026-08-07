@@ -2097,6 +2097,124 @@ the current appearance and record the attenuation. R3 forbade re-deriving the
 gates from the measured values; deriving them from this model is a different act
 and is now available. Nothing in the authored table was changed by this work.
 
+### UPDATE 2026-08-07 - R7 EXECUTED IN THE MODEL: OPTION 3 REACHES THE GATE AND COLLIDES WITH THE FLOOR. **STOP-WITH-FRONTIER; NO SHADER CHANGE.**
+
+R7 chose option 3 - a genus-conditioned base-field variance budget - and required
+candidate budgets to be swept IN THE BATCH-857 MODEL, with predicted elongation
+AND opacity numbers, before any shader edit. That sweep has been executed. The
+levers, the two opacity statistics and the frontier now live in
+`Tools/visual-regression/lib/cloud-march-transfer-model.mjs`
+(`baseVarianceBudget`, `budgetDownWeight`, `budgetPivotQuantile`,
+`budgetUseAspect`, the `erosionScale` attribution lever,
+`meanColumnOpacity`, `columnOpacityExceedance`, `scoreBudgetCandidate`) and are
+pinned by `cloud-march-transfer.spec.mjs` (24 -> **49** tests, all green, 97 s).
+**Nothing was changed in `ProceduralClouds.wgsl`, `CloudTypeProfile.js` or the
+uniform layout, and the spec asserts that NEGATIVELY** - a test fails if any
+budget symbol appears in the shader, which is what stops the model from quietly
+becoming the twin of code that does not exist.
+
+**THE MECHANISM WORKS, AND R7's DIAGNOSIS WAS RIGHT.** The budget reaches a gate
+that the authored aspect provably cannot reach (ceiling 1.379) and that fibre
+strength could only reach at -17% opacity: **CIRRUS elongation 1.232 -> 1.959 at
++1.2% mean column opacity** at the direction probe's configuration, with gate C's
+ratio at 2.34 (bar 1.4), both gate E ordering steps clear (1.878 and 1.109
+against 1.1), and gate D's argmax pinned on the true wind axis with a **1.59x**
+margin over the best out-of-window lobe, against the baseline's **1.02x**
+near-tie - the model reproduces gate D's failure SHAPE and the budget removes it.
+No authored aspect, no fibre strength and no gate bar was touched to get there.
+
+**THE MECHANISM ALSO HAS TWO NONLINEARITIES DOWNSTREAM OF IT, AND NEITHER IS
+VISIBLE FROM THE BASE FIELD.**
+
+**(1) The coverage gate - curable, but not by a constant.** The suggested
+spelling `mix(fbm, fbmMean, k)` is mean-preserving in the fBm and NOT
+mean-preserving in what the march integrates, because `smoothstep(1 - cEff, 1,
+base)` sits between them. The fix is to pivot on the gate's own mean instead:
+`gateMeanQuantile(cEff)` is the base-field value whose gate output equals the
+gate's mean, so blending toward it is mean-neutral at any weight. That quantile
+is **not a constant** - it runs **0.605 at cEff 0.43 to 0.485 at cEff 1.0**, a
+spread larger than the base field's own sigma - so shipping a single authored
+pivot is refuted by measurement, not by argument: using the gate probe's 0.49312
+at the tour fixture's cEff 0.5231 costs **another 14 points** of that fixture's
+column opacity (-61.9% against -47.5%).
+
+**(2) The subtractive erosion's ZERO CLAMP - not curable inside this mechanism.**
+`density = max(base x gradient - worley x 0.18 x w(h), 0)` is CONVEX in the base,
+so reducing the base's variance reduces the mass that survives it. At the
+`northatlantic-cirrus-fibratus` fixture's coverage **0.45** the mean erosion
+EXCEEDS the mean gated density, so that deck exists only as the base field's
+upper tail - exactly the part a variance budget removes, and exactly the part the
+tour's `changedFraction` gate counts. **Attribution executed, not argued:** the
+same budget at the same fixture reads **-47.5%** with the erosion in place and
+**+5.7%** with `erosionScale` 0. The sign flips.
+
+**THE FRONTIER** (`budgetDownWeight` 1 = symmetric budget, 0 = fill holes only
+and never lower a sample; `budget` chosen per row so every row sits at the same
+~1.8-2.0 on-screen elongation, which is what makes the two opacity columns
+comparable). "fixture TAIL" is the fraction of columns above alpha 0.04, the
+right proxy for `minChangedFraction` (threshold 18 on the channel sum) because
+the fixture's recorded ground value 0.0028 is a TAIL count, not a mean:
+
+| downWeight | budget | CIRRUS elong | gate E ci/cs | gate E cs/cc | opacity @ gate config | opacity @ tour fixture | TAIL @ tour fixture |
+|---|---|---|---|---|---|---|---|
+| - (shipped) | 0 | 1.232 | 1.242 | 1.059 | 0 | 0 | 0 |
+| 1.00 | 0.85 | **1.959** | 1.878 | 1.109 | **+1.2%** | **-47.5%** | **-43.1%** |
+| 0.50 | 1.00 | 1.841 | 1.749 | 1.109 | +10.5% | -27.0% | -21.9% |
+| 0.25 | 1.10 | 1.831 | 1.729 | 1.110 | +16.4% | -13.9% | -11.4% |
+| 0.00 | 1.35 | **1.984** | 1.840 | 1.118 | **+26.1%** | **+2.9%** | **+1.0%** |
+
+The trade is MONOTONE along `downWeight` and the exchange rate is about
+**1 : -2** - buying back the fixture's 47 points costs ~25 points of opacity at
+the gate configuration. **No point on the curve holds both surfaces**, and the
+spec asserts that as its own test, with the failure message pointing back here so
+a future edit that makes it passable cannot slip through as a green run. CUMULUS
+is byte-identical at every row (the identity guard is doubly closed: the budget
+weight is `budget x strength x (1 - 1/aspect)` and the shipped identity row is
+`(0, 1, 0)`, so either factor alone zeroes it).
+
+**Why the obvious compensator does not work.** Shallowing the erosion for fibrous
+genera restores the fixture and even helps elongation slightly - but it is a
+STRONG mass lever and a WEAK elongation lever (removing it entirely moves CIRRUS
+only 1.232 -> 1.365, still short of 1.6, while adding +27% opacity at the gate
+configuration and +71% at the fixture), and it is **2.2x stronger at the fixture
+than at the gate configuration**, so compensating the floor overshoots the
+opacity bar to +10-12%. Both halves are pinned in the spec.
+
+**Also measured and rejected, so they are not re-proposed:** applying the budget
+to the raw fBm rather than to the gated base (worse on both axes); modulating the
+budget by the local gate value so it only bites inside the deck body (it
+CORRELATES the weight with the mass it removes - -9% to -26% at the gate
+configuration for LESS elongation); and blending the gate with decorrelated
+companion draws of the same field, which is exactly mean-neutral at every
+coverage with no constant at all but whose variance reduction is capped at 1/m
+for m draws, so one companion tops out near elongation 1.35 and reaching 1.6
+would cost three full density evaluations per march sample.
+
+**WHAT WOULD UNBLOCK OPTION 3 - the concrete missing pieces, per Principle 9.**
+
+1. **A shipped `cloudGateMean(cEff)` response** beside `cloudEffectiveCoverage`
+   in `CloudDensityDomain.wgsl` + `WebGPUCloudDensityDomain.ts`, i.e. the deck's
+   mean gated density as a derived function of effective coverage (and of WHICH
+   base field - the LIVE fBm's mean is 0.484375, the baked shape channel's is
+   0.4307, and they need different responses). Without it the symmetric arm
+   cannot be mean-neutral anywhere except at one authored coverage. This does not
+   exist today.
+2. **A way to spend variance without spending tail mass at low coverage** - i.e.
+   either a coverage-tracking erosion compensation, or moving the fibre carve
+   ahead of the erosion so the deck's survival is not governed by the isotropic
+   term the budget is quieting. Both are density-chain changes with their own
+   byte-identity and W5 `base >= full` obligations.
+3. Failing both, the maintainer's remaining choices are the ones R3 left open and
+   R7 declined: accept the attenuation and re-derive gates C/D/E from this model
+   (now possible and now able to fail), or accept the up-only arm's +26% brighter
+   cirrus deck as an appearance change.
+
+**What did NOT change:** `FIBRE_MORPHOLOGY` (cirrus stays `0.6 / 9 / 0.9`), the
+authored aspects, gate bars C/D/E, the uniform layout (still 172 floats), and the
+frozen legacy-route hashes in `cloud-density-domain.spec.mjs`. The
+`cloud-genus-morphology` (21/21), `cloud-density-domain` (14/14),
+`cloud-coverage-response` and `cloud-tour-sequences` lanes are all still green.
+
 ## 2026-08-06 - ground fog renders NOTHING (Phase C, defect present since Batch 420)
 ### NEW-WEBGPU-GROUND-FOG-RENDERS-NOTHING
 
