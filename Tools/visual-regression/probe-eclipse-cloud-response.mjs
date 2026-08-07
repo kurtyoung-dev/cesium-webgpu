@@ -219,6 +219,13 @@ const VERBATIM_SLICES = [
     file: "packages/engine/Source/Scene/DynamicEnvironmentMapManager.js",
     marker: "this._lastEclipseEnvBucket = eclipseEnvBucket",
   },
+  {
+    // `C13-41-CLOUD-AERIAL-TINT-UNDIMMED` (CO-11). The deck's fourth eclipse
+    // site. Without this slice the probe would happily re-measure the deck
+    // ratio against a build that predates the fix and report the SAME 0.894.
+    file: "packages/engine/Source/Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
+    marker: "dimAerialTint",
+  },
 ];
 
 const REQUIRED_TOKENS = [
@@ -533,6 +540,28 @@ const RUN_CLOUD_LANES = async (cfg) => {
   });
   scene.globe.enableLighting = true;
 
+  // ── LANE B PRECONDITION (Batch 911): the GROUND has to be able to carry a
+  // contrast at all.
+  //
+  // The offline pin removes every imagery layer, so the globe renders
+  // `GlobeSurfaceTileProvider.baseColor`, whose default is
+  // `new Color(0.0, 0.0, 0.5, 1.0)` (`Scene/GlobeSurfaceTileProvider.js:409`) —
+  // a Rec.709 luma of 0.036 BEFORE `enableLighting`'s Lambert term. The second
+  // Edge run's lane B read a ground band mean of 0.5125 against that: the band
+  // was ~98% sunlit CLOUD TOP and ~2% ground. A cast shadow floors the ground at
+  // `max(exp(-tau*0.04), 0.35)` (`GlobeTerrain.wgsl:2219`), i.e. it can remove at
+  // most 65% of the ground's share — 0.65 * 0.018 = 1.2% of the band, so the
+  // measured contrast could not have crossed the 0.98 vacuity ceiling even with
+  // EVERY visible ground pixel fully shadowed. The lane was vacuous by
+  // construction for a PHOTOMETRIC reason, the same way the first run's 300 m
+  // vantage was vacuous for a GEOMETRIC one.
+  //
+  // A neutral bright base colour puts the ground at ~0.7 display luma, the same
+  // order as the deck, so the 65% floor is worth ~0.45 of the band. Read back
+  // below, and `shadowGroundIsBright` gates the read-back rather than this
+  // assignment.
+  scene.globe.baseColor = C.Color.fromBytes(200, 200, 200);
+
   const ac = scene.globe ? scene.globe.atmosphericConditions : null;
   if (!ac || !ac.lighting || !("enableEclipse" in ac.lighting)) {
     return {
@@ -587,6 +616,118 @@ const RUN_CLOUD_LANES = async (cfg) => {
 
   const skyBand = (frame) => bandMean(frame, 0.05, 0.45);
   const groundBand = (frame) => bandMean(frame, 0.6, 0.95);
+
+  // ── LANE B TELEMETRY (Batch 911). CPU-side reads only, so they cost one
+  // property access each and can be taken in the same task as the capture.
+  //
+  // The second run left three questions unanswerable from its own report, and
+  // each of these answers exactly one of them:
+  //   "did the shadow PRODUCER run?"   -> `cloudCacheTelemetry`
+  //   "did the CONSUMER's gate open?"  -> `globeUniformTelemetry` (the packed
+  //                                       `cloudShadowControl` the terrain FS
+  //                                       branches on, read out of the globe
+  //                                       surface renderer's own UB scratch)
+  //   "does the scored band even LIE   -> `shadowFootprintTelemetry`
+  //    inside the shadow footprint?"
+  const cloudCacheTelemetry = () => {
+    const cache = scene.context?._cloudCache;
+    if (!cache) {
+      return null;
+    }
+    return {
+      shadowActive: cache.shadowActive ?? null,
+      shadowStrength: cache.shadowStrength ?? null,
+      shadowAbsorption: cache.shadowAbsorption ?? null,
+      shadowSize: cache.shadowSize ?? null,
+      shadowViewPresent: !!cache.shadowView,
+      shadowFrameValid: cache.shadowFrame?.valid ?? null,
+      shadowFrameHalfExtent: cache.shadowFrame?.halfExtent ?? null,
+      shadowCascadeActive: cache.shadowCascadeActive ?? null,
+    };
+  };
+
+  // The globe surface renderer packs `cloudShadowVP` at floats 148-163 and
+  // `cloudShadowControl` at 164-167, with the C13-06 eye-relative flag in
+  // `cloudShadowCascadeParams.y` at 229 (`WebGPUGlobeSurfaceCameraUB.ts:820-935`
+  // and `:1084-1118`). Reading the scratch after a render is the CONSUMER-side
+  // truth: `control.x <= 0.5` means the terrain FS never entered the shadow
+  // branch at all, whatever the producer published.
+  const globeUniformTelemetry = () => {
+    const fr = scene.context?.getFeatureRenderer?.(cfg.globeSurfaceKey);
+    const data = fr?._cameraUniformData;
+    if (!data || data.length < 232) {
+      return null;
+    }
+    return {
+      cloudShadowControl: [data[164], data[165], data[166], data[167]],
+      cloudShadowRelativeToEye: data[229],
+      cloudShadowVpTranslationColumn: [
+        data[160],
+        data[161],
+        data[162],
+        data[163],
+      ],
+    };
+  };
+
+  // Project the ground the SCORED BAND actually sees through the published
+  // absolute sun-view VP. `sampleCloudGroundShadow` returns 1.0 (no shadow) for
+  // any fragment whose uv leaves [0,1], so an `inside: false` here is a complete
+  // explanation for a blind lane. `texel` makes the CO-10 texel-count argument
+  // measurable instead of derived: the band must span more than one texel of the
+  // 512-wide map.
+  const shadowFootprintTelemetry = () => {
+    const cache = scene.context?._cloudCache;
+    const vp = cache?.shadowSunViewVP;
+    if (!vp || vp.length < 16) {
+      return null;
+    }
+    const canvas = scene.canvas;
+    const width = canvas.clientWidth || canvas.width;
+    const height = canvas.clientHeight || canvas.height;
+    const size = cache.shadowSize ?? 512;
+    const samples = [];
+    for (const fraction of [0.6, 0.775, 0.95]) {
+      const windowPosition = new C.Cartesian2(width * 0.5, height * fraction);
+      const ray = scene.camera.getPickRay(windowPosition);
+      const world = ray ? scene.globe.pick(ray, scene) : undefined;
+      if (!world) {
+        samples.push({ bandFraction: fraction, groundHit: false });
+        continue;
+      }
+      // Column-major mat4 * vec4(world, 1), matching the WGSL exactly.
+      const cx = vp[0] * world.x + vp[4] * world.y + vp[8] * world.z + vp[12];
+      const cy = vp[1] * world.x + vp[5] * world.y + vp[9] * world.z + vp[13];
+      const cw = vp[3] * world.x + vp[7] * world.y + vp[11] * world.z + vp[15];
+      const w = Math.abs(cw) > 1e-6 ? Math.abs(cw) : 1e-6;
+      const u = (cx / w) * 0.5 + 0.5;
+      const v = 1.0 - ((cy / w) * 0.5 + 0.5);
+      samples.push({
+        bandFraction: fraction,
+        groundHit: true,
+        u,
+        v,
+        inside: u >= 0 && u <= 1 && v >= 0 && v <= 1,
+        texel: [u * size, v * size],
+        rangeMeters: C.Cartesian3.distance(world, scene.camera.positionWC),
+      });
+    }
+    const hits = samples.filter((sample) => sample.groundHit);
+    return {
+      shadowMapSize: size,
+      samples,
+      allInside: hits.length > 0 && hits.every((sample) => sample.inside),
+      // The band's extent in shadow texels — the number CO-10's "smaller than
+      // ONE texel" argument was about. Measured here, not derived from a FOV.
+      texelSpan:
+        hits.length >= 2
+          ? Math.hypot(
+              hits[hits.length - 1].texel[0] - hits[0].texel[0],
+              hits[hits.length - 1].texel[1] - hits[0].texel[1],
+            )
+          : null,
+    };
+  };
 
   // ── Camera: ground vantage, ANTI-SOLAR azimuth so the S1 sun billboard is
   // out of frame entirely and nothing measured here can be its alpha fade.
@@ -747,18 +888,53 @@ const RUN_CLOUD_LANES = async (cfg) => {
     // texel under the camera", and a ~63%-clear field reads clear most of the
     // time. 0.9969 is that reading, not a missing feature.
     //
-    // At `groundCameraHeight` the same band spans 9000/tan(53.8 deg) = 6.6 km to
-    // 9000/tan(41.6 deg) = 10.1 km — a ~3.5 km strip, ~15 x 35 texels, which is
-    // the geometry `probe-cloud-shadows-flagon` (9000 m, -38 deg) and
-    // `probe-cloud-shadow-cascades` (8000 m, -32 deg) both use to resolve a
-    // cast shadow. The lane also raises `cloudDensity` to those probes' proven
-    // 0.85: the ground term is `max(exp(-opticalDepth * 0.04), 0.35)`
-    // (`GlobeTerrain.wgsl:2219`), so a half-density deck halves the optical
-    // depth and the darkening with it. Density is lane B's own dial and does
-    // not touch lane A, whose subject is the deck's own radiance.
+    // Batch 909 flew this at 9000 m / -38 deg, where the same band spans
+    // 9000/tan(53.8 deg) = 6.6 km to 9000/tan(41.6 deg) = 10.1 km — a ~3.5 km
+    // strip, ~15 x 35 texels. That fixed the GEOMETRIC vacuity and the second
+    // Edge run still read 0.9987, because the lane had a SECOND, PHOTOMETRIC
+    // vacuity underneath it, and the numbers in the run's own report identify it
+    // exactly:
+    //
+    //   band mean, clear         0.512511   ground share ~1.8%, deck ~98%
+    //   band mean, obscuration 0.9   0.378175
+    //
+    // Fit `(1-a)*G + a*D` with the offline globe's `baseColor` = (0, 0, 0.5)
+    // (display luma 0.036, `GlobeSurfaceTileProvider.js:409`) and lane A's own
+    // measured deck response: a = 0.70, D = 0.719, and the clear/eclipsed pair
+    // reproduces to 0.513 / 0.3786 against the measured 0.5125 / 0.37818. At a
+    // 1.8% ground share the beer floor's maximum reach is 0.65 * 0.018 = 1.2% of
+    // the band, so the contrast COULD NOT have crossed the 0.98 vacuity ceiling
+    // however well the cast shadow worked. The 0.126% it did move corresponds to
+    // ~11% of the visible ground being shadowed — i.e. the shadow WAS there.
+    //
+    // Batch 911 therefore flies the lane BELOW the deck and looks down. At
+    // `groundCameraHeight` = 1400 m (the deck's floor is 1500 m) with a -8 deg
+    // pitch, the scored 60%..95% band covers down-angles 11.7 deg to 24.3 deg
+    // (vertical half-FOV 18 deg on this 1280x720 canvas) and therefore ground
+    // ranges 1400/tan(24.3 deg) = 3.1 km to 1400/tan(11.7 deg) = 6.8 km — a
+    // ~3.7 km strip, ~16 texels of the 234 m/texel map, so the geometric fix
+    // survives. What changes is that the line of sight to that ground NEVER
+    // crosses the 1500-4000 m deck, because the deck is entirely ABOVE the
+    // camera: the band is ground, and the cast shadow lands on it in full.
+    // `shadowGroundNotOccluded` reads that back instead of trusting it.
+    //
+    // `cloudDensity` stays at the 0.85 that `probe-cloud-shadows-flagon` and
+    // `probe-cloud-shadow-cascades` use: the ground term is
+    // `max(exp(-opticalDepth * 0.04), 0.35)` (`GlobeTerrain.wgsl:2219`), so a
+    // half-density deck halves the optical depth and the darkening with it.
+    // Density is lane B's own dial and does not touch lane A, whose subject is
+    // the deck's own radiance.
     aimCamera(julian, cfg.groundPitchDegrees, cfg.groundCameraHeight);
     const groundDials = { cloudDensity: cfg.groundCloudDensity };
     setEclipse(false);
+    // The DECK-FREE ground control. Without it "the band is ground" is an
+    // assumption, and the second run proves an assumption is not enough: this is
+    // the same class of read-back `deckBackgroundIsDark` added for lane A.
+    configure({ enableVolumetric: false, dials: groundDials });
+    await pin.settle(julian, cfg.settleMs);
+    const bOffNoCloud = groundBand(
+      captureLabelled(`B${index}-eclipseOff-cloudsOff`, julian, false),
+    );
     configure({
       enableVolumetric: true,
       dials: { ...groundDials, cloudCastShadows: false },
@@ -778,6 +954,9 @@ const RUN_CLOUD_LANES = async (cfg) => {
     const shadowStrengthOff =
       scene.context?._cloudCache?.shadowStrength ?? null;
     const shadowActiveOff = scene.context?._cloudCache?.shadowActive ?? null;
+    const cloudCacheOff = cloudCacheTelemetry();
+    const globeUniformOff = globeUniformTelemetry();
+    const footprintOff = shadowFootprintTelemetry();
 
     setEclipse(true);
     configure({
@@ -798,6 +977,8 @@ const RUN_CLOUD_LANES = async (cfg) => {
     );
     const shadowStrengthOn = scene.context?._cloudCache?.shadowStrength ?? null;
     const shadowActiveOn = scene.context?._cloudCache?.shadowActive ?? null;
+    const cloudCacheOn = cloudCacheTelemetry();
+    const globeUniformOn = globeUniformTelemetry();
 
     // Restore the lane-A dials so the next rung starts from one configuration.
     configure({ enableVolumetric: true });
@@ -822,6 +1003,11 @@ const RUN_CLOUD_LANES = async (cfg) => {
         samples: aOffClouds.samples,
       },
       shadow: {
+        // The DECK-FREE ground, i.e. what the band would read with no cloud in
+        // the scene at all. `offNoShadow / offNoCloud` is then the fraction of
+        // the ground band the deck did NOT take over, which is the precondition
+        // the second run silently failed.
+        offNoCloud: bOffNoCloud.mean,
         offNoShadow: bOffNoShadow.mean,
         offShadow: bOffShadow.mean,
         onNoShadow: bOnNoShadow.mean,
@@ -833,9 +1019,19 @@ const RUN_CLOUD_LANES = async (cfg) => {
         // `shadowActive: false` means the producer never ran, `true` with a
         // clear contrast means the map ran and the footprint had no cloud in
         // it — two different diagnoses, and the first run could distinguish
-        // neither.
+        // neither. It HAS been in the report JSON since Batch 909; what was
+        // missing is that no verdict or console line read it, so a reader saw
+        // "the shadow lane is blind" with the producer's own answer sitting
+        // three levels down in the file. `shadowTelemetry` in the verdicts and
+        // the SHADOW console line close that.
         shadowActiveOff,
         shadowActiveOn,
+        // Producer / consumer / footprint, per eclipse position.
+        cloudCacheOff,
+        cloudCacheOn,
+        globeUniformOff,
+        globeUniformOn,
+        footprintOff,
         cameraHeight: cfg.groundCameraHeight,
         pitchDegrees: cfg.groundPitchDegrees,
         samples: bOffShadow.samples,
@@ -865,6 +1061,22 @@ const RUN_CLOUD_LANES = async (cfg) => {
 
   results.captures = captures;
   results.shots = shots;
+  // The lane-B ground pin, READ BACK. `baseColor` is what the offline globe
+  // renders with every imagery layer removed, so its luma is the ceiling on any
+  // ground contrast this lane can measure.
+  {
+    const base = scene.globe.baseColor;
+    results.groundPin = {
+      baseColor: base ? [base.red, base.green, base.blue] : null,
+      baseColorLuma: base
+        ? 0.2126 * base.red + 0.7152 * base.green + 0.0722 * base.blue
+        : null,
+      enableLighting: scene.globe.enableLighting === true,
+      globeSurfaceRendererResolved: !!scene.context?.getFeatureRenderer?.(
+        cfg.globeSurfaceKey,
+      ),
+    };
+  }
   results.rendererType = String(
     scene.context?.rendererType ?? "",
   ).toLowerCase();
@@ -1235,11 +1447,15 @@ async function openPage(browser, renderer) {
   return { context, page, consoleErrors };
 }
 
-async function resolveProceduralKey(page) {
+async function resolveFeatureRendererKeys(page) {
   return page.evaluate(async () => {
     const C = await import("/Build/CesiumUnminified/index.js");
-    const key = C.FeatureRendererKey?.PROCEDURAL_CLOUDS;
-    return typeof key === "number" ? key : null;
+    const clouds = C.FeatureRendererKey?.PROCEDURAL_CLOUDS;
+    const globe = C.FeatureRendererKey?.GLOBE_SURFACE;
+    return {
+      proceduralKey: typeof clouds === "number" ? clouds : null,
+      globeSurfaceKey: typeof globe === "number" ? globe : null,
+    };
   });
 }
 
@@ -1307,14 +1523,18 @@ async function resolveProceduralKey(page) {
       // against the (now black) background.
       cameraHeight: 300.0,
       skyPitchDegrees: 12.0,
-      // Lane B: ABOVE the deck, looking down, at the geometry the two probes
-      // that DO resolve a cast shadow use — `probe-cloud-shadows-flagon` flies
-      // 9000 m / -38 deg and `probe-cloud-shadow-cascades` 8000 m / -32 deg.
-      // The +/-60 km, 512-texel shadow map is 234 m per texel, so lane A's
-      // 300 m vantage put the whole scored ground band inside ONE texel; see
-      // the arithmetic at the lane-B block.
-      groundCameraHeight: 9000.0,
-      groundPitchDegrees: -38.0,
+      // Lane B: BELOW the 1500 m deck floor, looking down at a ground patch far
+      // enough away to span many shadow texels. The +/-60 km, 512-texel shadow
+      // map is 234 m per texel, so the FIRST run's 300 m vantage put the whole
+      // scored band inside ONE texel (geometric vacuity); the SECOND run's
+      // 9000 m vantage fixed that but flew ABOVE the deck, so ~98% of the band
+      // was cloud top and only ~1.8% was ground (photometric vacuity). 1400 m
+      // at -8 deg puts the band at 3.1-6.8 km — ~16 texels — with the deck
+      // entirely above the line of sight. See the arithmetic at the lane-B
+      // block; `shadowGroundNotOccluded` and `shadowGroundIsBright` read both
+      // preconditions back.
+      groundCameraHeight: 1400.0,
+      groundPitchDegrees: -8.0,
       groundCloudDensity: 0.85,
       settleMs: 500,
       ladder: derived.ladder,
@@ -1326,16 +1546,17 @@ async function resolveProceduralKey(page) {
     // context with the cloud lanes).
     {
       const opened = await openPage(browser, "webgpu");
-      const proceduralKey = await resolveProceduralKey(opened.page);
-      if (proceduralKey === null) {
+      const keys = await resolveFeatureRendererKeys(opened.page);
+      if (keys.proceduralKey === null || keys.globeSurfaceKey === null) {
         cloudLanes = {
           structuralError:
-            "FeatureRendererKey.PROCEDURAL_CLOUDS is not exported",
+            "FeatureRendererKey.PROCEDURAL_CLOUDS / GLOBE_SURFACE is not exported",
         };
       } else {
         cloudLanes = await opened.page.evaluate(RUN_CLOUD_LANES, {
           ...laneConfig,
-          proceduralKey,
+          proceduralKey: keys.proceduralKey,
+          globeSurfaceKey: keys.globeSurfaceKey,
         });
       }
       consoleFaults.webgpu.push(...opened.consoleErrors.slice(0, 8));
@@ -1522,6 +1743,23 @@ async function resolveProceduralKey(page) {
   console.log(
     `NOT GATING (reported-only): ${ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.join(", ")}`,
   );
+  // The SHADOW plumbing, on one line. The second run's report carried
+  // `shadowActive` but nothing printed it, so a blind lane looked like a missing
+  // instrument rather than a scene that could not see its own subject.
+  {
+    const t = verdicts.shadowTelemetry ?? {};
+    const control = t.consumer?.cloudShadowControl;
+    console.log(
+      `SHADOW telemetry: producerActive off/on ${t.producerActiveOff}/${t.producerActiveOn}; ` +
+        `map ${t.producer?.shadowSize ?? "?"} px, frameValid ${t.producer?.shadowFrameValid ?? "?"}, ` +
+        `absorption ${t.producer?.shadowAbsorption ?? "?"}; ` +
+        `terrain cloudShadowControl ${control ? `[${control.map((n) => r3(n)).join(", ")}]` : "UNREADABLE"} ` +
+        `(x>0.5 opens the FS branch), eyeRelative ${t.consumer?.cloudShadowRelativeToEye ?? "?"}; ` +
+        `band inside footprint ${t.footprint?.allInside ?? "?"}, texelSpan ${r3(t.footprint?.texelSpan)}; ` +
+        `groundOnly ${r3(t.groundOnly)}, retention ${r3(t.groundRetention)} ` +
+        `@ ${t.cameraHeight} m / ${t.pitchDegrees} deg`,
+    );
+  }
   // INVALID is printed as INVALID with its reason. The first run printed
   // "-18.9 ms/refresh", which reads like a measurement and is not one.
   console.log(

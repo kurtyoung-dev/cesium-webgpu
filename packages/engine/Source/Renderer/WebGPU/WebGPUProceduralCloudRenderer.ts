@@ -2276,9 +2276,27 @@ export function executeProceduralClouds(
   // elevation (todT) as the sun color: warm orange-grey at the horizon (twilight
   // band) -> desaturated sky-blue at day. This roughly tracks the rendered sky's
   // horizon color so far clouds dissolve into it rather than a fixed blue.
-  data[offset++] = 0.8 + (0.62 - 0.8) * todT; // 92 R (warm 0.80 -> day 0.62)
-  data[offset++] = 0.62 + (0.72 - 0.62) * todT; // 93 G (warm 0.62 -> day 0.72)
-  data[offset++] = 0.5 + (0.85 - 0.5) * todT; // 94 B (warm 0.50 -> day 0.85)
+  //
+  // C13-41-CLOUD-AERIAL-TINT-UNDIMMED — this tint is an ADDEND, not a scale:
+  // the shader computes `mix(toneMapped, cloud.aerialColor, aerial)`
+  // (`ProceduralClouds.wgsl:2557`), so the `aerial` fraction of every deck pixel
+  // is this colour REGARDLESS of the deck's own radiance. It models the skylight
+  // in-scattered between camera and cloud, and during an eclipse that inscatter
+  // dims with the sky it comes from — exactly the argument
+  // `C13-41-ENV-GROUND-INSCATTER-ADDEND-UNDIMMED` makes for the bakes' ground
+  // texels. Left undimmed, a distant deck keeps a full-brightness horizon tint
+  // at totality and the measured deck ratio is biased upward by
+  // `aerial * (1 - F) * A / H(1)`. `* 1.0` is bit-exact, so every non-eclipse
+  // frame is byte-identical.
+  //
+  // Named rather than inlined so the probe's provenance guard has a
+  // NUMERAL-FREE marker to search the bundle for: every literal in this block is
+  // a float, and esbuild normalises those on the way in.
+  const dimAerialTint = (channel: number): number =>
+    applyEclipseCloudDimming(channel, eclipseCloudFactor);
+  data[offset++] = dimAerialTint(0.8 + (0.62 - 0.8) * todT); // 92 R (warm 0.80 -> day 0.62)
+  data[offset++] = dimAerialTint(0.62 + (0.72 - 0.62) * todT); // 93 G (warm 0.62 -> day 0.72)
+  data[offset++] = dimAerialTint(0.5 + (0.85 - 0.5) * todT); // 94 B (warm 0.50 -> day 0.85)
   data[offset++] = 0; // 95 pad
   // ── Batch 407 — promoted shader consts → live dials (96-100) + V11-reserved
   // pads (101-103). The ?? defaults EXACTLY match the former WGSL consts

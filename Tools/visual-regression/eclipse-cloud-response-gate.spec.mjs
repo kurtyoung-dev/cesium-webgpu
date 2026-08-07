@@ -338,6 +338,10 @@ function passingRun() {
     const onContribution = offContribution * factor;
     // Ground: unshadowed 0.5; shadowed = unshadowed * mix(1, 0.35, strength).
     // The eclipse scales BOTH bands by `factor`, which cancels in the ratio.
+    // `offNoCloud` is the DECK-FREE ground: lane B now flies below the deck
+    // floor, so turning the deck on leaves the ground band essentially
+    // untouched and the retention ratio sits at ~1.
+    const offNoCloud = 0.51;
     const offNoShadow = 0.5;
     const offShadow = offNoShadow * shadowContrast(1.0);
     const onNoShadow = offNoShadow * factor;
@@ -372,12 +376,17 @@ function passingRun() {
         samples: 20000,
       },
       shadow: {
+        offNoCloud,
         offNoShadow,
         offShadow,
         onNoShadow,
         onShadow,
         strengthOff: 1,
         strengthOn: directional,
+        shadowActiveOff: true,
+        shadowActiveOn: true,
+        cameraHeight: 1400,
+        pitchDegrees: -8,
         samples: 20000,
       },
     };
@@ -468,7 +477,7 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
     ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES,
   );
   // Membership is pinned so a gate cannot be added or removed by accident.
-  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 23);
+  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 25);
   assert.equal(ECLIPSE_CLOUD_PARITY_PREDICATES.length, 2);
   // Nothing is scored without a declared blindness domain — an unmapped
   // predicate would be silently unquarantinable.
@@ -699,6 +708,69 @@ test("E2 a cast shadow that does not darken the ground is STRUCTURAL", () => {
   assert.deepEqual(verdict.failedPredicates, []);
 });
 
+test("E2b a ground too DARK to carry a shadow is STRUCTURAL, and names why", () => {
+  // The offline pin removes every imagery layer, so an un-brightened globe
+  // renders `baseColor` (0, 0, 0.5) at luma 0.036. The beer floor removes at
+  // most 65% of that. The contrast ceiling can only ever report "no shadow";
+  // this detector reports the REASON.
+  const run = clone(passingRun());
+  for (const rung of run.cloudLanes.rungs) {
+    const dark = 0.036;
+    rung.shadow.offNoCloud = dark;
+    rung.shadow.offNoShadow = dark;
+    rung.shadow.offShadow = dark * shadowContrast(1.0);
+    rung.shadow.onNoShadow = dark * predictFactor(rung.target);
+    rung.shadow.onShadow =
+      rung.shadow.onNoShadow * shadowContrast(predictDirectional(rung.target));
+  }
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.shadowGroundIsBright, false);
+  assert.ok(
+    verdict.structuralReasons.some((r) => r.includes("brightness floor")),
+    JSON.stringify(verdict.structuralReasons),
+  );
+  assert.deepEqual(
+    verdict.failedPredicates,
+    [],
+    "a lane that cannot photometrically see its subject must not emit a verdict",
+  );
+  // ...and it must NOT drag the deck or IBL lanes down with it.
+  assert.ok(!verdict.unscoredPredicates.includes("deckRatioInBand"));
+  assert.ok(!verdict.unscoredPredicates.includes("iblRecovers"));
+});
+
+test("E2c the SECOND run's exact shape — a deck sitting in the ground band — is STRUCTURAL", () => {
+  // Replays the 2026-08-07 second Edge run's lane B verbatim: 9000 m above a
+  // 1500-4000 m deck, band mean 0.512511 clouds-on vs a ~0.03 deck-free ground,
+  // shadowed 0.511866 (contrast 0.998743). The old fold could only say "the
+  // cast shadow is not darkening the ground", which pointed the diagnosis at
+  // the engine. The retention read-back says what actually happened.
+  const run = clone(passingRun());
+  for (const rung of run.cloudLanes.rungs) {
+    rung.shadow.offNoCloud = 0.03;
+    rung.shadow.offNoShadow = 0.512511;
+    rung.shadow.offShadow = 0.511866;
+    rung.shadow.onNoShadow = 0.378175;
+    rung.shadow.onShadow = 0.377913;
+  }
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.shadowGroundIsBright, false);
+  assert.equal(verdict.shadowGroundNotOccluded, false);
+  assert.ok(
+    verdict.structuralReasons.some((r) => r.includes("turning the deck on")),
+    JSON.stringify(verdict.structuralReasons),
+  );
+  // The retention ratio is the headline number: the deck made the "ground"
+  // band 17x brighter than the ground.
+  assert.equal(
+    Number(verdict.shadowGroundRetentionRatio.toFixed(2)),
+    17.08,
+    "the second run's band was 17x the deck-free ground — it was not ground",
+  );
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.equal(verdict.exitCode, 3);
+});
+
 test("E3 a wrong backend on the cloud lane is STRUCTURAL", () => {
   const run = clone(passingRun());
   run.cloudLanes.rendererType = "webgl";
@@ -844,6 +916,8 @@ test("H1 the first run's EXACT shape — shadow-blind + deck out of band — is 
   assert.deepEqual(
     verdict.unscoredPredicates.sort(),
     [
+      "shadowGroundIsBright",
+      "shadowGroundNotOccluded",
       "shadowNonVacuous",
       "shadowContrastInvariant",
       "shadowContrastRejectsAlternativeDesign",
@@ -1160,10 +1234,9 @@ test("F3 the probe establishes the deck ISOLATION and the lane-B shadow geometry
   assert.match(pinning, /skyAtmosphere\.show = false/);
   assert.match(pinning, /scene\.backgroundColor = C\.Color\.BLACK/);
 
-  // Lane B flies its own, higher camera: the cast-shadow map is 512 texels
-  // across a +/-60 km footprint, so a 300 m vantage put the whole scored ground
-  // band inside ONE texel.
-  assert.match(probe, /groundCameraHeight: 9000\.0/);
+  // Lane B flies its own camera, and it has to clear TWO vacuity traps at once.
+  assert.match(probe, /groundCameraHeight: 1400\.0/);
+  assert.match(probe, /groundPitchDegrees: -8\.0/);
   assert.match(
     probe,
     /aimCamera\(julian, cfg\.groundPitchDegrees, cfg\.groundCameraHeight\)/,
@@ -1173,19 +1246,117 @@ test("F3 the probe establishes the deck ISOLATION and the lane-B shadow geometry
   );
   assert.match(engineCloud, /const CLOUD_SHADOW_SIZE = 512;/);
   assert.match(engineCloud, /const CLOUD_SHADOW_FOOTPRINT_M = 60000\.0;/);
-  // One texel is 234 m of ground; the first run's band was ~131 m deep.
+
+  // TRAP 1 — GEOMETRIC (the first run, 300 m / -35 deg). One texel is 234 m of
+  // ground, and that vantage's scored band was ~131 m deep: sub-texel, so the
+  // map was constant over the whole measurement by construction.
   assert.equal(Number(((2 * 60000) / 512).toFixed(1)), 234.4);
-  const bandDepthAt = (height) =>
-    height / Math.tan((38.6 * Math.PI) / 180) -
-    height / Math.tan((50.8 * Math.PI) / 180);
+  // `bandDepth` for a camera at `height` looking down, over the scored
+  // 60%..95% of the frame: `height/tan(near angle) - height/tan(far angle)`.
+  const bandDepth = (height, nearAngle, farAngle) =>
+    height / Math.tan((farAngle * Math.PI) / 180) -
+    height / Math.tan((nearAngle * Math.PI) / 180);
   assert.ok(
-    bandDepthAt(300) < 234.4,
-    "the 300 m vantage's scored band must be sub-texel — that is the diagnosis",
+    bandDepth(300, 50.8, 38.6) < 234.4,
+    "the 300 m vantage's scored band must be sub-texel — that is diagnosis 1",
+  );
+  // The 1400 m / -8 deg vantage: down-angles 11.7..24.3 deg (vertical half-FOV
+  // 18 deg on a 1280x720 canvas at the default 60 deg horizontal FOV).
+  assert.ok(
+    bandDepth(1400, 24.3, 11.7) > 10 * 234.4,
+    "the 1400 m vantage must span many texels",
+  );
+
+  // TRAP 2 — PHOTOMETRIC (the second run, 9000 m / -38 deg). That vantage
+  // cleared trap 1 and still read 0.9987, because it flew ABOVE the
+  // 1500-4000 m deck: the line of sight to the ground crossed the cloud, the
+  // band was ~98% cloud top, and the beer floor's reach over a ~1.8% ground
+  // share is 0.65 * 0.018 = 1.2% — the 0.98 ceiling was unreachable. Reproduce
+  // that arithmetic here so the fix cannot be undone without failing.
+  const DECK_BOTTOM = 1500;
+  const beerReach = (groundShare) => groundShare * (1 - 0.35);
+  assert.ok(
+    beerReach(0.018) < 1 - ECLIPSE_CLOUD_BANDS.shadowVacuityCeiling.hi,
+    "a 1.8% ground share cannot cross the vacuity ceiling — that is diagnosis 2",
+  );
+  assert.equal(
+    Number(
+      (
+        beerReach(ECLIPSE_CLOUD_BANDS.shadowGroundBrightness.lo) /
+        (1 - ECLIPSE_CLOUD_BANDS.shadowVacuityCeiling.hi)
+      ).toFixed(3),
+    ),
+    4.875,
+    "the brightness floor clears the vacuity ceiling by 4.875x — the band's own `why`",
+  );
+  // The fix is structural, not a tuning: the camera is BELOW the deck floor, so
+  // the line of sight to the scored ground never crosses the deck at all.
+  assert.ok(
+    1400 < DECK_BOTTOM,
+    "lane B must fly below the deck floor for the ground band to be ground",
+  );
+  assert.match(probe, /cloudLayerBottom: 1500/);
+  // And the probe brightens the offline globe, whose default base colour cannot
+  // carry the measurement.
+  assert.match(
+    probe,
+    /scene\.globe\.baseColor = C\.Color\.fromBytes\(200, 200, 200\)/,
+  );
+  assert.match(
+    readEngine("Scene/GlobeSurfaceTileProvider.js"),
+    /this\.baseColor = new Color\(0\.0, 0\.0, 0\.5, 1\.0\);/,
   );
   assert.ok(
-    bandDepthAt(9000) > 10 * 234.4,
-    "the 9000 m vantage must span many texels",
+    0.2126 * 0 + 0.7152 * 0 + 0.0722 * 0.5 <
+      ECLIPSE_CLOUD_BANDS.shadowGroundBrightness.lo,
+    "the DEFAULT base colour must fail the brightness floor — that is what the floor is for",
   );
+  // Both preconditions are read back, not assumed.
+  assert.match(probe, /offNoCloud: bOffNoCloud\.mean/);
+  assert.match(probe, /shadowGroundIsBright/);
+  assert.match(probe, /shadowGroundNotOccluded/);
+});
+
+test("F5 lane B publishes the producer / consumer / footprint telemetry", () => {
+  // The second run's report DID carry `shadowActiveOff/On`; nothing READ it, so
+  // the row recorded the telemetry as missing. These three reads answer the
+  // three separable questions a blind shadow lane raises, and the gate surfaces
+  // them next to the verdict rather than three levels down in the JSON.
+  const probe = fs
+    .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+  // The provenance guard must refuse a build that predates the aerial-tint dim,
+  // or the next run re-measures 0.894 against the OLD engine and reports it as
+  // the fix's result.
+  assert.match(probe, /marker: "dimAerialTint"/);
+  assert.match(
+    readEngine("Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts"),
+    /const dimAerialTint = /,
+  );
+  assert.match(probe, /const cloudCacheTelemetry = \(\) => \{/);
+  assert.match(probe, /const globeUniformTelemetry = \(\) => \{/);
+  assert.match(probe, /const shadowFootprintTelemetry = \(\) => \{/);
+  // The consumer read has to be the SAME slots the terrain FS branches on.
+  assert.match(
+    probe,
+    /cloudShadowControl: \[data\[164\], data\[165\], data\[166\], data\[167\]\]/,
+  );
+  assert.match(probe, /cloudShadowRelativeToEye: data\[229\]/);
+  const cameraUb = readEngine("Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts");
+  assert.match(
+    cameraUb,
+    /cloudShadowVP \(mat4, offsets 148-163\) \+ cloudShadowControl \(vec4, 164-167\)/,
+  );
+  assert.match(cameraUb, /cascade tail \(196-231\)/);
+  const globeFs = readEngine("Shaders/WebGPU/Globe/GlobeTerrain.wgsl");
+  assert.match(globeFs, /if \(camera\.cloudShadowControl\.x > 0\.5\) \{/);
+  assert.match(globeFs, /if \(camera\.cloudShadowCascadeParams\.y > 0\.5\) \{/);
+  // And the verdict carries them, so the console line has something to print.
+  const verdict = judgeEclipseCloudResponse(passingRun());
+  assert.equal(verdict.shadowTelemetry.producerActiveOff, true);
+  assert.equal(verdict.shadowTelemetry.cameraHeight, 1400);
+  assert.equal(verdict.shadowTelemetry.pitchDegrees, -8);
+  assert.match(probe, /SHADOW telemetry: producerActive off\/on/);
 });
 
 test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {

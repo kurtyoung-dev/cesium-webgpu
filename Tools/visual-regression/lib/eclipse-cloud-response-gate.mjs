@@ -58,6 +58,35 @@
  *      `mix(sceneColor, deckColor, alpha)`, so `cloudsOn - cloudsOff` is
  *      `alpha * (H - S)` and the sky survives with a minus sign. See
  *      `deckBackgroundCeiling.why`; the precondition is now READ BACK.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT THE SECOND EDGE RUN (Batch 910) CHANGED HERE — one more precondition
+ * pair, still zero band movement
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The second run came back EXIT 1 with the deck lane on a provably black
+ * background (`deckBackgroundMax` 0) reading 0.894 against [0.44, 0.70], and the
+ * shadow lane STILL blind at 0.9987 after Batch 909 had fixed its geometry.
+ *
+ *   - The DECK reading is a REAL product finding and stays one. It is NOT the
+ *     aerial addend: at the lane-A camera the haze fraction
+ *     `clamp(midDist/60000, 0, 0.85)` runs 0.086..0.170 over the scored band, so
+ *     `aerialColor` contributes ~10% of the deck's band mean and dimming it can
+ *     move the ratio to at best 0.79. See the C13-41 row for the full
+ *     arithmetic; the residual is the deck's own Reinhard at `cloud.exposure`
+ *     0.22 running at an exposed radiance of ~7.7, where a 2.15x radiance drop
+ *     displays as 1.13x. `deckDisplayedRatio` is NOT widened for that — a band
+ *     moved to admit the reading it was built to catch certifies nothing.
+ *   - The SHADOW lane was vacuous for a SECOND, independent reason the contrast
+ *     ceiling structurally cannot express. Batch 909 fixed the GEOMETRIC vacuity
+ *     (sub-texel band) and flew the lane at 9000 m — ABOVE the 1500-4000 m deck,
+ *     so the line of sight to the ground crossed the cloud. Fitting that run's
+ *     own numbers gives ~70% opaque cloud over a `baseColor`-only globe whose
+ *     display luma is 0.036: a ~1.8% ground share, against which the beer floor
+ *     can move the band by at most 0.65 * 0.018 = 1.2%. The 0.98 ceiling was
+ *     unreachable however well the cast shadow worked — and the 0.126% it DID
+ *     move is ~11% of the visible ground fully shadowed, i.e. the shadow was
+ *     there. `shadowGroundBrightness` and `shadowGroundRetention` are the two
+ *     read-backs that make that diagnosable instead of inferable.
  */
 
 /** The engine's totality floor, recomputed from the two published illuminances
@@ -310,6 +339,18 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
     "the un-eclipsed ground contrast (shadowOn / shadowOff). At or above 0.98 the cast shadow is not darkening the ground at all, so its invariance under an eclipse is unmeasurable. STRUCTURAL",
   ),
 
+  shadowGroundBrightness: band(
+    0.15,
+    1,
+    "the DECK-FREE ground band mean, i.e. the brightness of the surface the cast shadow has to darken. This is a PRECONDITION, and it exists because the second Edge run's lane B was vacuous for a reason the ceiling above cannot express. The offline pin removes every imagery layer, so the globe renders `GlobeSurfaceTileProvider.baseColor`, whose default `new Color(0, 0, 0.5, 1)` has a Rec.709 luma of 0.036 BEFORE the Lambert term. The cast shadow floors the ground at `max(exp(-tau*0.04), 0.35)`, so it can remove at most 65% of whatever the ground contributes: at 0.036 that is 0.023 of a full band and the 0.98 ceiling is unreachable by construction. 0.15 is the floor at which a fully-shadowed ground band moves the contrast by 0.65*0.15 = 0.0975, 4.875x the 0.02 the ceiling asks for. STRUCTURAL, not a product failure",
+  ),
+
+  shadowGroundRetention: band(
+    0.85,
+    1.18,
+    "`offNoShadow / offNoCloud` — the fraction of the scored ground band that survives turning the DECK on. The second Edge run flew lane B at 9000 m, ABOVE a 1500-4000 m deck, so the line of sight to the ground crossed it: fitting that run's own numbers gives ~70% opaque cloud and a ~1.8% ground share, and the 0.126% contrast it measured is ~11% of the visible ground fully shadowed — the cast shadow WAS working and the band could not see it. Flying below the deck floor makes the ratio ~1, and this band is that read-back. The window is deliberately two-sided: below 0.85 the deck has taken the band over, above 1.18 the deck is ADDING brightness to it (cloud tops in frame), and either way the band is not measuring ground. STRUCTURAL",
+  ),
+
   iblVacuityFloor: band(
     0.05,
     1,
@@ -336,6 +377,8 @@ export const ECLIPSE_CLOUD_GATE_PREDICATES = Object.freeze([
   "deckRatioInBand",
   "deckRatioMonotone",
   // Lane B — cloud shadow (prediction ii)
+  "shadowGroundIsBright",
+  "shadowGroundNotOccluded",
   "shadowNonVacuous",
   "offShadowStrengthExactlyOne",
   "shadowStrengthMatchesDirectional",
@@ -433,6 +476,8 @@ export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
   deckRatioInBand: "deck",
   deckRatioMonotone: "deck",
   // Lane B — cloud shadow (prediction ii)
+  shadowGroundIsBright: "shadow",
+  shadowGroundNotOccluded: "shadow",
   shadowNonVacuous: "shadow",
   offShadowStrengthExactlyOne: "cloud-page",
   shadowStrengthMatchesDirectional: "cloud-page",
@@ -792,6 +837,36 @@ export function judgeEclipseCloudResponse(run) {
         `deck contribution below the vacuity floor ${B.deckVacuityFloor.lo} on at least one rung — no deck in frame`,
       );
     }
+    // PHOTOMETRIC PRECONDITIONS, checked BEFORE the contrast ceiling and in this
+    // order, because each one bounds what the ceiling can possibly read. A dark
+    // ground caps the achievable contrast move at `0.65 * groundShare`; a deck
+    // sitting in the band caps `groundShare` itself. Both were true of the
+    // second Edge run, and the ceiling could only report the SYMPTOM.
+    v.shadowGroundOnly = rungs[0]?.shadow?.offNoCloud ?? null;
+    v.shadowGroundIsBright = inBand(
+      v.shadowGroundOnly,
+      B.shadowGroundBrightness,
+    );
+    if (!v.shadowGroundIsBright) {
+      markBlind(
+        "shadow",
+        `the deck-free ground band reads ${v.shadowGroundOnly} against the ${B.shadowGroundBrightness.lo} brightness floor — the cast shadow's 0.35 beer floor can remove at most 65% of that, so the ${B.shadowVacuityCeiling.hi} contrast ceiling is unreachable however well the shadow works`,
+      );
+    }
+    v.shadowGroundRetentionRatio = ratio(
+      rungs[0]?.shadow?.offNoShadow,
+      rungs[0]?.shadow?.offNoCloud,
+    );
+    v.shadowGroundNotOccluded = inBand(
+      v.shadowGroundRetentionRatio,
+      B.shadowGroundRetention,
+    );
+    if (!v.shadowGroundNotOccluded) {
+      markBlind(
+        "shadow",
+        `turning the deck on moves the ground band by ${v.shadowGroundRetentionRatio}x (outside [${B.shadowGroundRetention.lo}, ${B.shadowGroundRetention.hi}]) — the scored band is not the ground, so its contrast is not the cast shadow's`,
+      );
+    }
     v.shadowContrastClear = ratio(
       rungs[0]?.shadow?.offShadow,
       rungs[0]?.shadow?.offNoShadow,
@@ -885,6 +960,30 @@ export function judgeEclipseCloudResponse(run) {
   v.shadowContrastRejectsAlternativeDesign =
     inBand(v.shadowContrastRatioAtDiscriminating, B.shadowContrastRatio) &&
     !inBand(v.rejectedDesignContrastRatio, B.shadowContrastRatio);
+
+  // ── SHADOW TELEMETRY, reported not gated (Batch 911) ─────────────────────
+  // The second run's report DID carry `shadowActiveOff/On` — three levels down
+  // in `webgpuCloudLanes.rungs[i].shadow`, where no verdict and no console line
+  // read it, so the row recorded "the promised telemetry did not appear". It
+  // appears HERE now, next to the verdict that needs it, so a blind shadow lane
+  // is diagnosable from the printed summary alone:
+  //   producer  `shadowActive` + the published strength/absorption/map size
+  //   consumer  the packed `cloudShadowControl` the terrain FS branches on
+  //   geometry  where the scored band lands in the 512-texel footprint
+  // Deliberately NOT gating: each can legitimately read false in a
+  // configuration that is not lane B's (a clouds-off leg publishes no map), and
+  // the gate is the contrast, not the plumbing.
+  v.shadowTelemetry = {
+    producerActiveOff: rungs[0]?.shadow?.shadowActiveOff ?? null,
+    producerActiveOn: rungs[0]?.shadow?.shadowActiveOn ?? null,
+    producer: rungs[0]?.shadow?.cloudCacheOff ?? null,
+    consumer: rungs[0]?.shadow?.globeUniformOff ?? null,
+    footprint: rungs[0]?.shadow?.footprintOff ?? null,
+    groundOnly: v.shadowGroundOnly,
+    groundRetention: v.shadowGroundRetentionRatio,
+    cameraHeight: rungs[0]?.shadow?.cameraHeight ?? null,
+    pitchDegrees: rungs[0]?.shadow?.pitchDegrees ?? null,
+  };
 
   // ── Lane C: prediction (iii) ─────────────────────────────────────────────
   v.predictedSweepRefreshCount = predictedSweepRefreshCount();

@@ -510,6 +510,66 @@ test("D1 cloud DIRECT and AMBIENT light both carry the factor, resolved once", (
   assert.match(cloudRenderer, /data\[offset\+\+\] = 0\.35; \/\/ 84/);
 });
 
+test("D1b the AERIAL TINT is an ADDEND and carries the factor too", () => {
+  // `C13-41-CLOUD-AERIAL-TINT-UNDIMMED`, closed 2026-08-07 (CO-11). The two
+  // scalars D1 pins are MULTIPLIERS on the deck's own radiance, so dimming them
+  // makes `weightedColor` exactly linear in F. The aerial tint is different in
+  // kind: the shader lerps TOWARD it
+  // (`hazed = mix(toneMapped, cloud.aerialColor, aerial)`), so the `aerial`
+  // fraction of every deck pixel is this colour no matter how dark the deck
+  // gets. Undimmed it is a floor the eclipse cannot reach — the same defect
+  // `C13-41-ENV-GROUND-INSCATTER-ADDEND-UNDIMMED` names for the bakes.
+  // The dim is applied through ONE named local, so the whole tint moves
+  // together and the probe's provenance guard has a numeral-free marker.
+  pinWithMutant(
+    cloudRenderer,
+    /const dimAerialTint = \(channel: number\): number =>\n\s*applyEclipseCloudDimming\(channel, eclipseCloudFactor\);/,
+    (s) =>
+      s.replace(
+        "applyEclipseCloudDimming(channel, eclipseCloudFactor);",
+        "applyEclipseCloudDimming(channel, 1.0);",
+      ),
+    "the aerial tint helper resolves the eclipse factor",
+  );
+  for (const [channel, expression] of [
+    ["92 R", "dimAerialTint(0.8 + (0.62 - 0.8) * todT)"],
+    ["93 G", "dimAerialTint(0.62 + (0.72 - 0.62) * todT)"],
+    ["94 B", "dimAerialTint(0.5 + (0.85 - 0.5) * todT)"],
+  ]) {
+    pinWithMutant(
+      cloudRenderer,
+      new RegExp(
+        `data\\[offset\\+\\+\\] = ${expression.replace(
+          /[.()+*]/g,
+          (c) => `\\${c}`,
+        )}; \\/\\/ ${channel}`,
+      ),
+      (s) =>
+        s.replace(
+          `data[offset++] = ${expression};`,
+          `data[offset++] = ${expression.slice("dimAerialTint(".length, -1)};`,
+        ),
+      `aerialColor ${channel} routes through the dim`,
+    );
+  }
+
+  // The SHADER side of the claim: the tint is consumed as the second operand of
+  // a `mix`, i.e. an addend. If this ever becomes a multiply the dim above is
+  // the wrong correction and this test should fail rather than ride along.
+  assert.match(
+    readEngine("Shaders/WebGPU/Environment/ProceduralClouds.wgsl"),
+    /var hazed = mix\(toneMapped, cloud\.aerialColor, aerial\);/,
+  );
+
+  // The aerial STRENGTH is deliberately NOT dimmed: it is the haze FRACTION
+  // (a geometry term keyed on march distance), not a radiance. Dimming it would
+  // make distant clouds crisper during an eclipse, which is not a light change.
+  assert.match(
+    cloudRenderer,
+    /data\[offset\+\+\] = config\.cloudAerialStrength \?\? 1\.0; \/\/ 91 aerialStrength/,
+  );
+});
+
 test("D2 the cloud shadow has ONE owner and uses the DIRECTIONAL fraction", () => {
   pinWithMutant(
     cloudRenderer,
