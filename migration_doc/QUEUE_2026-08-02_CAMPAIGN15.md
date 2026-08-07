@@ -511,7 +511,7 @@ scoping row must re-verify all of it at HEAD):**
 | ID | Task | Size | Status | Depends on |
 | --- | --- | --- | --- | --- |
 | `C15-G0` | Scoping + root-cause verification: reproduce the production no-render, verify the `NEW-WEBGPU-SPLAT-DATA-PRODUCER` mechanism at HEAD, map the full WebGL splat data path (loader -> workers -> primitive -> renderer) and specify the WebGPU producer design + task breakdown `C15-G1..Gn` with exit gates | M | **COMPLETE — 2026-08-06** (report §6a-§6d below; docs/analysis only, no engine change) | — |
-| `C15-G1` | Probe harness + **WebGL reference leg** on the two in-tree splat tilesets. No engine change. | S | PENDING | `C15-G0` |
+| `C15-G1` | Probe harness + **WebGL reference leg** on the two in-tree splat tilesets. No engine change. | S | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run. `probe-gsplat-parity.mjs` + `lib/gsplat-parity-model.mjs` + `gsplat-harness.spec.mjs` (50 checks green). Predictions + the §6a addendum below | `C15-G0` |
 | `C15-G2` | Scene-logic extraction: move the FR dispatch below the data commit; split the backend-neutral snapshot pack from the WebGL `Texture` upload | M | PENDING | `C15-G1` |
 | `C15-G3` | Splat record format + WebGPU buffer commit — consume the WASM texture-generator output verbatim; first real WebGPU splat pixels | L | PENDING | `C15-G2` |
 | `C15-G4` | Consume the WASM radix sort (`primitive._indexes`) instead of the in-renderer synchronous JS comparator sort | M | PENDING | `C15-G3` |
@@ -686,6 +686,145 @@ the **WebGPU** leg on the same run records `_numSplats === 0`, zero
 `Pass.GAUSSIAN_SPLATS` commands, and a blank canvas — the documented baseline
 the rest of the track is measured against. Both PNGs read by the author.
 
+#### `C15-G1` — IMPLEMENTATION DONE (worker, 2026-08-07) — pending orchestrator landing + Edge run
+
+Shipped, harness-only, **no engine file touched**:
+
+| File | Role |
+| --- | --- |
+| `Tools/visual-regression/probe-gsplat-parity.mjs` | the browser probe (named for the parity gate it becomes, not for the asset it loads — supersedes the `probe-splat-real-asset.mjs` working title above) |
+| `Tools/visual-regression/lib/gsplat-parity-model.mjs` | the pure verdict arithmetic, browser-free and therefore executable by `node --test` |
+| `Tools/visual-regression/gsplat-harness.spec.mjs` | 50 checks: 22 rules × the real implementation, 12 mutants each required to be rejected, a meta-test proving the rejection loop can report survival, and CRLF-safe source anchors on the `C15-G0` engine facts |
+
+**The dual-mode contract, which is the row's whole point.** Default mode
+certifies today's absence and prints the greppable
+`WEBGPU-SPLATS-ABSENT (expected until C15-G3)` while the run stays exit 0 —
+but only when the absence is ATTRIBUTABLE to a named, observed blocker; an
+unattributed blank canvas exits 3, because "nothing rendered" is also what a
+broken probe looks like. `--expect-webgpu` (turned on by `C15-G3`) makes the
+same absence exit 1 and hands presence to a cross-backend pixel diff scored
+against the `C15-G8` thresholds already recorded here (tower 3%, cube 1%).
+The parity leg REFUSES to emit a number when the WebGPU leg showed nothing:
+two blank canvases diff to 0.000%, the tightest score the gate can print.
+Presence arriving while the probe is still in default mode is also STRUCTURAL,
+not a pass — a green run on a stale contract is how a gate stops meaning
+anything.
+
+**Design decisions.** Camera derived from `tileset.boundingSphere` only —
+`lookAt(center, HeadingPitchRange(0, -30°, max(2.0 × radius, 10 m)))` then
+`lookAtTransform(IDENTITY)` to bake the world pose; no hardcoded ECEF anywhere
+(the spec forbids `Cartesian3.fromDegrees` in the probe). Globe HIDDEN, not
+merely un-imaged: the metric needs a background it can prove blank, and
+`sh_unit_cube` is not georeferenced — its bounding volume sits ~87 m from the
+geocentre. Splats over a globe are `C15-G6`'s subject. The scored quantity is
+pixels the tileset ADDED versus the same settled scene with `tileset.show =
+false`, never "non-black pixels", so a widget or a clear-colour change cannot
+be mistaken for splats. Readiness is two separate wall-clock budgets — tileset
+content (backend-neutral) and splat data commit — and the WebGPU leg's data
+budget is DERIVED from what WebGL actually needed (`max(30 s, 4 × webgl
+dataReadyMs)`), so the absence claim reads "four times the reference's wall
+clock and still nothing" rather than an arbitrary wait.
+
+**Nine structural preconditions**, each independently falsifiable and each
+pinned by the spec: `server-reachable`, `tileset-fetch`, `pass-enum-exported`,
+`backend-identity`, `tileset-content-readiness`, `camera-framing`,
+`capture-liveness`, `background-blank`, `capture-determinism`,
+`negative-control-returns`. Two deserve naming:
+
+- **`capture-liveness`** paints the scene a known non-background colour and
+  requires the readback to see it. Without it, the fork's historical dead-
+  readback trap (`capture-and-diff.mjs`, Batch 227 — solid black post-present
+  under `preserveDrawingBuffer: false`) is indistinguishable from "the renderer
+  drew nothing", and the probe would file `reference:addedPixels` as a WebGL
+  defect that does not exist.
+- **`pass-enum-exported`** exists because `frustum.indices[undefined] | 0` is
+  `0`: an unexported `Pass` would MANUFACTURE the absence this probe observes.
+
+**Falsifiable predictions at HEAD** (`58af0d1819`, Edge, 1024×768 = 786,432 px,
+`sh_unit_cube`, offline viewer, pinned clock `2026-06-01T18:00:00Z`):
+
+*WebGL leg — predicted PASS.* `rendererType=webgl`;
+`contentReady=true`; `_numSplats === 27`; `_indexes.length === 27`;
+`isStable === true`; binned `Pass.GAUSSIAN_SPLATS` (= **12** at HEAD, not 11)
+`>= 1`; added `>= 15,729 px (2.000%)` with `edgeFraction` in `[0.002, 0.95]`
+and luminance σ `>= 4`; capture liveness `>= 90%`; hidden-tileset frame
+`< 0.100%` foreground; return-to-reference `< 0.100%`; determinism
+`< 0.050%`; zero console/device errors. On `tower`, the same shape with
+`_numSplats === 286868`.
+
+*WebGPU leg — predicted the ABSENT marker.* `rendererType=webgpu`;
+`contentReady=true` (content loading is backend-neutral, so this is NOT where
+it breaks); `_numSplats === 0`; `isStable === false`; `_indexes` undefined;
+`featureRendererKind === "ready"`; **`cache.splatCount` prints `null`, not
+`0`** — see the addendum below; `splatPassCommands === 0`; added
+`changed === 0`; `absenceBlockers = [primitive-show-undefined,
+no-splat-data-fields, primitive-numsplats-zero]`. Printed line:
+`WEBGPU-SPLATS-ABSENT (expected until C15-G3)`. Overall predicted exit **0**.
+
+*Named ways this run can come back other than predicted, and what each means:*
+
+- Added pixels land between ~0.5% and 2.0% → a FRAMING calibration finding
+  (`RANGE_SCALE`), not a product defect. The probe prints the measured fraction
+  either way; retune and re-run.
+- The WebGL leg never reaches `_numSplats > 0` → exit **3** with
+  `reference:splat-data-commit`. That is this row's de-risking outcome: the
+  WASM splat workers (`gaussianSplatTextureGenerator`, `gaussianSplatSorter`)
+  do not resolve under Playwright, every downstream parity gate in `C15-G2..G8`
+  is void, and the maintainer must know before `C15-G2` starts.
+- `capture-liveness` red → the canvas readback is dead and NOTHING in the run
+  is a product verdict.
+
+**Commands for the Edge run** (dev server up: `node server.js` from the repo
+root — it statics the repo root, so no Ion token and no network):
+
+```bash
+node --test Tools/visual-regression/gsplat-harness.spec.mjs
+node Tools/visual-regression/probe-gsplat-parity.mjs
+node Tools/visual-regression/probe-gsplat-parity.mjs --asset=tower
+PROBE_GSPLAT_WATCHDOG_MS=1200000 node Tools/visual-regression/probe-gsplat-parity.mjs --asset=both
+```
+
+Evidence lands in `Tools/visual-regression/output/gsplat-parity/` — per-lane
+`-on` / `-off` / `-off-after` / `-capture-liveness` PNGs plus `manifest.json`.
+
+#### §6a addendum — a SECOND, EARLIER blocker the `C15-G0` chain does not name
+
+Found while building this harness, verified at `58af0d1819`, and it changes
+`C15-G2`/`C15-G3` scope:
+
+`WebGPUGaussianSplatRenderer.updateWebGPUGaussianSplats` opens with
+`if (!primitive.show) { return; }` (`WebGPUGaussianSplatRenderer.ts:1059-1061`)
+— **before** it allocates `primitive._webgpuCache` (`:1063`) and roughly 240
+lines before the `_splatData` read at `:1299-1300` that §6a records as the
+break. **`GaussianSplatPrimitive` defines no `show` member at all**: the class
+has `debugShowBoundingVolume` and reads `tileset.show` inside its own WebGL
+path, but no `show` accessor and no `this.show =` anywhere. So for a PRODUCTION
+primitive `!undefined` is `true` and the renderer exits at its first statement.
+
+Why the record missed it: all three synthetic probes hand-roll `show: true` on
+their fake primitive object (`probe-splat-sort.mjs:220`,
+`probe-splat-globe-occlusion.mjs:120`, `probe-oit-transparency.mjs:717`), which
+is exactly why they reach the data path and production never does.
+
+Consequences, none of which invalidate §6a's verdict — the recorded
+`_splatData` break is real, it is just not the FIRST one:
+
+1. §6a step 4's consequence chain ("`splatData === undefined` → ... → returns
+   at `:1359-1361`") is never executed either; the function returns ~300 lines
+   earlier.
+2. `primitive._webgpuCache` is therefore `undefined`, not an allocated cache
+   with `splatCount === 0`. Any probe or row that expects to read
+   `cache.splatCount === 0` as evidence of the break will read `null` instead.
+3. **`C15-G3` cannot be closed by assigning `_splatData` alone** — that would
+   still render nothing. The row needs either a `show` member on
+   `GaussianSplatPrimitive` (proxying `tileset.show`, which is what the WebGL
+   path already gates on at `GaussianSplatPrimitive.js:1207`) or a renderer-side
+   change to that guard. Cheapest correct fix is the primitive-side accessor,
+   because the WebGL path's own visibility semantics are already `tileset.show`
+   and a `show` member keeps the two backends reading one source of truth.
+   `C15-G2` is the natural home for it, since it is already moving the
+   backend-neutral half of `update` around.
+
 ### `C15-G2` — scene-logic extraction (M) — deps: `C15-G1`
 
 Apply the scene-logic-extractor rule to `GaussianSplatPrimitive.update`: the
@@ -740,6 +879,13 @@ are meter-scale in the `_rootTransform` ENU frame by construction
 `positionHigh = <f32 position>`, `positionLow = 0`, keep the
 `(pH - camH) + (pL - camL)` cancellation structure intact, and land a rationale
 comment at the site. Do not silently drop the RTE lanes.
+
+**Prerequisite added by `C15-G1` (see the §6a addendum):** the renderer's first
+statement `if (!primitive.show) return;` fires for every production primitive
+because `GaussianSplatPrimitive` has no `show` member. Assigning splat data
+alone renders nothing. Land the `show` member (or the guard change) in `C15-G2`
+or here, and prove it with `probe-gsplat-parity.mjs --expect-webgpu` — the flip
+this row is supposed to turn on.
 
 Also in scope: `maybeSortSplats` (`:968-1049`) and `attachSplatVelocityCommand`
 (`:1654+`) both read the 16-float stride and must be moved to the new layout (or,
