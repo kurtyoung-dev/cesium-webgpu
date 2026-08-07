@@ -89,6 +89,200 @@ close Gate B. Do NOT widen the assertions to accommodate the noise - the spread
 assertion already missed by 0.0002 in one run, so a widened bar would be measuring
 the noise rather than the channels.
 
+### UPDATE 2026-08-06 - probe PINNED; mechanisms identified are ALL in the instrument
+
+**No product non-determinism was found, and none is claimed.** Every mechanism
+traced below lives in the probe's own configuration or its scene environment; the
+renderer produces a deterministic frame once the frame-index and clock inputs are
+removed. That is a source-traced conclusion, NOT a measured one - see "not
+verified" below. If the pinned probe still reports STRUCTURAL, the finding is
+promoted to a product defect, because every instrument-side input is then pinned
+and read back.
+
+**Mechanism 1 (dominant, and a MEASUREMENT defect as well as a determinism one) -
+the probe was scoring a network-fed globe.** It loaded
+`Apps/CesiumViewer/index.html?renderer=webgpu` with no `offline` flag, so
+`CesiumViewerStartupOptions.js:36-42` handed the Viewer **Cesium World Terrain
+plus the Ion world-imagery base layer**. The metric is a hard threshold,
+`max(r,g,b) > 120` over the central 60% of a nadir frame, so a bright imagery tile
+is counted as CLOUD. lon -170 / lat 25 is open ocean: with tiles unloaded the frame
+is the dark `baseColor` (max 25 -> frac **0.000**); with tiles loaded it is bright
+ocean over the whole sample region (frac **1.000**). That reproduces the recorded
+bimodal flip exactly, on exactly the location most exposed to it - the FIRST one
+visited after a camera jump, whose tiles are not prefetched during the preceding
+5 s source wait. It also explains the mean arithmetic: the GREEN/RED mean gap
+(0.4476 -> 0.5374) is ~1/9 of the sweep, i.e. one location changing state, with
+the residual +/-0.02 among the RED runs being the other eight locations' own tile
+timing. Every other cloud probe in the fleet already loads `&offline=true`; this
+one did not.
+
+**Mechanism 2 - two render drivers, two time coordinates.** `useDefaultRenderLoop`
+was left true, so the widget rAF loop rendered with `clock.tick()` while the
+probe's own loop called `scene.render()` with NO argument - and `Scene.js:4222-4224`
+substitutes `JulianDate.now()`. The cloud `time` uniform is derived from
+`frameState.time` (`WebGPUProceduralCloudRenderer.ts:688-706`), so half the frames
+advanced it with the wall clock regardless of the Viewer clock, and the clock was
+never pinned in any case.
+
+**Mechanism 3 - the tier path was active, with temporal accumulation and jitter.**
+`cloudQuality` defaults to **64** (`Scene/CloudVolumetrics.js:164`) and the probe
+never set it, so `resolveCloudPreset` (`WebGPUCloudTierPresets.ts:173-198`) took
+the TIER path, which at this camera height resolves T1/T2:
+`temporalEnabled: true`, `temporalUpdateFraction: 1/16`, `jitterEnabled: true`,
+`renderResScale: 0.5`, `noiseSource: BAKED`. This is the same hazard
+`probe-cloud-genus-morphology.mjs` documents for its own gate-B determinism
+control. It also carries a second, quieter transient: `noiseBakedBit` self-heals to
+the LIVE march until the async bake lands, so the image changes mid-run when it
+does.
+
+**Mechanism 4 - `hasData` is not "the map is applied".** The weather map
+auto-enables only once `getPackedTexture` returns bytes
+(`WebGPUProceduralCloudRenderer.ts:2023-2028`) and the upload is
+version-edge-triggered (`:1254-1258`). The probe waited a flat 5 s and read
+`provider.hasData`, which proves a CPU pack exists - not that the bytes reached the
+GPU texture and not that `weatherMapEnabled` went to 1. Until it does, the deck
+renders from the global `cloudCoverage` alone, i.e. dense everywhere: an
+independent second route to a saturated west.
+
+**Mechanism 5 - a fixed UTC clock across a 320-degree sweep is a day/night
+confound.** With one instant, part of the sweep is unlit, so gate 4's
+`west < east` could have been satisfied by the terminator rather than by the A
+channel. This is the C13-07 lesson already recorded on the genus probe.
+
+**What the pinned probe now does** (all documented in its header with the
+file:line evidence): `&offline=true` + `imageryLayers.removeAll()` + a forced
+`EllipsoidTerrainProvider`; `useDefaultRenderLoop = false` and every render is
+`scene.render(pinnedJulianDate)`; `cloudWindSpeed = 0` (`cloud.time` is consumed in
+exactly three places in `ProceduralClouds.wgsl` and all three are
+`windDirection * windSpeed * time`, so at speed 0 the clock is provably inert on
+the density field); `cloudQuality = 32` to take the escape hatch, which clears
+`temporalEnabled` / `jitterEnabled` / half-res / baked-noise / cone-light and
+therefore removes EVERY `cloud.frameCounter` consumer from the march
+(`ProceduralClouds.wgsl:378-392`, `:1755-1765`, `:2630-2640` - each is gated behind
+QF_JITTER, QF_LIGHT_CONE or `halfResEnabled()`); per-location local mean noon so
+illumination is identical at every sample; a weather-applied poll on
+`hasData && cache.weatherProviderVersion === provider.version &&
+uniformData[64] === 1`; binned `Pass.GLOBE` + `__cloudProbe.awaitProceduralReady`
+readiness; discarded warm-up renders, wall-clock settles with `setTimeout` yields,
+and same-task capture.
+
+**Every pin is READ BACK from the shipped artifacts, not merely requested** -
+`uniformData` slot 44 (`maxSteps` must be 32), slot 74 (`qualityFlags` bits
+0/1/2/3/10 must be clear), slot 64 (`weatherMapEnabled` must be 1 on all four
+legs), slot 107 (`weatherChannelStrength` 1 on the three full legs, 0 on the gated
+one), slot 35 (the cloud `time` uniform, required identical per location across the
+repeat), plus imagery-layer count, terrain-provider class and the clock flags. A
+pin that did not take reports STRUCTURAL, never a channel verdict.
+
+**Determinism control (new).** The rich sweep is captured TWICE back to back under
+one configuration; the two must agree per location within **0.005** and on the
+sweep mean within **0.0025**. Both are strictly inside the smallest scored margin
+(gate 3's 0.01 on stddev, gate 4's 0.02 on a fraction), so a control pass means the
+residual noise cannot flip an assertion. Failure reports **STRUCTURAL (exit 3)**
+with the measured spread. Exit codes now follow `probe-vector-draping.mjs`:
+0 pass / 1 real FAIL / 2 watchdog or exception / 3 STRUCTURAL.
+
+**NO ASSERTION WAS WIDENED, LOWERED OR REMOVED.** All six scored thresholds are
+byte-identical to the pre-pinning probe (`rich mean > 0.02`,
+`rich stddev >= neutral stddev + 0.01`, `west < east - 0.02`, the richOff-collapse
+comparison, `hasData && version > 0`, zero new errors). A WebGPU-backend gate was
+ADDED (a silent WebGL fallback now hard-fails), and a continuous `meanMax` per
+location is now REPORTED alongside the threshold count for diagnosis only.
+
+**NOT VERIFIED - no browser was available to this worker.** Nothing below was
+measured; it is source-traced only. (a) That the pinned probe is in fact stable -
+the ten-run acceptance has not been executed. (b) That the six scored gates still
+PASS under the new configuration: pins P1 (imagery removed), P4 (LIVE noise,
+full-res, no temporal) and P6 (uniform illumination) all move the ABSOLUTE
+fractions, so **the recorded 0.4129..0.5374 rich means are not a baseline for this
+probe and must not be compared against**. The gates are all relative (rich vs its
+own neutral control, west vs east within one sweep) and should survive, but that is
+an argument, not a measurement. (c) That the escape-hatch LIVE-noise march
+preserves the G/B/A response strongly enough for gate 3's 0.01 stddev margin - the
+weather-channel sampling is in `legacyCloudDensity` / `cloudMacroSampleAt` and is
+independent of the noise source, but the magnitude is unmeasured. (d) Whether the
+east sample saturates at 1.000 legitimately under the new configuration - see
+`C13-GATE-B-CHANNELS-METRIC-SATURATION`. (e) Runtime: the escape hatch is
+full-resolution LIVE noise, and the wall-clock budgets total ~225 s worst case
+against a 600 s watchdog, but this has not been timed.
+
+**Orchestrator acceptance command** (one build, no rebuild between runs; the dev
+server must be up on `PROBE_BASE`):
+
+```bash
+for i in $(seq 1 10); do
+  node Tools/visual-regression/probe-weather-channels.mjs > /tmp/wc-$i.log 2>&1
+  echo "run $i exit=$? $(grep -E '^RESULT|^rich    fr' /tmp/wc-$i.log | tr '\n' ' ')"
+done
+```
+
+Accept only when all ten exit codes are **identical and equal to 0**, the ten
+`rich mean` values have a max-minus-min spread **<= 0.01** (this cross-run
+tolerance must not be looser than the in-run mean tolerance of 0.0025 it sits
+above), and no run printed a `STRUCTURAL` block. An exit 3 on any run is NOT a
+Gate-B red - it is the probe declining to certify, and its printed reason names the
+pin that did not take.
+
+## 2026-08-06 - the weather-probe fleet's threshold metric has no headroom
+
+### C13-GATE-B-CHANNELS-METRIC-SATURATION
+
+**Status:** OPEN / LOW, filed as a SEPARATE finding from the pinning work so it
+cannot be mistaken for a licence to loosen a bar. No assertion was changed for it.
+
+`probe-weather-channels.mjs` scores a hard threshold - `max(r,g,b) > 120` sampled
+every third pixel over the central 60% of a nadir frame. Over a nearly uniform
+cloud deck that is a STEP FUNCTION: a location is essentially all-cloud (1.000) or
+all-background (0.000), so a deck sitting near the threshold amplifies any residual
+noise into a full-scale swing, and a legitimately dense location pins at 1.000 with
+no headroom left for gate 4's `west < east - 0.02` to discriminate against. The
+recorded 0.000/1.000 flip was caused by imagery, not by the deck (see
+`C13-GATE-B-CHANNELS-PROBE-NONDETERMINISM`), but the metric is what turned a small
+brightness difference into a whole-frame verdict change.
+
+**Proposal, for a maintainer ruling - NOT applied.** At `cloudCoverage 0.6 /
+cloudDensity 0.9` a lit deck clears 120 comfortably. Restoring headroom means
+either (a) a scene change - lower `cloudDensity` toward 0.5 so the sweep lands
+mid-scale - or (b) a metric change - score the CONTINUOUS per-location mean of
+`max(r,g,b)` instead of the threshold count. (b) is strictly more informative and
+does not touch the authored scene, but it re-bases every threshold in the file and
+so is a separate, ruled change rather than a drive-by. The pinned probe already
+REPORTS the continuous `meanMax` per location alongside the scored fraction, so the
+evidence needed to choose is produced by every run from now on.
+
+## 2026-08-06 - most weather probes score a NETWORK-FED globe
+
+### C13-WEATHER-PROBE-FLEET-NETWORK-GLOBE
+
+**Status:** OPEN / MEDIUM - found while pinning `probe-weather-channels.mjs`;
+scope-limited to a finding because that pass was authorized to touch one probe.
+
+`Apps/CesiumViewer` only gives a deterministic offline globe when the URL carries
+`offline=true` (`CesiumViewerStartupOptions.js:18-26`); every other query shape gets
+Cesium World Terrain plus the Ion world-imagery base layer (`:36-42`). Audit of
+`Tools/visual-regression/probe-weather-*.mjs` at this HEAD:
+
+| offline | probe |
+|---|---|
+| yes | `probe-weather-channels` (fixed this pass), `probe-weather-regional-tails` |
+| **no** | `probe-weather-edr-mock`, `probe-weather-ingest`, `probe-weather-inspector`, `probe-weather-map`, `probe-weather-metar`, `probe-weather-presets`, `probe-weather-seam-poles`, `probe-weather-time`, `probe-weather-wcs` |
+
+**Six of the nine network-fed probes are the other Gate-B legs** (`edr-mock`,
+`ingest`, `metar`, `seam-poles`, `time`, `wcs`) - the ones currently recorded GREEN
+and used to argue that only `channels` is unstable. Their greenness was established
+on the same instrument class that produced the `channels` flip. That does NOT make
+them wrong: a probe whose metric is confined to a cloud-contribution difference, or
+whose sample region is off-globe, is not contaminated by imagery the way a raw
+bright-pixel count is. But it does mean "six of seven are green" is not yet
+evidence that the seventh was the only susceptible one.
+
+**Work item.** For each of the nine, check whether its scored quantity can be moved
+by streamed imagery/terrain; where it can, add `&offline=true` +
+`imageryLayers.removeAll()` + the read-back structural assertions, using the pinned
+`probe-weather-channels.mjs` as the template. Re-run each on one build ten times
+before re-banking its verdict. **Effort:** M. **Impact:** the trustworthiness of
+Gate B as a whole, not just of the `channels` leg.
+
 ## 2026-08-06 - WebGPU globe does not receive sun shadows AT ALL
 
 ### NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD
