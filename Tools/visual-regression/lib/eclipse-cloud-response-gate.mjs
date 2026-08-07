@@ -30,11 +30,34 @@
  * ─────────────────────────────────────────────────────────────────────────────
  * EVERY BAND IS `DERIVED` UNTIL THE FIRST EDGE RUN
  * ─────────────────────────────────────────────────────────────────────────────
- * No band here was fitted to a measurement, because no measurement exists yet —
- * this probe has never run. Each carries its derivation in `why`. After the
- * first Edge run the orchestrator may TIGHTEN a band against the observed
- * margin; widening one to make a run pass is the failure mode this note exists
- * to make visible.
+ * No band here was fitted to a measurement. Each carries its derivation in
+ * `why`. After a confirming Edge run the orchestrator may TIGHTEN a band
+ * against the observed margin; widening one to make a run pass is the failure
+ * mode this note exists to make visible.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * WHAT THE FIRST EDGE RUN (Batch 908) CHANGED HERE — three INSTRUMENT defects,
+ * zero band movement
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The first run came back STRUCTURAL with a deck ratio of 2.937 against
+ * [0.44, 0.70] and a negative refresh cost. Not one band moved; three pieces of
+ * apparatus did.
+ *
+ *   1. EXIT CONTRACT. The probe exited 2 on a STRUCTURAL verdict, colliding
+ *      with its own watchdog. `eclipseCloudExitCode` now owns the mapping —
+ *      0 PASS / 1 FAIL / 2 harness fault / 3 STRUCTURAL — as a pure function
+ *      the spec pins directly.
+ *   2. PER-LANE SCOPING. A vacuous SHADOW lane demoted the whole gate, so a
+ *      3x out-of-band DECK reading printed `failedPredicates: []`. Quarantine
+ *      is now per-domain: see `ECLIPSE_CLOUD_PREDICATE_LANES`.
+ *   3. DECK ISOLATION. The 2.937 is not attainable by any deck. The deck's
+ *      pre-tonemap radiance is exactly linear in the eclipse factor (both
+ *      `sunIntensity` and `ambientIntensity` carry it) and Reinhard is
+ *      monotone, so H(F) <= H(1) and the pure deck ratio is bounded by 1. The
+ *      difference image was never isolating the deck: the composite is
+ *      `mix(sceneColor, deckColor, alpha)`, so `cloudsOn - cloudsOff` is
+ *      `alpha * (H - S)` and the sky survives with a minus sign. See
+ *      `deckBackgroundCeiling.why`; the precondition is now READ BACK.
  */
 
 /** The engine's totality floor, recomputed from the two published illuminances
@@ -275,6 +298,12 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
     "the deck's own contribution (cloudsOn - cloudsOff) in the UN-eclipsed leg. Below 0.01 there is no deck in frame and every ratio computed from it is noise over noise — the `NEW-PROBE-VACUOUS-REACHABILITY-ASSERTION` class. STRUCTURAL, not a product failure",
   ),
 
+  deckBackgroundCeiling: band(
+    0,
+    0.02,
+    "the clouds-OFF band mean, i.e. whatever is BEHIND the deck. This is a PRECONDITION of the isolation, not a product claim, and it exists because the first Edge run measured a deck ratio of 2.937 — a number no deck can produce. The composite is `mix(sceneColor, deckColor, cloudAlpha)`, so `cloudsOn - cloudsOff` is `alpha * (H - S)`, NOT `alpha * H`: the background S survives the difference with a MINUS sign. It does not cancel between eclipse positions either, because the sky is tonemapped by the scene chain (Reinhard + inverseGamma) while the deck carries its OWN private Reinhard at `cloud.exposure` and composites AFTER the gamma stage, so the two dim at different DISPLAY rates. When H and S are close the denominator `H(1) - S(1)` collapses and the ratio diverges — which is exactly the 2.937 regime. The band's own [0.44, 0.70] window is `F*(1+e)/(1+F*e)` for e in [0,1] (0.4642 at e=0, 0.6341 at e=1 — the row's '0.46 faint / ~0.63 bright core' verbatim), i.e. it was DERIVED for the pure deck ratio H(F)/H(1). The probe therefore removes the background (sky shell, skybox, sun, moon, black clear) so S ~ 0 and the difference IS the deck; this ceiling is the read-back that proves it took. Above 0.02 the isolation assumption is false and the deck lane is STRUCTURAL — a ratio above 1.0 is unattainable for ANY deck model, dimmed or not, because the pre-tonemap radiance is exactly linear in the eclipse factor and Reinhard is monotone",
+  ),
+
   shadowVacuityCeiling: band(
     0,
     0.98,
@@ -300,6 +329,7 @@ export const ECLIPSE_CLOUD_BANDS = Object.freeze({
 export const ECLIPSE_CLOUD_GATE_PREDICATES = Object.freeze([
   // Lane A — deck lighting (prediction i)
   "cloudLaneIsWebGPU",
+  "deckBackgroundIsDark",
   "deckNonVacuous",
   "offFactorExactlyOne",
   "factorMatchesSecondImplementation",
@@ -348,6 +378,302 @@ export const ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES = Object.freeze([
   "deckRatioMatchesLinearReportedOnly",
 ]);
 
+/**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * PER-LANE STRUCTURAL SCOPING — a blind lane quarantines only ITS OWN gates
+ * ─────────────────────────────────────────────────────────────────────────────
+ * The first Edge run (Batch 908) exposed the defect this map exists to fix. The
+ * shadow lane went vacuous (un-eclipsed ground contrast 0.9969 against the 0.98
+ * floor) and the old fold demoted EVERY gate to unscored, so `failedPredicates`
+ * printed `[]` while `deckRatioInBand` was false at 2.937 — a 3x out-of-band
+ * deck reading reported as "no product verdict at all".
+ *
+ * A blind lane certifies nothing about ITS OWN subject. It says nothing
+ * whatsoever about the others, and suppressing their verdicts is not caution,
+ * it is data loss. Each gating predicate therefore declares the BLINDNESS
+ * DOMAIN it is measured in, and domains NEST — blinding a parent blinds its
+ * children:
+ *
+ *   gate-arithmetic   never blind. Derived inside this module from the
+ *                     published constants with no run input at all.
+ *   cloud-page        the WebGPU cloud page ran and resolved the WebGPU
+ *                     backend. Covers the CPU-published reads
+ *                     (`eclipseSceneLightFactor`, `_cloudCache.shadowStrength`)
+ *                     and the determinism bracket — none of which need a deck
+ *                     or a shadow to be VISIBLE, only the page to have run.
+ *   deck   (child)    the deck difference image `cloudsOn - cloudsOff` carries
+ *                     real signal.
+ *   shadow (child)    the cast shadow actually darkens the ground.
+ *   ibl-page          both IBL lanes ran. Covers the refresh counters, the
+ *                     quiescence fold and the wall-clock cost — counter and
+ *                     clock reads rather than pixels.
+ *   ibl-model (child) the model band is lit and in frame.
+ *
+ * The vacuity DETECTOR for a domain lives IN that domain, so a vacuous lane
+ * reports ONE structural reason rather than a structural reason plus a derived
+ * FAIL restating it.
+ */
+export const ECLIPSE_CLOUD_LANE_PARENTS = Object.freeze({
+  "gate-arithmetic": null,
+  "cloud-page": null,
+  deck: "cloud-page",
+  shadow: "cloud-page",
+  "ibl-page": null,
+  "ibl-model": "ibl-page",
+});
+
+/** Every gating predicate's blindness domain. Membership is spec-pinned. */
+export const ECLIPSE_CLOUD_PREDICATE_LANES = Object.freeze({
+  // Lane A — deck lighting (prediction i)
+  cloudLaneIsWebGPU: "cloud-page",
+  deckBackgroundIsDark: "deck",
+  deckNonVacuous: "deck",
+  offFactorExactlyOne: "cloud-page",
+  factorMatchesSecondImplementation: "cloud-page",
+  deckRatioInBand: "deck",
+  deckRatioMonotone: "deck",
+  // Lane B — cloud shadow (prediction ii)
+  shadowNonVacuous: "shadow",
+  offShadowStrengthExactlyOne: "cloud-page",
+  shadowStrengthMatchesDirectional: "cloud-page",
+  shadowContrastInvariant: "shadow",
+  shadowContrastRejectsAlternativeDesign: "shadow",
+  // Lane C — IBL dim, refresh cadence, recovery (prediction iii)
+  predictedRefreshCountExact: "gate-arithmetic",
+  rampNeverSkipsABucket: "ibl-page",
+  engineRefreshCountWebGPUInBand: "ibl-page",
+  engineRefreshCountWebGLInBand: "ibl-page",
+  controlRefreshQuiescent: "ibl-page",
+  sweepQuiescenceInBand: "ibl-page",
+  iblNonVacuous: "ibl-model",
+  iblDimsAtDeepest: "ibl-model",
+  iblRecovers: "ibl-model",
+  // Instrument health
+  determinismBracketHolds: "cloud-page",
+  refreshCostMeasured: "ibl-page",
+});
+
+/** Both cross-backend predicates compare the two IBL lanes. */
+export const ECLIPSE_CLOUD_PARITY_LANE = "ibl-page";
+
+/**
+ * Resolves a domain to blind/not-blind through the parent chain. Bounded by the
+ * depth of `ECLIPSE_CLOUD_LANE_PARENTS`, and defensively by a step cap so a
+ * mis-edited parent map cannot spin.
+ *
+ * @param {object} blind `{ domain: [reason, ...] }`
+ * @param {string} domain
+ * @returns {boolean}
+ */
+export function laneIsBlind(blind, domain) {
+  let current = domain;
+  for (let depth = 0; depth < 8 && current; depth++) {
+    if ((blind[current]?.length ?? 0) > 0) {
+      return true;
+    }
+    current = ECLIPSE_CLOUD_LANE_PARENTS[current] ?? null;
+  }
+  return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE REFRESH-COST ARITHMETIC (C13-41-ECLIPSE-REFRESH-COST-UNMEASURED)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// WHY THIS IS A FUNCTION AND NOT THREE LINES INSIDE THE FOLD. The first run's
+// cost leg produced -18.9 ms/refresh: the eclipse leg ran FIRST at 0.77 s and
+// the control leg ran SECOND at 5.97 s, so the differential `sweep - control`
+// was dominated by whatever the second leg paid that the first did not. A
+// wall-clock A/B whose two legs do not pay the same warm-up is not a
+// measurement, and the fleet already learned this for GPU timing (Batch 762's
+// mandatory interleaved-A/B protocol). The instrument's answer is structural:
+//
+//   1. BOTH legs run a DISCARDED warm-up segment before either is timed;
+//   2. the two legs are INTERLEAVED in segments over one schedule, so any
+//      monotone drift (thermal, cache, GC) lands on both in equal measure;
+//   3. the estimate is either non-negative or explicitly INVALID with a named
+//      reason — a negative number is never reported as if it were a cost.
+//
+// This function owns rule 3 and VERIFIES rules 1 and 2 from the accounting the
+// lane hands in, so a probe that quietly stops interleaving fails here rather
+// than reporting a plausible-looking number.
+
+/** Minimum interleaved segments per leg. Two legs of one segment each is just
+ * the sequential design that produced the negative reading. */
+export const REFRESH_COST_MIN_SEGMENTS_PER_LEG = 3;
+
+/**
+ * @param {object} accounting The lane's `refreshCost` accounting.
+ * @returns {object} `{ valid, msPerRefresh, invalidReason, ... }`
+ */
+export function computeRefreshCost(accounting) {
+  const base = {
+    valid: false,
+    msPerRefresh: null,
+    invalidReason: null,
+    msDelta: null,
+    fillDelta: null,
+    eclipseWallMs: null,
+    controlWallMs: null,
+    eclipseFills: null,
+    controlFills: null,
+    eclipseFrames: null,
+    controlFrames: null,
+    segmentsPerLeg: null,
+    warmupBothLegs: null,
+  };
+  const a = accounting;
+  if (!a || typeof a !== "object") {
+    return {
+      ...base,
+      invalidReason:
+        "the lane reported no refresh-cost accounting — the interleaved legs did not run",
+    };
+  }
+
+  const out = {
+    ...base,
+    eclipseWallMs: Number.isFinite(a.eclipseWallMs) ? a.eclipseWallMs : null,
+    controlWallMs: Number.isFinite(a.controlWallMs) ? a.controlWallMs : null,
+    eclipseFills: Number.isFinite(a.eclipseFills) ? a.eclipseFills : null,
+    controlFills: Number.isFinite(a.controlFills) ? a.controlFills : null,
+    eclipseFrames: Number.isFinite(a.eclipseFrames) ? a.eclipseFrames : null,
+    controlFrames: Number.isFinite(a.controlFrames) ? a.controlFrames : null,
+    segmentsPerLeg: Number.isFinite(a.segmentsPerLeg) ? a.segmentsPerLeg : null,
+    warmupBothLegs: a.warmupBothLegs === true,
+  };
+
+  // RULE 1 — warm-up parity. This is the named cause of the first run's
+  // negative reading, so its absence is its own reason rather than a generic
+  // "invalid".
+  if (out.warmupBothLegs !== true) {
+    return {
+      ...out,
+      invalidReason:
+        "warm-up parity was not established — only one leg paid the first-touch cost, which is exactly the asymmetry that produced the first run's negative per-refresh",
+    };
+  }
+
+  // RULE 2 — interleaving. A single segment per leg is the sequential design.
+  if (!(out.segmentsPerLeg >= REFRESH_COST_MIN_SEGMENTS_PER_LEG)) {
+    return {
+      ...out,
+      invalidReason: `the legs were not interleaved (${out.segmentsPerLeg} segment(s) per leg, minimum ${REFRESH_COST_MIN_SEGMENTS_PER_LEG}) — a sequential A/B attributes drift to the effect`,
+    };
+  }
+  if (out.eclipseFrames !== out.controlFrames) {
+    return {
+      ...out,
+      invalidReason: `the two legs rendered different frame counts (${out.eclipseFrames} eclipse vs ${out.controlFrames} control) — everything except the fills no longer cancels`,
+    };
+  }
+  if (!(out.eclipseFrames > 0)) {
+    return {
+      ...out,
+      invalidReason: "neither leg rendered a frame",
+    };
+  }
+
+  const fillDelta = out.eclipseFills - out.controlFills;
+  if (!Number.isFinite(fillDelta) || !(fillDelta > 0)) {
+    return {
+      ...out,
+      fillDelta: Number.isFinite(fillDelta) ? fillDelta : null,
+      invalidReason: `no eclipse-driven fills to attribute cost to (${out.eclipseFills} eclipse vs ${out.controlFills} control) — the differential cannot be formed and the row does NOT discharge`,
+    };
+  }
+
+  const msDelta = out.eclipseWallMs - out.controlWallMs;
+  if (!Number.isFinite(msDelta)) {
+    return {
+      ...out,
+      fillDelta,
+      invalidReason: "a leg reported no wall clock",
+    };
+  }
+  // RULE 3 — non-negative or INVALID. A negative differential means the control
+  // leg outran the eclipse leg, i.e. something other than the fills dominated;
+  // reporting `msDelta / fillDelta` there would publish a negative cost as a
+  // measurement, which is what the first run did.
+  if (msDelta < 0) {
+    return {
+      ...out,
+      fillDelta,
+      msDelta,
+      invalidReason: `the control leg outran the eclipse leg (${out.controlWallMs} ms control vs ${out.eclipseWallMs} ms eclipse over the same ${out.eclipseFrames} frames) — the differential is negative, so no per-refresh cost can be attributed to the fills`,
+    };
+  }
+
+  return {
+    ...out,
+    fillDelta,
+    msDelta,
+    msPerRefresh: msDelta / fillDelta,
+    valid: true,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE EXIT CONTRACT
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// 0 PASS / 1 FAIL / 2 harness fault (watchdog or throw) / 3 STRUCTURAL.
+//
+// The first run printed EXIT 2 on a STRUCTURAL verdict, which collides with the
+// watchdog's own code — a reader cannot tell a probe that refused to certify
+// from a probe that never finished. The mapping lives here, as a pure function
+// over the verdict, so the spec can pin it directly instead of regex-matching a
+// ternary in the driver.
+//
+// FAIL outranks STRUCTURAL deliberately: with per-lane scoping a run can carry
+// both a quarantined lane and a real failure in an evaluable one, and the real
+// failure is the actionable half.
+export const ECLIPSE_CLOUD_EXIT = Object.freeze({
+  PASS: 0,
+  FAIL: 1,
+  HARNESS: 2,
+  STRUCTURAL: 3,
+});
+
+/**
+ * @param {object} outcome `{ harnessFault, structuralReasons, failedPredicates, parityFailed }`
+ * @returns {number}
+ */
+export function eclipseCloudExitCode(outcome) {
+  const o = outcome ?? {};
+  if (o.harnessFault === true) {
+    return ECLIPSE_CLOUD_EXIT.HARNESS;
+  }
+  const failures =
+    (o.failedPredicates?.length ?? 0) + (o.parityFailed?.length ?? 0);
+  if (failures > 0) {
+    return ECLIPSE_CLOUD_EXIT.FAIL;
+  }
+  if ((o.structuralReasons?.length ?? 0) > 0) {
+    return ECLIPSE_CLOUD_EXIT.STRUCTURAL;
+  }
+  return ECLIPSE_CLOUD_EXIT.PASS;
+}
+
+/**
+ * The one-word label that must agree with `eclipseCloudExitCode`.
+ *
+ * @param {object} outcome
+ * @returns {string}
+ */
+export function eclipseCloudGateLabel(outcome) {
+  switch (eclipseCloudExitCode(outcome)) {
+    case ECLIPSE_CLOUD_EXIT.PASS:
+      return "PASS";
+    case ECLIPSE_CLOUD_EXIT.FAIL:
+      return "FAIL";
+    case ECLIPSE_CLOUD_EXIT.HARNESS:
+      return "HARNESS FAULT";
+    default:
+      return "STRUCTURAL";
+  }
+}
+
 const inBand = (value, b) =>
   Number.isFinite(value) && value >= b.lo && value <= b.hi;
 
@@ -362,6 +688,12 @@ const ratio = (a, b) =>
  * seen its subject certifies nothing, and this fleet has re-learned that often
  * enough for it to be a rule.
  *
+ * SCOPING (Batch 909, from the first run's evidence): the quarantine is
+ * PER-LANE. A blind lane's own predicates go UNSCORED and are named in
+ * `unscoredPredicates`; every other lane still gates, and its failures are
+ * FAILURES. See `ECLIPSE_CLOUD_PREDICATE_LANES` for the domain map and the
+ * defect that forced it.
+ *
  * @param {object} run
  * @param {object} run.cloudLanes WebGPU lanes A + B.
  * @param {object} run.iblWebGPU Lane C on WebGPU.
@@ -370,33 +702,32 @@ const ratio = (a, b) =>
 export function judgeEclipseCloudResponse(run) {
   const v = {};
   const structuralReasons = [];
+  const blind = {};
   const B = ECLIPSE_CLOUD_BANDS;
-  const cloud = run.cloudLanes;
-  const gpu = run.iblWebGPU;
-  const gl = run.iblWebGL;
+  const cloud = run?.cloudLanes ?? {};
+  const gpu = run?.iblWebGPU ?? {};
+  const gl = run?.iblWebGL ?? {};
 
-  for (const [name, lane] of [
-    ["webgpu-cloud", cloud],
-    ["webgpu-ibl", gpu],
-    ["webgl-ibl", gl],
+  /** Blind one domain and record the reason once, in both places. */
+  const markBlind = (domain, reason) => {
+    (blind[domain] ??= []).push(reason);
+    structuralReasons.push(reason);
+  };
+  const isBlind = (domain) => laneIsBlind(blind, domain);
+
+  // ── Lane presence. A page that never ran blinds the domains it owns and
+  // NOTHING else — the other pages' measurements are untouched by it.
+  for (const [name, lane, domain] of [
+    ["webgpu-cloud", run?.cloudLanes, "cloud-page"],
+    ["webgpu-ibl", run?.iblWebGPU, "ibl-page"],
+    ["webgl-ibl", run?.iblWebGL, "ibl-page"],
   ]) {
     if (!lane || lane.structuralError) {
-      structuralReasons.push(
+      markBlind(
+        domain,
         `${name}: ${lane?.structuralError ?? "lane did not run"}`,
       );
     }
-  }
-  if (structuralReasons.length > 0) {
-    return {
-      ...v,
-      gatePredicates: ECLIPSE_CLOUD_GATE_PREDICATES,
-      reportedOnlyPredicates: ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES,
-      failedPredicates: [],
-      parityFailed: [],
-      structuralReasons,
-      cost: { webgpuMsPerRefresh: null, webglMsPerRefresh: null },
-      PASS: false,
-    };
   }
 
   const rungs = cloud.rungs ?? [];
@@ -409,43 +740,83 @@ export function judgeEclipseCloudResponse(run) {
     return best === undefined || d < bd ? rung : best;
   }, undefined);
 
-  v.cloudLaneIsWebGPU = cloud.rendererType === "webgpu";
-  if (!v.cloudLaneIsWebGPU) {
-    structuralReasons.push(
-      `webgpu-cloud: rendererType resolved "${cloud.rendererType}", not webgpu`,
-    );
+  // ── Backend resolution blinds the whole cloud PAGE (both lanes A and B). ──
+  if (!isBlind("cloud-page")) {
+    v.cloudLaneIsWebGPU = cloud.rendererType === "webgpu";
+    if (!v.cloudLaneIsWebGPU) {
+      markBlind(
+        "cloud-page",
+        `webgpu-cloud: rendererType resolved "${cloud.rendererType}", not webgpu`,
+      );
+    }
   }
 
-  // ── Vacuity, checked BEFORE any ratio is scored ──────────────────────────
+  // ── Vacuity, checked BEFORE any ratio is scored, and scoped to ONE lane ──
+  // Each detector is evaluated only if its own page ran, and blinds only its
+  // own domain. The deck going vacuous says nothing about the shadow, and the
+  // shadow going vacuous says nothing about the deck — that conflation is the
+  // exact defect the first Edge run exposed.
   v.deckContributionOff = deepest?.deck?.offContribution ?? null;
-  v.deckNonVacuous = rungs.every((rung) =>
-    inBand(rung.deck?.offContribution, B.deckVacuityFloor),
-  );
-  if (!v.deckNonVacuous) {
-    structuralReasons.push(
-      `deck contribution below the vacuity floor ${B.deckVacuityFloor.lo} on at least one rung — no deck in frame`,
+  if (!isBlind("cloud-page")) {
+    // ISOLATION PRECONDITION, checked before the vacuity floor: the difference
+    // `cloudsOn - cloudsOff` is only the deck when there is nothing behind it.
+    // See `deckBackgroundCeiling.why` for the arithmetic and for why the first
+    // run's 2.937 is unattainable by any deck.
+    v.deckBackgroundMax = rungs.reduce((worst, rung) => {
+      const values = [rung.deck?.offBare, rung.deck?.onBare].filter((value) =>
+        Number.isFinite(value),
+      );
+      return values.length === 0 ? worst : Math.max(worst, ...values);
+    }, 0);
+    v.deckBackgroundIsDark =
+      rungs.length > 0 &&
+      rungs.every(
+        (rung) =>
+          inBand(rung.deck?.offBare, B.deckBackgroundCeiling) &&
+          inBand(rung.deck?.onBare, B.deckBackgroundCeiling),
+      );
+    if (!v.deckBackgroundIsDark) {
+      markBlind(
+        "deck",
+        `the clouds-off background reads ${v.deckBackgroundMax} against the ${B.deckBackgroundCeiling.hi} isolation ceiling — the difference image carries a background term, so the ratio is (H-S)/(H-S) and not the deck's own H(F)/H(1)`,
+      );
+    }
+    v.deckNonVacuous =
+      rungs.length > 0 &&
+      rungs.every((rung) =>
+        inBand(rung.deck?.offContribution, B.deckVacuityFloor),
+      );
+    if (!v.deckNonVacuous) {
+      markBlind(
+        "deck",
+        `deck contribution below the vacuity floor ${B.deckVacuityFloor.lo} on at least one rung — no deck in frame`,
+      );
+    }
+    v.shadowContrastClear = ratio(
+      rungs[0]?.shadow?.offShadow,
+      rungs[0]?.shadow?.offNoShadow,
     );
+    v.shadowNonVacuous =
+      Number.isFinite(v.shadowContrastClear) &&
+      v.shadowContrastClear <= B.shadowVacuityCeiling.hi &&
+      v.shadowContrastClear > 0;
+    if (!v.shadowNonVacuous) {
+      markBlind(
+        "shadow",
+        `un-eclipsed ground contrast ${v.shadowContrastClear} is not below ${B.shadowVacuityCeiling.hi} — the cast shadow is not darkening the ground`,
+      );
+    }
   }
-  v.shadowContrastClear = ratio(
-    rungs[0]?.shadow?.offShadow,
-    rungs[0]?.shadow?.offNoShadow,
-  );
-  v.shadowNonVacuous =
-    Number.isFinite(v.shadowContrastClear) &&
-    v.shadowContrastClear <= B.shadowVacuityCeiling.hi &&
-    v.shadowContrastClear > 0;
-  if (!v.shadowNonVacuous) {
-    structuralReasons.push(
-      `un-eclipsed ground contrast ${v.shadowContrastClear} is not below ${B.shadowVacuityCeiling.hi} — the cast shadow is not darkening the ground`,
-    );
-  }
-  v.iblNonVacuous =
-    inBand(gpu.ibl?.baseline?.litFraction, B.iblVacuityFloor) &&
-    inBand(gl.ibl?.baseline?.litFraction, B.iblVacuityFloor);
-  if (!v.iblNonVacuous) {
-    structuralReasons.push(
-      "the IBL model band is unlit or out of frame on at least one backend",
-    );
+  if (!isBlind("ibl-page")) {
+    v.iblNonVacuous =
+      inBand(gpu.ibl?.baseline?.litFraction, B.iblVacuityFloor) &&
+      inBand(gl.ibl?.baseline?.litFraction, B.iblVacuityFloor);
+    if (!v.iblNonVacuous) {
+      markBlind(
+        "ibl-model",
+        "the IBL model band is unlit or out of frame on at least one backend",
+      );
+    }
   }
 
   // ── Lane A: prediction (i) ───────────────────────────────────────────────
@@ -581,33 +952,29 @@ export function judgeEclipseCloudResponse(run) {
   v.determinismBracketHolds = inBand(v.determinismDelta, B.determinismDelta);
 
   // C13-41-ECLIPSE-REFRESH-COST-UNMEASURED: the differential wall clock of the
-  // eclipse-driven fills. The control runs the IDENTICAL schedule with the
-  // effect off, so everything except the fills cancels.
-  const costPerRefresh = (lane) => {
-    const extraFills =
-      (lane.engineRefreshCount ?? 0) - (lane.controlRefreshCount ?? 0);
-    if (!(extraFills > 0)) {
-      return null;
-    }
-    return ((lane.sweepWallMs ?? 0) - (lane.controlWallMs ?? 0)) / extraFills;
-  };
+  // eclipse-driven fills, over INTERLEAVED legs that both paid a discarded
+  // warm-up. `computeRefreshCost` owns the arithmetic AND the validity rules;
+  // see its header for why a sequential A/B is not a measurement.
+  const webgpuCost = computeRefreshCost(gpu.refreshCost);
+  const webglCost = computeRefreshCost(gl.refreshCost);
   const cost = {
-    webgpuMsPerRefresh: costPerRefresh(gpu),
-    webglMsPerRefresh: costPerRefresh(gl),
-    webgpuSweepWallMs: gpu.sweepWallMs ?? null,
-    webgpuControlWallMs: gpu.controlWallMs ?? null,
-    webglSweepWallMs: gl.sweepWallMs ?? null,
-    webglControlWallMs: gl.controlWallMs ?? null,
+    webgpu: webgpuCost,
+    webgl: webglCost,
+    // Flat aliases the driver's one-line COST print reads. `null` whenever the
+    // estimate is INVALID, so a negative differential can never surface as a
+    // number that looks like a cost.
+    webgpuMsPerRefresh: webgpuCost.valid ? webgpuCost.msPerRefresh : null,
+    webglMsPerRefresh: webglCost.valid ? webglCost.msPerRefresh : null,
+    invalidReasons: [
+      webgpuCost.valid ? null : `webgpu: ${webgpuCost.invalidReason}`,
+      webglCost.valid ? null : `webgl: ${webglCost.invalidReason}`,
+    ].filter((reason) => reason !== null),
   };
   // MEASURED, not bounded: the row asks for the number, and there is no
   // pre-registered budget to score it against. The gate is only that a real,
-  // non-negative number came back — a null means the differential could not be
-  // formed and the row does NOT discharge.
-  v.refreshCostMeasured =
-    Number.isFinite(cost.webgpuMsPerRefresh) &&
-    cost.webgpuMsPerRefresh >= 0 &&
-    Number.isFinite(cost.webglMsPerRefresh) &&
-    cost.webglMsPerRefresh >= 0;
+  // non-negative number came back on both backends — an INVALID estimate means
+  // the differential could not be formed and the row does NOT discharge.
+  v.refreshCostMeasured = webgpuCost.valid && webglCost.valid;
 
   // ── Parity ───────────────────────────────────────────────────────────────
   const parity = {};
@@ -626,23 +993,39 @@ export function judgeEclipseCloudResponse(run) {
   parity.predictedRefreshCountParity =
     countBucketChanges(gpuBuckets, gpuBuckets[0]) ===
     countBucketChanges(glBuckets, glBuckets[0]);
-  const parityFailed = ECLIPSE_CLOUD_PARITY_PREDICATES.filter(
-    (name) => parity[name] !== true,
+  // Both cross-backend predicates read the two IBL lanes, so they are scored
+  // exactly when that domain can see.
+  const parityBlind = isBlind(ECLIPSE_CLOUD_PARITY_LANE);
+  const parityFailed = parityBlind
+    ? []
+    : ECLIPSE_CLOUD_PARITY_PREDICATES.filter((name) => parity[name] !== true);
+
+  // ── The scoped fold ──────────────────────────────────────────────────────
+  const unscoredPredicates = ECLIPSE_CLOUD_GATE_PREDICATES.filter((name) =>
+    isBlind(ECLIPSE_CLOUD_PREDICATE_LANES[name]),
   );
+  const unscored = new Set(unscoredPredicates);
 
   v.parity = parity;
   v.gatePredicates = ECLIPSE_CLOUD_GATE_PREDICATES;
+  v.predicateLanes = ECLIPSE_CLOUD_PREDICATE_LANES;
   v.reportedOnlyPredicates = ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES;
   v.structuralReasons = structuralReasons;
+  v.blindLanes = blind;
+  v.unscoredPredicates = unscoredPredicates;
+  v.unscoredParityPredicates = parityBlind
+    ? [...ECLIPSE_CLOUD_PARITY_PREDICATES]
+    : [];
   v.cost = cost;
-  v.failedPredicates =
-    structuralReasons.length > 0
-      ? []
-      : ECLIPSE_CLOUD_GATE_PREDICATES.filter((name) => v[name] !== true);
-  v.parityFailed = structuralReasons.length > 0 ? [] : parityFailed;
+  v.failedPredicates = ECLIPSE_CLOUD_GATE_PREDICATES.filter(
+    (name) => !unscored.has(name) && v[name] !== true,
+  );
+  v.parityFailed = parityFailed;
   v.PASS =
     structuralReasons.length === 0 &&
     v.failedPredicates.length === 0 &&
     parityFailed.length === 0;
+  v.exitCode = eclipseCloudExitCode(v);
+  v.GATE = eclipseCloudGateLabel(v);
   return v;
 }

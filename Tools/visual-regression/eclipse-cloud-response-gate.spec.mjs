@@ -36,15 +36,21 @@ import {
   CLOUD_SHADOW_BEER_FLOOR,
   ECLIPSE_ADAPTATION_EXPONENT,
   ECLIPSE_CLOUD_BANDS,
+  ECLIPSE_CLOUD_EXIT,
   ECLIPSE_CLOUD_GATE_PREDICATES,
   ECLIPSE_CLOUD_PARITY_PREDICATES,
+  ECLIPSE_CLOUD_PREDICATE_LANES,
   ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES,
   ECLIPSE_RADIOMETRIC_FLOOR,
   ENV_REFRESH_STEPS,
+  REFRESH_COST_MIN_SEGMENTS_PER_LEG,
   SWEEP_FRAMES,
   SWEEP_PEAK_OBSCURATION,
   SWEEP_RISING_FRAMES,
+  computeRefreshCost,
   countBucketChanges,
+  eclipseCloudExitCode,
+  eclipseCloudGateLabel,
   idealSweepBuckets,
   judgeEclipseCloudResponse,
   maxBucketStep,
@@ -352,10 +358,15 @@ function passingRun() {
         shadowStrength: 1,
       },
       deck: {
-        offClouds: 0.5,
-        offBare: 0.3,
-        onClouds: 0.3 * factor + onContribution,
-        onBare: 0.3 * factor,
+        // The background is BLACK by construction — the probe removes the sky
+        // shell, skybox, sun, moon and clear colour so that
+        // `cloudsOn - cloudsOff` is the deck's own contribution rather than
+        // `alpha * (H - S)`. 0.005 is the residual the isolation ceiling
+        // admits.
+        offClouds: 0.005 + offContribution,
+        offBare: 0.005,
+        onClouds: 0.005 * factor + onContribution,
+        onBare: 0.005 * factor,
         offContribution,
         onContribution,
         samples: 20000,
@@ -391,6 +402,19 @@ function passingRun() {
     controlRefreshCount: 1,
     sweepWallMs: 9000,
     controlWallMs: 5000,
+    // The INTERLEAVED cost accounting. 4000 ms over 274 eclipse-driven fills.
+    // Each leg carries the toggle-absorbing segment fills (8 per leg), so the
+    // DIFFERENCE is the sweep's own 274 edges.
+    refreshCost: {
+      warmupBothLegs: true,
+      segmentsPerLeg: 8,
+      eclipseFrames: SWEEP_FRAMES,
+      controlFrames: SWEEP_FRAMES,
+      eclipseWallMs: 9000,
+      controlWallMs: 5000,
+      eclipseFills: 282,
+      controlFills: 8,
+    },
     ibl: {
       baseline: { mean: 0.4, litFraction: 0.5, samples: 20000 },
       deepest: {
@@ -444,8 +468,16 @@ test("D2 PASS is the fold of the predicate LIST, with no second conjunction", ()
     ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES,
   );
   // Membership is pinned so a gate cannot be added or removed by accident.
-  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 22);
+  assert.equal(ECLIPSE_CLOUD_GATE_PREDICATES.length, 23);
   assert.equal(ECLIPSE_CLOUD_PARITY_PREDICATES.length, 2);
+  // Nothing is scored without a declared blindness domain — an unmapped
+  // predicate would be silently unquarantinable.
+  for (const name of ECLIPSE_CLOUD_GATE_PREDICATES) {
+    assert.ok(
+      ECLIPSE_CLOUD_PREDICATE_LANES[name],
+      `${name} has no blindness domain`,
+    );
+  }
   // A reported-only name must never also gate — that was the confusion the S2
   // probe had to name explicitly after a run was misdiagnosed twice in one day.
   for (const name of ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES) {
@@ -607,10 +639,11 @@ test("D12 an unreproducible capture fails the determinism bracket", () => {
 test("D13 a cost differential that cannot be formed fails — the row does NOT discharge", () => {
   expectFailure(
     (run) => {
-      // Same count in both legs: no eclipse-driven fills to attribute cost to.
-      run.iblWebGPU.controlRefreshCount = run.iblWebGPU.engineRefreshCount;
+      // Same fill count in both legs: nothing to attribute the wall clock to.
+      run.iblWebGPU.refreshCost.eclipseFills =
+        run.iblWebGPU.refreshCost.controlFills;
     },
-    ["refreshCostMeasured", "controlRefreshQuiescent"],
+    ["refreshCostMeasured"],
   );
 });
 
@@ -619,6 +652,8 @@ test("D14 the cost IS reported when the differential exists", () => {
   // 4000 ms over 274 eclipse-driven fills.
   assert.equal(Number(verdict.cost.webgpuMsPerRefresh.toFixed(4)), 14.5985);
   assert.equal(verdict.refreshCostMeasured, true);
+  assert.equal(verdict.cost.webgpu.valid, true);
+  assert.deepEqual(verdict.cost.invalidReasons, []);
 });
 
 test("D15 backend divergence in the published factor fails PARITY, not a lane gate", () => {
@@ -692,6 +727,366 @@ test("E5 an unlit IBL model band is STRUCTURAL", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// G. THE EXIT CONTRACT (Batch 909 instrument fix 1)
+//
+// The first run printed EXIT 2 on a STRUCTURAL verdict, colliding with the
+// watchdog's own code, so a reader could not tell a probe that REFUSED to
+// certify from one that never FINISHED.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("G1 the four exit codes are 0 PASS / 1 FAIL / 2 HARNESS / 3 STRUCTURAL", () => {
+  assert.deepEqual(
+    { ...ECLIPSE_CLOUD_EXIT },
+    {
+      PASS: 0,
+      FAIL: 1,
+      HARNESS: 2,
+      STRUCTURAL: 3,
+    },
+  );
+});
+
+test("G2 a STRUCTURAL verdict exits 3, NEVER 2 — the first run's exact defect", () => {
+  const structural = { structuralReasons: ["a lane went blind"] };
+  assert.equal(eclipseCloudExitCode(structural), 3);
+  assert.notEqual(
+    eclipseCloudExitCode(structural),
+    ECLIPSE_CLOUD_EXIT.HARNESS,
+    "exit 2 is the watchdog's code; a structural refusal must not collide with it",
+  );
+  assert.equal(eclipseCloudGateLabel(structural), "STRUCTURAL");
+
+  // The MUTANT: the mapping the first run shipped. It must be rejected.
+  const mutantExitCode = (outcome) =>
+    (outcome.structuralReasons?.length ?? 0) > 0
+      ? 2
+      : (outcome.failedPredicates?.length ?? 0)
+        ? 1
+        : 0;
+  assert.equal(mutantExitCode(structural), 2);
+  assert.notEqual(
+    mutantExitCode(structural),
+    eclipseCloudExitCode(structural),
+    "the shipped mapping must differ from the mutant that returns 2 for structural",
+  );
+});
+
+test("G3 PASS, FAIL and HARNESS map, and FAIL OUTRANKS structural", () => {
+  assert.equal(eclipseCloudExitCode({}), 0);
+  assert.equal(eclipseCloudGateLabel({}), "PASS");
+  assert.equal(eclipseCloudExitCode({ failedPredicates: ["x"] }), 1);
+  assert.equal(eclipseCloudExitCode({ parityFailed: ["y"] }), 1);
+  assert.equal(eclipseCloudExitCode({ harnessFault: true }), 2);
+  assert.equal(eclipseCloudGateLabel({ harnessFault: true }), "HARNESS FAULT");
+  // A harness fault outranks everything: no verdict was formed at all.
+  assert.equal(
+    eclipseCloudExitCode({
+      harnessFault: true,
+      failedPredicates: ["x"],
+      structuralReasons: ["z"],
+    }),
+    2,
+  );
+  // A quarantined lane PLUS a real failure in an evaluable one is a FAIL. This
+  // is the first run's shape and the reason the ranking is this way round.
+  assert.equal(
+    eclipseCloudExitCode({
+      structuralReasons: ["shadow lane blind"],
+      failedPredicates: ["deckRatioInBand"],
+    }),
+    1,
+  );
+});
+
+test("G4 the judge's own exitCode/GATE agree with the pure mapping", () => {
+  const pass = judgeEclipseCloudResponse(passingRun());
+  assert.equal(pass.exitCode, 0);
+  assert.equal(pass.GATE, "PASS");
+
+  const blind = clone(passingRun());
+  for (const rung of blind.cloudLanes.rungs) {
+    rung.shadow.offShadow = rung.shadow.offNoShadow;
+    rung.shadow.onShadow = rung.shadow.onNoShadow;
+  }
+  const blindVerdict = judgeEclipseCloudResponse(blind);
+  assert.equal(blindVerdict.exitCode, 3);
+  assert.equal(blindVerdict.GATE, "STRUCTURAL");
+  assert.equal(blindVerdict.exitCode, eclipseCloudExitCode(blindVerdict));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// H. PER-LANE STRUCTURAL SCOPING (Batch 909 instrument fix 2)
+//
+// The first run: shadow lane vacuous, deck ratio 2.937 out of band, and
+// `failedPredicates: []`. A blind lane must quarantine ITS OWN predicates and
+// nothing else.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("H1 the first run's EXACT shape — shadow-blind + deck out of band — is a FAIL, not STRUCTURAL", () => {
+  const run = clone(passingRun());
+  // (a) the shadow lane goes vacuous, exactly as measured: 0.9969 against the
+  //     0.98 ceiling.
+  for (const rung of run.cloudLanes.rungs) {
+    rung.shadow.offShadow = rung.shadow.offNoShadow * 0.9969;
+    rung.shadow.onShadow = rung.shadow.onNoShadow * 0.9969;
+  }
+  // (b) the deck reads 2.937 with the background verifiably dark, so the deck
+  //     lane can still see and its verdict still counts.
+  for (const rung of run.cloudLanes.rungs) {
+    rung.deck.onContribution = rung.deck.offContribution * 2.937;
+  }
+  const verdict = judgeEclipseCloudResponse(run);
+
+  assert.ok(
+    verdict.structuralReasons.some((r) => r.includes("ground contrast")),
+    "the shadow lane must still report itself blind",
+  );
+  assert.deepEqual(
+    verdict.unscoredPredicates.sort(),
+    [
+      "shadowNonVacuous",
+      "shadowContrastInvariant",
+      "shadowContrastRejectsAlternativeDesign",
+    ].sort(),
+    "ONLY the shadow lane's own predicates may be quarantined",
+  );
+  assert.ok(
+    verdict.failedPredicates.includes("deckRatioInBand"),
+    `the deck FAIL must survive the shadow lane's blindness: ${JSON.stringify(verdict.failedPredicates)}`,
+  );
+  assert.equal(verdict.exitCode, 1, "FAIL outranks the quarantine");
+  assert.equal(verdict.GATE, "FAIL");
+  // ...and this is precisely what the old fold did instead.
+  assert.notDeepEqual(verdict.failedPredicates, []);
+});
+
+test("H2 a blind DECK lane leaves the shadow and IBL lanes gating", () => {
+  const run = clone(passingRun());
+  for (const rung of run.cloudLanes.rungs) {
+    rung.deck.offContribution = 0.001;
+    rung.deck.onContribution = 0.0005;
+  }
+  // Break the IBL recovery at the same time: it must still FAIL.
+  for (const lane of [run.iblWebGPU, run.iblWebGL]) {
+    lane.ibl.recovered.mean = lane.ibl.deepest.mean;
+  }
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.deepEqual(
+    verdict.unscoredPredicates.sort(),
+    [
+      "deckNonVacuous",
+      "deckRatioInBand",
+      "deckRatioMonotone",
+      "deckBackgroundIsDark",
+    ].sort(),
+  );
+  assert.deepEqual(verdict.failedPredicates, ["iblRecovers"]);
+  assert.equal(verdict.exitCode, 1);
+});
+
+test("H3 a blind cloud PAGE blinds both its lanes and nothing else", () => {
+  const run = clone(passingRun());
+  run.cloudLanes.rendererType = "webgl";
+  const verdict = judgeEclipseCloudResponse(run);
+  for (const name of ECLIPSE_CLOUD_GATE_PREDICATES) {
+    const lane = ECLIPSE_CLOUD_PREDICATE_LANES[name];
+    const cloudOwned =
+      lane === "cloud-page" || lane === "deck" || lane === "shadow";
+    assert.equal(
+      verdict.unscoredPredicates.includes(name),
+      cloudOwned,
+      `${name} (${lane}) quarantine state is wrong`,
+    );
+  }
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.equal(verdict.exitCode, 3);
+});
+
+test("H4 a blind IBL page also quarantines PARITY, since both legs read it", () => {
+  const run = clone(passingRun());
+  run.iblWebGL = { structuralError: "the WebGL IBL lane did not run" };
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.deepEqual(verdict.unscoredParityPredicates, [
+    ...ECLIPSE_CLOUD_PARITY_PREDICATES,
+  ]);
+  assert.deepEqual(verdict.parityFailed, []);
+  // ...but the cloud page is untouched.
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.ok(!verdict.unscoredPredicates.includes("deckRatioInBand"));
+  assert.equal(verdict.exitCode, 3);
+});
+
+test("H5 the arithmetic-only predicate is NEVER quarantined", () => {
+  const run = {
+    cloudLanes: { structuralError: "gone" },
+    iblWebGPU: { structuralError: "gone" },
+    iblWebGL: { structuralError: "gone" },
+  };
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.ok(
+    !verdict.unscoredPredicates.includes("predictedRefreshCountExact"),
+    "the 275 derivation needs no run input and must always be scored",
+  );
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.equal(verdict.predictedRefreshCountExact, true);
+  assert.equal(verdict.exitCode, 3);
+});
+
+test("H6 the deck ISOLATION precondition is structural, and 2.937 is unattainable", () => {
+  // A ratio above 1 is impossible for ANY deck: the pre-tonemap radiance is
+  // exactly linear in the eclipse factor F <= 1 and Reinhard is monotone, so
+  // H(F) <= H(1). Even the FILED `C13-41-CLOUD-AMBIENT-IS-A-CONSTANT`
+  // mechanism — an ambient term that refuses to dim — has a supremum of 1.
+  const reinhard = (x) => x / (1 + x);
+  const F = predictFactor(SWEEP_PEAK_OBSCURATION);
+  for (const direct of [0.1, 1.8, 10, 52]) {
+    for (const ambient of [0.45, 0.9, 1.43]) {
+      const shipped =
+        reinhard(0.22 * F * (direct + ambient)) /
+        reinhard(0.22 * (direct + ambient));
+      const ambientUndimmed =
+        reinhard(0.22 * (F * direct + ambient)) /
+        reinhard(0.22 * (direct + ambient));
+      assert.ok(shipped <= 1, `shipped deck ratio ${shipped} exceeds 1`);
+      assert.ok(
+        ambientUndimmed <= 1,
+        `constant-ambient deck ratio ${ambientUndimmed} exceeds 1`,
+      );
+      assert.ok(
+        ambientUndimmed >= shipped,
+        "a constant ambient can only RAISE the ratio, never above 1",
+      );
+    }
+  }
+  // ...so a background that survives the difference is the only way to 2.937,
+  // and the ceiling catches it STRUCTURALLY rather than as a deck FAIL.
+  const run = clone(passingRun());
+  for (const rung of run.cloudLanes.rungs) {
+    rung.deck.offBare = 0.5;
+    rung.deck.onBare = 0.376;
+    rung.deck.onContribution = rung.deck.offContribution * 2.937;
+  }
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.ok(
+    verdict.structuralReasons.some((r) => r.includes("isolation ceiling")),
+    JSON.stringify(verdict.structuralReasons),
+  );
+  assert.ok(verdict.unscoredPredicates.includes("deckRatioInBand"));
+  assert.deepEqual(verdict.failedPredicates, []);
+  assert.equal(verdict.exitCode, 3);
+});
+
+test("H7 the band [0.44, 0.70] IS the pure-deck formula F(1+e)/(1+Fe)", () => {
+  // The row's "0.46 (faint deck) to ~0.63 (a bright core at exposed radiance
+  // ~1)" is exactly this curve, which is the ratio of two Reinhards of the SAME
+  // radiance scaled by F — i.e. it presumes NO background term.
+  const F = predictFactor(SWEEP_PEAK_OBSCURATION);
+  const pure = (e) => (F * (1 + e)) / (1 + F * e);
+  assert.equal(Number(pure(0).toFixed(4)), 0.4642);
+  assert.equal(Number(pure(1).toFixed(4)), 0.6341);
+  const b = ECLIPSE_CLOUD_BANDS.deckDisplayedRatio;
+  assert.ok(pure(0) > b.lo && pure(1) < b.hi);
+  // The curve is monotone in e and bounded by 1, so no exposure choice can
+  // reach the first run's 2.937.
+  assert.ok(pure(1e6) < 1.0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// I. THE REFRESH-COST ARITHMETIC (Batch 909 instrument fix 3)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const costInput = (overrides) => ({
+  warmupBothLegs: true,
+  segmentsPerLeg: 8,
+  eclipseFrames: 801,
+  controlFrames: 801,
+  eclipseWallMs: 9000,
+  controlWallMs: 5000,
+  eclipseFills: 282,
+  controlFills: 8,
+  ...overrides,
+});
+
+test("I1 the estimate is (eclipseMs - controlMs) / (eclipseFills - controlFills)", () => {
+  const cost = computeRefreshCost(costInput({}));
+  assert.equal(cost.valid, true);
+  assert.equal(cost.msDelta, 4000);
+  assert.equal(cost.fillDelta, 274);
+  assert.equal(Number(cost.msPerRefresh.toFixed(4)), 14.5985);
+  assert.equal(cost.invalidReason, null);
+});
+
+test("I2 a NEGATIVE differential is INVALID with a named reason, never a number", () => {
+  // The first run's actual numbers: 0.77 s eclipse leg, 5.97 s control leg.
+  const cost = computeRefreshCost(
+    costInput({ eclipseWallMs: 770, controlWallMs: 5970 }),
+  );
+  assert.equal(cost.valid, false);
+  assert.equal(cost.msPerRefresh, null, "a negative cost is never reported");
+  assert.match(cost.invalidReason, /control leg outran the eclipse leg/);
+  assert.match(cost.invalidReason, /5970/);
+  assert.match(cost.invalidReason, /770/);
+  // The old arithmetic would have published -18.98 ms/refresh as a measurement.
+  assert.equal(Number(((770 - 5970) / 274).toFixed(2)), -18.98);
+});
+
+test("I3 missing warm-up parity is its own named reason — the first run's cause", () => {
+  const cost = computeRefreshCost(costInput({ warmupBothLegs: false }));
+  assert.equal(cost.valid, false);
+  assert.equal(cost.msPerRefresh, null);
+  assert.match(cost.invalidReason, /warm-up parity/);
+});
+
+test("I4 a SEQUENTIAL A/B is rejected — interleaving is required, not advised", () => {
+  assert.ok(REFRESH_COST_MIN_SEGMENTS_PER_LEG >= 3);
+  for (const segments of [1, 2]) {
+    const cost = computeRefreshCost(costInput({ segmentsPerLeg: segments }));
+    assert.equal(cost.valid, false, `${segments} segment(s) must be rejected`);
+    assert.match(cost.invalidReason, /not interleaved/);
+  }
+  assert.equal(
+    computeRefreshCost(
+      costInput({ segmentsPerLeg: REFRESH_COST_MIN_SEGMENTS_PER_LEG }),
+    ).valid,
+    true,
+  );
+});
+
+test("I5 unequal frame counts and a zero fill delta are both INVALID", () => {
+  const uneven = computeRefreshCost(costInput({ controlFrames: 400 }));
+  assert.equal(uneven.valid, false);
+  assert.match(uneven.invalidReason, /different frame counts/);
+
+  const noFills = computeRefreshCost(costInput({ eclipseFills: 8 }));
+  assert.equal(noFills.valid, false);
+  assert.match(noFills.invalidReason, /no eclipse-driven fills/);
+  assert.match(noFills.invalidReason, /does NOT discharge/);
+
+  const absent = computeRefreshCost(undefined);
+  assert.equal(absent.valid, false);
+  assert.match(absent.invalidReason, /no refresh-cost accounting/);
+});
+
+test("I6 a zero differential is VALID at exactly 0 — non-negative by construction", () => {
+  const cost = computeRefreshCost(costInput({ eclipseWallMs: 5000 }));
+  assert.equal(cost.valid, true);
+  assert.equal(cost.msPerRefresh, 0);
+  assert.ok(cost.msPerRefresh >= 0);
+});
+
+test("I7 the fold refuses to discharge the row when EITHER backend is INVALID", () => {
+  const run = clone(passingRun());
+  run.iblWebGL.refreshCost.eclipseWallMs = 100;
+  const verdict = judgeEclipseCloudResponse(run);
+  assert.equal(verdict.refreshCostMeasured, false);
+  assert.equal(verdict.cost.webglMsPerRefresh, null);
+  assert.equal(verdict.cost.webgpu.valid, true);
+  assert.equal(verdict.cost.invalidReasons.length, 1);
+  assert.match(verdict.cost.invalidReasons[0], /^webgl: /);
+  assert.deepEqual(verdict.failedPredicates, ["refreshCostMeasured"]);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // F. The probe drives the surfaces this gate assumes exist
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -735,10 +1130,83 @@ test("F2 the probe follows the pinning doctrine it documents", () => {
   assert.match(probe, /watchdog\.unref\(\)/);
   assert.match(probe, /\} finally \{\n\s*await browser\.close\(\)/);
   assert.match(probe, /process\.exit\(exitCode\)/);
-  assert.match(probe, /pinReasons\.length > 0 \? 3 :/);
+  // The mapping comes from the pinned pure function, NOT from a ternary in the
+  // driver. That ternary is what shipped `2` for a STRUCTURAL verdict.
+  assert.match(probe, /const exitCode = eclipseCloudExitCode\(outcome\)/);
+  assert.ok(
+    !/pinReasons\.length > 0 \? 3 : structural \? 2 :/.test(probe),
+    "the first run's exit ternary must be gone, not merely bypassed",
+  );
   // The determinism bracket and the discarded warm-up.
   assert.match(probe, /discarded on purpose/);
   assert.match(probe, /repeat-A0-eclipseOff-cloudsOn/);
   // Canvas-ELEMENT data, reduced in-page, never a page screenshot.
   assert.ok(!probe.includes("page.screenshot"));
+});
+
+test("F3 the probe establishes the deck ISOLATION and the lane-B shadow geometry", () => {
+  const probe = fs
+    .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+  // Isolation: the background is removed, so `cloudsOn - cloudsOff` is the deck
+  // and not `alpha * (H - S)`.
+  assert.match(probe, /sky: false/);
+  assert.match(probe, /deckBackgroundIsDark/);
+  // ...and the shared pinning harness really does black the background out.
+  const pinning = fs
+    .readFileSync(path.join(here, "lib", "weather-probe-pinning.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+  assert.match(pinning, /opts\.sky === false/);
+  assert.match(pinning, /skyAtmosphere\.show = false/);
+  assert.match(pinning, /scene\.backgroundColor = C\.Color\.BLACK/);
+
+  // Lane B flies its own, higher camera: the cast-shadow map is 512 texels
+  // across a +/-60 km footprint, so a 300 m vantage put the whole scored ground
+  // band inside ONE texel.
+  assert.match(probe, /groundCameraHeight: 9000\.0/);
+  assert.match(
+    probe,
+    /aimCamera\(julian, cfg\.groundPitchDegrees, cfg\.groundCameraHeight\)/,
+  );
+  const engineCloud = readEngine(
+    "Renderer/WebGPU/WebGPUProceduralCloudRenderer.ts",
+  );
+  assert.match(engineCloud, /const CLOUD_SHADOW_SIZE = 512;/);
+  assert.match(engineCloud, /const CLOUD_SHADOW_FOOTPRINT_M = 60000\.0;/);
+  // One texel is 234 m of ground; the first run's band was ~131 m deep.
+  assert.equal(Number(((2 * 60000) / 512).toFixed(1)), 234.4);
+  const bandDepthAt = (height) =>
+    height / Math.tan((38.6 * Math.PI) / 180) -
+    height / Math.tan((50.8 * Math.PI) / 180);
+  assert.ok(
+    bandDepthAt(300) < 234.4,
+    "the 300 m vantage's scored band must be sub-texel — that is the diagnosis",
+  );
+  assert.ok(
+    bandDepthAt(9000) > 10 * 234.4,
+    "the 9000 m vantage must span many texels",
+  );
+});
+
+test("F4 the probe's cost legs are interleaved and both pay a warm-up", () => {
+  const probe = fs
+    .readFileSync(path.join(here, "probe-eclipse-cloud-response.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+  assert.match(probe, /const COST_SEGMENTS = 8;/);
+  assert.match(probe, /runCostSegment/);
+  assert.match(
+    probe,
+    /warmupBothLegs:\s*\n?\s*warmedLegs\.eclipse === true && warmedLegs\.control === true/,
+  );
+  assert.match(probe, /ABBA/);
+  // The gate reads the interleaved accounting, not the two counting legs.
+  assert.match(probe, /refreshCost,/);
+  assert.ok(
+    ECLIPSE_CLOUD_GATE_PREDICATES.includes("refreshCostMeasured"),
+    "the cost must remain a gate, or the row silently stops discharging",
+  );
+  assert.ok(
+    8 >= REFRESH_COST_MIN_SEGMENTS_PER_LEG,
+    "the probe's segment count must satisfy the gate's interleaving minimum",
+  );
 });

@@ -112,8 +112,17 @@
 // configuration is re-captured at the end and must reproduce); an unref'd
 // force-exit watchdog; `browser.close()` in `finally`; every loop bounded.
 //
-// EXIT CONTRACT: 0 pass / 1 gate fail / 2 harness-structural / 3
-// pin-or-vacuity-structural. A structural exit is never a product verdict.
+// EXIT CONTRACT (fleet): 0 PASS / 1 gate FAIL / 2 HARNESS FAULT (the watchdog
+// fired, or an exception escaped — no verdict of any kind was formed) / 3
+// STRUCTURAL (the probe finished and deliberately refused to certify: a stale
+// build, a failed pin, a lane that did not run, a vacuous measurement). The
+// mapping is `eclipseCloudExitCode` in the gate module, not a ternary here, so
+// the spec pins it directly.
+//
+// FAIL OUTRANKS STRUCTURAL. With per-lane scoping a run can quarantine one lane
+// and still return a real verdict on another, and the real verdict is the
+// actionable half. The first run had exactly that shape — a blind SHADOW lane
+// and a 3x out-of-band DECK reading — and printed `failedPredicates: []`.
 //
 // EVERY helper used inside a `page.evaluate` callback is defined INSIDE that
 // callback — module-scope bindings do not cross the serialization boundary.
@@ -134,12 +143,16 @@ import {
 import { installCloudProbeHarnessOnPage } from "./lib/cloud-probe-harness.mjs";
 import {
   ECLIPSE_CLOUD_BANDS,
+  ECLIPSE_CLOUD_EXIT,
   ECLIPSE_CLOUD_GATE_PREDICATES,
   ECLIPSE_CLOUD_PARITY_PREDICATES,
+  ECLIPSE_CLOUD_PREDICATE_LANES,
   ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES,
   SWEEP_FRAMES,
   SWEEP_PEAK_OBSCURATION,
   SWEEP_RISING_FRAMES,
+  eclipseCloudExitCode,
+  eclipseCloudGateLabel,
   judgeEclipseCloudResponse,
   predictBucket,
   predictDirectional,
@@ -489,10 +502,35 @@ const RUN_CLOUD_LANES = async (cfg) => {
   const viewer = window.viewer;
   const scene = viewer.scene;
 
-  // ── P1/P2: offline globe, one render driver, one clock. Sky is KEPT: the
-  // deck is measured as a DIFFERENCE against a clouds-off capture of the same
-  // instant, so whatever the sky contributes cancels exactly.
-  const pins = pin.pinScene(C, { groundAtmosphere: false, fog: false });
+  // ── P1/P2: offline globe, one render driver, one clock.
+  //
+  // THE SKY IS REMOVED, and the reason is arithmetic (Batch 909). The first run
+  // kept it on this rationale: "the deck is measured as a DIFFERENCE against a
+  // clouds-off capture of the same instant, so whatever the sky contributes
+  // cancels exactly." That is FALSE. The deck composites as
+  // `mix(sceneColor, deckColor, cloudAlpha)`, so
+  //
+  //     cloudsOn - cloudsOff = alpha * (H - S)
+  //
+  // — the background S survives the difference with a MINUS sign. It does not
+  // cancel across eclipse positions either: the sky is tonemapped by the scene
+  // chain (Reinhard + inverseGamma) while the deck carries its own private
+  // Reinhard at `cloud.exposure` and composites AFTER the gamma stage, so the
+  // two dim at different DISPLAY rates. When H and S land close the denominator
+  // collapses and the ratio diverges — which is how a deck that CANNOT brighten
+  // (its pre-tonemap radiance is exactly linear in the eclipse factor, and
+  // Reinhard is monotone, so H(F) <= H(1) and the true ratio is bounded by 1)
+  // measured 2.937.
+  //
+  // With the sky shell, skybox, sun, moon and clear colour all black, S ~ 0 and
+  // the difference IS `alpha * H` — the quantity the [0.44, 0.70] band was
+  // derived for. `deckBackgroundIsDark` reads the precondition back rather than
+  // trusting this comment.
+  const pins = pin.pinScene(C, {
+    groundAtmosphere: false,
+    fog: false,
+    sky: false,
+  });
   scene.globe.enableLighting = true;
 
   const ac = scene.globe ? scene.globe.atmosphericConditions : null;
@@ -552,11 +590,16 @@ const RUN_CLOUD_LANES = async (cfg) => {
 
   // ── Camera: ground vantage, ANTI-SOLAR azimuth so the S1 sun billboard is
   // out of frame entirely and nothing measured here can be its alpha fade.
-  const aimCamera = (julian, pitchDegrees) => {
+  //
+  // The two lanes need DIFFERENT altitudes and each passes its own; see
+  // `cfg.cameraHeight` (lane A, under the deck, looking up) and
+  // `cfg.groundCameraHeight` (lane B, above the deck, looking down at a ground
+  // patch large enough to resolve the cast shadow).
+  const aimCamera = (julian, pitchDegrees, heightMeters) => {
     const carto = C.Cartographic.fromDegrees(
       cfg.lon,
       cfg.lat,
-      cfg.cameraHeight,
+      heightMeters ?? cfg.cameraHeight,
     );
     const positionWC = C.Cartographic.toCartesian(carto);
     const enu = C.Transforms.eastNorthUpToFixedFrame(positionWC);
@@ -689,33 +732,72 @@ const RUN_CLOUD_LANES = async (cfg) => {
     // ratio essentially unchanged (+0.08%) — because an eclipse dims the direct
     // beam and the skylight together, so the shadow's contrast ratio survives
     // until the nonlocal umbral floor takes over.
-    aimCamera(julian, cfg.groundPitchDegrees);
+    //
+    // THE LANE FLIES ITS OWN CAMERA, and that is what the first run got wrong.
+    // The cast-shadow map is a 512x512 ortho render over a +/-60 km footprint
+    // centred on the camera's geodetic surface point
+    // (`CLOUD_SHADOW_SIZE = 512` and `CLOUD_SHADOW_FOOTPRINT_M = 60000.0`,
+    // `WebGPUProceduralCloudRenderer.ts:918,926`), i.e. ONE TEXEL IS 234 m of
+    // ground. Lane A's 300 m vantage put the scored ground band
+    // (60%..95% of the frame at -35 deg, vertical half-FOV ~17.5 deg on this
+    // canvas) at ground ranges of 300/tan(50.8 deg) = 245 m to
+    // 300/tan(38.6 deg) = 376 m — a strip ~131 m deep and ~200-300 m wide, i.e.
+    // SMALLER THAN A SINGLE SHADOW TEXEL. The map is constant over the whole
+    // measured band by construction, so the lane could only ever read "the one
+    // texel under the camera", and a ~63%-clear field reads clear most of the
+    // time. 0.9969 is that reading, not a missing feature.
+    //
+    // At `groundCameraHeight` the same band spans 9000/tan(53.8 deg) = 6.6 km to
+    // 9000/tan(41.6 deg) = 10.1 km — a ~3.5 km strip, ~15 x 35 texels, which is
+    // the geometry `probe-cloud-shadows-flagon` (9000 m, -38 deg) and
+    // `probe-cloud-shadow-cascades` (8000 m, -32 deg) both use to resolve a
+    // cast shadow. The lane also raises `cloudDensity` to those probes' proven
+    // 0.85: the ground term is `max(exp(-opticalDepth * 0.04), 0.35)`
+    // (`GlobeTerrain.wgsl:2219`), so a half-density deck halves the optical
+    // depth and the darkening with it. Density is lane B's own dial and does
+    // not touch lane A, whose subject is the deck's own radiance.
+    aimCamera(julian, cfg.groundPitchDegrees, cfg.groundCameraHeight);
+    const groundDials = { cloudDensity: cfg.groundCloudDensity };
     setEclipse(false);
-    configure({ enableVolumetric: true, dials: { cloudCastShadows: false } });
+    configure({
+      enableVolumetric: true,
+      dials: { ...groundDials, cloudCastShadows: false },
+    });
     await pin.settle(julian, cfg.settleMs);
     const bOffNoShadow = groundBand(
       captureLabelled(`B${index}-eclipseOff-shadowOff`, julian, false),
     );
-    configure({ enableVolumetric: true, dials: { cloudCastShadows: true } });
+    configure({
+      enableVolumetric: true,
+      dials: { ...groundDials, cloudCastShadows: true },
+    });
     await pin.settle(julian, cfg.settleMs);
     const bOffShadow = groundBand(
       captureLabelled(`B${index}-eclipseOff-shadowOn`, julian, false),
     );
     const shadowStrengthOff =
       scene.context?._cloudCache?.shadowStrength ?? null;
+    const shadowActiveOff = scene.context?._cloudCache?.shadowActive ?? null;
 
     setEclipse(true);
-    configure({ enableVolumetric: true, dials: { cloudCastShadows: false } });
+    configure({
+      enableVolumetric: true,
+      dials: { ...groundDials, cloudCastShadows: false },
+    });
     await pin.settle(julian, cfg.settleMs);
     const bOnNoShadow = groundBand(
       captureLabelled(`B${index}-eclipseOn-shadowOff`, julian, false),
     );
-    configure({ enableVolumetric: true, dials: { cloudCastShadows: true } });
+    configure({
+      enableVolumetric: true,
+      dials: { ...groundDials, cloudCastShadows: true },
+    });
     await pin.settle(julian, cfg.settleMs);
     const bOnShadow = groundBand(
       captureLabelled(`B${index}-eclipseOn-shadowOn`, julian, false),
     );
     const shadowStrengthOn = scene.context?._cloudCache?.shadowStrength ?? null;
+    const shadowActiveOn = scene.context?._cloudCache?.shadowActive ?? null;
 
     // Restore the lane-A dials so the next rung starts from one configuration.
     configure({ enableVolumetric: true });
@@ -746,6 +828,16 @@ const RUN_CLOUD_LANES = async (cfg) => {
         onShadow: bOnShadow.mean,
         strengthOff: shadowStrengthOff,
         strengthOn: shadowStrengthOn,
+        // The engine's own "a shadow map was rendered this frame" flag. Read
+        // (not gated) so a vacuity structural can be told apart at a glance:
+        // `shadowActive: false` means the producer never ran, `true` with a
+        // clear contrast means the map ran and the footprint had no cloud in
+        // it — two different diagnoses, and the first run could distinguish
+        // neither.
+        shadowActiveOff,
+        shadowActiveOn,
+        cameraHeight: cfg.groundCameraHeight,
+        pitchDegrees: cfg.groundPitchDegrees,
         samples: bOffShadow.samples,
       },
     });
@@ -929,6 +1021,11 @@ const RUN_IBL_SWEEP = async (cfg) => {
   // Warm-up so the environment cube's first fill is not inside the timed sweep.
   await pin.settle(C.JulianDate.fromIso8601(schedule[0].iso), 1500);
 
+  // Which legs have rendered the WHOLE schedule at least once. Read (not
+  // asserted) by the cost accounting below, so removing or reordering a phase
+  // flips the flag instead of silently leaving a stale `true` behind.
+  const warmedLegs = { eclipse: false, control: false };
+
   const factors = [];
   const buckets = [];
   const obscurations = [];
@@ -954,6 +1051,7 @@ const RUN_IBL_SWEEP = async (cfg) => {
     }
   }
   const sweepWallMs = performance.now() - sweepStartMs;
+  warmedLegs.eclipse = true;
 
   // The NaN-seeded first commit is a refresh too (`NaN !== anything`), and it
   // is the "one first-frame baseline" term of the 275. It happened during the
@@ -962,10 +1060,10 @@ const RUN_IBL_SWEEP = async (cfg) => {
   const engineRefreshCount =
     bucketTransitions + (Number.isNaN(initialCommitted) ? 0 : 1);
 
-  // ── The COST control: the identical 801-frame schedule with the eclipse
+  // ── The COUNT control: the identical 801-frame schedule with the eclipse
   // effect OFF, which produces exactly ONE eclipse-driven fill (the identity
-  // bucket, committed once). The difference is the wall-clock cost of the
-  // eclipse-driven fills — `C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`.
+  // bucket, committed once). This leg exists for `controlRefreshQuiescent`; it
+  // is NOT where the cost comes from any more (see the next block).
   ac.lighting.enableEclipse = false;
   await pin.settle(C.JulianDate.fromIso8601(schedule[0].iso), 1500);
   let controlTransitions = 0;
@@ -983,6 +1081,88 @@ const RUN_IBL_SWEEP = async (cfg) => {
     }
   }
   const controlWallMs = performance.now() - controlStartMs;
+  warmedLegs.control = true;
+
+  // ── C13-41-ECLIPSE-REFRESH-COST-UNMEASURED: the INTERLEAVED cost legs.
+  //
+  // The first run derived the cost from the two counting legs above and got
+  // -18.9 ms/refresh: the eclipse leg ran FIRST at 0.77 s and the control leg
+  // ran SECOND at 5.97 s. A wall-clock A/B whose legs do not pay the same
+  // warm-up is not a measurement — the fleet's mandatory interleaved-A/B
+  // protocol for GPU timing (Batch 762) applies to wall clock just as hard.
+  //
+  // Both legs have now rendered the ENTIRE schedule once, so warm-up parity is
+  // paid before anything below is timed, and it is REPORTED from `warmedLegs`
+  // rather than asserted in a comment. The legs are then interleaved segment by
+  // segment with the leg ORDER alternating (ABBA), so any monotone drift over
+  // the run lands on both legs instead of on the effect.
+  //
+  // Each segment renders one untimed frame immediately after the toggle: that
+  // frame absorbs the toggle's own bucket transition out of BOTH the clock and
+  // the fill count, so the accounting stays self-consistent.
+  const COST_SEGMENTS = 8;
+  const segmentBounds = [];
+  {
+    const size = Math.ceil(schedule.length / COST_SEGMENTS);
+    for (let start = 0; start < schedule.length; start += size) {
+      segmentBounds.push([start, Math.min(start + size, schedule.length)]);
+    }
+  }
+  const runCostSegment = (leg, from, to) => {
+    ac.lighting.enableEclipse = leg === "eclipse";
+    pin.renderAt(C.JulianDate.fromIso8601(schedule[from].iso)); // untimed
+    let previous = committedBucket();
+    let fills = 0;
+    const startMs = performance.now();
+    for (let f = from; f < to; f++) {
+      pin.renderAt(C.JulianDate.fromIso8601(schedule[f].iso));
+      const committed = committedBucket();
+      if (!Object.is(committed, previous)) {
+        fills++;
+        previous = committed;
+      }
+    }
+    return {
+      leg,
+      from,
+      to,
+      frames: to - from,
+      wallMs: performance.now() - startMs,
+      fills,
+    };
+  };
+  const costSegments = [];
+  for (let s = 0; s < segmentBounds.length; s++) {
+    const [from, to] = segmentBounds[s];
+    const order =
+      (s & 1) === 0 ? ["eclipse", "control"] : ["control", "eclipse"];
+    for (const leg of order) {
+      costSegments.push(runCostSegment(leg, from, to));
+    }
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  const sumLeg = (leg, key) =>
+    costSegments
+      .filter((segment) => segment.leg === leg)
+      .reduce((total, segment) => total + segment[key], 0);
+  const refreshCost = {
+    warmupBothLegs: warmedLegs.eclipse === true && warmedLegs.control === true,
+    warmupNote:
+      "the eclipse counting leg and the eclipse-off counting leg each rendered the whole schedule before any segment below was timed",
+    interleave: "ABBA — the leg that runs first alternates per segment",
+    segmentsPerLeg: segmentBounds.length,
+    eclipseFrames: sumLeg("eclipse", "frames"),
+    controlFrames: sumLeg("control", "frames"),
+    eclipseWallMs: sumLeg("eclipse", "wallMs"),
+    controlWallMs: sumLeg("control", "wallMs"),
+    eclipseFills: sumLeg("eclipse", "fills"),
+    controlFills: sumLeg("control", "fills"),
+    // Per-segment, so a reader can see WHERE a differential comes from. If the
+    // first run's 7.7x inversion was a step change at the eclipse toggle rather
+    // than a warm-up ramp, it shows up here as a per-segment pattern instead of
+    // hiding inside one aggregate number.
+    segments: costSegments,
+  };
 
   // ── Brightness legs: baseline (clear), deepest, and RECOVERY (back at clear
   // after the sweep has been through the deep phase). The recovery leg is the
@@ -1014,8 +1194,13 @@ const RUN_IBL_SWEEP = async (cfg) => {
     initialCommittedWasNaN: Number.isNaN(initialCommitted),
     engineRefreshCount,
     controlRefreshCount: controlTransitions,
+    // Reported-only from Batch 909 on: the GATE derives the per-refresh cost
+    // from `refreshCost` below, never from these two counting legs. They are
+    // kept because they are what the first run's -18.9 ms was computed from,
+    // and a reader comparing runs needs to see them.
     sweepWallMs,
     controlWallMs,
+    refreshCost,
     ibl: { baseline, deepest, recovered },
     publishedAtDeepest,
     modelReady: model.ready === true,
@@ -1067,7 +1252,10 @@ async function resolveProceduralKey(page) {
       "[probe-eclipse-cloud-response] PROVENANCE FAILURE — stale or missing build:",
       JSON.stringify(prov, null, 2),
     );
-    process.exit(2);
+    // STRUCTURAL, not a harness fault: the probe ran, checked, and refused. A
+    // pin on the BUILD is the same class as a pin on the scene.
+    console.log(`EXIT: ${ECLIPSE_CLOUD_EXIT.STRUCTURAL}`);
+    process.exit(ECLIPSE_CLOUD_EXIT.STRUCTURAL);
   }
 
   const browser = await chromium.launch({ channel: "msedge", headless: true });
@@ -1097,7 +1285,10 @@ async function resolveProceduralKey(page) {
         JSON.stringify(derived, null, 2),
       );
       await browser.close().catch(() => {});
-      process.exit(2);
+      // The derivation lane returned a `structuralError`; that is the same
+      // class as any other lane that could not run.
+      console.log(`EXIT: ${ECLIPSE_CLOUD_EXIT.STRUCTURAL}`);
+      process.exit(ECLIPSE_CLOUD_EXIT.STRUCTURAL);
     }
     console.log(
       `2026-08-12 vantage ${derived.region} (${r3(derived.lat)}, ${r3(derived.lon)}), ` +
@@ -1112,9 +1303,19 @@ async function resolveProceduralKey(page) {
     const laneConfig = {
       lat: derived.lat,
       lon: derived.lon,
+      // Lane A: UNDER the 1500-4000 m deck, looking up, so the deck is measured
+      // against the (now black) background.
       cameraHeight: 300.0,
       skyPitchDegrees: 12.0,
-      groundPitchDegrees: -35.0,
+      // Lane B: ABOVE the deck, looking down, at the geometry the two probes
+      // that DO resolve a cast shadow use — `probe-cloud-shadows-flagon` flies
+      // 9000 m / -38 deg and `probe-cloud-shadow-cascades` 8000 m / -32 deg.
+      // The +/-60 km, 512-texel shadow map is 234 m per texel, so lane A's
+      // 300 m vantage put the whole scored ground band inside ONE texel; see
+      // the arithmetic at the lane-B block.
+      groundCameraHeight: 9000.0,
+      groundPitchDegrees: -38.0,
+      groundCloudDensity: 0.85,
       settleMs: 500,
       ladder: derived.ladder,
       determinismDials: WEATHER_DETERMINISM_DIALS,
@@ -1213,21 +1414,26 @@ async function resolveProceduralKey(page) {
     );
   }
 
-  const verdicts =
-    pinReasons.length === 0
-      ? judgeEclipseCloudResponse({ cloudLanes, iblWebGPU, iblWebGL })
-      : null;
+  // A pin failure is a claim about the CONFIGURATION, not about any one lane,
+  // so it is not scoped — it blinds the whole run. The judge still runs, so the
+  // report carries every measured number, but its verdicts do not gate.
+  const verdicts = judgeEclipseCloudResponse({
+    cloudLanes,
+    iblWebGPU,
+    iblWebGL,
+  });
 
-  const structural =
-    pinReasons.length > 0 ||
-    verdicts === null ||
-    verdicts.structuralReasons.length > 0;
-  const failed = structural ? [] : verdicts.failedPredicates;
-  const GATE = structural
-    ? "STRUCTURAL"
-    : failed.length === 0
-      ? "PASS"
-      : "FAIL";
+  const structuralReasons = [...pinReasons, ...verdicts.structuralReasons];
+  const failed = pinReasons.length > 0 ? [] : verdicts.failedPredicates;
+  const parityFailed = pinReasons.length > 0 ? [] : verdicts.parityFailed;
+  const outcome = {
+    harnessFault: false,
+    structuralReasons,
+    failedPredicates: failed,
+    parityFailed,
+  };
+  const exitCode = eclipseCloudExitCode(outcome);
+  const GATE = eclipseCloudGateLabel(outcome);
 
   const report = {
     probe: "probe-eclipse-cloud-response",
@@ -1243,6 +1449,8 @@ async function resolveProceduralKey(page) {
     // what value was expected.
     pinnedCloudQuality: PINNED_CLOUD_QUALITY,
     bands: ECLIPSE_CLOUD_BANDS,
+    predicateLanes: ECLIPSE_CLOUD_PREDICATE_LANES,
+    exitContract: ECLIPSE_CLOUD_EXIT,
     predictions: {
       factorAt09: predictFactor(SWEEP_PEAK_OBSCURATION),
       directionalAt09: predictDirectional(SWEEP_PEAK_OBSCURATION),
@@ -1268,7 +1476,10 @@ async function resolveProceduralKey(page) {
     webgpuIbl: iblWebGPU,
     webglIbl: iblWebGL,
     verdicts,
+    structuralReasons,
+    unscoredPredicates: verdicts.unscoredPredicates ?? [],
     GATE,
+    exitCode,
   };
   fs.writeFileSync(
     path.join(OUT_DIR, "eclipse-cloud-response-report.json"),
@@ -1276,49 +1487,57 @@ async function resolveProceduralKey(page) {
   );
   console.log(
     JSON.stringify(
-      { predictions: report.predictions, pinReasons, verdicts, GATE },
+      { predictions: report.predictions, pinReasons, verdicts, GATE, exitCode },
       null,
       2,
     ),
   );
 
-  // ── The one line a reader should need on a FAIL. The JSON above carries
-  // dozens of numbers; naming the GATING predicate that is not true is what
-  // keeps the next reader from picking a diagnostic out of the noise and
-  // calling it the cause.
-  if (structural) {
-    for (const reason of [
-      ...pinReasons,
-      ...(verdicts?.structuralReasons ?? []),
-    ]) {
-      console.log(`STRUCTURAL: ${reason}`);
-    }
-  } else {
+  // ── The lines a reader should need. STRUCTURAL and FAIL are no longer
+  // exclusive: with per-lane scoping a run can quarantine one lane and still
+  // return a real verdict on the others, and BOTH halves have to be visible or
+  // the scoping has just moved the first run's blind spot somewhere else.
+  for (const reason of structuralReasons) {
+    console.log(`STRUCTURAL: ${reason}`);
+  }
+  if (verdicts.unscoredPredicates?.length) {
     console.log(
-      failed.length === 0
-        ? `GATE: PASS — all ${ECLIPSE_CLOUD_GATE_PREDICATES.length} gating predicates true`
-        : `GATE: FAIL — failing predicate(s): ${failed.join(", ")}`,
-    );
-    console.log(
-      `GATE parity: ${verdicts.parityFailed.length === 0 ? "PASS" : `FAIL — ${verdicts.parityFailed.join(", ")}`} ` +
-        `(${ECLIPSE_CLOUD_PARITY_PREDICATES.length} cross-backend predicates)`,
-    );
-    console.log(
-      `NOT GATING (reported-only): ${ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.join(", ")}`,
-    );
-    console.log(
-      `COST (C13-41-ECLIPSE-REFRESH-COST-UNMEASURED): ` +
-        `webgpu ${r3(verdicts.cost.webgpuMsPerRefresh)} ms/refresh, ` +
-        `webgl ${r3(verdicts.cost.webglMsPerRefresh)} ms/refresh`,
+      `UNSCORED (quarantined with their blind lane): ${verdicts.unscoredPredicates.join(", ")}`,
     );
   }
+  const scoredCount =
+    ECLIPSE_CLOUD_GATE_PREDICATES.length -
+    (verdicts.unscoredPredicates?.length ?? 0);
+  console.log(
+    failed.length === 0
+      ? `GATE: ${GATE} — ${scoredCount} of ${ECLIPSE_CLOUD_GATE_PREDICATES.length} gating predicates scored, all true`
+      : `GATE: ${GATE} — failing predicate(s): ${failed.join(", ")}`,
+  );
+  console.log(
+    verdicts.unscoredParityPredicates?.length
+      ? `GATE parity: UNSCORED — ${verdicts.unscoredParityPredicates.join(", ")}`
+      : `GATE parity: ${parityFailed.length === 0 ? "PASS" : `FAIL — ${parityFailed.join(", ")}`} ` +
+          `(${ECLIPSE_CLOUD_PARITY_PREDICATES.length} cross-backend predicates)`,
+  );
+  console.log(
+    `NOT GATING (reported-only): ${ECLIPSE_CLOUD_REPORTED_ONLY_PREDICATES.join(", ")}`,
+  );
+  // INVALID is printed as INVALID with its reason. The first run printed
+  // "-18.9 ms/refresh", which reads like a measurement and is not one.
+  console.log(
+    `COST (C13-41-ECLIPSE-REFRESH-COST-UNMEASURED): ` +
+      `webgpu ${verdicts.cost.webgpu.valid ? `${r3(verdicts.cost.webgpuMsPerRefresh)} ms/refresh` : `INVALID — ${verdicts.cost.webgpu.invalidReason}`}; ` +
+      `webgl ${verdicts.cost.webgl.valid ? `${r3(verdicts.cost.webglMsPerRefresh)} ms/refresh` : `INVALID — ${verdicts.cost.webgl.invalidReason}`}`,
+  );
 
-  const exitCode =
-    pinReasons.length > 0 ? 3 : structural ? 2 : failed.length ? 1 : 0;
   console.log(`EXIT: ${exitCode}`);
   clearTimeout(watchdog);
   process.exit(exitCode);
 })().catch((e) => {
-  console.error("[probe-eclipse-cloud-response] STRUCTURAL:", e);
-  process.exit(2);
+  // An escaped exception is a HARNESS FAULT (exit 2), not a STRUCTURAL refusal
+  // (exit 3): no verdict of any kind was formed, and the two must be
+  // distinguishable from the exit code alone.
+  console.error("[probe-eclipse-cloud-response] HARNESS FAULT:", e);
+  console.log(`EXIT: ${ECLIPSE_CLOUD_EXIT.HARNESS}`);
+  process.exit(ECLIPSE_CLOUD_EXIT.HARNESS);
 });

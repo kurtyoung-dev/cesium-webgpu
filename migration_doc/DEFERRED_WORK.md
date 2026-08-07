@@ -640,6 +640,22 @@ Filed by the C13-41 worker. All surfaced rather than routed around (Principle
   MAGNITUDE (not just its tint) from the sky/MS LUT the `ambientLutMode` path
   already samples, which is a cloud-lighting correctness item in its own right.
   **Effort: M.** Owner: unassigned; natural home is the C13 cloud-lighting wave.
+  **REFUTED as the cause of the first Edge run's 2.937 deck ratio (Batch 909,
+  quantitatively).** The run's candidate list named this class first; it cannot
+  produce that reading, and the arithmetic is now pinned by
+  `eclipse-cloud-response-gate.spec.mjs` H6. C13-41 multiplies BOTH packed
+  scalars by the eclipse factor F — `sunIntensity`
+  (`WebGPUProceduralCloudRenderer.ts:1947-1950`) and `ambientIntensity`
+  (`:2167-2170`) — so `weightedColor` is exactly linear in F, and the deck's own
+  Reinhard (`ProceduralClouds.wgsl:2543-2544`, `exposure` default 0.22) is
+  monotone. Therefore `H(F) <= H(1)` and the pure deck ratio is **bounded above
+  by 1** for every exposure. Even the counterfactual this entry describes — an
+  ambient that refuses to dim — has a supremum of exactly 1 (approached as
+  ambient dominates direct) and lands at 0.741 for the deck's own realistic
+  split of direct ~1.8 / ambient ~0.9 pre-exposure. A reading of 2.937 is
+  outside the achievable range of ANY deck model, dimmed or not, which is what
+  identified the isolation defect instead. The entry stands **unchanged** for
+  the general night-side / terminator case it was actually filed for.
 
 - **`C13-41-ENV-GROUND-INSCATTER-ADDEND-UNDIMMED`** — both environment bakes
   scale their sky hemisphere by the manager-level intensity C13-41 now dims, but
@@ -689,6 +705,65 @@ Filed by the C13-41 worker. All surfaced rather than routed around (Principle
   grid. If an Edge run shows the scheduler deferring heavily through a fast
   clock scrub, the grid is the dial to coarsen — but it must not be coarsened on
   speculation. **Effort: S** (one probe leg).
+  **UPDATE 2026-08-07 (Batch 909) — the INSTRUMENT is repaired; the number is
+  still owed.** The first attempt derived the cost from the two SEQUENTIAL
+  counting legs, so the eclipse leg was timed cold (0.77 s) and the control leg
+  warm (5.97 s) — a 7.7x inversion whose own mechanism is still unexplained and
+  is now instrumented rather than guessed at. The lane now runs a THIRD phase:
+  both legs have already rendered the whole 801-frame schedule (warm-up parity
+  by construction, and REPORTED from a `warmedLegs` flag rather than asserted in
+  a comment), then the two legs are interleaved ABBA across 8 segments so a
+  monotone drift lands on both instead of on the effect, with one untimed frame
+  after each toggle absorbing the toggle's own bucket transition out of both the
+  clock and the fill count. The arithmetic moved into `computeRefreshCost`
+  (`lib/eclipse-cloud-response-gate.mjs`), which VERIFIES warm-up parity, the
+  interleaving minimum and equal frame counts before dividing, and returns
+  `valid:false` with a NAMED reason rather than publishing a negative number as
+  a cost — the probe now prints `INVALID — <reason>` where it printed
+  `-18.9 ms/refresh`. Spec `eclipse-cloud-response-gate.spec.mjs` group I (7
+  tests) pins all of it, including the first run's exact 770/5970 ms numbers as
+  the negative-differential mutant. The per-segment table is emitted so the next
+  run localizes the inversion: a warm-up ramp cancels under interleaving, a step
+  change at the eclipse toggle shows up as a per-segment pattern. **This row
+  still does not discharge until a run returns a finite non-negative
+  ms/refresh.**
+
+- **`C13-41-CLOUD-AERIAL-TINT-UNDIMMED`** *(filed 2026-08-07, Batch 909 —
+  static diagnosis, NOT fixed here)* — the volumetric deck's aerial-perspective
+  term is `hazed = mix(toneMapped, cloud.aerialColor, aerial)` with
+  `aerial = clamp(midDist / 60000 * aerialStrength, 0, 0.85)`
+  (`Shaders/WebGPU/Environment/ProceduralClouds.wgsl:2555-2557`). `aerialColor`
+  is a packed uniform and is **not** one of C13-41's three eclipse sites
+  (`WebGPUProceduralCloudRenderer.ts:1947-1950`, `:2167-2170`, `:2697`), so it
+  is an UNDIMMED ADDEND in exactly the sense
+  `C13-41-ENV-GROUND-INSCATTER-ADDEND-UNDIMMED` describes for the bakes: at
+  totality a distant deck keeps a full-brightness horizon tint. Bounded — the
+  measured deck ratio is biased upward by roughly `a * (1 - F) * A / H(1)` for
+  haze fraction `a`, so a near deck (`a ~ 0.05`) shifts a few percent and the
+  0.85 clamp caps the far case. Named here so a deck ratio that lands slightly
+  ABOVE the linear 0.4642 is read as this residual and not as a dimming failure.
+  **Effort: S** (one more multiply at the pack site, symmetric with the two that
+  already carry the factor). Owner: unassigned; natural home is the same C13
+  cloud-lighting wave as the ambient item above.
+
+- **`C13-41-CLOUD-SUNINTENSITY-HAS-NO-USER-INPUT`** *(filed 2026-08-07, Batch
+  909 — static diagnosis, NOT fixed here)* — the deck's direct term packs
+  `config.atmosphereLightIntensity ?? 10.0`
+  (`WebGPUProceduralCloudRenderer.ts:1947-1950`), but `config` is a
+  `CloudVolumetrics` snapshot (`Scene/CloudCollection.js:370-376`) and
+  `Scene/CloudVolumetrics.js` **defines no `atmosphereLightIntensity` field at
+  all** — it survives only in the structural type
+  (`Renderer/WebGPU/cesium-js-types.d.ts:1288`). So the packed value is the
+  literal `10.0` fallback on every frame. It happens to equal
+  `Globe.js:252`'s default, which is why nothing looked wrong, but the two are
+  no longer connected: after the cloud-unification slice removed the
+  `globe.cloud*` surface, a user raising `globe.atmosphereLightIntensity` does
+  not move the deck. C13-41's own premise text records the field as "the globe's
+  UNDIMMED user field", which is now only half true — the dim IS applied, and
+  the user input is gone. This is a wiring gap, not an eclipse defect; the
+  eclipse multiply on top of it is correct either way. **Effort: S** (either
+  re-expose the field on `CloudVolumetrics` or read the globe's value at the
+  pack site). Owner: unassigned.
 
 ## New findings — weather/shadow/misc instrument-repair worker, 2026-08-07
 
