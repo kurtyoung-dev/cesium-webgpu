@@ -696,7 +696,7 @@ Filed by the C13-41 worker. All surfaced rather than routed around (Principle
   this decision must be revisited; the gate re-verifies the premise rather than
   assuming it. **Effort: S** once billboard lighting exists; blocked until then.
 
-- **`C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`** — the quantized gate's cadence is **UPDATE 2026-08-07: first measurement attempt INVALID — the control leg paid the warm-up (5.97 s control vs 0.77 s sweep on WebGPU, yielding a NEGATIVE per-refresh). Still open; re-run with warm-up parity or interleaved legs.**
+- **`C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`** — the quantized gate's cadence is **UPDATE 2026-08-07: first measurement attempt INVALID — the control leg paid the warm-up (5.97 s control vs 0.77 s sweep on WebGPU, yielding a NEGATIVE per-refresh). Still open; re-run with warm-up parity or interleaved legs.** **RESOLVED 2026-08-07 (second run, tip `1970806a59`): WebGPU 7.749 ms/refresh, WebGL 1.607 ms/refresh — ABBA-interleaved with warm-up parity and verified preconditions. The row closes.**
   derived and pinned arithmetically (exactly 275 fills across a `0 -> 0.9 -> 0`
   obscuration sweep: one first-frame baseline plus `2 x 137` bucket edges), but
   the WALL-CLOCK cost of those fills has not been measured on Edge. Each is a
@@ -728,7 +728,7 @@ Filed by the C13-41 worker. All surfaced rather than routed around (Principle
   still does not discharge until a run returns a finite non-negative
   ms/refresh.**
 
-- **`C13-41-CLOUD-AERIAL-TINT-UNDIMMED`** *(filed 2026-08-07, Batch 909 —
+- **`C13-41-CLOUD-AERIAL-TINT-UNDIMMED`** *(filed 2026-08-07, Batch 909 — **QUANTITATIVE TARGET 2026-08-07 (second probe run): the deck displayed ratio measured 0.894 at F=0.4642 on a verifiably black background vs the ~0.58 pure-deck prediction — if this addend is the cause it contributes ~0.31 of displayed ratio at the probe camera, far above the original few-percent estimate. Next: a diagnosis build zeroing the addend; if the ratio does not drop into band, the cause is elsewhere in the deck light path.**
   static diagnosis, NOT fixed here)* — the volumetric deck's aerial-perspective
   term is `hazed = mix(toneMapped, cloud.aerialColor, aerial)` with
   `aerial = clamp(midDist / 60000 * aerialStrength, 0, 0.85)`
