@@ -591,6 +591,55 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-08-07 — OPEN, CONDITIONAL: unexplained frame-to-frame variance on `tower`
+
+### C15-GSPLAT-TOWER-FRAME-VARIANCE
+
+**Status: OPEN pending one run — may self-close.** The Batch-890 `tower`
+acceptance exited 3 on `reference:capture-determinism`: two captures of a
+nominally identical scene differed by **410 px (0.052%) on the WebGL leg** and
+329 px (0.042%) on WebGPU, against a 0.050% bar. `sh_unit_cube` read 0.000%, so
+the effect scales with splat COUNT (286,868 vs 27), not footprint area — the
+scored footprint is only ~32,000 px, so ~1.3% of the drawn splat pixels moved,
+at byte-exact comparison (mostly ±1 LSB).
+
+**What it is NOT.** The obvious mechanism — a steady sort resolving between the
+captures — is **refuted at this camera**, twice over. (1) The probe sets the
+camera once and never touches it, with `useDefaultRenderLoop` off, so
+`shouldStartSteadySort` sees `positionDelta = 0` and `angleDelta = 0` against
+thresholds of 1.0 m / 0.5° and returns `false`; the only steady sort that fires
+is the bootstrap, six settle-seconds before the pair. (2) The leg that varied
+MORE does LESS splat work per frame — WebGL early-returns out of
+`_updateSplatData` on settled frames because `_drawCommand` is defined, while
+WebGPU (where it never is) runs to the throttle every frame. It is also not TAA,
+HDR, auto-exposure, the clock, or the globe/sky/sun/moon: all are off or hidden
+in the probe's scene setup.
+
+**Why it is conditional.** `C15-G4b` makes the determinism pair back-to-back in
+one task, which structurally removes *every* asynchronous cause (nothing can
+interleave without an event-loop yield) and adds a `sort-quiesced` structural
+precondition. If the next `tower` run reads ≤ 0.050% with `sortQuiesced=true`,
+the cause was async-in-the-window and **this entry closes with that mechanism
+recorded**. If it still reads ~400 px, the variance is INTRA-FRAME — two
+consecutive `scene.render()` calls on a byte-identical scene disagree — which is
+a different and more interesting defect than the one that surfaced it, is not a
+splat-sort problem, and needs its own investigation (candidates: a per-frame
+accumulator not yet found, frame-parity state, or driver-level rasterization
+non-determinism at 286k instanced quads). **Do not widen the 0.050% bar in
+either branch** — the bar is what caught this, and `C15-G4b` pins it with a
+mutant.
+
+**Not filed as a product defect:** a resolved sort DOES change the composite of
+overlapping premultiplied splats, so the frame after one lands differs from the
+frame before. That is the designed behaviour of an asynchronous sorter, WebGL
+has had it since upstream shipped `gaussianSplatSorter`, and both backends share
+the same worker and the same 3-frame/1 m/0.5° throttle since `C15-G2`. The
+re-sort is the draw order catching up to a camera that genuinely moved. Nothing
+measured so far argues for escalating it — the only number in hand comes from a
+camera that never moved at all.
+
+---
+
 ## 2026-08-07 — `C10-04-SPLAT-ASYNC-SORT` RESOLVED by `C15-G4`
 
 ### C10-04-SPLAT-ASYNC-SORT

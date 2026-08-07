@@ -84,6 +84,13 @@ function preconditionsHealthy(overrides = {}) {
     captureLivenessForeground: CANVAS_PIXELS,
     captureLivenessMean: [64, 128, 192],
     backgroundForeground: 0,
+    // C15-G4b — a healthy lane reached the determinism pair with the splat sort
+    // already quiet. Defaulting this to `true` in the fixture is safe ONLY
+    // because the violation table below drives it to `false` and requires the
+    // `sort-quiesced` precondition to be the one that fires.
+    sortQuiesced: true,
+    sortQuiesceMs: 2_100,
+    sortSignatureAtCapture: "4/1/4/286868/1/0",
     determinismChanged: 0,
     negativeControlChanged: 0,
     errors: [],
@@ -926,6 +933,12 @@ const RULES = {
       "background-blank": {
         backgroundForeground: Math.round(CANVAS_PIXELS * 0.5),
       },
+      // C15-G4b — a run that never reached sort quiescence must be refused by
+      // its OWN precondition. Note the determinism number stays perfect here:
+      // a scene that is still re-ordering itself can absolutely produce two
+      // identical captures by luck, which is why quiescence is asserted
+      // separately instead of being inferred from a good determinism reading.
+      "sort-quiesced": { sortQuiesced: false, sortQuiesceMs: 120_000 },
       "capture-determinism": {
         determinismChanged: Math.round(CANVAS_PIXELS * 0.5),
       },
@@ -5509,5 +5522,376 @@ for (const mutant of G4_MUTANTS) {
     // And the rule passes on the real source — otherwise the mutant proves
     // nothing about the shipped code.
     mutant.check(real);
+  });
+}
+
+// ── C15-G4b — the determinism pair is sort-quiesced and same-task ───────────
+//
+// Batch 890's `tower` run exited 3 on `reference:capture-determinism` — the
+// WEBGL leg measured 0.052% (410 px) against a 0.050% bar, with WebGPU at 329
+// px. `sh_unit_cube` read 0.000% on both. The defect scaled with splat COUNT
+// (286,868 vs 27), not with footprint area, and the scored footprint is only
+// ~32,000 px — so ~1.3% of the drawn splat pixels differed between two captures
+// of a scene whose clock is pinned, camera frozen, TAA and HDR off, and globe,
+// sky, sun and moon hidden.
+//
+// The fix is structural rather than mechanism-specific, and deliberately so:
+// with every synchronous source of variance already excluded by the scene
+// setup, what remains is asynchronous work landing on event-loop yields, and
+// the old pair had `await settleMs(2000)` — thousands of yields — between its
+// two captures. Taking both captures in ONE TASK removes the entire class by
+// the JS execution model, not by a timing hope. The quiescence wait then makes
+// "the sort was quiet when we scored" an asserted precondition instead of an
+// assumption, and preserves the temporal-stability check the old window used to
+// provide.
+//
+// The 0.050% bar is NOT widened. It is what caught this.
+
+/**
+ * Extract and compile the real `waitForSortQuiescence`. It closes over exactly
+ * four things, all injectable: `renderNow`, `sortSignature`, `sortInFlight` and
+ * the global clock/timer.
+ */
+function loadQuiescenceWait(probeSource) {
+  const header =
+    "const waitForSortQuiescence = async (windowMs, budgetMs) => {";
+  const at = probeSource.indexOf(header);
+  assert.notEqual(
+    at,
+    -1,
+    `${PROBE_PATH}: waitForSortQuiescence is gone — C15-G4b's precondition`,
+  );
+  const body = tsBlock(probeSource, header);
+  // eslint-disable-next-line no-new-func
+  const factory = new Function(
+    "performance",
+    "renderNow",
+    "sortSignature",
+    "sortInFlight",
+    "setTimeout",
+    `return async function waitForSortQuiescence(windowMs, budgetMs) ${body};`,
+  );
+  return (deps) =>
+    factory(
+      deps.performance,
+      deps.renderNow,
+      deps.sortSignature,
+      deps.sortInFlight,
+      deps.setTimeout,
+    );
+}
+
+/** A clock that advances a fixed step on every read — no real timers. */
+function fakeClock(stepMs = 10) {
+  let t = 0;
+  return {
+    now: () => {
+      t += stepMs;
+      return t;
+    },
+  };
+}
+
+function quiescenceDeps(overrides = {}) {
+  return {
+    performance: fakeClock(),
+    renderNow: () => {},
+    sortSignature: () => "stable",
+    sortInFlight: () => false,
+    setTimeout: (fn) => fn(),
+    ...overrides,
+  };
+}
+
+test("G4b QUIESCE: a settled sort signature quiesces", async () => {
+  const wait = loadQuiescenceWait(readNormalized(PROBE_PATH));
+  const result = await wait(quiescenceDeps())(200, 20_000);
+  assert.equal(result.quiesced, true, "a stable, idle sort never quiesced");
+  assert.equal(result.signature, "stable");
+});
+
+test("G4b QUIESCE: a sort that keeps resolving NEVER quiesces", async () => {
+  // The case the row exists for. If this returned `quiesced: true` the
+  // precondition would wave through exactly the scene it is meant to refuse.
+  const wait = loadQuiescenceWait(readNormalized(PROBE_PATH));
+  let n = 0;
+  const result = await wait(
+    quiescenceDeps({ sortSignature: () => `seq-${n++}` }),
+  )(200, 20_000);
+  assert.equal(
+    result.quiesced,
+    false,
+    "a sort still publishing new permutations was reported as quiescent",
+  );
+});
+
+test("G4b QUIESCE: an in-flight sort blocks quiescence even with a stable signature", async () => {
+  // A promise that has not resolved yet has not CHANGED the signature either.
+  // Signature-stability alone would call that quiet, and it is the opposite:
+  // it is a resolution about to land.
+  const wait = loadQuiescenceWait(readNormalized(PROBE_PATH));
+  const result = await wait(quiescenceDeps({ sortInFlight: () => true }))(
+    200,
+    20_000,
+  );
+  assert.equal(
+    result.quiesced,
+    false,
+    "an unresolved sort promise was reported as quiescent",
+  );
+});
+
+test("G4b QUIESCE: a sort that settles LATE still quiesces before the budget", async () => {
+  // Anti-vacuity for the two refusals above: the wait must be able to succeed
+  // after churn, or "never quiesces" would pass by being unsatisfiable.
+  const wait = loadQuiescenceWait(readNormalized(PROBE_PATH));
+  let calls = 0;
+  const result = await wait(
+    quiescenceDeps({
+      sortSignature: () => (calls++ < 30 ? `seq-${calls}` : "settled"),
+    }),
+  )(200, 20_000);
+  assert.equal(result.quiesced, true, "the wait cannot succeed at all");
+  assert.equal(result.signature, "settled");
+});
+
+test("G4b PAIR: the determinism captures are taken back-to-back in ONE task", () => {
+  // The structural fix. Any `await` between the two captures re-opens the
+  // window in which a worker message, a promise continuation or a timer can
+  // land — which is the entire class of causes the scene setup has not already
+  // excluded.
+  const from = PROBE_CODE.indexOf("const onA = captureNow();");
+  assert.notEqual(from, -1, `${PROBE_PATH}: the scored capture moved`);
+  const to = PROBE_CODE.indexOf(
+    "record.determinismChanged = changedPixelCount(onA.image, onB.image);",
+    from,
+  );
+  assert.ok(to > from, `${PROBE_PATH}: the determinism pair moved`);
+  const between = PROBE_CODE.slice(from, to);
+  assert.ok(
+    between.includes("const onB = captureNow();"),
+    "the repeat capture is no longer adjacent to the scored one",
+  );
+  assert.doesNotMatch(
+    between,
+    /\bawait\b/,
+    `${PROBE_PATH}: an await reappeared between the determinism captures — a ` +
+      `resolved WASM radix sort can land on that yield and re-order an ` +
+      `order-dependent premultiplied blend`,
+  );
+});
+
+test("G4b PAIR: quiescence is waited for BEFORE the pair, not after", () => {
+  const waitAt = PROBE_CODE.indexOf("await waitForSortQuiescence(");
+  const pairAt = PROBE_CODE.indexOf("const onA = captureNow();");
+  assert.ok(waitAt !== -1, `${PROBE_PATH}: the quiescence wait is not called`);
+  assert.ok(
+    waitAt < pairAt,
+    "quiescing after the pair proves nothing about the pair",
+  );
+});
+
+test("G4b SIGNATURE: quiescence is BACKEND-NEUTRAL", () => {
+  // The leg that failed at Batch 890 was WEBGL, which has no `_webgpuCache`.
+  // A signature built only from the WebGPU counters would leave the failing
+  // leg completely unprotected while reading green.
+  const signature = tsBlock(
+    readNormalized(PROBE_PATH),
+    "const sortSignature = () => {",
+  );
+  assert.ok(
+    signature.includes("_indexesSortSequence"),
+    "the quiescence signature dropped the backend-neutral sort provenance — " +
+      "the WebGL leg would be unprotected",
+  );
+  assert.ok(
+    signature.includes("_indexesDataGeneration"),
+    "the quiescence signature dropped the data generation",
+  );
+  const inFlight = tsBlock(
+    readNormalized(PROBE_PATH),
+    "const sortInFlight = () => {",
+  );
+  for (const slot of [
+    "_sorterPromise",
+    "_pendingSortPromise",
+    "_pendingSnapshot",
+  ]) {
+    assert.ok(
+      inFlight.includes(slot),
+      `sortInFlight no longer covers ${slot} — an unresolved sort would read as quiet`,
+    );
+  }
+});
+
+test("G4b BAR: the determinism threshold is NOT widened", () => {
+  // The whole finding rests on the bar. 0.052% failed against 0.050%; relaxing
+  // the number would have "fixed" the run by deleting the instrument.
+  assert.equal(
+    PREDICT.determinismFraction,
+    0.0005,
+    "the determinism bar moved — C15-G4b fixes the apparatus, not the threshold",
+  );
+});
+
+const G4B_MUTANTS = [
+  {
+    name: "a settle window is reintroduced between the two captures",
+    file: PROBE_PATH,
+    mutate: (source) =>
+      source.replace(
+        "  const onA = captureNow();\n  const onB = captureNow();",
+        "  const onA = captureNow();\n  await settleMs(predict.settleMs);\n  const onB = captureNow();",
+      ),
+    check: (source) => {
+      const code = source
+        .split("\n")
+        .filter((line) => !line.trimStart().startsWith("//"))
+        .join("\n");
+      const from = code.indexOf("const onA = captureNow();");
+      const to = code.indexOf(
+        "record.determinismChanged = changedPixelCount(onA.image, onB.image);",
+        from,
+      );
+      assert.doesNotMatch(
+        code.slice(from, to),
+        /\bawait\b/,
+        "an await reappeared between the determinism captures",
+      );
+    },
+    because: /await reappeared between the determinism captures/,
+  },
+  {
+    name: "the quiescence wait is dropped",
+    file: PROBE_PATH,
+    mutate: (source) =>
+      source.replace(
+        "  const quiescence = await waitForSortQuiescence(\n    predict.settleMs,\n    quiesceBudgetMs,\n  );",
+        "  const quiescence = { quiesced: true, ms: 0, signature: null };",
+      ),
+    check: (source) => {
+      assert.ok(
+        source.includes("await waitForSortQuiescence("),
+        "the quiescence wait is not called",
+      );
+    },
+    because: /quiescence wait is not called/,
+  },
+  {
+    name: "the quiescence wait reports success when its budget expires",
+    file: PROBE_PATH,
+    mutate: (source) =>
+      source.replace(
+        "    return {\n      quiesced: false,\n      ms: performance.now() - start,\n      signature: sortSignature(),\n    };",
+        "    return {\n      quiesced: true,\n      ms: performance.now() - start,\n      signature: sortSignature(),\n    };",
+      ),
+    check: async (source) => {
+      const wait = loadQuiescenceWait(source);
+      let n = 0;
+      const result = await wait(
+        quiescenceDeps({ sortSignature: () => `seq-${n++}` }),
+      )(200, 20_000);
+      assert.equal(
+        result.quiesced,
+        false,
+        "a sort still publishing new permutations was reported as quiescent",
+      );
+    },
+    because: /was reported as quiescent/,
+  },
+  {
+    name: "the quiescence signature is narrowed to the WebGPU counters",
+    file: PROBE_PATH,
+    mutate: (source) =>
+      source.replace(
+        "      p?._indexesSortSequence ?? -1,\n      p?._indexesDataGeneration ?? -1,",
+        "",
+      ),
+    check: (source) => {
+      const signature = tsBlock(source, "const sortSignature = () => {");
+      assert.ok(
+        signature.includes("_indexesSortSequence"),
+        "the quiescence signature dropped the backend-neutral sort provenance",
+      );
+    },
+    because: /dropped the backend-neutral sort provenance/,
+  },
+  {
+    name: "the in-flight test stops blocking quiescence",
+    file: PROBE_PATH,
+    mutate: (source) =>
+      source.replace(
+        "      if (next !== signature || sortInFlight()) {",
+        "      if (next !== signature) {",
+      ),
+    check: async (source) => {
+      const wait = loadQuiescenceWait(source);
+      const result = await wait(quiescenceDeps({ sortInFlight: () => true }))(
+        200,
+        20_000,
+      );
+      assert.equal(
+        result.quiesced,
+        false,
+        "an unresolved sort promise was reported as quiescent",
+      );
+    },
+    because: /unresolved sort promise was reported as quiescent/,
+  },
+  {
+    name: "the determinism bar is widened to swallow the Batch-890 reading",
+    file: "Tools/visual-regression/lib/gsplat-parity-model.mjs",
+    mutate: (source) =>
+      source.replace(
+        /determinismFraction: 0\.0005,/,
+        "determinismFraction: 0.001,",
+      ),
+    check: (source) => {
+      assert.match(
+        source,
+        /determinismFraction: 0\.0005,/,
+        "the determinism bar moved",
+      );
+    },
+    because: /determinism bar moved/,
+  },
+  {
+    name: "`sort-quiesced` is dropped from the structural precondition list",
+    file: "Tools/visual-regression/lib/gsplat-parity-model.mjs",
+    mutate: (source) => source.replace('  "sort-quiesced",\n', ""),
+    check: (source) => {
+      // Scoped to the DECLARED list. `"sort-quiesced"` also appears as the
+      // `name:` of the check itself, so a bare `source.includes` survives the
+      // very mutation this is meant to catch — the list can be emptied while
+      // the implementation still reads as present.
+      // `tsBlock` brace-matches `{}`; this declaration is an array literal, so
+      // slice it explicitly rather than grabbing the next unrelated block.
+      const at = source.indexOf("export const STRUCTURAL_PRECONDITIONS =");
+      assert.notEqual(at, -1, "the precondition list declaration is gone");
+      const list = source.slice(at, source.indexOf("]);", at));
+      assert.ok(
+        list.includes('"sort-quiesced"'),
+        "the quiescence precondition is no longer declared structural",
+      );
+      assert.ok(
+        list.indexOf('"sort-quiesced"') < list.indexOf('"capture-determinism"'),
+        "quiescence must be checked BEFORE determinism — it is a precondition of it",
+      );
+    },
+    because: /no longer declared structural/,
+  },
+];
+
+for (const mutant of G4B_MUTANTS) {
+  test(`G4b mutant rejected: ${mutant.name}`, async () => {
+    const real = readNormalized(mutant.file);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(mutated, real, "the mutation did not apply");
+    await assert.rejects(
+      async () => await mutant.check(mutated),
+      mutant.because,
+      `${mutant.name}: accepted, or rejected for the wrong reason`,
+    );
+    await mutant.check(real);
   });
 }

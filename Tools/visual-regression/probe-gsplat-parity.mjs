@@ -300,6 +300,13 @@ const RUN_LANE = async ({
     captureLivenessMean: null,
     backgroundForeground: null,
     determinismChanged: null,
+    // C15-G4b — was the splat sort quiet when the determinism pair was taken,
+    // and what did its provenance read at that moment. `sortQuiesced === false`
+    // is a STRUCTURAL refusal, not a soft warning: a scene still re-ordering
+    // itself cannot be scored for reproducibility.
+    sortQuiesced: null,
+    sortQuiesceMs: null,
+    sortSignatureAtCapture: null,
     negativeControlChanged: null,
     added: null,
     pngs: {},
@@ -326,6 +333,72 @@ const RUN_LANE = async ({
       renderNow();
       await new Promise((resolve) => setTimeout(resolve, 0));
     }
+  };
+
+  // ── C15-G4b — splat-sort quiescence.
+  //
+  // Everything that can change this scene between two renders is asynchronous:
+  // the clock is pinned, the camera is set once and never touched, TAA and HDR
+  // are off, the globe/sky/sun/moon are hidden. What remains is the splat
+  // pipeline's WASM workers, and their results land on event-loop yields.
+  //
+  // The signature is deliberately BACKEND-NEUTRAL. `_indexesSortSequence` and
+  // `_indexesDataGeneration` are the provenance `C15-G4` stamps onto the
+  // published permutation, so a change in them IS a resolved sort on either
+  // backend — the WebGL leg has no `_webgpuCache` to read. The WebGPU
+  // consumer-side upload counter rides along when present, and the in-flight
+  // promise flags are what separate "nothing has resolved yet" from "nothing is
+  // left to resolve".
+  const sortSignature = () => {
+    const p = tileset?.gaussianSplatPrimitive;
+    return [
+      p?._indexesSortSequence ?? -1,
+      p?._indexesDataGeneration ?? -1,
+      p?._sortRequestId ?? -1,
+      p?._indexes?.length ?? -1,
+      p?._webgpuCache?.providedSortUploads ?? -1,
+      p?._webgpuCache?.comparatorSorts ?? -1,
+    ].join("/");
+  };
+  const sortInFlight = () => {
+    const p = tileset?.gaussianSplatPrimitive;
+    return (
+      p?._sorterPromise !== undefined ||
+      p?._pendingSortPromise !== undefined ||
+      p?._pendingSnapshot !== undefined
+    );
+  };
+  /**
+   * Render until the sort signature has held steady for a full `windowMs` with
+   * nothing in flight. Returns without quiescing when `budgetMs` expires — the
+   * caller records that and the `sort-quiesced` precondition refuses the run,
+   * because scoring a scene that is still re-ordering itself is exactly the
+   * failure this exists to stop.
+   */
+  const waitForSortQuiescence = async (windowMs, budgetMs) => {
+    const start = performance.now();
+    let signature = sortSignature();
+    let stableSince = start;
+    while (performance.now() - start < budgetMs) {
+      renderNow();
+      const next = sortSignature();
+      if (next !== signature || sortInFlight()) {
+        signature = next;
+        stableSince = performance.now();
+      } else if (performance.now() - stableSince >= windowMs) {
+        return {
+          quiesced: true,
+          ms: performance.now() - start,
+          signature: signature,
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    return {
+      quiesced: false,
+      ms: performance.now() - start,
+      signature: sortSignature(),
+    };
   };
 
   // ── Pixel helpers.
@@ -707,10 +780,46 @@ const RUN_LANE = async ({
   const offA = captureNow();
   record.backgroundForeground = foregroundCount(offA.image);
 
-  // ── The scored ON frame, bracketed by a repeat capture (determinism).
+  // ── The scored ON frame, plus its repeat capture (determinism).
+  //
+  // C15-G4b — the pair is taken BACK-TO-BACK IN ONE TASK. There is no `await`
+  // between `onA` and `onB`, so no promise continuation, worker message or
+  // timer can interleave: the JS execution model, not a hope about timing, is
+  // what makes the two frames comparable. The previous form put
+  // `await settleMs(2000)` between them — thousands of yields, every one of
+  // them a landing site for a resolved WASM radix sort, whose new permutation
+  // re-orders an order-dependent premultiplied blend. That is what made the
+  // WebGL leg read 0.052% on `tower` at Batch 890 (410 px of a ~32,000 px
+  // footprint) while `sh_unit_cube` read 0.000%: the defect scaled with splat
+  // COUNT, not with footprint area.
+  //
+  // The temporal-stability check the old window provided is NOT lost — it moved
+  // into `waitForSortQuiescence` below, which requires the sort provenance to
+  // hold steady across a full settle window before either capture is taken.
+  // The 0.050% bar is untouched.
   tileset.show = true;
   await settleMs(predict.settleMs);
+  // Bounded well inside the 600 s watchdog rather than inheriting the full data
+  // budget: quiescence normally lands one settle window after the first render,
+  // and a leg that cannot go quiet in 30 s is going to be refused by the
+  // precondition anyway — burning 120 s per leg to reach the same verdict would
+  // put `--asset=both` at risk of a watchdog exit 2, which reports nothing.
+  const quiesceBudgetMs = Math.min(dataBudgetMs, 30_000);
+  const quiescence = await waitForSortQuiescence(
+    predict.settleMs,
+    quiesceBudgetMs,
+  );
+  record.sortQuiesced = quiescence.quiesced;
+  record.sortQuiesceMs = quiescence.ms;
+  record.sortSignatureAtCapture = quiescence.signature;
+
   const onA = captureNow();
+  const onB = captureNow();
+  record.determinismChanged = changedPixelCount(onA.image, onB.image);
+
+  // Everything below runs in the SAME task as both captures — `analyzeAdded` is
+  // a 786k-pixel loop and the C15-G3b lesson is that the renderer-owned stats
+  // must describe the frame that was actually scored, not one read later.
   record.added = analyzeAdded(onA.image, offA.image);
   record.splatPassCommands = (() => {
     const frustums = scene._view?.frustumCommandsList ?? [];
@@ -733,10 +842,6 @@ const RUN_LANE = async ({
   // that mismatch — 61% of the canvas painted by a renderer the verdict
   // believed had committed nothing.
   sampleRendererStats();
-
-  await settleMs(predict.settleMs);
-  const onB = captureNow();
-  record.determinismChanged = changedPixelCount(onA.image, onB.image);
 
   // ── Negative control, second side: hide the tileset again and require the
   // SAME metric against the SAME reference frame to collapse.
@@ -1097,6 +1202,21 @@ async function main() {
       } px, return=${webgl?.negativeControlChanged} px, determinism=${
         webgl?.determinismChanged
       } px (webgl) / ${webgpu?.determinismChanged} px (webgpu)`,
+    );
+    console.log(
+      `  [QUIESCE]    predicted the splat sort is quiet before the BACK-TO-BACK determinism pair; measured quiesced=${
+        webgl?.sortQuiesced
+      }@${
+        webgl?.sortQuiesceMs === null || webgl?.sortQuiesceMs === undefined
+          ? "n/a"
+          : `${Math.round(webgl.sortQuiesceMs)}ms`
+      } sig=${webgl?.sortSignatureAtCapture ?? "n/a"} (webgl) / quiesced=${
+        webgpu?.sortQuiesced
+      }@${
+        webgpu?.sortQuiesceMs === null || webgpu?.sortQuiesceMs === undefined
+          ? "n/a"
+          : `${Math.round(webgpu.sortQuiesceMs)}ms`
+      } sig=${webgpu?.sortSignatureAtCapture ?? "n/a"} (webgpu)`,
     );
     console.log(
       `  [LIVENESS]   predicted >= ${pct(PREDICT.minLivenessFraction)} of the canvas reads back non-background when the scene is painted a known colour; measured ${pct(

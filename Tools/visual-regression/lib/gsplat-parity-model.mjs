@@ -298,6 +298,7 @@ export const STRUCTURAL_PRECONDITIONS = Object.freeze([
   "camera-framing",
   "capture-liveness",
   "background-blank",
+  "sort-quiesced",
   "capture-determinism",
   "negative-control-returns",
 ]);
@@ -425,11 +426,32 @@ export function precheckPreconditions(lane, predict = PREDICT) {
       } px) — a polluted reference frame contaminates every ADDED count`,
     },
     {
+      // `C15-G4b`. The determinism pair used to bracket a 2 s render window with
+      // thousands of event-loop yields in it, and the splat pipeline resolves
+      // its WASM radix sort on exactly those yields. That made "two captures of
+      // the same settled frame" a claim the probe could not keep: a permutation
+      // landing mid-window legitimately re-orders an order-dependent
+      // premultiplied blend. This precondition asserts the scene was sort-quiet
+      // BEFORE the pair — the sort provenance `C15-G4` stamps on the published
+      // permutation (`_indexesSortSequence`, backend-neutral) held steady across
+      // a full settle window with no promise in flight. It is a precondition OF
+      // determinism, so it is checked before it.
+      name: "sort-quiesced",
+      ok: lane?.sortQuiesced === true,
+      detail: `predicted the splat sort is quiescent before the determinism pair (sort provenance stable for a full settle window, no sort promise in flight); measured sortQuiesced=${
+        lane?.sortQuiesced
+      } after ${
+        lane?.sortQuiesceMs === null || lane?.sortQuiesceMs === undefined
+          ? "n/a"
+          : `${Math.round(lane.sortQuiesceMs)}ms`
+      }, signature=${lane?.sortSignatureAtCapture ?? "n/a"} — a sort resolving between the two captures re-orders an order-dependent blend`,
+    },
+    {
       name: "capture-determinism",
       ok:
         Number.isFinite(determinism) &&
         determinism <= predict.determinismFraction,
-      detail: `predicted two captures of the SAME settled frame agree to <= ${pct(
+      detail: `predicted two BACK-TO-BACK captures (same task, no yield between them, so no async resolution can interleave) agree to <= ${pct(
         predict.determinismFraction,
       )}; measured ${pct(determinism)} (${
         lane?.determinismChanged ?? "n/a"
