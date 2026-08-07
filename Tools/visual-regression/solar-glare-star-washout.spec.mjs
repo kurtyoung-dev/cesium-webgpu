@@ -661,6 +661,7 @@ test("resolver: ON produces a unit TEME Sun direction and the shipped curve", ()
     { enableAngularSolarGlare: true },
     { x: 0.6, y: 0.0, z: 0.8 },
     undefined,
+    undefined,
     createSolarGlareAppearance(),
   );
   assert.equal(r.enabled, true);
@@ -678,6 +679,7 @@ test("resolver: OFF lands on the EXACT identity", () => {
     { enableAngularSolarGlare: false },
     { x: 0.0, y: 0.0, z: 1.0 },
     undefined,
+    undefined,
     createSolarGlareAppearance(),
   );
   assert.equal(r.enabled, false);
@@ -691,6 +693,7 @@ test("resolver: no lighting facade (no globe) keeps the pre-C12-27 look", () => 
     undefined,
     { x: 0.0, y: 0.0, z: 1.0 },
     undefined,
+    undefined,
     createSolarGlareAppearance(),
   );
   assert.equal(r.enabled, false);
@@ -700,6 +703,7 @@ test("resolver: no lighting facade (no globe) keeps the pre-C12-27 look", () => 
 test("resolver: no sun direction disables rather than producing NaN", () => {
   const r = readSolarGlareAppearance(
     { enableAngularSolarGlare: true },
+    undefined,
     undefined,
     undefined,
     createSolarGlareAppearance(),
@@ -713,6 +717,7 @@ test("resolver: a degenerate (zero-length) sun direction disables", () => {
     { enableAngularSolarGlare: true },
     { x: 0.0, y: 0.0, z: 0.0 },
     IDENTITY_MATRIX3,
+    undefined,
     createSolarGlareAppearance(),
   );
   assert.equal(r.enabled, false);
@@ -730,12 +735,139 @@ test("resolver: the TEME rotation is applied as the INVERSE, not forward", () =>
     { enableAngularSolarGlare: true },
     { x: 1.0, y: 0.0, z: 0.0 },
     temeToFixed,
+    undefined,
     createSolarGlareAppearance(),
   );
   const d = r.sunDirectionTeme;
   // transpose * (1,0,0) = (0,-1,0); the forward rotation would give (0,1,0).
   assert.ok(Math.abs(d.x) < 1e-15, "x must vanish");
   assert.ok(Math.abs(d.y + 1.0) < 1e-15, "the INVERSE rotation must be used");
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// C12-27 SOURCE-VISIBILITY GATE (Batch 873) — the veil needs a visible Sun
+//
+// The row as first landed had NO notion of whether the Sun delivers any flux
+// to the observer, and Batch 865 filed that against itself. Below the horizon
+// the veil still removed every star within 90 deg of the Sun's SKY POSITION —
+// glare with no glare source, and user-visible as a bald patch in a night sky.
+//
+// The gate is one multiply by `eclipseState.sunVisibleFraction`. Every test
+// here is written so that DELETING the multiply (`strength = enabled ?
+// SOLAR_GLARE_STRENGTH : 0.0`) fails it — that is the adversarial mutant, and
+// it is the pre-fix source verbatim.
+// ───────────────────────────────────────────────────────────────────────────
+
+const eclipse = (fields) => ({
+  enabled: true,
+  valid: true,
+  sunVisibleFraction: 1.0,
+  ...fields,
+});
+
+const resolveStrength = (eclipseState) =>
+  readSolarGlareAppearance(
+    { enableAngularSolarGlare: true },
+    { x: 0.6, y: 0.0, z: 0.8 },
+    undefined,
+    eclipseState,
+    createSolarGlareAppearance(),
+  );
+
+test("visibility: a fully occluded Sun drives strength to EXACTLY 0", () => {
+  // Night, or a camera in Earth's shadow: `earthOcclusionFraction` saturates
+  // at 1, so `sunVisibleFraction` is 0. Exactly 0 is what makes every
+  // consumer's `> 0.0` guard skip its whole glare block, i.e. byte-identical
+  // to the no-Sun frame rather than merely close to it.
+  const r = resolveStrength(eclipse({ sunVisibleFraction: 0.0 }));
+  assert.equal(r.strength, 0.0);
+  assert.equal(r.sunVisibleFraction, 0.0);
+  // ...and therefore the multiplier is exactly 1.0 even DEAD ON the Sun.
+  assert.equal(solarAngularGlareFactor(1.0, r.strength), 1.0);
+  // `enabled` still reports the TOGGLE, not the physics — a probe must be able
+  // to tell "switched off" from "source not visible".
+  assert.equal(r.enabled, true);
+});
+
+test("visibility: a partly occluded Sun scales the veil linearly", () => {
+  const r = resolveStrength(eclipse({ sunVisibleFraction: 0.25 }));
+  assert.equal(r.strength, 0.25);
+  // Dead on the Sun the multiplier is 1 - strength, so a quarter-lit Sun
+  // leaves three quarters of the star's radiance instead of extinguishing it.
+  assert.ok(Math.abs(solarAngularGlareFactor(1.0, r.strength) - 0.75) < 1e-15);
+});
+
+test("visibility: a fully visible Sun is bit-identical to the pre-gate row", () => {
+  const r = resolveStrength(eclipse({ sunVisibleFraction: 1.0 }));
+  assert.equal(r.strength, SOLAR_GLARE_STRENGTH);
+  assert.equal(solarAngularGlareFactor(1.0, r.strength), 0.0);
+});
+
+test("visibility: absent / invalid / disabled eclipse state resolves to 1.0", () => {
+  // These are the identity rules. A missing state (no globe, 2D/CV/MORPHING,
+  // the first frame before the ephemeris resolves) must NOT switch the veil
+  // off — that would make the row inert in exactly the scenes it was asked
+  // for. Same for `enableEclipse` off: every other consumer's off position
+  // applies exactly 1.0.
+  for (const state of [
+    undefined,
+    null,
+    eclipse({ valid: false, sunVisibleFraction: 0.0 }),
+    eclipse({ enabled: false, sunVisibleFraction: 0.0 }),
+    eclipse({ sunVisibleFraction: Number.NaN }),
+    eclipse({ sunVisibleFraction: "0" }),
+  ]) {
+    const r = resolveStrength(state);
+    assert.equal(r.strength, SOLAR_GLARE_STRENGTH, JSON.stringify(state));
+    assert.equal(r.sunVisibleFraction, 1.0);
+  }
+});
+
+test("visibility: out-of-range fractions are clamped, never extrapolated", () => {
+  assert.equal(
+    resolveStrength(eclipse({ sunVisibleFraction: -0.5 })).strength,
+    0.0,
+  );
+  assert.equal(
+    resolveStrength(eclipse({ sunVisibleFraction: 4.0 })).strength,
+    1.0,
+  );
+});
+
+test("visibility: the toggle OFF position stays EXACTLY 0 at every visibility", () => {
+  // The multiply must not be able to resurrect a disabled row, and it must not
+  // turn the off position into `0 * something` that could round differently.
+  for (const f of [0.0, 0.5, 1.0]) {
+    const r = readSolarGlareAppearance(
+      { enableAngularSolarGlare: false },
+      { x: 0.6, y: 0.0, z: 0.8 },
+      undefined,
+      eclipse({ sunVisibleFraction: f }),
+      createSolarGlareAppearance(),
+    );
+    assert.equal(r.enabled, false);
+    assert.equal(r.strength, 0.0);
+  }
+});
+
+test("visibility: the resolver reads the state — the multiply is IN the source", () => {
+  // Source-anchored, CRLF-normalised. The mutant this rejects is the pre-fix
+  // line `result.strength = enabled ? SOLAR_GLARE_STRENGTH : 0.0;`, which
+  // every behavioural test above also rejects; this one additionally proves
+  // the gate is a single named resolution rather than an inline re-derivation
+  // that a second consumer could disagree with.
+  const src = read("packages/engine/Source/Scene/SolarGlareAppearance.js");
+  assert.match(src, /function resolveSunVisibility\(eclipseState\)/);
+  assert.match(
+    src,
+    /result\.strength = enabled \? SOLAR_GLARE_STRENGTH \* visibility : 0\.0;/,
+  );
+  assert.equal((src.match(/sunVisibleFraction/g) ?? []).length >= 2, true);
+  // Scene must hand the resolver the PUBLISHED state, not re-derive one.
+  assert.match(
+    sceneJs,
+    /readSolarGlareAppearance\(\s*frameState\.atmosphericConditions\?\.lighting,\s*frameState\.context\.uniformState\.sunDirectionWC,\s*frameState\.context\.uniformState\.temeToPseudoFixedMatrix,\s*frameState\.eclipseState,/,
+  );
 });
 
 // ───────────────────────────────────────────────────────────────────────────

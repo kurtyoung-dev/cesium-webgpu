@@ -302,6 +302,10 @@ function predictDim(meanOff, factor) {
 const SOURCE_FILES = [
   "packages/engine/Source/Scene/EclipseState.js",
   "packages/engine/Source/Scene/computeSolarObscuration.js",
+  // C12-29 S5 — not a dimming SITE, but the orthogonal sub-effect the
+  // equivalence gate isolates. Listed so a stale build of it cannot make the
+  // isolation silently ineffective.
+  "packages/engine/Source/Scene/EclipseGlobeShadow.js",
   "packages/engine/Source/Scene/Scene.js",
   "packages/engine/Source/Scene/FrameState.js",
   "packages/engine/Source/Scene/Globe.js",
@@ -702,6 +706,30 @@ const LADDER = async ({ lat, lon, ladder }) => {
     return {
       structuralError:
         "enableEclipseHorizonTwilight no longer has its shipped default-on value",
+    };
+  }
+  // C12-29 S5 (`enableEclipseGlobeShadow`, default ON since 2026-07-25) is the
+  // SECOND orthogonal sub-effect the equivalence gate has to isolate, and the
+  // reason this gate started failing: it landed ONE DAY after the gate's
+  // calibration run (2026-07-24, WebGL 5.876e-7 / WebGPU bit-identical) and
+  // was never modelled. S5 dims the globe surface per FRAGMENT by
+  // `G(O_fragment)` — deliberately superseding S2's uniform `G(O_camera)`
+  // there — and it is gated on `enableEclipse`, so the manual twin (which
+  // runs with the eclipse OFF) loses it entirely and comes back BRIGHTER than
+  // the engine leg. That is a real difference between the two paths and no
+  // public surface can reproduce a per-fragment umbra by hand, so the only
+  // honest gate is to switch the sub-effect off in the engine leg too. Its own
+  // docstring says exactly that: "Turning this sub-effect off preserves the
+  // complete S1/S2 contract for isolation and equivalence probes."
+  if (!("enableEclipseGlobeShadow" in ac.lighting)) {
+    return {
+      structuralError: "enableEclipseGlobeShadow toggle is absent",
+    };
+  }
+  if (ac.lighting.enableEclipseGlobeShadow !== true) {
+    return {
+      structuralError:
+        "enableEclipseGlobeShadow no longer has its shipped default-on value",
     };
   }
 
@@ -1151,19 +1179,30 @@ const LADDER = async ({ lat, lon, ladder }) => {
       typeof f === "number" &&
       f < 1;
 
-    // S6 adds a physically separate horizon-twilight term at deep totality.
-    // Keep the shipped/default-on ON capture above, but isolate that orthogonal
-    // term for S2's manual-equivalence proof. This reference is still the real
-    // engine path with eclipse dimming enabled; only S6's additive glow is off.
-    // The dedicated totality probe independently requires that glow on both
-    // backends, so this isolation cannot hide a missing S6 feature.
+    // S6 adds a physically separate horizon-twilight term at deep totality, and
+    // S5 adds a physically separate PER-FRAGMENT lunar umbra on the globe
+    // surface. Keep the shipped/default-on ON capture above, but isolate BOTH
+    // orthogonal terms for S2's manual-equivalence proof. This reference is
+    // still the real engine path with eclipse dimming enabled; only S6's
+    // additive glow and S5's per-fragment umbra are off. Dedicated probes
+    // (`probe-eclipse-sky-totality`, `probe-eclipse-globe-shadow`)
+    // independently require both features on both backends, so this isolation
+    // cannot hide a missing S5/S6 feature.
+    //
+    // S5 IS THE ONE THAT MATTERS HERE. It is gated on `enableEclipse`, so the
+    // manual twin never draws it, and no public surface can reproduce a
+    // per-fragment umbra with a scalar — leaving it on makes the gate measure
+    // "S2 + S5 vs S2", which is a guaranteed, growing-with-obscuration
+    // failure and not a statement about S2's contract at all.
     let equivalentOnState = onState;
     let equivalentOnSky = onSky;
     let equivalentOnGround = onGround;
     let equivalentEngineMirror = engineMirror;
     let horizonTwilightIsolated = false;
+    let globeShadowIsolated = false;
     if (isEclipsed) {
       ac.lighting.enableEclipseHorizonTwilight = false;
+      ac.lighting.enableEclipseGlobeShadow = false;
       scene.render(T());
       equivalentOnState = readState();
       equivalentOnSky = bandStats(skyY0, skyY1);
@@ -1171,7 +1210,9 @@ const LADDER = async ({ lat, lon, ladder }) => {
       equivalentEngineMirror =
         scene.globe?._surface?.tileProvider?.atmosphereLightIntensity ?? null;
       horizonTwilightIsolated = true;
+      globeShadowIsolated = true;
       ac.lighting.enableEclipseHorizonTwilight = true;
+      ac.lighting.enableEclipseGlobeShadow = true;
       scene.render(T());
     }
 
@@ -1341,6 +1382,7 @@ const LADDER = async ({ lat, lon, ladder }) => {
         starCurve.inflection = savedInflection;
       }
       ac.lighting.enableEclipseHorizonTwilight = true;
+      ac.lighting.enableEclipseGlobeShadow = true;
       manualState = manualState ?? null;
       if (site4) {
         site4.inflectionRestored =
@@ -1400,6 +1442,7 @@ const LADDER = async ({ lat, lon, ladder }) => {
               sky: equivalentOnSky,
               ground: equivalentOnGround,
               horizonTwilightIsolated,
+              globeShadowIsolated,
             },
             state: manualState,
             sky: manualSky,
@@ -1779,6 +1822,21 @@ function judge(steps) {
   // headroom over the measured worst case, and 200x tighter than the opening
   // estimate. A future run that exceeds this is a real divergence between the
   // two paths, not instrument noise.
+  //
+  // ★ AND IT DID, ON 2026-08-07 (Batch 873) — worst relative 9e-3, ~90x over
+  // the bound, engine consistently DARKER than manual, on BOTH backends with
+  // `maxFactorDelta` 0 (so: CPU-side, backend-neutral, not an S2 arithmetic
+  // change). Cause: C12-29 **S5** `enableEclipseGlobeShadow` landed default-ON
+  // on 2026-07-25, ONE DAY AFTER the calibration above, and adds a
+  // per-fragment lunar umbra on the globe that (a) is gated on
+  // `enableEclipse`, so the manual twin never draws it, and (b) has no public
+  // scalar surface that could reproduce it by hand. The gate was therefore
+  // measuring "S2 + S5" against "S2". NOT a tolerance problem — the bound was
+  // never widened; S5 is now isolated alongside S6 (see `globeShadowIsolated`),
+  // which is what its own docstring prescribes for equivalence probes. The
+  // constants were checked first and are value-identical to the shipped
+  // module's (pinned in `eclipse-scene-dimming.spec.mjs`), so neither an
+  // embedded-copy drift nor a Batch-865 constant change is in play.
   const EQUIV_REL = 1.0e-4;
   const EQUIV_ABS = 1.0e-5;
   const equivalence = [];
@@ -1817,6 +1875,10 @@ function judge(steps) {
       manualToggleOff: m.state?.enabled === false,
       horizonTwilightIsolated:
         m.engineReference?.horizonTwilightIsolated === true,
+      // C12-29 S5's per-fragment globe umbra, isolated for the same reason and
+      // asserted for the same reason: if a future edit stops isolating it the
+      // gate silently reverts to measuring "S2 + S5 vs S2".
+      globeShadowIsolated: m.engineReference?.globeShadowIsolated === true,
       // Site 3's mirror must carry the same number down both paths.
       mirrorMatches: m.mirrorMatches,
       // Site 4 (C12-29 S6 / ruling E3): live since the star-modulation default
@@ -1837,6 +1899,7 @@ function judge(steps) {
         m.state?.factor === 1 &&
         m.state?.enabled === false &&
         m.engineReference?.horizonTwilightIsolated === true &&
+        m.engineReference?.globeShadowIsolated === true &&
         m.mirrorMatches !== false &&
         // Site 4 must have been modelled successfully whenever it is live.
         // `null` (modulation off) keeps the historical inert-exclusion path.

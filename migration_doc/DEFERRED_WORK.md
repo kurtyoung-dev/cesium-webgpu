@@ -1,5 +1,85 @@
 # Deferred Work Inventory - CesiumJS WebGPU Migration
 
+## New findings — celestial/eclipse instrument worker, 2026-08-07 (Batch 873)
+
+Three findings, all measured. Two are re-attributions that OVERTURN the
+hypothesis the work was dispatched under; the third is a live one-sided WebGPU
+defect that no existing gate could have seen.
+
+- **`NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA` — the sky-atmosphere shell
+  attenuates the background over ~15% of the frame that WebGL leaves
+  bit-identical. LIVE, ONE-SIDED (WebGPU), NOT FIXED — deliberately.**
+  Root-caused offline from the committed `celestial-g1*` capture PNGs at
+  `1c3778072d` (no rebuild, no browser). The star cube map renders
+  **bit-identically** on both backends at the orbital camera (mean sumRGB
+  6.5282 each); with the sky atmosphere ON at 30 km the two frames still agree
+  to 4 dp for `x < 840` and then diverge in a single anti-solar band `x ≥ 850`,
+  where WebGL's capture is bit-identical to the no-atmosphere reference
+  (transmission exactly **1.000**) and WebGPU's is **0.30–0.50**. The shell's
+  emitted COLOUR is identical there (both render `(0,0,0)`, and the two frames
+  with the star map blacked out agree to 3e-7 relative) — **only the alpha
+  differs**, which is exactly zero pixels of difference over the black
+  backgrounds every prior celestial parity gate used. Per channel in the band,
+  WebGL 1/2/3/4/5/6/7 map to WebGPU 0/1/1/1/1/2/2.
+  **The boundary is a fixed-distance clip, not a terminator.** Its per-row
+  position (850/845/842/839/837/837/837/839/842/845 for y = 0…576) holds
+  `sin α · cos β` constant to 0.7%, the signature of a constant ray-exit
+  distance, solving to **F ≈ 4.13e6 m**; a `nightAlpha` terminator is excluded
+  arithmetically (with `lightDirection = sunDirectionWC` the shell exit point
+  reaches `dot = 0` only at 134.4° from the Sun, and the frame spans to 114.3°).
+  The shared alpha formula is NOT the divergence — `SkyAtmosphereCommon.glsl`'s
+  `opacity = clamp((outer − cameraHeight)/(outer − inner)) · pow(nightAlpha,
+  0.5)` plus `mix(color.b, 1.0, opacity)` is reproduced line for line in
+  `SkyAtmosphere.wgsl`, and both backends' blend state is identical.
+  **NOT fixed on purpose:** "make WebGPU match" here means "replicate a
+  fixed-distance clip of the WebGL shell mesh", and it is not established that
+  the clip is intended rather than a WebGL far-plane artifact of its own (a sky
+  that stops mid-frame is not obviously correct either). Deciding which coverage
+  is canonical needs a browser measurement of `czm_entireFrustum` / the executed
+  frustum at that camera, which this analysis lane could not run (Principle 9:
+  surfaced with the number, not routed around). **Next concrete step:** a probe
+  that reads `czm_entireFrustum.y` and the executed frustum near/far at the G1
+  in-column camera on both backends, then decides the canonical extent.
+  **Effort: M.** **Blocks:** any re-reading of `probe-celestial-gates.mjs`
+  Lane B's `starEnergyRatio` as a star-modulation number.
+
+- **`PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS` — G1 Lane A and the
+  twilight probe still meter stars against a pre-DR-01 cube map.** Batch 833
+  (C12-11 / DR-01) made `SkyBox.defaultVariant = TYCHO_T5_DIFFUSE`, whose every
+  face censuses to **0 resolved point sources by construction** (peak luminance
+  8–28 vs 251–255) — resolved stars are the sprite catalogue's job now. G1's M1
+  baseline ("55 sources") was filed at Batch 745 against the UN-blurred map;
+  measured on the committed captures, the archived 2026-08-01 `cubemap-only`
+  PNG peaks at code **225** and tonight's at code **7**, identically on both
+  backends. The sprites are present and bit-identical across backends (the two
+  `sprites-only` PNGs share a SHA-256) but peak at code **36**, under the M1 bar
+  of `12/255` linear (≈ code 61). So all three orbital modes census 0/0 and the
+  lane correctly reports STRUCTURAL — the instrument is not wrong, the scene
+  changed under it. Batch 848 already performed exactly this re-scope for
+  `probe-stars-catalog.mjs` ("counting pixels against a pre-DR-01 floor measures
+  the REMOVED CUBEMAP, not the catalogue"); `probe-celestial-gates.mjs`
+  (`m1PointSourceCensus` threshold / `celestial-metrics.mjs`) and
+  `probe-sky-twilight-range.mjs` (`addedPixels`, `a − b > 24` on the RGB sum)
+  owe it. **REFUTED en route:** the working hypothesis that C12-27's angular
+  solar glare dimmed the census stars below threshold. G1's orbital camera aims
+  perpendicular to the Sun, so the minimum in-crop angular separation is
+  **65.72°** and the maximum veil is **0.00322** — a 0.32% dim, three orders of
+  magnitude short of moving a source across a `12/255` bar. **Effort: S.**
+
+- **`C12-29-S5-EQUIVALENCE-BLINDSPOT` — ✅ RESOLVED in the same batch.**
+  `probe-eclipse-scene-dimming.mjs`'s R1 equivalence leg was measuring
+  "S2 + S5" against "S2": C12-29 S5 (`enableEclipseGlobeShadow`, default ON)
+  landed 2026-07-25, ONE DAY after the gate's 1e-4 band was calibrated, and its
+  per-fragment umbra is gated on `enableEclipse`, so the manual twin never draws
+  it and no public scalar surface can reproduce it. S5 is now isolated alongside
+  S6 exactly as its own docstring prescribes, `globeShadowIsolated` is required
+  by the verdict, and **the tolerance was not widened**. Two competing
+  hypotheses were refuted first and are recorded in
+  `WEBGPU_DEBUGGING_LOG.md`: Batch 865 changed no obscuration-relevant constant,
+  and the probe's embedded S2 twin has NOT drifted (its curve equals
+  `eclipseSceneLightCurve` exactly at every rung, both exposure modes). A
+  value-comparison pin now guards the embedded copy anyway.
+
 ## New findings — audit-remediation worker (engine lane), 2026-08-07
 
 Surfaced while fixing the engine-code findings of the 2026-08-07 adversarially
@@ -210,6 +290,27 @@ than routed around (Principle 9); none blocks the batch.
   byte-identical no-op in the ordinary case). Deliberately NOT done in this
   batch: it couples a C12 appearance row to the C12-29 eclipse subsystem's
   publication order, and the coupling deserves its own gate. **Effort: XS.**
+- **`C12-27-FOLLOWUP-ECLIPSED-SUN` — ✅ RESOLVED 2026-08-07 (Batch 873).** Landed
+  exactly as prescribed: one multiply by `eclipseState.sunVisibleFraction` in
+  `Scene/SolarGlareAppearance.js`'s shared resolver, so all five shader texts and
+  both backends inherit it with **no shader change** and the existing strength
+  uniform carries it (strength 0 already skips every consumer's whole block).
+  The publication-order coupling this entry flagged as its reason for deferral
+  is resolved and VERIFIED, not assumed: `frameState.eclipseState` is published
+  by `prepareLogicalViewEclipse` at the tail of `Scene.updateFrameState`, which
+  runs before `Scene.updateEnvironment` — where `readSolarGlareAppearance` is
+  called. Identity rules: an absent state, `valid === false`, `enabled ===
+  false`, or a non-finite fraction all resolve to 1.0, i.e. bit-for-bit
+  pre-fix behaviour; a fully occluded Sun drives `strength` to EXACTLY 0.
+  Gate: `solar-glare-star-washout.spec.mjs` **41/41**, seven new visibility
+  tests, and the pre-fix line is the adversarial mutant — restoring
+  `strength = enabled ? SOLAR_GLARE_STRENGTH : 0.0` fails 4 of them and
+  dropping the `frameState.eclipseState` argument at the Scene call site fails
+  a 5th. **`enabled` still reports the TOGGLE, not the physics**, so a probe can
+  distinguish "switched off" (strength 0, visibility 1) from "source not
+  visible" (strength 0, visibility 0); the resolved fraction is published as
+  `sunVisibleFraction` on the appearance object for exactly that.
+
 - **`C12-27-FOLLOWUP-STRENGTH-DIAL`** — the washout STRENGTH is a module
   constant (`SOLAR_GLARE_STRENGTH = 1.0`), not a public dial, matching the
   C12-15/16/20/22 boolean-toggle precedent. If an application ever needs a

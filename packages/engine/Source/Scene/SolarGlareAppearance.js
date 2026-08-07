@@ -56,6 +56,15 @@
 // maintainer reported, so inheriting the gate would make this row inert exactly
 // where it was asked for.
 //
+// ─── SOURCE VISIBILITY (Batch 873, discharging the Batch-865 filing) ───────
+//
+// It IS gated on the Sun actually delivering flux to the observer. The row as
+// first landed washed out stars near the Sun's sky position even with the Sun
+// below the horizon or behind the Earth — glare with no glare source. The gate
+// is one multiply by `eclipseState.sunVisibleFraction`; see
+// {@link resolveSunVisibility} for the identity rules and for why THAT scalar
+// (whose Earth-limb term S2 deliberately refuses) is the right one here.
+//
 // @private
 // @module SolarGlareAppearance
 
@@ -80,6 +89,58 @@ import {
  */
 const SOLAR_GLARE_STRENGTH = 1.0;
 
+/**
+ * C12-27 SOURCE-VISIBILITY GATE (the finding Batch 865 filed against itself).
+ *
+ * Veiling glare is light from the GLARE SOURCE scattered inside the observer's
+ * eye and optics. If the source delivers no flux to the observer there is
+ * nothing to scatter, so the veil must vanish — and the shipped row did not
+ * know that: a camera in Earth's shadow, or one looking at a midnight sky,
+ * still washed out every star within 90 deg of the Sun's SKY POSITION even
+ * though the Sun was below the horizon. That is physically wrong, and it is
+ * user-visible as "stars disappear from a patch of the night sky".
+ *
+ * `eclipseState.sunVisibleFraction` is exactly the published scalar for
+ * "surviving solar flux at this camera": `(1 - earthOcclusionFraction) *
+ * (1 - moonObscuration)` (`Scene/EclipseState.js`). Its Earth-limb term is 1
+ * for every night frame and most of twilight — the property S2 deliberately
+ * refuses because dimming the WORLD by it would black out every sunset, and
+ * the very same property that makes it the correct gate for a term that
+ * models the observer's own optics. S1 already fades the Sun BILLBOARD by it,
+ * so the veil and the disc now disappear together instead of the veil
+ * outliving its source.
+ *
+ * Identity rules, so this cannot change a frame it should not:
+ *   * no eclipse state, or `valid === false` (missing inputs, 2D/CV/MORPHING,
+ *     the first frame before the ephemeris resolves) -> 1.0, i.e. the
+ *     pre-gate behaviour, bit-for-bit.
+ *   * `enabled === false` (`lighting.enableEclipse` off) -> 1.0, matching
+ *     every other consumer's contract that the toggle's off position applies
+ *     exactly 1.0 rather than a different number.
+ * A resolved visibility of exactly 0 drives `strength` to exactly 0, and 0 is
+ * the value every consumer's `> 0.0` guard skips its whole block on — so a
+ * fully-occluded Sun is byte-identical to the no-glare frame, not merely
+ * close to it.
+ *
+ * @param {object} [eclipseState] `frameState.eclipseState`.
+ * @returns {number} Surviving solar flux fraction in [0, 1]; 1.0 when unknown.
+ * @private
+ */
+function resolveSunVisibility(eclipseState) {
+  if (
+    !defined(eclipseState) ||
+    eclipseState.valid !== true ||
+    eclipseState.enabled !== true
+  ) {
+    return 1.0;
+  }
+  const fraction = eclipseState.sunVisibleFraction;
+  if (typeof fraction !== "number" || !Number.isFinite(fraction)) {
+    return 1.0;
+  }
+  return fraction < 0.0 ? 0.0 : fraction > 1.0 ? 1.0 : fraction;
+}
+
 const scratchTemeToFixedT = new Matrix3();
 
 /**
@@ -97,6 +158,11 @@ function createSolarGlareAppearance() {
     // `strength === 0` is the EXACT identity: every consumer skips its whole
     // glare block, so the off position is byte-identical rather than close.
     strength: 0.0,
+    // C12-27 source-visibility gate — REPORTED, not consumed by any shader:
+    // `strength` already carries the product. Published so a probe can tell
+    // "the toggle is off" (strength 0, visibility 1) apart from "the Sun is
+    // behind the Earth" (strength 0, visibility 0) without re-deriving either.
+    sunVisibleFraction: 1.0,
     angularCore: SOLAR_GLARE_ANGULAR_CORE,
     pedestal: SOLAR_GLARE_ANGULAR_PEDESTAL,
     support: SOLAR_GLARE_ANGULAR_SUPPORT,
@@ -121,6 +187,9 @@ function createSolarGlareAppearance() {
  *        `WebGPUCubeMapPanoramaRenderer.updateUniforms` already take, so all
  *        consumers stay consistent with one another even in that degenerate
  *        frame.
+ * @param {object} [eclipseState] `frameState.eclipseState`, the source of the
+ *        C12-27 visibility gate. See {@link resolveSunVisibility}; absent or
+ *        invalid resolves to 1.0 and leaves the frame unchanged.
  * @param {object} result A {@link createSolarGlareAppearance} object to fill.
  * @returns {object} `result`.
  * @private
@@ -129,13 +198,19 @@ function readSolarGlareAppearance(
   lighting,
   sunDirectionWC,
   temeToPseudoFixedMatrix,
+  eclipseState,
   result,
 ) {
   const enabled =
     lighting?.enableAngularSolarGlare === true && defined(sunDirectionWC);
 
+  // Resolved even when the toggle is off, so `sunVisibleFraction` is a pure
+  // multiplier on the ON strength and the OFF position stays EXACTLY 0.
+  const visibility = resolveSunVisibility(eclipseState);
+
   result.enabled = enabled;
-  result.strength = enabled ? SOLAR_GLARE_STRENGTH : 0.0;
+  result.strength = enabled ? SOLAR_GLARE_STRENGTH * visibility : 0.0;
+  result.sunVisibleFraction = visibility;
   result.angularCore = SOLAR_GLARE_ANGULAR_CORE;
   result.pedestal = SOLAR_GLARE_ANGULAR_PEDESTAL;
   result.support = SOLAR_GLARE_ANGULAR_SUPPORT;

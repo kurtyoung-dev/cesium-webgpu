@@ -54,6 +54,7 @@ const {
   updateEclipseState,
   getEclipseSunFactor,
   getEclipseSceneLightFactor,
+  eclipseSceneLightCurve,
   computeSunPositionWC,
   ECLIPSE_FULL_SUN_ILLUMINANCE,
   ECLIPSE_TOTALITY_ILLUMINANCE,
@@ -1076,9 +1077,13 @@ test("the gates are model-free: equivalence, not prediction", () => {
   // multiplicative contract. Keep it on for the shipped ON capture, then turn
   // it off only for the engine/manual equivalence pair. The dedicated S6 probe
   // gates the glow itself, so the isolation cannot hide a removed feature.
+  // Batch 873: S5's per-fragment globe umbra is isolated in the SAME block for
+  // the same reason, so the pin now spans both switches. Keeping them adjacent
+  // is the point — one render must follow both, or the reference frame carries
+  // one sub-effect and not the other.
   assert.match(
     probe,
-    /ac\.lighting\.enableEclipseHorizonTwilight = false;\s*scene\.render\(T\(\)\);\s*equivalentOnState = readState\(\);/,
+    /ac\.lighting\.enableEclipseHorizonTwilight = false;\s*ac\.lighting\.enableEclipseGlobeShadow = false;\s*scene\.render\(T\(\)\);\s*equivalentOnState = readState\(\);/,
   );
   assert.match(probe, /engineReference:\s*\{/);
   assert.match(probe, /horizonTwilightIsolated/);
@@ -1264,5 +1269,165 @@ test("S2 is JS-uniform-only: no shader edits, no new define bit", () => {
     readEngine("Renderer/WebGPU/WebGPUShaderDefines.ts"),
     /ECLIPSE/i,
     "C12 exit-gate item 5: runtime uniforms only",
+  );
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Batch 873 — the equivalence gate's TWO blind spots, found by an Edge run
+// that failed at worst relative 9e-3 against a 1e-4 bound.
+//
+// The suspicion at the time was embedded-copy drift: the probe carries its own
+// SECOND implementation of the S2 constants (deliberately — so a silent engine
+// retune fails the probe instead of riding along with it), and Batch 865 had
+// just refactored `SolarDiscModel.js`. That hypothesis is REFUTED below by
+// value comparison: the probe's constants and the shipped module's are equal
+// to the bit. The real cause was a NEW sub-effect — C12-29 S5's per-fragment
+// globe umbra, default ON since 2026-07-25, one day after the gate's
+// calibration — that the manual twin cannot reproduce and did not isolate.
+//
+// Both findings get a pin so neither class can recur silently.
+// ───────────────────────────────────────────────────────────────────────────
+
+const readProbeText = () =>
+  fs
+    .readFileSync(path.join(here, "probe-eclipse-scene-dimming.mjs"), "utf8")
+    .replace(/\r\n/g, "\n");
+
+test("the probe's EMBEDDED S2 constants equal the shipped module's, by VALUE", () => {
+  // The probe cannot import the engine (it runs its arithmetic in the Node
+  // half and its scene setup inside `page.evaluate`, where a closure does not
+  // survive), so the constants are embedded text. Embedded text drifts. This
+  // extracts the probe's literals and compares them to the module's EXPORTS —
+  // a value comparison, not a text comparison, so a legitimate reformat does
+  // not fail and a changed NUMBER always does.
+  const probe = readProbeText();
+
+  const grab = (name) => {
+    const m = new RegExp(`const ${name} = ([^;]+);`).exec(probe);
+    assert.ok(m, `${name} is no longer a single-expression const in the probe`);
+    // Only arithmetic on numeric literals is permitted here, which is exactly
+    // what the probe writes (`5.0 / 100000.0`, `1.0 / 3.0`).
+    assert.match(
+      m[1],
+      /^[\d.eE+\-*/() ]+$/,
+      `${name} in the probe is no longer a literal arithmetic expression`,
+    );
+    // The guard above restricts the text to numeric literals, `*`, `/` and
+    // parentheses, so compiling it can only produce a number. Same technique
+    // (and same disable) as `solar-glare-star-washout.spec.mjs`, which is how
+    // this fleet compares an embedded copy against a shipped one by VALUE
+    // rather than by text.
+    // eslint-disable-next-line no-new-func
+    return Number(new Function(`return (${m[1]});`)());
+  };
+
+  assert.equal(grab("ECLIPSE_RADIOMETRIC_FLOOR"), ECLIPSE_RADIOMETRIC_FLOOR);
+  assert.equal(
+    grab("ECLIPSE_ADAPTATION_EXPONENT"),
+    ECLIPSE_ADAPTATION_EXPONENT,
+  );
+  // ...and the ratio the probe writes out longhand must be the same ratio the
+  // module builds from the two published illuminances.
+  assert.equal(
+    ECLIPSE_TOTALITY_ILLUMINANCE / ECLIPSE_FULL_SUN_ILLUMINANCE,
+    ECLIPSE_RADIOMETRIC_FLOOR,
+  );
+
+  // The probe's derived floor must agree with the module's, computed the same
+  // way (`Math.pow`, not `Math.cbrt` — the module says why).
+  const expected = Math.pow(
+    ECLIPSE_RADIOMETRIC_FLOOR,
+    ECLIPSE_ADAPTATION_EXPONENT,
+  );
+  assert.match(
+    probe,
+    /const EXPECTED_TWILIGHT_FLOOR = Math\.pow\(\s*ECLIPSE_RADIOMETRIC_FLOOR,\s*ECLIPSE_ADAPTATION_EXPONENT,\s*\);/,
+  );
+  assert.equal(expected, ECLIPSE_TWILIGHT_FLOOR);
+
+  // And the probe's second implementation of the curve must agree with the
+  // shipped one at every rung the gate actually visits. Evaluated, not read.
+  const predict =
+    /function predictFactor\(obscuration, autoExposure\) \{[\s\S]*?\n\}/.exec(
+      probe,
+    );
+  assert.ok(predict, "predictFactor moved or changed shape");
+  // Compiling the probe's OWN function text is the point: a text comparison
+  // would fail on a reformat and pass on a changed constant, which is the
+  // wrong way round for a drift guard.
+  // eslint-disable-next-line no-new-func
+  const probeCurve = new Function(
+    "ECLIPSE_RADIOMETRIC_FLOOR",
+    "ECLIPSE_ADAPTATION_EXPONENT",
+    `${predict[0]}; return predictFactor;`,
+  )(ECLIPSE_RADIOMETRIC_FLOOR, ECLIPSE_ADAPTATION_EXPONENT);
+  for (const o of [0, 0.35, 0.65, 0.9, 0.99, 0.999, 1]) {
+    for (const ae of [false, true]) {
+      assert.equal(
+        probeCurve(o, ae),
+        eclipseSceneLightCurve(o, ae),
+        `probe curve disagrees at obscuration ${o}, autoExposure ${ae}`,
+      );
+    }
+  }
+});
+
+test("the equivalence gate isolates BOTH orthogonal sub-effects (S6 and S5)", () => {
+  // S5 (`enableEclipseGlobeShadow`) dims the globe per FRAGMENT and is gated on
+  // `enableEclipse`, so the manual twin — which runs with the eclipse off —
+  // never draws it. Leaving it on makes the gate compare "S2 + S5" against
+  // "S2": a guaranteed failure that grows with obscuration and says nothing
+  // about S2's contract. Its own docstring prescribes this isolation.
+  const probe = readProbeText();
+
+  // The shipped default must be asserted, or the isolation could be a no-op.
+  assert.match(probe, /enableEclipseGlobeShadow toggle is absent/);
+  assert.match(
+    probe,
+    /enableEclipseGlobeShadow no longer has its shipped default-on value/,
+  );
+
+  // Isolated in the engine-reference capture, alongside S6...
+  assert.match(
+    probe,
+    /ac\.lighting\.enableEclipseHorizonTwilight = false;\s*ac\.lighting\.enableEclipseGlobeShadow = false;/,
+  );
+  // ...restored immediately after it...
+  assert.match(
+    probe,
+    /ac\.lighting\.enableEclipseHorizonTwilight = true;\s*ac\.lighting\.enableEclipseGlobeShadow = true;/,
+  );
+  // ...recorded...
+  assert.match(probe, /globeShadowIsolated = true;/);
+  assert.match(
+    probe,
+    /globeShadowIsolated: m\.engineReference\?\.globeShadowIsolated === true,/,
+  );
+  // ...and REQUIRED by the verdict, not merely reported.
+  assert.match(probe, /m\.engineReference\?\.globeShadowIsolated === true &&/);
+
+  // The tolerance must NOT have been widened to absorb S5.
+  assert.match(probe, /const EQUIV_REL = 1\.0e-4;/);
+  assert.match(probe, /const EQUIV_ABS = 1\.0e-5;/);
+
+  // The finding stays recorded next to the constant it explains.
+  assert.match(probe, /enableEclipseGlobeShadow` landed default-ON/);
+});
+
+test("S5's globe umbra really is gated on enableEclipse (the reason it needs isolating)", () => {
+  // If this stops being true, the manual twin WOULD see the umbra and the
+  // isolation becomes unnecessary rather than load-bearing — a change that
+  // must be made deliberately, not discovered by a failing Edge run.
+  const shadow = readEngine("Scene/EclipseGlobeShadow.js").replace(
+    /\r\n/g,
+    "\n",
+  );
+  assert.match(
+    shadow,
+    /eclipseLighting\?\.enableEclipse !== false &&\s*eclipseLighting\?\.enableEclipseGlobeShadow !== false;/,
+  );
+  assert.match(
+    readEngine("Scene/AtmosphericConditions.js"),
+    /enableEclipseGlobeShadow: true,/,
   );
 });

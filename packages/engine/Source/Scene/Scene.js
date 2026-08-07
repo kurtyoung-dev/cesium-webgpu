@@ -3885,10 +3885,14 @@ class Scene {
       if (!defined(this._solarGlareAppearance)) {
         this._solarGlareAppearance = createSolarGlareAppearance();
       }
+      // `frameState.eclipseState` is published by `prepareLogicalViewEclipse`
+      // at the tail of `updateFrameState`, which runs before this function —
+      // the publication-order coupling the C12-27 filing called out.
       frameState.solarGlareAppearance = readSolarGlareAppearance(
         frameState.atmosphericConditions?.lighting,
         frameState.context.uniformState.sunDirectionWC,
         frameState.context.uniformState.temeToPseudoFixedMatrix,
+        frameState.eclipseState,
         this._solarGlareAppearance,
       );
 

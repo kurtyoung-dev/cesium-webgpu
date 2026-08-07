@@ -17218,3 +17218,182 @@ to 1.0 turns 2/5/7/8/9/11 red, and dropping the composition turns 12 red.
 run with volumetric clouds ON at coverage 0.15 / 0.35 / 0.55 must show the
 shadowed ground fraction tracking the visible deck, plus a clouds-OFF
 byte-identical control.
+
+---
+
+## NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA — the sky shell attenuates the background over ~15% of the frame that WebGL leaves untouched (2026-08-07)
+
+**Found by:** re-attributing G1 Lane B's `starEnergyRatio = 0.794` (Batch 873). Offline
+analysis of the committed capture PNGs — no rebuild, no browser.
+
+**Type:** Correctness, one-sided (WebGPU), and INVISIBLE TO EVERY PRIOR GATE by
+construction.
+
+**Symptom as first reported:** `probe-celestial-gates.mjs`'s in-column lane
+(30 km, `skyAtmosphere.show = true`, `skyBrightness` exactly 1.0 on both
+backends) failed `modulationEngaged_on_both_backends` and
+`starEnergyRatio_in_band`, with `glModulationEngaged: true` and
+`gpuModulationEngaged: false`. Read literally: "WebGL's star-brightness
+modulation removes star energy and WebGPU's does not" — the C11-176 shape.
+
+**That reading is wrong, and the numbers say so.** The lane's certifying
+quantity is `mean(OFF) - mean(ON)` per backend. WebGL 3.1026e-4, WebGPU
+2.4645e-4. The engagement bar is `srgbToLinear(1/255)` = 3.0349e-4, so WebGL
+clears it by 2.2% and WebGPU misses it by 19% — the boolean split is a
+threshold artifact sitting between two LIVE terms, not a dead term. Both
+backends' modulation is live; they disagree about how much star energy there
+was to remove.
+
+**Root cause (measured, per pixel):**
+
+| region | WebGL | WebGPU |
+| --- | --- | --- |
+| orbital lane, no atmosphere (43,600 km) | mean sumRGB 6.5282 | 6.5282 — **bit-identical** |
+| in-column, x < 840 | transmission 0.41–0.43 | 0.41–0.43 — identical to 4 dp |
+| in-column, x >= 850 (anti-solar) | transmission **exactly 1.000** | **0.30–0.50** |
+
+The star cube map itself renders identically on both backends (orbital lane,
+bit-identical means, `maxChan` 7 both). With the atmosphere ON the two frames
+agree exactly over 84% of the crop and then diverge in a single band on the
+anti-solar side: WebGL's in-column OFF capture there is **bit-identical to the
+no-atmosphere reference**, i.e. its sky-atmosphere shell contributes nothing at
+all, while WebGPU's shell is still compositing. Per channel in that band WebGL
+1/2/3/4/5/6/7 map to WebGPU 0/1/1/1/1/2/2.
+
+The shell's own EMITTED colour is identical — both render `(0,0,0)` there, and
+the modulation-ON legs (star map black) agree to 3e-7 relative. **Only the
+alpha differs**, and an alpha-only divergence over a black background is
+exactly zero pixels of difference. Every prior celestial parity gate put the
+sky over black. Lane B is the first instrument in the fleet to put non-black
+content behind the shell, which is why a 58% background attenuation survived
+this long.
+
+**The boundary is a fixed-distance clip, not a terminator.** Per row the first
+column where WebGL becomes bit-identical to the reference is 850 / 845 / 842 /
+839 / 837 / 837 / 837 / 839 / 842 / 845 for y = 0..576 — a curve symmetric about
+mid-height, bulging 13 px left at the centre. For a camera on the sun ray at
+|C| ~ 6.408e6 m the locus of constant ray-exit distance through the outer shell
+satisfies `sin(alpha) * cos(beta) = const`; the measured boundary holds that
+product to 0.7% (0.29115 at mid-height vs 0.28916 at the top row, ~2 px), and
+solving for the distance gives **F ~ 4.13e6 m**. A day/night terminator is
+excluded arithmetically: with `lightDirection = sunDirectionWC` the shell exit
+point only reaches `dot(normalize(P), sunDir) = 0` at 134.4 deg from the Sun,
+and the frame only spans to 114.3 deg.
+
+**Not the shared formula.** `SkyAtmosphereCommon.glsl`'s
+`opacity = clamp((outer - cameraHeight)/(outer - inner)) * pow(nightAlpha, 0.5)`
+and the FS's `color.a = mix(color.b, 1.0, color.a)` are reproduced line for line
+by `SkyAtmosphere.wgsl`'s `altitudeOpacity` / `nightAlpha` /
+`mix(finalColor.b, 1.0, opacity)`. Both backends' blend state is also identical
+(`src-alpha` / `one-minus-src-alpha` colour, `one` / `one-minus-src-alpha`
+alpha). The divergence is in WHERE the shell is rasterised, not in what it
+computes.
+
+**Status: ROOT-CAUSED TO THE PIXEL, NOT FIXED — deliberately.** "Make WebGPU
+match" here means "replicate a fixed-distance clip of the WebGL shell mesh",
+and it is not established that the clip is the intended behaviour rather than a
+WebGL far-plane artifact of its own (a sky that stops mid-frame is not obviously
+correct either). Choosing which coverage is canonical needs a browser
+measurement of `czm_entireFrustum` / the executed frustum at that camera, which
+this analysis lane could not run. Filed as
+`NEW-WEBGPU-SKYATMOSPHERE-SHELL-EXTENT-ALPHA` in `DEFERRED_WORK.md` with the
+boundary arithmetic, so the next holder starts from the number rather than the
+symptom.
+
+**Consequence for G1:** Lane B's failure is REAL but is NOT a star-modulation
+defect. Until the shell row is decided, `starEnergyRatio` in that lane measures
+the sky shell's alpha, not the modulation term. The star-modulation packing was
+audited byte by byte on the way through and is CORRECT on both backends; it is
+now pinned by `Tools/visual-regression/celestial-uniform-offsets.spec.mjs`
+(derives the WGSL uniform-layout offsets from the struct text and compares them
+to the packers' literal float indices; three offset mutants rejected).
+
+**Files:** none changed by this entry.
+**Evidence:** `Tools/visual-regression/output/celestial-g1*.png`,
+`celestial-g1.json` (commit `1c3778072d`, Edge 151.0.4129.59, GTX 1080 Ti).
+
+---
+
+## C12-27-VISIBILITY — the angular solar glare washed out stars with the Sun below the horizon (2026-08-07)
+
+**Type:** Correctness, both backends (the resolver is shared), user-visible at
+night.
+
+**Root cause:** `Scene/SolarGlareAppearance.js` resolved
+`strength = SOLAR_GLARE_STRENGTH` from the toggle alone. Veiling glare is light
+from the glare SOURCE scattered in the observer's eye and optics, so with no
+flux arriving there is nothing to scatter — but the shipped row had no notion of
+whether the Sun was visible. A camera in Earth's shadow, or any ground camera at
+night, still multiplied every star within 90 deg of the Sun's SKY POSITION by
+`1 - veil`, leaving a bald patch in the night sky. Batch 865 filed this against
+itself at landing ("the glare does not know whether the Sun is VISIBLE"); the
+coupling it flagged was C12-29's publication order.
+
+**Fix:** one multiply by `eclipseState.sunVisibleFraction`
+(`(1 - earthOcclusionFraction) * (1 - moonObscuration)`), resolved in the same
+shared CPU resolver so both backends and all five shader texts inherit it with
+no shader change. That scalar's Earth-limb term is 1 for every night frame and
+most of twilight — the property S2 deliberately refuses for WORLD dimming, and
+the correct one for a term that models the observer's own optics. S1 already
+fades the Sun BILLBOARD by it, so the veil and its source now vanish together.
+Identity rules: absent / `valid === false` / `enabled === false` state resolves
+to 1.0 (bit-for-bit pre-fix behaviour); a fully occluded Sun drives `strength`
+to EXACTLY 0, which is the value every consumer's `> 0.0` guard skips its whole
+block on.
+
+**Publication order verified:** `frameState.eclipseState` is published by
+`prepareLogicalViewEclipse` at the tail of `Scene.updateFrameState`, which runs
+before `Scene.updateEnvironment` — where `readSolarGlareAppearance` is called.
+
+**Files:** `packages/engine/Source/Scene/SolarGlareAppearance.js`,
+`packages/engine/Source/Scene/Scene.js`,
+`Tools/visual-regression/solar-glare-star-washout.spec.mjs` (41/41; deleting the
+multiply fails 4 of the 7 new tests, dropping the `frameState.eclipseState`
+argument fails 1).
+
+---
+
+## C12-29-S5-EQUIVALENCE-BLINDSPOT — the eclipse equivalence gate was measuring "S2 + S5" against "S2" (2026-08-07)
+
+**Type:** Instrument defect (the gate), not an engine defect.
+
+**Symptom:** `probe-eclipse-scene-dimming.mjs`'s R1 engine-vs-manual
+equivalence leg failed on an Edge run — engine 0.279 / 0.220 / 0.157 vs manual
+0.280 / 0.221 / 0.158, a consistent ~1e-3 absolute gap, worst relative 9e-3
+against a 1e-4 bound. Backend parity intact (`maxFactorDelta` 0), so CPU-side
+and backend-neutral.
+
+**Two hypotheses refuted before the third was confirmed:**
+
+1. *Batch 865 changed an obscuration-relevant constant.* REFUTED at source.
+   Batch 865 touched `SolarDiscModel.js` but not `EclipseState.js` or
+   `computeSolarObscuration.js`, and the S2 constants are value-identical to the
+   probe's embedded twin: `ECLIPSE_FULL_SUN_ILLUMINANCE = 100000.0`,
+   `ECLIPSE_TOTALITY_ILLUMINANCE = 5.0`, floor `5.0/100000.0`, exponent
+   `1.0/3.0`. The probe's `predictFactor` is line-for-line
+   `eclipseSceneLightCurve`.
+2. *The probe's embedded copy had drifted.* REFUTED by evaluation: the probe's
+   curve and the shipped curve agree exactly at obscuration 0 / 0.35 / 0.65 /
+   0.9 / 0.99 / 0.999 / 1 in both exposure modes. (Pinned anyway — see below.)
+
+**Actual cause:** C12-29 **S5** `enableEclipseGlobeShadow` shipped DEFAULT ON on
+2026-07-25 — **one day after** the equivalence band was calibrated (2026-07-24:
+WebGL worst 5.876e-7, WebGPU bit-identical 8/8 bands). S5 dims the globe surface
+per FRAGMENT by `G(O_fragment)`, deliberately superseding S2's uniform
+`G(O_camera)` there, and it is gated on `enableEclipse`
+(`EclipseGlobeShadow.js`: `enableEclipse !== false && enableEclipseGlobeShadow
+!== false`). The manual twin runs with the eclipse OFF, so it never draws the
+umbra, and no public scalar surface can reproduce a per-fragment term by hand —
+the engine leg was therefore darker by exactly the shadow, growing with
+obscuration, on both backends.
+
+**Fix:** isolate S5 in the equivalence capture exactly as S6's horizon twilight
+already is — its own docstring prescribes this ("Turning this sub-effect off
+preserves the complete S1/S2 contract for isolation and equivalence probes").
+`globeShadowIsolated` is recorded in the manifest and REQUIRED by the verdict,
+so a future edit that stops isolating it fails loudly instead of reverting to
+the wrong comparison. **The 1e-4 / 1e-5 tolerance was not widened.**
+
+**Files:** `Tools/visual-regression/probe-eclipse-scene-dimming.mjs`,
+`Tools/visual-regression/eclipse-scene-dimming.spec.mjs` (35/35; dropping the
+isolation line fails 2 tests, perturbing the probe's embedded floor fails 1).
