@@ -20,6 +20,29 @@
 //     aggregate over the whole sky is arithmetically blind to this change (the
 //     trap recorded across this campaign and in the eclipse work).
 //
+// ⚠ RE-SCOPED 2026-08-07 FOR DR-01 (CO-3,
+// `PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS`). The PIXELS leg's structural
+// precondition used to be a FITTED COUNT: `starAddedPixels[darkest] >= 50` on
+// both backends. That number was calibrated when the shipped cube map was the
+// UN-blurred `TYCHO_T5` bake and resolved stars were plentiful and bright.
+// Batch 833 (C12-11 / DR-01) made `TYCHO_T5_DIFFUSE` the default: the cube map
+// now carries diffuse light ONLY and every resolved star comes from the sprite
+// catalogue, whose exposure anchors a vmag-3.6 star at 15.3/255. A 50-pixel
+// floor over a sprite-only field sits right on top of the expected value for
+// this framing (a uniform sky puts ~36 stars brighter than the `a - b > 24`
+// bar in a 1024x768 60-degree frame, each lighting a handful of pixels), so it
+// was a coin flip rather than a control.
+//
+// Following Batch 848's re-scope of `probe-stars-catalog.mjs` — "counting pixels
+// against a pre-DR-01 floor measures the REMOVED CUBEMAP, not the catalogue" —
+// the precondition is now POSITIONAL and ZERO-BARRED: the darkest lane must
+// resolve a point source AT the projected position of the brightest catalogue
+// star in frame, on both backends, using the shared detector at its UNCHANGED
+// floor. The `a - b > 24` difference bar is NOT loosened: it is a difference
+// metric feeding the MONOTONIC-ORDERING claim, not a census, and lowering it
+// would admit dither. What it is not is a reachability control, which is the
+// job it was doing.
+//
 // ⚠ REPAIRED 2026-08-07 — THE PIXELS LEG USED TO RENDER AT THE WALL CLOCK.
 // `useDefaultRenderLoop = false` (below) kills `CesiumWidget.render()`, which is
 // the ONLY caller that passes `clock.tick()` into `Scene.render`. Every render
@@ -46,6 +69,10 @@
 // Env:   PROBE_BASE (default http://localhost:8080)
 
 import { chromium } from "playwright";
+// ONE HOME for the resolved-point-source detector. The same module the skybox
+// bake and `probe-stars-catalog.mjs` use, at its UNCHANGED thresholds — the
+// re-scope moves the CLAIM (from a fitted count to a position), not the floor.
+import { pointSourceCensus } from "../skybox-bake/starmap-census.mjs";
 
 // Machine-safety watchdog (Batch 861+ fleet sweep). A probe that wedges holds a
 // headless Edge + GPU process alive indefinitely; `unref` keeps the timer from
@@ -88,6 +115,52 @@ const RENDERED_ELEVATION_TOL_DEG = 1.0;
 // wall-clock leg collapses this to ~0.
 const RENDERED_ELEVATION_MIN_SPREAD_DEG = 2.0;
 
+// POST-DR-01 REACHABILITY CONTROL (see the header).
+//
+// Half-width, in pixels, of the box shipped out of the page around the brightest
+// in-frame catalogue star at the CONTROL lane. 40 gives an 81x81 box: wide
+// enough that the detector's 5 px background ring is never clamped against an
+// edge, small enough that the payload is ~26 KB rather than a whole frame.
+const CENSUS_BOX_HALF_PX = 40;
+// How far the resolved source may sit from the star's PROJECTED position.
+// Both the projection and the render consume the same catalogue row through the
+// same TEME->pseudo-fixed transform at the same instant, so the only legitimate
+// error is sub-pixel rounding plus the detector's plateau tie-break; 3 px is
+// generous for both and far tighter than the ~14 px spacing at which a
+// neighbouring star could be mistaken for the target in this field.
+const STAR_AIM_TOLERANCE_PX = 3;
+
+// Rec.709 luma of an RGBA box, in the stored 8-bit domain the detector expects.
+function censusAtTarget(box) {
+  if (!box) {
+    return { available: false };
+  }
+  const plane = new Float32Array(box.w * box.h);
+  for (let p = 0; p < plane.length; p++) {
+    const i = 4 * p;
+    plane[p] =
+      0.2126 * box.data[i] +
+      0.7152 * box.data[i + 1] +
+      0.0722 * box.data[i + 2];
+  }
+  const res = pointSourceCensus(plane, box.w, box.h, { collectSources: true });
+  let nearestPx = Infinity;
+  for (const s of res.sources ?? []) {
+    const d = Math.hypot(s.x - box.centerX, s.y - box.centerY);
+    if (d < nearestPx) {
+      nearestPx = d;
+    }
+  }
+  return {
+    available: true,
+    count: res.count,
+    peakMax: res.peakMax,
+    strongest: res.strongest,
+    nearestPx,
+    resolvedAtTarget: nearestPx <= STAR_AIM_TOLERANCE_PX,
+  };
+}
+
 async function run(renderer) {
   const browser = await chromium.launch({
     channel: "msedge",
@@ -118,7 +191,7 @@ async function runWith(browser, renderer) {
   await page.waitForFunction(() => !!window.viewer, { timeout: 90000 });
 
   const result = await page.evaluate(
-    async ({ lanes, view }) => {
+    async ({ lanes, view, censusBoxHalf }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const v = window.viewer;
       const s = v.scene;
@@ -161,6 +234,11 @@ async function runWith(browser, renderer) {
           typeof computeCelestialElevationSine === "function",
         nightZenithMagnitude: NIGHT_ZENITH_MAGNITUDE ?? null,
       };
+
+      // The SHIPPED catalogue — under DR-01 it is the sole source of resolved
+      // stars, so it is also the only honest oracle for "is a star there".
+      const { default: BrightStarCatalog } =
+        await import("/packages/engine/Source/Scene/BrightStarCatalog.js");
 
       // Ground camera at a fixed site. The lane's sun is SOLVED FROM THE CLOCK
       // (see `solveClock` below) and the clock then drives the renderer, so one
@@ -238,6 +316,76 @@ async function runWith(browser, renderer) {
         return added;
       };
 
+      // POST-DR-01 REACHABILITY CONTROL. Project every catalogue star at the
+      // lane's instant and return the BRIGHTEST one that lands inside the frame
+      // with room for the detector's background ring. Positional, and sourced
+      // from the renderer's own table, so the control cannot drift away from
+      // what was drawn.
+      const boxHalf = censusBoxHalf;
+      const brightestInFrameStar = (jd) => {
+        const temeToFixed = C.Transforms.computeTemeToPseudoFixedMatrix(
+          jd,
+          new C.Matrix3(),
+        );
+        const cat = BrightStarCatalog;
+        let best = null;
+        for (let i = 0; i < cat.count; i++) {
+          const base = i * cat.STRIDE;
+          const vmag = cat.data[base + 2];
+          if (best !== null && vmag >= best.vmag) continue;
+          const ra = C.Math.toRadians(cat.data[base + 0]);
+          const dec = C.Math.toRadians(cat.data[base + 1]);
+          const teme = new C.Cartesian3(
+            Math.cos(dec) * Math.cos(ra),
+            Math.cos(dec) * Math.sin(ra),
+            Math.sin(dec),
+          );
+          const dir = C.Matrix3.multiplyByVector(
+            temeToFixed,
+            teme,
+            new C.Cartesian3(),
+          );
+          C.Cartesian3.normalize(dir, dir);
+          const far = C.Cartesian3.multiplyByScalar(
+            dir,
+            1.0e12,
+            new C.Cartesian3(),
+          );
+          const win = s.cartesianToCanvasCoordinates(far, new C.Cartesian2());
+          if (!win || !Number.isFinite(win.x) || !Number.isFinite(win.y)) {
+            continue;
+          }
+          const px = Math.round(win.x);
+          const py = Math.round(win.y);
+          if (
+            px < boxHalf ||
+            py < boxHalf ||
+            px >= s.canvas.width - boxHalf ||
+            py >= s.canvas.height - boxHalf
+          ) {
+            continue;
+          }
+          best = { vmag, x: px, y: py, exactX: win.x, exactY: win.y };
+        }
+        return best;
+      };
+      const extractBox = (image, cx, cy) => {
+        const w = 2 * boxHalf + 1;
+        const h = 2 * boxHalf + 1;
+        const out = new Array(w * h * 4);
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            const si = 4 * ((cy - boxHalf + y) * image.w + (cx - boxHalf + x));
+            const di = 4 * (y * w + x);
+            out[di] = image.data[si];
+            out[di + 1] = image.data[si + 1];
+            out[di + 2] = image.data[si + 2];
+            out[di + 3] = image.data[si + 3];
+          }
+        }
+        return { data: out, w, h, centerX: boxHalf, centerY: boxHalf };
+      };
+
       // Solve the CLOCK for each lane's solar elevation instead of synthesizing
       // a sun direction. This is load-bearing, not fussiness: the renderer draws
       // with the sun the clock produces, so a synthesized direction would have
@@ -296,6 +444,8 @@ async function runWith(browser, renderer) {
       };
 
       const out = [];
+      let controlBox = null;
+      let controlTarget = null;
       for (const lane of lanes) {
         const jd = solveClock(lane.elevationDeg);
         if (jd === null) {
@@ -341,6 +491,18 @@ async function runWith(browser, renderer) {
         const without = renderAndGrab();
         s.skyBox.starField.show = true;
 
+        // Reachability control, CONTROL lane only: the darkest lane is the one
+        // whose star field must be present for the monotonic-ordering claim to
+        // mean anything. Ships a box around the brightest in-frame catalogue
+        // star so the shared detector can run in Node against its unchanged
+        // thresholds — the probe does not re-implement the census.
+        if (lane.control === true) {
+          controlTarget = brightestInFrameStar(jd);
+          controlBox = controlTarget
+            ? extractBox(withStars.image, controlTarget.x, controlTarget.y)
+            : null;
+        }
+
         // The sun the RENDERER used, expressed in the same units as the lane.
         // If this does not equal `solvedElevationDeg`, the pixels and the engine
         // leg are describing different scenes and the PIXELS verdict is void.
@@ -381,9 +543,15 @@ async function runWith(browser, renderer) {
           starAddedPixels: addedPixels(withStars.image, without.image),
         });
       }
-      return { engineExports, lanes: out, deviceErrs };
+      return {
+        engineExports,
+        lanes: out,
+        deviceErrs,
+        controlBox,
+        controlTarget,
+      };
     },
-    { lanes: LANES, view: VIEW },
+    { lanes: LANES, view: VIEW, censusBoxHalf: CENSUS_BOX_HALF_PX },
   );
 
   return { ...result, consoleErrs: errs };
@@ -460,12 +628,27 @@ const renderedSunTracked =
 const glStars = gl.lanes.map((l) => l.starAddedPixels);
 const gpuStars = gpu.lanes.map((l) => l.starAddedPixels);
 const monotonic = (a) => a[0] >= a[1] && a[1] >= a[2] && a[2] >= a[3];
+
 // PRECONDITION, reported STRUCTURAL rather than FAIL: the darkest lane must
 // actually draw stars, or this leg is measuring an empty sky and its verdict
 // is meaningless either way. A leg that cannot see its own subject must say
 // so — scoring it as a product failure would be a phantom defect, and scoring
 // it as a pass would be a false green.
-const starsVisible = glStars[0] >= 50 && gpuStars[0] >= 50;
+//
+// RE-SCOPED FOR DR-01 (see the header): the old form was `>= 50` added pixels,
+// a floor fitted to the pre-DR-01 cube map. It is now POSITIONAL and
+// zero-barred — a resolved point source AT the brightest in-frame catalogue
+// star's projected position, plus a bare "the sprite layer added something at
+// all". Nothing about the detector's thresholds moved.
+const glCensus = censusAtTarget(gl.controlBox);
+const gpuCensus = censusAtTarget(gpu.controlBox);
+const starsVisible =
+  glCensus.available === true &&
+  gpuCensus.available === true &&
+  glCensus.resolvedAtTarget === true &&
+  gpuCensus.resolvedAtTarget === true &&
+  glStars[0] > 0 &&
+  gpuStars[0] > 0;
 let pixelStructuralReason = null;
 if (!renderedSunTracked) {
   // Strictly ahead of `starsVisible`: if the frames were not drawn at their
@@ -480,10 +663,20 @@ if (!renderedSunTracked) {
     "leg and the engine leg described different scenes";
 } else if (!starsVisible) {
   pixelPass = null; // structural
+  const describe = (name, c, target, added) =>
+    `${name}: ` +
+    (c.available
+      ? `target vmag ${target?.vmag ?? "?"} at (${target?.x ?? "?"},${target?.y ?? "?"}), ` +
+        `census ${c.count} source(s), nearest ${Number.isFinite(c.nearestPx) ? c.nearestPx.toFixed(2) : "none"} px ` +
+        `(tolerance ${STAR_AIM_TOLERANCE_PX}), box peak luma ${c.peakMax?.toFixed?.(1)}, ` +
+        `strongest contrast ${c.strongest?.toFixed?.(1)}, addedPixels ${added}`
+      : "no in-frame catalogue star was found to aim the control at");
   pixelStructuralReason =
-    "the star field drew nothing at the darkest lane, so this leg measured an " +
-    "empty sky (instrument gap, NOT a product verdict; the ENGINE leg above is " +
-    "unaffected)";
+    "the darkest lane resolved NO catalogue star at its projected position, so " +
+    "this leg measured a sky whose star field it cannot confirm was drawn " +
+    "(instrument gap, NOT a product verdict; the ENGINE leg above is " +
+    `unaffected) — ${describe("webgl", glCensus, gl.controlTarget, glStars[0])}; ` +
+    `${describe("webgpu", gpuCensus, gpu.controlTarget, gpuStars[0])}`;
 } else if (!monotonic(glStars) || !monotonic(gpuStars)) {
   pixelPass = false;
 }
@@ -508,6 +701,12 @@ console.log(
         ? "PASS"
         : "FAIL"
   } gl=${JSON.stringify(glStars)} gpu=${JSON.stringify(gpuStars)}`,
+);
+console.log(
+  `STAR REACHABILITY (control lane resolves a catalogue star AT its projected ` +
+    `position, tolerance ${STAR_AIM_TOLERANCE_PX} px): ${starsVisible ? "PASS" : "STRUCTURAL"} ` +
+    `gl=${JSON.stringify({ target: gl.controlTarget?.vmag ?? null, count: glCensus.count ?? null, nearestPx: Number.isFinite(glCensus.nearestPx) ? Number(glCensus.nearestPx.toFixed(2)) : null })} ` +
+    `gpu=${JSON.stringify({ target: gpu.controlTarget?.vmag ?? null, count: gpuCensus.count ?? null, nearestPx: Number.isFinite(gpuCensus.nearestPx) ? Number(gpuCensus.nearestPx.toFixed(2)) : null })}`,
 );
 console.log(
   `RENDER-TIME (the frames were drawn at the lanes' solved instants): ${

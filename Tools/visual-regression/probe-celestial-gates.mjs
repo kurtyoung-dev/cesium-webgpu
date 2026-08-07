@@ -113,16 +113,67 @@
 //   6. Settle is a WALL-CLOCK READINESS BUDGET, not a frame count, and every
 //      capture is preceded by a DISCARDED warm-up capture. See SETTLE_BUDGET_MS.
 //
+// ⚠ LANE A WAS RE-SCOPED FOR DR-01 ON 2026-08-07 (CO-3,
+// `PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS`). Every Lane-A criterion used
+// to be built on the M1 point-source COUNT. Batch 833 (C12-11 / DR-01) made
+// `SkyBox.defaultVariant = TYCHO_T5_DIFFUSE`, whose faces census 0 resolved
+// sources BY CONSTRUCTION, and the sprite catalogue's shipped exposure peaks
+// below the census floor in this framing (measured: sprites-only peak code 36
+// against a floor of ~code 61) — so all three modes read 0/0 and the lane went
+// STRUCTURAL over a healthy scene. The census floor is NOT lowered (that would
+// put candidates back inside the diffuse band's own 8-bit range and re-create
+// the brightness count the census replaced). Instead, following Batch 848's
+// re-scope of `probe-stars-catalog.mjs`, each mode now certifies what it owns
+// after the seam — see `lib/celestial-g1-gate.mjs` and `lib/celestial-source-split.mjs`.
+//
+// GATE G2 (--g2) — the "white blobs" gate. Three sub-lanes per backend, and it
+// must PASS IDENTICALLY ON BOTH: the PSF is shared code (`StarField.wgsl` and
+// `StarFieldFS.glsl` are character-identical), so a WebGPU-only pass is a FAIL.
+//
+//   psf         — TELESCOPE framing (fovX 6 deg) aimed at the brightest
+//                 catalogue star, sprites only, HDR exposure bracket. The star's
+//                 core is SUB-PIXEL at the default 60-degree FOV (analytic core
+//                 HWHM 0.47 px), which leaves M4's slope windows — anchored at
+//                 multiples of r_core — with fewer than two integer radii, i.e.
+//                 no measurable slope at all. Narrowing the FOV magnifies the
+//                 same angular profile onto more pixels; nothing about the PSF
+//                 changes, only how well it is sampled.
+//   magnitude   — DEFAULT framing, same aim, single 1x HDR capture. Cross-matches
+//                 the SHIPPED `BrightStarCatalog` (imported from the served
+//                 source tree, so positions and magnitudes cannot drift from
+//                 what the renderer drew) and measures delivered range, flux
+//                 ordering and the clipped-core budget.
+//   glare       — C12-27's own acceptance criterion, both halves. Camera on the
+//                 SUNLIT side in both legs so `eclipseState.sunVisibleFraction`
+//                 is 1 and the veil has a source: aimed AT the Sun (near field,
+//                 must dim measurably) and AWAY from it (far field, every star
+//                 beyond the 90-degree support, must be BYTE-IDENTICAL with the
+//                 toggle on and off). An A/A control proves the byte-identity
+//                 claim is falsifiable on this renderer before it is made.
+//
+// ⚠ THE BRACKET STITCH IS NOW LINEARIZED (same batch). The C12-02 stitch
+// computed `L = (v / 255) / f` on the stated assumption that the display
+// transform is locally linear. The shipped HDR chain is `exposure ->
+// czm_pbrNeutralTonemapping -> czm_inverseGamma`, whose gamma step alone is
+// `pow(x, 1/2.2)` and whose PBR-Neutral black offset leaves `6.25 x^2` for a
+// neutral pixel below 0.08 — it SQUARES the faint end, which is exactly the halo
+// a PSF gate measures. `lib/celestial-g2-gate.mjs` inverts the chain exactly.
+// Consequence: the M4/M5 numbers the `--bracket` diagnostic printed before this
+// batch (`ratio1e3 = 9.27` off-browser) are NOT comparable to the ones it prints
+// now (the same synthetic profile linearizes to 6.35). They were DIAGNOSTIC and
+// certified nothing, so nothing is invalidated — but do not diff them.
+//
 // EXIT CODES:
 //   0 PASS  1 FAIL (a measurable criterion is out of band)
 //   2 ERROR (a backend lane did not run)
 //   3 STRUCTURAL (a lane ran but could not see its subject — reachability not
-//     met, or the modulation term never moved a pixel, or both backends
-//     censused zero sources in a count mode). NEVER report such a lane as 0.
+//     met, or the modulation term never moved a pixel, or both backends drew no
+//     lit pixel in a mode). NEVER report such a lane as 0.
 //
 // Usage:
 //   node Tools/visual-regression/probe-celestial-gates.mjs            # G1 (SDR)
 //   node Tools/visual-regression/probe-celestial-gates.mjs --bracket  # C12-02 HDR bracket
+//   node Tools/visual-regression/probe-celestial-gates.mjs --g2       # G2 (PSF + glare)
 //   PROBE_BASE=http://localhost:8080 node ... (override server)
 
 import { chromium } from "playwright";
@@ -136,16 +187,32 @@ import {
   m3Chroma,
   m4RadialFalloff,
   m5MagnitudeFidelity,
+  spearman,
 } from "./lib/celestial-metrics.mjs";
 import { sha256, createSceneIdentity } from "./lib/visual-gate-policy.mjs";
 import {
   EXIT_CODE,
+  MODE_ROLE,
   buildG1Summary,
   evaluateCubemapParityLane,
   evaluateStarModulationLane,
   foldG1Verdict,
   ratio,
 } from "./lib/celestial-g1-gate.mjs";
+import {
+  m3ChromaTopK,
+  m7LitExtent,
+  m8PixelAgreement,
+} from "./lib/celestial-source-split.mjs";
+import {
+  CLIPPED_SEARCH_RADIUS_PX,
+  CLIP_LEVEL_LINEAR,
+  buildG2Summary,
+  displayToLinear,
+  evaluateG2Backend,
+  foldG2Verdict,
+  stitchBracketLinear,
+} from "./lib/celestial-g2-gate.mjs";
 
 const BASE = process.env.PROBE_BASE || "http://localhost:8080";
 const OUT_DIR = "Tools/visual-regression/output";
@@ -191,7 +258,39 @@ const COLUMN_MODE_CAPTURE_ORDER = ["modulation-off", "modulation-on"];
 // sun direction, is the saturated daylight value 1.0.
 const IN_COLUMN_HEIGHT_M = 30000;
 
+// Lane A's three modes no longer measure the same thing after DR-01 — the
+// cube map owns diffuse light and the sprites own resolved stars — so each one
+// declares which role it plays and the gate lib builds a different criterion set
+// for it. See `MODE_ROLE` in lib/celestial-g1-gate.mjs.
+const G1_MODE_ROLES = Object.freeze({
+  default: MODE_ROLE.COMPOSITE,
+  "cubemap-only": MODE_ROLE.DIFFUSE,
+  "sprites-only": MODE_ROLE.SPRITES,
+});
+
+// G2 TELESCOPE FRAMING. The star PSF is defined in ANGLE (the quad's base
+// half-angle is 0.003 rad and the C12-06 glare cap is 1 degree), so narrowing
+// the FOV samples the identical profile onto more pixels. At the default 60
+// deg the analytic core HWHM is 0.47 px and M4's slope windows — [2*r_core,
+// 5*r_core] and [5*r_core, 15*r_core] — contain fewer than two integer radii,
+// so the "two agreeing log-log slopes" criterion is UNMEASURABLE. At 6 deg the
+// modelled core HWHM is 4.9 px, r_1e-3 is 35 px, and the windows carry 11 and
+// 35 samples. 6 rather than 4 because the quad must stay inside the crop with
+// margin (modelled quad half-extent 88.8 px against a 320 px crop half-height).
+const G2_TELESCOPE_FOV_X_DEG = 6.0;
+// Enough to reach past the AA window's outer edge (modelled 88.8 px) so a
+// truncated profile is visible as truncation rather than as a missing crossing.
+const G2_PSF_MAX_RADIUS_PX = 120;
+// Faintest catalogue magnitude offered to the M5 cross-match. Stars fainter
+// than the ~3.6 exposure anchor fall below the M1 census floor and simply go
+// unmatched; including them costs nothing and keeps the faint end of the
+// delivered range in play if the exposure ever moves.
+const G2_MAGNITUDE_MAX_VMAG = 4.5;
+// Cap on the projected expectation payload crossing the page boundary.
+const G2_MAGNITUDE_MAX_EXPECTATIONS = 120;
+
 const BRACKET = process.argv.includes("--bracket");
+const G2 = process.argv.includes("--g2");
 
 // Curated bright stars (J2000 RA/Dec deg, Johnson V) spanning ~3.5 mag around
 // the Sirius field — the M5 cross-match set. Projected in-page at the pinned
@@ -214,9 +313,11 @@ const CATALOG_EXPECTATIONS = [
 // capture pays a wall-clock settle budget plus a discarded warm-up (see
 // SETTLE_BUDGET_MS). The watchdog must outlast the honest worst case or it
 // becomes the thing that fails the gate.
-const HARD_LIMIT_MS = 600000;
+const HARD_LIMIT_MS = G2 ? 1200000 : 600000;
 const watchdog = setTimeout(() => {
-  console.error("[probe-celestial-gates] WATCHDOG FIRED (600s) — forcing exit");
+  console.error(
+    `[probe-celestial-gates] WATCHDOG FIRED (${HARD_LIMIT_MS / 1000}s) — forcing exit`,
+  );
   process.exit(EXIT_CODE.ERROR);
 }, HARD_LIMIT_MS);
 if (watchdog.unref) {
@@ -253,7 +354,10 @@ function normalizeHardwareClass(parts) {
 // Returns the stable sun direction, sky brightness, adapter provenance, and the
 // canvas/crop geometry. Runs entirely at the pinned clock.
 // --------------------------------------------------------------------------
-async function setupScene(page, { aim, skyAtmosphereOn, cameraHeightM }) {
+async function setupScene(
+  page,
+  { aim, skyAtmosphereOn, cameraHeightM, fovXDeg, catalogMaxVmag },
+) {
   return page.evaluate(
     async ({
       pinnedIso,
@@ -265,6 +369,9 @@ async function setupScene(page, { aim, skyAtmosphereOn, cameraHeightM }) {
       catalog,
       skyOn,
       heightM,
+      fovX,
+      maxVmag,
+      maxExpectations,
     }) => {
       const C = await import("/Build/CesiumUnminified/index.js");
       const viewer = window.viewer;
@@ -297,6 +404,30 @@ async function setupScene(page, { aim, skyAtmosphereOn, cameraHeightM }) {
       }
       if (scene.fog) {
         scene.fog.enabled = false;
+      }
+
+      // TELESCOPE FRAMING (G2 psf sub-lane). `PerspectiveFrustum.fov` is the
+      // HORIZONTAL field of view whenever the canvas is wider than it is tall,
+      // which it is here (1280x720). The star quads are sized in ANGLE, so this
+      // magnifies the same profile onto more pixels rather than changing it.
+      //
+      // RESTORED, NOT LEFT BEHIND. `runBackendLanes` drives several lanes on ONE
+      // page, so a lane that narrowed the FOV would silently hand its framing to
+      // every lane after it — the magnitude sub-lane would then cross-match a
+      // 6-degree field against a 47-degree expectation list and the glare legs
+      // would sample a different patch of sky than their derivation assumes. The
+      // original value is stashed on the first setup and put back whenever no
+      // override is requested.
+      let appliedFovXDeg = null;
+      const frustum = scene.camera?.frustum;
+      if (frustum && typeof frustum.fov === "number") {
+        if (typeof window.__probeOriginalFovRad !== "number") {
+          window.__probeOriginalFovRad = frustum.fov;
+        }
+        frustum.fov = Number.isFinite(fovX)
+          ? C.Math.toRadians(fovX)
+          : window.__probeOriginalFovRad;
+        appliedFovXDeg = C.Math.toDegrees(frustum.fov);
       }
 
       // RULE 3 — bounded sun-direction settle (ICRF loads async).
@@ -363,6 +494,46 @@ async function setupScene(page, { aim, skyAtmosphereOn, cameraHeightM }) {
           orientation: { direction: dir, up: realUp },
         });
         cameraUp = C.Cartesian3.normalize(eye, new C.Cartesian3());
+      } else if (aimMode === "sun-facing" || aimMode === "anti-sun") {
+        // C12-27 GLARE FRAMING. BOTH legs put the camera on the SUNLIT side,
+        // at +sunDir * dist, and differ only in where it looks. That is
+        // load-bearing: `SolarGlareAppearance` multiplies the veil strength by
+        // `eclipseState.sunVisibleFraction`, so a camera behind the Earth
+        // resolves strength 0 and every glare criterion would pass vacuously.
+        // Placing both legs in sunlight means the far-field byte-identity claim
+        // is made with the veil ENABLED and its strength NON-ZERO — the veil is
+        // exactly 1.0 there because the pedestal-subtracted Lorentzian reaches
+        // 0 at its 90-degree support, not because the term is switched off.
+        //
+        //   sun-facing : the Sun is at frame CENTRE, so the crop spans 0 deg
+        //                (centre) to ~27.7 deg (corner) of separation — the
+        //                whole of the band where the veil is measurable.
+        //   anti-sun   : every direction in frame is >= 152 deg from the Sun,
+        //                far beyond the support, so the multiplier is exactly
+        //                1.0 everywhere and `x * 1.0 === x`.
+        const axis = sunDir;
+        const position = C.Cartesian3.multiplyByScalar(
+          axis,
+          dist,
+          new C.Cartesian3(),
+        );
+        const seed =
+          Math.abs(axis.z) < 0.9
+            ? new C.Cartesian3(0, 0, 1)
+            : new C.Cartesian3(1, 0, 0);
+        const perp = C.Cartesian3.normalize(
+          C.Cartesian3.cross(axis, seed, new C.Cartesian3()),
+          new C.Cartesian3(),
+        );
+        const direction =
+          aimMode === "sun-facing"
+            ? C.Cartesian3.clone(axis, new C.Cartesian3())
+            : C.Cartesian3.negate(axis, new C.Cartesian3());
+        scene.camera.setView({
+          destination: position,
+          orientation: { direction, up: perp },
+        });
+        cameraUp = C.Cartesian3.normalize(position, new C.Cartesian3());
       } else {
         // SUNLIT G1: camera ALONG the sun direction => local up == sunDir =>
         // the Sun sits at the local zenith. `computeCelestialElevationSine`
@@ -474,14 +645,52 @@ async function setupScene(page, { aim, skyAtmosphereOn, cameraHeightM }) {
       const ox = Math.floor((canvas.width - cw) / 2);
       const oy = Math.floor((canvas.height - ch) / 2);
 
-      // Project the curated bright-star list to canvas, keep the ones inside the
-      // crop; positions are crop-relative for M5.
+      // CROSS-MATCH EXPECTATIONS.
+      //
+      // The curated ten-star list is the historical set and stays the default.
+      // When `maxVmag` is supplied (the G2 magnitude sub-lane) the list is built
+      // from the SHIPPED `BrightStarCatalog` instead, imported out of the served
+      // source tree exactly as `probe-sky-twilight-range.mjs` imports
+      // `SkyBrightness`. That is deliberately the renderer's OWN data: the
+      // criterion is "does the renderer honour the catalogue it was given", so a
+      // hand-typed coordinate list would add a provenance risk (a 0.14-degree
+      // error is already a 3 px miss at the default framing) without adding any
+      // independence — the catalogue is the input under test, not the oracle.
+      let sourceList = catalog;
+      let catalogSource = "curated-10";
+      if (Number.isFinite(maxVmag)) {
+        const mod =
+          await import("/packages/engine/Source/Scene/BrightStarCatalog.js");
+        const cat = mod.default;
+        const rows = [];
+        for (let i = 0; i < cat.count; i++) {
+          const base = i * cat.STRIDE;
+          const vmag = cat.data[base + 2];
+          if (vmag <= maxVmag) {
+            rows.push({
+              name: `bsc-${i}`,
+              ra: cat.data[base + 0],
+              dec: cat.data[base + 1],
+              vmag,
+            });
+          }
+        }
+        rows.sort((a, b) => a.vmag - b.vmag);
+        sourceList = rows;
+        catalogSource = `BrightStarCatalog<=${maxVmag}`;
+      }
+
+      // Project to canvas, keep the ones inside the crop; positions are
+      // crop-relative for M5.
       const temeToFixed = C.Transforms.computeTemeToPseudoFixedMatrix(
         pinnedTime(),
         new C.Matrix3(),
       );
       const expectations = [];
-      for (const s of catalog) {
+      for (const s of sourceList) {
+        if (expectations.length >= maxExpectations) {
+          break;
+        }
         const ra = C.Math.toRadians(s.ra);
         const dec = C.Math.toRadians(s.dec);
         const teme = new C.Cartesian3(
@@ -510,6 +719,16 @@ async function setupScene(page, { aim, skyAtmosphereOn, cameraHeightM }) {
               vmag: s.vmag,
               screenX: sx,
               screenY: sy,
+              // Angular separation from the Sun, in the Earth-fixed frame both
+              // vectors are expressed in here. Reported so the C12-27 glare
+              // legs can state — rather than assume — which side of the
+              // 90-degree support their content sits on.
+              sunSeparationDeg:
+                (Math.acos(
+                  Math.max(-1, Math.min(1, C.Cartesian3.dot(dir, sunDir))),
+                ) *
+                  180) /
+                Math.PI,
             });
           }
         }
@@ -517,6 +736,8 @@ async function setupScene(page, { aim, skyAtmosphereOn, cameraHeightM }) {
 
       return {
         rendererType: scene.context.rendererType,
+        catalogSource,
+        appliedFovXDeg,
         skyBrightness: scene.frameState
           ? (scene.frameState.skyBrightness ?? null)
           : null,
@@ -544,6 +765,9 @@ async function setupScene(page, { aim, skyAtmosphereOn, cameraHeightM }) {
       catalog: CATALOG_EXPECTATIONS,
       skyOn: skyAtmosphereOn === true,
       heightM: Number.isFinite(cameraHeightM) ? cameraHeightM : null,
+      fovX: Number.isFinite(fovXDeg) ? fovXDeg : null,
+      maxVmag: Number.isFinite(catalogMaxVmag) ? catalogMaxVmag : null,
+      maxExpectations: G2_MAGNITUDE_MAX_EXPECTATIONS,
     },
   );
 }
@@ -552,13 +776,14 @@ async function setupScene(page, { aim, skyAtmosphereOn, cameraHeightM }) {
 // In-page: apply the M6 toggles (or the bracket exposure), settle, and capture
 // the crop in the SAME task as the final render (RULE 2).
 // --------------------------------------------------------------------------
-async function captureMode(page, { mode, crop, exposure, hdr }) {
+async function captureMode(page, { mode, crop, exposure, hdr, glareOn }) {
   return page.evaluate(
     async ({
       captureMode,
       cropRect,
       exposureFactor,
       useHdr,
+      glareFlag,
       settleBudgetMs,
       settleMinFrames,
       settleYieldMs,
@@ -607,12 +832,36 @@ async function captureMode(page, { mode, crop, exposure, hdr }) {
         modulationFlag = skyLeaf.enableStarBrightnessModulation === true;
       }
 
-      let hdrEngaged = null;
+      // C12-27 angular solar glare. The toggle lives on the same
+      // atmospheric-conditions facade as the star modulation, and `Scene`
+      // re-resolves it every frame in `updateEnvironment` regardless of
+      // `globe.show`. Left untouched when `glareFlag` is null, so the G1 lanes
+      // and the legacy bracket keep the shipped default.
+      let glareRequested = null;
+      const lightingLeaf = scene.globe?.atmosphericConditions?.lighting;
+      if (lightingLeaf && typeof glareFlag === "boolean") {
+        lightingLeaf.enableAngularSolarGlare = glareFlag;
+        glareRequested = lightingLeaf.enableAngularSolarGlare === true;
+      }
+
+      // HDR IS SET IN BOTH DIRECTIONS, NOT ONLY ON. `runBackendLanes` drives
+      // several lanes on ONE page: an HDR lane that never turned the flag back
+      // off would hand the tonemap + inverse-gamma stage to the SDR lanes after
+      // it, and the C12-27 glare legs read raw 8-bit codes on the stated
+      // grounds that the SDR canvas carries clamp(linear) directly. Leaving the
+      // exposure behind would be worse still — the last bracket step is 64x.
+      let hdrEngaged;
       if (useHdr) {
         scene.highDynamicRange = true;
         hdrEngaged = scene.highDynamicRange === true;
         if (scene.postProcessStages) {
           scene.postProcessStages.exposure = exposureFactor;
+        }
+      } else {
+        scene.highDynamicRange = false;
+        hdrEngaged = scene.highDynamicRange === true;
+        if (scene.postProcessStages) {
+          scene.postProcessStages.exposure = 1.0;
         }
       }
 
@@ -659,11 +908,28 @@ async function captureMode(page, { mode, crop, exposure, hdr }) {
 
       const settleFrameCount = await settle();
       const full = grab();
+      // Read in the SAME task as the measured render (RULE 2) so the resolved
+      // glare describes the frame that was captured, not the intent. `strength`
+      // already carries the `sunVisibleFraction` product; `sunVisibleFraction`
+      // travels separately so "the toggle is off" (strength 0, visibility 1) is
+      // distinguishable from "the Sun is behind the Earth" (strength 0,
+      // visibility 0) without re-deriving either.
+      const glareState = scene.frameState?.solarGlareAppearance ?? null;
+      const solarGlare = glareState
+        ? {
+            enabled: glareState.enabled === true,
+            strength: glareState.strength,
+            sunVisibleFraction: glareState.sunVisibleFraction,
+            supportRad: glareState.support,
+          }
+        : null;
 
       return {
         width: cropRect.width,
         height: cropRect.height,
         data: Array.from(full.data),
+        glareRequested,
+        solarGlare,
         skyBrightness: scene.frameState
           ? (scene.frameState.skyBrightness ?? null)
           : null,
@@ -685,6 +951,7 @@ async function captureMode(page, { mode, crop, exposure, hdr }) {
       cropRect: crop,
       exposureFactor: exposure ?? 1,
       useHdr: !!hdr,
+      glareFlag: typeof glareOn === "boolean" ? glareOn : null,
       settleBudgetMs: SETTLE_BUDGET_MS,
       settleMinFrames: SETTLE_MIN_FRAMES,
       settleYieldMs: SETTLE_YIELD_MS,
@@ -831,35 +1098,91 @@ function buildManifestEntry({
 }
 
 // Stitch the 1x/8x/64x captures into a linear-light float composite.
+//
+// ⚠ THE STITCH MOVED (2026-08-07, CO-3). It used to be `L = (v / 255) / f` —
+// the raw code divided by the exposure — which is only correct if the display
+// transform is the identity. The shipped HDR chain is `exposure ->
+// czm_pbrNeutralTonemapping -> czm_inverseGamma`; its gamma step is
+// `pow(x, 1/2.2)` and PBR Neutral's black offset leaves `6.25 x^2` for a
+// neutral pixel below 0.08, i.e. it SQUARES the halo a PSF gate is trying to
+// measure. `stitchBracketLinear` inverts the chain exactly (see
+// lib/celestial-g2-gate.mjs); the function is kept here as a one-line
+// forwarder so both the legacy `--bracket` diagnostic and the G2 gate read the
+// same composite, and so `git log -S stitchBracket` still lands on this note.
 function stitchBracket(captures) {
-  const { width, height } = captures[0];
-  const n = width * height * 4;
-  const out = new Float64Array(n);
-  // Highest factor first so the first unclipped sample wins.
-  const ordered = captures
-    .slice()
-    .sort((a, b) => b.exposureFactor - a.exposureFactor);
-  for (let i = 0; i < n; i += 4) {
-    for (let c = 0; c < 3; c++) {
-      let linear = 0;
-      for (const cap of ordered) {
-        const v = cap.data[i + c];
-        if (v < 250) {
-          linear = v / 255 / cap.exposureFactor;
-          break;
-        }
-      }
-      // Every exposure clipped (v>=250 everywhere): fall back to the lowest
-      // exposure's normalized value so a saturated core still reads as bright.
-      if (linear === 0) {
-        const lowest = ordered[ordered.length - 1];
-        linear = lowest.data[i + c] / 255 / lowest.exposureFactor;
-      }
-      out[i + c] = linear;
+  return stitchBracketLinear(captures);
+}
+
+// Boot one viewer page on one backend and hand it to `body`. Extracted so the
+// G1/bracket path and the multi-lane G2 path share ONE definition of "the page
+// is ready" — a second copy is a second thing that can drift out of step with
+// the readiness contract.
+async function withPage(browser, renderer, body) {
+  const context = await browser.newContext({ viewport: VIEWPORT });
+  const page = await context.newPage();
+  const consoleErrors = [];
+  page.on("console", (m) => {
+    if (m.type() === "error") {
+      consoleErrors.push(m.text().slice(0, 200));
     }
-    out[i + 3] = 1;
+  });
+  try {
+    await page.goto(
+      `${BASE}/Apps/CesiumViewer/index.html?renderer=${renderer}`,
+      {
+        waitUntil: "domcontentloaded",
+        timeout: 90000,
+      },
+    );
+    await page.waitForFunction(
+      () =>
+        !!(window.viewer && window.viewer.scene && window.viewer.scene.context),
+      null,
+      { timeout: 90000 },
+    );
+    await page.waitForTimeout(5000);
+    const value = await body(page);
+    return {
+      ok: true,
+      renderer,
+      ...value,
+      consoleErrors: consoleErrors.slice(0, 6),
+    };
+  } catch (e) {
+    return {
+      ok: false,
+      renderer,
+      error: String((e && e.message) || e).slice(0, 400),
+      consoleErrors: consoleErrors.slice(0, 6),
+    };
+  } finally {
+    await context.close().catch(() => {});
   }
-  return { data: out, width, height };
+}
+
+// Run one backend through an ORDERED list of lane definitions on a single page.
+// Each lane is `{ key, setup, captures }`; captures within a lane run in the
+// listed order, which is CERTIFYING-LAST for the same reason
+// `G1_MODE_CAPTURE_ORDER` is (see its comment).
+async function runBackendLanes(browser, renderer, laneDefs) {
+  return withPage(browser, renderer, async (page) => {
+    const lanes = {};
+    for (const def of laneDefs) {
+      const setup = await setupScene(page, def.setup);
+      const captures = {};
+      for (const cap of def.captures) {
+        captures[cap.key] = await captureMode(page, {
+          mode: cap.mode,
+          crop: setup.crop,
+          exposure: cap.exposure,
+          hdr: cap.hdr === true,
+          glareOn: cap.glareOn,
+        });
+      }
+      lanes[def.key] = { setup, captures };
+    }
+    return { lanes };
+  });
 }
 
 async function runBackend(
@@ -969,6 +1292,7 @@ const G1_LANE_SPECS = [
     modes: G1_MODE_CAPTURE_ORDER,
     countModes: G1_COUNT_MODES,
     certifyingMode: G1_CERTIFYING_MODE,
+    modeRoles: G1_MODE_ROLES,
     skyAtmosphereOn: false,
     cameraHeightM: null,
   },
@@ -987,11 +1311,46 @@ const G1_LANE_SPECS = [
 function comparePair(glImg, gpuImg) {
   const glM = metricsForImage(glImg);
   const gpuM = metricsForImage(gpuImg);
+  // POST-DR-01 Lane-A instruments (see lib/celestial-source-split.mjs). The M1
+  // counts above are RETAINED and reported — a cube map that regains resolved
+  // sources has to be visible — but they census 0/0 at HEAD by construction, so
+  // the parity claim now rides on lit extent, per-pixel agreement and chroma
+  // over the brightest sprite pixels.
+  const glLit = m7LitExtent(glImg);
+  const gpuLit = m7LitExtent(gpuImg);
+  const agreement = m8PixelAgreement(glImg, gpuImg);
+  const glChroma = m3ChromaTopK(glImg);
+  const gpuChroma = m3ChromaTopK(gpuImg);
   return {
     m1CountRatio: ratio(gpuM.m1.count, glM.m1.count),
+    litPixelRatio: ratio(gpuLit.litPixels, glLit.litPixels),
+    webglLitPixels: glLit.litPixels,
+    webgpuLitPixels: gpuLit.litPixels,
+    webglPeakLuminance: glLit.peakLuminance,
+    webgpuPeakLuminance: gpuLit.peakLuminance,
+    differingPixels: agreement.differingPixels,
+    differingFraction: agreement.differingFraction,
+    maxChannelDelta: agreement.maxChannelDelta,
+    bitIdentical: agreement.bitIdentical,
+    webglMedianSaturation: glChroma.medianSaturation,
+    webgpuMedianSaturation: gpuChroma.medianSaturation,
+    webglChromaSamples: glChroma.sampleCount,
+    webgpuChromaSamples: gpuChroma.sampleCount,
+    webglHueIQR: glChroma.hueIQR,
+    webgpuHueIQR: gpuChroma.hueIQR,
     m2aRatio: ratio(gpuM.m2.rmsContrast, glM.m2.rmsContrast),
     m2bRatio: ratio(gpuM.m2.p999MinusP50, glM.m2.p999MinusP50),
-    m3ChromaRatio: ratio(gpuM.m3.medianSaturation, glM.m3.medianSaturation),
+    // RE-POINTED for DR-01: the shipped M3 samples HSV saturation at the M1
+    // detections, which is an EMPTY SET on every Lane-A mode at HEAD. The
+    // top-K form samples the brightest pixels instead, which is well defined
+    // precisely in `sprites-only`, where the cube map is switched off and every
+    // non-black pixel is sprite output. The M1-sourced value is kept as a
+    // diagnostic so the supersession is visible in the report.
+    m3ChromaRatio: ratio(gpuChroma.medianSaturation, glChroma.medianSaturation),
+    m3ChromaRatio_M1_SOURCED_DIAGNOSTIC: ratio(
+      gpuM.m3.medianSaturation,
+      glM.m3.medianSaturation,
+    ),
     // ATTRIBUTION FACTORS for m2aRatio = (sigma/mu)_gpu / (sigma/mu)_gl. Without
     // both of these a failing m2aRatio cannot be attributed to a mean/pedestal
     // shift versus a contrast excess — the omission that produced C12-G1F2.
@@ -1123,6 +1482,9 @@ async function runG1Lane(browser, git, spec, browserVersion) {
     // Forwarded so the gate lib can apply the BLINDNESS rule to the certifying
     // mode as well, rather than defaulting to its own copy of the name.
     certifyingMode: spec.certifyingMode,
+    // Which post-DR-01 subject each mode certifies. Absent for Lane B, whose
+    // two modes are an A/B of one flag rather than a source split.
+    modeRoles: spec.modeRoles ?? {},
     perMode,
   };
 
@@ -1326,6 +1688,431 @@ async function runBracket(browser, git) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// GATE G2 — star PSF ("white blobs") + C12-27 angular solar glare.
+// ---------------------------------------------------------------------------
+
+// Lane order is deliberate: the two HDR sub-lanes run first so the glare legs,
+// whose certifying claim is BYTE-IDENTITY, execute against the warmest caches
+// this page will ever have. Within each lane the capture order is
+// certifying-last, for the reason `G1_MODE_CAPTURE_ORDER` states.
+//
+// Every lane pins `glareOn` explicitly rather than inheriting whatever the
+// previous lane left behind. The psf/magnitude lanes pin it TRUE because that
+// is the shipped default and the gate must measure the shipped configuration;
+// Sirius sits ~58 degrees from the Sun at the pinned clock, where the veil is
+// 0.006 — a uniform 0.6% scale that cancels out of every ratio G2 takes.
+const G2_LANE_DEFS = [
+  {
+    key: "psf",
+    setup: {
+      aim: "sirius",
+      skyAtmosphereOn: false,
+      cameraHeightM: null,
+      fovXDeg: G2_TELESCOPE_FOV_X_DEG,
+    },
+    captures: [
+      { key: "1x", mode: "bracket", exposure: 1, hdr: true, glareOn: true },
+      { key: "8x", mode: "bracket", exposure: 8, hdr: true, glareOn: true },
+      { key: "64x", mode: "bracket", exposure: 64, hdr: true, glareOn: true },
+    ],
+  },
+  {
+    key: "magnitude",
+    setup: {
+      aim: "sirius",
+      skyAtmosphereOn: false,
+      cameraHeightM: null,
+      fovXDeg: null,
+      catalogMaxVmag: G2_MAGNITUDE_MAX_VMAG,
+    },
+    captures: [
+      { key: "1x", mode: "bracket", exposure: 1, hdr: true, glareOn: true },
+    ],
+  },
+  {
+    key: "glare-near",
+    setup: { aim: "sun-facing", skyAtmosphereOn: false, cameraHeightM: null },
+    captures: [
+      { key: "off", mode: "default", hdr: false, glareOn: false },
+      { key: "on", mode: "default", hdr: false, glareOn: true },
+    ],
+  },
+  {
+    key: "glare-far",
+    setup: { aim: "anti-sun", skyAtmosphereOn: false, cameraHeightM: null },
+    captures: [
+      { key: "off", mode: "default", hdr: false, glareOn: false },
+      // A/A CONTROL — the SAME state captured twice. Without it, a
+      // byte-identity PASS cannot be distinguished from a renderer that happens
+      // to be deterministic for reasons unrelated to the veil, and a
+      // byte-identity FAIL cannot be distinguished from frame-to-frame noise.
+      { key: "offAA", mode: "default", hdr: false, glareOn: false },
+      { key: "on", mode: "default", hdr: false, glareOn: true },
+    ],
+  },
+];
+
+const G2_LANE_AIMS = Object.freeze(
+  Object.fromEntries(G2_LANE_DEFS.map((d) => [d.key, d.setup.aim])),
+);
+
+// Linearize a SINGLE HDR capture through the shipped display chain.
+function linearizeCapture(capture) {
+  const { width, height, data } = capture;
+  const f = capture.exposureFactor ?? 1;
+  const out = new Float64Array(width * height * 4);
+  for (let i = 0; i < out.length; i += 4) {
+    const lin = displayToLinear(data[i], data[i + 1], data[i + 2], f);
+    out[i] = lin[0];
+    out[i + 1] = lin[1];
+    out[i + 2] = lin[2];
+    out[i + 3] = 1;
+  }
+  return { data: out, width, height };
+}
+
+// Brightest pixel within `radius` of the crop centre.
+//
+// POSITIONAL, following Batch 848. The camera is aimed AT the star, so the
+// profile's centre is the frame centre BY CONSTRUCTION — there is no need to
+// discover it with a census, and good reason not to: aiming at a star puts it
+// at NDC (0,0), which for an even-sized crop is a pixel CORNER, so its four
+// neighbours are equal and `m1PointSourceCensus`'s STRICT local-maximum test
+// drops all four (the exact trap `C12-STAR-POINT-CENSUS-LIVE-CALIBRATION`
+// root-caused in the sibling detector). Taking the brightest pixel in a small
+// disc around the aim point is immune to that and still asserts WHERE the
+// signal is.
+function brightestNearCentre(image, radius) {
+  const cx = image.width / 2;
+  const cy = image.height / 2;
+  let best = { x: -1, y: -1, value: -Infinity, distance: Infinity };
+  const x0 = Math.max(0, Math.floor(cx - radius));
+  const x1 = Math.min(image.width - 1, Math.ceil(cx + radius));
+  const y0 = Math.max(0, Math.floor(cy - radius));
+  const y1 = Math.min(image.height - 1, Math.ceil(cy + radius));
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+      if (d > radius) {
+        continue;
+      }
+      const i = 4 * (y * image.width + x);
+      const v =
+        0.2126 * image.data[i] +
+        0.7152 * image.data[i + 1] +
+        0.0722 * image.data[i + 2];
+      if (v > best.value) {
+        best = { x, y, value: v, distance: d };
+      }
+    }
+  }
+  return best;
+}
+
+// PSF sub-lane measurements for one backend.
+const PSF_AIM_SEARCH_RADIUS_PX = 12;
+const PSF_AIM_TOLERANCE_PX = 6;
+
+function psfMetrics(lane) {
+  const caps = ["1x", "8x", "64x"].map((k) => lane.captures[k]);
+  const hdrEngaged = caps.every((c) => c && c.hdrEngaged === true);
+  const composite = stitchBracketLinear(caps);
+  const oneX = toImage(caps[0]);
+  const aim = brightestNearCentre(composite, PSF_AIM_SEARCH_RADIUS_PX);
+  const aimReached = aim.value > 0 && aim.distance <= PSF_AIM_TOLERANCE_PX;
+
+  let m4 = null;
+  let subFloorPixelsRecovered = 0;
+  if (aimReached) {
+    m4 = m4RadialFalloff(
+      composite,
+      { x: aim.x, y: aim.y },
+      { alreadyLinear: true, maxRadius: G2_PSF_MAX_RADIUS_PX },
+    );
+    // Range-extension proof: count the pixels where the 1x capture quantized to
+    // hard zero on every channel while the bracket composite still carries
+    // signal. Bounded to the same disc M4 measured over.
+    const r = G2_PSF_MAX_RADIUS_PX;
+    const x0 = Math.max(0, aim.x - r);
+    const x1 = Math.min(composite.width - 1, aim.x + r);
+    const y0 = Math.max(0, aim.y - r);
+    const y1 = Math.min(composite.height - 1, aim.y + r);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = 4 * (y * composite.width + x);
+        const raw = oneX.data[i] + oneX.data[i + 1] + oneX.data[i + 2];
+        const lin =
+          composite.data[i] + composite.data[i + 1] + composite.data[i + 2];
+        if (raw === 0 && lin > 0) {
+          subFloorPixelsRecovered++;
+        }
+      }
+    }
+  }
+
+  return {
+    hdrEngaged,
+    fovXDeg: lane.setup.appliedFovXDeg,
+    aim: { x: aim.x, y: aim.y, distance: r3(aim.distance), peak: aim.value },
+    aimReached,
+    // `sources` is what the sub-lane's structural guard reads; the aim point is
+    // the subject, so "one positional source" is the honest count here.
+    sources: aimReached ? 1 : 0,
+    saturatedPixels: composite.saturatedPixels,
+    subFloorPixelsRecovered,
+    rCore: m4 ? m4.rCore : NaN,
+    r1e2: m4 ? m4.r1e2 : NaN,
+    r1e3: m4 ? m4.r1e3 : NaN,
+    ratio1e3: m4 ? m4.ratio1e3 : NaN,
+    slopeInner: m4 ? m4.slopeInner : NaN,
+    slopeOuter: m4 ? m4.slopeOuter : NaN,
+    peak: m4 ? m4.peak : NaN,
+  };
+}
+
+// Magnitude sub-lane measurements for one backend.
+function magnitudeMetrics(lane) {
+  const cap = lane.captures["1x"];
+  const linear = linearizeCapture(cap);
+  const census = m1PointSourceCensus(linear, { alreadyLinear: true });
+  const m5 = m5MagnitudeFidelity(lane.setup.expectations, census.sources, {
+    maxDistance: 3,
+  });
+
+  // `min(peak_brightest, 1.0) / peak_faintest` — see the sub-lane's docstring
+  // for why the numerator is clipped at the LDR white point.
+  let maxPeak = -Infinity;
+  let minPeak = Infinity;
+  const unclippedFlux = [];
+  const unclippedPeak = [];
+  for (const m of m5.matched) {
+    if (m.peak > maxPeak) {
+      maxPeak = m.peak;
+    }
+    if (m.peak > 0 && m.peak < minPeak) {
+      minPeak = m.peak;
+    }
+    if (m.peak > 0 && m.peak < CLIP_LEVEL_LINEAR) {
+      unclippedFlux.push(-0.4 * m.vmag);
+      unclippedPeak.push(Math.log10(m.peak));
+    }
+  }
+  const numerator = Math.min(maxPeak, CLIP_LEVEL_LINEAR);
+  const renderedRange =
+    Number.isFinite(numerator) && minPeak > 0 && Number.isFinite(minPeak)
+      ? numerator / minPeak
+      : NaN;
+
+  // Clipped-core budget around the brightest matched detection, in LINEAR
+  // radiance against the LDR white point (NOT against 8-bit code 250 — under
+  // PBR Neutral those are a factor of ~2.6 apart).
+  let clippedPixels = NaN;
+  let brightest = null;
+  for (const s of census.sources) {
+    if (!brightest || s.peak > brightest.peak) {
+      brightest = s;
+    }
+  }
+  if (brightest) {
+    clippedPixels = 0;
+    const r = CLIPPED_SEARCH_RADIUS_PX;
+    const x0 = Math.max(0, brightest.x - r);
+    const x1 = Math.min(linear.width - 1, brightest.x + r);
+    const y0 = Math.max(0, brightest.y - r);
+    const y1 = Math.min(linear.height - 1, brightest.y + r);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        if (Math.hypot(x - brightest.x, y - brightest.y) > r) {
+          continue;
+        }
+        const i = 4 * (y * linear.width + x);
+        const peak = Math.max(
+          linear.data[i],
+          Math.max(linear.data[i + 1], linear.data[i + 2]),
+        );
+        if (peak >= CLIP_LEVEL_LINEAR) {
+          clippedPixels++;
+        }
+      }
+    }
+  }
+
+  return {
+    catalogSource: lane.setup.catalogSource,
+    expectations: lane.setup.expectations.length,
+    censused: census.count,
+    matched: m5.matched.length,
+    matchedUnclipped: unclippedFlux.length,
+    spearman: spearman(unclippedFlux, unclippedPeak),
+    spearman_ALL_MATCHED_DIAGNOSTIC: m5.spearman,
+    exponent_DIAGNOSTIC: m5.exponent,
+    renderedRange,
+    numeratorClipped: Number.isFinite(maxPeak)
+      ? maxPeak >= CLIP_LEVEL_LINEAR
+      : null,
+    brightestPeak: Number.isFinite(maxPeak) ? maxPeak : null,
+    faintestPeak: Number.isFinite(minPeak) ? minPeak : null,
+    clippedPixels,
+  };
+}
+
+// SDR luminance proxy, in 8-bit code units.
+//
+// The glare legs capture with `highDynamicRange` OFF, where the tonemap +
+// inverse-gamma stage is not in the pipeline at all, so the canvas carries
+// clamp(linear) directly and a code-weighted Rec.709 sum is PROPORTIONAL to
+// linear radiance. That proportionality is all these criteria need: every one
+// of them is a fraction, a count or an identity.
+function sdrLuma(data, i) {
+  return 0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2];
+}
+
+function glareMetrics(near, far) {
+  const nearOff = toImage(near.captures.off);
+  const nearOn = toImage(near.captures.on);
+  const farOff = toImage(far.captures.off);
+  const farOffAA = toImage(far.captures.offAA);
+  const farOn = toImage(far.captures.on);
+
+  const nearAgreement = m8PixelAgreement(nearOff, nearOn);
+  const farAgreement = m8PixelAgreement(farOff, farOn);
+  const farAaAgreement = m8PixelAgreement(farOff, farOffAA);
+  const farLit = m7LitExtent(farOff);
+
+  let energyOff = 0;
+  let energyOn = 0;
+  for (let i = 0; i < nearOff.data.length; i += 4) {
+    energyOff += sdrLuma(nearOff.data, i);
+    energyOn += sdrLuma(nearOn.data, i);
+  }
+
+  const glareOf = (capture) => capture.solarGlare ?? null;
+  return {
+    onStrength: glareOf(near.captures.on)?.strength ?? null,
+    offStrength: glareOf(near.captures.off)?.strength ?? null,
+    onSunVisibleFraction: glareOf(near.captures.on)?.sunVisibleFraction ?? null,
+    farOnStrength: glareOf(far.captures.on)?.strength ?? null,
+    nearMinSeparationDeg: minSeparation(near.setup.expectations),
+    farMinSeparationDeg: minSeparation(far.setup.expectations),
+    nearEnergyOff: energyOff,
+    nearEnergyOn: energyOn,
+    nearEnergyDropFraction:
+      energyOff > 0 ? (energyOff - energyOn) / energyOff : NaN,
+    nearDifferingPixels: nearAgreement.differingPixels,
+    nearBrightenedPixels: nearAgreement.brightenedPixels,
+    nearMaxChannelDelta: nearAgreement.maxChannelDelta,
+    farDifferingPixels: farAgreement.differingPixels,
+    farMaxChannelDelta: farAgreement.maxChannelDelta,
+    farAaDifferingPixels: farAaAgreement.differingPixels,
+    farLitPixels: farLit.litPixels,
+  };
+}
+
+function minSeparation(expectations) {
+  let best = Infinity;
+  for (const e of expectations ?? []) {
+    if (Number.isFinite(e.sunSeparationDeg) && e.sunSeparationDeg < best) {
+      best = e.sunSeparationDeg;
+    }
+  }
+  return Number.isFinite(best) ? r3(best) : null;
+}
+
+async function runG2(browser, git) {
+  const gl = await runBackendLanes(browser, "webgl", G2_LANE_DEFS);
+  const gpu = await runBackendLanes(browser, "webgpu", G2_LANE_DEFS);
+  if (!gl.ok || !gpu.ok) {
+    return { fatal: true, gl, gpu };
+  }
+
+  const browserVersion = browser.version();
+  const manifest = {};
+  const backends = {};
+  for (const [renderer, run] of [
+    ["webgl", gl],
+    ["webgpu", gpu],
+  ]) {
+    const measured = {
+      renderer,
+      psf: psfMetrics(run.lanes.psf),
+      magnitude: magnitudeMetrics(run.lanes.magnitude),
+      glare: glareMetrics(run.lanes["glare-near"], run.lanes["glare-far"]),
+    };
+    backends[renderer] = evaluateG2Backend(measured);
+
+    for (const [laneKey, lane] of Object.entries(run.lanes)) {
+      for (const [capKey, cap] of Object.entries(lane.captures)) {
+        const img = toImage(cap);
+        const sceneName = `celestial-g2-${laneKey}-${capKey}`;
+        const pngName = `${sceneName}-${renderer}.png`;
+        const { png } = writeCapturePng(img, pngName);
+        const sceneDescriptor = {
+          name: sceneName,
+          camera: {
+            aim: G2_LANE_AIMS[laneKey] ?? null,
+            fovXDeg: lane.setup.appliedFovXDeg,
+            distance: 5.0e7,
+            pinnedIso: PINNED_ISO,
+          },
+          setup: "celestial-gate-g2",
+          setupParams: {
+            lane: laneKey,
+            capture: capKey,
+            hdr: cap.hdrEngaged === true,
+            exposure: cap.exposureFactor,
+            glareRequested: cap.glareRequested,
+            settleBudgetMs: SETTLE_BUDGET_MS,
+            warmupDiscarded: true,
+          },
+        };
+        manifest[`${sceneName}:${renderer}`] = buildManifestEntry({
+          scene: sceneName,
+          image: pngName,
+          pngBytes: png,
+          renderer,
+          env: {
+            browserClass: "msedge",
+            browserVersion,
+            adapterClass: normalizeHardwareClass([
+              lane.setup.adapter.vendor,
+              lane.setup.adapter.architecture,
+              lane.setup.adapter.device,
+              lane.setup.adapter.description,
+            ]),
+          },
+          git,
+          sceneIdentity: createSceneIdentity(sceneDescriptor, {
+            baseUrl: BASE,
+            settleFrames: SETTLE_MIN_FRAMES,
+            viewport: VIEWPORT,
+          }),
+          extra: {
+            lane: laneKey,
+            capture: capKey,
+            solarGlareStrength: cap.solarGlare?.strength ?? null,
+            sunVisibleFraction: cap.solarGlare?.sunVisibleFraction ?? null,
+          },
+        });
+      }
+    }
+  }
+
+  const folded = foldG2Verdict(backends);
+  return {
+    fatal: false,
+    gate: "G2",
+    ...folded,
+    pass: folded.exitCode === EXIT_CODE.PASS,
+    backends,
+    manifest,
+    consoleErrors: {
+      webgl: gl.consoleErrors,
+      webgpu: gpu.consoleErrors,
+    },
+  };
+}
+
 (async () => {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const git = getGit();
@@ -1333,9 +2120,11 @@ async function runBracket(browser, git) {
   let result;
   let exitCode;
   try {
-    result = BRACKET
-      ? await runBracket(browser, git)
-      : await runG1(browser, git);
+    result = G2
+      ? await runG2(browser, git)
+      : BRACKET
+        ? await runBracket(browser, git)
+        : await runG1(browser, git);
   } finally {
     await browser.close().catch(() => {});
   }
@@ -1356,11 +2145,37 @@ async function runBracket(browser, git) {
     process.exit(EXIT_CODE.ERROR);
   }
 
-  const outName = BRACKET ? "celestial-bracket.json" : "celestial-g1.json";
+  const outName = G2
+    ? "celestial-g2.json"
+    : BRACKET
+      ? "celestial-bracket.json"
+      : "celestial-g1.json";
   const outPath = path.join(OUT_DIR, outName);
   fs.writeFileSync(outPath, JSON.stringify(result, null, 2));
 
-  if (BRACKET) {
+  if (G2) {
+    console.log(JSON.stringify(buildG2Summary(result), null, 2));
+    // REPORTED, not gated — same posture as G1. A console error during a gate
+    // run is worth reading even when every criterion passed, and a gate that
+    // silently swallowed one would be the next instrument defect.
+    for (const [renderer, errs] of Object.entries(result.consoleErrors ?? {})) {
+      if (errs && errs.length > 0) {
+        console.log(`console errors (${renderer}): ${errs.length}`);
+        errs.slice(0, 6).forEach((e) => console.log(`  ERR: ${e}`));
+      }
+    }
+    console.log(`\n[full report: ${outPath}]`);
+    exitCode = result.exitCode;
+    const verdictLine = {
+      [EXIT_CODE.PASS]:
+        "G2 PASS — the PSF, the delivered magnitude range and the C12-27 angular glare all certify, IDENTICALLY on both backends",
+      [EXIT_CODE.FAIL]:
+        "G2 FAIL — see failures[] above; each entry names the backend and the predicate. A pass on ONE backend is a FAIL for this gate (shared code, campaign principle 5)",
+      [EXIT_CODE.STRUCTURAL]:
+        "G2 STRUCTURAL — a sub-lane ran but could not see its subject; this is NOT a pass and NOT a defect (see structural[] above)",
+    };
+    console.log(verdictLine[exitCode] ?? `G2 exit ${exitCode}`);
+  } else if (BRACKET) {
     const summary = {
       gate: "bracket (C12-02 evidence, HDR lane)",
       structuralPass: result.structuralPass,

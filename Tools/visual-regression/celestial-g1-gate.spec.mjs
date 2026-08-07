@@ -22,8 +22,11 @@ import { srgbToLinear } from "./lib/celestial-metrics.mjs";
 import {
   CUBEMAP_CERTIFYING_MODE,
   EXIT_CODE,
+  MODE_ROLE,
   MODULATION_ENGAGED_MIN_ABS_DELTA,
   SKY_FLOOR_ABS_TOLERANCE,
+  SPRITE_DIFFERING_FRACTION_MAX,
+  SPRITE_MAX_CHANNEL_DELTA,
   STAR_MODULATION_SKY_BRIGHTNESS_THRESHOLD,
   buildG1Summary,
   computeFramingReached,
@@ -31,10 +34,12 @@ import {
   evaluateStarModulationLane,
   foldG1Verdict,
   inBand,
+  modeIsBlank,
   modeIsBlind,
   ratio,
   skyFloorAgrees,
 } from "./lib/celestial-g1-gate.mjs";
+import { DR01_LIVE_MAX_RESOLVED_SOURCES } from "./lib/celestial-source-split.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..", "..");
@@ -74,8 +79,48 @@ const healthyMode = (over = {}) => ({
   webgpuM1Count: 55,
   webglSkyFloor: 0,
   webgpuSkyFloor: 0,
+  // POST-DR-01 Lane-A instruments (CO-3 re-scope). A healthy mode draws
+  // content, the two backends agree pixel for pixel, and the sprite chroma is
+  // measurable.
+  litPixelRatio: 1,
+  webglLitPixels: 40000,
+  webgpuLitPixels: 40000,
+  webglPeakLuminance: 0.02,
+  webgpuPeakLuminance: 0.02,
+  differingPixels: 0,
+  differingFraction: 0,
+  maxChannelDelta: 0,
+  bitIdentical: true,
+  webglMedianSaturation: 0.3,
+  webgpuMedianSaturation: 0.3,
+  webglChromaSamples: 200,
   ...over,
 });
+
+// The HEALTHY post-DR-01 `cubemap-only` mode: the diffuse bake censuses ZERO
+// resolved sources by construction. That reading used to route the mode to
+// STRUCTURAL; it is now the assertion.
+const healthyDiffuseMode = (over = {}) =>
+  healthyMode({
+    webglM1Count: 0,
+    webgpuM1Count: 0,
+    m1CountRatio: null,
+    ...over,
+  });
+
+// The HEALTHY post-DR-01 `sprites-only` mode. It ALSO censuses zero: the sprite
+// exposure anchors a vmag-3.6 star at 15.3/255 while `m1PointSourceCensus`
+// needs a local rise of 12/255 in LINEAR light (~code 61), and the measured
+// sprites-only peak in this framing is code 36. That is the reading that made
+// the pre-re-scope lane structural, and it is what any fixture claiming to
+// describe HEAD has to carry.
+const healthySpriteMode = (over = {}) =>
+  healthyMode({
+    webglM1Count: 0,
+    webgpuM1Count: 0,
+    m1CountRatio: null,
+    ...over,
+  });
 
 const cubemapLane = (over = {}) => ({
   id: "orbital-cubemap-parity",
@@ -84,10 +129,16 @@ const cubemapLane = (over = {}) => ({
   skyBrightness: { webgl: 0, webgpu: 0 },
   sunElevationDeg: { webgl: 90, webgpu: 90 },
   countModes: ["cubemap-only", "sprites-only"],
+  certifyingMode: "default",
+  modeRoles: {
+    default: MODE_ROLE.COMPOSITE,
+    "cubemap-only": MODE_ROLE.DIFFUSE,
+    "sprites-only": MODE_ROLE.SPRITES,
+  },
   perMode: {
     default: healthyMode(),
-    "cubemap-only": healthyMode(),
-    "sprites-only": healthyMode(),
+    "cubemap-only": healthyDiffuseMode(),
+    "sprites-only": healthySpriteMode(),
   },
   ...over,
 });
@@ -254,27 +305,174 @@ const RULES = {
     assert.equal(folded.exitCode, EXIT_CODE.PASS);
     assert.equal(folded.verdict, "PASS");
   },
-  "a count mode blind on BOTH backends is STRUCTURAL, not FAIL": (impl) => {
+  "a split mode BLANK on BOTH backends is STRUCTURAL, not FAIL": (impl) => {
     const lane = cubemapLane();
-    lane.perMode["sprites-only"] = healthyMode({
-      webglM1Count: 0,
-      webgpuM1Count: 0,
-      m1CountRatio: null,
+    lane.perMode["sprites-only"] = healthySpriteMode({
+      webglLitPixels: 0,
+      webgpuLitPixels: 0,
+      litPixelRatio: null,
     });
     const folded = evaluate(impl, { cubemap: lane });
     assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL);
     assert.equal(folded.failures.length, 0);
     assert.ok(folded.structural.some((s) => s.includes("sprites-only")));
   },
-  "a count mode blind on ONE backend is a real FAIL": (impl) => {
+  "a split mode blank on ONE backend is a real FAIL": (impl) => {
     const lane = cubemapLane();
-    lane.perMode["sprites-only"] = healthyMode({
-      webglM1Count: 55,
-      webgpuM1Count: 0,
-      m1CountRatio: 0,
+    lane.perMode["sprites-only"] = healthySpriteMode({
+      webglLitPixels: 40000,
+      webgpuLitPixels: 0,
+      litPixelRatio: 0,
     });
     const folded = evaluate(impl, { cubemap: lane });
     assert.equal(folded.exitCode, EXIT_CODE.FAIL);
+    assert.ok(
+      folded.failures.some((f) => f.includes("litPixelRatio")),
+      "the one-sided darkness must be named by the lit-extent criterion",
+    );
+  },
+
+  // ---- CO-3: THE PRE-DR-01 STAR-THRESHOLD RE-SCOPE -------------------------
+  //
+  // The point of the re-scope is that a ZERO CENSUS on the cube map went from
+  // being the lane's blindness to being its assertion. Both directions have to
+  // be pinned, or the change is indistinguishable from deleting a criterion.
+  "a zero cube-map census is the HEALTHY reading, not blindness": (impl) => {
+    const lane = cubemapLane();
+    const evaluated = impl.evaluateCubemapParityLane(lane);
+    assert.equal(
+      evaluated.criteria[
+        `cubemapOnly_dr01_resolvedSources_le_${DR01_LIVE_MAX_RESOLVED_SOURCES}`
+      ],
+      true,
+      "the DR-01 seam must be a CRITERION that a zero census SATISFIES",
+    );
+    assert.equal(
+      evaluated.structuralModes.includes("cubemap-only"),
+      false,
+      "a diffuse cube map with no resolved sources is not a blind mode",
+    );
+    const folded = evaluate(impl, { cubemap: lane });
+    assert.equal(folded.exitCode, EXIT_CODE.PASS);
+  },
+  "a cube map that REGAINS resolved sources fails the DR-01 seam": (impl) => {
+    // What a re-bake without the low-pass, or a default flipped back to the
+    // un-blurred faces, looks like from the live frame.
+    for (const over of [
+      { webglM1Count: 55, webgpuM1Count: 55, m1CountRatio: 1 },
+      { webglM1Count: 0, webgpuM1Count: 55, m1CountRatio: null },
+      { webglM1Count: 55, webgpuM1Count: 0, m1CountRatio: 0 },
+    ]) {
+      const lane = cubemapLane();
+      lane.perMode["cubemap-only"] = healthyDiffuseMode(over);
+      const folded = evaluate(impl, { cubemap: lane });
+      assert.equal(
+        folded.exitCode,
+        EXIT_CODE.FAIL,
+        `a cube map censusing ${JSON.stringify(over)} must FAIL the seam`,
+      );
+      assert.ok(
+        folded.failures.some((f) => f.includes("dr01_resolvedSources")),
+        "the seam failure must be named",
+      );
+    }
+  },
+  "the DR-01 seam cannot be satisfied by a BLACK cube-map frame": (impl) => {
+    // The vacuity this re-scope had to design against: "no resolved sources" is
+    // also what a frame with nothing in it says.
+    const lane = cubemapLane();
+    lane.perMode["cubemap-only"] = healthyDiffuseMode({
+      webglLitPixels: 0,
+      webgpuLitPixels: 0,
+      litPixelRatio: null,
+      webglPeakLuminance: 0,
+      webgpuPeakLuminance: 0,
+    });
+    const folded = evaluate(impl, { cubemap: lane });
+    assert.notEqual(
+      folded.exitCode,
+      EXIT_CODE.PASS,
+      "a black cube map satisfies the zero census and must NOT read as a pass",
+    );
+    assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL);
+    assert.ok(folded.structural.some((s) => s.includes("cubemap-only")));
+  },
+  "the sprite pass certifies on per-pixel agreement, and the bound has teeth": (
+    impl,
+  ) => {
+    const at = (over) => {
+      const lane = cubemapLane();
+      lane.perMode["sprites-only"] = healthySpriteMode(over);
+      return impl.evaluateCubemapParityLane(lane);
+    };
+    // Bit-identical (what Batch 873 measured) passes.
+    assert.equal(at({}).pass, true);
+    // One code value over the bound on ONE channel fails.
+    const overDelta = at({ maxChannelDelta: SPRITE_MAX_CHANNEL_DELTA + 1 });
+    assert.equal(
+      overDelta.criteria[
+        `spritesOnly_maxChannelDelta_le_${SPRITE_MAX_CHANNEL_DELTA}`
+      ],
+      false,
+    );
+    // A fraction just over the bound fails.
+    const overFraction = at({
+      differingFraction: SPRITE_DIFFERING_FRACTION_MAX * 1.0001,
+    });
+    assert.equal(
+      overFraction.criteria.spritesOnly_differingFraction_within_bound,
+      false,
+    );
+    // ...and just under it passes, so the bound is a bound and not a tautology.
+    assert.equal(
+      at({ differingFraction: SPRITE_DIFFERING_FRACTION_MAX * 0.9999 }).criteria
+        .spritesOnly_differingFraction_within_bound,
+      true,
+    );
+  },
+  "an unmeasurable sprite chroma is STRUCTURAL, never a scored 0/0": (impl) => {
+    const lane = cubemapLane();
+    lane.perMode["sprites-only"] = healthySpriteMode({
+      webglChromaSamples: 0,
+      webglMedianSaturation: 0,
+      webgpuMedianSaturation: 0,
+      m3ChromaRatio: null,
+    });
+    const evaluated = impl.evaluateCubemapParityLane(lane);
+    assert.equal(
+      Object.hasOwn(evaluated.criteria, "spritesOnly_chromaRatio_ge_0_85"),
+      false,
+      "a 0/0 chroma must be DROPPED, not scored — null >= 0.85 is a confident false",
+    );
+    const folded = evaluate(impl, { cubemap: lane });
+    assert.equal(folded.exitCode, EXIT_CODE.STRUCTURAL);
+    assert.equal(folded.failures.length, 0);
+    assert.ok(folded.structural.some((s) => s.includes("chroma")));
+  },
+  "a measurable sprite chroma still certifies": (impl) => {
+    const lane = cubemapLane();
+    lane.perMode["sprites-only"] = healthySpriteMode({ m3ChromaRatio: 0.5 });
+    const folded = evaluate(impl, { cubemap: lane });
+    assert.equal(folded.exitCode, EXIT_CODE.FAIL);
+    assert.ok(folded.failures.some((f) => f.includes("chromaRatio")));
+  },
+  "modeIsBlank is zero-barred and per-mode; modeIsBlind is retained": (
+    impl,
+  ) => {
+    assert.equal(modeIsBlank({ webglLitPixels: 0, webgpuLitPixels: 0 }), true);
+    assert.equal(modeIsBlank({ webglLitPixels: 1, webgpuLitPixels: 0 }), false);
+    assert.equal(modeIsBlank({ webglLitPixels: 0, webgpuLitPixels: 1 }), false);
+    assert.equal(modeIsBlank({}), true, "absent measurements read as blank");
+    // The superseded predicate is still exported, still has the same polarity,
+    // and is NOT what the lane routes on any more.
+    assert.equal(modeIsBlind({ webglM1Count: 0, webgpuM1Count: 0 }), true);
+    const lane = cubemapLane();
+    assert.equal(modeIsBlind(lane.perMode["cubemap-only"]), true);
+    assert.equal(
+      impl.evaluateCubemapParityLane(lane).structuralModes.length,
+      0,
+      "the mode modeIsBlind calls blind is exactly the mode the gate now certifies",
+    );
   },
 
   // ---- AUDIT ITEM 4: one-sided modulation death is the DEFECT --------------
@@ -362,13 +560,13 @@ const RULES = {
   // `null >= 0.9` / `inBand(null)` are both false, so a doubly-blind certifying
   // mode produced four confident FALSE criteria and exit 1 — a phantom defect
   // over a scene where no source was censused at all.
-  "the CERTIFYING cubemap mode blind on BOTH backends is STRUCTURAL, never a verdict":
+  "the CERTIFYING cubemap mode blank on BOTH backends is STRUCTURAL, never a verdict":
     (impl) => {
       const lane = cubemapLane();
       lane.perMode.default = healthyMode({
-        webglM1Count: 0,
-        webgpuM1Count: 0,
-        m1CountRatio: null,
+        webglLitPixels: 0,
+        webgpuLitPixels: 0,
+        litPixelRatio: null,
         m2aRatio: null,
         m2bRatio: null,
         m3ChromaRatio: null,
@@ -377,32 +575,32 @@ const RULES = {
       assert.equal(
         folded.exitCode,
         EXIT_CODE.STRUCTURAL,
-        `a doubly-blind certifying mode must not produce a verdict, got ${folded.verdict}`,
+        `a doubly-blank certifying mode must not produce a verdict, got ${folded.verdict}`,
       );
       assert.notEqual(folded.exitCode, EXIT_CODE.PASS);
       assert.notEqual(folded.exitCode, EXIT_CODE.FAIL);
       assert.equal(folded.failures.length, 0);
       assert.ok(
         folded.structural.some((s) => s.includes(CUBEMAP_CERTIFYING_MODE)),
-        "the blind CERTIFYING mode must be named in structural[]",
+        "the blank CERTIFYING mode must be named in structural[]",
       );
     },
-  "the CERTIFYING cubemap mode blind on ONE backend is a real FAIL": (impl) => {
+  "the CERTIFYING cubemap mode blank on ONE backend is a real FAIL": (impl) => {
     const lane = cubemapLane();
     lane.perMode.default = healthyMode({
-      webglM1Count: 55,
-      webgpuM1Count: 0,
-      m1CountRatio: 0,
+      webglLitPixels: 40000,
+      webgpuLitPixels: 0,
+      litPixelRatio: 0,
     });
     const folded = evaluate(impl, { cubemap: lane });
     assert.equal(
       folded.exitCode,
       EXIT_CODE.FAIL,
-      `one-sided blindness on the certifying mode is the defect, got ${folded.verdict}`,
+      `one-sided darkness on the certifying mode is the defect, got ${folded.verdict}`,
     );
     assert.ok(
-      folded.failures.some((f) => f.includes("m1CountRatio")),
-      "the count criterion must be named in failures[]",
+      folded.failures.some((f) => f.includes("litPixelRatio")),
+      "the lit-extent criterion must be named in failures[]",
     );
   },
   "a real defect outranks a structural lane": (impl) => {
@@ -570,14 +768,100 @@ const MUTANTS = {
       };
     },
   },
-  "a blind count mode scored as a defect": {
+  "a blank split mode scored as a defect": {
     ...REAL,
     evaluateCubemapParityLane: (lane) => {
       const evaluated = evaluateCubemapParityLane(lane);
       for (const mode of evaluated.structuralModes) {
-        evaluated.criteria[`${mode}_m1CountRatio_ge_0_90`] = false;
+        evaluated.criteria[`${mode}_litPixelRatio_in_band`] = false;
       }
       return { ...evaluated, structuralModes: [] };
+    },
+  },
+
+  // ---- CO-3 mutants — the plausible wrong re-scopes ------------------------
+  "the DR-01 seam asserted with NO not-blank control (the false green)": {
+    ...REAL,
+    evaluateCubemapParityLane: (lane) => {
+      const evaluated = evaluateCubemapParityLane(lane);
+      // Keeps the zero-census assertion, drops everything that would notice the
+      // frame is empty. This is the shape a hurried re-scope produces.
+      const criteria = { ...evaluated.criteria };
+      delete criteria.cubemapOnly_litPixelRatio_in_band;
+      delete criteria.cubemapOnly_peakLuminance_within_quantization;
+      const structuralModes = evaluated.structuralModes.filter(
+        (m) => m !== "cubemap-only",
+      );
+      criteria[
+        `cubemapOnly_dr01_resolvedSources_le_${DR01_LIVE_MAX_RESOLVED_SOURCES}`
+      ] = true;
+      return {
+        ...evaluated,
+        criteria,
+        structuralModes,
+        pass: !evaluated.certifyingModeBlank,
+      };
+    },
+  },
+  "the census loosened toward a brightness threshold (EXPLICITLY PROHIBITED)": {
+    ...REAL,
+    evaluateCubemapParityLane: (lane) => {
+      const evaluated = evaluateCubemapParityLane(lane);
+      // The forbidden move: stop asserting the seam and go back to comparing
+      // COUNTS between the backends. A cube map that regained every star scores
+      // a perfect 1.0 count ratio and sails through.
+      const criteria = { ...evaluated.criteria };
+      delete criteria[
+        `cubemapOnly_dr01_resolvedSources_le_${DR01_LIVE_MAX_RESOLVED_SOURCES}`
+      ];
+      const m = (lane.perMode ?? {})["cubemap-only"] ?? {};
+      criteria.cubemapOnly_m1CountRatio_ge_0_90 = !(m.m1CountRatio < 0.9);
+      return {
+        ...evaluated,
+        criteria,
+        pass:
+          !evaluated.certifyingModeBlank &&
+          Object.values(criteria).every(Boolean),
+      };
+    },
+  },
+  "the sprite pass still certified on the retired M1 count ratio": {
+    ...REAL,
+    evaluateCubemapParityLane: (lane) => {
+      const evaluated = evaluateCubemapParityLane(lane);
+      const m = (lane.perMode ?? {})["sprites-only"] ?? {};
+      const criteria = {
+        ...evaluated.criteria,
+        // At HEAD this is 0/0 -> null -> a confident false on a healthy scene:
+        // exactly the phantom defect the re-scope exists to remove.
+        spritesOnly_m1CountRatio_ge_0_90: m.m1CountRatio >= 0.9,
+      };
+      return {
+        ...evaluated,
+        criteria,
+        pass:
+          !evaluated.certifyingModeBlank &&
+          Object.values(criteria).every(Boolean),
+      };
+    },
+  },
+  "sprite chroma scored as 0/0 instead of dropped": {
+    ...REAL,
+    evaluateCubemapParityLane: (lane) => {
+      const evaluated = evaluateCubemapParityLane(lane);
+      const m = (lane.perMode ?? {})["sprites-only"] ?? {};
+      const criteria = {
+        ...evaluated.criteria,
+        spritesOnly_chromaRatio_ge_0_85: m.m3ChromaRatio >= 0.85,
+      };
+      return {
+        ...evaluated,
+        criteria,
+        structuralNotes: [],
+        pass:
+          !evaluated.certifyingModeBlank &&
+          Object.values(criteria).every(Boolean),
+      };
     },
   },
 
@@ -655,16 +939,16 @@ const MUTANTS = {
         };
       },
     },
-  "a blind certifying mode reported as PASS (the false green)": {
+  "a blank certifying mode reported as PASS (the false green)": {
     ...REAL,
     evaluateCubemapParityLane: (lane) => {
       const evaluated = evaluateCubemapParityLane(lane);
-      if (!evaluated.certifyingModeBlind) {
+      if (!evaluated.certifyingModeBlank) {
         return evaluated;
       }
       return {
         ...evaluated,
-        certifyingModeBlind: false,
+        certifyingModeBlank: false,
         structuralModes: evaluated.structuralModes.filter(
           (m) => m !== CUBEMAP_CERTIFYING_MODE,
         ),
@@ -672,28 +956,27 @@ const MUTANTS = {
       };
     },
   },
-  "ANY zero source count declares the certifying mode blind (the over-correction)":
-    {
-      ...REAL,
-      evaluateCubemapParityLane: (lane) => {
-        const evaluated = evaluateCubemapParityLane(lane);
-        const def = (lane.perMode ?? {}).default ?? {};
-        const blind =
-          (def.webglM1Count ?? 0) === 0 || (def.webgpuM1Count ?? 0) === 0;
-        if (!blind) {
-          return evaluated;
-        }
-        return {
-          ...evaluated,
-          certifyingModeBlind: true,
-          criteria: {},
-          structuralModes: [
-            ...new Set([...evaluated.structuralModes, CUBEMAP_CERTIFYING_MODE]),
-          ],
-          pass: false,
-        };
-      },
+  "ANY dark backend declares the certifying mode blank (the over-correction)": {
+    ...REAL,
+    evaluateCubemapParityLane: (lane) => {
+      const evaluated = evaluateCubemapParityLane(lane);
+      const def = (lane.perMode ?? {}).default ?? {};
+      const blank =
+        (def.webglLitPixels ?? 0) === 0 || (def.webgpuLitPixels ?? 0) === 0;
+      if (!blank) {
+        return evaluated;
+      }
+      return {
+        ...evaluated,
+        certifyingModeBlank: true,
+        criteria: {},
+        structuralModes: [
+          ...new Set([...evaluated.structuralModes, CUBEMAP_CERTIFYING_MODE]),
+        ],
+        pass: false,
+      };
     },
+  },
 
   // ITEM 1 mutants.
   "summary omits the sigma factor (the pre-repair shape)": {
@@ -851,6 +1134,63 @@ test("the engine constants the lane design depends on are still true", () => {
     "packages/engine/Source/Scene/CubeMapPanorama.js",
   );
   assert.match(panorama, /frameState\.skyAtmosphereVisible === true;/);
+});
+
+test("the DR-01 re-scope did NOT lower the point-source census floor", () => {
+  // The explicit prohibition, recorded at Batch 848 and repeated in
+  // `PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS`: lowering the floor puts
+  // candidates back inside the diffuse band's own 8-bit range and re-creates
+  // the brightness count the census replaced. Asserted against SOURCE TEXT,
+  // because the only way to break it is to pass a `threshold` override at a
+  // call site — which no amount of fixture-driven testing can see.
+  const metrics = readNormalized(
+    "Tools/visual-regression/lib/celestial-metrics.mjs",
+  );
+  assert.match(
+    metrics,
+    /const threshold = options\.threshold \?\? 12 \/ 255;/,
+    "the shipped M1 default floor moved",
+  );
+  const census = readNormalized("Tools/skybox-bake/starmap-census.mjs");
+  assert.match(
+    census,
+    /minPeak: 40,/,
+    "the shared detector's minPeak moved — the sibling probe's scope note is now false",
+  );
+  // No caller in the celestial fleet may hand a detector a lowered floor. This
+  // is a TRIPWIRE on the literal option names, not a proof — it catches the
+  // edit somebody would actually make (`{ threshold: 6 / 255 }`) rather than
+  // every conceivable indirection.
+  for (const rel of [
+    "Tools/visual-regression/probe-celestial-gates.mjs",
+    "Tools/visual-regression/lib/celestial-source-split.mjs",
+    "Tools/visual-regression/lib/celestial-g1-gate.mjs",
+  ]) {
+    const src = readNormalized(rel);
+    for (const option of ["threshold", "peakRatio", "minPeak", "minContrast"]) {
+      assert.doesNotMatch(
+        src,
+        new RegExp(String.raw`\b${option}\s*:\s*[0-9(]`),
+        `${rel} passes a ${option} override — the census floor may not be re-tuned`,
+      );
+    }
+  }
+});
+
+test("the probe declares a role for every Lane-A mode", () => {
+  // A mode with no role silently falls back to the composite criteria, which
+  // would drop the DR-01 seam assertion without anything going red.
+  const match = PROBE.match(
+    /const G1_MODE_ROLES = Object\.freeze\(\{([^}]*)\}/,
+  );
+  assert.ok(match, "G1_MODE_ROLES must be an explicit named constant");
+  for (const mode of ["default", "cubemap-only", "sprites-only"]) {
+    assert.ok(
+      match[1].includes(mode),
+      `mode ${mode} has no declared post-DR-01 role`,
+    );
+  }
+  assert.match(PROBE, /modeRoles: G1_MODE_ROLES/);
 });
 
 test("the non-vacuity floor is derived from quantization, not from brightness", () => {

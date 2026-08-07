@@ -35,8 +35,34 @@
 // Keeping the arithmetic here — pure, browser-free, importable — is what lets
 // `celestial-g1-gate.spec.mjs` construct the plausible WRONG implementation of
 // each rule and prove the spec rejects it.
+//
+// SIXTH REPAIR — THE PRE-DR-01 STAR THRESHOLDS (2026-08-07, CO-3).
+// `PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS`. Lane A's criteria were all
+// built on the M1 point-source COUNT. Batch 833 (C12-11 / DR-01) made
+// `SkyBox.defaultVariant = TYCHO_T5_DIFFUSE`, whose faces census 0 resolved
+// sources BY CONSTRUCTION, and the sprite catalogue's shipped exposure peaks
+// below the census floor in this framing — so all three modes read 0/0 and the
+// lane went STRUCTURAL on a healthy scene. The counts are not repairable by
+// lowering the floor (explicitly forbidden: it would put candidates back inside
+// the diffuse band's 8-bit range and re-create the brightness count the census
+// replaced). Following Batch 848's re-scope of `probe-stars-catalog.mjs`, the
+// COUNT is replaced per mode by what that mode actually owns after the seam:
+//
+//   cubemap-only : the DR-01 seam itself — zero resolved sources is now the
+//                  ASSERTION, not the blindness — plus a not-blank positive
+//                  control so a black frame cannot satisfy it.
+//   sprites-only : lit-pixel extent parity, cross-backend pixel agreement
+//                  (measured BIT-IDENTICAL at Batch 873) and chroma sampled
+//                  over the brightest sprite pixels.
+//   default      : the second-order metrics that never needed a census
+//                  (M2a/M2b/M2e) plus lit-extent parity.
+//
+// `modeIsBlind` (the count-based predicate) is retained, exported and pinned:
+// it is the pre-DR-01 rule this repair superseded, and keeping it visible is
+// what makes the supersession auditable rather than a silent deletion.
 
 import { srgbToLinear } from "./celestial-metrics.mjs";
+import { DR01_LIVE_MAX_RESOLVED_SOURCES } from "./celestial-source-split.mjs";
 
 /**
  * Absolute agreement bound for the M2e robust sky floor, in LINEAR light.
@@ -73,11 +99,51 @@ export const STAR_MODULATION_SKY_BRIGHTNESS_THRESHOLD = 0.5;
 /** Symmetric parity band shared by every ratio criterion. */
 export const PARITY_BAND = Object.freeze({ lo: 0.85, hi: 1.15 });
 
-/** Minimum WebGPU/WebGL M1 point-source count ratio. */
+/**
+ * Minimum WebGPU/WebGL M1 point-source count ratio.
+ *
+ * RETAINED, NOT CONSUMED BY LANE A SINCE THE DR-01 RE-SCOPE. Every Lane-A mode
+ * censuses 0/0 at HEAD by construction (see the header), so a ratio over these
+ * counts is 0/0 rather than parity. The constant stays exported because the
+ * count is still REPORTED — a cube map that regains resolved sources must be
+ * visible — and because the spec pins the supersession.
+ *
+ * @type {number}
+ */
 export const M1_COUNT_RATIO_MIN = 0.9;
 
 /** Minimum WebGPU/WebGL M3 median-chroma ratio. */
 export const M3_CHROMA_RATIO_MIN = 0.85;
+
+/**
+ * Maximum WebGPU-vs-WebGL differing-pixel FRACTION allowed on the shared-code
+ * `sprites-only` pass.
+ *
+ * ⚠ FIRST-PASS DERIVED, NOT MEASURED AT HEAD. Batch 873 measured the two
+ * committed `sprites-only` PNGs as sharing a SHA-256 — i.e. differing pixels
+ * exactly 0 — on this machine's Edge. The gate does not bind on 0, because a
+ * single adapter-dependent rounding difference in a shared shader is not the
+ * defect this criterion exists to catch; 5e-4 of a 1000x640 crop is 320 pixels,
+ * which is 320x the measured value and still three orders of magnitude below a
+ * one-sided regression. Re-derive from the first Edge run: if the measured
+ * fraction is 0, this stays; if it is non-zero, the CAUSE is the finding, not
+ * the bound.
+ *
+ * @type {number}
+ */
+export const SPRITE_DIFFERING_FRACTION_MAX = 5e-4;
+
+/**
+ * Maximum per-channel 8-bit delta allowed between the two backends on the
+ * `sprites-only` pass. Two code values: one for a legitimate rounding
+ * difference at the quantization boundary, one of headroom. A real one-sided
+ * regression moves the star cores by tens of code values.
+ *
+ * ⚠ FIRST-PASS DERIVED (measured 0 at Batch 873, same caveat as above).
+ *
+ * @type {number}
+ */
+export const SPRITE_MAX_CHANNEL_DELTA = 2;
 
 /**
  * Minimum ABSOLUTE mean-luminance swing between modulation OFF and ON that
@@ -177,10 +243,16 @@ export function skyFloorAgrees(glFloor, gpuFloor) {
 export const CUBEMAP_CERTIFYING_MODE = "default";
 
 /**
+ * PRE-DR-01 blindness predicate — SUPERSEDED for Lane A by {@link modeIsBlank},
+ * retained and pinned so the supersession is auditable.
+ *
  * A capture mode where BOTH backends census zero point sources cannot express
  * a count ratio: 0/0 is not parity and not a defect, it is an instrument that
- * cannot see its subject. Such a mode is reported STRUCTURAL rather than
- * folded into PASS/FAIL.
+ * cannot see its subject. That reasoning is still correct — what changed is
+ * that after DR-01 a zero census is the EXPECTED reading of a healthy diffuse
+ * cube map, so routing Lane A on this predicate declares a correct scene blind.
+ * {@link evaluateCubemapParityLane} therefore asserts the seam directly and
+ * decides blindness from lit-pixel extent instead.
  *
  * The two zero conditions are ANDed deliberately. A mode blind on ONE backend
  * is the real defect shape (one renderer censusing nothing while the other
@@ -193,6 +265,42 @@ export const CUBEMAP_CERTIFYING_MODE = "default";
 export function modeIsBlind(mode) {
   return (mode?.webglM1Count ?? 0) === 0 && (mode?.webgpuM1Count ?? 0) === 0;
 }
+
+/**
+ * POST-DR-01 blindness predicate: a mode where BOTH backends drew no lit pixel
+ * at all. That, and not a zero census, is the state in which Lane A cannot see
+ * its subject — a black frame satisfies "no resolved sources", "no chroma" and
+ * "the backends agree" simultaneously, which is a false green in three
+ * criteria at once.
+ *
+ * Same polarity as {@link modeIsBlind}: BOTH sides dark is blindness, ONE side
+ * dark is the defect (and is caught by the lit-pixel ratio criterion, which
+ * goes to 0 or null and fails).
+ *
+ * The bar is exactly zero — an existence claim, not a fitted floor.
+ *
+ * @param {{webglLitPixels:number,webgpuLitPixels:number}} mode
+ * @returns {boolean}
+ */
+export function modeIsBlank(mode) {
+  return (
+    (mode?.webglLitPixels ?? 0) === 0 && (mode?.webgpuLitPixels ?? 0) === 0
+  );
+}
+
+/**
+ * What each Lane-A capture mode is allowed to certify after the DR-01 seam.
+ * The probe passes one of these per mode; the lane builds a different criterion
+ * set for each, because the three modes no longer measure the same thing.
+ */
+export const MODE_ROLE = Object.freeze({
+  /** cube map + sprites — the shipped sky. Second-order metrics only. */
+  COMPOSITE: "composite",
+  /** cube map alone — diffuse Milky Way light, zero resolved sources. */
+  DIFFUSE: "diffuse",
+  /** sprites alone over black — the resolved-star owner under DR-01. */
+  SPRITES: "sprites",
+});
 
 /**
  * `cubemap-only` -> `cubemapOnly`, so criterion names survive the repair
@@ -219,68 +327,184 @@ function camel(mode) {
 export function evaluateCubemapParityLane(lane) {
   const modes = lane.perMode ?? {};
   const certifyingMode = lane.certifyingMode ?? CUBEMAP_CERTIFYING_MODE;
+  const roles = lane.modeRoles ?? {};
   const def = modes[certifyingMode] ?? {};
 
   // THE BLINDNESS RULE APPLIES TO THE CERTIFYING MODE TOO.
   //
-  // Every criterion below is measured on `default`, and each one reads a ratio
-  // that `ratio()` returns null for when the WebGL denominator is 0. `null >=
-  // 0.9` and `inBand(null)` are both false, so a mode where BOTH backends
-  // censused zero sources would have produced four confident FALSE criteria and
-  // exit 1 — a PHANTOM DEFECT over a scene in which the subject cannot be
+  // Every certifying criterion below reads a ratio that `ratio()` returns null
+  // for when the WebGL denominator is 0. `inBand(null)` is false, so a mode in
+  // which neither backend drew anything would produce confident FALSE criteria
+  // and exit 1 — a PHANTOM DEFECT over a scene in which the subject cannot be
   // observed at all, which is precisely the verdict this module's own doctrine
-  // (see EXIT_CODE) forbids. The secondary count modes have been routed to
-  // STRUCTURAL since the repair landed; the certifying mode was not, so the one
-  // mode whose blindness voids the WHOLE lane was the one mode not covered.
+  // (see EXIT_CODE) forbids.
   //
-  // One-sided blindness is untouched: `modeIsBlind` ANDs the zeros, so a lane
-  // where WebGL censuses 55 and WebGPU censuses 0 still scores, still fails, and
-  // still names the criterion.
+  // POST-DR-01 the predicate is `modeIsBlank`, not `modeIsBlind`: after Batch
+  // 833 a zero census is what a HEALTHY diffuse cube map reads, so routing on
+  // the count declares a correct scene blind (and, worse, lets a black frame
+  // satisfy the seam assertion below). One-sided darkness is untouched — the
+  // zeros are ANDed, so a mode where WebGL lights 40,000 pixels and WebGPU
+  // lights none still scores, still fails, and still names its criterion.
+  const certifyingModeBlank = modeIsBlank(def);
+  // Reported, never routed on: the pre-DR-01 reading of the same mode.
   const certifyingModeBlind = modeIsBlind(def);
 
-  const criteria = certifyingModeBlind
-    ? {}
-    : {
-        [`${camel(certifyingMode)}_m1CountRatio_ge_0_90`]:
-          def.m1CountRatio >= M1_COUNT_RATIO_MIN,
-        [`${camel(certifyingMode)}_m2a_in_band`]: inBand(def.m2aRatio),
-        [`${camel(certifyingMode)}_m2b_in_band`]: inBand(def.m2bRatio),
-        [`${camel(certifyingMode)}_m3Chroma_ge_0_85`]:
-          def.m3ChromaRatio >= M3_CHROMA_RATIO_MIN,
-        // M2e — the pedestal discriminator. Absolute bound; see
-        // SKY_FLOOR_ABS_TOLERANCE. Certifies only here, where the background is
-        // black by construction and the quantization derivation therefore holds.
-        [`${camel(certifyingMode)}_m2e_skyFloor_within_quantization`]:
-          skyFloorAgrees(def.webglSkyFloor, def.webgpuSkyFloor),
-      };
-
+  const criteria = {};
   const structuralModes = [];
-  if (certifyingModeBlind) {
+  const structuralNotes = [];
+
+  if (certifyingModeBlank) {
     structuralModes.push(certifyingMode);
+  } else {
+    Object.assign(criteria, compositeCriteria(camel(certifyingMode), def));
   }
+
   for (const mode of lane.countModes ?? []) {
     if (mode === certifyingMode) {
       continue;
     }
-    if (modeIsBlind(modes[mode])) {
+    const m = modes[mode];
+    if (modeIsBlank(m)) {
       structuralModes.push(mode);
       continue;
     }
-    criteria[`${camel(mode)}_m1CountRatio_ge_0_90`] =
-      modes[mode]?.m1CountRatio >= M1_COUNT_RATIO_MIN;
+    const role = roles[mode] ?? MODE_ROLE.COMPOSITE;
+    if (role === MODE_ROLE.DIFFUSE) {
+      Object.assign(criteria, diffuseCriteria(camel(mode), m));
+    } else if (role === MODE_ROLE.SPRITES) {
+      const { criteria: c, structural } = spriteCriteria(camel(mode), m);
+      Object.assign(criteria, c);
+      structuralNotes.push(...structural.map((s) => `${mode} — ${s}`));
+    } else {
+      Object.assign(criteria, compositeCriteria(camel(mode), m));
+    }
   }
 
   return {
     ...lane,
     certifyingMode,
+    certifyingModeBlank,
     certifyingModeBlind,
     criteria,
     structuralModes,
+    structuralNotes,
     framingReached: computeFramingReached(lane.skyBrightness),
-    // `{}.every(Boolean)` is vacuously true, so the blind case has to be
+    // `{}.every(Boolean)` is vacuously true, so the blank case has to be
     // excluded explicitly or an empty criteria set would read as a clean sheet.
-    pass: !certifyingModeBlind && Object.values(criteria).every(Boolean),
+    pass: !certifyingModeBlank && Object.values(criteria).every(Boolean),
   };
+}
+
+/**
+ * Criteria for a mode that carries the composite sky (cube map + sprites).
+ *
+ * These are exactly the metrics that never needed a point census: the two
+ * second-order ratios G1's headline names, the absolute pedestal discriminator,
+ * and lit-pixel extent parity — which is what now catches the one-sided
+ * darkness the M1 count ratio used to catch.
+ *
+ * @param {string} name camel-cased mode name for the criterion keys
+ * @param {object} m the mode's cross-backend measurements
+ * @returns {Object<string,boolean>}
+ */
+function compositeCriteria(name, m) {
+  return {
+    [`${name}_m2a_in_band`]: inBand(m.m2aRatio),
+    [`${name}_m2b_in_band`]: inBand(m.m2bRatio),
+    // M2e — the pedestal discriminator. Absolute bound; see
+    // SKY_FLOOR_ABS_TOLERANCE.
+    [`${name}_m2e_skyFloor_within_quantization`]: skyFloorAgrees(
+      m.webglSkyFloor,
+      m.webgpuSkyFloor,
+    ),
+    [`${name}_litPixelRatio_in_band`]: inBand(m.litPixelRatio),
+  };
+}
+
+/**
+ * Criteria for the `cubemap-only` mode after DR-01.
+ *
+ * THE ZERO IS THE ASSERTION. DR-01 gives the diffuse bake exactly one job —
+ * degree-scale Milky Way light, no resolved stars — and
+ * `DR01_LIMITS.diffuseMaxPointSources` is 0 offline. Asserting the same thing
+ * on the live frame turns the reading that made this mode structural into the
+ * strongest statement the mode can make: a re-bake that reintroduces resolved
+ * sources, or a default variant flipped back to the un-blurred faces, fails
+ * here. The tolerance matches `probe-stars-catalog.mjs`'s sibling check (G).
+ *
+ * The peak-luminance agreement is the positive control that keeps the zero
+ * honest: a black frame also censuses zero. `modeIsBlank` already routes a
+ * doubly-black mode to STRUCTURAL; this catches the one-sided case and any
+ * pedestal between the two backends' diffuse bands.
+ *
+ * @param {string} name
+ * @param {object} m
+ * @returns {Object<string,boolean>}
+ */
+function diffuseCriteria(name, m) {
+  const glCount = m.webglM1Count ?? 0;
+  const gpuCount = m.webgpuM1Count ?? 0;
+  return {
+    [`${name}_dr01_resolvedSources_le_${DR01_LIVE_MAX_RESOLVED_SOURCES}`]:
+      Number.isFinite(glCount) &&
+      Number.isFinite(gpuCount) &&
+      glCount <= DR01_LIVE_MAX_RESOLVED_SOURCES &&
+      gpuCount <= DR01_LIVE_MAX_RESOLVED_SOURCES,
+    [`${name}_litPixelRatio_in_band`]: inBand(m.litPixelRatio),
+    [`${name}_peakLuminance_within_quantization`]:
+      Number.isFinite(m.webglPeakLuminance) &&
+      Number.isFinite(m.webgpuPeakLuminance) &&
+      Math.abs(m.webgpuPeakLuminance - m.webglPeakLuminance) <=
+        SKY_FLOOR_ABS_TOLERANCE,
+  };
+}
+
+/**
+ * Criteria for the `sprites-only` mode after DR-01.
+ *
+ * The sprite catalogue is SHARED CODE (`StarFieldMath.ts` feeds a
+ * character-identical WGSL/GLSL pair), so the honest parity claim is per-pixel
+ * agreement rather than a count of things the census can no longer resolve.
+ * Batch 873 measured the two committed captures BIT-IDENTICAL; the bounded form
+ * is what binds, and `bitIdentical` travels in the report.
+ *
+ * Chroma is re-pointed from "HSV saturation at the M1 detections" (an empty set
+ * post-DR-01) to "HSV saturation over the brightest sprite pixels", which is
+ * well defined precisely because this mode switches the cube map off. When the
+ * WebGL reference has no chroma to compare against, the criterion is DROPPED
+ * and reported structural rather than scored — `ratio()` returns null on a zero
+ * denominator and `null >= 0.85` is a confident false.
+ *
+ * @param {string} name
+ * @param {object} m
+ * @returns {{criteria:Object<string,boolean>,structural:string[]}}
+ */
+function spriteCriteria(name, m) {
+  const criteria = {
+    [`${name}_litPixelRatio_in_band`]: inBand(m.litPixelRatio),
+    [`${name}_maxChannelDelta_le_${SPRITE_MAX_CHANNEL_DELTA}`]:
+      Number.isFinite(m.maxChannelDelta) &&
+      m.maxChannelDelta <= SPRITE_MAX_CHANNEL_DELTA,
+    [`${name}_differingFraction_within_bound`]:
+      Number.isFinite(m.differingFraction) &&
+      m.differingFraction <= SPRITE_DIFFERING_FRACTION_MAX,
+  };
+  const structural = [];
+  const chromaMeasurable =
+    Number.isFinite(m.webglChromaSamples) &&
+    m.webglChromaSamples > 0 &&
+    Number.isFinite(m.webglMedianSaturation) &&
+    m.webglMedianSaturation > 0;
+  if (chromaMeasurable) {
+    criteria[`${name}_chromaRatio_ge_0_85`] =
+      m.m3ChromaRatio >= M3_CHROMA_RATIO_MIN;
+  } else {
+    structural.push(
+      "the WebGL reference produced no chroma to compare against, so the " +
+        "sprite colour criterion could not be evaluated (0/0 is not a defect)",
+    );
+  }
+  return { criteria, structural };
 }
 
 /**
@@ -404,9 +628,12 @@ export function foldG1Verdict(evaluated) {
     for (const mode of cp.structuralModes) {
       structural.push(
         mode === certifyingMode
-          ? `orbital-cubemap-parity:${mode} — both backends censused 0 sources in the CERTIFYING mode; this lane certified nothing`
-          : `orbital-cubemap-parity:${mode} — both backends censused 0 sources`,
+          ? `orbital-cubemap-parity:${mode} — both backends drew NO lit pixel in the CERTIFYING mode; this lane certified nothing`
+          : `orbital-cubemap-parity:${mode} — both backends drew NO lit pixel`,
       );
+    }
+    for (const note of cp.structuralNotes ?? []) {
+      structural.push(`orbital-cubemap-parity:${note}`);
     }
   }
 
@@ -464,11 +691,16 @@ export function buildG1Summary(result) {
       framingReached: lane.framingReached,
       skyBrightness: lane.skyBrightness,
       sunElevationDeg: lane.sunElevationDeg,
-      ...(lane.certifyingModeBlind === undefined
+      ...(lane.certifyingModeBlank === undefined
         ? {}
         : {
             certifyingMode: lane.certifyingMode,
-            certifyingModeBlind: lane.certifyingModeBlind,
+            certifyingModeBlank: lane.certifyingModeBlank,
+            // The PRE-DR-01 reading of the same mode, reported so a reader can
+            // see that "0 resolved sources" is now the expected state rather
+            // than the blindness it used to be.
+            certifyingModeBlind_PRE_DR01_DIAGNOSTIC:
+              lane.certifyingModeBlind ?? null,
           }),
       ...(lane.modulationEngaged === undefined
         ? {}
@@ -495,6 +727,20 @@ export function buildG1Summary(result) {
             m3ChromaRatio: m.m3ChromaRatio ?? null,
             webgl_m1Count: m.webglM1Count ?? null,
             webgpu_m1Count: m.webgpuM1Count ?? null,
+            // POST-DR-01 Lane-A instruments. `m1Count` above is retained and
+            // reported but no longer certifies — see the module header.
+            litPixelRatio: m.litPixelRatio ?? null,
+            webgl_litPixels: m.webglLitPixels ?? null,
+            webgpu_litPixels: m.webgpuLitPixels ?? null,
+            webgl_peakLuminance: m.webglPeakLuminance ?? null,
+            webgpu_peakLuminance: m.webgpuPeakLuminance ?? null,
+            differingPixels: m.differingPixels ?? null,
+            differingFraction: m.differingFraction ?? null,
+            maxChannelDelta: m.maxChannelDelta ?? null,
+            bitIdentical: m.bitIdentical ?? null,
+            webgl_medianSaturation: m.webglMedianSaturation ?? null,
+            webgpu_medianSaturation: m.webgpuMedianSaturation ?? null,
+            webgl_chromaSamples: m.webglChromaSamples ?? null,
             webgl_skyFloor: m.webglSkyFloor ?? null,
             webgpu_skyFloor: m.webgpuSkyFloor ?? null,
             skyFloorAbsDelta:
@@ -515,6 +761,9 @@ export function buildG1Summary(result) {
     skyFloorAbsTolerance: SKY_FLOOR_ABS_TOLERANCE,
     starModulationSkyBrightnessThreshold:
       STAR_MODULATION_SKY_BRIGHTNESS_THRESHOLD,
+    dr01LiveMaxResolvedSources: DR01_LIVE_MAX_RESOLVED_SOURCES,
+    spriteDifferingFractionMax: SPRITE_DIFFERING_FRACTION_MAX,
+    spriteMaxChannelDelta: SPRITE_MAX_CHANNEL_DELTA,
     failures: result.failures,
     structural: result.structural,
     lanes: {

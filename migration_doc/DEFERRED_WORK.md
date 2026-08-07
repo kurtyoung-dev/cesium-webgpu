@@ -460,7 +460,48 @@ defect that no existing gate could have seen.
   **Effort: M.** **Blocks:** any re-reading of `probe-celestial-gates.mjs`
   Lane B's `starEnergyRatio` as a star-modulation number.
 
-- **`PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS` — G1 Lane A and the
+- **`PROBE-CELESTIAL-GATES-PRE-DR01-STAR-THRESHOLDS` — ✅ RE-SCOPED IN CODE
+  2026-08-07 (CO-3); EDGE ACCEPTANCE OWED.** The original filing is preserved
+  below unchanged. **What now exists:**
+  - `Tools/visual-regression/lib/celestial-source-split.mjs` (new) — the
+    post-DR-01 Lane-A metrics: `m7LitExtent` (lit-pixel extent + peak, bar
+    exactly zero), `m8PixelAgreement` (cross-backend per-pixel agreement, the
+    instrument for the Batch-873 bit-identity finding) and `m3ChromaTopK`
+    (chroma over the brightest SPRITE pixels, which is well defined precisely
+    because `sprites-only` switches the cube map off).
+  - `lib/celestial-g1-gate.mjs` — Lane A now builds a DIFFERENT criterion set
+    per mode via `MODE_ROLE`. **The zero census became the ASSERTION:**
+    `cubemapOnly_dr01_resolvedSources_le_2` is the DR-01 seam evaluated live,
+    with `peakLuminance_within_quantization` + `modeIsBlank` as the positive
+    control so a BLACK frame cannot satisfy it. `sprites-only` certifies on
+    lit-extent parity, `maxChannelDelta <= 2`, `differingFraction <= 5e-4` and
+    the re-pointed chroma ratio. `default` keeps M2a/M2b/M2e and gains
+    lit-extent parity. `modeIsBlind` is RETAINED, exported and pinned as the
+    superseded predicate.
+  - **The census floor was NOT lowered** — the explicit prohibition. A
+    source-text tripwire in `celestial-g1-gate.spec.mjs` fails if any celestial
+    caller passes a `threshold` / `peakRatio` / `minPeak` / `minContrast`
+    override, and the shipped `12/255` and `minPeak: 40` literals are asserted.
+  - `probe-sky-twilight-range.mjs` — the fitted `starAddedPixels >= 50`
+    reachability floor is replaced by a POSITIONAL, zero-barred control: the
+    control lane must resolve a point source at the projected position of the
+    brightest in-frame catalogue star (shipped `BrightStarCatalog`, shared
+    `pointSourceCensus` at unchanged thresholds, 3 px tolerance). The
+    `a − b > 24` difference bar is unchanged — it feeds the monotonic-ordering
+    claim, not a census.
+  - Gate: `celestial-g1-gate.spec.mjs` **62/62** (was 49/49) with 4 new
+    re-scope mutants including "the census loosened toward a brightness
+    threshold (EXPLICITLY PROHIBITED)".
+  **OWED:** `node Tools/visual-regression/probe-celestial-gates.mjs` on Edge (G1
+  re-run at HEAD) and `node Tools/visual-regression/probe-sky-twilight-range.mjs`.
+  Neither has executed since the re-scope; every threshold introduced is either
+  exactly zero or quantization-derived, and the two marked ⚠ FIRST-PASS DERIVED
+  (`SPRITE_DIFFERING_FRACTION_MAX`, `SPRITE_MAX_CHANNEL_DELTA`) are owed a
+  re-derivation from the first run.
+
+  ---
+
+  *(original filing, 2026-08-07 Batch 873)* **G1 Lane A and the
   twilight probe still meter stars against a pre-DR-01 cube map.** Batch 833
   (C12-11 / DR-01) made `SkyBox.defaultVariant = TYCHO_T5_DIFFUSE`, whose every
   face censuses to **0 resolved point sources by construction** (peak luminance
@@ -482,6 +523,34 @@ defect that no existing gate could have seen.
   perpendicular to the Sun, so the minimum in-crop angular separation is
   **65.72°** and the maximum veil is **0.00322** — a 0.32% dim, three orders of
   magnitude short of moving a source across a `12/255` bar. **Effort: S.**
+
+- **`NEW-M1-CENSUS-STRICT-LOCAL-MAX-PLATEAU` — the celestial M1 census still
+  carries the plateau defect Batch 848 fixed in its sibling.** Filed 2026-08-07
+  (CO-3) under Principle 9: found while building the G2 lane, deliberately NOT
+  fixed in that batch. `m1PointSourceCensus` (`lib/celestial-metrics.mjs:303`)
+  uses a **STRICT** 3×3 local-maximum test — `if (lum[...] >= v) { isMax = false }`
+  — which is exactly the rule
+  `C12-STAR-POINT-CENSUS-LIVE-CALIBRATION` root-caused in
+  `Tools/skybox-bake/starmap-census.mjs`: a source symmetric about a pixel
+  boundary produces a plateau of bit-identical pixels, and every member
+  disqualifies every other, so the census returns **0 for the one star a probe
+  is most likely to measure** (aiming a camera AT a star puts it at NDC (0,0) =
+  a pixel CORNER for an even viewport). The sibling detector now counts a
+  plateau once; this one does not. **Exposure, bounded:** the bias is
+  DOWNWARD, and the one criterion that reads these counts is
+  `cubemapOnly_dr01_resolvedSources_le_2`, where an undercount is the
+  false-green direction — but that criterion is dominated by the threshold, not
+  the tie rule (the diffuse faces peak at code 7 against a ~code-61 bar), and an
+  un-blurred cube map's hundreds of stars sit at arbitrary sub-pixel phases
+  where plateaus are rare. **Why not fixed here:** `celestial-metrics.spec.mjs`
+  is the 12/12 trust anchor for the whole celestial fleet and asserts exact
+  source counts ("one source per blob, no extras") on synthetic Gaussians whose
+  quantized shoulders can contain plateaus; changing the tie rule needs that
+  spec re-derived in the same batch, which is a batch of its own. The G2 psf
+  sub-lane sidesteps it entirely by taking the brightest pixel within 12 px of
+  the AIM POINT rather than censusing. **Effort: S.** **Fix shape:** port the
+  `earlierInPlateau` clause verbatim from `starmap-census.mjs`, then re-derive
+  the metrics spec's expected counts and add the plateau fixture it lacks.
 
 - **`C12-29-S5-EQUIVALENCE-BLINDSPOT` — ✅ RESOLVED in the same batch.**
   `probe-eclipse-scene-dimming.mjs`'s R1 equivalence leg was measuring

@@ -355,6 +355,101 @@ cache must never be mutated by a late callback. All six phases now pass;
 `C12-33` must retain these gates and use frame-owned submission, never a private
 `queue.submit`.
 
+### 2026-08-07 CO-3 gate-lane overlay (G1 Lane A re-scope + G2 lane construction)
+
+Batch group **CO-3** of `CLOSEOUT_PLAN_2026-08-07.md` Lane B. **Instruments
+only — zero engine files touched.** Read this before any G1/G2 claim below.
+
+- **`C12-01` residual DISCHARGED IN CODE, Edge acceptance OWED.** That row's last
+  line reads *"OWED on this row: re-scope Lane A's star thresholds for the DR-01
+  sprite-only world, exactly as Batch 848 did for `probe-stars-catalog.mjs`."*
+  Done. **The zero census became the assertion, not the blindness.** Lane A now
+  builds a different criterion set per mode (`MODE_ROLE` in
+  `lib/celestial-g1-gate.mjs`):
+  - `cubemap-only` → `cubemapOnly_dr01_resolvedSources_le_2` (the DR-01 seam
+    evaluated on a live frame — a re-bake that reintroduces resolved stars, or a
+    default flipped back to the un-blurred faces, now FAILS here), plus
+    `litPixelRatio_in_band` and `peakLuminance_within_quantization` as the
+    POSITIVE CONTROL, because a black frame also censuses zero.
+  - `sprites-only` → lit-extent parity, `maxChannelDelta <= 2`,
+    `differingFraction <= 5e-4` (the bounded form of the Batch-873 bit-identity
+    finding), and the chroma ratio **re-pointed** from "HSV saturation at the M1
+    detections" (an empty set at HEAD) to "over the brightest sprite pixels",
+    which is well defined precisely because that mode switches the cube map off.
+  - `default` → M2a / M2b / M2e unchanged, plus lit-extent parity, which is what
+    now catches the one-sided darkness the M1 count ratio used to catch.
+  - Blindness routes on `modeIsBlank` (lit pixels, bar exactly zero), not on
+    `modeIsBlind` (the count). `modeIsBlind` is retained, exported and pinned so
+    the supersession is auditable rather than a silent deletion.
+  - **The census floor was NOT lowered.** A source-text tripwire in
+    `celestial-g1-gate.spec.mjs` fails if any celestial caller passes a
+    `threshold` / `peakRatio` / `minPeak` / `minContrast` override.
+  `probe-sky-twilight-range.mjs` got the same treatment: its fitted
+  `starAddedPixels >= 50` reachability floor is now a POSITIONAL, zero-barred
+  claim against the shipped `BrightStarCatalog`.
+- **`C12-02`'s M4/M5 are now BOUND.** That row shipped them "as DIAGNOSTIC until
+  G2/G4 bind them (per wave structure)". G2 binds M4 (`psf_ratio1e3_ge_4`, the
+  two slope criteria) and M5 (`mag_renderedRange_ge_15`, `mag_spearman_ge_0_90`).
+- ⚠ **THE BRACKET STITCH WAS WRONG AND IS NOW LINEARIZED.** C12-02 stitched
+  `L = (v/255)/f` on the stated assumption that the display transform is locally
+  linear. The shipped HDR chain is `exposure → czm_pbrNeutralTonemapping →
+  czm_inverseGamma`: the gamma step is `pow(x, 1/2.2)`, and PBR Neutral's black
+  offset leaves `6.25·x²` for a neutral pixel below 0.08 — it SQUARES the faint
+  end, which is exactly the halo a PSF gate measures. Measured through a
+  simulation of the shipped chain at the telescope framing, the naive stitch
+  reports the shipped PSF's core **2.5× too wide** and its two log-log slopes as
+  **−1.910 / −6.783** — straddling the [−5,−2] band in opposite directions for a
+  profile that is a single power law. **Three of the four PSF criteria would go
+  red on a healthy renderer.** `lib/celestial-g2-gate.mjs` inverts the chain
+  exactly (`displayToLinear`), round-tripped in the spec against a forward model
+  transcribed from the shader sources. **Consequence:** the `--bracket`
+  diagnostic's historical M4/M5 numbers (`ratio1e3 = 9.27`) are NOT comparable to
+  what it prints now. They were diagnostic and certified nothing, so nothing is
+  invalidated — but do not diff them.
+- **G2 LANE EXISTS** (`node Tools/visual-regression/probe-celestial-gates.mjs --g2`),
+  three sub-lanes per backend, and it must PASS IDENTICALLY ON BOTH — a
+  WebGPU-only pass is a FAIL (campaign principle 5; the PSF is shared code).
+  Pre-registered predicate list: `psf_rangeExtended`, `psf_ratio1e3_ge_4`,
+  `psf_slopeInner_in_band`, `psf_slopeOuter_in_band`, `psf_slopes_agree`,
+  `mag_renderedRange_ge_15`, `mag_spearman_ge_0_90`, `mag_clippedPixels_le_25`,
+  `glare_farField_byteIdentical`, `glare_nearField_energyDrop_ge_bound`,
+  `glare_nearField_changedPixels_ge_bound`, `glare_nearField_noPixelBrightened`,
+  plus the cross-backend `psf_ratio1e3_parity`.
+  - The `psf` sub-lane uses a **TELESCOPE framing (`fovX = 6°`)**. At the default
+    60° the star's core is SUB-PIXEL (analytic HWHM 0.47 px) and M4's slope
+    windows — anchored at multiples of `r_core` — contain fewer than two integer
+    radii, so "two agreeing log-log slopes" is literally unmeasurable. The PSF is
+    defined in angle, so narrowing the FOV samples the identical profile better;
+    nothing about the profile changes.
+  - The `glare` sub-lane is **C12-27's own acceptance criterion**, both halves,
+    with BOTH legs on the SUNLIT side so `eclipseState.sunVisibleFraction` is 1
+    and the veil has a source (an anti-sunward camera would resolve strength 0
+    and every criterion would pass vacuously). An **A/A control** proves the
+    byte-identity claim is falsifiable on this renderer before it is made.
+- **Gates at authoring:** `celestial-g1-gate.spec.mjs` **62/62** (was 49/49; +4
+  re-scope mutants incl. "the census loosened toward a brightness threshold
+  (EXPLICITLY PROHIBITED)"), new `celestial-g2-gate.spec.mjs` **41/41** (14
+  mutants, incl. the naive stitch), celestial family **200/200**. Prettier +
+  per-file eslint clean. No engine file touched.
+- **OWED — Edge acceptance, none of it has executed:**
+  `probe-celestial-gates.mjs` (G1 re-run at HEAD post-re-scope),
+  `probe-celestial-gates.mjs --g2` (first G2 run ever),
+  `probe-sky-twilight-range.mjs` (first run since its Batch-869 repair AND the
+  CO-3 re-scope). Every threshold introduced is either exactly zero, derived from
+  8-bit quantization, or explicitly marked **⚠ FIRST-PASS DERIVED** in the source
+  and owed a re-derivation from the first run: `SPRITE_DIFFERING_FRACTION_MAX`,
+  `SPRITE_MAX_CHANNEL_DELTA`, `MAGNITUDE_SPEARMAN_MIN`,
+  `GLARE_NEAR_FIELD_MIN_ENERGY_DROP_FRACTION`,
+  `GLARE_NEAR_FIELD_MIN_CHANGED_PIXELS`,
+  `PSF_CROSS_BACKEND_MAX_RELATIVE_SPREAD`. **They are not measurements until
+  Edge runs.**
+- **Filed en route, deliberately NOT fixed** (Principle 9):
+  `NEW-M1-CENSUS-STRICT-LOCAL-MAX-PLATEAU` in `DEFERRED_WORK.md` — the celestial
+  `m1PointSourceCensus` still uses the STRICT local-maximum test that Batch 848
+  replaced in its sibling `pointSourceCensus`, so a source centred on a pixel
+  boundary censuses 0. Exposure is bounded and stated in the entry; the G2 psf
+  sub-lane sidesteps it by taking the brightest pixel near the AIM POINT.
+
 ---
 
 ## 3. Split — C11 tail vs C12
@@ -662,7 +757,7 @@ unchanged).
 | Gate | Covers | Headline criterion |
 |---|---|---|
 | **G1** | Skybox fade | Camera **on the sunlit side, Sun ≥ 25° above local horizon** — the only framing that reaches the failure state. M1 source-count ratio ≥ 0.90; RMS-contrast and P99.9−P50 ratios ∈ [0.85, 1.15]. **Mean luminance is diagnostic only and explicitly non-certifying.** *Expected already-green at HEAD: Batch 722 landed the fix and the §6 Q2 measurements are effectively this gate passing — G1 is held as a REGRESSION gate, baselined by `C12-01` in W1.* |
-| **G2** | White blobs | **`r_1e-3 / r_core ≥ 8`** — a Gaussian truncated at `d=1.0` cannot exceed ~1.8, so this one number separates blob from star. Plus: two agreeing log-log slopes in [−5,−2]; <25 clipped px/star; rendered brightest:faintest ≥ 15:1 (today **4:1** by construction). |
+| **G2** | White blobs | **`r_1e-3 / r_core ≥ 8`** — a Gaussian truncated at `d=1.0` cannot exceed ~1.8, so this one number separates blob from star. Plus: two agreeing log-log slopes in [−5,−2]; <25 clipped px/star; rendered brightest:faintest ≥ 15:1 (today **4:1** by construction). ✅ **BROWSER LANE BUILT 2026-08-07 (CO-3) — `probe-celestial-gates.mjs --g2`; Edge acceptance OWED (first run ever).** Per ruling `C12-G2-DEF` the browser gate binds the ratio on the **composite-HWHM** definition at **≥ 4** (analytic core-component ≥ 8 stays in `starfield-psf.spec.mjs`); simulated through the shipped display chain at the lane's telescope framing the shipped PSF scores **7.20** and the OLD truncated Gaussian **1.79**, so the bar separates with 1.8× margin both ways. "<25 clipped px/star" is evaluated in **linear scene radiance against the LDR white point of 1.0**, not against 8-bit code 250 — under PBR Neutral radiance 1.0 renders as code 239 and code 250 is radiance ~1.91, so the two definitions differ by ~1.9×. "Rendered brightest:faintest" is `min(peak_brightest, 1.0) / peak_faintest`, exactly the quantity `StarFieldMath.ts` anchors the exposure against (16.7:1). **C12-27's acceptance criterion is carried verbatim as the third sub-lane.** See the 2026-08-07 CO-3 overlay above for the full predicate list. |
 | **G3** | Asset upgrade | ≤ 2.0 arcmin/px; ≥10× sources/steradian vs the t3 baseline; median chroma ≥ 0.20 (**fails immediately under 4:2:0 JPEG**, so it doubles as the format gate); **dust-lane structure** via low-pass residual IQR ≥ 3× current. |
 | **G4** | Sun + Moon | Sun: `r_1e-3/r_core ≥ 10`; angular diameter within 5% of 0.5334°; `I(0.95R)/I(0)` ∈ [0.3,0.5]. Moon: full:quarter integrated-brightness ratio must exceed the Lambertian ~3:1. |
 
