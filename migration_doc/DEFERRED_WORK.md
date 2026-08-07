@@ -680,7 +680,7 @@ Filed by the C13-41 worker. All surfaced rather than routed around (Principle
   this decision must be revisited; the gate re-verifies the premise rather than
   assuming it. **Effort: S** once billboard lighting exists; blocked until then.
 
-- **`C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`** — the quantized gate's cadence is
+- **`C13-41-ECLIPSE-REFRESH-COST-UNMEASURED`** — the quantized gate's cadence is **UPDATE 2026-08-07: first measurement attempt INVALID — the control leg paid the warm-up (5.97 s control vs 0.77 s sweep on WebGPU, yielding a NEGATIVE per-refresh). Still open; re-run with warm-up parity or interleaved legs.**
   derived and pinned arithmetically (exactly 275 fills across a `0 -> 0.9 -> 0`
   obscuration sweep: one first-frame baseline plus `2 x 137` bucket edges), but
   the WALL-CLOCK cost of those fills has not been measured on Edge. Each is a
