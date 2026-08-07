@@ -496,10 +496,17 @@ scoping row must re-verify all of it at HEAD):**
 
 ### Ledger
 
-| ID | Task | Status |
-| --- | --- | --- |
-| `C15-G0` | Scoping + root-cause verification: reproduce the production no-render, verify the `NEW-WEBGPU-SPLAT-DATA-PRODUCER` mechanism at HEAD, map the full WebGL splat data path (loader -> workers -> primitive -> renderer) and specify the WebGPU producer design + task breakdown `C15-G1..Gn` with exit gates | **DISPATCHED 2026-08-06** |
-| `C15-G1..Gn` | Authored by `C15-G0` — do not pre-invent them here | pending `C15-G0` |
+| ID | Task | Size | Status | Depends on |
+| --- | --- | --- | --- | --- |
+| `C15-G0` | Scoping + root-cause verification: reproduce the production no-render, verify the `NEW-WEBGPU-SPLAT-DATA-PRODUCER` mechanism at HEAD, map the full WebGL splat data path (loader -> workers -> primitive -> renderer) and specify the WebGPU producer design + task breakdown `C15-G1..Gn` with exit gates | M | **COMPLETE — 2026-08-06** (report §6a-§6d below; docs/analysis only, no engine change) | — |
+| `C15-G1` | Probe harness + **WebGL reference leg** on the two in-tree splat tilesets. No engine change. | S | PENDING | `C15-G0` |
+| `C15-G2` | Scene-logic extraction: move the FR dispatch below the data commit; split the backend-neutral snapshot pack from the WebGL `Texture` upload | M | PENDING | `C15-G1` |
+| `C15-G3` | Splat record format + WebGPU buffer commit — consume the WASM texture-generator output verbatim; first real WebGPU splat pixels | L | PENDING | `C15-G2` |
+| `C15-G4` | Consume the WASM radix sort (`primitive._indexes`) instead of the in-renderer synchronous JS comparator sort | M | PENDING | `C15-G3` |
+| `C15-G5` | Spherical harmonics (degree 1-3) in WGSL — the view-dependent colour term the WGSL has **zero** implementation of | L | PENDING | `C15-G3` |
+| `C15-G6` | `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` — re-verify against production data (the B647 fix is currently **vacuous** under every probe) | M | PENDING | `C15-G3` |
+| `C15-G7` | `NEW-GS-CLASSIFICATION-DEPTH` — re-verify the depth-write variant against production data | S | PENDING | `C15-G3` |
+| `C15-G8` | Terminal parity gate + tracker reconciliation | M | PENDING | `C15-G4`, `C15-G5`, `C15-G6`, `C15-G7` |
 
 **`C15-G0` exit gate:** a written scoping report in this section that (a) names the
 exact break with file:line evidence at HEAD, (b) confirms or refutes each known-state
@@ -509,4 +516,345 @@ WebGL-parity pixel gate is the track's terminal gate), and (d) states what the t
 does NOT cover. Priority relative to aurora rows: the maintainer queued gsplats as
 wanted-working; the aurora hold (R4) does not apply to this track, so `C15-G*` rows
 may execute while `C15-01+` stay held.
+
+---
+
+## 6a. `C15-G0` scoping report — the exact break at HEAD
+
+Verified at `908125d22a` (worktree `wt-gsplat`), 2026-08-06. All line numbers are
+HEAD line numbers, re-read this session — not copied from the 2026-07-18 filing.
+
+### The break, in one chain
+
+1. `GaussianSplatPrimitive.update(frameState)` opens at
+   `packages/engine/Source/Scene/GaussianSplatPrimitive.js:1186`. Its **first**
+   statement resolves the feature renderer
+   (`:1189-1192`, `FeatureRendererKey.GAUSSIAN_SPLAT`), and `:1194-1198` is
+   `if (fr) { fr.update(this, frameState); this._featureRenderer = fr; return; }`.
+   Every line of the WebGL data path — snapshot aggregation (`:1280-1498`),
+   `generateSplatTexture` (`:1503`), `radixSortIndexes` (`:1543`),
+   `commitSnapshot` (`:407`), `buildGSplatDrawCommand` (`:1967`) — sits **after**
+   that return and never executes on WebGPU.
+2. The WebGPU renderer's only data read is
+   `packages/engine/Source/Renderer/WebGPU/WebGPUGaussianSplatRenderer.ts:1299-1300`:
+   `const splatData = primitive._splatData || primitive._renderResources?.splatBuffer;`
+   plus `:1301` `const revision = primitive._splatCount ?? 0;`.
+3. **All three fields are unassigned everywhere in `packages/`.** Repo-wide greps
+   this session: `_splatData` appears only at
+   `cesium-js-types.d.ts:1383`, `WebGPUGaussianSplatRenderer.ts:144` (a comment),
+   `:713` (a comment) and `:1300` (the read). `_renderResources` appears at
+   `cesium-js-types.d.ts:1384` and `:1300` only (the one other hit,
+   `Model/ModelPrimitiveGeometry.js:817`, is an unrelated runtime-primitive
+   field). `_splatCount` appears at `cesium-js-types.d.ts:1385` and `:1301` only.
+   `GaussianSplatPrimitive.js` never mentions any of the three (it has
+   `_splatDataGeneration`, a different field).
+4. Consequence: `splatData === undefined` → the buffer-build branch at `:1302`
+   never fires → `cache.splatBuffer` stays `null`, `cache.splatCount` stays `0`
+   → the function returns at `:1359-1361` (`if (cache.splatCount === 0) return;`)
+   **before** the sort, the uniform pack, the command build and the
+   `commandList.push` at `:1637`. No command is ever produced. This is
+   "do not work at all", exactly as the maintainer reported.
+5. The only writers of `_splatCount`/`_splatData` in the whole repo are three
+   probes that hand-roll a fake primitive object:
+   `Tools/visual-regression/probe-splat-sort.mjs:216-233`,
+   `probe-splat-globe-occlusion.mjs:119-134`, `probe-oit-transparency.mjs:720`.
+
+**Verdict: the recorded mechanism `NEW-WEBGPU-SPLAT-DATA-PRODUCER` is CONFIRMED
+verbatim at HEAD.** The v1.144-era splat churn (SPZ loader, snapshot state
+machine, texture hard-cap, SSE budget inflation, SH inverse rotation) landed
+entirely on the WebGL side of the `return` and did not move, heal, or worsen the
+break. The headline is not a refutation.
+
+### But two things the record does NOT say, and they change the track
+
+**(A) The WebGL path no longer produces anything shaped like `_splatData`.**
+The 2026-07-18 filing describes the fix as "pack the loaded snapshot into the
+16-float/64-byte interleaved record". That framing is now misleading. At HEAD the
+WebGL renderer is **texture-based**: `GaussianSplatTextureGenerator.generateFromAttributes`
+(`GaussianSplatPrimitive.js:1936`) hands positions/scales/rotations/colors to the
+`gaussianSplatTextureGenerator` worker, which calls the WASM
+`generate_splat_texture` (`packages/engine/Source/Workers/gaussianSplatTextureGenerator.js:17-36`).
+The WASM returns a `Uint32Array` in which **each splat is exactly 8 uint32
+(32 bytes)** — two side-by-side RGBA32UI texels, decoded by
+`packages/engine/Source/Shaders/PrimitiveGaussianSplatVS.glsl:152-173`:
+
+| u32 | contents |
+| --- | --- |
+| 0-2 | `uintBitsToFloat` → model-space position xyz (f32) |
+| 3 | unused |
+| 4-6 | 3 × `unpackHalf2x16` → the 6 unique symmetric 3D-covariance terms `(Sxx,Sxy,Sxz,Syy,Syz,Szz)` |
+| 7 | RGBA8 packed colour |
+
+The WGSL `SplatRecord` (`WebGPUGaussianSplatRenderer.ts:147-153`) is a **different,
+larger** layout: 16 × f32 = 64 bytes, `positionHigh(3) + positionLow(3) + covA(3)
++ covB(3) + rgba(4)`. The covariance **semantics** match (`WGSL:278-282` builds
+the same symmetric matrix as `GLSL:173`), but no in-tree producer emits the f32
+form, and `@cesium/wasm-splats` exports only two entry points —
+`generate_splat_texture` and `radix_sort_gaussians_indexes`
+(`node_modules/@cesium/wasm-splats/wasm_splats.d.ts`) — neither of which produces
+it. So "assign `_splatData`" is not a wiring job: it is either a full CPU repack
+(half→f32 expansion + RTE split over every splat, every snapshot, 2× the memory)
+or a WGSL format change. The orchestrator's own constraint ("consume the SAME
+worker outputs, not fork their formats") selects the latter. See `C15-G3`.
+
+**(B) Both in-tree test assets are spherical-harmonics degree 3, and the WGSL has
+no SH implementation whatsoever.** `grep -ci 'sphericalharmonic\|SH_C1\|evaluateSH'
+WebGPUGaussianSplatRenderer.ts` = **0**. The WebGL VS evaluates degree-1/2/3 SH
+per splat against the model-space view direction
+(`PrimitiveGaussianSplatVS.glsl:10-101`, applied at `:189-194`) from a second
+`RG32UI` texture. Both `Specs/Data/.../sh_unit_cube/0/0.glb` and
+`.../tower/0/0.glb` declare `KHR_gaussian_splatting:SH_DEGREE_3_COEF_*`
+attributes, so `GltfSpzLoader.getSpzInfoFromGltf` (`:70-80`) infers `shDegree = 3`
+for both. **A WebGL-parity pixel gate on either in-tree asset is therefore
+unreachable until SH lands in WGSL** — this is the single largest under-estimate
+in the queued track and it gets its own row (`C15-G5`).
+
+---
+
+## 6b. Known-state bullets — confirmed or refuted
+
+| # | Bullet as queued | Standing at HEAD |
+| --- | --- | --- |
+| 1 | `WebGPUGaussianSplatRenderer` exists and is probe-verified (sorted-index storage buffer, log-depth producer, Batch 288) but only under synthetic `_splatData` | **CONFIRMED.** Sorted-index consumption `WGSL:206-210, 255-258`; log-depth `//>>ifdef LOG_DEPTH` blocks `:212-226, 295-297, 308+` with the near/factor lanes packed at UBO floats 35/39 (`:1450-1451`) — still matches the Batch 288 description exactly. Synthetic-only confirmed (three probes, §6a.5). |
+| 2 | Root cause on record is `NEW-WEBGPU-SPLAT-DATA-PRODUCER`: `update` returns to the FR before the WebGL commit; nothing assigns `_splatData`/`_renderResources.splatBuffer` | **CONFIRMED, every clause**, with the two qualifications in §6a(A)/(B) that make the fix bigger than the filing implies. |
+| 3 | `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` is an adjacent open item | **OPEN, and the trackers CONTRADICT each other.** `QUEUE_2026-07-06_CAMPAIGN7.md:16` says "✅ LANDED B647"; `DEFERRED_WORK.md:3231` still describes it as open; `FEATURE_INVENTORY.md:616` calls it a "WIP boundary". Code at HEAD: B647 landed `C7-SPLAT-DEPTH-COMPOSE` (`WebGPUGaussianSplatRenderer.ts:1527-1543, 1555-1556, 1586-1589`) which sets `boundingVolume: tileset.boundingSphere` + `modelMatrix: rootTransform` on the command. **That fix is VACUOUS under every existing probe**: `commandBoundingVolume = parityFields._tileset?.boundingSphere` (`:1542`) and the probes' fake primitives have no `_tileset` (`probe-splat-sort.mjs:216-233`, `probe-splat-globe-occlusion.mjs:119-134`), so `boundingVolume` is `undefined` on every frame any probe has ever rendered — and `_backToFrontSplatsComparator` (via `WebGPUSceneRenderer.ts:503-518`) reads `boundingVolume.center`, so the sorter short-circuits too. The fix has never been executed. `C15-G6`. |
+| 4 | `NEW-GS-CLASSIFICATION-DEPTH` (translucent tiles classify against globe-depth, not splat-depth) | **OPEN.** The depth-write pipeline variant + `classificationDepthPipeline` plumbing exist (`:59-66, 1559-1568, 1591-1602`) but sit on the same unreachable path — no production splat command has ever carried it. `C15-G7`. |
+| 5 | The GPU radix-sort backlog item (BACKLOG §11) | **OPEN and explicitly OUT OF SCOPE for this track.** `WEBGPU_MIGRATION_BACKLOG.md:799` ("Gaussian Splat sort — radix sort on GPU, 2-3 days"). The live defect is the opposite direction: the renderer runs a **synchronous main-thread `Array.prototype.sort` with a JS comparator** (`WebGPUGaussianSplatRenderer.ts:1036-1039`) over a freshly-allocated `Float64Array(count)` (`:1025`), while the WebGL path already has an async WASM radix sort in a worker producing `primitive._indexes`. `C15-G4` consumes the shipped worker; the GPU sort stays deferred. |
+| 6 | `C10-04-SPLAT-ASYNC-SORT` (not in the queued bullets, but the sibling STOP-AND-BLOCK) | **BLOCKED-then-DISCHARGED-BY-`C15-G4`.** `WEBGPU_DEBUGGING_LOG.md:971-984`. Its premise ("the sync sort never runs in production") is confirmed; `C15-G4` is the smallest unblock and supersedes it. |
+| 7 | The upstream v1.144-era worker pipeline whose outputs WebGPU must consume without forking | **CONFIRMED present and healthy**: `GaussianSplatSorter.js` + `Workers/gaussianSplatSorter.js` (WASM `radix_sort_gaussians_indexes`), `GaussianSplatTextureGenerator.js` + `Workers/gaussianSplatTextureGenerator.js` (WASM `generate_splat_texture`), `GltfSpzLoader.js`, `GaussianSplat3DTileContent.js`. The WASM binary is installed (`node_modules/@cesium/wasm-splats/wasm_splats_bg.wasm`) and copied to `packages/engine/Source/ThirdParty/` + `Build/CesiumUnminified/ThirdParty/` by `gulpfile.js:384-385`. |
+| 8 | `NEW-LOG-DEPTH-REMAINING-PRODUCERS-POINTCLOUD-SPLAT` (splat half, Batch 288) | **CONFIRMED still matching its description** — see row 1. No drift. |
+
+### Test-asset situation — an asset-acquisition row is NOT needed
+
+The 2026-07-18 filing lists "no offline `.spz`/glTF-splat asset in-tree" as a
+prerequisite. **That is now false.** Two license-clean CesiumGS-shipped tilesets
+live in `Specs/Data/Cesium3DTiles/GaussianSplats/`:
+
+| Asset | Splats | SH | Georeferenced | Size | Role |
+| --- | ---: | --- | --- | ---: | --- |
+| `sh_unit_cube/tileset.json` | 27 | degree 3 | no | 2.7 KB | deterministic first-pixel + SH gate |
+| `tower/tileset.json` | 286,868 | degree 3 | yes | 7.5 MB | real-scale terminal parity + perf gate |
+
+Both already drive Jasmine specs (`GaussianSplatPrimitiveSpec.js:24`,
+`GaussianSplat3DTileContentSpec.js:19`), and `GaussianSplatPrimitiveSpec` makes a
+**real render assertion** on the WebGL backend (non-zero RGB at the canvas centre,
+then black after `tileset.show = false`) — so the WebGL reference leg is
+credible at HEAD. The dev server statics the repo root (`server.js:535`), so a
+Playwright probe reaches them at
+`http://localhost:8080/Specs/Data/Cesium3DTiles/GaussianSplats/<name>/tileset.json`
+with no network and no Ion token. The remote-Ion Sandcastle demos
+(`3d-tiles-gaussian-splatting` asset 3667783, `3d-tiles-gaussian-splats-with-lod`
+asset 4547222) are **not** the gate asset.
+
+---
+
+## 6c. `C15-G1..G8` — task breakdown
+
+Common contract for every row: worktree-isolated; workers never commit; WebGL
+output must stay byte-identical unless the row says otherwise
+(`capture-and-diff` + both `GaussianSplat*Spec` suites green is the standing
+off-gate); any new WGSL variant goes through `ShaderDefine`/`ShaderDefineHi` +
+`WebGPUShaderPreprocessor` + `WebGPUShaderModuleCache`
+(`ShaderSourceId.GAUSSIAN_SPLAT = 36` already exists; the lo-word is full at
+bit 30, so new splat axes claim `ShaderDefineHi` bits — 0 and 1 are taken).
+
+### `C15-G1` — probe harness + WebGL reference leg (S) — deps: `C15-G0`
+
+New `Tools/visual-regression/probe-splat-real-asset.mjs`: Edge, loads
+`sh_unit_cube` and `tower` from the local dev server, per-backend legs, pinned
+clock, same-task capture, canvas-element PNGs, camera framed on
+`tileset.boundingSphere`. **No engine change in this row.** This row exists to
+de-risk the whole track: if the WebGL leg is red at HEAD, every downstream
+parity gate is void and the maintainer must know before `C15-G2` starts.
+
+*Exit gate (falsifiable):* the **WebGL** leg renders both tilesets with
+`>= 2%` of canvas pixels non-background at the framed camera, and
+`tileset.gaussianSplatPrimitive._numSplats` reads `27` / `286868` respectively;
+the **WebGPU** leg on the same run records `_numSplats === 0`, zero
+`Pass.GAUSSIAN_SPLATS` commands, and a blank canvas — the documented baseline
+the rest of the track is measured against. Both PNGs read by the author.
+
+### `C15-G2` — scene-logic extraction (M) — deps: `C15-G1`
+
+Apply the scene-logic-extractor rule to `GaussianSplatPrimitive.update`: the
+snapshot build, aggregation, worker dispatch, sort dispatch and commit are
+**shared** logic and must run before the backend branch. Two concrete moves:
+
+- Relocate the FR resolve/dispatch from `:1189-1201` to after the data commit,
+  so the WebGPU FR is handed a primitive whose `_snapshot` / `_numSplats` /
+  `_indexes` are populated.
+- Split `processGeneratedSplatTextureData` (`:476-636`): the trim/pad/row-mask
+  computation is backend-neutral and stays shared; only
+  `createGaussianSplatTexture` / `createSphericalHarmonicsTexture`
+  (`:749-794`, which construct the **WebGL** `Texture` class) move behind the
+  backend branch. Same for `buildGSplatDrawCommand`'s `VertexArray` /
+  `ShaderProgram` / `DrawCommand` construction (`:1967-2168`).
+
+*Exit gate:* on the WebGPU backend with `tower` loaded, a probe reads
+`primitive._numSplats === 286868`, `primitive._indexes.length === 286868`,
+`primitive._rootTransform` defined, and **zero** WebGL `Texture`/`VertexArray`/
+`ShaderProgram` objects created for the splat primitive (assert via a counted
+spy or `scene.context` resource stats). WebGL leg from `C15-G1` unchanged within
+the probe's noise floor; both `GaussianSplat*Spec` suites green.
+
+### `C15-G3` — splat record format + WebGPU buffer commit (L) — deps: `C15-G2`
+
+The format decision, then the commit. **Recommended: Option B — consume the WASM
+`generate_splat_texture` output verbatim.** Change the WGSL group-0 binding 1
+from `array<SplatRecord>` (16 f32) to the WASM-native packed layout (8 u32 per
+splat) and unpack in the VS with `bitcast<f32>` + `unpack2x16float`, mirroring
+`PrimitiveGaussianSplatVS.glsl:153-173` term-for-term. Rationale: it is the
+"consume the same worker outputs, don't fork their formats" answer; it halves
+GPU memory (32 B vs 64 B per splat — 9.2 MB vs 18.4 MB for `tower`); it makes
+the covariance **bit-identical** to WebGL, which is what makes a tight parity
+threshold in `C15-G8` achievable at all; and the worker's raw buffer is already
+a tight `count * 8` sequence with no row padding
+(`GaussianSplatPrimitive.js:489-491` — "the WASM buffer layout is
+width-independent"), so `subarray(0, count * 8)` goes straight to
+`device.queue.writeBuffer` with **zero** CPU repack.
+
+Option A (repack to the existing 64-byte f32 record) stays recorded as the
+fallback if the WGSL unpack proves lossy; it costs a full CPU pass per snapshot
+and 2× memory.
+
+**Named decision the row must surface, not silently take:** the WASM layout
+stores position as a single f32 vec3, so `positionHigh`/`positionLow` cannot be
+recovered from it — the f32 is the data's own precision ceiling. RTE must be
+preserved on the **camera** side, which is where it buys precision here: the
+renderer already transforms the camera into the primitive's model frame and
+encodes it high/low (`WebGPUGaussianSplatRenderer.ts:1401-1404`), and positions
+are meter-scale in the `_rootTransform` ENU frame by construction
+(`GaussianSplatPrimitive.js:1300-1302, 2139-2146`). The row must set
+`positionHigh = <f32 position>`, `positionLow = 0`, keep the
+`(pH - camH) + (pL - camL)` cancellation structure intact, and land a rationale
+comment at the site. Do not silently drop the RTE lanes.
+
+Also in scope: `maybeSortSplats` (`:968-1049`) and `attachSplatVelocityCommand`
+(`:1654+`) both read the 16-float stride and must be moved to the new layout (or,
+for the sort, superseded by `C15-G4`); the three synthetic probes must be
+migrated to the new layout in the same row or they go red.
+
+*Exit gate:* WebGPU renders `sh_unit_cube` — probe asserts
+`cache.splatCount === 27`, exactly one `Pass.GAUSSIAN_SPLATS` command in the
+command list, `>= 2%` non-background canvas pixels at the framed camera, zero
+device/validation errors. **Negative control:** with `tileset.show = false` the
+canvas returns to background. `probe-splat-sort.mjs` and
+`probe-splat-globe-occlusion.mjs` still pass on the migrated layout. A
+`node --test` CPU spec proves the JS-side pack and the WGSL-side unpack agree on
+a known `(scale, rotation)` triple against the GLSL reference decode.
+
+### `C15-G4` — consume the WASM radix sort (M) — deps: `C15-G3`
+
+Replace the synchronous main-thread comparator sort
+(`WebGPUGaussianSplatRenderer.ts:1013-1041`) with `primitive._indexes`, the
+permutation the shipped `GaussianSplatSorter.radixSortIndexes` WASM worker
+already produces for the WebGL path (`GaussianSplatPrimitive.js:1543, 1601,
+1635`; resolved into `_indexes` at `:728` / `:677`). This is the
+`C10-04-SPLAT-ASYNC-SORT` unblock. Keep `cache.sortRequestPending` and the
+view-angle throttle as the demand signal; the WebGPU leg uploads the worker's
+result to `sortedIndexBuffer` rather than computing its own.
+
+*Exit gate:* on `tower` (286,868 splats) at a settled camera, a probe records
+**zero** calls into the in-renderer comparator sort (instrument or delete the
+path) and `sortedIndexBuffer` contents equal to `primitive._indexes` element-for-
+element on the sample frame; longest main-thread task during a 60-frame orbit is
+**below** the pre-row measurement taken in the same run (interleaved A/B, not
+across builds). Back-to-front correctness preserved: `probe-splat-sort.mjs`
+still asserts the non-identity permutation.
+
+### `C15-G5` — spherical harmonics degree 1-3 in WGSL (L) — deps: `C15-G3`
+
+Port `evaluateSH` / `loadSHCoeff` / `halfToVec3`
+(`PrimitiveGaussianSplatVS.glsl:10-101`) to WGSL with the same `SH_C1/SH_C2/SH_C3`
+constants and the same `inverse(computedTransform × axisCorrection ×
+worldTransform)` model-space view direction (`GaussianSplatPrimitive.js:1310-1326`
+computes `_shInverseRotation`; the WGSL UBO must carry it). The packed SH payload
+is the same `RG32UI` half-float pair layout the WebGL texture uses
+(`GaussianSplatPrimitive.js:584-628`) and reaches the primitive as
+`snapshot.shData` — consume it as a storage buffer, do not re-derive it. Gate the
+whole block behind a new `ShaderDefineHi` bit (`HAS_SPHERICAL_HARMONICS`, next
+free hi-word index) so `shDegree === 0` content compiles the historical
+`//>>else` path byte-identical.
+
+*Exit gate:* on `sh_unit_cube` at **three** camera azimuths 120° apart, WebGPU-vs-
+WebGL mismatch is below the `C15-G8` threshold at each. **Vacuity control
+(mandatory):** the SH-off leg (define bit cleared) must differ from the SH-on leg
+by more than that threshold at at least two of the three azimuths — otherwise the
+gate is not measuring SH and the row does not certify. Degree-0 content path
+proven byte-identical by a shader-source hash comparison against the pre-row
+module.
+
+### `C15-G6` — multifrustum compose, re-verified against production data (M) — deps: `C15-G3`
+
+`NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` has never been observed with a real
+tileset, and the B647 `C7-SPLAT-DEPTH-COMPOSE` fix that was supposed to close it
+has **never executed** (§6b row 3 — no probe primitive has a `_tileset`, so
+`boundingVolume` is always `undefined` at `:1542`). This row re-opens the
+question with data that can actually reach the code.
+
+*Exit gate:* with `tower` at a far nadir camera over a settled globe (`>= 2`
+active frustums, asserted from `frustumCommands`), the splat cloud composes over
+the globe — non-background splat-coloured pixels present, and WebGL-vs-WebGPU
+occlusion topology agrees (same pixels occluded on both). **Negative control:**
+suppressing `command.boundingVolume` reproduces the historical mis-binning
+(`indices[GAUSSIAN_SPLATS]` populated in every frustum band). If the compose is
+still broken with `boundingVolume` set, the row's deliverable is the per-frustum
+UBO re-pack described in `DEFERRED_WORK.md:3231`, re-gated the same way. Update
+all three contradicting trackers to one status.
+
+### `C15-G7` — classification depth, re-verified against production data (S) — deps: `C15-G3`
+
+`NEW-GS-CLASSIFICATION-DEPTH`: confirm the `classificationDepthPipeline`
+swap (`:1559-1568, 1591-1602`) fires when `Cesium3DTile.update` sets
+`depthForTranslucentClassification` on a real splat-pass command.
+
+*Exit gate:* a classification polygon draped over `tower` lands on the splat
+surface, not on the terrain behind it, on both backends; probe asserts the
+depth-write pipeline was actually selected on the frame measured (counter, not
+inference). **Negative control:** forcing `classificationDepthPipeline = null`
+puts the polygon back on the terrain.
+
+### `C15-G8` — terminal parity gate + tracker reconciliation (M) — deps: `C15-G4`, `C15-G5`, `C15-G6`, `C15-G7`
+
+*Exit gate (the track's terminal gate):*
+`Specs/Data/Cesium3DTiles/GaussianSplats/tower/tileset.json` — 286,868 real
+SPZ-compressed, SH-degree-3 splats, served locally — renders on the WebGPU
+backend with a WebGL-vs-WebGPU canvas mismatch **below 3%** at the framed camera
+and at two orbit positions, zero device/validation errors, PNGs read by the
+author. `sh_unit_cube` holds below **1%** (27 splats, no terrain, no streaming —
+the tight leg). Both legs captured in the same run with a pinned clock.
+**Vacuity control:** an intentionally corrupted covariance term must push the
+`tower` mismatch above 3%, proving the gate can fail.
+
+Reconciliation shipped in the same row: `DEFERRED_WORK.md` (close
+`NEW-WEBGPU-SPLAT-DATA-PRODUCER`, resolve the `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE`
+contradiction at `:3231`, close/redirect `C10-04-SPLAT-ASYNC-SORT`),
+`FEATURE_INVENTORY.md:616` (splat line moves from "SCAFFOLDED-not-SHIPPED for
+production" to SHIPPED, or to §C with the exact residual),
+`WEBGPU_DEBUGGING_LOG.md` (batch entry), `DEBUGGING_GUIDE.md` (the new probe
+joins the inventory), and the `QUEUE_2026-07-06_CAMPAIGN7.md:16` "LANDED B647"
+row annotated with the vacuity finding.
+
+---
+
+## 6d. Non-goals — what this track does NOT cover
+
+- **GPU/compute radix sort for splats** (`WEBGPU_MIGRATION_BACKLOG.md:799`).
+  `C15-G4` consumes the existing WASM worker; a GPU sort stays deferred.
+- **Remote / Ion / iTwin splat assets.** The gate is the in-tree tilesets only.
+  The Sandcastle demos keep their Ion asset IDs and are not gated.
+- **Per-splat feature IDs, metadata picking, or per-splat styling.** Pick stays
+  primitive-granularity on both backends (`WebGPUGaussianSplatRenderer.ts:191-195`).
+- **Splat LOD, streaming, or budget policy beyond WebGL parity.** The SSE
+  inflation + texture hard cap (`GaussianSplatPrimitive.js:497-533, 1088-1101`)
+  are consumed as-is, not redesigned.
+- **The deprecated `KHR_spz_gaussian_splats_compression` extension** — upstream
+  already emits a deprecation warning (`GaussianSplat3DTileContent.js:142-152`).
+- **2D / Columbus View splat rendering.** 3D only.
+- **TAA velocity / motion vectors for splats beyond keeping the C10-09 leg
+  alive** through the `C15-G3` layout change. Animated splat clouds are out.
+- **Any change to WebGL splat visual output.** WebGL is the reference; every row
+  carries a byte-identical-off gate.
+- **The aurora rows `C15-01..08`**, which remain HELD under ruling R4 and are
+  unaffected by this track in either direction.
 
