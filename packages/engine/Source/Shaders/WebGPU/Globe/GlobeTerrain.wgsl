@@ -369,6 +369,10 @@ struct TileUniforms {
   // Flags: x=hasWaterMask, y=enableClipping, z=showOceanWaves, w=isSubsequentPass
   flags: vec4<f32>,
   // === Night & Ocean Enhancement Parameters ===
+  // CLT-B2 — every slot in these two vec4s uses a NEGATIVE value as the
+  // "CPU supplied nothing, use the shader default" marker (see the getters
+  // below and `WebGPUGlobeTunables.GLOBE_UB_UNSET`). A zero here is a
+  // real, honoured zero.
   // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
   oceanParams: vec4<f32>,
   // nightOceanParams: x=nightIntensity, y=oceanReflectivity, z=foamThreshold, w=oceanDarkening
@@ -770,11 +774,30 @@ struct VertexOutput {
 const EARTH_RADIUS_FALLBACK: f32 = 6378137.0;
 const PI: f32 = 3.14159265358979;
 
-// ─── Default ocean parameters (used when uniforms are zero/unset) ───
+// ─── Default ocean/night parameters (used when the CPU supplied no value) ───
+//
+// CLT-B2 — "unset" is a NEGATIVE slot, not `0.0`.
+//
+// These six getters used to read `== 0.0` as "the CPU configured nothing,
+// substitute my built-in default". Every tunable below has a legitimate zero
+// (`Globe.nightIntensity = 0` is documented as "no emission"; foam threshold 0
+// is "foam everywhere"; darkening 0 is "no darkening"), so the zero was
+// UNREACHABLE and any off path that wrote 0.0 silently aliased onto default-on.
+// That is what made `globe.enableNightLights = false` a visual no-op on WebGPU.
+//
+// The domains are all non-negative magnitudes, so the negative half-line is
+// unreachable from the API and carries "unset" without colliding with anything
+// a caller can ask for. `WebGPUGlobeTunables.GLOBE_UB_UNSET` (-1.0) is the
+// CPU twin of this test; the two must move together.
+//
+// Default-path identity: the shipped defaults write real, positive values
+// (nightIntensity 2.5, fresnel 5.0, reflectivity 0.04, foam 0.35, darkening
+// 0.6, deep colour 0.008/0.045/0.12), so both the old `== 0.0` law and this
+// `< 0.0` law take the pass-through arm and emit the same bits.
 fn getOceanDeepColor() -> vec3<f32> {
   let p = tile.oceanParams;
-  // If all zero, use sensible defaults
-  if (p.x == 0.0 && p.y == 0.0 && p.z == 0.0) {
+  // Negative red channel = unset (the packer writes the marker to all three).
+  if (p.x < 0.0) {
     return vec3<f32>(0.008, 0.045, 0.12);
   }
   return vec3<f32>(p.x, p.y, p.z);
@@ -782,27 +805,27 @@ fn getOceanDeepColor() -> vec3<f32> {
 
 fn getFresnelPower() -> f32 {
   let p = tile.oceanParams.w;
-  return select(p, 5.0, p == 0.0);
+  return select(p, 5.0, p < 0.0);
 }
 
 fn getNightIntensity() -> f32 {
   let n = tile.nightOceanParams.x;
-  return select(n, 2.5, n == 0.0);
+  return select(n, 2.5, n < 0.0);
 }
 
 fn getOceanReflectivity() -> f32 {
   let r = tile.nightOceanParams.y;
-  return select(r, 0.04, r == 0.0);
+  return select(r, 0.04, r < 0.0);
 }
 
 fn getFoamThreshold() -> f32 {
   let f = tile.nightOceanParams.z;
-  return select(f, 0.35, f == 0.0);
+  return select(f, 0.35, f < 0.0);
 }
 
 fn getOceanDarkening() -> f32 {
   let d = tile.nightOceanParams.w;
-  return select(d, 0.6, d == 0.0);
+  return select(d, 0.6, d < 0.0);
 }
 
 // ─── RTE Translation ───

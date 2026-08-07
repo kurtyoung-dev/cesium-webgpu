@@ -1337,10 +1337,26 @@ interface CesiumGlobeTileProvider {
    */
   enableEnhancedOcean?: boolean;
   oceanNormalMap: CesiumOpaqueTexture | undefined;
-  oceanDeepColor: CesiumColor;
+  /**
+   * CLT-B2 — mirrored RAW from `Globe`, never pre-gated. `enableEnhancedOcean`
+   * carries the enable; `WebGPUGlobeSurfaceTileUB` owns the encoding of "off"
+   * and "unset" (`resolveGlobeTunable` / `GLOBE_UB_UNSET`). Optional because a
+   * frame can be packed before `Globe.update()` has populated the provider.
+   */
+  oceanDeepColor?: CesiumColor;
   oceanFresnelPower?: number;
+  /**
+   * CLT-B2 — mirrored RAW from `Globe.enableNightLights`, and now actually READ
+   * (by `WebGPUGlobeSurfaceTileUB`). It was write-only before this row, which
+   * is why the off state had to be smuggled through `nightIntensity = 0.0` and
+   * collided with the shader's "0 means use the default" sentinel.
+   */
+  enableNightLights?: boolean;
+  /** CLT-B2 — mirrored RAW from `Globe.nightIntensity`; `0` means no emission. */
   nightIntensity?: number;
   oceanReflectivity?: number;
+  oceanFoamThreshold?: number;
+  oceanDarkening?: number;
   nightFadeOutDistance: number;
   nightFadeInDistance: number;
   hasWaterMask: boolean;

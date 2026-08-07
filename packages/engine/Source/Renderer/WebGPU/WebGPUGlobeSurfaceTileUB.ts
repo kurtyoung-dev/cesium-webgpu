@@ -83,6 +83,10 @@ import {
   MAX_IMAGERY_LAYERS,
   resolveImageryLayerValue,
 } from "./WebGPUGlobeSurfaceTypes.js";
+// CLT-B2 — the enable/unset encoding for the night + ocean tunable slots lives
+// in its own leaf so the CPU packer, the WGSL getters and the Node spec that
+// cross-checks them all read one contract.
+import { GLOBE_UB_UNSET, resolveGlobeTunable } from "./WebGPUGlobeTunables.js";
 // GLOBE-TRANSLUCENCY-ALPHA — reuse the exact WebGL antimeridian-clip helper
 // for the translucency rectangle instead of replicating the split logic here
 // and risking drift. Backend-neutral pure function.
@@ -597,14 +601,30 @@ export function createTileUniformBuffer(
 
   // ─── Ocean enhancement params (vec4) ───
   // oceanParams: x=deepR, y=deepG, z=deepB, w=fresnelPower
-  // Defaults applied in shader when all zero (no tileProvider config needed)
-  if (tileProvider?.oceanDeepColor) {
-    const c = tileProvider.oceanDeepColor;
-    data[OCEAN_PARAMS_OFFSET + 0] = c.red ?? c.x ?? 0.008;
-    data[OCEAN_PARAMS_OFFSET + 1] = c.green ?? c.y ?? 0.045;
-    data[OCEAN_PARAMS_OFFSET + 2] = c.blue ?? c.z ?? 0.12;
+  //
+  // CLT-B2 — "unset" is `GLOBE_UB_UNSET` (negative), never `0.0`. `data` is
+  // zero-filled at the top of this function, so an unwritten slot would now
+  // read as an explicit zero; every arm below therefore writes something.
+  // `enableEnhancedOcean` OFF means NOT APPLICABLE (the consuming branch is
+  // preprocessed out by `ShaderDefineHi.ENHANCED_OCEAN`), so the off arm is the
+  // unset marker and the shader keeps returning the same built-in defaults it
+  // returned before this row — the default look is unchanged.
+  const enhancedOceanOn = tileProvider?.enableEnhancedOcean === true;
+  const deepColor = enhancedOceanOn ? tileProvider?.oceanDeepColor : undefined;
+  if (deepColor) {
+    data[OCEAN_PARAMS_OFFSET + 0] = deepColor.red ?? deepColor.x ?? 0.008;
+    data[OCEAN_PARAMS_OFFSET + 1] = deepColor.green ?? deepColor.y ?? 0.045;
+    data[OCEAN_PARAMS_OFFSET + 2] = deepColor.blue ?? deepColor.z ?? 0.12;
+  } else {
+    data[OCEAN_PARAMS_OFFSET + 0] = GLOBE_UB_UNSET;
+    data[OCEAN_PARAMS_OFFSET + 1] = GLOBE_UB_UNSET;
+    data[OCEAN_PARAMS_OFFSET + 2] = GLOBE_UB_UNSET;
   }
-  data[OCEAN_PARAMS_OFFSET + 3] = tileProvider?.oceanFresnelPower ?? 0.0; // 0 = use shader default
+  data[OCEAN_PARAMS_OFFSET + 3] = resolveGlobeTunable(
+    enhancedOceanOn,
+    tileProvider?.oceanFresnelPower,
+    GLOBE_UB_UNSET,
+  );
 
   // ─── Time for ocean wave animation ───
   // NS-WEBGPU-OCEAN-BRIGHT-NO-WAVES — drive the wave phase from
@@ -669,14 +689,40 @@ export function createTileUniformBuffer(
 
   // ─── Night & ocean secondary params (vec4) ───
   // nightOceanParams: x=nightIntensity, y=oceanReflectivity, z=foamThreshold, w=oceanDarkening
-  data[NIGHT_OCEAN_PARAMS_OFFSET + 0] =
-    (tileProvider?.nightIntensity as number | undefined) ?? 0.0; // 0 = use shader default (2.5)
-  data[NIGHT_OCEAN_PARAMS_OFFSET + 1] =
-    (tileProvider?.oceanReflectivity as number | undefined) ?? 0.0; // 0 = use shader default (0.04)
-  data[NIGHT_OCEAN_PARAMS_OFFSET + 2] =
-    (tileProvider?.oceanFoamThreshold as number | undefined) ?? 0.0; // 0 = use shader default (0.35)
-  data[NIGHT_OCEAN_PARAMS_OFFSET + 3] =
-    (tileProvider?.oceanDarkening as number | undefined) ?? 0.0; // 0 = use shader default (0.6)
+  //
+  // CLT-B2 — the enable arrives as its OWN signal (`tileProvider
+  // .enableNightLights` / `.enableEnhancedOcean`, both mirrored by
+  // `Globe.update()`), and the value slot carries only a value. Before this
+  // row `Globe.js` collapsed the two into one number by writing `0.0` on the
+  // off path, and `getNightIntensity()` read `0.0` as "use 2.5" — so
+  // `globe.enableNightLights = false` rendered as default-ON and C11-159's
+  // ratified "default OFF, keep the toggle" had no reachable off state.
+  //
+  // The two features answer "what does OFF mean" differently, which is why
+  // `resolveGlobeTunable` takes the off value explicitly:
+  //   night lights  → 0.0            (zero emission; the shader multiplies by it)
+  //   enhanced ocean→ GLOBE_UB_UNSET (branch removed by the define; no value)
+  const nightLightsOn = tileProvider?.enableNightLights !== false;
+  data[NIGHT_OCEAN_PARAMS_OFFSET + 0] = resolveGlobeTunable(
+    nightLightsOn,
+    tileProvider?.nightIntensity,
+    0.0,
+  );
+  data[NIGHT_OCEAN_PARAMS_OFFSET + 1] = resolveGlobeTunable(
+    enhancedOceanOn,
+    tileProvider?.oceanReflectivity,
+    GLOBE_UB_UNSET,
+  );
+  data[NIGHT_OCEAN_PARAMS_OFFSET + 2] = resolveGlobeTunable(
+    enhancedOceanOn,
+    tileProvider?.oceanFoamThreshold,
+    GLOBE_UB_UNSET,
+  );
+  data[NIGHT_OCEAN_PARAMS_OFFSET + 3] = resolveGlobeTunable(
+    enhancedOceanOn,
+    tileProvider?.oceanDarkening,
+    GLOBE_UB_UNSET,
+  );
 
   // ─── Per-tile debug fields (vec4) ───
   // Tier 2 debug: tile depth-level + imagery layer isolation. Both

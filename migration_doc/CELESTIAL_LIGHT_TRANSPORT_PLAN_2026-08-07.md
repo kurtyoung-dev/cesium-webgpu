@@ -96,7 +96,7 @@ be filed/fixed under the existing close-out plan, not held hostage to the epic:
    OFF, keep the toggle" vacuous as written.** Sibling sentinels in the same
    vec4 (`oceanReflectivity`/`oceanFoamThreshold`/`oceanDarkening`,
    `oceanFresnelPower`) may have the identical hole via
-   `enableEnhancedOcean = false` — unverified, audit together. (→ CLT-B2)
+   `enableEnhancedOcean = false` — unverified, audit together. **FIXED 2026-08-07 (Batch 913, CO-13): enable carried explicitly via `GLOBE_UB_UNSET = -1.0` (new `WebGPUGlobeTunables.ts` leaf); the write-only provider flag is now read by the tile-UB packer; `enableNightLights = false` produces zero emission and `nightIntensity = 0` is reachable; default look proven unchanged by enumeration over both laws; the `oceanFoamThreshold` sibling was a LIVE instance of the same hole, fixed in-slice; the other four latent siblings fixed with scaffolding retained; no GLSL twin exists so parity is discharged by absence.** (→ CLT-B2)
 2. **The two backends disagree about the terminator by 0.5 night-alpha**:
    GLSL `1−clamp(N·L×5,0,1)` ramps entirely on the DAY side (fully night at
    h≤0); WGSL `computeDayNightFade` adds `+0.5`, centring the ramp on the
@@ -105,7 +105,7 @@ be filed/fixed under the existing close-out plan, not held hostage to the epic:
    structural splits: WebGL gates day/night alpha off entirely on
    vertex-normal terrain (`ENABLE_DAYNIGHT_SHADING` emission rule) while
    WebGPU keeps it; and WebGL applies a camera-distance lighting fade the WGSL
-   path lacks. (→ CLT-B4)
+   path lacks. **PROBE AUTHORED 2026-08-07 (CO-13, `probe-daynight-terminator-law.mjs` — calibration-ladder design, synthetic layers, no Ion): not yet run; and a FIFTH divergence was filed while authoring it (`NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE` — the WGSL feeds the day/night term the MESH normal where GLSL recomputes the analytic one; on normal-less terrain the mesh normal is a CONSTANT, which would mimic the 0.5 reading with the OPPOSITE fix; lane E at a solstice is the decider). The 0.5-divergence mechanism is NOT banked until that run.** (→ CLT-B4)
 3. **`computeTerminatorGlow` (`GlobeTerrain.wgsl:2237`, unconditional at
    `:4795`) is a default-ON, WebGPU-only, untoggleable additive band** peaking
    exactly at N·L≈0 — the same class C12 exit-gate item 2 exists to close,

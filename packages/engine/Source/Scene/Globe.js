@@ -366,6 +366,12 @@ class Globe {
      * When true, night-side imagery layers with nightAlpha > dayAlpha
      * are treated as emissive city lights, boosted proportional to
      * their luminance. Only active with enableLighting.
+     * <p>
+     * CLT-B2: setting this to <code>false</code> now genuinely produces zero
+     * emission. Before that row the off state was encoded as
+     * <code>nightIntensity = 0.0</code>, which the WGSL globe read as "use my
+     * built-in default of 2.5" — so the toggle was a visual no-op.
+     * </p>
      * @type {boolean}
      * @default true
      */
@@ -374,6 +380,10 @@ class Globe {
     /**
      * Multiplier for night-side city light emission brightness.
      * Higher values = brighter city lights. 0 = no emission.
+     * <p>
+     * CLT-B2: <code>0</code> is honoured. It used to collide with the shader's
+     * "unset" sentinel and render as the default 2.5.
+     * </p>
      * @type {number}
      * @default 2.5
      */
@@ -1268,26 +1278,29 @@ class Globe {
       tileProvider.lambertDiffuseMultiplier = this.lambertDiffuseMultiplier;
 
       // ── Enhanced WebGPU rendering properties ──
+      // CLT-B2 — the enable and the value travel as SEPARATE signals.
+      //
+      // These lines used to fold the enable into the value (`enableNightLights
+      // ? nightIntensity : 0.0`). The WebGPU tile UB then handed that number to
+      // `GlobeTerrain.wgsl::getNightIntensity()`, which read `0.0` as "the CPU
+      // configured nothing — use my built-in default of 2.5". So the OFF value
+      // aliased exactly onto default-ON: `globe.enableNightLights = false` was
+      // a visual no-op, `tileProvider.enableNightLights` was written and never
+      // read, and C11-159's ratified "default OFF, keep the toggle" had no
+      // reachable off state to ratify. The same fold hid `nightIntensity = 0`,
+      // which this class documents as "no emission".
+      //
+      // The enable flags below are now READ by `WebGPUGlobeSurfaceTileUB`,
+      // which owns the encoding (`resolveGlobeTunable` +
+      // `GLOBE_UB_UNSET`). Nothing here decides what OFF looks like.
       tileProvider.enableNightLights = this.enableNightLights;
-      tileProvider.nightIntensity = this.enableNightLights
-        ? this.nightIntensity
-        : 0.0;
+      tileProvider.nightIntensity = this.nightIntensity;
       tileProvider.enableEnhancedOcean = this.enableEnhancedOcean;
-      tileProvider.oceanDeepColor = this.enableEnhancedOcean
-        ? this.oceanDeepColor
-        : undefined;
-      tileProvider.oceanFresnelPower = this.enableEnhancedOcean
-        ? this.oceanFresnelPower
-        : 0.0;
-      tileProvider.oceanReflectivity = this.enableEnhancedOcean
-        ? this.oceanReflectivity
-        : 0.0;
-      tileProvider.oceanFoamThreshold = this.enableEnhancedOcean
-        ? this.oceanFoamThreshold
-        : 0.0;
-      tileProvider.oceanDarkening = this.enableEnhancedOcean
-        ? this.oceanDarkening
-        : 0.0;
+      tileProvider.oceanDeepColor = this.oceanDeepColor;
+      tileProvider.oceanFresnelPower = this.oceanFresnelPower;
+      tileProvider.oceanReflectivity = this.oceanReflectivity;
+      tileProvider.oceanFoamThreshold = this.oceanFoamThreshold;
+      tileProvider.oceanDarkening = this.oceanDarkening;
 
       // Ground atmosphere needs no separate WebGPU pass — it is shaded
       // inside GlobeTerrain.wgsl (csm_computeGroundAtmosphereScattering +
