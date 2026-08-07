@@ -71,6 +71,64 @@ endpoints and the Kp / OVATION schema claims that `C15-00`'s own exit gate asks 
 (they are unverifiable offline and were flagged as such at authoring). Do NOT start
 C15-01+ until C12 closes, so the active campaign count stays bounded.
 
+### R4 EXECUTED 2026-08-06 - SWPC spot-check done, `C15-00` exit gate now MEASURED
+
+Full evidence record: [`QUEUE_2026-08-02_CAMPAIGN15.md`](QUEUE_2026-08-02_CAMPAIGN15.md)
+**§2a**, which quotes the literal response bytes per endpoint. §2 of that queue was
+rewritten from assumed to measured contracts. Build rows `C15-01..08` remain **HELD**
+per this ruling; nothing was implemented.
+
+**Verdicts.** All six named endpoints returned HTTP 200 and were parsed:
+`products/noaa-planetary-k-index.json` (**VERIFIED**, schema matched the authoring
+exactly), `json/ovation_aurora_latest.json` (**CORRECTED**),
+`json/rtsw/rtsw_mag_1m.json` and `json/rtsw/rtsw_wind_1m.json` (**CORRECTED**),
+`json/goes/primary/xrays-1-day.json` (**CORRECTED**),
+`json/goes/instrument-sources.json` (**VERIFIED**). Nothing was UNREACHABLE.
+
+**The two claims the closure audit doubted most both HELD.** The legacy
+`/products/solar-wind/*.json` family is genuinely gone - six paths probed, all HTTP
+404 - and SCN 26-21 is a real 54,549-byte NWS notice dating the removal "on or about
+April 30, 2026". The OVATION grid is exactly 65,160 points (360 longitudes x 181
+latitudes, verified complete). The Kp object schema
+`{time_tag, Kp, a_running, station_count}` is exact.
+
+**One authored fact was REFUTED:** `rtsw_ephemerides_1m.json` does not exist (404).
+SCN 26-21 names the replacement `rtsw_ephemerides_1h.json`, which returns 200.
+
+**Corrections that would have become defects in `C15-06` if left unmeasured:**
+the RTSW feeds ship rows in **DESCENDING** time order while GOES ships **ASCENDING**
+(so C15-06's authored "reject time regressions" rule would have discarded the entire
+solar-wind feed); every RTSW timestamp repeats **once per satellite** so `active`
+filtering must precede cadence logic; `max_data_flag: -9999` is a *fill* value present
+on 100% of active magnetometer rows, so a "flag must be zero" quality gate rejects
+everything; RTSW/Kp `time_tag` carries **no `Z`**, which `Date.parse` treats as local
+time; the GOES payload misspells `electron_contaminaton`; and the observed vs forecast
+Kp products disagree on the case of `Kp`/`kp`. Also of note for any future satellite
+assumption: the live sources are **`SOLAR1` (active), `IMAP`, `ACE` - `DSCOVR` does
+not appear at all**.
+
+**Licence position - unchanged and now quoted rather than paraphrased.** The NWS
+public-domain rule was confirmed verbatim, including its three operative conditions
+(no claiming as your own, no implied endorsement, no presenting modified content as
+official government material - the third matters because a re-projected OVATION grid
+*is* modified content). OVATION Prime is a Johns Hopkins APL model per SWPC's own
+product page, so the SWPC output's public-domain status is not a licence over the
+model. **The Kyoto Dst exclusion is CONFIRMED as still the right call**, on WDC
+Kyoto's verbatim "The WDC Kyoto does not allow commercial applications of the
+geomagnetic indices"; the authoring additionally *understated* the obligation by
+omitting Kyoto's DOI-citation requirement for Dst. SWPC's `products/kyoto-dst.json`
+mirror is live and reformatted, which makes it a standing temptation - it does not
+alter the source terms.
+
+**Still owed before `C15-05`/`C15-06` could be built:** (a) the GOES flux **unit** is
+not stated in the payload and was not stated plainly on the product page
+(conventionally W/m2) - it must be pinned before any flare-class threshold is
+hard-coded; (b) the **OVATION `Aurora` value unit** - only a quiet-period sample was
+available, measuring 0-16, so the widely-assumed 0-100 percent ceiling is unconfirmed
+and `C15-05` must not normalize against it yet; (c) the per-line auroral altitude
+profiles (427.8 / 557.7 / 630.0 nm) still rest on the NASA citations, which this pass
+did not re-fetch.
+
 ## 2026-08-06 - probe-weather-channels is NON-DETERMINISTIC and cannot certify Gate B
 
 ### C13-GATE-B-CHANNELS-PROBE-NONDETERMINISM
