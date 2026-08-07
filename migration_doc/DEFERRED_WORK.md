@@ -595,6 +595,8 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ### C15-GSPLAT-TOWER-FRAME-VARIANCE
 
+**BRANCH B CONFIRMED 2026-08-07 (Batch 891 discriminator run, tip `e7f1252642`) - status CONDITIONAL-OPEN -> OPEN.** With `sortQuiesced=true` on both legs (signatures held stable, nothing in flight) and the determinism pair taken BACK-TO-BACK IN ONE TASK (no yield between captures, so no async resolution can interleave by the JS execution model), the WebGL reference leg still measured **0.053% (416 px)** against the 0.050% bar - two consecutive `scene.render()` calls of a byte-identical scene disagree. WebGPU's leg is INSIDE the bar. Every G4 counter held (comparatorSorts 0, providedUploads 1, superseded 0). The variance is INTRA-FRAME on the WebGL leg at 286,868-splat scale (~±1 LSB texture-class deltas over ~0.05% of pixels; at 27-splat scale the same instrument reads 0.000%). Candidate mechanisms for the investigation lane, NONE verified: ANGLE/D3D translation nondeterminism under extreme blended overdraw (GL invariance rules notwithstanding); the reference leg's capture path interacting with compositing (`preserveDrawingBuffer` semantics on readback timing); driver-level shader scheduling. Do NOT widen the 0.050% bar (mutant-pinned); the tower parity certification stays exit-3 STRUCTURAL until this class is understood or the reference is stabilized by mechanism, not tolerance.
+
 **Status: OPEN pending one run — may self-close.** The Batch-890 `tower`
 acceptance exited 3 on `reference:capture-determinism`: two captures of a
 nominally identical scene differed by **410 px (0.052%) on the WebGL leg** and
