@@ -418,6 +418,40 @@ const out = await page.evaluate(async () => {
     stashedEncodeFactor: usAny?._logDepthEncodeFactor ?? null,
   };
 
+  // ── C15-G6g — the pair each producer ACTUALLY BAKED, read back from the
+  // producers themselves (`recordLogDepthEncoder`).
+  //
+  // Every previous round argued from one of two quantities, and neither
+  // decides the depth compare: the FIELDS each producer reads (proven
+  // character-identical at `C15-G3d` — which says nothing about their values),
+  // and a post-render sample of `uniformState` (which holds the LAST FRUSTUM
+  // SLICE, not what anyone packed during the update phase). The deciding
+  // quantity is the baked `(near, factor)`, and the producers DISAGREE in
+  // source about which pair it should be: the collections fleet + the depth
+  // plane prefer the stashed full-camera-frustum encode, while the globe and
+  // the splat read the live `currentFrustum`. They coincide only while nothing
+  // re-slices the frustum between their packs.
+  //
+  // Reconstructing each producer's frag_depth at the probe's own geometry from
+  // its OWN baked pair turns the whole question into three numbers that either
+  // interleave correctly or do not.
+  const baked = usAny?._diagLogDepthEncoders ?? null;
+  const encodeWith = (pair, eyeDistance) =>
+    pair ? Math.log2(eyeDistance - pair[0] + 1.0) * pair[2] : null;
+  const bakedVerdict = baked
+    ? {
+        splat: baked.splat ?? null,
+        globe: baked.globe ?? null,
+        collection: baked.collection ?? null,
+        // Camera is 8 km nadir: globe surface 8 km away, red splat 6 km,
+        // green splat and the blue control both 11 km.
+        globeAt8km: encodeWith(baked.globe, 8000),
+        redSplatAt6km: encodeWith(baked.splat, 6000),
+        greenSplatAt11km: encodeWith(baked.splat, 11000),
+        bluePointAt11km: encodeWith(baked.collection, 11000),
+      }
+    : null;
+
   const sr = scene._alternateSceneRenderer;
   const deferredLeak = !!sr?._deferredOITSplats;
   const tilesLoaded = scene.globe.tilesLoaded;
@@ -448,6 +482,7 @@ const out = await page.evaluate(async () => {
     bluePositiveControlPx,
     redOverGlobe,
     logDepth,
+    bakedVerdict,
     nonBlack,
     globePixels,
     deferredLeak,
@@ -525,6 +560,48 @@ console.log(
     `stashedNearFar=${JSON.stringify(out.logDepth.stashedEncodeNearFar)} stashedFactor=${out.logDepth.stashedEncodeFactor} ` +
     `numFrustums=${out.numFrustums}`,
 );
+// ── C15-G6g — the BAKED-PAIR diagnostic, and the arithmetic it settles.
+//
+// This is the first time the three producers' OWN baked `(near, far, factor)`
+// triples are on the same line. Read it like this:
+//   * all three triples EQUAL          → the encode really is common, the
+//     depth ordering below must be correct, and a leak convicts the pass;
+//   * splat differs from globe         → the splat's frag_depth is on a
+//     different curve; `greenSplatAt11km < globeAt8km` is then the leak,
+//     arithmetically, and the fix is to put the splat on the fleet's side of
+//     the stash-vs-live rule (see NEW-SPLAT-LOG-DEPTH-ENCODE-SOURCE-SPLIT);
+//   * collection differs from globe    → the CONTROL is the odd one out and
+//     check 7's asymmetry is an artefact of the control, not of the splat.
+if (out.bakedVerdict) {
+  const fmt = (t) => (t ? `[${t[0]}, ${t[1]}, ${t[2]}]` : "MISSING");
+  const bv = out.bakedVerdict;
+  console.log(
+    `(diag) baked encode triples (near, far, factor) — ` +
+      `splat=${fmt(bv.splat)} globe=${fmt(bv.globe)} collection=${fmt(bv.collection)}`,
+  );
+  console.log(
+    `(diag) reconstructed frag_depth from each producer's OWN baked pair — ` +
+      `globe@8km=${bv.globeAt8km} redSplat@6km=${bv.redSplatAt6km} ` +
+      `greenSplat@11km=${bv.greenSplatAt11km} bluePoint@11km=${bv.bluePointAt11km}`,
+  );
+  const leaks = (d) =>
+    d !== null && bv.globeAt8km !== null && d <= bv.globeAt8km;
+  console.log(
+    `(diag) predicted under less-equal — red composes=${leaks(bv.redSplatAt6km)} ` +
+      `green LEAKS=${leaks(bv.greenSplatAt11km)} blue LEAKS=${leaks(bv.bluePointAt11km)} ` +
+      `(measured: green ${out.greenPaintedOverGlobe >= 50 ? "LEAKS" : "hidden"}, ` +
+      `blue ${out.bluePaintedOverGlobe >= 50 ? "LEAKS" : "hidden"}) — ` +
+      `prediction MATCHES measurement -> the ENCODE is convicted; ` +
+      `prediction says hidden but it LEAKS -> the encode is exonerated with ` +
+      `numbers (not inference) and the PASS is convicted`,
+  );
+} else {
+  console.log(
+    `(diag) baked encode triples UNAVAILABLE — recordLogDepthEncoder did not ` +
+      `run (release build with pragmas stripped, or a producer did not pack ` +
+      `this frame). The encode question is NOT answered by this run.`,
+  );
+}
 check(
   "4",
   out.deferredLeak === false,

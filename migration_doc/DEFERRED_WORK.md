@@ -10908,6 +10908,8 @@ lever for this symptom.
 
 **Acceptance when fixed:** `greenPaintedOverGlobe < 50` with `redPainted` unchanged, P1/P2/**P3** green, probe exit 0.
 
+**`C15-G6g` (Batch 887) — P3 came back GREEN (`bluePositiveControlPx=3026` with the depth test off, `bluePaintedOverGlobe=0` with it on), so the control provably paints AND provably occludes and the asymmetry is real. Working the remaining ground exhaustively: the splat's and the point's declared depth states are FIELD-FOR-FIELD IDENTICAL** (`{depth24plus-stencil8, depthWriteEnabled:false, depthCompare:"less-equal"}` — `WebGPUGaussianSplatRenderer.ts:969-974` vs `WebGPUPointPrimitiveRenderer.js:470-479` built with `translucent=true`, and `context.depthFormat` is that same format), the central cache forwards them verbatim (`WebGPURenderPipelineCache.ts:736-783`), the `multisample`/format bakes agree, and `WebGPUSceneRendererPassRedirect.ts` contains no splat/OIT branch at all. **Prime suspect is now `NEW-SPLAT-LOG-DEPTH-ENCODE-SOURCE-SPLIT`**: the splat is the only renderer-wide log-depth producer that encodes against the LIVE `currentFrustum` while the whole collections fleet + the depth plane prefer the STASHED full-camera-frustum encode — and the point renderer's own comment describes the splat's exact symptom as the reason it does so. Withheld pending one run because the globe is on the live side too; `recordLogDepthEncoder` now publishes each producer's BAKED pair (the quantity that decides the compare, which nothing had ever measured — the `C15-G6e` triple is the near SLICE, not the camera frustum).
+
 **Effort:** M (this is the `C15-G6` per-frustum UBO re-pack). **Impact:** splats never depth-test correctly against the globe, on any scene.
 
 ### NEW-WEBGPU-COLLECTION-PASS-LITERAL-DRIFT
@@ -10932,3 +10934,36 @@ Separately, `pass: 7 /* CESIUM_3D_TILE_CLASSIFICATION_IGNORE_SHOW */` in `WebGPU
 **Fix.** Import `Pass` and use the enum at every one of these sites — the enumerated-keys rule in `CLAUDE.md` already forbids the literals. Correct the four stale `/* … */` labels. Then pin it: a spec that reads `Pass.js` and asserts no `pass: <number>` literal survives under `Source/Renderer/WebGPU/`, so the next enum insertion cannot re-open this silently. Note that fixing the point renderer's selector changes which render state a default collection gets (`_rsOpaque` becomes reachable), so it needs a collections visual pass, not just a compile.
 
 **Effort:** S (change) + M (verification sweep — Billboard/Label/Polyline/Point + the pick fleet). **Impact:** latent today on the default path; a real mis-binned pass for any app that sets `BlendOption.OPAQUE`, and a trap for the next person who inserts a `Pass` entry.
+
+### NEW-SPLAT-LOG-DEPTH-ENCODE-SOURCE-SPLIT
+
+**Status:** OPEN — FILED 2026-08-07 (`C15-G6g`, Batch 887). **Prime suspect for `NEW-SPLAT-DEPTH-ENCODE-MISMATCH-VS-GLOBE`'s surviving observation, deliberately NOT fixed pending one probe run.**
+
+**The split.** Renderer-wide log depth requires every producer to encode `frag_depth` against the SAME `(near, factor)` pair, or their depth values sit on different curves and the compare between them is meaningless. The fleet disagrees about which pair that is:
+
+| Producer | Source of `(near, factor)` | Site |
+| --- | --- | --- |
+| PointPrimitive | **stashed** `_logDepthEncodeNearFar`, factor recomputed from it | `WebGPUPointPrimitiveRenderer.js:898-937` |
+| Billboard | **stashed** | `WebGPUBillboardRenderer.js` |
+| Label | **stashed** | `WebGPULabelRenderer.js` |
+| Polyline | **stashed** | `WebGPUPolylineRenderer.js` |
+| EllipsoidPrimitive | **stashed** | `WebGPUEllipsoidPrimitiveRenderer.ts` |
+| DepthPlane | **stashed** | `WebGPUDepthPlane.ts:821-838` |
+| **GaussianSplat** | **live `currentFrustum`** | `WebGPUGaussianSplatRenderer.ts:1976-1991` |
+| Globe (the reference) | **live `currentFrustum`** | `WebGPUGlobeSurfaceCameraUB.ts:767-776` |
+
+**The collections fleet documents the failure mode in its own comment**, and it is a verbatim description of the reported splat defect: *"reading the live `currentFrustum` would encode log depth against the SLICE's narrow near/far — a different curve than the globe's — so the point's frag_depth no longer compares correctly against the globe and the point loses the depth test."* The splat's comment block argues the opposite (*"using the stashed full-frustum pair … over-deepens the splat vs the globe's per-pass encode and the splat loses every tie"*). These are the two contradictory rationales `C15-G3d` named as "the place to start"; the fleet has since voted 6 to 1, and the probe's own control — a PointPrimitive at the identical below-surface position — is on the winning side and is correctly occluded while the splat leaks.
+
+**Why it is NOT fixed yet.** The globe is on the LIVE side too, and it and the splat both pack during the primitive-update phase (`GlobeSurfaceTileProvider.js:787` → `addDrawCommandsForTile`; `primitives.update` → `updateWebGPUGaussianSplats`). If nothing re-slices `uniformState.currentFrustum` between those two packs, the live and stashed pairs COINCIDE and flipping the splat is a no-op — which would still produce a green run if the real cause is elsewhere, and this family has already lost three rounds to source-level inferences that felt conclusive. `C15-G6g` therefore instruments the deciding quantity instead of guessing (see below) and `gsplat-harness.spec.mjs` forbids the splat's source moving in EITHER direction without the accompanying probe numbers.
+
+**The deciding quantity, and why nothing had measured it.** Every prior round argued from (a) the FIELDS each producer reads — proven character-identical at `C15-G3d`, which says nothing about their values — or (b) a post-render sample of `uniformState`, which holds the LAST FRUSTUM SLICE, not what any producer packed. (The `near=0.1, far=1e8, factor=0.0376287` triple pinned at `C15-G6e` is the near slice; `Scene.js:1460-1461` sets the log-depth camera frustum to `(0.1, 1e10)`, so it is not what either producer baked.) `recordLogDepthEncoder` (`WebGPULogDepth.ts`, pragma-stripped) now publishes the pair each producer ACTUALLY baked, at the moment it baked it, from three call sites (splat / globe / collection). `probe-splat-globe-occlusion.mjs` reconstructs each geometry term with its own producer's pair and prints predicted-vs-measured visibility.
+
+**Decision rule for the next run (one shot, no follow-up needed):**
+
+- **splat triple ≠ globe triple** → convicted. The fix is to put the splat on the fleet's side (prefer `_logDepthEncodeNearFar`, recompute the factor from that pair, exactly as `WebGPUPointPrimitiveRenderer.js:914-931` does), and delete the contradictory rationale from the splat's comment block.
+- **all three triples EQUAL and green still leaks** → the encode family is closed with measured values rather than inference, and the subject is the pass — but note `C15-G6f` already eliminated placement, clears, attachment, format and declared state at source, so the next ground would be the BV-less multi-frustum replay below.
+- **collection triple ≠ globe triple** → the CONTROL is the odd one out and check 7's asymmetry is an artefact of the control rather than of the splat.
+
+**Adjacent finding, same batch (feeds `C15-G6` / `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE`).** The splat command carries no `boundingVolume` under every existing probe (the synthetic primitives have no `_tileset`, which is what makes the B647 fix vacuous — already recorded in the `C15-G6` queue row). `View.js:381-392` gives a BV-less command the camera worst-case span; under log depth that is `[0.1, 1e10]`, which forces a 2-frustum split (the C10-01 note in that same file documents the mechanism, having excluded BV-less `Pass.ENVIRONMENT` commands from the near/far accumulators for exactly this reason). So the splat executes once per slice with an MVP and log-depth pair baked for the camera frustum, while the blue control (BV present) executes in one. Whether the far-slice execution survives into the scored frame is the second thing the next run can settle — the globe draws only in the near slice and overwrites colour there.
+
+**Effort:** S (the flip is ~6 lines, mirroring the point renderer) + the probe run. **Impact:** if convicted, splats never depth-test correctly against the globe on any scene — and the same class would apply to any future producer that copies the splat's rationale instead of the fleet's.

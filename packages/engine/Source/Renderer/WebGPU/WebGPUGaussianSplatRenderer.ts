@@ -29,6 +29,7 @@ import {
 import {
   isWebGPULogDepthActive,
   isWebGPUPickLogDepthActive,
+  recordLogDepthEncoder,
 } from "./WebGPULogDepth.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
 import { WebGPUOIT } from "./WebGPUOIT.js";
@@ -1989,6 +1990,14 @@ function updateWebGPUGaussianSplats(
   }
   data[35] = ldNear;
   data[39] = ldFactor;
+  //>>includeStart('debug', pragmas.debug);
+  // C15-G6g — publish WHAT THIS PRODUCER ACTUALLY BAKED, at the moment it
+  // baked it. The whole family has been argued from the fields each producer
+  // READS (verified identical in source at `C15-G3d`) and from a post-render
+  // sample of `uniformState` (which is the LAST FRUSTUM SLICE, not what anyone
+  // packed). Neither is the quantity that decides the depth compare. This is.
+  recordLogDepthEncoder(us, "splat", ldNear, ldFar, ldFactor);
+  //>>includeEnd('debug');
 
   // Viewport + focal length derived from the perspective projection matrix.
   // For a standard perspective: P[0][0] = 1/(aspect*tan(fov/2)),

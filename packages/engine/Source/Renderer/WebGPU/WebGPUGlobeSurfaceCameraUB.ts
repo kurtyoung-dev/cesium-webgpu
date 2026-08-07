@@ -55,6 +55,7 @@ import WebMercatorProjection from "../../Core/WebMercatorProjection.js";
 import { isUndergroundVisible } from "../../Scene/GlobeSurfaceTileProviderRendering.js";
 import { m4Values } from "./webgpuTypeHelpers.js";
 import { assertCameraRTERoundTrip } from "./WebGPURTEAssertions.js";
+import { recordLogDepthEncoder } from "./WebGPULogDepth.js";
 import {
   CAMERA_UNIFORM_BYTES,
   multiplyMat4ColumnMajor,
@@ -775,6 +776,15 @@ export function createCameraUniformBuffer(
   data[offset++] = ldFar;
   data[offset++] = ldFactor;
   data[offset++] = 0.0; // reserved
+  //>>includeStart('debug', pragmas.debug);
+  // C15-G6g — publish the pair this tile's camera UB actually baked. The globe
+  // is the REFERENCE every other producer's frag_depth is compared against, so
+  // its baked pair is half of every depth verdict in the scene. Per-tile, but
+  // pragma-stripped from release builds, and the last tile wins (they all pack
+  // from the same `uniformState` read within one update phase — if they ever
+  // did NOT, that is itself the finding).
+  recordLogDepthEncoder(uniformState, "globe", ldNear, ldFar, ldFactor);
+  //>>includeEnd('debug');
 
   // ─── DP-H44 (Batch 360): globe pick color tail (vec4, offsets 144-147) ───
   // Read ONLY by GlobeTerrain.wgsl::fragmentPickMain (the pick-pass entry

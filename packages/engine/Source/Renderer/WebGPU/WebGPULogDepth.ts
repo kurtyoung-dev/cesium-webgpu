@@ -110,6 +110,54 @@ export function isWebGPUPickLogDepthActive(
 }
 
 /**
+ * C15-G6g — record what a log-depth producer ACTUALLY baked, at the moment it
+ * baked it.
+ *
+ * Every round of the splat-vs-globe depth investigation so far has argued from
+ * one of two quantities, and NEITHER is the one that decides the compare:
+ *
+ *   * the FIELDS each producer reads (`currentFrustum`,
+ *     `oneOverLog2FarDepthFromNearPlusOne`) — verified character-identical in
+ *     source at `C15-G3d`, which says nothing about their VALUES; and
+ *   * a post-render sample of `uniformState` — which holds the LAST FRUSTUM
+ *     SLICE's near/far, not what any producer packed during the update phase.
+ *
+ * The deciding quantity is the `(near, factor)` pair baked into each producer's
+ * uniform buffer. Producers disagree about WHICH pair that should be — the
+ * collections fleet and the depth plane prefer the stashed full-camera-frustum
+ * encode (`_logDepthEncodeNearFar`), while the globe and the Gaussian-splat
+ * renderer read the live `currentFrustum` — and the two coincide only while
+ * nothing re-slices the frustum between their packs. This records the pair so a
+ * single run can say whether they coincided, instead of another offline argument.
+ *
+ * Pragma-stripped: the call sites and this body vanish from release builds.
+ *
+ * @param uniformState  the shared UniformState the probe reads back from
+ * @param producer      short producer key ("splat", "globe", "collection", ...)
+ * @param near          the near plane baked into that producer's buffer
+ * @param far           the far plane the factor was derived from
+ * @param factor        the baked `oneOverLog2FarDepthFromNearPlusOne`
+ */
+export function recordLogDepthEncoder(
+  uniformState: unknown,
+  producer: string,
+  near: number,
+  far: number,
+  factor: number,
+): void {
+  //>>includeStart('debug', pragmas.debug);
+  if (!uniformState) {
+    return;
+  }
+  const state = uniformState as {
+    _diagLogDepthEncoders?: Record<string, [number, number, number]>;
+  };
+  state._diagLogDepthEncoders ??= {};
+  state._diagLogDepthEncoders[producer] = [near, far, factor];
+  //>>includeEnd('debug');
+}
+
+/**
  * Pack the per-frustum log-depth scalars into the reserved `.w` lanes of a
  * `CameraUniforms`-layout Float32Array. Safe to call unconditionally — it only
  * fills previously-zero pad lanes, so it is inert until a shader reads them and

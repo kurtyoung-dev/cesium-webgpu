@@ -4418,3 +4418,253 @@ test("G6f: check 7 carries a POSITIVE control, so a zero cannot mean 'never drew
     `${OCCLUSION_PROBE_PATH}: PAINT_DELTA is declared more than once — the control and the check can now drift apart`,
   );
 });
+
+// ────────────────────────────────────────────────────────────────────────────
+// C15-G6g — the STASH-vs-LIVE split in the renderer-wide log-depth fleet
+//
+// `C15-G3d` established that the splat and the globe read the SAME two
+// `UniformState` fields, and concluded from that that their encodes match.
+// That inference does not hold, and the fleet already knows it does not: the
+// collections fleet and the depth plane deliberately do NOT read those fields
+// directly. They prefer the STASHED full-camera-frustum encode
+// (`uniformState._logDepthEncodeNearFar`) and RECOMPUTE the factor from that
+// pair, and `WebGPUPointPrimitiveRenderer.js` states exactly why —
+//
+//     "reading the live `currentFrustum` would encode log depth against the
+//      SLICE's narrow near/far — a different curve than the globe's — so the
+//      point's frag_depth no longer compares correctly against the globe and
+//      the point loses the depth test"
+//
+// — which is a verbatim description of the reported splat defect, written by
+// the renderer that does NOT have it.
+//
+// The Gaussian-splat renderer is on the other side of that rule, and its own
+// comment block argues the opposite ("using the stashed full-frustum pair …
+// over-deepens the splat"). One of the two rationales is wrong. Which one is a
+// runtime question — the two pairs coincide whenever nothing re-slices the
+// frustum between the packs — so this group does NOT assert a winner. It pins
+// the SPLIT, so that it is visible, attributed, and cannot be quietly changed
+// on either side while the question is open; and it pins the instrument that
+// answers it in one run.
+// ────────────────────────────────────────────────────────────────────────────
+
+const LOG_DEPTH_MODULE_PATH =
+  "packages/engine/Source/Renderer/WebGPU/WebGPULogDepth.ts";
+const GLOBE_CAMERA_UB_PATH =
+  "packages/engine/Source/Renderer/WebGPU/WebGPUGlobeSurfaceCameraUB.ts";
+const POINT_RENDERER_PATH =
+  "packages/engine/Source/Renderer/WebGPU/WebGPUPointPrimitiveRenderer.js";
+
+/** Producers that prefer the stashed full-camera-frustum encode. */
+const STASH_SIDE = [
+  POINT_RENDERER_PATH,
+  "packages/engine/Source/Renderer/WebGPU/WebGPUBillboardRenderer.js",
+  "packages/engine/Source/Renderer/WebGPU/WebGPULabelRenderer.js",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUPolylineRenderer.js",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUEllipsoidPrimitiveRenderer.ts",
+  "packages/engine/Source/Renderer/WebGPU/WebGPUDepthPlane.ts",
+];
+
+test("G6g: the collections fleet + depth plane PREFER the stashed full-frustum encode", () => {
+  // If this ever stops being true, the "the splat is the outlier" framing below
+  // is no longer the right description of the defect and the whole G6g line of
+  // reasoning has to be re-derived rather than quietly inherited.
+  for (const path of STASH_SIDE) {
+    const source = readNormalized(path);
+    assert.match(
+      source,
+      /_logDepthEncodeNearFar/,
+      `${path}: no longer reads the stashed full-frustum encode`,
+    );
+    assert.match(
+      source,
+      /ldNear = ldEncode\[0\]/,
+      `${path}: no longer PREFERS the stashed pair over the live currentFrustum — ` +
+        `it just moved onto the splat's side of the split that C15-G6g is investigating`,
+    );
+  }
+});
+
+test("G6g: the splat is the OUTLIER — it reads the live currentFrustum only", () => {
+  // Stated as an observation with a citation, NOT as a verdict: whether the
+  // live read is wrong depends on whether the two pairs coincide at runtime,
+  // which `recordLogDepthEncoder` now measures. What must not happen is this
+  // asymmetry being edited away — in EITHER direction — without the run.
+  const splat = readNormalized(RENDERER_PATH);
+  assert.match(
+    splat,
+    /const ldNear = lds\.currentFrustum\?\.x \?\? 0\.0;/,
+    `${RENDERER_PATH}: the splat's log-depth source changed while C15-G6g is open — ` +
+      `if this was the fix, it must land WITH the probe run that convicts it`,
+  );
+  assert.doesNotMatch(
+    splat,
+    /ldNear = ldEncode\[0\]/,
+    `${RENDERER_PATH}: the splat moved onto the stash side — that is the CANDIDATE FIX, ` +
+      `and it may not land without the occlusion probe's acceptance numbers`,
+  );
+  // The globe — the reference every other producer is compared against — is on
+  // the same (live) side as the splat. That is why "they read the same fields"
+  // looked conclusive, and why only the BAKED VALUES can settle it.
+  const globeUB = readNormalized(GLOBE_CAMERA_UB_PATH);
+  assert.match(globeUB, /const ldNear = usLog\.currentFrustum\?\.x \?\? 0\.0;/);
+});
+
+test("G6g: all three producers publish the pair they actually baked", () => {
+  // The quantity that decides the depth compare is neither the FIELDS a
+  // producer reads (identical in source since C15-G3d, which is what made the
+  // wrong inference so persuasive) nor a post-render `uniformState` sample
+  // (that is the last frustum SLICE). It is the baked pair. Three call sites,
+  // one per side of the comparison the probe scores.
+  const helper = readNormalized(LOG_DEPTH_MODULE_PATH);
+  assert.match(
+    helper,
+    /export function recordLogDepthEncoder\(/,
+    `${LOG_DEPTH_MODULE_PATH}: the baked-pair recorder is gone`,
+  );
+  // Pragma-stripped, so release builds pay nothing for it.
+  const body = helper.slice(
+    helper.indexOf("export function recordLogDepthEncoder("),
+    helper.indexOf("Pack the per-frustum log-depth scalars"),
+  );
+  assert.match(
+    body,
+    /includeStart\('debug', pragmas\.debug\)/,
+    `${LOG_DEPTH_MODULE_PATH}: recordLogDepthEncoder's body is no longer pragma-stripped — ` +
+      `it now costs release builds a per-tile object write`,
+  );
+  for (const [path, producer] of [
+    [RENDERER_PATH, "splat"],
+    [GLOBE_CAMERA_UB_PATH, "globe"],
+    [POINT_RENDERER_PATH, "collection"],
+  ]) {
+    const source = readNormalized(path);
+    assert.match(
+      source,
+      new RegExp(`recordLogDepthEncoder\\([^)]*"${producer}"`),
+      `${path}: no longer publishes its baked "${producer}" pair — the three-way ` +
+        `comparison loses a leg and the run stops being decisive`,
+    );
+  }
+});
+
+test("G6g: the probe reconstructs each producer's frag_depth from its OWN pair", () => {
+  const probe = readNormalized(OCCLUSION_PROBE_PATH);
+  assert.match(
+    probe,
+    /_diagLogDepthEncoders/,
+    `${OCCLUSION_PROBE_PATH}: the probe no longer reads the baked pairs back`,
+  );
+  // Each geometry term must be reconstructed with the pair belonging to the
+  // producer that draws it — reconstructing the splat's depth with the globe's
+  // pair is precisely the assumption C15-G3d made and C15-G6g is testing.
+  assert.match(probe, /globeAt8km: encodeWith\(baked\.globe, 8000\)/);
+  assert.match(probe, /redSplatAt6km: encodeWith\(baked\.splat, 6000\)/);
+  assert.match(probe, /greenSplatAt11km: encodeWith\(baked\.splat, 11000\)/);
+  assert.match(
+    probe,
+    /bluePointAt11km: encodeWith\(baked\.collection, 11000\)/,
+  );
+  // A missing diagnostic must announce itself rather than read as "no problem".
+  assert.match(
+    probe,
+    /baked encode triples UNAVAILABLE/,
+    `${OCCLUSION_PROBE_PATH}: an absent diagnostic is now silent — the same vacuity ` +
+      `shape as C15-G3b.1 / C15-G3c.1 / C15-G6f.1`,
+  );
+});
+
+test("G6g: the reconstruction formula is the one the shaders execute", () => {
+  // `encodeWith` must be log2(d - near + 1) * factor — the same
+  // csm_vertexLogDepth -> csm_writeLogDepth composition the WGSL runs. A
+  // reconstruction that drifts from the shader would produce a confident
+  // wrong verdict, which is worse than no diagnostic.
+  const probe = readNormalized(OCCLUSION_PROBE_PATH);
+  assert.match(
+    probe,
+    /pair \? Math\.log2\(eyeDistance - pair\[0\] \+ 1\.0\) \* pair\[2\] : null/,
+    `${OCCLUSION_PROBE_PATH}: the CPU reconstruction diverged from the shader formula`,
+  );
+  // And it agrees with the WGSL, executed: same inputs, same output.
+  const splat = extractSplatWgsl(readNormalized(RENDERER_PATH));
+  assert.equal(
+    formulaBody(splat, "csm_vertexLogDepth"),
+    "{ return (clipPosition.w - near) + 1.0; }",
+  );
+  assert.equal(
+    formulaBody(splat, "csm_writeLogDepth"),
+    "{ return log2(depthFromNearPlusOne) * oneOverLog2FarDepthFromNearPlusOne; }",
+  );
+  const encodeWith = (pair, d) => Math.log2(d - pair[0] + 1.0) * pair[2];
+  const pair = [0.1, 1e8, 1 / Math.log2(1e8 - 0.1 + 1)];
+  assert.ok(Math.abs(encodeWith(pair, 8000) - 0.487892) < 1e-5);
+});
+
+const G6G_MUTANTS = [
+  {
+    name: "the point renderer drops its stash preference (joins the splat's side)",
+    path: POINT_RENDERER_PATH,
+    mutate: (source) =>
+      source.replace("    ldNear = ldEncode[0];", "    ldNear = ldFrustum.x;"),
+    check: (source) => {
+      assert.match(
+        source,
+        /ldNear = ldEncode\[0\]/,
+        "no longer PREFERS the stashed pair over the live currentFrustum",
+      );
+    },
+    because: /no longer PREFERS the stashed pair/,
+  },
+  {
+    name: "the splat silently switches to the stash without a probe run",
+    path: RENDERER_PATH,
+    mutate: (source) =>
+      source.replace(
+        "  const ldNear = lds.currentFrustum?.x ?? 0.0;",
+        "  let ldNear = lds.currentFrustum?.x ?? 0.0;\n  ldNear = ldEncode[0];",
+      ),
+    check: (source) => {
+      assert.match(
+        source,
+        /const ldNear = lds\.currentFrustum\?\.x \?\? 0\.0;/,
+        "the splat's log-depth source changed while C15-G6g is open",
+      );
+      assert.doesNotMatch(
+        source,
+        /ldNear = ldEncode\[0\]/,
+        "the splat moved onto the stash side",
+      );
+    },
+    because: /log-depth source changed|moved onto the stash side/,
+  },
+  {
+    name: "a baked-pair publication is dropped",
+    path: GLOBE_CAMERA_UB_PATH,
+    mutate: (source) =>
+      source.replace(
+        'recordLogDepthEncoder(uniformState, "globe", ldNear, ldFar, ldFactor);',
+        "",
+      ),
+    check: (source) => {
+      assert.match(
+        source,
+        /recordLogDepthEncoder\([^)]*"globe"/,
+        'no longer publishes its baked "globe" pair',
+      );
+    },
+    because: /no longer publishes its baked "globe" pair/,
+  },
+];
+
+for (const mutant of G6G_MUTANTS) {
+  test(`G6g mutant rejected: ${mutant.name}`, () => {
+    const real = readNormalized(mutant.path);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(mutated, real, "the mutation did not apply");
+    assert.throws(
+      () => mutant.check(mutated),
+      mutant.because,
+      `${mutant.name}: accepted, or rejected for the wrong reason`,
+    );
+  });
+}

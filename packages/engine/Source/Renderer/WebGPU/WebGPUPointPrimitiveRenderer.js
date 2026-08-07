@@ -44,6 +44,7 @@ import { ShaderDefine, ShaderSourceId } from "./WebGPUShaderDefines.js";
 import {
   isWebGPULogDepthActive,
   isWebGPUPickLogDepthActive,
+  recordLogDepthEncoder,
 } from "./WebGPULogDepth.js";
 import SceneMode from "../../Scene/SceneMode.js";
 // NEW-COLLECTION-RENDERER-BASE (Phase 11) — shared per-frame plumbing
@@ -935,6 +936,13 @@ function packUniforms(uniformData, frameState, modelMatrix) {
   uniformData[44] = ldNear;
   uniformData[45] = ldFar;
   uniformData[46] = ldFactor;
+  //>>includeStart('debug', pragmas.debug);
+  // C15-G6g — publish the pair THIS producer baked. The point is the probe's
+  // non-splat control (check 7) and it sits on the OTHER side of the
+  // stash-vs-live rule from the splat, so its baked pair is the direct
+  // comparison the whole investigation has been missing.
+  recordLogDepthEncoder(uniformState, "collection", ldNear, ldFar, ldFactor);
+  //>>includeEnd('debug');
   // Q13-PLAIN-HDR-GAMMA-CORE — HDR gamma gate at float 47 (camera.logDepth.w).
   // Carries czm_gamma (uniformState.gamma, default 2.2) when
   // `scene.highDynamicRange` is on (`frameState.useHDR`), else 0. The fragment
