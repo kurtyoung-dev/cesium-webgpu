@@ -37,6 +37,58 @@ This inventory is add-only; ship items mark `(SHIPPED in Batch N)` next to the h
 
 ---
 
+## 2026-08-06 - probe-weather-channels is NON-DETERMINISTIC and cannot certify Gate B
+
+### C13-GATE-B-CHANNELS-PROBE-NONDETERMINISM
+
+**Status:** OPEN / BLOCKING `C13-GATE-B`. This is an INSTRUMENT defect, not a
+product regression - and it is equally not evidence of correctness.
+
+**Measured: five runs, one build, no rebuild between them.**
+
+| run | verdict | rich mean | west sample |
+|---|---|---|---|
+| 1 | GREEN | 0.4476 | 0.000 |
+| 2 | RED | 0.5374 | 1.000 |
+| 3 | RED | 0.4129 | 0.000 |
+| 4 | RED | 0.5203 | 1.000 |
+| 5 | RED | 0.5165 | 1.000 |
+
+`rich mean` swings ~30% (0.4129..0.5374) across identical bytes and the `west`
+sample flips between 0.000 and fully-saturated 1.000. Run 3 shows the two
+assertions fail independently: it had `west 0.000` like the green run and still
+went RED on the spread assertion (rich stddev vs the R-only control, which in run 2
+missed its bar by 0.0002 - a margin far inside this run-to-run noise).
+
+**Why the green is the outlier and must not be banked.** The six other Gate B
+probes were re-run on the settled build and are GREEN (`ingest`, `edr-mock`, `wcs`,
+`time`, `seam-poles`, `metar`). Only `channels` is unstable. Its single GREEN came
+from the run that happened to sample a favourable frame; taking it as the Gate B
+verdict would be exactly the false-verification pattern this campaign has already
+hit three times (the verdict-less ground-fog probe, the CRLF-anchored census, the
+aim-geometry plateau).
+
+**How it was caught, which is worth recording.** An orchestrator build-timing
+mistake produced a control: the seven probes were launched while a rebuild was
+still running, so the run was discarded - but `channels` in that discarded pass
+executed AFTER the build settled, giving two runs of the SAME bytes with opposite
+verdicts. Without that accident the single RED would most likely have been filed as
+a regression against the cloud-morphology or fog work that landed this session.
+
+**Suspected mechanism (verify, do not assume).** A `west` sample reading 0.000 in
+one run and saturating to 1.000 in the next is the thin/flat region rendering as
+fully dense - consistent with capture at different convergence states, cloud
+animation not pinned to a fixed clock, temporal accumulation/jitter left enabled
+(the same tier-path hazard recorded on the C13-16 probe's gate B), or a readiness
+gate that returns before the volumetric march has converged.
+
+**Acceptance:** ten consecutive runs of `probe-weather-channels.mjs` on one build
+produce the SAME verdict and a `rich mean` spread under a stated tolerance, with
+the pinning mechanism documented in the probe header. Only then can its verdict
+close Gate B. Do NOT widen the assertions to accommodate the noise - the spread
+assertion already missed by 0.0002 in one run, so a widened bar would be measuring
+the noise rather than the channels.
+
 ## 2026-08-06 - WebGPU globe does not receive sun shadows AT ALL
 
 ### NEW-WEBGPU-GLOBE-SUN-SHADOW-RECEIVE-DEAD
