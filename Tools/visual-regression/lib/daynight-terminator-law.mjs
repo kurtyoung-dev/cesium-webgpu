@@ -17,6 +17,30 @@
  *       lighting fade, which the WGSL path lacks.
  *
  * ─────────────────────────────────────────────────────────────────────────────
+ * STATUS AFTER CLT-B4 (Batch 925, CO-18) — READ THIS BEFORE INTERPRETING A RUN
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Findings (a) and (d) are FIXED in the engine. This module is UNCHANGED below
+ * the doc comments, on purpose: it is the acceptance instrument, and an
+ * instrument rewritten in the same batch as the thing it measures certifies
+ * nothing. The consequence is that lanes A and D now REFUTE — exactly as lane B
+ * has done since CLT-B2 — because each lane's scored predicate is "the recorded
+ * divergence is present", and it is not.
+ *
+ *   lane A  REFUTED, with `webgpu_shape` = `glsl-law` and `terminator_delta`
+ *           ~ 0. The failure strings will read "WebGPU day-fade at the
+ *           terminator is 0.012, not the 0.500 its law predicts" and "WebGPU
+ *           ramp shape is glsl-law". Both are the fix reporting itself.
+ *   lane D  REFUTED, with the two backends' night/day ratios AGREEING at both
+ *           altitudes (~1.000 low, ~0.300 high) instead of WebGPU sitting at
+ *           0.312 / 0.0896. The failure string will read "WebGPU night/day
+ *           ratio moved with altitude, which the WGSL path has no term to
+ *           produce" — that sentence is now obsolete; `tile.lightingFade` IS
+ *           the term, and its presence is the point.
+ *
+ * Read acceptance from `lanes.laneA.metrics` and `lanes.laneD.metrics`, never
+ * from the exit code, which stays 1.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
  * THE TRAP THIS MODEL EXISTS TO AVOID
  * ─────────────────────────────────────────────────────────────────────────────
  * Finding (a) as recorded predicts "WebGPU reads ~0.5 at the terminator". A
@@ -102,13 +126,25 @@ export function dayFadeGlsl(ndotl) {
 }
 
 /**
- * WebGPU's day fade, transcribed from `GlobeTerrain.wgsl::computeDayNightFade`:
+ * The RETIRED WebGPU day fade — `clamp(N.L * 5.0 + 0.5, 0.0, 1.0)`.
  *
- *   clamp(dot(normalEC, sunDirEC) * 5.0 + 0.5, 0.0, 1.0)
+ * Until CLT-B4 landed (Batch 925, CO-18) this was a transcription of
+ * `GlobeTerrain.wgsl::computeDayNightFade`. It no longer is: the shader now
+ * runs `dayFadeGlsl`'s law on both backends. **The function stays, and its
+ * value MUST NOT be changed to match `dayFadeGlsl`.**
  *
- * The `+0.5` centres the ramp ON the terminator, so the geometric terminator
- * reads half-day. The function's own comment claims it "matches the GLSL path";
- * it does not, and that is §2 bug 2.
+ * WHY IT STAYS. `classifyRamp` names which law a backend implements by
+ * comparing the measured bins' residual against the two candidates. It needs
+ * TWO SEPARATED laws to do that — collapsing them would make every residual
+ * ratio 1.0 and every verdict "ambiguous", i.e. the probe would lose the
+ * ability to tell a fixed backend from a broken one. So this is now the
+ * ALTERNATIVE HYPOTHESIS / negative control: after CO-18 both backends should
+ * classify `glsl-law`, and a `wgsl-offset-law` verdict is a regression report.
+ *
+ * The `+0.5` centred the ramp ON the terminator, so the geometric terminator
+ * read half-day where GLSL reads full night. That was §2 bug 2, measured at
+ * pixels by this probe's run 2 (WebGL 0.012 vs WebGPU 0.496) and fixed by
+ * CLT-B4.
  */
 export function dayFadeWgsl(ndotl) {
   return clamp01(ndotl * 5.0 + 0.5);

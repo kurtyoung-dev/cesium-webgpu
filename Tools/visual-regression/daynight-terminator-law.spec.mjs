@@ -86,15 +86,40 @@ test("A1: the GLSL night-blend law is transcribed verbatim", () => {
   );
 });
 
-test("A2: the WGSL day-fade law is transcribed verbatim, +0.5 and all", () => {
+test("A2: the SHIPPED WGSL day-fade law is now GLSL's, and `dayFadeWgsl` is the retired one", () => {
+  // CLT-B4 CLOSED at Batch 925 (CO-18). This assertion used to require the
+  // `+0.5` to still be in the shader. It now requires the opposite — but
+  // `dayFadeWgsl` in the lib is DELIBERATELY LEFT AT THE OLD LAW, because it is
+  // no longer a transcription: it is the classifier's ALTERNATIVE HYPOTHESIS.
+  // `classifyRamp` separates a backend's measured ramp by comparing residuals
+  // against `dayFadeGlsl` and `dayFadeWgsl`; making the two functions identical
+  // would collapse every verdict to "ambiguous" and blind the probe. So the
+  // instrument keeps both laws and the SHADER keeps one.
   assert.match(
     wgsl,
-    /fn computeDayNightFade\(normalEC: vec3<f32>, sunDirEC: vec3<f32>\) -> f32 \{\n\s*let NdotL = dot\(normalEC, sunDirEC\);\n\s*return clamp\(NdotL \* 5\.0 \+ 0\.5, 0\.0, 1\.0\);/,
-    "GlobeTerrain.wgsl's day-fade law changed — update dayFadeWgsl with it",
+    /fn computeDayNightFade\(normalEC: vec3<f32>, sunDirEC: vec3<f32>\) -> f32 \{\n\s*let lambertDiffuse = max\(dot\(sunDirEC, normalEC\), 0\.0\);\n\s*return clamp\(lambertDiffuse \* 5\.0, 0\.0, 1\.0\);/,
+    "GlobeTerrain.wgsl's day-fade law is no longer GLSL's — CLT-B4 regressed, " +
+      "or the expression was reformatted and this pin needs re-anchoring",
+  );
+  assert.doesNotMatch(
+    wgsl,
+    /return clamp\(\s*(?:NdotL|lambertDiffuse)\s*\* 5\.0 \+ 0\.5, 0\.0, 1\.0\);/,
+    "the +0.5 offset is back in the shader",
+  );
+  // The SECOND expression WebGL has always had — the lighting one — is now
+  // present as its own function rather than reusing the alpha ramp.
+  assert.match(
+    wgsl,
+    /fn computeDayNightDiffuse\(normalEC: vec3<f32>, sunDirEC: vec3<f32>\) -> f32 \{\n\s*let lambertDiffuse = max\(dot\(sunDirEC, normalEC\), 0\.0\);\n\s*return clamp\(lambertDiffuse \* 5\.0 \+ 0\.3, 0\.0, 1\.0\);/,
+    "the WGSL lighting expression must be GLSL:829's `N·L*5 + 0.3`, distinct " +
+      "from the alpha ramp",
   );
 });
 
-test("A3: the two laws really do disagree by 0.5 at the terminator", () => {
+test("A3: the shipped law and the retired law still differ by 0.5 at the terminator", () => {
+  // This is what keeps `classifyRamp` able to name which law a backend runs.
+  // If it ever became 0, the probe could no longer tell a fixed backend from a
+  // broken one — the separation IS the instrument.
   assert.equal(dayFadeGlsl(0), 0);
   assert.equal(dayFadeWgsl(0), 0.5);
   assert.equal(nightBlendGlsl(0), 1);
@@ -119,18 +144,23 @@ test("A4: the divergence band brackets both ramps and nothing more", () => {
   assert.ok(FIT_WINDOW.max > DIVERGENCE_BAND.max);
 });
 
-test("A5: the WGSL comment claiming GLSL parity is still factually wrong", () => {
-  // Recorded as §2 bug 2's second half. If someone corrects the comment without
-  // correcting the law, this test says so rather than letting the plan's text
-  // quietly become inaccurate.
-  const fade = /Matches the GLSL path[\s\S]{0,400}?fn computeDayNightFade/.exec(
+test("A5: the false 'Matches the GLSL path' comment is gone, and now it would be true", () => {
+  // §2 bug 2's second half. The original form of this test required the WRONG
+  // comment to still be present, so that correcting the prose without
+  // correcting the law would fail loudly. CO-18 corrected the LAW, so the pin
+  // inverts: the stale claim must be gone. The `+0.5` counter-pin lives in A2.
+  assert.doesNotMatch(
     wgsl,
+    /Matches the GLSL path/,
+    "the retired 'Matches the GLSL path' comment is back — it described a " +
+      "claim that was false for the +0.5 law and is now redundant for the " +
+      "reconciled one",
   );
-  assert.ok(
-    fade,
-    "the 'Matches the GLSL path' claim above computeDayNightFade is gone — " +
-      "if the LAW was also fixed, CLT-B1's finding (a) is resolved and this " +
-      "spec plus the plan need updating together",
+  // And the replacement prose names the contract rather than asserting parity.
+  assert.match(
+    wgsl,
+    /THE DAY\/NIGHT RAMP LAW \(CLT-B4, CO-18\)/,
+    "the reconciled law's own explanation block is missing from the shader",
   );
 });
 

@@ -135,16 +135,17 @@ struct CameraUniforms {
   //   y = vertexShadowDarkness      (default 0.3 from Globe.js:523)
   //   z = hasVertexNormals flag — when > 0.5, the Lambert path uses the
   //       (x, y) coefficients directly (matches WebGL ENABLE_VERTEX_LIGHTING);
-  //       when ≤ 0.5, the Lambert path falls back to the existing WGSL
-  //       hardcoded `NdotL × 0.88 + 0.12` aesthetic that replaces
-  //       WebGL's ENABLE_DAYNIGHT_SHADING path.
+  //       when ≤ 0.5, the Lambert path runs WebGL's ENABLE_DAYNIGHT_SHADING
+  //       formula `mix(1, clamp(NdotL × 5 + 0.3, 0, 1), fade)` (CLT-B4, CO-18;
+  //       it was a hardcoded `NdotL × 0.88 + 0.12` aesthetic before that).
   //   w = zoomedOutOceanSpecularIntensity (GLOBE-POLAR-STRETCH-POLISH).
   //       Mirrors WebGL's `u_zoomedOutOceanSpecularIntensity`, which
   //       `Globe.beginFrame` sets per-frame: 0.4 when showGroundAtmosphere
   //       (the default), 0.5 otherwise, 0.0 outside SCENE3D. Consumed by
   //       `computeEnhancedOcean`'s specular surfaceReflectance. (This slot
-  //       was previously reserved for a DAYNIGHT_SHADING `fade` bridge —
-  //       that would need a new pad if ever built.)
+  //       was once reserved for a DAYNIGHT_SHADING `fade` bridge; CO-18 built
+  //       that bridge as `TileUniforms.lightingFade` instead, because the fade
+  //       is a per-tile-UB scalar in the same pass as `nightFade*Distance`.)
   lighting: vec4<f32>,
   // ─── Renderer-wide log depth (Approach A) ───
   //   x = frustum near, y = frustum far,
@@ -385,7 +386,18 @@ struct TileUniforms {
   // CPU side multiplies `frameState.splitPosition` (a 0..1 fraction) by
   // `drawingBufferWidth`, mirroring WebGL's `czm_splitPosition` auto-uniform.
   splitPosition: f32,
-  _tilePad0: f32,
+  // CLT-B4 (CO-18) — WebGL's day/night camera-distance fade, `GlobeFS.glsl:642`
+  //   fade = clamp((cameraDist - fadeOutDist) / (fadeInDist - fadeOutDist), 0, 1)
+  // computed CPU-side from `globe.lightingFadeOutDistance` /
+  // `lightingFadeInDistance` because the WGSL has neither `czm_view` nor
+  // `czm_frustumPlanes` to reproduce GLSL's per-scene-mode `cameraDist`.
+  // 0 near the ground (the day/night diffuse is mixed to FULL brightness there,
+  // i.e. flat-lit — WebGL's shape), 1 at orbit (the ramp applies in full).
+  // DISTINCT from `groundAtmosphereControl.y`, which carries the same clamp but
+  // is FORCED TO ZERO whenever the ground-atmosphere drape is off; the lighting
+  // fade has no such gate on WebGL, so it needs its own slot. Previously
+  // `_tilePad0` — a scalar pad, so no vec4 alignment moved.
+  lightingFade: f32,
   // Per-tile debug fields (Tier 2 debug). All zero in production:
   //   x = tileLevel — LOD depth integer (read by fragmentDebugLod)
   //   y = isolateImageryLayer — index 0..15 to render alone, or -1 for all
@@ -2247,25 +2259,62 @@ fn sampleCloudGroundShadow(worldPos: vec3<f32>) -> f32 {
 // Enhanced Day/Night Rendering
 // ═══════════════════════════════════════════════════════════════════════
 
+// ─── THE DAY/NIGHT RAMP LAW (CLT-B4, CO-18) ────────────────────────────────
+//
+// ONE LAW, TWO EXPRESSIONS, TWO CONSUMERS — and it is WebGL's law verbatim.
+// `GlobeFS.glsl` has always carried TWO distinct expressions over the same
+// `czm_getLambertDiffuse(L, N) * 5.0` core, and this file used to collapse both
+// consumers onto a single function that matched NEITHER:
+//
+//   consumer                        GLSL                       WGSL (here)
+//   imagery day/night alpha +       `1 - clamp(NdotL*5, 0, 1)` `computeDayNightFade`
+//     night-lights emission gate     (GlobeFS.glsl:601)
+//   ENABLE_DAYNIGHT_SHADING         `clamp(NdotL*5 + 0.3,      `computeDayNightDiffuse`
+//     diffuse                         0, 1)` (GlobeFS.glsl:851)
+//
+// The `+ 0.3` belongs ONLY to the lighting expression — it is a night-side
+// FLOOR that keeps the unlit hemisphere off pitch black. It is not, and never
+// was, an offset on the alpha ramp. The pre-CO-18 WGSL had a single
+// `clamp(NdotL*5 + 0.5, 0, 1)` serving both, which centred the alpha ramp ON
+// the geometric terminator (0.5 night alpha at N·L = 0 where GLSL says 1.0)
+// and simultaneously drove the lighting term from a ramp WebGL does not use
+// there. MEASURED at pixels by `probe-daynight-terminator-law.mjs` run 2 (tip
+// `679cbf5173`): lane A read WebGL 0.012 vs WebGPU 0.496 day-fade at the
+// terminator, shapes classified `glsl-law` vs `wgsl-offset-law`.
+//
 // CALLER CONTRACT (NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE, CO-15): `normalEC`
 // MUST be the analytic geocentric surface normal in eye space
 // (`dayNightNormalEC` in `fragmentMain`), never the interpolated mesh normal
 // `input.v_normalEC` — which is a CONSTANT on normal-less terrain and made this
 // whole term globally uniform. See the block above the call site.
-// STILL DIVERGENT (CLT-B4, unfixed here and MEASURABLE for the first time now
-// that the normal varies): the `+ 0.5` below centres the ramp ON the
-// terminator, where GLSL's `1 - clamp(N·L*5, 0, 1)` ramps entirely on the DAY
-// side — 0.5 vs 1.0 night alpha at N·L = 0.
-// Matches the GLSL path: czm_getLambertDiffuse * 5.0 gives a sharp
-// terminator. The 0.3 minimum keeps the night side from going pitch black
-// without city light imagery. The result is a 0..1 day factor.
+//
+// The imagery day/night alpha + night-lights gate. Byte-for-byte the day-side
+// complement of `GlobeFS.glsl:601`'s `nightBlend`: the caller takes
+// `nightBlend = 1.0 - dayFade`. Fully night at N·L <= 0; the ramp lives
+// ENTIRELY on the day side and saturates at N·L = 0.2.
 fn computeDayNightFade(normalEC: vec3<f32>, sunDirEC: vec3<f32>) -> f32 {
-  let NdotL = dot(normalEC, sunDirEC);
-  return clamp(NdotL * 5.0 + 0.5, 0.0, 1.0);
+  let lambertDiffuse = max(dot(sunDirEC, normalEC), 0.0);
+  return clamp(lambertDiffuse * 5.0, 0.0, 1.0);
+}
+
+// The ENABLE_DAYNIGHT_SHADING diffuse. Byte-for-byte `GlobeFS.glsl:851`'s
+// `diffuseIntensity`. The `+ 0.3` is this expression's own night floor and
+// MUST NOT leak into `computeDayNightFade` above — that leak was CLT-B4.
+// The caller then applies GLSL:852's `mix(1.0, diffuseIntensity, fade)` with
+// the camera-distance `fade`, so close-camera tiles stay flat-lit.
+fn computeDayNightDiffuse(normalEC: vec3<f32>, sunDirEC: vec3<f32>) -> f32 {
+  let lambertDiffuse = max(dot(sunDirEC, normalEC), 0.0);
+  return clamp(lambertDiffuse * 5.0 + 0.3, 0.0, 1.0);
 }
 
 // Compute the terminator glow — warm orange/pink color right at the
 // day-night boundary, simulating atmospheric scattering at the terminator.
+//
+// CLT-B4 NOTE: this term takes the raw signed `dot(N, L)`, NOT either ramp, so
+// the CO-18 law reconciliation does not move it — verified rather than assumed.
+// It is WebGPU-only with no GLSL twin (CLT-B3's audit subject) and is
+// deliberately neither expanded nor removed here; its only shared input is the
+// analytic normal, which it already takes.
 fn computeTerminatorGlow(normalEC: vec3<f32>, sunDirEC: vec3<f32>) -> vec3<f32> {
   let NdotL = dot(normalEC, sunDirEC);
   // Peak at the terminator (NdotL ≈ 0), fading on both sides
@@ -4764,14 +4813,16 @@ fn fragmentMain(
   // │   GLSL: Shaders/GlobeFS.glsl ~lines 515-524 (lighting); shadows are  │
   // │         injected by the WebGL pipeline cache via                      │
   // │         `ShadowMapShader.js`, not present in GlobeFS.glsl source.    │
-  // │ Last lockstep audit: 2026-08-07, Batch 919 (CO-15 normal source)     │
+  // │ Last lockstep audit: 2026-08-07, Batch 925 (CO-18 ramp-law            │
+  // │         reconciliation; CO-15 normal source before it)                │
   // └─────────────────────────────────────────────────────────────────────┘
   // Any change to this block MUST land with a matching change in the
   // GLSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
   //
-  // INTENTIONAL ALGORITHMIC REWRITE (Batch ~25, pre-current-batch series)
-  // Same overall intent (Lambert diffuse × light) but the coefficients
-  // are different and WGSL adds a terminator glow that WebGL lacks.
+  // NO LONGER AN ALGORITHMIC REWRITE (CLT-B4, CO-18). The day/night arm now
+  // runs WebGL's law verbatim. What used to sit here — "same intent, different
+  // coefficients" — was a real, measured visual divergence, not a stylistic
+  // choice, and it is closed.
   //
   // - WebGL has THREE mutually-exclusive lighting variants gated by
   //   #ifdef:
@@ -4779,26 +4830,36 @@ fn fragmentMain(
   //       and `u_vertexShadowDarkness` uniforms; multiplies by
   //       `czm_lightColor`. Used for tile-provider-driven custom
   //       lighting.
-  //     ENABLE_DAYNIGHT_SHADING — `NdotL × 5 + 0.3` (high-contrast),
-  //       mixed with full brightness by `fade` so close-camera tiles
+  //     ENABLE_DAYNIGHT_SHADING — `clamp(NdotL × 5 + 0.3, 0, 1)`, mixed with
+  //       full brightness by the camera-distance `fade` so close-camera tiles
   //       are flat-lit and orbit tiles get full day/night.
   //     (neither) — pass-through, no shading.
   //
-  // - WGSL has ONE unified path gated by `camera.enableLighting > 0.5`:
-  //     Lambert diffuse `NdotL × 0.88 + ambient(0.12)` × shadowFactor
-  //     for day; `nightAmbient = 0.025` for night; mixed by `dayFade`.
-  //     Then adds `computeTerminatorGlow(normal, sunDir)` — a warm
-  //     orange/pink contribution at the terminator that WebGL doesn't
-  //     have.
+  // - WGSL has ONE runtime gate (`camera.enableLighting > 0.5`) selecting
+  //   between the SAME two arms via `camera.lighting.z` (hasVertexNormals):
+  //     lighting.z > 0.5 → `clamp(NdotL × lighting.x + lighting.y, 0, 1)`
+  //       (WebGL's ENABLE_VERTEX_LIGHTING formula, mesh normal)
+  //     lighting.z ≤ 0.5 → `mix(1.0, computeDayNightDiffuse(dayNightNormalEC,
+  //       sunDir), tile.lightingFade)` (WebGL's ENABLE_DAYNIGHT_SHADING
+  //       formula, analytic normal, same camera-distance mix)
+  //   Then adds `computeTerminatorGlow(dayNightNormalEC, sunDir)` — a warm
+  //   orange/pink contribution at the terminator that WebGL doesn't have
+  //   (CLT-B3's audit subject; untouched by CO-18).
   //
   // STRUCTURAL DIVERGENCES
   //
   // 1. **Gating mechanism.** GLSL: three #ifdef variants; WGSL: single
-  //    runtime gate.
-  // 2. **Diffuse coefficients.** GLSL ENABLE_DAYNIGHT path uses
-  //    `NdotL × 5 + 0.3` (sharp transition, dark night); WGSL uses
-  //    `NdotL × 0.88 + 0.12` (gentler transition, brighter ambient).
-  //    Visually distinct day/night terminator shape between backends.
+  //    runtime gate. Shape only — the same three outcomes are reachable.
+  // 2. **Diffuse coefficients — RESOLVED, no longer a divergence (CLT-B4,
+  //    CO-18).** Both backends now run `clamp(NdotL × 5 + 0.3, 0, 1)` mixed
+  //    toward 1.0 by the camera-distance fade on the DAYNIGHT arm, and the
+  //    imagery day/night alpha ramp is the separate `clamp(NdotL × 5, 0, 1)`
+  //    on both. Before CO-18 the WGSL collapsed both consumers onto one
+  //    `clamp(NdotL × 5 + 0.5, 0, 1)` and drove the diffuse from
+  //    `mix(0.025, NdotL × 0.88 + 0.12, dayFade)` with no camera-distance term.
+  //    Measured, not inferred: `probe-daynight-terminator-law.mjs` run 2 read a
+  //    +0.485 terminator delta (lane A) and a night/day luminance ratio of
+  //    0.312/0.0896 against WebGL's 1.000/0.300 (lane D).
   // 3. **Custom light color.** GLSL multiplies by `czm_lightColor`
   //    (allows scene-provided custom light color). WGSL multiplies by
   //    `camera.lightColor.rgb` packed from `uniformState.lightColor`
@@ -4825,8 +4886,16 @@ fn fragmentMain(
   //    the constant `octDecode(0.0)` = (0,0,-1) — a globally uniform
   //    day/night term with no terminator. See the
   //    NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE block at `dayNightNormalEC`.
-  //    STILL DIVERGENT and tracked separately: the `+0.5` ramp offset
-  //    (CLT-B4) and the vertex-normal gating split (CLT-B1 finding (c)).
+  // 6c. **Camera-distance lighting fade — RESOLVED (CLT-B4, CO-18).** WebGL
+  //    mixes the DAYNIGHT diffuse toward 1.0 by `fade` (GlobeFS.glsl:620-644,
+  //    :852); the WGSL had no such term, so its night side stayed dark at any
+  //    altitude. `tile.lightingFade` now carries the identical clamp, packed
+  //    CPU-side in `WebGPUGlobeSurfaceTileUB.ts` because the WGSL has neither
+  //    `czm_view` nor `czm_frustumPlanes`.
+  //    STILL DIVERGENT and tracked separately: the vertex-normal gating split
+  //    (CLT-B1 finding (c) — WebGL emits ENABLE_VERTEX_LIGHTING *instead of*
+  //    ENABLE_DAYNIGHT_SHADING, so its day/night imagery alpha does not exist
+  //    at all on vertex-normal terrain, where WGSL still applies the ramp).
   //
   // 6. **Vertex-lighting customization.** GLSL ENABLE_VERTEX_LIGHTING
   //    path uses `u_lambertDiffuseMultiplier` and
@@ -4855,13 +4924,13 @@ fn fragmentMain(
 
   // ─── Lambert diffuse lighting + shadow receive ───
   if (camera.enableLighting > 0.5) {
-    // Two N·L values, because WebGL's two lighting arms read two different
-    // normals (see the NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE block above):
+    // WebGL's two lighting arms read two different normals (see the
+    // NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE block above):
     // ENABLE_VERTEX_LIGHTING is the mesh-normal term, ENABLE_DAYNIGHT_SHADING
     // is the analytic-normal term. Each branch below takes the one its WebGL
-    // twin takes.
+    // twin takes — this one the MESH normal, the DAYNIGHT arm the analytic
+    // `dayNightNormalEC` (inside `computeDayNightDiffuse`).
     let NdotL = max(dot(normal, sunDir), 0.0);
-    let dayNightNdotL = max(dot(dayNightNormalEC, sunDir), 0.0);
     var diffuse: f32;
     if (camera.lighting.z > 0.5) {
       // Batch 77 — VERTEX_LIGHTING path: terrain has vertex normals.
@@ -4877,17 +4946,32 @@ fn fragmentMain(
       let lambertTerm = NdotL * camera.lighting.x;
       diffuse = clamp(lambertTerm + camera.lighting.y, 0.0, 1.0);
     } else {
-      // DAYNIGHT_SHADING analogue: terrain has no vertex normals.
-      // Keeps the existing WGSL aesthetic (intentional algorithmic
-      // rewrite of WebGL's `NdotL × 5 + 0.3` × `fade` path — gentler
-      // transition, brighter ambient, separate night ambient).
-      let ambient = 0.12;
-      // Shadow applied to the final color below, not the Lambert term.
-      // `dayNightNdotL` — WebGL's ENABLE_DAYNIGHT_SHADING diffuse reads the
-      // per-fragment analytic normal (GlobeFS.glsl:595-597), not v_normalEC.
-      let dayDiffuse = dayNightNdotL * 0.88 + ambient;
-      let nightAmbient = 0.025;
-      diffuse = mix(nightAmbient, dayDiffuse, dayFade);
+      // DAYNIGHT_SHADING arm: terrain has no vertex normals.
+      //
+      // CLT-B4 (CO-18) — WebGL's law verbatim, GlobeFS.glsl:851-852:
+      //   diffuseIntensity = clamp(czm_getLambertDiffuse(L, N) * 5.0 + 0.3, 0, 1);
+      //   diffuseIntensity = mix(1.0, diffuseIntensity, fade);
+      // It reads the ANALYTIC normal (GlobeFS.glsl:595-597), it is a DIFFERENT
+      // expression from the imagery-alpha ramp (`+ 0.3`, not the bare ramp),
+      // and it is mixed toward FULL brightness by the camera-distance `fade` —
+      // so a close camera renders a flat-lit globe on both backends and only at
+      // orbit does the terminator appear in the lighting term.
+      //
+      // WHAT THIS REPLACED, and what the replacement is worth. The previous
+      // expression was `mix(0.025, dayNightNdotL * 0.88 + 0.12, dayFade)`: a
+      // second law, driven by the imagery-alpha ramp, with no camera-distance
+      // term at all. `probe-daynight-terminator-law.mjs` run 2 (tip
+      // `679cbf5173`) measured lane D's night/day luminance ratio at two
+      // altitudes; WebGL read 1.000 (3 Mm) and 0.300 (25 Mm), which are EXACTLY
+      // this expression's closed form — `mix(1, 0.3, 0) / 1` and `0.3 / 1` —
+      // because 3 Mm sits below `lightingFadeOutDistance` (π/2 × Rmin ≈
+      // 9.98 Mm ⇒ fade 0) and 25 Mm above `lightingFadeInDistance` (π × Rmin ≈
+      // 19.97 Mm ⇒ fade 1). WebGPU read 0.312 / 0.0896 against it.
+      //
+      // Shadow is applied to the FINAL color below, not folded into this term
+      // (matching WebGL's `out_FragColor.rgb *= visibility`).
+      let dayNightDiffuse = computeDayNightDiffuse(dayNightNormalEC, sunDir);
+      diffuse = mix(1.0, dayNightDiffuse, clamp(tile.lightingFade, 0.0, 1.0));
     }
     // Batch 76 — `camera.lightColor` mirrors WebGL's `czm_lightColor`
     // automatic uniform. Scene-provided custom light colors (e.g.

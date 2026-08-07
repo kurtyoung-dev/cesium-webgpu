@@ -38,10 +38,14 @@
 // decision stays anchored to them rather than to this comment.
 //
 // WHAT IS *NOT* FIXED HERE, recorded so the next reader does not assume it was:
-//   • CLT-B4 — the `+0.5` in `computeDayNightFade` still centres the ramp ON the
-//     terminator where GLSL ramps entirely on the day side. That divergence is
-//     now MEASURABLE for the first time (a constant term has no ramp to compare)
-//     and remains open. Section E1 pins that the offset is still there.
+//   • CLT-B4 — the `+0.5` in `computeDayNightFade`. **CLOSED at Batch 925
+//     (CO-18), AFTER this row.** Section E1 is now INVERTED: it pins that the
+//     offset is gone and that `computeDayNightFade` runs GLSL's law. The full
+//     pair contract lives in `globe-daynight-ramp-law.spec.mjs`; the consumer
+//     pin in section A moved with it (`computeDayNightDiffuse` replaced the
+//     inline `dayNightNdotL * 0.88 + ambient`), because the NORMAL-SOURCE
+//     obligation is about which normal each consumer reads, not which
+//     expression it evaluates.
 //   • CLT-B1 finding (c) — WebGPU still APPLIES the ramp on vertex-normal
 //     terrain where WebGL gates it off. Needs a `hasVertexNormals === true`
 //     provider to decide at pixels (row
@@ -122,13 +126,14 @@ const DAYNIGHT_CONSUMERS = Object.freeze([
     pattern: /dayFade = computeDayNightFade\(dayNightNormalEC, sunDir\);/,
   },
   {
-    name: "DAYNIGHT_SHADING Lambert",
+    // CLT-B4 (CO-18) rewrote this consumer: the DAYNIGHT diffuse is no longer
+    // an inline `dayNightNdotL * 0.88 + ambient`, it is WebGL's
+    // `clamp(N·L*5 + 0.3, 0, 1)` behind `computeDayNightDiffuse`. The
+    // NORMAL-SOURCE obligation this row owns is unchanged — the analytic
+    // normal is still what the term reads — so the pin follows the expression.
+    name: "DAYNIGHT_SHADING diffuse",
     pattern:
-      /let dayNightNdotL = max\(dot\(dayNightNormalEC, sunDir\), 0\.0\);/,
-  },
-  {
-    name: "DAYNIGHT_SHADING Lambert consumes the analytic N·L",
-    pattern: /let dayDiffuse = dayNightNdotL \* 0\.88 \+ ambient;/,
+      /let dayNightDiffuse = computeDayNightDiffuse\(dayNightNormalEC, sunDir\);/,
   },
   {
     name: "terminator glow",
@@ -145,12 +150,19 @@ export function consumersTakeAnalyticNormal(source) {
 /**
  * No day/night-family call site takes a mesh normal.
  *
- * `computeDayNightFade` and `computeTerminatorGlow` each have exactly one call
- * site; neither may be handed `normal`, `normalEC`, or `input.v_normalEC`.
+ * `computeDayNightFade`, `computeDayNightDiffuse` and `computeTerminatorGlow`
+ * each have exactly one call site; none may be handed `normal`, `normalEC`, or
+ * `input.v_normalEC`. (`computeDayNightDiffuse` joined the family at CO-18,
+ * when CLT-B4 split the single reused ramp function into the two expressions
+ * WebGL has always had.)
  */
 export function noMeshNormalInDayNightFamily(source) {
   const code = stripWgslComments(source);
-  for (const fn of ["computeDayNightFade", "computeTerminatorGlow"]) {
+  for (const fn of [
+    "computeDayNightFade",
+    "computeDayNightDiffuse",
+    "computeTerminatorGlow",
+  ]) {
     // The DEFINITION reads `fn NAME(`; a CALL SITE does not, so the lookbehind
     // separates them without a second pass.
     const re = new RegExp(`(?<!fn )\\b${fn}\\(([^)]*)\\)`, "g");
@@ -489,17 +501,22 @@ test("D2: reinstating it for the terminator glow alone is REJECTED", () => {
   assert.equal(noMeshNormalInDayNightFamily(mutant), false);
 });
 
-test("D3: reinstating it for the DAYNIGHT Lambert alone is REJECTED", () => {
+test("D3: reinstating it for the DAYNIGHT diffuse alone is REJECTED", () => {
   const mutant = mutate(
     wgsl,
-    "let dayDiffuse = dayNightNdotL * 0.88 + ambient;",
-    "let dayDiffuse = NdotL * 0.88 + ambient;",
+    "let dayNightDiffuse = computeDayNightDiffuse(dayNightNormalEC, sunDir);",
+    "let dayNightDiffuse = computeDayNightDiffuse(normal, sunDir);",
   );
   assert.equal(
     consumersTakeAnalyticNormal(mutant),
     false,
-    "a Lambert term fed the mesh N·L must not pass — it is the term WebGL " +
+    "a diffuse term fed the mesh normal must not pass — it is the term WebGL " +
       "sources from the analytic normal",
+  );
+  assert.equal(
+    noMeshNormalInDayNightFamily(mutant),
+    false,
+    "the mesh-normal pin must cover the CO-18 diffuse expression too",
   );
 });
 
@@ -513,8 +530,8 @@ test("D4: deriving the normal but never consuming it is REJECTED", () => {
       "dayFade = computeDayNightFade(normal, sunDir);",
     ],
     [
-      "let dayNightNdotL = max(dot(dayNightNormalEC, sunDir), 0.0);",
-      "let dayNightNdotL = max(dot(normal, sunDir), 0.0);",
+      "let dayNightDiffuse = computeDayNightDiffuse(dayNightNormalEC, sunDir);",
+      "let dayNightDiffuse = computeDayNightDiffuse(normal, sunDir);",
     ],
     [
       "color += computeTerminatorGlow(dayNightNormalEC, sunDir) * eclipseAbsolute;",
@@ -566,17 +583,26 @@ test("D6: a WORLD-space normal (no view transform) is REJECTED", () => {
 
 // ─── E. what this row deliberately did NOT change ────────────────────────────
 
-test("E1: the +0.5 ramp offset (CLT-B4) is still there, and still open", () => {
-  assert.match(
-    wgsl,
-    /fn computeDayNightFade\(normalEC: vec3<f32>, sunDirEC: vec3<f32>\) -> f32 \{\n\s*let NdotL = dot\(normalEC, sunDirEC\);\n\s*return clamp\(NdotL \* 5\.0 \+ 0\.5, 0\.0, 1\.0\);/,
-    "if the +0.5 was removed, CLT-B4 closed and this spec plus the CLT plan " +
-      "need updating together — do not let the ledger drift",
+test("E1: the +0.5 ramp offset (CLT-B4) is GONE — closed at Batch 925, CO-18", () => {
+  // This assertion is INVERTED from its original form. It used to pin that the
+  // `+0.5` was still present, precisely so that removing it could not happen
+  // quietly. It has now been removed deliberately; the pin flips rather than
+  // being deleted, so a re-introduction is still caught.
+  assert.doesNotMatch(
+    wgslCode,
+    /clamp\(\s*(?:NdotL|lambertDiffuse)\s*\*\s*5\.0\s*\+\s*0\.5\s*,\s*0\.0\s*,\s*1\.0\s*\)/,
+    "the +0.5 ramp offset is back — CLT-B4 regressed",
   );
-  // And the two laws still disagree by exactly 0.5 at the geometric terminator.
-  const glsl = (n) => Math.min(1, Math.max(0, n * 5.0));
-  const wgslLaw = (n) => Math.min(1, Math.max(0, n * 5.0 + 0.5));
-  assert.equal(wgslLaw(0) - glsl(0), 0.5);
+  assert.match(
+    wgslCode,
+    /fn computeDayNightFade\(normalEC: vec3<f32>, sunDirEC: vec3<f32>\) -> f32 \{\n\s*let lambertDiffuse = max\(dot\(sunDirEC, normalEC\), 0\.0\);\n\s*return clamp\(lambertDiffuse \* 5\.0, 0\.0, 1\.0\);/,
+    "the WGSL day-fade law must be GLSL's `clamp(N·L*5, 0, 1)` — see " +
+      "globe-daynight-ramp-law.spec.mjs for the full pair contract",
+  );
+  // The two backends' alpha ramps now agree at the geometric terminator.
+  const glslLaw = (n) => Math.min(1, Math.max(0, n * 5.0));
+  const wgslLaw = (n) => Math.min(1, Math.max(0, n * 5.0));
+  assert.equal(wgslLaw(0) - glslLaw(0), 0);
 });
 
 test("E2: WebGPU still applies the ramp on vertex-normal terrain (finding (c))", () => {
@@ -639,8 +665,7 @@ const FLAGS = Object.freeze([
 const EDITED_MARKERS = Object.freeze([
   "let dayNightNormalEC = normalize(",
   "dayFade = computeDayNightFade(dayNightNormalEC, sunDir);",
-  "let dayNightNdotL = max(dot(dayNightNormalEC, sunDir), 0.0);",
-  "let dayDiffuse = dayNightNdotL * 0.88 + ambient;",
+  "let dayNightDiffuse = computeDayNightDiffuse(dayNightNormalEC, sunDir);",
   "color += computeTerminatorGlow(dayNightNormalEC, sunDir) * eclipseAbsolute;",
 ]);
 

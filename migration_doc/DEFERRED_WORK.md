@@ -12053,7 +12053,9 @@ Combined, the true share is **7.2x** CO-11's estimate — **not the "~4x" the fo
 
 **RESIDUAL, NAMED NOT FIXED (Principle 9).** `computeAtmosphereColor(input.v_positionEC, normal, sunDir)` (2 call sites) still takes the MESH normal and so is a SECOND consumer of the same constant on normal-less terrain. It is a WGSL-only fog/atmosphere approximation using the normal purely as a view-angle reference (`cosAngle = dot(viewDir, normalEC)` -> Rayleigh phase); WebGL's fog path takes no surface normal at all, so there is no law to match and moving it would move fog colour on evidence this batch did not gather. Recorded as an assertion in the spec (A4) so a future change to it is a deliberate act, not a drift.
 
-**STILL OPEN downstream of this fix:** CLT-B4's `+0.5` ramp divergence (see the stamp below) and CLT-B1 finding (c) (WebGPU still applies the ramp on vertex-normal terrain). Feeding the analytic normal on the vertex-normal path keeps (c) a SINGLE-axis divergence - "the term exists at all" - instead of compounding it with a normal WebGL never computes.
+**STILL OPEN downstream of this fix:** ~~CLT-B4's `+0.5` ramp divergence~~ **CLOSED at Batch 925 (CO-18) - see the row below** and CLT-B1 finding (c) (WebGPU still applies the ramp on vertex-normal terrain). Feeding the analytic normal on the vertex-normal path keeps (c) a SINGLE-axis divergence - "the term exists at all" - instead of compounding it with a normal WebGL never computes.
+
+**CO-18 NOTE (Batch 925):** this row's consumer set moved with the ramp-law reconciliation. The DAYNIGHT_SHADING Lambert is no longer `dayNightNdotL * 0.88 + ambient`; it is `computeDayNightDiffuse(dayNightNormalEC, sunDir)` mixed by `tile.lightingFade`. The NORMAL-SOURCE obligation is unchanged - the term still reads the analytic normal - so `globe-daynight-normal-source.spec.mjs`'s A2/D3/D4 pins follow the new expression and E1 is INVERTED (it now requires the `+0.5` to be absent). The row itself is unaffected: CO-18 changed which expression each consumer evaluates, not which normal it reads.
 
 ---
 
@@ -12077,9 +12079,78 @@ Both are CONSTANT model-space vectors along the spin axis, not surface normals. 
 
 **Fix shape if confirmed:** feed `computeDayNightFade` / the Lambert term / `computeTerminatorGlow` the analytic sphere normal the ocean path already computes (`normalize(input.v_positionMC)` transformed by `camera.modifiedModelView` with w=0), keeping `v_normalEC` for the vertex-lighting branch where WebGL also uses a mesh normal. Parity note: this is a WebGPU-side correction toward the existing WebGL law, so it does not need a GLSL twin - but it WILL move the WebGPU default look, so it needs its own before/after probe evidence and is NOT a byte-identical change.
 
-### NEW-WEBGPU-GLOBE-DAYNIGHT-RAMP-OFFSET - the WGSL day/night ramp is centred ON the terminator where GLSL ramps entirely on the day side (CLT-B4; MEASURABLE FOR THE FIRST TIME as of Batch 919)
+### NEW-WEBGPU-GLOBE-DAYNIGHT-RAMP-OFFSET - the WGSL day/night ramp is centred ON the terminator where GLSL ramps entirely on the day side (CLT-B4; MEASURABLE FOR THE FIRST TIME as of Batch 919; **FIXED Batch 927, CO-18**)
 
-**Status: OPEN / MEDIUM. This is the CLT plan §2 bug 2 divergence AS ORIGINALLY RECORDED, and it is still unfixed.** `computeDayNightFade` returns `clamp(N·L * 5.0 + 0.5, 0.0, 1.0)`; `GlobeFS.glsl:600` computes `nightBlend = 1.0 - clamp(czm_getLambertDiffuse(L, N) * 5.0, 0.0, 1.0)`. At the geometric terminator (N·L = 0) GLSL says 1.0 night, WGSL says 0.5. The WGSL comment "Matches the GLSL path" remains factually wrong about the offset, and now says so explicitly in-file.
+**Status: FIXED (Batch 927, CO-18) - pending the terminator probe's third Edge run as acceptance.** The full arc is preserved below so the reasoning stays auditable; the original filing follows the fix.
+
+---
+
+**THE LAW THAT SHIPPED, on BOTH backends.** `GlobeFS.glsl` was the reference and is UNCHANGED (comments only). It has always carried **TWO DISTINCT expressions** over one `czm_getLambertDiffuse(czm_lightDirectionEC, normalEC) * 5.0` core, feeding **two consumers**:
+
+| consumer | GLSL (unchanged) | WGSL (adopted at CO-18) |
+| --- | --- | --- |
+| imagery day/night alpha + night-lights emission gate | `:601` `nightBlend = 1.0 - clamp(N·L * 5.0, 0.0, 1.0)` | `computeDayNightFade` = `clamp(max(dot(sunDirEC, normalEC), 0.0) * 5.0, 0.0, 1.0)`; caller takes `nightBlend = 1.0 - dayFade` |
+| ENABLE_DAYNIGHT_SHADING diffuse | `:851` `diffuseIntensity = clamp(N·L * 5.0 + 0.3, 0.0, 1.0)`, then `:852` `mix(1.0, diffuseIntensity, fade)` | `computeDayNightDiffuse` = `clamp(… * 5.0 + 0.3, 0.0, 1.0)`, then `diffuse = mix(1.0, dayNightDiffuse, clamp(tile.lightingFade, 0.0, 1.0))` |
+
+**The contract, stated so a future edit cannot drift silently: the `* 5.0` core is SHARED; the `+ 0.3` belongs to the LIGHTING expression ONLY; the `mix(1.0, …, fade)` belongs to the LIGHTING consumer ONLY; the alpha ramp carries NO offset and NO fade.** Written into `SHADER_PAIRS_LOCKSTEP.md` as the DAY/NIGHT RAMP LAW pair row.
+
+**WHAT WAS ACTUALLY WRONG - three divergences wearing one mechanism.** The pre-CO-18 WGSL had ONE function, `clamp(N·L * 5.0 + 0.5, 0.0, 1.0)`, serving both consumers, and derived the diffuse from it as `mix(0.025, N·L * 0.88 + 0.12, dayFade)`. So (i) the alpha ramp carried an offset it should not have, (ii) the lighting term was driven by the alpha ramp rather than by its own expression, and (iii) the lighting term had no camera-distance mix at all.
+
+**THE ×0.30 DERIVATION - which expression produced lane D's residual.** Lane D samples a night band at N·L ≤ -0.12 and a day band at N·L ≥ 0.21, both OUTSIDE both ramps, so only the LIGHTING term can move the reading. WebGL's closed form there is `mix(1.0, 0.3, fade) / mix(1.0, 1.0, fade)`:
+
+- `LOW_ALTITUDE_M` = 3 Mm ⇒ `cameraDist` = 9.378 Mm, below `lightingFadeOutDistance` = π/2 × Rmin = **9.985 Mm** ⇒ **fade = 0 exactly** ⇒ both bands mix to 1.0 ⇒ ratio **1.000**.
+- `HIGH_ALTITUDE_M` = 25 Mm ⇒ `cameraDist` = 31.378 Mm, above `lightingFadeInDistance` = π × Rmin = **19.970 Mm** ⇒ **fade = 1 exactly** ⇒ ratio **0.3 / 1.0 = 0.300**.
+
+**Run 2 measured 1.000 and 0.300.** The WebGL leg is a closed-form read of `GlobeFS.glsl:851-852` to three decimals with no residual - which is what licenses reading the WebGPU deficit as an expression difference rather than as instrument noise. **The ×0.30 IS `mix(1.0, clamp(N·L*5 + 0.3, 0, 1), fade)`: the `0.3` night floor over the saturated `1.0` day value.** The WGSL had neither half - its night floor was `0.025` and it had no `fade` - and measured 0.312 / 0.0896 against those two numbers. Executed as spec `C2`, which asserts both closed-form values exactly.
+
+**HOW THE FADE REACHES THE SHADER.** New leaf `packages/engine/Source/Renderer/WebGPU/WebGPUGlobeLightingFade.ts` (`computeLightingFade`) transcribes `GlobeFS.glsl:620-644` - all three per-scene-mode `cameraDist` arms and the non-3D radius reduction - reading `camera.viewMatrix[12..14]` for `czm_view[3]` and `frustum.offCenterFrustum ?? frustum` for `czm_frustumPlanes` (the same indirection `UniformState.js:794-802` applies). The result is packed into `TileUniforms.lightingFade`, **float 463 - the former `_tilePad0` scalar pad, so no vec4 alignment moved and `TILE_UNIFORM_FLOATS` stays 492.** CPU-side because the WGSL has neither `czm_view` nor `czm_frustumPlanes`; a leaf because the packer imports siblings through `.js` specifiers that resolve to `.ts`, which Node's strip-only loader will not follow - so only a leaf is EXECUTABLE from a spec (the same reason `WebGPUGlobeTunables.ts` exists).
+
+**DELIBERATELY NOT `groundAtmosphereControl.y`.** That slot carries the identical clamp - and the ocean path already reads it as "WebGL's lightingFade" - but it is forced to 0 whenever `showGroundAtmosphere` is false or the aerial-perspective post-process owns the haze. On the lighting path a 0 means `mix(1.0, diffuse, 0) = 1.0`, i.e. a globe with NO day/night lighting at all whenever the drape is off. WebGL applies no such gate. Spec `E4` pins both halves of that reasoning.
+
+**`computeTerminatorGlow` — CHECKED, NOT CHANGED.** It takes the raw SIGNED `dot(N, L)`, not either ramp, so the law reconciliation provably cannot move it. Spec `B4` records that reading rather than leaving it an assumption. It remains WebGPU-only with no GLSL twin and is CLT-B3's audit subject; CO-18 neither expanded nor removed it. It IS the one term that can lift the WebGPU night band above WebGL's in the run-3 lane-D reading (see the tolerance below).
+
+**NOT byte-identical, by design.** The WebGPU look moves onto WebGL's; the WebGL look does not move. On default (normal-less) terrain with `globe.enableLighting = true`, the WebGPU globe now (a) reads full night alpha at the geometric terminator instead of half, and (b) renders FLAT-LIT below ~10 Mm and picks up the day/night diffuse only between 10 and 20 Mm - both of which are what WebGL has always done.
+
+**Guards.** New: `Tools/visual-regression/globe-daynight-ramp-law.spec.mjs` (31 tests, `node --test`) - section A transcribes all four expressions out of the two shaders with the coefficients CAPTURED from source, never hardcoded, and requires the evaluated ramps to agree to 0 over an 801-point N·L grid; B pins each expression to its own consumer and that `computeDayNightFade` has exactly ONE call site (the single-function-reuse pin); C executes `computeLightingFade` and reproduces lane D's WebGL leg exactly; D runs six mutants (the `+0.5` form, single-function reuse, dropped fade, `+0.3` leaked into the alpha ramp, a GLSL-SIDE mutation that proves the spec reads both files, and the pre-CO-18 diffuse restored); E pins the UB plumbing and the drape-slot distinctness; F proves the edits sit at `//>>ifdef` depth 0, expand under all 64 define sets, and naga-validates the module across the sweep (MATERIAL_APPLY excluded - its arm calls the runtime-injected `czm_getMaterial` and does not validate standalone at HEAD either). **Mutant D6 found a real hole in this spec's own first draft** - the transcription pin was satisfied by a correct-but-orphaned function - which is why `diffuseIsConsumed` exists as a separate predicate. Moved: `daynight-terminator-law.spec.mjs` A2/A3/A5 and `globe-daynight-normal-source.spec.mjs` A2/D3/D4/E1 are all INVERTED rather than deleted, so a re-introduction is still caught.
+
+**`lib/daynight-terminator-law.mjs` is UNCHANGED below its doc comments, on purpose.** It is the acceptance instrument, and an instrument rewritten in the same batch as the thing it measures certifies nothing. In particular **`dayFadeWgsl` still returns the `+0.5` law and MUST NOT be changed to match `dayFadeGlsl`**: `classifyRamp` names a backend's law by comparing residuals against the two candidates, so collapsing them would make every ratio 1.0, trip the 1.5× ambiguity guard, and blind the probe. It is now the ALTERNATIVE HYPOTHESIS / negative control.
+
+**PRE-REGISTERED readings for the THIRD run of `probe-daynight-terminator-law.mjs`** (written BEFORE the run). Every DERIVED cell is the output of `lib/daynight-terminator-law.mjs`'s own `binByNdotL` / `centralSlope` / `rmseAgainst` / `classifyRamp` / `evaluateRampLane` / `evaluateSolsticeLane` / `evaluateCameraFadeLane`, fed the shipped law on the probe's own grid (`FIT_WINDOW` [-0.35, 0.35], `DIVERGENCE_BAND` [-0.1, 0.2], 0.02 bins, `centralSlope` window [-0.05, 0.05]).
+
+| reading | run 2 (tip `679cbf5173`) | expected run 3 | basis |
+| --- | --- | --- | --- |
+| `laneA.status` | CONFIRMED | **REFUTED - and the REFUTED IS the acceptance** | the lane's scored predicate is "the recorded `+0.5` divergence is present"; it is not. Identical in kind to lane B's REFUTED since CLT-B2. **Do not read it as a regression** |
+| `laneA.metrics.webgpu_shape` | `wgsl-offset-law` | **`glsl-law`** | DERIVED - the classifier's whole job; this is the single most diagnostic cell in the run |
+| `laneA.metrics.webgl_shape` | `glsl-law` | **`glsl-law`, unchanged** | the WebGL leg must not move at all. If it does, that is a probe-framing finding, not a CO-18 regression |
+| `laneA.metrics.webgpu_terminator` | 0.496 | **0.0125** (accept 0.010-0.020) | DERIVED; run 2's WebGL leg measured 0.012 on the same framing, which is the empirical anchor |
+| `laneA.metrics.webgl_terminator` | 0.012 | **0.012, unchanged** | measured anchor |
+| `laneA.metrics.terminator_delta` | +0.485 | **0.000** (accept \|delta\| ≤ 0.02 = one bin width) | DERIVED - cross-backend agreement is the positive claim |
+| `laneA.metrics.webgpu_slope` | 5.000 | **2.50**, equal to `webgl_slope` | DERIVED - the GLSL law is saturated at 0 over the negative half of the slope window, which halves its fitted slope. A slope near 5 would mean the offset law is back |
+| `laneA.metrics.webgpu_range` | 1.000 | **1.000, unchanged** | DERIVED - both laws saturate inside the fit window |
+| `laneA.metrics.webgpu_rmse_glslLaw` | (large) | **0.0033** | DERIVED |
+| `laneA.metrics.webgpu_rmse_wgslLaw` | 0.0026 | **0.386** | DERIVED - a 116× separation, far past `classifyRamp`'s 1.5× ambiguity guard, and the exact mirror of run 2's numbers |
+| `laneA.failures` | (empty) | **exactly 2 strings**, both naming the WebGPU leg's departure from the RETIRED law: "WebGPU day-fade at the terminator is 0.013, not the 0.500 its law predicts" and "WebGPU ramp shape is glsl-law" | DERIVED verbatim from `evaluateRampLane` |
+| `laneD.status` | REFUTED | **REFUTED, for the opposite reason** | run 2 refuted "WebGPU is altitude-invariant" because an unrelated chain term moved it; run 3 refutes it because `tile.lightingFade` moves it BY DESIGN |
+| `laneD.metrics.webgl_lowAlt_nightDayRatio` | 1.000 | **1.000, unchanged** | closed form; the WebGL leg is the control |
+| `laneD.metrics.webgl_highAlt_nightDayRatio` | 0.300 | **0.300, unchanged** | closed form |
+| `laneD.metrics.webgpu_lowAlt_nightDayRatio` | **0.312** | **≈1.00** - a ×3.2 move, the loudest number in the run | DERIVED from the shipped expression at fade 0 |
+| `laneD.metrics.webgpu_highAlt_nightDayRatio` | **0.0896** | **≈0.300** - a ×3.35 move | DERIVED from the shipped expression at fade 1 |
+| cross-backend ratio `webgpu_X / webgl_X` | 0.312 / 0.299 | **within [0.95, 1.15] at BOTH altitudes** | tolerance DERIVED, see below |
+| `laneE` | CONFIRMED, `per-fragment` | **CONFIRMED, `per-fragment`, unchanged** | CO-18 did not touch the normal source |
+| `laneB` | REFUTED | **REFUTED, unchanged** (CLT-B2's fix working) | |
+| `laneC` render half | STRUCTURAL, exit 3 | **STRUCTURAL, unchanged** - still needs a `hasVertexNormals === true` provider, which is an Ion/network dependency | `CLT-B1-VERTEX-NORMAL-LANE-NEEDS-A-NETWORK-LANE` |
+| process exit code | 1 | **1, unchanged and NOT a regression** | `foldVerdict` maps any REFUTED lane to FAIL and three lanes are now REFUTED-because-fixed. Read acceptance from `lanes.laneA.metrics` and `lanes.laneD.metrics` in `output/daynight-terminator-law-report.json`, never from the exit code |
+
+**WHY THE LANE-D TOLERANCE IS ASYMMETRIC, and what a miss on each side would mean.** Every term in the WebGPU lighting chain now evaluates WebGL's expression, so the closed form predicts EQUALITY. One WebGPU-only additive term survives: `computeTerminatorGlow`, which CO-18 deliberately did not remove (CLT-B3). Its amplitude is `0.95 × exp(-40·(N·L)²) × 0.15`, i.e. 0.080 in linear R at the night band's edge (N·L = -0.12), ~0.004 by N·L = -0.3, and 0.009 averaged over the day band - so it lifts the NIGHT band more than the DAY band and can only push the ratio ABOVE 1.0. Hence [0.95, **1.15**]. **A reading above 1.15 indicts the glow** (and is CLT-B3 evidence, not a CO-18 failure). **A reading below 0.95 indicts the fade PLUMBING** - the packed scalar not reaching the shader - which is a different, named failure with a different fix. The 0.95 floor is the lane's own `flatTolerance` (0.08) rounded in; the run-2 WebGL leg landing on 1.000/0.300 to three decimals bounds every OTHER residue in the chain at < 0.001.
+
+**Orchestrator re-run command:** `node Tools/visual-regression/probe-daynight-terminator-law.mjs`
+
+---
+
+<details>
+<summary>ENTRY AS FILED (Batch 919, CO-15), retained for the record</summary>
+
+**Status as filed: OPEN / MEDIUM. This is the CLT plan §2 bug 2 divergence AS ORIGINALLY RECORDED, and it is still unfixed.** `computeDayNightFade` returns `clamp(N·L * 5.0 + 0.5, 0.0, 1.0)`; `GlobeFS.glsl:600` computes `nightBlend = 1.0 - clamp(czm_getLambertDiffuse(L, N) * 5.0, 0.0, 1.0)`. At the geometric terminator (N·L = 0) GLSL says 1.0 night, WGSL says 0.5. The WGSL comment "Matches the GLSL path" remains factually wrong about the offset, and now says so explicitly in-file.
 
 **Why this row exists separately, and why it is only now MEASURABLE.** Batch 915's first probe run could not measure this at all: `NEW-WEBGPU-GLOBE-DAYNIGHT-NORMAL-SOURCE` made the WebGPU day/night term CONSTANT, and a constant has no ramp to compare against a ramp law. The probe's classifier caught that (`classifyRamp` tests the constant verdict FIRST, precisely so a 0.5-at-the-terminator reading could not be banked as the offset law) and lane A returned STRUCTURAL. **Batch 919 fixed the normal source, so the ramp now exists and this divergence becomes a readable number for the first time.** Fixing the normal did NOT fix the offset - they are independent, and the plan's own §2 stamp had them conflated.
 
@@ -12106,6 +12177,10 @@ Both are CONSTANT model-space vectors along the spin axis, not surface normals. 
 | process exit code | 1 | **1, unchanged and NOT a regression** | `foldVerdict` maps any REFUTED lane to FAIL, and lane B is REFUTED **because CLT-B2's fix works** (`enableNightLights = false` moved the night side by -23 counts). Lane C is STRUCTURAL by construction offline. Read this batch's acceptance from `lanes.laneA` / `lanes.laneE.metrics.webgpu_normalSource` in `output/daynight-terminator-law-report.json`, never from the exit code |
 
 **Fix shape when CLT-B4 is executed:** drop the `+ 0.5` so the WGSL law becomes `clamp(N·L * 5.0, 0.0, 1.0)`, matching GLSL exactly; correct the "Matches the GLSL path" comment in the same edit; decide the camera-fade question (finding (d)) and finding (c)'s vertex-normal gate at the same time so the day/night law lands as one coherent contract; write the target law into `SHADER_PAIRS_LOCKSTEP.md`. Guards that must move with it: `daynight-terminator-law.spec.mjs` A2/A3/A5 (which pin the `+0.5` and the wrong comment ON PURPOSE, so the plan's text cannot quietly become inaccurate) and `globe-daynight-normal-source.spec.mjs` E1.
+
+**HOW THIS PREDICTION FARED (CO-18, Batch 925).** The `+0.5` drop and the comment were right. Two things it did NOT anticipate: (1) the lighting term needed its OWN expression rather than any adjustment of the shared one - the `+ 0.3` and the `+ 0.5` were never the same knob, and untangling them was the larger half of the work; (2) finding (c)'s vertex-normal gate could NOT land in the same batch - its render half needs a `hasVertexNormals === true` provider, so it stays open as `CLT-B1-VERTEX-NORMAL-LANE-NEEDS-A-NETWORK-LANE` and the "one coherent contract" the prediction asked for is one law with one deliberate, named residual.
+
+</details>
 
 ### CLT-B1-VERTEX-NORMAL-LANE-NEEDS-A-NETWORK-LANE - finding (c) cannot be pixel-decided offline (FILED 2026-08-07)
 

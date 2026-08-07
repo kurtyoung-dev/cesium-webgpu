@@ -105,11 +105,14 @@ export interface GlobePipelineEntry {
 //     x = lambertDiffuseMultiplier  (from tileProvider, default 0.9)
 //     y = vertexShadowDarkness      (from tileProvider, default 0.3)
 //     z = hasVertexNormals flag — when > 0.5, WGSL uses the (x, y)
-//         coefficients directly (matches WebGL); when ≤ 0.5, WGSL
-//         falls back to its existing hardcoded `NdotL × 0.88 + 0.12`
-//         aesthetic (the intentional DAYNIGHT_SHADING-analogue rewrite).
-//     w = reserved (future: `fade` scalar for exact DAYNIGHT_SHADING
-//         parity if we ever bridge that path too).
+//         coefficients directly (matches WebGL ENABLE_VERTEX_LIGHTING);
+//         when ≤ 0.5, WGSL runs WebGL's ENABLE_DAYNIGHT_SHADING formula
+//         `mix(1, clamp(NdotL × 5 + 0.3, 0, 1), lightingFade)` (CLT-B4,
+//         CO-18; it was a hardcoded `NdotL × 0.88 + 0.12` aesthetic before).
+//     w = zoomedOutOceanSpecularIntensity (GLOBE-POLAR-STRETCH-POLISH). This
+//         slot was once reserved for the DAYNIGHT_SHADING `fade` bridge;
+//         CO-18 built that bridge as `TileUniforms.lightingFade` (float 463)
+//         instead, since the fade is per-frame tile-UB data.
 // 140 base floats + 4 for the log-depth tail vec4 (near, far,
 // oneOverLog2FarDepthFromNearPlusOne, reserved) — see GlobeTerrain.wgsl
 // CameraUniforms.logDepth and the renderer-wide log-depth epic (Approach A).
@@ -195,7 +198,18 @@ export const CAMERA_UNIFORM_BYTES = CAMERA_UNIFORM_FLOATS * 4;
 //   460        time
 //   461        fogVisualDensityScalar
 //   462        splitPosition (in framebuffer pixels — frameState.splitPosition × drawingBufferWidth)
-//   463        _pad
+//   463        lightingFade (CLT-B4, CO-18) — WebGL's day/night camera-distance
+//                fade, `GlobeFS.glsl:620-644`:
+//                  fade = clamp((cameraDist - fadeOutDist) /
+//                               (fadeInDist - fadeOutDist), 0, 1)
+//                with `cameraDist` selected per scene mode and both distances
+//                reduced by the ellipsoid's maximum radius outside SCENE3D.
+//                Consumed by the DAYNIGHT_SHADING arm as
+//                `mix(1.0, diffuseIntensity, lightingFade)` (GlobeFS.glsl:852).
+//                DISTINCT from `groundAtmosphereControl.y`, which carries the
+//                same clamp but is forced to 0 whenever the ground-atmosphere
+//                drape is off — WebGL applies no such gate to the lighting
+//                fade. Was `_pad`; a scalar slot, so no vec4 alignment moved.
 //   464 - 467  debugFields (vec4)
 //   468 - 471  hsbShift (vec4)
 //   472 - 475  groundAtmosphereControl (vec4) — Session 65 (2026-05-11):
@@ -273,6 +287,7 @@ export const NIGHT_OCEAN_PARAMS_OFFSET = 456;
 export const TIME_OFFSET = 460;
 export const FOG_VIS_DENSITY_OFFSET = 461;
 export const SPLIT_POSITION_OFFSET = 462;
+export const LIGHTING_FADE_OFFSET = 463;
 export const DEBUG_FIELDS_OFFSET = 464;
 export const HSB_SHIFT_OFFSET = 468;
 export const GROUND_ATMOSPHERE_CONTROL_OFFSET = 472;

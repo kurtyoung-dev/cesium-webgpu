@@ -72,6 +72,7 @@ import {
   TIME_OFFSET,
   FOG_VIS_DENSITY_OFFSET,
   SPLIT_POSITION_OFFSET,
+  LIGHTING_FADE_OFFSET,
   DEBUG_FIELDS_OFFSET,
   HSB_SHIFT_OFFSET,
   GROUND_ATMOSPHERE_CONTROL_OFFSET,
@@ -91,6 +92,17 @@ import { GLOBE_UB_UNSET, resolveGlobeTunable } from "./WebGPUGlobeTunables.js";
 // for the translucency rectangle instead of replicating the split logic here
 // and risking drift. Backend-neutral pure function.
 import { clipRectangleAntimeridian } from "../../Scene/GlobeSurfaceTileProviderRendering.js";
+// CLT-B4 — WebGL's day/night camera-distance lighting fade lives in its own
+// leaf, for the same reason as `WebGPUGlobeTunables`: the packer, the shader
+// and the Node spec that cross-checks both against `GlobeFS.glsl` all need to
+// read one law, and only a leaf is importable from a spec.
+import {
+  computeLightingFade,
+  type LightingFadeCamera,
+  DEFAULT_LIGHTING_FADE_IN_DISTANCE,
+  DEFAULT_LIGHTING_FADE_OUT_DISTANCE,
+} from "./WebGPUGlobeLightingFade.js";
+import SceneMode from "../../Scene/SceneMode.js";
 import { writeUniformSlice } from "./WebGPUGlobeSurfaceCameraUB.js";
 import { getActiveDebugSentinel } from "./WebGPUGlobeFragmentDebug.js";
 import {
@@ -686,6 +698,37 @@ export function createTileUniformBuffer(
     (frameState?.context as { drawingBufferWidth?: number } | undefined)
       ?.drawingBufferWidth ?? 0;
   data[SPLIT_POSITION_OFFSET] = splitFrac * drawWidth;
+
+  // ─── lightingFade (CLT-B4, CO-18) ───
+  // WebGL's day/night camera-distance fade. The DAYNIGHT_SHADING arm consumes
+  // it as `mix(1.0, diffuseIntensity, fade)` (GlobeFS.glsl:852), so 0 = flat-lit
+  // near the ground and 1 = full day/night at orbit. UNGATED, unlike
+  // `groundAtmosphereControl.y` below, which carries the identical clamp but is
+  // zeroed whenever the ground-atmosphere drape is off — WebGL computes this
+  // fade under `ENABLE_DAYNIGHT_SHADING || GROUND_ATMOSPHERE`, so turning the
+  // drape off must not flat-light the globe.
+  //
+  // The two distances live on the tile provider (`Globe.js:1204-1205` copies
+  // them each frame); `WebGPUGlobeLightingFade`'s exported defaults are the
+  // fallback if a provider never got that copy.
+  const lightingProvider = tileProvider as {
+    lightingFadeOutDistance?: number;
+    lightingFadeInDistance?: number;
+  };
+  const ellipsoidMaxRadius =
+    (
+      frameState?.mapProjection as
+        { ellipsoid?: { maximumRadius?: number } } | undefined
+    )?.ellipsoid?.maximumRadius ?? 6378137.0;
+  data[LIGHTING_FADE_OFFSET] = computeLightingFade(
+    frameState?.mode ?? SceneMode.SCENE3D,
+    frameState?.camera as unknown as LightingFadeCamera | undefined,
+    lightingProvider.lightingFadeOutDistance ??
+      DEFAULT_LIGHTING_FADE_OUT_DISTANCE,
+    lightingProvider.lightingFadeInDistance ??
+      DEFAULT_LIGHTING_FADE_IN_DISTANCE,
+    ellipsoidMaxRadius,
+  );
 
   // ─── Night & ocean secondary params (vec4) ───
   // nightOceanParams: x=nightIntensity, y=oceanReflectivity, z=foamThreshold, w=oceanDarkening

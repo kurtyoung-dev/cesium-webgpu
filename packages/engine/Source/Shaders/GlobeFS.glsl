@@ -780,31 +780,53 @@ void main()
 // │   WGSL: Shaders/WebGPU/Globe/GlobeTerrain.wgsl ~lines 2881-2960      │
 // │         (lighting); shadow-receive paths in same file at             │
 // │         `globeComputeShadowFactor*` (lines 2092-2230)                │
-// │ Last lockstep audit: 2026-05-19, Batch 74                            │
+// │ Last lockstep audit: 2026-08-07, Batch 925 (CO-18 ramp-law           │
+// │         reconciliation)                                              │
 // └─────────────────────────────────────────────────────────────────────┘
 // Any change to this block MUST land with a matching change in the
 // WGSL counterpart. See migration_doc/SHADER_PAIRS_LOCKSTEP.md.
 //
-// INTENTIONAL ALGORITHMIC REWRITE
-// Same overall intent (Lambert diffuse × light) but coefficients
-// differ and the WGSL adds a terminator glow this file doesn't.
+// THIS FILE IS THE REFERENCE. As of CLT-B4 (CO-18) the WGSL runs the two
+// expressions below verbatim; the earlier "intentional algorithmic rewrite"
+// note here was describing a measured visual divergence, and it is closed.
+// The two expressions are DISTINCT ON PURPOSE and must stay distinct:
+//
+//   consumer                         expression
+//   imagery day/night alpha +        `1.0 - clamp(NdotL × 5, 0, 1)`
+//     night-lights emission gate       (line ~601, `nightBlend`)
+//   ENABLE_DAYNIGHT_SHADING diffuse  `clamp(NdotL × 5 + 0.3, 0, 1)`,
+//                                      then `mix(1.0, that, fade)` (below)
+//
+// The `+ 0.3` is the LIGHTING expression's night floor only. Folding it (or
+// any other offset) into the alpha ramp moves the terminator; the WGSL did
+// exactly that with a `+ 0.5` until CO-18, measured at +0.485 night-alpha at
+// the geometric terminator by `probe-daynight-terminator-law.mjs` run 2.
 //
 // - This file: three #ifdef variants below — ENABLE_VERTEX_LIGHTING
 //   (tile-provider-driven with `u_lambertDiffuseMultiplier` +
 //   `u_vertexShadowDarkness` uniforms × `czm_lightColor`),
 //   ENABLE_DAYNIGHT_SHADING (`NdotL × 5 + 0.3` × `czm_lightColor`,
 //   mixed with full brightness by `fade`), or pass-through.
-// - WGSL: single unified path gated by `camera.enableLighting > 0.5`.
-//   Lambert `NdotL × 0.88 + ambient(0.12)` × shadowFactor for day,
-//   nightAmbient = 0.025 for night, mixed by dayFade. Multiplies by
+// - WGSL: one runtime gate (`camera.enableLighting > 0.5`) selecting the
+//   same two arms via `camera.lighting.z` (hasVertexNormals). The DAYNIGHT
+//   arm is `mix(1.0, computeDayNightDiffuse(dayNightNormalEC, sunDir),
+//   tile.lightingFade)` — the same expression and the same camera-distance
+//   mix, with `fade` packed CPU-side because the WGSL has no `czm_view` /
+//   `czm_frustumPlanes` to form `cameraDist`. Multiplies by
 //   `camera.lightColor.rgb` packed from `uniformState.lightColor`
 //   (Batch 76). Adds `computeTerminatorGlow` at the day/night boundary
-//   — a warm orange/pink band this file doesn't have.
+//   — a warm orange/pink band this file doesn't have (CLT-B3).
 //
 // STRUCTURAL DIVERGENCES
 //
 // - Variant gating: this file's three #ifdef branches; WGSL's single
-//   runtime gate.
+//   runtime gate. Shape only — the same three outcomes are reachable.
+// - Day/night imagery-alpha applicability: this file emits
+//   ENABLE_VERTEX_LIGHTING *instead of* ENABLE_DAYNIGHT_SHADING when the
+//   terrain has vertex normals (`GlobeSurfaceShaderSet.js:435-442`), so the
+//   day/night alpha does not exist at all there; WGSL still applies the ramp.
+//   Open as CLT-B1 finding (c) — it needs a vertex-normal provider to decide
+//   at pixels and is NOT closed by CO-18.
 // - Custom light color: this file multiplies by `czm_lightColor`;
 //   WGSL multiplies by `camera.lightColor.rgb` (Batch 76 — matched).
 // - Vertex-lighting uniforms (`u_lambertDiffuseMultiplier`,
