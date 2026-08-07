@@ -10824,3 +10824,62 @@ the mechanism itself worth a look rather than just this one call site.
 **Cross-refs:** `NEW-WEBGPU-OIT-TRANSLUCENT-PRIMITIVE-WIRING` (the same
 `_shaderCode` mechanism, from the other direction — no primitive/model/collection
 produces one at all); FEATURE_INVENTORY §B `WebGPUOIT`.
+
+---
+
+## 2026-08-07 — the splat-occlusion probe's globe covers only a right-hand strip
+
+### NEW-WEBGPU-OCCLUSION-PROBE-GLOBE-ABSENT
+
+**Status:** OPEN, and deliberately NOT diagnosed here — this entry records an
+observation and the evidence for it, because the round that found it
+(`C15-G3c`) was a splat round and this is a globe/scene question.
+
+**Observation.** `Tools/visual-regression/output/splat-occlusion-default.png`
+from the Batch-882 run shows `probe-splat-globe-occlusion.mjs`'s scene — a
+nadir camera 8 km above (-75, 40), `globe.show = true`, all imagery layers
+replaced by a `GridImageryProvider`, `globe.baseColor` brown — rendering the
+globe **only in a vertical strip covering roughly the right 24% of the canvas**.
+The remaining ~76%, including the entire centre where both test splats sit, is
+background black. At 8 km nadir the globe should fill the frame completely (the
+frustum subtends ~+/-4.6 km at the surface; the horizon is ~319 km away).
+
+The stale July-10 artifact `output/splat-occlusion-deferral-armed.png`, written
+by an older revision of the same probe, shows the same scene with **no globe at
+all**. So this is not new with Batch 882, and it has been invisible because the
+probe's checks could not report it (see below).
+
+**Why it went unreported for ~4 weeks.** The probe derived its globe count as
+`nonBlack - red - green`, so the red splat's own sub-threshold halo — bright
+enough for `isNonBlack`, too dim for `isRed` — and every un-hidden viewer-chrome
+pixel counted as "globe". Check 1 (`globePixels > 20000`) therefore could not
+fail for "the globe did not render". `C15-G3c` fixed the instrument: the globe
+is now measured on a splats-hidden, chrome-hidden frame, and a splat drawn where
+no globe is behind it raises a STRUCTURAL precondition instead of being scored
+as a depth-compare leak.
+
+**What it is NOT.** Not the splat renderer: the same build renders
+`sh_unit_cube` at 18.995% added against WebGL's 19.141% with a 2.574% parity
+mismatch (Batch 882), and `probe-splat-sort` / `probe-oit-transparency` are
+green. Not `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE`, which concerns ordering
+against a globe that EXISTS.
+
+**Candidate directions, none verified:** (a) the scene-framebuffer blit
+covering only part of the canvas (this fork has a history of partial-blit
+defects); (b) a canvas / drawing-buffer size mismatch between the frame the
+scene rendered and the element Playwright captures — the strip's hard vertical
+edge is more suggestive of a viewport/scissor extent than of tile loading, which
+would be blocky; (c) globe tile selection genuinely producing nothing for most
+of the frame in this specific camera + `GridImageryProvider` + no-terrain
+configuration. The probe's own `tilesLoaded` flag reads true.
+
+**Effort:** S to reproduce (the probe now reports it directly — run it and read
+`globePixels` plus the PNG), M if it turns out to be the blit extent.
+**Impact:** one probe's premise today. If (a) or (b) is the cause it is a real
+renderer defect with a much wider blast radius than this probe, which is the
+reason to look rather than to tune the probe around it.
+
+**Do NOT "fix" this by reverting the `C15-G3b` splat footprint.** The footprint
+is WebGL-parity-correct and pixel-verified (parity 31.946% -> 2.574%); it makes
+the green splat's countable footprint 4x SMALLER, so it is strictly the wrong
+lever for this symptom.

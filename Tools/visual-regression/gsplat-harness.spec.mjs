@@ -3390,3 +3390,282 @@ for (const mutant of FOOTPRINT_MUTANTS) {
     );
   });
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// C15-G3c — `probe-splat-globe-occlusion` check 3 went red after `C15-G3b`.
+//
+// It is not a splat defect and it is not `C15-G3b`. The arithmetic below is
+// executed rather than argued, because the whole question is whether a
+// footprint change can manufacture leak pixels — and it provably cannot: the
+// new falloff makes every leak pixel LESS countable, by exactly 4x in area.
+// What actually changed is that the globe is no longer present over the splat,
+// and the probe had no way to notice.
+// ────────────────────────────────────────────────────────────────────────────
+
+const OCCLUSION_PROBE_PATH =
+  "Tools/visual-regression/probe-splat-globe-occlusion.mjs";
+
+/**
+ * The probe counts a pixel green when `g > 150` with `r < 90` and `b < 90`.
+ * Compositing is premultiplied over-blend, so the green channel lands at
+ * `alpha + dstG * (1 - alpha)` for a splat whose green is 1.0. Solving for the
+ * alpha at which a pixel starts counting, then inverting each falloff, gives
+ * the radius of the COUNTABLE disc in units of the projected sigma.
+ */
+function countableGreenRadiusSigmas(exponentScale, dstG, splatAlpha = 0.95) {
+  const threshold = 150 / 255;
+  const alphaThreshold = (threshold - dstG) / (1.0 - dstG);
+  // alpha(r) = splatAlpha * exp(-exponentScale * (r/sigma)^2)
+  return Math.sqrt(-Math.log(alphaThreshold / splatAlpha) / exponentScale);
+}
+
+test("HEAD: the C15-G3b falloff can only SHRINK a leak, never manufacture one", () => {
+  // Pre-C15-G3b (Batch 288): the conic form evaluated the TRUE gaussian,
+  // alpha = a * exp(-0.5 * (r/sigma)^2), over a 3-sigma square support.
+  // Post-C15-G3b: WebGL's alpha = a * exp(-4 * dot(corner,corner)) with the
+  // quad edge at sqrt(2) sigma, i.e. alpha = a * exp(-2 * (r/sigma)^2).
+  const PRE_EXPONENT = 0.5;
+  const POST_EXPONENT = 2.0;
+
+  // The post exponent is read out of the shipped shader, not assumed.
+  const wgsl = extractSplatWgsl(readNormalized(RENDERER_PATH));
+  assert.match(
+    wgsl,
+    /let alpha = exp\(A \* 4\.0\) \* input\.color\.a;/,
+    `${RENDERER_PATH}: the falloff changed; re-derive the ratio below before trusting it`,
+  );
+  // exp(A*4) with A = -dot(v,v) and |v| = 1 at sqrt(2)*sigma gives
+  // exp(-4 * r^2 / (2 sigma^2)) = exp(-2 (r/sigma)^2).
+  assert.equal(POST_EXPONENT, 4 / 2);
+
+  // The ratio is INDEPENDENT of the globe colour behind the splat: both
+  // profiles are gaussians differing only by a constant factor in the
+  // exponent, so the countable radius always halves and the area always
+  // quarters, whatever threshold the blend produces.
+  for (const dstG of [0.15, 0.2, 0.25, 0.3, 0.35]) {
+    const pre = countableGreenRadiusSigmas(PRE_EXPONENT, dstG);
+    const post = countableGreenRadiusSigmas(POST_EXPONENT, dstG);
+    assert.ok(
+      Math.abs(pre / post - 2.0) < 1e-9,
+      `dstG=${dstG}: countable radius ratio ${pre / post}, expected exactly 2`,
+    );
+    assert.ok(
+      Math.abs((pre / post) ** 2 - 4.0) < 1e-9,
+      `dstG=${dstG}: countable AREA ratio must be exactly 4`,
+    );
+  }
+
+  // Therefore, for ANY fixed depth-test outcome, the post-G3b green count is a
+  // quarter of the pre-G3b one. A footprint change that strictly reduces both
+  // the support and the per-pixel opacity cannot create a pixel that was not
+  // already there. Mechanism (1) — "the sharper falloff pushed sub-threshold
+  // leak pixels over the bar" — is refuted, with a number.
+  const measured = 1436;
+  assert.ok(
+    measured * 4 > 5000,
+    "the same leak under the pre-G3b footprint would have counted ~5,743 px, far above the <50 bar — so it was never a threshold effect",
+  );
+});
+
+test("HEAD: greenPx=1436 is the FULLY UNOCCLUDED footprint, not a partial leak", () => {
+  // The probe's geometry, from its own source: a 600 m isotropic splat 3 km
+  // below the surface, nadir camera at 8 km, 1024x700 viewport.
+  const probe = readNormalized(OCCLUSION_PROBE_PATH);
+  assert.match(probe, /const R = 600\.0;/, "the splat radius moved");
+  assert.match(probe, /makeSplatPrim\(-3000\.0, \[0\.05, 1\.0, 0\.05\]\)/);
+  assert.match(probe, /fromDegrees\(LON, LAT, 8000\.0\)/);
+  assert.match(probe, /viewport: \{ width: 1024, height: 700 \}/);
+
+  const W = 1024;
+  const H = 700;
+  const fov = Math.PI / 3; // Cesium's default PerspectiveFrustum fov
+  const p00 = 1 / ((W / H) * Math.tan(fov / 2));
+  const focalPx = (p00 * W) / 2;
+  // Camera 8 km above the surface, splat 3 km below it -> 11 km along the ray.
+  const sigmaPx = (600 * focalPx) / 11000;
+  assert.ok(
+    Math.abs(sigmaPx - 33.07) < 0.5,
+    `projected sigma ${sigmaPx}, expected ~33.1 px`,
+  );
+
+  // The globe under the splat is `globe.baseColor` (0.35, 0.25, 0.15) tinted by
+  // a GridImageryProvider, so its green sits in the 0.2-0.3 band.
+  assert.match(probe, /new C\.Color\(0\.35, 0\.25, 0\.15, 1\.0\)/);
+  const areaFor = (dstG) =>
+    Math.PI * (countableGreenRadiusSigmas(2.0, dstG) * sigmaPx) ** 2;
+  const low = areaFor(0.2);
+  const high = areaFor(0.3);
+  assert.ok(
+    low < 1436 && 1436 <= high * 1.02,
+    `a FULLY VISIBLE green splat counts ${low.toFixed(0)}-${high.toFixed(0)} px; the run measured 1436, which is that number, not the tail of a partial occlusion`,
+  );
+  // A partial leak would have to be an annulus or a crescent; the measured
+  // value landing inside the fully-visible band (and the PNG showing a filled
+  // disc) means the depth test rejected NOTHING.
+});
+
+test("HEAD: the quad expansion cannot move clip-space z or w", () => {
+  // Mechanism (2): "the new quad axes move where fragments land relative to
+  // the globe's depth". The expansion writes x and y ONLY, and the log-depth
+  // varying is derived from the splat CENTRE's clip position, not from the
+  // expanded corner — so every fragment of the quad carries the centre's
+  // depth, exactly as before.
+  const wgsl = extractSplatWgsl(readNormalized(RENDERER_PATH));
+  assert.match(
+    wgsl,
+    /var fp = clipPos;\s*\n\s*fp\.x = fp\.x \+ ndcOff\.x; fp\.y = fp\.y \+ ndcOff\.y;/,
+    `${RENDERER_PATH}: the quad expansion no longer writes x/y only — if it touches z or w the splat's depth becomes position-dependent across the quad`,
+  );
+  assert.doesNotMatch(
+    wgsl,
+    /fp\.z = fp\.z \+|fp\.w = fp\.w \+/,
+    `${RENDERER_PATH}: the expansion writes clip z or w`,
+  );
+  assert.match(
+    wgsl,
+    /output\.v_logDepth = csm_vertexLogDepth\(clipPos, u\.logDepthNear\);/,
+    `${RENDERER_PATH}: the log-depth varying must come from the splat CENTRE clip position`,
+  );
+  // Same for the velocity VS's expansion.
+  assert.match(
+    wgsl,
+    /var fp = currCenterClip;\s*\n\s*fp\.x = fp\.x \+ ndcOff\.x;\s*\n\s*fp\.y = fp\.y \+ ndcOff\.y;/,
+    `${RENDERER_PATH}: the velocity expansion no longer writes x/y only`,
+  );
+});
+
+/**
+ * The occlusion probe's contract, asserted against a SOURCE STRING so the
+ * mutants can run the same battery over a mutated copy in memory.
+ */
+function assertOcclusionProbeContract(source) {
+  // The globe must be measured on its OWN frame, with the splats hidden.
+  // Deriving it as `nonBlack - red - green` counted the red splat's own
+  // sub-threshold halo and the viewer chrome as globe, so check (1) could not
+  // fail for "the globe did not render" — which is the exact state the
+  // Batch-882 run was in.
+  assert.match(
+    source,
+    /const globeOnly = await snap\(\);/,
+    `${OCCLUSION_PROBE_PATH}: the globe-only reference frame is gone`,
+  );
+  assert.match(
+    source,
+    /setSplatsVisible\(false\);/,
+    `${OCCLUSION_PROBE_PATH}: the reference frame is no longer captured with the splats hidden`,
+  );
+  assert.match(
+    source,
+    /const globePixels = globeOnlyPixels;/,
+    `${OCCLUSION_PROBE_PATH}: globePixels is derived by subtraction again — the red splat's halo and the viewer chrome would count as globe`,
+  );
+  assert.doesNotMatch(
+    source,
+    /const globePixels = nonBlack - red - green;/,
+    `${OCCLUSION_PROBE_PATH}: the subtraction-derived globe count is back`,
+  );
+
+  // The green verdict must be split per pixel by what is BEHIND it.
+  assert.match(source, /greenOverGlobe\+\+;/);
+  assert.match(source, /greenOverVoid\+\+;/);
+  assert.match(
+    source,
+    /out\.greenOverGlobe < 50/,
+    `${OCCLUSION_PROBE_PATH}: check 3 scores total green again — a splat drawn over EMPTY SPACE would be filed as a depth-compare leak`,
+  );
+  assert.doesNotMatch(
+    source,
+    /"3",\s*\n\s*out\.green < 50/,
+    `${OCCLUSION_PROBE_PATH}: check 3 is back on the undifferentiated green count`,
+  );
+  // ...and the missing-globe case must be STRUCTURAL, never a product verdict.
+  assert.match(
+    source,
+    /precondition\(\s*\n?\s*"P1",\s*\n?\s*out\.greenOverVoid === 0,/,
+    `${OCCLUSION_PROBE_PATH}: the globe-coverage precondition is gone`,
+  );
+  assert.match(
+    source,
+    /process\.exit\(ok \? \(structural \? 3 : 0\) : 1\);/,
+    `${OCCLUSION_PROBE_PATH}: a structural run must exit 3 — never 0 (which would certify an unevaluated subject) and never 1 (which would file it as a splat defect)`,
+  );
+  // Check 2 keeps its ORIGINAL meaning — the splat is rendered, not dropped
+  // (the C7-SPLAT-DEPTH-COMPOSE guard) — and the "over the globe" half of its
+  // claim becomes a precondition, because a splat drawn over empty space is
+  // not a splat defect either. Turning it into a hard FAIL would file the
+  // missing globe against the splat, which is the same error in the opposite
+  // direction.
+  assert.match(
+    source,
+    /precondition\(\s*\n?\s*"P2",\s*\n?\s*out\.redOverGlobe > 2000,/,
+    `${OCCLUSION_PROBE_PATH}: the compose-over-globe precondition is gone`,
+  );
+  assert.match(
+    source,
+    /"2",\s*\n\s*out\.red > 2000,/,
+    `${OCCLUSION_PROBE_PATH}: check 2 no longer guards the never-drop defect it was written for`,
+  );
+  // Chrome hidden, and the viewer loaded offline so a missing ion token cannot
+  // change what is on the canvas.
+  assert.match(source, /\.cesium-navigation-help/);
+  assert.match(source, /renderer=webgpu&offline=true/);
+}
+
+test("HEAD: the occlusion probe can tell a depth leak from a missing globe", () => {
+  assertOcclusionProbeContract(readNormalized(OCCLUSION_PROBE_PATH));
+});
+
+const OCCLUSION_PROBE_MUTANTS = [
+  {
+    name: "globePixels derived by subtraction again",
+    mutate: (source) =>
+      source.replace(
+        "const globePixels = globeOnlyPixels;",
+        "const globePixels = nonBlack - red - green;",
+      ),
+    because: /globePixels is derived by subtraction again/,
+  },
+  {
+    name: "check 3 scores undifferentiated green",
+    mutate: (source) =>
+      source.replace("out.greenOverGlobe < 50", "out.green < 50"),
+    because: /check 3 scores total green again/,
+  },
+  {
+    name: "the missing-globe case is folded back into the product verdict",
+    mutate: (source) =>
+      source.replace(
+        "process.exit(ok ? (structural ? 3 : 0) : 1);",
+        "process.exit(ok ? 0 : 1);",
+      ),
+    because: /a structural run must exit 3/,
+  },
+  {
+    name: "the globe-coverage precondition is deleted",
+    mutate: (source) =>
+      source.replace('precondition(\n  "P1",', 'noop(\n  "P1",'),
+    because: /globe-coverage precondition is gone/,
+  },
+  {
+    name: "the reference frame is captured with the splats still visible",
+    mutate: (source) => source.replace("setSplatsVisible(false);", ""),
+    because: /captured with the splats hidden/,
+  },
+];
+
+for (const mutant of OCCLUSION_PROBE_MUTANTS) {
+  test(`occlusion-probe mutant rejected: ${mutant.name}`, () => {
+    const real = readNormalized(OCCLUSION_PROBE_PATH);
+    const mutated = mutant.mutate(real);
+    assert.notEqual(
+      mutated,
+      real,
+      "the mutation did not apply — the anchor text moved and this mutant proves nothing",
+    );
+    assert.throws(
+      () => assertOcclusionProbeContract(mutated),
+      mutant.because,
+      `${mutant.name}: the contract accepted it, or rejected it for the wrong reason`,
+    );
+  });
+}

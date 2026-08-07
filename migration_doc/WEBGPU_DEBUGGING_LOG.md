@@ -17912,3 +17912,86 @@ falls back to the x axis (correct for a circular footprint). `gsplat-harness.spe
 EXECUTES both implementations over a battery of projected covariances: they must
 agree exactly wherever the GLSL is well-defined, and the port must stay finite
 with the right extents on the two cases where it is not.
+
+---
+
+## C15-G3c — a check that could not fail for the thing that was actually wrong (2026-08-07)
+
+**Bug:** `C15-G3c.1` (instrument). **Files:**
+`Tools/visual-regression/probe-splat-globe-occlusion.mjs`.
+
+**Symptom.** After `C15-G3b` landed the WebGL-parity splat footprint (Batch 882,
+every pre-registered number hit — added 18.995% vs WebGL 19.141%, parity
+31.946% → 2.574%), `probe-splat-globe-occlusion` check 3 went red:
+`greenPx=1436` against a `< 50` bar. The check reads "a GREEN splat 3 km BELOW
+the surface stays HIDDEN behind the globe", so on its face the depth test had
+broken.
+
+**It had not.** Three things were established before any code changed.
+
+*The footprint change can only SHRINK a leak.* The probe counts a pixel green
+at `g > 150`, which after the premultiplied blend requires the splat's alpha
+there to clear `(150/255 - dstG)/(1 - dstG)`. Pre-`C15-G3b` the falloff was
+`a*exp(-0.5 (r/sigma)^2)`; post it is WebGL's `a*exp(-4*dot(corner,corner))` =
+`a*exp(-2 (r/sigma)^2)`. Inverting both gives a countable radius that is
+**exactly halved and an area exactly quartered — independently of the globe
+colour**, since the two profiles are gaussians differing only by a constant in
+the exponent. So for ANY fixed depth-test outcome the new count is a quarter of
+the old. The 1,436 px measured would have counted **~5,743 px** before, and
+B647's recorded acceptance was **0 px**. A footprint that strictly shrinks both
+the support and the per-pixel opacity cannot manufacture a pixel.
+
+*The quad expansion never touched depth.* It writes `fp.x`/`fp.y` only; `z` and
+`w` are the splat centre's, and the log-depth varying is
+`csm_vertexLogDepth(clipPos, ...)` — the centre, not the corner. Every fragment
+of the quad has always carried the centre's depth.
+
+*1,436 is not a leak at all — it is the whole splat.* From the probe's own
+geometry (600 m isotropic splat, 3 km below the surface, nadir camera at 8 km,
+1024x700, 60-degree fov) the projected sigma is 33.1 px and a **fully
+unoccluded** green splat counts **1,154-1,436 px** across the plausible globe-
+green band. The measured value is the top of that range, and the PNG shows a
+**filled disc, not an annulus**. The depth test rejected nothing.
+
+**Root cause.** `output/splat-occlusion-default.png` shows the globe confined to
+a vertical strip on the right ~24% of the canvas; the splats sit over black.
+There was nothing in front of the below-surface splat to occlude it. Filed
+separately as `NEW-WEBGPU-OCCLUSION-PROBE-GLOBE-ABSENT` — a globe/scene
+question, not splat work. The stale July-10 artifact shows the same scene with
+NO globe at all, so it predates this work by weeks.
+
+**Why the probe scored a missing globe as a splat defect — the transferable
+part.** Two blind spots, each of which made the real failure mode
+*unrepresentable*:
+
+1. `globePixels` was DERIVED as `nonBlack - red - green`. The red splat's own
+   sub-threshold halo (bright enough for `isNonBlack`, too dim for `isRed`) and
+   every un-hidden viewer-chrome pixel counted as globe, so check 1
+   (`globePixels > 20000`) **could not fail for "the globe did not render"**.
+2. Check 3 read the undifferentiated green count. `green < 50` is equally
+   satisfied when the splat never drew; `green >= 50` is *guaranteed* whenever
+   the globe is absent at the splat's pixels. One number, two incompatible
+   causes, no way to separate them.
+
+*A check whose failure has two causes, only one of which it names, will
+eventually name the wrong one.* The repair is not a better threshold, it is a
+per-pixel premise: measure the thing that is supposed to be BEHIND, on its own
+frame, and classify each foreground pixel by what was actually there.
+
+**Fix (instrument only; no engine change, and the footprint is NOT reverted).**
+The globe is measured on a splats-hidden, chrome-hidden frame, and the green
+verdict splits per pixel: `greenOverGlobe` (globe behind → the product check,
+threshold unchanged at `< 50`) versus `greenOverVoid` (nothing behind →
+STRUCTURAL precondition P1, because occlusion is not evaluable there). Check 2
+keeps its original never-drop meaning and its "composed over the globe" half
+becomes precondition P2. Structural runs exit **3** — never 0, which would
+certify an unevaluated subject, and never 1, which would file a missing globe as
+a splat defect. The viewer now loads `&offline=true` so a missing ion token
+cannot change what is on the canvas.
+
+Pinned by `gsplat-harness.spec.mjs` (117 checks): the falloff-ratio arithmetic
+is EXECUTED over the whole `dstG` band, the fully-visible-footprint prediction
+is computed from the probe's own constants, the clip-z/w anchor forbids the
+expansion touching depth, and 5 mutants must be rejected — including
+"globePixels derived by subtraction again" and "the missing-globe case folded
+back into the product verdict".

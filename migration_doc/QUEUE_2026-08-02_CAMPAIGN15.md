@@ -513,7 +513,7 @@ scoping row must re-verify all of it at HEAD):**
 | `C15-G0` | Scoping + root-cause verification: reproduce the production no-render, verify the `NEW-WEBGPU-SPLAT-DATA-PRODUCER` mechanism at HEAD, map the full WebGL splat data path (loader -> workers -> primitive -> renderer) and specify the WebGPU producer design + task breakdown `C15-G1..Gn` with exit gates | M | **COMPLETE — 2026-08-06** (report §6a-§6d below; docs/analysis only, no engine change) | — |
 | `C15-G1` | Probe harness + **WebGL reference leg** on the two in-tree splat tilesets. No engine change. | S | **IMPLEMENTATION DONE — 2026-08-07 (worker)**; pending orchestrator landing + Edge run. `probe-gsplat-parity.mjs` + `lib/gsplat-parity-model.mjs` + `gsplat-harness.spec.mjs` (50 checks green). Predictions + the §6a addendum below | `C15-G0` |
 | `C15-G2` | Scene-logic extraction: move the FR dispatch below the data commit; split the backend-neutral snapshot pack from the WebGL `Texture` upload | M | **CONFIRMED-COMPLETE — 2026-08-07 (Batch 880 fix, Edge-verified).** Batch 878 landed the extraction and came back exit 3 on its own STAGE contract (`_numSplats` stuck at 0 — the TEXTURE_READY guard read `pending.gaussianSplatTexture`, a WebGL object the native branch deliberately never creates); `hasSnapshotRenderPayload` fixed it and the re-run measured `numSplats=27`, blockers exactly `[no-splat-data-fields, cache-splat-count-zero]`, **exit 0** — an exact match to the re-registered predictions. Mechanism + corrected boundary in the §6c `C15-G2` block below | `C15-G1` |
-| `C15-G3` | Splat record format + WebGPU buffer commit — consume the WASM texture-generator output verbatim; first real WebGPU splat pixels | L | **LANDED Batch 881 — SPLATS DRAW (first WebGPU splat pixels in project history): `splatCmds=1/1`, `added=480,480 px (61.096%)` vs a 2.000% floor, `errs=0`. Exit 1 on `cache.splatCount=0`; `C15-G3b` fix IMPLEMENTATION DONE 2026-08-07 (worker), pending orchestrator landing + re-run.** Two defects, both closed: (a) the buffer commit sat BELOW `tryResolveSplatPipelines`, so the renderer-owned count stayed at its constructor default for the whole cold-pipeline compile while the probe sampled it during readiness (every renderer stat in the manifest reads its allocation-time value — conclusive); commit hoisted above the gate + the probe re-samples at the SCORED frame. (b) The 3.19x coverage excess was NOT SH and NOT the decode but two footprint conventions Batch 288 never matched (half-viewport focal, 3-sigma square support, true gaussian vs WebGL's sqrt(2)-sigma oriented quad and `exp(-4*dot)`); ported verbatim, attribution corroborated by area (3.19 vs 3.53 predicted), edge fraction (2.38 vs 2.12 predicted) and the PNGs. 108 harness checks green (was 95). Prediction record + re-run predictions in the `C15-G3b` block below | `C15-G2` |
+| `C15-G3` | Splat record format + WebGPU buffer commit — consume the WASM texture-generator output verbatim; first real WebGPU splat pixels | L | **COMPLETE — Batch 882 (`C15-G3b`) Edge-verified, every pre-registered number hit.** WebGPU splats RENDER: `cache.splatCount=27`, added **18.995%** vs WebGL **19.141%** (inside the predicted 17.8-21.0% band, within 0.8% of parity), parity mismatch **31.946% -> 2.574%** (below the predicted 8-15%), blockers `[]`, `WEBGPU-SPLATS-PRESENT`, exit 0. `probe-splat-sort` + `probe-oit-transparency` green. `probe-splat-globe-occlusion` check 3 red (`greenPx=1436`) -> **`C15-G3c`: attributed to the MISSING GLOBE, not the splat** (the sharper falloff makes leak pixels exactly 4x LESS countable, so it cannot manufacture a leak; 1436 px is precisely the fully-unoccluded footprint at the probe's geometry; the PNG shows the globe confined to a right-hand strip). Instrument fixed (globe-only reference frame, per-pixel green split, structural exit 3); no engine change. 117 harness checks green. Blocks nothing: `C15-G4`/`G5` are unblocked | `C15-G2` |
 | `C15-G4` | Consume the WASM radix sort (`primitive._indexes`) instead of the in-renderer synchronous JS comparator sort | M | PENDING | `C15-G3` |
 | `C15-G5` | Spherical harmonics (degree 1-3) in WGSL — the view-dependent colour term the WGSL has **zero** implementation of | L | PENDING | `C15-G3` |
 | `C15-G6` | `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` — re-verify against production data (the B647 fix is currently **vacuous** under every probe) | M | PENDING | `C15-G3` |
@@ -1591,6 +1591,160 @@ eslint clean on both `Tools/` files; `node --test gsplat-harness.spec.mjs`
 with the pre-`C15-G3b` renderer copied back, exactly **9 of 108** go red — the
 commit-ordering anchor, the footprint anchor, and all 7 footprint mutants —
 while every `C15-G3` decode anchor stays green. File restored, md5-verified.
+
+
+#### `C15-G3c` — `probe-splat-globe-occlusion` check 3: the leak is the MISSING GLOBE, and the probe could not see that (worker, 2026-08-07)
+
+Batch 882 hit every pre-registered number — `cache.splatCount` 27, added
+**18.995%** against WebGL's 19.141%, parity **31.946% → 2.574%**, blockers `[]`,
+exit 0. `probe-splat-sort` and `probe-oit-transparency` came back GREEN (the
+axis-aligned NaN guard held, as the executed battery predicted).
+`probe-splat-globe-occlusion` check 3 went RED: `greenPx=1436` against a `<50`
+bar. **It is not a splat defect, and it is not `C15-G3b`.**
+
+##### (a) Was check 3 passing before, and on what margin?
+
+Yes, and on the largest margin available. `DEFERRED_WORK.md` records the B647
+acceptance verbatim: the GREEN splat "stays HIDDEN (**0 px**) behind the globe,
+proving the fix is not 'always on top'". Zero, not "under 50".
+
+And the coordinator's framing question answers itself once the numbers are in:
+**a BIGGER below-surface splat leaks MORE countable pixels, not fewer.** The
+probe counts a pixel green when `g > 150`, which after the premultiplied blend
+means the splat's alpha there must exceed `(150/255 - dstG)/(1 - dstG)`. Invert
+each falloff for the radius of the disc that clears that bar:
+
+| | falloff | countable radius | countable area |
+| --- | --- | --- | --- |
+| pre-`C15-G3b` (Batch 288 conic) | `a * exp(-0.5 (r/sigma)^2)` | `1.10-1.38 sigma` | 4x |
+| post-`C15-G3b` (WebGL parity) | `a * exp(-2 (r/sigma)^2)` | `0.55-0.69 sigma` | 1x |
+
+The ratio is **exactly 2 in radius and exactly 4 in area, independently of the
+globe colour behind the splat** — both profiles are gaussians differing only by
+a constant in the exponent, so whatever threshold the blend produces, the
+countable radius halves. The spec executes this over the whole plausible `dstG`
+band and asserts the ratio to 1e-9.
+
+##### (b) The three candidate mechanisms, scored
+
+1. **"The sharper falloff pushed sub-threshold leak pixels over the bar."**
+   **REFUTED, with a factor.** It moves them the other way: post-`C15-G3b`
+   every leak pixel is *less* opaque and the support is a strict subset
+   (half-extent `sqrt(2) sigma` versus `3 sigma`). For any fixed depth-test
+   outcome the new count is a QUARTER of the old one. The 1,436 px measured
+   today would have counted **~5,743 px** under the old footprint — i.e. if
+   this leak had existed at B647 it would have failed the `<50` bar by more
+   than a hundredfold, and B647 recorded 0.
+2. **"The new quad axes move where fragments land relative to the globe's
+   depth."** **REFUTED at the source, and pinned.** The expansion writes
+   `fp.x`/`fp.y` only; `z` and `w` are copied from the splat centre's clip
+   position and never touched, so every fragment of the quad carries the
+   CENTRE's depth exactly as before, and the log-depth varying is
+   `csm_vertexLogDepth(clipPos, ...)` — the centre, not the corner. A spec
+   anchor now forbids the expansion writing `fp.z`/`fp.w`, on both the colour
+   and the velocity vertex shaders.
+3. **The `NEW-SPLAT-MULTIFRUSTUM-DEPTH-COMPOSE` / `C15-G6` gap.** **Not this
+   either.** A compose or binning gap manifests where the globe EXISTS and the
+   splat is ordered against it wrongly. Here the globe does not exist over the
+   leak pixels at all.
+
+##### The actual cause: there is no globe over the splat, and the probe had no way to notice
+
+Read the PNGs. `output/splat-occlusion-default.png` from the Batch-882 run shows
+the globe confined to a **vertical strip on the right ~24% of the canvas**;
+everything else is black, with the red splat and a **fully-formed green core**
+floating over it, plus the Cesium viewer chrome (toolbar, the open navigation-
+help panel, timeline, credits) — which this probe never hid.
+
+The green core is a **filled disc, not an annulus**, and it measures what a
+completely unoccluded splat should measure. From the probe's own geometry — a
+600 m isotropic splat 3 km below the surface, nadir camera at 8 km, 1024x700,
+default 60-degree fov — the projected sigma is **33.1 px**, and the fully
+visible countable disc is **1,154-1,436 px** across the plausible globe-green
+band. The run measured **1,436**. Not the tail of a partial occlusion: the depth
+test rejected **nothing**, because there was nothing in front to reject it.
+
+**Why the probe scored that as a splat defect.** Two blind spots, both of which
+made the failure mode invisible by construction:
+
+* `globePixels` was **derived**, as `nonBlack - red - green`. The red splat's
+  own sub-threshold halo (bright enough for `isNonBlack`, too dim for `isRed`)
+  and every viewer-chrome pixel therefore counted as "globe". Check 1
+  (`globePixels > 20000`) **could not fail for "the globe did not render"** —
+  and it duly passed on this run.
+* Check 3 read the undifferentiated green count. `green < 50` is equally
+  satisfied when the splat never drew; `green >= 50` is *guaranteed* whenever
+  the globe is absent at the splat's pixels. The check had no way to tell a
+  depth-compare leak from an empty background.
+
+Corroboration that this is scene state rather than splat state: the stale
+July-10 artifact `output/splat-occlusion-deferral-armed.png` (from an older
+probe revision) shows the same scene with **no globe at all** and the green core
+plainly visible — so this probe's globe has been unreliable for a while, and
+the checks were structurally unable to report it.
+
+##### (c) What landed — instrument, not engine
+
+No engine change. The footprint is NOT reverted: it is correct, `C15-G8`
+depends on it, and reverting would trade a real parity fix for a probe artifact.
+
+`probe-splat-globe-occlusion.mjs` now measures the globe on its **own frame**,
+with both splats hidden and the viewer chrome hidden, and splits the verdict
+**per pixel by what is behind it**:
+
+* `greenOverGlobe` — green pixels that DO have globe behind them. **Product
+  check 3**, threshold unchanged at `< 50`.
+* `greenOverVoid` — green pixels with nothing behind them. **Precondition P1**,
+  STRUCTURAL: occlusion is not evaluable there, and filing it as a splat defect
+  bills the wrong subsystem.
+* Check 2 keeps its original meaning (the splat is RENDERED, not dropped — the
+  C7-SPLAT-DEPTH-COMPOSE guard it was written for) and the "composed OVER the
+  globe" half becomes **precondition P2** (`redOverGlobe > 2000`), because a
+  splat drawn over empty space is not a splat defect either.
+* Check 1 now reads the splats-hidden, chrome-hidden globe count directly, so
+  it CAN fail for a missing globe.
+* The viewer loads with `&offline=true` so a missing ion token cannot change
+  what is on the canvas, and structural runs **exit 3** — never 0 (which would
+  certify an unevaluated subject) and never 1 (which would file it as a splat
+  defect).
+
+The missing globe itself is filed separately as
+`NEW-WEBGPU-OCCLUSION-PROBE-GLOBE-ABSENT` in `DEFERRED_WORK.md`. It is a globe
+/ scene-setup question, not splat work, and it now has an instrument that
+reports it in its own words.
+
+##### Pre-registered prediction for the re-run
+
+`node Tools/visual-regression/probe-splat-globe-occlusion.mjs`, same scene:
+
+* **P1 STRUCTURAL** with `greenOverVoid` ≈ **1,400-1,450** (essentially all of
+  the green), and **check 3 GREEN** with `greenOverGlobe` ≈ **0** — the splat
+  is correctly occluded everywhere the globe actually is.
+* **P2 STRUCTURAL** with `redOverGlobe` ≈ 0 (the red splat sits over the black
+  region), **check 2 GREEN** (`red` still > 2000 — it renders).
+* Check 1: `globePixels` now measured honestly. On the Batch-882 scene the
+  right-hand strip is ~170,000 px, so **check 1 passes**; if the globe is
+  absent entirely (the July shape) it reads **< 20,000 and check 1 FAILS**,
+  which is the signal that was missing all along. Either outcome is
+  informative; both are honest.
+* Checks 4, 5, 6 unchanged and green.
+* **Overall exit 3 (INCOMPLETE — structural), not 1.** The splat subsystem is
+  exonerated by the run itself rather than by this document.
+
+*Named ways this comes back other than predicted:* `greenOverGlobe >= 50` —
+then there IS a genuine depth-compare leak where the globe exists, `C15-G6`/
+`C15-G7` inherit it with per-pixel evidence, and the arithmetic above says it
+was ~4x worse before `C15-G3b`. `greenOverVoid === 0` and check 3 green — the
+globe came back on its own (a load-timing flake), and P1 is then the standing
+guard that stops the flake being scored as a splat verdict ever again.
+
+*Gates:* `node --test gsplat-harness.spec.mjs` **117/117** (108 preserved);
+prettier + eslint clean on both touched files; no engine file modified, so tsc
+and Naga are unchanged from Batch 882. **Negative control (file copy):** with
+the pre-`C15-G3c` probe restored, exactly **6 of 117** go red — the contract
+anchor and its 5 mutants — while the three arithmetic/engine tests stay green,
+which is the right separation: they do not depend on the probe's contract. File
+restored, md5-verified.
 
 
 ### `C15-G4` — consume the WASM radix sort (M) — deps: `C15-G3`
